@@ -1,0 +1,69 @@
+# corral — 공통 지침
+
+herdr 기반 AI 워크스페이스 (LIFE-337). 세션·일감을 한 울타리에 모으는 미션 컨트롤.
+herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 Electron + React GUI.
+
+프로젝트 방향·스텝은 specs/00-project.md 를 읽는다.
+
+## 산출물 규칙
+
+- 작업 하나 = specs/LIFE-NNN-<슬러그>/ 폴더. 단계 산출물은 번호 파일 (00-analysis.md, 01-criteria.md, …)
+- specs/ 파일이 진실의 원천. 세션 간 조율은 파일로 한다 — 세션 컨텍스트는 휘발됨
+- 완료 선언 전에 .agents/rules/validation.md 의 완료 조건을 확인한다
+
+## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
+
+1. 분석: claude가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
+   (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
+2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
+   (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
+3. 경쟁 구현: claude 와 codex 가 같은 스펙을 각자 브랜치에서 구현
+   - 브랜치: LIFE-NNN-<슬러그>/claude, LIFE-NNN-<슬러그>/codex (git worktree 로 물리 격리)
+   - 리뷰·판정 수렴 후에야 채택 브랜치만 main 에 머지
+4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
+   → specs/LIFE-NNN-*/review-<도구>.md
+5. 취합·판정: claude 가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
+   - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
+   - 종료 조건: 높음+중간 지적 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
+
+## 브랜치 규약 (플랫 / 트렁크 기반)
+
+- 모든 작업 브랜치는 main 에서 직접 분기·머지. 체크포인트는 LA 묶음 개념만 — 통합 브랜치 금지
+- 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 2~3단어), 생성 후 불변 (매핑은 키로만)
+- 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
+- 예외적 장기 통합 브랜치는 만료일 명시, 넘기면 쪼개서 main 에
+
+## 도구 역할
+
+- claude (Claude Code) = 코디네이터·판정 + 구현자 A
+- codex = 구현자 B + 코드 검토
+- grok = 외부 서치·사실 검증 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
+
+## 세션 간 통신
+
+- 영속 산출물: specs/ 파일 (진실의 원천)
+- 제어 채널: orca terminal create/send/read/wait — 워커 터미널 생성·지시 주입·완료 감지.
+  워커는 백그라운드가 아니라 Orca 탭으로 열어 진행이 보이게 한다
+- 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
+
+## 어디를 고치나 (증상 → 파일)
+
+| 증상 | 고치는 파일 |
+| --- | --- |
+| 프로젝트가 뭔지 매번 설명하게 된다 | AGENTS.md · specs/00-project.md |
+| 문체·용어·문서 형식이 매번 다르다 | .agents/rules/writing.md |
+| 코드 스타일·파일 이름이 제각각이다 | .agents/rules/coding.md |
+| "다 됐습니다"인데 안 되어 있다 | .agents/rules/validation.md |
+| 리뷰 품질·형식이 도구마다 흔들린다 | .agents/agents/reviewer.md |
+| 같은 다단계 절차를 매번 다시 설명한다 | .agents/skills/<이름>/SKILL.md 신설 |
+| 무엇을 만들어야 하는지가 흔들린다 | 해당 작업의 01-criteria.md |
+
+## 원본 관리
+
+- 규칙·에이전트·스킬 원본은 .agents/ 에만 둔다. .claude/ 의 rules·skills·agents 는 심링크 — 원본 저장 금지
+- .agents/agents/ 의 역할 파일은 각 터미널 세션이 시작 시 읽는 지침서다 (서브에이전트 아님)
+- grok 은 AGENTS.md 와 .claude/rules/ 를 자동 로드한다 — .grok/ 폴더 불필요
+- .agents/agents/ 를 고치면 .codex/agents/*.toml 포인터가 깨지지 않았는지 확인
+- rules 스텁(writing.md·coding.md)은 같은 실수 두 번째에 한 줄씩. 글로벌 스타일과 중복 금지
+- 스킬의 로컬 상태(config.json, state/)는 .gitignore — config.example.json 만 커밋
+- 이 파일이 200줄을 넘으면 이미 너무 길다 — 긴 절차는 스킬로 빼고 포인터만

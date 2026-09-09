@@ -1,0 +1,6 @@
+# 스킬 로컬 상태 — config.example.json 만 커밋
+.agents/skills/*/config.json
+.agents/skills/*/state/
+
+# Claude Code 런타임
+.claude/worktrees/

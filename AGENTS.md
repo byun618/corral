@@ -13,14 +13,16 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
 
-0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기 + specs/LIFE-NNN-<슬러그>/ 생성.
-   분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
+0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기, 전용 worktree 로 체크아웃
+   (.claude/worktrees/LIFE-NNN-<슬러그>/) — 본체는 항상 main 에 둔다.
+   specs/LIFE-NNN-<슬러그>/ 생성. 분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
 1. 분석: claude가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
    (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
 3. 경쟁 구현: claude 와 codex 가 같은 스펙을 각자 브랜치에서 구현
-   - 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude, LIFE-NNN-<슬러그>-codex (git worktree 로 물리 격리)
+   - 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude, LIFE-NNN-<슬러그>-codex (각자 전용 worktree)
+   - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
    - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
    - 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
 4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
@@ -28,7 +30,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 5. 취합·판정: claude 가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
    - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
    - 종료 조건: 높음+중간 지적 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
-6. 마무리: 수렴 후 승자 브랜치 → 작업 브랜치 머지 (패자는 삭제) → 작업 브랜치 → main 머지 후 삭제
+6. 마무리: 수렴 후 승자 브랜치 → 작업 브랜치 머지 (패자는 삭제) → 본체(main)에서 작업 브랜치 머지
+   → 작업 브랜치·worktree 3개 모두 정리
 
 ## 브랜치 규약
 

@@ -13,22 +13,28 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
 
+0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기 + specs/LIFE-NNN-<슬러그>/ 생성.
+   분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
 1. 분석: claude가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
    (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
 3. 경쟁 구현: claude 와 codex 가 같은 스펙을 각자 브랜치에서 구현
-   - 브랜치: LIFE-NNN-<슬러그>/claude, LIFE-NNN-<슬러그>/codex (git worktree 로 물리 격리)
-   - 리뷰·판정 수렴 후에야 채택 브랜치만 main 에 머지
+   - 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude, LIFE-NNN-<슬러그>-codex (git worktree 로 물리 격리)
+   - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
+   - 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
 4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
    → specs/LIFE-NNN-*/review-<도구>.md
 5. 취합·판정: claude 가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
    - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
    - 종료 조건: 높음+중간 지적 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
+6. 마무리: 수렴 후 승자 브랜치 → 작업 브랜치 머지 (패자는 삭제) → 작업 브랜치 → main 머지 후 삭제
 
-## 브랜치 규약 (플랫 / 트렁크 기반)
+## 브랜치 규약
 
-- 모든 작업 브랜치는 main 에서 직접 분기·머지. 체크포인트는 LA 묶음 개념만 — 통합 브랜치 금지
+- 작업 브랜치 LIFE-NNN-<슬러그> 는 main 에서 분기, 작업 하나의 수명만 갖는다 —
+  main 머지 후 즉시 삭제 (단명이라 트렁크 기반의 짧은 수명 원칙 유지)
+- 체크포인트·프로젝트 단위 통합 브랜치는 금지 — LA 묶음 개념만
 - 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 2~3단어), 생성 후 불변 (매핑은 키로만)
 - 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
 - 예외적 장기 통합 브랜치는 만료일 명시, 넘기면 쪼개서 main 에

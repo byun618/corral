@@ -41,6 +41,8 @@ function currentState(): AppState {
     link: link.linkState(),
     workspaces: rows,
     selectedPaneId,
+    // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
+    diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
 }
 

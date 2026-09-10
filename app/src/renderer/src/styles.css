@@ -350,3 +350,16 @@ body {
   white-space: nowrap;
   font-weight: 500;
 }
+
+/* 멈춘 세션 — 산 것과 눈으로 갈린다 (herdr session list 의 running). */
+.row-stopped .row-title,
+.row-stopped .row-sub {
+  opacity: 0.45;
+}
+.tag-stopped {
+  border-color: #6b3a3a;
+  color: #d98c8c;
+}
+.dot-stopped {
+  background: #6b3a3a;
+}

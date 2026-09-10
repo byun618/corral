@@ -28,9 +28,14 @@ const EMPTY: AppState = {
   },
   workspaces: [],
   selectedPaneId: null,
+  diagnostics: false,
 }
 
 type RepoGroup = { key: string; repoName: string | null; repoRoot: string | null; workspaces: WorkspaceRow[] }
+
+function rowClass(selected: boolean, running: boolean): string {
+  return ['row', selected ? 'row-on' : null, running ? null : 'row-stopped'].filter((part) => part !== null).join(' ')
+}
 
 function groupByRepo(workspaces: WorkspaceRow[]): RepoGroup[] {
   const groups = new Map<string, RepoGroup>()
@@ -94,12 +99,15 @@ export function App(): React.JSX.Element {
                 <li key={session.name}>
                   <button
                     type="button"
-                    className={session.name === state.selectedSession ? 'row row-on' : 'row'}
+                    className={rowClass(session.name === state.selectedSession, session.running)}
                     onClick={() => void window.corral.selectSession(session.name)}
                   >
                     <span className="row-title">
+                      {/* session list 는 멈춘 세션도 준다 — 산 것과 죽은 것이 같아 보이면 안 된다. */}
+                      <span className={session.running ? 'dot dot-idle' : 'dot dot-stopped'} />
                       {session.name}
                       {session.isDefault && <em className="tag">default</em>}
+                      {!session.running && <em className="tag tag-stopped">stopped</em>}
                     </span>
                     <span className="row-sub">{session.socketPath}</span>
                   </button>
@@ -175,7 +183,7 @@ export function App(): React.JSX.Element {
       </div>
 
       <footer className="statusbar">
-        <SecurityProbe />
+        {state.diagnostics && <SecurityProbe />}
         {state.link.lastError !== null && <span className="warn">{state.link.lastError}</span>}
       </footer>
     </div>

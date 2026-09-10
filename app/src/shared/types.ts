@@ -77,6 +77,8 @@ export type AppState = {
   workspaces: WorkspaceRow[]
   /** 선택 대상은 pane 이다 (기준 L2). */
   selectedPaneId: string | null
+  /** 진단 UI(S3 프로브)를 띄우는 실행인가 — 패키징된 앱이거나 계측이 아니면 false. */
+  diagnostics: boolean
 }
 
 /** preload 가 contextBridge 로 노출하는 채널별 메서드. ipcRenderer 를 통째로 넘기지 않는다. */

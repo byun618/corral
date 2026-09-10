@@ -162,10 +162,20 @@ export function sliceLog(entries, tags) {
 /**
  * 격리 세션을 계속 흔든다 — 부트스트랩 창(구독 ack ~ 스냅샷 적용) 안에서 변화를 만들기 위한 것.
  * 스파이크 A4 가 본 "중복 create" 상황을 재현하는 자리이기도 하다.
+ *
+ * `keep` 은 **닫지 않고 남길 workspace 수**다 (판정문 H1). 만든 것을 전부 닫아 버리면 흔들기가
+ * 끝난 뒤 비교 대상이 `w1` 하나만 남아, "수렴 집합 == 실제 상태" 가 원소 1개짜리 비교가 된다.
+ * A4 는 pane 7개(그중 churn 생존분 2개)를 비교했다 — 같은 강도가 되려면 생존분이 있어야 한다.
+ * `keepAfterMs` 는 churn 시작으로부터 이만큼 지난 뒤에 만든 것부터 남긴다는 뜻이다
+ * (남는 것이 전부 부트스트랩 이전 생성분이 되지 않게 시각을 흩는다).
+ *
+ * 남긴 것은 `stop()` 이 닫지 않는다 — 측정이 끝난 뒤 `tidySession()` 이 턴다.
  */
-export function startChurn({ intervalMs = 150 } = {}) {
+export function startChurn({ intervalMs = 150, keep = 0, keepAfterMs = 0 } = {}) {
   let running = true
+  const startedAt = Date.now()
   const created = []
+  const kept = []
   const events = []
   const loop = (async () => {
     while (running) {
@@ -178,9 +188,15 @@ export function startChurn({ intervalMs = 150 } = {}) {
         }
         await sleep(intervalMs)
         if (workspaceId) {
-          await request('workspace.close', { workspace_id: workspaceId })
-          events.push({ kind: 'close', workspaceId, at: Date.now() })
+          const survives = kept.length < keep && Date.now() - startedAt >= keepAfterMs
           created.splice(created.indexOf(workspaceId), 1)
+          if (survives) {
+            kept.push(workspaceId)
+            events.push({ kind: 'keep', workspaceId, at: Date.now() })
+          } else {
+            await request('workspace.close', { workspace_id: workspaceId })
+            events.push({ kind: 'close', workspaceId, at: Date.now() })
+          }
         }
       } catch (error) {
         events.push({ kind: 'error', error: String(error), at: Date.now() })
@@ -190,12 +206,14 @@ export function startChurn({ intervalMs = 150 } = {}) {
   })()
   return {
     events,
+    kept,
     stop: async () => {
       running = false
       await loop
       for (const workspaceId of [...created]) {
         await request('workspace.close', { workspace_id: workspaceId }).catch(() => {})
       }
+      return { kept: [...kept] }
     },
   }
 }

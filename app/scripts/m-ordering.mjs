@@ -45,10 +45,11 @@ subscription.write(
 await sleep(300)
 
 await tidySession()
-const churns = [0, 1, 2, 3].map(() => startChurn({ intervalMs: 0 }))
-await sleep(6000)
+const churns = [0, 1, 2, 3, 4, 5].map(() => startChurn({ intervalMs: 0 }))
+await sleep(8000)
 for (const churn of churns) await churn.stop()
-await sleep(2000)
+// 넉넉히 기다린다 — 늦게 오는 푸시를 "안 온 것"으로 세지 않기 위해서다.
+await sleep(4000)
 subscription.end()
 subscription.destroy()
 
@@ -84,30 +85,78 @@ for (const [workspaceId, list] of byWorkspace) {
   }
 }
 
+// --- 흔들기가 실제로 한 일 vs 스트림이 알려 준 일 -------------------------
+// 앱 밖에서, 구독 스트림 원문만으로 센다. herdr 가 푸시를 흘리는지가 여기서 갈린다.
+const requestedCreates = churns.flatMap((churn) => churn.events.filter((e) => e.kind === 'create').map((e) => e.workspaceId))
+const requestedCloses = churns.flatMap((churn) => churn.events.filter((e) => e.kind === 'close').map((e) => e.workspaceId))
+const pushedCreates = new Set(
+  events.filter((item) => item.event === 'workspace_created').map((item) => item.data?.workspace?.workspace_id),
+)
+const pushedCloses = new Set(events.filter((item) => item.event === 'workspace_closed').map((item) => item.data?.workspace_id))
+const missingCreatePushes = [...new Set(requestedCreates)].filter((id) => id && !pushedCreates.has(id))
+const missingClosePushes = [...new Set(requestedCloses)].filter((id) => id && !pushedCloses.has(id))
+
 const result = {
   measuredAt: new Date().toISOString(),
   session: SESSION,
-  question: '같은 workspace 의 push 가 인과 순서대로 오는가 (create → close)',
+  question: '같은 workspace 의 push 가 인과 순서대로 오는가 (create → close). 그리고 다 오기는 하는가.',
+  delivery: {
+    requestedCreates: new Set(requestedCreates).size,
+    requestedCloses: new Set(requestedCloses).size,
+    missingCreatePushes: { count: missingCreatePushes.length, samples: missingCreatePushes.slice(0, 10) },
+    missingClosePushes: { count: missingClosePushes.length, samples: missingClosePushes.slice(0, 10) },
+    note:
+      '하네스가 요청한 생성·종료 중 구독 스트림으로 **되돌아오지 않은** 것. 앱을 거치지 않은 ' +
+      '원문 집계라 클라이언트 버그와 섞이지 않는다.',
+  },
   workspacesObserved: byWorkspace.size,
   eventsObserved: events.length,
   inversions: {
     count: inversions.length,
+    maxLagMs: inversions.reduce((max, item) => Math.max(max, item.lagMs), 0),
     samples: inversions.slice(0, 10),
     note: 'workspace_closed 가 같은 workspace 의 workspace_created 보다 먼저 도착한 경우',
   },
   lateChildren: {
     count: lateChildren.length,
+    maxLagMs: lateChildren.reduce((max, item) => Math.max(max, item.lagMs), 0),
     samples: lateChildren.slice(0, 10),
     note: 'workspace 가 닫힌 뒤에 그 workspace 의 pane_created/tab_created 가 도착한 경우',
   },
+  // 이 최댓값이 "시간창으로는 못 막는다"의 근거다 — 부하를 올리면 같이 올라간다.
+  // corral 은 시간창을 버리고 묘비(닫힌 id 는 다시 받지 않는다)로 갔다 (28-orphan-holding.json).
+  windowBasis: {
+    note:
+      '뒤집힘 지연은 부하를 따라 늘어난다. 4갈래에서 214ms 였던 것이 6갈래·8초에서는 1374ms 였다. ' +
+      '고정 시간창은 그래서 틀린 도구다 — workspace_id 가 생애 안에서 재사용되지 않는다는 실측 ' +
+      '(29-id-reuse.json)에 기대어 시간을 아예 안 보는 쪽으로 바꿨다.',
+  },
+  deliveryConclusion:
+    missingClosePushes.length > 0 || missingCreatePushes.length > 0
+      ? 'herdr 는 부하가 걸리면 push 를 **흘린다**. 구독만으로는 상태가 수렴하지 않는다 — ' +
+        '스냅샷 재조회가 유일한 진실 회복 경로다 (Step 2 가 물려받아야 한다).'
+      : '이번 부하에서는 흘린 push 가 없었다.',
   conclusion:
     inversions.length > 0 || lateChildren.length > 0
       ? 'herdr push 는 같은 workspace 안에서도 인과 순서를 보장하지 않는다. 푸시에 시퀀스 번호가 ' +
-        '없으므로 클라이언트가 막아야 한다 — corral 은 (1) 주인 없는 pane/tab 을 버리고 ' +
-        '(2) 닫힌 지 5초 안에 온 create 를 늦게 온 과거로 보고 버린다.'
+        '없으므로 클라이언트가 막아야 한다 — corral 은 (1) 주인보다 먼저 온 pane/tab 을 보류함에 ' +
+        '담았다가 주인이 오면 붙이고 (2) 닫힌 지 창(1000ms) 안에 온 create 를 늦게 온 과거로 버린다.'
       : '이번 측정에서는 뒤집힘이 관측되지 않았다 (부하가 낮았을 수 있다 — 공백으로 남긴다).',
 }
 
 writeRaw('27-push-ordering.json', result)
-console.log(JSON.stringify({ workspaces: result.workspacesObserved, inversions: inversions.length, lateChildren: lateChildren.length }, null, 2))
+console.log(
+  JSON.stringify(
+    {
+      workspaces: result.workspacesObserved,
+      inversions: inversions.length,
+      maxInversionLagMs: result.inversions.maxLagMs,
+      lateChildren: lateChildren.length,
+      missingCreatePushes: missingCreatePushes.length,
+      missingClosePushes: missingClosePushes.length,
+    },
+    null,
+    2,
+  ),
+)
 await tidySession()

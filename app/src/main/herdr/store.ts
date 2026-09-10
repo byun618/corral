@@ -49,24 +49,45 @@ export type ApplyResult = { changed: boolean; note: string }
  * `workspace_created` 를 `workspace_closed` **뒤에** 밀어 넣는다 (create 는 workspace 가 실제로
  * 다 서고 나서 알려지기 때문이다). 그대로 적용하면 이미 죽은 workspace 가 목록에 되살아난다.
  *
- * 푸시에는 시퀀스 번호가 없으므로 시간창으로 막는다 — 닫힌 지 이 시간 안에 도착한 create 는
- * "늦게 온 과거"로 보고 버린다. 스냅샷은 권위이므로 스냅샷을 적용하면 이 기록도 지운다.
+ * 1회차는 이걸 **시간창**(5000ms)으로 막았다. 시간창은 틀린 도구다 — 뒤집힘 지연이 부하를 따라
+ * 늘어난다. 4갈래로 흔들 때 최대 214ms 였던 것이 6갈래·8초에서는 **1374ms** 까지 갔고, 창을
+ * 넘긴 create 가 죽은 workspace 46개를 되살렸다 (28-orphan-holding.json 의 1차 측정).
+ *
+ * 그래서 창을 버리고 **묘비**로 바꾼다. 근거는 실측이다 — `workspace_id` 는 **서버 생애 안에서
+ * 재사용되지 않는다**(29-id-reuse.json: 40회 연속 생성·종료, 중복 0). 그러므로 한 번 닫힌 id 로
+ * 오는 create 는 **언제 오든** 늦게 온 과거다. 시간을 볼 필요가 없다.
+ *
+ * id 는 서버를 재기동하면 처음으로 되돌아간다(같은 측정). 그건 문제가 되지 않는다 — 생애가
+ * 바뀌는 유일한 경로가 재부트스트랩이고, 재부트스트랩은 `applySnapshot` → `reset()` 으로 묘비를
+ * 지운 **뒤에** 버퍼를 적용한다. 29-id-reuse.json 의 ③ 이 그걸 실측으로 확인한다.
  */
-const LATE_CREATE_WINDOW_MS = 5000
+
+/**
+ * 주인보다 **먼저** 온 pane/tab 을 담아 두는 창. 여기는 시간창이 맞다 — 주인이 영영 안 오는
+ * 경우가 있어서(그 workspace 가 닫힌 경우) 무한정 들고 있을 수는 없다. 넉넉히 잡는다:
+ * 너무 일찍 버리면 pane 을 잃고, 오래 들고 있으면 잠깐 메모리만 쓴다. 대칭이 아니다.
+ */
+const ORPHAN_HOLD_MS = 5000
+
+/** 주인 workspace 보다 먼저 도착한 pane/tab. 창이 지나면 턴다. */
+type Orphan = { at: number; workspaceId: string; kind: 'pane' | 'tab'; value: Record<string, unknown> }
 
 export class WorkspaceStore {
   private workspaces = new Map<string, Workspace>()
   private panes = new Map<string, Pane>()
   private tabs = new Map<string, Tab>()
   private repos = new Map<string, RepoInfo>()
-  private closedAt = new Map<string, number>()
+  /** 이 생애에서 닫힌 workspace 의 묘비. 재사용되지 않는 id 이므로 시간을 재지 않는다. */
+  private closed = new Set<string>()
+  private orphans: Orphan[] = []
 
   reset(): void {
     this.workspaces.clear()
     this.panes.clear()
     this.tabs.clear()
     this.repos.clear()
-    this.closedAt.clear()
+    this.closed.clear()
+    this.orphans = []
   }
 
   /** worktree.list 로 알아낸 repo 정보를 붙인다. workspace 가 사라지면 같이 지운다. */
@@ -111,8 +132,8 @@ export class WorkspaceStore {
       case 'workspace_metadata_updated': {
         const workspace = data['workspace']
         const id = isRecord(workspace) ? readString(workspace, 'workspace_id') : null
-        if (id !== null && this.recentlyClosed(id)) {
-          return { changed: false, note: `${frame.event}: 닫힌 뒤 늦게 온 create — 버린다 (${id})` }
+        if (id !== null && this.closed.has(id)) {
+          return { changed: false, note: `${frame.event}: 닫힌 뒤 늦게 온 것 — 버린다 (${id})` }
         }
         return { changed: this.putWorkspace(workspace), note: frame.event }
       }
@@ -131,8 +152,10 @@ export class WorkspaceStore {
         const id = readString(data, 'workspace_id')
         if (id === null) return { changed: false, note: 'workspace_closed 필드 부족' }
         const had = this.workspaces.delete(id)
-        this.closedAt.set(id, Date.now())
+        this.closed.add(id)
         this.repos.delete(id)
+        // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
+        this.orphans = this.orphans.filter((item) => item.workspaceId !== id)
         for (const [paneId, pane] of this.panes) if (pane.workspaceId === id) this.panes.delete(paneId)
         for (const [tabId, tab] of this.tabs) if (tab.workspaceId === id) this.tabs.delete(tabId)
         return { changed: had, note: had ? frame.event : 'workspace_closed: 이미 없음(멱등)' }
@@ -142,7 +165,12 @@ export class WorkspaceStore {
       case 'workspace_reordered': {
         const list = data['workspaces']
         if (!Array.isArray(list)) return { changed: false, note: `${frame.event}: workspaces 없음` }
-        for (const item of list) this.putWorkspace(item)
+        // 여기도 묘비를 본다 — 순서가 뒤집히면 이 목록으로도 죽은 workspace 가 되살아난다.
+        for (const item of list) {
+          const id = isRecord(item) ? readString(item, 'workspace_id') : null
+          if (id !== null && this.closed.has(id)) continue
+          this.putWorkspace(item)
+        }
         return { changed: true, note: frame.event }
       }
 
@@ -162,7 +190,7 @@ export class WorkspaceStore {
 
       case 'tab_created': {
         const added = this.putTab(data['tab'])
-        return { changed: added, note: added ? frame.event : 'tab_created: 모르는 workspace 의 고아 — 버린다' }
+        return { changed: added, note: added ? frame.event : 'tab_created: 주인 없음 — 보류함' }
       }
 
       case 'tab_closed': {
@@ -175,7 +203,7 @@ export class WorkspaceStore {
       case 'pane_created':
       case 'pane_updated': {
         const added = this.putPane(data['pane'])
-        return { changed: added, note: added ? frame.event : `${frame.event}: 모르는 workspace 의 고아 — 버린다` }
+        return { changed: added, note: added ? frame.event : `${frame.event}: 주인 없음 — 보류함` }
       }
 
       case 'pane_closed': {
@@ -245,12 +273,9 @@ export class WorkspaceStore {
     return rows
   }
 
-  /** 닫힌 지 얼마 안 된 id 인가. 겸사겸사 오래된 기록을 턴다. */
-  private recentlyClosed(workspaceId: string): boolean {
-    const now = Date.now()
-    for (const [key, at] of this.closedAt) if (now - at > LATE_CREATE_WINDOW_MS) this.closedAt.delete(key)
-    const at = this.closedAt.get(workspaceId)
-    return at !== undefined && now - at <= LATE_CREATE_WINDOW_MS
+  /** 계측용 — 보류함에 몇 개가 떠 있는지 (K1 원자료에 싣는다). */
+  heldOrphans(): { workspaceId: string; kind: 'pane' | 'tab' }[] {
+    return this.orphans.map((item) => ({ workspaceId: item.workspaceId, kind: item.kind }))
   }
 
   paneIds(): string[] {
@@ -281,6 +306,7 @@ export class WorkspaceStore {
       repoRoot: worktree === null ? null : readString(worktree, 'repo_root'),
       isLinkedWorktree: worktree === null ? null : worktree['is_linked_worktree'] === true,
     })
+    this.flushOrphans(id)
     return true
   }
 
@@ -296,7 +322,10 @@ export class WorkspaceStore {
     const id = readString(value, 'pane_id')
     const workspaceId = readString(value, 'workspace_id')
     if (id === null || workspaceId === null) return false
-    if (!this.workspaces.has(workspaceId)) return false
+    if (!this.workspaces.has(workspaceId)) {
+      this.hold({ at: Date.now(), workspaceId, kind: 'pane', value })
+      return false
+    }
     this.panes.set(id, {
       paneId: id,
       workspaceId,
@@ -321,8 +350,32 @@ export class WorkspaceStore {
     const id = readString(value, 'tab_id')
     const workspaceId = readString(value, 'workspace_id')
     if (id === null || workspaceId === null) return false
-    if (!this.workspaces.has(workspaceId)) return false
+    if (!this.workspaces.has(workspaceId)) {
+      this.hold({ at: Date.now(), workspaceId, kind: 'tab', value })
+      return false
+    }
     this.tabs.set(id, { tabId: id, workspaceId })
     return true
+  }
+
+  /** 보류함에 담는다. 담을 때마다 창 지난 것을 턴다 — 별도 타이머를 두지 않기 위해서다. */
+  private hold(orphan: Orphan): void {
+    const now = orphan.at
+    this.orphans = this.orphans.filter((item) => now - item.at <= ORPHAN_HOLD_MS)
+    this.orphans.push(orphan)
+  }
+
+  /** 주인이 도착했다 — 그 주인의 보류분을 꺼내 붙인다. 창이 지난 것은 붙이지 않고 버린다. */
+  private flushOrphans(workspaceId: string): void {
+    if (this.orphans.length === 0) return
+    const now = Date.now()
+    const mine = this.orphans.filter(
+      (item) => item.workspaceId === workspaceId && now - item.at <= ORPHAN_HOLD_MS,
+    )
+    if (mine.length === 0) return
+    this.orphans = this.orphans.filter((item) => item.workspaceId !== workspaceId)
+    // tab 을 먼저 붙인다 — pane 이 tab_id 를 참조한다.
+    for (const item of mine) if (item.kind === 'tab') this.putTab(item.value)
+    for (const item of mine) if (item.kind === 'pane') this.putPane(item.value)
   }
 }

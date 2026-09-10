@@ -34,10 +34,33 @@ function readInjection(): Injection {
   }
 }
 
+/**
+ * 계측용 — **첫 부트스트랩만** 이만큼 느리게 만든다 (CORRAL_INJECT_BOOT_DELAY_MS).
+ * 세션을 바꾸는 도중에 먼저 나간 시도가 뒤늦게 돌아오는 상황을 재현하려면 느린 쪽이 필요하다
+ * (raw/claude/33-session-switch.json). 한 번만 먹는다 — 그래야 뒤이은 전환은 정상 속도로 돈다.
+ */
+let bootDelayRemaining = Number(process.env.CORRAL_INJECT_BOOT_DELAY_MS)
+async function injectedBootDelay(): Promise<void> {
+  if (!Number.isFinite(bootDelayRemaining) || bootDelayRemaining <= 0) return
+  const delay = bootDelayRemaining
+  bootDelayRemaining = 0
+  log('boot.injected_delay', { delayMs: delay })
+  await sleep(delay)
+}
+
 export type SessionLinkHooks = { onChange: () => void }
 
 export class SessionLink {
   readonly store = new WorkspaceStore()
+  /**
+   * 링크 세대. `open()`·`close()` 마다 올라간다.
+   *
+   * 부트스트랩은 비동기다 (구독 → ack → 스냅샷 → 버퍼). 그 도중에 세션을 바꾸면 **먼저 나간
+   * 시도가 뒤늦게 돌아온다** — 그대로 두면 옛 세션의 스냅샷이 새 세션의 저장소에 부어지고,
+   * 헤더는 새 세션인데 목록은 옛 세션인 화면이 된다 (실측: 33-session-switch-before-fix.json).
+   * 그래서 시도는 자기 세대를 들고 다니고, 세대가 바뀌었으면 아무것도 건드리지 않고 물러난다.
+   */
+  private generation = 0
   private readonly hooks: SessionLinkHooks
   private session: SessionInfo | null = null
   private subscription: Subscription | null = null
@@ -67,6 +90,7 @@ export class SessionLink {
 
   open(session: SessionInfo): void {
     this.close()
+    this.generation += 1
     this.stopped = false
     this.session = session
     this.store.reset()
@@ -84,6 +108,7 @@ export class SessionLink {
 
   close(): void {
     this.stopped = true
+    this.generation += 1
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     this.subscription?.close()
@@ -104,6 +129,9 @@ export class SessionLink {
   private async attempt(): Promise<void> {
     const session = this.session
     if (session === null || this.stopped) return
+    const generation = this.generation
+    /** 이 시도가 아직 유효한가. 세션이 바뀌었으면(또는 닫혔으면) 여기서 손을 뗀다. */
+    const stale = (): boolean => generation !== this.generation
     this.state = { ...this.state, attempt: this.state.attempt + 1, nextRetryInMs: null }
     this.setPhase('connecting')
 
@@ -118,8 +146,15 @@ export class SessionLink {
     const injection = readInjection()
 
     const subscription = new Subscription({
-      onPush: (frame, at) => this.onPush(frame, at),
-      onDrop: (reason, detail) => this.onDrop(reason, detail),
+      // 옛 세대의 커넥션이 뒤늦게 뱉는 push 는 버린다 — 새 세션의 목록에 옛 세션이 섞이는 길이다.
+      onPush: (frame, at) => {
+        if (stale()) return
+        this.onPush(frame, at)
+      },
+      onDrop: (reason, detail) => {
+        if (stale()) return
+        this.onDrop(reason, detail)
+      },
     })
     this.subscription = subscription
     this.buffer = []
@@ -135,6 +170,10 @@ export class SessionLink {
       log('boot.subscribe.begin', { types: types.length, injectedBadType: injection.badSubscriptionType })
       const ack = await subscription.connect(session.socketPath, types)
       log('boot.subscribe.ack', { ack: JSON.stringify(ack) })
+      if (this.abandon(subscription, generation, 'subscribe.ack')) return
+
+      await injectedBootDelay()
+      if (this.abandon(subscription, generation, 'boot.delay')) return
 
       // ② ack 이후 도착분은 버퍼로 간다 (this.bootstrapping === true).
       this.setPhase('buffering')
@@ -143,6 +182,8 @@ export class SessionLink {
       this.setPhase('snapshotting')
       log('boot.snapshot.request', {})
       const response = await request(session.socketPath, 'session.snapshot', {}, { reason: 'bootstrap' })
+      // 여기가 핵심이다 — 이 아래부터 **공용 저장소를 건드린다.** 세대가 바뀌었으면 손대지 않는다.
+      if (this.abandon(subscription, generation, 'snapshot.response')) return
       if (response.error) {
         throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? 'snapshot 실패')
       }
@@ -156,7 +197,12 @@ export class SessionLink {
       log('boot.buffer.apply.begin', { count: buffered.length, duplicateInjection: injection.duplicateBufferedEvents })
       for (const item of buffered) {
         const result = this.store.applyEvent(item.frame)
-        log('boot.buffer.apply', { event: item.frame.event, changed: result.changed, note: result.note })
+        log('boot.buffer.apply', {
+          event: item.frame.event,
+          subject: subjectOf(item.frame),
+          changed: result.changed,
+          note: result.note,
+        })
         if (injection.duplicateBufferedEvents) {
           const again = this.store.applyEvent(item.frame)
           log('boot.buffer.apply.duplicate', { event: item.frame.event, changed: again.changed, note: again.note })
@@ -165,11 +211,14 @@ export class SessionLink {
       const converged = this.store.ids()
       log('boot.converged', {
         buffered: buffered.length,
+        heldOrphans: this.store.heldOrphans(),
         workspaces: converged.workspaces,
         tabs: converged.tabs,
         panes: converged.panes,
       })
-      this.state = { ...this.state, bufferedAtSnapshot: buffered.length, lastError: null }
+      // 성공했으면 재시도 카운터를 턴다. 안 털면 긴 세션에서 다음 끊김의 백오프가 늘 상한
+      // 근처에서 시작한다 (판정문 낮음 3).
+      this.state = { ...this.state, bufferedAtSnapshot: buffered.length, lastError: null, attempt: 0 }
       this.setPhase('live')
       this.hooks.onChange()
 
@@ -181,6 +230,11 @@ export class SessionLink {
       const code = 'code' in failure && typeof failure.code === 'string' ? failure.code : 'unknown'
       log('boot.failed', { code, message: failure.message, attempt: this.state.attempt })
       subscription.close()
+      // 옛 세대의 실패는 새 세션의 재시도 루프를 건드리면 안 된다.
+      if (stale()) {
+        log('link.attempt.stale', { at: 'boot.failed', generation, current: this.generation })
+        return
+      }
       this.subscription = null
       this.bootstrapping = false
       if (code === 'invalid_request' || code === 'unknown_subscription') {
@@ -234,6 +288,17 @@ export class SessionLink {
   }
 
   /**
+   * 이 시도가 낡았으면 자기 커넥션을 닫고 물러난다. 닫아 주지 않으면 옛 세션의 소켓이 계속
+   * 살아서 push 를 뱉는다 — 헤더와 목록이 다른 세션을 가리키는 화면이 그렇게 만들어진다.
+   */
+  private abandon(subscription: Subscription, generation: number, at: string): boolean {
+    if (generation === this.generation) return false
+    log('link.attempt.stale', { at, generation, current: this.generation })
+    subscription.close()
+    return true
+  }
+
+  /**
    * K1 — 수렴 집합이 **직후 재조회한 실제 상태**와 일치하는지 스스로 검사한다.
    * 비교용 스냅샷은 별도 커넥션으로 새로 받아 와 별도 저장소에 적용한다 (앱 상태를 건드리지 않는다).
    */
@@ -276,7 +341,7 @@ export class SessionLink {
     this.state = { ...this.state, lastPushAt: at }
     if (this.bootstrapping) {
       this.buffer.push({ frame, at })
-      log('push.buffered', { event: frame.event, size: this.buffer.length })
+      log('push.buffered', { event: frame.event, subject: subjectOf(frame), size: this.buffer.length })
       return
     }
     const result = this.store.applyEvent(frame)

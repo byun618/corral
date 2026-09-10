@@ -24,6 +24,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
 3. 경쟁 구현: claude 와 codex 가 같은 스펙을 각자 브랜치에서 구현
+   - 예외: 정답이 수렴하는 셋업성 작업은 분석 단계에서 **단독 구현**을 택할 수 있다 (일감에 명시).
+     이때도 3자 리뷰·판정은 동일 적용 — 생략되는 건 경쟁뿐
    - 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude, LIFE-NNN-<슬러그>-codex (각자 전용 worktree)
    - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
    - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가

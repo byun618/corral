@@ -20,6 +20,15 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
-    build: { rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') } },
+    // xterm.js 6.0.0 의 ESM 번들은 **이미 minify 된 채로** 배포된다. Vite 가 한 번 더 minify 하면
+    // DECRQM 처리에서 ReferenceError 가 난다는 보고가 있다 (00-analysis.md ⓖ9, xterm.js #5800).
+    // 이 앱이 정확히 electron-vite 라서 미리 막아 둔다 — 켜고 끄며 재현할 수 있게 두 곳 다.
+    optimizeDeps: {
+      exclude: ['@xterm/xterm', '@xterm/addon-webgl', '@xterm/addon-unicode11', '@xterm/addon-unicode-graphemes'],
+    },
+    build: {
+      rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') },
+      minify: process.env.CORRAL_RENDERER_MINIFY === '1' ? 'esbuild' : false,
+    },
   },
 })

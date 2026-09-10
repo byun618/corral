@@ -58,7 +58,16 @@ async function injectedBootDelay(): Promise<void> {
   await sleep(delay)
 }
 
-export type SessionLinkHooks = { onChange: () => void }
+export type SessionLinkHooks = {
+  onChange: () => void
+  /**
+   * LIFE-345 — pane 관련 push 를 터미널 층에 넘긴다. **새 구독을 만들지 않는다**:
+   * `pane.updated` 는 위 SUBSCRIPTION_TYPES 에 이미 있고, 여기 훅만 건다.
+   */
+  onPanePush?: (frame: PushFrame) => void
+  /** 부트스트랩이 끝나 live 가 됐다 (R3). */
+  onLive?: () => void
+}
 
 export class SessionLink {
   readonly store = new WorkspaceStore()
@@ -248,6 +257,9 @@ export class SessionLink {
       this.state = { ...this.state, bufferedAtSnapshot: buffered.length, lastError: null, attempt: 0 }
       this.setPhase('live')
       this.hooks.onChange()
+      // R3 — 링크가 다시 살아났으면 터미널 층도 스스로 회복해야 한다. 링크만 붙고 화면이
+      // 끊긴 채로 남으면 사용자에게는 여전히 죽은 터미널이다.
+      this.hooks.onLive?.()
 
       void this.resolveRepos()
       this.scheduleAgentSubscription()
@@ -388,6 +400,7 @@ export class SessionLink {
         if (generation !== this.generation) return
         // 이 커넥션은 상태 전이만 나른다 — 본 구독의 부트스트랩 버퍼링과 섞지 않는다.
         this.state = { ...this.state, lastPushAt: at }
+        this.hooks.onPanePush?.(frame)
         const result = this.store.applyEvent(frame)
         log('agent.push.applied', { event: frame.event, changed: result.changed, note: result.note })
         if (result.changed) this.hooks.onChange()
@@ -436,6 +449,8 @@ export class SessionLink {
 
   private onPush(frame: PushFrame, at: number): void {
     this.state = { ...this.state, lastPushAt: at }
+    // 터미널 층은 버퍼링과 무관하다 — 화면은 자기 스냅샷으로 세우고 이건 갱신 신호일 뿐이다.
+    this.hooks.onPanePush?.(frame)
     if (this.bootstrapping) {
       this.buffer.push({ frame, at })
       log('push.buffered', { event: frame.event, subject: subjectOf(frame), size: this.buffer.length })

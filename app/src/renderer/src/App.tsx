@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppState, LinkState, PaneRow, RepoGroupRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types'
 import { SecurityProbe } from './SecurityProbe'
+import { TerminalView } from './TerminalView'
 
 const EMPTY: AppState = {
   revision: 0,
@@ -36,6 +37,19 @@ const EMPTY: AppState = {
   selectedPaneId: null,
   collapsedWorkspaceIds: [],
   diagnostics: false,
+  terminal: {
+    paneId: null,
+    generation: 0,
+    grid: null,
+    alive: true,
+    deadReason: null,
+    seededLines: null,
+    lastReadMs: null,
+    lastFrameAt: null,
+    frames: 0,
+    reads: 0,
+    inputBlocked: null,
+  },
 }
 
 /**
@@ -195,23 +209,16 @@ export function App(): React.JSX.Element {
               <p className="placeholder-title">터미널 뷰</p>
               <p className="placeholder-body">
                 왼쪽에서 pane 을 고르면 여기에 그 터미널이 붙는다.
-                <br />
-                렌더링·입력은 이 일감 범위 밖이다 (Step 2 ②).
               </p>
             </div>
           ) : (
-            <div className="placeholder">
-              <p className="placeholder-title">
-                {selectedPane.title} <span className="mono">{selectedPane.paneId}</span>
-              </p>
-              <p className="placeholder-body">
-                {selectedWorkspace?.label ?? selectedPane.workspaceId} · agent_status {selectedPane.agentStatus}
-                {selectedPane.agent !== null && <> · agent {selectedPane.agent}</>}
-                <br />
-                <span className="mono">{selectedPane.cwd ?? ''}</span>
-              </p>
-              <p className="placeholder-note">터미널 뷰 자리 — 렌더링은 Step 2 ② (LIFE-345)</p>
-            </div>
+            <TerminalView
+              state={state.terminal}
+              title={`${selectedPane.title}  ${selectedPane.paneId}`}
+              subtitle={`${selectedWorkspace?.label ?? selectedPane.workspaceId} · ${selectedPane.agentStatus}${
+                selectedPane.agent === null ? '' : ` · ${selectedPane.agent}`
+              }`}
+            />
           )}
         </main>
       </div>

@@ -13,6 +13,9 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
 
+실행 절차(명령 수준)는 스킬을 따른다 — 시작: .agents/skills/task-start/SKILL.md (main 세션),
+진행: .agents/skills/task-coordinate/SKILL.md (코디네이터 세션). 아래는 원칙 요약.
+
 0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기, 전용 worktree 로 체크아웃
    (.claude/worktrees/LIFE-NNN-<슬러그>/) — 본체는 항상 main 에 둔다.
    specs/LIFE-NNN-<슬러그>/ 생성. 분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
@@ -48,7 +51,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 작업 브랜치 LIFE-NNN-<슬러그> 는 main 에서 분기, 작업 하나의 수명만 갖는다 —
   main 머지 후 즉시 삭제 (단명이라 트렁크 기반의 짧은 수명 원칙 유지)
 - 체크포인트·프로젝트 단위 통합 브랜치는 금지 — LA 묶음 개념만
-- 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 2~3단어), 생성 후 불변 (매핑은 키로만)
+- 슬러그는 일감 타이틀에서 자동 파생(케밥케이스 1~3단어), 생성 후 불변 (매핑은 키로만)
 - 통합 확인은 throwaway: integration/<이름>-YYYYMMDD 에 합쳐 테스트 후 삭제. 유지 금지
 - 예외적 장기 통합 브랜치는 만료일 명시, 넘기면 쪼개서 main 에
 

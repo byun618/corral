@@ -5,9 +5,12 @@ herdr 세션에 붙어 workspace 목록을 실시간으로 보여 주는 Electro
 
 ## 띄우기
 
-**Node 22.12 이상이 필요하다** (`.nvmrc` = 22.22.2). Electron 44 가 그렇게 요구하고,
-Node 20 에서는 `npm install` 이 electron 의 postinstall 을 건너뛰어 `npm run dev` 가
-`Error: Electron uninstall` 로 죽는다.
+**Node 22.12 이상이 필요하다** (`.nvmrc` = 22.22.2) — Electron 44 의 `engines` 가 그렇다.
+
+`npm install` 은 Electron 바이너리(~130MB)까지 받는다. electron 44 패키지에는 `scripts` 가
+아예 없어서 (바이너리를 `electron` 명령을 **처음 실행할 때** 늦게 받는다) 그대로 두면
+`npm run dev` 가 `Error: Electron uninstall` 로 죽는다. 그래서 이 앱의 `postinstall` 이
+`node node_modules/electron/install.js` 를 부른다 — 설치가 1회로 끝나게.
 
 ```sh
 cd app

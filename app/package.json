@@ -9,12 +9,12 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "lint": "eslint .",
-    "probe": "node scripts/probe.mjs"
+    "lint": "eslint ."
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

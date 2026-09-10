@@ -7,12 +7,12 @@
 // 복구 루프 (K6·K7): EOF 로 끊김 감지 → 백오프+jitter 재시도 → 재구독 → 스냅샷 재획득 → live 재개.
 // 시도마다 새 소켓·새 error 리스너다 (line-socket.ts). 재시도 대상은 ENOENT 와 ECONNREFUSED 둘 다.
 
-import type { LinkPhase, LinkState, SessionInfo } from '../../shared/types.js'
+import type { LinkPhase, LinkState, SessionInfo, WorktreeRow } from '../../shared/types.js'
 import { log } from '../log.js'
 import { SUBSCRIPTION_TYPES, isRecord, readRecord, readString, type PushFrame } from './protocol.js'
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
-import { WorkspaceStore } from './store.js'
+import { WorkspaceStore, type RepoInfo } from './store.js'
 import { checkUnixSocketPath } from '../unix-socket-path.js'
 
 /** 백오프: equal jitter. 간격이 실제로 벌어지면서 매번 값이 다르다. 상한은 K6 의 15초 예산에 맞춘다. */
@@ -269,7 +269,14 @@ export class SessionLink {
           const response = await request(session.socketPath, 'worktree.list', { cwd: item.cwd }, { reason: 'repo' })
           const repo = readWorktreeList(response.result, item.cwd)
           this.store.setRepo(item.workspaceId, repo)
-          log('repo.resolved', { workspaceId: item.workspaceId, cwd: item.cwd, ...repo })
+          log('repo.resolved', {
+            workspaceId: item.workspaceId,
+            cwd: item.cwd,
+            repoName: repo.repoName,
+            branch: repo.branch,
+            checkoutPath: repo.checkoutPath,
+            worktrees: repo.worktrees.map((worktree) => `${worktree.branch ?? '?'}@${worktree.path}`),
+          })
         } catch (error) {
           this.store.setRepo(item.workspaceId, {
             repoName: null,
@@ -277,6 +284,8 @@ export class SessionLink {
             branch: null,
             isLinkedWorktree: null,
             source: 'none',
+            checkoutPath: null,
+            worktrees: [],
           })
           log('repo.resolve_failed', { workspaceId: item.workspaceId, cwd: item.cwd, error: String(error) })
         }
@@ -377,43 +386,59 @@ export class SessionLink {
   }
 }
 
-/** worktree.list 응답에서 이 checkout 의 repo·branch 를 뽑는다. */
-function readWorktreeList(result: unknown, cwd: string): {
-  repoName: string | null
-  repoRoot: string | null
-  branch: string | null
-  isLinkedWorktree: boolean | null
-  source: 'worktree.list' | 'none'
-} {
-  if (!isRecord(result)) return { repoName: null, repoRoot: null, branch: null, isLinkedWorktree: null, source: 'none' }
+/**
+ * `worktree.list` 응답을 읽는다.
+ *
+ * 1회차는 cwd 접두가 맞는 worktree **하나만** 뽑고 나머지를 버렸다. 그래서 `cpm-macro` 의
+ * `issue/LIFE-341` 처럼 **herdr 에 안 열린 worktree 가 화면에서 사라졌다** (기준 L2r 개정).
+ * 이제 전부 들고 온다 — 어느 것이 이 workspace 의 것인지는 `checkoutPath` 로 표시하고,
+ * 열림 여부는 store 가 자기 workspace 목록과 맞춰 정한다.
+ */
+function readWorktreeList(result: unknown, cwd: string): RepoInfo {
+  const empty: RepoInfo = {
+    repoName: null,
+    repoRoot: null,
+    branch: null,
+    isLinkedWorktree: null,
+    source: 'none',
+    checkoutPath: null,
+    worktrees: [],
+  }
+  if (!isRecord(result)) return empty
   const source = readRecord(result, 'source')
-  const worktrees = result['worktrees']
-  let branch: string | null = null
-  let isLinked: boolean | null = null
-  if (Array.isArray(worktrees)) {
-    // cwd 가 어느 worktree 안에 있는지는 경로 접두로 가른다. 가장 긴 접두가 맞는 것이다.
-    let best: Record<string, unknown> | null = null
-    let bestLength = -1
-    for (const item of worktrees) {
+  const raw = result['worktrees']
+  const worktrees: WorktreeRow[] = []
+  let best: WorktreeRow | null = null
+  let bestLength = -1
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
       if (!isRecord(item)) continue
       const path = readString(item, 'path')
-      if (path === null || !cwd.startsWith(path)) continue
-      if (path.length > bestLength) {
-        best = item
+      if (path === null) continue
+      const row: WorktreeRow = {
+        path,
+        branch: readString(item, 'branch'),
+        label: readString(item, 'label'),
+        isLinkedWorktree: item['is_linked_worktree'] === true,
+        // 응답의 open_workspace_id 는 조회 시점 값이라 낡는다. store 가 다시 정한다.
+        openWorkspaceId: null,
+      }
+      worktrees.push(row)
+      // cwd 가 어느 worktree 안에 있는지는 경로 접두로 가른다. 가장 긴 접두가 맞는 것이다.
+      if (cwd.startsWith(path) && path.length > bestLength) {
+        best = row
         bestLength = path.length
       }
-    }
-    if (best !== null) {
-      branch = readString(best, 'branch')
-      isLinked = best['is_linked_worktree'] === true
     }
   }
   return {
     repoName: source === null ? null : readString(source, 'repo_name'),
     repoRoot: source === null ? null : readString(source, 'repo_root'),
-    branch,
-    isLinkedWorktree: isLinked,
+    branch: best?.branch ?? null,
+    isLinkedWorktree: best?.isLinkedWorktree ?? null,
     source: source === null ? 'none' : 'worktree.list',
+    checkoutPath: best?.path ?? null,
+    worktrees,
   }
 }
 

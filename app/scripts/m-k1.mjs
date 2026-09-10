@@ -10,15 +10,22 @@
 //
 // 그리고 N회 돌려 **모든 회차의 로그를 _runs/k1-1 … k1-N 에 남긴다** (판정문 M4).
 
-import { SESSION, sleep, startApp, startChurn, tidySession, writeRaw } from './lib.mjs'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+import { SESSION, request, sleep, socketPath, startApp, startChurn, tidySession, writeRaw } from './lib.mjs'
+
+const run = promisify(execFile)
+socketPath() // 격리 가드
 
 const RUNS = Number(process.env.K1_RUNS ?? 6)
 // 남길 것을 시각으로 흩는다 — 전부 부트스트랩 이전 생성분이 되면 "버퍼로 배운 것"이 안 남는다.
 // 실측상 부트스트랩(ack ~ 버퍼 적용)은 churn 시작 기준 **790~960ms** 에 열린다. 뒤쪽 offset 들이
 // 그 창을 겨눈다 — 창에 걸린 생존분은 스냅샷이 아니라 **버퍼로 배운** 것이 된다.
-// 흔들기를 8갈래로 돌리는 또 다른 이유: 부트스트랩 창은 실측 ~110ms 라, 푸시 밀도가 낮으면
-// 그 창에 이벤트가 하나도 안 걸려 **버퍼링을 아예 못 재는 회차**가 나온다 (1차 시도에서 실제로 났다).
-const KEEP_OFFSETS_MS = [0, 400, 500, 600, 700, 800, 900, 1000]
+// 흔들기를 12갈래로 돌리는 또 다른 이유: 부트스트랩 창은 실측 ~110ms 라, 푸시 밀도가 낮으면
+// 그 창에 이벤트가 하나도 안 걸려 **버퍼링을 아예 못 재는 회차**가 나온다. 8갈래에서 6회 중
+// 2회가 그랬다 — 서버에 닫힌 workspace 가 쌓일수록 push 가 느려진다(§5-⑥ 의 유실과 같은 성질).
+// 그래서 갈래를 늘리고, 회차 **전에 격리 세션 서버를 새로 띄운다**.
+const KEEP_OFFSETS_MS = [0, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]
 // 통과선의 강도: 흔들기 생존분이 이만큼은 비교에 들어와야 한다 (A4 = 2개).
 const MIN_RESIDUAL = 3
 
@@ -65,14 +72,15 @@ writeRaw(
 console.log(JSON.stringify(summary.verdict, null, 2))
 await tidySession()
 
-async function once(run) {
+async function once(runIndex) {
+  await freshServer()
   await tidySession()
   // 부트스트랩 창은 실측 ~106ms 다. 그 안에 이벤트를 넣으려면 촘촘해야 해서 병렬로 돌린다.
   const churns = KEEP_OFFSETS_MS.map((keepAfterMs) => startChurn({ intervalMs: 0, keep: 1, keepAfterMs }))
   await sleep(600)
 
   const app = await startApp({
-    name: `k1-${run}`,
+    name: `k1-${runIndex}`,
     env: { CORRAL_VERIFY_CONVERGE: '1' },
     waitFor: (entries) => entries.some((entry) => entry.tag === 'boot.verify'),
   })
@@ -146,8 +154,8 @@ async function once(run) {
     applied.length === buffered.length
 
   const result = {
-    run,
-    logDir: `_runs/k1-${run}`,
+    run: runIndex,
+    logDir: `_runs/k1-${runIndex}`,
     orderOk,
     bufferingProven,
     bufferedCount: buffered.length,
@@ -181,7 +189,7 @@ async function once(run) {
       ghosts.length === 0,
   }
   console.log(
-    `run ${run}: order=${result.orderOk} buffer=${result.bufferingProven}(${buffered.length}) match=${result.verifyAfterQuiet?.match} ` +
+    `run ${runIndex}: order=${result.orderOk} buffer=${result.bufferingProven}(${buffered.length}) match=${result.verifyAfterQuiet?.match} ` +
       `비교=${result.comparedWorkspaces} 생존분=${residualWorkspaces.length} 버퍼경유=${learnedFromBuffer.length} pass=${result.pass}`,
   )
   return result
@@ -198,4 +206,29 @@ async function waitQuiet(app, quietMs, timeoutMs) {
     await sleep(100)
   }
   return null
+}
+
+/**
+ * 격리 세션 서버를 새로 띄운다. 회차를 거듭할수록 닫힌 workspace 가 쌓여 push 가 느려지고,
+ * 부트스트랩 창(~110ms)에 이벤트가 하나도 안 걸리는 회차가 생긴다 — 그걸 없애기 위한 것뿐이다.
+ * 재는 대상(부트스트랩 순서·수렴)은 서버가 새것이든 아니든 달라지지 않는다.
+ */
+async function freshServer() {
+  await run('herdr', ['session', 'stop', SESSION]).catch(() => {})
+  await sleep(400)
+  const restart = spawn('script', ['-q', '/dev/null', 'herdr', 'session', 'attach', SESSION], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  restart.unref()
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    try {
+      await request('ping', {}, { timeoutMs: 800 })
+      return
+    } catch {
+      await sleep(200)
+    }
+  }
+  throw new Error('격리 세션이 20초 안에 안 떴다')
 }

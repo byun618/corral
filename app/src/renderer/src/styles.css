@@ -282,7 +282,7 @@ body {
   color: var(--warn);
 }
 
-/* 3단 트리 — repo > workspace > pane */
+/* 트리 — repo > worktree > (workspace) > tab > pane(스플릿일 때만) */
 .tree {
   display: flex;
   flex-direction: column;
@@ -309,13 +309,13 @@ body {
   font-size: 11px;
 }
 
-.workspace {
+.worktree {
   padding: 4px 0 6px 6px;
   border-left: 1px solid var(--line);
   margin-left: 4px;
 }
 
-.workspace-head {
+.worktree-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -323,22 +323,42 @@ body {
   min-width: 0;
 }
 
-.workspace-name {
+.worktree-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-sub {
+.worktree-sub {
   color: var(--dim);
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   margin: 1px 0 4px 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* herdr 에 workspace 가 안 열린 worktree — 있다는 것만 보이면 된다 */
+.worktree-closed .worktree-head,
+.worktree-closed .worktree-sub {
+  opacity: 0.45;
+}
+
+.tabs {
+  margin-left: 10px;
+}
+
+/* pane 이 2개 이상인 탭의 머리줄 — 고를 수 없고 묶음 표시만 한다 */
+.row-head {
+  cursor: default;
+  background: none;
 }
 
 .panes {
-  margin-left: 10px;
+  margin-left: 16px;
 }
+
 
 .pane-row {
   padding: 5px 8px;

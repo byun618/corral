@@ -28,6 +28,7 @@ const link = new SessionLink({ onChange: () => scheduleEmit() })
 
 function currentState(): AppState {
   const rows = link.store.rows()
+  const repos = link.store.repoGroups(rows)
   // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
   if (selectedPaneId !== null && !rows.some((row) => row.panes.some((pane) => pane.paneId === selectedPaneId))) {
     log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
@@ -40,6 +41,7 @@ function currentState(): AppState {
     selectedSession,
     link: link.linkState(),
     workspaces: rows,
+    repos,
     selectedPaneId,
     // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
@@ -103,10 +105,19 @@ async function capture(name: string): Promise<string> {
   return file
 }
 
+/** 계측용 창 크기 (CORRAL_WINDOW=1180x1400). 목록이 긴 화면을 한 장에 담기 위한 것뿐이다. */
+function windowSize(): { width: number; height: number } {
+  const raw = process.env.CORRAL_WINDOW ?? ''
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(raw)
+  if (match === null) return { width: 1180, height: 760 }
+  return { width: Number(match[1]), height: Number(match[2]) }
+}
+
 function createWindow(): void {
+  const size = windowSize()
   window = new BrowserWindow({
-    width: 1180,
-    height: 760,
+    width: size.width,
+    height: size.height,
     show: false,
     backgroundColor: '#12141a',
     title: 'corral',

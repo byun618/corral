@@ -218,12 +218,33 @@ export function startChurn({ intervalMs = 150, keep = 0, keepAfterMs = 0 } = {})
   }
 }
 
-/** 격리 세션에 남은 workspace 를 1개만 남기고 정리한다 (측정 사이 상태를 깨끗이). */
+/**
+ * 격리 세션을 측정 사이의 기준 상태로 되돌린다 — **workspace 1개 · 탭 1개 · pane 1개.**
+ *
+ * workspace 만 정리하면 부족하다. `m-l2` 가 탭을 만들고 pane 을 스플릿하므로, 그걸 안 털면
+ * 다음 측정이 "탭 2 · pane 3" 에서 시작한다 (실제로 K4 원자료에 그렇게 찍혔다).
+ */
 export async function tidySession() {
   const snapshot = await request('session.snapshot')
   const workspaces = snapshot.result?.snapshot?.workspaces ?? []
   for (const workspace of workspaces.slice(1)) {
     await request('workspace.close', { workspace_id: workspace.workspace_id }).catch(() => {})
+  }
+  const survivor = workspaces[0]
+  if (survivor) {
+    const after = await request('session.snapshot')
+    const inner = after.result?.snapshot ?? {}
+    const tabs = (inner.tabs ?? []).filter((tab) => tab.workspace_id === survivor.workspace_id)
+    for (const tab of tabs.slice(1)) {
+      await request('tab.close', { tab_id: tab.tab_id }).catch(() => {})
+    }
+    const firstTab = tabs[0]
+    if (firstTab) {
+      const panes = (inner.panes ?? []).filter((pane) => pane.tab_id === firstTab.tab_id)
+      for (const pane of panes.slice(1)) {
+        await request('pane.close', { pane_id: pane.pane_id }).catch(() => {})
+      }
+    }
   }
   return workspaces.length
 }

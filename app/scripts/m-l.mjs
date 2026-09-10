@@ -17,9 +17,15 @@ const before = await app.state()
 summary.stateAtStart = before.state
 // L2 근거는 "그 시점의 session.snapshot 원문"을 함께 요구한다 — 하네스가 따로 한 벌 받아 둔다.
 summary.snapshotAtShot = (await request('session.snapshot')).result
+// 탭 층이 들어온 뒤로 L2 의 본 근거는 35-l2-tab-tier.json 이다 (스플릿 전후 화면).
+// 여기서는 L1·L3·L4·L5 를 재면서 탭 구조도 같이 적어 둔다.
 summary.l2 = {
   workspaces: before.state.workspaces.length,
   everyWorkspaceHasPanes: before.state.workspaces.every((row) => row.panes.length > 0),
+  tabRows: before.state.workspaces.flatMap((row) =>
+    row.tabs.map((tab) => ({ tabId: tab.tabId, label: tab.label, panes: tab.panes.length })),
+  ),
+  renderedRows: app.entries().filter((entry) => entry.tag === 'renderer.probe' && entry.name === 'tree').pop() ?? null,
   paneRows: before.state.workspaces.flatMap((row) =>
     row.panes.map((pane) => ({
       paneId: pane.paneId,

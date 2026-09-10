@@ -23,7 +23,24 @@ export type PaneRow = {
   focused: boolean
 }
 
-/** 가운데 층 = herdr workspace (00-analysis.md §3 결정). 그 아래 pane 이 잎으로 달린다. */
+/**
+ * tab 층. **Orca 의 터미널 한 줄에 해당한다** — Orca 실측(`00-orca-terminal-list.json`)에서
+ * `tabId`·`leafId` 가 herdr 의 tab·pane 과 1:1 이고, 지금 사용자 화면은 탭마다 leaf 가 하나라
+ * 그 층이 접혀 보인다. 그래서 pane 은 **스플릿이 있을 때만** 아래로 펼친다 (기준 L2).
+ */
+export type TabRow = {
+  tabId: string
+  workspaceId: string
+  label: string
+  number: number
+  agentStatus: AgentStatus
+  focused: boolean
+  /** 스냅샷이 준 카운터. 우리가 맵에서 센 수(`panes.length`)와 다를 수 있어 그대로 싣는다 */
+  snapshotPaneCount: number | null
+  panes: PaneRow[]
+}
+
+/** 가운데 층 = herdr workspace (00-analysis.md §3 결정). 그 아래 tab, 그 아래(조건부) pane. */
 export type WorkspaceRow = {
   workspaceId: string
   label: string
@@ -38,7 +55,34 @@ export type WorkspaceRow = {
   branch: string | null
   isLinkedWorktree: boolean | null
   repoSource: 'snapshot' | 'worktree.list' | 'none'
+  /** 이 workspace 가 열고 있는 checkout 경로 — worktree 행과 짝짓는 열쇠다 */
+  checkoutPath: string | null
+  tabs: TabRow[]
+  /** workspace 안 pane 전부 (평평한 목록). 탭 구조와 별개로 계측·선택 검사에 쓴다 */
   panes: PaneRow[]
+}
+
+/**
+ * repo 아래 worktree 한 줄. **herdr 에 workspace 가 안 열린 것도 포함한다** (기준 L2r) —
+ * `worktree.list` 응답이 그 repo 의 worktree 를 전부 주는데 1회차는 하나만 쓰고 버렸다.
+ */
+export type WorktreeRow = {
+  path: string
+  branch: string | null
+  label: string | null
+  isLinkedWorktree: boolean
+  /** 열려 있으면 그 workspace id. 우리가 들고 있는 workspace 와 경로로 맞춰 정한다 */
+  openWorkspaceId: string | null
+}
+
+/** 맨 위 층 = repo. 열린 workspace 가 하나도 없는 repo 는 아예 나오지 않는다 (의도된 동작). */
+export type RepoGroupRow = {
+  key: string
+  repoName: string | null
+  repoRoot: string | null
+  worktrees: WorktreeRow[]
+  /** 이 repo 에 속하는 열린 workspace. worktree 와 못 짝지은 것은 여기에만 남는다 */
+  workspaces: WorkspaceRow[]
 }
 
 /**
@@ -75,6 +119,8 @@ export type AppState = {
   selectedSession: string | null
   link: LinkState
   workspaces: WorkspaceRow[]
+  /** 화면 왼쪽 트리의 실제 모양 — repo → worktree → workspace → tab → (조건부) pane */
+  repos: RepoGroupRow[]
   /** 선택 대상은 pane 이다 (기준 L2). */
   selectedPaneId: string | null
   /** 진단 UI(S3 프로브)를 띄우는 실행인가 — 패키징된 앱이거나 계측이 아니면 false. */

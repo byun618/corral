@@ -7,7 +7,7 @@
 // 숫자를 흔든다. 실측(raw/claude/20-*)에서 workspace_closed 는 그 안 pane 의 pane_closed 를
 // 따로 보내지 않으므로, workspace 를 지울 때 그 workspace 의 pane·tab 도 함께 지운다.
 
-import type { AgentStatus, PaneRow, WorkspaceRow } from '../../shared/types.js'
+import type { AgentStatus, PaneRow, RepoGroupRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
 import { isRecord, readAgentStatus, readNumber, readRecord, readString, type PushFrame } from './protocol.js'
 
 type Workspace = {
@@ -39,8 +39,21 @@ export type RepoInfo = {
   branch: string | null
   isLinkedWorktree: boolean | null
   source: 'snapshot' | 'worktree.list' | 'none'
+  /** 이 workspace 가 열고 있는 checkout 경로 — worktree 행과 짝짓는 열쇠 */
+  checkoutPath: string | null
+  /** 그 repo 의 worktree **전부**. 1회차는 cwd 에 맞는 하나만 쓰고 나머지를 버렸다 (판정문 2회차) */
+  worktrees: WorktreeRow[]
 }
-type Tab = { tabId: string; workspaceId: string }
+type Tab = {
+  tabId: string
+  workspaceId: string
+  label: string
+  number: number
+  agentStatus: AgentStatus
+  focused: boolean
+  /** 스냅샷/푸시가 준 카운터. 맵에서 센 수와 다를 수 있어 **믿지 않고 그대로 싣기만** 한다 */
+  snapshotPaneCount: number | null
+}
 
 export type ApplyResult = { changed: boolean; note: string }
 
@@ -227,10 +240,10 @@ export class WorkspaceStore {
   }
 
   rows(): WorkspaceRow[] {
+    const panesByTab = new Map<string, PaneRow[]>()
     const panesByWorkspace = new Map<string, PaneRow[]>()
     for (const pane of this.panes.values()) {
-      const list = panesByWorkspace.get(pane.workspaceId) ?? []
-      list.push({
+      const row: PaneRow = {
         paneId: pane.paneId,
         workspaceId: pane.workspaceId,
         tabId: pane.tabId,
@@ -239,18 +252,40 @@ export class WorkspaceStore {
         agentStatus: pane.agentStatus,
         cwd: pane.cwd,
         focused: pane.focused,
-      })
-      panesByWorkspace.set(pane.workspaceId, list)
+      }
+      const byTab = panesByTab.get(pane.tabId) ?? []
+      byTab.push(row)
+      panesByTab.set(pane.tabId, byTab)
+      const byWorkspace = panesByWorkspace.get(pane.workspaceId) ?? []
+      byWorkspace.push(row)
+      panesByWorkspace.set(pane.workspaceId, byWorkspace)
     }
+    for (const list of panesByTab.values()) list.sort((a, b) => a.paneId.localeCompare(b.paneId))
     for (const list of panesByWorkspace.values()) list.sort((a, b) => a.paneId.localeCompare(b.paneId))
-    const tabCounts = new Map<string, number>()
+
+    const tabsByWorkspace = new Map<string, TabRow[]>()
     for (const tab of this.tabs.values()) {
-      tabCounts.set(tab.workspaceId, (tabCounts.get(tab.workspaceId) ?? 0) + 1)
+      const list = tabsByWorkspace.get(tab.workspaceId) ?? []
+      list.push({
+        tabId: tab.tabId,
+        workspaceId: tab.workspaceId,
+        label: tab.label,
+        number: tab.number,
+        agentStatus: tab.agentStatus,
+        focused: tab.focused,
+        snapshotPaneCount: tab.snapshotPaneCount,
+        panes: panesByTab.get(tab.tabId) ?? [],
+      })
+      tabsByWorkspace.set(tab.workspaceId, list)
+    }
+    for (const list of tabsByWorkspace.values()) {
+      list.sort((a, b) => a.number - b.number || a.tabId.localeCompare(b.tabId))
     }
 
     const rows: WorkspaceRow[] = []
     for (const workspace of this.workspaces.values()) {
       const panes = panesByWorkspace.get(workspace.workspaceId) ?? []
+      const tabs = tabsByWorkspace.get(workspace.workspaceId) ?? []
       const repo = this.repos.get(workspace.workspaceId) ?? null
       rows.push({
         workspaceId: workspace.workspaceId,
@@ -258,7 +293,7 @@ export class WorkspaceStore {
         number: workspace.number,
         // 스냅샷의 pane_count 카운터를 믿지 않고 맵에서 센다 — 중복 적용에도 숫자가 안 흔들린다.
         paneCount: panes.length,
-        tabCount: tabCounts.get(workspace.workspaceId) ?? 0,
+        tabCount: tabs.length,
         agentStatus: workspace.agentStatus,
         focused: workspace.focused,
         repoName: repo?.repoName ?? workspace.repoName,
@@ -266,12 +301,59 @@ export class WorkspaceStore {
         branch: repo?.branch ?? null,
         isLinkedWorktree: repo?.isLinkedWorktree ?? workspace.isLinkedWorktree,
         repoSource: repo?.source ?? (workspace.repoName === null ? 'none' : 'snapshot'),
+        checkoutPath: repo?.checkoutPath ?? null,
+        tabs,
         panes,
       })
     }
     rows.sort((a, b) => a.number - b.number || a.workspaceId.localeCompare(b.workspaceId))
     return rows
   }
+
+  /**
+   * 화면 왼쪽 트리의 맨 위 층. **열린 workspace 가 있는 repo 만** 나온다 — herdr 에는 repo
+   * 레지스트리가 없고(session.json 이 여는 것만 영속한다) corral 은 얇은 층을 유지한다.
+   * 대신 그 repo 의 **worktree 는 전부** 싣는다 (기준 L2r). 열림 여부는 응답의 `open_workspace_id`
+   * 를 믿지 않고 **우리가 들고 있는 workspace 의 checkout 경로**와 맞춰 정한다 — 그 필드는 조회
+   * 시점 값이라 낡는다.
+   */
+  repoGroups(rows: WorkspaceRow[]): RepoGroupRow[] {
+    const NO_REPO = '(repo 없음)'
+    const groups = new Map<string, RepoGroupRow>()
+    for (const workspace of rows) {
+      const key = workspace.repoRoot ?? workspace.repoName ?? NO_REPO
+      const group = groups.get(key) ?? {
+        key,
+        repoName: key === NO_REPO ? null : workspace.repoName,
+        repoRoot: key === NO_REPO ? null : workspace.repoRoot,
+        worktrees: [],
+        workspaces: [],
+      }
+      group.workspaces.push(workspace)
+      const known = this.repos.get(workspace.workspaceId)
+      if (known && group.worktrees.length === 0) group.worktrees = known.worktrees
+      groups.set(key, group)
+    }
+
+    const openByPath = new Map<string, string>()
+    for (const workspace of rows) {
+      if (workspace.checkoutPath !== null) openByPath.set(workspace.checkoutPath, workspace.workspaceId)
+    }
+
+    const out: RepoGroupRow[] = []
+    for (const group of groups.values()) {
+      const worktrees = group.worktrees
+        .map((worktree) => ({ ...worktree, openWorkspaceId: openByPath.get(worktree.path) ?? null }))
+        .sort((a, b) => Number(a.isLinkedWorktree) - Number(b.isLinkedWorktree) || a.path.localeCompare(b.path))
+      out.push({ ...group, worktrees })
+    }
+    out.sort((a, b) => {
+      if ((a.key === NO_REPO) !== (b.key === NO_REPO)) return a.key === NO_REPO ? 1 : -1
+      return (a.repoName ?? a.key).localeCompare(b.repoName ?? b.key)
+    })
+    return out
+  }
+
 
   /** 계측용 — 보류함에 몇 개가 떠 있는지 (K1 원자료에 싣는다). */
   heldOrphans(): { workspaceId: string; kind: 'pane' | 'tab' }[] {
@@ -354,7 +436,15 @@ export class WorkspaceStore {
       this.hold({ at: Date.now(), workspaceId, kind: 'tab', value })
       return false
     }
-    this.tabs.set(id, { tabId: id, workspaceId })
+    this.tabs.set(id, {
+      tabId: id,
+      workspaceId,
+      label: readString(value, 'label') ?? id,
+      number: readNumber(value, 'number') ?? 0,
+      agentStatus: readAgentStatus(value, 'agent_status'),
+      focused: value['focused'] === true,
+      snapshotPaneCount: readNumber(value, 'pane_count'),
+    })
     return true
   }
 

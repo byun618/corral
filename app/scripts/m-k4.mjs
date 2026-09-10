@@ -6,7 +6,9 @@
 import { sleep, startApp, startChurn, tidySession, writeRaw } from './lib.mjs'
 
 await tidySession()
-const churns = [0, 1, 2, 3].map(() => startChurn({ intervalMs: 0 }))
+// 부트스트랩 창은 ~110ms 다. 갈래가 적으면 그 창에 이벤트가 하나도 안 걸려 **주입을 못 하는
+// 회차**가 나온다 (실제로 났다). K1 과 같은 밀도로 흔든다.
+const churns = [0, 1, 2, 3, 4, 5, 6, 7].map(() => startChurn({ intervalMs: 0 }))
 await sleep(600)
 
 const app = await startApp({
@@ -15,7 +17,10 @@ const app = await startApp({
   waitFor: (entries) => entries.some((entry) => entry.tag === 'boot.converged'),
 })
 for (const churn of churns) await churn.stop()
-await sleep(1200)
+// 흔드는 중의 수렴 비교는 서로 다른 시점을 비교하는 것이라 의미가 없다 — 조용해진 뒤에 본다
+// (K1 과 같은 이유). K4 의 통과선은 수렴이 아니라 "중복 주입해도 목록이 안 깨진다" 이지만,
+// 곁들여 싣는 값이라도 잴 수 있는 조건에서 재야 한다.
+await waitQuiet(app, 1500, 30000)
 
 const verify = await app.verify()
 const state = await app.state()
@@ -40,13 +45,23 @@ const result = {
   verify: verify.verify,
 }
 
+// 주입이 0건이면 이 회차는 멱등성을 **증명하지 못한 것**이다 — 통과가 아니다.
+result.pass = result.injectedDuplicates > 0 && !result.listHasDuplicateIds && result.paneCountsSane
+result.conclusion = result.pass
+  ? `버퍼 ${result.firstApplications}건을 각각 두 번 적용했는데(중복 ${result.injectedDuplicates}건) 목록에 중복 id 가 없고 pane 수가 안 흔들렸다.`
+  : result.injectedDuplicates === 0
+    ? '부트스트랩 창에 이벤트가 안 걸려 중복 주입 자체를 못 했다 — 보류(다시 측정할 것).'
+    : '중복 주입 뒤 목록이 깨졌다. 결과 문서에 미달로 적을 것.'
+
 writeRaw('22-k4-idempotent.json', result)
 console.log(
   JSON.stringify(
     {
       injectedDuplicates: result.injectedDuplicates,
+      firstApplications: result.firstApplications,
       listHasDuplicateIds: result.listHasDuplicateIds,
       verifyMatch: result.verifyMatch,
+      pass: result.pass,
       rows: result.rows,
     },
     null,
@@ -56,3 +71,16 @@ console.log(
 
 await app.stop()
 await tidySession()
+
+
+async function waitQuiet(handle, quietMs, timeoutMs) {
+  const started = Date.now()
+  const deadline = started + timeoutMs
+  while (Date.now() < deadline) {
+    const pushes = handle.entries().filter((entry) => entry.tag === 'push.applied')
+    const last = pushes.length === 0 ? started : pushes[pushes.length - 1].at
+    if (Date.now() - last >= quietMs) return Date.now() - started
+    await sleep(100)
+  }
+  return null
+}

@@ -44,14 +44,18 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
 - **완료 신호**: 전부 커밋 + `raw/<도구>/DONE.md` (한 줄 요약 + 미완 목록).
   "커밋되지 않은 결과는 없는 것이다"
 
-## 4. 경쟁 구현 — worktree 2개 + 워커 터미널 2개
+## 4. 구현 — 기본 claude 단독, 경쟁은 예외 (2026-09-11 전환)
+
+기본은 claude 워커 1개. 경쟁 구현(-codex 추가)은 분석 단계에서 "설계가 갈리고 되돌리기 비싼 작업"으로
+판단해 일감에 명시했을 때만. 워커 모델·effort 는 분석에서 정해 02-kickoff.md 정체 표에 기록한다
+(claude: `--model <m> --effort <e>` / codex: `-c model_reasoning_effort=<e>` — 모델은 구독 목록 한정).
 
 ```bash
 git worktree add ../LIFE-NNN-<슬러그>-claude -b LIFE-NNN-<슬러그>-claude LIFE-NNN-<슬러그>
-git worktree add ../LIFE-NNN-<슬러그>-codex  -b LIFE-NNN-<슬러그>-codex  LIFE-NNN-<슬러그>
+# (경쟁일 때만) git worktree add ../LIFE-NNN-<슬러그>-codex -b LIFE-NNN-<슬러그>-codex LIFE-NNN-<슬러그>
 
 orca terminal create --worktree path:<워커 worktree 절대경로> --title "impl: LIFE-NNN <도구>" \
-  --command "claude|codex" --json          # ⚠ --focus 금지 — 코디네이터 포커스를 뺏는다. 무포커스로도 탭은 보인다
+  --command "claude --model <m> --effort <e>" --json   # ⚠ --focus 금지 — 코디네이터 포커스를 뺏는다
 orca terminal send --terminal <handle> --text \
   "specs/LIFE-NNN-*/00-analysis.md → 01-criteria.md → 02-kickoff.md 순서로 읽고 구현해." --enter
 ```

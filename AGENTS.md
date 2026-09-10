@@ -25,13 +25,15 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
-3. 경쟁 구현: claude 와 codex 가 같은 스펙을 각자 브랜치에서 구현
-   - 예외: 정답이 수렴하는 셋업성 작업은 분석 단계에서 **단독 구현**을 택할 수 있다 (일감에 명시).
-     이때도 3자 리뷰·판정은 동일 적용 — 생략되는 건 경쟁뿐
-   - 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude, LIFE-NNN-<슬러그>-codex (각자 전용 worktree)
+3. 구현: 기본은 **claude 단독 구현** + 리뷰 강화 (2026-09-11 전환 — codex 구독 모델 격차로
+   경쟁의 기대값이 하락. 생성보다 검증이 쉬우므로 codex 는 적대적 리뷰어로 더 값을 한다)
+   - **경쟁 구현(claude ∥ codex)은 예외**: 설계 접근이 갈릴 게 명확하고 잘못 고르면 되돌리기
+     비싼 작업만 — 분석 단계에서 결정해 일감에 명시. codex Pro 구독 시 기본 복귀 재평가
+   - 워커 모델·effort 는 분석 단계에서 코디네이터가 정해 02-kickoff.md 정체 표에 기록
+   - 구현 브랜치: 작업 브랜치에서 분기, LIFE-NNN-<슬러그>-claude (경쟁이면 -codex 추가, 각자 전용 worktree)
    - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
    - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
-   - 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
+   - 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
 4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
    → specs/LIFE-NNN-*/review-<도구>.md
 5. 취합·판정: claude 가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md

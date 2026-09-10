@@ -163,6 +163,7 @@ app.whenReady().then(() => {
       scheduleEmit()
     },
     state: () => currentState(),
+    verify: () => link.verifyConvergence(),
   })
 
   app.on('activate', () => {

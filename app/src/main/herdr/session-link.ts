@@ -172,7 +172,7 @@ export class SessionLink {
       this.setPhase('live')
       this.hooks.onChange()
 
-      if (process.env.CORRAL_VERIFY_CONVERGE === '1') await this.verifyConvergence(session)
+      if (process.env.CORRAL_VERIFY_CONVERGE === '1') await this.verifyConvergence()
       if (process.env.CORRAL_PROBE_REQUESTS) await this.probeRequests(session)
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
@@ -190,8 +190,13 @@ export class SessionLink {
     }
   }
 
-  /** K1 — 수렴 집합이 직후 재조회한 실제 상태와 일치하는지 스스로 검사한다. */
-  private async verifyConvergence(session: SessionInfo): Promise<void> {
+  /**
+   * K1 — 수렴 집합이 **직후 재조회한 실제 상태**와 일치하는지 스스로 검사한다.
+   * 비교용 스냅샷은 별도 커넥션으로 새로 받아 와 별도 저장소에 적용한다 (앱 상태를 건드리지 않는다).
+   */
+  async verifyConvergence(): Promise<{ match: boolean; converged: unknown; actual: unknown } | null> {
+    const session = this.session
+    if (session === null) return null
     try {
       const response = await request(session.socketPath, 'session.snapshot', {}, { reason: 'verify' })
       const truth = new WorkspaceStore()
@@ -200,8 +205,10 @@ export class SessionLink {
       const theirs = truth.ids()
       const same = JSON.stringify(mine) === JSON.stringify(theirs)
       log('boot.verify', { match: same, converged: mine, actual: theirs })
+      return { match: same, converged: mine, actual: theirs }
     } catch (error) {
       log('boot.verify.error', { error: String(error) })
+      return null
     }
   }
 

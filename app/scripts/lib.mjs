@@ -135,6 +135,7 @@ export async function startApp({ name, env = {}, waitFor = (entries) => entries.
     entries: () => readLog(logPath),
     shot: (label) => control(controlSocket, { cmd: 'shot', name: label }),
     state: () => control(controlSocket, { cmd: 'state' }),
+    verify: () => control(controlSocket, { cmd: 'verify' }),
     selectWorkspace: (workspaceId) => control(controlSocket, { cmd: 'select-workspace', workspaceId }),
     selectSession: (sessionName) => control(controlSocket, { cmd: 'select-session', name: sessionName }),
     stop: async () => {
@@ -156,4 +157,55 @@ export function writeRaw(file, content) {
 /** 앱 로그에서 필요한 태그만 뽑아 원자료로 남긴다 (전문은 _runs/ 에 그대로 있다). */
 export function sliceLog(entries, tags) {
   return entries.filter((entry) => tags.some((tag) => entry.tag === tag || entry.tag.startsWith(tag)))
+}
+
+/**
+ * 격리 세션을 계속 흔든다 — 부트스트랩 창(구독 ack ~ 스냅샷 적용) 안에서 변화를 만들기 위한 것.
+ * 스파이크 A4 가 본 "중복 create" 상황을 재현하는 자리이기도 하다.
+ */
+export function startChurn({ intervalMs = 150 } = {}) {
+  let running = true
+  const created = []
+  const events = []
+  const loop = (async () => {
+    while (running) {
+      try {
+        const response = await request('workspace.create')
+        const workspaceId = response.result?.workspace?.workspace_id
+        if (workspaceId) {
+          created.push(workspaceId)
+          events.push({ kind: 'create', workspaceId, at: Date.now() })
+        }
+        await sleep(intervalMs)
+        if (workspaceId) {
+          await request('workspace.close', { workspace_id: workspaceId })
+          events.push({ kind: 'close', workspaceId, at: Date.now() })
+          created.splice(created.indexOf(workspaceId), 1)
+        }
+      } catch (error) {
+        events.push({ kind: 'error', error: String(error), at: Date.now() })
+      }
+      await sleep(intervalMs)
+    }
+  })()
+  return {
+    events,
+    stop: async () => {
+      running = false
+      await loop
+      for (const workspaceId of [...created]) {
+        await request('workspace.close', { workspace_id: workspaceId }).catch(() => {})
+      }
+    },
+  }
+}
+
+/** 격리 세션에 남은 workspace 를 1개만 남기고 정리한다 (측정 사이 상태를 깨끗이). */
+export async function tidySession() {
+  const snapshot = await request('session.snapshot')
+  const workspaces = snapshot.result?.snapshot?.workspaces ?? []
+  for (const workspace of workspaces.slice(1)) {
+    await request('workspace.close', { workspace_id: workspace.workspace_id }).catch(() => {})
+  }
+  return workspaces.length
 }

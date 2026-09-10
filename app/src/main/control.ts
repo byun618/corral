@@ -18,6 +18,7 @@ export type ControlHandlers = {
   selectSession: (name: string) => void
   selectWorkspace: (workspaceId: string | null) => void
   state: () => unknown
+  verify: () => Promise<unknown>
 }
 
 export function startControlServer(handlers: ControlHandlers): net.Server | null {
@@ -90,6 +91,10 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       }
       case 'state': {
         socket.write(JSON.stringify({ ok: true, state: handlers.state() }) + '\n')
+        return
+      }
+      case 'verify': {
+        socket.write(JSON.stringify({ ok: true, verify: await handlers.verify() }) + '\n')
         return
       }
       default:

@@ -11,7 +11,19 @@ export type SessionInfo = {
   socketPath: string
 }
 
-/** 좌측 목록 1행 = herdr workspace (00-analysis.md §3 결정). */
+/** 잎 = pane. Step 2 ② 의 터미널이 붙을 단위이자 **선택 대상**이다. */
+export type PaneRow = {
+  paneId: string
+  workspaceId: string
+  tabId: string
+  title: string
+  agent: string | null
+  agentStatus: AgentStatus
+  cwd: string | null
+  focused: boolean
+}
+
+/** 가운데 층 = herdr workspace (00-analysis.md §3 결정). 그 아래 pane 이 잎으로 달린다. */
 export type WorkspaceRow = {
   workspaceId: string
   label: string
@@ -20,9 +32,13 @@ export type WorkspaceRow = {
   tabCount: number
   agentStatus: AgentStatus
   focused: boolean
+  /** 맨 위 층 = repo. worktree.list 로 얻는다 (스냅샷의 workspace.worktree 는 대부분 비어 있다). */
   repoName: string | null
-  /** 이 workspace 안 pane 들의 agent_status 목록 — 행의 부제로 쓴다. */
-  paneAgents: string[]
+  repoRoot: string | null
+  branch: string | null
+  isLinkedWorktree: boolean | null
+  repoSource: 'snapshot' | 'worktree.list' | 'none'
+  panes: PaneRow[]
 }
 
 /**
@@ -59,7 +75,8 @@ export type AppState = {
   selectedSession: string | null
   link: LinkState
   workspaces: WorkspaceRow[]
-  selectedWorkspaceId: string | null
+  /** 선택 대상은 pane 이다 (기준 L2). */
+  selectedPaneId: string | null
 }
 
 /** preload 가 contextBridge 로 노출하는 채널별 메서드. ipcRenderer 를 통째로 넘기지 않는다. */
@@ -67,7 +84,7 @@ export type CorralApi = {
   getState: () => Promise<AppState>
   onState: (listener: (state: AppState) => void) => () => void
   selectSession: (name: string) => Promise<void>
-  selectWorkspace: (workspaceId: string | null) => Promise<void>
+  selectPane: (paneId: string | null) => Promise<void>
   refreshSessions: () => Promise<void>
   /** 렌더러가 실제로 그린 시점을 main 로그에 남긴다 (L3 의 "반영 시각"). */
   reportRendered: (revision: number) => void

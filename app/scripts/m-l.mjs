@@ -15,6 +15,23 @@ const summary = { session: process.env.LIFE344_SESSION ?? 'life344-probe', pairs
 // --- L1 / L2 / L5 : 화면 근거 -------------------------------------------
 const before = await app.state()
 summary.stateAtStart = before.state
+// L2 근거는 "그 시점의 session.snapshot 원문"을 함께 요구한다 — 하네스가 따로 한 벌 받아 둔다.
+summary.snapshotAtShot = (await request('session.snapshot')).result
+summary.l2 = {
+  workspaces: before.state.workspaces.length,
+  everyWorkspaceHasPanes: before.state.workspaces.every((row) => row.panes.length > 0),
+  paneRows: before.state.workspaces.flatMap((row) =>
+    row.panes.map((pane) => ({
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+      title: pane.title,
+      agentStatus: pane.agentStatus,
+    })),
+  ),
+  everyPaneHasAgentStatus: before.state.workspaces
+    .flatMap((row) => row.panes)
+    .every((pane) => typeof pane.agentStatus === 'string' && pane.agentStatus.length > 0),
+}
 summary.shots.push((await app.shot('l1-l2-l5-list')).file)
 
 // --- L3 : 5회 생성 + 5회 종료, 10/10 이 목록에 반영되는가 ----------------
@@ -40,15 +57,22 @@ for (const workspaceId of created) {
 }
 
 // --- L4 : 선택 유지 + 선택 대상이 사라져도 안 깨진다 ---------------------
+// 선택 대상은 pane 이다 (L2). 그 pane 이 속한 workspace 를 닫아 pane 을 사라지게 한다.
 const victimTriggered = Date.now()
 const victim = await request('workspace.create')
 const victimId = victim.result?.workspace?.workspace_id
 await waitReflect(app, victimId, true, victimTriggered)
-await app.selectWorkspace(victimId)
+await sleep(300)
+const withVictim = await app.state()
+const victimPane = withVictim.state.workspaces
+  .find((row) => row.workspaceId === victimId)
+  ?.panes[0]
+if (!victimPane) throw new Error('새 workspace 에 pane 이 안 달렸다')
+await app.selectPane(victimPane.paneId)
 await sleep(400)
 summary.shots.push((await app.shot('l4-selected')).file)
 const selectedState = await app.state()
-summary.l4 = { victimId, selectedBefore: selectedState.state.selectedWorkspaceId }
+summary.l4 = { victimId, victimPaneId: victimPane.paneId, selectedBefore: selectedState.state.selectedPaneId }
 
 const killTriggered = Date.now()
 await request('workspace.close', { workspace_id: victimId })
@@ -56,7 +80,7 @@ await waitReflect(app, victimId, false, killTriggered)
 await sleep(600)
 summary.shots.push((await app.shot('l4-after-victim-closed')).file)
 const afterState = await app.state()
-summary.l4.selectedAfter = afterState.state.selectedWorkspaceId
+summary.l4.selectedAfter = afterState.state.selectedPaneId
 summary.l4.appAlive = afterState.ok === true
 summary.l4.workspacesAfter = afterState.state.workspaces.map((row) => row.workspaceId)
 

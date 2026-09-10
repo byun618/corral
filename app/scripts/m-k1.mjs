@@ -16,10 +16,11 @@ const app = await startApp({
   env: { CORRAL_VERIFY_CONVERGE: '1' },
   waitFor: (entries) => entries.some((entry) => entry.tag === 'boot.verify'),
 })
-// 흔들기를 멈추고 조용해진 뒤에 수렴 비교를 한 번 더 한다 — 흔드는 중의 비교는 서로 다른
+// 흔들기를 멈추고 **실제로 조용해진 뒤에** 수렴 비교를 한다 — 흔드는 중의 비교는 서로 다른
 // 시점을 비교하는 것이라 의미가 없다 (스파이크 A4 도 churn 을 멈추고 비교했다).
+// "조용해졌다"는 앱 로그에 push 가 일정 시간 안 들어온 것으로 판정한다 (시계를 믿지 않는다).
 for (const churn of churns) await churn.stop()
-await sleep(1200)
+const quietAt = await waitQuiet(app, 1500, 30000)
 const verifyAfterQuiet = await app.verify()
 const entries = app.entries()
 
@@ -72,6 +73,7 @@ const result = {
   idempotentAbsorbed: applied.filter((entry) => entry.changed === false).map((entry) => entry.note),
   convergedIds: entries.find((entry) => entry.tag === 'boot.converged') ?? null,
   verify,
+  quietAfterMs: quietAt,
   verifyDuringChurn: verify?.match ?? null,
   verifyAfterQuiet: verifyAfterQuiet.verify,
   verifyMatch: verifyAfterQuiet.verify?.match ?? null,
@@ -107,3 +109,16 @@ console.log(
 
 await app.stop()
 await tidySession()
+
+/** 마지막 push.applied 이후 quietMs 가 지날 때까지 기다린다. 못 기다리면 null. */
+async function waitQuiet(app, quietMs, timeoutMs) {
+  const started = Date.now()
+  const deadline = started + timeoutMs
+  while (Date.now() < deadline) {
+    const pushes = app.entries().filter((entry) => entry.tag === 'push.applied')
+    const last = pushes.length === 0 ? started : pushes[pushes.length - 1].at
+    if (Date.now() - last >= quietMs) return Date.now() - started
+    await sleep(100)
+  }
+  return null
+}

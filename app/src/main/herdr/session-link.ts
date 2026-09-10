@@ -9,7 +9,7 @@
 
 import type { LinkPhase, LinkState, SessionInfo } from '../../shared/types.js'
 import { log } from '../log.js'
-import { SUBSCRIPTION_TYPES, readRecord, type PushFrame } from './protocol.js'
+import { SUBSCRIPTION_TYPES, isRecord, readRecord, readString, type PushFrame } from './protocol.js'
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
 import { WorkspaceStore } from './store.js'
@@ -43,6 +43,7 @@ export class SessionLink {
   private subscription: Subscription | null = null
   private buffer: Array<{ frame: PushFrame; at: number }> = []
   private bootstrapping = false
+  private resolvingRepos = false
   private stopped = false
   private timer: NodeJS.Timeout | null = null
   private state: LinkState = {
@@ -172,6 +173,7 @@ export class SessionLink {
       this.setPhase('live')
       this.hooks.onChange()
 
+      void this.resolveRepos()
       if (process.env.CORRAL_VERIFY_CONVERGE === '1') await this.verifyConvergence()
       if (process.env.CORRAL_PROBE_REQUESTS) await this.probeRequests(session)
     } catch (error) {
@@ -187,6 +189,47 @@ export class SessionLink {
         return
       }
       this.scheduleRetry(`${code}: ${failure.message}`)
+    }
+  }
+
+  /**
+   * L2r — repo 층을 채운다. 스냅샷의 `workspace.worktree` 는 실측상 4개 중 1개만 차 있어서
+   * (raw/claude/00-default-session-snapshot.json) 그 필드만 믿으면 그룹이 대부분 빈다.
+   * 나머지는 workspace 안 pane 의 cwd 로 `worktree.list` 를 조회해 채운다.
+   *
+   * 이 조회는 요청 경로(커넥션 1개짜리)로 나가고, workspace 하나당 한 번만 한다.
+   */
+  private async resolveRepos(): Promise<void> {
+    const session = this.session
+    if (session === null || this.resolvingRepos) return
+    const pending = this.store.workspacesMissingRepo()
+    if (pending.length === 0) return
+    this.resolvingRepos = true
+    try {
+      for (const item of pending) {
+        if (item.cwd === null) {
+          // pane 이 아직 안 붙은 workspace 는 다음 변화 때 다시 본다 — 지금 단정하지 않는다.
+          continue
+        }
+        try {
+          const response = await request(session.socketPath, 'worktree.list', { cwd: item.cwd }, { reason: 'repo' })
+          const repo = readWorktreeList(response.result, item.cwd)
+          this.store.setRepo(item.workspaceId, repo)
+          log('repo.resolved', { workspaceId: item.workspaceId, cwd: item.cwd, ...repo })
+        } catch (error) {
+          this.store.setRepo(item.workspaceId, {
+            repoName: null,
+            repoRoot: null,
+            branch: null,
+            isLinkedWorktree: null,
+            source: 'none',
+          })
+          log('repo.resolve_failed', { workspaceId: item.workspaceId, cwd: item.cwd, error: String(error) })
+        }
+      }
+      this.hooks.onChange()
+    } finally {
+      this.resolvingRepos = false
     }
   }
 
@@ -244,6 +287,7 @@ export class SessionLink {
       subject: subjectOf(frame),
     })
     this.hooks.onChange()
+    if (result.changed) void this.resolveRepos()
   }
 
   private onDrop(reason: string, detail: string): void {
@@ -265,6 +309,46 @@ export class SessionLink {
       this.timer = null
       void this.attempt()
     }, delay)
+  }
+}
+
+/** worktree.list 응답에서 이 checkout 의 repo·branch 를 뽑는다. */
+function readWorktreeList(result: unknown, cwd: string): {
+  repoName: string | null
+  repoRoot: string | null
+  branch: string | null
+  isLinkedWorktree: boolean | null
+  source: 'worktree.list' | 'none'
+} {
+  if (!isRecord(result)) return { repoName: null, repoRoot: null, branch: null, isLinkedWorktree: null, source: 'none' }
+  const source = readRecord(result, 'source')
+  const worktrees = result['worktrees']
+  let branch: string | null = null
+  let isLinked: boolean | null = null
+  if (Array.isArray(worktrees)) {
+    // cwd 가 어느 worktree 안에 있는지는 경로 접두로 가른다. 가장 긴 접두가 맞는 것이다.
+    let best: Record<string, unknown> | null = null
+    let bestLength = -1
+    for (const item of worktrees) {
+      if (!isRecord(item)) continue
+      const path = readString(item, 'path')
+      if (path === null || !cwd.startsWith(path)) continue
+      if (path.length > bestLength) {
+        best = item
+        bestLength = path.length
+      }
+    }
+    if (best !== null) {
+      branch = readString(best, 'branch')
+      isLinked = best['is_linked_worktree'] === true
+    }
+  }
+  return {
+    repoName: source === null ? null : readString(source, 'repo_name'),
+    repoRoot: source === null ? null : readString(source, 'repo_root'),
+    branch,
+    isLinkedWorktree: isLinked,
+    source: source === null ? 'none' : 'worktree.list',
   }
 }
 

@@ -10,7 +10,7 @@ const EXPOSED = [
   'getState',
   'onState',
   'selectSession',
-  'selectWorkspace',
+  'selectPane',
   'refreshSessions',
   'reportRendered',
   'reportProbe',
@@ -25,8 +25,7 @@ const api = {
     return () => ipcRenderer.removeListener('corral:state', handler)
   },
   selectSession: (name: string): Promise<void> => ipcRenderer.invoke('corral:selectSession', name),
-  selectWorkspace: (workspaceId: string | null): Promise<void> =>
-    ipcRenderer.invoke('corral:selectWorkspace', workspaceId),
+  selectPane: (paneId: string | null): Promise<void> => ipcRenderer.invoke('corral:selectPane', paneId),
   refreshSessions: (): Promise<void> => ipcRenderer.invoke('corral:refreshSessions'),
   reportRendered: (revision: number): void => ipcRenderer.send('corral:reportRendered', revision),
   reportProbe: (name: string, detail: Record<string, string>): void =>

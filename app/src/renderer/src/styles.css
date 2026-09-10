@@ -276,3 +276,71 @@ body {
 .warn {
   color: var(--warn);
 }
+
+/* 3단 트리 — repo > workspace > pane */
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 2px 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.group-name {
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.group-count {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.workspace {
+  padding: 4px 0 6px 6px;
+  border-left: 1px solid var(--line);
+  margin-left: 4px;
+}
+
+.workspace-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.workspace-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-sub {
+  color: var(--dim);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 1px 0 4px 14px;
+}
+
+.panes {
+  margin-left: 10px;
+}
+
+.pane-row {
+  padding: 5px 8px;
+}
+
+.pane-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}

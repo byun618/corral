@@ -21,17 +21,17 @@ let revision = 0
 let sessions: SessionInfo[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
-let selectedWorkspaceId: string | null = null
+let selectedPaneId: string | null = null
 let emitScheduled = false
 
 const link = new SessionLink({ onChange: () => scheduleEmit() })
 
 function currentState(): AppState {
   const rows = link.store.rows()
-  // 선택한 workspace 가 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
-  if (selectedWorkspaceId !== null && !rows.some((row) => row.workspaceId === selectedWorkspaceId)) {
-    log('ui.selection.cleared', { workspaceId: selectedWorkspaceId, reason: '대상이 사라짐' })
-    selectedWorkspaceId = null
+  // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
+  if (selectedPaneId !== null && !rows.some((row) => row.panes.some((pane) => pane.paneId === selectedPaneId))) {
+    log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
+    selectedPaneId = null
   }
   return {
     revision,
@@ -40,7 +40,7 @@ function currentState(): AppState {
     selectedSession,
     link: link.linkState(),
     workspaces: rows,
-    selectedWorkspaceId,
+    selectedPaneId,
   }
 }
 
@@ -56,6 +56,7 @@ function scheduleEmit(): void {
       revision: state.revision,
       phase: state.link.phase,
       workspaces: state.workspaces.map((row) => `${row.workspaceId}:${row.label}:${row.paneCount}`),
+      panes: state.workspaces.flatMap((row) => row.panes.map((pane) => pane.paneId)),
     })
     window?.webContents.send('corral:state', state)
   }, 0)
@@ -68,7 +69,7 @@ function pickSession(name: string): void {
     return
   }
   selectedSession = name
-  selectedWorkspaceId = null
+  selectedPaneId = null
   link.open(found)
   scheduleEmit()
 }
@@ -138,9 +139,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('corral:getState', () => currentState())
   ipcMain.handle('corral:selectSession', (_event, name: string) => pickSession(name))
-  ipcMain.handle('corral:selectWorkspace', (_event, workspaceId: string | null) => {
-    selectedWorkspaceId = workspaceId
-    log('ui.selection.set', { workspaceId })
+  ipcMain.handle('corral:selectPane', (_event, paneId: string | null) => {
+    selectedPaneId = paneId
+    log('ui.selection.set', { paneId })
     scheduleEmit()
   })
   ipcMain.handle('corral:refreshSessions', () => pollSessions())
@@ -158,8 +159,9 @@ app.whenReady().then(() => {
   startControlServer({
     capture,
     selectSession: pickSession,
-    selectWorkspace: (workspaceId) => {
-      selectedWorkspaceId = workspaceId
+    selectPane: (paneId) => {
+      selectedPaneId = paneId
+      log('ui.selection.set', { paneId })
       scheduleEmit()
     },
     state: () => currentState(),

@@ -5,8 +5,13 @@ herdr 세션에 붙어 workspace 목록을 실시간으로 보여 주는 Electro
 
 ## 띄우기
 
+**Node 22.12 이상이 필요하다** (`.nvmrc` = 22.22.2). Electron 44 가 그렇게 요구하고,
+Node 20 에서는 `npm install` 이 electron 의 postinstall 을 건너뛰어 `npm run dev` 가
+`Error: Electron uninstall` 로 죽는다.
+
 ```sh
 cd app
+nvm use         # .nvmrc → Node 22
 npm install     # 설치 1회
 npm run dev     # 개발 모드 (창이 뜬다)
 ```
@@ -38,7 +43,7 @@ src/main/            Electron main — 소켓을 소유하는 쪽
   sessions.ts        세션 발견 (CLI 재조회. 이 층에는 구독이 없다)
   control.ts         계측용 제어 채널 — CORRAL_CONTROL_SOCKET 을 준 실행에만 열린다
 src/preload/         contextBridge 로 채널별 메서드만 노출 (CJS 로 번들)
-src/renderer/        React. 왼쪽 세션·workspace 목록 + 오른쪽 터미널 자리
+src/renderer/        React. 왼쪽 repo>workspace>pane 3단 목록 + 오른쪽 터미널 자리
 scripts/             판정 근거를 만드는 측정 하네스 (m-*.mjs)
 ```
 
@@ -64,8 +69,9 @@ scripts/             판정 근거를 만드는 측정 하네스 (m-*.mjs)
 
 ## 측정 하네스
 
-판정 근거(`specs/LIFE-344-bootstrap/raw/claude/`)를 만드는 스크립트다. **격리 세션에서만** 돈다 —
-세션 이름이 `life344-` 로 시작하지 않으면 코드가 거부한다.
+판정 근거(`specs/LIFE-344-bootstrap/raw/claude/`)를 만드는 스크립트다. 흔들기(생성·종료)는
+**격리 세션에서만** 돈다 — 세션 이름이 `life344-` 로 시작하지 않으면 코드가 거부한다.
+`m-l2r.mjs` 만 사용자의 `default` 세션에 붙는데, 앱도 하네스도 **읽기 메서드만** 보낸다.
 
 ```sh
 node scripts/m-s.mjs         # S2·S3·S4  빌드 · 렌더러 격리 · 타입체크/린트
@@ -75,7 +81,8 @@ node scripts/m-k4.mjs        # K4        중복 이벤트 주입
 node scripts/m-k5.mjs        # K5        구독 타입 거부 처리
 node scripts/m-k6.mjs        # K6        서버 kill → 자동 복구 (격리 세션 서버를 죽인다)
 node scripts/m-k7.mjs        # K7        ENOENT/ECONNREFUSED · 백오프+jitter
-node scripts/m-l.mjs         # L1~L5     세션·workspace 목록 · 실시간 반영 · 선택
+node scripts/m-l.mjs         # L1~L5     세션·workspace·pane 목록 · 실시간 반영 · 선택
+node scripts/m-l2r.mjs       # L2r       repo 그룹핑 (default 세션에 **읽기로만** 붙는다)
 node scripts/m-restart.mjs   # 세션 재기동 경로 비교
 node scripts/m-sockpath.mjs  # 소켓 경로 길이 한계
 ```

@@ -9,7 +9,7 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
 import { log } from '../log.js'
 
 /** 앱이 보내도 되는 메서드. corral 은 이 일감 범위에서 herdr 를 **읽기만** 한다. */
-const ALLOWED_METHODS: readonly string[] = ['ping', 'session.snapshot']
+const ALLOWED_METHODS: readonly string[] = ['ping', 'session.snapshot', 'worktree.list']
 
 export class HerdrRequestError extends Error {
   readonly code: string

@@ -16,7 +16,7 @@ import { checkUnixSocketPath } from './unix-socket-path.js'
 export type ControlHandlers = {
   capture: (name: string) => Promise<string>
   selectSession: (name: string) => void
-  selectWorkspace: (workspaceId: string | null) => void
+  selectPane: (paneId: string | null) => void
   state: () => unknown
   verify: () => Promise<unknown>
 }
@@ -84,8 +84,8 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         socket.write(JSON.stringify({ ok: true }) + '\n')
         return
       }
-      case 'select-workspace': {
-        handlers.selectWorkspace(readString(parsed, 'workspaceId'))
+      case 'select-pane': {
+        handlers.selectPane(readString(parsed, 'paneId'))
         socket.write(JSON.stringify({ ok: true }) + '\n')
         return
       }

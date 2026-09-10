@@ -1,10 +1,14 @@
-// 미니멀 세션 워크스페이스 — 왼쪽 목록 + 오른쪽 터미널 자리.
+// 미니멀 세션 워크스페이스 — 왼쪽 3단 목록 + 오른쪽 터미널 자리.
 //
-// 왼쪽 목록 1행 = herdr **workspace** 다 (00-analysis.md §3). 세션은 그 위에서 "어느 서버에
-// 붙을지"를 고르는 축이라 별도 섹션으로 둔다 — 이번 범위는 발견 + 선택까지.
+//   repo        ← worktree.list (스냅샷의 workspace.worktree 는 대부분 비어 있다)
+//    └ workspace ← session.snapshot 의 workspaces[]
+//       └ pane   ← session.snapshot 의 panes[] — **선택 대상**이자 Step 2 ② 터미널이 붙을 단위
+//
+// 세션은 이 3단 위에서 "어느 서버에 붙을지"를 고르는 축이라 별도 섹션으로 둔다
+// (00-analysis.md §3: 세션 층에는 구독이 없다 — 발견 + 선택까지가 이번 범위).
 
 import { useEffect, useRef, useState } from 'react'
-import type { AppState, LinkState, WorkspaceRow } from '../../shared/types'
+import type { AppState, LinkState, PaneRow, WorkspaceRow } from '../../shared/types'
 import { SecurityProbe } from './SecurityProbe'
 
 const EMPTY: AppState = {
@@ -23,7 +27,30 @@ const EMPTY: AppState = {
     bufferedAtSnapshot: null,
   },
   workspaces: [],
-  selectedWorkspaceId: null,
+  selectedPaneId: null,
+}
+
+type RepoGroup = { key: string; repoName: string | null; repoRoot: string | null; workspaces: WorkspaceRow[] }
+
+function groupByRepo(workspaces: WorkspaceRow[]): RepoGroup[] {
+  const groups = new Map<string, RepoGroup>()
+  for (const workspace of workspaces) {
+    const key = workspace.repoRoot ?? workspace.repoName ?? '(repo 없음)'
+    const group = groups.get(key) ?? {
+      key,
+      repoName: workspace.repoName,
+      repoRoot: workspace.repoRoot,
+      workspaces: [],
+    }
+    group.workspaces.push(workspace)
+    groups.set(key, group)
+  }
+  // repo 를 못 붙인 묶음은 맨 아래로 (실측상 홈 디렉터리처럼 git repo 가 아닌 workspace 가 있다).
+  return [...groups.values()].sort((a, b) => {
+    if (a.repoName === null) return b.repoName === null ? 0 : 1
+    if (b.repoName === null) return -1
+    return a.repoName.localeCompare(b.repoName)
+  })
 }
 
 export function App(): React.JSX.Element {
@@ -42,7 +69,10 @@ export function App(): React.JSX.Element {
     window.corral.reportRendered(state.revision)
   }, [state.revision])
 
-  const selected = state.workspaces.find((row) => row.workspaceId === state.selectedWorkspaceId) ?? null
+  const selectedPane =
+    state.workspaces.flatMap((row) => row.panes).find((pane) => pane.paneId === state.selectedPaneId) ?? null
+  const selectedWorkspace =
+    selectedPane === null ? null : (state.workspaces.find((row) => row.workspaceId === selectedPane.workspaceId) ?? null)
 
   return (
     <div className="app">
@@ -81,27 +111,48 @@ export function App(): React.JSX.Element {
 
           <section className="panel grow">
             <h2>
-              workspace <small>구독 경유 실시간</small>
+              repo · workspace · pane <small>구독 경유 실시간</small>
             </h2>
             {state.workspaces.length === 0 && <p className="empty">workspace 없음</p>}
-            <ul className="list">
-              {state.workspaces.map((row) => (
-                <WorkspaceItem
-                  key={row.workspaceId}
-                  row={row}
-                  selected={row.workspaceId === state.selectedWorkspaceId}
-                />
+            <div className="tree">
+              {groupByRepo(state.workspaces).map((group) => (
+                <div key={group.key} className="group">
+                  <div className="group-head" title={group.repoRoot ?? ''}>
+                    <span className="group-name">{group.repoName ?? '(repo 없음)'}</span>
+                    <span className="group-count">{group.workspaces.length}</span>
+                  </div>
+                  {group.workspaces.map((workspace) => (
+                    <div key={workspace.workspaceId} className="workspace">
+                      <div className="workspace-head">
+                        <span className={`dot dot-${workspace.agentStatus}`} />
+                        <span className="workspace-name">{workspace.label}</span>
+                        {workspace.branch !== null && <em className="tag">{workspace.branch}</em>}
+                        {workspace.isLinkedWorktree === true && <em className="tag">linked</em>}
+                        {workspace.focused && <em className="tag">focused</em>}
+                      </div>
+                      <div className="workspace-sub">
+                        {workspace.workspaceId} · pane {workspace.paneCount} · tab {workspace.tabCount} ·{' '}
+                        {workspace.agentStatus}
+                      </div>
+                      <ul className="list panes">
+                        {workspace.panes.map((pane) => (
+                          <PaneItem key={pane.paneId} pane={pane} selected={pane.paneId === state.selectedPaneId} />
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
               ))}
-            </ul>
+            </div>
           </section>
         </aside>
 
         <main className="stage">
-          {selected === null ? (
+          {selectedPane === null ? (
             <div className="placeholder">
               <p className="placeholder-title">터미널 뷰</p>
               <p className="placeholder-body">
-                왼쪽에서 workspace 를 고르면 여기에 그 pane 들이 붙는다.
+                왼쪽에서 pane 을 고르면 여기에 그 터미널이 붙는다.
                 <br />
                 렌더링·입력은 이 일감 범위 밖이다 (Step 2 ②).
               </p>
@@ -109,11 +160,13 @@ export function App(): React.JSX.Element {
           ) : (
             <div className="placeholder">
               <p className="placeholder-title">
-                {selected.label} <span className="mono">{selected.workspaceId}</span>
+                {selectedPane.title} <span className="mono">{selectedPane.paneId}</span>
               </p>
               <p className="placeholder-body">
-                pane {selected.paneCount} · tab {selected.tabCount} · agent_status {selected.agentStatus}
-                {selected.repoName !== null && <> · repo {selected.repoName}</>}
+                {selectedWorkspace?.label ?? selectedPane.workspaceId} · agent_status {selectedPane.agentStatus}
+                {selectedPane.agent !== null && <> · agent {selectedPane.agent}</>}
+                <br />
+                <span className="mono">{selectedPane.cwd ?? ''}</span>
               </p>
               <p className="placeholder-note">터미널 뷰 자리 — 렌더링은 Step 2 ② (LIFE-345)</p>
             </div>
@@ -129,21 +182,21 @@ export function App(): React.JSX.Element {
   )
 }
 
-function WorkspaceItem({ row, selected }: { row: WorkspaceRow; selected: boolean }): React.JSX.Element {
+function PaneItem({ pane, selected }: { pane: PaneRow; selected: boolean }): React.JSX.Element {
   return (
     <li>
       <button
         type="button"
-        className={selected ? 'row row-on' : 'row'}
-        onClick={() => void window.corral.selectWorkspace(selected ? null : row.workspaceId)}
+        className={selected ? 'row pane-row row-on' : 'row pane-row'}
+        onClick={() => void window.corral.selectPane(selected ? null : pane.paneId)}
       >
         <span className="row-title">
-          <span className={`dot dot-${row.agentStatus}`} />
-          {row.label}
-          {row.focused && <em className="tag">focused</em>}
+          <span className={`dot dot-${pane.agentStatus}`} />
+          <span className="pane-title">{pane.title}</span>
+          {pane.agent !== null && <em className="tag">{pane.agent}</em>}
         </span>
         <span className="row-sub">
-          {row.workspaceId} · pane {row.paneCount} · tab {row.tabCount} · {row.agentStatus}
+          {pane.paneId} · {pane.agentStatus}
         </span>
       </button>
     </li>

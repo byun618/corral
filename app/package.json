@@ -5,6 +5,9 @@
   "type": "module",
   "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-344 부트스트랩)",
   "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",

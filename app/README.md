@@ -41,8 +41,10 @@ src/main/            Electron main — 소켓을 소유하는 쪽
     line-socket.ts   NDJSON 줄 프레이밍 + 소켓 수명 (EOF 감지)
     request.ts       요청 1건 = 커넥션 1개. 앱이 보내는 메서드는 화이트리스트
     subscription.ts  push 전용 커넥션 — 요청을 보내는 공개 메서드가 없다
-    store.ts         id 키 맵. create=set / close=delete 라 멱등이 설계로 나온다
-    session-link.ts  부트스트랩(구독→ack→버퍼→snapshot→적용) + 복구 루프
+    store.ts         id 키 맵. create=set / close=delete 라 멱등이 설계로 나온다.
+                     여기에 push 순서 방어 둘: 닫힌 id 묘비 · 주인 없는 pane/tab 보류함
+    session-link.ts  부트스트랩(구독→ack→버퍼→snapshot→적용) + 복구 루프.
+                     링크에 세대가 있다 — 세션을 바꾸면 낡은 시도는 손을 뗀다
   sessions.ts        세션 발견 (CLI 재조회. 이 층에는 구독이 없다)
   control.ts         계측용 제어 채널 — CORRAL_CONTROL_SOCKET 을 준 실행에만 열린다
 src/preload/         contextBridge 로 채널별 메서드만 노출 (CJS 로 번들)
@@ -65,6 +67,7 @@ scripts/             판정 근거를 만드는 측정 하네스 (m-*.mjs)
 | `CORRAL_PROBE_REQUESTS` | live 직후 `ping` 을 N 회 보낸다 (구독이 안 끊기는지 확인용) |
 | `CORRAL_INJECT_DUP` | `1` 이면 버퍼 이벤트를 일부러 두 번 적용 (멱등성 확인용) |
 | `CORRAL_INJECT_BAD_SUB` | `1` 이면 구독 목록에 모르는 타입을 하나 섞는다 (거부 처리 확인용) |
+| `CORRAL_INJECT_BOOT_DELAY_MS` | **첫** 부트스트랩만 이만큼 늦춘다 (세션 전환 경합 재현용) |
 
 > **유닉스 소켓 경로 길이**: macOS 는 104 bytes 가 한계다. Electron(Node 24)은 105 bytes 부터
 > `EINVAL` 로 죽고, Node 20 은 조용히 잘라 엉뚱한 파일을 만든다. corral 은 붙기·바인드 전에
@@ -88,6 +91,11 @@ node scripts/m-l.mjs         # L1~L5     세션·workspace·pane 목록 · 실�
 node scripts/m-l2r.mjs       # L2r       repo 그룹핑 (default 세션에 **읽기로만** 붙는다)
 node scripts/m-restart.mjs   # 세션 재기동 경로 비교
 node scripts/m-sockpath.mjs  # 소켓 경로 길이 한계
+node scripts/m-ordering.mjs  # push 순서 뒤집힘 · push 유실
+node scripts/m-orphan.mjs    # 주인보다 먼저 온 pane/tab 의 보류함
+node scripts/m-idreuse.mjs   # workspace_id 재사용 (서버를 두 번 껐다 켠다)
+node scripts/m-switch.mjs    # 세션 전환 일관성 (default 에 **읽기로만** 붙는다)
+node scripts/m-running.mjs   # 멈춘 세션 표시 (life344-stopped 를 만들었다 지운다)
 ```
 
 격리 세션은 먼저 띄워 둔다:

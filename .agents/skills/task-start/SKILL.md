@@ -28,8 +28,12 @@ description: corral 작업 시작 — 일감(LIFE-N)을 받아 worktree·코디�
 
 ## 주의
 
-- `orca terminal create` 가 "Timed out waiting for terminal handle" 로 실패하면 (간헐적, 2회 실측):
-  몇 초 대기 후 재시도하되 **`--focus` 를 빼고** 생성 → 성공 후 `orca terminal switch --terminal <handle>` 로
-  포커스 전환. 실패한 시도는 터미널을 남기지 않으므로 (`terminal list` 로 확인) 중복 걱정 없이 재시도
+- `orca terminal create` 가 "Timed out waiting for terminal handle" 로 실패하면 (간헐적):
+  **실패가 아니라 지연일 수 있다** — 핸들 응답만 타임아웃되고 터미널은 뒤늦게 생성된다
+  (LIFE-345 실측: 타임아웃 3회 → 빈 Claude 터미널 3개가 나중에 나타남).
+  재시도 전에 몇 초 기다렸다가 `terminal list` 로 해당 worktree 의 무제목 터미널을 확인하고,
+  이미 생겼으면 그걸 쓴다 (제목은 `terminal rename`). 재시도로 새로 만들었으면
+  뒤늦게 나타난 고아들을 `terminal close` 로 정리한다. `--focus` 는 빼고 생성 →
+  `orca terminal switch` 로 포커스 전환이 안전
 - 터미널 출력 읽기는 `orca terminal read --terminal <handle>` — 줄 수 제한 플래그는 `--limit` (`--lines` 아님)
 - 이 스킬은 시작만 담당한다. 이후 전 과정은 코디네이터가 task-coordinate 스킬로 진행

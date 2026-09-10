@@ -22,12 +22,16 @@
 // (`term.scrollback` 의 씨앗이 claude 32줄 · codex 13줄). 통과선이 요구하는 것은 **전체화면
 // TUI pane** 이므로 그 화면은 T4 의 대상이 아니었다.
 //
-// 판별자는 **스크롤백 씨앗 0줄**이다. 알트 판은 `visible`(알트 버퍼)과 `recent_unwrapped`
-// (host 버퍼)의 꼬리가 안 맞아 `historyAbove` 가 빈 배열을 준다. 다만 **씨앗 0 하나로는
-// 모자라다** — 히스토리가 없는 새 pane 도 0이다. 그래서 순서를 이렇게 박는다:
+// 판별자는 **herdr 가 주는 `scroll.max_offset_from_bottom`** 이다 — 알트 버퍼에는 스크롤백이
+// 없으므로 이 값이 0 이 된다. 히스토리가 없는 새 pane 도 0 이므로 값 하나로는 모자라다.
+// 그래서 순서를 박는다:
 //
-//   ① pane 에 히스토리 30줄을 심는다 → ② 붙어서 씨앗 > 0 을 확인한다(판별자가 살아 있다)
-//   → ③ TUI 를 띄운다 → ④ 다시 붙어서 씨앗 == 0 이면 **알트 진입 확정**
+//   ① pane 에 히스토리 60줄을 심는다 → ② `max_offset_from_bottom > 0` 을 확인한다
+//   (판별자가 살아 있다) → ③ TUI 를 띄운다 → ④ 그 값이 0 이면 **알트 진입 확정**
+//
+// corral 의 씨앗 줄 수를 판별자로 쓰지 않는 이유: **재는 대상이 corral 자신**이라 자기순환이다.
+// (실제로 그 방식은 vim 메시지 화면에서 36 을 내놓아 "알트 아님"으로 잘못 읽혔다.)
+// 씨앗은 보조 근거로만 싣는다.
 //
 // 판정 수치는 ④가 확정된 대상에서만 낸다. 에이전트(claude·codex)도 같은 절차로 돌려서
 // **"에이전트가 알트를 쓰는가"(판정 §6)에 실측으로 답한다** — 이건 T4 의 판정 수치가 아니라
@@ -76,6 +80,12 @@ const snapshotRows = (text) => {
       judged: true,
       launch: "vim -u NONE -O /tmp/l345-t4-left.txt /tmp/l345-t4-right.txt",
       settleMs: 3500,
+      // 파일 두 개를 열면 vim 이 "Press ENTER or type command to continue" 에서 멈춘다.
+      // 1차 재측정이 그 **메시지 화면**을 T4 대상으로 재 버렸다 (세로 테두리가 없었던 이유다).
+      afterLaunch: async () => {
+        await request('pane.send_text', { pane_id: paneId, text: '\r' })
+        await sleep(3000)
+      },
       quit: async () => {
         await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
         await sleep(300)
@@ -117,16 +127,28 @@ const snapshotRows = (text) => {
     await app.selectPane(paneId)
     await sleep(3000)
     const seededBefore = (await app.state()).state.terminal.seededLines
+    // **알트 판별자는 herdr 가 준다** — 알트 버퍼에는 스크롤백이 없으므로
+    // `scroll.max_offset_from_bottom` 이 0 이 된다. 히스토리 60줄을 심어 뒀으니 일반 판에서는
+    // 0 보다 커야 하고, 전체화면 TUI 로 들어가면 0 이어야 한다. corral 의 씨앗 줄 수는
+    // **corral 자신의 값**이라 판별자로 쓰면 자기순환이다 — 보조 근거로만 싣는다.
+    const scrollBefore = (await request('pane.get', { pane_id: paneId })).pane.scroll
 
     // ③ TUI 를 띄우고 ④ 다시 붙는다.
     await run(paneId, subject.launch, { settleMs: subject.settleMs })
+    if (subject.afterLaunch) await subject.afterLaunch()
+    const scrollAfter = (await request('pane.get', { pane_id: paneId })).pane.scroll
     await app.selectPane(null)
     await sleep(600)
     await app.selectPane(paneId)
     await sleep(4000)
     const seededAfter = (await app.state()).state.terminal.seededLines
-    const altConfirmed = seededBefore !== null && seededBefore > 0 && seededAfter === 0
-    console.log('T4', subject.key, '씨앗', seededBefore, '→', seededAfter, altConfirmed ? '알트 확정' : '알트 아님')
+    const altConfirmed = scrollBefore.max_offset_from_bottom > 0 && scrollAfter.max_offset_from_bottom === 0
+    console.log(
+      'T4', subject.key,
+      '스크롤백', scrollBefore.max_offset_from_bottom, '→', scrollAfter.max_offset_from_bottom,
+      '· 씨앗', seededBefore, '→', seededAfter,
+      altConfirmed ? '알트 확정' : '알트 아님',
+    )
 
     // 같은 순간의 herdr 스냅샷과 corral 화면을 맞춰 본다. 화면이 계속 움직이면 다시 뜬다.
     let pair = null
@@ -148,6 +170,8 @@ const snapshotRows = (text) => {
         judged: subject.judged,
         seededBefore,
         seededAfter,
+        maxOffsetBefore: scrollBefore.max_offset_from_bottom,
+        maxOffsetAfter: scrollAfter.max_offset_from_bottom,
         altConfirmed,
         settled: false,
         note: '화면이 정지하지 않아 비교 쌍을 못 얻었다',
@@ -184,6 +208,8 @@ const snapshotRows = (text) => {
       judged: subject.judged,
       seededBefore,
       seededAfter,
+      maxOffsetBefore: scrollBefore.max_offset_from_bottom,
+      maxOffsetAfter: scrollAfter.max_offset_from_bottom,
       altConfirmed,
       settled: true,
       rowsCompared: rows,
@@ -226,7 +252,14 @@ const snapshotRows = (text) => {
     altConfirmedAll: judged.length > 0 && judged.every((item) => item.altConfirmed),
     agentUsesAltScreen: cases
       .filter((item) => !item.judged)
-      .map((item) => ({ agent: item.subject, seededBefore: item.seededBefore, seededAfter: item.seededAfter, alt: item.altConfirmed })),
+      .map((item) => ({
+        agent: item.subject,
+        seededBefore: item.seededBefore,
+        seededAfter: item.seededAfter,
+        maxOffsetBefore: item.maxOffsetBefore,
+        maxOffsetAfter: item.maxOffsetAfter,
+        alt: item.altConfirmed,
+      })),
     cases,
   }
 }

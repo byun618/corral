@@ -6,3 +6,4 @@ herdr 기반 AI 워크스페이스 — 세션 및 일감 관리 통합 앱 (LIFE
 
 - spec: `specs/`
 - 일감·상태: life-assistant `LIFE-337`
+- 프로젝트 소개·스파이크 해설 (비개발자용): <https://claude.ai/code/artifact/751befcc-e5d9-4b0b-881a-0380852ff8e0> — `LIFE-342` 기준

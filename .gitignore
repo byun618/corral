@@ -4,3 +4,6 @@
 
 # Claude Code 런타임
 .claude/worktrees/
+
+# 스파이크 프로브 의존성
+spike/node_modules/

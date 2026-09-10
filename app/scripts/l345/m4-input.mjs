@@ -80,8 +80,15 @@ async function clearLine() {
 }
 
 const samples = []
+const invalid = []
 let accumulated = ''
 let index = 0
+/**
+ * **실행마다 다른 접두.** 알파벳 순회는 결정적이라 지난 실행이 친 글자열과 정확히 같다 —
+ * 셸 히스토리·자동제안이 그걸 화면에 먼저 띄우면 키를 보내기도 전에 needle 이 발견된다
+ * (실제로 60개 표본이 전부 0~2ms 로 나왔다). 무작위 접두면 어떤 과거 화면과도 겹치지 않는다.
+ */
+const RUN_TOKEN = Array.from({ length: 8 }, () => ALPHABET[Math.floor(Math.random() * 26)]).join('')
 /**
  * 폴링 간격. 이 값만큼 지연을 **과대평가**할 수 있다 — 통과선 쪽으로 유리하게 기울지 않도록
  * 일부러 이 방향으로 오차를 둔다 (측정값이 실제보다 크게 나온다).
@@ -90,16 +97,36 @@ const POLL_MS = 15
 
 while (samples.length < SAMPLE_COUNT && index < 400) {
   const positionInGroup = index % GROUP
+  const group = Math.floor(index / GROUP)
   if (positionInGroup === 0) {
+    // **화면을 통째로 비운다.** 줄만 비우면 앞 그룹의 글자가 화면에 남고, 알파벳을 돌며 치는
+    // 표본이라 다음 그룹의 누적 문자열이 그 잔해의 부분문자열이 되어 **키를 보내기도 전에
+    // 발견된다** (1차 측정에서 그룹 2~4 의 28개 표본이 전부 0~1ms 로 나왔다 — 거짓 통과다).
     await clearLine()
+    await run(paneId, 'clear', { settleMs: 900 })
     accumulated = ''
   }
-  const ch = ALPHABET[(index * 7 + 3) % ALPHABET.length]
+  // 그룹마다 다른 접두를 둔다 — 알파벳 순회에는 같은 글자가 잇달아 나오지 않으므로
+  // `aaa`·`bbb` … 는 다른 그룹의 화면과 절대 겹치지 않는다.
+  const ch =
+    positionInGroup < PREFIX ? RUN_TOKEN[(group * PREFIX + positionInGroup) % RUN_TOKEN.length] : ALPHABET[(index * 7 + 3) % ALPHABET.length]
   const measured = positionInGroup >= PREFIX
-  const sent = await app.key(ch)
-  accumulated += ch
-  const needle = accumulated
+  const needle = accumulated + ch
   index += 1
+
+  // **보내기 전에** 그 문자열이 이미 화면에 있으면 그 표본은 무효다 — 재는 것이 왕복이 아니라
+  // 남아 있던 글자다. 통과선을 낮추지 않으려면 이런 표본은 버리고 다시 잰다.
+  if (measured && (await app.find(needle)).found) {
+    invalid.push({ needle, reason: '보내기 전에 이미 화면에 있었다' })
+    await clearLine()
+    await run(paneId, 'clear', { settleMs: 900 })
+    accumulated = ''
+    index = group * GROUP + GROUP // 이 그룹을 버리고 다음 그룹으로
+    continue
+  }
+
+  const sent = await app.key(ch)
+  accumulated = needle
 
   if (!measured) {
     await sleep(450)
@@ -133,6 +160,8 @@ const i1 = {
   min: latencies.length ? Math.min(...latencies) : null,
   max: latencies.length ? Math.max(...latencies) : null,
   distribution: latencies,
+  invalidSamples: invalid,
+  runToken: RUN_TOKEN,
   detail: samples,
 }
 console.log('I1', JSON.stringify({ samples: i1.samples, measured: i1.measured, p50: i1.p50, p95: i1.p95, min: i1.min, max: i1.max }))
@@ -212,9 +241,16 @@ const i3 = {
 // I4 — 특수키. vi 를 쓴다: 방향키·Tab·Esc 가 **각각 화면에 다른 흔적**을 남긴다.
 // ==========================================================================
 await ensureShell('I4')
-await run(paneId, 'rm -f /tmp/l345-i4.txt; clear; vim -u NONE -c "set showmode" /tmp/l345-i4.txt', { settleMs: 3000 })
+// **`set list` 이 있어야 Tab 이 보인다.** 없으면 vim 이 탭을 공백 8칸으로 그리는데, 행은 폭이
+// 고정이라 앞뒤 화면 문자열이 완전히 같다 — 1차 I4 가 Tab 을 `arrived: false` 로 적은 이유다.
+// `list` 를 켜면 탭이 `^I` 로 보여 도착 여부가 화면에 남는다.
+await run(
+  paneId,
+  'rm -f /tmp/l345-i4.txt; clear; vim -u NONE -c "set showmode" -c "set list" /tmp/l345-i4.txt',
+  { settleMs: 3000 },
+)
 
-const screenHead = async () => (await screenOf()).split('\n').filter((line) => line.trim() !== '').slice(0, 3)
+const rawHead = async () => (await screenOf()).split('\n').filter((line) => line.trim() !== '').slice(0, 3)
 
 // 삽입 모드로 들어간다.
 await app.key('i')
@@ -233,14 +269,21 @@ for (const key of [
   { keyCode: 'Tab', domKey: 'Tab' },
   { keyCode: 'Escape', domKey: 'Escape' },
 ]) {
-  const before = await screenHead()
+  const before = await rawHead()
+  const previous = before[0] ?? ''
   await app.key('v', ['control'])
   await sleep(400)
   await app.key(key.keyCode)
-  await sleep(900)
-  const after = await screenHead()
-  const line = after[0] ?? ''
-  const previous = before[0] ?? ''
+  // 바뀔 때까지 기다린다 — 고정 대기는 느린 키를 "안 왔다"로 적는다.
+  let line = previous
+  const deadline = Date.now() + 4000
+  while (Date.now() < deadline) {
+    await sleep(120)
+    line = (await rawHead())[0] ?? ''
+    if (line !== previous) break
+  }
+  await sleep(300)
+  line = (await rawHead())[0] ?? ''
   literals.push({
     key: key.domKey,
     keyCode: key.keyCode,

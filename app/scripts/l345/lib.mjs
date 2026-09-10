@@ -7,7 +7,7 @@
 //   - 모든 수치는 `raw/claude/` 의 실물 파일을 가리킨다
 //   - T3·T7 은 **실제 렌더러**의 연속 스크린샷이 있어야 한다. 헤드리스 셀 카운트는 보조다
 
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -253,21 +253,86 @@ export async function panes() {
   return result.panes
 }
 
-/** 격리 세션을 pane 1개짜리 기준 상태로 되돌린다. */
+/**
+ * 격리 세션을 pane 1개짜리 기준 상태로 되돌린다.
+ *
+ * **살아남은 픽스처 프로세스를 먼저 죽인다.** 티커 픽스처는 `&` 로 띄우므로 C-c 가 닿지 않고,
+ * 알트스크린을 계속 다시 칠한다 — R1 다음에 온 R2 가 셸이 아니라 티커 화면을 재고 있었다
+ * (표본 6개 중 1개가 수렴 실패로 잡혔다). 패턴은 이 일감의 픽스처 경로로 좁힌다.
+ */
 export async function tidySession() {
+  await killFixtures()
   const list = await panes()
   for (const pane of list.slice(1)) {
     await request('pane.close', { pane_id: pane.pane_id }).catch(() => {})
   }
   await sleep(400)
   const survivor = (await panes())[0]
-  if (survivor) {
-    // 알트스크린에 들어간 채로 남으면 다음 측정이 내내 틀린 것을 잰다 (LIFE-342 B7 의 실패).
-    await request('pane.send_keys', { pane_id: survivor.pane_id, keys: ['C-c'] }).catch(() => {})
-    await sleep(200)
-    await run(survivor.pane_id, "printf '\\033[?1049l'; clear", { settleMs: 500 })
-  }
+  if (survivor) await reclaimShell(survivor.pane_id)
   return survivor?.pane_id ?? null
+}
+
+const SHELLS = ['zsh', 'bash', 'sh']
+
+/**
+ * 살아남은 픽스처 프로세스를 죽인다.
+ *
+ * 티커 픽스처는 `&` 로 띄우므로 C-c 가 닿지 않고, 알트스크린을 계속 다시 칠한다 —
+ * R1 다음에 온 R2 가 셸이 아니라 티커 화면을 재고 있었고(표본 6개 중 1개 수렴 실패),
+ * P1 의 두 팔이 서로 다른 부하를 쟀다(프레임 43 대 101). 패턴은 이 일감의 픽스처 경로로 좁힌다.
+ */
+export async function killFixtures() {
+  await new Promise((resolve) => {
+    execFile('pkill', ['-f', 'scripts/l345/fixtures/'], () => resolve())
+  })
+  await sleep(300)
+}
+
+/**
+ * pane 을 **셸 프롬프트**로 되돌린다.
+ *
+ * C-c 로 안 나가는 것이 있다 — T4 가 띄운 `codex`·`claude` 는 전체화면 TUI 라 다음 측정이
+ * 통째로 그 화면을 잰다 (실제로 `stty size` 대신 codex 업데이트 배너를 읽고 터졌다).
+ * 그래서 **부드럽게 → 세게** 순서로 올라간다: C-c · q · C-d, 그래도 안 되면 foreground
+ * 프로세스를 pid 로 죽인다. 죽이는 대상은 이 격리 pane 의 foreground 뿐이다.
+ */
+export async function reclaimShell(paneId) {
+  const foreground = async () => {
+    const info = await request('pane.process_info', { pane_id: paneId }).catch(() => null)
+    return info?.process_info?.foreground_processes ?? []
+  }
+  const isShell = (list) => list.length === 1 && SHELLS.includes(list[0]?.name)
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const current = await foreground()
+    if (isShell(current)) {
+      // **`stty sane` 이 없으면 다음 측정이 통째로 어긋난다.** 위에서 raw 모드로 들어간
+      // TUI(vim·codex)를 SIGKILL 로 죽이면 termios 를 되돌릴 기회가 없어 tty 가 raw 로 남는다.
+      // ONLCR 이 꺼진 채라 LF 가 CR 을 안 끌고 와서 화면이 계단처럼 밀린다 — T1 이 그 상태로
+      // 재서 로그형 일치율이 100% → 70% 로 떨어졌다.
+      await run(paneId, "stty sane; printf '\\033[?1049l'; clear", { settleMs: 500 })
+      return { ok: true, attempts: attempt, names: current.map((process) => process.name) }
+    }
+    if (attempt < 2) {
+      await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
+      await sleep(400)
+      await request('pane.send_text', { pane_id: paneId, text: 'q' }).catch(() => {})
+      await sleep(300)
+      await request('pane.send_keys', { pane_id: paneId, keys: ['C-d'] }).catch(() => {})
+      await sleep(600)
+      continue
+    }
+    for (const process of current) {
+      if (SHELLS.includes(process.name)) continue
+      await new Promise((resolve) => {
+        execFile('kill', [attempt >= 4 ? '-KILL' : '-TERM', String(process.pid)], () => resolve())
+      })
+    }
+    await sleep(900)
+  }
+  const names = (await foreground()).map((process) => process.name)
+  console.error('[reclaimShell] 셸로 못 돌렸다', names)
+  return { ok: false, attempts: 5, names }
 }
 
 /** pane 의 진짜 PTY 격자. API 에는 cols 가 없어서 셸에게 묻는 것이 유일한 진실이다. */

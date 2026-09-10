@@ -16,6 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import headless from '@xterm/headless'
 import unicode11 from '@xterm/addon-unicode11'
+import unicodeGraphemes from '@xterm/addon-unicode-graphemes'
 import {
   FIXTURE_DIR,
   RAW_DIR,
@@ -33,6 +34,7 @@ import {
 
 const { Terminal } = headless
 const { Unicode11Addon } = unicode11
+const { UnicodeGraphemesAddon } = unicodeGraphemes
 
 const FIXTURES = [
   { key: 'log', file: '01-log.sh', label: '① 로그형', alt: false, holdMs: 500 },
@@ -59,11 +61,24 @@ function fixtureBytes(file, holdMs) {
   })
 }
 
+/**
+ * 기준선 터미널.
+ *
+ * **폭 모델은 기준선의 자유 변수가 아니다.** 같은 바이트라도 폭 표가 다르면 글자가 놓이는 열이
+ * 달라진다 — `👨‍👩‍👧` 를 3칸으로 세는 표와 2칸으로 세는 표는 뒤따르는 글자를 4열 어긋나게 놓는다.
+ * 그래서 판정 수치는 **출고 설정과 같은 모델**(`15-graphemes`)로 잰다. 그 모델이 옳다는 근거는
+ * T7 이 따로 낸다 — herdr 스냅샷에서 역산한 폭과 7종 전부 0열 차이였다 (`11-t7-width.json`).
+ * 대조로 `11` 기준선도 같이 재서 둘의 차이를 원자료에 남긴다.
+ */
 function makeBaseline(cols, rows, mode) {
   const term = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 5000 })
   if (mode === '11') {
     term.loadAddon(new Unicode11Addon())
     term.unicode.activeVersion = '11'
+  }
+  if (mode === 'graphemes') {
+    term.loadAddon(new UnicodeGraphemesAddon())
+    term.unicode.activeVersion = '15-graphemes'
   }
   return term
 }
@@ -141,18 +156,27 @@ for (const fixture of FIXTURES) {
   )
 
   // 기준선 — 픽스처 원본 바이트를 pane 의 **진짜 격자**에 먹인다.
-  const baseline = makeBaseline(pty.cols, pty.rows, '11')
-  await write(baseline, '\x1b[2J\x1b[H')
-  await write(baseline, bytes)
-  const base = baselineGrid(baseline)
+  const gridFor = async (mode) => {
+    const term = makeBaseline(pty.cols, pty.rows, mode)
+    await write(term, '\x1b[2J\x1b[H')
+    await write(term, bytes)
+    return baselineGrid(term)
+  }
+  const base = await gridFor('graphemes')
+  const base11 = await gridFor('11')
   fs.writeFileSync(
     path.join(RAW_DIR, 'fixtures', `${fixture.key}-baseline.txt`),
     base.map((row) => rowText(row, pty.cols)).join('\n'),
+  )
+  fs.writeFileSync(
+    path.join(RAW_DIR, 'fixtures', `${fixture.key}-baseline-unicode11.txt`),
+    base11.map((row) => rowText(row, pty.cols)).join('\n'),
   )
 
   // 비교 행 범위 = 기준선에 내용이 있는 마지막 행까지. 그 아래는 pane 프롬프트라 잡음이다.
   const rows = lastInkedRow(base, pty.cols) + 1
   const compared = compareGrids(base, dump.grid, { rows, cols: pty.cols })
+  const compared11 = compareGrids(base11, dump.grid, { rows, cols: pty.cols })
 
   // corral 격자가 PTY 보다 넓을 때, 남는 열이 정말 비어 있나 (좁혀서 통과시키지 않았다는 증거)
   let surplusInked = 0
@@ -187,7 +211,16 @@ for (const fixture of FIXTURES) {
     wideMismatchRows: wideRows.length,
     wideMismatch: wideRows.slice(0, 6),
     shot: shot.file,
+    baselineMode: '15-graphemes (출고 설정과 같은 폭 모델)',
+    contrastUnicode11: {
+      note: '대조 — 기준선만 unicode 11 로 바꿔 잰 값. 차이는 전부 ZWJ·RI 군집의 칸 나눔에서 온다',
+      textMatch: compared11.textMatch,
+      textMatchInked: compared11.textMatchInked,
+      styleMatch: compared11.styleMatch,
+      styleMatchInked: compared11.styleMatchInked,
+    },
     baselineText: base.slice(0, rows).map((row) => rowText(row, pty.cols)),
+    baselineTextUnicode11: base11.slice(0, rows).map((row) => rowText(row, pty.cols)),
     rendererText: dump.grid.slice(0, rows).map((row) => rowText(row, pty.cols)),
   }
   console.log(

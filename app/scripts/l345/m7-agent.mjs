@@ -18,7 +18,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { pct, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { killFixtures, pct, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const exec = promisify(execFile)
 const out = {}
@@ -167,8 +167,29 @@ const snapshotRows = (text) => {
     }
   }
 
-  const arms = {}
-  for (const webgl of [false, true]) {
+  const arms = { dom: { idle: [], busy: [], rounds: [], webglEvents: [], frames: [], shot: null }, webgl: { idle: [], busy: [], rounds: [], webglEvents: [], frames: [], shot: null } }
+  // **한 번씩 재고 끝내면 안 된다.** 표본 10개로 쟀을 때 두 팔의 CPU 차이가 실행마다 방향이
+  // 뒤집혔다 — 그건 렌더러 차이가 아니라 잡음이다. 그래서 팔을 번갈아 여러 라운드 돌리고
+  // 라운드별 값을 전부 남긴다. 판단은 **반복해서 같은 방향으로 나오는 것**만 근거로 한다.
+  const SAMPLES = Number(process.env.L345_COST_SAMPLES ?? 15)
+  const ROUNDS = Number(process.env.L345_COST_ROUNDS ?? 3)
+  const summarize = (list) => ({
+    samples: list.length,
+    cpuP50: pct(list.map((item) => item.cpuPercent), 50),
+    cpuP95: pct(list.map((item) => item.cpuPercent), 95),
+    cpuMax: Math.max(...list.map((item) => item.cpuPercent)),
+    rssMBP50: pct(list.map((item) => item.rssMB), 50),
+    rssMBMax: Math.max(...list.map((item) => item.rssMB)),
+    processes: list[0]?.processes ?? null,
+  })
+  const plan = []
+  for (let round = 0; round < ROUNDS; round++) for (const webgl of [false, true]) plan.push({ round, webgl })
+  for (const { round, webgl } of plan) {
+    // **앞 팔의 티커를 확실히 죽이고 시작한다.** `&` 로 띄운 픽스처는 C-c 가 닿지 않아
+    // 다음 팔의 "유휴" 구간까지 화면을 계속 바꿨다 — 1차 측정에서 webgl 팔의 프레임이
+    // 101장(dom 팔은 43장)이라 두 팔이 아예 다른 부하를 잰 값이었다.
+    await killFixtures()
+    await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 600 })
     const app = await startApp({ name: `cost-${webgl ? 'webgl' : 'dom'}` })
     await sleep(1500)
     await app.webgl(webgl)
@@ -176,14 +197,14 @@ const snapshotRows = (text) => {
     await sleep(4000)
 
     const idle = []
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < SAMPLES; i++) {
       idle.push(await sample(app.child.pid))
       await sleep(1000)
     }
 
     await run(paneId, `sh ${process.cwd()}/scripts/l345/fixtures/04-ticker.sh &`, { settleMs: 2000 })
     const busy = []
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < SAMPLES; i++) {
       busy.push(await sample(app.child.pid))
       await sleep(1000)
     }
@@ -193,31 +214,36 @@ const snapshotRows = (text) => {
       .filter((entry) => entry.tag === 'renderer.probe' && entry.name === 'term.webgl')
       .map((entry) => entry.event)
 
+    await killFixtures()
     await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] })
     await sleep(600)
     await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 800 })
 
-    const summarize = (list) => ({
-      samples: list.length,
-      cpuP50: pct(list.map((item) => item.cpuPercent), 50),
-      cpuP95: pct(list.map((item) => item.cpuPercent), 95),
-      cpuMax: Math.max(...list.map((item) => item.cpuPercent)),
-      rssMBP50: pct(list.map((item) => item.rssMB), 50),
-      rssMBMax: Math.max(...list.map((item) => item.rssMB)),
-      processes: list[0]?.processes ?? null,
-    })
-    arms[webgl ? 'webgl' : 'dom'] = {
-      webglEvents,
-      idle: summarize(idle),
-      busy: summarize(busy),
-      framesAtEnd: state.frames,
-      readsAtEnd: state.reads,
-      shot: (await app.termShot(`p1-${webgl ? 'webgl' : 'dom'}`)).file,
-    }
-    console.log('P1', webgl ? 'webgl' : 'dom', JSON.stringify(arms[webgl ? 'webgl' : 'dom']))
+    const key = webgl ? 'webgl' : 'dom'
+    const arm = arms[key]
+    arm.idle.push(...idle)
+    arm.busy.push(...busy)
+    arm.webglEvents.push(...webglEvents)
+    arm.frames.push({ round, frames: state.frames, reads: state.reads })
+    arm.rounds.push({ round, idle: summarize(idle), busy: summarize(busy), frames: state.frames })
+    // startApp 이 라운드마다 이 팔의 shots 폴더를 비우므로 **마지막 라운드 것만 남는다.**
+    // 관문 ④ 증거로는 팔당 한 장이면 된다.
+    arm.shot = (await app.termShot(`p1-${key}`)).file
+    console.log('P1', key, 'round', round, JSON.stringify(arm.rounds[arm.rounds.length - 1]))
     await app.stop()
   }
-  out.p1 = { note: 'main + 렌더러/GPU 헬퍼 프로세스의 %CPU·RSS 합, 1초 간격 10표본', arms }
+  for (const key of ['dom', 'webgl']) {
+    const arm = arms[key]
+    arm.idleAll = summarize(arm.idle)
+    arm.busyAll = summarize(arm.busy)
+    delete arm.idle
+    delete arm.busy
+    console.log('P1', key, '합계', JSON.stringify({ idle: arm.idleAll, busy: arm.busyAll, frames: arm.frames }))
+  }
+  out.p1 = {
+    note: `main + 렌더러/GPU 헬퍼 프로세스의 %CPU·RSS 합, 1초 간격. 팔을 번갈아 ${ROUNDS}라운드 × 팔당 유휴/부하 각 ${SAMPLES}표본`,
+    arms,
+  }
 }
 
 writeRaw('50-agent-cost.json', { measuredAt: new Date().toISOString(), ...out })

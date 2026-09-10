@@ -76,8 +76,10 @@ function currentState(): AppState {
   // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
   if (selectedPaneId !== null && !rows.some((row) => row.panes.some((pane) => pane.paneId === selectedPaneId))) {
     log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
+    // 목록에서는 선택을 비우되(그 줄이 이미 없다) **터미널은 마지막 화면을 들고 죽는다** —
+    // 지워 버리면 무엇이 죽었는지 화면에 남지 않는다 (R5).
+    terminal.markGone('pane_closed — pane 이 목록에서 사라졌다')
     selectedPaneId = null
-    terminal.attach(null)
   }
   return {
     revision,

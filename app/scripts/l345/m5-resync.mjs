@@ -78,34 +78,48 @@ const out = {}
   await sleep(3000)
 
   const policy = (await app.policy()).policy
-  const before = await screenOf(app)
-  const marker = 'R2RECOVERED'
-  const at = Date.now()
-  await request('pane.send_text', { pane_id: paneId, text: `printf '${marker}\\n'\n` })
-
-  let convergedMs = null
-  const deadline = Date.now() + 15_000
-  while (Date.now() < deadline) {
-    const screen = await screenOf(app)
-    if (screen.includes(marker)) {
-      convergedMs = Date.now() - at
-      break
+  // **표본 하나로는 부족하다** — 심장박동 위상에 따라 0ms 에 가깝게도, 주기 전체만큼도 걸린다.
+  // 여러 번 재서 **최악값**을 약속과 견준다.
+  const rounds = []
+  for (let i = 0; i < 6; i++) {
+    const marker = `R2RECOVERED${i}`
+    const at = Date.now()
+    await request('pane.send_text', { pane_id: paneId, text: `printf '${marker}\\n'\n` })
+    let convergedMs = null
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+      const screen = await screenOf(app)
+      if (screen.includes(marker)) {
+        convergedMs = Date.now() - at
+        break
+      }
+      await sleep(40)
     }
-    await sleep(80)
+    rounds.push({ i, marker, convergedMs })
+    console.log('R2 round', i, convergedMs, 'ms')
+    // 다음 표본이 앞 표본의 심장박동 위상을 물려받지 않게 흩는다.
+    await sleep(300 + i * 170)
   }
+  const converged = rounds.map((round) => round.convergedMs).filter((value) => value !== null)
+  const before = ''
   const after = await screenOf(app)
   const dropped = app.entries().filter((entry) => entry.tag === 'term.event.dropped_by_injection').length
   out.r2 = {
     injection: 'CORRAL_INJECT_DROP_PANE_UPDATED=1 — pane.updated 를 터미널 층이 못 보게 막는다',
     droppedEvents: dropped,
     promisedWindowMs: policy.recoveryWindowMs,
-    convergedMs,
-    withinPromise: convergedMs !== null && convergedMs <= policy.recoveryWindowMs,
-    before: before.split('\n').slice(0, 4),
+    rounds,
+    convergedAll: converged,
+    worstMs: converged.length ? Math.max(...converged) : null,
+    medianMs: converged.length ? converged.slice().sort((a, b) => a - b)[Math.floor(converged.length / 2)] : null,
+    missed: rounds.length - converged.length,
+    withinPromise: converged.length === rounds.length && Math.max(...converged) <= policy.recoveryWindowMs,
+    pollMs: 40,
+    before,
     after: after.split('\n').slice(0, 4),
     shot: (await app.termShot('r2-after')).file,
   }
-  console.log('R2 converged', convergedMs, 'ms / 약속', policy.recoveryWindowMs, 'dropped', dropped)
+  console.log('R2 worst', out.r2.worstMs, 'ms / 약속', policy.recoveryWindowMs, 'dropped', dropped)
   await app.stop()
 }
 
@@ -125,9 +139,14 @@ const out = {}
   for (let i = 0; i < 60 && fs.existsSync(SOCK); i++) await sleep(100)
   const downAt = Date.now()
   await sleep(1500)
-  // PTY 래퍼로 되살린다 (LIFE-344 실측 경로 — Orca 탭 없이 헤드리스로 뜬다).
+  // **크기를 정한 PTY** 로 되살린다. `script -q /dev/null` 로 띄우면 제어 터미널이 없어
+  // PTY 가 80x24 로 잡히고, 그 뒤 측정이 전부 그 세계에서 돌아간다 (T2 가 pane 80칸인데
+  // corral 120칸을 그리는 것으로 잡았다). 측정 세계를 결정적으로 두려고 크기를 박는다.
   const { spawn } = await import('node:child_process')
-  spawn('script', ['-q', '/dev/null', 'herdr', 'session', 'attach', SESSION], { detached: true, stdio: 'ignore' }).unref()
+  spawn('python3', [`${process.cwd()}/scripts/l345/attach.py`, SESSION, '40', '120'], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref()
   for (let i = 0; i < 150 && !fs.existsSync(SOCK); i++) await sleep(100)
   const upMs = Date.now() - downAt
 
@@ -224,12 +243,14 @@ const out = {}
   await sleep(2500)
   const alive = (await app.state()).state.terminal
   const shotAlive = (await app.termShot('r5-alive')).file
+  const screenAlive = await screenOf(app)
 
   await request('pane.close', { pane_id: victim })
-  await sleep(2500)
+  await sleep(3000)
   const dead = (await app.state()).state.terminal
   const framesAfterDeath = dead.frames
-  await sleep(6000)
+  const screenDead = await screenOf(app)
+  await sleep(7000)
   const later = (await app.state()).state.terminal
 
   out.r5 = {
@@ -239,11 +260,16 @@ const out = {}
     deadReason: dead.deadReason,
     inputBlockedAfter: dead.inputBlocked,
     framesAtDeath: framesAfterDeath,
-    framesSixSecondsLater: later.frames,
+    framesSevenSecondsLater: later.frames,
     // 죽은 뒤에도 프레임이 늘면 죽은 pane 을 계속 그리고 있는 것이다.
     keptDrawing: later.frames > framesAfterDeath,
+    // 마지막 화면을 그대로 들고 있나 (지워 버리면 무엇이 죽었는지 안 남는다).
+    keptLastScreen: screenDead.includes('VICTIM PANE'),
+    screenAliveHead: screenAlive.split('\n').filter((line) => line.trim()).slice(0, 2),
+    screenDeadHead: screenDead.split('\n').filter((line) => line.trim()).slice(0, 2),
     shotAlive,
     shotDead: (await app.termShot('r5-dead')).file,
+    fullShotDead: (await app.shot('r5-dead-full')).file,
   }
   console.log('R5', JSON.stringify({ ...out.r5, shotAlive: undefined, shotDead: undefined }))
   await app.stop()

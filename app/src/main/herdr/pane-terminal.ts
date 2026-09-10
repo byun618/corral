@@ -44,19 +44,28 @@ import { isRecord, readNumber, readRecord, readString, type PushFrame } from './
 /**
  * 심장박동 — 아무 신호가 없어도 이 주기로 전체를 다시 읽는다.
  *
- * 두 값을 두는 이유: 사람이 보고 있는 판(방금 뭔가 움직인 판)과 띄워만 둔 판의 비용이 다르다.
- * `HOT` 은 최근 `HOT_WINDOW_MS` 안에 변화가 있었을 때, `IDLE` 은 그 밖이다.
+ * **이 값이 사실상 터미널의 갱신 주기다.** 처음엔 이벤트가 주 경로이고 심장박동은 유실 대비
+ * 안전망이라고 잡았는데, 실측이 그 전제를 뒤집었다:
  *
- * 값의 근거:
- *   - 하한은 왕복이 정한다. p50 109ms 인 요청을 1000ms 마다 부르면 듀티가 ~11% 다. 그보다 촘촘히
- *     하면 이벤트 경로가 이미 하고 있는 일을 중복으로 하는 것이라 비용만 는다
- *   - 상한은 "이벤트를 통째로 잃었을 때 사람이 참는 시간" 이다. 선행 사례의 하트비트는
- *     3~30초인데(분석 ⓖ10) 그건 **델타 스트림이 살아 있는 전제**의 값이다. corral 은 델타가
- *     없고 유실을 알 방법도 없으므로 그 범위보다 촘촘해야 한다
- *   - 그래서 hot 1000ms / idle 3000ms. idle 3초는 선행 하트비트 범위의 바닥과 만난다
+ *   `raw/claude/_runs/r1/app.ndjson` — 47초 동안(그중 20초는 50ms 마다 화면을 다시 그리는
+ *   티커) 도착한 `pane_updated` 는 **0건**이다(구독은 `subscription_started` 로 정상).
+ *   프레임 86장은 붙을 때 1장 + **심장박동 85장**이다. `pane.updated` 는 출력을 따라오지 않는다
+ *   (LIFE-344 R2-3 의 "출력마다 오지는 않는다" 가 실제로는 "거의 안 온다" 였다).
+ *
+ * 그래서 값을 다시 잡았다. 근거:
+ *   - **hot 250ms** — 출력이 흐르는 동안 사람이 보는 갱신률이 이 값이다. 초기값 1000ms 는
+ *     1Hz 라 눈에 띄게 굼떴다. 왕복 p50 이 109ms 라 250ms 주기는 커넥션 하나의 듀티 ~44% 이고,
+ *     요청 1건의 서버 비용은 0.3ms 다 (LIFE-342). 4Hz 를 그 값으로 산다
+ *   - **idle 2000ms** — 아무 변화가 없는 판. 여기서는 "이벤트를 통째로 잃었을 때 얼마 만에
+ *     회복하나"만 걸린다. 선행 사례의 하트비트는 3~30초인데(분석 ⓖ10) 그건 델타 스트림이
+ *     살아 있는 전제의 값이다. corral 은 델타도 유실 카운터도 없어 그 범위보다 촘촘해야 한다
+ *   - hot/idle 을 가르는 것은 최근 `HOT_WINDOW_MS` 안에 화면이 바뀐 적이 있는가다
+ *
+ * 요청은 한 번에 하나만 나가므로(in-flight 가드) 이 주기가 짧아도 초당 요청 수는
+ * `1 / 왕복시간` 을 넘지 못한다.
  */
-const HEARTBEAT_HOT_MS = 1000
-const HEARTBEAT_IDLE_MS = 3000
+const HEARTBEAT_HOT_MS = 250
+const HEARTBEAT_IDLE_MS = 2000
 const HOT_WINDOW_MS = 10_000
 
 /**
@@ -268,6 +277,17 @@ export class PaneTerminal {
     this.markDirty('event')
   }
 
+  /**
+   * 목록 층이 "이 pane 은 이제 없다"고 판단했을 때 (LIFE-344 L4 의 선택 비우기 경로).
+   *
+   * 여기서 `attach(null)` 을 하면 화면이 통째로 사라져 **무엇이 죽었는지 사용자가 못 본다.**
+   * 마지막 화면을 그대로 두고 죽었다는 표시만 얹는다 — 그리기는 멈추고 입력도 막힌다.
+   */
+  markGone(reason: string): void {
+    if (this.target === null) return
+    this.die(reason)
+  }
+
   private die(reason: string): void {
     if (!this.alive) return
     this.alive = false
@@ -361,14 +381,18 @@ export class PaneTerminal {
   /**
    * 격자를 정한다. **rows 는 API 가 주고, cols 는 관측으로 자란다** (분석 §4-ⓐ·ⓓ).
    *
-   * 열 수는 API 어디에도 없다 — 스키마 전문에 `grid_cols` 는 그래픽 배치용뿐이고,
-   * `pane.layout` 의 rect 는 herdr 창의 배치 기하라 PTY 폭과 어긋난다 (실측: 스플릿 뒤
-   * rect 60/60 인데 PTY 는 119/120). 그래서 셋 중 **가장 큰 값**을 쓴다:
-   * 관측 폭 · layout 힌트 · 하한 80.
+   * 열 수는 API 어디에도 없다 — 스키마 전문에 `grid_cols` 는 그래픽 배치용뿐이고
+   * (`pane.graphics.info` 는 셀의 픽셀 크기만 준다), `pane.layout` 의 rect 는 herdr **창**의
+   * 배치 기하라 pane 의 PTY 폭과 어긋난다. 실측 두 건:
+   *   - 스플릿 뒤 rect 60/60 인데 PTY 는 119/120
+   *   - 40x120 PTY 로 세션을 붙였더니 rect 120 · pane 의 PTY 93 (크롬이 27칸)
    *
-   * 왜 최댓값인가. 좁게 잡으면 긴 행이 잘린다(칠하는 동안 autowrap 을 꺼 두므로 접히지 않고
-   * 잘린다) — 내용이 사라지는 실패다. 넓게 잡으면 오른쪽에 빈 열이 남을 뿐이다.
-   * 두 실패의 무게가 다르므로 넓은 쪽으로 기운다.
+   * 그래서 **스냅샷에서 관측한 폭**만 쓰고 하한 80 을 둔다. layout 힌트는 상태에 남겨 두되
+   * 격자 계산에는 넣지 않는다 — 넣으면 크롬 폭만큼 빈 열을 그린다.
+   *
+   * 좁게 잡아 잘릴 걱정은 없다. 프레임은 전부 스냅샷 하나에서 나오고, 관측 폭은 **그 스냅샷을
+   * 읽는 그 자리에서** 자란다. 지금 격자보다 넓은 줄이 있으면 그 줄을 그리기 **전에** 격자가
+   * 먼저 넓어진다. 관측 폭은 줄지 않으므로 짧은 화면이 왔다고 다시 좁아지지도 않는다.
    */
   private async resolveGrid(snapshot: string, force = false): Promise<PaneGrid> {
     // 관측 폭은 **줄지 않는다.** 한 프레임에 짧은 줄만 있었다고 격자를 줄이면 다음 프레임의
@@ -382,14 +406,17 @@ export class PaneTerminal {
       await this.refreshGridFromApi()
     }
 
+    // **layout 힌트는 열 수의 오라클이 아니다.** rect 는 herdr 창의 배치 기하라 herdr 자신의
+    // 크롬(사이드바·거터)을 포함한다 — 실측에서 rect 120 인데 pane 의 PTY 는 93칸이었다
+    // (`40-grid-scrollback.json` → `t2`). 그걸 그대로 쓰면 오른쪽에 빈 열 27개를 그린다.
+    //
+    // 그래서 **관측 폭만 쓴다.** 잘릴 걱정은 없다: 모든 프레임은 스냅샷 하나에서 나오고,
+    // 폭은 그 스냅샷을 보고 **같은 프레임 안에서** 자란다. 어떤 줄이 지금 격자보다 넓으면
+    // 그 줄을 담은 스냅샷이 도착한 그 순간 격자가 먼저 넓어진다. 힌트는 첫 화면이 비어 있을 때
+    // 쓰던 것인데, 그 자리는 하한 80 이 맡는다.
     const layoutCols = this.apiLayoutCols
-    const cols = Math.max(this.observedCols, layoutCols ?? 0, 80)
-    const source: PaneGrid['source'] =
-      this.observedCols > 0 && this.observedCols >= (layoutCols ?? 0)
-        ? 'observed'
-        : layoutCols !== null
-          ? 'layout'
-          : 'default'
+    const cols = Math.max(this.observedCols, 80)
+    const source: PaneGrid['source'] = this.observedCols >= 80 ? 'observed' : 'default'
     return { cols, rows: this.apiRows ?? 24, source, layoutCols, observedCols: this.observedCols }
   }
 
@@ -429,11 +456,19 @@ export class PaneTerminal {
     if (target === null) return
     this.reading = true
     const startedAt = Date.now()
+    // 세대가 바뀌었으면 여기서 버린다. **버렸다는 사실을 로그에 남긴다** — R4 는
+    // "A 의 늦은 응답이 B 화면에 안 부어졌다"를 증명해야 하는데, 조용히 return 하면
+    // 화면이 멀쩡한 것이 세대 가드 덕인지 애초에 경합이 없었던 것인지 구분이 안 된다.
+    const stale = (at: string): boolean => {
+      if (generation === this.generation) return false
+      log('term.read.stale', { at, reason: 'attach', generation, current: this.generation })
+      return true
+    }
     try {
       const visible = await this.readSnapshot('visible', 'attach')
-      if (generation !== this.generation) return
+      if (stale('attach.visible')) return
       const grid = await this.resolveGrid(visible.text, true)
-      if (generation !== this.generation) return
+      if (stale('attach.grid')) return
       this.grid = grid
 
       // 스크롤백은 **일반 판에만** 있다. 알트스크린 판은 host 히스토리가 0줄이라
@@ -442,7 +477,7 @@ export class PaneTerminal {
       let seededLines = 0
       try {
         const recent = await this.readSnapshot('recent_unwrapped', 'attach-scrollback')
-        if (generation !== this.generation) return
+        if (stale('attach.scrollback')) return
         const history = historyAbove(splitRows(recent.text), splitRows(visible.text), grid.rows)
         seededLines = history.length
         seed = buildScrollbackSeed(history, grid.rows)

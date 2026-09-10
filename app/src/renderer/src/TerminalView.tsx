@@ -197,6 +197,12 @@ export function TerminalView({ state, title, subtitle }: Props): React.JSX.Eleme
     const term = termRef.current
     if (term === null) return
     const want = state.paneId !== null && shouldUseWebgl()
+    if (!want && webglRef.current !== null) {
+      webglRef.current.dispose()
+      webglRef.current = null
+      window.corral.reportProbe('term.webgl', { event: 'disposed' })
+      return
+    }
     if (want && webglRef.current === null) {
       try {
         const addon = new WebglAddon()
@@ -241,7 +247,30 @@ export function TerminalView({ state, title, subtitle }: Props): React.JSX.Eleme
   )
 }
 
-/** P1 실측 전에는 켜지 않는다. 켤지 말지는 수치로 정하고 사유를 결과 문서에 적는다. */
+/**
+ * **안 켠다.** P1 실측이 켤 이유를 못 준다 (`raw/claude/50-agent-cost.json` → `p1`).
+ *
+ * 두 팔을 **번갈아 3라운드** 돌리고 팔당 45표본을 모았다. 라운드마다 두 팔의 프레임 수가
+ * 60장·읽기 99회로 똑같아, 같은 부하를 잰 값이다.
+ *
+ *   |        | 유휴 CPU p50/p95 | 부하 CPU p50/p95 | RSS p50 (유휴/부하) |
+ *   | DOM    | 1.7% / 4.4%      | 2.5% / 4.7%      | **480 / 483 MB**    |
+ *   | WebGL  | 1.5% / 3.5%      | 2.7% / 4.4%      | 510 / 511 MB        |
+ *
+ * CPU 는 **두 렌더러를 가르지 못한다.** 합계 p50 차이가 0.2%p 안이고, 라운드별로 방향이
+ * 뒤집힌다 (부하 p50: DOM 2.9·2.7·1.1 대 WebGL 2.7·2.5·3.0). 일관되게 나오는 차이는
+ * **RSS 30MB** 하나뿐이고 그건 DOM 이 유리하다.
+ *
+ * 왜 이렇게 나오나 — GPU 경로의 이점은 초당 수십 프레임을 그릴 때 나온다. 이 설계의 프레임
+ * 상한은 심장박동이 정하는 **4Hz** 다 (§2.5). 그 영역에서는 캔버스 유지 비용이 이득보다 크다.
+ * 게다가 WebGL 은 컨텍스트 손실이라는 실패 모드를 하나 더 들여온다 (분석 ⓖ8).
+ *
+ * (1차 측정은 WebGL 이 크게 유리하다고 나왔었는데 — 유휴 0.2% 대 1.3% — 앞 팔의 티커가
+ * 살아남아 두 팔이 다른 부하를 잰 결과였다. 하네스를 고치니 그 차이가 사라졌다.)
+ *
+ * `data-corral-webgl="1"` 로 켤 수 있고 그 경로는 살려 둔다 (컨텍스트 손실 시 즉시 dispose).
+ * 프레임률을 올리는 변경이 오면 이 표를 다시 재는 자리다.
+ */
 function shouldUseWebgl(): boolean {
   return document.documentElement.dataset['corralWebgl'] === '1'
 }

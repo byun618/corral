@@ -51,16 +51,29 @@ export class Conn {
 
   connect() {
     return new Promise((resolve, reject) => {
+      // 서버가 죽어 있으면 소켓 파일 자체가 없다(ENOENT) — connect 단계 실패와
+      // 연결 후 실패를 명시적 플래그로 가른다. readyState 로 가르면 ENOENT 가
+      // 이미 'closed' 로 보여 connect 프라미스가 영영 안 풀린다 (A5 에서 물림).
+      let settling = true
       this.sock = net.createConnection(this.path)
       this.sock.setEncoding('utf8')
-      this.sock.once('connect', resolve)
+      this.sock.once('connect', () => {
+        settling = false
+        resolve()
+      })
       this.sock.once('error', (err) => {
-        if (!this.sock.readyState || this.sock.readyState === 'opening') reject(err)
-        else this._fail(err)
+        if (settling) {
+          settling = false
+          reject(err)
+        } else this._fail(err)
       })
       this.sock.on('data', (chunk) => this._onData(chunk))
       this.sock.on('close', () => {
         this.closed = true
+        if (settling) {
+          settling = false
+          reject(new Error(`connect failed (closed): ${this.path}`))
+        }
         this._fail(new Error('socket closed'))
         this.onClose()
       })

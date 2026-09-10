@@ -95,6 +95,12 @@ const RUN_TOKEN = Array.from({ length: 8 }, () => ALPHABET[Math.floor(Math.rando
  */
 const POLL_MS = 15
 
+// **프롬프트를 짧게 고정한다.** 이 저장소의 zsh 프롬프트는 경로 + 브랜치 + 변경 개수라 90칸에
+// 육박한다 — 그러면 친 글자가 곧바로 줄바꿈을 타는데, `term-find` 는 화면 줄을 개행으로 이어
+// 붙이므로 누적 문자열이 감싼 자리에서 끊겨 **못 찾는다** (표본 60개 중 50개를 그렇게 놓쳤다).
+// 재는 것은 왕복 시간이지 프롬프트가 아니므로 이 블록에서만 짧게 바꾼다.
+await run(paneId, "PROMPT='i1> '", { settleMs: 700 })
+
 while (samples.length < SAMPLE_COUNT && index < 400) {
   const positionInGroup = index % GROUP
   const group = Math.floor(index / GROUP)

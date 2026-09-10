@@ -137,6 +137,7 @@ export async function startApp({ name, env = {}, waitFor = (entries) => entries.
     state: () => control(controlSocket, { cmd: 'state' }),
     verify: () => control(controlSocket, { cmd: 'verify' }),
     selectPane: (paneId) => control(controlSocket, { cmd: 'select-pane', paneId }),
+    toggleCollapse: (workspaceId) => control(controlSocket, { cmd: 'toggle-collapse', workspaceId }),
     selectSession: (sessionName) => control(controlSocket, { cmd: 'select-session', name: sessionName }),
     stop: async () => {
       child.kill('SIGTERM')

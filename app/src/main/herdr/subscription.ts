@@ -36,7 +36,15 @@ export class Subscription {
   }
 
   /** 연결 → subscribe 전송 → ack 수신까지. 거부되면 SubscriptionRejected 로 던진다. */
-  async connect(socketPath: string, types: readonly string[], timeoutMs = 5000): Promise<unknown> {
+  /**
+   * `types` 는 문자열이거나 파라미터를 담은 레코드다 — `pane.agent_status_changed` 처럼
+   * `pane_id` 를 요구하는 타입이 있다 (raw/claude/36-agent-status-and-revision.json).
+   */
+  async connect(
+    socketPath: string,
+    types: readonly (string | Record<string, string>)[],
+    timeoutMs = 5000,
+  ): Promise<unknown> {
     const socket = new LineSocket({
       onLine: (line, at) => this.handleLine(line, at),
       onClose: (reason) => this.drop(reason, 'socket closed'),
@@ -54,7 +62,7 @@ export class Subscription {
     const frame = JSON.stringify({
       id: 'sub',
       method: 'events.subscribe',
-      params: { subscriptions: types.map((type) => ({ type })) },
+      params: { subscriptions: types.map((type) => (typeof type === 'string' ? { type } : type)) },
     })
     log('sub.tx', { conn: socket.id, line: frame })
     // 이 커넥션에 쓰는 것은 이 한 줄뿐이다. 이후로는 오로지 push 를 받는다.

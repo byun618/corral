@@ -17,6 +17,7 @@ export type ControlHandlers = {
   capture: (name: string) => Promise<string>
   selectSession: (name: string) => void
   selectPane: (paneId: string | null) => void
+  toggleCollapse: (workspaceId: string) => void
   state: () => unknown
   verify: () => Promise<unknown>
 }
@@ -86,6 +87,13 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       }
       case 'select-pane': {
         handlers.selectPane(readString(parsed, 'paneId'))
+        socket.write(JSON.stringify({ ok: true }) + '\n')
+        return
+      }
+      case 'toggle-collapse': {
+        const workspaceId = readString(parsed, 'workspaceId')
+        if (workspaceId === null) throw new Error('workspaceId 필요')
+        handlers.toggleCollapse(workspaceId)
         socket.write(JSON.stringify({ ok: true }) + '\n')
         return
       }

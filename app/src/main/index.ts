@@ -22,6 +22,8 @@ let sessions: SessionInfo[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
 let selectedPaneId: string | null = null
+/** L8 — 접어 둔 workspace. 화면 취향이라 herdr 에 저장하지 않는다 (corral 로컬 상태). */
+const collapsedWorkspaceIds = new Set<string>()
 let emitScheduled = false
 
 const link = new SessionLink({ onChange: () => scheduleEmit() })
@@ -43,6 +45,7 @@ function currentState(): AppState {
     workspaces: rows,
     repos,
     selectedPaneId,
+    collapsedWorkspaceIds: [...collapsedWorkspaceIds],
     // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -64,6 +67,13 @@ function scheduleEmit(): void {
     })
     window?.webContents.send('corral:state', state)
   }, 0)
+}
+
+function toggleCollapse(workspaceId: string): void {
+  if (collapsedWorkspaceIds.has(workspaceId)) collapsedWorkspaceIds.delete(workspaceId)
+  else collapsedWorkspaceIds.add(workspaceId)
+  log('ui.collapse.toggled', { workspaceId, collapsed: collapsedWorkspaceIds.has(workspaceId) })
+  scheduleEmit()
 }
 
 function pickSession(name: string): void {
@@ -157,6 +167,7 @@ app.whenReady().then(() => {
     log('ui.selection.set', { paneId })
     scheduleEmit()
   })
+  ipcMain.handle('corral:toggleCollapse', (_event, workspaceId: string) => toggleCollapse(workspaceId))
   ipcMain.handle('corral:refreshSessions', () => pollSessions())
   ipcMain.on('corral:reportRendered', (_event, rendered: number) => {
     log('ui.rendered', { revision: rendered })
@@ -177,6 +188,7 @@ app.whenReady().then(() => {
       log('ui.selection.set', { paneId })
       scheduleEmit()
     },
+    toggleCollapse,
     state: () => currentState(),
     verify: () => link.verifyConvergence(),
   })

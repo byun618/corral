@@ -9,13 +9,23 @@
 
 import type { LinkPhase, LinkState, SessionInfo, WorktreeRow } from '../../shared/types.js'
 import { log } from '../log.js'
-import { SUBSCRIPTION_TYPES, isRecord, readRecord, readString, type PushFrame } from './protocol.js'
+import {
+  SUBSCRIPTION_TYPES,
+  agentStatusSubscriptions,
+  isRecord,
+  readRecord,
+  readString,
+  type PushFrame,
+} from './protocol.js'
 import { HerdrRequestError, request } from './request.js'
 import { Subscription } from './subscription.js'
 import { WorkspaceStore, type RepoInfo } from './store.js'
 import { checkUnixSocketPath } from '../unix-socket-path.js'
 
 /** 백오프: equal jitter. 간격이 실제로 벌어지면서 매번 값이 다르다. 상한은 K6 의 15초 예산에 맞춘다. */
+/** pane 이 우르르 생길 때 커넥션을 매번 새로 열지 않도록 뭉치는 시간. */
+const AGENT_SUBSCRIPTION_DEBOUNCE_MS = 400
+
 const BACKOFF_BASE_MS = 200
 const BACKOFF_CAP_MS = 2000
 
@@ -61,6 +71,17 @@ export class SessionLink {
    * 그래서 시도는 자기 세대를 들고 다니고, 세대가 바뀌었으면 아무것도 건드리지 않고 물러난다.
    */
   private generation = 0
+  /**
+   * L6 — 상태 전이 전용 구독. 본 구독과 **커넥션을 나눈다.**
+   *
+   * `pane.agent_status_changed` 는 `pane_id` 가 required 라 pane 마다 걸어야 하고
+   * (`36-agent-status-and-revision.json`: 파라미터 없는 구독에는 0건, pane_id 를 건 구독에 3건),
+   * 구독 커넥션에는 `events.subscribe` 를 한 줄만 쓴다는 것이 스파이크 제약이다. 그래서 pane 목록이
+   * 바뀌면 **이 커넥션만 새로 연다** — 본 구독은 흔들리지 않는다.
+   */
+  private agentSubscription: Subscription | null = null
+  private agentPaneKey = ''
+  private agentTimer: ReturnType<typeof setTimeout> | null = null
   private readonly hooks: SessionLinkHooks
   private session: SessionInfo | null = null
   private subscription: Subscription | null = null
@@ -113,6 +134,11 @@ export class SessionLink {
     this.timer = null
     this.subscription?.close()
     this.subscription = null
+    this.agentSubscription?.close()
+    this.agentSubscription = null
+    this.agentPaneKey = ''
+    if (this.agentTimer) clearTimeout(this.agentTimer)
+    this.agentTimer = null
     this.buffer = []
     if (this.state.phase !== 'idle') {
       log('link.close', { session: this.state.sessionName })
@@ -223,6 +249,7 @@ export class SessionLink {
       this.hooks.onChange()
 
       void this.resolveRepos()
+      this.scheduleAgentSubscription()
       if (process.env.CORRAL_VERIFY_CONVERGE === '1') await this.verifyConvergence()
       if (process.env.CORRAL_PROBE_REQUESTS) await this.probeRequests(session)
     } catch (error) {
@@ -329,6 +356,64 @@ export class SessionLink {
     }
   }
 
+  /**
+   * pane 목록이 바뀌었으면 상태 구독을 다시 연다. 흔들리는 동안 매번 열지 않도록 한 박자 뭉친다.
+   */
+  private scheduleAgentSubscription(): void {
+    if (this.stopped) return
+    if (this.agentTimer) return
+    this.agentTimer = setTimeout(() => {
+      this.agentTimer = null
+      void this.openAgentSubscription()
+    }, AGENT_SUBSCRIPTION_DEBOUNCE_MS)
+  }
+
+  private async openAgentSubscription(): Promise<void> {
+    const session = this.session
+    if (session === null || this.stopped) return
+    const generation = this.generation
+    const paneIds = this.store.paneIds()
+    const key = paneIds.join(',')
+    if (key === this.agentPaneKey) return
+    this.agentPaneKey = key
+    this.agentSubscription?.close()
+    this.agentSubscription = null
+    if (paneIds.length === 0) return
+
+    const subscription = new Subscription({
+      onPush: (frame, at) => {
+        if (generation !== this.generation) return
+        // 이 커넥션은 상태 전이만 나른다 — 본 구독의 부트스트랩 버퍼링과 섞지 않는다.
+        this.state = { ...this.state, lastPushAt: at }
+        const result = this.store.applyEvent(frame)
+        log('agent.push.applied', { event: frame.event, changed: result.changed, note: result.note })
+        if (result.changed) this.hooks.onChange()
+      },
+      onDrop: (reason, detail) => {
+        if (generation !== this.generation) return
+        log('agent.sub.dropped', { reason, detail })
+        this.agentSubscription = null
+        this.agentPaneKey = ''
+        // 본 구독이 살아 있으면 상태 구독만 다시 연다. 죽었으면 본 구독의 복구 루프가 처리한다.
+        if (reason !== 'local' && this.state.phase === 'live') this.scheduleAgentSubscription()
+      },
+    })
+    this.agentSubscription = subscription
+    try {
+      const ack = await subscription.connect(session.socketPath, agentStatusSubscriptions(paneIds))
+      if (generation !== this.generation) {
+        subscription.close()
+        return
+      }
+      log('agent.sub.open', { panes: paneIds.length, ack: JSON.stringify(ack) })
+    } catch (error) {
+      log('agent.sub.failed', { error: String(error), panes: paneIds.length })
+      subscription.close()
+      if (this.agentSubscription === subscription) this.agentSubscription = null
+      this.agentPaneKey = ''
+    }
+  }
+
   /** K2·K3 — 구독이 살아 있는 동안 요청을 여러 번 보내도 push 가 계속 오는지. */
   private async probeRequests(session: SessionInfo): Promise<void> {
     const count = Number(process.env.CORRAL_PROBE_REQUESTS)
@@ -361,7 +446,10 @@ export class SessionLink {
       subject: subjectOf(frame),
     })
     this.hooks.onChange()
-    if (result.changed) void this.resolveRepos()
+    if (result.changed) {
+      void this.resolveRepos()
+      this.scheduleAgentSubscription()
+    }
   }
 
   private onDrop(reason: string, detail: string): void {

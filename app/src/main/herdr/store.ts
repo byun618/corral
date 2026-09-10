@@ -30,6 +30,14 @@ type Pane = {
   title: string
   cwd: string | null
   focused: boolean
+  /**
+   * L7 — 이 pane 이 마지막으로 **바뀐** 시각. herdr 는 pane 에 타임스탬프를 주지 않으므로
+   * corral 이 직접 찍는다. 근거는 `pane.updated` 의 `revision` 이 이벤트 경로에서 실제로
+   * 움직인다는 실측이다 (`36-agent-status-and-revision.json` — LIFE-342 §2.2 의 미검증 공백).
+   * 스냅샷으로 처음 알게 된 pane 은 `null` 이다 — 언제 바뀌었는지 모르는 것을 0초로 적지 않는다.
+   */
+  lastRevision: number | null
+  changedAt: number | null
 }
 
 /** repo 층 — 스냅샷이 아니라 worktree.list 로 채운다 (link 가 넣어 준다). */
@@ -226,6 +234,23 @@ export class WorkspaceStore {
         return { changed: had, note: had ? frame.event : 'pane_closed: 이미 없음(멱등)' }
       }
 
+      case 'pane_agent_status_changed':
+        return this.applyAgentStatus(data)
+
+      case 'pane_agent_detected': {
+        const paneId = readString(data, 'pane_id')
+        if (paneId === null) return { changed: false, note: 'agent_detected 필드 부족' }
+        const pane = this.panes.get(paneId)
+        if (!pane) return { changed: false, note: `agent_detected: 모르는 pane (${paneId})` }
+        const agent = readString(data, 'display_agent') ?? readString(data, 'agent')
+        // released:true 는 에이전트가 떠난 것이다 — 정체를 지운다.
+        const released = data['released'] === true
+        const next = released ? null : (agent ?? pane.agent)
+        if (pane.agent === next) return { changed: false, note: 'agent_detected: 같은 값' }
+        this.panes.set(paneId, { ...pane, agent: next, changedAt: Date.now() })
+        return { changed: true, note: released ? `agent_detected: ${agent} 떠남` : `agent_detected: ${agent}` }
+      }
+
       case 'pane_exited': {
         // pane 은 남고 프로세스만 끝난 것이다 — 목록에서 지우지 않는다.
         return { changed: false, note: 'pane_exited: 카운트에 영향 없음' }
@@ -252,6 +277,7 @@ export class WorkspaceStore {
         agentStatus: pane.agentStatus,
         cwd: pane.cwd,
         focused: pane.focused,
+        changedAt: pane.changedAt,
       }
       const byTab = panesByTab.get(pane.tabId) ?? []
       byTab.push(row)
@@ -408,12 +434,17 @@ export class WorkspaceStore {
       this.hold({ at: Date.now(), workspaceId, kind: 'pane', value })
       return false
     }
+    const before = this.panes.get(id) ?? null
+    const revision = readNumber(value, 'revision')
+    // revision 이 움직였을 때만 "바뀐 시각"을 새로 찍는다. 같은 값으로 다시 오는 것은 변화가 아니다.
+    const moved = revision !== null && before !== null && before.lastRevision !== null && revision !== before.lastRevision
     this.panes.set(id, {
       paneId: id,
       workspaceId,
       tabId: readString(value, 'tab_id') ?? '',
+      // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다.
       agentStatus: readAgentStatus(value, 'agent_status'),
-      agent: readString(value, 'display_agent') ?? readString(value, 'agent'),
+      agent: readString(value, 'display_agent') ?? readString(value, 'agent') ?? before?.agent ?? null,
       title:
         readString(value, 'title') ??
         readString(value, 'terminal_title_stripped') ??
@@ -422,8 +453,30 @@ export class WorkspaceStore {
         id,
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),
       focused: value['focused'] === true,
+      lastRevision: revision ?? before?.lastRevision ?? null,
+      changedAt: moved ? Date.now() : (before?.changedAt ?? null),
     })
     return true
+  }
+
+  /**
+   * L6 — `pane.agent_status_changed` 봉투를 적용한다.
+   * 실측 봉투: `{event:"pane.agent_status_changed", data:{agent, agent_status, pane_id, workspace_id}}`
+   * (`36-agent-status-and-revision.json`). `title`·`display_agent` 는 올 때만 쓴다.
+   */
+  private applyAgentStatus(data: Record<string, unknown>): ApplyResult {
+    const paneId = readString(data, 'pane_id')
+    if (paneId === null) return { changed: false, note: 'agent_status_changed 필드 부족' }
+    const pane = this.panes.get(paneId)
+    if (!pane) return { changed: false, note: `agent_status_changed: 모르는 pane (${paneId})` }
+    const status = readAgentStatus(data, 'agent_status')
+    const agent = readString(data, 'display_agent') ?? readString(data, 'agent') ?? pane.agent
+    const title = readString(data, 'title') ?? pane.title
+    if (pane.agentStatus === status && pane.agent === agent && pane.title === title) {
+      return { changed: false, note: `agent_status_changed: 같은 값 (${status})` }
+    }
+    this.panes.set(paneId, { ...pane, agentStatus: status, agent, title, changedAt: Date.now() })
+    return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
 
   /** tab 도 pane 과 같은 이유로 workspace 가 있을 때만 들고 있는다. */

@@ -11,6 +11,7 @@ const EXPOSED = [
   'onState',
   'selectSession',
   'selectPane',
+  'toggleCollapse',
   'refreshSessions',
   'reportRendered',
   'reportProbe',
@@ -26,6 +27,7 @@ const api = {
   },
   selectSession: (name: string): Promise<void> => ipcRenderer.invoke('corral:selectSession', name),
   selectPane: (paneId: string | null): Promise<void> => ipcRenderer.invoke('corral:selectPane', paneId),
+  toggleCollapse: (workspaceId: string): Promise<void> => ipcRenderer.invoke('corral:toggleCollapse', workspaceId),
   refreshSessions: (): Promise<void> => ipcRenderer.invoke('corral:refreshSessions'),
   reportRendered: (revision: number): void => ipcRenderer.send('corral:reportRendered', revision),
   reportProbe: (name: string, detail: Record<string, string>): void =>

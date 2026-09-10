@@ -27,8 +27,22 @@ export const SUBSCRIPTION_TYPES: readonly string[] = [
   'pane.closed',
   'pane.updated',
   'pane.exited',
+  'pane.agent_detected',
   'layout.updated',
 ]
+
+/**
+ * L6 — 상태 전이는 **이 타입으로만** 온다. 실측에서 파라미터 없는 구독(위 목록)에는
+ * `pane.agent_status_changed` 가 한 건도 안 왔고, `pane_id` 를 건 구독에만 왔다
+ * (`36-agent-status-and-revision.json`: statusA 0 · statusB 3).
+ *
+ * 그래서 **pane 마다** 걸어야 한다. 그런데 구독 커넥션에는 `events.subscribe` 를 한 줄만 쓴다는
+ * 것이 스파이크 제약이다 — 그래서 pane 목록이 바뀌면 이 구독만 **커넥션째 새로 연다**.
+ * 목록(위)과 섞지 않고 따로 두는 이유가 그것이다: 이쪽이 자주 다시 열려도 본 구독은 안 흔들린다.
+ */
+export function agentStatusSubscriptions(paneIds: readonly string[]): Array<Record<string, string>> {
+  return paneIds.map((paneId) => ({ type: 'pane.agent_status_changed', pane_id: paneId }))
+}
 
 export type RequestFrame = { id: string; method: string; params: Record<string, unknown> }
 
@@ -80,13 +94,20 @@ export function readAgentStatus(source: Record<string, unknown>, key: string): A
   }
 }
 
-/** 줄 하나를 push 봉투로 읽는다. 모양이 다르면 null — 던지지 않는다. */
+/**
+ * 줄 하나를 push 봉투로 읽는다. 모양이 다르면 null — 던지지 않는다.
+ *
+ * **실측 주의** (`raw/claude/36-agent-status-and-revision.json`): push 의 `event` 이름은 구독
+ * 타입의 점을 밑줄로 바꾼 것인데(`pane.created` → `pane_created`), **`pane.agent_status_changed`
+ * 만 점을 그대로 유지한 채로 온다.** 예외 하나를 위해 저장소가 두 이름을 알 필요는 없으므로
+ * 여기서 표기를 하나로 맞춘다.
+ */
 export function asPushFrame(message: unknown): PushFrame | null {
   if (!isRecord(message)) return null
   const event = readString(message, 'event')
   const data = readRecord(message, 'data')
   if (event === null || data === null) return null
-  return { event, data }
+  return { event: event.replace(/\./g, '_'), data }
 }
 
 /** 줄 하나를 응답 봉투로 읽는다. */

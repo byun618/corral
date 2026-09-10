@@ -21,6 +21,11 @@ export type PaneRow = {
   agentStatus: AgentStatus
   cwd: string | null
   focused: boolean
+  /**
+   * L7 — corral 이 이 pane 의 변화를 마지막으로 본 시각(epoch ms). herdr 는 pane 에 타임스탬프를
+   * 주지 않는다. **모르면 null 이고, 화면은 아무것도 안 쓴다** — 0초로 적지 않는다.
+   */
+  changedAt: number | null
 }
 
 /**
@@ -123,6 +128,8 @@ export type AppState = {
   repos: RepoGroupRow[]
   /** 선택 대상은 pane 이다 (기준 L2). */
   selectedPaneId: string | null
+  /** L8 — 접어 둔 workspace. **corral 로컬 상태**다 (herdr 에 저장하지 않는다). */
+  collapsedWorkspaceIds: string[]
   /** 진단 UI(S3 프로브)를 띄우는 실행인가 — 패키징된 앱이거나 계측이 아니면 false. */
   diagnostics: boolean
 }
@@ -133,6 +140,8 @@ export type CorralApi = {
   onState: (listener: (state: AppState) => void) => () => void
   selectSession: (name: string) => Promise<void>
   selectPane: (paneId: string | null) => Promise<void>
+  /** L8 — worktree 의 세션 묶음을 접거나 편다. */
+  toggleCollapse: (workspaceId: string) => Promise<void>
   refreshSessions: () => Promise<void>
   /** 렌더러가 실제로 그린 시점을 main 로그에 남긴다 (L3 의 "반영 시각"). */
   reportRendered: (revision: number) => void

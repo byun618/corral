@@ -20,15 +20,19 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
-    // xterm.js 6.0.0 의 ESM 번들은 **이미 minify 된 채로** 배포된다. Vite 가 한 번 더 minify 하면
-    // DECRQM 처리에서 ReferenceError 가 난다는 보고가 있다 (00-analysis.md ⓖ9, xterm.js #5800).
-    // 이 앱이 정확히 electron-vite 라서 미리 막아 둔다 — 켜고 끄며 재현할 수 있게 두 곳 다.
+    // ⓖ9(xterm.js #5800 — 이미 minify 된 6.0.0 ESM 을 한 번 더 minify 하면 DECRQM 에서
+    // ReferenceError) 는 **실측으로 재현되지 않았다** — minify 를 켜고 DECRQM 3종을 직접 쏴도
+    // 렌더러 예외 0건, 화면 정상 (`raw/claude/60-minify.json`). 그래서 회피 설정을 걷어냈고
+    // minify 는 electron-vite 기본값(렌더러 false)을 그대로 쓴다. 재현이 필요하면
+    // `CORRAL_RENDERER_MINIFY=1 node scripts/l345/m10-minify.mjs` 가 두 팔을 다시 잰다.
+    // xterm 은 순수 ESM 이라 dev 사전번들에서 빼 둔다 (회피가 아니라 불필요한 일이라서다).
     optimizeDeps: {
       exclude: ['@xterm/xterm', '@xterm/addon-webgl', '@xterm/addon-unicode11', '@xterm/addon-unicode-graphemes'],
     },
     build: {
       rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') },
-      minify: process.env.CORRAL_RENDERER_MINIFY === '1' ? 'esbuild' : false,
+      // 기본값에는 손대지 않는다. 이 환경변수는 **재현용 스위치**일 뿐이다 (없으면 기본값 그대로).
+      ...(process.env.CORRAL_RENDERER_MINIFY === '1' ? { minify: 'esbuild' } : {}),
     },
   },
 })

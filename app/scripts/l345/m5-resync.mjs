@@ -133,10 +133,13 @@ const out = {}
       convergedMs,
       idleGapMs: 12_000,
       framesDuringIdle,
+      // 읽기 횟수는 참고값이다 — 12초 중 앞 10초는 직전 표본이 만든 hot 꼬리라 250ms 로 돌고
+      // 뒤 2초만 idle 주기다. 그래서 이 값으로는 idle 여부를 못 가른다.
       readsDuringIdle,
-      // 12초 동안 프레임이 0장이어야 화면이 정지한 것이고, 읽기 횟수는 idle 주기(2000ms)에
-      // 맞게 6~7회여야 한다. 이 두 값이 그 표본이 정말 idle 이었다는 증거다.
-      wasIdle: framesDuringIdle === 0 && readsDuringIdle <= 9,
+      // **프레임 0장이 판별자다.** 12초 동안 화면이 한 번도 안 바뀌었다는 뜻이고,
+      // 그러면 `lastChangeAt` 이 12초 이상 묵어 HOT_WINDOW_MS(10초)를 넘긴다 — 보내는 순간
+      // 심장박동은 idle(2000ms) 이다.
+      wasIdle: framesDuringIdle === 0,
     })
     console.log('R2 idle round', i, convergedMs, 'ms')
   }

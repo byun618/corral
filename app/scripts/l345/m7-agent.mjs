@@ -106,7 +106,9 @@ const snapshotRows = (text) => {
   for (const subject of subjects) {
     await reclaimShell(paneId)
     // ① 히스토리를 심는다 — 판별자(씨앗 0줄)가 살아 있는지 먼저 보이기 위해서다.
-    await run(paneId, 'clear; for i in $(seq 1 30); do echo "T4 HIST $i"; done', { settleMs: 1200 })
+    // **뷰포트보다 많이** 심는다 — 39행짜리 pane 에 30줄만 심으면 화면에 다 들어가 씨앗이
+    // 0이 되고, 그러면 판별자가 죽는다 (m9 에서 그대로 밟았다).
+    await run(paneId, 'clear; for i in $(seq 1 60); do echo "T4 HIST $i"; done', { settleMs: 2500 })
 
     const app = await startApp({ name: `agent-${subject.key}` })
     await sleep(1500)

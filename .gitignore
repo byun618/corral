@@ -7,3 +7,8 @@
 
 # 스파이크 프로브 의존성
 spike/node_modules/
+
+# corral 앱
+app/node_modules/
+app/out/
+app/*.tsbuildinfo

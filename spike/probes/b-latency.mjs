@@ -88,8 +88,9 @@ await run(api, P, "printf '\\033[2J\\033[H'; sh fixtures/01-log.sh", { settleMs:
 //   reset : RIS(\x1bc) 로 지우고 write — 모드·팔레트·알트스크린까지 날아간다
 //   home  : 커서 홈 + 줄마다 erase-to-EOL + 끝에 erase-below — 화면만 덮어쓴다
 {
-  // 움직이는 화면이 있어야 churn 을 잴 수 있다. 하네스 전용 티커를 띄운다
-  // (판정용 3종 픽스처와 별개다 — B6 는 수치 판정 항목이 아니다).
+  // 움직이는 화면이 있어야 churn 을 잴 수 있다. 하네스 전용 티커를 띄운다.
+  // 판정용 3종 픽스처(01~03)와 별개라 90- 프리픽스로 구분했다 — B6 는 수치 판정 항목이 아니다.
+  // 이 프로브가 매번 다시 쓰므로 파일이 없어도 된다.
   fs.writeFileSync(
     path.join(SPIKE, 'fixtures', '90-ticker.sh'),
     // 하네스 전용: 알트스크린에서 카운터만 바꾸며 다시 그린다

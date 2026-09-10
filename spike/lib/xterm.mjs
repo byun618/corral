@@ -104,6 +104,13 @@ export function compare(a, b, { rows } = {}) {
       if (ta === tb) textOk++
       else if (textDiff.length < 40) textDiff.push({ y, x, a: ca?.ch ?? '', b: cb?.ch ?? '' })
       // 스타일은 글자가 있는 칸에서만 의미가 있다. 빈 칸의 색은 비교하지 않는다.
+      //
+      // 한계 (리뷰 지적 ⑫): 빈 칸 쌍을 styleOk 로 세면서 cells(분모)에도 남긴다.
+      // 그래서 styleMatch 의 분모에 빈 칸이 들어간다. 213열 격자처럼 내용 칸 비율이
+      // 낮은 화면에서는 이 비율이 실제보다 후하게 나오고, B2 의 95% 통과선이 헐거워진다.
+      // 이번 3종 픽스처는 styleDiff 가 빈 배열(불일치 0건)이라 내용 칸만 세도 100% 여서
+      // 판정이 안 바뀌었을 뿐이다. 내용이 적은 화면에 이 함수를 그대로 쓰면 안 된다 —
+      // 그때는 분모를 "글자가 있는 칸"으로 좁혀야 한다.
       if (ta === '' && tb === '') {
         styleOk++
         continue

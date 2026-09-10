@@ -93,15 +93,9 @@ git merge LIFE-NNN-<슬러그>-<승자>                      # 승자 → 작업
 
 - 머지 후 사용자에게 알린다: **작업 worktree 에서 통합 결과를 직접 실행·확인해 달라**
   (실행 방법을 한 줄로 같이 준다). 문제가 나오면 수정 라운드 → 재확인
-- 확인이 끝나 사용자가 **출고 승인**을 주면 아래 진행. worktree 는 그 전까지 유지
-
-```bash
-git -C <본체경로> merge LIFE-NNN-<슬러그>               # main 머지 (본체는 clean 전제)
-git -C <본체경로> worktree remove .claude/worktrees/LIFE-NNN-<슬러그>-claude
-git -C <본체경로> worktree remove .claude/worktrees/LIFE-NNN-<슬러그>-codex
-git -C <본체경로> branch -D LIFE-NNN-<슬러그>-<패자> && git -C <본체경로> branch -d LIFE-NNN-<슬러그>-<승자> LIFE-NNN-<슬러그>
-```
-
-- LA → "완료" 전이. 태그는 지우지 않는다
-- **자기 자신(작업 worktree) 제거는 main 세션에 맡긴다** — 세션이 앉아 있는 worktree 를 스스로 지우는
-  동작은 미검증(D3). 사용자 보고에 "작업 worktree 제거 부탁" 을 포함시킨다
+- 확인이 끝나 사용자가 **출고 승인**을 주면:
+  1. LA → "완료" 전이
+  2. 사용자에게 마무리 안내 한 줄: **"본체 위치에서 `scripts/task-finish.sh LIFE-NNN-<슬러그>` 실행"**
+     — main 머지·push·worktree 3개·브랜치 정리를 스크립트가 멱등하게 수행한다 (태그는 유지)
+- 코디네이터는 자기 worktree 밖(main 머지·정리)을 직접 건드리지 않는다 — 판단이 필요 없는
+  마무리는 세션이 아니라 스크립트의 일이다. 이 세션은 안내 후 종료해도 된다

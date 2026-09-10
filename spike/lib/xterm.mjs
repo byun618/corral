@@ -87,6 +87,10 @@ export function compare(a, b, { rows } = {}) {
   let styleOk = 0
   const textDiff = []
   const styleDiff = []
+  // 안 쓴 칸('')과 공백을 찍어둔 칸(' ')은 화면에서 구분되지 않는다. 둘을 같게 본다.
+  // observe 스트림은 행 끝까지 공백을 찍고, pane.read 스냅샷은 안 찍는다 —
+  // 정규화하지 않으면 같은 화면이 서로 다르다고 나온다.
+  const blank = (t) => (t === '' || t === ' ' ? '' : t)
   for (let y = 0; y < n; y++) {
     const ra = a[y] ?? []
     const rb = b[y] ?? []
@@ -95,10 +99,10 @@ export function compare(a, b, { rows } = {}) {
       const ca = ra[x] ?? null
       const cb = rb[x] ?? null
       cells++
-      const ta = ca?.ch ?? ''
-      const tb = cb?.ch ?? ''
+      const ta = blank(ca?.ch ?? '')
+      const tb = blank(cb?.ch ?? '')
       if (ta === tb) textOk++
-      else if (textDiff.length < 40) textDiff.push({ y, x, a: ta, b: tb })
+      else if (textDiff.length < 40) textDiff.push({ y, x, a: ca?.ch ?? '', b: cb?.ch ?? '' })
       // 스타일은 글자가 있는 칸에서만 의미가 있다. 빈 칸의 색은 비교하지 않는다.
       if (ta === '' && tb === '') {
         styleOk++

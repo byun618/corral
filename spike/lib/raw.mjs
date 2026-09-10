@@ -14,9 +14,12 @@ export class Raw {
     this.log('probe.start', { name, startedAt: new Date().toISOString() })
   }
 
-  /** 한 줄 = 한 사건. ms 는 프로브 시작 기준 상대 시각. */
+  /**
+   * 한 줄 = 한 사건. ms 는 프로브 시작 기준 상대 시각.
+   * kind 를 마지막에 둔다 — data 에 kind 라는 필드가 있어도 사건 종류가 먹히지 않도록.
+   */
   log(kind, data) {
-    fs.writeSync(this.fd, JSON.stringify({ ms: Date.now() - this.t0, kind, ...data }) + '\n')
+    fs.writeSync(this.fd, JSON.stringify({ ms: Date.now() - this.t0, ...data, kind }) + '\n')
   }
 
   /** 소켓에서 온 원문 줄을 가공 없이 남긴다. */

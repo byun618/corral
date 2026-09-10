@@ -188,6 +188,11 @@ export class PaneTerminal {
   /** 세대마다 한 번만 쓰는 즉시 재시도 티켓. 없으면 심장박동이 맡는다. */
   private attachRetry = false
   private apiRows: number | null = null
+  /**
+   * 뷰포트 **위에 있는 줄 수**(`scroll.max_offset_from_bottom`). herdr 가 직접 준다.
+   * 알트스크린 판은 스크롤백이 없어 0 이다 — 씨앗의 상한으로 쓴다 (`50-agent-cost.json` → `t4`).
+   */
+  private apiLinesAbove: number | null = null
   private apiLayoutCols: number | null = null
   /** 아직 안 보낸 입력. 텍스트는 이어 붙이고 특수키는 순서를 지켜 따로 담는다. */
   private inputQueue: InputItem[] = []
@@ -479,7 +484,10 @@ export class PaneTerminal {
       const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
       const pane = isRecord(info) ? readRecord(info, 'pane') : null
       const scroll = pane === null ? null : readRecord(pane, 'scroll')
-      if (scroll !== null) this.apiRows = readNumber(scroll, 'viewport_rows')
+      if (scroll !== null) {
+        this.apiRows = readNumber(scroll, 'viewport_rows')
+        this.apiLinesAbove = readNumber(scroll, 'max_offset_from_bottom')
+      }
     } catch (error) {
       log('term.grid.pane_get_failed', { error: String(error) })
     }
@@ -522,14 +530,24 @@ export class PaneTerminal {
       if (stale('attach.grid')) return
       this.grid = grid
 
-      // 스크롤백은 **일반 판에만** 있다. 알트스크린 판은 host 히스토리가 0줄이라
-      // 아래 `historyAbove` 가 빈 배열을 돌려준다 — 그게 정답이다 (T5).
+      // 스크롤백은 **일반 판에만** 있다. 알트스크린 판은 위에 아무것도 없다.
+      //
+      // 꼬리 일치만으로는 그것을 못 지킨다: 알트 화면이 계속 움직이면(에이전트 TUI) 두 스냅샷이
+      // 어긋나 일치를 못 찾고, 보수적 대체 규칙이 **지금 화면의 옛 프레임을 과거로 밀어 올린다**
+      // — 실측에서 claude 판이 그렇게 32줄을 지어냈다 (판정 §7-3 재측정에서 잡혔다).
+      // 그래서 herdr 가 주는 `max_offset_from_bottom` 을 씨앗의 **상한**으로 쓴다. 이 값은 행 수라
+      // 논리 줄 수보다 항상 크거나 같다 — 일반 판의 정당한 과거는 이 상한에 안 걸린다.
       let seed = ''
       let seededLines = 0
       try {
         const recent = await this.readSnapshot('recent_unwrapped', 'attach-scrollback')
         if (stale('attach.scrollback')) return
-        const history = historyAbove(splitRows(recent.text), splitRows(visible.text), grid.rows)
+        const found = historyAbove(splitRows(recent.text), splitRows(visible.text), grid.rows)
+        const cap = this.apiLinesAbove
+        const history = cap !== null && found.length > cap ? found.slice(found.length - cap) : found
+        if (history.length !== found.length) {
+          log('term.scrollback.capped', { paneId: target.paneId, found: found.length, cap })
+        }
         seededLines = history.length
         seed = buildScrollbackSeed(history, grid.rows)
         log('term.scrollback', {

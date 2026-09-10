@@ -14,12 +14,16 @@ import { SESSION, request, sleep, socketPath, startApp, tidySession, writeRaw } 
 socketPath() // 격리 가드
 await tidySession()
 
+// 살아남은 workspace 의 id 를 **읽어서** 쓴다. `w1` 로 박으면 안 된다 — workspace_id 는 서버
+// 생애 안에서만 유일하고 (29-id-reuse.json) 앞선 측정이 흔들어 놓으면 `w8H` 같은 값이 남는다.
+const workspaceId = (await request('session.snapshot')).result.snapshot.workspaces[0].workspace_id
+
 const app = await startApp({ name: 'l2' })
 await sleep(800)
 
 // --- ① 스플릿 없는 상태 -------------------------------------------------
 // 탭을 하나 더 만들어 "탭이 여럿이어도 pane 줄은 없다"까지 보이게 한다.
-await request('tab.create', { workspace_id: 'w1', label: '두번째' })
+await request('tab.create', { workspace_id: workspaceId, label: '두번째' })
 await settle(app)
 const flatProbe = await lastTreeProbe(app)
 const flatState = await app.state()
@@ -27,7 +31,7 @@ await app.shot('l2-1-no-split')
 
 // --- ② 실제로 스플릿을 만든다 -------------------------------------------
 const snapshot = (await request('session.snapshot')).result.snapshot
-const target = snapshot.panes.find((pane) => pane.workspace_id === 'w1')
+const target = snapshot.panes.find((pane) => pane.workspace_id === workspaceId)
 const split = await request('pane.split', { target_pane_id: target.pane_id, direction: 'right' })
 await settle(app)
 const splitProbe = await lastTreeProbe(app)

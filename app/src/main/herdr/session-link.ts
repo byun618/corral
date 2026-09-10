@@ -172,6 +172,7 @@ export class SessionLink {
     const injection = readInjection()
 
     const subscription = new Subscription({
+      label: 'main',
       // 옛 세대의 커넥션이 뒤늦게 뱉는 push 는 버린다 — 새 세션의 목록에 옛 세션이 섞이는 길이다.
       onPush: (frame, at) => {
         if (stale()) return
@@ -381,6 +382,8 @@ export class SessionLink {
     if (paneIds.length === 0) return
 
     const subscription = new Subscription({
+      // **일부러 자주 닫혔다 열리는 커넥션이다.** 측정이 구독 끊김을 셀 때 본 구독과 섞으면 안 된다.
+      label: 'agent',
       onPush: (frame, at) => {
         if (generation !== this.generation) return
         // 이 커넥션은 상태 전이만 나른다 — 본 구독의 부트스트랩 버퍼링과 섞지 않는다.

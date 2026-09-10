@@ -44,11 +44,14 @@ src/main/            Electron main — 소켓을 소유하는 쪽
     store.ts         id 키 맵. create=set / close=delete 라 멱등이 설계로 나온다.
                      여기에 push 순서 방어 둘: 닫힌 id 묘비 · 주인 없는 pane/tab 보류함
     session-link.ts  부트스트랩(구독→ack→버퍼→snapshot→적용) + 복구 루프.
-                     링크에 세대가 있다 — 세션을 바꾸면 낡은 시도는 손을 뗀다
+                     링크에 세대가 있다 — 세션을 바꾸면 낡은 시도는 손을 뗀다.
+                     상태 구독(pane.agent_status_changed)은 **별도 커넥션**이다 —
+                     pane_id 가 required 라 pane 목록이 바뀌면 그것만 다시 연다
   sessions.ts        세션 발견 (CLI 재조회. 이 층에는 구독이 없다)
   control.ts         계측용 제어 채널 — CORRAL_CONTROL_SOCKET 을 준 실행에만 열린다
 src/preload/         contextBridge 로 채널별 메서드만 노출 (CJS 로 번들)
-src/renderer/        React. 왼쪽 repo>workspace>pane 3단 목록 + 오른쪽 터미널 자리
+src/renderer/        React. 왼쪽 repo>worktree>workspace>탭 목록 + 오른쪽 터미널 자리.
+                     pane 줄은 그 탭이 스플릿일 때만 (Orca 와 같은 모양)
 scripts/             판정 근거를 만드는 측정 하네스 (m-*.mjs)
 ```
 
@@ -68,6 +71,7 @@ scripts/             판정 근거를 만드는 측정 하네스 (m-*.mjs)
 | `CORRAL_INJECT_DUP` | `1` 이면 버퍼 이벤트를 일부러 두 번 적용 (멱등성 확인용) |
 | `CORRAL_INJECT_BAD_SUB` | `1` 이면 구독 목록에 모르는 타입을 하나 섞는다 (거부 처리 확인용) |
 | `CORRAL_INJECT_BOOT_DELAY_MS` | **첫** 부트스트랩만 이만큼 늦춘다 (세션 전환 경합 재현용) |
+| `CORRAL_WINDOW` | 창 크기 `<가로>x<세로>` (측정 스크린샷을 같은 크기로 찍으려고) |
 
 > **유닉스 소켓 경로 길이**: macOS 는 104 bytes 가 한계다. Electron(Node 24)은 105 bytes 부터
 > `EINVAL` 로 죽고, Node 20 은 조용히 잘라 엉뚱한 파일을 만든다. corral 은 붙기·바인드 전에
@@ -88,7 +92,10 @@ node scripts/m-k5.mjs        # K5        구독 타입 거부 처리
 node scripts/m-k6.mjs        # K6        서버 kill → 자동 복구 (격리 세션 서버를 죽인다)
 node scripts/m-k7.mjs        # K7        ENOENT/ECONNREFUSED · 백오프+jitter
 node scripts/m-l.mjs         # L1~L5     세션·workspace·pane 목록 · 실시간 반영 · 선택
-node scripts/m-l2r.mjs       # L2r       repo 그룹핑 (default 세션에 **읽기로만** 붙는다)
+node scripts/m-l2.mjs        # L2        탭 층 · 스플릿일 때만 pane (그려진 줄 수로 판정)
+node scripts/m-l2r.mjs       # L2r       repo 묶음 + worktree 전부 (default 세션에 **읽기로만** 붙는다)
+node scripts/m-agent.mjs     # L6·L7 선행 실측: 상태 봉투 모양 · pane.updated 의 revision
+node scripts/m-l678.mjs      # L6·L7·L8  실제 에이전트를 띄워 상태 전이 · 경과 · 접기
 node scripts/m-restart.mjs   # 세션 재기동 경로 비교
 node scripts/m-sockpath.mjs  # 소켓 경로 길이 한계
 node scripts/m-ordering.mjs  # push 순서 뒤집힘 · push 유실
@@ -97,6 +104,9 @@ node scripts/m-idreuse.mjs   # workspace_id 재사용 (서버를 두 번 껐다 
 node scripts/m-switch.mjs    # 세션 전환 일관성 (default 에 **읽기로만** 붙는다)
 node scripts/m-running.mjs   # 멈춘 세션 표시 (life344-stopped 를 만들었다 지운다)
 ```
+
+하네스 쪽 환경변수: `K1_RUNS`(K1 회차, 기본 6) · `K6_RESTART_DELAY_MS`(K6 다운타임, 기본 4000) ·
+`L344_AGENT_CMD`(L6 이 격리 pane 에 띄울 에이전트 명령, 기본 `claude --dangerously-skip-permissions`).
 
 격리 세션은 먼저 띄워 둔다:
 

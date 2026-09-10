@@ -127,9 +127,12 @@ const result = {
   // corral 은 시간창을 버리고 묘비(닫힌 id 는 다시 받지 않는다)로 갔다 (28-orphan-holding.json).
   windowBasis: {
     note:
-      '뒤집힘 지연은 부하를 따라 늘어난다. 4갈래에서 214ms 였던 것이 6갈래·8초에서는 1374ms 였다. ' +
-      '고정 시간창은 그래서 틀린 도구다 — workspace_id 가 생애 안에서 재사용되지 않는다는 실측 ' +
-      '(29-id-reuse.json)에 기대어 시간을 아예 안 보는 쪽으로 바꿨다.',
+      '뒤집힘 지연은 부하와 그날의 서버 상태를 따라 흔들린다 — 같은 6갈래·8초 흔들기인데 ' +
+      '수정 1회차에는 1374ms 가 나왔다 (그 원자료는 이 파일이 덮었다). 이번 실행의 값은 위 ' +
+      'inversions.maxLagMs 다. 한쪽 실행의 값을 보고 창을 잡으면 다른 실행에서 틀린다 — ' +
+      '고정 시간창이 틀린 도구인 이유가 이것이다. ' +
+      'corral 은 workspace_id 가 생애 안에서 재사용되지 않는다는 실측(29-id-reuse.json)에 기대어 ' +
+      '시간을 아예 안 보는 쪽(묘비)으로 갔다.',
   },
   deliveryConclusion:
     missingClosePushes.length > 0 || missingCreatePushes.length > 0
@@ -140,7 +143,7 @@ const result = {
     inversions.length > 0 || lateChildren.length > 0
       ? 'herdr push 는 같은 workspace 안에서도 인과 순서를 보장하지 않는다. 푸시에 시퀀스 번호가 ' +
         '없으므로 클라이언트가 막아야 한다 — corral 은 (1) 주인보다 먼저 온 pane/tab 을 보류함에 ' +
-        '담았다가 주인이 오면 붙이고 (2) 닫힌 지 창(1000ms) 안에 온 create 를 늦게 온 과거로 버린다.'
+        '담았다가 주인이 오면 붙이고 (2) 이 생애에서 닫힌 id 를 묘비에 적어 다시 받지 않는다.'
       : '이번 측정에서는 뒤집힘이 관측되지 않았다 (부하가 낮았을 수 있다 — 공백으로 남긴다).',
 }
 

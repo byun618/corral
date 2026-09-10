@@ -40,7 +40,10 @@ const closes = entries.filter((entry) => entry.tag === 'req.conn.close')
 const txs = entries.filter((entry) => entry.tag === 'req.tx')
 const subConns = entries.filter((entry) => entry.tag === 'sub.conn.open')
 const pushesAfter = entries.filter((entry) => entry.tag === 'push.applied' && entry.at > afterRequests)
-const subDrops = entries.filter((entry) => entry.tag === 'sub.drop')
+// **본 구독**의 끊김만 센다. 상태 전용 커넥션(label='agent')은 pane 목록이 바뀔 때마다
+// 일부러 닫혔다 열린다 — 그걸 섞어 세면 K2 가 자기 설계 때문에 미달로 찍힌다.
+const subDrops = entries.filter((entry) => entry.tag === 'sub.drop' && (entry.label ?? 'main') === 'main')
+const agentSubDrops = entries.filter((entry) => entry.tag === 'sub.drop' && entry.label === 'agent')
 
 // 요청 커넥션 id 와 구독 커넥션 id 가 겹치지 않는 것이 "분리"의 기계적 증거다.
 const requestConnIds = new Set(opens.map((entry) => entry.conn))
@@ -61,6 +64,11 @@ const result = {
   subscriptionConnections: subConns.length,
   connectionIdOverlap: overlap,
   subscriptionDropsDuringRun: subDrops.length,
+  // 참고값 — 상태 전용 커넥션의 (의도된) 재연결 횟수. 통과선과 무관하다.
+  agentConnectionReopens: {
+    count: agentSubDrops.length,
+    why: 'pane.agent_status_changed 는 pane_id 가 required 라 pane 목록이 바뀌면 그 커넥션만 다시 연다 (L6)',
+  },
   pushesAfterTenRequests: pushesAfter.length,
   pushEventsAfterTenRequests: pushesAfter.map((entry) => entry.event),
   requestLog: [...opens, ...txs, ...closes]
@@ -77,6 +85,7 @@ console.log(
       openCloseBalanced: result.openCloseBalanced,
       connectionIdOverlap: result.connectionIdOverlap,
       subscriptionDropsDuringRun: result.subscriptionDropsDuringRun,
+      agentConnectionReopens: result.agentConnectionReopens.count,
       pushesAfterTenRequests: result.pushesAfterTenRequests,
     },
     null,

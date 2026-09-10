@@ -10,6 +10,8 @@ import { asPushFrame, asResponseFrame, type PushFrame } from './protocol.js'
 import { log } from '../log.js'
 
 export type SubscriptionHooks = {
+  /** 어느 커넥션인지 — 로그에 실린다. 상태 전용 커넥션은 **일부러** 자주 닫혔다 열린다. */
+  label?: string
   onPush: (frame: PushFrame, at: number) => void
   onDrop: (reason: 'eof' | 'local' | 'error', detail: string) => void
 }
@@ -31,8 +33,11 @@ export class Subscription {
   private onAck: ((ack: unknown) => void) | null = null
   private onAckFail: ((error: Error) => void) | null = null
 
+  private readonly label: string
+
   constructor(hooks: SubscriptionHooks) {
     this.hooks = hooks
+    this.label = hooks.label ?? 'main'
   }
 
   /** 연결 → subscribe 전송 → ack 수신까지. 거부되면 SubscriptionRejected 로 던진다. */
@@ -51,7 +56,7 @@ export class Subscription {
       onError: (error) => this.drop('error', `${error.code ?? 'unknown'}: ${error.message}`),
     })
     this.socket = socket
-    log('sub.conn.open', { conn: socket.id, socketPath, types: types.length })
+    log('sub.conn.open', { label: this.label, conn: socket.id, socketPath, types: types.length })
     await socket.connect(socketPath)
 
     const ack = new Promise<unknown>((resolve, reject) => {
@@ -64,7 +69,7 @@ export class Subscription {
       method: 'events.subscribe',
       params: { subscriptions: types.map((type) => (typeof type === 'string' ? { type } : type)) },
     })
-    log('sub.tx', { conn: socket.id, line: frame })
+    log('sub.tx', { label: this.label, conn: socket.id, line: frame })
     // 이 커넥션에 쓰는 것은 이 한 줄뿐이다. 이후로는 오로지 push 를 받는다.
     socket.write(frame)
     return ack
@@ -76,18 +81,18 @@ export class Subscription {
   }
 
   private handleLine(line: string, at: number): void {
-    log('sub.rx', { conn: this.socket?.id ?? '?', at, line: line.slice(0, 4000) })
+    log('sub.rx', { label: this.label, conn: this.socket?.id ?? '?', at, line: line.slice(0, 4000) })
     let parsed: unknown = null
     try {
       parsed = JSON.parse(line)
     } catch (error) {
-      log('sub.line.parse_error', { error: String(error), line: line.slice(0, 400) })
+      log('sub.line.parse_error', { label: this.label, error: String(error), line: line.slice(0, 400) })
       return
     }
 
     const push = asPushFrame(parsed)
     if (push !== null) {
-      if (!this.acked) log('sub.push.before_ack', { event: push.event })
+      if (!this.acked) log('sub.push.before_ack', { label: this.label, event: push.event })
       this.hooks.onPush(push, at)
       return
     }
@@ -98,23 +103,23 @@ export class Subscription {
       if (response.error) {
         const code = response.error.code ?? 'unknown'
         const message = response.error.message ?? ''
-        log('sub.ack.rejected', { code, message })
+        log('sub.ack.rejected', { label: this.label, code, message })
         this.onAckFail?.(new SubscriptionRejected(code, message))
         return
       }
       this.acked = true
-      log('sub.ack', { result: JSON.stringify(response.result) })
+      log('sub.ack', { label: this.label, result: JSON.stringify(response.result) })
       this.onAck?.(response.result)
       return
     }
 
-    log('sub.line.unknown_envelope', { line: line.slice(0, 400) })
+    log('sub.line.unknown_envelope', { label: this.label, line: line.slice(0, 400) })
   }
 
   private drop(reason: 'eof' | 'local' | 'error', detail: string): void {
     if (this.dropped) return
     this.dropped = true
-    log('sub.drop', { reason, detail })
+    log('sub.drop', { label: this.label, reason, detail })
     if (!this.acked) this.onAckFail?.(new SubscriptionRejected(reason, detail))
     this.hooks.onDrop(reason, detail)
   }

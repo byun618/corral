@@ -12,7 +12,10 @@
 // 아니라 "창을 격자에 맞춰 글자 크기를 고르는 것"이다. 이 스크립트는 창을 3단계로 바꿔가며
 // ① 격자가 그대로인지 ② 화면이 어떻게 되는지(잘림/여백/배율)를 화면으로 남긴다.
 
-import { panes, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { panes, ptyGrid, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+
+/** 200칸짜리 열 자. pane 폭보다 길어서 herdr 가 pane 폭으로 잘라 준다 — 폭을 눈과 코드로 동시에 본다. */
+const RULER = `clear; awk 'BEGIN{s="";for(i=1;i<=200;i++){s=s (i%10==0? substr(sprintf("%d",i/10),length(sprintf("%d",i/10))) : ".")};print s}'`
 
 const out = {}
 
@@ -21,17 +24,11 @@ const out = {}
 // ==========================================================================
 {
   const paneId = await tidySession()
+  // PTY 크기는 lib 의 `ptyGrid` 로 읽는다 — 여기 있던 정규식이 화면 아무 데서나 숫자 두 개를
+  // 집어 `{rows:0, cols:39}` 를 적었다 (판정 L1).
+  const pty = await ptyGrid(paneId)
   // 폭을 눈으로 확인할 수 있게 열 자를 그린다 — 잘리면 바로 보인다.
-  await run(
-    paneId,
-    `clear; awk 'BEGIN{s="";for(i=1;i<=200;i++){s=s (i%10==0? substr(sprintf("%d",i/10),length(sprintf("%d",i/10))) : ".")};print s}'; stty size`,
-    { settleMs: 1200 },
-  )
-  const pty = await (async () => {
-    const result = await request('pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
-    const match = /(\d+)\s+(\d+)/.exec(result.read.text)
-    return match ? { rows: Number(match[1]), cols: Number(match[2]) } : null
-  })()
+  await run(paneId, RULER, { settleMs: 1200 })
 
   const layout = await request('pane.layout', { pane_id: paneId })
   const info = await request('pane.get', { pane_id: paneId })
@@ -81,6 +78,88 @@ const out = {}
     gridStableAcrossWindowSizes: new Set(steps.map((step) => `${step.grid.cols}x${step.grid.rows}`)).size === 1,
     rulerStable: new Set(steps.map((step) => step.rulerLength)).size === 1,
   }
+
+  // --- ⓑ sparse pane — 긴 줄이 하나도 없는 화면 (판정 M3) --------------------
+  //
+  // 열 자를 그려 놓고 재면 관측 폭이 pane 폭까지 자란다. **평소 화면은 그렇지 않다.**
+  // 1차 측정의 T4 codex 팔이 실제로 그랬다 — 같은 pane(PTY 93)인데 격자는 80×39 였다.
+  // 여기서는 그 상태를 일부러 만들어 **corral 이 무엇을 그리는지 기록한다.**
+  // corral 은 열 수를 알 방법이 없다(API 에 없다) — 하한 80 이 답이고, 80 을 넘는 줄이
+  // 오면 **그 줄이 담긴 스냅샷에서** 격자가 먼저 넓어진다. 그 두 번째 절반도 여기서 잰다.
+  await run(paneId, 'clear; printf "짧은 줄\\n"', { settleMs: 1200 })
+  await sleep(7000) // > GRID_REFRESH_MS. 창 경계를 지나야 줄이기가 일어난다.
+  const sparseDump = (await app.dump()).dump
+  const sparseState = (await app.state()).state.terminal
+  const sparseShot = await app.termShot('t2-sparse')
+  await run(paneId, RULER, { settleMs: 1500 })
+  const regrownDump = (await app.dump()).dump
+  const regrownRuler = (regrownDump.grid[0] ?? []).map((cell) => (cell?.w === 0 ? '' : (cell?.ch ?? ' '))).join('').trimEnd()
+
+  out.t2.sparse = {
+    note: '긴 줄이 없는 화면 — 관측으로 알 수 있는 폭이 없다. 하한 80 이 답이고 pane 은 93 이다',
+    ptyCols: pty.cols,
+    grid: { cols: sparseDump.cols, rows: sparseDump.rows },
+    gridSource: sparseState.grid?.source ?? null,
+    observedCols: sparseState.grid?.observedCols ?? null,
+    matchesPane: sparseDump.cols === pty.cols,
+    shot: sparseShot.file,
+    regrown: {
+      note: '긴 줄(200칸 열 자)이 도착한 뒤 — 그 줄을 그리기 전에 격자가 먼저 넓어져야 한다',
+      grid: { cols: regrownDump.cols, rows: regrownDump.rows },
+      rulerLength: regrownRuler.length,
+      matchesPane: regrownDump.cols === pty.cols,
+      rulerIntact: regrownRuler.length === pty.cols,
+    },
+  }
+  console.log('T2 sparse → grid', sparseDump.cols + 'x' + sparseDump.rows, '(pane', pty.cols + ')',
+    '· 열 자 도착 뒤', regrownDump.cols, 'ruler', regrownRuler.length)
+
+  // --- ⓒ pane 을 실제로 좁힌다 (판정 M2) ------------------------------------
+  //
+  // `observedCols` 가 안 줄면 herdr pane 이 좁아져도 corral 이 못 따라간다는 지적이다.
+  // 창 경계 감쇠를 넣었으니(`term.grid.shrink`) 실제로 좁혀서 확인한다.
+  // 분할해서 절반으로 만든 뒤 `pane.resize` 로 폭을 되찾아 **하한 80 위에서** 재야
+  // "따라 줄었다"가 하한에 가려지지 않는다.
+  const split = await request('pane.split', { pane_id: paneId, direction: 'right' })
+  const otherPane = split.pane?.pane_id ?? split.pane_id ?? null
+  await sleep(900)
+  let widened = await ptyGrid(paneId)
+  for (let attempt = 0; attempt < 8 && widened.cols < 88; attempt++) {
+    await request('pane.resize', { pane_id: paneId, direction: 'right', amount: 8 }).catch(() => {})
+    await sleep(700)
+    widened = await ptyGrid(paneId)
+  }
+  await run(paneId, RULER, { settleMs: 1800 })
+  const wideDump = (await app.dump()).dump
+  const wideShot = await app.termShot('t2-narrow-before')
+
+  await request('pane.resize', { pane_id: paneId, direction: 'left', amount: 4 }).catch(() => {})
+  await sleep(900)
+  const narrowed = await ptyGrid(paneId)
+  await run(paneId, RULER, { settleMs: 1800 })
+  await sleep(7000) // 창 경계를 지나야 줄어든다
+  const narrowDump = (await app.dump()).dump
+  const narrowState = (await app.state()).state.terminal
+  const narrowShot = await app.termShot('t2-narrow-after')
+  const shrinkLogs = app.entries().filter((entry) => entry.tag === 'term.grid.shrink')
+
+  out.t2.narrowed = {
+    note: 'pane 을 실제로 좁혀서 corral 격자가 따라 내려오나 (판정 M2). 좁아진 폭은 긴 줄이 다시 와야 관측된다',
+    beforePty: widened,
+    beforeGrid: { cols: wideDump.cols, rows: wideDump.rows },
+    afterPty: narrowed,
+    afterGrid: { cols: narrowDump.cols, rows: narrowDump.rows },
+    observedColsAfter: narrowState.grid?.observedCols ?? null,
+    followedDown: narrowDump.cols < wideDump.cols && narrowDump.cols === Math.max(narrowed.cols, 80),
+    shrinkLogs,
+    shots: [wideShot.file, narrowShot.file],
+  }
+  console.log('T2 narrow', widened.cols, '→', narrowed.cols, '· grid', wideDump.cols, '→', narrowDump.cols,
+    '· shrink 로그', shrinkLogs.length)
+
+  if (otherPane) await request('pane.close', { pane_id: otherPane }).catch(() => {})
+  await sleep(600)
+
   await app.stop()
 }
 
@@ -126,6 +205,29 @@ const out = {}
     shot: (await app.termShot('t5-normal')).file,
   }
   console.log('T5 일반', JSON.stringify({ ...normal, shot: undefined }))
+
+  // --- 격자 점프가 스크롤백을 흔드나 (판정 M3 의 미측정 위험) ----------------
+  //
+  // sparse pane 에서 격자가 80 이다가 긴 줄이 오면 93 으로 뛴다. 그 순간 렌더러는
+  // `term.resize` 를 부르고 xterm 은 리플로우한다 — **심어 둔 히스토리가 그때 흔들리는지**
+  // 아무도 안 쟀다. 여기서 격자를 일부러 흔들어 놓고 히스토리를 다시 센다.
+  const beforeJump = { baseY: dump.baseY, historyLines: inHistory, first: firstHistory, last: lastHistory, cols: dump.cols }
+  await run(paneId, RULER, { settleMs: 1800 })
+  await sleep(1200)
+  const afterDump = (await app.dump()).dump
+  const afterHistory = afterDump.scrollback.filter((line) => line.includes('HIST ')).length
+  const afterFirst = afterDump.scrollback.find((line) => line.includes('HIST ')) ?? null
+  const afterLast = [...afterDump.scrollback].reverse().find((line) => line.includes('HIST ')) ?? null
+  normal.gridJump = {
+    note: '긴 줄을 흘려 격자를 넓힌 뒤 스크롤백을 다시 센다 (판정 M3 이 남긴 미측정 위험)',
+    before: beforeJump,
+    after: { baseY: afterDump.baseY, historyLines: afterHistory, first: afterFirst, last: afterLast, cols: afterDump.cols },
+    gridChanged: afterDump.cols !== dump.cols,
+    historyKept: afterHistory >= inHistory && afterFirst === firstHistory,
+    shot: (await app.termShot('t5-grid-jump')).file,
+  }
+  console.log('T5 격자 점프', dump.cols, '→', afterDump.cols, '· 히스토리', inHistory, '→', afterHistory,
+    normal.gridJump.historyKept ? '유지' : '흔들림')
   await app.stop()
 
   // --- 알트 판 ---

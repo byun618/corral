@@ -19,6 +19,7 @@ export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(impo
 export const REPO_DIR = path.dirname(APP_DIR)
 export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-345-terminal-view/raw/claude')
 export const FIXTURE_DIR = path.join(APP_DIR, 'scripts/l345/fixtures')
+export const SCRIPT_DIR = path.join(APP_DIR, 'scripts/l345')
 
 /** 사용자의 `default` 세션을 코드 레벨에서 막는다 (01-criteria.md §0.1). */
 export function socketPath(session = SESSION) {
@@ -335,13 +336,69 @@ export async function reclaimShell(paneId) {
   return { ok: false, attempts: 5, names }
 }
 
+/**
+ * 제3 오라클용 파이썬 환경. `wcwidth` 만 들어 있다.
+ *
+ * 시스템 파이썬은 PEP 668 로 잠겨 있어 전역 설치가 막힌다. 스크래치패드에 venv 를 하나 만들고
+ * 거기에만 깐다 — 저장소에는 안 들어간다. 재현 절차는 `raw/claude/README.md` 에 있다.
+ */
+export async function oraclePython() {
+  const dir = path.join(os.tmpdir(), 'l345-wcwidth-venv')
+  const python = path.join(dir, 'bin', 'python')
+  if (!fs.existsSync(python)) {
+    await new Promise((resolve, reject) => {
+      execFile('python3', ['-m', 'venv', dir], (error) => (error ? reject(error) : resolve()))
+    })
+    await new Promise((resolve, reject) => {
+      execFile(path.join(dir, 'bin', 'pip'), ['install', '--quiet', 'wcwidth'], (error) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+  }
+  return python
+}
+
+/** 문자열을 자소 군집으로 자른다 — 렌더러(xterm graphemes)와 같은 UAX #29 경계다. */
+const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' })
+export function clustersOf(text) {
+  return [...segmenter.segment(text)].map((part) => part.segment)
+}
+
+/** 군집들의 폭을 제3 오라클(`wcwidth`)에게 묻는다. 한 번의 프로세스로 몰아서 묻는다. */
+export async function oracleWidths(clusters) {
+  const python = await oraclePython()
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, [path.join(SCRIPT_DIR, 'oracle-width.py')])
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (chunk) => (out += chunk))
+    child.stderr.on('data', (chunk) => (err += chunk))
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error('oracle-width.py 실패: ' + err))
+      resolve(JSON.parse(out))
+    })
+    child.stdin.end(JSON.stringify(clusters))
+  })
+}
+
 /** pane 의 진짜 PTY 격자. API 에는 cols 가 없어서 셸에게 묻는 것이 유일한 진실이다. */
 export async function ptyGrid(paneId) {
   await run(paneId, 'clear; stty size', { settleMs: 900 })
   const result = await request('pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
-  const match = /(\d+)\s+(\d+)/.exec(result.read.text)
-  if (!match) throw new Error('stty size 를 못 읽었다: ' + JSON.stringify(result.read.text.slice(0, 200)))
-  return { rows: Number(match[1]), cols: Number(match[2]) }
+  // **줄 전체가 숫자 두 개인 줄**만 받는다 (판정 L1). 예전 정규식은 화면 아무 데서나 숫자
+  // 두 개를 집어서 프롬프트의 `+111 !58` 이나 시계 `07:12:59` 를 PTY 크기로 적었다
+  // (`40-grid-scrollback.json` 의 `{rows:0, cols:39}` 가 그것이다). 명령 자체가 화면에 남으므로
+  // 뒤에서부터 찾는다 — 마지막으로 나오는 그런 줄이 출력이다.
+  const line = result.read.text
+    .split('\n')
+    .map((row) => row.trim())
+    .reverse()
+    .find((row) => /^\d+\s+\d+$/.test(row))
+  if (line === undefined) {
+    throw new Error('stty size 를 못 읽었다: ' + JSON.stringify(result.read.text.slice(0, 200)))
+  }
+  const [rows, cols] = line.split(/\s+/).map(Number)
+  return { rows, cols }
 }
 
 /** 픽스처를 pane 에서 실행한다. */

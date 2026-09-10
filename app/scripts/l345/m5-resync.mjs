@@ -100,6 +100,48 @@ const out = {}
     // 다음 표본이 앞 표본의 심장박동 위상을 물려받지 않게 흩는다.
     await sleep(300 + i * 170)
   }
+  // --- idle 변형 (판정 M4) ------------------------------------------------
+  // 위 6회는 표본 사이 간격이 짧아 **전부 hot(250ms) 구간**에서 났다. 그런데 약속 창
+  // `recoveryWindowMs` 를 지탱하는 것은 idle(2000ms) 쪽이다 — 지탱하는 경로를 한 번도 안 재고
+  // "약속 안에 들어왔다"고 쓴 것이라 판정이 보류로 갔다. 여기서는 매 표본 전에
+  // **HOT_WINDOW_MS(10초) 넘게 화면을 정지시켜** idle 로 떨어뜨린 뒤 잰다.
+  const idleRounds = []
+  for (let i = 0; i < 4; i++) {
+    const beforeIdle = (await app.state()).state.terminal
+    await sleep(12_000) // > HOT_WINDOW_MS. 이 사이 화면이 안 바뀌므로 심장박동이 idle 로 내려간다.
+    const stateBefore = (await app.state()).state.terminal
+    // **정말 조용했나**를 증거로 남긴다. 프롬프트에 시계가 있는 셸이면 화면이 매초 바뀌어
+    // hot 에서 안 내려온다 — 그러면 이 표본은 idle 을 잰 것이 아니다.
+    const framesDuringIdle = stateBefore.frames - beforeIdle.frames
+    const readsDuringIdle = stateBefore.reads - beforeIdle.reads
+    const marker = `R2IDLE${i}`
+    const at = Date.now()
+    await request('pane.send_text', { pane_id: paneId, text: `printf '${marker}\n'\n` })
+    let convergedMs = null
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+      const screen = await screenOf(app)
+      if (screen.includes(marker)) {
+        convergedMs = Date.now() - at
+        break
+      }
+      await sleep(40)
+    }
+    idleRounds.push({
+      i,
+      marker,
+      convergedMs,
+      idleGapMs: 12_000,
+      framesDuringIdle,
+      readsDuringIdle,
+      // 12초 동안 프레임이 0장이어야 화면이 정지한 것이고, 읽기 횟수는 idle 주기(2000ms)에
+      // 맞게 6~7회여야 한다. 이 두 값이 그 표본이 정말 idle 이었다는 증거다.
+      wasIdle: framesDuringIdle === 0 && readsDuringIdle <= 9,
+    })
+    console.log('R2 idle round', i, convergedMs, 'ms')
+  }
+  const idleConverged = idleRounds.map((round) => round.convergedMs).filter((value) => value !== null)
+
   const converged = rounds.map((round) => round.convergedMs).filter((value) => value !== null)
   const before = ''
   const after = await screenOf(app)
@@ -114,12 +156,26 @@ const out = {}
     medianMs: converged.length ? converged.slice().sort((a, b) => a - b)[Math.floor(converged.length / 2)] : null,
     missed: rounds.length - converged.length,
     withinPromise: converged.length === rounds.length && Math.max(...converged) <= policy.recoveryWindowMs,
+    idle: {
+      note: '표본마다 12초 정지시켜 idle(2000ms) 구간으로 떨어뜨린 뒤 잰 값 (판정 M4)',
+      rounds: idleRounds,
+      convergedAll: idleConverged,
+      worstMs: idleConverged.length ? Math.max(...idleConverged) : null,
+      medianMs: idleConverged.length
+        ? idleConverged.slice().sort((a, b) => a - b)[Math.floor(idleConverged.length / 2)]
+        : null,
+      missed: idleRounds.length - idleConverged.length,
+      allSamplesWereIdle: idleRounds.every((round) => round.wasIdle),
+      withinPromise:
+        idleConverged.length === idleRounds.length && Math.max(...idleConverged) <= policy.recoveryWindowMs,
+    },
     pollMs: 40,
     before,
     after: after.split('\n').slice(0, 4),
     shot: (await app.termShot('r2-after')).file,
   }
   console.log('R2 worst', out.r2.worstMs, 'ms / 약속', policy.recoveryWindowMs, 'dropped', dropped)
+  console.log('R2 idle worst', out.r2.idle.worstMs, 'ms / 약속', policy.recoveryWindowMs, '놓침', out.r2.idle.missed)
   await app.stop()
 }
 

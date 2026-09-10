@@ -37,7 +37,7 @@ const before = (await app.dump()).dump
 const startFrames = (await app.state()).state.terminal.frames
 
 // --- ① 주기 재생 20회 이상 ------------------------------------------------
-// 하트비트가 hot 1000ms / idle 3000ms 다. 25회를 확실히 넘기려면 넉넉히 기다린다.
+// 하트비트가 hot 250ms / idle 2000ms 다 (출고값). 25회를 확실히 넘기려면 넉넉히 기다린다.
 const shots = []
 const hashes = []
 const deadline = Date.now() + 80_000

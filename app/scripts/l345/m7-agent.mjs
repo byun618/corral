@@ -15,10 +15,27 @@
 // ②③④ 는 결국 "스냅샷 행 == 화면 행"으로 한 번에 검사된다. 기준선을 herdr 스냅샷으로 두는 것이
 // 여기서는 맞다 — T1 과 달리 이 항목이 묻는 것은 *herdr 화면의 재현*이지 원본 바이트와의 일치가
 // 아니다 (에이전트 TUI 는 원본 바이트를 따로 얻을 방법이 없다). T1 이 그 일치를 이미 증명했다.
+//
+// ## 알트 판이라는 것을 **먼저 증명한다** (판정 H1)
+//
+// 1차 측정은 "에이전트를 띄웠으니 알트겠지"로 넘어갔고, 실제로는 둘 다 일반 버퍼였다
+// (`term.scrollback` 의 씨앗이 claude 32줄 · codex 13줄). 통과선이 요구하는 것은 **전체화면
+// TUI pane** 이므로 그 화면은 T4 의 대상이 아니었다.
+//
+// 판별자는 **스크롤백 씨앗 0줄**이다. 알트 판은 `visible`(알트 버퍼)과 `recent_unwrapped`
+// (host 버퍼)의 꼬리가 안 맞아 `historyAbove` 가 빈 배열을 준다. 다만 **씨앗 0 하나로는
+// 모자라다** — 히스토리가 없는 새 pane 도 0이다. 그래서 순서를 이렇게 박는다:
+//
+//   ① pane 에 히스토리 30줄을 심는다 → ② 붙어서 씨앗 > 0 을 확인한다(판별자가 살아 있다)
+//   → ③ TUI 를 띄운다 → ④ 다시 붙어서 씨앗 == 0 이면 **알트 진입 확정**
+//
+// 판정 수치는 ④가 확정된 대상에서만 낸다. 에이전트(claude·codex)도 같은 절차로 돌려서
+// **"에이전트가 알트를 쓰는가"(판정 §6)에 실측으로 답한다** — 이건 T4 의 판정 수치가 아니라
+// 그 질문의 답이다.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { killFixtures, pct, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { killFixtures, pct, reclaimShell, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const exec = promisify(execFile)
 const out = {}
@@ -47,18 +64,67 @@ const snapshotRows = (text) => {
   }
   console.log('agents', JSON.stringify(agents))
 
-  const cases = []
-  for (const agent of agents.slice(0, 2)) {
-    await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
-    await sleep(400)
-    await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 600 })
-    // 에이전트를 격리 pane 에서 띄운다. 아무 일도 시키지 않는다 — 화면만 본다.
-    await run(paneId, agent.name, { settleMs: 12_000 })
+  /**
+   * 대상 목록. `vim` 이 **판정용**이다 — 알트 진입이 확실하고, `-O` 세로 분할이라 세로
+   * 테두리(`│`)가 생겨 깨짐 정의 ①(테두리 정렬)이 실제로 검사할 것이 있다. 1차 측정의
+   * claude 팔은 `borderStartColumns: []` 라 ①이 아무것도 안 봤다 (판정 H1 보조 근거).
+   */
+  const subjects = [
+    {
+      key: 'vim',
+      label: 'vim -O (알트 확인용 · 판정 대상)',
+      judged: true,
+      launch: "vim -u NONE -O /tmp/l345-t4-left.txt /tmp/l345-t4-right.txt",
+      settleMs: 3500,
+      quit: async () => {
+        await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
+        await sleep(300)
+        await request('pane.send_text', { pane_id: paneId, text: ':qa!\n' }).catch(() => {})
+        await sleep(800)
+      },
+    },
+    ...agents.map((agent) => ({
+      key: agent.name,
+      label: `${agent.name} (에이전트 — 판정 §6 질문의 답)`,
+      judged: false,
+      launch: agent.name,
+      settleMs: 12_000,
+      quit: async () => {
+        for (let i = 0; i < 2; i++) {
+          await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
+          await sleep(600)
+        }
+      },
+    })),
+  ]
 
-    const app = await startApp({ name: `agent-${agent.name}` })
+  // vim 이 열 파일 두 개. 내용이 있어야 분할이 눈에 보인다.
+  await run(paneId, "printf 'LEFT 1\\nLEFT 2\\nLEFT 3\\n' > /tmp/l345-t4-left.txt", { settleMs: 400 })
+  await run(paneId, "printf 'RIGHT 1\\nRIGHT 2\\nRIGHT 3\\n' > /tmp/l345-t4-right.txt", { settleMs: 400 })
+
+  const cases = []
+  for (const subject of subjects) {
+    await reclaimShell(paneId)
+    // ① 히스토리를 심는다 — 판별자(씨앗 0줄)가 살아 있는지 먼저 보이기 위해서다.
+    await run(paneId, 'clear; for i in $(seq 1 30); do echo "T4 HIST $i"; done', { settleMs: 1200 })
+
+    const app = await startApp({ name: `agent-${subject.key}` })
     await sleep(1500)
+
+    // ② 일반 판에서 붙어 본다 — 씨앗이 0보다 커야 판별자가 의미를 갖는다.
+    await app.selectPane(paneId)
+    await sleep(3000)
+    const seededBefore = (await app.state()).state.terminal.seededLines
+
+    // ③ TUI 를 띄우고 ④ 다시 붙는다.
+    await run(paneId, subject.launch, { settleMs: subject.settleMs })
+    await app.selectPane(null)
+    await sleep(600)
     await app.selectPane(paneId)
     await sleep(4000)
+    const seededAfter = (await app.state()).state.terminal.seededLines
+    const altConfirmed = seededBefore !== null && seededBefore > 0 && seededAfter === 0
+    console.log('T4', subject.key, '씨앗', seededBefore, '→', seededAfter, altConfirmed ? '알트 확정' : '알트 아님')
 
     // 같은 순간의 herdr 스냅샷과 corral 화면을 맞춰 본다. 화면이 계속 움직이면 다시 뜬다.
     let pair = null
@@ -74,8 +140,18 @@ const snapshotRows = (text) => {
       await sleep(600)
     }
     if (pair === null) {
-      cases.push({ agent: agent.name, settled: false, note: '화면이 정지하지 않아 비교 쌍을 못 얻었다' })
+      cases.push({
+        subject: subject.key,
+        label: subject.label,
+        judged: subject.judged,
+        seededBefore,
+        seededAfter,
+        altConfirmed,
+        settled: false,
+        note: '화면이 정지하지 않아 비교 쌍을 못 얻었다',
+      })
       await app.stop()
+      await subject.quit()
       continue
     }
 
@@ -101,32 +177,39 @@ const snapshotRows = (text) => {
     const duplicated = [...screenCount.entries()].filter(([line, n]) => n > (snapCount.get(line) ?? 0))
 
     const item = {
-      agent: agent.name,
+      subject: subject.key,
+      label: subject.label,
+      judged: subject.judged,
+      seededBefore,
+      seededAfter,
+      altConfirmed,
       settled: true,
       rowsCompared: rows,
       mismatchedRows: mismatched.length,
       mismatchSample: mismatched.slice(0, 6),
       borderStartColumns: [...borderColumns].sort((a, b) => a - b),
       borderAligned: borderColumns.size <= 1,
+      borderChecked: borderColumns.size > 0,
       ghostRows: ghosts.length,
       duplicatedRows: duplicated.length,
       duplicatedSample: duplicated.slice(0, 4),
       broken: mismatched.length > 0 || ghosts.length > 0 || duplicated.length > 0,
-      shot: (await app.termShot(`t4-${agent.name}`)).file,
-      fullShot: (await app.shot(`t4-${agent.name}-full`)).file,
+      shot: (await app.termShot(`t4-${subject.key}`)).file,
+      fullShot: (await app.shot(`t4-${subject.key}-full`)).file,
       screen: screen.filter((line) => line !== '').slice(0, 20),
     }
     cases.push(item)
-    console.log('T4', agent.name, JSON.stringify({ ...item, screen: undefined, mismatchSample: undefined, shot: undefined, fullShot: undefined }))
+    console.log(
+      'T4',
+      subject.key,
+      JSON.stringify({ ...item, screen: undefined, mismatchSample: undefined, shot: undefined, fullShot: undefined }),
+    )
     await app.stop()
-
-    await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
-    await sleep(600)
-    await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
-    await sleep(600)
+    await subject.quit()
     await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 800 })
   }
 
+  const judged = cases.filter((item) => item.judged)
   out.t4 = {
     brokenDefinition: {
       '①': '테두리 어긋남 — 박스 문자로 시작하는 행들의 시작 열이 하나로 모이지 않으면 깨짐',
@@ -134,7 +217,14 @@ const snapshotRows = (text) => {
       '③': '잔상 — 스냅샷에 없는 글자가 화면에 남아 있으면 깨짐',
       '④': '행 밀림 — 스냅샷 행 i 와 화면 행 i 가 다르면 깨짐',
     },
+    altDiscriminator:
+      '히스토리 30줄을 심고 붙어 씨앗 > 0 을 확인한 뒤 TUI 를 띄우고 다시 붙는다. 씨앗 == 0 이면 알트 진입 확정 (판정 H1)',
     agentsAvailable: agents,
+    judgedSubjects: judged.map((item) => item.subject),
+    altConfirmedAll: judged.length > 0 && judged.every((item) => item.altConfirmed),
+    agentUsesAltScreen: cases
+      .filter((item) => !item.judged)
+      .map((item) => ({ agent: item.subject, seededBefore: item.seededBefore, seededAfter: item.seededAfter, alt: item.altConfirmed })),
     cases,
   }
 }

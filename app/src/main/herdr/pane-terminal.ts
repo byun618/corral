@@ -36,6 +36,7 @@ import type {
   TerminalReadReason,
   TerminalState,
 } from '../../shared/types.js'
+import { displayWidth } from '../../shared/width.js'
 import { buildScreenFrame, buildScrollbackSeed, historyAbove, splitRows } from '../../shared/frame.js'
 import { log } from '../log.js'
 import { request } from './request.js'
@@ -120,6 +121,27 @@ function dropsPaneEvents(): boolean {
 }
 
 /**
+ * 첫 붙기를 **n 번 실패시킨다** — H2 의 재현 스위치 (`CORRAL_INJECT_ATTACH_FAIL=<n>`).
+ *
+ * 세대마다 카운터가 새로 찬다. n 번 실패한 뒤에는 성공해야 한다 — 안 그러면 "복구했다"를
+ * 증명할 수 없고 "영영 안 뜬다"만 다시 보게 된다.
+ */
+let attachFailBudget = 0
+let attachFailGeneration = -1
+
+function injectedAttachFailure(generation: number): boolean {
+  const want = Number(process.env.CORRAL_INJECT_ATTACH_FAIL)
+  if (!Number.isFinite(want) || want <= 0) return false
+  if (attachFailGeneration !== generation) {
+    attachFailGeneration = generation
+    attachFailBudget = want
+  }
+  if (attachFailBudget <= 0) return false
+  attachFailBudget -= 1
+  return true
+}
+
+/**
  * 화면이 그대로여도 프레임을 보낸다 — T3 계측 스위치.
  *
  * 평시에는 같은 스냅샷이면 프레임을 안 보낸다(유휴 비용 0). 그런데 기준 T3 은 **"정지 화면에
@@ -155,6 +177,16 @@ export class PaneTerminal {
   private frames = 0
   private reads = 0
   private gridCheckedAt = 0
+  /** 이번 격자 갱신 창에서 본 최대 폭. 창이 닫힐 때 줄이기의 근거가 된다 (M2). */
+  private windowMaxCols = 0
+  /**
+   * **붙기가 성공한 세대.** 이 값이 현재 세대와 다르면 렌더러에는 아직 이 pane 의 화면이
+   * 하나도 안 갔다 — 그 상태에서 `screen` 프레임을 보내면 렌더러 게이트가 전부 버리고
+   * (`TerminalView.tsx` 의 `kind !== 'attach'` 검사) **이전 pane 의 화면이 그대로 남는다**.
+   */
+  private attachedGeneration: number | null = null
+  /** 세대마다 한 번만 쓰는 즉시 재시도 티켓. 없으면 심장박동이 맡는다. */
+  private attachRetry = false
   private apiRows: number | null = null
   private apiLayoutCols: number | null = null
   /** 아직 안 보낸 입력. 텍스트는 이어 붙이고 특수키는 순서를 지켜 따로 담는다. */
@@ -209,8 +241,11 @@ export class PaneTerminal {
     this.seededLines = null
     this.lastSnapshot = ''
     this.observedCols = 0
+    this.windowMaxCols = 0
     this.grid = null
     this.gridCheckedAt = 0
+    this.attachedGeneration = null
+    this.attachRetry = true
     this.apiRows = null
     this.apiLayoutCols = null
     this.inputQueue = []
@@ -392,18 +427,33 @@ export class PaneTerminal {
    *
    * 좁게 잡아 잘릴 걱정은 없다. 프레임은 전부 스냅샷 하나에서 나오고, 관측 폭은 **그 스냅샷을
    * 읽는 그 자리에서** 자란다. 지금 격자보다 넓은 줄이 있으면 그 줄을 그리기 **전에** 격자가
-   * 먼저 넓어진다. 관측 폭은 줄지 않으므로 짧은 화면이 왔다고 다시 좁아지지도 않는다.
+   * 먼저 넓어진다. 짧은 화면 한 장에 격자가 출렁이지도 않는다 — 폭은 창 안에서만 자라고,
+   * **줄어드는 것은 `GRID_REFRESH_MS` 창 경계에서 그 창의 최대 폭까지만**이다 (M2).
    */
   private async resolveGrid(snapshot: string, force = false): Promise<PaneGrid> {
-    // 관측 폭은 **줄지 않는다.** 한 프레임에 짧은 줄만 있었다고 격자를 줄이면 다음 프레임의
-    // 긴 줄이 잘린다 — 그게 ⓖ6 이 말한 재생 정합성 붕괴다. 이 계산은 네트워크를 안 쓴다.
+    // 관측 폭은 **한 창(window) 안에서는 줄지 않는다.** 한 프레임에 짧은 줄만 있었다고 즉시
+    // 줄이면 다음 프레임의 긴 줄이 잘린다 — 그게 ⓖ6 이 말한 재생 정합성 붕괴다.
+    // 이 계산은 네트워크를 안 쓴다.
     for (const line of splitRows(snapshot)) {
       const width = displayWidth(line)
+      if (width > this.windowMaxCols) this.windowMaxCols = width
       if (width > this.observedCols) this.observedCols = width
     }
 
     if (force || this.grid === null || Date.now() - this.gridCheckedAt > GRID_REFRESH_MS) {
       await this.refreshGridFromApi()
+      // **창 경계에서는 줄이기도 한다** (판정 M2 — grok·claude 지적).
+      //
+      // 관측 폭을 영영 안 줄이면 herdr pane 이 실제로 좁아졌을 때 corral 이 못 따라가고,
+      // 그 뒤로는 pane 보다 넓은 격자에 계속 그린다(오른쪽에 빈 열). 그렇다고 프레임마다
+      // 줄이면 짧은 화면 한 장에 격자가 출렁인다. 그래서 **`GRID_REFRESH_MS` 창 안에서 본
+      // 최대 폭**까지만 줄인다 — 창 하나(5초)를 통째로 짧게 산 화면이라야 줄어든다.
+      // 하한 80 이 있어 `clear` 로 빈 화면이 와도 80 밑으로는 안 내려간다.
+      if (this.windowMaxCols > 0 && this.windowMaxCols < this.observedCols) {
+        log('term.grid.shrink', { from: this.observedCols, to: this.windowMaxCols })
+        this.observedCols = this.windowMaxCols
+      }
+      this.windowMaxCols = 0
     }
 
     // **layout 힌트는 열 수의 오라클이 아니다.** rect 는 herdr 창의 배치 기하라 herdr 자신의
@@ -465,6 +515,7 @@ export class PaneTerminal {
       return true
     }
     try {
+      if (injectedAttachFailure(generation)) throw new Error('주입된 붙기 실패 (CORRAL_INJECT_ATTACH_FAIL)')
       const visible = await this.readSnapshot('visible', 'attach')
       if (stale('attach.visible')) return
       const grid = await this.resolveGrid(visible.text, true)
@@ -503,8 +554,19 @@ export class PaneTerminal {
         reason: 'attach',
         revision: visible.revision,
       })
+      // **여기까지 와야 붙은 것이다.** 늦은 세대 검사들을 다 지난 뒤에 표시한다.
+      this.attachedGeneration = generation
     } catch (error) {
-      log('term.attach.failed', { paneId: target.paneId, error: String(error) })
+      // **여기서 끝내면 옛 pane 의 화면이 영영 남는다** (판정 H2). 렌더러는 새 세대의
+      // `screen` 을 전부 버리므로 `attach` 프레임이 다시 나오기 전까지 화면은 이전 pane 이고,
+      // `alive` 는 true 라 죽음 표시도 안 뜬다. 그래서 **다시 붙는다** — 세대마다 즉시
+      // 재시도 한 번, 그 뒤로는 심장박동이 맡는다 (readOnce 가 붙기부터 다시 한다).
+      log('term.attach.failed', { paneId: target.paneId, generation, error: String(error) })
+      if (generation === this.generation && this.attachRetry) {
+        this.attachRetry = false
+        log('term.attach.retry', { paneId: target.paneId, generation })
+        this.dirty = this.dirty ?? 'attach'
+      }
     } finally {
       if (generation === this.generation) {
         this.reading = false
@@ -523,6 +585,13 @@ export class PaneTerminal {
     if (target === null || generation !== this.generation || !this.alive) return
     if (this.reading) {
       this.dirty = this.dirty ?? reason
+      return
+    }
+    // **아직 한 번도 못 붙었으면 화면 읽기가 아니라 붙기부터 다시 한다** (판정 H2).
+    // 여기서 `screen` 을 보내면 렌더러가 버려서 옛 화면이 남고, 설령 통과시킨다 해도
+    // 스크롤백 씨앗이 빠진 채 굳는다 — 붙기를 통째로 다시 하는 편이 싸고 정직하다.
+    if (this.attachedGeneration !== this.generation) {
+      await this.bootstrap(generation)
       return
     }
     this.reading = true
@@ -615,8 +684,12 @@ export class PaneTerminal {
    * 특수키. `pane.send_text` 로 보내면 xterm.js 가 만든 바이트가 나가는데, 그건 **corral 쪽
    * 터미널의 모드**(DECCKM 등)로 만든 것이라 pane 안 TUI 가 기대하는 모양과 다를 수 있다.
    * 스냅샷에는 모드가 안 실리므로 corral 은 그 모드를 알 수 없다 — herdr 는 안다.
-   * 그래서 방향키·Esc·Tab·Enter 는 이름으로 보낸다
-   * (실측: `Home`·`PageUp` 은 거부되고 `Up`/`Down`/`Left`/`Right`/`Escape`/`Tab`/`Enter` 는 통과).
+   * 그래서 방향키·Esc·Tab 은 이름으로 보낸다
+   * (실측: `Home`·`PageUp` 은 거부되고 `Up`/`Down`/`Left`/`Right`/`Escape`/`Tab` 은 통과).
+   *
+   * **Enter 는 일부러 이 목록에 없다** (판정 L2 — 주석이 코드보다 앞서 있었다). xterm 의
+   * `onData` 가 이미 `\r` 로 흘려 주고, 그 경로가 I2·I4 에서 실측으로 확인됐다. 이름으로
+   * 한 번 더 보내면 같은 키가 두 번 간다 — I4 를 고치다 그 함정을 밟고 되돌린 적이 있다.
    */
   sendKeys(keys: readonly string[]): Promise<{ ok: boolean; error?: string }> {
     return this.enqueue({ kind: 'keys', keys: [...keys] })
@@ -720,39 +793,3 @@ function paneIdOf(frame: PushFrame): string | null {
   return pane === null ? null : readString(pane, 'pane_id')
 }
 
-/**
- * ANSI 가 섞인 행의 **표시 폭**. SGR 을 걷어내고 wide char 를 2칸으로 센다.
- *
- * 정밀한 유니코드 폭 계산은 xterm.js 가 렌더러에서 한다. 여기서 필요한 것은 격자를 정할
- * **하한**뿐이라 CJK·전각 구간만 2로 세는 근사로 충분하다 — 과소평가하면 격자가 작아져
- * 행이 접히므로, 애매하면 넓게 세는 쪽으로 기운다.
- */
-export function displayWidth(line: string): number {
-  // ANSI 제어열을 걷어낸다. 제어문자가 패턴에 들어가는 것이 이 함수의 목적이라 규칙을 끈다.
-  // eslint-disable-next-line no-control-regex
-  const csi = /\x1b\[[0-9;:?]*[ -/]*[@-~]/g
-  // eslint-disable-next-line no-control-regex
-  const osc = /\x1b[\]P][^\x07\x1b]*(\x07|\x1b\\)?/g
-  const plain = line.replace(csi, '').replace(osc, '')
-  let width = 0
-  for (const ch of plain) {
-    const code = ch.codePointAt(0) ?? 0
-    if (code === 0x200d) continue
-    width += isWide(code) ? 2 : 1
-  }
-  return width
-}
-
-function isWide(code: number): boolean {
-  return (
-    (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe30 && code <= 0xfe6f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    (code >= 0xffe0 && code <= 0xffe6) ||
-    (code >= 0x1f300 && code <= 0x1faff) ||
-    (code >= 0x20000 && code <= 0x3fffd)
-  )
-}

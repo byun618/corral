@@ -20,7 +20,9 @@ import unicodeGraphemes from '@xterm/addon-unicode-graphemes'
 import {
   FIXTURE_DIR,
   RAW_DIR,
+  clustersOf,
   compareGrids,
+  oracleWidths,
   playFixture,
   ptyGrid,
   request,
@@ -114,6 +116,132 @@ function baselineGrid(term) {
   return rows
 }
 
+
+/**
+ * **기준선 ①(판정용) — 제3 오라클로 직접 배치한 격자.**
+ *
+ * 1차 측정은 기준선을 헤드리스 xterm 의 `getCell` 로 만들었고, 그 도구가 이모지를 1칸으로
+ * 세는 바람에 멀쩡한 화면이 98.92% 로 나왔다 (판정 §3 — herdr·렌더러·`wcwidth`·UAX #11 이
+ * 전부 2칸으로 일치하는데 기준선만 1칸이었다). **재는 자와 재이는 자가 같은 폭 표를 쓰면
+ * 그 항목은 무효다.** 그래서 기준선의 폭을 `wcwidth`(파이썬)에서 가져온다.
+ *
+ * 여기 있는 것은 터미널 에뮬레이터가 아니라 **픽스처가 실제로 쓰는 것만** 처리하는 배치기다:
+ * SGR(무시) · `ED`(2J) · `CUP`(H) · `EL`(K) · 알트 전환(?1049h/l) · CR/LF/BS/TAB · 그리고 글자.
+ * 픽스처 3종을 눈으로 확인하고 그 범위를 정했다 (커서 이동은 `\033[H` 뿐이다).
+ * 범위 밖 시퀀스가 오면 **조용히 넘기지 않고 세어서 원자료에 싣는다.**
+ */
+async function oracleGrid(bytes, cols, rows) {
+  const widths = new Map()
+  const unique = [...new Set(clustersOf(bytes.replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, '')))]
+  const measured = await oracleWidths(unique)
+  unique.forEach((cluster, index) => widths.set(cluster, measured[index]))
+
+  const blank = () => ({ ch: ' ', w: 1, fg: 'default', bg: 'default', bold: false, inverse: false, underline: false })
+  let grid = Array.from({ length: rows }, () => Array.from({ length: cols }, blank))
+  let x = 0
+  let y = 0
+  let unhandled = 0
+
+  const clearAll = () => {
+    grid = Array.from({ length: rows }, () => Array.from({ length: cols }, blank))
+  }
+  const newline = () => {
+    y += 1
+    if (y >= rows) {
+      grid.shift()
+      grid.push(Array.from({ length: cols }, blank))
+      y = rows - 1
+    }
+  }
+  const put = (cluster, width) => {
+    if (width === 0) return
+    if (x + width > cols) {
+      x = 0
+      newline()
+    }
+    grid[y][x] = { ...blank(), ch: cluster, w: width }
+    if (width === 2) grid[y][x + 1] = { ...blank(), ch: '', w: 0 }
+    x += width
+  }
+
+  const source = [...bytes]
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i]
+    if (ch === '\x1b') {
+      const window = source.slice(i, i + 64).join('')
+      const csi = /^\x1b\[([0-9;:?]*)([ -/]*)([@-~])/.exec(window)
+      if (csi) {
+        const [whole, params, , final] = csi
+        i += whole.length - 1
+        const numbers = params.replace('?', '').split(';').map((value) => (value === '' ? null : Number(value)))
+        if (final === 'm') continue
+        if (final === 'J') {
+          if (numbers[0] === 2) clearAll()
+          else for (let ty = y; ty < rows; ty++) for (let tx = ty === y ? x : 0; tx < cols; tx++) grid[ty][tx] = blank()
+          continue
+        }
+        if (final === 'K') {
+          for (let tx = x; tx < cols; tx++) grid[y][tx] = blank()
+          continue
+        }
+        if (final === 'H' || final === 'f') {
+          y = Math.min(rows - 1, Math.max(0, (numbers[0] ?? 1) - 1))
+          x = Math.min(cols - 1, Math.max(0, (numbers[1] ?? 1) - 1))
+          continue
+        }
+        if ((final === 'h' || final === 'l') && params.startsWith('?')) {
+          // 알트 전환·커서 표시 등. 알트로 들어가고 나올 때는 화면이 갈리므로 비운다.
+          if (numbers[0] === 1049) {
+            clearAll()
+            x = 0
+            y = 0
+          }
+          continue
+        }
+        if (final === 'G') {
+          x = Math.min(cols - 1, Math.max(0, (numbers[0] ?? 1) - 1))
+          continue
+        }
+        unhandled += 1
+        continue
+      }
+      const osc = /^\x1b[\]P][^\x07\x1b]*(\x07|\x1b\\)?/.exec(window)
+      if (osc) {
+        i += osc[0].length - 1
+        continue
+      }
+      unhandled += 1
+      continue
+    }
+    if (ch === '\r') {
+      x = 0
+      continue
+    }
+    if (ch === '\n') {
+      newline()
+      continue
+    }
+    if (ch === '\b') {
+      x = Math.max(0, x - 1)
+      continue
+    }
+    if (ch === '\t') {
+      x = Math.min(cols - 1, (Math.floor(x / 8) + 1) * 8)
+      continue
+    }
+    if (ch < ' ') continue
+    // 글자 — 군집 단위로 집는다. 결합 문자가 뒤따르면 한 칸에 함께 들어간다.
+    let cluster = ch
+    const tail = clustersOf(source.slice(i, i + 12).join(''))[0]
+    if (tail !== undefined && tail.startsWith(ch)) cluster = tail
+    // **코드포인트 개수만큼** 건너뛴다. `source` 는 코드포인트 배열이라 UTF-16 길이를 쓰면
+    // ZWJ 가족(코드포인트 5개 · UTF-16 8칸)에서 세 칸을 더 뛰어 뒤 글자를 먹는다.
+    i += [...cluster].length - 1
+    put(cluster, widths.get(cluster) ?? (await oracleWidths([cluster]))[0])
+  }
+  return { grid, unhandled }
+}
+
 function lastInkedRow(grid, cols) {
   let last = -1
   for (let y = 0; y < grid.length; y++) {
@@ -164,6 +292,8 @@ for (const fixture of FIXTURES) {
   }
   const base = await gridFor('graphemes')
   const base11 = await gridFor('11')
+  // **판정에 쓰는 기준선은 이것이다** — 제3 오라클(`wcwidth`)로 배치한 격자.
+  const oracle = await oracleGrid(bytes, pty.cols, pty.rows)
   fs.writeFileSync(
     path.join(RAW_DIR, 'fixtures', `${fixture.key}-baseline.txt`),
     base.map((row) => rowText(row, pty.cols)).join('\n'),
@@ -173,9 +303,18 @@ for (const fixture of FIXTURES) {
     base11.map((row) => rowText(row, pty.cols)).join('\n'),
   )
 
+  fs.writeFileSync(
+    path.join(RAW_DIR, 'fixtures', `${fixture.key}-baseline-oracle.txt`),
+    oracle.grid.map((row) => rowText(row, pty.cols)).join('\n'),
+  )
+
   // 비교 행 범위 = 기준선에 내용이 있는 마지막 행까지. 그 아래는 pane 프롬프트라 잡음이다.
-  const rows = lastInkedRow(base, pty.cols) + 1
-  const compared = compareGrids(base, dump.grid, { rows, cols: pty.cols })
+  const rows = Math.max(lastInkedRow(oracle.grid, pty.cols), lastInkedRow(base, pty.cols)) + 1
+  // **판정 수치**: 제3 오라클 기준선과의 대조.
+  const compared = compareGrids(oracle.grid, dump.grid, { rows, cols: pty.cols })
+  // 대조 ①: 헤드리스 xterm(graphemes) — 1차 측정이 쓴 기준선. 스타일은 여기서만 나온다.
+  const comparedXterm = compareGrids(base, dump.grid, { rows, cols: pty.cols })
+  // 대조 ②: 헤드리스 xterm(unicode11).
   const compared11 = compareGrids(base11, dump.grid, { rows, cols: pty.cols })
 
   // corral 격자가 PTY 보다 넓을 때, 남는 열이 정말 비어 있나 (좁혀서 통과시키지 않았다는 증거)
@@ -188,10 +327,10 @@ for (const fixture of FIXTURES) {
     }
   }
 
-  // T7 — wide char 시작 열이 어긋나면 그 행이 밀린 것이다.
+  // T7 — wide char 시작 열이 어긋나면 그 행이 밀린 것이다. 기준은 제3 오라클이다.
   const wideRows = []
   for (let y = 0; y < rows; y++) {
-    const a = wideStarts(base[y], pty.cols)
+    const a = wideStarts(oracle.grid[y], pty.cols)
     const b = wideStarts(dump.grid[y], pty.cols)
     const same = a.length === b.length && a.every((cell, i) => cell.x === b[i]?.x && cell.ch === b[i]?.ch)
     if (!same) wideRows.push({ y, baseline: a, renderer: b })
@@ -206,12 +345,26 @@ for (const fixture of FIXTURES) {
     comparedRows: rows,
     comparedCols: pty.cols,
     ...compared,
+    styleMatch: comparedXterm.styleMatch,
+    styleMatchInked: comparedXterm.styleMatchInked,
+    styleDiff: comparedXterm.styleDiff,
     surplusColumns: dump.cols - pty.cols,
     surplusInkedCells: surplusInked,
     wideMismatchRows: wideRows.length,
     wideMismatch: wideRows.slice(0, 6),
     shot: shot.file,
-    baselineMode: '15-graphemes (출고 설정과 같은 폭 모델)',
+    baselineMode: 'wcwidth 오라클 배치 (제3 오라클 — 판정 수치는 이것이다)',
+    unhandledSequences: oracle.unhandled,
+    styleFrom: '헤드리스 xterm(15-graphemes) 기준선 — 스타일은 폭 표와 무관한 SGR 비교다',
+    styleMatchNote: 'styleMatch/styleMatchInked 는 아래 contrastXterm 의 값과 같은 기준선에서 나온다',
+    contrastXterm: {
+      note: '대조 — 1차 측정이 쓴 기준선(헤드리스 xterm getCell, graphemes). 이모지를 1칸으로 세는 도구다 (판정 §3)',
+      textMatch: comparedXterm.textMatch,
+      textMatchInked: comparedXterm.textMatchInked,
+      styleMatch: comparedXterm.styleMatch,
+      styleMatchInked: comparedXterm.styleMatchInked,
+      textDiff: comparedXterm.textDiff,
+    },
     contrastUnicode11: {
       note: '대조 — 기준선만 unicode 11 로 바꿔 잰 값. 차이는 전부 ZWJ·RI 군집의 칸 나눔에서 온다',
       textMatch: compared11.textMatch,
@@ -219,7 +372,8 @@ for (const fixture of FIXTURES) {
       styleMatch: compared11.styleMatch,
       styleMatchInked: compared11.styleMatchInked,
     },
-    baselineText: base.slice(0, rows).map((row) => rowText(row, pty.cols)),
+    baselineText: oracle.grid.slice(0, rows).map((row) => rowText(row, pty.cols)),
+    baselineTextXterm: base.slice(0, rows).map((row) => rowText(row, pty.cols)),
     baselineTextUnicode11: base11.slice(0, rows).map((row) => rowText(row, pty.cols)),
     rendererText: dump.grid.slice(0, rows).map((row) => rowText(row, pty.cols)),
   }
@@ -227,9 +381,10 @@ for (const fixture of FIXTURES) {
     'text',
     (compared.textMatch * 100).toFixed(2) + '%',
     '(내용칸 ' + (compared.textMatchInked * 100).toFixed(2) + '%)',
+    '(대조 xterm ' + (comparedXterm.textMatch * 100).toFixed(2) + '%)',
     'style',
-    (compared.styleMatch * 100).toFixed(2) + '%',
-    '(내용칸 ' + (compared.styleMatchInked * 100).toFixed(2) + '%)',
+    (comparedXterm.styleMatch * 100).toFixed(2) + '%',
+    '(내용칸 ' + (comparedXterm.styleMatchInked * 100).toFixed(2) + '%)',
     'wide 밀림',
     wideRows.length,
     'surplus ink',
@@ -250,7 +405,10 @@ writeRaw('10-t1-fixtures.json', {
   session: process.env.LIFE345_SESSION ?? 'life345-claude',
   paneId,
   pty,
-  baselineRule: '픽스처 원본 바이트 (herdr 의 다른 형식이 아니다)',
+  baselineRule:
+    '픽스처 원본 바이트를 **제3 오라클(python wcwidth)** 폭으로 배치한 격자. ' +
+    '1차 측정의 헤드리스 xterm getCell 기준선은 이모지를 1칸으로 세어 T1 을 보류로 만들었다 (판정 §3) — ' +
+    '그 기준선은 contrastXterm 으로 함께 싣는다. 스타일(SGR)은 폭 표와 무관하므로 xterm 기준선에서 잰다',
   comparisonNote:
     '비교 영역은 pane 의 진짜 PTY 격자. corral 격자가 더 넓을 때 남는 열의 내용 칸 수를 surplusInkedCells 로 함께 싣는다',
   shots,

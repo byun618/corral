@@ -194,6 +194,10 @@ for (let round = 1; round <= TIMES; round++) {
     everyMs: 40,
   })
   // 그 순간 corral 도 그 행을 버렸나 — **이것이 ⓒ 가 묻는 것**이다.
+  // ⓐ·ⓑ 와 **같은 칸**을 남긴다 (낮음 2). herdr 가 그 workspace 를 버린 직후를 한 번 보고,
+  // 그때 이미 맞았는지 / 몇 ms 만에 맞았는지를 적는다. ⓒ 만 이 칸이 없으면 요약의
+  // `처음부터일치` 가 "0/5 가 어긋났다" 로 읽힌다 — 실제로는 칸이 없었을 뿐이다.
+  const firstLook = await compare()
   const corralEmpty = await until(
     async () => !(await app.state()).workspaces.some((row) => row.workspaceId === workspaceId),
     { what: 'corral 에서 workspace 사라짐', timeoutMs: 15000, everyMs: 40 },
@@ -208,6 +212,8 @@ for (let round = 1; round <= TIMES; round++) {
     herdr에서사라짐: herdrEmpty.ok,
     corral에서사라짐: corralEmpty.ok,
     corral반영ms: corralEmpty.ms,
+    처음부터일치: firstLook.일치,
+    수렴ms: firstLook.일치 ? 0 : converged.ms,
     수렴: converged.ok,
     스냅샷재조회: snapshotsSince(mark),
     ...result,

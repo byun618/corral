@@ -166,6 +166,5 @@ const out = {
 console.log(JSON.stringify({ n10: out.n10, n9종료후: out.n9.종료후, a1: out.a1 }, null, 2))
 
 writeRaw('n10-scenario.json', out)
-writeRaw('m6-app-log.ndjson', app.entries().map((entry) => JSON.stringify(entry)).join('\n') + '\n')
 await app.stop()
 await tidySession()

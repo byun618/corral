@@ -110,6 +110,5 @@ out.앱로그 = app
 const shot = await app.shot('n4-both-rows')
 out.최종샷 = shot.file
 writeRaw('n4-launch-failures.json', out)
-writeRaw('m3-app-log.ndjson', app.entries().map((entry) => JSON.stringify(entry)).join('\n') + '\n')
 await app.stop()
 await tidySession()

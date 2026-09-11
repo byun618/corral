@@ -132,6 +132,5 @@ out.결론 = out.cases.map((item) => ({
 console.log(JSON.stringify(out.결론, null, 2))
 
 writeRaw('a5-user-exit.json', out)
-writeRaw('m7-app-log.ndjson', app.entries().map((entry) => JSON.stringify(entry)).join('\n') + '\n')
 await app.stop()
 await tidySession()

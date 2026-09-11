@@ -172,8 +172,6 @@ async function runArm({ name, rounds: count, env }) {
     },
   }
   console.log(JSON.stringify(summary, null, 2))
-  const entries = app.entries()
-  writeRaw(`m2-${name}-app-log.ndjson`, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
   await app.stop()
   await tidySession()
   return { summary, rounds }

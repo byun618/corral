@@ -7,7 +7,6 @@
 // 순간부터 관측될 때까지** 사이드바를 연속으로 찍고, 각 샷과 같은 시각의 `phase` 를 함께 적는다.
 
 import {
-  clickWhenVisible,
   createRowByUi,
   firstWorkspaceId,
   herdrTruth,
@@ -156,7 +155,6 @@ out.corralAfter = (await app.state()).workspaces.map((row) => ({
 }))
 
 writeRaw('n1-create-kinds.json', out)
-writeRaw('m1-app-log.ndjson', app.entries().map((entry) => JSON.stringify(entry)).join('\n') + '\n')
 await sleep(300)
 await app.stop()
 await tidySession()

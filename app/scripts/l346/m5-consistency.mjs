@@ -220,7 +220,6 @@ out.이벤트적용 = app
   .map((entry) => ({ at: entry.at, event: entry.event, changed: entry.changed, note: entry.note }))
 
 writeRaw('n7-list-consistency.json', out)
-writeRaw('m5-app-log.ndjson', app.entries().map((entry) => JSON.stringify(entry)).join('\n') + '\n')
 await sleep(200)
 await app.stop()
 await tidySession()

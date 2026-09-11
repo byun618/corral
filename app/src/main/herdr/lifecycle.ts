@@ -28,7 +28,7 @@
 import type { LaunchRow, LifecycleState, ClosingRow, LaunchPhase, SessionInfo } from '../../shared/types.js'
 import { log } from '../log.js'
 import { defaultSessionWriteBlocked } from './default-session-guard.js'
-import { isRecord, readRecord, readString, type PushFrame } from './protocol.js'
+import { isRecord, readNumber, readRecord, readString, type PushFrame } from './protocol.js'
 import { request } from './request.js'
 
 /** 셸 행 — `agent.start` 를 아예 부르지 않는다는 뜻의 값이다. herdr 의 kind 가 아니다. */
@@ -72,6 +72,9 @@ function injectedTabEnv(): Record<string, string> | null {
 
 /** 포그라운드 프로세스 한 줄 — `pane.process_info` 가 주는 모양 그대로. */
 type ForegroundProcess = { pid: number; name: string; argv0: string; cmdline: string }
+
+/** `pane.process_info` 한 판 — 셸 PID·포그라운드 프로세스 그룹·포그라운드 프로세스들. */
+type PaneProcesses = { shellPid: number | null; foregroundGroupId: number | null; foreground: ForegroundProcess[] }
 
 export type LifecycleHooks = {
   onChange: () => void
@@ -458,6 +461,23 @@ export class Lifecycle {
    *
    * 못 물어보면(요청 실패) **묻는 쪽으로 기운다.** 모르는 채로 죽이는 것보다 한 번 더 묻는 쪽이
    * 싸다 — 이 문의 비대칭이 그것이다.
+   *
+   * # 포그라운드 목록만 보면 갓 만든 셸까지 묻는다 — 그래서 **프로세스 그룹**을 본다
+   *
+   * zsh 가 `.zshrc` 를 읽는 동안에도 포그라운드에는 `tail`·`printf`·`git` 이 떠 있다. 그것만
+   * 보고 물으면 "행을 만들자마자 닫기" 가 매번 확인을 띄운다 (M5 1회차에서 5회 중 3회가 그랬다).
+   *
+   * 가르는 것은 OS 자신이 들고 있다: 셸이 사용자의 명령을 실행하면 **자기 것이 아닌 프로세스
+   * 그룹**을 포그라운드에 앉힌다(job control). rc 를 읽는 동안에는 그럴 일이 없어 포그라운드
+   * 그룹이 셸 자신이다. 실측(`raw/claude/n6-foreground-group.json`):
+   *
+   * | 상태 | `shell_pid` | `foreground_process_group_id` |
+   * | --- | --- | --- |
+   * | rc 읽는 중 (`tail`·`head`·`git`) | 38757 | 38757 — **같다** |
+   * | claude 가 돈다 | 38757 | 39834 |
+   * | 사용자가 친 `sleep 100` | 40184 | 41168 |
+   *
+   * 그래서 규칙은 하나다: **포그라운드 그룹이 셸 자신이면 잃을 것이 없다.**
    */
   async close(input: CloseRequest): Promise<CloseOutcome> {
     const session = this.session
@@ -534,12 +554,17 @@ export class Lifecycle {
     const found = new Set<string>(described.agents)
     for (const paneId of described.paneIds) {
       try {
-        const response = await request(session.socketPath, 'pane.process_info', { pane_id: paneId }, {
-          reason: 'life.close.probe',
-          timeoutMs: 4000,
-        })
+        const response = await request(
+          session.socketPath,
+          'pane.process_info',
+          { pane_id: paneId },
+          { reason: 'life.close.probe', timeoutMs: 4000 },
+        )
         if (response.error) throw new Error(response.error.code ?? 'error')
-        for (const process of readForeground(response.result)) {
+        const processes = readProcesses(response.result)
+        // **셸의 포그라운드가 자기 자신이면 사용자의 일은 돌고 있지 않다.** 아래 주석 참고.
+        if (processes.shellPid !== null && processes.foregroundGroupId === processes.shellPid) continue
+        for (const process of processes.foreground) {
           if (isShell(process)) continue
           found.add(process.argv0.length > 0 ? process.argv0 : process.cmdline)
         }
@@ -617,11 +642,18 @@ function readArgv(result: unknown): string | null {
 }
 
 function readForeground(result: unknown): ForegroundProcess[] {
-  if (!isRecord(result)) return []
+  return readProcesses(result).foreground
+}
+
+function readProcesses(result: unknown): PaneProcesses {
+  const empty: PaneProcesses = { shellPid: null, foregroundGroupId: null, foreground: [] }
+  if (!isRecord(result)) return empty
   const info = readRecord(result, 'process_info')
-  if (info === null) return []
+  if (info === null) return empty
   const list = info['foreground_processes']
-  if (!Array.isArray(list)) return []
+  if (!Array.isArray(list)) {
+    return { shellPid: readNumber(info, 'shell_pid'), foregroundGroupId: readNumber(info, 'foreground_process_group_id'), foreground: [] }
+  }
   const out: ForegroundProcess[] = []
   for (const item of list) {
     if (!isRecord(item)) continue
@@ -633,7 +665,11 @@ function readForeground(result: unknown): ForegroundProcess[] {
       cmdline: readString(item, 'cmdline') ?? '',
     })
   }
-  return out
+  return {
+    shellPid: readNumber(info, 'shell_pid'),
+    foregroundGroupId: readNumber(info, 'foreground_process_group_id'),
+    foreground: out,
+  }
 }
 
 /**

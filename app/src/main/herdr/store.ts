@@ -260,12 +260,25 @@ export class WorkspaceStore {
        * 구간이 있어 갓 만든 탭은 잠시 pane 0 이다. 여기는 **pane 이 실제로 있다가 사라진**
        * 경로라서 0 이 곧 "이제 없다" 다.
        */
-      case 'pane_closed': {
+      /**
+       * `pane_exited` 도 같은 경로다 (LIFE-346 A5 실측).
+       *
+       * 1회차 코드는 `pane_exited` 를 "pane 은 남고 프로세스만 끝났다" 로 읽고 아무것도 안 했다.
+       * 그런데 **사용자가 셸에 `exit` 를 친 경로**를 재 보니 herdr 는 `pane_exited` **한 건만**
+       * 보내고 그 시점에 `pane.list`·`tab.list` 에서 그 pane 과 탭이 이미 사라져 있다
+       * (`raw/claude/a5-user-exit.json`: shell·claude 두 갈래 모두). 그래서 그대로 두면
+       * corral 에만 남는 **유령 행**이 된다 — G1·G2 와 같은 구멍이 다른 문에 있었던 것이다.
+       *
+       * 되돌릴 수 있는 실수다: herdr 가 exit 한 pane 을 들고 있는 판이 있다면 그 pane 의
+       * `pane_updated` 가 다시 오고, `putPane` 이 도로 넣는다.
+       */
+      case 'pane_closed':
+      case 'pane_exited': {
         const id = readString(data, 'pane_id')
-        if (id === null) return { changed: false, note: 'pane_closed 필드 부족' }
+        if (id === null) return { changed: false, note: `${frame.event} 필드 부족` }
         const pane = this.panes.get(id) ?? null
         const had = this.panes.delete(id)
-        if (pane === null) return { changed: false, note: 'pane_closed: 이미 없음(멱등)' }
+        if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: had, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
         const tabGone = this.tabs.delete(pane.tabId)
@@ -290,11 +303,6 @@ export class WorkspaceStore {
         if (pane.agent === next) return { changed: false, note: 'agent_detected: 같은 값' }
         this.panes.set(paneId, { ...pane, agent: next, changedAt: Date.now() })
         return { changed: true, note: released ? `agent_detected: ${agent} 떠남` : `agent_detected: ${agent}` }
-      }
-
-      case 'pane_exited': {
-        // pane 은 남고 프로세스만 끝난 것이다 — 목록에서 지우지 않는다.
-        return { changed: false, note: 'pane_exited: 카운트에 영향 없음' }
       }
 
       case 'layout_updated':

@@ -576,7 +576,7 @@ export class WorkspaceStore {
       tabId,
       // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다.
       agentStatus: readAgentStatus(value, 'agent_status'),
-      agent: readString(value, 'display_agent') ?? readString(value, 'agent') ?? before?.agent ?? null,
+      agent: pickAgent(value, before?.agent ?? null),
       title:
         readString(value, 'title') ??
         readString(value, 'terminal_title_stripped') ??
@@ -600,7 +600,7 @@ export class WorkspaceStore {
     const pane = this.panes.get(paneId)
     if (pane === undefined) return { changed: false, note: `agent_status_changed: 모르는 pane (${paneId})` }
     const status = readAgentStatus(data, 'agent_status')
-    const agent = readString(data, 'display_agent') ?? readString(data, 'agent') ?? pane.agent
+    const agent = pickAgent(data, pane.agent)
     if (pane.agentStatus === status && pane.agent === agent) {
       return { changed: false, note: `agent_status_changed: 같은 값 (${status})` }
     }
@@ -626,6 +626,20 @@ export class WorkspaceStore {
     for (const item of mine) if (item.kind === 'tab') this.putTab(item.value, item.at)
     for (const item of mine) if (item.kind === 'pane') this.putPane(item.value, item.at)
   }
+}
+
+/**
+ * 에이전트 **이름**을 읽는다 — "키가 없다" 와 "값이 null 이다" 를 가른다.
+ *
+ * 옛 규칙(`readString(…) ?? before?.agent`)은 둘을 같게 다뤘다. 그래서 herdr 가 에이전트를
+ * 떼어 낸 뒤(`release_agent`) 보낸 상태 전이에 `agent: null` 이 실려 와도 **이전 이름을 그대로
+ * 붙들었고**, 화면에는 이미 없는 에이전트의 이름표가 남았다 (N8 1회차 실측).
+ * 키가 있으면 herdr 가 값을 말해 준 것이다 — null 이어도 그게 답이다.
+ */
+function pickAgent(source: Record<string, unknown>, fallback: string | null): string | null {
+  if ('display_agent' in source) return readString(source, 'display_agent')
+  if ('agent' in source) return readString(source, 'agent')
+  return fallback
 }
 
 /** `{result:{snapshot:{…}}}` · `{snapshot:{…}}` · `{…}` 어느 모양으로 와도 안쪽을 집는다. */

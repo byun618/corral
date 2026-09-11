@@ -8,7 +8,7 @@
 // **하네스는 herdr 에 쓴다** (탭 생성·닫기·상태 주입). 그게 "밖에서 일으킨 변화" 다 (기준 N5).
 // 앱 자신은 읽기만 한다 — 그쪽 화이트리스트가 코드로 막는다 (adapter/internal/request.ts).
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -126,6 +126,35 @@ export async function until(check, { timeoutMs = 20000, everyMs = 40, what = 'co
 
 // --- 앱 -----------------------------------------------------------------------
 
+/**
+ * **소스보다 낡은 빌드로 재지 않는다.**
+ *
+ * `electron .` 은 package.json 의 `main`(=`out/main/index.js`)을 띄운다 — 소스가 아니다.
+ * 그래서 고친 뒤 빌드를 안 하면 하네스가 **옛 앱을 재고** 그 숫자를 새 앱의 근거로 적게 된다
+ * (실제로 N8 1회차에서 그렇게 됐다). 손으로 기억하는 대신 여기서 강제한다:
+ * src/ 에 out/ 보다 새 파일이 하나라도 있으면 빌드하고, 그 사실을 로그에 남긴다.
+ */
+let ensured = false
+export function ensureBuilt() {
+  if (ensured) return { built: false, reason: '이 프로세스에서 이미 확인' }
+  ensured = true
+  const built = path.join(APP_DIR, 'out/main/index.js')
+  const newest = (dir) => {
+    let max = 0
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      max = Math.max(max, entry.isDirectory() ? newest(full) : fs.statSync(full).mtimeMs)
+    }
+    return max
+  }
+  const srcAt = newest(path.join(APP_DIR, 'src'))
+  const outAt = fs.existsSync(built) ? fs.statSync(built).mtimeMs : 0
+  if (outAt >= srcAt) return { built: false, reason: '빌드가 소스보다 새것', srcAt, outAt }
+  console.log('[harness] 빌드가 낡았다 — electron-vite build 를 돌린다')
+  execFileSync('npm', ['run', 'build'], { cwd: APP_DIR, stdio: 'inherit' })
+  return { built: true, srcAt, outAt }
+}
+
 export async function startApp({
   name,
   env = {},
@@ -134,6 +163,7 @@ export async function startApp({
   /** 재기동 회차(N3)는 같은 레지스트리 파일을 다시 써야 한다 — 그때 경로를 넘긴다. */
   registryFile,
 } = {}) {
+  const buildCheck = ensureBuilt()
   const dir = path.join(RAW_DIR, '_runs', name)
   fs.rmSync(dir, { recursive: true, force: true })
   fs.mkdirSync(dir, { recursive: true })
@@ -183,6 +213,7 @@ export async function startApp({
     shotDir,
     dir,
     registryFile: registryFile ?? path.join(dir, 'repos.json'),
+    buildCheck,
     ready,
     entries: () => readLog(logPath),
     send,

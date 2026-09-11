@@ -9,12 +9,12 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, RepoRow, SessionInfo, UnregisteredGroup } from '../shared/types.js'
+import type { AddRepoResult, AppState, SessionInfo } from '../shared/types.js'
 import { SESSION_POLL_MS, SessionLink, listSessions } from './adapter/index.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { RepoRegistry } from './registry.js'
-import { buildTree } from './tree.js'
+import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -24,8 +24,8 @@ let sessions: SessionInfo[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
 let registry: RepoRegistry | null = null
-let repos: RepoRow[] = []
-let unregistered: UnregisteredGroup = { workspaces: [] }
+/** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
+let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
 let treeScheduled = false
 
@@ -40,6 +40,7 @@ function currentSocketPath(): string | null {
 }
 
 function currentState(): AppState {
+  const tree = joinTree(skeleton, link.store.rows())
   return {
     revision,
     sessions,
@@ -47,8 +48,8 @@ function currentState(): AppState {
     selectedSession,
     link: link.linkState(),
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
-    repos,
-    unregistered,
+    repos: tree.repos,
+    unregistered: tree.unregistered,
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -66,14 +67,14 @@ function scheduleEmit(): void {
     log('state.emit', {
       revision: state.revision,
       phase: state.link.phase,
-      repos: state.repos.map((repo) => `${repo.name}:${repo.worktrees.length}`),
+      repos: skeleton.map((repo) => `${repo.name}:${repo.worktrees.length}`),
       ...link.store.ids(),
     })
     window?.webContents.send('corral:state', state)
   }, 0)
 }
 
-/** 트리 재조립은 git·herdr 조회를 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */
+/** 골격 재조회는 git·herdr 왕복을 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */
 function scheduleTree(): void {
   if (treeScheduled) return
   treeScheduled = true
@@ -85,19 +86,12 @@ function scheduleTree(): void {
 
 async function rebuildTree(): Promise<void> {
   const startedAt = Date.now()
-  const tree = await buildTree({
-    roots: registry?.list() ?? [],
-    workspaces: link.store.rows(),
-    socketPath: currentSocketPath(),
-  })
-  repos = tree.repos
-  unregistered = tree.unregistered
+  skeleton = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
   log('tree.built', {
     ms: Date.now() - startedAt,
-    repos: repos.length,
-    worktrees: repos.reduce((sum, repo) => sum + repo.worktrees.length, 0),
-    open: repos.reduce((sum, repo) => sum + repo.worktrees.filter((item) => item.openWorkspaceId !== null).length, 0),
-    unregistered: unregistered.workspaces.length,
+    repos: skeleton.length,
+    worktrees: skeleton.reduce((sum, repo) => sum + repo.worktrees.length, 0),
+    open: skeleton.reduce((sum, repo) => sum + repo.worktrees.filter((item) => item.openWorkspaceId !== null).length, 0),
   })
   scheduleEmit()
 }

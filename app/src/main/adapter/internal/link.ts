@@ -304,24 +304,6 @@ export class SessionLink {
     }
   }
 
-  /**
-   * 대조용 — **지금 herdr 가 뭐라고 하나**를 앱 상태를 건드리지 않고 떠 본다.
-   * 별도 저장소에 적용해 id 집합만 돌려준다.
-   */
-  async herdrIds(): Promise<{ workspaces: string[]; tabs: string[]; panes: string[] } | null> {
-    const session = this.session
-    if (session === null) return null
-    try {
-      const response = await request(session.socketPath, 'session.snapshot', {}, { reason: 'verify' })
-      const truth = new WorkspaceStore()
-      truth.applySnapshot(response.result)
-      return truth.ids()
-    } catch (error) {
-      log('verify.failed', { error: String(error) })
-      return null
-    }
-  }
-
   // --- 상태 전이 구독 ----------------------------------------------------------
 
   private scheduleAgentSubscription(): void {

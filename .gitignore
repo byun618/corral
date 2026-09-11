@@ -12,3 +12,6 @@ spike/node_modules/
 app/node_modules/
 app/out/
 app/*.tsbuildinfo
+
+# LIFE-351 측정 하네스의 실행별 임시물 (로그·stdout 은 원자료 JSON 이 가리키는 요약으로 충분)
+specs/LIFE-351-app-skeleton/raw/claude/_runs/

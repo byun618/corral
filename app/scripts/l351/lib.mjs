@@ -1,0 +1,367 @@
+// LIFE-351 측정 하네스 — 앱을 띄우고, 밖에서 herdr 를 흔들고, 두 쪽을 같은 시각에 떠서 맞춰 본다.
+//
+// 판정 근거의 원칙 (01-criteria.md §0):
+//   관문 ① 실제 실행 + 재현 가능한 원자료 — 결과는 전부 raw/claude/ 로 간다
+//   관문 ④ 격리 — `life351-` 접두 세션만. 앱의 레지스트리도 격리 경로를 쓴다
+//   관문 ⑤ UI 주장은 좌표 클릭 또는 elementFromPoint 로 증명한다
+//
+// **하네스는 herdr 에 쓴다** (탭 생성·닫기·상태 주입). 그게 "밖에서 일으킨 변화" 다 (기준 N5).
+// 앱 자신은 읽기만 한다 — 그쪽 화이트리스트가 코드로 막는다 (adapter/internal/request.ts).
+
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+export const SESSION = process.env.LIFE351_SESSION ?? 'life351-claude'
+export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
+export const REPO_DIR = path.dirname(APP_DIR)
+export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-351-app-skeleton/raw/claude')
+
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 사용자의 `default` 세션을 **코드 레벨에서** 막는다 (관문 ④). */
+export function socketPath(session = SESSION) {
+  if (!session.startsWith('life351-')) {
+    throw new Error(`거부: 격리 세션이 아니다 (${session}). life351- 접두여야 한다`)
+  }
+  const target = path.join(os.homedir(), '.config', 'herdr', 'sessions', session, 'herdr.sock')
+  const bytes = Buffer.byteLength(target, 'utf8')
+  if (bytes > 104) throw new Error(`유닉스 소켓 경로 ${bytes} bytes — 104 한계를 넘는다`)
+  return target
+}
+
+/** 요청 1건 = 커넥션 1개. 서버가 응답 뒤 스스로 닫는다 (스파이크 제약 2). */
+export function request(method, params = {}, { session = SESSION, timeoutMs = 20000 } = {}) {
+  const target = socketPath(session)
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(target)
+    socket.setEncoding('utf8')
+    let buffer = ''
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error(`timeout ${method}`))
+    }, timeoutMs)
+    socket.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    socket.on('connect', () => socket.write(JSON.stringify({ id: 'h1', method, params }) + '\n'))
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const index = buffer.indexOf('\n')
+      if (index === -1) return
+      clearTimeout(timer)
+      const line = buffer.slice(0, index)
+      socket.end()
+      socket.destroy()
+      const message = JSON.parse(line)
+      if (message.error) reject(new Error(`${method}: ${message.error.code} ${message.error.message}`))
+      else resolve(message.result)
+    })
+  })
+}
+
+/** herdr 쪽 진실 — corral 상태와 **같은 시각에** 찍는다 (기준 N5). */
+export async function herdrTruth() {
+  const [tabs, panes, workspaces] = await Promise.all([
+    request('tab.list', {}),
+    request('pane.list', {}),
+    request('workspace.list', {}),
+  ])
+  return {
+    tabs: tabs.tabs.map((item) => item.tab_id).sort(),
+    panes: panes.panes.map((item) => item.pane_id).sort(),
+    workspaces: workspaces.workspaces.map((item) => item.workspace_id).sort(),
+  }
+}
+
+// --- 원자료 -------------------------------------------------------------------
+
+export function writeRaw(file, content) {
+  const target = path.join(RAW_DIR, file)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, typeof content === 'string' ? content : JSON.stringify(content, null, 2) + '\n')
+  console.log('wrote', path.relative(REPO_DIR, target))
+  return target
+}
+
+export function readLog(file) {
+  if (!fs.existsSync(file)) return []
+  return fs
+    .readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return { tag: 'unparsed', line }
+      }
+    })
+}
+
+export function pct(values, p) {
+  const sorted = [...values].filter((value) => typeof value === 'number').sort((a, b) => a - b)
+  if (sorted.length === 0) return null
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))
+  return sorted[index]
+}
+
+/**
+ * **조건이 참이 될 때까지 본다.** 고정 대기로 판정하지 않기 위한 도구다 —
+ * 기다린 시간도 함께 돌려주므로 "얼마나 걸렸나" 는 결과로 남고 판정의 근거는 관측이다.
+ */
+export async function until(check, { timeoutMs = 20000, everyMs = 40, what = 'condition' } = {}) {
+  const startedAt = Date.now()
+  for (;;) {
+    const value = await check()
+    if (value) return { ok: true, value, ms: Date.now() - startedAt }
+    if (Date.now() - startedAt > timeoutMs) return { ok: false, value: null, ms: Date.now() - startedAt, what }
+    await sleep(everyMs)
+  }
+}
+
+// --- 앱 -----------------------------------------------------------------------
+
+export async function startApp({
+  name,
+  env = {},
+  waitFor = (entries) => entries.some((entry) => entry.tag === 'link.phase' && entry.phase === 'live'),
+  timeoutMs = 40000,
+  /** 재기동 회차(N3)는 같은 레지스트리 파일을 다시 써야 한다 — 그때 경로를 넘긴다. */
+  registryFile,
+} = {}) {
+  const dir = path.join(RAW_DIR, '_runs', name)
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.mkdirSync(dir, { recursive: true })
+  const logPath = path.join(dir, 'app.ndjson')
+  // 소켓만 짧은 경로에 둔다 — worktree 아래는 sun_path 104 bytes 를 넘는다 (실측).
+  const controlSocket = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'l351-')), 'c.sock')
+  const shotDir = path.join(RAW_DIR, 'shots', name)
+  fs.mkdirSync(shotDir, { recursive: true })
+
+  const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), ['.'], {
+    cwd: APP_DIR,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CORRAL_LOG: logPath,
+      CORRAL_SESSION: SESSION,
+      CORRAL_CONTROL_SOCKET: controlSocket,
+      CORRAL_SHOT_DIR: shotDir,
+      // 관문 ④ — 앱의 영속 상태도 격리 경로로. 사용자의 실제 userData 를 더럽히지 않는다.
+      CORRAL_REGISTRY: registryFile ?? path.join(dir, 'repos.json'),
+      CORRAL_WINDOW: '1180x1200',
+      ...env,
+    },
+  })
+  const stdout = fs.createWriteStream(path.join(dir, 'stdout.txt'))
+  child.stdout.pipe(stdout)
+  child.stderr.pipe(stdout)
+  child.on('error', (error) => console.error('[harness] spawn error', error))
+
+  const deadline = Date.now() + timeoutMs
+  let ready = false
+  while (Date.now() < deadline) {
+    if (waitFor(readLog(logPath))) {
+      ready = true
+      break
+    }
+    await sleep(120)
+  }
+  if (!ready) console.error('[harness] waitFor 조건이 안 왔다 —', name)
+
+  let shotSeq = 0
+  const send = (frame, ms = 30000) => control(controlSocket, frame, { timeoutMs: ms })
+
+  return {
+    child,
+    logPath,
+    shotDir,
+    dir,
+    registryFile: registryFile ?? path.join(dir, 'repos.json'),
+    ready,
+    entries: () => readLog(logPath),
+    send,
+    state: async () => (await send({ cmd: 'state' })).state,
+    resync: (reason) => send({ cmd: 'resync', reason }),
+    dropPush: (dropping) => send({ cmd: 'drop-push', dropping }),
+    rebuildTree: () => send({ cmd: 'rebuild-tree' }),
+    addRepo: (root) => send({ cmd: 'add-repo', root }),
+    click: (selector) => send({ cmd: 'click', selector }),
+    type: (text) => send({ cmd: 'type', text }),
+    key: (keyCode, modifiers = []) => send({ cmd: 'key', keyCode, modifiers }),
+    query: (selector) => send({ cmd: 'query', selector }),
+    /** 샷 이름에 **순번과 시각**을 박는다 — 연속성이 파일 이름만으로 보여야 한다. */
+    shot: async (label, selector) => {
+      const seq = String(++shotSeq).padStart(3, '0')
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const response = await send({ cmd: 'shot', name: `${seq}-${label}-${stamp}`, ...(selector ? { selector } : {}) })
+      return { ...response, seq, at: Date.now(), label }
+    },
+    stop: async () => {
+      const exited = new Promise((resolve) => child.once('exit', resolve))
+      child.kill('SIGTERM')
+      const won = await Promise.race([exited, sleep(2500).then(() => 'timeout')])
+      if (won === 'timeout') {
+        child.kill('SIGKILL')
+        await Promise.race([exited, sleep(1500)])
+      }
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      stdout.end()
+      await sleep(200)
+    },
+  }
+}
+
+export function control(socketFile, frame, { timeoutMs = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketFile)
+    socket.setEncoding('utf8')
+    let buffer = ''
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error(`control timeout: ${JSON.stringify(frame).slice(0, 120)}`))
+    }, timeoutMs)
+    socket.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    socket.on('connect', () => socket.write(JSON.stringify(frame) + '\n'))
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const index = buffer.indexOf('\n')
+      if (index === -1) return
+      clearTimeout(timer)
+      const line = buffer.slice(0, index)
+      socket.end()
+      socket.destroy()
+      resolve(JSON.parse(line))
+    })
+  })
+}
+
+// --- 클릭 증거 (관문 ⑤) ---------------------------------------------------------
+
+const clicks = []
+export function clickLog() {
+  return clicks
+}
+
+/**
+ * 화면의 **진짜 버튼**을 누른다 — DOM 에 있는 것과 사람이 닿는 것은 다르다.
+ * 보일 때까지 + **눌리는 자리에 실제로 있을 때까지** 본 뒤 좌표로 마우스를 보낸다.
+ */
+export async function clickWhenVisible(app, selector, { timeoutMs = 10000 } = {}) {
+  const seen = await until(async () => (await app.query(selector)).found.length > 0, {
+    timeoutMs,
+    everyMs: 100,
+    what: selector,
+  })
+  if (!seen.ok) throw new Error(`화면에 안 나타났다: ${selector}`)
+  const reachable = await until(
+    async () => {
+      const response = await app.click(selector)
+      return response.hit === true ? response : null
+    },
+    { timeoutMs, everyMs: 120, what: `${selector} 히트테스트` },
+  )
+  if (!reachable.ok) {
+    const last = await app.click(selector)
+    throw new Error(`가려져 있다 — 못 눌렀다: ${selector} (위에 있는 것: ${last.blockedBy ?? '?'})`)
+  }
+  const record = {
+    at: Date.now(),
+    selector,
+    hit: reachable.value.hit === true,
+    x: reachable.value.x ?? null,
+    y: reachable.value.y ?? null,
+    elementFromPoint: reachable.value.elementFromPoint ?? null,
+    target: reachable.value.target ?? null,
+    method: reachable.value.method ?? null,
+    보일때까지ms: seen.ms,
+    닿을때까지ms: reachable.ms,
+  }
+  clicks.push(record)
+  return { ...reachable.value, record }
+}
+
+// --- 격리 세션 준비 ------------------------------------------------------------
+
+/**
+ * 격리 세션을 **workspace 1개 · 탭 1개** 로 되돌린다. workspace 를 통째로 다시 세운다 —
+ * 마지막 탭을 닫으면 workspace 까지 닫히는 경로를 측정이 일부러 밟기 때문에, "있으면 쓴다" 로
+ * 두면 회차마다 서로 다른 상태에서 출발하게 된다.
+ *
+ * **cwd 를 준다.** 안 주면 $HOME 에 서고, 그러면 그 workspace 가 어느 worktree 의 것인지
+ * herdr 가 모른다 — 4단 목록이 그 워크스페이스를 레포 밑에 못 건다.
+ */
+export async function tidySession(cwd = REPO_DIR) {
+  const workspaces = (await request('workspace.list', {})).workspaces
+  for (const workspace of workspaces) {
+    await request('workspace.close', { workspace_id: workspace.workspace_id }).catch(() => {})
+  }
+  await sleep(400)
+  await request('workspace.create', { label: 'l351', cwd })
+  await sleep(700)
+  return (await request('workspace.list', {})).workspaces[0]?.workspace_id ?? null
+}
+
+/** corral 상태에서 목록 층의 id 집합만 뽑는다 — herdr 쪽과 같은 모양으로 맞춘다. */
+export function sameSet(a, b) {
+  return a.length === b.length && a.every((id, index) => id === b[index])
+}
+
+export function diffSets(mine, truth) {
+  return {
+    탭_corral만: mine.tabs.filter((id) => !truth.tabs.includes(id)),
+    탭_herdr만: truth.tabs.filter((id) => !mine.tabs.includes(id)),
+    pane_corral만: mine.panes.filter((id) => !truth.panes.includes(id)),
+    pane_herdr만: truth.panes.filter((id) => !mine.panes.includes(id)),
+    ws_corral만: mine.workspaces.filter((id) => !truth.workspaces.includes(id)),
+    ws_herdr만: truth.workspaces.filter((id) => !mine.workspaces.includes(id)),
+  }
+}
+
+/**
+ * **화면이 들고 있는 id 집합**을 AppState 에서 뽑는다.
+ *
+ * store 내부가 아니라 렌더러가 받는 그 상태에서 뽑는 이유: 재는 것은 "저장소가 맞나" 가 아니라
+ * "목록이 맞나" 다. 4단 조립에서 어느 workspace 가 빠지면 여기서 드러난다.
+ */
+export function corralIdsFromState(state) {
+  const workspaces = [
+    ...state.repos.flatMap((repo) => repo.worktrees.map((worktree) => worktree.workspace).filter((item) => item !== null)),
+    ...state.unregistered.workspaces,
+  ]
+  const tabs = workspaces.flatMap((workspace) => workspace.tabs)
+  return {
+    workspaces: workspaces.map((item) => item.workspaceId).sort(),
+    tabs: tabs.map((item) => item.tabId).sort(),
+    panes: tabs.flatMap((tab) => tab.panes.map((pane) => pane.paneId)).sort(),
+  }
+}
+
+/**
+ * corral 과 herdr 를 **같은 폴에서** 뜬다.
+ * corral 쪽은 제어 채널(앱 상태), herdr 쪽은 **하네스 자기 커넥션** — 판별자가 재는 대상의
+ * 출력이 아니게 하려면 상대편은 제3자여야 한다 (관문 ⑤).
+ */
+export async function look(app) {
+  const [state, truth] = await Promise.all([app.state(), herdrTruth()])
+  const corral = corralIdsFromState(state)
+  const result = { at: Date.now(), corral, herdr: truth }
+  return { ...result, 일치: agreed(result), 차이: diffSets(corral, truth) }
+}
+
+export function agreed(look) {
+  return (
+    sameSet(look.corral.tabs, look.herdr.tabs) &&
+    sameSet(look.corral.panes, look.herdr.panes) &&
+    sameSet(look.corral.workspaces, look.herdr.workspaces)
+  )
+}

@@ -19,9 +19,6 @@ export type ControlHandlers = {
   capture: (name: string, selector?: string) => Promise<string>
   state: () => unknown
   window: () => BrowserWindow | null
-  /** 같은 시각 herdr 쪽 id 집합 — 대조의 상대편. */
-  herdrIds: () => Promise<unknown>
-  corralIds: () => unknown
   resync: (reason: string) => Promise<{ ok: boolean; note: string }>
   /** N7 — push 를 조용히 버리게/멈추게 한다. 커넥션은 살아 있다. */
   setDroppingPush: (dropping: boolean) => void
@@ -127,12 +124,11 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       case 'state':
         reply({ ok: true, at: Date.now(), state: handlers.state() })
         return
-      /** **같은 호출에서** corral 과 herdr 를 함께 뜬다 — 대조가 같은 창을 보게 하려고. */
-      case 'compare': {
-        const [corral, herdr] = [handlers.corralIds(), await handlers.herdrIds()]
-        reply({ ok: true, at: Date.now(), corral, herdr })
-        return
-      }
+      /**
+       * **herdr 쪽 대조값은 이 채널이 주지 않는다.**
+       * 판별자는 재는 대상 자신의 출력이면 안 된다 (관문 ⑤ 제3 오라클) — 하네스가 자기
+       * 커넥션으로 `tab.list`·`pane.list` 를 떠서 상대편을 만든다. 여기는 corral 쪽만 준다.
+       */
       case 'resync': {
         const result = await handlers.resync(readString(parsed, 'reason') ?? 'control')
         reply({ ok: result.ok, note: result.note, at: Date.now() })
@@ -198,14 +194,33 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: true, typed: text.length, at: Date.now() })
         return
       }
+      /**
+       * 키를 누른다 (수식자 포함) — 입력칸을 비우는 것도 **사람이 하는 걸음**이라 키로 한다.
+       * 모르는 수식자는 Electron 이 조용히 무시하므로 아는 것만 통과시킨다.
+       */
+      case 'key': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const keyCode = readString(parsed, 'keyCode')
+        if (keyCode === null) throw new Error('keyCode 필요')
+        const known = ['shift', 'control', 'alt', 'meta']
+        const raw = parsed['modifiers']
+        const modifiers = Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && known.includes(item)) : []
+        target.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+        target.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+        reply({ ok: true, keyCode, modifiers, at: Date.now() })
+        return
+      }
       /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나. */
       case 'query': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')
         const selector = readString(parsed, 'selector')
         if (selector === null) throw new Error('selector 필요')
+        // 입력칸은 textContent 가 빈 문자열이다 — **화면의 값**을 보려면 value 를 같이 읽어야 한다.
         const found = await target.webContents.executeJavaScript(
-          `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el) => el.textContent))()`,
+          `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el) =>
+            'value' in el && typeof el.value === 'string' ? el.value : el.textContent))()`,
           true,
         )
         reply({ ok: true, selector, found, at: Date.now() })

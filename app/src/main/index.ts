@@ -230,8 +230,6 @@ app.whenReady().then(() => {
     capture,
     state: () => currentState(),
     window: () => window,
-    herdrIds: () => link.herdrIds(),
-    corralIds: () => link.store.ids(),
     resync: (reason) => link.resync(reason),
     setDroppingPush: (dropping) => link.setDroppingPush(dropping),
     addRepo,

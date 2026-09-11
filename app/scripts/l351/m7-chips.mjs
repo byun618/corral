@@ -211,6 +211,22 @@ async function chipValue(attr, key) {
     '--bundle', '--format=esm', '--platform=node', `--outfile=${outFile}`,
   ])
   const { WorkspaceStore } = await import(outFile)
+  /**
+   * **로그 줄을 원자료로 붙잡는다** (수정 2회차 L-7 — codex).
+   * 1회차 문서는 "`agent_status.unmapped` 로 남긴다" 고 적었는데 원자료에는 그 줄이 없었다.
+   * 이 재생에서는 `openLog` 를 안 거치므로 `log()` 가 stdout 으로 쓴다 — 그걸 가로채 싣는다.
+   * (라이브 앱 로그에는 안 나온다. 0.9.0 이 `done` 을 만들지 않기 때문이고, 그래서 이 줄은
+   *  "코드 경로가 실제로 로그를 쓴다" 의 근거지 "운영에서 봤다" 의 근거가 아니다.)
+   */
+  const 로그줄 = []
+  const 원래write = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (chunk, ...rest) => {
+    const text = typeof chunk === 'string' ? chunk : String(chunk)
+    for (const line of text.split('\n')) {
+      if (line.includes('agent_status.unmapped')) 로그줄.push(line.trim())
+    }
+    return 원래write(chunk, ...rest)
+  }
   const store = new WorkspaceStore()
   store.applyEvent({ event: 'workspace_created', data: { workspace: { workspace_id: 'wZ', label: 'z', number: 1 } } })
   store.applyEvent({ event: 'tab_created', data: { tab: { tab_id: 'wZ:t1', workspace_id: 'wZ', number: 1 } } })
@@ -220,11 +236,19 @@ async function chipValue(attr, key) {
     data: { pane_id: 'wZ:p1', workspace_id: 'wZ', agent: 'claude', agent_status: 'done' },
   })
   const row = store.rows()[0].tabs[0].panes[0]
+  process.stdout.write = 원래write
   out['done 처리 재생'] = {
     '들어온 값': 'done',
     '저장소가 든 값': row.agentStatus,
     '화면 라벨': row.agentStatus === 'unknown' ? '미상' : `(칩 어휘에 없는 값: ${row.agentStatus})`,
     agent: row.agent,
+    '남은 로그 줄': 로그줄.map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return line
+      }
+    }),
   }
 }
 
@@ -239,18 +263,36 @@ const labelSource = (await import('node:fs')).readFileSync(
 )
 const labelBlock = /const STATUS_LABEL: Record<AgentStatus, string> = \{([^}]*)\}/.exec(labelSource)?.[1] ?? ''
 const 코드의칩어휘 = [...labelBlock.matchAll(/(\w+):/g)].map((match) => match[1]).sort()
-const 대조한상태 = ['blocked', 'idle', 'unknown', 'working']
+const 코드의칩라벨 = [...labelBlock.matchAll(/:\s*'([^']+)'/g)].map((match) => match[1]).sort()
+/**
+ * **대조한 상태는 실제 행에서 뽑는다** (수정 2회차 L-2).
+ *
+ * 1회차는 이 자리에 리터럴 배열이 박혀 있었다. 그래서 사슬이 *코드 → 리터럴* 이지
+ * *코드 → 실제로 대조한 행* 이 아니었고, 심는 목록(`STATES`)에서 한 종을 빼도 이 검사는
+ * 계속 참을 냈다. 이제 두 쪽을 다 행에서 만든다 — herdr 가 준 값의 집합과, 화면이 그 순간
+ * 실제로 들고 있던 라벨의 집합. 대조가 줄면 검사가 곧바로 어긋난다.
+ */
+const 대조행 = out.대조[1].rows.filter((row) => row.일치)
+const 대조한상태 = [...new Set(대조행.map((row) => row.herdr_agent_status))].sort()
+const 대조한라벨 = [...new Set(대조행.map((row) => row.화면_상태칩))].sort()
 
 out.판정 = {
   '노출하는 칩 수': Object.keys(out.노출하는칩).length,
   '① worktree 칩 전부 일치': out.대조[0].rows.every((row) => row.일치),
   코드의칩어휘,
+  대조한상태,
   '코드의 칩 어휘 = 대조한 상태 (노출한 것 전부를 댔나)': JSON.stringify(코드의칩어휘) === JSON.stringify(대조한상태),
+  코드의칩라벨,
+  대조한라벨,
+  '코드의 칩 라벨 = 화면에서 실제로 본 라벨': JSON.stringify(코드의칩라벨) === JSON.stringify(대조한라벨),
   '② 만들 수 있는 상태를 전부 대조했나 (미상·작업중·대기·막힘 + 뗌)': out.대조[1].rows.length === 5,
   '②③ pane 칩 전부 일치': out.대조[1].rows.every((row) => row.일치),
   '②③ 전 회차가 시한 안에 수렴했나 (게이트가 안 새는지)': out.대조[1].rows.every((row) => row.수렴했나 !== false),
   'done 은 노출하지 않는다': !코드의칩어휘.includes('done'),
   'done 이 와도 미상으로 간다': out['done 처리 재생']?.['저장소가 든 값'] === 'unknown',
+  'done 이 오면 로그가 실제로 남는다 (원자료로)': (out['done 처리 재생']?.['남은 로그 줄'] ?? []).some(
+    (line) => line.tag === 'agent_status.unmapped' && line.wire === 'done',
+  ),
 }
 console.log(JSON.stringify(out.판정, null, 2))
 writeRaw('n8-chips.json', out)

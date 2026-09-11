@@ -1,5 +1,8 @@
 // M11 — 수정 1회차에서 **앱·저장소 재생만으로는 안 보이는** 것들을 따로 잰다.
 //
+// (수정 2회차: 출력 파일명을 `units-fix1-checks.json` 으로 바꿨다 — 회차 폴더 안에서
+//  `fix1-units.json` 이라는 이름은 "1회차 것" 으로 읽힌다. 재는 내용은 그대로다.)
+//
 //   M4 connect 시한   — 연결이 얼면 시한 안에 거절되는가 · resyncing 이 풀리는가
 //   M6 세션 자동 선택 — running:false 를 거르는가 · 명시 세션이 죽었으면 사유가 나오나
 //   L1 ack 타이머     — 받으면 꺼지는가 (안 꺼지면 프로세스가 시한만큼 안 끝난다)
@@ -155,5 +158,5 @@ out.판정 = Object.fromEntries(
 )
 out.어긋난것 = Object.entries(out.판정).filter(([, value]) => value !== true).map(([key]) => key)
 console.log(JSON.stringify({ 판정: out.판정, 어긋난것: out.어긋난것 }, null, 2))
-writeRaw('fix1-units.json', out)
+writeRaw('units-fix1-checks.json', out)
 fs.rmSync(tmp, { recursive: true, force: true })

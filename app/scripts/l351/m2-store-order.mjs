@@ -19,6 +19,16 @@
 //   ⑨ L7  닫힌 workspace 앞으로 온 고아 + 만료 purge
 //   ⑩ L5  tab_closed 의 workspace 연쇄 (pane_exited 와 대칭인가)
 //   ⑪ M5  tab_moved 가 순서를 바꾸는가 — 순서의 진실은 number 가 아니라 배열 자리다
+//
+// **수정 2회차에 늘어난 갈래 — 표준 전제를 바꾼다.**
+// 여기까지의 재생은 전부 "corral 이 herdr 를 다 안다" 는 전제 위에 서 있었다. 그 전제가
+// 1회차 H1 과 2회차 H-1 을 나란히 가렸다 (판정 §D: **재생의 표준 전제로 "corral 이 일부를
+// 모르는 상태" 를 깐다**). 그래서 아래 셋은 먼저 **push 를 한 건 빼고** 재생을 시작한다:
+//   ⑬ H-1 tab_closed — corral 이 형제 탭을 모르는 채 **아는 마지막 탭**이 닫힌다
+//   ⑭ H-1 pane_exited — corral 이 형제 pane 을 모르는 채 아는 마지막 pane 이 exit 한다
+//   ⑮ H-1 반대 방향 — 낡은 사진이 **진짜 묘비**를 걷어 내지는 않는가 (회복이 부활의 문이 되면 안 된다)
+//   ⑯ L-1 한 층만 든 응답 — 스냅샷으로 받아들여 나머지 두 층을 전멸시키는가
+//   ⑰ L-5 뒤집혀 도착한 tab_created — 화면 순서가 도착순으로 굳는가
 
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -42,6 +52,8 @@ const { WorkspaceStore } = await import(bundle(APP_DIR, 'now'))
 const workspace = { workspace_id: 'wX', label: 'l351', number: 1, focused: true }
 const tab = { tab_id: 'wX:t1', workspace_id: 'wX', label: '1', number: 1 }
 const pane = { pane_id: 'wX:p1', workspace_id: 'wX', tab_id: 'wX:t1', title: 'zsh', revision: 1 }
+/** corral 이 **모르는** 형제들 — 유실된 push 로만 알 수 있었을 행이다 (수정 2회차 표준 전제). */
+const tab2 = { tab_id: 'wX:t2', workspace_id: 'wX', label: '2', number: 2 }
 
 const notes = []
 function apply(store, event, data) {
@@ -301,6 +313,105 @@ out['⑪ M5 tab_moved 순서'] = {
   '재동기가 순서를 맞추나': m재동기뒤.map((item) => item.tabId).join(',') === 'wX:t2,wX:t3,wX:t1',
 }
 
+// ── 수정 2회차: **corral 이 일부를 모르는 상태**에서 출발하는 재생 ─────────────
+// ⑬ 형제 탭을 모른 채 아는 마지막 탭이 닫힌다 → 진실 스냅샷으로 재동기.
+const n = new WorkspaceStore()
+apply(n, 'workspace_created', { workspace })
+apply(n, 'tab_created', { tab })
+// ← tab_created(t2) **유실**. herdr 에는 t2 가 있다.
+const n닫기전 = snap(n)
+const n닫음 = apply(n, 'tab_closed', { tab_id: tab.tab_id, workspace_id: 'wX' })
+const n닫은직후 = snap(n)
+await new Promise((resolve) => setTimeout(resolve, 5))
+const n재동기 = n.reconcile({ snapshot: { workspaces: [workspace], tabs: [tab2], panes: [] } }, Date.now())
+const n재동기뒤 = snap(n)
+
+// ⑭ 같은 사각의 pane_exited 판 — 형제 pane(p2)을 모른다.
+const o = new WorkspaceStore()
+apply(o, 'workspace_created', { workspace })
+apply(o, 'tab_created', { tab })
+apply(o, 'pane_created', { pane })
+// ← pane_created(p2) **유실**. herdr 에는 같은 탭에 p2 가 있다.
+const o닫음 = apply(o, 'pane_exited', { pane_id: pane.pane_id })
+const o닫은직후 = snap(o)
+await new Promise((resolve) => setTimeout(resolve, 5))
+const o재동기 = o.reconcile({ snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane2] } }, Date.now())
+const o재동기뒤 = snap(o)
+
+// ⑮ 반대 방향 — 낡은 사진이 **진짜** 묘비를 걷지는 않는가.
+const q = new WorkspaceStore()
+apply(q, 'workspace_created', { workspace })
+apply(q, 'tab_created', { tab })
+apply(q, 'pane_created', { pane })
+const q요청시각 = Date.now()
+const q낡은사진 = { snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane] } }
+await new Promise((resolve) => setTimeout(resolve, 5))
+apply(q, 'workspace_closed', { workspace_id: 'wX' })
+const q재동기 = q.reconcile(q낡은사진, q요청시각)
+const q재동기뒤 = snap(q)
+
+// ⑯ L-1 — 한 층만 든 응답.
+const r = new WorkspaceStore()
+apply(r, 'workspace_created', { workspace })
+apply(r, 'tab_created', { tab })
+apply(r, 'pane_created', { pane })
+await new Promise((resolve) => setTimeout(resolve, 5))
+const r재동기 = r.reconcile({ tabs: [tab] }, Date.now())
+const r재동기뒤 = snap(r)
+// 그 뒤 **정상** 스냅샷으로 회복되나 (1회차·fix1 은 영구 묘비라 회복 안 됐다).
+const r정상 = r.reconcile({ snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane] } }, Date.now() + 1000)
+const r회복뒤 = snap(r)
+
+// ⑰ L-5 — tab_created 가 뒤집혀 도착한다.
+const u = new WorkspaceStore()
+apply(u, 'workspace_created', { workspace })
+apply(u, 'tab_created', { tab: three[1] })
+apply(u, 'tab_created', { tab: three[0] })
+const u도착순뒤 = u.rows()[0].tabs.map((item) => ({ tabId: item.tabId, number: item.number, order: item.order }))
+
+out['⑬ H-1 형제 탭을 모른 채 tab_closed → 진실 스냅샷 재동기'] = {
+  전제: 'tab_created(wX:t2) 를 못 받았다 (push 유실 1건). herdr 에는 t2 가 살아 있다',
+  닫기전: n닫기전,
+  닫은note: n닫음.note,
+  닫은직후: n닫은직후,
+  재동기결과: n재동기,
+  재동기뒤: n재동기뒤,
+  '산 workspace 가 돌아왔나': n재동기뒤.workspaces.includes('wX'),
+  '산 탭이 돌아왔나': n재동기뒤.tabs.includes('wX:t2'),
+  '걷어 낸 묘비': n재동기.lifted,
+}
+out['⑭ H-1 형제 pane 을 모른 채 pane_exited → 진실 스냅샷 재동기'] = {
+  전제: 'pane_created(wX:p2) 를 못 받았다. herdr 에는 같은 탭에 p2 가 있다',
+  닫은note: o닫음.note,
+  닫은직후: o닫은직후,
+  재동기결과: o재동기,
+  재동기뒤: o재동기뒤,
+  '산 workspace 가 돌아왔나': o재동기뒤.workspaces.includes('wX'),
+  '산 탭이 돌아왔나': o재동기뒤.tabs.includes(tab.tab_id),
+  '산 pane 이 돌아왔나': o재동기뒤.panes.includes(pane2.pane_id),
+  '죽은 pane 은 그대로 죽었나': !o재동기뒤.panes.includes(pane.pane_id),
+  '걷어 낸 묘비': o재동기.lifted,
+}
+out['⑮ 낡은 사진이 진짜 묘비를 걷나 (걷으면 안 된다)'] = {
+  전제: '사진은 닫기 **전에** 요청됐다. 묘비 시각 > 요청 시각이라 걷지 않아야 한다',
+  재동기결과: q재동기,
+  재동기뒤: q재동기뒤,
+  workspace부활: q재동기뒤.workspaces.includes('wX'),
+  '걷어 낸 묘비': q재동기.lifted,
+}
+out['⑯ L-1 한 층만 든 응답'] = {
+  재동기결과: { note: r재동기.note, changed: r재동기.changed, removed: r재동기.removed },
+  재동기뒤: r재동기뒤,
+  목록전멸했나: r재동기뒤.panes.length === 0 || r재동기뒤.workspaces.length === 0,
+  '정상 스냅샷으로 회복되나': r회복뒤.panes.includes(pane.pane_id),
+  회복note: r정상.note,
+}
+out['⑰ L-5 뒤집혀 도착한 tab_created'] = {
+  도착순: ['wX:t2', 'wX:t1'],
+  화면순서: u도착순뒤,
+  '도착순으로 굳었나': u도착순뒤.map((item) => item.tabId).join(',') !== 'wX:t1,wX:t2',
+}
+
 out.판정 = {
   '① pane 부활': out['① tab_closed 뒤 늦은 pane_updated·tab_created'].pane부활,
   '① 탭 부활': out['① tab_closed 뒤 늦은 pane_updated·tab_created'].탭부활,
@@ -316,6 +427,9 @@ out.판정 = {
   '⑧ 모양 아닌 응답이 목록을 지웠나': out['⑧ M1 모양이 아닌 응답으로 재동기'].목록전멸했나,
   '⑨ 닫힌 workspace 앞 고아를 담았나': out['⑨ L7 고아 보류함']['닫힌 workspace 앞으로 온 고아를 담았나'],
   '⑩ 탭부활 (workspace 연쇄 뒤)': out['⑩ L5 tab_closed 의 workspace 연쇄'].탭부활,
+  '⑮ 낡은 사진이 진짜 묘비를 걷었나': out['⑮ 낡은 사진이 진짜 묘비를 걷나 (걷으면 안 된다)'].workspace부활,
+  '⑯ 한 층만 든 응답이 목록을 지웠나': out['⑯ L-1 한 층만 든 응답'].목록전멸했나,
+  '⑰ 도착순으로 굳었나': out['⑰ L-5 뒤집혀 도착한 tab_created']['도착순으로 굳었나'],
 }
 /** 부활·손상이 아니라 **되어야 하는 것**. 위 판정이 전부 false 여야 하듯 이건 전부 true 여야 한다. */
 out.되어야하는것 = {
@@ -327,6 +441,11 @@ out.되어야하는것 = {
   '⑪ tab_moved 가 순서를 바꾼다': out['⑪ M5 tab_moved 순서']['순서가 바뀌었나'],
   '⑪ number 는 순서를 안 따라간다': out['⑪ M5 tab_moved 순서']['number 는 그대로인가'],
   '⑪ 재동기가 순서를 맞춘다': out['⑪ M5 tab_moved 순서']['재동기가 순서를 맞추나'],
+  '⑬ 재동기가 산 workspace 를 되살린다': out['⑬ H-1 형제 탭을 모른 채 tab_closed → 진실 스냅샷 재동기']['산 workspace 가 돌아왔나'],
+  '⑬ 재동기가 산 탭을 되살린다': out['⑬ H-1 형제 탭을 모른 채 tab_closed → 진실 스냅샷 재동기']['산 탭이 돌아왔나'],
+  '⑭ 재동기가 산 pane 을 되살린다': out['⑭ H-1 형제 pane 을 모른 채 pane_exited → 진실 스냅샷 재동기']['산 pane 이 돌아왔나'],
+  '⑭ 죽은 pane 은 그대로 둔다': out['⑭ H-1 형제 pane 을 모른 채 pane_exited → 진실 스냅샷 재동기']['죽은 pane 은 그대로 죽었나'],
+  '⑯ 한 층만 든 응답 뒤에도 정상 스냅샷으로 회복된다': out['⑯ L-1 한 층만 든 응답']['정상 스냅샷으로 회복되나'],
 }
 out.부활건수 = Object.entries(out.판정).filter(([, value]) => value === true).length
 /**
@@ -384,38 +503,140 @@ async function replayOn(StoreClass) {
     go('tab_moved', { tab_id: 'wX:t3', workspace_id: 'wX', insert_index: 0, tabs: [three[2], three[0], three[1]] })
   })
 
+  /**
+   * ⑬ **corral 이 형제 탭을 모른다.** `tab_created(t2)` 가 유실된 채 아는 마지막 탭(t1)이 닫힌다.
+   * 그 뒤 **진실 스냅샷**으로 재동기한다 — herdr 에는 w1 과 t2 가 멀쩡히 살아 있다.
+   * 되어야 하는 것: 재동기 뒤 w1·t2 가 보인다. (1회차·fix1 판은 목록이 비어 있고 note 가 "어긋난 것 없음")
+   */
+  const thirteen = new StoreClass()
+  {
+    const go = (event, data) => thirteen.applyEvent({ event, data })
+    go('workspace_created', { workspace })
+    go('tab_created', { tab })
+    // ← 여기서 tab_created(t2) 를 **안 먹인다**. 그게 유실이다.
+    go('tab_closed', { tab_id: tab.tab_id, workspace_id: 'wX' })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    thirteen.reconcile({ snapshot: { workspaces: [workspace], tabs: [tab2], panes: [] } }, Date.now())
+  }
+
+  /** ⑭ 같은 사각의 `pane_exited` 판 — 형제 pane(p2)을 모른 채 아는 마지막 pane 이 exit 한다. */
+  const fourteen = new StoreClass()
+  {
+    const go = (event, data) => fourteen.applyEvent({ event, data })
+    go('workspace_created', { workspace })
+    go('tab_created', { tab })
+    go('pane_created', { pane })
+    // ← pane_created(p2) 유실. herdr 에는 같은 탭에 p2 가 있다.
+    go('pane_exited', { pane_id: pane.pane_id })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    fourteen.reconcile({ snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane2] } }, Date.now())
+  }
+
+  /**
+   * ⑮ **반대 방향** — 회복이 부활의 문이 되면 안 된다. 진짜로 닫힌 workspace 를,
+   * 닫기 **전에** 뜬 낡은 사진으로 재동기해도 되살아나면 안 된다 (묘비 시각 ≥ 요청 시각).
+   */
+  const fifteen = new StoreClass()
+  {
+    const go = (event, data) => fifteen.applyEvent({ event, data })
+    go('workspace_created', { workspace })
+    go('tab_created', { tab })
+    go('pane_created', { pane })
+    const 낡은요청시각 = Date.now()
+    const 낡은사진 = { snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane] } }
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    go('workspace_closed', { workspace_id: 'wX' })
+    fifteen.reconcile(낡은사진, 낡은요청시각)
+  }
+
+  /** ⑯ L-1 — 한 층만 든 응답. 스냅샷으로 받으면 나머지 두 층이 전멸하고 영구 묘비가 박힌다. */
+  const sixteen = new StoreClass()
+  {
+    const go = (event, data) => sixteen.applyEvent({ event, data })
+    go('workspace_created', { workspace })
+    go('tab_created', { tab })
+    go('pane_created', { pane })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    sixteen.reconcile({ tabs: [tab] }, Date.now())
+  }
+
+  /** ⑰ L-5 — `tab_created` 두 건이 **뒤집혀** 도착한다. 화면 순서가 도착순으로 굳는가. */
+  const seventeen = run((store, go) => {
+    go('workspace_created', { workspace })
+    go('tab_created', { tab: three[1] }) // number 2 가 먼저 도착
+    go('tab_created', { tab: three[0] }) // number 1 이 나중에
+  })
+
   return {
+    '⑬ 형제 탭을 모른 채 tab_closed — 재동기 뒤 산 workspace 가 보이나':
+      ids(thirteen).tabs.includes('wX:t2') && thirteen.rows().some((row) => row.workspaceId === 'wX'),
+    '⑭ 형제 pane 을 모른 채 pane_exited — 재동기 뒤 산 pane 이 보이나':
+      ids(fourteen).panes.includes(pane2.pane_id) && fourteen.rows().some((row) => row.workspaceId === 'wX'),
+    '⑮ 낡은 사진이 진짜 묘비를 걷나 (부활하면 true)': fifteen.rows().some((row) => row.workspaceId === 'wX'),
+    '⑯ 한 층만 든 응답이 목록을 지웠나': ids(sixteen).panes.length === 0,
+    '⑰ 뒤집힌 tab_created 가 도착순으로 굳나':
+      seventeen.rows()[0].tabs.map((item) => item.tabId).join(',') !== 'wX:t1,wX:t2',
     '⑤ pane 부활 (형제 잔존 탭)': ids(five).panes.includes(pane.pane_id),
     '⑥ pane 부활 (재동기 삭제 뒤)': ids(six).panes.includes(pane.pane_id),
     '⑦ 상태 칩이 지워졌나': seven.rows()[0].tabs[0].panes[0].agentStatus !== 'blocked',
     '⑧ 모양 아닌 응답이 목록을 지웠나': ids(eight).tabs.length === 0,
-    '⑩ workspace 연쇄가 도는가': eight !== null && ten.rows().length === 0,
+    // 1회차에는 `eight !== null &&` 가 붙어 있었다 — ⑧ 의 저장소라 항상 참인 **죽은 항**이고
+    // 붙여 넣기 흔적이었다 (수정 2회차 L-4). 판별식은 이 재생이 만든 것만 본다.
+    '⑩ workspace 연쇄가 도는가': ten.rows().length === 0,
     '⑪ tab_moved 로 순서가 바뀌나':
       eleven.rows()[0].tabs.map((item) => item.tabId).join(',') === 'wX:t3,wX:t1,wX:t2',
   }
 }
 
-const oldDir = fs.mkdtempSync('/tmp/l351-r1-')
-execFileSync('git', ['-C', APP_DIR, 'worktree', 'add', '--detach', oldDir, 'LIFE-351-claude-r1'], { stdio: 'ignore' })
-let 음성대조 = null
-try {
-  const old = await import(bundle(path.join(oldDir, 'app'), 'r1'))
-  음성대조 = {
-    설명: '같은 재생을 1회차 store(LIFE-351-claude-r1)에 먹인 결과. 여기서 참이 나야 케이스가 판별자다.',
-    '1회차': await replayOn(old.WorkspaceStore),
-    지금: await replayOn(WorkspaceStore),
+/**
+ * 옛 판을 **태그/커밋에서 꺼내** 같은 재생을 먹인다 (플래그로 갈아 끼운 가짜 대조가 아니다).
+ * 2회차에는 두 판을 본다 — 1회차 태그와 **수정 1회차 HEAD**(`7564173`). H-1 은 fix1 이 연
+ * 자리라 r1 만 보면 "원래도 그랬다" 와 "이번에 열렸다" 가 안 갈린다.
+ */
+async function replayOnRef(ref, label) {
+  const dir = fs.mkdtempSync(`/tmp/l351-${label}-`)
+  execFileSync('git', ['-C', APP_DIR, 'worktree', 'add', '--detach', dir, ref], { stdio: 'ignore' })
+  try {
+    const old = await import(bundle(path.join(dir, 'app'), label))
+    return await replayOn(old.WorkspaceStore)
+  } finally {
+    execFileSync('git', ['-C', APP_DIR, 'worktree', 'remove', '--force', dir], { stdio: 'ignore' })
   }
-} finally {
-  execFileSync('git', ['-C', APP_DIR, 'worktree', 'remove', '--force', oldDir], { stdio: 'ignore' })
+}
+
+const 음성대조 = {
+  설명:
+    '같은 재생을 옛 판 store 에 먹인 결과. 여기서 (지금과 다른 값이) 나와야 그 케이스가 판별자다. ' +
+    '1회차 = 태그 LIFE-351-claude-r1 · 수정1회차 = 7564173 (재리뷰가 본 커밋).',
+  '1회차': await replayOnRef('LIFE-351-claude-r1', 'r1'),
+  '수정1회차': await replayOnRef('7564173', 'fix1'),
+  지금: await replayOn(WorkspaceStore),
 }
 out['⑫ 음성 대조 — 1회차 store 로 같은 재생'] = 음성대조
-out.케이스가가르나 = 음성대조 === null ? null : {
+out.케이스가가르나 = {
   '⑤': 음성대조['1회차']['⑤ pane 부활 (형제 잔존 탭)'] === true && 음성대조.지금['⑤ pane 부활 (형제 잔존 탭)'] === false,
   '⑥': 음성대조['1회차']['⑥ pane 부활 (재동기 삭제 뒤)'] === true && 음성대조.지금['⑥ pane 부활 (재동기 삭제 뒤)'] === false,
   '⑦': 음성대조['1회차']['⑦ 상태 칩이 지워졌나'] === true && 음성대조.지금['⑦ 상태 칩이 지워졌나'] === false,
   '⑧': 음성대조['1회차']['⑧ 모양 아닌 응답이 목록을 지웠나'] === true && 음성대조.지금['⑧ 모양 아닌 응답이 목록을 지웠나'] === false,
   '⑩': 음성대조['1회차']['⑩ workspace 연쇄가 도는가'] === false && 음성대조.지금['⑩ workspace 연쇄가 도는가'] === true,
   '⑪': 음성대조['1회차']['⑪ tab_moved 로 순서가 바뀌나'] === false && 음성대조.지금['⑪ tab_moved 로 순서가 바뀌나'] === true,
+  // 수정 2회차 — 기준은 **수정 1회차 판**이다 (H-1 은 fix1 이 연 자리).
+  '⑬':
+    음성대조['수정1회차']['⑬ 형제 탭을 모른 채 tab_closed — 재동기 뒤 산 workspace 가 보이나'] === false &&
+    음성대조.지금['⑬ 형제 탭을 모른 채 tab_closed — 재동기 뒤 산 workspace 가 보이나'] === true,
+  '⑭':
+    음성대조['수정1회차']['⑭ 형제 pane 을 모른 채 pane_exited — 재동기 뒤 산 pane 이 보이나'] === false &&
+    음성대조.지금['⑭ 형제 pane 을 모른 채 pane_exited — 재동기 뒤 산 pane 이 보이나'] === true,
+  // ⑮ 는 **두 판이 같아야** 맞다 — 걷지 않는 쪽이 옳고, 고치면서 그 성질을 잃지 않았다는 뜻이다.
+  '⑮ 두 판 모두 안 걷나':
+    음성대조['수정1회차']['⑮ 낡은 사진이 진짜 묘비를 걷나 (부활하면 true)'] === false &&
+    음성대조.지금['⑮ 낡은 사진이 진짜 묘비를 걷나 (부활하면 true)'] === false,
+  '⑯':
+    음성대조['수정1회차']['⑯ 한 층만 든 응답이 목록을 지웠나'] === true &&
+    음성대조.지금['⑯ 한 층만 든 응답이 목록을 지웠나'] === false,
+  '⑰':
+    음성대조['수정1회차']['⑰ 뒤집힌 tab_created 가 도착순으로 굳나'] === true &&
+    음성대조.지금['⑰ 뒤집힌 tab_created 가 도착순으로 굳나'] === false,
 }
 
 out.어긋난것 = Object.entries(out.되어야하는것).filter(([, value]) => value !== true).map(([key]) => key)

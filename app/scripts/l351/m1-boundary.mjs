@@ -62,6 +62,14 @@ const PROBES = [
     file: 'src/renderer/src/wire-probe3.ts',
     source: "const f = (x: Record<string, unknown>): unknown => x['a']\nexport const probe = `pane ${f({ pane_id: 1 })}`\n",
   },
+  // 수정 2회차 L-6 — 1회차가 늘린 `tab_moved` 는 지문에 없었다. 이제 지문을 어댑터 목록에서
+  // 파생시키므로, **목록에만 있고 옛 지문에는 없던 이름**을 심어 그 파생이 실제로 도는지 본다.
+  {
+    rule: 'R4-wire-leak',
+    이름: 'R4 신규 이벤트 이름 (tab_moved)',
+    file: 'src/renderer/src/wire-probe4.ts',
+    source: "export const probe = (frame: { event: string }): boolean => frame.event === 'tab_moved'\n",
+  },
 ]
 
 const negative = []

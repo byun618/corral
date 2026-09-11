@@ -177,7 +177,16 @@ export async function startApp({
   const logPath = path.join(dir, 'app.ndjson')
   // 소켓만 짧은 경로에 둔다 — worktree 아래는 sun_path 104 bytes 를 넘는다 (실측).
   const controlSocket = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'l351-')), 'c.sock')
+  /**
+   * **샷 폴더도 회차마다 비운다** (수정 2회차 L-3).
+   *
+   * `_runs/<name>` 은 비우는데 샷은 안 비웠다. 그래서 같은 측정을 두 번 돌리면 앞 회차 샷이
+   * 남고, JSON 은 마지막 회차만 가리킨다 — 커밋된 원자료에 **아무도 안 가리키는 샷**이 섞여
+   * 판정자가 "근거" 칸을 따라갈 때 어느 회차가 근거인지 파일 목록만으로는 안 갈린다
+   * (fix1/shots/n8-chips 에 실제로 6장 남았다). 비우면 그 상태가 원천적으로 안 생긴다.
+   */
   const shotDir = path.join(RAW_DIR, 'shots', name)
+  fs.rmSync(shotDir, { recursive: true, force: true })
   fs.mkdirSync(shotDir, { recursive: true })
 
   const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), ['.'], {
@@ -226,7 +235,8 @@ export async function startApp({
     send,
     state: async () => (await send({ cmd: 'state' })).state,
     resync: (reason) => send({ cmd: 'resync', reason }),
-    dropPush: (dropping) => send({ cmd: 'drop-push', dropping }),
+    /** `only` 를 주면 **그 이벤트만** 버린다 — corral 이 일부만 모르게 만드는 손잡이 (H-1 재측정). */
+    dropPush: (dropping, only = null) => send({ cmd: 'drop-push', dropping, ...(only ? { only } : {}) }),
     rebuildTree: () => send({ cmd: 'rebuild-tree' }),
     addRepo: (root) => send({ cmd: 'add-repo', root }),
     click: (selector) => send({ cmd: 'click', selector }),
@@ -397,7 +407,10 @@ export function corralIdsFromState(state) {
 export async function look(app) {
   const [state, truth] = await Promise.all([app.state(), herdrTruth()])
   const corral = corralIdsFromState(state)
-  const result = { at: Date.now(), corral, herdr: truth }
+  // `at` 은 벽시계(원자료를 로그와 짝짓는 용), `mono` 는 **단조 시계**다 (수정 2회차 L-9).
+  // 두 관측 사이가 1ms 도 안 걸리는 구간이 실제로 있어서 ms 정수로는 0 이 나온다 —
+  // 그러면 "처음엔 안 맞았는데 수렴까지 0ms" 라는 모순된 줄이 남는다.
+  const result = { at: Date.now(), mono: performance.now(), corral, herdr: truth }
   return { ...result, 일치: agreed(result), 차이: diffSets(corral, truth) }
 }
 

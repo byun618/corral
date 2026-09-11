@@ -12,7 +12,7 @@
 // 아니라 "창을 격자에 맞춰 글자 크기를 고르는 것"이다. 이 스크립트는 창을 3단계로 바꿔가며
 // ① 격자가 그대로인지 ② 화면이 어떻게 되는지(잘림/여백/배율)를 화면으로 남긴다.
 
-import { countGridTransitions, panes, ptyGrid, rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { countGridTransitions, killFixtures, panes, ptyGrid, rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 /** 200칸짜리 열 자. pane 폭보다 길어서 herdr 가 pane 폭으로 잘라 준다 — 폭을 눈과 코드로 동시에 본다. */
 const RULER = `clear; awk 'BEGIN{s="";for(i=1;i<=200;i++){s=s (i%10==0? substr(sprintf("%d",i/10),length(sprintf("%d",i/10))) : ".")};print s}'`
@@ -251,6 +251,9 @@ const out = {}
   // xterm 이 리플로우하므로 심어 둔 히스토리가 흔들리는지 봐야 한다.
   //
   // 이번 회차에서 줄이기에 이력을 넣었으므로(연속 두 창) **창 두 개 이상**을 짧게 살아야 한다.
+  // 프롬프트가 ~93칸이라 `clear` 만으로는 **관측 폭이 안 내려간다** (드라이런에서 93→93).
+  // 프롬프트를 짧게 만들어야 "격자가 줄어드는 순간"이 실제로 생긴다 (I1 에서 쓴 것과 같은 수법).
+  await run(paneId, "unfunction precmd 2>/dev/null; precmd_functions=(); PROMPT='t5> '; RPROMPT=''", { settleMs: 900 })
   await run(paneId, 'clear; printf "짧은 줄\n"', { settleMs: 1200 })
   await sleep(14_000) // > GRID_REFRESH_MS × 2 + 여유
   const shrunkDump = (await app.dump()).dump
@@ -296,9 +299,13 @@ const out = {}
   // **한 번도 물지 않는 자리에서** "알트는 0줄"을 확인한 셈이다. 고친 버그가 재현되지 않는
   // 픽스처에서 회귀 검사가 돈 것이다.
   //
-  // 그래서 T4 가 쓰는 것과 같은 `vim -u NONE -O` 로 바꾼다: 화면이 움직여 두 스냅샷이 어긋나고,
-  // 꼬리 일치가 실패해 어림잡기로 빠지며, **그때 상한(0)이 실제로 문다**. 그 물린 자리가
-  // `term.scrollback.capped` 로그로 남아 T5 의 근거가 된다.
+  // 그래서 **두 팔로 잰다**:
+  //   ⓐ `vim -u NONE -O` — T4 가 쓰는 판정 대상과 같은 화면 (알트 확정용)
+  //   ⓑ `05-alt-scroll.sh` — 알트 판 안에서 **계속 스크롤하는** 화면. 드라이런에서 확인했는데
+  //      vim 은 화면이 멈춰 있어 꼬리 일치가 성공하고 `historyAbove` 가 0줄을 돌려준다 —
+  //      즉 vim 만으로는 **상한이 여전히 안 문다**. 지어내기가 일어나는 조건(두 스냅샷이
+  //      어긋나고 `recent` 가 화면보다 길다)을 만들려면 화면이 흘러야 한다. 거기서 상한 0 이
+  //      물고, 그 자리가 `term.scrollback.capped` 로그로 남아 T5 의 근거가 된다.
   await run(paneId, "printf 'ALT 왼쪽\n' > /tmp/l345-t5-left.txt; printf 'ALT 오른쪽\n' > /tmp/l345-t5-right.txt", { settleMs: 500 })
   // 뷰포트보다 많이 심어 둔다 — 일반 판에서 상한이 0보다 커야 대비가 보인다.
   await run(paneId, 'clear; for i in $(seq 1 60); do echo "ALT HIST $i"; done', { settleMs: 2000 })
@@ -342,17 +349,62 @@ const out = {}
   console.log('T5 알트', JSON.stringify({ ...alt, shot: undefined, cappedLogs: capped.length }))
   await altApp.stop()
 
+  // --- 알트 판 ⓑ: **흐르는 화면** — 상한이 실제로 무는 자리 ----------------
+  await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
+  await sleep(300)
+  await request('pane.send_text', { pane_id: paneId, text: ':qa!\n' }).catch(() => {})
+  await sleep(900)
+  await run(paneId, 'clear; for i in $(seq 1 60); do echo "ALT HIST $i"; done', { settleMs: 2000 })
+  const flowBefore = (await request('pane.get', { pane_id: paneId })).pane.scroll
+  await run(paneId, `sh ${process.cwd()}/scripts/l345/fixtures/05-alt-scroll.sh &`, { settleMs: 4000 })
+  const flowAfter = (await request('pane.get', { pane_id: paneId })).pane.scroll
+  const flowApp = await startApp({ name: 'scrollback-alt-flow' })
+  await sleep(1200)
+  await flowApp.selectPane(paneId)
+  await sleep(4000)
+  const flowDump = (await flowApp.dump()).dump
+  const flowState = (await flowApp.state()).state.terminal
+  const flowRecent = await request('pane.read', {
+    pane_id: paneId,
+    source: 'recent_unwrapped',
+    format: 'text',
+    lines: 2000,
+  })
+  const flowCapped = flowApp.entries().filter((entry) => entry.tag === 'term.scrollback.capped')
+  const altFlowing = {
+    paneId,
+    subject: '05-alt-scroll.sh (알트 판 안에서 계속 스크롤하는 화면)',
+    maxOffsetBefore: flowBefore.max_offset_from_bottom,
+    maxOffsetAfter: flowAfter.max_offset_from_bottom,
+    altConfirmed: flowBefore.max_offset_from_bottom > 0 && flowAfter.max_offset_from_bottom === 0,
+    recentLines: flowRecent.read.text.split('\n').length,
+    seededLines: flowState.seededLines,
+    baseY: flowDump.baseY,
+    scrollbackLines: flowDump.scrollback.length,
+    fabricatedHistory: flowDump.baseY > 0 || (flowState.seededLines ?? 0) > 0,
+    cappedLogs: flowCapped,
+    // **여기서 상한이 문다** — 어림잡기가 돌려준 몫(`found`)을 0 으로 잘랐다는 증거다.
+    capBit: flowCapped.some((entry) => entry.cap === 0 && entry.found > 0),
+    shot: (await flowApp.termShot('t5-alt-flow')).file,
+  }
+  console.log('T5 알트(흐름)', JSON.stringify({ ...altFlowing, shot: undefined, cappedLogs: flowCapped.length }))
+  await flowApp.stop()
+
   // --- 상한을 **모를 때** 무엇을 하나 (2회차 리뷰 G1-b) -----------------------
   //
   // 씨앗 상한은 `pane.get` 이 준다. 그 호출이 실패하면 상한이 `null` 이고, 1차 수정은 그때
   // **무제한**이었다 — 지어내기를 막으려고 만든 상한이 정작 모를 때는 안 걸렸다.
   // (1차 측정에는 `pane.get` 이 실패한 런이 한 건도 없어 이 갈래를 아무도 안 밟았다.)
   //
-  // 지금은 보수적으로 간다: **꼬리 일치로 닻을 내린 씨앗만** 쓰고 어림잡은 쪽은 버린다.
-  // 두 갈래를 다 잰다 — ⓐ 움직이는 알트(닻 없음 → 0줄) ⓑ 일반 판(닻 있음 → 과거 보존).
+  // 지금은 **아무것도 안 심는다.** 닻(꼬리 일치)을 대체물로 쓰려다 실측에 깨졌다 —
+  // 알트 판에서 닻이 성공했는데도 `found` 가 32줄이었다(`_runs/agent-claude`). 다음 붙기에서
+  // 다시 심으면 되는 일이라, 모를 때는 0 이 맞다.
+  //
+  // 두 갈래를 다 잰다 — ⓐ 흐르는 알트(0줄이 정답) ⓑ 일반 판(이 규칙이 **진짜 과거도** 미룬다는
+  // 것을 숨기지 않고 적는다 — 다음 붙기에 돌아온다).
   const capUnknown = {}
   {
-    // ⓐ vim 이 아직 떠 있다. 주입을 켜고 붙는다.
+    // ⓐ 흐르는 알트 화면이 아직 떠 있다. 주입을 켜고 붙는다.
     const app2 = await startApp({ name: 'cap-alt', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
     await sleep(1200)
     await app2.selectPane(paneId)
@@ -374,16 +426,18 @@ const out = {}
     await app2.stop()
   }
 
-  // vim 을 정직하게 닫는다 — C-c 로는 안 나간다.
-  await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
-  await sleep(300)
-  await request('pane.send_text', { pane_id: paneId, text: ':qa!\n' }).catch(() => {})
-  await sleep(900)
+  // 흐르는 픽스처를 멈추고 알트 판에서 나온다. 백그라운드(`&`)로 띄웠으므로 C-c 로는 안 죽는다.
+  await killFixtures()
+  await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
+  await sleep(500)
   await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 700 })
 
   {
-    // ⓑ 일반 판 — 닻이 있으므로 과거가 살아 있어야 한다. 보수적으로 간다고 **진짜 과거까지
-    // 버리면** 그건 또 다른 결함이다 (codex 가 짚은 반대 방향).
+    // ⓑ 일반 판 — 보수적 규칙의 **대가**를 정직하게 잰다. 상한을 모른 첫 붙기는 0줄이고,
+    // 그건 codex 가 짚은 반대 방향(진짜 과거가 잘린다)이 실제로 일어난다는 뜻이다.
+    // 그래서 **다시 붙으면 돌아오는지**까지 본다 — 주입 예산은 프로세스당 1회라 두 번째
+    // 붙기는 정상 경로를 탄다. 되돌아오면 손해는 "한 번의 붙기에서 과거가 늦게 온다"이고,
+    // 그 대가로 알트 판에서 없는 과거를 지어내지 않는다.
     await run(paneId, 'clear; for i in $(seq 1 200); do printf "CAP %03d 줄\n" $i; done', { settleMs: 3000 })
     const app3 = await startApp({ name: 'cap-normal', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
     await sleep(1200)
@@ -407,14 +461,36 @@ const out = {}
       markersOnScreen: onScreen3.size,
       markersCovered: new Set([...inHistory3, ...onScreen3]).size,
       markersDuplicated: [...inHistory3].filter((m) => onScreen3.has(m)).length,
-      historyKept: (state3.seededLines ?? 0) > 0,
       shot: (await app3.termShot('t5-cap-normal')).file,
     }
+
+    // 다시 붙는다 — 이번엔 `pane.get` 이 산다.
+    await app3.selectPane(null)
+    await sleep(800)
+    await app3.selectPane(paneId)
+    await sleep(4000)
+    const dump4 = (await app3.dump()).dump
+    const state4 = (await app3.state()).state.terminal
+    const inHistory4 = new Set(dump4.scrollback.map(capMarker).filter((m) => m !== null))
+    const onScreen4 = new Set(
+      dump4.grid.map((row) => capMarker(row.map((cell) => cell?.ch ?? ' ').join(''))).filter((m) => m !== null),
+    )
+    capUnknown.normal.reattached = {
+      note: '같은 pane 에 다시 붙는다 — 주입 예산이 다 떨어져 상한을 정상적으로 읽는다',
+      seededLines: state4.seededLines,
+      baseY: dump4.baseY,
+      markersInScrollback: inHistory4.size,
+      markersCovered: new Set([...inHistory4, ...onScreen4]).size,
+      markersDuplicated: [...inHistory4].filter((m) => onScreen4.has(m)).length,
+      historyCameBack: (state4.seededLines ?? 0) > 0,
+      shot: (await app3.termShot('t5-cap-normal-reattached')).file,
+    }
+    console.log('T5 상한모름·재붙기', JSON.stringify({ ...capUnknown.normal.reattached, shot: undefined }))
     console.log('T5 상한모름·일반', JSON.stringify({ ...capUnknown.normal, shot: undefined, cappedLogs: capUnknown.normal.cappedLogs.length }))
     await app3.stop()
   }
 
-  out.t5 = { normal, alt, capUnknown }
+  out.t5 = { normal, alt, altFlowing, capUnknown }
 
 }
 

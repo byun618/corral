@@ -156,17 +156,16 @@ function injectedAttachFailure(generation: number): boolean {
  * 없어서**(`term.grid.pane_get_failed` 0건) 그 갈래를 아무도 안 밟았다. 실패를 만들 수 있어야
  * "상한을 모를 때 보수적으로 간다"를 재고, 회귀 검사가 실제로 문다.
  *
- * 붙기 주입과 같은 모양이다 — 세대마다 예산이 다시 찬다.
+ * 붙기 주입과 달리 예산은 **프로세스 전체에 n 번**이다 (세대마다 채우지 않는다). 그래야
+ * "상한을 모른 첫 붙기는 0줄, **다음 붙기에는 과거가 돌아온다**"를 한 실행에서 잴 수 있다 —
+ * 세대마다 다시 차면 몇 번을 붙어도 영영 0줄이라 회복을 못 본다.
  */
-let paneGetFailBudget = 0
-let paneGetFailGeneration = -1
+let paneGetFailBudget: number | null = null
 
-function injectedPaneGetFailure(generation: number): boolean {
-  const want = Number(process.env.CORRAL_INJECT_PANE_GET_FAIL)
-  if (!Number.isFinite(want) || want <= 0) return false
-  if (paneGetFailGeneration !== generation) {
-    paneGetFailGeneration = generation
-    paneGetFailBudget = want
+function injectedPaneGetFailure(): boolean {
+  if (paneGetFailBudget === null) {
+    const want = Number(process.env.CORRAL_INJECT_PANE_GET_FAIL)
+    paneGetFailBudget = Number.isFinite(want) && want > 0 ? want : 0
   }
   if (paneGetFailBudget <= 0) return false
   paneGetFailBudget -= 1
@@ -608,7 +607,7 @@ export class PaneTerminal {
     let linesAbove: number | null = null
     let layoutCols: number | null = null
     try {
-      if (injectedPaneGetFailure(this.generation)) throw new Error('주입된 pane.get 실패 (CORRAL_INJECT_PANE_GET_FAIL)')
+      if (injectedPaneGetFailure()) throw new Error('주입된 pane.get 실패 (CORRAL_INJECT_PANE_GET_FAIL)')
       const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
       const pane = isRecord(info) ? readRecord(info, 'pane') : null
       const scroll = pane === null ? null : readRecord(pane, 'scroll')
@@ -690,15 +689,16 @@ export class PaneTerminal {
         // 상한을 넘는 몫은 **화면에 이미 있는 쪽**이다. `found` 는 오래된 것부터이므로 앞에서
         // 자른다 — 뒤에서 자르면 가장 오래된 과거가 날아간다(실측: HIST 001~038 소실).
         //
-        // **상한을 모르면(`null`) 무제한이 아니라 보수적으로 간다** (2회차 리뷰 G1-b):
-        // 꼬리 일치로 닻을 내린 씨앗만 쓰고, 어림잡은 쪽은 버린다. 어림잡기가 곧 지어내기다.
+        // **상한을 모르면(`null`) 무제한이 아니라 아무것도 안 심는다** (2회차 리뷰 G1-b).
+        //
+        // 처음에는 "꼬리 일치로 닻을 내렸으면 그건 믿자"로 두었는데 **실측이 그 전제를 깼다**:
+        // 알트 판(claude TUI)에서 꼬리 일치가 성공했는데도 `found` 가 32줄이었다
+        // (`_runs/agent-claude`: `found 32 · cap 0 · anchored true`). 알트 버퍼의
+        // `recent_unwrapped` 에는 그 판 안에서 위로 흘러간 줄이 섞여 들어오고, 그것을 심으면
+        // **지금 화면의 옛 프레임이 과거로 올라간다** — 이번 라운드가 막으려던 바로 그 결함이다.
+        // 닻은 상한의 대체물이 아니다. 그래서 모르면 0 이다 — 다음 붙기에서 다시 심으면 된다.
         const cap = linesAbove
-        const history =
-          cap === null
-            ? found.anchored
-              ? found.lines
-              : []
-            : found.lines.slice(0, Math.min(found.lines.length, cap))
+        const history = cap === null ? [] : found.lines.slice(0, Math.min(found.lines.length, cap))
         if (history.length !== found.lines.length) {
           log('term.scrollback.capped', {
             paneId: target.paneId,

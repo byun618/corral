@@ -27,6 +27,11 @@ let selectedPaneId: string | null = null
 /** L8 — 접어 둔 workspace. 화면 취향이라 herdr 에 저장하지 않는다 (corral 로컬 상태). */
 const collapsedWorkspaceIds = new Set<string>()
 let emitScheduled = false
+/**
+ * 지금까지 목록에 **실제로 있었던** pane. "선택한 것이 사라졌다" 를 판정하는 기준이다 —
+ * 아직 도착 안 한 것과 없어진 것을 가르는 유일한 방법이 이것이다 (currentState 주석).
+ */
+let knownPaneIds = new Set<string>()
 
 /**
  * LIFE-345 — 선택한 pane 의 터미널. 링크 위에 얹은 얇은 층이다: 구독은 링크 것을 쓰고
@@ -113,14 +118,21 @@ function selectPane(paneId: string | null): void {
 function currentState(): AppState {
   const rows = link.store.rows()
   const repos = link.store.repoGroups(rows)
+  const paneIds = new Set(rows.flatMap((row) => row.panes.map((pane) => pane.paneId)))
   // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
-  if (selectedPaneId !== null && !rows.some((row) => row.panes.some((pane) => pane.paneId === selectedPaneId))) {
+  //
+  // **한 번도 본 적 없는 pane 은 "사라진" 것이 아니다** (LIFE-346). 새 행을 만들면 그 pane 을
+  // 곧바로 고르는데, 그 시점엔 `pane_created` 가 아직 저장소에 안 들어와 있다 — 예전 규칙은
+  // 그걸 "대상이 사라짐" 으로 읽고 **갓 만든 터미널에 사망 표시를 씌웠다** (M4 1회차 샷 001).
+  // 사라졌다고 말할 자격은 **있었던 것**에만 있다.
+  if (selectedPaneId !== null && !paneIds.has(selectedPaneId) && knownPaneIds.has(selectedPaneId)) {
     log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
     // 목록에서는 선택을 비우되(그 줄이 이미 없다) **터미널은 마지막 화면을 들고 죽는다** —
     // 지워 버리면 무엇이 죽었는지 화면에 남지 않는다 (R5).
     terminal.markGone('pane_closed — pane 이 목록에서 사라졌다')
     selectedPaneId = null
   }
+  knownPaneIds = paneIds
   // 사라진 탭에 붙은 기동·종료 기록은 같이 턴다 — 없는 행에 붙은 표시는 그 자체가 유령이다.
   lifecycle.prune(new Set(rows.flatMap((row) => row.tabs.map((tab) => tab.tabId))))
   return {

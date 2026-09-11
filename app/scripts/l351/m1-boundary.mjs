@@ -48,6 +48,20 @@ const PROBES = [
     file: 'src/renderer/src/wire-probe.ts',
     source: "export const probe = (row: Record<string, unknown>): unknown => row['open_workspace_id']\n",
   },
+  // 수정 1회차 L2 — 1회차 지문은 **작은따옴표만** 봤다. prettier 가 작은따옴표로 맞춰 주는 덕에
+  // 통과하고 있었던 것이라, 검사의 통과선이 포매터에 기대고 있었다. 따옴표 3종을 다 건다.
+  {
+    rule: 'R4-wire-leak',
+    이름: 'R4 큰따옴표 메서드',
+    file: 'src/renderer/src/wire-probe2.ts',
+    source: 'export const probe = "pane.list"\n',
+  },
+  {
+    rule: 'R4-wire-leak',
+    이름: 'R4 템플릿 리터럴 ${} 안쪽',
+    file: 'src/renderer/src/wire-probe3.ts',
+    source: "const f = (x: Record<string, unknown>): unknown => x['a']\nexport const probe = `pane ${f({ pane_id: 1 })}`\n",
+  },
 ]
 
 const negative = []
@@ -58,7 +72,8 @@ for (const probe of PROBES) {
   const result = runCheck()
   fs.rmSync(target, { force: true })
   negative.push({
-    깬규칙: probe.rule,
+    깬규칙: probe.이름 ?? probe.rule,
+    규칙: probe.rule,
     심은파일: probe.file,
     exit: result.exit,
     잡았나: result.exit !== 0 && result.stdout.includes(probe.rule),

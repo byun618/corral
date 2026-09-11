@@ -9,10 +9,11 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, SessionInfo } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, listSessions } from './adapter/index.js'
+import type { AddRepoResult, AppState } from '../shared/types.js'
+import { SESSION_POLL_MS, SessionLink, listSessions, type SessionHandle } from './adapter/index.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
+import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
 import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
 
@@ -20,9 +21,11 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 
 let window: BrowserWindow | null = null
 let revision = 0
-let sessions: SessionInfo[] = []
+/** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
+let sessions: SessionHandle[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
+let sessionNote: string | null = null
 let registry: RepoRegistry | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
@@ -43,9 +46,11 @@ function currentState(): AppState {
   const tree = joinTree(skeleton, link.store.rows())
   return {
     revision,
-    sessions,
+    // 소켓 경로를 떼고 내보낸다 — 경계의 약속이 화면 상태로 새지 않게 (L9).
+    sessions: sessions.map(({ name, isDefault, running }) => ({ name, isDefault, running })),
     sessionsError,
     selectedSession,
+    sessionNote,
     link: link.linkState(),
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
     repos: tree.repos,
@@ -84,9 +89,23 @@ function scheduleTree(): void {
   }, 80)
 }
 
+/**
+ * 골격 재조회는 레포마다 `git worktree list`(최대 5초) + herdr 왕복을 **직렬로** 돈다.
+ * 그래서 A 가 도는 중 B 가 시작해 먼저 끝나면, 뒤늦게 끝난 A 의 **낡은 골격이 새것을 덮는다**
+ * (수정 1회차 L6). 예약은 `scheduleTree` 가 뭉치지만 실행 자체는 안 막았다.
+ * 세대 번호로 막는다 — 늦게 끝난 회차는 결과를 버린다.
+ */
+let treeGeneration = 0
+
 async function rebuildTree(): Promise<void> {
   const startedAt = Date.now()
-  skeleton = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
+  const generation = ++treeGeneration
+  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
+  if (generation !== treeGeneration) {
+    log('tree.stale', { generation, current: treeGeneration, ms: Date.now() - startedAt })
+    return
+  }
+  skeleton = built
   log('tree.built', {
     ms: Date.now() - startedAt,
     repos: skeleton.length,
@@ -119,12 +138,11 @@ async function pollSessions(): Promise<void> {
   sessions = scan.sessions
   sessionsError = scan.error
   if (selectedSession === null) {
-    const wanted = process.env.CORRAL_SESSION
-    const target =
-      (wanted !== undefined ? sessions.find((session) => session.name === wanted) : undefined) ??
-      sessions.find((session) => session.isDefault) ??
-      sessions[0]
-    if (target !== undefined) pickSession(target.name)
+    // 고르는 규칙은 순수 함수에 있다 (수정 1회차 M6) — 멈춘 세션을 실제로 만들지 않고 재생으로 잰다.
+    const choice = pickSessionName({ sessions, wanted: process.env.CORRAL_SESSION })
+    sessionNote = choice.note
+    if (choice.note !== null) log('session.select.note', { note: choice.note })
+    if (choice.name !== null) pickSession(choice.name)
   }
   scheduleEmit()
 }
@@ -183,8 +201,14 @@ function createWindow(): void {
   window.on('ready-to-show', () => window?.show())
   // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
   window.on('focus', () => void link.resync('window-focus'))
+  /**
+   * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
+   * R1 화면에 외부 링크는 없지만, `openExternal` 에 걸러지지 않은 URL 을 넘기는 모양이
+   * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.
+   */
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^https:\/\//.test(url)) void shell.openExternal(url)
+    else log('window.open.denied', { url: url.slice(0, 200) })
     return { action: 'deny' }
   })
 
@@ -210,10 +234,25 @@ app.whenReady().then(() => {
     registryFile: registry.state().file,
   })
 
-  ipcMain.handle('corral:getState', () => currentState())
-  ipcMain.handle('corral:addRepo', (_event, root: string) => addRepo(root))
-  ipcMain.handle('corral:refreshSessions', () => pollSessions())
-  ipcMain.on('corral:reportRendered', (_event, rendered: number) => log('ui.rendered', { revision: rendered }))
+  /**
+   * IPC 는 **우리 창에서 온 것만** 받는다 — 보안 체크리스트 15 (수정 1회차 L12).
+   * 지금 렌더러는 로컬·sandbox·isolation 이라 당장 잘못될 일은 없다. 그래도 핸들러가
+   * sender 를 안 보는 모양으로 굳으면, 나중에 iframe·원격 콘텐츠가 들어오는 순간 그대로 구멍이다.
+   */
+  const fromOurWindow = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean => {
+    const ok = window !== null && !window.isDestroyed() && event.senderFrame === window.webContents.mainFrame
+    if (!ok) log('ipc.rejected', { url: event.senderFrame?.url.slice(0, 200) ?? null })
+    return ok
+  }
+
+  ipcMain.handle('corral:getState', (event) => (fromOurWindow(event) ? currentState() : null))
+  ipcMain.handle('corral:addRepo', (event, root: string) =>
+    fromOurWindow(event) ? addRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
+  )
+  ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+  ipcMain.on('corral:reportRendered', (event, rendered: number) => {
+    if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
+  })
 
   createWindow()
   void pollSessions()

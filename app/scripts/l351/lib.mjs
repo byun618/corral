@@ -18,7 +18,14 @@ import { fileURLToPath } from 'node:url'
 export const SESSION = process.env.LIFE351_SESSION ?? 'life351-claude'
 export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
 export const REPO_DIR = path.dirname(APP_DIR)
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-351-app-skeleton/raw/claude')
+/**
+ * 이 회차의 원자료가 떨어지는 곳.
+ *
+ * 수정 라운드는 **앞 회차 원자료를 덮지 않는다** — 1회차 결과는 그대로 두고 `fix1/` 에 새로 쌓는다
+ * (지시 10). `L351_ROUND` 로 회차를 바꾼다.
+ */
+export const ROUND = process.env.L351_ROUND ?? 'fix1'
+export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-351-app-skeleton/raw/claude', ROUND)
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -226,12 +233,17 @@ export async function startApp({
     type: (text) => send({ cmd: 'type', text }),
     key: (keyCode, modifiers = []) => send({ cmd: 'key', keyCode, modifiers }),
     query: (selector) => send({ cmd: 'query', selector }),
-    /** 샷 이름에 **순번과 시각**을 박는다 — 연속성이 파일 이름만으로 보여야 한다. */
+    /**
+     * 샷 이름에 **순번과 시각**을 박는다 — 연속성이 파일 이름만으로 보여야 한다.
+     * 경로는 **원자료 기준 상대경로**로 돌려준다 (수정 1회차 L4): 1회차는 구현 worktree 의
+     * 절대경로를 JSON 에 박았는데, worktree 는 출고 후 정리되므로 그 경로는 곧 없어진다.
+     */
     shot: async (label, selector) => {
       const seq = String(++shotSeq).padStart(3, '0')
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const response = await send({ cmd: 'shot', name: `${seq}-${label}-${stamp}`, ...(selector ? { selector } : {}) })
-      return { ...response, seq, at: Date.now(), label }
+      const file = typeof response.file === 'string' ? path.relative(RAW_DIR, response.file) : response.file
+      return { ...response, file, seq, at: Date.now(), label }
     },
     stop: async () => {
       const exited = new Promise((resolve) => child.once('exit', resolve))

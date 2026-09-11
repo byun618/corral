@@ -59,6 +59,21 @@ function stripComments(source) {
       if (ch === '*' && next === '/') { mode = 'code'; i++ }
       continue
     }
+    // 템플릿 리터럴 안의 `${…}` 는 **코드다** (수정 1회차 L2). 문자열로 삼키면 그 안에 박힌
+    // 지문을 놓친다 — control.ts 의 clickProbe 가 실제로 큰 템플릿 리터럴이다.
+    if (mode === '`' && ch === '$' && next === '{') {
+      out += '${'
+      i++
+      let depth = 1
+      while (++i < source.length && depth > 0) {
+        const inner = source[i]
+        if (inner === '{') depth++
+        else if (inner === '}') depth--
+        out += inner
+      }
+      i--
+      continue
+    }
     // 문자열 안 — 이스케이프를 건너뛰고 닫는 따옴표를 찾는다.
     out += ch
     if (ch === '\\') { out += source[i + 1] ?? ''; i++; continue }
@@ -111,7 +126,13 @@ const inside = (file, dir) => file === dir || file.startsWith(dir + path.sep)
  * 메서드 이름과 실측 응답의 snake_case 필드 이름을 함께 본다.
  */
 const WIRE_FINGERPRINTS = [
-  { kind: 'method', pattern: /'(?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)'/g },
+  // 따옴표 3종을 다 본다 (수정 1회차 L2). 1회차는 작은따옴표만 봐서, 검사의 통과선이
+  // prettier 설정에 기대고 있었다 — `"pane.list"` 나 백틱 표기는 그냥 통과했다.
+  {
+    kind: 'method',
+    pattern:
+      /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)['"`]/g,
+  },
   { kind: 'field', pattern: /\b(?:workspace_id|pane_id|tab_id|agent_status|open_workspace_id|is_linked_worktree|repo_root|repo_name|foreground_cwd|terminal_title|display_agent|pane_count|tab_count|socket_path|process_info|foreground_process_group_id|shell_pid)\b/g },
   { kind: 'event', pattern: /\b(?:workspace_created|workspace_closed|tab_created|tab_closed|pane_created|pane_closed|pane_updated|pane_exited|pane_agent_detected|pane_agent_status_changed|layout_updated|worktree_opened|worktree_created|worktree_removed)\b/g },
   { kind: 'envelope', pattern: /events\.subscribe|"subscriptions"|'subscriptions'/g },

@@ -5,8 +5,8 @@
 // herdr 에게는 **열림상태만** 묻는다 (adapter/internal/worktrees.ts).
 
 import { execFile } from 'node:child_process'
-import path from 'node:path'
 import { promisify } from 'node:util'
+import { canonicalPath } from './canonical-path.js'
 
 const run = promisify(execFile)
 
@@ -33,7 +33,8 @@ export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeSca
     for (const line of stdout.split('\n')) {
       if (line.startsWith('worktree ')) {
         flush()
-        current = { path: path.resolve(line.slice('worktree '.length).trim()), branch: null }
+        // herdr 쪽과 같은 정규화를 쓴다 (수정 1회차 L8) — 문자열 완전일치로 조인하기 때문이다.
+        current = { path: canonicalPath(line.slice('worktree '.length).trim()), branch: null }
         continue
       }
       if (current === null) continue

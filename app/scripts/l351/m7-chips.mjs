@@ -2,16 +2,21 @@
 //
 // 이 구현이 노출하기로 한 칩은 셋이고, 각각의 오라클은 herdr 다 (R1 은 상태를 만들지 않는다):
 //   ① worktree 열림/닫힘 → `worktree.list` 의 `open_workspace_id` 유무
-//   ② pane 에이전트 상태 → `pane.list` 의 `agent_status` (미상·대기·작업중·막힘·완료 5종)
+//   ② pane 에이전트 상태 → `pane.list` 의 `agent_status` (미상·대기·작업중·막힘 **4종**)
 //   ③ pane 에이전트 이름 → `pane.list` 의 `agent`
 //
 // 상태를 어떻게 만드나: herdr 의 `pane.report_agent` 로 **하네스가 밖에서** 상태를 심는다.
 // 심는 쪽도 herdr 의 정식 경로고 그 결과는 `pane.list` 에 그대로 나오므로 오라클은 여전히 herdr 다.
 //
-// **공백 하나를 먼저 적는다**: `done` 은 이 환경에서 만들 수 없다. herdr 0.9.0 의
-// `pane.report_agent` 는 `done` 을 거절하고(`unknown variant \`done\``), 설치된 탐지 매니페스트
-// 중 `done` 을 내는 것이 하나도 없다. 그래서 `done` 은 **라이브 대조 대신** 어댑터 층 재생으로
-// 매핑만 보이고, 화면 대조는 공백으로 남긴다 — 못 잰 것을 잰 것처럼 적지 않는다.
+// **`done` 은 이제 노출하지 않는다** (수정 1회차 M7). 1회차는 `done` 을 칩 어휘에 넣어 놓고
+// 라이브 대조 없이 "통과(공백 1)" 로 적었고, 기준 N8("노출한 것 **전부** 대조")이 그걸 허락하지
+// 않는다는 판정을 받았다. 사실관계는 이렇다:
+//   · herdr 0.9.0 스키마 `AgentStatus`(이벤트·스냅샷·응답)에는 `done` 이 **있다**
+//   · `pane.report_agent` 가 받는 `PaneAgentState` 에는 **없다** — 그래서 그 거절은 스키마와 일치한다
+//   · 설치된 탐지 매니페스트가 쓰는 state 는 blocked·idle·unknown·working 넷뿐이다
+// 즉 0.9.0 은 `done` 을 만들지 않는다. 만들 수 없는 값을 칩으로 노출하면 영영 대조할 수 없으므로
+// 칩 어휘에서 뺐다. 어댑터는 `done` 이 와도 **미상으로 옮기고 로그에 남긴다** — 그 동작을
+// 여기서 실측으로 확인한다 (아래 `done 처리 재생`).
 //
 // 읽는 쪽은 **DOM 이다**: 앱 상태 객체가 아니라 화면에 실제로 그려진 `data-chip-value` 를 읽는다.
 
@@ -19,6 +24,25 @@ import { REPO_DIR, look, request, sleep, startApp, tidySession, until, writeRaw 
 
 /** 라이브로 만들 수 있는 상태. `done` 은 아래에서 거절당하는 것을 실측으로 남긴다. */
 const STATES = ['working', 'idle', 'blocked']
+
+/** 설치된 탐지 매니페스트가 실제로 내는 state 집합 — `done` 이 없다는 주장의 실물 근거. */
+const manifestStates = await (async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const pathMod = await import('node:path')
+  const dir = pathMod.join(os.homedir(), '.local/state/herdr/agent-detection/remote')
+  try {
+    const found = new Set()
+    for (const name of fs.readdirSync(dir)) {
+      for (const match of fs.readFileSync(pathMod.join(dir, name), 'utf8').matchAll(/state\s*=\s*"(\w+)"/g)) {
+        found.add(match[1])
+      }
+    }
+    return [...found].sort()
+  } catch (error) {
+    return { 못읽음: String(error) }
+  }
+})()
 
 await tidySession(REPO_DIR)
 const app = await startApp({ name: 'n8-chips' })
@@ -145,19 +169,22 @@ async function chipValue(attr, key) {
 
   out.노출하는칩['② pane 에이전트 상태'] = {
     오라클: 'herdr pane.list 의 agent_status',
-    값: ['미상(unknown)', '대기(idle)', '작업중(working)', '막힘(blocked)', '완료(done)'],
-    'done 공백': {
-      사유: 'herdr 0.9.0 이 pane.report_agent 에서 done 을 거절한다. 설치된 탐지 매니페스트에도 done 을 내는 규칙이 없다',
+    값: ['미상(unknown)', '대기(idle)', '작업중(working)', '막힘(blocked)'],
+    'done 을 노출하지 않는다 (수정 1회차 M7)': {
+      '스키마 AgentStatus (이벤트·스냅샷·응답)': ['idle', 'working', 'blocked', 'done', 'unknown'],
+      '스키마 PaneAgentState (report_agent 입력)': ['idle', 'working', 'blocked', 'unknown'],
       거절응답: doneRejection,
-      대신한것: '어댑터 재생으로 매핑만 확인 (아래 done매핑재생)',
+      '거절은 스키마와 일치한다': String(doneRejection).includes('unknown variant'),
+      탐지매니페스트가쓰는state: manifestStates,
+      결론: '0.9.0 은 done 을 만들지 않는다 → 칩 어휘에서 뺐다. 오면 미상으로 옮기고 로그에 남긴다',
     },
   }
   out.노출하는칩['③ pane 에이전트 이름'] = { 오라클: 'herdr pane.list 의 agent', 값: '문자열 또는 없음' }
   out.대조.push({ 칩: '②③ pane 에이전트 상태·이름', paneId, rows })
 }
 
-// `done` 매핑 재생 — herdr 가 언제든 이 값을 보내면 화면이 무엇을 그리나. 라이브 대조의 대체물이지
-// 대체 증거가 아니다: 오라클이 herdr 가 아니라 주입한 이벤트라서 N8 의 근거로는 공백으로 센다.
+// `done` 처리 재생 — herdr 가 언제든 이 값을 보내면 어댑터가 무엇을 하나 (수정 1회차 M7).
+// 이건 "노출한 칩을 대조한 근거" 가 아니라 "노출하지 않는 값이 와도 안전한가" 의 근거다.
 {
   const { execFileSync } = await import('node:child_process')
   const fs = await import('node:fs')
@@ -178,17 +205,36 @@ async function chipValue(attr, key) {
     data: { pane_id: 'wZ:p1', workspace_id: 'wZ', agent: 'claude', agent_status: 'done' },
   })
   const row = store.rows()[0].tabs[0].panes[0]
-  out.done매핑재생 = { agentStatus: row.agentStatus, agent: row.agent, '화면 라벨': '완료' }
+  out['done 처리 재생'] = {
+    '들어온 값': 'done',
+    '저장소가 든 값': row.agentStatus,
+    '화면 라벨': row.agentStatus === 'unknown' ? '미상' : `(칩 어휘에 없는 값: ${row.agentStatus})`,
+    agent: row.agent,
+  }
 }
 
 out.전체칩목록 = { 'data-chip-worktree': await chip('[data-chip-worktree]'), 'data-chip-pane': await chip('[data-chip-pane]') }
+/**
+ * 화면이 실제로 그릴 수 있는 라벨 전부 — **소스에서 뽑아 대조 목록과 맞춘다** (M7).
+ * 문서에 적은 목록과 코드가 갈라지면 "노출한 것 전부를 대조했다" 가 다시 거짓이 된다.
+ */
+const labelSource = (await import('node:fs')).readFileSync(
+  (await import('node:path')).join((await import('./lib.mjs')).APP_DIR, 'src/renderer/src/App.tsx'),
+  'utf8',
+)
+const labelBlock = /const STATUS_LABEL: Record<AgentStatus, string> = \{([^}]*)\}/.exec(labelSource)?.[1] ?? ''
+const 코드의칩어휘 = [...labelBlock.matchAll(/(\w+):/g)].map((match) => match[1]).sort()
+const 대조한상태 = ['blocked', 'idle', 'unknown', 'working']
+
 out.판정 = {
   '노출하는 칩 수': Object.keys(out.노출하는칩).length,
   '① worktree 칩 전부 일치': out.대조[0].rows.every((row) => row.일치),
+  코드의칩어휘,
+  '코드의 칩 어휘 = 대조한 상태 (노출한 것 전부를 댔나)': JSON.stringify(코드의칩어휘) === JSON.stringify(대조한상태),
   '② 만들 수 있는 상태를 전부 대조했나 (미상·작업중·대기·막힘 + 뗌)': out.대조[1].rows.length === 5,
   '②③ pane 칩 전부 일치': out.대조[1].rows.every((row) => row.일치),
-  '공백': 'done — herdr 가 만들어 주지 않아 라이브 대조 못 함 (거절응답을 원자료에 남김)',
-  'done 매핑은 재생으로 확인': out.done매핑재생?.agentStatus === 'done',
+  'done 은 노출하지 않는다': !코드의칩어휘.includes('done'),
+  'done 이 와도 미상으로 간다': out['done 처리 재생']?.['저장소가 든 값'] === 'unknown',
 }
 console.log(JSON.stringify(out.판정, null, 2))
 writeRaw('n8-chips.json', out)

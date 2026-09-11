@@ -5,6 +5,7 @@
 
 import { isRecord, readRecord, readString } from '../../../shared/json.js'
 import type { AgentStatus } from '../../../shared/types.js'
+import { log } from '../../log.js'
 
 /**
  * corral 이 구독하는 타입. herdr 0.9.0 이 아는 27종의 부분집합이며 **푸시 봉투 모양을 실제로
@@ -28,6 +29,8 @@ export const SUBSCRIPTION_TYPES: readonly string[] = [
   'tab.closed',
   'tab.focused',
   'tab.renamed',
+  // 목록이 탭 **번호·순서**를 그린다 — 순서가 바뀌면 화면도 따라가야 한다 (수정 1회차 M5).
+  'tab.moved',
   'pane.created',
   'pane.closed',
   'pane.updated',
@@ -37,6 +40,14 @@ export const SUBSCRIPTION_TYPES: readonly string[] = [
 ]
 
 /**
+ * **일부러 뺀 것** (수정 1회차 L13 — 다음 라운드가 이걸 "빠졌다" 로 재발견하지 않게 적는다).
+ * herdr 0.9.0 이 아는 27종 중 위 목록에 없는 것과 그 이유:
+ *   · `pane.focused` · `pane.moved` — R1 은 포커스·pane 배치를 그리지 않는다. 저장소가
+ *     `focused` 를 들고 있지만 칩으로 안 나간다. R2(터미널 뷰)가 쓸 자리다
+ *   · `pane.output_matched` · `pane.scroll_changed` — 터미널 내용 층이다. 목록과 무관하고
+ *     둘 다 파라미터를 요구하는 구독이라 pane 마다 커넥션이 든다
+ *   · `pane.agent_status_changed` — 목록에 없는 게 아니라 **별도 커넥션**으로 건다 (바로 아래)
+ *
  * 상태 전이는 **이 타입으로만** 온다 (LIFE-342 실측: 파라미터 없는 구독에는 0건,
  * `pane_id` 를 건 구독에만 왔다). 그래서 **pane 마다** 걸어야 하는데, 구독 커넥션에는
  * `events.subscribe` 를 한 줄만 쓴다는 것이 스파이크 제약이다 — 그래서 pane 목록이 바뀌면
@@ -56,12 +67,18 @@ export type ResponseFrame = {
 /** 구독 push 봉투. */
 export type PushFrame = { event: string; data: Record<string, unknown> }
 
-const AGENT_STATUSES: readonly string[] = ['idle', 'working', 'blocked', 'done', 'unknown']
-
-/** herdr 의 상태 문자열을 **corral 의** AgentStatus 로 옮긴다 (경계를 건너는 건 이쪽이다). */
+/**
+ * herdr 의 상태 문자열을 **corral 의** AgentStatus 로 옮긴다 (경계를 건너는 건 이쪽이다).
+ *
+ * herdr 0.9.0 스키마의 `AgentStatus` 는 다섯이다 — idle·working·blocked·**done**·unknown.
+ * corral 이 칩으로 구분하는 것은 넷이고 `done` 은 없다 (`shared/types.ts` 에 사유).
+ * 그래서 `done` 은 **여기서 미상으로 옮기고 로그에 남긴다** (수정 1회차 M7).
+ * 조용히 삼키지 않는 이유: 0.9.0 은 `done` 을 만들지 않지만 스키마는 허용한다 —
+ * 언젠가 실제로 오면 그 사실이 로그에 있어야 칩을 늘릴 근거가 된다.
+ */
 export function readAgentStatus(source: Record<string, unknown>, key: string): AgentStatus {
   const value = source[key]
-  if (typeof value !== 'string' || !AGENT_STATUSES.includes(value)) return 'unknown'
+  if (typeof value !== 'string') return 'unknown'
   switch (value) {
     case 'idle':
       return 'idle'
@@ -69,9 +86,10 @@ export function readAgentStatus(source: Record<string, unknown>, key: string): A
       return 'working'
     case 'blocked':
       return 'blocked'
-    case 'done':
-      return 'done'
+    case 'unknown':
+      return 'unknown'
     default:
+      log('agent_status.unmapped', { wire: value, key })
       return 'unknown'
   }
 }

@@ -6,15 +6,30 @@
 //
 // 규칙: 이 파일은 아무것도 import 하지 않는다. import 가 생기면 그 순간 경계가 새기 시작한다.
 
-/** 에이전트 상태. herdr 의 `AgentStatus` 와 값이 겹치지만 **corral 의 정의**다. */
-export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown'
+/**
+ * corral 이 **칩으로 구분하는** 에이전트 상태. herdr 와 값이 겹치지만 corral 의 정의다.
+ *
+ * `done` 이 여기 없는 이유 (수정 1회차 M7 — 기준 N8 은 "노출한 것 전부를 대조" 다):
+ *   · herdr 0.9.0 스키마의 `AgentStatus`(이벤트·스냅샷·응답)에는 `done` 이 **있다**
+ *   · `pane.report_agent` 가 받는 `PaneAgentState` 에는 **없다** — 그래서 그 거절은 스키마와 일치한다
+ *   · 설치된 탐지 매니페스트(remote/*.toml)가 쓰는 state 는 blocked·idle·unknown·working 넷뿐이다
+ * 즉 0.9.0 은 `done` 을 **만들지 않는다**. 만들 수 없는 값을 칩으로 노출하면 그 칩은 영영
+ * 오라클과 대조할 수 없다. 어댑터는 `done` 이 와도 읽을 수 있고(미상으로 옮기고 로그에 남긴다),
+ * 실제로 오기 시작하면 그때 칩을 늘린다 (이월).
+ */
+export type AgentStatus = 'idle' | 'working' | 'blocked' | 'unknown'
 
-/** herdr 세션 하나. 어댑터가 발견해 넘겨준다. */
+/**
+ * herdr 세션 하나 — **렌더러가 보는 만큼**.
+ *
+ * 소켓 경로는 여기 없다 (수정 1회차 L9). 경계의 약속이 "herdr 소켓은 main/adapter 안" 인데
+ * 진단용으로 렌더러까지 실어 보내면 그 약속이 화면 상태에서 새는 꼴이다. 소켓을 들고 다니는
+ * 타입은 어댑터의 `SessionHandle` 이고 그건 main 밖으로 나가지 않는다.
+ */
 export type SessionInfo = {
   name: string
   isDefault: boolean
   running: boolean
-  socketPath: string
 }
 
 /** 세션 링크가 지금 어느 걸음에 있나. */
@@ -31,7 +46,6 @@ export type LinkPhase =
 export type LinkState = {
   phase: LinkPhase
   sessionName: string | null
-  socketPath: string | null
   attempt: number
   nextRetryInMs: number | null
   lastError: string | null
@@ -64,7 +78,10 @@ export type TabRow = {
   tabId: string
   workspaceId: string
   label: string
+  /** herdr 가 붙인 표찰. **순서가 아니다** — 탭을 옮겨도 안 바뀐다 (수정 1회차 M5 실측). */
   number: number
+  /** 목록에서의 자리. 화면은 이 순서로 그린다. */
+  order: number
   agentStatus: AgentStatus
   focused: boolean
   panes: PaneRow[]
@@ -126,6 +143,8 @@ export type AppState = {
   sessions: SessionInfo[]
   sessionsError: string | null
   selectedSession: string | null
+  /** 세션을 왜 그것으로 골랐나 / 왜 못 골랐나 (수정 1회차 M6). 평시에는 null. */
+  sessionNote: string | null
   link: LinkState
   registry: RegistryState
   repos: RepoRow[]

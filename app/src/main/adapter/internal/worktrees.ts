@@ -9,6 +9,7 @@
 // 응답은 정상이고(열림 표시가 없을 뿐), git 이 아닌 경로는 `not_git_worktree` 로 거절한다.
 
 import { isRecord, readArray, readRecord, readString } from '../../../shared/json.js'
+import { canonicalPath } from '../../canonical-path.js'
 import { request } from './request.js'
 
 /** 경로 → 그 체크아웃을 열고 있는 workspace id. 열려 있지 않은 경로는 맵에 없다. */
@@ -28,7 +29,8 @@ export async function readOpenWorkspaces(socketPath: string, repoRoot: string): 
       const itemPath = readString(item, 'path')
       const openId = readString(item, 'open_workspace_id')
       if (itemPath === null || openId === null) continue
-      byPath.set(itemPath, openId)
+      // git 쪽과 같은 정규화 (수정 1회차 L8). 두 쪽이 다른 canonical path 를 주면 조인이 조용히 빗나간다.
+      byPath.set(canonicalPath(itemPath), openId)
     }
     const source = readRecord(result, 'source')
     return { byPath, repoName: source === null ? null : readString(source, 'repo_name'), error: null }

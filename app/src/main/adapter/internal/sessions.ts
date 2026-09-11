@@ -29,7 +29,15 @@ export function herdrHome(): string {
   return path.join(os.homedir(), '.config', 'herdr')
 }
 
-export type SessionScan = { sessions: SessionInfo[]; source: 'cli' | 'filesystem'; error: string | null }
+/**
+ * 세션 하나 — **소켓 경로까지** 든 것 (수정 1회차 L9).
+ *
+ * 렌더러가 보는 `SessionInfo` 에는 소켓이 없다. 소켓을 들고 다니는 건 이 타입이고,
+ * 이건 어댑터 공개 입구를 지나 **main 까지만** 간다. preload·renderer 는 이 이름을 모른다.
+ */
+export type SessionHandle = SessionInfo & { socketPath: string }
+
+export type SessionScan = { sessions: SessionHandle[]; source: 'cli' | 'filesystem'; error: string | null }
 
 export async function listSessions(): Promise<SessionScan> {
   try {
@@ -45,12 +53,12 @@ export async function listSessions(): Promise<SessionScan> {
   }
 }
 
-function parseSessionList(stdout: string): SessionInfo[] | null {
+function parseSessionList(stdout: string): SessionHandle[] | null {
   const parsed = safeParse(stdout)
   if (!isRecord(parsed)) return null
   const list = parsed['sessions']
   if (!Array.isArray(list)) return null
-  const sessions: SessionInfo[] = []
+  const sessions: SessionHandle[] = []
   for (const item of list) {
     if (!isRecord(item)) continue
     const name = readString(item, 'name')
@@ -69,7 +77,7 @@ function parseSessionList(stdout: string): SessionInfo[] | null {
 /** CLI 가 없거나 실패할 때의 폴백. 경로 규칙 두 갈래를 그대로 구현한다. */
 function scanFilesystem(reason: string): SessionScan {
   const home = herdrHome()
-  const sessions: SessionInfo[] = []
+  const sessions: SessionHandle[] = []
   const defaultSocket = path.join(home, 'herdr.sock')
   if (fs.existsSync(defaultSocket)) {
     sessions.push({ name: 'default', isDefault: true, running: true, socketPath: defaultSocket })

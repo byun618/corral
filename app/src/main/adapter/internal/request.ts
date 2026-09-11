@@ -15,16 +15,15 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  * 킥오프가 못 박은 것: "R1 의 herdr 접촉은 읽기 전용이다 — 쓰기 메서드가 나가면 그 자체가
  * 범위 위반". 그래서 화이트리스트에 쓰기가 한 줄도 없다. 코드가 실수로 불러도 여기서 막힌다.
  * (행 생성·종료는 R3. 그때 이 목록에 줄이 늘어난다.)
+ *
+ * **실제 호출부가 있는 것만 둔다** (수정 1회차 L3 — 판정 "줄인다"). 1회차에는 `ping`·`tab.list`·
+ * `pane.list`·`workspace.list`·`pane.process_info` 다섯 줄이 허용만 돼 있고 부르는 곳이 없었다.
+ * 이 목록의 값은 "이 앱이 herdr 에 무엇을 하는지가 목록 하나로 읽힌다" 는 것인데, 안 쓰는 줄이
+ * 섞이면 목록이 R1 의 실제 접촉면을 말하지 않는다.
+ *   · `session.snapshot` — 부트스트랩·주기 재동기 (link.ts)
+ *   · `worktree.list`    — worktree 열림상태 (worktrees.ts)
  */
-const ALLOWED_METHODS: readonly string[] = [
-  'ping',
-  'session.snapshot',
-  'workspace.list',
-  'tab.list',
-  'pane.list',
-  'worktree.list',
-  'pane.process_info',
-]
+const ALLOWED_METHODS: readonly string[] = ['session.snapshot', 'worktree.list']
 
 export class HerdrRequestError extends Error {
   readonly code: string

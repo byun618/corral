@@ -8,6 +8,11 @@
 //   ⓒ pane exit      셸에 `exit`       → 마지막 pane 이면 `pane_exited` 하나뿐이고
 //                                       `workspace_closed` 는 **안 온다**
 //   ⓓ 마지막 탭 닫기 `tab.close`       → `workspace_closed` 가 먼저 온다
+//   ⓔ 탭 이동        `tab.move`         → `tab_moved` (수정 1회차 M5 로 추가)
+//
+// **ⓔ 는 id 집합으로 재면 안 된다.** 탭을 옮겨도 id 집합은 그대로라 `sameSet` 이 공짜로 통과한다.
+// 판별자는 **순서**다 — corral 목록의 탭 배열과 herdr `tab.list` 의 배열을 자리째 비교한다.
+// (그리고 `number` 로 비교해도 안 된다: 실측상 `tab.move` 는 number 를 안 바꾼다 — 00-shapes-fix1.json)
 //
 // **스냅샷 재조회로 덮어 맞춘 것은 통과가 아니다.** 그래서 회차 구간에 `boot.snapshot.applied`·
 // `resync.applied` 가 한 번도 없었음을 로그로 함께 증명한다. 있으면 그 회차는 무효다.
@@ -30,7 +35,7 @@ await sleep(800)
 await app.addRepo(REPO_DIR)
 await until(async () => (await app.state()).repos.length === 1, { what: '레포 등록' })
 
-const out = { at: new Date().toISOString(), 재동기간격ms: 3600000, cases: { a: [], b: [], c: [], d: [] } }
+const out = { at: new Date().toISOString(), 재동기간격ms: 3600000, cases: { a: [], b: [], c: [], d: [], e: [] } }
 
 /** 그 구간에 스냅샷 재조회가 있었나 — 있으면 "이벤트 경로가 맞았다" 를 말할 수 없다. */
 function snapshotsSince(mark) {
@@ -192,6 +197,80 @@ for (let round = 1; round <= TIMES; round++) {
   })
 }
 
+// ── ⓔ 탭 이동 (`tab_moved`) — **순서**로 잰다 ──────────────────────────────
+/** corral 화면의 탭 순서(그 workspace 안) · herdr tab.list 의 탭 순서. */
+async function orderLook(workspaceId) {
+  const [state, list] = await Promise.all([app.state(), request('tab.list', { workspace_id: workspaceId })])
+  const rows = [
+    ...state.repos.flatMap((repo) => repo.worktrees.map((wt) => wt.workspace).filter((item) => item !== null)),
+    ...state.unregistered.workspaces,
+  ]
+  const corral = (rows.find((row) => row.workspaceId === workspaceId)?.tabs ?? []).map((tab) => tab.tabId)
+  const herdr = list.tabs.map((tab) => tab.tab_id)
+  return { at: Date.now(), corral, herdr, 일치: JSON.stringify(corral) === JSON.stringify(herdr) }
+}
+
+for (let round = 1; round <= TIMES; round++) {
+  const stale = (await look(app)).corral.workspaces
+  await tidySession(REPO_DIR)
+  const fresh = await until(
+    async () => {
+      const id = await firstWorkspaceId()
+      if (id === null || stale.includes(id)) return null
+      const seen = await orderLook(id)
+      return seen.corral.length > 0 ? id : null
+    },
+    { what: 'ⓔ 새 workspace 반영', timeoutMs: 20000, everyMs: 60 },
+  )
+  if (!fresh.ok) throw new Error('ⓔ 준비 실패')
+  const workspaceId = fresh.value
+  // 탭 셋을 만들고 corral 이 따라온 뒤에 옮긴다 — 준비 구간의 지연이 회차 수치에 섞이지 않게.
+  for (let i = 0; i < 2; i++) await request('tab.create', { workspace_id: workspaceId, cwd: REPO_DIR })
+  await until(async () => (await orderLook(workspaceId)).corral.length === 3 && (await orderLook(workspaceId)).일치, {
+    what: 'ⓔ 준비 수렴',
+    timeoutMs: 15000,
+    everyMs: 40,
+  })
+  const before = await orderLook(workspaceId)
+  const target = before.herdr[before.herdr.length - 1]
+  const mark = Date.now()
+  await request('tab.move', { tab_id: target, insert_index: 0 })
+
+  const confirmed = await until(
+    async () => {
+      const seen = await orderLook(workspaceId)
+      return seen.herdr[0] === target ? seen : null
+    },
+    { what: 'ⓔ herdr 확정', timeoutMs: 15000, everyMs: 20 },
+  )
+  const first = confirmed.value ?? (await orderLook(workspaceId))
+  const converged = await until(async () => ((await orderLook(workspaceId)).일치 ? true : null), {
+    what: 'ⓔ 수렴',
+    timeoutMs: 10000,
+    everyMs: 40,
+  })
+  const final = await orderLook(workspaceId)
+  out.cases.e.push({
+    round,
+    workspaceId,
+    옮긴탭: target,
+    게이트: { herdr확정: confirmed.ok, 수렴: converged.ok },
+    herdr확정ms: confirmed.ms,
+    해상도ms: 20,
+    옮기기전: before,
+    처음부터일치: first.일치,
+    수렴ms: first.일치 ? 0 : converged.ms,
+    스냅샷재조회: snapshotsSince(mark),
+    // id 집합만 보면 공짜로 통과한다는 것을 원자료에 남긴다 — 판별자가 순서임을 보이는 자리다.
+    'id 집합으로는 구분되나': JSON.stringify([...final.corral].sort()) !== JSON.stringify([...final.herdr].sort()),
+    일치: final.일치,
+    차이: final.일치 ? null : { corral: final.corral, herdr: final.herdr },
+    corral: final.corral,
+    herdr: final.herdr,
+  })
+  console.log(`e#${round}`, final.일치 ? 'OK' : JSON.stringify(final), `수렴 ${first.일치 ? 0 : converged.ms}ms`)
+}
+
 const roll = (rows) => ({
   회차: rows.length,
   불일치: rows.filter((item) => !item.일치).length,
@@ -206,12 +285,16 @@ out.요약 = {
   'ⓑ 탭 닫기': roll(out.cases.b),
   'ⓒ pane exit (마지막 pane)': roll(out.cases.c),
   'ⓓ 마지막 탭 닫기 (workspace 연쇄)': roll(out.cases.d),
+  'ⓔ 탭 이동 (순서 비교)': roll(out.cases.e),
 }
 out.판정 = {
-  '4케이스 × 5회': Object.values(out.요약).every((item) => item.회차 === TIMES),
+  '5케이스 × 5회': Object.values(out.요약).every((item) => item.회차 === TIMES),
   '불일치 합': Object.values(out.요약).reduce((sum, item) => sum + item.불일치, 0),
   '게이트실패 합': Object.values(out.요약).reduce((sum, item) => sum + item.게이트실패, 0),
   '스냅샷 재조회 합 (0이어야 이벤트 경로다)': Object.values(out.요약).reduce((sum, item) => sum + item.스냅샷재조회합, 0),
+  'ⓔ 가 id 집합으로 구분되지 않는 회차 (전부여야 순서가 판별자다)': out.cases.e.filter(
+    (row) => row['id 집합으로는 구분되나'] === false,
+  ).length,
 }
 // 이벤트 경로가 실제로 무엇을 했는지 — 적용 note 를 그대로 싣는다 (연쇄 삭제의 지문).
 out.이벤트적용 = app

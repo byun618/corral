@@ -8,8 +8,9 @@
 // 승계 팩트 (00-analysis.md §3 — 재측정하지 않되 지키는지는 새로 증명한다):
 //   · 구독은 갱신이지 진실이 아니다 — 스냅샷이 진실 (applySnapshot·reconcile)
 //   · push 에 시퀀스·revision 없음 · 인과 순서 비보장 → **묘비 + 보류함**
-//   · 닫기 부분 통보 → store 가 연쇄 삭제 (tab_closed → 그 pane / 마지막 pane → 탭 → workspace)
-//   · putPane 의 탭 존재(묘비) 검사
+//   · 닫기 부분 통보 → store 가 연쇄 삭제 (tab_closed → 그 pane → (마지막이면) workspace /
+//     마지막 pane → 탭 → workspace)
+//   · putPane 의 pane·탭 묘비 검사
 //   · workspace_id 는 서버 생애 안에서만 유일 → 묘비에 시간을 재지 않는다
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
@@ -31,6 +32,15 @@ type Tab = {
   workspaceId: string
   label: string
   number: number
+  /**
+   * 화면에 놓이는 **자리**. `number` 와 다르다 (수정 1회차 M5 실측 — `00-shapes-fix1.json`).
+   *
+   * `tab.move` 로 탭을 옮기면 `tab.list`·`session.snapshot`·`tab_moved` 의 **배열 순서**가 바뀌고
+   * `number` 는 그대로다 (t1·t2·t3 를 t3 앞으로 옮기면 `[t3(3), t1(1), t2(2)]`).
+   * 즉 herdr 에서 순서의 진실은 목록의 자리이지 `number` 가 아니다 — `number` 는 안정적인 표찰이다.
+   * 1회차는 `number` 로 정렬해서, 순서가 바뀐 목록을 herdr 와 다르게 그렸다.
+   */
+  order: number
   agentStatus: AgentStatus
   focused: boolean
   knownAt: number
@@ -90,6 +100,16 @@ export class WorkspaceStore {
    * pane 만 되살려 **탭 목록에는 없는데** 수가 늘어난다. 탭 id 도 재사용되지 않는다(실측).
    */
   private closedTabs = new Set<string>()
+  /**
+   * 닫힌 **pane** 의 묘비 (수정 1회차 H1 — 리뷰어가 실행으로 반증한 자리).
+   *
+   * 1회차에는 이 묘비가 없었고, pane 의 부활을 막는 것은 "그 pane 의 탭이 같이 죽어서
+   * `closedTabs` 에 들어갔다" 는 **간접 효과**뿐이었다. 그래서 **탭이 살아남는 경로**
+   * — 형제 pane 이 남은 탭에서 pane 하나만 닫히거나, 재동기가 pane 만 지운 경우 —
+   * 에는 방어가 하나도 없었고, 늦게 온 `pane_updated` 가 죽은 pane 을 되살렸다.
+   * pane id 도 workspace·tab 과 같이 서버 생애 안에서 재사용되지 않으므로 규칙도 같다.
+   */
+  private closedPanes = new Set<string>()
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -98,6 +118,7 @@ export class WorkspaceStore {
     this.panes.clear()
     this.closed.clear()
     this.closedTabs.clear()
+    this.closedPanes.clear()
     this.orphans = []
   }
 
@@ -108,7 +129,8 @@ export class WorkspaceStore {
     this.reset()
     const at = Date.now()
     for (const item of arrayOf(inner, 'workspaces')) this.putWorkspace(item, at)
-    for (const item of arrayOf(inner, 'tabs')) this.putTab(item, at)
+    // 탭은 **자리를 배열 순서에서 읽는다** (M5 실측) — 그래서 인덱스를 같이 넘긴다.
+    arrayOf(inner, 'tabs').forEach((item, index) => this.putTab(item, at, index))
     for (const item of arrayOf(inner, 'panes')) this.putPane(item, at)
     return {
       changed: true,
@@ -173,6 +195,9 @@ export class WorkspaceStore {
         continue
       }
       this.panes.delete(id)
+      // 탭 삭제와 같은 규칙으로 묘비를 세운다 (H1ⓓ). 위의 `knownAt` 으로 살려 둔 행
+      // (keptNewer)은 여기 오지 않는다 — 산 행에 묘비를 세우면 그 행이 영영 못 돌아온다.
+      this.closedPanes.add(id)
       removed.panes.push(id)
     }
 
@@ -185,12 +210,13 @@ export class WorkspaceStore {
       const had = this.workspaces.has(id)
       if (this.putWorkspace(item, at) && !had) added.workspaces.push(id)
     }
-    for (const item of arrayOf(inner, 'tabs')) {
+    // 재동기는 **순서도 맞춘다** — 스냅샷 배열의 자리가 진실이다 (M5).
+    arrayOf(inner, 'tabs').forEach((item, index) => {
       const id = idOf(item, 'tab_id')
-      if (id === null) continue
+      if (id === null) return
       const had = this.tabs.has(id)
-      if (this.putTab(item, at) && !had) added.tabs.push(id)
-    }
+      if (this.putTab(item, at, index) && !had) added.tabs.push(id)
+    })
     for (const item of arrayOf(inner, 'panes')) {
       const id = idOf(item, 'pane_id')
       if (id === null) continue
@@ -257,6 +283,7 @@ export class WorkspaceStore {
           if (id !== null && this.closed.has(id)) continue
           this.putWorkspace(item, at)
         }
+
         return { changed: true, note: frame.event }
       }
 
@@ -315,25 +342,58 @@ export class WorkspaceStore {
       case 'tab_closed': {
         const id = readString(data, 'tab_id')
         if (id === null) return { changed: false, note: 'tab_closed 필드 부족' }
+        // workspace 연쇄를 보려면 지우기 **전에** 주인을 읽어야 한다 (수정 1회차 L5).
+        const workspaceId = this.tabs.get(id)?.workspaceId ?? readString(data, 'workspace_id')
         const had = this.tabs.delete(id)
         this.closedTabs.add(id)
         let orphaned = 0
         for (const [paneId, pane] of this.panes) {
           if (pane.tabId !== id) continue
           this.panes.delete(paneId)
+          this.closedPanes.add(paneId) // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비
           orphaned += 1
         }
         // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
         const before = this.orphans.length
         this.orphans = this.orphans.filter((item) => readString(item.value, 'tab_id') !== id)
         const dropped = before - this.orphans.length
-        const changed = had || orphaned > 0
+        /**
+         * **마지막 탭이 닫히면 workspace 도 닫힌다** — `pane_exited` 경로와 대칭으로 (L5).
+         * 1회차는 "마지막 탭은 `workspace_closed` 가 먼저 온다"(LIFE-346 실측)에 기대 비대칭이었다.
+         * 그 실측은 지금도 맞고 N5ⓓ 가 5회 통과했지만, 분석 §3 이 박아 둔 전제는 **인과 비보장**이다 —
+         * `workspace_closed` 가 늦으면 그 사이 유령 workspace 행이 보인다. 연쇄는 멱등이라 싸다.
+         */
+        const workspaceGone =
+          workspaceId !== null &&
+          this.workspaces.has(workspaceId) &&
+          [...this.tabs.values()].every((item) => item.workspaceId !== workspaceId) &&
+          [...this.panes.values()].every((item) => item.workspaceId !== workspaceId)
+        if (workspaceGone) this.dropWorkspace(workspaceId)
+        const changed = had || orphaned > 0 || workspaceGone
         return {
           changed,
           note: changed
-            ? `${frame.event}: pane ${orphaned}개 · 보류 ${dropped}개 함께 정리`
+            ? `${frame.event}: pane ${orphaned}개 · 보류 ${dropped}개 함께 정리` +
+              (workspaceGone ? ` · 마지막 탭 — workspace(${workspaceId ?? ''})도 지움` : '')
             : 'tab_closed: 이미 없음(멱등)',
         }
+      }
+
+      /**
+       * **탭 순서 바뀜** (수정 1회차 M5 — codex 1).
+       * 실측 봉투: `{event:"tab_moved", data:{tab_id, workspace_id, insert_index, tabs:[TabInfo…]}}`
+       * — 그 workspace 의 탭 목록이 **통째로** 실려 온다 (`00-shapes-fix1.json`).
+       * 그래서 `workspace_moved` 와 같은 규칙으로 통째 다시 넣는다. 묘비는 그대로 존중한다:
+       * 목록에 죽은 탭이 섞여 와도 `putTab` 이 막는다.
+       */
+      case 'tab_moved': {
+        const list = data['tabs']
+        if (!Array.isArray(list)) return { changed: false, note: 'tab_moved: tabs 없음' }
+        let changed = false
+        list.forEach((item, index) => {
+          if (this.putTab(item, at, index)) changed = true
+        })
+        return { changed, note: `${frame.event}: 탭 ${list.length}개 순서 갱신` }
       }
 
       case 'pane_created':
@@ -341,6 +401,10 @@ export class WorkspaceStore {
         const added = this.putPane(data['pane'], at)
         if (added) return { changed: true, note: frame.event }
         const pane = readRecord(data, 'pane')
+        const paneId = pane === null ? null : readString(pane, 'pane_id')
+        if (paneId !== null && this.closedPanes.has(paneId)) {
+          return { changed: false, note: `${frame.event}: 닫힌 pane(${paneId}) — 묘비로 막음` }
+        }
         const tabId = pane === null ? null : readString(pane, 'tab_id')
         if (tabId !== null && this.closedTabs.has(tabId)) {
           return { changed: false, note: `${frame.event}: 닫힌 탭(${tabId}) — 묘비로 막음` }
@@ -366,6 +430,9 @@ export class WorkspaceStore {
         const id = readString(data, 'pane_id')
         if (id === null) return { changed: false, note: `${frame.event} 필드 부족` }
         const pane = this.panes.get(id) ?? null
+        // 묘비는 **모르는 pane 에도** 세운다 (H1ⓐ). tab_closed·dropWorkspace 가 이미 그렇게
+        // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
+        this.closedPanes.add(id)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
         this.panes.delete(id)
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
@@ -430,7 +497,11 @@ export class WorkspaceStore {
       this.tabs.delete(tabId)
       this.closedTabs.add(tabId)
     }
-    for (const [paneId, pane] of this.panes) if (pane.workspaceId === id) this.panes.delete(paneId)
+    for (const [paneId, pane] of this.panes) {
+      if (pane.workspaceId !== id) continue
+      this.panes.delete(paneId)
+      this.closedPanes.add(paneId) // H1ⓑ — workspace 연쇄로 죽은 pane 에도 묘비
+    }
     return had
   }
 
@@ -463,14 +534,16 @@ export class WorkspaceStore {
         workspaceId: tab.workspaceId,
         label: tab.label,
         number: tab.number,
+        order: tab.order,
         agentStatus: tab.agentStatus,
         focused: tab.focused,
         panes: panesByTab.get(tab.tabId) ?? [],
       })
       tabsByWorkspace.set(tab.workspaceId, list)
     }
+    // **자리 순으로** 정렬한다 — herdr 의 목록 순서가 그것이다 (M5 실측). `number` 가 아니다.
     for (const list of tabsByWorkspace.values()) {
-      list.sort((a, b) => a.number - b.number || a.tabId.localeCompare(b.tabId))
+      list.sort((a, b) => a.order - b.order || a.tabId.localeCompare(b.tabId))
     }
 
     const rows: WorkspaceRow[] = []
@@ -501,8 +574,13 @@ export class WorkspaceStore {
     return [...this.panes.keys()].sort()
   }
 
-  /** 계측용 — 보류함에 몇 개가 떠 있는지. */
+  /**
+   * 계측용 — 보류함에 몇 개가 떠 있는지.
+   * **읽을 때도 만료분을 턴다** (수정 1회차 L7 — codex 4): 1회차는 `hold()` 때만 털어서,
+   * 늦은 이벤트가 더 안 오면 만료된 고아가 보류함에 그대로 남아 보였다.
+   */
   heldOrphans(): Array<{ workspaceId: string; kind: 'pane' | 'tab' }> {
+    this.purgeOrphans(Date.now())
     return this.orphans.map((item) => ({ workspaceId: item.workspaceId, kind: item.kind }))
   }
 
@@ -526,7 +604,7 @@ export class WorkspaceStore {
   }
 
   /** tab 은 그 workspace 가 있을 때만 들고 있는다 — 없으면 보류함으로 간다. */
-  private putTab(value: unknown, at: number): boolean {
+  private putTab(value: unknown, at: number, order: number | null = null): boolean {
     if (!isRecord(value)) return false
     const id = readString(value, 'tab_id')
     const workspaceId = readString(value, 'workspace_id')
@@ -543,11 +621,20 @@ export class WorkspaceStore {
       workspaceId,
       label: readString(value, 'label') ?? id,
       number: readNumber(value, 'number') ?? 0,
+      // 목록을 통째로 받은 자리에서는 그 인덱스가 진실이고, 낱개 봉투(tab_created)는
+      // 알던 자리를 지키거나 끝에 붙인다.
+      order: order ?? before?.order ?? this.nextTabOrder(workspaceId),
       agentStatus: readAgentStatus(value, 'agent_status'),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
     return true
+  }
+
+  private nextTabOrder(workspaceId: string): number {
+    let max = -1
+    for (const tab of this.tabs.values()) if (tab.workspaceId === workspaceId) max = Math.max(max, tab.order)
+    return max + 1
   }
 
   /**
@@ -562,6 +649,8 @@ export class WorkspaceStore {
     const id = readString(value, 'pane_id')
     const workspaceId = readString(value, 'workspace_id')
     if (id === null || workspaceId === null) return false
+    // **묘비가 첫 검사다** (H1). 닫힌 pane 으로 오는 create/update 는 언제 오든 늦게 온 과거다.
+    if (this.closedPanes.has(id)) return false
     // 닫힌 탭의 pane 은 되살리지 않는다 — 보류함에도 안 넣는다 (주인이 영영 안 온다).
     const tabId = readString(value, 'tab_id') ?? ''
     if (tabId.length > 0 && this.closedTabs.has(tabId)) return false
@@ -574,8 +663,9 @@ export class WorkspaceStore {
       paneId: id,
       workspaceId,
       tabId,
-      // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다.
-      agentStatus: readAgentStatus(value, 'agent_status'),
+      // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다 —
+      // 주석이 약속한 이 보호가 1회차 코드에는 이름(agent)에만 있었다 (수정 1회차 M2).
+      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       agent: pickAgent(value, before?.agent ?? null),
       title:
         readString(value, 'title') ??
@@ -608,17 +698,27 @@ export class WorkspaceStore {
     return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
 
-  /** 보류함에 담는다. 담을 때마다 창 지난 것을 턴다 — 별도 타이머를 두지 않기 위해서다. */
+  /**
+   * 보류함에 담는다. 담을 때마다 창 지난 것을 턴다 — 별도 타이머를 두지 않기 위해서다.
+   * **닫힌 workspace 앞으로 온 것은 애초에 담지 않는다** (L7): 주인이 영영 안 오므로
+   * 5초를 기다릴 이유가 없다.
+   */
   private hold(orphan: Orphan): void {
-    const now = orphan.at
-    this.orphans = this.orphans.filter((item) => now - item.at <= ORPHAN_HOLD_MS)
+    this.purgeOrphans(orphan.at)
+    if (this.closed.has(orphan.workspaceId)) return
     this.orphans.push(orphan)
+  }
+
+  private purgeOrphans(now: number): void {
+    if (this.orphans.length === 0) return
+    this.orphans = this.orphans.filter((item) => now - item.at <= ORPHAN_HOLD_MS)
   }
 
   /** 주인이 도착했다 — 그 주인의 보류분을 꺼내 붙인다. 창이 지난 것은 붙이지 않고 버린다. */
   private flushOrphans(workspaceId: string): void {
     if (this.orphans.length === 0) return
     const now = Date.now()
+    this.purgeOrphans(now)
     const mine = this.orphans.filter((item) => item.workspaceId === workspaceId && now - item.at <= ORPHAN_HOLD_MS)
     if (mine.length === 0) return
     this.orphans = this.orphans.filter((item) => item.workspaceId !== workspaceId)
@@ -636,16 +736,39 @@ export class WorkspaceStore {
  * 붙들었고**, 화면에는 이미 없는 에이전트의 이름표가 남았다 (N8 1회차 실측).
  * 키가 있으면 herdr 가 값을 말해 준 것이다 — null 이어도 그게 답이다.
  */
+/**
+ * 에이전트 **상태**를 읽는다 — `pickAgent` 와 같은 규칙으로 "키가 없다" 를 가른다.
+ *
+ * 1회차는 `readAgentStatus` 를 무조건 불렀고, 키가 없으면 그게 `'unknown'` 을 돌려주므로
+ * `agent_status` 를 안 싣고 온 `pane_updated` 한 건이 칩을 `막힘 → 미상` 으로 지웠다
+ * (리뷰 부록 C). 키가 없으면 herdr 가 그 필드를 말하지 않은 것이다 — 알던 값을 지킨다.
+ */
+function pickAgentStatus(source: Record<string, unknown>, fallback: AgentStatus | null): AgentStatus {
+  if ('agent_status' in source) return readAgentStatus(source, 'agent_status')
+  return fallback ?? 'unknown'
+}
+
 function pickAgent(source: Record<string, unknown>, fallback: string | null): string | null {
   if ('display_agent' in source) return readString(source, 'display_agent')
   if ('agent' in source) return readString(source, 'agent')
   return fallback
 }
 
-/** `{result:{snapshot:{…}}}` · `{snapshot:{…}}` · `{…}` 어느 모양으로 와도 안쪽을 집는다. */
+/**
+ * `{result:{snapshot:{…}}}` · `{snapshot:{…}}` · `{…}` 어느 모양으로 와도 안쪽을 집는다.
+ *
+ * **모양이 아니면 null 이다** (수정 1회차 M1). 1회차에는 `snapshot` 키가 없으면 받은 객체를
+ * 그대로 안쪽으로 삼았고, 그래서 엉뚱한 응답 하나가 "workspace 0·tab 0·pane 0 인 스냅샷" 으로
+ * 읽혔다. 스냅샷이 진실인 규칙 아래서 그것은 **목록 전멸 + 영구 묘비**다 (리뷰 부록 D).
+ * 세 키 중 하나도 없으면 그건 스냅샷이 아니다 — 아무것도 고치지 않는 편이 옳다.
+ */
+const SNAPSHOT_KEYS: readonly string[] = ['workspaces', 'tabs', 'panes']
+
 function readSnapshot(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null
-  return readRecord(value, 'snapshot') ?? value
+  const inner = readRecord(value, 'snapshot') ?? value
+  if (!SNAPSHOT_KEYS.some((key) => Array.isArray(inner[key]))) return null
+  return inner
 }
 
 function arrayOf(source: Record<string, unknown>, key: string): unknown[] {

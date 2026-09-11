@@ -10,7 +10,8 @@
 // **주기 재동기** (기준 N7): push 는 유실된다 (실측 152/274). 구독은 갱신이지 진실이 아니다 —
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
 
-import type { LinkPhase, LinkState, SessionInfo } from '../../../shared/types.js'
+import type { LinkPhase, LinkState } from '../../../shared/types.js'
+import type { SessionHandle } from './sessions.js'
 import { log } from '../../log.js'
 import { checkUnixSocketPath } from '../../unix-socket-path.js'
 import { SUBSCRIPTION_TYPES, agentStatusSubscriptions, subjectOf, type PushFrame } from './protocol.js'
@@ -57,12 +58,12 @@ export class SessionLink {
   readonly store = new WorkspaceStore()
   private readonly hooks: SessionLinkHooks
   /**
-   * 링크 세대. `open()`·`close()` 마다 올라간다.
-   * 부트스트랩은 비동기라(구독 → ack → 스냅샷 → 버퍼) 도중에 세션을 바꾸면 **먼저 나간 시도가
-   * 뒤늦게 돌아온다**. 그대로 두면 옛 세션의 스냅샷이 새 세션의 저장소에 부어진다.
+   * 링크 세대. `open()`·`close()`·**`attempt()`** 마다 올라간다 (마지막은 수정 1회차 M3).
+   * 부트스트랩은 비동기라(구독 → ack → 스냅샷 → 버퍼) 도중에 세션을 바꾸거나 재부트스트랩이
+   * 돌면 **먼저 나간 시도가 뒤늦게 돌아온다**. 그대로 두면 옛 스냅샷이 새 저장소에 부어진다.
    */
   private generation = 0
-  private session: SessionInfo | null = null
+  private session: SessionHandle | null = null
   private subscription: Subscription | null = null
   private agentSubscription: Subscription | null = null
   private agentPaneKey = ''
@@ -78,7 +79,6 @@ export class SessionLink {
   private state: LinkState = {
     phase: 'idle',
     sessionName: null,
-    socketPath: null,
     attempt: 0,
     nextRetryInMs: null,
     lastError: null,
@@ -111,7 +111,7 @@ export class SessionLink {
     this.hooks.onChange()
   }
 
-  open(session: SessionInfo): void {
+  open(session: SessionHandle): void {
     this.close()
     this.generation += 1
     this.stopped = false
@@ -120,7 +120,6 @@ export class SessionLink {
     this.state = {
       ...this.state,
       sessionName: session.name,
-      socketPath: session.socketPath,
       attempt: 0,
       lastError: null,
       bufferedAtSnapshot: null,
@@ -152,13 +151,37 @@ export class SessionLink {
 
   private setPhase(phase: LinkPhase, extra: Partial<LinkState> = {}): void {
     this.state = { ...this.state, phase, ...extra }
-    log('link.phase', { phase, session: this.state.sessionName, attempt: this.state.attempt })
+    // 세대를 로그에 싣는다 — 재부트스트랩이 실제로 세대를 올렸다는 것이 원자료로 보여야 한다 (M3).
+    log('link.phase', {
+      phase,
+      session: this.state.sessionName,
+      attempt: this.state.attempt,
+      generation: this.generation,
+    })
     this.hooks.onChange()
   }
 
   private async attempt(): Promise<void> {
     const session = this.session
     if (session === null || this.stopped) return
+    /**
+     * **부트스트랩마다 세대를 올린다** (수정 1회차 M3).
+     *
+     * 1회차에는 `open()`·`close()` 만 올렸다. 그래서 주기 재동기가 날아간 뒤 구독이 끊겨
+     * 재부트스트랩이 돌면(그 안의 `applySnapshot` 이 `reset()` 으로 **묘비를 전부 턴다**),
+     * 뒤늦게 도착한 옛 스냅샷의 세대가 여전히 같아서 `reconcile` 이 실행됐다 —
+     * 그 사이 닫힌 행이 묘비 없는 저장소에 그대로 부어진다. 삭제 방향은 `knownAt` 이 막지만
+     * 추가 방향은 아무도 안 막았다. 세대를 여기서 올리면 열쇠 하나로 정리된다.
+     *
+     * 세대를 올리면 **agent 구독도 같이 무효가 된다** — 그 커넥션의 push 가드가 세대를 보므로,
+     * 살려 두면 상태 push 를 조용히 버리는 유령이 된다. 그래서 여기서 닫고 키도 턴다.
+     */
+    this.generation += 1
+    this.agentSubscription?.close()
+    this.agentSubscription = null
+    this.agentPaneKey = ''
+    if (this.agentTimer) clearTimeout(this.agentTimer)
+    this.agentTimer = null
     const generation = this.generation
     const stale = (): boolean => generation !== this.generation
     this.state = { ...this.state, attempt: this.state.attempt + 1, nextRetryInMs: null }
@@ -271,7 +294,11 @@ export class SessionLink {
     const requestedAt = Date.now()
     try {
       const response = await request(session.socketPath, 'session.snapshot', {}, { reason: `resync:${reason}` })
-      if (generation !== this.generation || this.stopped) return { ok: false, note: '세대가 바뀜' }
+      if (generation !== this.generation || this.stopped) {
+        // M3 가 막는 바로 그 경로다 — 응답이 돌아온 사이에 재부트스트랩이 끼었다.
+        log('resync.stale', { reason, generation, current: this.generation })
+        return { ok: false, note: '세대가 바뀜' }
+      }
       if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
       const result = this.store.reconcile(response.result, requestedAt)
       this.state = {

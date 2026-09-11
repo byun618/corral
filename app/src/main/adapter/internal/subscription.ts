@@ -57,10 +57,21 @@ export class Subscription {
     log('sub.conn.open', { label: this.label, conn: socket.id, socketPath, types: types.length })
     await socket.connect(socketPath)
 
+    // ack 타임아웃 타이머는 **받으면 끈다** (수정 1회차 L1). agent 구독은 pane 집합이 바뀔 때마다
+    // 커넥션째 다시 열리므로, 안 끄면 5초짜리 죽은 타이머가 계속 쌓인다.
     const ack = new Promise<unknown>((resolve, reject) => {
-      this.onAck = resolve
-      this.onAckFail = reject
-      setTimeout(() => reject(new SubscriptionRejected('timeout', `구독 ack 타임아웃 (${timeoutMs}ms)`)), timeoutMs)
+      const timer = setTimeout(
+        () => reject(new SubscriptionRejected('timeout', `구독 ack 타임아웃 (${timeoutMs}ms)`)),
+        timeoutMs,
+      )
+      this.onAck = (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      }
+      this.onAckFail = (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
     })
     const frame = JSON.stringify({
       id: 'sub',

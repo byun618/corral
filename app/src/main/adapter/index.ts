@@ -7,6 +7,6 @@
 // 기계 검사: `npm run check:boundary` (scripts/check-boundary.mjs). 사람 눈은 근거가 아니다.
 
 export { SessionLink } from './internal/link.js'
-export { listSessions, SESSION_POLL_MS } from './internal/sessions.js'
+export { listSessions, SESSION_POLL_MS, type SessionHandle } from './internal/sessions.js'
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { DEFAULT_RESYNC_MS } from './internal/link.js'

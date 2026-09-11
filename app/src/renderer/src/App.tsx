@@ -13,11 +13,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentStatus, AppState, PaneRow, RepoRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
 
+/**
+ * 칩이 **구분하는 상태의 전부**다 (기준 N8: "문서에 적고 그 전부를 대조한다").
+ * `done` 이 없는 이유는 `shared/types.ts` 의 `AgentStatus` 주석 — herdr 0.9.0 이 그 값을
+ * 만들지 않아 라이브 오라클과 대조할 길이 없다 (수정 1회차 M7).
+ */
 const STATUS_LABEL: Record<AgentStatus, string> = {
   idle: '대기',
   working: '작업중',
   blocked: '막힘',
-  done: '완료',
   unknown: '미상',
 }
 
@@ -120,6 +124,11 @@ export function App(): React.JSX.Element {
       <footer className="footer" data-footer>
         <span>레지스트리 {state.registry.file}</span>
         {state.registry.lastError === null ? null : <span className="warn">{state.registry.lastError}</span>}
+        {state.sessionNote === null ? null : (
+          <span className="warn" data-session-note>
+            세션: {state.sessionNote}
+          </span>
+        )}
         {state.sessionsError === null ? null : <span className="warn">세션: {state.sessionsError}</span>}
         {state.link.lastError === null ? null : <span className="warn">링크: {state.link.lastError}</span>}
       </footer>

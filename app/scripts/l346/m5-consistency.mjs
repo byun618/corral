@@ -89,6 +89,29 @@ async function compare() {
   }
 }
 
+/**
+ * **herdr 가 그 행을 버린 바로 그 폴에서 corral 을 함께 뜬다** (2차 리뷰 C4).
+ *
+ * 1회차 판은 `herdrGone` 을 먼저 기다린 뒤 **별도 IPC** 로 `compare()` 를 불렀다. 그래서
+ * `처음부터일치: true` 가 뜻한 것은 "herdr 소멸 직후" 가 아니라 "폴링이 알아챈 뒤(최대 40ms)
+ * 한 번 더 떠 봤더니" 였다 — 결과 문서의 문장이 그 해상도보다 한 칸 셌다.
+ * 이제 한 폴에서 corral·herdr 를 **같은 쌍으로** 떠서 두 질문("herdr 가 버렸나"·"corral 도 같나")에
+ * 답한다. 남는 폭은 폴 간격 하나뿐이고, 그 값을 `해상도ms` 로 원자료에 적는다.
+ */
+async function watchGone(gone, { everyMs = 20, timeoutMs = 15000 } = {}) {
+  let firstLook = null
+  const seen = await until(
+    async () => {
+      const look = await compare()
+      if (!gone(look.herdr)) return null
+      firstLook = look
+      return look
+    },
+    { what: 'herdr 에서 사라짐', timeoutMs, everyMs },
+  )
+  return { ok: seen.ok, ms: seen.ms, 해상도ms: everyMs, firstLook }
+}
+
 /** 셸 행 하나를 UI 로 만들고 herdr 가 그 탭을 알 때까지 기다린다. */
 async function addShellRow(workspaceId) {
   const before = new Set((await herdrTruth()).tabs)
@@ -115,14 +138,11 @@ for (let round = 1; round <= TIMES; round++) {
   const mark = Date.now()
   const confirmed = await closeRowByUi(row.tabId)
   // 그 탭이 herdr 에서 사라질 때까지 기다린 **뒤에** 대조한다.
-  const herdrGone = await until(async () => !(await herdrTruth()).tabs.includes(row.tabId), {
-    what: 'herdr 에서 사라짐',
-    timeoutMs: 15000,
-    everyMs: 40,
-  })
   // **수렴에 몇 ms 가 걸렸는지 적는다** (1차 리뷰 낮음 1 — claude). 1회차는 "예산 안에 맞았다"
   // 만 남겨서, 잠깐 어긋났다 맞은 회차와 처음부터 맞은 회차가 구분되지 않았다.
-  const firstLook = await compare()
+  // 그 첫 판은 herdr 소멸을 본 **뒤** 따로 떴다 — 이제 같은 폴에서 같이 뜬다 (2차 C4).
+  const herdrGone = await watchGone((truth) => !truth.tabs.includes(row.tabId))
+  const firstLook = herdrGone.firstLook ?? (await compare())
   const converged = await until(async () => (await compare()).일치, { what: '수렴', timeoutMs: 10000, everyMs: 60 })
   const result = await compare()
   out.cases.a.push({
@@ -131,7 +151,11 @@ for (let round = 1; round <= TIMES; round++) {
     확인모달: confirmed,
     게이트: { herdrGone: herdrGone.ok, converged: converged.ok },
     herdr사라짐ms: herdrGone.ms,
+    /** `처음부터일치` 가 서 있는 해상도 — herdr 소멸을 이 간격으로 폴링해 **같은 폴**에서 대조했다 */
+    해상도ms: herdrGone.해상도ms,
     처음부터일치: firstLook.일치,
+    /** 어긋났다면 **어느 쪽이 앞섰나** — "잠깐 어긋났다" 는 무엇이 어긋났는지까지 적어야 말이 된다 */
+    처음차이: firstLook.일치 ? null : firstLook.차이,
     수렴ms: firstLook.일치 ? 0 : converged.ms,
     스냅샷재조회: snapshotsSince(mark),
     ...result,
@@ -147,12 +171,8 @@ for (let round = 1; round <= TIMES; round++) {
   const mark = Date.now()
   // **herdr 에 직접 건다** — corral UI 에는 pane 단위 종료가 없다 (이 일감 범위 밖).
   await request('pane.close', { pane_id: row.paneId })
-  const herdrGone = await until(async () => !(await herdrTruth()).tabs.includes(row.tabId), {
-    what: 'herdr 에서 사라짐',
-    timeoutMs: 15000,
-    everyMs: 40,
-  })
-  const firstLook = await compare()
+  const herdrGone = await watchGone((truth) => !truth.tabs.includes(row.tabId))
+  const firstLook = herdrGone.firstLook ?? (await compare())
   const converged = await until(async () => (await compare()).일치, { what: '수렴', timeoutMs: 10000, everyMs: 60 })
   const result = await compare()
   out.cases.b.push({
@@ -160,7 +180,11 @@ for (let round = 1; round <= TIMES; round++) {
     ...row,
     게이트: { herdrGone: herdrGone.ok, converged: converged.ok },
     herdr사라짐ms: herdrGone.ms,
+    /** `처음부터일치` 가 서 있는 해상도 — herdr 소멸을 이 간격으로 폴링해 **같은 폴**에서 대조했다 */
+    해상도ms: herdrGone.해상도ms,
     처음부터일치: firstLook.일치,
+    /** 어긋났다면 **어느 쪽이 앞섰나** — "잠깐 어긋났다" 는 무엇이 어긋났는지까지 적어야 말이 된다 */
+    처음차이: firstLook.일치 ? null : firstLook.차이,
     수렴ms: firstLook.일치 ? 0 : converged.ms,
     스냅샷재조회: snapshotsSince(mark),
     ...result,
@@ -188,16 +212,12 @@ for (let round = 1; round <= TIMES; round++) {
   await waitPrompt(paneId)
   const mark = Date.now()
   const confirmed = await closeRowByUi(tabId)
-  const herdrEmpty = await until(async () => !(await herdrTruth()).workspaces.includes(workspaceId), {
-    what: 'herdr 에서 workspace 사라짐',
-    timeoutMs: 15000,
-    everyMs: 40,
-  })
+  const herdrEmpty = await watchGone((truth) => !truth.workspaces.includes(workspaceId))
   // 그 순간 corral 도 그 행을 버렸나 — **이것이 ⓒ 가 묻는 것**이다.
-  // ⓐ·ⓑ 와 **같은 칸**을 남긴다 (낮음 2). herdr 가 그 workspace 를 버린 직후를 한 번 보고,
+  // ⓐ·ⓑ 와 **같은 칸**을 남긴다 (1차 낮음 2). herdr 가 그 workspace 를 버린 그 폴에서
   // 그때 이미 맞았는지 / 몇 ms 만에 맞았는지를 적는다. ⓒ 만 이 칸이 없으면 요약의
   // `처음부터일치` 가 "0/5 가 어긋났다" 로 읽힌다 — 실제로는 칸이 없었을 뿐이다.
-  const firstLook = await compare()
+  const firstLook = herdrEmpty.firstLook ?? (await compare())
   const corralEmpty = await until(
     async () => !(await app.state()).workspaces.some((row) => row.workspaceId === workspaceId),
     { what: 'corral 에서 workspace 사라짐', timeoutMs: 15000, everyMs: 40 },
@@ -212,7 +232,10 @@ for (let round = 1; round <= TIMES; round++) {
     herdr에서사라짐: herdrEmpty.ok,
     corral에서사라짐: corralEmpty.ok,
     corral반영ms: corralEmpty.ms,
+    herdr사라짐ms: herdrEmpty.ms,
+    해상도ms: herdrEmpty.해상도ms,
     처음부터일치: firstLook.일치,
+    처음차이: firstLook.일치 ? null : firstLook.차이,
     수렴ms: firstLook.일치 ? 0 : converged.ms,
     수렴: converged.ok,
     스냅샷재조회: snapshotsSince(mark),

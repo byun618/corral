@@ -9,16 +9,22 @@ import path from 'node:path'
 import { APP_DIR, RAW_DIR, RAW_ROOT, defaultSessionWrites, pct, readLog, writeRaw } from './lib.mjs'
 
 /**
- * **회차를 가리지 않고 전부 센다.** 1회차는 `raw/claude/_runs/`, 수정 1회차는
- * `raw/claude/fix1/_runs/` 에 있다 — 관문 ⑥은 "전 실행 로그" 를 요구하므로 둘 다 훑는다.
+ * **회차를 가리지 않고 전부 센다.** 1회차는 `raw/claude/_runs/`, 수정 회차는
+ * `raw/claude/fix<N>/_runs/` 에 있다 — 관문 ⑥은 "전 실행 로그" 를 요구하므로 전부 훑는다.
+ * (회차가 늘 때마다 목록을 고치지 않도록 `fix*` 를 훑어서 찾는다.)
  */
-const runDirs = [path.join(RAW_ROOT, '_runs'), path.join(RAW_ROOT, 'fix1', '_runs')]
-const runs = runDirs.flatMap((dir) =>
+const fixRunDirs = fs
+  .readdirSync(RAW_ROOT)
+  .filter((name) => /^fix\d+$/.test(name))
+  .sort()
+  .map((name) => ({ prefix: `${name}/`, dir: path.join(RAW_ROOT, name, '_runs') }))
+const runDirs = [{ prefix: '', dir: path.join(RAW_ROOT, '_runs') }, ...fixRunDirs]
+const runs = runDirs.flatMap(({ prefix, dir }) =>
   fs.existsSync(dir)
     ? fs
         .readdirSync(dir)
         .sort()
-        .map((name) => ({ name: dir.includes('/fix1/') ? `fix1/${name}` : name, path: path.join(dir, name) }))
+        .map((name) => ({ name: `${prefix}${name}`, path: path.join(dir, name) }))
     : [],
 )
 
@@ -86,8 +92,20 @@ out.세션가드 = {
 }
 
 // A2 — M2 가 남긴 회차별 지연을 다시 굴린다 (원자료가 진실이고 여기서는 요약만 한다).
-const roundsFile = path.join(RAW_DIR, 'n3-n5-rounds.json')
-if (fs.existsSync(roundsFile)) {
+// **이 회차에 M2 를 안 돌렸으면 가장 최근 회차의 것을 쓴다** — 없다고 칸을 비우면 감사가
+// 회차마다 다른 모양이 된다. 어느 파일을 읽었는지 같이 적는다.
+const roundsCandidates = [
+  path.join(RAW_DIR, 'n3-n5-rounds.json'),
+  ...fs
+    .readdirSync(RAW_ROOT)
+    .filter((name) => /^fix\d+$/.test(name))
+    .sort()
+    .reverse()
+    .map((name) => path.join(RAW_ROOT, name, 'n3-n5-rounds.json')),
+  path.join(RAW_ROOT, 'n3-n5-rounds.json'),
+]
+const roundsFile = roundsCandidates.find((file) => fs.existsSync(file)) ?? ''
+if (roundsFile.length > 0) {
   const data = JSON.parse(fs.readFileSync(roundsFile, 'utf8'))
   for (const arm of data.arms ?? []) {
     for (const round of arm.rounds) {
@@ -99,6 +117,7 @@ if (fs.existsSync(roundsFile)) {
     표본: allLatencies.생성.length,
     '생성 요청 → 목록 반영 ms': { p50: pct(allLatencies.생성, 50), p95: pct(allLatencies.생성, 95), max: Math.max(...allLatencies.생성) },
     '종료 요청 → 목록에서 사라짐 ms': { p50: pct(allLatencies.종료, 50), p95: pct(allLatencies.종료, 95), max: Math.max(...allLatencies.종료) },
+    출처: path.relative(RAW_ROOT, roundsFile),
     메모: '통과선 없음 — 측정 자체가 항목이다 (기준 A2)',
   }
 }

@@ -36,9 +36,14 @@ const tab = { tab_id: 'wX:t1', workspace_id: 'wX', label: '1', number: 1 }
 const pane = { pane_id: 'wX:p1', workspace_id: 'wX', tab_id: 'wX:t1', title: 'zsh', revision: 1 }
 
 /**
- * 두 순서를 먹인다.
+ * 세 순서를 먹인다.
  *   ① `tab.close` 경로 — tab_closed 뒤에 늦은 `pane_updated`
  *   ② 사용자 `exit` 경로 — pane_exited(탭까지 지움) 뒤에 늦은 `pane_created`
+ *   ③ **workspace 층** — 마지막 탭의 마지막 pane 이 `pane_exited` 로 죽은 뒤 늦은 `tab_created`
+ *      (2차 리뷰 C2·C3). ①② 는 탭 층에서 멈춰 이번에 새로 생긴 G4 를 한 번도 안 탄다.
+ *      ③ 은 두 가지를 한꺼번에 적는다 — **M3 의 "고치기 전" 이 여기서 재현된다**(C3:
+ *      m10 은 뒤 회차가 앱 로그·샷을 덮어 JSON 한 장만 남았다. 이 재생은 앱이 필요 없어
+ *      언제든 같은 값이 나온다), 그리고 G4 뒤에 늦은 이벤트가 오면 어디로 가나(C2).
  * 그리고 닫힌 탭의 늦은 `tab_created` 도 같이 본다.
  */
 function run(StoreClass) {
@@ -82,6 +87,19 @@ function run(StoreClass) {
   apply(b, 'pane_created', { pane: { ...pane, revision: 3 } })
   const bAfter = snapshot(b)
 
+  // ③ 마지막 탭의 마지막 pane 이 exit 로 죽은 뒤 — workspace 층 (C2·C3)
+  const c = new StoreClass()
+  apply(c, 'workspace_created', { workspace })
+  apply(c, 'tab_created', { tab })
+  apply(c, 'pane_created', { pane })
+  apply(c, 'pane_exited', { pane_id: pane.pane_id })
+  const cClosed = snapshot(c)
+  const cHeldAfterExit = c.heldOrphans()
+  // herdr 가 그 workspace 를 버린 **뒤에** 늦게 오는 새 탭·새 pane (같은 workspace id)
+  apply(c, 'tab_created', { tab: { ...tab, tab_id: 'wX:t9', number: 9 } })
+  apply(c, 'pane_created', { pane: { pane_id: 'wX:p9', workspace_id: 'wX', tab_id: 'wX:t9', revision: 1 } })
+  const cAfter = snapshot(c)
+
   return {
     '① tab_closed 뒤 늦은 pane_updated': {
       닫기전: aBefore,
@@ -94,6 +112,16 @@ function run(StoreClass) {
       닫은직후: bClosed,
       늦은이벤트적용후: bAfter,
       pane부활: bAfter.panes.includes(pane.pane_id),
+    },
+    '③ 마지막 탭 pane_exited 뒤 늦은 tab_created': {
+      닫은직후: cClosed,
+      /** M3 이 앱으로 잰 것과 같은 칸 — 탭은 없는데 workspace 행만 남으면 유령이다 */
+      'M3 유령 workspace 행': cClosed.workspaces.includes('wX'),
+      보류함: cHeldAfterExit,
+      늦은이벤트적용후: cAfter,
+      늦은탭이붙었나: cAfter.tabs.includes('wX:t9'),
+      늦은pane이붙었나: cAfter.panes.includes('wX:p9'),
+      최종보류함: c.heldOrphans(),
     },
     적용note: seen,
   }
@@ -115,11 +143,18 @@ try {
 } finally {
   fs.rmSync(r1Path, { force: true })
 }
+const cell = (판, 케이스, 칸) => out[판][케이스][칸]
 out.판정 = {
-  '1회차 ①에서 pane 부활': out['1회차']['① tab_closed 뒤 늦은 pane_updated'].pane부활,
-  '1회차 ②에서 pane 부활': out['1회차']['② pane_exited 뒤 늦은 pane_created'].pane부활,
-  '수정 ①에서 pane 부활': out['수정1회차']['① tab_closed 뒤 늦은 pane_updated'].pane부활,
-  '수정 ②에서 pane 부활': out['수정1회차']['② pane_exited 뒤 늦은 pane_created'].pane부활,
+  '1회차 ①에서 pane 부활': cell('1회차', '① tab_closed 뒤 늦은 pane_updated', 'pane부활'),
+  '1회차 ②에서 pane 부활': cell('1회차', '② pane_exited 뒤 늦은 pane_created', 'pane부활'),
+  '수정 ①에서 pane 부활': cell('수정1회차', '① tab_closed 뒤 늦은 pane_updated', 'pane부활'),
+  '수정 ②에서 pane 부활': cell('수정1회차', '② pane_exited 뒤 늦은 pane_created', 'pane부활'),
+  /** C3 — M3 의 "고치기 전" 을 앱 없이 재현한다 */
+  '1회차 ③ 유령 workspace 행': cell('1회차', '③ 마지막 탭 pane_exited 뒤 늦은 tab_created', 'M3 유령 workspace 행'),
+  '수정 ③ 유령 workspace 행': cell('수정1회차', '③ 마지막 탭 pane_exited 뒤 늦은 tab_created', 'M3 유령 workspace 행'),
+  /** C2 — G4 뒤에 늦은 이벤트가 오면 그 행은 어디로 가나 */
+  '1회차 ③ 늦은 탭이 붙었나': cell('1회차', '③ 마지막 탭 pane_exited 뒤 늦은 tab_created', '늦은탭이붙었나'),
+  '수정 ③ 늦은 탭이 붙었나': cell('수정1회차', '③ 마지막 탭 pane_exited 뒤 늦은 tab_created', '늦은탭이붙었나'),
 }
 console.log(JSON.stringify(out.판정, null, 2))
 writeRaw('m4-store-ordering.json', out)

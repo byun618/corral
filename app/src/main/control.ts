@@ -133,7 +133,10 @@ function clickProbe(selector: string): string {
       const cls = typeof node.className === 'string' && node.className.length > 0 ? '.' + node.className.trim().split(/\\s+/).join('.') : ''
       return node.tagName.toLowerCase() + id + cls
     }
-    const hit = top !== null && (top === el || el.contains(top) || top.contains(el))
+    // **조상은 히트가 아니다** (2차 리뷰 C5 — grok). 최상위가 목표를 *담고 있는* 상자여도
+    // 그 좌표에서 실제로 눌리는 것은 그 상자다. \`top.contains(el)\` 을 빼면 프로브의 뜻이
+    // 좌표 클릭의 뜻과 같아진다: "이 점의 최상위가 그 버튼(또는 그 안의 글리프)인가".
+    const hit = top !== null && (top === el || el.contains(top))
     return {
       found: true,
       hit,

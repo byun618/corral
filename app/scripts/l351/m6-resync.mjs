@@ -123,19 +123,32 @@ for (let round = 1; round <= TIMES; round++) {
 // 앱을 **따로 띄운다**: 위 회차의 5초 재동기로는 어긋난 창이 관측 전에 닫힌다 (첫 실행에서
 // 실제로 그랬다 — 묘비를 걷은 로그는 남았는데 어긋난 상태를 못 떴다). 여기서는 재동기를
 // 넉넉히 밀어 **어긋난 것을 먼저 보고** 나서 타이머를 기다린다. 회복은 여전히 타이머가 시킨다.
-const H1_RESYNC_MS = Number(process.env.LIFE351_H1_RESYNC_MS ?? 20000)
+/**
+ * **경로마다 앱을 새로 띄우고, 재동기 간격을 준비 시간보다 크게 잡는다** (수정 3회차).
+ *
+ * 2회차는 두 경로를 한 앱에서 돌렸다. 그러면 주기 타이머가 **첫 경로가 끝난 뒤 어디쯤**에
+ * 와 있는지가 그때그때 달라, 둘째 경로의 준비 중에 재동기가 끼어들 수 있다. 재동기는 push
+ * 유실과 무관하게 스냅샷으로 진실을 통째로 가져오므로, 그 순간 corral 이 모르던 형제 탭을
+ * 알아 버린다 — "일부를 모르는 corral" 이 안 만들어지고 그 회차는 잴 것이 없어진다
+ * (이번 회차 첫 실행에서 `pane_exited` 경로가 실제로 그랬다: `잃기까지ms 10006` = 못 봤다).
+ * 앱을 새로 띄우면 타이머가 0 에서 시작하므로 준비 시간이 통째로 창 안에 든다.
+ * 그래도 끼어들면 **그 시도를 무효로 보고 다시 한다** (아래 `준비중재동기`).
+ */
+const H1_RESYNC_MS = Number(process.env.LIFE351_H1_RESYNC_MS ?? 120000)
 await app.stop()
-const app2 = await startApp({ name: 'n7-h1', env: { CORRAL_RESYNC_MS: String(H1_RESYNC_MS) } })
-await sleep(800)
-await app2.addRepo(REPO_DIR)
-await until(async () => (await app2.state()).repos.length === 1, { what: 'H-1 레포 등록' })
-
-app = app2
+app = null
 const 부분유실 = ['tab_closed', 'pane_exited']
 out['H-1 부분 유실'] = []
 out['H-1 재동기간격ms'] = H1_RESYNC_MS
+out['H-1 무효가 된 시도'] = []
 
 for (const 경로 of 부분유실) {
+ for (let 시도 = 1; 시도 <= 3; 시도++) {
+  if (app !== null) await app.stop()
+  app = await startApp({ name: `n7-h1-${경로}`, env: { CORRAL_RESYNC_MS: String(H1_RESYNC_MS) } })
+  await sleep(800)
+  await app.addRepo(REPO_DIR)
+  await until(async () => (await app.state()).repos.length === 1, { what: `H-1 ${경로} 레포 등록` })
   await app.dropPush(false)
   await tidySession(REPO_DIR)
   const 수렴 = await until(async () => ((await look(app)).일치 ? true : null), {
@@ -166,6 +179,19 @@ for (const 경로 of 부분유실) {
   await until(async () => (await herdrTruth()).tabs.includes(새탭id), { what: '새 탭 herdr 확정', timeoutMs: 15000 })
   await sleep(400)
   const 모르는상태 = await look(app)
+  // **준비가 실제로 됐나** — corral 이 새 탭을 이미 알면(=준비 중 재동기가 끼어들었다)
+  // 이 시도는 잴 것이 없는 시도다. 조용히 "잃음 X" 로 적지 않고 무효로 남기고 다시 한다.
+  if (모르는상태.corral.tabs.includes(새탭id) || resyncCount() > resyncBefore) {
+    out['H-1 무효가 된 시도'].push({
+      경로,
+      시도,
+      사유: 모르는상태.corral.tabs.includes(새탭id) ? 'corral 이 새 탭을 이미 안다' : '준비 중 재동기가 돌았다',
+      '준비 중 재동기 횟수': resyncCount() - resyncBefore,
+      corral: 모르는상태.corral,
+    })
+    console.log(`H-1 ${경로}: 시도 ${시도} 무효 — 준비가 안 됐다`)
+    continue
+  }
 
   // ③ corral 이 **아는 마지막** 탭/pane 을 닫는다 — 이 통보는 받는다.
   if (경로 === 'tab_closed') {
@@ -195,6 +221,23 @@ for (const 경로 of 부분유실) {
     },
     { what: `${경로} herdr 확정`, timeoutMs: 20000, everyMs: 40 },
   )
+  /**
+   * **닫힘이 herdr 에 확정된 시점까지 재동기가 없었어야 한다** (수정 3회차 — 두 번째 실행이
+   * 가르쳐 준 것). 준비 직후만 보면 모자란다: `pane_exited` 경로는 셸이 프롬프트에 올 때까지
+   * 기다리므로 준비와 닫기 사이가 수십 초로 벌어지고, 그 사이에 타이머가 돌면 corral 이
+   * 형제 탭을 알아 버려 **workspace 를 안 잃는다** (실측: 재동기 19초 뒤에 exit 가 먹었다).
+   * 그 회차는 "안 잃었다" 가 아니라 **못 잰 회차**다.
+   */
+  if (resyncCount() > resyncBefore) {
+    out['H-1 무효가 된 시도'].push({
+      경로,
+      시도,
+      사유: '닫기 전에 재동기가 돌았다 — corral 이 형제를 알아 버렸다',
+      '준비~닫기 사이 재동기 횟수': resyncCount() - resyncBefore,
+    })
+    console.log(`H-1 ${경로}: 시도 ${시도} 무효 — 닫기 전에 재동기가 돌았다`)
+    continue
+  }
   // **어긋난 순간을 붙잡는다** — herdr 에는 살아 있는 workspace 가 corral 에서 사라지는 그 창.
   const 잃은순간 = await until(
     async () => {
@@ -211,7 +254,7 @@ for (const 경로 of 부분유실) {
   // ④ **주기 타이머**가 돌 때까지 기다린다 — 하네스는 resync 를 부르지 않는다.
   const 돌았나 = await until(async () => (resyncCount() > resyncBefore ? resyncCount() : null), {
     what: `${경로} 재동기 타이머`,
-    timeoutMs: RESYNC_MS * 5,
+    timeoutMs: H1_RESYNC_MS * 3,
     everyMs: 100,
   })
   const 회복대조 = await until(async () => ((await look(app)).일치 ? true : null), {
@@ -275,6 +318,8 @@ for (const 경로 of 부분유실) {
       .flatMap((entry) => entry.lifted ?? [])
       .join(',') || '없음'}`,
   )
+  break
+ }
 }
 await app.dropPush(false)
 
@@ -297,6 +342,8 @@ out.판정 = {
     item['재동기 로그'].some((entry) => (entry.lifted ?? []).length > 0),
   ),
   'H-1 유실 주입은 회복 중에도 켜져 있었나': out['H-1 부분 유실'].every((item) => item['유실 주입 유지'] === true),
+  // 준비가 안 된 시도는 조용히 통과시키지 않고 무효로 남긴다 (수정 3회차).
+  'H-1 무효가 된 시도 수': out['H-1 무효가 된 시도'].length,
 }
 console.log(JSON.stringify(out.판정, null, 2))
 writeRaw('n7-resync.json', out)

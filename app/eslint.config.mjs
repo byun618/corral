@@ -31,6 +31,9 @@ export default tseslint.config(
         setInterval: 'readonly',
         clearInterval: 'readonly',
         URL: 'readonly',
+        // 수렴 시각을 단조 시계로 잰다 (수정 2회차 L-9). Node 16+ 의 전역인데 여기 목록에
+        // 없어서 커밋된 상태의 lint 가 깨져 있었다 — 수정 3회차 N1 재실행이 잡았다.
+        performance: 'readonly',
       },
     },
   },

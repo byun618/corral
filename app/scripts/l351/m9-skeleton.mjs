@@ -24,6 +24,16 @@ fs.mkdirSync(RUN_DIR, { recursive: true })
 const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: REPO_DIR }).toString().trim()
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_DIR }).toString().trim()
 const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: REPO_DIR }).toString().trim()
+/**
+ * **`app/` 이 깨끗한가** (수정 3회차 — 이 회차의 N1 재실행이 잡은 구멍).
+ *
+ * 클론은 **커밋된 것만** 뜬다. 그러니 `app/` 에 커밋 안 된 변경이 있으면 이 실행이 재는 것은
+ * 작업 트리가 아니라 **다른 코드**다. 수정 2회차가 그 함정에 빠졌다: 하네스 7개가 커밋 전이라
+ * 클론에는 옛 스크립트가 들어갔고 lint 가 0 으로 통과했는데, 그 스크립트를 커밋한 뒤의
+ * `927f4df` 는 `performance is not defined` 2건으로 lint 가 깨져 있었다 (실행으로 확인).
+ * 원자료(`specs/` 아래)는 측정 중에 쓰이므로 더러운 게 정상이다 — `app/` 만 본다.
+ */
+const appDirty = execFileSync('git', ['status', '--porcelain', '--', 'app'], { cwd: REPO_DIR }).toString().trim()
 
 const CLONE = fs.mkdtempSync(path.join(os.tmpdir(), 'l351-clone-'))
 const CLONE_APP = path.join(CLONE, 'app')
@@ -51,7 +61,7 @@ function capture(file, args, cwd) {
   return new Promise((resolve) => proc.on('close', (code) => resolve({ code, output })))
 }
 
-const out = { at: new Date().toISOString(), 측정한커밋: { 브랜치: branch, sha, 더러움: dirty || '(없음)' }, 클론: CLONE, node: process.version, 커맨드: {} }
+const out = { at: new Date().toISOString(), 측정한커밋: { 브랜치: branch, sha, 더러움: dirty || '(없음)', 'app/ 더러움': appDirty || '(없음)' }, 클론: CLONE, node: process.version, 커맨드: {} }
 
 out.클론뜨기 = await (async () => {
   const r = await capture('git', ['clone', '--quiet', '--branch', branch, '--single-branch', REPO_DIR, CLONE], os.tmpdir())
@@ -124,6 +134,8 @@ const exits = Object.values(out.커맨드).map((item) => item.exit)
 out.읽은것 = {
   '빈 클론이었다': out.클론뜨기.node_modules없음 && out.클론뜨기.out없음,
   '측정한 커밋 = 클론한 커밋': out.클론뜨기.sha일치,
+  // 이게 false 면 위 네 줄의 exit 는 **커밋된 코드**의 것이고 작업 트리의 것이 아니다.
+  'app/ 에 커밋 안 된 변경이 없다': appDirty === '',
   '네 커맨드 전부 0 exit': exits.every((code) => code === 0),
   '커맨드별 exit': Object.fromEntries(Object.entries(out.커맨드).map(([key, value]) => [key, value.exit])),
   'dev 로 창이 떴다': live,

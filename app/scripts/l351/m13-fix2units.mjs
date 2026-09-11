@@ -1,4 +1,4 @@
-// M13 — 수정 2회차의 단위 확인 (M-2 상태 구독 교체).
+// M13 — M-2(상태 구독 교체)의 단위 확인. 회차는 `L351_ROUND` 로 정한다.
 //
 // **M-2 를 재는 방법을 왜 로그 집계로 잡았나.**
 // 지적은 "옛 구독의 `onDrop('local')` 이 **새** 구독 참조를 지운다" 였고, 그 증거로 codex 가
@@ -37,23 +37,33 @@ function 집계(file) {
     'mine:false (교체된 옛 구독)': drops.filter((entry) => entry.mine === false).length,
     'mine:true': drops.filter((entry) => entry.mine === true).length,
     '열고 못 닫은 수 (open − local drop)': opens.length - localDrops.length,
+    /**
+     * **실패한 구독을 뺀 수지** (수정 3회차 F3-L3 — codex).
+     * `connect` 가 실패한 구독도 `close()` 를 타므로 local drop 을 하나 남기는데, 그 구독에는
+     * 짝이 되는 `agent.sub.open` 이 없다. 그래서 위 수지는 성공 구독만 세는 자가 아니다 —
+     * 실패 수를 빼고 다시 센다. 이쪽이 "연 것이 전부 닫혔나" 에 더 가까운 자다.
+     */
+    '실패를 뺀 열고 못 닫은 수': opens.length - (localDrops.length - 실패.length),
     표본: drops.slice(0, 3).map((entry) => ({ at: entry.at, reason: entry.reason, mine: entry.mine ?? '(필드 없음)' })),
   }
 }
 
 const 이번 = 집계(path.join(RAW_DIR, '_runs/n5-consistency/app.ndjson'))
 const fix1 = 집계(path.join(path.dirname(RAW_DIR), 'fix1/_runs/n5-consistency/app.ndjson'))
+const fix2 = 집계(path.join(path.dirname(RAW_DIR), 'fix2/_runs/n5-consistency/app.ndjson'))
 
 out['M-2 상태 구독 교체'] = {
   질문: '구독을 교체할 때 옛 구독의 local drop 이 새 참조를 지우는가 (열고 못 닫는 커넥션이 쌓이는가)',
   이번회차: 이번,
   '수정1회차 (커밋된 원자료 — 음성 대조)': fix1,
+  '수정2회차 (커밋된 원자료 — 같은 자로 다시)': fix2,
   읽은것: {
     '이번 회차 로그가 있다': 이번.있나 === true,
     // 교체가 실제로 여러 번 일어난 실행이어야 이 자가 의미를 갖는다.
     '교체가 실제로 여러 번 일어났다': 이번['agent.sub.open'] >= 3,
     // 열린 것은 **전부** 닫힌다. 마지막 하나는 앱 종료(link.close)로 닫히므로 0 또는 1 이 정상이다.
-    '열고 못 닫은 것이 0~1': 이번['열고 못 닫은 수 (open − local drop)'] <= 1,
+    // 실패 구독을 뺀 자로 건다 (F3-L3) — 섞어 세면 "정확히 0" 이 우연히 맞을 수 있다.
+    '열고 못 닫은 것이 0~1 (실패 제외)': 이번['실패를 뺀 열고 못 닫은 수'] <= 1,
     '옛 구독의 drop 이 mine:false 로 걸러진다': 이번['mine:false (교체된 옛 구독)'] > 0,
     '수정1회차는 열고 못 닫은 것이 여럿이었다 (케이스가 가른다)':
       fix1.있나 === true && fix1['열고 못 닫은 수 (open − local drop)'] > 1,
@@ -69,4 +79,4 @@ out.어긋난것 = Object.entries(out.판정)
   .filter(([, value]) => value !== true)
   .map(([key]) => key)
 console.log(JSON.stringify({ 판정: out.판정, 어긋난것: out.어긋난것 }, null, 2))
-writeRaw('units-fix2-checks.json', out)
+writeRaw('units-m2-checks.json', out)

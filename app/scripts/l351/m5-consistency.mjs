@@ -82,16 +82,36 @@ async function watch(done, { everyMs = 20, timeoutMs = 15000 } = {}) {
  * 곧바로 띄우는 `pyenv-rehash` 사이의 틈을 프롬프트로 착각한다 — 그러면 `exit` 가 그 bash 뒤에
  * 입력 버퍼로 들어가 셸이 안 죽고, 회차가 통째로 헛돈다 (이 회차 실측에서 실제로 났다).
  */
+/**
+ * `pane.process_info` — 그 pane 이 이미 없으면 `null`.
+ *
+ * **죽음은 이 케이스의 목표 상태지 오류가 아니다** (수정 3회차). 앞 시도의 `exit` 가 시한
+ * 뒤에 뒤늦게 먹으면 다음 폴이 `pane_not_found` 를 받는데, 2회차 하네스는 그걸 그대로
+ * throw 해서 실행을 통째로 죽였다 (이번 회차 첫 실행에서 실제로 났다 — ⓒ 진행 중 중단).
+ */
+async function paneInfo(paneId) {
+  try {
+    return (await request('pane.process_info', { pane_id: paneId })).process_info
+  } catch (error) {
+    if (String(error).includes('pane_not_found')) return null
+    throw error
+  }
+}
+
 async function waitPrompt(paneId) {
   const 프롬프트인가 = async () => {
-    const info = (await request('pane.process_info', { pane_id: paneId })).process_info
+    const info = await paneInfo(paneId)
+    if (info === null) return 'gone'
     return info.foreground_processes?.length === 1 && info.shell_pid === info.foreground_process_group_id
   }
   return until(
     async () => {
-      if (!(await 프롬프트인가())) return null
+      const first = await 프롬프트인가()
+      if (first === 'gone') return 'gone'
+      if (!first) return null
       await sleep(400)
-      return (await 프롬프트인가()) ? true : null
+      const second = await 프롬프트인가()
+      return second === 'gone' ? 'gone' : second ? true : null
     },
     { what: '프롬프트', timeoutMs: 60000, everyMs: 150 },
   )
@@ -111,7 +131,10 @@ async function sendExit(paneId, tabId) {
     return !truth.panes.includes(paneId) && !truth.tabs.includes(tabId)
   }
   for (let 시도 = 0; 시도 < 3; 시도++) {
-    await waitPrompt(paneId)
+    // 앞 시도가 시한 뒤에 먹었을 수 있다 — 그건 이 케이스가 재려는 그 사건이므로 성공이다.
+    if (await 죽었나()) return { 보낸횟수, ok: true, 뒤늦게먹음: 보낸횟수 > 0 }
+    const prompt = await waitPrompt(paneId)
+    if (prompt.value === 'gone' || (await 죽었나())) return { 보낸횟수, ok: true, 뒤늦게먹음: 보낸횟수 > 0 }
     await request('pane.send_text', { pane_id: paneId, text: 'exit\n' })
     보낸횟수 += 1
     const gone = await until(async () => ((await 죽었나()) ? true : null), {
@@ -119,9 +142,9 @@ async function sendExit(paneId, tabId) {
       timeoutMs: 12000,
       everyMs: 100,
     })
-    if (gone.ok) return { 보낸횟수, ok: true }
+    if (gone.ok) return { 보낸횟수, ok: true, 뒤늦게먹음: false }
   }
-  return { 보낸횟수, ok: false }
+  return { 보낸횟수, ok: false, 뒤늦게먹음: false }
 }
 
 async function firstWorkspaceId() {
@@ -232,7 +255,7 @@ for (let round = 1; round <= TIMES; round++) {
     round,
     mark,
     done: (truth) => !truth.panes.includes(made.paneId) && !truth.tabs.includes(made.tabId),
-    extra: { tabId: made.tabId, paneId: made.paneId, 방법: "pane.send_text 'exit\\n'", exit친횟수: 친결과.보낸횟수 },
+    extra: { tabId: made.tabId, paneId: made.paneId, 방법: "pane.send_text 'exit\\n'", exit친횟수: 친결과.보낸횟수, 뒤늦게먹음: 친결과.뒤늦게먹음 },
   })
 }
 

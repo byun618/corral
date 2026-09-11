@@ -90,7 +90,6 @@ export class SessionLink {
     lastResyncNote: null,
     resyncCount: 0,
     droppingPush: false,
-    dropPushOnly: null,
   }
 
   constructor(hooks: SessionLinkHooks) {
@@ -114,11 +113,9 @@ export class SessionLink {
   setDroppingPush(input: { dropping: boolean; only?: readonly string[] | null }): void {
     this.droppingPush = input.dropping
     this.dropPushOnly = input.dropping ? (input.only ?? null) : null
-    this.state = {
-      ...this.state,
-      droppingPush: input.dropping,
-      dropPushOnly: this.dropPushOnly === null ? null : [...this.dropPushOnly],
-    }
+    // 고른 목록은 **화면 타입에 안 싣는다** (수정 3회차 F3-L5 — grok, L9 와 같은 방향).
+    // 계측 전용이라 main 에만 두고, 원자료에는 아래 `link.drop_push` 로그로 남는다.
+    this.state = { ...this.state, droppingPush: input.dropping }
     log('link.drop_push', { dropping: input.dropping, only: this.dropPushOnly })
     this.hooks.onChange()
   }
@@ -416,9 +413,14 @@ export class SessionLink {
       }
       log('agent.sub.open', { panes: paneIds.length })
     } catch (error) {
-      log('agent.sub.failed', { error: String(error), panes: paneIds.length })
+      // 실패도 **자기 구독일 때만** 턴다 (수정 3회차 F3-L3 — codex).
+      // 참조는 이미 가드 안이었는데 `agentPaneKey` 만 무조건 지웠다: 늦게 실패한 옛 구독이
+      // 방금 연 구독의 key 를 지우면, 같은 pane 집합으로 한 번 더 여는 낭비가 생긴다.
+      const mine = this.agentSubscription === subscription
+      log('agent.sub.failed', { error: String(error), panes: paneIds.length, mine })
       subscription.close()
-      if (this.agentSubscription === subscription) this.agentSubscription = null
+      if (!mine) return
+      this.agentSubscription = null
       this.agentPaneKey = ''
     }
   }

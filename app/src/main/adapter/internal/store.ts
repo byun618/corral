@@ -11,7 +11,9 @@
 //   · 닫기 부분 통보 → store 가 연쇄 삭제 (tab_closed → 그 pane → (마지막이면) workspace /
 //     마지막 pane → 탭 → workspace)
 //   · putPane 의 pane·탭 묘비 검사
-//   · workspace_id 는 서버 생애 안에서만 유일 → 묘비에 시간을 재지 않는다
+//   · workspace_id 는 서버 생애 안에서만 유일 → 늦게 온 push 는 **시간을 안 보고** 묘비로 막는다
+//     (수정 2회차 H-1ⓑ 로 갈라졌다: 재동기만은 시간을 본다 — 묘비의 `closedAt` 과
+//      사진의 `requestedAt` 을 대 틀린 묘비를 걷는다. `reconcile` ⓪)
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import type { AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
@@ -114,8 +116,8 @@ export class WorkspaceStore {
    *
    * 시간창이 아니라 묘비인 이유는 실측이다 — `workspace_id` 는 **서버 생애 안에서 재사용되지
    * 않는다**(LIFE-344: 40회 연속 생성·종료, 중복 0). 그러므로 한 번 닫힌 id 로 오는 create 는
-   * **언제 오든** 늦게 온 과거다. 시간을 볼 필요가 없다. (시간창은 부하를 타고 늘어나
-   * 1374ms 까지 갔고 창을 넘긴 create 가 죽은 workspace 46개를 되살렸다.)
+   * **언제 오든** 늦게 온 과거다. **push 를 막을 때는** 시간을 볼 필요가 없다. (시간창은 부하를
+   * 타고 늘어나 1374ms 까지 갔고 창을 넘긴 create 가 죽은 workspace 46개를 되살렸다.)
    * 서버를 재기동하면 id 가 처음으로 돌아가지만, 그 경로는 반드시 재부트스트랩을 지나고
    * 재부트스트랩은 `reset()` 으로 묘비를 지운 **뒤에** 버퍼를 적용한다.
    *
@@ -250,8 +252,9 @@ export class WorkspaceStore {
       removed.panes.push(id)
     }
 
-    // ② 사진에 있는데 우리에게 없는 행을 붙인다. 묘비는 그대로 존중한다 —
-    //    묘비가 있는 id 가 사진에 살아 있을 수는 없다 (id 는 생애 안에서 재사용 안 됨).
+    // ② 사진에 있는데 우리에게 없는 행을 붙인다. 여기 남은 묘비는 그대로 존중한다 —
+    //    사진에 살아 있으면서 사진보다 먼저 세워진 묘비는 **⓪ 가 이미 걷었다**. 그러니 여기서
+    //    걸리는 묘비는 사진을 **요청한 뒤에** 세운 것이다 — 그 사진이 못 본 닫힘이라 붙이지 않는다.
     const added: ReconcileResult['added'] = { workspaces: [], tabs: [], panes: [] }
     for (const item of arrayOf(inner, 'workspaces')) {
       const id = idOf(item, 'workspace_id')
@@ -773,6 +776,21 @@ export class WorkspaceStore {
   /**
    * `pane.agent_status_changed` 봉투를 적용한다.
    * 실측 봉투: `{event:"pane.agent_status_changed", data:{agent, agent_status, pane_id, workspace_id}}`
+   *
+   * **상태 구독은 상태만 말한다 — 정체(이름)는 여기서 안 집는다** (수정 3회차, 이번 회차 N8 이
+   * 실제로 잡았다). 이 봉투의 `agent` 는 "지금 이 pane 의 에이전트" 가 아니라 **"상태가 바뀐
+   * 그 에이전트"** 다. `pane.release_agent` 때 herdr 가 실제로 보내는 두 줄이 그것을 보인다
+   * (probe 실측):
+   *
+   *   agent 구독: `{agent:"claude", agent_status:"unknown"}`      ← 이름이 실려 온다
+   *   본 구독:    `{agent:"claude", released:true, final_status:"unknown"}`
+   *   그 뒤 `pane.list` 의 진실: `agent` 없음(null) · `agent_status:"unknown"`
+   *
+   * 두 줄은 **다른 커넥션**이라 순서가 안 정해진다. 여기서 이름을 집으면 `released` 가 먼저
+   * 온 경우에 상태 줄이 지운 이름을 **도로 붙여** 다음 재동기(기본 30초)까지 유령 이름이 남는다.
+   * 실측에서 그 창이 8초 넘게 안 닫혔다 (`fix3/_discarded/n8-2026-09-11.md`).
+   * 이름의 출처는 `pane_agent_detected`·`pane_updated`·스냅샷 셋이다 — 전부 본 구독/스냅샷이라
+   * 저희끼리 순서가 선다.
    */
   private applyAgentStatus(data: Record<string, unknown>): ApplyResult {
     const paneId = readString(data, 'pane_id')
@@ -780,11 +798,10 @@ export class WorkspaceStore {
     const pane = this.panes.get(paneId)
     if (pane === undefined) return { changed: false, note: `agent_status_changed: 모르는 pane (${paneId})` }
     const status = readAgentStatus(data, 'agent_status')
-    const agent = pickAgent(data, pane.agent)
-    if (pane.agentStatus === status && pane.agent === agent) {
+    if (pane.agentStatus === status) {
       return { changed: false, note: `agent_status_changed: 같은 값 (${status})` }
     }
-    this.panes.set(paneId, { ...pane, agentStatus: status, agent })
+    this.panes.set(paneId, { ...pane, agentStatus: status })
     return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
 

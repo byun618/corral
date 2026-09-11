@@ -112,11 +112,18 @@ const d = new WorkspaceStore()
 apply(d, 'workspace_created', { workspace })
 apply(d, 'tab_created', { tab })
 apply(d, 'pane_created', { pane })
+// **요청 시각을 닫기 전에 찍는다** (수정 3회차 F3-M1). 2회차까지는 `reconcile(…, Date.now())`
+// 였는데, 그러면 `closedAt` 과 `requestedAt` 이 같은 밀리초라서 통과했다 — 두 줄이 1ms 라도
+// 벌어지면 ⓪ 가 묘비를 걷고 이 칸이 "부활 3" 으로 뒤집힌다 (재리뷰가 `sleep(5)` 로 실증).
+// 이 칸이 재려는 것은 "**닫기 전에 뜬** 사진으로 재동기해도 묘비가 버티는가" 이므로,
+// 사진을 요청한 시각도 그때여야 한다 (⑮ 와 같은 파라미터). 벌어뜨려 놓고 잰다.
+const d요청시각 = Date.now()
 const 낡은스냅샷 = { snapshot: { workspaces: [workspace], tabs: [tab], panes: [pane] } }
+await new Promise((resolve) => setTimeout(resolve, 5))
 apply(d, 'tab_closed', { tab_id: tab.tab_id })
+const d닫은간격ms = Date.now() - d요청시각 // 0 이면 경주 위 — 이 값이 양수여야 결정적이다
 const d닫은직후 = snap(d)
-// 스냅샷은 닫기 **전에** 뜬 것이다 — 요청 시각도 그때로 준다.
-const d재동기 = d.reconcile(낡은스냅샷, Date.now())
+const d재동기 = d.reconcile(낡은스냅샷, d요청시각)
 const d재동기뒤 = snap(d)
 
 // ④b 반대 방향: **스냅샷보다 나중에 생긴 행을 재동기가 지우면 안 된다.**
@@ -160,6 +167,9 @@ const out = {
     최종보류함: c.heldOrphans(),
   },
   '④ 낡은 스냅샷으로 재동기 — 묘비가 버티는가': {
+    전제: '사진은 닫기 전에 뜬 것이다 — 요청 시각도 그때 (F3-M1)',
+    '요청시각과 닫기의 간격ms': d닫은간격ms,
+    '결정적인가 (간격 > 0)': d닫은간격ms > 0,
     닫은직후: d닫은직후,
     재동기결과: d재동기,
     재동기뒤: d재동기뒤,
@@ -369,6 +379,34 @@ apply(u, 'tab_created', { tab: three[1] })
 apply(u, 'tab_created', { tab: three[0] })
 const u도착순뒤 = u.rows()[0].tabs.map((item) => ({ tabId: item.tabId, number: item.number, order: item.order }))
 
+/**
+ * ⑱ **에이전트를 뗀 뒤 이름이 도로 붙는가** (수정 3회차 — 이번 회차 N8 이 잡은 자리).
+ *
+ * `pane.release_agent` 때 herdr 는 **두 커넥션**으로 말한다 (probe 실측):
+ *   agent 구독 `pane.agent_status_changed {agent:"claude", agent_status:"unknown"}`
+ *   본 구독    `pane_agent_detected {agent:"claude", released:true}`
+ * 뒤 진실은 `agent: null`. 두 줄은 순서가 안 정해지므로 **두 순서 다** 이름이 없어야 한다.
+ */
+const 뗌 = (순서) => {
+  const store = new WorkspaceStore()
+  const go = (event, data) => store.applyEvent({ event, data })
+  go('workspace_created', { workspace })
+  go('tab_created', { tab })
+  go('pane_created', { pane })
+  go('pane_agent_detected', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude' })
+  go('pane_agent_status_changed', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', agent_status: 'working' })
+  const 붙은뒤 = store.rows()[0].tabs[0].panes[0]
+  const 상태줄 = () =>
+    go('pane_agent_status_changed', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', agent_status: 'unknown' })
+  const 뗌줄 = () =>
+    go('pane_agent_detected', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', released: true, final_status: 'unknown' })
+  if (순서 === '상태먼저') { 상태줄(); 뗌줄() } else { 뗌줄(); 상태줄() }
+  const 뗀뒤 = store.rows()[0].tabs[0].panes[0]
+  return { 순서, 붙은뒤: { agent: 붙은뒤.agent, agentStatus: 붙은뒤.agentStatus }, 뗀뒤: { agent: 뗀뒤.agent, agentStatus: 뗀뒤.agentStatus } }
+}
+const 뗌상태먼저 = 뗌('상태먼저')
+const 뗌뗌먼저 = 뗌('뗌먼저')
+
 out['⑬ H-1 형제 탭을 모른 채 tab_closed → 진실 스냅샷 재동기'] = {
   전제: 'tab_created(wX:t2) 를 못 받았다 (push 유실 1건). herdr 에는 t2 가 살아 있다',
   닫기전: n닫기전,
@@ -406,6 +444,16 @@ out['⑯ L-1 한 층만 든 응답'] = {
   '정상 스냅샷으로 회복되나': r회복뒤.panes.includes(pane.pane_id),
   회복note: r정상.note,
 }
+out['⑱ 에이전트를 뗀 뒤 상태 줄이 이름을 도로 붙이나'] = {
+  전제: 'release_agent 때 herdr 가 보내는 두 줄(상태 구독·본 구독)은 순서가 안 정해진다. 둘 다 agent:"claude" 를 싣는다',
+  진실: 'pane.list 의 agent 는 null · agent_status 는 unknown (probe 실측)',
+  상태먼저: 뗌상태먼저,
+  뗌먼저: 뗌뗌먼저,
+  '이름이 남았나 (상태먼저)': 뗌상태먼저.뗀뒤.agent !== null,
+  '이름이 남았나 (뗌먼저)': 뗌뗌먼저.뗀뒤.agent !== null,
+  '두 순서 다 이름이 지워졌나': 뗌상태먼저.뗀뒤.agent === null && 뗌뗌먼저.뗀뒤.agent === null,
+  '붙을 때는 이름이 붙나': 뗌상태먼저.붙은뒤.agent === 'claude' && 뗌뗌먼저.붙은뒤.agent === 'claude',
+}
 out['⑰ L-5 뒤집혀 도착한 tab_created'] = {
   도착순: ['wX:t2', 'wX:t1'],
   화면순서: u도착순뒤,
@@ -430,6 +478,8 @@ out.판정 = {
   '⑮ 낡은 사진이 진짜 묘비를 걷었나': out['⑮ 낡은 사진이 진짜 묘비를 걷나 (걷으면 안 된다)'].workspace부활,
   '⑯ 한 층만 든 응답이 목록을 지웠나': out['⑯ L-1 한 층만 든 응답'].목록전멸했나,
   '⑰ 도착순으로 굳었나': out['⑰ L-5 뒤집혀 도착한 tab_created']['도착순으로 굳었나'],
+  '⑱ 뗀 뒤에도 이름이 남았나 (상태먼저)': out['⑱ 에이전트를 뗀 뒤 상태 줄이 이름을 도로 붙이나']['이름이 남았나 (상태먼저)'],
+  '⑱ 뗀 뒤에도 이름이 남았나 (뗌먼저)': out['⑱ 에이전트를 뗀 뒤 상태 줄이 이름을 도로 붙이나']['이름이 남았나 (뗌먼저)'],
 }
 /** 부활·손상이 아니라 **되어야 하는 것**. 위 판정이 전부 false 여야 하듯 이건 전부 true 여야 한다. */
 out.되어야하는것 = {
@@ -446,6 +496,8 @@ out.되어야하는것 = {
   '⑭ 재동기가 산 pane 을 되살린다': out['⑭ H-1 형제 pane 을 모른 채 pane_exited → 진실 스냅샷 재동기']['산 pane 이 돌아왔나'],
   '⑭ 죽은 pane 은 그대로 둔다': out['⑭ H-1 형제 pane 을 모른 채 pane_exited → 진실 스냅샷 재동기']['죽은 pane 은 그대로 죽었나'],
   '⑯ 한 층만 든 응답 뒤에도 정상 스냅샷으로 회복된다': out['⑯ L-1 한 층만 든 응답']['정상 스냅샷으로 회복되나'],
+  '⑱ 붙을 때는 이름이 붙는다': out['⑱ 에이전트를 뗀 뒤 상태 줄이 이름을 도로 붙이나']['붙을 때는 이름이 붙나'],
+  '④ 가 경주 위가 아니다 (요청시각 < 닫기)': out['④ 낡은 스냅샷으로 재동기 — 묘비가 버티는가']['결정적인가 (간격 > 0)'],
 }
 out.부활건수 = Object.entries(out.판정).filter(([, value]) => value === true).length
 /**
@@ -560,6 +612,23 @@ async function replayOn(StoreClass) {
     sixteen.reconcile({ tabs: [tab] }, Date.now())
   }
 
+  /** ⑱ 에이전트를 뗀 뒤 상태 줄이 이름을 도로 붙이는가 (두 순서 다 본다). */
+  const 뗌판 = (순서) => {
+    const store = new StoreClass()
+    const go = (event, data) => store.applyEvent({ event, data })
+    go('workspace_created', { workspace })
+    go('tab_created', { tab })
+    go('pane_created', { pane })
+    go('pane_agent_detected', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude' })
+    go('pane_agent_status_changed', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', agent_status: 'working' })
+    const 상태줄 = () =>
+      go('pane_agent_status_changed', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', agent_status: 'unknown' })
+    const 뗌줄 = () =>
+      go('pane_agent_detected', { pane_id: pane.pane_id, workspace_id: 'wX', agent: 'claude', released: true, final_status: 'unknown' })
+    if (순서 === '상태먼저') { 상태줄(); 뗌줄() } else { 뗌줄(); 상태줄() }
+    return store.rows()[0].tabs[0].panes[0].agent
+  }
+
   /** ⑰ L-5 — `tab_created` 두 건이 **뒤집혀** 도착한다. 화면 순서가 도착순으로 굳는가. */
   const seventeen = run((store, go) => {
     go('workspace_created', { workspace })
@@ -574,6 +643,8 @@ async function replayOn(StoreClass) {
       ids(fourteen).panes.includes(pane2.pane_id) && fourteen.rows().some((row) => row.workspaceId === 'wX'),
     '⑮ 낡은 사진이 진짜 묘비를 걷나 (부활하면 true)': fifteen.rows().some((row) => row.workspaceId === 'wX'),
     '⑯ 한 층만 든 응답이 목록을 지웠나': ids(sixteen).panes.length === 0,
+    '⑱ 뗀 뒤에도 이름이 남나 (상태먼저)': 뗌판('상태먼저') !== null,
+    '⑱ 뗀 뒤에도 이름이 남나 (뗌먼저)': 뗌판('뗌먼저') !== null,
     '⑰ 뒤집힌 tab_created 가 도착순으로 굳나':
       seventeen.rows()[0].tabs.map((item) => item.tabId).join(',') !== 'wX:t1,wX:t2',
     '⑤ pane 부활 (형제 잔존 탭)': ids(five).panes.includes(pane.pane_id),
@@ -607,9 +678,11 @@ async function replayOnRef(ref, label) {
 const 음성대조 = {
   설명:
     '같은 재생을 옛 판 store 에 먹인 결과. 여기서 (지금과 다른 값이) 나와야 그 케이스가 판별자다. ' +
-    '1회차 = 태그 LIFE-351-claude-r1 · 수정1회차 = 7564173 (재리뷰가 본 커밋).',
+    '1회차 = 태그 LIFE-351-claude-r1 · 수정1회차 = 7564173 · 수정2회차 = 9b6cc87.',
   '1회차': await replayOnRef('LIFE-351-claude-r1', 'r1'),
   '수정1회차': await replayOnRef('7564173', 'fix1'),
+  // 수정 3회차 — ⑱ 은 **수정 2회차 판**이 기준이다 (그 판까지 상태 줄이 이름을 집었다).
+  '수정2회차': await replayOnRef('9b6cc87', 'fix2'),
   지금: await replayOn(WorkspaceStore),
 }
 out['⑫ 음성 대조 — 1회차 store 로 같은 재생'] = 음성대조
@@ -637,6 +710,12 @@ out.케이스가가르나 = {
   '⑰':
     음성대조['수정1회차']['⑰ 뒤집힌 tab_created 가 도착순으로 굳나'] === true &&
     음성대조.지금['⑰ 뒤집힌 tab_created 가 도착순으로 굳나'] === false,
+  // ⑱ 은 **수정 2회차 판**에서 한 순서(상태 줄이 나중)만 이름이 남는다 — 그래서 라이브에서
+  // 운에 따라 통과하기도 했다. 지금은 두 순서 다 안 남아야 한다.
+  '⑱ (수정2회차는 상태 줄이 이름을 도로 붙였다)':
+    음성대조['수정2회차']['⑱ 뗀 뒤에도 이름이 남나 (뗌먼저)'] === true &&
+    음성대조.지금['⑱ 뗀 뒤에도 이름이 남나 (뗌먼저)'] === false &&
+    음성대조.지금['⑱ 뗀 뒤에도 이름이 남나 (상태먼저)'] === false,
 }
 
 out.어긋난것 = Object.entries(out.되어야하는것).filter(([, value]) => value !== true).map(([key]) => key)

@@ -162,6 +162,24 @@ export function ensureBuilt() {
   return { built: true, srcAt, outAt }
 }
 
+/**
+ * 앞 실행의 폴더를 **지우지 않고 치운다** (수정 3회차 F3-L2).
+ *
+ * 2회차의 L-3 은 "회차마다 비운다" 로 고쳤는데, 그 비우기가 **버린 회차의 실물까지** 지웠다.
+ * G6-3 이 관문 ③ 으로 정직하게 적은 회차(`pyenv-rehash` 가 셸을 붙들어 `exit` 가 실행조차
+ * 안 된 5/5)의 근거가 브랜치에 안 남은 원인이 이것이다. 조정을 적는 값은 **검증 가능성**에서
+ * 오므로, 앞 실행은 `_discarded/<타임스탬프>/` 로 옮긴다 — 최종 원자료와 섞이지 않으면서
+ * 남는다. (L-3 이 막으려던 것은 "아무도 안 가리키는 샷이 원자료에 섞이는 것" 이고,
+ * `_discarded/` 는 이름 자체가 "이건 근거가 아니다" 를 말한다.)
+ */
+function 치운다(dir) {
+  if (!fs.existsSync(dir)) return
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const parked = path.join(RAW_DIR, '_discarded', stamp, path.basename(path.dirname(dir)), path.basename(dir))
+  fs.mkdirSync(path.dirname(parked), { recursive: true })
+  fs.renameSync(dir, parked)
+}
+
 export async function startApp({
   name,
   env = {},
@@ -172,7 +190,7 @@ export async function startApp({
 } = {}) {
   const buildCheck = ensureBuilt()
   const dir = path.join(RAW_DIR, '_runs', name)
-  fs.rmSync(dir, { recursive: true, force: true })
+  치운다(dir)
   fs.mkdirSync(dir, { recursive: true })
   const logPath = path.join(dir, 'app.ndjson')
   // 소켓만 짧은 경로에 둔다 — worktree 아래는 sun_path 104 bytes 를 넘는다 (실측).
@@ -186,7 +204,7 @@ export async function startApp({
    * (fix1/shots/n8-chips 에 실제로 6장 남았다). 비우면 그 상태가 원천적으로 안 생긴다.
    */
   const shotDir = path.join(RAW_DIR, 'shots', name)
-  fs.rmSync(shotDir, { recursive: true, force: true })
+  치운다(shotDir)
   fs.mkdirSync(shotDir, { recursive: true })
 
   const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), ['.'], {

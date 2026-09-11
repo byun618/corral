@@ -70,7 +70,7 @@ export function App(): React.JSX.Element {
         </span>
         {state.link.droppingPush ? (
           <span className="meta warn" data-dropping>
-            push 유실 주입 중{state.link.dropPushOnly === null ? '' : ` (${state.link.dropPushOnly.join('·')}만)`}
+            push 유실 주입 중
           </span>
         ) : null}
         {state.diagnostics ? (

@@ -543,8 +543,10 @@ export class PaneTerminal {
         const recent = await this.readSnapshot('recent_unwrapped', 'attach-scrollback')
         if (stale('attach.scrollback')) return
         const found = historyAbove(splitRows(recent.text), splitRows(visible.text), grid.rows)
+        // 상한을 넘는 몫은 **화면에 이미 있는 쪽**이다. `found` 는 오래된 것부터이므로 앞에서
+        // 자른다 — 뒤에서 자르면 가장 오래된 과거가 날아간다(실측: HIST 001~038 소실).
         const cap = this.apiLinesAbove
-        const history = cap !== null && found.length > cap ? found.slice(found.length - cap) : found
+        const history = cap !== null && found.length > cap ? found.slice(0, cap) : found
         if (history.length !== found.length) {
           log('term.scrollback.capped', { paneId: target.paneId, found: found.length, cap })
         }

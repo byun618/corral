@@ -190,6 +190,14 @@ const out = {}
   const inHistory = dump.scrollback.filter((line) => line.includes('HIST ')).length
   const firstHistory = dump.scrollback.find((line) => line.includes('HIST ')) ?? null
   const lastHistory = [...dump.scrollback].reverse().find((line) => line.includes('HIST ')) ?? null
+  // 통과선은 "회수 줄이 실제로 위로 스크롤된다"이다. 최신 줄은 **화면**에 있어야 정상이므로
+  // 스크롤백만 세면 안 된다 — 스크롤백 + 화면을 합쳐 300개 마커가 다 있는지, 그리고 두 곳에
+  // **겹쳐 나오는 줄(중복)** 이 없는지 같이 본다.
+  const markerOf = (line) => line.match(/HIST (\d{3})/)?.[1] ?? null
+  const historyMarkers = new Set(dump.scrollback.map(markerOf).filter((m) => m !== null))
+  const screenMarkers = new Set(dump.grid.map((row) => markerOf(row.map((cell) => cell?.ch ?? ' ').join(''))).filter((m) => m !== null))
+  const duplicated = [...historyMarkers].filter((m) => screenMarkers.has(m))
+  const covered = new Set([...historyMarkers, ...screenMarkers])
 
   const normal = {
     paneId,
@@ -201,6 +209,11 @@ const out = {}
     scrollbackLinesWithMarker: inHistory,
     firstHistoryLine: firstHistory,
     lastHistoryLine: lastHistory,
+    markersInScrollback: historyMarkers.size,
+    markersOnScreen: screenMarkers.size,
+    markersCovered: covered.size,
+    markersDuplicated: duplicated.length,
+    allMarkersPresent: covered.size === 300,
     usedPaneScroll: false,
     shot: (await app.termShot('t5-normal')).file,
   }

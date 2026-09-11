@@ -99,7 +99,20 @@ const POLL_MS = 15
 // 육박한다 — 그러면 친 글자가 곧바로 줄바꿈을 타는데, `term-find` 는 화면 줄을 개행으로 이어
 // 붙이므로 누적 문자열이 감싼 자리에서 끊겨 **못 찾는다** (표본 60개 중 50개를 그렇게 놓쳤다).
 // 재는 것은 왕복 시간이지 프롬프트가 아니므로 이 블록에서만 짧게 바꾼다.
-await run(paneId, "PROMPT='i1> '", { settleMs: 700 })
+// `PROMPT` 만 바꾸면 안 된다 — 이 셸의 프롬프트는 **precmd 훅이 매번 다시 그린다**.
+// 훅을 먼저 비우고 나서 바꾼다.
+await run(
+  paneId,
+  "unfunction precmd 2>/dev/null; precmd_functions=(); preexec_functions=(); PROMPT='i1> '; RPROMPT=''",
+  { settleMs: 900 },
+)
+// 진짜 짧아졌는지 확인한다 — 안 짧아졌으면 표본이 또 줄바꿈에서 깨진다. 그때는 수치를 내지 않고
+// 왜 못 쟀는지 적는 것이 맞다 (기준 §0: 못 잰 칸은 보류).
+{
+  const check = await request('pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
+  const lastLine = check.read.text.split('\n').filter((line) => line.trim() !== '').pop() ?? ''
+  console.log('I1 프롬프트', JSON.stringify(lastLine.slice(-20)), '길이', lastLine.length)
+}
 
 while (samples.length < SAMPLE_COUNT && index < 400) {
   const positionInGroup = index % GROUP

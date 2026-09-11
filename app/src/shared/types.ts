@@ -311,10 +311,13 @@ export type ClosingRow = {
 
 export type LifecycleState = { launches: LaunchRow[]; closings: ClosingRow[] }
 
-/** 종료 요청의 결과. `needsConfirm` 은 **아무것도 보내지 않고** 되돌아온 것이다 (N6). */
+/**
+ * 종료 요청의 결과. `needsConfirm` 은 **아무것도 보내지 않고** 되돌아온 것이다 (N6).
+ * `running` 은 그 탭에서 돌고 있는 것 — herdr 가 알아본 에이전트 + 지금 뜬 비(非)셸 포그라운드.
+ */
 export type CloseOutcome =
   | { ok: true }
-  | { ok: false; needsConfirm: true; agents: string[]; paneIds: string[] }
+  | { ok: false; needsConfirm: true; running: string[]; paneIds: string[] }
   | { ok: false; needsConfirm: false; error: string }
 
 /** 렌더러가 보내는 특수키. `pane.send_keys` 어휘로 그대로 나간다 (실측 확인분만 쓴다). */

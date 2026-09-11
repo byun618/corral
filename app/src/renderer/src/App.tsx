@@ -100,7 +100,7 @@ function rowClass(selected: boolean, running: boolean): string {
  * 에이전트가 도는 탭은 `confirmed:false` 로 부르면 herdr 로 아무것도 안 나가고
  * `needsConfirm` 만 돌아온다 (lifecycle.ts). 그래서 이 상태는 "무엇을 물을지" 만 들고 있다.
  */
-type ConfirmClose = { tabId: string; agents: string[] }
+type ConfirmClose = { tabId: string; running: string[] }
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>(EMPTY)
@@ -117,7 +117,7 @@ export function App(): React.JSX.Element {
       return
     }
     if (outcome.needsConfirm) {
-      setConfirm({ tabId, agents: outcome.agents })
+      setConfirm({ tabId, running: outcome.running })
       return
     }
     // herdr 가 거절했으면 **그대로** 보이고 멈춘다 — 강제 종료로 승격하지 않는다.
@@ -326,8 +326,8 @@ function ConfirmCloseDialog({
       <div className="modal">
         <p className="modal-title">이 행을 종료할까</p>
         <p className="modal-body">
-          <span className="mono">{confirm.tabId}</span> 에서 <b>{confirm.agents.join(', ')}</b> 가 돌고 있다.
-          종료하면 셸과 에이전트 프로세스가 **둘 다 죽는다** — 되돌릴 수 없다.
+          <span className="mono">{confirm.tabId}</span> 에서 <b>{confirm.running.join(', ')}</b> 가 돌고 있다.
+          종료하면 셸과 그 프로세스가 함께 죽는다 — 되돌릴 수 없다.
         </p>
         <div className="modal-actions">
           <button type="button" className="btn" data-confirm="cancel" onClick={onCancel}>

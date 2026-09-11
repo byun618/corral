@@ -57,6 +57,19 @@ const RUNNING_KEEP_MS = 5000
 
 const SHELL_NAMES: readonly string[] = ['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh']
 
+/**
+ * 계측용 — 새 pane 의 셸을 **실제로 느리게** 만든다 (`CORRAL_INJECT_ZDOTDIR`).
+ *
+ * N3 이 묻는 레이스(`agent_pane_busy`)는 부하를 타서 평시 20회에 한 번도 안 날 수 있다.
+ * 응답을 가짜로 만들면 재시도 장치가 아니라 가짜를 재게 되므로, **셸을 진짜로 늦게** 프롬프트에
+ * 오게 한다: `ZDOTDIR` 을 `sleep` 이 든 `.zshrc` 가 있는 폴더로 돌린다. 그러면 herdr 가
+ * 진짜로 튕기고, 앱의 재시도가 진짜로 일한다. 평시 실행에는 이 변수가 없다.
+ */
+function injectedTabEnv(): Record<string, string> | null {
+  const dir = process.env.CORRAL_INJECT_ZDOTDIR
+  return dir === undefined || dir.length === 0 ? null : { ZDOTDIR: dir }
+}
+
 /** 포그라운드 프로세스 한 줄 — `pane.process_info` 가 주는 모양 그대로. */
 type ForegroundProcess = { pid: number; name: string; argv0: string; cmdline: string }
 
@@ -85,7 +98,7 @@ export type CloseRequest = { tabId: string; confirmed: boolean }
 
 export type CloseOutcome =
   | { ok: true }
-  | { ok: false; needsConfirm: true; agents: string[]; paneIds: string[] }
+  | { ok: false; needsConfirm: true; running: string[]; paneIds: string[] }
   | { ok: false; needsConfirm: false; error: string }
 
 let nextLaunchId = 0
@@ -216,6 +229,11 @@ export class Lifecycle {
     const params: Record<string, unknown> = { workspace_id: input.workspaceId, focus: false }
     if (input.cwd !== null) params['cwd'] = input.cwd
     if (input.label !== null && input.label.length > 0) params['label'] = input.label
+    const injectedEnv = injectedTabEnv()
+    if (injectedEnv !== null) {
+      params['env'] = injectedEnv
+      log('life.create.injected_env', { launchId, env: injectedEnv })
+    }
 
     let created: { tabId: string; paneId: string }
     const createStartedAt = Date.now()
@@ -428,8 +446,18 @@ export class Lifecycle {
    *
    * **되돌릴 수 없는 일에는 확인이 있어야 한다** (N6). herdr API 에는 확인이 없으므로 corral 이
    * 놓는다 — 그리고 그 확인을 **여기서** 강제한다. 모달은 화면의 일이고, 위험한 호출을 막는 것은
-   * 호출하는 층의 일이다. `confirmed:false` 로 들어온 에이전트 행은 아무것도 보내지 않고
-   * 되돌아간다.
+   * 호출하는 층의 일이다. `confirmed:false` 로 들어온 행은 아무것도 보내지 않고 되돌아간다.
+   *
+   * # 무엇을 기준으로 묻나 — 목록이 아니라 **그 pane 의 포그라운드**다
+   *
+   * 처음에는 저장소의 `pane.agent`(= herdr 의 `pane_agent_detected`)만 봤다. 그런데 그 신호는
+   * `agent.start` 로부터 **2.5초쯤 뒤에** 온다 — 만들자마자 닫는 경로에서는 claude 가 실제로
+   * 돌고 있는데 corral 은 "에이전트 없음" 으로 알고 **확인 없이 죽였다** (M2 1회차에서 20회 전부
+   * 그랬다). 그래서 닫기 직전에 `pane.process_info` 를 떠서 **셸이 아닌 것이 도는지** 본다.
+   * 이쪽이 덤으로 corral 밖에서 띄운 프로그램(사용자가 직접 실행한 vim·빌드)도 지켜 준다.
+   *
+   * 못 물어보면(요청 실패) **묻는 쪽으로 기운다.** 모르는 채로 죽이는 것보다 한 번 더 묻는 쪽이
+   * 싸다 — 이 문의 비대칭이 그것이다.
    */
   async close(input: CloseRequest): Promise<CloseOutcome> {
     const session = this.session
@@ -441,9 +469,12 @@ export class Lifecycle {
     }
     const described = this.hooks.describeTab(input.tabId)
     if (described === null) return { ok: false, needsConfirm: false, error: `모르는 탭: ${input.tabId}` }
-    if (described.agents.length > 0 && !input.confirmed) {
-      log('life.close.needs_confirm', { tabId: input.tabId, agents: described.agents })
-      return { ok: false, needsConfirm: true, agents: described.agents, paneIds: described.paneIds }
+    if (!input.confirmed) {
+      const running = await this.runningIn(session, described)
+      if (running.length > 0) {
+        log('life.close.needs_confirm', { tabId: input.tabId, running })
+        return { ok: false, needsConfirm: true, running, paneIds: described.paneIds }
+      }
     }
 
     const generation = this.generation
@@ -490,6 +521,35 @@ export class Lifecycle {
       this.settleClose(input.tabId, 'failed', String(error))
       return { ok: false, needsConfirm: false, error: String(error) }
     }
+  }
+
+  /**
+   * 이 탭에서 **셸이 아닌 무엇이 돌고 있나.** 목록이 아는 에이전트와 지금 뜬 포그라운드를 합친다.
+   * 순서를 지키되 중복은 없앤다 — 같은 것을 두 이름으로 보여 주지 않기 위해서다.
+   */
+  private async runningIn(
+    session: SessionInfo,
+    described: { agents: string[]; paneIds: string[] },
+  ): Promise<string[]> {
+    const found = new Set<string>(described.agents)
+    for (const paneId of described.paneIds) {
+      try {
+        const response = await request(session.socketPath, 'pane.process_info', { pane_id: paneId }, {
+          reason: 'life.close.probe',
+          timeoutMs: 4000,
+        })
+        if (response.error) throw new Error(response.error.code ?? 'error')
+        for (const process of readForeground(response.result)) {
+          if (isShell(process)) continue
+          found.add(process.argv0.length > 0 ? process.argv0 : process.cmdline)
+        }
+      } catch (error) {
+        // 못 물어봤다 — 모르는 채로 죽이지 않는다.
+        log('life.close.probe_failed', { paneId, error: String(error) })
+        found.add(`알 수 없음 (${paneId} 의 상태를 못 읽었다)`)
+      }
+    }
+    return [...found]
   }
 
   private settleClose(tabId: string, phase: ClosingRow['phase'], error: string | null): void {
@@ -583,6 +643,10 @@ function readForeground(result: unknown): ForegroundProcess[] {
  * 로그인 셸은 `name:"zsh"` · `argv0:"zsh"` · `cmdline:"-zsh"` 였다 (실측). 그래서 세 칸을
  * 다 보되 **앞의 대시만 떼고** 비교한다.
  */
+function isShell(process: ForegroundProcess): boolean {
+  return matches(process, SHELL_NAMES, 'shell')
+}
+
 function matches(process: ForegroundProcess, expected: readonly string[], mode: 'shell' | 'agent'): boolean {
   const strip = (value: string): string => value.replace(/^-/, '').replace(/\.exe$/, '')
   const candidates = [strip(process.argv0), strip(process.name), strip(process.cmdline.split(/\s+/)[0] ?? '')]

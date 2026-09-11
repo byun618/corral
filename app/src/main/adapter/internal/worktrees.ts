@@ -1,0 +1,38 @@
+// worktree 의 **열림상태**를 herdr 에 묻는다 (기준 N4ⓒ).
+//
+// 구조(어떤 worktree 가 있나)는 git 이 진실이고 이 파일이 대답하지 않는다 — main 의
+// `git-worktrees.ts` 가 `git worktree list` 로 읽는다. 여기가 대답하는 것은 **그 체크아웃을
+// herdr 가 지금 열고 있나** 하나뿐이고, 그 답은 `worktree.list` 의 `open_workspace_id` 다.
+//
+// 실측(raw/claude/00-shapes.json): `worktree.list {cwd}` 는 그 cwd 의 레포 **전체** worktree 를
+// 주고, 열려 있는 줄에만 `open_workspace_id` 가 붙는다. 레포가 이 세션에 하나도 안 열려 있어도
+// 응답은 정상이고(열림 표시가 없을 뿐), git 이 아닌 경로는 `not_git_worktree` 로 거절한다.
+
+import { isRecord, readArray, readRecord, readString } from '../../../shared/json.js'
+import { request } from './request.js'
+
+/** 경로 → 그 체크아웃을 열고 있는 workspace id. 열려 있지 않은 경로는 맵에 없다. */
+export type OpenWorkspaceMap = { byPath: Map<string, string>; repoName: string | null; error: string | null }
+
+export async function readOpenWorkspaces(socketPath: string, repoRoot: string): Promise<OpenWorkspaceMap> {
+  const byPath = new Map<string, string>()
+  try {
+    const response = await request(socketPath, 'worktree.list', { cwd: repoRoot }, { reason: 'worktree' })
+    if (response.error) {
+      return { byPath, repoName: null, error: `${response.error.code ?? 'error'}: ${response.error.message ?? ''}` }
+    }
+    const result = response.result
+    if (!isRecord(result)) return { byPath, repoName: null, error: 'worktree.list 응답 모양이 아니다' }
+    for (const item of readArray(result, 'worktrees')) {
+      if (!isRecord(item)) continue
+      const itemPath = readString(item, 'path')
+      const openId = readString(item, 'open_workspace_id')
+      if (itemPath === null || openId === null) continue
+      byPath.set(itemPath, openId)
+    }
+    const source = readRecord(result, 'source')
+    return { byPath, repoName: source === null ? null : readString(source, 'repo_name'), error: null }
+  } catch (error) {
+    return { byPath, repoName: null, error: String(error) }
+  }
+}

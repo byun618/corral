@@ -103,6 +103,15 @@ export class Lifecycle {
   private generation = 0
   private launches: LaunchRow[] = []
   private closings: ClosingRow[] = []
+  /**
+   * 관측 폴링을 **앞당기는** 깨우개. pane 마다 하나.
+   *
+   * `pane_agent_detected` 가 오면 herdr 는 이미 에이전트를 봤다는 뜻이다. 그래도 판정은
+   * `process_info` 로만 한다(판별자를 하나로 두려고) — 대신 다음 폴링까지 기다리지 않고
+   * 그 자리에서 한 번 더 본다. 안 그러면 herdr 는 알아봤는데 화면은 최대 한 주기 동안
+   * "기동 중" 을 들고 있다 (M1 샷 004 가 그 상태였다).
+   */
+  private wakers = new Map<string, () => void>()
 
   constructor(hooks: LifecycleHooks) {
     this.hooks = hooks
@@ -266,7 +275,7 @@ export class Lifecycle {
       this.patch(launchId, { phase: 'starting', busyRetries })
       const attemptAt = Date.now()
       // `agent.start` 의 positional `name` — 나중에 로그에서 이 기동을 되찾는 열쇠다.
-      const name = `${kind}-${created.paneId.replace(/[^A-Za-z0-9]/g, '')}`
+      const name = agentName(kind, created.paneId)
       let code: string | null = null
       let message = ''
       let result: unknown = null
@@ -377,9 +386,25 @@ export class Lifecycle {
         })
         return
       }
-      await sleep(OBSERVE_POLL_MS)
+      await this.waitOrWake(paneId, OBSERVE_POLL_MS)
       if (this.stale(generation)) return
     }
+  }
+
+  /** 다음 폴링까지 기다리되, `pane_agent_detected` 가 오면 그 자리에서 깬다. */
+  private waitOrWake(paneId: string, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (): void => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        if (this.wakers.get(paneId) === finish) this.wakers.delete(paneId)
+        resolve()
+      }
+      const timer = setTimeout(finish, ms)
+      this.wakers.set(paneId, finish)
+    })
   }
 
   /**
@@ -393,6 +418,7 @@ export class Lifecycle {
     const row = this.launches.find((item) => item.paneId === paneId && item.phase === 'launching')
     if (row === undefined) return
     log('life.detect.push', { launchId: row.launchId, paneId, agent: readString(frame.data, 'agent') })
+    this.wakers.get(paneId)?.()
   }
 
   // --- 종료 ----------------------------------------------------------------
@@ -476,15 +502,34 @@ export class Lifecycle {
   /**
    * 목록에서 사라진 탭의 기록은 같이 턴다. 없는 탭에 붙은 실패 표시는 유령이다 —
    * N4 가 막으라는 바로 그것이라 여기서도 같은 규칙을 지킨다.
+   *
+   * **아직 진행 중인 것은 털지 않는다.** `tab.create` 의 응답이 탭 id 를 주는 시점은
+   * `tab_created` push 가 저장소에 적용되는 시점보다 **이르다** — 그 창에서 "목록에 없는
+   * 탭" 을 이유로 털면 방금 만든 기동이 화면에서 사라진다 (M1 1회차에서 실제로 그렇게 됐다:
+   * 기동 배지가 한 번도 안 보였다). 사라졌다고 말할 자격은 **끝난 기록**에만 있다.
    */
   prune(liveTabIds: ReadonlySet<string>): boolean {
-    const launches = this.launches.filter((item) => item.tabId === null || liveTabIds.has(item.tabId))
-    const closings = this.closings.filter((item) => liveTabIds.has(item.tabId))
+    const gone = (tabId: string | null, settledAt: number | null): boolean =>
+      settledAt !== null && tabId !== null && !liveTabIds.has(tabId)
+    const launches = this.launches.filter((item) => !gone(item.tabId, item.settledAt))
+    const closings = this.closings.filter((item) => !gone(item.tabId, item.settledAt))
     if (launches.length === this.launches.length && closings.length === this.closings.length) return false
     this.launches = launches
     this.closings = closings
     return true
   }
+}
+
+/**
+ * herdr 가 받는 에이전트 이름: 소문자로 시작하고 `[a-z0-9_-]` 만, 1~32자.
+ *
+ * **대문자 하나가 10번째 행부터 기동을 통째로 막았다.** pane id 는 9 를 넘으면 `w2:pA` 처럼
+ * 대문자가 섞이는데 그걸 그대로 넘겨 `invalid_agent_name` 으로 튕겼다 (M1 2회차의 grok).
+ */
+function agentName(kind: string, paneId: string): string {
+  const raw = `${kind}-${paneId}`.toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const trimmed = raw.replace(/^[^a-z]+/, '').slice(0, 32)
+  return trimmed.length > 0 ? trimmed : 'agent'
 }
 
 function sleep(ms: number): Promise<void> {

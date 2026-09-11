@@ -8,8 +8,9 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AppState, SessionInfo, TerminalFrame } from '../shared/types.js'
+import type { AppState, CloseOutcome, SessionInfo, TerminalFrame } from '../shared/types.js'
 import { startControlServer } from './control.js'
+import { LAUNCH_KINDS, Lifecycle } from './herdr/lifecycle.js'
 import { PaneTerminal } from './herdr/pane-terminal.js'
 import { SessionLink } from './herdr/session-link.js'
 import { closeLog, log, logFile, openLog } from './log.js'
@@ -43,9 +44,48 @@ const terminal = new PaneTerminal({
 
 const link = new SessionLink({
   onChange: () => scheduleEmit(),
-  onPanePush: (frame) => terminal.onPush(frame),
+  onPanePush: (frame) => {
+    terminal.onPush(frame)
+    lifecycle.onPush(frame)
+  },
   onLive: () => terminal.onLinkLive(),
 })
+
+/**
+ * LIFE-346 — 행의 생성·종료. 목록(store)도 터미널도 건드리지 않는다: 만들면 herdr 가
+ * `tab_created`·`pane_created` 를 보내고 목록은 **평소 경로로** 그걸 받는다. 이 층이 직접
+ * 맵에 손대면 이벤트 경로와 두 갈래가 되고, 그건 N7 이 금지하는 "덮어 맞추기" 다.
+ */
+const lifecycle = new Lifecycle({
+  onChange: () => scheduleEmit(),
+  onPaneCreated: (paneId) => selectPane(paneId),
+  describeTab: (tabId) => {
+    for (const workspace of link.store.rows()) {
+      const tab = workspace.tabs.find((item) => item.tabId === tabId)
+      if (tab === undefined) continue
+      return {
+        workspaceId: workspace.workspaceId,
+        agents: tab.panes.map((pane) => pane.agent).filter((agent) => agent !== null),
+        paneIds: tab.panes.map((pane) => pane.paneId),
+      }
+    }
+    return null
+  },
+})
+
+/**
+ * A4 — 새 행을 **어디서** 여나.
+ *
+ * 1순위는 그 workspace 가 열고 있는 checkout 경로다(`worktree.list` 가 준 것). 사용자가 보는
+ * 단위가 worktree 라서 새 행도 그 worktree 에서 열려야 말이 맞고, 이 값은 pane 안에서 `cd` 를
+ * 해도 안 흔들린다. 2순위는 그 workspace 의 pane 이 실제로 있는 곳. 둘 다 모르면 파라미터를
+ * **생략한다** — 그러면 herdr 세션의 launch cwd 로 간다 (실측 §3). 모르는 경로를 지어내지 않는다.
+ */
+function launchCwd(workspaceId: string): string | null {
+  const workspace = link.store.rows().find((row) => row.workspaceId === workspaceId) ?? null
+  if (workspace === null) return null
+  return workspace.checkoutPath ?? workspace.panes.find((pane) => pane.cwd !== null)?.cwd ?? null
+}
 
 /** 지금 선택한 pane 을 터미널 층에 물린다. 선택이 없거나 세션이 없으면 뗀다. */
 function retarget(): void {
@@ -81,6 +121,8 @@ function currentState(): AppState {
     terminal.markGone('pane_closed — pane 이 목록에서 사라졌다')
     selectedPaneId = null
   }
+  // 사라진 탭에 붙은 기동·종료 기록은 같이 턴다 — 없는 행에 붙은 표시는 그 자체가 유령이다.
+  lifecycle.prune(new Set(rows.flatMap((row) => row.tabs.map((tab) => tab.tabId))))
   return {
     revision,
     sessions,
@@ -92,6 +134,8 @@ function currentState(): AppState {
     selectedPaneId,
     collapsedWorkspaceIds: [...collapsedWorkspaceIds],
     terminal: terminal.state(),
+    lifecycle: lifecycle.state(),
+    launchKinds: [...LAUNCH_KINDS],
     // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -132,6 +176,8 @@ function pickSession(name: string): void {
   selectedSession = name
   selectedPaneId = null
   terminal.attach(null)
+  // 세션이 바뀌면 진행 중이던 기동 관측은 옛 세션의 일이다 — 세대를 올려 손을 떼게 한다.
+  lifecycle.setSession(found)
   link.open(found)
   scheduleEmit()
 }
@@ -149,6 +195,18 @@ async function pollSessions(): Promise<void> {
     if (target) pickSession(target.name)
   }
   scheduleEmit()
+}
+
+function createRow(input: { workspaceId: string; kind: string; label: string | null }): Promise<{
+  ok: boolean
+  launchId: string
+  error?: string
+}> {
+  return lifecycle.create({ ...input, cwd: launchCwd(input.workspaceId) })
+}
+
+function closeRow(input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> {
+  return lifecycle.close(input)
 }
 
 /**
@@ -232,6 +290,10 @@ app.whenReady().then(() => {
   ipcMain.handle('corral:paneText', (_event, text: string) => terminal.sendText(text))
   ipcMain.handle('corral:paneKeys', (_event, keys: string[]) => terminal.sendKeys(keys))
   ipcMain.handle('corral:toggleCollapse', (_event, workspaceId: string) => toggleCollapse(workspaceId))
+  ipcMain.handle('corral:createRow', (_event, input: { workspaceId: string; kind: string; label: string | null }) =>
+    createRow(input),
+  )
+  ipcMain.handle('corral:closeRow', (_event, input: { tabId: string; confirmed: boolean }) => closeRow(input))
   ipcMain.handle('corral:refreshSessions', () => pollSessions())
   ipcMain.on('corral:reportRendered', (_event, rendered: number) => {
     log('ui.rendered', { revision: rendered })
@@ -253,6 +315,8 @@ app.whenReady().then(() => {
     toggleCollapse,
     state: () => currentState(),
     verify: () => link.verifyConvergence(),
+    createRow,
+    closeRow,
   })
 
   app.on('activate', () => {

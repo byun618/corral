@@ -134,6 +134,10 @@ export type AppState = {
   diagnostics: boolean
   /** LIFE-345 — 선택한 pane 의 터미널 표면 상태. */
   terminal: TerminalState
+  /** LIFE-346 — 진행 중이거나 실패한 생성·종료. 화면은 이걸 보고 "기동 중" 을 그린다. */
+  lifecycle: LifecycleState
+  /** LIFE-346 — UI 가 고르게 하는 시작 커맨드 4종. main 이 진실을 들고 있다 */
+  launchKinds: string[]
 }
 
 /** preload 가 contextBridge 로 노출하는 채널별 메서드. ipcRenderer 를 통째로 넘기지 않는다. */
@@ -153,6 +157,14 @@ export type CorralApi = {
   sendPaneText: (text: string) => Promise<{ ok: boolean; error?: string }>
   /** 특수키 (`pane.send_keys`). 이름으로 보낸다 — 모드를 아는 쪽은 herdr 다. */
   sendPaneKeys: (keys: string[]) => Promise<{ ok: boolean; error?: string }>
+  /** LIFE-346 — 새 행. `kind` 가 `shell` 이면 `agent.start` 를 부르지 않는다. */
+  createRow: (input: { workspaceId: string; kind: string; label: string | null }) => Promise<{
+    ok: boolean
+    launchId: string
+    error?: string
+  }>
+  /** LIFE-346 — 행 종료. 에이전트가 도는 탭은 `confirmed:true` 없이는 아무것도 보내지 않는다 */
+  closeRow: (input: { tabId: string; confirmed: boolean }) => Promise<CloseOutcome>
   /** S3 근거용 — 렌더러 컨텍스트에서 실제로 무엇이 막혀 있는지 main 로그에 남긴다. */
   reportProbe: (name: string, detail: Record<string, string>) => void
   /** preload 가 자기 컨텍스트에서 관측한 값 (S3). */
@@ -246,6 +258,64 @@ export type TerminalState = {
    */
   staleScreen: string | null
 }
+
+// ---------------------------------------------------------------------------
+// LIFE-346 — 행의 생성과 종료
+// ---------------------------------------------------------------------------
+
+/**
+ * 기동의 단계. **`running` 은 관측으로만 도달한다** — `agent.start` 의 성공 응답은
+ * `launch_pending:true` 라서 "떴다" 의 근거가 아니다 (00-analysis.md ⓓ, 기준 관문 ④).
+ *
+ * | 값 | 뜻 | 무엇을 보고 적나 |
+ * | --- | --- | --- |
+ * | `creating` | `tab.create` 가 나가 있다 | — |
+ * | `starting` | `agent.start` 가 나가 있다 (재시도 포함) | — |
+ * | `launching` | `agent.start` 가 돌아왔다. **아직 안 떴다** | `launch_pending:true` |
+ * | `running` | 그 프로그램이 pane 의 포그라운드에 있다 | `pane.process_info` |
+ * | `failed` | 거절·관측 실패 | 응답 코드 또는 예산 초과 |
+ */
+export type LaunchPhase = 'creating' | 'starting' | 'launching' | 'running' | 'failed'
+
+/** 기동 한 건. 뜬 뒤에는 잠깐 남았다 사라지고, 실패는 그 탭이 사라질 때까지 남는다 (N4 정책). */
+export type LaunchRow = {
+  launchId: string
+  sessionName: string
+  workspaceId: string
+  /** herdr agent kind, 또는 `shell`(=`agent.start` 를 부르지 않는다) */
+  kind: string
+  label: string | null
+  cwd: string | null
+  tabId: string | null
+  paneId: string | null
+  phase: LaunchPhase
+  /** `agent_pane_busy` 로 튕겨 다시 건 횟수 (N3). 삼키지 않는다는 증거가 이 숫자다 */
+  busyRetries: number
+  /** 관측한 포그라운드 cmdline — "떴다" 의 유일한 근거 */
+  observedCmdline: string | null
+  error: string | null
+  startedAt: number
+  settledAt: number | null
+}
+
+/** 종료 한 건. 실측 ~0.65초가 걸리므로 그 동안 화면이 멈춘 것처럼 보이면 안 된다 (A1). */
+export type ClosingRow = {
+  tabId: string
+  sessionName: string
+  phase: 'closing' | 'failed'
+  /** herdr 가 거절했으면 그 코드·메시지 그대로. 강제 종료로 승격하지 않는다 (N6 추가) */
+  error: string | null
+  startedAt: number
+  settledAt: number | null
+}
+
+export type LifecycleState = { launches: LaunchRow[]; closings: ClosingRow[] }
+
+/** 종료 요청의 결과. `needsConfirm` 은 **아무것도 보내지 않고** 되돌아온 것이다 (N6). */
+export type CloseOutcome =
+  | { ok: true }
+  | { ok: false; needsConfirm: true; agents: string[]; paneIds: string[] }
+  | { ok: false; needsConfirm: false; error: string }
 
 /** 렌더러가 보내는 특수키. `pane.send_keys` 어휘로 그대로 나간다 (실측 확인분만 쓴다). */
 export type TerminalKey = 'Up' | 'Down' | 'Left' | 'Right' | 'Escape' | 'Tab'

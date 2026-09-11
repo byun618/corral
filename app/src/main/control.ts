@@ -7,6 +7,7 @@
 // 프로토콜은 앱의 herdr 클라이언트와 같은 NDJSON: {"cmd":"shot","name":"k6-before"}
 
 import type { BrowserWindow } from 'electron'
+import type { CloseOutcome } from '../shared/types.js'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
@@ -42,6 +43,17 @@ export type ControlHandlers = {
   verify: () => Promise<unknown>
   /** LIFE-345 — 터미널 층. 계측이 정책 상수와 격자를 그대로 읽어 간다. */
   terminal: PaneTerminal
+  /**
+   * LIFE-346 — 행의 생성·종료. **준비·뒷정리 전용이다.**
+   * 판정 대상인 회차(N6·N10)는 이 지름길이 아니라 `click` 으로 진짜 버튼을 누른다 —
+   * main 핸들러를 직접 부르면 "UI 조작만으로" 라는 문장이 증명되지 않는다.
+   */
+  createRow: (input: { workspaceId: string; kind: string; label: string | null }) => Promise<{
+    ok: boolean
+    launchId: string
+    error?: string
+  }>
+  closeRow: (input: { tabId: string; confirmed: boolean }) => Promise<CloseOutcome>
   window: () => BrowserWindow | null
 }
 
@@ -176,6 +188,57 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       }
       case 'verify': {
         socket.write(JSON.stringify({ ok: true, verify: await handlers.verify() }) + '\n')
+        return
+      }
+      // --- LIFE-346 계측 ---------------------------------------------------
+      /**
+       * 화면의 **진짜 버튼**을 누른다.
+       *
+       * N10 은 "Orca 를 한 번도 쓰지 않고 corral 안에서만" 을 요구하고, N6 은 확인 UI 를
+       * 요구한다. main 핸들러를 부르는 지름길로는 둘 다 증명이 안 된다 — 렌더러의 onClick 이
+       * 실제로 그 IPC 를 부르는지가 증명 대상의 일부라서다. 그래서 선택자로 눌러 본다.
+       */
+      case 'click': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        const at = Date.now()
+        const hit = await target.webContents.executeJavaScript(
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true })()`,
+          true,
+        )
+        log('control.click', { selector, hit: hit === true, at })
+        socket.write(JSON.stringify({ ok: hit === true, selector, at }) + '\n')
+        return
+      }
+      /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나 — 확인 모달·배지 검사용. */
+      case 'query': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        const found = await target.webContents.executeJavaScript(
+          `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el) => el.textContent))()`,
+          true,
+        )
+        socket.write(JSON.stringify({ ok: true, selector, found, at: Date.now() }) + '\n')
+        return
+      }
+      /** 준비·뒷정리용 지름길. 판정 회차에는 쓰지 않는다 (위 주석). */
+      case 'create-row': {
+        const workspaceId = readString(parsed, 'workspaceId')
+        const kind = readString(parsed, 'kind')
+        if (workspaceId === null || kind === null) throw new Error('workspaceId·kind 필요')
+        const result = await handlers.createRow({ workspaceId, kind, label: readString(parsed, 'label') })
+        socket.write(JSON.stringify({ ok: result.ok, result, at: Date.now() }) + '\n')
+        return
+      }
+      case 'close-row': {
+        const tabId = readString(parsed, 'tabId')
+        if (tabId === null) throw new Error('tabId 필요')
+        const result = await handlers.closeRow({ tabId, confirmed: parsed['confirmed'] === true })
+        socket.write(JSON.stringify({ ok: result.ok, result, at: Date.now() }) + '\n')
         return
       }
       // --- LIFE-345 계측 ---------------------------------------------------

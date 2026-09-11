@@ -4,7 +4,7 @@
 // electron.vite.config.ts 의 preload output.format = 'cjs' 가 그 보장이다.
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppState, TerminalFrame } from '../shared/types.js'
+import type { AppState, CloseOutcome, TerminalFrame } from '../shared/types.js'
 
 const EXPOSED = [
   'getState',
@@ -19,6 +19,8 @@ const EXPOSED = [
   'onTerminalFrame',
   'sendPaneText',
   'sendPaneKeys',
+  'createRow',
+  'closeRow',
 ]
 
 const api = {
@@ -43,6 +45,15 @@ const api = {
     ipcRenderer.invoke('corral:paneText', text),
   sendPaneKeys: (keys: string[]): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('corral:paneKeys', keys),
+  // LIFE-346 — 행의 생성·종료. 확인(N6)은 main 이 강제한다: 에이전트가 도는 탭은
+  // `confirmed:false` 로 부르면 `needsConfirm` 만 돌아오고 herdr 로는 아무것도 안 나간다.
+  createRow: (input: { workspaceId: string; kind: string; label: string | null }): Promise<{
+    ok: boolean
+    launchId: string
+    error?: string
+  }> => ipcRenderer.invoke('corral:createRow', input),
+  closeRow: (input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> =>
+    ipcRenderer.invoke('corral:closeRow', input),
   reportProbe: (name: string, detail: Record<string, string>): void =>
     ipcRenderer.send('corral:reportProbe', name, detail),
   // S3 근거 — preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다.

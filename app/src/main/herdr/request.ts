@@ -15,8 +15,9 @@ import { log } from '../log.js'
  * `pane.send_text`·`pane.send_keys` 두 개의 **쓰기** 경로가 생긴다 — 목록은 그래서 여전히
  * 화이트리스트다. 여기 없는 메서드는 코드가 실수로 불러도 나가지 않는다.
  *
- * 세션 단위의 안전장치는 따로 있다: `PaneTerminal.inputBlocked()` 가 `default` 세션에는
- * `CORRAL_ALLOW_DEFAULT_INPUT=1` 없이 입력을 보내지 않는다 (01-criteria.md §0.1 격리 규칙).
+ * 세션 단위의 안전장치는 따로 있다: `defaultSessionWriteBlocked()` 가 `default` 세션에는
+ * `CORRAL_ALLOW_DEFAULT_INPUT=1` 없이 쓰기를 보내지 않는다 (01-criteria.md §0.1 격리 규칙).
+ * 터미널 입력(LIFE-345)과 행 생성·종료(LIFE-346)가 같은 가드를 쓴다.
  */
 const ALLOWED_METHODS: readonly string[] = [
   'ping',
@@ -26,9 +27,17 @@ const ALLOWED_METHODS: readonly string[] = [
   'pane.read',
   'pane.get',
   'pane.layout',
-  // --- 터미널 쓰기 (LIFE-345) — 이 둘이 유일한 쓰기 경로다 ---
+  // --- 터미널 쓰기 (LIFE-345) ---
   'pane.send_text',
   'pane.send_keys',
+  // --- 행 생성·종료 (LIFE-346) ---
+  // 생성은 두 걸음이다: `tab.create` 로 탭(+root pane)을 만들고 그 pane 에 `agent.start` 를 건다.
+  // `tab.create` 에는 시작 커맨드 파라미터가 없다 (00-analysis.md ⓐ·ⓑ).
+  'tab.create',
+  'agent.start',
+  'tab.close',
+  // 기동 여부는 **관측**으로 판정한다 — 이 읽기가 그 관측이다 (01-criteria.md 관문 ④).
+  'pane.process_info',
 ]
 
 export class HerdrRequestError extends Error {

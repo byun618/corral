@@ -499,3 +499,128 @@ body {
   font-size: 11px;
   padding: 0 2px 2px;
 }
+
+/* --- LIFE-346 행의 생성·종료 ---------------------------------------------
+   목록 줄에 "죽이기" 버튼이 처음 생긴다. 고르기와 한 과녁을 쓰지 않도록 옆에 떼어 둔다. */
+.row-line {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row-line > .row {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-x {
+  flex: none;
+  width: 24px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: #5d6478;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.row-x:hover:not(:disabled) {
+  color: var(--warn);
+  background: #2a1c22;
+  border-color: #4a2430;
+}
+
+.row-x:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.launcher {
+  margin-left: 10px;
+}
+
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 4px 14px;
+}
+
+.btn {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #1e2230;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn-danger {
+  border-color: #4a2430;
+  color: #f0a7a7;
+}
+
+.btn-danger:hover {
+  border-color: var(--warn);
+  background: #2a1c22;
+}
+
+.btn-kind {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 기동 중은 기동 완료와 **눈으로 갈려야 한다** (N2) */
+.tag-launching {
+  border: 1px solid #4a3c22;
+  background: #2a2418;
+  color: var(--work);
+}
+
+.row-pending {
+  opacity: 0.75;
+}
+
+/* N6 — 되돌릴 수 없는 종료 앞의 확인. window.confirm 을 쓰지 않는 이유는 App.tsx 에 적었다. */
+.modal-veil {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 9, 12, 0.66);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+  max-width: 460px;
+}
+
+.modal-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.modal-body {
+  margin: 0 0 16px;
+  color: #b9c0d0;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

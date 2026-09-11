@@ -214,11 +214,33 @@ export class WorkspaceStore {
         return { changed: added, note: added ? frame.event : 'tab_created: 주인 없음 — 보류함' }
       }
 
+      /**
+       * G1 (LIFE-346) — **탭을 지우면 그 탭의 pane 도 지운다.**
+       *
+       * 실측(`raw/analysis/p3-events.json` C): `tab.close` 는 `tab_closed` **한 건만** 준다.
+       * pane 은 프로세스까지 죽는데(shell·agent PID 둘 다 사망) `pane_closed` 는 안 온다 —
+       * 레이아웃에서 먼저 빼고 죽이기 때문이다. 그래서 탭만 지우면 pane 이 맵에 남아
+       * `workspace.paneCount` 가 과대해진다. `workspace_closed`(G3)가 이미 같은 일을 한다.
+       */
       case 'tab_closed': {
         const id = readString(data, 'tab_id')
         if (id === null) return { changed: false, note: 'tab_closed 필드 부족' }
         const had = this.tabs.delete(id)
-        return { changed: had, note: had ? frame.event : 'tab_closed: 이미 없음(멱등)' }
+        let orphaned = 0
+        for (const [paneId, pane] of this.panes) {
+          if (pane.tabId !== id) continue
+          this.panes.delete(paneId)
+          orphaned += 1
+        }
+        // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
+        const before = this.orphans.length
+        this.orphans = this.orphans.filter((item) => readString(item.value, 'tab_id') !== id)
+        const dropped = before - this.orphans.length
+        const changed = had || orphaned > 0
+        return {
+          changed,
+          note: changed ? `${frame.event}: pane ${orphaned}개 · 보류 ${dropped}개 함께 정리` : 'tab_closed: 이미 없음(멱등)',
+        }
       }
 
       case 'pane_created':
@@ -227,11 +249,30 @@ export class WorkspaceStore {
         return { changed: added, note: added ? frame.event : `${frame.event}: 주인 없음 — 보류함` }
       }
 
+      /**
+       * G2 (LIFE-346) — **마지막 pane 이 사라지면 그 탭도 사라진다.**
+       *
+       * 실측(`raw/analysis/p3-events.json` D): `pane.close` 는 `pane_closed` **한 건만** 주는데
+       * 같은 시각 herdr `tab.list` 에는 그 탭이 이미 없다. pane 만 지우면 herdr 에 없는
+       * **유령 탭 행**이 corral 목록에 남는다.
+       *
+       * 탭이 비었다고 무조건 지우지는 않는다 — `tab_created` 가 `pane_created` 보다 먼저 오는
+       * 구간이 있어 갓 만든 탭은 잠시 pane 0 이다. 여기는 **pane 이 실제로 있다가 사라진**
+       * 경로라서 0 이 곧 "이제 없다" 다.
+       */
       case 'pane_closed': {
         const id = readString(data, 'pane_id')
         if (id === null) return { changed: false, note: 'pane_closed 필드 부족' }
+        const pane = this.panes.get(id) ?? null
         const had = this.panes.delete(id)
-        return { changed: had, note: had ? frame.event : 'pane_closed: 이미 없음(멱등)' }
+        if (pane === null) return { changed: false, note: 'pane_closed: 이미 없음(멱등)' }
+        const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
+        if (siblings > 0) return { changed: had, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
+        const tabGone = this.tabs.delete(pane.tabId)
+        return {
+          changed: had,
+          note: tabGone ? `${frame.event}: 마지막 pane — 탭(${pane.tabId})도 지움` : frame.event,
+        }
       }
 
       case 'pane_agent_status_changed':

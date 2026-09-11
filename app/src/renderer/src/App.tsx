@@ -13,7 +13,18 @@
 // (00-analysis.md §3: 세션 층에는 구독이 없다 — 발견 + 선택까지가 이번 범위).
 
 import { useEffect, useRef, useState } from 'react'
-import type { AppState, LinkState, PaneRow, RepoGroupRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types'
+import type {
+  AppState,
+  ClosingRow,
+  LaunchRow,
+  LifecycleState,
+  LinkState,
+  PaneRow,
+  RepoGroupRow,
+  TabRow,
+  WorkspaceRow,
+  WorktreeRow,
+} from '../../shared/types'
 import { SecurityProbe } from './SecurityProbe'
 import { TerminalView } from './TerminalView'
 
@@ -52,6 +63,8 @@ const EMPTY: AppState = {
     staleScreen: null,
     inputBlocked: null,
   },
+  lifecycle: { launches: [], closings: [] },
+  launchKinds: [],
 }
 
 /**
@@ -82,9 +95,41 @@ function rowClass(selected: boolean, running: boolean): string {
   return ['row', selected ? 'row-on' : null, running ? null : 'row-stopped'].filter((part) => part !== null).join(' ')
 }
 
+/**
+ * 종료 확인 (N6). **모달은 화면의 일이고, 막는 것은 main 의 일이다** —
+ * 에이전트가 도는 탭은 `confirmed:false` 로 부르면 herdr 로 아무것도 안 나가고
+ * `needsConfirm` 만 돌아온다 (lifecycle.ts). 그래서 이 상태는 "무엇을 물을지" 만 들고 있다.
+ */
+type ConfirmClose = { tabId: string; agents: string[] }
+
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>(EMPTY)
+  const [confirm, setConfirm] = useState<ConfirmClose | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const reported = useRef(-1)
+
+  /** 종료를 요청한다. 확인이 필요하면 보내지 않고 물어본다 (되돌릴 수 없는 일이라서다). */
+  const requestClose = async (tabId: string, confirmed: boolean): Promise<void> => {
+    setNotice(null)
+    const outcome = await window.corral.closeRow({ tabId, confirmed })
+    if (outcome.ok) {
+      setConfirm(null)
+      return
+    }
+    if (outcome.needsConfirm) {
+      setConfirm({ tabId, agents: outcome.agents })
+      return
+    }
+    // herdr 가 거절했으면 **그대로** 보이고 멈춘다 — 강제 종료로 승격하지 않는다.
+    setConfirm(null)
+    setNotice(outcome.error)
+  }
+
+  const requestCreate = async (workspaceId: string, kind: string): Promise<void> => {
+    setNotice(null)
+    const result = await window.corral.createRow({ workspaceId, kind, label: null })
+    if (!result.ok) setNotice(result.error ?? '새 행을 못 만들었다')
+  }
 
   useEffect(() => {
     void window.corral.getState().then(setState)
@@ -202,6 +247,10 @@ export function App(): React.JSX.Element {
                   selectedPaneId={state.selectedPaneId}
                   collapsedIds={state.collapsedWorkspaceIds}
                   now={now}
+                  lifecycle={state.lifecycle}
+                  launchKinds={state.launchKinds}
+                  onCreate={requestCreate}
+                  onClose={(tabId) => void requestClose(tabId, false)}
                 />
               ))}
             </div>
@@ -236,12 +285,69 @@ export function App(): React.JSX.Element {
         </main>
       </div>
 
+      {confirm !== null && (
+        <ConfirmCloseDialog
+          confirm={confirm}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => void requestClose(confirm.tabId, true)}
+        />
+      )}
+
       <footer className="statusbar">
         {state.diagnostics && <SecurityProbe />}
+        {notice !== null && (
+          <span className="warn" data-notice="lifecycle">
+            {notice}
+          </span>
+        )}
         {state.link.lastError !== null && <span className="warn">{state.link.lastError}</span>}
       </footer>
     </div>
   )
+}
+
+/**
+ * 되돌릴 수 없는 종료 앞의 한 걸음 (N6).
+ *
+ * `window.confirm` 을 쓰지 않는다 — 그건 렌더러의 자바스크립트를 통째로 멈추는 모달이라
+ * 스크린샷도 계측 채널도 같이 멈춘다. 화면 안에 그리면 무엇을 물었는지가 그림으로 남는다.
+ */
+function ConfirmCloseDialog({
+  confirm,
+  onCancel,
+  onConfirm,
+}: {
+  confirm: ConfirmClose
+  onCancel: () => void
+  onConfirm: () => void
+}): React.JSX.Element {
+  return (
+    <div className="modal-veil" data-modal="close-confirm">
+      <div className="modal">
+        <p className="modal-title">이 행을 종료할까</p>
+        <p className="modal-body">
+          <span className="mono">{confirm.tabId}</span> 에서 <b>{confirm.agents.join(', ')}</b> 가 돌고 있다.
+          종료하면 셸과 에이전트 프로세스가 **둘 다 죽는다** — 되돌릴 수 없다.
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="btn" data-confirm="cancel" onClick={onCancel}>
+            취소
+          </button>
+          <button type="button" className="btn btn-danger" data-confirm="close" onClick={onConfirm}>
+            종료한다
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** 트리 아래로 함께 흐르는 LIFE-346 프롭 묶음. 층마다 따로 적지 않으려고 한 덩어리로 둔다. */
+type LifecycleProps = {
+  lifecycle: LifecycleState
+  launchKinds: string[]
+  onCreate: (workspaceId: string, kind: string) => void
+  onClose: (tabId: string) => void
 }
 
 function RepoGroup({
@@ -249,12 +355,13 @@ function RepoGroup({
   selectedPaneId,
   collapsedIds,
   now,
+  ...life
 }: {
   group: RepoGroupRow
   selectedPaneId: string | null
   collapsedIds: string[]
   now: number
-}): React.JSX.Element {
+} & LifecycleProps): React.JSX.Element {
   const byId = new Map(group.workspaces.map((workspace) => [workspace.workspaceId, workspace]))
   // worktree 로 짝지어진 workspace 는 그 아래에서 그린다. 못 짝지은 것(예: git repo 가 아닌 cwd)은 따로.
   const claimed = new Set(group.worktrees.map((worktree) => worktree.openWorkspaceId).filter((id) => id !== null))
@@ -277,6 +384,7 @@ function RepoGroup({
           selectedPaneId={selectedPaneId}
           collapsedIds={collapsedIds}
           now={now}
+          {...life}
         />
       ))}
       {loose.map((workspace) => (
@@ -286,6 +394,7 @@ function RepoGroup({
             selectedPaneId={selectedPaneId}
             collapsed={collapsedIds.includes(workspace.workspaceId)}
             now={now}
+            {...life}
           />
         </div>
       ))}
@@ -300,13 +409,14 @@ function WorktreeItem({
   selectedPaneId,
   collapsedIds,
   now,
+  ...life
 }: {
   worktree: WorktreeRow
   workspace: WorkspaceRow | null
   selectedPaneId: string | null
   collapsedIds: string[]
   now: number
-}): React.JSX.Element {
+} & LifecycleProps): React.JSX.Element {
   return (
     <div className={workspace === null ? 'worktree worktree-closed' : 'worktree'}>
       <div className="worktree-head" title={worktree.path}>
@@ -324,6 +434,7 @@ function WorktreeItem({
           selectedPaneId={selectedPaneId}
           collapsed={collapsedIds.includes(workspace.workspaceId)}
           now={now}
+          {...life}
         />
       )}
     </div>
@@ -339,12 +450,16 @@ function WorkspaceBody({
   selectedPaneId,
   collapsed,
   now,
+  lifecycle,
+  launchKinds,
+  onCreate,
+  onClose,
 }: {
   workspace: WorkspaceRow
   selectedPaneId: string | null
   collapsed: boolean
   now: number
-}): React.JSX.Element {
+} & LifecycleProps): React.JSX.Element {
   const groupable = workspace.tabs.length >= 2
   // 선택된 pane 이 이 안에 있으면 접혀 있어도 펼쳐 보인다 — 고른 것이 화면에서 사라지면 안 된다.
   const holdsSelection =
@@ -369,11 +484,117 @@ function WorkspaceBody({
       {!hidden && (
         <ul className="list tabs">
           {workspace.tabs.map((tab) => (
-            <TabItem key={tab.tabId} tab={tab} selectedPaneId={selectedPaneId} now={now} />
+            <TabItem
+              key={tab.tabId}
+              tab={tab}
+              selectedPaneId={selectedPaneId}
+              now={now}
+              launch={lifecycle.launches.find((item) => item.tabId === tab.tabId) ?? null}
+              closing={lifecycle.closings.find((item) => item.tabId === tab.tabId) ?? null}
+              onClose={onClose}
+            />
           ))}
+          {/* 아직 탭이 안 생긴 기동 — **행이 생기기 전에도 무슨 일이 벌어지는지 보인다** */}
+          {lifecycle.launches
+            .filter((item) => item.tabId === null && item.workspaceId === workspace.workspaceId)
+            .map((item) => (
+              <li key={item.launchId}>
+                <div className="row row-head row-pending" data-launch={item.launchId}>
+                  <span className="row-title">
+                    <span className="dot" />
+                    <span className="pane-title">{item.kind}</span>
+                    <LaunchBadge launch={item} />
+                  </span>
+                  <span className="row-sub">탭을 만드는 중</span>
+                </div>
+              </li>
+            ))}
         </ul>
       )}
+      {!hidden && (
+        <RowLauncher workspaceId={workspace.workspaceId} launchKinds={launchKinds} onCreate={onCreate} />
+      )}
     </>
+  )
+}
+
+/**
+ * 새 행 만들기. `+ 새 행` 을 누르면 시작 커맨드 4종이 펼쳐지고, 하나를 고르면 곧바로 만든다.
+ *
+ * cwd 를 묻지 않는다 — 그 workspace 가 열고 있는 worktree 에서 여는 것이 기본이고(A4),
+ * 다른 곳에서 열고 싶다는 요구는 이 일감의 범위 밖이다(worktree·workspace 생성은 Step 4).
+ * 이름도 묻지 않는다: herdr 가 탭 번호를 라벨로 붙이고, 행의 정체는 **무엇이 도는가**로
+ * 드러난다 — 만들기 전에 사람이 지어내는 이름보다 그쪽이 정확하다.
+ */
+function RowLauncher({
+  workspaceId,
+  launchKinds,
+  onCreate,
+}: {
+  workspaceId: string
+  launchKinds: string[]
+  onCreate: (workspaceId: string, kind: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="launcher">
+      <button
+        type="button"
+        className="agents-toggle"
+        data-new-row={workspaceId}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? '새 행 ⌃' : '+ 새 행'}
+      </button>
+      {open && (
+        <div className="kinds" data-kinds={workspaceId}>
+          {launchKinds.map((kind) => (
+            <button
+              type="button"
+              key={kind}
+              className="btn btn-kind"
+              data-launch-kind={`${workspaceId}:${kind}`}
+              onClick={() => {
+                setOpen(false)
+                onCreate(workspaceId, kind)
+              }}
+            >
+              {kind}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 기동의 단계를 그대로 적는다 (N2).
+ *
+ * **`launching` 을 "떴다" 로 그리지 않는 것이 이 배지의 전부다.** `agent.start` 는 106ms 만에
+ * `launch_pending:true` 로 돌아오고, grok 은 그로부터 5초 뒤에 실제로 뜬다. 그 사이를 정직하게
+ * 쓰지 않으면 화면이 앞서 나간 거짓말을 한다.
+ */
+function LaunchBadge({ launch }: { launch: LaunchRow }): React.JSX.Element | null {
+  if (launch.phase === 'running') return null
+  const label =
+    launch.phase === 'creating'
+      ? '만드는 중'
+      : launch.phase === 'starting'
+        ? launch.busyRetries > 0
+          ? `셸 기다리는 중 (재시도 ${launch.busyRetries})`
+          : '거는 중'
+        : launch.phase === 'launching'
+          ? `${launch.kind} 기동 중`
+          : `${launch.kind} 기동 실패`
+  return (
+    <em
+      className={launch.phase === 'failed' ? 'tag tag-stopped' : 'tag tag-launching'}
+      data-launch-phase={launch.phase}
+      title={launch.error ?? ''}
+    >
+      {label}
+    </em>
   )
 }
 
@@ -385,10 +606,16 @@ function TabItem({
   tab,
   selectedPaneId,
   now,
+  launch,
+  closing,
+  onClose,
 }: {
   tab: TabRow
   selectedPaneId: string | null
   now: number
+  launch: LaunchRow | null
+  closing: ClosingRow | null
+  onClose: (tabId: string) => void
 }): React.JSX.Element {
   const only = tab.panes.length === 1 ? (tab.panes[0] ?? null) : null
   const split = tab.panes.length >= 2
@@ -407,6 +634,18 @@ function TabItem({
       {only?.agent != null && <em className="glyph">{agentGlyph(only.agent)}</em>}
       <span className="pane-title">{title}</span>
       {split && <em className="tag">pane {tab.panes.length}</em>}
+      {launch !== null && <LaunchBadge launch={launch} />}
+      {/* A1 — 종료는 실측 ~0.65초가 걸린다. 그 동안 화면이 멈춘 것처럼 보이면 안 된다. */}
+      {closing?.phase === 'closing' && (
+        <em className="tag tag-launching" data-closing={tab.tabId}>
+          종료 중…
+        </em>
+      )}
+      {closing?.phase === 'failed' && (
+        <em className="tag tag-stopped" data-close-failed={tab.tabId} title={closing.error ?? ''}>
+          종료 거절됨
+        </em>
+      )}
       <span className="row-age">{elapsed(changedAt, now)}</span>
     </span>
   )
@@ -414,25 +653,44 @@ function TabItem({
     <span className="row-sub">
       {tab.tabId}
       {only !== null ? ` · ${only.paneId} · ${only.agentStatus}` : ` · 스플릿 ${tab.panes.length}`}
+      {launch?.phase === 'failed' && launch.error !== null ? ` · ${launch.error}` : ''}
     </span>
+  )
+  // 종료 버튼은 선택 버튼 **옆**에 둔다 — 버튼 안에 버튼을 넣을 수 없고, 무엇보다
+  // "고르기" 와 "죽이기" 가 한 과녁을 공유하면 안 된다.
+  const closeButton = (
+    <button
+      type="button"
+      className="row-x"
+      data-close-tab={tab.tabId}
+      title="이 행을 종료한다"
+      disabled={closing?.phase === 'closing'}
+      onClick={() => onClose(tab.tabId)}
+    >
+      ×
+    </button>
   )
   return (
     <li>
-      {only === null ? (
-        <div className="row row-head">
-          {head}
-          {sub}
-        </div>
-      ) : (
-        <button
-          type="button"
-          className={selected ? 'row row-on' : 'row'}
-          onClick={() => void window.corral.selectPane(selected ? null : only.paneId)}
-        >
-          {head}
-          {sub}
-        </button>
-      )}
+      <div className="row-line">
+        {only === null ? (
+          <div className="row row-head">
+            {head}
+            {sub}
+          </div>
+        ) : (
+          <button
+            type="button"
+            className={selected ? 'row row-on' : 'row'}
+            data-select-pane={only.paneId}
+            onClick={() => void window.corral.selectPane(selected ? null : only.paneId)}
+          >
+            {head}
+            {sub}
+          </button>
+        )}
+        {closeButton}
+      </div>
       {split && (
         <ul className="list panes">
           {tab.panes.map((pane) => (

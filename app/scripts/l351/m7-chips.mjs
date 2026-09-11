@@ -94,18 +94,34 @@ async function chipValue(attr, key) {
   const paneId = panes[0].pane_id
   const rows = []
 
-  // 시작값(미상) 먼저 — 아무것도 심지 않은 상태다.
-  {
+  /**
+   * **한 폴에서 화면 둘과 herdr 을 같이 뜬다** (수정 1회차 — 하네스 정정).
+   *
+   * 1회차는 상태 칩만 게이트로 걸고 이름 칩을 곧바로 읽었다. 그런데 상태와 이름은 서로 다른
+   * push 로 온다 — `pane.agent_status_changed`(agent 구독)와 `pane_agent_detected`(본 구독).
+   * 그래서 `release_agent` 직후 상태가 먼저 `미상` 이 되고 이름이 15ms 뒤에 지워지는 구간에서
+   * 1회차 판정은 **운으로** 통과했다 (이번 회차 로그: 601785 상태, 601800 이름).
+   * 게이트를 "두 칩이 같은 폴에서 herdr 과 맞을 때까지" 로 바꾼다 — 안 맞으면 시한에 걸려
+   * 그 회차는 불일치로 남으므로 통과선을 낮춘 것이 아니라 **비교 시점을 정직하게 잡은 것**이다.
+   */
+  async function agree(expectLabel) {
     const truth = (await request('pane.list', {})).panes.find((item) => item.pane_id === paneId)
     const status = await chipValue('data-chip-pane', paneId)
     const agent = await chipValue('data-chip-agent', paneId)
+    const 일치 = status === expectLabel && agent === (truth.agent ?? null)
+    return { truth, status, agent, 일치 }
+  }
+
+  // 시작값(미상) 먼저 — 아무것도 심지 않은 상태다.
+  {
+    const seen = await agree('미상')
     rows.push({
       심은상태: '(없음 — 시작값)',
-      herdr_agent_status: truth.agent_status,
-      herdr_agent: truth.agent ?? null,
-      화면_상태칩: status,
-      화면_이름칩: agent,
-      일치: status === '미상' && truth.agent_status === 'unknown' && agent === null,
+      herdr_agent_status: seen.truth.agent_status,
+      herdr_agent: seen.truth.agent ?? null,
+      화면_상태칩: seen.status,
+      화면_이름칩: seen.agent,
+      일치: seen.일치 && seen.truth.agent_status === 'unknown',
       샷: (await app.shot(`n8-pane-unknown`)).file,
     })
   }
@@ -114,46 +130,45 @@ async function chipValue(attr, key) {
     await request('pane.report_agent', { pane_id: paneId, source: 'l351-harness', agent: 'claude', state })
     // 화면이 그 값을 들 때까지 본다 — 고정 대기로 판정하지 않는다.
     const label = { working: '작업중', idle: '대기', blocked: '막힘' }[state]
-    const seen = await until(async () => ((await chipValue('data-chip-pane', paneId)) === label ? label : null), {
+    // **오라클은 같은 시각의 herdr 다.** 두 칩이 함께 맞을 때까지 본다 (위 agree 주석).
+    const seen = await until(async () => { const view = await agree(label); return view.일치 ? view : null }, {
       what: `칩 ${label}`,
       timeoutMs: 8000,
       everyMs: 60,
     })
-    // **오라클은 같은 시각의 herdr 다.**
-    const truth = (await request('pane.list', {})).panes.find((item) => item.pane_id === paneId)
-    const status = await chipValue('data-chip-pane', paneId)
-    const agent = await chipValue('data-chip-agent', paneId)
+    const view = seen.value ?? (await agree(label))
     rows.push({
       심은상태: state,
       반영ms: seen.ms,
-      herdr_agent_status: truth.agent_status,
-      herdr_agent: truth.agent ?? null,
-      화면_상태칩: status,
-      화면_이름칩: agent,
-      일치: status === label && truth.agent_status === state && agent === (truth.agent ?? null),
+      수렴했나: seen.ok,
+      herdr_agent_status: view.truth.agent_status,
+      herdr_agent: view.truth.agent ?? null,
+      화면_상태칩: view.status,
+      화면_이름칩: view.agent,
+      일치: view.일치 && view.truth.agent_status === state,
       샷: (await app.shot(`n8-pane-${state}`)).file,
     })
   }
 
   // 에이전트를 떼면 미상으로 돌아가야 한다 (released 경로).
   await request('pane.release_agent', { pane_id: paneId, source: 'l351-harness', agent: 'claude' })
-  const back = await until(async () => ((await chipValue('data-chip-pane', paneId)) === '미상' ? '미상' : null), {
+  // 상태(미상)와 이름(없음)은 **다른 커넥션**으로 온다 — 둘이 같이 맞을 때까지가 반영이다.
+  const back = await until(async () => { const view = await agree('미상'); return view.일치 ? view : null }, {
     what: '미상 복귀',
     timeoutMs: 8000,
     everyMs: 60,
   })
   {
-    const truth = (await request('pane.list', {})).panes.find((item) => item.pane_id === paneId)
-    const status = await chipValue('data-chip-pane', paneId)
-    const agent = await chipValue('data-chip-agent', paneId)
+    const view = back.value ?? (await agree('미상'))
     rows.push({
       심은상태: '(뗌 — release_agent)',
       반영ms: back.ms,
-      herdr_agent_status: truth.agent_status,
-      herdr_agent: truth.agent ?? null,
-      화면_상태칩: status,
-      화면_이름칩: agent,
-      일치: status === '미상' && truth.agent_status === 'unknown' && agent === (truth.agent ?? null),
+      수렴했나: back.ok,
+      herdr_agent_status: view.truth.agent_status,
+      herdr_agent: view.truth.agent ?? null,
+      화면_상태칩: view.status,
+      화면_이름칩: view.agent,
+      일치: view.일치 && view.truth.agent_status === 'unknown',
       샷: (await app.shot('n8-pane-released')).file,
     })
   }
@@ -233,6 +248,7 @@ out.판정 = {
   '코드의 칩 어휘 = 대조한 상태 (노출한 것 전부를 댔나)': JSON.stringify(코드의칩어휘) === JSON.stringify(대조한상태),
   '② 만들 수 있는 상태를 전부 대조했나 (미상·작업중·대기·막힘 + 뗌)': out.대조[1].rows.length === 5,
   '②③ pane 칩 전부 일치': out.대조[1].rows.every((row) => row.일치),
+  '②③ 전 회차가 시한 안에 수렴했나 (게이트가 안 새는지)': out.대조[1].rows.every((row) => row.수렴했나 !== false),
   'done 은 노출하지 않는다': !코드의칩어휘.includes('done'),
   'done 이 와도 미상으로 간다': out['done 처리 재생']?.['저장소가 든 값'] === 'unknown',
 }

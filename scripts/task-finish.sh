@@ -43,3 +43,4 @@ done
 git -C "$REPO" rev-parse --verify -q "refs/heads/$TASK" >/dev/null && git -C "$REPO" branch -d "$TASK" && note "브랜치 삭제: $TASK" || true
 
 echo "✔ $TASK 마무리 완료 — main $(git -C "$REPO" log --oneline -1 | cut -c1-40)"
+echo "□ 확인: LA 일감이 '완료' 로 전이됐는가 (코디네이터 담당 — 누락 시 수동 전이)"

@@ -21,7 +21,7 @@
 //
 // 두 팔 다 잰다. **"복구했다"를 증명하려면 결국 성공해야 하므로** 예산은 유한하다.
 
-import { request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const OLD_MARK = 'H2OLDPANE'
 const NEW_MARK = 'H2NEWPANE'
@@ -95,6 +95,14 @@ for (const failures of [1, 3]) {
     seededLinesAfterRepair: state.seededLines,
     seedRestored: (state.seededLines ?? 0) > 0,
     alive: state.alive,
+    // 복구된 뒤에는 실패 표시가 없어야 한다 (G5 의 반대쪽 — 평시에 경고가 남으면 안 된다).
+    attachFailedNotice: state.attachFailed,
+    // **한 세대에 `attach` 프레임은 한 장이다** (2회차 리뷰 G2). 두 장 이상이면 씨앗이 겹친다.
+    attachFramesByGeneration: attachFrames.reduce((acc, frame) => {
+      acc[frame.generation] = (acc[frame.generation] ?? 0) + 1
+      return acc
+    }, {}),
+    rendererErrors: rendererErrors(entries),
     shot: (await app.termShot(`h2-${failures}`)).file,
     fullShot: (await app.shot(`h2-${failures}-full`)).file,
   }
@@ -103,6 +111,69 @@ for (const failures of [1, 3]) {
   await app.stop()
 }
 
+// ==========================================================================
+// H2-b — **영원히 실패하면** 화면을 정직하게 바꾸나 (2회차 리뷰 G5)
+// ==========================================================================
+//
+// 1차 수정은 "일시적 실패"만 덮었다. 계속 실패하면 옛 pane 의 화면이 그대로 남고 `alive` 는
+// true 라 아무 표시도 없다 — 1차 H2 가 지적한 그 화면이고, 트리거만 좁아졌을 뿐이다.
+// (`FIXED.md` §3 은 이 경우를 R3·R5 관할이라고 적었는데 **틀렸다**: R3 은 링크 단절,
+// R5 는 pane 사망이고, 여기는 링크 live · pane 생존 · 그 pane 의 읽기만 실패다.)
+//
+// 그래서 약속 창을 넘기면 화면을 덮는다. 여기서 재는 것은 ① 표시가 뜨는가 ② 언제 뜨는가
+// ③ 그 뒤에도 계속 다시 붙는가 — 포기하는 것이 아니라 **정직해지는 것**이 고침이다.
+const forever = await (async () => {
+  const app = await startApp({ name: 'h2-forever', env: { CORRAL_INJECT_ATTACH_FAIL: '999' } })
+  await sleep(1200)
+  await app.selectPane(paneId)
+  await sleep(6000)
+  const oldShown = (await app.find(OLD_MARK)).found
+  const policy = (await app.policy()).policy
+
+  const at = Date.now()
+  await app.selectPane(otherPane)
+  let noticeMs = null
+  let notice = null
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    const live = (await app.state()).state.terminal
+    if (live.attachFailed !== null) {
+      noticeMs = Date.now() - at
+      notice = live.attachFailed
+      break
+    }
+    await sleep(120)
+  }
+  await sleep(2500)
+  const state = (await app.state()).state.terminal
+  const entries = app.entries()
+  const broken = entries.filter((entry) => entry.tag === 'term.attach.broken')
+  const shot = await app.termShot('h2-forever')
+  const full = await app.shot('h2-forever-full')
+  const out = {
+    note: '붙기가 계속 실패하는 동안 화면이 정직해지나 (G5). 주입 999회라 이 팔은 끝내 복구되지 않는다',
+    injectedFailures: 999,
+    oldPaneShownFirst: oldShown,
+    promisedWindowMs: policy.recoveryWindowMs,
+    noticeMs,
+    notice,
+    // 약속 창 안에는 조용히 다시 붙고, 넘어가면 알린다 — 두 조건을 같이 본다.
+    noticeAfterPromise: noticeMs !== null && noticeMs > policy.recoveryWindowMs,
+    brokenLogs: broken.length,
+    // 표시를 띄운 뒤에도 **계속 다시 붙는다** — 포기가 아니다.
+    attachAttempts: entries.filter((entry) => entry.tag === 'term.attach.failed').length,
+    stillAlive: state.alive,
+    attachFailedNotice: state.attachFailed,
+    oldScreenStillUnderneath: (await app.find(OLD_MARK)).found,
+    rendererErrors: rendererErrors(entries),
+    shot: shot.file,
+    fullShot: full.file,
+  }
+  console.log('H2 영구실패', JSON.stringify({ ...out, shot: undefined, fullShot: undefined }))
+  await app.stop()
+  return out
+})()
+
 await request('pane.close', { pane_id: otherPane }).catch(() => {})
 
 writeRaw('31-h2-repair.json', {
@@ -110,9 +181,18 @@ writeRaw('31-h2-repair.json', {
   injection: 'CORRAL_INJECT_ATTACH_FAIL=<n> — 세대마다 붙기 읽기를 n 번 실패시킨다',
   fix: 'attachedGeneration 을 두고, 안 붙은 세대면 readOnce 가 읽기 대신 bootstrap 을 다시 부른다. 세대당 즉시 재시도 1회 + 그 뒤 심장박동',
   panes: { old: paneId, new: otherPane },
+  injectionBudgetNote:
+    '주입 예산은 **모듈 전역 + 세대당**이다 — 세대가 바뀌면 다시 찬다 (2회차 리뷰 N3). 그래서 n=1 이라도 옛 pane 붙기 1회 + 새 pane 붙기 1회 = attachFailedLogs 2 가 정상이다. 계측 전용 스위치이고 제품 경로에는 없다',
   arms,
+  forever,
   allRepaired: arms.every((arm) => arm.repairFromLogMs !== null && arm.attachFramesEmitted > 0),
   allWithinPromise: arms.every((arm) => arm.withinPromise),
   allSeedsRestored: arms.every((arm) => arm.seedRestored),
+  /** 복구된 팔에는 경고가 남으면 안 되고, 영영 실패하는 팔에는 반드시 떠야 한다 (G5). */
+  noticeOnlyWhenBroken: arms.every((arm) => arm.attachFailedNotice === null) && forever.notice !== null,
+  /** 한 세대에 attach 프레임 한 장 (G2). */
+  oneAttachFramePerGeneration: arms.every((arm) =>
+    Object.values(arm.attachFramesByGeneration).every((count) => count === 1),
+  ),
 })
 process.exit(0)

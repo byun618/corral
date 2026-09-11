@@ -48,6 +48,7 @@ const EMPTY: AppState = {
     lastFrameAt: null,
     frames: 0,
     reads: 0,
+    attachFailed: null,
     inputBlocked: null,
   },
 }

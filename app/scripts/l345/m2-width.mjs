@@ -33,13 +33,30 @@ const SAMPLES = [
   { key: 'vs16', label: 'VS16 하트', literal: '❤️', expect: 2 },
 ]
 
+/**
+ * **2회차 리뷰 G4 가 연 자리** — 판정 표본(위 7종) 밖의 글자들. 통과선은 위 7종 그대로 두고
+ * (기준은 freeze 됐다) 이쪽은 근거로만 싣는다.
+ *
+ * `width.ts` 의 범위표를 UAX #11 로 갈아 끼웠으니 **렌더러가 실제로 그리는 폭**과 맞는지
+ * 제품 경로에서 확인해야 한다. 헤드리스 xterm 은 astral 글자를 전부 1로 보고해 못 믿는다
+ * (1차 리뷰 §0.1 · 이번에 다시 확인: 🇰🇷 도 1로 준다) — 그래서 **띄운 앱의 격자**에서 읽는다.
+ */
+const EXTRA_SAMPLES = [
+  { key: 'watch', label: 'BMP wide 기호 ⌚', literal: '⌚', uax11: 2 },
+  { key: 'star', label: 'BMP wide 기호 ⭐', literal: '⭐', uax11: 2 },
+  { key: 'check', label: 'BMP wide 기호 ✅', literal: '✅', uax11: 2 },
+  { key: 'thermometer', label: '1칸인 기호 🌡', literal: '🌡', uax11: 1 },
+  { key: 'loneRI', label: '홀로 있는 지역표시자 🇰', literal: '🇰', uax11: 1 },
+]
+
 const MARK_COL = 40 // 1-기준. 0-기준으로는 39.
 const MODES = ['6', '11', 'graphemes']
 
 const paneId = await tidySession()
 
 // 표본을 화면에 한 줄씩 그린다. 각 줄: <글자> → CUP 40열 → '|'
-const lines = SAMPLES.map((sample) => `printf '%s\\033[${MARK_COL}G|\\n' '${sample.literal}'`).join('; ')
+const ALL_SAMPLES = [...SAMPLES, ...EXTRA_SAMPLES]
+const lines = ALL_SAMPLES.map((sample) => `printf '%s\\033[${MARK_COL}G|\\n' '${sample.literal}'`).join('; ')
 await run(paneId, `clear; ${lines}`, { settleMs: 1500 })
 
 // herdr 가 실제로 준 스냅샷 원문을 그대로 남긴다 (근거의 1차 자료).
@@ -63,7 +80,7 @@ function herdrWidthOf(line) {
 
 const snapshotLines = snapshot.read.text.split(/\r?\n/)
 const herdrWidths = {}
-SAMPLES.forEach((sample, index) => {
+ALL_SAMPLES.forEach((sample, index) => {
   herdrWidths[sample.key] = herdrWidthOf(snapshotLines[index] ?? '')
 })
 console.log('herdr 폭', JSON.stringify(herdrWidths))
@@ -86,8 +103,8 @@ for (const mode of MODES) {
   if (!dump?.ok) throw new Error('term-dump 실패')
   const shot = await app.shot(`t7-${mode}`)
 
-  const rows = {}
-  SAMPLES.forEach((sample, index) => {
+  /** 격자 한 줄에서 `|` 열과 첫 셀 폭을 읽는다 — 표본 하나의 측정값. */
+  const readRow = (sample, index) => {
     const cells = dump.grid[index] ?? []
     let barColumn = null
     for (let x = 0; x < dump.cols; x++) {
@@ -97,7 +114,7 @@ for (const mode of MODES) {
       }
     }
     const first = cells[0]
-    rows[sample.key] = {
+    return {
       label: sample.label,
       literal: sample.literal,
       herdrWidth: herdrWidths[sample.key],
@@ -107,8 +124,19 @@ for (const mode of MODES) {
       barColumn,
       // 0 이면 두 폭 모델이 같아 재생이 어긋나지 않는다. 양수면 그만큼 오른쪽으로 밀린 것이다.
       shift: barColumn === null ? null : barColumn - (MARK_COL - 1),
-      expectedWidth: sample.expect,
+      expectedWidth: sample.expect ?? sample.uax11,
     }
+  }
+
+  const rows = {}
+  SAMPLES.forEach((sample, index) => {
+    rows[sample.key] = readRow(sample, index)
+  })
+  // 판정 표본 밖 — `width.ts` 의 새 범위표가 **렌더러와 같은 값**인지 보는 자리 (G4).
+  const extraRows = {}
+  EXTRA_SAMPLES.forEach((sample, index) => {
+    const row = readRow(sample, SAMPLES.length + index)
+    extraRows[sample.key] = { ...row, uax11: sample.uax11, matchesUax11: row.xtermCellWidth === sample.uax11 }
   })
   byMode[mode] = {
     activeVersion: set.active,
@@ -116,9 +144,16 @@ for (const mode of MODES) {
     activeVersionAtDump: dump.unicodeVersion,
     shot: shot.file,
     rows,
+    extraRows,
     shiftedSamples: Object.values(rows).filter((row) => row.shift !== 0).length,
     cjkShifted: ['hangul', 'hanja', 'boxdraw'].filter((key) => rows[key].shift !== 0).length,
   }
+  console.log(
+    'mode',
+    mode,
+    'G4 표본 렌더러 폭',
+    JSON.stringify(Object.fromEntries(Object.entries(extraRows).map(([k, v]) => [k, v.xtermCellWidth]))),
+  )
   console.log(
     'mode',
     mode,

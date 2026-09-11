@@ -91,7 +91,8 @@ export function buildScrollbackSeed(lines: readonly string[], rows: number): str
  * 같은 지점을 찾아 거기서 끊는다. 못 찾으면 보수적으로 화면 행 수만큼을 잘라낸다
  * (덜 보여주는 쪽이 없는 과거를 지어내는 쪽보다 낫다).
  */
-export function historyAbove(recent: readonly string[], visible: readonly string[], rows: number): string[] {
+export function historyAbove(input: { recent: readonly string[]; visible: readonly string[]; rows: number }): HistoryAbove {
+  const { recent, visible, rows } = input
   const norm = (line: string): string => line.replace(/\s+$/, '')
   const screen = visible.map(norm).filter((line) => line !== '')
   const tail = recent.map(norm)
@@ -107,7 +108,16 @@ export function historyAbove(recent: readonly string[], visible: readonly string
         break
       }
     }
-    if (same) return recent.slice(0, end - k)
+    if (same) return { lines: recent.slice(0, end - k), anchored: true }
   }
-  return recent.slice(0, Math.max(0, end - rows))
+  return { lines: recent.slice(0, Math.max(0, end - rows)), anchored: false }
 }
+
+/**
+ * 잘라낸 과거와 **그것이 닻을 내린 것인지**.
+ *
+ * `anchored: false` 는 꼬리 일치를 못 찾아 행 수로 어림잡은 것이다 — 그 길이 바로 알트 화면에서
+ * **없는 과거를 지어내던** 길이라(1차 수정 §0), 상한을 모를 때는 이쪽을 아예 안 쓴다
+ * (`pane-terminal.ts` 의 씨앗 상한, 2회차 리뷰 G1-b).
+ */
+export type HistoryAbove = { lines: string[]; anchored: boolean }

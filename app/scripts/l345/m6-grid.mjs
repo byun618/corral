@@ -12,7 +12,7 @@
 // 아니라 "창을 격자에 맞춰 글자 크기를 고르는 것"이다. 이 스크립트는 창을 3단계로 바꿔가며
 // ① 격자가 그대로인지 ② 화면이 어떻게 되는지(잘림/여백/배율)를 화면으로 남긴다.
 
-import { panes, ptyGrid, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { countGridTransitions, panes, ptyGrid, rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 /** 200칸짜리 열 자. pane 폭보다 길어서 herdr 가 pane 폭으로 잘라 준다 — 폭을 눈과 코드로 동시에 본다. */
 const RULER = `clear; awk 'BEGIN{s="";for(i=1;i<=200;i++){s=s (i%10==0? substr(sprintf("%d",i/10),length(sprintf("%d",i/10))) : ".")};print s}'`
@@ -241,10 +241,71 @@ const out = {}
   }
   console.log('T5 격자 점프', dump.cols, '→', afterDump.cols, '· 히스토리', inHistory, '→', afterHistory,
     normal.gridJump.historyKept ? '유지' : '흔들림')
+
+  // --- 격자 **축소** 방향도 잰다 (2회차 리뷰 N6 · G3 의 측정 공백) -----------
+  //
+  // 위 점프는 넓히는 방향(88→93)만 쟀다. 실사용에서 더 잦은 것은 **좁히는 방향**이다 —
+  // 긴 줄이 화면에서 사라지면 관측 폭이 내려가고 격자가 하한 80 으로 줄어든다. 그때도
+  // xterm 이 리플로우하므로 심어 둔 히스토리가 흔들리는지 봐야 한다.
+  //
+  // 이번 회차에서 줄이기에 이력을 넣었으므로(연속 두 창) **창 두 개 이상**을 짧게 살아야 한다.
+  await run(paneId, 'clear; printf "짧은 줄\n"', { settleMs: 1200 })
+  await sleep(14_000) // > GRID_REFRESH_MS × 2 + 여유
+  const shrunkDump = (await app.dump()).dump
+  const shrunkState = (await app.state()).state.terminal
+  const shrunkHistory = shrunkDump.scrollback.filter((line) => line.includes('HIST ')).length
+  const shrunkFirst = shrunkDump.scrollback.find((line) => line.includes('HIST ')) ?? null
+  const shrunkLast = [...shrunkDump.scrollback].reverse().find((line) => line.includes('HIST ')) ?? null
+  const shrinkMarkers = new Set(shrunkDump.scrollback.map(markerOf).filter((m) => m !== null))
+  normal.gridShrink = {
+    note: '긴 줄을 치워 격자를 줄인 뒤 스크롤백을 다시 센다 (2회차 리뷰 N6 — 1차는 확대만 쟀다)',
+    before: { cols: afterDump.cols, historyLines: afterHistory, first: afterFirst, last: afterLast },
+    after: {
+      cols: shrunkDump.cols,
+      observedCols: shrunkState.grid?.observedCols ?? null,
+      historyLines: shrunkHistory,
+      first: shrunkFirst,
+      last: shrunkLast,
+      markers: shrinkMarkers.size,
+    },
+    gridShrank: shrunkDump.cols < afterDump.cols,
+    historyKept: shrunkHistory >= afterHistory && shrunkFirst === afterFirst && shrunkLast === afterLast,
+    shrinkLogs: app.entries().filter((entry) => entry.tag === 'term.grid.shrink'),
+    pendingLogs: app.entries().filter((entry) => entry.tag === 'term.grid.shrink.pending'),
+    shot: (await app.termShot('t5-grid-shrink')).file,
+  }
+  console.log('T5 격자 축소', afterDump.cols, '→', shrunkDump.cols, '· 히스토리', afterHistory, '→', shrunkHistory,
+    normal.gridShrink.historyKept ? '유지' : '흔들림')
+
+  // --- 그린 격자가 몇 번 바뀌었나 (G3 의 본 지적) ---------------------------
+  //
+  // `term.grid.shrink` 는 **관측 폭**의 변화고, 사용자가 보는 것은 `term.frame` 의 `cols` 다
+  // (`max(관측, 80)`). 1차 수정은 그 둘을 섞어 적어 "하한 80 이 흡수한다"로 맺었는데,
+  // 실제로 그린 격자는 93↔80 을 오갔다. 여기서 **그린 격자의 전환 횟수**를 직접 센다.
+  normal.gridTransitions = countGridTransitions(app.entries())
+  normal.rendererErrors = rendererErrors(app.entries())
+  console.log('T5 격자 전환', normal.gridTransitions.transitions, '회 ·', normal.gridTransitions.sequence.join('→'))
   await app.stop()
 
   // --- 알트 판 ---
-  await run(paneId, `clear; sh ${process.cwd()}/scripts/l345/fixtures/03-tui.sh &`, { settleMs: 2500 })
+  //
+  // **움직이는 TUI 로 잰다** (2회차 리뷰 G6). 1차에는 정지한 알트 픽스처(`03-tui.sh`)로 쟀는데,
+  // 그 화면에서는 꼬리 일치가 성공해 `historyAbove` 가 애초에 0줄을 돌려줬다 — 씨앗 상한이
+  // **한 번도 물지 않는 자리에서** "알트는 0줄"을 확인한 셈이다. 고친 버그가 재현되지 않는
+  // 픽스처에서 회귀 검사가 돈 것이다.
+  //
+  // 그래서 T4 가 쓰는 것과 같은 `vim -u NONE -O` 로 바꾼다: 화면이 움직여 두 스냅샷이 어긋나고,
+  // 꼬리 일치가 실패해 어림잡기로 빠지며, **그때 상한(0)이 실제로 문다**. 그 물린 자리가
+  // `term.scrollback.capped` 로그로 남아 T5 의 근거가 된다.
+  await run(paneId, "printf 'ALT 왼쪽\n' > /tmp/l345-t5-left.txt; printf 'ALT 오른쪽\n' > /tmp/l345-t5-right.txt", { settleMs: 500 })
+  // 뷰포트보다 많이 심어 둔다 — 일반 판에서 상한이 0보다 커야 대비가 보인다.
+  await run(paneId, 'clear; for i in $(seq 1 60); do echo "ALT HIST $i"; done', { settleMs: 2000 })
+  const altScrollBefore = (await request('pane.get', { pane_id: paneId })).pane.scroll
+  await run(paneId, 'vim -u NONE -O /tmp/l345-t5-left.txt /tmp/l345-t5-right.txt', { settleMs: 3500 })
+  // 파일 둘을 열면 vim 이 "Press ENTER" 에서 멈춘다 — 밀어 줘야 진짜 전체화면이다 (1차 수정 실측).
+  await request('pane.send_text', { pane_id: paneId, text: '\r' })
+  await sleep(3000)
+  const altScrollAfter = (await request('pane.get', { pane_id: paneId })).pane.scroll
   const altApp = await startApp({ name: 'scrollback-alt' })
   await sleep(1200)
   await altApp.selectPane(paneId)
@@ -257,22 +318,34 @@ const out = {}
     format: 'text',
     lines: 2000,
   })
+  // 상한이 **실제로 물었나**. 이게 이번 회차가 회귀 검사에 넣으라고 한 것이다 (G6).
+  const capped = altApp.entries().filter((entry) => entry.tag === 'term.scrollback.capped')
   const alt = {
     paneId,
+    subject: 'vim -u NONE -O (움직이는 알트 TUI — 꼬리 일치가 실패하는 화면)',
+    maxOffsetBefore: altScrollBefore.max_offset_from_bottom,
+    maxOffsetAfter: altScrollAfter.max_offset_from_bottom,
+    altConfirmed: altScrollBefore.max_offset_from_bottom > 0 && altScrollAfter.max_offset_from_bottom === 0,
     recentLines: altRecent.read.text.split('\n').length,
     seededLines: altState.seededLines,
     baseY: altDump.baseY,
     scrollbackLines: altDump.scrollback.length,
     // 알트 판의 정답은 0 이다. 가짜 히스토리를 만들면 미달.
     fabricatedHistory: altDump.baseY > 0 && altState.seededLines === 0,
+    cappedLogs: capped,
+    // **상한이 물었고(= 어림잡기가 지어낸 몫을 잘랐고) 그 결과가 0줄**이어야 한다.
+    capBit: capped.some((entry) => entry.cap === 0 && entry.found > 0),
     shot: (await altApp.termShot('t5-alt')).file,
   }
-  console.log('T5 알트', JSON.stringify({ ...alt, shot: undefined }))
+  console.log('T5 알트', JSON.stringify({ ...alt, shot: undefined, cappedLogs: capped.length }))
   await altApp.stop()
   out.t5 = { normal, alt }
 
-  await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
-  await sleep(400)
+  // vim 을 정직하게 닫는다 — C-c 로는 안 나간다.
+  await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
+  await sleep(300)
+  await request('pane.send_text', { pane_id: paneId, text: ':qa!\n' }).catch(() => {})
+  await sleep(900)
   await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 700 })
 }
 

@@ -18,7 +18,7 @@
 //      foreground 에 `sleep` 이 있는지 먼저 확인하고, 없으면 그 표본을 무효로 남긴다
 //   ③ I4·I5·I6 이 `less` 안에 갇힌 채로 측정됐다 → 매 항목 전에 **셸 프롬프트인지 확인**한다
 
-import { panes, pct, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { countGridTransitions, panes, pct, rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const SAMPLE_COUNT = Number(process.env.L345_SAMPLES ?? 60)
 const GROUP = 15
@@ -181,9 +181,21 @@ const i1 = {
   distribution: latencies,
   invalidSamples: invalid,
   runToken: RUN_TOKEN,
+  /**
+   * **이 런 동안 그린 격자가 몇 번 바뀌었나** (2회차 리뷰 N2).
+   *
+   * 1차 수정 뒤 I1 p50 이 135 → 193ms 로 올라갔고 판정문이 그것을 전부 "프롬프트 훅 수정 탓"으로
+   * 적었다. 그런데 같은 런에 격자 전환이 6회 새로 들어와 있었다 — 전환마다 `term.resize` +
+   * 리플로우 + `fit()` 이 렌더러를 잡으므로 두 원인이 섞였다. 귀속은 판정자 몫이고, 구현자는
+   * **수치를 같이 싣는다**: 이번 회차는 이력(G3)을 넣었으니 전환 수가 줄어야 한다.
+   */
+  gridTransitions: countGridTransitions(app.entries()),
+  /** 렌더러 예외 — 1차에는 이 채널을 달아 놓고 안 읽었다 (2회차 리뷰 N1). */
+  rendererErrors: rendererErrors(app.entries()),
   detail: samples,
 }
 console.log('I1', JSON.stringify({ samples: i1.samples, measured: i1.measured, p50: i1.p50, p95: i1.p95, min: i1.min, max: i1.max }))
+console.log('I1 격자 전환', i1.gridTransitions.transitions, '회 ·', i1.gridTransitions.sequence.join('→'))
 
 // ==========================================================================
 // I2 — 엔터

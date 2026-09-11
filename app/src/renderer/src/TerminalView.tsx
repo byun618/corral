@@ -222,6 +222,11 @@ export function TerminalView({ state, title, subtitle }: Props): React.JSX.Eleme
   }, [state.paneId])
 
   const dead = state.paneId !== null && !state.alive
+  // **붙기가 약속 창을 넘겨 계속 실패하는 중이면 화면을 정직하게 덮는다** (2회차 리뷰 G5).
+  // 이때 term-box 에 그려져 있는 것은 이 pane 이 아니라 **이전 pane** 의 마지막 화면이다 —
+  // 렌더러가 새 세대의 `screen` 프레임을 버리기 때문이다. 죽은 pane 과 같은 층의 표시를 쓰되
+  // 사유가 다르므로 문구를 따로 둔다. 죽음 표시가 이기게 한다(그쪽이 더 최종적인 상태다).
+  const attachFailed = !dead && state.attachFailed !== null ? state.attachFailed : null
 
   return (
     <div className="term-wrap">
@@ -236,11 +241,13 @@ export function TerminalView({ state, title, subtitle }: Props): React.JSX.Eleme
         )}
         {state.seededLines !== null && <span className="term-grid">history {state.seededLines}</span>}
         {dead && <em className="tag tag-stopped">{state.deadReason}</em>}
+        {attachFailed !== null && <em className="tag tag-stopped">붙기 실패</em>}
       </div>
       {/* 죽은 pane 은 마지막 화면을 그대로 두되 흐리게 덮는다 — 지우면 무엇이 죽었는지 못 본다 */}
-      <div ref={boxRef} className={dead ? 'term-box term-box-dead' : 'term-box'}>
+      <div ref={boxRef} className={dead || attachFailed !== null ? 'term-box term-box-dead' : 'term-box'}>
         <div ref={hostRef} className="term-host" />
         {dead && <div className="term-dead-veil">{state.deadReason}</div>}
+        {attachFailed !== null && <div className="term-dead-veil">{attachFailed}</div>}
       </div>
       {state.inputBlocked !== null && <div className="term-foot warn">입력 막힘 · {state.inputBlocked}</div>}
     </div>

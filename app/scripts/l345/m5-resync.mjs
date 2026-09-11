@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import { promisify } from 'node:util'
-import { panes, request, run, sleep, socketPath, startApp, tidySession, writeRaw } from './lib.mjs'
+import { panes, rendererErrors, request, run, sleep, socketPath, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const exec = promisify(execFile)
 const SESSION = process.env.LIFE345_SESSION ?? 'life345-claude'
@@ -233,9 +233,17 @@ const out = {}
   const screen = await screenOf(app)
   const state = (await app.state()).state.terminal
 
+  const r3Attach = app.entries().filter((entry) => entry.tag === 'term.frame' && entry.kind === 'attach')
   out.r3 = {
     stoppedSession: SESSION,
     restartMs: upMs,
+    // **한 세대에 attach 프레임 한 장** (2회차 리뷰 G2). 1차 원자료(`_runs/r3/app.ndjson`)에서는
+    // 세대 2에 두 장이 나갔다 — `onLinkLive` 가 가드 없이 bootstrap 을 또 불렀기 때문이다.
+    attachFramesByGeneration: r3Attach.reduce((acc, frame) => {
+      acc[frame.generation] = (acc[frame.generation] ?? 0) + 1
+      return acc
+    }, {}),
+    reliveLogs: app.entries().filter((entry) => entry.tag === 'term.relive').length,
     linkWentLiveAgain: livedAgain,
     oldPaneId: paneId,
     newPaneId,
@@ -331,6 +339,101 @@ const out = {}
     fullShotDead: (await app.shot('r5-dead-full')).file,
   }
   console.log('R5', JSON.stringify({ ...out.r5, shotAlive: undefined, shotDead: undefined }))
+  await app.stop()
+}
+
+// ==========================================================================
+// R6 — **선택을 유지한 채 링크가 되살아날 때** 스크롤백이 겹치나 (2회차 리뷰 G2 의 미측정 경로)
+// ==========================================================================
+//
+// 1차에는 이 경로를 아무도 안 밟았다. R3 은 재기동 뒤 pane 을 **다시 고르는** 모양이라 겹침이
+// 안 보인다고 형제 리뷰가 적었는데, 원자료를 다시 보니 pane id 가 그대로여서 선택은 no-op 이었고
+// **세대 2에 `attach` 프레임이 두 장** 나가 있었다 (`_runs/r3/app.ndjson`, 1차 빌드).
+//
+// 두 갈래로 잰다:
+//   ⓐ 렌더러 성질 — 같은 세대에 씨앗형 바이트를 한 번 더 쓰면 **기존 스크롤백 위에 쌓인다**
+//      (`term.reset()` 은 세대가 바뀔 때만 탄다). 이게 겹침의 기전이다
+//   ⓑ 제품 경로 — 링크를 끊었다 살렸을 때 그 세대에 `attach` 프레임이 **한 장만** 나가는가
+{
+  const paneId = await tidySession()
+  await run(paneId, 'clear; for i in $(seq 1 120); do printf "R6HIST %03d\n" $i; done', { settleMs: 3000 })
+  const app = await startApp({ name: 'r6' })
+  await sleep(1200)
+  await app.selectPane(paneId)
+  await sleep(3000)
+
+  const markersOf = (lines) => lines.map((line) => line.match(/R6HIST (\d{3})/)?.[1] ?? null).filter((m) => m !== null)
+  const before = (await app.dump()).dump
+  const beforeMarkers = markersOf(before.scrollback)
+
+  // ⓐ 기전 — 씨앗과 같은 모양의 바이트를 한 번 더 쓴다 (5줄 + 개행 rows-1).
+  const seedLike =
+    '\u001b[?2026h\u001b[?7h\u001b[H' +
+    [1, 2, 3, 4, 5].map((n) => `R6SEED ${n}\u001b[0m\r\n`).join('') +
+    '\n'.repeat(before.rows - 1) +
+    '\u001b[?2026l'
+  await app.write(seedLike)
+  await sleep(800)
+  const replayed = (await app.dump()).dump
+
+  // ⓑ 제품 경로 — 링크를 끊었다 살린다. 선택은 그대로 둔다 (재선택 없음).
+  await exec('herdr', ['session', 'stop', SESSION]).catch(() => {})
+  for (let i = 0; i < 60 && fs.existsSync(SOCK); i++) await sleep(100)
+  await sleep(1200)
+  const { spawn } = await import('node:child_process')
+  spawn('python3', [`${process.cwd()}/scripts/l345/attach.py`, SESSION, '40', '120'], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref()
+  for (let i = 0; i < 150 && !fs.existsSync(SOCK); i++) await sleep(100)
+  let livedAgain = false
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const phases = app.entries().filter((entry) => entry.tag === 'link.phase').map((entry) => entry.phase)
+    if (phases.lastIndexOf('live') > phases.indexOf('live')) {
+      livedAgain = true
+      break
+    }
+    await sleep(200)
+  }
+  await sleep(4000)
+
+  const after = (await app.dump()).dump
+  const afterMarkers = markersOf(after.scrollback)
+  const entries = app.entries()
+  const attachFrames = entries.filter((entry) => entry.tag === 'term.frame' && entry.kind === 'attach')
+  const byGeneration = attachFrames.reduce((acc, frame) => {
+    acc[frame.generation] = (acc[frame.generation] ?? 0) + 1
+    return acc
+  }, {})
+  const counts = {}
+  for (const marker of afterMarkers) counts[marker] = (counts[marker] ?? 0) + 1
+
+  out.r6 = {
+    note: '선택을 유지한 채 링크가 다시 live 가 되는 경로 (G2). 1차에는 어떤 측정도 이 길을 안 밟았다',
+    paneId,
+    rendererSeedReplay: {
+      note: '같은 세대에 씨앗형 바이트를 한 번 더 쓰면 기존 스크롤백 **위에 쌓인다** — 겹침의 기전',
+      baseYBefore: before.baseY,
+      baseYAfter: replayed.baseY,
+      grew: replayed.baseY - before.baseY,
+      seedLines: 5,
+      stacked: replayed.baseY > before.baseY,
+    },
+    linkWentLiveAgain: livedAgain,
+    reliveLogs: entries.filter((entry) => entry.tag === 'term.relive').length,
+    attachBusyLogs: entries.filter((entry) => entry.tag === 'term.attach.busy').length,
+    attachFramesByGeneration: byGeneration,
+    // 이것이 이번 회차의 통과 조건이다 — 세대마다 한 장.
+    oneAttachFramePerGeneration: Object.values(byGeneration).every((count) => count === 1),
+    markersBefore: beforeMarkers.length,
+    markersAfter: afterMarkers.length,
+    duplicatedMarkers: Object.entries(counts).filter(([, count]) => count > 1).length,
+    baseYAfterRelive: after.baseY,
+    rendererErrors: rendererErrors(entries),
+    shot: (await app.termShot('r6-after')).file,
+  }
+  console.log('R6', JSON.stringify({ ...out.r6, shot: undefined, rendererErrors: out.r6.rendererErrors.count }))
   await app.stop()
 }
 

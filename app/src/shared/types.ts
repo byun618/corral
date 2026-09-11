@@ -229,6 +229,14 @@ export type TerminalState = {
   reads: number
   /** 입력을 막고 있으면 그 사유 (격리 가드 포함) */
   inputBlocked: string | null
+  /**
+   * 붙기가 **약속 창을 넘겨 계속 실패**하고 있으면 그 사유. 없으면 null.
+   *
+   * 이 상태에서 화면에 그려져 있는 것은 **이 pane 의 것이 아니다** — 렌더러가 새 세대의
+   * `screen` 프레임을 버리기 때문에 이전 pane 의 마지막 화면이 그대로 남는다. 살아 있는
+   * 것처럼 두면 1차 H2 가 지적한 그 화면이고, 그래서 정직하게 덮는다 (2회차 리뷰 G5).
+   */
+  attachFailed: string | null
 }
 
 /** 렌더러가 보내는 특수키. `pane.send_keys` 어휘로 그대로 나간다 (실측 확인분만 쓴다). */

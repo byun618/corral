@@ -39,7 +39,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { killFixtures, pct, reclaimShell, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
+import { killFixtures, pct, reclaimShell, rendererErrors, request, run, sleep, startApp, tidySession, writeRaw } from './lib.mjs'
 
 const exec = promisify(execFile)
 const out = {}
@@ -292,7 +292,8 @@ const snapshotRows = (text) => {
     }
   }
 
-  const arms = { dom: { idle: [], busy: [], rounds: [], webglEvents: [], frames: [], shot: null }, webgl: { idle: [], busy: [], rounds: [], webglEvents: [], frames: [], shot: null } }
+  const emptyArm = () => ({ idle: [], busy: [], rounds: [], webglEvents: [], frames: [], rendererErrors: [], shot: null })
+  const arms = { dom: emptyArm(), webgl: emptyArm() }
   // **한 번씩 재고 끝내면 안 된다.** 표본 10개로 쟀을 때 두 팔의 CPU 차이가 실행마다 방향이
   // 뒤집혔다 — 그건 렌더러 차이가 아니라 잡음이다. 그래서 팔을 번갈아 여러 라운드 돌리고
   // 라운드별 값을 전부 남긴다. 판단은 **반복해서 같은 방향으로 나오는 것**만 근거로 한다.
@@ -354,6 +355,9 @@ const snapshotRows = (text) => {
     // startApp 이 라운드마다 이 팔의 shots 폴더를 비우므로 **마지막 라운드 것만 남는다.**
     // 관문 ④ 증거로는 팔당 한 장이면 된다.
     arm.shot = (await app.termShot(`p1-${key}`)).file
+    // 렌더러 예외를 **읽는다** — 1차 최종 빌드의 `cost-webgl` 런에 1건이 찍혀 있었는데
+    // 아무도 안 봤다 (2회차 리뷰 N1). 리사이즈가 잦은 런이라 격자 출렁임(G3)과 같은 자리다.
+    arm.rendererErrors.push(rendererErrors(app.entries()))
     console.log('P1', key, 'round', round, JSON.stringify(arm.rounds[arm.rounds.length - 1]))
     await app.stop()
   }

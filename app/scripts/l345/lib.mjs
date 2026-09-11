@@ -494,3 +494,34 @@ export function pct(values, p) {
   const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)
   return sorted[Math.max(0, index)]
 }
+
+/**
+ * **그린 격자의 전환 횟수.** `term.frame` 의 `cols` 를 시간 순으로 이어 붙여 값이 바뀐 횟수를 센다.
+ *
+ * 2회차 리뷰 G3 이 짚은 자리다 — 관측 폭 로그(`term.grid.shrink`)만 보면 하한 80 에 가려 안 보이는데,
+ * 전환마다 렌더러는 `term.resize` + `fit()`(글자 크기 재계산)을 돌린다. 사용자가 보는 것은 이 수열이다.
+ */
+export function countGridTransitions(entries) {
+  const sequence = []
+  for (const entry of entries) {
+    if (entry.tag !== 'term.frame' || typeof entry.cols !== 'number') continue
+    if (sequence[sequence.length - 1] !== entry.cols) sequence.push(entry.cols)
+  }
+  return { sequence, transitions: Math.max(0, sequence.length - 1) }
+}
+
+/**
+ * **렌더러가 흘린 예외.** `main.tsx` 가 `window.onerror` / `unhandledrejection` 을
+ * `renderer.error` 프로브로 main 로그에 넘긴다.
+ *
+ * 1차에는 이 채널을 달아 놓고 **아무도 읽지 않았다** (2회차 리뷰 N1 — 최종 빌드 런에 2건이
+ * 실제로 찍혀 있었다). 그래서 측정마다 같이 적는다: 0건이면 0건이라고, 있으면 무엇인지.
+ */
+export function rendererErrors(entries) {
+  const rows = entries.filter((entry) => entry.tag === 'renderer.error')
+  return {
+    count: rows.length,
+    messages: [...new Set(rows.map((row) => String(row.message ?? row.reason ?? '')))],
+    rows: rows.slice(0, 20),
+  }
+}

@@ -110,6 +110,13 @@ export type PaneTerminalHooks = {
 
 type Target = { paneId: string; socketPath: string; sessionName: string; isDefaultSession: boolean }
 
+/**
+ * `resolveGrid` 의 결과. `linesAbove` 는 **이번 호출이 방금 API 에서 읽은** 뷰포트 위 줄 수다 —
+ * 씨앗 상한은 남아 있는 필드가 아니라 이 값으로만 건다 (2회차 리뷰 G1). 갱신 창 안이라 API 를
+ * 안 물었거나 읽기가 실패했으면 `null` 이고, 그때는 상한을 모르는 것으로 친다.
+ */
+type GridRead = { grid: PaneGrid; linesAbove: number | null }
+
 function injectedReadDelay(): number {
   const value = Number(process.env.CORRAL_INJECT_READ_DELAY_MS)
   return Number.isFinite(value) && value > 0 ? value : 0
@@ -180,6 +187,11 @@ export class PaneTerminal {
   /** 이번 격자 갱신 창에서 본 최대 폭. 창이 닫힐 때 줄이기의 근거가 된다 (M2). */
   private windowMaxCols = 0
   /**
+   * 줄이기 후보 — **직전 창**의 최대 폭. 창 하나가 짧았다고 바로 줄이지 않게 한 겹 둔다 (G3).
+   * 줄이면 다시 null 이 되어, 연달아 내려가는 계단을 만들지 않는다.
+   */
+  private shrinkCandidate: number | null = null
+  /**
    * **붙기가 성공한 세대.** 이 값이 현재 세대와 다르면 렌더러에는 아직 이 pane 의 화면이
    * 하나도 안 갔다 — 그 상태에서 `screen` 프레임을 보내면 렌더러 게이트가 전부 버리고
    * (`TerminalView.tsx` 의 `kind !== 'attach'` 검사) **이전 pane 의 화면이 그대로 남는다**.
@@ -187,12 +199,15 @@ export class PaneTerminal {
   private attachedGeneration: number | null = null
   /** 세대마다 한 번만 쓰는 즉시 재시도 티켓. 없으면 심장박동이 맡는다. */
   private attachRetry = false
+  /** 이 세대에서 붙기가 처음 실패한 시각. 성공하면 null 로 돌아간다 (G5). */
+  private attachFailedAt: number | null = null
+  /** 이 세대의 연속 붙기 실패 횟수 (G5 표시의 근거값). */
+  private attachFailures = 0
   private apiRows: number | null = null
-  /**
-   * 뷰포트 **위에 있는 줄 수**(`scroll.max_offset_from_bottom`). herdr 가 직접 준다.
-   * 알트스크린 판은 스크롤백이 없어 0 이다 — 씨앗의 상한으로 쓴다 (`50-agent-cost.json` → `t4`).
-   */
-  private apiLinesAbove: number | null = null
+  // 뷰포트 위 줄 수(`scroll.max_offset_from_bottom`)는 **필드로 들고 있지 않는다** (2회차 리뷰 G1).
+  // 씨앗의 상한이라 남아 있으면 안 되는 값이다 — `pane.get` 이 한 번 실패한 채 pane 이 바뀌면
+  // 직전 pane 의 상한이 걸려, 일반 → 알트 전환에서는 가짜 과거가 되살아나고 알트 → 일반에서는
+  // 진짜 과거가 전부 잘린다. 그래서 `resolveGrid` 가 **방금 읽은 값을 돌려주고** 붙기가 그것만 쓴다.
   private apiLayoutCols: number | null = null
   /** 아직 안 보낸 입력. 텍스트는 이어 붙이고 특수키는 순서를 지켜 따로 담는다. */
   private inputQueue: InputItem[] = []
@@ -216,7 +231,28 @@ export class PaneTerminal {
       frames: this.frames,
       reads: this.reads,
       inputBlocked: this.inputBlocked(),
+      attachFailed: this.attachFailureNotice(),
     }
+  }
+
+  /**
+   * 붙기가 **약속 창을 넘겨서도 계속 실패**하고 있나 (2회차 리뷰 G5).
+   *
+   * 실패가 이어지는 동안 `alive` 는 true 이고 렌더러에는 이 pane 의 화면이 한 장도 안 갔다 —
+   * 즉 화면에 남은 것은 **이전 pane** 것이다. 그대로 두면 1차 H2 가 지적한 그 화면이고,
+   * 그 상태에서 pane 이 죽으면 엉뚱한 화면에 죽음 이름표가 붙는다.
+   *
+   * 약속 창(`recoveryWindowMs`)까지는 조용히 다시 붙는다 — 한 번 실패하고 457ms 만에 복구하는
+   * 길(H2 실측)에까지 경고를 띄우면 평시 화면이 시끄러워진다. 넘어가면 그때 정직하게 알린다.
+   */
+  private attachFailureNotice(): string | null {
+    if (this.target === null || this.attachedGeneration === this.generation) return null
+    const since = this.attachFailedAt
+    if (since === null) return null
+    const elapsed = Date.now() - since
+    if (elapsed <= this.recoveryWindowMs()) return null
+    const seconds = Math.round(elapsed / 1000)
+    return `이 pane 의 화면을 못 읽었다 — ${seconds}초째 다시 붙는 중 (실패 ${this.attachFailures}회). 아래 화면은 이 pane 의 것이 아니다`
   }
 
   /**
@@ -236,7 +272,16 @@ export class PaneTerminal {
     return null
   }
 
-  /** pane 선택. 세대를 올리고 화면을 처음부터 세운다. */
+  /**
+   * pane 선택. 세대를 올리고 화면을 처음부터 세운다.
+   *
+   * **여기 빠진 필드 하나가 곧 결함이다.** 이 목록에서 `apiLinesAbove` 가 빠져 있던 것을
+   * 2회차 리뷰 3자가 전원 짚었다 (G1) — 직전 pane 의 씨앗 상한이 새 pane 에 걸리는 자리였다.
+   * 그래서 **pane 을 따라다니는 상태는 전부 여기서 되돌린다**. `reading` 도 마찬가지다:
+   * 옛 pane 의 요청이 나가 있는 채로 새 pane 을 고르면 그 응답은 세대 가드가 버리므로
+   * (`readOnce` 의 `finally` 가 남의 세대 플래그를 건드리지 않는다) 여기서 풀어 줘야
+   * 새 붙기가 인플라이트 가드(G2)에 막히지 않는다.
+   */
   attach(target: Target | null): void {
     this.detach()
     this.generation += 1
@@ -247,10 +292,14 @@ export class PaneTerminal {
     this.lastSnapshot = ''
     this.observedCols = 0
     this.windowMaxCols = 0
+    this.shrinkCandidate = null
     this.grid = null
     this.gridCheckedAt = 0
+    this.reading = false
     this.attachedGeneration = null
     this.attachRetry = true
+    this.attachFailedAt = null
+    this.attachFailures = 0
     this.apiRows = null
     this.apiLayoutCols = null
     this.inputQueue = []
@@ -283,11 +332,18 @@ export class PaneTerminal {
     this.target = null
   }
 
-  /** 링크가 다시 live 가 됐다 — 터미널 층도 따라간다 (R3). */
+  /**
+   * 링크가 다시 live 가 됐다 — 터미널 층도 따라간다 (R3).
+   *
+   * **여기서 `bootstrap` 을 직접 부르지 않는다** (2회차 리뷰 G2). 그러면 이미 붙은 세대에
+   * `attach` 프레임이 한 장 더 나가는데, 렌더러는 세대가 같아 `term.reset()` 을 안 타고
+   * 씨앗의 개행 `rows-1` 개가 **기존 스크롤백 위에 한 번 더** 쌓인다 — 스크롤백 중복이다.
+   * 대신 평소의 읽기 경로로 보낸다: 아직 못 붙었으면 `readOnce` 가 알아서 붙기부터 한다.
+   */
   onLinkLive(): void {
     if (this.target === null) return
-    log('term.relive', { paneId: this.target.paneId })
-    void this.bootstrap(this.generation)
+    log('term.relive', { paneId: this.target.paneId, attached: this.attachedGeneration === this.generation })
+    this.markDirty('relive')
   }
 
   /**
@@ -435,7 +491,8 @@ export class PaneTerminal {
    * 먼저 넓어진다. 짧은 화면 한 장에 격자가 출렁이지도 않는다 — 폭은 창 안에서만 자라고,
    * **줄어드는 것은 `GRID_REFRESH_MS` 창 경계에서 그 창의 최대 폭까지만**이다 (M2).
    */
-  private async resolveGrid(snapshot: string, force = false): Promise<PaneGrid> {
+  private async resolveGrid(input: { snapshot: string; generation: number; force?: boolean }): Promise<GridRead | null> {
+    const { snapshot, generation, force = false } = input
     // 관측 폭은 **한 창(window) 안에서는 줄지 않는다.** 한 프레임에 짧은 줄만 있었다고 즉시
     // 줄이면 다음 프레임의 긴 줄이 잘린다 — 그게 ⓖ6 이 말한 재생 정합성 붕괴다.
     // 이 계산은 네트워크를 안 쓴다.
@@ -445,18 +502,47 @@ export class PaneTerminal {
       if (width > this.observedCols) this.observedCols = width
     }
 
+    let linesAbove: number | null = null
     if (force || this.grid === null || Date.now() - this.gridCheckedAt > GRID_REFRESH_MS) {
-      await this.refreshGridFromApi()
+      const api = await this.refreshGridFromApi()
+      // **여기서 세대를 본다.** 아래 줄들은 인스턴스 상태를 쓴다 — 그 사이에 pane 이 바뀌었다면
+      // 지금 손에 든 값은 **옛 pane 의 것**이라 새 세대의 격자를 오염시킨다 (2회차 리뷰 grok).
+      if (generation !== this.generation) {
+        log('term.grid.stale', { generation, current: this.generation })
+        return null
+      }
+      this.gridCheckedAt = Date.now()
+      if (api.rows !== null) this.apiRows = api.rows
+      if (api.layoutCols !== null) this.apiLayoutCols = api.layoutCols
+      // 상한은 **이 값 그대로** 돌려준다. 읽기가 실패했으면 `null` 이고, 그때는 상한을
+      // 모르는 것으로 친다 — 어딘가에 낡은 값을 남겨 두는 것이 G1 의 실체였다.
+      linesAbove = api.linesAbove
       // **창 경계에서는 줄이기도 한다** (판정 M2 — grok·claude 지적).
       //
       // 관측 폭을 영영 안 줄이면 herdr pane 이 실제로 좁아졌을 때 corral 이 못 따라가고,
       // 그 뒤로는 pane 보다 넓은 격자에 계속 그린다(오른쪽에 빈 열). 그렇다고 프레임마다
-      // 줄이면 짧은 화면 한 장에 격자가 출렁인다. 그래서 **`GRID_REFRESH_MS` 창 안에서 본
-      // 최대 폭**까지만 줄인다 — 창 하나(5초)를 통째로 짧게 산 화면이라야 줄어든다.
-      // 하한 80 이 있어 `clear` 로 빈 화면이 와도 80 밑으로는 안 내려간다.
+      // 줄이면 짧은 화면 한 장에 격자가 출렁인다.
+      //
+      // 1차 수정은 `GRID_REFRESH_MS` 창 하나만 보고 줄였는데, **그래도 출렁였다** — 넓히기는
+      // 즉시고 줄이기만 창에 걸려 비대칭이라, 줄인 직후 긴 줄 한 장에 바로 되돌아간다
+      // (실측: 입력 런 66초에 전환 6회, 픽스처 런은 줄인 지 1초 만에 복귀 — 2회차 리뷰 G3).
+      // 그래서 이력을 한 겹 둔다: **연속 두 창**이 짧아야 줄이고, 줄이는 폭도 **두 창의
+      // 최댓값**까지만이다. 한 창이 유독 조용했다고 깊이 떨어지지 않는다.
       if (this.windowMaxCols > 0 && this.windowMaxCols < this.observedCols) {
-        log('term.grid.shrink', { from: this.observedCols, to: this.windowMaxCols })
-        this.observedCols = this.windowMaxCols
+        const previous = this.shrinkCandidate
+        if (previous === null) {
+          this.shrinkCandidate = this.windowMaxCols
+          log('term.grid.shrink.pending', { from: this.observedCols, saw: this.windowMaxCols })
+        } else {
+          const to = Math.max(this.windowMaxCols, previous)
+          if (to < this.observedCols) {
+            log('term.grid.shrink', { from: this.observedCols, to, windows: 2 })
+            this.observedCols = to
+          }
+          this.shrinkCandidate = null
+        }
+      } else {
+        this.shrinkCandidate = null
       }
       this.windowMaxCols = 0
     }
@@ -472,21 +558,31 @@ export class PaneTerminal {
     const layoutCols = this.apiLayoutCols
     const cols = Math.max(this.observedCols, 80)
     const source: PaneGrid['source'] = this.observedCols >= 80 ? 'observed' : 'default'
-    return { cols, rows: this.apiRows ?? 24, source, layoutCols, observedCols: this.observedCols }
+    const grid = { cols, rows: this.apiRows ?? 24, source, layoutCols, observedCols: this.observedCols }
+    return { grid, linesAbove }
   }
 
-  /** 행 수와 layout 힌트만 API 에 묻는다 — 왕복 2회라 hot path 에서 뺐다. */
-  private async refreshGridFromApi(): Promise<void> {
+  /**
+   * 행 수·스크롤 위치·layout 힌트를 API 에 묻는다 — 왕복 2회라 hot path 에서 뺐다.
+   *
+   * **읽은 값을 인스턴스에 바로 쓰지 않고 돌려준다** (2회차 리뷰 G1 — codex 안). 쓰는 쪽이
+   * 세대를 확인한 뒤 반영해야 옛 pane 의 값이 새 pane 에 섞이지 않고, 씨앗 상한은
+   * "이번 붙기가 방금 읽은 값"만 쓰게 된다. 실패하면 그 자리는 `null` 이다 — 낡은 값이 아니라.
+   */
+  private async refreshGridFromApi(): Promise<{ rows: number | null; linesAbove: number | null; layoutCols: number | null }> {
     const target = this.target
-    if (target === null) return
-    this.gridCheckedAt = Date.now()
+    const empty = { rows: null, linesAbove: null, layoutCols: null }
+    if (target === null) return empty
+    let rows: number | null = null
+    let linesAbove: number | null = null
+    let layoutCols: number | null = null
     try {
       const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
       const pane = isRecord(info) ? readRecord(info, 'pane') : null
       const scroll = pane === null ? null : readRecord(pane, 'scroll')
       if (scroll !== null) {
-        this.apiRows = readNumber(scroll, 'viewport_rows')
-        this.apiLinesAbove = readNumber(scroll, 'max_offset_from_bottom')
+        rows = readNumber(scroll, 'viewport_rows')
+        linesAbove = readNumber(scroll, 'max_offset_from_bottom')
       }
     } catch (error) {
       log('term.grid.pane_get_failed', { error: String(error) })
@@ -500,18 +596,29 @@ export class PaneTerminal {
           if (!isRecord(item)) continue
           if (readString(item, 'pane_id') !== target.paneId) continue
           const rect = readRecord(item, 'rect')
-          if (rect !== null) this.apiLayoutCols = readNumber(rect, 'width')
+          if (rect !== null) layoutCols = readNumber(rect, 'width')
         }
       }
     } catch (error) {
       log('term.grid.layout_failed', { error: String(error) })
     }
+    return { rows, linesAbove, layoutCols }
   }
 
   /** 붙을 때 한 번 — 스크롤백 씨앗 + 첫 화면. */
   private async bootstrap(generation: number): Promise<void> {
     const target = this.target
     if (target === null) return
+    // **같은 세대에 붙기가 둘 돌지 않게 한다** (2회차 리뷰 G2). 호출자가 셋이고 그중
+    // `onLinkLive` 는 아무 가드가 없었다 — 아직 못 붙은 동안(심장박동마다 `readOnce` 가
+    // 붙기를 다시 부르는 구간)에 링크가 살아나면 둘이 겹쳐 같은 세대로 `attach` 프레임이
+    // 두 장 나가고, 렌더러는 세대가 같아 `reset()` 을 안 타 **씨앗이 한 벌 더 쌓인다**.
+    // 여기서 접어 두면 `finally` 가 한 번 더 읽어 준다.
+    if (this.reading) {
+      log('term.attach.busy', { paneId: target.paneId, generation })
+      this.dirty = this.dirty ?? 'attach'
+      return
+    }
     this.reading = true
     const startedAt = Date.now()
     // 세대가 바뀌었으면 여기서 버린다. **버렸다는 사실을 로그에 남긴다** — R4 는
@@ -526,8 +633,9 @@ export class PaneTerminal {
       if (injectedAttachFailure(generation)) throw new Error('주입된 붙기 실패 (CORRAL_INJECT_ATTACH_FAIL)')
       const visible = await this.readSnapshot('visible', 'attach')
       if (stale('attach.visible')) return
-      const grid = await this.resolveGrid(visible.text, true)
-      if (stale('attach.grid')) return
+      const resolved = await this.resolveGrid({ snapshot: visible.text, generation, force: true })
+      if (resolved === null || stale('attach.grid')) return
+      const { grid, linesAbove } = resolved
       this.grid = grid
 
       // 스크롤백은 **일반 판에만** 있다. 알트스크린 판은 위에 아무것도 없다.
@@ -542,13 +650,30 @@ export class PaneTerminal {
       try {
         const recent = await this.readSnapshot('recent_unwrapped', 'attach-scrollback')
         if (stale('attach.scrollback')) return
-        const found = historyAbove(splitRows(recent.text), splitRows(visible.text), grid.rows)
+        const found = historyAbove({
+          recent: splitRows(recent.text),
+          visible: splitRows(visible.text),
+          rows: grid.rows,
+        })
         // 상한을 넘는 몫은 **화면에 이미 있는 쪽**이다. `found` 는 오래된 것부터이므로 앞에서
         // 자른다 — 뒤에서 자르면 가장 오래된 과거가 날아간다(실측: HIST 001~038 소실).
-        const cap = this.apiLinesAbove
-        const history = cap !== null && found.length > cap ? found.slice(0, cap) : found
-        if (history.length !== found.length) {
-          log('term.scrollback.capped', { paneId: target.paneId, found: found.length, cap })
+        //
+        // **상한을 모르면(`null`) 무제한이 아니라 보수적으로 간다** (2회차 리뷰 G1-b):
+        // 꼬리 일치로 닻을 내린 씨앗만 쓰고, 어림잡은 쪽은 버린다. 어림잡기가 곧 지어내기다.
+        const cap = linesAbove
+        const history =
+          cap === null
+            ? found.anchored
+              ? found.lines
+              : []
+            : found.lines.slice(0, Math.min(found.lines.length, cap))
+        if (history.length !== found.lines.length) {
+          log('term.scrollback.capped', {
+            paneId: target.paneId,
+            found: found.lines.length,
+            cap,
+            anchored: found.anchored,
+          })
         }
         seededLines = history.length
         seed = buildScrollbackSeed(history, grid.rows)
@@ -576,12 +701,24 @@ export class PaneTerminal {
       })
       // **여기까지 와야 붙은 것이다.** 늦은 세대 검사들을 다 지난 뒤에 표시한다.
       this.attachedGeneration = generation
+      this.attachFailedAt = null
+      this.attachFailures = 0
     } catch (error) {
       // **여기서 끝내면 옛 pane 의 화면이 영영 남는다** (판정 H2). 렌더러는 새 세대의
       // `screen` 을 전부 버리므로 `attach` 프레임이 다시 나오기 전까지 화면은 이전 pane 이고,
       // `alive` 는 true 라 죽음 표시도 안 뜬다. 그래서 **다시 붙는다** — 세대마다 즉시
       // 재시도 한 번, 그 뒤로는 심장박동이 맡는다 (readOnce 가 붙기부터 다시 한다).
       log('term.attach.failed', { paneId: target.paneId, generation, error: String(error) })
+      if (generation === this.generation) {
+        // 실패가 **약속 창을 넘어 이어지면** 화면을 정직하게 덮는다 (2회차 리뷰 G5).
+        // 여기서 세고, 판단은 `attachFailureNotice()` 가 한다 — 넘어간 뒤에도 계속 다시 붙는다.
+        this.attachFailures += 1
+        this.attachFailedAt = this.attachFailedAt ?? Date.now()
+        const elapsed = Date.now() - this.attachFailedAt
+        if (elapsed > this.recoveryWindowMs()) {
+          log('term.attach.broken', { paneId: target.paneId, generation, failures: this.attachFailures, elapsed })
+        }
+      }
       if (generation === this.generation && this.attachRetry) {
         this.attachRetry = false
         log('term.attach.retry', { paneId: target.paneId, generation })
@@ -626,8 +763,9 @@ export class PaneTerminal {
       }
       this.reads += 1
       this.lastReadMs = Date.now() - startedAt
-      const grid = await this.resolveGrid(visible.text)
-      if (generation !== this.generation) return
+      const resolved = await this.resolveGrid({ snapshot: visible.text, generation })
+      if (resolved === null || generation !== this.generation) return
+      const grid = resolved.grid
       const gridChanged =
         this.grid === null || this.grid.cols !== grid.cols || this.grid.rows !== grid.rows
       this.grid = grid

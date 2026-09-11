@@ -87,7 +87,7 @@ const out = {}
   // corral 은 열 수를 알 방법이 없다(API 에 없다) — 하한 80 이 답이고, 80 을 넘는 줄이
   // 오면 **그 줄이 담긴 스냅샷에서** 격자가 먼저 넓어진다. 그 두 번째 절반도 여기서 잰다.
   await run(paneId, 'clear; printf "짧은 줄\\n"', { settleMs: 1200 })
-  await sleep(7000) // > GRID_REFRESH_MS. 창 경계를 지나야 줄이기가 일어난다.
+  await sleep(14_000) // > GRID_REFRESH_MS × 2. 이력 때문에 연속 두 창이 짧아야 줄어든다 (G3).
   const sparseDump = (await app.dump()).dump
   const sparseState = (await app.state()).state.terminal
   const sparseShot = await app.termShot('t2-sparse')
@@ -137,7 +137,9 @@ const out = {}
   await sleep(900)
   const narrowed = await ptyGrid(paneId)
   await run(paneId, RULER, { settleMs: 1800 })
-  await sleep(7000) // 창 경계를 지나야 줄어든다
+  // 줄이기에 이력을 넣었으므로 **연속 두 창**이 지나야 내려간다 (2회차 리뷰 G3).
+  // 한 창(7초)만 기다리면 "따라 내려오지 않는다"로 잘못 읽힌다 — 설계가 아니라 대기가 짧은 것이다.
+  await sleep(14_000)
   const narrowDump = (await app.dump()).dump
   const narrowState = (await app.state()).state.terminal
   const narrowShot = await app.termShot('t2-narrow-after')
@@ -339,7 +341,38 @@ const out = {}
   }
   console.log('T5 알트', JSON.stringify({ ...alt, shot: undefined, cappedLogs: capped.length }))
   await altApp.stop()
-  out.t5 = { normal, alt }
+
+  // --- 상한을 **모를 때** 무엇을 하나 (2회차 리뷰 G1-b) -----------------------
+  //
+  // 씨앗 상한은 `pane.get` 이 준다. 그 호출이 실패하면 상한이 `null` 이고, 1차 수정은 그때
+  // **무제한**이었다 — 지어내기를 막으려고 만든 상한이 정작 모를 때는 안 걸렸다.
+  // (1차 측정에는 `pane.get` 이 실패한 런이 한 건도 없어 이 갈래를 아무도 안 밟았다.)
+  //
+  // 지금은 보수적으로 간다: **꼬리 일치로 닻을 내린 씨앗만** 쓰고 어림잡은 쪽은 버린다.
+  // 두 갈래를 다 잰다 — ⓐ 움직이는 알트(닻 없음 → 0줄) ⓑ 일반 판(닻 있음 → 과거 보존).
+  const capUnknown = {}
+  {
+    // ⓐ vim 이 아직 떠 있다. 주입을 켜고 붙는다.
+    const app2 = await startApp({ name: 'cap-alt', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
+    await sleep(1200)
+    await app2.selectPane(paneId)
+    await sleep(4000)
+    const dump2 = (await app2.dump()).dump
+    const state2 = (await app2.state()).state.terminal
+    const entries2 = app2.entries()
+    capUnknown.alt = {
+      note: '움직이는 알트 TUI + pane.get 실패 주입 — 상한을 모르고 닻도 없다. 0줄이 정답이다',
+      paneGetFailedLogs: entries2.filter((entry) => entry.tag === 'term.grid.pane_get_failed').length,
+      cappedLogs: entries2.filter((entry) => entry.tag === 'term.scrollback.capped'),
+      seededLines: state2.seededLines,
+      baseY: dump2.baseY,
+      scrollbackLines: dump2.scrollback.length,
+      fabricatedHistory: (state2.seededLines ?? 0) > 0,
+      shot: (await app2.termShot('t5-cap-alt')).file,
+    }
+    console.log('T5 상한모름·알트', JSON.stringify({ ...capUnknown.alt, shot: undefined, cappedLogs: capUnknown.alt.cappedLogs.length }))
+    await app2.stop()
+  }
 
   // vim 을 정직하게 닫는다 — C-c 로는 안 나간다.
   await request('pane.send_keys', { pane_id: paneId, keys: ['Escape'] }).catch(() => {})
@@ -347,6 +380,42 @@ const out = {}
   await request('pane.send_text', { pane_id: paneId, text: ':qa!\n' }).catch(() => {})
   await sleep(900)
   await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 700 })
+
+  {
+    // ⓑ 일반 판 — 닻이 있으므로 과거가 살아 있어야 한다. 보수적으로 간다고 **진짜 과거까지
+    // 버리면** 그건 또 다른 결함이다 (codex 가 짚은 반대 방향).
+    await run(paneId, 'clear; for i in $(seq 1 200); do printf "CAP %03d 줄\n" $i; done', { settleMs: 3000 })
+    const app3 = await startApp({ name: 'cap-normal', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
+    await sleep(1200)
+    await app3.selectPane(paneId)
+    await sleep(4000)
+    const dump3 = (await app3.dump()).dump
+    const state3 = (await app3.state()).state.terminal
+    const entries3 = app3.entries()
+    const capMarker = (line) => line.match(/CAP (\d{3})/)?.[1] ?? null
+    const inHistory3 = new Set(dump3.scrollback.map(capMarker).filter((m) => m !== null))
+    const onScreen3 = new Set(
+      dump3.grid.map((row) => capMarker(row.map((cell) => cell?.ch ?? ' ').join(''))).filter((m) => m !== null),
+    )
+    capUnknown.normal = {
+      note: '일반 판 + pane.get 실패 주입 — 닻이 있으므로 과거는 살아 있어야 한다',
+      paneGetFailedLogs: entries3.filter((entry) => entry.tag === 'term.grid.pane_get_failed').length,
+      cappedLogs: entries3.filter((entry) => entry.tag === 'term.scrollback.capped'),
+      seededLines: state3.seededLines,
+      baseY: dump3.baseY,
+      markersInScrollback: inHistory3.size,
+      markersOnScreen: onScreen3.size,
+      markersCovered: new Set([...inHistory3, ...onScreen3]).size,
+      markersDuplicated: [...inHistory3].filter((m) => onScreen3.has(m)).length,
+      historyKept: (state3.seededLines ?? 0) > 0,
+      shot: (await app3.termShot('t5-cap-normal')).file,
+    }
+    console.log('T5 상한모름·일반', JSON.stringify({ ...capUnknown.normal, shot: undefined, cappedLogs: capUnknown.normal.cappedLogs.length }))
+    await app3.stop()
+  }
+
+  out.t5 = { normal, alt, capUnknown }
+
 }
 
 // ==========================================================================

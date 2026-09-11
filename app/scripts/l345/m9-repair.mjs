@@ -169,6 +169,20 @@ const forever = await (async () => {
     shot: shot.file,
     fullShot: full.file,
   }
+
+  // **더 나쁜 갈래**: 그 상태에서 pane 이 죽으면? 화면은 여전히 옛 pane 것인데 죽음 이름표가
+  // 붙는다 — 엉뚱한 화면에 붙은 이름표다 (2회차 리뷰 G5). 이름표가 그 사실을 말하는지 본다.
+  await request('pane.close', { pane_id: otherPane }).catch(() => {})
+  await sleep(3000)
+  const dead = (await app.state()).state.terminal
+  out.deathWhileNeverAttached = {
+    note: '한 번도 못 붙은 pane 이 죽었을 때 이름표가 정직한가',
+    alive: dead.alive,
+    deadReason: dead.deadReason,
+    saysScreenIsNotThisPane: String(dead.deadReason ?? '').includes('이 pane 의 것이 아니다'),
+    shot: (await app.termShot('h2-forever-dead')).file,
+  }
+  console.log('H2 영구실패·사망', JSON.stringify({ ...out.deathWhileNeverAttached, shot: undefined }))
   console.log('H2 영구실패', JSON.stringify({ ...out, shot: undefined, fullShot: undefined }))
   await app.stop()
   return out

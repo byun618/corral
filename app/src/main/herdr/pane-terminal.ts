@@ -149,6 +149,31 @@ function injectedAttachFailure(generation: number): boolean {
 }
 
 /**
+ * **`pane.get` 을 n 번 실패시킨다** — G1 의 재현 스위치 (`CORRAL_INJECT_PANE_GET_FAIL=<n>`).
+ *
+ * 씨앗 상한(`max_offset_from_bottom`)은 이 호출이 준다. 2회차 리뷰가 짚은 자리는 *"이 호출이
+ * 실패했을 때 무엇을 상한으로 쓰는가"* 였는데, 1차 측정에는 `pane.get` 이 실패한 런이 **한 건도
+ * 없어서**(`term.grid.pane_get_failed` 0건) 그 갈래를 아무도 안 밟았다. 실패를 만들 수 있어야
+ * "상한을 모를 때 보수적으로 간다"를 재고, 회귀 검사가 실제로 문다.
+ *
+ * 붙기 주입과 같은 모양이다 — 세대마다 예산이 다시 찬다.
+ */
+let paneGetFailBudget = 0
+let paneGetFailGeneration = -1
+
+function injectedPaneGetFailure(generation: number): boolean {
+  const want = Number(process.env.CORRAL_INJECT_PANE_GET_FAIL)
+  if (!Number.isFinite(want) || want <= 0) return false
+  if (paneGetFailGeneration !== generation) {
+    paneGetFailGeneration = generation
+    paneGetFailBudget = want
+  }
+  if (paneGetFailBudget <= 0) return false
+  paneGetFailBudget -= 1
+  return true
+}
+
+/**
  * 화면이 그대로여도 프레임을 보낸다 — T3 계측 스위치.
  *
  * 평시에는 같은 스냅샷이면 프레임을 안 보낸다(유휴 비용 0). 그런데 기준 T3 은 **"정지 화면에
@@ -387,7 +412,13 @@ export class PaneTerminal {
   private die(reason: string): void {
     if (!this.alive) return
     this.alive = false
-    this.deadReason = reason
+    // **한 번도 못 붙은 채 죽었으면 그 사실을 이름표에 적는다** (2회차 리뷰 G5 의 더 나쁜 갈래).
+    // 그 상태의 화면은 이전 pane 의 것이라, 그냥 "이 pane 이 죽었다"만 씌우면 **엉뚱한 화면에
+    // 사망 이름표**가 붙는다. 죽음 표시가 붙기 실패 표시를 덮으므로 여기서 한 문장 얹는다.
+    this.deadReason =
+      this.attachedGeneration === this.generation
+        ? reason
+        : `${reason} · 이 pane 의 화면은 한 번도 못 읽었다 (아래 화면은 이 pane 의 것이 아니다)`
     if (this.heartbeat) clearTimeout(this.heartbeat)
     this.heartbeat = null
     log('term.dead', { paneId: this.target?.paneId ?? null, reason })
@@ -577,6 +608,7 @@ export class PaneTerminal {
     let linesAbove: number | null = null
     let layoutCols: number | null = null
     try {
+      if (injectedPaneGetFailure(this.generation)) throw new Error('주입된 pane.get 실패 (CORRAL_INJECT_PANE_GET_FAIL)')
       const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
       const pane = isRecord(info) ? readRecord(info, 'pane') : null
       const scroll = pane === null ? null : readRecord(pane, 'scroll')

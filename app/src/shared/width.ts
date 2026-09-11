@@ -50,7 +50,13 @@ export function clusterWidth(cluster: string): number {
   if (cluster.includes('\u{fe0e}')) return 1
   if (cluster.includes('\u{200d}') || cluster.includes('\u{fe0f}')) return 2
   // 지역표시자는 **쌍일 때만** 국기 한 글자다. 홀로 있는 한 짝은 UAX #11 로 N(1칸)이고
-  // `wcwidth` 도 1을 준다 — 쌍으로 가정하면 빈 열이 하나 생긴다 (2회차 리뷰 grok 지적).
+  // **렌더러(xterm.js)도 1칸에 그린다** — 쌍으로 가정하면 빈 열이 하나 생긴다.
+  //
+  // 여기서 따르는 것은 오라클이 아니라 **렌더러**다. `wcwidth` 는 이 자리에서 2 를 준다
+  // (`13-m1-width.json` → `explainedDisagreements` 의 `🇰` oracle 2 / shipping 1,
+  // `11-t7-width.json` → `herdrWidths.loneRI` 2). 폭 표의 쓸모는 "우리가 그리는 칸 수"를
+  // 맞히는 것이고, 오라클과 렌더러가 갈리면 렌더러가 이긴다.
+  // (2회차 리뷰 grok 지적 · 주석의 `wcwidth` 오기는 3회차 리뷰 N5 에서 정정)
   if (isRegionalIndicator(first)) return countRegionalIndicators(cluster) >= 2 ? 2 : 1
   return isWide(first) ? 2 : 1
 }

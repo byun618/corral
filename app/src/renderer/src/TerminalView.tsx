@@ -242,6 +242,10 @@ export function TerminalView({ state, title, subtitle }: Props): React.JSX.Eleme
         {state.seededLines !== null && <span className="term-grid">history {state.seededLines}</span>}
         {dead && <em className="tag tag-stopped">{state.deadReason}</em>}
         {attachFailed !== null && <em className="tag tag-stopped">붙기 실패</em>}
+        {/* 붙은 뒤 읽기가 끊긴 화면 — 덮지 않는다. 이 pane 의 화면이 맞고 낡았을 뿐이다 (N2) */}
+        {!dead && attachFailed === null && state.staleScreen !== null && (
+          <em className="tag tag-stopped">{state.staleScreen}</em>
+        )}
       </div>
       {/* 죽은 pane 은 마지막 화면을 그대로 두되 흐리게 덮는다 — 지우면 무엇이 죽었는지 못 본다 */}
       <div ref={boxRef} className={dead || attachFailed !== null ? 'term-box term-box-dead' : 'term-box'}>

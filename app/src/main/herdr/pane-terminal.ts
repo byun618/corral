@@ -37,7 +37,13 @@ import type {
   TerminalState,
 } from '../../shared/types.js'
 import { displayWidth } from '../../shared/width.js'
-import { buildScreenFrame, buildScrollbackSeed, historyAbove, splitRows } from '../../shared/frame.js'
+import {
+  buildScreenFrame,
+  buildScrollbackSeed,
+  historyAbove,
+  splitRows,
+  visibleRowCount,
+} from '../../shared/frame.js'
 import { log } from '../log.js'
 import { request } from './request.js'
 import { isRecord, readNumber, readRecord, readString, type PushFrame } from './protocol.js'
@@ -139,17 +145,70 @@ let attachFailGeneration = -1
 function injectedAttachFailure(generation: number): boolean {
   const want = Number(process.env.CORRAL_INJECT_ATTACH_FAIL)
   if (!Number.isFinite(want) || want <= 0) return false
-  // **처음 몇 세대는 성공시킨다** (`CORRAL_INJECT_ATTACH_FAIL_SKIP=<n>`). G5 가 재려는 화면은
-  // *이전 pane 이 그려져 있는데 새 pane 을 못 읽는* 상태다 — 첫 붙기부터 실패시키면 화면이
-  // 비어 있어 그 상황이 안 만들어진다 (드라이런에서 `oldPaneShownFirst: false` 로 드러났다).
-  const skip = Number(process.env.CORRAL_INJECT_ATTACH_FAIL_SKIP)
-  if (Number.isFinite(skip) && skip > 0 && generation <= skip) return false
+  if (skipsAttachInjection(generation)) return false
   if (attachFailGeneration !== generation) {
     attachFailGeneration = generation
     attachFailBudget = want
   }
   if (attachFailBudget <= 0) return false
   attachFailBudget -= 1
+  return true
+}
+
+/**
+ * **처음 n 세대는 붙기 주입을 건너뛴다** (`CORRAL_INJECT_ATTACH_FAIL_SKIP=<n>`).
+ *
+ * G5 가 재려는 화면은 *이전 pane 이 그려져 있는데 새 pane 을 못 읽는* 상태다 — 첫 붙기부터
+ * 망가뜨리면 화면이 비어 있어 그 상황이 안 만들어진다 (드라이런에서 `oldPaneShownFirst: false`
+ * 로 드러났다). 실패 주입과 매달림 주입이 같은 화면을 필요로 하므로 스위치 하나를 같이 쓴다.
+ */
+function skipsAttachInjection(generation: number): boolean {
+  const skip = Number(process.env.CORRAL_INJECT_ATTACH_FAIL_SKIP)
+  return Number.isFinite(skip) && skip > 0 && generation <= skip
+}
+
+/**
+ * **붙기의 첫 읽기를 n ms 동안 매달아 둔다** — 3회차 리뷰 H2 의 재현 스위치
+ * (`CORRAL_INJECT_ATTACH_HANG_MS=<ms>`).
+ *
+ * `CORRAL_INJECT_ATTACH_FAIL` 은 **즉시 throw** 하는 fast-fail 이라, 실패가 `catch` 로
+ * 들어오는 시각과 시도를 시작한 시각이 사실상 같다. 그래서 시계를 `catch` 에 두어도 값이
+ * 맞아 보였다 — 2회차 원자료의 `forever.noticeMs: 2316` 이 그 값이다. 진짜 장애의 모양은
+ * 다르다: 요청이 **응답 없이 매달리면** `pane.read` 타임아웃 8초 동안 `catch` 가 안 돌고,
+ * 그동안은 아무 표시도 없다 (codex 지적). 이 스위치가 그 갈래를 만든다.
+ *
+ * 세대당 한 번만 매달고 그 뒤에는 정상으로 붙는다 — 표시가 **뜨고 다시 걷히는 것**까지
+ * 한 런에서 재야 "정직해졌다"가 증명된다.
+ */
+const attachHangSpent = new Set<number>()
+
+function injectedAttachHangMs(generation: number): number {
+  const want = Number(process.env.CORRAL_INJECT_ATTACH_HANG_MS)
+  if (!Number.isFinite(want) || want <= 0) return 0
+  if (skipsAttachInjection(generation)) return 0
+  if (attachHangSpent.has(generation)) return 0
+  attachHangSpent.add(generation)
+  return want
+}
+
+/**
+ * **붙은 뒤의 읽기를 n 번 실패시킨다** — 3회차 리뷰 N2 의 재현 스위치
+ * (`CORRAL_INJECT_READ_FAIL=<n>`).
+ *
+ * 붙기 실패와 다른 갈래다. 한 번 붙으면 `readOnce` 가 `bootstrap` 을 다시 안 부르므로 그 뒤의
+ * 실패는 `term.read.failed` 로만 쌓이고 화면은 **정지한 과거**가 된다 — `alive` 는 true 이고
+ * 2회차까지는 아무 표시도 없었다. 예산은 프로세스 전체에 n 번이라, 표시가 **켜졌다가 다시
+ * 꺼지는 것**까지 한 런에서 잰다.
+ */
+let readFailBudget: number | null = null
+
+function injectedReadFailure(): boolean {
+  if (readFailBudget === null) {
+    const want = Number(process.env.CORRAL_INJECT_READ_FAIL)
+    readFailBudget = Number.isFinite(want) && want > 0 ? want : 0
+  }
+  if (readFailBudget <= 0) return false
+  readFailBudget -= 1
   return true
 }
 
@@ -210,6 +269,14 @@ export class PaneTerminal {
   private seededLines: number | null = null
   private lastReadMs: number | null = null
   private lastFrameAt: number | null = null
+  /**
+   * **이 pane 의 화면이 마지막으로 진실이었다고 확인된 시각** — 읽기가 성공한 때다.
+   *
+   * `lastFrameAt` 이 아니다. 화면이 그대로면 프레임을 안 보내므로(`term.read.unchanged`)
+   * 조용한 pane 의 `lastFrameAt` 은 멀쩡한 상태에서도 늙는다 — 그걸 신선도로 쓰면 유휴
+   * 터미널마다 경고가 뜬다. 읽기는 심장박동마다 도므로 성공 시각이 정직한 시계다.
+   */
+  private lastReadAt: number | null = null
   private frames = 0
   private reads = 0
   private gridCheckedAt = 0
@@ -228,8 +295,15 @@ export class PaneTerminal {
   private attachedGeneration: number | null = null
   /** 세대마다 한 번만 쓰는 즉시 재시도 티켓. 없으면 심장박동이 맡는다. */
   private attachRetry = false
-  /** 이 세대에서 붙기가 처음 실패한 시각. 성공하면 null 로 돌아간다 (G5). */
-  private attachFailedAt: number | null = null
+  /**
+   * **이 세대의 붙기를 처음 시도한 시각.** 성공하면 null 로 돌아간다 (3회차 리뷰 H2).
+   *
+   * 2회차까지는 이 시계가 `catch` 안에 있었다 — *실패가 돌아온 시각*이다. 그러면 요청이
+   * 응답 없이 매달리는 동안은 `null` 이라 아무 표시도 안 뜨고, `pane.read` 타임아웃 8초가
+   * 끝난 **뒤에야** 약속 창을 다시 센다. 사용자가 보는 것은 그 10초 내내 "옛 pane 화면 +
+   * 새 pane 헤더"다. 잃은 것을 세는 시계는 잃기 시작한 때부터 돌아야 한다.
+   */
+  private attachStartedAt: number | null = null
   /** 이 세대의 연속 붙기 실패 횟수 (G5 표시의 근거값). */
   private attachFailures = 0
   /** 이 터미널이 **한 번이라도** 화면을 그린 적 있나. 실패 표시의 문구가 갈린다 (G5). */
@@ -263,30 +337,68 @@ export class PaneTerminal {
       reads: this.reads,
       inputBlocked: this.inputBlocked(),
       attachFailed: this.attachFailureNotice(),
+      staleScreen: this.staleScreenNotice(),
     }
   }
 
   /**
-   * 붙기가 **약속 창을 넘겨서도 계속 실패**하고 있나 (2회차 리뷰 G5).
+   * # 신선도 규칙 하나 (3회차 리뷰 H1·H2·N2)
    *
-   * 실패가 이어지는 동안 `alive` 는 true 이고 렌더러에는 이 pane 의 화면이 한 장도 안 갔다 —
-   * 즉 화면에 남은 것은 **이전 pane** 것이다. 그대로 두면 1차 H2 가 지적한 그 화면이고,
-   * 그 상태에서 pane 이 죽으면 엉뚱한 화면에 죽음 이름표가 붙는다.
+   * **시계는 그 pane 의 화면이 마지막으로 진실이었다고 확인된 시각에 둔다.**
+   * 붙기 전에는 아직 한 번도 확인 못 했으므로 **시도를 시작한 시각**이고,
+   * 붙은 뒤에는 **마지막으로 성공한 읽기**다. 표시의 무게는 둘로 갈린다:
    *
-   * 약속 창(`recoveryWindowMs`)까지는 조용히 다시 붙는다 — 한 번 실패하고 457ms 만에 복구하는
-   * 길(H2 실측)에까지 경고를 띄우면 평시 화면이 시끄러워진다. 넘어가면 그때 정직하게 알린다.
+   * | | 아래에 그려진 것 | 표시 |
+   * | --- | --- | --- |
+   * | 못 붙음 | **다른 pane** 의 화면 (렌더러가 새 세대의 `screen` 을 버린다) | 화면을 덮는다 |
+   * | 붙은 뒤 못 읽음 | 이 pane 의 화면. 다만 **그때 것**이다 | 머리말 한 칸 |
+   *
+   * 덮기와 이름표를 나눈 이유: 앞의 것은 *아래 화면이 거짓말*이고 뒤의 것은 *아래 화면이 낡은
+   * 진실*이다. 낡은 진실을 통째로 가리면 사용자가 마지막으로 본 것까지 잃는다.
+   *
+   * 2회차까지 시계가 `catch` 안에 있었던 대가는 `attachStartedAt` 주석에 적었다.
    */
   private attachFailureNotice(): string | null {
     if (this.target === null || this.attachedGeneration === this.generation) return null
-    const since = this.attachFailedAt
+    const since = this.attachStartedAt
     if (since === null) return null
     const elapsed = Date.now() - since
+    // 약속 창(`recoveryWindowMs`)까지는 조용히 다시 붙는다 — 한 번 실패하고 457ms 만에
+    // 복구하는 길(H2 실측)에까지 경고를 띄우면 평시 화면이 시끄러워진다.
     if (elapsed <= this.recoveryWindowMs()) return null
     const seconds = Math.round(elapsed / 1000)
-    const head = `이 pane 의 화면을 못 읽었다 — ${seconds}초째 다시 붙는 중 (실패 ${this.attachFailures}회)`
+    // 매달려 있는 동안은 `attachFailures` 가 0 이다 — 그때 "실패 0회"라고 적으면 거짓이라,
+    // 실패가 실제로 돌아온 뒤에만 횟수를 붙인다.
+    const head =
+      this.attachFailures > 0
+        ? `이 pane 의 화면을 못 읽었다 — ${seconds}초째 다시 붙는 중 (실패 ${this.attachFailures}회)`
+        : `이 pane 의 화면을 못 읽었다 — ${seconds}초째 응답이 없다`
     // 아래에 뭔가 그려져 있으면 그것이 **다른 pane 의 것**이라는 말이 필요하고,
     // 한 번도 못 그렸으면 그런 말은 거짓이다.
     return this.everAttached ? `${head}. 아래 화면은 이 pane 의 것이 아니다` : `${head}. 아직 아무 화면도 못 그렸다`
+  }
+
+  /**
+   * 붙은 **뒤에** 읽기가 이어서 실패하고 있나 (3회차 리뷰 N2).
+   *
+   * 한 번 붙으면 `readOnce` 가 `bootstrap` 을 다시 안 부르므로 그 뒤의 실패는 전부
+   * `term.read.failed` 로만 쌓이고 화면은 **정지한 과거**가 된다. `alive` 는 true 라
+   * 아무 표시도 없었다 — "못 읽는 상태가 이어진다"는 사실은 붙기 전후에 같은 층에서 다뤄야
+   * 말이 맞는다.
+   *
+   * 문턱은 **두 주기**다(`HEARTBEAT_IDLE_MS + recoveryWindowMs` ≈ 4.1초). 한 주기로 잡으면
+   * 읽기 한 번이 늦기만 해도 켜진다. 대가는 반대쪽에 있다: 읽기가 타임아웃(8초)으로 죽으면
+   * 그 한 번만으로 10초가 지나 이름표가 잠깐 켜진다 — 그건 오탐이 아니라 사실이고,
+   * 다음 성공에서 곧바로 꺼진다.
+   */
+  private staleScreenNotice(): string | null {
+    if (this.target === null || !this.alive) return null
+    if (this.attachedGeneration !== this.generation) return null
+    const since = this.lastReadAt
+    if (since === null) return null
+    const elapsed = Date.now() - since
+    if (elapsed <= HEARTBEAT_IDLE_MS + this.recoveryWindowMs()) return null
+    return `${Math.round(elapsed / 1000)}초째 못 읽음`
   }
 
   /**
@@ -332,7 +444,7 @@ export class PaneTerminal {
     this.reading = false
     this.attachedGeneration = null
     this.attachRetry = true
-    this.attachFailedAt = null
+    this.attachStartedAt = null
     this.attachFailures = 0
     this.apiRows = null
     this.apiLayoutCols = null
@@ -340,8 +452,14 @@ export class PaneTerminal {
     this.frames = 0
     this.reads = 0
     this.lastReadMs = null
+    this.lastReadAt = null
     this.lastFrameAt = null
     if (target === null) {
+      // **선택을 비우면 렌더러가 터미널을 언마운트한다** (`App.tsx` 의
+      // `selectedPane === null && !showsDeadTerminal`) — 아래에 남는 화면이 없다. 그러니
+      // 다음 붙기가 실패했을 때 "아래 화면은 이 pane 의 것이 아니다"는 거짓말이 된다
+      // (3회차 리뷰 N6). pane → pane 직행에서는 옛 화면이 그대로 남으므로 여기서만 지운다.
+      this.everAttached = false
       log('term.detach', {})
       this.hooks.onChange()
       return
@@ -456,6 +574,11 @@ export class PaneTerminal {
     this.heartbeat = setTimeout(() => {
       this.heartbeat = null
       this.markDirty('heartbeat')
+      // **요청이 매달려 있으면 `markDirty` 는 접히기만 한다** — 그 사이 상태가 한 번도 안
+      // 흐르므로, 시계를 시도 시작에 옮겨도 렌더러는 그 사실을 모른다 (3회차 리뷰 H2).
+      // 신선도 표시는 시간이 지나면서 **혼자 켜지는** 값이라 여기서 흘려 준다.
+      // 평시 비용은 0 이다 — 표시가 null 이면 아무것도 안 한다.
+      if (this.attachFailureNotice() !== null || this.staleScreenNotice() !== null) this.hooks.onChange()
       this.scheduleHeartbeat()
     }, delay)
   }
@@ -544,7 +667,8 @@ export class PaneTerminal {
 
     let linesAbove: number | null = null
     if (force || this.grid === null || Date.now() - this.gridCheckedAt > GRID_REFRESH_MS) {
-      const api = await this.refreshGridFromApi()
+      // 붙기에서는 `pane.get` 이 실패하면 **한 번 다시 묻는다** (아래 `refreshGridFromApi` 주석).
+      const api = await this.refreshGridFromApi({ retryPaneGet: force })
       // **여기서 세대를 본다.** 아래 줄들은 인스턴스 상태를 쓴다 — 그 사이에 pane 이 바뀌었다면
       // 지금 손에 든 값은 **옛 pane 의 것**이라 새 세대의 격자를 오염시킨다 (2회차 리뷰 grok).
       if (generation !== this.generation) {
@@ -598,7 +722,18 @@ export class PaneTerminal {
     const layoutCols = this.apiLayoutCols
     const cols = Math.max(this.observedCols, 80)
     const source: PaneGrid['source'] = this.observedCols >= 80 ? 'observed' : 'default'
-    const grid = { cols, rows: this.apiRows ?? 24, source, layoutCols, observedCols: this.observedCols }
+    // **행 수를 모를 때 24 로 굳히지 않는다** (3회차 리뷰 H1).
+    //
+    // 행 수와 씨앗 상한은 `pane.get` **한 번**에서 같이 나온다. 그 호출이 실패하면 둘 다
+    // null 이고, `attach()` 가 `apiRows` 를 방금 되돌려 놨으므로 예전 코드는 상수 24 로
+    // 떨어졌다. 그러면 `buildScreenFrame` 이 뒤에서 24줄만 남겨 **위쪽 행이 통째로 안
+    // 그려진다** — 이 세션 기준(39행)이면 15행이 사라진다. 실패가 이어지면 그 붙기 내내다.
+    //
+    // 대체값은 **스냅샷 자신**이다. `pane.read({source:'visible'})` 가 뷰포트 그대로를 주므로
+    // 그 줄 수가 곧 행 수다 — 상수보다 정확하고, 왕복이 더 들지 않는다. 그래서 장애가
+    // 무한히 이어져도 추가 비용이 0 이다(아래 재질문은 붙기에서 한 번뿐이다).
+    const rows = this.apiRows ?? Math.max(visibleRowCount(snapshot), 1)
+    const grid = { cols, rows, source, layoutCols, observedCols: this.observedCols }
     return { grid, linesAbove }
   }
 
@@ -608,25 +743,41 @@ export class PaneTerminal {
    * **읽은 값을 인스턴스에 바로 쓰지 않고 돌려준다** (2회차 리뷰 G1 — codex 안). 쓰는 쪽이
    * 세대를 확인한 뒤 반영해야 옛 pane 의 값이 새 pane 에 섞이지 않고, 씨앗 상한은
    * "이번 붙기가 방금 읽은 값"만 쓰게 된다. 실패하면 그 자리는 `null` 이다 — 낡은 값이 아니라.
+   *
+   * **붙기에서는 `pane.get` 을 한 번 다시 묻는다** (`retryPaneGet` — 3회차 리뷰 H1).
+   * 씨앗 상한은 이 호출에만 있고, 상한을 모르면 그 붙기의 스크롤백은 0줄이다. 그런데 그
+   * 붙기 **안에는 회복 수단이 없다** — 심장박동도 `relive` 도 이미 붙은 세대에 씨앗을 다시
+   * 안 심는다(회복은 재선택뿐). 한 번의 깜빡임에 과거를 통째로 미루는 것은 비싸다.
+   *
+   * **무한 장애의 비용**: 붙기마다 왕복 1회가 더 붙고(붙기는 hot path 가 아니다), 붙은 뒤의
+   * 5초 갱신에는 재질문이 없어 **정상 운전 비용은 0** 이다. `gridCheckedAt` 은 실패해도
+   * 그대로 찍는다 — 안 찍어 매 읽기마다 다시 묻는 쪽은 장애가 길수록 비싸지는데, 행 수
+   * 대체값이 위에서 이미 정직해졌으므로 그 값을 살 이유가 없다.
    */
-  private async refreshGridFromApi(): Promise<{ rows: number | null; linesAbove: number | null; layoutCols: number | null }> {
+  private async refreshGridFromApi(
+    input: { retryPaneGet: boolean } = { retryPaneGet: false },
+  ): Promise<{ rows: number | null; linesAbove: number | null; layoutCols: number | null }> {
     const target = this.target
     const empty = { rows: null, linesAbove: null, layoutCols: null }
     if (target === null) return empty
     let rows: number | null = null
     let linesAbove: number | null = null
     let layoutCols: number | null = null
-    try {
-      if (injectedPaneGetFailure()) throw new Error('주입된 pane.get 실패 (CORRAL_INJECT_PANE_GET_FAIL)')
-      const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
-      const pane = isRecord(info) ? readRecord(info, 'pane') : null
-      const scroll = pane === null ? null : readRecord(pane, 'scroll')
-      if (scroll !== null) {
-        rows = readNumber(scroll, 'viewport_rows')
-        linesAbove = readNumber(scroll, 'max_offset_from_bottom')
+    const attempts = input.retryPaneGet ? 2 : 1
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        if (injectedPaneGetFailure()) throw new Error('주입된 pane.get 실패 (CORRAL_INJECT_PANE_GET_FAIL)')
+        const info = await this.call('pane.get', { pane_id: target.paneId }, 'grid')
+        const pane = isRecord(info) ? readRecord(info, 'pane') : null
+        const scroll = pane === null ? null : readRecord(pane, 'scroll')
+        if (scroll !== null) {
+          rows = readNumber(scroll, 'viewport_rows')
+          linesAbove = readNumber(scroll, 'max_offset_from_bottom')
+        }
+        break
+      } catch (error) {
+        log('term.grid.pane_get_failed', { error: String(error), attempt, attempts })
       }
-    } catch (error) {
-      log('term.grid.pane_get_failed', { error: String(error) })
     }
     try {
       const layout = await this.call('pane.layout', { pane_id: target.paneId }, 'grid')
@@ -650,11 +801,24 @@ export class PaneTerminal {
   private async bootstrap(generation: number): Promise<void> {
     const target = this.target
     if (target === null) return
-    // **같은 세대에 붙기가 둘 돌지 않게 한다** (2회차 리뷰 G2). 호출자가 셋이고 그중
-    // `onLinkLive` 는 아무 가드가 없었다 — 아직 못 붙은 동안(심장박동마다 `readOnce` 가
-    // 붙기를 다시 부르는 구간)에 링크가 살아나면 둘이 겹쳐 같은 세대로 `attach` 프레임이
-    // 두 장 나가고, 렌더러는 세대가 같아 `reset()` 을 안 타 **씨앗이 한 벌 더 쌓인다**.
-    // 여기서 접어 두면 `finally` 가 한 번 더 읽어 준다.
+    // **같은 세대에 붙기가 둘 돌지 않게 한다** (2회차 리뷰 G2). 같은 세대로 `attach` 프레임이
+    // 두 장 나가면 렌더러는 세대가 같아 `reset()` 을 안 타고 **씨앗이 한 벌 더 쌓인다**.
+    //
+    // ## 이 가드는 지금 코드에서 **안 문다** (3회차 리뷰 N1 — claude 리뷰어)
+    //
+    // 호출자가 둘뿐이고 둘 다 진입 직전에 같은 플래그를 **동기로** 처리한다. `attach()` 는
+    // `reading = false` 를 깐 다음, `readOnce()` 는 `if (this.reading) return` 을 지난 다음
+    // 부르고, 사이에 `await` 가 없다. 그래서 `term.attach.busy` 는 한 번도 안 찍혔고
+    // **그 0 은 이 가드가 도는 증거가 아니다** — 그 사실을 근거 칸에서 뺐다 (FIXED3 §3).
+    // 남겨 두는 것은 침입 탐지용이다: 세 번째 호출자나 그 사이의 `await` 가 생기면 그때
+    // 겹침 대신 로그가 나온다.
+    //
+    // ## `attach()` 의 `reading = false` 와 **한 몸**이다
+    //
+    // 옛 pane 의 요청이 나가 있는 채로 새 pane 을 고르면 그 응답의 `finally` 는 세대가 달라
+    // 플래그를 안 푼다. `attach()` 가 풀어 주지 않으면 `reading` 이 **영영 true** 로 굳고,
+    // 새 붙기는 매번 여기 걸려 접히고 심장박동도 접히기만 해서 **그 pane 은 다시 못 붙는다**.
+    // 저쪽을 "남의 in-flight 플래그를 푸는 건 위험하다"며 지우려면 이 가드도 같이 봐야 한다.
     if (this.reading) {
       log('term.attach.busy', { paneId: target.paneId, generation })
       this.dirty = this.dirty ?? 'attach'
@@ -662,6 +826,10 @@ export class PaneTerminal {
     }
     this.reading = true
     const startedAt = Date.now()
+    // **시계는 여기서 시작한다** (3회차 리뷰 H2). `??` 인 이유: 같은 세대에서 붙기를 여러 번
+    // 시도해도 시계는 **처음 시도**부터 한 번만 돈다. 시도마다 되돌리면 실패가 빠를수록
+    // 경과가 영영 0 에 붙어 표시가 안 뜬다 (fast-fail 주입 팔이 정확히 그 모양이다).
+    this.attachStartedAt = this.attachStartedAt ?? startedAt
     // 세대가 바뀌었으면 여기서 버린다. **버렸다는 사실을 로그에 남긴다** — R4 는
     // "A 의 늦은 응답이 B 화면에 안 부어졌다"를 증명해야 하는데, 조용히 return 하면
     // 화면이 멀쩡한 것이 세대 가드 덕인지 애초에 경합이 없었던 것인지 구분이 안 된다.
@@ -672,6 +840,13 @@ export class PaneTerminal {
     }
     try {
       if (injectedAttachFailure(generation)) throw new Error('주입된 붙기 실패 (CORRAL_INJECT_ATTACH_FAIL)')
+      // **응답 없이 매달리는 갈래** — throw 가 아니라 시간만 잡아먹는다 (3회차 리뷰 H2).
+      const hangMs = injectedAttachHangMs(generation)
+      if (hangMs > 0) {
+        log('term.attach.hang', { paneId: target.paneId, generation, ms: hangMs })
+        await sleep(hangMs)
+        if (stale('attach.hang')) return
+      }
       const visible = await this.readSnapshot('visible', 'attach')
       if (stale('attach.visible')) return
       const resolved = await this.resolveGrid({ snapshot: visible.text, generation, force: true })
@@ -727,12 +902,18 @@ export class PaneTerminal {
         })
       } catch (error) {
         log('term.scrollback.failed', { paneId: target.paneId, error: String(error) })
+        // **여기에도 세대 검사가 필요하다** (3회차 리뷰 N3). `recent` 읽기가 throw 하는 사이
+        // pane 이 바뀌면 아래 `emit` 이 **옛 pane 의 `visible.text`** 를 현재 paneId·세대로
+        // 찍어 보낸다 — 렌더러에는 "새 pane 의 attach 프레임"으로 들어간다. LIFE-344 R3 과
+        // 같은 자리다. 성공 경로만 `stale('attach.scrollback')` 를 타고 있었다.
+        if (stale('attach.scrollback.failed')) return
       }
       this.seededLines = seededLines
 
       this.lastSnapshot = visible.text
       this.lastChangeAt = Date.now()
       this.lastReadMs = Date.now() - startedAt
+      this.lastReadAt = Date.now()
       this.reads += 1
       this.emit({
         kind: 'attach',
@@ -744,7 +925,7 @@ export class PaneTerminal {
       // **여기까지 와야 붙은 것이다.** 늦은 세대 검사들을 다 지난 뒤에 표시한다.
       this.attachedGeneration = generation
       this.everAttached = true
-      this.attachFailedAt = null
+      this.attachStartedAt = null
       this.attachFailures = 0
     } catch (error) {
       // **여기서 끝내면 옛 pane 의 화면이 영영 남는다** (판정 H2). 렌더러는 새 세대의
@@ -756,8 +937,7 @@ export class PaneTerminal {
         // 실패가 **약속 창을 넘어 이어지면** 화면을 정직하게 덮는다 (2회차 리뷰 G5).
         // 여기서 세고, 판단은 `attachFailureNotice()` 가 한다 — 넘어간 뒤에도 계속 다시 붙는다.
         this.attachFailures += 1
-        this.attachFailedAt = this.attachFailedAt ?? Date.now()
-        const elapsed = Date.now() - this.attachFailedAt
+        const elapsed = Date.now() - (this.attachStartedAt ?? Date.now())
         if (elapsed > this.recoveryWindowMs()) {
           log('term.attach.broken', { paneId: target.paneId, generation, failures: this.attachFailures, elapsed })
         }
@@ -797,6 +977,7 @@ export class PaneTerminal {
     this.reading = true
     const startedAt = Date.now()
     try {
+      if (injectedReadFailure()) throw new Error('주입된 읽기 실패 (CORRAL_INJECT_READ_FAIL)')
       const visible = await this.readSnapshot('visible', reason)
       // **세대 검사가 여기 있는 이유**: 이 아래부터 렌더러 화면을 건드린다. 느린 pane A 의
       // 응답이 B 를 고른 뒤 돌아오면 B 화면에 A 가 부어진다 (LIFE-344 R3 와 같은 자리).
@@ -806,6 +987,9 @@ export class PaneTerminal {
       }
       this.reads += 1
       this.lastReadMs = Date.now() - startedAt
+      // **이 pane 의 화면을 방금 확인했다.** 신선도 시계가 여기서 되돌아간다 (N2) —
+      // 아래 `emit` 이 아니라 여기다. 화면이 그대로면 프레임은 안 나가지만 확인은 된 것이다.
+      this.lastReadAt = Date.now()
       const resolved = await this.resolveGrid({ snapshot: visible.text, generation })
       if (resolved === null || generation !== this.generation) return
       const grid = resolved.grid

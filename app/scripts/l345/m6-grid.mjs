@@ -401,12 +401,21 @@ const out = {}
   // 알트 판에서 닻이 성공했는데도 `found` 가 32줄이었다(`_runs/agent-claude`). 다음 붙기에서
   // 다시 심으면 되는 일이라, 모를 때는 0 이 맞다.
   //
-  // 두 갈래를 다 잰다 — ⓐ 흐르는 알트(0줄이 정답) ⓑ 일반 판(이 규칙이 **진짜 과거도** 미룬다는
-  // 것을 숨기지 않고 적는다 — 다음 붙기에 돌아온다).
+  // 세 갈래를 잰다 — ⓐ 흐르는 알트(0줄이 정답) ⓑ 일반 판(이 규칙이 **진짜 과거도** 미룬다는
+  // 것을 숨기지 않고 적는다 — 다음 붙기에 돌아온다) ⓒ 한 번만 실패할 때 붙기 안의 재질문이
+  // 그 손해를 없애는가 (3회차 리뷰 H1).
+  //
+  // **주입 예산이 2 인 이유**: 3회차 수정으로 붙기가 `pane.get` 을 한 번 다시 묻는다. 예산이
+  // 1 이면 재질문이 성공해 상한을 알게 되고, 그러면 이 팔은 "상한을 모를 때의 규칙"이 아니라
+  // 재질문을 재게 된다 — 검사가 겨냥한 곳을 안 무는, 이 일감이 계속 경계해 온 그 모양이다.
+  //
+  // **`grid` 를 같이 적는다** (3회차 리뷰 H1): `pane.get` 이 실패하면 행 수도 같이 잃는데,
+  // 2회차까지는 그 자리에 상수 24 가 들어가 위쪽 15행이 안 그려졌다. 하네스는 `state` 를
+  // 이미 들고 있었으므로 한 줄이면 남는 값이었다.
   const capUnknown = {}
   {
     // ⓐ 흐르는 알트 화면이 아직 떠 있다. 주입을 켜고 붙는다.
-    const app2 = await startApp({ name: 'cap-alt', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
+    const app2 = await startApp({ name: 'cap-alt', env: { CORRAL_INJECT_PANE_GET_FAIL: '2' } })
     await sleep(1200)
     await app2.selectPane(paneId)
     await sleep(4000)
@@ -414,8 +423,10 @@ const out = {}
     const state2 = (await app2.state()).state.terminal
     const entries2 = app2.entries()
     capUnknown.alt = {
-      note: '움직이는 알트 TUI + pane.get 실패 주입 — 상한을 모르고 닻도 없다. 0줄이 정답이다',
+      note: '움직이는 알트 TUI + pane.get 을 2회(첫 질문 + 붙기 안 재질문) 실패시킨다 — 상한을 모르고 닻도 없다. 0줄이 정답이다',
       paneGetFailedLogs: entries2.filter((entry) => entry.tag === 'term.grid.pane_get_failed').length,
+      // 행 수를 못 읽은 격자. 2회차까지는 여기가 `rows: 24` 였다 (3회차 리뷰 H1).
+      grid: state2.grid,
       cappedLogs: entries2.filter((entry) => entry.tag === 'term.scrollback.capped'),
       seededLines: state2.seededLines,
       baseY: dump2.baseY,
@@ -431,7 +442,11 @@ const out = {}
   await killFixtures()
   await request('pane.send_keys', { pane_id: paneId, keys: ['C-c'] }).catch(() => {})
   await sleep(500)
-  await run(paneId, "printf '\\033[?1049l'; clear", { settleMs: 700 })
+  // **스크롤 영역까지 되돌린다** (`CSI r`). `05-alt-scroll.sh` 가 `DECSTBM` 으로 아래 2행을
+  // 고정 푸터로 잡아 두는데, 알트 판을 나와도 그 설정이 **일반 판에 남는다** — 그러면 다음
+  // 팔의 화면이 21행까지만 차서 "행 수를 모를 때 위쪽 행을 잃는가"를 잴 수가 없다
+  // (드라이런에서 `grid.rows: 21` 로 드러났다. 39행을 채워야 24행 대체값의 손해가 보인다).
+  await run(paneId, "printf '\\033[r\\033[?1049l'; clear", { settleMs: 700 })
 
   {
     // ⓑ 일반 판 — 보수적 규칙의 **대가**를 정직하게 잰다. 상한을 모른 첫 붙기는 0줄이고,
@@ -440,7 +455,7 @@ const out = {}
     // 붙기는 정상 경로를 탄다. 되돌아오면 손해는 "한 번의 붙기에서 과거가 늦게 온다"이고,
     // 그 대가로 알트 판에서 없는 과거를 지어내지 않는다.
     await run(paneId, 'clear; for i in $(seq 1 200); do printf "CAP %03d 줄\n" $i; done', { settleMs: 3000 })
-    const app3 = await startApp({ name: 'cap-normal', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
+    const app3 = await startApp({ name: 'cap-normal', env: { CORRAL_INJECT_PANE_GET_FAIL: '2' } })
     await sleep(1200)
     await app3.selectPane(paneId)
     await sleep(4000)
@@ -453,8 +468,13 @@ const out = {}
       dump3.grid.map((row) => capMarker(row.map((cell) => cell?.ch ?? ' ').join(''))).filter((m) => m !== null),
     )
     capUnknown.normal = {
-      note: '일반 판 + pane.get 실패 주입 — 닻이 있으므로 과거는 살아 있어야 한다',
+      // 2회차 원자료의 이 자리에는 **옛 설계 가정**이 남아 있었다 — "닻이 있으므로 과거는
+      // 살아 있어야 한다". 최종 규칙은 그 반대다: 상한을 모르면 일반 판의 **진짜 과거도**
+      // 그 붙기에서는 0줄이다. 값(`seededLines: 0`)이 처음부터 규칙 쪽이었고 문장만 옛것이라,
+      // 이 JSON 만 나중에 보면 거꾸로 읽혔다 (3회차 리뷰 N4).
+      note: '일반 판 + pane.get 2회 실패 — 닻이 있어도 상한을 모르면 0줄이다. 진짜 과거가 이 붙기에서 미뤄진다 (대가)',
       paneGetFailedLogs: entries3.filter((entry) => entry.tag === 'term.grid.pane_get_failed').length,
+      grid: state3.grid,
       cappedLogs: entries3.filter((entry) => entry.tag === 'term.scrollback.capped'),
       seededLines: state3.seededLines,
       baseY: dump3.baseY,
@@ -477,7 +497,7 @@ const out = {}
       dump4.grid.map((row) => capMarker(row.map((cell) => cell?.ch ?? ' ').join(''))).filter((m) => m !== null),
     )
     capUnknown.normal.reattached = {
-      note: '같은 pane 에 다시 붙는다 — 주입 예산이 다 떨어져 상한을 정상적으로 읽는다',
+      note: '같은 pane 에 다시 붙는다 — 주입 예산(2)이 다 떨어져 상한을 정상적으로 읽는다',
       seededLines: state4.seededLines,
       baseY: dump4.baseY,
       markersInScrollback: inHistory4.size,
@@ -489,6 +509,36 @@ const out = {}
     console.log('T5 상한모름·재붙기', JSON.stringify({ ...capUnknown.normal.reattached, shot: undefined }))
     console.log('T5 상한모름·일반', JSON.stringify({ ...capUnknown.normal, shot: undefined, cappedLogs: capUnknown.normal.cappedLogs.length }))
     await app3.stop()
+  }
+
+  {
+    // ⓒ **한 번만 실패한다** — 붙기 안의 재질문이 그 붙기에서 과거를 살리나 (3회차 리뷰 H1).
+    //
+    // ⓑ 가 보여 준 대가("진짜 과거가 한 붙기 동안 미뤄진다")는 그 붙기 안에 회복 수단이
+    // 없어서 비쌌다 — 심장박동도 `relive` 도 이미 붙은 세대에 씨앗을 다시 안 심는다.
+    // 깜빡임 한 번에 그 값을 치르지 않게 붙기에서만 한 번 다시 묻는다. 여기가 그 증거다.
+    const app5 = await startApp({ name: 'cap-retry', env: { CORRAL_INJECT_PANE_GET_FAIL: '1' } })
+    await sleep(1200)
+    await app5.selectPane(paneId)
+    await sleep(4000)
+    const dump5 = (await app5.dump()).dump
+    const state5 = (await app5.state()).state.terminal
+    const entries5 = app5.entries()
+    const capMarker5 = (line) => line.match(/CAP (\d{3})/)?.[1] ?? null
+    const inHistory5 = new Set(dump5.scrollback.map(capMarker5).filter((m) => m !== null))
+    capUnknown.retryHeals = {
+      note: 'pane.get 을 1회만 실패시킨다 — 붙기 안 재질문이 상한을 되찾아 같은 붙기에서 과거가 산다',
+      paneGetFailedLogs: entries5.filter((entry) => entry.tag === 'term.grid.pane_get_failed').length,
+      seededLines: state5.seededLines,
+      baseY: dump5.baseY,
+      markersInScrollback: inHistory5.size,
+      grid: state5.grid,
+      // 첫 질문은 실패했는데도 상한을 알고 과거를 심었다 = 재질문이 물었다.
+      healedInSameAttach: (state5.seededLines ?? 0) > 0,
+      shot: (await app5.termShot('t5-cap-retry')).file,
+    }
+    console.log('T5 상한모름·재질문', JSON.stringify({ ...capUnknown.retryHeals, shot: undefined }))
+    await app5.stop()
   }
 
   out.t5 = { normal, alt, altFlowing, capUnknown }

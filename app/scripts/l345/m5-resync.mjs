@@ -422,7 +422,12 @@ const out = {}
     },
     linkWentLiveAgain: livedAgain,
     reliveLogs: entries.filter((entry) => entry.tag === 'term.relive').length,
-    attachBusyLogs: entries.filter((entry) => entry.tag === 'term.attach.busy').length,
+    // **이 값은 G2 가 도는 증거가 아니다** (3회차 리뷰 N1). `bootstrap` 의 인플라이트 가드는
+    // 지금 코드에서 안 문다 — 호출자 둘 다 진입 직전에 같은 플래그를 동기로 처리하고 사이에
+    // `await` 가 없다. 그래서 이 0 은 가드가 있든 없든 나온다. **침입 탐지용 0** 으로만 남긴다:
+    // 0 이 아니게 되는 날은 세 번째 호출자가 생겼거나 그 사이에 `await` 가 낀 날이다.
+    // G2 를 받치는 것은 아래 `oneAttachFramePerGeneration` 과 마커 중복 0 이다.
+    attachBusyTripwire: entries.filter((entry) => entry.tag === 'term.attach.busy').length,
     attachFramesByGeneration: byGeneration,
     // 이것이 이번 회차의 통과 조건이다 — 세대마다 한 장.
     oneAttachFramePerGeneration: Object.values(byGeneration).every((count) => count === 1),

@@ -42,9 +42,25 @@ export type ScreenFrameInput = {
  * 각 행은 `CUP → 내용 → SGR 리셋 → EL` 순서다. EL 을 내용 **뒤에** 두는 이유:
  * 앞에 두면 이전 프레임이 남긴 배경색으로 행을 지우게 되고, 색이 있는 화면에서 잔상이 남는다.
  */
-export function buildScreenFrame({ snapshot, rows }: ScreenFrameInput): string {
+/**
+ * 스냅샷 한 장이 **몇 행짜리 화면인가**.
+ *
+ * `pane.read({source:'visible'})` 는 뷰포트 그대로를 준다 — 그래서 이 줄 수가 곧 행 수다.
+ * `pane.get` 이 실패해 `viewport_rows` 를 못 읽었을 때 쓰는 대체값이다 (3회차 리뷰 H1):
+ * 상수 24 를 쓰면 그보다 높은 pane 의 **위쪽 행이 통째로 안 그려진다**.
+ *
+ * `buildScreenFrame` 과 **같은 셈**이어야 한다 — 저쪽이 자를 기준과 이쪽이 셀 기준이 갈리면
+ * 대체값을 써도 한 줄이 잘린다. 그래서 한 함수로 묶는다.
+ */
+export function visibleRowCount(snapshot: string): number {
   const lines = splitRows(snapshot)
   // 마지막 원소가 빈 문자열이면 그건 끝 개행이지 행이 아니다.
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.length
+}
+
+export function buildScreenFrame({ snapshot, rows }: ScreenFrameInput): string {
+  const lines = splitRows(snapshot)
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
   const view = lines.length > rows ? lines.slice(lines.length - rows) : lines
 

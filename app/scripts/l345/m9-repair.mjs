@@ -194,6 +194,163 @@ const forever = await (async () => {
   return out
 })()
 
+// ==========================================================================
+// H2-c — **응답 없이 매달리는 붙기** (3회차 리뷰 H2 · codex)
+// ==========================================================================
+//
+// 2회차의 `forever` 팔은 `CORRAL_INJECT_ATTACH_FAIL` 로 **즉시 throw** 하는 fast-fail 이다.
+// 그 모양에서는 실패가 `catch` 로 들어오는 시각과 시도를 시작한 시각이 사실상 같아서,
+// 시계를 `catch` 에 두어도 값이 맞아 보였다(`noticeMs: 2316`). 진짜 장애는 다르다 —
+// 요청이 매달리면 `pane.read` 타임아웃 8초 동안 `catch` 가 안 돌고 그동안은 아무 표시도 없다.
+// 사용자가 보는 것은 그 10초 내내 "옛 pane 화면 + 새 pane 헤더"다.
+//
+// 3회차 수정은 시계를 **시도 시작**으로 옮겼다. 이 팔이 그 갈래를 실제로 밟는다.
+// **판별자**: 매달림 6초인데 표시가 그보다 **먼저** 뜨면, 그 표시는 `catch` 가 만든 것일 수
+// 없다 (옛 시계로는 6초 + 약속 창 ≈ 8.1초가 하한이다).
+const hang = await (async () => {
+  const hangMs = 6000
+  // **이 팔은 제 pane 을 만든다.** 앞의 `forever` 팔이 죽음 이름표를 재느라 `otherPane` 을
+  // 닫아 버린다 — 그대로 쓰면 매달림이 풀린 뒤의 읽기가 "pane 이 없다"로 실패해
+  // **표시가 걷히는 것을 못 잰다**. 드라이런에서 `recovered: false` 로 드러났다.
+  const hangSplit = await request('pane.split', { pane_id: paneId, direction: 'right' })
+  const hangPane = hangSplit.pane?.pane_id ?? hangSplit.pane_id
+  await sleep(900)
+  await run(hangPane, 'clear; for i in $(seq 1 60); do echo "H2 HANG $i"; done', { settleMs: 2500 })
+  await run(hangPane, `printf '${NEW_MARK}\\n'`, { settleMs: 900 })
+  const app = await startApp({
+    name: 'h2-hang',
+    env: { CORRAL_INJECT_ATTACH_HANG_MS: String(hangMs), CORRAL_INJECT_ATTACH_FAIL_SKIP: '2' },
+  })
+  await sleep(1200)
+  await app.selectPane(paneId)
+  await sleep(6000)
+  const oldShown = (await app.find(OLD_MARK)).found
+  const policy = (await app.policy()).policy
+
+  const at = Date.now()
+  await app.selectPane(hangPane)
+  let noticeMs = null
+  let notice = null
+  let failuresBeforeNotice = null
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    const live = (await app.state()).state.terminal
+    if (live.attachFailed !== null) {
+      noticeMs = Date.now() - at
+      notice = live.attachFailed
+      // **`catch` 가 한 번도 안 돌았는데 표시가 떴다** — 시계가 시도 시작에 있다는 증거다.
+      failuresBeforeNotice = app.entries().filter((entry) => entry.tag === 'term.attach.failed').length
+      break
+    }
+    await sleep(120)
+  }
+
+  // 매달림이 풀리면 정상으로 붙고 표시도 걷힌다 — 켜지는 것만으로는 반쪽이다.
+  let clearedMs = null
+  let newShownMs = null
+  const deadline2 = Date.now() + 20_000
+  while (Date.now() < deadline2) {
+    const live = (await app.state()).state.terminal
+    if (clearedMs === null && live.attachFailed === null && live.paneId === hangPane) clearedMs = Date.now() - at
+    if (newShownMs === null && (await app.find(NEW_MARK)).found) newShownMs = Date.now() - at
+    if (clearedMs !== null && newShownMs !== null) break
+    await sleep(150)
+  }
+
+  const entries = app.entries()
+  const state = (await app.state()).state.terminal
+  const out = {
+    note: '붙기의 첫 읽기를 6초 매달아 둔다 — throw 가 아니라 in-flight 다 (3회차 리뷰 H2)',
+    hangMs,
+    hangLogs: entries.filter((entry) => entry.tag === 'term.attach.hang').length,
+    oldPaneShownFirst: oldShown,
+    promisedWindowMs: policy.recoveryWindowMs,
+    noticeMs,
+    notice,
+    // 약속 창은 넘겼고, 매달림이 끝나기 **전에** 떴다. 뒤엣것이 옛 시계와 갈리는 자리다.
+    noticeAfterPromise: noticeMs !== null && noticeMs > policy.recoveryWindowMs,
+    noticeWhileInFlight: noticeMs !== null && noticeMs < hangMs,
+    failuresBeforeNotice,
+    // 2회차 코드(시계가 catch 안)라면 이 시각 이전에는 표시가 불가능했다 — 산술 하한이다.
+    oldClockEarliestMs: hangMs + (policy.recoveryWindowMs ?? 0),
+    clearedMs,
+    newShownMs,
+    // 매달림이 풀린 뒤 **씨앗까지** 제대로 심고 붙었나 — 표시가 걷히는 것만으로는 반쪽이다.
+    seededLinesAfter: state.seededLines,
+    recovered: state.attachFailed === null && (await app.find(NEW_MARK)).found,
+    attachFramesByGeneration: entries
+      .filter((entry) => entry.tag === 'term.frame' && entry.kind === 'attach')
+      .reduce((acc, frame) => {
+        acc[frame.generation] = (acc[frame.generation] ?? 0) + 1
+        return acc
+      }, {}),
+    rendererErrors: rendererErrors(entries),
+    shot: (await app.termShot('h2-hang')).file,
+  }
+  console.log('H2 매달림', JSON.stringify({ ...out, shot: undefined }))
+  await app.stop()
+  await request('pane.close', { pane_id: hangPane }).catch(() => {})
+  return out
+})()
+
+// ==========================================================================
+// H2-d — **붙은 뒤** 읽기가 끊기면 (3회차 리뷰 N2)
+// ==========================================================================
+//
+// 한 번 붙으면 `readOnce` 가 `bootstrap` 을 다시 안 부른다. 그래서 그 뒤의 실패는
+// `term.read.failed` 로만 쌓이고 화면은 **정지한 과거**인데 `alive` 는 true 다 — 2회차까지
+// 아무 표시도 없었다. 이쪽 화면은 "남의 pane" 이 아니라 **이 pane 의 낡은 화면**이므로
+// 덮지 않고 머리말에만 적는다(`staleScreen`). 켜지고 **꺼지는 것**까지 잰다.
+const afterAttach = await (async () => {
+  // **예산이 40 인 이유**: 붙은 직후는 hot 창이라 심장박동이 250ms 다. 문턱은 두 주기
+  // (≈4.1초)이므로, 실패가 그보다 오래 이어져야 이름표가 켜진다 — 6회(1.5초)면 문턱에
+  // 닿기 전에 예산이 떨어져 **검사가 아무것도 안 문다**.
+  const app = await startApp({ name: 'h2-stale', env: { CORRAL_INJECT_READ_FAIL: '40' } })
+  await sleep(1200)
+  const at = Date.now()
+  await app.selectPane(paneId)
+  let attachedMs = null
+  let staleMs = null
+  let stale = null
+  let clearedMs = null
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const live = (await app.state()).state.terminal
+    if (attachedMs === null && live.frames > 0) attachedMs = Date.now() - at
+    if (staleMs === null && live.staleScreen !== null) {
+      staleMs = Date.now() - at
+      stale = live.staleScreen
+    }
+    if (staleMs !== null && clearedMs === null && live.staleScreen === null) {
+      clearedMs = Date.now() - at
+      break
+    }
+    await sleep(150)
+  }
+  const entries = app.entries()
+  const state = (await app.state()).state.terminal
+  const out = {
+    note: '붙은 뒤 읽기를 40회 실패시킨다 — 화면은 이 pane 의 것이 맞고 낡았을 뿐이라 덮지 않는다',
+    injectedReadFailures: 40,
+    readFailedLogs: entries.filter((entry) => entry.tag === 'term.read.failed').length,
+    attachedMs,
+    // 붙기는 성공했다 = 이 갈래는 `attachFailed` 가 아니라 `staleScreen` 관할이다.
+    attachedThenFailed: attachedMs !== null,
+    staleNoticeMs: staleMs,
+    staleNotice: stale,
+    // 덮개가 아니라 이름표다 — 아래 화면은 이 pane 의 것이 맞다.
+    veiledInstead: state.attachFailed,
+    oldScreenStillReadable: (await app.find(OLD_MARK)).found,
+    clearedMs,
+    recovered: state.staleScreen === null,
+    rendererErrors: rendererErrors(entries),
+    shot: (await app.termShot('h2-stale')).file,
+  }
+  console.log('H2 붙은뒤끊김', JSON.stringify({ ...out, shot: undefined }))
+  await app.stop()
+  return out
+})()
+
 await request('pane.close', { pane_id: otherPane }).catch(() => {})
 
 writeRaw('31-h2-repair.json', {
@@ -205,6 +362,8 @@ writeRaw('31-h2-repair.json', {
     '주입 예산은 **모듈 전역 + 세대당**이다 — 세대가 바뀌면 다시 찬다 (2회차 리뷰 N3). 그래서 n=1 이라도 옛 pane 붙기 1회 + 새 pane 붙기 1회 = attachFailedLogs 2 가 정상이다. 계측 전용 스위치이고 제품 경로에는 없다',
   arms,
   forever,
+  hang,
+  afterAttach,
   allRepaired: arms.every((arm) => arm.repairFromLogMs !== null && arm.attachFramesEmitted > 0),
   allWithinPromise: arms.every((arm) => arm.withinPromise),
   allSeedsRestored: arms.every((arm) => arm.seedRestored),

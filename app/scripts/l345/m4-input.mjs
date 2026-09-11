@@ -163,6 +163,19 @@ while (samples.length < SAMPLE_COUNT && index < 400) {
     }
     await sleep(POLL_MS)
   }
+  // **음수 지연은 물리적으로 불가능하다 — 벽시계가 뒤로 갔다는 뜻이다.**
+  // 3회차 한 바퀴에서 실제로 한 번 나왔다: 표본 25 가 -1668ms, 그 다음 표본의 `sentAt` 이
+  // 앞 표본보다 1666ms **작다** (macOS 의 시각 보정이 측정 중에 한 번 걸렸다).
+  // `Date.now()` 두 개의 차를 재는 한 이 구멍은 남는다. 그 표본을 분포에 남기면 p50 이
+  // 실제보다 낮아진다 — 통과선 쪽으로 유리하게 기우는 값이라 버린다 (그룹째 다시 잰다).
+  if (latency !== null && latency < 0) {
+    invalid.push({ needle, reason: `벽시계 역행 — 지연이 음수다 (${latency}ms)` })
+    await clearLine()
+    await run(paneId, 'clear', { settleMs: 900 })
+    accumulated = ''
+    index = group * GROUP + GROUP
+    continue
+  }
   const lastScreen = latency === null ? (await screenOf()).split('\n').filter((line) => line.trim()).slice(-2) : null
   samples.push({ i: samples.length, needle, sentAt: t0, latencyMs: latency, ...(lastScreen ? { lastScreen } : {}) })
 }

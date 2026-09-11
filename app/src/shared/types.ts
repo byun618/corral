@@ -132,6 +132,8 @@ export type AppState = {
   collapsedWorkspaceIds: string[]
   /** 진단 UI(S3 프로브)를 띄우는 실행인가 — 패키징된 앱이거나 계측이 아니면 false. */
   diagnostics: boolean
+  /** LIFE-345 — 선택한 pane 의 터미널 표면 상태. */
+  terminal: TerminalState
 }
 
 /** preload 가 contextBridge 로 노출하는 채널별 메서드. ipcRenderer 를 통째로 넘기지 않는다. */
@@ -145,8 +147,105 @@ export type CorralApi = {
   refreshSessions: () => Promise<void>
   /** 렌더러가 실제로 그린 시점을 main 로그에 남긴다 (L3 의 "반영 시각"). */
   reportRendered: (revision: number) => void
+  /** LIFE-345 — 재생 프레임 구독. main 이 만든 바이트를 그대로 `term.write()` 한다. */
+  onTerminalFrame: (listener: (frame: TerminalFrame) => void) => () => void
+  /** 사용자가 친 글자 (`pane.send_text`). 로컬 에코 없음 — herdr 를 돌아와야 보인다. */
+  sendPaneText: (text: string) => Promise<{ ok: boolean; error?: string }>
+  /** 특수키 (`pane.send_keys`). 이름으로 보낸다 — 모드를 아는 쪽은 herdr 다. */
+  sendPaneKeys: (keys: string[]) => Promise<{ ok: boolean; error?: string }>
   /** S3 근거용 — 렌더러 컨텍스트에서 실제로 무엇이 막혀 있는지 main 로그에 남긴다. */
   reportProbe: (name: string, detail: Record<string, string>) => void
   /** preload 가 자기 컨텍스트에서 관측한 값 (S3). */
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }
+
+// ---------------------------------------------------------------------------
+// LIFE-345 — 터미널 뷰 + 입력
+// ---------------------------------------------------------------------------
+
+/**
+ * 터미널 격자. **herdr 것이고 corral 이 맞춰 그린다** — `pane.resize` 는 목표 cols×rows 를
+ * 못 받고(스키마 102개 메서드 중 없음), `PaneReadResult` 에도 격자가 없다 (분석 §4-ⓐ·ⓓ).
+ *
+ * - `rows` 는 `PaneInfo.scroll.viewport_rows` 다. 실측에서 `stty` 의 행 수와 일치했다
+ * - `cols` 는 **API 어디에도 없다.** `pane.layout` 의 rect 는 herdr 창의 배치 기하이고
+ *   PTY 크기와 어긋난다 (실측: 스플릿 뒤 rect 60/60 인데 PTY 는 119/120).
+ *   그래서 스냅샷에서 관측한 최대 행 폭을 바닥으로 삼고 layout 을 힌트로만 쓴다 —
+ *   `source` 가 어느 쪽인지 말해 준다
+ */
+export type PaneGrid = {
+  cols: number
+  rows: number
+  source: 'observed' | 'layout' | 'default'
+  /** `pane.layout` 이 말한 폭 (참고값 — PTY 폭과 다를 수 있다) */
+  layoutCols: number | null
+  /** 스냅샷에서 실제로 본 최대 행 폭 */
+  observedCols: number
+}
+
+/** 렌더러가 그대로 `term.write()` 할 바이트열. 만드는 곳은 main 이다 (로그에 그대로 남는다). */
+export type TerminalFrame = {
+  paneId: string
+  /** pane 전환 세대. 렌더러는 자기가 아는 세대와 다르면 버린다 (LIFE-344 R3 와 같은 자리) */
+  generation: number
+  seq: number
+  /** `attach` = 화면 초기화 + 스크롤백 씨앗, `screen` = 주기 재생 한 장 */
+  kind: 'attach' | 'seed' | 'screen'
+  bytes: string
+  grid: PaneGrid
+  /** 이 프레임을 부른 이유 — R1 정책의 트리거 이름이 그대로 들어간다 */
+  reason: TerminalReadReason
+  /** 이 프레임이 실린 스냅샷의 revision (`pane.read` 의 것 — 실측상 잘 안 움직인다) */
+  revision: number | null
+  at: number
+}
+
+export type TerminalReadReason =
+  | 'attach'
+  | 'event'
+  | 'heartbeat'
+  | 'input'
+  | 'relive'
+  | 'resize'
+  | 'manual'
+
+/** 터미널 표면의 상태. 죽은 pane 을 산 것처럼 그리지 않기 위한 것이 절반이다 (R5). */
+export type TerminalState = {
+  paneId: string | null
+  generation: number
+  grid: PaneGrid | null
+  /** pane 이 살아 있나. `pane_closed`·`pane_exited` 를 보면 false 로 떨어지고 입력을 막는다 */
+  alive: boolean
+  /** 죽었다면 왜 */
+  deadReason: string | null
+  /** 스크롤백 씨앗으로 실제로 회수한 줄 수. 알트스크린 판은 0 이 정답이다 (T5) */
+  seededLines: number | null
+  /** 마지막 스냅샷 왕복 시간 */
+  lastReadMs: number | null
+  /** 마지막으로 화면을 갱신한 시각 */
+  lastFrameAt: number | null
+  /** 지금까지 보낸 프레임 수 · 요청 수 (R1 비용 근거) */
+  frames: number
+  reads: number
+  /** 입력을 막고 있으면 그 사유 (격리 가드 포함) */
+  inputBlocked: string | null
+  /**
+   * 붙기가 **약속 창을 넘겨 계속 실패**하고 있으면 그 사유. 없으면 null.
+   *
+   * 이 상태에서 화면에 그려져 있는 것은 **이 pane 의 것이 아니다** — 렌더러가 새 세대의
+   * `screen` 프레임을 버리기 때문에 이전 pane 의 마지막 화면이 그대로 남는다. 살아 있는
+   * 것처럼 두면 1차 H2 가 지적한 그 화면이고, 그래서 정직하게 덮는다 (2회차 리뷰 G5).
+   */
+  attachFailed: string | null
+  /**
+   * 붙은 **뒤에** 읽기가 이어서 실패하고 있으면 그 사실. 없으면 null (3회차 리뷰 N2).
+   *
+   * `attachFailed` 와 다른 층이다 — 이쪽 화면은 **이 pane 의 것이 맞고, 다만 그때 것**이다.
+   * 그래서 덮지 않고 머리말에만 적는다. 낡은 진실을 통째로 가리면 사용자가 마지막으로 본
+   * 것까지 잃는다.
+   */
+  staleScreen: string | null
+}
+
+/** 렌더러가 보내는 특수키. `pane.send_keys` 어휘로 그대로 나간다 (실측 확인분만 쓴다). */
+export type TerminalKey = 'Up' | 'Down' | 'Left' | 'Right' | 'Escape' | 'Tab'

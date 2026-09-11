@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppState, LinkState, PaneRow, RepoGroupRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types'
 import { SecurityProbe } from './SecurityProbe'
+import { TerminalView } from './TerminalView'
 
 const EMPTY: AppState = {
   revision: 0,
@@ -36,6 +37,21 @@ const EMPTY: AppState = {
   selectedPaneId: null,
   collapsedWorkspaceIds: [],
   diagnostics: false,
+  terminal: {
+    paneId: null,
+    generation: 0,
+    grid: null,
+    alive: true,
+    deadReason: null,
+    seededLines: null,
+    lastReadMs: null,
+    lastFrameAt: null,
+    frames: 0,
+    reads: 0,
+    attachFailed: null,
+    staleScreen: null,
+    inputBlocked: null,
+  },
 }
 
 /**
@@ -131,6 +147,9 @@ export function App(): React.JSX.Element {
     state.workspaces.flatMap((row) => row.panes).find((pane) => pane.paneId === state.selectedPaneId) ?? null
   const selectedWorkspace =
     selectedPane === null ? null : (state.workspaces.find((row) => row.workspaceId === selectedPane.workspaceId) ?? null)
+  // pane 이 사라지면 목록의 선택은 비지만(그 줄이 없다) 터미널은 마지막 화면을 들고 죽어 있다.
+  // 그 상태를 계속 보여 준다 — 지워 버리면 무엇이 죽었는지 화면에 안 남는다 (R5).
+  const showsDeadTerminal = selectedPane === null && state.terminal.paneId !== null && !state.terminal.alive
 
   return (
     <div className="app">
@@ -190,28 +209,29 @@ export function App(): React.JSX.Element {
         </aside>
 
         <main className="stage">
-          {selectedPane === null ? (
+          {selectedPane === null && !showsDeadTerminal ? (
             <div className="placeholder">
               <p className="placeholder-title">터미널 뷰</p>
               <p className="placeholder-body">
                 왼쪽에서 pane 을 고르면 여기에 그 터미널이 붙는다.
-                <br />
-                렌더링·입력은 이 일감 범위 밖이다 (Step 2 ②).
               </p>
             </div>
           ) : (
-            <div className="placeholder">
-              <p className="placeholder-title">
-                {selectedPane.title} <span className="mono">{selectedPane.paneId}</span>
-              </p>
-              <p className="placeholder-body">
-                {selectedWorkspace?.label ?? selectedPane.workspaceId} · agent_status {selectedPane.agentStatus}
-                {selectedPane.agent !== null && <> · agent {selectedPane.agent}</>}
-                <br />
-                <span className="mono">{selectedPane.cwd ?? ''}</span>
-              </p>
-              <p className="placeholder-note">터미널 뷰 자리 — 렌더링은 Step 2 ② (LIFE-345)</p>
-            </div>
+            <TerminalView
+              state={state.terminal}
+              title={
+                selectedPane === null
+                  ? (state.terminal.paneId ?? '')
+                  : `${selectedPane.title}  ${selectedPane.paneId}`
+              }
+              subtitle={
+                selectedPane === null
+                  ? '이 pane 은 더 이상 없다 — 마지막 화면'
+                  : `${selectedWorkspace?.label ?? selectedPane.workspaceId} · ${selectedPane.agentStatus}${
+                      selectedPane.agent === null ? '' : ` · ${selectedPane.agent}`
+                    }`
+              }
+            />
           )}
         </main>
       </div>

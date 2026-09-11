@@ -8,8 +8,28 @@ import { LineSocket } from './line-socket.js'
 import { asResponseFrame, type ResponseFrame } from './protocol.js'
 import { log } from '../log.js'
 
-/** 앱이 보내도 되는 메서드. corral 은 이 일감 범위에서 herdr 를 **읽기만** 한다. */
-const ALLOWED_METHODS: readonly string[] = ['ping', 'session.snapshot', 'worktree.list']
+/**
+ * 앱이 보내도 되는 메서드.
+ *
+ * LIFE-344 까지 corral 은 herdr 를 **읽기만** 했다. LIFE-345 에서 터미널 입력이 붙으면서
+ * `pane.send_text`·`pane.send_keys` 두 개의 **쓰기** 경로가 생긴다 — 목록은 그래서 여전히
+ * 화이트리스트다. 여기 없는 메서드는 코드가 실수로 불러도 나가지 않는다.
+ *
+ * 세션 단위의 안전장치는 따로 있다: `PaneTerminal.inputBlocked()` 가 `default` 세션에는
+ * `CORRAL_ALLOW_DEFAULT_INPUT=1` 없이 입력을 보내지 않는다 (01-criteria.md §0.1 격리 규칙).
+ */
+const ALLOWED_METHODS: readonly string[] = [
+  'ping',
+  'session.snapshot',
+  'worktree.list',
+  // --- 터미널 읽기 (LIFE-345) ---
+  'pane.read',
+  'pane.get',
+  'pane.layout',
+  // --- 터미널 쓰기 (LIFE-345) — 이 둘이 유일한 쓰기 경로다 ---
+  'pane.send_text',
+  'pane.send_keys',
+]
 
 export class HerdrRequestError extends Error {
   readonly code: string

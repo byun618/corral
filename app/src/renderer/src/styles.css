@@ -422,3 +422,80 @@ body {
 .agents-toggle:hover {
   color: var(--fg);
 }
+
+/* --- LIFE-345 터미널 표면 ------------------------------------------------
+   격자는 herdr 것이라 폭·높이를 CSS 로 강제하지 않는다. 상자는 남는 자리를 주고,
+   그 안에서 글자 크기·배율로 맞추는 것은 TerminalView 의 fit() 이 한다. */
+.term-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 6px;
+}
+
+.term-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 2px 0;
+  font-size: 12px;
+  color: #9aa4b5;
+  flex-wrap: wrap;
+}
+
+.term-title {
+  color: #e6ebf2;
+  font-weight: 600;
+}
+
+.term-sub,
+.term-grid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.term-box {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d0f14;
+  border: 1px solid #232838;
+  border-radius: 6px;
+  padding: 4px;
+}
+
+.term-box:focus-within {
+  /* 커서를 안 그리므로(T6) "내 키가 어디로 가나"는 이 테두리가 말한다. */
+  border-color: #4c7dd6;
+}
+
+.term-box-dead {
+  border-color: #5a3b3b;
+}
+
+.term-host {
+  width: max-content;
+  height: max-content;
+}
+
+.term-dead-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 15, 20, 0.62);
+  color: #f0a7a7;
+  font-size: 13px;
+  /* 붙기 실패 문구는 한 줄보다 길 수 있다 — 좁은 창에서 잘리지 않게 여백과 줄바꿈을 둔다. */
+  padding: 0 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.term-foot {
+  font-size: 11px;
+  padding: 0 2px 2px;
+}

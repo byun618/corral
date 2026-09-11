@@ -8,8 +8,9 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AppState, SessionInfo } from '../shared/types.js'
+import type { AppState, SessionInfo, TerminalFrame } from '../shared/types.js'
 import { startControlServer } from './control.js'
+import { PaneTerminal } from './herdr/pane-terminal.js'
 import { SessionLink } from './herdr/session-link.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { SESSION_POLL_MS, listSessions } from './sessions.js'
@@ -26,7 +27,48 @@ let selectedPaneId: string | null = null
 const collapsedWorkspaceIds = new Set<string>()
 let emitScheduled = false
 
-const link = new SessionLink({ onChange: () => scheduleEmit() })
+/**
+ * LIFE-345 — 선택한 pane 의 터미널. 링크 위에 얹은 얇은 층이다: 구독은 링크 것을 쓰고
+ * (`onPanePush`), 스냅샷·입력만 자기 커넥션으로 오간다.
+ */
+const terminal = new PaneTerminal({
+  // 창이 이미 닫힌 뒤에도 하트비트 타이머가 한 박자 더 돌 수 있다. 그때 send 하면
+  // "Object has been destroyed" 로 main 이 튄다 — 실제로 계측 종료마다 났다.
+  onFrame: (frame: TerminalFrame) => {
+    if (window === null || window.isDestroyed()) return
+    window.webContents.send('corral:terminalFrame', frame)
+  },
+  onChange: () => scheduleEmit(),
+})
+
+const link = new SessionLink({
+  onChange: () => scheduleEmit(),
+  onPanePush: (frame) => terminal.onPush(frame),
+  onLive: () => terminal.onLinkLive(),
+})
+
+/** 지금 선택한 pane 을 터미널 층에 물린다. 선택이 없거나 세션이 없으면 뗀다. */
+function retarget(): void {
+  const session = sessions.find((item) => item.name === selectedSession) ?? null
+  if (selectedPaneId === null || session === null) {
+    terminal.attach(null)
+    return
+  }
+  terminal.attach({
+    paneId: selectedPaneId,
+    socketPath: session.socketPath,
+    sessionName: session.name,
+    isDefaultSession: session.isDefault,
+  })
+}
+
+function selectPane(paneId: string | null): void {
+  if (paneId === selectedPaneId) return
+  selectedPaneId = paneId
+  log('ui.selection.set', { paneId })
+  retarget()
+  scheduleEmit()
+}
 
 function currentState(): AppState {
   const rows = link.store.rows()
@@ -34,6 +76,9 @@ function currentState(): AppState {
   // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
   if (selectedPaneId !== null && !rows.some((row) => row.panes.some((pane) => pane.paneId === selectedPaneId))) {
     log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
+    // 목록에서는 선택을 비우되(그 줄이 이미 없다) **터미널은 마지막 화면을 들고 죽는다** —
+    // 지워 버리면 무엇이 죽었는지 화면에 남지 않는다 (R5).
+    terminal.markGone('pane_closed — pane 이 목록에서 사라졌다')
     selectedPaneId = null
   }
   return {
@@ -46,6 +91,7 @@ function currentState(): AppState {
     repos,
     selectedPaneId,
     collapsedWorkspaceIds: [...collapsedWorkspaceIds],
+    terminal: terminal.state(),
     // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -58,6 +104,7 @@ function scheduleEmit(): void {
   setTimeout(() => {
     emitScheduled = false
     revision += 1
+    if (window !== null && window.isDestroyed()) window = null
     const state = currentState()
     log('state.emit', {
       revision: state.revision,
@@ -84,6 +131,7 @@ function pickSession(name: string): void {
   }
   selectedSession = name
   selectedPaneId = null
+  terminal.attach(null)
   link.open(found)
   scheduleEmit()
 }
@@ -103,15 +151,33 @@ async function pollSessions(): Promise<void> {
   scheduleEmit()
 }
 
-async function capture(name: string): Promise<string> {
+/**
+ * 스크린샷. `selector` 를 주면 **그 요소만** 잘라 찍는다.
+ *
+ * 왜 자르나: T3 은 "정지 화면이 정말 정지해 있나" 를 스크린샷으로 봐야 하는데, 창 전체를 찍으면
+ * 헤더의 `rev` 카운터와 왼쪽 목록의 경과 초가 매초 바뀌어 **터미널과 무관하게** 그림이 달라진다.
+ * 실제로 첫 측정에서 24장 중 18장이 서로 달랐고 원인이 그것이었다. 잘라 찍으면 비교 대상이
+ * 터미널 표면 자체가 된다.
+ */
+async function capture(name: string, selector?: string): Promise<string> {
   const dir = process.env.CORRAL_SHOT_DIR ?? path.join(app.getPath('userData'), 'shots')
   fs.mkdirSync(dir, { recursive: true })
   const target = window
   if (target === null) throw new Error('창이 없다')
-  const image = await target.webContents.capturePage()
+  let rect: Electron.Rectangle | undefined
+  if (selector !== undefined) {
+    const box = await target.webContents.executeJavaScript(
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) } })()`,
+      true,
+    )
+    if (box !== null) rect = box
+  }
+  const image = rect === undefined ? await target.webContents.capturePage() : await target.webContents.capturePage(rect)
   const file = path.join(dir, `${name}.png`)
   fs.writeFileSync(file, image.toPNG())
-  log('shot.captured', { name, file, revision })
+  log('shot.captured', { name, file, revision, selector: selector ?? null })
   return file
 }
 
@@ -162,11 +228,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('corral:getState', () => currentState())
   ipcMain.handle('corral:selectSession', (_event, name: string) => pickSession(name))
-  ipcMain.handle('corral:selectPane', (_event, paneId: string | null) => {
-    selectedPaneId = paneId
-    log('ui.selection.set', { paneId })
-    scheduleEmit()
-  })
+  ipcMain.handle('corral:selectPane', (_event, paneId: string | null) => selectPane(paneId))
+  ipcMain.handle('corral:paneText', (_event, text: string) => terminal.sendText(text))
+  ipcMain.handle('corral:paneKeys', (_event, keys: string[]) => terminal.sendKeys(keys))
   ipcMain.handle('corral:toggleCollapse', (_event, workspaceId: string) => toggleCollapse(workspaceId))
   ipcMain.handle('corral:refreshSessions', () => pollSessions())
   ipcMain.on('corral:reportRendered', (_event, rendered: number) => {
@@ -183,11 +247,9 @@ app.whenReady().then(() => {
   startControlServer({
     capture,
     selectSession: pickSession,
-    selectPane: (paneId) => {
-      selectedPaneId = paneId
-      log('ui.selection.set', { paneId })
-      scheduleEmit()
-    },
+    selectPane,
+    terminal,
+    window: () => window,
     toggleCollapse,
     state: () => currentState(),
     verify: () => link.verifyConvergence(),
@@ -199,6 +261,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  terminal.detach()
   link.close()
   log('app.quit', { logFile: logFile() })
   closeLog()

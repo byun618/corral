@@ -356,7 +356,8 @@ const out = {}
   await sleep(900)
   await run(paneId, 'clear; for i in $(seq 1 60); do echo "ALT HIST $i"; done', { settleMs: 2000 })
   const flowBefore = (await request('pane.get', { pane_id: paneId })).pane.scroll
-  await run(paneId, `sh ${process.cwd()}/scripts/l345/fixtures/05-alt-scroll.sh &`, { settleMs: 4000 })
+  // 화면이 한 번 이상 흘러야 "꼬리가 부분적으로만 맞는" 상태가 된다 — 실측으로 12초를 잡았다.
+  await run(paneId, `sh ${process.cwd()}/scripts/l345/fixtures/05-alt-scroll.sh &`, { settleMs: 12000 })
   const flowAfter = (await request('pane.get', { pane_id: paneId })).pane.scroll
   const flowApp = await startApp({ name: 'scrollback-alt-flow' })
   await sleep(1200)

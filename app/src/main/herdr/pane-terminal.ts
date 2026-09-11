@@ -139,6 +139,11 @@ let attachFailGeneration = -1
 function injectedAttachFailure(generation: number): boolean {
   const want = Number(process.env.CORRAL_INJECT_ATTACH_FAIL)
   if (!Number.isFinite(want) || want <= 0) return false
+  // **처음 몇 세대는 성공시킨다** (`CORRAL_INJECT_ATTACH_FAIL_SKIP=<n>`). G5 가 재려는 화면은
+  // *이전 pane 이 그려져 있는데 새 pane 을 못 읽는* 상태다 — 첫 붙기부터 실패시키면 화면이
+  // 비어 있어 그 상황이 안 만들어진다 (드라이런에서 `oldPaneShownFirst: false` 로 드러났다).
+  const skip = Number(process.env.CORRAL_INJECT_ATTACH_FAIL_SKIP)
+  if (Number.isFinite(skip) && skip > 0 && generation <= skip) return false
   if (attachFailGeneration !== generation) {
     attachFailGeneration = generation
     attachFailBudget = want
@@ -227,6 +232,8 @@ export class PaneTerminal {
   private attachFailedAt: number | null = null
   /** 이 세대의 연속 붙기 실패 횟수 (G5 표시의 근거값). */
   private attachFailures = 0
+  /** 이 터미널이 **한 번이라도** 화면을 그린 적 있나. 실패 표시의 문구가 갈린다 (G5). */
+  private everAttached = false
   private apiRows: number | null = null
   // 뷰포트 위 줄 수(`scroll.max_offset_from_bottom`)는 **필드로 들고 있지 않는다** (2회차 리뷰 G1).
   // 씨앗의 상한이라 남아 있으면 안 되는 값이다 — `pane.get` 이 한 번 실패한 채 pane 이 바뀌면
@@ -276,7 +283,10 @@ export class PaneTerminal {
     const elapsed = Date.now() - since
     if (elapsed <= this.recoveryWindowMs()) return null
     const seconds = Math.round(elapsed / 1000)
-    return `이 pane 의 화면을 못 읽었다 — ${seconds}초째 다시 붙는 중 (실패 ${this.attachFailures}회). 아래 화면은 이 pane 의 것이 아니다`
+    const head = `이 pane 의 화면을 못 읽었다 — ${seconds}초째 다시 붙는 중 (실패 ${this.attachFailures}회)`
+    // 아래에 뭔가 그려져 있으면 그것이 **다른 pane 의 것**이라는 말이 필요하고,
+    // 한 번도 못 그렸으면 그런 말은 거짓이다.
+    return this.everAttached ? `${head}. 아래 화면은 이 pane 의 것이 아니다` : `${head}. 아직 아무 화면도 못 그렸다`
   }
 
   /**
@@ -415,7 +425,7 @@ export class PaneTerminal {
     // 그 상태의 화면은 이전 pane 의 것이라, 그냥 "이 pane 이 죽었다"만 씌우면 **엉뚱한 화면에
     // 사망 이름표**가 붙는다. 죽음 표시가 붙기 실패 표시를 덮으므로 여기서 한 문장 얹는다.
     this.deadReason =
-      this.attachedGeneration === this.generation
+      this.attachedGeneration === this.generation || !this.everAttached
         ? reason
         : `${reason} · 이 pane 의 화면은 한 번도 못 읽었다 (아래 화면은 이 pane 의 것이 아니다)`
     if (this.heartbeat) clearTimeout(this.heartbeat)
@@ -733,6 +743,7 @@ export class PaneTerminal {
       })
       // **여기까지 와야 붙은 것이다.** 늦은 세대 검사들을 다 지난 뒤에 표시한다.
       this.attachedGeneration = generation
+      this.everAttached = true
       this.attachFailedAt = null
       this.attachFailures = 0
     } catch (error) {

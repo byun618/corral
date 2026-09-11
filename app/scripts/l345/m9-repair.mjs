@@ -123,7 +123,13 @@ for (const failures of [1, 3]) {
 // 그래서 약속 창을 넘기면 화면을 덮는다. 여기서 재는 것은 ① 표시가 뜨는가 ② 언제 뜨는가
 // ③ 그 뒤에도 계속 다시 붙는가 — 포기하는 것이 아니라 **정직해지는 것**이 고침이다.
 const forever = await (async () => {
-  const app = await startApp({ name: 'h2-forever', env: { CORRAL_INJECT_ATTACH_FAIL: '999' } })
+  // **첫 세대(옛 pane)는 성공시킨다** — 그래야 "이전 pane 이 그려져 있는데 새 pane 을 못 읽는"
+  // 그 화면이 만들어진다. 드라이런에서 첫 붙기부터 실패시켰더니 화면이 비어 버려
+  // (`oldPaneShownFirst: false`) 정작 재려던 상태가 안 나왔다.
+  const app = await startApp({
+    name: 'h2-forever',
+    env: { CORRAL_INJECT_ATTACH_FAIL: '999', CORRAL_INJECT_ATTACH_FAIL_SKIP: '2' },
+  })
   await sleep(1200)
   await app.selectPane(paneId)
   await sleep(6000)

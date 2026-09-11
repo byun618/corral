@@ -489,6 +489,9 @@ body {
   background: rgba(13, 15, 20, 0.62);
   color: #f0a7a7;
   font-size: 13px;
+  /* 붙기 실패 문구는 한 줄보다 길 수 있다 — 좁은 창에서 잘리지 않게 여백과 줄바꿈을 둔다. */
+  padding: 0 16px;
+  text-align: center;
   pointer-events: none;
 }
 

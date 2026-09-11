@@ -18,6 +18,34 @@ const SRC = path.join(APP_DIR, 'src')
 const ADAPTER = path.join(SRC, 'main/adapter')
 const ADAPTER_INTERNAL = path.join(ADAPTER, 'internal')
 
+/**
+ * 이벤트 지문을 **어댑터의 목록에서 파생시킨다** (수정 2회차 L-6 — codex).
+ *
+ * 1회차까지는 이벤트 이름이 이 파일에 손으로 박혀 있었다. 그래서 수정 1회차가 `tab.moved` 를
+ * 구독 목록에 늘렸을 때 **지문만 안 늘었고**, 그 이름이 어댑터 밖에 심겨도 검사는 통과했다.
+ * 목록이 진실이니 목록에서 읽는다: 구독 타입(`SUBSCRIPTION_TYPES`, 점→밑줄)과 store 가
+ * 실제로 처리하는 `case '...'` 라벨의 합집합이다. 어휘가 늘면 지문도 저절로 는다.
+ */
+function wireEventNames() {
+  const read = (file) => fs.readFileSync(path.join(ADAPTER_INTERNAL, file), 'utf8')
+  const names = new Set()
+  const block = /export const SUBSCRIPTION_TYPES[^=]*=\s*\[([\s\S]*?)\n\]/.exec(read('protocol.ts'))
+  for (const match of (block?.[1] ?? '').matchAll(/'([a-z]+(?:\.[a-z_]+)+)'/g)) {
+    names.add(match[1].replace(/\./g, '_'))
+  }
+  // 구독은 안 하지만 처리하는 이름도 있다 (`pane.agent_status_changed` 는 별도 커넥션).
+  for (const match of read('store.ts').matchAll(/case '([a-z]+_[a-z_]+)':/g)) names.add(match[1])
+  return [...names].sort()
+}
+
+const EVENT_NAMES = wireEventNames()
+// 파생이 깨지면(정규식이 목록을 못 읽으면) 지문이 **조용히 비어** 검사가 아무것도 안 잡는다.
+// 그 실패는 통과로 보이므로 여기서 멈춘다 — 검사가 자기 입력을 의심하는 자리다.
+if (EVENT_NAMES.length < 10) {
+  console.error(`지문 파생 실패: 이벤트 이름 ${EVENT_NAMES.length}개만 읽혔다`)
+  process.exit(2)
+}
+
 const rel = (file) => path.relative(APP_DIR, file)
 
 function walk(dir) {
@@ -134,7 +162,8 @@ const WIRE_FINGERPRINTS = [
       /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)['"`]/g,
   },
   { kind: 'field', pattern: /\b(?:workspace_id|pane_id|tab_id|agent_status|open_workspace_id|is_linked_worktree|repo_root|repo_name|foreground_cwd|terminal_title|display_agent|pane_count|tab_count|socket_path|process_info|foreground_process_group_id|shell_pid)\b/g },
-  { kind: 'event', pattern: /\b(?:workspace_created|workspace_closed|tab_created|tab_closed|pane_created|pane_closed|pane_updated|pane_exited|pane_agent_detected|pane_agent_status_changed|layout_updated|worktree_opened|worktree_created|worktree_removed)\b/g },
+  // 목록에서 파생된다 (L-6) — 손으로 적지 않는다.
+  { kind: 'event', pattern: new RegExp(`\\b(?:${EVENT_NAMES.join('|')})\\b`, 'g') },
   { kind: 'envelope', pattern: /events\.subscribe|"subscriptions"|'subscriptions'/g },
 ]
 
@@ -215,6 +244,7 @@ const out = {
     샘플링: false,
     설명: 'src/ 아래 .ts/.tsx 전부. 한 파일도 건너뛰지 않는다 (N2 무효 조건).',
   },
+  '지문 — 이벤트 이름 (어댑터 목록에서 파생)': { 개수: EVENT_NAMES.length, 이름: EVENT_NAMES },
   규칙: {
     'R1-internal': '어댑터 바깥 파일이 adapter/internal/* 을 import',
     'R2-adapter': 'renderer·preload·shared 가 어댑터를 import (공개 입구 포함)',

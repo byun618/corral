@@ -264,7 +264,7 @@ app.whenReady().then(() => {
     state: () => currentState(),
     window: () => window,
     resync: (reason) => link.resync(reason),
-    setDroppingPush: (dropping) => link.setDroppingPush(dropping),
+    setDroppingPush: (input) => link.setDroppingPush(input),
     addRepo,
     rebuildTree,
   })

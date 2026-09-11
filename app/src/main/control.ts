@@ -20,8 +20,8 @@ export type ControlHandlers = {
   state: () => unknown
   window: () => BrowserWindow | null
   resync: (reason: string) => Promise<{ ok: boolean; note: string }>
-  /** N7 — push 를 조용히 버리게/멈추게 한다. 커넥션은 살아 있다. */
-  setDroppingPush: (dropping: boolean) => void
+  /** N7 — push 를 조용히 버리게/멈추게 한다. 커넥션은 살아 있다. `only` 면 그 이벤트만. */
+  setDroppingPush: (input: { dropping: boolean; only?: readonly string[] | null }) => void
   /** 준비·뒷정리 전용 지름길. 판정 회차(N3)는 이게 아니라 `click` 으로 진짜 버튼을 누른다. */
   addRepo: (root: string) => AddRepoResult
   rebuildTree: () => Promise<void>
@@ -135,8 +135,12 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         return
       }
       case 'drop-push': {
-        handlers.setDroppingPush(parsed['dropping'] === true)
-        reply({ ok: true, dropping: parsed['dropping'] === true, at: Date.now() })
+        // `only` 를 주면 **그 이벤트만** 버린다 — "corral 이 일부를 모르는 상태" 를 만드는 손잡이다.
+        const raw = parsed['only']
+        const only = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : null
+        const dropping = parsed['dropping'] === true
+        handlers.setDroppingPush({ dropping, only })
+        reply({ ok: true, dropping, only, at: Date.now() })
         return
       }
       case 'add-repo': {

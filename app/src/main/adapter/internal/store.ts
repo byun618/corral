@@ -66,6 +66,11 @@ export type ReconcileResult = {
   removed: { workspaces: string[]; tabs: string[]; panes: string[] }
   /** 스냅샷보다 나중에 생긴 행이라 **지우지 않고 둔** 것. */
   keptNewer: string[]
+  /**
+   * **걷어 낸 묘비** (수정 2회차 H-1ⓑ). 사진에 살아 있는데 우리가 죽은 것으로 알고 있던 id 다 —
+   * 그 자체가 "추정이 틀렸다" 는 증거라 로그에 그대로 실어 둔다.
+   */
+  lifted: string[]
   changed: boolean
   note: string
 }
@@ -78,6 +83,27 @@ export type ReconcileResult = {
 const ORPHAN_HOLD_MS = 5000
 
 type Orphan = { at: number; workspaceId: string; kind: 'pane' | 'tab'; value: Record<string, unknown> }
+
+/**
+ * **닫힘에는 두 출처가 있다** (수정 2회차 H-1 — 고친 방향의 근거).
+ *
+ * ① 관측 — herdr 가 그 id 를 두고 "닫혔다" 고 말했거나(`*_closed`/`*_exited`), 진실인 스냅샷에
+ *    그 id 가 없었다. corral 이 무엇을 아는지와 무관하게 참이다.
+ * ② 추정 — corral 이 **자기가 아는 것**에서 연쇄로 끌어냈다: "이 workspace 에 내가 아는 탭이
+ *    하나도 안 남았으니 workspace 도 닫혔겠지". 그런데 그 앎은 push 로 만들어지고 push 는
+ *    유실된다(분석 §3, 실측 152/274) — `tab_created` 한 건만 놓쳐도 추정은 **틀린다**.
+ *
+ * 재리뷰가 실행으로 보인 것: 틀린 추정이 묘비까지 세우면 `reconcile` §②가 그 id 를 건너뛰어
+ * **산 workspace 가 재동기로도 안 돌아온다** (재생 E1).
+ *
+ * 고치는 길이 둘이었다.
+ *   ⓐ 추정 연쇄는 묘비를 세우지 않는다 — 그러면 늦게 온 `workspace_created` 가 **진짜로**
+ *      죽은 workspace 를 되살린다. 그게 정확히 N6 재생 ③ 이 재는 것이고, 지금 ③ 이 통과하는
+ *      근거가 그 묘비다. **N7 을 살리려고 N6 을 깨는 맞바꿈이라 택하지 않았다.**
+ *   ⓑ 재동기가 **틀린 묘비를 걷는다** — 사진에 살아 있는 id 의 묘비는 우리가 잘못 세운 것이다.
+ *      묘비는 그대로 두므로 늦은 push 는 계속 막고(N6), 재동기는 회복의 문이 된다(N7).
+ * ⓑ 를 택했다. 구현은 `reconcile` ⓪ 과 묘비 값의 `closedAt` 이다.
+ */
 
 export class WorkspaceStore {
   private workspaces = new Map<string, Workspace>()
@@ -92,14 +118,17 @@ export class WorkspaceStore {
    * 1374ms 까지 갔고 창을 넘긴 create 가 죽은 workspace 46개를 되살렸다.)
    * 서버를 재기동하면 id 가 처음으로 돌아가지만, 그 경로는 반드시 재부트스트랩을 지나고
    * 재부트스트랩은 `reset()` 으로 묘비를 지운 **뒤에** 버퍼를 적용한다.
+   *
+   * 값은 **묘비를 세운 시각**이다 (수정 2회차 H-1ⓑ). 재동기가 "이 묘비가 사진보다 먼저
+   * 세워졌나" 를 물어야 틀린 묘비만 골라 걷을 수 있다 — `knownAt` 과 정확히 대칭이다.
    */
-  private closed = new Set<string>()
+  private closed = new Map<string, number>()
   /**
    * 닫힌 **탭**의 묘비 (LIFE-346 M4 — 3자 리뷰가 겹쳐 가리킨 자리).
    * `putPane` 이 탭 존재를 안 보면, 탭이 지워진 뒤 늦게 온 `pane_created`/`pane_updated` 가
    * pane 만 되살려 **탭 목록에는 없는데** 수가 늘어난다. 탭 id 도 재사용되지 않는다(실측).
    */
-  private closedTabs = new Set<string>()
+  private closedTabs = new Map<string, number>()
   /**
    * 닫힌 **pane** 의 묘비 (수정 1회차 H1 — 리뷰어가 실행으로 반증한 자리).
    *
@@ -109,7 +138,7 @@ export class WorkspaceStore {
    * 에는 방어가 하나도 없었고, 늦게 온 `pane_updated` 가 죽은 pane 을 되살렸다.
    * pane id 도 workspace·tab 과 같이 서버 생애 안에서 재사용되지 않으므로 규칙도 같다.
    */
-  private closedPanes = new Set<string>()
+  private closedPanes = new Map<string, number>()
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -147,12 +176,19 @@ export class WorkspaceStore {
    * ② **스냅샷보다 나중에 알게 된 행은 지우지 않는다.** 스냅샷은 요청 시점의 사진이다.
    *    그 뒤에 도착한 `tab_created` 를 "사진에 없다" 는 이유로 지우면 산 행을 죽인다.
    *    그래서 행마다 `knownAt` 을 들고, `knownAt >= requestedAt` 이면 건드리지 않는다.
+   *
+   * ①의 "묘비를 지우지 않는다" 에는 **예외가 하나 있다** (수정 2회차 H-1ⓑ): 사진에 **살아
+   * 있는** id 의 묘비다. 그건 우리가 잘못 세운 묘비다 — id 는 생애 안에서 재사용되지 않으므로
+   * 죽은 id 가 사진에 있을 수는 없다. 그대로 두면 §②가 그 id 를 건너뛰어 **재동기가 회복의
+   * 문이 아니라 영구 소멸의 문**이 된다. 단, 사진을 **요청한 뒤에** 세운 묘비는 사진이 못 본
+   * 닫힘일 수 있으니 건드리지 않는다 — `knownAt >= requestedAt` 과 정확히 대칭인 규칙이다.
    */
   reconcile(snapshot: unknown, requestedAt: number): ReconcileResult {
     const empty: ReconcileResult = {
       added: { workspaces: [], tabs: [], panes: [] },
       removed: { workspaces: [], tabs: [], panes: [] },
       keptNewer: [],
+      lifted: [],
       changed: false,
       note: 'snapshot 모양이 아니다',
     }
@@ -168,6 +204,19 @@ export class WorkspaceStore {
     const keptNewer: string[] = []
     const removed: ReconcileResult['removed'] = { workspaces: [], tabs: [], panes: [] }
 
+    // ⓪ **틀린 묘비를 걷는다** — 사진에 살아 있는 id 의 묘비는 우리가 잘못 세운 것이다.
+    const lifted: string[] = []
+    const lift = (graves: Map<string, number>, alive: Set<string>, kind: string): void => {
+      for (const [id, closedAt] of [...graves]) {
+        if (!alive.has(id) || closedAt >= requestedAt) continue
+        graves.delete(id)
+        lifted.push(`${kind}:${id}`)
+      }
+    }
+    lift(this.closed, truth.workspaces, 'workspace')
+    lift(this.closedTabs, truth.tabs, 'tab')
+    lift(this.closedPanes, truth.panes, 'pane')
+
     // ① 사진에 없는 행을 버린다 — 단, 사진보다 나중에 알게 된 행은 그대로 둔다.
     for (const [id, row] of [...this.workspaces]) {
       if (truth.workspaces.has(id)) continue
@@ -175,7 +224,7 @@ export class WorkspaceStore {
         keptNewer.push(`workspace:${id}`)
         continue
       }
-      this.dropWorkspace(id)
+      this.dropWorkspace(id, at)
       removed.workspaces.push(id)
     }
     for (const [id, row] of [...this.tabs]) {
@@ -185,7 +234,7 @@ export class WorkspaceStore {
         continue
       }
       this.tabs.delete(id)
-      this.closedTabs.add(id)
+      this.closedTabs.set(id, at)
       removed.tabs.push(id)
     }
     for (const [id, row] of [...this.panes]) {
@@ -197,7 +246,7 @@ export class WorkspaceStore {
       this.panes.delete(id)
       // 탭 삭제와 같은 규칙으로 묘비를 세운다 (H1ⓓ). 위의 `knownAt` 으로 살려 둔 행
       // (keptNewer)은 여기 오지 않는다 — 산 행에 묘비를 세우면 그 행이 영영 못 돌아온다.
-      this.closedPanes.add(id)
+      this.closedPanes.set(id, at)
       removed.panes.push(id)
     }
 
@@ -226,16 +275,19 @@ export class WorkspaceStore {
 
     const changed =
       added.workspaces.length + added.tabs.length + added.panes.length +
-        removed.workspaces.length + removed.tabs.length + removed.panes.length >
+        removed.workspaces.length + removed.tabs.length + removed.panes.length +
+        lifted.length >
       0
     return {
       added,
       removed,
       keptNewer,
+      lifted,
       changed,
       note: changed
         ? `추가 ws${added.workspaces.length}/t${added.tabs.length}/p${added.panes.length} · ` +
-          `삭제 ws${removed.workspaces.length}/t${removed.tabs.length}/p${removed.panes.length}`
+          `삭제 ws${removed.workspaces.length}/t${removed.tabs.length}/p${removed.panes.length}` +
+          (lifted.length > 0 ? ` · 묘비 걷음 ${lifted.length}` : '')
         : '어긋난 것 없음',
     }
   }
@@ -269,7 +321,7 @@ export class WorkspaceStore {
       case 'workspace_closed': {
         const id = readString(data, 'workspace_id')
         if (id === null) return { changed: false, note: 'workspace_closed 필드 부족' }
-        const had = this.dropWorkspace(id)
+        const had = this.dropWorkspace(id, at)
         return { changed: had, note: had ? frame.event : 'workspace_closed: 이미 없음(멱등)' }
       }
 
@@ -345,12 +397,14 @@ export class WorkspaceStore {
         // workspace 연쇄를 보려면 지우기 **전에** 주인을 읽어야 한다 (수정 1회차 L5).
         const workspaceId = this.tabs.get(id)?.workspaceId ?? readString(data, 'workspace_id')
         const had = this.tabs.delete(id)
-        this.closedTabs.add(id)
+        this.closedTabs.set(id, at)
         let orphaned = 0
         for (const [paneId, pane] of this.panes) {
           if (pane.tabId !== id) continue
           this.panes.delete(paneId)
-          this.closedPanes.add(paneId) // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비
+          // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비. 탭이 닫혔다는 **관측**에서 바로 따라 나오는
+          // 사실이라(닫힌 탭의 pane 은 herdr 에도 없다) 이쪽은 추정이 아니다.
+          this.closedPanes.set(paneId, at)
           orphaned += 1
         }
         // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
@@ -362,19 +416,24 @@ export class WorkspaceStore {
          * 1회차는 "마지막 탭은 `workspace_closed` 가 먼저 온다"(LIFE-346 실측)에 기대 비대칭이었다.
          * 그 실측은 지금도 맞고 N5ⓓ 가 5회 통과했지만, 분석 §3 이 박아 둔 전제는 **인과 비보장**이다 —
          * `workspace_closed` 가 늦으면 그 사이 유령 workspace 행이 보인다. 연쇄는 멱등이라 싸다.
+         *
+         * **다만 이 판별식이 묻는 것은 herdr 의 진실이 아니라 "corral 이 아는 탭" 이다**
+         * (수정 2회차 H-1). `tab_created` 한 건을 놓친 채 아는 마지막 탭이 닫히면 판별식은
+         * 산 workspace 에도 참이 된다. 그 추정이 틀렸을 때 되돌리는 것은 **재동기의 ⓪**이다 —
+         * 사진에 살아 있으면 묘비를 걷는다. 여기서는 알던 대로 지우고 묘비를 세운다.
          */
         const workspaceGone =
           workspaceId !== null &&
           this.workspaces.has(workspaceId) &&
           [...this.tabs.values()].every((item) => item.workspaceId !== workspaceId) &&
           [...this.panes.values()].every((item) => item.workspaceId !== workspaceId)
-        if (workspaceGone) this.dropWorkspace(workspaceId)
+        if (workspaceGone) this.dropWorkspace(workspaceId, at)
         const changed = had || orphaned > 0 || workspaceGone
         return {
           changed,
           note: changed
             ? `${frame.event}: pane ${orphaned}개 · 보류 ${dropped}개 함께 정리` +
-              (workspaceGone ? ` · 마지막 탭 — workspace(${workspaceId ?? ''})도 지움` : '')
+              (workspaceGone ? ` · 아는 마지막 탭 — workspace(${workspaceId ?? ''})도 지움 (추정)` : '')
             : 'tab_closed: 이미 없음(멱등)',
         }
       }
@@ -432,23 +491,30 @@ export class WorkspaceStore {
         const pane = this.panes.get(id) ?? null
         // 묘비는 **모르는 pane 에도** 세운다 (H1ⓐ). tab_closed·dropWorkspace 가 이미 그렇게
         // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
-        this.closedPanes.add(id)
+        this.closedPanes.set(id, at)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
         this.panes.delete(id)
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: true, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
+        /**
+         * 여기서부터는 **전부 추정이다** (수정 2회차 H-1). "내가 아는 pane 이 다 없어졌으니
+         * 탭도 죽었겠지 · 아는 탭이 다 없어졌으니 workspace 도 죽었겠지" — 그 앎이 push 유실로
+         * 구멍 나 있으면 그대로 틀린다. `tab_closed` 와 같은 자리이고, 되돌리는 것도 같다:
+         * 재동기 ⓪ 가 사진에 살아 있는 id 의 묘비를 걷는다.
+         * (위의 pane 묘비는 추정이 아니다 — herdr 가 그 id 를 두고 말해 준 것이다.)
+         */
         const tabGone = this.tabs.delete(pane.tabId)
-        this.closedTabs.add(pane.tabId)
+        this.closedTabs.set(pane.tabId, at)
         const siblingTabs = [...this.tabs.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const siblingPanes = [...this.panes.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const workspaceGone =
           tabGone && siblingTabs === 0 && siblingPanes === 0 && this.workspaces.has(pane.workspaceId)
-        if (workspaceGone) this.dropWorkspace(pane.workspaceId)
+        if (workspaceGone) this.dropWorkspace(pane.workspaceId, at)
         return {
           changed: true,
           note: tabGone
-            ? `${frame.event}: 마지막 pane — 탭(${pane.tabId})도 지움${
-                workspaceGone ? ` · 마지막 탭 — workspace(${pane.workspaceId})도 지움` : ''
+            ? `${frame.event}: 아는 마지막 pane — 탭(${pane.tabId})도 지움 (추정)${
+                workspaceGone ? ` · workspace(${pane.workspaceId})도 지움` : ''
               }`
             : frame.event,
         }
@@ -486,21 +552,21 @@ export class WorkspaceStore {
     }
   }
 
-  /** workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. */
-  private dropWorkspace(id: string): boolean {
+  /** workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. 묘비에는 **세운 시각**이 든다. */
+  private dropWorkspace(id: string, at: number): boolean {
     const had = this.workspaces.delete(id)
-    this.closed.add(id)
+    this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
     this.orphans = this.orphans.filter((item) => item.workspaceId !== id)
     for (const [tabId, tab] of this.tabs) {
       if (tab.workspaceId !== id) continue
       this.tabs.delete(tabId)
-      this.closedTabs.add(tabId)
+      this.closedTabs.set(tabId, at)
     }
     for (const [paneId, pane] of this.panes) {
       if (pane.workspaceId !== id) continue
       this.panes.delete(paneId)
-      this.closedPanes.add(paneId) // H1ⓑ — workspace 연쇄로 죽은 pane 에도 묘비
+      this.closedPanes.set(paneId, at) // H1ⓑ — workspace 연쇄로 죽은 pane 에도 묘비
     }
     return had
   }
@@ -557,6 +623,16 @@ export class WorkspaceStore {
         tabs: tabsByWorkspace.get(workspace.workspaceId) ?? [],
       })
     }
+    /**
+     * workspace 는 **`number` 로 정렬한다** — 탭과 다르다 (수정 2회차 M-1, 실측 `00-shapes-fix2.json`).
+     *
+     * 탭 층의 발견("순서의 진실은 배열 자리")을 이 층에 그대로 옮기지 않은 것은 실측이 갈라졌기
+     * 때문이다: `workspace.move` 를 걸면 herdr 가 **`number` 를 자리에 맞춰 다시 매긴다**
+     * (`[w1(1),w2(2),w3(3)]` 에서 w3 을 맨 앞으로 → `[w3(1),w1(2),w2(3)]`). 이동 2회 + 가운데
+     * 닫기까지 `workspace.list` 의 배열 순서에서 number 는 매번 단조 증가했다. 즉 이 층에서는
+     * number 순서 = 배열 순서이고, `workspace_moved` 봉투가 새 number 를 통째로 싣고 오므로
+     * 행도 같이 갱신된다. 탭은 정반대였다 — `tab.move` 는 number 를 건드리지 않는다.
+     */
     rows.sort((a, b) => a.number - b.number || a.workspaceId.localeCompare(b.workspaceId))
     return rows
   }
@@ -622,13 +698,27 @@ export class WorkspaceStore {
       label: readString(value, 'label') ?? id,
       number: readNumber(value, 'number') ?? 0,
       // 목록을 통째로 받은 자리에서는 그 인덱스가 진실이고, 낱개 봉투(tab_created)는
-      // 알던 자리를 지키거나 끝에 붙인다.
-      order: order ?? before?.order ?? this.nextTabOrder(workspaceId),
+      // 알던 자리를 지키거나 `number` 를 힌트로 삼는다.
+      order: order ?? before?.order ?? this.initialTabOrder(value, workspaceId),
       agentStatus: readAgentStatus(value, 'agent_status'),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
     return true
+  }
+
+  /**
+   * 낱개 `tab_created` 로 처음 알게 된 탭의 **초기 자리** (수정 2회차 L-5 — codex).
+   *
+   * 이 봉투에는 자리가 안 실린다. 1회차는 도착순으로 끝에 붙였는데, 분석 §3 의 전제가
+   * **인과 순서 비보장**이라 빠르게 만든 두 탭의 `tab_created` 가 뒤집혀 오면 그 순서가
+   * 재동기까지 굳는다. `number` 는 자리가 아니지만(`tab.move` 가 안 바꾼다 — M5 실측)
+   * **생성 순서를 따라 커지는 표찰**이라 초기 힌트로는 도착순보다 낫다.
+   * 진짜 자리는 목록이 통째로 오는 세 자리(스냅샷·reconcile·`tab_moved`)가 곧 덮는다.
+   */
+  private initialTabOrder(value: Record<string, unknown>, workspaceId: string): number {
+    const number = readNumber(value, 'number')
+    return number !== null && number > 0 ? number : this.nextTabOrder(workspaceId)
   }
 
   private nextTabOrder(workspaceId: string): number {
@@ -761,13 +851,18 @@ function pickAgent(source: Record<string, unknown>, fallback: string | null): st
  * 그대로 안쪽으로 삼았고, 그래서 엉뚱한 응답 하나가 "workspace 0·tab 0·pane 0 인 스냅샷" 으로
  * 읽혔다. 스냅샷이 진실인 규칙 아래서 그것은 **목록 전멸 + 영구 묘비**다 (리뷰 부록 D).
  * 세 키 중 하나도 없으면 그건 스냅샷이 아니다 — 아무것도 고치지 않는 편이 옳다.
+ *
+ * **세 키가 다 있어야 한다** (수정 2회차 L-1). 1회차 지시의 문언은 "하나도 없으면 null" 이라
+ * `some` 으로 정확히 그것을 했는데, 그러면 `{tabs:[…]}` 처럼 **한 층만 든 응답**은 여전히
+ * 스냅샷으로 통과해 나머지 두 층을 전멸시킨다. 진짜 `session.snapshot` 은 세 키를 다 싣는다
+ * (실측 `00-shapes.json`) — 하나라도 없으면 스냅샷이 아니다.
  */
 const SNAPSHOT_KEYS: readonly string[] = ['workspaces', 'tabs', 'panes']
 
 function readSnapshot(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null
   const inner = readRecord(value, 'snapshot') ?? value
-  if (!SNAPSHOT_KEYS.some((key) => Array.isArray(inner[key]))) return null
+  if (!SNAPSHOT_KEYS.every((key) => Array.isArray(inner[key]))) return null
   return inner
 }
 

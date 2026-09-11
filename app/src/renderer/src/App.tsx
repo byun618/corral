@@ -70,7 +70,7 @@ export function App(): React.JSX.Element {
         </span>
         {state.link.droppingPush ? (
           <span className="meta warn" data-dropping>
-            push 유실 주입 중
+            push 유실 주입 중{state.link.dropPushOnly === null ? '' : ` (${state.link.dropPushOnly.join('·')}만)`}
           </span>
         ) : null}
         {state.diagnostics ? (
@@ -205,11 +205,17 @@ function Workspace({ workspace }: { workspace: WorkspaceRow }): React.JSX.Elemen
 
 function Tab({ tab }: { tab: TabRow }): React.JSX.Element {
   return (
-    <div className="tab" data-tab={tab.tabId}>
+    <div className="tab" data-tab={tab.tabId} data-tab-order={tab.order} data-tab-number={tab.number}>
       <div className="tab-head">
-        <span className="tab-label">
-          {tab.number}. {tab.label}
-        </span>
+        {/*
+          **`number` 를 접두로 찍지 않는다** (수정 2회차 L-8 — grok + claude 보강).
+          `number` 는 자리가 아니다: `tab.move` 로 옮겨도 안 바뀐다 (M5 실측). 그래서 순서를
+          `order` 로 고친 뒤에도 접두만 남기면 목록 첫 줄이 `3. 1` 로 보인다 — 코드가 아는 모델과
+          화면이 어긋난다. herdr 쪽에서 **자리를 말하는 필드는 `label`** 이고(옮기면 1·2·3 으로
+          다시 붙는다 — `00-shapes-fix1.json`), 그래서 herdr 화면과 같은 것을 그대로 쓴다.
+          `number`·`order` 는 계측이 읽을 수 있게 data 속성으로만 남긴다.
+        */}
+        <span className="tab-label">{tab.label}</span>
         <span className="chip chip-id">{tab.tabId}</span>
       </div>
       {tab.panes.map((pane) => (

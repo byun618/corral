@@ -76,6 +76,8 @@ export class SessionLink {
   private stopped = false
   /** 계측용 — push 를 **조용히 버린다** (N7 의 유실 주입). 커넥션은 살아 있다. */
   private droppingPush = false
+  /** 버릴 이벤트를 고른 목록. null 이면 전부. */
+  private dropPushOnly: readonly string[] | null = null
   private state: LinkState = {
     phase: 'idle',
     sessionName: null,
@@ -88,6 +90,7 @@ export class SessionLink {
     lastResyncNote: null,
     resyncCount: 0,
     droppingPush: false,
+    dropPushOnly: null,
   }
 
   constructor(hooks: SessionLinkHooks) {
@@ -103,12 +106,27 @@ export class SessionLink {
    *
    * **소켓을 끊지 않는다**: 끊으면 EOF 복구 루프가 곧바로 재부트스트랩(=스냅샷)을 돌려서
    * "재동기가 돌아서 맞췄다" 가 증명되지 않는다. 실측한 유실은 커넥션이 멀쩡한 채로 일어났다.
+   *
+   * `only` 를 주면 **그 이벤트만** 버린다 (수정 2회차 H-1 재측정). 전부 버리면 corral 은
+   * 아무것도 모르는 채로 멈춰 있을 뿐이라, "일부만 모르는 corral 이 스스로 틀린 추정을 한다"
+   * 는 바로 그 상태를 못 만든다. 골라 버려야 `tab_created` 는 놓치고 `tab_closed` 는 받는다.
    */
-  setDroppingPush(dropping: boolean): void {
-    this.droppingPush = dropping
-    this.state = { ...this.state, droppingPush: dropping }
-    log('link.drop_push', { dropping })
+  setDroppingPush(input: { dropping: boolean; only?: readonly string[] | null }): void {
+    this.droppingPush = input.dropping
+    this.dropPushOnly = input.dropping ? (input.only ?? null) : null
+    this.state = {
+      ...this.state,
+      droppingPush: input.dropping,
+      dropPushOnly: this.dropPushOnly === null ? null : [...this.dropPushOnly],
+    }
+    log('link.drop_push', { dropping: input.dropping, only: this.dropPushOnly })
     this.hooks.onChange()
+  }
+
+  /** 이 봉투를 버리나 — 켜져 있고, 고른 목록이 있으면 거기 든 것만. */
+  private shouldDrop(frame: PushFrame): boolean {
+    if (!this.droppingPush) return false
+    return this.dropPushOnly === null || this.dropPushOnly.includes(frame.event)
   }
 
   open(session: SessionHandle): void {
@@ -315,6 +333,8 @@ export class SessionLink {
         added: result.added,
         removed: result.removed,
         keptNewer: result.keptNewer,
+        // 걷어 낸 묘비 — "추정이 틀렸고 재동기가 되돌렸다" 의 원자료 (수정 2회차 H-1ⓑ).
+        lifted: result.lifted,
         after: this.store.ids(),
       })
       this.hooks.onChange()
@@ -358,7 +378,7 @@ export class SessionLink {
       label: 'agent',
       onPush: (frame, at) => {
         if (generation !== this.generation) return
-        if (this.droppingPush) {
+        if (this.shouldDrop(frame)) {
           log('push.dropped', { label: 'agent', event: frame.event })
           return
         }
@@ -369,7 +389,18 @@ export class SessionLink {
       },
       onDrop: (reason, detail) => {
         if (generation !== this.generation) return
-        log('agent.sub.dropped', { reason, detail })
+        /**
+         * **자기 구독일 때만 참조를 턴다** (수정 2회차 M-2 — codex, fix1 원자료로 실증).
+         *
+         * 이 구독을 교체할 때 `close()` 를 먼저 부르고 새 `Subscription` 을 할당하는데,
+         * 옛 소켓의 `close` 이벤트는 **새 참조가 들어간 뒤에** 온다. 세대는 안 바뀌므로
+         * 위의 가드도 안 걸린다. 그대로 두면 방금 연 구독의 참조가 지워져 다시 닫을 수 없는
+         * 커넥션이 남았다 (`n5-consistency/app.ndjson`: open 44 vs local drop 26).
+         * `catch` 경로에는 이미 같은 검사가 있었다 — 그 모양을 여기에도 둔다.
+         */
+        const mine = this.agentSubscription === subscription
+        log('agent.sub.dropped', { reason, detail, mine })
+        if (!mine) return
         this.agentSubscription = null
         this.agentPaneKey = ''
         // 본 구독이 살아 있으면 상태 구독만 다시 연다. 죽었으면 본 구독의 복구 루프가 처리한다.
@@ -395,7 +426,7 @@ export class SessionLink {
   // --- push ------------------------------------------------------------------
 
   private onPush(frame: PushFrame, at: number): void {
-    if (this.droppingPush) {
+    if (this.shouldDrop(frame)) {
       log('push.dropped', { label: 'main', event: frame.event, subject: subjectOf(frame) })
       return
     }

@@ -59,6 +59,12 @@ export type LinkState = {
   resyncCount: number
   /** 계측용 — push 를 일부러 버리고 있나 (N7 유실 주입). 평시에는 false. */
   droppingPush: boolean
+  /**
+   * 유실 주입을 **일부 이벤트에만** 걸었을 때 그 목록 (계측 전용, 수정 2회차 H-1 재측정).
+   * `null` 이면 전부 버린다. "corral 이 일부를 모르는 상태" 를 실제 앱에서 만들려면
+   * 전부가 아니라 **고른 이벤트만** 새어 나가게 해야 한다.
+   */
+  dropPushOnly: string[] | null
 }
 
 // --- 목록 (repo → worktree → tab → pane) -------------------------------------

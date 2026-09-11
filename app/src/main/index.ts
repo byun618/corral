@@ -134,7 +134,10 @@ function currentState(): AppState {
   }
   knownPaneIds = paneIds
   // 사라진 탭에 붙은 기동·종료 기록은 같이 턴다 — 없는 행에 붙은 표시는 그 자체가 유령이다.
-  lifecycle.prune(new Set(rows.flatMap((row) => row.tabs.map((tab) => tab.tabId))))
+  lifecycle.prune(
+    new Set(rows.flatMap((row) => row.tabs.map((tab) => tab.tabId))),
+    new Set(rows.map((row) => row.workspaceId)),
+  )
   return {
     revision,
     sessions,
@@ -219,6 +222,13 @@ function createRow(input: { workspaceId: string; kind: string; label: string | n
 
 function closeRow(input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> {
   return lifecycle.close(input)
+}
+
+/** 끝난 기동 기록을 사용자가 턴다 (탭이 안 만들어진 실패의 유일한 손잡이다). */
+function dismissLaunch(launchId: string): boolean {
+  const done = lifecycle.dismiss(launchId)
+  if (done) scheduleEmit()
+  return done
 }
 
 /**
@@ -306,6 +316,7 @@ app.whenReady().then(() => {
     createRow(input),
   )
   ipcMain.handle('corral:closeRow', (_event, input: { tabId: string; confirmed: boolean }) => closeRow(input))
+  ipcMain.handle('corral:dismissLaunch', (_event, launchId: string) => dismissLaunch(launchId))
   ipcMain.handle('corral:refreshSessions', () => pollSessions())
   ipcMain.on('corral:reportRendered', (_event, rendered: number) => {
     log('ui.rendered', { revision: rendered })

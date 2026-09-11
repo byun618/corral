@@ -6,16 +6,28 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { APP_DIR, RAW_DIR, defaultSessionWrites, pct, readLog, writeRaw } from './lib.mjs'
+import { APP_DIR, RAW_DIR, RAW_ROOT, defaultSessionWrites, pct, readLog, writeRaw } from './lib.mjs'
 
-const runsDir = path.join(RAW_DIR, '_runs')
-const runs = fs.existsSync(runsDir) ? fs.readdirSync(runsDir).sort() : []
+/**
+ * **회차를 가리지 않고 전부 센다.** 1회차는 `raw/claude/_runs/`, 수정 1회차는
+ * `raw/claude/fix1/_runs/` 에 있다 — 관문 ⑥은 "전 실행 로그" 를 요구하므로 둘 다 훑는다.
+ */
+const runDirs = [path.join(RAW_ROOT, '_runs'), path.join(RAW_ROOT, 'fix1', '_runs')]
+const runs = runDirs.flatMap((dir) =>
+  fs.existsSync(dir)
+    ? fs
+        .readdirSync(dir)
+        .sort()
+        .map((name) => ({ name: dir.includes('/fix1/') ? `fix1/${name}` : name, path: path.join(dir, name) }))
+    : [],
+)
 
 const out = { at: new Date().toISOString(), runs: [], 합계: null, 화이트리스트: null, a2: null }
 
 const allLatencies = { 생성: [], 종료: [] }
-for (const name of runs) {
-  const logPath = path.join(runsDir, name, 'app.ndjson')
+for (const run of runs) {
+  const name = run.name
+  const logPath = path.join(run.path, 'app.ndjson')
   const entries = readLog(logPath)
   if (entries.length === 0) continue
   const writes = defaultSessionWrites(entries)
@@ -54,17 +66,23 @@ out.화이트리스트 = {
 }
 out.화이트리스트.추가가_목록에있나 = out.화이트리스트.LIFE346추가.every((method) => out.화이트리스트.목록.includes(method))
 
-// 세션 가드가 그대로 살아 있나 — 두 쓰기 경로가 같은 함수를 쓰는지 파일로 확인한다.
+/**
+ * 세션 가드 — **입력과 생성·종료가 서로 다른 문을 쓰는지** 파일로 확인한다 (1차 리뷰 M1).
+ * 1회차는 함수가 하나여서 `CORRAL_ALLOW_DEFAULT_INPUT=1` 이 생성·종료까지 열었다.
+ */
 const guard = fs.readFileSync(path.join(APP_DIR, 'src/main/herdr/default-session-guard.ts'), 'utf8')
+const terminalSource = fs.readFileSync(path.join(APP_DIR, 'src/main/herdr/pane-terminal.ts'), 'utf8')
+const lifecycleSource = fs.readFileSync(path.join(APP_DIR, 'src/main/herdr/lifecycle.ts'), 'utf8')
+const lifecycleGuard = guard.slice(guard.indexOf('export function defaultSessionLifecycleBlocked'))
 out.세션가드 = {
   파일: 'app/src/main/herdr/default-session-guard.ts',
-  열쇠: guard.includes('CORRAL_ALLOW_DEFAULT_INPUT'),
-  쓰는곳: ['pane-terminal.ts (입력)', 'lifecycle.ts (생성·종료)'].filter((_, index) =>
-    [
-      fs.readFileSync(path.join(APP_DIR, 'src/main/herdr/pane-terminal.ts'), 'utf8'),
-      fs.readFileSync(path.join(APP_DIR, 'src/main/herdr/lifecycle.ts'), 'utf8'),
-    ][index].includes('defaultSessionWriteBlocked'),
-  ),
+  '입력 가드': 'defaultSessionInputBlocked',
+  '생성·종료 가드': 'defaultSessionLifecycleBlocked',
+  '입력에 열쇠가 있나': guard.includes('CORRAL_ALLOW_DEFAULT_INPUT'),
+  '생성·종료에 열쇠가 있나': lifecycleGuard.includes('CORRAL_ALLOW_DEFAULT_INPUT'),
+  'pane-terminal.ts 가 입력 가드를 쓴다': terminalSource.includes('defaultSessionInputBlocked'),
+  'lifecycle.ts 가 생성·종료 가드를 쓴다': lifecycleSource.includes('defaultSessionLifecycleBlocked'),
+  'lifecycle.ts 가 입력 가드를 쓰지 않는다': !lifecycleSource.includes('defaultSessionInputBlocked'),
 }
 
 // A2 — M2 가 남긴 회차별 지연을 다시 굴린다 (원자료가 진실이고 여기서는 요약만 한다).

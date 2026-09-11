@@ -19,7 +19,15 @@ import { fileURLToPath } from 'node:url'
 export const SESSION = process.env.LIFE346_SESSION ?? 'life346-claude'
 export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
 export const REPO_DIR = path.dirname(APP_DIR)
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-346-session-lifecycle/raw/claude')
+export const RAW_ROOT = path.join(REPO_DIR, 'specs/LIFE-346-session-lifecycle/raw/claude')
+
+/**
+ * 재측정 회차는 **1회차 원자료를 덮지 않는다.** 1차 판정표와 verdict 의 재계산이 그 파일들을
+ * 가리키고 있어서, 같은 이름으로 다시 쓰면 근거가 사라진다. `LIFE346_RAW_SUBDIR=fix1` 이면
+ * 결과·로그·샷이 전부 그 아래로 간다 (`raw/claude/fix1/…`).
+ */
+export const RAW_SUBDIR = process.env.LIFE346_RAW_SUBDIR ?? ''
+export const RAW_DIR = RAW_SUBDIR.length > 0 ? path.join(RAW_ROOT, RAW_SUBDIR) : RAW_ROOT
 
 /** 사용자의 `default` 세션을 코드 레벨에서 막는다 (관문 ⑥). */
 export function socketPath(session = SESSION) {
@@ -390,6 +398,15 @@ export const firstWorkspaceId = async (app) => (await app.state()).workspaces[0]
  * 화면에 그 선택자가 **나타날 때까지** 본다. 고정 대기로 누르면 아직 안 그려진 버튼을
  * 누르고 "실패" 로 적게 된다 — 실제로 첫 스모크에서 200ms 가 모자라 그렇게 됐다.
  */
+/**
+ * 판정 회차에 누른 **모든 버튼의 히트테스트 기록**. 원자료에 그대로 실린다 —
+ * "눌렀다" 가 아니라 "그 좌표의 맨 위 요소가 그 버튼이었고 거기로 마우스를 보냈다" 가 근거다.
+ */
+const clicks = []
+export function clickLog() {
+  return clicks
+}
+
 export async function clickWhenVisible(app, selector, { timeoutMs = 10000 } = {}) {
   const seen = await until(async () => (await app.query(selector)).found.length > 0, {
     timeoutMs,
@@ -397,9 +414,33 @@ export async function clickWhenVisible(app, selector, { timeoutMs = 10000 } = {}
     what: selector,
   })
   if (!seen.ok) throw new Error(`화면에 안 나타났다: ${selector}`)
-  const response = await app.click(selector)
-  if (!response.ok) throw new Error(`못 눌렀다: ${selector}`)
-  return { ...response, waitedMs: seen.ms }
+  // **눌리는 자리에 실제로 있을 때까지** 본다. DOM 에 있는 것과 사람이 닿는 것은 다르다 —
+  // 1회차의 `el.click()` 이 터미널에 덮인 `×` 를 그냥 통과시켰다 (리뷰 H1).
+  const reachable = await until(
+    async () => {
+      const response = await app.click(selector)
+      return response.hit === true ? response : null
+    },
+    { timeoutMs, everyMs: 120, what: `${selector} 히트테스트` },
+  )
+  if (!reachable.ok) {
+    const last = await app.click(selector)
+    throw new Error(`가려져 있다 — 못 눌렀다: ${selector} (위에 있는 것: ${last.blockedBy ?? '?'})`)
+  }
+  const record = {
+    at: Date.now(),
+    selector,
+    hit: reachable.value.hit === true,
+    x: reachable.value.x ?? null,
+    y: reachable.value.y ?? null,
+    elementFromPoint: reachable.value.elementFromPoint ?? null,
+    target: reachable.value.target ?? null,
+    method: reachable.value.method ?? null,
+    보일때까지ms: seen.ms,
+    닿을때까지ms: reachable.ms,
+  }
+  clicks.push(record)
+  return { ...reachable.value, waitedMs: seen.ms, hitWaitedMs: reachable.ms, record }
 }
 
 /** `+ 새 행` → kind 고르기. **화면의 버튼만** 쓴다 (N10 의 "corral UI 조작만"). */

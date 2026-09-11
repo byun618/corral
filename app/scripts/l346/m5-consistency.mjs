@@ -13,6 +13,7 @@
 // **목록 정합**은 corral 의 책임이라 하네스가 herdr 에 직접 걸어 corral 이 따라오는지 본다.
 
 import {
+  clickLog,
   createRowByUi,
   firstWorkspaceId,
   corralIds,
@@ -119,6 +120,9 @@ for (let round = 1; round <= TIMES; round++) {
     timeoutMs: 15000,
     everyMs: 40,
   })
+  // **수렴에 몇 ms 가 걸렸는지 적는다** (1차 리뷰 낮음 1 — claude). 1회차는 "예산 안에 맞았다"
+  // 만 남겨서, 잠깐 어긋났다 맞은 회차와 처음부터 맞은 회차가 구분되지 않았다.
+  const firstLook = await compare()
   const converged = await until(async () => (await compare()).일치, { what: '수렴', timeoutMs: 10000, everyMs: 60 })
   const result = await compare()
   out.cases.a.push({
@@ -126,6 +130,9 @@ for (let round = 1; round <= TIMES; round++) {
     ...row,
     확인모달: confirmed,
     게이트: { herdrGone: herdrGone.ok, converged: converged.ok },
+    herdr사라짐ms: herdrGone.ms,
+    처음부터일치: firstLook.일치,
+    수렴ms: firstLook.일치 ? 0 : converged.ms,
     스냅샷재조회: snapshotsSince(mark),
     ...result,
   })
@@ -145,9 +152,19 @@ for (let round = 1; round <= TIMES; round++) {
     timeoutMs: 15000,
     everyMs: 40,
   })
+  const firstLook = await compare()
   const converged = await until(async () => (await compare()).일치, { what: '수렴', timeoutMs: 10000, everyMs: 60 })
   const result = await compare()
-  out.cases.b.push({ round, ...row, 게이트: { herdrGone: herdrGone.ok, converged: converged.ok }, 스냅샷재조회: snapshotsSince(mark), ...result })
+  out.cases.b.push({
+    round,
+    ...row,
+    게이트: { herdrGone: herdrGone.ok, converged: converged.ok },
+    herdr사라짐ms: herdrGone.ms,
+    처음부터일치: firstLook.일치,
+    수렴ms: firstLook.일치 ? 0 : converged.ms,
+    스냅샷재조회: snapshotsSince(mark),
+    ...result,
+  })
   console.log(`ⓑ#${round}`, result.일치 ? 'OK' : JSON.stringify(result.차이))
 }
 
@@ -205,6 +222,9 @@ const roll = (rows) => ({
     (item) => item.corral에서사라짐 === false || item.게이트?.herdrGone === false || item.게이트?.converged === false,
   ).length,
   스냅샷재조회합: rows.reduce((sum, item) => sum + item.스냅샷재조회, 0),
+  /** 낮음 1 — "예산 안에 맞았다" 가 아니라 **몇 ms 에 맞았나** */
+  처음부터일치: rows.filter((item) => item.처음부터일치 === true).length,
+  수렴ms: rows.map((item) => item.수렴ms ?? item.corral반영ms ?? null),
 })
 out.요약 = {
   'ⓐ tab.close 뒤 pane 잔재': roll(out.cases.a),
@@ -219,6 +239,7 @@ out.이벤트적용 = app
   .filter((entry) => entry.tag === 'push.applied' && ['tab_closed', 'pane_closed', 'workspace_closed'].includes(entry.event))
   .map((entry) => ({ at: entry.at, event: entry.event, changed: entry.changed, note: entry.note }))
 
+out.클릭증거 = clickLog()
 writeRaw('n7-list-consistency.json', out)
 await sleep(200)
 await app.stop()

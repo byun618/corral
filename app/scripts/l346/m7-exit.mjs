@@ -89,7 +89,17 @@ for (const kind of ['shell', 'claude']) {
   }
   await request('pane.send_text', { pane_id: paneId, text: 'exit\n' })
 
-  const dead = await until(() => !alive(processes.shellPid), { what: '셸 사멸', timeoutMs: 20000, everyMs: 25 })
+  let dead = await until(() => !alive(processes.shellPid), { what: '셸 사멸', timeoutMs: 8000, everyMs: 25 })
+  if (!dead.ok) {
+    // 셸이 rc 작업(예: pyenv rehash)에 붙들려 있으면 친 `exit` 는 버퍼에 남는다. 사람이라면
+    // 한 번 더 친다. **조용히 넘기지는 않는다** — 안 죽었는데 "이벤트 0건" 으로 적으면 그건
+    // 측정이 아니라 침묵이다 (1회차 claude 갈래가 그랬다).
+    const screen = await request('pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
+    console.error('[m7] exit 가 안 먹었다 — 다시 친다. 화면 끝:', (screen.read?.text ?? '').split('\n').filter((line) => line.trim()).slice(-2))
+    await request('pane.send_text', { pane_id: paneId, text: '\nexit\n' })
+    dead = await until(() => !alive(processes.shellPid), { what: '셸 사멸(재시도)', timeoutMs: 15000, everyMs: 25 })
+    if (!dead.ok) throw new Error(`셸이 exit 로 안 끝났다 (${kind}) — A5 를 잴 수 없다`)
+  }
   await sleep(2500) // 늦게 오는 이벤트까지 받는다
   const events = sub.drain()
   const [state, truth] = await Promise.all([app.state(), herdrTruth()])

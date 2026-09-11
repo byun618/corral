@@ -165,6 +165,8 @@ export type CorralApi = {
   }>
   /** LIFE-346 — 행 종료. 에이전트가 도는 탭은 `confirmed:true` 없이는 아무것도 보내지 않는다 */
   closeRow: (input: { tabId: string; confirmed: boolean }) => Promise<CloseOutcome>
+  /** 끝난 기동 기록 털기 — 탭이 안 만들어진 실패의 유일한 손잡이다 (1차 리뷰 중간 1). */
+  dismissLaunch: (launchId: string) => Promise<boolean>
   /** S3 근거용 — 렌더러 컨텍스트에서 실제로 무엇이 막혀 있는지 main 로그에 남긴다. */
   reportProbe: (name: string, detail: Record<string, string>) => void
   /** preload 가 자기 컨텍스트에서 관측한 값 (S3). */

@@ -7,6 +7,7 @@
 // 순간부터 관측될 때까지** 사이드바를 연속으로 찍고, 각 샷과 같은 시각의 `phase` 를 함께 적는다.
 
 import {
+  clickLog,
   createRowByUi,
   firstWorkspaceId,
   herdrTruth,
@@ -124,7 +125,13 @@ for (const kind of KINDS) {
     tabId,
     paneId,
     tabAppearedMs: grew.ms,
-    /** 클릭부터 **그 프로그램을 실제로 본** 순간까지 */
+    /**
+     * **기점을 둘 다 적는다** (1차 리뷰 낮음 1 — codex·claude).
+     * 1회차는 `observedMs` 하나만 싣고 결과 문서가 그걸 "클릭부터" 로 읽었다. 실제로는 새 탭을
+     * 찾은 **뒤** 시작한 관측 루프의 경과다. 두 기점 차가 탭이 목록에 뜨는 시간(100~400ms)이다.
+     */
+    observedSinceClickMs: trace.find((item) => item.hit !== null)?.sinceClickMs ?? null,
+    /** 관측 루프 기준 — 새 탭을 찾은 뒤부터 그 프로그램을 볼 때까지 */
     observedMs: settled.ok ? settled.ms : null,
     observed: settled.ok,
     /** ← 이 칸이 N1 의 근거다. 앱이 뭐라 했든 pane 의 포그라운드가 이것이다 */
@@ -154,6 +161,7 @@ out.corralAfter = (await app.state()).workspaces.map((row) => ({
   tabs: row.tabs.map((tab) => ({ tabId: tab.tabId, panes: tab.panes.map((pane) => `${pane.paneId}:${pane.agent ?? '-'}`) })),
 }))
 
+out.클릭증거 = clickLog()
 writeRaw('n1-create-kinds.json', out)
 await sleep(300)
 await app.stop()

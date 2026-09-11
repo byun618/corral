@@ -9,6 +9,7 @@
 
 import {
   alive,
+  clickLog,
   clickWhenVisible,
   createRowByUi,
   firstWorkspaceId,
@@ -165,6 +166,7 @@ const out = {
 }
 console.log(JSON.stringify({ n10: out.n10, n9종료후: out.n9.종료후, a1: out.a1 }, null, 2))
 
+out.클릭증거 = clickLog()
 writeRaw('n10-scenario.json', out)
 await app.stop()
 await tidySession()

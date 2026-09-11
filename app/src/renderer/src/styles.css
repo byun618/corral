@@ -90,6 +90,9 @@ body {
 .sidebar {
   width: 340px;
   flex: none;
+  /* 무엇이 넘쳐 오든 목록이 위에 그려진다 — 종료 `×` 가 덮이면 안 되는 자리다 (H1). */
+  position: relative;
+  z-index: 1;
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -208,13 +211,22 @@ body {
   background: var(--ok);
 }
 
+/* LIFE-346 리뷰 H1 — **터미널 패널이 사이드바를 덮던 것을 여기서 끊는다.**
+   `.term-host` 는 격자의 *안 줄인* 폭을 레이아웃 폭으로 들고 있고(scale 은 레이아웃을 안 바꾼다),
+   `.term-wrap` 의 자동 최소폭이 그걸 따라가 무대보다 넓어졌다. 가운데 정렬이라 넘친 만큼이
+   **양쪽으로** 삐져나오고, `<main>` 은 DOM 에서 `<aside>` 뒤라 왼쪽 삐짐이 사이드바 위에 그려졌다.
+   그 띠에 행 종료 `×` 가 있었다 (샷 `shots/m6-scenario/004·007` 에서 사이드바 글자가 잘려 있다).
+   고치는 곳은 셋: 넘치지 않게 하고(min-width:0), 넘쳐도 왼쪽으로는 안 가게 하고(safe center),
+   그래도 남으면 사이드바가 위에 그려지게 한다(z-index). */
 .stage {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  justify-content: safe center;
   padding: 24px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .placeholder {
@@ -432,6 +444,9 @@ body {
   height: 100%;
   min-height: 0;
   gap: 6px;
+  /* 격자의 안 줄인 폭이 이 상자의 최소폭이 되면 무대 밖으로 밀린다 (위 .stage 주석). */
+  min-width: 0;
+  max-width: 100%;
 }
 
 .term-head {

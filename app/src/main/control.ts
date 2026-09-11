@@ -107,6 +107,46 @@ const DUMP_SCRIPT = `(() => {
   }
 })()`
 
+/**
+ * 그 버튼이 **사람에게 닿나** — 누르기 전에 화면에 물어본다 (리뷰 H1).
+ *
+ * 1회차는 `el.click()` 으로 눌렀다. 그건 요소에 이벤트를 직접 꽂는 것이라 가시성·z-order·
+ * 히트테스트를 하나도 안 거친다. 그래서 터미널 패널에 **완전히 덮인** 종료 `×` 도 그대로
+ * "눌렀다" 가 됐고, 종료를 쓴 전 회차(N5·N6·N7·N10)가 그 문으로 통과했다.
+ *
+ * 그래서 순서를 바꾼다: ① 보이는 데까지 스크롤 ② 중심 좌표의 `elementFromPoint` 가 그 버튼인지
+ * 확인 ③ 맞을 때만 **좌표로** 마우스 이벤트를 보낸다. 아니면 무엇이 위에 있는지 적고 누르지 않는다.
+ */
+function clickProbe(selector: string): string {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)})
+    if (!el) return { found: false }
+    el.scrollIntoView({ block: 'center', inline: 'center' })
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) return { found: true, hit: false, blockedBy: 'zero-size', rect: { w: r.width, h: r.height } }
+    const x = Math.round(r.left + r.width / 2)
+    const y = Math.round(r.top + r.height / 2)
+    const top = document.elementFromPoint(x, y)
+    const describe = (node) => {
+      if (!node) return null
+      const id = node.id ? '#' + node.id : ''
+      const cls = typeof node.className === 'string' && node.className.length > 0 ? '.' + node.className.trim().split(/\\s+/).join('.') : ''
+      return node.tagName.toLowerCase() + id + cls
+    }
+    const hit = top !== null && (top === el || el.contains(top) || top.contains(el))
+    return {
+      found: true,
+      hit,
+      x,
+      y,
+      rect: { left: r.left, top: r.top, w: r.width, h: r.height },
+      elementFromPoint: describe(top),
+      target: describe(el),
+      blockedBy: hit ? null : describe(top),
+    }
+  })()`
+}
+
 export function startControlServer(handlers: ControlHandlers): net.Server | null {
   const socketPath = process.env.CORRAL_CONTROL_SOCKET
   if (!socketPath || socketPath.length === 0) return null
@@ -203,13 +243,27 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (target === null) throw new Error('창이 없다')
         const selector = readString(parsed, 'selector')
         if (selector === null) throw new Error('selector 필요')
+        const probe = await target.webContents.executeJavaScript(clickProbe(selector), true)
+        if (!isRecord(probe) || probe['found'] !== true) {
+          socket.write(JSON.stringify({ ok: false, hit: false, selector, error: '선택자가 화면에 없다' }) + '\n')
+          return
+        }
+        const x = readNumber(probe, 'x')
+        const y = readNumber(probe, 'y')
+        const hit = probe['hit'] === true
+        if (!hit || x === null || y === null) {
+          // **누르지 않는다.** 가려진 버튼을 눌러 주는 순간 측정이 거짓말을 하기 시작한다.
+          log('control.click.blocked', { selector, blockedBy: readString(probe, 'blockedBy') })
+          socket.write(JSON.stringify({ ok: false, hit: false, selector, ...probe }) + '\n')
+          return
+        }
         const at = Date.now()
-        const hit = await target.webContents.executeJavaScript(
-          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true })()`,
-          true,
-        )
-        log('control.click', { selector, hit: hit === true, at })
-        socket.write(JSON.stringify({ ok: hit === true, selector, at }) + '\n')
+        // 좌표로 보낸다 — 히트테스트·z-order 를 **크로미움이** 하게 두는 것이 요점이다.
+        target.webContents.sendInputEvent({ type: 'mouseMove', x, y })
+        target.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+        target.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+        log('control.click', { selector, hit: true, x, y, at, method: 'sendInputEvent' })
+        socket.write(JSON.stringify({ ok: true, selector, at, method: 'sendInputEvent', ...probe }) + '\n')
         return
       }
       /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나 — 확인 모달·배지 검사용. */

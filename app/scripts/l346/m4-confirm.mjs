@@ -14,6 +14,7 @@
 
 import {
   alive,
+  clickLog,
   clickWhenVisible,
   createRowByUi,
   firstWorkspaceId,
@@ -140,6 +141,7 @@ async function makeAgentRow() {
 out.공백 = {
   'herdr confirmation_required': '재현하지 않았다 (linked worktree workspace 가 필요 — 분석 §8). 코드 경로는 그대로 보이고 멈춘다',
 }
+out.클릭증거 = clickLog()
 writeRaw('n6-close-confirm.json', out)
 console.log(JSON.stringify(out.cases, null, 2))
 await app.stop()

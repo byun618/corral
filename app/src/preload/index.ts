@@ -21,6 +21,7 @@ const EXPOSED = [
   'sendPaneKeys',
   'createRow',
   'closeRow',
+  'dismissLaunch',
 ]
 
 const api = {
@@ -54,6 +55,7 @@ const api = {
   }> => ipcRenderer.invoke('corral:createRow', input),
   closeRow: (input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> =>
     ipcRenderer.invoke('corral:closeRow', input),
+  dismissLaunch: (launchId: string): Promise<boolean> => ipcRenderer.invoke('corral:dismissLaunch', launchId),
   reportProbe: (name: string, detail: Record<string, string>): void =>
     ipcRenderer.send('corral:reportProbe', name, detail),
   // S3 근거 — preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다.

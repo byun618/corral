@@ -27,7 +27,7 @@
 
 import type { LaunchRow, LifecycleState, ClosingRow, LaunchPhase, SessionInfo } from '../../shared/types.js'
 import { log } from '../log.js'
-import { defaultSessionWriteBlocked } from './default-session-guard.js'
+import { defaultSessionLifecycleBlocked } from './default-session-guard.js'
 import { isRecord, readNumber, readRecord, readString, type PushFrame } from './protocol.js'
 import { request } from './request.js'
 
@@ -66,6 +66,14 @@ const SHELL_NAMES: readonly string[] = ['zsh', 'bash', 'sh', 'fish', 'dash', 'ks
  * 진짜로 튕기고, 앱의 재시도가 진짜로 일한다. 평시 실행에는 이 변수가 없다.
  */
 function injectedTabEnv(): Record<string, string> | null {
+  /**
+   * 계측용 둘째 — **`tab.create` 자체를 herdr 가 거절하게** 만든다 (`CORRAL_INJECT_BAD_ENV`).
+   *
+   * N4 의 1회차 주입은 `agent.start` 쪽 두 갈래만 덮었다. 탭을 **못 만든** 실패는 탭도 pane 도
+   * 없는 다른 모양인데(1차 리뷰 중간 1) 재 본 적이 없었다. 응답을 가짜로 만들지 않는다:
+   * 빈 키가 든 env 는 herdr 0.9.0 이 `invalid_env` 로 **진짜로 거절한다**.
+   */
+  if (process.env.CORRAL_INJECT_BAD_ENV === '1') return { '': 'x' }
   const dir = process.env.CORRAL_INJECT_ZDOTDIR
   return dir === undefined || dir.length === 0 ? null : { ZDOTDIR: dir }
 }
@@ -161,7 +169,7 @@ export class Lifecycle {
     if (session === null) {
       return { ok: false, launchId, error: '세션이 선택되지 않았다' }
     }
-    const blocked = defaultSessionWriteBlocked(session.isDefault)
+    const blocked = defaultSessionLifecycleBlocked(session.isDefault)
     if (blocked !== null) {
       log('life.create.blocked', { session: session.name, reason: blocked })
       return { ok: false, launchId, error: blocked }
@@ -212,10 +220,32 @@ export class Lifecycle {
     this.patch(launchId, { ...patch, phase, settledAt: Date.now() })
     if (phase !== 'running') return
     // 뜬 행은 잠깐 뒤에 기록을 턴다. 실패는 남긴다 — 그게 N4 의 정책이다.
+    // 세대를 본다: 그 사이 세션이 바뀌었으면 `setSession()` 이 이미 다 비웠고, 여기서 한 번 더
+    // 걸러 봐야 지울 것도 없이 렌더만 한 번 더 돈다 (1차 리뷰 낮음 2 — 같은 파일의 다른
+    // 비동기 경로는 전부 세대를 보는데 이 둘만 안 봤다).
+    const generation = this.generation
     setTimeout(() => {
+      if (this.stale(generation)) return
       this.launches = this.launches.filter((item) => item.launchId !== launchId)
       this.emit()
     }, RUNNING_KEEP_MS)
+  }
+
+  /**
+   * 실패 기록을 사용자가 **직접 턴다** (1차 리뷰 중간 1).
+   *
+   * `tab.create` 자체가 실패한 기동에는 탭이 없다 — 그래서 탭 줄도, 그 줄의 종료 `×` 도 없다.
+   * 화면에 남는 것은 이 기동 기록 하나뿐인데 1회차에는 그걸 지울 손잡이가 없었다.
+   * **자동으로 지우지는 않는다**: 그러면 무엇이 왜 안 떴는지가 스쳐 지나가고, 그건 N4 에서
+   * 스스로 고른 정책("실패를 화면에 적는다")을 뒤집는 것이다. 끝난 기록만 턴다.
+   */
+  dismiss(launchId: string): boolean {
+    const target = this.launches.find((item) => item.launchId === launchId) ?? null
+    if (target === null || target.settledAt === null) return false
+    this.launches = this.launches.filter((item) => item.launchId !== launchId)
+    log('life.dismiss', { launchId, phase: target.phase })
+    this.emit()
+    return true
   }
 
   private stale(generation: number): boolean {
@@ -482,7 +512,7 @@ export class Lifecycle {
   async close(input: CloseRequest): Promise<CloseOutcome> {
     const session = this.session
     if (session === null) return { ok: false, needsConfirm: false, error: '세션이 선택되지 않았다' }
-    const blocked = defaultSessionWriteBlocked(session.isDefault)
+    const blocked = defaultSessionLifecycleBlocked(session.isDefault)
     if (blocked !== null) {
       log('life.close.blocked', { session: session.name, tabId: input.tabId, reason: blocked })
       return { ok: false, needsConfirm: false, error: blocked }
@@ -531,6 +561,7 @@ export class Lifecycle {
       // 목록에서 그 줄이 실제로 사라지는 것은 `tab_closed` 가 맡는다 — 여기서 지우지 않는다.
       // 기록만 잠깐 뒤에 턴다.
       setTimeout(() => {
+        if (this.stale(generation)) return
         this.closings = this.closings.filter((item) => item.tabId !== input.tabId)
         this.emit()
       }, RUNNING_KEEP_MS)
@@ -593,10 +624,17 @@ export class Lifecycle {
    * 탭" 을 이유로 털면 방금 만든 기동이 화면에서 사라진다 (M1 1회차에서 실제로 그렇게 됐다:
    * 기동 배지가 한 번도 안 보였다). 사라졌다고 말할 자격은 **끝난 기록**에만 있다.
    */
-  prune(liveTabIds: ReadonlySet<string>): boolean {
+  prune(liveTabIds: ReadonlySet<string>, liveWorkspaceIds: ReadonlySet<string> = new Set()): boolean {
     const gone = (tabId: string | null, settledAt: number | null): boolean =>
       settledAt !== null && tabId !== null && !liveTabIds.has(tabId)
-    const launches = this.launches.filter((item) => !gone(item.tabId, item.settledAt))
+    /**
+     * 탭을 못 만든 실패는 탭 id 가 없어 위 규칙에 안 걸린다 (1차 리뷰 중간 1). 그래도 그
+     * workspace 자체가 사라졌으면 붙어 있을 자리가 없으므로 같이 턴다. workspace 가 살아 있는
+     * 동안에는 **남긴다** — 사용자가 `×` 로 턴다(`dismiss`). 정책은 N4 와 같다.
+     */
+    const homeless = (item: LaunchRow): boolean =>
+      item.settledAt !== null && item.tabId === null && liveWorkspaceIds.size > 0 && !liveWorkspaceIds.has(item.workspaceId)
+    const launches = this.launches.filter((item) => !gone(item.tabId, item.settledAt) && !homeless(item))
     const closings = this.closings.filter((item) => !gone(item.tabId, item.settledAt))
     if (launches.length === this.launches.length && closings.length === this.closings.length) return false
     this.launches = launches

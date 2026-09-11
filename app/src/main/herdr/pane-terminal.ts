@@ -45,7 +45,7 @@ import {
   visibleRowCount,
 } from '../../shared/frame.js'
 import { log } from '../log.js'
-import { defaultSessionWriteBlocked } from './default-session-guard.js'
+import { defaultSessionInputBlocked } from './default-session-guard.js'
 import { request } from './request.js'
 import { isRecord, readNumber, readRecord, readString, type PushFrame } from './protocol.js'
 
@@ -414,7 +414,7 @@ export class PaneTerminal {
     if (target === null) return 'pane 이 선택되지 않았다'
     if (!this.alive) return `pane 이 살아 있지 않다: ${this.deadReason ?? '알 수 없음'}`
     // LIFE-346 이 같은 규칙을 행 생성·종료에도 쓰므로 한 함수로 모았다.
-    return defaultSessionWriteBlocked(target.isDefaultSession)
+    return defaultSessionInputBlocked(target.isDefaultSession)
   }
 
   /**

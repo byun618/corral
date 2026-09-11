@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  clickLog,
   alive,
   clickWhenVisible,
   createRowByUi,
@@ -187,4 +188,5 @@ function slowZdotdir() {
   return dir
 }
 
+all.클릭증거 = clickLog()
 writeRaw('n3-n5-rounds.json', all)

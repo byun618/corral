@@ -100,6 +100,19 @@ export class WorkspaceStore {
   private repos = new Map<string, RepoInfo>()
   /** 이 생애에서 닫힌 workspace 의 묘비. 재사용되지 않는 id 이므로 시간을 재지 않는다. */
   private closed = new Set<string>()
+  /**
+   * 닫힌 **탭**의 묘비 (1차 리뷰 M4 — grok·codex·claude 세 리뷰가 같은 자리를 가리켰다).
+   *
+   * `putPane` 이 탭 존재를 안 보던 것이 구멍이었다: 탭이 지워진 뒤 늦게 온 `pane_created`·
+   * `pane_updated` 가 pane 만 되살려서, **탭 목록에는 안 보이는데** `paneCount` 는 늘고
+   * `knownPaneIds` 에는 산 것으로 잡혔다. "탭이 있을 때만 넣는다" 로 막으면 `tab_created` 보다
+   * `pane_created` 가 먼저 오는 정상 구간에서 pane 을 잃는다. 그래서 workspace 와 같은 도구를
+   * 쓴다 — **닫힌 id 로 오는 것은 언제 오든 늦게 온 과거다.**
+   *
+   * 탭 id 도 재사용되지 않는다: 같은 workspace 에서 20회 연속 생성·종료한 회차의 tabId 20개가
+   * 전부 다르고 단조 증가한다 (`raw/claude/n3-n5-rounds.json` 의 natural arm).
+   */
+  private closedTabs = new Set<string>()
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -108,6 +121,7 @@ export class WorkspaceStore {
     this.tabs.clear()
     this.repos.clear()
     this.closed.clear()
+    this.closedTabs.clear()
     this.orphans = []
   }
 
@@ -226,6 +240,7 @@ export class WorkspaceStore {
         const id = readString(data, 'tab_id')
         if (id === null) return { changed: false, note: 'tab_closed 필드 부족' }
         const had = this.tabs.delete(id)
+        this.closedTabs.add(id)
         let orphaned = 0
         for (const [paneId, pane] of this.panes) {
           if (pane.tabId !== id) continue
@@ -246,7 +261,13 @@ export class WorkspaceStore {
       case 'pane_created':
       case 'pane_updated': {
         const added = this.putPane(data['pane'])
-        return { changed: added, note: added ? frame.event : `${frame.event}: 주인 없음 — 보류함` }
+        if (added) return { changed: true, note: frame.event }
+        const pane = readRecord(data, 'pane')
+        const tabId = pane === null ? null : readString(pane, 'tab_id')
+        if (tabId !== null && this.closedTabs.has(tabId)) {
+          return { changed: false, note: `${frame.event}: 닫힌 탭(${tabId}) — 묘비로 막음` }
+        }
+        return { changed: false, note: `${frame.event}: 주인 없음 — 보류함` }
       }
 
       /**
@@ -282,9 +303,32 @@ export class WorkspaceStore {
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: had, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
         const tabGone = this.tabs.delete(pane.tabId)
+        this.closedTabs.add(pane.tabId)
+        /**
+         * G4 (1차 리뷰 M3) — **그게 workspace 의 마지막 탭이었으면 workspace 도 사라진다.**
+         *
+         * 실측(`raw/claude/fix1/m3-lasttab-exit.json`): 탭이 하나뿐인 workspace 의 pane 에
+         * 사용자가 `exit` 를 치면 herdr 는 `pane_exited` **한 건만** 보내고 그 시점에
+         * `workspace.list` 에서 그 workspace 가 이미 없다. `workspace_closed` 는 **안 온다**.
+         * (`tab.close` 로 마지막 탭을 닫는 경로는 다르다 — 거기서는 `workspace_closed` 가 온다.
+         * 그래서 1회차는 이 문을 못 봤다: N7 ⓒ 는 그쪽만 쟀다.)
+         * 그대로 두면 herdr 에 없는 workspace 행이 corral 에만 남는다 — G1·G2 와 같은 유령이다.
+         */
+        const siblingTabs = [...this.tabs.values()].filter((item) => item.workspaceId === pane.workspaceId).length
+        const siblingPanes = [...this.panes.values()].filter((item) => item.workspaceId === pane.workspaceId).length
+        const workspaceGone = tabGone && siblingTabs === 0 && siblingPanes === 0 && this.workspaces.delete(pane.workspaceId)
+        if (workspaceGone) {
+          this.closed.add(pane.workspaceId)
+          this.repos.delete(pane.workspaceId)
+          this.orphans = this.orphans.filter((item) => item.workspaceId !== pane.workspaceId)
+        }
         return {
           changed: had,
-          note: tabGone ? `${frame.event}: 마지막 pane — 탭(${pane.tabId})도 지움` : frame.event,
+          note: tabGone
+            ? `${frame.event}: 마지막 pane — 탭(${pane.tabId})도 지움${
+                workspaceGone ? ` · 마지막 탭 — workspace(${pane.workspaceId})도 지움` : ''
+              }`
+            : frame.event,
         }
       }
 
@@ -479,6 +523,9 @@ export class WorkspaceStore {
     const id = readString(value, 'pane_id')
     const workspaceId = readString(value, 'workspace_id')
     if (id === null || workspaceId === null) return false
+    // 닫힌 탭의 pane 은 되살리지 않는다 — 보류함에도 안 넣는다 (주인이 영영 안 온다).
+    const tabId = readString(value, 'tab_id') ?? ''
+    if (tabId.length > 0 && this.closedTabs.has(tabId)) return false
     if (!this.workspaces.has(workspaceId)) {
       this.hold({ at: Date.now(), workspaceId, kind: 'pane', value })
       return false
@@ -534,6 +581,8 @@ export class WorkspaceStore {
     const id = readString(value, 'tab_id')
     const workspaceId = readString(value, 'workspace_id')
     if (id === null || workspaceId === null) return false
+    // 닫힌 탭으로 오는 create 는 늦게 온 과거다 (workspace 묘비와 같은 규칙).
+    if (this.closedTabs.has(id)) return false
     if (!this.workspaces.has(workspaceId)) {
       this.hold({ at: Date.now(), workspaceId, kind: 'tab', value })
       return false

@@ -499,13 +499,31 @@ function WorkspaceBody({
             .filter((item) => item.tabId === null && item.workspaceId === workspace.workspaceId)
             .map((item) => (
               <li key={item.launchId}>
-                <div className="row row-head row-pending" data-launch={item.launchId}>
-                  <span className="row-title">
-                    <span className="dot" />
-                    <span className="pane-title">{item.kind}</span>
-                    <LaunchBadge launch={item} />
-                  </span>
-                  <span className="row-sub">탭을 만드는 중</span>
+                <div className="row-line">
+                  <div className="row row-head row-pending" data-launch={item.launchId}>
+                    <span className="row-title">
+                      <span className="dot" />
+                      <span className="pane-title">{item.kind}</span>
+                      <LaunchBadge launch={item} />
+                    </span>
+                    {/* 1회차는 여기에 "탭을 만드는 중" 을 **무조건** 적었다. 그래서 실패한 뒤에도
+                        `claude 기동 실패` 와 `탭을 만드는 중` 이 한 줄에 같이 떴다 (리뷰 중간 1). */}
+                    <span className="row-sub">
+                      {item.phase === 'failed' ? (item.error ?? '탭을 못 만들었다') : '탭을 만드는 중'}
+                    </span>
+                  </div>
+                  {/* 탭이 없으니 종료할 것도 없다 — 여기서 할 수 있는 것은 **기록을 터는 것**뿐이다.
+                      끝난 기록에만 준다: 진행 중인 기동을 화면에서 지우면 그게 유령이다. */}
+                  <button
+                    type="button"
+                    className="row-x"
+                    data-dismiss-launch={item.launchId}
+                    title="이 실패 기록을 지운다"
+                    disabled={item.phase !== 'failed'}
+                    onClick={() => void window.corral.dismissLaunch(item.launchId)}
+                  >
+                    ×
+                  </button>
                 </div>
               </li>
             ))}

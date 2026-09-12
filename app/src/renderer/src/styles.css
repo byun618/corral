@@ -152,7 +152,7 @@ body {
 .term-empty { flex: 1; }
 
 /* xterm 이 이 상자를 꽉 채운다. fit 애드온이 이 크기를 잰다. */
-.term-host { flex: 1; min-height: 0; padding: 4px; }
+.term-host { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
 .term-host .xterm { height: 100%; }
 
 .pane { cursor: pointer; }

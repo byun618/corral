@@ -20,6 +20,9 @@ import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
+/** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
+const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
+
 let window: BrowserWindow | null = null
 let revision = 0
 /** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
@@ -49,6 +52,8 @@ const link = new SessionLink({
 const stream = new TerminalStream({
   onFrame: (frame) => {
     if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
+    // A4 스트림 비용 — 측정 실행(control 소켓 있음)에서만 프레임당 바이트를 남긴다. 평시 무음.
+    if (measuring) log('stream.frame', { seq: frame.seq, bytes: frame.data.length })
   },
   onState: () => scheduleEmit(),
   // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.

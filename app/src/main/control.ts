@@ -315,6 +315,34 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, deltaY, at: Date.now(), dispatched })
         return
       }
+      /**
+       * A5 — mouseReporting TUI 에 마우스 클릭을 전달한다. 진짜 MouseEvent 를 .xterm-screen 에
+       * 꽂아 xterm 의 마우스 핸들러가 SGR 시퀀스로 onData 를 발화하게 한다 (wheel 과 같은 결). fx·fy
+       * 는 스크린 rect 안 비율. main 지름길이 아니라 렌더러의 실제 입력 경로를 지난다.
+       */
+      case 'term-click': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const fx = readNumber(parsed, 'fx') ?? 0.5
+        const fy = readNumber(parsed, 'fy') ?? 0.5
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const x = Math.round(r.left + r.width * ${fx})
+             const y = Math.round(r.top + r.height * ${fy})
+             const opt = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }
+             screen.dispatchEvent(new MouseEvent('mousedown', opt))
+             screen.dispatchEvent(new MouseEvent('mouseup', opt))
+             return { ok: true, x, y }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, fx, fy, at: Date.now(), dispatched })
+        return
+      }
       /** S7ⓔ — xterm 이 한 문자열에 매기는 셀 폭. 폭 오라클의 xterm 축. */
       case 'term-cell-width': {
         const target = handlers.window()

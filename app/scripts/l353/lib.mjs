@@ -218,6 +218,7 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     termRead: async () => (await send({ cmd: 'term-read' })).term,
     termCellWidth: async (text) => (await send({ cmd: 'term-cell-width', text })).width,
     wheel: (deltaY) => send({ cmd: 'wheel', deltaY }),
+    termClick: (fx = 0.5, fy = 0.5) => send({ cmd: 'term-click', fx, fy }),
     resizeWindow: (width, height) => send({ cmd: 'resize-window', width, height }),
     readClipboard: async () => (await send({ cmd: 'read-clipboard' })).text,
     click: (selector) => send({ cmd: 'click', selector }),

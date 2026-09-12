@@ -1,0 +1,190 @@
+// 터미널 뷰 (R2) — xterm 6.0.0 안정판 + addon-fit 0.11.0 (00-analysis §4-4 권고 그대로).
+//
+// 렌더러 결정과 근거:
+//   · **DOM 렌더러** (기본값) — WebGL 은 Electron 에서 context loss 로 영구 블랙스크린 위험이
+//     외부 확인됨 (LIFE-345 P1 결론 유지, grok 서치 §2)
+//   · **scrollback 0** — endpoint 프레임은 항상 뷰포트 전체 리페인트이고 스크롤은 서버측이다
+//     (00-analysis §2-2). xterm 은 순수 뷰포트다. 가짜 히스토리를 만들지 않는다
+//   · 커서는 스트림이 그린다 (절대 CUP + DECSCUSR + show/hide) — xterm 커서 표시 그대로 사용
+//
+// 프레임 제시(coalesce)는 Studio 웹의 TerminalEndpointPresentation 을 **참고해 얇게 재작성**
+// (벤더 아님 — 코디네이터 지시). 프레임은 자기완결 리페인트라 쓰기 중 새 프레임이 오면
+// **최신 것만** 남긴다 — 밀린 프레임을 순서대로 다 그리는 것은 낭비이자 지연이다.
+
+import { useEffect, useRef } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
+import type { TerminalFrame } from '../../shared/types.js'
+
+const decoder = new TextDecoder()
+
+/** S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다. */
+type WriteRecord = { paneId: string; seq: number; at: number }
+const WRITE_RING_MAX = 400
+
+/**
+ * xterm 의 비공개 코어에서 커서 숨김 상태를 읽는다 (S3 프로브 전용).
+ *
+ * 공개 API 에 커서 가시성이 없다 — DECTCEM(\x1b[?25l/h)의 결과는 core 의 coreService 에만
+ * 남는다. 재는 대상(스트림이 쓴 시퀀스)을 다시 읽는 게 아니라 **xterm 이 실제로 도달한 상태**를
+ * 읽어야 하므로 비공개 필드를 쓴다. 비공개 접근은 이 함수 하나로 가둔다 (6.0.0 고정 전제,
+ * 원자료에 비공개 API 사용을 명시한다).
+ */
+function readCursorHidden(term: Terminal): boolean | null {
+  const core: unknown = Reflect.get(term, '_core')
+  if (core === null || typeof core !== 'object') return null
+  const service: unknown = Reflect.get(core, 'coreService')
+  if (service === null || typeof service !== 'object') return null
+  const hidden: unknown = Reflect.get(service, 'isCursorHidden')
+  return typeof hidden === 'boolean' ? hidden : null
+}
+
+export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (container === null) return
+
+    const term = new Terminal({
+      scrollback: 0,
+      cursorBlink: false,
+      fontSize: 13,
+      fontFamily: 'SF Mono, Menlo, Monaco, monospace',
+      theme: { background: '#12141a' },
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(container)
+
+    // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------
+    let pending: TerminalFrame | null = null
+    let writing = false
+    let disposed = false
+    let appliedMouseReporting: boolean | null = null
+    let lastSeq = 0
+    const writes: WriteRecord[] = []
+
+    const flush = (): void => {
+      if (disposed || writing || term.hasSelection()) return
+      const frame = pending
+      pending = null
+      let prefix = ''
+      if (frame !== null && appliedMouseReporting !== frame.mouseReporting) {
+        // pane 앱이 마우스를 받는 동안만 xterm 이 SGR 리포트를 만들게 한다 — 이 시퀀스는
+        // 서버가 아니라 **corral 이 xterm 에게** 하는 말이다 (Studio 웹과 같은 수법).
+        prefix = frame.mouseReporting ? '\x1b[?1006h\x1b[?1002h' : '\x1b[?1002l\x1b[?1006l'
+        appliedMouseReporting = frame.mouseReporting
+      }
+      if (frame === null && prefix === '') return
+      writing = true
+      term.write(prefix + (frame === null ? '' : decoder.decode(frame.data)), () => {
+        writing = false
+        if (disposed) return
+        if (frame !== null) {
+          lastSeq = frame.seq
+          // 쓰기 **완료** 시각 — S2 의 renderer 쪽 끝점. 프로브(term-read)가 읽어 간다.
+          writes.push({ paneId: frame.paneId, seq: frame.seq, at: Date.now() })
+          if (writes.length > WRITE_RING_MAX) writes.splice(0, writes.length - WRITE_RING_MAX)
+        }
+        flush()
+      })
+    }
+
+    const offFrame = window.corral.onTermFrame((frame) => {
+      // 이전 pane 의 늦은 프레임은 버린다 — 전환(S6) 때 A 잔상이 B 화면에 섞이면 안 된다.
+      if (frame.paneId !== paneId) return
+      pending = frame
+      flush()
+    })
+
+    // 선택이 풀리는 순간 보류분을 흘린다 (선택 중 프레임을 쓰면 선택이 지워진다).
+    const selectionListener = term.onSelectionChange(() => {
+      if (!term.hasSelection()) flush()
+    })
+
+    // --- 입력: xterm 이 만드는 VT 바이트 그대로 main 으로 ---------------------------
+    const dataListener = term.onData((data) => {
+      window.corral.termInput(data)
+    })
+
+    // --- 크기: 컨테이너를 재서 fit → 변화가 있으면 main 에 알린다 -------------------
+    const resizeListener = term.onResize(({ cols, rows }) => {
+      window.corral.termResize({ cols, rows })
+    })
+    const observer = new ResizeObserver(() => {
+      if (container.clientWidth > 0 && container.clientHeight > 0) fit.fit()
+    })
+    observer.observe(container)
+
+    // --- wheel: 가로채서 서버 스크롤로 (캡처 + preventDefault) ----------------------
+    // xterm 에 스크롤백이 없고(0), mouseReporting 이 켜져 있으면 xterm 자신도 wheel 을
+    // SGR 리포트로 바꾼다 — 두 길이 같이 살면 두 번 스크롤된다. 캡처 단계에서 끊어
+    // **corral 의 한 길**(termScroll → 벤더 session.scroll)로만 보낸다.
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault()
+      event.stopPropagation()
+      const screen = container.querySelector('.xterm-screen')
+      if (screen === null) return
+      const rect = screen.getBoundingClientRect()
+      const cellWidth = rect.width / term.cols
+      const cellHeight = rect.height / term.rows
+      if (cellHeight <= 0) return
+      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / cellHeight))
+      const column = Math.min(term.cols - 1, Math.max(0, Math.floor((event.clientX - rect.left) / cellWidth)))
+      const row = Math.min(term.rows - 1, Math.max(0, Math.floor((event.clientY - rect.top) / cellHeight)))
+      window.corral.termScroll({
+        direction: event.deltaY < 0 ? 'up' : 'down',
+        lines,
+        column,
+        row,
+      })
+    }
+    container.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
+    // --- 계측 프로브 (S1·S2·S3 의 xterm 쪽 실물) ------------------------------------
+    // 대조 대상이 "xterm 버퍼 실물(buffer.getLine)" 이라고 기준이 지정한다. 화면 상태를
+    // 읽기만 하는 훅이고, 쓰는 길은 없다.
+    window.corralTermProbe = {
+      read: () => {
+        const buffer = term.buffer.active
+        const lines: string[] = []
+        for (let y = 0; y < term.rows; y++) {
+          lines.push(buffer.getLine(y)?.translateToString(false) ?? '')
+        }
+        return {
+          paneId,
+          cols: term.cols,
+          rows: term.rows,
+          cursorX: buffer.cursorX,
+          cursorY: buffer.cursorY,
+          cursorHidden: readCursorHidden(term),
+          lastSeq,
+          lines,
+          writes: [...writes],
+          at: Date.now(),
+        }
+      },
+    }
+
+    // 첫 fit 이 끝난 크기로 스트림을 연다 — 첫 연결부터 맞는 크기를 요청하게.
+    if (container.clientWidth > 0 && container.clientHeight > 0) fit.fit()
+    void window.corral.selectPane({ paneId, cols: term.cols, rows: term.rows })
+    term.focus()
+
+    return () => {
+      disposed = true
+      delete window.corralTermProbe
+      observer.disconnect()
+      container.removeEventListener('wheel', onWheel, { capture: true })
+      offFrame()
+      selectionListener.dispose()
+      dataListener.dispose()
+      resizeListener.dispose()
+      term.dispose()
+    }
+  }, [paneId])
+
+  return <div className="term-host" data-term-pane={paneId} ref={containerRef} />
+}

@@ -5,12 +5,12 @@
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, listSessions, type SessionHandle } from './adapter/index.js'
+import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult, TerminalScroll } from '../shared/types.js'
+import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, type SessionHandle } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
@@ -36,8 +36,42 @@ let treeScheduled = false
 const link = new SessionLink({
   onChange: () => scheduleEmit(),
   // 목록 위상이 바뀌었으면 worktree 열림상태를 다시 읽는다 — 그게 N4ⓒ 의 진실 출처다.
-  onTopologyChange: () => scheduleTree(),
+  onTopologyChange: () => {
+    scheduleTree()
+    dropStreamIfPaneGone()
+  },
 })
+
+/**
+ * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
+ * 연결**이라 순서 보장이 없다 (A3 관찰 대상). 살아 있는 연결은 한 번에 하나 (stream.ts 주석).
+ */
+const stream = new TerminalStream({
+  onFrame: (frame) => {
+    if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
+  },
+  onState: () => scheduleEmit(),
+  // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.
+  // Electron 44 의 clipboard 는 W3C 모양(Promise)이다 — 실패는 로그로만 남긴다.
+  onClipboard: (text) => void clipboard.writeText(text).catch((error) => log('clipboard.write_failed', { error: String(error) })),
+})
+
+/**
+ * 스트리밍 중인 pane 이 목록에서 사라졌으면 스트림을 닫는다.
+ *
+ * pane 이 닫히면 endpoint surface 에서 그 pane 이 빠져 프레임만 조용히 멎는다 — 벤더 세션은
+ * 기다릴 뿐 오류를 내지 않는다. 사라짐을 아는 쪽은 control 링크(store)이므로 여기서 잇는다.
+ * (pane 이 **다른 탭으로 이동**한 경우는 store 에 남아 있어 닫지 않는다 — 프레임이 멎고
+ * 사용자가 다시 고르면 새 세션이 pane.focus 로 따라간다. 00-analysis §3-2)
+ */
+function dropStreamIfPaneGone(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.store.paneIds().includes(paneId)) return
+  log('stream.pane_gone', { paneId })
+  stream.close()
+  scheduleEmit()
+}
 
 function currentSocketPath(): string | null {
   return sessions.find((item) => item.name === selectedSession)?.socketPath ?? null
@@ -55,6 +89,7 @@ function currentState(): AppState {
     link: link.linkState(),
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
     repos: tree.repos,
+    terminal: stream.terminalState(),
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -238,7 +273,46 @@ function pickSession(name: string): void {
     return
   }
   selectedSession = name
+  // 세션이 바뀌면 이전 세션의 pane 스트림은 의미가 없다 — 같이 닫는다.
+  stream.close()
   link.open(found)
+  scheduleEmit()
+}
+
+/** endpoint 소켓은 control 소켓(herdr.sock)과 같은 폴더의 herdr-client.sock 이다. */
+function currentClientSocketPath(): string | null {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return null
+  return path.join(path.dirname(socketPath), 'herdr-client.sock')
+}
+
+/**
+ * pane 하나를 골라 스트림을 연다 (R2 의 유일한 herdr-client.sock 접촉 트리거).
+ *
+ * paneId 는 **현재 링크의 목록에 있는 것만** 받는다 — 렌더러가 낡은 id 를 보내면 (pane 이
+ * 방금 닫혔으면) 여기서 걸러 식별 가능한 로그로 남긴다. 검증의 진실은 store 다.
+ */
+function selectPane(input: { paneId: string | null; cols?: number; rows?: number }): void {
+  if (input.paneId === null) {
+    stream.close()
+    scheduleEmit()
+    return
+  }
+  const clientSocketPath = currentClientSocketPath()
+  if (clientSocketPath === null) {
+    log('stream.select.no_session', { paneId: input.paneId })
+    return
+  }
+  if (!link.store.paneIds().includes(input.paneId)) {
+    log('stream.select.unknown_pane', { paneId: input.paneId })
+    return
+  }
+  stream.open({
+    clientSocketPath,
+    paneId: input.paneId,
+    cols: input.cols ?? 80,
+    rows: input.rows ?? 24,
+  })
   scheduleEmit()
 }
 
@@ -397,6 +471,23 @@ app.whenReady().then(() => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
   })
 
+  // --- 터미널 스트림 (R2) ---
+  ipcMain.handle('corral:selectPane', (event, input: { paneId: string | null; cols?: number; rows?: number }) => {
+    if (fromOurWindow(event)) selectPane(input)
+  })
+  // 입력·리사이즈·스크롤은 fire-and-forget — 왕복을 기다릴 값이 없고 레이턴시(S2)에 민감하다.
+  ipcMain.on('corral:termInput', (event, data: string) => {
+    if (fromOurWindow(event) && typeof data === 'string') stream.input(data)
+  })
+  ipcMain.on('corral:termResize', (event, size: { cols: number; rows: number }) => {
+    if (!fromOurWindow(event)) return
+    if (typeof size?.cols !== 'number' || typeof size?.rows !== 'number') return
+    stream.resize({ cols: size.cols, rows: size.rows })
+  })
+  ipcMain.on('corral:termScroll', (event, scroll: TerminalScroll) => {
+    if (fromOurWindow(event)) stream.scroll(scroll)
+  })
+
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
@@ -414,6 +505,12 @@ app.whenReady().then(() => {
       dialogStub = value
       log('browse.stub_set', { stub: value === null ? '(뗌)' : 'path' in value ? value.path : '(취소)' })
     },
+    // R2 계측 — S5 는 창 크기를 3단계로 바꾸고, A1 은 OS 클립보드에 실렸는지를 읽는다.
+    resizeWindow: (size) => {
+      if (window === null || window.isDestroyed()) throw new Error('창이 없다')
+      window.setBounds({ width: size.width, height: size.height })
+    },
+    readClipboard: () => clipboard.readText(),
   })
 
   app.on('activate', () => {
@@ -422,6 +519,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  stream.close()
   link.close()
   log('app.quit', { logFile: logFile() })
   closeLog()

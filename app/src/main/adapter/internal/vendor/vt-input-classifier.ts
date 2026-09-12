@@ -1,3 +1,7 @@
+// @ts-nocheck — 벤더 무수정 유지를 위한 예외 (PROVENANCE.md).
+// 원본은 Studio 의 tsconfig(strict, noUncheckedIndexedAccess 없음)로 작성됐다. corral 의
+// noUncheckedIndexedAccess 아래서는 파서의 buf[i] 인덱싱 31곳이 걸리는데, 그걸 고치면
+// 벤더 diff 가 로직 아닌 잡음으로 덮인다. 타입 검사 대신 벤더 테스트(84건)가 이 파일을 덮는다.
 import { BinWriter } from "./bincode";
 
 // Classifies browser VT input bytes (what xterm.js emits from key events)

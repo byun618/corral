@@ -1,5 +1,8 @@
 {
   "include": ["electron.vite.config.ts", "eslint.config.mjs", "src/main/**/*", "src/preload/**/*", "src/shared/**/*", "scripts/**/*"],
+  // 벤더 테스트는 tsc 대상이 아니다 — bun:test 원본을 vitest 로 옮긴 것이라 corral 의
+  // noUncheckedIndexedAccess 아래서 원본 그대로가 안 선다. 검증은 vitest 실행(S7ⓓ)이 한다.
+  "exclude": ["src/main/adapter/internal/vendor/*.test.ts"],
   "compilerOptions": {
     "composite": true,
     "target": "ES2022",

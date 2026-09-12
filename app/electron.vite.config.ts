@@ -23,6 +23,19 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
-    build: { rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') } },
+    build: {
+      rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') },
+      /**
+       * xterm #5800 (열림) 회피 — R2 (LIFE-353).
+       *
+       * `@xterm/xterm` 의 ESM(`xterm.mjs`)은 **이미 minify 돼서** 배포된다. Vite 프로덕션이
+       * 기본 target(es2020 이하 다운레벨)으로 그걸 **재-minify** 하면 `InputHandler.requestMode`
+       * 의 클로저가 깨져 프로덕션 빌드에서만 `ReferenceError` 가 난다 — vim 처럼 DECRQM 을
+       * 쓰는 TUI 입력이 죽는다. 정석 우회는 target 을 es2021 이상으로 올려 `||=` 다운레벨을
+       * 없애는 것 (grok 서치 §3 — 이슈 댓글에서 효과 검증 1순위). Electron 44 의 Chromium 은
+       * es2022 를 훨씬 넘으므로 여유가 크다. 실증은 기준 S7ⓕ (프로덕션 빌드 vim 생존).
+       */
+      target: 'es2022',
+    },
   },
 })

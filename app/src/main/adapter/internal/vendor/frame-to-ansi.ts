@@ -1,3 +1,4 @@
+// @ts-nocheck — 벤더 무수정 유지를 위한 예외 (PROVENANCE.md, vt-input-classifier.ts 와 같은 사유).
 // 벤더 수정 (LIFE-353, 원본 대비 2점 — PROVENANCE.md):
 //   ① import 경로: ./thin-client → ./frame-types (발췌 파일)
 //   ② `Bun.stringWidth` → ./string-width 의 stringWidth (Node 대체, 3자 대조 원자료 있음)

@@ -33,6 +33,10 @@ export type ControlHandlers = {
    * 세 상태다: 경로를 고른 것 · **취소한 것** · 스텁을 뗀 것(`null` — 진짜 창이 뜬다).
    */
   setDialogStub: (value: { canceled: true } | { path: string } | null) => void
+  /** R2 계측 — S5 격자 수렴이 창 크기를 3단계로 바꾼다. */
+  resizeWindow: (size: { width: number; height: number }) => void
+  /** R2 계측 — A1 이 OSC 52 복사가 OS 클립보드에 실렸는지 읽는다. corral 쪽 관측이다. */
+  readClipboard: () => Promise<string>
 }
 
 /**
@@ -251,6 +255,36 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
           true,
         )
         reply({ ok: true, selector, found, at: Date.now() })
+        return
+      }
+      /** S5 — 창 크기 변경. 리사이즈→fit→요청→수렴 경로 전체가 진짜로 돈다. */
+      case 'resize-window': {
+        const width = readNumber(parsed, 'width')
+        const height = readNumber(parsed, 'height')
+        if (width === null || height === null) throw new Error('width·height 필요')
+        handlers.resizeWindow({ width, height })
+        reply({ ok: true, width, height, at: Date.now() })
+        return
+      }
+      /** A1 — Electron 클립보드 내용. corral 이 썼는지를 보는 것이라 corral 쪽 관측이 맞다. */
+      case 'read-clipboard': {
+        reply({ ok: true, text: await handlers.readClipboard(), at: Date.now() })
+        return
+      }
+      /**
+       * S1·S2·S3 — **xterm 버퍼 실물**을 렌더러에서 읽는다. 렌더러가 diagnostics 실행에서
+       * 노출하는 프로브 훅(window.corralTermProbe)을 부른다 — 기준 S1 이 지정한 대조 대상이
+       * "xterm 버퍼 실물(buffer.getLine)" 이라 화면 스크린샷이 아니라 버퍼를 뜬다.
+       * herdr 쪽 대조값은 여전히 이 채널이 주지 않는다 (위 'state' 주석의 규칙 그대로).
+       */
+      case 'term-read': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const result = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.read() : null)()`,
+          true,
+        )
+        reply({ ok: result !== null, at: Date.now(), term: result })
         return
       }
       default:

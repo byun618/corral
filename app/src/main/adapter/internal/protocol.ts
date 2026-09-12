@@ -42,8 +42,13 @@ export const SUBSCRIPTION_TYPES: readonly string[] = [
 /**
  * **일부러 뺀 것** (수정 1회차 L13 — 다음 라운드가 이걸 "빠졌다" 로 재발견하지 않게 적는다).
  * herdr 0.9.0 이 아는 27종 중 위 목록에 없는 것과 그 이유:
- *   · `pane.focused` · `pane.moved` — R1 은 포커스·pane 배치를 그리지 않는다. 저장소가
- *     `focused` 를 들고 있지만 칩으로 안 나간다. R2(터미널 뷰)가 쓸 자리다
+ *   · `pane.focused` — endpoint 세션은 자기 연결의 focus 를 자기가 정한다(`pane.focus` per-client,
+ *     0.9.0 실측). 그래서 control 구독의 `pane.focused` 는 R2 에서도 불필요하다 — corral 의
+ *     터미널 포커스는 endpoint 연결이 쥐지 control push 가 아니다 (LIFE-353 재평가, 00-analysis §3-2)
+ *   · `pane.moved` — pane 이 다른 탭으로 옮겨가는 이벤트. R2 스트림은 paneId 로 붙으므로 이동해도
+ *     같은 pane 을 따라간다(surface 에 그 pane 이 남는 한). pane 이 목록에서 **사라지는** 경우만
+ *     스트림을 내리면 되는데(main 의 `dropStreamIfPaneGone`), 그건 `pane_closed`/스냅샷 재동기가
+ *     이미 store 에서 지운다 — `pane.moved` 를 따로 구독할 필요가 여기서도 없다 (LIFE-353 확인)
  *   · `pane.output_matched` · `pane.scroll_changed` — 터미널 내용 층이다. 목록과 무관하고
  *     둘 다 파라미터를 요구하는 구독이라 pane 마다 커넥션이 든다
  *   · `pane.agent_status_changed` — 목록에 없는 게 아니라 **별도 커넥션**으로 건다 (바로 아래)

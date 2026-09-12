@@ -2,7 +2,11 @@
 //   ① import 경로: ./thin-client → ./frame-types, ../utils/logger → ./logger (shim)
 //   ② `create()` 메서드와 endpoint-creation import 를 strip — 탭/워크스페이스 **생성** 경로는
 //      R3 범위 (00-analysis §4-2·§4-3: "strip 하고 creation 파일은 벤더하지 않는 것을 권고")
-//   ③ 그 외 코드 본문 무수정
+//   ③ 계측 logger.debug 3줄 추가 — client.resize 호출 2지점("resize request")과 onSurface
+//      1지점("surface"). 기준 S5 의 오라클("요청 횟수는 하네스가 센 client.resize 호출 수",
+//      "surface 의 innerRect(서버 응답)")이 요구하는 원자료를 기존 logger 파라미터로 낸다.
+//      로직 무변경 — 로그 줄 3개뿐
+//   ④ 그 외 코드 본문 무수정
 import { EventEmitter } from "node:events";
 import { EndpointClient, type EndpointSurface } from "./endpoint-client";
 import { frameToAnsi } from "./frame-to-ansi";
@@ -206,6 +210,12 @@ export class EndpointTerminalSession extends EventEmitter {
     const pane = surface.panes.find((p) => p.paneId === this.paneId);
     if (!pane?.mouseReporting) this.pressedMouseButtons.clear();
     if (!pane) return;
+    // 벤더 수정 ③ — S5 원자료: 서버 응답 surface 의 기하를 그대로 남긴다.
+    this.logger.debug("surface", {
+      frame: `${surface.frame.width}x${surface.frame.height}`,
+      innerRect: `${pane.innerRect.width}x${pane.innerRect.height}`,
+      surfaceRevision: surface.surfaceRevision,
+    });
     this.fitSurface(surface, pane);
     this.lastScroll = pane.scroll
       ? {
@@ -265,6 +275,8 @@ export class EndpointTerminalSession extends EventEmitter {
     // Explicit viewer requests include same-size repaints for new viewers.
     this.fitResizeInFlight = true;
     this.lastRequest = next;
+    // 벤더 수정 ③ — S5 원자료: 요청 횟수는 이 로그 줄 수로 센다.
+    this.logger.debug("resize request", { cols: next.cols, rows: next.rows, kind: "viewer" });
     this.client.resize(next.cols, next.rows);
   }
 
@@ -380,6 +392,8 @@ export class EndpointTerminalSession extends EventEmitter {
     if (this.fitAttempts > 0) this.fitAttempts -= 1;
     this.fitResizeInFlight = true;
     this.lastRequest = next;
+    // 벤더 수정 ③ — S5 원자료: fit 보정 요청도 같은 자로 센다.
+    this.logger.debug("resize request", { cols: next.cols, rows: next.rows, kind: "fit" });
     this.client.resize(next.cols, next.rows);
   }
 

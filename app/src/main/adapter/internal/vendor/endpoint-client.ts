@@ -1,3 +1,4 @@
+// @ts-nocheck — 벤더 무수정 유지를 위한 예외 (PROVENANCE.md, vt-input-classifier.ts 와 같은 사유).
 import { EventEmitter } from "node:events";
 import * as net from "node:net";
 import { BinReader, BinWriter, encodeFrame } from "./bincode";

@@ -287,6 +287,34 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: result !== null, at: Date.now(), term: result })
         return
       }
+      /**
+       * S4 — 진짜 wheel 이벤트를 터미널 위에 꽂는다. 렌더러의 캡처-단계 wheel 핸들러가
+       * 받아 termScroll → stream.scroll(벤더 session.scroll) 한 길로 흐른다. `el.dispatchEvent`
+       * 로 실제 WheelEvent 를 만들어 그 경로가 실증되게 한다 (main 핸들러 지름길 아님).
+       */
+      case 'wheel': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const deltaY = readNumber(parsed, 'deltaY')
+        if (deltaY === null) throw new Error('deltaY 필요')
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const ev = new WheelEvent('wheel', {
+               deltaY: ${deltaY}, bubbles: true, cancelable: true,
+               clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+             })
+             host.dispatchEvent(ev)
+             return { ok: true }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, deltaY, at: Date.now(), dispatched })
+        return
+      }
       /** S7ⓔ — xterm 이 한 문자열에 매기는 셀 폭. 폭 오라클의 xterm 축. */
       case 'term-cell-width': {
         const target = handlers.window()

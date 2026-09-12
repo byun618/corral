@@ -15,7 +15,7 @@
 //   · 타임아웃 1초 하드코딩 — 프레임 하나를 한 번의 write 로 보내므로 걸릴 일이 없다
 
 import { EndpointTerminalSession } from './vendor/endpoint-terminal-session.js'
-import { corralLogger } from './vendor/logger.js'
+import { corralLogger, quietLogger, type Logger } from './vendor/logger.js'
 import type { TerminalFrame, TerminalScroll, TerminalState } from '../../../shared/types.js'
 import { log } from '../../log.js'
 
@@ -47,6 +47,15 @@ type VendorTerminalEvent = {
 
 export class TerminalStream {
   private readonly hooks: StreamHooks
+  /**
+   * 측정 실행인가 (수정 1회차 C1). 참일 때만 프레임당·스크롤당 로그를 남기고 벤더 세션에
+   * 프레임마다 debug 를 찍는 corralLogger 를 물린다. 평시엔 quietLogger — error/warn 만 남고
+   * 프레임 잡음은 끊긴다 (logger.ts 주석 참고). r1 은 이 게이트 없이 stream.ts 와 index.ts 두
+   * 곳에서 stream.frame 을 찍어 A4 가 프레임을 2배로 셌다 — 이제 여기 한 곳만, measuring 게이트로.
+   */
+  private readonly measuring: boolean
+  /** 벤더 세션이 쓸 로거 — 측정이면 corralLogger(프레임당 debug), 평시면 quietLogger. */
+  private readonly logger: Logger
   private session: EndpointTerminalSession | null = null
   /** 세대 — 늦게 도착한 옛 세션의 이벤트가 새 상태를 덮지 않게 (link.ts 와 같은 수법). */
   private generation = 0
@@ -59,8 +68,10 @@ export class TerminalStream {
     lastError: null,
   }
 
-  constructor(hooks: StreamHooks) {
-    this.hooks = hooks
+  constructor(input: { hooks: StreamHooks; measuring: boolean }) {
+    this.hooks = input.hooks
+    this.measuring = input.measuring
+    this.logger = input.measuring ? corralLogger : quietLogger
   }
 
   terminalState(): TerminalState {
@@ -83,7 +94,7 @@ export class TerminalStream {
       input.clientSocketPath,
       input.paneId,
       async () => input.paneId,
-      corralLogger,
+      this.logger,
     )
     this.session = session
     this.state = {
@@ -118,14 +129,19 @@ export class TerminalStream {
         rows: event.height,
         mouseReporting: event.mouseReporting,
       }
-      log('stream.frame', {
-        paneId: input.paneId,
-        seq: event.seq,
-        cols: event.width,
-        rows: event.height,
-        bytes: event.bytes.length,
-        mouseReporting: event.mouseReporting,
-      })
+      // A4 스트림 비용 — **측정 실행에서만** 프레임당 한 줄. `bytes` 는 벤더가 준 원 페이로드
+      // 길이(event.bytes.length)다: BSU/ESU 래퍼(+16B)를 더한 `data.length` 가 아니라, 화면을
+      // 그린 실제 바이트를 센다 (r1 의 index.ts 로그는 래핑 뒤라 프레임당 16B 를 부풀렸다).
+      if (this.measuring) {
+        log('stream.frame', {
+          paneId: input.paneId,
+          seq: event.seq,
+          cols: event.width,
+          rows: event.height,
+          bytes: event.bytes.length,
+          mouseReporting: event.mouseReporting,
+        })
+      }
       this.hooks.onFrame({
         paneId: input.paneId,
         seq: event.seq,
@@ -184,7 +200,8 @@ export class TerminalStream {
 
   /** wheel → mouseReporting pane 은 마우스 이벤트로, 아니면 pane.scroll RPC — 벤더가 가른다. */
   scroll(scroll: TerminalScroll): void {
-    log('stream.scroll', { paneId: this.state.paneId, ...scroll })
+    // 이벤트당 로그라 프레임 로그와 같은 게이트에 둔다 (수정 1회차 C1).
+    if (this.measuring) log('stream.scroll', { paneId: this.state.paneId, ...scroll })
     this.session?.scroll(scroll.direction, scroll.lines, scroll.column, scroll.row, 'wheel')
   }
 

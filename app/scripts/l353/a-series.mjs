@@ -62,7 +62,7 @@ async function a2Flicker(app, paneId) {
 async function a4StreamCost(app, paneId) {
   await resetPane(paneId)
   await neutralizePrompt(paneId)
-  // ~10줄/s 티커. 측정 실행이라 main 이 stream.frame{seq,bytes} 를 남긴다 (index.ts, measuring).
+  // ~10줄/s 티커. 측정 실행이라 stream 층이 stream.frame{seq,bytes} 를 남긴다 (stream.ts, measuring 게이트).
   await herdrRequest('pane.send_text', { pane_id: paneId, text: 'while true; do date +%s.%N; sleep 0.1; done\n' })
   const windowMs = 5000
   const since = Date.now()
@@ -86,7 +86,7 @@ async function a4StreamCost(app, paneId) {
     avgFrameBytes: frames.length ? Math.round(totalBytes / frames.length) : 0,
     cpuSecondsDelta: cpuBefore !== null && cpuAfter !== null ? Number((cpuAfter - cpuBefore).toFixed(2)) : null,
     cpuNote: 'electron 메인 프로세스만. 렌더러/GPU 프로세스는 별도 pid 라 미포함 — best-effort.',
-    note: '측정 실행에서만 켜지는 stream.frame 로그(index.ts, control 소켓 게이트) 기반.',
+    note: '측정 실행에서만 켜지는 stream.frame 로그(stream.ts, control 소켓 게이트로 measuring) 기반. r1 은 index.ts 에도 중복 로그가 있어 2배 계수였다 — C1 에서 index.ts 로그 제거.',
   }
 }
 

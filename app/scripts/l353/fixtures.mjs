@@ -110,12 +110,14 @@ export const FIXTURES = {
  * pane.read source='visible' 로는 알트 여부가 안 보이므로, vim 이 그리는 상태 줄 마커를
  * herdr 화면에서 찾는다. (0.9.0 pane.get 은 alternate 플래그를 노출하지 않는다 — §probe 확인)
  */
-export async function assertAltScreen(paneId) {
+export async function assertAltScreen(paneId, { marker = /vim-buffer-01/ } = {}) {
   const read = await herdrRead(paneId)
   const text = read.text
-  // vim -u NONE 은 하단에 파일명, 내용은 vim-buffer-01.. 로 채운다. 알트면 셸 프롬프트·이전
-  // 명령 잔상이 사라지고 vim 버퍼만 남는다.
-  const hasVimContent = /vim-buffer-01/.test(text)
+  // vim -u NONE 은 하단에 파일명, 내용은 fixture 마커로 채운다. 알트면 셸 프롬프트·이전 명령
+  // 잔상이 사라지고 vim 버퍼만 남는다. 마커는 fixture 마다 다르다 (수정 1회차 L3): tui 는
+  // `vim-buffer-01`, S4 의 mouse pane 은 `vimline-001` — 그래서 확인할 마커를 인자로 받는다.
+  // (r1 은 S4 도 기본 마커를 봐서 그 pane 의 alt 를 항상 false 로 잘못 적었다.)
+  const hasVimContent = marker.test(text)
   const noShellPrompt = !/\$\s*$/.test(text.trim())
   return { alt: hasVimContent && noShellPrompt, hasVimContent, noShellPrompt, sample: text.split('\n').slice(0, 3) }
 }

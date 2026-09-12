@@ -365,7 +365,11 @@ function TerminalPanel({ state, selectedPane }: { state: AppState; selectedPane:
           <span className="meta">터미널 — pane 을 고르면 여기 뜬다</span>
         )}
       </div>
-      {alive ? <TerminalPane paneId={selectedPane} /> : <div className="term-empty" data-term-empty />}
+      {alive ? (
+        <TerminalPane paneId={selectedPane} diagnostics={state.diagnostics} />
+      ) : (
+        <div className="term-empty" data-term-empty />
+      )}
     </section>
   )
 }

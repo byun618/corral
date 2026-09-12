@@ -70,6 +70,8 @@ async function main() {
     steps.push({
       window: step,
       xtermSize,
+      cols: term.cols,
+      rows: term.rows,
       innerRect,
       resizeRequestCount: resizeRequests.length,
       match: innerRect === xtermSize,
@@ -79,9 +81,14 @@ async function main() {
     console.log(`  창 ${step.width}x${step.height} → xterm ${xtermSize} · innerRect ${innerRect} · 요청 ${resizeRequests.length}회 · 수렴후프레임 ${framesAfterConverge.length}`)
   }
 
-  const pass = steps.every((s) => s.match && s.requestsWithinLimit && s.surplusAfterConverge === 0)
-  const result = { at: new Date().toISOString(), buildCheck: app.buildCheck, steps, verdict: pass ? '통과' : '미달' }
+  // 세로 변화가 원자료에 드러나야 한다 (수정 1회차 G-M1): 창 높이를 바꾸면 rows 가 실제로
+  // 바뀌는지. r1 은 .app{min-height:100vh} 라 rows 가 46 에 얼어붙어 가로만 실험됐다.
+  const rowsVaried = new Set(steps.map((s) => s.rows)).size > 1
+  const colsVaried = new Set(steps.map((s) => s.cols)).size > 1
+  const pass = steps.every((s) => s.match && s.requestsWithinLimit && s.surplusAfterConverge === 0) && rowsVaried
+  const result = { at: new Date().toISOString(), buildCheck: app.buildCheck, steps, rowsVaried, colsVaried, verdict: pass ? '통과' : '미달' }
   writeRaw('s5-grid.json', result)
+  console.log(`\nrows 변화 ${rowsVaried} · cols 변화 ${colsVaried}`)
   console.log('\nS5 →', result.verdict)
   await app.stop()
   process.exit(pass ? 0 : 1)

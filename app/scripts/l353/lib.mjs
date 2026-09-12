@@ -21,6 +21,12 @@ export const SESSION = process.env.LIFE353_SESSION ?? 'life353-claude'
 export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
 export const REPO_DIR = path.dirname(APP_DIR)
 export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude')
+/**
+ * 수정 회차 원자료를 앞 회차와 **분리**해 하위 폴더로 보낸다 (예: `fix1`). 판정·03-result 가
+ * 경로로 인용한 r1 원자료를 덮어쓰지 않으려는 것 — 이 스크립트들을 재실행해도 r1 raw 는 불변.
+ * 미설정이면 루트(r1 자리)로 간다.
+ */
+export const RAW_SUBDIR = process.env.L353_RAW_SUBDIR ?? ''
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -87,7 +93,7 @@ export async function firstPaneId(session = SESSION) {
 // --- 원자료 -------------------------------------------------------------------
 
 export function writeRaw(file, content) {
-  const target = path.join(RAW_DIR, file)
+  const target = path.join(RAW_DIR, RAW_SUBDIR, file)
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, typeof content === 'string' ? content : JSON.stringify(content, null, 2) + '\n')
   console.log('wrote', path.relative(REPO_DIR, target))
@@ -162,7 +168,7 @@ function park(dir) {
 
 export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile } = {}) {
   const buildCheck = ensureBuilt()
-  const dir = path.join(RAW_DIR, '_runs', name)
+  const dir = path.join(RAW_DIR, RAW_SUBDIR, '_runs', name)
   park(dir)
   fs.mkdirSync(dir, { recursive: true })
   const logPath = path.join(dir, 'app.ndjson')
@@ -217,6 +223,10 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     selectPane: (paneId) => send({ cmd: 'click', selector: `[data-pane="${paneId}"]` }),
     termRead: async () => (await send({ cmd: 'term-read' })).term,
     termCellWidth: async (text) => (await send({ cmd: 'term-cell-width', text })).width,
+    // S2 — 글자 주입. 응답의 `at` 이 **주입 시각**이다 (control.ts type, 수정 1회차 C3).
+    type: (text) => send({ cmd: 'type', text }),
+    // L2 — DECRQM 질의 → DECRPM 응답 문자열 (#5800 우회 직접 관측).
+    termDecrqm: (mode = 2026) => send({ cmd: 'term-decrqm', mode }),
     wheel: (deltaY) => send({ cmd: 'wheel', deltaY }),
     termClick: (fx = 0.5, fy = 0.5) => send({ cmd: 'term-click', fx, fy }),
     resizeWindow: (width, height) => send({ cmd: 'resize-window', width, height }),

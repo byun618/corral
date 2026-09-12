@@ -41,7 +41,7 @@ function readCursorHidden(term: Terminal): boolean | null {
   return typeof hidden === 'boolean' ? hidden : null
 }
 
-export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element {
+export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnostics: boolean }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -79,6 +79,12 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
     let appliedMouseReporting: boolean | null = null
     let lastSeq = 0
     const writes: WriteRecord[] = []
+    /**
+     * DECRQM 프로브가 켜지면 onData 를 **삼킨다** (수정 1회차 L2). xterm 이 DECRQM 질의에
+     * 답하는 DECRPM 리포트는 onData 로 나오는데, 그걸 pane 으로 흘리면 셸에 잡음이 찍힌다 —
+     * 프로브 창 동안엔 forward 하지 않고 여기 모은다. 평시엔 항상 null 이라 입력 경로 불변.
+     */
+    let decrqmCapture: { buf: string } | null = null
 
     const flush = (): void => {
       if (disposed || writing || term.hasSelection()) return
@@ -99,8 +105,11 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
         if (frame !== null) {
           lastSeq = frame.seq
           // 쓰기 **완료** 시각 — S2 의 renderer 쪽 끝점. 프로브(term-read)가 읽어 간다.
-          writes.push({ paneId: frame.paneId, seq: frame.seq, at: Date.now() })
-          if (writes.length > WRITE_RING_MAX) writes.splice(0, writes.length - WRITE_RING_MAX)
+          // 진단(계측) 실행에서만 링에 쌓는다 (수정 1회차 L7) — 평시엔 이 링을 안 만든다.
+          if (diagnostics) {
+            writes.push({ paneId: frame.paneId, seq: frame.seq, at: Date.now() })
+            if (writes.length > WRITE_RING_MAX) writes.splice(0, writes.length - WRITE_RING_MAX)
+          }
         }
         flush()
       })
@@ -119,12 +128,20 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
     })
 
     // --- 입력: xterm 이 만드는 VT 바이트 그대로 main 으로 ---------------------------
-    // S2 계측: onData 발화 시각을 렌더러 시계로 링에 남긴다 — write 완료도 같은 시계라
-    // 교차 프로세스 클럭 스큐 없이 입력→화면을 잰다.
+    // S2 계측: onData 발화 시각을 렌더러 시계로 링에 남긴다 (진단 실행에서만) — S2 는 이제
+    // 주입시각(main)을 기준으로 잰다(수정 1회차 C3). onData 시각은 그 드리프트를 원자료에
+    // 드러내는 참고값으로 남긴다.
     const inputs: Array<{ data: string; at: number }> = []
     const dataListener = term.onData((data) => {
-      inputs.push({ data, at: Date.now() })
-      if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
+      // DECRQM 프로브 창이면 xterm 의 응답을 삼킨다 — pane 으로 흘리지 않는다 (L2).
+      if (decrqmCapture !== null) {
+        decrqmCapture.buf += data
+        return
+      }
+      if (diagnostics) {
+        inputs.push({ data, at: Date.now() })
+        if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
+      }
       window.corral.termInput(data)
     })
 
@@ -197,36 +214,57 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
 
     // --- 계측 프로브 (S1·S2·S3 의 xterm 쪽 실물) ------------------------------------
     // 대조 대상이 "xterm 버퍼 실물(buffer.getLine)" 이라고 기준이 지정한다. 화면 상태를
-    // 읽기만 하는 훅이고, 쓰는 길은 없다.
-    window.corralTermProbe = {
-      // S7ⓔ — xterm 이 실제 렌더에 쓰는 폭 계산. graphemes 애드온이 활성이면 그 값이다.
-      // 재는 대상(스트림 바이트)이 아니라 xterm 의 독립 폭 판정이라 폭 오라클의 한 축이 된다.
-      cellWidth: (text) => {
-        const core: unknown = Reflect.get(term, '_core')
-        const svc: unknown = core && typeof core === 'object' ? Reflect.get(core, 'unicodeService') : null
-        const fn = svc && typeof svc === 'object' ? Reflect.get(svc, 'getStringCellWidth') : null
-        return typeof fn === 'function' ? (fn.call(svc, text) as number) : null
-      },
-      read: () => {
-        const buffer = term.buffer.active
-        const lines: string[] = []
-        for (let y = 0; y < term.rows; y++) {
-          lines.push(buffer.getLine(y)?.translateToString(false) ?? '')
-        }
-        return {
-          paneId,
-          cols: term.cols,
-          rows: term.rows,
-          cursorX: buffer.cursorX,
-          cursorY: buffer.cursorY,
-          cursorHidden: readCursorHidden(term),
-          lastSeq,
-          lines,
-          writes: [...writes],
-          inputs: [...inputs],
-          at: Date.now(),
-        }
-      },
+    // 읽기만 하는 훅이고, 쓰는 길은 없다. **진단(계측) 실행에서만 노출**한다 (수정 1회차 L7) —
+    // 평시 앱에는 window.corralTermProbe 가 아예 없다 (control 채널도 없어 부를 길도 없다).
+    if (diagnostics) {
+      window.corralTermProbe = {
+        // S7ⓔ — xterm 이 실제 렌더에 쓰는 폭 계산. graphemes 애드온이 활성이면 그 값이다.
+        // 재는 대상(스트림 바이트)이 아니라 xterm 의 독립 폭 판정이라 폭 오라클의 한 축이 된다.
+        // _core 비공개 접근은 readCursorHidden 주석의 6.0.0 고정 전제를 그대로 따른다 (L5).
+        cellWidth: (text) => {
+          const core: unknown = Reflect.get(term, '_core')
+          const svc: unknown = core && typeof core === 'object' ? Reflect.get(core, 'unicodeService') : null
+          const fn = svc && typeof svc === 'object' ? Reflect.get(svc, 'getStringCellWidth') : null
+          return typeof fn === 'function' ? (fn.call(svc, text) as number) : null
+        },
+        /**
+         * S7ⓕ/L2 — DECRQM 질의(`\x1b[?<mode>$p`)를 xterm 에 먹이고 그 DECRPM 응답을 그대로
+         * 돌려준다. #5800(프로덕션 재-minify 가 DECRQM CSI 핸들러를 깨뜨림) 우회가 살아 있으면
+         * `\x1b[?2026;<value>$y` 가 오고, 깨졌으면 빈 문자열이다 — 우회의 **직접 관측**이다.
+         * 응답은 onData 로 나오므로 decrqmCapture 로 삼켜 pane 을 더럽히지 않는다.
+         */
+        decrqm: (mode) =>
+          new Promise<string>((resolve) => {
+            const cap = { buf: '' }
+            decrqmCapture = cap
+            term.write(`\x1b[?${mode}$p`, () => {
+              setTimeout(() => {
+                decrqmCapture = null
+                resolve(cap.buf)
+              }, 60)
+            })
+          }),
+        read: () => {
+          const buffer = term.buffer.active
+          const lines: string[] = []
+          for (let y = 0; y < term.rows; y++) {
+            lines.push(buffer.getLine(y)?.translateToString(false) ?? '')
+          }
+          return {
+            paneId,
+            cols: term.cols,
+            rows: term.rows,
+            cursorX: buffer.cursorX,
+            cursorY: buffer.cursorY,
+            cursorHidden: readCursorHidden(term),
+            lastSeq,
+            lines,
+            writes: [...writes],
+            inputs: [...inputs],
+            at: Date.now(),
+          }
+        },
+      }
     }
 
     // 첫 fit 이 끝난 크기로 스트림을 연다 — 첫 연결부터 맞는 크기를 요청하게.
@@ -236,7 +274,7 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
 
     return () => {
       disposed = true
-      delete window.corralTermProbe
+      if (diagnostics) delete window.corralTermProbe
       if (fitTimer !== null) clearTimeout(fitTimer)
       observer.disconnect()
       container.removeEventListener('wheel', onWheel, { capture: true })
@@ -246,7 +284,7 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
       resizeListener.dispose()
       term.dispose()
     }
-  }, [paneId])
+  }, [paneId, diagnostics])
 
   return <div className="term-host" data-term-pane={paneId} ref={containerRef} />
 }

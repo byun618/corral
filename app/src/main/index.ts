@@ -50,15 +50,18 @@ const link = new SessionLink({
  * 연결**이라 순서 보장이 없다 (A3 관찰 대상). 살아 있는 연결은 한 번에 하나 (stream.ts 주석).
  */
 const stream = new TerminalStream({
-  onFrame: (frame) => {
-    if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
-    // A4 스트림 비용 — 측정 실행(control 소켓 있음)에서만 프레임당 바이트를 남긴다. 평시 무음.
-    if (measuring) log('stream.frame', { seq: frame.seq, bytes: frame.data.length })
+  measuring,
+  hooks: {
+    onFrame: (frame) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
+      // A4 프레임 로그는 이제 stream.ts 한 곳에서만 남긴다 (수정 1회차 C1) — 여기서 또 찍으면
+      // A4 가 프레임을 두 번 세고, frame.data.length 는 BSU/ESU 래퍼(+16B)까지 포함해 부풀린다.
+    },
+    onState: () => scheduleEmit(),
+    // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.
+    // Electron 44 의 clipboard 는 W3C 모양(Promise)이다 — 실패는 로그로만 남긴다.
+    onClipboard: (text) => void clipboard.writeText(text).catch((error) => log('clipboard.write_failed', { error: String(error) })),
   },
-  onState: () => scheduleEmit(),
-  // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.
-  // Electron 44 의 clipboard 는 W3C 모양(Promise)이다 — 실패는 로그로만 남긴다.
-  onClipboard: (text) => void clipboard.writeText(text).catch((error) => log('clipboard.write_failed', { error: String(error) })),
 })
 
 /**
@@ -74,6 +77,46 @@ function dropStreamIfPaneGone(): void {
   if (paneId === null) return
   if (link.store.paneIds().includes(paneId)) return
   log('stream.pane_gone', { paneId })
+  stream.close()
+  scheduleEmit()
+}
+
+/**
+ * **화면에 그려질 수 있는** pane id 들 — 렌더러 `TerminalPanel` 이 마운트 판정에 쓰는 것과
+ * 같은 트리(joinTree 결과)를 걷는다 (수정 1회차 C2). 렌더러가 pane 을 살아 있다고 보는 조건은
+ * "state.repos 트리 안에 그 paneId 가 있다" 이므로, 여기서도 같은 트리로 센다.
+ */
+function renderablePaneIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const repo of joinTree(skeleton, link.store.rows()).repos) {
+    for (const worktree of repo.worktrees) {
+      if (worktree.workspace === null) continue
+      for (const tab of worktree.workspace.tabs) {
+        for (const pane of tab.panes) ids.add(pane.paneId)
+      }
+    }
+  }
+  return ids
+}
+
+/**
+ * 스트리밍 중인 pane 이 **더는 트리에 없으면**(예: 그 레포가 목록에서 빠졌으면) 스트림을 닫는다
+ * (수정 1회차 C2 — codex 중간2).
+ *
+ * `dropStreamIfPaneGone` 은 pane 이 **herdr 위상에서** 사라진 경우(store)를 잡지만, 레포 제거는
+ * herdr pane 을 건드리지 않는다 — store 엔 그대로 있고 corral **트리에서만** 빠진다. 그러면
+ * 렌더러는 `TerminalPane` 을 언마운트하는데(App.tsx TerminalPanel), main 스트림은 열린 채 남아
+ * 프레임을 계속 받는다(누수). 그래서 렌더러와 **같은 트리 기준**으로 여기서 닫는다.
+ *
+ * 링크가 live 일 때만 판정한다: 재접속 중엔 `store.rows()` 가 일시적으로 비어 트리에 pane 이
+ * 하나도 안 잡히는데, 그때 닫으면 곧 되살아날 멀쩡한 스트림을 죽인다 (advisor 가드).
+ */
+function dropStreamIfPaneUnviewable(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.linkState().phase !== 'live') return
+  if (renderablePaneIds().has(paneId)) return
+  log('stream.pane_unviewable', { paneId })
   stream.close()
   scheduleEmit()
 }
@@ -152,6 +195,9 @@ async function rebuildTree(): Promise<void> {
     worktrees: skeleton.reduce((sum, repo) => sum + repo.worktrees.length, 0),
     open: skeleton.reduce((sum, repo) => sum + repo.worktrees.filter((item) => item.openWorkspaceId !== null).length, 0),
   })
+  // 트리가 새로 서면 스트리밍 pane 이 아직 트리 안에 있는지 확인한다 (C2) — 레포 제거로
+  // 트리에서 빠졌으면 여기서 스트림을 닫는다. scheduleEmit 은 안에서 한 번 더 뭉쳐 부른다.
+  dropStreamIfPaneUnviewable()
   scheduleEmit()
 }
 
@@ -416,7 +462,10 @@ function createWindow(): void {
   // 렌더러 콘솔을 main 로그로 끌어온다 — 계측 실행에서만(진단 켜짐). 렌더러 예외가
   // 조용히 사라지지 않게 한다 (R2 하네스 디버깅에서 필요했다).
   if (!app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined) {
-    // Electron 44 는 이 이벤트를 (event, level, message, line, sourceId) 위치 인자로 준다.
+    // Electron 44 는 이 이벤트를 (event, level, message, line, sourceId) 위치 인자로 주고 level 은
+    // 숫자다. 이 위치-인자 형태는 이후 버전에서 단일 Event 객체(details.level 문자열)로 대체되며
+    // deprecated 다 (수정 1회차 L5) — Electron 을 올릴 때 이 핸들러 시그니처를 같이 고쳐야 한다.
+    // 계측 실행에서만 켜지므로 평시 앱에는 영향이 없다.
     window.webContents.on(
       'console-message',
       (_event: Electron.Event, level: number, message: string, line: number, sourceId: string) => {
@@ -501,7 +550,14 @@ app.whenReady().then(() => {
     stream.resize({ cols: size.cols, rows: size.rows })
   })
   ipcMain.on('corral:termScroll', (event, scroll: TerminalScroll) => {
-    if (fromOurWindow(event)) stream.scroll(scroll)
+    // termInput·termResize 와 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
+    // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
+    if (!fromOurWindow(event)) return
+    if (scroll?.direction !== 'up' && scroll?.direction !== 'down') return
+    if (typeof scroll.lines !== 'number') return
+    if (scroll.column !== null && typeof scroll.column !== 'number') return
+    if (scroll.row !== null && typeof scroll.row !== 'number') return
+    stream.scroll(scroll)
   })
 
   createWindow()

@@ -18,11 +18,16 @@ function clientSocket() {
   return path.join(os.homedir(), '.config/herdr/sessions/life353-claude/herdr-client.sock')
 }
 
-/** 독립 endpoint 연결로 pane 의 서버 권위 커서(pane 상대) 를 읽는다. */
-async function herdrCursor(paneId) {
+/**
+ * 독립 endpoint 연결로 pane 의 서버 권위 커서(pane 상대) 를 읽는다.
+ * 연결 크기를 **앱 xterm 과 맞춘다** (수정 1회차 G-M3): r1 은 120×40 고정으로 붙어 앱(123×46)과
+ * 격자가 달랐고, 그래서 커서 좌표가 다른 격자에서 나와 대조가 흔들릴 수 있었다. 같은 크기로 붙으면
+ * surface 기하(innerRect)와 커서 좌표가 앱과 같은 격자에 놓인다.
+ */
+async function herdrCursor(paneId, { cols, rows }) {
   const client = new EndpointClient(clientSocket())
   client.on('error', () => {})
-  await client.connect(120, 40)
+  await client.connect(cols, rows)
   await client.callEndpoint('pane.focus', { pane_id: paneId })
   await sleep(600)
   const surface = client.currentSurface
@@ -52,8 +57,8 @@ async function main() {
     }
     await settleXterm(app)
     await sleep(300)
-    const herdr = await herdrCursor(paneId)
     const term = await app.termRead()
+    const herdr = await herdrCursor(paneId, { cols: term.cols, rows: term.rows })
     cases.push(evaluate(fixture.key, herdr, term))
   }
   // 숨김 커서 — printf '\e[?25l' 로 커서를 숨긴 정적 화면 (기준: 숨김 화면에서 숨김 포함)
@@ -63,8 +68,8 @@ async function main() {
   await sleep(1000)
   await settleXterm(app)
   {
-    const herdr = await herdrCursor(paneId)
     const term = await app.termRead()
+    const herdr = await herdrCursor(paneId, { cols: term.cols, rows: term.rows })
     cases.push(evaluate('hidden', herdr, term))
   }
   // 다시 보이게 (뒷정리)
@@ -74,7 +79,7 @@ async function main() {
   const result = {
     at: new Date().toISOString(),
     buildCheck: app.buildCheck,
-    oracle: '독립 endpoint 연결 surface.frame.cursor(pane 상대) vs xterm buffer.cursorX/Y + cursorHidden',
+    oracle: '독립 endpoint 연결(앱 xterm 과 같은 cols×rows 로 연결 — G-M3) surface.frame.cursor(pane 상대) vs xterm buffer.cursorX/Y + cursorHidden',
     cases,
     mismatches,
     verdict: mismatches === 0 ? '통과' : '미달',

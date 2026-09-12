@@ -68,7 +68,9 @@ async function main() {
   await sleep(1200)
   await herdrRequest('pane.send_text', { pane_id: paneId, text: ':set mouse=a\rG' }) // 마우스 켜고 문서 끝으로
   await sleep(800)
-  const alt = await assertAltScreen(paneId)
+  // 마커는 이 fixture 의 것(vimline-NNN)으로 본다 (수정 1회차 L3). `G` 로 문서 끝으로 갔으므로
+  // 화면에 보이는 건 001 이 아니라 꼬리 줄들이라, 특정 번호가 아니라 vimline-\d{3} 패턴으로 확인한다.
+  const alt = await assertAltScreen(paneId, { marker: /vimline-\d{3}/ })
   const beforeVim = await cellMatch(app, paneId)
   const beforeText = beforeVim.xtermLines.join('\n')
   // wheel 위로 — mouseReporting 이면 벤더가 마우스 스크롤 이벤트로 보낸다 (pane.scroll 아님)
@@ -91,7 +93,7 @@ async function main() {
   const mp = report.mousePane
   const pass =
     np.showedPast && np.returnedLatest && np.cellMatchBottom === 0 && np.cellMatchUp === 0 && np.cellMatchDown === 0 &&
-    mp.mouseReporting && mp.contentChanged && mp.cellMatchBefore === 0 && mp.cellMatchAfter === 0
+    mp.alt && mp.mouseReporting && mp.contentChanged && mp.cellMatchBefore === 0 && mp.cellMatchAfter === 0
   const result = { at: new Date().toISOString(), buildCheck: app.buildCheck, report, verdict: pass ? '통과' : '미달' }
   writeRaw('s4-scroll.json', result)
   console.log('\nS4 →', result.verdict)

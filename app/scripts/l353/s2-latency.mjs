@@ -2,14 +2,17 @@
 // 표본 ≥ 30타, 놓침 0.
 //
 // 측정 모양 (기준 S2): 실타이핑 리듬 — 키 사이 간격 p50 ~250ms 순차 타이핑.
-// 오라클 (같은 렌더러 시계로 양끝을 잰다 — 교차 프로세스 스큐 제거):
-//   시작 = xterm.onData 발화 시각(그 키가 입력으로 들어온 순간, 렌더러 Date.now)
-//   끝   = 그 글자가 담긴 에코 프레임의 **xterm write 완료 시각**(같은 렌더러 Date.now)
+// 오라클 (수정 1회차 C3 — **주입 시각 기준**):
+//   시작 = **주입 시각**: control `type` 명령이 sendInputEvent(char) **직전에** 찍은 main Date.now.
+//          (r1 은 시작을 xterm.onData 로 잡아 주입→onData 구간만큼 레이턴시를 과소평가했다.)
+//   끝   = 그 글자가 담긴 에코 프레임의 **xterm write 완료 시각**(renderer Date.now).
+//   main·renderer 는 같은 머신이라 Date.now 벽시계가 동일 — 교차 프로세스 스큐 없음.
 // 입력 경로는 진짜다: sendInputEvent(char) → xterm.onData → IPC → session.input → herdr →
 //   에코 프레임 → IPC → xterm write. 프롬프트를 중화해 에코 외 프레임이 안 끼게 한다.
 //
 // 매칭 규칙 (advisor #4): 프레임 seq 가 아니라 **내용**으로 — 제시층이 coalesce 하므로 특정
-//   seq 는 정당하게 버려질 수 있다. "그 글자가 화면에 나타난 첫 write 완료" 를 끝점으로 잡는다.
+//   seq 는 정당하게 버려질 수 있다. "그 글자가 화면에 나타난 뒤, 주입 이후 첫 write 완료" 를
+//   끝점으로 잡고 그 write 의 seq 를 같이 기록한다. onDataDeltaMs 로 주입→onData 드리프트도 남긴다.
 
 import { startApp, attachPane, firstPaneId, settleXterm, until, pct, sleep, writeRaw } from './lib.mjs'
 import { neutralizePrompt } from './fixtures.mjs'
@@ -33,17 +36,19 @@ async function main() {
     const before = await app.termRead()
     const baseCount = countChar(before, ch)
     const baseInputs = before.inputs.length
-    // 키 주입 — 진짜 입력 경로 (sendInputEvent → xterm.onData).
-    await app.send({ cmd: 'type', text: ch })
-    // 렌더러가 이 키를 onData 로 받은 시각 + 그 글자가 화면에 나타난 첫 write 완료 시각.
+    // 키 주입 — 진짜 입력 경로 (sendInputEvent → xterm.onData). 응답 `at` = 주입 시각(C3).
+    const injected = await app.type(ch)
+    const injectAt = injected.at
+    // 그 글자가 화면에 나타난 뒤, 주입 이후 첫 write 완료 시각. onData 시각도 참고로 잡는다.
     const appeared = await until(
       async () => {
         const term = await app.termRead()
-        if (countChar(term, ch) <= baseCount) return null
+        if (countChar(term, ch) <= baseCount) return null // 내용으로 매칭 (seq 아님)
+        // 프롬프트 중화라 에코 외 프레임이 없다 — 주입 이후 첫 write 완료가 그 글자를 그린 프레임.
+        const w = term.writes.filter((r) => r.at >= injectAt).sort((a, b) => a.at - b.at)[0]
+        if (!w) return null
         const input = term.inputs.slice(baseInputs).find((r) => r.data === ch)
-        if (!input) return null
-        const w = term.writes.filter((r) => r.at >= input.at).sort((a, b) => a.at - b.at)[0]
-        return w ? { inputAt: input.at, writeAt: w.at, seq: w.seq } : null
+        return { onDataAt: input ? input.at : null, writeAt: w.at, seq: w.seq }
       },
       { timeoutMs: 2000, everyMs: 8, what: `echo of ${ch}` },
     )
@@ -51,8 +56,17 @@ async function main() {
       misses += 1
       samples.push({ i, ch, latencyMs: null, miss: true })
     } else {
-      const { inputAt, writeAt, seq } = appeared.value
-      samples.push({ i, ch, inputAt, writeAt, seq, latencyMs: writeAt - inputAt })
+      const { onDataAt, writeAt, seq } = appeared.value
+      samples.push({
+        i,
+        ch,
+        injectAt,
+        onDataAt,
+        writeAt,
+        seq,
+        latencyMs: writeAt - injectAt,
+        onDataDeltaMs: onDataAt !== null ? onDataAt - injectAt : null,
+      })
     }
     await sleep(gap())
   }
@@ -65,7 +79,8 @@ async function main() {
   const result = {
     at: new Date().toISOString(),
     buildCheck: app.buildCheck,
-    method: '양끝 모두 렌더러 Date.now (스큐 없음): 시작=xterm.onData(그 키 입력), 끝=그 글자 담긴 에코 프레임 write 완료. 경로: onData→IPC→session.input→herdr echo→frame→IPC→xterm write.',
+    method:
+      '주입 시각 기준 (수정 1회차 C3): 시작=control type 이 sendInputEvent 직전 찍은 main Date.now, 끝=그 글자 담긴 에코 프레임 xterm write 완료(renderer Date.now). 같은 머신이라 벽시계 동일(스큐 없음). 매칭은 내용(그 글자 등장) 후 주입 이후 첫 write, seq 동봉. onDataDeltaMs=주입→onData 드리프트(참고).',
     samples: samples.length,
     misses,
     p50,

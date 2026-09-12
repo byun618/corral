@@ -219,10 +219,14 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (target === null) throw new Error('창이 없다')
         const text = readString(parsed, 'text')
         if (text === null) throw new Error('text 필요')
+        // **주입 시각을 넣기 직전에 찍는다** (수정 1회차 C3). S2 는 이 `at` 을 레이턴시의 시작점으로
+        // 쓴다 — 루프가 끝난 뒤에 찍으면 그 사이 시간만큼 레이턴시를 과소평가한다. 시계는 injection
+        // 순간에 시작해야 한다. (main·renderer 는 같은 머신이라 Date.now 벽시계가 동일 — 스큐 없음.)
+        const at = Date.now()
         for (const ch of text) {
           target.webContents.sendInputEvent({ type: 'char', keyCode: ch })
         }
-        reply({ ok: true, typed: text.length, at: Date.now() })
+        reply({ ok: true, typed: text.length, at })
         return
       }
       /**
@@ -354,6 +358,22 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
           true,
         )
         reply({ ok: width !== null, width, text, at: Date.now() })
+        return
+      }
+      /**
+       * L2 — #5800 우회 직접 관측. DECRQM 질의를 xterm 에 먹이고 그 DECRPM 응답을 그대로 받는다.
+       * 프로덕션(재-minify) 빌드에서도 `\x1b[?2026;<value>$y` 가 오면 DECRQM CSI 핸들러가 살아
+       * 있다는 증거다 (renderer build.target es2022 우회). 응답 없음이면 우회가 깨진 것이다.
+       */
+      case 'term-decrqm': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const mode = readNumber(parsed, 'mode') ?? 2026
+        const response = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.decrqm(${mode}) : null)()`,
+          true,
+        )
+        reply({ ok: typeof response === 'string' && response.length > 0, mode, response, at: Date.now() })
         return
       }
       default:

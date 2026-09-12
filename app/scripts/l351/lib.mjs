@@ -257,6 +257,13 @@ export async function startApp({
     dropPush: (dropping, only = null) => send({ cmd: 'drop-push', dropping, ...(only ? { only } : {}) }),
     rebuildTree: () => send({ cmd: 'rebuild-tree' }),
     addRepo: (root) => send({ cmd: 'add-repo', root }),
+    /**
+     * 다음 「폴더 찾아보기」가 무엇으로 끝날지 세운다 (수정 5회차).
+     * 경로를 주면 그 폴더를 고른 것, `'취소'` 면 그냥 닫은 것. 안 세우면 **진짜 OS 창이 뜬다** —
+     * 측정이 거기서 멈추므로 하네스는 언제나 둘 중 하나를 세우고 누른다.
+     */
+    browseStub: (target) =>
+      target === '취소' ? send({ cmd: 'browse-stub', canceled: true }) : send({ cmd: 'browse-stub', path: target }),
     click: (selector) => send({ cmd: 'click', selector }),
     type: (text) => send({ cmd: 'type', text }),
     key: (keyCode, modifiers = []) => send({ cmd: 'key', keyCode, modifiers }),

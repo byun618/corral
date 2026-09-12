@@ -6,9 +6,9 @@
 // 여기 오가는 타입은 전부 `shared/types.ts` 다. 어댑터는 이름조차 모른다 (기준 N2).
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AddRepoResult, AppState, CorralApi } from '../shared/types.js'
+import type { AddRepoResult, AppState, BrowseReposResult, CorralApi } from '../shared/types.js'
 
-const EXPOSED = ['getState', 'onState', 'addRepo', 'refreshSessions', 'reportRendered', 'preloadEnv']
+const EXPOSED = ['getState', 'onState', 'addRepo', 'browseForRepos', 'refreshSessions', 'reportRendered', 'preloadEnv']
 
 const api: CorralApi = {
   getState: () => ipcRenderer.invoke('corral:getState'),
@@ -20,6 +20,7 @@ const api: CorralApi = {
     }
   },
   addRepo: (root: string): Promise<AddRepoResult> => ipcRenderer.invoke('corral:addRepo', root),
+  browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
   reportRendered: (revision: number) => ipcRenderer.send('corral:reportRendered', revision),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).

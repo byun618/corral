@@ -35,6 +35,32 @@ body {
 .warn { color: var(--warn); }
 
 .add { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+
+/* 레포 추가 모달 — 앱 안에서 뜨는 창. 네이티브 폴더 선택기는 여기서 한 걸음 더 들어간다. */
+.modal-scrim {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal {
+  width: 420px; max-width: calc(100vw - 32px);
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.modal-title { margin: 0; font-size: 14px; }
+.modal-close { border: none; background: none; color: var(--dim); font-size: 14px; cursor: pointer; padding: 2px 6px; }
+.modal-close:hover { color: var(--text); }
+.modal-item {
+  display: flex; flex-direction: column; gap: 3px; width: 100%;
+  padding: 12px 14px; border: none; background: none; color: var(--text);
+  text-align: left; cursor: pointer; font: inherit;
+}
+.modal-item:hover:not(:disabled) { background: rgba(110, 168, 254, 0.1); }
+.modal-item:disabled { color: var(--dim); cursor: default; }
+.modal-item-name { font-weight: 600; }
+.modal-item-hint { color: var(--dim); font-size: 11px; }
+.modal-note { margin: 0; padding: 0 14px 12px; color: var(--warn); font-size: 12px; }
 .path {
   flex: 1; max-width: 560px; padding: 6px 10px;
   background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px;

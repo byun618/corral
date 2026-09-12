@@ -131,6 +131,32 @@ export type RegistryState = {
 
 export type AddRepoResult = { ok: boolean; root?: string; error?: string }
 
+/**
+ * 「폴더 찾아보기」 한 번의 결과 (게이트 ① 2번째 지시, 2026-09-12).
+ *
+ * 고른 폴더 하나가 여러 줄이 될 수 있어서 목록으로 돌려준다 — 레포가 많은 폴더를 고르면
+ * **바로 아래 1단계 자식** 중 git 레포를 전부 넣는다. 화면이 "몇 개 넣었나" 를 말하려면
+ * 넣은 것·이미 있던 것·실패한 것이 갈려 있어야 한다. 그래서 셋을 따로 싣는다.
+ *
+ * `canceled` 는 실패가 아니다 — 사용자가 네이티브 다이얼로그를 그냥 닫은 것이고,
+ * 그때 화면은 아무 말도 하지 않는다.
+ */
+export type BrowseReposResult = {
+  ok: boolean
+  canceled: boolean
+  /** 사용자가 고른 폴더. 취소면 null. */
+  selected: string | null
+  /** 고른 폴더 자체가 레포였나(`repo`), 아니면 자식을 훑었나(`scan`). 취소면 null. */
+  mode: 'repo' | 'scan' | null
+  /** 이번에 새로 들어간 레포 루트. */
+  added: string[]
+  /** 이미 레지스트리에 있던 것 — "0개 등록" 과 구분해야 안내가 안 거짓말한다. */
+  alreadyRegistered: string[]
+  failed: Array<{ path: string; error: string }>
+  /** 화면에 그대로 띄우는 한 줄. 취소면 null. */
+  message: string | null
+}
+
 export type AppState = {
   revision: number
   sessions: SessionInfo[]
@@ -150,6 +176,7 @@ export type CorralApi = {
   getState: () => Promise<AppState>
   onState: (listener: (state: AppState) => void) => () => void
   addRepo: (root: string) => Promise<AddRepoResult>
+  browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
   reportRendered: (revision: number) => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }

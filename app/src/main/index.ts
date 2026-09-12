@@ -5,12 +5,13 @@
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState } from '../shared/types.js'
+import type { AddRepoResult, AppState, BrowseReposResult } from '../shared/types.js'
 import { SESSION_POLL_MS, SessionLink, listSessions, type SessionHandle } from './adapter/index.js'
+import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
@@ -119,6 +120,101 @@ function addRepo(input: string): AddRepoResult {
   if (result.ok) scheduleTree()
   scheduleEmit()
   return result
+}
+
+/**
+ * 네이티브 다이얼로그의 **결과만** 갈아끼우는 손잡이 (게이트 ① 2번째 지시 (5) — 계측용).
+ *
+ * macOS 폴더 선택기는 OS 가 그리는 창이라 하네스가 못 누른다. 그래서 그 한 줄만 스텁으로
+ * 바꿀 수 있게 해 두고, **나머지 경로는 전부 진짜로** 지나가게 한다 — 버튼 클릭 → preload →
+ * IPC → main → 판별 → `registry.add()` → 상태 반영. 스텁이 대신하는 것은 "사용자가 폴더를
+ * 골랐다" 한 걸음뿐이고, 그 사실은 `browse.dialog` 로그의 `stub: true` 로 원자료에 남는다.
+ *
+ * 손잡이는 **제어 채널에만** 달려 있다. 제어 서버는 `CORRAL_CONTROL_SOCKET` 이 있을 때만 서므로
+ * 평시 앱에는 이 값을 세울 길 자체가 없다.
+ *
+ * 값이 셋인 이유: `null` 은 "스텁 없음"(진짜 다이얼로그를 연다)이고, "사용자가 그냥 닫았다" 는
+ * 그것과 **다른 상태**다. 둘을 한 값으로 묶었더니 취소 회차가 진짜 OS 창을 열어 측정이
+ * 거기서 멈췄다 (수정 5회차 실측).
+ */
+let dialogStub: { canceled: true } | { path: string } | null = null
+
+/** 다이얼로그가 떠 있는 동안 두 번째 클릭이 창을 하나 더 띄우지 않게. */
+let browsing = false
+
+async function browseForRepos(): Promise<BrowseReposResult> {
+  const empty = { added: [], alreadyRegistered: [], failed: [] }
+  if (browsing) {
+    log('browse.busy', {})
+    return { ok: false, canceled: true, selected: null, mode: null, ...empty, message: null }
+  }
+  browsing = true
+  try {
+    log('browse.opened', { stubbed: dialogStub !== null })
+    let selected: string | null = null
+    if (dialogStub !== null) {
+      selected = 'path' in dialogStub ? dialogStub.path : null
+    } else if (window !== null && !window.isDestroyed()) {
+      const picked = await dialog.showOpenDialog(window, {
+        title: '레포 추가',
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: '이 폴더 선택',
+      })
+      selected = picked.canceled ? null : (picked.filePaths[0] ?? null)
+    }
+    log('browse.dialog', { stub: dialogStub !== null, path: selected })
+    if (selected === null) {
+      return { ok: true, canceled: true, selected: null, mode: null, ...empty, message: null }
+    }
+
+    const decision = await decideRoots(selected)
+    log('browse.decided', { mode: decision.mode, candidates: decision.candidates.length, scanned: decision.scanned })
+
+    const added: string[] = []
+    const alreadyRegistered: string[] = []
+    const failed: Array<{ path: string; error: string }> = []
+    // 중복은 **접힌 루트**로 가린다 — 주 체크아웃과 그 링크된 worktree 를 나란히 고르면
+    // `add()` 가 둘 다 같은 루트로 접는다. 경로로 세면 "2개 등록" 이라 거짓말하게 된다.
+    const before = new Set(registry?.list() ?? [])
+    for (const candidate of decision.candidates) {
+      const result = addRepo(candidate)
+      if (!result.ok) {
+        failed.push({ path: candidate, error: result.error ?? '알 수 없음' })
+        continue
+      }
+      const root = result.root ?? candidate
+      if (before.has(root)) {
+        if (!alreadyRegistered.includes(root)) alreadyRegistered.push(root)
+        continue
+      }
+      if (!added.includes(root)) added.push(root)
+      before.add(root)
+    }
+
+    const message = browseMessage({ mode: decision.mode, added, alreadyRegistered, failed })
+    log('browse.result', { mode: decision.mode, added: added.length, already: alreadyRegistered.length, failed: failed.length })
+    return { ok: added.length > 0 || alreadyRegistered.length > 0, canceled: false, selected, mode: decision.mode, added, alreadyRegistered, failed, message }
+  } finally {
+    browsing = false
+  }
+}
+
+/** 화면에 그대로 뜨는 한 줄. 0개일 때의 문안은 지시가 준 그대로다. */
+function browseMessage(input: {
+  mode: 'repo' | 'scan'
+  added: string[]
+  alreadyRegistered: string[]
+  failed: Array<{ path: string; error: string }>
+}): string {
+  if (input.added.length === 0 && input.alreadyRegistered.length === 0) {
+    if (input.mode === 'scan') return '이 폴더에서 git 레포를 찾지 못했다'
+    return `등록하지 못했다: ${input.failed[0]?.error ?? '알 수 없음'}`
+  }
+  const parts: string[] = []
+  if (input.added.length > 0) parts.push(`${input.added.length}개 등록`)
+  if (input.alreadyRegistered.length > 0) parts.push(`${input.alreadyRegistered.length}개는 이미 있었다`)
+  if (input.failed.length > 0) parts.push(`${input.failed.length}개 실패`)
+  return parts.join(' · ')
 }
 
 function pickSession(name: string): void {
@@ -248,6 +344,11 @@ app.whenReady().then(() => {
   ipcMain.handle('corral:addRepo', (event, root: string) =>
     fromOurWindow(event) ? addRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
   )
+  ipcMain.handle('corral:browseForRepos', (event) =>
+    fromOurWindow(event)
+      ? browseForRepos()
+      : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
+  )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
   ipcMain.on('corral:reportRendered', (event, rendered: number) => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
@@ -266,6 +367,10 @@ app.whenReady().then(() => {
     setDroppingPush: (input) => link.setDroppingPush(input),
     addRepo,
     rebuildTree,
+    setDialogStub: (value) => {
+      dialogStub = value
+      log('browse.stub_set', { stub: value === null ? '(뗌)' : 'path' in value ? value.path : '(취소)' })
+    },
   })
 
   app.on('activate', () => {

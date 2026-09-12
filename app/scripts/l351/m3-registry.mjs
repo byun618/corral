@@ -1,8 +1,14 @@
 // M3 — N3(레포 레지스트리: 추가되고, 재시작을 견딘다).
 //
-// **UI 조작만으로** 넣는다: 입력칸을 눌러 포커스 → 글자를 쳐서 경로를 넣고 → 추가 버튼을 누른다.
-// 세 걸음 전부 관문 ⑤ 를 지난다 — `elementFromPoint` 로 그 좌표의 맨 위가 그 요소인지 확인한
+// **UI 조작만으로** 넣는다. 수정 5회차에서 제스처가 바뀌었다 (게이트 ① 2번째 지시):
+// 입력칸에 경로를 치는 대신 **「레포 추가」 버튼 → 모달 → 「폴더 찾아보기」** 두 번의 클릭이다.
+// 두 클릭 다 관문 ⑤ 를 지난다 — `elementFromPoint` 로 그 좌표의 맨 위가 그 요소인지 확인한
 // 뒤 **좌표로** 마우스를 보낸다. `el.click()` 은 쓰지 않는다.
+//
+// **한 걸음은 스텁이다.** macOS 네이티브 폴더 선택기는 OS 가 그리는 창이라 하네스가 못 누른다.
+// 그래서 "사용자가 이 폴더를 골랐다" 는 그 한 줄만 제어 채널로 갈아끼우고(`browse-stub`),
+// 나머지(버튼 클릭 → preload → IPC → main 판별 → `registry.add()` → 화면)는 전부 진짜로
+// 지나간다. 어느 줄이 스텁이었는지는 앱 로그의 `browse.dialog {stub:true}` 가 말한다.
 //
 // 그리고 앱을 **완전히 죽였다가** 같은 레지스트리 경로로 다시 띄워 목록이 남아 있는지 본다.
 // 저장 파일의 내용도 그대로 싣는다 — corral 이 소유하는 것이 **레포 루트뿐**임을 보이려면
@@ -24,23 +30,19 @@ const registryFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'l351-reg-'
 
 await tidySession()
 
-async function addByUi(app, text) {
-  // ① 입력칸을 눌러 포커스를 준다 (클릭도 히트테스트를 지난다).
-  const focus = await clickWhenVisible(app, '[data-repo-input]')
-  // ② 남아 있던 글자를 **키로** 지운다 (⌘A → Backspace). 상태를 프로그램으로 비우지 않는다.
-  await app.key('a', ['meta'])
-  await app.key('Backspace')
-  await sleep(80)
-  const 지운뒤 = (await app.query('[data-repo-input]')).found
-  // ③ 경로를 친다.
-  const typed = await app.type(text)
-  await sleep(150)
-  const 입력칸 = (await app.query('[data-repo-input]')).found
-  // ④ 추가 버튼.
-  const click = await clickWhenVisible(app, '[data-add-repo]')
-  await sleep(500)
+async function addByUi(app, target) {
+  // ⓪ 네이티브 다이얼로그가 돌려줄 값을 먼저 세운다 — **이 한 줄만** 스텁이다.
+  const stub = await app.browseStub(target)
+  // ① 「레포 추가」 버튼 (모달이 뜬다).
+  const open = await clickWhenVisible(app, '[data-add-repo]')
+  await sleep(200)
+  const 모달제목 = (await app.query('[data-modal-title]')).found
+  // ② 모달 안의 「폴더 찾아보기」.
+  const browse = await clickWhenVisible(app, '[data-browse-folder]')
+  await sleep(700)
+  const 남은모달 = (await app.query('[data-add-repo-modal]')).found.length
   const notice = (await app.query('[data-add-notice]')).found
-  return { typed: typed.typed, 지운뒤, 입력칸, 알림: notice, 클릭: [focus.record, click.record] }
+  return { 스텁: stub.path, 모달제목, 남은모달, 알림: notice, 클릭: [open.record, browse.record] }
 }
 
 const out = { at: new Date().toISOString(), registryFile, 걸음: [] }
@@ -57,7 +59,7 @@ const addB = await addByUi(first, SECOND_REPO)
 await sleep(800)
 const afterAdd = await first.state()
 out.추가 = {
-  'worktree 안쪽 경로로 넣음': { 준값: INSIDE_WORKTREE, ...addA },
+  '고른 폴더가 worktree 안쪽': { 준값: INSIDE_WORKTREE, ...addA },
   '두 번째 레포': { 준값: SECOND_REPO, ...addB },
   레지스트리: afterAdd.registry,
   '화면의 레포': afterAdd.repos.map((repo) => repo.root),
@@ -98,8 +100,17 @@ out.재기동화면 = (await second.shot('n3-after-restart')).file
 await second.stop()
 
 const rootsAfter = out.재기동.레지스트리.roots
+out['스텁이 대신한 걸음'] = {
+  무엇: '네이티브 폴더 선택기가 돌려주는 경로 한 줄 (`dialog.showOpenDialog`)',
+  왜: 'OS 가 그리는 창이라 sendInputEvent 가 안 닿는다',
+  '진짜로 지난 것': '버튼 클릭(좌표·히트테스트) → preload → corral:browseForRepos → 판별 → registry.add() → 상태 반영',
+  로그: first.entries().filter((entry) => entry.tag === 'browse.dialog').map((entry) => ({ stub: entry.stub, path: entry.path })),
+}
 out.판정 = {
-  'UI 조작만으로 추가됐나': afterAdd.registry.roots.length === 2,
+  'UI 조작만으로 추가됐나 (다이얼로그 결과 한 줄만 스텁)': afterAdd.registry.roots.length === 2,
+  '모달이 떴고 등록 뒤 닫혔나': addA.모달제목.length === 1 && addA.남은모달 === 0 && addB.남은모달 === 0,
+  '스텁이 실제로 쓰였나 (로그가 stub:true 라고 말한다)':
+    out['스텁이 대신한 걸음'].로그.length === 2 && out['스텁이 대신한 걸음'].로그.every((item) => item.stub === true),
   'worktree 안쪽 경로가 레포 루트로 접혔나': rootsAfter.includes(EXPECTED_ROOT),
   '두 레포 모두 남았나': rootsAfter.length === 2 && rootsAfter.includes(SECOND_REPO),
   '재기동 뒤에도 목록에 있나': out.재기동['화면의 레포'].length === 2,

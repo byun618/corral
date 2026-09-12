@@ -27,13 +27,29 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
-  const [draft, setDraft] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
+  /** 모달이 떠 있나 · 모달 안에 붙는 결과 줄 (0개일 때는 모달을 안 닫고 여기 적는다). */
+  const [modalOpen, setModalOpen] = useState(false)
+  const [modalNote, setModalNote] = useState<string | null>(null)
+  const [browsing, setBrowsing] = useState(false)
 
   useEffect(() => {
     void window.corral.getState().then(setState)
     return window.corral.onState(setState)
   }, [])
+
+  /**
+   * ESC 로 닫는다 — **문서에 건다.** 모달 `div` 의 `onKeyDown` 은 그 안에 포커스가 있어야만
+   * 불리는데, 모달을 연 직후 포커스는 아직 버튼에 있다. 계측도 사람도 같은 자리를 지난다.
+   */
+  useEffect(() => {
+    if (!modalOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setModalOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [modalOpen])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -45,14 +61,28 @@ export function App(): React.JSX.Element {
 
   if (state === null) return <div className="boot">부트스트랩…</div>
 
-  const add = async (): Promise<void> => {
-    const result = await window.corral.addRepo(draft)
-    if (result.ok) {
-      setDraft('')
-      setNotice(`등록: ${result.root ?? draft}`)
-      return
+  /**
+   * 「폴더 찾아보기」 — 네이티브 폴더 선택기는 **main 이 연다** (경계 규칙: 렌더러는 dialog 를
+   * 모른다). 여기서 하는 일은 IPC 한 번과 그 결과를 화면에 옮기는 것뿐이다.
+   *
+   * 결과 처리는 세 갈래다: 하나라도 등록됐으면 모달을 닫고 위쪽 알림으로, 하나도 못 찾았으면
+   * **모달을 연 채** 그 안에 적고(다시 고를 수 있게), 취소면 아무 말도 안 한다.
+   */
+  const browse = async (): Promise<void> => {
+    setBrowsing(true)
+    setModalNote(null)
+    try {
+      const result = await window.corral.browseForRepos()
+      if (result.canceled) return
+      if (result.added.length > 0 || result.alreadyRegistered.length > 0) {
+        setModalOpen(false)
+        setNotice(result.message)
+        return
+      }
+      setModalNote(result.message)
+    } finally {
+      setBrowsing(false)
     }
-    setNotice(`실패: ${result.error ?? '알 수 없음'}`)
   }
 
   return (
@@ -81,17 +111,7 @@ export function App(): React.JSX.Element {
       </header>
 
       <section className="add" data-add-repo-row>
-        <input
-          className="path"
-          data-repo-input
-          placeholder="레포 경로 (예: ~/repos/byun618/corral)"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') void add()
-          }}
-        />
-        <button className="primary" data-add-repo onClick={() => void add()}>
+        <button className="primary" data-add-repo onClick={() => setModalOpen(true)}>
           레포 추가
         </button>
         {notice === null ? null : (
@@ -101,10 +121,19 @@ export function App(): React.JSX.Element {
         )}
       </section>
 
+      {modalOpen ? (
+        <AddRepoModal
+          browsing={browsing}
+          note={modalNote}
+          onBrowse={() => void browse()}
+          onClose={() => setModalOpen(false)}
+        />
+      ) : null}
+
       <main className="list">
         {state.repos.length === 0 ? (
           <p className="empty" data-empty>
-            등록된 레포가 없다. 위에 레포 경로를 넣어 추가한다.
+            등록된 레포가 없다. 위의 「레포 추가」 로 폴더를 고른다.
           </p>
         ) : (
           state.repos.map((repo) => <Repo key={repo.root} repo={repo} />)
@@ -122,6 +151,49 @@ export function App(): React.JSX.Element {
         {state.sessionsError === null ? null : <span className="warn">세션: {state.sessionsError}</span>}
         {state.link.lastError === null ? null : <span className="warn">링크: {state.link.lastError}</span>}
       </footer>
+    </div>
+  )
+}
+
+/**
+ * 레포 추가 모달 (게이트 ① 2번째 지시, 2026-09-12).
+ *
+ * R1 에 있는 항목은 **「폴더 찾아보기」 하나뿐**이다. 지시 (4) 가 호스트 셀렉터·URL 복제·
+ * 새 프로젝트 만들기를 R1 범위 밖으로 잘랐다 — 자리만 비워 두지 말고 아예 안 만든다.
+ */
+function AddRepoModal({
+  browsing,
+  note,
+  onBrowse,
+  onClose,
+}: {
+  browsing: boolean
+  note: string | null
+  onBrowse: () => void
+  onClose: () => void
+}): React.JSX.Element {
+  return (
+    <div className="modal-scrim" data-modal-scrim onClick={onClose}>
+      {/* 창 안쪽 클릭은 닫기로 안 샌다. 닫는 길은 X 와 ESC 두 개다 (지시 (1)). */}
+      <div className="modal" data-add-repo-modal onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <h2 className="modal-title" data-modal-title>
+            레포 추가
+          </h2>
+          <button className="modal-close" data-modal-close aria-label="닫기" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <button className="modal-item" data-browse-folder disabled={browsing} onClick={onBrowse}>
+          <span className="modal-item-name">폴더 찾아보기</span>
+          <span className="modal-item-hint">로컬 Git 레포 또는 레포가 많은 폴더</span>
+        </button>
+        {note === null ? null : (
+          <p className="modal-note" data-browse-result>
+            {note}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

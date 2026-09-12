@@ -25,6 +25,14 @@ export type ControlHandlers = {
   /** 준비·뒷정리 전용 지름길. 판정 회차(N3)는 이게 아니라 `click` 으로 진짜 버튼을 누른다. */
   addRepo: (root: string) => AddRepoResult
   rebuildTree: () => Promise<void>
+  /**
+   * 네이티브 폴더 선택기의 **결과만** 갈아끼운다 (게이트 ① 2번째 지시 (5)).
+   * macOS 다이얼로그는 OS 가 그리는 창이라 `sendInputEvent` 가 안 닿는다. 그 한 걸음만 스텁으로
+   * 두고 버튼 클릭 → IPC → 판별 → 등록은 진짜로 지나가게 한다.
+   *
+   * 세 상태다: 경로를 고른 것 · **취소한 것** · 스텁을 뗀 것(`null` — 진짜 창이 뜬다).
+   */
+  setDialogStub: (value: { canceled: true } | { path: string } | null) => void
 }
 
 /**
@@ -150,6 +158,18 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ...result, at: Date.now() })
         return
       }
+      /**
+       * 다음 「폴더 찾아보기」가 **고른 것으로 칠** 경로. 계측 전용이고, 이 채널은
+       * `CORRAL_CONTROL_SOCKET` 이 있을 때만 선다 — 평시 앱에는 이 손잡이가 없다.
+       */
+      case 'browse-stub': {
+        // `path` 가 있으면 그 폴더를 고른 것, `canceled:true` 면 그냥 닫은 것, 둘 다 없으면 스텁을 뗀다.
+        const raw = readString(parsed, 'path')
+        const value = raw !== null ? { path: raw } : parsed['canceled'] === true ? ({ canceled: true } as const) : null
+        handlers.setDialogStub(value)
+        reply({ ok: true, stub: value, at: Date.now() })
+        return
+      }
       case 'rebuild-tree': {
         await handlers.rebuildTree()
         reply({ ok: true, at: Date.now() })
@@ -186,7 +206,10 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: true, selector, at, method: 'sendInputEvent', ...probe })
         return
       }
-      /** 글자를 친다 — 경로 입력칸에 값을 넣는 유일한 UI 경로다 (붙여넣기 아님). */
+      /**
+       * 글자를 친다 (붙여넣기 아님). 수정 5회차에서 경로 입력칸이 사라져 지금은 쓰는 측정이
+       * 없지만, 손잡이는 남긴다 — 다음에 입력칸이 생기면 같은 자리를 다시 쓴다.
+       */
       case 'type': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')

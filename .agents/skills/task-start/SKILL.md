@@ -19,7 +19,10 @@ description: corral 작업 시작 — 일감(LIFE-N)을 받아 worktree·코디�
      --title "LIFE-NNN-<슬러그>" --command "claude" --focus --json
    ```
    `--focus` 는 코디네이터 터미널에만 — 사용자가 바로 볼 대상이므로. handle 을 확보한다
-4. **LA 상태 전이**: `issue_transition` → "진행 중"
+4. **LA 상태 전이**: `issue_transition` → "진행 중".
+   **부모 체크포인트가 있으면 같이 움직인다** — 온보드(`issue_update` onBoard:true) + "진행 중" 전이.
+   task 만 전이하고 체크포인트를 백로그·할 일로 방치하지 말 것 (LIFE-348 에서 사용자가 직접 고침, 2026-09-12).
+   대칭: 라운드 종료(task 완료) 시 체크포인트도 완료 전이
 5. **킥오프 주입** (Claude 부팅 — 프롬프트 `❯` — 확인 후):
    ```bash
    orca terminal send --terminal <handle> --text \

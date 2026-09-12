@@ -44,11 +44,15 @@ async function main() {
       async () => {
         const term = await app.termRead()
         if (countChar(term, ch) <= baseCount) return null // 내용으로 매칭 (seq 아님)
-        // 프롬프트 중화라 에코 외 프레임이 없다 — 주입 이후 첫 write 완료가 그 글자를 그린 프레임.
-        const w = term.writes.filter((r) => r.at >= injectAt).sort((a, b) => a.at - b.at)[0]
+        // 주입 이후 write 들을 시각(동률이면 seq)으로 정렬. 첫 write 완료가 그 글자를 그린 프레임.
+        const after = term.writes.filter((r) => r.at >= injectAt).sort((a, b) => a.at - b.at || a.seq - b.seq)
+        const w = after[0]
         if (!w) return null
+        // F-1(2회차): 잡은 write 가 **주입 이후 첫** write 임을 명시 확인·기록. 프롬프트 중화라
+        //   에코 외 프레임이 없어 이 값은 1 이 기대치 — 1 이면 첫 write=에코라 과소측정 창이 닫힌다.
+        const writesAfterInject = after.length
         const input = term.inputs.slice(baseInputs).find((r) => r.data === ch)
-        return { onDataAt: input ? input.at : null, writeAt: w.at, seq: w.seq }
+        return { onDataAt: input ? input.at : null, writeAt: w.at, seq: w.seq, writesAfterInject }
       },
       { timeoutMs: 2000, everyMs: 8, what: `echo of ${ch}` },
     )
@@ -56,7 +60,7 @@ async function main() {
       misses += 1
       samples.push({ i, ch, latencyMs: null, miss: true })
     } else {
-      const { onDataAt, writeAt, seq } = appeared.value
+      const { onDataAt, writeAt, seq, writesAfterInject } = appeared.value
       samples.push({
         i,
         ch,
@@ -64,6 +68,7 @@ async function main() {
         onDataAt,
         writeAt,
         seq,
+        writesAfterInject,
         latencyMs: writeAt - injectAt,
         onDataDeltaMs: onDataAt !== null ? onDataAt - injectAt : null,
       })
@@ -75,23 +80,27 @@ async function main() {
   const p50 = pct(latencies, 50)
   const p95 = pct(latencies, 95)
   const max = Math.max(...latencies)
+  // F-1: 표본마다 '주입 이후 write 수'. 전부 1 이면 첫 write=에코 확정(과소측정 창 닫힘). 기록만 — 판정 무관.
+  const wai = samples.filter((s) => !s.miss).map((s) => s.writesAfterInject)
+  const writesAfterInject = { min: Math.min(...wai), max: Math.max(...wai), allOne: wai.every((n) => n === 1) }
   const pass = misses === 0 && latencies.length >= 30 && p50 <= 117 && p95 <= 173
   const result = {
     at: new Date().toISOString(),
     buildCheck: app.buildCheck,
     method:
-      '주입 시각 기준 (수정 1회차 C3): 시작=control type 이 sendInputEvent 직전 찍은 main Date.now, 끝=그 글자 담긴 에코 프레임 xterm write 완료(renderer Date.now). 같은 머신이라 벽시계 동일(스큐 없음). 매칭은 내용(그 글자 등장) 후 주입 이후 첫 write, seq 동봉. onDataDeltaMs=주입→onData 드리프트(참고).',
+      '주입 시각 기준 (수정 1회차 C3): 시작=control type 이 sendInputEvent 직전 찍은 main Date.now, 끝=그 글자 담긴 에코 프레임 xterm write 완료(renderer Date.now). 같은 머신이라 벽시계 동일(스큐 없음). 매칭은 내용(그 글자 등장) 후 주입 이후 첫 write, seq 동봉. F-1(2회차): 잡은 write 가 주입 이후 첫 write 임을 writesAfterInject 로 명시 확인(전부 1=첫 write가 에코, 과소측정 창 닫힘). onDataDeltaMs=주입→onData 드리프트(참고). 폴링·타이밍은 fix1 그대로 — 이번 미달은 zsh-autosuggestions 오염이 원인이라 neutralizePrompt 에서 자동제안 끄고 히스토리 비워 해결(§8).',
     samples: samples.length,
     misses,
     p50,
     p95,
     max,
+    writesAfterInject,
     floor: { p50: 117, p95: 173 },
     verdict: pass ? '통과' : '미달',
     raw: samples,
   }
   writeRaw('s2-latency.json', result)
-  console.log(`\nS2 표본 ${latencies.length} · 놓침 ${misses} · p50 ${p50}ms · p95 ${p95}ms · max ${max}ms → ${result.verdict}`)
+  console.log(`\nS2 표본 ${latencies.length} · 놓침 ${misses} · p50 ${p50}ms · p95 ${p95}ms · max ${max}ms · writesAfterInject ${writesAfterInject.min}~${writesAfterInject.max}(allOne=${writesAfterInject.allOne}) → ${result.verdict}`)
   await app.stop()
   process.exit(pass ? 0 : 1)
 }

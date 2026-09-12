@@ -194,7 +194,10 @@ export class TerminalStream {
 
   resize(size: { cols: number; rows: number }): void {
     if (this.session === null || this.session.isClosed) return
-    log('stream.resize', { paneId: this.state.paneId, cols: size.cols, rows: size.rows })
+    // 창 드래그 중 fit 이 연속 호출 → 모션당 이벤트라 frame·scroll 과 같은 게이트에 둔다 (F-3, 2회차).
+    // open/close/closed/error/connect_failed(수명주기·저빈도)와 clipboard(사용자 동작당)는 무게이트 —
+    // 평시 진단 가시성 유지. quietLogger 판단과 같은 결: 모션 로그만 끄고 수명주기·오류는 남긴다.
+    if (this.measuring) log('stream.resize', { paneId: this.state.paneId, cols: size.cols, rows: size.rows })
     this.session.resize(size.cols, size.rows)
   }
 

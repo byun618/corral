@@ -21,7 +21,7 @@ body {
 }
 
 /*
-  높이를 뷰포트에 **고정**한다 (수정 1회차 G-M1 — grok M2). `min-height:100vh` 이면 긴 레포
+  높이를 뷰포트에 **고정**한다 (수정 1회차 G-M1 — grok M1). `min-height:100vh` 이면 긴 레포
   목록이 .app 를 뷰포트보다 높게 밀어, .content(flex:1)·.term-host 가 창 세로에 안 묶인다 →
   창을 세로로 줄여도 xterm rows 가 안 바뀌어 S5 가 가로 변화만 실험했다. `height:100vh` +
   `min-height:0` 으로 flex 사슬(content→term-panel→term-host)이 창 높이에 묶이고, .list 는

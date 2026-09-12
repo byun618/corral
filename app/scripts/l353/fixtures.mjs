@@ -19,11 +19,17 @@ import { herdrRequest, herdrRead, sleep } from './lib.mjs'
 export async function neutralizePrompt(paneId) {
   await herdrRequest('pane.send_text', { pane_id: paneId, text: '\x03' }) // Ctrl-C (혹시 입력 중이면)
   await sleep(150)
+  await herdrRequest('pane.send_text', { pane_id: paneId, text: '\x15' }) // Ctrl-U: 눌러붙은 입력 줄 제거
+  await sleep(120)
   await herdrRequest('pane.send_text', {
     pane_id: paneId,
     // precmd/preexec 훅을 전부 걷고, p10k 재그리기를 끄고, 1줄 정적 프롬프트로.
+    // + zsh-autosuggestions 를 끄고 히스토리를 비운다 (2회차 F-1 조사): 켜져 있으면 타이핑한
+    //   글자로 히스토리 명령을 고스트 제안해 그 텍스트가 PTY 줄에 그려진다 — S2 가 'a' 를 치면
+    //   과거 실패 명령(예: `abcdef…qa!`)이 제안돼 화면이 얼어붙은 듯 보이고 내용 매칭이 깨졌다.
     text:
       "precmd() {}; preexec() {}; typeset -ga precmd_functions=(); typeset -ga preexec_functions=(); " +
+      "(( $+functions[_zsh_autosuggest_disable] )) && _zsh_autosuggest_disable; fc -p /dev/null 2>/dev/null; " +
       "unset RPROMPT RPS1; PROMPT='READY%# '; clear\n",
   })
   await sleep(500)

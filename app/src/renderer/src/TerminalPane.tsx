@@ -161,6 +161,14 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
     // 대조 대상이 "xterm 버퍼 실물(buffer.getLine)" 이라고 기준이 지정한다. 화면 상태를
     // 읽기만 하는 훅이고, 쓰는 길은 없다.
     window.corralTermProbe = {
+      // S7ⓔ — xterm 이 실제 렌더에 쓰는 폭 계산. graphemes 애드온이 활성이면 그 값이다.
+      // 재는 대상(스트림 바이트)이 아니라 xterm 의 독립 폭 판정이라 폭 오라클의 한 축이 된다.
+      cellWidth: (text) => {
+        const core: unknown = Reflect.get(term, '_core')
+        const svc: unknown = core && typeof core === 'object' ? Reflect.get(core, 'unicodeService') : null
+        const fn = svc && typeof svc === 'object' ? Reflect.get(svc, 'getStringCellWidth') : null
+        return typeof fn === 'function' ? (fn.call(svc, text) as number) : null
+      },
       read: () => {
         const buffer = term.buffer.active
         const lines: string[] = []

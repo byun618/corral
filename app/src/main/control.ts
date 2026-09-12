@@ -287,6 +287,19 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: result !== null, at: Date.now(), term: result })
         return
       }
+      /** S7ⓔ — xterm 이 한 문자열에 매기는 셀 폭. 폭 오라클의 xterm 축. */
+      case 'term-cell-width': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const text = readString(parsed, 'text')
+        if (text === null) throw new Error('text 필요')
+        const width = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.cellWidth(${JSON.stringify(text)}) : null)()`,
+          true,
+        )
+        reply({ ok: width !== null, width, text, at: Date.now() })
+        return
+      }
       default:
         reply({ ok: false, error: `모르는 cmd: ${cmd ?? '(없음)'}` })
         return

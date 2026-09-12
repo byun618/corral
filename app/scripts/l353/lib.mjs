@@ -216,6 +216,7 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     addRepo: (root) => send({ cmd: 'add-repo', root }),
     selectPane: (paneId) => send({ cmd: 'click', selector: `[data-pane="${paneId}"]` }),
     termRead: async () => (await send({ cmd: 'term-read' })).term,
+    termCellWidth: async (text) => (await send({ cmd: 'term-cell-width', text })).width,
     resizeWindow: (width, height) => send({ cmd: 'resize-window', width, height }),
     readClipboard: async () => (await send({ cmd: 'read-clipboard' })).text,
     click: (selector) => send({ cmd: 'click', selector }),

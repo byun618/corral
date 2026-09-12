@@ -121,7 +121,9 @@ out.판정 = {
   'ⓒ worktree 구조가 git 과 같다': JSON.stringify(gitPaths) === JSON.stringify(screenPaths) && rows.every((row) => row['git 과 일치']),
   'ⓒ 열림상태가 herdr 와 같다': rows.every((row) => row['herdr 와 일치']),
   '4단이 실제로 이어진다': Object.values(depth).every((value) => value !== null),
-  '루트가 레지스트리다 (등록 안 된 workspace 0)': state.unregistered.workspaces.length === 0,
+  // 수정 4회차에서 자가 바뀌었다: 예전엔 "미등록 칸이 비어 있다" 였는데, 이제 그 칸 자체가 없다
+  // (게이트 ① 지시). 미등록 workspace 가 있어도 안 그려진다는 쪽은 G1(m15) 이 따로 잰다.
+  '루트가 레지스트리다 (화면 상태에 미등록 칸이 아예 없다)': !('unregistered' in state),
 }
 console.log(JSON.stringify(out.판정, null, 2))
 writeRaw('n4-hierarchy.json', out)

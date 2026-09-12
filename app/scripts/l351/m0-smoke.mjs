@@ -21,7 +21,6 @@ writeRaw('m0-smoke.json', {
     error: repo.error,
     worktrees: repo.worktrees.map((item) => ({ path: item.path, branch: item.branch, open: item.openWorkspaceId })),
   })),
-  unregistered: state.unregistered,
   대조: first,
   shot: shot.file,
 })

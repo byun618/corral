@@ -122,17 +122,6 @@ export type RepoRow = {
   worktrees: WorktreeRow[]
 }
 
-/**
- * 레지스트리에 없는 레포에서 열린 workspace.
- *
- * 목록의 루트는 레지스트리지만(N4), 등록 안 된 workspace 를 **조용히 숨기지는 않는다** —
- * 숨기면 목록이 herdr 와 어긋난 채로 "맞다" 고 말하게 된다 (N5 가 재는 것이 그 어긋남이다).
- * 평시에는 비어 있는 칸이고, 차 있으면 "등록하라" 는 신호다.
- */
-export type UnregisteredGroup = {
-  workspaces: WorkspaceRow[]
-}
-
 export type RegistryState = {
   /** 레지스트리 파일이 실제로 어디 있나 — A2 의 근거이자 격리 확인용. */
   file: string
@@ -152,7 +141,6 @@ export type AppState = {
   link: LinkState
   registry: RegistryState
   repos: RepoRow[]
-  unregistered: UnregisteredGroup
   /** 개발·계측 실행에서만 켜지는 진단 표시. */
   diagnostics: boolean
 }

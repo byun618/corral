@@ -17,7 +17,7 @@
 // 그래서 비싼 쪽만 캐시하고(`buildSkeleton`), 행은 **내보낼 때마다 새로 붙인다**(`joinTree`).
 
 import path from 'node:path'
-import type { RepoRow, UnregisteredGroup, WorkspaceRow } from '../shared/types.js'
+import type { RepoRow, WorkspaceRow } from '../shared/types.js'
 import { readOpenWorkspaces } from './adapter/index.js'
 import { listGitWorktrees } from './git-worktrees.js'
 import { log } from './log.js'
@@ -30,7 +30,7 @@ export type RepoSkeleton = {
   worktrees: Array<{ path: string; branch: string | null; isLinked: boolean; openWorkspaceId: string | null }>
 }
 
-export type Tree = { repos: RepoRow[]; unregistered: UnregisteredGroup }
+export type Tree = { repos: RepoRow[] }
 
 export async function buildSkeleton(input: {
   roots: readonly string[]
@@ -87,12 +87,18 @@ export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly
   /**
    * 어느 등록 레포에도 안 붙은 workspace.
    *
-   * 목록의 루트는 레지스트리지만(N4), 등록 안 된 workspace 를 **조용히 숨기지는 않는다** —
-   * 숨기면 목록이 herdr 와 어긋난 채로 "맞다" 고 말하게 된다. 평시엔 비어 있는 칸이다.
+   * **여기 있던 판단은 뒤집혔다** (게이트 ① 사용자 지시, 2026-09-12). 원래는 "등록 안 된
+   * workspace 를 조용히 숨기지 않는다 — 숨기면 목록이 herdr 와 어긋난 채로 맞다고 말하게 된다"
+   * 였고, 그래서 화면 아래에 「레지스트리 밖 workspace」 칸을 뒀다. 사용자가 앱을 직접 굴려보고
+   * **등록한 레포만 보이게 하라**고 결정했다 — 목록의 루트는 레지스트리라는 N4 의 뜻이
+   * 화면에서도 그대로 지켜지는 쪽이다.
+   *
+   * 대신 **말없이 사라지지는 않게** 로그는 남긴다: 어긋남은 `tree.unregistered` 로 진단할 수
+   * 있고, 화면에만 안 실린다. 그래서 이 필터는 계속 돈다.
    */
   const unregistered = workspaces.filter((workspace) => !claimed.has(workspace.workspaceId))
   if (unregistered.length > 0) {
     log('tree.unregistered', { count: unregistered.length, ids: unregistered.map((item) => item.workspaceId) })
   }
-  return { repos, unregistered: { workspaces: unregistered } }
+  return { repos }
 }

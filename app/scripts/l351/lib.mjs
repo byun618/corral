@@ -405,10 +405,12 @@ export function diffSets(mine, truth) {
  * "목록이 맞나" 다. 4단 조립에서 어느 workspace 가 빠지면 여기서 드러난다.
  */
 export function corralIdsFromState(state) {
-  const workspaces = [
-    ...state.repos.flatMap((repo) => repo.worktrees.map((worktree) => worktree.workspace).filter((item) => item !== null)),
-    ...state.unregistered.workspaces,
-  ]
+  // 수정 4회차부터 **등록 레포 밑에 있는 것만** 화면에 실린다 (게이트 ① 지시 — `AppState` 에
+  // `unregistered` 필드 자체가 없다). 격리 세션에서 workspace 는 전부 등록된 REPO_DIR 밑에
+  // 열리므로 이 집합은 여전히 herdr 전체와 같다 — 안 같아지면 그게 볼 거리다.
+  const workspaces = state.repos.flatMap((repo) =>
+    repo.worktrees.map((worktree) => worktree.workspace).filter((item) => item !== null),
+  )
   const tabs = workspaces.flatMap((workspace) => workspace.tabs)
   return {
     workspaces: workspaces.map((item) => item.workspaceId).sort(),

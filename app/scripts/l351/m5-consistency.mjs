@@ -267,10 +267,9 @@ for (let round = 1; round <= TIMES; round++) {
   const fresh = await until(
     async () => {
       const state = await app.state()
-      const workspaces = [
-        ...state.repos.flatMap((repo) => repo.worktrees.map((wt) => wt.workspace).filter((item) => item !== null)),
-        ...state.unregistered.workspaces,
-      ].filter((item) => !stale.includes(item.workspaceId))
+      const workspaces = state.repos
+        .flatMap((repo) => repo.worktrees.map((wt) => wt.workspace).filter((item) => item !== null))
+        .filter((item) => !stale.includes(item.workspaceId))
       const row = workspaces[0]
       return row !== undefined && row.tabs.length > 0 ? { workspaceId: row.workspaceId, tabId: row.tabs[0].tabId } : null
     },
@@ -295,10 +294,9 @@ for (let round = 1; round <= TIMES; round++) {
 /** corral 화면의 탭 순서(그 workspace 안) · herdr tab.list 의 탭 순서. */
 async function orderLook(workspaceId) {
   const [state, list] = await Promise.all([app.state(), request('tab.list', { workspace_id: workspaceId })])
-  const rows = [
-    ...state.repos.flatMap((repo) => repo.worktrees.map((wt) => wt.workspace).filter((item) => item !== null)),
-    ...state.unregistered.workspaces,
-  ]
+  const rows = state.repos.flatMap((repo) =>
+    repo.worktrees.map((wt) => wt.workspace).filter((item) => item !== null),
+  )
   const corral = (rows.find((row) => row.workspaceId === workspaceId)?.tabs ?? []).map((tab) => tab.tabId)
   const herdr = list.tabs.map((tab) => tab.tab_id)
   return { at: Date.now(), mono: performance.now(), corral, herdr, 일치: JSON.stringify(corral) === JSON.stringify(herdr) }

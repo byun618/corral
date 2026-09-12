@@ -109,16 +109,6 @@ export function App(): React.JSX.Element {
         ) : (
           state.repos.map((repo) => <Repo key={repo.root} repo={repo} />)
         )}
-
-        {state.unregistered.workspaces.length > 0 ? (
-          <section className="repo" data-unregistered>
-            <h2 className="repo-name">레지스트리 밖 workspace</h2>
-            <p className="hint">이 workspace 들이 속한 레포는 아직 등록되지 않았다.</p>
-            {state.unregistered.workspaces.map((workspace) => (
-              <Workspace key={workspace.workspaceId} workspace={workspace} />
-            ))}
-          </section>
-        ) : null}
       </main>
 
       <footer className="footer" data-footer>

@@ -119,7 +119,12 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
     })
 
     // --- 입력: xterm 이 만드는 VT 바이트 그대로 main 으로 ---------------------------
+    // S2 계측: onData 발화 시각을 렌더러 시계로 링에 남긴다 — write 완료도 같은 시계라
+    // 교차 프로세스 클럭 스큐 없이 입력→화면을 잰다.
+    const inputs = []
     const dataListener = term.onData((data) => {
+      inputs.push({ data, at: Date.now() })
+      if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
       window.corral.termInput(data)
     })
 
@@ -185,6 +190,7 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
           lastSeq,
           lines,
           writes: [...writes],
+          inputs: [...inputs],
           at: Date.now(),
         }
       },

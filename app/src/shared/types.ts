@@ -132,6 +132,14 @@ export type RegistryState = {
 export type AddRepoResult = { ok: boolean; root?: string; error?: string }
 
 /**
+ * 레포 하나를 목록에서 뺀 결과 (게이트 ① 3번째 지시, 2026-09-12).
+ *
+ * 빼는 것은 **corral 레지스트리의 그 줄 하나**뿐이다. 디스크의 폴더도, herdr 세션도 건드리지
+ * 않는다 — 그래서 여기 돌려줄 것도 "어느 루트가 빠졌나" 하나로 족하다.
+ */
+export type RemoveRepoResult = { ok: boolean; root?: string; error?: string }
+
+/**
  * 「폴더 찾아보기」 한 번의 결과 (게이트 ① 2번째 지시, 2026-09-12).
  *
  * 고른 폴더 하나가 여러 줄이 될 수 있어서 목록으로 돌려준다 — 레포가 많은 폴더를 고르면
@@ -176,6 +184,7 @@ export type CorralApi = {
   getState: () => Promise<AppState>
   onState: (listener: (state: AppState) => void) => () => void
   addRepo: (root: string) => Promise<AddRepoResult>
+  removeRepo: (root: string) => Promise<RemoveRepoResult>
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
   reportRendered: (revision: number) => void

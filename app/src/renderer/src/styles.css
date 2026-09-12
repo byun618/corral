@@ -8,6 +8,7 @@
   --accent: #6ea8fe;
   --ok: #59c98a;
   --warn: #e0a458;
+  --danger: #e0685f;
 }
 
 * { box-sizing: border-box; }
@@ -80,6 +81,32 @@ body {
 .repo { margin-bottom: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .repo-name { display: flex; gap: 10px; align-items: center; margin: 0; padding: 8px 12px; font-size: 14px; border-bottom: 1px solid var(--line); }
 .path-hint { color: var(--dim); font-weight: 400; font-size: 11px; }
+
+/*
+  제거 버튼. **쉼 상태에서도 보인다** (흐리게) — 완전히 숨기면 사람 눈에 없는 버튼을
+  계측만 누를 수 있게 되고, 그건 좌표 클릭 규칙이 막으려는 모양이다. hover 에서 또렷해진다.
+*/
+.row-remove {
+  margin-left: auto; padding: 2px 9px; border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer;
+  opacity: 0.45; transition: opacity 80ms linear;
+}
+.repo:hover .row-remove, .row-remove:hover, .row-remove:focus-visible { opacity: 1; }
+.row-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+.confirm-body { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 12px 14px 6px; }
+/* 긴 경로가 창 밖으로 삐져나가지 않게 — 레포 루트는 길다. */
+.confirm-body .path-hint { overflow-wrap: anywhere; }
+.confirm-name { font-weight: 600; }
+.confirm-note { margin: 0; padding: 0 14px 12px; color: var(--dim); font-size: 12px; }
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 0 14px 12px; }
+.ghost, .danger {
+  padding: 5px 14px; border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+}
+.ghost:hover { border-color: var(--dim); }
+.danger { color: var(--danger); border-color: var(--danger); }
+.danger:hover { background: rgba(224, 104, 95, 0.12); }
 
 .worktree { padding: 6px 12px; border-bottom: 1px solid var(--line); }
 .worktree:last-child { border-bottom: none; }

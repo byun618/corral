@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { isRecord, readArray, safeParse } from '../shared/json.js'
 import { canonicalPath } from './canonical-path.js'
-import type { AddRepoResult, RegistryState } from '../shared/types.js'
+import type { AddRepoResult, RegistryState, RemoveRepoResult } from '../shared/types.js'
 import { log } from './log.js'
 
 const VERSION = 1
@@ -82,6 +82,39 @@ export class RepoRegistry {
     if (!saved.ok) return { ok: false, error: saved.error }
     this.roots = next
     log('registry.added', { root, roots: this.roots.length, file: this.file })
+    return { ok: true, root }
+  }
+
+  /**
+   * 레포 루트 하나를 뺀다 (게이트 ① 3번째 지시, 2026-09-12).
+   *
+   * 빼는 것은 **이 목록의 그 줄 하나**다. 디스크의 폴더도, herdr 도 건드리지 않는다 —
+   * 이 메서드가 부르는 것은 `save()` 하나뿐이고 그건 레지스트리 파일만 쓴다.
+   * (`canonicalPath` 가 realpath 를 부르지만 그건 **읽기**다. 고치는 파일은 레지스트리뿐이다.)
+   *
+   * 정규화는 `add()` 와 같은 길을 지난다 — trim → `~` 펴기 → `canonicalPath`. 그래야 넣을 때
+   * 접힌 루트와 뺄 때 준 경로가 같은 자리에서 만난다.
+   *
+   * **없는 경로도 뺄 수 있어야 한다**: 폴더를 지운 뒤에 목록에서 빼려는 것이 가장 흔하다.
+   * 그래서 `add()` 와 달리 존재 검사로 막지 않는다. 정확히 일치하는 루트를 먼저 보고,
+   * 없을 때만 — 그리고 경로가 실제로 있을 때만 — 레포 루트로 접어 한 번 더 본다.
+   */
+  remove(input: string): RemoveRepoResult {
+    const raw = input.trim()
+    if (raw.length === 0) return { ok: false, error: '경로가 비었다' }
+    const expanded = raw.startsWith('~') ? path.join(process.env.HOME ?? '', raw.slice(1)) : raw
+    const resolved = canonicalPath(expanded)
+    let root: string | null = this.roots.includes(resolved) ? resolved : null
+    if (root === null && fs.existsSync(resolved)) {
+      const folded = repoRootOf(resolved)
+      if (folded !== null && this.roots.includes(folded)) root = folded
+    }
+    if (root === null) return { ok: false, error: `목록에 없다: ${resolved}` }
+    const next = this.roots.filter((item) => item !== root)
+    const saved = this.save(next)
+    if (!saved.ok) return { ok: false, error: saved.error }
+    this.roots = next
+    log('registry.removed', { root, roots: this.roots.length, file: this.file })
     return { ok: true, root }
   }
 

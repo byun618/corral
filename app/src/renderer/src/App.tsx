@@ -13,6 +13,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentStatus, AppState, PaneRow, RepoRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
 
+/** 제거 확인 문구의 두 번째 줄. **여기 한 자리에만** 둔다 — 계측이 대조하는 것도 이 문자열이다. */
+const REMOVE_DISCLAIMER = '제거는 corral 목록에서만 빠진다 — 디스크의 폴더도, herdr 세션도 건드리지 않는다.'
+
 /**
  * 칩이 **구분하는 상태의 전부**다 (기준 N8: "문서에 적고 그 전부를 대조한다").
  * `done` 이 없는 이유는 `shared/types.ts` 의 `AgentStatus` 주석 — herdr 0.9.0 이 그 값을
@@ -32,6 +35,9 @@ export function App(): React.JSX.Element {
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [browsing, setBrowsing] = useState(false)
+  /** 제거 확인을 띄운 레포. null 이면 확인 창이 없다. */
+  const [pendingRemove, setPendingRemove] = useState<RepoRow | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
 
   useEffect(() => {
     void window.corral.getState().then(setState)
@@ -50,6 +56,16 @@ export function App(): React.JSX.Element {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [modalOpen])
+
+  /** 제거 확인도 같은 자리에서 ESC 로 닫는다 — 포커스가 어디에 있든 (위 주석과 같은 이유). */
+  useEffect(() => {
+    if (pendingRemove === null) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setPendingRemove(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [pendingRemove])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -83,6 +99,22 @@ export function App(): React.JSX.Element {
     } finally {
       setBrowsing(false)
     }
+  }
+
+  /**
+   * 확인 창에서 「제거」를 누른 뒤 (게이트 ① 3번째 지시).
+   *
+   * 여기서 하는 일은 IPC 한 번이다 — 목록은 main 이 새 상태를 밀면 저절로 다시 그려진다.
+   * 실패하면 창을 **닫지 않고** 그 안에 사유를 적는다. 조용히 닫히면 뺐는지 아닌지 모른다.
+   */
+  const removeRepo = async (repo: RepoRow): Promise<void> => {
+    setRemoveError(null)
+    const result = await window.corral.removeRepo(repo.root)
+    if (!result.ok) {
+      setRemoveError(result.error ?? '알 수 없음')
+      return
+    }
+    setPendingRemove(null)
   }
 
   return (
@@ -136,9 +168,27 @@ export function App(): React.JSX.Element {
             등록된 레포가 없다. 위의 「레포 추가」 로 폴더를 고른다.
           </p>
         ) : (
-          state.repos.map((repo) => <Repo key={repo.root} repo={repo} />)
+          state.repos.map((repo) => (
+            <Repo
+              key={repo.root}
+              repo={repo}
+              onRemove={() => {
+                setRemoveError(null)
+                setPendingRemove(repo)
+              }}
+            />
+          ))
         )}
       </main>
+
+      {pendingRemove === null ? null : (
+        <ConfirmRemove
+          repo={pendingRemove}
+          error={removeError}
+          onConfirm={() => void removeRepo(pendingRemove)}
+          onCancel={() => setPendingRemove(null)}
+        />
+      )}
 
       <footer className="footer" data-footer>
         <span>레지스트리 {state.registry.file}</span>
@@ -198,7 +248,67 @@ function AddRepoModal({
   )
 }
 
-function Repo({ repo }: { repo: RepoRow }): React.JSX.Element {
+/**
+ * 제거 확인 (게이트 ① 3번째 지시, 2026-09-12).
+ *
+ * 문구에 **이름과 루트 경로를 둘 다** 싣는다 — 이름만으로는 모자란다: 같은 basename 을 가진
+ * 레포 둘을 등록해 두면 (`~/a/corral` 과 `~/b/corral`) 어느 쪽을 빼는지 확인 창이 말을 못 한다.
+ *
+ * 그리고 **무엇을 안 하는지**를 적는다. 이 버튼이 폴더를 지우거나 herdr 세션을 닫는다고
+ * 오해하면 사람은 누르지 못한다. 안 하는 일을 적어 주는 것이 확인 단계의 값이다.
+ */
+function ConfirmRemove({
+  repo,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  repo: RepoRow
+  error: string | null
+  onConfirm: () => void
+  onCancel: () => void
+}): React.JSX.Element {
+  return (
+    <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
+      <div className="modal" data-confirm-remove={repo.root} onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <h2 className="modal-title" data-confirm-title>
+            레포 제거
+          </h2>
+          <button className="modal-close" data-confirm-close aria-label="닫기" onClick={onCancel}>
+            ✕
+          </button>
+        </div>
+        <p className="confirm-body">
+          <span className="confirm-name" data-confirm-name>
+            {repo.name}
+          </span>
+          <span className="path-hint" data-confirm-root>
+            {repo.root}
+          </span>
+        </p>
+        <p className="confirm-note" data-confirm-note>
+          {REMOVE_DISCLAIMER}
+        </p>
+        {error === null ? null : (
+          <p className="modal-note" data-confirm-error>
+            빼지 못했다: {error}
+          </p>
+        )}
+        <div className="confirm-actions">
+          <button className="ghost" data-confirm-cancel onClick={onCancel}>
+            취소
+          </button>
+          <button className="danger" data-confirm-ok onClick={onConfirm}>
+            제거
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Repo({ repo, onRemove }: { repo: RepoRow; onRemove: () => void }): React.JSX.Element {
   const open = repo.worktrees.filter((item) => item.openWorkspaceId !== null).length
   return (
     <section className="repo" data-repo={repo.root}>
@@ -208,6 +318,15 @@ function Repo({ repo }: { repo: RepoRow }): React.JSX.Element {
           worktree {repo.worktrees.length} · 열림 {open}
         </span>
         <span className="path-hint">{repo.root}</span>
+        {/*
+          제거 손잡이. 지시는 "행 hover 시 제거 버튼 또는 컨텍스트 메뉴 — 구현 단순한 쪽" 이었고
+          버튼을 골랐다. 다만 **쉼 상태에서도 보이게** 둔다(흐리게, hover 에서 또렷하게):
+          `opacity:0` 으로 완전히 숨기면 `elementFromPoint` 는 여전히 그 버튼을 집어 주므로
+          계측은 통과하는데 사람 눈에는 없는 버튼이 된다 — 관문 ⑤ 가 막으려는 바로 그 모양이다.
+        */}
+        <button className="row-remove" data-remove-repo={repo.root} title="목록에서 제거" onClick={onRemove}>
+          제거
+        </button>
       </h2>
       {repo.error === null ? null : (
         <p className="warn" data-repo-error={repo.root}>

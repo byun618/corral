@@ -9,7 +9,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, BrowseReposResult } from '../shared/types.js'
+import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult } from '../shared/types.js'
 import { SESSION_POLL_MS, SessionLink, listSessions, type SessionHandle } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
@@ -117,6 +117,20 @@ async function rebuildTree(): Promise<void> {
 
 function addRepo(input: string): AddRepoResult {
   const result = registry?.add(input) ?? { ok: false, error: '레지스트리 미초기화' }
+  if (result.ok) scheduleTree()
+  scheduleEmit()
+  return result
+}
+
+/**
+ * 레포 하나를 목록에서 뺀다 (게이트 ① 3번째 지시, 2026-09-12).
+ *
+ * `addRepo` 와 **같은 모양**이다 — 레지스트리를 고치고, 목록을 다시 세우고, 화면에 민다.
+ * herdr 는 부르지 않는다: 뺀 뒤 `scheduleTree()` 가 도는 것은 남은 레포들의 worktree 를
+ * 다시 읽기 위해서고, 뺀 레포에 대해서는 아무 요청도 안 나간다.
+ */
+function removeRepo(input: string): RemoveRepoResult {
+  const result = registry?.remove(input) ?? { ok: false, error: '레지스트리 미초기화' }
   if (result.ok) scheduleTree()
   scheduleEmit()
   return result
@@ -261,7 +275,33 @@ async function capture(name: string, selector?: string): Promise<string> {
     )
     if (box !== null) rect = box
   }
-  const image = rect === undefined ? await target.webContents.capturePage() : await target.webContents.capturePage(rect)
+  /**
+   * **새 프레임이 올라온 뒤에 찍는다** (수정 6회차 실측).
+   *
+   * `capturePage()` 는 컴포지터가 **마지막으로 올린 프레임**을 준다. React 가 방금 커밋한
+   * DOM 은 아직 그려지기 전일 수 있어서, 그대로 찍으면 한 프레임 전 화면이 나온다 —
+   * 6회차 첫 실행에서 `registered-two` 라고 이름 붙인 샷에 **빈 목록**이 찍혔고
+   * `confirm-open` 에는 확인 창 대신 그 앞 화면이 찍혔다. DOM 질의는 맞는데 그림만 뒤처진
+   * 것이라, 판정자가 원자료의 숫자와 그림을 대조하면 어긋난다.
+   *
+   * 두 겹으로 막는다:
+   *   ① rAF 를 두 번 기다린다 — 첫 번째는 다음 프레임 직전, 두 번째는 그 프레임이 올라간 뒤다.
+   *      **타이머로 반드시 빠져나온다**: 창이 가려지면 크로미움이 rAF 를 아예 안 부른다
+   *      (이 회차 두 번째 실행에서 세 번째 샷이 거기서 30초 타임아웃으로 죽었다).
+   *   ② 그러고도 한 번 버리고 찍는다 — 첫 `capturePage()` 가 프레임 생성을 밀어 주고,
+   *      두 번째가 그 새 프레임을 받는다. rAF 가 throttle 돼도 이쪽이 남는다.
+   */
+  await target.webContents.executeJavaScript(
+    `new Promise((resolve) => {
+       const timer = setTimeout(() => resolve('timer'), 400)
+       requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve('raf') }))
+     })`,
+    true,
+  )
+  const shoot = (): Promise<Electron.NativeImage> =>
+    rect === undefined ? target.webContents.capturePage() : target.webContents.capturePage(rect)
+  await shoot()
+  const image = await shoot()
   const file = path.join(dir, `${name}.png`)
   fs.writeFileSync(file, image.toPNG())
   log('shot.captured', { name, file, revision, selector: selector ?? null })
@@ -343,6 +383,9 @@ app.whenReady().then(() => {
   ipcMain.handle('corral:getState', (event) => (fromOurWindow(event) ? currentState() : null))
   ipcMain.handle('corral:addRepo', (event, root: string) =>
     fromOurWindow(event) ? addRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
+  )
+  ipcMain.handle('corral:removeRepo', (event, root: string) =>
+    fromOurWindow(event) ? removeRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
   )
   ipcMain.handle('corral:browseForRepos', (event) =>
     fromOurWindow(event)

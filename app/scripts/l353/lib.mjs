@@ -308,10 +308,57 @@ export function normalizeLines(text) {
     .map((line) => line.replace(/\s+$/g, ''))
 }
 
+/**
+ * herdr 화면이 정지할 때까지 본다 (S1·S3·S4 의 "정착 화면").
+ * pane.read visible 을 반복해 **연속 2회 같은** 내용이 나오면 정착으로 본다.
+ */
+export async function settleHerdr(paneId, { timeoutMs = 8000, everyMs = 100 } = {}) {
+  const startedAt = Date.now()
+  let previous = null
+  let stable = 0
+  for (;;) {
+    const read = await herdrRead(paneId)
+    const lines = normalizeLines(read.text)
+    const key = lines.join('\n')
+    if (key === previous) {
+      stable += 1
+      if (stable >= 2) return { lines, ms: Date.now() - startedAt }
+    } else {
+      stable = 0
+      previous = key
+    }
+    if (Date.now() - startedAt > timeoutMs) return { lines, ms: Date.now() - startedAt, timedOut: true }
+    await sleep(everyMs)
+  }
+}
+
+/**
+ * xterm 프레임이 멎을 때까지 본다 — lastSeq 가 연속 2회 안 바뀌면 정착.
+ * S2 의 FIT_DEFER 간섭을 피하려면 크기도 안정돼야 한다 (cols·rows 불변 같이 확인).
+ */
+export async function settleXterm(app, { timeoutMs = 8000, everyMs = 100 } = {}) {
+  const startedAt = Date.now()
+  let previous = null
+  let stable = 0
+  for (;;) {
+    const term = await app.termRead()
+    const key = term === null ? '∅' : `${term.lastSeq}:${term.cols}x${term.rows}`
+    if (key === previous && term !== null) {
+      stable += 1
+      if (stable >= 2) return { term, ms: Date.now() - startedAt }
+    } else {
+      stable = 0
+      previous = key
+    }
+    if (Date.now() - startedAt > timeoutMs) return { term, ms: Date.now() - startedAt, timedOut: true }
+    await sleep(everyMs)
+  }
+}
+
 /** 두 화면(줄 배열)의 불일치 줄 목록. 빈 후행 줄은 양쪽에서 잘라 맞춘다. */
 export function diffScreen(a, b) {
   const trim = (lines) => {
-    const out = [...lines]
+    const out = lines.map((line) => String(line).replace(/\s+$/g, ''))
     while (out.length > 0 && out[out.length - 1] === '') out.pop()
     return out
   }

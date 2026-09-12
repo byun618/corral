@@ -14,6 +14,7 @@
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 
@@ -53,9 +54,22 @@ export function TerminalPane({ paneId }: { paneId: string }): React.JSX.Element 
       fontSize: 13,
       fontFamily: 'SF Mono, Menlo, Monaco, monospace',
       theme: { background: '#12141a' },
+      // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
+      allowProposedApi: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
+    /**
+     * 이모지·CJK 폭을 herdr 격자와 맞춘다 (S1·S7ⓔ — 폭 재판 방지).
+     *
+     * xterm 기본 폭 표는 🙂·🚀 류 이모지를 **1칸**으로 그리는데, herdr 격자(Rust unicode-width)는
+     * **2칸**으로 깐다. 그러면 frame-to-ansi 의 열 앵커가 안 채워진 칸을 남겨 셀이 어긋난다
+     * (S1 미달). 이 애드온은 Unicode 15 그래핌+wcwidth 로 xterm 폭을 herdr 쪽과 일치시킨다.
+     * 6.0.0 안정판이라 #5893(DOM 이모지 회귀, 6.1 beta 전용)은 해당 없다 (00-analysis §4-4).
+     */
+    const graphemes = new UnicodeGraphemesAddon()
+    term.loadAddon(graphemes)
+    term.unicode.activeVersion = '15-graphemes'
     term.open(container)
 
     // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------

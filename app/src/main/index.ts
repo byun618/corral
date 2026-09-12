@@ -408,6 +408,17 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window?.show())
+  // 렌더러 콘솔을 main 로그로 끌어온다 — 계측 실행에서만(진단 켜짐). 렌더러 예외가
+  // 조용히 사라지지 않게 한다 (R2 하네스 디버깅에서 필요했다).
+  if (!app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined) {
+    // Electron 44 는 이 이벤트를 (event, level, message, line, sourceId) 위치 인자로 준다.
+    window.webContents.on(
+      'console-message',
+      (_event: Electron.Event, level: number, message: string, line: number, sourceId: string) => {
+        if (level >= 2) log('renderer.console', { level, message: message.slice(0, 500), line, sourceId })
+      },
+    )
+  }
   // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
   window.on('focus', () => void link.resync('window-focus'))
   /**

@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult, TerminalScroll } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, type SessionHandle } from './adapter/index.js'
+import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, readOpenWorkspaces, type SessionHandle } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
@@ -43,6 +43,8 @@ const link = new SessionLink({
     scheduleTree()
     dropStreamIfPaneGone()
   },
+  // 재동기 때 worktree→workspace 바인딩도 새로 대조한다 (버그 ①). 행 대조(reconcile)는 이걸 못 본다.
+  onResync: (reason) => refreshBindings(reason),
 })
 
 /**
@@ -199,6 +201,60 @@ async function rebuildTree(): Promise<void> {
   // 트리에서 빠졌으면 여기서 스트림을 닫는다. scheduleEmit 은 안에서 한 번 더 뭉쳐 부른다.
   dropStreamIfPaneUnviewable()
   scheduleEmit()
+}
+
+/**
+ * **바인딩만** 다시 대조한다 (게이트 ① 버그 ① — 재동기가 부른다).
+ *
+ * `rebuildTree` 는 레포마다 `git worktree list`(비쌈)까지 도는데, 여기서 재려는 것은 worktree
+ * 구조가 아니라 **열림상태**뿐이다. herdr `worktree.list` 만 왕복해(git 없음, 소켓 1회) 열림
+ * 바인딩을 새로 읽고, 골격의 낡은 `openWorkspaceId` 와 대조해 어긋난 것만 제자리에서 갈아끼운다.
+ *
+ * 왜 재동기에 얹나: `store.reconcile` 은 workspace/tab/pane **행**만 본다. pane 이 cd 로 worktree
+ * 경계를 넘나든 뒤 골격이 옛 바인딩을 든 채여도 행에는 드리프트가 없어 재동기가 '어긋난 것 없음'이라
+ * 하고 자가 회복이 안 됐다. 이 갱신이 그 구멍을 메운다 — 그리고 무엇을 걷었는지 로그·note 로 남긴다.
+ *
+ * 세대 가드: 읽는 사이에 `rebuildTree` 가 끼면(더 새 골격) 패치를 버린다 (L6 와 같은 결).
+ * 읽기 실패한 루트는 옛 바인딩을 그대로 둔다 — 일시적 실패로 트리를 비우지 않는다.
+ */
+async function refreshBindings(reason: string): Promise<{ changed: boolean; note: string | null }> {
+  const socketPath = currentSocketPath()
+  const roots = registry?.list() ?? []
+  if (socketPath === null || roots.length === 0) return { changed: false, note: null }
+  const generation = treeGeneration
+  const byPathByRoot = new Map<string, Map<string, string>>()
+  for (const root of roots) {
+    const open = await readOpenWorkspaces(socketPath, root)
+    if (open.error !== null) {
+      log('binding.read_failed', { reason, root, error: open.error })
+      continue // 이 루트는 옛 바인딩 유지
+    }
+    byPathByRoot.set(root, open.byPath)
+  }
+  if (generation !== treeGeneration) {
+    log('binding.stale', { reason, generation, current: treeGeneration })
+    return { changed: false, note: null }
+  }
+  const drift: Array<{ worktree: string; from: string | null; to: string | null }> = []
+  const patched = skeleton.map((repo) => {
+    const byPath = byPathByRoot.get(repo.root)
+    if (byPath === undefined) return repo // 읽기 실패·미대상 루트는 건드리지 않는다
+    return {
+      ...repo,
+      worktrees: repo.worktrees.map((worktree) => {
+        const fresh = byPath.get(worktree.path) ?? null
+        if (fresh === worktree.openWorkspaceId) return worktree
+        drift.push({ worktree: worktree.path, from: worktree.openWorkspaceId, to: fresh })
+        return { ...worktree, openWorkspaceId: fresh }
+      }),
+    }
+  })
+  if (drift.length === 0) return { changed: false, note: null }
+  skeleton = patched
+  log('tree.binding_drift', { reason, drift })
+  dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)
+  scheduleEmit()
+  return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
 }
 
 function addRepo(input: string): AddRepoResult {

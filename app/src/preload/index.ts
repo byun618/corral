@@ -8,12 +8,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AddRepoResult,
+  AgentKind,
   AppState,
   BrowseReposResult,
+  CloseRowResult,
   CorralApi,
+  CreateRowResult,
   RemoveRepoResult,
   TerminalFrame,
   TerminalScroll,
+  WorktreeActionResult,
 } from '../shared/types.js'
 
 const EXPOSED = [
@@ -23,6 +27,11 @@ const EXPOSED = [
   'removeRepo',
   'browseForRepos',
   'refreshSessions',
+  'createRow',
+  'closeRow',
+  'closeWorktree',
+  'openWorktree',
+  'createWorktree',
   'reportRendered',
   'selectPane',
   'termInput',
@@ -45,6 +54,16 @@ const api: CorralApi = {
   removeRepo: (root: string): Promise<RemoveRepoResult> => ipcRenderer.invoke('corral:removeRepo', root),
   browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
+  createRow: (input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> =>
+    ipcRenderer.invoke('corral:createRow', input),
+  closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
+    ipcRenderer.invoke('corral:closeRow', input),
+  closeWorktree: (input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
+    ipcRenderer.invoke('corral:closeWorktree', input),
+  openWorktree: (input: { repoRoot: string; path: string; isLinked: boolean }): Promise<WorktreeActionResult> =>
+    ipcRenderer.invoke('corral:openWorktree', input),
+  createWorktree: (input: { repoRoot: string; branch: string; path: string }): Promise<WorktreeActionResult> =>
+    ipcRenderer.invoke('corral:createWorktree', input),
   reportRendered: (revision: number) => ipcRenderer.send('corral:reportRendered', revision),
   selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('corral:selectPane', input),

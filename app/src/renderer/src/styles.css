@@ -142,11 +142,79 @@ body {
 
 .footer { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
 
+/* --- 라이프사이클 (R3) -------------------------------------------------------- */
+
+/* 행 동작 버튼 (열기·새 행·+worktree). 제거 버튼과 달리 늘 또렷하다 — 만드는 문이라 눈에 띄어야 한다. */
+.row-action {
+  padding: 2px 9px; border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer;
+}
+.row-action:hover { color: var(--accent); border-color: var(--accent); }
+/* + worktree 는 오른쪽 끝, 제거 왼쪽에 붙는다. */
+.repo-name .row-action { margin-left: auto; }
+.repo-name .row-remove { margin-left: 0; }
+
+.new-row { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; }
+.new-row-label { color: var(--dim); font-size: 11px; }
+/* + 빈 탭 (G1) — 기본 생성 문이라 또렷하게, 에이전트 버튼보다 앞선다. */
+.new-row .new-tab { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.new-row .new-tab:hover { background: rgba(110, 168, 254, 0.12); }
+
+/* worktree·tab 줄의 닫기/열기 버튼은 인라인에 둔다 (레포 제거처럼 오른쪽 끝으로 밀지 않는다). */
+.worktree-head .row-remove, .tab-head .row-remove { margin-left: 0; }
+
+/* 종료 확인 모달 안의 포그라운드 목록. */
+.confirm-fg { margin: 0; padding: 0 14px 8px 30px; }
+.confirm-fg li { overflow-wrap: anywhere; }
+
+/* 라이프사이클 알림 — 화면 상단 띠. 거절은 눈에 띄게(경고색), 실패는 danger. */
+.lifecycle-notice {
+  display: flex; gap: 10px; align-items: center; justify-content: space-between;
+  margin: 0 14px 8px; padding: 8px 12px; border-radius: 6px;
+  border: 1px solid var(--warn); background: rgba(214, 182, 86, 0.1); font-size: 12px;
+}
+.lifecycle-notice.error { border-color: var(--danger); background: rgba(224, 104, 95, 0.1); }
+/* 안내(info) — 부모 함께 열림 같은 중립 알림 (G4). 거절/실패와 색으로 구분한다. */
+.lifecycle-notice.info { border-color: var(--accent); background: rgba(110, 168, 254, 0.1); }
+.lifecycle-notice-text { color: var(--text); overflow-wrap: anywhere; }
+.lifecycle-notice-close { border: none; background: none; color: var(--dim); font-size: 13px; cursor: pointer; padding: 2px 6px; }
+.lifecycle-notice-close:hover { color: var(--text); }
+
+/* worktree 만들기 모달의 텍스트 입력. */
+.field { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px 0; }
+.field-label { color: var(--dim); font-size: 11px; }
+.field-input {
+  padding: 6px 10px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; font: inherit; font-size: 12px;
+}
+.field-input:focus { outline: none; border-color: var(--accent); }
+
+/*
+  G5 (게이트 ① 추가 — 레이아웃 결함): 긴 레포/worktree 경로(와 이름·브랜치)가 행을 옆으로 밀어
+  조작 버튼(새 worktree·제거·열기·닫기)이 사이드바 밖으로 잘리던 문제. 텍스트(이름·브랜치·경로)는
+  flex 안에서 min-width:0 + 말줄임으로 줄어들고(전체 경로는 title 툴팁), 칩·버튼은 flex-shrink:0
+  으로 절대 줄지 않아 항상 보인다. 경로가 남는 폭을 먹어(flex-grow:1) 버튼을 오른쪽 끝으로 민다.
+  data-*·문구 불변 — 레이아웃만.
+*/
+.repo-name span[data-repo-name],
+.repo-name .path-hint,
+.worktree-head .branch,
+.worktree-head .path-hint {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.repo-name .path-hint,
+.worktree-head .path-hint { flex: 1 1 auto; }
+.repo-name .chip, .repo-name .row-action, .repo-name .row-remove,
+.worktree-head .chip, .worktree-head .row-action, .worktree-head .row-remove {
+  flex-shrink: 0;
+}
+
 /* --- 터미널 패널 (R2) --------------------------------------------------------- */
 
-/* 목록 | 터미널 2단. 터미널 쪽이 남는 폭을 다 가진다. */
+/* 목록 | 터미널 2단. 터미널 쪽이 남는 폭을 다 가진다. 사이드바는 세로로만 스크롤(G5: 가로 제거). */
 .content { display: flex; flex: 1; min-height: 0; }
-.content .list { width: 420px; min-width: 320px; overflow-y: auto; border-right: 1px solid var(--line); }
+.content .list { width: 420px; min-width: 320px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--line); }
 
 .term-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
 .term-head {

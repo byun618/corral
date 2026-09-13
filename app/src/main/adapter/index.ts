@@ -11,3 +11,16 @@ export { listSessions, SESSION_POLL_MS, type SessionHandle } from './internal/se
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { DEFAULT_RESYNC_MS } from './internal/link.js'
 export { TerminalStream, type StreamHooks } from './internal/stream.js'
+export {
+  closeTab,
+  closeWorkspace,
+  createRow,
+  createWorktree,
+  openWorkspace,
+  openWorktree,
+  probeForeground,
+  type CloseTabOutcome,
+  type CreateRowOutcome,
+  type ForegroundProbe,
+  type WorktreeOutcome,
+} from './internal/lifecycle.js'

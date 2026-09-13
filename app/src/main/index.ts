@@ -9,9 +9,34 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult, TerminalScroll } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, readOpenWorkspaces, type SessionHandle } from './adapter/index.js'
+import type {
+  AddRepoResult,
+  AgentKind,
+  AppState,
+  BrowseReposResult,
+  CloseRowResult,
+  CreateRowResult,
+  RemoveRepoResult,
+  TerminalScroll,
+  WorktreeActionResult,
+} from '../shared/types.js'
+import {
+  SESSION_POLL_MS,
+  SessionLink,
+  TerminalStream,
+  closeTab,
+  closeWorkspace,
+  createRow,
+  createWorktree,
+  listSessions,
+  openWorkspace,
+  openWorktree,
+  probeForeground,
+  readOpenWorkspaces,
+  type SessionHandle,
+} from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
+import { canonicalPath } from './canonical-path.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
@@ -373,6 +398,245 @@ function browseMessage(input: {
   return parts.join(' · ')
 }
 
+// --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
+
+type ParentResult =
+  // `opened` — 이 호출이 부모를 **새로 열었나** (게이트 ① G4: linked 열기의 "함께 열림" 알림 근거).
+  | { ok: true; workspaceId: string; opened: boolean }
+  | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }
+
+/**
+ * 부모(주 체크아웃) workspace 를 여는 **in-flight 약속**을 경로별로 공유한다 (수정 2회차 F-1).
+ * 대상 경로 가드(`openingWorktrees`)는 "두 번째를 무시" 지만, 부모는 두 호출(예: primary·linked
+ * 동시 열기, worktree 만들기)이 **같은 id 를 써야** 한다 — 그래서 무시가 아니라 **같은 약속을
+ * 기다려 공유**한다. 이게 없으면 두 경로가 각자 `workspace.create` 를 불러 부모가 이중 생성된다.
+ */
+const parentOpenInFlight = new Map<string, Promise<ParentResult>>()
+
+/**
+ * worktree 열기·만들기의 공통 전제 — **parent(주 체크아웃) workspace 를 확보한다**.
+ *
+ * 실측(00-probe-findings): `worktree.open`/`create` 는 주 체크아웃 workspace 가 열려 있어야
+ * 하고 그 id 를 받는다. 닫힌 채로는 여는 문이 없다 — 그래서 여기서 연다 (L8 빈 상태 복구의 문).
+ *
+ * **수정 2회차 F-1**: 대상 경로와 **같은 급의 방어**를 부모에도 건다.
+ *   ① in-flight 공유 먼저 — 여는 중이면 같은 약속을 기다려 같은 id 를 쓴다 (이중 create 금지).
+ *   ② 권위 재확인 — **스테일 skeleton 이 아니라** herdr `worktree.list` 로 primary 열림을 본다.
+ *   ③ open.error(읽기 실패) 폴스루도 이 in-flight 안에서만 create 하므로 동시 호출은 안전하다.
+ */
+async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, rejection: null, error: '세션이 없다' }
+  const parentKey = canonicalPath(repoRoot)
+
+  // ① in-flight 공유 — 여는 중이면 그 약속을 그대로 기다린다 (두 경로가 같은 부모 id 를 쓴다).
+  const pending = parentOpenInFlight.get(parentKey)
+  if (pending) {
+    log('lifecycle.parent.in_flight_join', { repoRoot: parentKey })
+    return pending
+  }
+
+  const promise = (async (): Promise<ParentResult> => {
+    // ② 권위 재확인 (스테일 skeleton 아님) — 이미 열려 있으면 그 id (중복 부모 create 금지).
+    const open = await readOpenWorkspaces(socketPath, repoRoot)
+    if (open.error === null) {
+      const primaryOpen = open.byPath.get(parentKey) ?? null
+      if (primaryOpen !== null) {
+        log('lifecycle.parent.already_open', { repoRoot: parentKey, workspaceId: primaryOpen })
+        return { ok: true, workspaceId: primaryOpen, opened: false }
+      }
+    } else {
+      // ③ 읽기 실패 폴스루 — 열림상태를 확정 못 하지만 in-flight 가 동시 호출을 이미 하나로 묶었다.
+      log('lifecycle.parent.read_error_fallthrough', { repoRoot: parentKey, error: open.error })
+    }
+    const opened = await openWorkspace(socketPath, repoRoot)
+    if (!opened.ok || opened.workspaceId === null) {
+      return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
+    }
+    scheduleTree()
+    return { ok: true, workspaceId: opened.workspaceId, opened: true }
+  })()
+  parentOpenInFlight.set(parentKey, promise)
+  try {
+    return await promise
+  } finally {
+    parentOpenInFlight.delete(parentKey)
+  }
+}
+
+/** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
+  const outcome = await createRow(socketPath, input)
+  scheduleEmit()
+  return outcome
+}
+
+/**
+ * 종료 게이트 (L3·L4). 판별자는 herdr `pane.process_info` 다 (관문 ⑤) — 주어진 pane 들을
+ * 종료 **직전에** 떠서 포그라운드 그룹이 셸 pid 와 같은지 본다. 하나라도 다르면(=산 프로세스)
+ * 확인이 필요하다. probe 실패는 **묻는 쪽**으로 기운다 (LIFE-346).
+ *
+ * 왜 종료 직전 main 에서 떠서 판단하나: store 의 pane.agent 는 ~2.5초 늦게 와서, 그걸 믿으면
+ * 도는 에이전트가 확인 없이 죽었다 (LIFE-346 M2 20/20).
+ */
+async function checkCloseGate(
+  socketPath: string,
+  paneIds: readonly string[],
+  subject: Record<string, unknown>,
+): Promise<{ clear: true } | { clear: false; foreground: string[] }> {
+  const running: string[] = []
+  for (const paneId of paneIds) {
+    const probe = await probeForeground(socketPath, paneId)
+    const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
+    log('lifecycle.close_gate', {
+      ...subject,
+      paneId,
+      shellPid: probe.shellPid,
+      foregroundGroupId: probe.foregroundGroupId,
+      clear,
+      foreground: probe.foreground.map((item) => item.name),
+      probeError: probe.error,
+    })
+    if (clear) continue
+    if (probe.ok) for (const item of probe.foreground) running.push(item.cmdline ?? item.name)
+    else running.push(`(프로세스 확인 실패: ${probe.error})`)
+  }
+  return running.length > 0 ? { clear: false, foreground: running } : { clear: true }
+}
+
+/** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
+async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    for (const tab of workspace.tabs) {
+      if (tab.tabId !== input.tabId) continue
+      for (const pane of tab.panes) paneIds.push(pane.paneId)
+    }
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'tab', tabId: input.tabId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeTab(socketPath, input.tabId)
+  if (outcome.outcome === 'closed') {
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/**
+ * worktree(=workspace)를 닫는다 (L9b). 열린 worktree 행의 「닫기」 가 부른다 — 「열기」의 짝이다.
+ * linked 그룹이 열린 primary 를 닫으면 herdr 가 `workspace_group_close_required` 로 거절하고,
+ * corral 은 그 거절을 **그대로 보이고 멈춘다** (close_group 승격 금지, 기준). 게이트는 그 workspace 의
+ * 모든 pane 을 본다 — 하나라도 산 프로세스면 확인.
+ */
+async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    if (workspace.workspaceId !== input.workspaceId) continue
+    for (const tab of workspace.tabs) for (const pane of tab.panes) paneIds.push(pane.paneId)
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'workspace', workspaceId: input.workspaceId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeWorkspace(socketPath, input.workspaceId)
+  if (outcome.outcome === 'closed') {
+    scheduleTree()
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/**
+ * 열기 in-flight 가드 (수정 1회차 M5). herdr 는 **같은 cwd 에 workspace 중복 생성을 허용**한다
+ * (리뷰 e2e: 열기 두 번 → w14·w15 공존, corral 행은 하나만 가리켜 나머지는 UI 불가시 고아 +
+ * 산 PTY). 그래서 corral 이 문 앞에서 막는다 — 진행 중 같은 경로 재클릭은 무시한다.
+ */
+const openingWorktrees = new Set<string>()
+
+/** 닫힌 worktree 행을 연다 (L6·L8). 주 체크아웃은 workspace.create, linked 는 worktree.open. */
+async function openWorktreeRow(input: {
+  repoRoot: string
+  path: string
+  isLinked: boolean
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  const key = canonicalPath(input.path)
+
+  // ① in-flight 중복: 첫 열기가 끝나기 전 두 번째 클릭은 무시 (더블클릭 방어 — 두 번째가 새 workspace 를 안 만든다).
+  //    F-2: 문자열 대신 `deduped` 필드로 알린다 — 렌더러가 문구 비교 없이 양성 중복을 가린다.
+  if (openingWorktrees.has(key)) {
+    log('lifecycle.open_worktree.in_flight', { path: key })
+    return { ok: false, workspaceId: null, rejection: null, error: null, deduped: true }
+  }
+  openingWorktrees.add(key)
+  try {
+    // ② 권위 재확인: 이미 열려 있으면 그 workspace 를 그대로 (idempotent). 골격은 push 지연으로
+    //    낡을 수 있어 herdr `worktree.list` 를 직접 읽는다 (관문 ⑤와 같은 권위). 중복 create 를 막는 핵심.
+    const open = await readOpenWorkspaces(socketPath, input.repoRoot)
+    const already = open.error === null ? (open.byPath.get(key) ?? null) : null
+    if (already !== null) {
+      log('lifecycle.open_worktree.already_open', { path: key, workspaceId: already })
+      scheduleTree()
+      return { ok: true, workspaceId: already, rejection: null, error: null }
+    }
+
+    if (!input.isLinked) {
+      // primary 열기 = **부모 확보 그 자체**. F-1: linked 열기의 부모 확보와 같은 dedupe 를 타야
+      // 두 경로가 동시에 와도 부모가 하나만 선다 — 그래서 직접 openWorkspace 하지 않고 여기로 모은다.
+      const parent = await resolveParentWorkspace(input.repoRoot)
+      if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+      return { ok: true, workspaceId: parent.workspaceId, rejection: null, error: null }
+    }
+    const parent = await resolveParentWorkspace(input.repoRoot)
+    if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+    const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
+    if (result.ok) {
+      scheduleTree()
+      // G4: linked 를 열며 부모를 **이 호출이 함께 열었으면** 그 사실을 화면에 알린다 (탭 숨김 금지).
+      return { ...result, parentOpened: parent.opened }
+    }
+    return result
+  } finally {
+    openingWorktrees.delete(key)
+  }
+}
+
+/** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */
+async function createWorktreeForRepo(input: {
+  repoRoot: string
+  branch: string
+  path: string
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  const parent = await resolveParentWorkspace(input.repoRoot)
+  if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+  const result = await createWorktree(socketPath, {
+    parentWorkspaceId: parent.workspaceId,
+    branch: input.branch,
+    path: input.path,
+  })
+  if (result.ok) scheduleTree()
+  return result
+}
+
 function pickSession(name: string): void {
   const found = sessions.find((session) => session.name === name)
   if (found === undefined) {
@@ -588,6 +852,34 @@ app.whenReady().then(() => {
       : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+
+  // --- 라이프사이클 (R3) ---
+  const denied = { ok: false as const, error: '허용되지 않은 발신자' }
+  ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? createRowInWorkspace({ workspaceId: input.workspaceId, kind: input.kind })
+      : { ...denied, paneId: null, tabId: null, retries: 0 },
+  )
+  ipcMain.handle('corral:closeRow', (event, input: { tabId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.tabId === 'string'
+      ? closeRowByTab({ tabId: input.tabId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:closeWorktree', (event, input: { workspaceId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? closeWorktreeByWorkspace({ workspaceId: input.workspaceId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:openWorktree', (event, input: { repoRoot: string; path: string; isLinked: boolean }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.path === 'string'
+      ? openWorktreeRow({ repoRoot: input.repoRoot, path: input.path, isLinked: input.isLinked === true })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
+  ipcMain.handle('corral:createWorktree', (event, input: { repoRoot: string; branch: string; path: string }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.branch === 'string' && typeof input?.path === 'string'
+      ? createWorktreeForRepo({ repoRoot: input.repoRoot, branch: input.branch, path: input.path })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
   ipcMain.on('corral:reportRendered', (event, rendered: number) => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
   })

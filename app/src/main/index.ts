@@ -5,12 +5,12 @@
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, listSessions, type SessionHandle } from './adapter/index.js'
+import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult, TerminalScroll } from '../shared/types.js'
+import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, readOpenWorkspaces, type SessionHandle } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
@@ -19,6 +19,9 @@ import { RepoRegistry } from './registry.js'
 import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+
+/** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
+const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
 let revision = 0
@@ -36,8 +39,89 @@ let treeScheduled = false
 const link = new SessionLink({
   onChange: () => scheduleEmit(),
   // 목록 위상이 바뀌었으면 worktree 열림상태를 다시 읽는다 — 그게 N4ⓒ 의 진실 출처다.
-  onTopologyChange: () => scheduleTree(),
+  onTopologyChange: () => {
+    scheduleTree()
+    dropStreamIfPaneGone()
+  },
+  // 재동기 때 worktree→workspace 바인딩도 새로 대조한다 (버그 ①). 행 대조(reconcile)는 이걸 못 본다.
+  onResync: (reason) => refreshBindings(reason),
 })
+
+/**
+ * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
+ * 연결**이라 순서 보장이 없다 (A3 관찰 대상). 살아 있는 연결은 한 번에 하나 (stream.ts 주석).
+ */
+const stream = new TerminalStream({
+  measuring,
+  hooks: {
+    onFrame: (frame) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
+      // A4 프레임 로그는 이제 stream.ts 한 곳에서만 남긴다 (수정 1회차 C1) — 여기서 또 찍으면
+      // A4 가 프레임을 두 번 세고, frame.data.length 는 BSU/ESU 래퍼(+16B)까지 포함해 부풀린다.
+    },
+    onState: () => scheduleEmit(),
+    // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.
+    // Electron 44 의 clipboard 는 W3C 모양(Promise)이다 — 실패는 로그로만 남긴다.
+    onClipboard: (text) => void clipboard.writeText(text).catch((error) => log('clipboard.write_failed', { error: String(error) })),
+  },
+})
+
+/**
+ * 스트리밍 중인 pane 이 목록에서 사라졌으면 스트림을 닫는다.
+ *
+ * pane 이 닫히면 endpoint surface 에서 그 pane 이 빠져 프레임만 조용히 멎는다 — 벤더 세션은
+ * 기다릴 뿐 오류를 내지 않는다. 사라짐을 아는 쪽은 control 링크(store)이므로 여기서 잇는다.
+ * (pane 이 **다른 탭으로 이동**한 경우는 store 에 남아 있어 닫지 않는다 — 프레임이 멎고
+ * 사용자가 다시 고르면 새 세션이 pane.focus 로 따라간다. 00-analysis §3-2)
+ */
+function dropStreamIfPaneGone(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.store.paneIds().includes(paneId)) return
+  log('stream.pane_gone', { paneId })
+  stream.close()
+  scheduleEmit()
+}
+
+/**
+ * **화면에 그려질 수 있는** pane id 들 — 렌더러 `TerminalPanel` 이 마운트 판정에 쓰는 것과
+ * 같은 트리(joinTree 결과)를 걷는다 (수정 1회차 C2). 렌더러가 pane 을 살아 있다고 보는 조건은
+ * "state.repos 트리 안에 그 paneId 가 있다" 이므로, 여기서도 같은 트리로 센다.
+ */
+function renderablePaneIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const repo of joinTree(skeleton, link.store.rows()).repos) {
+    for (const worktree of repo.worktrees) {
+      if (worktree.workspace === null) continue
+      for (const tab of worktree.workspace.tabs) {
+        for (const pane of tab.panes) ids.add(pane.paneId)
+      }
+    }
+  }
+  return ids
+}
+
+/**
+ * 스트리밍 중인 pane 이 **더는 트리에 없으면**(예: 그 레포가 목록에서 빠졌으면) 스트림을 닫는다
+ * (수정 1회차 C2 — codex 중간2).
+ *
+ * `dropStreamIfPaneGone` 은 pane 이 **herdr 위상에서** 사라진 경우(store)를 잡지만, 레포 제거는
+ * herdr pane 을 건드리지 않는다 — store 엔 그대로 있고 corral **트리에서만** 빠진다. 그러면
+ * 렌더러는 `TerminalPane` 을 언마운트하는데(App.tsx TerminalPanel), main 스트림은 열린 채 남아
+ * 프레임을 계속 받는다(누수). 그래서 렌더러와 **같은 트리 기준**으로 여기서 닫는다.
+ *
+ * 링크가 live 일 때만 판정한다: 재접속 중엔 `store.rows()` 가 일시적으로 비어 트리에 pane 이
+ * 하나도 안 잡히는데, 그때 닫으면 곧 되살아날 멀쩡한 스트림을 죽인다 (advisor 가드).
+ */
+function dropStreamIfPaneUnviewable(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.linkState().phase !== 'live') return
+  if (renderablePaneIds().has(paneId)) return
+  log('stream.pane_unviewable', { paneId })
+  stream.close()
+  scheduleEmit()
+}
 
 function currentSocketPath(): string | null {
   return sessions.find((item) => item.name === selectedSession)?.socketPath ?? null
@@ -55,6 +139,7 @@ function currentState(): AppState {
     link: link.linkState(),
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
     repos: tree.repos,
+    terminal: stream.terminalState(),
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -112,7 +197,64 @@ async function rebuildTree(): Promise<void> {
     worktrees: skeleton.reduce((sum, repo) => sum + repo.worktrees.length, 0),
     open: skeleton.reduce((sum, repo) => sum + repo.worktrees.filter((item) => item.openWorkspaceId !== null).length, 0),
   })
+  // 트리가 새로 서면 스트리밍 pane 이 아직 트리 안에 있는지 확인한다 (C2) — 레포 제거로
+  // 트리에서 빠졌으면 여기서 스트림을 닫는다. scheduleEmit 은 안에서 한 번 더 뭉쳐 부른다.
+  dropStreamIfPaneUnviewable()
   scheduleEmit()
+}
+
+/**
+ * **바인딩만** 다시 대조한다 (게이트 ① 버그 ① — 재동기가 부른다).
+ *
+ * `rebuildTree` 는 레포마다 `git worktree list`(비쌈)까지 도는데, 여기서 재려는 것은 worktree
+ * 구조가 아니라 **열림상태**뿐이다. herdr `worktree.list` 만 왕복해(git 없음, 소켓 1회) 열림
+ * 바인딩을 새로 읽고, 골격의 낡은 `openWorkspaceId` 와 대조해 어긋난 것만 제자리에서 갈아끼운다.
+ *
+ * 왜 재동기에 얹나: `store.reconcile` 은 workspace/tab/pane **행**만 본다. pane 이 cd 로 worktree
+ * 경계를 넘나든 뒤 골격이 옛 바인딩을 든 채여도 행에는 드리프트가 없어 재동기가 '어긋난 것 없음'이라
+ * 하고 자가 회복이 안 됐다. 이 갱신이 그 구멍을 메운다 — 그리고 무엇을 걷었는지 로그·note 로 남긴다.
+ *
+ * 세대 가드: 읽는 사이에 `rebuildTree` 가 끼면(더 새 골격) 패치를 버린다 (L6 와 같은 결).
+ * 읽기 실패한 루트는 옛 바인딩을 그대로 둔다 — 일시적 실패로 트리를 비우지 않는다.
+ */
+async function refreshBindings(reason: string): Promise<{ changed: boolean; note: string | null }> {
+  const socketPath = currentSocketPath()
+  const roots = registry?.list() ?? []
+  if (socketPath === null || roots.length === 0) return { changed: false, note: null }
+  const generation = treeGeneration
+  const byPathByRoot = new Map<string, Map<string, string>>()
+  for (const root of roots) {
+    const open = await readOpenWorkspaces(socketPath, root)
+    if (open.error !== null) {
+      log('binding.read_failed', { reason, root, error: open.error })
+      continue // 이 루트는 옛 바인딩 유지
+    }
+    byPathByRoot.set(root, open.byPath)
+  }
+  if (generation !== treeGeneration) {
+    log('binding.stale', { reason, generation, current: treeGeneration })
+    return { changed: false, note: null }
+  }
+  const drift: Array<{ worktree: string; from: string | null; to: string | null }> = []
+  const patched = skeleton.map((repo) => {
+    const byPath = byPathByRoot.get(repo.root)
+    if (byPath === undefined) return repo // 읽기 실패·미대상 루트는 건드리지 않는다
+    return {
+      ...repo,
+      worktrees: repo.worktrees.map((worktree) => {
+        const fresh = byPath.get(worktree.path) ?? null
+        if (fresh === worktree.openWorkspaceId) return worktree
+        drift.push({ worktree: worktree.path, from: worktree.openWorkspaceId, to: fresh })
+        return { ...worktree, openWorkspaceId: fresh }
+      }),
+    }
+  })
+  if (drift.length === 0) return { changed: false, note: null }
+  skeleton = patched
+  log('tree.binding_drift', { reason, drift })
+  dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)
+  scheduleEmit()
+  return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
 }
 
 function addRepo(input: string): AddRepoResult {
@@ -238,7 +380,46 @@ function pickSession(name: string): void {
     return
   }
   selectedSession = name
+  // 세션이 바뀌면 이전 세션의 pane 스트림은 의미가 없다 — 같이 닫는다.
+  stream.close()
   link.open(found)
+  scheduleEmit()
+}
+
+/** endpoint 소켓은 control 소켓(herdr.sock)과 같은 폴더의 herdr-client.sock 이다. */
+function currentClientSocketPath(): string | null {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return null
+  return path.join(path.dirname(socketPath), 'herdr-client.sock')
+}
+
+/**
+ * pane 하나를 골라 스트림을 연다 (R2 의 유일한 herdr-client.sock 접촉 트리거).
+ *
+ * paneId 는 **현재 링크의 목록에 있는 것만** 받는다 — 렌더러가 낡은 id 를 보내면 (pane 이
+ * 방금 닫혔으면) 여기서 걸러 식별 가능한 로그로 남긴다. 검증의 진실은 store 다.
+ */
+function selectPane(input: { paneId: string | null; cols?: number; rows?: number }): void {
+  if (input.paneId === null) {
+    stream.close()
+    scheduleEmit()
+    return
+  }
+  const clientSocketPath = currentClientSocketPath()
+  if (clientSocketPath === null) {
+    log('stream.select.no_session', { paneId: input.paneId })
+    return
+  }
+  if (!link.store.paneIds().includes(input.paneId)) {
+    log('stream.select.unknown_pane', { paneId: input.paneId })
+    return
+  }
+  stream.open({
+    clientSocketPath,
+    paneId: input.paneId,
+    cols: input.cols ?? 80,
+    rows: input.rows ?? 24,
+  })
   scheduleEmit()
 }
 
@@ -334,6 +515,20 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window?.show())
+  // 렌더러 콘솔을 main 로그로 끌어온다 — 계측 실행에서만(진단 켜짐). 렌더러 예외가
+  // 조용히 사라지지 않게 한다 (R2 하네스 디버깅에서 필요했다).
+  if (!app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined) {
+    // Electron 44 는 이 이벤트를 (event, level, message, line, sourceId) 위치 인자로 주고 level 은
+    // 숫자다. 이 위치-인자 형태는 이후 버전에서 단일 Event 객체(details.level 문자열)로 대체되며
+    // deprecated 다 (수정 1회차 L5) — Electron 을 올릴 때 이 핸들러 시그니처를 같이 고쳐야 한다.
+    // 계측 실행에서만 켜지므로 평시 앱에는 영향이 없다.
+    window.webContents.on(
+      'console-message',
+      (_event: Electron.Event, level: number, message: string, line: number, sourceId: string) => {
+        if (level >= 2) log('renderer.console', { level, message: message.slice(0, 500), line, sourceId })
+      },
+    )
+  }
   // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
   window.on('focus', () => void link.resync('window-focus'))
   /**
@@ -397,6 +592,30 @@ app.whenReady().then(() => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
   })
 
+  // --- 터미널 스트림 (R2) ---
+  ipcMain.handle('corral:selectPane', (event, input: { paneId: string | null; cols?: number; rows?: number }) => {
+    if (fromOurWindow(event)) selectPane(input)
+  })
+  // 입력·리사이즈·스크롤은 fire-and-forget — 왕복을 기다릴 값이 없고 레이턴시(S2)에 민감하다.
+  ipcMain.on('corral:termInput', (event, data: string) => {
+    if (fromOurWindow(event) && typeof data === 'string') stream.input(data)
+  })
+  ipcMain.on('corral:termResize', (event, size: { cols: number; rows: number }) => {
+    if (!fromOurWindow(event)) return
+    if (typeof size?.cols !== 'number' || typeof size?.rows !== 'number') return
+    stream.resize({ cols: size.cols, rows: size.rows })
+  })
+  ipcMain.on('corral:termScroll', (event, scroll: TerminalScroll) => {
+    // termInput·termResize 와 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
+    // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
+    if (!fromOurWindow(event)) return
+    if (scroll?.direction !== 'up' && scroll?.direction !== 'down') return
+    if (typeof scroll.lines !== 'number') return
+    if (scroll.column !== null && typeof scroll.column !== 'number') return
+    if (scroll.row !== null && typeof scroll.row !== 'number') return
+    stream.scroll(scroll)
+  })
+
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
@@ -414,6 +633,12 @@ app.whenReady().then(() => {
       dialogStub = value
       log('browse.stub_set', { stub: value === null ? '(뗌)' : 'path' in value ? value.path : '(취소)' })
     },
+    // R2 계측 — S5 는 창 크기를 3단계로 바꾸고, A1 은 OS 클립보드에 실렸는지를 읽는다.
+    resizeWindow: (size) => {
+      if (window === null || window.isDestroyed()) throw new Error('창이 없다')
+      window.setBounds({ width: size.width, height: size.height })
+    },
+    readClipboard: () => clipboard.readText(),
   })
 
   app.on('activate', () => {
@@ -422,6 +647,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  stream.close()
   link.close()
   log('app.quit', { logFile: logFile() })
   closeLog()

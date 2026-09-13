@@ -52,6 +52,15 @@ export type SessionLinkHooks = {
   onChange: () => void
   /** 목록이 실제로 바뀌었다 — repo 층(worktree 열림상태)을 다시 보라는 신호. */
   onTopologyChange?: () => void
+  /**
+   * 재동기 때 **worktree→workspace 바인딩**도 새로 대조하라는 신호 (게이트 ① 버그 ①).
+   *
+   * `store.reconcile` 은 workspace/tab/pane **행**만 본다 — 바인딩은 골격(`buildSkeleton` 가 얼린
+   * open_workspace_id)에 있어 index.ts 만 갱신할 수 있다. cd 로 worktree 경계를 넘나든 뒤 골격이
+   * 낡은 바인딩을 들고 있어도 행에는 드리프트가 없어(재동기가 '어긋난 것 없음'이라 함) 자가 회복이
+   * 안 되던 정황을 이 훅이 덮는다. 걷어 낸 드리프트의 note 를 재동기 기록에 함께 싣는다.
+   */
+  onResync?: (reason: string) => Promise<{ changed: boolean; note: string | null }>
 }
 
 export class SessionLink {
@@ -316,22 +325,28 @@ export class SessionLink {
       }
       if (response.error) throw new HerdrRequestError(response.error.code ?? 'error', response.error.message ?? '')
       const result = this.store.reconcile(response.result, requestedAt)
+      // 행 대조 뒤 바인딩도 대조한다 (버그 ①). onChange 전에 불러 골격을 먼저 패치해야 이어지는
+      // emit 이 고쳐진 골격을 싣는다. note 를 합쳐 재동기 기록이 '어긋난 것 없음'으로 거짓말 안 하게.
+      const binding = (await this.hooks.onResync?.(reason)) ?? { changed: false, note: null }
+      const changed = result.changed || binding.changed
+      const note = binding.note !== null ? (result.note === '어긋난 것 없음' ? binding.note : `${result.note} · ${binding.note}`) : result.note
       this.state = {
         ...this.state,
         lastResyncAt: Date.now(),
-        lastResyncNote: result.note,
+        lastResyncNote: note,
         resyncCount: this.state.resyncCount + 1,
       }
       log('resync.applied', {
         reason,
         requestedAt,
-        changed: result.changed,
-        note: result.note,
+        changed,
+        note,
         added: result.added,
         removed: result.removed,
         keptNewer: result.keptNewer,
         // 걷어 낸 묘비 — "추정이 틀렸고 재동기가 되돌렸다" 의 원자료 (수정 2회차 H-1ⓑ).
         lifted: result.lifted,
+        binding, // 바인딩 드리프트 갱신 결과 (버그 ①)
         after: this.store.ids(),
       })
       this.hooks.onChange()
@@ -339,7 +354,7 @@ export class SessionLink {
         this.hooks.onTopologyChange?.()
         this.scheduleAgentSubscription()
       }
-      return { ok: true, note: result.note }
+      return { ok: true, note }
     } catch (error) {
       log('resync.failed', { reason, error: String(error) })
       return { ok: false, note: String(error) }

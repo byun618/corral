@@ -65,24 +65,52 @@ export async function buildSkeleton(input: {
 export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly WorkspaceRow[]): Tree {
   const byWorkspaceId = new Map<string, WorkspaceRow>()
   for (const workspace of workspaces) byWorkspaceId.set(workspace.workspaceId, workspace)
-  const claimed = new Set<string>()
 
+  /**
+   * 한 workspace 는 정확히 **한 worktree** 에만 열려 있다 — 그 pane 의 cwd 가 한 곳이므로.
+   *
+   * 그런데 herdr 는 pane 이 nested worktree(=부모 main 디렉터리 **아래** 있는 worktree)로 오갈 때
+   * open_workspace_id 를 부모·자식 **두 worktree 에 함께** 다는 과도기가 있다 (게이트 ① 버그 ①,
+   * 실측: raw/claude/fix3/herdr-both-bind-probe.json). 그 순간의 골격이 얼면 두 worktree 의
+   * `openWorkspaceId` 가 같은 wsId 가 되고, 아래 조립이 그 wsId 행을 두 worktree 에 다 붙여
+   * **화면이 '열림 2'로 거짓말한다**. 그래서 가장 구체적인(경로가 가장 긴) worktree 하나에만
+   * 붙이고 나머지는 걷는다 — 골격이 낡아 있어도 화면엔 이중 바인딩이 안 나온다. 골격 자체를
+   * 진실로 되돌리는 것은 재동기의 바인딩 갱신이 한다 (index.ts refreshBindings).
+   */
+  const winnerPathByWs = new Map<string, string>()
+  for (const repo of skeleton) {
+    for (const worktree of repo.worktrees) {
+      const id = worktree.openWorkspaceId
+      if (id === null) continue
+      const current = winnerPathByWs.get(id)
+      if (current === undefined || worktree.path.length > current.length) winnerPathByWs.set(id, worktree.path)
+    }
+  }
+
+  const claimed = new Set<string>()
+  const dropped: Array<{ workspaceId: string; worktree: string; boundTo: string }> = []
   const repos: RepoRow[] = skeleton.map((repo) => ({
     root: repo.root,
     name: repo.name,
     error: repo.error,
     worktrees: repo.worktrees.map((worktree) => {
-      const workspace = worktree.openWorkspaceId === null ? null : (byWorkspaceId.get(worktree.openWorkspaceId) ?? null)
+      const id = worktree.openWorkspaceId
+      const wins = id !== null && winnerPathByWs.get(id) === worktree.path
+      if (id !== null && !wins) dropped.push({ workspaceId: id, worktree: worktree.path, boundTo: winnerPathByWs.get(id) ?? '?' })
+      const workspace = wins ? (byWorkspaceId.get(id) ?? null) : null
       if (workspace !== null) claimed.add(workspace.workspaceId)
       return {
         path: worktree.path,
         branch: worktree.branch,
         isLinked: worktree.isLinked,
-        openWorkspaceId: worktree.openWorkspaceId,
+        // 진 worktree 는 openWorkspaceId 도 null 로 걷는다 — App.tsx 는 '열림 N'을 openWorkspaceId
+        // 로(388·432줄), 워크스페이스 행을 workspace 로(450줄) 센다. 둘 다 걷어야 거짓말이 안 남는다.
+        openWorkspaceId: wins ? id : null,
         workspace,
       }
     }),
   }))
+  if (dropped.length > 0) log('tree.double_bind', { dropped })
 
   /**
    * 어느 등록 레포에도 안 붙은 workspace.

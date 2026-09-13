@@ -33,6 +33,10 @@ export type ControlHandlers = {
    * 세 상태다: 경로를 고른 것 · **취소한 것** · 스텁을 뗀 것(`null` — 진짜 창이 뜬다).
    */
   setDialogStub: (value: { canceled: true } | { path: string } | null) => void
+  /** R2 계측 — S5 격자 수렴이 창 크기를 3단계로 바꾼다. */
+  resizeWindow: (size: { width: number; height: number }) => void
+  /** R2 계측 — A1 이 OSC 52 복사가 OS 클립보드에 실렸는지 읽는다. corral 쪽 관측이다. */
+  readClipboard: () => Promise<string>
 }
 
 /**
@@ -215,10 +219,14 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (target === null) throw new Error('창이 없다')
         const text = readString(parsed, 'text')
         if (text === null) throw new Error('text 필요')
+        // **주입 시각을 넣기 직전에 찍는다** (수정 1회차 C3). S2 는 이 `at` 을 레이턴시의 시작점으로
+        // 쓴다 — 루프가 끝난 뒤에 찍으면 그 사이 시간만큼 레이턴시를 과소평가한다. 시계는 injection
+        // 순간에 시작해야 한다. (main·renderer 는 같은 머신이라 Date.now 벽시계가 동일 — 스큐 없음.)
+        const at = Date.now()
         for (const ch of text) {
           target.webContents.sendInputEvent({ type: 'char', keyCode: ch })
         }
-        reply({ ok: true, typed: text.length, at: Date.now() })
+        reply({ ok: true, typed: text.length, at })
         return
       }
       /**
@@ -251,6 +259,121 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
           true,
         )
         reply({ ok: true, selector, found, at: Date.now() })
+        return
+      }
+      /** S5 — 창 크기 변경. 리사이즈→fit→요청→수렴 경로 전체가 진짜로 돈다. */
+      case 'resize-window': {
+        const width = readNumber(parsed, 'width')
+        const height = readNumber(parsed, 'height')
+        if (width === null || height === null) throw new Error('width·height 필요')
+        handlers.resizeWindow({ width, height })
+        reply({ ok: true, width, height, at: Date.now() })
+        return
+      }
+      /** A1 — Electron 클립보드 내용. corral 이 썼는지를 보는 것이라 corral 쪽 관측이 맞다. */
+      case 'read-clipboard': {
+        reply({ ok: true, text: await handlers.readClipboard(), at: Date.now() })
+        return
+      }
+      /**
+       * S1·S2·S3 — **xterm 버퍼 실물**을 렌더러에서 읽는다. 렌더러가 diagnostics 실행에서
+       * 노출하는 프로브 훅(window.corralTermProbe)을 부른다 — 기준 S1 이 지정한 대조 대상이
+       * "xterm 버퍼 실물(buffer.getLine)" 이라 화면 스크린샷이 아니라 버퍼를 뜬다.
+       * herdr 쪽 대조값은 여전히 이 채널이 주지 않는다 (위 'state' 주석의 규칙 그대로).
+       */
+      case 'term-read': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const result = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.read() : null)()`,
+          true,
+        )
+        reply({ ok: result !== null, at: Date.now(), term: result })
+        return
+      }
+      /**
+       * S4 — 진짜 wheel 이벤트를 터미널 위에 꽂는다. 렌더러의 캡처-단계 wheel 핸들러가
+       * 받아 termScroll → stream.scroll(벤더 session.scroll) 한 길로 흐른다. `el.dispatchEvent`
+       * 로 실제 WheelEvent 를 만들어 그 경로가 실증되게 한다 (main 핸들러 지름길 아님).
+       */
+      case 'wheel': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const deltaY = readNumber(parsed, 'deltaY')
+        if (deltaY === null) throw new Error('deltaY 필요')
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const ev = new WheelEvent('wheel', {
+               deltaY: ${deltaY}, bubbles: true, cancelable: true,
+               clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+             })
+             host.dispatchEvent(ev)
+             return { ok: true }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, deltaY, at: Date.now(), dispatched })
+        return
+      }
+      /**
+       * A5 — mouseReporting TUI 에 마우스 클릭을 전달한다. 진짜 MouseEvent 를 .xterm-screen 에
+       * 꽂아 xterm 의 마우스 핸들러가 SGR 시퀀스로 onData 를 발화하게 한다 (wheel 과 같은 결). fx·fy
+       * 는 스크린 rect 안 비율. main 지름길이 아니라 렌더러의 실제 입력 경로를 지난다.
+       */
+      case 'term-click': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const fx = readNumber(parsed, 'fx') ?? 0.5
+        const fy = readNumber(parsed, 'fy') ?? 0.5
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const x = Math.round(r.left + r.width * ${fx})
+             const y = Math.round(r.top + r.height * ${fy})
+             const opt = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }
+             screen.dispatchEvent(new MouseEvent('mousedown', opt))
+             screen.dispatchEvent(new MouseEvent('mouseup', opt))
+             return { ok: true, x, y }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, fx, fy, at: Date.now(), dispatched })
+        return
+      }
+      /** S7ⓔ — xterm 이 한 문자열에 매기는 셀 폭. 폭 오라클의 xterm 축. */
+      case 'term-cell-width': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const text = readString(parsed, 'text')
+        if (text === null) throw new Error('text 필요')
+        const width = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.cellWidth(${JSON.stringify(text)}) : null)()`,
+          true,
+        )
+        reply({ ok: width !== null, width, text, at: Date.now() })
+        return
+      }
+      /**
+       * L2 — #5800 우회 직접 관측. DECRQM 질의를 xterm 에 먹이고 그 DECRPM 응답을 그대로 받는다.
+       * 프로덕션(재-minify) 빌드에서도 `\x1b[?2026;<value>$y` 가 오면 DECRQM CSI 핸들러가 살아
+       * 있다는 증거다 (renderer build.target es2022 우회). 응답 없음이면 우회가 깨진 것이다.
+       */
+      case 'term-decrqm': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const mode = readNumber(parsed, 'mode') ?? 2026
+        const response = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.decrqm(${mode}) : null)()`,
+          true,
+        )
+        reply({ ok: typeof response === 'string' && response.length > 0, mode, response, at: Date.now() })
         return
       }
       default:

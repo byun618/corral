@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { AgentStatus, AppState, PaneRow, RepoRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
+import { TerminalPane } from './TerminalPane.js'
 
 /** 제거 확인 문구의 두 번째 줄. **여기 한 자리에만** 둔다 — 계측이 대조하는 것도 이 문자열이다. */
 const REMOVE_DISCLAIMER = '제거는 corral 목록에서만 빠진다 — 디스크의 폴더도, herdr 세션도 건드리지 않는다.'
@@ -38,6 +39,8 @@ export function App(): React.JSX.Element {
   /** 제거 확인을 띄운 레포. null 이면 확인 창이 없다. */
   const [pendingRemove, setPendingRemove] = useState<RepoRow | null>(null)
   const [removeError, setRemoveError] = useState<string | null>(null)
+  /** 터미널로 보고 있는 pane (R2). 선택은 렌더러의 상태고, 스트림 수명은 main 이 쥔다. */
+  const [selectedPane, setSelectedPane] = useState<string | null>(null)
 
   useEffect(() => {
     void window.corral.getState().then(setState)
@@ -162,24 +165,29 @@ export function App(): React.JSX.Element {
         />
       ) : null}
 
-      <main className="list">
-        {state.repos.length === 0 ? (
-          <p className="empty" data-empty>
-            등록된 레포가 없다. 위의 「레포 추가」 로 폴더를 고른다.
-          </p>
-        ) : (
-          state.repos.map((repo) => (
-            <Repo
-              key={repo.root}
-              repo={repo}
-              onRemove={() => {
-                setRemoveError(null)
-                setPendingRemove(repo)
-              }}
-            />
-          ))
-        )}
-      </main>
+      <div className="content">
+        <main className="list">
+          {state.repos.length === 0 ? (
+            <p className="empty" data-empty>
+              등록된 레포가 없다. 위의 「레포 추가」 로 폴더를 고른다.
+            </p>
+          ) : (
+            state.repos.map((repo) => (
+              <Repo
+                key={repo.root}
+                repo={repo}
+                selectedPane={selectedPane}
+                onSelectPane={setSelectedPane}
+                onRemove={() => {
+                  setRemoveError(null)
+                  setPendingRemove(repo)
+                }}
+              />
+            ))
+          )}
+        </main>
+        <TerminalPanel state={state} selectedPane={selectedPane} />
+      </div>
 
       {pendingRemove === null ? null : (
         <ConfirmRemove
@@ -308,7 +316,75 @@ function ConfirmRemove({
   )
 }
 
-function Repo({ repo, onRemove }: { repo: RepoRow; onRemove: () => void }): React.JSX.Element {
+/**
+ * 터미널 패널 (R2) — 선택된 pane 의 라이브 화면.
+ *
+ * **pane 이 목록에서 사라지면 뷰도 내린다.** main 은 이미 스트림을 닫았다 (stream.pane_gone) —
+ * 여기서 TerminalPane 을 언마운트하지 않으면 죽은 pane 의 마지막 프레임이 산 것처럼 남는다.
+ */
+function TerminalPanel({ state, selectedPane }: { state: AppState; selectedPane: string | null }): React.JSX.Element {
+  const paneIds = new Set(
+    state.repos.flatMap((repo) =>
+      repo.worktrees.flatMap((worktree) =>
+        worktree.workspace === null
+          ? []
+          : worktree.workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.paneId)),
+      ),
+    ),
+  )
+  const alive = selectedPane !== null && paneIds.has(selectedPane)
+  const terminal = state.terminal
+  return (
+    <section className="term-panel" data-term-panel>
+      <div className="term-head" data-term-head>
+        {alive ? (
+          <>
+            <span className="chip chip-id" data-term-pane-id>
+              {selectedPane}
+            </span>
+            <span className={`chip term-phase-${terminal.phase}`} data-term-phase>
+              {terminal.phase}
+            </span>
+            {terminal.cols === null ? null : (
+              <span className="chip chip-count" data-term-size>
+                {terminal.cols}×{terminal.rows}
+              </span>
+            )}
+            {terminal.mouseReporting ? (
+              <span className="chip" data-term-mouse>
+                mouse
+              </span>
+            ) : null}
+            {terminal.lastError === null ? null : (
+              <span className="warn" data-term-error>
+                {terminal.lastError}
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="meta">터미널 — pane 을 고르면 여기 뜬다</span>
+        )}
+      </div>
+      {alive ? (
+        <TerminalPane paneId={selectedPane} diagnostics={state.diagnostics} />
+      ) : (
+        <div className="term-empty" data-term-empty />
+      )}
+    </section>
+  )
+}
+
+function Repo({
+  repo,
+  selectedPane,
+  onSelectPane,
+  onRemove,
+}: {
+  repo: RepoRow
+  selectedPane: string | null
+  onSelectPane: (paneId: string) => void
+  onRemove: () => void
+}): React.JSX.Element {
   const open = repo.worktrees.filter((item) => item.openWorkspaceId !== null).length
   return (
     <section className="repo" data-repo={repo.root}>
@@ -336,13 +412,23 @@ function Repo({ repo, onRemove }: { repo: RepoRow; onRemove: () => void }): Reac
       {repo.worktrees.length === 0 ? (
         <p className="hint">worktree 를 못 읽었다.</p>
       ) : (
-        repo.worktrees.map((worktree) => <Worktree key={worktree.path} worktree={worktree} />)
+        repo.worktrees.map((worktree) => (
+          <Worktree key={worktree.path} worktree={worktree} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+        ))
       )}
     </section>
   )
 }
 
-function Worktree({ worktree }: { worktree: WorktreeRow }): React.JSX.Element {
+function Worktree({
+  worktree,
+  selectedPane,
+  onSelectPane,
+}: {
+  worktree: WorktreeRow
+  selectedPane: string | null
+  onSelectPane: (paneId: string) => void
+}): React.JSX.Element {
   const isOpen = worktree.openWorkspaceId !== null
   return (
     <div className={`worktree ${isOpen ? 'is-open' : 'is-closed'}`} data-worktree={worktree.path}>
@@ -361,12 +447,22 @@ function Worktree({ worktree }: { worktree: WorktreeRow }): React.JSX.Element {
         {worktree.isLinked ? <span className="chip chip-linked">linked</span> : null}
         <span className="path-hint">{worktree.path}</span>
       </div>
-      {worktree.workspace === null ? null : <Workspace workspace={worktree.workspace} />}
+      {worktree.workspace === null ? null : (
+        <Workspace workspace={worktree.workspace} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+      )}
     </div>
   )
 }
 
-function Workspace({ workspace }: { workspace: WorkspaceRow }): React.JSX.Element {
+function Workspace({
+  workspace,
+  selectedPane,
+  onSelectPane,
+}: {
+  workspace: WorkspaceRow
+  selectedPane: string | null
+  onSelectPane: (paneId: string) => void
+}): React.JSX.Element {
   return (
     <div className="workspace" data-workspace={workspace.workspaceId}>
       <div className="workspace-head">
@@ -378,13 +474,23 @@ function Workspace({ workspace }: { workspace: WorkspaceRow }): React.JSX.Elemen
       {workspace.tabs.length === 0 ? (
         <p className="hint">탭 없음</p>
       ) : (
-        workspace.tabs.map((tab) => <Tab key={tab.tabId} tab={tab} />)
+        workspace.tabs.map((tab) => (
+          <Tab key={tab.tabId} tab={tab} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+        ))
       )}
     </div>
   )
 }
 
-function Tab({ tab }: { tab: TabRow }): React.JSX.Element {
+function Tab({
+  tab,
+  selectedPane,
+  onSelectPane,
+}: {
+  tab: TabRow
+  selectedPane: string | null
+  onSelectPane: (paneId: string) => void
+}): React.JSX.Element {
   return (
     <div className="tab" data-tab={tab.tabId} data-tab-order={tab.order} data-tab-number={tab.number}>
       <div className="tab-head">
@@ -400,15 +506,24 @@ function Tab({ tab }: { tab: TabRow }): React.JSX.Element {
         <span className="chip chip-id">{tab.tabId}</span>
       </div>
       {tab.panes.map((pane) => (
-        <Pane key={pane.paneId} pane={pane} />
+        <Pane
+          key={pane.paneId}
+          pane={pane}
+          selected={pane.paneId === selectedPane}
+          onSelect={() => onSelectPane(pane.paneId)}
+        />
       ))}
     </div>
   )
 }
 
-function Pane({ pane }: { pane: PaneRow }): React.JSX.Element {
+/**
+ * pane 행 — 누르면 터미널이 이 pane 으로 붙는다 (R2). 행 전체가 손잡이다.
+ * 버튼이 아니라 행 클릭인 이유: herdr·Orca 의 관습이 그렇고, 행 안의 칩은 정보지 조작이 아니다.
+ */
+function Pane({ pane, selected, onSelect }: { pane: PaneRow; selected: boolean; onSelect: () => void }): React.JSX.Element {
   return (
-    <div className="pane" data-pane={pane.paneId}>
+    <div className={`pane ${selected ? 'is-selected' : ''}`} data-pane={pane.paneId} onClick={onSelect}>
       <span className="pane-title">{pane.title}</span>
       {/* 칩의 정답 오라클은 herdr `pane.list` 의 agent_status·agent 다 (N8). */}
       <span

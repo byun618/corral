@@ -165,6 +165,47 @@ export type BrowseReposResult = {
   message: string | null
 }
 
+// --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
+
+/** 스트림 링크가 지금 어느 걸음에 있나. link 의 LinkPhase 와 별개다 — 소켓이 다르다. */
+export type TerminalPhase = 'idle' | 'connecting' | 'streaming' | 'failed'
+
+export type TerminalState = {
+  /** 지금 스트리밍 중(또는 시도 중)인 pane. 없으면 null. */
+  paneId: string | null
+  phase: TerminalPhase
+  /** 마지막 프레임의 크기 (crop 결과 = pane 내용 영역). 아직 없으면 null. */
+  cols: number | null
+  rows: number | null
+  /** 마지막 프레임 기준 — 이 pane 의 앱이 마우스를 받겠다고 했나. */
+  mouseReporting: boolean
+  lastError: string | null
+}
+
+/**
+ * 터미널 프레임 하나 — main → renderer 로 미는 페이로드.
+ *
+ * `data` 는 ANSI 바이트다 (전체 리페인트, DEC 2026 BSU/ESU 로 감쌈 — 어댑터가 만든
+ * **corral 의 표현**이고 herdr 와이어 모양이 아니다). Uint8Array 로 보낸다 —
+ * structured clone 이 복사 없이 나르고, base64 왕복이 없다.
+ */
+export type TerminalFrame = {
+  paneId: string
+  seq: number
+  cols: number
+  rows: number
+  mouseReporting: boolean
+  data: Uint8Array
+}
+
+/** renderer → main 스크롤 요청. 좌표는 pane 내용 영역 기준 0-기반 셀. */
+export type TerminalScroll = {
+  direction: 'up' | 'down'
+  lines: number
+  column: number | null
+  row: number | null
+}
+
 export type AppState = {
   revision: number
   sessions: SessionInfo[]
@@ -175,6 +216,7 @@ export type AppState = {
   link: LinkState
   registry: RegistryState
   repos: RepoRow[]
+  terminal: TerminalState
   /** 개발·계측 실행에서만 켜지는 진단 표시. */
   diagnostics: boolean
 }
@@ -188,5 +230,15 @@ export type CorralApi = {
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
   reportRendered: (revision: number) => void
+  /**
+   * pane 하나를 골라 스트림을 연다. paneId null 이면 닫는다. 결과는 state.terminal 로 돌아온다.
+   * cols·rows 는 렌더러가 잰 터미널 영역 크기 — 첫 연결이 맞는 크기로 뜨게 한다 (없으면 80×24).
+   */
+  selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) => Promise<void>
+  /** xterm onData 그대로 — 키·마우스 리포트·붙여넣기 전부 이 한 길이다. */
+  termInput: (data: string) => void
+  termResize: (size: { cols: number; rows: number }) => void
+  termScroll: (scroll: TerminalScroll) => void
+  onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

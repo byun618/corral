@@ -6,7 +6,15 @@
 // 여기 오가는 타입은 전부 `shared/types.ts` 다. 어댑터는 이름조차 모른다 (기준 N2).
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AddRepoResult, AppState, BrowseReposResult, CorralApi, RemoveRepoResult } from '../shared/types.js'
+import type {
+  AddRepoResult,
+  AppState,
+  BrowseReposResult,
+  CorralApi,
+  RemoveRepoResult,
+  TerminalFrame,
+  TerminalScroll,
+} from '../shared/types.js'
 
 const EXPOSED = [
   'getState',
@@ -16,6 +24,11 @@ const EXPOSED = [
   'browseForRepos',
   'refreshSessions',
   'reportRendered',
+  'selectPane',
+  'termInput',
+  'termResize',
+  'termScroll',
+  'onTermFrame',
   'preloadEnv',
 ]
 
@@ -33,6 +46,19 @@ const api: CorralApi = {
   browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
   reportRendered: (revision: number) => ipcRenderer.send('corral:reportRendered', revision),
+  selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) =>
+    ipcRenderer.invoke('corral:selectPane', input),
+  // 입력·리사이즈·스크롤은 send — 왕복 없는 한 방향이 레이턴시(S2)의 모양이다.
+  termInput: (data: string) => ipcRenderer.send('corral:termInput', data),
+  termResize: (size: { cols: number; rows: number }) => ipcRenderer.send('corral:termResize', size),
+  termScroll: (scroll: TerminalScroll) => ipcRenderer.send('corral:termScroll', scroll),
+  onTermFrame: (listener: (frame: TerminalFrame) => void) => {
+    const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)
+    ipcRenderer.on('corral:termFrame', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:termFrame', handler)
+    }
+  },
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

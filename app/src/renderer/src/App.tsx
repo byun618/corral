@@ -580,8 +580,9 @@ function ConfirmClose({
  * 네이티브 폴더 선택기는 만들 폴더가 아직 없으니 애초에 맞지 않고, 텍스트 입력이면 계측이
  * 그 경로로 지나간다 (스텁 불필요).
  *
- * path 는 branch 를 건드릴 때마다 `<레포부모>/<레포이름>-<branch>` 로 따라 채운다 — 사람이
- * path 를 직접 만지기 전까지만. 흔한 경우(레포 옆에 브랜치 이름으로)를 기본으로 주되 고칠 수 있다.
+ * path 는 branch 를 건드릴 때마다 `<repoRoot>/.claude/worktrees/<branch>` 로 따라 채운다 (G6) —
+ * 사람이 path 를 직접 만지기 전까지만(수동 우선). 프로젝트 규약대로 worktree 는 레포의
+ * `.claude/worktrees/` 아래 형제 폴더에 둔다 — 그 위치를 기본값으로 준다. 빈 branch 면 그 폴더까지만.
  */
 function CreateWorktreeModal({
   repoRoot,
@@ -592,10 +593,12 @@ function CreateWorktreeModal({
   onClose: () => void
   onDone: (message: string) => void
 }): React.JSX.Element {
-  const parent = repoRoot.replace(/\/[^/]+$/, '')
-  const base = repoRoot.split('/').pop() ?? 'repo'
-  const derivePath = (branch: string): string =>
-    `${parent}/${base}-${branch.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'wt'}`
+  const worktreesDir = `${repoRoot}/.claude/worktrees`
+  // 슬래시 등은 평탄화한다 — worktree 는 .claude/worktrees/ 아래 형제 폴더(중첩 금지, AGENTS.md).
+  const derivePath = (branch: string): string => {
+    const slug = branch.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+    return slug.length === 0 ? `${worktreesDir}/` : `${worktreesDir}/${slug}`
+  }
 
   const [branch, setBranch] = useState('')
   const [pathValue, setPathValue] = useState('')

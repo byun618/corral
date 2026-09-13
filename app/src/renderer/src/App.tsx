@@ -753,7 +753,7 @@ function Repo({
         <span className="chip chip-count" data-chip-repo={repo.root}>
           worktree {repo.worktrees.length} · 열림 {open}
         </span>
-        <span className="path-hint">{repo.root}</span>
+        <span className="path-hint" title={repo.root}>{repo.root}</span>
         {/* 새 worktree 만들기 (L7). 텍스트 입력 모달을 연다. */}
         <button className="row-action" data-create-worktree={repo.root} title="새 worktree" onClick={() => actions.openCreateWorktree(repo.root)}>
           + worktree
@@ -836,7 +836,7 @@ function Worktree({
             열기
           </button>
         )}
-        <span className="path-hint">{worktree.path}</span>
+        <span className="path-hint" title={worktree.path}>{worktree.path}</span>
       </div>
       {worktree.workspace === null ? null : (
         <Workspace workspace={worktree.workspace} actions={actions} selectedPane={selectedPane} onSelectPane={onSelectPane} />

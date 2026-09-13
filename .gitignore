@@ -12,3 +12,7 @@ spike/node_modules/
 app/node_modules/
 app/out/
 app/*.tsbuildinfo
+
+# 대량 반복 런 로그 — 요약 JSON 이 원본 해시로 사슬을 남긴다 (LIFE-356 킥오프 원자료 정책).
+# _discarded 의 버린 회차 실물은 커밋한다 (park() 가 _runs 밖으로 옮기므로 이 규칙에 안 걸린다).
+specs/*/raw/*/_runs/

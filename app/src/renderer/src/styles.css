@@ -189,11 +189,32 @@ body {
 }
 .field-input:focus { outline: none; border-color: var(--accent); }
 
+/*
+  G5 (게이트 ① 추가 — 레이아웃 결함): 긴 레포/worktree 경로(와 이름·브랜치)가 행을 옆으로 밀어
+  조작 버튼(새 worktree·제거·열기·닫기)이 사이드바 밖으로 잘리던 문제. 텍스트(이름·브랜치·경로)는
+  flex 안에서 min-width:0 + 말줄임으로 줄어들고(전체 경로는 title 툴팁), 칩·버튼은 flex-shrink:0
+  으로 절대 줄지 않아 항상 보인다. 경로가 남는 폭을 먹어(flex-grow:1) 버튼을 오른쪽 끝으로 민다.
+  data-*·문구 불변 — 레이아웃만.
+*/
+.repo-name span[data-repo-name],
+.repo-name .path-hint,
+.worktree-head .branch,
+.worktree-head .path-hint {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.repo-name .path-hint,
+.worktree-head .path-hint { flex: 1 1 auto; }
+.repo-name .chip, .repo-name .row-action, .repo-name .row-remove,
+.worktree-head .chip, .worktree-head .row-action, .worktree-head .row-remove {
+  flex-shrink: 0;
+}
+
 /* --- 터미널 패널 (R2) --------------------------------------------------------- */
 
-/* 목록 | 터미널 2단. 터미널 쪽이 남는 폭을 다 가진다. */
+/* 목록 | 터미널 2단. 터미널 쪽이 남는 폭을 다 가진다. 사이드바는 세로로만 스크롤(G5: 가로 제거). */
 .content { display: flex; flex: 1; min-height: 0; }
-.content .list { width: 420px; min-width: 320px; overflow-y: auto; border-right: 1px solid var(--line); }
+.content .list { width: 420px; min-width: 320px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--line); }
 
 .term-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
 .term-head {

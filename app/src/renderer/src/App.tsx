@@ -11,11 +11,38 @@
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다.
 
 import { useEffect, useRef, useState } from 'react'
-import type { AgentStatus, AppState, PaneRow, RepoRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
+import type { AgentKind, AgentStatus, AppState, PaneRow, RepoRow, TabRow, WorkspaceRow, WorktreeRow } from '../../shared/types.js'
 import { TerminalPane } from './TerminalPane.js'
 
 /** 제거 확인 문구의 두 번째 줄. **여기 한 자리에만** 둔다 — 계측이 대조하는 것도 이 문자열이다. */
 const REMOVE_DISCLAIMER = '제거는 corral 목록에서만 빠진다 — 디스크의 폴더도, herdr 세션도 건드리지 않는다.'
+
+/** 행 생성에서 고르는 종류. 화면 라벨과 corral kind 값을 한 자리에 둔다. */
+const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
+  { kind: 'claude', label: 'claude' },
+  { kind: 'codex', label: 'codex' },
+  { kind: 'grok', label: 'grok' },
+  { kind: 'shell', label: '셸' },
+]
+
+/**
+ * 화면에 올리는 라이프사이클 동작 묶음 — Repo→Worktree→Workspace→Tab 으로 내려간다.
+ * 한 객체로 묶어 내려서 컴포넌트마다 손잡이를 하나씩 늘어놓지 않는다 (관심사: 트리는 그리기,
+ * 동작은 App 이 IPC 로).
+ */
+/** 닫기 대상 — 행(탭) 또는 worktree(workspace). 확인 모달과 IPC 갈래를 이걸로 가른다. */
+type CloseTarget = { kind: 'tab'; tabId: string } | { kind: 'workspace'; workspaceId: string }
+
+type LifecycleActions = {
+  createRow: (workspaceId: string, kind: AgentKind) => void
+  closeRow: (tabId: string) => void
+  closeWorktree: (workspaceId: string) => void
+  openWorktree: (repoRoot: string, worktree: WorktreeRow) => void
+  openCreateWorktree: (repoRoot: string) => void
+}
+
+/** 화면 상단에 그대로 뜨는 라이프사이클 알림 (거절·실패). L9 거절은 여기서 멈춘다. */
+type LifecycleNotice = { kind: 'rejected'; code: string; message: string } | { kind: 'error'; message: string }
 
 /**
  * 칩이 **구분하는 상태의 전부**다 (기준 N8: "문서에 적고 그 전부를 대조한다").
@@ -41,6 +68,12 @@ export function App(): React.JSX.Element {
   const [removeError, setRemoveError] = useState<string | null>(null)
   /** 터미널로 보고 있는 pane (R2). 선택은 렌더러의 상태고, 스트림 수명은 main 이 쥔다. */
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
+  /** 종료 확인 모달 (L4). 산 프로세스가 있을 때만. null 이면 확인 없이 이미 닫혔거나 닫을 게 없다. */
+  const [pendingClose, setPendingClose] = useState<{ target: CloseTarget; foreground: string[] } | null>(null)
+  /** 라이프사이클 거절·실패 알림 (L9 포함). 그대로 보이고 멈춘다. */
+  const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
+  /** worktree 만들기 모달 (L7). null 이면 닫힘. */
+  const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
 
   useEffect(() => {
     void window.corral.getState().then(setState)
@@ -69,6 +102,26 @@ export function App(): React.JSX.Element {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [pendingRemove])
+
+  /** 종료 확인 모달도 ESC 로 닫는다 (취소와 같다 — 행은 산다). */
+  useEffect(() => {
+    if (pendingClose === null) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setPendingClose(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [pendingClose])
+
+  /** worktree 만들기 모달도 ESC 로 닫는다. */
+  useEffect(() => {
+    if (worktreeModal === null) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setWorktreeModal(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [worktreeModal])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -120,6 +173,60 @@ export function App(): React.JSX.Element {
     setPendingRemove(null)
   }
 
+  /**
+   * 닫는다 (L3·L4·L9). `confirmed:false` 로 부르면 main 이 종료 게이트를 재고, 산 프로세스가
+   * 있으면 `needs-confirm` 으로 돌아온다 — 그때만 모달을 띄운다. 셸만 있으면 바로 `closed` 라
+   * 모달이 없다 (L3 오탐 0). `rejected` (L9)는 그대로 보이고 멈춘다 — corral 이 승격하지 않는다.
+   */
+  const closeTarget = async (target: CloseTarget, confirmed = false): Promise<void> => {
+    setLifecycleNotice(null)
+    const result =
+      target.kind === 'tab'
+        ? await window.corral.closeRow({ tabId: target.tabId, confirmed })
+        : await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
+    switch (result.outcome) {
+      case 'closed':
+        setPendingClose(null)
+        return
+      case 'needs-confirm':
+        setPendingClose({ target, foreground: result.foreground })
+        return
+      case 'rejected':
+        setPendingClose(null)
+        setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+        return
+      case 'error':
+        setPendingClose(null)
+        setLifecycleNotice({ kind: 'error', message: result.error })
+        return
+    }
+  }
+
+  const createRow = async (workspaceId: string, kind: AgentKind): Promise<void> => {
+    setLifecycleNotice(null)
+    const result = await window.corral.createRow({ workspaceId, kind })
+    if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '행 생성 실패' })
+    // 성공이면 store push 로 행이 나타난다 — 여기서 목록을 만지지 않는다.
+  }
+
+  const openWorktree = async (repoRoot: string, worktree: WorktreeRow): Promise<void> => {
+    setLifecycleNotice(null)
+    const result = await window.corral.openWorktree({ repoRoot, path: worktree.path, isLinked: worktree.isLinked })
+    if (result.rejection) setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+    else if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
+  }
+
+  const actions: LifecycleActions = {
+    createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
+    closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
+    closeWorktree: (workspaceId) => void closeTarget({ kind: 'workspace', workspaceId }),
+    openWorktree: (repoRoot, worktree) => void openWorktree(repoRoot, worktree),
+    openCreateWorktree: (repoRoot) => {
+      setLifecycleNotice(null)
+      setWorktreeModal({ repoRoot })
+    },
+  }
+
   return (
     <div className="app">
       <header className="header" data-header>
@@ -165,6 +272,24 @@ export function App(): React.JSX.Element {
         />
       ) : null}
 
+      {lifecycleNotice === null ? null : (
+        <div
+          className={`lifecycle-notice ${lifecycleNotice.kind === 'rejected' ? 'rejected' : 'error'}`}
+          data-lifecycle-notice
+          data-notice-kind={lifecycleNotice.kind}
+          data-notice-code={lifecycleNotice.kind === 'rejected' ? lifecycleNotice.code : ''}
+        >
+          <span className="lifecycle-notice-text">
+            {lifecycleNotice.kind === 'rejected'
+              ? `herdr 거절 (${lifecycleNotice.code}): ${lifecycleNotice.message}`
+              : `실패: ${lifecycleNotice.message}`}
+          </span>
+          <button className="lifecycle-notice-close" data-notice-dismiss aria-label="닫기" onClick={() => setLifecycleNotice(null)}>
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="content">
         <main className="list">
           {state.repos.length === 0 ? (
@@ -176,6 +301,7 @@ export function App(): React.JSX.Element {
               <Repo
                 key={repo.root}
                 repo={repo}
+                actions={actions}
                 selectedPane={selectedPane}
                 onSelectPane={setSelectedPane}
                 onRemove={() => {
@@ -195,6 +321,26 @@ export function App(): React.JSX.Element {
           error={removeError}
           onConfirm={() => void removeRepo(pendingRemove)}
           onCancel={() => setPendingRemove(null)}
+        />
+      )}
+
+      {pendingClose === null ? null : (
+        <ConfirmClose
+          target={pendingClose.target}
+          foreground={pendingClose.foreground}
+          onConfirm={() => void closeTarget(pendingClose.target, true)}
+          onCancel={() => setPendingClose(null)}
+        />
+      )}
+
+      {worktreeModal === null ? null : (
+        <CreateWorktreeModal
+          repoRoot={worktreeModal.repoRoot}
+          onClose={() => setWorktreeModal(null)}
+          onDone={(message) => {
+            setWorktreeModal(null)
+            setNotice(message)
+          }}
         />
       )}
 
@@ -317,6 +463,157 @@ function ConfirmRemove({
 }
 
 /**
+ * 종료 확인 (L4). **산 프로세스가 있을 때만** 뜬다 — 셸만 있는 행은 이 모달 없이 즉시 닫힌다.
+ *
+ * 판별자는 herdr `pane.process_info` 의 포그라운드 프로세스 그룹이고, 그 판정은 main 이 종료
+ * 직전에 뜬다 (App 은 결과만 받는다). 무엇이 도는지를 그대로 보여 사람이 근거를 보고 정한다.
+ * 취소는 무해(행 생존), 승인은 닫힌다. `window.confirm` 이 아니다 — 그건 렌더러(와 계측 채널)를
+ * 얼린다 (LIFE-346 결정).
+ */
+function ConfirmClose({
+  target,
+  foreground,
+  onConfirm,
+  onCancel,
+}: {
+  target: CloseTarget
+  foreground: string[]
+  onConfirm: () => void
+  onCancel: () => void
+}): React.JSX.Element {
+  const what = target.kind === 'tab' ? '이 행을' : '이 worktree 를'
+  return (
+    <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
+      <div className="modal" data-confirm-close-modal data-confirm-close-kind={target.kind} onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <h2 className="modal-title" data-confirm-close-title>
+            {what} 닫을까
+          </h2>
+          <button className="modal-close" data-confirm-close-x aria-label="닫기" onClick={onCancel}>
+            ✕
+          </button>
+        </div>
+        <p className="confirm-note">포그라운드에 도는 프로세스가 있다. 닫으면 같이 종료된다.</p>
+        <ul className="confirm-fg" data-confirm-close-fg>
+          {foreground.map((item, index) => (
+            <li key={index} className="path-hint">
+              {item}
+            </li>
+          ))}
+        </ul>
+        <div className="confirm-actions">
+          <button className="ghost" data-close-confirm-cancel onClick={onCancel}>
+            취소
+          </button>
+          <button className="danger" data-close-confirm-ok onClick={onConfirm}>
+            닫기
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * worktree 만들기 (L7). **OS 다이얼로그가 아니라 텍스트 입력**으로 branch·path 를 받는다 —
+ * 네이티브 폴더 선택기는 만들 폴더가 아직 없으니 애초에 맞지 않고, 텍스트 입력이면 계측이
+ * 그 경로로 지나간다 (스텁 불필요).
+ *
+ * path 는 branch 를 건드릴 때마다 `<레포부모>/<레포이름>-<branch>` 로 따라 채운다 — 사람이
+ * path 를 직접 만지기 전까지만. 흔한 경우(레포 옆에 브랜치 이름으로)를 기본으로 주되 고칠 수 있다.
+ */
+function CreateWorktreeModal({
+  repoRoot,
+  onClose,
+  onDone,
+}: {
+  repoRoot: string
+  onClose: () => void
+  onDone: (message: string) => void
+}): React.JSX.Element {
+  const parent = repoRoot.replace(/\/[^/]+$/, '')
+  const base = repoRoot.split('/').pop() ?? 'repo'
+  const derivePath = (branch: string): string =>
+    `${parent}/${base}-${branch.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'wt'}`
+
+  const [branch, setBranch] = useState('')
+  const [pathValue, setPathValue] = useState('')
+  const [pathEdited, setPathEdited] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  const effectivePath = pathEdited ? pathValue : derivePath(branch)
+
+  const submit = async (): Promise<void> => {
+    if (branch.trim().length === 0) {
+      setNote('branch 이름을 넣어라')
+      return
+    }
+    setBusy(true)
+    setNote(null)
+    try {
+      const result = await window.corral.createWorktree({ repoRoot, branch: branch.trim(), path: effectivePath })
+      if (result.ok) {
+        onDone(`worktree 만듦: ${branch.trim()}`)
+        return
+      }
+      if (result.rejection) setNote(`herdr 거절 (${result.rejection.code}): ${result.rejection.message}`)
+      else setNote(`실패: ${result.error ?? '알 수 없음'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-scrim" data-modal-scrim onClick={onClose}>
+      <div className="modal" data-create-worktree-modal onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <h2 className="modal-title">worktree 만들기</h2>
+          <button className="modal-close" data-create-worktree-close aria-label="닫기" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <label className="field">
+          <span className="field-label">branch</span>
+          <input
+            className="field-input"
+            data-worktree-branch-input
+            value={branch}
+            placeholder="예: feature/foo"
+            onChange={(event) => setBranch(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">path</span>
+          <input
+            className="field-input"
+            data-worktree-path-input
+            value={effectivePath}
+            onChange={(event) => {
+              setPathEdited(true)
+              setPathValue(event.target.value)
+            }}
+          />
+        </label>
+        {note === null ? null : (
+          <p className="modal-note" data-worktree-create-note>
+            {note}
+          </p>
+        )}
+        <div className="confirm-actions">
+          <button className="ghost" data-create-worktree-cancel onClick={onClose}>
+            취소
+          </button>
+          <button className="primary" data-worktree-create-submit disabled={busy} onClick={() => void submit()}>
+            만들기
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
  * 터미널 패널 (R2) — 선택된 pane 의 라이브 화면.
  *
  * **pane 이 목록에서 사라지면 뷰도 내린다.** main 은 이미 스트림을 닫았다 (stream.pane_gone) —
@@ -376,11 +673,13 @@ function TerminalPanel({ state, selectedPane }: { state: AppState; selectedPane:
 
 function Repo({
   repo,
+  actions,
   selectedPane,
   onSelectPane,
   onRemove,
 }: {
   repo: RepoRow
+  actions: LifecycleActions
   selectedPane: string | null
   onSelectPane: (paneId: string) => void
   onRemove: () => void
@@ -394,6 +693,10 @@ function Repo({
           worktree {repo.worktrees.length} · 열림 {open}
         </span>
         <span className="path-hint">{repo.root}</span>
+        {/* 새 worktree 만들기 (L7). 텍스트 입력 모달을 연다. */}
+        <button className="row-action" data-create-worktree={repo.root} title="새 worktree" onClick={() => actions.openCreateWorktree(repo.root)}>
+          + worktree
+        </button>
         {/*
           제거 손잡이. 지시는 "행 hover 시 제거 버튼 또는 컨텍스트 메뉴 — 구현 단순한 쪽" 이었고
           버튼을 골랐다. 다만 **쉼 상태에서도 보이게** 둔다(흐리게, hover 에서 또렷하게):
@@ -413,7 +716,14 @@ function Repo({
         <p className="hint">worktree 를 못 읽었다.</p>
       ) : (
         repo.worktrees.map((worktree) => (
-          <Worktree key={worktree.path} worktree={worktree} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+          <Worktree
+            key={worktree.path}
+            worktree={worktree}
+            repoRoot={repo.root}
+            actions={actions}
+            selectedPane={selectedPane}
+            onSelectPane={onSelectPane}
+          />
         ))
       )}
     </section>
@@ -422,10 +732,14 @@ function Repo({
 
 function Worktree({
   worktree,
+  repoRoot,
+  actions,
   selectedPane,
   onSelectPane,
 }: {
   worktree: WorktreeRow
+  repoRoot: string
+  actions: LifecycleActions
   selectedPane: string | null
   onSelectPane: (paneId: string) => void
 }): React.JSX.Element {
@@ -445,10 +759,26 @@ function Worktree({
           {isOpen ? '열림' : '닫힘'}
         </span>
         {worktree.isLinked ? <span className="chip chip-linked">linked</span> : null}
+        {/* 닫힌 worktree 는 여는 문(L6·L8), 열린 worktree 는 닫는 문(L9b). */}
+        {isOpen ? (
+          <button
+            className="row-remove"
+            data-close-worktree={worktree.path}
+            data-close-workspace={worktree.openWorkspaceId ?? ''}
+            title="worktree 닫기"
+            onClick={() => worktree.openWorkspaceId !== null && actions.closeWorktree(worktree.openWorkspaceId)}
+          >
+            닫기
+          </button>
+        ) : (
+          <button className="row-action" data-open-worktree={worktree.path} onClick={() => actions.openWorktree(repoRoot, worktree)}>
+            열기
+          </button>
+        )}
         <span className="path-hint">{worktree.path}</span>
       </div>
       {worktree.workspace === null ? null : (
-        <Workspace workspace={worktree.workspace} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+        <Workspace workspace={worktree.workspace} actions={actions} selectedPane={selectedPane} onSelectPane={onSelectPane} />
       )}
     </div>
   )
@@ -456,10 +786,12 @@ function Worktree({
 
 function Workspace({
   workspace,
+  actions,
   selectedPane,
   onSelectPane,
 }: {
   workspace: WorkspaceRow
+  actions: LifecycleActions
   selectedPane: string | null
   onSelectPane: (paneId: string) => void
 }): React.JSX.Element {
@@ -470,12 +802,27 @@ function Workspace({
         <span className="chip chip-id" data-workspace-id={workspace.workspaceId}>
           {workspace.workspaceId}
         </span>
+        {/* 새 행 (L1·L2). 종류마다 버튼 하나 — 계측이 좌표로 누를 수 있게 명시적으로 둔다. */}
+        <span className="new-row" data-new-row={workspace.workspaceId}>
+          <span className="new-row-label">새 행:</span>
+          {AGENT_KINDS.map(({ kind, label }) => (
+            <button
+              key={kind}
+              className="row-action"
+              data-create-row={workspace.workspaceId}
+              data-kind={kind}
+              onClick={() => actions.createRow(workspace.workspaceId, kind)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
       </div>
       {workspace.tabs.length === 0 ? (
         <p className="hint">탭 없음</p>
       ) : (
         workspace.tabs.map((tab) => (
-          <Tab key={tab.tabId} tab={tab} selectedPane={selectedPane} onSelectPane={onSelectPane} />
+          <Tab key={tab.tabId} tab={tab} actions={actions} selectedPane={selectedPane} onSelectPane={onSelectPane} />
         ))
       )}
     </div>
@@ -484,10 +831,12 @@ function Workspace({
 
 function Tab({
   tab,
+  actions,
   selectedPane,
   onSelectPane,
 }: {
   tab: TabRow
+  actions: LifecycleActions
   selectedPane: string | null
   onSelectPane: (paneId: string) => void
 }): React.JSX.Element {
@@ -504,6 +853,10 @@ function Tab({
         */}
         <span className="tab-label">{tab.label}</span>
         <span className="chip chip-id">{tab.tabId}</span>
+        {/* 행 닫기 (L3·L4·L9a). main 이 종료 게이트를 재고, 산 프로세스가 있을 때만 모달이 뜬다. */}
+        <button className="row-remove" data-close-tab={tab.tabId} title="행 닫기" onClick={() => actions.closeRow(tab.tabId)}>
+          닫기
+        </button>
       </div>
       {tab.panes.map((pane) => (
         <Pane

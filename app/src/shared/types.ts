@@ -129,6 +129,56 @@ export type RegistryState = {
   lastError: string | null
 }
 
+// --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
+
+/**
+ * 행 생성 시 고르는 종류. **corral 의 enum 이다** — 값이 herdr `kind` 문자열과 겹치지만
+ * 옮기는 것은 어댑터가 한다 (`shell` 은 agent.start 를 안 부른다는 뜻의 corral 값).
+ */
+export type AgentKind = 'claude' | 'codex' | 'grok' | 'shell'
+
+/**
+ * 행 생성 결과 (L1·L2). `tab.create` → (셸이 아니면) `agent.start` 재시도.
+ * 성공은 "걸었다"(launch_pending)까지다 — 기동 판정은 store 의 상태 칩이 뒤이어 반영한다.
+ */
+export type CreateRowResult = {
+  ok: boolean
+  paneId: string | null
+  tabId: string | null
+  /** `agent_pane_busy` 를 corral 이 흡수한 재시도 횟수 (L2 의 화면 근거). */
+  retries: number
+  error: string | null
+}
+
+/**
+ * 행 종료 결과 (L3·L4·L9a). **판별자는 herdr `pane.process_info` 다** (관문 ⑤) —
+ * 포그라운드 프로세스 그룹이 셸 pid 와 같으면 잃을 게 없다(즉시 닫힘), 다르면 확인.
+ * `confirmed:true` 로 다시 부르면 확인 걸음을 건너뛴다.
+ *
+ * discriminated union — 화면은 `outcome` 으로 갈래를 정한다:
+ *   · closed        — 닫혔다
+ *   · needs-confirm — 산 프로세스가 있다. 모달을 띄우고 `foreground` 를 보인다
+ *   · rejected      — herdr 가 그룹 닫기를 거절했다 (L9a). **그대로 보이고 멈춘다**
+ *   · error         — 그 밖의 실패
+ */
+export type CloseRowResult =
+  | { outcome: 'closed' }
+  | { outcome: 'needs-confirm'; foreground: string[] }
+  | { outcome: 'rejected'; rejection: { code: string; message: string } }
+  | { outcome: 'error'; error: string }
+
+/**
+ * worktree/workspace 열기·만들기 결과 (L6·L7·L8).
+ * `rejection` 은 herdr 가 그대로 돌려준 거절(예 `workspace_group_close_required`,
+ * `linked_worktree_source`) — 화면에 그대로 보인다. corral 이 승격하지 않는다 (기준 L9).
+ */
+export type WorktreeActionResult = {
+  ok: boolean
+  workspaceId: string | null
+  rejection: { code: string; message: string } | null
+  error: string | null
+}
+
 export type AddRepoResult = { ok: boolean; root?: string; error?: string }
 
 /**
@@ -229,6 +279,17 @@ export type CorralApi = {
   removeRepo: (root: string) => Promise<RemoveRepoResult>
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
+  // --- 라이프사이클 (R3) ---
+  /** 열린 workspace 에 새 행을 만든다 (tab.create → agent.start 재시도). */
+  createRow: (input: { workspaceId: string; kind: AgentKind }) => Promise<CreateRowResult>
+  /** 행(탭)을 닫는다. 판별자는 herdr process_info. `confirmed` 면 확인 걸음을 건너뛴다. */
+  closeRow: (input: { tabId: string; confirmed?: boolean }) => Promise<CloseRowResult>
+  /** 열린 worktree(=workspace)를 닫는다 (L9b). 그룹 열린 primary 면 herdr 가 거절 → 그대로 보인다. */
+  closeWorktree: (input: { workspaceId: string; confirmed?: boolean }) => Promise<CloseRowResult>
+  /** 닫힌 worktree 행을 연다. 주 체크아웃(isLinked=false)은 workspace.create, linked 는 worktree.open. */
+  openWorktree: (input: { repoRoot: string; path: string; isLinked: boolean }) => Promise<WorktreeActionResult>
+  /** 새 linked worktree 를 만든다 (branch·path 지정). OS 다이얼로그 없이 텍스트 입력으로. */
+  createWorktree: (input: { repoRoot: string; branch: string; path: string }) => Promise<WorktreeActionResult>
   reportRendered: (revision: number) => void
   /**
    * pane 하나를 골라 스트림을 연다. paneId null 이면 닫는다. 결과는 state.terminal 로 돌아온다.

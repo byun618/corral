@@ -9,8 +9,32 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AddRepoResult, AppState, BrowseReposResult, RemoveRepoResult, TerminalScroll } from '../shared/types.js'
-import { SESSION_POLL_MS, SessionLink, TerminalStream, listSessions, readOpenWorkspaces, type SessionHandle } from './adapter/index.js'
+import type {
+  AddRepoResult,
+  AgentKind,
+  AppState,
+  BrowseReposResult,
+  CloseRowResult,
+  CreateRowResult,
+  RemoveRepoResult,
+  TerminalScroll,
+  WorktreeActionResult,
+} from '../shared/types.js'
+import {
+  SESSION_POLL_MS,
+  SessionLink,
+  TerminalStream,
+  closeTab,
+  closeWorkspace,
+  createRow,
+  createWorktree,
+  listSessions,
+  openWorkspace,
+  openWorktree,
+  probeForeground,
+  readOpenWorkspaces,
+  type SessionHandle,
+} from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
@@ -373,6 +397,168 @@ function browseMessage(input: {
   return parts.join(' · ')
 }
 
+// --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
+
+/**
+ * worktree 열기·만들기의 공통 전제 — **parent(주 체크아웃) workspace 를 확보한다**.
+ *
+ * 실측(00-probe-findings): `worktree.open`/`create` 는 주 체크아웃 workspace 가 열려 있어야
+ * 하고 그 id 를 받는다. 열려 있으면 골격에서 그 id 를 읽고, 닫혀 있으면 `workspace.create` 로
+ * 연다 (그게 곧 L8 빈 상태 복구의 문이다). 닫힌 채로는 여는 문이 없다 — 그래서 여기서 연다.
+ */
+async function resolveParentWorkspace(
+  repoRoot: string,
+): Promise<{ ok: true; workspaceId: string } | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, rejection: null, error: '세션이 없다' }
+  const repo = skeleton.find((item) => item.root === repoRoot)
+  const primary = repo?.worktrees.find((item) => !item.isLinked)
+  if (primary?.openWorkspaceId != null) return { ok: true, workspaceId: primary.openWorkspaceId }
+  const opened = await openWorkspace(socketPath, repoRoot)
+  if (!opened.ok || opened.workspaceId === null) {
+    return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
+  }
+  scheduleTree()
+  return { ok: true, workspaceId: opened.workspaceId }
+}
+
+/** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
+  const outcome = await createRow(socketPath, input)
+  scheduleEmit()
+  return outcome
+}
+
+/**
+ * 종료 게이트 (L3·L4). 판별자는 herdr `pane.process_info` 다 (관문 ⑤) — 주어진 pane 들을
+ * 종료 **직전에** 떠서 포그라운드 그룹이 셸 pid 와 같은지 본다. 하나라도 다르면(=산 프로세스)
+ * 확인이 필요하다. probe 실패는 **묻는 쪽**으로 기운다 (LIFE-346).
+ *
+ * 왜 종료 직전 main 에서 떠서 판단하나: store 의 pane.agent 는 ~2.5초 늦게 와서, 그걸 믿으면
+ * 도는 에이전트가 확인 없이 죽었다 (LIFE-346 M2 20/20).
+ */
+async function checkCloseGate(
+  socketPath: string,
+  paneIds: readonly string[],
+  subject: Record<string, unknown>,
+): Promise<{ clear: true } | { clear: false; foreground: string[] }> {
+  const running: string[] = []
+  for (const paneId of paneIds) {
+    const probe = await probeForeground(socketPath, paneId)
+    const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
+    log('lifecycle.close_gate', {
+      ...subject,
+      paneId,
+      shellPid: probe.shellPid,
+      foregroundGroupId: probe.foregroundGroupId,
+      clear,
+      foreground: probe.foreground.map((item) => item.name),
+      probeError: probe.error,
+    })
+    if (clear) continue
+    if (probe.ok) for (const item of probe.foreground) running.push(item.cmdline ?? item.name)
+    else running.push(`(프로세스 확인 실패: ${probe.error})`)
+  }
+  return running.length > 0 ? { clear: false, foreground: running } : { clear: true }
+}
+
+/** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
+async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    for (const tab of workspace.tabs) {
+      if (tab.tabId !== input.tabId) continue
+      for (const pane of tab.panes) paneIds.push(pane.paneId)
+    }
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'tab', tabId: input.tabId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeTab(socketPath, input.tabId)
+  if (outcome.outcome === 'closed') {
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/**
+ * worktree(=workspace)를 닫는다 (L9b). 열린 worktree 행의 「닫기」 가 부른다 — 「열기」의 짝이다.
+ * linked 그룹이 열린 primary 를 닫으면 herdr 가 `workspace_group_close_required` 로 거절하고,
+ * corral 은 그 거절을 **그대로 보이고 멈춘다** (close_group 승격 금지, 기준). 게이트는 그 workspace 의
+ * 모든 pane 을 본다 — 하나라도 산 프로세스면 확인.
+ */
+async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    if (workspace.workspaceId !== input.workspaceId) continue
+    for (const tab of workspace.tabs) for (const pane of tab.panes) paneIds.push(pane.paneId)
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'workspace', workspaceId: input.workspaceId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeWorkspace(socketPath, input.workspaceId)
+  if (outcome.outcome === 'closed') {
+    scheduleTree()
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/** 닫힌 worktree 행을 연다 (L6·L8). 주 체크아웃은 workspace.create, linked 는 worktree.open. */
+async function openWorktreeRow(input: {
+  repoRoot: string
+  path: string
+  isLinked: boolean
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  if (!input.isLinked) {
+    const result = await openWorkspace(socketPath, input.repoRoot)
+    if (result.ok) scheduleTree()
+    return result
+  }
+  const parent = await resolveParentWorkspace(input.repoRoot)
+  if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+  const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
+  if (result.ok) scheduleTree()
+  return result
+}
+
+/** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */
+async function createWorktreeForRepo(input: {
+  repoRoot: string
+  branch: string
+  path: string
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  const parent = await resolveParentWorkspace(input.repoRoot)
+  if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+  const result = await createWorktree(socketPath, {
+    parentWorkspaceId: parent.workspaceId,
+    branch: input.branch,
+    path: input.path,
+  })
+  if (result.ok) scheduleTree()
+  return result
+}
+
 function pickSession(name: string): void {
   const found = sessions.find((session) => session.name === name)
   if (found === undefined) {
@@ -588,6 +774,34 @@ app.whenReady().then(() => {
       : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+
+  // --- 라이프사이클 (R3) ---
+  const denied = { ok: false as const, error: '허용되지 않은 발신자' }
+  ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? createRowInWorkspace({ workspaceId: input.workspaceId, kind: input.kind })
+      : { ...denied, paneId: null, tabId: null, retries: 0 },
+  )
+  ipcMain.handle('corral:closeRow', (event, input: { tabId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.tabId === 'string'
+      ? closeRowByTab({ tabId: input.tabId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:closeWorktree', (event, input: { workspaceId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? closeWorktreeByWorkspace({ workspaceId: input.workspaceId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:openWorktree', (event, input: { repoRoot: string; path: string; isLinked: boolean }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.path === 'string'
+      ? openWorktreeRow({ repoRoot: input.repoRoot, path: input.path, isLinked: input.isLinked === true })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
+  ipcMain.handle('corral:createWorktree', (event, input: { repoRoot: string; branch: string; path: string }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.branch === 'string' && typeof input?.path === 'string'
+      ? createWorktreeForRepo({ repoRoot: input.repoRoot, branch: input.branch, path: input.path })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
   ipcMain.on('corral:reportRendered', (event, rendered: number) => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
   })

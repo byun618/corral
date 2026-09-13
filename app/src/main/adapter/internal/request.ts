@@ -16,14 +16,31 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  * 범위 위반". 그래서 화이트리스트에 쓰기가 한 줄도 없다. 코드가 실수로 불러도 여기서 막힌다.
  * (행 생성·종료는 R3. 그때 이 목록에 줄이 늘어난다.)
  *
- * **실제 호출부가 있는 것만 둔다** (수정 1회차 L3 — 판정 "줄인다"). 1회차에는 `ping`·`tab.list`·
- * `pane.list`·`workspace.list`·`pane.process_info` 다섯 줄이 허용만 돼 있고 부르는 곳이 없었다.
- * 이 목록의 값은 "이 앱이 herdr 에 무엇을 하는지가 목록 하나로 읽힌다" 는 것인데, 안 쓰는 줄이
- * 섞이면 목록이 R1 의 실제 접촉면을 말하지 않는다.
- *   · `session.snapshot` — 부트스트랩·주기 재동기 (link.ts)
- *   · `worktree.list`    — worktree 열림상태 (worktrees.ts)
+ * **실제 호출부가 있는 것만 둔다** (수정 1회차 L3 — 판정 "줄인다"). 안 쓰는 줄이 섞이면
+ * 목록이 실제 접촉면을 말하지 않는다. R3(LIFE-356)에서 쓰기 7종이 늘었다 — R1 L3 판정
+ * ("R3 에서 다시 늘리면 된다")과 정합.
+ *   읽기:
+ *   · `session.snapshot`   — 부트스트랩·주기 재동기 (link.ts)
+ *   · `worktree.list`      — worktree 열림상태 (worktrees.ts)
+ *   · `pane.process_info`  — 종료 게이트 판별자 (lifecycle.ts probeForeground)
+ *   쓰기 (R3 — lifecycle.ts):
+ *   · `tab.create`·`agent.start` — 행 생성 (L1·L2)
+ *   · `tab.close`               — 행 종료 (L3·L4·L9a)
+ *   · `workspace.close`         — worktree(=workspace) 닫기 (L9b — close_group 없이)
+ *   · `worktree.open`·`worktree.create`·`workspace.create` — worktree 열기·만들기·빈 상태 복구 (L6·L7·L8)
  */
-const ALLOWED_METHODS: readonly string[] = ['session.snapshot', 'worktree.list']
+const ALLOWED_METHODS: readonly string[] = [
+  'session.snapshot',
+  'worktree.list',
+  'pane.process_info',
+  'tab.create',
+  'agent.start',
+  'tab.close',
+  'workspace.close',
+  'worktree.open',
+  'worktree.create',
+  'workspace.create',
+]
 
 export class HerdrRequestError extends Error {
   readonly code: string
@@ -67,7 +84,9 @@ export async function request(
           log('req.line.unknown', { conn: socket.id, method, line: line.slice(0, 400) })
           return
         }
-        log('req.rx', { conn: socket.id, method, at, bytes: line.length })
+        // 에러 응답은 **원문 줄 그대로** 남긴다 (L9 채널 원자료 — advisor). 성공은 바이트 수만.
+        if (frame.error) log('req.rx.error', { conn: socket.id, method, at, line: line.slice(0, 2000) })
+        else log('req.rx', { conn: socket.id, method, at, bytes: line.length })
         finish(() => resolve(frame))
       },
       // 서버는 응답 뒤 스스로 닫는다 — 응답을 이미 받았으면 finish 가 먼저라 이 경로로 안 온다.

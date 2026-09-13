@@ -23,8 +23,9 @@ function rxError(method, sinceAt) {
     .filter((e) => e.tag === 'req.rx.error' && e.method === method && (sinceAt ? e.at >= sinceAt : true))
     .slice(-1)[0] ?? null
 }
+// 수정 1회차 L-3: 죽은 필터 `(sinceAt ? true : true)` 제거 — sinceAt 이 있으면 그 시점 이후만.
 function rejectedLog(tag, sinceAt) {
-  return app.entries().filter((e) => e.tag === tag && (sinceAt ? true : true)).slice(-1)[0] ?? null
+  return app.entries().filter((e) => e.tag === tag && (sinceAt ? e.at >= sinceAt : true)).slice(-1)[0] ?? null
 }
 async function noticeText() {
   const found = (await app.query('.lifecycle-notice-text')).found
@@ -86,7 +87,7 @@ try {
     await sleep(200)
     const text = await noticeText()
     const shownCode = await noticeCodeFromText()
-    const rejLog = rejectedLog('lifecycle.workspace_close_rejected')
+    const rejLog = rejectedLog('lifecycle.workspace_close_rejected', mark)
     const channel = parseChannel(rxError('workspace.close', mark))
     const after = await workspaceCount()
     out.l9b = {
@@ -120,7 +121,7 @@ try {
     await sleep(200)
     const text = await noticeText()
     const shownCode = await noticeCodeFromText()
-    const rejLog = rejectedLog('lifecycle.tab_close_rejected')
+    const rejLog = rejectedLog('lifecycle.tab_close_rejected', mark)
     const channel = parseChannel(rxError('tab.close', mark))
     const after = await workspaceCount()
     out.l9a = {
@@ -185,6 +186,8 @@ try {
   await app.stop()
 }
 
+out.rawChain = app.rawChain() // 수정 1회차 M4: _runs/app.ndjson sha256 사슬
+out.clickEvidence = app.clickLog() // 수정 1회차 M3: 통과선 클릭 좌표·target
 writeRaw('m4-l9.json', out)
 console.log('\nM4:', out.verdict, JSON.stringify(out.summary))
 if (out.verdict !== 'PASS') process.exitCode = 1

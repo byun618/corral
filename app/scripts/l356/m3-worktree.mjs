@@ -98,11 +98,15 @@ try {
     const done = await until(async () => ((await app.query('[data-create-worktree-modal]')).found.length === 0 ? true : null), { what: 'modal closed', timeoutMs: 20000, everyMs: 150 })
     const note = (await app.query('[data-worktree-create-note]')).found
     await sleep(600)
-    const inGit = gitWorktrees(repo.root).some((w) => w.path === linkedPath || w.branch?.endsWith(linkedBranch))
+    // 수정 1회차 L-4: path 매치에 branch 검증이 가려지지 않게 **AND** 로 — 둘 다 확인
+    const gwt = gitWorktrees(repo.root)
+    const inGitPath = gwt.some((w) => w.path === linkedPath)
+    const inGitBranch = gwt.some((w) => w.branch?.endsWith(`/${linkedBranch}`) || w.branch === linkedBranch)
+    const inGit = inGitPath && inGitBranch
     const inCorral = (await corralWorktrees(repo.root)).some((w) => w.path === linkedPath)
     const openId = await worktreeOpenId(repo.root, linkedPath)
-    out.l7 = { branch: linkedBranch, derivedPath, submitHit: submit.hit, modalClosed: done.ok, note, inGit, inCorral, openWorkspaceIdAfterCreate: openId }
-    console.log(`[L7] path=${linkedPath} inGit=${inGit} inCorral=${inCorral} openId=${openId}`)
+    out.l7 = { branch: linkedBranch, derivedPath, submitHit: submit.hit, modalClosed: done.ok, note, inGit, inGitPath, inGitBranch, inCorral, openWorkspaceIdAfterCreate: openId }
+    console.log(`[L7] path=${linkedPath} inGit=${inGit}(path=${inGitPath} branch=${inGitBranch}) inCorral=${inCorral} openId=${openId}`)
   }
 
   // ---------- L6: 그 worktree 를 닫았다가 UI 열기 로 다시 열기 ----------
@@ -111,26 +115,42 @@ try {
     // 닫는다 (하네스: linked 멤버만 닫기 — 게이트 없이 herdr 로 직접)
     if (openIdBefore) await herdrRequest('workspace.close', { workspace_id: openIdBefore }).catch(() => {})
     const closed = await until(async () => ((await worktreeOpenId(repo.root, linkedPath)) === null ? true : null), { what: 'worktree closed', timeoutMs: 12000 })
-    // corral 이 닫힘으로 보이고 열기 버튼이 있나
-    await until(async () => ((await app.query(`[data-open-worktree="${linkedPath}"]`)).found.length > 0 ? true : null), { what: 'open button', timeoutMs: 12000, everyMs: 150 })
+    // corral 이 닫힘으로 보이고 열기 버튼이 있나 (수정 1회차 L-2: 하드코딩 아닌 실측값)
+    const openButton = await until(async () => ((await app.query(`[data-open-worktree="${linkedPath}"]`)).found.length > 0 ? true : null), { what: 'open button', timeoutMs: 12000, everyMs: 150 })
     const chipClosed = (await app.query(`[data-chip-worktree="${linkedPath}"]`)).found.length > 0
-    // UI 열기 (좌표 클릭)
+    // UI 열기 (좌표 클릭) — worktree.open 경로
     const openClick = await app.click(`[data-open-worktree="${linkedPath}"]`)
     const reopened = await until(async () => {
       const id = await worktreeOpenId(repo.root, linkedPath)
       return id ? id : null
     }, { what: 'reopened (open_workspace_id set)', timeoutMs: 15000, everyMs: 150 })
+    const reopenedWs = reopened.value ?? null
+    // 수정 1회차 M6 (통과선 꼬리): worktree.open 으로 연 그 workspace 에 **행 생성까지** UI 로 이어진다.
+    let rowCreatedInReopened = false
+    let reopenedRowPaneId = null
+    if (reopenedWs) {
+      const before = (await herdrRequest('pane.list', {})).panes.filter((p) => p.workspace_id === reopenedWs).length
+      const createClick = await app.click(`[data-create-row="${reopenedWs}"][data-kind="shell"]`)
+      const rowUp = await until(async () => {
+        const panes = (await herdrRequest('pane.list', {})).panes.filter((p) => p.workspace_id === reopenedWs)
+        return panes.length > before ? panes[panes.length - 1] : null
+      }, { what: 'row in reopened ws', timeoutMs: 15000 })
+      rowCreatedInReopened = rowUp.ok && createClick.hit
+      reopenedRowPaneId = rowUp.value?.pane_id ?? null
+    }
     out.l6 = {
       linkedPath,
       openIdBeforeClose: openIdBefore,
       closedOk: closed.ok,
-      openButtonAfterClose: true,
+      openButtonAfterClose: openButton.ok,
       chipPresent: chipClosed,
       openClickHit: openClick.hit,
-      reopenedWorkspaceId: reopened.value ?? null,
+      reopenedWorkspaceId: reopenedWs,
       reopenedViaUI: reopened.ok,
+      rowCreatedInReopened, // ← M6 통과선 꼬리
+      reopenedRowPaneId,
     }
-    console.log(`[L6] closed=${closed.ok} reopened=${reopened.ok} newId=${reopened.value}`)
+    console.log(`[L6] closed=${closed.ok} reopened=${reopened.ok} newId=${reopenedWs} rowInReopened=${rowCreatedInReopened}`)
   }
 
   // ---------- L8b: 마지막 workspace 닫아 0 으로 → UI 회복 ----------
@@ -159,6 +179,7 @@ try {
 
   out.summary = {
     l6ReopenedViaUI: out.l6.reopenedViaUI,
+    l6RowCreatedInReopened: out.l6.rowCreatedInReopened, // ← M6 통과선 꼬리
     l7CreatedInGit: out.l7.inGit,
     l7CreatedInCorral: out.l7.inCorral,
     l8aRecovered: out.l8.a.rowCreated && out.l8.a.openButtonPresent,
@@ -166,6 +187,7 @@ try {
   }
   out.verdict =
     out.l6.reopenedViaUI &&
+    out.l6.rowCreatedInReopened &&
     out.l7.inGit &&
     out.l7.inCorral &&
     out.summary.l8aRecovered &&
@@ -183,6 +205,8 @@ try {
   await app.stop()
 }
 
+out.rawChain = app.rawChain() // 수정 1회차 M4: _runs/app.ndjson sha256 사슬
+out.clickEvidence = app.clickLog() // 수정 1회차 M3: 통과선 클릭 좌표·target
 writeRaw('m3-worktree.json', out)
 console.log('\nM3:', out.verdict, JSON.stringify(out.summary))
 if (out.verdict !== 'PASS') process.exitCode = 1

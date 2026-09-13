@@ -10,6 +10,7 @@
 // 앞 라운드 원자료 폴더를 이 라운드 실행이 건드린다.
 
 import { execFileSync, spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -225,6 +226,10 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
 
   const send = (frame, ms = 30000) => control(controlSocket, frame, { timeoutMs: ms })
 
+  // 통과선 클릭의 좌표·target 증거를 쌓는다 (수정 1회차 M3 — 커밋 원자료에 hit 비트만 남던 것 보강).
+  // control.click 응답에는 이미 x·y·target(누른 요소)·elementFromPoint(그 좌표의 실제 요소)가 있다.
+  const clicks = []
+
   return {
     child,
     logPath,
@@ -236,7 +241,34 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     send,
     state: async () => (await send({ cmd: 'state' })).state,
     addRepo: (root) => send({ cmd: 'add-repo', root }),
-    click: (selector) => send({ cmd: 'click', selector }),
+    click: async (selector) => {
+      const r = await send({ cmd: 'click', selector })
+      clicks.push({
+        selector,
+        hit: r.hit ?? null,
+        x: r.x ?? null,
+        y: r.y ?? null,
+        target: r.target ?? null,
+        elementFromPoint: r.elementFromPoint ?? null,
+        method: r.method ?? null,
+        at: r.at ?? null,
+      })
+      return r
+    },
+    clickLog: () => clicks,
+    /**
+     * 요약 JSON ↔ 미추적 `_runs/app.ndjson` 사슬 (수정 1회차 M4 — 킥오프 원자료 보존 정책).
+     * app.stop() 뒤에 부른다 (로그 플러시 완료 후). worktree 정리돼도 이 해시로 원본을 묶는다.
+     */
+    rawChain: () => {
+      if (!fs.existsSync(logPath)) return { file: null, sha256: null, bytes: 0 }
+      const buf = fs.readFileSync(logPath)
+      return {
+        file: path.relative(RAW_DIR, logPath),
+        sha256: crypto.createHash('sha256').update(buf).digest('hex'),
+        bytes: buf.length,
+      }
+    },
     query: (selector) => send({ cmd: 'query', selector }),
     type: (text) => send({ cmd: 'type', text }),
     key: (keyCode, modifiers = []) => send({ cmd: 'key', keyCode, modifiers }),

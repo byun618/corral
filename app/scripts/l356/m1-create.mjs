@@ -23,12 +23,26 @@ async function paneMap(workspaceId) {
   return map
 }
 
-/** 그 pane 의 포그라운드에 kind 실행 파일이 보이나 (herdr 오라클). */
+/**
+ * 기동 판정 — 포그라운드 프로세스의 **실행 파일**이 kind 인가 (수정 1회차 M1: 부분 문자열 금지).
+ * 판별: `name === kind`, 또는 cmdline argv0 의 basename === kind, 또는 경계 정규식 `/(^|\/)kind(\s|$)/`.
+ * PATH 안의 `.claude/` 나 인자로 스친 'claude'(예: `security … claude`)는 매칭하지 않는다.
+ */
+function matchesKind(p, kind) {
+  const name = p.name ?? ''
+  const cmdline = p.cmdline ?? ''
+  const argv0 = cmdline.split(/\s+/)[0] ?? ''
+  const base = argv0.split('/').pop() ?? ''
+  if (name === kind || base === kind) return true
+  return new RegExp(`(^|/)${kind}(\\s|$)`).test(cmdline)
+}
+/** 그 pane 의 포그라운드에 kind 실행 파일이 보이나 (herdr 오라클, 토큰 단위). */
 async function launched(paneId, kind) {
   const info = await herdrRequest('pane.process_info', { pane_id: paneId })
   const fg = info.process_info?.foreground_processes ?? []
-  const cmd = fg.map((p) => p.cmdline ?? p.name ?? '').join(' ')
-  return new RegExp(kind).test(cmd) ? { cmd, fg } : null
+  const cmd = fg.map((p) => p.cmdline ?? p.name ?? '').join(' | ')
+  const hit = fg.find((p) => matchesKind(p, kind))
+  return hit ? { cmd, matched: hit.cmdline ?? hit.name ?? null, fg } : null
 }
 
 /** 앱 로그에서 이 pane 의 busy 재시도·기동 결과를 읽는다. */
@@ -85,9 +99,10 @@ try {
       launchMs: obs.ms,
       sinceClickMs: obs.ok ? Date.now() - clickAt : null,
       cmd: obs.value?.cmd ?? null,
+      matched: obs.value?.matched ?? null,
       ...retries,
     })
-    console.log(`[L1 ${round}/${ROUNDS}] launched=${obs.ok} ${obs.ms}ms busy=${retries.busyLogged}`)
+    console.log(`[L1 ${round}/${ROUNDS}] launched=${obs.ok} ${obs.ms}ms busy=${retries.busyLogged} matched=${obs.value?.matched ?? '—'}`)
     // 정리 (하네스)
     await herdrRequest('tab.close', { tab_id: tabId }).catch(() => {})
     await until(async () => !(await paneMap(workspaceId)).has(paneId), { what: 'cleanup', timeoutMs: 8000 }).catch(() => {})
@@ -108,7 +123,8 @@ try {
   const raceResults = []
   for (const paneId of racePanes) {
     const obs = await until(async () => launched(paneId, KIND), { what: `race launch ${paneId}`, timeoutMs: 30000, everyMs: 300 })
-    raceResults.push({ paneId, launched: obs.ok, launchMs: obs.ms, ...retriesFor(paneId) })
+    // 수정 1회차 M1: 레이스도 cmd·matched 원문 저장 (요약 JSON 만으로 재검산 가능하게)
+    raceResults.push({ paneId, launched: obs.ok, launchMs: obs.ms, cmd: obs.value?.cmd ?? null, matched: obs.value?.matched ?? null, ...retriesFor(paneId) })
   }
   out.forcedRace = {
     count: racePanes.length,
@@ -143,6 +159,8 @@ try {
   await app.stop()
 }
 
+out.rawChain = app.rawChain() // 수정 1회차 M4: _runs/app.ndjson sha256 사슬
+out.clickEvidence = app.clickLog() // 수정 1회차 M3: 통과선 클릭 좌표·target
 writeRaw('m1-create.json', out)
 console.log('\nM1:', out.verdict, JSON.stringify(out.summary))
 void REPO_DIR

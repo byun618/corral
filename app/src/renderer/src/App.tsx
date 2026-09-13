@@ -223,8 +223,8 @@ export function App(): React.JSX.Element {
     try {
       const result = await window.corral.openWorktree({ repoRoot, path: worktree.path, isLinked: worktree.isLinked })
       if (result.rejection) setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
-      // '이미 여는 중' 은 main 의 backstop 신호라 알림으로 띄우지 않는다 (양성 중복).
-      else if (!result.ok && result.error !== '이미 여는 중') setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
+      // `deduped` (양성 중복 — 이미 여는 중) 는 알림으로 띄우지 않는다 (F-2: 문자열 비교 대신 필드).
+      else if (!result.ok && !result.deduped) setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
     } finally {
       openingWorktrees.current.delete(worktree.path)
     }

@@ -400,27 +400,67 @@ function browseMessage(input: {
 
 // --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
 
+type ParentResult =
+  | { ok: true; workspaceId: string }
+  | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }
+
+/**
+ * 부모(주 체크아웃) workspace 를 여는 **in-flight 약속**을 경로별로 공유한다 (수정 2회차 F-1).
+ * 대상 경로 가드(`openingWorktrees`)는 "두 번째를 무시" 지만, 부모는 두 호출(예: primary·linked
+ * 동시 열기, worktree 만들기)이 **같은 id 를 써야** 한다 — 그래서 무시가 아니라 **같은 약속을
+ * 기다려 공유**한다. 이게 없으면 두 경로가 각자 `workspace.create` 를 불러 부모가 이중 생성된다.
+ */
+const parentOpenInFlight = new Map<string, Promise<ParentResult>>()
+
 /**
  * worktree 열기·만들기의 공통 전제 — **parent(주 체크아웃) workspace 를 확보한다**.
  *
  * 실측(00-probe-findings): `worktree.open`/`create` 는 주 체크아웃 workspace 가 열려 있어야
- * 하고 그 id 를 받는다. 열려 있으면 골격에서 그 id 를 읽고, 닫혀 있으면 `workspace.create` 로
- * 연다 (그게 곧 L8 빈 상태 복구의 문이다). 닫힌 채로는 여는 문이 없다 — 그래서 여기서 연다.
+ * 하고 그 id 를 받는다. 닫힌 채로는 여는 문이 없다 — 그래서 여기서 연다 (L8 빈 상태 복구의 문).
+ *
+ * **수정 2회차 F-1**: 대상 경로와 **같은 급의 방어**를 부모에도 건다.
+ *   ① in-flight 공유 먼저 — 여는 중이면 같은 약속을 기다려 같은 id 를 쓴다 (이중 create 금지).
+ *   ② 권위 재확인 — **스테일 skeleton 이 아니라** herdr `worktree.list` 로 primary 열림을 본다.
+ *   ③ open.error(읽기 실패) 폴스루도 이 in-flight 안에서만 create 하므로 동시 호출은 안전하다.
  */
-async function resolveParentWorkspace(
-  repoRoot: string,
-): Promise<{ ok: true; workspaceId: string } | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }> {
+async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { ok: false, rejection: null, error: '세션이 없다' }
-  const repo = skeleton.find((item) => item.root === repoRoot)
-  const primary = repo?.worktrees.find((item) => !item.isLinked)
-  if (primary?.openWorkspaceId != null) return { ok: true, workspaceId: primary.openWorkspaceId }
-  const opened = await openWorkspace(socketPath, repoRoot)
-  if (!opened.ok || opened.workspaceId === null) {
-    return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
+  const parentKey = canonicalPath(repoRoot)
+
+  // ① in-flight 공유 — 여는 중이면 그 약속을 그대로 기다린다 (두 경로가 같은 부모 id 를 쓴다).
+  const pending = parentOpenInFlight.get(parentKey)
+  if (pending) {
+    log('lifecycle.parent.in_flight_join', { repoRoot: parentKey })
+    return pending
   }
-  scheduleTree()
-  return { ok: true, workspaceId: opened.workspaceId }
+
+  const promise = (async (): Promise<ParentResult> => {
+    // ② 권위 재확인 (스테일 skeleton 아님) — 이미 열려 있으면 그 id (중복 부모 create 금지).
+    const open = await readOpenWorkspaces(socketPath, repoRoot)
+    if (open.error === null) {
+      const primaryOpen = open.byPath.get(parentKey) ?? null
+      if (primaryOpen !== null) {
+        log('lifecycle.parent.already_open', { repoRoot: parentKey, workspaceId: primaryOpen })
+        return { ok: true, workspaceId: primaryOpen }
+      }
+    } else {
+      // ③ 읽기 실패 폴스루 — 열림상태를 확정 못 하지만 in-flight 가 동시 호출을 이미 하나로 묶었다.
+      log('lifecycle.parent.read_error_fallthrough', { repoRoot: parentKey, error: open.error })
+    }
+    const opened = await openWorkspace(socketPath, repoRoot)
+    if (!opened.ok || opened.workspaceId === null) {
+      return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
+    }
+    scheduleTree()
+    return { ok: true, workspaceId: opened.workspaceId }
+  })()
+  parentOpenInFlight.set(parentKey, promise)
+  try {
+    return await promise
+  } finally {
+    parentOpenInFlight.delete(parentKey)
+  }
 }
 
 /** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
@@ -539,9 +579,10 @@ async function openWorktreeRow(input: {
   const key = canonicalPath(input.path)
 
   // ① in-flight 중복: 첫 열기가 끝나기 전 두 번째 클릭은 무시 (더블클릭 방어 — 두 번째가 새 workspace 를 안 만든다).
+  //    F-2: 문자열 대신 `deduped` 필드로 알린다 — 렌더러가 문구 비교 없이 양성 중복을 가린다.
   if (openingWorktrees.has(key)) {
     log('lifecycle.open_worktree.in_flight', { path: key })
-    return { ok: false, workspaceId: null, rejection: null, error: '이미 여는 중' }
+    return { ok: false, workspaceId: null, rejection: null, error: null, deduped: true }
   }
   openingWorktrees.add(key)
   try {
@@ -556,9 +597,11 @@ async function openWorktreeRow(input: {
     }
 
     if (!input.isLinked) {
-      const result = await openWorkspace(socketPath, input.repoRoot)
-      if (result.ok) scheduleTree()
-      return result
+      // primary 열기 = **부모 확보 그 자체**. F-1: linked 열기의 부모 확보와 같은 dedupe 를 타야
+      // 두 경로가 동시에 와도 부모가 하나만 선다 — 그래서 직접 openWorkspace 하지 않고 여기로 모은다.
+      const parent = await resolveParentWorkspace(input.repoRoot)
+      if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+      return { ok: true, workspaceId: parent.workspaceId, rejection: null, error: null }
     }
     const parent = await resolveParentWorkspace(input.repoRoot)
     if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }

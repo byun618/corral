@@ -177,6 +177,11 @@ export type WorktreeActionResult = {
   workspaceId: string | null
   rejection: { code: string; message: string } | null
   error: string | null
+  /**
+   * 양성 중복 — 이미 여는 중이라 이 호출이 아무것도 안 했다 (수정 2회차 F-2). 렌더러는 이걸
+   * 보고 알림을 띄우지 않는다 (문자열 비교 대신 필드로 판별 — 문구가 바뀌어도 안 깨진다).
+   */
+  deduped?: boolean
 }
 
 export type AddRepoResult = { ok: boolean; root?: string; error?: string }

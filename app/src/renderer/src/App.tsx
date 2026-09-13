@@ -74,6 +74,12 @@ export function App(): React.JSX.Element {
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
   /** worktree 만들기 모달 (L7). null 이면 닫힘. */
   const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
+  /**
+   * 열기 in-flight 경로 (수정 1회차 M5). 같은 worktree 를 두 번 눌러도 두 번째는 무시한다 —
+   * ref 라 같은 틱의 더블클릭도 잡는다 (state 는 리렌더 전이라 놓친다). main 도 같은 가드가 있어
+   * 이건 방어의 앞선(빠른) 층이다.
+   */
+  const openingWorktrees = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     void window.corral.getState().then(setState)
@@ -210,10 +216,18 @@ export function App(): React.JSX.Element {
   }
 
   const openWorktree = async (repoRoot: string, worktree: WorktreeRow): Promise<void> => {
+    // in-flight 재클릭 무시 (M5) — 진행 중이면 두 번째는 아무것도 안 한다 (고아 workspace 방지).
+    if (openingWorktrees.current.has(worktree.path)) return
+    openingWorktrees.current.add(worktree.path)
     setLifecycleNotice(null)
-    const result = await window.corral.openWorktree({ repoRoot, path: worktree.path, isLinked: worktree.isLinked })
-    if (result.rejection) setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
-    else if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
+    try {
+      const result = await window.corral.openWorktree({ repoRoot, path: worktree.path, isLinked: worktree.isLinked })
+      if (result.rejection) setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+      // '이미 여는 중' 은 main 의 backstop 신호라 알림으로 띄우지 않는다 (양성 중복).
+      else if (!result.ok && result.error !== '이미 여는 중') setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
+    } finally {
+      openingWorktrees.current.delete(worktree.path)
+    }
   }
 
   const actions: LifecycleActions = {

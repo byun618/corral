@@ -36,6 +36,7 @@ import {
   type SessionHandle,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
+import { canonicalPath } from './canonical-path.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
@@ -520,6 +521,13 @@ async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?
   return { outcome: 'error', error: outcome.error }
 }
 
+/**
+ * 열기 in-flight 가드 (수정 1회차 M5). herdr 는 **같은 cwd 에 workspace 중복 생성을 허용**한다
+ * (리뷰 e2e: 열기 두 번 → w14·w15 공존, corral 행은 하나만 가리켜 나머지는 UI 불가시 고아 +
+ * 산 PTY). 그래서 corral 이 문 앞에서 막는다 — 진행 중 같은 경로 재클릭은 무시한다.
+ */
+const openingWorktrees = new Set<string>()
+
 /** 닫힌 worktree 행을 연다 (L6·L8). 주 체크아웃은 workspace.create, linked 는 worktree.open. */
 async function openWorktreeRow(input: {
   repoRoot: string
@@ -528,16 +536,38 @@ async function openWorktreeRow(input: {
 }): Promise<WorktreeActionResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
-  if (!input.isLinked) {
-    const result = await openWorkspace(socketPath, input.repoRoot)
+  const key = canonicalPath(input.path)
+
+  // ① in-flight 중복: 첫 열기가 끝나기 전 두 번째 클릭은 무시 (더블클릭 방어 — 두 번째가 새 workspace 를 안 만든다).
+  if (openingWorktrees.has(key)) {
+    log('lifecycle.open_worktree.in_flight', { path: key })
+    return { ok: false, workspaceId: null, rejection: null, error: '이미 여는 중' }
+  }
+  openingWorktrees.add(key)
+  try {
+    // ② 권위 재확인: 이미 열려 있으면 그 workspace 를 그대로 (idempotent). 골격은 push 지연으로
+    //    낡을 수 있어 herdr `worktree.list` 를 직접 읽는다 (관문 ⑤와 같은 권위). 중복 create 를 막는 핵심.
+    const open = await readOpenWorkspaces(socketPath, input.repoRoot)
+    const already = open.error === null ? (open.byPath.get(key) ?? null) : null
+    if (already !== null) {
+      log('lifecycle.open_worktree.already_open', { path: key, workspaceId: already })
+      scheduleTree()
+      return { ok: true, workspaceId: already, rejection: null, error: null }
+    }
+
+    if (!input.isLinked) {
+      const result = await openWorkspace(socketPath, input.repoRoot)
+      if (result.ok) scheduleTree()
+      return result
+    }
+    const parent = await resolveParentWorkspace(input.repoRoot)
+    if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+    const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
     if (result.ok) scheduleTree()
     return result
+  } finally {
+    openingWorktrees.delete(key)
   }
-  const parent = await resolveParentWorkspace(input.repoRoot)
-  if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
-  const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
-  if (result.ok) scheduleTree()
-  return result
 }
 
 /** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */

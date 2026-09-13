@@ -1,121 +1,53 @@
 // 계측용 제어 채널 — **CORRAL_CONTROL_SOCKET 이 설정된 실행에서만** 열린다.
 //
-// 왜 있나: 판정 근거가 "화면"과 "타임스탬프 로그"를 함께 요구한다 (K6·L3·L4). 사람 손으로
-// 클릭해 가며 찍으면 재현이 안 되므로, 측정 스크립트가 라벨을 붙여 스크린샷을 요청하고
-// 선택을 바꿀 수 있게 얇은 채널을 둔다. 평시 실행에는 열리지 않는다.
+// 왜 있나: 판정 근거가 "화면" 과 "타임스탬프 로그" 를 함께 요구한다. 사람 손으로 클릭해 가며
+// 찍으면 재현이 안 되므로, 측정 스크립트가 라벨을 붙여 스크린샷을 요청하고 화면을 누를 수 있게
+// 얇은 채널을 둔다. 평시 실행에는 열리지 않는다. 프로토콜은 NDJSON: {"cmd":"shot","name":"n3-1"}
 //
-// 프로토콜은 앱의 herdr 클라이언트와 같은 NDJSON: {"cmd":"shot","name":"k6-before"}
+// **이 파일은 herdr 를 모른다** — 어댑터 타입도 프로토콜 모듈도 import 하지 않는다 (기준 N2).
 
 import type { BrowserWindow } from 'electron'
-import type { CloseOutcome } from '../shared/types.js'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { isRecord, readNumber, readString } from './herdr/protocol.js'
-import type { PaneTerminal } from './herdr/pane-terminal.js'
+import { isRecord, readNumber, readString, safeParse } from '../shared/json.js'
+import type { AddRepoResult } from '../shared/types.js'
 import { log } from './log.js'
 import { checkUnixSocketPath } from './unix-socket-path.js'
 
-/**
- * `sendInputEvent` 가 받는 수식자. 계측이 문자열로 보내오므로 아는 것만 통과시킨다 —
- * 모르는 값을 그대로 넘기면 Electron 이 조용히 무시하고 "Ctrl 을 보냈는데 안 먹었다" 가 된다.
- */
-const KEY_MODIFIERS = ['shift', 'control', 'alt', 'meta'] as const
-type KeyModifier = (typeof KEY_MODIFIERS)[number]
-
-function readModifiers(value: unknown): KeyModifier[] {
-  if (!Array.isArray(value)) return []
-  const out: KeyModifier[] = []
-  for (const item of value) {
-    for (const known of KEY_MODIFIERS) {
-      if (item === known) out.push(known)
-    }
-  }
-  return out
-}
-
 export type ControlHandlers = {
   capture: (name: string, selector?: string) => Promise<string>
-  selectSession: (name: string) => void
-  selectPane: (paneId: string | null) => void
-  toggleCollapse: (workspaceId: string) => void
   state: () => unknown
-  verify: () => Promise<unknown>
-  /** LIFE-345 — 터미널 층. 계측이 정책 상수와 격자를 그대로 읽어 간다. */
-  terminal: PaneTerminal
-  /**
-   * LIFE-346 — 행의 생성·종료. **준비·뒷정리 전용이다.**
-   * 판정 대상인 회차(N6·N10)는 이 지름길이 아니라 `click` 으로 진짜 버튼을 누른다 —
-   * main 핸들러를 직접 부르면 "UI 조작만으로" 라는 문장이 증명되지 않는다.
-   */
-  createRow: (input: { workspaceId: string; kind: string; label: string | null }) => Promise<{
-    ok: boolean
-    launchId: string
-    error?: string
-  }>
-  closeRow: (input: { tabId: string; confirmed: boolean }) => Promise<CloseOutcome>
   window: () => BrowserWindow | null
+  resync: (reason: string) => Promise<{ ok: boolean; note: string }>
+  /** N7 — push 를 조용히 버리게/멈추게 한다. 커넥션은 살아 있다. `only` 면 그 이벤트만. */
+  setDroppingPush: (input: { dropping: boolean; only?: readonly string[] | null }) => void
+  /** 준비·뒷정리 전용 지름길. 판정 회차(N3)는 이게 아니라 `click` 으로 진짜 버튼을 누른다. */
+  addRepo: (root: string) => AddRepoResult
+  rebuildTree: () => Promise<void>
+  /**
+   * 네이티브 폴더 선택기의 **결과만** 갈아끼운다 (게이트 ① 2번째 지시 (5)).
+   * macOS 다이얼로그는 OS 가 그리는 창이라 `sendInputEvent` 가 안 닿는다. 그 한 걸음만 스텁으로
+   * 두고 버튼 클릭 → IPC → 판별 → 등록은 진짜로 지나가게 한다.
+   *
+   * 세 상태다: 경로를 고른 것 · **취소한 것** · 스텁을 뗀 것(`null` — 진짜 창이 뜬다).
+   */
+  setDialogStub: (value: { canceled: true } | { path: string } | null) => void
+  /** R2 계측 — S5 격자 수렴이 창 크기를 3단계로 바꾼다. */
+  resizeWindow: (size: { width: number; height: number }) => void
+  /** R2 계측 — A1 이 OSC 52 복사가 OS 클립보드에 실렸는지 읽는다. corral 쪽 관측이다. */
+  readClipboard: () => Promise<string>
 }
 
 /**
- * 렌더러의 **진짜 xterm 버퍼**를 셀 단위로 뜬다 (T1·T3 관문 ④).
+ * 그 버튼이 **사람에게 닿나** — 누르기 전에 화면에 물어본다 (관문 ⑤).
  *
- * 헤드리스 인스턴스를 따로 돌려 재면 그건 "재생 로직을 잰 것" 이지 "화면을 잰 것" 이 아니다.
- * 그래서 판정 근거는 실제로 사람이 보고 있는 그 버퍼에서 뽑는다.
- * 이 스크립트는 `TerminalView` 가 걸어 둔 `window.__corralTerm` 을 읽는다.
- */
-const DUMP_SCRIPT = `(() => {
-  const term = window.__corralTerm
-  if (!term) return { ok: false, error: 'terminal not mounted' }
-  const buf = term.buffer.active
-  const rows = []
-  for (let y = 0; y < term.rows; y++) {
-    const line = buf.getLine(buf.viewportY + y)
-    const cells = []
-    if (line) {
-      for (let x = 0; x < term.cols; x++) {
-        const c = line.getCell(x)
-        if (!c) { cells.push(null); continue }
-        cells.push({
-          ch: c.getChars(),
-          w: c.getWidth(),
-          fg: c.isFgDefault() ? 'default' : (c.isFgPalette() ? 'p' : 'rgb') + c.getFgColor(),
-          bg: c.isBgDefault() ? 'default' : (c.isBgPalette() ? 'p' : 'rgb') + c.getBgColor(),
-          bold: !!c.isBold(),
-          inverse: !!c.isInverse(),
-          underline: !!c.isUnderline(),
-        })
-      }
-    }
-    rows.push(cells)
-  }
-  const scrollback = []
-  for (let y = 0; y < buf.baseY; y++) {
-    const line = buf.getLine(y)
-    scrollback.push(line ? line.translateToString(true) : '')
-  }
-  return {
-    ok: true,
-    cols: term.cols,
-    rows: term.rows,
-    baseY: buf.baseY,
-    viewportY: buf.viewportY,
-    length: buf.length,
-    unicodeVersion: term.unicode.activeVersion,
-    grid: rows,
-    scrollback,
-  }
-})()`
-
-/**
- * 그 버튼이 **사람에게 닿나** — 누르기 전에 화면에 물어본다 (리뷰 H1).
- *
- * 1회차는 `el.click()` 으로 눌렀다. 그건 요소에 이벤트를 직접 꽂는 것이라 가시성·z-order·
- * 히트테스트를 하나도 안 거친다. 그래서 터미널 패널에 **완전히 덮인** 종료 `×` 도 그대로
- * "눌렀다" 가 됐고, 종료를 쓴 전 회차(N5·N6·N7·N10)가 그 문으로 통과했다.
- *
+ * `el.click()` 은 요소에 이벤트를 직접 꽂는 것이라 가시성·z-order·히트테스트를 하나도 안 거친다.
  * 그래서 순서를 바꾼다: ① 보이는 데까지 스크롤 ② 중심 좌표의 `elementFromPoint` 가 그 버튼인지
  * 확인 ③ 맞을 때만 **좌표로** 마우스 이벤트를 보낸다. 아니면 무엇이 위에 있는지 적고 누르지 않는다.
+ *
+ * **조상은 히트가 아니다**: 최상위가 목표를 *담고 있는* 상자여도 그 좌표에서 실제로 눌리는 것은
+ * 그 상자다. 그래서 `el.contains(top)` 만 인정한다 (목표 또는 그 안의 글리프).
  */
 function clickProbe(selector: string): string {
   return `(() => {
@@ -123,25 +55,20 @@ function clickProbe(selector: string): string {
     if (!el) return { found: false }
     el.scrollIntoView({ block: 'center', inline: 'center' })
     const r = el.getBoundingClientRect()
-    if (r.width === 0 || r.height === 0) return { found: true, hit: false, blockedBy: 'zero-size', rect: { w: r.width, h: r.height } }
+    if (r.width === 0 || r.height === 0) return { found: true, hit: false, blockedBy: 'zero-size' }
     const x = Math.round(r.left + r.width / 2)
     const y = Math.round(r.top + r.height / 2)
     const top = document.elementFromPoint(x, y)
     const describe = (node) => {
       if (!node) return null
       const id = node.id ? '#' + node.id : ''
-      const cls = typeof node.className === 'string' && node.className.length > 0 ? '.' + node.className.trim().split(/\\s+/).join('.') : ''
+      const cls = typeof node.className === 'string' && node.className.length > 0
+        ? '.' + node.className.trim().split(/\\s+/).join('.') : ''
       return node.tagName.toLowerCase() + id + cls
     }
-    // **조상은 히트가 아니다** (2차 리뷰 C5 — grok). 최상위가 목표를 *담고 있는* 상자여도
-    // 그 좌표에서 실제로 눌리는 것은 그 상자다. \`top.contains(el)\` 을 빼면 프로브의 뜻이
-    // 좌표 클릭의 뜻과 같아진다: "이 점의 최상위가 그 버튼(또는 그 안의 글리프)인가".
     const hit = top !== null && (top === el || el.contains(top))
     return {
-      found: true,
-      hit,
-      x,
-      y,
+      found: true, hit, x, y,
       rect: { left: r.left, top: r.top, w: r.width, h: r.height },
       elementFromPoint: describe(top),
       target: describe(el),
@@ -152,13 +79,13 @@ function clickProbe(selector: string): string {
 
 export function startControlServer(handlers: ControlHandlers): net.Server | null {
   const socketPath = process.env.CORRAL_CONTROL_SOCKET
-  if (!socketPath || socketPath.length === 0) return null
+  if (socketPath === undefined || socketPath.length === 0) return null
 
   // 경로가 길면 bind 가 EINVAL 로 던지고, main 의 uncaught exception 은 Electron 모달로 앱을 막는다.
   // 계측 채널 하나 때문에 앱이 죽지 않게 **바인드 전에** 재고 식별 가능한 실패로 남긴다.
   const check = checkUnixSocketPath(socketPath)
   if (!check.ok) {
-    log('control.path_too_long', { socketPath, bytes: check.bytes, limit: check.limit, reason: check.reason })
+    log('control.path_too_long', { socketPath, bytes: check.bytes, limit: check.limit })
     return null
   }
   fs.mkdirSync(path.dirname(socketPath), { recursive: true })
@@ -186,60 +113,75 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
 }
 
 async function handle(line: string, socket: net.Socket, handlers: ControlHandlers): Promise<void> {
-  let parsed: unknown = null
-  try {
-    parsed = JSON.parse(line)
-  } catch {
-    socket.write(JSON.stringify({ ok: false, error: 'bad json' }) + '\n')
-    return
-  }
+  const parsed = safeParse(line)
   if (!isRecord(parsed)) {
     socket.write(JSON.stringify({ ok: false, error: 'bad frame' }) + '\n')
     return
+  }
+  const reply = (payload: Record<string, unknown>): void => {
+    socket.write(JSON.stringify(payload) + '\n')
   }
   const cmd = readString(parsed, 'cmd')
   log('control.cmd', { line: line.slice(0, 300) })
   try {
     switch (cmd) {
       case 'shot': {
-        const file = await handlers.capture(readString(parsed, 'name') ?? 'shot', readString(parsed, 'selector') ?? undefined)
-        socket.write(JSON.stringify({ ok: true, file }) + '\n')
+        const file = await handlers.capture(
+          readString(parsed, 'name') ?? 'shot',
+          readString(parsed, 'selector') ?? undefined,
+        )
+        reply({ ok: true, file })
         return
       }
-      case 'select-session': {
-        const name = readString(parsed, 'name')
-        if (name === null) throw new Error('name 필요')
-        handlers.selectSession(name)
-        socket.write(JSON.stringify({ ok: true }) + '\n')
+      case 'state':
+        reply({ ok: true, at: Date.now(), state: handlers.state() })
         return
-      }
-      case 'select-pane': {
-        handlers.selectPane(readString(parsed, 'paneId'))
-        socket.write(JSON.stringify({ ok: true }) + '\n')
-        return
-      }
-      case 'toggle-collapse': {
-        const workspaceId = readString(parsed, 'workspaceId')
-        if (workspaceId === null) throw new Error('workspaceId 필요')
-        handlers.toggleCollapse(workspaceId)
-        socket.write(JSON.stringify({ ok: true }) + '\n')
-        return
-      }
-      case 'state': {
-        socket.write(JSON.stringify({ ok: true, state: handlers.state() }) + '\n')
-        return
-      }
-      case 'verify': {
-        socket.write(JSON.stringify({ ok: true, verify: await handlers.verify() }) + '\n')
-        return
-      }
-      // --- LIFE-346 계측 ---------------------------------------------------
       /**
-       * 화면의 **진짜 버튼**을 누른다.
-       *
-       * N10 은 "Orca 를 한 번도 쓰지 않고 corral 안에서만" 을 요구하고, N6 은 확인 UI 를
-       * 요구한다. main 핸들러를 부르는 지름길로는 둘 다 증명이 안 된다 — 렌더러의 onClick 이
-       * 실제로 그 IPC 를 부르는지가 증명 대상의 일부라서다. 그래서 선택자로 눌러 본다.
+       * **herdr 쪽 대조값은 이 채널이 주지 않는다.**
+       * 판별자는 재는 대상 자신의 출력이면 안 된다 (관문 ⑤ 제3 오라클) — 하네스가 자기
+       * 커넥션으로 `tab.list`·`pane.list` 를 떠서 상대편을 만든다. 여기는 corral 쪽만 준다.
+       */
+      case 'resync': {
+        const result = await handlers.resync(readString(parsed, 'reason') ?? 'control')
+        reply({ ok: result.ok, note: result.note, at: Date.now() })
+        return
+      }
+      case 'drop-push': {
+        // `only` 를 주면 **그 이벤트만** 버린다 — "corral 이 일부를 모르는 상태" 를 만드는 손잡이다.
+        const raw = parsed['only']
+        const only = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : null
+        const dropping = parsed['dropping'] === true
+        handlers.setDroppingPush({ dropping, only })
+        reply({ ok: true, dropping, only, at: Date.now() })
+        return
+      }
+      case 'add-repo': {
+        const root = readString(parsed, 'root')
+        if (root === null) throw new Error('root 필요')
+        const result = handlers.addRepo(root)
+        reply({ ...result, at: Date.now() })
+        return
+      }
+      /**
+       * 다음 「폴더 찾아보기」가 **고른 것으로 칠** 경로. 계측 전용이고, 이 채널은
+       * `CORRAL_CONTROL_SOCKET` 이 있을 때만 선다 — 평시 앱에는 이 손잡이가 없다.
+       */
+      case 'browse-stub': {
+        // `path` 가 있으면 그 폴더를 고른 것, `canceled:true` 면 그냥 닫은 것, 둘 다 없으면 스텁을 뗀다.
+        const raw = readString(parsed, 'path')
+        const value = raw !== null ? { path: raw } : parsed['canceled'] === true ? ({ canceled: true } as const) : null
+        handlers.setDialogStub(value)
+        reply({ ok: true, stub: value, at: Date.now() })
+        return
+      }
+      case 'rebuild-tree': {
+        await handlers.rebuildTree()
+        reply({ ok: true, at: Date.now() })
+        return
+      }
+      /**
+       * 화면의 **진짜 버튼**을 누른다. main 핸들러를 부르는 지름길로는 "UI 조작만으로" 가
+       * 증명되지 않는다 — 렌더러의 onClick 이 실제로 그 IPC 를 부르는지가 증명 대상의 일부다.
        */
       case 'click': {
         const target = handlers.window()
@@ -248,16 +190,15 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (selector === null) throw new Error('selector 필요')
         const probe = await target.webContents.executeJavaScript(clickProbe(selector), true)
         if (!isRecord(probe) || probe['found'] !== true) {
-          socket.write(JSON.stringify({ ok: false, hit: false, selector, error: '선택자가 화면에 없다' }) + '\n')
+          reply({ ok: false, hit: false, selector, error: '선택자가 화면에 없다' })
           return
         }
         const x = readNumber(probe, 'x')
         const y = readNumber(probe, 'y')
-        const hit = probe['hit'] === true
-        if (!hit || x === null || y === null) {
+        if (probe['hit'] !== true || x === null || y === null) {
           // **누르지 않는다.** 가려진 버튼을 눌러 주는 순간 측정이 거짓말을 하기 시작한다.
           log('control.click.blocked', { selector, blockedBy: readString(probe, 'blockedBy') })
-          socket.write(JSON.stringify({ ok: false, hit: false, selector, ...probe }) + '\n')
+          reply({ ok: false, selector, ...probe })
           return
         }
         const at = Date.now()
@@ -266,183 +207,181 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         target.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
         target.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
         log('control.click', { selector, hit: true, x, y, at, method: 'sendInputEvent' })
-        socket.write(JSON.stringify({ ok: true, selector, at, method: 'sendInputEvent', ...probe }) + '\n')
-        return
-      }
-      /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나 — 확인 모달·배지 검사용. */
-      case 'query': {
-        const target = handlers.window()
-        if (target === null) throw new Error('창이 없다')
-        const selector = readString(parsed, 'selector')
-        if (selector === null) throw new Error('selector 필요')
-        const found = await target.webContents.executeJavaScript(
-          `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el) => el.textContent))()`,
-          true,
-        )
-        socket.write(JSON.stringify({ ok: true, selector, found, at: Date.now() }) + '\n')
-        return
-      }
-      /** 준비·뒷정리용 지름길. 판정 회차에는 쓰지 않는다 (위 주석). */
-      case 'create-row': {
-        const workspaceId = readString(parsed, 'workspaceId')
-        const kind = readString(parsed, 'kind')
-        if (workspaceId === null || kind === null) throw new Error('workspaceId·kind 필요')
-        const result = await handlers.createRow({ workspaceId, kind, label: readString(parsed, 'label') })
-        socket.write(JSON.stringify({ ok: result.ok, result, at: Date.now() }) + '\n')
-        return
-      }
-      case 'close-row': {
-        const tabId = readString(parsed, 'tabId')
-        if (tabId === null) throw new Error('tabId 필요')
-        const result = await handlers.closeRow({ tabId, confirmed: parsed['confirmed'] === true })
-        socket.write(JSON.stringify({ ok: result.ok, result, at: Date.now() }) + '\n')
-        return
-      }
-      // --- LIFE-345 계측 ---------------------------------------------------
-      case 'term-dump': {
-        const target = handlers.window()
-        if (target === null) throw new Error('창이 없다')
-        const dump = await target.webContents.executeJavaScript(DUMP_SCRIPT, true)
-        socket.write(JSON.stringify({ ok: true, dump }) + '\n')
+        reply({ ok: true, selector, at, method: 'sendInputEvent', ...probe })
         return
       }
       /**
-       * 렌더러 화면에 이 문자열이 지금 보이나 (I1 계측).
-       *
-       * 로그를 긁어 프레임과 페인트를 짝짓는 방식은 zsh 구문 강조·로그 성장 때문에 자꾸
-       * 표본을 놓쳤다. 화면에 실제로 보이는지를 **화면에 직접** 묻는 것이 이 항목의 질문
-       * ("그 글자가 화면에 나타나기까지")에도 더 정직하다.
+       * 글자를 친다 (붙여넣기 아님). 수정 5회차에서 경로 입력칸이 사라져 지금은 쓰는 측정이
+       * 없지만, 손잡이는 남긴다 — 다음에 입력칸이 생기면 같은 자리를 다시 쓴다.
        */
-      case 'term-find': {
+      case 'type': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')
-        const needle = readString(parsed, 'needle')
-        if (needle === null) throw new Error('needle 필요')
-        const found = await target.webContents.executeJavaScript(
-          `(() => {
-            const t = window.__corralTerm
-            if (!t) return false
-            const buf = t.buffer.active
-            let text = ''
-            for (let y = 0; y < t.rows; y++) {
-              const line = buf.getLine(buf.viewportY + y)
-              text += (line ? line.translateToString(true) : '') + String.fromCharCode(10)
-            }
-            return text.includes(${JSON.stringify(needle)})
-          })()`,
-          true,
-        )
-        socket.write(JSON.stringify({ ok: true, found, at: Date.now() }) + '\n')
-        return
-      }
-      case 'term-policy': {
-        socket.write(JSON.stringify({ ok: true, policy: handlers.terminal.policy() }) + '\n')
+        const text = readString(parsed, 'text')
+        if (text === null) throw new Error('text 필요')
+        // **주입 시각을 넣기 직전에 찍는다** (수정 1회차 C3). S2 는 이 `at` 을 레이턴시의 시작점으로
+        // 쓴다 — 루프가 끝난 뒤에 찍으면 그 사이 시간만큼 레이턴시를 과소평가한다. 시계는 injection
+        // 순간에 시작해야 한다. (main·renderer 는 같은 머신이라 Date.now 벽시계가 동일 — 스큐 없음.)
+        const at = Date.now()
+        for (const ch of text) {
+          target.webContents.sendInputEvent({ type: 'char', keyCode: ch })
+        }
+        reply({ ok: true, typed: text.length, at })
         return
       }
       /**
-       * 렌더러 터미널에 **바이트를 직접** 쓴다 — T3 의 대조군 전용이다.
-       * 제품 경로(main 이 만든 home 프레임)와 나란히 naive·reset 전략을 같은 화면에서 돌려
-       * "0줄"이 전략 덕분이라는 것을 보이기 위한 것. 앱 코드는 이 경로를 쓰지 않는다.
-       */
-      case 'term-write': {
-        const target = handlers.window()
-        if (target === null) throw new Error('창이 없다')
-        const bytes = readString(parsed, 'bytes')
-        if (bytes === null) throw new Error('bytes 필요')
-        const done = await target.webContents.executeJavaScript(
-          `new Promise((resolve) => { const t = window.__corralTerm; if (!t) return resolve(false); t.write(${JSON.stringify(bytes)}, () => resolve(t.buffer.active.baseY)) })`,
-          true,
-        )
-        socket.write(JSON.stringify({ ok: true, baseY: done }) + '\n')
-        return
-      }
-      case 'term-unicode': {
-        const target = handlers.window()
-        if (target === null) throw new Error('창이 없다')
-        const mode = readString(parsed, 'mode') ?? '11'
-        // dataset 에도 박는다. pane 선택을 비우면 TerminalView 가 **언마운트**되고 다시 붙을 때
-        // 새 인스턴스가 기본 모드로 뜬다 — 실측에서 이것 때문에 세 모드가 전부 11 로 나왔다.
-        const active = await target.webContents.executeJavaScript(
-          `(() => {
-            document.documentElement.dataset.corralUnicode = ${JSON.stringify(mode)}
-            return window.__corralUnicode ? window.__corralUnicode(${JSON.stringify(mode)}) : null
-          })()`,
-          true,
-        )
-        log('control.unicode', { mode, active: String(active) })
-        socket.write(JSON.stringify({ ok: true, mode, active }) + '\n')
-        return
-      }
-      case 'term-webgl': {
-        const target = handlers.window()
-        if (target === null) throw new Error('창이 없다')
-        const on = parsed['on'] === true
-        await target.webContents.executeJavaScript(
-          `document.documentElement.dataset.corralWebgl = ${JSON.stringify(on ? '1' : '0')}; true`,
-          true,
-        )
-        socket.write(JSON.stringify({ ok: true, on }) + '\n')
-        return
-      }
-      /**
-       * **진짜 키 입력**을 렌더러에 넣는다 (I1·I2·I3·I4).
-       *
-       * `sendPaneText` 를 main 에서 직접 부르면 재는 경로가 짧아져 xterm 의 키 처리와 IPC 가
-       * 빠진다 — 사용자가 겪는 지연이 아니다. 그래서 `sendInputEvent` 로 렌더러의 keydown 부터
-       * 밟게 한다. 포커스는 여기서 맞춘다.
+       * 키를 누른다 (수식자 포함) — 입력칸을 비우는 것도 **사람이 하는 걸음**이라 키로 한다.
+       * 모르는 수식자는 Electron 이 조용히 무시하므로 아는 것만 통과시킨다.
        */
       case 'key': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')
         const keyCode = readString(parsed, 'keyCode')
         if (keyCode === null) throw new Error('keyCode 필요')
-        const modifiers = readModifiers(parsed['modifiers'])
-        // 대문자는 shift 를 같이 눌러야 브라우저가 그 글자로 읽는다. 안 넣으면 keydown 이
-        // 소문자로 해석돼 화면에 소문자가 찍힌다 (1차 측정에서 `I2MARK0` 이 `imark0` 이 됐다).
-        if (/^[A-Z]$/.test(keyCode) && !modifiers.includes('shift')) modifiers.push('shift')
-        const printable = keyCode.length === 1 && !modifiers.includes('control') && !modifiers.includes('meta')
-        await target.webContents.executeJavaScript(
-          `(() => { const el = document.querySelector('.xterm-helper-textarea'); if (el) el.focus(); return !!el })()`,
-          true,
-        )
-        const at = Date.now()
+        const known = ['shift', 'control', 'alt', 'meta']
+        const raw = parsed['modifiers']
+        const modifiers = Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && known.includes(item)) : []
         target.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
-        if (printable) target.webContents.sendInputEvent({ type: 'char', keyCode, modifiers })
         target.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
-        log('control.key', { keyCode, modifiers: modifiers.join('+'), at })
-        socket.write(JSON.stringify({ ok: true, at }) + '\n')
+        reply({ ok: true, keyCode, modifiers, at: Date.now() })
         return
       }
-      /** 붙여넣기 (I5) — 여러 줄을 한 번에 넣는다. xterm 의 paste 경로를 그대로 탄다. */
-      case 'paste': {
+      /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나. */
+      case 'query': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        // 입력칸은 textContent 가 빈 문자열이다 — **화면의 값**을 보려면 value 를 같이 읽어야 한다.
+        const found = await target.webContents.executeJavaScript(
+          `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el) =>
+            'value' in el && typeof el.value === 'string' ? el.value : el.textContent))()`,
+          true,
+        )
+        reply({ ok: true, selector, found, at: Date.now() })
+        return
+      }
+      /** S5 — 창 크기 변경. 리사이즈→fit→요청→수렴 경로 전체가 진짜로 돈다. */
+      case 'resize-window': {
+        const width = readNumber(parsed, 'width')
+        const height = readNumber(parsed, 'height')
+        if (width === null || height === null) throw new Error('width·height 필요')
+        handlers.resizeWindow({ width, height })
+        reply({ ok: true, width, height, at: Date.now() })
+        return
+      }
+      /** A1 — Electron 클립보드 내용. corral 이 썼는지를 보는 것이라 corral 쪽 관측이 맞다. */
+      case 'read-clipboard': {
+        reply({ ok: true, text: await handlers.readClipboard(), at: Date.now() })
+        return
+      }
+      /**
+       * S1·S2·S3 — **xterm 버퍼 실물**을 렌더러에서 읽는다. 렌더러가 diagnostics 실행에서
+       * 노출하는 프로브 훅(window.corralTermProbe)을 부른다 — 기준 S1 이 지정한 대조 대상이
+       * "xterm 버퍼 실물(buffer.getLine)" 이라 화면 스크린샷이 아니라 버퍼를 뜬다.
+       * herdr 쪽 대조값은 여전히 이 채널이 주지 않는다 (위 'state' 주석의 규칙 그대로).
+       */
+      case 'term-read': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const result = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.read() : null)()`,
+          true,
+        )
+        reply({ ok: result !== null, at: Date.now(), term: result })
+        return
+      }
+      /**
+       * S4 — 진짜 wheel 이벤트를 터미널 위에 꽂는다. 렌더러의 캡처-단계 wheel 핸들러가
+       * 받아 termScroll → stream.scroll(벤더 session.scroll) 한 길로 흐른다. `el.dispatchEvent`
+       * 로 실제 WheelEvent 를 만들어 그 경로가 실증되게 한다 (main 핸들러 지름길 아님).
+       */
+      case 'wheel': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const deltaY = readNumber(parsed, 'deltaY')
+        if (deltaY === null) throw new Error('deltaY 필요')
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const ev = new WheelEvent('wheel', {
+               deltaY: ${deltaY}, bubbles: true, cancelable: true,
+               clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+             })
+             host.dispatchEvent(ev)
+             return { ok: true }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, deltaY, at: Date.now(), dispatched })
+        return
+      }
+      /**
+       * A5 — mouseReporting TUI 에 마우스 클릭을 전달한다. 진짜 MouseEvent 를 .xterm-screen 에
+       * 꽂아 xterm 의 마우스 핸들러가 SGR 시퀀스로 onData 를 발화하게 한다 (wheel 과 같은 결). fx·fy
+       * 는 스크린 rect 안 비율. main 지름길이 아니라 렌더러의 실제 입력 경로를 지난다.
+       */
+      case 'term-click': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const fx = readNumber(parsed, 'fx') ?? 0.5
+        const fy = readNumber(parsed, 'fy') ?? 0.5
+        const dispatched = await target.webContents.executeJavaScript(
+          `(() => {
+             const host = document.querySelector('.term-host')
+             if (!host) return { ok: false, reason: 'no term-host' }
+             const screen = host.querySelector('.xterm-screen') ?? host
+             const r = screen.getBoundingClientRect()
+             const x = Math.round(r.left + r.width * ${fx})
+             const y = Math.round(r.top + r.height * ${fy})
+             const opt = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }
+             screen.dispatchEvent(new MouseEvent('mousedown', opt))
+             screen.dispatchEvent(new MouseEvent('mouseup', opt))
+             return { ok: true, x, y }
+           })()`,
+          true,
+        )
+        reply({ ok: isRecord(dispatched) && dispatched['ok'] === true, fx, fy, at: Date.now(), dispatched })
+        return
+      }
+      /** S7ⓔ — xterm 이 한 문자열에 매기는 셀 폭. 폭 오라클의 xterm 축. */
+      case 'term-cell-width': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')
         const text = readString(parsed, 'text')
         if (text === null) throw new Error('text 필요')
-        const at = Date.now()
-        await target.webContents.executeJavaScript(
-          `(() => { const t = window.__corralTerm; if (!t) return false; t.paste(${JSON.stringify(text)}); return true })()`,
+        const width = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.cellWidth(${JSON.stringify(text)}) : null)()`,
           true,
         )
-        log('control.paste', { length: text.length, at })
-        socket.write(JSON.stringify({ ok: true, at }) + '\n')
+        reply({ ok: width !== null, width, text, at: Date.now() })
         return
       }
-      /** 창 크기 (T2) — 격자가 창을 따라 어떻게 되는지 보려면 창을 흔들어야 한다. */
-      case 'resize': {
+      /**
+       * L2 — #5800 우회 직접 관측. DECRQM 질의를 xterm 에 먹이고 그 DECRPM 응답을 그대로 받는다.
+       * 프로덕션(재-minify) 빌드에서도 `\x1b[?2026;<value>$y` 가 오면 DECRQM CSI 핸들러가 살아
+       * 있다는 증거다 (renderer build.target es2022 우회). 응답 없음이면 우회가 깨진 것이다.
+       */
+      case 'term-decrqm': {
         const target = handlers.window()
         if (target === null) throw new Error('창이 없다')
-        const width = readNumber(parsed, 'width')
-        const height = readNumber(parsed, 'height')
-        if (width === null || height === null) throw new Error('width·height 필요')
-        target.setSize(Math.round(width), Math.round(height))
-        socket.write(JSON.stringify({ ok: true, width, height }) + '\n')
+        const mode = readNumber(parsed, 'mode') ?? 2026
+        const response = await target.webContents.executeJavaScript(
+          `(() => window.corralTermProbe ? window.corralTermProbe.decrqm(${mode}) : null)()`,
+          true,
+        )
+        reply({ ok: typeof response === 'string' && response.length > 0, mode, response, at: Date.now() })
         return
       }
       default:
-        socket.write(JSON.stringify({ ok: false, error: `모르는 cmd: ${cmd}` }) + '\n')
+        reply({ ok: false, error: `모르는 cmd: ${cmd ?? '(없음)'}` })
+        return
     }
   } catch (error) {
-    socket.write(JSON.stringify({ ok: false, error: String(error) }) + '\n')
+    log('control.failed', { cmd, error: String(error) })
+    reply({ ok: false, error: String(error) })
   }
 }

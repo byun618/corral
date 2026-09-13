@@ -1,15 +1,18 @@
+// electron-vite 5 는 `externalizeDepsPlugin` 을 deprecated 하고 `build.externalizeDeps` 를
+// **기본 활성**으로 바꿨다 (수정 1회차 L10 — grok L1). 그래서 플러그인을 걷어냈다.
+// 1회차에도 빌드는 통과했지만(N1 exit 0), 5.x 안에서 경고 대상이고 차기 메이저 제거 후보다.
+
 import { resolve } from 'node:path'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
     build: { rollupOptions: { input: resolve(__dirname, 'src/main/index.ts') } },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
-    // sandbox:true 인 렌더러의 preload 는 CJS 여야 로드된다 (ESM preload 는 조용히 실패).
+    // sandbox:true 인 렌더러의 preload 는 **단일 CJS 번들**이어야 로드된다 (ESM preload 는 조용히 실패).
+    // 분석 §5 U2 가 확인한 현행 제약이다.
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/preload/index.ts'),
@@ -20,19 +23,19 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
-    // ⓖ9(xterm.js #5800 — 이미 minify 된 6.0.0 ESM 을 한 번 더 minify 하면 DECRQM 에서
-    // ReferenceError) 는 **실측으로 재현되지 않았다** — minify 를 켜고 DECRQM 3종을 직접 쏴도
-    // 렌더러 예외 0건, 화면 정상 (`raw/claude/60-minify.json`). 그래서 회피 설정을 걷어냈고
-    // minify 는 electron-vite 기본값(렌더러 false)을 그대로 쓴다. 재현이 필요하면
-    // `CORRAL_RENDERER_MINIFY=1 node scripts/l345/m10-minify.mjs` 가 두 팔을 다시 잰다.
-    // xterm 은 순수 ESM 이라 dev 사전번들에서 빼 둔다 (회피가 아니라 불필요한 일이라서다).
-    optimizeDeps: {
-      exclude: ['@xterm/xterm', '@xterm/addon-webgl', '@xterm/addon-unicode11', '@xterm/addon-unicode-graphemes'],
-    },
     build: {
       rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') },
-      // 기본값에는 손대지 않는다. 이 환경변수는 **재현용 스위치**일 뿐이다 (없으면 기본값 그대로).
-      ...(process.env.CORRAL_RENDERER_MINIFY === '1' ? { minify: 'esbuild' } : {}),
+      /**
+       * xterm #5800 (열림) 회피 — R2 (LIFE-353).
+       *
+       * `@xterm/xterm` 의 ESM(`xterm.mjs`)은 **이미 minify 돼서** 배포된다. Vite 프로덕션이
+       * 기본 target(es2020 이하 다운레벨)으로 그걸 **재-minify** 하면 `InputHandler.requestMode`
+       * 의 클로저가 깨져 프로덕션 빌드에서만 `ReferenceError` 가 난다 — vim 처럼 DECRQM 을
+       * 쓰는 TUI 입력이 죽는다. 정석 우회는 target 을 es2021 이상으로 올려 `||=` 다운레벨을
+       * 없애는 것 (grok 서치 §3 — 이슈 댓글에서 효과 검증 1순위). Electron 44 의 Chromium 은
+       * es2022 를 훨씬 넘으므로 여유가 크다. 실증은 기준 S7ⓕ (프로덕션 빌드 vim 생존).
+       */
+      target: 'es2022',
     },
   },
 })

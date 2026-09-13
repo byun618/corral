@@ -1,157 +1,171 @@
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
-// require 화이트리스트는 electron(일부)·events·timers·url 뿐이고 net 이 없다
-// (electronjs.org/docs/latest/tutorial/sandbox). 그래서 herdr 소켓은 전부 여기서 다룬다.
+// require 화이트리스트에는 net 이 없다. 그래서 herdr 소켓은 전부 여기서 다룬다.
+//
+// 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AppState, CloseOutcome, SessionInfo, TerminalFrame } from '../shared/types.js'
+import type {
+  AddRepoResult,
+  AgentKind,
+  AppState,
+  BrowseReposResult,
+  CloseRowResult,
+  CreateRowResult,
+  RemoveRepoResult,
+  TerminalScroll,
+  WorktreeActionResult,
+} from '../shared/types.js'
+import {
+  SESSION_POLL_MS,
+  SessionLink,
+  TerminalStream,
+  closeTab,
+  closeWorkspace,
+  createRow,
+  createWorktree,
+  listSessions,
+  openWorkspace,
+  openWorktree,
+  probeForeground,
+  readOpenWorkspaces,
+  type SessionHandle,
+} from './adapter/index.js'
+import { decideRoots } from './browse-repos.js'
+import { canonicalPath } from './canonical-path.js'
 import { startControlServer } from './control.js'
-import { LAUNCH_KINDS, Lifecycle } from './herdr/lifecycle.js'
-import { PaneTerminal } from './herdr/pane-terminal.js'
-import { SessionLink } from './herdr/session-link.js'
 import { closeLog, log, logFile, openLog } from './log.js'
-import { SESSION_POLL_MS, listSessions } from './sessions.js'
+import { pickSessionName } from './pick-session.js'
+import { RepoRegistry } from './registry.js'
+import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
+/** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
+const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
+
 let window: BrowserWindow | null = null
 let revision = 0
-let sessions: SessionInfo[] = []
+/** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
+let sessions: SessionHandle[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
-let selectedPaneId: string | null = null
-/** L8 — 접어 둔 workspace. 화면 취향이라 herdr 에 저장하지 않는다 (corral 로컬 상태). */
-const collapsedWorkspaceIds = new Set<string>()
+let sessionNote: string | null = null
+let registry: RepoRegistry | null = null
+/** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
+let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
-/**
- * 지금까지 목록에 **실제로 있었던** pane. "선택한 것이 사라졌다" 를 판정하는 기준이다 —
- * 아직 도착 안 한 것과 없어진 것을 가르는 유일한 방법이 이것이다 (currentState 주석).
- */
-let knownPaneIds = new Set<string>()
-
-/**
- * LIFE-345 — 선택한 pane 의 터미널. 링크 위에 얹은 얇은 층이다: 구독은 링크 것을 쓰고
- * (`onPanePush`), 스냅샷·입력만 자기 커넥션으로 오간다.
- */
-const terminal = new PaneTerminal({
-  // 창이 이미 닫힌 뒤에도 하트비트 타이머가 한 박자 더 돌 수 있다. 그때 send 하면
-  // "Object has been destroyed" 로 main 이 튄다 — 실제로 계측 종료마다 났다.
-  onFrame: (frame: TerminalFrame) => {
-    if (window === null || window.isDestroyed()) return
-    window.webContents.send('corral:terminalFrame', frame)
-  },
-  onChange: () => scheduleEmit(),
-})
+let treeScheduled = false
 
 const link = new SessionLink({
   onChange: () => scheduleEmit(),
-  onPanePush: (frame) => {
-    terminal.onPush(frame)
-    lifecycle.onPush(frame)
+  // 목록 위상이 바뀌었으면 worktree 열림상태를 다시 읽는다 — 그게 N4ⓒ 의 진실 출처다.
+  onTopologyChange: () => {
+    scheduleTree()
+    dropStreamIfPaneGone()
   },
-  onLive: () => terminal.onLinkLive(),
+  // 재동기 때 worktree→workspace 바인딩도 새로 대조한다 (버그 ①). 행 대조(reconcile)는 이걸 못 본다.
+  onResync: (reason) => refreshBindings(reason),
 })
 
 /**
- * LIFE-346 — 행의 생성·종료. 목록(store)도 터미널도 건드리지 않는다: 만들면 herdr 가
- * `tab_created`·`pane_created` 를 보내고 목록은 **평소 경로로** 그걸 받는다. 이 층이 직접
- * 맵에 손대면 이벤트 경로와 두 갈래가 되고, 그건 N7 이 금지하는 "덮어 맞추기" 다.
+ * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
+ * 연결**이라 순서 보장이 없다 (A3 관찰 대상). 살아 있는 연결은 한 번에 하나 (stream.ts 주석).
  */
-const lifecycle = new Lifecycle({
-  onChange: () => scheduleEmit(),
-  onPaneCreated: (paneId) => selectPane(paneId),
-  describeTab: (tabId) => {
-    for (const workspace of link.store.rows()) {
-      const tab = workspace.tabs.find((item) => item.tabId === tabId)
-      if (tab === undefined) continue
-      return {
-        workspaceId: workspace.workspaceId,
-        agents: tab.panes.map((pane) => pane.agent).filter((agent) => agent !== null),
-        paneIds: tab.panes.map((pane) => pane.paneId),
-      }
-    }
-    return null
+const stream = new TerminalStream({
+  measuring,
+  hooks: {
+    onFrame: (frame) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:termFrame', frame)
+      // A4 프레임 로그는 이제 stream.ts 한 곳에서만 남긴다 (수정 1회차 C1) — 여기서 또 찍으면
+      // A4 가 프레임을 두 번 세고, frame.data.length 는 BSU/ESU 래퍼(+16B)까지 포함해 부풀린다.
+    },
+    onState: () => scheduleEmit(),
+    // OSC 52 — pane 안의 복사를 OS 클립보드로 (A1). 벤더가 base64 검증, stream 이 디코드까지.
+    // Electron 44 의 clipboard 는 W3C 모양(Promise)이다 — 실패는 로그로만 남긴다.
+    onClipboard: (text) => void clipboard.writeText(text).catch((error) => log('clipboard.write_failed', { error: String(error) })),
   },
 })
 
 /**
- * A4 — 새 행을 **어디서** 여나.
+ * 스트리밍 중인 pane 이 목록에서 사라졌으면 스트림을 닫는다.
  *
- * 1순위는 그 workspace 가 열고 있는 checkout 경로다(`worktree.list` 가 준 것). 사용자가 보는
- * 단위가 worktree 라서 새 행도 그 worktree 에서 열려야 말이 맞고, 이 값은 pane 안에서 `cd` 를
- * 해도 안 흔들린다. 2순위는 그 workspace 의 pane 이 실제로 있는 곳. 둘 다 모르면 파라미터를
- * **생략한다** — 그러면 herdr 세션의 launch cwd 로 간다 (실측 §3). 모르는 경로를 지어내지 않는다.
+ * pane 이 닫히면 endpoint surface 에서 그 pane 이 빠져 프레임만 조용히 멎는다 — 벤더 세션은
+ * 기다릴 뿐 오류를 내지 않는다. 사라짐을 아는 쪽은 control 링크(store)이므로 여기서 잇는다.
+ * (pane 이 **다른 탭으로 이동**한 경우는 store 에 남아 있어 닫지 않는다 — 프레임이 멎고
+ * 사용자가 다시 고르면 새 세션이 pane.focus 로 따라간다. 00-analysis §3-2)
  */
-function launchCwd(workspaceId: string): string | null {
-  const workspace = link.store.rows().find((row) => row.workspaceId === workspaceId) ?? null
-  if (workspace === null) return null
-  return workspace.checkoutPath ?? workspace.panes.find((pane) => pane.cwd !== null)?.cwd ?? null
-}
-
-/** 지금 선택한 pane 을 터미널 층에 물린다. 선택이 없거나 세션이 없으면 뗀다. */
-function retarget(): void {
-  const session = sessions.find((item) => item.name === selectedSession) ?? null
-  if (selectedPaneId === null || session === null) {
-    terminal.attach(null)
-    return
-  }
-  terminal.attach({
-    paneId: selectedPaneId,
-    socketPath: session.socketPath,
-    sessionName: session.name,
-    isDefaultSession: session.isDefault,
-  })
-}
-
-function selectPane(paneId: string | null): void {
-  if (paneId === selectedPaneId) return
-  selectedPaneId = paneId
-  log('ui.selection.set', { paneId })
-  retarget()
+function dropStreamIfPaneGone(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.store.paneIds().includes(paneId)) return
+  log('stream.pane_gone', { paneId })
+  stream.close()
   scheduleEmit()
 }
 
-function currentState(): AppState {
-  const rows = link.store.rows()
-  const repos = link.store.repoGroups(rows)
-  const paneIds = new Set(rows.flatMap((row) => row.panes.map((pane) => pane.paneId)))
-  // 선택한 pane 이 사라지면 선택을 비운다 (L4) — 앱은 빈 상태로 떨어지고 깨지지 않는다.
-  //
-  // **한 번도 본 적 없는 pane 은 "사라진" 것이 아니다** (LIFE-346). 새 행을 만들면 그 pane 을
-  // 곧바로 고르는데, 그 시점엔 `pane_created` 가 아직 저장소에 안 들어와 있다 — 예전 규칙은
-  // 그걸 "대상이 사라짐" 으로 읽고 **갓 만든 터미널에 사망 표시를 씌웠다** (M4 1회차 샷 001).
-  // 사라졌다고 말할 자격은 **있었던 것**에만 있다.
-  if (selectedPaneId !== null && !paneIds.has(selectedPaneId) && knownPaneIds.has(selectedPaneId)) {
-    log('ui.selection.cleared', { paneId: selectedPaneId, reason: '대상이 사라짐' })
-    // 목록에서는 선택을 비우되(그 줄이 이미 없다) **터미널은 마지막 화면을 들고 죽는다** —
-    // 지워 버리면 무엇이 죽었는지 화면에 남지 않는다 (R5).
-    terminal.markGone('pane_closed — pane 이 목록에서 사라졌다')
-    selectedPaneId = null
+/**
+ * **화면에 그려질 수 있는** pane id 들 — 렌더러 `TerminalPanel` 이 마운트 판정에 쓰는 것과
+ * 같은 트리(joinTree 결과)를 걷는다 (수정 1회차 C2). 렌더러가 pane 을 살아 있다고 보는 조건은
+ * "state.repos 트리 안에 그 paneId 가 있다" 이므로, 여기서도 같은 트리로 센다.
+ */
+function renderablePaneIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const repo of joinTree(skeleton, link.store.rows()).repos) {
+    for (const worktree of repo.worktrees) {
+      if (worktree.workspace === null) continue
+      for (const tab of worktree.workspace.tabs) {
+        for (const pane of tab.panes) ids.add(pane.paneId)
+      }
+    }
   }
-  knownPaneIds = paneIds
-  // 사라진 탭에 붙은 기동·종료 기록은 같이 턴다 — 없는 행에 붙은 표시는 그 자체가 유령이다.
-  lifecycle.prune(
-    new Set(rows.flatMap((row) => row.tabs.map((tab) => tab.tabId))),
-    new Set(rows.map((row) => row.workspaceId)),
-  )
+  return ids
+}
+
+/**
+ * 스트리밍 중인 pane 이 **더는 트리에 없으면**(예: 그 레포가 목록에서 빠졌으면) 스트림을 닫는다
+ * (수정 1회차 C2 — codex 중간2).
+ *
+ * `dropStreamIfPaneGone` 은 pane 이 **herdr 위상에서** 사라진 경우(store)를 잡지만, 레포 제거는
+ * herdr pane 을 건드리지 않는다 — store 엔 그대로 있고 corral **트리에서만** 빠진다. 그러면
+ * 렌더러는 `TerminalPane` 을 언마운트하는데(App.tsx TerminalPanel), main 스트림은 열린 채 남아
+ * 프레임을 계속 받는다(누수). 그래서 렌더러와 **같은 트리 기준**으로 여기서 닫는다.
+ *
+ * 링크가 live 일 때만 판정한다: 재접속 중엔 `store.rows()` 가 일시적으로 비어 트리에 pane 이
+ * 하나도 안 잡히는데, 그때 닫으면 곧 되살아날 멀쩡한 스트림을 죽인다 (advisor 가드).
+ */
+function dropStreamIfPaneUnviewable(): void {
+  const paneId = stream.terminalState().paneId
+  if (paneId === null) return
+  if (link.linkState().phase !== 'live') return
+  if (renderablePaneIds().has(paneId)) return
+  log('stream.pane_unviewable', { paneId })
+  stream.close()
+  scheduleEmit()
+}
+
+function currentSocketPath(): string | null {
+  return sessions.find((item) => item.name === selectedSession)?.socketPath ?? null
+}
+
+function currentState(): AppState {
+  const tree = joinTree(skeleton, link.store.rows())
   return {
     revision,
-    sessions,
+    // 소켓 경로를 떼고 내보낸다 — 경계의 약속이 화면 상태로 새지 않게 (L9).
+    sessions: sessions.map(({ name, isDefault, running }) => ({ name, isDefault, running })),
     sessionsError,
     selectedSession,
+    sessionNote,
     link: link.linkState(),
-    workspaces: rows,
-    repos,
-    selectedPaneId,
-    collapsedWorkspaceIds: [...collapsedWorkspaceIds],
-    terminal: terminal.state(),
-    lifecycle: lifecycle.state(),
-    launchKinds: [...LAUNCH_KINDS],
-    // S3 프로브는 개발·계측 실행에서만 띄운다. 패키징된 앱의 평시 화면에는 나오지 않는다.
+    registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
+    repos: tree.repos,
+    terminal: stream.terminalState(),
+    // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
 }
@@ -168,32 +182,508 @@ function scheduleEmit(): void {
     log('state.emit', {
       revision: state.revision,
       phase: state.link.phase,
-      workspaces: state.workspaces.map((row) => `${row.workspaceId}:${row.label}:${row.paneCount}`),
-      panes: state.workspaces.flatMap((row) => row.panes.map((pane) => pane.paneId)),
+      repos: skeleton.map((repo) => `${repo.name}:${repo.worktrees.length}`),
+      ...link.store.ids(),
     })
     window?.webContents.send('corral:state', state)
   }, 0)
 }
 
-function toggleCollapse(workspaceId: string): void {
-  if (collapsedWorkspaceIds.has(workspaceId)) collapsedWorkspaceIds.delete(workspaceId)
-  else collapsedWorkspaceIds.add(workspaceId)
-  log('ui.collapse.toggled', { workspaceId, collapsed: collapsedWorkspaceIds.has(workspaceId) })
+/** 골격 재조회는 git·herdr 왕복을 낀다 — 흔들릴 때 매번 돌지 않게 한 박자 뭉친다. */
+function scheduleTree(): void {
+  if (treeScheduled) return
+  treeScheduled = true
+  setTimeout(() => {
+    treeScheduled = false
+    void rebuildTree()
+  }, 80)
+}
+
+/**
+ * 골격 재조회는 레포마다 `git worktree list`(최대 5초) + herdr 왕복을 **직렬로** 돈다.
+ * 그래서 A 가 도는 중 B 가 시작해 먼저 끝나면, 뒤늦게 끝난 A 의 **낡은 골격이 새것을 덮는다**
+ * (수정 1회차 L6). 예약은 `scheduleTree` 가 뭉치지만 실행 자체는 안 막았다.
+ * 세대 번호로 막는다 — 늦게 끝난 회차는 결과를 버린다.
+ */
+let treeGeneration = 0
+
+async function rebuildTree(): Promise<void> {
+  const startedAt = Date.now()
+  const generation = ++treeGeneration
+  const built = await buildSkeleton({ roots: registry?.list() ?? [], socketPath: currentSocketPath() })
+  if (generation !== treeGeneration) {
+    log('tree.stale', { generation, current: treeGeneration, ms: Date.now() - startedAt })
+    return
+  }
+  skeleton = built
+  log('tree.built', {
+    ms: Date.now() - startedAt,
+    repos: skeleton.length,
+    worktrees: skeleton.reduce((sum, repo) => sum + repo.worktrees.length, 0),
+    open: skeleton.reduce((sum, repo) => sum + repo.worktrees.filter((item) => item.openWorkspaceId !== null).length, 0),
+  })
+  // 트리가 새로 서면 스트리밍 pane 이 아직 트리 안에 있는지 확인한다 (C2) — 레포 제거로
+  // 트리에서 빠졌으면 여기서 스트림을 닫는다. scheduleEmit 은 안에서 한 번 더 뭉쳐 부른다.
+  dropStreamIfPaneUnviewable()
   scheduleEmit()
+}
+
+/**
+ * **바인딩만** 다시 대조한다 (게이트 ① 버그 ① — 재동기가 부른다).
+ *
+ * `rebuildTree` 는 레포마다 `git worktree list`(비쌈)까지 도는데, 여기서 재려는 것은 worktree
+ * 구조가 아니라 **열림상태**뿐이다. herdr `worktree.list` 만 왕복해(git 없음, 소켓 1회) 열림
+ * 바인딩을 새로 읽고, 골격의 낡은 `openWorkspaceId` 와 대조해 어긋난 것만 제자리에서 갈아끼운다.
+ *
+ * 왜 재동기에 얹나: `store.reconcile` 은 workspace/tab/pane **행**만 본다. pane 이 cd 로 worktree
+ * 경계를 넘나든 뒤 골격이 옛 바인딩을 든 채여도 행에는 드리프트가 없어 재동기가 '어긋난 것 없음'이라
+ * 하고 자가 회복이 안 됐다. 이 갱신이 그 구멍을 메운다 — 그리고 무엇을 걷었는지 로그·note 로 남긴다.
+ *
+ * 세대 가드: 읽는 사이에 `rebuildTree` 가 끼면(더 새 골격) 패치를 버린다 (L6 와 같은 결).
+ * 읽기 실패한 루트는 옛 바인딩을 그대로 둔다 — 일시적 실패로 트리를 비우지 않는다.
+ */
+async function refreshBindings(reason: string): Promise<{ changed: boolean; note: string | null }> {
+  const socketPath = currentSocketPath()
+  const roots = registry?.list() ?? []
+  if (socketPath === null || roots.length === 0) return { changed: false, note: null }
+  const generation = treeGeneration
+  const byPathByRoot = new Map<string, Map<string, string>>()
+  for (const root of roots) {
+    const open = await readOpenWorkspaces(socketPath, root)
+    if (open.error !== null) {
+      log('binding.read_failed', { reason, root, error: open.error })
+      continue // 이 루트는 옛 바인딩 유지
+    }
+    byPathByRoot.set(root, open.byPath)
+  }
+  if (generation !== treeGeneration) {
+    log('binding.stale', { reason, generation, current: treeGeneration })
+    return { changed: false, note: null }
+  }
+  const drift: Array<{ worktree: string; from: string | null; to: string | null }> = []
+  const patched = skeleton.map((repo) => {
+    const byPath = byPathByRoot.get(repo.root)
+    if (byPath === undefined) return repo // 읽기 실패·미대상 루트는 건드리지 않는다
+    return {
+      ...repo,
+      worktrees: repo.worktrees.map((worktree) => {
+        const fresh = byPath.get(worktree.path) ?? null
+        if (fresh === worktree.openWorkspaceId) return worktree
+        drift.push({ worktree: worktree.path, from: worktree.openWorkspaceId, to: fresh })
+        return { ...worktree, openWorkspaceId: fresh }
+      }),
+    }
+  })
+  if (drift.length === 0) return { changed: false, note: null }
+  skeleton = patched
+  log('tree.binding_drift', { reason, drift })
+  dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)
+  scheduleEmit()
+  return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
+}
+
+function addRepo(input: string): AddRepoResult {
+  const result = registry?.add(input) ?? { ok: false, error: '레지스트리 미초기화' }
+  if (result.ok) scheduleTree()
+  scheduleEmit()
+  return result
+}
+
+/**
+ * 레포 하나를 목록에서 뺀다 (게이트 ① 3번째 지시, 2026-09-12).
+ *
+ * `addRepo` 와 **같은 모양**이다 — 레지스트리를 고치고, 목록을 다시 세우고, 화면에 민다.
+ * herdr 는 부르지 않는다: 뺀 뒤 `scheduleTree()` 가 도는 것은 남은 레포들의 worktree 를
+ * 다시 읽기 위해서고, 뺀 레포에 대해서는 아무 요청도 안 나간다.
+ */
+function removeRepo(input: string): RemoveRepoResult {
+  const result = registry?.remove(input) ?? { ok: false, error: '레지스트리 미초기화' }
+  if (result.ok) scheduleTree()
+  scheduleEmit()
+  return result
+}
+
+/**
+ * 네이티브 다이얼로그의 **결과만** 갈아끼우는 손잡이 (게이트 ① 2번째 지시 (5) — 계측용).
+ *
+ * macOS 폴더 선택기는 OS 가 그리는 창이라 하네스가 못 누른다. 그래서 그 한 줄만 스텁으로
+ * 바꿀 수 있게 해 두고, **나머지 경로는 전부 진짜로** 지나가게 한다 — 버튼 클릭 → preload →
+ * IPC → main → 판별 → `registry.add()` → 상태 반영. 스텁이 대신하는 것은 "사용자가 폴더를
+ * 골랐다" 한 걸음뿐이고, 그 사실은 `browse.dialog` 로그의 `stub: true` 로 원자료에 남는다.
+ *
+ * 손잡이는 **제어 채널에만** 달려 있다. 제어 서버는 `CORRAL_CONTROL_SOCKET` 이 있을 때만 서므로
+ * 평시 앱에는 이 값을 세울 길 자체가 없다.
+ *
+ * 값이 셋인 이유: `null` 은 "스텁 없음"(진짜 다이얼로그를 연다)이고, "사용자가 그냥 닫았다" 는
+ * 그것과 **다른 상태**다. 둘을 한 값으로 묶었더니 취소 회차가 진짜 OS 창을 열어 측정이
+ * 거기서 멈췄다 (수정 5회차 실측).
+ */
+let dialogStub: { canceled: true } | { path: string } | null = null
+
+/** 다이얼로그가 떠 있는 동안 두 번째 클릭이 창을 하나 더 띄우지 않게. */
+let browsing = false
+
+async function browseForRepos(): Promise<BrowseReposResult> {
+  const empty = { added: [], alreadyRegistered: [], failed: [] }
+  if (browsing) {
+    log('browse.busy', {})
+    return { ok: false, canceled: true, selected: null, mode: null, ...empty, message: null }
+  }
+  browsing = true
+  try {
+    log('browse.opened', { stubbed: dialogStub !== null })
+    let selected: string | null = null
+    if (dialogStub !== null) {
+      selected = 'path' in dialogStub ? dialogStub.path : null
+    } else if (window !== null && !window.isDestroyed()) {
+      const picked = await dialog.showOpenDialog(window, {
+        title: '레포 추가',
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: '이 폴더 선택',
+      })
+      selected = picked.canceled ? null : (picked.filePaths[0] ?? null)
+    }
+    log('browse.dialog', { stub: dialogStub !== null, path: selected })
+    if (selected === null) {
+      return { ok: true, canceled: true, selected: null, mode: null, ...empty, message: null }
+    }
+
+    const decision = await decideRoots(selected)
+    log('browse.decided', { mode: decision.mode, candidates: decision.candidates.length, scanned: decision.scanned })
+
+    const added: string[] = []
+    const alreadyRegistered: string[] = []
+    const failed: Array<{ path: string; error: string }> = []
+    // 중복은 **접힌 루트**로 가린다 — 주 체크아웃과 그 링크된 worktree 를 나란히 고르면
+    // `add()` 가 둘 다 같은 루트로 접는다. 경로로 세면 "2개 등록" 이라 거짓말하게 된다.
+    const before = new Set(registry?.list() ?? [])
+    for (const candidate of decision.candidates) {
+      const result = addRepo(candidate)
+      if (!result.ok) {
+        failed.push({ path: candidate, error: result.error ?? '알 수 없음' })
+        continue
+      }
+      const root = result.root ?? candidate
+      if (before.has(root)) {
+        if (!alreadyRegistered.includes(root)) alreadyRegistered.push(root)
+        continue
+      }
+      if (!added.includes(root)) added.push(root)
+      before.add(root)
+    }
+
+    const message = browseMessage({ mode: decision.mode, added, alreadyRegistered, failed })
+    log('browse.result', { mode: decision.mode, added: added.length, already: alreadyRegistered.length, failed: failed.length })
+    return { ok: added.length > 0 || alreadyRegistered.length > 0, canceled: false, selected, mode: decision.mode, added, alreadyRegistered, failed, message }
+  } finally {
+    browsing = false
+  }
+}
+
+/** 화면에 그대로 뜨는 한 줄. 0개일 때의 문안은 지시가 준 그대로다. */
+function browseMessage(input: {
+  mode: 'repo' | 'scan'
+  added: string[]
+  alreadyRegistered: string[]
+  failed: Array<{ path: string; error: string }>
+}): string {
+  if (input.added.length === 0 && input.alreadyRegistered.length === 0) {
+    if (input.mode === 'scan') return '이 폴더에서 git 레포를 찾지 못했다'
+    return `등록하지 못했다: ${input.failed[0]?.error ?? '알 수 없음'}`
+  }
+  const parts: string[] = []
+  if (input.added.length > 0) parts.push(`${input.added.length}개 등록`)
+  if (input.alreadyRegistered.length > 0) parts.push(`${input.alreadyRegistered.length}개는 이미 있었다`)
+  if (input.failed.length > 0) parts.push(`${input.failed.length}개 실패`)
+  return parts.join(' · ')
+}
+
+// --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
+
+type ParentResult =
+  // `opened` — 이 호출이 부모를 **새로 열었나** (게이트 ① G4: linked 열기의 "함께 열림" 알림 근거).
+  | { ok: true; workspaceId: string; opened: boolean }
+  | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }
+
+/**
+ * 부모(주 체크아웃) workspace 를 여는 **in-flight 약속**을 경로별로 공유한다 (수정 2회차 F-1).
+ * 대상 경로 가드(`openingWorktrees`)는 "두 번째를 무시" 지만, 부모는 두 호출(예: primary·linked
+ * 동시 열기, worktree 만들기)이 **같은 id 를 써야** 한다 — 그래서 무시가 아니라 **같은 약속을
+ * 기다려 공유**한다. 이게 없으면 두 경로가 각자 `workspace.create` 를 불러 부모가 이중 생성된다.
+ */
+const parentOpenInFlight = new Map<string, Promise<ParentResult>>()
+
+/**
+ * worktree 열기·만들기의 공통 전제 — **parent(주 체크아웃) workspace 를 확보한다**.
+ *
+ * 실측(00-probe-findings): `worktree.open`/`create` 는 주 체크아웃 workspace 가 열려 있어야
+ * 하고 그 id 를 받는다. 닫힌 채로는 여는 문이 없다 — 그래서 여기서 연다 (L8 빈 상태 복구의 문).
+ *
+ * **수정 2회차 F-1**: 대상 경로와 **같은 급의 방어**를 부모에도 건다.
+ *   ① in-flight 공유 먼저 — 여는 중이면 같은 약속을 기다려 같은 id 를 쓴다 (이중 create 금지).
+ *   ② 권위 재확인 — **스테일 skeleton 이 아니라** herdr `worktree.list` 로 primary 열림을 본다.
+ *   ③ open.error(읽기 실패) 폴스루도 이 in-flight 안에서만 create 하므로 동시 호출은 안전하다.
+ */
+async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, rejection: null, error: '세션이 없다' }
+  const parentKey = canonicalPath(repoRoot)
+
+  // ① in-flight 공유 — 여는 중이면 그 약속을 그대로 기다린다 (두 경로가 같은 부모 id 를 쓴다).
+  const pending = parentOpenInFlight.get(parentKey)
+  if (pending) {
+    log('lifecycle.parent.in_flight_join', { repoRoot: parentKey })
+    return pending
+  }
+
+  const promise = (async (): Promise<ParentResult> => {
+    // ② 권위 재확인 (스테일 skeleton 아님) — 이미 열려 있으면 그 id (중복 부모 create 금지).
+    const open = await readOpenWorkspaces(socketPath, repoRoot)
+    if (open.error === null) {
+      const primaryOpen = open.byPath.get(parentKey) ?? null
+      if (primaryOpen !== null) {
+        log('lifecycle.parent.already_open', { repoRoot: parentKey, workspaceId: primaryOpen })
+        return { ok: true, workspaceId: primaryOpen, opened: false }
+      }
+    } else {
+      // ③ 읽기 실패 폴스루 — 열림상태를 확정 못 하지만 in-flight 가 동시 호출을 이미 하나로 묶었다.
+      log('lifecycle.parent.read_error_fallthrough', { repoRoot: parentKey, error: open.error })
+    }
+    const opened = await openWorkspace(socketPath, repoRoot)
+    if (!opened.ok || opened.workspaceId === null) {
+      return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
+    }
+    scheduleTree()
+    return { ok: true, workspaceId: opened.workspaceId, opened: true }
+  })()
+  parentOpenInFlight.set(parentKey, promise)
+  try {
+    return await promise
+  } finally {
+    parentOpenInFlight.delete(parentKey)
+  }
+}
+
+/** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
+  const outcome = await createRow(socketPath, input)
+  scheduleEmit()
+  return outcome
+}
+
+/**
+ * 종료 게이트 (L3·L4). 판별자는 herdr `pane.process_info` 다 (관문 ⑤) — 주어진 pane 들을
+ * 종료 **직전에** 떠서 포그라운드 그룹이 셸 pid 와 같은지 본다. 하나라도 다르면(=산 프로세스)
+ * 확인이 필요하다. probe 실패는 **묻는 쪽**으로 기운다 (LIFE-346).
+ *
+ * 왜 종료 직전 main 에서 떠서 판단하나: store 의 pane.agent 는 ~2.5초 늦게 와서, 그걸 믿으면
+ * 도는 에이전트가 확인 없이 죽었다 (LIFE-346 M2 20/20).
+ */
+async function checkCloseGate(
+  socketPath: string,
+  paneIds: readonly string[],
+  subject: Record<string, unknown>,
+): Promise<{ clear: true } | { clear: false; foreground: string[] }> {
+  const running: string[] = []
+  for (const paneId of paneIds) {
+    const probe = await probeForeground(socketPath, paneId)
+    const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
+    log('lifecycle.close_gate', {
+      ...subject,
+      paneId,
+      shellPid: probe.shellPid,
+      foregroundGroupId: probe.foregroundGroupId,
+      clear,
+      foreground: probe.foreground.map((item) => item.name),
+      probeError: probe.error,
+    })
+    if (clear) continue
+    if (probe.ok) for (const item of probe.foreground) running.push(item.cmdline ?? item.name)
+    else running.push(`(프로세스 확인 실패: ${probe.error})`)
+  }
+  return running.length > 0 ? { clear: false, foreground: running } : { clear: true }
+}
+
+/** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
+async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    for (const tab of workspace.tabs) {
+      if (tab.tabId !== input.tabId) continue
+      for (const pane of tab.panes) paneIds.push(pane.paneId)
+    }
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'tab', tabId: input.tabId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeTab(socketPath, input.tabId)
+  if (outcome.outcome === 'closed') {
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/**
+ * worktree(=workspace)를 닫는다 (L9b). 열린 worktree 행의 「닫기」 가 부른다 — 「열기」의 짝이다.
+ * linked 그룹이 열린 primary 를 닫으면 herdr 가 `workspace_group_close_required` 로 거절하고,
+ * corral 은 그 거절을 **그대로 보이고 멈춘다** (close_group 승격 금지, 기준). 게이트는 그 workspace 의
+ * 모든 pane 을 본다 — 하나라도 산 프로세스면 확인.
+ */
+async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const paneIds: string[] = []
+  for (const workspace of link.store.rows()) {
+    if (workspace.workspaceId !== input.workspaceId) continue
+    for (const tab of workspace.tabs) for (const pane of tab.panes) paneIds.push(pane.paneId)
+  }
+
+  if (input.confirmed !== true) {
+    const gate = await checkCloseGate(socketPath, paneIds, { close: 'workspace', workspaceId: input.workspaceId })
+    if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
+  }
+
+  const outcome = await closeWorkspace(socketPath, input.workspaceId)
+  if (outcome.outcome === 'closed') {
+    scheduleTree()
+    scheduleEmit()
+    return { outcome: 'closed' }
+  }
+  if (outcome.outcome === 'rejected') return { outcome: 'rejected', rejection: outcome.rejection }
+  return { outcome: 'error', error: outcome.error }
+}
+
+/**
+ * 열기 in-flight 가드 (수정 1회차 M5). herdr 는 **같은 cwd 에 workspace 중복 생성을 허용**한다
+ * (리뷰 e2e: 열기 두 번 → w14·w15 공존, corral 행은 하나만 가리켜 나머지는 UI 불가시 고아 +
+ * 산 PTY). 그래서 corral 이 문 앞에서 막는다 — 진행 중 같은 경로 재클릭은 무시한다.
+ */
+const openingWorktrees = new Set<string>()
+
+/** 닫힌 worktree 행을 연다 (L6·L8). 주 체크아웃은 workspace.create, linked 는 worktree.open. */
+async function openWorktreeRow(input: {
+  repoRoot: string
+  path: string
+  isLinked: boolean
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  const key = canonicalPath(input.path)
+
+  // ① in-flight 중복: 첫 열기가 끝나기 전 두 번째 클릭은 무시 (더블클릭 방어 — 두 번째가 새 workspace 를 안 만든다).
+  //    F-2: 문자열 대신 `deduped` 필드로 알린다 — 렌더러가 문구 비교 없이 양성 중복을 가린다.
+  if (openingWorktrees.has(key)) {
+    log('lifecycle.open_worktree.in_flight', { path: key })
+    return { ok: false, workspaceId: null, rejection: null, error: null, deduped: true }
+  }
+  openingWorktrees.add(key)
+  try {
+    // ② 권위 재확인: 이미 열려 있으면 그 workspace 를 그대로 (idempotent). 골격은 push 지연으로
+    //    낡을 수 있어 herdr `worktree.list` 를 직접 읽는다 (관문 ⑤와 같은 권위). 중복 create 를 막는 핵심.
+    const open = await readOpenWorkspaces(socketPath, input.repoRoot)
+    const already = open.error === null ? (open.byPath.get(key) ?? null) : null
+    if (already !== null) {
+      log('lifecycle.open_worktree.already_open', { path: key, workspaceId: already })
+      scheduleTree()
+      return { ok: true, workspaceId: already, rejection: null, error: null }
+    }
+
+    if (!input.isLinked) {
+      // primary 열기 = **부모 확보 그 자체**. F-1: linked 열기의 부모 확보와 같은 dedupe 를 타야
+      // 두 경로가 동시에 와도 부모가 하나만 선다 — 그래서 직접 openWorkspace 하지 않고 여기로 모은다.
+      const parent = await resolveParentWorkspace(input.repoRoot)
+      if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+      return { ok: true, workspaceId: parent.workspaceId, rejection: null, error: null }
+    }
+    const parent = await resolveParentWorkspace(input.repoRoot)
+    if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+    const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
+    if (result.ok) {
+      scheduleTree()
+      // G4: linked 를 열며 부모를 **이 호출이 함께 열었으면** 그 사실을 화면에 알린다 (탭 숨김 금지).
+      return { ...result, parentOpened: parent.opened }
+    }
+    return result
+  } finally {
+    openingWorktrees.delete(key)
+  }
+}
+
+/** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */
+async function createWorktreeForRepo(input: {
+  repoRoot: string
+  branch: string
+  path: string
+}): Promise<WorktreeActionResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { ok: false, workspaceId: null, rejection: null, error: '세션이 없다' }
+  const parent = await resolveParentWorkspace(input.repoRoot)
+  if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
+  const result = await createWorktree(socketPath, {
+    parentWorkspaceId: parent.workspaceId,
+    branch: input.branch,
+    path: input.path,
+  })
+  if (result.ok) scheduleTree()
+  return result
 }
 
 function pickSession(name: string): void {
   const found = sessions.find((session) => session.name === name)
-  if (!found) {
+  if (found === undefined) {
     log('session.select.missing', { name })
     return
   }
   selectedSession = name
-  selectedPaneId = null
-  terminal.attach(null)
-  // 세션이 바뀌면 진행 중이던 기동 관측은 옛 세션의 일이다 — 세대를 올려 손을 떼게 한다.
-  lifecycle.setSession(found)
+  // 세션이 바뀌면 이전 세션의 pane 스트림은 의미가 없다 — 같이 닫는다.
+  stream.close()
   link.open(found)
+  scheduleEmit()
+}
+
+/** endpoint 소켓은 control 소켓(herdr.sock)과 같은 폴더의 herdr-client.sock 이다. */
+function currentClientSocketPath(): string | null {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return null
+  return path.join(path.dirname(socketPath), 'herdr-client.sock')
+}
+
+/**
+ * pane 하나를 골라 스트림을 연다 (R2 의 유일한 herdr-client.sock 접촉 트리거).
+ *
+ * paneId 는 **현재 링크의 목록에 있는 것만** 받는다 — 렌더러가 낡은 id 를 보내면 (pane 이
+ * 방금 닫혔으면) 여기서 걸러 식별 가능한 로그로 남긴다. 검증의 진실은 store 다.
+ */
+function selectPane(input: { paneId: string | null; cols?: number; rows?: number }): void {
+  if (input.paneId === null) {
+    stream.close()
+    scheduleEmit()
+    return
+  }
+  const clientSocketPath = currentClientSocketPath()
+  if (clientSocketPath === null) {
+    log('stream.select.no_session', { paneId: input.paneId })
+    return
+  }
+  if (!link.store.paneIds().includes(input.paneId)) {
+    log('stream.select.unknown_pane', { paneId: input.paneId })
+    return
+  }
+  stream.open({
+    clientSocketPath,
+    paneId: input.paneId,
+    cols: input.cols ?? 80,
+    rows: input.rows ?? 24,
+  })
   scheduleEmit()
 }
 
@@ -202,42 +692,18 @@ async function pollSessions(): Promise<void> {
   sessions = scan.sessions
   sessionsError = scan.error
   if (selectedSession === null) {
-    const wanted = process.env.CORRAL_SESSION
-    const target =
-      (wanted ? sessions.find((session) => session.name === wanted) : undefined) ??
-      sessions.find((session) => session.isDefault) ??
-      sessions[0]
-    if (target) pickSession(target.name)
+    // 고르는 규칙은 순수 함수에 있다 (수정 1회차 M6) — 멈춘 세션을 실제로 만들지 않고 재생으로 잰다.
+    const choice = pickSessionName({ sessions, wanted: process.env.CORRAL_SESSION })
+    sessionNote = choice.note
+    if (choice.note !== null) log('session.select.note', { note: choice.note })
+    if (choice.name !== null) pickSession(choice.name)
   }
   scheduleEmit()
 }
 
-function createRow(input: { workspaceId: string; kind: string; label: string | null }): Promise<{
-  ok: boolean
-  launchId: string
-  error?: string
-}> {
-  return lifecycle.create({ ...input, cwd: launchCwd(input.workspaceId) })
-}
-
-function closeRow(input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> {
-  return lifecycle.close(input)
-}
-
-/** 끝난 기동 기록을 사용자가 턴다 (탭이 안 만들어진 실패의 유일한 손잡이다). */
-function dismissLaunch(launchId: string): boolean {
-  const done = lifecycle.dismiss(launchId)
-  if (done) scheduleEmit()
-  return done
-}
-
 /**
- * 스크린샷. `selector` 를 주면 **그 요소만** 잘라 찍는다.
- *
- * 왜 자르나: T3 은 "정지 화면이 정말 정지해 있나" 를 스크린샷으로 봐야 하는데, 창 전체를 찍으면
- * 헤더의 `rev` 카운터와 왼쪽 목록의 경과 초가 매초 바뀌어 **터미널과 무관하게** 그림이 달라진다.
- * 실제로 첫 측정에서 24장 중 18장이 서로 달랐고 원인이 그것이었다. 잘라 찍으면 비교 대상이
- * 터미널 표면 자체가 된다.
+ * 스크린샷. `selector` 를 주면 **그 요소만** 잘라 찍는다 — 헤더의 rev 카운터처럼 매 틱 바뀌는
+ * 것이 비교를 흔들지 않게 하기 위해서다.
  */
 async function capture(name: string, selector?: string): Promise<string> {
   const dir = process.env.CORRAL_SHOT_DIR ?? path.join(app.getPath('userData'), 'shots')
@@ -254,18 +720,43 @@ async function capture(name: string, selector?: string): Promise<string> {
     )
     if (box !== null) rect = box
   }
-  const image = rect === undefined ? await target.webContents.capturePage() : await target.webContents.capturePage(rect)
+  /**
+   * **새 프레임이 올라온 뒤에 찍는다** (수정 6회차 실측).
+   *
+   * `capturePage()` 는 컴포지터가 **마지막으로 올린 프레임**을 준다. React 가 방금 커밋한
+   * DOM 은 아직 그려지기 전일 수 있어서, 그대로 찍으면 한 프레임 전 화면이 나온다 —
+   * 6회차 첫 실행에서 `registered-two` 라고 이름 붙인 샷에 **빈 목록**이 찍혔고
+   * `confirm-open` 에는 확인 창 대신 그 앞 화면이 찍혔다. DOM 질의는 맞는데 그림만 뒤처진
+   * 것이라, 판정자가 원자료의 숫자와 그림을 대조하면 어긋난다.
+   *
+   * 두 겹으로 막는다:
+   *   ① rAF 를 두 번 기다린다 — 첫 번째는 다음 프레임 직전, 두 번째는 그 프레임이 올라간 뒤다.
+   *      **타이머로 반드시 빠져나온다**: 창이 가려지면 크로미움이 rAF 를 아예 안 부른다
+   *      (이 회차 두 번째 실행에서 세 번째 샷이 거기서 30초 타임아웃으로 죽었다).
+   *   ② 그러고도 한 번 버리고 찍는다 — 첫 `capturePage()` 가 프레임 생성을 밀어 주고,
+   *      두 번째가 그 새 프레임을 받는다. rAF 가 throttle 돼도 이쪽이 남는다.
+   */
+  await target.webContents.executeJavaScript(
+    `new Promise((resolve) => {
+       const timer = setTimeout(() => resolve('timer'), 400)
+       requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve('raf') }))
+     })`,
+    true,
+  )
+  const shoot = (): Promise<Electron.NativeImage> =>
+    rect === undefined ? target.webContents.capturePage() : target.webContents.capturePage(rect)
+  await shoot()
+  const image = await shoot()
   const file = path.join(dir, `${name}.png`)
   fs.writeFileSync(file, image.toPNG())
   log('shot.captured', { name, file, revision, selector: selector ?? null })
   return file
 }
 
-/** 계측용 창 크기 (CORRAL_WINDOW=1180x1400). 목록이 긴 화면을 한 장에 담기 위한 것뿐이다. */
+/** 계측용 창 크기 (CORRAL_WINDOW=1180x1400) — 긴 목록을 한 장에 담기 위한 것뿐이다. */
 function windowSize(): { width: number; height: number } {
-  const raw = process.env.CORRAL_WINDOW ?? ''
-  const match = /^(\d{3,5})x(\d{3,5})$/.exec(raw)
-  if (match === null) return { width: 1180, height: 760 }
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(process.env.CORRAL_WINDOW ?? '')
+  if (match === null || match[1] === undefined || match[2] === undefined) return { width: 1180, height: 800 }
   return { width: Number(match[1]), height: Number(match[2]) }
 }
 
@@ -279,7 +770,8 @@ function createWindow(): void {
     title: 'corral',
     webPreferences: {
       preload: path.join(here, '../preload/index.cjs'),
-      // S3 — 셋 다 켠다. sandbox:true 라서 렌더러/preload 는 net 을 쓸 수 없다.
+      // 셋 다 명시한다. 현행 기본값이지만 보안 자세는 기본값에 기대지 않는다 (분석 §5 U2).
+      // sandbox:true 라서 렌더러/preload 는 net 을 쓸 수 없다.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -287,13 +779,35 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window?.show())
+  // 렌더러 콘솔을 main 로그로 끌어온다 — 계측 실행에서만(진단 켜짐). 렌더러 예외가
+  // 조용히 사라지지 않게 한다 (R2 하네스 디버깅에서 필요했다).
+  if (!app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined) {
+    // Electron 44 는 이 이벤트를 (event, level, message, line, sourceId) 위치 인자로 주고 level 은
+    // 숫자다. 이 위치-인자 형태는 이후 버전에서 단일 Event 객체(details.level 문자열)로 대체되며
+    // deprecated 다 (수정 1회차 L5) — Electron 을 올릴 때 이 핸들러 시그니처를 같이 고쳐야 한다.
+    // 계측 실행에서만 켜지므로 평시 앱에는 영향이 없다.
+    window.webContents.on(
+      'console-message',
+      (_event: Electron.Event, level: number, message: string, line: number, sourceId: string) => {
+        if (level >= 2) log('renderer.console', { level, message: message.slice(0, 500), line, sourceId })
+      },
+    )
+  }
+  // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
+  window.on('focus', () => void link.resync('window-focus'))
+  /**
+   * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
+   * R1 화면에 외부 링크는 없지만, `openExternal` 에 걸러지지 않은 URL 을 넘기는 모양이
+   * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.
+   */
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^https:\/\//.test(url)) void shell.openExternal(url)
+    else log('window.open.denied', { url: url.slice(0, 200) })
     return { action: 'deny' }
   })
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
-  if (devServer) void window.loadURL(devServer)
+  if (devServer !== undefined) void window.loadURL(devServer)
   else void window.loadFile(path.join(here, '../renderer/index.html'))
 }
 
@@ -304,42 +818,119 @@ process.on('unhandledRejection', (reason) => log('main.unhandled_rejection', { r
 
 app.whenReady().then(() => {
   const file = openLog(app.getPath('userData'))
-  log('app.ready', { logFile: file, electron: process.versions.electron, node: process.versions.node })
-
-  ipcMain.handle('corral:getState', () => currentState())
-  ipcMain.handle('corral:selectSession', (_event, name: string) => pickSession(name))
-  ipcMain.handle('corral:selectPane', (_event, paneId: string | null) => selectPane(paneId))
-  ipcMain.handle('corral:paneText', (_event, text: string) => terminal.sendText(text))
-  ipcMain.handle('corral:paneKeys', (_event, keys: string[]) => terminal.sendKeys(keys))
-  ipcMain.handle('corral:toggleCollapse', (_event, workspaceId: string) => toggleCollapse(workspaceId))
-  ipcMain.handle('corral:createRow', (_event, input: { workspaceId: string; kind: string; label: string | null }) =>
-    createRow(input),
-  )
-  ipcMain.handle('corral:closeRow', (_event, input: { tabId: string; confirmed: boolean }) => closeRow(input))
-  ipcMain.handle('corral:dismissLaunch', (_event, launchId: string) => dismissLaunch(launchId))
-  ipcMain.handle('corral:refreshSessions', () => pollSessions())
-  ipcMain.on('corral:reportRendered', (_event, rendered: number) => {
-    log('ui.rendered', { revision: rendered })
+  registry = new RepoRegistry(app.getPath('userData'))
+  registry.load()
+  log('app.ready', {
+    logFile: file,
+    electron: process.versions.electron,
+    node: process.versions.node,
+    chrome: process.versions.chrome,
+    registryFile: registry.state().file,
   })
-  ipcMain.on('corral:reportProbe', (_event, name: string, detail: Record<string, string>) => {
-    log('renderer.probe', { name, ...detail })
+
+  /**
+   * IPC 는 **우리 창에서 온 것만** 받는다 — 보안 체크리스트 15 (수정 1회차 L12).
+   * 지금 렌더러는 로컬·sandbox·isolation 이라 당장 잘못될 일은 없다. 그래도 핸들러가
+   * sender 를 안 보는 모양으로 굳으면, 나중에 iframe·원격 콘텐츠가 들어오는 순간 그대로 구멍이다.
+   */
+  const fromOurWindow = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean => {
+    const ok = window !== null && !window.isDestroyed() && event.senderFrame === window.webContents.mainFrame
+    if (!ok) log('ipc.rejected', { url: event.senderFrame?.url.slice(0, 200) ?? null })
+    return ok
+  }
+
+  ipcMain.handle('corral:getState', (event) => (fromOurWindow(event) ? currentState() : null))
+  ipcMain.handle('corral:addRepo', (event, root: string) =>
+    fromOurWindow(event) ? addRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
+  )
+  ipcMain.handle('corral:removeRepo', (event, root: string) =>
+    fromOurWindow(event) ? removeRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
+  )
+  ipcMain.handle('corral:browseForRepos', (event) =>
+    fromOurWindow(event)
+      ? browseForRepos()
+      : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
+  )
+  ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+
+  // --- 라이프사이클 (R3) ---
+  const denied = { ok: false as const, error: '허용되지 않은 발신자' }
+  ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? createRowInWorkspace({ workspaceId: input.workspaceId, kind: input.kind })
+      : { ...denied, paneId: null, tabId: null, retries: 0 },
+  )
+  ipcMain.handle('corral:closeRow', (event, input: { tabId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.tabId === 'string'
+      ? closeRowByTab({ tabId: input.tabId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:closeWorktree', (event, input: { workspaceId: string; confirmed?: boolean }) =>
+    fromOurWindow(event) && typeof input?.workspaceId === 'string'
+      ? closeWorktreeByWorkspace({ workspaceId: input.workspaceId, confirmed: input.confirmed === true })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:openWorktree', (event, input: { repoRoot: string; path: string; isLinked: boolean }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.path === 'string'
+      ? openWorktreeRow({ repoRoot: input.repoRoot, path: input.path, isLinked: input.isLinked === true })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
+  ipcMain.handle('corral:createWorktree', (event, input: { repoRoot: string; branch: string; path: string }) =>
+    fromOurWindow(event) && typeof input?.repoRoot === 'string' && typeof input?.branch === 'string' && typeof input?.path === 'string'
+      ? createWorktreeForRepo({ repoRoot: input.repoRoot, branch: input.branch, path: input.path })
+      : { ...denied, workspaceId: null, rejection: null },
+  )
+  ipcMain.on('corral:reportRendered', (event, rendered: number) => {
+    if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
+  })
+
+  // --- 터미널 스트림 (R2) ---
+  ipcMain.handle('corral:selectPane', (event, input: { paneId: string | null; cols?: number; rows?: number }) => {
+    if (fromOurWindow(event)) selectPane(input)
+  })
+  // 입력·리사이즈·스크롤은 fire-and-forget — 왕복을 기다릴 값이 없고 레이턴시(S2)에 민감하다.
+  ipcMain.on('corral:termInput', (event, data: string) => {
+    if (fromOurWindow(event) && typeof data === 'string') stream.input(data)
+  })
+  ipcMain.on('corral:termResize', (event, size: { cols: number; rows: number }) => {
+    if (!fromOurWindow(event)) return
+    if (typeof size?.cols !== 'number' || typeof size?.rows !== 'number') return
+    stream.resize({ cols: size.cols, rows: size.rows })
+  })
+  ipcMain.on('corral:termScroll', (event, scroll: TerminalScroll) => {
+    // termInput·termResize 와 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
+    // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
+    if (!fromOurWindow(event)) return
+    if (scroll?.direction !== 'up' && scroll?.direction !== 'down') return
+    if (typeof scroll.lines !== 'number') return
+    if (scroll.column !== null && typeof scroll.column !== 'number') return
+    if (scroll.row !== null && typeof scroll.row !== 'number') return
+    stream.scroll(scroll)
   })
 
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
+  scheduleTree()
 
   startControlServer({
     capture,
-    selectSession: pickSession,
-    selectPane,
-    terminal,
-    window: () => window,
-    toggleCollapse,
     state: () => currentState(),
-    verify: () => link.verifyConvergence(),
-    createRow,
-    closeRow,
+    window: () => window,
+    resync: (reason) => link.resync(reason),
+    setDroppingPush: (input) => link.setDroppingPush(input),
+    addRepo,
+    rebuildTree,
+    setDialogStub: (value) => {
+      dialogStub = value
+      log('browse.stub_set', { stub: value === null ? '(뗌)' : 'path' in value ? value.path : '(취소)' })
+    },
+    // R2 계측 — S5 는 창 크기를 3단계로 바꾸고, A1 은 OS 클립보드에 실렸는지를 읽는다.
+    resizeWindow: (size) => {
+      if (window === null || window.isDestroyed()) throw new Error('창이 없다')
+      window.setBounds({ width: size.width, height: size.height })
+    },
+    readClipboard: () => clipboard.readText(),
   })
 
   app.on('activate', () => {
@@ -348,7 +939,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  terminal.detach()
+  stream.close()
   link.close()
   log('app.quit', { logFile: logFile() })
   closeLog()

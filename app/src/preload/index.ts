@@ -1,64 +1,84 @@
 // preload — contextBridge 로 **채널별 메서드만** 노출한다. ipcRenderer 를 통째로 넘기지 않는다.
 //
-// sandbox:true 에서는 이 파일이 CJS 로 번들되어야 로드된다 (ESM preload 는 조용히 실패).
-// electron.vite.config.ts 의 preload output.format = 'cjs' 가 그 보장이다.
+// sandbox:true 에서는 이 파일이 **단일 CJS 번들**이어야 로드된다 (ESM preload 는 조용히 실패) —
+// electron.vite.config.ts 의 preload output.format='cjs' 가 그 보장이다.
+//
+// 여기 오가는 타입은 전부 `shared/types.ts` 다. 어댑터는 이름조차 모른다 (기준 N2).
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppState, CloseOutcome, TerminalFrame } from '../shared/types.js'
+import type {
+  AddRepoResult,
+  AgentKind,
+  AppState,
+  BrowseReposResult,
+  CloseRowResult,
+  CorralApi,
+  CreateRowResult,
+  RemoveRepoResult,
+  TerminalFrame,
+  TerminalScroll,
+  WorktreeActionResult,
+} from '../shared/types.js'
 
 const EXPOSED = [
   'getState',
   'onState',
-  'selectSession',
-  'selectPane',
-  'toggleCollapse',
+  'addRepo',
+  'removeRepo',
+  'browseForRepos',
   'refreshSessions',
-  'reportRendered',
-  'reportProbe',
-  'preloadEnv',
-  'onTerminalFrame',
-  'sendPaneText',
-  'sendPaneKeys',
   'createRow',
   'closeRow',
-  'dismissLaunch',
+  'closeWorktree',
+  'openWorktree',
+  'createWorktree',
+  'reportRendered',
+  'selectPane',
+  'termInput',
+  'termResize',
+  'termScroll',
+  'onTermFrame',
+  'preloadEnv',
 ]
 
-const api = {
-  getState: (): Promise<AppState> => ipcRenderer.invoke('corral:getState'),
-  onState: (listener: (state: AppState) => void): (() => void) => {
+const api: CorralApi = {
+  getState: () => ipcRenderer.invoke('corral:getState'),
+  onState: (listener: (state: AppState) => void) => {
     const handler = (_event: unknown, state: AppState): void => listener(state)
     ipcRenderer.on('corral:state', handler)
-    return () => ipcRenderer.removeListener('corral:state', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:state', handler)
+    }
   },
-  selectSession: (name: string): Promise<void> => ipcRenderer.invoke('corral:selectSession', name),
-  selectPane: (paneId: string | null): Promise<void> => ipcRenderer.invoke('corral:selectPane', paneId),
-  toggleCollapse: (workspaceId: string): Promise<void> => ipcRenderer.invoke('corral:toggleCollapse', workspaceId),
-  refreshSessions: (): Promise<void> => ipcRenderer.invoke('corral:refreshSessions'),
-  reportRendered: (revision: number): void => ipcRenderer.send('corral:reportRendered', revision),
-  // LIFE-345 — 터미널. 프레임은 main 이 만들고 렌더러는 그대로 쓴다.
-  onTerminalFrame: (listener: (frame: TerminalFrame) => void): (() => void) => {
-    const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)
-    ipcRenderer.on('corral:terminalFrame', handler)
-    return () => ipcRenderer.removeListener('corral:terminalFrame', handler)
-  },
-  sendPaneText: (text: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('corral:paneText', text),
-  sendPaneKeys: (keys: string[]): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('corral:paneKeys', keys),
-  // LIFE-346 — 행의 생성·종료. 확인(N6)은 main 이 강제한다: 에이전트가 도는 탭은
-  // `confirmed:false` 로 부르면 `needsConfirm` 만 돌아오고 herdr 로는 아무것도 안 나간다.
-  createRow: (input: { workspaceId: string; kind: string; label: string | null }): Promise<{
-    ok: boolean
-    launchId: string
-    error?: string
-  }> => ipcRenderer.invoke('corral:createRow', input),
-  closeRow: (input: { tabId: string; confirmed: boolean }): Promise<CloseOutcome> =>
+  addRepo: (root: string): Promise<AddRepoResult> => ipcRenderer.invoke('corral:addRepo', root),
+  removeRepo: (root: string): Promise<RemoveRepoResult> => ipcRenderer.invoke('corral:removeRepo', root),
+  browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
+  refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
+  createRow: (input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> =>
+    ipcRenderer.invoke('corral:createRow', input),
+  closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
     ipcRenderer.invoke('corral:closeRow', input),
-  dismissLaunch: (launchId: string): Promise<boolean> => ipcRenderer.invoke('corral:dismissLaunch', launchId),
-  reportProbe: (name: string, detail: Record<string, string>): void =>
-    ipcRenderer.send('corral:reportProbe', name, detail),
-  // S3 근거 — preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다.
+  closeWorktree: (input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
+    ipcRenderer.invoke('corral:closeWorktree', input),
+  openWorktree: (input: { repoRoot: string; path: string; isLinked: boolean }): Promise<WorktreeActionResult> =>
+    ipcRenderer.invoke('corral:openWorktree', input),
+  createWorktree: (input: { repoRoot: string; branch: string; path: string }): Promise<WorktreeActionResult> =>
+    ipcRenderer.invoke('corral:createWorktree', input),
+  reportRendered: (revision: number) => ipcRenderer.send('corral:reportRendered', revision),
+  selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) =>
+    ipcRenderer.invoke('corral:selectPane', input),
+  // 입력·리사이즈·스크롤은 send — 왕복 없는 한 방향이 레이턴시(S2)의 모양이다.
+  termInput: (data: string) => ipcRenderer.send('corral:termInput', data),
+  termResize: (size: { cols: number; rows: number }) => ipcRenderer.send('corral:termResize', size),
+  termScroll: (scroll: TerminalScroll) => ipcRenderer.send('corral:termScroll', scroll),
+  onTermFrame: (listener: (frame: TerminalFrame) => void) => {
+    const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)
+    ipcRenderer.on('corral:termFrame', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:termFrame', handler)
+    }
+  },
+  // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,
     contextIsolated: process.contextIsolated === true,

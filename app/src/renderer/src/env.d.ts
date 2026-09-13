@@ -1,17 +1,29 @@
-import type { Terminal } from '@xterm/xterm'
-import type { CorralApi } from '../../shared/types'
+/// <reference types="vite/client" />
+import type { CorralApi } from '../../shared/types.js'
+
+/** 계측 프로브(term-read)가 읽는 xterm 버퍼 실물 스냅샷 — 읽기 전용 훅. */
+type CorralTermProbe = {
+  cellWidth: (text: string) => number | null
+  /** L2 — DECRQM 질의를 xterm 에 먹이고 그 DECRPM 응답 문자열을 돌려준다 (#5800 우회 직접 관측). */
+  decrqm: (mode: number) => Promise<string>
+  read: () => {
+    paneId: string
+    cols: number
+    rows: number
+    cursorX: number
+    cursorY: number
+    cursorHidden: boolean | null
+    lastSeq: number
+    lines: string[]
+    writes: Array<{ paneId: string; seq: number; at: number }>
+    inputs: Array<{ data: string; at: number }>
+    at: number
+  }
+}
 
 declare global {
   interface Window {
     corral: CorralApi
-    /**
-     * 계측 전용 문 — `control.ts` 의 `term-dump`·`paste` 가 이걸 읽는다.
-     * 판정 근거를 **렌더러의 진짜 버퍼**에서 뽑기 위한 것이고 평시 코드는 쓰지 않는다.
-     */
-    __corralTerm?: Terminal
-    /** T7 계측 — 유니코드 폭 모드를 갈아 끼운다. 되돌려주는 값은 실제 `activeVersion` 이다. */
-    __corralUnicode?: (mode: '6' | '11' | 'graphemes') => string
+    corralTermProbe?: CorralTermProbe
   }
 }
-
-export {}

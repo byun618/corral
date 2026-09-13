@@ -156,6 +156,9 @@ body {
 
 .new-row { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; }
 .new-row-label { color: var(--dim); font-size: 11px; }
+/* + 빈 탭 (G1) — 기본 생성 문이라 또렷하게, 에이전트 버튼보다 앞선다. */
+.new-row .new-tab { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.new-row .new-tab:hover { background: rgba(110, 168, 254, 0.12); }
 
 /* worktree·tab 줄의 닫기/열기 버튼은 인라인에 둔다 (레포 제거처럼 오른쪽 끝으로 밀지 않는다). */
 .worktree-head .row-remove, .tab-head .row-remove { margin-left: 0; }
@@ -171,6 +174,8 @@ body {
   border: 1px solid var(--warn); background: rgba(214, 182, 86, 0.1); font-size: 12px;
 }
 .lifecycle-notice.error { border-color: var(--danger); background: rgba(224, 104, 95, 0.1); }
+/* 안내(info) — 부모 함께 열림 같은 중립 알림 (G4). 거절/실패와 색으로 구분한다. */
+.lifecycle-notice.info { border-color: var(--accent); background: rgba(110, 168, 254, 0.1); }
 .lifecycle-notice-text { color: var(--text); overflow-wrap: anywhere; }
 .lifecycle-notice-close { border: none; background: none; color: var(--dim); font-size: 13px; cursor: pointer; padding: 2px 6px; }
 .lifecycle-notice-close:hover { color: var(--text); }

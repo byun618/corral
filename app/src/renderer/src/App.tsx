@@ -17,12 +17,15 @@ import { TerminalPane } from './TerminalPane.js'
 /** 제거 확인 문구의 두 번째 줄. **여기 한 자리에만** 둔다 — 계측이 대조하는 것도 이 문자열이다. */
 const REMOVE_DISCLAIMER = '제거는 corral 목록에서만 빠진다 — 디스크의 폴더도, herdr 세션도 건드리지 않는다.'
 
-/** 행 생성에서 고르는 종류. 화면 라벨과 corral kind 값을 한 자리에 둔다. */
+/**
+ * **에이전트 즉시 기동** 버튼 (게이트 ① G1). `+`(빈 탭)와 달리 누르는 즉시 그 에이전트를 띄운다
+ * (`tab.create` + `agent.start`) — L1/L2 검증 자산(생성+기동 배선)을 유지한다. 빈 탭(셸,
+ * `tab.create` 만)은 아래 `+` 버튼이 `kind:'shell'` 로 만든다. data-kind 값은 불변(하네스 계약).
+ */
 const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
   { kind: 'claude', label: 'claude' },
   { kind: 'codex', label: 'codex' },
   { kind: 'grok', label: 'grok' },
-  { kind: 'shell', label: '셸' },
 ]
 
 /**
@@ -41,8 +44,11 @@ type LifecycleActions = {
   openCreateWorktree: (repoRoot: string) => void
 }
 
-/** 화면 상단에 그대로 뜨는 라이프사이클 알림 (거절·실패). L9 거절은 여기서 멈춘다. */
-type LifecycleNotice = { kind: 'rejected'; code: string; message: string } | { kind: 'error'; message: string }
+/** 화면 상단에 그대로 뜨는 라이프사이클 알림 (거절·실패·안내). L9 거절은 여기서 멈춘다. */
+type LifecycleNotice =
+  | { kind: 'rejected'; code: string; message: string }
+  | { kind: 'error'; message: string }
+  | { kind: 'info'; message: string } // 게이트 ① G4: 부모 함께 열림 같은 안내 한 줄
 
 /**
  * 칩이 **구분하는 상태의 전부**다 (기준 N8: "문서에 적고 그 전부를 대조한다").
@@ -80,10 +86,35 @@ export function App(): React.JSX.Element {
    * 이건 방어의 앞선(빠른) 층이다.
    */
   const openingWorktrees = useRef<Set<string>>(new Set())
+  /**
+   * 마지막으로 상호작용한 workspace (게이트 ① G2 ⌘T 대상). "선택(포커스)" = 탭을 보는 것 →
+   * 탭 생성·pane 선택 때 갱신한다. ref 라 키 핸들러가 최신값을 스테일 없이 읽는다. null 이면 no-op.
+   */
+  const lastWorkspaceRef = useRef<string | null>(null)
 
   useEffect(() => {
     void window.corral.getState().then(setState)
     return window.corral.onState(setState)
+  }, [])
+
+  /**
+   * ⌘T (mac) / Ctrl+T — 선택/최근 workspace 에 **빈 탭** (게이트 ① G2). 대상이 없으면 no-op.
+   * `+ 빈 탭` 클릭과 같은 경로(`createRow` kind:'shell' = tab.create 만)다. 문서에 걸어 포커스와
+   * 무관하게 받는다. 기본 동작(있으면)은 막는다.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || (event.key !== 't' && event.key !== 'T')) return
+      event.preventDefault()
+      const workspaceId = lastWorkspaceRef.current
+      if (workspaceId === null) return // 선택/최근 workspace 없음 → 무시
+      setLifecycleNotice(null)
+      void window.corral.createRow({ workspaceId, kind: 'shell' }).then((result) => {
+        if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
+      })
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [])
 
   /**
@@ -209,10 +240,21 @@ export function App(): React.JSX.Element {
   }
 
   const createRow = async (workspaceId: string, kind: AgentKind): Promise<void> => {
+    lastWorkspaceRef.current = workspaceId // G2: 상호작용한 workspace 를 ⌘T 대상으로 기록
     setLifecycleNotice(null)
     const result = await window.corral.createRow({ workspaceId, kind })
-    if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '행 생성 실패' })
-    // 성공이면 store push 로 행이 나타난다 — 여기서 목록을 만지지 않는다.
+    if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
+    // 성공이면 store push 로 탭이 나타난다 — 여기서 목록을 만지지 않는다.
+  }
+
+  /** 탭(pane) 선택 — 터미널을 그 pane 으로. G2: 그 pane 의 workspace 를 ⌘T 대상으로 기록한다. */
+  const selectPane = (paneId: string): void => {
+    setSelectedPane(paneId)
+    const ws = state.repos
+      .flatMap((repo) => repo.worktrees)
+      .map((worktree) => worktree.workspace)
+      .find((workspace) => workspace?.tabs.some((tab) => tab.panes.some((pane) => pane.paneId === paneId)))
+    if (ws) lastWorkspaceRef.current = ws.workspaceId
   }
 
   const openWorktree = async (repoRoot: string, worktree: WorktreeRow): Promise<void> => {
@@ -225,6 +267,9 @@ export function App(): React.JSX.Element {
       if (result.rejection) setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
       // `deduped` (양성 중복 — 이미 여는 중) 는 알림으로 띄우지 않는다 (F-2: 문자열 비교 대신 필드).
       else if (!result.ok && !result.deduped) setLifecycleNotice({ kind: 'error', message: result.error ?? '열기 실패' })
+      // G4: linked 를 열며 부모(main workspace)가 함께 열렸으면 안내 한 줄 (herdr 부모 필수 제약, P3).
+      else if (result.ok && result.parentOpened)
+        setLifecycleNotice({ kind: 'info', message: 'main workspace 를 함께 열었습니다 (herdr 제약)' })
     } finally {
       openingWorktrees.current.delete(worktree.path)
     }
@@ -288,7 +333,7 @@ export function App(): React.JSX.Element {
 
       {lifecycleNotice === null ? null : (
         <div
-          className={`lifecycle-notice ${lifecycleNotice.kind === 'rejected' ? 'rejected' : 'error'}`}
+          className={`lifecycle-notice ${lifecycleNotice.kind}`}
           data-lifecycle-notice
           data-notice-kind={lifecycleNotice.kind}
           data-notice-code={lifecycleNotice.kind === 'rejected' ? lifecycleNotice.code : ''}
@@ -296,7 +341,9 @@ export function App(): React.JSX.Element {
           <span className="lifecycle-notice-text">
             {lifecycleNotice.kind === 'rejected'
               ? `herdr 거절 (${lifecycleNotice.code}): ${lifecycleNotice.message}`
-              : `실패: ${lifecycleNotice.message}`}
+              : lifecycleNotice.kind === 'info'
+                ? lifecycleNotice.message
+                : `실패: ${lifecycleNotice.message}`}
           </span>
           <button className="lifecycle-notice-close" data-notice-dismiss aria-label="닫기" onClick={() => setLifecycleNotice(null)}>
             ✕
@@ -317,7 +364,7 @@ export function App(): React.JSX.Element {
                 repo={repo}
                 actions={actions}
                 selectedPane={selectedPane}
-                onSelectPane={setSelectedPane}
+                onSelectPane={selectPane}
                 onRemove={() => {
                   setRemoveError(null)
                   setPendingRemove(repo)
@@ -495,7 +542,7 @@ function ConfirmClose({
   onConfirm: () => void
   onCancel: () => void
 }): React.JSX.Element {
-  const what = target.kind === 'tab' ? '이 행을' : '이 worktree 를'
+  const what = target.kind === 'tab' ? '이 탭을' : '이 worktree 를'
   return (
     <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
       <div className="modal" data-confirm-close-modal data-confirm-close-kind={target.kind} onClick={(event) => event.stopPropagation()}>
@@ -673,7 +720,7 @@ function TerminalPanel({ state, selectedPane }: { state: AppState; selectedPane:
             )}
           </>
         ) : (
-          <span className="meta">터미널 — pane 을 고르면 여기 뜬다</span>
+          <span className="meta">터미널 — 탭을 고르면 여기 뜬다</span>
         )}
       </div>
       {alive ? (
@@ -816,15 +863,29 @@ function Workspace({
         <span className="chip chip-id" data-workspace-id={workspace.workspaceId}>
           {workspace.workspaceId}
         </span>
-        {/* 새 행 (L1·L2). 종류마다 버튼 하나 — 계측이 좌표로 누를 수 있게 명시적으로 둔다. */}
+        {/*
+          새 탭 (L1·L2). 게이트 ① G1: **`+` 는 빈 탭(셸, tab.create 만)** 이 기본 — 그 안에서 사용자가
+          직접 에이전트를 띄운다 (Orca 방식). 에이전트 버튼은 **즉시 기동** 경로로 남긴다 (L1 자산).
+          data-create-row·data-kind 는 불변 — 계측이 좌표로 누르는 화면 계약이다 (G3: 워딩만 바꾼다).
+        */}
         <span className="new-row" data-new-row={workspace.workspaceId}>
-          <span className="new-row-label">새 행:</span>
+          <button
+            className="row-action new-tab"
+            data-create-row={workspace.workspaceId}
+            data-kind="shell"
+            title="빈 탭 (셸)"
+            onClick={() => actions.createRow(workspace.workspaceId, 'shell')}
+          >
+            + 빈 탭
+          </button>
+          <span className="new-row-label">에이전트:</span>
           {AGENT_KINDS.map(({ kind, label }) => (
             <button
               key={kind}
               className="row-action"
               data-create-row={workspace.workspaceId}
               data-kind={kind}
+              title={`${label} 즉시 기동`}
               onClick={() => actions.createRow(workspace.workspaceId, kind)}
             >
               {label}
@@ -867,8 +928,8 @@ function Tab({
         */}
         <span className="tab-label">{tab.label}</span>
         <span className="chip chip-id">{tab.tabId}</span>
-        {/* 행 닫기 (L3·L4·L9a). main 이 종료 게이트를 재고, 산 프로세스가 있을 때만 모달이 뜬다. */}
-        <button className="row-remove" data-close-tab={tab.tabId} title="행 닫기" onClick={() => actions.closeRow(tab.tabId)}>
+        {/* 탭 닫기 (L3·L4·L9a). main 이 종료 게이트를 재고, 산 프로세스가 있을 때만 모달이 뜬다. */}
+        <button className="row-remove" data-close-tab={tab.tabId} title="탭 닫기" onClick={() => actions.closeRow(tab.tabId)}>
           닫기
         </button>
       </div>

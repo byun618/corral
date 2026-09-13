@@ -182,6 +182,12 @@ export type WorktreeActionResult = {
    * 보고 알림을 띄우지 않는다 (문자열 비교 대신 필드로 판별 — 문구가 바뀌어도 안 깨진다).
    */
   deduped?: boolean
+  /**
+   * linked worktree 를 열며 부모(주 체크아웃) workspace 를 **이 호출이 함께 열었다** (게이트 ① G4).
+   * herdr `worktree.open` 은 부모가 열려 있어야 하는 제약(P3) 때문에 부모가 딸려 열린다 — 그 사실을
+   * 화면에 한 줄 알린다 (탭을 숨기지 않는다 = 상태 왜곡 금지, 기준 N8). 이미 열려 있었으면 false.
+   */
+  parentOpened?: boolean
 }
 
 export type AddRepoResult = { ok: boolean; root?: string; error?: string }

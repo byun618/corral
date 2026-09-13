@@ -401,7 +401,8 @@ function browseMessage(input: {
 // --- 라이프사이클 (R3 — LIFE-356) --------------------------------------------
 
 type ParentResult =
-  | { ok: true; workspaceId: string }
+  // `opened` — 이 호출이 부모를 **새로 열었나** (게이트 ① G4: linked 열기의 "함께 열림" 알림 근거).
+  | { ok: true; workspaceId: string; opened: boolean }
   | { ok: false; rejection: WorktreeActionResult['rejection']; error: string | null }
 
 /**
@@ -442,7 +443,7 @@ async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
       const primaryOpen = open.byPath.get(parentKey) ?? null
       if (primaryOpen !== null) {
         log('lifecycle.parent.already_open', { repoRoot: parentKey, workspaceId: primaryOpen })
-        return { ok: true, workspaceId: primaryOpen }
+        return { ok: true, workspaceId: primaryOpen, opened: false }
       }
     } else {
       // ③ 읽기 실패 폴스루 — 열림상태를 확정 못 하지만 in-flight 가 동시 호출을 이미 하나로 묶었다.
@@ -453,7 +454,7 @@ async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
       return { ok: false, rejection: opened.rejection, error: opened.error ?? 'parent workspace 를 못 열었다' }
     }
     scheduleTree()
-    return { ok: true, workspaceId: opened.workspaceId }
+    return { ok: true, workspaceId: opened.workspaceId, opened: true }
   })()
   parentOpenInFlight.set(parentKey, promise)
   try {
@@ -606,7 +607,11 @@ async function openWorktreeRow(input: {
     const parent = await resolveParentWorkspace(input.repoRoot)
     if (!parent.ok) return { ok: false, workspaceId: null, rejection: parent.rejection, error: parent.error }
     const result = await openWorktree(socketPath, { parentWorkspaceId: parent.workspaceId, path: input.path })
-    if (result.ok) scheduleTree()
+    if (result.ok) {
+      scheduleTree()
+      // G4: linked 를 열며 부모를 **이 호출이 함께 열었으면** 그 사실을 화면에 알린다 (탭 숨김 금지).
+      return { ...result, parentOpened: parent.opened }
+    }
     return result
   } finally {
     openingWorktrees.delete(key)

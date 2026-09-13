@@ -1,6 +1,6 @@
 ---
 name: task-coordinate
-description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 구현→3자 리뷰→판정→승인 게이트→머지·정리 전 과정. 작업 worktree 의 코디네이터 세션이 킥오프 직후 읽는다. LIFE-342 첫 주행(2026-09-10)으로 검증, 어긋남 12건 반영.
+description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 구현→3자 리뷰→판정→승인 게이트→머지·정리 전 과정. 작업 worktree 의 코디네이터 세션이 킥오프 직후 읽는다. LIFE-342 첫 주행(2026-09-10)으로 검증, 어긋남 13건 반영(LIFE-357 — design-brief/design-intake 삽입 지점 명시).
 ---
 
 # task-coordinate — 코디네이터 절차 (작업 worktree 세션에서 실행)
@@ -22,6 +22,12 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
 - **선행 문서의 사실 주장을 대조표로 검증한다** — 일감 본문·00-project.md 의 전제가 틀렸을 수 있다
   (LIFE-342 에서 5건 중 2건 오류 발견). 산출물: `00-analysis.md` (+ 외부 서치 원문 `00-analysis-grok.md`)
 - 절차가 이 스킬과 어긋나면 `00-analysis.md` 의 "절차 어긋남" 섹션에 누적 기록한다 (스킬 개정 재료)
+- **UI 비중이 큰 일감이면 여기서 `design-brief`/`design-intake` 스킬 삽입 여부를 검토한다** — 비주얼
+  디테일(간격·톤·인터랙션 느낌)이 판정 기준에 안 잡히는 일감은 목업 없이 구현자 재량에 맡기면
+  재작업 위험이 있다 (LIFE-357 판단 뒤집음, 2026-09-13). 넣기로 하면 순서는 `specs/app-screens.md`
+  (화면 인벤토리, 없으면 먼저) → `/design-brief` → 외부 Claude Design → `/design-intake` →
+  그 결과를 반영해 `01-criteria.md`/`02-kickoff.md` 작성·freeze. 안 넣기로 하면 그 판단 사유를
+  `00-analysis.md` 에 한 줄 남긴다(추측 판정 금지 원칙과 같은 결의 — 판단 없이 생략하지 않는다)
 
 ## 2. 판정 기준 — `01-criteria.md`
 

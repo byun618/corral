@@ -52,6 +52,20 @@ async function measureGaps(app) {
           repoGroupGapsPx: repoGaps,
           worktreeBlockGapsPx: worktreeGaps,
           sessionRowGapsPx: sessionGaps,
+          // I-4 — **3단 들여쓰기 좌표**. 레포 이름 < worktree 이름 < 세션 제목 으로 단조
+          // 증가해야 한다. 전에는 레포 33 > worktree 29 로 위계가 거꾸로였다.
+          // 세션은 **행 시작**과 **제목 텍스트**를 따로 잰다 — 제목 앞에 상태·종류 글리프 2칸이
+          // 있어서 제목 좌표만 보면 들여쓰기가 실제보다 커 보인다. 표가 같은 것끼리 비교되게.
+          sessionRowLeftPx: (() => {
+            const r = document.querySelector('[data-tab]')
+            if (r === null) return null
+            const cs = getComputedStyle(r)
+            return Math.round(r.getBoundingClientRect().left + parseFloat(cs.paddingLeft))
+          })(),
+          repoNameLeftPx: (() => {
+            const n = document.querySelector('.repo-row-name')
+            return n === null ? null : Math.round(n.getBoundingClientRect().left)
+          })(),
           // 세션 행이 worktree 이름보다 **안쪽**에서 시작하는가 (소속이 보이게).
           worktreeNameLeftPx: worktreeName === null ? null : Math.round(worktreeName.getBoundingClientRect().left),
           sessionTitleLeftPx: sessionRow === null ? null : Math.round(sessionRow.querySelector('.session-row-title')?.getBoundingClientRect().left ?? 0),
@@ -166,6 +180,23 @@ async function main() {
       sessionIndentDeltaPx:
         expanded.sessionTitleLeftPx === null || expanded.worktreeNameLeftPx === null ? null : expanded.sessionTitleLeftPx - expanded.worktreeNameLeftPx,
       sessionGapPx: expanded.sessionRowGapsPx[0] ?? null,
+      // I-4 3단 실측 좌표 — 산술이 아니라 rect 로 잰다.
+      indentTiers: {
+        repoNameLeftPx: expanded.repoNameLeftPx,
+        worktreeNameLeftPx: expanded.worktreeNameLeftPx,
+        sessionRowLeftPx: expanded.sessionRowLeftPx,
+        sessionTitleLeftPx: expanded.sessionTitleLeftPx,
+        monotonicByRowStart:
+          expanded.repoNameLeftPx !== null && expanded.worktreeNameLeftPx !== null && expanded.sessionRowLeftPx !== null &&
+          expanded.repoNameLeftPx < expanded.worktreeNameLeftPx && expanded.worktreeNameLeftPx < expanded.sessionRowLeftPx,
+        monotonic:
+          expanded.repoNameLeftPx !== null &&
+          expanded.worktreeNameLeftPx !== null &&
+          expanded.sessionTitleLeftPx !== null &&
+          expanded.repoNameLeftPx < expanded.worktreeNameLeftPx &&
+          expanded.worktreeNameLeftPx < expanded.sessionTitleLeftPx,
+        beforeFix: { repoNameLeftPx: 33, worktreeNameLeftPx: 29, note: '11-gate1-fix3.md I-4 표 — worktree 가 레포보다 덜 들어가 위계가 거꾸로였다' },
+      },
       // 통과선은 절대값이 아니라 **위계**다: 레포 간격 > worktree 간격 > 세션 간격.
       ladderHolds:
         (expanded.repoGroupGapsPx[0] ?? 0) > (expanded.worktreeBlockGapsPx[0] ?? 0) &&
@@ -200,6 +231,8 @@ async function main() {
     out.selectedCardEnvelope.wrapsEverything &&
     out.hierarchy.ladderHolds &&
     out.hierarchy.sessionIndentedInsideWorktreeName &&
+    out.hierarchy.indentTiers.monotonic &&
+    out.hierarchy.indentTiers.monotonicByRowStart &&
     out.collapsedSummary.sessionRowsGone &&
     out.collapsedSummary.summaryRowPresent &&
     out.collapsedSummary.doesNotUseDataTab &&

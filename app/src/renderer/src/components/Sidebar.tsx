@@ -60,7 +60,16 @@ export function Sidebar({
     if (pane !== null) selectPane(pane.paneId)
   }
 
+  /**
+   * 세션 행 클릭 — **그 탭의 workspace 를 먼저 활성화**하고 pane 을 고른다 (11-gate1-fix3.md I-6).
+   *
+   * 전에는 `selectPane` 만 불렀다. 그래서 활성이 아닌 worktree 의 세션을 누르면 터미널만 바뀌고
+   * 탭바·상태바는 딴 workspace 를 계속 가리켰다 — `App.tsx` 의 `activeWorkspace` 가
+   * `activeWorkspaceId` 를 따르기 때문이다. `onSelectBlock` 이
+   * `activateWorkspace` → `selectFirstSession` 순으로 하는 것과 같은 결로 맞춘다.
+   */
   const onSelectSession = (tab: TabRow): void => {
+    if (tab.workspaceId !== activeWorkspaceId) actions.activateWorkspace(tab.workspaceId)
     const pane = pickPane(tab)
     if (pane !== null) selectPane(pane.paneId)
   }

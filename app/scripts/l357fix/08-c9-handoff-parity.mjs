@@ -148,7 +148,10 @@ async function main() {
     { timeoutMs: 10000, what: 'worktree opened' },
   ).then((r) => r.value)
 
-  // ---------- (c) 규칙 ① 탭바 표시 규칙 (sessionCount>=2) — 1개일 때 없음 → 2개일 때 있음 ----------
+  // ---------- (c) 규칙 ① 탭바 표시 규칙 (C5′ 상시 렌더) — 1개일 때 **있음** → N개일 때도 있음 ----------
+  // 옛 규칙은 "탭 1개면 DOM 부재"였다. 01-criteria.md 부록 C5′ 가 그것을 **개정**했다
+  // (11-gate1-fix3.md I-5 — 원 근거였던 Orca 인용이 사실이 아니었다). 규칙을 약화한 게 아니라
+  // 양쪽 상태 모두에서 **존재**를 요구하는 쪽으로 바뀐 것이다.
   const tabbarAtOne = (await app.query('[data-main-tabbar]')).found.length
   const tabsAtOne = (await tabsOf(app, repo.root)).length
 
@@ -164,13 +167,15 @@ async function main() {
   })
 
   const ruleTabBar = {
-    label: 'c_rule1_tabBarAtTwoSessions',
+    label: 'c_rule1_tabBarAlwaysRendered',
     tabsAtOne,
     tabbarPresentAtOne: tabbarAtOne > 0,
     tabsAtMany: mixedThree.tabCount,
     tabbarPresentAtMany: tabbarAtMany > 0,
-    pass: tabsAtOne === 1 && tabbarAtOne === 0 && mixedThree.tabCount >= 2 && tabbarAtMany > 0,
-    reason: 'handoff §1-3 / §2 MainTabBar "sessionCount >= 2 일 때만 존재". 탭 1개일 때 DOM 부재 → 2개 이상일 때 존재를 같은 실행에서 잰다. 여기서 sessionCount 는 **전체 탭**이다(01-criteria.md 부록).',
+    pass: tabsAtOne === 1 && tabbarAtOne > 0 && mixedThree.tabCount >= 2 && tabbarAtMany > 0,
+    supersedes: '옛 판정식 `tabsAtOne === 1 && tabbarAtOne === 0` (탭 1개면 부재)',
+    reason:
+      '01-criteria.md 부록 C5′ "활성 workspace 가 있으면 탭 수와 무관하게 렌더". 탭 1개일 때와 N개일 때 **둘 다 존재**함을 같은 실행에서 잰다. 탭 0개 경계는 herdr 허용 여부가 걸려 있어 C5 하네스(c5-tabbar.json zeroTabProbe)에서 따로 만들어 잰다. 여기서 탭 수는 **전체 탭**이다(부록 "세션 용어 확정" — 그 정의는 유효하고, 개정된 건 임계값 출처뿐).',
   }
 
   const ruleGroupHeader = {

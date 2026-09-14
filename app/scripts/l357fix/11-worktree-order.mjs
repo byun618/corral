@@ -38,12 +38,15 @@ async function orderSnapshot(app, label) {
     const w = stateRows.find((x) => x.path === p)
     return w === undefined ? p : (w.branch ?? w.path)
   }
+  // I-1 — 주 체크아웃(`isLinked === false`)이 맨 위. 브랜치 이름이 'main' 인지로 재지 않는다.
+  const linkedOf = (p) => stateRows.find((x) => x.path === p)?.isLinked ?? null
   const openCount = stateRows.filter((w) => w.openWorkspaceId !== null).length
   const sessionCount = stateRows.reduce((sum, w) => sum + (w.workspace?.tabs.length ?? 0), 0)
   return {
     label,
     // 화면에 보이는 이름(leaf) — 통과선의 비교 단위다.
     renderedShownNames: rows.map((r) => r.shown),
+    renderedIsLinked: paths.map(linkedOf),
     renderedNames: paths.map(nameOf),
     // herdr 가 준 배열 순서 — 우리가 여기에 의존하지 **않는다**는 것을 보이기 위해 같이 찍는다.
     stateArrayNames: stateRows.map((w) => w.branch ?? w.path),
@@ -141,10 +144,17 @@ async function main() {
 
   // 렌더러와 **같은 비교자**로 기대 순서를 만든다(leaf 1차 · 풀네임 2차). 손으로 적으면
   // localeCompare 가 코드포인트 순이 아니라서 틀린다.
-  const pairsOf = (s) => s.renderedShownNames.map((shown, i) => ({ shown, full: s.renderedNames[i] }))
+  const pairsOf = (s) => s.renderedShownNames.map((shown, i) => ({ shown, full: s.renderedNames[i], linked: s.renderedIsLinked[i] }))
   const byLeafThenFull = (a, b) => (a.shown.localeCompare(b.shown) !== 0 ? a.shown.localeCompare(b.shown) : a.full.localeCompare(b.full))
-  const expectedNames = pairsOf(snapshots[0]).sort(byLeafThenFull).map((p) => p.shown)
-  const matchesNameOrder = snapshots.every((s) => JSON.stringify([...pairsOf(s)].sort(byLeafThenFull).map((p) => p.shown)) === JSON.stringify(s.renderedShownNames))
+  // I-1 — 주 체크아웃 축이 **앞에** 붙었다(정적 키라 H-1 "세션 무관" 요구와 충돌하지 않는다).
+  const byMainThenName = (a, b) => (Number(a.linked) - Number(b.linked) !== 0 ? Number(a.linked) - Number(b.linked) : byLeafThenFull(a, b))
+  const expectedNames = pairsOf(snapshots[0]).sort(byMainThenName).map((p) => p.shown)
+  const matchesNameOrder = snapshots.every((s) => JSON.stringify([...pairsOf(s)].sort(byMainThenName).map((p) => p.shown)) === JSON.stringify(s.renderedShownNames))
+  // 주 체크아웃이 실제로 1행에 있는가 — 사용자 지시의 문구 그대로를 따로 잰다.
+  const mainCheckoutFirst = snapshots.every((s) => s.renderedIsLinked[0] === false && s.renderedIsLinked.slice(1).every((v) => v === true))
+  // 회귀 감지력 ③: I-1 **이전 규칙**(leaf 단일축)이었다면 순서가 달라져야 한다.
+  const leafOnlyRuleOrder = pairsOf(selectionSnapshot).sort(byLeafThenFull).map((p) => p.shown)
+  const leafOnlyRuleWouldDiffer = JSON.stringify(leafOnlyRuleOrder) !== JSON.stringify(selectionSnapshot.renderedShownNames)
 
   // 정렬이 실제로 돌고 있다는 증거 — 한 컷이라도 herdr 배열 순서와 달라야 한다.
   const differsFromStateArray = snapshots.some((s) => JSON.stringify(s.renderedNames) !== JSON.stringify(s.stateArrayNames))
@@ -161,8 +171,9 @@ async function main() {
 
   const out = {
     what: 'H-1 — worktree 정렬이 세션 상태와 무관하게 고정인가 (10-gate1-fix2.md 통과선 ⓐⓑⓒ)',
-    rule: '화면에 보이는 이름(브랜치 leaf) 1차 · 풀네임 2차 사전순. 세션 수·열림 여부·선택 여부는 정렬 키에 넣지 않는다.',
+    rule: '주 체크아웃(isLinked=false) 1차 · 보이는 이름(leaf) 2차 · 풀네임 3차. 세션 수·열림 여부·선택 여부는 정렬 키에 넣지 않는다.',
     fullNameRuleOrder,
+    leafOnlyRuleOrder,
     fixtureCreationOrder: created.map((w) => w.branch),
     expectedNames,
     snapshots,
@@ -176,13 +187,15 @@ async function main() {
       differsFromStateArray,
       withdrawnRuleWouldDiffer,
       fullNameRuleWouldDiffer,
+      mainCheckoutFirst,
+      leafOnlyRuleWouldDiffer,
     },
     shots: [shotSelection],
     rawChain: [app.rawChain(), app2.rawChain()],
     clickLog: [...app.clickLog(), ...app2.clickLog()],
     pass: null,
   }
-  out.pass = allIdentical && matchesNameOrder && differsFromStateArray && withdrawnRuleWouldDiffer && fullNameRuleWouldDiffer
+  out.pass = allIdentical && matchesNameOrder && differsFromStateArray && withdrawnRuleWouldDiffer && fullNameRuleWouldDiffer && mainCheckoutFirst && leafOnlyRuleWouldDiffer
   console.log(JSON.stringify({ ...out, snapshots: snapshots.map((s) => ({ label: s.label, renderedShownNames: s.renderedShownNames })) }, null, 2))
   writeRaw('h1-worktree-order.json', out)
   await app2.stop()

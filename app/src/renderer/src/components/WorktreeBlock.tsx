@@ -22,6 +22,7 @@ import { useState } from 'react'
 import type { AgentKind, TabRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { agentIcon, GLYPH } from '../session-glyphs.js'
+import { AgentIcon } from './AgentIcon.js'
 import { isAgentTab, tabAgent } from '../session-title.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
@@ -215,7 +216,7 @@ export function WorktreeBlock({
           <span className={`session-row-glyph tone-${collapsedSummary.status.tone}`}>{collapsedSummary.status.glyph}</span>
           {collapsedSummary.kind === null ? null : (
             <span className={`session-row-agent agent-${collapsedSummary.kind.kind}`} data-agent-kind={collapsedSummary.kind.kind}>
-              {collapsedSummary.kind.glyph}
+              <AgentIcon kind={collapsedSummary.kind.kind} glyph={collapsedSummary.kind.glyph} />
             </span>
           )}
           {collapsedSummary.hiddenCount > 0 ? (

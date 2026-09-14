@@ -163,8 +163,8 @@ button { font: inherit; }
   cursor: pointer; background: transparent; border: 1px solid transparent;
 }
 .worktree-block.is-selected { background: var(--bg-selected); border-color: var(--line-strong); }
-.worktree-block-line1 { display: flex; align-items: center; gap: 7px; min-height: 19px; }
-.worktree-block-line2 { display: flex; align-items: center; gap: 8px; padding: 1px 0 2px 13px; }
+.worktree-block-line1 { display: flex; align-items: center; gap: 7px; min-height: 19px; padding-left: var(--indent-worktree); }
+.worktree-block-line2 { display: flex; align-items: center; gap: 8px; padding: 1px 0 2px calc(var(--indent-worktree) + 13px); }
 .worktree-block-spacer { flex: 1; }
 .worktree-block-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity 80ms linear; }
 .worktree-block-actions.is-active { opacity: 1; }
@@ -220,7 +220,15 @@ button { font: inherit; }
 }
 .session-row.is-active .session-row-title { color: var(--fg); }
 /* H-6 에이전트 종류 아이콘 — 상태 글리프와 **별도 칸**. 색은 토큰만 쓴다. */
-.session-row-agent, .main-tab-agent { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-badge); }
+/* 아이콘 칸 (I-2) — 안에 인라인 SVG 가 들어온다. `inline-flex` 로 두어 **행 높이에 관여하지
+   않게** 한다: 텍스트 흐름에 SVG 를 그냥 얹으면 baseline 아래 여유분이 붙어 행이 밀리고,
+   --h-session-row(21px) 는 C9(b) 통과선이다. `shell` 은 여전히 글자(`$`)라 font-* 도 남긴다.
+   색은 `.agent-*` 가 정하고 SVG 는 `currentColor` 로 받는다. */
+.session-row-agent, .main-tab-agent {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; line-height: 0;
+  font-family: var(--font-mono); font-size: var(--fs-badge);
+}
 .agent-claude { color: var(--agent-claude); }
 .agent-codex { color: var(--agent-codex); }
 .agent-grok { color: var(--agent-grok); }

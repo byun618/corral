@@ -78,7 +78,12 @@
   --h-session-row: 21px;
   --h-group-row: 22px;
   --h-footer-toolbar: 30px;
-  --indent-session: 24px;
+  /* 들여쓰기 3단 (11-gate1-fix3.md I-4) — **레포 < worktree < 세션** 으로 단조 증가한다.
+     전에는 레포 이름 33px > worktree 이름 29px 로 위계가 거꾸로였다. 두 토큰은 worktree 블록의
+     **안쪽 내용**에만 걸린다 — 바깥 margin 을 밀면 선택 카드 경계가 같이 밀려 H-3 이 흔들린다.
+     ⚠ 세로 치수(--h-*)는 C9(b) 통과선이라 손대지 않는다. 가로만 건드린다. */
+  --indent-worktree: 12px;
+  --indent-session: 32px;
 
   /* 계층 분리 여백 (10-gate1-fix2.md H-3) — **레포 > worktree > 세션** 순으로 벌린다.
      Orca 는 세 덩어리가 여백으로 뚜렷이 갈리는데 목업은 빽빽하다(레포 헤더→첫 worktree 2px).

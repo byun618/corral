@@ -1,4 +1,13 @@
-// design-handoff.md §2 MainTabBar — `sessionCount >= 2` 일 때만 존재(Orca 규칙, C5/C9′).
+// design-handoff.md §2 MainTabBar — **활성 workspace 가 있으면 탭 수와 무관하게 존재**한다
+// (01-criteria.md 부록 C5′ / 11-gate1-fix3.md I-5). 마운트 조건은 `App.tsx` 의
+// `activeWorkspace !== null` 하나뿐이고, 이 파일엔 탭 수 조건이 **없다**.
+//
+// 전 버전 주석은 "`sessionCount >= 2` 일 때만 존재(Orca 규칙)" 였는데 **그 근거가 사실이 아니었다.**
+// 부록이 인용한 Orca `use-app-chrome-layout.ts:74` 의 `hasTabBar = tabCount >= 2` 는 같은 파일
+// `:139` 의 타이틀바 확장 버튼 조건에만 쓰인다 — 탭 스트립을 가르는 상수가 아니다. Orca 는 탭
+// 1개에서도 스트립을 그린다. 사용자 지시(*"하나만 있어도 저런식으로 나올 수 있게"*)와 이 사실
+// 정정으로 C5 가 C5′ 로 개정됐다. 증명해야 할 상태는 2개(1/N)에서 **3개(0/1/N)** 로 늘었다.
+//
 // 활성 탭은 배경이 터미널과 이어지고, 비활성은 톤 차이로만. 우측 고정 `+`(빈 탭) · 활성 worktree 라벨.
 //
 // 닫기(×)는 탭 자체에 둔다 — 수정 1회차(07-fix-orca1.md M-2) 코디네이터 결정: freeze 된 C5 본문이
@@ -13,6 +22,7 @@
 import { useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
 import { agentIcon } from '../session-glyphs.js'
+import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 
 function MainTab({
@@ -42,7 +52,7 @@ function MainTab({
       <span className={`main-tab-dot tone-${tab.agentStatus === 'working' ? 'accent' : 'neutral'}`} />
       {kind === null ? null : (
         <span className={`main-tab-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
-          {kind.glyph}
+          <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
       <span className="main-tab-label">{sessionTitle(tab)}</span>
@@ -75,8 +85,9 @@ export function MainTabBar({
   onSelectTab: (tab: TabRow) => void
   onCreateShell: () => void
   onCloseTab: (tab: TabRow) => void
-}): React.JSX.Element | null {
-  if (tabs.length < 2) return null // C5 통과선 — 1개 이하면 탭바 자체가 DOM 에 없다
+}): React.JSX.Element {
+  // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 와 worktree 라벨이 남는 껍데기를 그린다 —
+  // 마지막 탭을 닫았을 때 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   return (
     <div className="main-tabbar" data-main-tabbar>
       {tabs.map((tab) => (

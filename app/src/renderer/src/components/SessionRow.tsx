@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
 import { agentIcon, GLYPH, STATUS_LABEL } from '../session-glyphs.js'
+import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 export function SessionRow({
   tab,
@@ -35,12 +36,20 @@ export function SessionRow({
       title={STATUS_LABEL[tab.agentStatus]}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={onSelect}
+      // ⚠ 버블링을 끊는다 (11-gate1-fix3.md I-6). 이 행은 `.worktree-block` **안에** 있고
+      // 그 블록의 onClick 은 `selectFirstSession` 이다 — 안 끊으면 "클릭한 세션 선택" 직후
+      // "그 worktree 의 첫 세션 선택"이 덮어써서, 어느 행을 눌러도 첫 탭이 열린다.
+      // 실측으로 잡았다(raw/gate1-fix3/i6-session-click.json 1차 실행: activeTabId 가 t1 고정).
+      // 같은 파일의 닫기 버튼이 이미 쓰는 관용구다.
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelect()
+      }}
     >
       <span className={`session-row-glyph tone-${tone}`}>{glyph}</span>
       {kind === null ? null : (
         <span className={`session-row-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
-          {kind.glyph}
+          <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
       <span className="session-row-title">{sessionTitle(tab)}</span>

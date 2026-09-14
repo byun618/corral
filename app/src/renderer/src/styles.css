@@ -278,6 +278,19 @@ button { font: inherit; }
   background: transparent; border: 1px solid transparent; border-bottom: none; color: var(--fg-dim);
 }
 .main-tab.is-active { background: var(--bg-surface); border-color: var(--line); color: var(--fg); }
+/* I-7 인라인 리네임 입력칸 — 라벨 위에 겹친다. absolute 라 탭의 폭·높이에 영향이 없다
+   (C9(b) 핀 높이 보호). 평소엔 투명 + `pointer-events: none` 이라 라벨 클릭을 안 가로챈다 —
+   이게 없으면 보이지도 않는 입력칸이 모든 탭 클릭을 삼킨다. */
+.main-tab { position: relative; }
+.main-tab-rename {
+  position: absolute; left: 28px; right: 8px; top: 50%; transform: translateY(-50%);
+  opacity: 0; pointer-events: none;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1;
+  padding: 2px 4px; border-radius: 3px;
+  background: var(--bg-input); border: 1px solid var(--accent); color: var(--fg);
+}
+.main-tab-rename.is-editing { opacity: 1; pointer-events: auto; }
+.main-tab-rename:focus { outline: none; }
 .main-tab-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
 .main-tab-dot.tone-accent { background: var(--accent); }
 .main-tab-dot.tone-neutral { background: var(--dot-neutral); }

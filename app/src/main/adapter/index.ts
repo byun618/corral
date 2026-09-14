@@ -13,6 +13,7 @@ export { DEFAULT_RESYNC_MS } from './internal/link.js'
 export { TerminalStream, type StreamHooks } from './internal/stream.js'
 export {
   closeTab,
+  renameTab,
   closeWorkspace,
   createRow,
   createWorktree,
@@ -20,6 +21,7 @@ export {
   openWorktree,
   probeForeground,
   type CloseTabOutcome,
+  type RenameTabOutcome,
   type CreateRowOutcome,
   type ForegroundProbe,
   type WorktreeOutcome,

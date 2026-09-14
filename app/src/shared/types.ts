@@ -188,6 +188,15 @@ export type CloseRowResult =
   | { outcome: 'error'; error: string }
 
 /**
+ * 탭 이름 변경 결과 (LIFE-357 I-7). 종료 게이트가 없으니 `needs-confirm` 이 없다 —
+ * 이름은 잃을 게 없는 조작이다. herdr 거절은 **그대로** 올라온다(승격 금지, `closeRow` 와 같은 기준).
+ */
+export type RenameRowResult =
+  | { outcome: 'renamed' }
+  | { outcome: 'rejected'; rejection: { code: string; message: string } }
+  | { outcome: 'error'; error: string }
+
+/**
  * worktree/workspace 열기·만들기 결과 (L6·L7·L8).
  * `rejection` 은 herdr 가 그대로 돌려준 거절(예 `workspace_group_close_required`,
  * `linked_worktree_source`) — 화면에 그대로 보인다. corral 이 승격하지 않는다 (기준 L9).
@@ -332,6 +341,11 @@ export type CorralApi = {
   createRow: (input: { workspaceId: string; kind: AgentKind }) => Promise<CreateRowResult>
   /** 행(탭)을 닫는다. 판별자는 herdr process_info. `confirmed` 면 확인 걸음을 건너뛴다. */
   closeRow: (input: { tabId: string; confirmed?: boolean }) => Promise<CloseRowResult>
+  /**
+   * 탭 이름을 사용자가 준 이름으로 바꾼다 (I-7). herdr `tab.rename` 한 번 — corral 은 이름을
+   * 따로 저장하지 않는다(herdr 가 들고 있고 재기동해도 남는다).
+   */
+  renameRow: (input: { tabId: string; label: string }) => Promise<RenameRowResult>
   /** 열린 worktree(=workspace)를 닫는다 (L9b). 그룹 열린 primary 면 herdr 가 거절 → 그대로 보인다. */
   closeWorktree: (input: { workspaceId: string; confirmed?: boolean }) => Promise<CloseRowResult>
   /** 닫힌 worktree 행을 연다. 주 체크아웃(isLinked=false)은 workspace.create, linked 는 worktree.open. */

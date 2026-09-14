@@ -231,6 +231,12 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
       })
       return r
     },
+    /** 더블클릭 — 인라인 리네임 진입(I-7). `click` 과 같은 좌표·가림 판정을 쓴다. */
+    dblclick: async (selector) => {
+      const r = await send({ cmd: 'dblclick', selector })
+      clicks.push({ selector, hit: r.hit ?? null, x: r.x ?? null, y: r.y ?? null, target: r.target ?? null, method: 'dblclick', at: r.at ?? null })
+      return r
+    },
     clickLog: () => clicks,
     rawChain: () => {
       if (!fs.existsSync(logPath)) return { file: null, sha256: null, bytes: 0 }

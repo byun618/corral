@@ -129,6 +129,19 @@ export function useLifecycleActions(state: AppState | null): {
     }
   }, [])
 
+  /**
+   * 이름 바꾸기 (I-7). 종료 게이트가 없어 `needs-confirm` 갈래도 없다 — 성공이면 `tab_renamed`
+   * 푸시로 목록이 알아서 바뀌므로 여기서 아무것도 만지지 않는다. 거절·실패만 알림으로 올린다
+   * (승격 금지 — 이 알림 경로가 그 기준의 화면쪽 끝이다).
+   */
+  const renameRow = useCallback(async (tabId: string, label: string): Promise<void> => {
+    setLifecycleNotice(null)
+    const result = await window.corral.renameRow({ tabId, label })
+    if (result.outcome === 'rejected')
+      setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+    else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
+  }, [])
+
   const createRow = useCallback(
     async (workspaceId: string, kind: AgentKind): Promise<void> => {
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
@@ -180,6 +193,7 @@ export function useLifecycleActions(state: AppState | null): {
   const actions: LifecycleActions = {
     createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
     closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
+    renameRow: (tabId, label) => void renameRow(tabId, label),
     closeWorktree: (workspaceId) => void closeTarget({ kind: 'workspace', workspaceId }),
     openWorktree: (repoRoot, worktree) => void openWorktree(repoRoot, worktree),
     openCreateWorktree: (repoRoot) => {

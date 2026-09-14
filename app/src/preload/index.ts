@@ -17,6 +17,7 @@ import type {
   RemoveRepoResult,
   TerminalFrame,
   TerminalScroll,
+  RenameRowResult,
   UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
@@ -32,6 +33,7 @@ const EXPOSED = [
   'setUiPrefs',
   'createRow',
   'closeRow',
+  'renameRow',
   'closeWorktree',
   'openWorktree',
   'createWorktree',
@@ -63,6 +65,8 @@ const api: CorralApi = {
     ipcRenderer.invoke('corral:createRow', input),
   closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
     ipcRenderer.invoke('corral:closeRow', input),
+  renameRow: (input: { tabId: string; label: string }): Promise<RenameRowResult> =>
+    ipcRenderer.invoke('corral:renameRow', input),
   closeWorktree: (input: { workspaceId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
     ipcRenderer.invoke('corral:closeWorktree', input),
   openWorktree: (input: { repoRoot: string; path: string; isLinked: boolean }): Promise<WorktreeActionResult> =>

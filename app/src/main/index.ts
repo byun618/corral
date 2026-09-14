@@ -17,6 +17,7 @@ import type {
   CloseRowResult,
   CreateRowResult,
   RemoveRepoResult,
+  RenameRowResult,
   TerminalScroll,
   UiPrefs,
   WorktreeActionResult,
@@ -34,6 +35,7 @@ import {
   openWorktree,
   probeForeground,
   readOpenWorkspaces,
+  renameTab,
   type SessionHandle,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
@@ -536,6 +538,22 @@ async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Pro
 }
 
 /**
+ * 탭 이름을 바꾼다 (I-7). 종료 게이트가 없다 — 이름은 잃을 게 없는 조작이라 확인 걸음도 없다.
+ * herdr 가 거절하면 **그대로** 돌려준다 (`closeRowByTab` 과 같은 기준, 승격 금지).
+ */
+async function renameRowByTab(input: { tabId: string; label: string }): Promise<RenameRowResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
+  const outcome = await renameTab(socketPath, input.tabId, input.label)
+  if (outcome.outcome === 'renamed') {
+    // 이름은 `tab_renamed` 푸시로도 돌아오지만, 밀어 두면 화면이 왕복을 기다리지 않는다.
+    scheduleEmit()
+    return { outcome: 'renamed' }
+  }
+  return outcome
+}
+
+/**
  * worktree(=workspace)를 닫는다 (L9b). 열린 worktree 행의 「닫기」 가 부른다 — 「열기」의 짝이다.
  * linked 그룹이 열린 primary 를 닫으면 herdr 가 `workspace_group_close_required` 로 거절하고,
  * corral 은 그 거절을 **그대로 보이고 멈춘다** (close_group 승격 금지, 기준). 게이트는 그 workspace 의
@@ -875,6 +893,11 @@ app.whenReady().then(() => {
     fromOurWindow(event) && typeof input?.tabId === 'string'
       ? closeRowByTab({ tabId: input.tabId, confirmed: input.confirmed === true })
       : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies CloseRowResult),
+  )
+  ipcMain.handle('corral:renameRow', (event, input: { tabId: string; label: string }) =>
+    fromOurWindow(event) && typeof input?.tabId === 'string' && typeof input?.label === 'string'
+      ? renameRowByTab({ tabId: input.tabId, label: input.label })
+      : ({ outcome: 'error', error: '허용되지 않은 발신자' } satisfies RenameRowResult),
   )
   ipcMain.handle('corral:closeWorktree', (event, input: { workspaceId: string; confirmed?: boolean }) =>
     fromOurWindow(event) && typeof input?.workspaceId === 'string'

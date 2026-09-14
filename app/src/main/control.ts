@@ -211,8 +211,42 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         return
       }
       /**
-       * 글자를 친다 (붙여넣기 아님). 수정 5회차에서 경로 입력칸이 사라져 지금은 쓰는 측정이
-       * 없지만, 손잡이는 남긴다 — 다음에 입력칸이 생기면 같은 자리를 다시 쓴다.
+       * 더블클릭 (11-gate1-fix3.md I-7 인라인 리네임 진입). `click` 과 **같은 좌표 경로**다 —
+       * 히트테스트를 크로미움이 하고, 가려져 있으면 누르지 않는다. 다른 점은 두 번째 누름의
+       * `clickCount: 2` 뿐이고, 크로미움은 그 mouseUp 에서 `dblclick` 을 만든다.
+       * (규칙을 약하게 하는 추가가 아니다 — 좌표·가림 판정은 그대로다.)
+       */
+      case 'dblclick': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        const probe = await target.webContents.executeJavaScript(clickProbe(selector), true)
+        if (!isRecord(probe) || probe['found'] !== true) {
+          reply({ ok: false, hit: false, selector, error: '선택자가 화면에 없다' })
+          return
+        }
+        const x = readNumber(probe, 'x')
+        const y = readNumber(probe, 'y')
+        if (probe['hit'] !== true || x === null || y === null) {
+          log('control.dblclick.blocked', { selector, blockedBy: readString(probe, 'blockedBy') })
+          reply({ ok: false, selector, ...probe })
+          return
+        }
+        const at = Date.now()
+        target.webContents.sendInputEvent({ type: 'mouseMove', x, y })
+        target.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+        target.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+        target.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 2 })
+        target.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 2 })
+        log('control.dblclick', { selector, hit: true, x, y, at, method: 'sendInputEvent' })
+        reply({ ok: true, selector, at, method: 'sendInputEvent', ...probe })
+        return
+      }
+      /**
+       * 글자를 친다 (붙여넣기 아님). 수정 5회차에서 경로 입력칸이 사라져 한동안 쓰는 측정이
+       * 없었는데, I-7 인라인 리네임 입력칸이 생기며 다시 쓴다 — `char` 이벤트는 **포커스된
+       * 요소**로 간다. 그래서 "편집 중 키가 터미널로 새지 않는다"를 이 손잡이 하나로 잰다.
        */
       case 'type': {
         const target = handlers.window()

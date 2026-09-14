@@ -153,6 +153,30 @@ export async function closeTab(socketPath: string, tabId: string): Promise<Close
 }
 
 /**
+ * 탭 이름을 바꾼다 (LIFE-357 I-7). herdr `tab.rename` 한 번이 전부다 — 이름은 herdr 가 들고
+ * 있고 `tab_renamed` 이벤트로 되돌아온다(`store.ts` 가 이미 받는다). **corral 쪽 영속 계층은
+ * 없다** — 만들면 herdr 의 것과 두 벌이 된다.
+ *
+ * `closeTab` 과 같은 모양이다: **herdr 가 거절하면 그대로 돌려준다.** corral 이 승격하지
+ * 않는다(기준) — 모르는 tab_id 든 빈 이름이든 판단은 herdr 것이고 화면은 그 말을 그대로 쓴다.
+ */
+export type RenameTabOutcome =
+  | { outcome: 'renamed' }
+  | { outcome: 'rejected'; rejection: { code: string; message: string } }
+  | { outcome: 'error'; error: string }
+
+export async function renameTab(socketPath: string, tabId: string, label: string): Promise<RenameTabOutcome> {
+  const response = await request(socketPath, 'tab.rename', { tab_id: tabId, label }, { reason: 'rename-row' })
+  if (response.error) {
+    const rejection = { code: response.error.code ?? 'error', message: response.error.message ?? '' }
+    log('lifecycle.tab_rename_rejected', { tabId, ...rejection })
+    return { outcome: 'rejected', rejection }
+  }
+  log('lifecycle.tab_renamed', { tabId, label })
+  return { outcome: 'renamed' }
+}
+
+/**
  * workspace 를 닫는다 (L9b). linked worktree 그룹이 열린 primary 를 close_group 없이 닫으면
  * herdr 가 `workspace_group_close_required` 로 거절한다 — **그대로 돌려준다**.
  * corral 이 close_group:true 로 승격하지 않는다 (기준). 승격은 사람이 정한다.

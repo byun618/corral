@@ -28,6 +28,8 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  *   · `tab.close`               — 행 종료 (L3·L4·L9a)
  *   · `workspace.close`         — worktree(=workspace) 닫기 (L9b — close_group 없이)
  *   · `worktree.open`·`worktree.create`·`workspace.create` — worktree 열기·만들기·빈 상태 복구 (L6·L7·L8)
+ *   · `tab.rename`               — 탭 이름을 사용자가 직접 준다 (LIFE-357 I-7, lifecycle.ts renameTab).
+ *     수신부(`tab_renamed`)는 이미 있었고 발신 경로가 없었다 — 이 줄이 그 구멍이다.
  */
 const ALLOWED_METHODS: readonly string[] = [
   'session.snapshot',
@@ -40,6 +42,7 @@ const ALLOWED_METHODS: readonly string[] = [
   'worktree.open',
   'worktree.create',
   'workspace.create',
+  'tab.rename',
 ]
 
 export class HerdrRequestError extends Error {

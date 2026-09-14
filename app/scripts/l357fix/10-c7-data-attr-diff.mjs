@@ -22,6 +22,18 @@ function attrsAt(rev) {
   return [...new Set(out.split('\n').filter((line) => line.trim().length > 0))].sort()
 }
 
+/**
+ * 기준 커밋이 **무엇인지 스스로 말하게** 한다. 전엔 "승자 -claude-orca 머지 커밋" 이 상수로
+ * 박혀 있어서 `L357FIX_BASE` 를 바꿔 재면 설명이 거짓이 됐다 — note 를 계산으로 바꾼 것과 같은 사유.
+ */
+function describeRev(rev) {
+  const subject = execFileSync('git', ['log', '-1', '--format=%h %s', rev], { cwd: REPO_DIR, encoding: 'utf8' }).trim()
+  const tags = execFileSync('git', ['tag', '--points-at', rev], { cwd: REPO_DIR, encoding: 'utf8' }).trim()
+  return tags.length > 0 ? `${subject} (태그: ${tags.split('\n').join(', ')})` : subject
+}
+
+// ⚠ 비교 대상은 **HEAD** 다 — 작업 트리가 아니다. 커밋하기 전에 돌리면 새 `data-*` 가 안 잡힌다
+// (이번 라운드에서 실제로 한 번 그렇게 돌아 '추가 0' 이 나왔다). 커밋한 뒤에 잰다.
 const before = attrsAt(BASE)
 const after = attrsAt('HEAD')
 const added = after.filter((a) => !before.includes(a))
@@ -30,7 +42,8 @@ const removed = before.filter((a) => !after.includes(a))
 const result = {
   criterion: 'C7 — data-* 계약 (재실행 불필요 조건 확인)',
   baseRev: BASE,
-  baseRevNote: '승자 -claude-orca 머지 커밋 = 이 수정 라운드의 출발점',
+  baseRevNote: describeRev(BASE),
+  headNote: describeRev('HEAD'),
   beforeCount: before.length,
   afterCount: after.length,
   added,

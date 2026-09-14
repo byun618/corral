@@ -76,10 +76,35 @@ export function paneTitleLabel(tab: TabRow): string | null {
 }
 
 /**
- * 세션 제목. 터미널 제목이 쓸 만하면 그것을, 아니면 폴백.
+ * **사용자가 직접 준 이름** (`TabRow.label`) — 없으면 `null`.
+ *
+ * 판별자는 herdr 의 기본 label 이 **순수 숫자**(`"1"`)라는 실측이다 (09-gate1-fix.md C,
+ * 재확인 `raw/gate1-fix3/rename/rename.json` 의 `labelBefore`). 숫자만이면 사람이 지은 이름이
+ * 아니라 herdr 표찰이므로 다음 단으로 내려간다. 빈 문자열·공백도 이름이 아니다.
+ *
+ * 관측 기반 판별자라 **가정이 깨지면 원자료가 먼저 안다** — 위 JSON 이 리네임 전/후 label 을
+ * 둘 다 들고 있어서, 기본값이 숫자가 아니게 되면 그 파일이 어긋난다.
+ */
+export function userLabel(tab: TabRow): string | null {
+  const label = tab.label.trim()
+  if (label.length === 0) return null
+  if (/^\d+$/.test(label)) return null
+  return label
+}
+
+/**
+ * 세션 제목. **사용자 이름 → 터미널 제목 → 폴백** 순이다 (11-gate1-fix3.md I-7 ②).
  * 폴백은 `claude 1` · `codex 2` · `세션 3` — 번호는 herdr 표찰(`TabRow.number`)이다.
+ *
+ * 6단 전체(퀵커맨드 라벨·provider 세션 제목·LLM 자동 명명)와 2차 줄은 **Step 5 일감이다**
+ * (`00-project.md` 2026-09-14 신설). 여기는 2단까지만 만든다.
+ *
+ * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가
+ * 같은 틱에 따라온다. 호출부마다 분기하면 두 목록이 갈라진다.
  */
 export function sessionTitle(tab: TabRow): string {
+  const named = userLabel(tab)
+  if (named !== null) return named
   const label = paneTitleLabel(tab)
   if (label !== null) return label
   const agent = tabAgent(tab)

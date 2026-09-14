@@ -14,7 +14,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clearTranscriptCacheForTest, readSessionDigest } from '../../src/main/transcript.js'
+import { clearTranscriptCache, readSessionDigest } from '../../src/main/transcript.js'
 import type { AgentSessionRef } from '../../src/shared/types.js'
 
 const RAW_DIR = path.join(
@@ -106,7 +106,7 @@ function main(): void {
   const rows = []
   for (const pick of picks) {
     const ref: AgentSessionRef = { kind: 'id', agent: 'claude', source: 'herdr:claude', id: pick.id }
-    clearTranscriptCacheForTest()
+    clearTranscriptCache()
     const coldAt = process.hrtime.bigint()
     const cold = readSessionDigest(ref)
     const coldMs = Number(process.hrtime.bigint() - coldAt) / 1e6
@@ -176,7 +176,7 @@ function main(): void {
     },
   }
   fs.mkdirSync(RAW_DIR, { recursive: true })
-  fs.writeFileSync(path.join(RAW_DIR, 'a5-a6-cost.json'), JSON.stringify(out, null, 2) + '\n')
+  fs.writeFileSync(path.join(RAW_DIR, 'a5-a6-cost-r1.json'), JSON.stringify(out, null, 2) + '\n')
   console.log(JSON.stringify(out, null, 1))
 }
 

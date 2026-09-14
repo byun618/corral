@@ -84,7 +84,23 @@ async function readRows(app) {
       secondKind: second ? second.getAttribute('data-second-kind') : null,
       secondText: second ? second.textContent : null,
       secondTooltip: second ? second.getAttribute('title') : null,
+      // **getClientRects().length 는 판별력이 0 이다** (수정 라운드 1, V4). 2차 줄은 block div 라
+      // 텍스트가 3줄로 감겨도 rect 는 늘 1개다 — 여러 개가 나오는 건 인라인 박스뿐이다.
+      // 감김을 실제로 가르는 값은 **넘치는 높이**다: scrollHeight / line-height.
       secondLines: second ? second.getClientRects().length : null,
+      secondWrap: second
+        ? (() => {
+            const s = getComputedStyle(second)
+            const lineHeight = parseFloat(s.lineHeight) || parseFloat(s.fontSize) * 1.2
+            return {
+              scrollHeight: second.scrollHeight,
+              clientHeight: second.clientHeight,
+              lineHeight,
+              줄수: Math.max(1, Math.round(second.scrollHeight / lineHeight)),
+              가로가_넘치나: second.scrollWidth > second.clientWidth,
+            }
+          })()
+        : null,
       elapsed: elapsed ? elapsed.textContent : null,
       titleBox: box(title),
       secondBox: box(second),
@@ -297,13 +313,50 @@ async function main() {
     secondX: rowA.secondBox.x,
     차이: Math.round((rowA.secondBox.x - rowA.titleBox.x) * 10) / 10,
   }
+  // B5 — 한 줄인가. **판별력 있는 값으로 판정한다** (수정 라운드 1, V4): `getClientRects().length`
+  // 는 block div 에서 늘 1이라 감김을 못 가른다. 넘치는 높이(`scrollHeight / line-height`)로 센다.
+  //
+  // 관문 ⑤ 반례: **일부러 감기게** 만든다 — 같은 행에 `white-space: normal` 을 inline 으로 얹고
+  // 다시 잰다. 판정식이 살아 있으면 여기서 줄수가 1을 넘어 미달이 나와야 한다. 재고 나면 되돌린다.
+  const wrapProbe = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const el = document.querySelector('[data-tab="${tabA.tabId}"] .session-row-second')
+      if (!el) return null
+      const measure = () => {
+        const s = getComputedStyle(el)
+        const lh = parseFloat(s.lineHeight) || parseFloat(s.fontSize) * 1.2
+        return { scrollHeight: el.scrollHeight, lineHeight: lh, 줄수: Math.max(1, Math.round(el.scrollHeight / lh)), whiteSpace: s.whiteSpace }
+      }
+      const before = measure()
+      el.style.whiteSpace = 'normal'
+      el.style.overflow = 'visible'
+      const wrapped = measure()
+      el.style.whiteSpace = ''
+      el.style.overflow = ''
+      const after = measure()
+      return { before, wrapped, after }
+    })()`,
+  })).result
   out['B5 — 한 줄 말줄임 + 전문 툴팁'] = {
-    줄수: rowA.secondLines,
+    '줄수(판별력 있는 값)': rowA.secondWrap?.줄수 ?? null,
+    측정: rowA.secondWrap,
+    '줄수(1회차가 쓴 getClientRects — 참고용)': rowA.secondLines,
     whiteSpace: rowA.secondStyle['white-space'],
     textOverflow: rowA.secondStyle['text-overflow'],
+    가로가_넘치나: rowA.secondWrap?.가로가_넘치나 ?? null,
     툴팁이_전문인가: rowA.secondTooltip === textA,
     툴팁길이: rowA.secondTooltip?.length ?? null,
     본문길이: textA.length,
+    판정: rowA.secondWrap !== null && rowA.secondWrap.줄수 === 1,
+    '관문⑤ 반례 — 일부러 감기게': {
+      설명: 'white-space 를 normal 로 얹으면 같은 판정식이 미달이어야 한다. 1이 그대로 나오면 그 칸은 감김을 못 재는 것이다.',
+      전: wrapProbe?.before ?? null,
+      감긴_동안: wrapProbe?.wrapped ?? null,
+      되돌린_뒤: wrapProbe?.after ?? null,
+      반례가_성립하나: (wrapProbe?.wrapped?.줄수 ?? 1) > 1,
+      '되돌아왔나': (wrapProbe?.after?.줄수 ?? null) === 1,
+    },
   }
   out['C1 — 제목 티어가 화면에 반영됐나'] = {
     'A(ai-title 있음)': rowA.title,
@@ -337,10 +390,26 @@ async function main() {
   }, { timeoutMs: 30000, everyMs: 400, what: '텍스트가 사라짐' })
   const goneRows = gone.value ?? (await readRows(app))
   heights['③ 사라짐(파일 삭제)'] = byTab(goneRows, tabA.tabId)?.rowHeight ?? null
+  // **전이 상태와 안정 상태를 둘 다 싣는다** (수정 라운드 1, V11). 파일이 사라진 **그 주기**는
+  // `statSync` 가 ENOENT 라 `unreadable`(「기록을 읽지 못했다」)로 내려앉고, 같은 호출이 캐시를
+  // 지우므로 **다음 주기에는** 재탐색이 돌아 `unresolved`(빈 슬롯)가 된다. 1회차 원자료는 앞의
+  // 것만 실어서 1.5초짜리 깜빡임이 최종 상태처럼 읽혔다.
+  await sleep(3200)
+  const settledRows = await readRows(app)
+  heights['③-2 사라진 뒤 두 주기'] = byTab(settledRows, tabA.tabId)?.rowHeight ?? null
   out['B4 — 행 높이가 안 튄다'] = {
     높이: heights,
     전부_같은가: new Set(Object.values(heights).filter((h) => h !== null)).size === 1,
-    '③ 상태': { secondKind: byTab(goneRows, tabA.tabId)?.secondKind, secondText: byTab(goneRows, tabA.tabId)?.secondText },
+    '③ 상태 — 사라진 직후(전이, 한 주기)': {
+      secondKind: byTab(goneRows, tabA.tabId)?.secondKind,
+      secondText: byTab(goneRows, tabA.tabId)?.secondText,
+      'until ok': gone.ok,
+      'until ms': gone.ms,
+    },
+    '③ 상태 — 두 주기 뒤(안정)': {
+      secondKind: byTab(settledRows, tabA.tabId)?.secondKind,
+      secondText: byTab(settledRows, tabA.tabId)?.secondText,
+    },
   }
   out['B4 스크린샷(사라진 뒤)'] = await app.shot('b4-cleared')
 
@@ -380,6 +449,47 @@ async function main() {
       제목: row?.title ?? null,
     })
   }
+  // 관문 ⑤ 반례 (수정 라운드 1, V3) — **검출기가 실제로 반응하나.**
+  //
+  // 1회차의 「예외 전파 없음」 다리는 `transcript.error` 태그를 봤는데 그 태그가 코드에 없었다.
+  // 없는 것을 세었으니 매번 참이었다 — 관측이 아니라 무관측이다. 이번엔 판독층이 실패를 실제로
+  // 태그로 남기게 했고(`transcript.ts`), 여기서 **읽을 수 없는 파일을 심어 그 태그를 뽑아낸다.**
+  // 태그 수가 **늘면** 검출기가 산 것이고, 그래야 이 칸의 수가 뜻을 갖는다. (0 에서 출발하지는
+  // 않는다 — 바로 앞 B4 가 파일을 지웠고 그 ENOENT 도 실제 판독 실패라 이미 한 건 찍혀 있다.)
+  const errorsBefore = app.entries().filter((entry) => entry.tag === 'transcript.error').length
+  const eaccesFile = writeClaudeTranscript({
+    id: idC,
+    folder: 'l366-c',
+    lines: [assistantRecord('이 파일은 열 수 없다', now - 30000)],
+  })
+  fs.chmodSync(eaccesFile, 0o000)
+  await sleep(3400)
+  const eaccesRows = await readRows(app)
+  const errorsAfter = app.entries().filter((entry) => entry.tag === 'transcript.error')
+  fs.chmodSync(eaccesFile, 0o600)
+  out['관문⑤ 반례 — 판독 실패 검출기'] = {
+    설명: '읽을 수 없는 파일(chmod 000)을 심는다. transcript.error 수가 늘어야 이 검출기가 관측이다.',
+    '전 transcript.error 수': errorsBefore,
+    '후 transcript.error 수': errorsAfter.length,
+    '전 건은 무엇이었나': '바로 앞 B4 가 파일을 지운 ENOENT (where: stat) — 그것도 실제 판독 실패다',
+    마지막_태그: errorsAfter.slice(-1)[0] ?? null,
+    반례가_성립하나: errorsAfter.length > errorsBefore,
+    '그때 화면': {
+      secondKind: byTab(eaccesRows, tabC.tabId)?.secondKind ?? null,
+      secondText: byTab(eaccesRows, tabC.tabId)?.secondText ?? null,
+      행이_남아있나: byTab(eaccesRows, tabC.tabId) !== null,
+      행높이: byTab(eaccesRows, tabC.tabId)?.rowHeight ?? null,
+    },
+  }
+  // 미처리 예외는 로그가 아니라 **stderr** 로 샌다 (판독층은 타이머 콜백에서 돈다).
+  const stdoutText = fs.existsSync(path.join(app.dir, 'stdout.txt'))
+    ? fs.readFileSync(path.join(app.dir, 'stdout.txt'), 'utf8')
+    : ''
+  const uncaught = stdoutText
+    .split('\n')
+    .filter((line) => /uncaught|unhandled|Error:.*transcript|at readSessionDigest/i.test(line))
+    .slice(-10)
+
   out['A8 — 포맷이 깨져도 거짓말하지 않는다'] = {
     결과: damaged,
     // 통과선은 "**비거나 부재로 표시**" 이고 미달은 "지어낸 문자열·예외 전파·행 소멸" 이다.
@@ -390,7 +500,12 @@ async function main() {
       (d) => d.secondKind !== 'text' || 파일에_실재하는_텍스트.includes(d.secondText),
     ),
     행이_다_살아있나: damaged.every((d) => d.행이_남아있나),
-    예외_전파_없나: app.entries().every((e) => e.tag !== 'transcript.error'),
+    // **미처리 예외**는 stderr 로 샌다 — 판독층이 타이머 콜백에서 돌기 때문에 로그 파일엔 안 남는다.
+    // 손상 3종을 태운 뒤 stdout.txt 를 훑는다 (앞의 「판독 실패 검출기」 반례가 이 다리도 받친다:
+    // 심은 실패는 `transcript.error` 로 잡히고 stderr 로는 새지 않는다).
+    미처리_예외_없나: uncaught.length === 0,
+    'stderr 에서 걸린 줄': uncaught,
+    '반례 전까지의 transcript.error 수': errorsBefore,
   }
   out['A8 스크린샷'] = await app.shot('a8-damaged')
 
@@ -401,7 +516,7 @@ async function main() {
   out.rawChain = app.rawChain()
 
   await app.stop()
-  writeRaw('app-sessions.json', out)
+  writeRaw('app-sessions-r1.json', out)
   console.log(JSON.stringify({
     A4: out['A4 — 같은 worktree 2세션이 갈린다'].통과,
     반례: out['관문⑤ 반례 — 참조 전 A4 비교식'].두_줄이_다른가,

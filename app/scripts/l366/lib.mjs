@@ -362,6 +362,11 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     entries: () => readLog(logPath),
     send,
     state: async () => (await send({ cmd: 'state' })).state,
+    /** 메인 프로세스 누적 CPU (μs) — 구간 앞뒤로 떠서 빼면 그 구간의 CPU 다 (A7, V12). */
+    cpu: async () => {
+      const r = await send({ cmd: 'cpu' })
+      return r.ok === true ? r.cpu : null
+    },
     addRepo: (root) => send({ cmd: 'add-repo', root }),
     click: async (selector) => {
       const r = await send({ cmd: 'click', selector })

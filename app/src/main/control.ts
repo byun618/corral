@@ -137,6 +137,15 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: true, at: Date.now(), state: handlers.state() })
         return
       /**
+       * **메인 프로세스**의 누적 CPU 시간 (μs). 기준 A7 본문이 "메인 프로세스 추가 CPU" 를
+       * 재라고 하는데 1회차는 벽시계(ms)만 쟀다 — 수정 라운드 1 (V12) 에서 이 문을 낸다.
+       * 구간 앞뒤로 두 번 떠서 빼면 그 구간이 실제로 쓴 CPU 다. `ps` 의 초·센티초 해상도로는
+       * 6ms 짜리 주기를 못 가르므로 프로세스 자신에게 묻는다.
+       */
+      case 'cpu':
+        reply({ ok: true, at: Date.now(), cpu: process.cpuUsage(), uptimeMs: Math.round(process.uptime() * 1000) })
+        return
+      /**
        * **herdr 쪽 대조값은 이 채널이 주지 않는다.**
        * 판별자는 재는 대상 자신의 출력이면 안 된다 (관문 ⑤ 제3 오라클) — 하네스가 자기
        * 커넥션으로 `tab.list`·`pane.list` 를 떠서 상대편을 만든다. 여기는 corral 쪽만 준다.

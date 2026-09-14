@@ -9,8 +9,25 @@
 // 크기는 실측 분포를 따라간다: 30MB 1개 · 10MB 1개 · 1MB 2개 · 50KB 4개
 // (사용자 실물 분포는 중앙값 0.85MB · 최대 100MB, `raw/claude/a5-a6-cost.json`).
 //
-// 관문 ⑤ 반례: 구간 A 의 `transcript.read` 는 **files 0** 이어야 한다. 거기서도 8이 나오면
-// 구간 나누기가 안 된 것이고, 그러면 ②의 비교는 아무 의미가 없다.
+// ## 수정 라운드 1 — 판정식을 기준 A7′ 로 갈았다 (V1)
+//
+// 1회차 판정식은 두 곳에서 기준과 달랐다: ⓐ 최악 구간 C 를 **안 보고** ⓑ 기준에 없는 `×1.1`
+// 여유를 스스로 얹었다. 리뷰 3자가 독립으로 같은 자리를 짚었고, 코디네이터가 **재측정 전에**
+// 통과선을 개정했다 (`01-criteria.md` [2026-09-15 기준 개정] A7′, 관문 ③ 절차).
+//
+//   ①′ 세 구간 전부 주기당 총 ≤ 200ms. **주기 수가 0인 구간이 있으면 미달**
+//   ②′ 같은 길이·같은 최소 프레임 수로 재고, `p95(B) ≤ p95(A)+5ms` **그리고** `p95(C) ≤ p95(A)+5ms`.
+//      곱셈 여유 금지
+//
+// 그래서 세 구간을 **전부 15초**로 맞췄다 (1회차 C 는 6초였다). C 는 그 15초 내내 8파일을
+// 1.3초마다 덧붙여 "전부 바뀐 주기" 를 이어 만든다 — 한 번만 덧붙이면 대부분의 주기가 stat 만
+// 하는 구간이 되어 최악이 아니다.
+//
+// 메인 프로세스 **CPU** 도 같이 잰다 (V12) — 기준 본문이 재라고 한 값인데 1회차는 벽시계만 쟀다.
+//
+// 관문 ⑤ 반례 둘: ⓐ 구간 A 의 `transcript.read` 는 **주기는 돌되 files 0** 이어야 한다 — 8이
+// 나오면 구간 나누기가 안 된 것이다 ⓑ **아무것도 안 돈 구간**(앱이 뜨기 전 시간대)에 ①′ 판정식을
+// 그대로 먹이면 미달이 나와야 한다. 여기서 통과가 나오면 "주기 0 = 미달" 조항이 죽은 것이다.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,6 +44,14 @@ import {
 } from './lib.mjs'
 
 const SESSION_COUNT = 8
+/** 세 구간의 길이를 **같게** 못 박는다 (기준 A7-②′ "같은 길이"). */
+const WINDOW_MS = 15000
+/**
+ * 구간 하나가 가져야 하는 **최소 프레임 수** (A7-②′ "같은 최소 프레임 수").
+ * 15초 · 간격 p50 60ms ⇒ 대략 250개다. 절반인 125 를 바닥으로 둔다 — 이보다 적으면 p95 가
+ * 표본 부족이라 비교 자체가 성립하지 않는다.
+ */
+const MIN_FRAMES = 125
 
 function percentile(values, q) {
   if (values.length === 0) return null
@@ -71,6 +96,7 @@ function windowStats(entries, from, to) {
   const gaps = []
   for (let i = 1; i < frames.length; i += 1) gaps.push(frames[i] - frames[i - 1])
   return {
+    '구간 길이 ms': to - from,
     주기수: reads.length,
     '주기당 files': reads.length === 0 ? null : Math.max(...reads.map((read) => read.files)),
     '주기당 statOnly 최대': reads.length === 0 ? null : Math.max(...reads.map((read) => read.statOnly)),
@@ -119,10 +145,16 @@ async function main() {
   await sleep(3000)
   out['출력 루프 확인'] = (await app.send({ cmd: 'term-read' })).term?.rows?.slice?.(-2) ?? null
 
+  // 앱이 뜨기 **전** 시간대 — 관문 ⑤ 반례ⓑ 가 쓸 "아무것도 안 돈 구간" 이다.
+  const deadFrom = Date.now() - 120000
+  const deadTo = Date.now() - 110000
+
   // ---------- 구간 A: 참조 없음 ----------
+  const cpuA0 = await app.cpu()
   const aFrom = Date.now()
-  await sleep(15000)
+  await sleep(WINDOW_MS)
   const aTo = Date.now()
+  const cpuA1 = await app.cpu()
 
   // ---------- 참조 8개 + 트랜스크립트 ----------
   const plan = [
@@ -159,27 +191,39 @@ async function main() {
   out['2차 줄이 다 차기까지'] = { ok: filled.ok, ms: filled.ms, kinds: filled.value }
 
   // ---------- 구간 B: 참조 8개 (정상 상태 — 대부분 stat 만) ----------
+  const cpuB0 = await app.cpu()
   const bFrom = Date.now()
-  await sleep(15000)
+  await sleep(WINDOW_MS)
   const bTo = Date.now()
+  const cpuB1 = await app.cpu()
 
-  // ---------- 구간 C: **전부 바뀐** 최악 주기 ----------
-  const cFrom = Date.now()
-  for (const [index, tab] of agentTabs.entries()) {
-    void tab
-    const id = `a7000000-0000-4000-8000-${String(index).padStart(12, '0')}`
-    const file = path.join(isolatedHome(), '.claude', 'projects', 'l366-a7', `${id}.jsonl`)
-    fs.appendFileSync(
-      file,
-      JSON.stringify({
-        type: 'assistant',
-        timestamp: new Date().toISOString(),
-        message: { role: 'assistant', content: [{ type: 'text', text: `갱신 ${index} — 전부 바뀐 주기` }] },
-      }) + '\n',
-    )
+  // ---------- 구간 C: **전부 바뀐** 최악 주기를 15초 내내 이어 만든다 ----------
+  const touchAll = (round) => {
+    for (const index of agentTabs.keys()) {
+      const id = `a7000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+      const file = path.join(isolatedHome(), '.claude', 'projects', 'l366-a7', `${id}.jsonl`)
+      fs.appendFileSync(
+        file,
+        JSON.stringify({
+          type: 'assistant',
+          timestamp: new Date().toISOString(),
+          message: { role: 'assistant', content: [{ type: 'text', text: `갱신 ${round}-${index} — 전부 바뀐 주기` }] },
+        }) + '\n',
+      )
+    }
   }
-  await sleep(6000)
+  const cpuC0 = await app.cpu()
+  const cFrom = Date.now()
+  let rounds = 0
+  // 폴링이 1.5초라 1.3초마다 건드리면 **거의 모든 주기가 "전부 바뀐 주기"** 가 된다.
+  while (Date.now() - cFrom < WINDOW_MS) {
+    touchAll(rounds)
+    rounds += 1
+    await sleep(1300)
+  }
   const cTo = Date.now()
+  const cpuC1 = await app.cpu()
+  out['구간 C — 덧붙인 횟수'] = { rounds, '파일당 줄': rounds, '매 회차 파일수': agentTabs.length }
 
   const shot = await app.shot('a7-eight-sessions')
   const entries = app.entries()
@@ -191,25 +235,74 @@ async function main() {
   out['구간 A — 참조 없음'] = A
   out['구간 B — 참조 8개(정상)'] = B
   out['구간 C — 8개 전부 바뀐 주기'] = C
+  // --- 기준 A7′ 판정식 (한 군데서만 쓴다 — 반례도 이 함수를 그대로 먹인다) -------------------
+  /** ①′ 주기당 총 ≤200ms, **주기 수 0 이면 미달**. */
+  const passes1 = (windows) =>
+    windows.every((window) => window.주기수 > 0 && (window['주기 ms 최대'] ?? Number.POSITIVE_INFINITY) <= 200)
+  /** ②′ `p95(B) ≤ p95(A)+5` **그리고** `p95(C) ≤ p95(A)+5`. 곱셈 여유 없음. */
+  const ALLOWANCE_MS = 5
+  const passes2 = (base, others) =>
+    base !== null && others.every((value) => value !== null && value <= base + ALLOWANCE_MS)
+
+  const dead = windowStats(entries, deadFrom, deadTo)
   out['관문⑤ 반례'] = {
-    설명: '구간 A 는 참조가 0이라 판독 비용이 0이어야 한다. 여기서도 8이 나오면 구간 나누기가 안 된 것이다.',
-    'A 의 판독 주기 수': A.주기수,
-    'A 의 주기당 files': A['주기당 files'],
-    기대: '주기 수 0 (참조가 없으면 로그 자체가 안 남는다 — 비용 0)',
+    'ⓐ 구간 A 의 판독 files': {
+      설명: '구간 A 는 참조가 0이라 주기는 돌되 files 가 0이어야 한다. 8이 나오면 구간 나누기가 안 된 것이다.',
+      'A 의 판독 주기 수': A.주기수,
+      'A 의 주기당 files': A['주기당 files'],
+      'A 의 주기 바이트 최대': A['주기 바이트 최대'],
+      통과: A.주기수 > 0 && A['주기당 files'] === 0,
+    },
+    'ⓑ 아무것도 안 돈 구간에 ①′ 를 먹인다': {
+      설명: '앱이 뜨기 전 시간대다. 「주기 0이면 미달」 조항이 살아 있으면 여기서 ①′ 는 미달이어야 한다.',
+      구간: { from: deadFrom, to: deadTo },
+      주기수: dead.주기수,
+      '①′ 결과': passes1([dead]),
+      기대: false,
+      반례가_성립하나: passes1([dead]) === false,
+    },
+  }
+  const cpuDelta = (before, after) =>
+    before === null || after === null
+      ? null
+      : { user_ms: Math.round((after.user - before.user) / 1000), system_ms: Math.round((after.system - before.system) / 1000) }
+  // 구간 밖이지만 **가장 비싼 주기**다 — 참조가 처음 붙는 주기에 8파일이 한꺼번에 첫 판독을
+  // 받는다. 수정 라운드 1 의 제목 훑기(V2)가 파일당 한 번 여기서 돈다: 이 주기만 바이트가 크고
+  // 그 다음부터는 안 그렇다(구간 B·C 가 그 증거다). 숨기지 않고 표에 싣는다.
+  const allReads = entries.filter((entry) => entry.tag === 'transcript.read' && entry.bytes > 0)
+  const worst = allReads.length === 0 ? null : allReads.reduce((max, read) => (read.bytes > max.bytes ? read : max))
+  out['첫 채움 주기 (구간 밖)'] = {
+    설명: '참조 8개가 처음 붙는 주기. 제목 훑기(V2)가 파일당 한 번 도는 자리라 이 주기만 바이트가 크다.',
+    '읽은 주기 수(전체 실행)': allReads.length,
+    '가장 비싼 주기': worst === null ? null : { files: worst.files, bytes: worst.bytes, ms: worst.ms },
+    '200ms 이하인가': worst === null ? null : worst.ms <= 200,
+  }
+  out['메인 프로세스 CPU (V12)'] = {
+    설명: '구간 앞뒤의 process.cpuUsage() 차 — 통과선은 아니고 기준 본문이 재라고 한 값이다',
+    A: cpuDelta(cpuA0, cpuA1),
+    B: cpuDelta(cpuB0, cpuB1),
+    C: cpuDelta(cpuC0, cpuC1),
+    'B−A user_ms': cpuDelta(cpuA0, cpuA1) === null || cpuDelta(cpuB0, cpuB1) === null ? null : cpuDelta(cpuB0, cpuB1).user_ms - cpuDelta(cpuA0, cpuA1).user_ms,
+    'C−A user_ms': cpuDelta(cpuA0, cpuA1) === null || cpuDelta(cpuC0, cpuC1) === null ? null : cpuDelta(cpuC0, cpuC1).user_ms - cpuDelta(cpuA0, cpuA1).user_ms,
   }
   out['A7 판정'] = {
-    '통과선 ①': '주기당 총 200ms 이하',
-    '최대 주기 ms(B·C)': Math.max(B['주기 ms 최대'] ?? 0, C['주기 ms 최대'] ?? 0),
-    '① 통과': (B['주기 ms 최대'] ?? 0) <= 200 && (C['주기 ms 최대'] ?? 0) <= 200,
-    '통과선 ②': '프레임 간격 p95 가 붙이기 전보다 나빠지지 않는다',
-    'p95 A': A['프레임 간격 p95'],
-    'p95 B': B['프레임 간격 p95'],
-    'p95 C': C['프레임 간격 p95'],
-    '② 통과': A['프레임 간격 p95'] !== null && B['프레임 간격 p95'] !== null && B['프레임 간격 p95'] <= A['프레임 간격 p95'] * 1.1,
+    기준: '01-criteria.md [2026-09-15 기준 개정] A7′',
+    '구간 길이': { A: A['구간 길이 ms'], B: B['구간 길이 ms'], C: C['구간 길이 ms'] },
+    '표본 — 프레임수': { A: A.프레임수, B: B.프레임수, C: C.프레임수, 최소선: MIN_FRAMES },
+    '표본 — 주기수': { A: A.주기수, B: B.주기수, C: C.주기수 },
+    '같은 길이인가': Math.max(A['구간 길이 ms'], B['구간 길이 ms'], C['구간 길이 ms']) - Math.min(A['구간 길이 ms'], B['구간 길이 ms'], C['구간 길이 ms']) <= 1500,
+    '최소 프레임 수를 넘나': [A, B, C].every((window) => window.프레임수 >= MIN_FRAMES),
+    '통과선 ①′': '세 구간 전부 주기당 총 ≤200ms · 주기 수 0이면 미달',
+    '주기 ms 최대': { A: A['주기 ms 최대'], B: B['주기 ms 최대'], C: C['주기 ms 최대'] },
+    '①′ 통과': passes1([A, B, C]),
+    '통과선 ②′': 'p95(B) ≤ p95(A)+5ms 그리고 p95(C) ≤ p95(A)+5ms · 곱셈 여유 금지',
+    'p95': { A: A['프레임 간격 p95'], B: B['프레임 간격 p95'], C: C['프레임 간격 p95'] },
+    '여유 ms': ALLOWANCE_MS,
+    '②′ 통과': passes2(A['프레임 간격 p95'], [B['프레임 간격 p95'], C['프레임 간격 p95']]),
   }
   out.스크린샷 = shot
   out.rawChain = app.rawChain()
-  writeRaw('a7-concurrency.json', out)
+  writeRaw('a7-concurrency-r1.json', out)
   console.log(JSON.stringify({ A, B, C, 판정: out['A7 판정'], 반례: out['관문⑤ 반례'] }, null, 1))
 }
 

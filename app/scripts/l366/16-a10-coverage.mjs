@@ -8,8 +8,16 @@
 //   codex  : <HOME>/.codex/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl · payload.content[].output_text
 //   grok   : <HOME>/.grok/sessions/<enc cwd>/<id>/chat_history.jsonl · content 가 문자열
 //
-// 관문 ⑤ 반례: **모르는 에이전트**(`pi`)로도 같은 보고를 한 번 한다. corral 은 읽을 줄 모르는
-// 에이전트의 참조를 무시해야 한다 — 거기서도 2차 줄이 차면 판독기가 아무 파일이나 읽는 것이다.
+// ## 관문 ⑤ 반례 — 수정 라운드 1 에서 **자리를 옮겼다** (V5)
+//
+// 1회차 반례는 `agent:"pi"` 참조를 **셸 탭**에 보고하고 "사이드바에 안 나타난다" 를 확인했다.
+// 그런데 셸 탭은 참조와 **무관하게** 사이드바에 안 나온다 — 목록은 pane 에 에이전트가 붙었나
+// (`isAgentTab`)로 갈리지 `agentSession` 으로 갈리지 않는다. 그래서 `transcriptAgent()` 가
+// `pi` 를 거절하든 받아들이든 결과가 같아, 반례가 원래 재려던 경로를 안 밟았다 (리뷰 M3).
+//
+// 이번엔 **에이전트 탭 두 개를 나란히** 세운다. 둘 다 참조가 아직 안 박힌 claude 탭이고,
+// 같은 claude 파일의 id 를 보고하되 **에이전트 이름만 다르다** — 하나는 `pi`, 하나는 `claude`.
+// 파일은 실재하므로 이름이 유일한 변수다: `pi` 쪽은 비고 `claude` 쪽은 차야 한다.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -161,7 +169,7 @@ async function rows(app) {
 async function main() {
   const out = { at: new Date().toISOString() }
   out['세션 초기화'] = await resetSession()
-  for (const dir of ['.claude/projects/l366-a10', '.codex/sessions', '.grok/sessions']) {
+  for (const dir of ['.claude/projects/l366-a10', '.claude/projects/l366-a10-probe', '.codex/sessions', '.grok/sessions']) {
     fs.rmSync(path.join(isolatedHome(), dir), { recursive: true, force: true })
   }
 
@@ -242,34 +250,64 @@ async function main() {
   }
   out['참조와 파일'] = used
 
-  // 관문 ⑤ 반례 — corral 이 모르는 에이전트 이름으로 **claude 파일의 id** 를 보고한다.
-  const shellTab = (await app.state()).repos
+  // ---------- 관문 ⑤ 반례 (V5) — 에이전트 이름 하나만 바꿔서 결과가 뒤집히나 ----------
+  //
+  // 참조가 아직 없는 **claude 탭 두 개**를 새로 세운다. 같은 파일(id 하나)을 가리키되 한쪽은
+  // `agent:"pi"`, 한쪽은 `agent:"claude"` 로 보고한다. `transcriptAgent()` 가 모르는 이름을
+  // 거절하므로 pi 쪽만 비어야 한다 — 받아들이도록 바뀌면 두 행이 똑같이 차서 반례가 뒤집힌다.
+  const PROBE_ID = 'dd000000-0000-4000-8000-000000000004'
+  const PROBE_TEXT = '이름만 다른 두 보고 — 이 말은 claude 쪽에서만 보여야 한다'
+  const probeDir = path.join(isolatedHome(), '.claude', 'projects', 'l366-a10-probe')
+  fs.mkdirSync(probeDir, { recursive: true })
+  fs.writeFileSync(path.join(probeDir, `${PROBE_ID}.jsonl`), assistantLine('claude', PROBE_TEXT) + '\n')
+
+  const probeTabs = []
+  for (const label of ['pi', 'claude']) {
+    const before = (await rows(app)).length
+    await createTab(app, repo.root, 'claude')
+    const ok = await until(async () => (await rows(app)).length > before, { timeoutMs: 30000, everyMs: 300, what: `${label} 반례 탭` })
+    probeTabs.push({ label, 생겼나: ok.ok })
+    await sleep(600)
+  }
+  const probeState = (await app.state()).repos
     .flatMap((r) => r.worktrees)
     .flatMap((w) => w.workspace?.tabs ?? [])
-    .find((tab) => tab.panes.every((pane) => pane.agent === null))
+    .filter((tab) => tab.panes.some((pane) => pane.agent !== null) && !withRefs.some((used) => used.tabId === tab.tabId))
+  const [piTab, claudeTab] = probeState
+  const reportProbe = async (tab, agent) =>
+    tab === undefined
+      ? { 보고: null, '참조가 비어 있었나': null }
+      : {
+          '참조가 비어 있었나': tab.panes[0].agentSession === null,
+          보고: (await herdrCall('pane.report_agent_session', {
+            pane_id: tab.panes[0].paneId,
+            source: `herdr:${agent}`,
+            agent,
+            seq: Date.now(),
+            agent_session_id: PROBE_ID,
+          })).error,
+        }
   out['관문⑤ 반례 — 모르는 에이전트'] = {
-    설명: 'agent="pi" 로 참조를 보고한다. corral 은 읽을 줄 모르는 이름을 무시해야 한다.',
-    보고: shellTab === undefined
-      ? null
-      : (await herdrCall('pane.report_agent_session', {
-          pane_id: shellTab.panes[0].paneId,
-          source: 'herdr:pi',
-          agent: 'pi',
-          seq: Date.now(),
-          agent_session_id: IDS.claude,
-        })).error,
+    설명: '참조가 없는 claude 탭 둘에 같은 파일 id 를 보고한다. 다른 것은 에이전트 이름뿐이다.',
+    '심은 파일': { id: PROBE_ID, file: path.join(probeDir, `${PROBE_ID}.jsonl`), 문구: PROBE_TEXT },
+    탭: probeTabs,
+    'pi 로 보고': piTab === undefined ? null : { tabId: piTab.tabId, ...(await reportProbe(piTab, 'pi')) },
+    'claude 로 보고': claudeTab === undefined ? null : { tabId: claudeTab.tabId, ...(await reportProbe(claudeTab, 'claude')) },
   }
 
   await app.send({ cmd: 'resync', reason: 'l366-a10' })
+  // 3종 + **claude 로 보고한 반례 탭** = 4행이 차야 한다. pi 쪽은 영영 안 찬다(그게 반례다).
   const filled = await until(async () => {
     const list = await rows(app)
-    return list.filter((row) => row.secondKind === 'text').length >= 3 ? list : false
-  }, { timeoutMs: 40000, everyMs: 500, what: '세 행이 다 찬다' })
+    return list.filter((row) => row.secondKind === 'text').length >= 4 ? list : false
+  }, { timeoutMs: 40000, everyMs: 500, what: '네 행이 다 찬다 (3종 + claude 반례 탭)' })
   const final = filled.value ?? (await rows(app))
   out['A10 표'] = final
+  // **본실험 탭은 tabId 로 찾는다** — 반례 탭도 kind 가 claude 라 종류로 찾으면 섞인다.
+  const mainTabId = Object.fromEntries(withRefs.map((tab) => [tab.panes[0].agent, tab.tabId]))
   out['A10 판정'] = Object.fromEntries(
     ['claude', 'codex', 'grok'].map((agent) => {
-      const row = final.find((item) => item.kind === agent)
+      const row = final.find((item) => item.tabId === mainTabId[agent])
       return [
         agent,
         {
@@ -284,17 +322,27 @@ async function main() {
   )
   out['셸 탭'] = {
     사이드바_행수: final.length,
-    에이전트_탭수: withRefs.length,
+    '에이전트 탭수(본실험)': withRefs.length,
+    '에이전트 탭수(반례 포함)': probeState.length + withRefs.length,
     결론: '셸 탭은 사이드바 세션 행이 없다 — 2차 줄 자체가 없다',
   }
+  const probeRow = (tabId) => (tabId === undefined ? null : final.find((row) => row.tabId === tabId) ?? null)
+  const piRow = probeRow(piTab?.tabId)
+  const claudeRow = probeRow(claudeTab?.tabId)
   out['반례 결과'] = {
-    'pi 참조가 붙은 셸 탭이 사이드바에 나타났나': final.some((row) => row.kind === null || row.kind === 'shell'),
-    설명: '셸 탭은 에이전트가 없으므로 사이드바에 안 나온다. pi 참조는 화면 어디에도 반영되지 않는다.',
+    설명: '같은 파일·같은 id·같은 탭 종류. 에이전트 이름만 pi ↔ claude 다.',
+    'pi 쪽 행': piRow === null ? null : { secondKind: piRow.secondKind, secondText: piRow.secondText },
+    'claude 쪽 행': claudeRow === null ? null : { secondKind: claudeRow.secondKind, secondText: claudeRow.secondText },
+    'pi 는 비었나': piRow !== null && piRow.secondKind !== 'text',
+    'claude 는 찼나': claudeRow !== null && claudeRow.secondText === PROBE_TEXT,
+    반례가_성립하나:
+      piRow !== null && claudeRow !== null && piRow.secondKind !== 'text' && claudeRow.secondText === PROBE_TEXT,
+    '1회차와 달라진 점': '셸 탭이 아니라 에이전트 탭에 보고한다 — 이제 transcriptAgent() 의 거절이 유일한 갈림이다',
   }
   out.스크린샷 = await app.shot('a10-three-agents')
   out.rawChain = app.rawChain()
   await app.stop()
-  writeRaw('a10-coverage.json', out)
+  writeRaw('a10-coverage-r1.json', out)
   console.log(JSON.stringify({ 표: out['A10 표'], 판정: out['A10 판정'], 반례: out['반례 결과'] }, null, 1))
 }
 

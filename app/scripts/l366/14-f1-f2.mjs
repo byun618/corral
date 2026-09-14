@@ -113,8 +113,12 @@ async function main() {
     { timeoutMs: 30000, what: 'worktree opened' },
   )
   // 에이전트 탭 하나만 있으면 된다. 탭바는 탭이 2개 이상일 때만 뜨므로(C5) 셸 탭을 남겨 둔다.
-  await app.click(`[data-worktree-menu-toggle="${repo.root}"]`)
-  await app.click(`[data-worktree-create-agent="${repo.root}"][data-kind="claude"]`)
+  // **클릭 반환값을 버리지 않는다** (수정 라운드 1, V9). 다른 프로브는 `clickLog()` 로 `hit` 을
+  // 남기는데 이 둘만 버려서, 가려진 버튼을 눌렀을 때 30초 뒤 엉뚱한 곳에서 터졌다.
+  out['탭 만들기 클릭'] = [
+    await app.click(`[data-worktree-menu-toggle="${repo.root}"]`),
+    await app.click(`[data-worktree-create-agent="${repo.root}"][data-kind="claude"]`),
+  ].map((result) => ({ hit: result.hit ?? null, target: result.target ?? null, blockedBy: result.blockedBy ?? null }))
   const gotTab = await until(async () => {
     const workspace = (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root)?.workspace
     const tab = workspace?.tabs.find((item) => item.panes.some((pane) => pane.agent !== null))
@@ -220,10 +224,70 @@ async function main() {
   })
   out['⑤ 메뉴 닫기'] = { 통과: closed.ok, ms: closed.ms, 닫기전_탭수: beforeClose, 확인모달을_거쳤나: modal.ok }
 
+  // ---------- V7 — 메뉴가 뷰포트 밖으로 나가나 ----------
+  //
+  // 1회차 실측은 창 1400px 에 탭 2개라 우클릭 좌표가 `x: 558`·`521` 이었다 — **엣지케이스를
+  // 한 번도 안 밟았다.** 여기서는 창을 좁히고 탭을 채워 **가장 오른쪽 탭**을 우클릭한다.
+  // 클램프가 없으면 메뉴(168px) 오른쪽 끝이 창 밖으로 나간다.
+  await app.resizeWindow(900, 800)
+  await sleep(500)
+  for (let i = 0; i < 5; i += 1) {
+    await app.click(`[data-worktree-menu-toggle="${repo.root}"]`)
+    await app.click(`[data-worktree-create-agent="${repo.root}"][data-kind="claude"]`)
+    await sleep(500)
+  }
+  const tabIds = (await app.query('[data-main-tab]')).found
+  const lastTab = (
+    await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        const tabs = [...document.querySelectorAll('[data-main-tab]')]
+        if (tabs.length === 0) return null
+        const last = tabs[tabs.length - 1]
+        const box = last.getBoundingClientRect()
+        return { tabId: last.getAttribute('data-main-tab'), right: Math.round(box.right), center: Math.round(box.x + box.width / 2), innerWidth: window.innerWidth }
+      })()`,
+    })
+  ).result
+  const clampProbe = lastTab === null ? null : await (async () => {
+    await rightClick(app, `[data-main-tab="${lastTab.tabId}"]`)
+    await sleep(300)
+    return (
+      await app.send({
+        cmd: 'eval',
+        code: `(() => {
+          const menu = document.querySelector('.tab-context-menu')
+          if (menu === null) return { 열렸나: false }
+          const box = menu.getBoundingClientRect()
+          const anchorX = Number(menu.getAttribute('data-menu-anchor-x'))
+          const anchorY = Number(menu.getAttribute('data-menu-anchor-y'))
+          return {
+            열렸나: true,
+            창: { innerWidth: window.innerWidth, innerHeight: window.innerHeight },
+            우클릭_좌표: { x: anchorX, y: anchorY },
+            메뉴: { left: Math.round(box.left), right: Math.round(box.right), top: Math.round(box.top), bottom: Math.round(box.bottom), w: Math.round(box.width), h: Math.round(box.height) },
+            '클램프가 없었으면 넘쳤을 양': Math.round(anchorX + box.width - window.innerWidth),
+            '오른쪽 끝이 창 안인가': box.right <= window.innerWidth,
+            '아래 끝이 창 안인가': box.bottom <= window.innerHeight,
+          }
+        })()`,
+      })
+    ).result
+  })()
+  out['V7 — 메뉴 클램프'] = {
+    설명: '창을 900px 로 좁히고 탭을 채운 뒤 가장 오른쪽 탭을 우클릭한다.',
+    탭수: tabIds.length,
+    '가장 오른쪽 탭': lastTab,
+    측정: clampProbe,
+    통과: clampProbe !== null && clampProbe.열렸나 === true && clampProbe['오른쪽 끝이 창 안인가'] === true,
+    '엣지케이스를 실제로 밟았나': clampProbe !== null && (clampProbe['클램프가 없었으면 넘쳤을 양'] ?? 0) > 0,
+  }
+  out['V7 스크린샷'] = await app.shot('v7-menu-clamped')
+
   out.rawChain = app.rawChain()
   out.클릭기록 = app.clickLog()
   await app.stop()
-  writeRaw('f1-f2-menu.json', out)
+  writeRaw('f1-f2-menu-r1.json', out)
   console.log(
     JSON.stringify(
       {

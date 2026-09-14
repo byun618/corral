@@ -8,7 +8,7 @@
 // (`onClose`)를 부르고, 이름 변경은 더블클릭 인라인 편집과 **같은 `beginEdit`** 을 부른다.
 // 메뉴가 두 번째 구현을 들이면 두 경로가 갈라진다 — 여기서는 문만 하나 더 내는 것이다.
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export type TabMenuAnchor = { tabId: string; x: number; y: number }
 
@@ -29,6 +29,24 @@ export function TabContextMenu({
   onDismiss: () => void
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null)
+  // 우클릭 좌표 그대로 놓으면 **창 밖으로 나간다** (수정 라운드 1, V7). 오른쪽 끝 탭을 우클릭하면
+  // 메뉴 폭(168px)의 대부분이 화면 밖에 걸려 「이름 지우기」·「탭 닫기」의 글자와 클릭 영역이
+  // 잘린다. 레포 메뉴(`.repo-row-menu`)는 `right` 앵커라 구조적으로 이 문제가 없는데, 좌표 앵커로
+  // 바꾸면서 새로 생긴 갈래다.
+  //
+  // 상수(168px)를 여기 베껴 두지 않고 **붙은 뒤 실측한 크기**로 접는다 — 항목 수가 바뀌면 높이가
+  // 바뀌고, 폭은 토큰이 정한다. `useLayoutEffect` 라 그려지기 전에 자리가 잡힌다(깜빡임 없음).
+  const [placed, setPlaced] = useState<{ left: number; top: number }>({ left: anchor.x, top: anchor.y })
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (element === null) return
+    const box = element.getBoundingClientRect()
+    const margin = 4
+    setPlaced({
+      left: Math.max(margin, Math.min(anchor.x, window.innerWidth - box.width - margin)),
+      top: Math.max(margin, Math.min(anchor.y, window.innerHeight - box.height - margin)),
+    })
+  }, [anchor.x, anchor.y])
 
   useEffect(() => {
     const onDocPointerDown = (event: MouseEvent): void => {
@@ -50,7 +68,9 @@ export function TabContextMenu({
       className="tab-context-menu"
       data-tab-menu={anchor.tabId}
       ref={ref}
-      style={{ left: anchor.x, top: anchor.y }}
+      style={{ left: placed.left, top: placed.top }}
+      data-menu-anchor-x={anchor.x}
+      data-menu-anchor-y={anchor.y}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >

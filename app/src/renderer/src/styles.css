@@ -265,8 +265,10 @@ button { font: inherit; }
 .agent-grok { color: var(--agent-grok); }
 .agent-shell { color: var(--agent-shell); }
 
-/* H-5 접힘 요약 행 — 접힘이 "사라짐"이 아니라 "압축됨"으로 읽히게. 세션 행과 같은 들여쓰기·
-   높이를 쓰되 `[data-tab]` 이 아니라서 C3ⓑ 의 세션 행 집계에는 안 잡힌다. */
+/* H-5 접힘 요약 행 — 접힘이 "사라짐"이 아니라 "압축됨"으로 읽히게. 세션 행과 같은 들여쓰기를
+   쓰되 `[data-tab]` 이 아니라서 C3ⓑ 의 세션 행 집계에는 안 잡힌다.
+   **높이는 이제 갈렸다** (LIFE-366 B1): 세션 행은 2줄이 되어 30px(`--h-session-row-2`) 이고
+   이 행은 1줄 그대로 21px 이다 — `--h-session-row` 토큰이 살아 있는 이유가 이 행이다. */
 .agent-group-summary {
   display: flex; align-items: center; gap: 6px;
   height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;

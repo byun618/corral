@@ -58,6 +58,12 @@ type CacheEntry = {
   size: number
   mtimeMs: number
   digest: SessionDigest
+  /**
+   * 이 파일에서 **provider 제목을 상한(2MB)까지 한 번 훑어봤나** (수정 라운드 1, V2).
+   * 한 번 훑었으면 다시 안 훑는다 — 이 깃발이 없으면 제목 없는 긴 파일이 갱신될 때마다
+   * 2MB 를 다시 읽어 A7 주기 비용을 망가뜨린다.
+   */
+  titleScanned: boolean
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -90,7 +96,15 @@ function shouldResolveNow(key: string, now: number): boolean {
  */
 export type ReadCost = { files: number; statOnly: number; bytes: number; ms: number }
 
-export function clearTranscriptCacheForTest(): void {
+/**
+ * 판독 캐시를 통째로 비운다 — **세션을 갈아탈 때** main 이 부른다 (수정 라운드 1, V10).
+ *
+ * 캐시 키는 `<agent>:id:<세션 id>` 라 세션이 달라도 충돌하지는 않는다. 다만 안 비우면 닫힌 탭·
+ * 떠난 세션의 항목이 프로세스 수명 내내 남는다 — 지문 문자열이 p99 2.4KB 라 터질 크기는
+ * 아니지만, 세션 전환이 "그 세션의 것만 본다" 는 약속(`index.ts` 의 `digests = new Map()`)과
+ * 어긋난 채로 남는 것이 문제다. 테스트·실측 하네스도 같은 문을 쓴다.
+ */
+export function clearTranscriptCache(): void {
   cache.clear()
   misses.clear()
 }
@@ -216,22 +230,41 @@ function readRange(file: string, from: number, to: number): string {
   }
 }
 
-/** 한 파일을 읽어 지문을 만든다. 읽은 바이트를 같이 돌려준다 (A6 계측). */
+/**
+ * 한 파일을 읽어 지문을 만든다. 읽은 바이트를 같이 돌려준다 (A6 계측).
+ *
+ * # 창을 넓히는 이유가 **둘**이다 (수정 라운드 1, V2)
+ *
+ * 처음엔 하나였다 — 첫 창(256KB)에 어시스턴트 텍스트가 없을 때. 리뷰(codex)가 두 번째를 찾았다:
+ * **`ai-title` 이 첫 창 밖이고 어시스턴트 텍스트는 안에 있는** 파일에서는 확장이 안 돌아
+ * `providerTitle` 이 조용히 null 이 되고, 제목이 provider 티어를 건너뛰어 폴백으로 떨어진다
+ * (기준 C1 이 요구하는 티어가 긴 세션에서만 사라지는 모양이다).
+ *
+ * 그래서 **제목이 아직 없으면 한 번은 상한까지 훑는다.** 세 가지로 묶어 둔다.
+ *   · `agent === 'claude'` 일 때만 — `ai-title` 은 claude 포맷의 레코드다. codex·grok 판독은
+ *     provider 제목을 아예 안 주므로(`transcript-parse.ts`) 안 막으면 매번 2MB 를 다시 읽는다
+ *   · **파일당 한 번** (`titleScanned`) — 없는 제목을 갱신마다 다시 찾지 않는다
+ *   · 예산은 **같은 2MB** — 두 창은 여전히 안 겹치므로 갱신 1회의 총 읽기는 그대로 ≤2MB 다 (A6)
+ */
 function readDigest(input: {
   file: string
   size: number
   mtimeMs: number
   agent: TranscriptAgent
   sessionId: string | null
-}): { digest: SessionDigest; bytes: number } {
+  titleScanned: boolean
+}): { digest: SessionDigest; bytes: number; titleScanned: boolean } {
   const firstFrom = Math.max(0, input.size - TAIL_WINDOW_BYTES)
   let chunk = readRange(input.file, firstFrom, input.size)
   let bytes = input.size - firstFrom
   let from = firstFrom
   let parsed = parseTail({ agent: input.agent, chunk, partial: from > 0, sessionId: input.sessionId })
+  let titleScanned = input.titleScanned
 
-  // 첫 창에서 어시스턴트 텍스트를 못 찾았고 아직 앞에 남은 게 있으면 **한 번만** 더 넓힌다.
-  if (parsed.activity.state !== 'text' && from > 0) {
+  const needsText = parsed.activity.state !== 'text'
+  const needsTitle = input.agent === 'claude' && parsed.providerTitle === null && !titleScanned
+  // 첫 창에서 못 찾은 게 있고 아직 앞에 남은 게 있으면 **한 번만** 더 넓힌다.
+  if ((needsText || needsTitle) && from > 0) {
     const secondFrom = Math.max(0, input.size - TAIL_MAX_BYTES)
     if (secondFrom < from) {
       chunk = readRange(input.file, secondFrom, from) + chunk // 두 구간은 붙어 있다 — 겹치지 않는다
@@ -239,9 +272,14 @@ function readDigest(input: {
       from = secondFrom
       parsed = parseTail({ agent: input.agent, chunk, partial: from > 0, sessionId: input.sessionId })
     }
+    // 상한까지 봤다 — 여기서 제목이 없으면 이 파일엔 (창 안에) 없는 것이다. 다시 안 훑는다.
+    titleScanned = true
   }
+  // 파일을 통째로 읽었거나 제목을 찾았으면 더 훑을 이유가 없다.
+  if (from === 0 || parsed.providerTitle !== null) titleScanned = true
 
   return {
+    titleScanned,
     digest: {
       activity: parsed.activity,
       providerTitle: parsed.providerTitle,
@@ -288,6 +326,10 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
   try {
     stat = fs.statSync(file)
   } catch (error) {
+    // **판독 실패를 로그로 남긴다** (수정 라운드 1, V3). 화면은 `unreadable` 로 정직하게
+    // 내려앉지만, 그 사실이 아무 데도 안 남으면 하네스의 「예외 없음」 다리가 관측이 아니라
+    // 무관측이 된다 — 리뷰가 그 자리를 짚었다.
+    log('transcript.error', { where: 'stat', agent, error: String(error) })
     cache.delete(key)
     return {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
@@ -307,10 +349,22 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
       mtimeMs: stat.mtimeMs,
       agent,
       sessionId: ref.kind === 'id' ? ref.id : null,
+      // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
+      // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
+      titleScanned: cached?.titleScanned ?? false,
     })
-    cache.set(key, { file, size: stat.size, mtimeMs: stat.mtimeMs, digest: read.digest })
-    return { digest: read.digest, bytes: read.bytes, statOnly: false }
+    // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
+    // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
+    // 이름이 대화 중에 폴백으로 **되돌아간다**. 같은 파일 = 같은 세션이라 소유자 확인(C2)은
+    // 이미 끝난 값이다.
+    const digest: SessionDigest = {
+      ...read.digest,
+      providerTitle: read.digest.providerTitle ?? cached?.digest.providerTitle ?? null,
+    }
+    cache.set(key, { file, size: stat.size, mtimeMs: stat.mtimeMs, digest, titleScanned: read.titleScanned })
+    return { digest, bytes: read.bytes, statOnly: false }
   } catch (error) {
+    log('transcript.error', { where: 'read', agent, error: String(error) })
     return {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
       bytes: 0,
@@ -321,7 +375,11 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
 
 /**
  * 참조 여러 개를 한 주기에 읽는다 — 화면 갱신이 부르는 입구다.
- * 비용을 한 줄 로그로 남긴다 (A7 이 그 로그를 근거로 삼는다).
+ *
+ * **비용 로그는 여기서 안 찍는다** (수정 라운드 1, V1). 기준 A7′ 은 세 구간 전부에 주기 수가
+ * 있어야 한다고 못 박는데, 참조가 0인 구간은 읽을 파일이 없어 `files > 0` 조건에서는 로그가
+ * 아예 안 남는다 — "무관측이 통과로 읽히는" 자리다. 로그 정책은 부르는 쪽(`index.ts`)이 정한다:
+ * 평시엔 읽은 게 있을 때만, 계측 실행에서는 매 주기.
  */
 export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | null>): {
   digests: Map<string, SessionDigest>
@@ -340,7 +398,5 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     if (read.statOnly) statOnly += 1
     bytes += read.bytes
   }
-  const cost = { files, statOnly, bytes, ms: Date.now() - startedAt }
-  if (files > 0) log('transcript.read', cost)
-  return { digests, cost }
+  return { digests, cost: { files, statOnly, bytes, ms: Date.now() - startedAt } }
 }

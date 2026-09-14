@@ -48,7 +48,7 @@ import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
-import { readSessionDigests } from './transcript.js'
+import { clearTranscriptCache, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -687,6 +687,8 @@ function pickSession(name: string): void {
   link.open(found)
   // 세션이 바뀌면 지문·통합 상태도 그 세션의 것이다 (LIFE-366). 주기를 기다리지 않고 바로 읽는다.
   digests = new Map()
+  // 지문 캐시도 이전 세션의 것이다 — 같이 비운다 (수정 라운드 1, V10).
+  clearTranscriptCache()
   void refreshIntegrations()
   scheduleEmit()
 }
@@ -748,6 +750,10 @@ function digestsEqual(a: SessionDigest, b: SessionDigest): boolean {
 function refreshDigests(): void {
   const refs = collectSessionRefs(link.store.rows())
   const read = readSessionDigests(refs)
+  // 평시엔 **읽은 게 있을 때만** 남긴다(1.5초마다 빈 줄을 쌓지 않는다). 계측 실행에서는 매 주기 —
+  // 기준 A7′ 이 세 구간 전부의 주기 수를 요구하는데, 참조 0인 구간은 읽을 파일이 없어서 그냥 두면
+  // 로그가 한 줄도 안 남는다 (수정 라운드 1, V1).
+  if (read.cost.files > 0 || measuring) log('transcript.read', read.cost)
   let changed = read.digests.size !== digests.size
   if (!changed) {
     for (const [tabId, digest] of read.digests) {

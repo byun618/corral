@@ -40,7 +40,7 @@ function isolatedHome(): string {
 // POSIX 의 `os.homedir()` 는 `$HOME` 을 먼저 본다.
 process.env['HOME'] = isolatedHome()
 
-const { clearTranscriptCacheForTest, readSessionDigest, TAIL_MAX_BYTES, TAIL_WINDOW_BYTES } = await import(
+const { clearTranscriptCache, readSessionDigest, TAIL_MAX_BYTES, TAIL_WINDOW_BYTES } = await import(
   '../../src/main/transcript.js'
 )
 type Ref = Parameters<typeof readSessionDigest>[0]
@@ -68,7 +68,14 @@ function filler(index: number): string {
   )
 }
 
-/** 꼬리에서 `tailBytes` 바이트쯤 앞에 어시스턴트 텍스트 하나를 심은 파일을 만든다. */
+/**
+ * 꼬리에서 `tailBytes` 바이트쯤 앞에 어시스턴트 텍스트 하나를 심은 파일을 만든다.
+ *
+ * **꼬리 끝에 `ai-title` 을 같이 심는다** (수정 라운드 1). V2 를 고치면서 창을 넓히는 이유가
+ * 둘이 됐다 — 텍스트를 못 찾았을 때와 **제목을 못 찾았을 때**. 제목을 안 심으면 ① 대조군에서도
+ * 제목 때문에 확장이 돌아, 이 스크립트가 재려던 「텍스트 때문의 확장」이 안 갈린다.
+ * 제목 쪽 확장은 `18-v2-aititle.mts` 가 따로 잰다.
+ */
 function makeFile(input: { home: string; id: string; text: string; tailBytes: number; headBytes: number }): string {
   const dir = path.join(input.home, '.claude', 'projects', '-l366-window')
   fs.mkdirSync(dir, { recursive: true })
@@ -86,7 +93,8 @@ function makeFile(input: { home: string; id: string; text: string; tailBytes: nu
     message: { content: [{ type: 'text', text: input.text }] },
   })
   const tail = grow(input.tailBytes, 5000)
-  fs.writeFileSync(file, head + mark + '\n' + tail)
+  const title = JSON.stringify({ type: 'ai-title', sessionId: input.id, aiTitle: '창 실측용 제목', timestamp: stamp(3) })
+  fs.writeFileSync(file, head + mark + '\n' + tail + title + '\n')
   return file
 }
 
@@ -107,7 +115,7 @@ function measure(input: { 경우: string; id: string; text: string; tailBytes: n
   const file = makeFile({ home, id: input.id, text: input.text, tailBytes: input.tailBytes, headBytes: input.headBytes })
   const size = fs.statSync(file).size
   const ref: Ref = { kind: 'id', agent: 'claude', source: 'l366:window', id: input.id }
-  clearTranscriptCacheForTest()
+  clearTranscriptCache()
   const at = process.hrtime.bigint()
   const read = readSessionDigest(ref)
   const ms = Number(process.hrtime.bigint() - at) / 1e6
@@ -149,5 +157,5 @@ const out = {
 }
 
 fs.mkdirSync(RAW_DIR, { recursive: true })
-fs.writeFileSync(path.join(RAW_DIR, 'a6-window.json'), JSON.stringify(out, null, 2) + '\n')
+fs.writeFileSync(path.join(RAW_DIR, 'a6-window-r1.json'), JSON.stringify(out, null, 2) + '\n')
 console.log(JSON.stringify(out, null, 1))

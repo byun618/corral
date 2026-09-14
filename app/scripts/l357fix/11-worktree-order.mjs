@@ -7,6 +7,12 @@
 // fixture 는 **생성 순서를 알파벳 순서와 어긋나게** 잡는다(zzz → aaa → issue). 그래야
 // 렌더 순서가 herdr 배열 순서와 달라지고, "정렬이 실제로 돌고 있다"가 증명된다 — 같으면
 // "받은 순서 그대로"와 구분이 안 된다.
+//
+// 여기에 **leaf 순과 풀네임 순이 반대로 갈리는 쌍**을 더 넣는다: `zzz/aaa-leaf` 와
+// `aaa/zzz-leaf`. 풀네임으로 정렬하면 `aaa/zzz-leaf` 가 앞이고, 화면에 보이는 leaf 로
+// 정렬하면 `aaa-leaf` 가 앞이라 둘이 정확히 뒤집힌다. 이 쌍이 없으면 두 정렬이 같은 결과를
+// 내서 "정렬 키를 leaf 로 바꿨는가"를 테스트가 **구분하지 못한다** — 코디네이터가 실물에서
+// 잡은 결함이 그 형태였다(`main` → `012-…`: 풀네임으론 맞고 보이는 이름으론 역순).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,7 +25,10 @@ async function orderSnapshot(app, label) {
   const rows = (
     await app.send({
       cmd: 'eval',
-      code: "[...document.querySelectorAll('[data-worktree]')].map((el) => ({ path: el.getAttribute('data-worktree'), selected: el.classList.contains('is-selected') }))",
+      // 1줄에 **실제로 그려진 문자열**(`.worktree-name` 텍스트)을 같이 읽는다 — 정렬 키를
+      // 코드에서 다시 계산해 비교하면 "코드가 코드를 검증"하는 꼴이라, 사용자가 보는 순서가
+      // 맞는지는 증명되지 않는다. 이번 결함이 딱 그 틈에서 나왔다.
+      code: "[...document.querySelectorAll('[data-worktree]')].map((el) => ({ path: el.getAttribute('data-worktree'), selected: el.classList.contains('is-selected'), shown: el.querySelector('.worktree-name')?.textContent?.trim() ?? null }))",
     })
   ).result
   const paths = rows.map((r) => r.path)
@@ -33,6 +42,8 @@ async function orderSnapshot(app, label) {
   const sessionCount = stateRows.reduce((sum, w) => sum + (w.workspace?.tabs.length ?? 0), 0)
   return {
     label,
+    // 화면에 보이는 이름(leaf) — 통과선의 비교 단위다.
+    renderedShownNames: rows.map((r) => r.shown),
     renderedNames: paths.map(nameOf),
     // herdr 가 준 배열 순서 — 우리가 여기에 의존하지 **않는다**는 것을 보이기 위해 같이 찍는다.
     stateArrayNames: stateRows.map((w) => w.branch ?? w.path),
@@ -61,6 +72,8 @@ async function main() {
     ['zzz-last', 'zzz'],
     ['aaa-first', 'aaa'],
     ['issue/LIFE-89', 'issue-life-89'],
+    ['zzz/aaa-leaf', 'slash-zzz'],
+    ['aaa/zzz-leaf', 'slash-aaa'],
   ]) {
     const full = path.join(wtRoot, dir)
     execFileSync('git', ['-C', repo.root, 'worktree', 'add', '-b', branch, full], { encoding: 'utf8' })
@@ -69,7 +82,7 @@ async function main() {
 
   const app = await startApp({ name: '11-worktree-order' })
   await app.addRepo(repo.root)
-  await until(async () => (await app.query('[data-worktree]')).found.length === 4, { timeoutMs: 10000, what: 'worktree rows mounted (4)' })
+  await until(async () => (await app.query('[data-worktree]')).found.length === 6, { timeoutMs: 10000, what: 'worktree rows mounted (6)' })
 
   const snapshots = []
 
@@ -117,25 +130,39 @@ async function main() {
   // 레지스트리를 공유할 필요가 없고, 공유하면 레포가 중복 등록돼 행 수가 어긋난다.
   const app2 = await startApp({ name: '11-worktree-order-restart' })
   await app2.addRepo(repo.root)
-  await until(async () => (await app2.query('[data-worktree]')).found.length === 4, { timeoutMs: 12000, what: 'worktree rows mounted after restart' })
+  await until(async () => (await app2.query('[data-worktree]')).found.length === 6, { timeoutMs: 12000, what: 'worktree rows mounted after restart' })
   snapshots.push(await orderSnapshot(app2, 'after-restart'))
 
   // ---------- 판정 ----------
-  const first = JSON.stringify(snapshots[0].renderedNames)
-  const allIdentical = snapshots.every((s) => JSON.stringify(s.renderedNames) === first)
-  // 기대 순서는 손으로 적지 않고 **렌더러와 같은 비교자**로 만든다 — localeCompare 는
-  // 코드포인트 순이 아니라서 손으로 적으면 틀린다.
-  const expectedNames = [...snapshots[0].renderedNames].sort((a, b) => a.localeCompare(b))
-  const matchesNameOrder = snapshots.every((s) => JSON.stringify([...s.renderedNames].sort((a, b) => a.localeCompare(b))) === JSON.stringify(s.renderedNames))
+  // 비교 단위는 **화면에 보이는 이름(leaf)** 이다. 풀네임 배열도 같이 보되, 통과/미달은
+  // 사용자가 보는 쪽으로 가른다.
+  const first = JSON.stringify(snapshots[0].renderedShownNames)
+  const allIdentical = snapshots.every((s) => JSON.stringify(s.renderedShownNames) === first)
+
+  // 렌더러와 **같은 비교자**로 기대 순서를 만든다(leaf 1차 · 풀네임 2차). 손으로 적으면
+  // localeCompare 가 코드포인트 순이 아니라서 틀린다.
+  const pairsOf = (s) => s.renderedShownNames.map((shown, i) => ({ shown, full: s.renderedNames[i] }))
+  const byLeafThenFull = (a, b) => (a.shown.localeCompare(b.shown) !== 0 ? a.shown.localeCompare(b.shown) : a.full.localeCompare(b.full))
+  const expectedNames = pairsOf(snapshots[0]).sort(byLeafThenFull).map((p) => p.shown)
+  const matchesNameOrder = snapshots.every((s) => JSON.stringify([...pairsOf(s)].sort(byLeafThenFull).map((p) => p.shown)) === JSON.stringify(s.renderedShownNames))
+
   // 정렬이 실제로 돌고 있다는 증거 — 한 컷이라도 herdr 배열 순서와 달라야 한다.
   const differsFromStateArray = snapshots.some((s) => JSON.stringify(s.renderedNames) !== JSON.stringify(s.stateArrayNames))
-  // 회귀 감지력 — 철회된 규칙이었다면 ⓑ 에서 다른 순서가 나왔어야 한다. 같다면 이 fixture 로는
-  // 두 규칙이 구분되지 않는다는 뜻이라 통과로 치지 않는다.
+
+  // 회귀 감지력 ①: 철회된 등급 규칙(선택됨 → 열림 → 그 외)이었다면 ⓑ 에서 다른 순서가 나왔어야 한다.
   const withdrawnRuleWouldDiffer = JSON.stringify(selectionSnapshot.withdrawnRankOrder) !== JSON.stringify(selectionSnapshot.renderedNames)
+
+  // 회귀 감지력 ②: **고쳐진 결함**을 이 fixture 가 잡는가. 풀네임 정렬로 되돌리면 화면 순서가
+  // 달라져야 한다 — 같다면 `zzz/aaa-leaf`·`aaa/zzz-leaf` 쌍이 제 일을 못 한 것이라 통과로 안 친다.
+  const fullNameRuleOrder = pairsOf(selectionSnapshot)
+    .sort((a, b) => a.full.localeCompare(b.full))
+    .map((p) => p.shown)
+  const fullNameRuleWouldDiffer = JSON.stringify(fullNameRuleOrder) !== JSON.stringify(selectionSnapshot.renderedShownNames)
 
   const out = {
     what: 'H-1 — worktree 정렬이 세션 상태와 무관하게 고정인가 (10-gate1-fix2.md 통과선 ⓐⓑⓒ)',
-    rule: '이름(branch ?? path) 사전순. 세션 수·열림 여부·선택 여부는 정렬 키에 넣지 않는다.',
+    rule: '화면에 보이는 이름(브랜치 leaf) 1차 · 풀네임 2차 사전순. 세션 수·열림 여부·선택 여부는 정렬 키에 넣지 않는다.',
+    fullNameRuleOrder,
     fixtureCreationOrder: created.map((w) => w.branch),
     expectedNames,
     snapshots,
@@ -148,14 +175,15 @@ async function main() {
       matchesNameOrder,
       differsFromStateArray,
       withdrawnRuleWouldDiffer,
+      fullNameRuleWouldDiffer,
     },
     shots: [shotSelection],
     rawChain: [app.rawChain(), app2.rawChain()],
     clickLog: [...app.clickLog(), ...app2.clickLog()],
     pass: null,
   }
-  out.pass = allIdentical && matchesNameOrder && differsFromStateArray && withdrawnRuleWouldDiffer
-  console.log(JSON.stringify({ ...out, snapshots: snapshots.map((s) => ({ label: s.label, renderedNames: s.renderedNames })) }, null, 2))
+  out.pass = allIdentical && matchesNameOrder && differsFromStateArray && withdrawnRuleWouldDiffer && fullNameRuleWouldDiffer
+  console.log(JSON.stringify({ ...out, snapshots: snapshots.map((s) => ({ label: s.label, renderedShownNames: s.renderedShownNames })) }, null, 2))
   writeRaw('h1-worktree-order.json', out)
   await app2.stop()
 }

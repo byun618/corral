@@ -5,33 +5,13 @@ import type { RefObject } from 'react'
 import type { AgentKind, AppState, TabRow, WorktreeRow } from '../../../shared/types.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { pickPane } from '../pane-utils.js'
+import { sortWorktrees } from '../worktree-name.js'
 import { RepoRow } from './RepoRow.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarBrandBar } from './SidebarBrandBar.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
-
-/**
- * worktree 정렬 — **이름 사전순 고정**.
- *
- * 요구는 "열려 있는 세션과 상관없이 순서가 고정"이다. 그래서 정렬 키는 worktree 이름
- * (`branch ?? path`) 하나뿐이고, **세션 수·열림 여부·선택 여부는 키에 넣지 않는다** —
- * 활성 상태를 키에 넣었다가 세션을 열고 닫을 때마다 목록이 눈앞에서 재배열된 것이
- * 이 규칙이 생긴 이유다(10-gate1-fix2.md H-1).
- *
- * herdr 가 주는 배열 순서를 그대로 쓰지 않는 이유도 같다 — 그 순서에는 고정 보장이 없다.
- * 여기서 한 번 정렬해야 세션 상태와 무관하게 같은 순서가 나온다.
- */
-function worktreeName(worktree: WorktreeRow): string {
-  return worktree.branch ?? worktree.path
-}
-
-function sortWorktrees(worktrees: WorktreeRow[]): WorktreeRow[] {
-  // 이름은 중복될 수 없어 동률 처리는 필요 없지만, `sort` 는 ES2019 부터 안정 정렬이라
-  // 혹시 동률이 생겨도 들어온 순서가 유지된다.
-  return [...worktrees].sort((a, b) => worktreeName(a).localeCompare(worktreeName(b)))
-}
 
 export function Sidebar({
   sidebarRef,

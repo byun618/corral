@@ -23,6 +23,7 @@ import type { AgentKind, TabRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { agentIcon, GLYPH } from '../session-glyphs.js'
 import { isAgentTab, tabAgent } from '../session-title.js'
+import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { SessionRow } from './SessionRow.js'
 
@@ -34,12 +35,6 @@ const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
 
 // 01-criteria.md C3ⓑ + 부록 "세션 용어 확정" — 여기서 세는 "세션"은 **에이전트 세션**이다.
 const GROUP_THRESHOLD = 3
-
-/** 브랜치 leaf — 마지막 `/` 뒤. 슬래시가 없으면 풀네임 그대로다. */
-function branchLeaf(branch: string): string {
-  const index = branch.lastIndexOf('/')
-  return index === -1 ? branch : branch.slice(index + 1)
-}
 
 export function WorktreeBlock({
   worktree,
@@ -87,7 +82,9 @@ export function WorktreeBlock({
   const isOpen = worktree.workspace !== null
 
   const branch = worktree.branch
-  const line1Name = branch === null ? '(브랜치 없음)' : branchLeaf(branch)
+  // 표시 이름은 **정렬 키와 같은 함수**에서 온다 — 둘이 갈라져서 보이는 이름 기준 역순이
+  // 나온 적이 있다(worktree-name.ts 주석).
+  const line1Name = worktreeDisplayName(worktree)
   // 2줄은 **항상** 풀네임이다 — leaf 와 같아도 그린다 (H-2). 브랜치가 없는 worktree 만
   // 예외인데, 그건 규칙의 예외가 아니라 쓸 이름이 없어서다(절대경로는 §2.5 가 행에 금지).
   const line2Branch = branch

@@ -86,13 +86,19 @@ function makeFile(input: {
   gapBytes: number
   text: string
   titleAtEnd?: boolean
-}): string {
+}): { file: string; titleStart: number | null } {
   fs.mkdirSync(DIR, { recursive: true })
   const file = path.join(DIR, `${input.id}.jsonl`)
   const title = input.titleOwner === null ? '' : titleLine(input.title, input.titleOwner)
   const body = grow(input.gapBytes, 1000) + textLine(input.text)
-  fs.writeFileSync(file, input.titleAtEnd === true ? body + title : title + body)
-  return file
+  const content = input.titleAtEnd === true ? body + title : title + body
+  fs.writeFileSync(file, content)
+  // 제목 줄이 **어디서 시작하는지**를 쓴 쪽이 돌려준다 (수정 라운드 2).
+  // 1회차는 `size - titleLine(...).length` 로 계산해서 두 번 틀렸다 — 제목이 늘 파일 앞에
+  // 있다고 가정했고(꼬리 끝이면 거리가 파일 크기만큼 부풀었다), 바이트 크기에서 **글자 수**를
+  // 뺐다(한글 한 글자 3바이트). 아래는 코퍼스 §의 `lastTitleDistance()` 와 같은 정의다.
+  const titleStart = input.titleOwner === null ? null : input.titleAtEnd === true ? Buffer.byteLength(body) : 0
+  return { file, titleStart }
 }
 
 const TEXT = 'Recent text — 꼬리 창 안에 있는 마지막 어시스턴트 텍스트'
@@ -101,7 +107,7 @@ const TITLE = '창 밖에 있는 provider 제목'
 type Row = {
   경우: string
   파일_바이트: number
-  'ai-title 이 EOF 에서 떨어진 거리': number | null
+  'ai-title 줄 시작이 EOF 에서 떨어진 거리': number | null
   activity: string
   텍스트_일치: boolean
   providerTitle: string | null
@@ -112,7 +118,7 @@ type Row = {
 }
 
 function measure(input: { 경우: string; id: string; titleOwner: string | null; gapBytes: number; titleAtEnd?: boolean }): Row {
-  const file = makeFile({
+  const { file, titleStart } = makeFile({
     id: input.id,
     titleOwner: input.titleOwner,
     title: TITLE,
@@ -130,7 +136,7 @@ function measure(input: { 경우: string; id: string; titleOwner: string | null;
   return {
     경우: input.경우,
     파일_바이트: size,
-    'ai-title 이 EOF 에서 떨어진 거리': input.titleOwner === null ? null : size - titleLine(TITLE, input.titleOwner).length,
+    'ai-title 줄 시작이 EOF 에서 떨어진 거리': titleStart === null ? null : size - titleStart,
     activity: read.digest.activity.state,
     텍스트_일치: got === TEXT,
     providerTitle: read.digest.providerTitle,
@@ -273,5 +279,5 @@ const out = {
 }
 
 fs.mkdirSync(RAW_DIR, { recursive: true })
-fs.writeFileSync(path.join(RAW_DIR, 'a6-aititle-r1.json'), JSON.stringify(out, null, 2) + '\n')
+fs.writeFileSync(path.join(RAW_DIR, 'a6-aititle-r2.json'), JSON.stringify(out, null, 2) + '\n')
 console.log(JSON.stringify(out, null, 1))

@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { buildMixedFixture, makeScratchRepo, sleep, startApp, until, writeRaw } from './lib.mjs'
+import { buildMixedFixture, makeScratchRepo, RAW_DIR, RAW_SUBDIR, sleep, startApp, until, writeRaw } from './lib.mjs'
 
 function addWorktree(repo, branch, dir) {
   const full = path.join(repo.root, '.wt', dir)
@@ -209,14 +209,20 @@ async function main() {
   writeRaw('h3-h5-hierarchy.json', out)
 
   // 육안 대조용 스크린샷을 원자료 폴더 최상위로 복사한다 — `_runs/` 는 로그 보관용이라 묻힌다.
+  // **`writeRaw` 를 쓰면 안 된다** — 문자열이 아닌 값을 JSON.stringify 해서 PNG 가 아니라
+  // Buffer JSON 이 저장된다(실제로 한 번 그렇게 나갔다). 바이트 그대로 복사한다.
   for (const [label, shot] of [
     ['hierarchy-expanded.png', shotExpanded],
     ['hierarchy-collapsed.png', shotCollapsed],
   ]) {
-    const from = path.isAbsolute(shot.file) ? shot.file : path.join(path.dirname(app.dir), '..', shot.file)
-    const src = fs.existsSync(from) ? from : path.join(app.shotDir, path.basename(shot.file))
-    if (fs.existsSync(src)) writeRaw(label, fs.readFileSync(src))
+    const src = path.join(app.shotDir, path.basename(shot.file))
+    if (!fs.existsSync(src)) continue
+    const target = path.join(RAW_DIR, RAW_SUBDIR, label)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.copyFileSync(src, target)
+    console.log('copied', label)
   }
+
   await app.stop()
 }
 

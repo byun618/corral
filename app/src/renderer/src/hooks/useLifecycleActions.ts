@@ -153,7 +153,7 @@ export function useLifecycleActions(state: AppState | null): {
   /**
    * 이름 지우기 (LIFE-366 F1) — 빈 label 을 보낸다.
    *
-   * 실측(`raw/claude/f1-rename-clear.json`): herdr `tab.rename` 은 빈 문자열을 **받아들인다**
+   * 실측(`raw/claude/f1-f2-menu.json`): herdr `tab.rename` 은 빈 문자열을 **받아들인다**
    * (거절 없음, `label: ""` 로 저장). 그러면 `userLabel()` 이 빈 label 을 이름으로 안 세므로
    * 제목이 저절로 다음 티어로 떨어진다. 기준 F1 은 "herdr 가 거절하면 그 거절을 그대로 보인다"
    * 는 조건부였고, 실측상 거절이 없어 그 갈래는 안 타지만 **경로는 남겨 둔다** — 버전이 바뀌어

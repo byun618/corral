@@ -50,9 +50,10 @@ function fullFileOracle(file: string, sessionId: string, { firstInsteadOfLast = 
     if (row['type'] !== 'assistant') continue
     const message = row['message']
     if (typeof message !== 'object' || message === null) continue
-    const content2 = (message as Record<string, unknown>)['content']
-    if (!Array.isArray(content2)) continue
-    const joined = content2
+    const inner: Record<string, unknown> = { ...message }
+    const blocks = inner['content']
+    if (!Array.isArray(blocks)) continue
+    const joined = blocks
       .filter((block): block is { type: string; text: string } => {
         if (typeof block !== 'object' || block === null) return false
         const item: Record<string, unknown> = { ...block }
@@ -93,12 +94,14 @@ function main(): void {
   if (files.length === 0) throw new Error('claude 트랜스크립트가 없다')
   const sizes = files.map((item) => item.size)
   // 소·중·대 + **가장 큰 것**. A6 통과선이 29MB급이라 최대값은 반드시 넣는다.
-  const picks = [
-    files[Math.floor(files.length * 0.1)],
-    files[Math.floor(files.length * 0.5)],
-    files[Math.floor(files.length * 0.9)],
-    files[files.length - 1],
-  ].filter((item, index, list) => list.findIndex((other) => other.file === item.file) === index)
+  const at = (fraction: number): { file: string; id: string; size: number } | null =>
+    files[Math.min(files.length - 1, Math.floor(files.length * fraction))] ?? null
+  const picks: Array<{ file: string; id: string; size: number }> = []
+  for (const candidate of [at(0.1), at(0.5), at(0.9), at(1)]) {
+    if (candidate === null) continue
+    if (picks.some((chosen) => chosen.file === candidate.file)) continue
+    picks.push(candidate)
+  }
 
   const rows = []
   for (const pick of picks) {
@@ -151,10 +154,10 @@ function main(): void {
     note: '사용자 트랜스크립트는 읽기 전용(E6). 대화 내용은 안 싣고 해시·길이·비용만 싣는다.',
     '파일 분포': {
       개수: files.length,
-      최소: sizes[0],
-      중앙값: sizes[Math.floor(sizes.length / 2)],
-      최대: sizes[sizes.length - 1],
-      '최대 MB': Math.round((sizes[sizes.length - 1] / 1024 / 1024) * 100) / 100,
+      최소: Math.min(...sizes),
+      중앙값: sizes[Math.floor(sizes.length / 2)] ?? 0,
+      최대: Math.max(...sizes),
+      '최대 MB': Math.round((Math.max(...sizes) / 1024 / 1024) * 100) / 100,
     },
     표: rows,
     'A5 판정': {

@@ -19,7 +19,7 @@
 // 빈 탭 생성 · 에이전트 즉시 기동(L1/L2 자산 보존) · worktree 닫기(기존 확인 게이트 경로 유지,
 // §6 "액션을 추가하지 않았다"는 상시 노출 버튼 얘기라 hover 메뉴 항목으로는 기능을 지우지 않는다).
 import { useState } from 'react'
-import type { AgentKind, TabRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, IntegrationRow, TabRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { agentIcon, GLYPH } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
@@ -41,6 +41,8 @@ export function WorktreeBlock({
   worktree,
   selected,
   selectedPane,
+  integrations,
+  now,
   groupCollapsed,
   onToggleGroup,
   onSelectBlock,
@@ -53,6 +55,10 @@ export function WorktreeBlock({
   worktree: WorktreeRow
   selected: boolean
   selectedPane: string | null
+  /** herdr 통합 설치 상태 — 2차 줄이 "왜 비었나" 를 말할 때 쓴다 (LIFE-366 B8). */
+  integrations: readonly IntegrationRow[]
+  /** 흐르는 「지금」 — 경과 시간용 (LIFE-366 D1). */
+  now: number
   groupCollapsed: boolean
   onToggleGroup: () => void
   onSelectBlock: () => void
@@ -235,6 +241,8 @@ export function WorktreeBlock({
               key={tab.tabId}
               tab={tab}
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
+              integrations={integrations}
+              now={now}
               onSelect={() => onSelectSession(tab)}
               onClose={() => onCloseSession(tab.tabId)}
             />

@@ -208,6 +208,7 @@ export function App(): React.JSX.Element {
               }}
               onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
               onRenameTab={(tab, label) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number })}
+              onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
             />
           ) : null}
 

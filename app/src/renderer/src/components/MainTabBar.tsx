@@ -29,7 +29,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
 import { agentIcon } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { sessionTitle, tabAgent } from '../session-title.js'
+import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
+import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
 
 /**
  * 활성 터미널로 포커스를 돌려준다 (J-1).
@@ -51,13 +52,18 @@ function MainTab({
   onSelect,
   onClose,
   onRename,
+  onClearName,
 }: {
   tab: TabRow
   active: boolean
   onSelect: () => void
   onClose: () => void
   onRename: (label: string) => void
+  /** LIFE-366 F1 — 사용자가 준 이름 지우기. 메뉴에서만 닿는다. */
+  onClearName: () => void
 }): React.JSX.Element {
+  // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
+  const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
   const [hovered, setHovered] = useState(false)
   // 인라인 리네임 (I-7). **입력칸은 항상 DOM 에 있다** — 조건부 렌더링하면 좌표 클릭 계측이
   // 없는 요소를 못 누른다(MainTab 닫기 버튼·SessionRow 와 같은 결). 대신 평소엔 투명하고
@@ -140,6 +146,12 @@ function MainTab({
         event.stopPropagation()
         beginEdit()
       }}
+      // 우클릭은 **선택을 바꾸지 않는다** — 메뉴만 연다 (OS 탭바 관습).
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setMenu({ tabId: tab.tabId, x: event.clientX, y: event.clientY })
+      }}
     >
       <span className={`main-tab-dot tone-${tab.agentStatus === 'working' ? 'accent' : 'neutral'}`} />
       {kind === null ? null : (
@@ -187,6 +199,16 @@ function MainTab({
       >
         ×
       </button>
+      {menu === null ? null : (
+        <TabContextMenu
+          anchor={menu}
+          hasUserName={userLabel(tab) !== null}
+          onRename={beginEdit}
+          onClearName={onClearName}
+          onClose={onClose}
+          onDismiss={() => setMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -199,6 +221,7 @@ export function MainTabBar({
   onCreateShell,
   onCloseTab,
   onRenameTab,
+  onClearTabName,
 }: {
   tabs: TabRow[]
   selectedPane: string | null
@@ -207,6 +230,7 @@ export function MainTabBar({
   onCreateShell: () => void
   onCloseTab: (tab: TabRow) => void
   onRenameTab: (tab: TabRow, label: string) => void
+  onClearTabName: (tab: TabRow) => void
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 와 worktree 라벨이 남는 껍데기를 그린다 —
   // 마지막 탭을 닫았을 때 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
@@ -220,6 +244,7 @@ export function MainTabBar({
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
           onRename={(label) => onRenameTab(tab, label)}
+          onClearName={() => onClearTabName(tab)}
         />
       ))}
       <button className="main-tab-add" data-main-tabbar-add title="빈 탭" onClick={onCreateShell}>

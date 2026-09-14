@@ -100,11 +100,33 @@ export function userLabel(tab: TabRow): string | null {
 }
 
 /**
- * 세션 제목. **사용자 이름 → 터미널 제목 → 폴백** 순이다 (11-gate1-fix3.md I-7 ②).
+ * provider 가 스스로 붙인 세션 제목 (claude `ai-title`). 없으면 null.
+ *
+ * **소유자 확인은 판독 층이 이미 했다** (`main/transcript-parse.ts` — 레코드의 `sessionId` 가
+ * 그 pane 의 참조 id 와 같을 때만 싣는다, 기준 C2). Orca 도 `agent`+`sessionId` 가 맞을 때만
+ * 쓴다 (`agent-row-conversation-name.ts:139-148`). 여기서는 온 값을 쓸지만 정한다.
+ */
+export function providerTitle(tab: TabRow): string | null {
+  const title = tab.digest.providerTitle
+  if (title === null) return null
+  const trimmed = title.trim()
+  return trimmed.length === 0 ? null : trimmed
+}
+
+/**
+ * 세션 제목 — **사용자 이름 → provider 세션 제목 → 정제된 터미널 제목 → 폴백** (LIFE-366 C1).
  * 폴백은 `claude 1` · `codex 2` · `세션 3` — 번호는 herdr 표찰(`TabRow.number`)이다.
  *
- * 6단 전체(퀵커맨드 라벨·provider 세션 제목·LLM 자동 명명)와 2차 줄은 **Step 5 일감이다**
- * (`00-project.md` 2026-09-14 신설). 여기는 2단까지만 만든다.
+ * ## provider 제목이 터미널 제목보다 **위**인 이유
+ *
+ * 둘 다 "에이전트가 지금 무슨 일을 하나" 를 말하지만 출처가 다르다. 터미널 제목은 OSC 로
+ * 흘러오는 **현재 상태**라 자주 바뀌고 유휴 기본값(`Claude Code`)으로 돌아간다. `ai-title` 은
+ * claude 가 대화 전체를 보고 붙인 **그 세션의 이름**이라 안정적이고, 같은 worktree 의 claude
+ * 두 개를 가르는 것이 바로 이 값이다 — 이 일감이 풀려는 문제가 그것이다.
+ * (LIFE-357 의 2단은 그대로 남는다: 사용자가 준 이름은 여전히 맨 위다.)
+ *
+ * ⓑ 6단 중 **퀵커맨드 라벨·자체 LLM 명명은 넣지 않는다** (기준 C4, `00-analysis.md` §5):
+ * corral 에 퀵커맨드 기능 자체가 없고, `ai-title` 이 이미 LLM 명명이다.
  *
  * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가
  * 같은 틱에 따라온다. 호출부마다 분기하면 두 목록이 갈라진다.
@@ -112,6 +134,8 @@ export function userLabel(tab: TabRow): string | null {
 export function sessionTitle(tab: TabRow): string {
   const named = userLabel(tab)
   if (named !== null) return named
+  const provider = providerTitle(tab)
+  if (provider !== null) return provider
   const label = paneTitleLabel(tab)
   if (label !== null) return label
   const agent = tabAgent(tab)

@@ -4,6 +4,7 @@
 import type { RefObject } from 'react'
 import type { AgentKind, AppState, TabRow, WorktreeRow } from '../../../shared/types.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
+import { useNowTick } from '../hooks/useNowTick.js'
 import { pickPane } from '../pane-utils.js'
 import { sortWorktrees } from '../worktree-name.js'
 import { RepoRow } from './RepoRow.js'
@@ -44,6 +45,9 @@ export function Sidebar({
   onRemoveRepo: (root: string) => void
   onRefresh: () => void
 }): React.JSX.Element {
+  // 경과 시간이 얼지 않게 **한 곳에서만** 시계를 돌린다 (LIFE-366 D1) — 행마다 타이머를 두면
+  // 세션 수만큼 타이머가 생긴다.
+  const now = useNowTick()
   /**
    * 블록 클릭 시 자동 활성화할 세션 (§4 "첫 세션 자동 활성").
    *
@@ -100,6 +104,8 @@ export function Sidebar({
                   <WorktreeBlock
                     key={worktree.path}
                     worktree={worktree}
+                    integrations={state.integrations}
+                    now={now}
                     selected={selected}
                     selectedPane={selectedPane}
                     groupCollapsed={isGroupCollapsed(worktree.path)}

@@ -10,7 +10,7 @@ import { LineSocket } from './line-socket.js'
 import { asResponseFrame, type ResponseFrame } from './protocol.js'
 
 /**
- * 앱이 보내도 되는 메서드 — **읽기 3종 + 쓰기 8종** (R3, LIFE-356 기준 + LIFE-357 `tab.rename`).
+ * 앱이 보내도 되는 메서드 — **읽기 4종 + 쓰기 8종** (R3 + LIFE-357 `tab.rename` + LIFE-366 `integration.list`).
  *
  * R1(LIFE-351)에서는 herdr 접촉이 읽기 전용이었다 — 쓰기 메서드가 나가면 범위 위반이라
  * 화이트리스트에 쓰기가 한 줄도 없었다. R3 에서 행 생성·종료·worktree 조작이 들어오며 쓰기
@@ -23,6 +23,9 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  *   · `session.snapshot`   — 부트스트랩·주기 재동기 (link.ts)
  *   · `worktree.list`      — worktree 열림상태 (worktrees.ts)
  *   · `pane.process_info`  — 종료 게이트 판별자 (lifecycle.ts probeForeground)
+ *   · `integration.list`   — herdr 통합 훅 설치 상태 (LIFE-366 A1, integrations.ts).
+ *     **읽기만 한다** — `integration.install`·`uninstall` 은 목록에 없다. 사용자 에이전트 설정을
+ *     고치는 조작이라 corral 이 말없이 부를 일이 아니다 (기준 B8 "사용자 확인 없이 실행하지 않는다")
  *   쓰기 (R3 — lifecycle.ts):
  *   · `tab.create`·`agent.start` — 행 생성 (L1·L2)
  *   · `tab.close`               — 행 종료 (L3·L4·L9a)
@@ -35,6 +38,7 @@ const ALLOWED_METHODS: readonly string[] = [
   'session.snapshot',
   'worktree.list',
   'pane.process_info',
+  'integration.list',
   'tab.create',
   'agent.start',
   'tab.close',

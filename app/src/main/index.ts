@@ -16,8 +16,10 @@ import type {
   BrowseReposResult,
   CloseRowResult,
   CreateRowResult,
+  IntegrationRow,
   RemoveRepoResult,
   RenameRowResult,
+  SessionDigest,
   TerminalScroll,
   UiPrefs,
   WorktreeActionResult,
@@ -34,6 +36,7 @@ import {
   openWorkspace,
   openWorktree,
   probeForeground,
+  readIntegrations,
   readOpenWorkspaces,
   renameTab,
   type SessionHandle,
@@ -44,7 +47,8 @@ import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
-import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
+import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
+import { readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -65,6 +69,13 @@ let uiPrefs: UiPrefsStore | null = null
 let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
 let treeScheduled = false
+/**
+ * 탭별 세션 지문 (LIFE-366). **내보내기와 읽기를 갈라 둔다** — 내보내기는 push 마다 일어나고,
+ * 디스크 읽기는 그 박자로 돌면 안 된다 (기준 A7). 여기는 주기가 채우고 emit 은 붙이기만 한다.
+ */
+let digests = new Map<string, SessionDigest>()
+let integrations: IntegrationRow[] = []
+let digestTimer: NodeJS.Timeout | null = null
 
 const link = new SessionLink({
   onChange: () => scheduleEmit(),
@@ -158,7 +169,7 @@ function currentSocketPath(): string | null {
 }
 
 function currentState(): AppState {
-  const tree = joinTree(skeleton, link.store.rows())
+  const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests))
   return {
     revision,
     // 소켓 경로를 떼고 내보낸다 — 경계의 약속이 화면 상태로 새지 않게 (L9).
@@ -170,6 +181,7 @@ function currentState(): AppState {
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
     repos: tree.repos,
     terminal: stream.terminalState(),
+    integrations,
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
   }
@@ -230,6 +242,7 @@ async function rebuildTree(): Promise<void> {
   // 트리가 새로 서면 스트리밍 pane 이 아직 트리 안에 있는지 확인한다 (C2) — 레포 제거로
   // 트리에서 빠졌으면 여기서 스트림을 닫는다. scheduleEmit 은 안에서 한 번 더 뭉쳐 부른다.
   dropStreamIfPaneUnviewable()
+  refreshDigests() // 탭이 늘었으면 그 지문도 같이 (LIFE-366) — 주기를 기다리지 않는다
   scheduleEmit()
 }
 
@@ -672,6 +685,9 @@ function pickSession(name: string): void {
   // 세션이 바뀌면 이전 세션의 pane 스트림은 의미가 없다 — 같이 닫는다.
   stream.close()
   link.open(found)
+  // 세션이 바뀌면 지문·통합 상태도 그 세션의 것이다 (LIFE-366). 주기를 기다리지 않고 바로 읽는다.
+  digests = new Map()
+  void refreshIntegrations()
   scheduleEmit()
 }
 
@@ -710,6 +726,55 @@ function selectPane(input: { paneId: string | null; cols?: number; rows?: number
     rows: input.rows ?? 24,
   })
   scheduleEmit()
+}
+
+/**
+ * 세션 지문 주기 갱신 (LIFE-366).
+ *
+ * 1.5초는 "사람이 행을 보고 있을 때 늦다고 느끼지 않는" 쪽에서 고른 값이고, 비용은 파일이
+ * 안 변했을 때 `stat` 한 번이라(캐시) 유휴 상태에서는 거의 0 이다 (`transcript.ts`).
+ * 바뀐 것이 없으면 **emit 도 안 한다** — 1.5초마다 화면 전체를 다시 그리면 그게 곧 A7 의 비용이다.
+ */
+const DIGEST_POLL_MS = 1500
+
+function digestsEqual(a: SessionDigest, b: SessionDigest): boolean {
+  if (a.providerTitle !== b.providerTitle) return false
+  if (a.lastActivityAt !== b.lastActivityAt) return false
+  if (a.activity.state !== b.activity.state) return false
+  if (a.activity.state === 'text' && b.activity.state === 'text') return a.activity.text === b.activity.text
+  return true
+}
+
+function refreshDigests(): void {
+  const refs = collectSessionRefs(link.store.rows())
+  const read = readSessionDigests(refs)
+  let changed = read.digests.size !== digests.size
+  if (!changed) {
+    for (const [tabId, digest] of read.digests) {
+      const before = digests.get(tabId)
+      if (before === undefined || !digestsEqual(before, digest)) {
+        changed = true
+        break
+      }
+    }
+  }
+  digests = read.digests
+  if (changed) scheduleEmit()
+}
+
+/** 통합 설치 상태는 잘 안 바뀐다 — 세션을 고를 때와 주기 재조회에서만 읽는다 (A1). */
+async function refreshIntegrations(): Promise<void> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) {
+    if (integrations.length === 0) return
+    integrations = []
+    scheduleEmit()
+    return
+  }
+  const scan = await readIntegrations(socketPath)
+  const before = JSON.stringify(integrations)
+  integrations = scan.rows
+  if (JSON.stringify(integrations) !== before) scheduleEmit()
 }
 
 async function pollSessions(): Promise<void> {
@@ -949,6 +1014,9 @@ app.whenReady().then(() => {
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
+  // LIFE-366 — 세션 지문·통합 상태. 지문은 짧은 주기(캐시가 막는다), 통합은 세션 폴링에 얹는다.
+  digestTimer = setInterval(() => refreshDigests(), DIGEST_POLL_MS)
+  setInterval(() => void refreshIntegrations(), SESSION_POLL_MS * 4)
   scheduleTree()
 
   startControlServer({
@@ -977,6 +1045,8 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  if (digestTimer !== null) clearInterval(digestTimer)
+  digestTimer = null
   stream.close()
   link.close()
   log('app.quit', { logFile: logFile() })

@@ -23,6 +23,15 @@ export type LifecycleActions = {
    * `tabNumber` 는 J-4 의 "기본 표찰과 같은 이름" 가드가 쓴다 — 그 값은 보내기 전에 막는다.
    */
   renameRow: (input: { tabId: string; label: string; tabNumber: number }) => void
+  /**
+   * LIFE-366 F1 — 사용자가 준 이름을 **지운다**. 제목은 다음 티어로 되돌아간다
+   * (provider 제목 → 정제된 터미널 제목 → 폴백).
+   *
+   * 지우기가 `renameRow` 와 별개인 이유: 인라인 편집의 빈 확정은 **취소**다(I-7 ③ 결정).
+   * 같은 손잡이에 얹으면 "아무것도 안 치고 Enter" 가 이름을 지워 버린다 — 다른 뜻의 조작이라
+   * 다른 문을 낸다.
+   */
+  clearRowName: (tabId: string) => void
   closeWorktree: (workspaceId: string) => void
   openWorktree: (repoRoot: string, worktree: WorktreeRow) => void
   openCreateWorktree: (repoRoot: string) => void

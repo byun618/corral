@@ -67,6 +67,31 @@ export type LinkState = {
 
 // --- 목록 (repo → worktree → tab → pane) -------------------------------------
 
+/**
+ * 이 pane 에 붙은 에이전트가 **자기 세션을 스스로 밝힌 것** (LIFE-366).
+ *
+ * 출처는 herdr 가 자체 설치하는 통합 훅이다: 에이전트가 뜰 때(`SessionStart`) 훅이 herdr 소켓에
+ * 자기 세션 id 를 보고하고, herdr 가 그것을 pane 에 실어 준다. corral 은 훅을 만들지도, 사용자
+ * 에이전트 설정을 고치지도 않는다 (`00-analysis.md` §2.2).
+ *
+ * ## 왜 union 인가 — **실측은 `id` 뿐이다**
+ *
+ * herdr 스키마의 참조 갈래는 `id | path` 인데, 통합 3종(claude·codex·grok)을 전부 태워 보니
+ * **셋 다 `id`** 로 왔다 (`raw/claude/a3-agent-session-probe.json`). claude 훅은 경로까지
+ * 보내는데도 그렇다 — 경로만 보내면 herdr 는 참조 자체를 안 만든다
+ * (`raw/claude/ref-semantics.json` ①). 즉 **파일을 찾는 일은 corral 몫**이다.
+ * `path` 갈래는 스키마에 있어 union 으로 받아 두되, 관측된 적이 없다는 사실을 여기 적어 둔다.
+ *
+ * ## 한 번 박히면 안 바뀐다 (실측)
+ *
+ * 같은 pane 에 새 id·다른 에이전트·null 을 seq 를 올려 보고해도 herdr 는 **첫 값을 지킨다**
+ * (`ref-semantics.json` ②③④). 그래서 한 pane 에서 `/clear`·`--resume` 로 세션이 갈리면
+ * 참조가 낡는다 — corral 이 고칠 수 있는 자리가 아니라 herdr 상류의 일이다.
+ */
+export type AgentSessionRef =
+  | { kind: 'id'; agent: string; source: string; id: string }
+  | { kind: 'path'; agent: string; source: string; path: string }
+
 export type PaneRow = {
   paneId: string
   tabId: string
@@ -76,6 +101,54 @@ export type PaneRow = {
   agentStatus: AgentStatus
   cwd: string | null
   focused: boolean
+  /** 에이전트가 밝힌 세션 참조. 셸 탭·통합 미설치·보고 전에는 null. */
+  agentSession: AgentSessionRef | null
+}
+
+/**
+ * 세션 행 2차 줄에 실을 **마지막 활동 문구** (LIFE-366 ⓒ).
+ *
+ * `null` 하나로 뭉개지 않는다 (기준 E3): "셸 탭이라 애초에 없다" 와 "참조는 있는데 파일을
+ * 못 찾았다" 와 "읽었는데 모양이 낯설다" 는 화면에서 **다르게 읽혀야 한다**. 특히 마지막 갈래는
+ * 트랜스크립트 포맷이 공개 계약이 아니라는 사실(`00-analysis.md` §9.1)에 대한 대비다 —
+ * 모양이 바뀌면 화면은 **모른다고 말해야지 지어내면 안 된다** (기준 A8).
+ */
+export type SessionActivity =
+  /** 참조 자체가 없다 — 셸 탭이거나, 통합이 안 깔렸거나, 아직 보고 전이다. */
+  | { state: 'none' }
+  /** 참조는 있는데 그 id 의 파일을 못 찾았다 (에이전트가 다른 HOME 에서 돌거나 파일이 지워짐). */
+  | { state: 'unresolved' }
+  /** 파일은 찾았는데 읽지 못했다 (권한·삭제 경합 등). 사유는 진단용이라 짧게만 싣는다. */
+  | { state: 'unreadable'; reason: string }
+  /** 읽었는데 마지막 어시스턴트 텍스트를 못 찾았다 — 포맷이 낯설거나 꼬리 창 밖이다. */
+  | { state: 'unknown-format' }
+  /** 찾았다. `at` 은 그 발화의 시각(레코드 timestamp). 없으면 null. */
+  | { state: 'text'; text: string; at: number | null }
+
+/**
+ * 트랜스크립트에서 읽어 낸 한 세션의 지문 — 2차 줄·제목 3단·경과 시간이 전부 여기서 나온다.
+ * herdr 를 모르는 층이 만든다 (`main/transcript.ts`, `main/git-status.ts` 와 같은 결).
+ */
+export type SessionDigest = {
+  activity: SessionActivity
+  /**
+   * provider 가 스스로 붙인 세션 제목 (claude 의 `ai-title` 레코드). 없으면 null.
+   * **그 세션의 것임이 확인된 값만** 들어온다 (기준 C2) — 레코드의 `sessionId` 가 참조 id 와
+   * 다르면 버린다.
+   */
+  providerTitle: string | null
+  /**
+   * 마지막 활동 시각 (epoch ms). 트랜스크립트 레코드의 timestamp, 없으면 파일 mtime.
+   * **렌더러가 그 행을 처음 본 시각이 아니다** — 09-gate1-fix.md E 가 지웠던 결함이 그것이었다.
+   */
+  lastActivityAt: number | null
+}
+
+/** 아무것도 못 읽은 상태의 지문. 셸 탭·통합 미설치가 여기 선다. */
+export const EMPTY_SESSION_DIGEST: SessionDigest = {
+  activity: { state: 'none' },
+  providerTitle: null,
+  lastActivityAt: null,
 }
 
 export type TabRow = {
@@ -89,6 +162,8 @@ export type TabRow = {
   agentStatus: AgentStatus
   focused: boolean
   panes: PaneRow[]
+  /** 이 탭의 세션 지문 (LIFE-366). 읽을 게 없으면 `EMPTY_SESSION_DIGEST` 와 같은 모양이다. */
+  digest: SessionDigest
 }
 
 export type WorkspaceRow = {
@@ -156,6 +231,21 @@ export type RegistryState = {
  * 옮기는 것은 어댑터가 한다 (`shell` 은 agent.start 를 안 부른다는 뜻의 corral 값).
  */
 export type AgentKind = 'claude' | 'codex' | 'grok' | 'shell'
+
+/** 세션 지문을 읽을 수 있는 에이전트 — `AgentKind` 에서 `shell` 을 뺀 것. */
+export type TranscriptAgent = 'claude' | 'codex' | 'grok'
+
+/**
+ * herdr 통합 훅이 그 에이전트에 깔려 있나 (LIFE-366 A1·B8).
+ *
+ * 이 값이 `not-installed` 이면 `agentSession` 이 영영 안 오고, 그러면 2차 줄도 못 채운다.
+ * 화면이 조용히 빈 줄을 보이면 사용자는 **고장으로 읽는다** — 그래서 이 사실을 올려 보낸다.
+ * 설치하는 것은 herdr 가 할 일이고 corral 은 상태만 읽는다 (`00-analysis.md` §2.2 — 뒤집힌 전제).
+ */
+export type IntegrationRow = {
+  agent: TranscriptAgent
+  state: 'not-installed' | 'current' | 'outdated'
+}
 
 /**
  * 행 생성 결과 (L1·L2). `tab.create` → (셸이 아니면) `agent.start` 재시도.
@@ -321,6 +411,11 @@ export type AppState = {
   registry: RegistryState
   repos: RepoRow[]
   terminal: TerminalState
+  /**
+   * herdr 통합 설치 상태 3종 (LIFE-366 A1). 아직 못 읽었으면 빈 배열 —
+   * 화면은 "미설치" 와 "아직 모름" 을 구분해야 하므로 빈 배열을 미설치로 읽지 않는다.
+   */
+  integrations: IntegrationRow[]
   /** 개발·계측 실행에서만 켜지는 진단 표시. */
   diagnostics: boolean
 }

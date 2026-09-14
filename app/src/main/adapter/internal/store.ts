@@ -16,7 +16,8 @@
 //      사진의 `requestedAt` 을 대 틀린 묘비를 걷는다. `reconcile` ⓪)
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
-import type { AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
+import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
+import type { AgentSessionRef, AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
 import { readAgentStatus, type PushFrame } from './protocol.js'
 
 type Workspace = {
@@ -57,6 +58,8 @@ type Pane = {
   title: string
   cwd: string | null
   focused: boolean
+  /** 에이전트가 스스로 밝힌 세션 참조 (LIFE-366). 보고 전·셸 탭이면 null. */
+  agentSession: AgentSessionRef | null
   knownAt: number
 }
 
@@ -588,6 +591,7 @@ export class WorkspaceStore {
         agentStatus: pane.agentStatus,
         cwd: pane.cwd,
         focused: pane.focused,
+        agentSession: pane.agentSession,
       }
       const list = panesByTab.get(pane.tabId) ?? []
       list.push(row)
@@ -607,6 +611,10 @@ export class WorkspaceStore {
         agentStatus: tab.agentStatus,
         focused: tab.focused,
         panes: panesByTab.get(tab.tabId) ?? [],
+        // **판독은 어댑터의 일이 아니다** (LIFE-366 기준 E1). 트랜스크립트를 읽는 층은 herdr 를
+        // 모르고, 어댑터는 그 층을 모른다. 그래서 여기는 빈 지문을 놓고 가고 `tree.joinTree` 가
+        // 덮는다 — `gitStatus` 가 worktree 줄에 붙는 것과 같은 자리다.
+        digest: EMPTY_SESSION_DIGEST,
       })
       tabsByWorkspace.set(tab.workspaceId, list)
     }
@@ -768,6 +776,7 @@ export class WorkspaceStore {
         id,
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),
       focused: value['focused'] === true,
+      agentSession: pickAgentSession(value, before?.agentSession ?? null),
       knownAt: before?.knownAt ?? at,
     })
     return true
@@ -859,6 +868,42 @@ function pickAgent(source: Record<string, unknown>, fallback: string | null): st
   if ('display_agent' in source) return readString(source, 'display_agent')
   if ('agent' in source) return readString(source, 'agent')
   return fallback
+}
+
+/**
+ * 세션 **참조**를 읽는다 — `pickAgent` 와 같은 규칙으로 "키가 없다" 를 가른다 (LIFE-366).
+ *
+ * 이게 왜 중요하냐면, 참조는 에이전트가 뜰 때 **딱 한 번** 실려 오고 그 뒤의 `pane_updated` 는
+ * 그 필드를 안 싣고 오기 때문이다. `readRecord(...) ?? null` 로 읽으면 그 한 건이 알던 참조를
+ * 지워 2차 줄이 깜빡인다 — 수정 1회차 M2(에이전트 이름)가 겪은 것과 **같은 모양의 결함**이다.
+ * 키가 있으면 herdr 가 값을 말해 준 것이고, null 이어도 그게 답이다.
+ */
+function pickAgentSession(
+  source: Record<string, unknown>,
+  fallback: AgentSessionRef | null,
+): AgentSessionRef | null {
+  if (!('agent_session' in source)) return fallback
+  return readAgentSession(source['agent_session'])
+}
+
+/**
+ * herdr 의 세션 참조 봉투를 corral 타입으로 옮긴다. **여기가 마지막 herdr 어휘다** —
+ * 밖으로 나가는 것은 `AgentSessionRef` 이고 snake_case 는 이 함수 안에서 끝난다 (기준 A2).
+ *
+ * 실측 봉투 (`raw/claude/a3-agent-session-probe.json`):
+ *   `{"source":"herdr:claude","agent":"claude","kind":"id","value":"<세션 id>"}`
+ * `kind` 가 둘 중 하나가 아니면 **버린다** — 모르는 갈래를 지어내 화면에 올리지 않는다.
+ */
+function readAgentSession(value: unknown): AgentSessionRef | null {
+  if (!isRecord(value)) return null
+  const agent = readString(value, 'agent')
+  const source = readString(value, 'source')
+  const kind = readString(value, 'kind')
+  const raw = readString(value, 'value')
+  if (agent === null || source === null || raw === null || raw.length === 0) return null
+  if (kind === 'id') return { kind: 'id', agent, source, id: raw }
+  if (kind === 'path') return { kind: 'path', agent, source, path: raw }
+  return null
 }
 
 /**

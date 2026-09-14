@@ -56,11 +56,37 @@ type CacheEntry = {
 
 const cache = new Map<string, CacheEntry>()
 
-/** 이번 갱신 주기에 실제로 읽은 바이트·파일 수 — A6·A7 계측이 이 값을 로그로 가져간다. */
+/**
+ * **못 찾은 참조의 재탐색 간격** — 처음 30초는 매 주기 훑고, 그 뒤로는 15초에 한 번만 훑는다.
+ *
+ * 못 찾는 경우는 두 가지인데 비용이 정반대다. ① *방금 뜬 세션* — 파일이 곧 생기므로 빨리 다시
+ * 훑어야 2차 줄이 제때 붙는다. ② *영영 안 생기는 참조* (`/clear` 뒤 낡은 id, 지워진 파일) —
+ * 이건 폴링 주기(1.5초)마다 codex 날짜 3단을 영원히 훑게 된다. 두 경우를 나이로 가른다.
+ */
+export const RESOLVE_EAGER_MS = 30_000
+export const RESOLVE_RETRY_MS = 15_000
+
+/** 참조 키 → { 처음 못 찾은 시각, 마지막으로 훑어본 시각 }. */
+const misses = new Map<string, { firstAt: number; lastTryAt: number }>()
+
+/** 지금 다시 훑어야 하나. */
+function shouldResolveNow(key: string, now: number): boolean {
+  const miss = misses.get(key) ?? null
+  if (miss === null) return true
+  if (now - miss.firstAt < RESOLVE_EAGER_MS) return true
+  return now - miss.lastTryAt >= RESOLVE_RETRY_MS
+}
+
+/**
+ * 이번 갱신 주기에 실제로 읽은 바이트·파일 수 — A6·A7 계측이 이 값을 로그로 가져간다.
+ * `statOnly` 는 **읽기 0바이트로 끝난 참조** 수다: 파일이 안 바뀌어 `stat` 한 번으로 끝났거나,
+ * 못 찾은 참조라 이번 주기엔 훑기조차 건너뛴 경우.
+ */
 export type ReadCost = { files: number; statOnly: number; bytes: number; ms: number }
 
 export function clearTranscriptCacheForTest(): void {
   cache.clear()
+  misses.clear()
 }
 
 /** 참조 하나의 캐시 키. pane 이 달라도 같은 세션이면 같은 파일이라 id 로 잡는다. */
@@ -234,10 +260,22 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
 
   const key = cacheKey(ref)
   const cached = cache.get(key) ?? null
-  const file = cached?.file ?? resolveTranscriptFile(ref)
+  const unresolved: { digest: SessionDigest; bytes: number } = {
+    digest: { ...EMPTY, activity: { state: 'unresolved' } },
+    bytes: 0,
+  }
+  let file = cached?.file ?? null
   if (file === null) {
-    // 못 찾았다는 사실은 캐시하지 않는다 — 세션이 방금 떠서 파일이 아직 없을 수 있다.
-    return { digest: { ...EMPTY, activity: { state: 'unresolved' } }, bytes: 0, statOnly: false }
+    const now = Date.now()
+    // 훑기를 건너뛰는 주기 — 디스크를 아예 안 만진다. `statOnly` 로 세어 A7 표에 드러낸다.
+    if (!shouldResolveNow(key, now)) return { ...unresolved, statOnly: true }
+    file = resolveTranscriptFile(ref)
+    if (file === null) {
+      const miss = misses.get(key) ?? null
+      misses.set(key, { firstAt: miss?.firstAt ?? now, lastTryAt: now })
+      return { ...unresolved, statOnly: false }
+    }
+    misses.delete(key)
   }
 
   let stat: fs.Stats

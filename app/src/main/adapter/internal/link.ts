@@ -43,6 +43,21 @@ const AGENT_SUBSCRIPTION_DEBOUNCE_MS = 400
  */
 export const DEFAULT_RESYNC_MS = 30_000
 
+/**
+ * 에이전트가 붙은 뒤 **세션 참조를 주우러 가는 시각** (LIFE-366).
+ *
+ * herdr 는 `pane.report_agent_session` 에 **push 를 안 준다** — 실측이다
+ * (`raw/claude/push-probe.json`: 같은 구독이 `pane_created` 는 받는데 보고 뒤에는 0건이고,
+ * `pane.agent_session_*` 류 구독 타입은 herdr 가 모른다). 그래서 통합 훅이 알린 세션 id 는
+ * **30초 주기 재동기 스냅샷**까지 corral 에 안 온다 — 세션 행 2차 줄이 최대 30초 늦게 붙는다.
+ *
+ * 에이전트가 붙는 순간(`pane_agent_detected`)에 두 번 더 주워 그 구멍을 메운다. 훅은
+ * 에이전트의 SessionStart 에서 뜨므로 검출 직후 몇 초 안에 참조가 생긴다(A3ⓑ 실측: 기동 →
+ * 참조 1,068ms). 폴링을 새로 들이지 않고 **이미 있는 재동기를 두 번 당겨 쓰는** 것이라
+ * 비용은 에이전트 기동 1회당 스냅샷 2회다.
+ */
+export const AGENT_SESSION_NUDGE_MS: readonly number[] = [2_000, 8_000]
+
 function resyncIntervalMs(): number {
   const raw = Number(process.env.CORRAL_RESYNC_MS)
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RESYNC_MS
@@ -77,6 +92,8 @@ export class SessionLink {
   private agentSubscription: Subscription | null = null
   private agentPaneKey = ''
   private agentTimer: ReturnType<typeof setTimeout> | null = null
+  /** 에이전트 검출 뒤 참조를 주우러 가는 타이머들 (LIFE-366). */
+  private nudgeTimers = new Set<ReturnType<typeof setTimeout>>()
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private resyncTimer: ReturnType<typeof setInterval> | null = null
   private buffer: Array<{ frame: PushFrame; at: number }> = []
@@ -161,6 +178,8 @@ export class SessionLink {
     this.resyncTimer = null
     if (this.agentTimer) clearTimeout(this.agentTimer)
     this.agentTimer = null
+    for (const timer of this.nudgeTimers) clearTimeout(timer)
+    this.nudgeTimers.clear()
     this.subscription?.close()
     this.subscription = null
     this.agentSubscription?.close()
@@ -459,6 +478,20 @@ export class SessionLink {
     if (result.changed || frame.event.startsWith('worktree_')) {
       this.hooks.onTopologyChange?.()
       this.scheduleAgentSubscription()
+    }
+    // 에이전트가 붙었다 — 곧 통합 훅이 세션 id 를 알린다. 그 보고에는 push 가 없으므로
+    // 여기서 재동기를 두 번 당겨 준다 (`AGENT_SESSION_NUDGE_MS` 주석에 실측 근거).
+    if (frame.event === 'pane_agent_detected' && frame.data['released'] !== true) this.nudgeForAgentSession()
+  }
+
+  private nudgeForAgentSession(): void {
+    if (this.stopped) return
+    for (const delay of AGENT_SESSION_NUDGE_MS) {
+      const timer = setTimeout(() => {
+        this.nudgeTimers.delete(timer)
+        void this.resync('agent-session-nudge')
+      }, delay)
+      this.nudgeTimers.add(timer)
     }
   }
 

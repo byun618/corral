@@ -50,7 +50,10 @@ export function secondaryLine(input: { tab: TabRow; integrations: readonly Integ
     case 'unreadable':
       return { kind: 'notice', text: '기록을 읽지 못했다' }
     case 'unknown-format':
-      return { kind: 'notice', text: '기록 형식을 모른다' }
+      // 두 경우가 같은 갈래로 온다 — ① 레코드 모양이 낯설다 ② 꼬리 창(2MB) 안에 어시스턴트
+      // 텍스트가 없다. 그래서 문구를 **둘 다 참인 말**로 쓴다. "형식을 모른다" 라고 쓰면
+      // ②에서 거짓말이 된다 (A8 이 막으려는 바로 그것 — 화면이 모르는 것을 안다고 하면 안 된다).
+      return { kind: 'notice', text: '최근 기록에서 표시할 텍스트를 못 찾았다' }
     case 'unresolved':
       // 참조는 왔는데 파일이 아직 없다 — 방금 뜬 세션이 여기 선다. 곧 채워지므로 조용히 둔다.
       return { kind: 'empty' }

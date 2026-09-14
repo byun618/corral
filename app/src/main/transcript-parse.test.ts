@@ -167,11 +167,11 @@ describe('cleanActivityText', () => {
     expect(cleanActivityText('   \n  ')).toBeNull()
   })
 
-  it('길면 말줄임표로 자른다', () => {
-    const long = 'x'.repeat(1000)
-    const cleaned = cleanActivityText(long)
-    expect(cleaned?.length).toBe(401)
-    expect(cleaned?.endsWith('…')).toBe(true)
+  it('길어도 자르지 않는다 — 툴팁이 전문을 받아야 한다 (B5)', () => {
+    // 실측: 마지막 어시스턴트 텍스트의 70.3% 가 400자를 넘는다 (raw/claude/b5-text-length.json).
+    // 상한을 두면 열에 일곱은 툴팁까지 잘린다. 보이는 줄의 말줄임은 CSS 몫이다.
+    const long = 'x'.repeat(3000)
+    expect(cleanActivityText(long)).toBe(long)
   })
 })
 

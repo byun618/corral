@@ -27,8 +27,6 @@ export const EMPTY_DIGEST: TranscriptDigest = {
   lastActivityAt: null,
 }
 
-/** 2차 줄에 실을 길이 상한 — 한 줄 말줄임(B5)은 CSS 가 하지만, IPC 로 문단을 나르지는 않는다. */
-export const MAX_ACTIVITY_CHARS = 400
 
 /**
  * 꼬리 조각을 줄로 자른다.
@@ -99,11 +97,21 @@ export function textFromContent(content: unknown): string | null {
  *
  * 실제로 관측된 유일한 문제는 **여러 줄**이다(15/28). 그건 공백으로 접는다 — B5 가 요구하는
  * 한 줄이 되고, `title` 툴팁도 같은 한 줄을 쓴다.
+ *
+ * ## 자르지 않는다 (B5 「전문은 `title` 툴팁으로」)
+ *
+ * 처음엔 400자에서 잘라 날랐다. 그러면 툴팁에 오는 것이 **전문이 아니다** — 실측상 마지막
+ * 어시스턴트 텍스트의 **70.3%** 가 400자를 넘는다(`raw/claude/b5-text-length.json`).
+ * 즉 상한을 두면 열에 일곱은 툴팁마저 잘린 채 보인다.
+ *
+ * 안 잘라도 되는 근거도 같은 실측에 있다: 접은 뒤 길이가 p50 866 · p99 2,413 · 최대 2,760자이고
+ * 4KB 를 넘는 것이 **0건**이다. 세션 8개를 동시에 붙여도 p99 기준 약 18KB — IPC 로 나르는 데
+ * 문제가 되는 크기가 아니다. 보이는 줄의 말줄임은 CSS 가 한다(`.session-row-second`).
+ * 상한이 아예 없는 것도 아니다 — 꼬리 창(`transcript.ts` 의 256KB→2MB)이 위를 막는다.
  */
 export function cleanActivityText(raw: string): string | null {
   const oneLine = raw.replace(/\s+/g, ' ').trim()
-  if (oneLine.length === 0) return null
-  return oneLine.length > MAX_ACTIVITY_CHARS ? `${oneLine.slice(0, MAX_ACTIVITY_CHARS)}…` : oneLine
+  return oneLine.length === 0 ? null : oneLine
 }
 
 /**

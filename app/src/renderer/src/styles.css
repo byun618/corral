@@ -205,20 +205,26 @@ button { font: inherit; }
    높이 토큰이 `--h-session-row`(1줄) → `--h-session-row-2`(2줄) 로 바뀌었다. LIFE-357 C9(b) 의
    21px 통과선을 이 일감이 의도적으로 대체한다 (SessionRow.tsx 주석에 사유). */
 .session-row {
-  display: flex; flex-direction: column; justify-content: center;
+  display: flex; align-items: center; gap: 6px;
   height: var(--h-session-row-2); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
   /* 행 사이 여백은 margin 으로만 — height 는 통과선이라 행 안에서 벌리지 않는다 (H-3). */
   margin-top: var(--gap-session-row);
 }
+/* 상태 글리프 + 종류 아이콘 칸 — **두 줄에 걸친다.** 이 칸이 1차 줄 안에 있으면 2차 줄이
+   거터만큼 왼쪽으로 어긋나고(실측 30.7px), 맞추려면 들여쓰기 상수를 지어내야 한다. 칸을
+   밖으로 빼면 2차 줄이 구조상 제목에 맞는다 (B3). */
+.session-row-gutter { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+/* 두 줄이 사는 칸 — 제목과 2차 줄의 왼쪽 끝이 **같은 상자**라 어긋날 수가 없다. */
+.session-row-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 /* 1차 줄 — 옛 `.session-row` 의 가로 배치가 그대로 여기로 내려왔다. */
 .session-row-line { display: flex; align-items: center; gap: 6px; height: var(--h-session-row-line); }
-/* 2차 줄 (B2·B3·B5) — 한 급 작고 한 급 흐리며, 아이콘 거터만큼 들여써 **제목 왼쪽 끝에 맞는다**.
+/* 2차 줄 (B2·B3·B5) — 한 급 작고 한 급 흐리다. 제목 왼쪽 끝과는 `.session-row-body` 가
+   같은 상자를 주므로 들여쓰기 값 없이 맞는다.
    Orca 는 11px→10px + `pl-5` + `text-muted-foreground/80` 이다 (00-analysis.md §2.7). corral 의
    1차 줄은 mono 10.5px 라 같은 비율(≈0.91)로 9.5px 로 옮긴다 — 기존 `--fs-badge` 와 같은 값이다.
    **값이 없어도 이 줄은 그려진다** (B4) — 슬롯을 남겨 행 높이가 안 튀게. */
 .session-row-second {
   height: var(--h-session-row-second); line-height: var(--h-session-row-second);
-  padding-left: var(--indent-session-second);
   font-family: var(--font-mono); font-size: var(--fs-session-second);
   color: var(--fg-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

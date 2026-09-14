@@ -112,6 +112,30 @@ export function integrationStatus({ home = 'isolated' } = {}) {
 }
 
 /**
+ * 격리 세션을 **비우고 새로 띄운다** (실측 재현성).
+ *
+ * herdr 세션은 실행 사이에 살아남고, `agent_session` 참조는 pane 에 한 번 박히면 안 지워진다
+ * (`raw/claude/ref-semantics.json`). 그래서 안 비우면 지난 실행의 workspace 들이 **낡은 참조를
+ * 든 채** 남아, 다음 실행의 corral 이 그 참조들까지 해소하려 든다 — 3차 실행에서 참조 17개가
+ * 잡혀 비용 표가 망가졌고, 낡은 참조가 남긴 재탐색 백오프 때문에 새 파일이 제때 안 읽혔다.
+ */
+export async function resetSession(session = SESSION) {
+  const env = isolatedEnv()
+  const quiet = (args) => {
+    try {
+      return execFileSync('herdr', args, { env, encoding: 'utf8' }).trim()
+    } catch (error) {
+      return `실패: ${String(error.stderr ?? error.message).trim().slice(0, 200)}`
+    }
+  }
+  const stopped = quiet(['session', 'stop', session])
+  const deleted = quiet(['session', 'delete', session])
+  await sleep(400)
+  const started = await ensureSession(session)
+  return { stopped, deleted, started }
+}
+
+/**
  * 격리 herdr 세션이 살아 있게 한다 — 없으면 띄운다.
  *
  * `herdr --session <이름>` 은 TUI 라 TTY 를 요구한다. `script -q /dev/null` 로 가짜 TTY 를 물려
@@ -295,7 +319,10 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     cwd: APP_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
-      ...process.env,
+      // **격리 HOME 으로 띄운다** (관문 ④). corral 이 트랜스크립트를 찾는 뿌리가 `os.homedir()`
+      // 이고 herdr 세션 소켓도 `$HOME/.config/herdr/` 밑이라, 여기서 HOME 을 안 갈아끼우면
+      // 실측 앱이 **사용자 실물 홈**을 읽게 된다.
+      ...isolatedEnv(),
       CORRAL_LOG: logPath,
       CORRAL_SESSION: SESSION,
       CORRAL_CONTROL_SOCKET: controlSocket,

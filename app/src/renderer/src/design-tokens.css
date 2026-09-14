@@ -86,9 +86,6 @@
   --h-session-row-line: 17px;
   --h-session-row-second: 13px;
   --h-session-row-2: 30px;
-  /* 2차 줄 들여쓰기 — 1차 줄의 글리프+아이콘 거터만큼 밀어 **제목 왼쪽 끝에 맞춘다** (B3).
-     거터 = 글리프(≈8px) + gap(6px) + 아이콘(13px) + gap(6px). Orca 의 `pl-5`(20px)와 같은 몫. */
-  --indent-session-second: 21px;
   /* 2차 줄 글자 — 1차(10.5px)보다 **한 급 작다**. Orca 의 11→10 과 같은 비율(≈0.91). */
   --fs-session-second: 9.5px;
   --h-group-row: 22px;

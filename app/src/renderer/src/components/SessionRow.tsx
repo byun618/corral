@@ -65,42 +65,51 @@ export function SessionRow({
         onSelect()
       }}
     >
-      <div className="session-row-line">
+      {/* 왼쪽 거터 — 글리프와 종류 아이콘은 **두 줄에 걸친다**. 이 칸을 1차 줄 안에 두면
+          2차 줄이 거터만큼 어긋나서, 맞추려고 들여쓰기 상수를 지어내게 된다. 실제로 처음엔
+          그렇게 했다가 실측에서 30.7px 어긋났다 (raw/claude/app-sessions.json 1차 실행).
+          거터를 밖으로 빼면 2차 줄이 **구조상** 제목 왼쪽 끝에 맞는다 (B3) — 종류 아이콘이
+          없는 행에서도 자동으로 맞는다. */}
+      <div className="session-row-gutter">
         <span className={`session-row-glyph tone-${tone}`}>{glyph}</span>
         {kind === null ? null : (
           <span className={`session-row-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
             <AgentIcon kind={kind.kind} glyph={kind.glyph} />
           </span>
         )}
-        <span className="session-row-title">{sessionTitle(tab)}</span>
-        <div className="session-row-spacer" />
-        {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재. */}
-        {elapsed === null ? null : (
-          <span className="session-row-elapsed" data-elapsed={elapsed}>
-            {elapsed}
-          </span>
-        )}
-        {/* hover 로만 opacity 를 바꾼다 — 조건부 렌더링하면 좌표/elementFromPoint 클릭이
-            hover 없이는(mousemove 없이 click 만 보내는 계측 채널) 못 찾는다(WorktreeBlock 과 같은 결). */}
-        <button
-          className={`session-row-close ${hovered ? 'is-active' : ''}`}
-          data-close-tab={tab.tabId}
-          title="탭 닫기"
-          onClick={(event) => {
-            event.stopPropagation()
-            onClose()
-          }}
-        >
-          ×
-        </button>
       </div>
-      {/* **항상 그린다** — 빈 값이어도 슬롯이 남아야 행 높이가 안 튄다 (B4). */}
-      <div
-        className={`session-row-second ${secondary.kind === 'notice' ? 'is-notice' : ''}`}
-        data-second-kind={secondary.kind}
-        title={secondary.kind === 'empty' ? undefined : secondary.text}
-      >
-        {secondary.kind === 'empty' ? ' ' : secondary.text}
+      <div className="session-row-body">
+        <div className="session-row-line">
+          <span className="session-row-title">{sessionTitle(tab)}</span>
+          <div className="session-row-spacer" />
+          {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재. */}
+          {elapsed === null ? null : (
+            <span className="session-row-elapsed" data-elapsed={elapsed}>
+              {elapsed}
+            </span>
+          )}
+          {/* hover 로만 opacity 를 바꾼다 — 조건부 렌더링하면 좌표/elementFromPoint 클릭이
+              hover 없이는(mousemove 없이 click 만 보내는 계측 채널) 못 찾는다(WorktreeBlock 과 같은 결). */}
+          <button
+            className={`session-row-close ${hovered ? 'is-active' : ''}`}
+            data-close-tab={tab.tabId}
+            title="탭 닫기"
+            onClick={(event) => {
+              event.stopPropagation()
+              onClose()
+            }}
+          >
+            ×
+          </button>
+        </div>
+        {/* **항상 그린다** — 빈 값이어도 슬롯이 남아야 행 높이가 안 튄다 (B4). */}
+        <div
+          className={`session-row-second ${secondary.kind === 'notice' ? 'is-notice' : ''}`}
+          data-second-kind={secondary.kind}
+          title={secondary.kind === 'empty' ? undefined : secondary.text}
+        >
+          {secondary.kind === 'empty' ? '\u{a0}' : secondary.text}
+        </div>
       </div>
     </div>
   )

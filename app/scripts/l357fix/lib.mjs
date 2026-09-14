@@ -108,6 +108,13 @@ export function readLog(file) {
     })
 }
 
+/**
+ * 조건이 참이 될 때까지 기다린다.
+ *
+ * ⚠ **타임아웃에 거부하지 않는다** — `{ ok: false }` 로 **정상 resolve** 한다. 그래서
+ * `await until(...).then(() => true).catch(() => false)` 는 실패를 전부 `true` 로 읽는다.
+ * 반드시 `(await until(...)).ok` 를 봐라 (fix4 에서 프로브 세 개가 이 함정에 있었다).
+ */
 export async function until(check, { timeoutMs = 20000, everyMs = 40, what = 'condition' } = {}) {
   const startedAt = Date.now()
   for (;;) {

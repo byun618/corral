@@ -21,7 +21,7 @@
 // 닫기 좌표 클릭과 활성 탭 시각 구분을 요구한다 — 이번엔 그 넷을 전부 좌표 클릭(관문④)·
 // getComputedStyle 실측으로 원자료에 남긴다. MainTabBar 에 닫기 컨트롤이 없던 것도 이번 수정
 // 범위에서 추가했다(코디네이터 결정 — SessionRow 닫기로 갈음 불가).
-import { agentTabsOf, buildMixedFixture, createTab, makeScratchRepo, startApp, tabsOf, until, writeRaw } from './lib.mjs'
+import { agentTabsOf, buildMixedFixture, createTab, makeScratchRepo, sleep, startApp, tabsOf, until, writeRaw } from './lib.mjs'
 
 async function tabBarState(app) {
   const bar = await app.query('[data-main-tabbar]')
@@ -29,11 +29,74 @@ async function tabBarState(app) {
   return { barPresent: bar.found.length > 0, tabCount: tabs.found.length }
 }
 
-async function currentTabIds(app, workspaceId) {
+/**
+ * workspace 가 **정말** 살아 있는가 — 한 번 읽고 단정하지 않는다 (fix4).
+ *
+ * 4회차 1차 실행에서 `openWorkspaceId` 는 살아 있다는데 탭바는 없는, **서로 모순된 한 컷**이
+ * 나왔다. 마지막 탭이 사라진 직후에는 herdr 푸시와 골격 재조회(`scheduleTree`)가 아직
+ * 안 맞은 상태라 한 컷이 거짓말한다. 그래서 몇 초간 **연속 샘플**을 남기고 **정착값**으로 판정한다.
+ */
+async function sampleWorkspace(app, repoRoot, { count = 8, everyMs = 800 } = {}) {
+  const samples = []
+  for (let i = 0; i < count; i += 1) {
+    const st = await app.state()
+    const wt = st.repos.flatMap((r) => r.worktrees).find((w) => w.path === repoRoot)
+    const bar = await tabBarState(app)
+    samples.push({
+      at: Date.now(),
+      openWorkspaceId: wt?.openWorkspaceId ?? null,
+      tabCountInState: wt?.workspace?.tabs.length ?? 0,
+      barPresent: bar.barPresent,
+      tabCountInDom: bar.tabCount,
+    })
+    if (i < count - 1) await sleep(everyMs)
+  }
+  const settled = samples[samples.length - 1]
+  return {
+    samples,
+    settled,
+    stable: samples.slice(-3).every((s) => s.openWorkspaceId === settled.openWorkspaceId && s.barPresent === settled.barPresent),
+    workspaceOpen: settled.openWorkspaceId !== null,
+    // 화면과 상태가 어긋난 채로 굳으면 그것 자체가 결함이다 — 조용히 한쪽만 믿지 않는다.
+    consistent: (settled.openWorkspaceId !== null) === settled.barPresent,
+  }
+}
+
+/**
+ * 탭 목록이 **안정될 때까지** 기다렸다 읽는다 (fix4 J-6 2차 정정).
+ *
+ * workspace 를 다시 열면 herdr 가 기본 탭을 **한 박자 늦게** 붙인다. 그 전에 목록을 읽고
+ * "탭 1개"라고 믿으면, `exit` 를 친 순간엔 이미 2개라 **마지막 탭 실험이 아니게 된다**
+ * (1차·2차 실행이 연달아 이 함정에 빠졌다 — 둘 다 공허한 '도달'이었다).
+ */
+async function stableTabIds(app, workspaceId, { settleMs = 900, rounds = 4 } = {}) {
+  let last = null
+  let same = 0
+  for (let i = 0; i < 20; i += 1) {
+    const ids = await currentTabIds(app, workspaceId)
+    const key = ids.join(',')
+    same = key === last ? same + 1 : 0
+    last = key
+    if (same >= rounds - 1) return ids
+    await sleep(settleMs)
+  }
+  return currentTabIds(app, workspaceId)
+}
+
+/**
+ * 그 workspace 의 탭 id 들. **workspace 가 목록에 없으면 `null`** 이다 (fix4 정정).
+ *
+ * 예전엔 `?? []` 라 "탭이 0개"와 "workspace 를 못 찾았다"가 **같은 값**이었다. workspace 가
+ * 잠깐 안 보이는 순간(골격 재조회 중)을 "탭 0개 도달"로 읽어 `exit` 실측이 거짓 통과했다.
+ */
+async function tabIdsOrNull(app, workspaceId) {
   const s = await app.state()
-  return (s.repos.flatMap((r) => r.worktrees).find((w) => w.workspace?.workspaceId === workspaceId)?.workspace?.tabs ?? []).map(
-    (t) => t.tabId,
-  )
+  const ws = s.repos.flatMap((r) => r.worktrees).find((w) => w.workspace?.workspaceId === workspaceId)?.workspace
+  return ws === undefined || ws === null ? null : ws.tabs.map((t) => t.tabId)
+}
+
+async function currentTabIds(app, workspaceId) {
+  return (await tabIdsOrNull(app, workspaceId)) ?? []
 }
 
 // selectedPane 은 렌더러 로컬 상태(useLifecycleActions)라 main 의 `state` 커맨드엔 없다 —
@@ -163,8 +226,11 @@ async function main() {
   const zeroWorktree = zeroState.repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root)
   zeroTabProbe.finalTabCount = remainingIds.length
   zeroTabProbe.reachable = remainingIds.length === 0
-  zeroTabProbe.barPresent = afterZero.barPresent
-  zeroTabProbe.workspaceStillOpen = zeroWorktree?.openWorkspaceId !== null && zeroWorktree?.openWorkspaceId !== undefined
+  zeroTabProbe.firstShot = { barPresent: afterZero.barPresent, openWorkspaceId: zeroWorktree?.openWorkspaceId ?? null }
+  // **한 컷으로 단정하지 않는다** — 위 `sampleWorkspace` 주석 참조.
+  zeroTabProbe.settling = zeroTabProbe.reachable ? await sampleWorkspace(app, repo.root) : null
+  zeroTabProbe.barPresent = zeroTabProbe.settling?.settled.barPresent ?? afterZero.barPresent
+  zeroTabProbe.workspaceStillOpen = zeroTabProbe.settling?.workspaceOpen ?? false
   zeroTabProbe.addButtonPresent = (await app.query('[data-main-tabbar-add]')).found.length > 0
   // 탭 0개에 도달했을 때 **화면이 무엇을 보여주는가** — 판정의 근거가 되는 실물.
   zeroTabProbe.screenAtZero = (
@@ -193,9 +259,13 @@ async function main() {
     const recreated = await until(async () => (await currentTabIds(app, workspaceId)).length === 1, { timeoutMs: 10000, what: 'tab recreated from 0 via +' }).catch(() => ({ ok: false }))
     zeroTabProbe.addClickable = addClick.hit && recreated.ok
   }
+  // ⚠ note 와 interpretation 이 서로 다른 말을 하던 자리다 (J-6 문구 모순 정리, fix3 리뷰 M4).
+  // note 는 **무슨 일이 있었는지**만 적고, 통과선은 아래 정정된 기준서 조항이 정한다:
+  // 01-criteria.md C5′ 정정문 — ⓐ workspace 가 살아 있으면 탭바 + **눌러지는** `+`,
+  // ⓑ workspace 가 함께 닫혔으면 탭바 부재 + worktree 행 클릭으로 복구 가능.
   zeroTabProbe.note = zeroTabProbe.reachable
-    ? '탭 0개 상태에 실제로 도달했다(에이전트 탭은 확인 게이트를 통과시켜 닫았다). C5′ 대로 탭바와 + 가 남아 있어야 한다.'
-    : `탭 0개에 도달하지 못했다 — 남은 탭 ${remainingIds.length}개. 마지막 닫기 시도의 결과는 attemptedCloses 끝 항목에 있다(확인 게이트 여부 포함). 도달 불가 자체가 관측 결과다.`
+    ? `탭바 × 로 남은 탭을 전부 닫아 탭 0개에 도달했다(에이전트 탭은 확인 게이트를 통과시켜 닫았다). workspace 는 ${zeroTabProbe.workspaceStillOpen ? '살아 있다 → ⓐ 칸' : '함께 닫혔다 → ⓑ 칸'}.`
+    : `탭 0개에 도달하지 못했다 — 남은 탭 ${remainingIds.length}개. **이 브랜치에서 이건 제품 거동이 아니라 측정 실패다**(J-5): 설치 herdr 0.9.0 은 마지막 탭 종료를 허용한다. 마지막 닫기 시도의 결과는 attemptedCloses 끝 항목에 있다.`
   // ---------- 판정 ----------
   // 실측 결과: 탭 0개에는 도달하지만 **마지막 탭을 닫으면 workspace 자체가 닫힌다**
   // (`openWorkspaceId === null`). C5′ 의 마운트 조건은 "활성 workspace 가 있으면" 이므로,
@@ -207,18 +277,191 @@ async function main() {
     : zeroTabProbe.workspaceStillOpen
       ? '탭 0개 workspace 가 살아 있다 → C5′ 대로 탭바와 + 가 남아야 한다'
       : '마지막 탭을 닫으면 workspace 가 함께 닫힌다 → "탭 0개 + 활성 workspace" 상태가 존재하지 않는다. C5′ 마운트 조건(활성 workspace) 불성립이라 탭바 부재가 정상이고, worktree 행을 다시 누르면 복구된다(recoverable).'
+  // J-5 — **`null` 탈출구를 없앴다.** 예전엔 `reachable === false → pass: null → allPass` 통과라,
+  // 닫기 클릭이 빗나가거나 확인 모달이 안 눌리면 0개 칸이 **증명 없이** 통과했다.
+  // 도달 실패는 이제 **실패**다. 정말 upstream 거동 차이라면 herdr 거절 코드 같은 별도 근거를
+  // 들고 와서 보류 칸을 새로 만들어야 하고, 그때도 allPass 에서 빼지 않는다.
   zeroTabProbe.pass =
     zeroTabProbe.reachable === false
-      ? null
+      ? false
       : zeroTabProbe.workspaceStillOpen
         ? zeroTabProbe.barPresent === true && zeroTabProbe.addButtonPresent === true && zeroTabProbe.addClickable === true
         : // workspace 가 닫혔으면 탭바가 **없어야** 정상이고, 복구 가능해야 한다.
           zeroTabProbe.barPresent === false && zeroTabProbe.recoverable.reopened === true
 
+  // ---------- J-6: **다른 경로로도** 탭 0개에 닿는가 — 셸에서 `exit` ----------
+  // 기준서 C5′ 정정문의 사정거리가 "탭바 × 로 닫는 경로"로 좁혀졌다(fix3 리뷰 M4).
+  // 그 경로 말고 사용자가 실제로 쓰는 다른 경로 하나를 잰다. 결과가 ⓐ(workspace 생존)면
+  // **정정문을 다시 고쳐야 한다** — 그때는 "눌러지는 +" 를 실제로 눌러 증명한다.
+  const exitPathProbe = { path: '셸 pane 에서 exit', reachable: null, workspaceStillOpen: null, barPresent: null, addButtonPresent: null, addClickable: null, focusedTerminal: null, note: null, pass: null }
+  {
+    // 0) fixture 를 **다시 세운다.** 앞 단계에서 workspace 가 닫혔을 수 있으므로 worktree 를
+    //    다시 열고, 탭이 하나도 없으면 worktree 메뉴로 셸 탭을 만든다. 이 준비가 안 되면
+    //    "탭 0개에서 시작해 탭 0개로 끝났다"는 **공허한 도달**이 된다(1차 실행이 그랬다).
+    await app.click(`[data-worktree="${repo.root}"]`)
+    await until(async () => (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root)?.openWorkspaceId != null, {
+      timeoutMs: 25000,
+      what: 'exit 실측용 workspace 재개방',
+    }).catch(() => ({ ok: false }))
+    const reopenedState = await app.state()
+    const reopenedWs = reopenedState.repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root)
+    const exitWorkspaceId = reopenedWs?.openWorkspaceId ?? workspaceId
+    exitPathProbe.workspaceId = exitWorkspaceId
+    const openIds = await currentTabIds(app, exitWorkspaceId)
+    let addClickForExit = { hit: null }
+    if (openIds.length === 0) {
+      await createTab(app, repo.root, 'shell')
+    } else {
+      addClickForExit = await app.click('[data-main-tabbar-add]')
+    }
+    const grew = await until(async () => (await currentTabIds(app, exitWorkspaceId)).length > openIds.length, { timeoutMs: 20000, what: 'exit 실측용 셸 탭' }).catch(() => ({ ok: false }))
+    // 목록이 **굳은 뒤에** 읽는다 — 늦게 붙는 기본 탭을 놓치면 실험이 통째로 무효다.
+    const idsNow = await stableTabIds(app, exitWorkspaceId)
+    const shellTabId = idsNow.find((id) => !openIds.includes(id)) ?? idsNow[0] ?? null
+    for (const victim of idsNow.filter((id) => id !== shellTabId)) {
+      await app.click(`[data-main-tab-close="${victim}"]`)
+      const modal = await until(async () => (await app.query('[data-confirm-close-modal]')).found.length > 0, { timeoutMs: 1500, what: 'confirm modal' }).catch(() => ({ ok: false }))
+      if (modal.ok) await app.click('[data-close-confirm-ok]')
+      await until(async () => !(await currentTabIds(app, exitWorkspaceId)).includes(victim), { timeoutMs: 8000, what: `tab ${victim} closed` }).catch(() => ({ ok: false }))
+    }
+    // 2) 그 탭을 활성화하고 **타이핑이 그 터미널에 간다는 걸 확인한 뒤에** 친다.
+    //    이 확인을 빼면 `exit` 가 어디로 갔는지 모르는 채로 "도달 불가"라는 결론이 나온다
+    //    (fix2 1회차·15-title-probe3 1차가 그 함정이었다).
+    if (shellTabId !== null) await app.click(`[data-main-tab="${shellTabId}"]`)
+    // **기능으로 확인한다.** `document.activeElement` 가 textarea 인지 보는 방식은 이 실행에서
+    // 계속 false 였는데(창 포커스 등 다른 요인) 정작 타이핑은 닿는다 — 우리가 알아야 하는 건
+    // "글자가 이 터미널에 들어가는가" 하나다. 표식을 한 줄 쳐서 화면에 뜨는지로 잰다
+    // (17-rename 의 양성 대조와 같은 결).
+    const FOCUS_MARK = 'probe-focus-ok'
+    // ⚠ **터미널이 붙은 뒤에** 친다. 마운트 전에 치면 글자가 아무 데도 안 가고, 그걸 "포커스
+    // 실패"로 읽으면 원인을 잘못 짚는다(1차 실행이 그랬다).
+    const shellPaneId = (await app.state()).repos
+      .flatMap((r) => r.worktrees)
+      .find((w) => w.workspace?.workspaceId === exitWorkspaceId)
+      ?.workspace?.tabs.find((t) => t.tabId === shellTabId)
+      ?.panes[0]?.paneId ?? null
+    exitPathProbe.shellPaneId = shellPaneId
+    exitPathProbe.termMounted = (
+      await until(
+        async () => (await app.query(`.term-host[data-term-pane="${shellPaneId}"]`)).found.length > 0,
+        { timeoutMs: 20000, what: '셸 pane 터미널 마운트' },
+      )
+    ).ok
+    await sleep(900)
+    // 터미널을 **눌러서** 포커스를 준다 — 사용자가 하는 그대로다. 앞 단계에서 확인 모달·`+`
+    // 버튼을 누르느라 포커스가 딴 데 가 있으면 `char` 이벤트가 그 요소로 가서 아무 일도 안 난다.
+    exitPathProbe.termClick = (await app.click(`.term-host[data-term-pane="${shellPaneId}"]`)).hit
+    await sleep(400)
+    await app.type(`# ${FOCUS_MARK}\r`)
+    const focusCheck = (
+      await until(
+        async () => {
+          const r = await app.send({ cmd: 'term-read' }).catch(() => null)
+          const term = r?.term ?? {}
+          return (term.lines ?? term.rows ?? []).join('\n').includes(FOCUS_MARK)
+        },
+        { timeoutMs: 15000, what: '셸 터미널에 타이핑 도달' },
+      )
+    ).ok
+    exitPathProbe.focusProbe = { mark: FOCUS_MARK, reachedTerminal: focusCheck }
+    exitPathProbe.focusedTerminal = focusCheck
+    exitPathProbe.tabsBefore = await stableTabIds(app, exitWorkspaceId)
+    // **유효성**: 탭이 정확히 1개여야 "마지막 탭을 exit 로 없앤다"는 실험이 성립한다.
+    // 0개에서 시작하면 도달이 공허참이 되고, 2개 이상이면 마지막 탭이 아니다.
+    exitPathProbe.fixtureValid = exitPathProbe.tabsBefore.length === 1 && focusCheck
+    if (exitPathProbe.fixtureValid) {
+      await app.type('exit\r')
+      const victimId = exitPathProbe.tabsBefore[0]
+      exitPathProbe.victimId = victimId
+      // 그 탭이 사라졌을 뿐 아니라 **탭이 0개**여야 한다 — 둘을 같이 건다.
+      // ⚠ 0개 창은 **짧다**: herdr 가 곧 새 탭을 채운다(아래 refill). 그래서 0개를 본 그 순간
+      // 화면을 같이 찍어 둔다 — 나중에 읽으면 이미 1개라 "0탭에서 탭바가 있었나"를 못 잔다.
+      exitPathProbe.reachable = (
+        await until(
+        async () => {
+          const ids = await tabIdsOrNull(app, exitWorkspaceId)
+          // `null` 은 두 가지다: ① 골격 재조회 중 잠깐 안 보임 ② workspace 가 **함께 닫힘**.
+          // 둘 다 "그 탭이 사라졌다"에는 해당하므로 도달로 친다 — 어느 쪽인지는 아래 정착
+          // 샘플이 가른다(살아 있으면 ⓐ, 닫혔으면 ⓑ). `null` 을 기다리기만 하면 ⓑ 에서
+          // 영원히 도달 못 한 것으로 읽힌다(4차 실행이 그랬다).
+          if (ids !== null && ids.includes(victimId)) return false
+          // 탭 0개인데 workspace 는 살아 있는 **그 순간**만 찍는다 — ⓐ 의 유일한 증거다.
+          if (ids !== null && ids.length === 0 && exitPathProbe.atZero === undefined) {
+            exitPathProbe.atZero = (
+              await app.send({
+                cmd: 'eval',
+                code: `(() => ({
+                  at: Date.now(),
+                  tabbarPresent: document.querySelector('[data-main-tabbar]') !== null,
+                  addPresent: document.querySelector('[data-main-tabbar-add]') !== null,
+                  tabCountInDom: document.querySelectorAll('[data-main-tab]').length,
+                  worktreeLabel: document.querySelector('[data-main-tabbar-worktree]')?.textContent ?? null,
+                }))()`,
+              })
+            ).result
+            // 0개를 본 **즉시** + 를 눌러 본다. 재충전이 먼저 이기면 그 사실도 기록으로 남는다.
+            const addAtZero = await app.click('[data-main-tabbar-add]')
+            exitPathProbe.addAtZero = { hit: addAtZero.hit, tabCountWhenClicked: exitPathProbe.atZero.tabCountInDom }
+          }
+          return true
+        },
+          { timeoutMs: 20000, what: 'exit 로 탭 0개' },
+        )
+      ).ok
+      const afterSettle = await stableTabIds(app, exitWorkspaceId)
+      exitPathProbe.refill = {
+        tabsAfter: afterSettle,
+        newTabAppeared: afterSettle.length > 0 && !afterSettle.includes(victimId),
+        note: '탭 0개 창이 유지되지 않는다면 herdr 가 workspace 에 탭을 다시 채운 것이다 — corral 에는 그런 경로가 없다(workspace.create 는 worktree 열기 전용).',
+      }
+    } else {
+      exitPathProbe.reachable = false
+    }
+    exitPathProbe.settling = await sampleWorkspace(app, repo.root)
+    exitPathProbe.workspaceStillOpen = exitPathProbe.settling.workspaceOpen
+    exitPathProbe.barPresent = exitPathProbe.settling.settled.barPresent
+    exitPathProbe.addButtonPresent = (await app.query('[data-main-tabbar-add]')).found.length > 0
+    if (exitPathProbe.reachable && exitPathProbe.workspaceStillOpen && exitPathProbe.addButtonPresent) {
+      // ⓐ 가 실재한다 — DOM 에 있는 것과 **눌리는** 것은 다르므로 눌러서 증명한다.
+      // `+` 가 **눌린다**는 주장은 누른 뒤 탭이 하나 늘어야 증명된다. 누르기 직전 개수를 찍어
+      // 둔다 — 이미 1개인 상태에서 `length === 1` 을 기다리면 아무것도 증명하지 않는다.
+      const beforeAdd = await currentTabIds(app, exitWorkspaceId)
+      const addClick = await app.click('[data-main-tabbar-add]')
+      const recreated = await until(async () => (await currentTabIds(app, exitWorkspaceId)).length === beforeAdd.length + 1, { timeoutMs: 10000, what: '+ 로 탭 생성' }).catch(() => ({ ok: false }))
+      exitPathProbe.addFrom = beforeAdd.length
+      exitPathProbe.addClickable = addClick.hit && recreated.ok
+    } else if (exitPathProbe.reachable) {
+      const reopenClick2 = await app.click(`[data-worktree="${repo.root}"]`)
+      const reopened2 = await until(async () => (await app.query('[data-main-tabbar]')).found.length > 0, { timeoutMs: 20000, what: 'exit 뒤 복구' }).catch(() => ({ ok: false }))
+      exitPathProbe.recoverable = { clickHit: reopenClick2.hit, reopened: reopened2.ok }
+    }
+    exitPathProbe.addClickForExitHit = addClickForExit.hit
+    exitPathProbe.shellTabCreated = grew.ok === undefined ? grew : grew.ok
+    exitPathProbe.note = exitPathProbe.fixtureValid !== true
+      ? `실험 불성립 — 시작 탭 ${exitPathProbe.tabsBefore.length}개 / 터미널 포커스 ${focusCheck}. 도달 여부를 판정하지 않는다(공허참 방지).`
+      : !exitPathProbe.reachable
+      ? '`exit` 로 탭 0개에 도달하지 못했다 — 포커스 확인 결과(focusedTerminal)를 같이 보라. 도달 실패는 측정 실패로 센다(J-5 와 같은 기준).'
+      : exitPathProbe.workspaceStillOpen
+        ? '**ⓐ 칸이 실재한다** — `exit` 로 마지막 탭이 사라져도 workspace 가 살아 있다. 다만 0개 상태는 **일시적**이다(herdr 가 탭을 다시 채운다). 0개를 본 순간의 화면은 atZero 에 있다. C5′ 정정문을 다시 고쳐야 한다(코디네이터 보고 대상).'
+        : 'workspace 가 함께 닫혔다 → ⓑ. 탭바 × 경로와 같은 결론이고, 정정문의 사정거리를 그만큼 넓힐 근거가 된다.'
+    exitPathProbe.pass = exitPathProbe.fixtureValid !== true || !exitPathProbe.reachable
+      ? false
+      : exitPathProbe.workspaceStillOpen
+        ? // ⓐ: workspace 가 살아 있으면 **0개를 본 그 순간** 탭바와 `+` 가 화면에 있어야 하고,
+          // `+` 는 실제로 눌려 탭을 늘려야 한다(0개 창이 짧아 클릭은 재충전 뒤가 될 수 있다 —
+          // 그래서 존재는 0개 순간 값으로, 눌림은 그 뒤 값으로 나눠 건다).
+          exitPathProbe.atZero?.tabbarPresent === true &&
+          exitPathProbe.atZero?.addPresent === true &&
+          exitPathProbe.barPresent === true &&
+          exitPathProbe.addClickable === true
+        : exitPathProbe.barPresent === false && exitPathProbe.recoverable?.reopened === true
+  }
+
   await app.stop()
 
   const result = {
     zeroTabProbe,
+    exitPathProbe,
     divergeAtTwo,
     divergeMixed,
     // C5′ 의 마운트 조건은 **활성 workspace 유무** 하나다(App.tsx `activeWorkspace !== null`).
@@ -261,7 +504,8 @@ async function main() {
     },
   }
   result.allPass =
-    (result.zeroTabProbe.pass === null || result.zeroTabProbe.pass === true) &&
+    result.zeroTabProbe.pass === true &&
+    result.exitPathProbe.pass === true &&
     result.divergeAtTwo.pass &&
     result.divergeMixed.pass &&
     result.noWorkspace.pass &&

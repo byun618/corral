@@ -149,6 +149,33 @@ try {
   await sleep(600)
   const afterBlank = await labelOf(app, repo.root, shellTab.tabId)
 
+  // ---------- ⑤ blur 는 **확정**이다 ----------
+  // 입력칸 밖을 누른다. 입력칸 자신의 stopPropagation 은 안쪽 클릭만 막으므로 바깥은 그대로 간다.
+  // 누르는 곳은 탭바 우측 worktree 라벨 — 핸들러가 없어서 '확정' 말고 다른 일이 안 일어난다.
+  const BLUR_NAME = 'blur-commit'
+  await beginEdit(app, shellTab.tabId)
+  await app.type(BLUR_NAME)
+  await app.click('[data-main-tabbar-worktree]')
+  const blurCommitted = await until(
+    async () => (await labelOf(app, repo.root, shellTab.tabId)).label === BLUR_NAME,
+    { timeoutMs: 8000, what: 'blur 확정' },
+  )
+    .then(() => true)
+    .catch(() => false)
+  const afterBlur = await labelOf(app, repo.root, shellTab.tabId)
+
+  // ---------- ⑤ 씨앗 그대로면 **요청을 안 보낸다** ----------
+  // **한 번도 리네임 안 한 탭**으로 잰다. 규칙이 깨졌다면 label 이 `"1"` → `"세션 1"` 로 바뀐다 —
+  // 숫자가 아니게 되는 순간 그 폴백 문구가 **영구 사용자 이름으로 굳는다**. 그게 이 규칙이 막는 일이다.
+  // (이미 리네임한 탭으로 재면 같은 문자열을 다시 보내도 결과가 같아 판별력이 없다.)
+  const pristineTab = (await tabsOf(app, repo.root))[0]
+  const pristineBefore = await labelOf(app, repo.root, pristineTab.tabId)
+  const pristineShown = await shownTitles(app, pristineTab.tabId)
+  await beginEdit(app, pristineTab.tabId)
+  await app.key('Return')
+  await sleep(900)
+  const pristineAfter = await labelOf(app, repo.root, pristineTab.tabId)
+
   // ---------- ③ 에이전트 탭: 사이드바·탭바 동시 반영 ----------
   await buildMixedFixture(app, repo.root, { agents: 1, shells: 0 })
   // `pane.agent` 부착은 기동 뒤에 온다 — 16-agent-icon-render 1차와 같은 함정이라 기다린다.
@@ -205,6 +232,8 @@ try {
     g_noLeakWhileEditing: !leaked,
     h_escapeCancels: afterEscape.label === USER_NAME,
     i_blankCancels: afterBlank.label === USER_NAME,
+    i2_blurCommits: afterBlur.label === BLUR_NAME,
+    i3_unchangedSendsNothing: pristineAfter.label === pristineBefore.label && /^\d+$/.test(pristineAfter.label ?? ''),
     j_inputAlwaysInDom: shownBefore.inputInDom && shownBefore.inputPointerEvents === 'none' && shownBefore.inputOpacity === '0',
     k_inactiveTabKeepsFocus: inactiveEntry.state.focusedIsRenameInput === true,
     l_survivesRestart: restartLabels.some((t) => t.label === '클로드 작업'),
@@ -225,6 +254,8 @@ try {
     inactiveEntry: inactiveEntry.state,
     afterEscape,
     afterBlank,
+    blur: { name: BLUR_NAME, committed: blurCommitted, after: afterBlur },
+    noop: { before: pristineBefore, shown: pristineShown, after: pristineAfter },
     keyLeak: { controlWord: CONTROL_WORD, controlVisible, leaked, screenWhileEditingTail: screenWhileEditing.slice(-200) },
     notMeasured: {
       rejectionPassthrough: 'eval 은 읽기 전용 규칙 — 거절을 만들 화면 경로가 없어 이번 라운드는 안 쟀다',

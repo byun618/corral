@@ -24,7 +24,6 @@ import { execFileSync } from 'node:child_process'
 import {
   SESSION,
   buildMixedFixture,
-  ensureSession,
   resetSession,
   herdrCall,
   installIntegration,

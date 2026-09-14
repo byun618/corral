@@ -9,6 +9,14 @@
 //   (b) — 3개 전부 렌더 실측치(rect/computedStyle 반환값)가 pass 식에 직접 들어간다.
 //        측정 대상이 그 시점 DOM 에 없으면(탭바) 있는 상태를 만들어 잰다.
 // 여유분 권고(색 7+·치수 4+)를 따라 (a) 8쌍·(b) 4개를 잰다.
+//
+// 수정 2회차(08-fix-orca2.md D-1·D-2) — (a) 는 코디네이터 검산에서 통과 확인돼 그대로 둔다.
+// (b) 만 재작성한다: 코디네이터 검산(verdict.md "-claude-orca 수정 1회차 판정 부록")이
+// dimensionPassCount:4 를 뒤집었다 — d1 만 pass 식이 Orca 값과 비교했고, d2·d3 은 corral 자기
+// 토큰(236/560)과, d4 는 구현자가 정한 임계값(>=6)과 비교해 Orca 정합성을 실제로 재는 게
+// 아니었다. 이번엔 사이드바 폭 경계 자체를 Orca 값(220/500)으로 채택해 d2·d3 의 pass 식이
+// Orca 상수와 비교하게 만들고(자기 토큰 비교가 아니라 클램프된 렌더값 대 ORCA 상수), d4 는
+// 히트폭 실측 vs ORCA 12px 로 바꾸고, 가시선을 d5 로 분리해 Orca 1px 과 대조한다(여유분).
 import { makeScratchRepo, startApp, sleep, until, writeRaw } from './lib.mjs'
 
 function parseRgb(cssColor) {
@@ -151,8 +159,9 @@ async function main() {
   const clampedMin = await dragResizerTo(app, beforeDragWidth - 800, beforeDragWidth) // 한참 아래로 — 하한 클램프 유도
   const clampedMax = await dragResizerTo(app, clampedMin + 800, clampedMin) // 한참 위로 — 상한 클램프 유도
 
-  // ---------- (b) d4 — 리사이저 히트폭: rect.width 실측(M-3 로 9px 로 넓힘) ----------
+  // ---------- (b) d4·d5 — 리사이저 히트폭·가시선폭: 각각 rect.width 실측(D-2 로 구조 분리) ----------
   const resizerRect = (await app.rect('[data-sidebar-resizer]')).rect
+  const resizerLineRect = (await app.rect('[data-sidebar-resizer-line]')).rect
 
   await app.stop()
 
@@ -231,25 +240,32 @@ async function main() {
       corralRenderedPx: clampedMin,
       orcaPx: ORCA.sidebarMinWidth.px,
       orcaAt: ORCA.sidebarMinWidth.at,
-      pass: Math.abs(clampedMin - 236) <= 2, // design-tokens.css --sidebar-min 과 렌더 실측이 일치하는지
-      reason: '리사이저를 하한 밖(-800px)으로 드래그해 실제로 클램프된 렌더 폭을 잰다(토큰 인용이 아니라 rect 반환값). Orca 220px 대비 corral 236px(+7%, 밀도 스케일).',
+      // 수정 2회차(D-1): corral 자기 토큰이 아니라 ORCA 상수와 직접 비교한다. --sidebar-min 을
+      // Orca 값(220)으로 채택했으니 이 비교가 곧 "클램프가 Orca 경계대로 작동하는가"를 잰다.
+      pass: Math.abs(clampedMin - ORCA.sidebarMinWidth.px) <= 2,
+      reason: '리사이저를 하한 밖(-800px)으로 드래그해 실제로 클램프된 렌더 폭을 ORCA.sidebarMinWidth(220px, sidebar/index.tsx:33)와 직접 대조. corral --sidebar-min 도 이번에 220px 로 맞췄다(편차 폐기).',
     },
     d3_sidebarMaxWidthClamped: {
       corralRenderedPx: clampedMax,
       orcaPx: ORCA.sidebarMaxWidth.px,
       orcaAt: ORCA.sidebarMaxWidth.at,
-      pass: Math.abs(clampedMax - 560) <= 2,
-      reason: '리사이저를 상한 밖(+800px)으로 드래그해 실제로 클램프된 렌더 폭을 잰다. Orca 500px 대비 corral 560px(+12%, 밀도 스케일 — L-2 정정: Orca 도 상한이 있다).',
+      pass: Math.abs(clampedMax - ORCA.sidebarMaxWidth.px) <= 2,
+      reason: '리사이저를 상한 밖(+800px)으로 드래그해 실제로 클램프된 렌더 폭을 ORCA.sidebarMaxWidth(500px, sidebar/index.tsx:34)와 직접 대조. corral MAX_WIDTH 도 이번에 500px 로 맞췄다(편차 폐기).',
     },
     d4_resizeHandleHitWidth: {
       corralRenderedPx: resizerRect.width,
-      orcaHitPx: ORCA.resizeHandleHitWidthPx.px,
-      orcaHitAt: ORCA.resizeHandleHitWidthPx.at,
-      orcaVisiblePx: ORCA.resizeHandleVisibleWidthPx.px,
-      orcaVisibleAt: ORCA.resizeHandleVisibleWidthPx.at,
-      pass: resizerRect.width >= 6, // M-3 목표: 3px 단일값보다 확연히 넓혀 집기 쉽게 — Orca 12px 자체는 아니되 절반 이상
-      reason:
-        'M-3·L-2 수정: --resizer-w 를 3px→9px 로 넓혀 rect.width 실측(토큰 인용 아님). Orca 는 히트(12px)/가시(1px) 를 분리하지만 corral 은 여전히 단일 색 막대(히트=가시)라 구조 자체는 명시적 편차로 남긴다 — 폭만 격차를 줄였다.',
+      orcaPx: ORCA.resizeHandleHitWidthPx.px,
+      orcaAt: ORCA.resizeHandleHitWidthPx.at,
+      // 수정 2회차(D-2): 구현자가 정한 자가 임계값(>=6) 폐기 — 히트폭 실측을 ORCA 12px 과 직접 비교.
+      pass: Math.abs(resizerRect.width - ORCA.resizeHandleHitWidthPx.px) <= 2,
+      reason: 'D-2: 히트존(비가시)과 가시선을 분리하고 히트존을 Orca 값(12px, sidebar/index.tsx:37-38)으로 맞췄다. rect.width 실측을 ORCA 상수와 직접 대조.',
+    },
+    d5_resizeHandleVisibleWidth: {
+      corralRenderedPx: resizerLineRect.width,
+      orcaPx: ORCA.resizeHandleVisibleWidthPx.px,
+      orcaAt: ORCA.resizeHandleVisibleWidthPx.at,
+      pass: Math.abs(resizerLineRect.width - ORCA.resizeHandleVisibleWidthPx.px) <= 0.5,
+      reason: '여유분(D-2 지시) — 가시선(.sidebar-resizer-line) rect.width 를 ORCA 1px(sidebar/index.tsx:39-40)과 직접 대조. corral 도 1px 그대로 채택(밀도 스케일 대상 아님 — 두께가 아니라 존재 여부가 핵심).',
     },
   }
   const dimensionPassCount = Object.values(dimensions).filter((d) => d.pass === true).length
@@ -273,7 +289,7 @@ async function main() {
         reason: 'M-4 로 --line-weak(#181c1d) 을 낮춰 사이드바<경계선<선택카드 서열을 바로잡았는지 실측 확인 — Orca 대응 file:line 값이 없어 (a) 8쌍 카운트에는 넣지 않는다(부록 규칙: 대응값 없는 항목은 제외).',
       },
     },
-    note: '01-criteria.md 부록(C9′ (a)(b) 판정 의미 확정, 2026-09-14) 셈법 적용 — (a) 는 존재확인·반대방향 중복 없이 독립 서열 쌍만, (b) 는 전부 rect/computedStyle 렌더 실측치가 pass 식에 직접 들어간다. 통과선(색 5·치수 3)은 불변, 여유분(7+·4+)까지 측정했다.',
+    note: '01-criteria.md 부록(C9′ (a)(b) 판정 의미 확정, 2026-09-14) 셈법 적용 — (a) 는 존재확인·반대방향 중복 없이 독립 서열 쌍만, (b) 는 전부 rect/computedStyle 렌더 실측치가 pass 식에 직접 들어간다. 통과선(색 5·치수 3)은 불변, 여유분(7+·5)까지 측정했다. 수정 2회차(08-fix-orca2.md D-1·D-2): d2·d3·d4 의 pass 식을 corral 자기 토큰/자가 임계값이 아니라 ORCA 상수와 직접 비교하도록 바꿨다(코디네이터 검산 — verdict.md 부록) — 이제 (b) 5개 전부 Orca 값과 직접 대조한다.',
   }
   console.log(JSON.stringify(result, null, 2))
   writeRaw('c9prime-orca-parity.json', result)

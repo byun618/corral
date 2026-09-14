@@ -91,12 +91,19 @@
   --w-modal-create: 400px;
   --w-modal-confirm: 380px;
   --sidebar-w: 322px;
-  --sidebar-min: 236px;
-  /* 수정 1회차(07-fix-orca1.md M-3·L-2) — Orca 리사이즈 핸들은 비가시 12px 히트존(`w-3`)
-     + 가시 1px 선(`w-px`, sidebar/index.tsx:37-40)이다. corral 1차 구현은 3px 단일값(히트=가시)
-     이라 Orca 대비 4배 좁았다 — 9px 로 넓혀 격차를 대부분 줄인다(고정폭 색 막대 유지, corral
-     밀도 스케일상 12px 그대로 옮기진 않음 — 그 판단도 결과 문서에 남긴다). */
-  --resizer-w: 9px;
+  /* 수정 2회차(08-fix-orca2.md D-1) — 이 브랜치의 그라운드 트루스는 Orca 다(02-kickoff-orca.md).
+     1회차는 "밀도 스케일"을 이유로 236/560 을 썼지만 그 근거가 이 브랜치엔 없다(코디네이터
+     검산, verdict.md "-claude-orca 수정 1회차 판정 부록") — Orca 값(220/500, sidebar/index.tsx:
+     33-34)을 그대로 채택한다. --sidebar-w(322) 는 새 경계 안이라 그대로 둔다. */
+  --sidebar-min: 220px;
+  --sidebar-max: 500px;
+  /* 수정 2회차(08-fix-orca2.md D-2) — Orca 는 리사이저를 넓은 비가시 히트존(`w-3`=12px,
+     sidebar/index.tsx:37-38)과 얇은 가시선(`w-px`=1px, :39-40)으로 분리한다. 1회차는 히트=가시
+     단일 9px 막대라 보이는 막대까지 두꺼워지는 부작용이 있었다(verdict.md 지적) — 이번엔 구조
+     자체를 분리한다. 가시선은 Orca 리터럴(1px) 그대로 채택 — 얇은 선 자체는 밀도 스케일과
+     무관하다(두께가 아니라 존재 여부가 핵심이라 스케일할 이유가 없다). */
+  --resizer-hit-w: 12px;
+  --resizer-line-w: 1px;
   --radius: 6px;
   --radius-block: 7px;   /* worktree 블록 */
   --radius-sm: 5px;

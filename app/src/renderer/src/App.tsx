@@ -183,7 +183,9 @@ export function App(): React.JSX.Element {
           }}
           onRefresh={() => void window.corral.getState().then(setState)}
         />
-        <div className="sidebar-resizer" data-sidebar-resizer onMouseDown={onHandleMouseDown} />
+        <div className="sidebar-resizer" data-sidebar-resizer onMouseDown={onHandleMouseDown}>
+          <div className="sidebar-resizer-line" data-sidebar-resizer-line />
+        </div>
 
         <div className="main-area" data-main-area>
           {activeWorkspace !== null ? (

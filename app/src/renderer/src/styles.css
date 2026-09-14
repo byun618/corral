@@ -36,13 +36,24 @@ button { font: inherit; }
   border-right: 1px solid var(--line-weak);
   overflow: hidden;
 }
+/* 수정 2회차(08-fix-orca2.md D-2) — 히트존(넓음, 비가시)과 가시선(얇음)을 분리한다(Orca 구조).
+   히트존 자체는 배경을 안 칠해 사이드바/메인 캔버스와 안 섞이게만 하고, 실제로 보이는 건
+   가운데 얇은 줄(.sidebar-resizer-line)뿐이다. */
 .sidebar-resizer {
-  width: var(--resizer-w);
+  width: var(--resizer-hit-w);
   flex: 0 0 auto;
-  background: var(--bg-surface);
+  display: flex;
+  justify-content: center;
+  background: transparent;
   cursor: col-resize;
 }
-.sidebar-resizer:hover { background: var(--accent); }
+.sidebar-resizer-line {
+  width: var(--resizer-line-w);
+  align-self: stretch;
+  background: var(--line-strong);
+  pointer-events: none; /* 클릭·드래그는 부모 히트존이 받는다 */
+}
+.sidebar-resizer:hover .sidebar-resizer-line { background: var(--accent); }
 
 .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
 

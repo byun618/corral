@@ -22,11 +22,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 const DEFAULT_WIDTH = 322 // --sidebar-w
-const MIN_WIDTH = 236 // --sidebar-min
-// 수정 1회차(07-fix-orca1.md L-2) 정정: Orca 도 상한을 둔다(MAX_WIDTH=500,
-// components/sidebar/index.tsx:34) — "Orca 는 상한이 없다"는 1차 구현의 주석이 틀렸었다.
-// corral 560 은 Orca 500 대비 +12%, 밀도 스케일 차이로 그대로 둔다(비례는 유지).
-const MAX_WIDTH = 560
+// 수정 2회차(08-fix-orca2.md D-1) — 이 브랜치의 그라운드 트루스는 Orca 다(02-kickoff-orca.md).
+// 1회차는 "corral 밀도 스케일"을 이유로 236/560(Orca 대비 +7%/+12%)을 썼으나, 코디네이터
+// 검산(verdict.md "-claude-orca 수정 1회차 판정 부록")이 그 근거가 이 브랜치엔 없다고 정정했다
+// — Orca 리터럴을 그대로 채택한다(components/sidebar/index.tsx:33-34).
+const MIN_WIDTH = 220 // --sidebar-min
+const MAX_WIDTH = 500 // --sidebar-max
 
 /** Orca 원본 `clampSidebarResizeWidth` (그대로). */
 export function clampSidebarWidth(width: number, minWidth: number = MIN_WIDTH, maxWidth: number = MAX_WIDTH): number {

@@ -37,18 +37,23 @@ function makeCleanFixture() {
 }
 
 // --- 픽스처 2: dirty (staged + unstaged + untracked 혼합) -----------------------
+// 수정 1회차(07-fix-orca1.md M-5) 버그 수정: 1차 구현은 a.txt 를 staged 로 만든 뒤
+// `commitFile(root,'b.txt',…)` 가 **pathspec 없는 `git commit`** 을 실행해 인덱스 전체
+// (staged 였던 a.txt 포함)를 커밋해버렸다 — 최종 상태가 staged 0 이라 parseGitStatus 의
+// X 자리(staged) 계수가 한 번도 검증되지 않았다. 고침: **staged 를 마지막에 만들고 그 뒤로는
+// commit 을 아예 안 한다** — 커밋이 인덱스를 비울 기회 자체를 없앤다.
 function makeDirtyFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l357orca-c4-dirty-'))
   initRepo(root)
   commitFile(root, 'a.txt', 'a\n', 'init')
-  // staged: 기존 파일 수정 + add (커밋 안 함)
-  fs.writeFileSync(path.join(root, 'a.txt'), 'a changed\n')
-  git(root, 'add', 'a.txt')
-  // unstaged: 커밋된 파일을 add 없이 수정
   commitFile(root, 'b.txt', 'b\n', 'add b')
+  // unstaged: 커밋된 파일을 add 없이 수정
   fs.writeFileSync(path.join(root, 'b.txt'), 'b changed\n')
   // untracked: 새 파일, add 안 함
   fs.writeFileSync(path.join(root, 'c.txt'), 'c new\n')
+  // staged: 새 파일을 add 만 하고 끝 — 이 뒤로 commit 호출이 없어 인덱스가 안 비워진다
+  fs.writeFileSync(path.join(root, 'staged.txt'), 'staged\n')
+  git(root, 'add', 'staged.txt')
   return fs.realpathSync(root)
 }
 
@@ -81,10 +86,18 @@ function makeAheadBehindFixture(aheadCount, behindCount) {
   return fs.realpathSync(work)
 }
 
-// --- 독립 오라클 (앱이 쓰는 것과 다른 명령) --------------------------------------
-function oracleDirtyCount(root) {
-  const out = git(root, 'status', '--short')
-  return out.split('\n').filter((line) => line.trim().length > 0).length
+// --- 독립 오라클 (앱이 쓰는 것과 다른 명령·다른 파서) ----------------------------
+// `git status --short` 의 `XY 파일명` 두 칸을 직접 해석한다 — corral 의 parseGitStatus
+// (porcelain=v2) 와는 다른 플래그·다른 파싱 코드다(관문⑤). M-5: staged·unstaged·untracked
+// 를 **각각** 세서 합계만 맞아도 개별 계수 버그가 가려지는 일을 막는다.
+function oracleStatusBreakdown(root) {
+  const lines = git(root, 'status', '--short')
+    .split('\n')
+    .filter((line) => line.length > 0)
+  const staged = lines.filter((line) => line[0] !== ' ' && line[0] !== '?').length
+  const unstaged = lines.filter((line) => line[1] !== ' ' && line[1] !== '?').length
+  const untracked = lines.filter((line) => line.startsWith('??')).length
+  return { staged, unstaged, untracked, dirtyCount: lines.length, rawLines: lines }
 }
 
 function oracleAheadBehind(root) {
@@ -108,7 +121,9 @@ async function readRendered(app, worktreePath) {
     cmd: 'eval',
     code: `document.querySelector('[data-worktree="${worktreePath}"] .worktree-dot')?.className ?? null`,
   })
-  return { markText: mark.found[0] ?? null, dotClassName: dotClass.result }
+  const state = await app.state()
+  const gitStatus = state.repos.flatMap((r) => r.worktrees).find((w) => w.path === worktreePath)?.gitStatus ?? null
+  return { markText: mark.found[0] ?? null, dotClassName: dotClass.result, gitStatus }
 }
 
 async function main() {
@@ -126,9 +141,9 @@ async function main() {
   const ab = await readRendered(app, abRoot)
   await app.stop()
 
-  const oracleClean = { dirtyCount: oracleDirtyCount(cleanRoot), ...oracleAheadBehind(cleanRoot) }
-  const oracleDirty = { dirtyCount: oracleDirtyCount(dirtyRoot), ...oracleAheadBehind(dirtyRoot) }
-  const oracleAb = { dirtyCount: oracleDirtyCount(abRoot), ...oracleAheadBehind(abRoot) }
+  const oracleClean = { ...oracleStatusBreakdown(cleanRoot), ...oracleAheadBehind(cleanRoot) }
+  const oracleDirty = { ...oracleStatusBreakdown(dirtyRoot), ...oracleAheadBehind(dirtyRoot) }
+  const oracleAb = { ...oracleStatusBreakdown(abRoot), ...oracleAheadBehind(abRoot) }
 
   const expectMark = (oracle) => {
     const parts = []
@@ -145,18 +160,25 @@ async function main() {
   }
 
   const cases = [
-    { name: 'clean', root: cleanRoot, oracle: oracleClean, rendered: clean },
-    { name: 'dirty', root: dirtyRoot, oracle: oracleDirty, rendered: dirty },
-    { name: 'ahead-behind', root: abRoot, oracle: oracleAb, rendered: ab },
+    { name: 'clean', root: cleanRoot, oracle: oracleClean, rendered: clean, expectStaged: 0, expectUnstaged: 0, expectUntracked: 0 },
+    { name: 'dirty', root: dirtyRoot, oracle: oracleDirty, rendered: dirty, expectStaged: 1, expectUnstaged: 1, expectUntracked: 1 },
+    { name: 'ahead-behind', root: abRoot, oracle: oracleAb, rendered: ab, expectStaged: 0, expectUnstaged: 0, expectUntracked: 0 },
   ].map((c) => ({
     ...c,
     expectedMark: expectMark(c.oracle),
     expectedTone: expectTone(c.oracle),
     markMatches: c.rendered.markText === expectMark(c.oracle),
     toneMatches: typeof c.rendered.dotClassName === 'string' && c.rendered.dotClassName.includes(`tone-${expectTone(c.oracle)}`),
+    // M-5 — staged·unstaged·untracked 를 각각 독립 오라클 대 corral 파서(gitStatus) 로 대조한다.
+    stagedMatches: c.oracle.staged === c.expectStaged && c.rendered.gitStatus?.staged === c.expectStaged,
+    unstagedMatches: c.oracle.unstaged === c.expectUnstaged && c.rendered.gitStatus?.unstaged === c.expectUnstaged,
+    untrackedMatches: c.oracle.untracked === c.expectUntracked && c.rendered.gitStatus?.untracked === c.expectUntracked,
   }))
 
-  const result = { cases, allPass: cases.every((c) => c.markMatches && c.toneMatches) }
+  const result = {
+    cases,
+    allPass: cases.every((c) => c.markMatches && c.toneMatches && c.stagedMatches && c.unstagedMatches && c.untrackedMatches),
+  }
   console.log(JSON.stringify(result, null, 2))
   writeRaw('c4-git-oracle.json', result)
 }

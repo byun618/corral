@@ -26,7 +26,11 @@
   /* 경계 */
   --line-strong: #2b3132; /* 카드 · 버튼 테두리 */
   --line: #23282a;        /* 영역 구획 */
-  --line-weak: #1f2324;   /* 창 내부 미세 구획 */
+  /* 수정 1회차(07-fix-orca1.md M-4) — 원안 #1f2324 는 --bg-selected(#1d2122) 보다 근소하게
+     밝아 "사이드바 < 경계선 < 선택 카드" 서열(C9′(a))이 깨져 있었다(채널당 2 이하 역전, 육안
+     구분은 안 되지만 실측하면 뒤집힘). --bg-window(#141718)와 --bg-selected(#1d2122) 사이로
+     내려 서열을 바로잡는다. */
+  --line-weak: #181c1d;   /* 창 내부 미세 구획 */
 
   /* 텍스트 2단 + 보조 */
   --fg: #e6e9e8;
@@ -88,7 +92,11 @@
   --w-modal-confirm: 380px;
   --sidebar-w: 322px;
   --sidebar-min: 236px;
-  --resizer-w: 3px;
+  /* 수정 1회차(07-fix-orca1.md M-3·L-2) — Orca 리사이즈 핸들은 비가시 12px 히트존(`w-3`)
+     + 가시 1px 선(`w-px`, sidebar/index.tsx:37-40)이다. corral 1차 구현은 3px 단일값(히트=가시)
+     이라 Orca 대비 4배 좁았다 — 9px 로 넓혀 격차를 대부분 줄인다(고정폭 색 막대 유지, corral
+     밀도 스케일상 12px 그대로 옮기진 않음 — 그 판단도 결과 문서에 남긴다). */
+  --resizer-w: 9px;
   --radius: 6px;
   --radius-block: 7px;   /* worktree 블록 */
   --radius-sm: 5px;

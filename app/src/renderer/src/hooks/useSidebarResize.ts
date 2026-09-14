@@ -23,7 +23,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 const DEFAULT_WIDTH = 322 // --sidebar-w
 const MIN_WIDTH = 236 // --sidebar-min
-const MAX_WIDTH = 560 // corral 신설 — Orca 는 상한을 안 두지만 corral 창 최소폭 보호용
+// 수정 1회차(07-fix-orca1.md L-2) 정정: Orca 도 상한을 둔다(MAX_WIDTH=500,
+// components/sidebar/index.tsx:34) — "Orca 는 상한이 없다"는 1차 구현의 주석이 틀렸었다.
+// corral 560 은 Orca 500 대비 +12%, 밀도 스케일 차이로 그대로 둔다(비례는 유지).
+const MAX_WIDTH = 560
 
 /** Orca 원본 `clampSidebarResizeWidth` (그대로). */
 export function clampSidebarWidth(width: number, minWidth: number = MIN_WIDTH, maxWidth: number = MAX_WIDTH): number {

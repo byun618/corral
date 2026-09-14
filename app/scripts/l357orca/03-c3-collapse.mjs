@@ -1,83 +1,156 @@
-// C3 — 레포 접기/펼치기 + 앱 재기동 후 접힘 상태 유지.
-// [data-repo-toggle] 클릭으로 레포를 접고([data-worktree] 가 DOM 에서 사라짐을 `query` 로
-// 확인), ui-prefs.json(`window.corral.getUiPrefs`)에 반영됐는지 읽은 뒤 재기동해 유지를 본다.
+// C3 — 접기/펼치기. 수정 1회차(07-fix-orca1.md M-1) 전면 재작성: 1차 구현은 ⓐ레포 collapse
+// 한 방향만 쟀다(expand·ⓑAgentGroupHeader 는 원자료 0건, codex M1·grok 동조로 보류 판정).
+// 이번엔 세션 3개 이상 worktree fixture 로 ⓐ레포·ⓑ그룹 **양방향**(collapse→expand) 각 1회 이상,
+// 접힌 자식의 DOM 미존재 확인, 재기동 후 ⓐⓑ 상태 유지까지 좌표 클릭(관문④)으로 원자료에 남긴다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { makeScratchRepo, RAW_DIR, RAW_SUBDIR, startApp, until, writeRaw } from './lib.mjs'
 
 const uiPrefsFile = path.join(RAW_DIR, RAW_SUBDIR, '_runs', '03-c3-collapse-ui-prefs.json')
 
+async function tabCountVia(app, workspaceId) {
+  const s = await app.state()
+  return s.repos.flatMap((r) => r.worktrees).find((w) => w.workspace?.workspaceId === workspaceId)?.workspace?.tabs.length ?? 0
+}
+
+async function ensureOpen(app, repoRoot) {
+  const already = (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repoRoot)?.workspace !== null
+  if (already) return
+  await app.click(`[data-worktree="${repoRoot}"]`)
+  await until(async () => (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repoRoot)?.workspace !== null, {
+    timeoutMs: 8000,
+    what: 'worktree opened',
+  })
+}
+
 async function main() {
   fs.mkdirSync(path.dirname(uiPrefsFile), { recursive: true })
   fs.rmSync(uiPrefsFile, { force: true })
 
   const repo = makeScratchRepo('c3-collapse')
-
   const app = await startApp({ name: '03-c3-collapse', env: { CORRAL_UI_PREFS: uiPrefsFile } })
   await app.addRepo(repo.root)
-  await until(async () => (await app.query(`[data-repo="${repo.root}"]`)).found.length > 0, {
-    timeoutMs: 8000,
-    what: 'repo row mounted',
+  await until(async () => (await app.query(`[data-repo="${repo.root}"]`)).found.length > 0, { timeoutMs: 8000, what: 'repo row mounted' })
+  await ensureOpen(app, repo.root)
+  const workspaceId = (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root).workspace.workspaceId
+
+  // 세션 3개 이상으로 만들어 AgentGroupHeader(GROUP_THRESHOLD=3) 를 띄운다 — 기본 탭 1개 + 2개 추가.
+  for (let i = 0; i < 2; i++) {
+    await app.click(`[data-worktree-menu-toggle="${repo.root}"]`)
+    await app.click(`[data-worktree-create-shell="${repo.root}"]`)
+    await until(async () => (await tabCountVia(app, workspaceId)) >= i + 2, { timeoutMs: 8000, what: `tab count ${i + 2}` })
+  }
+  const tabCountBefore = await tabCountVia(app, workspaceId)
+
+  // ---------- ⓐ 레포 collapse → expand (양방향) ----------
+  const repoCollapseClick = await app.click(`[data-repo-toggle="${repo.root}"]`)
+  const repoCollapsed = await until(async () => (await app.query(`[data-worktree="${repo.root}"]`)).found.length === 0, {
+    timeoutMs: 4000,
+    what: 'ⓐ repo collapsed — worktree hidden',
+  })
+  const caretCollapsed = await app.query(`[data-repo-caret="${repo.root}"]`)
+  const repoExpandClick = await app.click(`[data-repo-toggle="${repo.root}"]`)
+  const repoExpanded = await until(async () => (await app.query(`[data-worktree="${repo.root}"]`)).found.length > 0, {
+    timeoutMs: 4000,
+    what: 'ⓐ repo expanded — worktree visible again',
+  })
+  const caretExpanded = await app.query(`[data-repo-caret="${repo.root}"]`)
+
+  // ---------- ⓑ AgentGroupHeader collapse → expand (양방향) — 그룹 헤더는 남고 세션 행만 사라진다 ----------
+  const groupPresent = await until(async () => (await app.query(`[data-agent-group="${repo.root}"]`)).found.length > 0, {
+    timeoutMs: 4000,
+    what: 'AgentGroupHeader mounted (tabCount>=3)',
+  })
+  const tabRowsBefore = (await app.query('[data-tab]')).found.length
+  const groupCollapseClick = await app.click(`[data-agent-group="${repo.root}"]`)
+  const groupCollapsed = await until(async () => (await app.query('[data-tab]')).found.length === 0, {
+    timeoutMs: 4000,
+    what: 'ⓑ group collapsed — session rows hidden',
+  })
+  const headerStillThereWhileCollapsed = (await app.query(`[data-agent-group="${repo.root}"]`)).found.length > 0
+  const groupExpandClick = await app.click(`[data-agent-group="${repo.root}"]`)
+  const groupExpanded = await until(async () => (await app.query('[data-tab]')).found.length === tabRowsBefore, {
+    timeoutMs: 4000,
+    what: 'ⓑ group expanded — session rows visible again',
   })
 
-  const worktreeBefore = await app.query(`[data-worktree]`)
-  console.log('worktree count before collapse', worktreeBefore.found.length)
+  const phase1 = {
+    tabCountBefore,
+    repo: {
+      collapseClickHit: repoCollapseClick.hit,
+      collapsed: repoCollapsed.ok,
+      caretWhileCollapsed: caretCollapsed.found[0] ?? null,
+      expandClickHit: repoExpandClick.hit,
+      expanded: repoExpanded.ok,
+      caretWhileExpanded: caretExpanded.found[0] ?? null,
+    },
+    group: {
+      mounted: groupPresent.ok,
+      tabRowsBefore,
+      collapseClickHit: groupCollapseClick.hit,
+      collapsed: groupCollapsed.ok,
+      headerStillThereWhileCollapsed,
+      expandClickHit: groupExpandClick.hit,
+      expanded: groupExpanded.ok,
+    },
+    pass:
+      repoCollapseClick.hit &&
+      repoCollapsed.ok &&
+      repoExpandClick.hit &&
+      repoExpanded.ok &&
+      groupPresent.ok &&
+      groupCollapseClick.hit &&
+      groupCollapsed.ok &&
+      headerStillThereWhileCollapsed &&
+      groupExpandClick.hit &&
+      groupExpanded.ok,
+  }
+  console.log('phase1 (collapse/expand both directions)', phase1)
+  writeRaw('c3-collapse-phase1.json', phase1)
 
-  const click = await app.click(`[data-repo-toggle="${repo.root}"]`)
-  console.log('toggle click hit', click.hit)
-
-  const worktreeAfterCollapse = await (async () => {
-    const r = await until(async () => (await app.query(`[data-worktree]`)).found.length === 0, {
-      timeoutMs: 4000,
-      what: 'worktree hidden after collapse',
-    })
-    return r.ok
-  })()
-  console.log('worktree hidden after collapse', worktreeAfterCollapse)
-
-  const caret = await app.query(`[data-repo-caret="${repo.root}"]`)
-  console.log('caret text after collapse', caret.found[0])
-
-  const prefsAfterCollapse = await app.send({
-    cmd: 'eval',
-    code: 'window.corral.getUiPrefs().then((p) => p.collapsedRepos)',
-  })
-  console.log('ui-prefs collapsedRepos after collapse', prefsAfterCollapse.result)
-
+  // ---------- 재기동 후 ⓐⓑ 둘 다 유지되는지 — 그룹부터 collapse(ⓐ가 펼쳐져 있어야 DOM 이 있다),
+  // 그 다음 레포를 collapse 한다. ----------
+  await app.click(`[data-agent-group="${repo.root}"]`) // ⓑ collapse
+  await until(async () => (await app.query('[data-tab]')).found.length === 0, { timeoutMs: 4000, what: 'ⓑ collapsed before restart' })
+  await app.click(`[data-repo-toggle="${repo.root}"]`) // ⓐ collapse
+  await until(async () => (await app.query(`[data-worktree="${repo.root}"]`)).found.length === 0, { timeoutMs: 4000, what: 'ⓐ collapsed before restart' })
+  const prefsBeforeRestart = await app.send({ cmd: 'eval', code: 'window.corral.getUiPrefs().then((p) => ({ collapsedRepos: p.collapsedRepos, collapsedGroups: p.collapsedGroups }))' })
   await app.stop()
 
   const app2 = await startApp({ name: '03-c3-collapse-restart', env: { CORRAL_UI_PREFS: uiPrefsFile } })
   await app2.addRepo(repo.root)
-  await until(async () => (await app2.query(`[data-repo="${repo.root}"]`)).found.length > 0, {
-    timeoutMs: 8000,
-    what: 'repo row mounted (restart)',
-  })
-  // 접힘은 렌더 즉시가 아니라 ui-prefs IPC 응답(비동기) 이후 반영된다 — 폴링으로 기다린다.
-  const worktreeAfterRestart = await until(async () => (await app2.query(`[data-worktree]`)).found.length === 0, {
+  await until(async () => (await app2.query(`[data-repo="${repo.root}"]`)).found.length > 0, { timeoutMs: 8000, what: 'repo row mounted (restart)' })
+  const worktreeHiddenAfterRestart = await until(async () => (await app2.query(`[data-worktree="${repo.root}"]`)).found.length === 0, {
     timeoutMs: 4000,
-    what: 'worktree still hidden after restart',
+    what: 'ⓐ still collapsed after restart',
   })
-  console.log('worktree hidden after restart', worktreeAfterRestart.ok)
-  const prefsAfterRestart = await app2.send({
-    cmd: 'eval',
-    code: 'window.corral.getUiPrefs().then((p) => p.collapsedRepos)',
-  })
-  console.log('ui-prefs collapsedRepos after restart', prefsAfterRestart.result)
+  // ⓐ 를 펼쳐서 그 밑의 ⓑ(그룹) 상태를 들여다본다.
+  await app2.click(`[data-repo-toggle="${repo.root}"]`)
+  await until(async () => (await app2.query(`[data-worktree="${repo.root}"]`)).found.length > 0, { timeoutMs: 4000, what: 'ⓐ expanded to inspect ⓑ' })
+  const groupStillCollapsedAfterRestart = await until(
+    async () => {
+      const group = await app2.query(`[data-agent-group="${repo.root}"]`)
+      const tabRows = await app2.query('[data-tab]')
+      return group.found.length > 0 && tabRows.found.length === 0 ? true : null
+    },
+    { timeoutMs: 4000, what: 'ⓑ still collapsed after restart (group header present, no session rows)' },
+  )
+  const prefsAfterRestart = await app2.send({ cmd: 'eval', code: 'window.corral.getUiPrefs().then((p) => ({ collapsedRepos: p.collapsedRepos, collapsedGroups: p.collapsedGroups }))' })
   await app2.stop()
 
-  const result = {
-    worktreeCountBeforeCollapse: worktreeBefore.found.length,
-    toggleClickHit: click.hit,
-    worktreeHiddenAfterCollapse: worktreeAfterCollapse,
-    caretAfterCollapse: caret.found[0],
-    collapsedReposAfterCollapse: prefsAfterCollapse.result,
-    worktreeHiddenAfterRestart: worktreeAfterRestart.ok,
-    collapsedReposAfterRestart: prefsAfterRestart.result,
-    persisted: worktreeAfterCollapse === true && worktreeAfterRestart.ok === true,
-    uiPrefsFileOnDisk: fs.readFileSync(uiPrefsFile, 'utf8'),
+  const phase2 = {
+    prefsBeforeRestart: prefsBeforeRestart.result,
+    repoStillCollapsedAfterRestart: worktreeHiddenAfterRestart.ok,
+    groupStillCollapsedAfterRestart: groupStillCollapsedAfterRestart.ok,
+    prefsAfterRestart: prefsAfterRestart.result,
+    pass: worktreeHiddenAfterRestart.ok && groupStillCollapsedAfterRestart.ok,
   }
-  console.log(result)
-  writeRaw('c3-collapse.json', result)
+  console.log('phase2 (restart persistence, both ⓐⓑ)', phase2)
+  writeRaw('c3-collapse-phase2.json', phase2)
+
+  const overall = { phase1Pass: phase1.pass, phase2Pass: phase2.pass, allPass: phase1.pass && phase2.pass }
+  console.log('C3 overall', overall)
+  writeRaw('c3-collapse-summary.json', overall)
 }
 
 main().catch((error) => {

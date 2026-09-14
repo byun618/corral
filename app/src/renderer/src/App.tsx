@@ -198,6 +198,7 @@ export function App(): React.JSX.Element {
               onCreateShell={() => {
                 if (activeWorkspace !== null) lifecycle.actions.createRow(activeWorkspace.workspaceId, 'shell')
               }}
+              onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
             />
           ) : null}
 

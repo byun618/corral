@@ -3,10 +3,34 @@
 //
 // ## 출처 · 라이선스
 //
-// `claude` · `codex` 패스는 **Orca 에서 이식**했다:
+// `claude` · `codex` 패스와 `grok` PNG 는 **Orca 에서 이식**했다:
 //   출처: `~/repos/etc/orca/src/renderer/src/components/status-bar/icons.tsx`
 //         (`ClaudeIcon` · `OpenAIIcon`)
+//         `~/repos/etc/orca/src/shared/agent-icons/grok.png` (590 B)
+//
 //   MIT License — Copyright (c) 2026 Lovecast Inc.
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in all
+//   copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//   SOFTWARE. (MIT 허가 문단 전문 — fix3 리뷰 grok L1)
+//
+// 브랜드 마크의 **상표권은 MIT 와 별건**이다. Orca 의 MIT 는 코드 사용을 허락할 뿐
+// Anthropic·OpenAI·xAI 의 상표 사용권을 주지 않는다 — 여기서는 각 에이전트를 가리키는
+// 지시적 용법(nominative use)으로만 쓴다.
 //
 // ## 색: 토큰을 새로 만들지 않고 `currentColor` 로 받는다
 //
@@ -16,13 +40,29 @@
 // 토큰화해 둔 바로 그 브랜드 색) 등을 쓰고 있어서, 새 토큰 0개로 브랜드 색이 그대로 나온다.
 // C9(a) 토큰 색 셈도 그대로다.
 //
-// ## grok 은 글자 배지다 — **명시적 편차**
+// ## grok — **정정 (fix3 리뷰 M1 / 13-gate1-fix4.md J-3)**
 //
-// Orca 에도 grok SVG 가 없다. `agent-catalog.tsx:78` 이 `faviconDomain: 'x.ai'` 로 Google
-// favicon 서비스를 때리는데, corral 은 오프라인 데스크톱 앱이고 Orca 자신도 *"Google's favicon
-// service is unreachable in some regions and offline"* 이라 적어 뒀다(`:364`). **네트워크 fetch
-// 금지** — Orca `AgentLetterIcon`(`lib/agent-icon-glyphs.tsx:140`) 방식의 둥근 사각 + 머리글자로
-// 떨어뜨린다. 같은 MIT 출처다.
+// 이 주석의 옛 판은 *"Orca 에도 grok SVG 가 없다 → Google favicon 서비스를 때린다 → 네트워크
+// 금지라 글자 배지로 떨어뜨린다"* 였다. **그 전제가 사실이 아니었다.** 지시서
+// (`11-gate1-fix3.md` I-2)가 사실로 단정해 넘긴 것을 그대로 옮겨 적은 것이고, 원본을 다시 열어
+// 확인한 결과는 정반대다:
+//
+//   · `~/repos/etc/orca/src/shared/agent-icons/grok.png` — **590 B, 실재한다**
+//   · `lib/agent-favicon-assets.ts:2` `import grokUrl from '…/grok.png?url'` · `:36` `grok: grokUrl`
+//   · `agent-catalog.tsx:362-364` 원문: *"prefer the favicon **bundled at build time** so the icon
+//     renders **without a live network request**"* — 번들이 **네트워크 회피책**이지 그 반대가 아니다.
+//
+// → grok 도 **진짜 마크**를 쓴다. 빌드 타임 번들이라 런타임 네트워크 요청이 없다(원칙은 유효).
+//   Orca 자신의 렌더링과 같게 `<img>` + `borderRadius: 2` 다(`agent-catalog.tsx:368-377`).
+//
+// ### 색이 갈리는 이유 — 자산의 성질이다
+//
+// claude·codex 는 SVG 패스라 `currentColor` 로 토큰 색을 먹지만 **grok 은 원색 그대로** 나온다.
+// 취향이 아니라 파일 성질 때문이다: 이 PNG 는 **팔레트(color type 3) + `tRNS` 청크 없음**,
+// 즉 **알파 채널이 아예 없다**(`raw/gate1-fix4/j3-grok-asset.json` 에 청크 실측). 알파 마스킹
+// (`mask-image`)은 붙을 데가 없고, 휘도 마스킹은 흰 배경이 남고 검은 마크가 뚫려 **마크가 반전**된다.
+// 브랜드 마크를 변형하는 쪽보다 **원본 그대로 두는 쪽**을 골랐다 — 상표는 변형하지 않는 게 안전하고,
+// Orca 도 같은 그림을 같은 방식으로 그린다.
 //
 // ⚠ 행 높이를 밀지 않는다 — `size` 기본값이 기존 글리프 칸 폭에 맞춰져 있고, 세로는
 // `--h-session-row` 등 C9(b) 통과선이 잡는다.

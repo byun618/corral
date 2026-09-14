@@ -12,7 +12,8 @@
 // **전체 탭**(셸 포함), 사이드바는 에이전트 세션만 (01-criteria.md 부록 "세션 용어 확정").
 import { useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
-import { sessionTitle } from '../session-title.js'
+import { agentIcon } from '../session-glyphs.js'
+import { sessionTitle, tabAgent } from '../session-title.js'
 
 function MainTab({
   tab,
@@ -26,6 +27,10 @@ function MainTab({
   onClose: () => void
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
+  // H-6 을 탭바에도 적용한다(구현자 판단) — 사이드바와 탭바가 같은 세션을 다른 기호로 보이면
+  // 두 목록을 짝지어 읽을 수 없다. 탭바는 **셸 탭도** 보여주므로 에이전트가 없는 탭은 `shell`
+  // 아이콘(`$`)으로 떨어뜨린다 — 여기서만 의미가 있는 구분이다(사이드바는 에이전트 세션만 그린다).
+  const kind = agentIcon(tabAgent(tab) ?? 'shell')
   return (
     <div
       className={`main-tab ${active ? 'is-active' : ''}`}
@@ -35,6 +40,11 @@ function MainTab({
       onClick={onSelect}
     >
       <span className={`main-tab-dot tone-${tab.agentStatus === 'working' ? 'accent' : 'neutral'}`} />
+      {kind === null ? null : (
+        <span className={`main-tab-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
+          {kind.glyph}
+        </span>
+      )}
       <span className="main-tab-label">{sessionTitle(tab)}</span>
       <button
         className={`main-tab-close ${hovered ? 'is-active' : ''}`}

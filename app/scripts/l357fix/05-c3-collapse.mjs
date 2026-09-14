@@ -43,11 +43,17 @@ async function main() {
   const workspaceId = (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === repo.root).workspace.workspaceId
 
   // ---------- 음성 대조: 셸 탭만 늘려서는 그룹 헤더가 안 생긴다 ----------
-  // worktree 를 열면 herdr 가 기본 셸 탭 1개를 준다. 여기에 셸 2개를 더해 **탭 3개**를 만든다 —
-  // 옛 기준(전체 탭 3개)이었다면 여기서 그룹이 떠야 하고, 새 기준(에이전트 3개)이면 안 떠야 한다.
-  for (let i = 0; i < 2; i++) {
+  // **탭 3개(전부 셸)** 를 만든다 — 옛 기준(전체 탭 3개)이었다면 여기서 그룹이 떠야 하고,
+  // 새 기준(에이전트 3개)이면 안 떠야 한다.
+  //
+  // 이전 판은 "worktree 를 열면 herdr 가 기본 셸 탭 1개를 준다"고 **가정**하고 2개만 더 만들었다.
+  // 그 가정은 항상 참이 아니다 — 기본 탭이 0개로 온 실행에서 총 2개에 그쳐 음성 대조가 헛돌았다
+  // (2회차에서 실제로 그랬다). 가정하지 말고 **3개가 될 때까지** 만든다.
+  for (let guard = 0; guard < 5; guard++) {
+    const now = (await tabsOf(app, repo.root)).length
+    if (now >= 3) break
     await createTab(app, repo.root, 'shell')
-    await until(async () => (await tabCountVia(app, workspaceId)) >= i + 2, { timeoutMs: 10000, what: `shell tab ${i + 2}` })
+    await until(async () => (await tabCountVia(app, workspaceId)) > now, { timeoutMs: 12000, what: `shell tab ${now + 1}` })
   }
   const shellOnlyTabs = await tabsOf(app, repo.root)
   const groupAbsentWithShellsOnly = (await app.query(`[data-agent-group="${repo.root}"]`)).found.length === 0

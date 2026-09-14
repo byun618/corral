@@ -8,33 +8,9 @@
 // 렌더러가 그 tabId 를 **처음 관측한** 시각부터의 경과였다. 근거 없는 수를 마지막 활동인 양
 // 보이지 않는다. 필드가 생기면 그때 되살린다.
 import { useState } from 'react'
-import type { AgentStatus, TabRow } from '../../../shared/types.js'
-import { sessionTitle } from '../session-title.js'
-
-/**
- * §2.5 SessionRow 글리프 표. corral 의 `AgentStatus` 네 값에 대응시킨다.
- *
- * 스펙에 있으나 **못 그리는 두 칸**(09-gate1-fix.md E — 만들지 않고 명시한다):
- *   · 완료 `✓` `--accent` — corral 에 `done` 상태가 없다. herdr 0.9.0 이 `pane.report_agent`
- *     경로로 `done` 을 만들지 않기 때문이다 (`shared/types.ts` AgentStatus 주석).
- *   · 에러 `✕` `--st-error` — `AgentStatus` 에 `error` 가 없다. 가장 가까운 `blocked` 는
- *     "막혔다"이지 "실패했다"가 아니라 같은 칸으로 셈하지 않는다.
- * 미상은 §2.5 원문대로 `◉` + `--fg-faint` 다 (실행 중 `◉` 와 글리프가 같고 색으로 갈린다).
- */
-const GLYPH: Record<AgentStatus, { glyph: string; tone: 'accent' | 'dirty' | 'behind' | 'error' | 'faint' }> = {
-  working: { glyph: '⚡', tone: 'dirty' },
-  idle: { glyph: '◉', tone: 'behind' },
-  blocked: { glyph: '!', tone: 'error' },
-  unknown: { glyph: '◉', tone: 'faint' },
-}
-
-const STATUS_LABEL: Record<AgentStatus, string> = {
-  idle: '대기',
-  working: '작업중',
-  blocked: '막힘',
-  unknown: '미상',
-}
-
+import type { TabRow } from '../../../shared/types.js'
+import { agentIcon, GLYPH, STATUS_LABEL } from '../session-glyphs.js'
+import { sessionTitle, tabAgent } from '../session-title.js'
 export function SessionRow({
   tab,
   active,
@@ -48,6 +24,8 @@ export function SessionRow({
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const { glyph, tone } = GLYPH[tab.agentStatus]
+  // H-6 — 상태 글리프와 **별도 칸**이다. 모르는 종류면 칸 자체를 안 그린다(부재, 빈 칸 아님).
+  const kind = agentIcon(tabAgent(tab))
   return (
     <div
       className={`session-row ${active ? 'is-active' : ''}`}
@@ -60,6 +38,11 @@ export function SessionRow({
       onClick={onSelect}
     >
       <span className={`session-row-glyph tone-${tone}`}>{glyph}</span>
+      {kind === null ? null : (
+        <span className={`session-row-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
+          {kind.glyph}
+        </span>
+      )}
       <span className="session-row-title">{sessionTitle(tab)}</span>
       <div className="session-row-spacer" />
       {/* hover 로만 opacity 를 바꾼다 — 조건부 렌더링하면 좌표/elementFromPoint 클릭이

@@ -64,7 +64,8 @@ async function main() {
   const leafOf = (branch) => (branch.lastIndexOf('/') === -1 ? branch : branch.slice(branch.lastIndexOf('/') + 1))
   const lineMapping = Object.entries(blocks).map(([branch, { worktree, dom }]) => {
     const leaf = leafOf(branch)
-    const expectLine2 = leaf !== branch
+    // H-2 — 중복이어도 2줄을 **항상** 그린다. 1회차의 "leaf 와 같으면 숨긴다"는 철회됐다.
+    const expectLine2 = true
     return {
       branch,
       expectedLeaf: leaf,
@@ -74,7 +75,7 @@ async function main() {
       renderedLine2: dom?.line2Text ?? null,
       blockHeightPx: dom?.blockHeight ?? null,
       line1IsLeaf: dom?.line1Text === leaf,
-      line2MatchesRule: expectLine2 ? dom?.line2Present === true && dom?.line2Text === branch : dom?.line2Present === false,
+      line2AlwaysRendered: dom?.line2Present === true && dom?.line2Text === branch,
       // §2.5 "절대경로는 행에 넣지 않는다" — 어느 행 텍스트에도 worktree 절대경로가 없어야 한다.
       noAbsolutePathInRows: !(dom?.line1Text ?? '').includes('/') && !(dom?.line2Text ?? '').includes(worktree.path),
       // 절대경로는 1줄 이름의 title 툴팁에서만 노출된다.
@@ -85,21 +86,23 @@ async function main() {
     }
   })
   for (const row of lineMapping) {
-    row.pass = row.line1IsLeaf && row.line2MatchesRule && row.noAbsolutePathInRows && row.tooltipIsAbsolutePath && row.dataAttrValueUnchanged
+    row.pass = row.line1IsLeaf && row.line2AlwaysRendered && row.noAbsolutePathInRows && row.tooltipIsAbsolutePath && row.dataAttrValueUnchanged
   }
 
   // 블록 높이 비교 — 2줄 있는 블록이 없는 블록보다 실제로 높아야 한다(=높이 축소가 일어났다).
   const withLine2 = lineMapping.find((r) => r.renderedLine2Present === true)
   const withoutLine2 = lineMapping.find((r) => r.renderedLine2Present === false)
-  const heightShrink = {
-    twoLineBranch: withLine2?.branch ?? null,
-    twoLineHeightPx: withLine2?.blockHeightPx ?? null,
-    oneLineBranch: withoutLine2?.branch ?? null,
-    oneLineHeightPx: withoutLine2?.blockHeightPx ?? null,
-    shrinks: withLine2 !== undefined && withoutLine2 !== undefined && withoutLine2.blockHeightPx < withLine2.blockHeightPx,
-    note: '§2.5 "이름과 동일하면 2줄을 렌더하지 않고 블록 높이를 줄인다" — 두 블록의 rect.height 를 같은 실행에서 비교한다. 목업(2줄 고정 47px)보다 납작해지는 것은 의도된 결과다.',
+  // H-2 로 **높이 축소 규칙이 사라졌다** — 이제 모든 블록이 2줄이라 높이가 균일해야 한다.
+  // (1회차는 여기서 45px vs 30px 를 쟀다. 그 통과선은 철회됐다.)
+  const heights = lineMapping.map((row) => row.blockHeightPx)
+  const heightRule = {
+    heightsPx: Object.fromEntries(lineMapping.map((row) => [row.branch, row.blockHeightPx])),
+    allTwoLine: lineMapping.every((row) => row.renderedLine2Present === true),
+    uniformHeight: heights.every((h) => h !== null && Math.abs(h - heights[0]) < 0.5),
+    note: 'H-2 — 중복이어도 2줄을 그리므로 블록 높이가 브랜치 이름과 무관하게 균일하다.',
+    pass: null,
   }
-  heightShrink.pass = heightShrink.shrinks
+  heightRule.pass = heightRule.allTwoLine && heightRule.uniformHeight
 
   // ---------- git 마크 0 숨김 (이미 충족 — 확인만, 09-gate1-fix.md B) ----------
   const cleanBlock = Object.values(blocks).find(({ dom }) => dom?.markPresent === false)
@@ -158,47 +161,38 @@ async function main() {
     sessionTitles.noBareNumberTitles &&
     sessionTitles.elapsedTimeRemoved
 
-  // ---------- 3등급이 전부 나오는 상태를 만든다 ----------
-  // 1회차 fixture 는 `[0, 2, 2]` 만 나와 **중간 등급(열림·비선택)이 한 번도 안 나왔다** —
-  // 그러면 단조 비감소가 3등급 규칙과 2등급 규칙을 구분하지 못한다. linked worktree 를 하나
-  // 더 열고 다시 main 을 선택해 `[0, 1, 2]` 를 만든 뒤 잰다.
-  const linkedWithSlash = worktrees.find((w) => w.branch === 'issue/LIFE-89')
-  await app.click(`[data-worktree="${linkedWithSlash.path}"]`)
-  await until(
-    async () => (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === linkedWithSlash.path)?.workspace !== null,
-    { timeoutMs: 15000, what: 'second worktree opened (rank-1 fixture)' },
-  )
-  await app.click(`[data-worktree="${repo.root}"]`) // 다시 main 선택 → main=0, issue/LIFE-89=1, 나머지=2
-  await until(async () => (await app.query(`[data-worktree="${repo.root}"].is-selected`)).found.length > 0, {
-    timeoutMs: 6000,
-    what: 'main re-selected',
-  })
-
-  // ---------- worktree 정렬 — 선택됨 → 열림 → 그 외 ----------
+  // ---------- worktree 정렬 — **이름 사전순 고정** ----------
+  // 이전 회차는 여기서 "선택됨 → 열림 → 그 외" 등급 정렬을 쟀다. 그 규칙은 **철회됐다**
+  // (04-result-gate1-fix.md §10 — 목업에 '활성이 위' 규칙이 없다는 코디네이터 실측).
+  // 지금 규칙은 세션 상태에 의존하지 않는 이름 사전순이고, 세션을 열고 닫아도·재기동해도
+  // 순서가 안 바뀐다는 본 증명은 `11-worktree-order.mjs` 가 한다. 여기서는 같은 fixture 로
+  // 한 컷만 대조한다.
   const renderedOrder = (await app.send({
     cmd: 'eval',
-    code: "[...document.querySelectorAll('[data-worktree]')].map((el) => ({ path: el.getAttribute('data-worktree'), selected: el.classList.contains('is-selected') }))",
+    code: "[...document.querySelectorAll('[data-worktree]')].map((el) => el.getAttribute('data-worktree'))",
   })).result
   const stateNow = await app.state()
-  const rank = (p) => {
+  const nameOf = (p) => {
     const w = stateNow.repos.flatMap((r) => r.worktrees).find((x) => x.path === p)
-    if (w === undefined) return 9
-    if (renderedOrder.find((r) => r.path === p)?.selected) return 0
-    return w.openWorkspaceId !== null ? 1 : 2
+    return w === undefined ? p : (w.branch ?? w.path)
   }
-  const ranks = renderedOrder.map((r) => ({ path: r.path, selected: r.selected, rank: rank(r.path) }))
-  const tiersSeen = [...new Set(ranks.map((r) => r.rank))].sort()
+  const renderedNames = renderedOrder.map(nameOf)
+  // 기대 순서는 손으로 적지 않고 **렌더러와 같은 비교자**로 만든다 — localeCompare 는
+  // 코드포인트 순이 아니라서 손으로 적으면 틀린다.
+  const expectedNames = [...renderedNames].sort((a, b) => a.localeCompare(b))
+  const stateArrayNames = stateNow.repos.flatMap((r) => r.worktrees).map((w) => w.branch ?? w.path)
   const sortRule = {
-    renderedOrder: ranks,
-    nonDecreasing: ranks.every((r, i) => i === 0 || r.rank >= ranks[i - 1].rank),
-    tiersSeen,
-    // 3등급이 전부 관측돼야 "단조 비감소"가 3등급 규칙의 증거가 된다 — 중간 등급이 없으면
-    // 2등급 규칙과 구분이 안 된다.
-    allThreeTiersExercised: tiersSeen.length === 3 && tiersSeen.every((t, i) => t === i),
+    renderedNames,
+    expectedNames,
+    stateArrayNames,
+    matchesNameOrder: JSON.stringify(renderedNames) === JSON.stringify(expectedNames),
+    // 렌더 순서가 herdr 배열 순서와 **달라야** 정렬이 실제로 돌고 있다는 증거가 된다
+    // (같으면 "받은 순서 그대로"와 구분이 안 된다). fixture 생성 순서를 일부러 어긋나게 잡았다.
+    differsFromStateArray: JSON.stringify(renderedNames) !== JSON.stringify(stateArrayNames),
     pass: null,
-    note: '선택됨(0) → 열린 workspace 있음(1) → 그 외(2). 동률은 안정 정렬로 기존 순서 유지 — 렌더된 순서의 등급이 단조 비감소인지로 잰다. 세 등급이 전부 나오는 상태를 일부러 만들어서 잰다.',
+    note: '이름(branch ?? path) 사전순 고정. 세션 수·열림·선택은 정렬 키에 넣지 않는다 — 철회된 등급 정렬의 대체 규칙.',
   }
-  sortRule.pass = sortRule.nonDecreasing && sortRule.allThreeTiersExercised
+  sortRule.pass = sortRule.matchesNameOrder && sortRule.differsFromStateArray
 
   // ---------- 상태바 `{n} agents` — 지시서 밖 판단 1건의 렌더 증거 ----------
   const statusBarText = (await app.send({
@@ -238,7 +232,7 @@ async function main() {
     criterion: 'B — design-handoff §2.5 필드 매핑 · 빈 값 규칙 (09-gate1-fix.md B)',
     worktrees,
     lineMapping,
-    heightShrink,
+    heightRule,
     gitMarkHidden,
     noPlaceholder,
     sessionTitles,
@@ -247,7 +241,7 @@ async function main() {
     tabBarReceivesAllTabs,
     allPass:
       lineMapping.every((r) => r.pass) &&
-      heightShrink.pass &&
+      heightRule.pass &&
       gitMarkHidden.pass &&
       noPlaceholder.pass &&
       sessionTitles.pass &&

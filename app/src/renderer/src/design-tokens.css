@@ -78,7 +78,22 @@
   --h-session-row: 21px;
   --h-group-row: 22px;
   --h-footer-toolbar: 30px;
-  --indent-session: 13px;
+  --indent-session: 24px;
+
+  /* 계층 분리 여백 (10-gate1-fix2.md H-3) — **레포 > worktree > 세션** 순으로 벌린다.
+     Orca 는 세 덩어리가 여백으로 뚜렷이 갈리는데 목업은 빽빽하다(레포 헤더→첫 worktree 2px).
+     사용자가 Orca 쪽을 원해서 **목업보다 성기게** 가는 의도적 편차다.
+     ⚠ 높이(--h-*)는 C9 통과선이라 건드리지 않는다 — 여백과 들여쓰기로만 낸다. */
+  --gap-repo-group: 18px;     /* 레포 그룹 사이 — 가장 크게 */
+  --gap-worktree-block: 8px;  /* worktree 블록 사이 — 중간 */
+  --gap-session-row: 2px;     /* 세션 행 사이 — 가장 작게 */
+
+  /* 에이전트 종류 아이콘 색 (10-gate1-fix2.md H-6) — `AgentKind` 네 값에만 대응한다.
+     CSS 는 이 토큰만 참조하고 리터럴 hex 를 두지 않는다. */
+  --agent-claude: #d97757;
+  --agent-codex: #7fb682;
+  --agent-grok: #8fa7c4;
+  --agent-shell: #6b7473;
   --tab-min-w: 74px;
   --tab-max-w: 230px;
   --h-action-btn: 20px;       /* RepoRow hover 액션 */

@@ -98,13 +98,22 @@ async function main() {
   const nameRectBefore = (await app.rect(`[data-repo-toggle="${repo.root}"] .repo-row-name`)).rect
 
   const repoRowRect = (await app.rect(`[data-repo-toggle="${repo.root}"]`)).rect
+  // 먼저 **행 바깥**으로 한 번 뺐다가 들어간다 — 포인터가 이미 목표 좌표에 있으면 mouseMove 가
+  // 상태 전이를 안 만들어 mouseenter 가 안 뜬다. 그리고 고정 sleep 대신 opacity 가 실제로
+  // 바뀔 때까지 기다린다(250ms 로는 앱 기동 직후 첫 상호작용에서 놓친 적이 있다).
+  await app.send({ cmd: 'raw-mouse', type: 'mouseMove', x: 5, y: Math.round(repoRowRect.top + 400) })
+  await sleep(120)
   await app.send({
     cmd: 'raw-mouse',
     type: 'mouseMove',
     x: Math.round(repoRowRect.left + repoRowRect.width / 2),
     y: Math.round(repoRowRect.top + repoRowRect.height / 2),
   })
-  await sleep(250)
+  await until(async () => (await computedProp(app, actionsSelector, 'opacity')) === '1', {
+    timeoutMs: 5000,
+    everyMs: 100,
+    what: 'RepoRow hover actions opacity -> 1',
+  })
   const actionsOpacityHover = await computedProp(app, actionsSelector, 'opacity')
   const actionsRectHover = (await app.rect(actionsSelector)).rect
   const nameRectHover = (await app.rect(`[data-repo-toggle="${repo.root}"] .repo-row-name`)).rect

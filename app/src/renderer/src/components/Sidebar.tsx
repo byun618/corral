@@ -13,24 +13,24 @@ import { SidebarSearch } from './SidebarSearch.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
 
 /**
- * worktree 정렬 (09-gate1-fix.md B) — **선택됨 → 열린 workspace 있음 → 그 외**.
+ * worktree 정렬 — **이름 사전순 고정**.
  *
- * 왜 이 순서인가: 사이드바에서 손이 가는 빈도 그대로다. 지금 보고 있는 것이 맨 위, 열려 있어
- * 한 번 클릭으로 전환되는 것이 그다음, 아직 안 연 것이 아래. 목업의 블록 순서도 선택된 카드가
- * 위에 오는 배치다.
+ * 요구는 "열려 있는 세션과 상관없이 순서가 고정"이다. 그래서 정렬 키는 worktree 이름
+ * (`branch ?? path`) 하나뿐이고, **세션 수·열림 여부·선택 여부는 키에 넣지 않는다** —
+ * 활성 상태를 키에 넣었다가 세션을 열고 닫을 때마다 목록이 눈앞에서 재배열된 것이
+ * 이 규칙이 생긴 이유다(10-gate1-fix2.md H-1).
  *
- * **동률은 기존 순서를 유지한다** — `Array.prototype.sort` 는 ES2019 부터 안정 정렬이 보장되므로
- * 같은 등급 안에서는 들어온 순서(= git worktree 열거 순서)가 그대로 남는다. 등급이 흔들리지 않는
- * 한 목록이 눈앞에서 재배열되지 않는다는 뜻이다.
+ * herdr 가 주는 배열 순서를 그대로 쓰지 않는 이유도 같다 — 그 순서에는 고정 보장이 없다.
+ * 여기서 한 번 정렬해야 세션 상태와 무관하게 같은 순서가 나온다.
  */
-function worktreeRank(worktree: WorktreeRow, activeWorkspaceId: string | null): number {
-  if (worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId) return 0
-  if (worktree.openWorkspaceId !== null) return 1
-  return 2
+function worktreeName(worktree: WorktreeRow): string {
+  return worktree.branch ?? worktree.path
 }
 
-function sortWorktrees(worktrees: WorktreeRow[], activeWorkspaceId: string | null): WorktreeRow[] {
-  return [...worktrees].sort((a, b) => worktreeRank(a, activeWorkspaceId) - worktreeRank(b, activeWorkspaceId))
+function sortWorktrees(worktrees: WorktreeRow[]): WorktreeRow[] {
+  // 이름은 중복될 수 없어 동률 처리는 필요 없지만, `sort` 는 ES2019 부터 안정 정렬이라
+  // 혹시 동률이 생겨도 들어온 순서가 유지된다.
+  return [...worktrees].sort((a, b) => worktreeName(a).localeCompare(worktreeName(b)))
 }
 
 export function Sidebar({
@@ -105,7 +105,7 @@ export function Sidebar({
               onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
               onRemove={() => onRemoveRepo(repo.root)}
             >
-              {sortWorktrees(repo.worktrees, activeWorkspaceId).map((worktree) => {
+              {sortWorktrees(repo.worktrees).map((worktree) => {
                 const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
                 return (
                   <WorktreeBlock

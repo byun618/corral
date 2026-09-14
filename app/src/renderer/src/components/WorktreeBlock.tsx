@@ -1,14 +1,17 @@
 // design-handoff.md §2 WorktreeBlock — 1줄(상태 도트+이름+기본칩+git마크) + 2줄(브랜치명),
 // 선택 시에만 카드로 올라온다(별도 컴포넌트가 아니라 같은 블록의 선택 상태 — §1).
 //
-// **§2.5 필드 매핑** (09-gate1-fix.md B + 코디네이터 목업 실측 보정, 2026-09-14):
-//   · 1줄 이름 = 브랜치 **leaf**(마지막 `/` 뒤), 2줄 = **브랜치 풀네임**.
-//     `issue/LIFE-89` → 1줄 `LIFE-89` / 2줄 `issue/LIFE-89` (다르므로 2줄 렌더)
-//     `main` · `LIFE-357-layout-redesign-fix` → leaf == 풀네임 → **2줄 미렌더, 블록 높이 축소**
+// **§2.5 필드 매핑** (10-gate1-fix2.md H-2 로 갱신, 2026-09-14):
+//   · 1줄 이름 = 브랜치 **leaf**(마지막 `/` 뒤), 2줄 = **브랜치 풀네임**. 이 구조는 유지된다.
+//     `issue/LIFE-89` → 1줄 `LIFE-89` / 2줄 `issue/LIFE-89`
+//     `main` → 1줄 `main` / 2줄 `main` — **중복이어도 2줄을 그린다.**
+//   · §2.5 의 "1줄과 같으면 2줄을 숨기고 블록 높이를 줄인다"는 **철회됐다**(H-2). 사용자가
+//     실물 Orca 스크린샷으로 반례를 냈다 — `main`/`main`, `ticket/012-…`/`ticket/012-…` 가
+//     전부 2줄이고, 목업도 같은 47px 2줄 블록이다. 디자이너의 §2.5 는 화면을 안 보고 쓴 규칙이라
+//     실물 대조가 이긴다.
 //   · 절대경로는 행에 안 넣는다 — 1줄 이름의 `title` 툴팁과 CreateWorktreeModal 경로 필드에서만.
-//   · 목업 자체는 1줄·2줄이 같아도 둘 다 그려 블록이 47px 이지만, §2.5 가 그 뒤에 나온 정정이라
-//     §2.5 가 우선한다. 슬래시 없는 브랜치가 많은 corral 에서 블록이 목업보다 납작해지는 것은
-//     **의도된 결과**다 — 빈 2줄을 억지로 채우지 않는다.
+//     그래서 브랜치가 없는(detached) worktree 만은 2줄에 쓸 이름 자체가 없어 2줄을 비운다.
+//   · 세션이 하나도 없는 worktree 도 2줄 블록 그대로다 — 블록만 남고 아래가 비는 게 정답이다.
 //
 // 핸드오프 목업에는 없지만 01-criteria.md C1(필수)이 요구하는 "세션(탭) 생성·닫기" 진입점을
 // 여기 얹는다 — MainTabBar 는 sessionCount>=2 에서만 존재해(C5) 0/1개일 때 "+" 를 못 둔다.
@@ -18,7 +21,8 @@
 import { useState } from 'react'
 import type { AgentKind, TabRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
-import { isAgentTab } from '../session-title.js'
+import { agentIcon, GLYPH } from '../session-glyphs.js'
+import { isAgentTab, tabAgent } from '../session-title.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { SessionRow } from './SessionRow.js'
 
@@ -73,12 +77,20 @@ export function WorktreeBlock({
   const agentTabs = (worktree.workspace?.tabs ?? []).filter(isAgentTab)
   const hasGroup = agentTabs.length >= GROUP_THRESHOLD
   const showSessions = !hasGroup || !groupCollapsed
+  // H-5 — 접힘은 "사라짐"이 아니라 **"압축됨"**으로 읽혀야 한다. 첫 세션의 글리프만 남기고
+  // 나머지 개수를 `+N` 으로 접는다.
+  const firstAgentTab = agentTabs[0] ?? null
+  const collapsedSummary =
+    hasGroup && groupCollapsed && firstAgentTab !== null
+      ? { status: GLYPH[firstAgentTab.agentStatus], kind: agentIcon(tabAgent(firstAgentTab)), hiddenCount: agentTabs.length - 1 }
+      : null
   const isOpen = worktree.workspace !== null
 
   const branch = worktree.branch
   const line1Name = branch === null ? '(브랜치 없음)' : branchLeaf(branch)
-  // 2줄은 leaf 와 다를 때만 — 같으면 렌더하지 않아 블록 높이가 줄어든다 (§2.5).
-  const line2Branch = branch !== null && branch !== line1Name ? branch : null
+  // 2줄은 **항상** 풀네임이다 — leaf 와 같아도 그린다 (H-2). 브랜치가 없는 worktree 만
+  // 예외인데, 그건 규칙의 예외가 아니라 쓸 이름이 없어서다(절대경로는 §2.5 가 행에 금지).
+  const line2Branch = branch
 
   return (
     <div
@@ -188,6 +200,35 @@ export function WorktreeBlock({
             onToggleGroup()
           }}
         />
+      ) : null}
+
+      {/* 접힘 요약 행 — **`data-tab` 을 쓰지 않는다.** C3ⓑ 하네스가 "접힌 자식은 DOM 미존재"를
+          `[data-tab]` 개수로 검사하므로, 여기에 그 속성을 달면 접혀도 세션 행이 남은 것으로
+          집계돼 통과선이 깨진다. 세션 행이 아니라 헤더의 접힘 표현이라 별도 마크업이 맞다. */}
+      {isOpen && collapsedSummary !== null ? (
+        <div
+          className="agent-group-summary"
+          data-agent-group-summary={worktree.path}
+          title={`세션 ${agentTabs.length}개 — 펼치기`}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleGroup()
+          }}
+        >
+          <span className={`session-row-glyph tone-${collapsedSummary.status.tone}`}>{collapsedSummary.status.glyph}</span>
+          {collapsedSummary.kind === null ? null : (
+            <span className={`session-row-agent agent-${collapsedSummary.kind.kind}`} data-agent-kind={collapsedSummary.kind.kind}>
+              {collapsedSummary.kind.glyph}
+            </span>
+          )}
+          {collapsedSummary.hiddenCount > 0 ? (
+            <span className="agent-group-summary-more" data-agent-group-hidden={collapsedSummary.hiddenCount}>
+              +{collapsedSummary.hiddenCount}
+            </span>
+          ) : null}
+          <div className="agent-group-spacer" />
+          <span className="agent-group-summary-caret">›</span>
+        </div>
       ) : null}
 
       {isOpen && showSessions

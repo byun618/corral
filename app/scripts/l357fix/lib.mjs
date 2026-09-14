@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url'
 export const SESSION = process.env.LIFE357FIX_SESSION ?? 'life357-fix'
 export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
 export const REPO_DIR = path.dirname(APP_DIR)
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-357-layout-redesign/raw/gate1-fix')
+// 라운드마다 원자료 폴더가 바뀐다(1회차 raw/gate1-fix, 2회차 raw/gate1-fix2) — 스크립트는
+// 그대로 두고 env 로 갈아끼운다. 기존 폴더는 회차 기록으로 보존한다.
+export const RAW_DIR =
+  process.env.L357FIX_RAW_DIR ?? path.join(REPO_DIR, 'specs/LIFE-357-layout-redesign/raw/gate1-fix')
 export const RAW_SUBDIR = process.env.L357FIX_RAW_SUBDIR ?? ''
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -330,15 +333,20 @@ export function agentTabsOf(tabs) {
  */
 export async function buildMixedFixture(app, worktreePath, { agents, shells }) {
   const log = []
-  for (let i = 0; i < agents; i++) {
+  // **목표치까지** 만든다 — "몇 개 더"가 아니라 "몇 개가 되게". 아래 셸 루프는 원래 목표치
+  // 방식이었는데 에이전트 루프만 증분이라, 이미 에이전트가 있는 worktree 에 다시 부르면
+  // 목표를 넘겨 버렸다(C9 규칙② 가 2→3 을 재려다 4개가 돼 실패했다).
+  for (;;) {
+    const before = agentTabsOf(await tabsOf(app, worktreePath)).length
+    if (before >= agents) break
     const click = await createTab(app, worktreePath, 'claude')
-    const want = i + 1
-    const ok = await until(async () => agentTabsOf(await tabsOf(app, worktreePath)).length >= want, {
+    const ok = await until(async () => agentTabsOf(await tabsOf(app, worktreePath)).length > before, {
       timeoutMs: 20000,
       everyMs: 200,
-      what: `agent tab ${want}`,
+      what: `agent tab ${before + 1}`,
     })
-    log.push({ kind: 'claude', index: want, clickHit: click.hit, reached: ok.ok, ms: ok.ms })
+    log.push({ kind: 'claude', index: before + 1, clickHit: click.hit, reached: ok.ok, ms: ok.ms })
+    if (!ok.ok) break
   }
   for (;;) {
     const tabs = await tabsOf(app, worktreePath)

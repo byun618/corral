@@ -1,0 +1,97 @@
+/* corral · LIFE-357 layout redesign — design tokens (dark only, 단일 테마)
+   원본: specs/design-tokens.css (design-intake 산출물, `-claude` 브랜치가 그대로 쓴다) — 이
+   파일은 사본이되 **의도적으로 값 2개를 바꿨다** (아래 배경 3단 주석 참고). 이 라운드(C9′)는
+   design-handoff 대신 Orca 실측이 판정 기준이라 이 편차가 정당하다(02-kickoff-orca.md).
+   surface: desktop · 근거: specs/reference/layout-reference-2026-09-13.md */
+
+:root {
+  /* 배경 3단 — Orca 실측(main.css .dark, 2026-09-14)과 대조해 사이드바/터미널 밝기 서열을
+     뒤집었다: Orca 는 `--background`(캔버스) #0a0a0a < `--editor-surface`(터미널) #1e1e1e <
+     `--worktree-sidebar`(사이드바) #2a2a2a < `--worktree-sidebar-accent`(선택 카드) #353535 —
+     사이드바가 터미널보다 밝다. `specs/design-tokens.css` 원안은 반대(사이드바 #0e1011 <
+     터미널 #141718)였다 — design-handoff 가 이 서열을 안 챙긴 것으로 보인다. C9′ 는 Orca 를
+     그라운드 트루스로 쓰므로 이 두 값을 맞바꿔 서열을 Orca 와 일치시켰다(색상 자체의 hue 는
+     그대로 — 회색조가 아니라 corral 팔레트 톤 유지, 서열 방향만 교정). */
+  --bg-window: #141718;   /* 사이드바 · 탭바 스트립 · 창 크롬 — Orca 대조 후 값 교체(원안 #0e1011) */
+  --bg-surface: #0e1011;  /* 메인/터미널 영역 · 활성 탭 · 카드 내 탭 리스트 — 원안 #141718 */
+  --bg-raised: #181b1c;   /* 모달 패널(CreateWorktreeModal 등) — design-handoff §2 원문 그대로 */
+  --bg-input: #16191a;    /* 검색 입력 */
+  --bg-chip: #202425;     /* 배지 pill */
+  --bg-selected: #1d2122;  /* 선택된 worktree 블록 */
+  --bg-row-hover: #1e2223;
+  --bg-statusbar: #0b0d0e;
+  --bg-menu-hover: #262b2c;   /* RepoRowMenu 항목 hover */
+  --bg-danger-hover: #2a1e1d; /* 파괴적 항목 hover */
+
+  /* 경계 */
+  --line-strong: #2b3132; /* 카드 · 버튼 테두리 */
+  --line: #23282a;        /* 영역 구획 */
+  --line-weak: #1f2324;   /* 창 내부 미세 구획 */
+
+  /* 텍스트 2단 + 보조 */
+  --fg: #e6e9e8;
+  --fg-muted: #9aa3a1;
+  --fg-dim: #6e7877;      /* 메타 · 수치 */
+  --fg-faint: #5f6968;    /* 비활성 글리프 */
+  /* 메뉴 항목 텍스트 — 목업/핸드오프 §2 RepoRowMenu 리터럴(#c4cbc9), 토큰 없어 신설(구현 자유 재량). */
+  --fg-menu: #c4cbc9;
+
+  /* 강조 1단 */
+  --accent: #7dd3a0;      /* 활성 상태 · 실행 중 에이전트 · 커서 · 리사이저 hover */
+  --accent-hi: #a5e5c1;
+
+  /* 상태색 4 */
+  --st-dirty: #d9a23f;
+  --st-ahead: #6ea8fe;
+  --st-behind: #b98bd9;
+  --st-error: #e06c5f;
+  --st-error-hi: #ea867b;
+  --fg-on-accent: #0e1011;    /* accent 버튼 위 텍스트 */
+  --fg-on-danger: #140d0c;
+  /* git 상태 없음(clean·not-ahead·not-behind) 도트 색 — 핸드오프 §2 WorktreeBlock 표·목업 리터럴
+     (#3a4140, 비활성 탭 도트와 동일 값)에 있으나 토큰 diff(§3)에는 없던 값이라 신설한다. */
+  --dot-neutral: #3a4140;
+  /* InlineNotice(경고류) 배경/경계/텍스트 — 목업의 showNotice 블록 리터럴, 토큰 diff 에는 없음. */
+  --bg-notice: #1a1614;
+  --line-notice: #3a2a22;
+  --fg-notice: #d9bd93;
+
+  /* 오버레이 */
+  --scrim: rgba(6, 7, 8, .62);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, .6);
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, .5);
+
+  /* 타입 */
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --fs-ui: 13px;       /* 창 기본 */
+  --fs-row: 11.5px;    /* 트리/탭 라벨 (mono) */
+  --fs-meta: 10px;     /* 메타·상태바 */
+  --fs-badge: 9.5px;
+  --fs-term: 12px;
+  --lh-term: 1.7;
+
+  /* 치수 (밀도 8/10) */
+  --h-brandbar: 38px;
+  --h-tabbar: 33px;
+  --h-statusbar: 25px;
+  --h-repo-row: 28px;
+  --h-session-row: 21px;
+  --h-group-row: 22px;
+  --h-footer-toolbar: 30px;
+  --indent-session: 13px;
+  --tab-min-w: 74px;
+  --tab-max-w: 230px;
+  --h-action-btn: 20px;       /* RepoRow hover 액션 */
+  --w-repo-menu: 168px;
+  --w-modal-create: 400px;
+  --w-modal-confirm: 380px;
+  --sidebar-w: 322px;
+  --sidebar-min: 236px;
+  --resizer-w: 3px;
+  --radius: 6px;
+  --radius-block: 7px;   /* worktree 블록 */
+  --radius-sm: 5px;
+  --radius-badge: 3px;
+  --radius-modal: 8px;
+}

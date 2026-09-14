@@ -17,6 +17,7 @@ import type {
   RemoveRepoResult,
   TerminalFrame,
   TerminalScroll,
+  UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
 
@@ -27,6 +28,8 @@ const EXPOSED = [
   'removeRepo',
   'browseForRepos',
   'refreshSessions',
+  'getUiPrefs',
+  'setUiPrefs',
   'createRow',
   'closeRow',
   'closeWorktree',
@@ -54,6 +57,8 @@ const api: CorralApi = {
   removeRepo: (root: string): Promise<RemoveRepoResult> => ipcRenderer.invoke('corral:removeRepo', root),
   browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
+  getUiPrefs: (): Promise<UiPrefs> => ipcRenderer.invoke('corral:getUiPrefs'),
+  setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   createRow: (input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> =>
     ipcRenderer.invoke('corral:createRow', input),
   closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>

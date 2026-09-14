@@ -376,6 +376,97 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: typeof response === 'string' && response.length > 0, mode, response, at: Date.now() })
         return
       }
+      /**
+       * C9′ — `getComputedStyle` 실측(색상·치수 대조). `properties` 는 읽을 CSS 속성 이름 목록.
+       * 화면 자신의 출력이 아니라 브라우저 엔진이 계산한 값이라 관문 ⑤ 오라클 문제와 무관하다 —
+       * 대조 대상(Orca 소스 리터럴)은 이 채널 밖(정적 소스 읽기)에서 따로 구한다.
+       */
+      case 'computed-style': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        const raw = parsed['properties']
+        const properties = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+        const values = await target.webContents.executeJavaScript(
+          `(() => {
+             const el = document.querySelector(${JSON.stringify(selector)})
+             if (!el) return null
+             const style = getComputedStyle(el)
+             const out = {}
+             for (const prop of ${JSON.stringify(properties)}) out[prop] = style.getPropertyValue(prop)
+             return out
+           })()`,
+          true,
+        )
+        reply({ ok: values !== null, selector, values, at: Date.now() })
+        return
+      }
+      /** 치수 실측(C9′ⓑ) — `getBoundingClientRect()`. */
+      case 'rect': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const selector = readString(parsed, 'selector')
+        if (selector === null) throw new Error('selector 필요')
+        const rect = await target.webContents.executeJavaScript(
+          `(() => {
+             const el = document.querySelector(${JSON.stringify(selector)})
+             if (!el) return null
+             const r = el.getBoundingClientRect()
+             return { width: r.width, height: r.height, top: r.top, left: r.left }
+           })()`,
+          true,
+        )
+        reply({ ok: rect !== null, selector, rect, at: Date.now() })
+        return
+      }
+      /**
+       * 원 마우스 이벤트 하나를 좌표로 보낸다 — 드래그(mousedown→여러 mousemove→mouseup) 실측용.
+       * `click` 은 한 지점을 눌렀다 떼는 것까지 한 걸음이라 리사이즈 드래그처럼 여러 중간 지점을
+       * 지나야 하는 동작엔 못 쓴다. `type`(mouseDown/mouseMove/mouseUp)·x·y·button 필요.
+       */
+      case 'raw-mouse': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const type = readString(parsed, 'type')
+        const x = readNumber(parsed, 'x')
+        const y = readNumber(parsed, 'y')
+        if (type !== 'mouseDown' && type !== 'mouseMove' && type !== 'mouseUp') throw new Error('type 은 mouseDown/mouseMove/mouseUp')
+        if (x === null || y === null) throw new Error('x·y 필요')
+        const rawButton = readString(parsed, 'button') ?? 'left'
+        const button = rawButton === 'right' ? 'right' : rawButton === 'middle' ? 'middle' : 'left'
+        if (type === 'mouseMove') target.webContents.sendInputEvent({ type, x, y })
+        else target.webContents.sendInputEvent({ type, x, y, button, clickCount: 1 })
+        reply({ ok: true, type, x, y, at: Date.now() })
+        return
+      }
+      /**
+       * 임의 JS 를 렌더러에서 평가해 결과를 돌려준다 — localStorage 실측(C2·C3 재기동 후 값
+       * 확인) 등 전용 cmd 를 매번 늘리기엔 좁은 용도에 쓴다. **판정 대상 자신의 계산값을
+       * 읽는 게 아니라 저장소 원값을 그대로 읽는 용도로만 쓴다**(관문 ⑤ — 이 채널로 상태를
+       * 조작하지 않는다, 읽기만).
+       */
+      case 'eval': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const code = readString(parsed, 'code')
+        if (code === null) throw new Error('code 필요')
+        const result: unknown = await target.webContents.executeJavaScript(code, true)
+        reply({ ok: true, result: result === undefined ? null : result, at: Date.now() })
+        return
+      }
+      /**
+       * localStorage 등 DOM 저장소를 디스크에 강제 커밋한다 (C2·C3 재기동-후-유지 실측용).
+       * Chromium 의 커밋 타이머를 기다리지 않고 `session.flushStorageData()` 로 즉시 내린다 —
+       * 안 그러면 테스트 하네스가 SIGTERM 으로 죽일 때 아직 안 커밋된 값이 사라질 수 있다.
+       */
+      case 'flush-storage': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        target.webContents.session.flushStorageData()
+        reply({ ok: true, at: Date.now() })
+        return
+      }
       default:
         reply({ ok: false, error: `모르는 cmd: ${cmd ?? '(없음)'}` })
         return

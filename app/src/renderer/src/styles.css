@@ -1,235 +1,350 @@
-:root {
-  color-scheme: dark;
-  --bg: #12141a;
-  --panel: #191c24;
-  --line: #2a2f3a;
-  --text: #dde3ee;
-  --dim: #8a93a5;
-  --accent: #6ea8fe;
-  --ok: #59c98a;
-  --warn: #e0a458;
-  --danger: #e0685f;
-}
+/* LIFE-357 (Orca 직접 포팅) — design-tokens.css 변수만 쓴다. 리터럴 재입력 금지(승계 요구사항). */
 
 * { box-sizing: border-box; }
 
-body {
+html, body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0;
+  color-scheme: dark;
+  background: var(--bg-surface); /* 캔버스 톤(가장 어두움, Orca --background 대응) — 사이드바/메인이 항상 덮는다 */
 }
 
-/*
-  높이를 뷰포트에 **고정**한다 (수정 1회차 G-M1 — grok M1). `min-height:100vh` 이면 긴 레포
-  목록이 .app 를 뷰포트보다 높게 밀어, .content(flex:1)·.term-host 가 창 세로에 안 묶인다 →
-  창을 세로로 줄여도 xterm rows 가 안 바뀌어 S5 가 가로 변화만 실험했다. `height:100vh` +
-  `min-height:0` 으로 flex 사슬(content→term-panel→term-host)이 창 높이에 묶이고, .list 는
-  overflow-y:auto 로 스크롤한다 — 이제 창 세로가 rows 를 실제로 바꾼다.
-*/
-.app { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
-.boot { padding: 24px; color: var(--dim); }
-
-.header {
-  display: flex; gap: 12px; align-items: center;
-  padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+body {
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
 }
-.brand { font-weight: 700; letter-spacing: 0.08em; }
-.session { color: var(--accent); }
-.phase { padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; color: var(--dim); }
-.phase-live { color: var(--ok); border-color: var(--ok); }
-.phase-failed, .phase-reconnecting { color: var(--warn); border-color: var(--warn); }
-.meta { color: var(--dim); }
-.warn { color: var(--warn); }
 
-.add { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
 
-/* 레포 추가 모달 — 앱 안에서 뜨는 창. 네이티브 폴더 선택기는 여기서 한 걸음 더 들어간다. */
-.modal-scrim {
-  position: fixed; inset: 0; z-index: 10;
+button { font: inherit; }
+
+.boot { padding: 24px; color: var(--fg-muted); }
+
+/* --- 창 골격: [사이드바 | 리사이저 | 메인] + 상태바 (design-handoff.md §1-2) ------------------- */
+
+.app { display: flex; flex-direction: column; height: 100vh; min-height: 0; background: var(--bg-surface); }
+.app-body { flex: 1; min-height: 0; display: flex; }
+
+.sidebar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-window);
+  border-right: 1px solid var(--line-weak);
+  overflow: hidden;
+}
+.sidebar-resizer {
+  width: var(--resizer-w);
+  flex: 0 0 auto;
+  background: var(--bg-surface);
+  cursor: col-resize;
+}
+.sidebar-resizer:hover { background: var(--accent); }
+
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
+
+/* --- SidebarBrandBar (§2) ------------------------------------------------------------------- */
+
+.brandbar { display: flex; align-items: center; gap: 8px; height: var(--h-brandbar); padding: 0 10px 0 12px; flex: 0 0 auto; }
+.brandbar-mark {
+  width: 15px; height: 15px; border-radius: 4px; background: var(--accent);
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  color: var(--fg-on-accent); font-family: var(--font-mono); font-size: 9px; font-weight: 700;
 }
-.modal {
-  width: 420px; max-width: calc(100vw - 32px);
-  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+.brandbar-name { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
+.brandbar-hint { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); letter-spacing: .04em; }
+
+/* --- SidebarSearch (§2 — 시각 스펙만) ------------------------------------------------------- */
+
+.sidebar-search {
+  display: flex; align-items: center; gap: 7px;
+  height: 26px; margin: 0 10px 8px; padding: 0 8px;
+  background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  flex: 0 0 auto;
 }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.modal-title { margin: 0; font-size: 14px; }
-.modal-close { border: none; background: none; color: var(--dim); font-size: 14px; cursor: pointer; padding: 2px 6px; }
-.modal-close:hover { color: var(--text); }
-.modal-item {
-  display: flex; flex-direction: column; gap: 3px; width: 100%;
-  padding: 12px 14px; border: none; background: none; color: var(--text);
-  text-align: left; cursor: pointer; font: inherit;
+.sidebar-search-glyph { color: var(--fg-faint); font-size: 11px; }
+.sidebar-search-input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--fg); font-size: 11.5px; }
+.sidebar-search-input::placeholder { color: var(--fg-faint); }
+
+/* --- ReposSectionHeader (§2) ----------------------------------------------------------------- */
+
+.repos-header { display: flex; align-items: center; gap: 10px; padding: 2px 12px 6px; flex: 0 0 auto; }
+.repos-header-label { font-size: 11px; font-weight: 600; color: var(--fg-muted); letter-spacing: .06em; text-transform: uppercase; }
+.repos-header-spacer { flex: 1; }
+.repos-header-glyph {
+  background: none; border: none; padding: 0; margin: 0;
+  font-size: 13px; color: var(--fg-muted); cursor: default;
 }
-.modal-item:hover:not(:disabled) { background: rgba(110, 168, 254, 0.1); }
-.modal-item:disabled { color: var(--dim); cursor: default; }
-.modal-item-name { font-weight: 600; }
-.modal-item-hint { color: var(--dim); font-size: 11px; }
-.modal-note { margin: 0; padding: 0 14px 12px; color: var(--warn); font-size: 12px; }
-.path {
-  flex: 1; max-width: 560px; padding: 6px 10px;
-  background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
-  font: inherit;
+.repos-header-add { font-family: var(--font-mono); font-size: 14px; cursor: pointer; }
+.repos-header-add:hover, .repos-header-glyph:hover { color: var(--fg); }
+
+/* --- 레포 목록 / RepoRow (§2) ------------------------------------------------------------------ */
+
+.repo-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 8px; }
+.sidebar-empty { padding: 12px; color: var(--fg-muted); font-size: 12px; }
+
+.repo-row-group { position: relative; padding-bottom: 6px; }
+.repo-row {
+  display: flex; align-items: center; gap: 8px;
+  height: var(--h-repo-row); padding: 0 12px; cursor: pointer;
+  background: transparent; transition: background 80ms linear;
 }
-.primary {
-  padding: 6px 14px; border: 1px solid var(--accent); border-radius: 4px;
-  background: transparent; color: var(--accent); font: inherit; cursor: pointer;
+/* design-handoff.md §2 원문은 --bg-surface 를 썼지만, 그 값은 Orca 대조 후 사이드바보다 어두운
+   터미널 톤으로 바뀌었다(design-tokens.css 상단 주석) — hover 는 "들어올려짐"이어야 하므로
+   사이드바 안에서 실제로 더 밝은 --bg-row-hover 로 대체한다(세션 행 hover 와 같은 톤 — 일관). */
+.repo-row.is-active { background: var(--bg-row-hover); }
+.repo-row-avatar {
+  width: 13px; height: 13px; border-radius: 3px; flex: 0 0 auto;
+  background: var(--line-strong); display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 8px; color: var(--fg-muted);
 }
-.primary:hover { background: rgba(110, 168, 254, 0.12); }
-.notice { color: var(--dim); }
+.repo-row-name { min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.repo-row-spacer { flex: 1; }
+.repo-row-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.repo-row-error { margin: 0; padding: 2px 12px 4px 33px; color: var(--st-error); font-size: 11px; }
 
-.list { padding: 12px 14px 40px; }
-.empty { color: var(--dim); }
-.hint { color: var(--dim); margin: 2px 0 2px 16px; }
-
-.repo { margin-bottom: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
-.repo-name { display: flex; gap: 10px; align-items: center; margin: 0; padding: 8px 12px; font-size: 14px; border-bottom: 1px solid var(--line); }
-.path-hint { color: var(--dim); font-weight: 400; font-size: 11px; }
-
-/*
-  제거 버튼. **쉼 상태에서도 보인다** (흐리게) — 완전히 숨기면 사람 눈에 없는 버튼을
-  계측만 누를 수 있게 되고, 그건 좌표 클릭 규칙이 막으려는 모양이다. hover 에서 또렷해진다.
-*/
-.row-remove {
-  margin-left: auto; padding: 2px 9px; border: 1px solid var(--line); border-radius: 4px;
-  background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer;
-  opacity: 0.45; transition: opacity 80ms linear;
+.repo-row-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity 80ms linear; }
+.repo-row.is-active .repo-row-actions { opacity: 1; }
+.repo-row-action-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: var(--h-action-btn); height: var(--h-action-btn); border-radius: 4px;
+  background: none; border: none; color: var(--fg-muted);
+  font-family: var(--font-mono); font-size: 14px; cursor: pointer;
 }
-.repo:hover .row-remove, .row-remove:hover, .row-remove:focus-visible { opacity: 1; }
-.row-remove:hover { color: var(--danger); border-color: var(--danger); }
+.repo-row-action-btn:hover { background: var(--line); color: var(--fg); }
 
-.confirm-body { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 12px 14px 6px; }
-/* 긴 경로가 창 밖으로 삐져나가지 않게 — 레포 루트는 길다. */
-.confirm-body .path-hint { overflow-wrap: anywhere; }
-.confirm-name { font-weight: 600; }
-.confirm-note { margin: 0; padding: 0 14px 12px; color: var(--dim); font-size: 12px; }
-.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 0 14px 12px; }
-.ghost, .danger {
-  padding: 5px 14px; border: 1px solid var(--line); border-radius: 4px;
-  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+/* 드롭다운 메뉴 — RepoRowMenu · WorktreeBlock 의 에이전트 메뉴가 같은 시각 어휘를 쓴다. */
+.repo-row-menu {
+  position: absolute; top: 26px; right: 12px; z-index: 30;
+  width: var(--w-repo-menu);
+  background: var(--bg-selected); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  padding: 4px; box-shadow: var(--shadow-menu);
 }
-.ghost:hover { border-color: var(--dim); }
-.danger { color: var(--danger); border-color: var(--danger); }
-.danger:hover { background: rgba(224, 104, 95, 0.12); }
-
-.worktree { padding: 6px 12px; border-bottom: 1px solid var(--line); }
-.worktree:last-child { border-bottom: none; }
-.worktree-head { display: flex; gap: 8px; align-items: center; }
-.is-closed .branch { color: var(--dim); }
-.branch { font-weight: 600; }
-
-.chip { padding: 0 7px; border: 1px solid var(--line); border-radius: 9px; font-size: 11px; color: var(--dim); white-space: nowrap; }
-.chip-open { color: var(--ok); border-color: var(--ok); }
-.chip-closed { color: var(--dim); }
-.chip-linked { color: var(--accent); border-color: var(--accent); }
-.chip-working { color: var(--accent); border-color: var(--accent); }
-.chip-idle { color: var(--ok); border-color: var(--ok); }
-.chip-blocked { color: var(--warn); border-color: var(--warn); }
-.chip-done { color: var(--ok); }
-.chip-agent { color: var(--text); }
-
-.workspace { margin: 6px 0 6px 16px; }
-.workspace-head { display: flex; gap: 8px; align-items: center; }
-.ws-label { color: var(--text); }
-.tab { margin: 4px 0 4px 16px; }
-.tab-head { display: flex; gap: 8px; align-items: center; color: var(--dim); }
-.tab-label { color: var(--text); }
-.pane { display: flex; gap: 8px; align-items: center; margin: 2px 0 2px 16px; }
-.pane-title { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.footer { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
-
-/* --- 라이프사이클 (R3) -------------------------------------------------------- */
-
-/* 행 동작 버튼 (열기·새 행·+worktree). 제거 버튼과 달리 늘 또렷하다 — 만드는 문이라 눈에 띄어야 한다. */
-.row-action {
-  padding: 2px 9px; border: 1px solid var(--line); border-radius: 4px;
-  background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer;
+.worktree-menu { top: 24px; right: 8px; }
+.repo-row-menu-item {
+  display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px;
+  border-radius: 4px; font-size: 11.5px; color: var(--fg-menu); cursor: pointer;
 }
-.row-action:hover { color: var(--accent); border-color: var(--accent); }
-/* + worktree 는 오른쪽 끝, 제거 왼쪽에 붙는다. */
-.repo-name .row-action { margin-left: auto; }
-.repo-name .row-remove { margin-left: 0; }
+.repo-row-menu-item:hover { background: var(--bg-menu-hover); color: var(--fg); }
+.repo-row-menu-glyph { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.repo-row-menu-sep { height: 1px; margin: 4px 2px; background: var(--line-strong); }
+.repo-row-menu-danger { color: var(--st-error); }
+.repo-row-menu-danger .repo-row-menu-glyph { color: inherit; }
+.repo-row-menu-danger:hover { background: var(--bg-danger-hover); }
 
-.new-row { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; }
-.new-row-label { color: var(--dim); font-size: 11px; }
-/* + 빈 탭 (G1) — 기본 생성 문이라 또렷하게, 에이전트 버튼보다 앞선다. */
-.new-row .new-tab { color: var(--accent); border-color: var(--accent); font-weight: 600; }
-.new-row .new-tab:hover { background: rgba(110, 168, 254, 0.12); }
+/* --- WorktreeBlock (§2) ------------------------------------------------------------------------ */
 
-/* worktree·tab 줄의 닫기/열기 버튼은 인라인에 둔다 (레포 제거처럼 오른쪽 끝으로 밀지 않는다). */
-.worktree-head .row-remove, .tab-head .row-remove { margin-left: 0; }
-
-/* 종료 확인 모달 안의 포그라운드 목록. */
-.confirm-fg { margin: 0; padding: 0 14px 8px 30px; }
-.confirm-fg li { overflow-wrap: anywhere; }
-
-/* 라이프사이클 알림 — 화면 상단 띠. 거절은 눈에 띄게(경고색), 실패는 danger. */
-.lifecycle-notice {
-  display: flex; gap: 10px; align-items: center; justify-content: space-between;
-  margin: 0 14px 8px; padding: 8px 12px; border-radius: 6px;
-  border: 1px solid var(--warn); background: rgba(214, 182, 86, 0.1); font-size: 12px;
+.worktree-block {
+  position: relative;
+  margin: 2px 8px; padding: 5px 8px 4px; border-radius: var(--radius-block);
+  cursor: pointer; background: transparent; border: 1px solid transparent;
 }
-.lifecycle-notice.error { border-color: var(--danger); background: rgba(224, 104, 95, 0.1); }
-/* 안내(info) — 부모 함께 열림 같은 중립 알림 (G4). 거절/실패와 색으로 구분한다. */
-.lifecycle-notice.info { border-color: var(--accent); background: rgba(110, 168, 254, 0.1); }
-.lifecycle-notice-text { color: var(--text); overflow-wrap: anywhere; }
-.lifecycle-notice-close { border: none; background: none; color: var(--dim); font-size: 13px; cursor: pointer; padding: 2px 6px; }
-.lifecycle-notice-close:hover { color: var(--text); }
+.worktree-block.is-selected { background: var(--bg-selected); border-color: var(--line-strong); }
+.worktree-block-line1 { display: flex; align-items: center; gap: 7px; min-height: 19px; }
+.worktree-block-line2 { display: flex; align-items: center; gap: 8px; padding: 1px 0 2px 13px; }
+.worktree-block-spacer { flex: 1; }
+.worktree-block-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity 80ms linear; }
+.worktree-block-actions.is-active { opacity: 1; }
 
-/* worktree 만들기 모달의 텍스트 입력. */
-.field { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px 0; }
-.field-label { color: var(--dim); font-size: 11px; }
-.field-input {
-  padding: 6px 10px; background: var(--bg); color: var(--text);
-  border: 1px solid var(--line); border-radius: 4px; font: inherit; font-size: 12px;
+.worktree-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
+.worktree-dot.tone-dirty { background: var(--st-dirty); }
+.worktree-dot.tone-ahead { background: var(--st-ahead); }
+.worktree-dot.tone-behind { background: var(--st-behind); }
+.worktree-dot.tone-clean { background: var(--dot-neutral); }
+.worktree-dot.tone-accent { background: var(--accent); }
+
+.worktree-name {
+  min-width: 0; font-size: 12px; font-weight: 600; color: #c4cbc9;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.field-input:focus { outline: none; border-color: var(--accent); }
-
-/*
-  G5 (게이트 ① 추가 — 레이아웃 결함): 긴 레포/worktree 경로(와 이름·브랜치)가 행을 옆으로 밀어
-  조작 버튼(새 worktree·제거·열기·닫기)이 사이드바 밖으로 잘리던 문제. 텍스트(이름·브랜치·경로)는
-  flex 안에서 min-width:0 + 말줄임으로 줄어들고(전체 경로는 title 툴팁), 칩·버튼은 flex-shrink:0
-  으로 절대 줄지 않아 항상 보인다. 경로가 남는 폭을 먹어(flex-grow:1) 버튼을 오른쪽 끝으로 민다.
-  data-*·문구 불변 — 레이아웃만.
-*/
-.repo-name span[data-repo-name],
-.repo-name .path-hint,
-.worktree-head .branch,
-.worktree-head .path-hint {
-  min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.worktree-block.is-selected .worktree-name { color: var(--fg); }
+.worktree-chip { flex: 0 0 auto; font-size: 9.5px; color: var(--fg-muted); background: var(--bg-chip); border-radius: var(--radius-badge); padding: 1px 5px; }
+.worktree-mark { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-badge); }
+.worktree-mark.tone-dirty { color: var(--st-dirty); }
+.worktree-mark.tone-ahead { color: var(--st-ahead); }
+.worktree-mark.tone-behind { color: var(--st-behind); }
+.worktree-mark.tone-clean { color: var(--fg-dim); }
+.worktree-sub {
+  min-width: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.repo-name .path-hint,
-.worktree-head .path-hint { flex: 1 1 auto; }
-.repo-name .chip, .repo-name .row-action, .repo-name .row-remove,
-.worktree-head .chip, .worktree-head .row-action, .worktree-head .row-remove {
-  flex-shrink: 0;
+.worktree-empty-hint { margin: 0; padding: 2px 0 2px 13px; color: var(--fg-dim); font-size: 10.5px; }
+
+/* --- AgentGroupHeader (§2, 세션 3개 이상) ------------------------------------------------------ */
+
+.agent-group-header { display: flex; align-items: center; gap: 7px; height: var(--h-group-row); padding-left: var(--indent-session); cursor: pointer; }
+.agent-group-label { font-size: 12px; color: var(--fg-muted); }
+.agent-group-spacer { flex: 1; }
+.agent-group-caret { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+
+/* --- SessionRow (§2) --------------------------------------------------------------------------- */
+
+.session-row {
+  display: flex; align-items: center; gap: 6px;
+  height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
+}
+.session-row:hover, .session-row.is-active { background: var(--bg-row-hover); }
+.session-row-glyph { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-badge); }
+.session-row-glyph.tone-accent { color: var(--accent); }
+.session-row-glyph.tone-dirty { color: var(--st-dirty); }
+.session-row-glyph.tone-behind { color: var(--st-behind); }
+.session-row-glyph.tone-error { color: var(--st-error); }
+.session-row-glyph.tone-faint { color: var(--fg-faint); }
+.session-row-title {
+  min-width: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-row.is-active .session-row-title { color: var(--fg); }
+.session-row-spacer { flex: 1; }
+.session-row-time { flex: 0 0 auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-muted); padding-right: 8px; }
+.session-row-close {
+  flex: 0 0 auto; margin-right: 6px; width: 16px; height: 16px; border-radius: 3px;
+  background: none; border: none; color: var(--fg-muted); font-size: 13px; line-height: 1; cursor: pointer;
+  opacity: 0; /* 항상 DOM 에 있다 — hover 시에만 보인다(WorktreeBlock 액션과 같은 결) */
+}
+.session-row-close.is-active { opacity: 1; }
+.session-row-close:hover { background: var(--bg-danger-hover); color: var(--st-error-hi); }
+
+/* --- SidebarFooterToolbar (§2) ------------------------------------------------------------------ */
+
+.sidebar-footer {
+  flex: 0 0 auto; border-top: 1px solid var(--line-weak);
+  display: flex; align-items: center; gap: 12px; height: var(--h-footer-toolbar); padding: 0 12px;
+}
+.sidebar-footer-glyph { background: none; border: none; padding: 0; margin: 0; font-size: 14px; color: var(--fg-muted); cursor: default; }
+.sidebar-footer-btn { cursor: pointer; }
+.sidebar-footer-btn:hover, .sidebar-footer-glyph:hover { color: var(--fg); }
+.sidebar-footer-spacer { flex: 1; }
+
+/* --- MainTabBar (§2, sessionCount>=2 일 때만 DOM 에 존재 — C5) ---------------------------------- */
+
+.main-tabbar {
+  flex: 0 0 auto; display: flex; align-items: stretch; height: var(--h-tabbar);
+  background: var(--bg-window); border-bottom: 1px solid var(--line); padding: 0 6px; overflow: hidden;
+}
+.main-tab {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 1 auto; min-width: var(--tab-min-w); max-width: var(--tab-max-w); overflow: hidden;
+  padding: 0 11px; margin: 4px 2px 0; border-radius: 5px 5px 0 0; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-bottom: none; color: var(--fg-dim);
+}
+.main-tab.is-active { background: var(--bg-surface); border-color: var(--line); color: var(--fg); }
+.main-tab-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
+.main-tab-dot.tone-accent { background: var(--accent); }
+.main-tab-dot.tone-neutral { background: var(--dot-neutral); }
+.main-tab-label { min-width: 0; font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.main-tab-add {
+  display: flex; align-items: center; justify-content: center; width: 24px; flex: 0 0 auto;
+  margin: 4px 4px 0; background: none; border: none; color: var(--fg-dim);
+  font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+}
+.main-tab-add:hover { color: var(--fg); }
+.main-tabbar-spacer { flex: 1; }
+.main-tabbar-active-worktree {
+  display: flex; align-items: center; min-width: 0; padding-right: 8px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--fg-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* --- 터미널 패널 (R2) --------------------------------------------------------- */
+/* --- InlineNotice (§2) --------------------------------------------------------------------------- */
 
-/* 목록 | 터미널 2단. 터미널 쪽이 남는 폭을 다 가진다. 사이드바는 세로로만 스크롤(G5: 가로 제거). */
-.content { display: flex; flex: 1; min-height: 0; }
-.content .list { width: 420px; min-width: 320px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--line); }
-
-.term-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
-.term-head {
-  display: flex; gap: 8px; align-items: center;
-  padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel);
+.inline-notice {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 9px; height: 28px; padding: 0 12px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--line);
 }
-.term-phase-streaming { color: var(--ok); border-color: var(--ok); }
-.term-phase-connecting { color: var(--warn); border-color: var(--warn); }
-.term-phase-failed { color: var(--danger); border-color: var(--danger); }
+.inline-notice.tone-rejected, .inline-notice.tone-error {
+  background: var(--bg-notice); border-bottom: 1px solid var(--line-notice);
+}
+.inline-notice-dot { width: 5px; height: 5px; border-radius: 5px; flex: 0 0 auto; background: var(--accent); }
+.inline-notice.tone-rejected .inline-notice-dot { background: var(--st-dirty); }
+.inline-notice.tone-error .inline-notice-dot { background: var(--st-error); }
+.inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere; }
+.inline-notice.tone-rejected .inline-notice-text, .inline-notice.tone-error .inline-notice-text { color: var(--fg-notice); }
+.inline-notice-spacer { flex: 1; }
+.inline-notice-dismiss {
+  flex: 0 0 auto; background: none; border: none; color: var(--fg-dim);
+  font-family: var(--font-mono); font-size: 10px; cursor: pointer;
+}
+.inline-notice-dismiss:hover { color: var(--fg); }
+
+/* --- TerminalChrome (§2 — xterm 렌더 영역 자체는 미변경, 감싸는 크롬만) --------------------------- */
+
+.terminal-chrome { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-top: 1px solid var(--line-weak); }
+.terminal-chrome-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal-chrome-hint {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px; height: 24px; padding: 0 16px;
+  color: var(--fg-faint); font-family: var(--font-mono); font-size: var(--fs-meta);
+}
+.terminal-chrome-hint-left, .terminal-chrome-hint-right { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.terminal-chrome-hint-spacer { flex: 1; }
+
 .term-empty { flex: 1; }
-
-/* xterm 이 이 상자를 꽉 채운다. fit 애드온이 이 크기를 잰다. */
-.term-host { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
+.term-host { flex: 1; min-height: 0; padding: 12px 16px 4px; overflow: hidden; }
 .term-host .xterm { height: 100%; }
 
-.pane { cursor: pointer; }
-.pane:hover { background: rgba(110, 168, 254, 0.08); }
-.pane.is-selected { background: rgba(110, 168, 254, 0.16); outline: 1px solid var(--accent); }
+/* --- StatusBar (§2) ------------------------------------------------------------------------------ */
+
+.statusbar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 14px; height: var(--h-statusbar); padding: 0 12px;
+  background: var(--bg-statusbar); border-top: 1px solid var(--line-weak);
+  font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-dim);
+}
+.statusbar-repo { color: var(--fg-muted); }
+.statusbar-badge.tone-dirty { color: var(--st-dirty); }
+.statusbar-badge.tone-ahead { color: var(--st-ahead); }
+.statusbar-badge.tone-behind { color: var(--st-behind); }
+.statusbar-spacer { flex: 1; }
+
+/* --- 모달 공통 (AddRepoModal · CreateWorktreeModal · RemoveRepoConfirm · ConfirmClose) ------------ */
+
+.modal-scrim {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--scrim);
+}
+.modal { background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-modal); box-shadow: var(--shadow-modal); }
+.modal-create { width: var(--w-modal-create); }
+.modal-confirm { width: var(--w-modal-confirm); }
+
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+.modal-head-plain { border-bottom: none; }
+.modal-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
+.modal-subtitle { margin: 0; padding-top: 3px; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); }
+.modal-close { background: none; border: none; color: var(--fg-muted); font-size: 14px; cursor: pointer; padding: 2px 6px; }
+.modal-close:hover { color: var(--fg); }
+
+.modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.modal-item { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 12px 14px; border: none; background: none; color: var(--fg); text-align: left; cursor: pointer; font: inherit; }
+.modal-item:hover:not(:disabled) { background: var(--bg-row-hover); }
+.modal-item:disabled { color: var(--fg-dim); cursor: default; }
+.modal-item-name { font-weight: 600; }
+.modal-item-hint { color: var(--fg-dim); font-size: 11px; }
+.modal-note { margin: 0; padding: 0 16px 12px; color: var(--st-dirty); font-size: 12px; }
+.modal-desc { margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--fg-muted); }
+.modal-code-block { margin: 0; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-menu); background: var(--bg-surface); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 9px; overflow-wrap: anywhere; }
+.modal-meta-line { margin: 0; display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 10.5px; color: var(--st-dirty); }
+.modal-list { margin: 0; padding: 0 0 0 18px; }
+.modal-list li { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; color: var(--fg-menu); }
+
+.dot { width: 5px; height: 5px; border-radius: 5px; flex: 0 0 auto; }
+.dot.tone-dirty { background: var(--st-dirty); }
+
+.confirm-name { font-weight: 600; color: var(--fg); }
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field-label { font-size: 11px; color: var(--fg-muted); }
+.field-input { height: 28px; padding: 0 9px; background: var(--bg-input); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11.5px; }
+.field-input:focus { outline: none; border-color: var(--accent); }
+.field-hint { font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); }
+
+.modal-footer { display: flex; align-items: center; gap: 8px; padding: 0 16px 14px; justify-content: flex-end; }
+.btn-ghost { height: 28px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
+.btn-ghost:hover { background: var(--bg-selected); color: var(--fg); }
+.btn-accent { height: 28px; padding: 0 14px; border-radius: var(--radius-sm); background: var(--accent); color: var(--fg-on-accent); font-size: 11.5px; font-weight: 600; border: none; cursor: pointer; }
+.btn-accent:hover { background: var(--accent-hi); }
+.btn-accent:disabled { opacity: .6; cursor: default; }
+.btn-danger { height: 28px; padding: 0 14px; border-radius: var(--radius-sm); background: var(--st-error); color: var(--fg-on-danger); font-size: 11.5px; font-weight: 600; border: none; cursor: pointer; }
+.btn-danger:hover { background: var(--st-error-hi); }

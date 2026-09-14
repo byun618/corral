@@ -17,8 +17,9 @@
 // 그래서 비싼 쪽만 캐시하고(`buildSkeleton`), 행은 **내보낼 때마다 새로 붙인다**(`joinTree`).
 
 import path from 'node:path'
-import type { RepoRow, WorkspaceRow } from '../shared/types.js'
+import type { GitStatusSummary, RepoRow, WorkspaceRow } from '../shared/types.js'
 import { readOpenWorkspaces } from './adapter/index.js'
+import { getGitStatus } from './git-status.js'
 import { listGitWorktrees } from './git-worktrees.js'
 import { log } from './log.js'
 
@@ -27,7 +28,14 @@ export type RepoSkeleton = {
   root: string
   name: string
   error: string | null
-  worktrees: Array<{ path: string; branch: string | null; isLinked: boolean; openWorkspaceId: string | null }>
+  worktrees: Array<{
+    path: string
+    branch: string | null
+    isLinked: boolean
+    openWorkspaceId: string | null
+    /** git-status.ts 의 TTL 캐시를 지난 값 — buildSkeleton 이 매번 다시 부르지만 캐시가 막는다. */
+    gitStatus: GitStatusSummary
+  }>
 }
 
 export type Tree = { repos: RepoRow[] }
@@ -45,16 +53,20 @@ export async function buildSkeleton(input: {
         ? { byPath: new Map<string, string>(), repoName: null, error: null }
         : await readOpenWorkspaces(input.socketPath, root)
     const errors = [git.error, open.error].filter((item) => item !== null)
-    skeletons.push({
-      root,
-      name: open.repoName ?? path.basename(root),
-      error: errors.length === 0 ? null : errors.join(' · '),
-      worktrees: git.worktrees.map((worktree) => ({
+    const worktrees = await Promise.all(
+      git.worktrees.map(async (worktree) => ({
         path: worktree.path,
         branch: worktree.branch,
         isLinked: worktree.isLinked,
         openWorkspaceId: open.byPath.get(worktree.path) ?? null,
+        gitStatus: await getGitStatus(worktree.path),
       })),
+    )
+    skeletons.push({
+      root,
+      name: open.repoName ?? path.basename(root),
+      error: errors.length === 0 ? null : errors.join(' · '),
+      worktrees,
     })
   }
   skeletons.sort((a, b) => a.name.localeCompare(b.name) || a.root.localeCompare(b.root))
@@ -107,6 +119,7 @@ export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly
         // 로(388·432줄), 워크스페이스 행을 workspace 로(450줄) 센다. 둘 다 걷어야 거짓말이 안 남는다.
         openWorkspaceId: wins ? id : null,
         workspace,
+        gitStatus: worktree.gitStatus,
       }
     }),
   }))

@@ -100,6 +100,24 @@ export type WorkspaceRow = {
   tabs: TabRow[]
 }
 
+/**
+ * worktree 하나의 git 상태 요약 (LIFE-357 C4). `git status --porcelain=v2 --branch` 파싱 결과다 —
+ * herdr 를 모른다(경계 규칙, 이 파일 맨 위 주석). ahead·behind 는 업스트림이 없으면 null.
+ */
+export type GitStatusSummary = {
+  branch: string | null
+  upstream: string | null
+  ahead: number | null
+  behind: number | null
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+  dirty: boolean
+  /** git 실행 자체가 실패했을 때만 채워진다 — worktree 줄은 그래도 보인다(레포 error 필드와 같은 결). */
+  error: string | null
+}
+
 /** 한 worktree(체크아웃 한 벌). 구조는 git, 열림상태는 herdr 에서 온다 (기준 N4ⓒ). */
 export type WorktreeRow = {
   path: string
@@ -110,6 +128,8 @@ export type WorktreeRow = {
   openWorkspaceId: string | null
   /** 열려 있으면 그 workspace 의 행. 닫혀 있으면 null — 그래도 worktree 줄은 보인다. */
   workspace: WorkspaceRow | null
+  /** git 상태 배지 (LIFE-357 C4) — TTL 캐시로 계산한다 (main/git-status.ts). */
+  gitStatus: GitStatusSummary
 }
 
 /** 레지스트리에 등록된 레포 하나. **목록의 루트는 이것이다** (기준 N4). */
@@ -226,6 +246,20 @@ export type BrowseReposResult = {
   message: string | null
 }
 
+// --- 화면 UI 상태 영속 (LIFE-357 C2·C3) --------------------------------------
+
+/**
+ * 사이드바 폭·접힘 상태 (main/ui-prefs.ts 가 파일로 영속). `localStorage` 가 아니라 IPC 로
+ * main 에 저장한다 — 프로덕션 빌드(file:// 렌더러)에서 LocalStorage 커밋이 디스크에 반영되지
+ * 않는 현상을 실측했다(ui-prefs.ts 주석 참고). `collapsedRepos`는 레포 루트 목록,
+ * `collapsedGroups`는 AgentGroupHeader 가 접힌 worktree 경로 목록 — 접힌 것만 담는다(기본은 펼침).
+ */
+export type UiPrefs = {
+  sidebarWidth: number | null
+  collapsedRepos: string[]
+  collapsedGroups: string[]
+}
+
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 
 /** 스트림 링크가 지금 어느 걸음에 있나. link 의 LinkPhase 와 별개다 — 소켓이 다르다. */
@@ -290,6 +324,9 @@ export type CorralApi = {
   removeRepo: (root: string) => Promise<RemoveRepoResult>
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
+  // --- 화면 UI 상태 영속 (C2·C3) ---
+  getUiPrefs: () => Promise<UiPrefs>
+  setUiPrefs: (patch: Partial<UiPrefs>) => void
   // --- 라이프사이클 (R3) ---
   /** 열린 workspace 에 새 행을 만든다 (tab.create → agent.start 재시도). */
   createRow: (input: { workspaceId: string; kind: AgentKind }) => Promise<CreateRowResult>

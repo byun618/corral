@@ -18,6 +18,7 @@ import type {
   CreateRowResult,
   RemoveRepoResult,
   TerminalScroll,
+  UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
 import {
@@ -42,6 +43,7 @@ import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
 import { buildSkeleton, joinTree, type RepoSkeleton } from './tree.js'
+import { UiPrefsStore } from './ui-prefs.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -56,6 +58,7 @@ let sessionsError: string | null = null
 let selectedSession: string | null = null
 let sessionNote: string | null = null
 let registry: RepoRegistry | null = null
+let uiPrefs: UiPrefsStore | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
@@ -820,6 +823,8 @@ app.whenReady().then(() => {
   const file = openLog(app.getPath('userData'))
   registry = new RepoRegistry(app.getPath('userData'))
   registry.load()
+  uiPrefs = new UiPrefsStore(app.getPath('userData'))
+  uiPrefs.load()
   log('app.ready', {
     logFile: file,
     electron: process.versions.electron,
@@ -852,6 +857,12 @@ app.whenReady().then(() => {
       : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+  ipcMain.handle('corral:getUiPrefs', (event) =>
+    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [] }) : null,
+  )
+  ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
+    if (fromOurWindow(event)) uiPrefs?.update(patch)
+  })
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

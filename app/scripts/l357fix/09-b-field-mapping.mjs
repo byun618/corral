@@ -158,6 +158,22 @@ async function main() {
     sessionTitles.noBareNumberTitles &&
     sessionTitles.elapsedTimeRemoved
 
+  // ---------- 3등급이 전부 나오는 상태를 만든다 ----------
+  // 1회차 fixture 는 `[0, 2, 2]` 만 나와 **중간 등급(열림·비선택)이 한 번도 안 나왔다** —
+  // 그러면 단조 비감소가 3등급 규칙과 2등급 규칙을 구분하지 못한다. linked worktree 를 하나
+  // 더 열고 다시 main 을 선택해 `[0, 1, 2]` 를 만든 뒤 잰다.
+  const linkedWithSlash = worktrees.find((w) => w.branch === 'issue/LIFE-89')
+  await app.click(`[data-worktree="${linkedWithSlash.path}"]`)
+  await until(
+    async () => (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === linkedWithSlash.path)?.workspace !== null,
+    { timeoutMs: 15000, what: 'second worktree opened (rank-1 fixture)' },
+  )
+  await app.click(`[data-worktree="${repo.root}"]`) // 다시 main 선택 → main=0, issue/LIFE-89=1, 나머지=2
+  await until(async () => (await app.query(`[data-worktree="${repo.root}"].is-selected`)).found.length > 0, {
+    timeoutMs: 6000,
+    what: 'main re-selected',
+  })
+
   // ---------- worktree 정렬 — 선택됨 → 열림 → 그 외 ----------
   const renderedOrder = (await app.send({
     cmd: 'eval',
@@ -171,13 +187,38 @@ async function main() {
     return w.openWorkspaceId !== null ? 1 : 2
   }
   const ranks = renderedOrder.map((r) => ({ path: r.path, selected: r.selected, rank: rank(r.path) }))
+  const tiersSeen = [...new Set(ranks.map((r) => r.rank))].sort()
   const sortRule = {
     renderedOrder: ranks,
     nonDecreasing: ranks.every((r, i) => i === 0 || r.rank >= ranks[i - 1].rank),
+    tiersSeen,
+    // 3등급이 전부 관측돼야 "단조 비감소"가 3등급 규칙의 증거가 된다 — 중간 등급이 없으면
+    // 2등급 규칙과 구분이 안 된다.
+    allThreeTiersExercised: tiersSeen.length === 3 && tiersSeen.every((t, i) => t === i),
     pass: null,
-    note: '선택됨(0) → 열린 workspace 있음(1) → 그 외(2). 동률은 안정 정렬로 기존 순서 유지 — 렌더된 순서의 등급이 단조 비감소인지로 잰다.',
+    note: '선택됨(0) → 열린 workspace 있음(1) → 그 외(2). 동률은 안정 정렬로 기존 순서 유지 — 렌더된 순서의 등급이 단조 비감소인지로 잰다. 세 등급이 전부 나오는 상태를 일부러 만들어서 잰다.',
   }
-  sortRule.pass = sortRule.nonDecreasing
+  sortRule.pass = sortRule.nonDecreasing && sortRule.allThreeTiersExercised
+
+  // ---------- 상태바 `{n} agents` — 지시서 밖 판단 1건의 렌더 증거 ----------
+  const statusBarText = (await app.send({
+    cmd: 'eval',
+    code: "[...document.querySelectorAll('[data-statusbar] span')].map((el) => el.textContent)",
+  })).result
+  const selectedTabs = await tabsOf(app, repo.root)
+  const statusBarAgents = {
+    outOfScopeJudgement: true,
+    renderedSpans: statusBarText,
+    renderedAgentsSpan: (statusBarText ?? []).find((t) => String(t).endsWith(' agents')) ?? null,
+    expectedAgentSessionCount: agentTabsOf(selectedTabs).length,
+    totalTabCount: selectedTabs.length,
+    // 옛 동작이면 전체 탭 수가 찍힌다 — 두 수가 다른 fixture 라야 이 검사가 의미를 갖는다.
+    countsDiffer: agentTabsOf(selectedTabs).length !== selectedTabs.length,
+    pass: null,
+    note: '09-gate1-fix.md 에 없던 판단(04-result-gate1-fix.md §6-③). 코드·빌드만으로 주장하지 않고 렌더된 상태바 텍스트를 읽어 에이전트 세션 수와 대조한다.',
+  }
+  statusBarAgents.pass =
+    statusBarAgents.renderedAgentsSpan === `${statusBarAgents.expectedAgentSessionCount} agents` && statusBarAgents.countsDiffer
 
   // ---------- App.tsx:193 확인만 — 탭바가 전체 탭을 받는가 ----------
   const tabBarReceivesAllTabs = {
@@ -202,6 +243,7 @@ async function main() {
     noPlaceholder,
     sessionTitles,
     sortRule,
+    statusBarAgents,
     tabBarReceivesAllTabs,
     allPass:
       lineMapping.every((r) => r.pass) &&
@@ -210,6 +252,7 @@ async function main() {
       noPlaceholder.pass &&
       sessionTitles.pass &&
       sortRule.pass &&
+      statusBarAgents.pass &&
       tabBarReceivesAllTabs.pass,
     shots,
     rawChain,

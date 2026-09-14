@@ -67,6 +67,7 @@
 // ⚠ 행 높이를 밀지 않는다 — `size` 기본값이 기존 글리프 칸 폭에 맞춰져 있고, 세로는
 // `--h-session-row` 등 C9(b) 통과선이 잡는다.
 import type { AgentKind } from '../../../shared/types.js'
+import grokUrl from '../assets/grok.png?url'
 
 /** Orca `ClaudeIcon` 이식. `fill` 만 `currentColor` 로 바꿨다. */
 function ClaudeMark({ size }: { size: number }): React.JSX.Element {
@@ -86,16 +87,17 @@ function OpenAIMark({ size }: { size: number }): React.JSX.Element {
   )
 }
 
-/** Orca `AgentLetterIcon` 방식 — 브랜드 SVG 가 없는 종류의 대체물. */
-function LetterMark({ letter, size }: { letter: string; size: number }): React.JSX.Element {
-  return (
-    <svg height={size} width={size} viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-      <rect width="14" height="14" rx="3" fill="currentColor" fillOpacity="0.2" />
-      <text x="7" y="10.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="currentColor" fontFamily="system-ui, -apple-system, sans-serif">
-        {letter}
-      </text>
-    </svg>
-  )
+/**
+ * Orca `grok.png` 이식 (J-3). Orca 자신의 렌더링과 같다 — `<img>` + `borderRadius: 2`
+ * (`agent-catalog.tsx:368-377`).
+ *
+ * `?url` 은 **빌드 타임 번들**이다. 런타임 네트워크 요청이 없다는 원칙은 그대로 지킨다.
+ * ⚠ 이 앱의 CSP 는 `default-src 'self'` 라 **data: URI 이미지가 막힌다** — 그래서
+ * `electron.vite.config.ts` 가 `assetsInlineLimit: 0` 으로 이 PNG 를 인라인하지 않고
+ * 파일로 내보낸다. 실측은 `raw/gate1-fix4/j3-grok-asset.json` 의 `naturalWidth`.
+ */
+function GrokMark({ size }: { size: number }): React.JSX.Element {
+  return <img src={grokUrl} width={size} height={size} alt="" aria-hidden style={{ borderRadius: 2 }} />
 }
 
 /**
@@ -112,7 +114,7 @@ export function AgentIcon({ kind, glyph, size = 12 }: { kind: AgentKind; glyph: 
     case 'codex':
       return <OpenAIMark size={size} />
     case 'grok':
-      return <LetterMark letter="G" size={size} />
+      return <GrokMark size={size} />
     case 'shell':
       return <>{glyph}</>
   }

@@ -207,7 +207,7 @@ export function App(): React.JSX.Element {
                 if (activeWorkspace !== null) lifecycle.actions.createRow(activeWorkspace.workspaceId, 'shell')
               }}
               onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
-              onRenameTab={(tab, label) => lifecycle.actions.renameRow(tab.tabId, label)}
+              onRenameTab={(tab, label) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number })}
             />
           ) : null}
 

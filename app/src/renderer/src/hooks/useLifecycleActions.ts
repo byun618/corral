@@ -134,8 +134,16 @@ export function useLifecycleActions(state: AppState | null): {
    * 푸시로 목록이 알아서 바뀌므로 여기서 아무것도 만지지 않는다. 거절·실패만 알림으로 올린다
    * (승격 금지 — 이 알림 경로가 그 기준의 화면쪽 끝이다).
    */
-  const renameRow = useCallback(async (tabId: string, label: string): Promise<void> => {
+  const renameRow = useCallback(async ({ tabId, label, tabNumber }: { tabId: string; label: string; tabNumber: number }): Promise<void> => {
     setLifecycleNotice(null)
+    // J-4 — **기본 표찰과 같은 이름은 보내기 전에 막는다.** herdr 는 이런 label 도 저장에
+    // 성공하지만(grok 소켓 실측: `"42"` 저장됨) 화면 쪽에서는 `userLabel` 이 기본 표찰과
+    // 구분할 수 없어 제목이 안 바뀐다 — 보내 놓고 아무 일도 안 일어난 것처럼 보이는 상태가
+    // 이 라운드가 없애려는 바로 그 거짓말이다. 막고, 왜 막았는지 말한다.
+    if (label === String(tabNumber)) {
+      setLifecycleNotice({ kind: 'error', message: `"${label}" 은 이 탭의 기본 표찰과 같아 이름으로 구분되지 않는다 — 다른 이름을 써라` })
+      return
+    }
     const result = await window.corral.renameRow({ tabId, label })
     if (result.outcome === 'rejected')
       setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
@@ -193,7 +201,7 @@ export function useLifecycleActions(state: AppState | null): {
   const actions: LifecycleActions = {
     createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
     closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
-    renameRow: (tabId, label) => void renameRow(tabId, label),
+    renameRow: (input) => void renameRow(input),
     closeWorktree: (workspaceId) => void closeTarget({ kind: 'workspace', workspaceId }),
     openWorktree: (repoRoot, worktree) => void openWorktree(repoRoot, worktree),
     openCreateWorktree: (repoRoot) => {

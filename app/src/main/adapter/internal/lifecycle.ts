@@ -157,8 +157,12 @@ export async function closeTab(socketPath: string, tabId: string): Promise<Close
  * 있고 `tab_renamed` 이벤트로 되돌아온다(`store.ts` 가 이미 받는다). **corral 쪽 영속 계층은
  * 없다** — 만들면 herdr 의 것과 두 벌이 된다.
  *
- * `closeTab` 과 같은 모양이다: **herdr 가 거절하면 그대로 돌려준다.** corral 이 승격하지
- * 않는다(기준) — 모르는 tab_id 든 빈 이름이든 판단은 herdr 것이고 화면은 그 말을 그대로 쓴다.
+ * `closeTab` 과 같은 모양이다: **herdr 가 거절하면 그대로 돌려준다.** corral 이 승격하지 않는다(기준).
+ *
+ * ⚠ 정정(L-h): 옛 주석은 *"빈 이름이든 판단은 herdr 것"* 이라 적어 herdr 가 빈 라벨을 거절할
+ * 것처럼 읽혔는데, **herdr 는 빈 라벨도 그냥 저장한다**(fix3 리뷰 grok 의 소켓 실측).
+ * 실제로 오는 거절은 `tab_not_found` 나 필드 누락 쪽이다. 화면의 "공백만이면 취소"는 herdr
+ * 거동이 아니라 **UI 규칙**이고(I-7 ③), 그래서 그 판정은 `MainTabBar` 에 있다.
  */
 export type RenameTabOutcome =
   | { outcome: 'renamed' }

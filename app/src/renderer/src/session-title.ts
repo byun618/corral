@@ -78,17 +78,24 @@ export function paneTitleLabel(tab: TabRow): string | null {
 /**
  * **사용자가 직접 준 이름** (`TabRow.label`) — 없으면 `null`.
  *
- * 판별자는 herdr 의 기본 label 이 **순수 숫자**(`"1"`)라는 실측이다 (09-gate1-fix.md C,
- * 재확인 `raw/gate1-fix3/rename/rename.json` 의 `labelBefore`). 숫자만이면 사람이 지은 이름이
- * 아니라 herdr 표찰이므로 다음 단으로 내려간다. 빈 문자열·공백도 이름이 아니다.
+ * 판별자는 herdr 의 기본 label 이 **그 탭의 표찰 번호 문자열**이라는 실측이다
+ * (09-gate1-fix.md C, 재확인 `raw/gate1-fix3/rename/rename.json` 의 `labelBefore`:
+ * `number: 2` 인 탭의 `label: "2"`). 빈 문자열·공백도 이름이 아니다.
  *
- * 관측 기반 판별자라 **가정이 깨지면 원자료가 먼저 안다** — 위 JSON 이 리네임 전/후 label 을
- * 둘 다 들고 있어서, 기본값이 숫자가 아니게 되면 그 파일이 어긋난다.
+ * ## `/^\d+$/` 에서 좁혔다 (J-4, fix3 리뷰 M2)
+ *
+ * 옛 판별자는 **모든** 숫자 label 을 거부해서, 사용자가 탭 이름을 `357` 로 바꾸면
+ * herdr 는 저장에 성공하고 거절도 없는데 화면만 안 바뀌었다 — **성공한 조작을 말없이 버렸다.**
+ * 이제 걸러지는 건 "그 탭의 기본 표찰"뿐이라 `357` 은 이름으로 산다.
+ *
+ * 남는 한 칸(탭 2번을 `"2"` 로 바꾸기)은 여기서 못 가른다 — 저장된 값과 기본값이 **같은 문자열**
+ * 이라 사후에 구분할 방법이 없다. 그래서 **보내기 전에** 막고 사용자에게 알린다
+ * (`useLifecycleActions.renameRow`). 화면이 거짓말하지 않는다는 요구는 그 둘로 함께 채운다.
  */
 export function userLabel(tab: TabRow): string | null {
   const label = tab.label.trim()
   if (label.length === 0) return null
-  if (/^\d+$/.test(label)) return null
+  if (label === String(tab.number)) return null
   return label
 }
 

@@ -36,6 +36,14 @@ export default defineConfig({
        * es2022 를 훨씬 넘으므로 여유가 크다. 실증은 기준 S7ⓕ (프로덕션 빌드 vim 생존).
        */
       target: 'es2022',
+      /**
+       * 자산을 **인라인하지 않는다** (LIFE-357 J-3). Vite 기본값(4 KB 미만 → base64 data: URI)
+       * 이면 590 B 짜리 `grok.png` 가 `data:image/png;…` 로 들어가는데, 이 앱의 CSP 는
+       * `index.html` 에서 `default-src 'self'` 라 **data: 는 img-src 에 안 걸린다** — 아이콘이
+       * 조용히 안 그려진다. 파일로 내보내면 같은 출처라 통과한다.
+       * (CSP 를 넓히는 쪽 대신 이쪽을 골랐다 — 보안 자세를 자산 하나 때문에 낮추지 않는다.)
+       */
+      assetsInlineLimit: 0,
     },
   },
 })

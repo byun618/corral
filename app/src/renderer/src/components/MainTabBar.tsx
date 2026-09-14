@@ -31,6 +31,20 @@ import { agentIcon } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 
+/**
+ * 활성 터미널로 포커스를 돌려준다 (J-1).
+ *
+ * xterm 은 자기 **보조 textarea** 가 포커스를 쥐어야 키를 받는다. `TerminalPane` 은 선택된
+ * pane 하나만 마운트하므로(`.term-host` 가 화면에 하나) 셀렉터 하나로 찾는다 — 여기서
+ * `term.focus()` 를 부를 길이 없다(그 인스턴스는 `TerminalPane` 안에 갇혀 있다).
+ * 터미널이 없는 상태(빈 workspace)면 아무것도 안 한다 — 그때는 포커스가 body 로 가고
+ * 문서 단축키는 살아 있다.
+ */
+function focusActiveTerminal(): void {
+  const textarea = document.querySelector('.term-host textarea')
+  if (textarea instanceof HTMLTextAreaElement) textarea.focus()
+}
+
 function MainTab({
   tab,
   active,
@@ -55,26 +69,51 @@ function MainTab({
   // state 는 그 시점에 아직 옛값일 수 있다. blur 가 취소를 확정으로 되돌리면 안 된다.
   const editingRef = useRef(false)
 
+  /**
+   * **편집을 시작한 시점의** 씨앗 (J-2). `seed` 는 렌더마다 다시 계산되므로 확정 시점 값과
+   * 비교하면 안 된다 — 에이전트 탭은 제목이 계속 바뀌어서(`Claude Code` → `NOTES.md 파일 생성`,
+   * I-3 실측), 아무것도 안 친 확정이 "그때 보이던 제목"을 사용자 이름으로 **굳혀** 버린다.
+   * 가드가 막으려던 일이 가드를 통과해 일어나던 자리다.
+   */
+  const seedAtEditRef = useRef('')
+
   const seed = sessionTitle(tab)
   const beginEdit = (): void => {
+    seedAtEditRef.current = seed
     setDraft(seed)
     editingRef.current = true
     setEditing(true)
   }
+  /**
+   * 편집을 끝내고 **키보드를 돌려준다** (J-1, fix3 리뷰 H1).
+   *
+   * 입력칸이 `opacity:0; pointer-events:none` 이 돼도 **DOM 포커스는 남는다.** 그대로 두면
+   * 터미널 입력과 문서 단축키(⌘T)가 죽는다 — xterm 은 자기 textarea 가 포커스여야 받고,
+   * `TerminalPane` 의 `term.focus()` 는 `[paneId]` effect 안이라 같은 탭을 리네임하면 다시 안 돈다.
+   *
+   * ⚠ 포커스를 **조건부로** 되돌린다: 지금 포커스를 쥔 게 이 입력칸일 때만. blur 확정 경로는
+   * 사용자가 다른 데를 **일부러 누른** 것이라(사이드바 검색칸 등) 거기서 포커스를 뺏으면 안 된다.
+   */
   const endEdit = (): void => {
     editingRef.current = false
     setEditing(false)
+    const input = inputRef.current
+    if (input === null || document.activeElement !== input) return
+    input.blur()
+    focusActiveTerminal()
   }
   /**
    * 확정. 공백만이면 **취소**다 (이름 지우기는 별개 기능 — I-7 ③ 범위 밖).
-   * 씨앗과 같으면 요청을 보내지 않는다 — 안 그러면 실수로 연 더블클릭 + blur 가 지금 보이던
-   * OSC 제목을 사용자 이름으로 **굳혀** 버린다(살아 있던 제목이 조용히 얼어붙는다).
+   * **편집 시작 시점의** 씨앗과 같으면 요청을 보내지 않는다 (J-2).
+   *
+   * `endEdit()` 이 `blur()` 를 부르므로 `editingRef` 를 **먼저** 내린다 — 안 그러면 그 blur 가
+   * `onBlur` → `commit` 으로 되돌아와 두 번 확정된다.
    */
   const commit = (): void => {
     if (!editingRef.current) return
     const next = draft.trim()
     endEdit()
-    if (next.length === 0 || next === seed) return
+    if (next.length === 0 || next === seedAtEditRef.current) return
     onRename(next)
   }
 
@@ -127,6 +166,10 @@ function MainTab({
         onDoubleClick={(event) => event.stopPropagation()}
         onBlur={commit}
         onKeyDown={(event) => {
+          // ⚠ **편집 중이 아니면 아무것도 안 한다** (J-1 두 번째 방어선). 어떤 이유로든 포커스가
+          // 이 입력칸에 남았을 때 `stopPropagation` 이 무조건 걸리면 ⌘T 같은 문서 단축키가 죽는다.
+          // 포커스 반환(endEdit)과 **둘 다** 한다 — 하나가 새도 나머지가 막는다.
+          if (!editingRef.current) return
           // 편집 중 키는 여기서 끝난다 — 문서에 달린 ⌘T·Esc 리스너로도, 터미널로도 안 간다.
           event.stopPropagation()
           if (event.key === 'Enter') commit()

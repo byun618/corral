@@ -18,8 +18,11 @@ export type CloseTarget = { kind: 'tab'; tabId: string } | { kind: 'workspace'; 
 export type LifecycleActions = {
   createRow: (workspaceId: string, kind: AgentKind) => void
   closeRow: (tabId: string) => void
-  /** LIFE-357 I-7 — 탭 이름을 사용자가 준 이름으로. 거절은 알림으로 그대로 올라온다. */
-  renameRow: (tabId: string, label: string) => void
+  /**
+   * LIFE-357 I-7 — 탭 이름을 사용자가 준 이름으로. 거절은 알림으로 그대로 올라온다.
+   * `tabNumber` 는 J-4 의 "기본 표찰과 같은 이름" 가드가 쓴다 — 그 값은 보내기 전에 막는다.
+   */
+  renameRow: (input: { tabId: string; label: string; tabNumber: number }) => void
   closeWorktree: (workspaceId: string) => void
   openWorktree: (repoRoot: string, worktree: WorktreeRow) => void
   openCreateWorktree: (repoRoot: string) => void

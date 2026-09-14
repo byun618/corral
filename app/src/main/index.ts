@@ -546,7 +546,11 @@ async function renameRowByTab(input: { tabId: string; label: string }): Promise<
   if (socketPath === null) return { outcome: 'error', error: '세션이 없다' }
   const outcome = await renameTab(socketPath, input.tabId, input.label)
   if (outcome.outcome === 'renamed') {
-    // 이름은 `tab_renamed` 푸시로도 돌아오지만, 밀어 두면 화면이 왕복을 기다리지 않는다.
+    // ⚠ 이 호출은 **새 이름을 화면에 싣지 않는다** (L-c 정정). `scheduleEmit` 은 지금 store 가
+    // 들고 있는 스냅샷을 한 박자 뭉쳐 다시 밀 뿐이고, 이 시점 store 에는 옛 label 이 있다.
+    // 화면이 바뀌는 건 herdr 의 `tab_renamed` 푸시가 store 를 갱신할 때이고, 그 경로는
+    // `link.hooks.onChange → scheduleEmit`(`:70`) 이 이미 잡는다. 여기 남기는 이유는 하나 —
+    // 푸시가 응답보다 **먼저** 와서 뭉침 창을 이미 소비했을 때 한 번 더 밀어 주는 안전망이다.
     scheduleEmit()
     return { outcome: 'renamed' }
   }

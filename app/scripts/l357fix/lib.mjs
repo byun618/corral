@@ -293,3 +293,80 @@ export function control(socketFile, frame, { timeoutMs = 30000 } = {}) {
     })
   })
 }
+
+// --- fixture 도우미 (게이트 ① 수정 라운드) -------------------------------------
+//
+// 01-criteria.md 부록 "세션 용어 확정" 이후로 **사이드바 세션(에이전트 탭)과 탭바 세션(전체 탭)
+// 이 다른 수**다. 그래서 fixture 는 두 종류를 섞어 만들어야 한다 — 같은 수가 나오는 fixture
+// 로는 이 구분이 증명되지 않는다(부록 명시).
+
+/** worktree 블록의 ⋯메뉴를 열어 탭 하나를 만든다. kind: 'shell' | 'claude' | 'codex' | 'grok'. */
+export async function createTab(app, worktreePath, kind) {
+  await app.click(`[data-worktree-menu-toggle="${worktreePath}"]`)
+  const selector =
+    kind === 'shell'
+      ? `[data-worktree-create-shell="${worktreePath}"]`
+      : `[data-worktree-create-agent="${worktreePath}"][data-kind="${kind}"]`
+  return app.click(selector)
+}
+
+export async function workspaceOf(app, worktreePath) {
+  const state = await app.state()
+  return state.repos.flatMap((r) => r.worktrees).find((w) => w.path === worktreePath)?.workspace ?? null
+}
+
+export async function tabsOf(app, worktreePath) {
+  return (await workspaceOf(app, worktreePath))?.tabs ?? []
+}
+
+/** 에이전트가 붙은 탭 — 렌더러 `session-title.ts` 의 `isAgentTab` 과 같은 판별식이다. */
+export function agentTabsOf(tabs) {
+  return tabs.filter((tab) => tab.panes.some((pane) => pane.agent !== null))
+}
+
+/**
+ * 혼합 fixture — 에이전트 탭 `agents` 개 + 셸 탭 `shells` 개가 될 때까지 만든다.
+ * worktree 를 열면 herdr 가 기본 셸 탭 1개를 이미 만들어 두므로 그 몫을 빼고 만든다.
+ */
+export async function buildMixedFixture(app, worktreePath, { agents, shells }) {
+  const log = []
+  for (let i = 0; i < agents; i++) {
+    const click = await createTab(app, worktreePath, 'claude')
+    const want = i + 1
+    const ok = await until(async () => agentTabsOf(await tabsOf(app, worktreePath)).length >= want, {
+      timeoutMs: 20000,
+      everyMs: 200,
+      what: `agent tab ${want}`,
+    })
+    log.push({ kind: 'claude', index: want, clickHit: click.hit, reached: ok.ok, ms: ok.ms })
+  }
+  for (;;) {
+    const tabs = await tabsOf(app, worktreePath)
+    const shellCount = tabs.length - agentTabsOf(tabs).length
+    if (shellCount >= shells) break
+    const click = await createTab(app, worktreePath, 'shell')
+    const want = shellCount + 1
+    const ok = await until(
+      async () => {
+        const next = await tabsOf(app, worktreePath)
+        return next.length - agentTabsOf(next).length >= want
+      },
+      { timeoutMs: 15000, everyMs: 200, what: `shell tab ${want}` },
+    )
+    log.push({ kind: 'shell', index: want, clickHit: click.hit, reached: ok.ok, ms: ok.ms })
+    if (!ok.ok) break
+  }
+  const tabs = await tabsOf(app, worktreePath)
+  return {
+    log,
+    tabCount: tabs.length,
+    agentTabCount: agentTabsOf(tabs).length,
+    shellTabCount: tabs.length - agentTabsOf(tabs).length,
+    tabs: tabs.map((tab) => ({
+      tabId: tab.tabId,
+      number: tab.number,
+      agents: tab.panes.map((pane) => pane.agent),
+      isAgentTab: tab.panes.some((pane) => pane.agent !== null),
+    })),
+  }
+}

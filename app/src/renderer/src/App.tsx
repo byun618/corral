@@ -23,6 +23,7 @@ import { useMemoryLabel } from './hooks/useMemoryLabel.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { pickPane } from './pane-utils.js'
+import { isAgentTab } from './session-title.js'
 import { TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -151,7 +152,12 @@ export function App(): React.JSX.Element {
   const behindTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.behind ?? 0), 0)
 
   const paneCount = activeTab?.panes.length ?? 0
-  const agentCount = activeWorkspace?.tabs.length ?? 0
+  // 상태바의 `{n} agents` 는 **에이전트 세션 수**다 — 전체 탭 수가 아니다.
+  // 09-gate1-fix.md D 가 사이드바를 에이전트 세션만 그리게 하고 01-criteria.md 부록이 "세션"을
+  // 갈라 정의한 뒤로, 전체 탭을 "agents" 라고 부르면 사이드바(2행)와 상태바("4 agents")가
+  // 같은 화면에서 서로 다른 말을 한다. E 의 원칙("근거 없는 수를 …인 양 보여주지 마라")과
+  // 같은 결이라 라벨이 세는 것과 맞췄다. **지시서에 없던 판단이므로 결과 문서에 적는다.**
+  const agentCount = activeWorkspace?.tabs.filter(isAgentTab).length ?? 0
   const terminal = state.terminal
   const terminalAlive =
     lifecycle.selectedPane !== null &&

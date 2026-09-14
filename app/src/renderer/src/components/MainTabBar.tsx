@@ -6,8 +6,13 @@
 // 갈음했다. 그건 고정 문구 재해석이라 관문 ③ 위반 — `-claude` 형제 브랜치는 탭바에 닫기가 있어
 // 같은 저울로 비교되지 않는다. hover 시에만 보이되 항상 DOM 에 있다(opacity 토글, SessionRow
 // 결함 수정과 같은 패턴 — 조건부 렌더링하면 좌표 클릭 계측이 hover 없이는 못 찾는다).
+//
+// 탭 제목은 사이드바 SessionRow 와 **같은 함수**를 쓴다(`session-title.ts`) — 09-gate1-fix.md C-3
+// "세션 제목이 곧 탭 제목이다". 탭바가 받는 목록 자체는 사이드바와 다르다: 여기는 그 worktree 의
+// **전체 탭**(셸 포함), 사이드바는 에이전트 세션만 (01-criteria.md 부록 "세션 용어 확정").
 import { useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
+import { sessionTitle } from '../session-title.js'
 
 function MainTab({
   tab,
@@ -30,7 +35,7 @@ function MainTab({
       onClick={onSelect}
     >
       <span className={`main-tab-dot tone-${tab.agentStatus === 'working' ? 'accent' : 'neutral'}`} />
-      <span className="main-tab-label">{tab.label}</span>
+      <span className="main-tab-label">{sessionTitle(tab)}</span>
       <button
         className={`main-tab-close ${hovered ? 'is-active' : ''}`}
         data-main-tab-close={tab.tabId}

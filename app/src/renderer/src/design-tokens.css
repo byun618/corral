@@ -1,19 +1,18 @@
 /* corral · LIFE-357 layout redesign — design tokens (dark only, 단일 테마)
-   원본: specs/design-tokens.css (design-intake 산출물, `-claude` 브랜치가 그대로 쓴다) — 이
-   파일은 사본이되 **의도적으로 값 2개를 바꿨다** (아래 배경 3단 주석 참고). 이 라운드(C9′)는
-   design-handoff 대신 Orca 실측이 판정 기준이라 이 편차가 정당하다(02-kickoff-orca.md).
+   원본: specs/design-tokens.css (design-intake 산출물). **게이트 ① 수정 라운드(09-gate1-fix.md
+   선행 결정 1)로 원안에 복귀했다** — `-claude-orca` 라운드가 C9′(Orca 를 그라운드 트루스로)
+   때문에 뒤집어 놨던 배경 서열·`--line-weak`·사이드바 폭 경계를 되돌린다. 그 축(C9′)을 접고
+   design-handoff 기반 C9 로 갈아탄 것이 사용자 결정이라, Orca 리터럴을 채택할 근거가 사라졌다.
+   목업 실측(코디네이터, 2026-09-14)이 원안 값과 일치함을 확인했다: 사이드바 rgb(14,16,17)
+   = #0e1011, 메인 rgb(20,23,24) = #141718, 선택 카드 rgb(29,33,34) = #1d2122.
+   원안에 없는 신설 토큰은 `specs/design-tokens.css` 에 역반영한다(토큰 원본은 specs 다).
    surface: desktop · 근거: specs/reference/layout-reference-2026-09-13.md */
 
 :root {
-  /* 배경 3단 — Orca 실측(main.css .dark, 2026-09-14)과 대조해 사이드바/터미널 밝기 서열을
-     뒤집었다: Orca 는 `--background`(캔버스) #0a0a0a < `--editor-surface`(터미널) #1e1e1e <
-     `--worktree-sidebar`(사이드바) #2a2a2a < `--worktree-sidebar-accent`(선택 카드) #353535 —
-     사이드바가 터미널보다 밝다. `specs/design-tokens.css` 원안은 반대(사이드바 #0e1011 <
-     터미널 #141718)였다 — design-handoff 가 이 서열을 안 챙긴 것으로 보인다. C9′ 는 Orca 를
-     그라운드 트루스로 쓰므로 이 두 값을 맞바꿔 서열을 Orca 와 일치시켰다(색상 자체의 hue 는
-     그대로 — 회색조가 아니라 corral 팔레트 톤 유지, 서열 방향만 교정). */
-  --bg-window: #141718;   /* 사이드바 · 탭바 스트립 · 창 크롬 — Orca 대조 후 값 교체(원안 #0e1011) */
-  --bg-surface: #0e1011;  /* 메인/터미널 영역 · 활성 탭 · 카드 내 탭 리스트 — 원안 #141718 */
+  /* 배경 3단 — 원안 복귀(09-gate1-fix.md A). 목업 리터럴과 일치:
+     사이드바 컨테이너 #0e1011, JetBrains Mono 터미널 블록 #141718. */
+  --bg-window: #0e1011;   /* 사이드바 · 탭바 스트립 · 창 크롬 */
+  --bg-surface: #141718;  /* 메인/터미널 영역 · 활성 탭 · 카드 내 탭 리스트 */
   --bg-raised: #181b1c;   /* 모달 패널(CreateWorktreeModal 등) — design-handoff §2 원문 그대로 */
   --bg-input: #16191a;    /* 검색 입력 */
   --bg-chip: #202425;     /* 배지 pill */
@@ -26,11 +25,7 @@
   /* 경계 */
   --line-strong: #2b3132; /* 카드 · 버튼 테두리 */
   --line: #23282a;        /* 영역 구획 */
-  /* 수정 1회차(07-fix-orca1.md M-4) — 원안 #1f2324 는 --bg-selected(#1d2122) 보다 근소하게
-     밝아 "사이드바 < 경계선 < 선택 카드" 서열(C9′(a))이 깨져 있었다(채널당 2 이하 역전, 육안
-     구분은 안 되지만 실측하면 뒤집힘). --bg-window(#141718)와 --bg-selected(#1d2122) 사이로
-     내려 서열을 바로잡는다. */
-  --line-weak: #181c1d;   /* 창 내부 미세 구획 */
+  --line-weak: #1f2324;   /* 창 내부 미세 구획 — 원안 복귀(09-gate1-fix.md A) */
 
   /* 텍스트 2단 + 보조 */
   --fg: #e6e9e8;
@@ -91,17 +86,13 @@
   --w-modal-create: 400px;
   --w-modal-confirm: 380px;
   --sidebar-w: 322px;
-  /* 수정 2회차(08-fix-orca2.md D-1) — 이 브랜치의 그라운드 트루스는 Orca 다(02-kickoff-orca.md).
-     1회차는 "밀도 스케일"을 이유로 236/560 을 썼지만 그 근거가 이 브랜치엔 없다(코디네이터
-     검산, verdict.md "-claude-orca 수정 1회차 판정 부록") — Orca 값(220/500, sidebar/index.tsx:
-     33-34)을 그대로 채택한다. --sidebar-w(322) 는 새 경계 안이라 그대로 둔다. */
-  --sidebar-min: 220px;
-  --sidebar-max: 500px;
-  /* 수정 2회차(08-fix-orca2.md D-2) — Orca 는 리사이저를 넓은 비가시 히트존(`w-3`=12px,
-     sidebar/index.tsx:37-38)과 얇은 가시선(`w-px`=1px, :39-40)으로 분리한다. 1회차는 히트=가시
-     단일 9px 막대라 보이는 막대까지 두꺼워지는 부작용이 있었다(verdict.md 지적) — 이번엔 구조
-     자체를 분리한다. 가시선은 Orca 리터럴(1px) 그대로 채택 — 얇은 선 자체는 밀도 스케일과
-     무관하다(두께가 아니라 존재 여부가 핵심이라 스케일할 이유가 없다). */
+  /* 원안 복귀(09-gate1-fix.md A) — Orca 리터럴(220/500)을 채택했던 근거가 C9′ 축을 접으며
+     사라졌다. `--sidebar-max` 는 specs 원안에 없던 corral 자기 토큰이라 이번에 역반영한다. */
+  --sidebar-min: 236px;
+  --sidebar-max: 560px;
+  /* **명시적 편차** (09-gate1-fix.md A 에서 유지 결정) — 핸드오프 §4 는 `--resizer-w: 3px`
+     단일이지만, 히트존(집기)과 가시선(보이기)을 분리하면 *보이는 선은 1px* 이라 "테두리 최소"
+     기조에 오히려 더 맞고 집기는 더 쉽다. 편차인 채로 결과 문서에 기록한다. */
   --resizer-hit-w: 12px;
   --resizer-line-w: 1px;
   --radius: 6px;

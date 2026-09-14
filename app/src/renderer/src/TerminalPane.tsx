@@ -41,6 +41,13 @@ function readCursorHidden(term: Terminal): boolean | null {
   return typeof hidden === 'boolean' ? hidden : null
 }
 
+/** design-tokens.css 의 변수 하나를 런타임에 읽는다 (xterm 처럼 CSS 를 못 쓰는 소비자용). */
+function readToken(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value.length > 0 ? value : fallback
+}
+
 export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnostics: boolean }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -53,9 +60,10 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
       cursorBlink: false,
       fontSize: 13,
       fontFamily: 'SF Mono, Menlo, Monaco, monospace',
-      // --bg-surface(design-tokens.css) — xterm 은 CSS 변수를 못 읽어(캔버스/DOM 렌더러 자체 설정) 값을 복사한다.
-      // Orca 대조 후 사이드바/터미널 밝기 서열을 교정하며 이 값도 같이 바뀌었다(design-tokens.css 주석 참고).
-      theme: { background: '#0e1011' },
+      // --bg-surface(design-tokens.css) — xterm 은 CSS 변수를 못 읽으므로(캔버스/DOM 렌더러
+      // 자체 설정) **런타임에 읽어 넘긴다**. 리터럴로 복사해 두면 토큰이 바뀔 때 따라오지 않는다
+      // — 게이트 ① 수정 라운드에서 배경 서열이 원안으로 되돌아가며 실제로 어긋났던 자리다.
+      theme: { background: readToken('--bg-surface', '#141718') },
       // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
       allowProposedApi: true,
     })

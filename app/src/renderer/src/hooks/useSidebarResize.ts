@@ -13,7 +13,8 @@
 // corral 쪽 각색: Orca 는 폭 영속을 외부 store 에 맡기지만(이 훅은 `setWidth` 콜백만 받는다),
 // corral 엔 store 가 없어(00-analysis §참고 재료 요약 — zustand 미도입) 이 훅 안에서 직접
 // 영속한다. min/max·기본폭 값은 Orca 리터럴이 아니라 corral 토큰
-// (design-tokens.css --sidebar-w/--sidebar-min, 밀도가 다르다 — 00-analysis 판단 유지)이다.
+// (design-tokens.css --sidebar-w/--sidebar-min/--sidebar-max)이고, 리터럴이 아니라 런타임에
+// CSS 변수에서 읽는다 (아래 tokenPx).
 //
 // 영속은 `localStorage` 가 아니라 `window.corral.getUiPrefs/setUiPrefs` (main 프로세스
 // ui-prefs.ts, tmp→rename 원자적 쓰기) 를 쓴다 — 이 앱의 프로덕션 file:// 로드 경로에서
@@ -21,16 +22,27 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-const DEFAULT_WIDTH = 322 // --sidebar-w
-// 수정 2회차(08-fix-orca2.md D-1) — 이 브랜치의 그라운드 트루스는 Orca 다(02-kickoff-orca.md).
-// 1회차는 "corral 밀도 스케일"을 이유로 236/560(Orca 대비 +7%/+12%)을 썼으나, 코디네이터
-// 검산(verdict.md "-claude-orca 수정 1회차 판정 부록")이 그 근거가 이 브랜치엔 없다고 정정했다
-// — Orca 리터럴을 그대로 채택한다(components/sidebar/index.tsx:33-34).
-const MIN_WIDTH = 220 // --sidebar-min
-const MAX_WIDTH = 500 // --sidebar-max
+// 폭 경계는 **토큰에서 읽는다** — 게이트 ① 수정 라운드(09-gate1-fix.md A) 가 원안(236/560)으로
+// 되돌리며, 같은 값을 JS 리터럴로 또 적어 두면 토큰과 코드가 따로 노는 것을 실제로 겪었다
+// (`-claude-orca` 라운드에서 토큰만 바꾸고 이 상수가 남아 클램프가 안 따라왔다). freeze v2
+// 승계 요구사항 "값은 `--*` 변수로만 참조한다" 의 JS 쪽 이행이다.
+const TOKEN_FALLBACK = { width: 322, min: 236, max: 560 } as const
 
-/** Orca 원본 `clampSidebarResizeWidth` (그대로). */
-export function clampSidebarWidth(width: number, minWidth: number = MIN_WIDTH, maxWidth: number = MAX_WIDTH): number {
+function tokenPx(name: string, fallback: number): number {
+  if (typeof document === 'undefined') return fallback
+  // getPropertyValue 는 선행 공백을 붙여 돌려준다 — trim 없이 parseFloat 하면 NaN 은 아니지만
+  // 값이 비었을 때(''), parseFloat('') = NaN 이라 폴백으로 떨어뜨려야 한다.
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+/** Orca 원본 `clampSidebarResizeWidth` 의 형태(그대로) — 경계값만 corral 토큰에서 온다. */
+export function clampSidebarWidth(
+  width: number,
+  minWidth: number = tokenPx('--sidebar-min', TOKEN_FALLBACK.min),
+  maxWidth: number = tokenPx('--sidebar-max', TOKEN_FALLBACK.max),
+): number {
   return Math.min(maxWidth, Math.max(minWidth, width))
 }
 
@@ -39,7 +51,7 @@ export function useSidebarResize(sidebarRef: React.RefObject<HTMLDivElement | nu
   resizing: boolean
   onHandleMouseDown: (event: React.MouseEvent) => void
 } {
-  const [width, setWidthState] = useState<number>(DEFAULT_WIDTH)
+  const [width, setWidthState] = useState<number>(() => tokenPx('--sidebar-w', TOKEN_FALLBACK.width))
   const [resizing, setResizing] = useState(false)
 
   const isResizingRef = useRef(false)

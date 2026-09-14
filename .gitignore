@@ -17,3 +17,6 @@ app/*.tsbuildinfo
 # _discarded 의 버린 회차 실물은 커밋한다 (park() 가 _runs 밖으로 옮기므로 이 규칙에 안 걸린다).
 # `**` 로 수정 회차 하위 폴더(raw/claude/fix1/_runs 등)까지 덮는다 (RAW_SUBDIR).
 specs/*/raw/**/_runs/
+
+# LIFE-366 격리 HOME (02-kickoff.md 정체 표) — 통합 설치·에이전트 기동 실측이 여기 떨어진다.
+.tmp/

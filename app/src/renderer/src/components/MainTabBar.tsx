@@ -48,6 +48,7 @@ function focusActiveTerminal(): void {
 
 function MainTab({
   tab,
+  branch,
   active,
   onSelect,
   onClose,
@@ -55,6 +56,8 @@ function MainTab({
   onClearName,
 }: {
   tab: TabRow
+  /** 이 worktree 의 git 브랜치 — 셸 탭 제목의 브랜치 티어 (G3). 없으면 null. */
+  branch: string | null
   active: boolean
   onSelect: () => void
   onClose: () => void
@@ -83,7 +86,7 @@ function MainTab({
    */
   const seedAtEditRef = useRef('')
 
-  const seed = sessionTitle(tab)
+  const seed = sessionTitle({ tab, branch })
   const beginEdit = (): void => {
     seedAtEditRef.current = seed
     setDraft(seed)
@@ -159,7 +162,7 @@ function MainTab({
           <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
-      <span className="main-tab-label">{sessionTitle(tab)}</span>
+      <span className="main-tab-label">{sessionTitle({ tab, branch })}</span>
       {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
           ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
           으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
@@ -215,6 +218,7 @@ function MainTab({
 
 export function MainTabBar({
   tabs,
+  branch,
   selectedPane,
   activeWorktreeLabel,
   onSelectTab,
@@ -224,6 +228,12 @@ export function MainTabBar({
   onClearTabName,
 }: {
   tabs: TabRow[]
+  /**
+   * 활성 worktree 의 git 브랜치 (G3). `activeWorktreeLabel` 과 **다른 값**이다 —
+   * 저 라벨은 브랜치가 없으면 경로로 떨어지는데, 제목에는 절대경로를 넣지 않는다 (§2.5).
+   * 그래서 여기는 정제 안 된 `WorktreeRow.branch` 를 그대로 받는다.
+   */
+  branch: string | null
   selectedPane: string | null
   activeWorktreeLabel: string
   onSelectTab: (tab: TabRow) => void
@@ -240,6 +250,7 @@ export function MainTabBar({
         <MainTab
           key={tab.tabId}
           tab={tab}
+          branch={branch}
           active={tab.panes.some((pane) => pane.paneId === selectedPane)}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}

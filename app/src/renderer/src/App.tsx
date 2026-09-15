@@ -197,6 +197,7 @@ export function App(): React.JSX.Element {
           {activeWorkspace !== null ? (
             <MainTabBar
               tabs={activeWorkspace.tabs}
+              branch={activeWorktree?.branch ?? null}
               selectedPane={lifecycle.selectedPane}
               activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? ''}
               onSelectTab={(tab) => {

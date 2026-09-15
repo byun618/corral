@@ -240,6 +240,7 @@ export function WorktreeBlock({
             <SessionRow
               key={tab.tabId}
               tab={tab}
+              branch={branch}
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
               integrations={integrations}
               now={now}

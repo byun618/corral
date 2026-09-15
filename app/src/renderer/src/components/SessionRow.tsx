@@ -25,6 +25,7 @@ import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 export function SessionRow({
   tab,
+  branch,
   active,
   integrations,
   now,
@@ -32,6 +33,8 @@ export function SessionRow({
   onClose,
 }: {
   tab: TabRow
+  /** 이 worktree 의 브랜치 (G3) — 제목 함수를 탭바와 **하나로** 유지하려고 같이 넘긴다. */
+  branch: string | null
   active: boolean
   integrations: readonly IntegrationRow[]
   /** 흐르는 「지금」 — 경과 시간이 얼지 않게 한 곳에서 틱을 받는다 (`useNowTick`). */
@@ -80,7 +83,7 @@ export function SessionRow({
       </div>
       <div className="session-row-body">
         <div className="session-row-line">
-          <span className="session-row-title">{sessionTitle(tab)}</span>
+          <span className="session-row-title">{sessionTitle({ tab, branch })}</span>
           <div className="session-row-spacer" />
           {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재. */}
           {elapsed === null ? null : (

@@ -44,8 +44,21 @@ export function isAgentTab(tab: TabRow): boolean {
 /** `wG:p3` — herdr pane ID 가 제목 자리에 올 때(최초 몇 프레임). */
 const PANE_ID_TITLE = /^w[A-Za-z0-9]+:p\d+$/
 
-/** `byun@sanghyunui-MacBookPro:/private/var/...` — zsh 가 OSC 로 쓰는 프롬프트 제목. */
-const SHELL_PROMPT_TITLE = /^\S+@\S+:\//
+/**
+ * `byun@host:~` · `byun@host:~/repos/corral` · `byun@host:/private/var/...` —
+ * oh-my-zsh 가 OSC 2 로 쏘는 프롬프트 제목 (`ZSH_THEME_TERM_TITLE_IDLE="%n@%m:%~"`,
+ * `~/.oh-my-zsh/lib/termsupport.zsh:41`).
+ *
+ * ## `:\/` 에서 `:[~\/]` 로 넓혔다 — **격리가 만든 사각지대였다** (수정 라운드 3 G1)
+ *
+ * 옛 판별자는 `:` 뒤에 **`/`** 를 요구했다. 구현자도 리뷰어 셋도 전부 격리 HOME 에서 돌았고
+ * 그 HOME 이 `/private/var/folders/…` 라 zsh 가 **절대경로**를 써서 표본이 전부 `:/` 였다.
+ * 실환경 HOME 아래에서는 `%~` 가 `~` 로 접혀 `:~` · `:~/…` 가 되고, 그 셋이 전부 필터를
+ * 통과해 긴 프롬프트 문자열이 탭 제목으로 떴다 (`04-gate1-check.md` §2 실측 4줄).
+ * 그 4줄을 `session-title.test.ts` 에 그대로 박아 둔다 — 다음 라운드가 또 격리 표본만 보고
+ * 좁히지 않게.
+ */
+const SHELL_PROMPT_TITLE = /^\S+@\S+:[~/]/
 
 /**
  * 유휴 기본값인가 — 에이전트 이름 그 자체(`claude`)이거나 관측된 제품명(`Claude Code`).
@@ -113,9 +126,29 @@ export function providerTitle(tab: TabRow): string | null {
   return trimmed.length === 0 ? null : trimmed
 }
 
+/** 판독층이 detached HEAD 에 주는 표식 (`main/git-worktrees.ts:42`) — 브랜치 이름이 아니다. */
+const DETACHED_HEAD = '(detached)'
+
 /**
- * 세션 제목 — **사용자 이름 → provider 세션 제목 → 정제된 터미널 제목 → 폴백** (LIFE-366 C1).
- * 폴백은 `claude 1` · `codex 2` · `세션 3` — 번호는 herdr 표찰(`TabRow.number`)이다.
+ * 세션 제목 — **사용자 이름 → provider 세션 제목 → 정제된 터미널 제목 → 브랜치 → 폴백**
+ * (LIFE-366 C1 + 수정 라운드 3 G3). 폴백은 `claude 1` · `codex 2` · `세션 3` —
+ * 번호는 herdr 표찰(`TabRow.number`)이다.
+ *
+ * ## 브랜치 티어는 **에이전트 없는 탭에만** 내려온다 (G3)
+ *
+ * 통과선이 "에이전트 탭은 영향을 안 받는다" 이고, 그 조건은 위 세 티어만으로는 안 지켜진다 —
+ * 갓 띄운 에이전트 탭은 사용자 이름도 `ai-title` 도 없고 터미널 제목은 유휴 기본값(`Claude Code`)
+ * 이라 **거절**되어 지금도 `claude N` 으로 떨어지는 자리가 있다. 브랜치를 무조건 끼우면 그 자리가
+ * 브랜치 이름으로 덮인다. 그래서 `tabAgent(tab) === null` 일 때만 본다.
+ *
+ * 브랜치 뒤에 **표찰 번호를 붙인다** — 같은 worktree 의 셸 탭 둘이 같은 제목이 되면 안 된다
+ * (기준 A4). `claude N` · `세션 N` 과 같은 모양이라 번호 규칙도 하나로 유지된다.
+ *
+ * 브랜치가 없으면(detached HEAD·非git) `세션 N` 이다 — 빈 문자열이나 `null` 을 그리지 않고,
+ * `WorktreeRow.path` 로 대신하지도 않는다 (§2.5 "절대경로는 행에 넣지 않는다").
+ * detached HEAD 는 판독층이 **`(detached)` 라는 표식 문자열**로 준다
+ * (`main/git-worktrees.ts:42`) — 그건 브랜치 이름이 아니므로 여기서 없음으로 본다.
+ * 그 표식을 제목에 그대로 쓰면 같은 상태의 worktree 가 전부 같은 이름이 된다(A4 위반).
  *
  * ## provider 제목이 터미널 제목보다 **위**인 이유
  *
@@ -131,7 +164,8 @@ export function providerTitle(tab: TabRow): string | null {
  * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가
  * 같은 틱에 따라온다. 호출부마다 분기하면 두 목록이 갈라진다.
  */
-export function sessionTitle(tab: TabRow): string {
+export function sessionTitle(input: { tab: TabRow; branch: string | null }): string {
+  const { tab, branch } = input
   const named = userLabel(tab)
   if (named !== null) return named
   const provider = providerTitle(tab)
@@ -139,5 +173,8 @@ export function sessionTitle(tab: TabRow): string {
   const label = paneTitleLabel(tab)
   if (label !== null) return label
   const agent = tabAgent(tab)
-  return agent === null ? `세션 ${tab.number}` : `${agent} ${tab.number}`
+  if (agent !== null) return `${agent} ${tab.number}`
+  const branchName = branch === null ? '' : branch.trim()
+  if (branchName.length === 0 || branchName === DETACHED_HEAD) return `세션 ${tab.number}`
+  return `${branchName} ${tab.number}`
 }

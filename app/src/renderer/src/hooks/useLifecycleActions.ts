@@ -38,6 +38,16 @@ export function useLifecycleActions(state: AppState | null): {
   const openingWorktrees = useRef<Set<string>>(new Set())
   /** ⌘T 핸들러가 스테일 없이 최신값을 읽게 하는 ref 거울 — state 는 렌더용, ref 는 키 핸들러용. */
   const lastWorkspaceRef = useRef<string | null>(null)
+  /**
+   * 방금 만든 pane — **store 에 나타나면 그때 선택한다** (수정 라운드 3 G2).
+   *
+   * 응답이 오자마자 `setSelectedPane` 하면 안 된다. 그 시점의 `state` 에는 새 pane 이 아직
+   * 없어서 ⓐ 터미널이 없는 id 를 가리키고 ⓑ 바로 아래 자동 선택 이펙트의 가드
+   * (`panes.some(pane => pane.paneId === selectedPane)`)가 **false** 라 이펙트가 돌아
+   * `focused ?? 첫 pane` 으로 내 선택을 덮는다. push 가 먼저 오면 안 덮이므로 **경합**이다 —
+   * 하네스에서 우연히 통과할 수 있는 모양이라 ref 로 미뤄서 구조적으로 끊는다.
+   */
+  const pendingSelectRef = useRef<string | null>(null)
 
   const setActive = useCallback((workspaceId: string | null) => {
     lastWorkspaceRef.current = workspaceId
@@ -75,31 +85,21 @@ export function useLifecycleActions(state: AppState | null): {
       .find((ws): ws is WorkspaceRow => ws !== null && ws.workspaceId === activeWorkspaceId)
     if (workspace === undefined) return
     const panes = workspace.tabs.flatMap((tab) => tab.panes)
+    // G2 — 방금 만든 pane 이 **도착했으면** 그것을 선택한다. 아직이면 아무것도 안 한다:
+    // 여기서 첫 pane 으로 승격해 버리면 곧 올 새 탭이 선택을 못 받는다(그게 결함이었다).
+    const pending = pendingSelectRef.current
+    if (pending !== null) {
+      if (!panes.some((pane) => pane.paneId === pending)) return
+      pendingSelectRef.current = null
+      setSelectedPane(pending)
+      return
+    }
     if (panes.length === 0 || panes.some((pane) => pane.paneId === selectedPane)) return
     const [firstPane] = panes
     if (firstPane === undefined) return
     const promoted = panes.find((pane) => pane.focused) ?? firstPane
     setSelectedPane(promoted.paneId)
   }, [state, activeWorkspaceId, selectedPane])
-
-  /**
-   * ⌘T (mac) / Ctrl+T — 선택/최근 workspace 에 **빈 탭** (게이트 ① G2). 대상이 없으면 no-op.
-   * `+ 빈 탭` 클릭과 같은 경로(`createRow` kind:'shell' = tab.create 만)다.
-   */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || (event.key !== 't' && event.key !== 'T')) return
-      event.preventDefault()
-      const workspaceId = lastWorkspaceRef.current
-      if (workspaceId === null) return
-      setLifecycleNotice(null)
-      void window.corral.createRow({ workspaceId, kind: 'shell' }).then((result) => {
-        if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
-      })
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [])
 
   /**
    * 닫는다 (L3·L4·L9). `confirmed:false` 로 부르면 main 이 종료 게이트를 재고, 산 프로세스가
@@ -172,11 +172,36 @@ export function useLifecycleActions(state: AppState | null): {
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
       const result = await window.corral.createRow({ workspaceId, kind })
-      if (!result.ok) setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
-      // 성공이면 store push 로 탭이 나타난다 — 여기서 목록을 만지지 않는다.
+      if (!result.ok) {
+        setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
+        return
+      }
+      // G2 — **새 탭이 선택된다.** 이미 탭이 있는 worktree 에서는 자동 선택 이펙트가 안 돌아
+      // (그 workspace 에 선택된 pane 이 이미 있다) 새 탭이 뒤에 조용히 생기기만 했다.
+      // `CreateRowResult.paneId` 는 이미 렌더러까지 오던 값이다 — 버리고 있었을 뿐이다.
+      // 선택은 pane 이 store 에 도착한 뒤에 한다(위 `pendingSelectRef` 주석).
+      if (result.paneId !== null) pendingSelectRef.current = result.paneId
     },
     [setActive],
   )
+
+  /**
+   * ⌘T (mac) / Ctrl+T — 선택/최근 workspace 에 **빈 탭** (게이트 ① G2). 대상이 없으면 no-op.
+   * `+ 빈 탭` 클릭과 같은 경로(`createRow` kind:'shell' = tab.create 만)다.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || (event.key !== 't' && event.key !== 'T')) return
+      event.preventDefault()
+      const workspaceId = lastWorkspaceRef.current
+      if (workspaceId === null) return
+      // G2 — `+ 빈 탭` 과 **같은 함수**를 부른다. 옛 코드는 여기서 `window.corral.createRow` 를
+      // 직접 불러서 포커스 이동 같은 뒤처리가 한쪽에만 붙을 수 있었다. 경로를 하나로 둔다.
+      void createRow(workspaceId, 'shell')
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [createRow])
 
   /** pane 선택 — 터미널을 그 pane 으로. G2: 그 pane 의 workspace 를 ⌘T·탭바 대상으로 기록한다. */
   const selectPane = useCallback(

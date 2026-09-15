@@ -18,6 +18,9 @@ const REPO_DIR = path.dirname(APP_DIR)
 const RAW = path.join(REPO_DIR, 'specs/LIFE-373-mru-pane-split/raw/spike')
 const RUNS = path.join(RAW, 'runs')
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'l373-run-'))
+/** 반복 회차 — 같은 시나리오를 여러 번 돌려 실행 간 변동을 드러낸다 (writeP95 가 회차마다 흔들렸다). */
+const REP = String(process.env.L373_REP ?? '1')
+const suffix = REP === '1' ? '' : `.r${REP}`
 
 const WARMUP_MS = 1500
 const MEASURE_MS = 8000
@@ -117,7 +120,7 @@ const SCENARIOS = [
 // --- 실행 ----------------------------------------------------------------------
 async function runOne(spec, framesFile, frameStats) {
   const configPath = path.join(TMP, `${spec.name}.config.json`)
-  const outPath = path.join(RUNS, `${spec.name}.json`)
+  const outPath = path.join(RUNS, `${spec.name}${suffix}.json`)
   fs.writeFileSync(configPath, JSON.stringify({ ...spec, framesFile, out: outPath }, null, 2))
 
   const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), [HERE], {
@@ -188,7 +191,7 @@ async function runOne(spec, framesFile, frameStats) {
 
   if (!fs.existsSync(outPath)) {
     fs.mkdirSync(RUNS, { recursive: true })
-    fs.writeFileSync(outPath, JSON.stringify({ name: spec.name, failed: true, exit: code, log }, null, 2) + '\n')
+    fs.writeFileSync(outPath, JSON.stringify({ name: spec.name, rep: REP, failed: true, exit: code, log }, null, 2) + '\n')
     return { name: spec.name, ok: false, exit: code }
   }
 
@@ -214,6 +217,7 @@ async function runOne(spec, framesFile, frameStats) {
   const rssValues = samples.map((s) => s.rssKb).filter((v) => Number.isFinite(v))
   const merged = {
     ...result,
+    rep: REP,
     scenario: spec,
     frameStats,
     pids: { main: mainPid, renderer: rendererPid },
@@ -274,7 +278,7 @@ const machine = {
   display: '2560x1440 @144Hz (primary, 사용자 확인)',
   startedAt: new Date().toISOString(),
 }
-fs.writeFileSync(path.join(RAW, 'machine.json'), JSON.stringify(machine, null, 2) + '\n')
+if (REP === '1') fs.writeFileSync(path.join(RAW, 'machine.json'), JSON.stringify(machine, null, 2) + '\n')
 console.log('machine', machine.cpu, machine.macos, 'electron', machine.electron, 'xterm', machine.xterm)
 
 const summary = []
@@ -296,6 +300,7 @@ for (const spec of picked) {
   )
   summary.push({
     name: spec.name,
+    rep: REP,
     group: spec.group,
     panes: spec.panes.count,
     geometry: key,
@@ -323,7 +328,7 @@ for (const spec of picked) {
     rssKbEnd: m.ps.rssKbEnd,
     rssKbMax: m.ps.rssKbMax,
   })
-  fs.writeFileSync(path.join(RAW, 'summary.json'), JSON.stringify({ machine, runs: summary }, null, 2) + '\n')
+  fs.writeFileSync(path.join(RAW, `summary${suffix}.json`), JSON.stringify({ machine, rep: REP, runs: summary }, null, 2) + '\n')
   await sleep(600)
 }
 

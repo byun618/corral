@@ -14,9 +14,11 @@
 
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import {
   RAW_DIR,
+  controlSocketPath,
   RAW_SUBDIR,
   SESSION,
   createTab,
@@ -57,6 +59,31 @@ async function readTabs(app) {
 
 const labelOf = async (app, tabId) => (await readTabs(app)).find((row) => row.tabId === tabId)?.label ?? null
 
+/**
+ * 그 탭이 **탭바에 올라올 때까지** 워크스페이스를 활성으로 만든다.
+ *
+ * `.main-tab` 은 활성 워크스페이스의 탭만 그린다. 1차 실행에서 홈 아래 레포 칸이 `null` 로
+ * 기록된 게 이것이었다 — 상태에는 탭이 있는데 화면에는 다른 워크스페이스가 떠 있었다.
+ */
+async function ensureActive(app, worktreePath, tabId) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const seen = await until(async () => (await readTabs(app)).some((row) => row.tabId === tabId), {
+      timeoutMs: 6000,
+      everyMs: 250,
+      what: `탭바에 ${tabId}`,
+    }).catch(() => ({ ok: false }))
+    if (seen.ok) return true
+    await app.click(`[data-worktree="${worktreePath}"]`)
+  }
+  return false
+}
+
+/** 화면에 **실제로 떠 있는** pane (C14 의 기준값) — `TerminalPane` 이 그 id 를 달고 있다. */
+async function shownPane(app) {
+  const code = `(() => { const el = document.querySelector('[data-term-pane]'); return el === null ? null : el.getAttribute('data-term-pane') })()`
+  return (await app.send({ cmd: 'eval', code })).result
+}
+
 /** 그 pane 의 herdr 원문 제목 — 화면 값과 **나란히** 실어야 「무엇을 그렸나」가 검산된다. */
 async function paneTitles(paneId) {
   const pane = (await herdrRequest('pane.get', { pane_id: paneId })).pane ?? {}
@@ -74,6 +101,48 @@ const runLine = (paneId, line) => sendText(paneId, `${line}\n`)
 
 /** OSC 2 로 제목을 쏘는 셸 한 줄 (`printf`). 실측 근거는 10-gate1-fix2.md H-4 의 주입과 같다. */
 const oscLine = (title) => `printf '\\033]2;${title}\\007'`
+
+/**
+ * herdr 가 **제목 변화를 언제 알리나** — `pane.updated` 푸시를 직접 받아서 센다.
+ *
+ * 이 라운드의 계측이 두 번 어긋난 원인이라 관측으로 박아 둔다. 구독 프레임은 corral 의
+ * `adapter/internal/subscription.ts` 가 쓰는 것과 같은 모양이다(`events.subscribe` 한 줄).
+ */
+async function watchTitleEvents({ paneId, titles }) {
+  const socket = net.createConnection(controlSocketPath())
+  const pushes = []
+  let buffer = ''
+  socket.on('data', (chunk) => {
+    buffer += chunk.toString()
+    let index = buffer.indexOf('\n')
+    while (index >= 0) {
+      const line = buffer.slice(0, index)
+      buffer = buffer.slice(index + 1)
+      index = buffer.indexOf('\n')
+      if (line.trim().length === 0) continue
+      const frame = JSON.parse(line)
+      if (frame.event === 'pane_updated') pushes.push(frame)
+    }
+  })
+  await new Promise((resolve) => socket.once('connect', resolve))
+  socket.write(`${JSON.stringify({ id: 'sub', method: 'events.subscribe', params: { subscriptions: [{ type: 'pane.updated' }] } })}\n`)
+  await sleep(800)
+  const rows = []
+  for (const title of titles) {
+    const mark = pushes.length
+    await sendText(paneId, `${oscLine(title)}\n`)
+    await sleep(1800)
+    const pane = (await herdrRequest('pane.get', { pane_id: paneId })).pane ?? {}
+    rows.push({
+      쏜: title,
+      'pane.get 원문': pane.terminal_title ?? null,
+      'pane.get 벗긴 값': pane.terminal_title_stripped ?? null,
+      '푸시 수': pushes.length - mark,
+    })
+  }
+  socket.end()
+  return rows
+}
 
 async function main() {
   const out = { at: new Date().toISOString(), session: SESSION, isolatedHome: isolatedHome() }
@@ -121,6 +190,7 @@ async function main() {
   await app.click(`[data-worktree="${nearHome}"]`)
   await until(async () => (await tabsOf(app, nearHome)).length > 0, { timeoutMs: 30000, what: 'worktree opened (홈 아래)' })
   const homeTab = (await tabsOf(app, nearHome))[0]
+  const homeTabShown = await ensureActive(app, nearHome, homeTab.tabId)
   await runLine(homeTab.panes[0].paneId, oscLine(homePrompt))
   const atHome = await until(async () => (await labelOf(app, homeTab.tabId)) === '~/p', {
     timeoutMs: 20000,
@@ -135,6 +205,7 @@ async function main() {
     '홈 아래 — herdr 원문': homeTitles,
     '홈 아래 — 그려진 제목': await labelOf(app, homeTab.tabId),
     '홈 아래 — 그냥 15자로 잘랐다면': homePrompt.length <= 15 ? homePrompt : `..${homePrompt.slice(-13)}`,
+    '홈 아래 — 탭바에 올라왔나': homeTabShown,
     '홈 아래 통과': atHome.ok,
     통과: atWorktree.ok && atHome.ok,
     설명:
@@ -149,6 +220,7 @@ async function main() {
   // --- ⓔ C14 포커스된 pane 만 제목을 몬다 ---------------------------------------------------
   // `pane.split` 의 대상 칸은 `target_pane_id` 다 (`herdr api schema --json` 의 `PaneSplitParams`).
   // 1차 실행에서 `pane_id` 로 보냈다가 두 번째 pane 이 안 생겨 멈췄다.
+  let shotFocus = null
   const split = await herdrCall('pane.split', { target_pane_id: shellPane, direction: 'right', focus: false })
   const secondPane = await until(
     async () => {
@@ -181,35 +253,69 @@ async function main() {
         title: pane.title,
       }))
     }
-    const before = { panes: await panesOf(), 그려진: await labelOf(app, shellTab.tabId) }
-    // herdr 의 focus 는 **연결마다 따로**다 (`adapter/internal/protocol.ts` 의 제외 목록: control
-    // 구독은 `pane.focused` 를 안 받는다). 그래서 「포커스를 옮겼다」가 아니라 **corral 상태가
-    // 그 pane 을 활성으로 아는 시점**을 기다렸다가, 그때 제목이 그 pane 을 따라갔는지 본다.
-    await herdrCall('pane.focus', { pane_id: other })
-    const learned = await until(
-      async () => (await panesOf()).some((pane) => pane.paneId === other && pane.focused),
-      { timeoutMs: 20000, everyMs: 300, what: 'ⓔ corral 이 둘째 pane 을 활성으로 안다' },
-    ).catch(() => ({ ok: false }))
-    // 탭을 눌러 **화면에 뜬 pane** 도 그쪽으로 옮긴다 (corral 의 활성 pane = `selectedPane`).
-    await app.click(`[data-main-tab="${shellTab.tabId}"]`)
-    const moved = await until(async () => (await labelOf(app, shellTab.tabId)) === '둘째 pane 제목', {
+    // **이 탭을 배경으로 돌린다.** corral 은 탭 하나에 pane 하나만 화면에 띄우므로(`TerminalPane`),
+    // 활성 탭에서는 「화면에 뜬 pane」이 제목을 몬다 — split 한 둘째 pane 은 화면에 뜨질 않아
+    // 그 자리에서는 게이트를 잴 수 없다(1차·2차 실행에서 그렇게 어긋났다). 배경 탭은 화면에 뜬
+    // pane 이 **없어서** 다음 칸인 `focused` 가 정확히 드러난다 — 그게 C14 가 말하는 자리다.
+    const seenBefore = new Set((await tabsOf(app, root)).map((tab) => tab.tabId))
+    await createTab(app, root, 'shell')
+    const sideTab = await until(
+      async () => {
+        const fresh = (await tabsOf(app, root)).find((tab) => !seenBefore.has(tab.tabId)) ?? null
+        return fresh === null ? false : fresh
+      },
+      { timeoutMs: 30000, everyMs: 250, what: 'ⓔ 배경으로 돌릴 다른 탭' },
+    )
+    await app.click(`[data-main-tab="${sideTab.value.tabId}"]`)
+    const asideShown = await until(async () => (await shownPane(app)) !== shellPane, {
       timeoutMs: 20000,
       everyMs: 250,
-      what: 'ⓔ 제목이 그 pane 을 따라간다',
+      what: 'ⓔ 다른 탭이 화면을 쥔다',
     }).catch(() => ({ ok: false }))
+
+    // herdr 의 focus 는 **연결마다 따로**다 (`adapter/internal/protocol.ts` 의 제외 목록) —
+    // 그래서 「포커스를 옮겼다」가 아니라 **corral 상태가 그 pane 을 focused 로 아는 시점**을
+    // 기다렸다가, 그때 그려진 제목이 그 pane 을 따라갔는지 본다.
+    const followFocus = async (paneId, expected) => {
+      await herdrCall('pane.focus', { pane_id: paneId })
+      const learned = await until(
+        async () => (await panesOf()).some((pane) => pane.paneId === paneId && pane.focused),
+        { timeoutMs: 20000, everyMs: 300, what: `ⓔ corral 이 ${paneId} 를 focused 로 안다` },
+      ).catch(() => ({ ok: false }))
+      const moved = await until(async () => (await labelOf(app, shellTab.tabId)) === expected, {
+        timeoutMs: 20000,
+        everyMs: 250,
+        what: `ⓔ 제목이 ${paneId} 를 따라간다`,
+      }).catch(() => ({ ok: false }))
+      return {
+        'focus 준 pane': paneId,
+        기대: expected,
+        'corral 이 focused 로 아나': learned.ok,
+        '그려진 제목': await labelOf(app, shellTab.tabId),
+        '화면에 뜬 pane': await shownPane(app),
+        통과: learned.ok && moved.ok,
+      }
+    }
+    const toSecond = await followFocus(other, '둘째 pane 제목')
+    // **판별 순간에** 찍는다 — 제목이 둘째 pane 으로 옮겨간 그 화면이 반례와 갈리는 자리다.
+    shotFocus = await app.shot('r8-focus-gate')
+    // 되돌리기는 **관측**으로만 싣는다 — 판별 칸이 아니다. 포커스가 아무 데도 없으면 게이트는
+    // `panes[0]` 으로 떨어지므로(단위에 그 칸이 있다) 첫 pane 으로 돌아온 제목은 양쪽 이유로
+    // 설명된다. 2차 실행에서 실제로 corral 이 「p1 이 focused」를 못 배웠는데도 제목은 돌아왔다.
+    const backToFirst = await followFocus(shellPane, '첫 pane 제목')
     out['ⓔ 포커스된 pane 만 제목을 몬다 (C14)'] = {
       'split 전/후 pane': [shellPane, other],
-      '옮기기 전': before,
-      '옮긴 뒤 — corral 이 아는 pane': await panesOf(),
-      '옮긴 뒤 — 그려진 제목': await labelOf(app, shellTab.tabId),
-      'corral 이 활성 pane 을 배웠나': learned.ok,
-      통과: learned.ok && moved.ok && before.그려진 === '첫 pane 제목',
+      '배경으로 돌렸나': asideShown.ok,
+      '그때 pane 들': await panesOf(),
+      '둘째 pane 으로 (판별 칸)': toSecond,
+      '다시 첫 pane 으로 (관측)': backToFirst,
+      통과: asideShown.ok && toSecond.통과,
       설명:
-        '게이트가 없으면 목록의 **첫 pane**(`panes[0]`)이 계속 제목을 몬다 — 옮겨도 `첫 pane 제목` 에 머문다(반례 ⓓ). ' +
-        'herdr 의 focus 는 연결마다 따로라, 이 칸은 corral 이 활성으로 아는 pane 을 기준으로 잰다.',
+        '게이트가 없으면 **목록의 첫 pane**(`panes[0]`, r8 이전 구현)이 계속 제목을 몬다 — 포커스를 옮겨도 `첫 pane 제목` 에 머문다(반례 ⓓ). ' +
+        '활성 탭에서는 「화면에 뜬 pane」이 앞 단이라 이 칸은 **배경 탭**에서 잰다. ' +
+        '판별은 「첫 pane 이 아닌 pane 으로 제목이 옮겨가나」 한 방향이다.',
     }
   }
-  const shotFocus = await app.shot('r8-focus-gate')
   if (other !== null) await herdrCall('pane.close', { pane_id: other }).catch(() => null)
   await sleep(1500)
 
@@ -227,10 +333,19 @@ async function main() {
     everyMs: 150,
     what: 'ⓒ 첫 스피너 프레임',
   }).catch(() => ({ ok: false }))
+  // **표본마다 재동기**를 때린다. herdr 는 스피너 프레임마다 `pane_updated` 를 안 보낸다
+  // (`r8-herdr-title-events.json`: 벗긴 제목이 같으면 푸시가 없다) — 그래서 이벤트만 보면
+  // 억제가 있으나 없으나 한 가지로 보인다. 스냅샷 재동기는 **그 순간의 원문**을 통째로 실어
+  // 오므로, 억제가 없으면 재동기가 떨어진 프레임마다 다른 글자가 화면에 박힌다.
   const samples = []
+  let shotSpin = null
   for (let index = 0; index < 12; index += 1) {
+    await app.send({ cmd: 'resync', reason: `l366-r8-spin-${index}` })
+    await sleep(120)
     samples.push(await labelOf(app, shellTab.tabId))
-    await sleep(350)
+    // 스피너가 **도는 한가운데**서 찍는다 — 루프가 끝난 뒤 찍으면 반례와 같은 그림이 된다.
+    if (index === 5) shotSpin = await app.shot('r8-spinner-stable')
+    await sleep(230)
   }
   const spinTitles = await paneTitles(shellPane)
   const distinct = [...new Set(samples.filter((value) => (value ?? '').includes('PROBE')))]
@@ -249,7 +364,20 @@ async function main() {
     통과: spinning.ok && distinct.length === 1,
     설명: '억제를 빼면 프레임마다 다른 글자가 잡힌다 — 그게 반례 ⓒ 다.',
   }
-  const shotSpin = await app.shot('r8-spinner-stable')
+
+  // --- 관측: herdr 는 **벗긴 제목이 바뀔 때만** 알린다 ---------------------------------------
+  const eventRows = await watchTitleEvents({
+    paneId: shellPane,
+    titles: ['EVT-BASE', '⠋ Thinking EVT', '⠙ Thinking EVT', '✳ Claude EVT', 'Claude EVT', 'EVT-END'],
+  })
+  out['관측 — herdr 가 제목 변화를 언제 알리나'] = {
+    표: eventRows,
+    '푸시가 0 건이었던 줄': eventRows.filter((row) => row['푸시 수'] === 0).map((row) => row.쏜),
+    설명:
+      '`terminal_title_stripped` 가 그대로면 `pane_updated` 가 **안 온다** — 스피너 프레임과 `✳` 접두사만 다른 제목이 그렇다. ' +
+      '그래서 ⓒ 는 재동기를 때려서 재고, ⓐ 는 벗긴 제목이 매번 달라지는 문자열로 잰다. ' +
+      '이 성질은 C11ⓑ(원문을 쓴다)의 대가이기도 하다 — 화면의 장식 접두사가 본문이 바뀔 때까지 옛 값에 머문다(공백에 기록).',
+  }
 
   // --- ⓐ C11 거절 폐지 ---------------------------------------------------------------------
   //
@@ -257,29 +385,28 @@ async function main() {
   // 이라고 통째로 거절했고, 그 거절이 폐지됐는지는 그 문자열이 그려지는지로 갈린다. 실물 claude 를
   // 기다릴 필요가 없어서 셸 pane 에 같은 글자를 쏜다(제목 티어는 글자만 본다).
   // 두 번째 칸은 **실물 claude pane 의 관측**이다 — 이 격리 실행의 claude 가 무슨 제목을 쏘는지.
-  await runLine(shellPane, oscLine('✳ Claude Code'))
-  const vendorDrawn = await until(async () => (await labelOf(app, shellTab.tabId)) === '✳ Claude Code', {
-    timeoutMs: 20000,
-    everyMs: 250,
-    what: 'ⓐ 벤더 문자열이 그대로',
-  }).catch(() => ({ ok: false }))
-  const vendorTitles = await paneTitles(shellPane)
-  const vendorDrawnLabel = await labelOf(app, shellTab.tabId)
-  await runLine(shellPane, oscLine('Claude Code'))
-  const strippedDrawn = await until(async () => (await labelOf(app, shellTab.tabId)) === 'Claude Code', {
-    timeoutMs: 20000,
-    everyMs: 250,
-    what: 'ⓐ 접두사 없는 벤더 문자열도 그대로',
-  }).catch(() => ({ ok: false }))
+  //
+  // ⚠ 세 문자열의 **벗긴 제목이 서로 달라야** 한다. herdr 는 `terminal_title_stripped` 가 안
+  // 바뀌면 `pane_updated` 를 아예 안 보낸다(`r8-herdr-title-events.json` — 이 라운드에서 실측).
+  // 1차 실행은 `✳ Claude Code` → `Claude Code` 로 이어서 둘째 칸이 영영 안 왔다. 제품이 아니라
+  // 계측이 틀린 자리였고, 그 성질 자체는 공백으로 기록한다.
+  const vendorStrings = ['Claude Code', 'claude', '✳ Claude Code']
+  const vendorSeen = []
+  for (const title of vendorStrings) {
+    await runLine(shellPane, oscLine(title))
+    const drawn = await until(async () => (await labelOf(app, shellTab.tabId)) === title, {
+      timeoutMs: 20000,
+      everyMs: 250,
+      what: `ⓐ 벤더 문자열 ${title}`,
+    }).catch(() => ({ ok: false }))
+    vendorSeen.push({ 쏜: title, 'herdr 원문': await paneTitles(shellPane), 그려진: await labelOf(app, shellTab.tabId), 통과: drawn.ok })
+  }
   out['ⓐ 거절 폐지 — 벤더 문자열이 그대로 뜬다 (C11ⓐⓑ)'] = {
-    '쏜 제목': ['✳ Claude Code', 'Claude Code'],
-    'herdr 원문(첫 번째)': vendorTitles,
-    '그려진 제목(첫 번째)': vendorDrawnLabel,
-    'herdr 원문(두 번째)': await paneTitles(shellPane),
-    '그려진 제목(두 번째)': await labelOf(app, shellTab.tabId),
-    'r7 이었다면': '거절 → cwd 티어로 내려가 `..sion-identity`',
-    통과: vendorDrawn.ok && strippedDrawn.ok,
-    설명: 'r7 은 `Claude Code`·`claude` 를 유휴 기본값으로 거절했다 — 반례 ⓐ 가 그 목록을 되살린다.',
+    '쏜 제목': vendorStrings,
+    관측: vendorSeen,
+    'r7 이었다면': '셋 다 거절 → cwd 티어로 내려가 `..sion-identity`',
+    통과: vendorSeen.every((row) => row.통과),
+    설명: 'r7 은 `Claude Code`·`claude`·`✳ Claude Code` 를 유휴 기본값으로 거절했다 — 반례 ⓐ 가 그 목록을 되살린다.',
   }
   const shotVendor = await app.shot('r8-vendor-title')
 

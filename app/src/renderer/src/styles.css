@@ -61,9 +61,9 @@ button { font: inherit; }
 
 .brandbar { display: flex; align-items: center; gap: 8px; height: var(--h-brandbar); padding: 0 10px 0 12px; flex: 0 0 auto; }
 .brandbar-mark {
-  width: 15px; height: 15px; border-radius: 4px; background: var(--accent);
+  width: 17px; height: 17px; border-radius: 4px; background: var(--accent);
   display: flex; align-items: center; justify-content: center;
-  color: var(--fg-on-accent); font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  color: var(--fg-on-accent); font-family: var(--font-mono); font-size: 10px; font-weight: 700;
 }
 .brandbar-name { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
 .brandbar-hint { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); letter-spacing: .04em; }
@@ -76,7 +76,7 @@ button { font: inherit; }
   background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--radius-sm);
   flex: 0 0 auto;
 }
-.sidebar-search-glyph { color: var(--fg-faint); font-size: 11px; }
+.sidebar-search-glyph { color: var(--fg-faint); font-size: 13px; }
 .sidebar-search-input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--fg); font-size: 11.5px; }
 .sidebar-search-input::placeholder { color: var(--fg-faint); }
 
@@ -87,9 +87,9 @@ button { font: inherit; }
 .repos-header-spacer { flex: 1; }
 .repos-header-glyph {
   background: none; border: none; padding: 0; margin: 0;
-  font-size: 13px; color: var(--fg-muted); cursor: default;
+  font-size: 15px; color: var(--fg-muted); cursor: default;
 }
-.repos-header-add { font-family: var(--font-mono); font-size: 14px; cursor: pointer; }
+.repos-header-add { font-family: var(--font-mono); font-size: 16px; cursor: pointer; }
 .repos-header-add:hover, .repos-header-glyph:hover { color: var(--fg); }
 
 /* --- 레포 목록 / RepoRow (§2) ------------------------------------------------------------------ */
@@ -108,9 +108,9 @@ button { font: inherit; }
    사이드바 안에서 실제로 더 밝은 --bg-row-hover 로 대체한다(세션 행 hover 와 같은 톤 — 일관). */
 .repo-row.is-active { background: var(--bg-row-hover); }
 .repo-row-avatar {
-  width: 13px; height: 13px; border-radius: 3px; flex: 0 0 auto;
+  width: 15px; height: 15px; border-radius: 3px; flex: 0 0 auto;
   background: var(--line-strong); display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-mono); font-size: 8px; color: var(--fg-muted);
+  font-family: var(--font-mono); font-size: 9px; color: var(--fg-muted);
 }
 /* H-8 타이포 위계 — **레포 > worktree > 세션**. 크기·굵기·밝기가 같은 방향으로 움직인다
    (H-3 여백 위계와 같은 방향: 여백 큼 = 굵기 굵음 = 밝음 = 상위).
@@ -123,7 +123,7 @@ button { font: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .repo-row-spacer { flex: 1; }
-.repo-row-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.repo-row-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 14px; color: var(--fg-muted); }
 .repo-row-error { margin: 0; padding: 2px 12px 4px 33px; color: var(--st-error); font-size: 11px; }
 
 .repo-row-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity 80ms linear; }
@@ -132,7 +132,7 @@ button { font: inherit; }
   display: flex; align-items: center; justify-content: center;
   width: var(--h-action-btn); height: var(--h-action-btn); border-radius: 4px;
   background: none; border: none; color: var(--fg-muted);
-  font-family: var(--font-mono); font-size: 14px; cursor: pointer;
+  font-family: var(--font-mono); font-size: 16px; cursor: pointer;
 }
 .repo-row-action-btn:hover { background: var(--line); color: var(--fg); }
 
@@ -149,7 +149,7 @@ button { font: inherit; }
   border-radius: 4px; font-size: 11.5px; color: var(--fg-menu); cursor: pointer;
 }
 .repo-row-menu-item:hover { background: var(--bg-menu-hover); color: var(--fg); }
-.repo-row-menu-glyph { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+.repo-row-menu-glyph { font-family: var(--font-mono); font-size: 13px; color: var(--fg-muted); }
 .repo-row-menu-sep { height: 1px; margin: 4px 2px; background: var(--line-strong); }
 .repo-row-menu-danger { color: var(--st-error); }
 .repo-row-menu-danger .repo-row-menu-glyph { color: inherit; }
@@ -169,7 +169,7 @@ button { font: inherit; }
 .worktree-block-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity 80ms linear; }
 .worktree-block-actions.is-active { opacity: 1; }
 
-.worktree-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
+.worktree-dot { width: 7px; height: 7px; border-radius: 7px; flex: 0 0 auto; }
 .worktree-dot.tone-dirty { background: var(--st-dirty); }
 .worktree-dot.tone-ahead { background: var(--st-ahead); }
 .worktree-dot.tone-behind { background: var(--st-behind); }
@@ -255,7 +255,7 @@ button { font: inherit; }
    색은 `.agent-*` 가 정하고 SVG 는 `currentColor` 로 받는다. */
 .session-row-agent, .main-tab-agent {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 13px; height: 13px; line-height: 0;
+  width: 14px; height: 14px; line-height: 0;
   font-family: var(--font-mono); font-size: var(--fs-badge);
 }
 .agent-claude { color: var(--agent-claude); }
@@ -303,7 +303,7 @@ button { font: inherit; }
   flex: 0 0 auto; border-top: 1px solid var(--line-weak);
   display: flex; align-items: center; gap: 12px; height: var(--h-footer-toolbar); padding: 0 12px;
 }
-.sidebar-footer-glyph { background: none; border: none; padding: 0; margin: 0; font-size: 14px; color: var(--fg-muted); cursor: default; }
+.sidebar-footer-glyph { background: none; border: none; padding: 0; margin: 0; font-size: 16px; color: var(--fg-muted); cursor: default; }
 .sidebar-footer-btn { cursor: pointer; }
 .sidebar-footer-btn:hover, .sidebar-footer-glyph:hover { color: var(--fg); }
 .sidebar-footer-spacer { flex: 1; }
@@ -340,7 +340,7 @@ button { font: inherit; }
 /* ⚠ grok 아이콘은 `<img>`(원본 PNG)라 `.agent-grok` 의 `color` 가 안 먹는다 — 알파 채널이 없는
    팔레트 PNG 라 마스킹도 못 한다(J-3). 클래스는 구조·선택자 계약 때문에 그대로 둔다. */
 .main-tab-rename:focus { outline: none; }
-.main-tab-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
+.main-tab-dot { width: 7px; height: 7px; border-radius: 7px; flex: 0 0 auto; }
 .main-tab-dot.tone-accent { background: var(--accent); }
 .main-tab-dot.tone-neutral { background: var(--dot-neutral); }
 .main-tab-label {
@@ -376,7 +376,7 @@ button { font: inherit; }
 .inline-notice.tone-rejected, .inline-notice.tone-error {
   background: var(--bg-notice); border-bottom: 1px solid var(--line-notice);
 }
-.inline-notice-dot { width: 5px; height: 5px; border-radius: 5px; flex: 0 0 auto; background: var(--accent); }
+.inline-notice-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; background: var(--accent); }
 .inline-notice.tone-rejected .inline-notice-dot { background: var(--st-dirty); }
 .inline-notice.tone-error .inline-notice-dot { background: var(--st-error); }
 .inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere; }
@@ -447,7 +447,7 @@ button { font: inherit; }
 .modal-list { margin: 0; padding: 0 0 0 18px; }
 .modal-list li { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; color: var(--fg-menu); }
 
-.dot { width: 5px; height: 5px; border-radius: 5px; flex: 0 0 auto; }
+.dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; }
 .dot.tone-dirty { background: var(--st-dirty); }
 
 .confirm-name { font-weight: 600; color: var(--fg); }

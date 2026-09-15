@@ -107,7 +107,7 @@ function GrokMark({ size }: { size: number }): React.JSX.Element {
  * 세 소비처(`SessionRow` · 접힘 요약 행 · `MainTabBar`)가 **이 컴포넌트 하나**를 쓴다 —
  * 표를 한 군데 모아 둔 `session-glyphs.ts` 의 취지를 아이콘에도 적용한다.
  */
-export function AgentIcon({ kind, glyph, size = 12 }: { kind: AgentKind; glyph: string; size?: number }): React.JSX.Element {
+export function AgentIcon({ kind, glyph, size = 13 }: { kind: AgentKind; glyph: string; size?: number }): React.JSX.Element {
   switch (kind) {
     case 'claude':
       return <ClaudeMark size={size} />

@@ -66,7 +66,7 @@
   --fs-ui: 13px;       /* 창 기본 */
   --fs-row: 11.5px;    /* 트리/탭 라벨 (mono) */
   --fs-meta: 10px;     /* 메타·상태바 */
-  --fs-badge: 9.5px;
+  --fs-badge: 10.5px; /* 2026-09-15: 사용자 요청으로 아이콘·배지 계열 소폭 확대 (9.5px→10.5px) */
   --fs-term: 12px;
   --lh-term: 1.7;
 
@@ -108,7 +108,7 @@
   --agent-shell: #6b7473;
   --tab-min-w: 74px;
   --tab-max-w: 230px;
-  --h-action-btn: 20px;       /* RepoRow hover 액션 */
+  --h-action-btn: 22px;       /* RepoRow hover 액션 (2026-09-15: 20px→22px, 아이콘 확대) */
   --w-repo-menu: 168px;
   --w-modal-create: 400px;
   --w-modal-confirm: 380px;

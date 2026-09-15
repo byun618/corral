@@ -8,6 +8,8 @@
 //   ⓒ ai-title 이 오면 **첫 발화를 이긴다** (C1′ 순서 — 관문 ⑤ 반례가 이 칸이다)
 //   ⓓ `working` 일 때만 2차 줄이 `Bash: …` 다 — 상태를 `idle` 로 되돌리면 마지막 말로 돌아온다
 //   ⓔ 과도기 모양(자리와 다른 번호가 label 에 앉은 순간)에도 제목이 숫자로 안 떨어진다 (G7)
+//   ⓖ 개명 사전 차단이 **범위**(1..탭수)다 — `357` 은 살아야 한다 (G7 + LIFE-357 J-4)
+//   ⓕ 접은 그룹이 상태 클러스터 줄이다 (P6/C7)
 //
 // ⓔ 를 **직접 심는 이유**: 닫기 과도기는 몇 프레임짜리라 잡기가 운에 달렸다(r4 에서 확인:
 // 닫기 봉투만으로는 label 이 안 따라오고 resync 뒤에야 바뀐다). 그래서 herdr `tab.rename` 으로
@@ -36,6 +38,7 @@ const FIRST_PROMPT_TITLE = '트랜스크립트 판독층의 머리 읽기를 고
 const AI_TITLE = 'ai-title 이 첫 발화를 이긴다'
 const TOOL_LINE = 'Bash: npm run typecheck'
 const LAST_TEXT = '하네스가 지어낸 마지막 말이다.'
+const USER_NAME = '357'
 const SESSION_ID = 'a5a5a5a5-b5b5-4b5b-8b5b-000000000055'
 
 /** 메인 탭바를 **DOM 에서** 읽는다 — 상태가 아니라 그려진 결과를 본다. */
@@ -76,6 +79,21 @@ async function readSummary(app, worktreePath) {
     }
   })()`
   return (await app.send({ cmd: 'eval', code })).result
+}
+
+/** 인라인 알림 줄 — ⓖ 는 **막았다고 말했는지**로 잡는다 (제목으로 잡으면 판별력이 없다). */
+async function readNotices(app) {
+  return (await app.send({ cmd: 'eval', code: `(() => [...document.querySelectorAll('.inline-notice')].map((el) => el.textContent))()` })).result
+}
+
+/** 탭 이름을 인라인 편집으로 바꾼다 — 사용자 손과 같은 경로다 (사전 차단이 여기 붙어 있다). */
+async function renameTab(app, tabId, label) {
+  await app.dblclick(`[data-main-tab="${tabId}"]`)
+  await sleep(300)
+  await app.key('a', ['meta'])
+  await app.type(label)
+  await app.key('Enter')
+  await sleep(600)
 }
 
 /** 격리 HOME 에 트랜스크립트를 깐다. 줄 목록을 그대로 쓴다 — 자라는 것도 여기서 흉내 낸다. */
@@ -361,6 +379,50 @@ async function main() {
     설명: '닫기 과도기는 몇 프레임이라 못 잡을 수 있다 — 판정은 ⓔ(직접 심은 모양)가 한다.',
   }
 
+  // --- ⓖ 개명 사전 차단이 **범위**로 넓어졌다 (G7) -----------------------------------------
+  //
+  // r4 의 차단은 "자리 정확 일치"였고 알림 글월도 달랐다(`기본 표찰과 같아`). r5 에서 판별자를
+  // `1..탭수` 범위로 넓히면서 글월도 바뀌었으니 — **r4 의 ⓒ-1 프로브는 이제 이 알림을 못 잡는다**.
+  // 그래서 이 칸을 새로 둔다. 판별력은 `357` 반례가 준다: 차단이 숫자 전체로 넓어지면 거기서 깨진다.
+  const renameTarget = agent
+  const tabCountAtRename = (await tabsOf(app, repo.root)).length
+  const inRangeName = '2'
+  const titleBeforeRename = await drawnOf(renameTarget.tabId)
+  const herdrLabelOf = async (tabId) =>
+    ((await herdrCall('tab.list', {})).result?.tabs ?? []).find((item) => item.tab_id === tabId)?.label ?? null
+  // **`친_이름` 과 비교하면 안 된다**: 이 탭의 herdr 기본 표찰이 마침 `"2"` 다(자리 2). 그래서
+  // 개명 **전 값**과 견준다 — 실측에서 이 함정에 한 번 걸렸다 (`herdr label 이 그대로인가: false`).
+  const herdrLabelBefore = await herdrLabelOf(renameTarget.tabId)
+  await renameTab(app, renameTarget.tabId, inRangeName)
+  const notices = await readNotices(app)
+  out['ⓖ-1 범위 안 숫자로 개명 → 막힌다'] = {
+    tabId: renameTarget.tabId,
+    친_이름: inRangeName,
+    '그때 탭 수': tabCountAtRename,
+    알림: notices,
+    '막았다고 알렸나': notices.some((text) => typeof text === 'string' && text.includes('이름으로 구분되지 않는다')),
+    '개명 전 제목': titleBeforeRename,
+    '그려진 제목': await drawnOf(renameTarget.tabId),
+    '제목이 그대로인가': (await drawnOf(renameTarget.tabId)) === titleBeforeRename,
+    'herdr 기본 표찰(개명 전)': herdrLabelBefore,
+    'herdr label 이 그대로인가': (await herdrLabelOf(renameTarget.tabId)) === herdrLabelBefore,
+  }
+  // 알림이 **떠 있는 동안** 찍는다 — 357 개명 뒤에 찍으면 차단 장면이 아니라 생존 장면이다.
+  const shotRename = await app.shot('r5-rename-blocked')
+  await renameTab(app, renameTarget.tabId, USER_NAME)
+  const named = await until(async () => (await drawnOf(renameTarget.tabId)) === USER_NAME, {
+    timeoutMs: 10000,
+    everyMs: 200,
+    what: 'ⓖ-2 반례 — `357` 은 이름으로 산다',
+  })
+  out['ⓖ-2 반례 — 357 은 이름이다'] = {
+    친_이름: USER_NAME,
+    '그려진 제목': await drawnOf(renameTarget.tabId),
+    통과: named.ok,
+    설명: '차단이 숫자 전체로 넓어지면 여기서 깨진다 (LIFE-357 J-4 가 고친 자리).',
+  }
+  const shotNamed = await app.shot('r5-rename-357-survives')
+
   // --- ⓕ 접힘 요약 = 상태 클러스터 (P6/C7) ----------------------------------------------
   //
   // 상태가 다른 세션을 여럿 만들어 접는다. 상태는 ⓓ 와 같은 방법으로 심는다(셸 pane 에 권한을
@@ -422,10 +484,13 @@ async function main() {
     'ⓓ-1 working 이면 도구가 보인다 (B9)': out['ⓓ-1 working 이면 도구가 보인다'].통과,
     'ⓓ-2 idle 이면 도구를 지어내지 않는다 (B9 반례)': out['ⓓ-2 반례: 같은 꼬리·상태만 idle 이면 지어내지 않는다'].통과,
     'ⓔ 과도기에도 제목이 숫자로 안 떨어진다 (G7)': out['ⓔ 과도기에도 숫자로 안 떨어진다'].통과,
+    'ⓖ-1 범위 안 숫자 개명이 막힌다 (G7)':
+      out['ⓖ-1 범위 안 숫자로 개명 → 막힌다']['막았다고 알렸나'] && out['ⓖ-1 범위 안 숫자로 개명 → 막힌다']['제목이 그대로인가'],
+    'ⓖ-2 다른 이름은 산다 (J-4 회귀)': out['ⓖ-2 반례 — 357 은 이름이다'].통과,
     'ⓕ 접힘 요약이 상태 클러스터다 (C7)': out['ⓕ 접힘 요약 = 상태 클러스터'].통과,
     'id 가 유일한가 (하네스 전제)': collisions.length === 0,
   }
-  out.샷 = { shotPrompt, shotTool, shotTransient, shotSummary }
+  out.샷 = { shotPrompt, shotTool, shotTransient, shotRename, shotNamed, shotSummary }
   await app.stop()
   writeRaw('r5-orca.json', JSON.stringify(out, null, 2))
   console.log(JSON.stringify(out.판정, null, 2))

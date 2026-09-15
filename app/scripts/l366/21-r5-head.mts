@@ -24,9 +24,12 @@ import { clearTranscriptCache, readSessionDigest, HEAD_WINDOW_BYTES } from '../.
 import { cleanFirstPrompt } from '../../src/main/transcript-parse.js'
 import type { AgentSessionRef } from '../../src/shared/types.js'
 
+// 원자료 폴더. `L366_RAW_SUBDIR` 을 주면 그 아래로 간다 — 반례 실행이 본 실행 파일을 **덮지 않게**
+// (lib.mjs 의 `writeRaw` 와 같은 규칙. 한 번 덮어서 본 실행을 다시 돌렸다).
 const RAW_DIR = path.join(
   path.dirname(path.dirname(path.dirname(path.dirname(new URL(import.meta.url).pathname)))),
   'specs/LIFE-366-session-identity/raw/claude',
+  process.env['L366_RAW_SUBDIR'] ?? '',
 )
 
 const hash = (value: string | null): string | null =>

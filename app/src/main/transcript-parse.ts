@@ -426,11 +426,14 @@ export function cleanFirstPrompt(raw: string): string | null {
  * | `<local-command-stdout>` | 29개 파일 |
  *
  * `isSidechain` 은 **첫 발화 자리에서 0건**이라 건너뛰기를 안 만들었다 (기준 A9 — 안 나온
- * 형식을 미리 지우지 않는다). 이 규칙으로 363개 중 **347개**에서 첫 발화가 나왔고, 나머지
- * 16개는 머리 창 안에 사람 발화가 아예 없었다(부재).
+ * 형식을 미리 지우지 않는다). 이 규칙으로 실측 당시 365개 중 **349개**에서 첫 발화가 나왔다.
+ * 나머지 16개는 **두 갈래다** (`c5-b9-shapes-r5.json`): 7개는 머리 창 안에 사람 발화가 없고,
+ * 9개는 **첫 발화 레코드 한 줄이 256KB 머리 창을 넘어** 잘린다 — 뒤쪽은 판독 실패가 아니라
+ * 예산이 만든 부재다. 예산은 C6 가 먼저 박은 값이라 실측으로 넓히지 않았다(관문 ③) —
+ * 통과선 판정은 코디네이터 몫으로 올렸다.
  *
  * 소유자 확인은 C2 그대로 — 레코드의 `sessionId` 가 이 세션 참조와 같을 때만 쓴다.
- * 실측에서 347개 전부 일치했고 어긋난 파일은 0개였다.
+ * 실측에서 349개 전부 일치했고 어긋난 파일은 0개였다.
  */
 export function parseClaudeHead(input: { chunk: string; sessionId: string | null }): string | null {
   if (input.sessionId === null) return null

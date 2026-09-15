@@ -38,21 +38,28 @@ function title(input: { tab: TabRow; tabCount?: number | null; ordinal?: number;
   })
 }
 
+/** 터미널 제목 티어 한 줄 (C11) — `home` 은 프롬프트 모양을 cwd 값으로 바꿀 때만 쓴다. */
+function label(row: TabRow, home: string | null = null, selectedPaneId: string | null = null): string | null {
+  return paneTitleLabel({ tab: row, home, selectedPaneId })
+}
+
 function pane(input: {
   title?: string
   agent?: string | null
   agentSession?: AgentSessionRef | null
   cwd?: string | null
+  focused?: boolean
+  paneId?: string
 }): PaneRow {
   return {
-    paneId: 'wA:p1',
+    paneId: input.paneId ?? 'wA:p1',
     tabId: 'wA:t1',
     workspaceId: 'wA',
     title: input.title ?? '',
     agent: input.agent ?? null,
     agentStatus: 'idle',
     cwd: input.cwd ?? null,
-    focused: false,
+    focused: input.focused ?? false,
     agentSession: input.agentSession ?? null,
   }
 }
@@ -139,30 +146,80 @@ describe('sessionTitle — 5단 우선순위 (C1′, Orca 순서)', () => {
     expect(title({ tab: tab({ number: 2, panes, digest: blank }) })).toBe('SUMMARY.md 작성')
   })
 
-  it('상태 단어·에이전트 종류는 제목에 안 들어간다 (§4 ② — 빈 자리는 폴백이 받는다)', () => {
+  it('유휴 기본값은 **이제 제목이 된다** (C11ⓐ — r7 까지는 `claude N` 으로 떨어졌다)', () => {
     const idle = tab({ number: 2, panes: [pane({ title: 'Claude Code', agent: 'claude' })] })
-    expect(title({ tab: idle, ordinal: 2 })).toBe('claude 2')
+    expect(title({ tab: idle, ordinal: 2 })).toBe('Claude Code')
   })
 })
 
-describe('거절 목록 회귀 — LIFE-357 이 그대로다 (C3)', () => {
-  it('pane ID 는 제목이 아니다', () => {
-    expect(paneTitleLabel(tab({ panes: [pane({ title: 'wG:p3', agent: 'claude' })] }))).toBeNull()
+describe('제목 정책 (C11, 수정 라운드 8) — 거절은 pane ID 하나뿐', () => {
+  it('pane ID 는 여전히 제목이 아니다 (C11ⓔ — 어댑터 자체 폴백이다)', () => {
+    expect(label(tab({ panes: [pane({ title: 'wG:p3', agent: 'claude' })] }))).toBeNull()
   })
 
-  it('셸 프롬프트 제목(절대경로)은 제목이 아니다', () => {
-    const title = 'byun@sanghyunui-MacBookPro:/private/var/folders/q4/T/x'
-    expect(paneTitleLabel(tab({ panes: [pane({ title })] }))).toBeNull()
+  it('**벤더 유휴 기본값은 이제 뜬다** (C11ⓐⓑ) — 사용자가 Orca 에서 본 그 글자', () => {
+    expect(label(tab({ panes: [pane({ title: '✳ Claude Code', agent: 'claude' })] }))).toBe('✳ Claude Code')
+    expect(label(tab({ panes: [pane({ title: 'Claude Code', agent: 'claude' })] }))).toBe('Claude Code')
+    expect(label(tab({ panes: [pane({ title: 'claude', agent: 'claude' })] }))).toBe('claude')
   })
 
-  it('유휴 기본값(에이전트 이름 자체·`Claude Code`)은 제목이 아니다', () => {
-    expect(paneTitleLabel(tab({ panes: [pane({ title: 'claude', agent: 'claude' })] }))).toBeNull()
-    expect(paneTitleLabel(tab({ panes: [pane({ title: 'Claude Code', agent: 'claude' })] }))).toBeNull()
+  it('갓 뜬 claude 탭의 제목이 `✳ Claude Code` 다 — 폴백(`claude N`)까지 안 내려간다', () => {
+    const fresh = tab({ number: 2, panes: [pane({ title: '✳ Claude Code', agent: 'claude' })] })
+    expect(title({ tab: fresh, ordinal: 2 })).toBe('✳ Claude Code')
   })
 
-  it('거절당한 pane 다음에 쓸 만한 제목이 있으면 그것을 쓴다', () => {
-    const panes = [pane({ title: 'wG:p3', agent: 'claude' }), pane({ title: '테스트 고치기', agent: 'claude' })]
-    expect(paneTitleLabel(tab({ panes }))).toBe('테스트 고치기')
+  it('**C1′ 순서는 그대로다** — 재료가 있으면 OSC 단까지 안 내려간다 (이 라운드가 깨면 안 되는 것)', () => {
+    const panes = [pane({ title: '✳ Claude Code', agent: 'claude' })]
+    expect(title({ tab: tab({ number: 2, panes, digest: withProviderTitle('리뷰 지적 취합') }) })).toBe('리뷰 지적 취합')
+    expect(title({ tab: tab({ number: 2, panes, digest: withDigest({ firstPrompt: '테스트 고치기' }) }) })).toBe('테스트 고치기')
+    expect(title({ tab: tab({ label: '내 세션', number: 2, panes }) })).toBe('내 세션')
+  })
+
+  it('15자를 넘으면 왼쪽을 자른다 (C11ⓓ) — 길이만 잡는다', () => {
+    const long = '✳ Thinking… 리뷰 지적 취합을 마저 한다'
+    expect(long.length).toBeGreaterThan(15)
+    const drawn = label(tab({ panes: [pane({ title: long, agent: 'claude' })] }))
+    expect(drawn).toBe(`..${long.slice(-13)}`)
+    expect(drawn?.length).toBe(15)
+  })
+
+  it('15자 이하는 그대로다 — `✳ Claude Code` 는 13자라 안 잘린다', () => {
+    expect('✳ Claude Code'.length).toBe(13)
+    expect(label(tab({ panes: [pane({ title: '✳ Claude Code', agent: 'claude' })] }))).toBe('✳ Claude Code')
+  })
+
+  it('**포커스된 pane 만 제목을 몬다** (C14) — 뒤 pane 이 제목을 덮지 않는다', () => {
+    const panes = [
+      pane({ title: '앞 pane 제목', agent: 'claude' }),
+      pane({ title: '뒤 pane 제목', agent: 'claude', focused: true, paneId: 'wA:p2' }),
+    ]
+    expect(label(tab({ panes }))).toBe('뒤 pane 제목')
+  })
+
+  it('포커스가 아무 데도 없으면 첫 pane 을 쓴다 — 비활성 탭도 제목이 있어야 한다', () => {
+    const panes = [pane({ title: '앞 pane 제목', agent: 'claude' }), pane({ title: '뒤 pane 제목', agent: 'claude', paneId: 'wA:p2' })]
+    expect(label(tab({ panes }))).toBe('앞 pane 제목')
+  })
+
+  it('**화면에 뜬 pane 이 herdr 의 focused 보다 먼저다** (C14) — 보는 것과 제목이 안 어긋난다', () => {
+    const panes = [
+      pane({ title: '앞 pane 제목', agent: 'claude' }),
+      pane({ title: '뒤 pane 제목', agent: 'claude', focused: true, paneId: 'wA:p2' }),
+    ]
+    expect(label(tab({ panes }), null, 'wA:p1')).toBe('앞 pane 제목')
+  })
+
+  it('선택된 pane 이 **다른 탭의 것**이면 무시한다 — 비활성 탭도 제목이 있어야 한다', () => {
+    const panes = [pane({ title: '앞 pane 제목', agent: 'claude' })]
+    expect(label(tab({ panes }), null, 'wB:p9')).toBe('앞 pane 제목')
+  })
+
+  it('포커스된 pane 의 제목이 pane ID 면 **뒤 pane 으로 안 넘어간다** (C14 의 대가)', () => {
+    const panes = [
+      pane({ title: '앞 pane 제목', agent: 'claude' }),
+      pane({ title: 'wA:p2', agent: 'claude', focused: true, paneId: 'wA:p2' }),
+    ]
+    expect(label(tab({ panes }))).toBeNull()
   })
 
   it('herdr 기본 label(표찰 번호 문자열)은 사용자 이름이 아니다', () => {
@@ -195,6 +252,7 @@ describe('tabAgent · providerTitle', () => {
 // `:~` 로 접히는 실환경 프롬프트를 못 걸렀다 (`04-gate1-check.md` §2). 아래 4줄은 사용자
 // 실환경 `herdr pane list` 실측값 그대로다 — 다음 라운드가 또 격리 표본만 보고 좁히면 여기서 깨진다.
 describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
+  const HOME = '/Users/byun'
   const MEASURED = [
     'byun@sanghyunui-MacBookPro:~',
     'byun@sanghyunui-MacBookPro:~/repos/byun618/corral',
@@ -202,23 +260,40 @@ describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
     'byun@sanghyunui-MacBookPro:/private/var/folders/x',
   ]
 
+  // **이제 거절이 아니라 치환이다** (C11ⓒ): 프롬프트 모양이면 그 pane 의 cwd 로 만든 값을 쓴다.
+  // herdr 는 OSC 2 만 주므로 그냥 15자로 자르면 홈에서 `..-MacBookPro:~` 가 되어 Orca(`~`)와
+  // 어긋난다 — 그 어긋남을 아래 마지막 칸이 못 박는다.
   for (const measured of MEASURED) {
-    it(`걸러진다: ${measured}`, () => {
-      expect(paneTitleLabel(tab({ panes: [pane({ title: measured })] }))).toBeNull()
+    it(`프롬프트 모양으로 잡힌다: ${measured}`, () => {
+      expect(label(tab({ panes: [pane({ title: measured })] }))).toBe(null) // cwd 가 없으면 부재
     })
   }
 
-  it('그래서 셸 탭 제목이 프롬프트 문자열이 되지 않는다', () => {
+  it('홈에서는 **`~`** 가 된다 — 그냥 자르면 `..-MacBookPro:~` 라 Orca 와 어긋난다', () => {
+    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~', cwd: HOME })]
+    expect(label(tab({ panes }), HOME)).toBe('~')
+    expect(truncatePathLeft('byun@sanghyunui-MacBookPro:~')).toBe('..-MacBookPro:~') // 안 쓰는 쪽
+  })
+
+  it('worktree 에서는 잘린 경로가 된다 — Orca 화면과 같은 글자', () => {
+    const cwd = `${HOME}/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity`
+    const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity', cwd })]
+    expect(label(tab({ panes }), HOME)).toBe('..sion-identity')
+  })
+
+  it('cwd 를 모르면 그 티어는 부재다 — 긴 프롬프트 문자열이 절대 안 뜬다', () => {
     const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~/repos/byun618/corral' })]
     expect(title({ tab: tab({ number: 2, panes }), ordinal: 2 })).toBe('terminal 2')
   })
 
-  // 반례 — 걸러지면 **안 되는** 제목. 필터가 넓어지면 여기서 깨진다.
-  it('정상 제목은 안 걸러진다', () => {
-    expect(paneTitleLabel(tab({ panes: [pane({ title: 'SUMMARY.md 작성', agent: 'claude' })] }))).toBe('SUMMARY.md 작성')
-    expect(paneTitleLabel(tab({ panes: [pane({ title: '리뷰 지적 취합', agent: 'claude' })] }))).toBe('리뷰 지적 취합')
+  // 반례 — 프롬프트로 잡히면 **안 되는** 제목. 판별이 넓어지면 여기서 깨진다.
+  it('정상 제목은 프롬프트로 안 잡힌다', () => {
+    expect(label(tab({ panes: [pane({ title: 'SUMMARY.md 작성', agent: 'claude' })] }))).toBe('SUMMARY.md 작성')
+    expect(label(tab({ panes: [pane({ title: '리뷰 지적 취합', agent: 'claude' })] }))).toBe('리뷰 지적 취합')
     // `@` 가 **문장 가운데**에 있는 제목 — `^` 앵커가 일하고 있다는 증거다.
-    expect(paneTitleLabel(tab({ panes: [pane({ title: 'review foo@bar PR' })] }))).toBe('review foo@bar PR')
+    expect(label(tab({ panes: [pane({ title: 'fix foo@bar PR' })] }))).toBe('fix foo@bar PR')
+    // 17자짜리는 프롬프트가 아니라 **길이**로 잘린다 (C11ⓓ) — 치환이 아니라 절단이다.
+    expect(label(tab({ panes: [pane({ title: 'review foo@bar PR' })] }))).toBe('..ew foo@bar PR')
   })
 
   it('사용자가 준 이름은 프롬프트 모양이어도 산다 — 필터는 터미널 제목 티어에만 있다', () => {
@@ -299,8 +374,13 @@ describe('herdr 기본 label 은 위치다 — 실측표 (G5·G7)', () => {
       expect(title({ tab: claude, tabCount: 3 })).toBe('리뷰 지적 취합')
     })
 
-    it('ai-title 도 첫 발화도 없는 claude 탭은 `claude N` 이다', () => {
+    it('ai-title 도 첫 발화도 없는 claude 탭은 **터미널 제목**이다 (C11ⓐ 이후)', () => {
       const claude = tab({ label: '2', number: 3, panes: [pane({ title: 'Claude Code', agent: 'claude' })] })
+      expect(title({ tab: claude, tabCount: 3, ordinal: 4 })).toBe('Claude Code')
+    })
+
+    it('터미널 제목마저 없으면 그때 `claude N` 이다', () => {
+      const claude = tab({ label: '2', number: 3, panes: [pane({ title: '', agent: 'claude' })] })
       expect(title({ tab: claude, tabCount: 3, ordinal: 4 })).toBe('claude 4')
     })
   })
@@ -423,7 +503,7 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
     const claude = tab({
       label: '1',
       number: 1,
-      panes: [pane({ title: 'Claude Code', agent: 'claude', cwd: `${HOME}/repos/byun618/corral` })],
+      panes: [pane({ title: '', agent: 'claude', cwd: `${HOME}/repos/byun618/corral` })],
     })
     expect(title({ tab: claude, tabCount: 1, home: HOME, ordinal: 2 })).toBe('claude 2')
   })

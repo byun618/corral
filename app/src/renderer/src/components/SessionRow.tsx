@@ -27,6 +27,7 @@ export function SessionRow({
   tab,
   tabCount,
   home,
+  selectedPane,
   active,
   integrations,
   now,
@@ -41,6 +42,8 @@ export function SessionRow({
   tabCount: number | null
   /** 셸 폴백이 경로를 접는 데 쓴다 (C9). `AppState.home` 그대로다. */
   home: string
+  /** 지금 화면에 뜬 pane (C14) — 그 pane 이 제목을 몬다. */
+  selectedPane: string | null
   active: boolean
   integrations: readonly IntegrationRow[]
   /** 흐르는 「지금」 — 경과 시간이 얼지 않게 한 곳에서 틱을 받는다 (`useNowTick`). */
@@ -54,7 +57,7 @@ export function SessionRow({
   const kind = agentIcon(tabAgent(tab))
   const secondary = secondaryLine({ tab, integrations })
   const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
-  const text = sessionRowText({ title: sessionTitle({ tab, tabCount, ordinal, home }), secondary })
+  const text = sessionRowText({ title: sessionTitle({ tab, tabCount, ordinal, home, selectedPaneId: selectedPane }), secondary })
   const elapsed = elapsedLabel(tab.digest.lastActivityAt, now)
   return (
     <div

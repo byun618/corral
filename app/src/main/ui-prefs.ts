@@ -15,14 +15,43 @@ import path from 'node:path'
 import { isRecord, safeParse } from '../shared/json.js'
 import { log } from './log.js'
 
+/** 폴백 번호 배정 한 칸 (LIFE-366 C13) — `shared/types.ts` 의 `TabOrdinal` 과 같은 모양이다. */
+export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
+
 export type UiPrefs = {
   sidebarWidth: number | null
   collapsedRepos: string[]
   collapsedGroups: string[]
+  /**
+   * 폴백 번호 배정표 (LIFE-366 C13, 수정 라운드 8).
+   *
+   * **왜 여기냐**: Orca 는 `tab.defaultTitle` 에 저장한다. corral 에서 같은 자리는 herdr
+   * `tab.label` 인데 거기 쓰면 `userLabel` 이 그 숫자를 사용자 이름으로 읽어 **G5 가 되살아난다**.
+   * 그래서 "저장하는 것은 화면 UI 상태뿐" 인 이 파일에 싣는다 — 폴백 번호는 herdr 가 모르는,
+   * 화면이 혼자 쓰는 표시 상태다.
+   */
+  tabOrdinals: TabOrdinal[]
 }
 
 const VERSION = 1
-const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [] }
+const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [] }
+
+/** 저장된 배정표를 **모양을 확인하며** 읽는다 — 손으로 고친 파일이 화면을 깨뜨리지 않게. */
+function readTabOrdinals(value: unknown): TabOrdinal[] {
+  if (!Array.isArray(value)) return []
+  const rows: TabOrdinal[] = []
+  for (const item of value) {
+    if (!isRecord(item)) continue
+    const tabId = item['tabId']
+    const groupId = item['groupId']
+    const ordinal = item['ordinal']
+    if (typeof tabId !== 'string' || tabId.length === 0) continue
+    if (typeof groupId !== 'string') continue
+    if (typeof ordinal !== 'number' || !Number.isInteger(ordinal) || ordinal < 1) continue
+    rows.push({ tabId, groupId, ordinal })
+  }
+  return rows
+}
 
 export class UiPrefsStore {
   private readonly file: string
@@ -48,6 +77,7 @@ export class UiPrefsStore {
         sidebarWidth: typeof width === 'number' ? width : null,
         collapsedRepos: Array.isArray(repos) ? repos.filter((item): item is string => typeof item === 'string') : [],
         collapsedGroups: Array.isArray(groups) ? groups.filter((item): item is string => typeof item === 'string') : [],
+        tabOrdinals: readTabOrdinals(parsed['tabOrdinals']),
       }
       log('ui_prefs.load', { file: this.file })
     } catch (error) {
@@ -57,7 +87,12 @@ export class UiPrefsStore {
   }
 
   get(): UiPrefs {
-    return { ...this.prefs, collapsedRepos: [...this.prefs.collapsedRepos], collapsedGroups: [...this.prefs.collapsedGroups] }
+    return {
+      ...this.prefs,
+      collapsedRepos: [...this.prefs.collapsedRepos],
+      collapsedGroups: [...this.prefs.collapsedGroups],
+      tabOrdinals: this.prefs.tabOrdinals.map((row) => ({ ...row })),
+    }
   }
 
   /** 부분 갱신 — 준 필드만 덮는다(레지스트리처럼 즉시 원자적 쓰기, 디바운스 없음 — 쓰기 빈도가 낮다). */

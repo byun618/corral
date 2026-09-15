@@ -31,7 +31,7 @@ describe('폴백 번호 = 비어 있는 가장 작은 번호 (C10)', () => {
   it('옆 탭이 닫혀도 **남은 탭의 번호는 안 바뀐다** (②)', () => {
     const book = createOrdinalBook()
     for (const tabId of ['t1', 't2', 't3', 't4']) book.ordinalFor({ tabId, groupId: W })
-    book.keepOnly(['t3', 't4'])
+    book.keepOnly({ tabIds: ['t3', 't4'], groupIds: [W] })
     expect(book.ordinalFor({ tabId: 't3', groupId: W })).toBe(3)
     expect(book.ordinalFor({ tabId: 't4', groupId: W })).toBe(4)
   })
@@ -39,7 +39,7 @@ describe('폴백 번호 = 비어 있는 가장 작은 번호 (C10)', () => {
   it('닫고 다시 만들면 **빈 번호를 다시 쓴다** — 여기가 herdr 표찰(`TabRow.number`)과 갈린다 (①)', () => {
     const book = createOrdinalBook()
     for (const tabId of ['t1', 't2', 't3', 't4']) book.ordinalFor({ tabId, groupId: W })
-    book.keepOnly(['t3', 't4']) // 1·2 가 풀린다
+    book.keepOnly({ tabIds: ['t3', 't4'], groupIds: [W] }) // 1·2 가 풀린다
     expect(book.ordinalFor({ tabId: 't5', groupId: W })).toBe(1)
     expect(book.ordinalFor({ tabId: 't6', groupId: W })).toBe(2)
     expect(book.ordinalFor({ tabId: 't7', groupId: W })).toBe(5)
@@ -49,7 +49,7 @@ describe('폴백 번호 = 비어 있는 가장 작은 번호 (C10)', () => {
   it('가운데만 비면 **그 가운데**를 채운다 (가장 작은 빈 번호)', () => {
     const book = createOrdinalBook()
     for (const tabId of ['t1', 't2', 't3']) book.ordinalFor({ tabId, groupId: W })
-    book.keepOnly(['t1', 't3'])
+    book.keepOnly({ tabIds: ['t1', 't3'], groupIds: [W] })
     expect(book.ordinalFor({ tabId: 't9', groupId: W })).toBe(2)
   })
 
@@ -70,7 +70,66 @@ describe('폴백 번호 = 비어 있는 가장 작은 번호 (C10)', () => {
   it('`keepOnly` 는 살아 있는 탭만 남긴다 — 배정표가 무한히 자라지 않는다', () => {
     const book = createOrdinalBook()
     for (const tabId of ['t1', 't2', 't3']) book.ordinalFor({ tabId, groupId: W })
-    book.keepOnly(['t2'])
+    book.keepOnly({ tabIds: ['t2'], groupIds: [W] })
     expect(book.entries()).toEqual([{ tabId: 't2', groupId: W, ordinal: 2 }])
+  })
+
+  // --- C13: 재기동에도 남는다 (수정 라운드 8) -----------------------------------
+
+  it('저장된 배정표를 실으면 **그 번호 그대로**다', () => {
+    const book = createOrdinalBook()
+    book.hydrate([
+      { tabId: 't9', groupId: W, ordinal: 4 },
+      { tabId: 't8', groupId: W, ordinal: 2 },
+    ])
+    expect(book.ordinalFor({ tabId: 't9', groupId: W })).toBe(4)
+    expect(book.ordinalFor({ tabId: 't8', groupId: W })).toBe(2)
+    // 그 뒤 새 탭은 여전히 **비어 있는 가장 작은 번호**를 받는다.
+    expect(book.ordinalFor({ tabId: 't1', groupId: W })).toBe(1)
+    expect(book.ordinalFor({ tabId: 't2', groupId: W })).toBe(3)
+  })
+
+  it('싣기 전에 이미 배정된 게 있어도 **저장값이 이긴다** (부팅 경합)', () => {
+    const book = createOrdinalBook()
+    book.ordinalFor({ tabId: 't9', groupId: W }) // 1 을 집었다
+    book.hydrate([{ tabId: 't9', groupId: W, ordinal: 4 }])
+    expect(book.ordinalFor({ tabId: 't9', groupId: W })).toBe(4)
+  })
+
+  it('저장 파일이 망가져 있어도 화면이 안 깨진다 — 같은 번호·이상한 값은 버린다', () => {
+    const book = createOrdinalBook()
+    book.hydrate([
+      { tabId: 't1', groupId: W, ordinal: 1 },
+      { tabId: 't2', groupId: W, ordinal: 1 }, // 중복 — 버린다
+      { tabId: 't3', groupId: W, ordinal: 0 }, // 1 미만 — 버린다
+      { tabId: '', groupId: W, ordinal: 2 }, // 빈 tabId — 버린다
+    ])
+    expect(book.entries()).toEqual([{ tabId: 't1', groupId: W, ordinal: 1 }])
+    expect(book.ordinalFor({ tabId: 't2', groupId: W })).toBe(2)
+  })
+
+  it('**안 열린 워크스페이스**의 칸은 추릴 때 살아남는다 — 재기동 직후 화면이 비어 있다', () => {
+    // 화면에서 C13 이 깨진 자리다: 부팅 직후 상태에는 열린 워크스페이스가 하나도 없어서
+    // `tabIds` 가 비었고, 옛 `keepOnly` 는 그걸 "전부 닫혔다" 로 읽어 실어 온 표를 지웠다.
+    const book = createOrdinalBook()
+    book.hydrate([
+      { tabId: 'wA:t1', groupId: 'wA', ordinal: 2 },
+      { tabId: 'wB:t1', groupId: 'wB', ordinal: 1 },
+    ])
+    book.keepOnly({ tabIds: [], groupIds: [] })
+    expect(book.entries()).toHaveLength(2)
+    // 워크스페이스가 화면에 있는데 그 탭이 없으면 그때는 푼다 — wB 만 열린 순간이다.
+    book.keepOnly({ tabIds: [], groupIds: ['wB'] })
+    expect(book.entries()).toEqual([{ tabId: 'wA:t1', groupId: 'wA', ordinal: 2 }])
+  })
+
+  it('`entries()` 가 그대로 저장되고 그대로 실린다 — 왕복이 값을 안 바꾼다', () => {
+    const book = createOrdinalBook()
+    for (const tabId of ['t1', 't2', 't3']) book.ordinalFor({ tabId, groupId: W })
+    book.keepOnly({ tabIds: ['t2', 't3'], groupIds: [W] })
+    const saved = JSON.parse(JSON.stringify(book.entries()))
+    const next = createOrdinalBook()
+    next.hydrate(saved)
+    expect(next.entries()).toEqual(book.entries())
   })
 })

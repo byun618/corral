@@ -768,10 +768,16 @@ export class WorkspaceStore {
       // 주석이 약속한 이 보호가 1회차 코드에는 이름(agent)에만 있었다 (수정 1회차 M2).
       agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       agent: pickAgent(value, before?.agent ?? null),
+      // **원문 제목을 먼저 읽는다** (LIFE-366 C11ⓑ, 수정 라운드 8). r7 까지는 `title` →
+      // `terminal_title_stripped` 순이라 herdr 가 `✳` 를 벗긴 값이 먼저 잡혔고, 그래서 corral 은
+      // 상태 접두사를 **한 번도 못 봤다**(00-analysis.md §2.4 의 "미관측"이 그 사유였다).
+      // Orca 는 접두사가 붙은 원문을 그대로 띄운다 — 같은 글자를 보려면 원문을 집어야 한다.
+      // 마지막 `?? id` 는 터미널이 준 제목이 아니라 **어댑터의 자체 폴백**이다 (C11ⓔ 가 거절을
+      // 거기에만 남긴 이유).
       title:
+        readString(value, 'terminal_title') ??
         readString(value, 'title') ??
         readString(value, 'terminal_title_stripped') ??
-        readString(value, 'terminal_title') ??
         readString(value, 'label') ??
         id,
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),

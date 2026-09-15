@@ -267,6 +267,7 @@ export function WorktreeBlock({
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
               integrations={integrations}
               home={home}
+              selectedPane={selectedPane}
               now={now}
               onSelect={() => onSelectSession(tab)}
               onClose={() => onCloseSession(tab.tabId)}

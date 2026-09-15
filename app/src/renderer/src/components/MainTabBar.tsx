@@ -51,6 +51,7 @@ function MainTab({
   tab,
   tabCount,
   home,
+  selectedPane,
   active,
   onSelect,
   onClose,
@@ -65,6 +66,8 @@ function MainTab({
   tabCount: number
   /** 셸 폴백이 경로를 접는 데 쓴다 (C9). `AppState.home` 그대로다. */
   home: string
+  /** 지금 화면에 뜬 pane (C14) — 그 pane 이 제목을 몬다. */
+  selectedPane: string | null
   active: boolean
   onSelect: () => void
   onClose: () => void
@@ -96,7 +99,7 @@ function MainTab({
   // 폴백 번호는 **사이드바와 같은 배정표**에서 온다 (C10) — 두 목록이 다른 번호를 그리면
   // 같은 세션이 두 이름으로 보인다 (B6).
   const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
-  const seed = sessionTitle({ tab, tabCount, ordinal, home })
+  const seed = sessionTitle({ tab, tabCount, ordinal, home, selectedPaneId: selectedPane })
   const beginEdit = (): void => {
     seedAtEditRef.current = seed
     setDraft(seed)
@@ -260,6 +263,7 @@ export function MainTabBar({
           // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님).
           tabCount={tabs.length}
           home={home}
+          selectedPane={selectedPane}
           active={tab.panes.some((pane) => pane.paneId === selectedPane)}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}

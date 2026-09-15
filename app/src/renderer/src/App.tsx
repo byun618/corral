@@ -6,7 +6,7 @@
 //
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppState, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
@@ -14,6 +14,7 @@ import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { MainTabBar } from './components/MainTabBar.js'
 import { tabOrdinals } from './fallback-ordinal.js'
+import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
 import { StatusBar } from './components/StatusBar.js'
@@ -58,9 +59,47 @@ export function App(): React.JSX.Element {
   const groupCollapse = usePersistentCollapse('collapsedGroups')
   const memoryLabel = useMemoryLabel()
 
+  /**
+   * 상태가 화면에 오기 **전에** pane 제목의 스피너 프레임을 억제한다 (C12).
+   *
+   * 한 자리에서 하는 이유는 사이드바와 탭바가 **같은 프레임**에 서야 하기 때문이다 — 각자
+   * 억제하면 두 목록이 다른 글자에 멈춘다 (B6). 표시 함수는 순수하게 남는다.
+   */
+  const receive = useCallback((next: AppState) => {
+    setState({ ...next, repos: stabilizePaneTitles({ repos: next.repos, frames: paneTitleFrames }) })
+  }, [])
+
   useEffect(() => {
-    void window.corral.getState().then(setState)
-    return window.corral.onState(setState)
+    void window.corral.getState().then(receive)
+    return window.corral.onState(receive)
+  }, [receive])
+
+  /**
+   * 폴백 번호 배정표를 **첫 그림 전에** 싣는다 (C13).
+   *
+   * 다 싣기 전에는 부트 화면에 머문다 — 탭을 먼저 그리면 그 탭이 1번을 집어 저장값과 어긋나고,
+   * 사용자 눈에는 번호가 한 번 튀었다가 제자리를 찾는 것으로 보인다. 읽기가 실패해도 화면은
+   * 떠야 하므로 **실패도 「다 실었다」로 친다**(빈 배정표 = r7 동작).
+   */
+  const [ordinalsReady, setOrdinalsReady] = useState(false)
+  /** 마지막으로 저장한 배정표 — 안 바뀌었으면 파일을 다시 안 쓴다. */
+  const savedOrdinals = useRef('')
+  useEffect(() => {
+    let cancelled = false
+    window.corral
+      .getUiPrefs()
+      .then((prefs) => {
+        if (!cancelled) tabOrdinals.hydrate(prefs.tabOrdinals)
+      })
+      .catch(() => {
+        // 읽기 실패 — 빈 배정표로 간다.
+      })
+      .finally(() => {
+        if (!cancelled) setOrdinalsReady(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // ESC 로 닫는다 — **문서에 건다** (모달 안 포커스 유무와 무관하게, 옛 App.tsx 121-161줄과 동일 이유).
@@ -106,17 +145,34 @@ export function App(): React.JSX.Element {
    * 배정은 컴포넌트가 처음 그릴 때 일어나고, 해제는 여기 한 곳에서만 한다 — 탭이 닫히면 그
    * 번호가 풀려 다음 탭이 그 자리를 쓴다. 렌더 뒤(effect)라 닫힌 탭의 번호가 **한 프레임** 더
    * 잡혀 있는데, 그 프레임에 새 탭이 생겨도 번호가 하나 밀릴 뿐 이미 그린 탭의 번호는 안 바뀐다.
+   *
+   * ⚠ **다 싣기 전에는 아무것도 하지 않는다** (`ordinalsReady`). 이 effect 는 화면이 부트 문구에
+   * 머무는 동안에도 돈다 — 첫 상태가 hydrate 보다 먼저 오면 여기서 빈 배정표를 파일에 써서
+   * 저장값을 지워버린다. 화면에서 실제로 그렇게 깨졌다 (raw/claude/r8-ordinal-wipe.md).
+   * 추리는 범위도 **지금 열려 있는 워크스페이스 안**으로 좁힌다 — 같은 순간 열린 워크스페이스가
+   * 하나도 없으면 `live` 가 비어서 배정표가 통째로 날아간다.
    */
   useEffect(() => {
-    if (state === null) return
+    if (state === null || !ordinalsReady) return
     const live: string[] = []
+    const shown: string[] = []
     for (const repo of state.repos) {
       for (const worktree of repo.worktrees) {
-        for (const tab of worktree.workspace?.tabs ?? []) live.push(tab.tabId)
+        const workspace = worktree.workspace
+        if (workspace === null) continue
+        shown.push(workspace.workspaceId)
+        for (const tab of workspace.tabs) live.push(tab.tabId)
       }
     }
-    tabOrdinals.keepOnly(live)
-  }, [state])
+    tabOrdinals.keepOnly({ tabIds: live, groupIds: shown })
+    // 배정이 **실제로 바뀐 때만** 저장한다 (C13) — 이 effect 는 상태 갱신마다 돌고,
+    // ui-prefs 는 디바운스 없이 즉시 파일을 쓴다.
+    const entries = tabOrdinals.entries()
+    const serialized = JSON.stringify(entries)
+    if (serialized === savedOrdinals.current) return
+    savedOrdinals.current = serialized
+    window.corral.setUiPrefs({ tabOrdinals: entries })
+  }, [state, ordinalsReady])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -126,7 +182,7 @@ export function App(): React.JSX.Element {
     window.corral.reportRendered(state.revision)
   })
 
-  if (state === null) return <div className="boot">부트스트랩…</div>
+  if (state === null || !ordinalsReady) return <div className="boot">부트스트랩…</div>
 
   const browse = async (): Promise<void> => {
     setBrowsing(true)

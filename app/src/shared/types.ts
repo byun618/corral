@@ -378,10 +378,20 @@ export type BrowseReposResult = {
  * 않는 현상을 실측했다(ui-prefs.ts 주석 참고). `collapsedRepos`는 레포 루트 목록,
  * `collapsedGroups`는 AgentGroupHeader 가 접힌 worktree 경로 목록 — 접힌 것만 담는다(기본은 펼침).
  */
+/**
+ * 폴백 번호 배정 한 칸 (LIFE-366 C13, 수정 라운드 8) — `terminal N`·`claude N` 의 N.
+ *
+ * Orca 는 이 값을 `tab.defaultTitle` 에 저장한다. corral 은 herdr `tab.label` 에 **쓰면 안 되므로**
+ * (`userLabel` 이 사용자 이름으로 읽어 G5 가 되살아난다) 화면 영속 파일에 싣는다.
+ */
+export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
+
 export type UiPrefs = {
   sidebarWidth: number | null
   collapsedRepos: string[]
   collapsedGroups: string[]
+  /** 폴백 번호 배정표 (C13) — 재기동해도 같은 탭이 같은 번호를 쓴다. */
+  tabOrdinals: TabOrdinal[]
 }
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------

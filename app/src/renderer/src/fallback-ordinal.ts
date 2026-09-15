@@ -31,15 +31,26 @@
 // 별로 나누지 않는다: 갈래는 탭 수명 중에 바뀔 수 있고(셸 탭에서 에이전트를 띄운다), 그때
 // 번호가 갈아끼워지면 ② 가 깨진다.
 //
-// 앱을 껐다 켜면 배정표가 빈다 — 그때는 보이는 순서대로 1..N 이 다시 매겨진다. Orca 는 자기
-// 스토어에 저장해 그것도 남기지만 corral 에는 저장 자리가 없다 (**공백으로 적는다**).
+// **재기동에도 남는다** (C13, 수정 라운드 8). r7 은 "corral 에는 저장 자리가 없다" 고 적었는데
+// 좁은 서술이었다 — herdr `tab.label` 이 막혀 있을 뿐(G5) 화면 영속 파일(`main/ui-prefs.ts`,
+// `<userData>/ui-prefs.json`)이 있었다. 그 파일의 원칙("저장하는 것은 화면 UI 상태뿐")에 폴백
+// 번호가 정확히 들어맞는다: herdr 는 이 번호를 모르고, 화면만 쓴다.
+// 부팅 때 `hydrate` 로 싣고, 배정이 바뀔 때 `entries()` 를 그대로 저장한다 (App.tsx).
 
 /** tabId → 폴백 번호 배정표. 렌더러 한 벌이 공유한다. */
 export type OrdinalBook = {
   /** 이 탭의 번호. 처음 보는 탭이면 **그 순간 비어 있는 가장 작은 번호**를 배정한다. */
   ordinalFor: (input: { tabId: string; groupId: string }) => number
-  /** 살아 있는 탭만 남긴다 — 닫힌 탭이 쥐고 있던 번호가 여기서 풀린다. */
-  keepOnly: (tabIds: readonly string[]) => void
+  /**
+   * 살아 있는 탭만 남긴다 — 닫힌 탭이 쥐고 있던 번호가 여기서 풀린다.
+   *
+   * **지금 화면에 있는 워크스페이스 안에서만** 푼다 (`groupIds`). 안 그러면 재기동 직후처럼
+   * 아직 아무 워크스페이스도 안 열린 순간에 `tabIds` 가 비어서 **실어 온 배정표가 통째로
+   * 날아간다** — C13 이 화면에서 깨졌던 자리다(raw/claude/r8-ordinal-wipe.md).
+   */
+  keepOnly: (input: { tabIds: readonly string[]; groupIds: readonly string[] }) => void
+  /** 저장된 배정표를 싣는다 (C13). **부팅 때 한 번**, 아무 탭도 그리기 전에 부른다. */
+  hydrate: (rows: readonly { tabId: string; groupId: string; ordinal: number }[]) => void
   /** 지금 배정표 (검사·계측용). */
   entries: () => { tabId: string; groupId: string; ordinal: number }[]
 }
@@ -61,9 +72,27 @@ export function createOrdinalBook(): OrdinalBook {
       book.set(tabId, { groupId, ordinal })
       return ordinal
     },
-    keepOnly: (tabIds) => {
+    hydrate: (rows) => {
+      // 저장된 값이 **기준**이다 — 이 시점에 이미 배정된 게 있으면(부팅 경합) 저장값으로 덮는다.
+      // 같은 번호가 둘이 되지 않게, 앞서 온 행이 이긴다.
+      book.clear()
+      for (const row of rows) {
+        if (row.tabId.length === 0 || !Number.isInteger(row.ordinal) || row.ordinal < 1) continue
+        if (book.has(row.tabId)) continue
+        const taken = [...book.values()].some((entry) => entry.groupId === row.groupId && entry.ordinal === row.ordinal)
+        if (taken) continue
+        book.set(row.tabId, { groupId: row.groupId, ordinal: row.ordinal })
+      }
+    },
+    keepOnly: ({ tabIds, groupIds }) => {
       const live = new Set(tabIds)
-      for (const tabId of [...book.keys()]) if (!live.has(tabId)) book.delete(tabId)
+      const shown = new Set(groupIds)
+      for (const [tabId, entry] of [...book.entries()]) {
+        // 안 보이는 워크스페이스의 칸은 **그대로 둔다** — 그 탭들은 사라진 게 아니라
+        // 아직 안 열렸을 뿐이다. 다시 열면 같은 번호로 돌아와야 한다 (C13).
+        if (!shown.has(entry.groupId)) continue
+        if (!live.has(tabId)) book.delete(tabId)
+      }
     },
     entries: () =>
       [...book.entries()].map(([tabId, entry]) => ({ tabId, groupId: entry.groupId, ordinal: entry.ordinal })),

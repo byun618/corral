@@ -104,7 +104,6 @@
   /* 에이전트 종류 아이콘 색 (10-gate1-fix2.md H-6) — `AgentKind` 네 값에만 대응한다.
      CSS 는 이 토큰만 참조하고 리터럴 hex 를 두지 않는다. */
   --agent-claude: #d97757;
-  --agent-codex: #7fb682;
   --agent-grok: #8fa7c4;
   --agent-shell: #6b7473;
   --tab-min-w: 74px;

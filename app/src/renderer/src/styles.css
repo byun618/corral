@@ -259,7 +259,14 @@ button { font: inherit; }
   font-family: var(--font-mono); font-size: var(--fs-badge);
 }
 .agent-claude { color: var(--agent-claude); }
-.agent-codex { color: var(--agent-codex); }
+/* codex 만 **브랜드 색을 안 씌운다** — Orca 원본이 그렇다 (`OpenAIIcon` 은 `fill="currentColor"`,
+   `components/status-bar/icons.tsx:4-17`). OpenAI 마크가 흑백이라 주변 글자 색을 그대로 쓴다.
+   `claude` 는 원본이 `fill="#D97757"` 리터럴이라 토큰 색을 씌우는 게 맞다 — 그래서 둘이 갈린다.
+   LIFE-357 이 "`--agent-codex` 가 OpenAI 브랜드 색이 아니다" 를 미결로 넘겼고
+   (`06-result-gate1-fix3.md` §87·§245), 사용자가 여기서 그 질문에 답했다. */
+.agent-codex { color: var(--fg-muted); }
+.session-row.is-active .agent-codex,
+.main-tab.is-active .agent-codex { color: var(--fg); }
 .agent-grok { color: var(--agent-grok); }
 .agent-shell { color: var(--agent-shell); }
 

@@ -41,10 +41,11 @@
 //
 // 위의 모든 것은 꼬리다. 제목의 「첫 사용자 발화」 티어는 파일 **맨 앞**에 있어서 꼬리로는 영영
 // 못 닿는다. 그래서 머리 창(256KB)을 하나 더 열되, 세 가지로 묶어 A6 을 지킨다:
-//   · **파일당 1회** (`headScanned`) — 첫 발화는 세션 내내 안 바뀐다. 파일이 자라도 안 다시 읽는다
-//   · 이미 읽은 조각이 0바이트부터면 **추가 읽기 0바이트** (작은 파일이 대부분 여기 선다)
-//   · 그래서 겹치는 건 **첫 채움 주기 1회뿐**이고, 그 1회의 통과선이 C6 의 ≤2.25MB·≤50ms 다.
-//     두 번째 주기부터는 기존 A6(≤2MB)이 그대로 산다
+//   · **끝나는 재판독** (`headDone`, 수정 라운드 6·C6′) — 찾았거나 창을 꽉 채워 읽었으면 그만
+//     읽는다. r5 의 「파일당 1회」는 **못 찾은 것까지 영구히** 닫아서, 갓 뜬 세션(메타 한 줄)을
+//     먼저 읽으면 사용자가 첫 말을 친 뒤에도 제목이 영영 안 살았다 (codex R1)
+//   · 아직 안 끝난 파일은 **창보다 작다** — 꼬리 조각이 이미 0바이트부터라 재판독이 **0바이트**다
+//   · 그래서 머리를 읽은 주기만 ≤2.25MB·≤50ms(C6′-③)이고, 나머지 주기는 기존 A6(≤2MB)이다
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -61,9 +62,10 @@ export const TAIL_MAX_BYTES = 2 * 1024 * 1024
  * **머리 창** — 세션의 첫 사용자 발화를 찾는 앞쪽 조각 (C6, 수정 라운드 5).
  *
  * 꼬리 창과 같은 256KB 다. 실측이 그 크기를 고른 게 아니라 **확인**했다: 사용자 트랜스크립트
- * 363개에서 첫 발화의 바이트 오프셋이 p50 3.5KB · p95 6.6KB · 최대 202KB 로 전부 이 창 안이다
- * (`raw/claude/c5-b9-shapes-r5.json`). 창을 넘는 파일은 **부재**로 둔다 — 창을 키워 C6 예산을
- * 깨느니 모른다고 말하는 쪽이다 (기준 A8 과 같은 결).
+ * 365개에서 첫 발화의 바이트 오프셋이 p50 3.5KB · p95 6.6KB · 최대 202KB 로 전부 이 창 안이다
+ * (`raw/claude/c5-b9-shapes-r6.json`). 다만 **레코드 한 줄의 끝**이 창을 넘는 파일이 9개 있고,
+ * 그건 부재로 둔다 — 창을 키워 미리 박은 예산을 깨느니 모른다고 말하는 쪽이다. 기준 **C5′** 가
+ * 그 칸을 명문화했다: 부재가 허용되는 경우는 **줄 끝이 창을 넘을 때뿐**이고 그 외 부재는 미달이다.
  */
 export const HEAD_WINDOW_BYTES = 256 * 1024
 
@@ -83,15 +85,20 @@ type CacheEntry = {
    */
   titleScanned: boolean
   /**
-   * 이 파일의 **머리를 한 번 읽어 봤나** (수정 라운드 5, C6).
+   * 이 파일의 **머리 판독이 끝났나** (수정 라운드 6, C6′-④).
    *
-   * 첫 발화는 세션 내내 안 바뀌므로 **파일이 자라도 다시 안 읽는다** — 이 깃발이 없으면 갱신마다
-   * 머리 256KB 를 다시 읽어 C6 의 「파일당 1회」가 깨진다. 못 찾은 경우에도 선다: 첫 발화가
-   * 안 나온 파일(실측 당시 365개 중 16개 — 창 안에 사람 발화가 없는 7개 + 레코드 한 줄이
-   * 머리 창을 넘는 9개)을 갱신마다 다시 훑지 않는다. 뒤쪽 9개는 **다시 읽어도 같다** —
-   * 예산이 그대로인 한 잘리는 자리도 그대로다.
+   * 두 경우에만 선다. ① 첫 발화를 **찾았다** ② 머리 창을 **꽉 채워** 읽었다(파일이 창보다
+   * 크다). JSONL 은 append-only 라 그 뒤로 앞쪽 256KB 는 안 바뀌므로, 두 경우 다 다시 읽어야
+   * 같은 답이 나온다.
+   *
+   * r5 는 여기서 **못 찾은 것까지** 닫았다(`headScanned`). 그래서 갓 뜬 세션 — 트랜스크립트에
+   * 메타 한 줄뿐인 순간에 통합 참조가 먼저 관측되면 — 사용자가 첫 말을 친 뒤에도 제목이 영영
+   * 안 살아났다(codex R1, 사용자가 원래 신고한 「제목이 안 바뀐다」와 같은 장면).
+   *
+   * 안 끝난 파일은 **창보다 작다**. 그 크기면 꼬리 조각이 이미 파일 전체라 재판독이 추가
+   * **0바이트**다 — 재판독을 열어도 C6′-② (주기당 ≤256KB)가 안 깨지는 이유다.
    */
-  headScanned: boolean
+  headDone: boolean
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -119,10 +126,12 @@ function shouldResolveNow(key: string, now: number): boolean {
 
 /**
  * 이번 갱신 주기에 실제로 읽은 바이트·파일 수 — A6·A7 계측이 이 값을 로그로 가져간다.
+ * `headBytes` 는 그중 **머리 창** 몫이다 (수정 라운드 6·C6′-③): 통과선이 「머리를 읽은
+ * 주기 ≤2.25MB · 나머지 주기 ≤2MB」로 갈려서, 주기를 **어느 쪽으로 세는지**가 값에 달렸다.
  * `statOnly` 는 **읽기 0바이트로 끝난 참조** 수다: 파일이 안 바뀌어 `stat` 한 번으로 끝났거나,
  * 못 찾은 참조라 이번 주기엔 훑기조차 건너뛴 경우.
  */
-export type ReadCost = { files: number; statOnly: number; bytes: number; ms: number }
+export type ReadCost = { files: number; statOnly: number; bytes: number; headBytes: number; ms: number }
 
 /**
  * 판독 캐시를 통째로 비운다 — **세션을 갈아탈 때** main 이 부른다 (수정 라운드 1, V10).
@@ -281,8 +290,15 @@ function readDigest(input: {
   agent: TranscriptAgent
   sessionId: string | null
   titleScanned: boolean
-  headScanned: boolean
-}): { digest: SessionDigest; bytes: number; titleScanned: boolean; headScanned: boolean; firstPrompt: string | null } {
+  headDone: boolean
+}): {
+  digest: SessionDigest
+  bytes: number
+  headBytes: number
+  titleScanned: boolean
+  headDone: boolean
+  firstPrompt: string | null
+} {
   const firstFrom = Math.max(0, input.size - TAIL_WINDOW_BYTES)
   let chunk = readRange(input.file, firstFrom, input.size)
   let bytes = input.size - firstFrom
@@ -313,20 +329,29 @@ function readDigest(input: {
   // 시작하면(작은 파일·확장이 끝까지 간 경우) 그 조각에 머리가 들어 있다 — 그때는
   // **한 바이트도 더 안 읽는다.** 그 외에는 앞에서 `HEAD_WINDOW_BYTES` 만큼 따로 읽는다.
   let firstPrompt: string | null = null
-  let headScanned = input.headScanned
-  if (!headScanned) {
-    const headChunk = from === 0 ? chunk : readRange(input.file, 0, Math.min(HEAD_WINDOW_BYTES, input.size))
-    if (from > 0) bytes += Math.min(HEAD_WINDOW_BYTES, input.size)
+  let headBytes = 0
+  let headDone = input.headDone
+  if (!headDone) {
+    // 꼬리 조각을 **그대로 쓰는 건 파일이 창 안에 다 들어올 때뿐**이다. 확장이 0바이트까지 간
+    // 큰 파일에서 그 조각을 쓰면 창 **밖**의 레코드까지 읽어, 같은 파일을 두고 판독층과 C5′
+    // 오라클의 답이 갈린다(줄 끝이 창을 넘는 9개가 그 자리다). 그래서 그때는 창을 따로 읽는다.
+    const reuse = from === 0 && input.size <= HEAD_WINDOW_BYTES
+    const headChunk = reuse ? chunk : readRange(input.file, 0, Math.min(HEAD_WINDOW_BYTES, input.size))
+    if (!reuse) {
+      headBytes = Math.min(HEAD_WINDOW_BYTES, input.size)
+      bytes += headBytes
+    }
     firstPrompt = parseHead({ agent: input.agent, chunk: headChunk, sessionId: input.sessionId })
-    // 찾았든 못 찾았든 **다시 안 읽는다.** 첫 발화는 세션 내내 안 바뀌고, 창 안에 없으면
-    // 파일이 자란다고 나타나지도 않는다 (앞쪽은 그대로다).
-    headScanned = true
+    // **끝나는 조건은 둘뿐이다** (C6′-④): 찾았거나, 창을 꽉 채워 읽었거나. 파일이 창보다 작고
+    // 아직 못 찾았으면 **안 닫는다** — 사용자가 이제 첫 말을 칠 수도 있다.
+    headDone = firstPrompt !== null || input.size >= HEAD_WINDOW_BYTES
   }
 
   return {
     titleScanned,
-    headScanned,
+    headDone,
     firstPrompt,
+    headBytes,
     digest: {
       activity: parsed.activity,
       providerTitle: parsed.providerTitle,
@@ -346,16 +371,22 @@ function readDigest(input: {
  * **던지지 않는다.** 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 되므로 모든 실패는
  * `activity` 의 갈래로 내려앉는다 (기준 A8).
  */
-export function readSessionDigest(ref: AgentSessionRef | null): { digest: SessionDigest; bytes: number; statOnly: boolean } {
-  if (ref === null) return { digest: EMPTY, bytes: 0, statOnly: false }
+export function readSessionDigest(ref: AgentSessionRef | null): {
+  digest: SessionDigest
+  bytes: number
+  headBytes: number
+  statOnly: boolean
+} {
+  if (ref === null) return { digest: EMPTY, bytes: 0, headBytes: 0, statOnly: false }
   const agent = transcriptAgent(ref.agent)
-  if (agent === null) return { digest: EMPTY, bytes: 0, statOnly: false }
+  if (agent === null) return { digest: EMPTY, bytes: 0, headBytes: 0, statOnly: false }
 
   const key = cacheKey(ref)
   const cached = cache.get(key) ?? null
-  const unresolved: { digest: SessionDigest; bytes: number } = {
+  const unresolved: { digest: SessionDigest; bytes: number; headBytes: number } = {
     digest: { ...EMPTY, activity: { state: 'unresolved' } },
     bytes: 0,
+    headBytes: 0,
   }
   let file = cached?.file ?? null
   if (file === null) {
@@ -383,12 +414,13 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
     return {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
       bytes: 0,
+      headBytes: 0,
       statOnly: false,
     }
   }
 
   if (cached !== null && cached.file === file && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-    return { digest: cached.digest, bytes: 0, statOnly: true }
+    return { digest: cached.digest, bytes: 0, headBytes: 0, statOnly: true }
   }
 
   try {
@@ -401,9 +433,9 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
       // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
       // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
       titleScanned: cached?.titleScanned ?? false,
-      // 머리도 같은 이유로 **파일을 건너 이어진다** (C6 「파일당 1회」). 안 이으면 파일이 자랄
-      // 때마다 머리 256KB 를 다시 읽는다.
-      headScanned: cached?.headScanned ?? false,
+      // 머리는 **끝났을 때만** 이어진다 (C6′-④). 안 끝난 파일은 자랄 때마다 다시 읽는데,
+      // 그런 파일은 창보다 작아서 그 재판독이 추가 0바이트다.
+      headDone: cached?.headDone ?? false,
     })
     // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
     // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
@@ -412,9 +444,9 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
     const digest: SessionDigest = {
       ...read.digest,
       providerTitle: read.digest.providerTitle ?? cached?.digest.providerTitle ?? null,
-      // **첫 발화도 이어 나른다.** 머리는 파일당 한 번만 읽으므로 두 번째 갱신부터는 이번
-      // 판독에 값이 아예 안 실린다 — 안 이으면 두 번째 갱신에서 제목이 폴백으로 되돌아간다
-      // (V2 가 provider 제목에서 잡았던 것과 같은 결함).
+      // **첫 발화도 이어 나른다.** 머리 판독이 끝난 뒤로는 이번 판독에 값이 아예 안 실린다 —
+      // 안 이으면 다음 갱신에서 제목이 폴백으로 되돌아간다 (V2 가 provider 제목에서 잡았던
+      // 것과 같은 결함).
       firstPrompt: read.digest.firstPrompt ?? cached?.digest.firstPrompt ?? null,
     }
     cache.set(key, {
@@ -423,14 +455,15 @@ export function readSessionDigest(ref: AgentSessionRef | null): { digest: Sessio
       mtimeMs: stat.mtimeMs,
       digest,
       titleScanned: read.titleScanned,
-      headScanned: read.headScanned,
+      headDone: read.headDone,
     })
-    return { digest, bytes: read.bytes, statOnly: false }
+    return { digest, bytes: read.bytes, headBytes: read.headBytes, statOnly: false }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
     return {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
       bytes: 0,
+      headBytes: 0,
       statOnly: false,
     }
   }
@@ -453,6 +486,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   let files = 0
   let statOnly = 0
   let bytes = 0
+  let headBytes = 0
   for (const [id, ref] of refs) {
     const read = readSessionDigest(ref)
     digests.set(id, read.digest)
@@ -460,6 +494,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     files += 1
     if (read.statOnly) statOnly += 1
     bytes += read.bytes
+    headBytes += read.headBytes
   }
-  return { digests, cost: { files, statOnly, bytes, ms: Date.now() - startedAt } }
+  return { digests, cost: { files, statOnly, bytes, headBytes, ms: Date.now() - startedAt } }
 }

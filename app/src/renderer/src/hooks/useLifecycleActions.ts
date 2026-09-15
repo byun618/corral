@@ -134,21 +134,29 @@ export function useLifecycleActions(state: AppState | null): {
    * 푸시로 목록이 알아서 바뀌므로 여기서 아무것도 만지지 않는다. 거절·실패만 알림으로 올린다
    * (승격 금지 — 이 알림 경로가 그 기준의 화면쪽 끝이다).
    */
-  const renameRow = useCallback(async ({ tabId, label, tabNumber }: { tabId: string; label: string; tabNumber: number }): Promise<void> => {
-    setLifecycleNotice(null)
-    // J-4 — **기본 표찰과 같은 이름은 보내기 전에 막는다.** herdr 는 이런 label 도 저장에
-    // 성공하지만(grok 소켓 실측: `"42"` 저장됨) 화면 쪽에서는 `userLabel` 이 기본 표찰과
-    // 구분할 수 없어 제목이 안 바뀐다 — 보내 놓고 아무 일도 안 일어난 것처럼 보이는 상태가
-    // 이 라운드가 없애려는 바로 그 거짓말이다. 막고, 왜 막았는지 말한다.
-    if (label === String(tabNumber)) {
-      setLifecycleNotice({ kind: 'error', message: `"${label}" 은 이 탭의 기본 표찰과 같아 이름으로 구분되지 않는다 — 다른 이름을 써라` })
-      return
-    }
-    const result = await window.corral.renameRow({ tabId, label })
-    if (result.outcome === 'rejected')
-      setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
-    else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
-  }, [])
+  const renameRow = useCallback(
+    async ({ tabId, label, tabNumber, position }: { tabId: string; label: string; tabNumber: number; position: number }): Promise<void> => {
+      setLifecycleNotice(null)
+      // J-4 — **기본 표찰과 같은 이름은 보내기 전에 막는다.** herdr 는 이런 label 도 저장에
+      // 성공하지만(grok 소켓 실측: `"42"` 저장됨) 화면 쪽에서는 `userLabel` 이 기본 표찰과
+      // 구분할 수 없어 제목이 안 바뀐다 — 보내 놓고 아무 일도 안 일어난 것처럼 보이는 상태가
+      // 이 라운드가 없애려는 바로 그 거짓말이다. 막고, 왜 막았는지 말한다.
+      //
+      // 수정 라운드 4 (G5): **자리 번호도 같이 막는다.** herdr 기본 label 은 `number` 가 아니라
+      // 워크스페이스 안 1-기반 **자리**라(`session-title.userLabel` 주석의 실측표), 판별자가
+      // 둘을 다 거절하게 된 이상 사전 차단도 같은 둘을 막아야 한다 — 안 그러면 자리 번호로
+      // 개명한 순간 그 이름이 화면에서 조용히 사라진다(막으려던 거짓말이 반대편으로 돌아온다).
+      if (label === String(tabNumber) || label === String(position)) {
+        setLifecycleNotice({ kind: 'error', message: `"${label}" 은 이 탭의 기본 표찰과 같아 이름으로 구분되지 않는다 — 다른 이름을 써라` })
+        return
+      }
+      const result = await window.corral.renameRow({ tabId, label })
+      if (result.outcome === 'rejected')
+        setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+      else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
+    },
+    [],
+  )
 
   /**
    * 이름 지우기 (LIFE-366 F1) — 빈 label 을 보낸다.

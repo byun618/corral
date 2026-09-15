@@ -49,6 +49,7 @@ function focusActiveTerminal(): void {
 function MainTab({
   tab,
   branch,
+  position,
   active,
   onSelect,
   onClose,
@@ -58,6 +59,8 @@ function MainTab({
   tab: TabRow
   /** 이 worktree 의 git 브랜치 — 셸 탭 제목의 브랜치 티어 (G3). 없으면 null. */
   branch: string | null
+  /** 이 탭의 **워크스페이스 안 1-기반 자리** (수정 라운드 4 G5) — 기본 label 판별에 쓴다. */
+  position: number
   active: boolean
   onSelect: () => void
   onClose: () => void
@@ -86,7 +89,7 @@ function MainTab({
    */
   const seedAtEditRef = useRef('')
 
-  const seed = sessionTitle({ tab, branch })
+  const seed = sessionTitle({ tab, branch, position })
   const beginEdit = (): void => {
     seedAtEditRef.current = seed
     setDraft(seed)
@@ -162,7 +165,7 @@ function MainTab({
           <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
-      <span className="main-tab-label">{sessionTitle({ tab, branch })}</span>
+      <span className="main-tab-label">{sessionTitle({ tab, branch, position })}</span>
       {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
           ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
           으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
@@ -205,7 +208,7 @@ function MainTab({
       {menu === null ? null : (
         <TabContextMenu
           anchor={menu}
-          hasUserName={userLabel(tab) !== null}
+          hasUserName={userLabel({ tab, position }) !== null}
           onRename={beginEdit}
           onClearName={onClearName}
           onClose={onClose}
@@ -239,22 +242,24 @@ export function MainTabBar({
   onSelectTab: (tab: TabRow) => void
   onCreateShell: () => void
   onCloseTab: (tab: TabRow) => void
-  onRenameTab: (tab: TabRow, label: string) => void
+  onRenameTab: (input: { tab: TabRow; label: string; position: number }) => void
   onClearTabName: (tab: TabRow) => void
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 와 worktree 라벨이 남는 껍데기를 그린다 —
   // 마지막 탭을 닫았을 때 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   return (
     <div className="main-tabbar" data-main-tabbar>
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <MainTab
           key={tab.tabId}
           tab={tab}
           branch={branch}
+          // **배열 자리**가 herdr 의 기본 label 이다 (G5) — `tab.order` 값도 `tab.number` 도 아니다.
+          position={index + 1}
           active={tab.panes.some((pane) => pane.paneId === selectedPane)}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
-          onRename={(label) => onRenameTab(tab, label)}
+          onRename={(label) => onRenameTab({ tab, label, position: index + 1 })}
           onClearName={() => onClearTabName(tab)}
         />
       ))}

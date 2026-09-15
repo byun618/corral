@@ -23,7 +23,7 @@ import type { AgentKind, IntegrationRow, TabRow, WorktreeRow } from '../../../sh
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { agentIcon, GLYPH } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { isAgentTab, tabAgent } from '../session-title.js'
+import { isAgentTab, tabAgent, tabPosition } from '../session-title.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { SessionRow } from './SessionRow.js'
@@ -241,6 +241,8 @@ export function WorktreeBlock({
               key={tab.tabId}
               tab={tab}
               branch={branch}
+              // 거른 목록(`agentTabs`)의 인덱스가 아니라 **워크스페이스 전체 목록**의 자리다 (G5).
+              position={tabPosition({ tabs: worktree.workspace?.tabs ?? [], tabId: tab.tabId })}
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
               integrations={integrations}
               now={now}

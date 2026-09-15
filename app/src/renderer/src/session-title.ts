@@ -101,15 +101,54 @@ export function paneTitleLabel(tab: TabRow): string | null {
  * herdr 는 저장에 성공하고 거절도 없는데 화면만 안 바뀌었다 — **성공한 조작을 말없이 버렸다.**
  * 이제 걸러지는 건 "그 탭의 기본 표찰"뿐이라 `357` 은 이름으로 산다.
  *
- * 남는 한 칸(탭 2번을 `"2"` 로 바꾸기)은 여기서 못 가른다 — 저장된 값과 기본값이 **같은 문자열**
- * 이라 사후에 구분할 방법이 없다. 그래서 **보내기 전에** 막고 사용자에게 알린다
+ * 남는 한 칸(탭을 **제 기본값과 같은 문자열**로 개명)은 여기서 못 가른다 — 저장된 값과 기본값이
+ * 같은 문자열이라 사후에 구분할 방법이 없다. 그래서 **보내기 전에** 막고 사용자에게 알린다
  * (`useLifecycleActions.renameRow`). 화면이 거짓말하지 않는다는 요구는 그 둘로 함께 채운다.
+ *
+ * ## `number` 만 보던 것이 틀렸다 — 기본 label 은 **위치**다 (수정 라운드 4 G5, 높음)
+ *
+ * J-4 가 `/^\d+$/` 를 좁히면서 "herdr 기본 label = 그 탭의 `number` 문자열" 이라고 읽었다.
+ * 그 전제가 틀렸다. 코디네이터 실측(격리 세션, 탭 7개 만들고 두 번째를 닫음,
+ * `04-gate1-check.md` §7):
+ *
+ *   생성 직후   `t1,1,1` `t2,2,2` `t3,3,3` `t4,4,4` `t5,5,5` `t6,6,6` `t7,7,7`
+ *   `t2` 닫은 뒤 `t1,1,1` **`t3,2,3`** **`t4,3,4`** **`t5,4,5`** `t6,5,6` `t7,6,7`   ← (tab_id, label, number)
+ *
+ * **herdr 기본 `label` = 워크스페이스 안 1-기반 위치**이고 닫으면 다시 매겨진다. `number` 는
+ * 재사용 없는 생성 순번이다. 그래서 **탭을 하나라도 닫으면** `label !== String(number)` 가 되고,
+ * 그때부터 이 함수가 기본 label 을 사용자 이름으로 읽었다 — `userLabel` 이 맨 위 티어라
+ * `ai-title`·터미널 제목·브랜치가 **전부 가려졌다**(사용자 실환경 `wS`: `label"1" number 5` ·
+ * `label"2" number 6` · `label"3" number 7`). 탭을 한 번도 안 닫은 워크스페이스에서는 안 보여서
+ * 하네스·리뷰·앞 라운드 확인을 전부 통과했다.
+ *
+ * 그래서 **위치도 같이 본다.** 둘 중 하나와 같으면 기본값 모양이다:
+ *   · `String(position)` — 지금 herdr 가 주는 기본값
+ *   · `String(tab.number)` — 늦게 온 봉투 등으로 옛 기본값이 남아 있는 경우(J-4 가 보던 것)
+ * 위치는 **`workspace.tabs` 전체 목록에서의 자리**다 (사이드바가 거르는 에이전트 탭 목록이 아니다).
+ * 목록에서 못 찾으면 `null` 을 받고, 그때는 위치 비교를 **안 한다** — 모르는 값으로 이름을 지우지 않는다.
+ *
+ * J-4 회귀는 그대로 산다: 탭 이름을 `357` 로 바꾸면 그 탭의 위치도 `number` 도 357 이 아니라 **이름이다.**
  */
-export function userLabel(tab: TabRow): string | null {
+export function userLabel(input: { tab: TabRow; position: number | null }): string | null {
+  const { tab, position } = input
   const label = tab.label.trim()
   if (label.length === 0) return null
   if (label === String(tab.number)) return null
+  if (position !== null && label === String(position)) return null
   return label
+}
+
+/**
+ * 이 탭이 **워크스페이스 안에서 몇 번째인가** — 1-기반. 목록에 없으면 `null`.
+ *
+ * 어댑터가 `workspace.tabs` 를 herdr 의 목록 순서(`order`)로 정렬해 준다
+ * (`adapter/internal/store.ts:622`). 그래서 자리는 **배열 인덱스**로 센다 — `order` **값**이
+ * 아니다: 탭을 닫아도 남은 탭의 `order` 값은 그대로라 구멍이 생기고(0,2,3…), 그 값을 위치로
+ * 쓰면 herdr 가 다시 매긴 label 과 어긋난다.
+ */
+export function tabPosition(input: { tabs: readonly TabRow[]; tabId: string }): number | null {
+  const index = input.tabs.findIndex((tab) => tab.tabId === input.tabId)
+  return index === -1 ? null : index + 1
 }
 
 /**
@@ -163,10 +202,14 @@ const DETACHED_HEAD = '(detached)'
  *
  * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가
  * 같은 틱에 따라온다. 호출부마다 분기하면 두 목록이 갈라진다.
+ *
+ * `position` 은 **워크스페이스 전체 탭 목록에서의 1-기반 자리**다 (`tabPosition`). 맨 위 티어가
+ * herdr 기본 label 을 가려내는 데 쓴다 (수정 라운드 4 G5) — 사이드바처럼 에이전트 탭만 거른
+ * 목록의 인덱스를 넣으면 자리가 어긋나 기본 label 이 다시 이름으로 산다.
  */
-export function sessionTitle(input: { tab: TabRow; branch: string | null }): string {
-  const { tab, branch } = input
-  const named = userLabel(tab)
+export function sessionTitle(input: { tab: TabRow; branch: string | null; position: number | null }): string {
+  const { tab, branch, position } = input
+  const named = userLabel({ tab, position })
   if (named !== null) return named
   const provider = providerTitle(tab)
   if (provider !== null) return provider

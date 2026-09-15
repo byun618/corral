@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
-import { secondaryLine, sessionRowText } from './session-activity.js'
+import { elapsedLabel, secondaryLine, sessionRowText } from './session-activity.js'
 
 function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): PaneRow {
   // `??` 를 안 쓴다 — `agent: null`(셸 pane)을 「안 줬다」와 구분해야 한다.
@@ -116,4 +116,50 @@ describe('세션 행 한 줄 잇기 (C8)', () => {
     const long = '가'.repeat(200)
     expect(sessionRowText({ title: 'claude 1', secondary: { kind: 'text', text: long } }).full).toBe(`claude 1 - ${long}`)
   })
+})
+
+/**
+ * 경과 시간은 **이 라운드에서 안 건드린다** — 지시: "확인만 해서 원자료에 적어라".
+ * 확인을 말로 두지 않고 여기 박는다: Orca `formatShortTimeAgo`
+ * (`renderer/src/lib/short-time-ago.ts`) 를 **그대로 옮긴 사본**과 경계 앞뒤에서 대조한다.
+ * 실행 기록은 `raw/claude/elapsed-parity-r7.json` (원본 파일의 sha256·원문 포함).
+ */
+describe('경과 시간 = Orca formatShortTimeAgo (확인만)', () => {
+  /** Orca 원문 사본 — 고치지 않는다. */
+  function formatShortTimeAgo(ts: number, now: number): string {
+    const delta = now - ts
+    if (delta < 60_000) return 'now'
+    const minutes = Math.floor(delta / 60_000)
+    if (minutes < 60) return `${minutes}m`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h`
+    return `${Math.floor(hours / 24)}d`
+  }
+
+  const MINUTE = 60_000
+  const HOUR = 60 * MINUTE
+  const DAY = 24 * HOUR
+  const NOW = 1_757_000_000_000
+  const CASES: [string, number, string][] = [
+    ['방금', 0, 'now'],
+    ['59.999초 (경계 직전)', MINUTE - 1, 'now'],
+    ['1분 (경계)', MINUTE, '1m'],
+    ['44분', 44 * MINUTE, '44m'],
+    ['59분 59초 (경계 직전)', HOUR - 1, '59m'],
+    ['1시간 (경계)', HOUR, '1h'],
+    ['3시간', 3 * HOUR, '3h'],
+    ['23시간 59분 (경계 직전)', DAY - MINUTE, '23h'],
+    ['24시간 (경계)', DAY, '1d'],
+    ['2일', 2 * DAY, '2d'],
+    ['400일', 400 * DAY, '400d'],
+    ['시계 어긋남 (미래)', -HOUR, 'now'],
+  ]
+
+  for (const [name, delta, expected] of CASES) {
+    it(`${name} → ${expected} — 둘이 같은 글자다`, () => {
+      const at = NOW - delta
+      expect(elapsedLabel(at, NOW)).toBe(expected)
+      expect(elapsedLabel(at, NOW)).toBe(formatShortTimeAgo(at, NOW))
+    })
+  }
 })

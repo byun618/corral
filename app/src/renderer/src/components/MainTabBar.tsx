@@ -48,8 +48,7 @@ function focusActiveTerminal(): void {
 
 function MainTab({
   tab,
-  branch,
-  position,
+  tabCount,
   active,
   onSelect,
   onClose,
@@ -57,10 +56,11 @@ function MainTab({
   onClearName,
 }: {
   tab: TabRow
-  /** 이 worktree 의 git 브랜치 — 셸 탭 제목의 브랜치 티어 (G3). 없으면 null. */
-  branch: string | null
-  /** 이 탭의 **워크스페이스 안 1-기반 자리** (수정 라운드 4 G5) — 기본 label 판별에 쓴다. */
-  position: number
+  /**
+   * 이 워크스페이스의 **탭 수** — herdr 기본 label(`1..탭수` 의 자리 번호) 판별에 쓴다 (G7).
+   * 자리 하나가 아니라 수인 이유는 `session-title.userLabel` 주석에 있다(닫는 과도기).
+   */
+  tabCount: number
   active: boolean
   onSelect: () => void
   onClose: () => void
@@ -89,7 +89,7 @@ function MainTab({
    */
   const seedAtEditRef = useRef('')
 
-  const seed = sessionTitle({ tab, branch, position })
+  const seed = sessionTitle({ tab, tabCount })
   const beginEdit = (): void => {
     seedAtEditRef.current = seed
     setDraft(seed)
@@ -165,7 +165,7 @@ function MainTab({
           <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
-      <span className="main-tab-label">{sessionTitle({ tab, branch, position })}</span>
+      <span className="main-tab-label">{sessionTitle({ tab, tabCount })}</span>
       {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
           ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
           으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
@@ -208,7 +208,7 @@ function MainTab({
       {menu === null ? null : (
         <TabContextMenu
           anchor={menu}
-          hasUserName={userLabel({ tab, position }) !== null}
+          hasUserName={userLabel({ tab, tabCount }) !== null}
           onRename={beginEdit}
           onClearName={onClearName}
           onClose={onClose}
@@ -221,7 +221,6 @@ function MainTab({
 
 export function MainTabBar({
   tabs,
-  branch,
   selectedPane,
   activeWorktreeLabel,
   onSelectTab,
@@ -231,35 +230,29 @@ export function MainTabBar({
   onClearTabName,
 }: {
   tabs: TabRow[]
-  /**
-   * 활성 worktree 의 git 브랜치 (G3). `activeWorktreeLabel` 과 **다른 값**이다 —
-   * 저 라벨은 브랜치가 없으면 경로로 떨어지는데, 제목에는 절대경로를 넣지 않는다 (§2.5).
-   * 그래서 여기는 정제 안 된 `WorktreeRow.branch` 를 그대로 받는다.
-   */
-  branch: string | null
   selectedPane: string | null
   activeWorktreeLabel: string
   onSelectTab: (tab: TabRow) => void
   onCreateShell: () => void
   onCloseTab: (tab: TabRow) => void
-  onRenameTab: (input: { tab: TabRow; label: string; position: number }) => void
+  onRenameTab: (input: { tab: TabRow; label: string; tabCount: number }) => void
   onClearTabName: (tab: TabRow) => void
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 와 worktree 라벨이 남는 껍데기를 그린다 —
   // 마지막 탭을 닫았을 때 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   return (
     <div className="main-tabbar" data-main-tabbar>
-      {tabs.map((tab, index) => (
+      {tabs.map((tab) => (
         <MainTab
           key={tab.tabId}
           tab={tab}
-          branch={branch}
-          // **배열 자리**가 herdr 의 기본 label 이다 (G5) — `tab.order` 값도 `tab.number` 도 아니다.
-          position={index + 1}
+          // 기본 label 은 **이 워크스페이스 탭 수까지의 자리 번호**다 (G7) — 하나로 못 박으면
+          // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님).
+          tabCount={tabs.length}
           active={tab.panes.some((pane) => pane.paneId === selectedPane)}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
-          onRename={(label) => onRenameTab({ tab, label, position: index + 1 })}
+          onRename={(label) => onRenameTab({ tab, label, tabCount: tabs.length })}
           onClearName={() => onClearTabName(tab)}
         />
       ))}

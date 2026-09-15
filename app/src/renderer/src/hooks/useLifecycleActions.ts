@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../shared/types.js'
 import type { CloseTarget, LifecycleActions, LifecycleNotice } from '../lifecycle-types.js'
+import { isDefaultPositionLabel } from '../session-title.js'
 
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
@@ -135,7 +136,7 @@ export function useLifecycleActions(state: AppState | null): {
    * (승격 금지 — 이 알림 경로가 그 기준의 화면쪽 끝이다).
    */
   const renameRow = useCallback(
-    async ({ tabId, label, tabNumber, position }: { tabId: string; label: string; tabNumber: number; position: number }): Promise<void> => {
+    async ({ tabId, label, tabNumber, tabCount }: { tabId: string; label: string; tabNumber: number; tabCount: number }): Promise<void> => {
       setLifecycleNotice(null)
       // J-4 — **기본 표찰과 같은 이름은 보내기 전에 막는다.** herdr 는 이런 label 도 저장에
       // 성공하지만(grok 소켓 실측: `"42"` 저장됨) 화면 쪽에서는 `userLabel` 이 기본 표찰과
@@ -146,8 +147,15 @@ export function useLifecycleActions(state: AppState | null): {
       // 워크스페이스 안 1-기반 **자리**라(`session-title.userLabel` 주석의 실측표), 판별자가
       // 둘을 다 거절하게 된 이상 사전 차단도 같은 둘을 막아야 한다 — 안 그러면 자리 번호로
       // 개명한 순간 그 이름이 화면에서 조용히 사라진다(막으려던 거짓말이 반대편으로 돌아온다).
-      if (label === String(tabNumber) || label === String(position)) {
-        setLifecycleNotice({ kind: 'error', message: `"${label}" 은 이 탭의 기본 표찰과 같아 이름으로 구분되지 않는다 — 다른 이름을 써라` })
+      //
+      // 수정 라운드 5 (G7): 판별자가 **`1..탭수` 범위**로 넓어졌으므로 차단도 같은 범위다.
+      // 둘이 어긋나면 한쪽이 거짓말을 한다 — 범위 안 숫자로 개명을 허용해 놓고 화면에서는
+      // 기본값으로 읽어 지워 버리는 자리가 정확히 그 어긋남이었다.
+      if (label === String(tabNumber) || isDefaultPositionLabel(label, tabCount)) {
+        setLifecycleNotice({
+          kind: 'error',
+          message: `"${label}" 은 herdr 가 자리 번호로 쓰는 기본 표찰(1~${tabCount})이라 이름으로 구분되지 않는다 — 다른 이름을 써라`,
+        })
         return
       }
       const result = await window.corral.renameRow({ tabId, label })

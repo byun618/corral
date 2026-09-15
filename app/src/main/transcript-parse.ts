@@ -12,18 +12,21 @@
 // 예외를 밖으로 던지지도 않는다 — 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 된다.
 
 import { isRecord, readString, safeParse } from '../shared/json.js'
-import type { SessionActivity, TranscriptAgent } from '../shared/types.js'
+import type { SessionActivity, SessionTool, TranscriptAgent } from '../shared/types.js'
 
 /** 꼬리 조각에서 뽑아낸 것. 못 찾은 자리는 전부 null 이다. */
 export type TranscriptDigest = {
   activity: SessionActivity
   providerTitle: string | null
+  /** 마지막 어시스턴트 턴이 도구 호출뿐일 때 그 도구 (B9). 텍스트가 있으면 null. */
+  tool: SessionTool | null
   lastActivityAt: number | null
 }
 
 export const EMPTY_DIGEST: TranscriptDigest = {
   activity: { state: 'unknown-format' },
   providerTitle: null,
+  tool: null,
   lastActivityAt: null,
 }
 
@@ -130,6 +133,8 @@ export function parseClaudeTail(input: { chunk: string; partial: boolean; sessio
   const lines = tailLines(input.chunk, { partial: input.partial })
   let activity: SessionActivity | null = null
   let providerTitle: string | null = null
+  let tool: SessionTool | null = null
+  let sawAssistant = false
   let lastActivityAt: number | null = null
 
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -149,10 +154,17 @@ export function parseClaudeTail(input: { chunk: string; partial: boolean; sessio
       }
       continue
     }
-    if (type === 'assistant' && activity === null) {
+    if (type === 'assistant') {
       const message = record['message']
       if (!isRecord(message)) continue
       const text = textFromContent(message['content'])
+      // **맨 뒤 어시스턴트 턴**만 도구 자리다 (B9). 그 턴에 텍스트가 없으면 = 지금 도구를
+      // 돌리는 중이다. 한 턴이라도 지나간 뒤의 도구는 "지금 무엇을 하나" 가 아니므로 안 싣는다.
+      if (!sawAssistant) {
+        sawAssistant = true
+        if (text === null) tool = toolFromContent(message['content'])
+      }
+      if (activity !== null) continue
       if (text === null) continue // tool_use 뿐인 턴 — 한 턴 더 거슬러 올라간다
       const cleaned = cleanActivityText(text)
       if (cleaned === null) continue
@@ -165,8 +177,52 @@ export function parseClaudeTail(input: { chunk: string; partial: boolean; sessio
   return {
     activity: activity ?? { state: 'unknown-format' },
     providerTitle,
+    tool,
     lastActivityAt,
   }
+}
+
+/**
+ * 어시스턴트 content 의 **첫 `tool_use` 블록**을 `{ 이름, 한 줄 미리보기 }` 로 (B9).
+ *
+ * 미리보기로 쓸 키는 **관측된 것만** 본다 (기준 A9 와 같은 규칙 — 안 나온 모양을 미리 다루지
+ * 않는다). 사용자 트랜스크립트 40개의 도구뿐인 턴 405개에서 센 `input` 키 분포
+ * (`raw/claude/c5-b9-shapes-r5.json`):
+ *
+ * | 도구 | 키 | 건수 |
+ * | --- | --- | --- |
+ * | `Bash` | `command`(+`description`) | 289 |
+ * | `Edit`·`Write`·`Read` | `file_path` | 36 |
+ * | `WebFetch` | `url`(+`prompt`) | 17 |
+ * | `ToolSearch`·`WebSearch` | `query` | 19 |
+ * | 나머지(MCP 등) | 제각각 | 44 |
+ *
+ * 그래서 `command → file_path → url → query → task` 순으로 **문자열인 첫 키**를 쓰고, 그중 어느
+ * 것도 없으면 **이름만** 준다(`mcp__playwright__browser_click` 처럼 키가 제각각인 도구가 여기 선다).
+ * 지어낸 요약을 만들지 않는다.
+ */
+function toolFromContent(content: unknown): SessionTool | null {
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    if (!isRecord(block)) continue
+    if (block['type'] !== 'tool_use') continue
+    const name = readString(block, 'name')
+    if (name === null || name.trim().length === 0) continue
+    return { name: name.trim(), input: toolInputPreview(block['input']) }
+  }
+  return null
+}
+
+/** 관측된 키 순서대로 문자열 하나. 없으면 null (이름만 보인다). */
+function toolInputPreview(input: unknown): string | null {
+  if (!isRecord(input)) return null
+  for (const key of ['command', 'file_path', 'url', 'query', 'task']) {
+    const value = readString(input, key)
+    if (value === null) continue
+    const cleaned = cleanActivityText(value)
+    if (cleaned !== null) return cleaned
+  }
+  return null
 }
 
 /**
@@ -197,7 +253,10 @@ export function parseCodexTail(input: { chunk: string; partial: boolean }): Tran
     activity = { state: 'text', text: cleaned, at }
   }
 
-  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, lastActivityAt }
+  // codex 의 도구 호출은 어시스턴트 메시지 **밖**(`response_item/function_call`)에 산다 —
+  // B9 은 "마지막 어시스턴트 턴이 tool_use 뿐일 때" 라 codex 에는 해당하는 자리가 없다.
+  // 실측 결과는 `raw/claude/c5-b9-shapes-r5.json` 에 부재로 적었다 (기준 A10).
+  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, tool: null, lastActivityAt }
 }
 
 /** codex 블록의 `output_text` 를 공용 `text` 모양으로 옮긴다 — `textFromContent` 를 그대로 쓰려고. */
@@ -236,7 +295,8 @@ export function parseGrokTail(input: { chunk: string; partial: boolean }): Trans
     activity = { state: 'text', text: cleaned, at }
   }
 
-  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, lastActivityAt }
+  // grok 도 같다 — 한 줄이 한 메시지이고 도구 레코드가 어시스턴트 메시지 안에 없다.
+  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, tool: null, lastActivityAt }
 }
 
 /** 에이전트별 판독기 한 자리 — 갈래를 switch 로 좁힌다 (기준 E3). */
@@ -253,5 +313,206 @@ export function parseTail(input: {
       return parseCodexTail({ chunk: input.chunk, partial: input.partial })
     case 'grok':
       return parseGrokTail({ chunk: input.chunk, partial: input.partial })
+  }
+}
+
+// --- 머리 읽기: 세션의 첫 사용자 발화 (C5, 수정 라운드 5) ---------------------------
+//
+// 여기 위의 모든 함수는 **꼬리**를 본다. 첫 발화만 방향이 반대다 — 15MB 파일의 맨 앞이라
+// 어떤 꼬리 창으로도 닿지 않는다. 그래서 읽기 경로가 하나 늘었고(`transcript.ts` 의 머리 창),
+// 예산은 통과선에 먼저 박혀 있다 (C6 — 256KB · 파일당 1회).
+//
+// ## 머리 조각은 **마지막 줄**이 잘려 있다 (꼬리와 거울이다)
+//
+// `tailLines` 는 `partial` 일 때 **첫 줄**을 버린다. 머리는 반대로 끝이 잘리는데, 그 줄은 따로
+// 안 버린다 — JSON 파싱이 실패해 어차피 건너뛴다. 꼬리의 마지막 줄을 안 버리는 것과 같은
+// 판단이고, 규칙이 하나 적다.
+
+/** 머리에서 찾는 것은 **첫 발화 하나**다. 못 찾으면 null. */
+export function headLines(chunk: string): string[] {
+  return chunk.split('\n').filter((line) => line.trim().length > 0)
+}
+
+/** 정제된 첫 프롬프트 제목의 상한 — Orca `GENERATED_TAB_TITLE_MAX_LENGTH` 와 같은 40자. */
+export const FIRST_PROMPT_MAX_LENGTH = 40
+
+/**
+ * 정제 전에 훑는 원문 길이 — Orca `GENERATED_TAB_TITLE_SOURCE_SCAN_LIMIT`(512) 와 같다.
+ * 첫 발화는 붙여넣기로 수십 KB 가 될 수 있는데 쓰는 것은 앞 40자뿐이라, 정규식을 전문에
+ * 돌릴 이유가 없다.
+ */
+const FIRST_PROMPT_SCAN_LIMIT = 512
+
+/**
+ * 머리말 필러 — Orca `LEADING_FILLER_PATTERNS`(`shared/agent-tab-title.ts:4-13`) 그대로.
+ * 영어 목록인데 그대로 둔다: 한국어 발화에는 안 걸리고(무해), 영어 발화에는 Orca 와 **같은**
+ * 제목이 나온다. 목록을 한국어로 지어 넓히지 않는다 — 관측이 아니라 상상이 된다.
+ */
+const LEADING_FILLER: readonly RegExp[] = [
+  /^(?:can|could|would)\s+you(?:\s+please)?\s+/i,
+  /^please(?:\s+|$)/i,
+  /^i\s+(?:want|need)\s+(?:you\s+)?to\s+/i,
+  /^help\s+me(?:\s+to)?\s+/i,
+  /^help\s+/i,
+  /^let'?s\s+/i,
+  /^we\s+need\s+to\s+/i,
+  /^need\s+to\s+/i,
+]
+
+/** 첫 글자만 대문자로 (Orca `capitalizeFirstLetter`). 한글에는 아무 일도 안 일어난다. */
+function capitalizeFirst(value: string): string {
+  return value.replace(/\p{L}/u, (letter) => letter.toLocaleUpperCase())
+}
+
+/**
+ * 40자에서 **단어 경계**로 자른다 (Orca `truncateAtWordBoundary`).
+ * 마지막 공백이 너무 앞(55% 미만)이면 그냥 자른다 — 띄어쓰기가 드문 한국어 발화가 여기 선다.
+ */
+function truncateAtWordBoundary(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const rawSlice = value.slice(0, maxLength)
+  const sliced = rawSlice.trim()
+  if (sliced.length < rawSlice.length) return sliced
+  const lastSpace = sliced.lastIndexOf(' ')
+  if (lastSpace >= Math.floor(maxLength * 0.55)) return sliced.slice(0, lastSpace).trim()
+  return sliced
+}
+
+/**
+ * 첫 발화 → 제목 (Orca `deriveGeneratedTabTitle` 과 같은 결, `shared/agent-tab-title.ts:69-110`).
+ *
+ * 순서가 중요하다 — **URL 을 마크다운 기호보다 먼저** 지운다. Orca 주석의 사유 그대로:
+ * `/merge_requests/42` 처럼 URL 안에 `_` 가 있으면 기호를 먼저 접을 때 URL 이 쪼개져
+ * 조각("requests")이 제목에 샌다.
+ *
+ * 코드를 옮겨 붙이지 않고 같은 규칙을 다시 썼다 — 검증은 `session-title.test.ts` 가 Orca 의
+ * 사례(URL·필러·40자 경계)로 한다.
+ */
+export function cleanFirstPrompt(raw: string): string | null {
+  const preview = raw.slice(0, FIRST_PROMPT_SCAN_LIMIT)
+  const firstClause = preview
+    .trim()
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[`*_~#>[\]{}()]/g, ' ')
+    .replace(/^(?:issue|task|bug|feature|pr)\s*(?:#?\d+)?\s*[:-]\s*/i, '')
+    .split(/[.!?;\n\r\u2028\u2029]/u)[0]
+    ?.trim()
+  if (firstClause === undefined || firstClause.length === 0) return null
+
+  let candidate = firstClause
+  for (let round = 0; round < 3; round += 1) {
+    const before = candidate
+    for (const filler of LEADING_FILLER) candidate = candidate.replace(filler, '')
+    candidate = candidate.trim()
+    if (candidate === before.trim()) break
+  }
+
+  const folded = candidate.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
+  if (folded.length === 0) return null
+  return truncateAtWordBoundary(capitalizeFirst(folded), FIRST_PROMPT_MAX_LENGTH)
+}
+
+/**
+ * claude 머리 판독 — **사람이 친 첫 발화**. 없으면 null.
+ *
+ * 건너뛰는 것은 **관측된 것뿐**이다 (사용자 트랜스크립트 363개 실측,
+ * `raw/claude/c5-b9-shapes-r5.json`):
+ *
+ * | 건너뛰는 것 | 관측 |
+ * | --- | --- |
+ * | `type` 이 `user` 가 아닌 레코드 (`attachment` 61 · `last-prompt` 34 · `mode` 34 · `file-history-snapshot` 5 …) | 머리에 항상 섞여 있다 |
+ * | `isMeta: true` | 34개 파일 |
+ * | `<command-message>`·`<command-name>` 봉투 (슬래시 명령) | 33개 파일 |
+ * | `<local-command-stdout>` | 29개 파일 |
+ *
+ * `isSidechain` 은 **첫 발화 자리에서 0건**이라 건너뛰기를 안 만들었다 (기준 A9 — 안 나온
+ * 형식을 미리 지우지 않는다). 이 규칙으로 363개 중 **347개**에서 첫 발화가 나왔고, 나머지
+ * 16개는 머리 창 안에 사람 발화가 아예 없었다(부재).
+ *
+ * 소유자 확인은 C2 그대로 — 레코드의 `sessionId` 가 이 세션 참조와 같을 때만 쓴다.
+ * 실측에서 347개 전부 일치했고 어긋난 파일은 0개였다.
+ */
+export function parseClaudeHead(input: { chunk: string; sessionId: string | null }): string | null {
+  if (input.sessionId === null) return null
+  for (const line of headLines(input.chunk)) {
+    const record = safeParse(line)
+    if (!isRecord(record)) continue
+    if (readString(record, 'type') !== 'user') continue
+    if (record['isMeta'] === true) continue
+    if (readString(record, 'sessionId') !== input.sessionId) continue
+    const message = record['message']
+    if (!isRecord(message)) continue
+    const text = textFromContent(message['content'])
+    if (text === null) continue
+    if (text.includes('<command-message>') || text.includes('<command-name>')) continue
+    if (text.includes('<local-command-stdout>')) continue
+    const title = cleanFirstPrompt(text)
+    if (title !== null) return title
+  }
+  return null
+}
+
+/**
+ * codex 머리 판독 — `event_msg` 의 `user_message` 가 **사람이 친 것만** 싣는다.
+ *
+ * 실측(`~/.codex/sessions` 16개 전수): 머리에 `response_item/message/user` 가 먼저 오는데 그건
+ * 하네스 주입이다(`<environment_context>`, `AGENTS.md instructions`). 사람 발화는 그 다음
+ * `{"type":"event_msg","payload":{"type":"user_message","message":"…"}}` 에 문자열로 온다 —
+ * **16/16 에서 나왔다.** 그래서 봉투를 지우는 대신 **그 레코드만** 본다.
+ *
+ * 소유자 확인(C2)은 파일 해소가 이미 했다 — 파일 이름에 세션 id 가 들어 있어
+ * (`rollout-<시각>-<id>.jsonl`) 그 id 로 찾은 파일이다. 레코드 안에 `sessionId` 필드는 없다.
+ */
+export function parseCodexHead(input: { chunk: string }): string | null {
+  for (const line of headLines(input.chunk)) {
+    const record = safeParse(line)
+    if (!isRecord(record)) continue
+    const payload = record['payload']
+    if (!isRecord(payload)) continue
+    if (payload['type'] !== 'user_message') continue
+    const message = readString(payload, 'message')
+    if (message === null) continue
+    const title = cleanFirstPrompt(message)
+    if (title !== null) return title
+  }
+  return null
+}
+
+/** grok 의 사람 발화 봉투 — `<user_query>…</user_query>`. 봉투가 없으면 하네스 주입이다. */
+const GROK_USER_QUERY = /<user_query>([\s\S]*?)<\/user_query>/
+
+/**
+ * grok 머리 판독 — `<user_query>` 봉투 안쪽.
+ *
+ * 실측(`~/.grok/sessions` 269개 전수): 머리의 user 레코드는 대부분 하네스 주입
+ * (`<user_info>`·`<system-reminder>`)이고, 사람 발화는 `<user_query>` 봉투에 싸여 온다.
+ * 봉투가 있는 파일은 **44개**, user 레코드가 아예 없는 파일이 202개다 — 즉 grok 은 이 값이
+ * **자주 부재**한다. 부재는 부재로 둔다(A10) — 봉투 없는 레코드를 첫 발화로 쓰면 모든 grok 행이
+ * `<user_info>` 로 같은 제목이 된다.
+ */
+export function parseGrokHead(input: { chunk: string }): string | null {
+  for (const line of headLines(input.chunk)) {
+    const record = safeParse(line)
+    if (!isRecord(record)) continue
+    if (record['type'] !== 'user' && record['role'] !== 'user') continue
+    const text = textFromContent(record['content'])
+    if (text === null) continue
+    const inside = GROK_USER_QUERY.exec(text)
+    if (inside === null) continue
+    const title = cleanFirstPrompt(inside[1] ?? '')
+    if (title !== null) return title
+  }
+  return null
+}
+
+/** 에이전트별 머리 판독 한 자리 — 꼬리와 같은 결로 switch 로 좁힌다 (기준 E3). */
+export function parseHead(input: { agent: TranscriptAgent; chunk: string; sessionId: string | null }): string | null {
+  switch (input.agent) {
+    case 'claude':
+      return parseClaudeHead({ chunk: input.chunk, sessionId: input.sessionId })
+    case 'codex':
+      return parseCodexHead({ chunk: input.chunk })
+    case 'grok':
+      return parseGrokHead({ chunk: input.chunk })
   }
 }

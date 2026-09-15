@@ -126,7 +126,17 @@ export type SessionActivity =
   | { state: 'text'; text: string; at: number | null }
 
 /**
- * 트랜스크립트에서 읽어 낸 한 세션의 지문 — 2차 줄·제목 3단·경과 시간이 전부 여기서 나온다.
+ * 진행 중인 도구 한 자리 (LIFE-366 B9, 수정 라운드 5).
+ *
+ * Orca 는 이 값을 훅에서 받지만(`agent-row-tool-preview.ts` 의 `toolName`·`toolInput`),
+ * corral 은 herdr 통합이 `message` 를 안 부르므로(`00-analysis.md` §2.3) **트랜스크립트의
+ * 마지막 어시스턴트 턴**에서 읽는다. `input` 은 관측된 키에서 고른 한 줄 미리보기다 —
+ * 없으면 null 이고, 그때 화면은 도구 이름만 쓴다.
+ */
+export type SessionTool = { name: string; input: string | null }
+
+/**
+ * 트랜스크립트에서 읽어 낸 한 세션의 지문 — 2차 줄·제목 티어·경과 시간이 전부 여기서 나온다.
  * herdr 를 모르는 층이 만든다 (`main/transcript.ts`, `main/git-status.ts` 와 같은 결).
  */
 export type SessionDigest = {
@@ -138,6 +148,19 @@ export type SessionDigest = {
    */
   providerTitle: string | null
   /**
+   * **세션의 첫 사용자 발화**를 40자로 정제한 것 (C5, 수정 라운드 5). 없으면 null.
+   *
+   * 제목 티어에서 `ai-title` **아래**, 터미널 제목 **위**다 (C1′ — Orca `aiVaultTitle` 4단이
+   * 라이브 제목 6단보다 위인 것과 같은 자리). 첫 발화는 세션 내내 안 바뀌므로 파일이 자라도
+   * **한 번 읽어 캐시**한다 (C6).
+   */
+  firstPrompt: string | null
+  /**
+   * 마지막 어시스턴트 턴이 **도구 호출뿐일 때** 그 도구 (B9). 텍스트가 있는 턴이면 null.
+   * 화면에 쓸지는 **그 pane 의 상태가 `working` 인지**가 정한다 — 판독층은 상태를 모른다.
+   */
+  tool: SessionTool | null
+  /**
    * 마지막 활동 시각 (epoch ms). 트랜스크립트 레코드의 timestamp, 없으면 파일 mtime.
    * **렌더러가 그 행을 처음 본 시각이 아니다** — 09-gate1-fix.md E 가 지웠던 결함이 그것이었다.
    */
@@ -148,6 +171,8 @@ export type SessionDigest = {
 export const EMPTY_SESSION_DIGEST: SessionDigest = {
   activity: { state: 'none' },
   providerTitle: null,
+  firstPrompt: null,
+  tool: null,
   lastActivityAt: null,
 }
 

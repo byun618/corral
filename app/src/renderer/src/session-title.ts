@@ -91,64 +91,52 @@ export function paneTitleLabel(tab: TabRow): string | null {
 /**
  * **사용자가 직접 준 이름** (`TabRow.label`) — 없으면 `null`.
  *
- * 판별자는 herdr 의 기본 label 이 **그 탭의 표찰 번호 문자열**이라는 실측이다
- * (09-gate1-fix.md C, 재확인 `raw/gate1-fix3/rename/rename.json` 의 `labelBefore`:
- * `number: 2` 인 탭의 `label: "2"`). 빈 문자열·공백도 이름이 아니다.
- *
- * ## `/^\d+$/` 에서 좁혔다 (J-4, fix3 리뷰 M2)
- *
- * 옛 판별자는 **모든** 숫자 label 을 거부해서, 사용자가 탭 이름을 `357` 로 바꾸면
- * herdr 는 저장에 성공하고 거절도 없는데 화면만 안 바뀌었다 — **성공한 조작을 말없이 버렸다.**
- * 이제 걸러지는 건 "그 탭의 기본 표찰"뿐이라 `357` 은 이름으로 산다.
- *
- * 남는 한 칸(탭을 **제 기본값과 같은 문자열**로 개명)은 여기서 못 가른다 — 저장된 값과 기본값이
- * 같은 문자열이라 사후에 구분할 방법이 없다. 그래서 **보내기 전에** 막고 사용자에게 알린다
- * (`useLifecycleActions.renameRow`). 화면이 거짓말하지 않는다는 요구는 그 둘로 함께 채운다.
- *
- * ## `number` 만 보던 것이 틀렸다 — 기본 label 은 **위치**다 (수정 라운드 4 G5, 높음)
- *
- * J-4 가 `/^\d+$/` 를 좁히면서 "herdr 기본 label = 그 탭의 `number` 문자열" 이라고 읽었다.
- * 그 전제가 틀렸다. 코디네이터 실측(격리 세션, 탭 7개 만들고 두 번째를 닫음,
- * `04-gate1-check.md` §7):
+ * herdr 의 기본 label 은 **워크스페이스 안 1-기반 위치**다. 코디네이터 실측(격리 세션, 탭 7개를
+ * 만들고 두 번째를 닫음, `04-gate1-check.md` §7, `(tab_id, label, number)`):
  *
  *   생성 직후   `t1,1,1` `t2,2,2` `t3,3,3` `t4,4,4` `t5,5,5` `t6,6,6` `t7,7,7`
- *   `t2` 닫은 뒤 `t1,1,1` **`t3,2,3`** **`t4,3,4`** **`t5,4,5`** `t6,5,6` `t7,6,7`   ← (tab_id, label, number)
+ *   `t2` 닫은 뒤 `t1,1,1` **`t3,2,3`** **`t4,3,4`** **`t5,4,5`** `t6,5,6` `t7,6,7`
  *
- * **herdr 기본 `label` = 워크스페이스 안 1-기반 위치**이고 닫으면 다시 매겨진다. `number` 는
- * 재사용 없는 생성 순번이다. 그래서 **탭을 하나라도 닫으면** `label !== String(number)` 가 되고,
- * 그때부터 이 함수가 기본 label 을 사용자 이름으로 읽었다 — `userLabel` 이 맨 위 티어라
- * `ai-title`·터미널 제목·브랜치가 **전부 가려졌다**(사용자 실환경 `wS`: `label"1" number 5` ·
- * `label"2" number 6` · `label"3" number 7`). 탭을 한 번도 안 닫은 워크스페이스에서는 안 보여서
- * 하네스·리뷰·앞 라운드 확인을 전부 통과했다.
+ * 즉 **탭을 하나라도 닫으면** `label !== String(number)` 가 된다. 이 함수가 맨 위 티어라, 기본
+ * label 을 이름으로 읽으면 `ai-title`·첫 발화·터미널 제목이 **전부 가려진다** (수정 라운드 4 G5).
  *
- * 그래서 **위치도 같이 본다.** 둘 중 하나와 같으면 기본값 모양이다:
- *   · `String(position)` — 지금 herdr 가 주는 기본값
- *   · `String(tab.number)` — 늦게 온 봉투 등으로 옛 기본값이 남아 있는 경우(J-4 가 보던 것)
- * 위치는 **`workspace.tabs` 전체 목록에서의 자리**다 (사이드바가 거르는 에이전트 탭 목록이 아니다).
- * 목록에서 못 찾으면 `null` 을 받고, 그때는 위치 비교를 **안 한다** — 모르는 값으로 이름을 지우지 않는다.
+ * ## 위치 **정확 일치**에서 **1..탭수 범위**로 넓혔다 (수정 라운드 5 G7)
  *
- * J-4 회귀는 그대로 산다: 탭 이름을 `357` 로 바꾸면 그 탭의 위치도 `number` 도 357 이 아니라 **이름이다.**
+ * r4 는 "label 이 그 탭의 지금 자리와 같은가" 로 봤다. 그 조건이 **탭을 닫는 과도기에 깨진다**:
+ * herdr 가 label 을 다시 매긴 봉투와 목록 갱신이 같은 틱에 안 오므로, 잠깐 `label "2"` 인 탭이
+ * 배열 자리 1 에 선다. 그 한 프레임 동안 기본 label 이 이름으로 읽혀 제목이
+ * `main 2` → `2` → `main 2` 로 **깜빡였다** (`05-orca-parity.md` §5 G7).
+ *
+ * 그래서 판별을 **자리 하나**가 아니라 **자리의 범위**로 본다 — `1..탭수` 안의 순수 정수는
+ * 어느 것이든 herdr 가 줄 수 있는 기본 label 이다. 과도기의 어긋난 짝도 이 범위 안이라
+ * 깜빡임이 사라진다.
+ *
+ * 세 줄 다 필요하다:
+ *   · `String(tab.number)` — 늦게 온 봉투로 **옛 기본값**이 남은 경우. 탭이 줄어들면
+ *     `number` 가 탭수보다 커서 범위 규칙만으로는 안 걸린다 (예: 2탭 워크스페이스의 `label "3"`)
+ *   · `1..탭수` 순수 정수 — 지금 herdr 가 주는 기본값과 그 과도기 모양
+ *   · 탭수를 모르면(`null`) 범위 비교를 **안 한다** — 모르는 값으로 사용자 이름을 지우지 않는다
+ *
+ * J-4 회귀(LIFE-357)는 그대로 산다: 탭 이름을 `357` 로 바꾸면 워크스페이스에 탭이 357개가
+ * 아닌 한 범위 밖이라 **이름으로 산다.**
+ *
+ * 남는 한 칸(탭수 이하의 숫자로 개명)은 여기서 못 가른다 — 저장된 값과 기본값이 같은 문자열이라
+ * 사후에 구분할 방법이 없다. 그래서 **보내기 전에** 막고 알린다 (`useLifecycleActions.renameRow`).
  */
-export function userLabel(input: { tab: TabRow; position: number | null }): string | null {
-  const { tab, position } = input
+export function userLabel(input: { tab: TabRow; tabCount: number | null }): string | null {
+  const { tab, tabCount } = input
   const label = tab.label.trim()
   if (label.length === 0) return null
   if (label === String(tab.number)) return null
-  if (position !== null && label === String(position)) return null
+  if (tabCount !== null && isDefaultPositionLabel(label, tabCount)) return null
   return label
 }
 
-/**
- * 이 탭이 **워크스페이스 안에서 몇 번째인가** — 1-기반. 목록에 없으면 `null`.
- *
- * 어댑터가 `workspace.tabs` 를 herdr 의 목록 순서(`order`)로 정렬해 준다
- * (`adapter/internal/store.ts:622`). 그래서 자리는 **배열 인덱스**로 센다 — `order` **값**이
- * 아니다: 탭을 닫아도 남은 탭의 `order` 값은 그대로라 구멍이 생기고(0,2,3…), 그 값을 위치로
- * 쓰면 herdr 가 다시 매긴 label 과 어긋난다.
- */
-export function tabPosition(input: { tabs: readonly TabRow[]; tabId: string }): number | null {
-  const index = input.tabs.findIndex((tab) => tab.tabId === input.tabId)
-  return index === -1 ? null : index + 1
+/** `1..탭수` 안의 **순수 정수** 인가 — herdr 가 기본 label 로 줄 수 있는 문자열의 집합이다. */
+export function isDefaultPositionLabel(label: string, tabCount: number): boolean {
+  if (!/^\d+$/.test(label)) return false
+  const value = Number(label)
+  return Number.isInteger(value) && value >= 1 && value <= tabCount
 }
 
 /**
@@ -165,59 +153,63 @@ export function providerTitle(tab: TabRow): string | null {
   return trimmed.length === 0 ? null : trimmed
 }
 
-/** 판독층이 detached HEAD 에 주는 표식 (`main/git-worktrees.ts:42`) — 브랜치 이름이 아니다. */
-const DETACHED_HEAD = '(detached)'
+/**
+ * **세션의 첫 사용자 발화**를 정제한 제목 (C5). 없으면 null.
+ *
+ * 값은 판독층이 만든다 (`main/transcript-parse.ts` 의 `cleanFirstPrompt` — Orca
+ * `deriveGeneratedTabTitle` 과 같은 결). 여기서는 그 값을 **쓸지만** 정한다: 소유자 확인과
+ * 하네스 턴 건너뛰기는 이미 판독층에서 끝났다 (C2·C5).
+ */
+export function firstPromptTitle(tab: TabRow): string | null {
+  const prompt = tab.digest.firstPrompt
+  if (prompt === null) return null
+  const trimmed = prompt.trim()
+  return trimmed.length === 0 ? null : trimmed
+}
 
 /**
- * 세션 제목 — **사용자 이름 → provider 세션 제목 → 정제된 터미널 제목 → 브랜치 → 폴백**
- * (LIFE-366 C1 + 수정 라운드 3 G3). 폴백은 `claude 1` · `codex 2` · `세션 3` —
- * 번호는 herdr 표찰(`TabRow.number`)이다.
+ * 세션 제목 — **사용자 이름 → `ai-title` → 첫 사용자 발화 → 정제된 터미널 제목 → 폴백**
+ * (기준 C1′, 수정 라운드 5 「Orca 동등」).
  *
- * ## 브랜치 티어는 **에이전트 없는 탭에만** 내려온다 (G3)
+ * ## 순서는 Orca 의 것이다 — 지어낸 순서가 아니다
  *
- * 통과선이 "에이전트 탭은 영향을 안 받는다" 이고, 그 조건은 위 세 티어만으로는 안 지켜진다 —
- * 갓 띄운 에이전트 탭은 사용자 이름도 `ai-title` 도 없고 터미널 제목은 유휴 기본값(`Claude Code`)
- * 이라 **거절**되어 지금도 `claude N` 으로 떨어지는 자리가 있다. 브랜치를 무조건 끼우면 그 자리가
- * 브랜치 이름으로 덮인다. 그래서 `tabAgent(tab) === null` 일 때만 본다.
+ * Orca `getAgentRowConversationName`(`shared/agent-row-conversation-name.ts:140-162`)에서
+ * `aiVaultTitle`(= `ai-title`, 없으면 **첫 사용자 발화**)은 **4단**이고 라이브 터미널 제목은
+ * **6단**이다. 즉 provider 가 붙인 이름과 사람이 친 첫 말이 **둘 다** 터미널 제목보다 위다.
+ * 사용자 지시가 "orca 와 동일하게" 라 그 순서를 그대로 박는다 (`05-orca-parity.md` §3.1).
  *
- * 브랜치 뒤에 **표찰 번호를 붙인다** — 같은 worktree 의 셸 탭 둘이 같은 제목이 되면 안 된다
- * (기준 A4). `claude N` · `세션 N` 과 같은 모양이라 번호 규칙도 하나로 유지된다.
+ * 값의 성질도 그 순서를 지지한다. 터미널 제목은 OSC 로 흘러오는 **지금 상태**라 자주 바뀌고
+ * 유휴 기본값(`Claude Code`)으로 되돌아간다. `ai-title` 과 첫 발화는 **그 세션의 이름**이라
+ * 안정적이고, 같은 worktree 의 claude 둘을 가르는 것이 바로 그 둘이다 — 이 일감이 푸는 문제다.
  *
- * 브랜치가 없으면(detached HEAD·非git) `세션 N` 이다 — 빈 문자열이나 `null` 을 그리지 않고,
- * `WorktreeRow.path` 로 대신하지도 않는다 (§2.5 "절대경로는 행에 넣지 않는다").
- * detached HEAD 는 판독층이 **`(detached)` 라는 표식 문자열**로 준다
- * (`main/git-worktrees.ts:42`) — 그건 브랜치 이름이 아니므로 여기서 없음으로 본다.
- * 그 표식을 제목에 그대로 쓰면 같은 상태의 worktree 가 전부 같은 이름이 된다(A4 위반).
+ * ## 폴백: 에이전트 탭 `claude N` · 셸 탭 `terminal N` (P5/G8)
  *
- * ## provider 제목이 터미널 제목보다 **위**인 이유
+ * 수정 라운드 3 이 셸 탭에 넣었던 **브랜치 티어는 걷어냈다** (사용자 결정). 브랜치 이름은 같은
+ * worktree 의 셸 탭 전부에 같은 말을 붙이고, 사용자가 탭에서 기대하는 것은 터미널이라는 사실
+ * 하나였다. `N` 은 herdr 표찰(`TabRow.number`)이다 — **자리 번호가 아니다.** 자리로 붙이면
+ * 탭을 닫을 때마다 폴백 제목이 다시 매겨져 G7 이 없앤 깜빡임이 폴백 자리에서 되살아난다.
  *
- * 둘 다 "에이전트가 지금 무슨 일을 하나" 를 말하지만 출처가 다르다. 터미널 제목은 OSC 로
- * 흘러오는 **현재 상태**라 자주 바뀌고 유휴 기본값(`Claude Code`)으로 돌아간다. `ai-title` 은
- * claude 가 대화 전체를 보고 붙인 **그 세션의 이름**이라 안정적이고, 같은 worktree 의 claude
- * 두 개를 가르는 것이 바로 이 값이다 — 이 일감이 풀려는 문제가 그것이다.
- * (LIFE-357 의 2단은 그대로 남는다: 사용자가 준 이름은 여전히 맨 위다.)
+ * Orca 의 나머지 단은 **일부러 안 따른다** (`05-orca-parity.md` §4): 상태 단어(`Done`·`Idle`)와
+ * 에이전트 종류(`Claude`)는 왼쪽 글리프와 오른쪽 경과 시간이 이미 말한다. 퀵커맨드 라벨은
+ * corral 에 기능 자체가 없다 (기준 C4).
  *
- * ⓑ 6단 중 **퀵커맨드 라벨·자체 LLM 명명은 넣지 않는다** (기준 C4, `00-analysis.md` §5):
- * corral 에 퀵커맨드 기능 자체가 없고, `ai-title` 이 이미 LLM 명명이다.
+ * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가 같은
+ * 틱에 따라온다 (09-gate1-fix.md C-3). 호출부마다 분기하면 두 목록이 갈라진다.
  *
- * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가
- * 같은 틱에 따라온다. 호출부마다 분기하면 두 목록이 갈라진다.
- *
- * `position` 은 **워크스페이스 전체 탭 목록에서의 1-기반 자리**다 (`tabPosition`). 맨 위 티어가
- * herdr 기본 label 을 가려내는 데 쓴다 (수정 라운드 4 G5) — 사이드바처럼 에이전트 탭만 거른
- * 목록의 인덱스를 넣으면 자리가 어긋나 기본 label 이 다시 이름으로 산다.
+ * `tabCount` 는 **그 워크스페이스의 탭 수**다 — 맨 위 티어가 herdr 기본 label 을 가려내는 데
+ * 쓴다 (G7). 사이드바처럼 에이전트 탭만 거른 목록의 길이를 넣으면 범위가 좁아져 기본 label 이
+ * 다시 이름으로 산다.
  */
-export function sessionTitle(input: { tab: TabRow; branch: string | null; position: number | null }): string {
-  const { tab, branch, position } = input
-  const named = userLabel({ tab, position })
+export function sessionTitle(input: { tab: TabRow; tabCount: number | null }): string {
+  const { tab, tabCount } = input
+  const named = userLabel({ tab, tabCount })
   if (named !== null) return named
   const provider = providerTitle(tab)
   if (provider !== null) return provider
+  const prompt = firstPromptTitle(tab)
+  if (prompt !== null) return prompt
   const label = paneTitleLabel(tab)
   if (label !== null) return label
   const agent = tabAgent(tab)
-  if (agent !== null) return `${agent} ${tab.number}`
-  const branchName = branch === null ? '' : branch.trim()
-  if (branchName.length === 0 || branchName === DETACHED_HEAD) return `세션 ${tab.number}`
-  return `${branchName} ${tab.number}`
+  return agent === null ? `terminal ${tab.number}` : `${agent} ${tab.number}`
 }

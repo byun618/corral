@@ -11,10 +11,23 @@
 // 상태 단어는 이미 왼쪽 글리프가 말하고 있으며(`session-glyphs.ts`), 침묵 시간은 **오른쪽 경과
 // 시간 칸**이 말한다. 그 셋을 2차 줄에 또 쓰면 같은 말을 세 번 하게 된다.
 //
-// 그래서 corral 의 2차 줄은 **한 가지만** 말한다: *마지막으로 무슨 말을 했나.*
-// Orca 가 그 순서로 덮으려 했던 문제(마지막 메시지가 한 턴 낡을 수 있다)는 다른 방법으로 푼다 —
-// **판독 층이 tool_use 뿐인 턴을 건너뛰고 텍스트가 있는 턴까지 거슬러 올라가고**
-// (`transcript-parse.ts`), 오른쪽 경과 시간은 그 낡은 말이 아니라 **최신 레코드 시각**을 쓴다.
+// 그래서 corral 의 2차 줄은 **두 가지만** 말한다: *지금 무슨 도구를 돌리나* (일하는 중일 때) ·
+// *마지막으로 무슨 말을 했나*.
+//
+// ## 「진행 중 도구」 갈래를 되살렸다 (수정 라운드 5, B9 — Orca 동등)
+//
+// 위 문단은 원래 이 갈래를 "herdr 가 안 준다" 는 이유로 뺐다. 절반만 맞았다 — herdr 통합은
+// 여전히 `message` 를 안 부르지만, **트랜스크립트에 그 값이 있다.** 마지막 어시스턴트 턴이
+// `tool_use` 뿐이면 그게 지금 돌고 있는 도구다 (`transcript-parse.ts` 의 `tool`).
+//
+// 게이트는 Orca 와 같다: **`working` 일 때만** 쓴다 (`agent-row-tool-preview.ts:12`
+// `showsAgentToolPreview`). 도구 값은 자기를 세운 턴보다 오래 살아남아서, 다른 상태에서 쓰면
+// 끝난 일을 "하는 중" 이라고 말하게 된다 — 기준 B9 이 "`unknown`·`idle` 에서는 지어내지 않는다"
+// 로 못 박은 자리다. Orca 의 `waiting` 은 corral 에 대응 상태가 없어 안 따른다 (`blocked` 는
+// 승인 대기라 "도구를 돌리는 중" 과 다르다).
+//
+// 낡은 마지막 메시지 문제는 그대로 두 방법으로도 푼다 — 판독 층이 tool_use 뿐인 턴을 건너뛰고
+// 텍스트가 있는 턴까지 거슬러 올라가고, 오른쪽 경과 시간은 **최신 레코드 시각**을 쓴다.
 // 그러면 "3분 전 · 이 말을 했다" 가 되어 실시간을 참칭하지 않는다 (기준 A8·B7).
 //
 // # 없는 값은 **없다고 쓴다**
@@ -43,6 +56,10 @@ export type SecondaryLine =
  * (`AppState.integrations` 주석과 같은 약속).
  */
 export function secondaryLine(input: { tab: TabRow; integrations: readonly IntegrationRow[] }): SecondaryLine {
+  // **진행 중 도구가 마지막 말보다 앞이다** (B9, Orca `worktree-card-compact-agent-row.tsx:26-57`
+  // 과 같은 순서) — 단 그 pane 이 실제로 일하는 중일 때만.
+  const tool = runningTool(input.tab)
+  if (tool !== null) return { kind: 'text', text: tool }
   const activity: SessionActivity = input.tab.digest.activity
   switch (activity.state) {
     case 'text':
@@ -60,6 +77,24 @@ export function secondaryLine(input: { tab: TabRow; integrations: readonly Integ
     case 'none':
       return noticeForMissingRef(input)
   }
+}
+
+/**
+ * 지금 돌고 있는 도구 한 줄 (`Bash: cd …`). 아니면 null.
+ *
+ * 상태는 **에이전트가 붙은 pane 의 것**을 본다 (`tabAgent` 와 같은 규칙 — 처음 붙은 pane).
+ * 탭 단위 상태(`TabRow.agentStatus`)가 아니라 pane 단위인 이유는 기준 B9 의 문언 그대로다:
+ * 지문을 만든 그 세션이 일하는 중인지를 물어야 한다.
+ *
+ * 값 자체는 판독층이 관측된 모양에서만 만든다 — 없으면 이름만 오고(`input: null`), 그것도
+ * 없으면 여기까지 안 온다.
+ */
+function runningTool(tab: TabRow): string | null {
+  const tool = tab.digest.tool
+  if (tool === null) return null
+  const pane = tab.panes.find((row) => row.agent !== null) ?? null
+  if (pane === null || pane.agentStatus !== 'working') return null
+  return tool.input === null ? tool.name : `${tool.name}: ${tool.input}`
 }
 
 /**

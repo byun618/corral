@@ -197,7 +197,6 @@ export function App(): React.JSX.Element {
           {activeWorkspace !== null ? (
             <MainTabBar
               tabs={activeWorkspace.tabs}
-              branch={activeWorktree?.branch ?? null}
               selectedPane={lifecycle.selectedPane}
               activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? ''}
               onSelectTab={(tab) => {
@@ -208,7 +207,7 @@ export function App(): React.JSX.Element {
                 if (activeWorkspace !== null) lifecycle.actions.createRow(activeWorkspace.workspaceId, 'shell')
               }}
               onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
-              onRenameTab={({ tab, label, position }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, position })}
+              onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
               onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
             />
           ) : null}

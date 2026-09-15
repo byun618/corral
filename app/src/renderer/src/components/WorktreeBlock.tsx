@@ -21,9 +21,10 @@
 import { useState } from 'react'
 import type { AgentKind, IntegrationRow, TabRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
-import { agentIcon, GLYPH } from '../session-glyphs.js'
+import { GLYPH, STATUS_LABEL } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { isAgentTab, tabAgent, tabPosition } from '../session-title.js'
+import { isAgentTab } from '../session-title.js'
+import { collapsedSummary } from '../session-summary.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { SessionRow } from './SessionRow.js'
@@ -79,13 +80,12 @@ export function WorktreeBlock({
   const agentTabs = (worktree.workspace?.tabs ?? []).filter(isAgentTab)
   const hasGroup = agentTabs.length >= GROUP_THRESHOLD
   const showSessions = !hasGroup || !groupCollapsed
-  // H-5 — 접힘은 "사라짐"이 아니라 **"압축됨"**으로 읽혀야 한다. 첫 세션의 글리프만 남기고
-  // 나머지 개수를 `+N` 으로 접는다.
-  const firstAgentTab = agentTabs[0] ?? null
-  const collapsedSummary =
-    hasGroup && groupCollapsed && firstAgentTab !== null
-      ? { status: GLYPH[firstAgentTab.agentStatus], kind: agentIcon(tabAgent(firstAgentTab)), hiddenCount: agentTabs.length - 1 }
-      : null
+  // H-5 — 접힘은 "사라짐"이 아니라 **"압축됨"**으로 읽혀야 한다.
+  //
+  // 수정 라운드 5 (P6/C7): 압축의 단위가 **세션**에서 **상태 클러스터**로 바뀌었다. 첫 세션 하나의
+  // 글리프 + `+N` 은 "무엇이 어떤 상태인가" 를 못 말한다 — 접힌 카드에서 사용자가 알고 싶은 것이
+  // 그것이다. 규칙은 `session-summary.ts` 에 있고 여기서는 그리기만 한다.
+  const summary = hasGroup && groupCollapsed && agentTabs.length > 0 ? collapsedSummary({ tabs: agentTabs }) : null
   const isOpen = worktree.workspace !== null
 
   const branch = worktree.branch
@@ -209,25 +209,43 @@ export function WorktreeBlock({
       {/* 접힘 요약 행 — **`data-tab` 을 쓰지 않는다.** C3ⓑ 하네스가 "접힌 자식은 DOM 미존재"를
           `[data-tab]` 개수로 검사하므로, 여기에 그 속성을 달면 접혀도 세션 행이 남은 것으로
           집계돼 통과선이 깨진다. 세션 행이 아니라 헤더의 접힘 표현이라 별도 마크업이 맞다. */}
-      {isOpen && collapsedSummary !== null ? (
+      {isOpen && summary !== null ? (
         <div
           className="agent-group-summary"
           data-agent-group-summary={worktree.path}
-          title={`세션 ${agentTabs.length}개 — 펼치기`}
+          data-summary-clusters={summary.clusters.length}
+          title={`세션 ${summary.total}개 — 펼치기`}
           onClick={(event) => {
             event.stopPropagation()
             onToggleGroup()
           }}
         >
-          <span className={`session-row-glyph tone-${collapsedSummary.status.tone}`}>{collapsedSummary.status.glyph}</span>
-          {collapsedSummary.kind === null ? null : (
-            <span className={`session-row-agent agent-${collapsedSummary.kind.kind}`} data-agent-kind={collapsedSummary.kind.kind}>
-              <AgentIcon kind={collapsedSummary.kind.kind} glyph={collapsedSummary.kind.glyph} />
+          {summary.clusters.map((cluster) => (
+            <span
+              key={cluster.status}
+              className="agent-group-cluster"
+              data-summary-cluster={cluster.status}
+              data-summary-count={cluster.count}
+              title={`${STATUS_LABEL[cluster.status]} ${cluster.count}`}
+            >
+              <span className={`session-row-glyph tone-${GLYPH[cluster.status].tone}`}>{GLYPH[cluster.status].glyph}</span>
+              {cluster.icons.map((icon) => (
+                <span key={icon.kind} className={`session-row-agent agent-${icon.kind}`} data-agent-kind={icon.kind} title={icon.label}>
+                  <AgentIcon kind={icon.kind} glyph={icon.glyph} />
+                </span>
+              ))}
+              {/* `+N` 첫 층 — 이 클러스터에서 **아이콘이 안 붙은 세션 수**다(총수가 아니다). */}
+              {cluster.hiddenIcons > 0 ? (
+                <span className="agent-group-cluster-more" data-summary-hidden-icons={cluster.hiddenIcons}>
+                  +{cluster.hiddenIcons}
+                </span>
+              ) : null}
             </span>
-          )}
-          {collapsedSummary.hiddenCount > 0 ? (
-            <span className="agent-group-summary-more" data-agent-group-hidden={collapsedSummary.hiddenCount}>
-              +{collapsedSummary.hiddenCount}
+          ))}
+          {/* `+N` 둘째 층 — 클러스터 상한(3)에 **잘려나간 클러스터들의 세션 합**이다. */}
+          {summary.hiddenSessions > 0 ? (
+            <span className="agent-group-summary-more" data-agent-group-hidden={summary.hiddenSessions}>
+              +{summary.hiddenSessions}
             </span>
           ) : null}
           <div className="agent-group-spacer" />
@@ -240,9 +258,9 @@ export function WorktreeBlock({
             <SessionRow
               key={tab.tabId}
               tab={tab}
-              branch={branch}
-              // 거른 목록(`agentTabs`)의 인덱스가 아니라 **워크스페이스 전체 목록**의 자리다 (G5).
-              position={tabPosition({ tabs: worktree.workspace?.tabs ?? [], tabId: tab.tabId })}
+              // 거른 목록(`agentTabs`)의 길이가 아니라 **워크스페이스 전체 탭 수**다 (G7) —
+              // 기본 label 은 전체 목록에서의 자리 번호라, 거른 길이를 쓰면 범위가 좁아진다.
+              tabCount={worktree.workspace?.tabs.length ?? null}
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
               integrations={integrations}
               now={now}

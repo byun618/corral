@@ -275,6 +275,13 @@ button { font: inherit; }
   margin-top: var(--gap-session-row);
 }
 .agent-group-summary:hover { background: var(--bg-row-hover); }
+/* 상태 클러스터 하나 — 상태 점 + 종류 아이콘들이 **한 덩어리**로 읽히게 묶는다 (C7).
+   Orca 도 같은 자리에 옅은 바탕을 깔아 클러스터 경계를 만든다(`bg-worktree-sidebar/70`). */
+.agent-group-cluster {
+  display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto;
+  padding: 0 4px; border-radius: 4px; background: var(--bg-row-hover);
+}
+.agent-group-cluster-more { font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-dim); }
 .agent-group-summary-more { font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-dim); }
 .agent-group-summary-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
 

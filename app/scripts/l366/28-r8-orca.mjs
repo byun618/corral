@@ -323,10 +323,13 @@ async function main() {
   //
   // 셸에 점자 프레임을 줄줄이 쏘게 하고 **그려진 제목의 가짓수**를 센다. 억제가 없으면
   // 프레임마다 다른 글자가 잡힌다 (관문 ⑤ 반례 ⓒ).
+  // 본문을 **짧게** 쓴다(`⠋ PROBE`, 7자). C11ⓓ 의 15자 왼쪽 절단이 긴 제목의 **앞쪽**을 잘라
+  // 내는데, 스피너 글리프가 바로 그 앞쪽이라 `⠋ Thinking PROBE` 는 잘린 뒤 `..hinking PROBE` 로
+  // 프레임이 구별되지 않는다 — 1차 반례(c12)가 그래서 화면에서 안 뒤집혔다(단위 2칸만 뒤집혔다).
   // 루프 끝에 **표식**을 붙인다 — 다음 칸(ⓐ)이 루프가 도는 동안 글자를 쏘면 셸 입력 버퍼에
   // 쌓였다가 루프가 끝난 뒤 한꺼번에 실행돼, 두 제목이 한 폴링 안에 지나가 버린다.
   // 1차 실행에서 ⓐ 의 두 번째 칸이 그렇게 어긋났다(제품 결함이 아니라 계측 결함이었다).
-  const spinLoop = `for g in ${SPIN.join(' ')} ${SPIN.join(' ')} ${SPIN.join(' ')} ${SPIN.join(' ')}; do printf '\\033]2;%s Thinking PROBE\\007' "$g"; sleep 0.35; done; printf '\\033]2;SPIN-DONE\\007'`
+  const spinLoop = `for g in ${SPIN.join(' ')} ${SPIN.join(' ')} ${SPIN.join(' ')} ${SPIN.join(' ')}; do printf '\\033]2;%s PROBE\\007' "$g"; sleep 0.35; done; printf '\\033]2;SPIN-DONE\\007'`
   await runLine(shellPane, spinLoop)
   const spinning = await until(async () => ((await labelOf(app, shellTab.tabId)) ?? '').includes('PROBE'), {
     timeoutMs: 20000,

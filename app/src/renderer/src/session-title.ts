@@ -75,13 +75,17 @@ const SHELL_PROMPT_TITLE = /^\S+@\S+:[~/]/
  * // sequences. Only the active split's title propagates to the tab.
  * ```
  *
- * 포커스가 **아무 데도 없으면** 첫 pane 을 쓴다 — 비활성 탭도 제목이 있어야 하고, 그 자리는
- * corral 이 이미 `pane-utils.pickPane` 에서 쓰는 관용구다. Orca 는 활성 pane 이 바뀔 때 그 값을
- * 탭에 **복사해 두지만**(`onActivePaneChange`) corral 의 화면은 상태에서 매번 계산하므로
- * 저장할 자리가 없다 — 대신 같은 규칙(포커스 우선)으로 같은 결과를 만든다.
+ * **corral 이 지금 보여주는 pane 이 먼저다.** Orca 의 `manager.getActivePane()` 에 해당하는 것이
+ * corral 에서는 `selectedPane`(렌더러가 고른 pane)이다 — 화면에 그 pane 이 떠 있는데 제목은 옆
+ * pane 의 것이면, 사용자가 보는 것과 제목이 어긋난다. herdr 의 `focused` 는 **연결마다 따로**라
+ * (control 구독이 `pane.focused` 를 일부러 안 받는다 — `adapter/internal/protocol.ts` 의 제외 목록)
+ * corral 이 늘 최신으로 아는 값이 아니다. 그래서 순서는 **보여주는 pane → herdr 가 말한 focused
+ * → 첫 pane** 이다. 마지막 칸은 비활성 탭(선택된 pane 이 그 탭에 없다)이 제목을 잃지 않게 한다.
  */
-function titlePane(tab: TabRow): PaneRow | null {
-  return tab.panes.find((pane) => pane.focused) ?? tab.panes[0] ?? null
+function titlePane(input: { tab: TabRow; selectedPaneId: string | null }): PaneRow | null {
+  const { tab, selectedPaneId } = input
+  const shown = selectedPaneId === null ? undefined : tab.panes.find((pane) => pane.paneId === selectedPaneId)
+  return shown ?? tab.panes.find((pane) => pane.focused) ?? tab.panes[0] ?? null
 }
 
 /**
@@ -121,8 +125,8 @@ function paneCwdLabel(input: { pane: PaneRow; home: string | null }): string | n
  * 스피너 프레임 억제는 **상태가 화면에 들어오기 전**에 끝난다 (`pane-title-frames.ts`, C12) —
  * 여기 오는 `pane.title` 은 이미 안정된 프레임이다.
  */
-export function paneTitleLabel(input: { tab: TabRow; home: string | null }): string | null {
-  const pane = titlePane(input.tab)
+export function paneTitleLabel(input: { tab: TabRow; home: string | null; selectedPaneId?: string | null }): string | null {
+  const pane = titlePane({ tab: input.tab, selectedPaneId: input.selectedPaneId ?? null })
   if (pane === null) return null
   const title = pane.title.trim()
   if (title.length === 0) return null
@@ -310,7 +314,14 @@ export function shellCwdLabel(input: { tab: TabRow; home: string | null }): stri
  * 쓴다 (G7). 사이드바처럼 에이전트 탭만 거른 목록의 길이를 넣으면 범위가 좁아져 기본 label 이
  * 다시 이름으로 산다.
  */
-export function sessionTitle(input: { tab: TabRow; tabCount: number | null; ordinal: number; home: string | null }): string {
+export function sessionTitle(input: {
+  tab: TabRow
+  tabCount: number | null
+  ordinal: number
+  home: string | null
+  /** corral 이 지금 보여주는 pane (C14) — 그 pane 이 탭 제목을 몬다. 이 탭에 없으면 무시된다. */
+  selectedPaneId?: string | null
+}): string {
   const { tab, tabCount, ordinal, home } = input
   const named = userLabel({ tab, tabCount })
   if (named !== null) return named
@@ -318,7 +329,7 @@ export function sessionTitle(input: { tab: TabRow; tabCount: number | null; ordi
   if (provider !== null) return provider
   const prompt = firstPromptTitle(tab)
   if (prompt !== null) return prompt
-  const label = paneTitleLabel({ tab, home })
+  const label = paneTitleLabel({ tab, home, selectedPaneId: input.selectedPaneId ?? null })
   if (label !== null) return label
   const agent = tabAgent(tab)
   if (agent !== null) return `${agent} ${ordinal}`

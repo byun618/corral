@@ -169,6 +169,22 @@ function currentSocketPath(): string | null {
   return sessions.find((item) => item.name === selectedSession)?.socketPath ?? null
 }
 
+/**
+ * 홈 디렉터리의 **실경로** (LIFE-366 C11ⓒ, 수정 라운드 8).
+ *
+ * herdr 가 주는 `foreground_cwd` 는 실경로인데 `HOME` 은 심링크일 수 있다 — 그러면 `~` 로 접히지
+ * 않는다. r7 계측에서 실제로 밟았다(격리 HOME 이 `/tmp/l366h` 링크라 경로가 안 접혔다).
+ * macOS 의 `/tmp` → `/private/tmp` 도 같은 모양이다. 못 풀면 원래 값을 쓴다.
+ */
+function homeDirReal(): string {
+  const home = os.homedir()
+  try {
+    return fs.realpathSync(home)
+  } catch {
+    return home
+  }
+}
+
 function currentState(): AppState {
   const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests))
   return {
@@ -185,9 +201,9 @@ function currentState(): AppState {
     integrations,
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
-    // 셸 탭 폴백이 경로를 접는 데 쓴다 (C9). `os.homedir()` 은 `HOME` 을 따르므로 격리 실행에서
-    // 격리 HOME 이 실린다 — 판독층이 트랜스크립트를 찾는 뿌리와 같은 값이다.
-    home: os.homedir(),
+    // 셸 탭 폴백이 경로를 접는 데 쓴다 (C9·C11ⓒ). `os.homedir()` 은 `HOME` 을 따르므로 격리
+    // 실행에서 격리 HOME 이 실린다 — 판독층이 트랜스크립트를 찾는 뿌리와 같은 값이다.
+    home: homeDirReal(),
   }
 }
 

@@ -39,8 +39,8 @@ function title(input: { tab: TabRow; tabCount?: number | null; ordinal?: number;
 }
 
 /** 터미널 제목 티어 한 줄 (C11) — `home` 은 프롬프트 모양을 cwd 값으로 바꿀 때만 쓴다. */
-function label(row: TabRow, home: string | null = null): string | null {
-  return paneTitleLabel({ tab: row, home })
+function label(row: TabRow, home: string | null = null, selectedPaneId: string | null = null): string | null {
+  return paneTitleLabel({ tab: row, home, selectedPaneId })
 }
 
 function pane(input: {
@@ -199,6 +199,19 @@ describe('제목 정책 (C11, 수정 라운드 8) — 거절은 pane ID 하나�
   it('포커스가 아무 데도 없으면 첫 pane 을 쓴다 — 비활성 탭도 제목이 있어야 한다', () => {
     const panes = [pane({ title: '앞 pane 제목', agent: 'claude' }), pane({ title: '뒤 pane 제목', agent: 'claude', paneId: 'wA:p2' })]
     expect(label(tab({ panes }))).toBe('앞 pane 제목')
+  })
+
+  it('**화면에 뜬 pane 이 herdr 의 focused 보다 먼저다** (C14) — 보는 것과 제목이 안 어긋난다', () => {
+    const panes = [
+      pane({ title: '앞 pane 제목', agent: 'claude' }),
+      pane({ title: '뒤 pane 제목', agent: 'claude', focused: true, paneId: 'wA:p2' }),
+    ]
+    expect(label(tab({ panes }), null, 'wA:p1')).toBe('앞 pane 제목')
+  })
+
+  it('선택된 pane 이 **다른 탭의 것**이면 무시한다 — 비활성 탭도 제목이 있어야 한다', () => {
+    const panes = [pane({ title: '앞 pane 제목', agent: 'claude' })]
+    expect(label(tab({ panes }), null, 'wB:p9')).toBe('앞 pane 제목')
   })
 
   it('포커스된 pane 의 제목이 pane ID 면 **뒤 pane 으로 안 넘어간다** (C14 의 대가)', () => {

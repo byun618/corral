@@ -145,16 +145,26 @@ export function App(): React.JSX.Element {
    * 배정은 컴포넌트가 처음 그릴 때 일어나고, 해제는 여기 한 곳에서만 한다 — 탭이 닫히면 그
    * 번호가 풀려 다음 탭이 그 자리를 쓴다. 렌더 뒤(effect)라 닫힌 탭의 번호가 **한 프레임** 더
    * 잡혀 있는데, 그 프레임에 새 탭이 생겨도 번호가 하나 밀릴 뿐 이미 그린 탭의 번호는 안 바뀐다.
+   *
+   * ⚠ **다 싣기 전에는 아무것도 하지 않는다** (`ordinalsReady`). 이 effect 는 화면이 부트 문구에
+   * 머무는 동안에도 돈다 — 첫 상태가 hydrate 보다 먼저 오면 여기서 빈 배정표를 파일에 써서
+   * 저장값을 지워버린다. 화면에서 실제로 그렇게 깨졌다 (raw/claude/r8-ordinal-wipe.md).
+   * 추리는 범위도 **지금 열려 있는 워크스페이스 안**으로 좁힌다 — 같은 순간 열린 워크스페이스가
+   * 하나도 없으면 `live` 가 비어서 배정표가 통째로 날아간다.
    */
   useEffect(() => {
-    if (state === null) return
+    if (state === null || !ordinalsReady) return
     const live: string[] = []
+    const shown: string[] = []
     for (const repo of state.repos) {
       for (const worktree of repo.worktrees) {
-        for (const tab of worktree.workspace?.tabs ?? []) live.push(tab.tabId)
+        const workspace = worktree.workspace
+        if (workspace === null) continue
+        shown.push(workspace.workspaceId)
+        for (const tab of workspace.tabs) live.push(tab.tabId)
       }
     }
-    tabOrdinals.keepOnly(live)
+    tabOrdinals.keepOnly({ tabIds: live, groupIds: shown })
     // 배정이 **실제로 바뀐 때만** 저장한다 (C13) — 이 effect 는 상태 갱신마다 돌고,
     // ui-prefs 는 디바운스 없이 즉시 파일을 쓴다.
     const entries = tabOrdinals.entries()
@@ -162,7 +172,7 @@ export function App(): React.JSX.Element {
     if (serialized === savedOrdinals.current) return
     savedOrdinals.current = serialized
     window.corral.setUiPrefs({ tabOrdinals: entries })
-  }, [state])
+  }, [state, ordinalsReady])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)

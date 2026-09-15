@@ -41,8 +41,14 @@
 export type OrdinalBook = {
   /** 이 탭의 번호. 처음 보는 탭이면 **그 순간 비어 있는 가장 작은 번호**를 배정한다. */
   ordinalFor: (input: { tabId: string; groupId: string }) => number
-  /** 살아 있는 탭만 남긴다 — 닫힌 탭이 쥐고 있던 번호가 여기서 풀린다. */
-  keepOnly: (tabIds: readonly string[]) => void
+  /**
+   * 살아 있는 탭만 남긴다 — 닫힌 탭이 쥐고 있던 번호가 여기서 풀린다.
+   *
+   * **지금 화면에 있는 워크스페이스 안에서만** 푼다 (`groupIds`). 안 그러면 재기동 직후처럼
+   * 아직 아무 워크스페이스도 안 열린 순간에 `tabIds` 가 비어서 **실어 온 배정표가 통째로
+   * 날아간다** — C13 이 화면에서 깨졌던 자리다(raw/claude/r8-ordinal-wipe.md).
+   */
+  keepOnly: (input: { tabIds: readonly string[]; groupIds: readonly string[] }) => void
   /** 저장된 배정표를 싣는다 (C13). **부팅 때 한 번**, 아무 탭도 그리기 전에 부른다. */
   hydrate: (rows: readonly { tabId: string; groupId: string; ordinal: number }[]) => void
   /** 지금 배정표 (검사·계측용). */
@@ -78,9 +84,15 @@ export function createOrdinalBook(): OrdinalBook {
         book.set(row.tabId, { groupId: row.groupId, ordinal: row.ordinal })
       }
     },
-    keepOnly: (tabIds) => {
+    keepOnly: ({ tabIds, groupIds }) => {
       const live = new Set(tabIds)
-      for (const tabId of [...book.keys()]) if (!live.has(tabId)) book.delete(tabId)
+      const shown = new Set(groupIds)
+      for (const [tabId, entry] of [...book.entries()]) {
+        // 안 보이는 워크스페이스의 칸은 **그대로 둔다** — 그 탭들은 사라진 게 아니라
+        // 아직 안 열렸을 뿐이다. 다시 열면 같은 번호로 돌아와야 한다 (C13).
+        if (!shown.has(entry.groupId)) continue
+        if (!live.has(tabId)) book.delete(tabId)
+      }
     },
     entries: () =>
       [...book.entries()].map(([tabId, entry]) => ({ tabId, groupId: entry.groupId, ordinal: entry.ordinal })),

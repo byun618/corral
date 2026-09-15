@@ -165,6 +165,21 @@ describe('머리 재판독 (C6′)', () => {
     expect(readSessionDigest(ref).headBytes).toBe(0)
   })
 
+  it('C5′ 첫 발화가 머리 **한참 뒤**(창 안)에 있어도 뽑는다 — 좁게 훑으면 여기서 깨진다', () => {
+    // 앞에 채움을 50KB 쯤 깔아 첫 발화를 창 **안쪽 깊숙이** 민다. 판독을 4KB 로 좁힌 빌드는
+    // 이 칸에서 부재가 되고, C5′ 는 그 부재를 **미달**로 센다 (관문 ⑤ 반례 ⓑ 의 단위 쪽 얼굴).
+    const lines = [meta]
+    let size = 0
+    while (size < 50 * 1024) {
+      const line = fillerRecord(4096)
+      lines.push(line)
+      size += line.length + 1
+    }
+    lines.push(userRecord('창 안쪽 깊숙이 있는 첫 발화다. 좁게 훑으면 놓친다.'))
+    write(lines)
+    expect(readSessionDigest(ref).digest.firstPrompt).toBe('창 안쪽 깊숙이 있는 첫 발화다')
+  })
+
   it('창 안에서 시작하고 창 안에서 끝나는 레코드는 **반드시** 뽑는다 (C5′ — 그 외 부재는 미달)', () => {
     const filler = fillerRecord(100 * 1024)
     write([meta, userRecord('창 안에 있는 첫 발화다. 이건 부재가 허용되지 않는다.'), filler, filler, filler])

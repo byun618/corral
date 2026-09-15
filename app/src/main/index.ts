@@ -7,6 +7,7 @@
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
@@ -184,6 +185,9 @@ function currentState(): AppState {
     integrations,
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
+    // 셸 탭 폴백이 경로를 접는 데 쓴다 (C9). `os.homedir()` 은 `HOME` 을 따르므로 격리 실행에서
+    // 격리 HOME 이 실린다 — 판독층이 트랜스크립트를 찾는 뿌리와 같은 값이다.
+    home: os.homedir(),
   }
 }
 

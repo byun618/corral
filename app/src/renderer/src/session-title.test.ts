@@ -13,23 +13,37 @@ import type { AgentSessionRef, PaneRow, SessionDigest, TabRow } from '../../shar
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import {
   firstPromptTitle,
+  homeRelativeDir,
   isDefaultPositionLabel,
   paneTitleLabel,
   providerTitle,
   sessionTitle,
+  shellCwdLabel,
   tabAgent,
+  truncatePathLeft,
   userLabel,
 } from './session-title.js'
 
 /**
  * 제목 한 줄. `tabCount` 는 그 워크스페이스의 탭 수(G7) — 안 주면 **모름(null)** 이라
- * 범위 판별을 안 한다.
+ * 범위 판별을 안 한다. `ordinal` 은 폴백 번호(C10)로 **밖에서 배정된 값**이다 — 기본 1.
+ * `home` 은 셸 폴백이 경로를 접는 데만 쓴다 (C9).
  */
-function title(input: { tab: TabRow; tabCount?: number | null }): string {
-  return sessionTitle({ tab: input.tab, tabCount: input.tabCount ?? null })
+function title(input: { tab: TabRow; tabCount?: number | null; ordinal?: number; home?: string | null }): string {
+  return sessionTitle({
+    tab: input.tab,
+    tabCount: input.tabCount ?? null,
+    ordinal: input.ordinal ?? 1,
+    home: input.home ?? null,
+  })
 }
 
-function pane(input: { title?: string; agent?: string | null; agentSession?: AgentSessionRef | null }): PaneRow {
+function pane(input: {
+  title?: string
+  agent?: string | null
+  agentSession?: AgentSessionRef | null
+  cwd?: string | null
+}): PaneRow {
   return {
     paneId: 'wA:p1',
     tabId: 'wA:t1',
@@ -37,7 +51,7 @@ function pane(input: { title?: string; agent?: string | null; agentSession?: Age
     title: input.title ?? '',
     agent: input.agent ?? null,
     agentStatus: 'idle',
-    cwd: null,
+    cwd: input.cwd ?? null,
     focused: false,
     agentSession: input.agentSession ?? null,
   }
@@ -90,17 +104,17 @@ describe('sessionTitle — 5단 우선순위 (C1′, Orca 순서)', () => {
     expect(title({ tab: tab({ number: 2, panes, digest: withDigest({}) }) })).toBe('SUMMARY.md 작성')
   })
 
-  it('⑤ 넷 다 없으면 폴백 — 에이전트 이름 + 표찰 번호', () => {
-    expect(title({ tab: tab({ number: 3, panes: [pane({ agent: 'codex' })] }) })).toBe('codex 3')
+  it('⑤ 넷 다 없으면 폴백 — 에이전트 이름 + **배정 번호** (C10 — 표찰 번호가 아니다)', () => {
+    expect(title({ tab: tab({ number: 3, panes: [pane({ agent: 'codex' })] }), ordinal: 1 })).toBe('codex 1')
   })
 
-  it('⑤ 에이전트가 없는 셸 탭의 폴백은 `terminal N` 이다 (P5/G8 — 브랜치가 아니다)', () => {
-    expect(title({ tab: tab({ number: 4 }) })).toBe('terminal 4')
+  it('⑤ cwd 도 없는 셸 탭의 폴백은 `terminal N` 이다 (P5/G8 — 브랜치가 아니다)', () => {
+    expect(title({ tab: tab({ number: 4 }), ordinal: 1 })).toBe('terminal 1')
   })
 
   it('같은 worktree 의 셸 탭 둘은 서로 다른 제목이다 (A4)', () => {
-    expect(title({ tab: tab({ number: 1 }) })).toBe('terminal 1')
-    expect(title({ tab: tab({ number: 2 }) })).toBe('terminal 2')
+    expect(title({ tab: tab({ number: 1 }), ordinal: 1 })).toBe('terminal 1')
+    expect(title({ tab: tab({ number: 2 }), ordinal: 2 })).toBe('terminal 2')
   })
 
   // 반례 (관문 ⑤) — 첫 발화 티어가 ai-title 을 **이기면 안 된다.** 순서를 뒤집으면 여기서 깨진다.
@@ -127,7 +141,7 @@ describe('sessionTitle — 5단 우선순위 (C1′, Orca 순서)', () => {
 
   it('상태 단어·에이전트 종류는 제목에 안 들어간다 (§4 ② — 빈 자리는 폴백이 받는다)', () => {
     const idle = tab({ number: 2, panes: [pane({ title: 'Claude Code', agent: 'claude' })] })
-    expect(title({ tab: idle })).toBe('claude 2')
+    expect(title({ tab: idle, ordinal: 2 })).toBe('claude 2')
   })
 })
 
@@ -196,7 +210,7 @@ describe('셸 프롬프트 제목 — 실환경 실측 4줄 (G1)', () => {
 
   it('그래서 셸 탭 제목이 프롬프트 문자열이 되지 않는다', () => {
     const panes = [pane({ title: 'byun@sanghyunui-MacBookPro:~/repos/byun618/corral' })]
-    expect(title({ tab: tab({ number: 2, panes }) })).toBe('terminal 2')
+    expect(title({ tab: tab({ number: 2, panes }), ordinal: 2 })).toBe('terminal 2')
   })
 
   // 반례 — 걸러지면 **안 되는** 제목. 필터가 넓어지면 여기서 깨진다.
@@ -271,7 +285,8 @@ describe('herdr 기본 label 은 위치다 — 실측표 (G5·G7)', () => {
   /** 반례 — 이 판별이 없으면 아래 두 칸이 `2` 로 되돌아간다 (사용자가 실환경에서 본 ⓐⓑ 그대로). */
   describe('가려져 있던 티어가 돌아온다', () => {
     it('셸 탭은 `terminal N` 으로 내려온다 — label "2" · number 3 · 탭 3개', () => {
-      expect(title({ tab: tab({ label: '2', number: 3 }), tabCount: 3 })).toBe('terminal 3')
+      // 번호는 **배정표에서 온 값**이지 `tab.number`(3) 가 아니다 (C10).
+      expect(title({ tab: tab({ label: '2', number: 3 }), tabCount: 3, ordinal: 4 })).toBe('terminal 4')
     })
 
     it('claude 탭은 ai-title 이 뜬다 — 같은 모양의 기본 label 이 위에 얹혀 있었다', () => {
@@ -286,7 +301,7 @@ describe('herdr 기본 label 은 위치다 — 실측표 (G5·G7)', () => {
 
     it('ai-title 도 첫 발화도 없는 claude 탭은 `claude N` 이다', () => {
       const claude = tab({ label: '2', number: 3, panes: [pane({ title: 'Claude Code', agent: 'claude' })] })
-      expect(title({ tab: claude, tabCount: 3 })).toBe('claude 3')
+      expect(title({ tab: claude, tabCount: 3, ordinal: 4 })).toBe('claude 4')
     })
   })
 })
@@ -353,5 +368,81 @@ describe('firstPromptTitle', () => {
 
   it('없으면 null', () => {
     expect(firstPromptTitle(tab({}))).toBeNull()
+  })
+})
+
+/**
+ * 수정 라운드 7 (C9) — **셸 탭 폴백은 잘린 경로다.**
+ *
+ * 사용자가 Orca 화면에서 본 `..sion-identity` 는 oh-my-zsh 가 OSC 1 로 쏜 `%15<..<%~%<<` 이고
+ * **herdr 는 OSC 1 을 안 준다**. 그래서 같은 값을 corral 이 계산한다 — 그 계산이 이 표다.
+ */
+describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
+  const HOME = '/Users/byun'
+
+  it('사용자가 본 그 글자 — `~/…/worktrees/LIFE-366-session-identity` → `..sion-identity`', () => {
+    const shell = tab({
+      label: '1',
+      number: 1,
+      panes: [pane({ cwd: `${HOME}/repos/byun618/corral/.claude/worktrees/LIFE-366-session-identity` })],
+    })
+    expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..sion-identity')
+  })
+
+  it('15자 이하면 자르지 않는다 — `..` 를 억지로 붙이지 않는다', () => {
+    expect(truncatePathLeft('~/repos')).toBe('~/repos')
+    expect(truncatePathLeft('~/1234567890123')).toBe('~/1234567890123') // 정확히 15자
+    expect(truncatePathLeft('~/12345678901234')).toBe('..2345678901234') // 16자 → 15자로
+  })
+
+  it('자른 값은 **언제나 15자**다 (zsh `%15<..<` 와 같은 폭)', () => {
+    const long = truncatePathLeft(`${'~/'}${'가'.repeat(80)}`)
+    expect(long.length).toBe(15)
+    expect(long.startsWith('..')).toBe(true)
+  })
+
+  it('홈 상대로 접는다 — 홈 자신은 `~`, 홈 밖은 절대경로 그대로', () => {
+    expect(homeRelativeDir({ dir: HOME, home: HOME })).toBe('~')
+    expect(homeRelativeDir({ dir: `${HOME}/repos`, home: HOME })).toBe('~/repos')
+    expect(homeRelativeDir({ dir: '/private/var/folders/l366', home: HOME })).toBe('/private/var/folders/l366')
+    // 홈을 모르면(null) 접지 않는다 — 모르는 값으로 경로를 지어내지 않는다.
+    expect(homeRelativeDir({ dir: `${HOME}/repos`, home: null })).toBe(`${HOME}/repos`)
+  })
+
+  it('`~/repos` 로 시작하는 **다른** 폴더를 홈으로 오인하지 않는다', () => {
+    expect(homeRelativeDir({ dir: '/Users/byun618/x', home: HOME })).toBe('/Users/byun618/x')
+  })
+
+  it('cwd 를 모르면 `terminal N` 으로 떨어진다 (C9 마지막 줄)', () => {
+    const shell = tab({ label: '1', number: 1, panes: [pane({ cwd: null })] })
+    expect(shellCwdLabel({ tab: shell, home: HOME })).toBe(null)
+    expect(title({ tab: shell, tabCount: 1, home: HOME, ordinal: 2 })).toBe('terminal 2')
+  })
+
+  it('**에이전트 탭에는 경로를 안 쓴다** — 폴백은 `claude N` 그대로다', () => {
+    const claude = tab({
+      label: '1',
+      number: 1,
+      panes: [pane({ title: 'Claude Code', agent: 'claude', cwd: `${HOME}/repos/byun618/corral` })],
+    })
+    expect(title({ tab: claude, tabCount: 1, home: HOME, ordinal: 2 })).toBe('claude 2')
+  })
+
+  it('경로는 **맨 아래 티어**다 — 정제된 터미널 제목이 있으면 그게 이긴다', () => {
+    const shell = tab({
+      label: '1',
+      number: 1,
+      panes: [pane({ title: 'npm run dev', cwd: `${HOME}/repos/byun618/corral` })],
+    })
+    expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('npm run dev')
+  })
+
+  it('거절당한 셸 프롬프트 제목(G1) 아래로는 경로가 받는다 — 긴 문자열이 다시 뜨지 않는다', () => {
+    const shell = tab({
+      label: '1',
+      number: 1,
+      panes: [pane({ title: 'byun@host:~/repos/byun618/corral', cwd: `${HOME}/repos/byun618/corral` })],
+    })
+    expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..yun618/corral')
   })
 })

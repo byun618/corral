@@ -13,6 +13,7 @@ import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { MainTabBar } from './components/MainTabBar.js'
+import { tabOrdinals } from './fallback-ordinal.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
 import { StatusBar } from './components/StatusBar.js'
@@ -98,6 +99,24 @@ export function App(): React.JSX.Element {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [lifecycle.worktreeModal, lifecycle.closeWorktreeModal])
+
+  /**
+   * 폴백 번호 배정표를 **살아 있는 탭만** 남게 추린다 (C10, `fallback-ordinal.ts`).
+   *
+   * 배정은 컴포넌트가 처음 그릴 때 일어나고, 해제는 여기 한 곳에서만 한다 — 탭이 닫히면 그
+   * 번호가 풀려 다음 탭이 그 자리를 쓴다. 렌더 뒤(effect)라 닫힌 탭의 번호가 **한 프레임** 더
+   * 잡혀 있는데, 그 프레임에 새 탭이 생겨도 번호가 하나 밀릴 뿐 이미 그린 탭의 번호는 안 바뀐다.
+   */
+  useEffect(() => {
+    if (state === null) return
+    const live: string[] = []
+    for (const repo of state.repos) {
+      for (const worktree of repo.worktrees) {
+        for (const tab of worktree.workspace?.tabs ?? []) live.push(tab.tabId)
+      }
+    }
+    tabOrdinals.keepOnly(live)
+  }, [state])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -197,6 +216,7 @@ export function App(): React.JSX.Element {
           {activeWorkspace !== null ? (
             <MainTabBar
               tabs={activeWorkspace.tabs}
+              home={state.home}
               selectedPane={lifecycle.selectedPane}
               activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? ''}
               onSelectTab={(tab) => {

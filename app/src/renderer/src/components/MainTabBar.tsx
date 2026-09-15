@@ -30,6 +30,7 @@ import type { TabRow } from '../../../shared/types.js'
 import { agentIcon } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
+import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
 
 /**
@@ -49,6 +50,7 @@ function focusActiveTerminal(): void {
 function MainTab({
   tab,
   tabCount,
+  home,
   active,
   onSelect,
   onClose,
@@ -61,6 +63,8 @@ function MainTab({
    * 자리 하나가 아니라 수인 이유는 `session-title.userLabel` 주석에 있다(닫는 과도기).
    */
   tabCount: number
+  /** 셸 폴백이 경로를 접는 데 쓴다 (C9). `AppState.home` 그대로다. */
+  home: string
   active: boolean
   onSelect: () => void
   onClose: () => void
@@ -89,7 +93,10 @@ function MainTab({
    */
   const seedAtEditRef = useRef('')
 
-  const seed = sessionTitle({ tab, tabCount })
+  // 폴백 번호는 **사이드바와 같은 배정표**에서 온다 (C10) — 두 목록이 다른 번호를 그리면
+  // 같은 세션이 두 이름으로 보인다 (B6).
+  const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
+  const seed = sessionTitle({ tab, tabCount, ordinal, home })
   const beginEdit = (): void => {
     seedAtEditRef.current = seed
     setDraft(seed)
@@ -165,7 +172,7 @@ function MainTab({
           <AgentIcon kind={kind.kind} glyph={kind.glyph} />
         </span>
       )}
-      <span className="main-tab-label">{sessionTitle({ tab, tabCount })}</span>
+      <span className="main-tab-label">{seed}</span>
       {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
           ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
           으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
@@ -221,6 +228,7 @@ function MainTab({
 
 export function MainTabBar({
   tabs,
+  home,
   selectedPane,
   activeWorktreeLabel,
   onSelectTab,
@@ -230,6 +238,8 @@ export function MainTabBar({
   onClearTabName,
 }: {
   tabs: TabRow[]
+  /** 셸 탭 폴백이 경로를 접는 데 쓴다 (C9). */
+  home: string
   selectedPane: string | null
   activeWorktreeLabel: string
   onSelectTab: (tab: TabRow) => void
@@ -249,6 +259,7 @@ export function MainTabBar({
           // 기본 label 은 **이 워크스페이스 탭 수까지의 자리 번호**다 (G7) — 하나로 못 박으면
           // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님).
           tabCount={tabs.length}
+          home={home}
           active={tab.panes.some((pane) => pane.paneId === selectedPane)}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}

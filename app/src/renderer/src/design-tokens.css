@@ -78,16 +78,12 @@
   /* **1줄짜리 행**의 높이 — 접힘 요약 행(`.agent-group-summary`)이 계속 이 값을 쓴다.
      LIFE-357 C9(b) 통과선 그대로 21px. */
   --h-session-row: 21px;
-  /* --- LIFE-366 B1: 세션 행이 2줄이 된다 -------------------------------------------
-     세션 행만 갈라져 나온다. 1차 줄 17 + 2차 줄 13 = 30px 이고, **값이 도착·소멸해도 이
-     높이는 안 변한다** (B4 — 2차 줄은 빈 슬롯으로 항상 그려진다).
-     LIFE-357 C9(b) 의 "세션 행 21px" 통과선을 이 일감이 의도적으로 대체한다
-     (사유는 `components/SessionRow.tsx` 주석). */
-  --h-session-row-line: 17px;
-  --h-session-row-second: 13px;
-  --h-session-row-2: 30px;
-  /* 2차 줄 글자 — 1차(10.5px)보다 **한 급 작다**. Orca 의 11→10 과 같은 비율(≈0.91). */
-  --fs-session-second: 9.5px;
+  /* --- LIFE-366 C8 (수정 라운드 7): 세션 행이 **다시 한 줄**이다 ---------------------
+     B1 이 2줄로 갈라 두었던 토큰 셋(`--h-session-row-line`·`--h-session-row-second`·
+     `--h-session-row-2`)과 2차 줄 글자 크기(`--fs-session-second`)는 **없앴다**. 한 줄이면
+     제목과 2차 줄이 한 칸에서 같은 크기로 흐르고(Orca 도 `/90` 대 `/65` 로 색만 가른다),
+     높이는 LIFE-357 C9(b) 의 `--h-session-row`(21px) 로 돌아온다 — B1 이 그 통과선을 대체한
+     사유가 없어졌다 (사유는 `components/SessionRow.tsx` 주석). */
   --h-group-row: 22px;
   --h-footer-toolbar: 30px;
   /* 들여쓰기 3단 (11-gate1-fix3.md I-4) — **레포 < worktree < 세션** 으로 단조 증가한다.

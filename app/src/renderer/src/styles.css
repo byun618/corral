@@ -201,36 +201,34 @@ button { font: inherit; }
 
 /* --- SessionRow (§2) --------------------------------------------------------------------------- */
 
-/* LIFE-366 B1 — 세션 행이 **2줄**이 된다. 1줄 = 글리프+아이콘+제목+경과, 2줄 = 마지막 활동.
-   높이 토큰이 `--h-session-row`(1줄) → `--h-session-row-2`(2줄) 로 바뀌었다. LIFE-357 C9(b) 의
-   21px 통과선을 이 일감이 의도적으로 대체한다 (SessionRow.tsx 주석에 사유). */
+/* LIFE-366 C8 (수정 라운드 7) — 세션 행은 **한 줄**이다. Orca 의 사이드바 행이 그렇고
+   (`flex h-6 items-center`), 사용자 지시가 "한줄로 가자" 였다. B1 이 2줄로 바꾸면서 LIFE-357
+   C9(b) 의 21px 통과선을 대체했는데, 그 사유(2차 줄 자리)가 없어졌으므로 **원래 값이 다시
+   산다** — `--h-session-row` 하나로 돌아가고 2줄 토큰은 사라진다.
+   높이가 한 줄로 고정되니 B4(빈 슬롯 유지)도 폐기다 (C8-②): 2차 줄이 있든 없든 높이가 같다. */
 .session-row {
   display: flex; align-items: center; gap: 6px;
-  height: var(--h-session-row-2); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
+  height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
   /* 행 사이 여백은 margin 으로만 — height 는 통과선이라 행 안에서 벌리지 않는다 (H-3). */
   margin-top: var(--gap-session-row);
+  overflow: hidden;
 }
-/* 상태 글리프 + 종류 아이콘 칸 — **두 줄에 걸친다.** 이 칸이 1차 줄 안에 있으면 2차 줄이
-   거터만큼 왼쪽으로 어긋나고(실측 30.7px), 맞추려면 들여쓰기 상수를 지어내야 한다. 칸을
-   밖으로 빼면 2차 줄이 구조상 제목에 맞는다 (B3). */
-.session-row-gutter { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
-/* 두 줄이 사는 칸 — 제목과 2차 줄의 왼쪽 끝이 **같은 상자**라 어긋날 수가 없다. */
-.session-row-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
-/* 1차 줄 — 옛 `.session-row` 의 가로 배치가 그대로 여기로 내려왔다. */
-.session-row-line { display: flex; align-items: center; gap: 6px; height: var(--h-session-row-line); }
-/* 2차 줄 (B2·B3·B5) — 한 급 작고 한 급 흐리다. 제목 왼쪽 끝과는 `.session-row-body` 가
-   같은 상자를 주므로 들여쓰기 값 없이 맞는다.
-   Orca 는 11px→10px + `pl-5` + `text-muted-foreground/80` 이다 (00-analysis.md §2.7). corral 의
-   1차 줄은 mono 10.5px 라 같은 비율(≈0.91)로 9.5px 로 옮긴다 — 기존 `--fs-badge` 와 같은 값이다.
-   **값이 없어도 이 줄은 그려진다** (B4) — 슬롯을 남겨 행 높이가 안 튀게. */
-.session-row-second {
-  height: var(--h-session-row-second); line-height: var(--h-session-row-second);
-  font-family: var(--font-mono); font-size: var(--fs-session-second);
-  color: var(--fg-dim);
+/* **글 칸 하나** — 제목과 2차 줄이 여기서 **같이** 잘린다 (C8). 칸을 둘로 나누면 잘림이
+   칸마다 따로 일어나 Orca 와 다른 자리에서 끊긴다. 전문은 `title` 툴팁이 쥔다. */
+.session-row-text {
+  flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1;
 }
+/* 2차 줄 (B2·B5) — 한 급 흐리다. Orca 도 같은 자리에서 `/90` 대 `/65` 로만 가른다
+   (`worktree-card-compact-agent-row.tsx:236-244`) — 글자 크기는 안 줄인다. 한 줄 안에서 크기를
+   섞으면 baseline 이 흔들려 행이 들썩인다.
+   **없으면 안 그린다** (C8-② — B4 폐기). */
+.session-row-second { color: var(--fg-dim); }
 /* corral 이 **못 읽는 상태**임을 알리는 줄 — 에이전트가 한 말과 섞이면 안 된다 (B8). */
 .session-row-second.is-notice { color: var(--fg-faint); font-style: italic; }
+/* 활성 행에서는 **둘 다** 밝아진다 (C8, Orca 의 `isFocusedPane` 분기와 같은 결) — 채워진
+   바탕이 흐린 글자를 씻어내서, 2차 줄만 어두우면 한 줄 안에서 끊겨 보인다. */
 .session-row.is-active .session-row-second { color: var(--fg-muted); }
 /* 마지막 활동 경과 (D1) — 핸드오프 §2 의 우측 메타 칸. 값이 실재할 때만 DOM 에 있다. */
 .session-row-elapsed {
@@ -245,10 +243,10 @@ button { font: inherit; }
 .session-row-glyph.tone-behind { color: var(--st-behind); }
 .session-row-glyph.tone-error { color: var(--st-error); }
 .session-row-glyph.tone-faint { color: var(--fg-faint); }
-.session-row-title {
-  min-width: 0; font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; line-height: 1;
-  color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+/* 제목 — 2차 줄과 **같은 칸 안의 인라인 조각**이다 (C8). 자기 상자에서 따로 자르지 않는다:
+   자르면 칸 하나에서 같이 잘린다는 규칙이 깨진다. 글꼴·크기는 칸 전체가 물려받는다. */
+.session-row-text { font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; }
+.session-row-title { color: var(--fg-muted); }
 .session-row.is-active .session-row-title { color: var(--fg); }
 /* H-6 에이전트 종류 아이콘 — 상태 글리프와 **별도 칸**. 색은 토큰만 쓴다. */
 /* 아이콘 칸 (I-2) — 안에 인라인 SVG 가 들어온다. `inline-flex` 로 두어 **행 높이에 관여하지
@@ -267,8 +265,7 @@ button { font: inherit; }
 
 /* H-5 접힘 요약 행 — 접힘이 "사라짐"이 아니라 "압축됨"으로 읽히게. 세션 행과 같은 들여쓰기를
    쓰되 `[data-tab]` 이 아니라서 C3ⓑ 의 세션 행 집계에는 안 잡힌다.
-   **높이는 이제 갈렸다** (LIFE-366 B1): 세션 행은 2줄이 되어 30px(`--h-session-row-2`) 이고
-   이 행은 1줄 그대로 21px 이다 — `--h-session-row` 토큰이 살아 있는 이유가 이 행이다. */
+   **높이가 다시 같아졌다** (C8): 세션 행이 한 줄로 돌아와 둘 다 `--h-session-row`(21px) 다. */
 .agent-group-summary {
   display: flex; align-items: center; gap: 6px;
   height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
@@ -285,7 +282,6 @@ button { font: inherit; }
 .agent-group-summary-more { font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-dim); }
 .agent-group-summary-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
 
-.session-row-spacer { flex: 1; }
 .session-row-close {
   flex: 0 0 auto; margin-right: 6px; width: 16px; height: 16px; border-radius: 3px;
   background: none; border: none; color: var(--fg-muted); font-size: 13px; line-height: 1; cursor: pointer;

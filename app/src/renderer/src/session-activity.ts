@@ -111,6 +111,42 @@ function noticeForMissingRef(input: { tab: TabRow; integrations: readonly Integr
   return { kind: 'empty' } // 설치는 됐고 아직 보고 전 — 곧 온다
 }
 
+/** 한 줄로 이은 세션 행 글 (C8). `trailing` 이 없으면 ` - ` 도 안 그린다. */
+export type SessionRowText = {
+  /** 제목 — 진하게. */
+  leading: string
+  /** 2차 줄 — 한 급 흐리게. 없으면 null. */
+  trailing: string | null
+  /** 툴팁에 넣을 전문 (`제목 - 2차 줄`). */
+  full: string
+}
+
+/**
+ * 세션 행 한 줄 (C8, 수정 라운드 7) — **제목과 2차 줄을 ` - ` 로 잇는다**.
+ *
+ * Orca 가 같은 자리에서 하는 것 그대로다 (`worktree-card-compact-agent-row.tsx:141-145`):
+ *
+ * ```ts
+ * const rowTitle = `${leadingText}${trailingText ? ` - ${trailingText}` : ''}`
+ * // Why: sidebar truncation must preserve the passive-vs-active distinction.
+ * ```
+ *
+ * 두 조각을 **한 칸 안에** 넣는 것이 요점이다. 칸을 둘로 나누면 제목이 짧을 때 2차 줄이 남은
+ * 폭을 다 먹거나 그 반대가 되고, 그러면 잘림이 "행 하나" 가 아니라 칸마다 따로 일어난다.
+ * 한 칸이면 앞에서부터 들어가는 만큼 보이고 나머지가 한 번에 잘린다 — 그래서 전문은 툴팁이 쥔다.
+ *
+ * Orca 의 `monitoring` 갈래(앞뒤를 뒤바꾼다)는 안 따른다 — herdr 가 `workingMode` 를 안 줘서
+ * corral 에 그 상태가 없다 (`05-orca-parity.md` §2 ③ · §5.1 의 실물 확인).
+ */
+export function sessionRowText(input: { title: string; secondary: SecondaryLine }): SessionRowText {
+  const trailing = input.secondary.kind === 'empty' ? null : input.secondary.text
+  return {
+    leading: input.title,
+    trailing,
+    full: trailing === null ? input.title : `${input.title} - ${trailing}`,
+  }
+}
+
 /**
  * 경과 시간 문구 (D1). 핸드오프 §2 의 `now` / `44m` / `2h` 를 그대로 쓴다.
  *

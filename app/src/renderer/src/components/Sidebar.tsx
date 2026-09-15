@@ -105,6 +105,7 @@ export function Sidebar({
                     key={worktree.path}
                     worktree={worktree}
                     integrations={state.integrations}
+                    home={state.home}
                     now={now}
                     selected={selected}
                     selectedPane={selectedPane}

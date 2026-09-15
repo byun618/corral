@@ -43,6 +43,7 @@ export function WorktreeBlock({
   selected,
   selectedPane,
   integrations,
+  home,
   now,
   groupCollapsed,
   onToggleGroup,
@@ -58,6 +59,8 @@ export function WorktreeBlock({
   selectedPane: string | null
   /** herdr 통합 설치 상태 — 2차 줄이 "왜 비었나" 를 말할 때 쓴다 (LIFE-366 B8). */
   integrations: readonly IntegrationRow[]
+  /** 셸 탭 폴백이 경로를 접는 데 쓴다 (LIFE-366 C9). `AppState.home` 그대로다. */
+  home: string
   /** 흐르는 「지금」 — 경과 시간용 (LIFE-366 D1). */
   now: number
   groupCollapsed: boolean
@@ -263,6 +266,7 @@ export function WorktreeBlock({
               tabCount={worktree.workspace?.tabs.length ?? null}
               active={tab.panes.some((pane) => pane.paneId === selectedPane)}
               integrations={integrations}
+              home={home}
               now={now}
               onSelect={() => onSelectSession(tab)}
               onClose={() => onCloseSession(tab.tabId)}

@@ -167,6 +167,59 @@ export function firstPromptTitle(tab: TabRow): string | null {
   return trimmed.length === 0 ? null : trimmed
 }
 
+/** 경로 표찰의 길이 — zsh `%15<..<%~%<<` 의 15 다 (`05-orca-parity.md` §5.2). */
+const PATH_LABEL_MAX = 15
+const PATH_LABEL_MARK = '..'
+
+/**
+ * 절대경로를 **홈 상대**로 접는다 — zsh 의 `%~` 와 같은 규칙. 홈 밖이면 그대로 둔다.
+ *
+ * `home` 은 main 이 실어 보낸 그 프로세스의 홈이다 (`AppState.home`). 계측 실행에서는 격리
+ * HOME 이라 스크래치 레포도 `~/…` 로 접힌다 — 화면이 사용자 홈을 가정하면 안 되는 이유다.
+ */
+export function homeRelativeDir(input: { dir: string; home: string | null }): string {
+  const { dir, home } = input
+  if (home === null) return dir
+  const root = home.endsWith('/') ? home.slice(0, -1) : home
+  if (root.length === 0) return dir
+  if (dir === root) return '~'
+  return dir.startsWith(`${root}/`) ? `~${dir.slice(root.length)}` : dir
+}
+
+/**
+ * **왼쪽을 자른다** — 15자 이하면 그대로, 넘으면 `..` + 뒤 13자 (C9).
+ *
+ * 오른쪽이 아니라 왼쪽을 자르는 이유는 사용자가 본 화면이 그렇기 때문이다: oh-my-zsh 가
+ * `%15<..<%~%<<` 로 쏘는 값이고, 경로에서 사람이 읽는 부분은 **끝**이다
+ * (`~/…/worktrees/LIFE-366-session-identity` → `..sion-identity`).
+ */
+export function truncatePathLeft(label: string): string {
+  if (label.length <= PATH_LABEL_MAX) return label
+  return `${PATH_LABEL_MARK}${label.slice(PATH_LABEL_MARK.length - PATH_LABEL_MAX)}`
+}
+
+/**
+ * **셸 탭 폴백 — 잘린 경로** (C9, 수정 라운드 7). cwd 를 모르면 null 이고 그때 `terminal N` 이다.
+ *
+ * Orca 는 거절 목록이 없어서 셸이 쏜 OSC 를 그대로 띄우고, 사용자가 화면에서 본 짧은 글자는
+ * oh-my-zsh 가 **OSC 1** 로 쏜 `%15<..<%~%<<` 였다. 그런데 **herdr 는 OSC 1 을 안 준다**
+ * (`PaneInfo` 에 `title`·`terminal_title`·`terminal_title_stripped` 뿐) — 그대로 따르면
+ * OSC 2 의 `byun@host:~/repos/…` 긴 문자열이 뜨고, 그게 사용자가 G1 로 신고한 그 문자열이다.
+ * 그래서 **같은 값을 corral 이 계산한다** (사용자 결정 "그렇게 짤라서 가",
+ * `05-orca-parity.md` §5.2).
+ *
+ * cwd 는 `tabAgent` 와 같은 규칙으로 **처음 나오는 pane** 의 것을 쓴다.
+ */
+export function shellCwdLabel(input: { tab: TabRow; home: string | null }): string | null {
+  for (const pane of input.tab.panes) {
+    if (pane.cwd === null) continue
+    const dir = pane.cwd.trim()
+    if (dir.length === 0) continue
+    return truncatePathLeft(homeRelativeDir({ dir, home: input.home }))
+  }
+  return null
+}
+
 /**
  * 세션 제목 — **사용자 이름 → `ai-title` → 첫 사용자 발화 → 정제된 터미널 제목 → 폴백**
  * (기준 C1′, 수정 라운드 5 「Orca 동등」).
@@ -182,12 +235,21 @@ export function firstPromptTitle(tab: TabRow): string | null {
  * 유휴 기본값(`Claude Code`)으로 되돌아간다. `ai-title` 과 첫 발화는 **그 세션의 이름**이라
  * 안정적이고, 같은 worktree 의 claude 둘을 가르는 것이 바로 그 둘이다 — 이 일감이 푸는 문제다.
  *
- * ## 폴백: 에이전트 탭 `claude N` · 셸 탭 `terminal N` (P5/G8)
+ * ## 폴백: 에이전트 탭 `claude N` · 셸 탭 **잘린 경로** → `terminal N` (P5/G8 · C9 · C10)
  *
  * 수정 라운드 3 이 셸 탭에 넣었던 **브랜치 티어는 걷어냈다** (사용자 결정). 브랜치 이름은 같은
  * worktree 의 셸 탭 전부에 같은 말을 붙이고, 사용자가 탭에서 기대하는 것은 터미널이라는 사실
- * 하나였다. `N` 은 herdr 표찰(`TabRow.number`)이다 — **자리 번호가 아니다.** 자리로 붙이면
- * 탭을 닫을 때마다 폴백 제목이 다시 매겨져 G7 이 없앤 깜빡임이 폴백 자리에서 되살아난다.
+ * 하나였다.
+ *
+ * 수정 라운드 7 이 그 자리에 **잘린 cwd** 를 넣는다 (C9) — 셸 탭에만이다. 에이전트 탭은
+ * 트랜스크립트가 곧 이름이라 경로를 쓸 이유가 없고, 같은 worktree 의 셸 탭들이 같은 글자가
+ * 되는 것은 브랜치 티어를 걷어낸 사유와 같지만 **사용자가 그 화면을 짚어 결정했다**
+ * ("그렇게 짤라서 가" — `05-orca-parity.md` §5.2). cwd 를 모르면 `terminal N` 으로 떨어진다.
+ *
+ * `N` 은 **비어 있는 가장 작은 번호**다 (C10, `fallback-ordinal.ts`) — herdr 표찰
+ * (`TabRow.number`)이 아니다. 표찰은 재사용이 없어서 탭을 여럿 닫으면 `terminal 7` 이 남는다.
+ * 매 렌더에 자리로 다시 세는 것도 아니다 — 그러면 옆 탭을 닫을 때마다 폴백 제목이 바뀌어
+ * G7 이 없앤 깜빡임이 폴백 자리에서 되살아난다. **배정은 한 번, 탭이 닫힐 때까지 그대로다.**
  *
  * Orca 의 나머지 단은 **일부러 안 따른다** (`05-orca-parity.md` §4): 상태 단어(`Done`·`Idle`)와
  * 에이전트 종류(`Claude`)는 왼쪽 글리프와 오른쪽 경과 시간이 이미 말한다. 퀵커맨드 라벨은
@@ -196,12 +258,15 @@ export function firstPromptTitle(tab: TabRow): string | null {
  * 사이드바와 탭바가 **이 함수 하나**를 공유한다 — 그래서 탭에서 이름을 바꾸면 사이드바가 같은
  * 틱에 따라온다 (09-gate1-fix.md C-3). 호출부마다 분기하면 두 목록이 갈라진다.
  *
+ * `ordinal` 은 폴백 번호다 — 호출부가 `fallback-ordinal.ts` 의 배정표에서 받아 넣는다. 이 함수를
+ * 순수하게 두려고 밖에서 받는다(배정은 상태다). `home` 은 셸 폴백이 경로를 접는 데만 쓴다.
+ *
  * `tabCount` 는 **그 워크스페이스의 탭 수**다 — 맨 위 티어가 herdr 기본 label 을 가려내는 데
  * 쓴다 (G7). 사이드바처럼 에이전트 탭만 거른 목록의 길이를 넣으면 범위가 좁아져 기본 label 이
  * 다시 이름으로 산다.
  */
-export function sessionTitle(input: { tab: TabRow; tabCount: number | null }): string {
-  const { tab, tabCount } = input
+export function sessionTitle(input: { tab: TabRow; tabCount: number | null; ordinal: number; home: string | null }): string {
+  const { tab, tabCount, ordinal, home } = input
   const named = userLabel({ tab, tabCount })
   if (named !== null) return named
   const provider = providerTitle(tab)
@@ -211,5 +276,6 @@ export function sessionTitle(input: { tab: TabRow; tabCount: number | null }): s
   const label = paneTitleLabel(tab)
   if (label !== null) return label
   const agent = tabAgent(tab)
-  return agent === null ? `terminal ${tab.number}` : `${agent} ${tab.number}`
+  if (agent !== null) return `${agent} ${ordinal}`
+  return shellCwdLabel({ tab, home }) ?? `terminal ${ordinal}`
 }

@@ -199,6 +199,34 @@ async function main() {
     'ⓒ 나중 발화로는 안 바뀐다 (C6′-④)': out['ⓒ 나중 발화로는 안 바뀐다'].통과,
     'id 가 유일한가 (하네스 전제)': collisions.length === 0,
   }
+  // --- A6 재측정 (C6′-③) — **앱이 실제로 돈 주기**의 비용을 로그에서 그대로 가져온다 ---------
+  //
+  // 하네스가 따로 재는 값이 아니라 `transcript.read` 로그다. 재판독을 열었는데도 주기 비용이
+  // 안 늘었다는 것을 여기서 본다: 파일이 안 바뀐 주기는 `statOnly`(0바이트), 바뀐 주기도
+  // 파일이 창보다 작아 `headBytes = 0` 이다.
+  const cycles = app
+    .entries()
+    .filter((entry) => entry.tag === 'transcript.read')
+    .map((entry) => ({ ts: entry.ts, files: entry.files, statOnly: entry.statOnly, bytes: entry.bytes, headBytes: entry.headBytes, ms: entry.ms }))
+  const headCycles = cycles.filter((cycle) => Number(cycle.headBytes) > 0)
+  const otherCycles = cycles.filter((cycle) => Number(cycle.headBytes) === 0)
+  out['A6 주기 비용 (개정 예산)'] = {
+    주기수: cycles.length,
+    '머리를 읽은 주기': headCycles.length,
+    '머리를 읽은 주기 최대 바이트': headCycles.length === 0 ? null : Math.max(...headCycles.map((cycle) => Number(cycle.bytes))),
+    '나머지 주기 최대 바이트': otherCycles.length === 0 ? null : Math.max(...otherCycles.map((cycle) => Number(cycle.bytes))),
+    '최대 ms': cycles.length === 0 ? null : Math.max(...cycles.map((cycle) => Number(cycle.ms))),
+    '주기당 머리 ≤256KB': cycles.every((cycle) => Number(cycle.headBytes) <= 256 * 1024),
+    '머리를 읽은 주기 ≤2.25MB': headCycles.every((cycle) => Number(cycle.bytes) <= 2.25 * 1024 * 1024),
+    '나머지 주기 ≤2MB': otherCycles.every((cycle) => Number(cycle.bytes) <= 2 * 1024 * 1024),
+    표: cycles,
+    설명: '메타뿐인 파일을 다시 읽는 주기도 여기 있다 — 파일이 안 바뀐 주기는 statOnly 라 0바이트다.',
+  }
+  out.판정['A6 주기 예산 (C6′-②③)'] =
+    out['A6 주기 비용 (개정 예산)']['주기당 머리 ≤256KB'] &&
+    out['A6 주기 비용 (개정 예산)']['머리를 읽은 주기 ≤2.25MB'] &&
+    out['A6 주기 비용 (개정 예산)']['나머지 주기 ≤2MB']
+
   out.샷 = { shotBefore, shotAfter }
   await app.stop()
   writeRaw('r6-orca.json', JSON.stringify(out, null, 2))

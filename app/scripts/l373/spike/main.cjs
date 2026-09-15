@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const crypto = require('node:crypto')
 
 const configPath = process.env.L373_CONFIG
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
@@ -39,6 +40,26 @@ app.whenReady().then(() => {
 
   ipcMain.on('l373-mark', (_event, mark) => {
     process.stdout.write(`L373 mark ${mark} ${Date.now()}\n`)
+    // 가장 바깥 오라클 — 실제 픽셀. 측정창 안에서 3장 찍어 해시를 비교한다.
+    // DOM 변경(MutationObserver)이 화면까지 갔는지의 독립 확인 (관문 ②).
+    if (mark === 'measure_start' && config.capture === true) {
+      const shots = path.join(path.dirname(config.out), '..', 'shots')
+      fs.mkdirSync(shots, { recursive: true })
+      for (let i = 0; i < 3; i++) {
+        setTimeout(() => {
+          win.webContents
+            .capturePage()
+            .then((image) => {
+              const png = image.toPNG()
+              const hash = crypto.createHash('sha256').update(png).digest('hex').slice(0, 16)
+              const file = path.join(shots, `${config.name}-${i}.png`)
+              fs.writeFileSync(file, png)
+              process.stdout.write(`L373 shot ${i} ${hash} ${png.length} ${file}\n`)
+            })
+            .catch((error) => process.stdout.write(`L373 shot ${i} failed ${String(error)}\n`))
+        }, 1000 + i * 1200)
+      }
+    }
   })
   ipcMain.on('l373-result', (_event, result) => {
     const metrics = app.getAppMetrics().map((m) => ({

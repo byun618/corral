@@ -62,7 +62,7 @@ function gridShape(count) {
   return { cx: 4, cy: 2 }
 }
 
-function scenario({ name, group, count, geo = G.std, mode, paceMs = 0, activePanes = null, skip = null, observeDom = true }) {
+function scenario({ name, group, count, geo = G.std, mode, paceMs = 0, activePanes = null, skip = null, observeDom = true, capture = false, window: windowOverride = null }) {
   const { cx, cy } = gridShape(count)
   return {
     name,
@@ -73,9 +73,13 @@ function scenario({ name, group, count, geo = G.std, mode, paceMs = 0, activePan
     activePanes,
     skip,
     observeDom,
+    capture,
     warmupMs: WARMUP_MS,
     measureMs: MEASURE_MS,
-    window: { width: Math.min(2400, geo.cols * CELL_W * cx + 40), height: Math.min(1300, geo.rows * CELL_H * cy + 40) },
+    window: windowOverride ?? {
+      width: Math.min(2400, geo.cols * CELL_W * cx + 40),
+      height: Math.min(1300, geo.rows * CELL_H * cy + 40),
+    },
   }
 }
 
@@ -105,6 +109,12 @@ const SCENARIOS = [
   // 관측자 부담 A/B — MutationObserver 자체 비용을 재서 위 수치의 오차를 밝힌다
   scenario({ name: 'ab-pace15-n4-noobs', group: 'control', count: 4, mode: 'paced', paceMs: PACE_MS, observeDom: false }),
   scenario({ name: 'ab-pace15-n8-noobs', group: 'control', count: 8, mode: 'paced', paceMs: PACE_MS, observeDom: false }),
+  // 스케일 A/B — N=8 은 창에 안 들어가 0.80 으로 축소해 쟀다. 축소가 수치를 바꾸는지 본다
+  scenario({ name: 'ab-pace15-n4-scale08', group: 'control', count: 4, mode: 'paced', paceMs: PACE_MS, window: { width: 1330, height: 880 } }),
+  scenario({ name: 'ab-pace15-n4-scale06', group: 'control', count: 4, mode: 'paced', paceMs: PACE_MS, window: { width: 1000, height: 660 } }),
+  // 픽셀 오라클 — capturePage 해시가 실제로 바뀌는가 (idle 은 안 바뀌어야 한다)
+  scenario({ name: 'cap-pace15-n8', group: 'control', count: 8, mode: 'paced', paceMs: PACE_MS, capture: true }),
+  scenario({ name: 'cap-idle-n8', group: 'control', count: 8, mode: 'idle', capture: true }),
   // M3 — 크롭 skip 유·무 (탭 프레임 1건, 바뀐 pane 은 1개)
   scenario({ name: 'm3-n4-skipoff', group: 'M3', count: 4, mode: 'paced', paceMs: PACE_MS, activePanes: 1, skip: false }),
   scenario({ name: 'm3-n4-skipon', group: 'M3', count: 4, mode: 'paced', paceMs: PACE_MS, activePanes: 1, skip: true }),

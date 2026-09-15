@@ -17,18 +17,22 @@
 //   · claude 에게 실제 작업을 시키면 제목이 `Claude Code` → `SUMMARY.md 작성` 으로 바뀐다.
 //     **작업 설명이 그대로 제목에 온다.**
 //
-// ## 거절 목록 — 전부 **관측된 형식**이다 (관측 안 된 형식은 다루지 않는다)
+// ## 거절 목록은 **폐지됐다** (C11, 수정 라운드 8)
 //
-//   · `wG:p3` 꼴 — pane ID. §2.5 "pane 인덱스나 숫자만 단독 표시 금지".
-//   · `byun@host:/private/var/...` 꼴 — 셸 프롬프트 제목. §2.5 "절대경로는 행에 넣지 않는다".
-//   · `claude`(1회차) · `Claude Code`(2회차) — 유휴 기본값. 작업 설명이 아니라서 같은 종류의
-//     탭이 전부 같은 제목이 된다(행 구분 불가 — 1회차가 셸 제목을 기각한 것과 같은 사유).
+// r1~r7 은 벤더 유휴 기본값(`claude`·`Claude Code`)과 셸 프롬프트 문자열을 거절했다. 근거였던
+// G1 신고를 코디네이터가 「내용 거절」로 읽었는데 **사용자 뜻은 「길이」**였다
+// (*"내가 거절한 건 문자열이 길어지는 걸 거절한 거지, orca와 동일하게 자르면 되잖아"*).
+// 그래서 길이는 **자르는 것**으로 잡고(C11ⓓ 왼쪽 절단 15자), 프롬프트 모양은 herdr 가 안 주는
+// OSC 1 값을 **우리가 만들어 넣고**(C11ⓒ), 거절은 **pane ID 하나만** 남겼다(C11ⓔ — 그건 남의
+// 제목이 아니라 어댑터의 자체 폴백이다). 자세한 사유는 `paneTitleLabel` 주석에 있다.
 //
-// **상태 접두사(`✳`·`. `·`* `·스피너)는 corral 에서 한 번도 관측되지 않았다.** 120~150ms 간격
-// 연속 샘플링 2회에서 접두사 붙은 제목이 안 나왔다 — 그래서 접두사 분리 코드를 **만들지 않는다**
-// (10-gate1-fix2.md H-4 "관측 안 된 형식을 미리 처리하지 마라"). 상태는 계속 `AgentStatus`
-// 글리프가 맡는다. 접두사가 관측되면 그때 붙인다.
-import type { TabRow } from '../../shared/types.js'
+// ## 상태 접두사(`✳`)와 스피너는 이제 **보인다**
+//
+// r7 까지 "corral 에서 한 번도 관측되지 않았다" 고 적혀 있었는데, 사유가 달랐다 — 어댑터가
+// `terminal_title_stripped`(herdr 가 `✳` 를 벗긴 값)를 먼저 읽고 있었다(00-analysis.md §2.4).
+// C11ⓑ 가 원문 `terminal_title` 로 바꿨으므로 접두사가 산다. 프레임마다 바뀌는 스피너는
+// `pane-title-frames.ts`(C12)가 상태 단계에서 억제한다 — 여기 오는 제목은 이미 안정된 값이다.
+import type { PaneRow, TabRow } from '../../shared/types.js'
 
 /** 이 탭에 붙은 에이전트 이름. pane 중 처음 붙은 것을 쓴다. 없으면 null. */
 export function tabAgent(tab: TabRow): string | null {
@@ -61,31 +65,70 @@ const PANE_ID_TITLE = /^w[A-Za-z0-9]+:p\d+$/
 const SHELL_PROMPT_TITLE = /^\S+@\S+:[~/]/
 
 /**
- * 유휴 기본값인가 — 에이전트 이름 그 자체(`claude`)이거나 관측된 제품명(`Claude Code`).
- * 제품명 목록을 넓게 지어내지 않는다: 나머지는 **에이전트 이름과 같은지**로 판정해 데이터에서 끌어낸다.
+ * 탭 제목을 모는 pane — **포커스된 pane** (C14, 수정 라운드 8).
+ *
+ * Orca `title-spawn-bell.ts:60-65` 의 사유 그대로다:
+ *
+ * ```ts
+ * // Why: only the focused pane should drive the tab title — otherwise two
+ * // agents in split panes cause rapid title flickering as each emits OSC
+ * // sequences. Only the active split's title propagates to the tab.
+ * ```
+ *
+ * 포커스가 **아무 데도 없으면** 첫 pane 을 쓴다 — 비활성 탭도 제목이 있어야 하고, 그 자리는
+ * corral 이 이미 `pane-utils.pickPane` 에서 쓰는 관용구다. Orca 는 활성 pane 이 바뀔 때 그 값을
+ * 탭에 **복사해 두지만**(`onActivePaneChange`) corral 의 화면은 상태에서 매번 계산하므로
+ * 저장할 자리가 없다 — 대신 같은 규칙(포커스 우선)으로 같은 결과를 만든다.
  */
-function isVendorIdleTitle(title: string, agent: string | null): boolean {
-  const normalized = title.toLowerCase()
-  if (agent !== null && normalized === agent.toLowerCase()) return true
-  return normalized === 'claude code'
+function titlePane(tab: TabRow): PaneRow | null {
+  return tab.panes.find((pane) => pane.focused) ?? tab.panes[0] ?? null
 }
 
 /**
- * 제목으로 쓸 수 있는 `PaneRow.title` — 없으면 `null`.
- * 탭에 pane 이 여럿이면 먼저 쓸 만한 것을 준다.
+ * 그 pane 의 cwd 를 **zsh 가 OSC 1 에 넣었을 값**으로 만든다 (C9 · C11ⓒ). 없으면 null.
  */
-export function paneTitleLabel(tab: TabRow): string | null {
-  const agent = tabAgent(tab)
-  for (const pane of tab.panes) {
-    if (pane.title === null) continue
-    const title = pane.title.trim()
-    if (title.length === 0) continue
-    if (PANE_ID_TITLE.test(title)) continue
-    if (SHELL_PROMPT_TITLE.test(title)) continue
-    if (isVendorIdleTitle(title, agent)) continue
-    return title
-  }
-  return null
+function paneCwdLabel(input: { pane: PaneRow; home: string | null }): string | null {
+  const cwd = input.pane.cwd
+  if (cwd === null) return null
+  const dir = cwd.trim()
+  if (dir.length === 0) return null
+  return truncatePathLeft(homeRelativeDir({ dir, home: input.home }))
+}
+
+/**
+ * 제목으로 쓸 수 있는 pane 제목 — 없으면 `null`.
+ *
+ * ## 거절을 **폐지했다** (C11, 수정 라운드 8) — 사용자 지시 "orca와 동일하게"
+ *
+ * r1~r7 의 거절 목록은 **벤더 유휴 기본값**(`claude`·`Claude Code`)과 **셸 프롬프트 문자열**을
+ * 통째로 쫓아냈다. 그 근거는 G1 신고였는데, 코디네이터가 그 신고를 「내용 거절」로 읽은 것이
+ * **잘못이었다** — 사용자 뜻은 *"내가 거절한 건 문자열이 길어지는 걸 거절한 거지, orca와 동일하게
+ * 자르면 되잖아"* 로, **길이** 문제였다. 거절은 길이의 해법이 아니라 과잉이었고, 그 과잉이
+ * corral 을 Orca 에서 멀어지게 했다 (`05-orca-parity.md` §6).
+ *
+ * 그래서 이제 남는 것은 **네 가지 처리**다:
+ *
+ *   · **pane ID(`wG:p3`) 는 계속 거절한다** (C11ⓔ) — 이건 터미널이 보낸 제목이 아니라
+ *     corral 어댑터가 제목 필드를 하나도 못 찾았을 때 넣는 **자체 폴백**(`store.ts` 의 `?? id`)이다.
+ *     남의 값을 거절하는 게 아니라 내 폴백을 안 쓰는 것이라 성격이 다르다.
+ *   · **프롬프트 모양은 cwd 값으로 바꾼다** (C11ⓒ) — herdr 는 OSC **2**(`%n@%m:%~`)만 주는데
+ *     그걸 그냥 15자로 자르면 홈에서 `..-MacBookPro:~` 가 되어 Orca 화면(`~`)과 **어긋난다**.
+ *     zsh 가 OSC 1 에 넣었을 값(`%15<..<%~%<<`)을 우리가 만들어 넣으면 글자가 같아진다.
+ *   · **그 외는 그대로 두되 15자가 넘으면 왼쪽을 자른다** (C11ⓓ) — 길이만 잡는다.
+ *   · 갓 뜬 claude 탭의 `✳ Claude Code` 는 이제 **그대로 뜬다** (C11ⓐⓑ). 재료(`ai-title`·첫 발화)가
+ *     있는 세션은 C1′ 순서상 계속 자기 제목을 쓰므로, 이 값이 보이는 자리는 Orca 와 정확히 같다.
+ *
+ * 스피너 프레임 억제는 **상태가 화면에 들어오기 전**에 끝난다 (`pane-title-frames.ts`, C12) —
+ * 여기 오는 `pane.title` 은 이미 안정된 프레임이다.
+ */
+export function paneTitleLabel(input: { tab: TabRow; home: string | null }): string | null {
+  const pane = titlePane(input.tab)
+  if (pane === null) return null
+  const title = pane.title.trim()
+  if (title.length === 0) return null
+  if (PANE_ID_TITLE.test(title)) return null
+  if (SHELL_PROMPT_TITLE.test(title)) return paneCwdLabel({ pane, home: input.home })
+  return truncatePathLeft(title)
 }
 
 /**
@@ -212,17 +255,19 @@ export function truncatePathLeft(label: string): string {
  */
 export function shellCwdLabel(input: { tab: TabRow; home: string | null }): string | null {
   for (const pane of input.tab.panes) {
-    if (pane.cwd === null) continue
-    const dir = pane.cwd.trim()
-    if (dir.length === 0) continue
-    return truncatePathLeft(homeRelativeDir({ dir, home: input.home }))
+    const label = paneCwdLabel({ pane, home: input.home })
+    if (label !== null) return label
   }
   return null
 }
 
 /**
- * 세션 제목 — **사용자 이름 → `ai-title` → 첫 사용자 발화 → 정제된 터미널 제목 → 폴백**
+ * 세션 제목 — **사용자 이름 → `ai-title` → 첫 사용자 발화 → 터미널 제목 → 폴백**
  * (기준 C1′, 수정 라운드 5 「Orca 동등」).
+ *
+ * ⚠ **순서를 건드리지 마라.** 수정 라운드 8 이 터미널 제목의 *내용 정책*을 Orca 와 맞췄지만
+ * (거절 폐지 — C11), 그 단은 여전히 **4단**이다. OSC 단을 `ai-title`·첫 발화 위로 올리면
+ * 재료가 있는 세션까지 `✳ Claude Code` 가 되어 이 일감이 푸는 문제가 그대로 되돌아온다.
  *
  * ## 순서는 Orca 의 것이다 — 지어낸 순서가 아니다
  *
@@ -273,7 +318,7 @@ export function sessionTitle(input: { tab: TabRow; tabCount: number | null; ordi
   if (provider !== null) return provider
   const prompt = firstPromptTitle(tab)
   if (prompt !== null) return prompt
-  const label = paneTitleLabel(tab)
+  const label = paneTitleLabel({ tab, home })
   if (label !== null) return label
   const agent = tabAgent(tab)
   if (agent !== null) return `${agent} ${ordinal}`

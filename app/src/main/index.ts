@@ -955,7 +955,7 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
   ipcMain.handle('corral:getUiPrefs', (event) =>
-    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [] }) : null,
+    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [] }) : null,
   )
   ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
     if (fromOurWindow(event)) uiPrefs?.update(patch)

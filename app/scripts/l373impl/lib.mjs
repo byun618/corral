@@ -117,7 +117,27 @@ export function pct(values, p) {
  * 상관없다 — 유령 창이 herdr 연결을 붙들고 있으면 연결 수가 곧 영역 수라는 전제가 깨진다.
  */
 export function strayAppPids() {
-  const pattern = path.join(APP_DIR, 'node_modules')
+  return pidsMatching(path.join(APP_DIR, 'node_modules'))
+}
+
+/**
+ * **M0-d** — 형제 worktree 의 유령까지 센다 (코디네이터 승격, R23-5-ⓐ).
+ *
+ * `strayAppPids` 는 **내 APP_DIR** 만 본다. R13-a 는 형제 worktree(`cbe4e1b` detached)에서 앱을
+ * 띄우므로 그쪽 유령은 그 패턴에 안 걸린다 — "유령 0" 이라고 적으면서 살아 있는 유령 위에서
+ * 재게 된다. 그래서 `.claude/worktrees/` 아래 **모든** corral Electron 을 센다.
+ *
+ * **세기만 하고 죽이지 않는다.** 남의 worktree 프로세스를 죽이면 다른 세션·사용자의 앱을
+ * 끄게 된다. 죽이는 것은 언제나 자기 APP_DIR 뿐이고(각 하네스가 자기 것을 죽인다), 형제가
+ * 남아 있으면 그 런을 **무효로 적는다**.
+ */
+export function siblingAppPids() {
+  const worktrees = path.dirname(REPO_DIR) // `.claude/worktrees`
+  const mine = new Set(strayAppPids())
+  return pidsMatching(`${worktrees}/[^/]+/app/node_modules`).filter((pid) => !mine.has(pid))
+}
+
+function pidsMatching(pattern) {
   try {
     return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
   } catch {
@@ -149,7 +169,15 @@ export function m0Start() {
   const before = strayAppPids().length
   killStrayApps()
   const after = strayAppPids().length
-  return { 시작전잔여: before, 죽인뒤잔여: after, 유효: before === 0 && after === 0 }
+  const 형제 = siblingAppPids()
+  return {
+    시작전잔여: before,
+    죽인뒤잔여: after,
+    // M0-d: 형제 worktree 의 앱은 **세기만** 한다. 0 이 아니면 이 런은 무효다.
+    형제잔여: 형제.length,
+    형제pid: 형제,
+    유효: before === 0 && after === 0 && 형제.length === 0,
+  }
 }
 
 /**
@@ -191,5 +219,6 @@ export async function resetPanes() {
 /** **M0-b** — 런이 끝난 뒤에도 0 인가. 남았으면 그 런의 CPU·rAF 계열은 보류다. */
 export function m0End() {
   const left = strayAppPids().length
-  return { 종료후잔여: left, 유효: left === 0 }
+  const 형제 = siblingAppPids().length
+  return { 종료후잔여: left, 형제잔여: 형제, 유효: left === 0 && 형제 === 0 }
 }

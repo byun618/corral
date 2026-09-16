@@ -24,7 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, dragPaneDivider, moveTabToNewGroup, press, pressNative, quiesce } from './app-steps.mjs'
-import { layout as herdrLayout, m0End, m0Start, paneList, resetPanes, tabList, writeRaw } from './lib.mjs'
+import { ensureWorkspace, layout as herdrLayout, m0End, m0Start, paneList, resetPanes, tabList, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -115,6 +115,7 @@ async function 걸음(app, label, { settleMs = 1200 } = {}) {
   return row
 }
 
+결과.workspace = ensureWorkspace()
 결과.초기화 = await resetPanes()
 let app = await startApp({ name: 's6-s2b', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)

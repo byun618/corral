@@ -191,6 +191,27 @@ export function m0Start() {
  * 실제로 새 뒤: F1 의 g2 가 `38×24`(2 pane) 인 채로 폭 3점을 쟀다 — 앞 회차(②)가 다른 탭에
  * 남긴 분할이었다. 그래서 `pane list`(탭 구분이 있는 유일한 목록)로 **탭마다** 훑는다.
  */
+/**
+ * 이 worktree 의 workspace 가 살아 있게 한다 — 없으면 하나 연다.
+ *
+ * `⌘W` 반복 회차(F3-7)는 탭을 끝까지 닫아 **workspace 자체를 끝낼 수 있다**. 그러면 다음 런의
+ * `attachThisWorktree` 가 "열린 workspace 가 없다"로 죽는다(실제로 죽었다). 여는 것은 격리
+ * 세션 안이고, cwd 가 이 worktree 인 pane 이 하나라도 있으면 아무것도 하지 않는다.
+ */
+export function ensureWorkspace() {
+  const here = fs.realpathSync(REPO_DIR)
+  const 있다 = paneList().some((pane) => {
+    try {
+      return fs.realpathSync(pane.cwd) === here
+    } catch {
+      return false
+    }
+  })
+  if (있다) return { 열었나: false }
+  ctl('workspace', 'create', '--cwd', REPO_DIR)
+  return { 열었나: true, cwd: REPO_DIR }
+}
+
 export async function resetPanes() {
   const byTab = new Map()
   for (const pane of paneList()) {

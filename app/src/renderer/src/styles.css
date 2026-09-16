@@ -492,6 +492,24 @@ body.is-group-drag { cursor: inherit; user-select: none; }
 .term-host { flex: 1; min-height: 0; padding: 0; overflow: hidden; }
 .term-host .xterm { height: 100%; }
 
+/* ② pane 층 — 상자는 herdr 사각형이 정한다 (PaneLayout 주석). 이 층이 content box 의 원점이다. */
+.term-pane-stack { position: relative; flex: 1; min-height: 0; }
+.term-pane { position: absolute; overflow: hidden; }
+/* 활성 pane 링 (핸드오프 §2 Pane). 테두리가 아니라 inset 그림자라 **자리를 안 먹는다** —
+   먹으면 셀 배수로 맞춰 둔 상자가 1px 씩 흔들린다. 단일 pane 은 링을 안 그린다(고를 것이 없다). */
+.term-group[data-pane-count="1"] > .term-pane-stack > .term-pane.is-selected { box-shadow: none; }
+.term-pane.is-selected { box-shadow: inset 0 0 0 1px var(--accent); }
+.term-pane-inner { position: absolute; display: flex; overflow: hidden; }
+/* 장식 행 위의 pane 메타 (§10-R17-1) — herdr 가 비워 둔 한 행에 얹으므로 **추가 픽셀 0**.
+   좌 장식 열 한 칸 뒤에서 시작한다. 클릭은 아래 pane 으로 흘려보낸다. */
+.term-pane-meta {
+  position: absolute; top: 0; right: 0;
+  display: flex; align-items: center; gap: 0;
+  font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint);
+  white-space: nowrap; overflow: hidden; pointer-events: none;
+}
+.term-pane.is-selected > .term-pane-meta { color: var(--fg-dim); }
+
 /* --- StatusBar (§2) ------------------------------------------------------------------------------ */
 
 .statusbar {

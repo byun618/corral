@@ -32,6 +32,7 @@ import { useMemoryLabel } from './hooks/useMemoryLabel.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { pickPane } from './pane-utils.js'
+import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { isAgentTab } from './session-title.js'
 import { TerminalPane } from './TerminalPane.js'
 
@@ -451,18 +452,38 @@ export function App(): React.JSX.Element {
     const isActiveGroup = group.groupId === layout.activeGroupId
     const canCloseGroup = layout.groups.length > 1 ? () => layout.closeGroup(group.groupId) : null
     const groupState = state.terminalGroups.find((row) => row.groupId === group.groupId) ?? null
+    /**
+     * **이 영역의 선택 pane** — 헤더 액션·포커스가 겨누는 대상이다 (② 에서 pane 이 여럿이 된다).
+     *
+     * 창 전체의 선택 pane 이 이 영역의 탭에 속할 때만 그것을 쓰고, 아니면 그 탭이 원래 보던
+     * pane 으로 떨어진다. ① 에서 잡은 "헤더가 남의 pane 을 건드린다"의 pane 판이다 — 대상은
+     * 언제나 **누른 그 영역** 안에서 나와야 한다.
+     */
+    const groupSelectedPaneId =
+      groupActiveTab === null
+        ? null
+        : (groupActiveTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? groupPane?.paneId ?? null)
+    /** herdr 가 준 pane 사각형 + 같은 pane 의 목록 행(종류). 순번은 탭 안 순서다. */
+    const seats: PaneSeat[] =
+      groupState === null || groupActiveTab === null
+        ? []
+        : groupState.panes.map((view) => ({
+            view,
+            row: groupActiveTab.panes.find((pane) => pane.paneId === view.paneId) ?? null,
+            number: groupActiveTab.panes.findIndex((pane) => pane.paneId === view.paneId) + 1,
+          }))
     return (
       <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
         <GroupHeader
           groupId={group.groupId}
           tabs={groupTabs}
           home={state.home}
-          selectedPane={lifecycle.selectedPane}
+          selectedPane={groupSelectedPaneId}
           activeTabId={group.activeTabId}
           activeGroup={isActiveGroup}
           paneCount={groupActiveTab?.panes.length ?? 0}
           zoomed={groupState?.zoomedPaneId != null}
-          onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupPane?.paneId ?? null })}
+          onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onSelectTab={(tab) => {
             layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
             const pane = pickPane(tab)
@@ -472,10 +493,10 @@ export function App(): React.JSX.Element {
           onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
           onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
           onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
-          onSplitPane={(direction) => void splitPaneAt({ paneId: groupPane?.paneId ?? null, direction })}
+          onSplitPane={(direction) => void splitPaneAt({ paneId: groupSelectedPaneId, direction })}
           onMoveToGroup={({ tabId, direction }) => layout.splitGroup({ groupId: group.groupId, tabId, direction })}
-          onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupPane?.paneId ?? null })}
-          onClosePane={() => void closePaneAt(groupPane?.paneId ?? null)}
+          onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+          onClosePane={() => void closePaneAt(groupSelectedPaneId)}
           onCloseGroup={canCloseGroup}
         />
         {isActiveGroup && groupNotice !== null ? (
@@ -498,15 +519,40 @@ export function App(): React.JSX.Element {
           <div
             className="term-group"
             data-term-group={group.groupId}
+            data-pane-count={seats.length}
             ref={termSync.boxRef(group.groupId)}
-            onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupPane.paneId })}
+            onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           >
-            <TerminalPane
-              paneId={groupPane.paneId}
-              diagnostics={state.diagnostics}
-              focusable={isActiveGroup}
-              focusToken={isActiveGroup ? focusToken : 0}
-            />
+            {/* pane 상자의 좌표 원점 — `.term-group` 에 직접 걸면 **패딩 상자**가 기준이 돼서
+                격자의 분모(content box)와 한 겹 어긋난다. 이 층이 정확히 content box 다. */}
+            <div className="term-pane-stack">
+            {seats.length === 0 || groupState?.grid == null ? (
+              // 첫 프레임 전에는 herdr 사각형이 없다 — 그 사이에도 터미널은 서 있어야 한다.
+              // 단일 pane 경로(LIFE-353 C2)와 **같은 DOM** 이다.
+              <div className="term-pane is-selected" data-term-pane-box={groupPane.paneId} style={{ inset: 0 }}>
+                <div className="term-pane-inner" style={{ inset: 0 }}>
+                  <TerminalPane
+                    paneId={groupPane.paneId}
+                    diagnostics={state.diagnostics}
+                    focusable={isActiveGroup}
+                    focusToken={isActiveGroup ? focusToken : 0}
+                  />
+                </div>
+              </div>
+            ) : (
+              <PaneLayout
+                seats={seats}
+                grid={groupState.grid}
+                cell={cell}
+                zoomedPaneId={groupState.zoomedPaneId}
+                selectedPaneId={groupSelectedPaneId}
+                focusable={isActiveGroup}
+                focusToken={focusToken}
+                diagnostics={state.diagnostics}
+                onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
+              />
+            )}
+            </div>
           </div>
         )}
       </div>

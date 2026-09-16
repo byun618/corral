@@ -58,6 +58,7 @@ export function TerminalPane({
   diagnostics,
   focusable = true,
   focusToken = 0,
+  announceFocus = true,
 }: {
   paneId: string
   diagnostics: boolean
@@ -77,11 +78,22 @@ export function TerminalPane({
    * 다시 고른 경우**를 못 잡는다 (LIFE-353 은 pane 을 고를 때마다 새로 마운트돼서 안 보였다).
    */
   focusToken?: number
+  /**
+   * 마운트할 때 **herdr 에 포커스를 알릴 것인가** (LIFE-373 ② · S2).
+   *
+   * 탭 하나에 pane 이 여럿이면 여러 개가 동시에 마운트된다. 전부 알리면 마지막에 마운트된 것이
+   * 이기고, 그건 사용자가 고른 pane 이 아니다 — ① 에서 잡은 포커스 훔치기와 같은 모양이다.
+   * 그 탭의 **선택 pane** 하나만 참이다. 기본값이 참인 것은 단일 pane 경로(LIFE-353 C2)를
+   * 한 글자도 안 바꾸기 위해서다.
+   */
+  announceFocus?: boolean
 }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const focusableRef = useRef(focusable)
   focusableRef.current = focusable
+  const announceRef = useRef(announceFocus)
+  announceRef.current = announceFocus
 
   useEffect(() => {
     const container = containerRef.current
@@ -282,7 +294,7 @@ export function TerminalPane({
     }
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
-    void window.corral.selectPane({ paneId })
+    if (announceRef.current) void window.corral.selectPane({ paneId })
     if (focusableRef.current) term.focus()
 
     return () => {
@@ -296,6 +308,24 @@ export function TerminalPane({
       term.dispose()
     }
   }, [paneId, diagnostics])
+
+  /**
+   * **이미 떠 있는 pane 이 선택으로 바뀐 순간**에도 herdr 에 알린다 (형제 pane 클릭).
+   *
+   * 마운트 때 한 번 알리는 것만으로는 이 경우를 못 잡는다 — 그 pane 은 벌써 떠 있어서 마운트
+   * effect 가 다시 안 돈다. 참이 된 **전이**에서만 쏜다: 마운트에서 이미 알렸으면 안 쏜다
+   * (한 번의 클릭에 `pane.focus` 두 번이 나가지 않게).
+   */
+  const announcedRef = useRef(announceFocus)
+  useEffect(() => {
+    if (!announceFocus) {
+      announcedRef.current = false
+      return
+    }
+    if (announcedRef.current) return
+    announcedRef.current = true
+    void window.corral.selectPane({ paneId })
+  }, [announceFocus, paneId])
 
   // 다시 고른 순간 터미널로 포커스를 돌린다 (위 focusToken 주석).
   // `0` 은 신호가 아니다 — 비활성 영역이 받는 값이라, 여기서 포커스를 주면 **비활성 영역이

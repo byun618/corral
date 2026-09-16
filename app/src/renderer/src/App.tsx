@@ -7,13 +7,15 @@
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
+import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { GroupHeader } from './components/MainTabBar.js'
+import { MruSwitcher, type MruRow } from './components/MruSwitcher.js'
+import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './mru-order.js'
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
@@ -23,7 +25,9 @@ import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
 import { StatusBar } from './components/StatusBar.js'
-import { TerminalChrome, type PaneStripItem } from './components/TerminalChrome.js'
+import { kindLabel, TerminalChrome, type PaneStripItem } from './components/TerminalChrome.js'
+import { elapsedLabel } from './session-activity.js'
+import { worktreeDisplayName } from './worktree-name.js'
 import './design-tokens.css'
 import { useCellMetrics } from './hooks/useCellMetrics.js'
 import { useGroupLayout } from './hooks/useGroupLayout.js'
@@ -34,7 +38,7 @@ import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { pickPane } from './pane-utils.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { isAgentTab } from './session-title.js'
+import { isAgentTab, sessionTitle } from './session-title.js'
 import { TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -221,13 +225,21 @@ export function App(): React.JSX.Element {
    * `selectPane` 만으로는 pane 만 바뀌고 그 탭을 안 보는 영역은 그대로라, 사용자가 누른 세션이
    * 화면 어디에도 안 뜨는 회차가 생긴다. 영역 활성 + 그 영역의 활성 탭까지 같이 옮긴다.
    */
+  /**
+   * **아직 못 편 reveal** — worktree 를 막 바꾼 순간의 배치는 아직 옛 worktree 의 것이다 (R3-i).
+   *
+   * `selectPane` 이 활성 workspace 를 옮기면 `useGroupLayout` 은 **다음 렌더**에 그 worktree 의
+   * 배치를 들고 온다. 그래서 같은 틱의 `revealTab` 은 남의 배치에서 탭을 찾다가 false 로 끝난다.
+   * 그 실패를 여기 적어 두고 배치가 바뀐 뒤 한 번 더 편다 — MRU 의 `⇄` 행이 이 길로 간다.
+   */
+  const pendingRevealRef = useRef<string | null>(null)
   const revealPane = useCallback(
     (paneId: string) => {
       const owner = stateRef.current?.repos
         .flatMap((repo) => repo.worktrees)
         .flatMap((worktree) => worktree.workspace?.tabs ?? [])
         .find((tab) => tab.panes.some((pane) => pane.paneId === paneId))
-      if (owner !== undefined) layoutRef.current.revealTab(owner.tabId)
+      pendingRevealRef.current = owner === undefined || layoutRef.current.revealTab(owner.tabId) ? null : owner.tabId
       selectPane(paneId)
     },
     [selectPane],
@@ -260,6 +272,18 @@ export function App(): React.JSX.Element {
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+
+  /**
+   * 못 편 reveal 을 **배치가 바뀐 뒤** 한 번 더 편다 (위 `pendingRevealRef`).
+   *
+   * 끝나는 갈래가 둘이다: 폈거나(`revealTab` true), 그 탭이 이 worktree 에 없거나. 후자까지
+   * 지워야 옛 요청이 남아 **나중에 엉뚱한 탭을 스스로 여는** 일이 없다.
+   */
+  useEffect(() => {
+    const tabId = pendingRevealRef.current
+    if (tabId === null) return
+    if (layout.revealTab(tabId) || !liveTabIds.includes(tabId)) pendingRevealRef.current = null
+  }, [layout.revealTab, liveTabIds])
 
   /**
    * 영역 선언 (§10-R13) — 영역 하나가 연결 하나다. `active` 인 영역이 **마지막에** 붙는다(S2-b).
@@ -302,6 +326,80 @@ export function App(): React.JSX.Element {
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
   }
+  // --- ③ MRU 전환 (LIFE-373 · F3-1~F3-6) ------------------------------------------
+  //
+  // 키는 **main 이 잡는다** (`before-input-event`) — xterm textarea 가 포커스를 쥐고 있어
+  // `document` keydown 으로는 `Tab`·`Enter` 가 PTY 로 새기 때문이다(R15). 여기로는 **뜻**만 온다.
+  //
+  // 화면이 들고 있는 것은 둘뿐이다: 최근 포커스 **기록**(ref — 렌더 대상이 아니다)과 홀드 중인
+  // **목록 상태**. 순서·자리 계산은 전부 `mru-order.ts` 의 순수 함수다.
+
+  /** 최근 포커스 순서 (앞이 최근). pane 을 고르는 **모든 길**이 여기 찍힌다 — 선택 자체를 보므로. */
+  const mruHistoryRef = useRef<string[]>([])
+  useEffect(() => {
+    if (lifecycle.selectedPane === null) return
+    mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: lifecycle.selectedPane })
+  }, [lifecycle.selectedPane])
+
+  /**
+   * 홀드 중 목록. `order` 는 **열 때 찍은 스냅숏**이다 — 홀드 사이에 상태 push 가 와도 고른
+   * 자리가 발밑에서 안 밀린다. 그 사이 죽은 pane 은 그릴 때 빠지고, 확정해도 아무 일이 없다.
+   */
+  const [mru, setMru] = useState<{ order: string[]; index: number; at: number } | null>(null)
+  /** 키 핸들러가 읽는 거울 (`closeTargetRef` 와 같은 결 — 뜻이 IPC 로 늦게 온다). */
+  const mruRef = useRef<{ order: string[]; index: number; at: number } | null>(null)
+  mruRef.current = mru
+
+  /**
+   * MRU 가 세는 pane — **열려 있는 모든 worktree** 다 (F3-4 전체 범위). 활성 worktree 로 안 좁힌다.
+   */
+  const mruPanes = useMemo(() => {
+    if (state === null) return []
+    const rows: {
+      paneId: string
+      tab: TabRow
+      tabCount: number
+      paneIndex: number
+      agent: string | null
+      status: AgentStatus
+      worktree: string
+      sameWorktree: boolean
+    }[] = []
+    for (const repo of state.repos) {
+      for (const worktree of repo.worktrees) {
+        const workspace = worktree.workspace
+        if (workspace === null) continue
+        const sameWorktree = workspace.workspaceId === lifecycle.activeWorkspaceId
+        for (const tab of workspace.tabs) {
+          tab.panes.forEach((pane, paneIndex) => {
+            rows.push({
+              paneId: pane.paneId,
+              tab,
+              tabCount: workspace.tabs.length,
+              paneIndex,
+              agent: pane.agent,
+              status: pane.agentStatus,
+              worktree: worktreeDisplayName(worktree),
+              sameWorktree,
+            })
+          })
+        }
+      }
+    }
+    return rows
+  }, [state, lifecycle.activeWorkspaceId])
+  const mruPanesRef = useRef(mruPanes)
+  mruPanesRef.current = mruPanes
+
+  /**
+   * 홀드 중 **터미널이 키를 안 받는다**는 단서 (핸드오프 O) — xterm 이 포커스를 놓으면 모든
+   * pane 의 커서가 저절로 외곽선이 된다. 픽셀 하나 새로 그리지 않고 이미 쓰는 어휘로 말한다.
+   * 원복은 `focusToken` 을 올려서 한다 (취소도 확정도 포커스는 되돌아온다).
+   */
+  const blurTerminal = (): void => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  }
+
   /**
    * `⌘W` 가 겨누는 자리 (F2-5) — **활성 영역의 탭과 그 탭의 pane 들**.
    *
@@ -472,9 +570,57 @@ export function App(): React.JSX.Element {
           void closePaneAt(paneId)
           return
         }
+        case 'mru-open': {
+          // 이미 열려 있으면 이동이다 — main 이 홀드를 들고 있지만, 재기동·핫리로드로 양쪽이
+          // 어긋난 회차에도 목록이 두 개가 되지 않게 여기서 한 번 더 갈라 준다.
+          if (mruRef.current !== null) {
+            setMru((current) =>
+              current === null
+                ? null
+                : { ...current, index: stepMru({ index: current.index, count: current.order.length, backward: shortcut.backward }) },
+            )
+            return
+          }
+          const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
+          if (order.length === 0) return
+          blurTerminal()
+          setMru({ order, index: openMru({ count: order.length, backward: shortcut.backward }), at: Date.now() })
+          return
+        }
+        case 'mru-step': {
+          setMru((current) =>
+            current === null
+              ? null
+              : { ...current, index: stepMru({ index: current.index, count: current.order.length, backward: shortcut.backward }) },
+          )
+          return
+        }
+        case 'mru-commit': {
+          const current = mruRef.current
+          setMru(null)
+          if (current === null) return
+          const paneId = current.order[current.index]
+          // 고른 pane 이 홀드 사이에 죽었으면 **아무 데도 안 간다** — 없는 자리로 옮기느니 제자리다.
+          if (paneId === undefined || !mruPanesRef.current.some((pane) => pane.paneId === paneId)) {
+            setFocusToken((token) => token + 1)
+            return
+          }
+          // 같은 worktree 면 reveal + pane 포커스, 다른 worktree 면 `selectPane` 이 활성 workspace 를
+          // 옮기고 `pendingRevealRef` 가 다음 배치에서 편다 (R3-i).
+          revealPane(paneId)
+          return
+        }
+        case 'mru-cancel': {
+          if (mruRef.current === null) return
+          setMru(null)
+          // **상태는 하나도 안 건드린다** (F3-5). 되돌리는 것은 포커스뿐이다 — 홀드 단서로
+          // 놓았던 xterm 포커스를 그 자리 그대로 돌려준다.
+          setFocusToken((token) => token + 1)
+          return
+        }
       }
     })
-  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane])
+  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane, revealPane])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -681,6 +827,50 @@ export function App(): React.JSX.Element {
       selected: view.paneId === lifecycle.selectedPane,
     }))
 
+  /**
+   * MRU 행 — **홀드 중에만** 만든다 (F3-4).
+   *
+   * 번호·종류는 스트립과 **같은 표**에서 나온다 (`numbersOf`·`kindLabel`, C5-8) — 두 자리가
+   * 다른 수를 말하면 "pane 2" 가 어느 것인지 화면이 스스로 못 정한다. 서버 사각형이 없는 pane
+   * (다른 worktree·안 보이는 탭)은 그 표에 없으므로 **탭 안 자리**로 떨어진다.
+   */
+  const mruRows: MruRow[] = []
+  if (mru !== null) {
+    const numbers = new Map<string, number>()
+    for (const group of state.terminalGroups) for (const [paneId, number] of numbersOf(group.panes)) numbers.set(paneId, number)
+    const root = layout.layout?.root ?? null
+    const glyphs = groupGlyphs({
+      groupIds: layout.groups.map((group) => group.groupId),
+      direction: root !== null && root.kind === 'split' ? root.direction : null,
+    })
+    for (const paneId of mru.order.slice(0, MRU_LIMIT)) {
+      const entry = mruPanes.find((pane) => pane.paneId === paneId)
+      if (entry === undefined) continue // 홀드 사이에 죽은 pane — 없는 줄을 그리지 않는다
+      const owner = entry.sameWorktree ? layout.groups.find((group) => group.tabOrder.includes(entry.tab.tabId)) : undefined
+      const number = numbers.get(paneId) ?? entry.paneIndex + 1
+      const kind = kindLabel(entry.agent)
+      mruRows.push({
+        paneId,
+        title: sessionTitle({
+          tab: entry.tab,
+          tabCount: entry.tabCount,
+          ordinal: tabOrdinals.ordinalFor({ tabId: entry.tab.tabId, groupId: entry.tab.workspaceId }),
+          home: state.home,
+          selectedPaneId: paneId,
+        }),
+        groupGlyph: entry.sameWorktree ? (owner === undefined ? '' : (glyphs.get(owner.groupId) ?? '')) : '⇄',
+        otherWorktree: !entry.sameWorktree,
+        status: entry.status,
+        paneDesc: entry.tab.panes.length > 1 ? `pane ${number} · ${kind}` : kind,
+        worktree: entry.worktree,
+        // 경과는 **열 때 찍은 시각** 기준이다 — 홀드는 몇 초라 초시계를 새로 돌릴 이유가 없다.
+        elapsed: elapsedLabel(entry.tab.digest.lastActivityAt, mru.at),
+      })
+    }
+  }
+  /** 고른 자리는 **id 로** 찾는다 — 죽은 pane 이 빠져도 강조가 한 줄 밀리지 않는다. */
+  const mruSelectedIndex = mru === null ? -1 : mruRows.findIndex((row) => row.paneId === mru.order[mru.index])
+
   const allWorktrees = state.repos.flatMap((repo) => repo.worktrees)
   const dirtyTotal = allWorktrees.reduce(
     (sum, worktree) =>
@@ -758,6 +948,19 @@ export function App(): React.JSX.Element {
               />
             )}
           </TerminalChrome>
+
+          {/* ③ MRU — scrim 이 없어 아래 터미널이 계속 보인다 (핸드오프 O). 행 클릭도 확정이다. */}
+          {mru === null ? null : (
+            <MruSwitcher
+              rows={mruRows}
+              selectedIndex={mruSelectedIndex}
+              moreCount={Math.max(0, mru.order.length - MRU_LIMIT)}
+              onPick={(paneId) => {
+                setMru(null)
+                revealPane(paneId)
+              }}
+            />
+          )}
         </div>
       </div>
 

@@ -30,8 +30,8 @@ function kindGlyph(agent: string | null): string {
  * pane 닫기의 `✕` 는 **pane 이 하나일 때 사라져서**(글리프표) 마지막 pane 에서는 이 줄이 유일한
  * 안내다. 끼운 자리는 핸드오프가 안 정한 곳이라 C5 로 남긴다.
  *
- * `⌃Tab`(MRU)은 **아직 바인딩이 없어 넣지 않았다** — 안 먹는 키를 안내하면 장식 행 메타와 같은
- * 거짓말이 된다. ③ 이 서면 같이 들어온다.
+ * `⌃Tab`(MRU)은 ③ 이 서면서 **핸드오프가 준 자리 그대로** 들어왔다 (`⌘D` 뒤, `⌘T` 앞 — C5-13).
+ * `⌘W` 가 그 사이에 끼어 있어 버림 순서는 `… ⌘D → ⌘W → ⌃Tab → ⌘T` 다.
  */
 const HINTS: { key: string; text: string }[] = [
   { key: 'split-group', text: '⌘⌥D 새 영역' },
@@ -39,6 +39,7 @@ const HINTS: { key: string; text: string }[] = [
   { key: 'zoom', text: '⌘⇧Z 줌' },
   { key: 'split-right', text: '⌘D 분할' },
   { key: 'close-pane', text: '⌘W pane 닫기' },
+  { key: 'mru', text: '⌃Tab 전환' },
   { key: 'new-tab', text: '⌘T 새 탭' },
 ]
 

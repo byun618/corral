@@ -544,7 +544,16 @@ export type AppState = {
  * 메뉴 액셀러레이터는 페이지 keydown 보다 먼저 처리돼서 렌더러가 볼 수 없다. main 이
  * `preventDefault()` 로 삼킨 뒤 **뜻**을 이 채널로 넘긴다 — 키 코드는 넘기지 않는다.
  */
-export type CorralShortcut = { kind: 'close-pane' }
+export type CorralShortcut =
+  | { kind: 'close-pane' }
+  /** `⌃Tab` 을 처음 눌렀다 — 목록을 열고 `backward` 방향으로 1칸 (F3-1). */
+  | { kind: 'mru-open'; backward: boolean }
+  /** 홀드 중 `Tab`/`⇧Tab` (F3-2). */
+  | { kind: 'mru-step'; backward: boolean }
+  /** `Control` keyup 또는 `Enter` — 고른 pane 으로 간다 (F3-2). */
+  | { kind: 'mru-commit' }
+  /** `Esc`·창 blur·타임아웃 — **상태를 하나도 안 바꾸고** 닫는다 (F3-5). */
+  | { kind: 'mru-cancel' }
 
 export type CorralApi = {
   getState: () => Promise<AppState>

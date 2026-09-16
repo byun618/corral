@@ -16,6 +16,7 @@ import type {
   AppState,
   BrowseReposResult,
   CloseRowResult,
+  CorralShortcut,
   CreateRowResult,
   IntegrationRow,
   RemoveRepoResult,
@@ -913,6 +914,13 @@ function windowSize(): { width: number; height: number } {
   return { width: Number(match[1]), height: Number(match[2]) }
 }
 
+/**
+ * MRU 홀드 무동작 상한 (F3-3 폴백 ⓒ). `Control` keyup 도 blur 도 못 받았는데 사용자가 키를
+ * 더 누르지도 않는 상태 — 이대로 두면 키가 계속 삼켜진다. 10초는 "홀드"로 볼 수 있는 상한을
+ * 넉넉히 넘긴 값이고, 넘겨 끝내는 쪽은 **취소**라 상태가 안 바뀐다.
+ */
+const MRU_HOLD_TIMEOUT_MS = 10_000
+
 function createWindow(): void {
   const size = windowSize()
   window = new BrowserWindow({
@@ -966,14 +974,88 @@ function createWindow(): void {
    * **`⌃W` 도 손대지 않는다**: 메뉴 액셀러레이터는 `CommandOrControl+W` 라 다른 OS 에서는
    * `⌃W` 지만, 터미널에서 `⌃W` 는 단어 지우기라 PTY 의 것이다. macOS 의 `⌘` 만 가져온다.
    */
+  /**
+   * `⌃Tab` MRU 홀드 — **여기가 키의 유일한 주인이다** (F3-1·F3-3·R15).
+   *
+   * 렌더러 `document` keydown 으로는 안 된다: xterm 의 textarea 가 포커스를 쥐고 있어 `Tab`·
+   * `Enter` 가 `onData` 로 **PTY 에 그대로 흘러간다**(R15 가 통과선으로 승격한 유출). 여기서
+   * `preventDefault()` 하면 페이지가 그 키를 아예 못 보므로 1바이트도 안 나간다.
+   *
+   * **`Control` keyup 은 절대 막지 않는다** (F3-3, electron#37336 — keyup 을 가로채면 그 뒤로
+   * 창이 modifier 상태를 잃는다). 보기만 하고 확정한다. keyup 이 아예 안 오는 회차를 위해
+   * 폴백이 셋이다: ⓐ 창 blur ⓑ 홀드가 열린 채 `Control` 없이 들어온 keydown ⓒ 무동작 타임아웃.
+   *
+   * 홀드 중에는 **모든 keydown 을 삼킨다** — 목록이 키를 받는 중이라는 것이 화면 약속이고
+   * (핸드오프 O), F3-6 의 통과선이 "홀드 동안 어떤 pane 의 PTY 에도 1바이트도" 이기 때문이다.
+   */
+  let mruHold: { timer: NodeJS.Timeout | null } | null = null
+  const sendShortcut = (shortcut: CorralShortcut): void => {
+    if (window === null || window.isDestroyed()) return
+    window.webContents.send('corral:shortcut', shortcut)
+  }
+  const mruEnd = (kind: 'mru-commit' | 'mru-cancel', why: string): void => {
+    if (mruHold === null) return
+    if (mruHold.timer !== null) clearTimeout(mruHold.timer)
+    mruHold = null
+    log('shortcut.mru', { kind, why })
+    sendShortcut({ kind })
+  }
+  const mruStep = (backward: boolean): void => {
+    const opening = mruHold === null
+    if (mruHold === null) mruHold = { timer: null }
+    else if (mruHold.timer !== null) clearTimeout(mruHold.timer)
+    // 무동작 타임아웃 — 이 자리에 오면 keyup 도 blur 도 못 받은 것이다. **취소**로 끝낸다
+    // (확정은 사용자가 안 고른 pane 으로 화면을 옮긴다. 취소는 아무것도 안 바꾼다).
+    mruHold.timer = setTimeout(() => mruEnd('mru-cancel', 'timeout'), MRU_HOLD_TIMEOUT_MS)
+    log('shortcut.mru', { kind: opening ? 'mru-open' : 'mru-step', backward })
+    sendShortcut(opening ? { kind: 'mru-open', backward } : { kind: 'mru-step', backward })
+  }
+  // 창이 포커스를 잃으면 취소다 (F3-2 blur). keyup 을 못 받는 회차의 1차 폴백이기도 하다.
+  window.on('blur', () => mruEnd('mru-cancel', 'blur'))
   window.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.key.toLowerCase() !== 'w') return
+    const key = input.key.toLowerCase()
+    // ⓐ keyup — **손대지 않는다**. `Control` 이면 확정만 한다.
+    if (input.type === 'keyUp') {
+      if (key === 'control') mruEnd('mru-commit', 'control-up')
+      return
+    }
+    if (input.type !== 'keyDown') return
+    // ⓑ `⌃Tab` — 열기·이동. `⌘`·`⌥` 가 끼면 우리 키가 아니다.
+    if (key === 'tab' && input.control && !input.meta && !input.alt) {
+      event.preventDefault()
+      mruStep(input.shift)
+      return
+    }
+    // ⓒ 홀드 중 — 목록이 받는다. 여기서부터 **아무 키도 페이지로 안 간다**.
+    if (mruHold !== null) {
+      event.preventDefault()
+      switch (key) {
+        case 'tab':
+          // `Control` 이 유실돼도 `Tab` 은 목록의 것이다 (홀드가 열려 있는 동안에는).
+          mruStep(input.shift)
+          return
+        case 'enter':
+          mruEnd('mru-commit', 'enter')
+          return
+        case 'escape':
+          mruEnd('mru-cancel', 'escape')
+          return
+        case 'control':
+          return
+        default:
+          // `Control` 이 이미 올라가 있다 = keyup 을 놓쳤다. 놓은 순간의 뜻대로 확정한다.
+          if (!input.control) mruEnd('mru-commit', 'control-lost')
+          return
+      }
+    }
+    // ⓓ `⌘W`
+    if (key !== 'w') return
     if (!input.meta || input.alt || input.control || input.shift) return
     event.preventDefault()
     // 가로챘다는 사실은 **로그로만** 보인다 — 키를 삼켰으니 화면에는 아무 흔적이 없고,
     // "안 닫혔다"는 관측은 "안 눌렸다"와 구분되지 않는다.
     log('shortcut.intercepted', { key: 'w', meta: true })
-    window?.webContents.send('corral:shortcut', { kind: 'close-pane' })
+    sendShortcut({ kind: 'close-pane' })
   })
   /**
    * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).

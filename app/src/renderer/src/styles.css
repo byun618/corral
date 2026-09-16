@@ -55,7 +55,61 @@ button { font: inherit; }
 }
 .sidebar-resizer:hover .sidebar-resizer-line { background: var(--accent); }
 
-.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
+
+/* --- MruSwitcher (§2 · LIFE-373 ③) ---------------------------------------------------------- */
+/*
+ * `.main-area` 를 기준으로 뜬다 — scrim 이 없어 **아래 터미널이 계속 보여야** 하고(핸드오프 O),
+ * 격자 상자(`.term-group`) 안에 넣으면 영역이 여럿일 때 목록이 한쪽 영역에 갇힌다.
+ */
+.mru-switcher {
+  position: absolute; top: 14px; left: 16px; right: 16px; z-index: 20;
+  max-width: var(--w-mru); margin: 0 auto;
+  background: var(--bg-raised); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-modal); box-shadow: var(--shadow-modal);
+  padding: 0 0 4px;
+  animation: mru-fade var(--dur-fade) linear;
+}
+@keyframes mru-fade { from { opacity: 0; } to { opacity: 1; } }
+.mru-header {
+  display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 12px;
+  border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-muted);
+}
+.mru-header-label { white-space: nowrap; }
+.mru-header-chip {
+  flex: 0 0 auto; height: 16px; display: flex; align-items: center; padding: 0 6px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-badge); color: var(--fg-muted); white-space: nowrap;
+}
+.mru-header-spacer { flex: 1; }
+.mru-header-keys { color: var(--fg-dim); white-space: nowrap; }
+.mru-rows { padding: 4px 4px 0; display: flex; flex-direction: column; }
+.mru-row {
+  display: flex; align-items: center; gap: 8px; height: var(--h-mru-row); padding: 0 8px 0 6px;
+  border-radius: 5px; border: 1px solid transparent; color: var(--fg-menu); cursor: default;
+}
+.mru-row.is-selected { background: var(--bg-selected); border-color: var(--line-strong); color: var(--fg); }
+.mru-row-index { width: 12px; flex: 0 0 auto; text-align: right; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint); }
+.mru-row-place { width: 14px; flex: 0 0 auto; text-align: center; font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); }
+.mru-row-place.is-other { color: var(--fg-muted); }
+.mru-row-status { width: 12px; flex: 0 0 auto; text-align: center; font-family: var(--font-mono); font-size: var(--fs-meta); }
+.mru-row-status.tone-accent { color: var(--accent); }
+.mru-row-status.tone-dirty { color: var(--st-dirty); }
+.mru-row-status.tone-behind { color: var(--st-behind); }
+.mru-row-status.tone-error { color: var(--st-error); }
+.mru-row-status.tone-faint { color: var(--fg-faint); }
+.mru-row-title { flex: 0 1 auto; min-width: 0; font-size: var(--fs-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mru-row-pane { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-muted); white-space: nowrap; }
+.mru-row-spacer { flex: 1; }
+.mru-row-worktree {
+  flex: 0 1 auto; max-width: 170px; font-family: var(--font-mono); font-size: var(--fs-meta);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-dim);
+}
+.mru-row-worktree.is-other { color: var(--fg-muted); }
+.mru-row-elapsed { flex: 0 0 auto; width: 30px; text-align: right; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-muted); }
+.mru-more {
+  display: flex; align-items: center; height: 24px; padding: 0 12px; margin-top: 2px;
+  font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint);
+}
 
 /* --- SidebarBrandBar (§2) ------------------------------------------------------------------- */
 

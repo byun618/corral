@@ -449,15 +449,35 @@ export function corralIdsFromState(state) {
  * 출력이 아니게 하려면 상대편은 제3자여야 한다 (관문 ⑤).
  */
 /**
- * corral 이 **연 적 없는** workspace 를 대조에서 뺀다 (LIFE-373 하네스 수정 ③).
+ * corral 이 **연 적 없는** workspace 를 대조에서 뺀다 (LIFE-373 하네스 수정 ③, §10-R18-3 으로 조임).
  *
  * herdr 0.9.0 은 workspace 수가 0 이 되면 `$HOME` 에 하나를 **스스로** 만든다 (제3 오라클 실측:
  * 마지막 workspace 를 닫으면 곧바로 label `~` 의 새 workspace 가 선다). corral 은 자기가 연
- * workspace 만 그리므로(등록 레포의 worktree 에 바인딩된 것), 그 유령은 영원히 corral 쪽에
- * 안 뜬다 — ⓓ(마지막 탭 닫기)가 5/5 어긋나는 원인이 이것이고, corral 회귀가 아니다.
- * 뺄 대상은 **그 닫기 직전 herdr 목록에 없던 workspace** 로만 한정한다 (호출자가 스냅샷을 준다).
- * id 접두(`w1B:t1`)로 그 workspace 의 탭·pane 도 함께 뺀다.
+ * workspace 만 그리므로 그 유령은 영원히 corral 쪽에 안 뜬다 — ⓓ(마지막 탭 닫기)가 5/5
+ * 어긋나는 원인이 이것이고, corral 회귀가 아니다.
+ *
+ * 제외 조건은 **둘 다** 만족해야 한다 (R18-3 — "닫기 직후 생겼다" 하나로는 너무 넓다:
+ * corral 이 열지 말았어야 할 workspace 를 연 경우도 같은 조건에 걸려 조용히 가려진다):
+ *   ⓐ 닫기 직전 herdr 목록에 **없었다**
+ *   ⓑ corral 이 **열 수 없는 자리**에 있다 — 그 workspace 의 pane cwd 가 등록 레포 밖이다
+ *      (corral 은 등록 레포의 worktree 에만 workspace 를 연다)
+ * 뺀 id·label·cwd 는 원자료에 남긴다.
  */
+export async function ghostWorkspaces({ before, repoDir }) {
+  const workspaces = (await request('workspace.list', {})).workspaces
+  const panes = (await request('pane.list', {})).panes
+  const rows = []
+  for (const workspace of workspaces) {
+    if (before.includes(workspace.workspace_id)) continue // ⓐ 미충족
+    const mine = panes.filter((pane) => pane.workspace_id === workspace.workspace_id)
+    const cwds = [...new Set(mine.map((pane) => pane.cwd))]
+    const corral이열수있나 = cwds.some((cwd) => typeof cwd === 'string' && cwd.startsWith(repoDir))
+    if (corral이열수있나) continue // ⓑ 미충족 — 등록 레포 안이면 corral 이 열었을 수 있다. 가리지 않는다
+    rows.push({ workspaceId: workspace.workspace_id, label: workspace.label ?? null, cwds })
+  }
+  return rows
+}
+
 export function ignoreWorkspacesIn(truth, ignore) {
   if (ignore.length === 0) return truth
   const 유령인가 = (id) => ignore.some((ws) => id === ws || id.startsWith(`${ws}:`))

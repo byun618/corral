@@ -31,10 +31,21 @@ export type UiPrefs = {
    * 화면이 혼자 쓰는 표시 상태다.
    */
   tabOrdinals: TabOrdinal[]
+  /**
+   * 영역(탭 그룹) 배치 — **worktree 별** (LIFE-373 F1-6 · §10-R3-h).
+   *
+   * 여기 있는 이유는 tabOrdinals 와 같다: herdr 가 모르는, 화면이 혼자 쓰는 상태다. 키를
+   * `workspace_id` 가 아니라 **worktree 경로**로 잡는다 — workspace_id 는 herdr 서버 생애
+   * 안에서만 유일해서(LIFE-344) 재기동하면 다른 worktree 의 배치를 뒤집어쓴다.
+   *
+   * 모양 검사는 렌더러(`group-tree.ts` readStoredLayouts)가 한다 — 트리 모양을 아는 쪽이
+   * 거기고, 저장소는 **통째로 실어 나르기만** 한다(여기서 또 검사하면 두 진실이 생긴다).
+   */
+  groupLayouts: unknown[]
 }
 
 const VERSION = 1
-const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [] }
+const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }
 
 /** 저장된 배정표를 **모양을 확인하며** 읽는다 — 손으로 고친 파일이 화면을 깨뜨리지 않게. */
 function readTabOrdinals(value: unknown): TabOrdinal[] {
@@ -78,6 +89,7 @@ export class UiPrefsStore {
         collapsedRepos: Array.isArray(repos) ? repos.filter((item): item is string => typeof item === 'string') : [],
         collapsedGroups: Array.isArray(groups) ? groups.filter((item): item is string => typeof item === 'string') : [],
         tabOrdinals: readTabOrdinals(parsed['tabOrdinals']),
+        groupLayouts: Array.isArray(parsed['groupLayouts']) ? parsed['groupLayouts'] : [],
       }
       log('ui_prefs.load', { file: this.file })
     } catch (error) {
@@ -92,6 +104,7 @@ export class UiPrefsStore {
       collapsedRepos: [...this.prefs.collapsedRepos],
       collapsedGroups: [...this.prefs.collapsedGroups],
       tabOrdinals: this.prefs.tabOrdinals.map((row) => ({ ...row })),
+      groupLayouts: [...this.prefs.groupLayouts],
     }
   }
 

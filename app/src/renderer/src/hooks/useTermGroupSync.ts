@@ -25,6 +25,8 @@ export type GroupDeclaration = {
 export type TermGroupSync = {
   /** 영역 상자에 다는 ref 콜백 — 이 상자의 content box 가 격자의 분모다. */
   boxRef: (groupId: string) => (element: HTMLDivElement | null) => void
+  /** 그 영역 상자가 지금 담는 격자 — 줌(F2-3)이 역산의 목표로 쓴다. 상자가 없으면 null. */
+  gridOf: (groupId: string) => { cols: number; rows: number } | null
 }
 
 export function useTermGroupSync(input: { groups: GroupDeclaration[]; cell: CellSize }): TermGroupSync {
@@ -111,5 +113,11 @@ export function useTermGroupSync(input: { groups: GroupDeclaration[]; cell: Cell
     send()
   }, [send, input.groups, input.cell])
 
-  return { boxRef }
+  const gridOf = useCallback((groupId: string) => {
+    const box = boxes.current.get(groupId)
+    if (box === undefined) return null
+    return gridForBox({ box: contentBoxOf(box), cell: latest.current.cell })
+  }, [])
+
+  return { boxRef, gridOf }
 }

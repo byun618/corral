@@ -88,7 +88,7 @@ describe('폴백 번호 영속 (C13)', () => {
     fs.writeFileSync(file, '{ 이건 JSON 이 아니다')
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [] })
+    expect(store.get()).toEqual({ sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] })
   })
 
   it('`get()` 이 준 배열을 고쳐도 스토어 안이 안 바뀐다 (복사본이다)', () => {

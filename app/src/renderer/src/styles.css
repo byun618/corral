@@ -393,7 +393,7 @@ button { font: inherit; }
 .terminal-chrome { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-top: 1px solid var(--line-weak); }
 .terminal-chrome-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-chrome-hint {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 10px; height: 24px; padding: 0 16px;
+  flex: 0 0 auto; display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 var(--pad-strip-x);
   color: var(--fg-faint); font-family: var(--font-mono); font-size: var(--fs-meta);
 }
 .terminal-chrome-hint-left, .terminal-chrome-hint-right { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -405,6 +405,78 @@ button { font: inherit; }
  * 격자를 정하는 상자와 xterm 이 들어앉는 상자가 같아야 전환 전후 요청 격자가 같다 (R13-a).
  */
 .term-group { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 4px; }
+
+/* --- ① 영역 층 (LIFE-373 §2 PaneGrid · TabGroup · GroupDivider · EmptyGroup) --------------------- */
+
+.pane-grid { flex: 1; min-height: 0; display: flex; }
+.group-split { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
+.group-split.dir-row { flex-direction: row; }
+.group-split.dir-column { flex-direction: column; }
+/* 비율은 basis 로 준다 — grow 는 내용 크기가 섞여 들어와 같은 비율이 창마다 다른 px 이 된다. */
+.group-split-side { min-width: 0; min-height: 0; display: flex; flex-grow: 0; flex-shrink: 1; }
+.tab-group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+
+/* 영역 경계선 — 1px 선에 12px 히트(사이드바 리사이저와 같은 토큰, 핸드오프 B). 탭바를 관통한다. */
+.group-divider { position: relative; flex: 0 0 auto; z-index: 3; }
+.group-divider.dir-row { width: var(--resizer-hit-w); margin: 0 calc(var(--resizer-hit-w) / -2); cursor: col-resize; }
+.group-divider.dir-column { height: var(--resizer-hit-w); margin: calc(var(--resizer-hit-w) / -2) 0; cursor: row-resize; }
+.group-divider-line { position: absolute; background: var(--line-strong); }
+.group-divider.dir-row .group-divider-line { top: 0; bottom: 0; left: 50%; width: var(--resizer-line-w); transform: translateX(-50%); }
+.group-divider.dir-column .group-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
+.group-divider:hover .group-divider-line, .group-divider.is-dragging .group-divider-line { background: var(--accent); }
+
+/* 드래그 고스트·배지 — **분할 상자 기준**이다(12px 띠 안에 두면 끌어도 안 따라온다). */
+.group-divider-ghost { position: absolute; background: var(--accent); opacity: 0.4; z-index: 4; pointer-events: none; }
+.group-divider-ghost.dir-row { top: 0; bottom: 0; width: var(--resizer-line-w); }
+.group-divider-ghost.dir-column { left: 0; right: 0; height: var(--resizer-line-w); }
+.group-divider-badge {
+  position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, -50%);
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 2px 6px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg);
+}
+.group-divider-badge.dir-row { top: 50%; }
+.group-divider-badge.dir-column { left: 50%; }
+/* 드래그 중엔 터미널이 마우스를 가로채지 않게 한다 — 안 그러면 xterm 위에서 이동이 끊긴다. */
+body.is-group-drag .term-host { pointer-events: none; }
+body.is-group-drag { cursor: inherit; user-select: none; }
+
+/* 영역 헤더 액션 — 자리는 항상 점유, 보이는 건 활성 영역·hover·줌 (핸드오프 §2 표). */
+.group-actions { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity var(--dur-fade) ease; }
+.main-tabbar:hover .group-actions, .main-tabbar.is-active-group .group-actions { opacity: 1; }
+.group-action {
+  height: var(--h-action-btn); min-width: var(--h-action-btn); padding: 0 5px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: calc(var(--radius-sm) - 1px);
+  font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); cursor: pointer;
+}
+.group-action:hover { border-color: var(--line); color: var(--fg); }
+.group-action.is-on { color: var(--accent); }
+.group-action.is-danger:hover { color: var(--st-error); }
+.group-zoom-chip { display: flex; align-items: center; padding: 0 8px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--accent); }
+
+/* 빈 영역 (F1-4) */
+.empty-group { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-surface); }
+.empty-group.is-active-group { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.empty-group-card { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.empty-group-title { font-size: var(--fs-badge); color: var(--fg-dim); }
+.empty-group-buttons { display: flex; gap: 8px; }
+.empty-group-btn {
+  height: 26px; padding: 0 10px; background: none; border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); font-size: var(--fs-badge); color: var(--fg-muted); cursor: pointer;
+}
+.empty-group-btn:hover { background: var(--bg-selected); color: var(--fg); }
+.empty-group-hint { font-size: var(--fs-meta); color: var(--fg-faint); }
+
+/* 영역별 알림 오버레이 (K) — 헤더 바로 아래, absolute 라 리플로우 0. */
+.tab-group > .inline-notice {
+  position: absolute; top: var(--h-tabbar); left: 0; right: 0; z-index: 6; height: var(--h-notice);
+}
+
+/* 탭 메뉴 섹션 라벨·키 (핸드오프 §2 TabContextMenu) */
+.worktree-groups-glyph { font-size: var(--fs-badge); color: var(--fg-faint); }
+
+.tab-menu-section { padding: 6px 10px 2px; font-size: var(--fs-meta); color: var(--fg-faint); }
+.tab-menu-key { margin-left: auto; padding-left: 12px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint); }
 .term-host { flex: 1; min-height: 0; padding: 0; overflow: hidden; }
 .term-host .xterm { height: 100%; }
 
@@ -475,8 +547,9 @@ button { font: inherit; }
 /* --- TabContextMenu (LIFE-366 F2) ----------------------------------------------------------- */
 /* RepoRowMenu 와 **같은 판**을 쓴다 (항목·구분선·파괴적 항목 클래스). 다른 건 뜨는 자리뿐 —
    레포 메뉴는 `⋯` 버튼 아래 붙고, 이건 우클릭 좌표에 뜬다(탭바에 버튼 자리가 없다). */
+/* LIFE-373: 두 섹션(pane 분할 · 새 영역으로)이 들어가 폭이 196 으로 넓어진다 (§2). */
 .tab-context-menu {
-  position: fixed; z-index: 60; width: var(--w-repo-menu);
+  position: fixed; z-index: 60; width: var(--w-tab-menu);
   background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-menu); padding: 4px 0;
 }

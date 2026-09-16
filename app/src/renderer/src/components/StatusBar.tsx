@@ -7,7 +7,9 @@ export function StatusBar({
   dirtyTotal,
   aheadTotal,
   behindTotal,
+  groupCount,
   paneCount,
+  zoomed,
   agentCount,
   termSize,
   memoryLabel,
@@ -16,7 +18,12 @@ export function StatusBar({
   dirtyTotal: number
   aheadTotal: number
   behindTotal: number
+  /** 영역 수 (LIFE-373 I) — **2 이상일 때만** 보인다. 1이면 영역이라는 말이 필요 없다. */
+  groupCount: number
+  /** 활성 worktree 의 **전체** pane 수 (I). 활성 탭 하나가 아니다. */
   paneCount: number
+  /** 어느 영역이든 줌 중인가 — `⤢` 를 붙인다. */
+  zoomed: boolean
   agentCount: number
   termSize: { cols: number; rows: number } | null
   memoryLabel: string | null
@@ -28,7 +35,10 @@ export function StatusBar({
       <span className="statusbar-badge tone-ahead">↑{aheadTotal}</span>
       <span className="statusbar-badge tone-behind">↓{behindTotal}</span>
       <div className="statusbar-spacer" />
-      <span>{paneCount} panes</span>
+      {groupCount > 1 ? <span data-statusbar-groups>{groupCount} groups</span> : null}
+      <span data-statusbar-panes>
+        {paneCount} panes{zoomed ? ' ⤢' : ''}
+      </span>
       <span>{agentCount} agents</span>
       <span>{termSize === null ? 'xterm —' : `xterm ${termSize.cols}×${termSize.rows}`}</span>
       {memoryLabel === null ? null : <span>{memoryLabel}</span>}

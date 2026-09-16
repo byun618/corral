@@ -392,6 +392,11 @@ export type UiPrefs = {
   collapsedGroups: string[]
   /** 폴백 번호 배정표 (C13) — 재기동해도 같은 탭이 같은 번호를 쓴다. */
   tabOrdinals: TabOrdinal[]
+  /**
+   * worktree 별 영역 배치 (LIFE-373 F1-6 · R3-h). 모양은 렌더러 `group-tree.ts` 가 안다 —
+   * 여기서는 실어 나르기만 하므로 `unknown[]` 이다(저장소가 트리 모양을 또 알면 두 진실이 된다).
+   */
+  groupLayouts: unknown[]
 }
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------

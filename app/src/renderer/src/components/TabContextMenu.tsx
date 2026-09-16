@@ -1,4 +1,8 @@
-// 탭 우클릭 메뉴 (LIFE-366 F2) — 이름 변경 · 이름 지우기 · 닫기.
+// 탭 우클릭 메뉴 — 이름 변경 · 이름 지우기 · **pane 분할 ②** · **새 영역으로 옮기기 ①** · 닫기.
+//
+// LIFE-373 핸드오프 §1-6 "한 메뉴 두 섹션": 같은 `D` 키가 무엇을 쪼개는지를 메뉴에서 갈라
+// 보여준다 — `이 탭 안에서 pane 분할`(herdr 소유)과 `이 탭을 새 영역으로 옮기기`(화면 소유).
+// 원 영역에 탭이 하나뿐이면 옮기기는 **비활성**이다(빈 영역을 만드는 경로가 되면 안 된다).
 //
 // `RepoRowMenu` 와 같은 모양·같은 규칙이다 (핸드오프 §2 의 168px 드롭다운, 바깥 클릭 시 닫힘).
 // 다른 점 하나: 레포 메뉴는 `⋯` 버튼 아래 붙는데 이건 **우클릭 좌표**에 뜬다 — 탭바에는 메뉴
@@ -15,16 +19,23 @@ export type TabMenuAnchor = { tabId: string; x: number; y: number }
 export function TabContextMenu({
   anchor,
   hasUserName,
+  canMoveToGroup,
   onRename,
   onClearName,
+  onSplitPane,
+  onMoveToGroup,
   onClose,
   onDismiss,
 }: {
   anchor: TabMenuAnchor
   /** 사용자가 준 이름이 있나 — 없으면 「이름 지우기」는 할 일이 없어 **비활성**으로 보인다. */
   hasUserName: boolean
+  /** 원 영역에 탭이 2개 이상인가 (F1-1) — 하나뿐이면 옮기기가 빈 영역을 만든다. */
+  canMoveToGroup: boolean
   onRename: () => void
   onClearName: () => void
+  onSplitPane: (direction: 'right' | 'down') => void
+  onMoveToGroup: (direction: 'row' | 'column') => void
   onClose: () => void
   onDismiss: () => void
 }): React.JSX.Element {
@@ -98,6 +109,64 @@ export function TabContextMenu({
       >
         <span className="repo-row-menu-glyph">⌫</span>
         <span>이름 지우기</span>
+      </div>
+      <div className="repo-row-menu-sep" />
+      <div className="tab-menu-section">이 탭 안에서 pane 분할</div>
+      <div
+        className="repo-row-menu-item"
+        data-tab-menu-split-right={anchor.tabId}
+        onClick={() => {
+          onDismiss()
+          onSplitPane('right')
+        }}
+      >
+        <span className="repo-row-menu-glyph">▥</span>
+        <span>오른쪽으로</span>
+        <span className="tab-menu-key">⌘D</span>
+      </div>
+      <div
+        className="repo-row-menu-item"
+        data-tab-menu-split-down={anchor.tabId}
+        onClick={() => {
+          onDismiss()
+          onSplitPane('down')
+        }}
+      >
+        <span className="repo-row-menu-glyph">▤</span>
+        <span>아래로</span>
+        <span className="tab-menu-key">⌘⇧D</span>
+      </div>
+      <div className="repo-row-menu-sep" />
+      <div className="tab-menu-section">이 탭을 새 영역으로 옮기기</div>
+      <div
+        className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
+        data-tab-menu-move-right={anchor.tabId}
+        data-disabled={canMoveToGroup ? 'false' : 'true'}
+        title={canMoveToGroup ? undefined : '이 영역에 탭이 하나뿐이다'}
+        onClick={() => {
+          if (!canMoveToGroup) return
+          onDismiss()
+          onMoveToGroup('row')
+        }}
+      >
+        <span className="repo-row-menu-glyph">◨</span>
+        <span>오른쪽 영역</span>
+        <span className="tab-menu-key">⌘⌥D</span>
+      </div>
+      <div
+        className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
+        data-tab-menu-move-down={anchor.tabId}
+        data-disabled={canMoveToGroup ? 'false' : 'true'}
+        title={canMoveToGroup ? undefined : '이 영역에 탭이 하나뿐이다'}
+        onClick={() => {
+          if (!canMoveToGroup) return
+          onDismiss()
+          onMoveToGroup('column')
+        }}
+      >
+        <span className="repo-row-menu-glyph">⬓</span>
+        <span>아래 영역</span>
+        <span className="tab-menu-key">⌘⌥⇧D</span>
       </div>
       <div className="repo-row-menu-sep" />
       <div

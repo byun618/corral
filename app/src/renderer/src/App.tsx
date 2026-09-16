@@ -7,13 +7,17 @@
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
+import type { AppState, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
+import { EmptyGroup } from './components/EmptyGroup.js'
 import { InlineNotice } from './components/InlineNotice.js'
-import { MainTabBar } from './components/MainTabBar.js'
+import { GroupHeader } from './components/MainTabBar.js'
+import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
+import type { TabGroup } from './group-tree.js'
+import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
@@ -21,6 +25,7 @@ import { StatusBar } from './components/StatusBar.js'
 import { TerminalChrome } from './components/TerminalChrome.js'
 import './design-tokens.css'
 import { useCellMetrics } from './hooks/useCellMetrics.js'
+import { useGroupLayout } from './hooks/useGroupLayout.js'
 import { useLifecycleActions } from './hooks/useLifecycleActions.js'
 import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSync.js'
 import { useMemoryLabel } from './hooks/useMemoryLabel.js'
@@ -67,8 +72,12 @@ export function App(): React.JSX.Element {
    * 한 자리에서 하는 이유는 사이드바와 탭바가 **같은 프레임**에 서야 하기 때문이다 — 각자
    * 억제하면 두 목록이 다른 글자에 멈춘다 (B6). 표시 함수는 순수하게 남는다.
    */
+  /** 키 핸들러가 스테일 없이 최신 상태를 읽는 거울 — state 는 렌더용, ref 는 핸들러용. */
+  const stateRef = useRef<AppState | null>(null)
   const receive = useCallback((next: AppState) => {
-    setState({ ...next, repos: stabilizePaneTitles({ repos: next.repos, frames: paneTitleFrames }) })
+    const stabilized = { ...next, repos: stabilizePaneTitles({ repos: next.repos, frames: paneTitleFrames }) }
+    stateRef.current = stabilized
+    setState(stabilized)
   }, [])
 
   useEffect(() => {
@@ -84,6 +93,8 @@ export function App(): React.JSX.Element {
    * 떠야 하므로 **실패도 「다 실었다」로 친다**(빈 배정표 = r7 동작).
    */
   const [ordinalsReady, setOrdinalsReady] = useState(false)
+  /** 저장된 영역 배치 (F1-6) — 배정표와 **같은 읽기**에서 온다. 화면은 다 실은 뒤에 뜬다. */
+  const [storedLayouts, setStoredLayouts] = useState<unknown[]>([])
   /** 마지막으로 저장한 배정표 — 안 바뀌었으면 파일을 다시 안 쓴다. */
   const savedOrdinals = useRef('')
   useEffect(() => {
@@ -91,7 +102,9 @@ export function App(): React.JSX.Element {
     window.corral
       .getUiPrefs()
       .then((prefs) => {
-        if (!cancelled) tabOrdinals.hydrate(prefs.tabOrdinals)
+        if (cancelled) return
+        tabOrdinals.hydrate(prefs.tabOrdinals)
+        setStoredLayouts(prefs.groupLayouts)
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
@@ -177,13 +190,6 @@ export function App(): React.JSX.Element {
   }, [state, ordinalsReady])
 
   /**
-   * 영역 선언 (LIFE-373 ①) — 지금은 **영역 하나**다. 화면 분할 UI 가 붙기 전까지는 활성 탭
-   * 하나를 보는 영역 `g1` 만 선언한다 (LIFE-353 과 같은 모양 = C2 회귀의 기준선).
-   *
-   * 연결을 여는 판단이 `selectPane` 에서 여기로 옮겨 왔다: 화면이 **무엇을 보고 있는지**를
-   * 선언하면 main 이 연결을 맞춘다 (§10-R13).
-   */
-  /**
    * pane 을 **다시 고른** 횟수 — 값이 바뀌면 활성 터미널이 포커스를 되찾는다 (TerminalPane).
    * 탭을 누른 뒤 곧바로 타건하는 흐름이 끊기지 않게 하는 자리다.
    */
@@ -196,15 +202,178 @@ export function App(): React.JSX.Element {
     [lifecycle],
   )
 
-  const cell = useCellMetrics()
+  /**
+   * 사이드바에서 세션을 누르면 **그 탭이 배정된 영역으로 간다** (R3-e reveal — 옮기지 않는다).
+   *
+   * `selectPane` 만으로는 pane 만 바뀌고 그 탭을 안 보는 영역은 그대로라, 사용자가 누른 세션이
+   * 화면 어디에도 안 뜨는 회차가 생긴다. 영역 활성 + 그 영역의 활성 탭까지 같이 옮긴다.
+   */
+  const revealPane = useCallback(
+    (paneId: string) => {
+      const owner = stateRef.current?.repos
+        .flatMap((repo) => repo.worktrees)
+        .flatMap((worktree) => worktree.workspace?.tabs ?? [])
+        .find((tab) => tab.panes.some((pane) => pane.paneId === paneId))
+      if (owner !== undefined) layoutRef.current.revealTab(owner.tabId)
+      selectPane(paneId)
+    },
+    [selectPane],
+  )
+
+  // --- ① 영역 층 (LIFE-373) ------------------------------------------------------
+  //
+  // 화면이 보는 worktree 하나 → 그 worktree 의 영역 배치 → 영역마다 자기 탭 목록·활성 탭.
+  // 영역 배치는 **worktree 경로**로 영속한다 (R3-h) — workspace_id 는 herdr 재기동에 안 산다.
+  const activeWorktreeRow = useMemo(() => {
+    if (state === null || lifecycle.activeWorkspaceId === null) return null
+    return (
+      state.repos
+        .flatMap((repo) => repo.worktrees)
+        .find((worktree) => worktree.openWorkspaceId !== null && worktree.openWorkspaceId === lifecycle.activeWorkspaceId) ?? null
+    )
+  }, [state, lifecycle.activeWorkspaceId])
+
+  const activeWorkspaceRow = useMemo(
+    () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
+    [state, lifecycle.activeWorkspaceId],
+  )
+  /** 이 worktree 에 살아 있는 탭 — 배치를 추리는 기준이자 새 탭이 흘러드는 입구다 (F1-6·R3-d). */
+  const liveTabIds = useMemo(() => activeWorkspaceRow?.tabs.map((tab) => tab.tabId) ?? [], [activeWorkspaceRow])
+  const layout = useGroupLayout({
+    worktreePath: activeWorktreeRow?.path ?? null,
+    liveTabIds,
+    ready: ordinalsReady,
+    stored: storedLayouts,
+  })
+
+  const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+
+  /**
+   * 영역 선언 (§10-R13) — 영역 하나가 연결 하나다. `active` 인 영역이 **마지막에** 붙는다(S2-b).
+   *
+   * 탭이 없는 영역은 선언하지 않는다 — 붙을 탭이 없으면 연결을 열 이유가 없다(빈 상태 카드만).
+   */
   const termGroups = useMemo<GroupDeclaration[]>(() => {
-    if (state === null || lifecycle.selectedPane === null) return []
-    const workspace = findWorkspace(state, lifecycle.activeWorkspaceId)
-    const tab = findActiveTab(workspace, lifecycle.selectedPane)
-    if (tab === null) return []
-    return [{ groupId: 'g1', tabId: tab.tabId, activePaneId: lifecycle.selectedPane, active: true }]
-  }, [state, lifecycle.activeWorkspaceId, lifecycle.selectedPane])
+    const rows: GroupDeclaration[] = []
+    for (const group of layout.groups) {
+      const tab = tabById(group.activeTabId)
+      if (tab === null) continue
+      const pane = pickPane(tab)
+      if (pane === null) continue
+      rows.push({
+        groupId: group.groupId,
+        tabId: tab.tabId,
+        activePaneId: pane.paneId,
+        active: group.groupId === layout.activeGroupId,
+      })
+    }
+    return rows
+  }, [layout.groups, layout.activeGroupId, tabById])
+
+  const cell = useCellMetrics()
+
   const termSync = useTermGroupSync({ groups: termGroups, cell })
+
+  /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
+  const layoutRef = useRef({
+    activeGroupId: layout.activeGroupId,
+    activeTabId: null as string | null,
+    splitGroup: layout.splitGroup,
+    closeGroup: layout.closeGroup,
+    revealTab: layout.revealTab,
+  })
+  layoutRef.current = {
+    activeGroupId: layout.activeGroupId,
+    activeTabId: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null,
+    splitGroup: layout.splitGroup,
+    closeGroup: layout.closeGroup,
+    revealTab: layout.revealTab,
+  }
+  // --- ② pane 동작 (포커스 pane 기준) -------------------------------------------
+  //
+  // 어느 pane 을 쪼개고·줌하고·닫는가는 **포커스 pane** 하나로 정한다 — 헤더 액션·단축키·메뉴가
+  // 전부 같은 대상을 본다. 거절은 그대로 알림으로 올린다(강제로 밀지 않는다, §10-R8).
+  const [paneError, setPaneError] = useState<string | null>(null)
+  const splitFocusedPane = useCallback(
+    async (direction: PaneSplitDirection): Promise<void> => {
+      const paneId = lifecycle.selectedPane
+      if (paneId === null) return
+      const result = await window.corral.splitPane({ paneId, direction })
+      setPaneError(result.ok ? null : result.error)
+    },
+    [lifecycle.selectedPane],
+  )
+  const closeFocusedPane = useCallback(async (): Promise<void> => {
+    const paneId = lifecycle.selectedPane
+    if (paneId === null) return
+    const result = await window.corral.closePane({ paneId })
+    setPaneError(result.ok ? null : result.error)
+  }, [lifecycle.selectedPane])
+
+  /**
+   * 줌 토글 (F2-3) — **격자 역산**이라 이 영역 상자의 격자를 같이 보낸다.
+   *
+   * 서버 rect 는 줌을 반영하지 않으므로(프리플라이트 ②) 화면은 "그 pane 의 inner 가 상자와
+   * 같아지도록" 탭 격자를 키워서 그린다. 그 목표 격자가 곧 지금 상자의 격자다.
+   */
+  const toggleZoom = useCallback(
+    (groupId: string): void => {
+      const grid = termSync.gridOf(groupId)
+      if (grid === null) return
+      const current = stateRef.current?.terminalGroups.find((row) => row.groupId === groupId)?.zoomedPaneId ?? null
+      const paneId = current === null ? lifecycle.selectedPane : null
+      window.corral.termZoom({ groupId, paneId, cols: grid.cols, rows: grid.rows })
+    },
+    [termSync, lifecycle.selectedPane],
+  )
+
+  /**
+   * ① ② 단축키 — 한 자리에 모은다 (핸드오프 §1-6 "한 메뉴 두 섹션" 의 키 쪽).
+   *
+   *   ⌘D / ⌘⇧D      이 탭 **안에서** pane 분할 (herdr)
+   *   ⌘⌥D / ⌘⌥⇧D   이 탭을 **새 영역으로** (화면)
+   *   ⌘⌥W           영역 닫기 (F1-5)
+   *   ⌘⇧Z           pane 줌 토글 (F2-3)
+   *
+   * ⌘T 는 `useLifecycleActions` 가 이미 들고 있다 — 두 군데서 같은 키를 잡지 않는다.
+   * 편집 중인 입력칸에서는 아무것도 안 한다(리네임 입력이 `stopPropagation` 으로 먼저 막지만,
+   * 그게 새면 여기서 한 번 더 막는다 — J-1 과 같은 두 겹 방어).
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        if (event.target.classList.contains('main-tab-rename')) return
+      }
+      const key = event.key.toLowerCase()
+      if (key === 'd') {
+        event.preventDefault()
+        const direction = event.shiftKey ? 'down' : 'right'
+        if (event.altKey) {
+          const groupId = layoutRef.current.activeGroupId
+          const tabId = layoutRef.current.activeTabId
+          if (groupId === null || tabId === null) return
+          layoutRef.current.splitGroup({ groupId, tabId, direction: direction === 'right' ? 'row' : 'column' })
+          return
+        }
+        void splitFocusedPane(direction)
+        return
+      }
+      if (key === 'w' && event.altKey) {
+        event.preventDefault()
+        const groupId = layoutRef.current.activeGroupId
+        if (groupId !== null) layoutRef.current.closeGroup(groupId)
+        return
+      }
+      if (key === 'z' && event.shiftKey) {
+        event.preventDefault()
+        const groupId = layoutRef.current.activeGroupId
+        if (groupId !== null) toggleZoom(groupId)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [splitFocusedPane, toggleZoom])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -243,6 +412,92 @@ export function App(): React.JSX.Element {
     setPendingRemove(null)
   }
 
+  /**
+   * 영역 하나를 그린다 (F1-1·F1-3·F1-4) — 헤더 + 본문(활성 탭의 pane / 빈 상태 카드).
+   *
+   * 본문 상자(`.term-group`)가 **격자의 분모**다 (R13) — 그 상자에 `useTermGroupSync` 의 ref 를
+   * 달아야 영역 크기가 곧 요청 격자가 된다. 영역이 하나뿐이면 `.term-group` 의 위치·패딩이
+   * 전환 전과 같아 요청 격자도 같다(R13-a 실측).
+   */
+  /**
+   * 영역 본문에 얹는 알림 (핸드오프 §2 InlineNotice K).
+   *
+   * **어느 영역에 뜨나**: 지금 포커스 영역이다. 핸드오프는 "그 탭이 활성인 영역"을 말하지만
+   * `LifecycleNotice` 에 tabId 가 없다 — 라이프사이클 층이 탭을 안 실어 보낸다(App.tsx 의 옛
+   * 창 단위 배너를 그대로 옮겨온 자리다). tabId 를 새로 뚫는 것은 ① 의 범위 밖이라, §10-R17-2 가
+   * 구현자 재량으로 연 **기본안(포커스 영역)** 을 택하고 C5 로 기록한다.
+   */
+  const groupNotice: LifecycleNotice | null =
+    lifecycle.lifecycleNotice ?? (paneError === null ? null : { kind: 'error', message: paneError })
+
+  const renderGroup = ({ group, workspaceId }: { group: TabGroup; workspaceId: string }): React.JSX.Element => {
+    const groupTabs = group.tabOrder.map((tabId) => tabById(tabId)).filter((tab): tab is TabRow => tab !== null)
+    const groupActiveTab = tabById(group.activeTabId)
+    const groupPane = groupActiveTab === null ? null : pickPane(groupActiveTab)
+    const isActiveGroup = group.groupId === layout.activeGroupId
+    const canCloseGroup = layout.groups.length > 1 ? () => layout.closeGroup(group.groupId) : null
+    const groupState = state.terminalGroups.find((row) => row.groupId === group.groupId) ?? null
+    return (
+      <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
+        <GroupHeader
+          groupId={group.groupId}
+          tabs={groupTabs}
+          home={state.home}
+          selectedPane={lifecycle.selectedPane}
+          activeTabId={group.activeTabId}
+          activeGroup={isActiveGroup}
+          paneCount={groupActiveTab?.panes.length ?? 0}
+          zoomed={groupState?.zoomedPaneId != null}
+          onActivate={() => layout.setActiveGroup(group.groupId)}
+          onSelectTab={(tab) => {
+            layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
+            const pane = pickPane(tab)
+            if (pane !== null) selectPane(pane.paneId)
+          }}
+          onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
+          onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
+          onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
+          onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
+          onSplitPane={(direction) => void splitFocusedPane(direction)}
+          onMoveToGroup={({ tabId, direction }) => layout.splitGroup({ groupId: group.groupId, tabId, direction })}
+          onZoom={() => toggleZoom(group.groupId)}
+          onClosePane={() => void closeFocusedPane()}
+          onCloseGroup={canCloseGroup}
+        />
+        {isActiveGroup && groupNotice !== null ? (
+          <InlineNotice
+            notice={groupNotice}
+            onDismiss={() => {
+              setPaneError(null)
+              lifecycle.dismissNotice()
+            }}
+          />
+        ) : null}
+        {groupPane === null ? (
+          <EmptyGroup
+            groupId={group.groupId}
+            activeGroup={isActiveGroup}
+            onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
+            onCloseGroup={canCloseGroup}
+          />
+        ) : (
+          <div
+            className="term-group"
+            data-term-group={group.groupId}
+            ref={termSync.boxRef(group.groupId)}
+            onMouseDown={() => layout.setActiveGroup(group.groupId)}
+          >
+            <TerminalPane
+              paneId={groupPane.paneId}
+              diagnostics={state.diagnostics}
+              focusToken={isActiveGroup ? focusToken : 0}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const activeWorkspace = findWorkspace(state, lifecycle.activeWorkspaceId)
   const activeWorktree = state.repos
     .flatMap((repo) => repo.worktrees)
@@ -258,7 +513,9 @@ export function App(): React.JSX.Element {
   const aheadTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.ahead ?? 0), 0)
   const behindTotal = allWorktrees.reduce((sum, worktree) => sum + (worktree.gitStatus.behind ?? 0), 0)
 
-  const paneCount = activeTab?.panes.length ?? 0
+  // 활성 worktree 의 **전체** pane 수 (핸드오프 I) — 영역이 여럿이면 활성 탭 하나로는 못 센다.
+  const paneCount = activeWorkspace?.tabs.reduce((sum, tab) => sum + tab.panes.length, 0) ?? 0
+  const zoomedAnywhere = state.terminalGroups.some((group) => group.zoomedPaneId !== null)
   // 상태바의 `{n} agents` 는 **에이전트 세션 수**다 — 전체 탭 수가 아니다.
   // 09-gate1-fix.md D 가 사이드바를 에이전트 세션만 그리게 하고 01-criteria.md 부록이 "세션"을
   // 갈라 정의한 뒤로, 전체 탭을 "agents" 라고 부르면 사이드바(2행)와 상태바("4 agents")가
@@ -266,11 +523,6 @@ export function App(): React.JSX.Element {
   // 같은 결이라 라벨이 세는 것과 맞췄다. **지시서에 없던 판단이므로 결과 문서에 적는다.**
   const agentCount = activeWorkspace?.tabs.filter(isAgentTab).length ?? 0
   const terminal = state.terminal
-  const terminalAlive =
-    lifecycle.selectedPane !== null &&
-    allWorktrees.some(
-      (worktree) => worktree.workspace?.tabs.some((tab) => tab.panes.some((pane) => pane.paneId === lifecycle.selectedPane)) ?? false,
-    )
 
   return (
     <div className="app">
@@ -281,7 +533,7 @@ export function App(): React.JSX.Element {
           state={state}
           activeWorkspaceId={lifecycle.activeWorkspaceId}
           selectedPane={lifecycle.selectedPane}
-          selectPane={selectPane}
+          selectPane={revealPane}
           actions={lifecycle.actions}
           isRepoCollapsed={repoCollapse.isCollapsed}
           toggleRepoCollapsed={repoCollapse.toggle}
@@ -295,35 +547,17 @@ export function App(): React.JSX.Element {
             setPendingRemove(repo)
           }}
           onRefresh={() => void window.corral.getState().then(setState)}
+          groupGlyphOf={(worktreePath) => {
+            // R17-2 공백 2 — 영속 스키마(R3-h)가 영역 수를 그대로 주므로 **넣는다**(비용 0).
+            if (layout.groupCountOf(worktreePath) < 2) return null
+            return layout.splitDirectionOf(worktreePath) === 'column' ? '⊟' : '◫'
+          }}
         />
         <div className="sidebar-resizer" data-sidebar-resizer onMouseDown={onHandleMouseDown}>
           <div className="sidebar-resizer-line" data-sidebar-resizer-line />
         </div>
 
         <div className="main-area" data-main-area>
-          {activeWorkspace !== null ? (
-            <MainTabBar
-              tabs={activeWorkspace.tabs}
-              home={state.home}
-              selectedPane={lifecycle.selectedPane}
-              activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? ''}
-              onSelectTab={(tab) => {
-                const pane = pickPane(tab)
-                if (pane !== null) selectPane(pane.paneId)
-              }}
-              onCreateShell={() => {
-                if (activeWorkspace !== null) lifecycle.actions.createRow(activeWorkspace.workspaceId, 'shell')
-              }}
-              onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
-              onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
-              onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
-            />
-          ) : null}
-
-          {lifecycle.lifecycleNotice === null ? null : (
-            <InlineNotice notice={lifecycle.lifecycleNotice} onDismiss={lifecycle.dismissNotice} />
-          )}
-
           {notice === null ? null : (
             <div className="inline-notice tone-info" data-add-notice>
               <span className="inline-notice-dot" />
@@ -336,13 +570,15 @@ export function App(): React.JSX.Element {
           )}
 
           <TerminalChrome activeTab={activeTab}>
-            <div className="term-group" data-term-group="g1" ref={termSync.boxRef('g1')}>
-              {terminalAlive && lifecycle.selectedPane !== null ? (
-                <TerminalPane paneId={lifecycle.selectedPane} diagnostics={state.diagnostics} focusToken={focusToken} />
-              ) : (
-                <div className="term-empty" data-term-empty />
-              )}
-            </div>
+            {activeWorkspace === null || layout.layout === null ? (
+              <div className="term-empty" data-term-empty />
+            ) : (
+              <PaneGrid
+                root={layout.layout.root}
+                onCommitRatio={layout.setRatio}
+                renderGroup={(group) => renderGroup({ group, workspaceId: activeWorkspace.workspaceId })}
+              />
+            )}
           </TerminalChrome>
         </div>
       </div>
@@ -352,7 +588,9 @@ export function App(): React.JSX.Element {
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
         behindTotal={behindTotal}
+        groupCount={layout.groups.length}
         paneCount={paneCount}
+        zoomed={zoomedAnywhere}
         agentCount={agentCount}
         termSize={terminal.cols === null || terminal.rows === null ? null : { cols: terminal.cols, rows: terminal.rows }}
         memoryLabel={memoryLabel}

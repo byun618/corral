@@ -44,6 +44,7 @@ export function WorktreeBlock({
   worktree,
   selected,
   selectedPane,
+  groupGlyph,
   integrations,
   home,
   now,
@@ -58,6 +59,13 @@ export function WorktreeBlock({
 }: {
   worktree: WorktreeRow
   selected: boolean
+  /**
+   * 보존된 영역 레이아웃의 예고 (LIFE-373 L-③ · §2 Sidebar WorktreeBlock).
+   *
+   * 비활성 worktree 에 영역이 2개 이상이면 `◫`(좌우) / `⊟`(상하). "돌아가면 저 모양으로
+   * 복원된다"를 미리 말한다. 활성 worktree 는 지금 화면이 그 모양이라 표시하지 않는다.
+   */
+  groupGlyph: string | null
   selectedPane: string | null
   /** herdr 통합 설치 상태 — 2차 줄이 "왜 비었나" 를 말할 때 쓴다 (LIFE-366 B8). */
   integrations: readonly IntegrationRow[]
@@ -119,6 +127,11 @@ export function WorktreeBlock({
         <span className="worktree-name" data-worktree-branch={worktree.path} title={worktree.path}>
           {line1Name}
         </span>
+        {groupGlyph === null ? null : (
+          <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
+            {groupGlyph}
+          </span>
+        )}
         {!worktree.isLinked ? <span className="worktree-chip">기본</span> : null}
         <div className="worktree-block-spacer" />
         {isOpen ? (

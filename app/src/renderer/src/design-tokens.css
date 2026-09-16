@@ -106,8 +106,10 @@
   --agent-claude: #d97757;
   --agent-grok: #8fa7c4;
   --agent-shell: #6b7473;
-  --tab-min-w: 74px;
+  /* LIFE-373 §3 (H): 풀 폼 고정 요소 81px + 라벨 ≥ 39px → 120. 접힘 26 = 아이콘 14 + 6×2. */
+  --tab-min-w: 120px;
   --tab-max-w: 230px;
+  --tab-compact-w: 26px;
   --h-action-btn: 22px;       /* RepoRow hover 액션 (2026-09-15: 20px→22px, 아이콘 확대) */
   --w-repo-menu: 168px;
   --w-modal-create: 400px;
@@ -127,4 +129,13 @@
   --radius-sm: 5px;
   --radius-badge: 3px;
   --radius-modal: 8px;
+
+  /* --- LIFE-373 (①②③) — design-handoff §3 -------------------------------------------------- */
+  --pad-pane: 6px;         /* Pane 의 CSS 패딩 (격자 안쪽은 herdr 장식이 따로 든다) */
+  --pad-strip-x: 10px;     /* .terminal-chrome 좌우 (E: 16 → 10) */
+  --h-notice: 28px;        /* InlineNotice — 영역별 오버레이 높이 (K) */
+  --w-mru: 520px;          /* MruSwitcher 폭 상한 */
+  --h-mru-row: 28px;
+  --w-tab-menu: 196px;     /* 탭 메뉴 — 두 섹션이 들어가 168 → 196 */
+  --dur-fade: 80ms;        /* 등장/소멸 한 종류 (§1-7) */
 }

@@ -29,6 +29,7 @@ export function Sidebar({
   onAddRepo,
   onRemoveRepo,
   onRefresh,
+  groupGlyphOf,
 }: {
   sidebarRef: RefObject<HTMLDivElement | null>
   width: number
@@ -44,6 +45,8 @@ export function Sidebar({
   onAddRepo: () => void
   onRemoveRepo: (root: string) => void
   onRefresh: () => void
+  /** 비활성 worktree 의 보존된 영역 레이아웃 글리프 (LIFE-373). 없으면 null. */
+  groupGlyphOf: (worktreePath: string) => string | null
 }): React.JSX.Element {
   // 경과 시간이 얼지 않게 **한 곳에서만** 시계를 돌린다 (LIFE-366 D1) — 행마다 타이머를 두면
   // 세션 수만큼 타이머가 생긴다.
@@ -109,6 +112,7 @@ export function Sidebar({
                     now={now}
                     selected={selected}
                     selectedPane={selectedPane}
+                    groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
                     groupCollapsed={isGroupCollapsed(worktree.path)}
                     onToggleGroup={() => toggleGroupCollapsed(worktree.path)}
                     onSelectBlock={() => {

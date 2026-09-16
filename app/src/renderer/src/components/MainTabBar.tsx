@@ -57,6 +57,9 @@ function MainTab({
   onClose,
   onRename,
   onClearName,
+  onSplitPane,
+  onMoveToGroup,
+  canMoveToGroup,
 }: {
   tab: TabRow
   /**
@@ -74,6 +77,11 @@ function MainTab({
   onRename: (label: string) => void
   /** LIFE-366 F1 — 사용자가 준 이름 지우기. 메뉴에서만 닿는다. */
   onClearName: () => void
+  /** LIFE-373 ② — 이 탭 안에서 pane 분할 (herdr). */
+  onSplitPane: (direction: 'right' | 'down') => void
+  /** LIFE-373 ① — 이 탭을 빼내 새 영역으로 (화면). */
+  onMoveToGroup: (direction: 'row' | 'column') => void
+  canMoveToGroup: boolean
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -219,8 +227,11 @@ function MainTab({
         <TabContextMenu
           anchor={menu}
           hasUserName={userLabel({ tab, tabCount }) !== null}
+          canMoveToGroup={canMoveToGroup}
           onRename={beginEdit}
           onClearName={onClearName}
+          onSplitPane={onSplitPane}
+          onMoveToGroup={onMoveToGroup}
           onClose={onClose}
           onDismiss={() => setMenu(null)}
         />
@@ -229,32 +240,72 @@ function MainTab({
   )
 }
 
-export function MainTabBar({
+/**
+ * 영역 하나의 헤더 (LIFE-373 핸드오프 §2 GroupHeader).
+ *
+ * LIFE-357 의 `MainTabBar` 가 그대로 여기로 왔다. 바뀐 것 셋:
+ *   · 활성 탭을 **영역이 정한다**(`activeTabId`) — 포커스 pane 에서 파생시키지 않는다 (R3-a).
+ *     비포커스 영역도 자기 탭을 보여야 하는데 파생시키면 그 영역엔 활성 탭이 없다.
+ *   · worktree 라벨을 **뺐다** (R3-g·L-②) — 모든 영역이 한 worktree 를 공유하므로 정보가 없다.
+ *     그 자리는 상태바 `corral / {worktree}` 와 사이드바 선택 블록이 맡는다.
+ *   · 우측 **액션**(`▥ ▤ ⤢ ✕`) — 평소 opacity 0, 활성 영역/hover/줌 에서 1. 자리는 항상 점유한다.
+ */
+export function GroupHeader({
+  groupId,
   tabs,
   home,
   selectedPane,
-  activeWorktreeLabel,
+  activeTabId,
+  activeGroup,
+  paneCount,
+  zoomed,
+  onActivate,
   onSelectTab,
   onCreateShell,
   onCloseTab,
   onRenameTab,
   onClearTabName,
+  onSplitPane,
+  onMoveToGroup,
+  onZoom,
+  onClosePane,
+  onCloseGroup,
 }: {
+  groupId: string
+  /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
   tabs: TabRow[]
   /** 셸 탭 폴백이 경로를 접는 데 쓴다 (C9). */
   home: string
   selectedPane: string | null
-  activeWorktreeLabel: string
+  activeTabId: string | null
+  /** 이 영역이 포커스 영역인가 — 액션 노출과 탭 라벨 색이 갈린다. */
+  activeGroup: boolean
+  /** 이 영역 활성 탭의 pane 수 — `⤢`·`✕`(pane) 는 2개 이상일 때만 뜬다. */
+  paneCount: number
+  zoomed: boolean
+  /** 헤더 아무 데나 누르면 이 영역이 활성이 된다 (F1-3). */
+  onActivate: () => void
   onSelectTab: (tab: TabRow) => void
   onCreateShell: () => void
   onCloseTab: (tab: TabRow) => void
   onRenameTab: (input: { tab: TabRow; label: string; tabCount: number }) => void
   onClearTabName: (tab: TabRow) => void
+  onSplitPane: (direction: 'right' | 'down') => void
+  onMoveToGroup: (input: { tabId: string; direction: 'row' | 'column' }) => void
+  onZoom: () => void
+  onClosePane: () => void
+  /** 영역 닫기 (F1-5) — 영역이 하나뿐이면 `null` 로 줘서 버튼을 안 그린다. */
+  onCloseGroup: (() => void) | null
 }): React.JSX.Element {
-  // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 와 worktree 라벨이 남는 껍데기를 그린다 —
-  // 마지막 탭을 닫았을 때 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
+  // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
+  // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   return (
-    <div className="main-tabbar" data-main-tabbar>
+    <div
+      className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
+      data-main-tabbar
+      data-group-header={groupId}
+      onMouseDown={onActivate}
+    >
       {tabs.map((tab) => (
         <MainTab
           key={tab.tabId}
@@ -264,20 +315,53 @@ export function MainTabBar({
           tabCount={tabs.length}
           home={home}
           selectedPane={selectedPane}
-          active={tab.panes.some((pane) => pane.paneId === selectedPane)}
+          active={tab.tabId === activeTabId}
+          canMoveToGroup={tabs.length > 1}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
           onRename={(label) => onRenameTab({ tab, label, tabCount: tabs.length })}
           onClearName={() => onClearTabName(tab)}
+          onSplitPane={onSplitPane}
+          onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
         />
       ))}
-      <button className="main-tab-add" data-main-tabbar-add title="빈 탭" onClick={onCreateShell}>
+      <button className="main-tab-add" data-main-tabbar-add={groupId} title="빈 탭 (⌘T)" onClick={onCreateShell}>
         +
       </button>
       <div className="main-tabbar-spacer" />
-      <span className="main-tabbar-active-worktree" data-main-tabbar-worktree title={activeWorktreeLabel}>
-        {activeWorktreeLabel}
-      </span>
+      {zoomed ? (
+        <span className="group-zoom-chip" data-group-zoom-chip={groupId}>
+          ⤢ {Math.max(0, paneCount - 1)} pane 접힘
+        </span>
+      ) : null}
+      <div className="group-actions" data-group-actions={groupId}>
+        <button className="group-action" data-group-split-right={groupId} title="오른쪽으로 pane 분할 (⌘D)" onClick={() => onSplitPane('right')}>
+          ▥
+        </button>
+        <button className="group-action" data-group-split-down={groupId} title="아래로 pane 분할 (⌘⇧D)" onClick={() => onSplitPane('down')}>
+          ▤
+        </button>
+        {paneCount > 1 ? (
+          <button
+            className={`group-action ${zoomed ? 'is-on' : ''}`}
+            data-group-zoom={groupId}
+            title={zoomed ? '줌 해제 (⌘⇧Z)' : 'pane 줌 (⌘⇧Z)'}
+            onClick={onZoom}
+          >
+            {zoomed ? '⤡' : '⤢'}
+          </button>
+        ) : null}
+        {paneCount > 1 ? (
+          <button className="group-action is-danger" data-group-close-pane={groupId} title="pane 닫기" onClick={onClosePane}>
+            ✕
+          </button>
+        ) : null}
+        {tabs.length === 0 && onCloseGroup !== null ? (
+          <button className="group-action is-danger" data-group-close={groupId} title="영역 닫기 (⌘⌥W)" onClick={onCloseGroup}>
+            ✕
+          </button>
+        ) : null}
+      </div>
     </div>
   )
 }

@@ -26,7 +26,7 @@
 // 대조는 **같은 폴에서** 두 쪽을 뜬다. corral 은 제어 채널의 AppState(=화면이 받는 그것),
 // herdr 은 하네스 자기 커넥션의 `tab.list`·`pane.list`·`workspace.list` 다 (제3 오라클).
 
-import { REPO_DIR, herdrTruth, look, request, sleep, startApp, tidySession, until, writeRaw, pct } from './s8-lib.mjs'
+import { REPO_DIR, ghostWorkspaces, herdrTruth, look, request, sleep, startApp, tidySession, until, writeRaw, pct } from './s8-lib.mjs'
 
 const TIMES = Number(process.env.LIFE353_TIMES ?? 5)
 
@@ -291,21 +291,22 @@ for (let round = 1; round <= TIMES; round++) {
   // 만든 것이다(수수 count 0 → `$HOME` 자동 생성). 대조에서 뺀다.
   const 닫기전 = (await herdrTruth()).workspaces
   await request('tab.close', { tab_id: tabId })
+  // 유령 = ⓐ 닫기 뒤에 생겼고 **AND** ⓑ 등록 레포 밖이라 corral 이 열 수 없는 workspace (R18-3).
   const 유령 = await until(
     async () => {
-      const now = (await herdrTruth()).workspaces
-      const 새것 = now.filter((id) => !닫기전.includes(id))
-      return 새것.length > 0 ? 새것 : null
+      const rows = await ghostWorkspaces({ before: 닫기전, repoDir: REPO_DIR })
+      return rows.length > 0 ? rows : null
     },
-    { what: '자동 생성 workspace', timeoutMs: 1500, everyMs: 40 },
+    { what: 'herdr 자동 생성 workspace', timeoutMs: 1500, everyMs: 40 },
   )
+  const 유령들 = 유령.value ?? []
   await settle({
     bucket: 'd',
     round,
     mark,
     done: (truth) => !truth.workspaces.includes(workspaceId),
-    ignoreWorkspaces: 유령.value ?? [],
-    extra: { workspaceId, tabId, paneId },
+    ignoreWorkspaces: 유령들.map((row) => row.workspaceId),
+    extra: { workspaceId, tabId, paneId, 유령: 유령들 },
   })
 }
 

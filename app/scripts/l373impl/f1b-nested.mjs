@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION, until } from '../l353/lib.mjs'
 import { attachThisWorktree, dragDivider, ensureTabs, g1, moveTabToNewGroup, quiesce, snapshot, tabsOf } from './app-steps.mjs'
-import { m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
+import { ensureWorkspace, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -23,6 +23,7 @@ const APP_ENV = { CORRAL_UI_PREFS: path.join(RUN_DIR, 'ui-prefs.json') }
 const REGISTRY = path.join(RUN_DIR, 'repos.json')
 
 const 결과 = { at: new Date().toISOString(), 세션: SESSION, M0 }
+ensureWorkspace()
 결과.초기화 = await resetPanes()
 
 const app = await startApp({ name: 'f1b-nested', env: APP_ENV, registryFile: REGISTRY })

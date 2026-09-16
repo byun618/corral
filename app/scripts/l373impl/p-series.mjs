@@ -22,7 +22,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, press, quiesce, resizeEvents } from './app-steps.mjs'
-import { APP_DIR, layout as herdrLayout, m0End, m0Start, paneList, pct, psSample, resetPanes, writeRaw } from './lib.mjs'
+import { APP_DIR, ensureWorkspace, layout as herdrLayout, m0End, m0Start, paneList, pct, psSample, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -206,6 +206,7 @@ async function phase(app, label, paneIds) {
   return row
 }
 
+ensureWorkspace()
 결과.초기화 = await resetPanes()
 const app = await startApp({ name: 'p-series', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)

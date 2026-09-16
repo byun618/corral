@@ -21,7 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, dragDivider, ensureTabs, moveTabToNewGroup, resizeEvents, snapshot, syncEvents, tabsOf } from './app-steps.mjs'
-import { m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
+import { ensureWorkspace, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION}) — LIFE353_SESSION=life373-… 로 띄워라`)
 
@@ -35,13 +35,17 @@ const APP_ENV = { CORRAL_UI_PREFS: PREFS }
 
 const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS, M0 }
 // pane 이 둘 이상이면 장식이 생겨 격자가 달라진다 — ① 의 숫자는 pane 하나에서 잰다.
+ensureWorkspace()
 결과.초기화 = await resetPanes()
 
 // ── 1회차: ⓐ ⓑ ⓒ ⓓ, 그리고 2영역인 채로 종료해서 ⓔ 의 씨앗을 남긴다 ──────────────
 const app = await startApp({ name: 'f1-groups', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)
 await sleep(600)
-await ensureTabs(app, 4)
+// 탭 **5개**로 고정한다 — F1-7(접힘)은 탭 수가 분모라, 세션에 남아 있던 탭 수에 따라
+// 1400/1000 에서 접히기도 안 접히기도 한다(재실행에서 4개가 되어 안 접혔다).
+// F-final 회차의 구성(g1 4 + g2 1)이 이 값이다.
+await ensureTabs(app, 5)
 
 결과.기본 = await snapshot(app, '기본 1영역')
 await app.shot('f1-a-single')

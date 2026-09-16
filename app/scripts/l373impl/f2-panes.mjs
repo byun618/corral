@@ -7,6 +7,9 @@
 //   ⓓ F2-1 아래 분할까지 걸어 3 pane
 //   ⓔ F2-2 경계 드래그 — 끄는 동안 서버에 0, mouseup 에 1회. **배지가 말한 칸 수 == 커밋 결과**
 //   ⓕ F2-2 도달 구간 **밖**으로 끌기 — 거기서도 배지와 결과가 같은가 (코디네이터 요구)
+//   ⓖ F2-4 인접 pane 포커스 — `pane.neighbor` 로 물어보고 그 답으로 옮긴다
+//   ⓗ F2-1 단축키 경로 (`⌘D`) — 헤더 버튼과 같은 길인가
+//   ⓘ F2-5 pane 닫기 — 하나 닫고, 마지막까지 닫으면 탭이 닫힌다
 //
 // 격리: `life373-` 세션 전용(두 lib 가 각자 막는다). M0: 유령 앱 0 에서만 유효하다.
 
@@ -14,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
-import { attachThisWorktree, dragPaneDivider, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
+import { attachThisWorktree, dragPaneDivider, focusedPane, paneCalls, press, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
 import { layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
@@ -230,6 +233,80 @@ const 내용칸 = async (direction) => {
 }
 
 결과.끝 = await 기록('드래그 뒤 (pane 3)')
+
+// ⓖ F2-4 — 인접 pane 포커스. 서버가 답한 이웃으로만 옮긴다.
+{
+  const 이동 = []
+  for (const [key, 라벨] of [
+    ['ArrowRight', '오른쪽'],
+    ['ArrowDown', '아래'],
+    ['ArrowUp', '위'],
+    ['ArrowLeft', '왼쪽'],
+  ]) {
+    const before = await focusedPane(app)
+    const since = Date.now()
+    await press(app, { key, meta: true, alt: true })
+    이동.push({ 키: `⌘⌥${라벨}`, 전: before, 후: await focusedPane(app), 부른것: paneCalls(app, since, 'pane.neighbor') })
+  }
+  결과.포커스이동 = 이동
+  console.log('F2-4', JSON.stringify(이동.map((m) => [m.키, m.전.선택, '→', m.후.선택, m.후.포커스pane, m.부른것.length])))
+  await app.shot('f2-g-focus-move')
+}
+
+// ⓗ F2-1 단축키 경로 — `⌘D` 로 하나 더.
+{
+  const since = Date.now()
+  await press(app, { key: 'd', meta: true })
+  await sleep(1200)
+  결과.단축키분할 = {
+    부른것: paneCalls(app, since, 'pane.split'),
+    pane수: (await app.state()).terminalGroups[0]?.panes.length ?? 0,
+    오라클: truth(),
+  }
+  결과.단축키분할.기록 = await 기록('⌘D 뒤 (pane 4)')
+  console.log('F2-1 단축키 | pane', 결과.단축키분할.pane수, '| 부른것', 결과.단축키분할.부른것.length)
+  await app.shot('f2-h-shortcut-split')
+}
+
+// ⓘ F2-5 — 헤더 ✕ 로 포커스 pane 을 닫는다. 마지막 하나까지 닫으면 탭이 닫혀야 한다.
+{
+  const groupId = (await app.state()).terminalGroups[0]?.groupId ?? null
+  const 탭전 = (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length
+  const since = Date.now()
+  await app.click(`[data-group-close-pane="${groupId}"]`)
+  await sleep(1400)
+  결과.pane닫기 = {
+    부른것: paneCalls(app, since, 'pane.close'),
+    pane수: (await app.state()).terminalGroups[0]?.panes.length ?? 0,
+    오라클: truth(),
+    기록: await 기록('pane 하나 닫은 뒤'),
+  }
+  console.log('F2-5 | pane', 결과.pane닫기.pane수, '| 부른것', 결과.pane닫기.부른것.length)
+  await app.shot('f2-i-close-pane')
+
+  // 계속 닫는다. 핸드오프 글리프표가 `✕` 를 **pane ≥ 2** 에서만 보이게 해서, UI 로는
+  // 마지막 하나에 못 닿는다 — 버튼이 사라지는 지점까지만 가고 그 사실을 그대로 적는다.
+  const 연속 = []
+  for (let i = 0; i < 6; i += 1) {
+    const 버튼 = (await app.query(`[data-group-close-pane="${groupId}"]`)).found.length
+    if (버튼 === 0) break
+    await app.click(`[data-group-close-pane="${groupId}"]`)
+    await sleep(1400)
+    const state = await app.state()
+    연속.push({
+      남은: state.terminalGroups[0]?.panes.length ?? 0,
+      탭수: state.repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length,
+    })
+  }
+  결과.마지막pane = {
+    탭전,
+    연속,
+    닫기버튼남았나: (await app.query(`[data-group-close-pane="${groupId}"]`)).found.length > 0,
+    pane수: (await app.state()).terminalGroups[0]?.panes.length ?? 0,
+  }
+  console.log('F2-5 마지막 | 탭전', 탭전, JSON.stringify(결과.마지막pane))
+  await app.shot('f2-j-close-last')
+}
 
 // M0-b 는 **앱을 멈춘 뒤** 잰다 — 먼저 재면 이 런이 띄운 Electron 을 유령으로 센다.
 await app.stop()

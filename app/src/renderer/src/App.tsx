@@ -23,7 +23,7 @@ import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
 import { StatusBar } from './components/StatusBar.js'
-import { TerminalChrome } from './components/TerminalChrome.js'
+import { TerminalChrome, type PaneStripItem } from './components/TerminalChrome.js'
 import './design-tokens.css'
 import { useCellMetrics } from './hooks/useCellMetrics.js'
 import { useGroupLayout } from './hooks/useGroupLayout.js'
@@ -47,9 +47,20 @@ function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRo
   return null
 }
 
-function findActiveTab(workspace: WorkspaceRow | null, selectedPane: string | null): TabRow | null {
-  if (workspace === null) return null
-  return workspace.tabs.find((tab) => tab.panes.some((pane) => pane.paneId === selectedPane)) ?? null
+/** 방향키 → pane 방향. 모르는 키는 `null` — 여기서 걸러야 다른 ⌘⌥ 조합을 안 삼킨다. */
+function arrowDirection(key: string): PaneDirection | null {
+  switch (key) {
+    case 'arrowleft':
+      return 'left'
+    case 'arrowright':
+      return 'right'
+    case 'arrowup':
+      return 'up'
+    case 'arrowdown':
+      return 'down'
+    default:
+      return null
+  }
 }
 
 export function App(): React.JSX.Element {
@@ -327,6 +338,25 @@ export function App(): React.JSX.Element {
     },
     [],
   )
+  /**
+   * 인접 pane 으로 포커스 (F2-4). **누가 이웃인지는 서버가 정한다** — 화면 좌표로 고르지 않는다.
+   *
+   * `pane.focus_direction` 이 아니라 `pane.neighbor` 다(main 쪽 주석): focus_direction 은 herdr
+   * 세션 전역 포커스를 움직여 사용자의 TUI 클라이언트까지 끌고 간다. 이웃이 없으면 아무것도 안 한다.
+   */
+  const focusNeighbor = useCallback(
+    async (target: { paneId: string | null; direction: PaneDirection }): Promise<void> => {
+      if (target.paneId === null) return
+      const result = await window.corral.focusPaneDirection({ paneId: target.paneId, direction: target.direction })
+      if (!result.ok) {
+        setPaneError(result.error)
+        return
+      }
+      setPaneError(null)
+      if (result.paneId !== null) selectPane(result.paneId)
+    },
+    [selectPane],
+  )
   const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
     const result = await window.corral.closePane({ paneId })
@@ -383,6 +413,14 @@ export function App(): React.JSX.Element {
         void splitPaneAt({ paneId: lifecycle.selectedPane, direction })
         return
       }
+      // ⌘⌥ + 방향키 — 인접 pane 포커스 (F2-4). 기준서·핸드오프가 키를 안 정해 여기서 고른 자리다
+      // (C5-9). ⌘⌥D 계열과 겹치지 않고, 화살표라 방향이 그대로 읽힌다.
+      const arrow = event.altKey ? arrowDirection(key) : null
+      if (arrow !== null) {
+        event.preventDefault()
+        void focusNeighbor({ paneId: lifecycle.selectedPane, direction: arrow })
+        return
+      }
       if (key === 'w' && event.altKey) {
         event.preventDefault()
         const groupId = layoutRef.current.activeGroupId
@@ -397,7 +435,7 @@ export function App(): React.JSX.Element {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [splitPaneAt, toggleZoom, lifecycle.selectedPane])
+  }, [splitPaneAt, toggleZoom, focusNeighbor, lifecycle.selectedPane])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -472,6 +510,9 @@ export function App(): React.JSX.Element {
       groupActiveTab === null
         ? null
         : (groupActiveTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? groupPane?.paneId ?? null)
+    /** 헤더가 보이는 격자 — **선택 pane 의 내용 셀**이다 (장식 제외, 줌 중엔 커진 값). */
+    const selectedView = groupState?.panes.find((pane) => pane.paneId === groupSelectedPaneId) ?? null
+    const gridOfSelected = selectedView === null ? null : { cols: selectedView.innerRect.width, rows: selectedView.innerRect.height }
     /** herdr 가 준 pane 사각형 + 같은 pane 의 목록 행(종류). 번호는 **화면 읽는 순서**다. */
     const paneNumbers = groupState === null ? new Map<string, number>() : numbersOf(groupState.panes)
     const seats: PaneSeat[] =
@@ -492,6 +533,7 @@ export function App(): React.JSX.Element {
           activeTabId={group.activeTabId}
           activeGroup={isActiveGroup}
           paneCount={groupActiveTab?.panes.length ?? 0}
+          grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onSelectTab={(tab) => {
@@ -580,7 +622,25 @@ export function App(): React.JSX.Element {
   const activeWorktree = state.repos
     .flatMap((repo) => repo.worktrees)
     .find((worktree) => worktree.openWorkspaceId !== null && worktree.openWorkspaceId === lifecycle.activeWorkspaceId)
-  const activeTab = findActiveTab(activeWorkspace, lifecycle.selectedPane)
+  /**
+   * 힌트줄 pane 스트립 (§10-R21-1b) — **활성 영역의** pane 들을 화면 읽는 순서로.
+   *
+   * 번호는 `numbersOf` 한 곳에서만 나온다. 스트립과 MRU 가 같은 수를 써야 하고, 레이아웃이
+   * 안 바뀌면 흔들리지 않아야 한다 (코디네이터 단서 2개).
+   */
+  const activeGroupPanes = state.terminalGroups.find((group) => group.groupId === layout.activeGroupId)?.panes ?? []
+  const agentOfPane = new Map(
+    (activeWorkspace?.tabs ?? []).flatMap((tab) => tab.panes.map((pane) => [pane.paneId, pane.agent])),
+  )
+  const stripNumbers = numbersOf(activeGroupPanes)
+  const stripPanes: PaneStripItem[] = [...activeGroupPanes]
+    .sort((a, b) => (stripNumbers.get(a.paneId) ?? 0) - (stripNumbers.get(b.paneId) ?? 0))
+    .map((view) => ({
+      paneId: view.paneId,
+      number: stripNumbers.get(view.paneId) ?? 0,
+      agent: agentOfPane.get(view.paneId) ?? null,
+      selected: view.paneId === lifecycle.selectedPane,
+    }))
 
   const allWorktrees = state.repos.flatMap((repo) => repo.worktrees)
   const dirtyTotal = allWorktrees.reduce(
@@ -647,7 +707,7 @@ export function App(): React.JSX.Element {
             </div>
           )}
 
-          <TerminalChrome activeTab={activeTab}>
+          <TerminalChrome panes={stripPanes}>
             {activeWorkspace === null || layout.layout === null ? (
               <div className="term-empty" data-term-empty />
             ) : (

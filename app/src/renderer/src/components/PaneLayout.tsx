@@ -7,6 +7,11 @@
 //
 // 좌표 원점은 **내용의 왼쪽 위 모서리**다 — 서피스의 (0,0) 이 아니다.
 //
+// pane 메타 행(R17-1)은 **여기 없다**. herdr 장식 링이 상자 밖으로 나가 잘리므로 바깥 줄 pane 은
+// 그 행이 화면에 안 선다 — 2분할에서는 하나도 안 보였다(실측). "추가 픽셀 0" 이라는 전제가
+// 거짓이었다는 뜻이라 코디네이터가 R17-1 을 철회했다(§10-R21-1a). pane 식별은 **힌트줄 스트립**,
+// 격자 수는 **영역 헤더**가 진다.
+//
 // herdr 서피스는 영역 상자보다 크다: main 이 가장자리 장식(`edgeWaste`)만큼 격자를 늘려 요청해서
 // **안쪽 사각형들의 합집합이 정확히 상자 격자**가 되게 맞춰 놓는다(`group-session.learnEdgeWaste`).
 // 그래서 `min(innerRect)` 을 원점으로 잡고 거기서 셀을 곱한다. 바깥 사각형은 그 원점보다 왼쪽·
@@ -19,7 +24,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaneDirection, PaneRow, TerminalCellRect, TerminalPaneView } from '../../../shared/types.js'
 import { firstCellsOf, innerCellsOf, seamsOf, snapPaneSeam, type PaneSeam } from '../pane-geometry.js'
-import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
 import { TerminalPane } from '../TerminalPane.js'
 import type { CellSize } from '../term-metrics.js'
 
@@ -83,33 +87,6 @@ function geometryOf(input: { view: TerminalPaneView; cell: CellSize; origin: Pan
     outer,
     inner: { left: `${left}px`, top: `${top}px`, width: `calc(100% - ${trimX}px)`, height: `calc(100% - ${trimY}px)` },
   }
-}
-
-/**
- * 종류 라벨 — corral 어휘로만 말한다 (herdr 타입을 렌더러로 흘리지 않는다, C1).
- * 필요한 것은 `agent` 한 칸뿐이라 `PaneRow` 전체를 요구하지 않는다.
- */
-function kindLabel(row: { agent: string | null } | null): string {
-  // 모르는 종류는 지어내지 않고 **셸**로 떨어뜨린다 — 탭바와 같은 표를 쓴다(라벨도 그 표의 것).
-  return agentIcon(row?.agent ?? 'shell')?.label ?? AGENT_ICON.shell.label
-}
-
-/**
- * 장식 행에 얹는 pane 메타 (§10-R17-1). **추가 픽셀 0** — herdr 가 pane ≥ 2 에서 강제로 비우는
- * 상단 장식 행을 그대로 쓴다. 단일 pane 은 장식이 0 행이라 이 줄도 없다(C2 기하 불변).
- */
-function PaneMeta({ seat, zoomed, cell }: { seat: PaneSeat; zoomed: boolean; cell: CellSize }): React.JSX.Element {
-  const inner = seat.view.innerRect
-  // 높이·왼쪽 들여쓰기는 **실측 셀**에서 나온다. 토큰(`--lh-term × --fs-term`)은 목업의 셀
-  // 크기(20.4px)라 실제 xterm 셀(15px)과 다르다 — 그걸 쓰면 메타 행이 장식 행을 넘어 내용을 덮는다.
-  const band = { left: (inner.x - seat.view.rect.x) * cell.width, height: (inner.y - seat.view.rect.y) * cell.height }
-  if (band.height <= 0) return <></>
-  return (
-    <div className="term-pane-meta" data-term-pane-meta={seat.view.paneId} style={{ left: band.left, height: band.height }}>
-      {zoomed ? '⤢ ' : ''}
-      {seat.number} · {kindLabel(seat.row)} · {inner.width}×{inner.height}
-    </div>
-  )
 }
 
 /**
@@ -215,7 +192,6 @@ export function PaneLayout({
   onSelect: (paneId: string) => void
   onCommitResize: PaneResizeCommit
 }): React.JSX.Element {
-  const decorated = seats.length > 1
   const origin = originOf(seats)
   const views = seats.map((seat) => seat.view)
   // 줌 중에는 경계를 안 그린다 — 보이는 pane 이 하나뿐이라 끌 경계가 없다.
@@ -240,7 +216,6 @@ export function PaneLayout({
             style={outer}
             onMouseDown={() => onSelect(seat.view.paneId)}
           >
-            {decorated ? <PaneMeta seat={seat} zoomed={zoomed} cell={cell} /> : null}
             <div className="term-pane-inner" style={inner}>
               <TerminalPane
                 paneId={seat.view.paneId}
@@ -320,4 +295,4 @@ function useSeamDrag(input: { cell: CellSize; onCommitResize: PaneResizeCommit }
   return { drag, beginDrag }
 }
 
-export const __test = { originOf, placeOf, geometryOf, kindLabel }
+export const __test = { originOf, placeOf, geometryOf }

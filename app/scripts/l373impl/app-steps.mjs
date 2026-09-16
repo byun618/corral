@@ -22,15 +22,19 @@ export const paneCalls = (app, since, event) =>
     .map((e) => ({ tag: e.tag, direction: e.direction ?? null, amount: e.amount ?? null, paneId: e.paneId ?? null }))
 
 /**
- * **G1 통과선** — 요청한 격자가 화면에 들어가는가 (코디네이터 신설, 2026-09-16).
+ * **G1 / G1-b / G1-c 통과선** (코디네이터 §10-R21-2, 첫 문언을 다시 씀).
  *
- * 결함 6 을 셀 수 대조로는 못 잡았다. 앱이 요청한 수로 오라클도 검산하면 둘이 같은 틀린 수를
- * 공유하기 때문이다. 그래서 여기서는 **픽셀 공간**에서 본다: 요청 cols × 셀폭이 실제 가시
- * 상자 폭을 넘지 않는가. G1-b 는 그 반대쪽 — 남는 여백이 한 셀 미만인가(화면을 놀리지 않는가).
+ * 첫 문언은 `요청 격자 × 셀 ≤ 상자` 였는데 그건 **A 모델에서 틀린다** — `learnEdgeWaste` 가
+ * 장식만큼 부풀려 요청하므로 요청이 상자보다 큰 게 정상이다. 결함 6 이 실제로 어긴 것은
+ * 요청이 아니라 **보이는 내용**이었다. 그래서 내용 사각형들의 합집합으로 본다.
+ *
+ *   G1   `inner` 합집합 × 셀 ≤ 가시 상자 (픽셀 실측)
+ *   G1-b 그 합집합이 상자를 **1 셀 미만** 남기고 채운다
+ *   G1-c 상자 밖으로 나가는 셀은 **herdr 장식 링에 한한다** — 내용 셀이 한 칸이라도 잘리면 미달
  */
 export async function g1(app) {
   const state = await app.state()
-  const 상자 = (await app.send({
+  const 잰것 = (await app.send({
     cmd: 'eval',
     code: `(() => {
       const cell = window.corralTermProbe ? window.corralTermProbe.cell() : null
@@ -43,26 +47,52 @@ export async function g1(app) {
       }
     })()`,
   })).result
-  const cell = 상자.cell?.measured ?? null
+  const cell = 잰것.cell?.measured ?? null
   const 연결 = state.terminalGroups
-    .filter((g) => g.grid !== null)
+    .filter((g) => g.panes.length > 0)
     .map((g) => {
-      const box = 상자.boxes.find((b) => b.groupId === g.groupId) ?? null
-      if (box === null || cell === null) return { groupId: g.groupId, grid: g.grid, 상자: box, 판정: '상자를 못 쟀다' }
-      const 필요 = { width: +(g.grid.cols * cell.width).toFixed(3), height: +(g.grid.rows * cell.height).toFixed(3) }
+      const box = 잰것.boxes.find((b) => b.groupId === g.groupId) ?? null
+      if (box === null || cell === null) return { groupId: g.groupId, 판정: '상자나 셀을 못 쟀다' }
+      const inner = g.panes.map((p) => p.innerRect)
+      const 합집합 = {
+        x: Math.min(...inner.map((r) => r.x)),
+        y: Math.min(...inner.map((r) => r.y)),
+        right: Math.max(...inner.map((r) => r.x + r.width)),
+        bottom: Math.max(...inner.map((r) => r.y + r.height)),
+      }
+      const 필요 = {
+        width: +((합집합.right - 합집합.x) * cell.width).toFixed(3),
+        height: +((합집합.bottom - 합집합.y) * cell.height).toFixed(3),
+      }
       const 여백 = { width: +(box.width - 필요.width).toFixed(3), height: +(box.height - 필요.height).toFixed(3) }
+      // G1-c: 원점은 합집합의 왼쪽 위다. 거기서 잰 내용 사각형은 전부 상자 안에 들어야 한다.
+      const 잘린내용 = g.panes
+        .map((p) => ({
+          paneId: p.paneId,
+          오른쪽넘침: +((p.innerRect.x + p.innerRect.width - 합집합.x) * cell.width - box.width).toFixed(3),
+          아래넘침: +((p.innerRect.y + p.innerRect.height - 합집합.y) * cell.height - box.height).toFixed(3),
+        }))
+        .filter((p) => p.오른쪽넘침 > 0.5 || p.아래넘침 > 0.5)
       return {
         groupId: g.groupId,
-        grid: g.grid,
-        상자: box,
+        요청격자: g.grid,
+        내용합집합: { cols: 합집합.right - 합집합.x, rows: 합집합.bottom - 합집합.y },
+        상자: { width: box.width, height: box.height },
         필요,
         여백,
-        // G1: 안 넘친다 / G1-b: 한 셀 미만만 남긴다.
-        G1: 여백.width >= 0 && 여백.height >= 0,
+        G1: 여백.width >= -0.5 && 여백.height >= -0.5,
         'G1-b': 여백.width < cell.width && 여백.height < cell.height,
+        'G1-c': 잘린내용.length === 0,
+        잘린내용,
       }
     })
-  return { cell, 연결, 위반: 연결.filter((c) => c.G1 !== true).length, '여백위반': 연결.filter((c) => c['G1-b'] !== true).length }
+  return {
+    cell,
+    연결,
+    위반: 연결.filter((c) => c.G1 !== true).length,
+    여백위반: 연결.filter((c) => c['G1-b'] !== true).length,
+    내용잘림: 연결.filter((c) => c['G1-c'] !== true).length,
+  }
 }
 
 export async function snapshot(app, label) {
@@ -311,6 +341,36 @@ export async function dragPaneDivider(app, { direction = 'row', px = 120, steps 
     보낸것: paneCalls(app, beforeUp, 'pane.resize'),
     고스트사라짐: (await app.query('.pane-divider-ghost')).found.length === 0,
   }
+}
+
+/** 단축키 하나를 문서에 떨어뜨린다 — 앱이 거는 `keydown` 리스너와 같은 길이다. */
+export async function press(app, { key, meta = true, alt = false, shift = false }) {
+  await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: '${key}', metaKey: ${meta}, altKey: ${alt}, shiftKey: ${shift}, bubbles: true, cancelable: true,
+      }))
+      return 1
+    })()`,
+  })
+  await sleep(900)
+}
+
+/** 지금 선택된 pane 과 DOM 포커스가 든 pane — 둘이 같아야 F2-4 가 성립한다. */
+export async function focusedPane(app) {
+  return (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const selected = document.querySelector('[data-pane-selected="true"]')
+      const active = document.activeElement
+      return {
+        선택: selected === null ? null : selected.dataset.termPaneBox,
+        포커스요소: active === null ? null : active.tagName + (active.className ? '.' + String(active.className).split(' ')[0] : ''),
+        포커스pane: active === null ? null : (active.closest('[data-term-pane-box]')?.dataset.termPaneBox ?? null),
+      }
+    })()`,
+  })).result
 }
 
 /**

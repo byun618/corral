@@ -437,6 +437,14 @@ button { font: inherit; }
 .group-divider.dir-column .group-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
 .group-divider:hover .group-divider-line, .group-divider.is-dragging .group-divider-line { background: var(--accent); }
 
+/* 힌트줄 pane 스트립 (§10-R21-1b) — pane 식별의 유일한 자리. 레이아웃 순 `{글리프} {n} {종류}`. */
+.pane-strip-item { font-family: var(--font-mono); color: var(--fg-faint); }
+.pane-strip-item + .pane-strip-item { margin-left: 12px; }
+.pane-strip-item.is-selected { color: var(--fg-dim); }
+
+/* 영역 헤더 격자 — 장식 행 메타(R17-1)가 철회돼 돌아온 자리. */
+.group-grid-meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint); margin-right: 8px; }
+
 /* pane 경계 (② F2-2) — 영역 경계와 같은 관용(1px + 12px 히트)이지만 **탭바 아래에서** 시작하고
    `.term-pane-stack` 안에 절대 배치된다. 선은 두 pane rect 경계에 정확히 선다(핸드오프 M). */
 .pane-divider { position: absolute; z-index: 3; }
@@ -523,13 +531,6 @@ body.is-group-drag { cursor: inherit; user-select: none; }
 .term-pane-inner { position: absolute; display: flex; overflow: hidden; }
 /* 장식 행 위의 pane 메타 (§10-R17-1) — herdr 가 비워 둔 한 행에 얹으므로 **추가 픽셀 0**.
    좌 장식 열 한 칸 뒤에서 시작한다. 클릭은 아래 pane 으로 흘려보낸다. */
-.term-pane-meta {
-  position: absolute; top: 0; right: 0;
-  display: flex; align-items: center; gap: 0;
-  font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint);
-  white-space: nowrap; overflow: hidden; pointer-events: none;
-}
-.term-pane.is-selected > .term-pane-meta { color: var(--fg-dim); }
 
 /* --- StatusBar (§2) ------------------------------------------------------------------------------ */
 

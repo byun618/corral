@@ -307,6 +307,7 @@ export function GroupHeader({
   activeTabId,
   activeGroup,
   paneCount,
+  grid,
   zoomed,
   onActivate,
   onSelectTab,
@@ -331,6 +332,8 @@ export function GroupHeader({
   activeGroup: boolean
   /** 이 영역 활성 탭의 pane 수 — `⤢`·`✕`(pane) 는 2개 이상일 때만 뜬다. */
   paneCount: number
+  /** 선택 pane 의 **내용** 셀 수. 장식 행 메타가 철회돼 이 자리가 유일한 격자 표시다 (§10-R21-1b). */
+  grid: { cols: number; rows: number } | null
   zoomed: boolean
   /** 헤더 아무 데나 누르면 이 영역이 활성이 된다 (F1-3). */
   onActivate: () => void
@@ -383,6 +386,11 @@ export function GroupHeader({
         +
       </button>
       <div className="main-tabbar-spacer" />
+      {grid === null ? null : (
+        <span className="group-grid-meta" data-group-grid={groupId}>
+          {grid.cols}×{grid.rows}
+        </span>
+      )}
       {zoomed ? (
         <span className="group-zoom-chip" data-group-zoom-chip={groupId}>
           ⤢ {Math.max(0, paneCount - 1)} pane 접힘

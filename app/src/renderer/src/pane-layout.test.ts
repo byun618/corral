@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { __test } from './components/PaneLayout.js'
+import { kindLabel } from './components/TerminalChrome.js'
 
 const cell = { width: 7.825, height: 15 }
 const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height })
@@ -59,10 +60,9 @@ describe('pane 상자 (②)', () => {
     expect(inner.height).toBe('calc(100% - 30px)')
   })
 
-  it('종류 라벨은 탭바와 같은 표에서 나온다 — 모르는 값은 셸', () => {
-    expect(__test.kindLabel({ agent: 'claude' })).toBe('claude')
-    expect(__test.kindLabel({ agent: null })).toBe('셸')
-    expect(__test.kindLabel(null)).toBe('셸')
-    expect(__test.kindLabel({ agent: '듣도보도못한것' })).toBe('셸')
+  it('종류 라벨은 탭바와 같은 표에서 나온다 — 모르는 값은 셸 (스트립이 쓴다)', () => {
+    expect(kindLabel('claude')).toBe('claude')
+    expect(kindLabel(null)).toBe('셸')
+    expect(kindLabel('듣도보도못한것')).toBe('셸')
   })
 })

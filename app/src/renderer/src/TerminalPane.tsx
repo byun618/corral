@@ -237,8 +237,12 @@ export function TerminalPane({
     // 대조 대상이 "xterm 버퍼 실물(buffer.getLine)" 이라고 기준이 지정한다. 화면 상태를
     // 읽기만 하는 훅이고, 쓰는 길은 없다. **진단(계측) 실행에서만 노출**한다 (수정 1회차 L7) —
     // 평시 앱에는 window.corralTermProbe 가 아예 없다 (control 채널도 없어 부를 길도 없다).
+    // pane 이 여럿이면 마지막에 마운트한 것이 프로브를 쥔다. 내릴 때 **자기 것일 때만** 지운다 —
+    // 무조건 지우면 형제 pane 하나를 닫는 순간 프로브가 통째로 사라져 하네스가 셀을 못 잰다
+    // (실측: pane 닫기 직후 회차가 `그린 상자가 없다` 로 미달났다).
+    let installed: Window['corralTermProbe'] = undefined
     if (diagnostics) {
-      window.corralTermProbe = {
+      installed = {
         // S7ⓔ — xterm 이 실제 렌더에 쓰는 폭 계산. graphemes 애드온이 활성이면 그 값이다.
         // 재는 대상(스트림 바이트)이 아니라 xterm 의 독립 폭 판정이라 폭 오라클의 한 축이 된다.
         // _core 비공개 접근은 readCursorHidden 주석의 6.0.0 고정 전제를 그대로 따른다 (L5).
@@ -291,6 +295,7 @@ export function TerminalPane({
           }
         },
       }
+      window.corralTermProbe = installed
     }
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
@@ -299,7 +304,7 @@ export function TerminalPane({
 
     return () => {
       disposed = true
-      if (diagnostics) delete window.corralTermProbe
+      if (installed !== undefined && window.corralTermProbe === installed) delete window.corralTermProbe
       container.removeEventListener('wheel', onWheel, { capture: true })
       offFrame()
       selectionListener.dispose()

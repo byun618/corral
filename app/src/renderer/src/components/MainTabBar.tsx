@@ -161,12 +161,18 @@ function MainTab({
   // 두 목록을 짝지어 읽을 수 없다. 탭바는 **셸 탭도** 보여주므로 에이전트가 없는 탭은 `shell`
   // 아이콘(`$`)으로 떨어뜨린다 — 여기서만 의미가 있는 구분이다(사이드바는 에이전트 세션만 그린다).
   const kind = agentIcon(tabAgent(tab) ?? 'shell')
+  /**
+   * 접힌 탭은 아이콘만 26px 인데, **이름을 고치는 동안은 편다** — 접힌 상태에서는 리네임
+   * 입력칸이 `display: none` 이라 `focus()` 가 안 먹는다. 메뉴 `이름 바꾸기` 가 접힌 탭의
+   * 유일한 입구라(더블클릭할 라벨이 없다) 여기서 안 펴면 그 입구가 막힌다.
+   */
+  const collapsed = compact && !editing
   return (
     <div
-      className={`main-tab ${active ? 'is-active' : ''} ${compact ? 'is-compact' : ''}`}
+      className={`main-tab ${active ? 'is-active' : ''} ${collapsed ? 'is-compact' : ''}`}
       data-main-tab={tab.tabId}
-      data-tab-compact={compact ? 'true' : 'false'}
-      title={compact ? seed : undefined}
+      data-tab-compact={collapsed ? 'true' : 'false'}
+      title={collapsed ? seed : undefined}
       data-tab-editing={editing ? 'true' : 'false'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

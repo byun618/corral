@@ -10,6 +10,7 @@
 //   ⓔ F1-6 재기동 복원 — 같은 ui-prefs·registry 로 다시 띄워 배치가 돌아오나
 //   ⓕ F1-4 영역의 마지막 탭을 닫으면 빈 카드가 서고 연결이 하나 준다
 //   ⓖ F1-5 영역 닫기 — 형제가 자리를 먹고 탭을 물려받는다
+//   ⓗ F1-2(세로) 아래 영역으로 나눈 뒤 경계 드래그 — overhead ≠ 0 · 배지 rows · 셀 바닥 1칸
 //
 // 격리(관문 ⑤): `life373-` 세션에서만 돈다. l353 lib 는 `LIFE353_SESSION` 을 보므로 거기에
 // 박아 넣고, 여기서 한 번 더 막는다 — 사용자 default 세션에 붙는 순간 끝이다.
@@ -75,17 +76,103 @@ async function ensureTabs(app, want) {
   return workspaceId
 }
 
-/** 탭 우클릭 → 「오른쪽 영역으로」 — 실제 UI 경로로 연다 (F1-1). */
-async function moveTabToNewGroup(app, tabId) {
+/** 탭 우클릭 → 「오른쪽/아래 영역으로」 — 실제 UI 경로로 연다 (F1-1). */
+async function moveTabToNewGroup(app, { tabId, direction = 'right' }) {
+  const item = direction === 'right' ? 'data-tab-menu-move-right' : 'data-tab-menu-move-down'
   await app.send({
     cmd: 'eval',
     code: `document.querySelector('[data-main-tab="${tabId}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 40 })), 1`,
   })
-  await until(async () => (await app.query(`[data-tab-menu-move-right="${tabId}"]`)).found.length > 0, { what: '탭 메뉴' })
-  const hit = await app.click(`[data-tab-menu-move-right="${tabId}"]`)
+  await until(async () => (await app.query(`[${item}="${tabId}"]`)).found.length > 0, { what: '탭 메뉴' })
+  const hit = await app.click(`[${item}="${tabId}"]`)
   await until(async () => (await app.query('[data-tab-group]')).found.length === 2, { what: '영역 2개', timeoutMs: 5000 })
   await sleep(900)
   return hit.hit === true
+}
+
+/**
+ * 경계 하나를 실제로 끌어 본다 (F1-2). **끄는 동안 격자 요청이 한 번도 나가면 안 된다.**
+ *
+ * 가로·세로를 같은 절차로 잰다 — 세로는 각 쪽에 탭바가 얹혀 `overhead ≠ 0` 이고 배지가 rows 라,
+ * 가로만 재면 스냅 산술의 절반이 화면에서 한 번도 안 돈다.
+ */
+async function dragDivider(app, { selector, direction, shot, step = 9, steps = 12 }) {
+  const row = direction === 'row'
+  const since = Date.now()
+  const begin = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (el === null) return null
+      const box = el.getBoundingClientRect()
+      const y = box.top + box.height / 2
+      const x = box.left + box.width / 2
+      window.__l373drag = { y, x, from: ${row ? 'x' : 'y'} }
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }))
+      const walk = []
+      for (let i = 1; i <= ${steps}; i++) {
+        const at = window.__l373drag.from - i * ${step}
+        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: ${row ? 'at' : 'x'}, clientY: ${row ? 'y' : 'at'} }))
+        walk.push(at)
+      }
+      return { steps: walk.length, to: walk.at(-1) }
+    })()`,
+  })).result
+  // 고스트·배지는 React 가 **다시 그린 뒤에** 읽는다 — 같은 eval 안에서 읽으면 mousemove 가
+  // 예약한 setState 가 아직 안 돌아 늘 null 이다 (첫 회차의 `badge: null` 이 그 허깨비였다).
+  await sleep(500)
+  const 고스트 = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const badge = document.querySelector('[data-group-divider-badge]')
+      const ghost = document.querySelector('.group-divider-ghost')
+      return { 배지: badge ? badge.textContent : null, 고스트: ghost !== null, 위치: ghost ? ghost.style.${row ? 'left' : 'top'} : null }
+    })()`,
+  })).result
+  const 드래그중 = { resize: resizeEvents(app, since).length, sync: syncEvents(app, since).length }
+  await app.shot(shot)
+  const beforeUp = Date.now()
+  await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const d = window.__l373drag
+      const at = d.from - ${steps * step}
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: ${row ? 'at' : 'd.x'}, clientY: ${row ? 'd.y' : 'at'} }))
+      return 1
+    })()`,
+  })
+  await sleep(1400)
+  return {
+    방향: direction,
+    시작: begin,
+    고스트,
+    드래그중,
+    커밋후: { resize: resizeEvents(app, beforeUp).length, sync: syncEvents(app, beforeUp).length },
+    // 스냅이 먹었으면 배지가 말한 칸 수 = 실제 요청 격자다. 다르면 산술이 어디서 갈렸는지 숫자로 뜬다.
+    격자: (await app.state()).terminalGroups.map((g) => ({ groupId: g.groupId, grid: g.grid })),
+    산술: (await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        const split = document.querySelector('[data-group-split]')
+        const sides = [...split.querySelectorAll(':scope > .group-split-side')]
+        const axis = (el) => {
+          const box = el.getBoundingClientRect()
+          const style = getComputedStyle(el)
+          return { rect: +box.${row ? 'width' : 'height'}.toFixed(3), computed: style.${row ? 'width' : 'height'}, parseInt: Number.parseInt(style.${row ? 'width' : 'height'}, 10) }
+        }
+        return {
+          분할상자: +split.getBoundingClientRect().${row ? 'width' : 'height'}.toFixed(3),
+          셀: window.corralTermProbe ? window.corralTermProbe.cell() : null,
+          쪽: sides.map((side) => ({
+            basis: side.style.flexBasis,
+            상자: axis(side),
+            터미널: (() => { const t = side.querySelector('[data-term-group]'); return t === null ? null : axis(t) })(),
+          })),
+        }
+      })()`,
+    })).result,
+    고스트사라짐: (await app.query('.group-divider-ghost')).found.length === 0,
+  }
 }
 
 const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS }
@@ -134,7 +221,7 @@ await app.shot('f1-a-single')
 const tabs = tabsOf(await app.state())
 const second = tabs[1]?.tabId ?? null
 if (second === null) throw new Error('두 번째 탭이 없다')
-결과.분할클릭 = await moveTabToNewGroup(app, second)
+결과.분할클릭 = await moveTabToNewGroup(app, { tabId: second })
 결과.분할후 = await snapshot(app, '오른쪽 영역으로 옮기기')
 await app.shot('f1-b-two-groups')
 
@@ -157,6 +244,19 @@ await app.shot('f1-b-two-groups')
      * 앞에 적혀 있어도 S2-b 위반이 아니다. S2-b 자체는 attach 로그로 따로 잰다.
      */
     선언순서_정렬전: syncEvents(app, since).at(-1)?.groups ?? null,
+    /**
+     * "활성 pane 도 같이 옮겨진다"를 **DOM 포커스로** 잰다 — 추정 금지. 헤더 div 는 포커스를
+     * 받지 않으므로 이게 참이려면 `activateGroup` 의 `selectPane` → `focusToken` 경로가
+     * 실제로 xterm 의 textarea 를 잡아야 한다. 잡은 쪽 영역 id 를 그대로 적는다.
+     */
+    포커스한영역: (await app.send({
+      cmd: 'eval',
+      code: `document.activeElement?.closest('[data-term-group]')?.dataset.termGroup ?? null`,
+    })).result,
+    포커스요소: (await app.send({
+      cmd: 'eval',
+      code: `document.activeElement === null ? null : (document.activeElement.tagName + '.' + (document.activeElement.className || ''))`,
+    })).result,
     스냅샷: after,
   }
   await app.shot('f1-c-focus')
@@ -189,80 +289,9 @@ await app.shot('f1-b-two-groups')
   await sleep(900)
 }
 
-// ⓓ F1-2 — 경계 드래그. 끄는 동안 격자 요청이 **한 번도** 나가면 안 된다.
-{
-  const since = Date.now()
-  const begin = (await app.send({
-    cmd: 'eval',
-    code: `(() => {
-      const el = document.querySelector('[data-group-divider]')
-      if (el === null) return null
-      const box = el.getBoundingClientRect()
-      const y = box.top + box.height / 2
-      const x = box.left + box.width / 2
-      window.__l373drag = { y, from: x }
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }))
-      const steps = []
-      for (let i = 1; i <= 12; i++) {
-        const at = x - i * 9
-        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at, clientY: y }))
-        steps.push(at)
-      }
-      return { steps: steps.length, to: steps.at(-1) }
-    })()`,
-  })).result
-  // 고스트·배지는 React 가 **다시 그린 뒤에** 읽는다 — 같은 eval 안에서 읽으면 mousemove 가
-  // 예약한 setState 가 아직 안 돌아 늘 null 이다 (첫 회차의 `badge: null` 이 그 허깨비였다).
-  await sleep(500)
-  const 고스트 = (await app.send({
-    cmd: 'eval',
-    code: `(() => {
-      const badge = document.querySelector('[data-group-divider-badge]')
-      const ghost = document.querySelector('.group-divider-ghost')
-      return { 배지: badge ? badge.textContent : null, 고스트: ghost !== null, 위치: ghost ? ghost.style.left : null }
-    })()`,
-  })).result
-  const 드래그중 = { resize: resizeEvents(app, since).length, sync: syncEvents(app, since).length }
-  await app.shot('f1-d-drag-ghost')
-  const beforeUp = Date.now()
-  await app.send({
-    cmd: 'eval',
-    code: `document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: window.__l373drag.from - 108, clientY: window.__l373drag.y })), 1`,
-  })
-  await sleep(1400)
-  결과.경계드래그 = {
-    시작: begin,
-    고스트,
-    드래그중,
-    커밋후: { resize: resizeEvents(app, beforeUp).length, sync: syncEvents(app, beforeUp).length },
-    // 스냅이 먹었으면 두 영역의 격자 합 + 경계가 셀에 딱 떨어진다. 실제 격자를 그대로 적는다.
-    격자: (await app.state()).terminalGroups.map((g) => ({ groupId: g.groupId, grid: g.grid })),
-    // 배지가 말한 칸 수와 실제 요청 격자가 **같은가**. 다르면 산술이 어디서 갈렸는지 여기 숫자로 뜬다.
-    산술: (await app.send({
-      cmd: 'eval',
-      code: `(() => {
-        const split = document.querySelector('[data-group-split]')
-        const sides = [...split.querySelectorAll(':scope > .group-split-side')]
-        const axis = (el) => {
-          const box = el.getBoundingClientRect()
-          const style = getComputedStyle(el)
-          return { rect: +box.width.toFixed(3), computed: style.width, parseInt: Number.parseInt(style.width, 10) }
-        }
-        return {
-          분할상자: +split.getBoundingClientRect().width.toFixed(3),
-          셀: window.corralTermProbe ? window.corralTermProbe.cell() : null,
-          쪽: sides.map((side) => ({
-            basis: side.style.flexBasis,
-            상자: axis(side),
-            터미널: (() => { const t = side.querySelector('[data-term-group]'); return t === null ? null : axis(t) })(),
-          })),
-        }
-      })()`,
-    })).result,
-    고스트사라짐: (await app.query('.group-divider-ghost')).found.length === 0,
-  }
-  await app.shot('f1-d-drag-committed')
-}
+// ⓓ F1-2 — 경계 드래그(가로). 끄는 동안 격자 요청이 **한 번도** 나가면 안 된다.
+결과.경계드래그 = await dragDivider(app, { selector: '[data-group-divider]', direction: 'row', shot: 'f1-d-drag-ghost' })
+await app.shot('f1-d-drag-committed')
 
 결과.종료직전 = await snapshot(app, '재기동 직전')
 결과.종료직전저장 = JSON.parse(fs.readFileSync(PREFS, 'utf8')).groupLayouts ?? null
@@ -307,6 +336,23 @@ await app2.shot('f1-f-restored')
 }
 
 결과.저장된배치 = JSON.parse(fs.readFileSync(PREFS, 'utf8')).groupLayouts ?? null
+
+// ⓗ F1-2(세로) — 같은 경계를 세로로. 가로와 달리 각 쪽에 탭바가 얹혀 overhead ≠ 0 이고
+//    배지 단위가 rows, 셀 바닥이 1칸이다. 이 경로는 여기서만 화면에서 돈다.
+{
+  const remaining = tabsOf(await app2.state())
+  const victim = remaining[1]?.tabId ?? null
+  if (victim === null) {
+    결과.세로드래그 = { 건너뜀: '탭이 2개 미만이라 세로 분할을 못 만든다', 탭수: remaining.length }
+  } else {
+    결과.세로분할클릭 = await moveTabToNewGroup(app2, { tabId: victim, direction: 'down' })
+    결과.세로분할후 = await snapshot(app2, '아래 영역으로 옮기기')
+    await app2.shot('f1-i-column-split')
+    결과.세로드래그 = await dragDivider(app2, { selector: '[data-group-divider]', direction: 'column', shot: 'f1-i-column-ghost' })
+    await app2.shot('f1-j-column-committed')
+  }
+}
+
 await app2.stop()
 
 writeRaw('f1-groups.json', 결과)

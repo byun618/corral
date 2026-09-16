@@ -14,8 +14,20 @@ import { snapSplitRatio, type CellSize } from '../term-metrics.js'
 
 export type GroupDragCommit = (input: { splitId: string; ratio: number }) => void
 
-/** 드래그 중인 경계 — 고스트만 그리고 **mouseup 에 1회 커밋**한다 (F1-2). */
-type DragState = { splitId: string; direction: 'row' | 'column'; ratio: number; first: number; second: number }
+/**
+ * 드래그 중인 경계 — 고스트만 그리고 **mouseup 에 1회 커밋**한다 (F1-2).
+ *
+ * `leaf` 는 그 쪽이 **영역 하나인가**다. 중첩 분할이면 그 쪽의 셀 수는 의미가 없어서 배지에
+ * 숫자 대신 `—` 를 보인다 — 없는 숫자를 지어내지 않는다.
+ */
+type DragState = {
+  splitId: string
+  direction: 'row' | 'column'
+  ratio: number
+  first: number
+  second: number
+  leaf: { first: boolean; second: boolean }
+}
 
 /**
  * 분할 상자 안에서 **터미널이 아닌 부분** px 을 양쪽에서 잰다 (셀 스냅의 분모 보정).
@@ -23,19 +35,33 @@ type DragState = { splitId: string; direction: 'row' | 'column'; ratio: number; 
  * 세로 분할이면 각 쪽에 탭바가 얹혀 있어 상자 높이 ≠ 터미널 높이다. 상수로 적지 않고 DOM 에서
  * 재는 이유는 헤더 높이 토큰이 바뀌면 상수가 조용히 어긋나기 때문이다. 터미널 상자가 아직
  * 없으면(빈 영역) 0 으로 둔다 — 그 쪽은 격자를 요청하지도 않는다.
+ *
+ * ⚠ **바로 아래 자식이 영역일 때만** 잰다. 그 쪽이 또 분할이면(⌘⌥D 두 번) 안쪽 터미널 상자는
+ * 그 쪽 전체가 아니라 **일부**라, 깊이 훑어 찾으면 형제 폭만큼을 "터미널이 아닌 부분"으로
+ * 세어 버린다. 배지가 거짓말을 하고 스냅도 엉뚱한 자리에 선다. 중첩된 쪽은 0 으로 둔다 —
+ * 그 안의 경계는 자기 분할 상자 기준으로 따로 잰다.
  */
-function overheadOf(input: { box: HTMLElement; direction: 'row' | 'column' }): { first: number; second: number } {
+function overheadOf(input: { box: HTMLElement; direction: 'row' | 'column' }): SideMetrics {
   const sides = input.box.querySelectorAll(':scope > .group-split-side')
-  const axis = (side: Element | undefined): number => {
-    if (!(side instanceof HTMLElement)) return 0
-    const term = side.querySelector('[data-term-group]')
-    if (!(term instanceof HTMLElement)) return 0
+  const axis = (side: Element | undefined): { overhead: number; leaf: boolean } => {
+    if (!(side instanceof HTMLElement)) return { overhead: 0, leaf: false }
+    const group = side.querySelector(':scope > .tab-group')
+    if (!(group instanceof HTMLElement)) return { overhead: 0, leaf: false }
+    const term = group.querySelector(':scope > [data-term-group]')
+    if (!(term instanceof HTMLElement)) return { overhead: 0, leaf: false }
     const sideBox = side.getBoundingClientRect()
     const termBox = term.getBoundingClientRect()
-    return Math.max(0, input.direction === 'row' ? sideBox.width - termBox.width : sideBox.height - termBox.height)
+    return {
+      overhead: Math.max(0, input.direction === 'row' ? sideBox.width - termBox.width : sideBox.height - termBox.height),
+      leaf: true,
+    }
   }
-  return { first: axis(sides[0]), second: axis(sides[1]) }
+  const first = axis(sides[0])
+  const second = axis(sides[1])
+  return { overhead: { first: first.overhead, second: second.overhead }, leaf: { first: first.leaf, second: second.leaf } }
 }
+
+type SideMetrics = { overhead: { first: number; second: number }; leaf: { first: boolean; second: boolean } }
 
 export function PaneGrid({
   root,
@@ -58,29 +84,31 @@ export function PaneGrid({
    * xterm 이 마우스를 가로채지 않게 해야 한다(`.is-group-drag` 가 pointer-events 를 끈다).
    */
   const beginDrag = useCallback(
-    (input: {
-      splitId: string
-      direction: 'row' | 'column'
-      box: DOMRect
-      ratio: number
-      overhead: { first: number; second: number }
-    }) => {
+    (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics }) => {
       const row = input.direction === 'row'
       const total = Math.max(1, row ? input.box.width : input.box.height)
       const unit = Math.max(1, row ? cell.width : cell.height)
-      const snap = (wanted: number): DragState => ({
-        splitId: input.splitId,
-        direction: input.direction,
-        ...snapSplitRatio({
-          total,
-          wanted,
-          overhead: input.overhead,
-          unit,
-          // 격자 산식의 바닥과 같은 수를 쓴다 (`gridForBox`: 가로 2 · 세로 1).
-          minCells: row ? 2 : 1,
-          clamp: { min: RATIO_MIN, max: RATIO_MAX },
-        }),
-      })
+      // 격자 산식의 바닥과 같은 수를 쓴다 (`gridForBox`: 가로 2 · 세로 1).
+      const common = { total, unit, minCells: row ? 2 : 1, clamp: { min: RATIO_MIN, max: RATIO_MAX } }
+      const leaf = input.metrics.leaf
+      const head = { splitId: input.splitId, direction: input.direction, leaf }
+      /**
+       * **영역 하나인 쪽**에 셀을 맞춘다. 반 칸 비켜서는 보정(`snapSplitRatio`)은 첫 쪽 기준이라,
+       * 첫 쪽이 중첩 분할이면 좌우를 뒤집어 재고 결과를 되돌린다 — 안 그러면 리프인 둘째 쪽이
+       * 다시 한 칸씩 어긋난다(배지 54, 화면 53 과 같은 사고). 양쪽 다 중첩이면 붙일 셀이 없다.
+       */
+      const snap = (wanted: number): DragState => {
+        if (leaf.first) return { ...head, ...snapSplitRatio({ ...common, wanted, overhead: input.metrics.overhead }) }
+        if (leaf.second) {
+          const mirrored = snapSplitRatio({
+            ...common,
+            wanted: total - wanted,
+            overhead: { first: input.metrics.overhead.second, second: input.metrics.overhead.first },
+          })
+          return { ...head, ratio: 1 - mirrored.ratio, first: mirrored.second, second: mirrored.first }
+        }
+        return { ...head, ratio: Math.min(Math.max(wanted / total, RATIO_MIN), RATIO_MAX), first: 0, second: 0 }
+      }
       setDrag(snap(total * input.ratio))
       document.body.classList.add('is-group-drag')
       const onMove = (event: MouseEvent): void => {
@@ -115,23 +143,19 @@ function DragGhost({ drag }: { drag: DragState }): React.JSX.Element {
   const at = `${(drag.ratio * 100).toFixed(4)}%`
   const place = drag.direction === 'row' ? { left: at } : { top: at }
   const unit = drag.direction === 'row' ? 'cols' : 'rows'
+  // 중첩된 쪽은 셀 수가 없다 — 지어내는 대신 `—` 다.
+  const show = (cells: number, leaf: boolean): string => (leaf ? String(cells) : '—')
   return (
     <>
       <div className={`group-divider-ghost dir-${drag.direction}`} style={place} />
       <div className={`group-divider-badge dir-${drag.direction}`} data-group-divider-badge={drag.splitId} style={place}>
-        {drag.first} · {drag.second} {unit}
+        {show(drag.first, drag.leaf.first)} · {show(drag.second, drag.leaf.second)} {unit}
       </div>
     </>
   )
 }
 
-type BeginDrag = (input: {
-  splitId: string
-  direction: 'row' | 'column'
-  box: DOMRect
-  ratio: number
-  overhead: { first: number; second: number }
-}) => void
+type BeginDrag = (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number; metrics: SideMetrics }) => void
 
 function GridNode({
   node,
@@ -170,7 +194,7 @@ function GridNode({
                 direction: node.direction,
                 box: element.getBoundingClientRect(),
                 ratio: node.ratio,
-                overhead: overheadOf({ box: element, direction: node.direction }),
+                metrics: overheadOf({ box: element, direction: node.direction }),
               })
             }}
           >

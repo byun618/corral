@@ -276,6 +276,10 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       /**
        * 키를 누른다 (수식자 포함) — 입력칸을 비우는 것도 **사람이 하는 걸음**이라 키로 한다.
        * 모르는 수식자는 Electron 이 조용히 무시하므로 아는 것만 통과시킨다.
+       *
+       * `type` 으로 **누름/뗌을 따로** 보낼 수 있다 (기본은 둘 다 — 기존 호출부 그대로).
+       * MRU 홀드(`⌃Tab` 을 쥔 채 `Tab` 을 여러 번)는 누름만 이어 보내야 재현되고, 확정은
+       * `Control` **뗌** 하나로 나야 한다 — 붙여 보내면 그 사이 뗌이 홀드를 먼저 끝낸다.
        */
       case 'key': {
         const target = handlers.window()
@@ -285,9 +289,10 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         const known = ['shift', 'control', 'alt', 'meta']
         const raw = parsed['modifiers']
         const modifiers = Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && known.includes(item)) : []
-        target.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
-        target.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
-        reply({ ok: true, keyCode, modifiers, at: Date.now() })
+        const type = readString(parsed, 'type')
+        const types = type === 'keyDown' || type === 'keyUp' ? [type] : ['keyDown', 'keyUp']
+        for (const one of types) target.webContents.sendInputEvent({ type: one === 'keyUp' ? 'keyUp' : 'keyDown', keyCode, modifiers })
+        reply({ ok: true, keyCode, modifiers, types, at: Date.now() })
         return
       }
       /** 화면에 그 선택자가 있나 / 무슨 글자를 들고 있나. */

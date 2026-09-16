@@ -51,6 +51,21 @@ function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRo
   return null
 }
 
+/**
+ * 홀드 중 **터미널이 키를 안 받는다**는 단서 (핸드오프 O) — xterm 이 포커스를 놓으면 모든
+ * pane 의 커서가 저절로 외곽선이 된다. 픽셀 하나 새로 그리지 않고 이미 쓰는 어휘로 말한다.
+ * 원복은 `focusToken` 을 올려서 한다 (취소도 확정도 포커스는 되돌아온다).
+ */
+function blurTerminal(): void {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
+
+/**
+ * MRU 홀드 무동작 상한 (F3-3). `Control` keyup 도 창 blur 도 못 받은 회차를 여기서 끝낸다 —
+ * 10초는 "홀드"로 볼 수 있는 상한을 넉넉히 넘긴 값이고, 넘겨 끝내는 쪽은 **취소**다.
+ */
+const MRU_HOLD_TIMEOUT_MS = 10_000
+
 /** 방향키 → pane 방향. 모르는 키는 `null` — 여기서 걸러야 다른 ⌘⌥ 조합을 안 삼킨다. */
 function arrowDirection(key: string): PaneDirection | null {
   switch (key) {
@@ -328,8 +343,16 @@ export function App(): React.JSX.Element {
   }
   // --- ③ MRU 전환 (LIFE-373 · F3-1~F3-6) ------------------------------------------
   //
-  // 키는 **main 이 잡는다** (`before-input-event`) — xterm textarea 가 포커스를 쥐고 있어
-  // `document` keydown 으로는 `Tab`·`Enter` 가 PTY 로 새기 때문이다(R15). 여기로는 **뜻**만 온다.
+  // 키는 **document 의 캡처 단계**가 잡는다. 두 가지를 한 번에 푸는 자리다:
+  //   ⓐ xterm 은 자기 textarea 에서 키를 듣는다 — 캡처는 document → … → textarea 순이라
+  //     여기서 `stopPropagation()` 하면 **xterm 이 아예 못 본다**. `onData` 로 새지 않는다(R15).
+  //   ⓑ main 의 `before-input-event` 에서 `preventDefault()` 하면 Chromium 이 **그 뒤 keyUp 을
+  //     전부 버린다**(`suppress_events_until_keydown_`, 실측 R26). 홀드를 여는 `⌃Tab` 을 거기서
+  //     삼키면 확정 신호인 `Control` keyup 이 같이 사라진다 — 기준서가 권한 경로(F3-1)가 그
+  //     기준서의 다른 통과선(F3-2 "Ctrl keyup 확정")을 깨는 자리라, 실측을 따라 여기로 옮겼다.
+  //
+  // `⌃Tab` 은 메뉴가 안 쥔 키다(`menu-dump` 실측: 메뉴 액셀러레이터는 ⌘Q·⌘W·⌘A·⌘C·⌘V·⌘X 뿐).
+  // 그래서 페이지가 직접 받을 수 있고, `⌘W` 와 달리 main 이 뺏어 올 이유가 없다.
   //
   // 화면이 들고 있는 것은 둘뿐이다: 최근 포커스 **기록**(ref — 렌더 대상이 아니다)과 홀드 중인
   // **목록 상태**. 순서·자리 계산은 전부 `mru-order.ts` 의 순수 함수다.
@@ -391,14 +414,130 @@ export function App(): React.JSX.Element {
   const mruPanesRef = useRef(mruPanes)
   mruPanesRef.current = mruPanes
 
+
+  /** 홀드를 접고 포커스만 돌려준다 — **상태는 하나도 안 건드린다** (F3-5 취소 무결성). */
+  const mruCancel = useCallback(() => {
+    if (mruRef.current === null) return
+    mruRef.current = null
+    setMru(null)
+    setFocusToken((token) => token + 1)
+  }, [])
+
   /**
-   * 홀드 중 **터미널이 키를 안 받는다**는 단서 (핸드오프 O) — xterm 이 포커스를 놓으면 모든
-   * pane 의 커서가 저절로 외곽선이 된다. 픽셀 하나 새로 그리지 않고 이미 쓰는 어휘로 말한다.
-   * 원복은 `focusToken` 을 올려서 한다 (취소도 확정도 포커스는 되돌아온다).
+   * 고른 pane 으로 간다 (F3-2 확정).
+   *
+   * 같은 worktree 면 reveal + pane 포커스, 다른 worktree 면 `selectPane` 이 활성 workspace 를
+   * 옮기고 `pendingRevealRef` 가 다음 배치에서 편다 (R3-i). 홀드 사이에 그 pane 이 죽었으면
+   * **아무 데도 안 간다** — 없는 자리로 옮기느니 제자리다.
    */
-  const blurTerminal = (): void => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
-  }
+  const mruCommit = useCallback(() => {
+    const current = mruRef.current
+    if (current === null) return
+    mruRef.current = null
+    setMru(null)
+    const paneId = current.order[current.index]
+    if (paneId === undefined || !mruPanesRef.current.some((pane) => pane.paneId === paneId)) {
+      setFocusToken((token) => token + 1)
+      return
+    }
+    revealPane(paneId)
+  }, [revealPane])
+
+  /**
+   * 홀드 **무동작 상한** (F3-3 폴백). `Control` keyup 도 blur 도 못 받은 회차가 이 자리에 온다.
+   * 넘겨 끝내는 쪽은 **취소**다 — 사용자가 안 고른 pane 으로 화면을 옮기느니 아무 일도 안 한다.
+   */
+  const mruTimerRef = useRef<number | null>(null)
+  const mruArm = useCallback(() => {
+    if (mruTimerRef.current !== null) window.clearTimeout(mruTimerRef.current)
+    mruTimerRef.current = window.setTimeout(() => mruCancel(), MRU_HOLD_TIMEOUT_MS)
+  }, [mruCancel])
+
+  /**
+   * `⌃Tab` 홀드 — **캡처 단계**에서 잡는다 (이 절 머리말 ⓐⓑ).
+   *
+   * 홀드 중에는 **모든 keydown 을 삼킨다**: 통과선이 "홀드 동안 어떤 pane 의 PTY 에도 1바이트도"
+   * 이고(F3-6), 화면 약속도 "목록이 키를 받는 중"이다(핸드오프 O). `Control` keyup 은 **막지
+   * 않는다** — 그게 확정 신호다(F3-3, electron#37336 이 경고한 자리).
+   */
+  /**
+   * 키 핸들러가 부르는 동작들 — 리스너를 **한 번만** 달려고 ref 로 넘긴다.
+   *
+   * 의존성으로 넘기면 `revealPane` 이 매 렌더 새 함수라 effect 가 매번 다시 붙고, 그때마다
+   * cleanup 이 돌아 **홀드 타이머를 지운다** — 실측에서 10초 타임아웃이 영영 안 왔다
+   * (`raw/claude/f3-mru.json` 1회차 `F3_3_타임아웃.닫혔나: false`). 리스너를 고정하면
+   * 타이머도 산다.
+   */
+  const mruOps = useRef({ commit: mruCommit, cancel: mruCancel, arm: mruArm })
+  mruOps.current = { commit: mruCommit, cancel: mruCancel, arm: mruArm }
+
+  useEffect(() => {
+    const swallow = (event: KeyboardEvent): void => {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    const step = (backward: boolean): void => {
+      mruOps.current.arm()
+      const current = mruRef.current
+      if (current !== null) {
+        const next = { ...current, index: stepMru({ index: current.index, count: current.order.length, backward }) }
+        mruRef.current = next
+        setMru(next)
+        return
+      }
+      const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
+      if (order.length === 0) return
+      blurTerminal()
+      const opened = { order, index: openMru({ count: order.length, backward }), at: Date.now() }
+      mruRef.current = opened
+      setMru(opened)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Tab' && event.ctrlKey && !event.metaKey && !event.altKey) {
+        swallow(event)
+        step(event.shiftKey)
+        return
+      }
+      if (mruRef.current === null) return
+      swallow(event)
+      switch (event.key) {
+        case 'Tab':
+          // `Control` 이 유실돼도 `Tab` 은 목록의 것이다 (홀드가 열려 있는 동안에는).
+          step(event.shiftKey)
+          return
+        case 'Enter':
+          mruOps.current.commit()
+          return
+        case 'Escape':
+          mruOps.current.cancel()
+          return
+        case 'Control':
+        case 'Shift':
+        case 'Alt':
+        case 'Meta':
+          return
+        default:
+          // `Control` 이 이미 올라가 있다 = keyup 을 놓쳤다. 놓은 순간의 뜻대로 확정한다.
+          if (!event.ctrlKey) mruOps.current.commit()
+          return
+      }
+    }
+    const onKeyUp = (event: KeyboardEvent): void => {
+      // **절대 `preventDefault` 하지 않는다** (electron#37336) — 보기만 하고 확정한다.
+      if (event.key === 'Control') mruOps.current.commit()
+    }
+    // 창이 포커스를 잃으면 취소 (F3-2 blur). keyup 을 못 받는 회차의 폴백이기도 하다.
+    const onBlur = (): void => mruOps.current.cancel()
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('keyup', onKeyUp, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', onBlur)
+      if (mruTimerRef.current !== null) window.clearTimeout(mruTimerRef.current)
+    }
+  }, [])
 
   /**
    * `⌘W` 가 겨누는 자리 (F2-5) — **활성 영역의 탭과 그 탭의 pane 들**.
@@ -560,6 +699,13 @@ export function App(): React.JSX.Element {
     return window.corral.onShortcut((shortcut) => {
       switch (shortcut.kind) {
         case 'close-pane': {
+          // 홀드 중에 `⌘W` 가 오면 **닫지 않고 목록을 접는다**. 이 키는 main 이 메뉴에서
+          // 뺏어 오느라 `preventDefault()` 를 쓰고, 그 순간 Chromium 이 뒤따르는 keyUp 을
+          // 버린다(R26) — 확정 신호가 사라진 홀드를 열어 둔 채 pane 까지 닫을 수는 없다.
+          if (mruRef.current !== null) {
+            mruCancel()
+            return
+          }
           const target = closeTargetRef.current
           if (target.tabId === null) return
           if (target.paneIds.length <= 1) {
@@ -570,57 +716,9 @@ export function App(): React.JSX.Element {
           void closePaneAt(paneId)
           return
         }
-        case 'mru-open': {
-          // 이미 열려 있으면 이동이다 — main 이 홀드를 들고 있지만, 재기동·핫리로드로 양쪽이
-          // 어긋난 회차에도 목록이 두 개가 되지 않게 여기서 한 번 더 갈라 준다.
-          if (mruRef.current !== null) {
-            setMru((current) =>
-              current === null
-                ? null
-                : { ...current, index: stepMru({ index: current.index, count: current.order.length, backward: shortcut.backward }) },
-            )
-            return
-          }
-          const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
-          if (order.length === 0) return
-          blurTerminal()
-          setMru({ order, index: openMru({ count: order.length, backward: shortcut.backward }), at: Date.now() })
-          return
-        }
-        case 'mru-step': {
-          setMru((current) =>
-            current === null
-              ? null
-              : { ...current, index: stepMru({ index: current.index, count: current.order.length, backward: shortcut.backward }) },
-          )
-          return
-        }
-        case 'mru-commit': {
-          const current = mruRef.current
-          setMru(null)
-          if (current === null) return
-          const paneId = current.order[current.index]
-          // 고른 pane 이 홀드 사이에 죽었으면 **아무 데도 안 간다** — 없는 자리로 옮기느니 제자리다.
-          if (paneId === undefined || !mruPanesRef.current.some((pane) => pane.paneId === paneId)) {
-            setFocusToken((token) => token + 1)
-            return
-          }
-          // 같은 worktree 면 reveal + pane 포커스, 다른 worktree 면 `selectPane` 이 활성 workspace 를
-          // 옮기고 `pendingRevealRef` 가 다음 배치에서 편다 (R3-i).
-          revealPane(paneId)
-          return
-        }
-        case 'mru-cancel': {
-          if (mruRef.current === null) return
-          setMru(null)
-          // **상태는 하나도 안 건드린다** (F3-5). 되돌리는 것은 포커스뿐이다 — 홀드 단서로
-          // 놓았던 xterm 포커스를 그 자리 그대로 돌려준다.
-          setFocusToken((token) => token + 1)
-          return
-        }
       }
     })
-  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane, revealPane])
+  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane, mruCancel])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)

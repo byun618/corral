@@ -514,7 +514,8 @@ body.is-group-drag { cursor: inherit; user-select: none; }
 /* ② pane 층 — 상자는 herdr 사각형이 정한다 (PaneLayout 주석). 이 층이 content box 의 원점이다. */
 /* 장식 칸은 상자 밖으로 삐져나간다 — 눌러 담지 않고 **잘라 낸다** (PaneLayout 주석). */
 .term-pane-stack { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-.term-pane { position: absolute; overflow: hidden; }
+/* 핸드오프 §2 Pane: 배경은 `--bg-surface`. 잘려 나가는 장식 조각이 뒤로 비치지 않게 한다. */
+.term-pane { position: absolute; overflow: hidden; background: var(--bg-surface); }
 /* 활성 pane 링 (핸드오프 §2 Pane). 테두리가 아니라 inset 그림자라 **자리를 안 먹는다** —
    먹으면 셀 배수로 맞춰 둔 상자가 1px 씩 흔들린다. 단일 pane 은 링을 안 그린다(고를 것이 없다). */
 .term-group[data-pane-count="1"] > .term-pane-stack > .term-pane.is-selected { box-shadow: none; }

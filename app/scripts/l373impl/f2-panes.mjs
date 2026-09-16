@@ -53,6 +53,10 @@ async function drawn(app) {
           const box = el.getBoundingClientRect()
           const inner = el.querySelector('.term-pane-inner')?.getBoundingClientRect() ?? null
           const meta = el.querySelector('[data-term-pane-meta]')
+          // 글자가 DOM 에 **있는 것**과 **보이는 것**은 다르다. 결함 6 과 같은 부류라 여기서
+          // 갈라 적는다 - 메타 상자가 스택 상자와 겹치는 높이가 0 이면 사용자는 못 본다.
+          const metaBox = meta === null ? null : meta.getBoundingClientRect()
+          const 보임 = metaBox === null ? null : Math.min(metaBox.bottom, origin.bottom) - Math.max(metaBox.top, origin.top)
           return {
             paneId: el.dataset.termPaneBox,
             선택: el.dataset.paneSelected,
@@ -60,6 +64,8 @@ async function drawn(app) {
             바깥: { x: round(box.left - origin.left), y: round(box.top - origin.top), width: round(box.width), height: round(box.height) },
             안쪽: inner === null ? null : { x: round(inner.left - origin.left), y: round(inner.top - origin.top), width: round(inner.width), height: round(inner.height) },
             메타: meta === null ? null : meta.textContent,
+            메타상자: metaBox === null ? null : { y: round(metaBox.top - origin.top), height: round(metaBox.height) },
+            메타보임: 보임 === null ? null : { 겹친높이: round(보임), 보인다: 보임 > 0 },
           }
         }),
       }

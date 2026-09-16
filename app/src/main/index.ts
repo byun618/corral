@@ -776,6 +776,8 @@ function syncTermGroups(groups: TerminalGroupRequest[]): void {
     log('stream.sync.unknown_pane', { groupId: group.groupId, paneId: group.activePaneId })
     return false
   })
+  // 선언이 들어온 사실 자체를 남긴다 — 격자 요청(S3·R13-b)의 렌더러 쪽 끝점이다.
+  log('stream.sync', { groups: valid.map((group) => `${group.groupId}:${group.tabId}:${group.cols}x${group.rows}`).join(' ') })
   stream.sync({ clientSocketPath, groups: valid })
 }
 

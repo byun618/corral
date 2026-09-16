@@ -85,6 +85,31 @@ export async function herdrPane(paneId) {
   return r.pane
 }
 
+/**
+ * pane 이 속한 탭 — 선택자 이전(아래 `resolveSelector`)에 쓴다.
+ */
+export async function tabIdOf(paneId, session = SESSION) {
+  const panes = (await herdrRequest('pane.list', {}, { session })).panes
+  return panes.find((pane) => pane.pane_id === paneId)?.tab_id ?? null
+}
+
+/**
+ * **LIFE-373 하네스 수정 ①** (기준 §10-R5: 수정하면 diff 전량을 결과 문서에).
+ *
+ * LIFE-357 이 사이드바를 다시 그리면서 `[data-pane="…"]` 행이 사라졌다 — 지금 사이드바의 행은
+ * **탭 단위**(`[data-tab]`)이고 그나마 **에이전트 탭만** 그린다(WorktreeBlock 의 `isAgentTab`
+ * 필터). 그래서 셸 pane 을 누르는 길은 메인 탭바(`[data-main-tab]`)뿐이다.
+ *
+ * 이 깨짐은 LIFE-373 이 만든 것이 아니라 **LIFE-357 시점에 이미 있었다** — 이 하네스가 그 뒤로
+ * 안 돌았을 뿐이다. 스크립트(s1·s6·a-series)는 손대지 않고 여기 한 곳에서 선택자를 옮긴다.
+ */
+async function resolveSelector(selector) {
+  const matched = /^\[data-pane="(.+)"\]$/.exec(String(selector))
+  if (matched === null) return selector
+  const tabId = await tabIdOf(matched[1])
+  return tabId === null ? selector : `[data-main-tab="${tabId}"]`
+}
+
 export async function firstPaneId(session = SESSION) {
   const panes = (await herdrRequest('pane.list', {}, { session })).panes
   return panes[0]?.pane_id ?? null
@@ -220,7 +245,7 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     send,
     state: async () => (await send({ cmd: 'state' })).state,
     addRepo: (root) => send({ cmd: 'add-repo', root }),
-    selectPane: (paneId) => send({ cmd: 'click', selector: `[data-pane="${paneId}"]` }),
+    selectPane: async (paneId) => send({ cmd: 'click', selector: await resolveSelector(`[data-pane="${paneId}"]`) }),
     termRead: async () => (await send({ cmd: 'term-read' })).term,
     termCellWidth: async (text) => (await send({ cmd: 'term-cell-width', text })).width,
     // S2 — 글자 주입. 응답의 `at` 이 **주입 시각**이다 (control.ts type, 수정 1회차 C3).
@@ -231,8 +256,8 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
     termClick: (fx = 0.5, fy = 0.5) => send({ cmd: 'term-click', fx, fy }),
     resizeWindow: (width, height) => send({ cmd: 'resize-window', width, height }),
     readClipboard: async () => (await send({ cmd: 'read-clipboard' })).text,
-    click: (selector) => send({ cmd: 'click', selector }),
-    query: (selector) => send({ cmd: 'query', selector }),
+    click: async (selector) => send({ cmd: 'click', selector: await resolveSelector(selector) }),
+    query: async (selector) => send({ cmd: 'query', selector: await resolveSelector(selector) }),
     shot: async (label, selector) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const response = await send({ cmd: 'shot', name: `${label}-${stamp}`, ...(selector ? { selector } : {}) })

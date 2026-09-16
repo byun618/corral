@@ -6,7 +6,7 @@
 //
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppState, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
@@ -20,7 +20,9 @@ import { Sidebar } from './components/Sidebar.js'
 import { StatusBar } from './components/StatusBar.js'
 import { TerminalChrome } from './components/TerminalChrome.js'
 import './design-tokens.css'
+import { useCellMetrics } from './hooks/useCellMetrics.js'
 import { useLifecycleActions } from './hooks/useLifecycleActions.js'
+import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSync.js'
 import { useMemoryLabel } from './hooks/useMemoryLabel.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
@@ -174,6 +176,36 @@ export function App(): React.JSX.Element {
     window.corral.setUiPrefs({ tabOrdinals: entries })
   }, [state, ordinalsReady])
 
+  /**
+   * 영역 선언 (LIFE-373 ①) — 지금은 **영역 하나**다. 화면 분할 UI 가 붙기 전까지는 활성 탭
+   * 하나를 보는 영역 `g1` 만 선언한다 (LIFE-353 과 같은 모양 = C2 회귀의 기준선).
+   *
+   * 연결을 여는 판단이 `selectPane` 에서 여기로 옮겨 왔다: 화면이 **무엇을 보고 있는지**를
+   * 선언하면 main 이 연결을 맞춘다 (§10-R13).
+   */
+  /**
+   * pane 을 **다시 고른** 횟수 — 값이 바뀌면 활성 터미널이 포커스를 되찾는다 (TerminalPane).
+   * 탭을 누른 뒤 곧바로 타건하는 흐름이 끊기지 않게 하는 자리다.
+   */
+  const [focusToken, setFocusToken] = useState(0)
+  const selectPane = useCallback(
+    (paneId: string) => {
+      lifecycle.selectPane(paneId)
+      setFocusToken((token) => token + 1)
+    },
+    [lifecycle],
+  )
+
+  const cell = useCellMetrics()
+  const termGroups = useMemo<GroupDeclaration[]>(() => {
+    if (state === null || lifecycle.selectedPane === null) return []
+    const workspace = findWorkspace(state, lifecycle.activeWorkspaceId)
+    const tab = findActiveTab(workspace, lifecycle.selectedPane)
+    if (tab === null) return []
+    return [{ groupId: 'g1', tabId: tab.tabId, activePaneId: lifecycle.selectedPane, active: true }]
+  }, [state, lifecycle.activeWorkspaceId, lifecycle.selectedPane])
+  const termSync = useTermGroupSync({ groups: termGroups, cell })
+
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
   useEffect(() => {
@@ -249,7 +281,7 @@ export function App(): React.JSX.Element {
           state={state}
           activeWorkspaceId={lifecycle.activeWorkspaceId}
           selectedPane={lifecycle.selectedPane}
-          selectPane={lifecycle.selectPane}
+          selectPane={selectPane}
           actions={lifecycle.actions}
           isRepoCollapsed={repoCollapse.isCollapsed}
           toggleRepoCollapsed={repoCollapse.toggle}
@@ -277,7 +309,7 @@ export function App(): React.JSX.Element {
               activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? ''}
               onSelectTab={(tab) => {
                 const pane = pickPane(tab)
-                if (pane !== null) lifecycle.selectPane(pane.paneId)
+                if (pane !== null) selectPane(pane.paneId)
               }}
               onCreateShell={() => {
                 if (activeWorkspace !== null) lifecycle.actions.createRow(activeWorkspace.workspaceId, 'shell')
@@ -304,11 +336,13 @@ export function App(): React.JSX.Element {
           )}
 
           <TerminalChrome activeTab={activeTab}>
-            {terminalAlive && lifecycle.selectedPane !== null ? (
-              <TerminalPane paneId={lifecycle.selectedPane} diagnostics={state.diagnostics} />
-            ) : (
-              <div className="term-empty" data-term-empty />
-            )}
+            <div className="term-group" data-term-group="g1" ref={termSync.boxRef('g1')}>
+              {terminalAlive && lifecycle.selectedPane !== null ? (
+                <TerminalPane paneId={lifecycle.selectedPane} diagnostics={state.diagnostics} focusToken={focusToken} />
+              ) : (
+                <div className="term-empty" data-term-empty />
+              )}
+            </div>
           </TerminalChrome>
         </div>
       </div>

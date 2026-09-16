@@ -5,12 +5,15 @@
 그래서 pty 를 직접 열고 TIOCSWINSZ 로 크기를 박은 뒤 그 슬레이브를 stdio 로 준다.
 (spike2 `tui.py` 와 같은 수법 — 하네스는 재사용하지 않고 수법만 참고한다.)
 
-격리: L373_SESSION 은 반드시 `life373-` 접두.
+격리: L373_SESSION 은 `life373-` 접두. **예외 하나** — `life353-` 접두도 허용한다:
+C2(단일 pane 회귀)가 LIFE-353 하네스를 그대로 재실행하라고 요구하는데 그 하네스는
+`life353-` 접두를 코드로 강제한다(l353/lib.mjs sessionDir). 하네스를 고치면 R5 의
+"무수정" 요구를 깨므로 세션 쪽을 연다. 사용자 default 세션은 여전히 불가침이다.
 """
 import fcntl, os, pty, struct, subprocess, sys, termios, time
 
 session = os.environ.get("L373_SESSION", "life373-impl")
-if not session.startswith("life373-"):
+if not (session.startswith("life373-") or session.startswith("life353-")):
     raise SystemExit(f"거부: 격리 세션이 아니다 ({session})")
 
 cols = int(sys.argv[1]) if len(sys.argv) > 1 else 200

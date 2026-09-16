@@ -379,14 +379,25 @@ export async function clickWhenVisible(app, selector, { timeoutMs = 10000 } = {}
  * herdr 가 모른다 — 4단 목록이 그 워크스페이스를 레포 밑에 못 건다.
  */
 export async function tidySession(cwd = REPO_DIR) {
+  // **LIFE-373 하네스 수정 ②** (기준 §10-R5: 수정하면 diff 전량을 결과 문서에).
+  //
+  // 옛 순서는 `전부 닫기 → 하나 만들기 → workspace.list[0] 을 쓴다` 였다. herdr 0.9.0 은
+  // **workspace 가 하나도 없으면 $HOME 에 하나를 자동으로 만든다** — 그래서 다 닫는 순간
+  // 유령 workspace 가 서고, `[0]` 이 그 유령을 집는다. 그러면 측정은 등록 레포 **밖**에 탭을
+  // 만들게 되고(corral 은 등록 레포 밑만 그린다) corral↔herdr 대조가 영원히 어긋난다.
+  //
+  // 고친 것은 **순서와 선택**뿐이다: 먼저 만들고(한 번도 0 개가 되지 않는다) 나머지를 닫고,
+  // 만든 id 를 그대로 쓴다. 측정 의미는 그대로다 — 회차마다 workspace 1개·탭 1개에서 출발한다.
+  const created = await request('workspace.create', { label: 'l351', cwd })
+  const createdId = created?.workspace?.workspace_id ?? created?.workspace_id ?? null
+  await sleep(400)
   const workspaces = (await request('workspace.list', {})).workspaces
   for (const workspace of workspaces) {
+    if (workspace.workspace_id === createdId) continue
     await request('workspace.close', { workspace_id: workspace.workspace_id }).catch(() => {})
   }
-  await sleep(400)
-  await request('workspace.create', { label: 'l351', cwd })
   await sleep(700)
-  return (await request('workspace.list', {})).workspaces[0]?.workspace_id ?? null
+  return createdId ?? (await request('workspace.list', {})).workspaces[0]?.workspace_id ?? null
 }
 
 /** corral 상태에서 목록 층의 id 집합만 뽑는다 — herdr 쪽과 같은 모양으로 맞춘다. */

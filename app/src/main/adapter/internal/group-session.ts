@@ -129,7 +129,22 @@ export class GroupSession {
   /** 누적 pane 명부 — 전체 서피스가 교체, patch 가 덮어쓴다 (R7). */
   private meta = new Map<string, PaneView>()
   private io = new Map<string, PaneIo>()
+  /** 영역 상자가 담을 수 있는 격자 (렌더러가 잰 것). 서버에 보내는 값은 여기에 가장자리 장식을 더한 것. */
+  private boxGrid = { cols: 0, rows: 0 }
+  /** 마지막으로 서버에 보낸 격자. */
   private requestedGrid = { cols: 0, rows: 0 }
+  /**
+   * **가장자리 장식** — 프레임에서 어떤 pane 의 내용도 덮지 않는 바깥쪽 셀 수 (상하/좌우 합).
+   *
+   * 프레임의 빈 셀은 두 종류다: pane **사이**의 것과 **가장자리**의 것. 사이의 것은 corral 이
+   * 실제 간격으로 그리므로(§10-R12) 상자 안에서 자리를 차지한다 — 더해 주면 안 된다.
+   * 가장자리의 것(스크롤바 열 등)은 아무도 안 그리므로 그만큼 **더 요청해야** 내용이 상자를
+   * 꽉 채운다. 단일 pane 에서 이 값이 (1,0) 이고, 그래서 LIFE-353 과 같은 xterm 격자가 나온다(C2).
+   *
+   * 값은 서피스에서 배운다. pane 트리가 바뀔 때만 달라지므로 창 드래그 중에는 고정이다 —
+   * 즉 드래그 1회당 요청은 연결당 1회로 남는다 (S3·R13-b).
+   */
+  private edgeWaste = { cols: 0, rows: 0 }
   /** 줌 직전 요청 격자 — 해제 시 **그대로** 되돌린다 (F2-3c: px 재계산은 한 셀 어긋난다). */
   private gridBeforeZoom: { cols: number; rows: number } | null = null
   private zoomedPaneId: string | null = null
@@ -214,6 +229,7 @@ export class GroupSession {
    */
   async attach(input: { tabId: string; paneId: string; grid: { cols: number; rows: number } }): Promise<void> {
     if (this.closed) throw new Error('group session is closed')
+    this.boxGrid = { cols: input.grid.cols, rows: input.grid.rows }
     this.requestedGrid = { cols: input.grid.cols, rows: input.grid.rows }
     await this.client.connect(input.grid.cols, input.grid.rows)
     this.client.assertMethod('pane.focus')
@@ -267,6 +283,12 @@ export class GroupSession {
    */
   requestGrid(input: { cols: number; rows: number; kind?: string; force?: boolean }): void {
     if (this.closed) return
+    this.boxGrid = { cols: clampGrid(input.cols), rows: clampGrid(input.rows) }
+    this.sendGrid({ ...input, cols: this.boxGrid.cols + this.edgeWaste.cols, rows: this.boxGrid.rows + this.edgeWaste.rows })
+  }
+
+  /** 서버에 보내는 마지막 관문 — 같은 격자면 안 보낸다 (S3). */
+  private sendGrid(input: { cols: number; rows: number; kind?: string; force?: boolean }): void {
     const cols = clampGrid(input.cols)
     const rows = clampGrid(input.rows)
     if (!input.force && cols === this.requestedGrid.cols && rows === this.requestedGrid.rows) return
@@ -289,14 +311,15 @@ export class GroupSession {
       const restore = this.gridBeforeZoom
       this.zoomedPaneId = null
       this.gridBeforeZoom = null
-      if (restore !== null) this.requestGrid({ ...restore, kind: 'zoom-off', force: true })
+      if (restore !== null) this.sendGrid({ ...restore, kind: 'zoom-off', force: true })
       return
     }
     const pane = this.meta.get(input.paneId)
     if (pane === undefined) return
     if (this.gridBeforeZoom === null) this.gridBeforeZoom = { ...this.requestedGrid }
     this.zoomedPaneId = input.paneId
-    this.requestGrid({ ...this.gridForPane({ pane, wanted: input.boxGrid }), kind: 'zoom-on' })
+    // 줌은 **그 pane 의 inner 가 상자와 같아지게** 역산한 격자다 — 가장자리 보정과 길이 다르다.
+    this.sendGrid({ ...this.gridForPane({ pane, wanted: input.boxGrid }), kind: 'zoom-on' })
   }
 
   /**
@@ -453,6 +476,7 @@ export class GroupSession {
     this.mergeMeta(surface)
     if (this.checkConsistency) this.counters.inconsistencies += countInconsistencies(surface.frame, this.panes())
 
+    this.learnEdgeWaste(surface)
     let layoutChanged = surface.full
     for (const raw of surface.panes) {
       const pane = this.meta.get(raw.paneId)
@@ -485,6 +509,37 @@ export class GroupSession {
       layoutChanged = true
     }
     if (layoutChanged) this.hooks.onLayout(this.panes())
+  }
+
+  /**
+   * 서피스에서 **가장자리 장식**을 배운다 (위 `edgeWaste` 주석 참고).
+   *
+   * 값이 달라졌을 때만 격자를 한 번 더 요청한다 — pane 을 나누거나 닫을 때뿐이고, 창 드래그
+   * 중에는 안 바뀌므로 요청은 연결당 1회로 남는다.
+   */
+  private learnEdgeWaste(surface: EndpointSurface): void {
+    if (this.zoomedPaneId !== null) return // 줌 중에는 격자가 역산값이라 이 보정이 성립하지 않는다
+    const panes = this.panes()
+    if (panes.length === 0) return
+    let minX = Number.POSITIVE_INFINITY
+    let maxX = 0
+    let minY = Number.POSITIVE_INFINITY
+    let maxY = 0
+    for (const pane of panes) {
+      minX = Math.min(minX, pane.innerRect.x)
+      maxX = Math.max(maxX, pane.innerRect.x + pane.innerRect.width)
+      minY = Math.min(minY, pane.innerRect.y)
+      maxY = Math.max(maxY, pane.innerRect.y + pane.innerRect.height)
+    }
+    const next = {
+      cols: Math.max(0, minX + (surface.frame.width - maxX)),
+      rows: Math.max(0, minY + (surface.frame.height - maxY)),
+    }
+    if (next.cols === this.edgeWaste.cols && next.rows === this.edgeWaste.rows) return
+    this.edgeWaste = next
+    this.logger.debug('edge waste', { cols: next.cols, rows: next.rows })
+    if (this.boxGrid.cols < 1 || this.boxGrid.rows < 1) return
+    this.sendGrid({ cols: this.boxGrid.cols + next.cols, rows: this.boxGrid.rows + next.rows, kind: 'deco' })
   }
 
   /**

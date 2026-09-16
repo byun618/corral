@@ -1,4 +1,4 @@
-// 터미널 뷰 (R2) — xterm 6.0.0 안정판 + addon-fit 0.11.0 (00-analysis §4-4 권고 그대로).
+// 터미널 뷰 (R2) — xterm 6.0.0 안정판 (00-analysis §4-4 권고 그대로).
 //
 // 렌더러 결정과 근거:
 //   · **DOM 렌더러** (기본값) — WebGL 은 Electron 에서 context loss 로 영구 블랙스크린 위험이
@@ -10,10 +10,14 @@
 // 프레임 제시(coalesce)는 Studio 웹의 TerminalEndpointPresentation 을 **참고해 얇게 재작성**
 // (벤더 아님 — 코디네이터 지시). 프레임은 자기완결 리페인트라 쓰기 중 새 프레임이 오면
 // **최신 것만** 남긴다 — 밀린 프레임을 순서대로 다 그리는 것은 낭비이자 지연이다.
+//
+// **LIFE-373 에서 크기의 주인이 바뀌었다** (§10-R13): 이 컴포넌트는 더 이상 자기 상자를 재서
+// `fit()`→`termResize` 로 서버에 크기를 요구하지 않는다. 격자는 **영역**이 한 번 요청하고,
+// 서버가 준 pane `innerRect` 가 프레임의 cols·rows 로 내려온다 — xterm 은 그 값으로 resize 된다.
+// 왕복이 사라져 요청이 연결당 1회로 수렴하고(S3), 픽셀→cols 역산이 한 군데로 줄었다.
 
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
@@ -48,8 +52,24 @@ function readToken(name: string, fallback: string): string {
   return value.length > 0 ? value : fallback
 }
 
-export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnostics: boolean }): React.JSX.Element {
+export function TerminalPane({
+  paneId,
+  diagnostics,
+  focusToken = 0,
+}: {
+  paneId: string
+  diagnostics: boolean
+  /**
+   * 사용자가 이 pane 을 **다시 골랐다**는 신호 (값이 바뀔 때마다 xterm 에 포커스를 준다).
+   *
+   * 탭바·사이드바에서 탭을 누르면 DOM 포커스는 눌린 그 요소로 간다 — 그대로 두면 다음 타건이
+   * 터미널이 아니라 탭으로 들어간다. 마운트 때 한 번 주는 포커스로는 **이미 떠 있는 pane 을
+   * 다시 고른 경우**를 못 잡는다 (LIFE-353 은 pane 을 고를 때마다 새로 마운트돼서 안 보였다).
+   */
+  focusToken?: number
+}): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const termRef = useRef<Terminal | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
@@ -67,8 +87,6 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
       // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
       allowProposedApi: true,
     })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
     /**
      * 이모지·CJK 폭을 herdr 격자와 맞춘다 (S1·S7ⓔ — 폭 재판 방지).
      *
@@ -81,6 +99,7 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
     term.loadAddon(graphemes)
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
+    termRef.current = term
 
     // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------
     let pending: TerminalFrame | null = null
@@ -96,6 +115,13 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
      */
     let decrqmCapture: { buf: string } | null = null
 
+    // --- 크기: **서버가 준 프레임 크기를 그대로 따른다** (R13) ----------------------
+    // 프레임은 전체 리페인트라 resize 와 write 사이에 찢어질 창이 없다 — 먼저 맞추고 그 위에 쓴다.
+    const sizeTo = (cols: number, rows: number): void => {
+      if (term.cols === cols && term.rows === rows) return
+      term.resize(cols, rows)
+    }
+
     const flush = (): void => {
       if (disposed || writing || term.hasSelection()) return
       const frame = pending
@@ -108,6 +134,8 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
         appliedMouseReporting = frame.mouseReporting
       }
       if (frame === null && prefix === '') return
+      // 서버 격자에 맞춘 뒤 쓴다 (R13) — 프레임이 그 크기를 전제로 만들어졌다.
+      if (frame !== null) sizeTo(frame.cols, frame.rows)
       writing = true
       term.write(prefix + (frame === null ? '' : decoder.decode(frame.data)), () => {
         writing = false
@@ -152,50 +180,8 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
         inputs.push({ data, at: Date.now() })
         if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
       }
-      window.corral.termInput(data)
+      window.corral.termInput({ paneId, data })
     })
-
-    // --- 크기: 컨테이너를 재서 fit → 변화가 있으면 main 에 알린다 -------------------
-    // 마지막으로 서버에 보낸 크기 — 중복·왕복 진동을 끊는 방벽 (S5).
-    let sentCols = 0
-    let sentRows = 0
-    const resizeListener = term.onResize(({ cols, rows }) => {
-      if (cols === sentCols && rows === sentRows) return
-      sentCols = cols
-      sentRows = rows
-      window.corral.termResize({ cols, rows })
-    })
-    /**
-     * fit() 를 디바운스하고 **컨테이너 자체가 바뀐 경우에만** 반응한다 (S5).
-     *
-     * ResizeObserver 는 컨테이너를 보는데, fit() 이 그 안의 xterm 크기를 바꾸면 (스크롤바·반올림
-     * 때문에 124↔126 처럼) 관측이 다시 튄다 → fit → termResize → 서버 프레임 → 또 관측… 무한 진동.
-     * 컨테이너의 content-box 크기를 기억해 두고, **그 박스가 실제로 달라졌을 때만** fit 한다 —
-     * fit 이 유발한 자식 변화(컨테이너 박스 불변)는 무시된다. 창 리사이즈만 통과한다. 디바운스로
-     * 창 리사이즈 전이 중 중간 크기들을 한 번으로 뭉친다. onResize 의 중복 방벽이 마지막 보루다.
-     */
-    let fitTimer: ReturnType<typeof setTimeout> | null = null
-    let boxW = 0
-    let boxH = 0
-    const runFit = (): void => {
-      if (container.clientWidth > 0 && container.clientHeight > 0) fit.fit()
-    }
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[entries.length - 1]?.contentRect
-      if (box) {
-        const w = Math.round(box.width)
-        const h = Math.round(box.height)
-        if (w === boxW && h === boxH) return // 컨테이너는 그대로 — fit 자기 유발
-        boxW = w
-        boxH = h
-      }
-      if (fitTimer !== null) clearTimeout(fitTimer)
-      fitTimer = setTimeout(() => {
-        fitTimer = null
-        runFit()
-      }, 120)
-    })
-    observer.observe(container)
 
     // --- wheel: 가로채서 서버 스크롤로 (캡처 + preventDefault) ----------------------
     // xterm 에 스크롤백이 없고(0), mouseReporting 이 켜져 있으면 xterm 자신도 wheel 을
@@ -214,6 +200,7 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
       const column = Math.min(term.cols - 1, Math.max(0, Math.floor((event.clientX - rect.left) / cellWidth)))
       const row = Math.min(term.rows - 1, Math.max(0, Math.floor((event.clientY - rect.top) / cellHeight)))
       window.corral.termScroll({
+        paneId,
         direction: event.deltaY < 0 ? 'up' : 'down',
         lines,
         column,
@@ -277,24 +264,26 @@ export function TerminalPane({ paneId, diagnostics }: { paneId: string; diagnost
       }
     }
 
-    // 첫 fit 이 끝난 크기로 스트림을 연다 — 첫 연결부터 맞는 크기를 요청하게.
-    runFit()
-    void window.corral.selectPane({ paneId, cols: term.cols, rows: term.rows })
+    // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
+    void window.corral.selectPane({ paneId })
     term.focus()
 
     return () => {
       disposed = true
       if (diagnostics) delete window.corralTermProbe
-      if (fitTimer !== null) clearTimeout(fitTimer)
-      observer.disconnect()
       container.removeEventListener('wheel', onWheel, { capture: true })
       offFrame()
       selectionListener.dispose()
       dataListener.dispose()
-      resizeListener.dispose()
+      termRef.current = null
       term.dispose()
     }
   }, [paneId, diagnostics])
+
+  // 다시 고른 순간 터미널로 포커스를 돌린다 (위 focusToken 주석).
+  useEffect(() => {
+    termRef.current?.focus()
+  }, [focusToken])
 
   return <div className="term-host" data-term-pane={paneId} ref={containerRef} />
 }

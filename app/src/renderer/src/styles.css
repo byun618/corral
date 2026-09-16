@@ -437,6 +437,25 @@ button { font: inherit; }
 .group-divider.dir-column .group-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
 .group-divider:hover .group-divider-line, .group-divider.is-dragging .group-divider-line { background: var(--accent); }
 
+/* pane 경계 (② F2-2) — 영역 경계와 같은 관용(1px + 12px 히트)이지만 **탭바 아래에서** 시작하고
+   `.term-pane-stack` 안에 절대 배치된다. 선은 두 pane rect 경계에 정확히 선다(핸드오프 M). */
+.pane-divider { position: absolute; z-index: 3; }
+.pane-divider.dir-row { width: var(--resizer-hit-w); transform: translateX(calc(var(--resizer-hit-w) / -2)); cursor: col-resize; }
+.pane-divider.dir-column { height: var(--resizer-hit-w); transform: translateY(calc(var(--resizer-hit-w) / -2)); cursor: row-resize; }
+.pane-divider-line { position: absolute; background: var(--line-strong); }
+.pane-divider.dir-row .pane-divider-line { top: 0; bottom: 0; left: 50%; width: var(--resizer-line-w); transform: translateX(-50%); }
+.pane-divider.dir-column .pane-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
+.pane-divider:hover .pane-divider-line, .pane-divider.is-dragging .pane-divider-line { background: var(--accent); }
+
+.pane-divider-ghost { position: absolute; background: var(--accent); opacity: 0.4; z-index: 4; pointer-events: none; }
+.pane-divider-ghost.dir-row { width: var(--resizer-line-w); transform: translateX(-50%); }
+.pane-divider-ghost.dir-column { height: var(--resizer-line-w); transform: translateY(-50%); }
+.pane-divider-badge {
+  position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, -50%);
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 2px 6px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg);
+}
+
 /* 드래그 고스트·배지 — **분할 상자 기준**이다(12px 띠 안에 두면 끌어도 안 따라온다). */
 .group-divider-ghost { position: absolute; background: var(--accent); opacity: 0.4; z-index: 4; pointer-events: none; }
 .group-divider-ghost.dir-row { top: 0; bottom: 0; width: var(--resizer-line-w); }

@@ -5,6 +5,8 @@
 //      영역이 하나면 좌표계가 같으므로 **절대 셀 비교**까지 요구한다 (F2-6b)
 //   ⓒ R17-1 pane 메타 행 — 장식 행에 `{n} · {종류} · {cols}×{rows}`
 //   ⓓ F2-1 아래 분할까지 걸어 3 pane
+//   ⓔ F2-2 경계 드래그 — 끄는 동안 서버에 0, mouseup 에 1회. **배지가 말한 칸 수 == 커밋 결과**
+//   ⓕ F2-2 도달 구간 **밖**으로 끌기 — 거기서도 배지와 결과가 같은가 (코디네이터 요구)
 //
 // 격리: `life373-` 세션 전용(두 lib 가 각자 막는다). M0: 유령 앱 0 에서만 유효하다.
 
@@ -12,7 +14,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
-import { attachThisWorktree, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
+import { attachThisWorktree, dragPaneDivider, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
 import { layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
@@ -188,6 +190,43 @@ await app.shot('f2-a-single')
   await app.shot('f2-c-split-down')
 }
 
-결과.M0b = m0End()
+// ⓔ·ⓕ F2-2 — 경계 드래그. 배지가 말한 칸 수와 커밋 결과가 같아야 한다.
+/** 커밋 뒤 pane 들의 **내용 칸 수** — 배지와 같은 단위로 읽는다. */
+const 내용칸 = async (direction) => {
+  const views = (await app.state()).terminalGroups[0]?.panes ?? []
+  return views
+    .map((v) => ({ paneId: v.paneId, rect: v.rect, inner: v.innerRect }))
+    .sort((a, b) => (direction === 'row' ? a.rect.x - b.rect.x : a.rect.y - b.rect.y))
+}
+
+{
+  const drag = await dragPaneDivider(app, { direction: 'row', px: 120, shot: 'f2-d-drag-row' })
+  결과.가로드래그 = { ...drag, 커밋후칸: await 내용칸('row'), 오라클: truth(), G1: (await snapshot(app, '가로 드래그 커밋')).G1 }
+  결과.가로드래그.그린것 = await drawn(app)
+  console.log('가로 드래그 | 배지', drag.고스트.배지, '| 칸', JSON.stringify(결과.가로드래그.커밋후칸.map((p) => [p.paneId, p.inner.width])))
+  await app.shot('f2-d-drag-committed')
+}
+
+{
+  // 도달 구간 밖 — 한 번에 갈 수 있는 것보다 훨씬 멀리 민다. 고스트가 구간 끝에 서야 하고,
+  // 그 자리의 배지가 커밋 결과와 같아야 한다.
+  const drag = await dragPaneDivider(app, { direction: 'row', px: -2000, shot: 'f2-e-drag-far' })
+  결과.도달밖 = { ...drag, 커밋후칸: await 내용칸('row'), 오라클: truth() }
+  console.log('도달 밖 | 배지', drag.고스트.배지, '| 칸', JSON.stringify(결과.도달밖.커밋후칸.map((p) => [p.paneId, p.inner.width])))
+  await app.shot('f2-e-drag-far-committed')
+}
+
+{
+  const drag = await dragPaneDivider(app, { direction: 'column', px: 90, shot: 'f2-f-drag-column' })
+  결과.세로드래그 = { ...drag, 커밋후칸: await 내용칸('column'), 오라클: truth() }
+  console.log('세로 드래그 | 배지', drag.고스트.배지, '| 칸', JSON.stringify(결과.세로드래그.커밋후칸.map((p) => [p.paneId, p.inner.height])))
+  await app.shot('f2-f-drag-column-committed')
+}
+
+결과.끝 = await 기록('드래그 뒤 (pane 3)')
+
+// M0-b 는 **앱을 멈춘 뒤** 잰다 — 먼저 재면 이 런이 띄운 Electron 을 유령으로 센다.
 await app.stop()
+await sleep(800)
+결과.M0b = m0End()
 writeRaw('f2-panes.json', 결과)

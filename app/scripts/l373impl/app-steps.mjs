@@ -9,6 +9,61 @@ export const tabsOf = (state) => state.repos.flatMap((r) => r.worktrees).flatMap
 export const resizeEvents = (app, since) =>
   app.entries().filter((e) => e.tag === 'vendor.debug' && e.message === 'resize request' && e.at >= since)
 export const syncEvents = (app, since) => app.entries().filter((e) => e.tag === 'stream.sync' && e.at >= since)
+/**
+ * main 이 herdr 에 실제로 부른 pane 명령 (`panes.ts` 의 `outcomeOf` 가 남기는 태그).
+ *
+ * 격자 요청(`resize request`)과는 다른 축이다 — pane 경계 밀기는 격자를 안 바꾸므로 그쪽 수가
+ * 0 이어도 맞다. "mouseup 에 1회"를 증명하는 것은 이 수다.
+ */
+export const paneCalls = (app, since, event) =>
+  app
+    .entries()
+    .filter((e) => (e.tag === event || e.tag === `${event}_rejected`) && e.at >= since)
+    .map((e) => ({ tag: e.tag, direction: e.direction ?? null, amount: e.amount ?? null, paneId: e.paneId ?? null }))
+
+/**
+ * **G1 통과선** — 요청한 격자가 화면에 들어가는가 (코디네이터 신설, 2026-09-16).
+ *
+ * 결함 6 을 셀 수 대조로는 못 잡았다. 앱이 요청한 수로 오라클도 검산하면 둘이 같은 틀린 수를
+ * 공유하기 때문이다. 그래서 여기서는 **픽셀 공간**에서 본다: 요청 cols × 셀폭이 실제 가시
+ * 상자 폭을 넘지 않는가. G1-b 는 그 반대쪽 — 남는 여백이 한 셀 미만인가(화면을 놀리지 않는가).
+ */
+export async function g1(app) {
+  const state = await app.state()
+  const 상자 = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const cell = window.corralTermProbe ? window.corralTermProbe.cell() : null
+      return {
+        cell,
+        boxes: [...document.querySelectorAll('[data-term-box]')].map((el) => {
+          const box = el.getBoundingClientRect()
+          return { groupId: el.dataset.termBox, width: +box.width.toFixed(3), height: +box.height.toFixed(3) }
+        }),
+      }
+    })()`,
+  })).result
+  const cell = 상자.cell?.measured ?? null
+  const 연결 = state.terminalGroups
+    .filter((g) => g.grid !== null)
+    .map((g) => {
+      const box = 상자.boxes.find((b) => b.groupId === g.groupId) ?? null
+      if (box === null || cell === null) return { groupId: g.groupId, grid: g.grid, 상자: box, 판정: '상자를 못 쟀다' }
+      const 필요 = { width: +(g.grid.cols * cell.width).toFixed(3), height: +(g.grid.rows * cell.height).toFixed(3) }
+      const 여백 = { width: +(box.width - 필요.width).toFixed(3), height: +(box.height - 필요.height).toFixed(3) }
+      return {
+        groupId: g.groupId,
+        grid: g.grid,
+        상자: box,
+        필요,
+        여백,
+        // G1: 안 넘친다 / G1-b: 한 셀 미만만 남긴다.
+        G1: 여백.width >= 0 && 여백.height >= 0,
+        'G1-b': 여백.width < cell.width && 여백.height < cell.height,
+      }
+    })
+  return { cell, 연결, 위반: 연결.filter((c) => c.G1 !== true).length, '여백위반': 연결.filter((c) => c['G1-b'] !== true).length }
+}
 
 export async function snapshot(app, label) {
   const state = await app.state()
@@ -28,6 +83,7 @@ export async function snapshot(app, label) {
       code: `[...document.querySelectorAll('[data-tab-group]')].map((g) => ({ groupId: g.dataset.tabGroup, tabs: [...g.querySelectorAll('[data-main-tab]')].map((t) => t.dataset.mainTab) }))`,
     })).result,
     연결: state.terminalGroups.map((g) => ({ groupId: g.groupId, tabId: g.tabId, phase: g.phase, grid: g.grid })),
+    G1: await g1(app),
   }
 }
 
@@ -127,7 +183,11 @@ export async function dragDivider(app, { selector, direction, shot, step = 9, st
       return { 배지: badge ? badge.textContent : null, 고스트: ghost !== null, 위치: ghost ? ghost.style.${row ? 'left' : 'top'} : null }
     })()`,
   })).result
-  const 드래그중 = { resize: resizeEvents(app, since).length, sync: syncEvents(app, since).length }
+  const 드래그중 = {
+    resize: resizeEvents(app, since).length,
+    sync: syncEvents(app, since).length,
+    'pane.resize': paneCalls(app, since, 'pane.resize').length,
+  }
   await app.shot(shot)
   const beforeUp = Date.now()
   await app.send({
@@ -172,6 +232,84 @@ export async function dragDivider(app, { selector, direction, shot, step = 9, st
       })()`,
     })).result,
     고스트사라짐: (await app.query('.group-divider-ghost')).found.length === 0,
+  }
+}
+
+/**
+ * pane 경계를 끈다 (F2-2). ① 의 `dragDivider` 와 같은 모양이되 **셀·오라클로 검산**한다.
+ *
+ * `px` 은 경계 중심에서 밀 픽셀이다(양수 = 오른쪽/아래). 도달 구간 밖까지 밀어 보는 회차도
+ * 있어야 한다 — 밖에서 배지와 커밋 결과가 갈리는지가 이 통과선의 핵심이다.
+ */
+export async function dragPaneDivider(app, { direction = 'row', px = 120, steps = 6, shot = 'f2-drag' } = {}) {
+  const row = direction === 'row'
+  await quiesce(app)
+  const since = Date.now()
+  const 시작 = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const el = [...document.querySelectorAll('[data-pane-divider]')].find((d) => d.classList.contains('dir-${direction}'))
+      if (el === undefined) return null
+      const box = el.getBoundingClientRect()
+      const at = { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+      window.__l373pane = at
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: at.x, clientY: at.y }))
+      return { seam: el.dataset.paneDivider, at: { x: +at.x.toFixed(3), y: +at.y.toFixed(3) } }
+    })()`,
+  })).result
+  if (시작 === null) throw new Error(`경계선이 없다 (dir-${direction})`)
+  for (let i = 1; i <= steps; i += 1) {
+    await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        const at = window.__l373pane
+        const moved = ${(px / steps).toFixed(4)} * ${i}
+        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: ${row ? 'at.x + moved' : 'at.x'}, clientY: ${row ? 'at.y' : 'at.y + moved'} }))
+        return 1
+      })()`,
+    })
+    await sleep(60)
+  }
+  // setState 가 돌 때까지 기다렸다가 읽는다 - 바로 읽으면 늘 null 이다 (F1 첫 회차의 허깨비).
+  await sleep(500)
+  const 고스트 = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const badge = document.querySelector('[data-pane-divider-badge]')
+      const ghost = document.querySelector('.pane-divider-ghost')
+      return { 배지: badge ? badge.textContent : null, 고스트: ghost !== null, 위치: ghost ? ghost.style.${row ? 'left' : 'top'} : null }
+    })()`,
+  })).result
+  const 드래그중 = {
+    resize: resizeEvents(app, since).length,
+    sync: syncEvents(app, since).length,
+    'pane.resize': paneCalls(app, since, 'pane.resize').length,
+  }
+  await app.shot(shot)
+  const beforeUp = Date.now()
+  await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const at = window.__l373pane
+      const moved = ${px}
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: ${row ? 'at.x + moved' : 'at.x'}, clientY: ${row ? 'at.y' : 'at.y + moved'} }))
+      return 1
+    })()`,
+  })
+  await sleep(1600)
+  return {
+    방향: direction,
+    민px: px,
+    시작,
+    고스트,
+    드래그중,
+    커밋후: {
+      resize: resizeEvents(app, beforeUp).length,
+      sync: syncEvents(app, beforeUp).length,
+      'pane.resize': paneCalls(app, beforeUp, 'pane.resize').length,
+    },
+    보낸것: paneCalls(app, beforeUp, 'pane.resize'),
+    고스트사라짐: (await app.query('.pane-divider-ghost')).found.length === 0,
   }
 }
 

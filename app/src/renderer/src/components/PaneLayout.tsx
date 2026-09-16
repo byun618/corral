@@ -16,10 +16,14 @@
 //
 // 상자는 전부 **셀 배수 px** 이다. 이웃한 두 pane 이 같은 수(경계 칸)를 쓰므로 틈도 겹침도 없다.
 
-import type { PaneRow, TerminalCellRect, TerminalPaneView } from '../../../shared/types.js'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { PaneDirection, PaneRow, TerminalCellRect, TerminalPaneView } from '../../../shared/types.js'
+import { firstCellsOf, innerCellsOf, seamsOf, snapPaneSeam, type PaneSeam } from '../pane-geometry.js'
 import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
 import { TerminalPane } from '../TerminalPane.js'
 import type { CellSize } from '../term-metrics.js'
+
+export type PaneResizeCommit = (input: { paneId: string; direction: PaneDirection; amount: number }) => void
 
 export type PaneSeat = {
   view: TerminalPaneView
@@ -108,6 +112,87 @@ function PaneMeta({ seat, zoomed, cell }: { seat: PaneSeat; zoomed: boolean; cel
   )
 }
 
+/**
+ * 끄는 중인 pane 경계 — 고스트·배지만 움직이고 **mouseup 에 `pane.resize` 1회**다 (F2-2).
+ *
+ * 끄는 동안 서버에 아무것도 안 보내므로 `resize request` 도 `stream.sync` 도 0 이어야 한다.
+ * `cells` 는 **커밋 뒤 그 쪽 상자가 받을 칸 수**다 — 겨눈 수가 아니라 도달 구간에 갇힌 수라,
+ * 배지가 말한 수와 커밋 결과가 갈릴 자리가 없다.
+ */
+type SeamDrag = { seam: PaneSeam; cells: { first: number; second: number } }
+
+/** 경계선(1px + 12px 히트). 상자는 셀 배수라 선은 두 pane rect 경계에 정확히 선다. */
+function PaneDivider({
+  seam,
+  cell,
+  origin,
+  dragging,
+  onGrab,
+}: {
+  seam: PaneSeam
+  cell: CellSize
+  origin: PaneOrigin
+  dragging: boolean
+  onGrab: (event: React.MouseEvent) => void
+}): React.JSX.Element {
+  const row = seam.direction === 'row'
+  const unit = row ? cell.width : cell.height
+  const crossUnit = row ? cell.height : cell.width
+  const at = (seam.at - (row ? origin.x : origin.y)) * unit
+  const from = (seam.band.start - (row ? origin.y : origin.x)) * crossUnit
+  const length = (seam.band.end - seam.band.start) * crossUnit
+  const place = row ? { left: at, top: from, height: length } : { top: at, left: from, width: length }
+  return (
+    <div
+      className={`pane-divider dir-${seam.direction} ${dragging ? 'is-dragging' : ''}`}
+      data-pane-divider={seam.id}
+      style={place}
+      onMouseDown={onGrab}
+    >
+      <div className="pane-divider-line" />
+    </div>
+  )
+}
+
+/** 고스트·배지. 배지는 **내용 칸 수**다 — 메타 행이 보이는 것과 같은 수. */
+function SeamGhost({
+  drag,
+  panes,
+  cell,
+  origin,
+}: {
+  drag: SeamDrag
+  panes: TerminalPaneView[]
+  cell: CellSize
+  origin: PaneOrigin
+}): React.JSX.Element {
+  const { seam, cells } = drag
+  const row = seam.direction === 'row'
+  const unit = row ? cell.width : cell.height
+  const crossUnit = row ? cell.height : cell.width
+  const at = (seam.start + cells.first - (row ? origin.x : origin.y)) * unit
+  const from = (seam.band.start - (row ? origin.y : origin.x)) * crossUnit
+  const length = (seam.band.end - seam.band.start) * crossUnit
+  const line = row ? { left: at, top: from, height: length } : { top: at, left: from, width: length }
+  const badge = row ? { left: at, top: from + length / 2 } : { top: at, left: from + length / 2 }
+  const show = (paneId: string, blockNow: number, want: number): string => {
+    const pane = panes.find((view) => view.paneId === paneId)
+    if (pane === undefined) return '—'
+    const inner = innerCellsOf({ pane, direction: seam.direction, blockNow, cells: want })
+    // 그 쪽 상자 안이 또 쪼개져 있으면 셀 수가 그 pane 의 것이 아니다 — 지어내지 않는다 (①).
+    return inner === null ? '—' : String(inner)
+  }
+  const now = firstCellsOf(seam)
+  return (
+    <>
+      <div className={`pane-divider-ghost dir-${seam.direction}`} style={line} />
+      <div className={`pane-divider-badge dir-${seam.direction}`} data-pane-divider-badge={seam.id} style={badge}>
+        {show(seam.first, now, cells.first)} · {show(seam.second, seam.span - now, cells.second)} {row ? 'cols' : 'rows'}
+      </div>
+    </>
+  )
+}
+
 export function PaneLayout({
   seats,
   cell,
@@ -117,6 +202,7 @@ export function PaneLayout({
   focusToken,
   diagnostics,
   onSelect,
+  onCommitResize,
 }: {
   seats: PaneSeat[]
   cell: CellSize
@@ -127,9 +213,14 @@ export function PaneLayout({
   focusToken: number
   diagnostics: boolean
   onSelect: (paneId: string) => void
+  onCommitResize: PaneResizeCommit
 }): React.JSX.Element {
   const decorated = seats.length > 1
   const origin = originOf(seats)
+  const views = seats.map((seat) => seat.view)
+  // 줌 중에는 경계를 안 그린다 — 보이는 pane 이 하나뿐이라 끌 경계가 없다.
+  const seams = zoomedPaneId === null ? seamsOf(views) : []
+  const { drag, beginDrag } = useSeamDrag({ cell, onCommitResize })
   return (
     <>
       {seats.map((seat) => {
@@ -162,8 +253,71 @@ export function PaneLayout({
           </div>
         )
       })}
+      {seams.map((seam) => (
+        <PaneDivider
+          key={seam.id}
+          seam={seam}
+          cell={cell}
+          origin={origin}
+          dragging={drag !== null && drag.seam.id === seam.id}
+          onGrab={(event) => beginDrag({ seam, event })}
+        />
+      ))}
+      {drag === null ? null : <SeamGhost drag={drag} panes={views} cell={cell} origin={origin} />}
     </>
   )
+}
+
+/**
+ * 경계 드래그 — ① 과 같은 모양이다. 문서에 걸어야 커서가 경계를 벗어나도 따라오고,
+ * `.is-group-drag` 가 터미널의 `pointer-events` 를 꺼서 xterm 이 마우스를 안 가로챈다.
+ */
+function useSeamDrag(input: { cell: CellSize; onCommitResize: PaneResizeCommit }): {
+  drag: SeamDrag | null
+  beginDrag: (grab: { seam: PaneSeam; event: React.MouseEvent }) => void
+} {
+  const { cell, onCommitResize } = input
+  const [drag, setDrag] = useState<SeamDrag | null>(null)
+  const dragRef = useRef<SeamDrag | null>(null)
+  dragRef.current = drag
+
+  const beginDrag = useCallback(
+    (grab: { seam: PaneSeam; event: React.MouseEvent }) => {
+      grab.event.preventDefault()
+      const { seam } = grab
+      const row = seam.direction === 'row'
+      const unit = Math.max(1, row ? cell.width : cell.height)
+      // 경계의 화면 좌표 — 여기서 움직인 px 을 칸으로 환산한다. 상자가 셀 배수라 나누어떨어진다.
+      const base = grab.event.currentTarget.getBoundingClientRect()
+      const anchor = row ? base.left + base.width / 2 : base.top + base.height / 2
+      const at = (wanted: number): SeamDrag => {
+        const moved = Math.round((wanted - anchor) / unit)
+        const snapped = snapPaneSeam({ seam, wantedFirstCells: firstCellsOf(seam) + moved })
+        return { seam, cells: { first: snapped.firstCells, second: snapped.secondCells } }
+      }
+      setDrag(at(anchor))
+      document.body.classList.add('is-group-drag')
+      const onMove = (event: MouseEvent): void => setDrag(at(row ? event.clientX : event.clientY))
+      const onUp = (): void => {
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+        document.body.classList.remove('is-group-drag')
+        const last = dragRef.current
+        setDrag(null)
+        if (last === null) return
+        // **여기서 딱 한 번** 보낸다. 끄는 동안은 서버에 아무것도 안 갔다 (F2-2).
+        const snapped = snapPaneSeam({ seam: last.seam, wantedFirstCells: last.cells.first })
+        if (snapped.commit === null) return
+        onCommitResize({ paneId: last.seam.first, ...snapped.commit })
+      }
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+    },
+    [cell.width, cell.height, onCommitResize],
+  )
+
+  useEffect(() => () => document.body.classList.remove('is-group-drag'), [])
+  return { drag, beginDrag }
 }
 
 export const __test = { originOf, placeOf, geometryOf, kindLabel }

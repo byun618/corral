@@ -7,13 +7,14 @@
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
+import type { AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { GroupHeader } from './components/MainTabBar.js'
+import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
 import type { TabGroup } from './group-tree.js'
@@ -318,6 +319,14 @@ export function App(): React.JSX.Element {
     const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
     setPaneError(result.ok ? null : result.error)
   }, [])
+  /** 경계 드래그 끝(F2-2). 끄는 동안은 아무것도 안 보내고 여기서 1회다. */
+  const resizePaneAt = useCallback(
+    async (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<void> => {
+      const result = await window.corral.resizePane(input)
+      setPaneError(result.ok ? null : result.error)
+    },
+    [],
+  )
   const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
     const result = await window.corral.closePane({ paneId })
@@ -463,14 +472,15 @@ export function App(): React.JSX.Element {
       groupActiveTab === null
         ? null
         : (groupActiveTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? groupPane?.paneId ?? null)
-    /** herdr 가 준 pane 사각형 + 같은 pane 의 목록 행(종류). 순번은 탭 안 순서다. */
+    /** herdr 가 준 pane 사각형 + 같은 pane 의 목록 행(종류). 번호는 **화면 읽는 순서**다. */
+    const paneNumbers = groupState === null ? new Map<string, number>() : numbersOf(groupState.panes)
     const seats: PaneSeat[] =
       groupState === null || groupActiveTab === null
         ? []
         : groupState.panes.map((view) => ({
             view,
             row: groupActiveTab.panes.find((pane) => pane.paneId === view.paneId) ?? null,
-            number: groupActiveTab.panes.findIndex((pane) => pane.paneId === view.paneId) + 1,
+            number: paneNumbers.get(view.paneId) ?? 0,
           }))
     return (
       <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
@@ -556,6 +566,7 @@ export function App(): React.JSX.Element {
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
+                onCommitResize={(input) => void resizePaneAt(input)}
               />
             )}
             </div>

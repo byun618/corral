@@ -5,17 +5,21 @@
 // 그래서 ① 의 영역 경계가 쓰는 `parseInt` 절삭 보정(반 칸 비켜서기)이 **여기엔 없다** — 손실이
 // 생기는 방향이 반대다. 여기서 지킬 것은 **배지가 말한 칸 수 == 커밋 뒤 `pane.layout`** 이다.
 //
-// 상자를 px 이 아니라 **CSS 값**으로 만든다:
-//   · 안쪽 경계는 셀 배수 px — 양쪽 pane 이 **같은 수**를 쓰므로 틈도 겹침도 안 생긴다
-//     (pane 마다 폭을 따로 반올림하면 7.825px 셀에서 1px 이 샌다)
-//   · 바깥 모서리는 `0` 과 `100%` — 격자는 `floor(상자/셀)` 이라 셀 배수가 상자보다 최대 한 칸
-//     짧다. 그 나머지를 남기면 오른쪽·아래에 빈 띠가 보인다
-// 덕분에 창이 바뀌어도 **React 가 상자를 다시 잴 필요가 없다** — CSS 가 100% 를 따라간다.
+// 좌표 원점은 **내용의 왼쪽 위 모서리**다 — 서피스의 (0,0) 이 아니다.
+//
+// herdr 서피스는 영역 상자보다 크다: main 이 가장자리 장식(`edgeWaste`)만큼 격자를 늘려 요청해서
+// **안쪽 사각형들의 합집합이 정확히 상자 격자**가 되게 맞춰 놓는다(`group-session.learnEdgeWaste`).
+// 그래서 `min(innerRect)` 을 원점으로 잡고 거기서 셀을 곱한다. 바깥 사각형은 그 원점보다 왼쪽·
+// 위로, 또 오른쪽·아래로 장식 칸만큼 삐져나가는데 **잘라 낸다**(`.term-pane-stack` overflow).
+// 삐져나간 부분을 상자에 맞춰 눌러 담으면 그 pane 의 내용이 장식 칸 수만큼 좁아진다 —
+// 실측에서 마지막 pane 이 64칸이어야 하는데 486px(≈62칸) 상자를 받았다.
+//
+// 상자는 전부 **셀 배수 px** 이다. 이웃한 두 pane 이 같은 수(경계 칸)를 쓰므로 틈도 겹침도 없다.
 
 import type { PaneRow, TerminalCellRect, TerminalPaneView } from '../../../shared/types.js'
 import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
 import { TerminalPane } from '../TerminalPane.js'
-import type { CellSize, Grid } from '../term-metrics.js'
+import type { CellSize } from '../term-metrics.js'
 
 export type PaneSeat = {
   view: TerminalPaneView
@@ -27,42 +31,52 @@ export type PaneSeat = {
 
 type Placement = { left: string; top: string; width: string; height: string }
 
-/** 한 축의 시작·길이를 CSS 값으로. 끝이 격자 끝에 닿으면 `100%` 로 붙인다. */
-function axis(input: { start: number; span: number; total: number; unit: number }): { offset: string; size: string } {
-  const startPx = input.start <= 0 ? 0 : input.start * input.unit
-  const offset = `${startPx}px`
-  if (input.start + input.span >= input.total) return { offset, size: `calc(100% - ${startPx}px)` }
-  return { offset, size: `${(input.start + input.span) * input.unit - startPx}px` }
+/** 내용의 왼쪽 위 모서리 — 모든 상자가 여기서 센다 (위 주석). */
+export type PaneOrigin = { x: number; y: number }
+
+/** 안쪽 사각형들의 왼쪽 위 모서리. 비어 있으면 서피스 원점 그대로. */
+function originOf(seats: PaneSeat[]): PaneOrigin {
+  if (seats.length === 0) return { x: 0, y: 0 }
+  return {
+    x: Math.min(...seats.map((seat) => seat.view.innerRect.x)),
+    y: Math.min(...seats.map((seat) => seat.view.innerRect.y)),
+  }
 }
 
-/** 셀 사각형 → 상자. 안쪽 경계는 셀 배수, 바깥 모서리는 상자 끝. */
-function placeOf(input: { rect: TerminalCellRect; cell: CellSize; grid: Grid }): Placement {
-  const x = axis({ start: input.rect.x, span: input.rect.width, total: input.grid.cols, unit: input.cell.width })
-  const y = axis({ start: input.rect.y, span: input.rect.height, total: input.grid.rows, unit: input.cell.height })
-  return { left: x.offset, top: y.offset, width: x.size, height: y.size }
+/** 셀 사각형 → 상자 px. 원점보다 앞서면 음수 — 잘려 나갈 장식 칸이다. */
+function placeOf(input: { rect: TerminalCellRect; cell: CellSize; origin: PaneOrigin }): Placement {
+  const { rect, cell, origin } = input
+  return {
+    left: `${(rect.x - origin.x) * cell.width}px`,
+    top: `${(rect.y - origin.y) * cell.height}px`,
+    width: `${rect.width * cell.width}px`,
+    height: `${rect.height * cell.height}px`,
+  }
 }
 
 /**
  * pane 하나의 바깥·안쪽 상자.
  *
+ * ⚠ 안쪽 상자는 **바깥 상자 기준**이다 — `.term-pane-inner` 가 `.term-pane` 안에 있으므로
+ * 격자 원점 기준 좌표를 그대로 넣으면 형제 폭만큼 밀려 화면 밖으로 나간다(실측: pG 의 안쪽
+ * 상자가 x=1103px·폭 0 이었다). 그래서 `innerRect − rect` 로만 만든다. 바깥이 `100%` 로 붙는
+ * 쪽이어도 `calc(100% − 장식)` 이면 따라간다.
+ *
  * 줌 중에는 **서버 rect 가 안 바뀐다**(F2-3). 대신 영역이 역산 격자를 요청해서 그 pane 의 rect 가
- * 상자 하나를 채우는 크기가 된다 — 그래서 바깥 상자는 통째로 주고, 장식(rect − inner)만 셀 px 로
- * 깎는다. 장식 띠를 남겨야 메타 행이 터미널 내용 위에 겹치지 않는다.
+ * 상자 하나를 채우는 크기가 된다 — 그래서 바깥 상자만 통째로 주고, 안쪽은 같은 식을 쓴다.
  */
-function geometryOf(input: { view: TerminalPaneView; cell: CellSize; grid: Grid; zoomed: boolean }): {
+function geometryOf(input: { view: TerminalPaneView; cell: CellSize; origin: PaneOrigin; zoomed: boolean }): {
   outer: Placement
   inner: Placement
 } {
-  const { view, cell, grid, zoomed } = input
-  if (!zoomed) {
-    return { outer: placeOf({ rect: view.rect, cell, grid }), inner: placeOf({ rect: view.innerRect, cell, grid }) }
-  }
+  const { view, cell, origin, zoomed } = input
+  const outer = zoomed ? { left: '0px', top: '0px', width: '100%', height: '100%' } : placeOf({ rect: view.rect, cell, origin })
   const left = (view.innerRect.x - view.rect.x) * cell.width
   const top = (view.innerRect.y - view.rect.y) * cell.height
   const trimX = (view.rect.width - view.innerRect.width) * cell.width
   const trimY = (view.rect.height - view.innerRect.height) * cell.height
   return {
-    outer: { left: '0px', top: '0px', width: '100%', height: '100%' },
+    outer,
     inner: { left: `${left}px`, top: `${top}px`, width: `calc(100% - ${trimX}px)`, height: `calc(100% - ${trimY}px)` },
   }
 }
@@ -96,7 +110,6 @@ function PaneMeta({ seat, zoomed, cell }: { seat: PaneSeat; zoomed: boolean; cel
 
 export function PaneLayout({
   seats,
-  grid,
   cell,
   zoomedPaneId,
   selectedPaneId,
@@ -106,8 +119,6 @@ export function PaneLayout({
   onSelect,
 }: {
   seats: PaneSeat[]
-  /** 이 영역이 요청한 탭 격자 — 바깥 모서리를 상자 끝에 붙일지 판단하는 기준이다. */
-  grid: Grid
   cell: CellSize
   zoomedPaneId: string | null
   selectedPaneId: string | null
@@ -118,11 +129,12 @@ export function PaneLayout({
   onSelect: (paneId: string) => void
 }): React.JSX.Element {
   const decorated = seats.length > 1
+  const origin = originOf(seats)
   return (
     <>
       {seats.map((seat) => {
         const zoomed = zoomedPaneId === seat.view.paneId
-        const { outer, inner } = geometryOf({ view: seat.view, cell, grid, zoomed })
+        const { outer, inner } = geometryOf({ view: seat.view, cell, origin, zoomed })
         const selected = selectedPaneId === seat.view.paneId
         // 줌 중에는 나머지를 **감추되 마운트는 유지**한다. 다시 만들면 xterm 과 쓰기 링이 통째로
         // 날아가는데, 서버 rect 가 그대로라 프레임은 계속 온다 — 껐다 켤 이유가 없다.
@@ -154,4 +166,4 @@ export function PaneLayout({
   )
 }
 
-export const __test = { axis, placeOf, geometryOf, kindLabel }
+export const __test = { originOf, placeOf, geometryOf, kindLabel }

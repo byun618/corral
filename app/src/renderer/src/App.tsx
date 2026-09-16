@@ -520,13 +520,20 @@ export function App(): React.JSX.Element {
             className="term-group"
             data-term-group={group.groupId}
             data-pane-count={seats.length}
-            ref={termSync.boxRef(group.groupId)}
             onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           >
-            {/* pane 상자의 좌표 원점 — `.term-group` 에 직접 걸면 **패딩 상자**가 기준이 돼서
-                격자의 분모(content box)와 한 겹 어긋난다. 이 층이 정확히 content box 다. */}
-            <div className="term-pane-stack">
-            {seats.length === 0 || groupState?.grid == null ? (
+            {/**
+             * **격자의 분모이자 pane 좌표의 원점**이다 (R13).
+             *
+             * `.term-group` 을 재면 안 된다 — 전역 `box-sizing: border-box` 때문에
+             * `getComputedStyle().width` 가 **패딩까지 포함한 값**을 준다. 실측: 1066×785 를
+             * 돌려주는데 터미널이 실제로 서는 곳은 1034×769 라, 격자를 136×52 로 요청해 놓고
+             * 132×51 만 보였다(오른쪽 4열·아래 1행이 잘렸다). 산식(FitAddon 이식)은 그대로 두고
+             * **패딩이 없는 상자**를 재게 한다 — FitAddon 도 xterm 의 부모를 재고, 그 부모에는
+             * 패딩이 없다. 그래서 C2 의 "같은 산식" 논거가 그대로 산다.
+             */}
+            <div className="term-pane-stack" data-term-box={group.groupId} ref={termSync.boxRef(group.groupId)}>
+            {seats.length === 0 || groupState === null ? (
               // 첫 프레임 전에는 herdr 사각형이 없다 — 그 사이에도 터미널은 서 있어야 한다.
               // 단일 pane 경로(LIFE-353 C2)와 **같은 DOM** 이다.
               <div className="term-pane is-selected" data-term-pane-box={groupPane.paneId} style={{ inset: 0 }}>
@@ -542,7 +549,6 @@ export function App(): React.JSX.Element {
             ) : (
               <PaneLayout
                 seats={seats}
-                grid={groupState.grid}
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}

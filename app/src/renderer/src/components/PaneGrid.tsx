@@ -47,7 +47,9 @@ function overheadOf(input: { box: HTMLElement; direction: 'row' | 'column' }): S
     if (!(side instanceof HTMLElement)) return { overhead: 0, leaf: false }
     const group = side.querySelector(':scope > .tab-group')
     if (!(group instanceof HTMLElement)) return { overhead: 0, leaf: false }
-    const term = group.querySelector(':scope > [data-term-group]')
+    // **격자의 분모와 같은 상자**를 재야 한다 (`[data-term-box]`). `.term-group` 은 패딩을
+    // 포함하므로 그걸 재면 오버헤드가 패딩만큼 모자라고, 스냅이 그만큼 어긋난다.
+    const term = group.querySelector(':scope > .term-group > [data-term-box]')
     if (!(term instanceof HTMLElement)) return { overhead: 0, leaf: false }
     const sideBox = side.getBoundingClientRect()
     const termBox = term.getBoundingClientRect()

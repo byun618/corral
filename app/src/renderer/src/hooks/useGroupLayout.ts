@@ -88,8 +88,16 @@ export function useGroupLayout(input: {
     return reconcileLayout({ layout: base, liveTabIds: input.liveTabIds })
   }, [byWorktree, input.worktreePath, input.liveTabIds])
 
-  // 사용자가 바꾼 배치를 저장한다. 추린 결과가 아니라 **들고 있는 것**을 쓴다(위 주석).
-  const saved = useRef('')
+  /**
+   * 사용자가 바꾼 배치를 저장한다. 추린 결과가 아니라 **들고 있는 것**을 쓴다(위 주석).
+   *
+   * 초기값이 `''` 가 아니라 `'[]'` 인 것이 핵심이다 (r8-ordinal-wipe 와 **같은 사고**):
+   * 싣기(hydrate)와 저장이 같은 렌더 패스의 effect 두 개라, 싣기가 `setState` 를 예약한 직후
+   * 저장 effect 가 **아직 빈** `byWorktree` 를 보고 `groupLayouts: []` 를 파일에 쓴다. 그 한
+   * 커밋 사이에 앱이 죽으면 저장된 배치가 사라진다. 빈 배열을 "이미 쓴 값"으로 두면 그 패스는
+   * 조용히 지나간다.
+   */
+  const saved = useRef('[]')
   useEffect(() => {
     if (!input.ready || !hydrated.current) return
     const rows = Object.entries(byWorktree).map(([worktreePath, value]) => ({ worktreePath, layout: value }))

@@ -100,3 +100,48 @@ export function contentBoxOf(element: HTMLElement): { width: number; height: num
     height: Number.isFinite(height) ? height : 0,
   }
 }
+
+/**
+ * 영역 경계 드래그를 **셀에 붙인다** (F1-2 "셀 최소치 우선" · 핸드오프 §1-3 "고스트 + 셀 스냅 + 배지").
+ *
+ * 경계는 아무 px 에나 설 수 있지만 터미널은 셀 단위로만 자란다 — 셀 경계가 아닌 자리에 세우면
+ * 남는 px 이 그냥 버려지고, 같은 드래그를 두 번 해도 같은 격자가 안 나온다. 그래서 커서 위치를
+ * 받아 **첫 쪽 터미널이 정확히 몇 칸인가**로 바꾸고, 그 칸 수가 만드는 px 을 되돌려 준다.
+ *
+ * `overhead` 는 그 쪽 상자에서 터미널이 아닌 부분이다(세로 분할의 헤더 등). 실제 DOM 에서 재서
+ * 넣는다 — 상수로 적으면 헤더 높이 토큰이 바뀔 때 조용히 어긋난다.
+ *
+ * 최소치: 격자 산식(`gridForBox`)이 보장하는 바닥과 같다 — 가로 2칸, 세로 1칸. 비율 클램프
+ * (.15~.85)보다 **이쪽이 우선**이라, 클램프 안이어도 한 쪽이 바닥 밑으로 내려가면 한 칸 물린다.
+ */
+export function snapSplitRatio(input: {
+  /** 분할 상자의 축 길이 px (경계선은 음수 마진이라 자리를 안 먹는다). */
+  total: number
+  /** 커서가 가리키는 첫 쪽 길이 px. */
+  wanted: number
+  /** 첫 쪽·둘째 쪽에서 터미널이 아닌 부분 px. */
+  overhead: { first: number; second: number }
+  /** 셀 한 칸 px — 가로 분할이면 `cell.width`, 세로면 `cell.height`. */
+  unit: number
+  /** 이 축의 셀 바닥 (가로 2 · 세로 1). */
+  minCells: number
+  clamp: { min: number; max: number }
+}): { ratio: number; first: number; second: number } {
+  const cellsAt = (first: number): number => Math.floor(Math.max(0, first - input.overhead.first) / input.unit)
+  const secondCellsAt = (first: number): number =>
+    Math.floor(Math.max(0, input.total - first - input.overhead.second) / input.unit)
+  const pxFor = (cells: number): number => input.overhead.first + cells * input.unit
+
+  const lowPx = input.total * input.clamp.min
+  const highPx = input.total * input.clamp.max
+  let cells = cellsAt(Math.min(Math.max(input.wanted, lowPx), highPx))
+  // 바닥 먼저 — 비율 클램프 안이어도 한 쪽이 최소 칸을 못 채우면 밀어낸다.
+  const maxCells = cellsAt(input.total - input.overhead.second - input.minCells * input.unit)
+  cells = Math.max(input.minCells, Math.min(cells, Math.max(input.minCells, maxCells)))
+  const first = pxFor(cells)
+  return {
+    ratio: input.total <= 0 ? input.clamp.min : Math.min(Math.max(first / input.total, 0), 1),
+    first: cells,
+    second: Math.max(0, secondCellsAt(first)),
+  }
+}

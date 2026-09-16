@@ -321,6 +321,18 @@ button { font: inherit; }
   background: transparent; border: 1px solid transparent; border-bottom: none; color: var(--fg-dim);
 }
 .main-tab.is-active { background: var(--bg-surface); border-color: var(--line); color: var(--fg); }
+/* F1-7 접힌 탭 — **아이콘만** 26px (핸드오프 §1-8-a·H). 활성 탭은 이 클래스를 절대 안 받는다.
+   도트·라벨·× 를 지우고 아이콘 하나만 남긴다: 26 = 아이콘 14 + 패딩 6×2. 이름은 `title` 로 뜬다.
+   리네임 입력칸은 `display: none` 이 아니라 그대로 두되(좌표 계측 계약, I-7) 폭 안에 눌러 담는다 —
+   접힌 탭은 더블클릭으로 펼 수 없고 메뉴 `이름 바꾸기` 가 입구다. */
+.main-tab.is-compact {
+  min-width: var(--tab-compact-w); max-width: var(--tab-compact-w);
+  padding: 0 6px; gap: 0; justify-content: center;
+}
+.main-tab.is-compact > .main-tab-dot,
+.main-tab.is-compact > .main-tab-label,
+.main-tab.is-compact > .main-tab-close,
+.main-tab.is-compact > .main-tab-rename { display: none; }
 /* I-7 인라인 리네임 입력칸 — 라벨 위에 겹친다. absolute 라 탭의 폭·높이에 영향이 없다
    (C9(b) 핀 높이 보호). 평소엔 투명 + `pointer-events: none` 이라 라벨 클릭을 안 가로챈다 —
    이게 없으면 보이지도 않는 입력칸이 모든 탭 클릭을 삼킨다. */

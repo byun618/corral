@@ -60,6 +60,7 @@ function MainTab({
   onSplitPane,
   onMoveToGroup,
   canMoveToGroup,
+  compact,
 }: {
   tab: TabRow
   /**
@@ -82,6 +83,8 @@ function MainTab({
   /** LIFE-373 ① — 이 탭을 빼내 새 영역으로 (화면). */
   onMoveToGroup: (direction: 'row' | 'column') => void
   canMoveToGroup: boolean
+  /** 영역이 좁아 **아이콘만**으로 접힌 탭인가 (F1-7). 활성 탭은 절대 접히지 않는다. */
+  compact: boolean
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -160,8 +163,10 @@ function MainTab({
   const kind = agentIcon(tabAgent(tab) ?? 'shell')
   return (
     <div
-      className={`main-tab ${active ? 'is-active' : ''}`}
+      className={`main-tab ${active ? 'is-active' : ''} ${compact ? 'is-compact' : ''}`}
       data-main-tab={tab.tabId}
+      data-tab-compact={compact ? 'true' : 'false'}
+      title={compact ? seed : undefined}
       data-tab-editing={editing ? 'true' : 'false'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -241,6 +246,44 @@ function MainTab({
 }
 
 /**
+ * 좁은 영역에서 비활성 탭을 **아이콘만**으로 접을지 (F1-7 · 핸드오프 §1-8-a).
+ *
+ * 탭 폭 합 = `탭 수 × (--tab-min-w 120 + gap 4)`. 쓸 수 있는 폭 = `영역폭 − 12(패딩) − 32(+) − 94(액션)`.
+ * 액션은 **항상 자리를 점유**하므로(핸드오프) 접힘 판정에서도 빼고 센다. 활성 탭은 언제나 풀 폼이라
+ * 접힌 뒤에도 "지금 뭘 보고 있나"는 글로 남는다.
+ *
+ * 폭이 아직 0 이면(첫 렌더·측정 전) 접지 않는다 — 측정 전에 접으면 넓은 창에서도 한 프레임 접힌다.
+ */
+export function shouldCompactTabs(input: { tabCount: number; headerWidth: number }): boolean {
+  if (input.headerWidth <= 0) return false
+  return input.tabCount * (TAB_FULL_W + TAB_GAP) > input.headerWidth - HEADER_PAD - ADD_BTN_W - ACTIONS_W
+}
+
+const TAB_FULL_W = 120
+const TAB_GAP = 4
+const HEADER_PAD = 12
+const ADD_BTN_W = 32
+const ACTIONS_W = 94
+
+/** 영역 헤더의 실제 폭 — 영역 경계를 끌면 바로 따라와야 해서 `ResizeObserver` 로 잰다. */
+function useHeaderWidth(): { ref: React.RefObject<HTMLDivElement | null>; width: number } {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const node = ref.current
+    if (node === null) return
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect
+      if (box !== undefined) setWidth(box.width)
+    })
+    observer.observe(node)
+    setWidth(node.getBoundingClientRect().width)
+    return () => observer.disconnect()
+  }, [])
+  return { ref, width }
+}
+
+/**
  * 영역 하나의 헤더 (LIFE-373 핸드오프 §2 GroupHeader).
  *
  * LIFE-357 의 `MainTabBar` 가 그대로 여기로 왔다. 바뀐 것 셋:
@@ -299,11 +342,15 @@ export function GroupHeader({
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
+  const header = useHeaderWidth()
+  const compact = shouldCompactTabs({ tabCount: tabs.length, headerWidth: header.width })
   return (
     <div
-      className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
+      className={`main-tabbar ${activeGroup ? 'is-active-group' : ''} ${compact ? 'is-compact' : ''}`}
       data-main-tabbar
       data-group-header={groupId}
+      data-header-compact={compact ? 'true' : 'false'}
+      ref={header.ref}
       onMouseDown={onActivate}
     >
       {tabs.map((tab) => (
@@ -316,6 +363,7 @@ export function GroupHeader({
           home={home}
           selectedPane={selectedPane}
           active={tab.tabId === activeTabId}
+          compact={compact && tab.tabId !== activeTabId}
           canMoveToGroup={tabs.length > 1}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}

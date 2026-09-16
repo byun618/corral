@@ -56,10 +56,19 @@ function readToken(name: string, fallback: string): string {
 export function TerminalPane({
   paneId,
   diagnostics,
+  focusable = true,
   focusToken = 0,
 }: {
   paneId: string
   diagnostics: boolean
+  /**
+   * 이 pane 이 **DOM 포커스를 가져가도 되는가** — 활성 영역의 pane 만 참이다 (LIFE-373 ①).
+   *
+   * 영역이 여럿이면 pane 도 여럿이 동시에 산다. 마운트 포커스를 그대로 두면 worktree 를 바꿀 때마다
+   * 모든 영역의 pane 이 트리 순서로 `focus()` 를 불러 **마지막 영역이 포커스를 훔친다**. 활성 여부는
+   * ref 로 읽는다 — 이 값이 바뀔 때마다 터미널을 다시 만들면 안 되기 때문이다.
+   */
+  focusable?: boolean
   /**
    * 사용자가 이 pane 을 **다시 골랐다**는 신호 (값이 바뀔 때마다 xterm 에 포커스를 준다).
    *
@@ -71,6 +80,8 @@ export function TerminalPane({
 }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
+  const focusableRef = useRef(focusable)
+  focusableRef.current = focusable
 
   useEffect(() => {
     const container = containerRef.current
@@ -272,7 +283,7 @@ export function TerminalPane({
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
     void window.corral.selectPane({ paneId })
-    term.focus()
+    if (focusableRef.current) term.focus()
 
     return () => {
       disposed = true
@@ -287,7 +298,10 @@ export function TerminalPane({
   }, [paneId, diagnostics])
 
   // 다시 고른 순간 터미널로 포커스를 돌린다 (위 focusToken 주석).
+  // `0` 은 신호가 아니다 — 비활성 영역이 받는 값이라, 여기서 포커스를 주면 **비활성 영역이
+  // 활성 영역 뒤에 포커스를 훔친다**(effect 순서는 활성 순서가 아니라 트리 순서다).
   useEffect(() => {
+    if (focusToken === 0) return
     termRef.current?.focus()
   }, [focusToken])
 

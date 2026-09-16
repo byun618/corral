@@ -289,26 +289,39 @@ export function App(): React.JSX.Element {
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
   }
-  // --- ② pane 동작 (포커스 pane 기준) -------------------------------------------
-  //
-  // 어느 pane 을 쪼개고·줌하고·닫는가는 **포커스 pane** 하나로 정한다 — 헤더 액션·단축키·메뉴가
-  // 전부 같은 대상을 본다. 거절은 그대로 알림으로 올린다(강제로 밀지 않는다, §10-R8).
-  const [paneError, setPaneError] = useState<string | null>(null)
-  const splitFocusedPane = useCallback(
-    async (direction: PaneSplitDirection): Promise<void> => {
-      const paneId = lifecycle.selectedPane
-      if (paneId === null) return
-      const result = await window.corral.splitPane({ paneId, direction })
-      setPaneError(result.ok ? null : result.error)
+  /**
+   * 영역을 활성으로 옮긴다 — **포커스 pane 도 같이 옮긴다**.
+   *
+   * 둘을 따로 두면 "B 영역을 눌렀는데 타건은 A 로 간다"가 된다. 활성 영역과 포커스 pane 은
+   * 한 몸으로 움직여야 단축키(포커스 pane 기준)와 헤더(영역 기준)가 같은 것을 가리킨다.
+   */
+  const activateGroup = useCallback(
+    (target: { groupId: string; paneId: string | null }): void => {
+      layout.setActiveGroup(target.groupId)
+      if (target.paneId !== null) selectPane(target.paneId)
     },
-    [lifecycle.selectedPane],
+    [layout.setActiveGroup, selectPane],
   )
-  const closeFocusedPane = useCallback(async (): Promise<void> => {
-    const paneId = lifecycle.selectedPane
+
+  // --- ② pane 동작 (대상 pane 을 **받아서** 한다) ---------------------------------
+  //
+  // 대상을 안에서 `selectedPane` 으로 집지 않는다. 영역이 여럿이라 그러면 **B 영역의 ▥ 를 눌렀는데
+  // A 영역의 pane 이 쪼개진다** — 헤더 버튼은 자기 영역의 것이고, 그 영역을 활성화한다고 해서
+  // 포커스 pane 이 같은 프레임에 따라오지도 않는다. 줄은 더 위험하다 — `session.zoom` 은 명부에 없는
+  // paneId 를 무시하지만 서버 줄 깃발은 그대로 나가 격자와 서버 상태가 어긋난다(F2-3·S6가 재는 것).
+  // 그래서 호출하는 쪽이 대상을 명시한다: 헤더·메뉴는 **그 영역의 활성 탭 pane**, 단축키는 포커스 pane.
+  // 거절은 그대로 알림으로 올린다(강제로 밀지 않는다, §10-R8).
+  const [paneError, setPaneError] = useState<string | null>(null)
+  const splitPaneAt = useCallback(async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
+    if (target.paneId === null) return
+    const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
+    setPaneError(result.ok ? null : result.error)
+  }, [])
+  const closePaneAt = useCallback(async (paneId: string | null): Promise<void> => {
     if (paneId === null) return
     const result = await window.corral.closePane({ paneId })
     setPaneError(result.ok ? null : result.error)
-  }, [lifecycle.selectedPane])
+  }, [])
 
   /**
    * 줌 토글 (F2-3) — **격자 역산**이라 이 영역 상자의 격자를 같이 보낸다.
@@ -317,14 +330,15 @@ export function App(): React.JSX.Element {
    * 같아지도록" 탭 격자를 키워서 그린다. 그 목표 격자가 곧 지금 상자의 격자다.
    */
   const toggleZoom = useCallback(
-    (groupId: string): void => {
-      const grid = termSync.gridOf(groupId)
+    (target: { groupId: string; paneId: string | null }): void => {
+      const grid = termSync.gridOf(target.groupId)
       if (grid === null) return
-      const current = stateRef.current?.terminalGroups.find((row) => row.groupId === groupId)?.zoomedPaneId ?? null
-      const paneId = current === null ? lifecycle.selectedPane : null
-      window.corral.termZoom({ groupId, paneId, cols: grid.cols, rows: grid.rows })
+      const current = stateRef.current?.terminalGroups.find((row) => row.groupId === target.groupId)?.zoomedPaneId ?? null
+      // 이미 줄이 있으면 끄는 것이므로 대상은 null 이다. 켜는 쪽이면 대상이 없을 때 아무 것도 안 한다.
+      if (current === null && target.paneId === null) return
+      window.corral.termZoom({ groupId: target.groupId, paneId: current === null ? target.paneId : null, cols: grid.cols, rows: grid.rows })
     },
-    [termSync, lifecycle.selectedPane],
+    [termSync],
   )
 
   /**
@@ -356,7 +370,7 @@ export function App(): React.JSX.Element {
           layoutRef.current.splitGroup({ groupId, tabId, direction: direction === 'right' ? 'row' : 'column' })
           return
         }
-        void splitFocusedPane(direction)
+        void splitPaneAt({ paneId: lifecycle.selectedPane, direction })
         return
       }
       if (key === 'w' && event.altKey) {
@@ -368,12 +382,12 @@ export function App(): React.JSX.Element {
       if (key === 'z' && event.shiftKey) {
         event.preventDefault()
         const groupId = layoutRef.current.activeGroupId
-        if (groupId !== null) toggleZoom(groupId)
+        if (groupId !== null) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [splitFocusedPane, toggleZoom])
+  }, [splitPaneAt, toggleZoom, lifecycle.selectedPane])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -448,7 +462,7 @@ export function App(): React.JSX.Element {
           activeGroup={isActiveGroup}
           paneCount={groupActiveTab?.panes.length ?? 0}
           zoomed={groupState?.zoomedPaneId != null}
-          onActivate={() => layout.setActiveGroup(group.groupId)}
+          onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupPane?.paneId ?? null })}
           onSelectTab={(tab) => {
             layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
             const pane = pickPane(tab)
@@ -458,10 +472,10 @@ export function App(): React.JSX.Element {
           onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
           onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
           onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
-          onSplitPane={(direction) => void splitFocusedPane(direction)}
+          onSplitPane={(direction) => void splitPaneAt({ paneId: groupPane?.paneId ?? null, direction })}
           onMoveToGroup={({ tabId, direction }) => layout.splitGroup({ groupId: group.groupId, tabId, direction })}
-          onZoom={() => toggleZoom(group.groupId)}
-          onClosePane={() => void closeFocusedPane()}
+          onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupPane?.paneId ?? null })}
+          onClosePane={() => void closePaneAt(groupPane?.paneId ?? null)}
           onCloseGroup={canCloseGroup}
         />
         {isActiveGroup && groupNotice !== null ? (
@@ -485,11 +499,12 @@ export function App(): React.JSX.Element {
             className="term-group"
             data-term-group={group.groupId}
             ref={termSync.boxRef(group.groupId)}
-            onMouseDown={() => layout.setActiveGroup(group.groupId)}
+            onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupPane.paneId })}
           >
             <TerminalPane
               paneId={groupPane.paneId}
               diagnostics={state.diagnostics}
+              focusable={isActiveGroup}
               focusToken={isActiveGroup ? focusToken : 0}
             />
           </div>
@@ -576,6 +591,7 @@ export function App(): React.JSX.Element {
               <PaneGrid
                 root={layout.layout.root}
                 onCommitRatio={layout.setRatio}
+                cell={cell}
                 renderGroup={(group) => renderGroup({ group, workspaceId: activeWorkspace.workspaceId })}
               />
             )}

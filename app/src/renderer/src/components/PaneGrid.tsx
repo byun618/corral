@@ -9,19 +9,43 @@
 // 상자의 top~bottom 을 전부 지난다. pane 경계선은 탭바 아래에서 시작하고, 그건 ② 의 것이다.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { clampRatio, splitIdOf, type GroupNode, type TabGroup } from '../group-tree.js'
+import { RATIO_MAX, RATIO_MIN, splitIdOf, type GroupNode, type TabGroup } from '../group-tree.js'
+import { snapSplitRatio, type CellSize } from '../term-metrics.js'
 
 export type GroupDragCommit = (input: { splitId: string; ratio: number }) => void
 
 /** 드래그 중인 경계 — 고스트만 그리고 **mouseup 에 1회 커밋**한다 (F1-2). */
-type DragState = { splitId: string; direction: 'row' | 'column'; ratio: number }
+type DragState = { splitId: string; direction: 'row' | 'column'; ratio: number; first: number; second: number }
+
+/**
+ * 분할 상자 안에서 **터미널이 아닌 부분** px 을 양쪽에서 잰다 (셀 스냅의 분모 보정).
+ *
+ * 세로 분할이면 각 쪽에 탭바가 얹혀 있어 상자 높이 ≠ 터미널 높이다. 상수로 적지 않고 DOM 에서
+ * 재는 이유는 헤더 높이 토큰이 바뀌면 상수가 조용히 어긋나기 때문이다. 터미널 상자가 아직
+ * 없으면(빈 영역) 0 으로 둔다 — 그 쪽은 격자를 요청하지도 않는다.
+ */
+function overheadOf(input: { box: HTMLElement; direction: 'row' | 'column' }): { first: number; second: number } {
+  const sides = input.box.querySelectorAll(':scope > .group-split-side')
+  const axis = (side: Element | undefined): number => {
+    if (!(side instanceof HTMLElement)) return 0
+    const term = side.querySelector('[data-term-group]')
+    if (!(term instanceof HTMLElement)) return 0
+    const sideBox = side.getBoundingClientRect()
+    const termBox = term.getBoundingClientRect()
+    return Math.max(0, input.direction === 'row' ? sideBox.width - termBox.width : sideBox.height - termBox.height)
+  }
+  return { first: axis(sides[0]), second: axis(sides[1]) }
+}
 
 export function PaneGrid({
   root,
+  cell,
   renderGroup,
   onCommitRatio,
 }: {
   root: GroupNode
+  /** 셀 한 칸 px — 경계를 셀에 붙이는 데 쓴다 (F1-2). */
+  cell: CellSize
   renderGroup: (group: TabGroup) => React.JSX.Element
   onCommitRatio: GroupDragCommit
 }): React.JSX.Element {
@@ -34,16 +58,33 @@ export function PaneGrid({
    * xterm 이 마우스를 가로채지 않게 해야 한다(`.is-group-drag` 가 pointer-events 를 끈다).
    */
   const beginDrag = useCallback(
-    (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number }) => {
-      const start: DragState = { splitId: input.splitId, direction: input.direction, ratio: input.ratio }
-      setDrag(start)
+    (input: {
+      splitId: string
+      direction: 'row' | 'column'
+      box: DOMRect
+      ratio: number
+      overhead: { first: number; second: number }
+    }) => {
+      const row = input.direction === 'row'
+      const total = Math.max(1, row ? input.box.width : input.box.height)
+      const unit = Math.max(1, row ? cell.width : cell.height)
+      const snap = (wanted: number): DragState => ({
+        splitId: input.splitId,
+        direction: input.direction,
+        ...snapSplitRatio({
+          total,
+          wanted,
+          overhead: input.overhead,
+          unit,
+          // 격자 산식의 바닥과 같은 수를 쓴다 (`gridForBox`: 가로 2 · 세로 1).
+          minCells: row ? 2 : 1,
+          clamp: { min: RATIO_MIN, max: RATIO_MAX },
+        }),
+      })
+      setDrag(snap(total * input.ratio))
       document.body.classList.add('is-group-drag')
       const onMove = (event: MouseEvent): void => {
-        const ratio =
-          input.direction === 'row'
-            ? (event.clientX - input.box.left) / Math.max(1, input.box.width)
-            : (event.clientY - input.box.top) / Math.max(1, input.box.height)
-        setDrag({ ...start, ratio: clampRatio(ratio) })
+        setDrag(snap(row ? event.clientX - input.box.left : event.clientY - input.box.top))
       }
       const onUp = (): void => {
         document.removeEventListener('mousemove', onMove)
@@ -57,7 +98,7 @@ export function PaneGrid({
       document.addEventListener('mousemove', onMove)
       document.addEventListener('mouseup', onUp)
     },
-    [onCommitRatio],
+    [onCommitRatio, cell.width, cell.height],
   )
 
   useEffect(() => () => document.body.classList.remove('is-group-drag'), [])
@@ -69,26 +110,28 @@ export function PaneGrid({
   )
 }
 
-function DragGhost({
-  splitId,
-  direction,
-  ratio,
-}: {
-  splitId: string
-  direction: 'row' | 'column'
-  ratio: number
-}): React.JSX.Element {
-  const at = `${(ratio * 100).toFixed(4)}%`
-  const place = direction === 'row' ? { left: at } : { top: at }
+/** 고스트·배지. 배지는 **셀 수**를 보인다 — 비율 %(는) 화면에 서는 격자와 한 칸씩 어긋난다. */
+function DragGhost({ drag }: { drag: DragState }): React.JSX.Element {
+  const at = `${(drag.ratio * 100).toFixed(4)}%`
+  const place = drag.direction === 'row' ? { left: at } : { top: at }
+  const unit = drag.direction === 'row' ? 'cols' : 'rows'
   return (
     <>
-      <div className={`group-divider-ghost dir-${direction}`} style={place} />
-      <div className={`group-divider-badge dir-${direction}`} data-group-divider-badge={splitId} style={place}>
-        {Math.round(ratio * 100)}%
+      <div className={`group-divider-ghost dir-${drag.direction}`} style={place} />
+      <div className={`group-divider-badge dir-${drag.direction}`} data-group-divider-badge={drag.splitId} style={place}>
+        {drag.first} · {drag.second} {unit}
       </div>
     </>
   )
 }
+
+type BeginDrag = (input: {
+  splitId: string
+  direction: 'row' | 'column'
+  box: DOMRect
+  ratio: number
+  overhead: { first: number; second: number }
+}) => void
 
 function GridNode({
   node,
@@ -99,7 +142,7 @@ function GridNode({
   node: GroupNode
   renderGroup: (group: TabGroup) => React.JSX.Element
   drag: DragState | null
-  beginDrag: (input: { splitId: string; direction: 'row' | 'column'; box: DOMRect; ratio: number }) => void
+  beginDrag: BeginDrag
 }): React.JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null)
   switch (node.kind) {
@@ -120,9 +163,15 @@ function GridNode({
             data-group-divider={splitId}
             onMouseDown={(event) => {
               event.preventDefault()
-              const box = boxRef.current?.getBoundingClientRect()
-              if (box === undefined) return
-              beginDrag({ splitId, direction: node.direction, box, ratio: node.ratio })
+              const element = boxRef.current
+              if (element === null) return
+              beginDrag({
+                splitId,
+                direction: node.direction,
+                box: element.getBoundingClientRect(),
+                ratio: node.ratio,
+                overhead: overheadOf({ box: element, direction: node.direction }),
+              })
             }}
           >
             <div className="group-divider-line" />
@@ -131,7 +180,7 @@ function GridNode({
             <GridNode node={node.second} renderGroup={renderGroup} drag={drag} beginDrag={beginDrag} />
           </div>
           {/* 고스트·배지는 **분할 상자 기준**이다 — 12px 히트 띠 안에 두면 끌어도 안 따라온다. */}
-          {dragging && drag !== null ? <DragGhost splitId={splitId} direction={node.direction} ratio={drag.ratio} /> : null}
+          {dragging && drag !== null ? <DragGhost drag={drag} /> : null}
         </div>
       )
     }

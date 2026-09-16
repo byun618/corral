@@ -4,8 +4,8 @@
 //   F3-7b  역순 — MRU 확정 **직후** `⌘W` 가 pane 을 닫는다. 3/3
 //
 // 왜 재나: `⌘W` 는 main 의 `before-input-event` 에서 `preventDefault()` 로 삼킨다. 그 순간
-// Chromium 은 `suppress_events_until_keydown_` 를 세워 **다음 keyDown 까지 모든 키 이벤트를
-// 버린다**(R26-1 실측). 이론상 그 다음 keyDown(`⌃Tab`)이 억제를 풀지만 — 이 일감에서 이론이
+// Chromium 은 **다음 keyDown 까지 모든 키 이벤트를 버린다**(R26-1 실측. 내부 식별자
+// `suppress_events_until_keydown_` 는 **추정** — 공개 트리에서 확인 못 했다). 이론상 그 다음 keyDown(`⌃Tab`)이 억제를 풀지만 — 이 일감에서 이론이
 // 실측에 진 사례가 이미 여럿이라 그대로 재 본다. 반대 방향(F3-7b)은 확정 직후의 `⌘W` 다.
 //
 // 키는 **`sendInputEvent`(제어 채널 `key`)로만** 보낸다. 홀드는 누름/뗌을 따로 보내 만든다.

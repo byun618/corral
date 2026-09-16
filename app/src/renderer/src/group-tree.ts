@@ -272,9 +272,20 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
           tabOrder: [...group.tabOrder, ...orphans],
           activeTabId: group.activeTabId ?? orphans[0] ?? null,
         }))
-  const activeGroupId = groups.some((group) => group.groupId === input.layout.activeGroupId)
-    ? input.layout.activeGroupId
-    : head.groupId
+  /**
+   * 활성 영역도 **착지점을 따라간다** (§10-R32-1).
+   *
+   * 복원 실패면 탭은 전부 첫 영역으로 갔는데 `activeGroupId` 만 옛 영역에 남을 수 있다 — 그 영역은
+   * 비어 있고, 활성 영역의 `activeTabId` 가 `null` 이면 `⌘D`·`⌘W`·`⌘⇧Z` 가 **조용히 no-op** 이 된다
+   * (`closeTargetRef`·`splitPaneAt(null)`·`toggleZoom` 이 전부 활성 탭을 본다).
+   * R3-d 가 "첫 영역으로 모은다"로 정한 의도는 **한 영역에서 다시 시작한다**이지
+   * "탭은 첫 영역, 포커스는 빈 영역"이 아니다.
+   */
+  const activeGroupId = restoreFailed
+    ? landing.groupId
+    : groups.some((group) => group.groupId === input.layout.activeGroupId)
+      ? input.layout.activeGroupId
+      : head.groupId
   return { root, activeGroupId }
 }
 

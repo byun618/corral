@@ -978,7 +978,8 @@ function createWindow(): void {
    * ⚠ **여기서 `preventDefault()` 를 하면 그 뒤 keyUp 이 전부 사라진다** (실측).
    *
    * Chromium 은 브라우저 쪽 델리게이트(= 이 이벤트)가 keyDown 을 처리했다고 답하면
-   * `suppress_events_until_keydown_` 를 세워 **다음 keyDown 까지 모든 키 이벤트를 버린다**.
+   * **다음 keyDown 까지 모든 키 이벤트를 버린다**. 내부 식별자는 `suppress_events_until_keydown_`
+   * 로 **추정**하지만 공개 트리에서 그 문자열을 확인하지 못했다 — **근거는 이름이 아니라 아래 실측**이다.
    * 실측: `⌘W` 를 삼킨 직후 보낸 `Shift` keyUp 3개가 main 에도 페이지에도 하나도 안 왔다
    * (`raw/claude/f3-keyup-suppression.json`). 그래서 ③ MRU 의 `⌃Tab` 홀드는 이 자리를 쓸 수
    * 없다 — 홀드를 여는 키를 삼키는 순간 확정 신호인 `Control` keyup 이 같이 사라진다.

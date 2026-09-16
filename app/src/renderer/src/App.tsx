@@ -342,7 +342,8 @@ export function App(): React.JSX.Element {
   //   ⓐ xterm 은 자기 textarea 에서 키를 듣는다 — 캡처는 document → … → textarea 순이라
   //     여기서 `stopPropagation()` 하면 **xterm 이 아예 못 본다**. `onData` 로 새지 않는다(R15).
   //   ⓑ main 의 `before-input-event` 에서 `preventDefault()` 하면 Chromium 이 **그 뒤 keyUp 을
-  //     전부 버린다**(`suppress_events_until_keydown_`, 실측: `03-result.md` §10 「keyup 억제」). 홀드를 여는 `⌃Tab` 을 거기서
+  //     전부 버린다**(실측: `03-result.md` §10 「keyup 억제」. 내부 식별자 `suppress_events_until_keydown_`
+  //     는 **추정**이고 공개 트리에서 확인 못 했다 — 근거는 이름이 아니라 그 실측이다). 홀드를 여는 `⌃Tab` 을 거기서
   //     삼키면 확정 신호인 `Control` keyup 이 같이 사라진다 — 기준서가 권한 경로(F3-1)가 그
   //     기준서의 다른 통과선(F3-2 "Ctrl keyup 확정")을 깨는 자리라, 실측을 따라 여기로 옮겼다.
   //
@@ -607,10 +608,13 @@ export function App(): React.JSX.Element {
   }, [])
 
   /**
-   * 줌 토글 (F2-3) — **격자 역산**이라 이 영역 상자의 격자를 같이 보낸다.
+   * 줌 토글 (F2-3) — 이 영역 상자의 **지금 격자를 그대로** 같이 보낸다.
    *
-   * 서버 rect 는 줌을 반영하지 않으므로(프리플라이트 ②) 화면은 "그 pane 의 inner 가 상자와
-   * 같아지도록" 탭 격자를 키워서 그린다. 그 목표 격자가 곧 지금 상자의 격자다.
+   * **격자 역산은 §10-R22-1 에서 철회됐다.** 서버가 줌을 반영해 접어서 보내므로(줌 중에는 그
+   * pane 하나만 서피스로 온다) 클라이언트가 격자를 키울 일이 없다 — 역산을 달았을 때 13칸 pane
+   * 줌이 요청 격자를 1139×85(13.5배)로 부풀렸고, 걷어낸 뒤에는 135×53 그대로다.
+   * 여기서 `cols`·`rows` 를 싣는 것은 **줌 토글이 격자를 안 흔든다**는 것을 서버 쪽에서도
+   * 같은 수로 보게 하려는 것뿐이다 (F2-3d).
    */
   const toggleZoom = useCallback(
     (target: { groupId: string; paneId: string | null }): void => {
@@ -633,8 +637,10 @@ export function App(): React.JSX.Element {
    *   ⌘⇧Z           pane 줌 토글 (F2-3)
    *
    * ⌘T 는 `useLifecycleActions` 가 이미 들고 있다 — 두 군데서 같은 키를 잡지 않는다.
-   * 편집 중인 입력칸에서는 아무것도 안 한다(리네임 입력이 `stopPropagation` 으로 먼저 막지만,
-   * 그게 새면 여기서 한 번 더 막는다 — J-1 과 같은 두 겹 방어).
+   * 편집 중인 입력칸 중 **탭 리네임(`.main-tab-rename`) 에서만** 비켜선다(리네임 입력이
+   * `stopPropagation` 으로 먼저 막지만, 그게 새면 여기서 한 번 더 막는다 — J-1 과 같은 두 겹 방어).
+   * **다른 입력칸(사이드바 검색 등)에서는 이 키들이 그대로 먹는다** — 기존 단축키 가드를 따른
+   * 현행이고 C5-6·게이트 B1 로 승인됐다. 넓게 막는 쪽으로 바꾸려면 그 항목을 먼저 뒤집어야 한다.
    */
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

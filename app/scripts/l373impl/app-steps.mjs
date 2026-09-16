@@ -132,7 +132,10 @@ export async function ensureTabs(app, want) {
   while (tabsOf(await app.state()).length < want) {
     const before = tabsOf(await app.state()).length
     await herdrRequest('tab.create', { workspace_id: workspaceId })
-    await until(async () => tabsOf(await app.state()).length > before, { what: '탭 생성 반영' })
+    const grew = await until(async () => tabsOf(await app.state()).length > before, { what: '탭 생성 반영' })
+    // 대기가 실패한 채로 돌면 **탭 수가 모자란 화면**에서 F1-7(접힘)을 재게 된다 — `want` 가
+    // 분모인 판정이라 조용히 지나가면 그 회차가 통째로 거짓이 된다 (L1).
+    if (!grew.ok) throw new Error(`탭 생성이 ${grew.ms}ms 안에 화면에 안 왔다 (${before} → 그대로)`)
     await sleep(300)
   }
   await sleep(600)
@@ -142,15 +145,22 @@ export async function ensureTabs(app, want) {
 /** 탭 우클릭 → 「오른쪽/아래 영역으로」 — 실제 UI 경로로 연다 (F1-1). */
 export async function moveTabToNewGroup(app, { tabId, direction = 'right' }) {
   const item = direction === 'right' ? 'data-tab-menu-move-right' : 'data-tab-menu-move-down'
+  const before = (await app.query('[data-tab-group]')).found.length
   await app.send({
     cmd: 'eval',
     code: `document.querySelector('[data-main-tab="${tabId}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 40 })), 1`,
   })
-  await until(async () => (await app.query(`[${item}="${tabId}"]`)).found.length > 0, { what: '탭 메뉴' })
+  const menu = await until(async () => (await app.query(`[${item}="${tabId}"]`)).found.length > 0, { what: '탭 메뉴' })
+  if (!menu.ok) throw new Error(`탭 메뉴가 안 떴다 (${item}, ${menu.ms}ms)`)
   const hit = await app.click(`[${item}="${tabId}"]`)
-  await until(async () => (await app.query('[data-tab-group]')).found.length === 2, { what: '영역 2개', timeoutMs: 5000 })
+  // **"2개가 됐나"가 아니라 "늘었나"** 로 기다린다 — f1b 는 이 함수로 영역을 **셋**까지 만든다.
+  // 원래 코드는 `=== 2` 였고, 중첩 회차에서는 그 대기가 영영 안 맞아 5초를 버리고 있었다.
+  const grew = await until(async () => (await app.query('[data-tab-group]')).found.length > before, { what: '영역 증가', timeoutMs: 5000 })
   await sleep(900)
-  return hit.hit === true
+  // **클릭 히트만 돌려주면 안 된다** (L1): 눌리기는 눌렸는데 영역이 안 생긴 회차가 `true` 로
+  // 지나간다. 이 함수의 계약은 "영역이 하나 늘었다"이지 "메뉴 항목이 눌렸다"가 아니다.
+  if (!grew.ok) throw new Error(`「${direction}」 로 옮겼는데 영역이 안 늘었다 (${before}개 그대로, ${grew.ms}ms)`)
+  return { 눌렸나: hit.hit === true, 영역늘었나: true, 영역수: before + 1, ms: grew.ms }
 }
 
 /**
@@ -421,7 +431,8 @@ export async function attachThisWorktree(app) {
   }
   const tabId = found.value.workspace.tabs[0]?.tabId ?? null
   if (tabId === null) throw new Error('workspace 에 탭이 없다')
-  await until(async () => (await app.query(`[data-main-tab="${tabId}"]`)).found.length > 0, { what: '탭바에 탭' })
+  const inBar = await until(async () => (await app.query(`[data-main-tab="${tabId}"]`)).found.length > 0, { what: '탭바에 탭' })
+  if (!inBar.ok) throw new Error(`탭바에 탭이 안 떴다 (${tabId}, ${inBar.ms}ms)`)
   await app.click(`[data-main-tab="${tabId}"]`)
   const streaming = await until(async () => (await app.state()).terminalGroups.some((g) => g.phase === 'streaming'), {
     timeoutMs: 15000,

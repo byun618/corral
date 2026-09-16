@@ -20,7 +20,24 @@ import { fileURLToPath } from 'node:url'
 export const SESSION = process.env.LIFE353_SESSION ?? 'life353-claude'
 export const APP_DIR = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
 export const REPO_DIR = path.dirname(APP_DIR)
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude')
+/**
+ * 원자료가 **어느 일감 트리로 가나** (§10-R32-2).
+ *
+ * 이 하네스는 LIFE-353 것이지만 **LIFE-373 이 회귀 확인용으로 그대로 돌린다**. 그때 `park()` 와
+ * `_runs` 가 LIFE-353 트리 본체로 떨어지면 **남의 일감 폴더에 이 일감의 쓰레기가 쌓인다** —
+ * 실제로 `_discarded/` 에 701건이 쌓였고, `L353_RAW_SUBDIR` 슬롯은 있었지만 **주는 곳이
+ * `r13a-compare.mjs` 하나뿐**이라 16개 하네스가 전부 빈 값으로 돌았다.
+ *
+ * 그래서 기본값을 **세션에서 끌어온다** — 부르는 쪽이 환경변수를 안 줘도 제자리를 찾는다.
+ * `L353_RAW_DIR` 로 덮어쓸 수 있다 (`l366/lib.mjs`·`l357fix/lib.mjs` 와 같은 손잡이).
+ */
+const RAW_ROOTS = {
+  'life353-': path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude'),
+  'life373-': path.join(REPO_DIR, 'specs/LIFE-373-mru-pane-split/raw/claude/l353harness'),
+}
+export const RAW_DIR =
+  process.env.L353_RAW_DIR ??
+  RAW_ROOTS[Object.keys(RAW_ROOTS).find((prefix) => SESSION.startsWith(prefix)) ?? 'life353-']
 /**
  * 수정 회차 원자료를 앞 회차와 **분리**해 하위 폴더로 보낸다 (예: `fix1`). 판정·03-result 가
  * 경로로 인용한 r1 원자료를 덮어쓰지 않으려는 것 — 이 스크립트들을 재실행해도 r1 raw 는 불변.

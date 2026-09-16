@@ -193,16 +193,29 @@ const 합 = (rows, key) => rows.reduce((sum, row) => sum + (row[key] ?? 0), 0)
   결과.P2c.앱_pane당쓰기_서피스대비 === null || 결과.P2c.관측자_프레임당바뀐pane비율 === null
     ? null
     : +(결과.P2c.앱_pane당쓰기_서피스대비 - 결과.P2c.관측자_프레임당바뀐pane비율).toFixed(4)
+/**
+ * 판정 블록 — **이 회차가 무엇을 재는 회차인가에 맞춰 적는다** (L6).
+ *
+ * 예전에는 `부하hz` 에 `LOAD_HZ`(light 기본 60)를 그대로 싣고 `m1 이 적었던 F: 27.4`·§15 결론 문구를
+ * 늘 붙였다. 그래서 P2-c 판정점 회차(heavy 15 Hz)의 원자료가 `부하: {hz 15}` 인데
+ * `판정: {부하hz: 60}` 이었다 — §15-3 이 P2-c 근거로 인용하는 바로 그 파일이다.
+ */
+const 실제hz = LOAD_KIND === 'heavy' ? HEAVY_HZ : LOAD_HZ
 결과.판정 = {
   'ⓐ 앱이 받은 서피스/s': 결과.앱.서피스초당,
   'ⓑ cheap 관측자/s': cheap.초당 ?? null,
   'ⓒ heavy 관측자/s (m1 과 같은 부담)': heavy.초당 ?? null,
-  'm1 이 적었던 F': 27.4,
-  부하hz: LOAD_HZ,
-  결론:
-    cheap.초당 !== undefined && heavy.초당 !== undefined && cheap.초당 > heavy.초당 * 1.4
-      ? '관측자 부담으로 갈린다 — heavy 가 느려서 F 가 낮게 찍혔다'
-      : '관측자 부담으로는 안 갈린다 — 두 관측자가 같은 수를 본다. 남은 변수는 **부하 자체**다',
+  부하: { 종류: LOAD_KIND, 'pane당 hz': 실제hz, 기하: GEOM },
+  ...(GEOM === 'judgment'
+    ? { 재는것: 'P2-c 를 §14 판정점 기하에서 (R31-6)', 'P2-c 차': 결과.P2c.차, 통과선: '±0.02' }
+    : {
+        재는것: 'R27-1 — F 가 관측자 산물인가 (§15)',
+        'm1 이 적었던 F': 27.4,
+        결론:
+          cheap.초당 !== undefined && heavy.초당 !== undefined && cheap.초당 > heavy.초당 * 1.4
+            ? '관측자 부담으로 갈린다 — heavy 가 느려서 F 가 낮게 찍혔다'
+            : '관측자 부담으로는 안 갈린다 — 두 관측자가 같은 수를 본다. 남은 변수는 **부하 자체**다',
+      }),
 }
 console.log('\n판정', JSON.stringify(결과.판정, null, 1))
 

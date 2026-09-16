@@ -31,7 +31,13 @@ export const ROUND = process.env.L353_ROUND ?? 's8'
  * 덮었다 (`s8/n5-list-consistency.json`, `_discarded/.../m0-smoke/app.ndjson` — 복원함).
  */
 export const RAW_SUBDIR = process.env.L353_RAW_SUBDIR ?? ''
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude', RAW_SUBDIR, ROUND)
+/** 베이스는 `lib.mjs` 와 **같은 규칙**이다 — 세션이 `life373-` 이면 그쪽 트리로 간다 (§10-R32-2). */
+const RAW_BASE =
+  process.env.L353_RAW_DIR ??
+  (SESSION.startsWith('life373-')
+    ? path.join(REPO_DIR, 'specs/LIFE-373-mru-pane-split/raw/claude/l353harness')
+    : path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude'))
+export const RAW_DIR = path.join(RAW_BASE, RAW_SUBDIR, ROUND)
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -396,6 +402,10 @@ export async function tidySession(cwd = REPO_DIR) {
   // 만든 id 를 그대로 쓴다. 측정 의미는 그대로다 — 회차마다 workspace 1개·탭 1개에서 출발한다.
   const created = await request('workspace.create', { label: 'l351', cwd })
   const createdId = created?.workspace?.workspace_id ?? created?.workspace_id ?? null
+  // **id 를 못 읽으면 여기서 멈춘다** (L7). 그대로 내려가면 `continue` 가 한 번도 안 맞아
+  // **방금 만든 것까지 전부 닫고** `workspaces[0]` 으로 떨어진다 — 위 주석이 고쳤다고 적은
+  // 유령 경로로 정확히 되돌아가는 자리다. 조용히 되돌아가느니 회차를 세우지 않는다.
+  if (createdId === null) throw new Error(`workspace.create 가 id 를 안 줬다 — ${JSON.stringify(created)}`)
   await sleep(400)
   const workspaces = (await request('workspace.list', {})).workspaces
   for (const workspace of workspaces) {
@@ -403,7 +413,7 @@ export async function tidySession(cwd = REPO_DIR) {
     await request('workspace.close', { workspace_id: workspace.workspace_id }).catch(() => {})
   }
   await sleep(700)
-  return createdId ?? (await request('workspace.list', {})).workspaces[0]?.workspace_id ?? null
+  return createdId
 }
 
 /** corral 상태에서 목록 층의 id 집합만 뽑는다 — herdr 쪽과 같은 모양으로 맞춘다. */
@@ -471,8 +481,11 @@ export async function ghostWorkspaces({ before, repoDir }) {
     if (before.includes(workspace.workspace_id)) continue // ⓐ 미충족
     const mine = panes.filter((pane) => pane.workspace_id === workspace.workspace_id)
     const cwds = [...new Set(mine.map((pane) => pane.cwd))]
-    const corral이열수있나 = cwds.some((cwd) => typeof cwd === 'string' && cwd.startsWith(repoDir))
-    if (corral이열수있나) continue // ⓑ 미충족 — 등록 레포 안이면 corral 이 열었을 수 있다. 가리지 않는다
+    // **cwd 를 하나도 못 읽었으면 가리지 않는다** (L8). `some()` 은 빈 배열에 false 라, pane 이 아직
+    // 안 뜬 workspace 가 "유령"으로 분류돼 대조에서 통째로 빠진다 — §10-R18-3 이 "너무 넓다"고
+    // 조인 자리에 같은 구멍이 남아 있었다. 모르면 **빼지 않는 쪽**이 안전하다.
+    const corral이열수있나 = cwds.length === 0 || cwds.some((cwd) => typeof cwd === 'string' && cwd.startsWith(repoDir))
+    if (corral이열수있나) continue // ⓑ 미충족 — 등록 레포 안이거나 알 수 없으면 가리지 않는다
     rows.push({ workspaceId: workspace.workspace_id, label: workspace.label ?? null, cwds })
   }
   return rows

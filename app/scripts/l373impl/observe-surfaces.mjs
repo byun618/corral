@@ -41,6 +41,8 @@ function cropHash(frame, rect) {
 }
 
 const arrivals = []
+/** 마지막으로 받은 **서피스 격자** — 리터럴을 적어 두면 관측치 자리에 상수가 실린다 (L5). */
+let frameGrid = null
 /** heavy 만: 직전 판과 크롭 해시가 달라진 pane 수 — P2-c 의 **독립 오라클**이다. */
 const lastHash = new Map()
 const changed = []
@@ -56,6 +58,7 @@ client.on('surface', (s) => {
     }
     changed.push(n)
   }
+  frameGrid = { cols: s.frame.width, rows: s.frame.height }
   arrivals.push({ at, panes: s.panes.length })
 })
 client.on('error', () => {})
@@ -85,7 +88,8 @@ process.stdout.write(
     프레임당pane수: arrivals.length === 0 ? null : +(arrivals.reduce((a, b) => a + b.panes, 0) / arrivals.length).toFixed(3),
     // 첫 판은 전원이 "바뀜"이라 뺀다 (m1-frame-rate 와 같은 규칙).
     프레임당바뀐pane수: mode !== 'heavy' || changed.length < 2 ? null : +(changed.slice(1).reduce((a, b) => a + b, 0) / (changed.length - 1)).toFixed(3),
-    관측격자: { cols: 200, rows: 50 },
+    // 받은 서피스의 **실제** 격자다. 예전에는 `{ cols: 200, rows: 50 }` 리터럴이 여기 실렸다 (L5).
+    서피스격자: frameGrid,
     gapMs: { p50: pct(gaps, 50), p95: pct(gaps, 95), max: gaps.length === 0 ? null : Math.max(...gaps) },
   })}\n`,
 )

@@ -76,11 +76,16 @@ describe('살아 있는 탭에 맞춰 추리기 (F1-6 안전한 붕괴)', () => 
     expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1'], ['t2', 't9']])
   })
 
-  it('herdr 재기동으로 tabId 가 **하나도** 안 맞으면 전부 첫 영역으로 모인다', () => {
+  it('herdr 재기동으로 tabId 가 **하나도** 안 맞으면 탭도 **활성 영역도** 첫 영역으로 간다 (R32-1)', () => {
     const split = splitGroup({ layout: base(), groupId: 'g1', tabId: 't2', direction: 'row', newGroupId: 'g2' })
+    expect(split.activeGroupId).toBe('g2') // 분할 직후 활성 영역은 새 영역이다
     const next = reconcileLayout({ layout: split, liveTabIds: ['w9:t1', 'w9:t2'] })
     expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['w9:t1', 'w9:t2'], []])
     expect(listGroups(next.root)[0]?.activeTabId).toBe('w9:t1')
+    // 탭만 옮기고 활성 영역을 빈 g2 에 두면 활성 탭이 null 이 되어 ⌘D·⌘W·⌘⇧Z 가 조용히 안 먹는다.
+    expect(next.activeGroupId).toBe('g1')
+    const active = listGroups(next.root).find((group) => group.groupId === next.activeGroupId)
+    expect(active?.activeTabId).not.toBeNull()
   })
 
   it('같은 탭이 두 영역에 실려 있으면 앞쪽만 남는다', () => {

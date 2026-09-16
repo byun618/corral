@@ -27,10 +27,12 @@ async function main() {
   // 한 번도 안 돌아서 이제야 드러났다. **LIFE-373 과 무관한 선행 깨짐**이다 — `data-pane` 행이
   // 사라진 것과 같은 결. UI 경로로 재현한다는 이 시험의 취지는 그대로 두고 경로만 따라간다.
   const menuClick = await app.click(`[data-repo-menu-toggle="${root}"]`)
-  await until(async () => (await app.query(`[data-repo-menu-remove="${root}"]`)).found.length > 0, {
+  const menuUp = await until(async () => (await app.query(`[data-repo-menu-remove="${root}"]`)).found.length > 0, {
     timeoutMs: 4000,
     what: 'repo row menu',
   })
+  // 대기 실패를 안 보면 **없는 항목을 누르고** 뒤의 확인창 대기까지 흘러가 실패 지점이 흐려진다 (L1).
+  if (!menuUp.ok) throw new Error(`repo 행 메뉴가 안 떴다 (${root}, ${menuUp.ms}ms)`)
   const removeClick = await app.click(`[data-repo-menu-remove="${root}"]`)
   const modalUp = await until(async () => (await app.query('[data-confirm-ok]')).found.length > 0, {
     timeoutMs: 4000,

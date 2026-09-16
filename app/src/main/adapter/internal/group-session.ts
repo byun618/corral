@@ -115,6 +115,15 @@ export type GroupCounters = {
   skipped: number
   /** S1 가드가 막은 입력 수 — 붙은 탭 밖 pane 으로 가려던 것. */
   blockedInputs: number
+  /**
+   * **모르는 pane 이라 조용히 지나간 수** (L11).
+   *
+   * 두 자리가 여기로 모인다 — `zoom()` 의 "붙은 탭 밖 pane 을 줌하려 했다" 와 `onSurface()` 의
+   * "서피스에 실려 왔는데 이 연결의 meta 에 없다". 둘 다 `allows()` 와 달리 **카운터도 로그도
+   * 없이** 되돌아가서, 화면이 조용히 안 움직일 때 ⓐ 안 왔다 ⓑ 왔는데 버렸다 를 가를 수 없었다.
+   * 후보로조차 안 세는 자리라 `candidates` 로는 안 보인다.
+   */
+  unknownPanes: number
   /** 연결 내 자기정합 위반 (S6): rect 합 != frame · inner ⊄ rect · pane 간 겹침. */
   inconsistencies: number
   /** 이 연결이 보낸 `client.resize` 횟수 (S3·R13-b). */
@@ -167,6 +176,7 @@ export class GroupSession {
     candidates: 0,
     skipped: 0,
     blockedInputs: 0,
+    unknownPanes: 0,
     inconsistencies: 0,
     gridRequests: 0,
   }
@@ -349,7 +359,12 @@ export class GroupSession {
       })
       return
     }
-    if (!this.meta.has(input.paneId)) return
+    if (!this.meta.has(input.paneId)) {
+      // `allows()` 와 같은 자리를 남긴다 (L11) — 조용히 되돌아가면 "줌이 안 먹었다"의 원인이 안 남는다.
+      this.counters.unknownPanes += 1
+      this.logger.warn('zoom target not in attached tab', { paneId: input.paneId, tab: this.attachedTabId ?? '' })
+      return
+    }
     this.zoomedPaneId = input.paneId
     this.boxGrid = { cols: clampGrid(input.boxGrid.cols), rows: clampGrid(input.boxGrid.rows) }
     this.sendGrid({
@@ -501,7 +516,12 @@ export class GroupSession {
     let layoutChanged = surface.full
     for (const raw of surface.panes) {
       const pane = this.meta.get(raw.paneId)
-      if (pane === undefined) continue
+      if (pane === undefined) {
+        // 서피스에 실려 왔는데 이 연결이 모르는 pane 이다 — **후보로도 안 센다**. 세어 두지 않으면
+        // "왜 이 pane 만 안 그려지나"를 밖에서 물을 자리가 없다 (L11).
+        this.counters.unknownPanes += 1
+        continue
+      }
       // 벤더 수정 ③ 과 **같은 형식** — LIFE-353 S5 하네스가 이 줄에서 innerRect 를 읽는다 (§10-R16).
       this.logger.debug('surface', {
         frame: `${surface.frame.width}x${surface.frame.height}`,

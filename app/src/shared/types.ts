@@ -586,6 +586,8 @@ export type CorralApi = {
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) => void
   // --- pane 분할 (② — herdr 소유) ---
   /** `pane.split`. 클라이언트가 트리를 발명하지 않는다 (F2-1). */
+  /** 새 xterm 이 붙었을 때 마지막 화면을 다시 받는다 (S6). 서버에는 아무것도 안 보낸다. */
+  repaintPane: (input: { paneId: string }) => Promise<void>
   splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }) => Promise<PaneActionResult>
   /** `pane.resize` — `amount` 는 **비율 델타**다(셀이 아니다). 드래그 끝에 1회만 부른다 (F2-2). */
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }) => Promise<PaneActionResult>

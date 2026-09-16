@@ -262,6 +262,25 @@ export class GroupSession {
   }
 
   /**
+   * **뷰어가 새로 붙었다 — 마지막 서피스를 그 pane 에 다시 그린다** (S6).
+   *
+   * 프레임은 내용이 바뀔 때만 나간다(크롭 해시). 그래서 탭을 바꾸면 이런 일이 생긴다:
+   * main 은 붙자마자 프레임을 한 번 내보내는데, 렌더러의 그 pane 상자는 **그 다음 상태 전파에서야**
+   * 생긴다(상자 좌표가 서피스에서 오므로). 새 xterm 은 이미 지나간 프레임을 못 듣고, pane 이
+   * 놀고 있으면 다음 프레임도 안 와서 **빈 화면으로 남는다** — 실측: 탭 전환 10/10 이 빈 화면.
+   *
+   * 해시를 지우고 같은 서피스를 한 번 더 흘린다. 서버에는 아무것도 안 보낸다(격자 요청 0).
+   */
+  repaint(paneId: string): void {
+    if (this.closed) return
+    const surface = this.client.currentSurface
+    const io = this.io.get(paneId)
+    if (surface === null || surface === undefined || io === undefined) return
+    io.hash = null
+    this.onSurface(surface)
+  }
+
+  /**
    * 같은 탭 안에서 포커스 pane 을 옮긴다 (S2 — 클릭·명시 단축키에서만 부른다).
    *
    * herdr 의 `focused_pane_id` 를 corral 의 포커스와 맞추는 유일한 수단이고(S2-b), 0.9.0 의

@@ -48,6 +48,7 @@ const EXPOSED = [
   'termInput',
   'termScroll',
   'termZoom',
+  'repaintPane',
   'splitPane',
   'resizePane',
   'closePane',
@@ -92,6 +93,7 @@ const api: CorralApi = {
   termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),
+  repaintPane: (input: { paneId: string }): Promise<void> => ipcRenderer.invoke('corral:repaintPane', input),
   splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneActionResult> =>
     ipcRenderer.invoke('corral:splitPane', input),
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> =>

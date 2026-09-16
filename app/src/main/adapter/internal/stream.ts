@@ -322,6 +322,11 @@ export class TerminalStreams {
     })
   }
 
+  /** 새로 붙은 뷰어에 마지막 화면을 다시 그린다 (S6 — 탭 전환 뒤 빈 화면 방지). */
+  repaint(paneId: string): void {
+    this.entryForPane(paneId)?.session.repaint(paneId)
+  }
+
   /** xterm onData 그대로 — 분류(VtInputClassifier)는 pane 마다 따로 돈다. */
   input(request: { paneId: string; data: string }): void {
     const entry = this.entryForPane(request.paneId)

@@ -1054,6 +1054,10 @@ app.whenReady().then(() => {
   ipcMain.handle('corral:selectPane', (event, input: { paneId: string | null; cols?: number; rows?: number }) => {
     if (fromOurWindow(event)) selectPane(input)
   })
+  // 새 xterm 이 붙었다 — 마지막 화면을 그 pane 에 다시 그린다 (S6). 서버 호출 없음.
+  ipcMain.handle('corral:repaintPane', (event, input: { paneId: string }) => {
+    if (fromOurWindow(event) && typeof input?.paneId === 'string') stream.repaint(input.paneId)
+  })
   // 영역 선언 — 연결을 열고·닫고·탭을 옮기고·격자를 맞추는 유일한 입구 (LIFE-373).
   ipcMain.on('corral:syncTermGroups', (event, groups: TerminalGroupRequest[]) => {
     if (!fromOurWindow(event) || !Array.isArray(groups)) return

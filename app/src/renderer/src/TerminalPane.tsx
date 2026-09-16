@@ -300,6 +300,9 @@ export function TerminalPane({
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
     if (announceRef.current) void window.corral.selectPane({ paneId })
+    // **마운트한 순간의 화면을 받아 온다.** 프레임은 내용이 바뀔 때만 오므로, 탭을 바꿔 새로
+    // 붙은 xterm 은 이미 지나간 프레임을 못 듣고 빈 채로 남는다 (S6 실측: 전환 10/10 빈 화면).
+    void window.corral.repaintPane({ paneId })
     if (focusableRef.current) term.focus()
 
     return () => {

@@ -347,7 +347,7 @@ export function App(): React.JSX.Element {
   //   ⓐ xterm 은 자기 textarea 에서 키를 듣는다 — 캡처는 document → … → textarea 순이라
   //     여기서 `stopPropagation()` 하면 **xterm 이 아예 못 본다**. `onData` 로 새지 않는다(R15).
   //   ⓑ main 의 `before-input-event` 에서 `preventDefault()` 하면 Chromium 이 **그 뒤 keyUp 을
-  //     전부 버린다**(`suppress_events_until_keydown_`, 실측 R26). 홀드를 여는 `⌃Tab` 을 거기서
+  //     전부 버린다**(`suppress_events_until_keydown_`, 실측: `03-result.md` §10 「keyup 억제」). 홀드를 여는 `⌃Tab` 을 거기서
   //     삼키면 확정 신호인 `Control` keyup 이 같이 사라진다 — 기준서가 권한 경로(F3-1)가 그
   //     기준서의 다른 통과선(F3-2 "Ctrl keyup 확정")을 깨는 자리라, 실측을 따라 여기로 옮겼다.
   //
@@ -701,7 +701,7 @@ export function App(): React.JSX.Element {
         case 'close-pane': {
           // 홀드 중에 `⌘W` 가 오면 **닫지 않고 목록을 접는다**. 이 키는 main 이 메뉴에서
           // 뺏어 오느라 `preventDefault()` 를 쓰고, 그 순간 Chromium 이 뒤따르는 keyUp 을
-          // 버린다(R26) — 확정 신호가 사라진 홀드를 열어 둔 채 pane 까지 닫을 수는 없다.
+          // 버린다(§10 「keyup 억제」) — 확정 신호가 사라진 홀드를 열어 둔 채 pane 까지 닫을 수는 없다.
           if (mruRef.current !== null) {
             mruCancel()
             return

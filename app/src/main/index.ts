@@ -975,7 +975,7 @@ function createWindow(): void {
    */
   const instrumented = !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined
   /**
-   * ⚠ **여기서 `preventDefault()` 를 하면 그 뒤 keyUp 이 전부 사라진다** (실측, R26).
+   * ⚠ **여기서 `preventDefault()` 를 하면 그 뒤 keyUp 이 전부 사라진다** (실측).
    *
    * Chromium 은 브라우저 쪽 델리게이트(= 이 이벤트)가 keyDown 을 처리했다고 답하면
    * `suppress_events_until_keydown_` 를 세워 **다음 keyDown 까지 모든 키 이벤트를 버린다**.

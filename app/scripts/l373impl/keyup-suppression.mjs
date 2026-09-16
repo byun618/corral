@@ -1,4 +1,5 @@
-// R26 — **`before-input-event` 에서 `preventDefault()` 하면 그 뒤 keyUp 이 사라진다** (실측).
+// **`before-input-event` 에서 `preventDefault()` 하면 그 뒤 keyUp 이 사라진다** (실측).
+// 결과 문서 `03-result.md` §10 「keyup 억제」의 원자료를 만드는 스크립트다.
 //
 // 왜 재나: ③ MRU 의 확정 신호가 `Control` **keyup** 이다 (F3-2). 기준서 F3-1 은 캡처 경로로
 // main 의 `before-input-event` 를 권했는데, 거기서 `⌃Tab` 을 삼키면 확정 신호가 같이 죽는다.

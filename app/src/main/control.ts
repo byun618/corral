@@ -38,6 +38,13 @@ export type ControlHandlers = {
   resizeWindow: (size: { width: number; height: number }) => void
   /** R2 계측 — A1 이 OSC 52 복사가 OS 클립보드에 실렸는지 읽는다. corral 쪽 관측이다. */
   readClipboard: () => Promise<string>
+  /**
+   * **S6** 계측 — 연결별 카운터(크롭 skip·S1 차단·**자기정합 위반**·격자 요청).
+   *
+   * 자기정합은 `checkConsistency` 가 **매 서피스마다** 세고 있었는데 밖으로 나오는 길이 없었다.
+   * "매 프레임 위반 0" 은 밖에서 폴링해서는 만들 수 없는 수라 이 문을 낸다 (읽기 전용).
+   */
+  counters: () => unknown
 }
 
 /**
@@ -136,6 +143,10 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       }
       case 'state':
         reply({ ok: true, at: Date.now(), state: handlers.state() })
+        return
+      /** S6 — 연결별 누적 카운터. 재는 대상의 **자기 신고**라 판정은 제3 오라클과 함께 읽는다. */
+      case 'counters':
+        reply({ ok: true, at: Date.now(), counters: handlers.counters() })
         return
       /**
        * **메인 프로세스**의 누적 CPU 시간 (μs). 기준 A7 본문이 "메인 프로세스 추가 CPU" 를

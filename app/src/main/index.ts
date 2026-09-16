@@ -1230,6 +1230,8 @@ app.whenReady().then(() => {
       window.setBounds({ width: size.width, height: size.height })
     },
     readClipboard: () => clipboard.readText(),
+    // S6 — 연결이 매 서피스마다 세고 있던 자기정합 위반 수를 밖으로 낸다 (읽기 전용).
+    counters: () => stream.counters(),
   })
 
   app.on('activate', () => {

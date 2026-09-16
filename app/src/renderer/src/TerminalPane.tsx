@@ -26,8 +26,19 @@ import { measureCellSize, readCellSize } from './term-metrics.js'
 const decoder = new TextDecoder()
 
 /** S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다. */
-type WriteRecord = { paneId: string; seq: number; at: number }
+type WriteRecord = { paneId: string; seq: number; at: number; ms: number }
 const WRITE_RING_MAX = 400
+
+/**
+ * **모든 pane 의 쓰기 기록** (계측 실행에서만) — §4 P2·P4 가 여기서 나온다.
+ *
+ * `window.corralTermProbe` 는 **마지막에 마운트한 pane** 하나만 쥔다. P2 는 "pane 당 렌더
+ * 패스/s"라 4 pane 을 **동시에** 봐야 하고, 한 pane 만 보면 나머지 셋이 굶고 있어도 통과한다.
+ * 그래서 pane 마다 자기 요약을 여기에 등록한다 — 읽기 전용이고 `lines` 는 안 싣는다(4 pane ×
+ * 51줄을 매 폴링마다 옮길 이유가 없다).
+ */
+type PaneWriteSummary = { paneId: string; cols: number; rows: number; lastSeq: number; writes: WriteRecord[] }
+const paneProbes = new Map<string, () => PaneWriteSummary>()
 
 /**
  * xterm 의 비공개 코어에서 커서 숨김 상태를 읽는다 (S3 프로브 전용).
@@ -161,6 +172,9 @@ export function TerminalPane({
       // 서버 격자에 맞춘 뒤 쓴다 (R13) — 프레임이 그 크기를 전제로 만들어졌다.
       if (frame !== null) sizeTo(frame.cols, frame.rows)
       writing = true
+      // P4 는 **`term.write` 호출 → 콜백**을 잰다 (1차 스파이크 M2 와 같은 정의). 시작 시각을
+      // 여기서 찍어야 파싱·렌더에 실제로 든 시간이 남는다 — 완료 시각만으로는 못 만든다.
+      const writeStartedAt = Date.now()
       term.write(prefix + (frame === null ? '' : decoder.decode(frame.data)), () => {
         writing = false
         if (disposed) return
@@ -169,7 +183,8 @@ export function TerminalPane({
           // 쓰기 **완료** 시각 — S2 의 renderer 쪽 끝점. 프로브(term-read)가 읽어 간다.
           // 진단(계측) 실행에서만 링에 쌓는다 (수정 1회차 L7) — 평시엔 이 링을 안 만든다.
           if (diagnostics) {
-            writes.push({ paneId: frame.paneId, seq: frame.seq, at: Date.now() })
+            const doneAt = Date.now()
+            writes.push({ paneId: frame.paneId, seq: frame.seq, at: doneAt, ms: doneAt - writeStartedAt })
             if (writes.length > WRITE_RING_MAX) writes.splice(0, writes.length - WRITE_RING_MAX)
           }
         }
@@ -296,6 +311,9 @@ export function TerminalPane({
         },
       }
       window.corralTermProbe = installed
+      // P2·P4 — pane 마다 자기 요약을 등록한다 (위 `paneProbes` 주석).
+      paneProbes.set(paneId, () => ({ paneId, cols: term.cols, rows: term.rows, lastSeq, writes: [...writes] }))
+      window.corralPaneWrites = () => [...paneProbes.values()].map((read) => read())
     }
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
@@ -308,6 +326,7 @@ export function TerminalPane({
     return () => {
       disposed = true
       if (installed !== undefined && window.corralTermProbe === installed) delete window.corralTermProbe
+      if (installed !== undefined) paneProbes.delete(paneId)
       container.removeEventListener('wheel', onWheel, { capture: true })
       offFrame()
       selectionListener.dispose()

@@ -27,5 +27,13 @@ declare global {
   interface Window {
     corral: CorralApi
     corralTermProbe?: CorralTermProbe
+    /** §4 P2·P4 — **살아 있는 모든 pane** 의 쓰기 기록 요약 (계측 실행에서만 붙는다). */
+    corralPaneWrites?: () => Array<{
+      paneId: string
+      cols: number
+      rows: number
+      lastSeq: number
+      writes: Array<{ paneId: string; seq: number; at: number; ms: number }>
+    }>
   }
 }

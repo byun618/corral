@@ -25,8 +25,14 @@ import { measureCellSize, readCellSize } from './term-metrics.js'
 
 const decoder = new TextDecoder()
 
-/** S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다. */
-type WriteRecord = { paneId: string; seq: number; at: number; ms: number }
+/**
+ * S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다.
+ *
+ * `bytes`·`cols`·`rows` 는 **프레임의 무게**다 (§10-R27-a). P3·P4·P5 통과선이 1차 스파이크의
+ * 100×30·28.4KB(셀당 9.5B) 전체 리페인트로 만들어진 값이라, 같은 자리에서 비교하려면 이 부하의
+ * 프레임이 몇 바이트짜리인지 **재는 쪽이 아니라 쓰는 쪽에서** 남겨야 한다.
+ */
+type WriteRecord = { paneId: string; seq: number; at: number; ms: number; bytes: number; cols: number; rows: number }
 const WRITE_RING_MAX = 400
 
 /**
@@ -184,7 +190,15 @@ export function TerminalPane({
           // 진단(계측) 실행에서만 링에 쌓는다 (수정 1회차 L7) — 평시엔 이 링을 안 만든다.
           if (diagnostics) {
             const doneAt = Date.now()
-            writes.push({ paneId: frame.paneId, seq: frame.seq, at: doneAt, ms: doneAt - writeStartedAt })
+            writes.push({
+              paneId: frame.paneId,
+              seq: frame.seq,
+              at: doneAt,
+              ms: doneAt - writeStartedAt,
+              bytes: frame.data.byteLength,
+              cols: frame.cols,
+              rows: frame.rows,
+            })
             if (writes.length > WRITE_RING_MAX) writes.splice(0, writes.length - WRITE_RING_MAX)
           }
         }

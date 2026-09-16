@@ -101,6 +101,14 @@ type PaneIo = {
 }
 
 export type GroupCounters = {
+  /**
+   * 이 연결이 실제로 받은 **서피스 수** (§10-R27-1).
+   *
+   * P2 의 분모다. 별도 연결로 잰 F 는 **그 관측자의 소화 속도**까지 같이 재 버린다 —
+   * herdr 는 연결마다 따로 밀고, 느린 소비자에게는 뭉쳐서 준다. 그래서 "pane 당 렌더가
+   * 탭 프레임률을 넘었다"를 가릴 유일한 자리는 **받은 쪽의 셈**이다.
+   */
+  surfaces: number
   /** 서피스에 실려 온 (pane × 프레임) 후보 수. */
   candidates: number
   /** 그중 해시가 같아 xterm 쓰기를 건너뛴 수 (P1 이 걷어낸 몫). */
@@ -155,6 +163,7 @@ export class GroupSession {
   private attaching = false
   private commandChain: Promise<unknown> = Promise.resolve()
   private counters: GroupCounters = {
+    surfaces: 0,
     candidates: 0,
     skipped: 0,
     blockedInputs: 0,
@@ -484,6 +493,7 @@ export class GroupSession {
 
   private onSurface(surface: EndpointSurface): void {
     if (this.closed || this.attaching) return
+    this.counters.surfaces += 1
     this.mergeMeta(surface)
     if (this.checkConsistency) this.counters.inconsistencies += countInconsistencies(surface.frame, this.panes())
 

@@ -282,11 +282,6 @@ export class GroupSession {
     if (this.closed) return
     this.boxGrid = { cols: clampGrid(input.cols), rows: clampGrid(input.rows) }
     // 줌 중이면 격자의 뜻이 다르다 — 그 pane 의 inner 가 상자와 같아지도록 역산한다 (F2-3b).
-    const zoomed = this.zoomedPaneId === null ? undefined : this.meta.get(this.zoomedPaneId)
-    if (zoomed !== undefined) {
-      this.sendGrid({ ...input, ...this.gridForPane({ pane: zoomed, wanted: this.boxGrid }), kind: input.kind ?? 'zoom-resize' })
-      return
-    }
     this.sendGrid({ ...input, cols: this.boxGrid.cols + this.edgeWaste.cols, rows: this.boxGrid.rows + this.edgeWaste.rows })
   }
 
@@ -303,12 +298,16 @@ export class GroupSession {
   }
 
   /**
-   * 줌 — herdr 서피스가 줌을 반영하지 않으므로(프리플라이트 ②) **격자 역산**으로 그린다.
+   * 줌 — **서피스가 줌을 반영한다**. 그래서 격자는 늘 상자 격자(+가장자리 보정) 하나뿐이다.
    *
-   * 켤 때: 그 pane 의 inner 가 영역 상자 격자와 같아지도록 프레임 격자를 키운다.
-   * 끌 때: **지금 상자 격자**(+가장자리 보정)로 되돌린다. 줌 직전 값을 따로 캐시하지 않는 이유는
-   * 줌 중에 창을 끌 수 있기 때문이다(F2-3b) — 캐시하면 해제 때 옛 상자로 돌아가 화면이 굳는다.
-   * 상자가 안 바뀌었으면 이 식은 줌 전에 보낸 것과 **같은 수**라 F2-3c 의 정확 복원이 그대로 선다.
+   * 프리플라이트 ② 는 "서버 rect 는 줌을 안 따른다"로 읽혔고 기준서도 그 문장을 실었지만,
+   * 그건 **control 소켓(제3 오라클)이 보는 기본 배치**였다. endpoint 연결에서는 다르다 —
+   * 실측: 줌을 켜면 그 연결의 서피스에 **pane 이 하나만** 실려 온다(나머지는 빠진다).
+   * 그래서 역산이 필요 없다. 역산을 쓰면 1139×85 짜리 유령 서피스를 한 번 요청했다가
+   * 보정으로 135×53 로 되돌아오는, 두 번 흔드는 길이 된다(실측 `보낸격자`).
+   *
+   * 끌 때도 **지금 상자 격자**다. 줌 직전 값을 캐시하지 않는 이유는 줌 중에 창을 끌 수 있기
+   * 때문이고(F2-3b), 상자가 안 바뀌었으면 같은 수라 F2-3c 의 정확 복원이 그대로 선다.
    */
   zoom(input: { paneId: string | null; boxGrid: { cols: number; rows: number } }): void {
     if (this.closed) return
@@ -322,32 +321,17 @@ export class GroupSession {
       })
       return
     }
-    const pane = this.meta.get(input.paneId)
-    if (pane === undefined) return
+    if (!this.meta.has(input.paneId)) return
     this.zoomedPaneId = input.paneId
     this.boxGrid = { cols: clampGrid(input.boxGrid.cols), rows: clampGrid(input.boxGrid.rows) }
-    // 줌은 **그 pane 의 inner 가 상자와 같아지게** 역산한 격자다 — 가장자리 보정과 길이 다르다.
-    this.sendGrid({ ...this.gridForPane({ pane, wanted: input.boxGrid }), kind: 'zoom-on' })
+    this.sendGrid({
+      cols: this.boxGrid.cols + this.edgeWaste.cols,
+      rows: this.boxGrid.rows + this.edgeWaste.rows,
+      kind: 'zoom-on',
+      force: true,
+    })
   }
 
-  /**
-   * pane 의 inner 가 `wanted` 셀이 되게 하는 **프레임 격자**를 역산한다.
-   *
-   * 벤더 `sizeForPane` 과 같은 산수다: 장식(rect−inner)을 더한 뒤 이 pane 이 프레임에서 차지하는
-   * 비율로 나눈다. 장식은 pane 수에만 달린 **고정값**(가로 3·세로 2, 프리플라이트 ③)이라
-   * 비율로 스케일하지 않는다.
-   */
-  private gridForPane(input: { pane: PaneView; wanted: { cols: number; rows: number } }): { cols: number; rows: number } {
-    const { pane, wanted } = input
-    const frame = this.client.currentSurface?.frame
-    if (frame === undefined || pane.rect.width < 1 || pane.rect.height < 1) return { ...wanted }
-    const invert = (want: number, outer: number, inner: number, total: number): number =>
-      clampGrid(Math.round(((want + outer - inner) * total) / outer))
-    return {
-      cols: invert(wanted.cols, pane.rect.width, pane.innerRect.width, frame.width),
-      rows: invert(wanted.rows, pane.rect.height, pane.innerRect.height, frame.height),
-    }
-  }
 
   /**
    * S1 가드 — 붙어 있는 탭의 pane 인가. herdr 는 아니면 **오류 없이 버린다**(3차 T3a).
@@ -526,7 +510,6 @@ export class GroupSession {
    * 중에는 안 바뀌므로 요청은 연결당 1회로 남는다.
    */
   private learnEdgeWaste(surface: EndpointSurface): void {
-    if (this.zoomedPaneId !== null) return // 줌 중에는 격자가 역산값이라 이 보정이 성립하지 않는다
     const panes = this.panes()
     if (panes.length === 0) return
     let minX = Number.POSITIVE_INFINITY

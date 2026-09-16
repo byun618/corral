@@ -10,6 +10,8 @@
 //   ⓖ F2-4 인접 pane 포커스 — `pane.neighbor` 로 물어보고 그 답으로 옮긴다
 //   ⓗ F2-1 단축키 경로 (`⌘D`) — 헤더 버튼과 같은 길인가
 //   ⓘ F2-5 pane 닫기 — 하나 닫고, 마지막까지 닫으면 탭이 닫힌다
+//   ⓙ F2-3 / 3c / 3d 줌 — 서버 rect 는 그대로, 격자만 역산으로 커진다. 해제 뒤 격자 복원은
+//      **두 얼굴 다** 본다: 창이 그대로인 경우와 줌 중 창이 바뀐 경우
 //
 // 격리: `life373-` 세션 전용(두 lib 가 각자 막는다). M0: 유령 앱 0 에서만 유효하다.
 
@@ -17,7 +19,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
-import { attachThisWorktree, dragPaneDivider, focusedPane, paneCalls, press, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
+import { attachThisWorktree, dragPaneDivider, focusedPane, g1, paneCalls, press, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
 import { layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
@@ -233,6 +235,113 @@ const 내용칸 = async (direction) => {
 }
 
 결과.끝 = await 기록('드래그 뒤 (pane 3)')
+
+// ⓙ F2-3 · F2-3c · F2-3d — 줌. pane 2개인 지금 상태에서 잰다 (드래그로 비율이 기울어 있어
+// 역산 격자가 1:1 이 아닌 쪽이 더 엄한 시험이다).
+{
+  const groupId = (await app.state()).terminalGroups[0]?.groupId ?? null
+  if (groupId === null) throw new Error('영역이 없다')
+  const gridOf = async () => (await app.state()).terminalGroups[0]?.grid ?? null
+  const 줌상태 = async () => {
+    const live = truth()
+    return {
+      오라클zoomed: live.zoomed,
+      // **서피스 격자**다. 줌은 여기서 커진다 — 영역이 역산 격자를 요청하기 때문이다.
+      오라클area: live.area,
+      오라클rect: live.pane.map((p) => [p.paneId, p.rect]),
+      // 줌 대상 pane 의 내용 셀 — 상자 격자와 같아야 화면을 꽉 쓴다 (G1-b).
+      줌pane내용: await (async () => {
+        const sel = (await app.send({ cmd: 'eval', code: `document.querySelector('[data-pane-selected="true"]')?.dataset.termPaneBox ?? null` })).result
+        const view = (await app.state()).terminalGroups[0]?.panes.find((p) => p.paneId === sel) ?? null
+        return view === null ? null : { cols: view.innerRect.width, rows: view.innerRect.height }
+      })(),
+      // 렌더러가 아는 `grid` 는 **상자 격자**라 줌과 무관하게 그대로다. 둘을 같이 적어야
+      // "무엇이 커지고 무엇이 안 커지는가"가 보인다.
+      상자격자: await gridOf(),
+      셀: (await drawn(app))?.셀?.measured ?? null,
+    }
+  }
+  await quiesce(app)
+  const 줌 = { 창: '1400×900' }
+  줌.전 = await 줌상태()
+
+  줌.활성영역 = (await app.send({
+    cmd: 'eval',
+    code: `document.querySelector('.tab-group.is-active-group')?.dataset.tabGroup ?? null`,
+  })).result
+
+  // 켜기 — 먼저 ⌘⇧Z. 안 먹으면 헤더 `⤢` 로 가고 **둘 다 적는다**(어느 길이 죽었는지가 사실이다).
+  let since = Date.now()
+  await press(app, { key: 'z', meta: true, shift: true })
+  await sleep(1500)
+  줌.단축키 = { zoomed: truth().zoomed, 상자격자: await gridOf() }
+  if (줌.단축키.zoomed === null) {
+    since = Date.now()
+    await app.click(`[data-group-zoom="${groupId}"]`)
+    await sleep(1500)
+    줌.헤더버튼 = { zoomed: truth().zoomed, 상자격자: await gridOf() }
+  }
+  await sleep(1200) // 역산 보정 한 바퀴가 돌 시간을 준다 (`correctZoomGrid`).
+  줌.보낸격자 = resizeEvents(app, since).map((e) => ({ cols: e.cols, rows: e.rows, kind: e.kind }))
+  줌.켠뒤 = { ...(await 줌상태()), resize: resizeEvents(app, since).length, sync: syncEvents(app, since).length }
+  줌.켠뒤.그린것 = await drawn(app)
+  줌.켠뒤.G1 = await g1(app, { cell: 줌.전.셀 })
+  await app.shot('f2-k-zoom-on')
+
+  // 줌 중 창 바꾸기 — 여기서 '줌 이전 값'은 더 이상 옳은 목표가 아니다 (F2-3c 재표현).
+  since = Date.now()
+  await app.resizeWindow(1100, 800)
+  await sleep(1800)
+  줌.줌중창바꾼뒤 = { ...(await 줌상태()), resize: resizeEvents(app, since).length }
+  await app.shot('f2-l-zoom-resized')
+
+  // 끄기 — 지금 상자가 줌 없이 요청했을 값이어야 한다. 켤 때 먹힌 길로 끈다.
+  since = Date.now()
+  if (줌.단축키.zoomed === true) await press(app, { key: 'z', meta: true, shift: true })
+  else await app.click(`[data-group-zoom="${groupId}"]`)
+  await sleep(1800)
+  줌.끈뒤_1100 = { ...(await 줌상태()), resize: resizeEvents(app, since).length }
+  await app.shot('f2-m-zoom-off')
+
+  // 대조 ①: 같은 창 크기를 **줌 없이** 다시 만들어 본 격자와 같은가.
+  await app.resizeWindow(1400, 900)
+  await sleep(1600)
+  줌.복귀_1400 = await 줌상태()
+  await app.resizeWindow(1100, 800)
+  await sleep(1600)
+  줌.무줌_1100 = await 줌상태()
+  await app.resizeWindow(1400, 900)
+  await sleep(1600)
+  줌.무줌_1400 = await 줌상태()
+
+  // 줌 pane 의 서버 rect 가 **서피스 전체가 아니다** — 서버가 다시 배치하지 않았다는 뜻이고,
+  // 그게 "그리는 건 클라이언트"의 실물이다.
+  // `pane.layout.zoomed` 는 boolean 이라 어느 pane 인지는 안 준다 — 줌 대상은 corral 이 안다.
+  // 서버 rect 중 **어느 것도 서피스 전체가 아니면** 서버가 다시 배치하지 않았다는 뜻이고,
+  // 그게 "그리는 건 클라이언트"의 실물이다.
+  줌.판정 = {
+    'F2-3 서버 zoomed 플래그': 줌.켠뒤.오라클zoomed === true && 줌.끈뒤_1100.오라클zoomed === false,
+    'F2-3 서버는 다시 배치하지 않는다': 줌.켠뒤.오라클rect.every(
+      ([, r]) => r.width < 줌.켠뒤.오라클area.width || r.height < 줌.켠뒤.오라클area.height,
+    ),
+    'F2-3 서피스 격자를 안 흔든다': JSON.stringify(줌.켠뒤.오라클area) === JSON.stringify(줌.전.오라클area),
+    'F2-3 줌 중 연결에는 pane 이 하나만 실린다': (줌.켠뒤.그린것?.pane.length ?? 0) === 1,
+    'F2-3 상자 격자는 그대로다': JSON.stringify(줌.켠뒤.상자격자) === JSON.stringify(줌.전.상자격자),
+    'F2-3c 줌중 창변경 뒤 해제 == 그 상자의 무줌 격자': JSON.stringify(줌.끈뒤_1100.오라클area) === JSON.stringify(줌.무줌_1100.오라클area),
+    'F2-3c 창이 그대로면 줌 이전 값': JSON.stringify(줌.복귀_1400.오라클area) === JSON.stringify(줌.전.오라클area),
+    'F2-3 줌 pane 내용이 상자 격자와 같다': 줌.켠뒤.줌pane내용 !== null && JSON.stringify(줌.켠뒤.줌pane내용) === JSON.stringify(줌.전.상자격자),
+    'F2-3b 줌 중에도 G1/G1-b/G1-c': 줌.켠뒤.G1.위반 === 0 && 줌.켠뒤.G1.여백위반 === 0 && 줌.켠뒤.G1.내용잘림 === 0,
+    'F2-3d 줌 토글 resize 는 연결당 1회': 줌.켠뒤.resize === 1 && 줌.끈뒤_1100.resize === 1,
+    'F2-3d 흔든 서피스 크기': { 전: 줌.전.오라클area, 줌중: 줌.켠뒤.오라클area },
+    '켠 뒤 rect': 줌.켠뒤.오라클rect,
+  }
+  결과.줌 = 줌
+  console.log('F2-3', JSON.stringify(줌.판정))
+  console.log('  area', JSON.stringify([줌.전.오라클area, 줌.켠뒤.오라클area, 줌.줌중창바꾼뒤.오라클area, 줌.끈뒤_1100.오라클area, 줌.무줌_1100.오라클area, 줌.복귀_1400.오라클area]))
+  console.log('  상자격자', JSON.stringify([줌.전.상자격자, 줌.켠뒤.상자격자, 줌.끈뒤_1100.상자격자, 줌.무줌_1100.상자격자, 줌.복귀_1400.상자격자]))
+  console.log('  보낸격자', JSON.stringify(줌.보낸격자))
+  console.log('  경로', JSON.stringify({ 활성영역: 줌.활성영역, 단축키: 줌.단축키, 헤더버튼: 줌.헤더버튼 ?? null }))
+}
 
 // ⓖ F2-4 — 인접 pane 포커스. 서버가 답한 이웃으로만 옮긴다.
 {

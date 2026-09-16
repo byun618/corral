@@ -32,7 +32,7 @@ export const paneCalls = (app, since, event) =>
  *   G1-b 그 합집합이 상자를 **1 셀 미만** 남기고 채운다
  *   G1-c 상자 밖으로 나가는 셀은 **herdr 장식 링에 한한다** — 내용 셀이 한 칸이라도 잘리면 미달
  */
-export async function g1(app) {
+export async function g1(app, { cell: 준cell = null } = {}) {
   const state = await app.state()
   const 잰것 = (await app.send({
     cmd: 'eval',
@@ -47,7 +47,9 @@ export async function g1(app) {
       }
     })()`,
   })).result
-  const cell = 잰것.cell?.measured ?? null
+  // 줌 중에는 계측 프로브가 없을 수 있다 — pane 이 하나만 실려 와서 프로브를 쥐고 있던
+  // 형제가 내려간 회차다. 그때는 **호출자가 준 셀**로 잰다(없으면 못 쟀다고 적는다).
+  const cell = 잰것.cell?.measured ?? 준cell
   const 연결 = state.terminalGroups
     .filter((g) => g.panes.length > 0)
     .map((g) => {

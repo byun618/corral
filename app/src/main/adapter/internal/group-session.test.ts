@@ -211,7 +211,11 @@ describe('격자 요청 (R13·S3)', () => {
     expect(session.counterSnapshot().gridRequests).toBe(before.counted + 1)
   })
 
-  it('줌 해제는 줌 직전 격자를 그대로 되돌린다 (F2-3c)', async () => {
+  it('줌은 격자를 안 바꾼다 — 서피스가 줌을 반영한다 (F2-3 · 실측)', async () => {
+    // 프리플라이트 ② 는 "서버 rect 는 줌을 안 따른다"로 읽혔지만 그건 **control 소켓이 보는
+    // 기본 배치**였다. endpoint 연결은 다르다 — 줌을 켜면 그 연결의 서피스에 pane 이 하나만
+    // 실려 온다(실측). 그래서 역산 격자가 필요 없고, 쓰면 1139×85 짜리 유령 서피스를 한 번
+    // 요청했다가 되돌아오는 두 번 흔드는 길이 된다.
     const { client, session } = await attachedSession({
       panes: [
         { paneId: 'p1', x: 0, width: 10 },
@@ -219,9 +223,11 @@ describe('격자 요청 (R13·S3)', () => {
       ],
     })
     session.requestGrid({ cols: 40, rows: 12 })
+    const before = client.resizes.length
     session.zoom({ paneId: 'p1', boxGrid: { cols: 40, rows: 12 } })
-    const zoomed = client.resizes[client.resizes.length - 1]
-    expect(zoomed).not.toEqual({ cols: 40, rows: 12 })
+    expect(client.resizes[client.resizes.length - 1]).toEqual({ cols: 40, rows: 12 })
+    // 같은 수여도 **한 번은 나간다** — 줌 깃발과 같이 가야 서피스가 줌 모양으로 다시 온다.
+    expect(client.resizes.length).toBe(before + 1)
     session.zoom({ paneId: null, boxGrid: { cols: 40, rows: 12 } })
     expect(client.resizes[client.resizes.length - 1]).toEqual({ cols: 40, rows: 12 })
   })
@@ -236,11 +242,13 @@ describe('격자 요청 (R13·S3)', () => {
     session.requestGrid({ cols: 40, rows: 12 })
     session.zoom({ paneId: 'p1', boxGrid: { cols: 40, rows: 12 } })
     const zoomedSmall = client.resizes[client.resizes.length - 1]
+    expect(zoomedSmall).toEqual({ cols: 40, rows: 12 })
 
-    // 창 드래그 — 줌 중이라 격자는 역산값이어야 한다 (상자 격자 그대로 보내면 줌이 풀린다).
+    // 창 드래그 — 줌 중에도 **그 상자 격자**를 그대로 보낸다. 줌 직전 값을 캐시하면 해제 때
+    // 옛 상자로 돌아가 화면이 굳는다 (F2-3b).
     session.requestGrid({ cols: 60, rows: 20 })
     const zoomedBig = client.resizes[client.resizes.length - 1]
-    expect(zoomedBig).not.toEqual({ cols: 60, rows: 20 })
+    expect(zoomedBig).toEqual({ cols: 60, rows: 20 })
     expect(zoomedBig).not.toEqual(zoomedSmall)
 
     session.zoom({ paneId: null, boxGrid: { cols: 60, rows: 20 } })

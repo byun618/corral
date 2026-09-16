@@ -30,7 +30,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, press, quiesce, resizeEvents } from './app-steps.mjs'
-import { APP_DIR, ensureWorkspace, layout as herdrLayout, m0End, m0Start, paneList, pct, psSample, resetPanes, writeRaw } from './lib.mjs'
+import { APP_DIR, ensureWorkspace, layout as herdrLayout, m0End, m0Start, paneList, paneRead, pct, psSample, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -49,7 +49,12 @@ const HEAVY_HZ = Number(process.env.L373_HEAVY_HZ ?? 30)
 const OUT_NAME = process.env.L373_OUT ?? (LOAD_KIND === 'heavy' ? 'p-series-heavy.json' : 'p-series.json')
 const WINDOW_MS = Number(process.env.L373_WINDOW_MS ?? 20000)
 const IDLE_MS = 6000
-const P2_LINE = 26.85
+/** R28 로 폐기된 옛 통과선 — 값은 병기만 한다 (분모 F=27.4 가 실측으로 반증됐다, §15). */
+const P2_LINE_OLD = 26.85
+/** R28 P2-a 흘림 없음 · P2-b 고르기 · P2-c 빠진 몫이 전부 크롭 skip 으로 설명될 것. */
+const P2A_LINE = 0.99
+const P2B_LINE = 1.1
+const P2C_TOL = 0.02
 const P3_LINE = 70
 const P4_LINE = 25
 const P5_RATIO = 0.7
@@ -59,7 +64,16 @@ const ETX = '\u0003'
 const 결과 = {
   at: new Date().toISOString(),
   세션: SESSION,
-  통과선: { P2: P2_LINE, P3: P3_LINE, P4: P4_LINE, P5: `${P5_RATIO} × 유휴 바닥`, 보류밴드: '0.68~0.73' },
+  통과선: {
+    'P2-a 흘림없음': `≥ ${P2A_LINE}`,
+    'P2-b 고르기 최대/최소': `≤ ${P2B_LINE}`,
+    'P2-c 빠진 몫 = 크롭 skip': `±${P2C_TOL}`,
+    P3: P3_LINE,
+    P4: P4_LINE,
+    P5: `${P5_RATIO} × 유휴 바닥`,
+    보류밴드: '0.68~0.73',
+    폐기: { 'P2 옛 통과선': P2_LINE_OLD, 사유: 'R28 — 분모 F=27.4 가 반증됐다' },
+  },
   부하: {
     종류: LOAD_KIND,
     hz: LOAD_KIND === 'heavy' ? HEAVY_HZ : LOAD_HZ,
@@ -194,8 +208,22 @@ const stopLoad = (paneIds) => {
 async function phase(app, label, paneIds) {
   console.log('\n##', label, paneIds.join(' '))
   const floorBefore = await idleFloor(app, '부하 전')
-  startLoad(paneIds, await grids(app))
+  const 격자 = await grids(app)
+  startLoad(paneIds, 격자)
   await sleep(4000) // 부하가 실제로 흐르기 시작할 때까지 (판정 창 밖)
+  // **부하가 정말 걸렸나** — 1회차 heavy 1 pane 이 프레임 1.5KB(셀당 0.1B)로 찍혔다. 화면이
+  // 비어 있으면 "재고 통과"가 아니라 "안 재고 통과"다. 판정 창 밖에서 pane 내용을 눈으로 본다.
+  const 부하확인 = paneIds.map((paneId) => {
+    const text = paneRead(paneId, 4)
+    return {
+      paneId,
+      격자: 격자.get(paneId) ?? null,
+      // heavy 는 글리프표의 글자가, light 는 박스 테두리가 화면에 있어야 한다.
+      걸렸나: LOAD_KIND === 'heavy' ? /[▏▎▍▌▋▊▉█░▒▓]/.test(text) : /[┌│└─]/.test(text),
+      맛보기: text.slice(0, 80),
+    }
+  })
+  console.log('  부하확인', JSON.stringify(부하확인.map((row) => ({ paneId: row.paneId, 격자: row.격자, 걸렸나: row.걸렸나 }))))
   const cpuBefore = psSample(rendererPid())
   const mainBefore = (await app.send({ cmd: 'cpu' })).cpu
   const countersBefore = (await app.send({ cmd: 'counters' })).counters
@@ -264,6 +292,7 @@ async function phase(app, label, paneIds) {
     label,
     pane수: paneIds.length,
     paneIds,
+    부하확인,
     창: { t0, t1, 초: +secs.toFixed(2) },
     // **같은 런의 분모** (R27-1). 별도 연결로 잰 F 는 부하의 박자를 같이 잰다 — §15 참고.
     서피스: {
@@ -286,16 +315,27 @@ async function phase(app, label, paneIds) {
     폴링: polls,
     오라클: { pane수: paneList().length, focused: herdrLayout().focused_pane_id },
   }
+  // --- R28 P2 세 항목 ------------------------------------------------------------------
+  // **흘림**은 "본체가 렌더러로 내보낸 프레임" 대비 "렌더러가 실제로 쓴 프레임"이다.
+  // 크롭 skip(`건너뜀`)은 흘림이 **아니다** — 내용이 같아 안 그린 것이고 P1 의 설계다.
+  const 렌더러쓰기 = perPane.reduce((sum, p) => sum + p.쓰기수, 0)
+  const 도달비율 = row.서피스.쓴프레임 === 0 ? null : +(렌더러쓰기 / row.서피스.쓴프레임).toFixed(4)
+  const 초당들 = perPane.map((p) => p.쓰기_초당).filter((n) => n > 0)
+  const 고르기 = 초당들.length === 0 ? null : +(Math.max(...초당들) / Math.min(...초당들)).toFixed(3)
+  row.흘림 = { 본체가보낸: row.서피스.쓴프레임, 렌더러가쓴: 렌더러쓰기, 흘린수: row.서피스.쓴프레임 - 렌더러쓰기, 도달비율 }
+  row.고르기 = { pane별초당: 초당들, 최대최소: 고르기 }
   row.판정 = {
-    // P2 의 분모(F=27.4)가 R27-1 로 깨졌다 — 얼어 있는 통과선을 혼자 고치지 않는다.
-    // 옛 통과선 그대로의 값과, 같은 런 분모로 읽은 두 비율을 **나란히** 싣는다. 판단은 코디네이터.
-    P2_옛통과선_26_85: perPane.length === 0 ? '못 쟀다' : perPane.every((p) => p.쓰기_초당 >= P2_LINE) ? '통과' : '미달',
-    P2_같은런_서피스대비: row.서피스.pane당쓰기_서피스대비,
-    P2_후보대비_안흘렸나: row.서피스.쓴비율_후보대비,
+    'P2-a 흘림없음': 도달비율 === null ? '못 쟀다' : 도달비율 >= P2A_LINE ? '통과' : '미달',
+    'P2-b 고르기': 고르기 === null ? '못 쟀다' : 고르기 <= P2B_LINE ? '통과' : '미달',
+    // P2-c 의 **독립 오라클**(별도 연결의 크롭 해시)은 이 하네스에 없다 — `f-observer.mjs` 가
+    // 같은 부하에서 잰다. 여기서는 값만 싣고 판정은 그 원자료와 맞춰 §15 에서 한다.
+    'P2-c pane당쓰기÷서피스': row.서피스.pane당쓰기_서피스대비,
+    P2_옛통과선_폐기값: perPane.length === 0 ? '못 쟀다' : perPane.every((p) => p.쓰기_초당 >= P2_LINE_OLD) ? '통과' : '미달',
     P3: cpuPct === null ? '못 쟀다' : cpuPct <= P3_LINE ? '통과' : '미달',
     P4: row.write_p95_전체 === null ? '못 쟀다' : row.write_p95_전체 <= P4_LINE ? '통과' : '미달',
     P5: ratio === null ? '못 쟀다' : ratio >= 0.73 ? '통과' : ratio >= 0.68 ? '보류' : '미달',
     바닥변동10퍼센트초과: drift !== null && drift > 0.1,
+    부하걸렸나: 부하확인.every((r) => r.걸렸나),
   }
   console.log(' ', label, JSON.stringify(row.판정), 'rAF', raf?.perSec, '바닥', floor, 'CPU', cpuPct)
   console.log('  서피스', JSON.stringify(row.서피스))

@@ -42,10 +42,21 @@ function cropHash(frame, rect) {
 
 const arrivals = []
 let cells = 0
+/** heavy 만: 직전 판과 크롭 해시가 달라진 pane 수 — P2-c 의 **독립 오라클**이다. */
+const lastHash = new Map()
+const changed = []
 const client = new EndpointClient(clientSocketPath)
 client.on('surface', (s) => {
   const at = Date.now()
-  if (mode === 'heavy') for (const p of s.panes) cropHash(s.frame, p.innerRect)
+  if (mode === 'heavy') {
+    let n = 0
+    for (const p of s.panes) {
+      const hash = cropHash(s.frame, p.innerRect)
+      if (lastHash.get(p.paneId) !== hash) n += 1
+      lastHash.set(p.paneId, hash)
+    }
+    changed.push(n)
+  }
   cells += s.frame.width * s.frame.height
   arrivals.push({ at, panes: s.panes.length })
 })
@@ -57,6 +68,7 @@ await client.callEndpoint('pane.focus', { pane_id: paneId })
 await sleep(1500)
 
 arrivals.length = 0
+changed.length = 0
 cells = 0
 const t0 = Date.now()
 await sleep(windowMs)
@@ -74,6 +86,9 @@ process.stdout.write(
     surfaces: arrivals.length,
     초당: +(arrivals.length / secs).toFixed(2),
     프레임당pane수: arrivals.length === 0 ? null : +(arrivals.reduce((a, b) => a + b.panes, 0) / arrivals.length).toFixed(3),
+    // 첫 판은 전원이 "바뀜"이라 뺀다 (m1-frame-rate 와 같은 규칙).
+    프레임당바뀐pane수: mode !== 'heavy' || changed.length < 2 ? null : +(changed.slice(1).reduce((a, b) => a + b, 0) / (changed.length - 1)).toFixed(3),
+    관측격자: { cols: 200, rows: 50 },
     gapMs: { p50: pct(gaps, 50), p95: pct(gaps, 95), max: gaps.length === 0 ? null : Math.max(...gaps) },
   })}\n`,
 )

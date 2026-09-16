@@ -47,6 +47,12 @@ export function ctl(...args) {
 }
 
 export const paneList = () => ctl('pane', 'list').panes
+/** pane 화면 글자 — 부하가 정말 걸렸는지 **눈으로** 보는 자리 (제3 오라클). */
+export const paneRead = (paneId, lines = 6) =>
+  execFileSync('herdr', ['--session', SESSION, 'pane', 'read', paneId, '--format', 'text', '--lines', String(lines)], {
+    encoding: 'utf8',
+    maxBuffer: 1 << 22,
+  })
 export const tabList = () => ctl('tab', 'list').tabs
 export const layout = () => ctl('pane', 'layout').layout
 

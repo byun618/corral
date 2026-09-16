@@ -20,7 +20,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, press, quiesce } from './app-steps.mjs'
-import { APP_DIR, ensureWorkspace, m0End, m0Start, paneList, resetPanes, writeRaw } from './lib.mjs'
+import { APP_DIR, ensureWorkspace, m0End, m0Start, paneList, paneRead, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -30,24 +30,38 @@ const APP_ENV = { CORRAL_UI_PREFS: path.join(RUN_DIR, 'ui-prefs.json') }
 const REGISTRY = path.join(RUN_DIR, 'repos.json')
 const LOAD_HZ = Number(process.env.L373_LOAD_HZ ?? 60)
 const LOAD_SECS = 120
+const LOAD_KIND = process.env.L373_LOAD ?? 'light'
+const HEAVY_EVERY = Number(process.env.L373_HEAVY_EVERY ?? 2)
+const HEAVY_HZ = Number(process.env.L373_HEAVY_HZ ?? 30)
 const WINDOW_MS = Number(process.env.L373_WINDOW_MS ?? 20000)
 const ETX = '\u0003'
 const OUT_NAME = process.env.L373_OUT ?? 'f-observer.json'
 
-const 결과 = { at: new Date().toISOString(), 세션: SESSION, M0, 부하: { hz: LOAD_HZ, 창ms: WINDOW_MS } }
+const 결과 = {
+  at: new Date().toISOString(),
+  세션: SESSION,
+  M0,
+  부하: { 종류: LOAD_KIND, hz: LOAD_KIND === 'heavy' ? HEAVY_HZ : LOAD_HZ, 창ms: WINDOW_MS, heavy: LOAD_KIND === 'heavy' ? { every: HEAVY_EVERY } : null },
+}
 
-const startLoad = (paneIds) => {
+/** `p-series.mjs` 와 **같은 부하**를 건다 — heavy 면 pane 격자 전체 리페인트(R27-b). */
+const startLoad = (paneIds, grids) => {
   paneIds.forEach((paneId, index) => {
-    execFileSync('herdr', [
-      '--session',
-      SESSION,
-      'pane',
-      'run',
-      paneId,
-      `bash ${path.join(APP_DIR, 'scripts/l373impl/load.sh')} ${LOAD_HZ} ${LOAD_SECS} p${index + 1}`,
-    ])
+    const grid = grids?.get(paneId) ?? null
+    const command =
+      LOAD_KIND === 'heavy' && grid !== null
+        ? `${process.execPath} ${path.join(APP_DIR, 'scripts/l373impl/load-heavy.mjs')} --cols ${grid.cols} --rows ${grid.rows}` +
+          ` --hz ${HEAVY_HZ} --secs ${LOAD_SECS} --every ${HEAVY_EVERY} --tag p${index + 1}`
+        : `bash ${path.join(APP_DIR, 'scripts/l373impl/load.sh')} ${LOAD_HZ} ${LOAD_SECS} p${index + 1}`
+    execFileSync('herdr', ['--session', SESSION, 'pane', 'run', paneId, command])
   })
 }
+const grids = async (app) =>
+  new Map(
+    (
+      (await app.send({ cmd: 'eval', code: '(() => window.corralPaneWrites ? window.corralPaneWrites() : null)()' })).result ?? []
+    ).map((row) => [row.paneId, { cols: row.cols, rows: row.rows }]),
+  )
 const stopLoad = (paneIds) => {
   for (const paneId of paneIds) {
     try {
@@ -80,6 +94,10 @@ const observe = (mode, paneId) =>
 결과.초기화 = await resetPanes()
 const app = await startApp({ name: 'f-observer', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)
+if (LOAD_KIND === 'heavy') {
+  await app.send({ cmd: 'resize-window', width: 2000, height: 1250 })
+  await sleep(1200)
+}
 await sleep(800)
 await quiesce(app)
 
@@ -102,7 +120,7 @@ const paneIds = paneList()
 결과.대상 = { tabId, paneIds, 선택: selected }
 console.log('# 대상', JSON.stringify(결과.대상))
 
-startLoad(paneIds)
+startLoad(paneIds, await grids(app))
 await sleep(4000) // 부하가 실제로 흐를 때까지 (창 밖)
 
 const before = (await app.send({ cmd: 'counters' })).counters
@@ -125,8 +143,21 @@ const 합 = (rows, key) => rows.reduce((sum, row) => sum + (row[key] ?? 0), 0)
 결과.앱.서피스초당 = +(결과.앱.서피스 / 초).toFixed(2)
 결과.앱.쓴프레임초당 = +((결과.앱.후보 - 결과.앱.건너뜀) / 초).toFixed(2)
 결과.앱.pane당쓴프레임초당 = +(결과.앱.쓴프레임초당 / paneIds.length).toFixed(2)
+결과.앱.pane당쓰기_서피스대비 = 결과.앱.서피스초당 === 0 ? null : +(결과.앱.pane당쓴프레임초당 / 결과.앱.서피스초당).toFixed(4)
 결과.cheap = cheap
 결과.heavy = heavy
+결과.부하확인 = paneIds.map((paneId) => {
+  const text = paneRead(paneId, 4)
+  return { paneId, 걸렸나: LOAD_KIND === 'heavy' ? /[▏▎▍▌▋▊▉█░▒▓]/.test(text) : /[┌│└─]/.test(text), 맛보기: text.slice(0, 80) }
+})
+결과.P2c = {
+  앱_pane당쓰기_서피스대비: 결과.앱.pane당쓰기_서피스대비 ?? null,
+  관측자_프레임당바뀐pane비율: heavy.프레임당바뀐pane수 === null || heavy.프레임당바뀐pane수 === undefined ? null : +(heavy.프레임당바뀐pane수 / paneIds.length).toFixed(4),
+}
+결과.P2c.차 =
+  결과.P2c.앱_pane당쓰기_서피스대비 === null || 결과.P2c.관측자_프레임당바뀐pane비율 === null
+    ? null
+    : +(결과.P2c.앱_pane당쓰기_서피스대비 - 결과.P2c.관측자_프레임당바뀐pane비율).toFixed(4)
 결과.판정 = {
   'ⓐ 앱이 받은 서피스/s': 결과.앱.서피스초당,
   'ⓑ cheap 관측자/s': cheap.초당 ?? null,

@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
-import { ctl, layout as herdrLayout, m0End, m0Start, sleep as wait, writeRaw } from './lib.mjs'
+import { layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -82,19 +82,7 @@ function truth() {
 
 const 결과 = { at: new Date().toISOString(), 세션: SESSION, M0, 단계: [] }
 
-/**
- * 앱을 띄우기 전에 **탭을 pane 하나로 되돌린다**. herdr 는 pane 을 영속하므로 앞 회차가 남긴
- * 분할 위에 또 나누면 회차마다 다른 트리에서 출발한다 — 회차 간 비교가 성립하지 않는다.
- */
-{
-  const before = herdrLayout()
-  const keep = before.focused_pane_id
-  for (const pane of before.panes) if (pane.pane_id !== keep) ctl('pane', 'close', pane.pane_id)
-  await wait(900)
-  const after = herdrLayout()
-  결과.초기화 = { 닫은수: before.panes.length - after.panes.length, 남은수: after.panes.length }
-  if (after.panes.length !== 1) throw new Error(`pane 하나로 못 돌렸다 (${after.panes.length}개)`)
-}
+결과.초기화 = await resetPanes()
 
 const app = await startApp({ name: 'f2-panes', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)

@@ -165,6 +165,8 @@ export async function dragDivider(app, { selector, direction, shot, step = 9, st
             basis: side.style.flexBasis,
             상자: axis(side),
             터미널: (() => { const t = side.querySelector('[data-term-group]'); return t === null ? null : axis(t) })(),
+            // 결함 6 이후 격자의 분모는 패딩 없는 상자다 — 둘을 나란히 적어야 차이가 숫자로 남는다.
+            격자상자: (() => { const t = side.querySelector('[data-term-box]'); return t === null ? null : axis(t) })(),
           })),
         }
       })()`,

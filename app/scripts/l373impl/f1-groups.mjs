@@ -21,7 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, dragDivider, ensureTabs, moveTabToNewGroup, resizeEvents, snapshot, syncEvents, tabsOf } from './app-steps.mjs'
-import { m0End, m0Start, writeRaw } from './lib.mjs'
+import { m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION}) — LIFE353_SESSION=life373-… 로 띄워라`)
 
@@ -34,6 +34,8 @@ const REGISTRY = path.join(RUN_DIR, 'repos.json')
 const APP_ENV = { CORRAL_UI_PREFS: PREFS }
 
 const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS, M0 }
+// pane 이 둘 이상이면 장식이 생겨 격자가 달라진다 — ① 의 숫자는 pane 하나에서 잰다.
+결과.초기화 = await resetPanes()
 
 // ── 1회차: ⓐ ⓑ ⓒ ⓓ, 그리고 2영역인 채로 종료해서 ⓔ 의 씨앗을 남긴다 ──────────────
 const app = await startApp({ name: 'f1-groups', env: APP_ENV, registryFile: REGISTRY })

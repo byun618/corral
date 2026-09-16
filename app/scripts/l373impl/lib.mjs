@@ -152,6 +152,23 @@ export function m0Start() {
   return { 시작전잔여: before, 죽인뒤잔여: after, 유효: before === 0 && after === 0 }
 }
 
+/**
+ * 붙어 있는 탭을 **pane 하나로** 되돌린다.
+ *
+ * herdr 는 pane 을 영속한다 — 앞 회차가 남긴 분할 위에서 또 나누면 회차마다 다른 트리에서
+ * 출발해 비교가 성립하지 않는다. F1(영역)도 마찬가지다: pane 이 둘이면 장식이 생겨 격자가
+ * 달라지므로 F1 의 숫자가 회차마다 흔들린다.
+ */
+export async function resetPanes() {
+  const before = layout()
+  const keep = before.focused_pane_id
+  for (const pane of before.panes) if (pane.pane_id !== keep) ctl('pane', 'close', pane.pane_id)
+  await sleep(900)
+  const after = layout()
+  if (after.panes.length !== 1) throw new Error(`pane 하나로 못 돌렸다 (${after.panes.length}개) — 손으로 정리하고 다시 돌려라`)
+  return { 닫은수: before.panes.length - after.panes.length, 남은수: after.panes.length }
+}
+
 /** **M0-b** — 런이 끝난 뒤에도 0 인가. 남았으면 그 런의 CPU·rAF 계열은 보류다. */
 export function m0End() {
   const left = strayAppPids().length

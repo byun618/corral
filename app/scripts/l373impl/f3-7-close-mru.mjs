@@ -156,7 +156,7 @@ for (let round = 1; round <= ROUNDS; round++) {
   const 채움 = await 보충(app)
   const 전 = { 오라클: 오라클(), 채움, 화면: await 화면포커스(app) }
   await tap(app, 'Tab', ['control'], 700)
-  const 열림 = await mruView(app)
+  await mruView(app) // 목록이 뜬 것만 지나가며 본다 — 이 회차의 판별자는 아래 `이동` 이다
   await tap(app, 'Tab', ['control'], 500)
   const 이동 = await mruView(app)
   await release(app, 붙는간격MS) // 확정하고 **바로** ⌘W 로 간다

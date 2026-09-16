@@ -11,8 +11,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { startApp, sleep, SESSION, until } from '../l353/lib.mjs'
-import { attachThisWorktree, dragDivider, ensureTabs, g1, moveTabToNewGroup, quiesce, snapshot, tabsOf } from './app-steps.mjs'
+import { startApp, sleep, SESSION } from '../l353/lib.mjs'
+import { attachThisWorktree, dragDivider, ensureTabs, moveTabToNewGroup, quiesce, snapshot, tabsOf } from './app-steps.mjs'
 import { ensureWorkspace, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)

@@ -3,7 +3,7 @@
 // 앱 구동·control 채널은 l353 lib 을 그대로 쓴다(관문 ④의 격리 가드도 거기 있다).
 // 여기 있는 것은 **corral 화면을 어떻게 몰고 무엇을 읽는가**뿐이다.
 
-import { until, sleep, herdrRequest, REPO_DIR } from '../l353/lib.mjs'
+import { until, sleep, herdrRequest, REPO_DIR, SESSION } from '../l353/lib.mjs'
 
 export const tabsOf = (state) => state.repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? [])
 export const resizeEvents = (app, since) =>

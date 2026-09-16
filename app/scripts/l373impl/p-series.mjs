@@ -96,14 +96,27 @@ function rendererPid() {
   return rows[0] ?? null
 }
 
+/**
+ * rAF 하트비트 — **세대 토큰**으로 이전 루프를 확실히 끊는다 (`p-limit.mjs` 와 같은 고침).
+ *
+ * `stop` 플래그만 쓰면 옛 루프가 새 객체의 `stop:false` 를 보고 되살아나 카운터를 같이 올린다.
+ * 이 파일로 낸 원자료(`p-series*.json`)의 바닥은 143.8~144.3 으로 배수가 찍힌 적이 없어 기존
+ * 판정은 그대로 선다 — 다시 밟지 않으려고 미리 막는다.
+ */
 const rafStart = (app) =>
   app.send({
     cmd: 'eval',
     code: `(() => {
-      window.__l373raf = { n: 0, t0: performance.now(), stop: false }
-      const tick = () => { if (window.__l373raf.stop) return; window.__l373raf.n += 1; requestAnimationFrame(tick) }
+      const gen = (window.__l373rafGen ?? 0) + 1
+      window.__l373rafGen = gen
+      window.__l373raf = { n: 0, t0: performance.now(), gen }
+      const tick = () => {
+        if (window.__l373rafGen !== gen) return
+        window.__l373raf.n += 1
+        requestAnimationFrame(tick)
+      }
       requestAnimationFrame(tick)
-      return 1
+      return gen
     })()`,
   })
 const rafRead = async (app) =>
@@ -113,9 +126,9 @@ const rafRead = async (app) =>
       code: `(() => {
         const r = window.__l373raf
         if (!r) return null
-        r.stop = true
+        window.__l373rafGen = (window.__l373rafGen ?? 0) + 1
         const ms = performance.now() - r.t0
-        return { n: r.n, ms: Math.round(ms), perSec: +(r.n / (ms / 1000)).toFixed(2) }
+        return { n: r.n, ms: Math.round(ms), perSec: +(r.n / (ms / 1000)).toFixed(2), gen: r.gen }
       })()`,
     })
   ).result

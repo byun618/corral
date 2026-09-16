@@ -279,20 +279,9 @@ const 상자들 = async () =>
       }))()`,
     })
   ).result
-/** 가장 넓은 pane 을 눌러 거기를 쪼갠다 — DOM 순서로 고르면 이미 쪼갠 쪽을 또 쪼갠다(1회차 실패). */
-const 제일넓은거쪼개기 = async (shift) => {
-  const 상자 = (await 상자들()).sort((a, b) => b.넓이 - a.넓이)[0]
-  await app.click(`[data-term-pane-box="${상자.paneId}"]`)
-  await sleep(900)
-  await press(app, { key: 'd', shift })
-  await sleep(2400)
-  return 상자
-}
 
 // **누르는 것으로 pane 을 고르지 않는다.** 1·2회차에서 클릭이 선택을 안 옮겨(선택은 mousedown
 // 핸들러인데 가려짐 판정에 걸리면 아예 안 누른다) 왼쪽만 계속 쪼개져 15/14/30/63 이 나왔다.
-// 분할은 **선택된 pane** 에 붙으므로(App.tsx `splitPaneAt(lifecycle.selectedPane)`), 분할 직후
-// 선택이 새 pane 으로 옮겨 가는 성질과 `⌘⌥←`(인접 pane 포커스, C5-9)만으로 2×2 를 세운다.
 // 분할은 **선택을 옮기지 않는다**(App.tsx `splitPaneAt` — 일부러 그렇다). 1·2회차가 여기서
 // 왼쪽만 세 번 쪼개 15/14/30/63 이 나왔다. 선택을 옮기는 것은 `⌘⌥←→`(인접 pane 포커스) 뿐이다.
 await press(app, { key: 'd' }) // 좌우
@@ -356,15 +345,20 @@ const 판정hz = HZ_LIST.at(-1)
 }
 
 // --- 처음 넘는 지점 --------------------------------------------------------------------
-const 유효 = 결과.훑기.filter((row) => row.부하걸렸나)
-const 첫돌파 = (이름, 넘었나) => {
+// **4 pane 훑기만** 본다. `한점` 이 병기(2 pane·1 pane)도 같은 `훑기` 에 밀어 넣어서, 거르지
+// 않으면 "P4 를 처음 넘는 점"이 pane 수가 다른 행을 집는다 — 축(hz)이 같은 곡선이 아니다.
+// 첫 커밋(`873e67b`)의 `p-limit.json` 한계 블록이 그렇게 2 pane 행을 집었다.
+const 유효 = 결과.훑기.filter((row) => row.부하걸렸나 && row.pane수 === 4)
+const 첫돌파 = (값뽑기, 넘었나) => {
   const row = 유효.find(넘었나)
-  return row === undefined ? null : { hz: row.hz, ...row.축, 값: 이름 === 'P3' ? row.렌더러CPU : 이름 === 'P4' ? row.write_p95 : row.P5비율 }
+  return row === undefined ? null : { hz: row.hz, pane수: row.pane수, ...row.축, 값: 값뽑기(row) }
 }
 결과.한계 = {
-  'P3 70% 를 처음 넘는 점': 첫돌파('P3', (row) => row.렌더러CPU !== null && row.렌더러CPU > P3_LINE),
-  'P4 25ms 를 처음 넘는 점': 첫돌파('P4', (row) => row.write_p95 !== null && row.write_p95 > P4_LINE),
-  'P5 0.70 아래로 처음 떨어지는 점': 첫돌파('P5', (row) => row.P5비율 !== null && row.P5비율 < P5_RATIO),
+  '훑은축': '4 pane 고정 · hz 오름차순',
+  'P3 70% 를 처음 넘는 점': 첫돌파((row) => row.렌더러CPU, (row) => row.렌더러CPU !== null && row.렌더러CPU > P3_LINE),
+  'P4 25ms 를 처음 넘는 점': 첫돌파((row) => row.write_p95, (row) => row.write_p95 !== null && row.write_p95 > P4_LINE),
+  'P5 0.70 아래로 처음 떨어지는 점': 첫돌파((row) => row.P5비율, (row) => row.P5비율 !== null && row.P5비율 < P5_RATIO),
+  'P2-a 도달 0.99 아래로 처음 떨어지는 점': 첫돌파((row) => row.흘림.도달비율, (row) => row.흘림.도달비율 !== null && row.흘림.도달비율 < 0.99),
 }
 console.log('\n한계', JSON.stringify(결과.한계, null, 1))
 

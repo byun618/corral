@@ -41,7 +41,6 @@ function cropHash(frame, rect) {
 }
 
 const arrivals = []
-let cells = 0
 /** heavy 만: 직전 판과 크롭 해시가 달라진 pane 수 — P2-c 의 **독립 오라클**이다. */
 const lastHash = new Map()
 const changed = []
@@ -57,7 +56,6 @@ client.on('surface', (s) => {
     }
     changed.push(n)
   }
-  cells += s.frame.width * s.frame.height
   arrivals.push({ at, panes: s.panes.length })
 })
 client.on('error', () => {})
@@ -69,7 +67,6 @@ await sleep(1500)
 
 arrivals.length = 0
 changed.length = 0
-cells = 0
 const t0 = Date.now()
 await sleep(windowMs)
 const t1 = Date.now()

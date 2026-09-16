@@ -31,6 +31,14 @@ const HZ_LIST = (process.env.L373_HZ_LIST ?? '5,10,15,20,30,45,60').split(',').m
 const WINDOW_MS = Number(process.env.L373_WINDOW_MS ?? 12000)
 const IDLE_MS = 5000
 const HEAVY_EVERY = Number(process.env.L373_HEAVY_EVERY ?? 2)
+/** 런마다 전경+배경+굵기를 싣는다 — 런 길이는 그대로 두고 **무게만** 올리는 축 (§16). */
+const HEAVY_RICH = String(process.env.L373_HEAVY_RICH ?? '0')
+/**
+ * 결과 파일 이름 — 기본값은 첫 회차와 같다.
+ *
+ * `--every` 를 바꿔 다시 재는 회차가 **앞 회차의 원자료를 덮으면 안 된다.** §14 가 그 수를 인용한다.
+ */
+const OUT_NAME = process.env.L373_OUT ?? 'p-limit.json'
 const LOAD_SECS = 40
 /** 판정점 격자 — 100×30 ±10%. 창 크기는 여기에 맞춰 찾는다. */
 const 목표 = { cols: 100, rows: 30, 여유: 0.1 }
@@ -45,7 +53,7 @@ const 결과 = {
   at: new Date().toISOString(),
   세션: SESSION,
   M0,
-  판정점조건: { pane: 4, 격자: `${목표.cols}x${목표.rows} ±10%`, 프레임: '28±6 KB/pane · 셀당 9~12 B', skip: '켠 채 · 아무것도 못 걸러야 한다' },
+  판정점조건: { pane: 4, 격자: `${목표.cols}x${목표.rows} ±10%`, 프레임: '28±6 KB/pane · 셀당 9~12 B', 색런길이: HEAVY_EVERY, 런마다속성: HEAVY_RICH === '2' ? '전경+배경(24비트)+굵기' : HEAVY_RICH === '1' ? '전경+배경(256)+굵기' : '전경만', '1차 스파이크 avgRun': 5, skip: '켠 채 · 아무것도 못 걸러야 한다' },
   통과선: { P3: P3_LINE, P4: P4_LINE, P5: `${P5_RATIO} × 유휴 바닥` },
   창: { width: WIN_W, height: WIN_H },
   훑기: [],
@@ -145,7 +153,7 @@ const startLoad = (paneIds, gridMap, hz) => {
       'run',
       paneId,
       `${process.execPath} ${path.join(APP_DIR, 'scripts/l373impl/load-heavy.mjs')} --cols ${grid.cols} --rows ${grid.rows}` +
-        ` --hz ${hz} --secs ${LOAD_SECS} --every ${HEAVY_EVERY} --tag p${index + 1}`,
+        ` --hz ${hz} --secs ${LOAD_SECS} --every ${HEAVY_EVERY}${HEAVY_RICH === '0' ? '' : ` --rich ${HEAVY_RICH}`} --tag p${index + 1}`,
     ])
   })
 }
@@ -365,5 +373,5 @@ console.log('\n한계', JSON.stringify(결과.한계, null, 1))
 await app.stop()
 await sleep(1500)
 결과.M0_끝 = m0End()
-writeRaw('p-limit.json', 결과)
-console.log('wrote raw/claude/p-limit.json')
+writeRaw(OUT_NAME, 결과)
+console.log('wrote raw/claude/' + OUT_NAME)

@@ -21,6 +21,15 @@ const hz = Number(arg('hz', 30))
 const secs = Number(arg('secs', 120))
 const every = Number(arg('every', 2))
 const tag = String(arg('tag', 'heavy'))
+/**
+ * `--rich 1` 이면 런마다 **전경+배경+굵기**를 싣는다 (기본은 전경만).
+ *
+ * 왜 따로 두나: 프레임 무게(셀당 바이트)와 **색 런 길이**는 다른 축인데, `--every` 하나로
+ * 무게를 맞추면 둘이 같이 움직인다. 1차 스파이크의 보정 프레임은 `avgRun 5`(런 길이 평균 5)
+ * 이면서 셀당 9.5 B 다 — 런은 길고 런마다 실리는 속성은 무겁다(테두리·배경 있는 diff 줄·
+ * 굵은 상태바). `--every 5 --rich 1` 이 그 자리다.
+ */
+const rich = String(arg('rich', '0'))
 
 /** 에이전트 TUI 모양의 글자들 — 셀마다 다른 글리프를 넣어 격자가 통째로 바뀌게 한다. */
 const GLYPHS = '▏▎▍▌▋▊▉█░▒▓·=-+*#@'
@@ -30,7 +39,18 @@ const frameText = (phase) => {
   for (let y = 0; y < rows; y++) {
     let line = ''
     for (let x = 0; x < cols; x++) {
-      if (x % every === 0) line += `\x1b[38;5;${((x + y + phase) % 213) + 17}m`
+      if (x % every === 0) {
+        const color = ((x + y + phase) % 213) + 17
+        const bold = ((x + y) & 1) === 0 ? 1 : 22
+        // rich=2 는 **24비트 색**이다 — 1차 스파이크의 `gen-frames.mjs` 가 `rgb(...)` 팔레트를
+        // 쓰므로 그쪽 셀당 9.5 B 는 truecolor 값이다. 런 길이를 그대로 두고 무게만 그 자리로 올린다.
+        line +=
+          rich === '2'
+            ? `\x1b[${bold}m\x1b[38;2;${color};${(color * 3) % 256};${(color * 7) % 256}m\x1b[48;2;${(color * 5) % 256};${color};${(color * 11) % 256}m`
+            : rich === '1'
+              ? `\x1b[${bold}m\x1b[38;5;${color}m\x1b[48;5;${((color * 7) % 213) + 17}m`
+              : `\x1b[38;5;${color}m`
+      }
       line += GLYPHS[(x * 3 + y * 5 + phase) % GLYPHS.length]
     }
     out.push(line + '\x1b[0m')
@@ -42,7 +62,7 @@ const frameText = (phase) => {
 // 프레임은 미리 만들어 둔다 — 생성 비용이 셸 쪽 지연으로 새면 부하가 목표 주기를 못 지킨다.
 const frames = []
 for (let phase = 0; phase < 24; phase++) frames.push(Buffer.from(frameText(phase), 'utf8'))
-process.stderr.write(`${tag} 프레임 ${frames[0].length}B (${cols}x${rows}, every=${every}) hz=${hz}\n`)
+process.stderr.write(`${tag} 프레임 ${frames[0].length}B (${cols}x${rows}, every=${every}, rich=${rich}) hz=${hz}\n`)
 
 const 끝 = Date.now() + secs * 1000
 let i = 0

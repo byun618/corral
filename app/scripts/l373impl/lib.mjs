@@ -93,3 +93,31 @@ export function pct(values, p) {
   const s = [...values].sort((a, b) => a - b)
   return +s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))].toFixed(2)
 }
+
+/**
+ * 앞 회차에서 살아남은 앱을 먼저 죽인다 (사고 2 재발 방지).
+ *
+ * `startApp` 의 `stop()` 이 SIGTERM→SIGKILL 을 쓰지만 스크립트가 중간에 터지면 그 길을 안 지난다.
+ * 남은 앱은 **커밋된 로그 파일에 계속 덧붙인다** — `park()` 가 옮겨 놓은 `_discarded/` 안의
+ * 파일까지 자란다(실제로 한 번 일어났다: 426줄 증가, `git checkout` 으로 회수). 재는 것과도
+ * 상관없다 — 유령 창이 herdr 연결을 붙들고 있으면 연결 수가 곧 영역 수라는 전제가 깨진다.
+ */
+export function killStrayApps() {
+  const pattern = path.join(APP_DIR, 'node_modules')
+  const pids = (() => {
+    try {
+      return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    } catch {
+      return []
+    }
+  })()
+  for (const pid of pids) {
+    try {
+      process.kill(Number(pid), 'SIGKILL')
+    } catch {
+      /* 이미 죽었다 */
+    }
+  }
+  if (pids.length > 0) console.log(`[l373] 남은 앱 ${pids.length}개를 먼저 죽였다`)
+  return pids.length
+}

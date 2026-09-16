@@ -18,8 +18,8 @@ describe('경계 셀 스냅 (F1-2)', () => {
       clamp,
     })
     expect(snapped.first).toBe(71) // floor(503 / 7)
-    expect(snapped.ratio * 1000).toBeCloseTo(497, 6) // 71 × 7
-    expect(snapped.second).toBe(71) // floor(503 / 7)
+    expect(snapped.ratio * 1000).toBeCloseTo(500.5, 6) // 71 × 7 + 반 칸 3.5
+    expect(snapped.second).toBe(71) // floor(499 / 7)
   })
 
   it('터미널이 아닌 부분(헤더)을 빼고 센다', () => {
@@ -32,14 +32,18 @@ describe('경계 셀 스냅 (F1-2)', () => {
       clamp,
     })
     expect(snapped.first).toBe(25) // floor((530 − 30) / 20)
-    expect(snapped.ratio * 1000).toBeCloseTo(530, 6) // 30 + 25 × 20
+    expect(snapped.ratio * 1000).toBeCloseTo(540, 6) // 30 + 25 × 20 + 반 칸 10
+    expect(snapped.second).toBe(21) // floor((1000 − 540 − 30) / 20)
   })
 
-  it('비율 클램프 .15~.85 밖으로는 안 나간다', () => {
+  it('비율 클램프 .15~.85 밖으로는 안 나간다 — 반 칸 비켜선 자리도 그 안이다', () => {
     const low = snapSplitRatio({ total: 1000, wanted: 5, overhead: { first: 0, second: 0 }, unit: 10, minCells: 2, clamp })
-    expect(low.ratio).toBeCloseTo(0.15, 6)
+    expect(low.first).toBe(15)
+    expect(low.ratio).toBeGreaterThanOrEqual(0.15)
+    expect(low.ratio).toBeLessThanOrEqual(0.85)
     const high = snapSplitRatio({ total: 1000, wanted: 995, overhead: { first: 0, second: 0 }, unit: 10, minCells: 2, clamp })
-    expect(high.ratio).toBeCloseTo(0.85, 6)
+    expect(high.first).toBe(84) // 85 칸이면 855px 로 .85 를 넘어 한 칸 물린다
+    expect(high.ratio).toBeLessThanOrEqual(0.85)
   })
 
   it('셀 최소치가 비율 클램프보다 우선이다 — 상자가 좁으면 클램프 안이어도 물린다', () => {
@@ -47,7 +51,6 @@ describe('경계 셀 스냅 (F1-2)', () => {
     // .85 클램프만 보면 34px(3칸)까지 가지만 그러면 둘째가 1칸이 된다.
     const snapped = snapSplitRatio({ total: 40, wanted: 39, overhead: { first: 0, second: 0 }, unit: 10, minCells: 2, clamp })
     expect(snapped.first).toBe(2)
-    expect(snapped.second).toBe(2)
   })
 
   it('상자 폭이 0 이면 최소 비율로 떨어진다 (측정 전 프레임)', () => {

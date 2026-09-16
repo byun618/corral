@@ -1,61 +1,314 @@
-// F1 육안·계측 — 영역이 실제로 서나 (LIFE-373 ①).
+// F1 통과선 — 영역이 실제로 서나 (LIFE-373 ①). 화면에서 본 것만 적는다.
 //
 // LIFE-353 하네스의 앱 구동·control 채널을 그대로 쓴다(재는 도구는 같은 것이 낫다).
-// 여기서 보는 것: ⓐ 기본 1영역 ⓑ ⌘⌥D 로 2영역(탭이 빠져나간다) ⓒ 헤더·빈 상태·경계선 선택자
-// ⓓ 영역별 연결 수(= 영역 수) ⓔ 재기동 후 복원(F1-6).
+// 판정 원자료는 **LIFE-373 쪽**에 쓴다 — 앱 로그·스크린샷만 l353 의 `_runs/` 에 남는다.
+//
+//   ⓐ F1-1 기본 1영역 → 탭 메뉴 「오른쪽 영역」 → 2영역(탭이 빠져나가고 연결이 하나 는다)
+//   ⓑ F1-3 다른 영역 헤더를 누르면 포커스가 그리로 간다 (활성 표시·attach 순서)
+//   ⓒ F1-7 창을 좁히면 비활성 탭이 아이콘만으로 접힌다 (폭 3점 — **드래그보다 먼저**, 아래 주석)
+//   ⓓ F1-2 경계 드래그 — **끄는 동안 sync·resize 0**, mouseup 에 각각 1회. 셀 스냅·배지.
+//   ⓔ F1-6 재기동 복원 — 같은 ui-prefs·registry 로 다시 띄워 배치가 돌아오나
+//   ⓕ F1-4 영역의 마지막 탭을 닫으면 빈 카드가 서고 연결이 하나 준다
+//   ⓖ F1-5 영역 닫기 — 형제가 자리를 먹고 탭을 물려받는다
+//
+// 격리(관문 ⑤): `life373-` 세션에서만 돈다. l353 lib 는 `LIFE353_SESSION` 을 보므로 거기에
+// 박아 넣고, 여기서 한 번 더 막는다 — 사용자 default 세션에 붙는 순간 끝이다.
 
-import { startApp, attachPane, firstPaneId, until, sleep, writeRaw, herdrRequest } from '../l353/lib.mjs'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { startApp, until, sleep, herdrRequest, SESSION, REPO_DIR } from '../l353/lib.mjs'
+import { killStrayApps, writeRaw } from './lib.mjs'
 
-const paneId = await firstPaneId()
-const app = await startApp({ name: 'f1-groups' })
-await attachPane(app, paneId)
-await sleep(600)
+if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION}) — LIFE353_SESSION=life373-… 로 띄워라`)
 
-const state0 = await app.state()
-const workspaceId = state0.repos.flatMap((r) => r.worktrees).find((w) => w.workspace !== null)?.workspace.workspaceId ?? null
-if (workspaceId === null) throw new Error('열린 workspace 가 없다')
+killStrayApps()
 
-// 탭이 2개 이상이어야 분할이 뜻을 갖는다 (원 영역 탭 1개면 무효 — F1-1).
-const before = (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? [])
-if (before.length < 2) {
-  await herdrRequest('tab.create', { workspace_id: workspaceId })
-  await until(async () => (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length > before.length, {
-    what: '탭 생성 반영',
-  })
-}
-await sleep(400)
+const RUN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'l373-f1-'))
+const PREFS = path.join(RUN_DIR, 'ui-prefs.json')
+const REGISTRY = path.join(RUN_DIR, 'repos.json')
+const APP_ENV = { CORRAL_UI_PREFS: PREFS }
 
-const query = async (selector) => (await app.query(selector)).found.length
-const snapshot = async (label) => {
+const tabsOf = (state) => state.repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? [])
+const resizeEvents = (app, since) =>
+  app.entries().filter((e) => e.tag === 'vendor.debug' && e.message === 'resize request' && e.at >= since)
+const syncEvents = (app, since) => app.entries().filter((e) => e.tag === 'stream.sync' && e.at >= since)
+
+async function snapshot(app, label) {
   const state = await app.state()
+  const count = async (selector) => (await app.query(selector)).found.length
   return {
     label,
-    영역수: await query('[data-tab-group]'),
-    헤더수: await query('[data-group-header]'),
-    경계선: await query('[data-group-divider]'),
-    빈영역: await query('[data-empty-group]'),
-    터미널상자: await query('[data-term-group]'),
+    영역수: await count('[data-tab-group]'),
+    헤더수: await count('[data-group-header]'),
+    경계선: await count('[data-group-divider]'),
+    빈영역: await count('[data-empty-group]'),
+    터미널상자: await count('[data-term-group]'),
+    탭바탭: await count('[data-main-tab]'),
+    접힌탭: await count('[data-tab-compact="true"]'),
+    활성영역: (await app.send({ cmd: 'eval', code: `document.querySelector('.tab-group.is-active-group')?.dataset.tabGroup ?? null` })).result,
+    영역별탭: (await app.send({
+      cmd: 'eval',
+      code: `[...document.querySelectorAll('[data-tab-group]')].map((g) => ({ groupId: g.dataset.tabGroup, tabs: [...g.querySelectorAll('[data-main-tab]')].map((t) => t.dataset.mainTab) }))`,
+    })).result,
     연결: state.terminalGroups.map((g) => ({ groupId: g.groupId, tabId: g.tabId, phase: g.phase, grid: g.grid })),
-    탭바탭: await query('[data-main-tab]'),
   }
 }
 
-const 기본 = await snapshot('기본')
+/**
+ * 탭을 `want` 개까지 채운다.
+ *
+ * 2개는 F1-1 의 바닥이다(원 영역 탭이 하나뿐이면 분할이 무효다). 4개인 이유는 F1-7 —
+ * 분할 뒤 한 영역에 3개가 남아야 760px 창에서 탭 폭 합(3×124=372)이 남는 폭을 넘어 접힌다.
+ */
+async function ensureTabs(app, want) {
+  const state = await app.state()
+  const workspaceId = state.repos.flatMap((r) => r.worktrees).find((w) => w.workspace !== null)?.workspace.workspaceId ?? null
+  if (workspaceId === null) throw new Error('열린 workspace 가 없다')
+  while (tabsOf(await app.state()).length < want) {
+    const before = tabsOf(await app.state()).length
+    await herdrRequest('tab.create', { workspace_id: workspaceId })
+    await until(async () => tabsOf(await app.state()).length > before, { what: '탭 생성 반영' })
+    await sleep(300)
+  }
+  await sleep(600)
+  return workspaceId
+}
+
+/** 탭 우클릭 → 「오른쪽 영역으로」 — 실제 UI 경로로 연다 (F1-1). */
+async function moveTabToNewGroup(app, tabId) {
+  await app.send({
+    cmd: 'eval',
+    code: `document.querySelector('[data-main-tab="${tabId}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 40 })), 1`,
+  })
+  await until(async () => (await app.query(`[data-tab-menu-move-right="${tabId}"]`)).found.length > 0, { what: '탭 메뉴' })
+  const hit = await app.click(`[data-tab-menu-move-right="${tabId}"]`)
+  await until(async () => (await app.query('[data-tab-group]')).found.length === 2, { what: '영역 2개', timeoutMs: 5000 })
+  await sleep(900)
+  return hit.hit === true
+}
+
+const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS }
+
+/**
+ * 저장소를 등록하고 **이 worktree 에 열린** workspace 의 탭을 눌러 스트리밍까지 데려간다.
+ *
+ * l353 의 `attachPane` 을 안 쓴다. 그건 `firstPaneId()`(목록의 첫 pane)를 전제로 하는데 격리
+ * 세션에는 다른 cwd 의 workspace 도 산다 — 실측: `life373-impl` 의 w1 은 `/private/tmp` 다.
+ * corral 은 worktree 경로로 workspace 를 묶으므로 그런 pane 은 4단 목록에 아예 안 뜨고
+ * `attachPane` 이 "pane 행이 목록에 안 떴다"로 죽는다. 여기서는 **앱이 보는 것**을 따라간다.
+ */
+async function attachThisWorktree(app) {
+  await app.addRepo(REPO_DIR)
+  const found = await until(
+    async () => {
+      const worktree = (await app.state()).repos.flatMap((r) => r.worktrees).find((w) => w.workspace !== null)
+      return worktree === undefined ? null : worktree
+    },
+    { timeoutMs: 15000, what: '이 worktree 에 열린 workspace' },
+  )
+  if (!found.ok) {
+    throw new Error(`이 worktree 에 열린 workspace 가 없다 — herdr --session ${SESSION} workspace create --cwd ${REPO_DIR} 로 하나 열어라`)
+  }
+  const tabId = found.value.workspace.tabs[0]?.tabId ?? null
+  if (tabId === null) throw new Error('workspace 에 탭이 없다')
+  await until(async () => (await app.query(`[data-main-tab="${tabId}"]`)).found.length > 0, { what: '탭바에 탭' })
+  await app.click(`[data-main-tab="${tabId}"]`)
+  const streaming = await until(async () => (await app.state()).terminalGroups.some((g) => g.phase === 'streaming'), {
+    timeoutMs: 15000,
+    what: 'streaming',
+  })
+  if (!streaming.ok) throw new Error('streaming 이 안 왔다')
+}
+
+// ── 1회차: ⓐ ⓑ ⓒ ⓓ, 그리고 2영역인 채로 종료해서 ⓔ 의 씨앗을 남긴다 ──────────────
+const app = await startApp({ name: 'f1-groups', env: APP_ENV, registryFile: REGISTRY })
+await attachThisWorktree(app)
+await sleep(600)
+await ensureTabs(app, 4)
+
+결과.기본 = await snapshot(app, '기본 1영역')
 await app.shot('f1-a-single')
 
-// ⓑ 탭 메뉴로 새 영역 — 실제 UI 경로로 (우클릭 → 「오른쪽 영역」).
-const tabs = (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? [])
+// ⓐ F1-1
+const tabs = tabsOf(await app.state())
 const second = tabs[1]?.tabId ?? null
 if (second === null) throw new Error('두 번째 탭이 없다')
-await app.send({ cmd: 'eval', code: `document.querySelector('[data-main-tab="${second}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 40 })), 1` })
-await until(async () => (await query(`[data-tab-menu-move-right="${second}"]`)) > 0, { what: '탭 메뉴' })
-const moveClick = await app.click(`[data-tab-menu-move-right="${second}"]`)
-await until(async () => (await query('[data-tab-group]')) === 2, { what: '영역 2개', timeoutMs: 5000 })
-await sleep(900)
-const 분할후 = await snapshot('오른쪽 영역으로 옮기기')
+결과.분할클릭 = await moveTabToNewGroup(app, second)
+결과.분할후 = await snapshot(app, '오른쪽 영역으로 옮기기')
 await app.shot('f1-b-two-groups')
 
-const out = { at: new Date().toISOString(), moveClick: moveClick.hit === true, 기본, 분할후 }
-writeRaw('f1-groups.json', out)
-console.log(JSON.stringify(out, null, 2))
+// ⓑ F1-3 — 첫 영역 헤더를 눌러 포커스를 되돌린다.
+{
+  const groups = 결과.분할후.영역별탭.map((g) => g.groupId)
+  const target = groups[0]
+  const since = Date.now()
+  await app.click(`[data-group-header="${target}"]`)
+  await sleep(700)
+  const after = await snapshot(app, `헤더 클릭 → ${target}`)
+  결과.포커스전환 = {
+    누른영역: target,
+    이전활성: 결과.분할후.활성영역,
+    이후활성: after.활성영역,
+    /**
+     * 화면이 **선언한** 순서 그대로다 — attach 순서가 아니다.
+     * S2-b(활성이 마지막에 붙는다)는 main 이 `stream.ts` 에서 `active` 로 정렬해 지킨다
+     * (`[...groups].sort((a, b) => Number(a.active) - Number(b.active))`). 그래서 여기 활성 영역이
+     * 앞에 적혀 있어도 S2-b 위반이 아니다. S2-b 자체는 attach 로그로 따로 잰다.
+     */
+    선언순서_정렬전: syncEvents(app, since).at(-1)?.groups ?? null,
+    스냅샷: after,
+  }
+  await app.shot('f1-c-focus')
+}
+
+// ⓒ F1-7 — 폭 3점. 좁힐수록 비활성 탭이 접힌다.
+//
+// 경계 드래그보다 **먼저** 잰다. 드래그가 비율을 한쪽으로 몰아 놓으면 넓은 창에서도 이미 접힌
+// 상태로 시작해서 "접힘이 켜지는 지점"이 안 보인다 (첫 회차에서 실제로 그랬다).
+{
+  const widths = [1400, 1000, 760]
+  const 점 = []
+  for (const width of widths) {
+    await app.resizeWindow(width, 900)
+    await sleep(1100)
+    const shot = await app.shot(`f1-e-width-${width}`)
+    const measured = (await app.send({
+      cmd: 'eval',
+      code: `[...document.querySelectorAll('[data-group-header]')].map((h) => ({
+        groupId: h.dataset.groupHeader,
+        헤더폭: Math.round(h.getBoundingClientRect().width),
+        접힘: h.dataset.headerCompact,
+        탭: [...h.querySelectorAll('[data-main-tab]')].map((t) => ({ 접힘: t.dataset.tabCompact, 폭: Math.round(t.getBoundingClientRect().width) })),
+      }))`,
+    })).result
+    점.push({ width, 헤더: measured, shot: shot.file })
+  }
+  결과.탭접기 = 점
+  await app.resizeWindow(1400, 900)
+  await sleep(900)
+}
+
+// ⓓ F1-2 — 경계 드래그. 끄는 동안 격자 요청이 **한 번도** 나가면 안 된다.
+{
+  const since = Date.now()
+  const begin = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const el = document.querySelector('[data-group-divider]')
+      if (el === null) return null
+      const box = el.getBoundingClientRect()
+      const y = box.top + box.height / 2
+      const x = box.left + box.width / 2
+      window.__l373drag = { y, from: x }
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y }))
+      const steps = []
+      for (let i = 1; i <= 12; i++) {
+        const at = x - i * 9
+        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at, clientY: y }))
+        steps.push(at)
+      }
+      return { steps: steps.length, to: steps.at(-1) }
+    })()`,
+  })).result
+  // 고스트·배지는 React 가 **다시 그린 뒤에** 읽는다 — 같은 eval 안에서 읽으면 mousemove 가
+  // 예약한 setState 가 아직 안 돌아 늘 null 이다 (첫 회차의 `badge: null` 이 그 허깨비였다).
+  await sleep(500)
+  const 고스트 = (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const badge = document.querySelector('[data-group-divider-badge]')
+      const ghost = document.querySelector('.group-divider-ghost')
+      return { 배지: badge ? badge.textContent : null, 고스트: ghost !== null, 위치: ghost ? ghost.style.left : null }
+    })()`,
+  })).result
+  const 드래그중 = { resize: resizeEvents(app, since).length, sync: syncEvents(app, since).length }
+  await app.shot('f1-d-drag-ghost')
+  const beforeUp = Date.now()
+  await app.send({
+    cmd: 'eval',
+    code: `document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: window.__l373drag.from - 108, clientY: window.__l373drag.y })), 1`,
+  })
+  await sleep(1400)
+  결과.경계드래그 = {
+    시작: begin,
+    고스트,
+    드래그중,
+    커밋후: { resize: resizeEvents(app, beforeUp).length, sync: syncEvents(app, beforeUp).length },
+    // 스냅이 먹었으면 두 영역의 격자 합 + 경계가 셀에 딱 떨어진다. 실제 격자를 그대로 적는다.
+    격자: (await app.state()).terminalGroups.map((g) => ({ groupId: g.groupId, grid: g.grid })),
+    // 배지가 말한 칸 수와 실제 요청 격자가 **같은가**. 다르면 산술이 어디서 갈렸는지 여기 숫자로 뜬다.
+    산술: (await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        const split = document.querySelector('[data-group-split]')
+        const sides = [...split.querySelectorAll(':scope > .group-split-side')]
+        const axis = (el) => {
+          const box = el.getBoundingClientRect()
+          const style = getComputedStyle(el)
+          return { rect: +box.width.toFixed(3), computed: style.width, parseInt: Number.parseInt(style.width, 10) }
+        }
+        return {
+          분할상자: +split.getBoundingClientRect().width.toFixed(3),
+          셀: window.corralTermProbe ? window.corralTermProbe.cell() : null,
+          쪽: sides.map((side) => ({
+            basis: side.style.flexBasis,
+            상자: axis(side),
+            터미널: (() => { const t = side.querySelector('[data-term-group]'); return t === null ? null : axis(t) })(),
+          })),
+        }
+      })()`,
+    })).result,
+    고스트사라짐: (await app.query('.group-divider-ghost')).found.length === 0,
+  }
+  await app.shot('f1-d-drag-committed')
+}
+
+결과.종료직전 = await snapshot(app, '재기동 직전')
+결과.종료직전저장 = JSON.parse(fs.readFileSync(PREFS, 'utf8')).groupLayouts ?? null
+await app.stop()
+await sleep(800)
+
+// ── 2회차: ⓔ 복원 → ⓕ 빈 영역 → ⓖ 영역 닫기 ────────────────────────────────────
+const app2 = await startApp({ name: 'f1-groups-restart', env: APP_ENV, registryFile: REGISTRY })
+await sleep(2500)
+결과.재기동후 = await snapshot(app2, '재기동 후 복원')
+await app2.shot('f1-f-restored')
+
+// ⓕ F1-4 — 두 번째 영역의 탭을 전부 닫으면 빈 카드가 선다.
+{
+  const groups = 결과.재기동후.영역별탭
+  const victim = groups.at(-1)
+  const before = 결과.재기동후.연결.length
+  for (const tabId of victim?.tabs ?? []) {
+    await app2.click(`[data-main-tab-close="${tabId}"]`)
+    await sleep(900)
+  }
+  await sleep(1200)
+  결과.빈영역 = {
+    비운영역: victim?.groupId ?? null,
+    연결_전: before,
+    스냅샷: await snapshot(app2, '마지막 탭을 닫은 뒤'),
+    카드: (await app2.query(`[data-empty-group-new]`)).found.length,
+  }
+  await app2.shot('f1-g-empty-group')
+}
+
+// ⓖ F1-5 — 영역 닫기. 형제가 자리를 먹고 남은 탭을 물려받는다.
+{
+  const closer = (await app2.query('[data-empty-group-close]')).found[0] ?? null
+  결과.영역닫기 = { 버튼: closer }
+  if (closer !== null) {
+    await app2.click('[data-empty-group-close]')
+    await sleep(1600)
+    결과.영역닫기.스냅샷 = await snapshot(app2, '영역을 닫은 뒤')
+    await app2.shot('f1-h-closed')
+  }
+}
+
+결과.저장된배치 = JSON.parse(fs.readFileSync(PREFS, 'utf8')).groupLayouts ?? null
+await app2.stop()
+
+writeRaw('f1-groups.json', 결과)
+console.log(JSON.stringify(결과, null, 2))
 process.exit(0)

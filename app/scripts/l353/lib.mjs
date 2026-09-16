@@ -30,10 +30,17 @@ export const RAW_SUBDIR = process.env.L353_RAW_SUBDIR ?? ''
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** 사용자의 default 세션을 코드 레벨에서 막는다 (관문 ④). */
+/**
+ * 사용자의 default 세션을 코드 레벨에서 막는다 (관문 ④).
+ *
+ * LIFE-373 에서 `life373-` 접두를 **추가로** 허용한다. 막으려는 것은 사용자 세션이지 접두 문자열이
+ * 아니다 — LIFE-373 구현 계측은 `life373-` 세션에서만 돌아야 하는데(02-kickoff 격리 규칙) 이
+ * 하네스의 앱 구동·control 채널을 그대로 쓰려면 여기를 지나야 한다. C2 재실행은 여전히
+ * `life353-claude` 로 도므로 회귀 비교 경로는 한 글자도 안 바뀐다.
+ */
 export function sessionDir(session = SESSION) {
-  if (!session.startsWith('life353-')) {
-    throw new Error(`거부: 격리 세션이 아니다 (${session}). life353- 접두여야 한다`)
+  if (!(session.startsWith('life353-') || session.startsWith('life373-'))) {
+    throw new Error(`거부: 격리 세션이 아니다 (${session}). life353- 또는 life373- 접두여야 한다`)
   }
   return path.join(os.homedir(), '.config', 'herdr', 'sessions', session)
 }

@@ -113,6 +113,13 @@ export function contentBoxOf(element: HTMLElement): { width: number; height: num
  *
  * 최소치: 격자 산식(`gridForBox`)이 보장하는 바닥과 같다 — 가로 2칸, 세로 1칸. 비율 클램프
  * (.15~.85)보다 **이쪽이 우선**이라, 클램프 안이어도 한 쪽이 바닥 밑으로 내려가면 한 칸 물린다.
+ *
+ * ⚠ 셀 **경계 위**가 아니라 **칸 한가운데**에 세운다 (`+ unit / 2`). 경계에 딱 세우면 한 칸을
+ * 잃는다 — `contentBoxOf` 가 FitAddon 과 같은 `parseInt(getComputedStyle().width)` 라 소수점을
+ * 버리기 때문이다. 실측(raw/claude/f1-groups.json 경계드래그): 54칸을 겨냥해 422.547px 에 세웠더니
+ * `parseInt` 가 422 로 깎아 `floor(422 / 7.825) = 53` 이 요청됐다. 배지는 54, 화면은 53.
+ * 산식을 고칠 수도 있지만 그건 C2(전환 전후 같은 격자)를 건드리는 길이라 **여기서 반 칸 비켜선다**.
+ * 반 칸은 3~4px, 눈에 안 보이고, 그 대신 끄는 칸 수와 실제 격자가 늘 같아진다.
  */
 export function snapSplitRatio(input: {
   /** 분할 상자의 축 길이 px (경계선은 음수 마진이라 자리를 안 먹는다). */
@@ -127,10 +134,11 @@ export function snapSplitRatio(input: {
   minCells: number
   clamp: { min: number; max: number }
 }): { ratio: number; first: number; second: number } {
-  const cellsAt = (first: number): number => Math.floor(Math.max(0, first - input.overhead.first) / input.unit)
-  const secondCellsAt = (first: number): number =>
-    Math.floor(Math.max(0, input.total - first - input.overhead.second) / input.unit)
-  const pxFor = (cells: number): number => input.overhead.first + cells * input.unit
+  // 화면이 실제로 세는 방식과 **같은 손실**을 먹인다 — 상자 px 은 `parseInt` 로 깎여서 들어온다.
+  const cellsIn = (span: number): number => Math.floor(Math.floor(Math.max(0, span)) / input.unit)
+  const cellsAt = (first: number): number => cellsIn(first - input.overhead.first)
+  const secondCellsAt = (first: number): number => cellsIn(input.total - first - input.overhead.second)
+  const pxFor = (cells: number): number => input.overhead.first + cells * input.unit + input.unit / 2
 
   const lowPx = input.total * input.clamp.min
   const highPx = input.total * input.clamp.max
@@ -138,6 +146,9 @@ export function snapSplitRatio(input: {
   // 바닥 먼저 — 비율 클램프 안이어도 한 쪽이 최소 칸을 못 채우면 밀어낸다.
   const maxCells = cellsAt(input.total - input.overhead.second - input.minCells * input.unit)
   cells = Math.max(input.minCells, Math.min(cells, Math.max(input.minCells, maxCells)))
+  // 반 칸 비켜선 자리가 클램프를 넘을 수 있다 — 넘으면 한 칸 물린다. 클램프가 얼어 있는 수다.
+  while (cells > input.minCells && pxFor(cells) > highPx) cells -= 1
+  while (pxFor(cells) < lowPx && cells < maxCells) cells += 1
   const first = pxFor(cells)
   return {
     ratio: input.total <= 0 ? input.clamp.min : Math.min(Math.max(first / input.total, 0), 1),

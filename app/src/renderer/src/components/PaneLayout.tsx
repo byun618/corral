@@ -222,7 +222,11 @@ export function PaneLayout({
                 diagnostics={diagnostics}
                 focusable={focusable && selected}
                 focusToken={focusable && selected ? focusToken : 0}
-                announceFocus={selected}
+                // **창 전체의 포커스 pane 일 때만** herdr 에 알린다 (S2-b).
+                // `selected` 는 **영역 안**의 선택이라, 영역이 둘이면 두 pane 이 동시에 참이다.
+                // 그것으로 알리면 활성 영역이 바뀐 순간(영역 클릭·worktree 복귀)에 두 pane 의
+                // `selected` 가 그대로라 아무도 안 알리고, herdr 세션 포커스가 옛 영역에 남는다.
+                announceFocus={focusable && selected}
               />
             </div>
           </div>

@@ -316,6 +316,8 @@ export class TerminalStreams {
     this.focusedPaneId = paneId
     if (paneId === null) return
     const entry = this.entryForPane(paneId)
+    // 계측 실행에서만 — S2-b 는 "쐈는데 안 갔나" 와 "애초에 안 쐈나" 를 갈라야 판정이 선다.
+    if (this.measuring) log('stream.focus', { paneId, groupId: entry?.groupId ?? null, sent: entry !== undefined })
     if (entry === undefined) return
     void entry.session.focusPane(paneId).catch((error: unknown) => {
       log('stream.focus_failed', { paneId, error: error instanceof Error ? error.message : String(error) })

@@ -327,20 +327,15 @@ export function App(): React.JSX.Element {
   const termSync = useTermGroupSync({ groups: termGroups, cell })
 
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
-  const layoutRef = useRef({
-    activeGroupId: layout.activeGroupId,
-    activeTabId: null as string | null,
-    splitGroup: layout.splitGroup,
-    closeGroup: layout.closeGroup,
-    revealTab: layout.revealTab,
-  })
-  layoutRef.current = {
+  const layoutMirror = {
     activeGroupId: layout.activeGroupId,
     activeTabId: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null,
     splitGroup: layout.splitGroup,
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
   }
+  const layoutRef = useRef(layoutMirror)
+  layoutRef.current = layoutMirror
   // --- ③ MRU 전환 (LIFE-373 · F3-1~F3-6) ------------------------------------------
   //
   // 키는 **document 의 캡처 단계**가 잡는다. 두 가지를 한 번에 푸는 자리다:
@@ -878,6 +873,8 @@ export function App(): React.JSX.Element {
                     diagnostics={state.diagnostics}
                     focusable={isActiveGroup}
                     focusToken={isActiveGroup ? focusToken : 0}
+                    /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
+                    announceFocus={isActiveGroup}
                   />
                 </div>
               </div>

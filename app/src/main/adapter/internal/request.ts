@@ -10,7 +10,8 @@ import { LineSocket } from './line-socket.js'
 import { asResponseFrame, type ResponseFrame } from './protocol.js'
 
 /**
- * 앱이 보내도 되는 메서드 — **읽기 4종 + 쓰기 8종** (R3 + LIFE-357 `tab.rename` + LIFE-366 `integration.list`).
+ * 앱이 보내도 되는 메서드 — **읽기 4종 + 쓰기 13종** (R3 + LIFE-357 `tab.rename` + LIFE-366 `integration.list`
+ *  + LIFE-373 `pane.*` 5종).
  *
  * R1(LIFE-351)에서는 herdr 접촉이 읽기 전용이었다 — 쓰기 메서드가 나가면 범위 위반이라
  * 화이트리스트에 쓰기가 한 줄도 없었다. R3 에서 행 생성·종료·worktree 조작이 들어오며 쓰기
@@ -33,6 +34,13 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  *   · `worktree.open`·`worktree.create`·`workspace.create` — worktree 열기·만들기·빈 상태 복구 (L6·L7·L8)
  *   · `tab.rename`               — 탭 이름을 사용자가 직접 준다 (LIFE-357 I-7, lifecycle.ts renameTab).
  *     수신부(`tab_renamed`)는 이미 있었고 발신 경로가 없었다 — 이 줄이 그 구멍이다.
+ *   쓰기 (LIFE-373 ② — panes.ts):
+ *   · `pane.split`·`pane.resize`·`pane.close` — 분할·경계 밀기·닫기 (F2-1·F2-2·F2-5).
+ *     **분할 트리는 herdr 것이다** — corral 이 클라이언트 트리를 발명하지 않는다 (§0-1)
+ *   · `pane.zoom`     — 줌 **플래그만** 서버에 남긴다. 그리는 건 클라이언트다 (F2-3, A5)
+ *   · `pane.neighbor` — 인접 pane 을 **묻는다**. `pane.focus_direction` 은 여기 없다:
+ *     그건 herdr 세션 전역 포커스를 움직여 사용자의 TUI 클라이언트까지 끌고 간다 (3차 T3b).
+ *     corral 은 이웃 id 만 받아 자기 연결의 `pane.focus`(endpoint 소켓)로 옮긴다
  */
 const ALLOWED_METHODS: readonly string[] = [
   'session.snapshot',
@@ -47,6 +55,12 @@ const ALLOWED_METHODS: readonly string[] = [
   'worktree.create',
   'workspace.create',
   'tab.rename',
+  // LIFE-373 ② — pane 분할. 분할 트리는 herdr 것이고 corral 은 이 다섯으로만 건드린다 (panes.ts).
+  'pane.split',
+  'pane.resize',
+  'pane.zoom',
+  'pane.close',
+  'pane.neighbor',
 ]
 
 export class HerdrRequestError extends Error {

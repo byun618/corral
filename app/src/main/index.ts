@@ -20,7 +20,11 @@ import type {
   IntegrationRow,
   RemoveRepoResult,
   RenameRowResult,
+  PaneActionResult,
+  PaneDirection,
+  PaneSplitDirection,
   SessionDigest,
+  TerminalGroupRequest,
   TerminalScroll,
   UiPrefs,
   WorktreeActionResult,
@@ -28,7 +32,8 @@ import type {
 import {
   SESSION_POLL_MS,
   SessionLink,
-  TerminalStream,
+  TerminalStreams,
+  closePane,
   closeTab,
   closeWorkspace,
   createRow,
@@ -37,9 +42,13 @@ import {
   openWorkspace,
   openWorktree,
   probeForeground,
+  neighborPane,
   readIntegrations,
   readOpenWorkspaces,
   renameTab,
+  resizePane,
+  splitPane,
+  zoomPane,
   type SessionHandle,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
@@ -93,7 +102,7 @@ const link = new SessionLink({
  * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
  * 연결**이라 순서 보장이 없다 (A3 관찰 대상). 살아 있는 연결은 한 번에 하나 (stream.ts 주석).
  */
-const stream = new TerminalStream({
+const stream = new TerminalStreams({
   measuring,
   hooks: {
     onFrame: (frame) => {
@@ -109,19 +118,23 @@ const stream = new TerminalStream({
 })
 
 /**
- * 스트리밍 중인 pane 이 목록에서 사라졌으면 스트림을 닫는다.
+ * 목록에서 사라진 pane 을 **연결 명부에서 뺀다** (LIFE-373 §10-R16 축출).
  *
- * pane 이 닫히면 endpoint surface 에서 그 pane 이 빠져 프레임만 조용히 멎는다 — 벤더 세션은
- * 기다릴 뿐 오류를 내지 않는다. 사라짐을 아는 쪽은 control 링크(store)이므로 여기서 잇는다.
- * (pane 이 **다른 탭으로 이동**한 경우는 store 에 남아 있어 닫지 않는다 — 프레임이 멎고
- * 사용자가 다시 고르면 새 세션이 pane.focus 로 따라간다. 00-analysis §3-2)
+ * pane 이 닫히면 endpoint surface 에서 그 pane 이 빠져 프레임만 조용히 멎는다 — 세션은 기다릴 뿐
+ * 오류를 내지 않는다. 게다가 **patch 서피스는 사라진 pane 을 알려주지 않으므로**(R7) 다음 전체
+ * 서피스까지 누적 명부에 stale 로 남고, 그 사이 입력이 그 pane 으로 가면 S1 가드를 그냥 통과해
+ * herdr 가 조용히 버린다. 사라짐을 제때 아는 쪽은 control 링크(store)라 여기서 잇는다.
+ *
+ * LIFE-353 과 달라진 것: 연결을 **닫지 않는다**. 연결의 단위가 pane 이 아니라 영역(탭)이라
+ * pane 하나가 사라진다고 그 탭의 연결을 죽일 이유가 없다 — 명부에서만 뺀다.
+ * (연결을 닫는 판단은 렌더러의 영역 선언(`syncTermGroups`)이 한다 — S4.)
  */
 function dropStreamIfPaneGone(): void {
-  const paneId = stream.terminalState().paneId
-  if (paneId === null) return
-  if (link.store.paneIds().includes(paneId)) return
-  log('stream.pane_gone', { paneId })
-  stream.close()
+  const alive = new Set(link.store.paneIds())
+  const gone = stream.heldPaneIds().filter((paneId) => !alive.has(paneId))
+  if (gone.length === 0) return
+  log('stream.pane_gone', { panes: gone.join(',') })
+  stream.evictPanes(gone)
   scheduleEmit()
 }
 
@@ -144,24 +157,23 @@ function renderablePaneIds(): Set<string> {
 }
 
 /**
- * 스트리밍 중인 pane 이 **더는 트리에 없으면**(예: 그 레포가 목록에서 빠졌으면) 스트림을 닫는다
- * (수정 1회차 C2 — codex 중간2).
+ * **더는 트리에 없는** pane(예: 그 레포가 목록에서 빠졌다)을 명부에서 뺀다 (수정 1회차 C2 — codex 중간2).
  *
  * `dropStreamIfPaneGone` 은 pane 이 **herdr 위상에서** 사라진 경우(store)를 잡지만, 레포 제거는
  * herdr pane 을 건드리지 않는다 — store 엔 그대로 있고 corral **트리에서만** 빠진다. 그러면
  * 렌더러는 `TerminalPane` 을 언마운트하는데(App.tsx TerminalPanel), main 스트림은 열린 채 남아
- * 프레임을 계속 받는다(누수). 그래서 렌더러와 **같은 트리 기준**으로 여기서 닫는다.
+ * 프레임을 계속 받는다(누수). 그래서 렌더러와 **같은 트리 기준**으로 여기서 뺀다.
  *
  * 링크가 live 일 때만 판정한다: 재접속 중엔 `store.rows()` 가 일시적으로 비어 트리에 pane 이
- * 하나도 안 잡히는데, 그때 닫으면 곧 되살아날 멀쩡한 스트림을 죽인다 (advisor 가드).
+ * 하나도 안 잡히는데, 그때 빼면 곧 되살아날 멀쩡한 pane 을 명부에서 지운다 (advisor 가드).
  */
 function dropStreamIfPaneUnviewable(): void {
-  const paneId = stream.terminalState().paneId
-  if (paneId === null) return
   if (link.linkState().phase !== 'live') return
-  if (renderablePaneIds().has(paneId)) return
-  log('stream.pane_unviewable', { paneId })
-  stream.close()
+  const renderable = renderablePaneIds()
+  const gone = stream.heldPaneIds().filter((paneId) => !renderable.has(paneId))
+  if (gone.length === 0) return
+  log('stream.pane_unviewable', { panes: gone.join(',') })
+  stream.evictPanes(gone)
   scheduleEmit()
 }
 
@@ -198,6 +210,7 @@ function currentState(): AppState {
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
     repos: tree.repos,
     terminal: stream.terminalState(),
+    terminalGroups: stream.groupStates(),
     integrations,
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
@@ -702,8 +715,8 @@ function pickSession(name: string): void {
     return
   }
   selectedSession = name
-  // 세션이 바뀌면 이전 세션의 pane 스트림은 의미가 없다 — 같이 닫는다.
-  stream.close()
+  // 세션이 바뀌면 이전 세션의 영역 연결은 의미가 없다 — 전부 닫는다.
+  stream.closeAll()
   link.open(found)
   // 세션이 바뀌면 지문·통합 상태도 그 세션의 것이다 (LIFE-366). 주기를 기다리지 않고 바로 읽는다.
   digests = new Map()
@@ -721,19 +734,22 @@ function currentClientSocketPath(): string | null {
 }
 
 /**
- * pane 하나를 골라 스트림을 연다 (R2 의 유일한 herdr-client.sock 접촉 트리거).
+ * 포커스 pane 을 고른다 (S2 — 클릭·MRU 확정·명시 단축키에서만 여기 온다).
+ *
+ * LIFE-353 에서는 이 호출이 곧 "연결을 연다"였다. LIFE-373 에서 연결의 단위가 **영역**으로
+ * 올라가면서 여는 판단은 렌더러의 영역 선언(`syncTermGroups`)이 가져갔다 — 여기 남은 일은
+ * ① `state.terminal` 파생의 기준점을 옮기고 ② 그 pane 을 쥔 연결에 `pane.focus` 를 쏘는 것뿐이다.
  *
  * paneId 는 **현재 링크의 목록에 있는 것만** 받는다 — 렌더러가 낡은 id 를 보내면 (pane 이
  * 방금 닫혔으면) 여기서 걸러 식별 가능한 로그로 남긴다. 검증의 진실은 store 다.
  */
 function selectPane(input: { paneId: string | null; cols?: number; rows?: number }): void {
   if (input.paneId === null) {
-    stream.close()
+    stream.focusPane(null)
     scheduleEmit()
     return
   }
-  const clientSocketPath = currentClientSocketPath()
-  if (clientSocketPath === null) {
+  if (currentClientSocketPath() === null) {
     log('stream.select.no_session', { paneId: input.paneId })
     return
   }
@@ -741,13 +757,31 @@ function selectPane(input: { paneId: string | null; cols?: number; rows?: number
     log('stream.select.unknown_pane', { paneId: input.paneId })
     return
   }
-  stream.open({
-    clientSocketPath,
-    paneId: input.paneId,
-    cols: input.cols ?? 80,
-    rows: input.rows ?? 24,
-  })
+  stream.focusPane(input.paneId)
   scheduleEmit()
+}
+
+/** 렌더러가 선언한 영역 구성을 스트림 층에 넘긴다 (LIFE-373 ① — 연결 수명의 유일한 입구). */
+function syncTermGroups(groups: TerminalGroupRequest[]): void {
+  const clientSocketPath = currentClientSocketPath()
+  if (clientSocketPath === null) {
+    if (groups.length > 0) log('stream.sync.no_session', { groups: groups.length })
+    stream.closeAll()
+    scheduleEmit()
+    return
+  }
+  const alive = new Set(link.store.paneIds())
+  const valid = groups.filter((group) => {
+    if (alive.has(group.activePaneId)) return true
+    log('stream.sync.unknown_pane', { groupId: group.groupId, paneId: group.activePaneId })
+    return false
+  })
+  stream.sync({ clientSocketPath, groups: valid })
+}
+
+/** herdr 거절을 화면 문구로 옮긴다 — 봉투는 어댑터 안에서 끝난다. */
+function paneResult(outcome: { outcome: 'ok' } | { outcome: 'rejected'; rejection: { code: string; message: string } }): PaneActionResult {
+  return outcome.outcome === 'ok' ? { ok: true } : { ok: false, error: outcome.rejection.message || outcome.rejection.code }
 }
 
 /**
@@ -1017,25 +1051,100 @@ app.whenReady().then(() => {
   ipcMain.handle('corral:selectPane', (event, input: { paneId: string | null; cols?: number; rows?: number }) => {
     if (fromOurWindow(event)) selectPane(input)
   })
+  // 영역 선언 — 연결을 열고·닫고·탭을 옮기고·격자를 맞추는 유일한 입구 (LIFE-373).
+  ipcMain.on('corral:syncTermGroups', (event, groups: TerminalGroupRequest[]) => {
+    if (!fromOurWindow(event) || !Array.isArray(groups)) return
+    const valid = groups.filter(
+      (group) =>
+        typeof group?.groupId === 'string' &&
+        typeof group.tabId === 'string' &&
+        typeof group.activePaneId === 'string' &&
+        typeof group.cols === 'number' &&
+        typeof group.rows === 'number',
+    )
+    syncTermGroups(valid)
+  })
   // 입력·리사이즈·스크롤은 fire-and-forget — 왕복을 기다릴 값이 없고 레이턴시(S2)에 민감하다.
-  ipcMain.on('corral:termInput', (event, data: string) => {
-    if (fromOurWindow(event) && typeof data === 'string') stream.input(data)
-  })
-  ipcMain.on('corral:termResize', (event, size: { cols: number; rows: number }) => {
+  ipcMain.on('corral:termInput', (event, input: { paneId: string; data: string }) => {
     if (!fromOurWindow(event)) return
-    if (typeof size?.cols !== 'number' || typeof size?.rows !== 'number') return
-    stream.resize({ cols: size.cols, rows: size.rows })
+    if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
+    stream.input(input)
   })
-  ipcMain.on('corral:termScroll', (event, scroll: TerminalScroll) => {
+  ipcMain.on('corral:termResize', (event, size: { groupId: string; cols: number; rows: number }) => {
+    if (!fromOurWindow(event)) return
+    if (typeof size?.groupId !== 'string' || typeof size.cols !== 'number' || typeof size.rows !== 'number') return
+    stream.resize(size)
+  })
+  ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {
     // termInput·termResize 와 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
     // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
     if (!fromOurWindow(event)) return
-    if (scroll?.direction !== 'up' && scroll?.direction !== 'down') return
+    if (typeof scroll?.paneId !== 'string') return
+    if (scroll.direction !== 'up' && scroll.direction !== 'down') return
     if (typeof scroll.lines !== 'number') return
     if (scroll.column !== null && typeof scroll.column !== 'number') return
     if (scroll.row !== null && typeof scroll.row !== 'number') return
     stream.scroll(scroll)
   })
+  /**
+   * 줌은 두 곳에 남는다 (F2-3): **서버에는 플래그**(herdr TUI 도 같은 상태를 보게), **화면은
+   * 클라이언트가** 격자 역산으로 그린다. 서버 rect 는 안 바뀌므로(A5·프리플라이트 ②) 플래그는
+   * 정합용이지 그림의 근거가 아니다. 해제 대상 pane 은 스트림이 들고 있던 값을 쓴다.
+   */
+  ipcMain.on('corral:termZoom', (event, input: { groupId: string; paneId: string | null; cols: number; rows: number }) => {
+    if (!fromOurWindow(event)) return
+    if (typeof input?.groupId !== 'string' || typeof input.cols !== 'number' || typeof input.rows !== 'number') return
+    if (input.paneId !== null && typeof input.paneId !== 'string') return
+    const previous = stream.zoomedPaneOf(input.groupId)
+    stream.zoom(input)
+    const socketPath = currentSocketPath()
+    if (socketPath === null) return
+    const target = input.paneId ?? previous
+    if (target === null) return
+    void zoomPane({ socketPath, paneId: target, on: input.paneId !== null }).catch((error: unknown) =>
+      log('stream.zoom_flag_failed', { paneId: target, error: error instanceof Error ? error.message : String(error) }),
+    )
+  })
+
+  // --- pane 분할 (② — control 소켓) ---
+  ipcMain.handle(
+    'corral:splitPane',
+    async (event, input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneActionResult> => {
+      if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
+      const socketPath = currentSocketPath()
+      if (socketPath === null) return { ok: false, error: '세션이 없다' }
+      return paneResult(await splitPane({ socketPath, ...input }))
+    },
+  )
+  ipcMain.handle(
+    'corral:resizePane',
+    async (event, input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> => {
+      if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
+      const socketPath = currentSocketPath()
+      if (socketPath === null) return { ok: false, error: '세션이 없다' }
+      return paneResult(await resizePane({ socketPath, ...input }))
+    },
+  )
+  ipcMain.handle('corral:closePane', async (event, input: { paneId: string }): Promise<PaneActionResult> => {
+    if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
+    const socketPath = currentSocketPath()
+    if (socketPath === null) return { ok: false, error: '세션이 없다' }
+    return paneResult(await closePane({ socketPath, paneId: input.paneId }))
+  })
+  // 인접 pane 은 **서버가 계산한다**(F2-4). corral 은 id 만 받아 자기 연결의 pane.focus 로 옮긴다.
+  ipcMain.handle(
+    'corral:focusPaneDirection',
+    async (event, input: { paneId: string; direction: PaneDirection }): Promise<PaneActionResult> => {
+      if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
+      const socketPath = currentSocketPath()
+      if (socketPath === null) return { ok: false, error: '세션이 없다' }
+      const found = await neighborPane({ socketPath, ...input })
+      if (found.outcome === 'rejected') return { ok: false, error: found.rejection.message || found.rejection.code }
+      if (found.paneId === null) return { ok: true }
+      selectPane({ paneId: found.paneId })
+      return { ok: true }
+    },
+  )
 
   createWindow()
   void pollSessions()
@@ -1073,7 +1182,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null
-  stream.close()
+  stream.closeAll()
   link.close()
   log('app.quit', { logFile: logFile() })
   closeLog()

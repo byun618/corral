@@ -11,7 +11,15 @@ export { listSessions, SESSION_POLL_MS, type SessionHandle } from './internal/se
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { readIntegrations, type IntegrationScan } from './internal/integrations.js'
 export { DEFAULT_RESYNC_MS } from './internal/link.js'
-export { TerminalStream, type StreamHooks } from './internal/stream.js'
+export { TerminalStreams, type StreamHooks } from './internal/stream.js'
+export {
+  closePane,
+  neighborPane,
+  resizePane,
+  splitPane,
+  zoomPane,
+  type PaneOutcome,
+} from './internal/panes.js'
 export {
   closeTab,
   renameTab,

@@ -435,6 +435,66 @@ export type TerminalScroll = {
   row: number | null
 }
 
+/** pane 리사이즈·이웃 이동의 방향. */
+export type PaneDirection = 'left' | 'right' | 'up' | 'down'
+
+/** **분할**의 방향은 둘뿐이다 — herdr 스키마 `SplitDirection` 에 좌/상 분할이 없다. */
+export type PaneSplitDirection = 'right' | 'down'
+
+/** pane 조작 결과 — 실패는 화면에 문구로 뜬다 (herdr 응답을 그대로 흘리지 않는다). */
+export type PaneActionResult = { ok: true } | { ok: false; error: string }
+
+/** 셀 좌표 사각형 — 탭 격자(=한 연결이 받는 서피스) 기준. */
+export type TerminalCellRect = { x: number; y: number; width: number; height: number }
+
+/**
+ * 영역이 붙은 탭 안 pane 하나의 기하 (LIFE-373 ②).
+ *
+ * **셀 단위**다. 렌더러는 이 값에 바닥 셀 크기를 곱해 pane DOM 상자를 만든다 — 픽셀에서
+ * cols 를 되짚는 반대 방향은 쓰지 않는다 (§10-R13: herdr rect → DOM 이 진실 방향).
+ */
+export type TerminalPaneView = {
+  paneId: string
+  /** 장식(테두리·스크롤바) 포함 바깥 사각형. */
+  rect: TerminalCellRect
+  /** 내용만 — xterm 에 실리는 범위. */
+  innerRect: TerminalCellRect
+  focused: boolean
+  mouseReporting: boolean
+}
+
+/** 영역 하나 = endpoint 연결 하나의 상태 (main → renderer). */
+export type TerminalGroupState = {
+  groupId: string
+  /** 이 연결이 붙어 있는 탭. 아직 안 붙었으면 null. */
+  tabId: string | null
+  phase: TerminalPhase
+  /** 마지막으로 요청한 탭 격자. */
+  grid: { cols: number; rows: number } | null
+  panes: TerminalPaneView[]
+  /** 줌 중인 pane (클라이언트가 그린다 — 서버 rect 는 안 바뀐다). */
+  zoomedPaneId: string | null
+  lastError: string | null
+}
+
+/**
+ * 렌더러가 선언하는 영역 구성 (renderer → main).
+ *
+ * 명령이 아니라 **선언**이다 — main 이 현재 연결과 대조해 열고·닫고·탭을 옮기고·격자를 맞춘다.
+ * 부팅 복원·재접속·worktree 전환이 전부 이 한 길로 들어와 attach 순서(S2-b)가 한 곳에서 지켜진다.
+ */
+export type TerminalGroupRequest = {
+  groupId: string
+  tabId: string
+  /** 이 탭에서 활성인 pane — attach 의 `pane.focus` 대상. */
+  activePaneId: string
+  /** 영역 상자가 정한 탭 격자 (셀). */
+  cols: number
+  rows: number
+  /** 활성 영역인가 — attach 순서에서 **마지막**에 붙는다 (S2-b). */
+  active: boolean
+}
+
 export type AppState = {
   revision: number
   sessions: SessionInfo[]
@@ -446,6 +506,11 @@ export type AppState = {
   registry: RegistryState
   repos: RepoRow[]
   terminal: TerminalState
+  /**
+   * 영역별 스트림 상태 (LIFE-373). `terminal` 은 그중 **포커스 pane** 하나를 추린 것이라
+   * LIFE-353 의 단일 pane 계약이 그대로 산다 (§10-R5).
+   */
+  terminalGroups: TerminalGroupState[]
   /**
    * herdr 통합 설치 상태 3종 (LIFE-366 A1). 아직 못 읽었으면 빈 배열 —
    * 화면은 "미설치" 와 "아직 모름" 을 구분해야 하므로 빈 배열을 미설치로 읽지 않는다.
@@ -497,10 +562,30 @@ export type CorralApi = {
    * cols·rows 는 렌더러가 잰 터미널 영역 크기 — 첫 연결이 맞는 크기로 뜨게 한다 (없으면 80×24).
    */
   selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) => Promise<void>
-  /** xterm onData 그대로 — 키·마우스 리포트·붙여넣기 전부 이 한 길이다. */
-  termInput: (data: string) => void
-  termResize: (size: { cols: number; rows: number }) => void
-  termScroll: (scroll: TerminalScroll) => void
+  /**
+   * 영역 구성을 선언한다 (LIFE-373). main 이 현재 연결과 대조해 열고·닫고·탭을 옮기고·격자를 맞춘다.
+   * 빈 배열이면 연결을 전부 닫는다.
+   */
+  syncTermGroups: (groups: TerminalGroupRequest[]) => void
+  /**
+   * xterm onData 그대로 — 키·마우스 리포트·붙여넣기 전부 이 한 길이다.
+   * **어느 pane 인지 실어 보낸다**: 붙은 탭 밖 pane 이면 herdr 가 조용히 버리므로 main 이 막는다 (S1).
+   */
+  termInput: (input: { paneId: string; data: string }) => void
+  /** 영역 상자가 정한 **탭 격자**를 1회 요청한다 (pane 단위가 아니다 — §10-R13). */
+  termResize: (input: { groupId: string; cols: number; rows: number }) => void
+  termScroll: (input: { paneId: string } & TerminalScroll) => void
+  /** 줌 — paneId null 이면 해제. 그리는 건 클라이언트, 격자만 역산해 요청한다 (F2-3). */
+  termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) => void
+  // --- pane 분할 (② — herdr 소유) ---
+  /** `pane.split`. 클라이언트가 트리를 발명하지 않는다 (F2-1). */
+  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }) => Promise<PaneActionResult>
+  /** `pane.resize` — `amount` 는 **비율 델타**다(셀이 아니다). 드래그 끝에 1회만 부른다 (F2-2). */
+  resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }) => Promise<PaneActionResult>
+  /** `pane.close`. 마지막 pane 이면 탭이 닫힌다 (F2-5). */
+  closePane: (input: { paneId: string }) => Promise<PaneActionResult>
+  /** `pane.focus_direction` — 인접 pane 포커스 이동은 서버가 정한다 (F2-4). */
+  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneActionResult>
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

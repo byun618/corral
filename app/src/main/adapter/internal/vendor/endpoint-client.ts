@@ -78,6 +78,8 @@ export interface EndpointSurface {
   frame: FrameData;
   surfaceRevision: number;
   panes: PaneSurfacePaneMeta[];
+  /** corral 수정 ②: true = full surface (panes = 전원), false = patch (panes = 바뀐 것만). */
+  full: boolean;
 }
 
 /**
@@ -463,7 +465,7 @@ export class EndpointClient extends EventEmitter {
     const frame = readFrameData(r);
     const panes = readPaneSurfacePanes(r);
     // splits / popup / graphics tail: unused by the GUI, left unread.
-    this.surface = { frame, surfaceRevision, panes };
+    this.surface = { frame, surfaceRevision, panes, full: true };
     this.emit("surface", this.surface);
   }
 
@@ -510,7 +512,7 @@ export class EndpointClient extends EventEmitter {
       }
     }
     if (cursor) nextFrame.cursor = cursor;
-    this.surface = { frame: nextFrame, surfaceRevision, panes };
+    this.surface = { frame: nextFrame, surfaceRevision, panes, full: false };
     this.emit("surface", this.surface);
   }
 }

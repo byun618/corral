@@ -14,7 +14,11 @@ import type {
   CloseRowResult,
   CorralApi,
   CreateRowResult,
+  PaneActionResult,
+  PaneDirection,
+  PaneSplitDirection,
   RemoveRepoResult,
+  TerminalGroupRequest,
   TerminalFrame,
   TerminalScroll,
   RenameRowResult,
@@ -39,9 +43,15 @@ const EXPOSED = [
   'createWorktree',
   'reportRendered',
   'selectPane',
+  'syncTermGroups',
   'termInput',
   'termResize',
   'termScroll',
+  'termZoom',
+  'splitPane',
+  'resizePane',
+  'closePane',
+  'focusPaneDirection',
   'onTermFrame',
   'preloadEnv',
 ]
@@ -77,9 +87,19 @@ const api: CorralApi = {
   selectPane: (input: { paneId: string | null; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('corral:selectPane', input),
   // 입력·리사이즈·스크롤은 send — 왕복 없는 한 방향이 레이턴시(S2)의 모양이다.
-  termInput: (data: string) => ipcRenderer.send('corral:termInput', data),
-  termResize: (size: { cols: number; rows: number }) => ipcRenderer.send('corral:termResize', size),
-  termScroll: (scroll: TerminalScroll) => ipcRenderer.send('corral:termScroll', scroll),
+  syncTermGroups: (groups: TerminalGroupRequest[]) => ipcRenderer.send('corral:syncTermGroups', groups),
+  termInput: (input: { paneId: string; data: string }) => ipcRenderer.send('corral:termInput', input),
+  termResize: (input: { groupId: string; cols: number; rows: number }) => ipcRenderer.send('corral:termResize', input),
+  termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
+  termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
+    ipcRenderer.send('corral:termZoom', input),
+  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneActionResult> =>
+    ipcRenderer.invoke('corral:splitPane', input),
+  resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> =>
+    ipcRenderer.invoke('corral:resizePane', input),
+  closePane: (input: { paneId: string }): Promise<PaneActionResult> => ipcRenderer.invoke('corral:closePane', input),
+  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneActionResult> =>
+    ipcRenderer.invoke('corral:focusPaneDirection', input),
   onTermFrame: (listener: (frame: TerminalFrame) => void) => {
     const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)
     ipcRenderer.on('corral:termFrame', handler)

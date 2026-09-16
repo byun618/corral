@@ -14,7 +14,7 @@
 | `vt-input-classifier.ts` | `server/src/bridge/vt-input-classifier.ts` | **무수정** |
 | `terminal-clipboard.ts` | `server/src/bridge/terminal-clipboard.ts` | **무수정** |
 | `frame-types.ts` | `server/src/bridge/thin-client.ts` **발췌** | `CellData`·`CursorState`·`FrameData`·`readCellData`·`readFrameData` 다섯 개만. thin-client.ts 본체(레거시 프로토콜 클라이언트)는 02-rebuild-plan §2 "안 봄" — 벤더하지 않는다. 발췌 본문 무수정 |
-| `endpoint-client.ts` | `server/src/bridge/endpoint-client.ts` | import 경로 1건 (`./thin-client` → `./frame-types`). 본문 무수정 |
+| `endpoint-client.ts` | `server/src/bridge/endpoint-client.ts` | ① import 경로 1건 (`./thin-client` → `./frame-types`) ② **`EndpointSurface.full: boolean`** — `handleSurface` 는 `true`, `handlePatch` 는 `false` 로 채운다 (LIFE-373 §10-R7). 원본은 두 경로가 `panes` 를 통째로 교체하는데 patch 의 `panes` 는 **바뀐 pane 만** 실어 온다 — 소비자가 "이 탭에 없다"와 "이번엔 안 바뀌었다"를 구분할 방법이 없었다. 필드 추가뿐, 로직 무변경. 그 외 본문 무수정 |
 | `frame-to-ansi.ts` | `server/src/bridge/frame-to-ansi.ts` | ① import 경로 (`./thin-client` → `./frame-types`) ② **`Bun.stringWidth` → `./string-width` 의 `stringWidth`** (Node 대체 — 00-analysis §4-2). 그 외 본문 무수정 |
 | `endpoint-terminal-session.ts` | `server/src/bridge/endpoint-terminal-session.ts` | ① import 경로 (`./thin-client` → `./frame-types`, `../utils/logger` → `./logger`) ② **`create()` 메서드 + `endpoint-creation` import strip** — 탭/워크스페이스 생성은 R3 범위 (00-analysis §4-2·§4-3 권고 그대로. `endpoint-creation.ts` 는 벤더하지 않음) ③ **계측 `logger.debug` 3줄** — `client.resize` 호출 2지점(`"resize request"`)과 `onSurface` 1지점(`"surface"`). 기준 S5 오라클(요청 횟수·innerRect 서버 응답)의 원자료. 로직 무변경. 그 외 본문 무수정 |
 

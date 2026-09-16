@@ -21,6 +21,7 @@ import type {
   RemoveRepoResult,
   RenameRowResult,
   PaneActionResult,
+  PaneNeighborResult,
   PaneDirection,
   PaneSplitDirection,
   SessionDigest,
@@ -1064,6 +1065,13 @@ app.whenReady().then(() => {
         typeof group.cols === 'number' &&
         typeof group.rows === 'number',
     )
+    // 하나라도 모양이 어긋나면 **통째로 버린다** — 걸러낸 나머지를 보내면 그 선언에서 빠진 영역이
+    // "사라진 영역"으로 읽혀 멀쩡한 연결이 닫힌다. 렌더러는 상태가 바뀔 때마다 다시 선언하므로
+    // 한 번 버리는 건 안전하고, 연결을 죽이는 건 안 안전하다.
+    if (valid.length !== groups.length) {
+      log('stream.sync_dropped', { declared: groups.length, valid: valid.length })
+      return
+    }
     syncTermGroups(valid)
   })
   // 입력·리사이즈·스크롤은 fire-and-forget — 왕복을 기다릴 값이 없고 레이턴시(S2)에 민감하다.
@@ -1072,13 +1080,8 @@ app.whenReady().then(() => {
     if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
     stream.input(input)
   })
-  ipcMain.on('corral:termResize', (event, size: { groupId: string; cols: number; rows: number }) => {
-    if (!fromOurWindow(event)) return
-    if (typeof size?.groupId !== 'string' || typeof size.cols !== 'number' || typeof size.rows !== 'number') return
-    stream.resize(size)
-  })
   ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {
-    // termInput·termResize 와 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
+    // termInput 과 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
     // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
     if (!fromOurWindow(event)) return
     if (typeof scroll?.paneId !== 'string') return
@@ -1136,15 +1139,15 @@ app.whenReady().then(() => {
   // 인접 pane 은 **서버가 계산한다**(F2-4). corral 은 id 만 받아 자기 연결의 pane.focus 로 옮긴다.
   ipcMain.handle(
     'corral:focusPaneDirection',
-    async (event, input: { paneId: string; direction: PaneDirection }): Promise<PaneActionResult> => {
+    async (event, input: { paneId: string; direction: PaneDirection }): Promise<PaneNeighborResult> => {
       if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
       const socketPath = currentSocketPath()
       if (socketPath === null) return { ok: false, error: '세션이 없다' }
       const found = await neighborPane({ socketPath, ...input })
       if (found.outcome === 'rejected') return { ok: false, error: found.rejection.message || found.rejection.code }
-      if (found.paneId === null) return { ok: true }
-      selectPane({ paneId: found.paneId })
-      return { ok: true }
+      // 여기서 포커스를 옮기지 않는다 — 선택 pane 의 주인은 렌더러다. main 이 앞질러 옮기면
+      // herdr 포커스는 이웃, 화면 강조·영역 선언은 옛 pane 으로 갈린다. id 만 돌려준다.
+      return { ok: true, paneId: found.paneId }
     },
   )
 

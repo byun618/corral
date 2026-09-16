@@ -25,7 +25,13 @@ export const REPO_DIR = path.dirname(APP_DIR)
  * (지시 10). `L351_ROUND` 로 회차를 바꾼다.
  */
 export const ROUND = process.env.L353_ROUND ?? 's8'
-export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude', ROUND)
+/**
+ * LIFE-373 재실행분은 `L353_RAW_SUBDIR` 로 한 층 더 내려간다 — lib.mjs 와 같은 규칙이다.
+ * 이게 없으면 다른 작업(LIFE-373)의 재실행이 **얼어 있는 LIFE-353 원자료를 덮는다**. 실제로
+ * 덮었다 (`s8/n5-list-consistency.json`, `_discarded/.../m0-smoke/app.ndjson` — 복원함).
+ */
+export const RAW_SUBDIR = process.env.L353_RAW_SUBDIR ?? ''
+export const RAW_DIR = path.join(REPO_DIR, 'specs/LIFE-353-terminal-streaming/raw/claude', RAW_SUBDIR, ROUND)
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -442,13 +448,34 @@ export function corralIdsFromState(state) {
  * corral 쪽은 제어 채널(앱 상태), herdr 쪽은 **하네스 자기 커넥션** — 판별자가 재는 대상의
  * 출력이 아니게 하려면 상대편은 제3자여야 한다 (관문 ⑤).
  */
-export async function look(app) {
-  const [state, truth] = await Promise.all([app.state(), herdrTruth()])
+/**
+ * corral 이 **연 적 없는** workspace 를 대조에서 뺀다 (LIFE-373 하네스 수정 ③).
+ *
+ * herdr 0.9.0 은 workspace 수가 0 이 되면 `$HOME` 에 하나를 **스스로** 만든다 (제3 오라클 실측:
+ * 마지막 workspace 를 닫으면 곧바로 label `~` 의 새 workspace 가 선다). corral 은 자기가 연
+ * workspace 만 그리므로(등록 레포의 worktree 에 바인딩된 것), 그 유령은 영원히 corral 쪽에
+ * 안 뜬다 — ⓓ(마지막 탭 닫기)가 5/5 어긋나는 원인이 이것이고, corral 회귀가 아니다.
+ * 뺄 대상은 **그 닫기 직전 herdr 목록에 없던 workspace** 로만 한정한다 (호출자가 스냅샷을 준다).
+ * id 접두(`w1B:t1`)로 그 workspace 의 탭·pane 도 함께 뺀다.
+ */
+export function ignoreWorkspacesIn(truth, ignore) {
+  if (ignore.length === 0) return truth
+  const 유령인가 = (id) => ignore.some((ws) => id === ws || id.startsWith(`${ws}:`))
+  return {
+    workspaces: truth.workspaces.filter((id) => !유령인가(id)),
+    tabs: truth.tabs.filter((id) => !유령인가(id)),
+    panes: truth.panes.filter((id) => !유령인가(id)),
+  }
+}
+
+export async function look(app, ignoreWorkspaces = []) {
+  const [state, raw] = await Promise.all([app.state(), herdrTruth()])
+  const truth = ignoreWorkspacesIn(raw, ignoreWorkspaces)
   const corral = corralIdsFromState(state)
   // `at` 은 벽시계(원자료를 로그와 짝짓는 용), `mono` 는 **단조 시계**다 (수정 2회차 L-9).
   // 두 관측 사이가 1ms 도 안 걸리는 구간이 실제로 있어서 ms 정수로는 0 이 나온다 —
   // 그러면 "처음엔 안 맞았는데 수렴까지 0ms" 라는 모순된 줄이 남는다.
-  const result = { at: Date.now(), mono: performance.now(), corral, herdr: truth }
+  const result = { at: Date.now(), mono: performance.now(), corral, herdr: truth, herdr원본: raw }
   return { ...result, 일치: agreed(result), 차이: diffSets(corral, truth) }
 }
 

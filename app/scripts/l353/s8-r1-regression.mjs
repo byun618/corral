@@ -66,11 +66,11 @@ function snapshotsSince(mark) {
 }
 
 /** herdr 가 그 변화를 확정한 **바로 그 폴에서** corral 을 함께 뜬다. */
-async function watch(done, { everyMs = 20, timeoutMs = 15000 } = {}) {
+async function watch(done, { everyMs = 20, timeoutMs = 15000, ignoreWorkspaces = [] } = {}) {
   let firstLook = null
   const seen = await until(
     async () => {
-      const view = await look(app)
+      const view = await look(app, ignoreWorkspaces)
       if (!done(view.herdr)) return null
       firstLook = view
       return view
@@ -183,17 +183,17 @@ async function record(bucket, row) {
  * 짝 안 맞는 줄이 나왔다 (N5 ⓔ 3회차). 어긋난 것을 본 폴과 일치한 폴이 다른 관측이면
  * 그 사이는 0 일 수 없다. 표기가 스스로 모순되지 않게 게이트도 같이 싣는다.
  */
-async function settle({ bucket, round, mark, done, extra = {} }) {
-  const confirmed = await watch(done)
-  const first = confirmed.firstLook ?? (await look(app))
+async function settle({ bucket, round, mark, done, extra = {}, ignoreWorkspaces = [] }) {
+  const confirmed = await watch(done, { ignoreWorkspaces })
+  const first = confirmed.firstLook ?? (await look(app, ignoreWorkspaces))
   const converged = await until(
     async () => {
-      const view = await look(app)
+      const view = await look(app, ignoreWorkspaces)
       return view.일치 ? view : null
     },
     { what: '수렴', timeoutMs: 10000, everyMs: 40 },
   )
-  const final = await look(app)
+  const final = await look(app, ignoreWorkspaces)
   const 수렴ms = 사이ms(first, converged.value)
   await record(bucket, {
     round,
@@ -210,6 +210,8 @@ async function settle({ bucket, round, mark, done, extra = {} }) {
     처음차이: first.일치 ? null : first.차이,
     수렴ms,
     스냅샷재조회: snapshotsSince(mark),
+    // 뺀 유령이 있으면 그대로 남긴다 — 안 보이게 뺀 것이 아니라 **왜 뺐는지 보이게** 뺀다.
+    herdr가스스로만든workspace: ignoreWorkspaces,
     일치: final.일치,
     차이: final.차이,
     corral: final.corral,
@@ -285,12 +287,24 @@ for (let round = 1; round <= TIMES; round++) {
   const paneId = (await request('pane.list', {})).panes.find((pane) => pane.tab_id === tabId)?.pane_id ?? null
   await waitPrompt(paneId)
   const mark = Date.now()
+  // 닫기 **직전** herdr 목록 — 이 뒤에 생긴 workspace 는 corral 이 연 게 아니라 herdr 가 스스로
+  // 만든 것이다(수수 count 0 → `$HOME` 자동 생성). 대조에서 뺀다.
+  const 닫기전 = (await herdrTruth()).workspaces
   await request('tab.close', { tab_id: tabId })
+  const 유령 = await until(
+    async () => {
+      const now = (await herdrTruth()).workspaces
+      const 새것 = now.filter((id) => !닫기전.includes(id))
+      return 새것.length > 0 ? 새것 : null
+    },
+    { what: '자동 생성 workspace', timeoutMs: 1500, everyMs: 40 },
+  )
   await settle({
     bucket: 'd',
     round,
     mark,
     done: (truth) => !truth.workspaces.includes(workspaceId),
+    ignoreWorkspaces: 유령.value ?? [],
     extra: { workspaceId, tabId, paneId },
   })
 }

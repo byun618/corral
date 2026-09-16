@@ -20,8 +20,18 @@ async function main() {
   if (root === null) throw new Error('레포 루트를 못 찾음 — attach 가 등록을 안 했나')
 
   const t0 = Date.now()
-  // 진짜 「제거」 버튼 (행 hover 시 또렷해지지만 쉼 상태에서도 히트 가능) → 확인창.
-  const removeClick = await app.click(`[data-remove-repo="${root}"]`)
+  // 진짜 「제거」 경로 — **LIFE-357 이후 메뉴 안으로 들어갔다** (LIFE-373 하네스 수정 ④).
+  //
+  // r1 때는 행에 바로 `[data-remove-repo]` 버튼이 있었다. LIFE-357 사이드바 재설계가 그 버튼을
+  // 「더보기」 메뉴(`data-repo-menu-toggle` → `data-repo-menu-remove`)로 옮겼고, 하네스는 그 뒤로
+  // 한 번도 안 돌아서 이제야 드러났다. **LIFE-373 과 무관한 선행 깨짐**이다 — `data-pane` 행이
+  // 사라진 것과 같은 결. UI 경로로 재현한다는 이 시험의 취지는 그대로 두고 경로만 따라간다.
+  const menuClick = await app.click(`[data-repo-menu-toggle="${root}"]`)
+  await until(async () => (await app.query(`[data-repo-menu-remove="${root}"]`)).found.length > 0, {
+    timeoutMs: 4000,
+    what: 'repo row menu',
+  })
+  const removeClick = await app.click(`[data-repo-menu-remove="${root}"]`)
   const modalUp = await until(async () => (await app.query('[data-confirm-ok]')).found.length > 0, {
     timeoutMs: 4000,
     what: 'confirm modal',
@@ -62,6 +72,7 @@ async function main() {
     repoRoot: root,
     streamingBefore,
     attach: { streamingMs: attached.streamingMs },
+    메뉴열기Hit: menuClick.hit === true,
     removeClickHit: removeClick.hit === true,
     confirmModalUp: modalUp.ok,
     confirmClickHit: confirmClick.hit === true,

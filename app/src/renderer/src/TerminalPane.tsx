@@ -21,6 +21,7 @@ import { Terminal } from '@xterm/xterm'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
+import { measureCellSize, readCellSize } from './term-metrics.js'
 
 const decoder = new TextDecoder()
 
@@ -241,6 +242,11 @@ export function TerminalPane({
               }, 60)
             })
           }),
+        /**
+         * R13-a — 이 xterm 이 실제로 쓰는 셀 px 과 **오프스크린 측정치**를 나란히 준다.
+         * 둘이 다르면 영역이 요청하는 격자가 통째로 어긋난다 (전 pane 동시 오차).
+         */
+        cell: () => ({ live: readCellSize(term), measured: measureCellSize() }),
         read: () => {
           const buffer = term.buffer.active
           const lines: string[] = []

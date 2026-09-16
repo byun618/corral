@@ -444,6 +444,9 @@ export type PaneSplitDirection = 'right' | 'down'
 /** pane 조작 결과 — 실패는 화면에 문구로 뜬다 (herdr 응답을 그대로 흘리지 않는다). */
 export type PaneActionResult = { ok: true } | { ok: false; error: string }
 
+/** 이웃 찾기 결과 — 포커스 이동은 렌더러가 한다 (선택 pane 의 주인이 렌더러라서). */
+export type PaneNeighborResult = { ok: true; paneId: string | null } | { ok: false; error: string }
+
 /** 셀 좌표 사각형 — 탭 격자(=한 연결이 받는 서피스) 기준. */
 export type TerminalCellRect = { x: number; y: number; width: number; height: number }
 
@@ -573,7 +576,6 @@ export type CorralApi = {
    */
   termInput: (input: { paneId: string; data: string }) => void
   /** 영역 상자가 정한 **탭 격자**를 1회 요청한다 (pane 단위가 아니다 — §10-R13). */
-  termResize: (input: { groupId: string; cols: number; rows: number }) => void
   termScroll: (input: { paneId: string } & TerminalScroll) => void
   /** 줌 — paneId null 이면 해제. 그리는 건 클라이언트, 격자만 역산해 요청한다 (F2-3). */
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) => void
@@ -585,7 +587,7 @@ export type CorralApi = {
   /** `pane.close`. 마지막 pane 이면 탭이 닫힌다 (F2-5). */
   closePane: (input: { paneId: string }) => Promise<PaneActionResult>
   /** `pane.focus_direction` — 인접 pane 포커스 이동은 서버가 정한다 (F2-4). */
-  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneActionResult>
+  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneNeighborResult>
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

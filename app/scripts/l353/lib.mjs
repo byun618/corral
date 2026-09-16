@@ -186,7 +186,8 @@ export function ensureBuilt() {
 function park(dir) {
   if (!fs.existsSync(dir)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const parked = path.join(RAW_DIR, '_discarded', stamp, path.basename(dir))
+  // RAW_SUBDIR 를 빠뜨리면 이 재실행이 **앞 작업의 얼어 있는 _discarded 를 덮는다** (실제로 덮었다).
+  const parked = path.join(RAW_DIR, RAW_SUBDIR, '_discarded', stamp, path.basename(dir))
   fs.mkdirSync(path.dirname(parked), { recursive: true })
   fs.renameSync(dir, parked)
 }

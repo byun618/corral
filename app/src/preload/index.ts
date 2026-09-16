@@ -15,6 +15,7 @@ import type {
   CorralApi,
   CreateRowResult,
   PaneActionResult,
+  PaneNeighborResult,
   PaneDirection,
   PaneSplitDirection,
   RemoveRepoResult,
@@ -45,7 +46,6 @@ const EXPOSED = [
   'selectPane',
   'syncTermGroups',
   'termInput',
-  'termResize',
   'termScroll',
   'termZoom',
   'splitPane',
@@ -89,7 +89,6 @@ const api: CorralApi = {
   // 입력·리사이즈·스크롤은 send — 왕복 없는 한 방향이 레이턴시(S2)의 모양이다.
   syncTermGroups: (groups: TerminalGroupRequest[]) => ipcRenderer.send('corral:syncTermGroups', groups),
   termInput: (input: { paneId: string; data: string }) => ipcRenderer.send('corral:termInput', input),
-  termResize: (input: { groupId: string; cols: number; rows: number }) => ipcRenderer.send('corral:termResize', input),
   termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),
@@ -98,7 +97,7 @@ const api: CorralApi = {
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> =>
     ipcRenderer.invoke('corral:resizePane', input),
   closePane: (input: { paneId: string }): Promise<PaneActionResult> => ipcRenderer.invoke('corral:closePane', input),
-  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneActionResult> =>
+  focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneNeighborResult> =>
     ipcRenderer.invoke('corral:focusPaneDirection', input),
   onTermFrame: (listener: (frame: TerminalFrame) => void) => {
     const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)

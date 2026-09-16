@@ -225,6 +225,27 @@ describe('격자 요청 (R13·S3)', () => {
     session.zoom({ paneId: null, boxGrid: { cols: 40, rows: 12 } })
     expect(client.resizes[client.resizes.length - 1]).toEqual({ cols: 40, rows: 12 })
   })
+
+  it('줌 중에 상자가 바뀌면 그 상자로 그리고, 해제도 그 상자로 돌아간다 (F2-3b)', async () => {
+    const { client, session } = await attachedSession({
+      panes: [
+        { paneId: 'p1', x: 0, width: 10 },
+        { paneId: 'p2', x: 10, width: 10 },
+      ],
+    })
+    session.requestGrid({ cols: 40, rows: 12 })
+    session.zoom({ paneId: 'p1', boxGrid: { cols: 40, rows: 12 } })
+    const zoomedSmall = client.resizes[client.resizes.length - 1]
+
+    // 창 드래그 — 줌 중이라 격자는 역산값이어야 한다 (상자 격자 그대로 보내면 줌이 풀린다).
+    session.requestGrid({ cols: 60, rows: 20 })
+    const zoomedBig = client.resizes[client.resizes.length - 1]
+    expect(zoomedBig).not.toEqual({ cols: 60, rows: 20 })
+    expect(zoomedBig).not.toEqual(zoomedSmall)
+
+    session.zoom({ paneId: null, boxGrid: { cols: 60, rows: 20 } })
+    expect(client.resizes[client.resizes.length - 1]).toEqual({ cols: 60, rows: 20 })
+  })
 })
 
 describe('연결 내 자기정합 (S6 — §10-R14)', () => {

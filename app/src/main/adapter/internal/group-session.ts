@@ -145,8 +145,6 @@ export class GroupSession {
    * 즉 드래그 1회당 요청은 연결당 1회로 남는다 (S3·R13-b).
    */
   private edgeWaste = { cols: 0, rows: 0 }
-  /** 줌 직전 요청 격자 — 해제 시 **그대로** 되돌린다 (F2-3c: px 재계산은 한 셀 어긋난다). */
-  private gridBeforeZoom: { cols: number; rows: number } | null = null
   private zoomedPaneId: string | null = null
   private closed = false
   /**
@@ -252,7 +250,6 @@ export class GroupSession {
     }
     this.attachedTabId = input.tabId
     this.zoomedPaneId = null
-    this.gridBeforeZoom = null
     this.attaching = true
     try {
       await this.enqueue(() => this.client.callEndpoint('pane.focus', { pane_id: input.paneId }))
@@ -284,6 +281,12 @@ export class GroupSession {
   requestGrid(input: { cols: number; rows: number; kind?: string; force?: boolean }): void {
     if (this.closed) return
     this.boxGrid = { cols: clampGrid(input.cols), rows: clampGrid(input.rows) }
+    // 줌 중이면 격자의 뜻이 다르다 — 그 pane 의 inner 가 상자와 같아지도록 역산한다 (F2-3b).
+    const zoomed = this.zoomedPaneId === null ? undefined : this.meta.get(this.zoomedPaneId)
+    if (zoomed !== undefined) {
+      this.sendGrid({ ...input, ...this.gridForPane({ pane: zoomed, wanted: this.boxGrid }), kind: input.kind ?? 'zoom-resize' })
+      return
+    }
     this.sendGrid({ ...input, cols: this.boxGrid.cols + this.edgeWaste.cols, rows: this.boxGrid.rows + this.edgeWaste.rows })
   }
 
@@ -303,21 +306,26 @@ export class GroupSession {
    * 줌 — herdr 서피스가 줌을 반영하지 않으므로(프리플라이트 ②) **격자 역산**으로 그린다.
    *
    * 켤 때: 그 pane 의 inner 가 영역 상자 격자와 같아지도록 프레임 격자를 키운다.
-   * 끌 때: 줌 직전 요청 격자를 **그대로** 되돌린다 (F2-3c 는 `area` 정확 복원을 본다).
+   * 끌 때: **지금 상자 격자**(+가장자리 보정)로 되돌린다. 줌 직전 값을 따로 캐시하지 않는 이유는
+   * 줌 중에 창을 끌 수 있기 때문이다(F2-3b) — 캐시하면 해제 때 옛 상자로 돌아가 화면이 굳는다.
+   * 상자가 안 바뀌었으면 이 식은 줌 전에 보낸 것과 **같은 수**라 F2-3c 의 정확 복원이 그대로 선다.
    */
   zoom(input: { paneId: string | null; boxGrid: { cols: number; rows: number } }): void {
     if (this.closed) return
     if (input.paneId === null) {
-      const restore = this.gridBeforeZoom
       this.zoomedPaneId = null
-      this.gridBeforeZoom = null
-      if (restore !== null) this.sendGrid({ ...restore, kind: 'zoom-off', force: true })
+      this.sendGrid({
+        cols: this.boxGrid.cols + this.edgeWaste.cols,
+        rows: this.boxGrid.rows + this.edgeWaste.rows,
+        kind: 'zoom-off',
+        force: true,
+      })
       return
     }
     const pane = this.meta.get(input.paneId)
     if (pane === undefined) return
-    if (this.gridBeforeZoom === null) this.gridBeforeZoom = { ...this.requestedGrid }
     this.zoomedPaneId = input.paneId
+    this.boxGrid = { cols: clampGrid(input.boxGrid.cols), rows: clampGrid(input.boxGrid.rows) }
     // 줌은 **그 pane 의 inner 가 상자와 같아지게** 역산한 격자다 — 가장자리 보정과 길이 다르다.
     this.sendGrid({ ...this.gridForPane({ pane, wanted: input.boxGrid }), kind: 'zoom-on' })
   }

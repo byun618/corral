@@ -48,7 +48,6 @@ type GroupEntry = {
   activePaneId: string
   grid: { cols: number; rows: number }
   panes: PaneView[]
-  zoomedPaneId: string | null
   lastError: string | null
   /** 마지막 프레임의 크기·마우스 보고 — pane 별. `terminal` 파생이 여기서 나온다. */
   frames: Map<string, { cols: number; rows: number; mouseReporting: boolean }>
@@ -116,7 +115,8 @@ export class TerminalStreams {
         focused: pane.focused,
         mouseReporting: pane.mouseReporting,
       })),
-      zoomedPaneId: entry.zoomedPaneId,
+      // 줌은 세션이 쥔다 — 탭이 바뀌면 세션이 스스로 푼다(focusTab). 여기 따로 두면 어긋난다.
+      zoomedPaneId: entry.session.zoomedPane,
       lastError: entry.lastError,
     }))
   }
@@ -246,7 +246,6 @@ export class TerminalStreams {
       activePaneId: group.activePaneId,
       grid: { cols: group.cols, rows: group.rows },
       panes: [],
-      zoomedPaneId: null,
       lastError: null,
       frames: new Map(),
     }
@@ -361,14 +360,13 @@ export class TerminalStreams {
 
   /** 이 영역이 지금 줌 중인 pane — 해제 시 서버 플래그를 끌 대상이다. */
   zoomedPaneOf(groupId: string): string | null {
-    return this.groups.get(groupId)?.zoomedPaneId ?? null
+    return this.groups.get(groupId)?.session.zoomedPane ?? null
   }
 
   zoom(request: { groupId: string; paneId: string | null; cols: number; rows: number }): void {
     const entry = this.groups.get(request.groupId)
     if (entry === undefined) return
     log('stream.zoom', { groupId: request.groupId, paneId: request.paneId ?? '' })
-    entry.zoomedPaneId = request.paneId
     entry.session.zoom({ paneId: request.paneId, boxGrid: { cols: request.cols, rows: request.rows } })
     this.hooks.onState()
   }

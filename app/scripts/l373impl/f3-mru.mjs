@@ -445,15 +445,36 @@ await app.shot('f3-a-setup')
 
 // --- ⓔ F3-3 폴백 ③ 무동작 타임아웃 (10초) ------------------------------------------------
 {
+  // 바로 앞 R3-i 가 **worktree 를 닫고** 나온다. 그 철거가 화면에 퍼지는 데 한 걸음 걸려서,
+  // 기다리지 않으면 11.5초 창 안에서 화면이 저 혼자 옛 worktree → 이 worktree 로 옮겨간다.
+  // 1회차에 `상태변화0: false` 로 찍힌 것이 그것이었다 (전 wC:p1 → 뒤 wA:pC).
+  await quiesce(app)
+  await sleep(1500)
   const before = await 상태스냅(app, '타임아웃 전')
   await tap(app, 'Tab', ['control'], 700)
   const 열렸나 = (await mruView(app)).열림
   await sleep(11_500)
   const after = await 상태스냅(app, '타임아웃 뒤')
+  // 어긋나면 **무엇이** 어긋났는지 남긴다 — 불리언 하나로는 "취소가 깨졌다"와 "관계없는 필드가
+  // 흔들렸다"를 못 가른다 (1회차에 `상태변화0: false` 만 남아 판정이 안 섰다).
+  const 다른곳 = []
+  for (const [키, 왼, 오른] of [
+    ['화면', before.화면, after.화면],
+    ['오라클', before.오라클, after.오라클],
+  ]) {
+    for (const 이름 of new Set([...Object.keys(왼 ?? {}), ...Object.keys(오른 ?? {})])) {
+      const a = JSON.stringify(왼?.[이름])
+      const b = JSON.stringify(오른?.[이름])
+      if (a !== b) 다른곳.push({ 자리: `${키}.${이름}`, 전: 왼?.[이름] ?? null, 뒤: 오른?.[이름] ?? null })
+    }
+  }
   결과.F3_3_타임아웃 = {
     열렸나,
     닫혔나: !(await mruView(app)).열림,
-    상태변화0: JSON.stringify(before.화면) === JSON.stringify(after.화면) && JSON.stringify(before.오라클) === JSON.stringify(after.오라클),
+    상태변화0: 다른곳.length === 0,
+    다른곳,
+    전: before,
+    뒤: after,
   }
   기록('ⓔ F3-3 타임아웃 폴백', 결과.F3_3_타임아웃)
 }

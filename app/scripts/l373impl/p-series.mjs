@@ -13,6 +13,14 @@
 //   · CPU → **렌더러 프로세스**의 누적 CPU 시간 차 / 벽시계. `ps` 의 %CPU 순간값이 아니다
 //   · 부하 성립·pane 구성 → **제3 오라클**(control 소켓). 재는 대상의 말로 판정하지 않는다
 //
+// **R27 뒤 달라진 것** (코디네이터 재정 2026-09-16)
+//   · 분모 F 를 **이 런에서** 잰다 — 앱 연결이 받은 서피스 수(`counters.surfaces`). 별도 연결로
+//     잰 27.4/s 는 그 관측자의 소화 속도였다 (`f-observer.json`, §15)
+//   · **렌더 패스**를 1차 스파이크와 **같은 오라클**로도 센다 — `MutationObserver(.xterm-rows)`.
+//     쓰기 수(`term.write` 완료)와 DOM 패스는 포화에서 크게 갈린다(스파이크: 5232 vs 60.7)
+//   · **프레임 무게**를 싣는다 — 바이트·격자·셀당 바이트 (R27-a). `L373_LOAD=heavy` 면
+//     `load-heavy.mjs` 로 1차와 같은 급(100×30 전체 리페인트)으로 때린다 (R27-b)
+//
 // 비교: `1 · 2 · 4 pane` 을 같은 런에서 순서대로. 기본 케이스는 **4 pane**이다.
 // 격리: `life373-` 세션 전용. M0(내 유령) · M0-b(종료 후) · M0-c(prefs) · M0-d(형제 worktree).
 
@@ -33,6 +41,12 @@ const REGISTRY = path.join(RUN_DIR, 'repos.json')
 /** 포화 부하 — 서버 push 천장(F≈27.4/s)을 넘겨 때린다. 1차 스파이크의 `saturate` 와 같은 결. */
 const LOAD_HZ = Number(process.env.L373_LOAD_HZ ?? 60)
 const LOAD_SECS = 180
+/** `light`(기본) = `load.sh` 40×20 박스 · `heavy` = `load-heavy.mjs` pane 격자 전체 리페인트. */
+const LOAD_KIND = process.env.L373_LOAD ?? 'light'
+/** heavy 는 색이 몇 칸마다 바뀌나로 무게를 맞춘다 (셀당 바이트가 여기서 정해진다). */
+const HEAVY_EVERY = Number(process.env.L373_HEAVY_EVERY ?? 2)
+const HEAVY_HZ = Number(process.env.L373_HEAVY_HZ ?? 30)
+const OUT_NAME = process.env.L373_OUT ?? (LOAD_KIND === 'heavy' ? 'p-series-heavy.json' : 'p-series.json')
 const WINDOW_MS = Number(process.env.L373_WINDOW_MS ?? 20000)
 const IDLE_MS = 6000
 const P2_LINE = 26.85
@@ -46,7 +60,13 @@ const 결과 = {
   at: new Date().toISOString(),
   세션: SESSION,
   통과선: { P2: P2_LINE, P3: P3_LINE, P4: P4_LINE, P5: `${P5_RATIO} × 유휴 바닥`, 보류밴드: '0.68~0.73' },
-  부하: { hz: LOAD_HZ, 창ms: WINDOW_MS, 스크립트: 'scripts/l373impl/load.sh' },
+  부하: {
+    종류: LOAD_KIND,
+    hz: LOAD_KIND === 'heavy' ? HEAVY_HZ : LOAD_HZ,
+    창ms: WINDOW_MS,
+    스크립트: LOAD_KIND === 'heavy' ? 'scripts/l373impl/load-heavy.mjs' : 'scripts/l373impl/load.sh',
+    heavy: LOAD_KIND === 'heavy' ? { every: HEAVY_EVERY } : null,
+  },
   M0,
   단계: [],
 }
@@ -95,20 +115,66 @@ async function idleFloor(app, label) {
   return row
 }
 
+/**
+ * **렌더 패스** — 1차 스파이크가 쓴 오라클 그대로(`MutationObserver(.xterm-rows)`).
+ *
+ * 쓰기 수(`term.write` 완료)와 같지 않다: 스파이크는 포화에서 초당 5232 장을 써 넣고도 DOM
+ * 패스는 60.7 이었다. 두 수를 나란히 싣는다 — P2 가 무엇을 재는 항목인지는 코디네이터가 정한다.
+ */
+const passStart = (app) =>
+  app.send({
+    cmd: 'eval',
+    code: `(() => {
+      for (const mo of window.__l373mo ?? []) mo.disconnect()
+      window.__l373mo = []
+      window.__l373pass = {}
+      for (const box of document.querySelectorAll('[data-term-pane-box]')) {
+        const id = box.dataset.termPaneBox
+        const rows = box.querySelector('.xterm-rows')
+        if (rows === null) continue
+        window.__l373pass[id] = { 콜백: 0, 변이: 0 }
+        const mo = new MutationObserver((records) => {
+          window.__l373pass[id].콜백 += 1
+          window.__l373pass[id].변이 += records.length
+        })
+        mo.observe(rows, { childList: true, subtree: true, characterData: true })
+        window.__l373mo.push(mo)
+      }
+      return Object.keys(window.__l373pass).length
+    })()`,
+  })
+const passRead = async (app) =>
+  (
+    await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        for (const mo of window.__l373mo ?? []) mo.disconnect()
+        return window.__l373pass ?? null
+      })()`,
+    })
+  ).result
+
 const paneWrites = async (app) =>
   (await app.send({ cmd: 'eval', code: '(() => window.corralPaneWrites ? window.corralPaneWrites() : null)()' })).result
 
-/** 부하를 건다 — **제3 오라클**로 각 pane 셸에 직접 명령을 넣는다 (화면을 거치지 않는다). */
-function startLoad(paneIds) {
+/** pane 마다 **앱이 실제로 쓰고 있는 격자** — heavy 부하가 그 크기로 칠한다 (R27-b). */
+const grids = async (app) => new Map(((await paneWrites(app)) ?? []).map((row) => [row.paneId, { cols: row.cols, rows: row.rows }]))
+
+/**
+ * 부하를 건다 — **제3 오라클**로 각 pane 셸에 직접 명령을 넣는다 (화면을 거치지 않는다).
+ *
+ * heavy 는 **그 pane 의 격자**를 통째로 다시 칠한다. 격자는 앱이 실제로 쓰고 있는 값(쓰기 링의
+ * `cols`·`rows`)에서 받는다 — 짐작한 크기로 칠하면 herdr 가 잘라내거나 줄바꿈해서 무게가 어긋난다.
+ */
+function startLoad(paneIds, grids) {
   paneIds.forEach((paneId, index) => {
-    execFileSync('herdr', [
-      '--session',
-      SESSION,
-      'pane',
-      'run',
-      paneId,
-      `bash ${path.join(APP_DIR, 'scripts/l373impl/load.sh')} ${LOAD_HZ} ${LOAD_SECS} p${index + 1}`,
-    ])
+    const grid = grids?.get(paneId) ?? null
+    const command =
+      LOAD_KIND === 'heavy' && grid !== null
+        ? `${process.execPath} ${path.join(APP_DIR, 'scripts/l373impl/load-heavy.mjs')} --cols ${grid.cols} --rows ${grid.rows}` +
+          ` --hz ${HEAVY_HZ} --secs ${LOAD_SECS} --every ${HEAVY_EVERY} --tag p${index + 1}`
+        : `bash ${path.join(APP_DIR, 'scripts/l373impl/load.sh')} ${LOAD_HZ} ${LOAD_SECS} p${index + 1}`
+    execFileSync('herdr', ['--session', SESSION, 'pane', 'run', paneId, command])
   })
 }
 const stopLoad = (paneIds) => {
@@ -128,10 +194,12 @@ const stopLoad = (paneIds) => {
 async function phase(app, label, paneIds) {
   console.log('\n##', label, paneIds.join(' '))
   const floorBefore = await idleFloor(app, '부하 전')
-  startLoad(paneIds)
+  startLoad(paneIds, await grids(app))
   await sleep(4000) // 부하가 실제로 흐르기 시작할 때까지 (판정 창 밖)
   const cpuBefore = psSample(rendererPid())
   const mainBefore = (await app.send({ cmd: 'cpu' })).cpu
+  const countersBefore = (await app.send({ cmd: 'counters' })).counters
+  await passStart(app)
   await rafStart(app)
   const t0 = Date.now()
   const seen = new Map() // `${paneId}:${seq}:${at}` → record
@@ -144,6 +212,8 @@ async function phase(app, label, paneIds) {
   }
   const t1 = Date.now()
   const raf = await rafRead(app)
+  const passes = await passRead(app)
+  const countersAfter = (await app.send({ cmd: 'counters' })).counters
   const cpuAfter = psSample(rendererPid())
   const mainAfter = (await app.send({ cmd: 'cpu' })).cpu
   const last = await paneWrites(app)
@@ -157,10 +227,19 @@ async function phase(app, label, paneIds) {
   const secs = (t1 - t0) / 1000
   const perPane = paneIds.map((paneId) => {
     const mine = inWindow.filter((w) => w.paneId === paneId)
+    const 바이트 = mine.map((w) => w.bytes ?? 0)
+    const 셀 = mine.length === 0 ? null : (mine.at(-1).cols ?? 0) * (mine.at(-1).rows ?? 0)
+    const 평균바이트 = mine.length === 0 ? null : Math.round(바이트.reduce((a, b) => a + b, 0) / mine.length)
     return {
       paneId,
       쓰기수: mine.length,
-      렌더패스_초당: +(mine.length / secs).toFixed(2),
+      쓰기_초당: +(mine.length / secs).toFixed(2),
+      // 1차 스파이크의 "pane 당 렌더 패스"와 같은 오라클 (DOM). 위 쓰기 수와 다를 수 있다.
+      DOM패스_초당: passes?.[paneId] === undefined ? null : +(passes[paneId].콜백 / secs).toFixed(2),
+      DOM변이_초당: passes?.[paneId] === undefined ? null : +(passes[paneId].변이 / secs).toFixed(2),
+      격자: mine.length === 0 ? null : `${mine.at(-1).cols}x${mine.at(-1).rows}`,
+      프레임바이트: { 평균: 평균바이트, p50: pct(바이트, 50), p95: pct(바이트, 95), max: 바이트.length === 0 ? null : Math.max(...바이트) },
+      셀당바이트: 평균바이트 === null || 셀 === null || 셀 === 0 ? null : +(평균바이트 / 셀).toFixed(2),
       write_p50: pct(mine.map((w) => w.ms), 50),
       write_p95: pct(mine.map((w) => w.ms), 95),
       write_max: mine.length === 0 ? null : Math.max(...mine.map((w) => w.ms)),
@@ -177,11 +256,25 @@ async function phase(app, label, paneIds) {
     floorBefore === null || floorAfter === null
       ? null
       : +(Math.abs(floorBefore.perSec - floorAfter.perSec) / Math.max(floorBefore.perSec, floorAfter.perSec)).toFixed(3)
+  const 합 = (rows, key) => rows.reduce((sum, item) => sum + (item[key] ?? 0), 0)
+  const 서피스 = 합(countersAfter, 'surfaces') - 합(countersBefore, 'surfaces')
+  const 후보 = 합(countersAfter, 'candidates') - 합(countersBefore, 'candidates')
+  const 건너뜀 = 합(countersAfter, 'skipped') - 합(countersBefore, 'skipped')
   const row = {
     label,
     pane수: paneIds.length,
     paneIds,
     창: { t0, t1, 초: +secs.toFixed(2) },
+    // **같은 런의 분모** (R27-1). 별도 연결로 잰 F 는 부하의 박자를 같이 잰다 — §15 참고.
+    서피스: {
+      수: 서피스,
+      초당: +(서피스 / secs).toFixed(2),
+      후보: 후보,
+      건너뜀: 건너뜀,
+      쓴프레임: 후보 - 건너뜀,
+      쓴비율_후보대비: 후보 === 0 ? null : +((후보 - 건너뜀) / 후보).toFixed(4),
+      pane당쓰기_서피스대비: 서피스 === 0 ? null : +((후보 - 건너뜀) / paneIds.length / 서피스).toFixed(4),
+    },
     유휴바닥: { 전: floorBefore, 후: floorAfter, 쓴값: floor, 변동률: drift },
     rAF: raf,
     P5_비율: ratio,
@@ -194,13 +287,18 @@ async function phase(app, label, paneIds) {
     오라클: { pane수: paneList().length, focused: herdrLayout().focused_pane_id },
   }
   row.판정 = {
-    P2: perPane.length === 0 ? '못 쟀다' : perPane.every((p) => p.렌더패스_초당 >= P2_LINE) ? '통과' : '미달',
+    // P2 의 분모(F=27.4)가 R27-1 로 깨졌다 — 얼어 있는 통과선을 혼자 고치지 않는다.
+    // 옛 통과선 그대로의 값과, 같은 런 분모로 읽은 두 비율을 **나란히** 싣는다. 판단은 코디네이터.
+    P2_옛통과선_26_85: perPane.length === 0 ? '못 쟀다' : perPane.every((p) => p.쓰기_초당 >= P2_LINE) ? '통과' : '미달',
+    P2_같은런_서피스대비: row.서피스.pane당쓰기_서피스대비,
+    P2_후보대비_안흘렸나: row.서피스.쓴비율_후보대비,
     P3: cpuPct === null ? '못 쟀다' : cpuPct <= P3_LINE ? '통과' : '미달',
     P4: row.write_p95_전체 === null ? '못 쟀다' : row.write_p95_전체 <= P4_LINE ? '통과' : '미달',
     P5: ratio === null ? '못 쟀다' : ratio >= 0.73 ? '통과' : ratio >= 0.68 ? '보류' : '미달',
     바닥변동10퍼센트초과: drift !== null && drift > 0.1,
   }
   console.log(' ', label, JSON.stringify(row.판정), 'rAF', raf?.perSec, '바닥', floor, 'CPU', cpuPct)
+  console.log('  서피스', JSON.stringify(row.서피스))
   console.log('  pane별', JSON.stringify(perPane))
   결과.단계.push(row)
   return row
@@ -210,6 +308,12 @@ ensureWorkspace()
 결과.초기화 = await resetPanes()
 const app = await startApp({ name: 'p-series', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)
+// heavy 는 **1차 스파이크와 같은 격자**(pane 당 100×30 급)를 만들어야 한다 — 기본 창으로 4분할하면
+// pane 이 60×20 언저리라 같은 자리에서 못 비교한다. 창을 키워 pane 을 키운다 (실제 격자는 기록한다).
+if (LOAD_KIND === 'heavy') {
+  await app.send({ cmd: 'resize-window', width: 2000, height: 1250 })
+  await sleep(1200)
+}
 await sleep(800)
 await quiesce(app)
 결과.rendererPid = rendererPid()
@@ -276,7 +380,7 @@ await quiesce(app)
 await app.stop()
 await sleep(1500)
 결과.M0_끝 = m0End()
-writeRaw('p-series.json', 결과)
+writeRaw(OUT_NAME, 결과)
 console.log('\nP 요약')
 for (const row of 결과.단계)
   if (row.판정)

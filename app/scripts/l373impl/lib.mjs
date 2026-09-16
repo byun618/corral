@@ -16,8 +16,22 @@ export const REPO_DIR = path.dirname(APP_DIR)
 export const RAW = path.join(REPO_DIR, 'specs/LIFE-373-mru-pane-split/raw/claude')
 
 export const SESSION = process.env.L373_SESSION ?? 'life373-impl'
-/** 관문 ⑤ 격리 — 사용자 default 세션·다른 세션을 코드 레벨에서 막는다. */
+/**
+ * 관문 ⑤ 격리 — **두 축의 AND** 다 (코디네이터 재정 2026-09-16).
+ *   ⓐ `life373-` 접두다  ⓑ herdr 가 default 로 표시한 세션도, 사용자의 `CORRAL_SESSION` 도 아니다
+ * ⓐ만 두면 접두가 늘 때 거부가 같이 안 는다 — 막으려는 것은 접두가 아니라 사용자 세션이다.
+ */
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
+{
+  const denied = new Set(process.env.CORRAL_SESSION ? [process.env.CORRAL_SESSION] : [])
+  try {
+    const listed = JSON.parse(execFileSync('herdr', ['session', 'list', '--json'], { encoding: 'utf8' }))
+    for (const row of listed.sessions ?? []) if (row.default === true) denied.add(row.name)
+  } catch {
+    denied.add('default')
+  }
+  if (denied.has(SESSION)) throw new Error(`거부: 사용자·default 세션이다 (${SESSION}) — 접두가 맞아도 붙지 않는다`)
+}
 
 export const sessionDir = path.join(os.homedir(), '.config', 'herdr', 'sessions', SESSION)
 export const clientSocketPath = path.join(sessionDir, 'herdr-client.sock')
@@ -102,15 +116,17 @@ export function pct(values, p) {
  * 파일까지 자란다(실제로 한 번 일어났다: 426줄 증가, `git checkout` 으로 회수). 재는 것과도
  * 상관없다 — 유령 창이 herdr 연결을 붙들고 있으면 연결 수가 곧 영역 수라는 전제가 깨진다.
  */
-export function killStrayApps() {
+export function strayAppPids() {
   const pattern = path.join(APP_DIR, 'node_modules')
-  const pids = (() => {
-    try {
-      return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
-    } catch {
-      return []
-    }
-  })()
+  try {
+    return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+export function killStrayApps() {
+  const pids = strayAppPids()
   for (const pid of pids) {
     try {
       process.kill(Number(pid), 'SIGKILL')
@@ -120,4 +136,24 @@ export function killStrayApps() {
   }
   if (pids.length > 0) console.log(`[l373] 남은 앱 ${pids.length}개를 먼저 죽였다`)
   return pids.length
+}
+
+/**
+ * **M0** — 측정 런의 시작 상태를 원자료에 남긴다 (코디네이터 신설 통과선, 2026-09-16).
+ *
+ * 사고 2가 가리킨 진짜 위험은 오염된 로그가 아니라 **유령 렌더러가 CPU·rAF 를 오염시키는 것**이다.
+ * P2~P5 는 렌더러 CPU 와 rAF 를 직접 보는 통과선이라 떠도는 앱 하나면 그 숫자가 통째로 무효다.
+ * 그래서 "죽였다"로 끝내지 않고 **죽이기 전에 몇 개였는지를 적는다** — 0 이 아니면 그 런은 무효다.
+ */
+export function m0Start() {
+  const before = strayAppPids().length
+  killStrayApps()
+  const after = strayAppPids().length
+  return { 시작전잔여: before, 죽인뒤잔여: after, 유효: before === 0 && after === 0 }
+}
+
+/** **M0-b** — 런이 끝난 뒤에도 0 인가. 남았으면 그 런의 CPU·rAF 계열은 보류다. */
+export function m0End() {
+  const left = strayAppPids().length
+  return { 종료후잔여: left, 유효: left === 0 }
 }

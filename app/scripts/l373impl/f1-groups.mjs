@@ -11,6 +11,7 @@
 //   ⓕ F1-4 영역의 마지막 탭을 닫으면 빈 카드가 서고 연결이 하나 준다
 //   ⓖ F1-5 영역 닫기 — 형제가 자리를 먹고 탭을 물려받는다
 //   ⓗ F1-2(세로) 아래 영역으로 나눈 뒤 경계 드래그 — overhead ≠ 0 · 배지 rows · 셀 바닥 1칸
+//   ⓘ F1-2 클램프 양 끝(.15/.85) — 반 칸이 끝을 넘는지는 거기서만 드러난다
 //
 // 격리(관문 ⑤): `life373-` 세션에서만 돈다. l353 lib 는 `LIFE353_SESSION` 을 보므로 거기에
 // 박아 넣고, 여기서 한 번 더 막는다 — 사용자 default 세션에 붙는 순간 끝이다.
@@ -19,11 +20,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, until, sleep, herdrRequest, SESSION, REPO_DIR } from '../l353/lib.mjs'
-import { killStrayApps, writeRaw } from './lib.mjs'
+import { m0End, m0Start, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION}) — LIFE353_SESSION=life373-… 로 띄워라`)
 
-killStrayApps()
+/** M0 — 이 런이 유효한가. 시작 전 잔여가 0 이 아니면 CPU·rAF 계열은 무효다. */
+const M0 = m0Start()
 
 const RUN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'l373-f1-'))
 const PREFS = path.join(RUN_DIR, 'ui-prefs.json')
@@ -198,7 +200,7 @@ async function dragDivider(app, { selector, direction, shot, step = 9, steps = 1
   }
 }
 
-const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS }
+const 결과 = { at: new Date().toISOString(), 세션: SESSION, prefs: PREFS, M0 }
 
 /**
  * 저장소를 등록하고 **이 worktree 에 열린** workspace 의 탭을 눌러 스트리밍까지 데려간다.
@@ -316,6 +318,13 @@ await app.shot('f1-b-two-groups')
 결과.경계드래그 = await dragDivider(app, { selector: '[data-group-divider]', direction: 'row', shot: 'f1-d-drag-ghost' })
 await app.shot('f1-d-drag-committed')
 
+// ⓘ F1-2 클램프 양 끝 — 반 칸(`+unit/2`)이 `.15`/`.85` 를 넘는지는 **끝에서만** 드러난다.
+//    코디네이터 추가 요구(2026-09-16): 양 끝에서도 배지 == 커밋 격자임을 원자료로 보여라.
+결과.클램프 = {
+  최소: await dragDivider(app, { selector: '[data-group-divider]', direction: 'row', step: 240, shot: 'f1-k-clamp-min' }),
+  최대: await dragDivider(app, { selector: '[data-group-divider]', direction: 'row', step: -240, shot: 'f1-k-clamp-max' }),
+}
+
 결과.종료직전 = await snapshot(app, '재기동 직전')
 결과.종료직전저장 = JSON.parse(fs.readFileSync(PREFS, 'utf8')).groupLayouts ?? null
 await app.stop()
@@ -377,6 +386,8 @@ await app2.shot('f1-f-restored')
 }
 
 await app2.stop()
+await sleep(800)
+결과.M0b = m0End()
 
 writeRaw('f1-groups.json', 결과)
 console.log(JSON.stringify(결과, null, 2))

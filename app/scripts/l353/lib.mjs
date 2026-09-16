@@ -30,17 +30,41 @@ export const RAW_SUBDIR = process.env.L353_RAW_SUBDIR ?? ''
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** 계측이 붙어도 되는 세션 이름 접두. 늘리려면 **아래 거부 축이 그대로 산다는 것**을 확인하고 늘린다. */
+const ISOLATED_PREFIXES = ['life353-', 'life373-']
+
 /**
- * 사용자의 default 세션을 코드 레벨에서 막는다 (관문 ④).
+ * 사용자 세션에 붙는 것을 막는다 (관문 ④·⑤).
  *
- * LIFE-373 에서 `life373-` 접두를 **추가로** 허용한다. 막으려는 것은 사용자 세션이지 접두 문자열이
- * 아니다 — LIFE-373 구현 계측은 `life373-` 세션에서만 돌아야 하는데(02-kickoff 격리 규칙) 이
- * 하네스의 앱 구동·control 채널을 그대로 쓰려면 여기를 지나야 한다. C2 재실행은 여전히
- * `life353-claude` 로 도므로 회귀 비교 경로는 한 글자도 안 바뀐다.
+ * 규칙은 **두 축의 AND** 다 (코디네이터 재정 2026-09-16, 조건부 승인):
+ *   ⓐ 허용 접두 목록에 든다 — `life353-`(C2 무수정 재실행) 또는 `life373-`(이 구현 계측)
+ *   ⓑ **herdr 가 default 로 표시한 세션이 아니고**, 사용자가 쓰는 세션(`CORRAL_SESSION`)도 아니다
+ *
+ * ⓐ만 두면 접두가 하나 늘 때 거부가 같이 안 는다 — 막으려는 것은 접두 문자열이 아니라
+ * **사용자 세션**이기 때문이다. ⓑ 는 이름을 박지 않고 herdr 에게 묻는다(`session list --json`
+ * 의 `default` 플래그). 물어볼 수 없으면(herdr 없음 등) 이름 `default` 를 최소 방어로 거부한다.
  */
+let denied = null
+function deniedSessions() {
+  if (denied !== null) return denied
+  denied = new Set()
+  const wanted = process.env.CORRAL_SESSION ?? ''
+  if (wanted.length > 0) denied.add(wanted)
+  try {
+    const listed = JSON.parse(execFileSync('herdr', ['session', 'list', '--json'], { encoding: 'utf8' }))
+    for (const row of listed.sessions ?? []) if (row.default === true) denied.add(row.name)
+  } catch {
+    denied.add('default')
+  }
+  return denied
+}
+
 export function sessionDir(session = SESSION) {
-  if (!(session.startsWith('life353-') || session.startsWith('life373-'))) {
-    throw new Error(`거부: 격리 세션이 아니다 (${session}). life353- 또는 life373- 접두여야 한다`)
+  if (!ISOLATED_PREFIXES.some((prefix) => session.startsWith(prefix))) {
+    throw new Error(`거부: 격리 세션이 아니다 (${session}). ${ISOLATED_PREFIXES.join(' 또는 ')} 접두여야 한다`)
+  }
+  if (deniedSessions().has(session)) {
+    throw new Error(`거부: 사용자·default 세션이다 (${session}) — 접두가 맞아도 붙지 않는다`)
   }
   return path.join(os.homedir(), '.config', 'herdr', 'sessions', session)
 }

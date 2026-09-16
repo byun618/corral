@@ -23,6 +23,7 @@ import type {
   TerminalFrame,
   TerminalScroll,
   RenameRowResult,
+  CorralShortcut,
   UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
@@ -54,6 +55,7 @@ const EXPOSED = [
   'closePane',
   'focusPaneDirection',
   'onTermFrame',
+  'onShortcut',
   'preloadEnv',
 ]
 
@@ -106,6 +108,13 @@ const api: CorralApi = {
     ipcRenderer.on('corral:termFrame', handler)
     return () => {
       ipcRenderer.removeListener('corral:termFrame', handler)
+    }
+  },
+  onShortcut: (listener: (shortcut: CorralShortcut) => void) => {
+    const handler = (_event: unknown, shortcut: CorralShortcut): void => listener(shortcut)
+    ipcRenderer.on('corral:shortcut', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:shortcut', handler)
     }
   },
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).

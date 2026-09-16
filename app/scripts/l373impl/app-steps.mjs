@@ -359,6 +359,30 @@ export async function press(app, { key, meta = true, alt = false, shift = false 
   await sleep(900)
 }
 
+/**
+ * **진짜 입력 경로**로 키 하나 (`webContents.sendInputEvent`, 제어 채널 `key`).
+ *
+ * `press()` 의 합성 `KeyboardEvent` 는 **메뉴 액셀러레이터도 main 의 `before-input-event` 도
+ * 지나지 않는다** — 문서 리스너에만 떨어진다. `⌘W` 는 Electron 기본 메뉴가 쥔 키를 main 이
+ * 뺏어 오는 길(R23)이라 **이 길로만** 재야 한다. 합성 이벤트로 재면 "렌더러 핸들러가 돈다"만
+ * 보이고 진짜 `⌘W` 가 창을 닫는지는 영영 안 보인다.
+ */
+export async function pressNative(app, { keyCode, modifiers = ['meta'], settleMs = 1200 }) {
+  const sent = await app.send({ cmd: 'key', keyCode, modifiers })
+  await sleep(settleMs)
+  return sent
+}
+
+/** 창이 아직 있나 — `⌘W` 가 창을 닫아 버리면 이 호출이 실패한다(제어 채널이 창을 못 찾는다). */
+export async function windowAlive(app) {
+  try {
+    const seen = await app.query('[data-main-tabbar]')
+    return seen.found.length > 0
+  } catch {
+    return false
+  }
+}
+
 /** 지금 선택된 pane 과 DOM 포커스가 든 pane — 둘이 같아야 F2-4 가 성립한다. */
 export async function focusedPane(app) {
   return (await app.send({

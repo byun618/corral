@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
-import { attachThisWorktree, dragPaneDivider, focusedPane, g1, paneCalls, press, quiesce, resizeEvents, snapshot, syncEvents } from './app-steps.mjs'
+import { attachThisWorktree, dragPaneDivider, focusedPane, g1, paneCalls, press, pressNative, quiesce, resizeEvents, snapshot, syncEvents, windowAlive } from './app-steps.mjs'
 import { layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
@@ -393,28 +393,128 @@ const 내용칸 = async (direction) => {
   console.log('F2-5 | pane', 결과.pane닫기.pane수, '| 부른것', 결과.pane닫기.부른것.length)
   await app.shot('f2-i-close-pane')
 
-  // 계속 닫는다. 핸드오프 글리프표가 `✕` 를 **pane ≥ 2** 에서만 보이게 해서, UI 로는
-  // 마지막 하나에 못 닿는다 — 버튼이 사라지는 지점까지만 가고 그 사실을 그대로 적는다.
+  // 계속 닫는다 — 이번엔 **`⌘W`** 로 (F2-5a · R23). `✕` 는 핸드오프 글리프표대로 pane ≥ 2 에서만
+  // 있어 마지막 하나에 못 닿는다. `⌘W` 는 Electron 기본 메뉴의 `File ▸ Close Window` 가 쥔 키를
+  // main 이 `before-input-event` 로 뺏어 온 것이라 **진짜 입력 경로**(`pressNative`)로만 잰다 —
+  // 합성 이벤트로 재면 창이 닫히는지가 영영 안 보인다. 그래서 회차마다 `창살아있나` 를 같이 적는다.
   const 연속 = []
   for (let i = 0; i < 6; i += 1) {
-    const 버튼 = (await app.query(`[data-group-close-pane="${groupId}"]`)).found.length
-    if (버튼 === 0) break
-    await app.click(`[data-group-close-pane="${groupId}"]`)
-    await sleep(1400)
+    const before = await app.state()
+    const 남기전 = before.terminalGroups[0]?.panes.length ?? 0
+    if (남기전 === 0) break
+    const since각 = Date.now()
+    await pressNative(app, { keyCode: 'w', modifiers: ['meta'], settleMs: 1500 })
+    const alive = await windowAlive(app)
+    if (!alive) {
+      연속.push({ 보낸키: '⌘W', 창살아있나: false })
+      break
+    }
     const state = await app.state()
     연속.push({
+      보낸키: '⌘W',
+      창살아있나: true,
+      쥐기전: 남기전,
       남은: state.terminalGroups[0]?.panes.length ?? 0,
       탭수: state.repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length,
+      부른것: paneCalls(app, since각, 'pane.close').length,
+      닫기버튼: (await app.query(`[data-group-close-pane="${groupId}"]`)).found.length,
     })
+    if (남기전 === 1) break // F2-5b — 마지막 pane 에서 한 번 더 누르면 탭이 닫힌다. 여기서 멈춘다.
   }
   결과.마지막pane = {
     탭전,
     연속,
     닫기버튼남았나: (await app.query(`[data-group-close-pane="${groupId}"]`)).found.length > 0,
     pane수: (await app.state()).terminalGroups[0]?.panes.length ?? 0,
+    탭수: (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length,
+    창살아있나: await windowAlive(app),
   }
   console.log('F2-5 마지막 | 탭전', 탭전, JSON.stringify(결과.마지막pane))
   await app.shot('f2-j-close-last')
+}
+
+// ⓚ 힌트줄 (F2-5c · R6-J) — 목록·버림 순서가 **화면에 선** 것으로 잰다.
+//    글자만 보면 `.is-dropped`(흐름 밖·visibility:hidden)를 못 가른다 — 보이는 상자로 센다.
+{
+  const 힌트 = async (label) => (await app.send({
+    cmd: 'eval',
+    code: `(() => {
+      const box = (el) => { const r = el.getBoundingClientRect(); return { x: +r.left.toFixed(1), w: +r.width.toFixed(1) } }
+      const row = document.querySelector('[data-term-hint]')
+      const strip = document.querySelector('[data-pane-strip]')
+      return {
+        라벨: ${JSON.stringify(label)},
+        줄폭: row === null ? null : +row.getBoundingClientRect().width.toFixed(1),
+        스트립폭: strip === null ? null : +strip.getBoundingClientRect().width.toFixed(1),
+        항목: [...document.querySelectorAll('[data-hint-key]')].map((el) => ({
+          key: el.dataset.hintKey,
+          글: el.textContent,
+          버림: el.dataset.hintDropped,
+          보임: getComputedStyle(el).visibility,
+          상자: box(el),
+        })),
+      }
+    })()`,
+  })).result
+  const 점 = []
+  for (const width of [1400, 1000, 820, 700]) {
+    await app.resizeWindow(width, 900)
+    await sleep(900)
+    const 잰것 = await 힌트(`창 ${width}`)
+    잰것.창 = width
+    잰것.남은수 = 잰것.항목.filter((i) => i.버림 === 'false').length
+    점.push(잰것)
+    console.log('힌트줄', width, '| 남은', 잰것.남은수, '|', 잰것.항목.filter((i) => i.버림 === 'false').map((i) => i.key).join(' '))
+  }
+  await app.resizeWindow(1400, 900)
+  await sleep(700)
+  결과.힌트줄 = 점
+  await app.shot('f2-k-hint-strip')
+}
+
+// ⓛ R23 곁불 — **`⌘W` 만 가져왔다**. 다른 메뉴 액셀러레이터는 그대로 사는가.
+//    Edit role(`⌘A` 전체 선택)을 **편집 가능한 칸**에서 잰다(사이드바 검색칸은 disabled 다).
+//    이 확인이 `⌘W` 판정의 판별자이기도 하다: 같은 주입 경로로 다른 액셀러레이터가 먹는다면,
+//    `⌘W` 가 창을 안 닫은 것은 "경로가 메뉴에 안 닿아서"가 아니라 **우리가 삼켰기 때문**이다.
+{
+  const tabId = (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? [])[0]?.tabId ?? null
+  결과.R23곁불 = { tabId }
+  if (tabId !== null) {
+    await app.send({ cmd: 'dblclick', selector: `[data-main-tab="${tabId}"] .main-tab-label` })
+    await sleep(500)
+    const 쓰기 = await app.send({ cmd: 'eval', code: `(() => { const el = document.querySelector('.main-tab-rename'); return el === null ? null : { 있나: true, 값: el.value } })()` })
+    // 편집을 켜면 corral 이 이미 `select()` 해 둔다 — 그대로 ⌘A 를 재면 **아무것도 안 해도 통과**다.
+    // 방향키로 선택을 한 번 풀고(캐럿만 남는다) 나서 ⌘A 가 되돌리는지를 본다.
+    await app.send({ cmd: 'key', keyCode: 'Right', modifiers: [] })
+    await sleep(300)
+    결과.R23곁불.푼뒤 = (await app.send({
+      cmd: 'eval',
+      code: `(() => { const el = document.querySelector('.main-tab-rename'); return el === null ? null : { start: el.selectionStart, end: el.selectionEnd } })()`,
+    })).result
+    await pressNative(app, { keyCode: 'a', modifiers: ['meta'], settleMs: 600 })
+    결과.R23곁불.전체선택 = (await app.send({
+      cmd: 'eval',
+      code: `(() => {
+        const el = document.querySelector('.main-tab-rename')
+        if (el === null) return null
+        return { 값: el.value, start: el.selectionStart, end: el.selectionEnd, 전부: el.selectionStart === 0 && el.selectionEnd === el.value.length && el.value.length > 0 }
+      })()`,
+    })).result
+    결과.R23곁불.입력칸 = 쓰기.result
+    await app.send({ cmd: 'key', keyCode: 'Escape', modifiers: [] })
+    await sleep(400)
+  }
+  결과.R23곁불.창살아있나 = await windowAlive(app)
+  console.log('R23 곁불 | ⌘A 전체선택', JSON.stringify(결과.R23곁불.전체선택))
+}
+
+// ⓜ R23 — **`⌘Q` 는 그대로 산다**. 맨 끝에 잰다(먹으면 앱이 죽는다).
+//    이게 먹는다는 것은 같은 주입 경로가 **메뉴 액셀러레이터까지 닿는다**는 뜻이다 → ⓛ 과 함께
+//    `⌘W` 가 안 닫힌 이유가 "우리가 삼켜서"임을 가른다.
+{
+  await pressNative(app, { keyCode: 'q', modifiers: ['meta'], settleMs: 2500 })
+  결과.R23종료 = { 보낸키: '⌘Q', 창살아있나: await windowAlive(app) }
+  console.log('R23 ⌘Q | 창살아있나', 결과.R23종료.창살아있나)
 }
 
 // M0-b 는 **앱을 멈춘 뒤** 잰다 — 먼저 재면 이 런이 띄운 Electron 을 유령으로 센다.

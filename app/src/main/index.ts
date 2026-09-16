@@ -949,6 +949,33 @@ function createWindow(): void {
   // 사용자가 목록을 다시 읽는 순간이 포커스가 돌아오는 때다 — 그때 한 번 맞춘다 (A4).
   window.on('focus', () => void link.resync('window-focus'))
   /**
+   * `⌘W` 를 **메뉴에서 뺏어 온다** (F2-5a · R23).
+   *
+   * corral 은 `Menu.setApplicationMenu` 를 부르지 않으므로 Electron **재고 기본 메뉴**가 살아
+   * 있고, 거기 `File ▸ Close Window` 가 `CommandOrControl+W` 를 쥐고 있다(실측). 터미널 관습에서
+   * `⌘W` 는 탭·pane 닫기인데 corral 에서는 **창이 통째로 닫혀** UI 를 잃는다 — 그 함정을 남긴 채
+   * pane 닫기를 더할 수 없다. 코디네이터 재정(R23): **`preventDefault()` 로만 가져온다.**
+   * 메뉴를 다시 만들지 않는다 — 기본 메뉴를 재구성하면 Edit 의 복사·붙여넣기 role 까지 우리가
+   * 책임지게 되고, 그건 pane 닫기 하나가 질 위험이 아니다. `⌘Q`·Edit role 은 그대로 산다.
+   *
+   * `before-input-event` 여야 한다: 메뉴 액셀러레이터는 **페이지 keydown 보다 먼저** 처리돼서
+   * 렌더러의 `document.addEventListener('keydown')` 으로는 닿지 못한다. 여기서 `preventDefault()`
+   * 하면 메뉴 단축키와 페이지 keydown **둘 다** 막히므로, 뜻은 채널로 렌더러에 넘긴다.
+   *
+   * `⌥` 가 끼면 손대지 않는다 — `⌘⌥W`(영역 닫기)는 메뉴가 안 쥔 키라 렌더러가 이미 받는다.
+   * **`⌃W` 도 손대지 않는다**: 메뉴 액셀러레이터는 `CommandOrControl+W` 라 다른 OS 에서는
+   * `⌃W` 지만, 터미널에서 `⌃W` 는 단어 지우기라 PTY 의 것이다. macOS 의 `⌘` 만 가져온다.
+   */
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key.toLowerCase() !== 'w') return
+    if (!input.meta || input.alt || input.control || input.shift) return
+    event.preventDefault()
+    // 가로챘다는 사실은 **로그로만** 보인다 — 키를 삼켰으니 화면에는 아무 흔적이 없고,
+    // "안 닫혔다"는 관측은 "안 눌렸다"와 구분되지 않는다.
+    log('shortcut.intercepted', { key: 'w', meta: true })
+    window?.webContents.send('corral:shortcut', { kind: 'close-pane' })
+  })
+  /**
    * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
    * R1 화면에 외부 링크는 없지만, `openExternal` 에 걸러지지 않은 URL 을 넘기는 모양이
    * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.

@@ -303,6 +303,17 @@ export function App(): React.JSX.Element {
     revealTab: layout.revealTab,
   }
   /**
+   * `⌘W` 가 겨누는 자리 (F2-5) — **활성 영역의 탭과 그 탭의 pane 들**.
+   *
+   * 키는 main 이 메뉴에서 뺏어 오므로(R23) 뜻이 IPC 로 늦게 도착한다. 그 사이 렌더가 몇 번
+   * 돌든 **가장 최근 화면**을 겨눠야 해서 ref 로 둔다 — `layoutRef` 와 같은 결이다.
+   */
+  const closeTargetRef = useRef<{ tabId: string | null; paneIds: string[] }>({ tabId: null, paneIds: [] })
+  {
+    const tab = tabById(layoutRef.current.activeTabId)
+    closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [] }
+  }
+  /**
    * 영역을 활성으로 옮긴다 — **포커스 pane 도 같이 옮긴다**.
    *
    * 둘을 따로 두면 "B 영역을 눌렀는데 타건은 A 로 간다"가 된다. 활성 영역과 포커스 pane 은
@@ -436,6 +447,34 @@ export function App(): React.JSX.Element {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [splitPaneAt, toggleZoom, focusNeighbor, lifecycle.selectedPane])
+
+  /**
+   * `⌘W` — pane 을 닫고, **마지막 pane 이면 탭을 닫는다** (F2-5 · R23).
+   *
+   * 이 키만 `document` keydown 이 아니라 채널로 온다: Electron 기본 메뉴의
+   * `File ▸ Close Window` 가 `⌘W` 를 쥐고 있어 렌더러까지 오지 않는다. main 이
+   * `before-input-event` 에서 삼키고 **뜻**을 보낸다.
+   *
+   * 마지막 pane 에서 `pane.close` 를 보내지 않는다 — pane 이 0 인 탭은 herdr 에 없고, 그 자리의
+   * 사용자 뜻은 "이 탭을 닫는다"다. 그래서 탭 `✕` 와 **같은 길**(`closeRow`)로 보낸다.
+   */
+  useEffect(() => {
+    return window.corral.onShortcut((shortcut) => {
+      switch (shortcut.kind) {
+        case 'close-pane': {
+          const target = closeTargetRef.current
+          if (target.tabId === null) return
+          if (target.paneIds.length <= 1) {
+            lifecycle.actions.closeRow(target.tabId)
+            return
+          }
+          const paneId = target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null
+          void closePaneAt(paneId)
+          return
+        }
+      }
+    })
+  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane])
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)

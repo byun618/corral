@@ -6,6 +6,7 @@
 //
 // **이 파일은 herdr 를 모른다** — 어댑터 타입도 프로토콜 모듈도 import 하지 않는다 (기준 N2).
 
+import { Menu } from 'electron'
 import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -311,6 +312,33 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (width === null || height === null) throw new Error('width·height 필요')
         handlers.resizeWindow({ width, height })
         reply({ ok: true, width, height, at: Date.now() })
+        return
+      }
+      /**
+       * LIFE-373 R23 — **지금 앱이 들고 있는 메뉴**를 그대로 읽는다 (읽기 전용).
+       *
+       * `⌘W` 를 `before-input-event` 로 가로채면서 "메뉴는 손대지 않았다"를 주장하는데, 그건
+       * 소스에 `setApplicationMenu` 가 없다는 사실만으로는 **살아 있는 앱**에 대한 증거가 아니다.
+       * `⌘Q`·Edit role 이 그대로인지를 여기서 원본 그대로 찍는다.
+       */
+      case 'menu-dump': {
+        const menu = Menu.getApplicationMenu()
+        reply({
+          ok: true,
+          at: Date.now(),
+          menu:
+            menu === null
+              ? null
+              : menu.items.map((item) => ({
+                  label: item.label,
+                  items: (item.submenu?.items ?? []).map((sub) => ({
+                    label: sub.label,
+                    role: sub.role ?? null,
+                    accelerator: sub.accelerator ?? null,
+                    enabled: sub.enabled,
+                  })),
+                })),
+        })
         return
       }
       /** A1 — Electron 클립보드 내용. corral 이 썼는지를 보는 것이라 corral 쪽 관측이 맞다. */

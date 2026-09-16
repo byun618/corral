@@ -538,6 +538,14 @@ export type AppState = {
 }
 
 /** preload 가 렌더러에 노출하는 표면. 여기 없는 것은 렌더러가 부를 수 없다. */
+/**
+ * main 이 `before-input-event` 에서 가로챈 단축키 (F2-5a · R23).
+ *
+ * 메뉴 액셀러레이터는 페이지 keydown 보다 먼저 처리돼서 렌더러가 볼 수 없다. main 이
+ * `preventDefault()` 로 삼킨 뒤 **뜻**을 이 채널로 넘긴다 — 키 코드는 넘기지 않는다.
+ */
+export type CorralShortcut = { kind: 'close-pane' }
+
 export type CorralApi = {
   getState: () => Promise<AppState>
   onState: (listener: (state: AppState) => void) => () => void
@@ -596,5 +604,7 @@ export type CorralApi = {
   /** `pane.focus_direction` — 인접 pane 포커스 이동은 서버가 정한다 (F2-4). */
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneNeighborResult>
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
+  /** 메뉴에서 뺏어 온 단축키가 뜻만 실려 온다 (F2-5a · R23) — 키는 main 이 삼키고 여기로 넘긴다. */
+  onShortcut: (listener: (shortcut: CorralShortcut) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

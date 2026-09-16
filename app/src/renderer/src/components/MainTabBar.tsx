@@ -254,25 +254,28 @@ function MainTab({
 /**
  * 좁은 영역에서 비활성 탭을 **아이콘만**으로 접을지 (F1-7 · 핸드오프 §1-8-a).
  *
- * 탭 폭 합 = `탭 수 × (--tab-min-w 120 + gap 4)`. 쓸 수 있는 폭 = `영역폭 − 12(패딩) − 32(+) − 94(액션)`.
- * 액션은 **항상 자리를 점유**하므로(핸드오프) 접힘 판정에서도 빼고 센다. 활성 탭은 언제나 풀 폼이라
- * 접힌 뒤에도 "지금 뭘 보고 있나"는 글로 남는다.
+ * 탭 폭 합 = `탭 수 × (--tab-min-w 120 + gap 4)`. 쓸 수 있는 폭 = `영역폭 − 12(패딩) − 32(+) − 꼬리`.
+ * **꼬리는 상수가 아니라 실측**이다 (`.main-tabbar-tail`) — 격자 메타(`138×51`/`81×37` 로 폭이
+ * 다르다)·줌 칩이 들고 나며, 액션도 pane 수에 따라 버튼이 둘/넷이다. 94px 상수로 세던 때는
+ * 메타가 들어온 만큼(≈50px) 판정이 늦어 탭이 메타와 부딪힌 뒤에야 접혔다. 꼬리는 **항상 자리를
+ * 점유**하므로(핸드오프) 접힘 판정에서도 빼고 센다. 활성 탭은 언제나 풀 폼이라 접힌 뒤에도
+ * "지금 뭘 보고 있나"는 글로 남는다.
  *
  * 폭이 아직 0 이면(첫 렌더·측정 전) 접지 않는다 — 측정 전에 접으면 넓은 창에서도 한 프레임 접힌다.
+ * 꼬리는 액션 버튼 둘이 늘 있어 0 이 될 수 없다 — 0 은 "아직 안 쟀다"는 뜻이다.
  */
-export function shouldCompactTabs(input: { tabCount: number; headerWidth: number }): boolean {
-  if (input.headerWidth <= 0) return false
-  return input.tabCount * (TAB_FULL_W + TAB_GAP) > input.headerWidth - HEADER_PAD - ADD_BTN_W - ACTIONS_W
+export function shouldCompactTabs(input: { tabCount: number; headerWidth: number; tailWidth: number }): boolean {
+  if (input.headerWidth <= 0 || input.tailWidth <= 0) return false
+  return input.tabCount * (TAB_FULL_W + TAB_GAP) > input.headerWidth - HEADER_PAD - ADD_BTN_W - input.tailWidth
 }
 
 const TAB_FULL_W = 120
 const TAB_GAP = 4
 const HEADER_PAD = 12
 const ADD_BTN_W = 32
-const ACTIONS_W = 94
 
-/** 영역 헤더의 실제 폭 — 영역 경계를 끌면 바로 따라와야 해서 `ResizeObserver` 로 잰다. */
-function useHeaderWidth(): { ref: React.RefObject<HTMLDivElement | null>; width: number } {
+/** 상자 폭 — 영역 경계를 끌면 바로 따라와야 해서 `ResizeObserver` 로 잰다. */
+function useBoxWidth(): { ref: React.RefObject<HTMLDivElement | null>; width: number } {
   const ref = useRef<HTMLDivElement | null>(null)
   const [width, setWidth] = useState(0)
   useEffect(() => {
@@ -351,8 +354,9 @@ export function GroupHeader({
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
-  const header = useHeaderWidth()
-  const compact = shouldCompactTabs({ tabCount: tabs.length, headerWidth: header.width })
+  const header = useBoxWidth()
+  const tail = useBoxWidth()
+  const compact = shouldCompactTabs({ tabCount: tabs.length, headerWidth: header.width, tailWidth: tail.width })
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''} ${compact ? 'is-compact' : ''}`}
@@ -386,43 +390,46 @@ export function GroupHeader({
         +
       </button>
       <div className="main-tabbar-spacer" />
-      {grid === null ? null : (
-        <span className="group-grid-meta" data-group-grid={groupId}>
-          {grid.cols}×{grid.rows}
-        </span>
-      )}
-      {zoomed ? (
-        <span className="group-zoom-chip" data-group-zoom-chip={groupId}>
-          ⤢ {Math.max(0, paneCount - 1)} pane 접힘
-        </span>
-      ) : null}
-      <div className="group-actions" data-group-actions={groupId}>
-        <button className="group-action" data-group-split-right={groupId} title="오른쪽으로 pane 분할 (⌘D)" onClick={() => onSplitPane('right')}>
-          ▥
-        </button>
-        <button className="group-action" data-group-split-down={groupId} title="아래로 pane 분할 (⌘⇧D)" onClick={() => onSplitPane('down')}>
-          ▤
-        </button>
-        {paneCount > 1 ? (
-          <button
-            className={`group-action ${zoomed ? 'is-on' : ''}`}
-            data-group-zoom={groupId}
-            title={zoomed ? '줌 해제 (⌘⇧Z)' : 'pane 줌 (⌘⇧Z)'}
-            onClick={onZoom}
-          >
-            {zoomed ? '⤡' : '⤢'}
-          </button>
+      {/* 탭이 아닌 것들은 한 상자에 담는다 — 접힘 판정이 이 상자의 **실측 폭**을 뺀다. */}
+      <div className="main-tabbar-tail" data-group-tail={groupId} ref={tail.ref}>
+        {grid === null ? null : (
+          <span className="group-grid-meta" data-group-grid={groupId}>
+            {grid.cols}×{grid.rows}
+          </span>
+        )}
+        {zoomed ? (
+          <span className="group-zoom-chip" data-group-zoom-chip={groupId}>
+            ⤢ {Math.max(0, paneCount - 1)} pane 접힘
+          </span>
         ) : null}
-        {paneCount > 1 ? (
-          <button className="group-action is-danger" data-group-close-pane={groupId} title="pane 닫기" onClick={onClosePane}>
-            ✕
+        <div className="group-actions" data-group-actions={groupId}>
+          <button className="group-action" data-group-split-right={groupId} title="오른쪽으로 pane 분할 (⌘D)" onClick={() => onSplitPane('right')}>
+            ▥
           </button>
-        ) : null}
-        {tabs.length === 0 && onCloseGroup !== null ? (
-          <button className="group-action is-danger" data-group-close={groupId} title="영역 닫기 (⌘⌥W)" onClick={onCloseGroup}>
-            ✕
+          <button className="group-action" data-group-split-down={groupId} title="아래로 pane 분할 (⌘⇧D)" onClick={() => onSplitPane('down')}>
+            ▤
           </button>
-        ) : null}
+          {paneCount > 1 ? (
+            <button
+              className={`group-action ${zoomed ? 'is-on' : ''}`}
+              data-group-zoom={groupId}
+              title={zoomed ? '줌 해제 (⌘⇧Z)' : 'pane 줌 (⌘⇧Z)'}
+              onClick={onZoom}
+            >
+              {zoomed ? '⤡' : '⤢'}
+            </button>
+          ) : null}
+          {paneCount > 1 ? (
+            <button className="group-action is-danger" data-group-close-pane={groupId} title="pane 닫기" onClick={onClosePane}>
+              ✕
+            </button>
+          ) : null}
+          {tabs.length === 0 && onCloseGroup !== null ? (
+            <button className="group-action is-danger" data-group-close={groupId} title="영역 닫기 (⌘⌥W)" onClick={onCloseGroup}>
+              ✕
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   )

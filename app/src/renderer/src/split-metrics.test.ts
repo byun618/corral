@@ -60,19 +60,28 @@ describe('경계 셀 스냅 (F1-2)', () => {
 })
 
 describe('좁은 영역 탭 접기 (F1-7)', () => {
-  // 쓸 수 있는 폭 = 영역폭 − 12(패딩) − 32(+) − 94(액션), 탭 하나 124.
+  // 쓸 수 있는 폭 = 영역폭 − 12(패딩) − 32(+) − 꼬리(실측), 탭 하나 124.
   it('넓으면 안 접는다', () => {
-    expect(shouldCompactTabs({ tabCount: 3, headerWidth: 900 })).toBe(false)
+    expect(shouldCompactTabs({ tabCount: 3, headerWidth: 900, tailWidth: 94 })).toBe(false)
   })
 
   it('탭 폭 합이 남는 폭을 넘으면 접는다', () => {
     // 3 × 124 = 372 > 500 − 138 = 362
-    expect(shouldCompactTabs({ tabCount: 3, headerWidth: 500 })).toBe(true)
+    expect(shouldCompactTabs({ tabCount: 3, headerWidth: 500, tailWidth: 94 })).toBe(true)
     // 2 × 124 = 248 < 362
-    expect(shouldCompactTabs({ tabCount: 2, headerWidth: 500 })).toBe(false)
+    expect(shouldCompactTabs({ tabCount: 2, headerWidth: 500, tailWidth: 94 })).toBe(false)
+  })
+
+  it('꼬리가 굵어지면 그만큼 일찍 접는다 — 격자 메타·줌 칩이 들어오는 자리다', () => {
+    // 액션만 94 면 3 × 124 = 372 < 636 − 138 = 498 로 안 접힌다.
+    expect(shouldCompactTabs({ tabCount: 4, headerWidth: 636, tailWidth: 94 })).toBe(false)
+    // 격자 메타(48) + 줌 칩(86) 이 붙으면 꼬리가 228 → 남는 폭 364 < 496.
+    expect(shouldCompactTabs({ tabCount: 4, headerWidth: 636, tailWidth: 228 })).toBe(true)
   })
 
   it('폭을 아직 못 쟀으면 접지 않는다 (첫 프레임)', () => {
-    expect(shouldCompactTabs({ tabCount: 9, headerWidth: 0 })).toBe(false)
+    expect(shouldCompactTabs({ tabCount: 9, headerWidth: 0, tailWidth: 94 })).toBe(false)
+    // 꼬리도 마찬가지다 — 액션 버튼이 늘 둘이라 0 은 "아직 안 쟀다"는 뜻이다.
+    expect(shouldCompactTabs({ tabCount: 9, headerWidth: 500, tailWidth: 0 })).toBe(false)
   })
 })

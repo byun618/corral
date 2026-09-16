@@ -373,6 +373,8 @@ button { font: inherit; }
 }
 .main-tab-add:hover { color: var(--fg); }
 .main-tabbar-spacer { flex: 1; }
+/* 탭이 아닌 꼬리(격자 메타·줌 칩·액션) — 접힘 판정이 이 상자 폭을 실측해 뺀다. */
+.main-tabbar-tail { flex: 0 0 auto; display: flex; align-items: center; }
 .main-tabbar-active-worktree {
   display: flex; align-items: center; min-width: 0; padding-right: 8px;
   font-family: var(--font-mono); font-size: 10px; color: var(--fg-muted);
@@ -409,6 +411,9 @@ button { font: inherit; }
   color: var(--fg-faint); font-family: var(--font-mono); font-size: var(--fs-meta);
 }
 .terminal-chrome-hint-left, .terminal-chrome-hint-right { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 우측 단축키 — 버려진 항목은 **DOM 에 남긴 채 흐름에서만 뺀다**(폭을 계속 재야 한다). */
+.terminal-chrome-hint-right { position: relative; display: flex; align-items: center; gap: 14px; }
+.hint-key.is-dropped { position: absolute; right: 0; visibility: hidden; pointer-events: none; }
 .terminal-chrome-hint-spacer { flex: 1; }
 
 .term-empty { flex: 1; }

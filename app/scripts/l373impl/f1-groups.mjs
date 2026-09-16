@@ -108,6 +108,10 @@ await app.shot('f1-b-two-groups')
         groupId: h.dataset.groupHeader,
         헤더폭: Math.round(h.getBoundingClientRect().width),
         접힘: h.dataset.headerCompact,
+        // 접힘 산술의 분모 — 상수 94 를 걷어내고 **꼬리 실측**으로 바꿨으니(격자 메타·줌 칩이
+        // 들고 나는 자리) 그 폭이 원자료에 같이 있어야 판정을 되짚을 수 있다.
+        꼬리폭: (() => { const t = h.querySelector('[data-group-tail]'); return t === null ? null : Math.round(t.getBoundingClientRect().width) })(),
+        메타: (() => { const m = h.querySelector('[data-group-grid]'); return m === null ? null : m.textContent })(),
         탭: [...h.querySelectorAll('[data-main-tab]')].map((t) => ({ 접힘: t.dataset.tabCompact, 폭: Math.round(t.getBoundingClientRect().width) })),
       }))`,
     })).result

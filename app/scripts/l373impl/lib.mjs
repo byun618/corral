@@ -153,20 +153,39 @@ export function m0Start() {
 }
 
 /**
- * 붙어 있는 탭을 **pane 하나로** 되돌린다.
+ * 세션의 **모든 탭**을 pane 하나로 되돌린다.
  *
  * herdr 는 pane 을 영속한다 — 앞 회차가 남긴 분할 위에서 또 나누면 회차마다 다른 트리에서
  * 출발해 비교가 성립하지 않는다. F1(영역)도 마찬가지다: pane 이 둘이면 장식이 생겨 격자가
  * 달라지므로 F1 의 숫자가 회차마다 흔들린다.
+ *
+ * **`pane layout` 은 포커스된 탭 하나만 답한다.** 그것만 보고 "남은수 1" 로 통과시키던 판이
+ * 실제로 새 뒤: F1 의 g2 가 `38×24`(2 pane) 인 채로 폭 3점을 쟀다 — 앞 회차(②)가 다른 탭에
+ * 남긴 분할이었다. 그래서 `pane list`(탭 구분이 있는 유일한 목록)로 **탭마다** 훑는다.
  */
 export async function resetPanes() {
-  const before = layout()
-  const keep = before.focused_pane_id
-  for (const pane of before.panes) if (pane.pane_id !== keep) ctl('pane', 'close', pane.pane_id)
+  const byTab = new Map()
+  for (const pane of paneList()) {
+    const list = byTab.get(pane.tab_id) ?? []
+    list.push(pane)
+    byTab.set(pane.tab_id, list)
+  }
+  let 닫은수 = 0
+  for (const [, panes] of byTab) {
+    // 그 탭에서 포커스를 쥔 pane 을 남긴다 — 없으면 첫째. 닫는 쪽이 포커스면 herdr 가 옮겨 준다.
+    const keep = panes.find((pane) => pane.focused) ?? panes[0]
+    for (const pane of panes) {
+      if (pane.pane_id === keep.pane_id) continue
+      ctl('pane', 'close', pane.pane_id)
+      닫은수 += 1
+    }
+  }
   await sleep(900)
-  const after = layout()
-  if (after.panes.length !== 1) throw new Error(`pane 하나로 못 돌렸다 (${after.panes.length}개) — 손으로 정리하고 다시 돌려라`)
-  return { 닫은수: before.panes.length - after.panes.length, 남은수: after.panes.length }
+  const 남은 = new Map()
+  for (const pane of paneList()) 남은.set(pane.tab_id, (남은.get(pane.tab_id) ?? 0) + 1)
+  const 나쁜탭 = [...남은].filter(([, n]) => n !== 1)
+  if (나쁜탭.length > 0) throw new Error(`pane 하나로 못 돌린 탭이 있다 (${JSON.stringify(나쁜탭)}) — 손으로 정리하고 다시 돌려라`)
+  return { 닫은수, 탭수: 남은.size, 탭별남은수: [...남은].map(([tab, n]) => ({ tab, n })) }
 }
 
 /** **M0-b** — 런이 끝난 뒤에도 0 인가. 남았으면 그 런의 CPU·rAF 계열은 보류다. */

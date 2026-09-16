@@ -91,6 +91,28 @@ async function moveTabToNewGroup(app, { tabId, direction = 'right' }) {
 }
 
 /**
+ * 격자 요청이 **멎을 때까지** 기다린다.
+ *
+ * 창 크기 조절(F1-7 폭 3점)이 만든 resize 가 드래그 시작 직후에 늦게 떨어지면 "끄는 동안 0" 이
+ * 거짓으로 깨진다 — 실제로 한 회차에서 가로 드래그만 2/1 로 찍혔고, 세로는 같은 코드로 0/0
+ * 이었다. 고정 sleep 으로 맞추면 다음에 또 흔들린다. 잠잠해진 뒤부터 센다.
+ */
+async function quiesce(app, { quietMs = 900, timeoutMs = 8000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let mark = Date.now()
+  while (Date.now() < deadline) {
+    const last = Math.max(
+      resizeEvents(app, 0).at(-1)?.at ?? 0,
+      syncEvents(app, 0).at(-1)?.at ?? 0,
+    )
+    if (last > mark) mark = last
+    if (Date.now() - mark >= quietMs) return true
+    await sleep(150)
+  }
+  return false
+}
+
+/**
  * 경계 하나를 실제로 끌어 본다 (F1-2). **끄는 동안 격자 요청이 한 번도 나가면 안 된다.**
  *
  * 가로·세로를 같은 절차로 잰다 — 세로는 각 쪽에 탭바가 얹혀 `overhead ≠ 0` 이고 배지가 rows 라,
@@ -98,6 +120,7 @@ async function moveTabToNewGroup(app, { tabId, direction = 'right' }) {
  */
 async function dragDivider(app, { selector, direction, shot, step = 9, steps = 12 }) {
   const row = direction === 'row'
+  await quiesce(app)
   const since = Date.now()
   const begin = (await app.send({
     cmd: 'eval',

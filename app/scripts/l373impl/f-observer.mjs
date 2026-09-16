@@ -163,6 +163,18 @@ const t0 = Date.now()
 const [cheap, heavy] = await Promise.all([observe('cheap', paneIds[0]), observe('heavy', paneIds[0])])
 const t1 = Date.now()
 const after = (await app.send({ cmd: 'counters' })).counters
+/**
+ * **부하가 화면에 걸렸는지는 끄기 전에 본다** (L12-b).
+ *
+ * 예전에는 `stopLoad()` 뒤에 읽어서, `^C` 로 프롬프트가 다시 그려지는 속도에 따라 같은 부하가
+ * 어떤 회차는 4/4 · 어떤 회차는 2/4 로 찍혔다(원자료의 `맛보기` 에 `^C` 가 남아 있다).
+ * 재는 것은 "부하가 돌았나"이지 "끈 뒤에도 글자가 남았나"가 아니다.
+ */
+결과.부하확인 = paneIds.map((paneId) => {
+  const text = paneRead(paneId, 4)
+  return { paneId, 걸렸나: LOAD_KIND === 'heavy' ? /[▏▎▍▌▋▊▉█░▒▓]/.test(text) : /[┌│└─]/.test(text), 맛보기: text.slice(0, 80) }
+})
+결과.부하걸렸나 = 결과.부하확인.every((row) => row.걸렸나)
 stopLoad(paneIds)
 
 const 초 = (t1 - t0) / 1000
@@ -181,10 +193,6 @@ const 합 = (rows, key) => rows.reduce((sum, row) => sum + (row[key] ?? 0), 0)
 결과.앱.pane당쓰기_서피스대비 = 결과.앱.서피스초당 === 0 ? null : +(결과.앱.pane당쓴프레임초당 / 결과.앱.서피스초당).toFixed(4)
 결과.cheap = cheap
 결과.heavy = heavy
-결과.부하확인 = paneIds.map((paneId) => {
-  const text = paneRead(paneId, 4)
-  return { paneId, 걸렸나: LOAD_KIND === 'heavy' ? /[▏▎▍▌▋▊▉█░▒▓]/.test(text) : /[┌│└─]/.test(text), 맛보기: text.slice(0, 80) }
-})
 결과.P2c = {
   앱_pane당쓰기_서피스대비: 결과.앱.pane당쓰기_서피스대비 ?? null,
   관측자_프레임당바뀐pane비율: heavy.프레임당바뀐pane수 === null || heavy.프레임당바뀐pane수 === undefined ? null : +(heavy.프레임당바뀐pane수 / paneIds.length).toFixed(4),

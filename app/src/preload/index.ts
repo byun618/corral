@@ -16,6 +16,7 @@ import type {
   CreateRowResult,
   PaneActionResult,
   PaneNeighborResult,
+  PaneSplitResult,
   PaneDirection,
   PaneSplitDirection,
   RemoveRepoResult,
@@ -96,7 +97,7 @@ const api: CorralApi = {
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),
   repaintPane: (input: { paneId: string }): Promise<void> => ipcRenderer.invoke('corral:repaintPane', input),
-  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneActionResult> =>
+  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneSplitResult> =>
     ipcRenderer.invoke('corral:splitPane', input),
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<PaneActionResult> =>
     ipcRenderer.invoke('corral:resizePane', input),

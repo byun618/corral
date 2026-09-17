@@ -42,17 +42,24 @@ function outcomeOf(input: {
 }
 
 /**
- * pane 을 우/하로 나눈다 (F2-1).
+ * pane 을 우/하로 나눈다 (F2-1) — **새 pane 의 id 를 같이 돌려준다** (F2-7).
  *
  * `focus: false` — 분할 직후 herdr 세션 포커스를 옮기지 않는다. 포커스는 corral 이 자기 상태로
  * 들고 있고, 옮길 때는 endpoint 연결의 `pane.focus` 로 쏜다 (S2: 클릭·명시 동작에서만).
+ * 그 "자기 상태"를 새 pane 으로 옮기려면 **누가 새 pane 인지**를 알아야 하는데, 서피스만 보면
+ * 분할 전 목록과 대조하는 추리가 되고 그 사이 다른 pane 이 생기면 틀린다.
+ *
+ * `pane.split` 응답은 **`{ type: 'pane_info', pane: { pane_id } }` 하나다** (실측 — 이 파일
+ * 머리말의 "모든 `pane.*` 응답이 layout 을 통째로 준다"는 분할에는 해당하지 않는다).
+ * **여기서 읽는 것은 기하가 아니라 신원 하나**라 A6("배치는 서피스로만 읽는다")는 그대로다 —
+ * rect·트리는 계속 안 읽는다. 이웃 이동(`pane.neighbor`)이 id 만 받아 오는 것과 같은 모양이다.
  */
 export async function splitPane(input: {
   socketPath: string
   paneId: string
   direction: PaneSplitDirection
   ratio?: number
-}): Promise<PaneOutcome> {
+}): Promise<{ outcome: 'ok'; paneId: string | null } | { outcome: 'rejected'; rejection: { code: string; message: string } }> {
   const response = await request(
     input.socketPath,
     'pane.split',
@@ -64,7 +71,23 @@ export async function splitPane(input: {
     },
     { reason: 'pane-split' },
   )
-  return outcomeOf({ response, event: 'pane.split', detail: { paneId: input.paneId, direction: input.direction } })
+  if (response.error) {
+    const rejection = { code: response.error.code ?? 'error', message: response.error.message ?? '' }
+    log('pane.split_rejected', { paneId: input.paneId, direction: input.direction, ...rejection })
+    return { outcome: 'rejected', rejection }
+  }
+  const created = readCreatedPaneId(response.result)
+  log('pane.split', { paneId: input.paneId, direction: input.direction, created: created ?? '' })
+  return { outcome: 'ok', paneId: created }
+}
+
+/** `{ type: 'pane_info', pane: { pane_id } }` — 봉투는 여기서 끝난다 (`readNeighborPaneId` 와 같은 결). */
+function readCreatedPaneId(result: unknown): string | null {
+  if (!isRecord(result)) return null
+  const pane = readRecord(result, 'pane')
+  if (pane === null) return null
+  const paneId = readString(pane, 'pane_id')
+  return paneId !== null && paneId.length > 0 ? paneId : null
 }
 
 /**

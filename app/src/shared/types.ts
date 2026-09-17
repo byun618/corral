@@ -452,6 +452,13 @@ export type PaneActionResult = { ok: true } | { ok: false; error: string }
 /** 이웃 찾기 결과 — 포커스 이동은 렌더러가 한다 (선택 pane 의 주인이 렌더러라서). */
 export type PaneNeighborResult = { ok: true; paneId: string | null } | { ok: false; error: string }
 
+/**
+ * 분할 결과 — **새 pane 의 id 를 얹는다** (F2-7). `PaneNeighborResult` 와 같은 모양이다:
+ * 서버 포커스는 안 옮기고(`focus: false`) 선택을 옮기는 것은 렌더러다.
+ * herdr 가 id 를 안 주면 `paneId: null` — 그때는 선택이 그대로 남는다(지어내지 않는다).
+ */
+export type PaneSplitResult = { ok: true; paneId: string | null } | { ok: false; error: string }
+
 /** 셀 좌표 사각형 — 탭 격자(=한 연결이 받는 서피스) 기준. */
 export type TerminalCellRect = { x: number; y: number; width: number; height: number }
 
@@ -596,7 +603,7 @@ export type CorralApi = {
   /** `pane.split`. 클라이언트가 트리를 발명하지 않는다 (F2-1). */
   /** 새 xterm 이 붙었을 때 마지막 화면을 다시 받는다 (S6). 서버에는 아무것도 안 보낸다. */
   repaintPane: (input: { paneId: string }) => Promise<void>
-  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }) => Promise<PaneActionResult>
+  splitPane: (input: { paneId: string; direction: PaneSplitDirection; ratio?: number }) => Promise<PaneSplitResult>
   /** `pane.resize` — `amount` 는 **비율 델타**다(셀이 아니다). 드래그 끝에 1회만 부른다 (F2-2). */
   resizePane: (input: { paneId: string; direction: PaneDirection; amount: number }) => Promise<PaneActionResult>
   /** `pane.close`. 마지막 pane 이면 탭이 닫힌다 (F2-5). */

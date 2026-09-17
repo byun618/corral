@@ -16,6 +16,8 @@ import { isDefaultPositionLabel } from '../session-title.js'
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
   selectPane: (paneId: string) => void
+  /** 아직 store 에 없는 pane 을 **도착하면** 선택한다 (분할 직후 — F2-7). */
+  selectPaneWhenReady: (paneId: string) => void
   activeWorkspaceId: string | null
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
@@ -40,7 +42,7 @@ export function useLifecycleActions(state: AppState | null): {
   /** ⌘T 핸들러가 스테일 없이 최신값을 읽게 하는 ref 거울 — state 는 렌더용, ref 는 키 핸들러용. */
   const lastWorkspaceRef = useRef<string | null>(null)
   /**
-   * 방금 만든 pane — **store 에 나타나면 그때 선택한다** (수정 라운드 3 G2).
+   * 방금 만든 pane — **store 에 나타나면 그때 선택한다** (수정 라운드 3 G2 · LIFE-373 F2-7).
    *
    * 응답이 오자마자 `setSelectedPane` 하면 안 된다. 그 시점의 `state` 에는 새 pane 이 아직
    * 없어서 ⓐ 터미널이 없는 id 를 가리키고 ⓑ 바로 아래 자동 선택 이펙트의 가드
@@ -233,6 +235,16 @@ export function useLifecycleActions(state: AppState | null): {
     [state, setActive],
   )
 
+  /**
+   * **분할 직후 새 pane 선택** (F2-7) — `createRow` 가 쓰던 `pendingSelectRef` 와 같은 길이다.
+   *
+   * 여기서 `selectPane` 을 바로 부르면 안 된다: 그 시점의 `state` 에는 새 pane 이 아직 없어서
+   * 위 자동 선택 이펙트가 그것을 못 보고 **옛 pane 으로 되돌린다**(같은 경합). 도착을 기다린다.
+   */
+  const selectPaneWhenReady = useCallback((paneId: string): void => {
+    pendingSelectRef.current = paneId
+  }, [])
+
   const openWorktree = useCallback(
     async (repoRoot: string, worktree: WorktreeRow): Promise<void> => {
       // in-flight 재클릭 무시 (M5) — 진행 중이면 두 번째는 아무것도 안 한다 (고아 workspace 방지).
@@ -281,6 +293,7 @@ export function useLifecycleActions(state: AppState | null): {
   return {
     selectedPane,
     selectPane,
+    selectPaneWhenReady,
     activeWorkspaceId,
     lifecycleNotice,
     dismissNotice,

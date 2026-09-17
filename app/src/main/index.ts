@@ -22,6 +22,7 @@ import type {
   RenameRowResult,
   PaneActionResult,
   PaneNeighborResult,
+  PaneSplitResult,
   PaneDirection,
   PaneSplitDirection,
   SessionDigest,
@@ -1168,11 +1169,14 @@ app.whenReady().then(() => {
   // --- pane 분할 (② — control 소켓) ---
   ipcMain.handle(
     'corral:splitPane',
-    async (event, input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneActionResult> => {
+    async (event, input: { paneId: string; direction: PaneSplitDirection; ratio?: number }): Promise<PaneSplitResult> => {
       if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
       const socketPath = currentSocketPath()
       if (socketPath === null) return { ok: false, error: '세션이 없다' }
-      return paneResult(await splitPane({ socketPath, ...input }))
+      const split = await splitPane({ socketPath, ...input })
+      if (split.outcome === 'rejected') return { ok: false, error: split.rejection.message || split.rejection.code }
+      // 이웃 이동과 같다 — main 은 선택을 옮기지 않고 **새 pane 의 id 만** 돌려준다 (F2-7).
+      return { ok: true, paneId: split.paneId }
     },
   )
   ipcMain.handle(

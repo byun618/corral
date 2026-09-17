@@ -569,11 +569,19 @@ export function App(): React.JSX.Element {
   // 그래서 호출하는 쪽이 대상을 명시한다: 헤더·메뉴는 **그 영역의 활성 탭 pane**, 단축키는 포커스 pane.
   // 거절은 그대로 알림으로 올린다(강제로 밀지 않는다, §10-R8).
   const [paneError, setPaneError] = useState<string | null>(null)
-  const splitPaneAt = useCallback(async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
-    if (target.paneId === null) return
-    const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
-    setPaneError(result.ok ? null : result.error)
-  }, [])
+  const splitPaneAt = useCallback(
+    async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
+      if (target.paneId === null) return
+      const result = await window.corral.splitPane({ paneId: target.paneId, direction: target.direction })
+      setPaneError(result.ok ? null : result.error)
+      // **분할 직후 새 pane 으로 선택을 옮긴다** (F2-7 — 게이트 ① 사용자 지적 1).
+      // 서버 포커스는 계속 `focus: false` 다: 옮기는 것은 **렌더러의 선택**이고, herdr 세션 전역
+      // 포커스는 안 끌고 간다 (F2-4 `pane.neighbor` 와 같은 논거). 새 pane 이 store 에 도착한
+      // 뒤에 선택해야 자동 선택 이펙트가 그것을 덮지 않는다 — `selectPaneWhenReady` 가 그 자리다.
+      if (result.ok && result.paneId !== null) lifecycle.selectPaneWhenReady(result.paneId)
+    },
+    [lifecycle.selectPaneWhenReady],
+  )
   /** 경계 드래그 끝(F2-2). 끄는 동안은 아무것도 안 보내고 여기서 1회다. */
   const resizePaneAt = useCallback(
     async (input: { paneId: string; direction: PaneDirection; amount: number }): Promise<void> => {
@@ -856,7 +864,20 @@ export function App(): React.JSX.Element {
             className="term-group"
             data-term-group={group.groupId}
             data-pane-count={seats.length}
-            onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+            /**
+             * 영역 **배경**을 눌렀을 때만 활성화한다 (F2-8).
+             *
+             * pane 상자를 누르면 그 상자의 `onMouseDown` 이 **먼저** 자기 paneId 로 활성화하는데,
+             * 이 핸들러가 버블로 뒤따라 돌면서 `groupSelectedPaneId` — 렌더에 갇힌 **옛 선택** —
+             * 으로 다시 `selectPane` 을 불러 **방금 고른 pane 을 덮었다**. 그래서 "핸들러는 붙어
+             * 있고 이벤트도 도달하는데 선택이 안 바뀐다"로 보였다(게이트 ① 사용자 지적 2).
+             * `stopPropagation` 으로 막지 않는 이유: 그러면 네이티브 이벤트가 문서까지 못 가서
+             * 문서 mousedown 으로 닫는 메뉴(RepoRowMenu·TabContextMenu)가 안 닫힌다.
+             */
+            onMouseDown={(event) => {
+              if (event.target instanceof Element && event.target.closest('[data-term-pane-box]') !== null) return
+              activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })
+            }}
           >
             {/**
              * **격자의 분모이자 pane 좌표의 원점**이다 (R13).
@@ -872,7 +893,15 @@ export function App(): React.JSX.Element {
             {seats.length === 0 || groupState === null ? (
               // 첫 프레임 전에는 herdr 사각형이 없다 — 그 사이에도 터미널은 서 있어야 한다.
               // 단일 pane 경로(LIFE-353 C2)와 **같은 DOM** 이다.
-              <div className="term-pane is-selected" data-term-pane-box={groupPane.paneId} style={{ inset: 0 }}>
+              // pane 상자는 **자기 선택을 스스로 말한다** — 위 `.term-group` 가드가 pane 상자 안을
+              // 건너뛰므로, 이 단일 pane 경로에도 같은 핸들러가 있어야 비활성 영역을 눌러 활성으로
+              // 옮길 수 있다 (F1-3). PaneLayout 의 `onSelect` 와 같은 자리다.
+              <div
+                className="term-pane is-selected"
+                data-term-pane-box={groupPane.paneId}
+                style={{ inset: 0 }}
+                onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupPane.paneId })}
+              >
                 <div className="term-pane-inner" style={{ inset: 0 }}>
                   <TerminalPane
                     paneId={groupPane.paneId}

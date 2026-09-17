@@ -97,7 +97,13 @@ export async function g1(app, { cell: 준cell = null } = {}) {
   }
 }
 
-export async function snapshot(app, label) {
+/**
+ * `cell` 을 밖에서 줄 수 있다 — **프로브를 쥔 pane 이 닫히면** `window.corralTermProbe` 가 통째로
+ * 사라져 `g1` 이 "상자나 셀을 못 쟀다"로 **거짓 위반**을 낸다(라운드 3 재실행: pane 닫기 회차에서
+ * 위반 1 · 여백위반 1 · 내용잘림 1). 셀은 창의 성질이라 같은 런의 앞 회차 값이 그대로 맞는다 —
+ * 줌 블록이 이미 같은 이유로 `g1(app, { cell })` 을 쓴다(§7 ⓱).
+ */
+export async function snapshot(app, label, { cell = null } = {}) {
   const state = await app.state()
   const count = async (selector) => (await app.query(selector)).found.length
   return {
@@ -115,7 +121,7 @@ export async function snapshot(app, label) {
       code: `[...document.querySelectorAll('[data-tab-group]')].map((g) => ({ groupId: g.dataset.tabGroup, tabs: [...g.querySelectorAll('[data-main-tab]')].map((t) => t.dataset.mainTab) }))`,
     })).result,
     연결: state.terminalGroups.map((g) => ({ groupId: g.groupId, tabId: g.tabId, phase: g.phase, grid: g.grid })),
-    G1: await g1(app),
+    G1: await g1(app, { cell }),
   }
 }
 

@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
-import { attachThisWorktree, dragPaneDivider, focusedPane, g1, paneCalls, press, pressNative, quiesce, resizeEvents, snapshot, syncEvents, windowAlive } from './app-steps.mjs'
+import { attachThisWorktree, dragPaneDivider, ensureTabs, focusedPane, g1, paneCalls, press, pressNative, quiesce, resizeEvents, snapshot, syncEvents, windowAlive } from './app-steps.mjs'
 import { ensureWorkspace, layout as herdrLayout, m0End, m0Start, resetPanes, writeRaw } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
@@ -110,8 +110,15 @@ await quiesce(app)
  *   ② corral 이 **그린** px == 그 사각형 × 바닥 셀 (원점 = 안쪽 사각형들의 왼쪽 위)
  * 영역이 하나뿐이라 좌표계가 같다 — F2-6b 가 요구하는 **절대 비교**를 그대로 한다.
  */
-function 대조({ 그린것, 오라클, 상태 }) {
-  const cell = 그린것?.셀?.measured ?? null
+function 대조({ 그린것, 오라클, 상태, 대체셀 = null }) {
+  // **셀은 창의 성질이지 pane 의 성질이 아니다.** `window.corralTermProbe` 는 **마지막에 마운트한
+  // pane** 하나가 쥐는데, 그 pane 을 닫으면 프로브가 통째로 사라져 셀이 `null` 이 된다 — 그러면
+  // 사슬2 가 "그린 상자가 없다"로 **거짓 미달**난다(라운드 3 재실행에서 실제로 났다: pane 닫기
+  // 회차만 미달, 상자는 셋 다 멀쩡히 있었다). 폰트·DPI 가 안 바뀌면 셀 px 도 안 바뀌므로 **같은
+  // 런의 앞 회차 실측값**으로 잰다 — 줌 블록이 이미 같은 이유로 그렇게 한다(§7 ⓱).
+  // 대체했으면 원자료에 그렇게 적는다(`셀출처`) — 조용히 갈아끼우지 않는다.
+  const 셀출처 = 그린것?.셀?.measured != null ? '이 회차 실측' : 대체셀 != null ? '앞 회차 실측(프로브 쥔 pane 이 닫혔다)' : '없음'
+  const cell = 그린것?.셀?.measured ?? 대체셀 ?? null
   const views = 상태.terminalGroups[0]?.panes ?? []
   const origin = {
     x: views.length === 0 ? 0 : Math.min(...views.map((v) => v.innerRect.x)),
@@ -164,6 +171,7 @@ function 대조({ 그린것, 오라클, 상태 }) {
     }
   })
   return {
+    셀출처,
     원점: origin,
     id집합같다: JSON.stringify(views.map((v) => v.paneId).sort()) === JSON.stringify(오라클.pane.map((p) => p.paneId).sort()),
     사슬1_corral_vs_herdr: 사슬1,
@@ -172,12 +180,15 @@ function 대조({ 그린것, 오라클, 상태 }) {
   }
 }
 
+// 이 런에서 마지막으로 **실제로 잰** 셀. 프로브를 쥔 pane 이 닫히면 이 값으로 잰다 (위 `대조` 주석).
+let 마지막셀 = null
 const 기록 = async (label) => {
   await sleep(1200)
   const 그린것 = await drawn(app)
+  if (그린것?.셀?.measured != null) 마지막셀 = 그린것.셀.measured
   const 오라클 = truth()
   const 상태 = await app.state()
-  const row = { label, 그린것, 오라클, 화면: await snapshot(app, label), 대조: 대조({ 그린것, 오라클, 상태 }) }
+  const row = { label, 그린것, 오라클, 화면: await snapshot(app, label, { cell: 마지막셀 }), 대조: 대조({ 그린것, 오라클, 상태, 대체셀: 마지막셀 }) }
   결과.단계.push(row)
   console.log(label, '| 정합', row.대조.통과, JSON.stringify(row.그린것?.pane.map((p) => [p.paneId, p.메타])))
   return row
@@ -379,6 +390,13 @@ const 내용칸 = async (direction) => {
 }
 
 // ⓘ F2-5 — 헤더 ✕ 로 포커스 pane 을 닫는다. 마지막 하나까지 닫으면 탭이 닫혀야 한다.
+//
+// **탭 수를 먼저 박는다** (F1-7 이 접힘 분모를 박은 것과 같은 이유 — §7 ㊲). herdr 는 탭을
+// 영속하는데 이 블록의 `⌘W` 연속 닫기가 탭을 줄여 놓고 끝나므로, 다음 런이 탭 하나에서
+// 출발하면 **마지막 ⌘W 가 창까지 닫는다**(F2-5b 문언 그대로다). 그러면 뒤따르는 R23 곁불
+// (⌘A·⌘Q)이 아예 못 돌아 원자료에 `창살아있나 false` 만 남는다 — 라운드 3 재실행에서 실제로
+// 그랬다. 재는 것은 "pane 을 다 닫으면 탭이 닫히나"이지 "세션에 탭이 몇 개 남아 있었나"가 아니다.
+await ensureTabs(app, 3)
 {
   const groupId = (await app.state()).terminalGroups[0]?.groupId ?? null
   const 탭전 = (await app.state()).repos.flatMap((r) => r.worktrees).flatMap((w) => w.workspace?.tabs ?? []).length
@@ -522,4 +540,6 @@ const 내용칸 = async (direction) => {
 await app.stop()
 await sleep(800)
 결과.M0b = m0End()
-writeRaw('f2-panes.json', 결과)
+// 결과 파일 이름을 밖에서 준다 (`L373_OUT`) — 같은 하네스를 같은 빌드에서 두 번 돌릴 때
+// 뒤 회차가 앞 회차를 말없이 덮는다(§5 사고 3·4 와 같은 기전).
+writeRaw(process.env.L373_OUT ?? 'f2-panes.json', 결과)

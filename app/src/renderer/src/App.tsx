@@ -39,7 +39,7 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { pickPane } from './pane-utils.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { isAgentTab, sessionTitle } from './session-title.js'
-import { TerminalPane } from './TerminalPane.js'
+import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
   if (workspaceId === null) return null
@@ -876,6 +876,7 @@ export function App(): React.JSX.Element {
              */
             onMouseDown={(event) => {
               if (event.target instanceof Element && event.target.closest('[data-term-pane-box]') !== null) return
+              keepTerminalFocus(event)
               activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })
             }}
           >
@@ -900,7 +901,10 @@ export function App(): React.JSX.Element {
                 className="term-pane is-selected"
                 data-term-pane-box={groupPane.paneId}
                 style={{ inset: 0 }}
-                onMouseDown={() => activateGroup({ groupId: group.groupId, paneId: groupPane.paneId })}
+                onMouseDown={(event) => {
+                  keepTerminalFocus(event)
+                  activateGroup({ groupId: group.groupId, paneId: groupPane.paneId })
+                }}
               >
                 <div className="term-pane-inner" style={{ inset: 0 }}>
                   <TerminalPane

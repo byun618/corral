@@ -26,6 +26,31 @@ import { measureCellSize, readCellSize } from './term-metrics.js'
 const decoder = new TextDecoder()
 
 /**
+ * **xterm 밖을 눌렀을 때 터미널 포커스를 지킨다** (F2-8 ⓑ — 기준 §R33-2).
+ *
+ * pane 상자에는 장식 띠(패딩 약 15px)가 있다. 거기를 누르면 히트 요소가 `.term-pane` 인데 그것은
+ * **포커스를 받을 수 없는 요소**라, 크로미움이 `mousedown` **기본 동작**으로 포커스를 가장 가까운
+ * 포커스 가능 조상 — 없으니 `body` — 으로 옮긴다. 기본 동작은 우리 핸들러가 **다 끝난 뒤** 적용되
+ * 므로, 선택이 옮겨가며 `term.focus()` 가 넣은 포커스를 그대로 덮는다.
+ *
+ * 실측 (`raw/claude/probe-focus-mech.json`, 빌드 `d74e801`): `mousedown(캡처) → focus()호출 →
+ * focusin(대상 pane) → mousedown 버블끝(기본막힘 **false**) → focusout(대상 → null)`. 배지는
+ * 옮겨가고 **키는 아무 데도 안 갔다.** `focusToken` 은 범인이 아니었다 — effect 는 돌았다.
+ *
+ * xterm **위**에서 이 일이 안 보인 이유는 xterm 이 자기 `mousedown` 에서 `preventDefault()` 를
+ * 하기 때문이다(같은 실측: 기본막힘 **true**). 그래서 여기서 하는 일은 새 규칙이 아니라 **xterm 이
+ * 자기 영역에서 이미 하는 것을 상자의 나머지에 맞추는 것**이다.
+ *
+ * xterm **안**이면 손대지 않는다 — 드래그 텍스트 선택이 그 기본 동작을 쓴다(xterm 이 스스로
+ * 처리한다). `stopPropagation` 도 쓰지 않는다: 그러면 네이티브 이벤트가 문서까지 못 가서 문서
+ * `mousedown` 으로 닫는 메뉴(RepoRowMenu·TabContextMenu)가 안 닫힌다.
+ */
+export function keepTerminalFocus(event: React.MouseEvent): void {
+  if (event.target instanceof Element && event.target.closest('[data-term-pane]') !== null) return
+  event.preventDefault()
+}
+
+/**
  * S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다.
  *
  * `bytes`·`cols`·`rows` 는 **프레임의 무게**다 (§10-R27-a). P3·P4·P5 통과선이 1차 스파이크의

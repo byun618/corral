@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaneDirection, PaneRow, TerminalCellRect, TerminalPaneView } from '../../../shared/types.js'
 import { firstCellsOf, innerCellsOf, seamsOf, snapPaneSeam, type PaneSeam } from '../pane-geometry.js'
-import { TerminalPane } from '../TerminalPane.js'
+import { keepTerminalFocus, TerminalPane } from '../TerminalPane.js'
 import type { CellSize } from '../term-metrics.js'
 
 export type PaneResizeCommit = (input: { paneId: string; direction: PaneDirection; amount: number }) => void
@@ -214,7 +214,12 @@ export function PaneLayout({
             data-pane-selected={selected ? 'true' : 'false'}
             hidden={hidden}
             style={outer}
-            onMouseDown={() => onSelect(seat.view.paneId)}
+            // 고르는 것과 **포커스를 지키는 것**은 다른 일이다 — 뒤엣것은 xterm 밖을 눌렀을 때만
+            // 하는 일이라 `keepTerminalFocus` 안에서 가른다 (F2-8 ⓑ).
+            onMouseDown={(event) => {
+              keepTerminalFocus(event)
+              onSelect(seat.view.paneId)
+            }}
           >
             <div className="term-pane-inner" style={inner}>
               <TerminalPane

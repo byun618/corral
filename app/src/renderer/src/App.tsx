@@ -19,6 +19,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
+import { ONE_TAB_IN_GROUP } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -301,6 +302,23 @@ export function App(): React.JSX.Element {
   }, [layout.revealTab, liveTabIds])
 
   /**
+   * **방금 만든 탭을 편다** (G2′ · §10-R35-1) — `⌘T`·사이드바 `+`·메뉴 **세 경로 전부**가 여기로 온다.
+   *
+   * `createRow` 는 pane 선택만 예약했고 `activeTabId` 는 안 건드렸다. 이 앱은 **영역이 활성 탭을
+   * 정하므로**(R3-a) 새 탭은 만들어지고도 **뒤에 조용히 숨어 있었다** — 게이트 ① 에서 사용자가
+   * 잡은 것이고, 옛 통과선은 `selectedPane` 만 봐서 그걸 통과시켰다.
+   *
+   * 위 `pendingRevealRef` 와 같은 모양이되 **끝나는 조건이 다르다**: 그쪽은 이미 있는 탭을 겨누니
+   * "이 worktree 에 없다"로 끝낼 수 있지만, 여기 탭은 **아직 안 왔을 뿐**이라 그 조건으로 지우면
+   * 도착하기도 전에 요청을 버린다. **폈을 때만** 지운다.
+   */
+  useEffect(() => {
+    const tabId = lifecycle.pendingRevealTab
+    if (tabId === null) return
+    if (layout.revealTab(tabId)) lifecycle.revealTabHandled()
+  }, [lifecycle.pendingRevealTab, lifecycle.revealTabHandled, layout.revealTab, liveTabIds])
+
+  /**
    * 영역 선언 (§10-R13) — 영역 하나가 연결 하나다. `active` 인 영역이 **마지막에** 붙는다(S2-b).
    *
    * 탭이 없는 영역은 선언하지 않는다 — 붙을 탭이 없으면 연결을 열 이유가 없다(빈 상태 카드만).
@@ -330,6 +348,8 @@ export function App(): React.JSX.Element {
   const layoutMirror = {
     activeGroupId: layout.activeGroupId,
     activeTabId: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null,
+    /** 활성 영역의 탭 수 — `⌘⌥D` 가 **거절 이유를 말하려면** 이게 필요하다 (G3′ · §10-R35-2). */
+    activeTabCount: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0,
     splitGroup: layout.splitGroup,
     closeGroup: layout.closeGroup,
     revealTab: layout.revealTab,
@@ -569,6 +589,8 @@ export function App(): React.JSX.Element {
   // 그래서 호출하는 쪽이 대상을 명시한다: 헤더·메뉴는 **그 영역의 활성 탭 pane**, 단축키는 포커스 pane.
   // 거절은 그대로 알림으로 올린다(강제로 밀지 않는다, §10-R8).
   const [paneError, setPaneError] = useState<string | null>(null)
+  /** 거절이 아니라 **안내** 한 줄 (G3′) — 실패 문구(`실패: …`)로 감싸지 않는다. */
+  const [groupHint, setGroupHint] = useState<string | null>(null)
   const splitPaneAt = useCallback(
     async (target: { paneId: string | null; direction: PaneSplitDirection }): Promise<void> => {
       if (target.paneId === null) return
@@ -664,6 +686,13 @@ export function App(): React.JSX.Element {
           const groupId = layoutRef.current.activeGroupId
           const tabId = layoutRef.current.activeTabId
           if (groupId === null || tabId === null) return
+          // **말없이 아무것도 안 하지 않는다** (G3′ · §10-R35-2). `splitGroupIn` 은 탭이 하나뿐이면
+          // 원래 배치를 그대로 돌려주는데, 메뉴는 그 사실을 흐린 항목 + `title` 로 말하고 키보드만
+          // 조용했다. 문구는 메뉴와 **같은 상수**를 쓴다.
+          if (layoutRef.current.activeTabCount < 2) {
+            setGroupHint(ONE_TAB_IN_GROUP)
+            return
+          }
           layoutRef.current.splitGroup({ groupId, tabId, direction: direction === 'right' ? 'row' : 'column' })
           return
         }
@@ -782,7 +811,8 @@ export function App(): React.JSX.Element {
    * 구현자 재량으로 연 **기본안(포커스 영역)** 을 택하고 C5 로 기록한다.
    */
   const groupNotice: LifecycleNotice | null =
-    lifecycle.lifecycleNotice ?? (paneError === null ? null : { kind: 'error', message: paneError })
+    lifecycle.lifecycleNotice ??
+    (paneError !== null ? { kind: 'error', message: paneError } : groupHint !== null ? { kind: 'info', message: groupHint } : null)
 
   const renderGroup = ({ group, workspaceId }: { group: TabGroup; workspaceId: string }): React.JSX.Element => {
     const groupTabs = group.tabOrder.map((tabId) => tabById(tabId)).filter((tab): tab is TabRow => tab !== null)
@@ -848,6 +878,7 @@ export function App(): React.JSX.Element {
             notice={groupNotice}
             onDismiss={() => {
               setPaneError(null)
+              setGroupHint(null)
               lifecycle.dismissNotice()
             }}
           />

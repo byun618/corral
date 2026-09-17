@@ -66,7 +66,8 @@ const 결과 = {
 async function cdpTarget() {
   for (let i = 0; i < 60; i += 1) {
     try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/json/list`)
+      // `globalThis.` 를 붙여 둔다 — 이 하네스의 eslint env 는 node 22 전역을 모른다(lint 증감 0 규율).
+      const res = await globalThis.fetch(`http://127.0.0.1:${PORT}/json/list`)
       const list = await res.json()
       const page = list.find((t) => t.type === 'page' && typeof t.webSocketDebuggerUrl === 'string')
       if (page !== undefined) return page
@@ -80,7 +81,7 @@ async function cdpTarget() {
 
 /** 최소 CDP 클라이언트 — node 22 내장 `WebSocket`. */
 function cdpConnect(url) {
-  const ws = new WebSocket(url)
+  const ws = new globalThis.WebSocket(url)
   const 대기 = new Map()
   let seq = 0
   const 열림 = new Promise((resolve, reject) => {

@@ -13,6 +13,7 @@
 // 메뉴가 두 번째 구현을 들이면 두 경로가 갈라진다 — 여기서는 문만 하나 더 내는 것이다.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ONE_TAB_IN_GROUP } from '../group-tree.js'
 
 export type TabMenuAnchor = { tabId: string; x: number; y: number }
 
@@ -142,7 +143,7 @@ export function TabContextMenu({
         className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
         data-tab-menu-move-right={anchor.tabId}
         data-disabled={canMoveToGroup ? 'false' : 'true'}
-        title={canMoveToGroup ? undefined : '이 영역에 탭이 하나뿐이다'}
+        title={canMoveToGroup ? undefined : ONE_TAB_IN_GROUP}
         onClick={() => {
           if (!canMoveToGroup) return
           onDismiss()
@@ -157,7 +158,7 @@ export function TabContextMenu({
         className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
         data-tab-menu-move-down={anchor.tabId}
         data-disabled={canMoveToGroup ? 'false' : 'true'}
-        title={canMoveToGroup ? undefined : '이 영역에 탭이 하나뿐이다'}
+        title={canMoveToGroup ? undefined : ONE_TAB_IN_GROUP}
         onClick={() => {
           if (!canMoveToGroup) return
           onDismiss()

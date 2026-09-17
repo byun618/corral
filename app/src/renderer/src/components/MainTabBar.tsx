@@ -302,6 +302,26 @@ function useBoxWidth(): { ref: React.RefObject<HTMLDivElement | null>; width: nu
  *     그 자리는 상태바 `corral / {worktree}` 와 사이드바 선택 블록이 맡는다.
  *   · 우측 **액션**(`▥ ▤ ⤢ ✕`) — 평소 opacity 0, 활성 영역/hover/줌 에서 1. 자리는 항상 점유한다.
  */
+/**
+ * 헤더 **빈 배경**(과 탭 자체)을 누를 때 포커스가 `body` 로 새는 것을 막는다 — **A8 · G4′-a**.
+ *
+ * 기전은 `TerminalPane.keepTerminalFocus` 와 **같다**(`raw/claude/probe-focus-mech.json` 실측):
+ * 영역은 켜지고 `term.focus()` 도 불리는데, 포커스를 못 받는 `div` 위의 `mousedown` **기본
+ * 동작**이 그 뒤에 포커스를 `body` 로 옮긴다. 그래서 배지는 옮겨가고 **키는 아무 데도 안 간다.**
+ *
+ * 기준 §R33-3 은 이걸 **안 고치기로** 했었다 — 헤더에는 이름 바꾸기 입력칸·버튼이 있어 조건이
+ * 하나 더 붙고, 어긋나면 지금 되는 길이 깨지기 때문이다. 사용자 지시로 뒤집혔고(§R35-3),
+ * **그 조건이 이 한 줄이다**: 포커스를 받을 수 있는 자손 위면 손대지 않는다. 그래야
+ * 이름 바꾸기 캐럿(G4′-b)과 헤더 버튼(G4′-c)이 그대로 산다.
+ *
+ * `stopPropagation` 은 쓰지 않는다 — 문서 `mousedown` 으로 닫는 메뉴들이 안 닫힌다.
+ */
+function keepFocusOnHeaderBackground(event: React.MouseEvent): void {
+  if (!(event.target instanceof Element)) return
+  if (event.target.closest('button, input, textarea, select, a[href], [contenteditable="true"], [tabindex]') !== null) return
+  event.preventDefault()
+}
+
 export function GroupHeader({
   groupId,
   tabs,
@@ -364,7 +384,10 @@ export function GroupHeader({
       data-group-header={groupId}
       data-header-compact={compact ? 'true' : 'false'}
       ref={header.ref}
-      onMouseDown={onActivate}
+      onMouseDown={(event) => {
+        keepFocusOnHeaderBackground(event)
+        onActivate()
+      }}
     >
       {tabs.map((tab) => (
         <MainTab

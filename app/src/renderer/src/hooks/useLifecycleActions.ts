@@ -18,6 +18,14 @@ export function useLifecycleActions(state: AppState | null): {
   selectPane: (paneId: string) => void
   /** 아직 store 에 없는 pane 을 **도착하면** 선택한다 (분할 직후 — F2-7). */
   selectPaneWhenReady: (paneId: string) => void
+  /**
+   * 방금 만든 **탭** — 배치에 들어오면 App 이 그 탭을 편다 (G2′ · §10-R35-1).
+   *
+   * pane 선택만으로는 부족하다: 이 앱은 **영역이 활성 탭을 정한다**(R3-a). 배치를 아는 것은
+   * App 이고 이 훅은 모르므로, **무엇을 펴야 하는지만** 여기서 알리고 펴는 일은 App 이 한다.
+   */
+  pendingRevealTab: string | null
+  revealTabHandled: () => void
   activeWorkspaceId: string | null
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
@@ -51,6 +59,8 @@ export function useLifecycleActions(state: AppState | null): {
    * 하네스에서 우연히 통과할 수 있는 모양이라 ref 로 미뤄서 구조적으로 끊는다.
    */
   const pendingSelectRef = useRef<string | null>(null)
+  /** 방금 만든 탭 (G2′). `state` 가 아니라 **배치**가 여는 것이라 App 으로 넘긴다. */
+  const [pendingRevealTab, setPendingRevealTab] = useState<string | null>(null)
 
   const setActive = useCallback((workspaceId: string | null) => {
     lastWorkspaceRef.current = workspaceId
@@ -199,9 +209,14 @@ export function useLifecycleActions(state: AppState | null): {
       // `CreateRowResult.paneId` 는 이미 렌더러까지 오던 값이다 — 버리고 있었을 뿐이다.
       // 선택은 pane 이 store 에 도착한 뒤에 한다(위 `pendingSelectRef` 주석).
       if (result.paneId !== null) pendingSelectRef.current = result.paneId
+      // **G2′** — 새 탭을 화면에 띄우는 것은 pane 선택이 아니라 **영역의 활성 탭**이다(R3-a).
+      // 여기서는 무엇을 펴야 하는지만 남기고, 배치를 아는 App 이 탭이 도착한 뒤 편다.
+      // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
+      if (result.tabId !== null) setPendingRevealTab(result.tabId)
     },
     [setActive],
   )
+  const revealTabHandled = useCallback((): void => setPendingRevealTab(null), [])
 
   /**
    * ⌘T (mac) / Ctrl+T — 선택/최근 workspace 에 **빈 탭** (게이트 ① G2). 대상이 없으면 no-op.
@@ -294,6 +309,8 @@ export function useLifecycleActions(state: AppState | null): {
     selectedPane,
     selectPane,
     selectPaneWhenReady,
+    pendingRevealTab,
+    revealTabHandled,
     activeWorkspaceId,
     lifecycleNotice,
     dismissNotice,

@@ -42,6 +42,14 @@ export function leaf(group: TabGroup): GroupNode {
   return { kind: 'leaf', group }
 }
 
+/**
+ * 탭이 하나뿐인 영역에서 «새 영역으로 옮기기»가 안 되는 이유 — **한 곳에서만 쓴다** (§10-R35-2).
+ *
+ * 탭 메뉴는 항목을 흐리고 이 문구를 `title` 로 달았는데 키보드(`⌘⌥D`)는 **아무 말도 안 했다**
+ * (부류 ④ 무음 실패). 두 경로가 같은 사실을 말하므로 문구도 한 자리에서 가져간다.
+ */
+export const ONE_TAB_IN_GROUP = '이 영역에 탭이 하나뿐이다'
+
 export function singleLayout(input: { groupId: string; tabOrder: string[]; activeTabId: string | null }): GroupLayout {
   return {
     root: leaf({ groupId: input.groupId, tabOrder: [...input.tabOrder], activeTabId: input.activeTabId }),

@@ -44,6 +44,14 @@ const LOAD_SECS = 40
 const 목표 = { cols: 100, rows: 30, 여유: 0.1 }
 const WIN_W = Number(process.env.L373_WIN_W ?? 1720)
 const WIN_H = Number(process.env.L373_WIN_H ?? 1120)
+/**
+ * **G-4 절개 (§10-R35-4c)** — `1` 이면 `.xterm-rows` 의 MutationObserver 를 **안 단다**.
+ *
+ * MO 는 동반물 중 **어느 통과선도 안 먹이는 유일한 것**이다(`DOM패스_초당` 하나만 만든다 —
+ * `총프레임_초당` 은 `paneWrites` 에서 온다, `:247`·`:193`). 그래서 떼도 판정점·P4·P5·P2-a·
+ * 관문 ② 가 전부 그대로 확인된다. **이 회차는 진단용 대조이지 판정 표본이 아니다.**
+ */
+const NO_MO = process.env.L373_NO_MO === '1'
 const P3_LINE = 70
 const P4_LINE = 25
 const P5_RATIO = 0.7
@@ -55,6 +63,7 @@ const 결과 = {
   M0,
   판정점조건: { pane: 4, 격자: `${목표.cols}x${목표.rows} ±10%`, 프레임: '28±6 KB/pane · 셀당 9~12 B', 색런길이: HEAVY_EVERY, 런마다속성: HEAVY_RICH === '2' ? '전경+배경(24비트)+굵기' : HEAVY_RICH === '1' ? '전경+배경(256)+굵기' : '전경만', '1차 스파이크 avgRun': 5, skip: '켠 채 · 아무것도 못 걸러야 한다' },
   통과선: { P3: P3_LINE, P4: P4_LINE, P5: `${P5_RATIO} × 유휴 바닥` },
+  절개: NO_MO ? { MO: false, 무엇: 'G-4 진단 — .xterm-rows MutationObserver 를 떼고 잰다 (판정 표본 아님)' } : null,
   창: { width: WIN_W, height: WIN_H },
   // **M0-e (§R34-1)** — 기계 전체 부하. 이 칸이 비면 이 회차는 P3 판정에 못 쓴다.
   'M0-e': { 조건표시: process.env.L373_LOAD_TAG ?? null, 회차직전: null, 회차직후: null, 회차전체: null },
@@ -184,7 +193,7 @@ async function 한점(app, paneIds, hz) {
   const cpuBefore = psSample(rendererPid())
   const 부하전 = loadSnapshot() // M0-e — 창을 감싸는 두 점만 찍는다 (창 안에서 표본 뜨지 않는다)
   const countersBefore = (await app.send({ cmd: 'counters' })).counters
-  await passStart(app)
+  if (!NO_MO) await passStart(app)
   await rafStart(app)
   const t0 = Date.now()
   const seen = new Map()
@@ -194,7 +203,7 @@ async function 한점(app, paneIds, hz) {
   }
   const t1 = Date.now()
   const raf = await rafRead(app)
-  const passes = await passRead(app)
+  const passes = NO_MO ? null : await passRead(app)
   const countersAfter = (await app.send({ cmd: 'counters' })).counters
   const 부하후 = loadSnapshot()
   const cpuAfter = psSample(rendererPid())

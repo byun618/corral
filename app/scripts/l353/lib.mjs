@@ -240,7 +240,11 @@ function park(dir) {
   fs.renameSync(dir, parked)
 }
 
-export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile } = {}) {
+/**
+ * @param extraArgs Electron 바이너리에 더 붙일 인자 — 기본 `[]` 라 103개 호출부의 동작은 그대로다.
+ *   G-4 프로파일이 `--remote-debugging-port` 를 여기로 넘긴다(**앱 코드 0줄 수정** 조건).
+ */
+export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile, extraArgs = [] } = {}) {
   const buildCheck = ensureBuilt()
   const dir = path.join(RAW_DIR, RAW_SUBDIR, '_runs', name)
   park(dir)
@@ -250,7 +254,7 @@ export async function startApp({ name, env = {}, timeoutMs = 40000, registryFile
   const shotDir = path.join(dir, 'shots')
   fs.mkdirSync(shotDir, { recursive: true })
 
-  const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), ['.'], {
+  const child = spawn(path.join(APP_DIR, 'node_modules/.bin/electron'), ['.', ...extraArgs], {
     cwd: APP_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {

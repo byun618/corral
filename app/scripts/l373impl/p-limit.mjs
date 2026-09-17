@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startApp, sleep, SESSION } from '../l353/lib.mjs'
 import { attachThisWorktree, press, quiesce } from './app-steps.mjs'
-import { APP_DIR, ensureWorkspace, m0End, m0Start, paneList, paneRead, pct, psSample, resetPanes, writeRaw } from './lib.mjs'
+import { APP_DIR, ensureWorkspace, loadSnapshot, m0End, m0Start, paneList, paneRead, pct, psSample, resetPanes, writeRaw, 부하델타 } from './lib.mjs'
 
 if (!SESSION.startsWith('life373-')) throw new Error(`거부: 격리 세션이 아니다 (${SESSION})`)
 const M0 = m0Start()
@@ -56,6 +56,8 @@ const 결과 = {
   판정점조건: { pane: 4, 격자: `${목표.cols}x${목표.rows} ±10%`, 프레임: '28±6 KB/pane · 셀당 9~12 B', 색런길이: HEAVY_EVERY, 런마다속성: HEAVY_RICH === '2' ? '전경+배경(24비트)+굵기' : HEAVY_RICH === '1' ? '전경+배경(256)+굵기' : '전경만', '1차 스파이크 avgRun': 5, skip: '켠 채 · 아무것도 못 걸러야 한다' },
   통과선: { P3: P3_LINE, P4: P4_LINE, P5: `${P5_RATIO} × 유휴 바닥` },
   창: { width: WIN_W, height: WIN_H },
+  // **M0-e (§R34-1)** — 기계 전체 부하. 이 칸이 비면 이 회차는 P3 판정에 못 쓴다.
+  'M0-e': { 조건표시: process.env.L373_LOAD_TAG ?? null, 회차직전: null, 회차직후: null, 회차전체: null },
   훑기: [],
 }
 
@@ -180,6 +182,7 @@ async function 한점(app, paneIds, hz) {
     return { paneId, 격자: gridMap.get(paneId) ?? null, 걸렸나: /[▏▎▍▌▋▊▉█░▒▓]/.test(text), 맛보기: text.slice(0, 60) }
   })
   const cpuBefore = psSample(rendererPid())
+  const 부하전 = loadSnapshot() // M0-e — 창을 감싸는 두 점만 찍는다 (창 안에서 표본 뜨지 않는다)
   const countersBefore = (await app.send({ cmd: 'counters' })).counters
   await passStart(app)
   await rafStart(app)
@@ -193,6 +196,7 @@ async function 한점(app, paneIds, hz) {
   const raf = await rafRead(app)
   const passes = await passRead(app)
   const countersAfter = (await app.send({ cmd: 'counters' })).counters
+  const 부하후 = loadSnapshot()
   const cpuAfter = psSample(rendererPid())
   for (const row of (await paneWrites(app)) ?? []) for (const w of row.writes) seen.set(`${row.paneId}:${w.seq}:${w.at}`, w)
   stopLoad(paneIds)
@@ -229,6 +233,7 @@ async function 한점(app, paneIds, hz) {
     cpuBefore === null || cpuAfter === null || cpuBefore.cpuSec === null || cpuAfter.cpuSec === null
       ? null
       : +(((cpuAfter.cpuSec - cpuBefore.cpuSec) / ((cpuAfter.at - cpuBefore.at) / 1000)) * 100).toFixed(1)
+  const 부하 = 부하델타(부하전, 부하후)
   const floor = floorBefore === null || floorAfter === null ? null : Math.min(floorBefore.perSec, floorAfter.perSec)
   const ratio = floor === null || raf === null || floor === 0 ? null : +(raf.perSec / floor).toFixed(3)
   const p95 = pct(inWindow.map((w) => w.ms), 95)
@@ -246,20 +251,24 @@ async function 한점(app, paneIds, hz) {
     서피스: { 수: 서피스, 초당: +(서피스 / secs).toFixed(2), 후보, 건너뜀, skip비율: 후보 === 0 ? null : +(건너뜀 / 후보).toFixed(4) },
     흘림: { 본체가보낸: 후보 - 건너뜀, 렌더러가쓴: 총쓰기, 도달비율: 후보 - 건너뜀 === 0 ? null : +(총쓰기 / (후보 - 건너뜀)).toFixed(4) },
     렌더러CPU: cpuPct,
+    // M0-e — 이 창 **안에서** 기계가 얼마나 바빴나. `밖합` 이 corral·하네스 밖 CPU 합이다.
+    부하,
     write_p95: p95,
     rAF: raf?.perSec ?? null,
     유휴바닥: floor,
     P5비율: ratio,
     pane별: perPane,
     판정: {
-      P3: cpuPct === null ? '못 쟀다' : cpuPct <= P3_LINE ? '통과' : '미달',
+      // **M0-e**: 부하 기록이 없는 창은 P3 판정에 쓸 수 없다 (§R34-1 — 근거 없는 칸은 무효).
+      P3: 부하 === null ? '무효(M0-e 부하 기록 없음)' : cpuPct === null ? '못 쟀다' : cpuPct <= P3_LINE ? '통과' : '미달',
       P4: p95 === null ? '못 쟀다' : p95 <= P4_LINE ? '통과' : '미달',
       P5: ratio === null ? '못 쟀다' : ratio >= 0.73 ? '통과' : ratio >= 0.68 ? '보류' : '미달',
     },
   }
   console.log(
     `  ${hz}Hz | 부하 ${row.부하걸렸나} | 프레임/s ${row.축.총프레임_초당} · 셀/s ${row.축.총셀_초당} · KB/s ${row.축.KB_초당}` +
-      ` | CPU ${cpuPct} | p95 ${p95} | rAF ${raf?.perSec}/${floor} = ${ratio} | skip ${row.서피스.skip비율} | 도달 ${row.흘림.도달비율}`,
+      ` | CPU ${cpuPct} | p95 ${p95} | rAF ${raf?.perSec}/${floor} = ${ratio} | skip ${row.서피스.skip비율} | 도달 ${row.흘림.도달비율}` +
+      ` | M0-e 밖합 ${row.부하?.밖합 ?? '없음'} · la ${row.부하?.loadavg1?.후 ?? '?'}`,
   )
   결과.훑기.push(row)
   return row
@@ -267,6 +276,8 @@ async function 한점(app, paneIds, hz) {
 
 // --- 준비 — 4 pane 을 **고르게** 나눈다 (2×2) ------------------------------------------
 ensureWorkspace()
+const 회차부하시작 = loadSnapshot() // M0-e — 회차 **직전**
+결과['M0-e'].회차직전 = 회차부하시작 === null ? null : { at: new Date(회차부하시작.at).toISOString(), loadavg1: 회차부하시작.loadavg1, 프로세스수: 회차부하시작.프로세스수 }
 결과.초기화 = await resetPanes()
 const app = await startApp({ name: 'p-limit', env: APP_ENV, registryFile: REGISTRY })
 await attachThisWorktree(app)
@@ -372,6 +383,13 @@ console.log('\n한계', JSON.stringify(결과.한계, null, 1))
 
 await app.stop()
 await sleep(1500)
+{
+  // M0-e — 회차 **직후**. 회차 전체 구간의 밖 CPU 합도 같이 남긴다(창별 값은 `훑기[].부하`).
+  const 회차부하끝 = loadSnapshot()
+  결과['M0-e'].회차직후 = 회차부하끝 === null ? null : { at: new Date(회차부하끝.at).toISOString(), loadavg1: 회차부하끝.loadavg1, 프로세스수: 회차부하끝.프로세스수 }
+  결과['M0-e'].회차전체 = 부하델타(회차부하시작, 회차부하끝)
+  console.log('M0-e 회차전체', JSON.stringify(결과['M0-e'].회차전체))
+}
 결과.M0_끝 = m0End()
 writeRaw(OUT_NAME, 결과)
 console.log('wrote raw/claude/' + OUT_NAME)

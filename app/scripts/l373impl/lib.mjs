@@ -86,6 +86,94 @@ export function psSample(pid) {
   }
 }
 
+/**
+ * **M0-e (§R34-1)** — 기계 전체를 한 번 훑어 pid 별 누적 CPU 초를 담는다.
+ *
+ * 라운드 3 까지의 M0 는 **떠 있는 corral 앱 수만** 셌다. 측정 내내 claude 세션 둘과 Spotlight
+ * 색인이 같이 돌고 있었는데 원자료 어디에도 그 수가 없다 — 그래서 "부하가 밀었나"를 사후에
+ * 가를 수가 없었다. 이 함수와 `부하델타` 가 그 칸을 만든다.
+ *
+ * `ps` 의 `%cpu` 는 **프로세스 수명 평균**이라 순간 부하를 못 본다. 두 번 찍어 **누적 CPU 초의
+ * 차 ÷ 실제 흐른 시간**으로 계산한다 — 창을 감싸는 두 점만 찍으면 되므로 창 안에서 따로
+ * 표본을 뜨지 않는다(감시 출력이 곧 부하다 — §R34-3).
+ */
+export function loadSnapshot() {
+  const rows = new Map()
+  try {
+    // `comm=` 이 아니라 `command=` 를 쓴다 — **누구 것인지**를 가르려면 인자까지 봐야 한다.
+    // `comm=` 만 보면 이 하네스 자신(`…/bin/node`)이 경로에 APP_DIR 이 없어 **밖**으로 세어진다.
+    const out = execFileSync('ps', ['-axo', 'pid=,time=,command='], { encoding: 'utf8' })
+    for (const line of out.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/)
+      if (m === null) continue
+      const cpuSec = parseCpuTime(m[2])
+      if (cpuSec === null) continue
+      rows.set(Number(m[1]), { cpuSec, cmd: m[3] })
+    }
+  } catch {
+    return null
+  }
+  return { at: Date.now(), loadavg1: +os.loadavg()[0].toFixed(2), 프로세스수: rows.size, rows }
+}
+
+/**
+ * 이 하네스·이 worktree 의 corral 인가 — M0-e 가 요구하는 "밖" 판별의 반대쪽.
+ *
+ * **형제 worktree 의 corral 은 「밖」이다** — M0-d 대로 죽이지 않는 남의 앱이고, 기계를 미는
+ * 쪽이면 그대로 세어져야 한다. 그래서 `APP_DIR` **전체 경로**로 가른다.
+ */
+const 내것인가 = (pid, cmd) =>
+  pid === process.pid ||
+  cmd.includes(APP_DIR) ||
+  cmd.includes('l373impl/') ||
+  cmd.includes('scripts/l353/') ||
+  /(^|\/)herdr( |$)/.test(cmd)
+
+/**
+ * 두 `loadSnapshot` 사이의 pid 별 CPU %(코어 1개 = 100 %)를 내림차순으로 준다.
+ *
+ * `밖상위` 는 **corral·하네스 밖** 프로세스만이고, `밖합` 이 R34-2a 가 "조용한가"를 가르는 수다.
+ * 임계값은 안 박는다 — 기록만 만든다 (§R34-1).
+ */
+const 이름뽑기 = (cmd) => {
+  const 첫 = cmd.split(/\s+/)[0]
+  const base = path.basename(첫)
+  // Electron 헬퍼는 실행 파일 이름이 전부 같다 — `--type=` 을 붙여야 렌더러/GPU 가 갈린다.
+  const type = cmd.match(/--type=(\S+)/)
+  return type === null ? base : `${base}(${type[1]})`
+}
+
+export function 부하델타(before, after, { 상위 = 8, 최소 = 1.0 } = {}) {
+  if (before === null || after === null) return null
+  const 초 = (after.at - before.at) / 1000
+  if (초 <= 0) return null
+  const all = []
+  const 새것 = []
+  for (const [pid, row] of after.rows) {
+    const 전 = before.rows.get(pid)
+    if (전 === undefined) {
+      // **양쪽 표본에 다 있는 pid 만** 합에 넣는다. 창 중간에 생긴 프로세스는 누적 CPU 초가
+      // 언제 쌓인 것인지 모르는데 그걸 창 길이로 나누면 수를 부풀린다 — 내가 부른 `ps`
+      // 자신이 14.3 % 로 찍힌 자리가 그것이다. 대신 **감추지도 않는다**: 아래 `새프로세스` 로 싣는다.
+      if (row.cpuSec > 0 && !내것인가(pid, row.cmd)) 새것.push({ pid, 이름: 이름뽑기(row.cmd), 누적CPU초: +row.cpuSec.toFixed(1) })
+      continue
+    }
+    const pct = +(((row.cpuSec - 전.cpuSec) / 초) * 100).toFixed(1)
+    if (pct <= 0) continue
+    all.push({ pid, 이름: 이름뽑기(row.cmd), CPU: pct, 내것: 내것인가(pid, row.cmd) })
+  }
+  all.sort((a, b) => b.CPU - a.CPU)
+  const 밖 = all.filter((r) => !r.내것)
+  return {
+    잰구간초: +초.toFixed(1),
+    loadavg1: { 전: before.loadavg1, 후: after.loadavg1 },
+    밖합: +밖.reduce((sum, r) => sum + r.CPU, 0).toFixed(1),
+    내것합: +all.filter((r) => r.내것).reduce((sum, r) => sum + r.CPU, 0).toFixed(1),
+    밖상위: 밖.filter((r) => r.CPU >= 최소).slice(0, 상위).map(({ pid, 이름, CPU }) => ({ pid, 이름, CPU })),
+    새프로세스: 새것.sort((a, b) => b.누적CPU초 - a.누적CPU초).slice(0, 상위),
+  }
+}
+
 export function writeRaw(file, content) {
   const target = path.join(RAW, file)
   fs.mkdirSync(path.dirname(target), { recursive: true })

@@ -693,6 +693,11 @@ export function App(): React.JSX.Element {
             setGroupHint(ONE_TAB_IN_GROUP)
             return
           }
+          // **성공하면 지운다** (G3′-b). 안 지우면 분할이 된 화면에 *"탭이 하나뿐이다"* 가 그대로
+          // 남아 **방금 일어난 일의 반대**를 말한다. `paneError` 도 네 자리 전부 성공 시 `null` 로
+          // 되돌린다 — 이 파일의 규약이다. 수정 전 대조: `g23-notice-header-수정전-G3b.json`
+          // (영역 1 → 2 로 분할됐는데 알림은 그대로 "이 영역에 탭이 하나뿐이다").
+          setGroupHint(null)
           layoutRef.current.splitGroup({ groupId, tabId, direction: direction === 'right' ? 'row' : 'column' })
           return
         }

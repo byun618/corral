@@ -160,7 +160,39 @@ const groupId = (await evalIn(app, `(() => document.querySelector('[data-group-h
   }
   console.log(`G3′ 탭수 ${탭수} · 알림 ${JSON.stringify(알림)} · 메뉴 ${JSON.stringify(메뉴문구)} → 통과 ${row.통과}`)
   결과.항목.push(row)
-  // 알림을 지우고 다음 항목으로 (다음 판별을 오염시키지 않는다)
+  // **해제하지 않는다.** 알림이 떠 있는 채로 G3′-b 로 들어가야 "성공하면 사라지나"를 잴 수 있다.
+  // (첫 판에서 여기서 해제해 버려 G3′-b 가 `null → null` 로 **거짓 통과**했다.)
+}
+
+// --- G3′-b — **거짓이 되면 사라지나** (§10-R35-2 보탬) ---------------------------------
+//
+// "알림이 뜬다"만 보면 절반이다. 탭을 하나 더 만들어 **분할이 실제로 되는** 상태로 바꾼 뒤 다시
+// 누르면, 분할은 성공하는데 *"탭이 하나뿐이다"* 가 그대로 남아 **방금 일어난 일의 반대**를 말할
+// 수 있다. 그것도 부류 ①(있는 것 ≠ 보이는 것)이다.
+{
+  const 영역수전 = await evalIn(app, `(() => document.querySelectorAll('[data-tab-group]').length)()`)
+  const 알림전 = await evalIn(app, `(() => document.querySelector('[data-lifecycle-notice] .inline-notice-text')?.textContent ?? null)()`)
+  await press(app, { key: 't' }) // 탭 하나 더 — 이제 ⌘⌥D 가 **되는** 조건이다
+  await sleep(2600)
+  await quiesce(app)
+  const 탭수 = await evalIn(app, `(() => document.querySelectorAll('[data-group-header="${groupId}"] [data-main-tab]').length)()`)
+  await press(app, { key: 'd', alt: true })
+  await sleep(1600)
+  await quiesce(app)
+  const 영역수후 = await evalIn(app, `(() => document.querySelectorAll('[data-tab-group]').length)()`)
+  const 알림후 = await evalIn(app, `(() => document.querySelector('[data-lifecycle-notice] .inline-notice-text')?.textContent ?? null)()`)
+  const row = {
+    항목: 'G3′-b 성공하면 안내가 사라지나',
+    알림: { 전: 알림전, 후: 알림후 },
+    탭수,
+    영역수: { 전: 영역수전, 후: 영역수후 },
+    분할됐나: 영역수후 > 영역수전,
+    // `알림전 !== null` 이 **판별의 전제**다 — 안 떠 있던 알림이 안 떠 있는 것은 통과가 아니다.
+    통과: 알림전 !== null && 영역수후 > 영역수전 && 알림후 === null,
+    화면: await snapshot(app, 'g23-notice-cleared'),
+  }
+  console.log(`G3′-b 탭수 ${탭수} · 영역 ${영역수전} → ${영역수후} · 알림 ${JSON.stringify(알림전)} → ${JSON.stringify(알림후)} → 통과 ${row.통과}`)
+  결과.항목.push(row)
   await app.send({ cmd: 'click', selector: '[data-notice-dismiss]' }).catch(() => null)
   await sleep(500)
 }

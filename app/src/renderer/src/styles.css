@@ -540,6 +540,26 @@ button { font: inherit; }
 body.is-group-drag .term-host { pointer-events: none; }
 body.is-group-drag { cursor: inherit; user-select: none; }
 
+/* 탭 드래그 (LIFE-387 A1 · 핸드오프 §2 TabDrag/DropZoneOverlay) — 리사이즈 고스트(선)와 다른
+   모양(면)으로 낸다 (§1 Q5 "얼굴 vs 선"). 오버레이 하나가 fixed 로 창을 덮고, 안의 조각들만
+   판정이 잰 사각형에 맞춰 자리를 잡는다. */
+body.is-tab-drag .term-host { pointer-events: none; }
+body.is-tab-drag { cursor: grabbing; user-select: none; }
+.drop-zone-overlay { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+.dropzone-fill {
+  position: fixed; background: var(--dropzone-fill); border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  transition: none;
+}
+.dropzone-fill.is-empty { background: var(--dropzone-fill-empty); }
+.dropzone-fill.is-invalid { background: var(--dropzone-invalid); border-color: var(--st-error); }
+.dropzone-tabbar-marker { position: fixed; width: var(--w-drop-marker); background: var(--accent); transform: translateX(-50%); }
+.tab-drag-ghost {
+  position: fixed; z-index: 21; pointer-events: none;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 3px 8px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
 /* 영역 헤더 액션 — 자리는 항상 점유, 보이는 건 활성 영역·hover·줌 (핸드오프 §2 표). */
 .group-actions { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity var(--dur-fade) ease; }
 .main-tabbar:hover .group-actions, .main-tabbar.is-active-group .group-actions { opacity: 1; }

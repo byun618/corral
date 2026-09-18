@@ -11,6 +11,7 @@ import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow 
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
+import { DropZoneOverlay } from './components/DropZoneOverlay.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { GroupHeader } from './components/MainTabBar.js'
@@ -37,6 +38,7 @@ import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSyn
 import { useMemoryLabel } from './hooks/useMemoryLabel.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
+import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { isAgentTab, sessionTitle } from './session-title.js'
@@ -288,6 +290,31 @@ export function App(): React.JSX.Element {
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+
+  /**
+   * LIFE-387 A1 — 탭 드래그. 판정은 `useTabDrag`(순수 함수 `tab-drag.ts` 를 DOM 에 잇는 층)가
+   * 다 하고, 여기선 판정 결과를 어느 `layout` 함수로 커밋할지만 고른다(§4 동작 계약 표 그대로).
+   */
+  const tabDrag = useTabDrag({
+    ownTabCountOf: (groupId) => layout.groups.find((group) => group.groupId === groupId)?.tabOrder.length ?? 0,
+    onDrop: ({ tabId, fromGroupId, target }) => {
+      switch (target.kind) {
+        case 'tabbar':
+          layout.moveTabWithinTabbar({ tabId, fromGroupId, toGroupId: target.groupId, index: target.index })
+          return
+        case 'split':
+          if (target.groupId === fromGroupId) layout.splitGroup({ groupId: fromGroupId, tabId, direction: target.direction, edge: target.edge })
+          else layout.splitGroupWithForeignTab({ tabId, fromGroupId, targetGroupId: target.groupId, direction: target.direction, edge: target.edge })
+          return
+        case 'merge':
+          layout.mergeTabIntoGroup({ tabId, fromGroupId, toGroupId: target.groupId })
+          return
+        case 'self-noop':
+        case 'invalid':
+          return
+      }
+    },
+  })
 
   /**
    * 못 편 reveal 을 **배치가 바뀐 뒤** 한 번 더 편다 (위 `pendingRevealRef`).
@@ -863,7 +890,10 @@ export function App(): React.JSX.Element {
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}
           onActivate={() => activateGroup({ groupId: group.groupId, paneId: groupSelectedPaneId })}
+          onTabDragStart={(event, tabId) => tabDrag.onArm(event, { tabId, fromGroupId: group.groupId })}
           onSelectTab={(tab) => {
+            // LIFE-387 A1 — 문턱을 넘긴 드래그 뒤에 따라오는 click 하나는 활성화로 치지 않는다.
+            if (tabDrag.consumeClick()) return
             layout.setActiveTab({ groupId: group.groupId, tabId: tab.tabId })
             const pane = pickPane(tab)
             if (pane !== null) selectPane(pane.paneId)
@@ -1187,6 +1217,10 @@ export function App(): React.JSX.Element {
             setNotice(message)
           }}
         />
+      )}
+
+      {tabDrag.dragState === null ? null : (
+        <DropZoneOverlay state={tabDrag.dragState} tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''} />
       )}
     </div>
   )

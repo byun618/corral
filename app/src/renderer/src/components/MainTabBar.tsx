@@ -64,6 +64,7 @@ function MainTab({
   otherGroups,
   onMoveToOtherGroup,
   compact,
+  onDragStart,
 }: {
   tab: TabRow
   /**
@@ -91,6 +92,8 @@ function MainTab({
   onMoveToOtherGroup: (targetGroupId: string) => void
   /** 영역이 좁아 **아이콘만**으로 접힌 탭인가 (F1-7). 활성 탭은 절대 접히지 않는다. */
   compact: boolean
+  /** LIFE-387 A1 — 드래그 무장(mousedown). 6px 넘기 전엔 평소 클릭과 다르지 않다. */
+  onDragStart: (event: React.MouseEvent) => void
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -186,6 +189,12 @@ function MainTab({
       data-tab-editing={editing ? 'true' : 'false'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // LIFE-387 A1 — 편집 중엔 무장하지 않는다(캐럿 드래그와 겹친다). 문턱(6px)을 안 넘기면
+      // 이 mousedown 은 그냥 뒤따르는 click 으로 남는다 — `preventDefault` 를 안 쓰는 이유.
+      onMouseDown={(event) => {
+        if (editingRef.current) return
+        onDragStart(event)
+      }}
       onClick={onSelect}
       onDoubleClick={(event) => {
         event.stopPropagation()
@@ -357,6 +366,7 @@ export function GroupHeader({
   onCloseGroup,
   otherGroups,
   onMoveToOtherGroup,
+  onTabDragStart,
 }: {
   groupId: string
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
@@ -388,6 +398,8 @@ export function GroupHeader({
   /** LIFE-387 A1/B1 — 다른 영역 목록(탭 메뉴·헤더 메뉴 공용 "다른 영역으로 옮기기" 섹션). */
   otherGroups: { groupId: string; label: string }[]
   onMoveToOtherGroup: (input: { tabId: string; targetGroupId: string }) => void
+  /** LIFE-387 A1 — 탭 mousedown 을 드래그 컨트롤러(App 소유 `useTabDrag`)로 그대로 넘긴다. */
+  onTabDragStart: (event: React.MouseEvent, tabId: string) => void
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
@@ -440,6 +452,7 @@ export function GroupHeader({
           onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
           otherGroups={otherGroups}
           onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
+          onDragStart={(event) => onTabDragStart(event, tab.tabId)}
         />
       ))}
       <button className="main-tab-add" data-main-tabbar-add={groupId} title="빈 탭 (⌘T)" onClick={onCreateShell}>

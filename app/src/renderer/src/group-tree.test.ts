@@ -84,15 +84,13 @@ describe('살아 있는 탭에 맞춰 추리기 (F1-6 안전한 붕괴)', () => 
     const split = splitGroup({ layout: base(), groupId: 'g1', tabId: 't2', direction: 'row', newGroupId: 'g2' })
     expect(split.activeGroupId).toBe('g2') // 분할 직후 활성 영역은 새 영역이다
     const next = reconcileLayout({ layout: split, liveTabIds: ['w9:t1', 'w9:t2'] })
-    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['w9:t1', 'w9:t2'], []])
+    // g2 는 탭을 하나도 못 받아 비고, 비면 접힌다(게이트 ① 수정 — 이하 참고).
+    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['w9:t1', 'w9:t2']])
     expect(listGroups(next.root)[0]?.activeTabId).toBe('w9:t1')
-    // 탭만 옮기고 활성 영역을 빈 g2 에 두면 활성 탭이 null 이 되어 ⌘D·⌘W·⌘⇧Z 가 조용히 안 먹는다.
     expect(next.activeGroupId).toBe('g1')
-    const active = listGroups(next.root).find((group) => group.groupId === next.activeGroupId)
-    expect(active?.activeTabId).not.toBeNull()
   })
 
-  it('같은 탭이 두 영역에 실려 있으면 앞쪽만 남는다', () => {
+  it('같은 탭이 두 영역에 실려 있으면 앞쪽만 남고 뒤는 접힌다', () => {
     const broken: GroupLayout = {
       activeGroupId: 'g1',
       root: {
@@ -104,7 +102,24 @@ describe('살아 있는 탭에 맞춰 추리기 (F1-6 안전한 붕괴)', () => 
       },
     }
     const next = reconcileLayout({ layout: broken, liveTabIds: ['t1'] })
-    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1'], []])
+    expect(listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1']])
+  })
+})
+
+describe('빈 영역 자동 접힘 — × 로 마지막 탭을 닫아도 (게이트 ① 수정, 04-manual-check-notes.md §5)', () => {
+  it('마지막 탭이 살아있는 탭 목록에서 빠지면 그 영역이 접힌다(형제가 자리를 넘겨받는다)', () => {
+    const split = splitGroup({ layout: base(), groupId: 'g1', tabId: 't2', direction: 'row', newGroupId: 'g2' })
+    // g2 의 유일한 탭(t2)이 닫혀 살아있는 목록에서 빠졌다.
+    const next = reconcileLayout({ layout: split, liveTabIds: ['t1'] })
+    expect(listGroups(next.root)).toHaveLength(1)
+    expect(listGroups(next.root)[0]?.tabOrder).toEqual(['t1'])
+    expect(next.activeGroupId).toBe('g1')
+  })
+
+  it('영역이 하나뿐이면 마지막 탭이 닫혀도 접지 않는다(접을 곳이 없다)', () => {
+    const next = reconcileLayout({ layout: base(), liveTabIds: [] })
+    expect(listGroups(next.root)).toHaveLength(1)
+    expect(listGroups(next.root)[0]?.tabOrder).toEqual([])
   })
 })
 

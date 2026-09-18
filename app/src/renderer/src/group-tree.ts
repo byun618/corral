@@ -421,7 +421,7 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
   const landing = restoreFailed
     ? head
     : (groups.find((group) => group.groupId === input.layout.activeGroupId) ?? head)
-  const root =
+  const withOrphans =
     orphans.length === 0
       ? pruned
       : mapGroup(pruned, landing.groupId, (group) => ({
@@ -430,19 +430,40 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
           activeTabId: group.activeTabId ?? orphans[0] ?? null,
         }))
   /**
-   * 활성 영역도 **착지점을 따라간다** (§10-R32-1).
+   * 마지막 탭을 **닫아서**(×) 영역이 비어도 접는다 — 기존 결정("닫기는 영역을 남긴다")을
+   * 사용자가 뒤집었다(게이트 ① 수정, 04-manual-check-notes.md §5). 드래그로 끌어냈을 때
+   * (`removeTabFromGroup`)와 같은 결로 맞춘다 — 영역이 하나뿐이면 접지 않는다(`collapseEmptyGroup`
+   * 과 같은 하한선, `dropEmptyLeaves` 가 트리 전체를 지워버리면 `?? withOrphans` 로 되돌린다).
+   * 어느 영역이 비든(방금 분리로 만든 것이든 원래 있던 것이든) 똑같이 접는다 — "방금 만든 영역만"
+   * 으로 좁힐 근거가 없다(사용자 표현 "원래대로 돌아가면 좋을듯"은 일반 규칙으로 읽었다).
    *
-   * 복원 실패면 탭은 전부 첫 영역으로 갔는데 `activeGroupId` 만 옛 영역에 남을 수 있다 — 그 영역은
-   * 비어 있고, 활성 영역의 `activeTabId` 가 `null` 이면 `⌘D`·`⌘W`·`⌘⇧Z` 가 **조용히 no-op** 이 된다
-   * (`closeTargetRef`·`splitPaneAt(null)`·`toggleZoom` 이 전부 활성 탭을 본다).
-   * R3-d 가 "첫 영역으로 모은다"로 정한 의도는 **한 영역에서 다시 시작한다**이지
-   * "탭은 첫 영역, 포커스는 빈 영역"이 아니다.
+   * **orphans 를 얹은 뒤에** 접어야 한다 — 얹기 전에 접으면(복원 실패 회차처럼 전부 비어 있다가
+   * 착지 그룹에만 나중에 orphans 가 꽂히는 경우) 착지 그룹이 아직 비어 보여서 통째로 사라지고,
+   * 정작 진짜로 계속 비어 있는 다른 그룹은 그 시점엔 안 지워진다.
    */
-  const activeGroupId = restoreFailed
-    ? landing.groupId
-    : groups.some((group) => group.groupId === input.layout.activeGroupId)
-      ? input.layout.activeGroupId
-      : head.groupId
+  const dropEmptyLeaves = (node: GroupNode): GroupNode | null => {
+    switch (node.kind) {
+      case 'leaf':
+        return node.group.tabOrder.length === 0 ? null : node
+      case 'split': {
+        const first = dropEmptyLeaves(node.first)
+        const second = dropEmptyLeaves(node.second)
+        if (first === null) return second
+        if (second === null) return first
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  const root = dropEmptyLeaves(withOrphans) ?? withOrphans
+  const finalGroups = listGroups(root)
+  /**
+   * 활성 영역도 **착지점을 따라간다** (§10-R32-1) — 단, 접힌 뒤에는 그 착지 그룹이 실제로
+   * 남아 있는지 다시 확인한다(collapse 로 사라졌을 수 있다).
+   */
+  const preferredActiveGroupId = restoreFailed ? landing.groupId : input.layout.activeGroupId
+  const activeGroupId = finalGroups.some((group) => group.groupId === preferredActiveGroupId)
+    ? preferredActiveGroupId
+    : (finalGroups.some((group) => group.groupId === head.groupId) ? head.groupId : (finalGroups[0]?.groupId ?? head.groupId))
   return { root, activeGroupId }
 }
 

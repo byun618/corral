@@ -1,3 +1,4 @@
+import type { Keybindings, ShortcutMatch } from './keybindings.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -390,6 +391,7 @@ export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
 
 export type UiPrefs = {
   sidebarWidth: number | null
+  sidebarCollapsed: boolean
   collapsedRepos: string[]
   collapsedGroups: string[]
   /** 폴백 번호 배정표 (C13) — 재기동해도 같은 탭이 같은 번호를 쓴다. */
@@ -553,7 +555,7 @@ export type AppState = {
  * 메뉴 액셀러레이터는 페이지 keydown 보다 먼저 처리돼서 렌더러가 볼 수 없다. main 이
  * `preventDefault()` 로 삼킨 뒤 **뜻**을 이 채널로 넘긴다 — 키 코드는 넘기지 않는다.
  */
-export type CorralShortcut = { kind: 'close-pane' }
+export type CorralShortcut = ShortcutMatch
 
 export type CorralApi = {
   getState: () => Promise<AppState>
@@ -563,6 +565,9 @@ export type CorralApi = {
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
   // --- 화면 UI 상태 영속 (C2·C3) ---
+  getKeybindings: () => Promise<Keybindings>
+  saveKeybindings: (overrides: Keybindings) => Promise<{ ok: true; overrides: Keybindings } | { ok: false; error: string }>
+  setShortcutRecording: (active: boolean) => Promise<void>
   getUiPrefs: () => Promise<UiPrefs>
   setUiPrefs: (patch: Partial<UiPrefs>) => void
   // --- 라이프사이클 (R3) ---
@@ -613,7 +618,7 @@ export type CorralApi = {
   /** `pane.focus_direction` — 인접 pane 포커스 이동은 서버가 정한다 (F2-4). */
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }) => Promise<PaneNeighborResult>
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
-  /** 메뉴에서 뺏어 온 단축키가 뜻만 실려 온다 (F2-5a · R23) — 키는 main 이 삼키고 여기로 넘긴다. */
+  /** 메뉴에서 뺏어 온 단축키가 레지스트리 액션과 방향 번호가 온다 — 키는 main 이 삼키고 여기로 넘긴다. */
   onShortcut: (listener: (shortcut: CorralShortcut) => void) => () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

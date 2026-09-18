@@ -1,3 +1,4 @@
+import { useBindingLabel } from '../hooks/BindingLabels.js'
 // 탭 우클릭 메뉴 — 이름 변경 · 이름 지우기 · **pane 분할 ②** · **새 영역으로 옮기기 ①** · 닫기.
 //
 // LIFE-373 핸드오프 §1-6 "한 메뉴 두 섹션": 같은 `D` 키가 무엇을 쪼개는지를 메뉴에서 갈라
@@ -52,6 +53,7 @@ export function TabContextMenu({
   onClose: () => void
   onDismiss: () => void
 }): React.JSX.Element {
+  const bindingLabel = useBindingLabel()
   const ref = useRef<HTMLDivElement | null>(null)
   // 우클릭 좌표 그대로 놓으면 **창 밖으로 나간다** (수정 라운드 1, V7). 오른쪽 끝 탭을 우클릭하면
   // 메뉴 폭(168px)의 대부분이 화면 밖에 걸려 「이름 지우기」·「탭 닫기」의 글자와 클릭 영역이
@@ -146,7 +148,7 @@ export function TabContextMenu({
       >
         <span className="repo-row-menu-glyph"><SplitIcon kind="pane-right" /></span>
         <span>오른쪽으로</span>
-        <span className="tab-menu-key">⌘D</span>
+        <span className="tab-menu-key">{bindingLabel('terminal.split')}</span>
       </div>
       <div
         className="repo-row-menu-item"
@@ -158,7 +160,7 @@ export function TabContextMenu({
       >
         <span className="repo-row-menu-glyph"><SplitIcon kind="pane-down" /></span>
         <span>아래로</span>
-        <span className="tab-menu-key">⌘⇧D</span>
+        <span className="tab-menu-key">{bindingLabel('terminal.split', 1)}</span>
       </div>
       <div className="repo-row-menu-sep" />
       <div className="tab-menu-section">이 탭을 새 영역으로 옮기기</div>
@@ -175,7 +177,7 @@ export function TabContextMenu({
       >
         <span className="repo-row-menu-glyph"><SplitIcon kind="group-right" /></span>
         <span>오른쪽 영역</span>
-        <span className="tab-menu-key">⌘⌥D</span>
+        <span className="tab-menu-key">{bindingLabel('group.split')}</span>
       </div>
       <div
         className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
@@ -190,7 +192,7 @@ export function TabContextMenu({
       >
         <span className="repo-row-menu-glyph"><SplitIcon kind="group-down" /></span>
         <span>아래 영역</span>
-        <span className="tab-menu-key">⌘⌥⇧D</span>
+        <span className="tab-menu-key">{bindingLabel('group.split', 1)}</span>
       </div>
       {otherGroups.length === 0 ? null : (
         <>

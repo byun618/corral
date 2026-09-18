@@ -1,3 +1,7 @@
+import { bindingsFor, formatBinding } from '../../shared/keybindings.js'
+import { BindingLabels } from './hooks/BindingLabels.js'
+import { useKeybindings } from './hooks/useKeybindings.js'
+import { ShortcutSettings } from './components/ShortcutSettings.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
 // 내려보내는 관심사 분리는 그대로 유지한다 — 이 파일이 하는 일은 데이터를 각 컴포넌트에 나눠
@@ -69,27 +73,18 @@ function blurTerminal(): void {
  */
 const MRU_HOLD_TIMEOUT_MS = 10_000
 
-/** 방향키 → pane 방향. 모르는 키는 `null` — 여기서 걸러야 다른 ⌘⌥ 조합을 안 삼킨다. */
-function arrowDirection(key: string): PaneDirection | null {
-  switch (key) {
-    case 'arrowleft':
-      return 'left'
-    case 'arrowright':
-      return 'right'
-    case 'arrowup':
-      return 'up'
-    case 'arrowdown':
-      return 'down'
-    default:
-      return null
-  }
-}
-
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const toggleSidebar = (): void => {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    window.corral.setUiPrefs({ sidebarCollapsed: next })
+  }
   const [browsing, setBrowsing] = useState(false)
   const [pendingRemove, setPendingRemove] = useState<RepoRowData | null>(null)
   const [removeError, setRemoveError] = useState<string | null>(null)
@@ -140,6 +135,7 @@ export function App(): React.JSX.Element {
         if (cancelled) return
         tabOrdinals.hydrate(prefs.tabOrdinals)
         setStoredLayouts(prefs.groupLayouts)
+        setSidebarCollapsed(prefs.sidebarCollapsed)
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
@@ -514,39 +510,35 @@ export function App(): React.JSX.Element {
   const mruOps = useRef({ commit: mruCommit, cancel: mruCancel, arm: mruArm })
   mruOps.current = { commit: mruCommit, cancel: mruCancel, arm: mruArm }
 
+  const stepMruHold = (backward: boolean): void => {
+    mruOps.current.arm()
+    const current = mruRef.current
+    if (current !== null) {
+      const next = { ...current, index: stepMru({ index: current.index, count: current.order.length, backward }) }
+      mruRef.current = next
+      setMru(next)
+      return
+    }
+    const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
+    if (order.length === 0) return
+    blurTerminal()
+    const opened = { order, index: openMru({ count: order.length, backward }), at: Date.now() }
+    mruRef.current = opened
+    setMru(opened)
+  }
+
   useEffect(() => {
     const swallow = (event: KeyboardEvent): void => {
       event.preventDefault()
       event.stopPropagation()
     }
-    const step = (backward: boolean): void => {
-      mruOps.current.arm()
-      const current = mruRef.current
-      if (current !== null) {
-        const next = { ...current, index: stepMru({ index: current.index, count: current.order.length, backward }) }
-        mruRef.current = next
-        setMru(next)
-        return
-      }
-      const order = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanesRef.current.map((pane) => pane.paneId) })
-      if (order.length === 0) return
-      blurTerminal()
-      const opened = { order, index: openMru({ count: order.length, backward }), at: Date.now() }
-      mruRef.current = opened
-      setMru(opened)
-    }
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Tab' && event.ctrlKey && !event.metaKey && !event.altKey) {
-        swallow(event)
-        step(event.shiftKey)
-        return
-      }
       if (mruRef.current === null) return
       swallow(event)
       switch (event.key) {
         case 'Tab':
           // `Control` 이 유실돼도 `Tab` 은 목록의 것이다 (홀드가 열려 있는 동안에는).
-          step(event.shiftKey)
+          stepMruHold(event.shiftKey)
           return
         case 'Enter':
           mruOps.current.commit()
@@ -642,7 +634,7 @@ export function App(): React.JSX.Element {
   /**
    * 인접 pane 으로 포커스 (F2-4). **누가 이웃인지는 서버가 정한다** — 화면 좌표로 고르지 않는다.
    *
-   * `pane.focus_direction` 이 아니라 `pane.neighbor` 다(main 쪽 주석): focus_direction 은 herdr
+   * `terminal.focus_direction` 이 아니라 `pane.neighbor` 다(main 쪽 주석): focus_direction 은 herdr
    * 세션 전역 포커스를 움직여 사용자의 TUI 클라이언트까지 끌고 간다. 이웃이 없으면 아무것도 안 한다.
    */
   const focusNeighbor = useCallback(
@@ -685,110 +677,39 @@ export function App(): React.JSX.Element {
     [termSync],
   )
 
-  /**
-   * ① ② 단축키 — 한 자리에 모은다 (핸드오프 §1-6 "한 메뉴 두 섹션" 의 키 쪽).
-   *
-   *   ⌘D / ⌘⇧D      이 탭 **안에서** pane 분할 (herdr)
-   *   ⌘⌥D / ⌘⌥⇧D   이 탭을 **새 영역으로** (화면)
-   *   ⌘⌥W           영역 닫기 (F1-5)
-   *   ⌘⇧Z           pane 줌 토글 (F2-3)
-   *
-   * ⌘T 는 `useLifecycleActions` 가 이미 들고 있다 — 두 군데서 같은 키를 잡지 않는다.
-   * 편집 중인 입력칸 중 **탭 리네임(`.main-tab-rename`) 에서만** 비켜선다(리네임 입력이
-   * `stopPropagation` 으로 먼저 막지만, 그게 새면 여기서 한 번 더 막는다 — J-1 과 같은 두 겹 방어).
-   * **다른 입력칸(사이드바 검색 등)에서는 이 키들이 그대로 먹는다** — 기존 단축키 가드를 따른
-   * 현행이고 C5-6·게이트 B1 로 승인됐다. 넓게 막는 쪽으로 바꾸려면 그 항목을 먼저 뒤집어야 한다.
-   */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (!(event.metaKey || event.ctrlKey)) return
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-        if (event.target.classList.contains('main-tab-rename')) return
-      }
-      const key = event.key.toLowerCase()
-      if (key === 'd') {
-        event.preventDefault()
-        const direction = event.shiftKey ? 'down' : 'right'
-        if (event.altKey) {
-          const groupId = layoutRef.current.activeGroupId
-          const tabId = layoutRef.current.activeTabId
-          if (groupId === null || tabId === null) return
-          // **말없이 아무것도 안 하지 않는다** (G3′ · §10-R35-2). `splitGroupIn` 은 탭이 하나뿐이면
-          // 원래 배치를 그대로 돌려주는데, 메뉴는 그 사실을 흐린 항목 + `title` 로 말하고 키보드만
-          // 조용했다. 문구는 메뉴와 **같은 상수**를 쓴다.
-          if (layoutRef.current.activeTabCount < 2) {
-            setGroupHint(ONE_TAB_IN_GROUP)
-            return
-          }
-          // **성공하면 지운다** (G3′-b). 안 지우면 분할이 된 화면에 *"탭이 하나뿐이다"* 가 그대로
-          // 남아 **방금 일어난 일의 반대**를 말한다. `paneError` 도 네 자리 전부 성공 시 `null` 로
-          // 되돌린다 — 이 파일의 규약이다. 수정 전 대조: `g23-notice-header-수정전-G3b.json`
-          // (영역 1 → 2 로 분할됐는데 알림은 그대로 "이 영역에 탭이 하나뿐이다").
-          setGroupHint(null)
-          layoutRef.current.splitGroup({ groupId, tabId, direction: direction === 'right' ? 'row' : 'column' })
-          return
-        }
-        void splitPaneAt({ paneId: lifecycle.selectedPane, direction })
-        return
-      }
-      // ⌘⌥ + 방향키 — 인접 pane 포커스 (F2-4). 기준서·핸드오프가 키를 안 정해 여기서 고른 자리다
-      // (C5-9). ⌘⌥D 계열과 겹치지 않고, 화살표라 방향이 그대로 읽힌다.
-      const arrow = event.altKey ? arrowDirection(key) : null
-      if (arrow !== null) {
-        event.preventDefault()
-        void focusNeighbor({ paneId: lifecycle.selectedPane, direction: arrow })
-        return
-      }
-      if (key === 'w' && event.altKey) {
-        event.preventDefault()
-        const groupId = layoutRef.current.activeGroupId
-        if (groupId !== null) layoutRef.current.closeGroup(groupId)
-        return
-      }
-      if (key === 'z' && event.shiftKey) {
-        event.preventDefault()
-        const groupId = layoutRef.current.activeGroupId
-        if (groupId !== null) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [splitPaneAt, toggleZoom, focusNeighbor, lifecycle.selectedPane])
-
-  /**
-   * `⌘W` — pane 을 닫고, **마지막 pane 이면 탭을 닫는다** (F2-5 · R23).
-   *
-   * 이 키만 `document` keydown 이 아니라 채널로 온다: Electron 기본 메뉴의
-   * `File ▸ Close Window` 가 `⌘W` 를 쥐고 있어 렌더러까지 오지 않는다. main 이
-   * `before-input-event` 에서 삼키고 **뜻**을 보낸다.
-   *
-   * 마지막 pane 에서 `pane.close` 를 보내지 않는다 — pane 이 0 인 탭은 herdr 에 없고, 그 자리의
-   * 사용자 뜻은 "이 탭을 닫는다"다. 그래서 탭 `✕` 와 **같은 길**(`closeRow`)로 보낸다.
-   */
-  useEffect(() => {
-    return window.corral.onShortcut((shortcut) => {
-      switch (shortcut.kind) {
-        case 'close-pane': {
-          // 홀드 중에 `⌘W` 가 오면 **닫지 않고 목록을 접는다**. 이 키는 main 이 메뉴에서
-          // 뺏어 오느라 `preventDefault()` 를 쓰고, 그 순간 Chromium 이 뒤따르는 keyUp 을
-          // 버린다(§10 「keyup 억제」) — 확정 신호가 사라진 홀드를 열어 둔 채 pane 까지 닫을 수는 없다.
-          if (mruRef.current !== null) {
-            mruCancel()
-            return
-          }
-          const target = closeTargetRef.current
-          if (target.tabId === null) return
-          if (target.paneIds.length <= 1) {
-            lifecycle.actions.closeRow(target.tabId)
-            return
-          }
-          const paneId = target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null
-          void closePaneAt(paneId)
-          return
-        }
-      }
-    })
-  }, [closePaneAt, lifecycle.actions, lifecycle.selectedPane, mruCancel])
+  // A single action lookup serves renderer keys and the existing main Cmd+W channel.
+  const keymap = useKeybindings({
+    'terminal.new': () => lifecycle.createShell(),
+    'mru.open': (variant) => stepMruHold(variant === 1),
+    'terminal.split': (variant) => void splitPaneAt({ paneId: lifecycle.selectedPane, direction: variant === 1 ? 'down' : 'right' }),
+    'group.split': (variant) => {
+      const { activeGroupId: groupId, activeTabId: tabId, activeTabCount } = layoutRef.current
+      if (groupId === null || tabId === null) return
+      if (activeTabCount < 2) { setGroupHint(ONE_TAB_IN_GROUP); return }
+      setGroupHint(null)
+      layoutRef.current.splitGroup({ groupId, tabId, direction: variant === 1 ? 'column' : 'row' })
+    },
+    'terminal.focus': (variant) => void focusNeighbor({ paneId: lifecycle.selectedPane, direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
+    'group.close': () => {
+      const groupId = layoutRef.current.activeGroupId
+      if (groupId !== null) layoutRef.current.closeGroup(groupId)
+    },
+    'terminal.zoom': () => {
+      const groupId = layoutRef.current.activeGroupId
+      if (groupId !== null) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
+    },
+    'terminal.close': () => {
+      const target = closeTargetRef.current
+      if (target.tabId === null) return
+      if (target.paneIds.length <= 1) { lifecycle.actions.closeRow(target.tabId); return }
+      void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
+    },
+    'sidebar.toggle': toggleSidebar,
+  }, shortcutsOpen, () => {
+    if (mruRef.current === null) return false
+    mruCancel()
+    return true
+  })
 
   // 렌더가 실제로 끝난 revision 을 main 로그에 남긴다 — 반영 지연(A1)의 화면 쪽 끝점이다.
   const lastReported = useRef(-1)
@@ -798,7 +719,7 @@ export function App(): React.JSX.Element {
     window.corral.reportRendered(state.revision)
   })
 
-  if (state === null || !ordinalsReady) return <div className="boot">부트스트랩…</div>
+  if (state === null || !ordinalsReady || !keymap.ready) return <div className="boot">부트스트랩…</div>
 
   const browse = async (): Promise<void> => {
     setBrowsing(true)
@@ -1108,9 +1029,13 @@ export function App(): React.JSX.Element {
   const terminal = state.terminal
 
   return (
+    <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
       <div className="app-body">
+        {sidebarCollapsed ? null : <>
         <Sidebar
+          onToggleSidebar={toggleSidebar}
+          shortcutHint={formatBinding(bindingsFor('sidebar.toggle', keymap.overrides)[0]!)}
           sidebarRef={sidebarRef}
           width={width}
           state={state}
@@ -1141,7 +1066,12 @@ export function App(): React.JSX.Element {
           <div className="sidebar-resizer-line" data-sidebar-resizer-line />
         </div>
 
+        </>}
         <div className="main-area" data-main-area>
+          <div className="workspace-tools">
+            {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={formatBinding(bindingsFor('sidebar.toggle', keymap.overrides)[0]!)}>사이드바 펼치기</button> : null}
+            <button data-shortcuts-open onClick={() => { mruCancel(); setShortcutsOpen(true) }}>단축키</button>
+          </div>
           {notice === null ? null : (
             <div className="inline-notice tone-info" data-add-notice>
               <span className="inline-notice-dot" />
@@ -1194,6 +1124,7 @@ export function App(): React.JSX.Element {
         memoryLabel={memoryLabel}
       />
 
+      {shortcutsOpen ? <ShortcutSettings overrides={keymap.overrides} onChange={keymap.setOverrides} onClose={() => setShortcutsOpen(false)} /> : null}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />
       ) : null}
@@ -1231,5 +1162,6 @@ export function App(): React.JSX.Element {
         <DropZoneOverlay state={tabDrag.dragState} tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''} />
       )}
     </div>
+    </BindingLabels.Provider>
   )
 }

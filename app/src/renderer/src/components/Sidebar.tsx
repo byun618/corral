@@ -15,6 +15,8 @@ import { SidebarSearch } from './SidebarSearch.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
 
 export function Sidebar({
+  onToggleSidebar,
+  shortcutHint,
   sidebarRef,
   width,
   state,
@@ -32,6 +34,8 @@ export function Sidebar({
   onRefresh,
   groupGlyphOf,
 }: {
+  onToggleSidebar: () => void
+  shortcutHint: string
   sidebarRef: RefObject<HTMLDivElement | null>
   width: number
   state: AppState
@@ -84,7 +88,7 @@ export function Sidebar({
 
   return (
     <div className="sidebar" data-sidebar ref={sidebarRef} style={{ width }}>
-      <SidebarBrandBar />
+      <SidebarBrandBar onToggle={onToggleSidebar} shortcutHint={shortcutHint} />
       <SidebarSearch />
       <ReposSectionHeader onAddRepo={onAddRepo} />
       <div className="repo-list" data-repo-list>

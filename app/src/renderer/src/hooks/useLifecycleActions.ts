@@ -26,6 +26,7 @@ export function useLifecycleActions(state: AppState | null): {
    */
   pendingRevealTab: string | null
   revealTabHandled: () => void
+  createShell: () => void
   activeWorkspaceId: string | null
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
@@ -222,18 +223,9 @@ export function useLifecycleActions(state: AppState | null): {
    * ⌘T (mac) / Ctrl+T — 선택/최근 workspace 에 **빈 탭** (게이트 ① G2). 대상이 없으면 no-op.
    * `+ 빈 탭` 클릭과 같은 경로(`createRow` kind:'shell' = tab.create 만)다.
    */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || (event.key !== 't' && event.key !== 'T')) return
-      event.preventDefault()
-      const workspaceId = lastWorkspaceRef.current
-      if (workspaceId === null) return
-      // G2 — `+ 빈 탭` 과 **같은 함수**를 부른다. 옛 코드는 여기서 `window.corral.createRow` 를
-      // 직접 불러서 포커스 이동 같은 뒤처리가 한쪽에만 붙을 수 있었다. 경로를 하나로 둔다.
-      void createRow(workspaceId, 'shell')
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+  const createShell = useCallback((): void => {
+    const workspaceId = lastWorkspaceRef.current
+    if (workspaceId !== null) void createRow(workspaceId, 'shell')
   }, [createRow])
 
   /** pane 선택 — 터미널을 그 pane 으로. G2: 그 pane 의 workspace 를 ⌘T·탭바 대상으로 기록한다. */
@@ -306,6 +298,7 @@ export function useLifecycleActions(state: AppState | null): {
   }, [pendingClose, closeTarget])
 
   return {
+    createShell,
     selectedPane,
     selectPane,
     selectPaneWhenReady,

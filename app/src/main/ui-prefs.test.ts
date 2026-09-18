@@ -46,12 +46,13 @@ describe('폴백 번호 영속 (C13)', () => {
   it('앞 라운드가 쓰던 칸(폭·접힘)을 안 건드린다 — 부분 갱신이다', () => {
     const store = new UiPrefsStore(dir)
     store.load()
-    store.update({ sidebarWidth: 320, collapsedRepos: ['/tmp/r'] })
+    store.update({ sidebarWidth: 320, sidebarCollapsed: true, collapsedRepos: ['/tmp/r'] })
     store.update({ tabOrdinals: [{ tabId: 'wA:t1', groupId: 'wA', ordinal: 1 }] })
 
     const next = new UiPrefsStore(dir)
     next.load()
     expect(next.get().sidebarWidth).toBe(320)
+    expect(next.get().sidebarCollapsed).toBe(true)
     expect(next.get().collapsedRepos).toEqual(['/tmp/r'])
     expect(next.get().tabOrdinals).toHaveLength(1)
   })
@@ -88,7 +89,7 @@ describe('폴백 번호 영속 (C13)', () => {
     fs.writeFileSync(file, '{ 이건 JSON 이 아니다')
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] })
+    expect(store.get()).toEqual({ sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] })
   })
 
   it('`get()` 이 준 배열을 고쳐도 스토어 안이 안 바뀐다 (복사본이다)', () => {

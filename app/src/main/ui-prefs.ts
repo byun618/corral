@@ -20,6 +20,7 @@ export type TabOrdinal = { tabId: string; groupId: string; ordinal: number }
 
 export type UiPrefs = {
   sidebarWidth: number | null
+  sidebarCollapsed: boolean
   collapsedRepos: string[]
   collapsedGroups: string[]
   /**
@@ -45,7 +46,7 @@ export type UiPrefs = {
 }
 
 const VERSION = 1
-const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }
+const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }
 
 /** 저장된 배정표를 **모양을 확인하며** 읽는다 — 손으로 고친 파일이 화면을 깨뜨리지 않게. */
 function readTabOrdinals(value: unknown): TabOrdinal[] {
@@ -86,6 +87,7 @@ export class UiPrefsStore {
       const groups = parsed['collapsedGroups']
       this.prefs = {
         sidebarWidth: typeof width === 'number' ? width : null,
+        sidebarCollapsed: parsed['sidebarCollapsed'] === true,
         collapsedRepos: Array.isArray(repos) ? repos.filter((item): item is string => typeof item === 'string') : [],
         collapsedGroups: Array.isArray(groups) ? groups.filter((item): item is string => typeof item === 'string') : [],
         tabOrdinals: readTabOrdinals(parsed['tabOrdinals']),

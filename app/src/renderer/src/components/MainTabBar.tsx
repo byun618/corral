@@ -1,3 +1,4 @@
+import { useBindingLabel } from '../hooks/BindingLabels.js'
 // design-handoff.md §2 MainTabBar — **활성 workspace 가 있으면 탭 수와 무관하게 존재**한다
 // (01-criteria.md 부록 C5′ / 11-gate1-fix3.md I-5). 마운트 조건은 `App.tsx` 의
 // `activeWorkspace !== null` 하나뿐이고, 이 파일엔 탭 수 조건이 **없다**.
@@ -408,6 +409,7 @@ export function GroupHeader({
   /** LIFE-387 A1 — 탭 mousedown 을 드래그 컨트롤러(App 소유 `useTabDrag`)로 그대로 넘긴다. */
   onTabDragStart: (event: React.MouseEvent, tabId: string) => void
 }): React.JSX.Element {
+  const bindingLabel = useBindingLabel()
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   const header = useBoxWidth()
@@ -463,7 +465,7 @@ export function GroupHeader({
           onDragStart={(event) => onTabDragStart(event, tab.tabId)}
         />
       ))}
-      <button className="main-tab-add" data-main-tabbar-add={groupId} title="빈 탭 (⌘T)" onClick={onCreateShell}>
+      <button className="main-tab-add" data-main-tabbar-add={groupId} title={`빈 탭 (${bindingLabel('terminal.new')})`} onClick={onCreateShell}>
         +
       </button>
       <div className="main-tabbar-spacer" />
@@ -480,10 +482,10 @@ export function GroupHeader({
           </span>
         ) : null}
         <div className="group-actions" data-group-actions={groupId}>
-          <button className="group-action" data-group-split-right={groupId} title="오른쪽으로 pane 분할 (⌘D)" onClick={() => onSplitPane('right')}>
+          <button className="group-action" data-group-split-right={groupId} title={`오른쪽으로 pane 분할 (${bindingLabel('terminal.split')})`} onClick={() => onSplitPane('right')}>
             <SplitIcon kind="pane-right" />
           </button>
-          <button className="group-action" data-group-split-down={groupId} title="아래로 pane 분할 (⌘⇧D)" onClick={() => onSplitPane('down')}>
+          <button className="group-action" data-group-split-down={groupId} title={`아래로 pane 분할 (${bindingLabel('terminal.split', 1)})`} onClick={() => onSplitPane('down')}>
             <SplitIcon kind="pane-down" />
           </button>
           {/* LIFE-387 B1 F-B1-1 — 영역 분할에는 상시 버튼이 하나도 없었다(▥▤는 pane 급).
@@ -503,7 +505,7 @@ export function GroupHeader({
             <button
               className={`group-action ${zoomed ? 'is-on' : ''}`}
               data-group-zoom={groupId}
-              title={zoomed ? '줌 해제 (⌘⇧Z)' : 'pane 줌 (⌘⇧Z)'}
+              title={`${zoomed ? '줌 해제' : 'pane 줌'} (${bindingLabel('terminal.zoom')})`}
               onClick={onZoom}
             >
               {zoomed ? '⤡' : '⤢'}
@@ -515,7 +517,7 @@ export function GroupHeader({
             </button>
           ) : null}
           {tabs.length === 0 && onCloseGroup !== null ? (
-            <button className="group-action is-danger" data-group-close={groupId} title="영역 닫기 (⌘⌥W)" onClick={onCloseGroup}>
+            <button className="group-action is-danger" data-group-close={groupId} title={`영역 닫기 (${bindingLabel('group.close')})`} onClick={onCloseGroup}>
               ✕
             </button>
           ) : null}

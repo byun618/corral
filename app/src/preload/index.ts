@@ -37,6 +37,9 @@ const EXPOSED = [
   'browseForRepos',
   'refreshSessions',
   'getUiPrefs',
+  'getKeybindings',
+  'saveKeybindings',
+  'setShortcutRecording',
   'setUiPrefs',
   'createRow',
   'closeRow',
@@ -61,6 +64,9 @@ const EXPOSED = [
 ]
 
 const api: CorralApi = {
+  getKeybindings: () => ipcRenderer.invoke('corral:getKeybindings'),
+  saveKeybindings: (overrides) => ipcRenderer.invoke('corral:saveKeybindings', overrides),
+  setShortcutRecording: (active) => ipcRenderer.invoke('corral:setShortcutRecording', active),
   getState: () => ipcRenderer.invoke('corral:getState'),
   onState: (listener: (state: AppState) => void) => {
     const handler = (_event: unknown, state: AppState): void => listener(state)

@@ -1,3 +1,5 @@
+import { useBindingLabel } from '../hooks/BindingLabels.js'
+import type { ActionId } from '../../../shared/keybindings.js'
 // design-handoff.md §2 TerminalChrome — 감싸는 크롬만 대상, xterm.js 렌더 영역 자체는 미변경.
 // 하단 24px 힌트줄: 좌 활성 영역의 **pane 스트립**, 우 단축키 목록(§1-8-b 버림 순서).
 //
@@ -36,14 +38,14 @@ function kindGlyph(agent: string | null): string {
  * 있지만 `✕`(pane 닫기)는 pane 이 하나면 사라져서 마지막 pane 에서 이 줄이 유일한 안내이기 때문
  * (이전 코디네이터 결정, 이번 라운드가 뒤집을 근거가 없어 유지).
  */
-const HINTS: { key: string; text: string }[] = [
-  { key: 'split-down', text: '⌘⇧D 아래 분할' },
-  { key: 'split-right', text: '⌘D 분할' },
-  { key: 'close-pane', text: '⌘W pane 닫기' },
-  { key: 'zoom', text: '⌘⇧Z 줌' },
-  { key: 'split-group', text: '⌘⌥D 탭 → 새 영역' },
-  { key: 'mru', text: '⌃Tab 전환' },
-  { key: 'new-tab', text: '⌘T 새 탭' },
+const HINTS: { key: string; id: ActionId; variant: number; text: string }[] = [
+  { key: 'split-down', id: 'terminal.split', variant: 1, text: '아래 분할' },
+  { key: 'split-right', id: 'terminal.split', variant: 0, text: '분할' },
+  { key: 'close-pane', id: 'terminal.close', variant: 0, text: 'pane 닫기' },
+  { key: 'zoom', id: 'terminal.zoom', variant: 0, text: '줌' },
+  { key: 'split-group', id: 'group.split', variant: 0, text: '탭 → 새 영역' },
+  { key: 'mru', id: 'mru.open', variant: 0, text: '전환' },
+  { key: 'new-tab', id: 'terminal.new', variant: 0, text: '새 탭' },
 ]
 
 /** `.terminal-chrome-hint` 의 `gap`. 폭 산술이 CSS 와 어긋나면 한 칸씩 밀린다. */
@@ -56,7 +58,7 @@ const HINT_GAP = 14
  * 매 프레임 **실제 폭을 다시 잴 수 있다** — 폭을 한 번 재서 캐시하면 폰트가 늦게 뜬 첫 프레임의
  * 값에 영영 묶인다. 흐름에서 빠지니 줄이 넘치는 일도 없고, 그래서 관측 → 축소 → 재관측 고리도 없다.
  */
-function useHintFit(deps: { paneCount: number }): {
+function useHintFit(deps: { paneCount: number; bindings: string }): {
   row: React.RefObject<HTMLDivElement | null>
   strip: React.RefObject<HTMLSpanElement | null>
   list: React.RefObject<HTMLSpanElement | null>
@@ -90,7 +92,7 @@ function useHintFit(deps: { paneCount: number }): {
     const observer = new ResizeObserver(fit)
     observer.observe(rowNode)
     return () => observer.disconnect()
-  }, [deps.paneCount])
+  }, [deps.paneCount, deps.bindings])
   return { row, strip, list, kept }
 }
 
@@ -101,7 +103,9 @@ export function TerminalChrome({
   panes: PaneStripItem[]
   children: React.ReactNode
 }): React.JSX.Element {
-  const hint = useHintFit({ paneCount: panes.length })
+  const bindingLabel = useBindingLabel()
+  const labels = HINTS.map((item) => bindingLabel(item.id, item.variant))
+  const hint = useHintFit({ paneCount: panes.length, bindings: labels.join('|') })
   const dropped = HINTS.length - hint.kept
   return (
     <div className="terminal-chrome" data-term-panel>
@@ -130,7 +134,7 @@ export function TerminalChrome({
                 data-hint-dropped={hidden ? 'true' : 'false'}
                 aria-hidden={hidden}
               >
-                {item.text}
+                {labels[index]} {item.text}
               </span>
             )
           })}

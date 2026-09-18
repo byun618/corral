@@ -1,3 +1,5 @@
+import { KeybindingStore } from './keybindings.js'
+import { matchBinding } from '../shared/keybindings.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -66,6 +68,8 @@ import { UiPrefsStore } from './ui-prefs.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
+let keybindings: KeybindingStore
+let shortcutRecording = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
@@ -987,17 +991,23 @@ function createWindow(): void {
    * MRU 는 **렌더러의 document 캡처 단계**가 잡는다(App.tsx) — 거기서 막으면 xterm 은 못 보고
    * 브라우저의 keyUp 억제도 안 걸린다. 여기 남는 것은 **메뉴가 쥔 키**(`⌘W`) 하나뿐이다.
    */
+  window.webContents.on('did-start-loading', () => {
+    shortcutRecording = false
+    window?.webContents.setIgnoreMenuShortcuts(false)
+  })
   window.webContents.on('before-input-event', (event, input) => {
     if (instrumented && (input.type === 'keyUp' || input.control || input.meta || input.alt)) {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
     }
+    if (shortcutRecording) return
     if (input.type !== 'keyDown' || input.key.toLowerCase() !== 'w') return
     if (!input.meta || input.alt || input.control || input.shift) return
     event.preventDefault()
     // 가로챘다는 사실은 **로그로만** 보인다 — 키를 삼켰으니 화면에는 아무 흔적이 없고,
     // "안 닫혔다"는 관측은 "안 눌렸다"와 구분되지 않는다.
     log('shortcut.intercepted', { key: 'w', meta: true })
-    if (window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', { kind: 'close-pane' })
+    const match = matchBinding('Mod+W', keybindings.get())
+    if (match && window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', match)
   })
   /**
    * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
@@ -1022,6 +1032,8 @@ process.on('unhandledRejection', (reason) => log('main.unhandled_rejection', { r
 
 app.whenReady().then(() => {
   const file = openLog(app.getPath('userData'))
+  keybindings = new KeybindingStore(app.getPath('userData'))
+  keybindings.load()
   registry = new RepoRegistry(app.getPath('userData'))
   registry.load()
   uiPrefs = new UiPrefsStore(app.getPath('userData'))
@@ -1058,8 +1070,20 @@ app.whenReady().then(() => {
       : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+  ipcMain.handle('corral:getKeybindings', (event) => fromOurWindow(event) ? keybindings.get() : {})
+  ipcMain.handle('corral:saveKeybindings', (event, overrides: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, error: '다른 창의 요청' }
+    try { return { ok: true, overrides: keybindings.save(overrides) } }
+    catch (error) { return { ok: false, error: String(error) } }
+  })
+  ipcMain.handle('corral:setShortcutRecording', (event, active: unknown) => {
+    if (!fromOurWindow(event)) return
+    shortcutRecording = active === true
+    // Recording receives raw Cmd+W in Chromium; the stock menu must not close the window.
+    event.sender.setIgnoreMenuShortcuts(shortcutRecording)
+  })
   ipcMain.handle('corral:getUiPrefs', (event) =>
-    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [] }) : null,
+    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }) : null,
   )
   ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
     if (fromOurWindow(event)) uiPrefs?.update(patch)

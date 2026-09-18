@@ -157,6 +157,14 @@ describe('제목 정책 (C11, 수정 라운드 8) — 거절은 pane ID 하나�
     expect(label(tab({ panes: [pane({ title: 'wG:p3', agent: 'claude' })] }))).toBeNull()
   })
 
+  it('herdr pane_id 가 `p` 뒤에 숫자가 아니어도 걸러진다 (실측 `wS:pR` — regex 형태 추측이 아니라 pane.paneId 구조 비교)', () => {
+    expect(label(tab({ panes: [pane({ title: 'wS:pR', paneId: 'wS:pR', agent: 'claude' })] }))).toBeNull()
+  })
+
+  it('herdr pane_id 가 정규식 모양(`w..:p..`)을 아예 벗어나도, title === paneId 면 걸러진다', () => {
+    expect(label(tab({ panes: [pane({ title: 'ptyabc123', paneId: 'ptyabc123', agent: 'claude' })] }))).toBeNull()
+  })
+
   it('**벤더 유휴 기본값은 이제 뜬다** (C11ⓐⓑ) — 사용자가 Orca 에서 본 그 글자', () => {
     expect(label(tab({ panes: [pane({ title: '✳ Claude Code', agent: 'claude' })] }))).toBe('✳ Claude Code')
     expect(label(tab({ panes: [pane({ title: 'Claude Code', agent: 'claude' })] }))).toBe('Claude Code')

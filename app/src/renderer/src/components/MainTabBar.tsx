@@ -349,6 +349,7 @@ function keepFocusOnHeaderBackground(event: React.MouseEvent): void {
 export function GroupHeader({
   groupId,
   tabs,
+  workspaceTabCount,
   home,
   selectedPane,
   activeTabId,
@@ -374,6 +375,9 @@ export function GroupHeader({
   groupId: string
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
   tabs: TabRow[]
+  /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
+   * `tabs` 는 이 영역 로컬이라 그 길이를 쓰면 범위가 좁아져 기본 label 이 이름으로 샌다). */
+  workspaceTabCount: number
   /** 셸 탭 폴백이 경로를 접는 데 쓴다 (C9). */
   home: string
   selectedPane: string | null
@@ -440,8 +444,9 @@ export function GroupHeader({
           key={tab.tabId}
           tab={tab}
           // 기본 label 은 **이 워크스페이스 탭 수까지의 자리 번호**다 (G7) — 하나로 못 박으면
-          // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님).
-          tabCount={tabs.length}
+          // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님) — 그래서
+          // 이 영역 로컬인 `tabs.length` 가 아니라 `workspaceTabCount` 를 쓴다.
+          tabCount={workspaceTabCount}
           home={home}
           selectedPane={selectedPane}
           active={tab.tabId === activeTabId}
@@ -449,7 +454,7 @@ export function GroupHeader({
           canMoveToGroup={tabs.length > 1}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
-          onRename={(label) => onRenameTab({ tab, label, tabCount: tabs.length })}
+          onRename={(label) => onRenameTab({ tab, label, tabCount: workspaceTabCount })}
           onClearName={() => onClearTabName(tab)}
           onSplitPane={onSplitPane}
           onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}

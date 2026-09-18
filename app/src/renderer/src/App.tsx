@@ -882,6 +882,7 @@ export function App(): React.JSX.Element {
         <GroupHeader
           groupId={group.groupId}
           tabs={groupTabs}
+          workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
           selectedPane={groupSelectedPaneId}
           activeTabId={group.activeTabId}

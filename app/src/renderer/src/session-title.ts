@@ -45,8 +45,13 @@ export function isAgentTab(tab: TabRow): boolean {
   return tabAgent(tab) !== null
 }
 
-/** `wG:p3` — herdr pane ID 가 제목 자리에 올 때(최초 몇 프레임). */
-const PANE_ID_TITLE = /^w[A-Za-z0-9]+:p\d+$/
+/**
+ * `wG:p3` — herdr pane ID 가 제목 자리에 올 때(최초 몇 프레임). `p` 뒤가 숫자라는 **형태를
+ * 추측하는 필터**였는데, 실측(사용자 신고 `wS:pR`)에서 herdr 의 실제 id 가 이 모양을 벗어날 수
+ * 있음이 나와 구멍이었다 — `paneTitleLabel` 이 `pane.paneId` 와 직접 비교하는 쪽(형태 무관)으로
+ * 바꿨다. 이 regex 는 그 비교가 못 잡는 옛 스냅샷·테스트 호환용 방어선으로만 남긴다.
+ */
+const PANE_ID_TITLE = /^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/
 
 /**
  * `byun@host:~` · `byun@host:~/repos/corral` · `byun@host:/private/var/...` —
@@ -130,6 +135,10 @@ export function paneTitleLabel(input: { tab: TabRow; home: string | null; select
   if (pane === null) return null
   const title = pane.title.trim()
   if (title.length === 0) return null
+  // 형태(regex)가 아니라 **그 pane 자신의 id 와 같은가**로 거절한다 — `store.ts` 의 폴백
+  // (`title: ... ?? id`, id = herdr `pane_id`)이 만드는 값은 언제나 이 비교로 정확히 잡힌다.
+  // herdr 의 실제 id 모양이 `wG:p3` 를 벗어나도(실측 `wS:pR`) 새지 않는다.
+  if (title === pane.paneId) return null
   if (PANE_ID_TITLE.test(title)) return null
   if (SHELL_PROMPT_TITLE.test(title)) return paneCwdLabel({ pane, home: input.home })
   return truncatePathLeft(title)

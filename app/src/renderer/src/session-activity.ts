@@ -37,7 +37,7 @@
 // 않는다. 단 하나의 예외가 통합 미설치인데, 그건 "값이 없다" 가 아니라 **"corral 이 못 읽는
 // 상태다"** 라 사용자가 알아야 한다 (기준 B8).
 
-import type { IntegrationRow, SessionActivity, TabRow } from '../../shared/types.js'
+import type { IntegrationRow, PaneRow, SessionActivity, SessionDigest, TabRow } from '../../shared/types.js'
 import { tabAgent } from './session-title.js'
 
 /** 2차 줄에 그릴 것 — 갈래를 화면이 switch 로 받는다. */
@@ -58,9 +58,32 @@ export type SecondaryLine =
 export function secondaryLine(input: { tab: TabRow; integrations: readonly IntegrationRow[] }): SecondaryLine {
   // **진행 중 도구가 마지막 말보다 앞이다** (B9, Orca `worktree-card-compact-agent-row.tsx:26-57`
   // 과 같은 순서) — 단 그 pane 이 실제로 일하는 중일 때만.
-  const tool = runningTool(input.tab)
+  return activityLine({
+    digest: input.tab.digest,
+    agent: tabAgent(input.tab),
+    working: input.tab.panes.find((pane) => pane.agent !== null)?.agentStatus === 'working',
+    integrations: input.integrations,
+  })
+}
+
+export function paneSecondaryLine(input: { pane: PaneRow; integrations: readonly IntegrationRow[] }): SecondaryLine {
+  return activityLine({
+    digest: input.pane.digest,
+    agent: input.pane.agent,
+    working: input.pane.agentStatus === 'working',
+    integrations: input.integrations,
+  })
+}
+
+function activityLine(input: {
+  digest: SessionDigest
+  agent: string | null
+  working: boolean
+  integrations: readonly IntegrationRow[]
+}): SecondaryLine {
+  const tool = input.working ? runningTool(input.digest) : null
   if (tool !== null) return { kind: 'text', text: tool }
-  const activity: SessionActivity = input.tab.digest.activity
+  const activity: SessionActivity = input.digest.activity
   switch (activity.state) {
     case 'text':
       return { kind: 'text', text: activity.text }
@@ -82,18 +105,14 @@ export function secondaryLine(input: { tab: TabRow; integrations: readonly Integ
 /**
  * 지금 돌고 있는 도구 한 줄 (`Bash: cd …`). 아니면 null.
  *
- * 상태는 **에이전트가 붙은 pane 의 것**을 본다 (`tabAgent` 와 같은 규칙 — 처음 붙은 pane).
- * 탭 단위 상태(`TabRow.agentStatus`)가 아니라 pane 단위인 이유는 기준 B9 의 문언 그대로다:
- * 지문을 만든 그 세션이 일하는 중인지를 물어야 한다.
+ * 호출부가 지문 소유 pane의 working 상태를 확인한 뒤에만 부른다.
  *
  * 값 자체는 판독층이 관측된 모양에서만 만든다 — 없으면 이름만 오고(`input: null`), 그것도
  * 없으면 여기까지 안 온다.
  */
-function runningTool(tab: TabRow): string | null {
-  const tool = tab.digest.tool
+function runningTool(digest: SessionDigest): string | null {
+  const tool = digest.tool
   if (tool === null) return null
-  const pane = tab.panes.find((row) => row.agent !== null) ?? null
-  if (pane === null || pane.agentStatus !== 'working') return null
   return tool.input === null ? tool.name : `${tool.name}: ${tool.input}`
 }
 
@@ -101,8 +120,8 @@ function runningTool(tab: TabRow): string | null {
  * 참조 자체가 없을 때. 셸 탭이면 2차 줄이 **애초에 없는 것**이고(B1 은 세션 행 얘기다),
  * 에이전트 탭인데 없으면 통합 미설치가 가장 흔한 이유다 (A1·B8).
  */
-function noticeForMissingRef(input: { tab: TabRow; integrations: readonly IntegrationRow[] }): SecondaryLine {
-  const agent = tabAgent(input.tab)
+function noticeForMissingRef(input: { agent: string | null; integrations: readonly IntegrationRow[] }): SecondaryLine {
+  const agent = input.agent
   if (agent === null) return { kind: 'empty' } // 셸 탭
   const row = input.integrations.find((item) => item.agent === agent)
   if (row === undefined) return { kind: 'empty' } // 아직 모른다 / corral 이 못 읽는 에이전트

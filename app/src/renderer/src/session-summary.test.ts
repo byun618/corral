@@ -24,6 +24,7 @@ function tab(input: { status: AgentStatus; agent?: string | null }): TabRow {
     cwd: null,
     focused: false,
     agentSession: null,
+    digest: EMPTY_SESSION_DIGEST,
   }
   return {
     tabId: `wA:t${seq}`,
@@ -41,7 +42,7 @@ function tab(input: { status: AgentStatus; agent?: string | null }): TabRow {
 describe('collapsedSummary — 상태 클러스터 (C7)', () => {
   it('상태로 묶고 `blocked → working → unknown → idle` 순으로 준다 (생성 순서가 아니다)', () => {
     const tabs = [tab({ status: 'idle' }), tab({ status: 'working' }), tab({ status: 'blocked' })]
-    expect(collapsedSummary({ tabs }).clusters.map((cluster) => cluster.status)).toEqual(['blocked', 'working', 'idle'])
+    expect(collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters.map((cluster) => cluster.status)).toEqual(['blocked', 'working', 'idle'])
   })
 
   it('순서표는 corral 의 네 상태 전부를 덮는다', () => {
@@ -50,7 +51,7 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
 
   it('같은 상태의 세션은 한 클러스터로 뭉친다', () => {
     const tabs = [tab({ status: 'working' }), tab({ status: 'working' }), tab({ status: 'idle' })]
-    const summary = collapsedSummary({ tabs })
+    const summary = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) })
     expect(summary.clusters.map((cluster) => [cluster.status, cluster.count])).toEqual([
       ['working', 2],
       ['idle', 1],
@@ -60,7 +61,7 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
   // 반례 ⓑ — 같은 상태·같은 종류 5개. 아이콘이 5개로 늘어나면 깨진다.
   it('반례 ⓑ: 같은 상태·같은 종류 5개 → 아이콘 1개 + `+4`', () => {
     const tabs = Array.from({ length: 5 }, () => tab({ status: 'working', agent: 'claude' }))
-    const [cluster] = collapsedSummary({ tabs }).clusters
+    const [cluster] = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters
     expect(cluster?.icons.map((icon) => icon.kind)).toEqual(['claude'])
     expect(cluster?.hiddenIcons).toBe(4)
     expect(cluster?.count).toBe(5)
@@ -72,7 +73,7 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
       tab({ status: 'working', agent: 'claude' }),
       tab({ status: 'working', agent: 'claude' }),
     ]
-    const [cluster] = collapsedSummary({ tabs }).clusters
+    const [cluster] = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters
     expect(cluster?.icons.map((icon) => icon.kind)).toEqual(['claude', 'codex'])
     expect(cluster?.hiddenIcons).toBe(1)
   })
@@ -84,14 +85,14 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
       tab({ status: 'idle', agent: 'grok' }),
       tab({ status: 'idle', agent: 'shell' }),
     ]
-    const [cluster] = collapsedSummary({ tabs }).clusters
+    const [cluster] = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters
     expect(cluster?.icons).toHaveLength(MAX_ICONS_PER_CLUSTER)
     expect(cluster?.hiddenIcons).toBe(1)
   })
 
   it('모르는 종류는 아이콘을 지어내지 않는다 — 숨은 수로 간다 (H-6)', () => {
     const tabs = [tab({ status: 'working', agent: 'droid' }), tab({ status: 'working', agent: 'claude' })]
-    const [cluster] = collapsedSummary({ tabs }).clusters
+    const [cluster] = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters
     expect(cluster?.icons.map((icon) => icon.kind)).toEqual(['claude'])
     expect(cluster?.hiddenIcons).toBe(1)
   })
@@ -105,7 +106,7 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
       tab({ status: 'idle' }),
       tab({ status: 'idle' }),
     ]
-    const summary = collapsedSummary({ tabs })
+    const summary = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) })
     expect(summary.clusters.map((cluster) => cluster.status)).toEqual(['blocked', 'working', 'unknown'])
     expect(summary.clusters).toHaveLength(MAX_CLUSTERS)
     expect(summary.hiddenSessions).toBe(2) // 잘려나간 idle 클러스터의 **세션 수**
@@ -122,7 +123,7 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
       tab({ status: 'idle' }),
       tab({ status: 'idle' }),
     ]
-    const summary = collapsedSummary({ tabs })
+    const summary = collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) })
     expect(summary.clusters[0]?.hiddenIcons).toBe(1) // 클러스터 안에서 아이콘이 안 붙은 수
     expect(summary.hiddenSessions).toBe(3) // 잘려나간 클러스터의 세션 합
     expect(summary.total).toBe(7)
@@ -130,10 +131,20 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
 
   it('클러스터가 3 이하면 바깥 `+N` 은 0이다 — 없는 수를 그리지 않는다', () => {
     const tabs = [tab({ status: 'working' }), tab({ status: 'idle' })]
-    expect(collapsedSummary({ tabs }).hiddenSessions).toBe(0)
+    expect(collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).hiddenSessions).toBe(0)
   })
 
   it('빈 목록이면 클러스터도 비어 있다', () => {
-    expect(collapsedSummary({ tabs: [] })).toEqual({ clusters: [], hiddenSessions: 0, total: 0 })
+    expect(collapsedSummary({ panes: [] })).toEqual({ clusters: [], hiddenSessions: 0, total: 0 })
   })
+})
+
+// Same tab identity must not collapse independently running panes into one session.
+it('two panes in one tab retain separate state clusters and count', () => {
+  const first = tab({ status: 'working', agent: 'claude' }).panes[0]!
+  const second = { ...tab({ status: 'blocked', agent: 'codex' }).panes[0]!, tabId: first.tabId }
+  const summary = collapsedSummary({ panes: [first, second] })
+  expect(summary.total).toBe(2)
+  expect(summary.clusters.map(({ status, count, icons }) => [status, count, icons[0]?.kind]))
+    .toEqual([['blocked', 1, 'codex'], ['working', 1, 'claude']])
 })

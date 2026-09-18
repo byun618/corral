@@ -592,6 +592,7 @@ export class WorkspaceStore {
         cwd: pane.cwd,
         focused: pane.focused,
         agentSession: pane.agentSession,
+        digest: EMPTY_SESSION_DIGEST,
       }
       const list = panesByTab.get(pane.tabId) ?? []
       list.push(row)

@@ -17,7 +17,7 @@
 // 그래서 비싼 쪽만 캐시하고(`buildSkeleton`), 행은 **내보낼 때마다 새로 붙인다**(`joinTree`).
 
 import path from 'node:path'
-import type { AgentSessionRef, GitStatusSummary, RepoRow, SessionDigest, TabRow, WorkspaceRow } from '../shared/types.js'
+import type { AgentSessionRef, GitStatusSummary, RepoRow, SessionDigest, WorkspaceRow } from '../shared/types.js'
 import { readOpenWorkspaces } from './adapter/index.js'
 import { getGitStatus } from './git-status.js'
 import { listGitWorktrees } from './git-worktrees.js'
@@ -74,16 +74,7 @@ export async function buildSkeleton(input: {
 }
 
 /**
- * 탭에 붙은 세션 참조 — pane 중 **처음 참조를 가진 것**을 쓴다.
- * 렌더러의 `tabAgent` 와 같은 판별식이다 (한 탭에 pane 이 여럿이면 먼저 쓸 만한 것).
- */
-function tabSessionRef(tab: TabRow): AgentSessionRef | null {
-  for (const pane of tab.panes) if (pane.agentSession !== null) return pane.agentSession
-  return null
-}
-
-/**
- * 지금 열린 탭들의 세션 참조를 모은다 (LIFE-366) — **디스크는 안 건드린다.**
+ * 지금 열린 pane들의 세션 참조를 모은다 (LIFE-366) — **디스크는 안 건드린다.**
  *
  * 읽기와 붙이기를 가르는 이유는 `buildSkeleton`/`joinTree` 를 가른 이유와 같다: 내보내기는
  * push 마다 일어나는데(잦다) 디스크 읽기는 그 박자로 돌면 안 된다. 그래서 읽기는 main 의
@@ -91,18 +82,28 @@ function tabSessionRef(tab: TabRow): AgentSessionRef | null {
  */
 export function collectSessionRefs(workspaces: readonly WorkspaceRow[]): Map<string, AgentSessionRef | null> {
   const refs = new Map<string, AgentSessionRef | null>()
-  for (const workspace of workspaces) for (const tab of workspace.tabs) refs.set(tab.tabId, tabSessionRef(tab))
+  for (const workspace of workspaces) for (const tab of workspace.tabs) {
+    for (const pane of tab.panes) refs.set(pane.paneId, pane.agentSession)
+  }
   return refs
 }
 
-/** 읽어 둔 지문을 행에 붙인다. 순수 함수 — 없는 탭은 어댑터가 놓고 간 빈 지문 그대로 둔다. */
+/** 읽어 둔 지문을 행에 붙인다. 순수 함수 — 없는 pane은 어댑터가 놓고 간 빈 지문 그대로 둔다. */
 export function attachDigests(
   workspaces: readonly WorkspaceRow[],
   digests: ReadonlyMap<string, SessionDigest>,
 ): WorkspaceRow[] {
   return workspaces.map((workspace) => ({
     ...workspace,
-    tabs: workspace.tabs.map((tab) => ({ ...tab, digest: digests.get(tab.tabId) ?? tab.digest })),
+    tabs: workspace.tabs.map((tab) => {
+      // 탭바는 기존처럼 첫 세션 참조의 지문을 쓴다. 선택 pane에 따라 바꾸지 않는다.
+      const firstSession = tab.panes.find((pane) => pane.agentSession !== null)
+      return {
+        ...tab,
+        digest: (firstSession && digests.get(firstSession.paneId)) ?? tab.digest,
+        panes: tab.panes.map((pane) => ({ ...pane, digest: digests.get(pane.paneId) ?? pane.digest })),
+      }
+    }),
   }))
 }
 

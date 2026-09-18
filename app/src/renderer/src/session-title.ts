@@ -1,5 +1,4 @@
-// 세션 제목 — **사이드바 SessionRow 와 메인 MainTabBar 가 공유한다**
-// (09-gate1-fix.md C-3: "세션 제목이 곧 탭 제목이다").
+// 탭 제목과 pane 세션 제목. 정제 규칙은 공유하되 지문의 소유자는 각각 유지한다.
 //
 // ## `PaneRow.title` 을 **쓴다** — 1회차 결론을 뒤집은 재실측 결과다
 //
@@ -40,9 +39,21 @@ export function tabAgent(tab: TabRow): string | null {
   return null
 }
 
-/** 에이전트가 붙은 탭인가 — 01-criteria.md 부록 "세션 용어 확정" 의 **사이드바 쪽 '세션'** 정의. */
+/** 에이전트가 붙은 탭인가. 사이드바 행은 agentPanes로 pane마다 센다. */
 export function isAgentTab(tab: TabRow): boolean {
   return tabAgent(tab) !== null
+}
+
+/** 사이드바 목록·헤더·상태바가 공유하는 에이전트 pane 집합. */
+export function agentPanes(tabs: readonly TabRow[]): PaneRow[] {
+  return tabs.flatMap((tab) => tab.panes.filter((pane) => pane.agent !== null))
+}
+
+/** 탭 리네임은 탭바에만 적용한다. pane 행은 자신의 세션 이름을 유지한다. */
+export function paneSessionTitle(input: { pane: PaneRow; ordinal: number; home: string | null }): string {
+  const { pane, ordinal, home } = input
+  return providerTitle(pane) ?? firstPromptTitle(pane) ?? terminalTitleLabel({ pane, home })
+    ?? `${pane.agent ?? 'terminal'} ${ordinal}`
 }
 
 /**
@@ -133,6 +144,11 @@ function paneCwdLabel(input: { pane: PaneRow; home: string | null }): string | n
 export function paneTitleLabel(input: { tab: TabRow; home: string | null; selectedPaneId?: string | null }): string | null {
   const pane = titlePane({ tab: input.tab, selectedPaneId: input.selectedPaneId ?? null })
   if (pane === null) return null
+  return terminalTitleLabel({ pane, home: input.home })
+}
+
+function terminalTitleLabel(input: { pane: PaneRow; home: string | null }): string | null {
+  const { pane } = input
   const title = pane.title.trim()
   if (title.length === 0) return null
   // 형태(regex)가 아니라 **그 pane 자신의 id 와 같은가**로 거절한다 — `store.ts` 의 폴백
@@ -202,7 +218,7 @@ export function isDefaultPositionLabel(label: string, tabCount: number): boolean
  * 그 pane 의 참조 id 와 같을 때만 싣는다, 기준 C2). Orca 도 `agent`+`sessionId` 가 맞을 때만
  * 쓴다 (`agent-row-conversation-name.ts:139-148`). 여기서는 온 값을 쓸지만 정한다.
  */
-export function providerTitle(tab: TabRow): string | null {
+export function providerTitle(tab: Pick<TabRow, 'digest'>): string | null {
   const title = tab.digest.providerTitle
   if (title === null) return null
   const trimmed = title.trim()
@@ -216,7 +232,7 @@ export function providerTitle(tab: TabRow): string | null {
  * `deriveGeneratedTabTitle` 과 같은 결). 여기서는 그 값을 **쓸지만** 정한다: 소유자 확인과
  * 하네스 턴 건너뛰기는 이미 판독층에서 끝났다 (C2·C5).
  */
-export function firstPromptTitle(tab: TabRow): string | null {
+export function firstPromptTitle(tab: Pick<TabRow, 'digest'>): string | null {
   const prompt = tab.digest.firstPrompt
   if (prompt === null) return null
   const trimmed = prompt.trim()

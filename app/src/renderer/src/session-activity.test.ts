@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
-import { elapsedLabel, secondaryLine, sessionRowText } from './session-activity.js'
+import { elapsedLabel, paneSecondaryLine, secondaryLine, sessionRowText } from './session-activity.js'
 
 function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): PaneRow {
   // `??` 를 안 쓴다 — `agent: null`(셸 pane)을 「안 줬다」와 구분해야 한다.
@@ -21,6 +21,7 @@ function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): Pane
     cwd: null,
     focused: false,
     agentSession: null,
+    digest: EMPTY_SESSION_DIGEST,
   }
 }
 
@@ -162,4 +163,18 @@ describe('경과 시간 = Orca formatShortTimeAgo (확인만)', () => {
       expect(elapsedLabel(at, NOW)).toBe(formatShortTimeAgo(at, NOW))
     })
   }
+})
+
+describe('pane secondary lines', () => {
+  it('uses the selected row’s own message, tool and working state', () => {
+    const first: PaneRow = { ...pane({ agentStatus: 'working' }), digest: { ...EMPTY_SESSION_DIGEST,
+      activity: { state: 'text', text: 'first message', at: 1000 },
+      tool: { name: 'Read', input: 'first.ts' } } }
+    const second: PaneRow = { ...pane({ agentStatus: 'idle' }), paneId: 'wA:p2',
+      digest: { ...EMPTY_SESSION_DIGEST,
+        activity: { state: 'text', text: 'second message', at: 2000 },
+        tool: { name: 'Bash', input: 'old command' } } }
+    expect(paneSecondaryLine({ pane: first, integrations: [] })).toEqual({ kind: 'text', text: 'Read: first.ts' })
+    expect(paneSecondaryLine({ pane: second, integrations: [] })).toEqual({ kind: 'text', text: 'second message' })
+  })
 })

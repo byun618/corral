@@ -17,33 +17,24 @@
 // 것을 막으려는 규칙. 한 줄이면 **구조상** 높이가 고정돼서 그 목적이 저절로 달성된다. 규칙이
 // 필요 없어졌으므로 빈 슬롯(`\u{a0}`)을 그리지 않는다 — 2차 줄이 없으면 ` - ` 도 안 그린다.
 import { useState } from 'react'
-import type { IntegrationRow, TabRow } from '../../../shared/types.js'
-import { elapsedLabel, secondaryLine, sessionRowText } from '../session-activity.js'
-import { tabOrdinals } from '../fallback-ordinal.js'
+import type { IntegrationRow, PaneRow } from '../../../shared/types.js'
+import { elapsedLabel, paneSecondaryLine, sessionRowText } from '../session-activity.js'
 import { agentIcon, GLYPH, STATUS_LABEL } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { sessionTitle, tabAgent } from '../session-title.js'
+import { paneSessionTitle } from '../session-title.js'
 export function SessionRow({
-  tab,
-  tabCount,
+  pane,
+  ordinal,
   home,
-  selectedPane,
   active,
   integrations,
   now,
   onSelect,
   onClose,
 }: {
-  tab: TabRow
-  /**
-   * 이 탭이 속한 워크스페이스의 **전체 탭 수** (수정 라운드 5 G7) — 기본 label 판별에 쓴다.
-   * 이 목록은 에이전트 탭만 거른 것이라(`WorktreeBlock.agentTabs`) 그 길이를 쓰면 안 된다.
-   */
-  tabCount: number | null
-  /** 셸 폴백이 경로를 접는 데 쓴다 (C9). `AppState.home` 그대로다. */
+  pane: PaneRow
+  ordinal: number
   home: string
-  /** 지금 화면에 뜬 pane (C14) — 그 pane 이 제목을 몬다. */
-  selectedPane: string | null
   active: boolean
   integrations: readonly IntegrationRow[]
   /** 흐르는 「지금」 — 경과 시간이 얼지 않게 한 곳에서 틱을 받는다 (`useNowTick`). */
@@ -52,19 +43,17 @@ export function SessionRow({
   onClose: () => void
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const { glyph, tone } = GLYPH[tab.agentStatus]
+  const { glyph, tone } = GLYPH[pane.agentStatus]
   // H-6 — 상태 글리프와 **별도 칸**이다. 모르는 종류면 칸 자체를 안 그린다(부재, 빈 칸 아님).
-  const kind = agentIcon(tabAgent(tab))
-  const secondary = secondaryLine({ tab, integrations })
-  const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
-  const text = sessionRowText({ title: sessionTitle({ tab, tabCount, ordinal, home, selectedPaneId: selectedPane }), secondary })
-  const elapsed = elapsedLabel(tab.digest.lastActivityAt, now)
+  const kind = agentIcon(pane.agent)
+  const secondary = paneSecondaryLine({ pane, integrations })
+  const text = sessionRowText({ title: paneSessionTitle({ pane, ordinal, home }), secondary })
+  const elapsed = elapsedLabel(pane.digest.lastActivityAt, now)
   return (
     <div
       className={`session-row ${active ? 'is-active' : ''}`}
-      data-tab={tab.tabId}
-      data-tab-order={tab.order}
-      data-tab-number={tab.number}
+      data-tab={pane.tabId}
+      data-pane={pane.paneId}
       data-secondary={secondary.kind}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -80,7 +69,7 @@ export function SessionRow({
     >
       {/* 상태 말은 **글리프가 쥔다** — 행 툴팁은 이제 글 전문의 것이다 (C8). 둘을 같은
           `title` 에 겹치면 전문이 상태 단어에 가려진다. */}
-      <span className={`session-row-glyph tone-${tone}`} title={STATUS_LABEL[tab.agentStatus]}>
+      <span className={`session-row-glyph tone-${tone}`} title={STATUS_LABEL[pane.agentStatus]}>
         {glyph}
       </span>
       {kind === null ? null : (
@@ -109,8 +98,8 @@ export function SessionRow({
           hover 없이는(mousemove 없이 click 만 보내는 계측 채널) 못 찾는다(WorktreeBlock 과 같은 결). */}
       <button
         className={`session-row-close ${hovered ? 'is-active' : ''}`}
-        data-close-tab={tab.tabId}
-        title="탭 닫기"
+        data-close-pane={pane.paneId}
+        title="세션 닫기"
         onClick={(event) => {
           event.stopPropagation()
           onClose()

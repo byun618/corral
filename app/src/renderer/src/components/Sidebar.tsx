@@ -2,7 +2,7 @@
 // C6 이 나열한 개별 컴포넌트(SidebarBrandBar 등)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
 // 자유롭게 구조화했다.
 import type { RefObject } from 'react'
-import type { AgentKind, AppState, TabRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, AppState, PaneRow, WorktreeRow } from '../../../shared/types.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { pickPane } from '../pane-utils.js'
@@ -21,6 +21,7 @@ export function Sidebar({
   activeWorkspaceId,
   selectedPane,
   selectPane,
+  closePane,
   actions,
   isRepoCollapsed,
   toggleRepoCollapsed,
@@ -37,6 +38,7 @@ export function Sidebar({
   activeWorkspaceId: string | null
   selectedPane: string | null
   selectPane: (paneId: string) => void
+  closePane: (paneId: string) => void
   actions: LifecycleActions
   isRepoCollapsed: (root: string) => boolean
   toggleRepoCollapsed: (root: string) => void
@@ -75,10 +77,9 @@ export function Sidebar({
    * `activeWorkspaceId` 를 따르기 때문이다. `onSelectBlock` 이
    * `activateWorkspace` → `selectFirstSession` 순으로 하는 것과 같은 결로 맞춘다.
    */
-  const onSelectSession = (tab: TabRow): void => {
-    if (tab.workspaceId !== activeWorkspaceId) actions.activateWorkspace(tab.workspaceId)
-    const pane = pickPane(tab)
-    if (pane !== null) selectPane(pane.paneId)
+  const onSelectSession = (pane: PaneRow): void => {
+    if (pane.workspaceId !== activeWorkspaceId) actions.activateWorkspace(pane.workspaceId)
+    selectPane(pane.paneId)
   }
 
   return (
@@ -125,7 +126,7 @@ export function Sidebar({
                       selectFirstSession(worktree)
                     }}
                     onSelectSession={onSelectSession}
-                    onCloseSession={(tabId) => actions.closeRow(tabId)}
+                    onCloseSession={closePane}
                     onCloseWorktree={() => {
                       if (worktree.openWorkspaceId !== null) actions.closeWorktree(worktree.openWorkspaceId)
                     }}

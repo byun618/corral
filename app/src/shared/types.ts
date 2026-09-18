@@ -103,6 +103,8 @@ export type PaneRow = {
   focused: boolean
   /** 에이전트가 밝힌 세션 참조. 셸 탭·통합 미설치·보고 전에는 null. */
   agentSession: AgentSessionRef | null
+  /** 이 pane 자신의 세션 참조에서 읽은 지문 (사이드바 세션 행). */
+  digest: SessionDigest
 }
 
 /**

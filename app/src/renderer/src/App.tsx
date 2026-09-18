@@ -41,7 +41,7 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { isAgentTab, sessionTitle } from './session-title.js'
+import { agentPanes, sessionTitle } from './session-title.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -1104,7 +1104,7 @@ export function App(): React.JSX.Element {
   // 갈라 정의한 뒤로, 전체 탭을 "agents" 라고 부르면 사이드바(2행)와 상태바("4 agents")가
   // 같은 화면에서 서로 다른 말을 한다. E 의 원칙("근거 없는 수를 …인 양 보여주지 마라")과
   // 같은 결이라 라벨이 세는 것과 맞췄다. **지시서에 없던 판단이므로 결과 문서에 적는다.**
-  const agentCount = activeWorkspace?.tabs.filter(isAgentTab).length ?? 0
+  const agentCount = agentPanes(activeWorkspace?.tabs ?? []).length
   const terminal = state.terminal
 
   return (
@@ -1117,6 +1117,7 @@ export function App(): React.JSX.Element {
           activeWorkspaceId={lifecycle.activeWorkspaceId}
           selectedPane={lifecycle.selectedPane}
           selectPane={revealPane}
+          closePane={(paneId) => void closePaneAt(paneId)}
           actions={lifecycle.actions}
           isRepoCollapsed={repoCollapse.isCollapsed}
           toggleRepoCollapsed={repoCollapse.toggle}

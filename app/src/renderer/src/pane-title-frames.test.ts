@@ -106,6 +106,7 @@ function pane(input: { paneId: string; title: string }): PaneRow {
     cwd: null,
     focused: true,
     agentSession: null,
+    digest: EMPTY_SESSION_DIGEST,
   }
 }
 

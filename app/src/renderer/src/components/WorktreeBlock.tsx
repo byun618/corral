@@ -21,11 +21,11 @@
 // 빈 탭 생성 · 에이전트 즉시 기동(L1/L2 자산 보존) · worktree 닫기(기존 확인 게이트 경로 유지,
 // §6 "액션을 추가하지 않았다"는 상시 노출 버튼 얘기라 hover 메뉴 항목으로는 기능을 지우지 않는다).
 import { useState } from 'react'
-import type { AgentKind, IntegrationRow, TabRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, IntegrationRow, PaneRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { GLYPH, STATUS_LABEL } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { isAgentTab } from '../session-title.js'
+import { agentPanes } from '../session-title.js'
 import { collapsedSummary } from '../session-summary.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
@@ -37,7 +37,7 @@ const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
   { kind: 'grok', label: 'grok 기동' },
 ]
 
-// 01-criteria.md C3ⓑ + 부록 "세션 용어 확정" — 여기서 세는 "세션"은 **에이전트 세션**이다.
+// 07-criteria-pane-sessions C-P5 — 에이전트 pane 3개부터 압축한다.
 const GROUP_THRESHOLD = 3
 
 export function WorktreeBlock({
@@ -76,8 +76,8 @@ export function WorktreeBlock({
   groupCollapsed: boolean
   onToggleGroup: () => void
   onSelectBlock: () => void
-  onSelectSession: (tab: TabRow) => void
-  onCloseSession: (tabId: string) => void
+  onSelectSession: (pane: PaneRow) => void
+  onCloseSession: (paneId: string) => void
   onCloseWorktree: () => void
   onCreateShell: () => void
   onCreateAgent: (kind: AgentKind) => void
@@ -90,15 +90,15 @@ export function WorktreeBlock({
   // 한 번 거른 목록을 행·그룹 임계값·헤더 카운트가 모두 공유한다 — 임계값 의미가 저절로 따라온다.
   // 탭바는 그대로 전체 탭을 받는다(App.tsx `tabs={activeWorkspace.tabs}`) — 두 곳의 역할이
   // 갈리는 것이 목적이다: 사이드바 = AI 세션, 탭바 = 그 worktree 의 모든 탭.
-  const agentTabs = (worktree.workspace?.tabs ?? []).filter(isAgentTab)
-  const hasGroup = agentTabs.length >= GROUP_THRESHOLD
+  const panes = agentPanes(worktree.workspace?.tabs ?? [])
+  const hasGroup = panes.length >= GROUP_THRESHOLD
   const showSessions = !hasGroup || !groupCollapsed
   // H-5 — 접힘은 "사라짐"이 아니라 **"압축됨"**으로 읽혀야 한다.
   //
   // 수정 라운드 5 (P6/C7): 압축의 단위가 **세션**에서 **상태 클러스터**로 바뀌었다. 첫 세션 하나의
   // 글리프 + `+N` 은 "무엇이 어떤 상태인가" 를 못 말한다 — 접힌 카드에서 사용자가 알고 싶은 것이
   // 그것이다. 규칙은 `session-summary.ts` 에 있고 여기서는 그리기만 한다.
-  const summary = hasGroup && groupCollapsed && agentTabs.length > 0 ? collapsedSummary({ tabs: agentTabs }) : null
+  const summary = hasGroup && groupCollapsed && panes.length > 0 ? collapsedSummary({ panes }) : null
   const isOpen = worktree.workspace !== null
 
   const branch = worktree.branch
@@ -215,7 +215,7 @@ export function WorktreeBlock({
       {isOpen && hasGroup ? (
         <AgentGroupHeader
           worktreePath={worktree.path}
-          count={agentTabs.length}
+          count={panes.length}
           collapsed={groupCollapsed}
           onToggle={(event) => {
             event.stopPropagation()
@@ -272,20 +272,17 @@ export function WorktreeBlock({
       ) : null}
 
       {isOpen && showSessions
-        ? agentTabs.map((tab) => (
+        ? panes.map((pane, index) => (
             <SessionRow
-              key={tab.tabId}
-              tab={tab}
-              // 거른 목록(`agentTabs`)의 길이가 아니라 **워크스페이스 전체 탭 수**다 (G7) —
-              // 기본 label 은 전체 목록에서의 자리 번호라, 거른 길이를 쓰면 범위가 좁아진다.
-              tabCount={worktree.workspace?.tabs.length ?? null}
-              active={tab.panes.some((pane) => pane.paneId === selectedPane)}
+              key={pane.paneId}
+              pane={pane}
+              ordinal={index + 1}
+              active={pane.paneId === selectedPane}
               integrations={integrations}
               home={home}
-              selectedPane={selectedPane}
               now={now}
-              onSelect={() => onSelectSession(tab)}
-              onClose={() => onCloseSession(tab.tabId)}
+              onSelect={() => onSelectSession(pane)}
+              onClose={() => onCloseSession(pane.paneId)}
             />
           ))
         : null}

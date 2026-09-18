@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest'
 import type { AgentSessionRef, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import {
+  agentPanes,
+  paneSessionTitle,
   firstPromptTitle,
   homeRelativeDir,
   isDefaultPositionLabel,
@@ -61,6 +63,7 @@ function pane(input: {
     cwd: input.cwd ?? null,
     focused: input.focused ?? false,
     agentSession: input.agentSession ?? null,
+    digest: EMPTY_SESSION_DIGEST,
   }
 }
 
@@ -157,11 +160,11 @@ describe('제목 정책 (C11, 수정 라운드 8) — 거절은 pane ID 하나�
     expect(label(tab({ panes: [pane({ title: 'wG:p3', agent: 'claude' })] }))).toBeNull()
   })
 
-  it('herdr pane_id 가 `p` 뒤에 숫자가 아니어도 걸러진다 (실측 `wS:pR` — regex 형태 추측이 아니라 pane.paneId 구조 비교)', () => {
+  it('herdr pane ID 가 `p` 뒤에 숫자가 아니어도 걸러진다 (실측 `wS:pR` — regex 형태 추측이 아니라 pane.paneId 구조 비교)', () => {
     expect(label(tab({ panes: [pane({ title: 'wS:pR', paneId: 'wS:pR', agent: 'claude' })] }))).toBeNull()
   })
 
-  it('herdr pane_id 가 정규식 모양(`w..:p..`)을 아예 벗어나도, title === paneId 면 걸러진다', () => {
+  it('herdr pane ID 가 정규식 모양(`w..:p..`)을 아예 벗어나도, title === paneId 면 걸러진다', () => {
     expect(label(tab({ panes: [pane({ title: 'ptyabc123', paneId: 'ptyabc123', agent: 'claude' })] }))).toBeNull()
   })
 
@@ -532,5 +535,25 @@ describe('셸 탭 폴백 = 잘린 경로 (C9)', () => {
       panes: [pane({ title: 'byun@host:~/repos/byun618/corral', cwd: `${HOME}/repos/byun618/corral` })],
     })
     expect(title({ tab: shell, tabCount: 1, home: HOME })).toBe('..yun618/corral')
+  })
+})
+
+describe('pane session titles (C-P1/C-P2/C-P7/C-P8)', () => {
+  it('lists both agents in one tab, excluding shell panes and shell tabs', () => {
+    const first = pane({ paneId: 'p1', agent: 'claude' })
+    const second = pane({ paneId: 'p2', agent: 'codex' })
+    expect(agentPanes([tab({ panes: [first, pane({}), second] }), tab({ panes: [pane({})] })]))
+      .toEqual([first, second])
+  })
+
+  it('each pane uses its own provider title, prompt, terminal title, then fallback', () => {
+    const first = { ...pane({ agent: 'claude', title: 'terminal A' }), digest: withDigest({ providerTitle: 'A', firstPrompt: 'prompt A' }) }
+    const second = { ...pane({ agent: 'codex', title: 'terminal B' }), digest: withDigest({ firstPrompt: 'prompt B' }) }
+    const paneTitle = (row: PaneRow): string => paneSessionTitle({ pane: row, ordinal: 2, home: null })
+    expect(paneTitle(first)).toBe('A')
+    expect(paneTitle(second)).toBe('prompt B')
+    expect(paneTitle({ ...second, digest: EMPTY_SESSION_DIGEST })).toBe('terminal B')
+    expect(paneTitle({ ...second, title: second.paneId, digest: EMPTY_SESSION_DIGEST })).toBe('codex 2')
+    expect(title({ tab: tab({ panes: [first, second], label: 'my tab', digest: withProviderTitle('tab digest') }) })).toBe('my tab')
   })
 })

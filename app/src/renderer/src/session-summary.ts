@@ -15,9 +15,8 @@
 //   ⑤ 상태 점과 종류 아이콘은 **안 합친다** (Orca `AgentStateDot.tsx:18-21` 의 명문 — "누가" 와
 //      "어떤 상태인가" 를 각각 훑을 수 있어야 한다). corral 의 H-6 두 칸 규칙과 같은 말이다
 
-import type { AgentKind, AgentStatus, TabRow } from '../../shared/types.js'
+import type { AgentKind, AgentStatus, PaneRow } from '../../shared/types.js'
 import { agentIcon } from './session-glyphs.js'
-import { tabAgent } from './session-title.js'
 
 /**
  * 상태 정렬 순서. **corral 의 상태는 넷뿐**이라 Orca 의 8단을 그대로 못 쓴다
@@ -55,15 +54,15 @@ export type CollapsedSummary = {
 /**
  * 접힌 카드의 요약 한 줄.
  *
- * 입력은 **이미 걸러진 에이전트 탭 목록**이다 (`WorktreeBlock.agentTabs`) — 사이드바가 그리는
+ * 입력은 **이미 걸러진 에이전트 pane 목록**이다 (`WorktreeBlock.panes`) — 사이드바가 그리는
  * 세션과 같은 집합이어야 접힘/펼침이 같은 것을 말한다.
  */
-export function collapsedSummary(input: { tabs: readonly TabRow[] }): CollapsedSummary {
-  const byStatus = new Map<AgentStatus, TabRow[]>()
-  for (const tab of input.tabs) {
-    const rows = byStatus.get(tab.agentStatus)
-    if (rows === undefined) byStatus.set(tab.agentStatus, [tab])
-    else rows.push(tab)
+export function collapsedSummary(input: { panes: readonly PaneRow[] }): CollapsedSummary {
+  const byStatus = new Map<AgentStatus, PaneRow[]>()
+  for (const pane of input.panes) {
+    const rows = byStatus.get(pane.agentStatus)
+    if (rows === undefined) byStatus.set(pane.agentStatus, [pane])
+    else rows.push(pane)
   }
 
   const ordered: SummaryCluster[] = []
@@ -76,7 +75,7 @@ export function collapsedSummary(input: { tabs: readonly TabRow[] }): CollapsedS
 
   const clusters = ordered.slice(0, MAX_CLUSTERS)
   const hiddenSessions = ordered.slice(clusters.length).reduce((sum, cluster) => sum + cluster.count, 0)
-  return { clusters, hiddenSessions, total: input.tabs.length }
+  return { clusters, hiddenSessions, total: input.panes.length }
 }
 
 /**
@@ -87,10 +86,10 @@ export function collapsedSummary(input: { tabs: readonly TabRow[] }): CollapsedS
  * 종류를 모르는 세션(`agentIcon` 이 null)은 대표를 못 내므로 숨은 수로 간다 — 없는 아이콘을
  * 지어내지 않는다 (H-6 과 같은 규칙).
  */
-function representativeIcons(rows: readonly TabRow[]): SummaryIcon[] {
+function representativeIcons(rows: readonly PaneRow[]): SummaryIcon[] {
   const byKind = new Map<AgentKind, { icon: SummaryIcon; count: number; firstIndex: number }>()
-  rows.forEach((tab, index) => {
-    const icon = agentIcon(tabAgent(tab))
+  rows.forEach((pane, index) => {
+    const icon = agentIcon(pane.agent)
     if (icon === null) return
     const seen = byKind.get(icon.kind)
     if (seen === undefined) byKind.set(icon.kind, { icon, count: 1, firstIndex: index })

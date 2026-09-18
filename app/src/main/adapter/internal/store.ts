@@ -774,11 +774,20 @@ export class WorkspaceStore {
       // Orca 는 접두사가 붙은 원문을 그대로 띄운다 — 같은 글자를 보려면 원문을 집어야 한다.
       // 마지막 `?? id` 는 터미널이 준 제목이 아니라 **어댑터의 자체 폴백**이다 (C11ⓔ 가 거절을
       // 거기에만 남긴 이유).
+      //
+      // **`label` 은 이 체인에 없다** (게이트 ① 수정, 04-manual-check-notes.md §3) — herdr 가
+      // pane 생성 봉투에 싣는 `label` 은 `TabRow.label` 과 같은 값(그 워크스페이스 안 1-기반
+      // 위치, 예: `"4"`)이다. 실제 터미널 제목(OSC)이 아직 안 온 갓 생긴 pane 에서 이걸 폴백으로
+      // 쓰면 `session-title.ts` 의 `paneTitleLabel` 이 `PANE_ID_TITLE`(`wG:p3` 꼴)도
+      // `SHELL_PROMPT_TITLE`(`user@host:~` 꼴)도 아닌 순수 숫자 문자열을 그대로 통과시켜 탭
+      // 이름 자리에 **맨 숫자만**(`"4"`) 뜬다 — `userLabel` 이 `TabRow.label` 에 대해서만 하는
+      // 기본-위치-라벨 거르기(`isDefaultPositionLabel`)가 여기(`PaneRow.title`)엔 적용되지
+      // 않기 때문이다. "다음 탭이 생겨야 이름이 바뀐다"는 증상은 이 버그가 아니라 그 사이 실제
+      // OSC 제목이 도착해 `pane.title` 이 갱신되는 시점과 우연히 겹친 것뿐이었다.
       title:
         readString(value, 'terminal_title') ??
         readString(value, 'title') ??
         readString(value, 'terminal_title_stripped') ??
-        readString(value, 'label') ??
         id,
       cwd: readString(value, 'foreground_cwd') ?? readString(value, 'cwd'),
       focused: value['focused'] === true,

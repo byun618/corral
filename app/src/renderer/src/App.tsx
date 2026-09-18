@@ -933,6 +933,12 @@ export function App(): React.JSX.Element {
             activeGroup={isActiveGroup}
             onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
             onCloseGroup={canCloseGroup}
+            // LIFE-387 B1 F-B1-6 — 빈 영역이 드래그의 유효 병합 타깃일 때만 켠다(§2 EmptyGroup).
+            isDropTarget={
+              tabDrag.dragState !== null &&
+              tabDrag.dragState.target.kind === 'merge' &&
+              tabDrag.dragState.target.groupId === group.groupId
+            }
           />
         ) : (
           <div

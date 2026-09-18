@@ -12,15 +12,21 @@ export function EmptyGroup({
   activeGroup,
   onCreateShell,
   onCloseGroup,
+  isDropTarget,
 }: {
   groupId: string
   activeGroup: boolean
   onCreateShell: () => void
   /** 영역이 하나뿐이면 `null` — 닫을 수 없다 (F1-5). */
   onCloseGroup: (() => void) | null
+  /** LIFE-387 B1 F-B1-6 — 지금 드래그 중인 탭의 유효한 병합 타깃인가(§2 EmptyGroup). */
+  isDropTarget: boolean
 }): React.JSX.Element {
   return (
-    <div className={`empty-group ${activeGroup ? 'is-active-group' : ''}`} data-empty-group={groupId}>
+    <div
+      className={`empty-group ${activeGroup ? 'is-active-group' : ''} ${isDropTarget ? 'is-drop-target' : ''}`}
+      data-empty-group={groupId}
+    >
       <div className="empty-group-card">
         <span className="empty-group-title">탭이 없습니다</span>
         <div className="empty-group-buttons">
@@ -34,8 +40,7 @@ export function EmptyGroup({
           )}
         </div>
         {/* LIFE-387 B1 F-B1-6 — "다른 영역의 탭을 끌어다 놓아도 됩니다" 를 덧붙인다(§1 Q3).
-            드래그 타깃 중 문구·강조는 A1 드래그 구현이 붙는 자리에서 마저 한다(이 파일은 정적
-            안내만 갱신 — 드래그 상태에 따른 스타일 전환은 이번 커밋 범위 밖으로 남는다). */}
+            강조는 `.is-drop-target`(App 이 `useTabDrag` 판정으로 켠다) 이 카드 톤을 바꾼다. */}
         <span className="empty-group-hint">
           새 탭은 이 영역에 열립니다 · 이미 열린 탭은 있는 영역으로 갑니다 · 다른 영역의 탭을 끌어다 놓아도 됩니다
         </span>

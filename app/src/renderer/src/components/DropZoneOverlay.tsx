@@ -5,11 +5,20 @@
 //
 // 판정(`DropTarget`)은 이미 끝나 왔다 — 여기는 그 결과가 가리키는 사각형만 그린다.
 
-import { DROPZONE_BAND } from '../tab-drag.js'
 import type { TabDragState } from '../hooks/useTabDrag.js'
 
+/**
+ * 미리보기 사각형 크기 — **판정 폭(`DROPZONE_BAND` 0.25, `tab-drag.ts` `resolveBodyZone`)과는
+ * 다른 값이다.** 판정은 "포인터가 얼마나 가까이 가야 그 방향으로 잡히는가"(히트존)이고, 이건
+ * "드롭하면 실제로 얼마를 차지하는가"(결과 미리보기)다. 핸드오프 §2 DropZoneOverlay: "본문
+ * 가장자리 → 그 절반 사각(inset 6)" — 결과가 50:50 분할이니 미리보기도 50% 여야 한다. 이전엔
+ * 이 값 자리에 `DROPZONE_BAND`(0.25)를 그대로 써서 미리보기가 실제 결과보다 훨씬 좁게 보였다
+ * (게이트 ① 수정, 04-manual-check-notes.md §1).
+ */
+const PREVIEW_FRACTION = 0.5
+
 function edgeBandStyle(bodyRect: DOMRect, zone: 'left' | 'right' | 'up' | 'down'): React.CSSProperties {
-  const band = DROPZONE_BAND
+  const band = PREVIEW_FRACTION
   switch (zone) {
     case 'left':
       return { left: bodyRect.left, top: bodyRect.top, width: bodyRect.width * band, height: bodyRect.height }

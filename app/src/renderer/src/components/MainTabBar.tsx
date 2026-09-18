@@ -193,6 +193,9 @@ function MainTab({
       // 이 mousedown 은 그냥 뒤따르는 click 으로 남는다 — `preventDefault` 를 안 쓰는 이유.
       onMouseDown={(event) => {
         if (editingRef.current) return
+        // 닫기(×) 위 mousedown 은 무장하지 않는다 — 안 그러면 누르고 6px 밀린 뒤 떼는
+        // 손짓이 닫기 대신 드래그로 잡힌다(keepFocusOnHeaderBackground 와 같은 결).
+        if (event.target instanceof Element && event.target.closest('button') !== null) return
         onDragStart(event)
       }}
       onClick={onSelect}

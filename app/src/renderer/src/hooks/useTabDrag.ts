@@ -117,7 +117,16 @@ export function useTabDrag(input: {
       if (commit && dragging && last !== null) {
         inputRef.current.onDrop({ tabId: armInput.tabId, fromGroupId: armInput.fromGroupId, target: last.target })
       }
-      if (dragging) consumeClickRef.current = true
+      // 드롭이 원래 탭 밖(다른 영역·본문 가장자리)에서 끝나면 mouseup 뒤 click 이 그 탭에서
+      // 아예 안 열려(공통 조상에서 뜬다) `consumeClick` 이 절대 안 불려 다음 진짜 클릭까지
+      // 삼킨다 — 한 틱 뒤 스스로 내린다. 네이티브 click 은 mouseup 직후 **동기**로 뜨므로
+      // 그 경로에서는 타이머가 돌기 전에 이미 정상 소비된다.
+      if (dragging) {
+        consumeClickRef.current = true
+        window.setTimeout(() => {
+          consumeClickRef.current = false
+        }, 0)
+      }
     }
     const onMove = (moveEvent: MouseEvent): void => {
       const point = { x: moveEvent.clientX, y: moveEvent.clientY }

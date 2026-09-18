@@ -96,9 +96,11 @@ export function updateGroup(layout: GroupLayout, groupId: string, change: (group
 /**
  * 영역을 쪼갠다 (F1-1) — **그 탭을 빼내** 새 영역에 넣는다.
  *
- * `direction: 'row'` = 오른쪽(⌘⌥D), `'column'` = 아래(⌘⌥⇧D). 새 영역이 활성이 된다.
- * 원 영역의 탭이 하나뿐이면 **아무것도 하지 않는다** — 빈 영역을 만드는 경로가 되면 안 된다
- * (핸드오프 §1-6 "원 영역에 탭이 하나뿐이면 비활성").
+ * `direction: 'row'` = 가로 분할(좌우), `'column'` = 세로 분할(상하). `edge: 'after'`(기본,
+ * 기존 `⌘⌥D`/`⌘⌥⇧D` 그대로) 면 새 영역이 뒤(오른쪽/아래), `'before'` 면 앞(왼쪽/위) — LIFE-387
+ * 탭 드래그가 본문 왼쪽/위 가장자리에 놓였을 때 쓴다(핸드오프 §1 Q1 "왼/위 = 앞"). 새 영역이
+ * 활성이 된다. 원 영역의 탭이 하나뿐이면 **아무것도 하지 않는다** — 빈 영역을 만드는 경로가 되면
+ * 안 된다(핸드오프 §1-6 "원 영역에 탭이 하나뿐이면 비활성").
  */
 export function splitGroup(input: {
   layout: GroupLayout
@@ -106,31 +108,31 @@ export function splitGroup(input: {
   tabId: string
   direction: 'row' | 'column'
   newGroupId: string
+  edge?: 'before' | 'after'
 }): GroupLayout {
   const source = findGroup(input.layout.root, input.groupId)
   if (source === null) return input.layout
   if (!source.tabOrder.includes(input.tabId)) return input.layout
   if (source.tabOrder.length < 2) return input.layout
 
+  const edge = input.edge ?? 'after'
   const remaining = source.tabOrder.filter((tabId) => tabId !== input.tabId)
   const moved: TabGroup = { groupId: input.newGroupId, tabOrder: [input.tabId], activeTabId: input.tabId }
 
   const replace = (node: GroupNode): GroupNode => {
     switch (node.kind) {
-      case 'leaf':
+      case 'leaf': {
         if (node.group.groupId !== input.groupId) return node
-        return {
-          kind: 'split',
-          direction: input.direction,
-          ratio: 0.5,
-          first: leaf({
-            ...node.group,
-            tabOrder: remaining,
-            // 빠져나간 탭이 활성이었으면 남은 것 중 앞쪽을 활성으로 (§4 "인접 탭 활성" 과 같은 결).
-            activeTabId: node.group.activeTabId === input.tabId ? (remaining[0] ?? null) : node.group.activeTabId,
-          }),
-          second: leaf(moved),
-        }
+        const stayed = leaf({
+          ...node.group,
+          tabOrder: remaining,
+          // 빠져나간 탭이 활성이었으면 남은 것 중 앞쪽을 활성으로 (§4 "인접 탭 활성" 과 같은 결).
+          activeTabId: node.group.activeTabId === input.tabId ? (remaining[0] ?? null) : node.group.activeTabId,
+        })
+        return edge === 'before'
+          ? { kind: 'split', direction: input.direction, ratio: 0.5, first: leaf(moved), second: stayed }
+          : { kind: 'split', direction: input.direction, ratio: 0.5, first: stayed, second: leaf(moved) }
+      }
       case 'split': {
         const first = replace(node.first)
         const second = replace(node.second)
@@ -140,6 +142,153 @@ export function splitGroup(input: {
   }
 
   return { root: replace(input.layout.root), activeGroupId: input.newGroupId }
+}
+
+/**
+ * 다른 영역의 탭을 이 영역 가장자리로 끌어 새 영역을 만든다 (LIFE-387 A1, 핸드오프 §4
+ * "본문 가장자리 · 대상 영역").
+ *
+ * `splitGroup` 과 다른 점: 빼내는 탭이 **`targetGroupId` 가 아니라 `fromGroupId` 에 있다.**
+ * `fromGroupId === targetGroupId`(제 영역 가장자리)면 이 함수를 쓰지 말고 `splitGroup` 을 그대로
+ * 써라 — 그쪽은 `tabOrder.length < 2` 로 이미 무효 케이스(탭 1개 + 제 영역 가장자리)를 막는다.
+ * 여기는 원 영역이 반드시 다른 영역이므로 원 영역의 탭이 1개여도(=원 영역이 사라지는 경우도)
+ * 유효하다 — `removeTabFromGroup` 이 그 collapse 를 처리한다.
+ */
+export function splitGroupWithForeignTab(input: {
+  layout: GroupLayout
+  tabId: string
+  fromGroupId: string
+  targetGroupId: string
+  direction: 'row' | 'column'
+  edge: 'before' | 'after'
+  newGroupId: string
+}): GroupLayout {
+  if (input.fromGroupId === input.targetGroupId) return input.layout
+  const from = findGroup(input.layout.root, input.fromGroupId)
+  if (from === null || !from.tabOrder.includes(input.tabId)) return input.layout
+  if (findGroup(input.layout.root, input.targetGroupId) === null) return input.layout
+
+  const removed = removeTabFromGroup(input.layout, input.fromGroupId, input.tabId)
+  const moved: TabGroup = { groupId: input.newGroupId, tabOrder: [input.tabId], activeTabId: input.tabId }
+
+  const replace = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf': {
+        if (node.group.groupId !== input.targetGroupId) return node
+        return input.edge === 'before'
+          ? { kind: 'split', direction: input.direction, ratio: 0.5, first: leaf(moved), second: node }
+          : { kind: 'split', direction: input.direction, ratio: 0.5, first: node, second: leaf(moved) }
+      }
+      case 'split': {
+        const first = replace(node.first)
+        const second = replace(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+
+  return { root: replace(removed.root), activeGroupId: input.newGroupId }
+}
+
+/**
+ * 그룹이 자식 없이 빈 채로 트리에서 사라진다 — `closeGroup` 의 collapse 부분만 떼어낸 것.
+ *
+ * `closeGroup` 은 남은 탭을 형제(heir)로 병합하는데(사용자가 명시적으로 "이 영역 닫기"를 눌러서
+ * 탭 목적지를 모를 때 쓰는 로직), `removeTabFromGroup` 은 호출부가 탭의 목적지를 이미 알고
+ * 별도로 옮기는 중이라 그 병합이 필요 없다 — 오히려 병합하면 탭이 두 곳에 동시에 실린다.
+ */
+function collapseEmptyGroup(layout: GroupLayout, groupId: string): GroupLayout {
+  const groups = listGroups(layout.root)
+  if (groups.length < 2) return layout
+  const drop = (node: GroupNode): GroupNode | null => {
+    switch (node.kind) {
+      case 'leaf':
+        return node.group.groupId === groupId ? null : node
+      case 'split': {
+        const first = drop(node.first)
+        const second = drop(node.second)
+        if (first === null) return second
+        if (second === null) return first
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  const pruned = drop(layout.root)
+  if (pruned === null) return layout
+  const nextActive = listGroups(pruned).some((group) => group.groupId === layout.activeGroupId)
+    ? layout.activeGroupId
+    : (listGroups(pruned)[0]?.groupId ?? layout.activeGroupId)
+  return { root: pruned, activeGroupId: nextActive }
+}
+
+/**
+ * 탭 하나를 영역에서 뺀다 — 마지막 탭이면 그 영역째 접힌다(LIFE-387 §1-A `lastTabOut`).
+ *
+ * 드래그·크로스그룹 이동/병합/분할이 전부 이 함수로 "원 영역에서 뗀다" 단계를 공유한다.
+ */
+export function removeTabFromGroup(layout: GroupLayout, groupId: string, tabId: string): GroupLayout {
+  const group = findGroup(layout.root, groupId)
+  if (group === null || !group.tabOrder.includes(tabId)) return layout
+  const remaining = group.tabOrder.filter((id) => id !== tabId)
+  const updated = updateGroup(layout, groupId, (g) => ({
+    ...g,
+    tabOrder: remaining,
+    activeTabId: g.activeTabId === tabId ? (remaining[0] ?? null) : g.activeTabId,
+  }))
+  if (remaining.length > 0) return updated
+  return collapseEmptyGroup(updated, groupId)
+}
+
+/**
+ * 탭바 안 드롭 — 같은 영역이면 순서만, 다른 영역이면 이동까지 (LIFE-387 §4 "탭바 재정렬"/"탭바 이동").
+ *
+ * `index` 는 **목적지 영역의 드롭 이후 tabOrder 기준** 삽입 위치(0 ~ length). 같은 영역 재정렬은
+ * 드래그 중이던 탭을 먼저 빼고 나서 그 인덱스에 넣는다 — 그래야 "탭 셋 중 가운데를 맨 끝으로"
+ * 같은 이동에서 index 셈이 어긋나지 않는다.
+ */
+export function moveTabWithinTabbar(
+  layout: GroupLayout,
+  input: { tabId: string; fromGroupId: string; toGroupId: string; index: number },
+): GroupLayout {
+  if (input.fromGroupId === input.toGroupId) {
+    return updateGroup(layout, input.toGroupId, (g) => {
+      const without = g.tabOrder.filter((id) => id !== input.tabId)
+      const at = Math.max(0, Math.min(input.index, without.length))
+      return { ...g, tabOrder: [...without.slice(0, at), input.tabId, ...without.slice(at)], activeTabId: input.tabId }
+    })
+  }
+  const from = findGroup(layout.root, input.fromGroupId)
+  if (from === null || !from.tabOrder.includes(input.tabId)) return layout
+  if (findGroup(layout.root, input.toGroupId) === null) return layout
+
+  const removed = removeTabFromGroup(layout, input.fromGroupId, input.tabId)
+  const inserted = updateGroup(removed, input.toGroupId, (g) => {
+    const at = Math.max(0, Math.min(input.index, g.tabOrder.length))
+    return { ...g, tabOrder: [...g.tabOrder.slice(0, at), input.tabId, ...g.tabOrder.slice(at)], activeTabId: input.tabId }
+  })
+  return { ...inserted, activeGroupId: input.toGroupId }
+}
+
+/**
+ * 다른 영역으로 병합 — 본문 중앙 드롭·빈 영역 드롭·"다른 영역으로 옮기기" 메뉴가 전부 이 함수를
+ * 쓴다(LIFE-387 §4 "병합"). 대상 tabOrder 끝에 붙인다. 같은 영역이면 no-op(제 영역 중앙 드롭).
+ */
+export function mergeTabIntoGroup(
+  layout: GroupLayout,
+  input: { tabId: string; fromGroupId: string; toGroupId: string },
+): GroupLayout {
+  if (input.fromGroupId === input.toGroupId) return layout
+  const from = findGroup(layout.root, input.fromGroupId)
+  if (from === null || !from.tabOrder.includes(input.tabId)) return layout
+  if (findGroup(layout.root, input.toGroupId) === null) return layout
+
+  const removed = removeTabFromGroup(layout, input.fromGroupId, input.tabId)
+  const merged = updateGroup(removed, input.toGroupId, (g) => ({
+    ...g,
+    tabOrder: g.tabOrder.includes(input.tabId) ? g.tabOrder : [...g.tabOrder, input.tabId],
+    activeTabId: input.tabId,
+  }))
+  return { ...merged, activeGroupId: input.toGroupId }
 }
 
 /**

@@ -9,7 +9,7 @@ export class KeybindingStore {
   constructor(userData: string) { this.file = path.join(userData, 'keybindings.json') }
   load(): void {
     try {
-      this.overrides = validateOverrides(JSON.parse(fs.readFileSync(this.file, 'utf8')))
+      this.overrides = validateOverrides(JSON.parse(fs.readFileSync(this.file, 'utf8')), true)
       log('keybindings.loaded', { file: this.file })
     } catch (error) {
       this.overrides = {}

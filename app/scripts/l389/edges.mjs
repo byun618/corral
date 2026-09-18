@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
-process.env.LIFE353_SESSION = 'life373-codex-l389'
-process.env.L353_RAW_DIR = path.resolve('../specs/LIFE-389-shortcut-system/raw/codex')
+process.env.LIFE353_SESSION ??= 'life373-codex-l389'
+process.env.L353_RAW_DIR ??= path.resolve('../specs/LIFE-389-shortcut-system/raw/codex/fix1')
 const { startApp, sleep, until, RAW_DIR } = await import('../l353/lib.mjs')
 const data = '/tmp/l389-codex-data'
 fs.mkdirSync(data, { recursive: true })
@@ -20,7 +20,7 @@ const ev = async (code) => (await app.send({ cmd: 'eval', code })).result
 const count = async (selector) => (await app.query(selector)).found.length
 const key = async (keyCode, modifiers = [], type) => { await app.send({ cmd: 'key', keyCode, modifiers, ...type ? { type } : {} }); await sleep(180) }
 const click = async (selector) => { const result = await app.click(selector); assert.equal(result.hit, true, `not hittable: ${selector}`); await sleep(180); return result }
-const check = (id, observation) => { results.push({ id, observation, pass: true }); console.log('PASS', id, JSON.stringify(observation)) }
+const recordVerified = (id, observation) => { results.push({ id, observation }); console.log('VERIFIED', id, JSON.stringify(observation)) }
 const waitCount = async (selector, expected) => assert((await until(async () => await count(selector) === expected, { timeoutMs: 9000, what: selector })).ok, `${selector} count != ${expected}`)
 try {
   await launch('edge-cases')
@@ -42,10 +42,10 @@ try {
   assert.equal(await count('[data-term-pane-box]'),panes)
   await app.shot('rename-guard')
   await key('Escape')
-  check('M3 rename', {guardKeys,initial,after:await snapshot()})
+  recordVerified('M3 rename', {guardKeys,initial,after:await snapshot()})
   await click('.sidebar-search input')
   await key('D',['meta']); await waitCount('[data-term-pane-box]',panes+1)
-  check('M3 other input', 'Sidebar search keeps pane split shortcut active')
+  recordVerified('M3 other input', 'Sidebar search keeps pane split shortcut active')
   // Actual terminal textarea focus for Ctrl+Tab; wrapping, blur and cross-worktree scope.
   await click('.term-pane.is-selected .xterm-screen')
   assert.equal(await ev('document.activeElement.classList.contains("xterm-helper-textarea")'),true)
@@ -58,7 +58,7 @@ try {
   assert.equal(await ev('document.querySelector("[data-mru-selected=true]").dataset.mruRow'),first)
   await app.shot('mru-global-wrap')
   await key('Escape')
-  check('F3-1 F3-2 wrap F3-4 global', {terminalFocused:true,rows,first,wrappedTo:first})
+  recordVerified('F3-1 F3-2 wrap F3-4 global', {terminalFocused:true,rows,first,wrappedTo:first})
   const beforeBlur = await snapshot()
   await ev("window.__l389Blur = null; window.addEventListener('blur', () => { window.__l389Blur = Date.now() }, {once:true})")
   const blurStart = Date.now()
@@ -70,14 +70,14 @@ try {
   const nativeBlurAt = await ev('window.__l389Blur')
   assert(nativeBlurAt >= blurStart && nativeBlurAt - blurStart < 5000, 'native blur must precede 10-second timeout')
   await second.stop()
-  check('F3-2 F3-3 F3-5 native blur', {beforeBlur,afterBlur:await snapshot(),nativeBlurLatencyMs:nativeBlurAt-blurStart})
+  recordVerified('F3-2 F3-3 F3-5 native blur', {beforeBlur,afterBlur:await snapshot(),nativeBlurLatencyMs:nativeBlurAt-blurStart})
   await key('Tab',['control'],'keyDown')
   const targetSelector = `[data-mru-row="${secondaryPane}"]`
   await click(targetSelector)
   await waitCount('[data-mru]',0)
   assert.equal((await snapshot()).pane,secondaryPane)
   await app.shot('mru-cross-worktree')
-  check('F3-4 cross-worktree commit', await snapshot())
+  recordVerified('F3-4 cross-worktree commit', await snapshot())
   await click('[data-worktree="/private/tmp/l389-codex-repo"]')
   // Native Cmd+W can be reassigned, and reset cannot silently introduce a collision.
   await click('[data-shortcuts-open]')
@@ -94,22 +94,24 @@ try {
   await key('W',['meta']); await waitCount('[data-sidebar]',0)
   assert.equal((await app.state()).repos.flatMap(r=>r.worktrees).flatMap(w=>w.workspace?.tabs??[]).flatMap(t=>t.panes).length,total)
   await key('W',['meta']); await waitCount('[data-sidebar]',1)
-  check('M2 custom reassignment D4 reset collision', {saved,total})
+  recordVerified('M2 custom reassignment D4 reset collision', {saved,total})
   await key('Y',['meta']); await sleep(500)
   assert.equal((await app.state()).repos.flatMap(r=>r.worktrees).flatMap(w=>w.workspace?.tabs??[]).flatMap(t=>t.panes).length,total-1)
-  check('D2 custom close dispatch', 'Cmd+Y closes active pane after Cmd+W moved to sidebar')
+  recordVerified('D2 custom close dispatch', 'Cmd+Y closes active pane after Cmd+W moved to sidebar')
   await click('[data-shortcuts-open]'); await click('[data-reset="sidebar.toggle"]'); await click('[data-reset="terminal.close"]'); await key('Escape')
   // The last pane closes its tab while the Electron window stays alive.
   tabs = await count('[data-main-tab]')
   await key('T',['meta']); await waitCount('[data-main-tab]',tabs+1); await sleep(600)
   await key('W',['meta']); await waitCount('[data-main-tab]',tabs)
-  check('G3 last-pane closes tab', {tabsBefore:tabs+1,tabsAfter:tabs,windowAlive:await count('[data-shortcuts-open]')})
+  recordVerified('G3 last-pane closes tab', {tabsBefore:tabs+1,tabsAfter:tabs,windowAlive:await count('[data-shortcuts-open]')})
   await key('T',['meta']); await waitCount('[data-main-tab]',tabs+1); await sleep(800)
   await click('.term-pane.is-selected .xterm-screen')
   const byteFile = '/tmp/l389-codex-ctrl-bytes.txt'
-  fs.rmSync(byteFile,{force:true})
-  await app.type(`python3 -c 'import os,termios,tty; f=0; old=termios.tcgetattr(f); tty.setraw(f); a=os.read(f,1); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,old); open("${byteFile}","w").write(repr(a+b))'`)
-  await key('Enter'); await sleep(600)
+  const readyFile = `${byteFile}.ready`
+  fs.rmSync(byteFile,{force:true}); fs.rmSync(readyFile,{force:true})
+  await app.type(`python3 -c 'import os,termios,tty; f=0; old=termios.tcgetattr(f); tty.setraw(f); open("${readyFile}","w").write("ready"); a=os.read(f,1); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,old); open("${byteFile}","w").write(repr(a+b))'`)
+  await key('Enter')
+  assert((await until(()=>fs.existsSync(readyFile),{timeoutMs:10000})).ok, 'PTY raw reader must be ready before sending Ctrl+D/T')
   const paneCountBeforeCtrl = await count('[data-term-pane-box]')
   await key('D',['control']); await key('T',['control'])
   assert((await until(()=>fs.existsSync(byteFile),{timeoutMs:5000})).ok)
@@ -117,7 +119,7 @@ try {
   assert.equal(bytes,"b'\\x04\\x14'")
   assert.equal(await count('[data-term-pane-box]'),paneCountBeforeCtrl)
   assert.equal(await count('[data-main-tab]'),tabs+1)
-  check('Coordinator Mod clarification: PTY Ctrl+D Ctrl+T', {bytes,paneCountBeforeCtrl,tabs:tabs+1})
+  recordVerified('Coordinator Mod clarification: PTY Ctrl+D Ctrl+T', {bytes,paneCountBeforeCtrl,tabs:tabs+1})
   await key('W',['meta']); await waitCount('[data-main-tab]',tabs)
 
   const width = await ev('document.querySelector("[data-sidebar]").getBoundingClientRect().width')
@@ -128,7 +130,10 @@ try {
   await key('B',['meta']); await waitCount('[data-sidebar]',1)
   assert.equal(await ev('document.querySelector("[data-sidebar]").getBoundingClientRect().width'),width)
   await app.shot('custom-width-restored')
-  check('sidebar custom width restart', {width})
+  recordVerified('sidebar custom width restart', {width})
+} catch (error) {
+  results.push({ id: 'run failed', error: String(error) })
+  throw error
 } finally {
   fs.writeFileSync(path.join(RAW_DIR,'edge-results.json'),JSON.stringify(results,null,2))
   if(app) await app.stop()

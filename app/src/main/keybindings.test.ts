@@ -22,6 +22,38 @@ describe('keybinding file', () => {
       fs.writeFileSync(file, content); const store = new KeybindingStore(dir); store.load(); expect(store.get()).toEqual({})
     }
   })
+  it.each([
+    { unknown: [] },
+    { 'terminal.split': ['Mod+K'] },
+    { 'terminal.close': ['D'] },
+    { 'terminal.close': ['Mod+D'] },
+    { 'terminal.split': ['Mod+K', 'Mod+K'] },
+  ])('discards only damaged entries while retaining unrelated overrides: %j', (bad) => {
+    const { dir, file } = fixture()
+    fs.writeFileSync(file, JSON.stringify({ 'sidebar.toggle': ['Mod+J'], ...bad }))
+    const store = new KeybindingStore(dir); store.load()
+    expect(store.get()).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+  })
+  it('resolves fallback cascades and keeps valid swaps independent of file order', () => {
+    const { dir, file } = fixture()
+    const store = new KeybindingStore(dir)
+    fs.writeFileSync(file, JSON.stringify({ 'sidebar.toggle': ['Mod+J'], 'terminal.close': ['Mod+D'], 'terminal.split': ['Mod+W', 'Mod+Shift+D'] }))
+    store.load()
+    expect(store.get()).toEqual({ 'sidebar.toggle': ['Mod+J'], 'terminal.close': ['Mod+D'], 'terminal.split': ['Mod+W', 'Mod+Shift+D'] })
+    fs.writeFileSync(file, JSON.stringify({ 'sidebar.toggle': ['Mod+J'], 'terminal.close': ['Mod+K'], 'terminal.split': ['Mod+W', 'Mod+K'] }))
+    store.load() // duplicate K drops close, restored W then drops split
+    expect(store.get()).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+  })
+  it('rejects unmodified saves without changing disk or memory', () => {
+    const { dir, file } = fixture(); const store = new KeybindingStore(dir)
+    store.save({ 'sidebar.toggle': ['Mod+J'] })
+    const before = fs.readFileSync(file, 'utf8')
+    for (const key of ['D', 'Tab', 'Enter']) {
+      expect(() => store.save({ 'sidebar.toggle': [key] })).toThrow()
+      expect(store.get()).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+      expect(fs.readFileSync(file, 'utf8')).toBe(before)
+    }
+  })
   it('rejects conflicting saves without replacing prior file or memory', () => {
     const { dir, file } = fixture(); const store = new KeybindingStore(dir)
     store.save({ 'sidebar.toggle': ['Mod+J'] }); const before = fs.readFileSync(file, 'utf8')

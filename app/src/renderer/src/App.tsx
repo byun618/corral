@@ -80,8 +80,10 @@ export function App(): React.JSX.Element {
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const sidebarCollapsedRef = useRef(false)
   const toggleSidebar = (): void => {
-    const next = !sidebarCollapsed
+    const next = !sidebarCollapsedRef.current
+    sidebarCollapsedRef.current = next
     setSidebarCollapsed(next)
     window.corral.setUiPrefs({ sidebarCollapsed: next })
   }
@@ -135,6 +137,7 @@ export function App(): React.JSX.Element {
         if (cancelled) return
         tabOrdinals.hydrate(prefs.tabOrdinals)
         setStoredLayouts(prefs.groupLayouts)
+        sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
       })
       .catch(() => {

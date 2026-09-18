@@ -76,8 +76,8 @@ export function ShortcutSettings({ overrides, onChange, onClose }: { overrides: 
           const capturing = recording?.id === action.id && recording.variant === variant
           const pending = candidate?.id === action.id && candidate.variant === variant ? candidate : null
           return <div key={variant}>
-            <span>{action.variants[variant]}</span>
-            <button disabled={busy} data-record={action.id} data-variant={variant} aria-label={`${action.title} ${action.variants[variant]} 키 기록`} onClick={async () => {
+            <span>{action.variants[action.bindingVariants[variant] ?? 0]}</span>
+            <button disabled={busy} data-record={action.id} data-variant={variant} aria-label={`${action.title} ${action.variants[action.bindingVariants[variant] ?? 0]} 키 기록`} onClick={async () => {
               setCandidate(null); setError(null)
               // Arm both renderer state and its synchronous ref before the IPC round trip.
               recordingRef.current = { id: action.id, variant }

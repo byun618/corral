@@ -877,6 +877,15 @@ export function App(): React.JSX.Element {
           onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onClosePane={() => void closePaneAt(groupSelectedPaneId)}
           onCloseGroup={canCloseGroup}
+          // LIFE-387 A1/B1 — "다른 영역으로 옮기기". 라벨은 herdr 원 label(sessionTitle 전체
+          // 파생은 그 영역의 selectedPane 등 별도 문맥이 필요해 과한 비용 — 메뉴 한 줄 식별에는
+          // 이 정도로 충분하다는 판단, 03-result.md 에 단순화로 기록).
+          otherGroups={layout.groups
+            .filter((other) => other.groupId !== group.groupId)
+            .map((other) => ({ groupId: other.groupId, label: tabById(other.activeTabId)?.label ?? '비어 있음' }))}
+          onMoveToOtherGroup={({ tabId, targetGroupId }) =>
+            layout.mergeTabIntoGroup({ tabId, fromGroupId: group.groupId, toGroupId: targetGroupId })
+          }
         />
         {isActiveGroup && groupNotice !== null ? (
           <InlineNotice

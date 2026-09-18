@@ -32,6 +32,7 @@ import { AgentIcon } from './AgentIcon.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
+import { SplitIcon } from './SplitIcon.js'
 
 /**
  * 활성 터미널로 포커스를 돌려준다 (J-1).
@@ -60,6 +61,8 @@ function MainTab({
   onSplitPane,
   onMoveToGroup,
   canMoveToGroup,
+  otherGroups,
+  onMoveToOtherGroup,
   compact,
 }: {
   tab: TabRow
@@ -83,6 +86,9 @@ function MainTab({
   /** LIFE-373 ① — 이 탭을 빼내 새 영역으로 (화면). */
   onMoveToGroup: (direction: 'row' | 'column') => void
   canMoveToGroup: boolean
+  /** LIFE-387 A1 — 다른 영역 목록("다른 영역으로 옮기기" 메뉴 섹션). */
+  otherGroups: { groupId: string; label: string }[]
+  onMoveToOtherGroup: (targetGroupId: string) => void
   /** 영역이 좁아 **아이콘만**으로 접힌 탭인가 (F1-7). 활성 탭은 절대 접히지 않는다. */
   compact: boolean
 }): React.JSX.Element {
@@ -167,12 +173,16 @@ function MainTab({
    * 유일한 입구라(더블클릭할 라벨이 없다) 여기서 안 펴면 그 입구가 막힌다.
    */
   const collapsed = compact && !editing
+  // LIFE-387 B1 F-B1-5 — 툴팁이 드래그를 안내한다(§2 "탭 툴팁"). 상태 라벨은 사용자 카피라 한글로 —
+  // AgentStatus 자체(herdr 타입)를 노출하지 않는다.
+  const statusLabel: Record<typeof tab.agentStatus, string> = { idle: '대기', working: '작업 중', blocked: '막힘', unknown: '알 수 없음' }
+  const tooltip = editing ? undefined : `${seed} · ${kind?.label ?? '셸'} · ${statusLabel[tab.agentStatus]} — 끌어서 옮기기`
   return (
     <div
       className={`main-tab ${active ? 'is-active' : ''} ${collapsed ? 'is-compact' : ''}`}
       data-main-tab={tab.tabId}
       data-tab-compact={collapsed ? 'true' : 'false'}
-      title={collapsed ? seed : undefined}
+      title={tooltip}
       data-tab-editing={editing ? 'true' : 'false'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -239,10 +249,12 @@ function MainTab({
           anchor={menu}
           hasUserName={userLabel({ tab, tabCount }) !== null}
           canMoveToGroup={canMoveToGroup}
+          otherGroups={otherGroups}
           onRename={beginEdit}
           onClearName={onClearName}
           onSplitPane={onSplitPane}
           onMoveToGroup={onMoveToGroup}
+          onMoveToOtherGroup={onMoveToOtherGroup}
           onClose={onClose}
           onDismiss={() => setMenu(null)}
         />
@@ -343,6 +355,8 @@ export function GroupHeader({
   onZoom,
   onClosePane,
   onCloseGroup,
+  otherGroups,
+  onMoveToOtherGroup,
 }: {
   groupId: string
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
@@ -371,12 +385,23 @@ export function GroupHeader({
   onClosePane: () => void
   /** 영역 닫기 (F1-5) — 영역이 하나뿐이면 `null` 로 줘서 버튼을 안 그린다. */
   onCloseGroup: (() => void) | null
+  /** LIFE-387 A1/B1 — 다른 영역 목록(탭 메뉴·헤더 메뉴 공용 "다른 영역으로 옮기기" 섹션). */
+  otherGroups: { groupId: string; label: string }[]
+  onMoveToOtherGroup: (input: { tabId: string; targetGroupId: string }) => void
 }): React.JSX.Element {
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   const header = useBoxWidth()
   const tail = useBoxWidth()
   const compact = shouldCompactTabs({ tabCount: tabs.length, headerWidth: header.width, tailWidth: tail.width })
+  // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
+  // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
+  const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
+  const openHeaderMenu = (point: { x: number; y: number }): void => {
+    if (activeTabId === null) return
+    setHeaderMenu({ tabId: activeTabId, x: point.x, y: point.y })
+  }
+  const activeTabLabel = tabs.find((tab) => tab.tabId === activeTabId)?.label ?? ''
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''} ${compact ? 'is-compact' : ''}`}
@@ -387,6 +412,12 @@ export function GroupHeader({
       onMouseDown={(event) => {
         keepFocusOnHeaderBackground(event)
         onActivate()
+      }}
+      // LIFE-387 B1 F-B1-3 — 탭바 빈 곳 우클릭 = 헤더 모드 메뉴(VS Code 관용). 탭 자체 우클릭은
+      // `MainTab` 이 `stopPropagation` 으로 먼저 가로채므로 여기 안 닿는다.
+      onContextMenu={(event) => {
+        event.preventDefault()
+        openHeaderMenu({ x: event.clientX, y: event.clientY })
       }}
     >
       {tabs.map((tab) => (
@@ -407,6 +438,8 @@ export function GroupHeader({
           onClearName={() => onClearTabName(tab)}
           onSplitPane={onSplitPane}
           onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
+          otherGroups={otherGroups}
+          onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
         />
       ))}
       <button className="main-tab-add" data-main-tabbar-add={groupId} title="빈 탭 (⌘T)" onClick={onCreateShell}>
@@ -427,10 +460,23 @@ export function GroupHeader({
         ) : null}
         <div className="group-actions" data-group-actions={groupId}>
           <button className="group-action" data-group-split-right={groupId} title="오른쪽으로 pane 분할 (⌘D)" onClick={() => onSplitPane('right')}>
-            ▥
+            <SplitIcon kind="pane-right" />
           </button>
           <button className="group-action" data-group-split-down={groupId} title="아래로 pane 분할 (⌘⇧D)" onClick={() => onSplitPane('down')}>
-            ▤
+            <SplitIcon kind="pane-down" />
+          </button>
+          {/* LIFE-387 B1 F-B1-1 — 영역 분할에는 상시 버튼이 하나도 없었다(▥▤는 pane 급).
+              ⊞ 하나가 탭 우클릭과 같은 메뉴를 헤더 모드로 연다 (§1 Q2·§2 GroupHeader 액션). */}
+          <button
+            className="group-action"
+            data-group-menu={groupId}
+            title="분할 · 옮기기 메뉴 (탭바 우클릭과 같음)"
+            onClick={(event) => {
+              event.stopPropagation()
+              openHeaderMenu({ x: event.clientX, y: event.clientY })
+            }}
+          >
+            ⊞
           </button>
           {paneCount > 1 ? (
             <button
@@ -454,6 +500,31 @@ export function GroupHeader({
           ) : null}
         </div>
       </div>
+      {headerMenu === null ? null : (
+        <TabContextMenu
+          anchor={headerMenu}
+          hasUserName={false}
+          canMoveToGroup={tabs.length > 1}
+          otherGroups={otherGroups}
+          headerMode={{ activeTabLabel }}
+          onRename={() => {}}
+          onClearName={() => {}}
+          onSplitPane={onSplitPane}
+          onMoveToGroup={(direction) => {
+            if (activeTabId === null) return
+            onMoveToGroup({ tabId: activeTabId, direction })
+          }}
+          onMoveToOtherGroup={(targetGroupId) => {
+            if (activeTabId === null) return
+            onMoveToOtherGroup({ tabId: activeTabId, targetGroupId })
+          }}
+          onClose={() => {
+            const activeTab = tabs.find((tab) => tab.tabId === activeTabId)
+            if (activeTab !== undefined) onCloseTab(activeTab)
+          }}
+          onDismiss={() => setHeaderMenu(null)}
+        />
+      )}
     </div>
   )
 }

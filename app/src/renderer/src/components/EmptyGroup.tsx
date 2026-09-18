@@ -33,7 +33,12 @@ export function EmptyGroup({
             </button>
           )}
         </div>
-        <span className="empty-group-hint">새 탭은 이 영역에 열립니다 · 이미 열린 탭은 있는 영역으로 갑니다</span>
+        {/* LIFE-387 B1 F-B1-6 — "다른 영역의 탭을 끌어다 놓아도 됩니다" 를 덧붙인다(§1 Q3).
+            드래그 타깃 중 문구·강조는 A1 드래그 구현이 붙는 자리에서 마저 한다(이 파일은 정적
+            안내만 갱신 — 드래그 상태에 따른 스타일 전환은 이번 커밋 범위 밖으로 남는다). */}
+        <span className="empty-group-hint">
+          새 탭은 이 영역에 열립니다 · 이미 열린 탭은 있는 영역으로 갑니다 · 다른 영역의 탭을 끌어다 놓아도 됩니다
+        </span>
       </div>
     </div>
   )

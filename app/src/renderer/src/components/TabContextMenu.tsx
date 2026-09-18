@@ -14,6 +14,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ONE_TAB_IN_GROUP } from '../group-tree.js'
+import { SplitIcon } from './SplitIcon.js'
 
 export type TabMenuAnchor = { tabId: string; x: number; y: number }
 
@@ -21,10 +22,13 @@ export function TabContextMenu({
   anchor,
   hasUserName,
   canMoveToGroup,
+  otherGroups,
+  headerMode,
   onRename,
   onClearName,
   onSplitPane,
   onMoveToGroup,
+  onMoveToOtherGroup,
   onClose,
   onDismiss,
 }: {
@@ -33,10 +37,18 @@ export function TabContextMenu({
   hasUserName: boolean
   /** 원 영역에 탭이 2개 이상인가 (F1-1) — 하나뿐이면 옮기기가 빈 영역을 만든다. */
   canMoveToGroup: boolean
+  /** LIFE-387 A1 — 다른 영역 목록("다른 영역으로 옮기기" 섹션, 영역 ≥ 2 일 때만 뜬다). */
+  otherGroups: { groupId: string; label: string }[]
+  /**
+   * LIFE-387 B1 — 헤더(`⊞`)·탭바 빈 곳 우클릭에서 열리면 이름 변경/지우기를 뺀 "헤더 모드"다
+   * (§2 GroupHeader 우클릭 — 활성 탭 대상, 빈 영역이면 열지 않는다).
+   */
+  headerMode?: { activeTabLabel: string }
   onRename: () => void
   onClearName: () => void
   onSplitPane: (direction: 'right' | 'down') => void
   onMoveToGroup: (direction: 'row' | 'column') => void
+  onMoveToOtherGroup: (targetGroupId: string) => void
   onClose: () => void
   onDismiss: () => void
 }): React.JSX.Element {
@@ -86,32 +98,43 @@ export function TabContextMenu({
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <div
-        className="repo-row-menu-item"
-        data-tab-menu-rename={anchor.tabId}
-        onClick={() => {
-          onDismiss()
-          onRename()
-        }}
-      >
-        <span className="repo-row-menu-glyph">✎</span>
-        <span>이름 변경</span>
-      </div>
-      <div
-        className={`repo-row-menu-item ${hasUserName ? '' : 'is-disabled'}`}
-        data-tab-menu-clear={anchor.tabId}
-        data-disabled={hasUserName ? 'false' : 'true'}
-        title={hasUserName ? undefined : '사용자가 준 이름이 없다'}
-        onClick={() => {
-          if (!hasUserName) return
-          onDismiss()
-          onClearName()
-        }}
-      >
-        <span className="repo-row-menu-glyph">⌫</span>
-        <span>이름 지우기</span>
-      </div>
-      <div className="repo-row-menu-sep" />
+      {headerMode === undefined ? (
+        <>
+          <div
+            className="repo-row-menu-item"
+            data-tab-menu-rename={anchor.tabId}
+            onClick={() => {
+              onDismiss()
+              onRename()
+            }}
+          >
+            <span className="repo-row-menu-glyph">✎</span>
+            <span>이름 변경</span>
+          </div>
+          <div
+            className={`repo-row-menu-item ${hasUserName ? '' : 'is-disabled'}`}
+            data-tab-menu-clear={anchor.tabId}
+            data-disabled={hasUserName ? 'false' : 'true'}
+            title={hasUserName ? undefined : '사용자가 준 이름이 없다'}
+            onClick={() => {
+              if (!hasUserName) return
+              onDismiss()
+              onClearName()
+            }}
+          >
+            <span className="repo-row-menu-glyph">⌫</span>
+            <span>이름 지우기</span>
+          </div>
+          <div className="repo-row-menu-sep" />
+        </>
+      ) : (
+        <>
+          <div className="tab-menu-section tab-menu-header-mode" data-tab-menu-header-mode={anchor.tabId}>
+            탭 · {headerMode.activeTabLabel}
+          </div>
+          <div className="repo-row-menu-sep" />
+        </>
+      )}
       <div className="tab-menu-section">이 탭 안에서 pane 분할</div>
       <div
         className="repo-row-menu-item"
@@ -121,7 +144,7 @@ export function TabContextMenu({
           onSplitPane('right')
         }}
       >
-        <span className="repo-row-menu-glyph">▥</span>
+        <span className="repo-row-menu-glyph"><SplitIcon kind="pane-right" /></span>
         <span>오른쪽으로</span>
         <span className="tab-menu-key">⌘D</span>
       </div>
@@ -133,7 +156,7 @@ export function TabContextMenu({
           onSplitPane('down')
         }}
       >
-        <span className="repo-row-menu-glyph">▤</span>
+        <span className="repo-row-menu-glyph"><SplitIcon kind="pane-down" /></span>
         <span>아래로</span>
         <span className="tab-menu-key">⌘⇧D</span>
       </div>
@@ -150,7 +173,7 @@ export function TabContextMenu({
           onMoveToGroup('row')
         }}
       >
-        <span className="repo-row-menu-glyph">◨</span>
+        <span className="repo-row-menu-glyph"><SplitIcon kind="group-right" /></span>
         <span>오른쪽 영역</span>
         <span className="tab-menu-key">⌘⌥D</span>
       </div>
@@ -165,10 +188,30 @@ export function TabContextMenu({
           onMoveToGroup('column')
         }}
       >
-        <span className="repo-row-menu-glyph">⬓</span>
+        <span className="repo-row-menu-glyph"><SplitIcon kind="group-down" /></span>
         <span>아래 영역</span>
         <span className="tab-menu-key">⌘⌥⇧D</span>
       </div>
+      {otherGroups.length === 0 ? null : (
+        <>
+          <div className="repo-row-menu-sep" />
+          <div className="tab-menu-section">이 탭을 다른 영역으로 옮기기</div>
+          {otherGroups.map((group, index) => (
+            <div
+              key={group.groupId}
+              className="repo-row-menu-item"
+              data-tab-menu-move-other={group.groupId}
+              onClick={() => {
+                onDismiss()
+                onMoveToOtherGroup(group.groupId)
+              }}
+            >
+              <span className="repo-row-menu-glyph tab-menu-group-badge">{index + 1}</span>
+              <span>영역 {index + 1} · {group.label}</span>
+            </div>
+          ))}
+        </>
+      )}
       <div className="repo-row-menu-sep" />
       <div
         className="repo-row-menu-item repo-row-menu-danger"

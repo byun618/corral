@@ -138,4 +138,19 @@
   --h-mru-row: 28px;
   --w-tab-menu: 196px;     /* 탭 메뉴 — 두 섹션이 들어가 168 → 196 */
   --dur-fade: 80ms;        /* 등장/소멸 한 종류 (§1-7) */
+
+  /* --- LIFE-387 (Step 6-b) 분할 UI/UX — design-handoff.md §3 -----------------------
+     **색 추가 0** — `--dropzone-*` 는 기존 `--accent`/`--st-error` 알파 변형. 이 블록은
+     `specs/design-tokens.css` 의 같은 절을 그대로 옮긴 것 — 기존 토큰(위)은 app/specs 값이
+     갈린 채로 있어(예: `--pad-pane`·`--w-mru`) 손대지 않았다, 신규 토큰만 더한다. */
+  --tab-drag-arm: 6px;              /* 클릭→드래그 승격 거리 */
+  --tabbar-grace: 8px;              /* 탭바 판정을 헤더(--h-tabbar) 아래로 연장하는 폭 */
+  --dropzone-band: .25;             /* 본문 가장자리 드롭존 비율(가로/세로 폭 대비) */
+  --dropzone-fill: rgba(125, 211, 160, .12);       /* --accent 12% */
+  --dropzone-fill-empty: rgba(125, 211, 160, .08); /* --accent 8%, EmptyGroup 드롭 타깃 */
+  --dropzone-invalid: rgba(224, 108, 95, .07);     /* --st-error 7%, 무효 드롭(탭 1개·제 영역) */
+  --w-drop-marker: 2px;             /* 탭바 안 삽입 마커 두께 */
+  --split-icon-w: 14px;
+  --split-icon-h: 11px;
+  --split-icon-strip: 3px;          /* SplitIcon 상단 "탭바 띠" 두께 */
 }

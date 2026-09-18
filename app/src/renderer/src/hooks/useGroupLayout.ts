@@ -11,11 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   closeGroup as closeGroupIn,
   listGroups,
+  mergeTabIntoGroup as mergeTabIntoGroupIn,
+  moveTabWithinTabbar as moveTabWithinTabbarIn,
   reconcileLayout,
   readStoredLayouts,
   setRatio as setRatioIn,
   singleLayout,
   splitGroup as splitGroupIn,
+  splitGroupWithForeignTab as splitGroupWithForeignTabIn,
   updateGroup,
   type GroupLayout,
   type TabGroup,
@@ -33,9 +36,21 @@ export type GroupLayoutApi = {
   setActiveTab: (input: { groupId: string; tabId: string }) => void
   /** 그 탭이 있는 영역을 활성으로 + 그 영역의 활성 탭으로 (R3-e reveal). 없으면 false. */
   revealTab: (tabId: string) => boolean
-  splitGroup: (input: { groupId: string; tabId: string; direction: 'row' | 'column' }) => void
+  splitGroup: (input: { groupId: string; tabId: string; direction: 'row' | 'column'; edge?: 'before' | 'after' }) => void
   closeGroup: (groupId: string) => void
   setRatio: (input: { splitId: string; ratio: number }) => void
+  /** LIFE-387 A1 — 탭바 안 드롭(재정렬/크로스그룹 이동). */
+  moveTabWithinTabbar: (input: { tabId: string; fromGroupId: string; toGroupId: string; index: number }) => void
+  /** LIFE-387 A1 — 본문 중앙/빈 영역 드롭(병합, corral 에 없던 "기존 영역으로 이동"). */
+  mergeTabIntoGroup: (input: { tabId: string; fromGroupId: string; toGroupId: string }) => void
+  /** LIFE-387 A1 — 다른 영역의 탭을 대상 가장자리로 끌어 새 영역 생성. */
+  splitGroupWithForeignTab: (input: {
+    tabId: string
+    fromGroupId: string
+    targetGroupId: string
+    direction: 'row' | 'column'
+    edge: 'before' | 'after'
+  }) => void
 }
 
 const ROOT_GROUP = 'g1'
@@ -166,13 +181,14 @@ export function useGroupLayout(input: {
   )
 
   const splitGroup = useCallback(
-    (target: { groupId: string; tabId: string; direction: 'row' | 'column' }) =>
+    (target: { groupId: string; tabId: string; direction: 'row' | 'column'; edge?: 'before' | 'after' }) =>
       mutate((current) =>
         splitGroupIn({
           layout: current,
           groupId: target.groupId,
           tabId: target.tabId,
           direction: target.direction,
+          edge: target.edge,
           newGroupId: nextGroupId(listGroups(current.root).map((group) => group.groupId)),
         }),
       ),
@@ -183,6 +199,30 @@ export function useGroupLayout(input: {
 
   const setRatio = useCallback(
     (target: { splitId: string; ratio: number }) => mutate((current) => setRatioIn(current, target.splitId, target.ratio)),
+    [mutate],
+  )
+
+  const moveTabWithinTabbar = useCallback(
+    (target: { tabId: string; fromGroupId: string; toGroupId: string; index: number }) =>
+      mutate((current) => moveTabWithinTabbarIn(current, target)),
+    [mutate],
+  )
+
+  const mergeTabIntoGroup = useCallback(
+    (target: { tabId: string; fromGroupId: string; toGroupId: string }) =>
+      mutate((current) => mergeTabIntoGroupIn(current, target)),
+    [mutate],
+  )
+
+  const splitGroupWithForeignTab = useCallback(
+    (target: { tabId: string; fromGroupId: string; targetGroupId: string; direction: 'row' | 'column'; edge: 'before' | 'after' }) =>
+      mutate((current) =>
+        splitGroupWithForeignTabIn({
+          layout: current,
+          ...target,
+          newGroupId: nextGroupId(listGroups(current.root).map((group) => group.groupId)),
+        }),
+      ),
     [mutate],
   )
 
@@ -198,5 +238,8 @@ export function useGroupLayout(input: {
     splitGroup,
     closeGroup,
     setRatio,
+    moveTabWithinTabbar,
+    mergeTabIntoGroup,
+    splitGroupWithForeignTab,
   }
 }

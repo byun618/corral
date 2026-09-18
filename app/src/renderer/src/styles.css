@@ -509,7 +509,9 @@ button { font: inherit; }
 .pane-divider { position: absolute; z-index: 3; }
 .pane-divider.dir-row { width: var(--resizer-hit-w); transform: translateX(calc(var(--resizer-hit-w) / -2)); cursor: col-resize; }
 .pane-divider.dir-column { height: var(--resizer-hit-w); transform: translateY(calc(var(--resizer-hit-w) / -2)); cursor: row-resize; }
-.pane-divider-line { position: absolute; background: var(--line-strong); }
+/* LIFE-387 Q0 보강: pane 경계는 영역 경계보다 한 단 옅다(--line-strong → --line) — 굵기·히트존은
+   그대로라 리사이저 관용은 안 깨진다. 영역 경계(.group-divider-line, 아래)는 --line-strong 유지. */
+.pane-divider-line { position: absolute; background: var(--line); }
 .pane-divider.dir-row .pane-divider-line { top: 0; bottom: 0; left: 50%; width: var(--resizer-line-w); transform: translateX(-50%); }
 .pane-divider.dir-column .pane-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
 .pane-divider:hover .pane-divider-line, .pane-divider.is-dragging .pane-divider-line { background: var(--accent); }

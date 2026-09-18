@@ -1,6 +1,6 @@
 ---
 name: task-coordinate
-description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 구현→3자 리뷰→판정→승인 게이트→머지·정리 전 과정. 작업 worktree 의 코디네이터 세션이 킥오프 직후 읽는다. LIFE-342 첫 주행(2026-09-10)으로 검증, 어긋남 13건 반영(LIFE-357 — design-brief/design-intake 삽입 지점 명시).
+description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 구현→3자 리뷰→판정→승인 게이트→머지·정리 전 과정. 작업 worktree 의 코디네이터 세션이 킥오프 직후 읽는다. LIFE-342 첫 주행(2026-09-10)으로 검증, 어긋남 13건 반영(LIFE-357 — design-brief/design-intake 삽입 지점 명시). 2026-09-18: 워커 기동·완료 감지를 저수준 `orca terminal` 조합에서 `orca orchestration`(worker-start/check --wait)로 전면 교체 — 완료 감지 폴링 실패(LIFE-345) 근본 해결.
 ---
 
 # task-coordinate — 코디네이터 절차 (작업 worktree 세션에서 실행)
@@ -47,39 +47,67 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
   이 차이가 판정을 뒤집는다. (**각각 1회 측정**이라 수치는 자릿수로만 쓴다)
 - 원자료 규칙: 로그·스냅샷·타이밍 원본을 `specs/LIFE-NNN-*/raw/<도구>/` 에 커밋.
   판정표 "근거" 칸이 가리킬 실물이 없으면 그 항목은 무효
-- **완료 신호**: 전부 커밋 + `raw/<도구>/DONE.md` (한 줄 요약 + 미완 목록).
-  "커밋되지 않은 결과는 없는 것이다"
+- **결과 문서**: 전부 커밋 + `raw/<도구>/DONE.md` (한 줄 요약 + 미완 목록) — 이건 감사 추적용
+  기록이지 프로세스 완료 감지 신호가 아니다. 완료 감지는 §4 의 orchestration `worker_done` 메시지로
+  한다. "커밋되지 않은 결과는 없는 것이다"
 
-## 4. 구현 — 기본 claude 단독, 경쟁은 예외 (2026-09-11 전환)
+## 4. 구현 — 기본 경쟁(claude ∥ codex), 단독은 예외 (2026-09-18 전환)
 
-기본은 claude 워커 1개. 경쟁 구현(-codex 추가)은 분석 단계에서 "설계가 갈리고 되돌리기 비싼 작업"으로
-판단해 일감에 명시했을 때만. 워커 모델·effort 는 분석에서 정해 02-kickoff.md 정체 표에 기록한다
-(claude: `--model <m> --effort <e>` / codex: `-c model_reasoning_effort=<e>` — 모델은 구독 목록 한정).
+기본은 claude·codex 워커 2개를 동시에 붙인다. claude 단독은 분석 단계에서 "설계 접근이 갈릴 여지가
+거의 없는 단순 작업"으로 판단해 일감에 명시했을 때만. 워커 모델·effort 는 분석에서 정해
+02-kickoff.md 정체 표에 기록한다 — 둘 다 `orchestration worker-start --model <m> --effort <e>`로
+동일하게 지정한다(모델은 구독 목록 한정).
+
+**기본 페어링은 플래그십 대 플래그십** (2026-09-18, GPT-6 Astra 출시 계기로 명시): codex 쪽에
+Astra(`model = "gpt-6-astra"`, Codex 신규 최상위 모델)를 쓴다면 claude 쪽도 Opus 가 아니라
+**Fable**(Anthropic 신규 최상위 "Mythos급" 모델, `claude-fable-5-1` — FrontierBench 최고점,
+Opus 는 그 아래 등급으로 재배치됨)로 맞춘다. effort 도 양쪽 동일 등급(예: 둘 다 high)으로 —
+한쪽만 급을 낮추면 판정이 모델 격차 때문인지 구현 품질 때문인지 갈리지 않는다. 비용·속도 등
+다른 이유로 급을 다르게 갈 때는 그 사유를 02-kickoff.md 정체 표에 남긴다.
+
+**워커 기동·완료 감지는 Orca `orchestration` 계층으로 한다** (2026-09-18 전환, 저수준
+`terminal create/send/read` 조합 폐기). 먼저 `orca skills get orchestration`으로 스킬 본문을 읽는다.
+이유: 저수준 조합은 완료 감지를 git 파일 존재(`DONE.md`)로 대체 판단해야 했고 이게 두 번 헛불렀다
+(`specs/LIFE-345-terminal-view/verdict.md` — ① 자리표시자 든 초안을 완료로 오판 ② 워커가 계속
+도는데 파일만 보고 완료로 오판, 사용자가 잡음). `orchestration`은 워커가 보내는 구조화된
+`worker_done` 메시지로 이 문제를 근본에서 없앤다. 워크트리 배치 경로는 그대로
+`.claude/worktrees/<이름>`이다(Orca 기본값 — life-assistant·home-coffing 두 레포에서 실측 확인,
+`orca.yaml` 오버라이드 없이도 이 경로를 씀).
 
 ```bash
-git worktree add ../LIFE-NNN-<슬러그>-claude -b LIFE-NNN-<슬러그>-claude LIFE-NNN-<슬러그>
-# (경쟁일 때만) git worktree add ../LIFE-NNN-<슬러그>-codex -b LIFE-NNN-<슬러그>-codex LIFE-NNN-<슬러그>
+orca orchestration run-create --objective "LIFE-NNN <슬러그>" --json
+orca orchestration task-create --spec "specs/LIFE-NNN-*/00-analysis.md → 01-criteria.md → 02-kickoff.md 순서로 읽고 구현해." --json
+# → task_claude 발급. codex 도 동일 spec 으로 한 번 더 task-create → task_codex (단독 예외면 생략)
 
-orca terminal create --worktree path:<워커 worktree 절대경로> --title "impl: LIFE-NNN <도구>" \
-  --command "claude --model <m> --effort <e>" --json   # ⚠ --focus 금지 — 코디네이터 포커스를 뺏는다
-orca terminal send --terminal <handle> --text \
-  "specs/LIFE-NNN-*/00-analysis.md → 01-criteria.md → 02-kickoff.md 순서로 읽고 구현해." --enter
+orca orchestration worker-start --task <task_claude> --worktree new-child \
+  --name LIFE-NNN-<슬러그>-claude --agent claude --model <m> --effort <e> --json
+orca orchestration worker-start --task <task_codex> --worktree new-child \
+  --name LIFE-NNN-<슬러그>-codex --agent codex --model <m> --effort <e> --json
 ```
 
+- 브랜치·worktree 이름은 `--name`으로 기존 컨벤션(`LIFE-NNN-<슬러그>-<도구>`) 그대로 지정
 - 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지
-- **완료 감지는 화면이 아니라 git 으로**:
+- **완료 대기는 블로킹으로 건다 — 폴링하지 않는다**:
   ```bash
-  # zsh 함정: <rev>:<path> 를 변수와 붙이지 않는다 (:s 가 히스토리 수식어로 파싱돼 오탐)
-  git ls-tree -r --name-only "$BRANCH" -- "specs/LIFE-NNN-*/raw/<도구>/DONE.md"   # 출력 있으면 완료
+  orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 900000 --json
   ```
-  완료 신호는 "참이 되기 어려운 조건"으로 짠다 — 실패가 우연히 참이 되는 모양 금지
-- **워커에 무엇을 맡기든 그 자리에서 워처를 같이 건다 — 첫 라운드만이 아니다.**
-  수정 라운드·재리뷰도 같다. LIFE-344 에서 수정 1·2회차에 워처를 안 걸어, 구현자가 끝낸 걸
-  코디네이터가 사용자가 물을 때까지 몰랐다
+  타임아웃이나 `{count:0}`은 실패가 아니라 체크포인트다 — 긴 구현은 15~60분 걸리는 게 정상이니
+  받은 배치를 처리하고 `check --ack <delivery_id> --wait ...`로 이어서 다시 건다. 유효한
+  `worker_done`이 오면 그 태스크는 자동으로 완료 처리된다(`task-update`로 수동 완료 처리 금지)
+- **워커가 막혀서 `question`을 보내면** `orca orchestration reply --id <msg_id> --body <답> --json`으로
+  답하고 계속 대기한다 — "질문 대기 화면을 코디네이터가 키 입력으로 풀어주던" 임시방편(LIFE-356)의
+  정식 대체
+- **완료된 워커는 정리한다**: `orca orchestration worker-release --dispatch <dispatch_id> --json`.
+  수정 라운드로 같은 워커에 바로 이어 맡길 거면 release 하지 말고
+  `orca orchestration worker-start --task <다음_task_id> --terminal <handle> --json`로 재사용한다
 
 ## 5. 3자 리뷰
 
 - 검토 전 `.agents/agents/reviewer.md` 필독. claude 리뷰어는 **코디네이터와 별도 세션** (구현 지휘 기억 오염 방지)
+- **claude·codex 리뷰어도 §4 와 같은 방식으로 띄운다** — 같은 Run 에 `orchestration worker-start`,
+  완료 대기는 `check --wait --types worker_done,escalation,question`. grok 리뷰어는 예외 —
+  grok-search 스킬의 기존 Orca 대화형 경로 그대로 쓴다(orchestration `--agent` 대상이 아니라
+  검색 위임 스킬 소관)
 - `git diff LIFE-NNN-<슬러그>..LIFE-NNN-<슬러그>-<도구>` 로 검토 (체크아웃 불필요)
 - **리뷰어 터미널은 구현 worktree 에서 돌려도 된다** (LIFE-356, 사용자 승인 2026-09-13) —
   원자료 재검산·독립 재실행(하네스 재투입)이 체크아웃 상태를 요구할 때 이쪽이 싸다.
@@ -111,8 +139,10 @@ git merge LIFE-NNN-<슬러그>-<승자>                      # 승자 → 작업
   범위를 문서로 박고(04-gate1-fix.md 류) 워커가 구현 브랜치에 이어 커밋(rN 태그) → 코디네이터가
   diff 정독·게이트 재실행·스모크 원자료 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지.
   풀 3자 리뷰는 안 돌린다 (범위가 UI/문구 수준일 때 — 가드·기준 경로를 건드리면 재리뷰 판단)
-- 워커 감시엔 완료 신호(태그) 워처와 함께 **질문 대기 화면 감지**를 넣는다 — codex 류 승인
-  프롬프트 정지를 코디네이터가 키 주입으로 풀어준 실전례 2회 (LIFE-356 verdict §5)
+- 수정 라운드 워커도 §4 패턴 그대로: 같은 워커에 이어 맡기면
+  `orchestration worker-start --task <fix_task_id> --terminal <handle>`로 재사용, 완료 대기·질문
+  응답은 `check --wait`/`reply`로 처리한다(codex 류 승인 프롬프트 정지도 이제 `question` 메시지로
+  들어오므로 화면 감시가 따로 필요 없다 — LIFE-356 verdict §5 임시방편의 정식 대체)
 - 확인이 끝나 사용자가 **출고 승인**을 주면:
   1. LA → "완료" 전이
   2. 사용자에게 마무리 안내 한 줄: **"본체 위치에서 `scripts/task-finish.sh LIFE-NNN-<슬러그>` 실행"**

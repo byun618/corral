@@ -25,12 +25,13 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
-3. 구현: 기본은 **claude 단독 구현** + 리뷰 강화 (2026-09-11 전환 — codex 구독 모델 격차로
-   경쟁의 기대값이 하락. 생성보다 검증이 쉬우므로 codex 는 적대적 리뷰어로 더 값을 한다)
-   - **경쟁 구현(claude ∥ codex)은 예외**: 설계 접근이 갈릴 게 명확하고 잘못 고르면 되돌리기
-     비싼 작업만 — 분석 단계에서 결정해 일감에 명시. codex Pro 구독 시 기본 복귀 재평가
+3. 구현: 기본은 **경쟁 구현(claude ∥ codex)** (2026-09-18 전환 — codex 구독 업그레이드로
+   2026-09-11 전환 사유였던 구독 모델 격차 해소, 경쟁 기대값 회복)
+   - **claude 단독 구현은 예외**: 설계 접근이 갈릴 여지가 거의 없는 단순 작업만 —
+     분석 단계에서 판단해 일감에 명시
    - 워커 모델·effort 는 분석 단계에서 코디네이터가 정해 02-kickoff.md 정체 표에 기록
-   - 구현 브랜치: 작업 브랜치에서 분기, LIFE-NNN-<슬러그>-claude (경쟁이면 -codex 추가, 각자 전용 worktree)
+     (기본 페어링 = 플래그십 대 플래그십, 상세는 task-coordinate SKILL.md §4)
+   - 구현 브랜치: 작업 브랜치에서 분기, LIFE-NNN-<슬러그>-claude / -codex (단독 예외면 codex 생략), 각자 전용 worktree
    - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
    - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
    - 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
@@ -73,8 +74,9 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 ## 세션 간 통신
 
 - 영속 산출물: specs/ 파일 (진실의 원천)
-- 제어 채널: orca terminal create/send/read/wait — 워커 터미널 생성·지시 주입·완료 감지.
-  워커는 백그라운드가 아니라 Orca 탭으로 열어 진행이 보이게 한다
+- 제어 채널: orca `orchestration`(worker-start/check --wait/ask·reply) — 워커 기동·완료 감지·질의응답을
+  구조화된 메시지로 처리 (2026-09-18, 저수준 `terminal create/send/read` 폴링 조합 폐기, 상세는
+  task-coordinate SKILL.md §4). worker-start 도 실제 Orca 탭을 만드니 진행 가시성은 그대로 유지된다
 - 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
 
 ## 어디를 고치나 (증상 → 파일)

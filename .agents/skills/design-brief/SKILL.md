@@ -1,6 +1,11 @@
 ---
 name: design-brief
-description: corral 앱(herdr 기반 Electron 워크스페이스)의 디자인 브리프 작성 — Claude Design(claude.ai/design)에 붙여넣을 단일 문서 `specs/LIFE-NNN-<슬러그>/design-brief.md`. 사용자가 전달자, Claude Code가 브리프·왕복 프롬프트를 쓴다. 그라운딩(화면 인벤토리·현재 렌더러 코드·Orca/herdr-studio 레퍼런스·토큰) 자동 + 6섹션 골격 + forward 핸드오프 계약(돌려받을 형식). 트리거 예시 — "디자인 브리프 써줘" / "Claude Design에 줄 프롬프트 만들어줘" / "UI 디자인 하자" / "레이아웃 디자인 브리프" / "디자인 수정 요청 프롬프트". 디자인을 그리지 않음(외부 Claude Design). 앞=화면 인벤토리(`specs/app-screens.md`, 없으면 먼저), 돌아오면=`design-intake`, 구현=AGENTS.md 작업 플로우(분석→기준→구현).
+description: >-
+  corral 앱의 디자인 브리프와 수정 요청 프롬프트를 작성한다. 사용자가 외부 Claude Design에
+  전달할 specs의 design-brief.md를 코디네이터(Claude Code 또는 Codex)가 쓴다.
+  "디자인 브리프 써줘", "Claude Design에 줄 프롬프트 만들어줘", "UI 디자인 하자" 요청에 사용한다.
+  화면 인벤토리·렌더러·레퍼런스·토큰을 확인하고 6섹션 브리프와 핸드오프 형식을 정의한다.
+  직접 디자인을 그리지 않으며, 돌아온 산출물 이관은 design-intake가 담당한다.
 ---
 
 # Design — Brief (Claude Design에 줄 브리프)
@@ -57,7 +62,7 @@ design-intake로 specs/ 이관"* 명시:
 4. **디자인 시스템 앵커** — 토큰 파일 그대로(없으면 "이번에 만든다"), Orca/herdr-studio 레퍼런스 문서의
    구체적 패턴(파일:줄 근거) 인용, 컴포넌트 관용(모달 최소, 종료·삭제 같은 되돌릴 수 없는 동작은 확인 게이트).
 5. **열린 디자인 질문** — **걱정거리와 제약을 주고 안은 저쪽이 낸다**. "A/B/C 중 골라달라"가 아니라
-   *"이런 게 걱정된다 · 이건 못 바꾼다(화면 계층·어댑터 경계) — 풀어서 2~3안 제안해달라"*. Claude Code가
+   *"이런 게 걱정된다 · 이건 못 바꾼다(화면 계층·어댑터 경계) — 풀어서 2~3안 제안해달라"*. 코디네이터가
    떠올린 해법은 **브리프에 넣지 않는다**. 예시 스크린샷이 도움될 화면이면 여기서 "예시 스크린샷을
    함께 보내주시면 좋습니다"를 사용자에게 명시적으로 요청한다.
 6. **범위 밖 (안 그림)** — 별도 Step/LIFE로 분리할 것.

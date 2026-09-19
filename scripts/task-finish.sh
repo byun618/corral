@@ -89,4 +89,4 @@ if [ -n "$NNN" ] && command -v herdr >/dev/null 2>&1; then
 fi
 
 echo "✔ $TASK 마무리 완료 — main $(git -C "$REPO" log --oneline -1 | cut -c1-40)"
-echo "□ 확인: LA 일감이 '완료' 로 전이됐는가 (코디네이터 담당 — 누락 시 수동 전이)"
+echo "□ 다음: 본체 마무리 세션이 main 반영을 확인하고 LA 일감을 '완료' 로 전이 (handoff-main.md 참조)"

@@ -1,12 +1,30 @@
 ---
 name: task-coordinate
-description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 구현→3자 리뷰→판정→승인 게이트→머지·정리 전 과정. 작업 worktree 의 코디네이터 세션이 킥오프 직후 읽는다. LIFE-342 첫 주행(2026-09-10)으로 검증, 어긋남 13건 반영(LIFE-357 — design-brief/design-intake 삽입 지점 명시). 2026-09-18: 워커 기동·완료 감지를 저수준 `orca terminal` 조합에서 `orca orchestration`(worker-start/check --wait)로 전면 교체 — 완료 감지 폴링 실패(LIFE-345) 근본 해결.
+description: >-
+  corral 작업 코디네이터 절차. 작업 worktree의 Claude 또는 Codex 코디네이터가 킥오프 직후 읽는다.
+  분석·판정 기준·경쟁 구현·3자 리뷰·판정·두 승인 게이트·본체 마무리 인계를 다룬다.
+  Orca orchestration으로 워커 기동·완료 감지·질의응답을 처리한다.
 ---
 
 # task-coordinate — 코디네이터 절차 (작업 worktree 세션에서 실행)
 
 전제: task-start 가 만든 작업 worktree(`.claude/worktrees/LIFE-NNN-<슬러그>/`, 작업 브랜치 체크아웃) 안이다.
 원칙은 AGENTS.md, 완료 조건은 `.agents/rules/validation.md`. 문서 산출물은 전부 작업 브랜치에 커밋한다.
+
+## 0. 실제 코디네이터 세션 확인
+
+- `specs/LIFE-NNN-<슬러그>/00-start.md`의 코디네이터·모델/effort·worktree를 확인한다.
+  현재 세션과 기록이 다르면 작업을 시작하지 말고 시작 세션에 불일치를 알린다.
+  재개 시 기존 Run·워커·승인 상태부터 확인하고 중복 기동하지 않는다.
+- **이 세션에서** LA `issue_by_seq` 조회, 웹 검색 도구의 사용 가능 여부, `grok-search` 본문 읽기,
+  `command -v grok`, `orca status --json`을 확인한다. 시작 세션에서 됐다는 이유로 생략하지 않는다.
+  MCP를 새로 등록했다면 실제 호출 도구로 나타나는지도 확인한다. 인증값은 문서·프롬프트에 적지 않는다.
+- 빠진 도구·권한이 있으면 해결 가능한 설정을 점검하고, 남은 차단 사유를 시작 기록과 사용자에게
+  보고한다. 임의로 다른 코디네이터로 바꾸거나 필수 리뷰를 생략하지 않는다.
+- 통과하면 `00-start.md`를 `준비 완료`로 갱신·커밋한다. 코디네이터 선택은 구현자·리뷰어
+  페어링을 바꾸지 않는다. 문서 작성·판정은 코디네이터, 구현은 별도 워커가 맡는다.
+- 각 단계에 필요한 `.agents/rules/` 문서를 읽는다: 글 작성 전 writing.md, 코드 작업 전 coding.md,
+  완료 판정 전 validation.md. 디렉터리의 자동 로딩 여부에 기대지 않는다.
 
 ## LA 상태 전이 (life-assistant `issue_transition`, forward-only)
 
@@ -15,8 +33,9 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
 ## 1. 분석 — 4박자 (외부 서치가 수 분 걸리므로 순차가 아니라 겹친다)
 
 1. **일감 본문 확보**: `issue_by_seq` 로 LIFE-N 상세를 읽는다. `specs/LIFE-NNN-<슬러그>/` 생성
-2. **외부 서치 먼저 띄운다**: Claude WebSearch 로 개요를 먼저 깔고, grok 은 Orca 터미널 대화형으로
-   병렬 위임 (grok-search 스킬 절차). grok 결과는 WebSearch 와 대조해 귀속 표기 — grok 단독 금지
+2. **외부 서치 먼저 띄운다**: 코디네이터의 웹 검색으로 개요를 먼저 깔고, grok은 Orca 터미널
+   대화형으로 병렬 위임한다(공통 grok-search 스킬). Claude Code는 WebSearch/WebFetch,
+   Codex는 제공된 웹 검색·페이지 열기 도구를 사용한다. grok 결과는 자체 검색과 대조해 귀속 표기한다.
 3. **서치 대기 중 기준 초안** 작성 (§2)
 4. **서치 취합 → 기준 확정**: 서치 결과가 기준을 바꿀 수 있다. 기준 freeze 는 *구현 시작 시점*이다
 - **선행 문서의 사실 주장을 대조표로 검증한다** — 일감 본문·00-project.md 의 전제가 틀렸을 수 있다
@@ -25,7 +44,7 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
 - **UI 비중이 큰 일감이면 여기서 `design-brief`/`design-intake` 스킬 삽입 여부를 검토한다** — 비주얼
   디테일(간격·톤·인터랙션 느낌)이 판정 기준에 안 잡히는 일감은 목업 없이 구현자 재량에 맡기면
   재작업 위험이 있다 (LIFE-357 판단 뒤집음, 2026-09-13). 넣기로 하면 순서는 `specs/app-screens.md`
-  (화면 인벤토리, 없으면 먼저) → `/design-brief` → 외부 Claude Design → `/design-intake` →
+  (화면 인벤토리, 없으면 먼저) → `design-brief` 스킬 → 외부 Claude Design → `design-intake` 스킬 →
   그 결과를 반영해 `01-criteria.md`/`02-kickoff.md` 작성·freeze. 안 넣기로 하면 그 판단 사유를
   `00-analysis.md` 에 한 줄 남긴다(추측 판정 금지 원칙과 같은 결의 — 판단 없이 생략하지 않는다)
 
@@ -39,6 +58,8 @@ description: corral 작업 코디네이터 절차 — 분석→기준→경쟁 �
 
 - **물류만 정한다. 설계는 지시하지 않는다** — 구조·라이브러리·계측 방법은 구현자 몫이고 그게 채점 대상
 - 정체 표: 브랜치 / worktree / 격리 리소스(예: herdr 세션명) / 원자료 경로 / 결과 파일
+- `00-start.md`의 코디네이터 선택과 지정 모델·effort를 정체 표에 옮긴다. 재선택하지 않는다.
+  구현자·리뷰어의 도구·모델·effort는 역할별로 별도 기록한다.
 - **격리 규칙**: 사용자가 실제 쓰는 리소스(default 세션·소켓 등)를 건드리지 않는다.
   외부 도구 실측은 전용 격리 인스턴스에서. 상대 브랜치 보지 않기, 작업 브랜치에 커밋하지 않기
 - **격리 인스턴스 기동에 "헤드리스는 안 된다" 고 단정하지 않는다.** 정확히는 *TTY 가 없으면* 안 되는
@@ -89,21 +110,27 @@ orca orchestration worker-start --task <task_codex> --worktree new-child \
 - 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지
 - **완료 대기는 블로킹으로 건다 — 폴링하지 않는다**:
   ```bash
-  orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 900000 --json
+  orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 60000 --json
   ```
   타임아웃이나 `{count:0}`은 실패가 아니라 체크포인트다 — 긴 구현은 15~60분 걸리는 게 정상이니
   받은 배치를 처리하고 `check --ack <delivery_id> --wait ...`로 이어서 다시 건다. 유효한
-  `worker_done`이 오면 그 태스크는 자동으로 완료 처리된다(`task-update`로 수동 완료 처리 금지)
+  `worker_done`을 받으면 해당 task/dispatch의 `outcome`을 확인한다. `succeeded`와 `failed` 모두
+  종료 보고이며 성공을 뜻하는 것은 아니다. 상태 전이는 Orca가 처리한다(`task-update`로 수동 완료 금지).
+- 호스트 실행 도구도 60초 이내에 제어를 돌려받도록 한다. Codex는 셸 실행의 session ID 또는
+  실행 중 cell ID를 반환받았으면 해당 대기 도구로 이어 받는다. 기존 대기 프로세스가 살아 있는 동안
+  같은 Run의 `check`를 중복 실행하지 않는다. Claude Code는 장기 대기를 백그라운드로 실행할 수 있다.
 - **워커가 막혀서 `question`을 보내면** `orca orchestration reply --id <msg_id> --body <답> --json`으로
   답하고 계속 대기한다 — "질문 대기 화면을 코디네이터가 키 입력으로 풀어주던" 임시방편(LIFE-356)의
   정식 대체
 - **완료된 워커는 정리한다**: `orca orchestration worker-release --dispatch <dispatch_id> --json`.
   수정 라운드로 같은 워커에 바로 이어 맡길 거면 release 하지 말고
-  `orca orchestration worker-start --task <다음_task_id> --terminal <handle> --json`로 재사용한다
+  `orca orchestration worker-start --task <다음_task_id> --terminal <handle> --worktree path:<해당 워커 worktree 절대경로> --json`로 재사용한다.
+  배치의 모든 메시지와 정리·재사용 결정을 처리한 뒤 delivery를 ack한다.
 
 ## 5. 3자 리뷰
 
-- 검토 전 `.agents/agents/reviewer.md` 필독. claude 리뷰어는 **코디네이터와 별도 세션** (구현 지휘 기억 오염 방지)
+- 검토 전 `.agents/agents/reviewer.md` 필독. **모든 리뷰어는 코디네이터·구현자와 별도 세션**이다.
+  Codex 코디네이터가 Codex 리뷰를 대신하거나, Claude 코디네이터가 Claude 리뷰를 대신하지 않는다.
 - **claude·codex 리뷰어도 §4 와 같은 방식으로 띄운다** — 같은 Run 에 `orchestration worker-start`,
   완료 대기는 `check --wait --types worker_done,escalation,question`. grok 리뷰어는 예외 —
   grok-search 스킬의 기존 Orca 대화형 경로 그대로 쓴다(orchestration `--agent` 대상이 아니라
@@ -140,12 +167,24 @@ git merge LIFE-NNN-<슬러그>-<승자>                      # 승자 → 작업
   diff 정독·게이트 재실행·스모크 원자료 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지.
   풀 3자 리뷰는 안 돌린다 (범위가 UI/문구 수준일 때 — 가드·기준 경로를 건드리면 재리뷰 판단)
 - 수정 라운드 워커도 §4 패턴 그대로: 같은 워커에 이어 맡기면
-  `orchestration worker-start --task <fix_task_id> --terminal <handle>`로 재사용, 완료 대기·질문
+  `orchestration worker-start --task <fix_task_id> --terminal <handle> --worktree path:<해당 워커 worktree 절대경로>`로 재사용, 완료 대기·질문
   응답은 `check --wait`/`reply`로 처리한다(codex 류 승인 프롬프트 정지도 이제 `question` 메시지로
   들어오므로 화면 감시가 따로 필요 없다 — LIFE-356 verdict §5 임시방편의 정식 대체)
 - 확인이 끝나 사용자가 **출고 승인**을 주면:
-  1. LA → "완료" 전이
-  2. 사용자에게 마무리 안내 한 줄: **"본체 위치에서 `scripts/task-finish.sh LIFE-NNN-<슬러그>` 실행"**
-     — main 머지·push·worktree 3개·브랜치 정리를 스크립트가 멱등하게 수행한다 (태그는 유지)
-- 코디네이터는 자기 worktree 밖(main 머지·정리)을 직접 건드리지 않는다 — 판단이 필요 없는
-  마무리는 세션이 아니라 스크립트의 일이다. 이 세션은 안내 후 종료해도 된다
+  1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다.
+     LIFE-N, 본체 경로, 작업 브랜치, 검증한 구현 커밋, 채택·출고 승인 근거, 마무리 명령,
+     LA의 현재 상태와 다음 전이를 기록한다. **LA는 아직 완료로 바꾸지 않는다.**
+  2. 사용자와 **본체 마무리 세션**에 인계한다. 시작 세션이 남아 있으면 그 세션이 담당하고,
+     없으면 사용자가 본체에서 여는 Claude 또는 Codex 세션이 이 파일을 읽고 이어받는다.
+     코디네이터는 "출고 인계 완료, main 반영·LA 완료는 대기"라고 보고한다.
+  3. 본체 마무리 세션은 LA 접근과 승인 기록을 먼저 확인하고 본체에서
+     `scripts/task-finish.sh LIFE-NNN-<슬러그>`를 실행한다.
+     스크립트는 main 머지·push·worktree·브랜치 정리를 수행하며 태그는 유지한다.
+  4. 본체 마무리 세션이 스크립트 성공 및 검증한 구현 커밋의 main 포함을 확인한 뒤
+     `issue_transition(seq: NNN, toStatusLabel: "완료", resolution: "completed")`를 호출하고
+     실제 응답을 확인해 사용자에게 완료를 보고한다. 부모 checkpoint는 다른 미완 자식이 없는지
+     확인한 뒤 별도로 완료 여부를 판단한다.
+- 스크립트가 실패하면 LA를 완료로 바꾸지 않는다. main 반영 후 LA 전이만 실패했다면
+  "main 반영 완료 / LA 전이 미완"을 보고하고 본체 세션에서 전이만 재시도한다.
+- 작업 worktree의 코디네이터는 main 머지·정리를 직접 실행하지 않는다. worktree 삭제 후에도
+  필요한 인계 문서는 main의 specs에 남고, 후속 책임은 본체 마무리 세션에 있다.

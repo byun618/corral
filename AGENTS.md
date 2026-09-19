@@ -21,8 +21,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기, 전용 worktree 로 체크아웃
    (.claude/worktrees/LIFE-NNN-<슬러그>/) — 본체는 항상 main 에 둔다.
    specs/LIFE-NNN-<슬러그>/ 생성. 분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
-1. 분석: claude가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
-   (Orca 터미널 대화형, Claude WebSearch 먼저 깔고 대조) → specs/LIFE-NNN-*/00-analysis.md
+1. 분석: 코디네이터가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
+   (Orca 터미널 대화형, 코디네이터의 웹 검색과 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
 3. 구현: 기본은 **경쟁 구현(claude ∥ codex)** (2026-09-18 전환 — codex 구독 업그레이드로
@@ -37,7 +37,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    - 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
 4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
    → specs/LIFE-NNN-*/review-<도구>.md
-5. 취합·판정: claude 가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
+5. 취합·판정: 코디네이터가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
    - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
    - 종료 조건: 높음+중간 지적 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
 6. 마무리 — 승인 게이트 2단:
@@ -55,6 +55,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   ② 출고 승인(main 머지·정리 전). 판정(verdict)까지는 자율 진행하되 거기서 멈추고 보고한다.
   worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
+- 출고 승인 후에는 본체 마무리 세션이 스크립트 성공·main 반영을 확인하고 LA를 완료한다.
+  작업 worktree 삭제 전에 인계 내용을 커밋한다 — 상세는 task-coordinate §8.
 
 ## 브랜치 규약
 
@@ -67,9 +69,14 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 도구 역할
 
-- claude (Claude Code) = 코디네이터·판정 + 구현자 A
+- 코디네이터·판정 = 작업마다 claude 또는 codex 선택. 명시한 선택을 우선하고 신규 작업의
+  미지정 기본값은 claude. 시작 시 `specs/LIFE-NNN-*/00-start.md`에 기록하고 재개 시 그대로 따른다.
+  기동·전제 점검·선택 충돌 처리는 task-start 스킬을 따른다.
+- claude (Claude Code) = 구현자 A + 코드 검토
 - codex = 구현자 B + 코드 검토
 - grok = 외부 서치·사실 검증 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
+- 코디네이터 선택은 구현자 페어링을 바꾸지 않는다. 모든 리뷰어는 코디네이터·구현자와
+  별도 세션으로 기동한다. 같은 도구여도 세션과 역할은 구분한다.
 
 ## 세션 간 통신
 

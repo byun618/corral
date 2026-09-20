@@ -127,6 +127,10 @@ try {
   })
   await f.check('F6-backend-disconnect-wait',async()=>{
     const target=(await f.cli(['terminal','list'],{env})).result.terminals[0],pending=f.cli(['terminal','wait','--terminal',target.handle,'--for','exit','--timeout-ms','3000'],{env,fail:true})
-    await pause(100);await f.stop(backend);const result=await pending;assert(!result.ok);return result
+    await pause(100);await f.stop(backend);const result=await pending
+    // SIGTERM may reply with a shutdown error or close the socket before a reply.
+    assert(['backend_unavailable','server_unavailable'].includes(result.error.code),JSON.stringify(result))
+    if(result.error.code==='server_unavailable')assert.equal(result.error.message,'server is shutting down')
+    assert.equal(result.error.stage,'backend');assert.equal(result._meta.outcome,'not_started');return result
   })
 } finally { for(const close of proxies.reverse())await close();await f.cleanup() }

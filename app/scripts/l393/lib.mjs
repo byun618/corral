@@ -85,7 +85,7 @@ export async function fixture(label) {
   async function cleanup() {
     for (const child of [...children].reverse()) await stop(child).catch(e => observations.push({ cleanupError: String(e), pid: child.pid }))
     for (const file of fs.readdirSync(root).filter(f => /\.(input|starts)$/.test(f))) fs.copyFileSync(path.join(root, file), path.join(raw, file))
-    fs.writeFileSync(path.join(raw, 'run.json'), JSON.stringify({ runId, root, backend, binarySHA256: createHash('sha256').update(fs.readFileSync(backend)).digest('hex'), commands, observations, checks }, null, 2) + '\n')
+    fs.writeFileSync(path.join(raw, 'run.json'), JSON.stringify({ runId, root, appRoot: app, node: process.version, runtimeSHA256: createHash('sha256').update(fs.readFileSync(path.join(app, 'out/runtime/cli.mjs'))).digest('hex'), backend, binarySHA256: createHash('sha256').update(fs.readFileSync(backend)).digest('hex'), commands, observations, checks }, null, 2) + '\n')
     console.log(JSON.stringify({ runId, raw, checks: checks.map(({id, pass}) => ({id,pass})) }))
   }
   for (const args of [['init', '-b', 'main', repo], ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'fixture'], ['-C', repo, 'worktree', 'add', '-b', 'linked', linked]]) { const r = await run('git', args); assert.equal(r.exit, 0) }

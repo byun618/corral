@@ -108,7 +108,7 @@ export async function runCli(argv: string[]): Promise<void> {
       }
       controller.signal.removeEventListener('abort', abortStdin)
       controller.signal.throwIfAborted()
-      try { inv.stdin = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)) }
+      try { inv.stdin = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks)) }
       catch { throw new RuntimeError('invalid_argument', 'stdin must contain valid UTF-8') }
       registry.validate(inv)
     }

@@ -17,6 +17,9 @@ node app/scripts/l393/gui.mjs
 node app/scripts/l393/failures.mjs
 node app/scripts/l393/gui-race.mjs
 node app/scripts/l393/contract.mjs
+node app/scripts/l393/receipt-loss.mjs
+node app/scripts/l393/stdin-bom.mjs
+node app/scripts/l393/wait-boundary.mjs
 node app/scripts/l393/installed.mjs
 ```
 
@@ -32,7 +35,8 @@ node app/scripts/l393/installed.mjs
 - `--expect-process`는 미지원이다. 일반 입력은 선택 PTY의 현재 foreground에 전달하며 process/agent/Dispatch 소유권을 보장하지 않는다. 조건부 요청을 일반 입력/종료로 바꾸지 않는다.
 - raw 출력은 PTY가 낸 마지막 1,048,576 bytes를 PTY 런타임 수명 동안 보존한다. cursor는 profile 서명, backend/PTY 세대, byte offset, 최대 3-byte UTF-8 carry를 갖는다. `bytesBase64`는 정확한 바이트이고 `text`는 UTF-8 해석이다. 유효하지 않은 UTF-8은 text에서 replacement 문자로 표현되지만 base64에는 그대로 남는다. 보존 손실은 `gap/truncated/retainedFrom/recoveryCursor`로 표시한다.
 - `--screen`은 herdr의 현재 visible screen snapshot이다. raw 출력과 다르며 cursor가 없다. GUI는 기존 endpoint+xterm을 계속 사용한다.
-- create/send receipt는 효과 전에 fsync한 pending 기록, 효과 후 completed 결과로 남는다. 24시간·10,000개까지 보존한다. `r1.<Unix ms>.<UUID>` ID를 새 요청 직전에 만들며 CLI는 생략 시 생성한다. 같은 ID/같은 입력은 결과 재생, 다른 입력은 conflict다. 만료 ID는 expired, 이전 runtime보다 오래된 missing ID 또는 pending receipt는 unknown으로 거절한다. 입력 본문은 receipt에 저장하지 않고 fingerprint만 저장한다.
+- create/send receipt는 효과 전에 fsync한 pending 기록, 효과 후 completed 결과로 남는다. 24시간·10,000개까지 보존한다. `r1.<Unix ms>.<UUID>` ID를 새 요청 직전에 만들며 CLI는 생략 시 생성한다. 같은 ID/같은 입력은 결과 재생, 다른 입력은 conflict다. runtime은 수락한 ID와 fingerprint를 결과 파일과 별도로 기억하므로 파일 유실도 용량을 해제하지 않는다. 만료 ID는 expired, 이미 수락했거나 이전 runtime보다 오래된 missing ID 또는 pending receipt는 unknown으로 거절한다. 입력 본문은 receipt에 저장하지 않고 fingerprint만 저장한다.
+- `--stdin`은 선두 U+FEFF(BOM)를 포함한 유효 UTF-8을 literal bytes로 전달한다. NUL·잘못된 UTF-8·65,536 bytes 초과는 효과 없이 거절한다.
 - GUI focus는 renderer의 worktree/tab 준비 및 실제 선택된 pane의 DOM 키보드 focus와 main의 선택이 일치한다는 ACK 뒤 성공한다. wait의 ready는 transport, send의 성공은 backend 수락이다. 프로그램 소비·agent ready·작업 완료는 별도 계약이다.
 
 `node app/scripts/l393/negative.mjs`는 timeout 전파를 검증하기 위해 **의도적으로 exit 1** 한다. 성공으로 감추면 안 된다.

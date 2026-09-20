@@ -30,14 +30,37 @@ export interface SetupRecord {
   state: string
   method: string
 }
-interface RegistryData { version: 2; repos: RepoRecord[]; setups: SetupRecord[] }
+export interface WorktreeMetadataRecord {
+  repoId?: string
+  displayName?: string | null
+  comment?: string | null
+  linkedIssue?: number | null
+  linkedLinearIssue?: { identifier: string; organizationKey: string | null; url: string | null } | null
+  parentWorktreeId?: string | null
+  workspaceStatus?: string | null
+  createdBranch?: boolean
+}
+interface RegistryData { version: 2; repos: RepoRecord[]; setups: SetupRecord[]; worktrees: Record<string, WorktreeMetadataRecord> }
+
+/** Delete metadata and cross-repo parent references in the same registry transaction. */
+export function unregisterRepo(data: RegistryData, id: string): void {
+  const repo = data.repos.find(row => row.id === id)
+  if (!repo) return
+  data.repos = data.repos.filter(row => row.id !== id)
+  for (const [target, metadata] of Object.entries(data.worktrees)) {
+    if (metadata.repoId === id || (!metadata.repoId && (target === repo.path || target.startsWith(repo.path + path.sep)))) delete data.worktrees[target]
+    else if (metadata.parentWorktreeId?.startsWith(id + '::')) metadata.parentWorktreeId = null
+  }
+}
 
 export class RepoRegistry {
   private readonly file: string
+  private readonly legacyMetadata: string
   private lastError: string | null = null
 
   constructor(userDataDir: string) {
     this.file = process.env.CORRAL_REGISTRY || path.join(userDataDir, 'repos.json')
+    this.legacyMetadata = path.join(userDataDir, 'worktree-metadata.json')
   }
 
   load(): void {
@@ -52,10 +75,15 @@ export class RepoRegistry {
   list(): string[] { return this.records().map(repo => repo.path).sort() }
   records(): RepoRecord[] { return this.read().repos }
   setups(): SetupRecord[] { return this.read().setups }
+  metadata(): Record<string, WorktreeMetadataRecord> { return this.read().worktrees }
 
   private read(): RegistryData {
-    if (!fs.existsSync(this.file)) return { version: 2, repos: [], setups: [] }
-    const data: unknown = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+    let data: unknown
+    try { data = JSON.parse(fs.readFileSync(this.file, 'utf8')) }
+    catch (error) {
+      if (!hasCode(error, 'ENOENT')) throw error
+      data = { version: 2, repos: [], setups: [] }
+    }
     if (!Array.isArray(data) && !isRecord(data)) throw new Error('Invalid registry')
     const entries: unknown = Array.isArray(data) ? data : data.repos
     if (!Array.isArray(entries)) throw new Error('Invalid repo registry')
@@ -73,26 +101,36 @@ export class RepoRegistry {
     }
     const setups: unknown = Array.isArray(data) ? [] : data.setups ?? []
     if (!Array.isArray(setups) || !setups.every(isSetup)) throw new Error('Invalid setups')
-    return { version: 2, repos, setups }
+    let worktrees: unknown = Array.isArray(data) ? undefined : data.worktrees
+    if (worktrees === undefined) {
+      try { worktrees = JSON.parse(fs.readFileSync(this.legacyMetadata, 'utf8')) }
+      catch (error) { if (!hasCode(error, 'ENOENT')) throw error; worktrees = {} }
+    }
+    if (!isRecord(worktrees)) throw new Error('Invalid worktree metadata')
+    const metadata: Record<string, WorktreeMetadataRecord> = {}
+    for (const [target, value] of Object.entries(worktrees)) {
+      if (!isMetadata(value)) throw new Error('Invalid worktree metadata')
+      metadata[target] = value
+    }
+    return { version: 2, repos, setups, worktrees: metadata }
   }
 
   /** Synchronous read-modify-rename, shared by GUI and runtime. No stale cached records. */
   change<T>(mutate: (data: RegistryData) => T): T {
     fs.mkdirSync(path.dirname(this.file), { recursive: true })
-    const lock = `${this.file}.lock`
-    const fd = fs.openSync(lock, 'wx', 0o600)
+    const release = acquireRegistryLock(this.file)
     const tmp = `${this.file}.${randomUUID()}.tmp`
     try {
       const data = this.read()
       const result = mutate(data)
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
       fs.renameSync(tmp, this.file)
+      fs.rmSync(this.legacyMetadata, { force: true })
       this.lastError = null
       return result
     } finally {
       fs.rmSync(tmp, { force: true })
-      fs.closeSync(fd)
-      fs.unlinkSync(lock)
+      release()
     }
   }
 
@@ -121,7 +159,7 @@ export class RepoRegistry {
       const root = records.some(repo => repo.path === resolved) ? resolved : repoRootOf(input)
       return this.change(data => {
         if (!data.repos.some(repo => repo.path === root)) throw new Error(`목록에 없다: ${root}`)
-        data.repos = data.repos.filter(repo => repo.path !== root)
+        unregisterRepo(data, data.repos.find(repo => repo.path === root)!.id)
         return { ok: true as const, root }
       })
     } catch (error) { return { ok: false, error: String(error) } }
@@ -148,4 +186,64 @@ function isRepo(value: unknown): value is RepoRecord {
 }
 function isSetup(value: unknown): value is SetupRecord {
   return isRecord(value) && ['id', 'projectId', 'hostId', 'kind', 'state', 'method'].every(key => typeof value[key] === 'string') && ['path', 'displayName', 'worktreeBasePath', 'gitUsername'].every(key => value[key] === null || typeof value[key] === 'string')
+}
+
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+function isMetadata(value: unknown): value is WorktreeMetadataRecord {
+  if (!isRecord(value)) return false
+  for (const key of ['repoId', 'displayName', 'comment', 'parentWorktreeId', 'workspaceStatus']) {
+    if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'string') return false
+  }
+  if (value.createdBranch !== undefined && typeof value.createdBranch !== 'boolean') return false
+  if (value.linkedIssue !== undefined && value.linkedIssue !== null && !Number.isSafeInteger(value.linkedIssue)) return false
+  const linear = value.linkedLinearIssue
+  return linear === undefined || linear === null || (isRecord(linear) && typeof linear.identifier === 'string' &&
+    ['organizationKey', 'url'].every(key => linear[key] === null || typeof linear[key] === 'string'))
+}
+
+/** Atomic directory rename: an acquired lock is never empty. Reapers only unlink
+ * the observed dead owner's unique file, never recursively remove the lock path.
+ * Thus a late reaper cannot delete a new owner's file or nonempty directory. */
+function acquireRegistryLock(file: string): () => void {
+  const lock = file + '.lock'
+  const owner = `${process.pid}-${randomUUID()}`
+  const candidate = lock + '.' + owner
+  fs.mkdirSync(candidate, { mode: 0o700 })
+  try {
+    fs.writeFileSync(path.join(candidate, owner), '', { mode: 0o600 })
+    const deadline = Date.now() + 1500
+    while (true) {
+      try {
+        fs.renameSync(candidate, lock)
+        return () => {
+          fs.unlinkSync(path.join(lock, owner))
+          try { fs.rmdirSync(lock) } catch (error) {
+            if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].some(code => hasCode(error, code))) throw error
+          }
+        }
+      } catch (error) {
+        if (!['EEXIST', 'ENOTEMPTY', 'ENOTDIR'].some(code => hasCode(error, code))) throw error
+      }
+      try {
+        for (const entry of fs.readdirSync(lock)) {
+          if (!/^\d+-[a-f0-9-]+$/.test(entry)) continue
+          const pid = Number(entry.split('-')[0])
+          if (pid <= 0) continue
+          try { process.kill(pid, 0) } catch (error) {
+            if (hasCode(error, 'ESRCH')) {
+              try { fs.unlinkSync(path.join(lock, entry)) } catch (unlinkError) {
+                if (!hasCode(unlinkError, 'ENOENT')) throw unlinkError
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].some(code => hasCode(error, code))) throw error
+      }
+      if (Date.now() >= deadline) throw new Error(`Registry busy: ${lock}; retry after the owner finishes. For a legacy or malformed lock, stop all profile owners before removing it.`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  } finally { fs.rmSync(candidate, { recursive: true, force: true }) }
 }

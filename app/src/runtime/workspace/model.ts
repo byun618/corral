@@ -2,10 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { RepoRegistry, type RepoRecord, type SetupRecord, expandPath } from '../../main/registry.js'
+import { RepoRegistry, type RepoRecord, type SetupRecord, type WorktreeMetadataRecord, expandPath } from '../../main/registry.js'
 import { canonicalPath } from '../../main/canonical-path.js'
 import { RuntimeError } from '../contracts.js'
-import { atomicWrite, readFile } from '../storage.js'
 
 const run = promisify(execFile)
 export async function git(root: string, args: string[], signal?: AbortSignal): Promise<string> {
@@ -45,15 +44,7 @@ export function projects(registry: RepoRegistry) {
 export function repoSetup(repo: RepoRecord): SetupRecord {
   return { id: repo.id, projectId: repo.projectId, hostId: 'local', path: repo.path, kind: 'git', displayName: repo.displayName ?? repo.name, worktreeBasePath: repo.worktreeBasePath ?? null, gitUsername: repo.gitUsername ?? null, state: 'ready', method: repo.method }
 }
-export interface Metadata {
-  displayName?: string | null
-  comment?: string | null
-  linkedIssue?: number | null
-  linkedLinearIssue?: { identifier: string; organizationKey: string | null; url: string | null } | null
-  parentWorktreeId?: string | null
-  workspaceStatus?: string | null
-  createdBranch?: boolean
-}
+export type Metadata = WorktreeMetadataRecord
 export interface WorktreeRecord {
   id: string
   repoId: string
@@ -72,19 +63,16 @@ export interface WorktreeRecord {
   workspaceStatus: string | null
 }
 export class WorktreeMetadata {
-  readonly file: string
-  constructor(userData: string) { this.file = path.join(userData, 'worktree-metadata.json') }
-  read(): Record<string, Metadata> { return readFile(this.file, () => ({})) }
+  constructor(private readonly registry: RepoRegistry) {}
+  read(): Record<string, Metadata> { return this.registry.metadata() }
   put(target: string, update: Metadata): void {
-    const data = this.read()
-    data[target] = { ...data[target], ...update }
-    atomicWrite(this.file, data)
+    this.registry.change(data => { data.worktrees[target] = { ...data.worktrees[target], ...update } })
   }
   remove(target: WorktreeRecord): void {
-    const data = this.read()
-    delete data[target.path]
-    for (const value of Object.values(data)) if (value.parentWorktreeId === target.id) value.parentWorktreeId = null
-    atomicWrite(this.file, data)
+    this.registry.change(data => {
+      delete data.worktrees[target.path]
+      for (const value of Object.values(data.worktrees)) if (value.parentWorktreeId === target.id) value.parentWorktreeId = null
+    })
   }
   async list(repos: RepoRecord[], signal?: AbortSignal): Promise<WorktreeRecord[]> {
     const metadata = this.read(), records: WorktreeRecord[] = []
@@ -97,9 +85,9 @@ export class WorktreeMetadata {
         const target = field('worktree')
         if (!target || !fs.existsSync(target)) continue
         const root = canonicalPath(target), meta = metadata[root] ?? {}
-        const branch = field('branch')?.replace(/^refs\/heads\//, '') ?? null
+        const branch = field('branch') ?? null
         records.push({ id: `${repo.id}::${root}`, repoId: repo.id, projectId: repo.projectId, hostId: 'local', path: root, branch,
-          head: field('HEAD') ?? '', displayName: meta.displayName ?? branch ?? path.basename(root), isMainWorktree: index === 0,
+          head: field('HEAD') ?? '', displayName: meta.displayName ?? branch?.replace(/^refs\/heads\//, '') ?? path.basename(root), isMainWorktree: index === 0,
           comment: meta.comment ?? null, linkedIssue: meta.linkedIssue ?? null, linkedLinearIssue: meta.linkedLinearIssue ?? null,
           parentWorktreeId: meta.parentWorktreeId ?? null, childWorktreeIds: [], workspaceStatus: meta.workspaceStatus ?? null })
       }
@@ -138,10 +126,10 @@ export function worktreeSelect(records: WorktreeRecord[], selector: string, cwd:
     switch (prefixed?.[1]) {
       case 'id': return record.id === value
       case 'path': return record.path === resolvePath(value, cwd)
-      case 'branch': return record.branch === value
+      case 'branch': return (record.branch === value || record.branch === `refs/heads/${value}`)
       case 'name': return record.displayName === value
       case 'issue': return String(record.linkedIssue) === value || record.linkedLinearIssue?.identifier === value
-      default: return record.id === value || record.path === resolvePath(value, cwd) || record.branch === value || record.displayName === value
+      default: return record.id === value || record.path === resolvePath(value, cwd) || (record.branch === value || record.branch === `refs/heads/${value}`) || record.displayName === value
     }
   }), selector)
 }

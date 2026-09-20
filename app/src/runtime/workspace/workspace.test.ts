@@ -37,6 +37,7 @@ async function fixture() {
 describe('workspace commands against real git and local socket', () => {
   it('serializes creation, persists metadata and shares the GUI registry across restart', async () => {
     const { data, repo, git, call, restart } = await fixture()
+    fs.chmodSync(data, 0o755)
     expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
     const registry = new RepoRegistry(data), id = registry.records()[0]!.id
     expect((await call('repo', 'set-base-ref', '--repo', id, '--ref', 'older')).ok).toBe(true)
@@ -47,7 +48,10 @@ describe('workspace commands against real git and local socket', () => {
     await restart()
     expect(await call('worktree', 'show', '--worktree', 'branch:race')).toMatchObject({ result: { worktree: { comment: 'saved' } } })
     expect(registry.records()[0]?.baseRef).toBe('older')
+    expect(fs.statSync(data).mode & 0o777).toBe(0o755)
+    expect(fs.existsSync(path.join(data, 'worktree-metadata.json'))).toBe(false)
     expect(registry.remove(repo).ok).toBe(true)
+    expect(registry.metadata()).toEqual({})
     expect(await call('repo', 'list')).toMatchObject({ result: { repos: [] } })
   })
   it('protects dirty and main checkouts, retains unmerged branches and detects ambiguity', async () => {
@@ -67,7 +71,7 @@ describe('workspace commands against real git and local socket', () => {
     git('-C', path.join(repo, '.claude/worktrees/two'), 'commit', '--allow-empty', '-m', 'unmerged')
     expect(await call('worktree', 'delete', '--worktree', 'branch:two')).toMatchObject({ result: { removed: true, preservedBranch: { branchName: 'two' } } })
     expect(git('branch', '--list', 'two')).toContain('two')
-    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(data, 'worktree-metadata.json'), 'utf8')))).toHaveLength(0)
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(data, 'repos.json'), 'utf8')).worktrees)).toHaveLength(0)
   })
   it('fails headless observation and activation before effects and migrates v1 without losing roots', async () => {
     const { data, repo, call } = await fixture()
@@ -81,4 +85,32 @@ describe('workspace commands against real git and local socket', () => {
     expect(JSON.parse(fs.readFileSync(path.join(data, 'repos.json'), 'utf8')).version).toBe(2)
     expect(registry.list()).toEqual([fs.realpathSync(repo)])
   })
+  it('clones below an existing parent and rejects only the final child collision', async () => {
+    const { root, data, repo, git, call } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const registry = new RepoRegistry(data), project = registry.records()[0]!.projectId
+    const bare = path.join(root, 'source.git'), parent = path.join(root, 'clones')
+    git('clone', '--bare', repo, bare)
+    fs.mkdirSync(parent)
+    expect(await call('project', 'setup-clone', '--project', project, '--url', bare, '--destination', parent)).toMatchObject({ ok: true, result: { setup: { method: 'cloned' } } })
+    expect(git('-C', path.join(parent, 'source'), 'rev-parse', 'HEAD')).toBe(git('rev-parse', 'HEAD'))
+    expect((await call('project', 'setup-clone', '--project', project, '--url', bare, '--destination', parent)).error?.code).toBe('already_exists')
+  })
+  it('reports a branch left by failed git checkout without claiming an existing collision', async () => {
+    const { repo, git, call } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const parent = path.join(repo, '.claude/worktrees')
+    fs.mkdirSync(parent, { recursive: true })
+    fs.chmodSync(parent, 0o500)
+    try {
+      const failed = await call('worktree', 'create', '--name', 'partial')
+      expect(failed).toMatchObject({ ok: false, error: { code: 'git_failed', resources: { branch: 'partial' } } })
+      expect(git('branch', '--list', 'partial')).toContain('partial')
+      expect(fs.existsSync(path.join(parent, 'partial'))).toBe(false)
+      const collision = await call('worktree', 'create', '--name', 'partial')
+      expect(collision.error?.code).toBe('already_exists')
+      expect(collision.error?.resources).toBeUndefined()
+    } finally { fs.chmodSync(parent, 0o755) }
+  })
+
 })

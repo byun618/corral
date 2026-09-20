@@ -3,7 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import specs from './specs.json'
 import { RuntimeError, stringFlag, reject, type CommandModule, type CommandSpec, type Invocation, type CommandContext } from '../contracts.js'
-import { RepoRegistry, repoRootOf, type RepoRecord, type SetupRecord } from '../../main/registry.js'
+import { RepoRegistry, repoRootOf, unregisterRepo, type RepoRecord, type SetupRecord } from '../../main/registry.js'
 import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, WorktreeMetadata, worktreeSelect, type Metadata, type WorkspaceDesktop, type WorktreeRecord } from './model.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
@@ -43,7 +43,7 @@ const reads = new Set(['repo list', 'repo show', 'repo search-refs', 'project li
 const isMutation = (inv: Invocation) => !reads.has(inv.command)
 
 export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): CommandModule {
-  const registry = new RepoRegistry(userData), metadata = new WorktreeMetadata(userData)
+  const registry = new RepoRegistry(userData), metadata = new WorktreeMetadata(registry)
   return {
     specs: workspaceSpecs, validate: validateWorkspace, isMutation,
     serialKey: () => 'workspace',
@@ -112,18 +112,24 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
           break
         }
         case 'project setup-clone': {
-          const selected = project(need('project')), url = need('url'), destination = resolvePath(need('destination'), inv.cwd)
-          let source: string
+          const selected = project(need('project')), url = need('url'), parent = resolvePath(need('destination'), inv.cwd)
+          let source: string, basename: string
           if (url.startsWith('https://')) {
             let parsed: URL
             try { parsed = new URL(url) } catch { reject('Invalid clone URL') }
             if (parsed.username || parsed.password) throw new RuntimeError('unsupported', 'Authenticated clones are not supported')
+            try { basename = decodeURIComponent(path.posix.basename(parsed.pathname.replace(/\/+$/, ''))) }
+            catch { reject('Invalid clone URL basename') }
             source = url
           } else {
             const local = resolvePath(url, inv.cwd)
             if (/^[\w+.-]+:/.test(url) || url.includes('@') || !fs.existsSync(local)) throw new RuntimeError('unsupported', 'Only local paths and unauthenticated HTTPS clones are supported')
             source = local
+            basename = path.basename(local)
           }
+          basename = basename.replace(/\.git$/, '')
+          if (!basename || basename === '.' || basename === '..' || /[/\\\0]/.test(basename)) reject('Invalid clone repository name')
+          const destination = path.join(parent, basename)
           if (fs.existsSync(destination)) throw new RuntimeError('already_exists', `Destination exists: ${destination}`)
           try {
             await git(inv.cwd, ['-c', 'credential.helper=', '-c', 'core.askPass=', 'clone', '--', source, destination], ctx.signal)
@@ -141,7 +147,7 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
           const setup = unique([...allRepos.map(repoSetup), ...registry.setups()].filter(row => row.id === id), id)
           const selected = project(setup.projectId)
           if (inv.command.endsWith('delete')) {
-            registry.change(data => { data.repos = data.repos.filter(row => row.id !== id); data.setups = data.setups.filter(row => row.id !== id) })
+            registry.change(data => { unregisterRepo(data, id); data.setups = data.setups.filter(row => row.id !== id) })
             result = { project: selected, setup }
           } else {
             if (repo && ['path', 'kind', 'state', 'method'].some(key => key in f)) reject('Repo-backed setups only allow display-name, git-username and worktree-base-path updates')
@@ -204,7 +210,7 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
   if (inv.command === 'worktree current' || inv.command === 'worktree show') return { worktree: await select(inv.command === 'worktree current' ? 'current' : need('worktree')) }
   if (inv.command === 'worktree set') {
     const target = await select(need('worktree'))
-    metadata.put(target.path, await updateMetadata(target))
+    metadata.put(target.path, { ...await updateMetadata(target), repoId: target.repoId })
     return { worktree: (await metadata.list(repos, ctx.signal)).find(row => row.id === target.id) }
   }
   if (inv.command === 'worktree create') {
@@ -232,14 +238,24 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     const base = flag('base-branch') ?? repo.baseRef ?? 'HEAD'
     await verifyRef(repo.path, base, ctx)
     const update = await updateMetadata()
-    await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
+    let added = false
     try {
-      metadata.put(target, { ...update, createdBranch: true })
+      await git(repo.path, ['worktree', 'add', '-b', name, target, base], ctx.signal)
+      added = true
+      metadata.put(target, { ...update, repoId: repo.id, createdBranch: true })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
       const worktree = (await metadata.list(repos, ctx.signal)).find(row => row.path === target)!
       return { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }
     } catch (error) {
-      throw new RuntimeError(error instanceof RuntimeError ? error.code : 'git_failed', `Worktree created, follow-up failed: ${String(error)}`, { path: target, branch: name })
+      // Inspect without the cancelled request signal: Git may have created the
+      // branch before failing checkout. Both names were absent at preflight.
+      const resources: Record<string, unknown> = {}
+      if (fs.existsSync(target)) resources.path = target
+      try {
+        if (await git(repo.path, ['show-ref', '--verify', '--hash', `refs/heads/${name}`])) resources.branch = name
+      } catch { /* A missing ref is expected when git failed before creating it. */ }
+      if (added) Object.assign(resources, { path: target, branch: name })
+      throw new RuntimeError(error instanceof RuntimeError ? error.code : 'git_failed', `${added ? 'Worktree created, follow-up failed' : 'Worktree add failed'}: ${String(error)}`, Object.keys(resources).length ? resources : undefined)
     }
   }
   if (inv.command === 'worktree rm') {
@@ -256,11 +272,12 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     const ownedBranch = metadata.read()[target.path]?.createdBranch
     await git(repo.path, ['worktree', 'remove', ...(f.force ? ['--force'] : []), target.path], ctx.signal)
     let preservedBranch: { branchName: string; head: string } | undefined
-    if (target.branch) {
+    const branchName = target.branch?.replace(/^refs\/heads\//, '')
+    if (branchName) {
       if (ownedBranch) {
-        try { await git(repo.path, ['branch', '-d', '--', target.branch], ctx.signal) }
-        catch { preservedBranch = { branchName: target.branch, head: target.head } }
-      } else preservedBranch = { branchName: target.branch, head: target.head }
+        try { await git(repo.path, ['branch', '-d', '--', branchName], ctx.signal) }
+        catch { preservedBranch = { branchName, head: target.head } }
+      } else preservedBranch = { branchName, head: target.head }
     }
     try { metadata.remove(target) } catch (error) { throw new RuntimeError('git_failed', `Worktree removed but metadata cleanup failed: ${String(error)}`, { path: target.path, removed: true, preservedBranch }) }
     return { removed: true, ...(preservedBranch ? { preservedBranch } : {}), ...(warning ? { warning } : {}) }

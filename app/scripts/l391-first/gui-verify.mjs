@@ -78,8 +78,8 @@ try{
  await key('K',['meta']);assert.equal(await count('[data-command-palette]'),0);await key('P',['meta','shift']);assert.equal(await count('[data-command-palette]'),1);await key('Escape')
  await click('[data-shortcuts-open]');await click('[data-reset="palette.open"]');await key('Escape')
  // Real Chromium composition events, not JS-dispatched keyboard events.
- const pages=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();const page=pages.find(p=>p.type==='page'&&p.title==='corral');assert(page)
- ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j});let id=0;const pending=new Map();ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const cb=pending.get(m.id);pending.delete(m.id);if(m.error)cb.reject(Error(JSON.stringify(m.error)));else cb.resolve(m.result)}};cdp=(method,params)=>new Promise((resolve,reject)=>{const next=++id;pending.set(next,{resolve,reject});ws.send(JSON.stringify({id:next,method,params}))})
+ const pages=await(await globalThis.fetch(`http://127.0.0.1:${port}/json/list`)).json();const page=pages.find(p=>p.type==='page'&&p.title==='corral');assert(page)
+ ws=new globalThis.WebSocket(page.webSocketDebuggerUrl);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j});let id=0;const pending=new Map();ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const cb=pending.get(m.id);pending.delete(m.id);if(m.error)cb.reject(Error(JSON.stringify(m.error)));else cb.resolve(m.result)}};cdp=(method,params)=>new Promise((resolve,reject)=>{const next=++id;pending.set(next,{resolve,reject});ws.send(JSON.stringify({id:next,method,params}))})
  const tabsBefore=await count('[data-main-tab]');await key('K',['meta']);await search('terminal.new')
  await ev('window.__imeEvents=[];for(const type of ["compositionstart","compositionupdate","compositionend","keydown"])document.querySelector("[role=combobox]").addEventListener(type,e=>window.__imeEvents.push({type:e.type,key:e.key,data:e.data,isComposing:e.isComposing,keyCode:e.keyCode,isTrusted:e.isTrusted}))')
  await cdp('Input.imeSetComposition',{text:'새',selectionStart:1,selectionEnd:1,replacementStart:0,replacementEnd:12});await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:229,nativeVirtualKeyCode:229})
@@ -121,7 +121,7 @@ try{
  observations.push({staleTargetRemoved:target,allGuiChecksPassed:true})
 }finally{
  ws?.close()
- if(desktopPid){try{process.kill(desktopPid,'SIGTERM')}catch{}}
+ if(desktopPid){try{process.kill(desktopPid,'SIGTERM')}catch{/* already stopped */}}
  if(serving?.exitCode===null)serving.kill('SIGTERM')
  if(backend){env.CORRAL_SESSION=session;env.CORRAL_BACKEND_SOCKET=hs;run('herdr',['--session',session,'server','stop']);if(backend.exitCode===null)backend.kill('SIGTERM')}
  fs.writeFileSync(path.join(raw,'evidence.json'),JSON.stringify({root,data,repo,session,desktopPid,commands,observations,inputs},null,2))

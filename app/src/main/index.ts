@@ -1238,7 +1238,7 @@ app.whenReady().then(async () => {
   )
 
   const runtime = await startRuntime({
-    userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed(),
+    userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed() && window.isVisible() && !window.webContents.isLoadingMainFrame(),
     focus: () => { window?.show(); window?.focus() },
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
   })

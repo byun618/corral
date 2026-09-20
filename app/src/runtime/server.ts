@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { randomUUID } from 'node:crypto'
 import { RuntimeError, type RpcResponse } from './contracts.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
@@ -69,7 +70,10 @@ export async function startRuntime(options: {
       if (inv.command === 'status') return status()
       if (inv.command === 'diagnostics memory') return memorySnapshot(options.appProcessRoles?.(), ctx.signal)
       if (inv.command === 'open') {
-        if (options.ui) { options.focus?.(); return status() }
+        if (options.ui) {
+          while (!options.ui()) await delay(25, undefined, { signal: ctx.signal })
+          options.focus?.(); return status()
+        }
         if (!options.requestDesktop) throw new RuntimeError('ui_unavailable', 'Desktop handoff unavailable')
         return { handoff: 'desktop', runtimeId, instanceId }
       }

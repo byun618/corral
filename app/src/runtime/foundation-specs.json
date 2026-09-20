@@ -1,0 +1,118 @@
+[
+  {
+    "command": "open",
+    "path": [
+      "open"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Open or focus the local desktop",
+    "usage": "corral open [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral open --json"
+    ],
+    "notes": [
+      "Local Unix socket only; remote/environment/pairing, project and terminal commands are not shipped."
+    ]
+  },
+  {
+    "command": "serve",
+    "path": [
+      "serve"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Run a local foreground runtime",
+    "usage": "corral serve [--help] [--json] [--socket VALUE]",
+    "flags": [
+      "help",
+      "json",
+      "socket"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral serve --json"
+    ],
+    "notes": [
+      "Local Unix socket only; remote/environment/pairing, project and terminal commands are not shipped."
+    ]
+  },
+  {
+    "command": "status",
+    "path": [
+      "status"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Inspect the selected local runtime",
+    "usage": "corral status [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral status --json"
+    ],
+    "notes": [
+      "Local Unix socket only; remote/environment/pairing, project and terminal commands are not shipped."
+    ]
+  },
+  {
+    "command": "agent-context",
+    "path": [
+      "agent-context"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Print the five-command local schema without connecting",
+    "usage": "corral agent-context [--help] [--json]",
+    "flags": [
+      "help",
+      "json"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral agent-context --json"
+    ],
+    "notes": [
+      "Local Unix socket only; remote/environment/pairing, project and terminal commands are not shipped."
+    ]
+  },
+  {
+    "command": "diagnostics memory",
+    "path": [
+      "diagnostics",
+      "memory"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Measure selected runtime process RSS",
+    "usage": "corral diagnostics memory [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral diagnostics memory --json"
+    ],
+    "notes": [
+      "Local Unix socket only; remote/environment/pairing, project and terminal commands are not shipped."
+    ]
+  }
+]

@@ -1,5 +1,6 @@
 /** One action per user-visible operation. Each stored chord names a dispatch variant through bindingVariants. */
 export const ACTIONS = [
+  { id: 'palette.open', title: '커맨드 팔레트', defaultBinding: ['Mod+K'], bindingVariants: [0], variants: ['열기'] },
   { id: 'terminal.new', title: '새 탭', defaultBinding: ['Mod+T', 'Mod+Shift+T'], bindingVariants: [0, 0], variants: ['열기'] },
   { id: 'mru.open', title: '최근 pane 전환', defaultBinding: ['Control+Tab', 'Control+Shift+Tab'], bindingVariants: [0, 1], variants: ['다음', '이전'] },
   { id: 'terminal.split', title: 'pane 분할', defaultBinding: ['Mod+D', 'Mod+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },

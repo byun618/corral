@@ -40,6 +40,7 @@ export type SessionHandle = SessionInfo & { socketPath: string }
 export type SessionScan = { sessions: SessionHandle[]; source: 'cli' | 'filesystem'; error: string | null }
 
 export async function listSessions(): Promise<SessionScan> {
+  if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) return {sessions:[{name:process.env.CORRAL_SESSION,isDefault:false,running:fs.existsSync(process.env.CORRAL_BACKEND_SOCKET),socketPath:process.env.CORRAL_BACKEND_SOCKET}],source:'filesystem',error:null}
   try {
     const { stdout } = await run('herdr', ['session', 'list', '--json'], { timeout: 5000 })
     const sessions = parseSessionList(stdout)

@@ -3,6 +3,7 @@
 // (worktree 1줄의 마크는 그 worktree 하나만의 값 — 같은 상태를 두 곳에서 반복하지 않는다는 원칙은
 // "범위"로 지킨다: 하나는 전역 합, 하나는 개별.)
 export function StatusBar({
+  inert = false,
   activeWorktreeLabel,
   dirtyTotal,
   aheadTotal,
@@ -14,6 +15,7 @@ export function StatusBar({
   termSize,
   memoryLabel,
 }: {
+  inert?: boolean
   activeWorktreeLabel: string | null
   dirtyTotal: number
   aheadTotal: number
@@ -29,7 +31,7 @@ export function StatusBar({
   memoryLabel: string | null
 }): React.JSX.Element {
   return (
-    <div className="statusbar" data-statusbar>
+    <div className="statusbar" data-statusbar inert={inert}>
       <span className="statusbar-repo">corral{activeWorktreeLabel === null ? '' : ` / ${activeWorktreeLabel}`}</span>
       <span className="statusbar-badge tone-dirty">●{dirtyTotal}</span>
       <span className="statusbar-badge tone-ahead">↑{aheadTotal}</span>

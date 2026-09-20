@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-351 R1: 앱 골격 + 어댑터 control 층)",
+  "description": "corral \u2014 herdr \uae30\ubc18 AI \uc6cc\ud06c\uc2a4\ud398\uc774\uc2a4 \ubbf8\uc158 \ucee8\ud2b8\ub864 (LIFE-351 R1: \uc571 \uace8\uaca9 + \uc5b4\ub311\ud130 control \uce35)",
   "main": "./out/main/index.js",
   "engines": {
     "node": ">=22.12.0"
@@ -11,11 +11,12 @@
   "scripts": {
     "postinstall": "node node_modules/electron/install.js",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && electron-vite build && npm run build:runtime",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint .",
-    "check:boundary": "node scripts/check-boundary.mjs"
+    "check:boundary": "node scripts/check-boundary.mjs",
+    "build:runtime": "node scripts/build-runtime.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -39,5 +40,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "string-width": "7.2.0"
+  },
+  "bin": {
+    "corral": "cli/corral.mjs"
   }
 }

@@ -397,7 +397,7 @@ export function TerminalPane({
   // `0` 은 신호가 아니다 — 비활성 영역이 받는 값이라, 여기서 포커스를 주면 **비활성 영역이
   // 활성 영역 뒤에 포커스를 훔친다**(effect 순서는 활성 순서가 아니라 트리 순서다).
   useEffect(() => {
-    if (focusToken === 0) return
+    if (focusToken === 0 || !focusableRef.current) return
     termRef.current?.focus()
   }, [focusToken])
 

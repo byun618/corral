@@ -1,0 +1,14 @@
+.palette-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: flex-start; justify-content: center; padding: min(14vh, 100px) 24px 24px; background: var(--scrim); }
+.command-palette { width: 640px; max-width: 100%; max-height: 75vh; display: flex; flex-direction: column; color: var(--fg); background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow-modal); overflow: hidden; }
+.command-palette input { font: inherit; font-size: 15px; color: var(--fg); background: var(--bg-input); padding: 18px; border: 0; border-bottom: 1px solid var(--line); outline: none; }
+.command-palette input:focus { box-shadow: inset 0 -2px var(--accent); }
+.palette-results { overflow-y: auto; min-height: 60px; padding: 6px; }
+.palette-results p { padding: 16px; color: var(--fg-muted); }
+.palette-entry { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 5px; cursor: pointer; }
+.palette-entry.selected { background: var(--bg-selected); outline: 1px solid var(--line-strong); }
+.palette-entry[aria-disabled=true] { color: var(--fg-dim); cursor: default; }
+.palette-label { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 4px; }
+.palette-label strong, .palette-label small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.palette-label small { color: var(--fg-muted); }
+.palette-entry kbd { flex-shrink: 0; color: var(--fg-muted); }
+.command-palette footer { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--fg-dim); }

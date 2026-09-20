@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { ACTIONS, bindingConflict, bindingFromEvent, matchBinding, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
-  it('has nine actions with no default collisions', () => {
-    expect(ACTIONS).toHaveLength(9)
+  it('keeps the nine actions and adds a rebindable palette without collisions', () => {
+    expect(ACTIONS).toHaveLength(10)
+    expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
+    expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
+    expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
     expect(bindingConflict({})).toBeNull()
     for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {})).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
   })

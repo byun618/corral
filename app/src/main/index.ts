@@ -1,3 +1,4 @@
+import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
 import { matchBinding } from '../shared/keybindings.js'
 // Electron main — 소켓을 소유하는 쪽.
@@ -68,6 +69,8 @@ import { UiPrefsStore } from './ui-prefs.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
+if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
+let stopRuntime: (() => Promise<void>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
@@ -1030,7 +1033,8 @@ function createWindow(): void {
 process.on('uncaughtException', (error) => log('main.uncaught_exception', { error: String(error), stack: error.stack }))
 process.on('unhandledRejection', (reason) => log('main.unhandled_rejection', { reason: String(reason) }))
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  restoreBackend(app.getPath('userData'))
   const file = openLog(app.getPath('userData'))
   keybindings = new KeybindingStore(app.getPath('userData'))
   keybindings.load()
@@ -1233,6 +1237,12 @@ app.whenReady().then(() => {
     },
   )
 
+  const runtime = await startRuntime({
+    userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed(),
+    focus: () => { window?.show(); window?.focus() },
+    appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
+  })
+  stopRuntime = runtime.close
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
@@ -1266,6 +1276,13 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch(error => { log('runtime.start_failed', { error: String(error) }); app.exit(1) })
+
+app.on('before-quit', event => {
+  if (!stopRuntime) return
+  event.preventDefault()
+  const close = stopRuntime; stopRuntime = null
+  void close().finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {

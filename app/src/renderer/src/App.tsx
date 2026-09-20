@@ -1,4 +1,7 @@
-import { bindingsFor, formatBinding } from '../../shared/keybindings.js'
+import { CommandPalette } from './components/CommandPalette.js'
+import type { PaletteEntry } from './palette-search.js'
+import type { ShortcutHandlers } from './hooks/useKeybindings.js'
+import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
 import { BindingLabels } from './hooks/BindingLabels.js'
 import { useKeybindings } from './hooks/useKeybindings.js'
 import { ShortcutSettings } from './components/ShortcutSettings.js'
@@ -78,6 +81,8 @@ export function App(): React.JSX.Element {
   const [notice, setNotice] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const paletteReturn = useRef<HTMLElement | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarCollapsedRef = useRef(false)
@@ -172,11 +177,12 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (lifecycle.pendingClose === null) return
+    document.querySelector<HTMLButtonElement>('[data-close-confirm-cancel]')?.focus()
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') lifecycle.cancelPendingClose()
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
   }, [lifecycle.pendingClose, lifecycle.cancelPendingClose])
 
   useEffect(() => {
@@ -681,7 +687,15 @@ export function App(): React.JSX.Element {
   )
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
-  const keymap = useKeybindings({
+  const modalBlocked = shortcutsOpen || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null
+  const openPalette = (): void => {
+    if (modalBlocked || document.querySelector('.main-tab-rename.is-editing')) return
+    paletteReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    mruCancel()
+    setPaletteOpen(true)
+  }
+  const handlers: ShortcutHandlers = {
+    'palette.open': openPalette,
     'terminal.new': () => lifecycle.createShell(),
     'mru.open': (variant) => stepMruHold(variant === 1),
     'terminal.split': (variant) => void splitPaneAt({ paneId: lifecycle.selectedPane, direction: variant === 1 ? 'down' : 'right' }),
@@ -708,7 +722,8 @@ export function App(): React.JSX.Element {
       void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
     },
     'sidebar.toggle': toggleSidebar,
-  }, shortcutsOpen, () => {
+  }
+  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -916,8 +931,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup}
-                    focusToken={isActiveGroup ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !modalBlocked}
+                    focusToken={isActiveGroup && !paletteOpen && !modalBlocked ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -929,7 +944,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup}
+                focusable={isActiveGroup && !paletteOpen && !modalBlocked}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
@@ -1031,10 +1046,48 @@ export function App(): React.JSX.Element {
   const agentCount = agentPanes(activeWorkspace?.tabs ?? []).length
   const terminal = state.terminal
 
+  const paletteEntries: PaletteEntry[] = []
+  const connected = state.link.phase === 'live'
+  const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
+  for (const action of ACTIONS) {
+    if (action.id === 'palette.open') continue
+    for (let variant = 0; variant < action.variants.length; variant++) {
+      const id = action.id
+      paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
+        shortcut: bindingsFor(id, keymap.overrides).filter((_, index) => action.bindingVariants[index] === variant).map(formatBinding).join(' / '),
+        disabled: id === 'sidebar.toggle' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        run: () => {
+          if (id === 'mru.open') {
+            const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)
+            const paneId = variant === 1 ? other.at(-1) : other[0]
+            if (paneId) revealPane(paneId)
+          } else handlers[id](variant)
+          setFocusToken(value => value + 1)
+        },
+      })
+    }
+  }
+  paletteEntries.push({ id: 'repo.add', title: '레포 등록', detail: '폴더 선택', keywords: 'add repository register', run: () => setModalOpen(true) })
+  paletteEntries.push({ id: 'shortcuts.settings', title: '단축키 설정', detail: '키 바인딩 변경', run: () => setShortcutsOpen(true) })
+  for (const kind of ['claude', 'codex', 'grok'] as const) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
+  for (const repo of state.repos) {
+    const primary = repo.worktrees.find(worktree => !worktree.isLinked)
+    paletteEntries.push({ id: `repo.select:${repo.root}`, title: `레포 선택 · ${repo.root.split('/').at(-1)}`, detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => { if (primary) lifecycle.actions.openWorktree(repo.root, primary) } })
+    paletteEntries.push({ id: `worktree.create:${repo.root}`, title: '새 worktree 만들기', detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openCreateWorktree(repo.root) })
+    for (const worktree of repo.worktrees) {
+      paletteEntries.push({ id: `worktree.open:${worktree.path}`, title: `${worktree.workspace ? 'worktree 전환' : 'worktree 열기'} · ${worktree.branch ?? worktree.path.split('/').at(-1)}`, detail: worktree.path, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openWorktree(repo.root, worktree) })
+      for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) paletteEntries.push({ id: `pane.switch:${pane.paneId}`, title: sessionTitle({ tab, tabCount: worktree.workspace!.tabs.length, ordinal: tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId }), home: state.home, selectedPaneId: pane.paneId }), detail: `${worktree.path} · ${tab.tabId} · ${pane.paneId} · ${pane.agent ?? 'shell'}`, keywords: 'terminal tab pane switch', disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => {
+        const alive = stateRef.current?.repos.some(r => r.worktrees.some(w => w.workspace?.tabs.some(t => t.panes.some(p => p.paneId === pane.paneId))))
+        if (!alive) { setNotice('대상 pane이 사라졌습니다'); return }
+        revealPane(pane.paneId)
+      } })
+    }
+  }
+
   return (
     <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
-      <div className="app-body">
+      <div className="app-body" inert={paletteOpen}>
         {sidebarCollapsed ? null : <>
         <Sidebar
           onToggleSidebar={toggleSidebar}
@@ -1073,6 +1126,7 @@ export function App(): React.JSX.Element {
         <div className="main-area" data-main-area>
           <div className="workspace-tools">
             {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={formatBinding(bindingsFor('sidebar.toggle', keymap.overrides)[0]!)}>사이드바 펼치기</button> : null}
+            <button data-palette-open disabled={modalBlocked} onClick={openPalette}>명령 {formatBinding(bindingsFor('palette.open', keymap.overrides)[0] ?? '')}</button>
             <button data-shortcuts-open onClick={() => { mruCancel(); setShortcutsOpen(true) }}>단축키</button>
           </div>
           {notice === null ? null : (
@@ -1115,6 +1169,7 @@ export function App(): React.JSX.Element {
       </div>
 
       <StatusBar
+        inert={paletteOpen}
         activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? null}
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
@@ -1127,6 +1182,10 @@ export function App(): React.JSX.Element {
         memoryLabel={memoryLabel}
       />
 
+      {paletteOpen ? <CommandPalette entries={paletteEntries} onClose={restore => {
+        setPaletteOpen(false)
+        if (restore) requestAnimationFrame(() => { if (paletteReturn.current?.isConnected) paletteReturn.current.focus(); else setFocusToken(value => value + 1) })
+      }} /> : null}
       {shortcutsOpen ? <ShortcutSettings overrides={keymap.overrides} onChange={keymap.setOverrides} onClose={() => setShortcutsOpen(false)} /> : null}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />

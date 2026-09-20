@@ -15,7 +15,15 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
   useEffect(() => {
     const dispatch = (match: ShortcutMatch): void => latest.current.handlers[match.id](match.variant)
     const onKey = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented || latest.current.blocked || event.isComposing) return
+      if (event.defaultPrevented || event.isComposing) return
+      if (latest.current.blocked) {
+        // Yield to the modal's own editing/navigation keys. No background dispatch.
+        if (event.metaKey || event.ctrlKey || event.altKey) {
+          const binding = bindingFromEvent(event)
+          if (binding && matchBinding(binding, latest.current.overrides)) { event.preventDefault(); event.stopPropagation() }
+        }
+        return
+      }
       const binding = bindingFromEvent(event)
       const match = binding === null ? null : matchBinding(binding, latest.current.overrides)
       if (match === null) return

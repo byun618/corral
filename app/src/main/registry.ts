@@ -196,7 +196,7 @@ export function repoRootOf(input: string): string {
   const run = (args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   run(['rev-parse', '--show-toplevel'])
   const common = canonicalPath(path.resolve(cwd, run(['rev-parse', '--git-common-dir'])))
-  const main = run(['worktree', 'list', '--porcelain']).split('\n').find(line => line.startsWith('worktree '))?.slice(9)
+  const main = run(['worktree', 'list', '--porcelain', '-z']).split('\0').find(line => line.startsWith('worktree '))?.slice(9)
   return main ? canonicalPath(main) : path.dirname(common)
 }
 

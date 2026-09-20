@@ -25,7 +25,7 @@ export function unique<T extends { id: string }>(items: T[], selector: string): 
   return items[0]!
 }
 export function repoSelect(repos: RepoRecord[], selector: string, cwd: string): RepoRecord {
-  const prefixed = /^(id|name|path):(.*)$/.exec(selector)
+  const prefixed = /^(id|name|path):(.*)$/s.exec(selector)
   const value = prefixed?.[2] ?? selector
   return unique(repos.filter(repo => {
     if (prefixed?.[1] === 'id') return repo.id === value
@@ -120,7 +120,7 @@ export function worktreeSelect(records: WorktreeRecord[], selector: string, cwd:
     return unique(matches.slice(0, 1), selector)
   }
   if (selector === 'active') return unique(records.filter(record => record.path === active), selector)
-  const prefixed = /^(id|path|branch|name|issue):(.*)$/.exec(selector)
+  const prefixed = /^(id|path|branch|name|issue):(.*)$/s.exec(selector)
   const value = prefixed?.[2] ?? selector
   return unique(records.filter(record => {
     switch (prefixed?.[1]) {

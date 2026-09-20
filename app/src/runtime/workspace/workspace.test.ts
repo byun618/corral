@@ -15,8 +15,8 @@ afterEach(async () => {
   cleanups.length = 0
   process.env = { ...env }
 })
-async function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l392-test-')), data = path.join(root, 'data'), repo = path.join(root, 'repo')
+async function fixture(repoName = 'repo') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l392-test-')), data = path.join(root, 'data'), repo = path.join(root, repoName)
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
   delete process.env.CORRAL_RUNTIME_SOCKET
   delete process.env.CORRAL_SESSION
@@ -35,6 +35,32 @@ async function fixture() {
   return { root, data, repo, git, call, restart }
 }
 describe('workspace commands against real git and local socket', () => {
+  it('preserves newline values in repo and worktree selectors against real Git', async () => {
+    const { root, data, repo, git, call } = await fixture('repo\nroot')
+    expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
+    const registered = new RepoRegistry(data).records()[0]!
+    for (const selector of [repo, registered.id, `path:${repo}`, `id:${registered.id}`, `name:${registered.name}`]) {
+      expect(await call('repo', 'show', '--repo', selector)).toMatchObject({ ok: true, result: { repo: { id: registered.id } } })
+    }
+    const external = path.join(root, 'outside\nworktree')
+    git('worktree', 'add', '-b', 'outside', external)
+    expect((await call('repo', 'add', '--path', external)).error?.code).toBe('already_exists')
+    expect(new RepoRegistry(data).records()).toEqual([registered])
+    const id = `${registered.id}::${fs.realpathSync(external)}`
+    expect((await call('worktree', 'set', '--worktree', `id:${id}`, '--display-name', 'line\nname', '--issue', '12')).ok).toBe(true)
+    for (const selector of [external, id, `path:${external}`, `id:${id}`, 'branch:outside', 'name:line\nname', 'issue:12']) {
+      expect(await call('worktree', 'show', '--worktree', selector)).toMatchObject({ ok: true, result: { worktree: { id } } })
+    }
+    expect(await call('worktree', 'list')).toMatchObject({ result: { worktrees: expect.arrayContaining([expect.objectContaining({ id })]) } })
+    for (const selector of [`path:${root}/missing\npath`, 'unknown:outside']) {
+      expect((await call('worktree', 'show', '--worktree', selector)).error?.code).toBe('not_found')
+    }
+    for (const prefix of ['identity', 'folder']) {
+      expect((await call('worktree', 'show', '--worktree', `${prefix}:${external}`)).error?.code).toBe('invalid_argument')
+    }
+    await call('worktree', 'set', '--worktree', `path:${repo}`, '--display-name', 'line\nname')
+    expect((await call('worktree', 'show', '--worktree', 'name:line\nname')).error?.code).toBe('ambiguous_target')
+  })
   it('serializes creation, persists metadata and shares the GUI registry across restart', async () => {
     const { data, repo, git, call, restart } = await fixture()
     fs.chmodSync(data, 0o755)

@@ -34,7 +34,9 @@ description: >-
    이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다.
 3. **기동 전에 선택 기록**: 작업 worktree에서 `specs/LIFE-NNN-<슬러그>/00-start.md`를 작성·커밋한다.
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·절대 worktree 경로, 코디네이터 도구, 선택 근거
-   (사용자 지정/신규 기본값/재개), 모델·effort(미지정이면 도구 기본값), 기동 상태.
+   (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값 = 해당 도구 플래그십 + xhigh:
+   claude → `claude-fable-5-1` xhigh, codex → `gpt-6-astra` xhigh — 코디네이터는 단일 소스라
+   최고 등급을 기본으로 한다, 2026-09-20), 기동 상태.
    처음 상태는 `기동 전`. 재개 때는 기존 기록을 덮어쓰지 말고 재기동 이력을 추가한다.
 4. **코디네이터 터미널 기동** (`--worktree path:`에는 기록한 절대경로):
 
@@ -43,10 +45,11 @@ description: >-
    | claude | `claude` |
    | codex | `codex` |
 
-   모델·effort를 사용자가 지정했다면 해당 CLI의 `--help`를 확인해 명령에 반영하고 기록한다.
+   모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값(플래그십 + xhigh)을 해당 CLI의
+   `--help`를 확인해 명령에 반영하고 기록한다.
    예: Claude는 `claude --model <모델> --effort <등급>`, Codex는
    `codex --model <모델> -c model_reasoning_effort='<등급>'`.
-   미지정 옵션은 추가하지 않는다. 사용자 문자열을 실행 코드로 이어 붙이지 말고 각 값을 셸 인자로 인용한다.
+   사용자 문자열을 실행 코드로 이어 붙이지 말고 각 값을 셸 인자로 인용한다.
 
    ```bash
    orca terminal create --worktree path:<작업 worktree 절대경로> \

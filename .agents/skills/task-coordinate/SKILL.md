@@ -2,7 +2,7 @@
 name: task-coordinate
 description: >-
   corral 작업 코디네이터 절차. 작업 worktree의 Claude 또는 Codex 코디네이터가 킥오프 직후 읽는다.
-  분석·판정 기준·경쟁 구현·3자 리뷰·판정·두 승인 게이트·본체 마무리 인계를 다룬다.
+  분석·판정 기준·킥오프 승인·경쟁 구현·3자 리뷰·판정·세 승인 게이트·본체 마무리 인계를 다룬다.
   Orca orchestration으로 워커 기동·완료 감지·질의응답을 처리한다.
 ---
 
@@ -72,6 +72,19 @@ description: >-
   기록이지 프로세스 완료 감지 신호가 아니다. 완료 감지는 §4 의 orchestration `worker_done` 메시지로
   한다. "커밋되지 않은 결과는 없는 것이다"
 
+## ⛔ 승인 게이트 ⓪ — 킥오프 (§3 후 · §4 전, worker-start 금지 지점)
+
+00-analysis · 01-criteria · 02-kickoff 를 커밋한 뒤 사용자에게 보고하고 **멈춘다**:
+
+- **문제 정의·범위**: 뭘 구현하기로 했고, 뭘 명시적으로 뺐는지 (분석에서 좁힌 결과)
+- **판정 기준 요약**: 01-criteria 통과선 핵심 몇 줄
+- **구현 방식**: 경쟁/단독 판단과 근거, 워커 페어링(모델·effort), 디자인 브리프 삽입 여부와 사유
+
+승인이 오면 §4 로 진행한다. 지적이 나오면 문서를 고쳐 재보고한다 — 기준 freeze 는 이 승인
+시점이다(§1-4 의 "구현 시작 시점"이 곧 여기). 설계안은 보고 대상이 아니다 — §3 원칙대로
+설계는 구현자 몫이고 채점 대상이다. (게이트 ⓪ 신설 2026-09-20 — 가장 비싼 구간인 구현 전에
+방향 오류를 잡는다. LIFE-342 전제 오류·LIFE-357 디자인 판단 번복이 근거)
+
 ## 4. 구현 — 기본 경쟁(claude ∥ codex), 단독은 예외 (2026-09-18 전환)
 
 기본은 claude·codex 워커 2개를 동시에 붙인다. claude 단독은 분석 단계에서 "설계 접근이 갈릴 여지가
@@ -82,9 +95,11 @@ description: >-
 **기본 페어링은 플래그십 대 플래그십** (2026-09-18, GPT-6 Astra 출시 계기로 명시): codex 쪽에
 Astra(`model = "gpt-6-astra"`, Codex 신규 최상위 모델)를 쓴다면 claude 쪽도 Opus 가 아니라
 **Fable**(Anthropic 신규 최상위 "Mythos급" 모델, `claude-fable-5-1` — FrontierBench 최고점,
-Opus 는 그 아래 등급으로 재배치됨)로 맞춘다. effort 도 양쪽 동일 등급(예: 둘 다 high)으로 —
+Opus 는 그 아래 등급으로 재배치됨)로 맞춘다. effort 도 양쪽 동일 등급 — **기본은 둘 다 high**
+(경쟁 + 3자 리뷰로 이중 헤지가 있는 자리라 xhigh 는 기본이 아니다, 2026-09-20). 난도가 높다고
+분석 단계에서 판단한 일감만 양쪽 함께 xhigh 로 승격하고 사유를 02-kickoff.md 정체 표에 남긴다.
 한쪽만 급을 낮추면 판정이 모델 격차 때문인지 구현 품질 때문인지 갈리지 않는다. 비용·속도 등
-다른 이유로 급을 다르게 갈 때는 그 사유를 02-kickoff.md 정체 표에 남긴다.
+다른 이유로 급을 다르게 갈 때도 그 사유를 02-kickoff.md 정체 표에 남긴다.
 
 **워커 기동·완료 감지는 Orca `orchestration` 계층으로 한다** (2026-09-18 전환, 저수준
 `terminal create/send/read` 조합 폐기). 먼저 `orca skills get orchestration`으로 스킬 본문을 읽는다.
@@ -132,7 +147,10 @@ orca orchestration worker-start --task <task_codex> --worktree new-child \
 - 검토 전 `.agents/agents/reviewer.md` 필독. **모든 리뷰어는 코디네이터·구현자와 별도 세션**이다.
   Codex 코디네이터가 Codex 리뷰를 대신하거나, Claude 코디네이터가 Claude 리뷰를 대신하지 않는다.
 - **claude·codex 리뷰어도 §4 와 같은 방식으로 띄운다** — 같은 Run 에 `orchestration worker-start`,
-  완료 대기는 `check --wait --types worker_done,escalation,question`. grok 리뷰어는 예외 —
+  완료 대기는 `check --wait --types worker_done,escalation,question`.
+  **리뷰어 기본값 = 플래그십 + xhigh** (claude → Fable xhigh, codex → Astra xhigh, 2026-09-20):
+  리뷰가 안전망이라 뚫리면 헤지가 없고, diff 읽기 중심이라 구현보다 싸서 xhigh 가성비가 가장 좋은
+  자리다. 낮출 때는 사유를 02-kickoff.md 정체 표에 남긴다. grok 리뷰어는 예외 —
   grok-search 스킬의 기존 Orca 대화형 경로 그대로 쓴다(orchestration `--agent` 대상이 아니라
   검색 위임 스킬 소관)
 - `git diff LIFE-NNN-<슬러그>..LIFE-NNN-<슬러그>-<도구>` 로 검토 (체크아웃 불필요)

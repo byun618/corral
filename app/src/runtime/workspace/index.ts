@@ -3,7 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import specs from './specs.json'
 import { RuntimeError, stringFlag, reject, type CommandModule, type CommandSpec, type Invocation, type CommandContext } from '../contracts.js'
-import { RepoRegistry, repoRootOf, unregisterRepo, type RepoRecord, type SetupRecord } from '../../main/registry.js'
+import { RepoRegistry, repoRootOf, unregisterRepo, expandPath, type RepoRecord, type SetupRecord } from '../../main/registry.js'
 import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, WorktreeMetadata, worktreeSelect, type Metadata, type WorkspaceDesktop, type WorktreeRecord } from './model.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
@@ -125,7 +125,7 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
             const local = resolvePath(url, inv.cwd)
             if (/^[\w+.-]+:/.test(url) || url.includes('@') || !fs.existsSync(local)) throw new RuntimeError('unsupported', 'Only local paths and unauthenticated HTTPS clones are supported')
             source = local
-            basename = path.basename(local)
+            basename = path.basename(path.resolve(inv.cwd, expandPath(url)))
           }
           basename = basename.replace(/\.git$/, '')
           if (!basename || basename === '.' || basename === '..' || /[/\\\0]/.test(basename)) reject('Invalid clone repository name')

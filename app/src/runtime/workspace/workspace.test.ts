@@ -113,4 +113,90 @@ describe('workspace commands against real git and local socket', () => {
     } finally { fs.chmodSync(parent, 0o755) }
   })
 
+  it('uses the input alias basename for absolute, relative and trailing-slash clones', async () => {
+    const { root, data, repo, git, call } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const registry = new RepoRegistry(data), project = registry.records()[0]!.projectId
+    const actual = path.join(root, 'actual.git'), alias = path.join(root, 'alias.git')
+    git('clone', '--bare', repo, actual)
+    fs.symlinkSync(actual, alias)
+    for (const [index, url] of [alias, '../alias.git', '../alias.git/'].entries()) {
+      const parent = path.join(root, `clones-${index}`)
+      const result = await call('project', 'setup-clone', '--project', project, '--url', url, '--destination', parent)
+      const child = fs.realpathSync(path.join(parent, 'alias'))
+      expect(result).toMatchObject({ ok: true, result: { repo: { path: child, method: 'cloned' } } })
+      expect(git('-C', child, 'rev-parse', 'HEAD')).toBe(git('rev-parse', 'HEAD'))
+      expect(fs.existsSync(path.join(parent, 'actual'))).toBe(false)
+      expect((await call('project', 'setup-clone', '--project', project, '--url', url, '--destination', parent)).error?.code).toBe('already_exists')
+    }
+  })
+
+  it.each(['CLI', 'GUI'])('cleans migrated external metadata on %s unregister without guessing ownership', async mode => {
+    const { root, data, repo, git, call, restart } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const registry = new RepoRegistry(data), original = registry.records()[0]!
+    const external = path.join(root, 'external'), nested = path.join(repo, 'nested')
+    git('worktree', 'add', '-b', 'external', external)
+    git('init', '-b', 'main', nested)
+    git('-C', nested, 'commit', '--allow-empty', '-m', 'nested')
+    await call('repo', 'add', '--path', nested)
+    const other = registry.records().find(row => row.id !== original.id)!
+    await call('project', 'setup-create', '--project', original.projectId, '--host', 'local', '--setup-id', 'independent')
+    const externalPath = fs.realpathSync(external), unknown = path.join(repo, 'unknown')
+    const disk = JSON.parse(fs.readFileSync(path.join(data, 'repos.json'), 'utf8'))
+    delete disk.worktrees
+    fs.writeFileSync(path.join(data, 'repos.json'), JSON.stringify(disk))
+    fs.writeFileSync(path.join(data, 'worktree-metadata.json'), JSON.stringify({
+      [externalPath]: { displayName: 'old external', comment: 'old comment' },
+      [other.path]: { comment: 'keep nested', parentWorktreeId: `${original.id}::${externalPath}` },
+      [unknown]: { comment: 'unknown owner' },
+    }))
+    fs.chmodSync(data, 0o755)
+    await restart()
+    expect(await call('worktree', 'show', '--worktree', `path:${external}`)).toMatchObject({ result: { worktree: { comment: 'old comment' } } })
+    // Exercise migration on an unrelated write before unregistering.
+    await call('repo', 'set-base-ref', '--repo', original.id, '--ref', 'main')
+    expect(fs.existsSync(path.join(data, 'worktree-metadata.json'))).toBe(false)
+    await restart()
+    const before = git('worktree', 'list', '--porcelain')
+    if (mode === 'CLI') expect((await call('project', 'setup-delete', '--setup', original.id)).ok).toBe(true)
+    else expect(registry.remove(repo).ok).toBe(true)
+    expect(registry.metadata()[externalPath]).toBeUndefined()
+    expect(registry.metadata()[other.path]).toEqual({ comment: 'keep nested', parentWorktreeId: null })
+    expect(registry.metadata()[unknown]).toEqual({ comment: 'unknown owner' })
+    expect(registry.setups().some(row => row.id === 'independent')).toBe(true)
+    expect(git('worktree', 'list', '--porcelain')).toBe(before)
+    expect(fs.existsSync(external)).toBe(true)
+    await call('repo', 'add', '--path', repo)
+    await restart()
+    expect(await call('worktree', 'show', '--worktree', `path:${external}`)).toMatchObject({ result: { worktree: { displayName: 'external', comment: null } } })
+    expect(fs.statSync(data).mode & 0o777).toBe(0o755)
+  })
+
+  it('unregisters a missing repository while preserving legacy metadata of unknown ownership', async () => {
+    const { root, data, repo, call } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const registry = new RepoRegistry(data), original = registry.records()[0]!
+    const unknown = path.join(root, 'unknown')
+    registry.change(data => { data.worktrees[unknown] = { comment: 'unknown' }; data.worktrees[repo] = { repoId: original.id, comment: 'known' } })
+    fs.renameSync(repo, path.join(root, 'moved'))
+    expect(registry.remove(original.path).ok).toBe(true)
+    expect(registry.records()).toEqual([])
+    expect(registry.metadata()).toEqual({ [unknown]: { comment: 'unknown' } })
+  })
+
+  it('does not use an enclosing repository when a registered nested repository loses .git', async () => {
+    const { data, repo, git, call } = await fixture()
+    await call('repo', 'add', '--path', repo)
+    const registry = new RepoRegistry(data), original = registry.records()[0]!
+    const nested = path.join(repo, 'nested')
+    git('init', '-b', 'main', nested)
+    git('-C', nested, 'commit', '--allow-empty', '-m', 'nested')
+    await call('repo', 'add', '--path', nested)
+    registry.change(data => { data.worktrees[original.path] = { comment: 'outer owner' } })
+    fs.rmSync(path.join(nested, '.git'), { recursive: true, force: true })
+    expect(registry.remove(nested).ok).toBe(true)
+    expect(registry.metadata()[original.path]).toEqual({ comment: 'outer owner' })
+  })
+
 })

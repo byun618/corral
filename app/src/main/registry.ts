@@ -46,9 +46,28 @@ interface RegistryData { version: 2; repos: RepoRecord[]; setups: SetupRecord[];
 export function unregisterRepo(data: RegistryData, id: string): void {
   const repo = data.repos.find(row => row.id === id)
   if (!repo) return
+  // Old metadata has no repoId. Ask Git for exact membership; directory
+  // containment cannot distinguish another repository nested under this one.
+  const ownedPaths = new Set([repo.path])
+  if (Object.values(data.worktrees).some(metadata => !metadata.repoId)) {
+    try {
+      const output = execFileSync('git', ['-C', repo.path, 'worktree', 'list', '--porcelain', '-z'], {
+        encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const targets = output.split('\0\0').flatMap(block => {
+        const target = block.split('\0').find(field => field.startsWith('worktree '))?.slice(9)
+        return target ? [canonicalPath(target)] : []
+      })
+      // If .git disappeared, Git may discover an enclosing repository instead.
+      if (targets[0] === repo.path) for (const target of targets) ownedPaths.add(target)
+    } catch {
+      // Missing/unreadable repositories must still be unregisterable. Keep
+      // unowned legacy entries when Git cannot establish their ownership.
+    }
+  }
   data.repos = data.repos.filter(row => row.id !== id)
   for (const [target, metadata] of Object.entries(data.worktrees)) {
-    if (metadata.repoId === id || (!metadata.repoId && (target === repo.path || target.startsWith(repo.path + path.sep)))) delete data.worktrees[target]
+    if (metadata.repoId === id || (!metadata.repoId && ownedPaths.has(canonicalPath(target)))) delete data.worktrees[target]
     else if (metadata.parentWorktreeId?.startsWith(id + '::')) metadata.parentWorktreeId = null
   }
 }

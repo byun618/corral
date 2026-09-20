@@ -41,9 +41,9 @@ describe('terminal receipt admission survives result loss', () => {
 
   it('replays after restart and rejects changed input without executing', async () => {
     const inv = request(), effect = vi.fn(async () => ({ bytes: 4 }))
-    const first = await receipts.run(inv, effect)
+    await receipts.run(inv, effect)
     receipts = new Receipts(root, ++now)
-    await expect(receipts.run(inv, effect)).resolves.toEqual({ ...(first as object), replayed: true })
+    await expect(receipts.run(inv, effect)).resolves.toEqual({ bytes: 4, requestId: inv.flags['request-id'], replayed: true })
     await expect(receipts.run({ ...inv, flags: { ...inv.flags, text: 'DIFFERENT' } }, effect)).rejects.toMatchObject({ code: 'request_conflict' })
     expect(effect).toHaveBeenCalledTimes(1)
   })

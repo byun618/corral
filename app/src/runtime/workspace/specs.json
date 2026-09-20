@@ -1,0 +1,564 @@
+[
+  {
+    "command": "project list",
+    "path": [
+      "project",
+      "list"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "List durable projects known to corral",
+    "usage": "corral project list [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project list [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setup-clone",
+    "path": [
+      "project",
+      "setup-clone"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Make a project available on a host by cloning a repository",
+    "usage": "corral project setup-clone --project <id> --host <host-id> --url <clone-url> --destination <path> [--display-name <name>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "project",
+      "host",
+      "url",
+      "destination",
+      "display-name"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setup-clone --project <id> --host <host-id> --url <clone-url> --destination <path> [--display-name <name>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setup-create",
+    "path": [
+      "project",
+      "setup-create"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Create independent project host setup metadata",
+    "usage": "corral project setup-create --project <id> --host <host-id> [--setup-id <id>] [--path <path>] [--kind git|folder] [--display-name <name>] [--worktree-base-path <path>] [--git-username <name>] [--state ready|not-set-up|setting-up|error|unsupported] [--method imported-existing-folder|cloned|provisioned] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "project",
+      "host",
+      "setup-id",
+      "path",
+      "kind",
+      "display-name",
+      "worktree-base-path",
+      "git-username",
+      "state",
+      "method"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setup-create --project <id> --host <host-id> [--setup-id <id>] [--path <path>] [--kind git|folder] [--display-name <name>] [--worktree-base-path <path>] [--git-username <name>] [--state ready|not-set-up|setting-up|error|unsupported] [--method imported-existing-folder|cloned|provisioned] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setup-delete",
+    "path": [
+      "project",
+      "setup-delete"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Remove a project host setup",
+    "usage": "corral project setup-delete --setup <setup-id> [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "setup"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setup-delete --setup <setup-id> [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setup-existing-folder",
+    "path": [
+      "project",
+      "setup-existing-folder"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Make a project available on a host by importing an existing folder",
+    "usage": "corral project setup-existing-folder --project <id> --host <host-id> --path <path> [--kind git|folder] [--display-name <name>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "project",
+      "host",
+      "path",
+      "kind",
+      "display-name"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setup-existing-folder --project <id> --host <host-id> --path <path> [--kind git|folder] [--display-name <name>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setup-update",
+    "path": [
+      "project",
+      "setup-update"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Update project host setup metadata",
+    "usage": "corral project setup-update --setup <setup-id> [--display-name <name>] [--path <path>] [--worktree-base-path <path>] [--git-username <name>] [--kind git|folder] [--state ready|not-set-up|setting-up|error|unsupported] [--method legacy-repo|imported-existing-folder|cloned|provisioned] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "setup",
+      "display-name",
+      "path",
+      "worktree-base-path",
+      "git-username",
+      "kind",
+      "state",
+      "method"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setup-update --setup <setup-id> [--display-name <name>] [--path <path>] [--worktree-base-path <path>] [--git-username <name>] [--kind git|folder] [--state ready|not-set-up|setting-up|error|unsupported] [--method legacy-repo|imported-existing-folder|cloned|provisioned] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "project setups",
+    "path": [
+      "project",
+      "setups"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "List project host setups",
+    "usage": "corral project setups [--project <id>] [--host <host-id>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "project",
+      "host"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral project setups [--project <id>] [--host <host-id>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo add",
+    "path": [
+      "repo",
+      "add"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Add a project to corral by filesystem path",
+    "usage": "corral repo add --path <path> [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "path"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo add --path <path> [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo list",
+    "path": [
+      "repo",
+      "list"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "List repos registered in corral",
+    "usage": "corral repo list [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo list [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo search-refs",
+    "path": [
+      "repo",
+      "search-refs"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Search branch/tag refs within a repo",
+    "usage": "corral repo search-refs --repo <selector> --query <text> [--limit <n>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo",
+      "query",
+      "limit"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo search-refs --repo <selector> --query <text> [--limit <n>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo set-base-ref",
+    "path": [
+      "repo",
+      "set-base-ref"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Set the repo's default base ref for future worktrees",
+    "usage": "corral repo set-base-ref --repo <selector> --ref <ref> [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo",
+      "ref"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo set-base-ref --repo <selector> --ref <ref> [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "repo show",
+    "path": [
+      "repo",
+      "show"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Show one registered repo",
+    "usage": "corral repo show --repo <selector> [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral repo show --repo <selector> [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "worktree create",
+    "path": [
+      "worktree",
+      "create"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Create a new corral-managed worktree",
+    "usage": "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent <id>] [--prompt <text>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo",
+      "project",
+      "host",
+      "project-host-setup",
+      "name",
+      "agent",
+      "prompt",
+      "base-branch",
+      "issue",
+      "linear-issue",
+      "comment",
+      "setup",
+      "parent-worktree",
+      "no-parent",
+      "run-hooks",
+      "activate"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent <id>] [--prompt <text>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": [
+      "no-parent",
+      "run-hooks",
+      "activate"
+    ]
+  },
+  {
+    "command": "worktree current",
+    "path": [
+      "worktree",
+      "current"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Show the corral-managed worktree for the current directory",
+    "usage": "corral worktree current [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree current [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "worktree list",
+    "path": [
+      "worktree",
+      "list"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "List corral-managed worktrees",
+    "usage": "corral worktree list [--repo <selector>] [--limit <n>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "repo",
+      "limit"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree list [--repo <selector>] [--limit <n>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "worktree ps",
+    "path": [
+      "worktree",
+      "ps"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Show a compact orchestration summary across worktrees",
+    "usage": "corral worktree ps [--limit <n>] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "limit"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree ps [--limit <n>] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  },
+  {
+    "command": "worktree rm",
+    "path": [
+      "worktree",
+      "rm"
+    ],
+    "aliases": [
+      [
+        "worktree",
+        "remove"
+      ],
+      [
+        "worktree",
+        "delete"
+      ]
+    ],
+    "argumentMode": "parsed",
+    "summary": "Remove a worktree from corral and git",
+    "usage": "corral worktree rm --worktree <selector> [--force] [--run-hooks] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "worktree",
+      "force",
+      "run-hooks"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree rm --worktree <selector> [--force] [--run-hooks] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": [
+      "force",
+      "run-hooks"
+    ]
+  },
+  {
+    "command": "worktree set",
+    "path": [
+      "worktree",
+      "set"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Update corral metadata for a worktree",
+    "usage": "corral worktree set --worktree <selector> [--display-name <name>] [--issue <number|null>] [--linear-issue <identifier-or-url|null>] [--comment <text>] [--workspace-status <id>] [--parent-worktree <selector>|--no-parent] [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "worktree",
+      "display-name",
+      "issue",
+      "linear-issue",
+      "comment",
+      "workspace-status",
+      "parent-worktree",
+      "no-parent"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree set --worktree <selector> [--display-name <name>] [--issue <number|null>] [--linear-issue <identifier-or-url|null>] [--comment <text>] [--workspace-status <id>] [--parent-worktree <selector>|--no-parent] [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": [
+      "no-parent"
+    ]
+  },
+  {
+    "command": "worktree show",
+    "path": [
+      "worktree",
+      "show"
+    ],
+    "aliases": [],
+    "argumentMode": "parsed",
+    "summary": "Show one worktree",
+    "usage": "corral worktree show --worktree <selector> [--json]",
+    "flags": [
+      "help",
+      "json",
+      "pairing-code",
+      "environment",
+      "worktree"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral worktree show --worktree <selector> [--json]"
+    ],
+    "notes": [
+      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+    ],
+    "booleanFlags": []
+  }
+]

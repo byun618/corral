@@ -6,6 +6,8 @@ import { RuntimeError, type RpcResponse } from './contracts.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
 import { atomicWrite, privateDirectory, readFile, recoverLock } from './storage.js'
 import { serveSocket, socketPath } from './transport.js'
+import { workspaceModule } from './workspace/index.js'
+import type { WorkspaceDesktop } from './workspace/model.js'
 import { memorySnapshot } from './memory.js'
 
 interface Profile { runtimeId: string; backend?: { socket: string; session: string } }
@@ -20,6 +22,7 @@ export function restoreBackend(userData: string): void {
 }
 export async function startRuntime(options: {
   userData: string
+  workspaceDesktop?: WorkspaceDesktop
   requestDesktop?: () => void
   ui?: () => boolean
   focus?: () => void
@@ -64,7 +67,7 @@ export async function startRuntime(options: {
     if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) profile.backend = { socket: process.env.CORRAL_BACKEND_SOCKET, session: process.env.CORRAL_SESSION }
     atomicWrite(profileFile, profile)
     const { runtimeId } = profile
-    const status = () => ({ target: { kind: 'local', socket: endpoint }, runtime: { state: 'ready', reachable: true, runtimeId, instanceId, pid: process.pid, mode: options.ui ? 'desktop' : 'headless', capabilities: foundationSpecs.map(s => s.command) }, ui: { available: options.ui?.() ?? false }, backend: profile.backend ? { ...profile.backend, ownership: 'external', lifecycle: 'independent' } : { state: 'not_configured' } })
+    const status = () => ({ target: { kind: 'local', socket: endpoint }, runtime: { state: 'ready', reachable: true, runtimeId, instanceId, pid: process.pid, mode: options.ui ? 'desktop' : 'headless', capabilities: registry.schema().commands.map(s => s.command) }, ui: { available: options.ui?.() ?? false }, backend: profile.backend ? { ...profile.backend, ownership: 'external', lifecycle: 'independent' } : { state: 'not_configured' } })
     const registry = new CommandRegistry()
     registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async (inv, ctx) => {
       if (inv.command === 'status') return status()
@@ -83,6 +86,8 @@ export async function startRuntime(options: {
       }
       throw new RuntimeError('client_command', 'This command must execute in the CLI client')
     } })
+    registry.register(workspaceModule(options.userData, options.workspaceDesktop))
+    const lanes = new Map<string, Promise<unknown>>()
     stopSocket = await serveSocket(endpoint, async (req, cancelled): Promise<RpcResponse> => {
       const signal = AbortSignal.any([controller.signal, cancelled, AbortSignal.timeout(req.timeoutMs ?? 10000)])
       const meta = { runtimeId, instanceId }
@@ -96,12 +101,21 @@ export async function startRuntime(options: {
         }
         registry.validate(req.invocation)
         signal.throwIfAborted()
-        effectsStarted = req.invocation.command === 'open' && !!options.ui
-        const result = await registry.module(req.invocation.command)!.execute(req.invocation, { ...meta, userData: options.userData, signal, remote: false, deadlineAt: Date.now() + (req.timeoutMs ?? 10000) })
+        const module = registry.module(req.invocation.command)!
+        const execute = async () => {
+          signal.throwIfAborted()
+          effectsStarted = (req.invocation.command === 'open' && !!options.ui) || !!module.isMutation?.(req.invocation)
+          return module.execute(req.invocation, { ...meta, userData: options.userData, signal, remote: false, deadlineAt: Date.now() + (req.timeoutMs ?? 10000) })
+        }
+        const key = module.serialKey?.(req.invocation)
+        const pending = key ? (lanes.get(key) ?? Promise.resolve()).catch(() => {}).then(execute) : execute()
+        if (key) lanes.set(key, pending)
+        let result: unknown
+        try { result = await pending } finally { if (key && lanes.get(key) === pending) lanes.delete(key) }
         signal.throwIfAborted()
         return { id: req.id, ok: true, result, _meta: { ...meta, outcome: 'completed' } }
       } catch (error) {
-        return { id: req.id, ok: false, error: { code: signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error) }, _meta: { ...meta, outcome: effectsStarted ? 'unknown' : 'not_started' } }
+        return { id: req.id, ok: false, error: { code: signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), ...(error instanceof RuntimeError ? { resources: error.resources, stage: error.stage } : {}) }, _meta: { ...meta, outcome: effectsStarted ? 'unknown' : 'not_started' } }
       }
     }, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
     atomicWrite(lock, { pid: process.pid, instanceId, socket: endpoint, socketInode: fs.lstatSync(endpoint).ino })

@@ -559,6 +559,7 @@ export type CorralShortcut = ShortcutMatch
 
 export type CorralApi = {
   getState: () => Promise<AppState>
+  onRevealPane: (listener: (paneId: string) => void) => () => void
   onState: (listener: (state: AppState) => void) => () => void
   addRepo: (root: string) => Promise<AddRepoResult>
   removeRepo: (root: string) => Promise<RemoveRepoResult>

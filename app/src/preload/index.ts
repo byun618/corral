@@ -49,6 +49,7 @@ const EXPOSED = [
   'createWorktree',
   'reportRendered',
   'selectPane',
+  'onRevealPane',
   'syncTermGroups',
   'termInput',
   'termScroll',
@@ -110,6 +111,11 @@ const api: CorralApi = {
   closePane: (input: { paneId: string }): Promise<PaneActionResult> => ipcRenderer.invoke('corral:closePane', input),
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneNeighborResult> =>
     ipcRenderer.invoke('corral:focusPaneDirection', input),
+  onRevealPane: (listener: (paneId: string) => void) => {
+    const handler = (_event: unknown, paneId: string): void => listener(paneId)
+    ipcRenderer.on('corral:revealPane', handler)
+    return () => { ipcRenderer.removeListener('corral:revealPane', handler) }
+  },
   onTermFrame: (listener: (frame: TerminalFrame) => void) => {
     const handler = (_event: unknown, frame: TerminalFrame): void => listener(frame)
     ipcRenderer.on('corral:termFrame', handler)

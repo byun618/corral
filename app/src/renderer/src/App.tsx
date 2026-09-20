@@ -268,6 +268,15 @@ export function App(): React.JSX.Element {
     [selectPane],
   )
 
+  const [requestedPane, setRequestedPane] = useState<string | null>(null)
+  useEffect(() => window.corral.onRevealPane(setRequestedPane), [])
+  useEffect(() => {
+    if (!requestedPane || !state?.repos.some(repo => repo.worktrees.some(worktree =>
+      worktree.workspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === requestedPane))))) return
+    revealPane(requestedPane)
+    setRequestedPane(null)
+  }, [requestedPane, state, revealPane])
+
   // --- ① 영역 층 (LIFE-373) ------------------------------------------------------
   //
   // 화면이 보는 worktree 하나 → 그 worktree 의 영역 배치 → 영역마다 자기 탭 목록·활성 탭.

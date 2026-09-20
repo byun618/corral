@@ -1,3 +1,5 @@
+import { RuntimeError } from '../runtime/contracts.js'
+import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
 import { matchBinding } from '../shared/keybindings.js'
@@ -13,6 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
 import type {
   AddRepoResult,
   AgentKind,
@@ -698,6 +701,59 @@ async function openWorktreeRow(input: {
   }
 }
 
+/** CLI capabilities use the same tree and lifecycle as GUI actions. */
+const workspaceDesktop: WorkspaceDesktop = {
+  changed: rebuildTree,
+  async observe() {
+    const socket = currentSocketPath()
+    if (!socket || link.linkState().phase !== 'live') throw new RuntimeError('backend_unavailable', 'Desktop backend is not connected')
+    await link.resync('cli-process-observation')
+    await rebuildTree()
+    const activePane = stream.terminalState().paneId
+    const rows = []
+    for (const repo of currentState().repos) for (const worktree of repo.worktrees) {
+      const panes = worktree.workspace?.tabs.flatMap(tab => tab.panes) ?? []
+      let liveTerminalCount = 0
+      for (const pane of panes) {
+        const probe = await probeForeground(socket, pane.paneId)
+        if (!probe.ok) throw new RuntimeError('backend_unavailable', probe.error ?? 'Cannot observe terminal')
+        if (probe.shellPid !== null) liveTerminalCount++
+      }
+      rows.push({ path: worktree.path, liveTerminalCount, hasAttachedPty: liveTerminalCount > 0,
+        isActive: panes.some(pane => pane.paneId === activePane), status: worktree.workspace ? 'open' : 'closed',
+        agents: panes.filter(pane => pane.agent !== null).map(pane => ({ paneKey: pane.paneId, agentType: pane.agent!, state: pane.agentStatus })) })
+    }
+    return rows
+  },
+  async activate(repoRoot, target) {
+    const result = await openWorktreeRow({ repoRoot, path: target, isLinked: target !== repoRoot })
+    if (!result.ok) throw new RuntimeError('backend_unavailable', result.error ?? result.rejection?.message ?? 'Cannot open worktree')
+    // Lifecycle responses can precede pane creation and the coalesced tree refresh.
+    const findPane = () => currentState().repos.flatMap(repo => repo.worktrees).find(row => row.path === target)?.workspace?.tabs[0]?.panes[0]
+    let pane = findPane()
+    const deadline = Date.now() + 3000
+    while (!pane && Date.now() < deadline) {
+      await link.resync('cli-activate')
+      await rebuildTree()
+      pane = findPane()
+      if (!pane) await delay(30)
+    }
+    if (!pane) throw new RuntimeError('backend_unavailable', 'Opened worktree has no terminal')
+    window?.show()
+    window?.focus()
+    // The renderer owns tab/group selection. Deliver the request after its tree state.
+    window?.webContents.send('corral:state', currentState())
+    window?.webContents.send('corral:revealPane', pane.paneId)
+    return { parentOpened: result.parentOpened ?? false }
+  },
+  async close(target) {
+    const row = currentState().repos.flatMap(repo => repo.worktrees).find(row => row.path === target)
+    if (!row?.workspace) return
+    const result = await closeWorktreeByWorkspace({ workspaceId: row.workspace.workspaceId, confirmed: true })
+    if (result.outcome !== 'closed') throw new RuntimeError('backend_unavailable', `Cannot close worktree: ${JSON.stringify(result)}`)
+  },
+}
+
 /** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */
 async function createWorktreeForRepo(input: {
   repoRoot: string
@@ -1240,6 +1296,7 @@ app.whenReady().then(async () => {
   const runtime = await startRuntime({
     userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed() && window.isVisible() && !window.webContents.isLoadingMainFrame(),
     focus: () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus() },
+    workspaceDesktop,
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
   })
   stopRuntime = runtime.close

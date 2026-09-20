@@ -1,162 +1,151 @@
-// 레포 레지스트리 — **corral 이 소유하는 유일한 영속 상태** (기준 N3).
-//
-// 저장하는 것은 **레포 루트 경로 목록뿐**이다. worktree 목록도, 어느 것이 열려 있는지도
-// 저장하지 않는다 — 그건 git 과 herdr 에서 읽는다. 저장하는 순간 두 진실이 생기고 낡는다.
-//
-// 형식·위치 (A2): `<userData>/repos.json`, 원자적 쓰기(같은 디렉터리에 tmp → rename).
-// electron-store 를 쓰지 않은 이유 (수정 1회차 L11 — 1회차 문장이 이 레포의 모듈 형식과
-// 안 맞았다): electron-store 11 은 **ESM 전용**이고, 그 함정은 main 을 CJS 로 묶는 설정에서
-// `Store is not a constructor` 로 터지는 것이다 (분석 §5 U4). 이 앱의 main 은 ESM 이라
-// 그 함정 자체는 안 밟는다 — 그래도 안 쓴다: 저장하는 것이 **경로 목록 한 줄**이라
-// 의존성·마이그레이션·스키마를 얹을 값이 없다. tmp→rename 이 같은 보장을 더 싸게 준다.
-// 계측은 `CORRAL_REGISTRY` 로 파일 경로를 통째로 돌린다 (관문 ④ 격리).
-
+// Repo roots and setup metadata have one owner: repos.json. Git owns worktree existence.
 import fs from 'node:fs'
 import path from 'node:path'
-import { isRecord, readArray, safeParse } from '../shared/json.js'
+import { createHash, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { isRecord } from '../shared/json.js'
 import { canonicalPath } from './canonical-path.js'
 import type { AddRepoResult, RegistryState, RemoveRepoResult } from '../shared/types.js'
-import { log } from './log.js'
 
-const VERSION = 1
+export interface RepoRecord {
+  id: string
+  path: string
+  name: string
+  projectId: string
+  baseRef: string | null
+  displayName?: string | null
+  worktreeBasePath?: string | null
+  gitUsername?: string | null
+  method: string
+}
+export interface SetupRecord {
+  id: string
+  projectId: string
+  hostId: string
+  path: string | null
+  kind: string
+  displayName: string | null
+  worktreeBasePath: string | null
+  gitUsername: string | null
+  state: string
+  method: string
+}
+interface RegistryData { version: 2; repos: RepoRecord[]; setups: SetupRecord[] }
 
 export class RepoRegistry {
   private readonly file: string
-  private roots: string[] = []
   private lastError: string | null = null
 
   constructor(userDataDir: string) {
-    const fromEnv = process.env.CORRAL_REGISTRY
-    this.file = fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : path.join(userDataDir, 'repos.json')
+    this.file = process.env.CORRAL_REGISTRY || path.join(userDataDir, 'repos.json')
   }
 
   load(): void {
-    try {
-      if (!fs.existsSync(this.file)) {
-        this.roots = []
-        this.lastError = null
-        log('registry.load', { file: this.file, roots: 0, note: '파일 없음 — 빈 레지스트리' })
-        return
-      }
-      const parsed = safeParse(fs.readFileSync(this.file, 'utf8'))
-      if (!isRecord(parsed)) throw new Error('레지스트리 파일이 객체가 아니다')
-      const roots: string[] = []
-      for (const item of readArray(parsed, 'repos')) {
-        if (typeof item !== 'string' || item.length === 0) continue
-        if (!roots.includes(item)) roots.push(item)
-      }
-      this.roots = roots.sort()
-      this.lastError = null
-      log('registry.load', { file: this.file, roots: this.roots.length })
-    } catch (error) {
-      this.roots = []
-      this.lastError = String(error)
-      log('registry.load_failed', { file: this.file, error: String(error) })
-    }
+    try { this.read(); this.lastError = null } catch (error) { this.lastError = String(error) }
   }
 
   state(): RegistryState {
-    return { file: this.file, roots: [...this.roots], lastError: this.lastError }
+    this.load()
+    return { file: this.file, roots: this.lastError ? [] : this.list(), lastError: this.lastError }
   }
 
-  list(): string[] {
-    return [...this.roots]
-  }
+  list(): string[] { return this.records().map(repo => repo.path).sort() }
+  records(): RepoRecord[] { return this.read().repos }
+  setups(): SetupRecord[] { return this.read().setups }
 
-  /**
-   * 레포 루트를 더한다. 받는 것은 사용자가 친 경로고, **레포 루트로 정규화해서** 넣는다 —
-   * worktree 안쪽 경로를 그대로 넣으면 같은 레포가 두 줄로 앉는다.
-   */
-  add(input: string): AddRepoResult {
-    const raw = input.trim()
-    if (raw.length === 0) return { ok: false, error: '경로가 비었다' }
-    const expanded = raw.startsWith('~') ? path.join(process.env.HOME ?? '', raw.slice(1)) : raw
-    // 조인에 쓰는 경로는 전부 같은 정규화를 지난다 (L8) — symlink 로 등록해도 git·herdr 와 맞는다.
-    const resolved = canonicalPath(expanded)
-    if (!fs.existsSync(resolved)) return { ok: false, error: `없는 경로다: ${resolved}` }
-    const root = repoRootOf(resolved)
-    if (root === null) return { ok: false, error: `git 레포가 아니다: ${resolved}` }
-    if (this.roots.includes(root)) return { ok: true, root }
-    const next = [...this.roots, root].sort()
-    const saved = this.save(next)
-    if (!saved.ok) return { ok: false, error: saved.error }
-    this.roots = next
-    log('registry.added', { root, roots: this.roots.length, file: this.file })
-    return { ok: true, root }
-  }
-
-  /**
-   * 레포 루트 하나를 뺀다 (게이트 ① 3번째 지시, 2026-09-12).
-   *
-   * 빼는 것은 **이 목록의 그 줄 하나**다. 디스크의 폴더도, herdr 도 건드리지 않는다 —
-   * 이 메서드가 부르는 것은 `save()` 하나뿐이고 그건 레지스트리 파일만 쓴다.
-   * (`canonicalPath` 가 realpath 를 부르지만 그건 **읽기**다. 고치는 파일은 레지스트리뿐이다.)
-   *
-   * 정규화는 `add()` 와 같은 길을 지난다 — trim → `~` 펴기 → `canonicalPath`. 그래야 넣을 때
-   * 접힌 루트와 뺄 때 준 경로가 같은 자리에서 만난다.
-   *
-   * **없는 경로도 뺄 수 있어야 한다**: 폴더를 지운 뒤에 목록에서 빼려는 것이 가장 흔하다.
-   * 그래서 `add()` 와 달리 존재 검사로 막지 않는다. 정확히 일치하는 루트를 먼저 보고,
-   * 없을 때만 — 그리고 경로가 실제로 있을 때만 — 레포 루트로 접어 한 번 더 본다.
-   */
-  remove(input: string): RemoveRepoResult {
-    const raw = input.trim()
-    if (raw.length === 0) return { ok: false, error: '경로가 비었다' }
-    const expanded = raw.startsWith('~') ? path.join(process.env.HOME ?? '', raw.slice(1)) : raw
-    const resolved = canonicalPath(expanded)
-    let root: string | null = this.roots.includes(resolved) ? resolved : null
-    if (root === null && fs.existsSync(resolved)) {
-      const folded = repoRootOf(resolved)
-      if (folded !== null && this.roots.includes(folded)) root = folded
+  private read(): RegistryData {
+    if (!fs.existsSync(this.file)) return { version: 2, repos: [], setups: [] }
+    const data: unknown = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+    if (!Array.isArray(data) && !isRecord(data)) throw new Error('Invalid registry')
+    const entries: unknown = Array.isArray(data) ? data : data.repos
+    if (!Array.isArray(entries)) throw new Error('Invalid repo registry')
+    const repos: RepoRecord[] = []
+    for (const entry of entries) {
+      if (typeof entry === 'string') {
+        const root = canonicalPath(entry)
+        // Stable UUID during read-only v1 migration, even across GUI/CLI processes.
+        const hex = createHash('sha256').update(root).digest('hex')
+        const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+        if (!repos.some(repo => repo.path === root)) repos.push({ id, path: root, name: path.basename(root), projectId: `repo:${id}`, baseRef: null, method: 'imported-existing-folder' })
+      } else if (isRepo(entry)) {
+        repos.push(entry)
+      } else throw new Error('Invalid repo record')
     }
-    if (root === null) return { ok: false, error: `목록에 없다: ${resolved}` }
-    const next = this.roots.filter((item) => item !== root)
-    const saved = this.save(next)
-    if (!saved.ok) return { ok: false, error: saved.error }
-    this.roots = next
-    log('registry.removed', { root, roots: this.roots.length, file: this.file })
-    return { ok: true, root }
+    const setups: unknown = Array.isArray(data) ? [] : data.setups ?? []
+    if (!Array.isArray(setups) || !setups.every(isSetup)) throw new Error('Invalid setups')
+    return { version: 2, repos, setups }
   }
 
-  /** 원자적 쓰기 — 같은 디렉터리에 tmp 를 쓰고 rename 한다 (rename 은 같은 파일시스템에서 원자적). */
-  private save(roots: string[]): { ok: true } | { ok: false; error: string } {
-    const payload = JSON.stringify({ version: VERSION, repos: roots }, null, 2) + '\n'
-    const tmp = `${this.file}.${process.pid}.tmp`
+  /** Synchronous read-modify-rename, shared by GUI and runtime. No stale cached records. */
+  change<T>(mutate: (data: RegistryData) => T): T {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true })
+    const lock = `${this.file}.lock`
+    const fd = fs.openSync(lock, 'wx', 0o600)
+    const tmp = `${this.file}.${randomUUID()}.tmp`
     try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      fs.writeFileSync(tmp, payload)
+      const data = this.read()
+      const result = mutate(data)
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
       fs.renameSync(tmp, this.file)
       this.lastError = null
-      return { ok: true }
-    } catch (error) {
+      return result
+    } finally {
       fs.rmSync(tmp, { force: true })
-      this.lastError = String(error)
-      log('registry.save_failed', { file: this.file, error: String(error) })
-      return { ok: false, error: String(error) }
+      fs.closeSync(fd)
+      fs.unlinkSync(lock)
     }
+  }
+
+  register(root: string, fields: Partial<RepoRecord> = {}): RepoRecord {
+    return this.change(data => {
+      if (data.repos.some(repo => repo.path === root)) throw new Error(`Repo already registered: ${root}`)
+      const id = randomUUID()
+      const repo: RepoRecord = { id, path: root, name: path.basename(root), projectId: `repo:${id}`, baseRef: null, method: 'imported-existing-folder', ...fields }
+      data.repos.push(repo)
+      return repo
+    })
+  }
+
+  add(input: string): AddRepoResult {
+    try {
+      const root = repoRootOf(input)
+      if (!this.records().some(repo => repo.path === root)) this.register(root)
+      return { ok: true, root }
+    } catch (error) { return { ok: false, error: String(error) } }
+  }
+
+  remove(input: string): RemoveRepoResult {
+    try {
+      const resolved = canonicalPath(expandPath(input))
+      const records = this.records()
+      const root = records.some(repo => repo.path === resolved) ? resolved : repoRootOf(input)
+      return this.change(data => {
+        if (!data.repos.some(repo => repo.path === root)) throw new Error(`목록에 없다: ${root}`)
+        data.repos = data.repos.filter(repo => repo.path !== root)
+        return { ok: true as const, root }
+      })
+    } catch (error) { return { ok: false, error: String(error) } }
   }
 }
 
-/** 그 경로가 속한 **레포 루트**(주 체크아웃)를 찾는다. worktree 안쪽을 줘도 루트로 접힌다. */
-function repoRootOf(target: string): string | null {
-  let dir = fs.statSync(target).isDirectory() ? target : path.dirname(target)
-  for (;;) {
-    const git = path.join(dir, '.git')
-    if (fs.existsSync(git)) {
-      const stat = fs.statSync(git)
-      // 디렉터리면 주 체크아웃이다. 파일이면 링크된 worktree — `gitdir:` 를 따라 주 체크아웃으로 간다.
-      if (stat.isDirectory()) return dir
-      const pointer = fs.readFileSync(git, 'utf8').trim()
-      const match = /^gitdir:\s*(.+)$/.exec(pointer)
-      if (match === null || match[1] === undefined) return dir
-      // <main>/.git/worktrees/<name> → <main>
-      const worktreeGitDir = canonicalPath(path.resolve(dir, match[1]))
-      const marker = `${path.sep}.git${path.sep}worktrees${path.sep}`
-      const index = worktreeGitDir.indexOf(marker)
-      return index === -1 ? dir : worktreeGitDir.slice(0, index)
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
+export function expandPath(input: string): string {
+  if (!input.trim()) throw new Error('경로가 비었다')
+  return input.startsWith('~/') ? path.join(process.env.HOME ?? '', input.slice(2)) : input
+}
+
+export function repoRootOf(input: string): string {
+  const target = canonicalPath(expandPath(input))
+  const cwd = fs.statSync(target).isDirectory() ? target : path.dirname(target)
+  const run = (args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  run(['rev-parse', '--show-toplevel'])
+  const common = canonicalPath(path.resolve(cwd, run(['rev-parse', '--git-common-dir'])))
+  const main = run(['worktree', 'list', '--porcelain']).split('\n').find(line => line.startsWith('worktree '))?.slice(9)
+  return main ? canonicalPath(main) : path.dirname(common)
+}
+
+function isRepo(value: unknown): value is RepoRecord {
+  return isRecord(value) && ['id', 'path', 'name', 'projectId', 'method'].every(key => typeof value[key] === 'string') && (value.baseRef === null || typeof value.baseRef === 'string')
+}
+function isSetup(value: unknown): value is SetupRecord {
+  return isRecord(value) && ['id', 'projectId', 'hostId', 'kind', 'state', 'method'].every(key => typeof value[key] === 'string') && ['path', 'displayName', 'worktreeBasePath', 'gitUsername'].every(key => value[key] === null || typeof value[key] === 'string')
 }

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
+import { workspaceModule } from './workspace/index.js'
 import { startRuntime } from './server.js'
 import { localCall, request, MAX_REQUEST } from './transport.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
@@ -17,10 +18,13 @@ function fixture() {
 }
 const invocation = (command = 'status') => ({ command, flags: {}, args: [], cwd: '/tmp' })
 describe('first release boundary and ownership', () => {
-  it('has exactly five commands and rejects legacy/future commands and unsupported options', () => {
+  it('has five foundation plus nineteen workspace commands and rejects future commands and unsupported options', () => {
     const registry = new CommandRegistry()
     registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => null })
     expect(registry.schema().commands.map(s => s.command)).toEqual(['open','serve','status','agent-context','diagnostics memory'])
+    registry.register(workspaceModule('/tmp/metadata-only'))
+    expect(registry.schema().commandCount).toBe(24)
+    expect(registry.parse(['repo', 'add', '--path', '/tmp/repo'], '/tmp').command).toBe('repo add')
     for (const args of [['terminal','list'],['environment','list'],['repo','add'],['status','--host','local'],['serve','--port','0'],['status','--timeout-ms','0'],['status','--json','--json'],['status','unexpected']]) expect(() => registry.parse(args, '/tmp')).toThrow()
   })
   it('preserves runtime identity across restart, rejects another identity and a live owner', async () => {

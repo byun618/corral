@@ -6,14 +6,22 @@ import { CommandRegistry, foundationSpecs, validateFoundation } from './registry
 import { RuntimeError, stringFlag, type Invocation, type RpcResponse } from './contracts.js'
 import { defaultUserData, privateDirectory } from './storage.js'
 import { localCall, request, socketPath } from './transport.js'
+import { workspaceModule } from './workspace/index.js'
 import { startRuntime } from './server.js'
 import { isRecord } from '../shared/json.js'
 const registry = new CommandRegistry()
 registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => { throw new Error('Client metadata') } })
+registry.register(workspaceModule(defaultUserData()))
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function print(response: RpcResponse, json: boolean): void {
   if (json) console.log(JSON.stringify(response))
-  else if (response.ok) console.log(JSON.stringify(response.result, null, 2))
+  else if (response.ok) {
+    console.log(JSON.stringify(response.result, null, 2))
+    if (isRecord(response.result) && isRecord(response.result.hostScope)) {
+      console.log('scope: local')
+      if (response.result.truncated) console.log(`truncated: showing ${Array.isArray(response.result.worktrees) ? response.result.worktrees.length : 0} of ${String(response.result.totalCount)}`)
+    }
+  }
   else console.error(`${response.error?.code}: ${response.error?.message}`)
   process.exitCode = response.ok ? 0 : 1
 }

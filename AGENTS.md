@@ -3,7 +3,7 @@
 herdr 기반 AI 워크스페이스 (LIFE-337). 세션·일감을 한 울타리에 모으는 미션 컨트롤.
 herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 Electron + React GUI.
 
-프로젝트 방향·스텝은 specs/00-project.md 를 읽는다.
+프로젝트 방향·체크포인트는 specs/00-project.md 를 읽는다.
 
 ## 산출물 규칙
 

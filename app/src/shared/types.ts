@@ -559,6 +559,8 @@ export type CorralShortcut = ShortcutMatch
 
 export type CorralApi = {
   getState: () => Promise<AppState>
+  onTerminalFocus: (listener: (request: { id: string; paneId: string; deadlineAt: number }) => void) => () => void
+  terminalFocused: (id: string, paneId: string) => void
   onRevealPane: (listener: (paneId: string) => void) => () => void
   onState: (listener: (state: AppState) => void) => () => void
   addRepo: (root: string) => Promise<AddRepoResult>

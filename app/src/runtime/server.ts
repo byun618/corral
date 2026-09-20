@@ -8,6 +8,8 @@ import { atomicWrite, privateDirectory, readFile, recoverLock } from './storage.
 import { serveSocket, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
 import type { WorkspaceDesktop } from './workspace/model.js'
+import { terminalModule, type TerminalDesktop } from './terminal/index.js'
+import { isRecord } from '../shared/json.js'
 import { memorySnapshot } from './memory.js'
 
 interface Profile { runtimeId: string; backend?: { socket: string; session: string } }
@@ -23,6 +25,7 @@ export function restoreBackend(userData: string): void {
 export async function startRuntime(options: {
   userData: string
   workspaceDesktop?: WorkspaceDesktop
+  terminalDesktop?: TerminalDesktop
   requestDesktop?: () => void
   ui?: () => boolean
   focus?: () => void
@@ -87,11 +90,13 @@ export async function startRuntime(options: {
       throw new RuntimeError('client_command', 'This command must execute in the CLI client')
     } })
     registry.register(workspaceModule(options.userData, options.workspaceDesktop))
+    registry.register(terminalModule(options.userData, options.terminalDesktop))
     const lanes = new Map<string, Promise<unknown>>()
     stopSocket = await serveSocket(endpoint, async (req, cancelled): Promise<RpcResponse> => {
       const signal = AbortSignal.any([controller.signal, cancelled, AbortSignal.timeout(req.timeoutMs ?? 10000)])
       const meta = { runtimeId, instanceId }
       let effectsStarted = false
+      const deadlineAt = Date.now() + (req.timeoutMs ?? 10000)
       try {
         if (req.expectedRuntimeId && req.expectedRuntimeId !== runtimeId) throw new RuntimeError('identity_mismatch', 'Request addresses a different runtime')
         if (req.invocation.command === 'open') {
@@ -104,8 +109,8 @@ export async function startRuntime(options: {
         const module = registry.module(req.invocation.command)!
         const execute = async () => {
           signal.throwIfAborted()
-          effectsStarted = (req.invocation.command === 'open' && !!options.ui) || !!module.isMutation?.(req.invocation)
-          return module.execute(req.invocation, { ...meta, userData: options.userData, signal, remote: false, deadlineAt: Date.now() + (req.timeoutMs ?? 10000) })
+          effectsStarted = (req.invocation.command === 'open' && !!options.ui) || (!module.tracksEffects && !!module.isMutation?.(req.invocation))
+          return module.execute(req.invocation, { ...meta, userData: options.userData, signal, remote: false, deadlineAt, onEffect: () => { effectsStarted = true } })
         }
         const key = module.serialKey?.(req.invocation)
         const pending = key ? (lanes.get(key) ?? Promise.resolve()).catch(() => {}).then(execute) : execute()
@@ -115,7 +120,13 @@ export async function startRuntime(options: {
         signal.throwIfAborted()
         return { id: req.id, ok: true, result, _meta: { ...meta, outcome: 'completed' } }
       } catch (error) {
-        return { id: req.id, ok: false, error: { code: signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), ...(error instanceof RuntimeError ? { resources: error.resources, stage: error.stage } : {}) }, _meta: { ...meta, outcome: effectsStarted ? 'unknown' : 'not_started' } }
+        const terminal = req.invocation.command.startsWith('terminal ')
+        const waitTimeout = req.invocation.command === 'terminal wait' && !cancelled.aborted && !controller.signal.aborted && (signal.aborted || error instanceof RuntimeError && ['wait_timeout', 'backend_timeout', 'deadline_exceeded'].includes(error.code))
+        const detail = error instanceof RuntimeError ? error.resources : undefined
+        const resources = terminal ? { ...(isRecord(detail) ? detail : {}), terminal: req.invocation.flags.terminal ?? null,
+          requestId: req.invocation.flags['request-id'] ?? null, recovery: 'Inspect terminal list/show/read; retry mutations only with the same request ID' } : detail
+        const stage = error instanceof RuntimeError && error.stage ? error.stage : terminal ? (effectsStarted ? 'backend' : 'preflight') : undefined
+        return { id: req.id, ok: false, error: { code: waitTimeout ? 'wait_timeout' : signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), resources, stage }, _meta: { ...meta, outcome: error instanceof RuntimeError && error.outcome ? error.outcome : effectsStarted ? 'unknown' : 'not_started' } }
       }
     }, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
     atomicWrite(lock, { pid: process.pid, instanceId, socket: endpoint, socketInode: fs.lstatSync(endpoint).ino })

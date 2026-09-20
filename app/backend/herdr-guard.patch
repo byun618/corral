@@ -1,0 +1,211 @@
+--- a/src/api/schema.rs
++++ b/src/api/schema.rs
+@@ -45,6 +45,8 @@
+ // the simple serde shape and avoids boxing churn across every caller.
+ #[allow(clippy::large_enum_variant)]
+ pub enum Method {
++    #[serde(rename = "corral.terminal")]
++    CorralTerminal(CorralTerminalParams),
+     #[serde(rename = "ping")]
+     Ping(PingParams),
+     #[serde(rename = "server.stop")]
+@@ -268,3 +270,13 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++/// Private corral guard protocol v1. The App event loop validates and executes in one turn.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct CorralTerminalParams {
++    #[serde(default)] pub epoch: String,
++    #[serde(default)] pub deadline_ms: u64,
++    #[serde(default)] pub pane_id: Option<String>,
++    #[serde(default)] pub terminal_id: Option<String>,
++    #[serde(default)] pub operation: Option<serde_json::Value>,
++}
+--- a/src/api/server.rs
++++ b/src/api/server.rs
+@@ -385,6 +385,7 @@
+ pub(crate) fn api_method_name(method: &Method) -> &'static str {
+     match method {
+         Method::Ping(_) => "ping",
++        Method::CorralTerminal(_) => "corral.terminal",
+         Method::ServerStop(_) => "server.stop",
+         Method::ServerLiveHandoff(_) => "server.live_handoff",
+         Method::ServerReloadConfig(_) => "server.reload_config",
+--- a/src/app/api.rs
++++ b/src/app/api.rs
+@@ -1,5 +1,6 @@
+ use std::time::{Duration, Instant};
+ 
++mod corral;
+ mod agent_view;
+ mod agents;
+ mod env;
+@@ -892,6 +893,7 @@
+         };
+ 
+         let response = match request.method {
++            Method::CorralTerminal(params) => return self.handle_corral_terminal(request.id, params),
+             Method::ServerStop(_) => {
+                 self.state.should_quit = true;
+                 SuccessResponse {
+--- /dev/null
++++ b/src/app/api/corral.rs
+@@ -0,0 +1,107 @@
++use super::App;
++use crate::api::schema::{CorralTerminalParams, Method, Request};
++use super::responses::encode_error;
++
++fn epoch() -> &'static str {
++    static EPOCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
++    EPOCH.get_or_init(|| {
++        use std::io::Read;
++        let mut bytes = [0u8; 32];
++        std::fs::File::open("/dev/urandom").unwrap().read_exact(&mut bytes).unwrap();
++        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
++    })
++}
++impl App {
++    pub(super) fn handle_corral_terminal(&mut self, id: String, params: CorralTerminalParams) -> String {
++        let Some(mut operation) = params.operation else {
++            return serde_json::json!({"id": id, "result": {"epoch": epoch(), "guard_version": 1,
++                "raw_capacity": 1048576, "conditional_process": false}}).to_string();
++        };
++        if params.epoch != epoch() { return encode_error(id, "stale_backend", "backend generation changed"); }
++        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
++        if now >= u128::from(params.deadline_ms) { return encode_error(id, "deadline_exceeded", "no effect started"); }
++        operation["id"] = serde_json::Value::String(id.clone());
++        let Ok(request) = serde_json::from_value::<Request>(operation) else {
++            return encode_error(id, "invalid_request", "invalid guarded operation");
++        };
++        let target = match &request.method {
++            Method::PaneSendText(p) => Some(p.pane_id.as_str()),
++            Method::PaneClose(p) => Some(p.pane_id.as_str()),
++            Method::PaneRead(p) => Some(p.pane_id.as_str()),
++            Method::PaneProcessInfo(p) => p.pane_id.as_deref(),
++            Method::TabRename(_) => params.pane_id.as_deref(),
++            Method::SessionSnapshot(_) | Method::WorkspaceCreate(_) | Method::TabCreate(_) => None,
++            _ => return encode_error(id, "unsupported", "operation is outside terminal guard protocol"),
++        };
++        if let Some(target) = target {
++            if params.pane_id.as_deref() != Some(target) { return encode_error(id, "invalid_request", "target mismatch"); }
++            let Some((ws, pane)) = self.parse_pane_id(target) else { return encode_error(id, "stale_terminal", "pane disappeared"); };
++            let actual = self.state.terminal_id_for_pane(ws, pane).and_then(|value| self.lookup_runtime_sender(ws, pane).map(|runtime| format!("{value}.{}", runtime.corral_generation())));
++            if actual.is_none() || actual != params.terminal_id { return encode_error(id, "stale_terminal", "PTY generation changed"); }
++            if let Method::TabRename(p) = &request.method {
++                let Some((tab_ws, tab_idx)) = self.parse_tab_id(&p.tab_id) else { return encode_error(id, "stale_terminal", "tab disappeared"); };
++                if tab_ws != ws || !self.state.workspaces[ws].tabs[tab_idx].panes.contains_key(&pane) {
++                    return encode_error(id, "stale_terminal", "pane moved to another tab");
++                }
++            }
++        } else if matches!(&request.method, Method::TabRename(_)) {
++            return encode_error(id, "invalid_request", "rename needs terminal guard");
++        }
++        // No await, internal-event drain, or second queue between guard and effect.
++        let snapshot = matches!(&request.method, Method::SessionSnapshot(_));
++        let response = self.handle_api_request_after_internal_events_drained(request);
++        if !snapshot { return response; }
++        let mut value: serde_json::Value = serde_json::from_str(&response).unwrap();
++        if let Some(panes) = value["result"]["snapshot"]["panes"].as_array_mut() {
++            for pane in panes {
++                let generation = pane["pane_id"].as_str().and_then(|id| self.parse_pane_id(id))
++                    .and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane))
++                    .map(|runtime| runtime.corral_generation().to_string());
++                pane["corral_pty_generation"] = serde_json::json!(generation);
++            }
++        }
++        value.to_string()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[tokio::test]
++    async fn corral_terminal_rejects_old_generation_after_real_pty_respawn() {
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l393-codex-rust-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        assert!(response.get("error").is_none(), "{response}");
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        let old_runtime = app.terminal_runtimes.remove(&terminal).unwrap();
++        let old_generation = old_runtime.corral_generation();
++        old_runtime.shutdown();
++        assert!(app.respawn_shell_for_launch_pane(pane, false));
++        let new_generation = app.lookup_runtime_sender(ws, pane).unwrap().corral_generation();
++        assert_ne!(old_generation, new_generation);
++        for (method, text) in [("pane.send_text", "WRONG\r"), ("pane.send_text", "\u{3}"), ("pane.close", "")] {
++            let operation = if method == "pane.close" { serde_json::json!({"method":method,"params":{"pane_id":pane_name}}) }
++                else { serde_json::json!({"method":method,"params":{"pane_id":pane_name,"text":text}}) };
++            let response: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation),
++            })).unwrap();
++            assert_eq!(response["error"]["code"], "stale_terminal");
++            assert_eq!(app.lookup_runtime_sender(ws, pane).unwrap().corral_generation(), new_generation);
++        }
++        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
++        let (raw, _, _) = app.lookup_runtime_sender(ws, pane).unwrap().corral_raw_snapshot();
++        use base64::Engine;
++        let output = base64::engine::general_purpose::STANDARD.decode(raw).unwrap();
++        assert!(!String::from_utf8_lossy(&output).contains("WRONG"));
++        println!("same terminal={terminal}, old PTY generation={old_generation}, new={new_generation}; send/interrupt/close rejected; replacement alive; output={:?}", String::from_utf8_lossy(&output));
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++}
+--- a/src/pane/terminal.rs
++++ b/src/pane/terminal.rs
+@@ -213,12 +213,14 @@
+ 
+ pub(crate) struct PaneTerminal {
+     pub(crate) ghostty: GhosttyPaneTerminal,
++    corral_generation: u64,
+     corral_raw: Mutex<(std::collections::VecDeque<u8>, u64)>,
+ }
+ 
+ impl PaneTerminal {
+     pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
+-        Self { ghostty, corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
++        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        Self { ghostty, corral_generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
+     }
+ 
+     pub fn process_pty_bytes(
+@@ -237,6 +239,8 @@
+         self.ghostty
+             .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
+     }
++
++    pub(crate) fn corral_generation(&self) -> u64 { self.corral_generation }
+ 
+     pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) {
+         use base64::Engine;
+--- a/src/pane.rs
++++ b/src/pane.rs
+@@ -2920,6 +2920,8 @@
+         self.terminal.scroll_metrics()
+     }
+ 
++    pub(crate) fn corral_generation(&self) -> u64 { self.terminal.corral_generation() }
++
+     pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
+ 
+     pub(crate) fn search_text_window(
+--- a/src/terminal/runtime.rs
++++ b/src/terminal/runtime.rs
+@@ -348,6 +348,8 @@
+         self.0.synchronized_output_active()
+     }
+ 
++    pub(crate) fn corral_generation(&self) -> u64 { self.0.corral_generation() }
++
+     pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
+ 
+     pub fn visible_text(&self) -> String {

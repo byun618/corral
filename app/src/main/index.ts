@@ -1,4 +1,6 @@
 import { RuntimeError } from '../runtime/contracts.js'
+import { randomUUID } from 'node:crypto'
+import type { TerminalDesktop } from '../runtime/terminal/index.js'
 import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
@@ -754,6 +756,40 @@ const workspaceDesktop: WorkspaceDesktop = {
   },
 }
 
+const terminalDesktop: TerminalDesktop = {
+  available: () => !!window && !window.isDestroyed() && !window.webContents.isLoadingMainFrame(),
+  async changed() { await link.resync('terminal-cli'); await rebuildTree() },
+  async reveal(target, context) {
+    const client = window
+    if (!client || client.isDestroyed() || currentSocketPath() !== process.env.CORRAL_BACKEND_SOCKET) throw new RuntimeError('ui_unavailable', 'GUI no longer addresses this backend')
+    await terminalDesktop.changed()
+    context.signal.throwIfAborted()
+    if (client.isDestroyed() || Date.now() >= context.deadlineAt) throw new RuntimeError('ui_unavailable', 'GUI closed before selection')
+    const id = randomUUID()
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer)
+        ipcMain.removeListener('corral:terminalFocused', ack)
+        context.signal.removeEventListener('abort', cancelled)
+        client.removeListener('closed', closed)
+        if (error) reject(error); else resolve()
+      }
+      const ack = (event: Electron.IpcMainEvent, response: { id: string; paneId: string }) => {
+        if (event.sender === client.webContents && response.id === id && response.paneId === target.paneId && stream.terminalState().paneId === target.paneId) finish()
+      }
+      const cancelled = () => finish(new RuntimeError('request_cancelled', 'GUI selection cancelled'))
+      const closed = () => finish(new RuntimeError('ui_unavailable', 'GUI closed during selection'))
+      const timer = setTimeout(() => finish(new RuntimeError('ui_unavailable', 'GUI did not confirm keyboard destination')), Math.max(1, context.deadlineAt - Date.now() - 10))
+      ipcMain.on('corral:terminalFocused', ack)
+      context.signal.addEventListener('abort', cancelled, { once: true })
+      client.once('closed', closed)
+      client.show(); client.focus()
+      client.webContents.send('corral:state', currentState())
+      client.webContents.send('corral:terminalFocus', { id, paneId: target.paneId, deadlineAt: context.deadlineAt })
+    })
+  },
+}
+
 /** 새 linked worktree 를 만든다 (L7). parent 를 확보한 뒤 부른다. */
 async function createWorktreeForRepo(input: {
   repoRoot: string
@@ -1296,7 +1332,7 @@ app.whenReady().then(async () => {
   const runtime = await startRuntime({
     userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed() && window.isVisible() && !window.webContents.isLoadingMainFrame(),
     focus: () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus() },
-    workspaceDesktop,
+    workspaceDesktop, terminalDesktop,
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
   })
   stopRuntime = runtime.close

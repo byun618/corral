@@ -20,7 +20,7 @@
       "corral open --json"
     ],
     "notes": [
-      "Local Unix socket only; remote/environment/pairing, terminal commands are not shipped.",
+      "Local Unix socket only; remote/environment/pairing are not shipped.",
       "open requires CORRAL_USER_DATA to match the selected runtime profile; an unreachable explicit socket never launches a desktop."
     ]
   },
@@ -43,7 +43,7 @@
       "corral serve --json"
     ],
     "notes": [
-      "Local Unix socket only; remote/environment/pairing, terminal commands are not shipped."
+      "Local Unix socket only; remote/environment/pairing are not shipped."
     ]
   },
   {
@@ -67,7 +67,7 @@
       "corral status --json"
     ],
     "notes": [
-      "Local Unix socket only; remote/environment/pairing, terminal commands are not shipped."
+      "Local Unix socket only; remote/environment/pairing are not shipped."
     ]
   },
   {
@@ -88,7 +88,7 @@
       "corral agent-context --json"
     ],
     "notes": [
-      "Local Unix socket only; remote/environment/pairing, terminal commands are not shipped."
+      "Local Unix socket only; remote/environment/pairing are not shipped."
     ]
   },
   {
@@ -113,7 +113,7 @@
       "corral diagnostics memory --json"
     ],
     "notes": [
-      "Local Unix socket only; remote/environment/pairing, terminal commands are not shipped."
+      "Local Unix socket only; remote/environment/pairing are not shipped."
     ]
   }
 ]

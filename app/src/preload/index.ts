@@ -111,6 +111,12 @@ const api: CorralApi = {
   closePane: (input: { paneId: string }): Promise<PaneActionResult> => ipcRenderer.invoke('corral:closePane', input),
   focusPaneDirection: (input: { paneId: string; direction: PaneDirection }): Promise<PaneNeighborResult> =>
     ipcRenderer.invoke('corral:focusPaneDirection', input),
+  onTerminalFocus: (listener: (request: { id: string; paneId: string; deadlineAt: number }) => void) => {
+    const handler = (_event: unknown, request: { id: string; paneId: string; deadlineAt: number }): void => listener(request)
+    ipcRenderer.on('corral:terminalFocus', handler)
+    return () => { ipcRenderer.removeListener('corral:terminalFocus', handler) }
+  },
+  terminalFocused: (id: string, paneId: string) => ipcRenderer.send('corral:terminalFocused', { id, paneId }),
   onRevealPane: (listener: (paneId: string) => void) => {
     const handler = (_event: unknown, paneId: string): void => listener(paneId)
     ipcRenderer.on('corral:revealPane', handler)

@@ -51,10 +51,11 @@ export interface RpcResponse {
     };
 }
 export class RuntimeError extends Error {
-    constructor(readonly code: string, message: string, readonly resources?: unknown, readonly stage?: string) { super(message); }
+    constructor(readonly code: string, message: string, readonly resources?: unknown, readonly stage?: string, readonly outcome?: 'not_started' | 'unknown') { super(message); }
 }
 export interface CommandModule {
     specs: CommandSpec[];
+    tracksEffects?: boolean;
     executeLocal?(invocation: Invocation, context: { userData: string }): Promise<unknown>;
     isMutation?(invocation: Invocation): boolean;
     /** Only commands sharing mutable state need a lane. Waiting commands should return undefined. */
@@ -70,6 +71,7 @@ export interface CommandContext {
     signal: AbortSignal;
     remote: boolean;
     deadlineAt: number;
+    onEffect?: () => void;
 }
 export function stringFlag(flags: Flags, name: string, required = false): string | undefined {
     const value = flags[name];

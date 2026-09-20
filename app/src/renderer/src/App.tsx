@@ -269,13 +269,29 @@ export function App(): React.JSX.Element {
   )
 
   const [requestedPane, setRequestedPane] = useState<string | null>(null)
-  useEffect(() => window.corral.onRevealPane(setRequestedPane), [])
+  const requestedDeadline = useRef<number | null>(null)
+  useEffect(() => window.corral.onRevealPane(pane => { requestedDeadline.current = null; setRequestedPane(pane) }), [])
   useEffect(() => {
-    if (!requestedPane || !state?.repos.some(repo => repo.worktrees.some(worktree =>
-      worktree.workspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === requestedPane))))) return
-    revealPane(requestedPane)
-    setRequestedPane(null)
-  }, [requestedPane, state, revealPane])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const stop = window.corral.onTerminalFocus(request => {
+      if (timer) clearTimeout(timer)
+      if (Date.now() >= request.deadlineAt) return
+      requestedDeadline.current = request.deadlineAt
+      setRequestedPane(request.paneId)
+      const confirm = () => {
+        if (Date.now() >= request.deadlineAt) { setRequestedPane(null); return }
+        const selected = document.querySelector<HTMLElement>('[data-term-pane-box].is-selected')
+        if (selected?.dataset.termPaneBox === request.paneId && selected.contains(document.activeElement)) {
+          window.corral.terminalFocused(request.id, request.paneId)
+          return
+        }
+        timer = setTimeout(confirm, 20)
+      }
+      timer = setTimeout(confirm, 20)
+    })
+    return () => { stop(); if (timer) clearTimeout(timer) }
+  }, [])
+
 
   // --- ① 영역 층 (LIFE-373) ------------------------------------------------------
   //
@@ -329,6 +345,20 @@ export function App(): React.JSX.Element {
       }
     },
   })
+
+  // A CLI-created tab may arrive before the destination worktree layout has been restored.
+  // Keep the request until both workspace and tab placement exist, then select the keyboard target.
+  useEffect(() => {
+    if (!requestedPane) return
+    if (requestedDeadline.current !== null && Date.now() >= requestedDeadline.current) { setRequestedPane(null); return }
+    const owner = state?.repos.flatMap(repo => repo.worktrees).flatMap(row => row.workspace?.tabs ?? [])
+      .find(tab => tab.panes.some(pane => pane.paneId === requestedPane))
+    if (!owner) return
+    if (lifecycle.activeWorkspaceId !== owner.workspaceId) { selectPane(requestedPane); return }
+    if (!layout.revealTab(owner.tabId)) return
+    selectPane(requestedPane)
+    setRequestedPane(null)
+  }, [requestedPane, state, lifecycle.activeWorkspaceId, layout.revealTab, selectPane])
 
   /**
    * 못 편 reveal 을 **배치가 바뀐 뒤** 한 번 더 편다 (위 `pendingRevealRef`).

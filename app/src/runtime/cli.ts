@@ -7,11 +7,14 @@ import { RuntimeError, stringFlag, type Invocation, type RpcResponse } from './c
 import { defaultUserData, privateDirectory } from './storage.js'
 import { localCall, request, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
+import { terminalModule, MAX_INPUT } from './terminal/index.js'
+import { randomUUID } from 'node:crypto'
 import { startRuntime } from './server.js'
 import { isRecord } from '../shared/json.js'
 const registry = new CommandRegistry()
 registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => { throw new Error('Client metadata') } })
 registry.register(workspaceModule(defaultUserData()))
+registry.register(terminalModule(defaultUserData()))
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function print(response: RpcResponse, json: boolean): void {
   if (json) console.log(JSON.stringify(response))
@@ -85,6 +88,7 @@ export async function runCli(argv: string[]): Promise<void> {
   const controller = new AbortController()
   const cancel = () => controller.abort(new RuntimeError('request_cancelled', 'CLI cancelled; accepted effects may already have occurred'))
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel)
+  let recovery: { requestId: string; terminal: string | boolean | null; command: string; action: string } | undefined
   try {
     const inv = registry.parse(argv, process.cwd())
     if (inv.flags.help) {
@@ -92,6 +96,26 @@ export async function runCli(argv: string[]): Promise<void> {
       console.log(json ? JSON.stringify({ ok: true, commands }) : 'Local Unix socket commands (no remote/environment support):\n' + commands.map(s => s.usage).join('\n')); return
     }
     if (inv.command === 'agent-context') { console.log(JSON.stringify(registry.schema(), null, json ? 0 : 2)); return }
+    if (inv.flags.stdin) {
+      const abortStdin = () => process.stdin.destroy()
+      controller.signal.addEventListener('abort', abortStdin, { once: true })
+      const chunks: Buffer[] = []; let size = 0
+      for await (const chunk of process.stdin) {
+        controller.signal.throwIfAborted()
+        const data = Buffer.from(chunk); size += data.length
+        if (size > MAX_INPUT) throw new RuntimeError('invalid_argument', `stdin exceeds ${MAX_INPUT} bytes`)
+        chunks.push(data)
+      }
+      controller.signal.removeEventListener('abort', abortStdin)
+      controller.signal.throwIfAborted()
+      try { inv.stdin = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)) }
+      catch { throw new RuntimeError('invalid_argument', 'stdin must contain valid UTF-8') }
+      registry.validate(inv)
+    }
+    if (['terminal create', 'terminal send'].includes(inv.command)) {
+      inv.flags['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
+      recovery = { requestId: String(inv.flags['request-id']), terminal: inv.flags.terminal ?? null, command: inv.command, action: 'Retry with the same request ID and input; inspect terminal list/read if unknown' }
+    }
     if (inv.flags.socket) process.env.CORRAL_RUNTIME_SOCKET = String(inv.flags.socket)
     const userData = defaultUserData()
     if (inv.command === 'serve') {
@@ -105,9 +129,9 @@ export async function runCli(argv: string[]): Promise<void> {
       } finally { await runtime.close() }
       return
     }
-    const response = inv.command === 'open' ? await open(userData, inv, controller.signal) : await localCall(socketPath(userData), request(inv, stringFlag(inv.flags, 'instance'), Number(inv.flags['timeout-ms'] ?? 10000)), undefined, controller.signal)
+    const response = inv.command === 'open' ? await open(userData, inv, controller.signal) : await localCall(socketPath(userData), request(inv, stringFlag(inv.flags, 'instance'), Number(inv.flags['timeout-ms'] ?? 10000)), inv.command === 'terminal wait' ? Number(inv.flags['timeout-ms'] ?? 10000) + 500 : undefined, controller.signal)
     print(response, json)
   } catch (error) {
-    print({ id: 'local', ok: false, error: { code: error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error) }, _meta: { runtimeId: 'unknown', outcome: error instanceof RuntimeError && ['outcome_unknown', 'request_cancelled'].includes(error.code) ? 'unknown' : 'not_started' } }, json)
+    print({ id: 'local', ok: false, error: { code: error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), resources: error instanceof RuntimeError ? error.resources ?? recovery : recovery, stage: error instanceof RuntimeError ? error.stage : undefined }, _meta: { runtimeId: 'unknown', outcome: error instanceof RuntimeError && ['outcome_unknown', 'request_cancelled'].includes(error.code) ? 'unknown' : 'not_started' } }, json)
   } finally { process.off('SIGINT', cancel); process.off('SIGTERM', cancel) }
 }

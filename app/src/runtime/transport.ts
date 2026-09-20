@@ -41,7 +41,7 @@ export async function localCall(endpoint: string, req: RpcRequest, timeout = req
         const cancel = () => finish(new RuntimeError('request_cancelled', 'Caller cancelled; accepted effects may already have occurred'));
         signal?.addEventListener('abort', cancel, { once: true });
         const timer = setTimeout(() => finish(new RuntimeError(sent ? 'outcome_unknown' : 'runtime_unavailable', 'Deadline exceeded; mutations are never automatically retried')), timeout);
-        socket.once('connect', () => { sent = true; socket.write(line); });
+        socket.once('connect', () => { if (done || signal?.aborted) return; sent = true; socket.write(line); });
         socket.once('error', error => finish(new RuntimeError(sent ? 'outcome_unknown' : 'runtime_unavailable', error.message)));
         socket.once('close', () => finish(new RuntimeError(sent ? 'outcome_unknown' : 'runtime_unavailable', 'Connection closed before response; inspect resources before retrying')));
         socket.setEncoding('utf8');

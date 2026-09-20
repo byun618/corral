@@ -1,0 +1,340 @@
+[
+  {
+    "command": "terminal create",
+    "path": [
+      "terminal",
+      "create"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "focus"
+    ],
+    "summary": "Create one PTY; command is sent once to its shell",
+    "usage": "corral terminal create [--worktree VALUE] [--title VALUE] [--command VALUE] [--focus] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "worktree",
+      "title",
+      "command",
+      "focus",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal create --worktree current --title worker --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal list",
+    "path": [
+      "terminal",
+      "list"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "List live terminals with stable hierarchy and PTY identity",
+    "usage": "corral terminal list [--worktree VALUE] [--limit VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "worktree",
+      "limit",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal list --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal show",
+    "path": [
+      "terminal",
+      "show"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "Observe terminal transport and foreground process",
+    "usage": "corral terminal show --terminal HANDLE [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal show --terminal HANDLE --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal read",
+    "path": [
+      "terminal",
+      "read"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "screen"
+    ],
+    "summary": "Read retained raw PTY bytes or the current screen",
+    "usage": "corral terminal read --terminal HANDLE [--screen] [--cursor VALUE] [--limit VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "screen",
+      "cursor",
+      "limit",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal read --terminal HANDLE --screen --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal send",
+    "path": [
+      "terminal",
+      "send"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "stdin",
+      "enter",
+      "interrupt"
+    ],
+    "summary": "Send literal UTF-8 to the selected PTY",
+    "usage": "corral terminal send --terminal HANDLE [--text VALUE] [--stdin] [--enter] [--interrupt] [--request-id VALUE] [--expect-process VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "text",
+      "stdin",
+      "enter",
+      "interrupt",
+      "request-id",
+      "expect-process",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal send --terminal HANDLE --text hello --enter --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal wait",
+    "path": [
+      "terminal",
+      "wait"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "Wait for transport ready, new output, or PTY exit",
+    "usage": "corral terminal wait --terminal HANDLE --for ready|output|exit [--cursor VALUE] [--text VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "for",
+      "cursor",
+      "text",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal wait --terminal HANDLE --for output --text done --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal switch",
+    "path": [
+      "terminal",
+      "switch"
+    ],
+    "aliases": [
+      [
+        "terminal",
+        "focus"
+      ]
+    ],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "Select this pane in the addressed runtime desktop",
+    "usage": "corral terminal switch --terminal HANDLE [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal switch --terminal HANDLE --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal rename",
+    "path": [
+      "terminal",
+      "rename"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "Rename the whole tab containing the selected pane",
+    "usage": "corral terminal rename --terminal HANDLE --title VALUE [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "title",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal rename --terminal HANDLE --title worker --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  },
+  {
+    "command": "terminal close",
+    "path": [
+      "terminal",
+      "close"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [],
+    "summary": "Close one explicit PTY and confirm its removal",
+    "usage": "corral terminal close --terminal HANDLE [--expect-process VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "expect-process",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal close --terminal HANDLE --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; old missing or pending receipt is unknown, never re-executed.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+    ]
+  }
+]

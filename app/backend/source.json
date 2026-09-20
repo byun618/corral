@@ -1,0 +1,19 @@
+{
+  "upstream": "https://github.com/herdrdev/herdr",
+  "tag": "v0.9.0",
+  "commit": "b99002ac99b09e00b4ca692436cb15a6b0d676f1",
+  "archiveSHA256": "1e83bff4b05834ed8281e16f1680e8f3e58375a94b2e3f2b3d021e28e293ef9a",
+  "patches": [
+    "herdr-stream.patch",
+    "herdr-guard.patch"
+  ],
+  "platform": "darwin",
+  "arch": "arm64",
+  "guardVersion": 1,
+  "rawCapacityBytes": 1048576,
+  "conditionalProcess": false,
+  "patchSHA256": {
+    "herdr-stream.patch": "d7ec2e8b6af5fc1ee2fcebaacb5861ffe2f5e67e3394fac3c3a3e7d5c5b1fdce",
+    "herdr-guard.patch": "7cbc73777ab45d803ed325bbb563696b28de8a2fe9e1596bf3350d57f37e71cb"
+  }
+}

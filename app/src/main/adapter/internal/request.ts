@@ -43,6 +43,7 @@ import { asResponseFrame, type ResponseFrame } from './protocol.js'
  *     corral 은 이웃 id 만 받아 자기 연결의 `pane.focus`(endpoint 소켓)로 옮긴다
  */
 const ALLOWED_METHODS: readonly string[] = [
+  'corral.terminal',
   'session.snapshot',
   'worktree.list',
   'pane.process_info',
@@ -72,7 +73,7 @@ export class HerdrRequestError extends Error {
   }
 }
 
-export type RequestOptions = { timeoutMs?: number; reason?: string }
+export type RequestOptions = { timeoutMs?: number; reason?: string; signal?: AbortSignal; onSent?: () => void }
 
 export async function request(
   socketPath: string,
@@ -83,6 +84,7 @@ export async function request(
   if (!ALLOWED_METHODS.includes(method)) {
     throw new HerdrRequestError('method_not_allowed', `corral 이 보내지 않는 메서드: ${method}`)
   }
+  options.signal?.throwIfAborted()
   const timeoutMs = options.timeoutMs ?? 5000
   const reason = options.reason ?? 'app'
 
@@ -93,6 +95,7 @@ export async function request(
       if (done) return
       done = true
       if (timer) clearTimeout(timer)
+      options.signal?.removeEventListener('abort', abort)
       log('req.conn.close', { conn: socket.id, method, reason })
       socket.end()
       fn()
@@ -115,15 +118,19 @@ export async function request(
       onError: (error) => finish(() => reject(toRequestError(error))),
     })
 
+    const abort = () => finish(() => reject(new HerdrRequestError('request_cancelled', 'Request cancelled')))
+    options.signal?.addEventListener('abort', abort, { once: true })
     log('req.conn.open', { conn: socket.id, method, reason, socketPath })
     socket.connect(socketPath).then(
       () => {
+        if (done || options.signal?.aborted) { abort(); return }
         timer = setTimeout(
           () => finish(() => reject(new HerdrRequestError('timeout', `타임아웃 ${method} (${timeoutMs}ms)`))),
           timeoutMs,
         )
         const frame = JSON.stringify({ id: `${socket.id}:1`, method, params })
-        log('req.tx', { conn: socket.id, method, line: frame.slice(0, 500) })
+        log('req.tx', { conn: socket.id, method, ...(method === 'corral.terminal' ? { bytes: frame.length } : { line: frame.slice(0, 500) }) })
+        options.onSent?.()
         socket.write(frame)
       },
       (error) => finish(() => reject(toRequestError(error))),

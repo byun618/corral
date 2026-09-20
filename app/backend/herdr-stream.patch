@@ -1,0 +1,130 @@
+--- a/src/pane/terminal.rs
++++ b/src/pane/terminal.rs
+@@ -213,11 +213,12 @@
+ 
+ pub(crate) struct PaneTerminal {
+     pub(crate) ghostty: GhosttyPaneTerminal,
++    corral_raw: Mutex<(std::collections::VecDeque<u8>, u64)>,
+ }
+ 
+ impl PaneTerminal {
+     pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
+-        Self { ghostty }
++        Self { ghostty, corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
+     }
+ 
+     pub fn process_pty_bytes(
+@@ -227,8 +228,21 @@
+         bytes: &[u8],
+         response_writer: &mpsc::Sender<Bytes>,
+     ) -> ProcessBytesResult {
++        if let Ok(mut history) = self.corral_raw.lock() {
++            history.1 = history.1.saturating_add(bytes.len() as u64);
++            history.0.extend(bytes);
++            let drop = history.0.len().saturating_sub(1024 * 1024);
++            history.0.drain(..drop);
++        }
+         self.ghostty
+             .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
++    }
++
++    pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) {
++        use base64::Engine;
++        let history = self.corral_raw.lock().unwrap();
++        let bytes: Vec<u8> = history.0.iter().copied().collect();
++        (base64::engine::general_purpose::STANDARD.encode(&bytes), history.1, history.1 > bytes.len() as u64)
+     }
+ 
+     pub fn resize(
+--- a/src/pane.rs
++++ b/src/pane.rs
+@@ -2920,6 +2920,8 @@
+         self.terminal.scroll_metrics()
+     }
+ 
++    pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
++
+     pub(crate) fn search_text_window(
+         &self,
+         query: &str,
+--- a/src/terminal/runtime.rs
++++ b/src/terminal/runtime.rs
+@@ -348,6 +348,8 @@
+         self.0.synchronized_output_active()
+     }
+ 
++    pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
++
+     pub fn visible_text(&self) -> String {
+         self.0.visible_text()
+     }
+--- a/src/api/schema/common.rs
++++ b/src/api/schema/common.rs
+@@ -77,6 +77,7 @@
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+ #[serde(rename_all = "snake_case")]
+ pub enum ReadSource {
++    CorralStream,
+     Visible,
+     Recent,
+     RecentUnwrapped,
+--- a/src/app/api_helpers.rs
++++ b/src/app/api_helpers.rs
+@@ -117,6 +117,7 @@
+     let line_limit = lines.map(|lines| lines.min(1000) as usize);
+     let recent_lines = line_limit.unwrap_or(80);
+     match (format, source) {
++        (_, ReadSource::CorralStream) => { let (text, _, truncated) = terminal.corral_raw_snapshot(); crate::pane::TerminalReadSnapshot {text, truncated} },
+         (ReadFormat::Text, ReadSource::Visible) => {
+             limit_snapshot_lines(terminal.visible_text(), line_limit)
+         }
+--- a/src/app/api/panes.rs
++++ b/src/app/api/panes.rs
+@@ -1504,12 +1504,12 @@
+         else {
+             return pane_not_found(id, &params.pane_id);
+         };
+-        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
+-            pane,
+-            params.source,
+-            params.format,
+-            params.lines,
+-        );
++        let (snapshot, revision) = if params.source == crate::api::schema::ReadSource::CorralStream {
++            let (text, total, truncated) = pane.corral_raw_snapshot();
++            (crate::pane::TerminalReadSnapshot {text, truncated}, total)
++        } else {
++            (crate::app::api_helpers::read_terminal_snapshot(pane, params.source, params.format, params.lines), 0)
++        };
+ 
+         encode_success(
+             id,
+@@ -1521,7 +1521,7 @@
+                     source: params.source,
+                     format: params.format,
+                     text: snapshot.text,
+-                    revision: 0,
++                    revision,
+                     truncated: snapshot.truncated,
+                 },
+             },
+--- a/src/server/alt_screen_read.rs
++++ b/src/server/alt_screen_read.rs
+@@ -99,6 +99,7 @@
+     ) -> crate::pane::TerminalReadSnapshot {
+         let line_limit = lines.map(|lines| lines.min(1000) as usize);
+         match source {
++            crate::api::schema::ReadSource::CorralStream => unreachable!("raw reads bypass alt-screen snapshots"),
+             crate::api::schema::ReadSource::Recent
+             | crate::api::schema::ReadSource::RecentUnwrapped => {
+                 let limit = line_limit.unwrap_or(80);
+--- a/src/server/headless.rs
++++ b/src/server/headless.rs
+@@ -2806,6 +2806,7 @@
+             ),
+             _ => return AltScreenReadConflict::None,
+         };
++        if source == api::schema::ReadSource::CorralStream { return AltScreenReadConflict::None; }
+         let Some(target) = target else {
+             return AltScreenReadConflict::None;
+         };

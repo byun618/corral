@@ -40,10 +40,13 @@ try {
  run(['serve','--json'],1)
  assert.equal(run(['status','--instance','wrong','--json'],1).error.code,'identity_mismatch')
  assert.equal(run(['status','--json'],0,{},'ignored stdin\n').result.runtime.runtimeId,initial.runtime.runtimeId)
+ const release=path.join(root,'release');fs.mkdirSync(path.join(release,'cli'),{recursive:true});fs.mkdirSync(path.join(release,'out/runtime'),{recursive:true});fs.copyFileSync(path.join(app,'cli/corral.mjs'),path.join(release,'cli/corral.mjs'));fs.copyFileSync(path.join(app,'out/runtime/cli.mjs'),path.join(release,'out/runtime/cli.mjs'))
+ const relocated=spawnSync(process.execPath,[path.join(release,'cli/corral.mjs'),'status','--instance',initial.runtime.runtimeId,'--json'],{env,encoding:'utf8'});assert.equal(relocated.status,0);assert.equal(JSON.parse(relocated.stdout).result.runtime.pid,p.pid);observations.push({relocated:{path:release,stdout:relocated.stdout,stderr:relocated.stderr,exit:relocated.status}})
  const memory=run(['diagnostics','memory','--json']).result
  const ps=spawnSync('ps',['-p',String(p.pid),'-o','pid=,rss='],{encoding:'utf8'});observations.push({memory,oracle:ps.stdout})
  const rss=Number(ps.stdout.trim().split(/\s+/)[1])*1024;assert(memory.app.main.memory>rss*.5&&memory.app.main.memory<rss*2)
  const socket=path.join(data,'runtime/rpc.sock')
+ const expired=await rawRpc(socket,JSON.stringify({version:1,id:'deadline',timeoutMs:1,invocation:{command:'diagnostics memory',flags:{},args:[],cwd:root}})+'\n');assert.equal(JSON.parse(expired).ok,false);observations.push({serverDeadline:JSON.parse(expired)})
  const malformed=await rawRpc(socket,'{\n');assert.equal(JSON.parse(malformed).ok,false)
  const oversized=await rawRpc(socket,'x'.repeat(512*1024+1));assert.equal(oversized,'')
  observations.push({malformed,oversizedBytes:512*1024+1,recovery:run(['status','--json'])})

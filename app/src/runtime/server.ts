@@ -71,8 +71,12 @@ export async function startRuntime(options: {
       if (inv.command === 'diagnostics memory') return memorySnapshot(options.appProcessRoles?.(), ctx.signal)
       if (inv.command === 'open') {
         if (options.ui) {
-          while (!options.ui()) await delay(25, undefined, { signal: ctx.signal })
-          options.focus?.(); return status()
+          options.focus?.()
+          while (!options.ui()) {
+            await delay(25, undefined, { signal: ctx.signal })
+            options.focus?.()
+          }
+          return status()
         }
         if (!options.requestDesktop) throw new RuntimeError('ui_unavailable', 'Desktop handoff unavailable')
         return { handoff: 'desktop', runtimeId, instanceId }
@@ -82,15 +86,22 @@ export async function startRuntime(options: {
     stopSocket = await serveSocket(endpoint, async (req, cancelled): Promise<RpcResponse> => {
       const signal = AbortSignal.any([controller.signal, cancelled, AbortSignal.timeout(req.timeoutMs ?? 10000)])
       const meta = { runtimeId, instanceId }
+      let effectsStarted = false
       try {
         if (req.expectedRuntimeId && req.expectedRuntimeId !== runtimeId) throw new RuntimeError('identity_mismatch', 'Request addresses a different runtime')
+        if (req.invocation.command === 'open') {
+          let matches = false
+          try { matches = !!req.expectedUserData && fs.realpathSync(req.expectedUserData) === fs.realpathSync(options.userData) } catch { /* Missing profile cannot own this runtime. */ }
+          if (!matches) throw new RuntimeError('profile_mismatch', 'Selected runtime belongs to another profile; set CORRAL_USER_DATA to its owner before open')
+        }
         registry.validate(req.invocation)
         signal.throwIfAborted()
+        effectsStarted = req.invocation.command === 'open' && !!options.ui
         const result = await registry.module(req.invocation.command)!.execute(req.invocation, { ...meta, userData: options.userData, signal, remote: false, deadlineAt: Date.now() + (req.timeoutMs ?? 10000) })
         signal.throwIfAborted()
         return { id: req.id, ok: true, result, _meta: { ...meta, outcome: 'completed' } }
       } catch (error) {
-        return { id: req.id, ok: false, error: { code: signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error) }, _meta: { ...meta, outcome: 'not_started' } }
+        return { id: req.id, ok: false, error: { code: signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error) }, _meta: { ...meta, outcome: effectsStarted ? 'unknown' : 'not_started' } }
       }
     }, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
     atomicWrite(lock, { pid: process.pid, instanceId, socket: endpoint, socketInode: fs.lstatSync(endpoint).ino })

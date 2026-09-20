@@ -14,6 +14,7 @@ export function validateRequest(value: unknown): RpcRequest {
         throw new RuntimeError('invalid_request', 'timeoutMs must be 1..43200000');
     if (req.version !== 1 || typeof req.id !== 'string' || !/^[\w-]{1,100}$/.test(req.id) || !req.invocation || typeof req.invocation.command !== 'string' || !req.invocation.flags || typeof req.invocation.flags !== 'object' || Array.isArray(req.invocation.flags) || !Array.isArray(req.invocation.args) || !req.invocation.args.every(v => typeof v === 'string') || typeof req.invocation.cwd !== 'string' || (req.expectedRuntimeId !== undefined && typeof req.expectedRuntimeId !== 'string'))
         throw new RuntimeError('invalid_request', 'Invalid protocol/version/request');
+    if (req.expectedUserData !== undefined && (typeof req.expectedUserData !== 'string' || !path.isAbsolute(req.expectedUserData) || req.expectedUserData.includes('\0'))) throw new RuntimeError('invalid_request', 'expectedUserData must be an absolute path');
     if (req.invocation.stdin !== undefined && typeof req.invocation.stdin !== 'string') throw new RuntimeError('invalid_request', 'stdin must be a string');
     if (req.invocation.repeatedFlags !== undefined && (!req.invocation.repeatedFlags || typeof req.invocation.repeatedFlags !== 'object' || Array.isArray(req.invocation.repeatedFlags))) throw new RuntimeError('invalid_request', 'repeatedFlags must be an object');
     return req;

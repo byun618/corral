@@ -321,6 +321,17 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: true, selector, found, at: Date.now() })
         return
       }
+      // Isolated verification only: acts on this control socket's window.
+      case 'window-visibility': {
+        const target = handlers.window()
+        if (target === null) throw new Error('창이 없다')
+        const action = readString(parsed, 'action')
+        if (action === 'hide') target.hide()
+        else if (action === 'minimize') target.minimize()
+        else if (action !== 'read') throw new Error('hide/minimize/read 필요')
+        reply({ ok: true, visible: target.isVisible(), minimized: target.isMinimized() })
+        return
+      }
       /** S5 — 창 크기 변경. 리사이즈→fit→요청→수렴 경로 전체가 진짜로 돈다. */
       case 'resize-window': {
         const width = readNumber(parsed, 'width')

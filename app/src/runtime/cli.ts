@@ -19,50 +19,58 @@ function print(response: RpcResponse, json: boolean): void {
 }
 async function open(userData: string, inv: Invocation, signal: AbortSignal): Promise<RpcResponse> {
   const endpoint = socketPath(userData), budget = Number(inv.flags['timeout-ms'] ?? 20000), deadline = Date.now() + budget
-  const call = (command: string) => localCall(endpoint, request({ ...inv, command }, stringFlag(inv.flags, 'instance'), Math.max(1, deadline - Date.now())), Math.max(1, deadline - Date.now()), signal)
-  let handed = false
+  let expectedRuntimeId = stringFlag(inv.flags, 'instance'), effectsStarted = false
+  const call = (command: string) => localCall(endpoint, { ...request({ ...inv, command }, expectedRuntimeId, Math.max(1, deadline - Date.now())), expectedUserData: path.resolve(userData) }, Math.max(1, deadline - Date.now()), signal)
   try {
-    const prior = await call('open')
-    if (!prior.ok) return prior
-    handed = isRecord(prior.result) && prior.result.handoff === 'desktop'
-    if (!handed) return prior
-  } catch (error) {
-    if (!(error instanceof RuntimeError) || error.code !== 'runtime_unavailable') throw error
-    if (inv.flags.instance) throw new RuntimeError('identity_mismatch', 'Selected runtime is not reachable; no desktop launched')
-  }
-  if (handed) {
+    let handed = false
+    try {
+      const prior = await call('open')
+      if (!prior.ok) return prior
+      handed = isRecord(prior.result) && prior.result.handoff === 'desktop'
+      if (handed) { effectsStarted = true; expectedRuntimeId = prior._meta.runtimeId }
+      if (!handed) return prior
+    } catch (error) {
+      if (!(error instanceof RuntimeError) || error.code !== 'runtime_unavailable') throw error
+      if (inv.flags.instance || process.env.CORRAL_RUNTIME_SOCKET) throw new RuntimeError('runtime_unavailable', 'Selected runtime is not reachable; no desktop launched')
+    }
+    if (handed) {
+      while (Date.now() < deadline) {
+        signal.throwIfAborted()
+        try { const status = await call('status'); if (!status.ok) throw new RuntimeError('identity_mismatch', status.error?.message ?? 'Handoff identity check failed') } catch (error) {
+          if (error instanceof RuntimeError && error.code === 'runtime_unavailable') break
+          if (!(error instanceof RuntimeError && error.code === 'outcome_unknown')) throw error
+        }
+        await pause(30)
+      }
+    }
+    signal.throwIfAborted()
+    if (Date.now() >= deadline) throw new RuntimeError('outcome_unknown', 'Handoff deadline exceeded')
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+    const electron = process.env.CORRAL_ELECTRON ?? path.join(root, 'node_modules/electron', process.platform === 'darwin' ? 'dist/Electron.app/Contents/MacOS/Electron' : 'dist/electron')
+    if (!fs.existsSync(path.join(root, 'out/main/index.js'))) throw new RuntimeError('build_required', 'Run npm run build first')
+    privateDirectory(path.join(userData, 'runtime'))
+    const logfile = fs.openSync(path.join(userData, 'runtime/desktop.log'), 'a', 0o600)
+    const env: NodeJS.ProcessEnv = { ...process.env, CORRAL_USER_DATA: userData }; delete env.ELECTRON_RUN_AS_NODE
+    const child = spawn(electron, [root, `--user-data-dir=${userData}`], { env, detached: true, stdio: ['ignore', logfile, logfile] })
+    effectsStarted ||= child.pid !== undefined
+    fs.closeSync(logfile)
+    let failure: Error | undefined
+    child.once('error', error => { failure = error }); child.unref()
     while (Date.now() < deadline) {
       signal.throwIfAborted()
-      try { await call('status') } catch (error) {
-        if (error instanceof RuntimeError && error.code === 'runtime_unavailable') break
-        if (!(error instanceof RuntimeError && error.code === 'outcome_unknown')) throw error
-      }
-      await pause(30)
+      if (failure) throw new RuntimeError('launch_failed', failure.message)
+      try {
+        const response = await call('status')
+        if (!response.ok) return { ...response, _meta: { ...response._meta, outcome: effectsStarted ? 'unknown' : response._meta.outcome } }
+        if (isRecord(response.result) && isRecord(response.result.ui) && response.result.ui.available === true) return response
+      } catch (error) { if (!(error instanceof RuntimeError) || error.code !== 'runtime_unavailable') throw error }
+      await pause(50)
     }
+    throw new RuntimeError('outcome_unknown', 'Desktop launch deadline exceeded; inspect runtime/desktop.log before retrying')
+  } catch (error) {
+    if (effectsStarted && !(error instanceof RuntimeError && error.code === 'request_cancelled')) throw new RuntimeError('outcome_unknown', `Desktop handoff/launch may have taken effect: ${error instanceof Error ? error.message : String(error)}`)
+    throw error
   }
-  signal.throwIfAborted()
-  if (Date.now() >= deadline) throw new RuntimeError('outcome_unknown', 'Handoff deadline exceeded')
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-  const electron = process.env.CORRAL_ELECTRON ?? path.join(root, 'node_modules/electron', process.platform === 'darwin' ? 'dist/Electron.app/Contents/MacOS/Electron' : 'dist/electron')
-  if (!fs.existsSync(path.join(root, 'out/main/index.js'))) throw new RuntimeError('build_required', 'Run npm run build first')
-  privateDirectory(path.join(userData, 'runtime'))
-  const logfile = fs.openSync(path.join(userData, 'runtime/desktop.log'), 'a', 0o600)
-  const env: NodeJS.ProcessEnv = { ...process.env, CORRAL_USER_DATA: userData }; delete env.ELECTRON_RUN_AS_NODE
-  const child = spawn(electron, [root, `--user-data-dir=${userData}`], { env, detached: true, stdio: ['ignore', logfile, logfile] })
-  fs.closeSync(logfile)
-  let failure: Error | undefined
-  child.once('error', error => { failure = error }); child.unref()
-  while (Date.now() < deadline) {
-    signal.throwIfAborted()
-    if (failure) throw new RuntimeError('launch_failed', failure.message)
-    try {
-      const response = await call('status')
-      if (!response.ok) return response
-      if (isRecord(response.result) && isRecord(response.result.ui) && response.result.ui.available === true) return response
-    } catch (error) { if (!(error instanceof RuntimeError) || error.code !== 'runtime_unavailable') throw error }
-    await pause(50)
-  }
-  throw new RuntimeError('outcome_unknown', 'Desktop launch deadline exceeded; inspect runtime/desktop.log before retrying')
 }
 export async function runCli(argv: string[]): Promise<void> {
   const json = argv.includes('--json')

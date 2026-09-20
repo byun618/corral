@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const raw = path.resolve(app, '../specs/LIFE-391-command-palette-cli/raw/first-release/codex/cli')
+const raw = process.env.CORRAL_VERIFY_RAW ? path.resolve(process.env.CORRAL_VERIFY_RAW) : path.resolve(app,'../specs/LIFE-391-command-palette-cli/raw/first-release/codex/cli')
 fs.mkdirSync(raw, { recursive: true })
 const root = fs.mkdtempSync('/tmp/c391-cli-'), data = path.join(root, 'data')
 const env = { ...process.env, CORRAL_USER_DATA: data }

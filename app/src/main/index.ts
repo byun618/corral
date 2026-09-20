@@ -1051,7 +1051,7 @@ app.whenReady().then(async () => {
   })
 
   /**
-   * IPC 는 **우리 창에서 온 것만** 받는다 — 보안 체크리스트 15 (수정 1회차 L12).
+   * IPC 는 **우리 창에서 온 것만** 받는다 — 보안 체크리스트 17 (수정 1회차 L12).
    * 지금 렌더러는 로컬·sandbox·isolation 이라 당장 잘못될 일은 없다. 그래도 핸들러가
    * sender 를 안 보는 모양으로 굳으면, 나중에 iframe·원격 콘텐츠가 들어오는 순간 그대로 구멍이다.
    */
@@ -1239,7 +1239,7 @@ app.whenReady().then(async () => {
 
   const runtime = await startRuntime({
     userData: app.getPath('userData'), ui: () => window !== null && !window.isDestroyed() && window.isVisible() && !window.webContents.isLoadingMainFrame(),
-    focus: () => { window?.show(); window?.focus() },
+    focus: () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus() },
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
   })
   stopRuntime = runtime.close

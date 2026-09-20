@@ -30,6 +30,8 @@ export interface RpcRequest {
     id: string;
     invocation: Invocation;
     expectedRuntimeId?: string;
+    /** open must name the profile that will launch its desktop. Checked before effects. */
+    expectedUserData?: string;
     timeoutMs?: number;
 }
 export interface RpcResponse {

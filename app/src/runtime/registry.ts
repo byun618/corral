@@ -48,7 +48,7 @@ export class CommandRegistry {
                 flags[key] = raw.slice(equal + 1);
             else {
                 const value = argv[++i];
-                if (value === undefined || (value.startsWith('--') && !['prompt', 'text', 'command'].includes(key)))
+                if (value === undefined || value.startsWith('--'))
                     reject(`Missing value for --${key}`);
                 flags[key] = value;
             }

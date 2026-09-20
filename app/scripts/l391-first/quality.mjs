@@ -3,7 +3,7 @@ import path from 'node:path'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
 const app=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),root=path.dirname(app)
-const raw=path.join(root,'specs/LIFE-391-command-palette-cli/raw/first-release/codex/quality')
+const raw = process.env.CORRAL_VERIFY_RAW ? path.resolve(process.env.CORRAL_VERIFY_RAW) : path.join(root,'specs/LIFE-391-command-palette-cli/raw/first-release/codex/quality')
 fs.mkdirSync(raw,{recursive:true})
 const results=[]
 for(const [name,args]of [['typecheck',['run','typecheck']],['build',['run','build']],['boundary',['run','check:boundary']],['vitest',['exec','--','vitest','run']],['lint',['run','lint','--','--format','json']]]){

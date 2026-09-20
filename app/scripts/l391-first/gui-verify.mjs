@@ -50,7 +50,7 @@ try{
  process.kill(backend.pid,0)
  await until(()=>fs.existsSync(control),'control socket');await until(async()=>(await send({cmd:'state'})).state?.link.phase==='live','GUI connected')
  const after=await backendRpc('pane.list'),processAfter=await backendRpc('pane.process_info',{pane_id:firstPane})
- assert.deepEqual(after.panes.map(p=>p.pane_id),before.panes.map(p=>p.pane_id));assert.equal(processAfter.shell_pid,processBefore.shell_pid)
+ assert.deepEqual(after.panes.map(p=>p.pane_id),before.panes.map(p=>p.pane_id));assert(Number.isInteger(processBefore.process_info.shell_pid));assert.equal(processAfter.process_info.shell_pid,processBefore.process_info.shell_pid);assert.deepEqual(after.panes.map(p=>p.terminal_id),before.panes.map(p=>p.terminal_id))
  observations.push({handoff:{serveStatus,opened:opened.result,backendPidBefore:backend.pid,backendPidAfter:backend.pid,before,after,processBefore,processAfter}})
  await send({cmd:'add-repo',root:repo});await until(async()=>(await send({cmd:'state'})).state.repos.some(r=>r.root===fs.realpathSync(repo)),'repo fixture')
  await until(async()=>await count('[data-term-pane-box]')>0,'terminal visible')

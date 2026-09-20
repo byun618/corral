@@ -32,12 +32,20 @@ export async function verifyFix({ev,key,click,search,action,count,until,backendR
  // Exercise all action variants with observable state changes.
  const effects=[]
  const effect=async(id,read,verify)=>{const before=await read();await action(id);await until(async()=>verify(before,await read()),id+' effect');effects.push({id,before,after:await read()})}
- const panes=async()=>(await backendRpc('pane.list')).panes.length
+ const paneIds=async()=>(await backendRpc('pane.list')).panes.map(p=>p.pane_id)
+ const split=async id=>{
+   const before=await paneIds();await action(id)
+   const after=await until(async()=>{const ids=await paneIds();return ids.length===before.length+1&&ids},id+' pane count')
+   const added=after.filter(p=>!before.includes(p));assert.equal(added.length,1,id+' new pane')
+   // Backend creation precedes renderer selection; directional baselines need both.
+   await until(async()=>await selected()===added[0],id+' renderer selection')
+   effects.push({id,before:before.length,after:after.length,created:added[0],selected:await selected()})
+ }
  const tabs=()=>count('[data-main-tab]'),groups=()=>count('[data-tab-group]')
  await effect('terminal.new:0',tabs,(a,b)=>b===a+1)
- await effect('terminal.split:0',panes,(a,b)=>b===a+1)
+ await split('terminal.split:0')
  const right=await selected();await effect('terminal.focus:0',selected,(a,b)=>a!==b);const left=await selected();await effect('terminal.focus:1',selected,(a,b)=>b===right&&a===left)
- await effect('terminal.split:1',panes,(a,b)=>b===a+1)
+ await split('terminal.split:1')
  const down=await selected();await effect('terminal.focus:2',selected,(a,b)=>a!==b);const up=await selected();await effect('terminal.focus:3',selected,(a,b)=>b===down&&a===up)
  await effect('terminal.zoom:0',()=>count('[data-group-zoom-chip]'),(a,b)=>a===0&&b===1)
  await effect('terminal.zoom:0',()=>count('[data-group-zoom-chip]'),(a,b)=>a===1&&b===0)

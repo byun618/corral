@@ -14,9 +14,19 @@ export const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 export const pause = ms => new Promise(r => setTimeout(r, ms))
 export const quote = s => "'" + s.replaceAll("'", "'\\''") + "'"
 export const requestId = () => `r1.${Date.now()}.${randomUUID()}`
-export async function until(fn, label, ms = 20000) {
+/**
+ * Poll `predicate` until it returns **exactly `true`**, or fail (G5). The strict comparison is the
+ * contract: a predicate that returns a value has no way to say "satisfied, and the value is 0" or
+ * "satisfied, and the value is false", and a loose check silently turns those into "not yet" — a
+ * timeout that reads as a real failure. Every caller here answers a yes/no question, so the helper
+ * asks for a boolean and nothing else; a thrown error is "not yet" and is reported if time runs out.
+ */
+export async function until(predicate, label, ms = 20000) {
   const deadline = Date.now() + ms; let last
-  while (Date.now() < deadline) { try { const result = await fn(); if (result) return result } catch (e) { last = String(e) } await pause(40) }
+  while (Date.now() < deadline) {
+    try { if (await predicate() === true) return true } catch (e) { last = String(e) }
+    await pause(40)
+  }
   throw Error(`${label} timeout; last error ${last ?? 'none'}`)
 }
 export function rpc(socketPath, request, timeout = 20000) {
@@ -91,7 +101,7 @@ export async function fixture(label, options = {}) {
     observations.push({ at: Date.now(), backend: { request, response: result } })
     assert(!result.error, JSON.stringify(result)); return result.result
   }
-  async function stop(child, signal = 'SIGTERM') { if (!child || child.exitCode !== null || child.signalCode) return; child.kill(signal); await until(() => child.exitCode !== null || child.signalCode, 'child exit') }
+  async function stop(child, signal = 'SIGTERM') { if (!child || child.exitCode !== null || child.signalCode) return; child.kill(signal); await until(() => child.exitCode !== null || child.signalCode !== null, 'child exit') }
   /** `guard: false` for an unpatched herdr, which answers `ping` but has no corral.terminal method. */
   async function startBackend(name = 'backend', options = {}) {
     const child = start(options.exe ?? backend, ['--session', session, 'server'], base, name)
@@ -103,7 +113,7 @@ export async function fixture(label, options = {}) {
   async function serve(environment = env, name = 'serve') {
     const child = start(process.execPath, [path.join(app, 'cli/corral.mjs'), 'serve', '--json'], environment, name)
     await until(async () => (await rpc(path.join(environment.CORRAL_USER_DATA, 'runtime/rpc.sock'),
-      { version: 1, id: 'ready', invocation: { command: 'status', flags: {}, args: [], cwd: repo } })).ok, 'runtime ready')
+      { version: 1, id: 'ready', invocation: { command: 'status', flags: {}, args: [], cwd: repo } })).ok === true, 'runtime ready')
     return child
   }
   /** A pane whose foreground is a FIFO-backed reader, so input and output are observable exactly. */

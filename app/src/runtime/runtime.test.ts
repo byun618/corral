@@ -242,9 +242,29 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
     expect(codexSessionDates(t0, t0)).not.toContain(localDay(t0 + 2 * DAY))
   })
 
+  it('joins a grok body that arrived as consecutive chunks and never joins across a turn (G6)', () => {
+    const file = '/r/updates.jsonl', submittedAtMs = Date.parse('2026-09-21T05:55:00.000Z')
+    const second = Math.floor(submittedAtMs / 1000)
+    const chunk = (body: string, at: number) => grokUser(body, at) + '\n'
+    const agent = (at: number) => JSON.stringify({ params: { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'ok' } } }, timestamp: at }) + '\n'
+    // One submission, split across three chunk rows. Each row alone is neither this body nor another.
+    const split = chunk('first line\n', second + 1) + chunk('second line\n', second + 1) + chunk('third line', second + 1) + agent(second + 2)
+    const whole = countSubmissions({ kind: 'grok', files: [file], identity: bodyIdentity('first line\nsecond line\nthird line'), submittedAtMs, cursor: [], read: reader({ [file]: split }) })
+    expect([whole.matchCount, whole.assistantAfter]).toEqual([1, true])
+    // A single chunk of it is not the body, so a partial match cannot confirm anything.
+    expect(countSubmissions({ kind: 'grok', files: [file], identity: bodyIdentity('first line'), submittedAtMs, cursor: [], read: reader({ [file]: split }) }).matchCount).toBe(0)
+    // Two turns of the same body stay two rows: the assistant row between them ends the run.
+    const twice = chunk('repeat me', second + 1) + agent(second + 2) + chunk('repeat me', second + 3)
+    const both = countSubmissions({ kind: 'grok', files: [file], identity: bodyIdentity('repeat me'), submittedAtMs, cursor: [], read: reader({ [file]: twice }) })
+    expect([both.matchCount, classifyCount(both, both.scanned.length)]).toEqual([2, 'ambiguous'])
+    // The merged row is dated by its FIRST chunk, so a turn that began before the submit stays out.
+    const straddling = chunk('early half ', second - 1) + chunk('late half', second + 1)
+    expect(countSubmissions({ kind: 'grok', files: [file], identity: bodyIdentity('early half late half'), submittedAtMs, cursor: [], read: reader({ [file]: straddling }) }).matchCount).toBe(0)
+  })
+
   it('refuses every manifest that is not the expected bundled one, for all three providers (F12b)', () => {
     const bundled = (agent: string, version: string) => ({ agent, source_kind: 'bundled', active_version: version, local_override_shadowing_remote: false })
-    for (const kind of ['claude', 'codex', 'grok'] as const) {
+    for (const kind of AGENT_KINDS) {
       const expected = EXPECTED_MANIFESTS[kind]
       expect(evaluateManifest(kind, [bundled(kind, expected.version)], null).verified).toBe(true)
       // 1: an older local override is active and shadows the remote.

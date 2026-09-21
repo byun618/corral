@@ -14,8 +14,8 @@ import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { atomicWrite, privateDirectory, readFile } from '../storage.js'
 
-export const AGENT_KINDS = ['claude', 'codex', 'grok'] as const
-export type AgentKind = (typeof AGENT_KINDS)[number]
+export type AgentKind = 'claude' | 'codex' | 'grok'
+export const AGENT_KINDS: readonly AgentKind[] = ['claude', 'codex', 'grok']
 export const isAgentKind = (value: unknown): value is AgentKind => AGENT_KINDS.some(kind => kind === value)
 
 export type AgentPhase = 'launching' | 'blocked' | 'ready' | 'accepted' | 'responded' | 'exited'
@@ -293,6 +293,25 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
     const role: RowRole = sessionUpdate === 'agent_message_chunk' ? 'assistant' : sessionUpdate === 'user_message_chunk' ? 'user' : 'other'
     return { text, timeSeconds: typeof row.timestamp === 'number' ? Math.floor(row.timestamp) : isoSeconds(row.timestamp), role }
 }
+/**
+ * §4.6 (G6): grok writes the submitted body as `user_message_chunk` rows. A 466-byte, 6-line body
+ * came back as exactly one chunk, but a larger body may arrive split, and half a body is neither
+ * this body nor a different one — so a run of consecutive chunks is one user row. The merged row
+ * keeps the *first* chunk's line index and timestamp: a turn that began before the cursor or before
+ * the submit second stays outside the window instead of being dragged in by its later chunks.
+ */
+function mergeUserChunks(rows: Row[]): Row[] {
+    const merged: Row[] = []
+    for (const row of rows) {
+        const previous = merged[merged.length - 1]
+        if (row.role === 'user' && row.text !== null && previous !== undefined && previous.role === 'user' && previous.text !== null) {
+            merged[merged.length - 1] = { ...previous, text: previous.text + row.text }
+            continue
+        }
+        merged.push(row)
+    }
+    return merged
+}
 function parseRows(kind: AgentKind, text: string): Row[] {
     const rows: Row[] = []
     text.split('\n').forEach((line, index) => {
@@ -302,7 +321,7 @@ function parseRows(kind: AgentKind, text: string): Row[] {
         const record = asRecord(parsed)
         if (record) rows.push({ index, ...projectRow(kind, record) })
     })
-    return rows
+    return kind === 'grok' ? mergeUserChunks(rows) : rows
 }
 export interface CountInput {
     kind: AgentKind
@@ -493,6 +512,17 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
     const home = options.home ?? os.homedir()
     if (kind === 'claude') {
         if (!options.sessionId) return []
+        // G7: the documented rule is "working directory path with non-alphanumeric characters
+        // replaced by `-`", and *"for a working directory whose converted name exceeds 200
+        // characters, Claude Code truncates the name to 200 characters and appends a hash of the
+        // full path"* (code.claude.com/docs/en/sessions, "Where transcripts are stored"). The hash
+        // function, its length and its separator are not documented anywhere, so corral does not
+        // guess one: past 200 converted characters this path is simply wrong and the submission
+        // reports `not_found` rather than a confirmation. The SDK page offers a workaround — list
+        // `projects/` and *"match the first 200 characters of the converted name"* — which is a
+        // directory scan, not this function's shape; it is the next round's to take if it matters.
+        // `CLAUDE_CODE_PROJECT_DIR_NAME` (with `CLAUDE_CONFIG_DIR`) replaces the derived name
+        // outright and has the same effect here. Both limits are in the README and 미확인 list.
         const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude')
         return [path.join(configDir, 'projects', realpath(options.cwd).replace(/[^A-Za-z0-9]/g, '-'), options.sessionId + '.jsonl')]
     }
@@ -512,8 +542,8 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
  * The removal is an allowlist, not a pattern: CODEX_HOME, GROK_HOME and CLAUDE_CONFIG_DIR must
  * survive or the child writes somewhere corral is not looking.
  */
-export const SESSION_MARKER_NAMES = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT'] as const
-export const SESSION_MARKER_PREFIXES = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_'] as const
+export const SESSION_MARKER_NAMES: readonly string[] = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT']
+export const SESSION_MARKER_PREFIXES: readonly string[] = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_']
 export function strippedSessionMarkers(environment: Record<string, string | undefined>): string[] {
     return Object.keys(environment)
         .filter(name => SESSION_MARKER_NAMES.some(marker => marker === name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix)))

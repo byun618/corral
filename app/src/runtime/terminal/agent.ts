@@ -208,16 +208,28 @@ export function codexCandidates(files: string[], cwd: string, t0Ms: number, read
 
 // --- §4.6 record window and match counting ------------------------------------------------------
 
-export interface CursorEntry { path: string; existed: boolean; bytes: number; lines: number }
-/** Capture where each candidate record file ends *before* the submit RPC (§4.6; persisted per C3). */
+/**
+ * Where one candidate record file ended *before* the submit RPC (§4.6; persisted per C3).
+ *
+ * `prefixSha256` digests exactly those `bytes`, so a file that is merely longer is not assumed to be
+ * the same file continued (R2): a provider that rewrites the record in place can push an *older* row
+ * past the old line cursor, and then a plain length comparison counts it as this submission's.
+ * The field is optional because records written before this round carry no digest; those fall back
+ * to the length rule they were captured under rather than being called invalid.
+ */
+export interface CursorEntry { path: string; existed: boolean; bytes: number; lines: number; prefixSha256?: string }
 export function captureCursor(paths: string[], read?: (file: string) => string | null): CursorEntry[] {
     const load = read ?? ((file: string) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } })
     return paths.map(file => {
         const text = load(file)
         if (text === null) return { path: file, existed: false, bytes: 0, lines: 0 }
-        return { path: file, existed: true, bytes: Buffer.byteLength(text), lines: text.length ? text.split('\n').length - 1 : 0 }
+        const bytes = Buffer.byteLength(text)
+        return { path: file, existed: true, bytes, lines: text.length ? text.split('\n').length - 1 : 0, prefixSha256: prefixDigest(text, bytes) }
     })
 }
+/** sha256 of the file's first `bytes` bytes — the identity a later read has to still start with. */
+const prefixDigest = (text: string, bytes: number): string =>
+    createHash('sha256').update(Buffer.from(text, 'utf8').subarray(0, bytes)).digest('hex')
 /**
  * grok writes integer Unix seconds; codex and claude write ISO-8601 ms. The lower bound is a second
  * for all three (C8, review r4 미확인 6), so a record stamped in the same second as the submit still
@@ -319,7 +331,12 @@ export function countSubmissions(input: CountInput): CountResult {
         const prior = input.cursor.find(entry => entry.path === file)
         let fromLine = 0, whole = true
         if (prior?.existed) {
-            if (Buffer.byteLength(text) < prior.bytes) result.cursorInvalidated = true
+            // Shorter than its cursor, or no longer starting with what the cursor saw: the file was
+            // rotated or rewritten, so the line cursor means nothing here (R2/C3). Scan it whole and
+            // flag it — the caller keeps the outcome unknown even at one match.
+            const continued = Buffer.byteLength(text) >= prior.bytes
+                && (prior.prefixSha256 === undefined || prefixDigest(text, prior.bytes) === prior.prefixSha256)
+            if (!continued) result.cursorInvalidated = true
             else { fromLine = prior.lines; whole = false }
         }
         const rows = parseRows(input.kind, text)

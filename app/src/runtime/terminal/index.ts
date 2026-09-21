@@ -13,7 +13,7 @@ import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
-  agentName, agentQuiescent, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
+  agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
   evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, resolvedIdentity, sessionRecordPaths,
   type AgentKind, type AgentPhase, type AgentRecord, type CursorEntry, type DetectManifestObservation,
 } from './agent.js'
@@ -243,38 +243,52 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         const manifest = kind !== null && isAgentKind(kind) ? await observeManifest(kind) : null
         return { views: pass.views, satisfied: pass.satisfied && manifest !== null && manifest.verified, manifest }
       }
-      const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean): AgentPhase => {
+      /**
+       * `manifest` is the gate observed on *this* pass. A stored `ready` was earned under whatever
+       * manifest was active then, so it is not echoed back once the gate no longer holds (R5): the
+       * whole point of the gate is that an unverified manifest may report a trust dialog as idle, and
+       * `show` saying `ready` under one is the same false claim the gate exists to refuse. Only
+       * `ready` is masked — `accepted`/`responded` are facts about a body found in the provider's own
+       * record, which a screen-detection rule cannot make untrue.
+       */
+      const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null): AgentPhase => {
         const last = views[views.length - 1]
-        if (!last || last.stale) return record?.phase ?? 'launching'
+        const unverified = manifest !== null && !manifest.verified
+        if (!last || last.stale) return record === null || (unverified && record.phase === 'ready') ? 'launching' : record.phase
         if (last.live === 'blocked') return 'blocked'
         if (last.live === 'exited') return 'exited'
         if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' ? 'ready' : record.phase
         if (last.live === 'launching') return 'launching'
         // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
         // and a pane that has not held the gate has not earned `ready` either.
-        return record === null || record.phase === 'blocked' ? 'launching' : record.phase
+        if (record === null || record.phase === 'blocked') return 'launching'
+        return unverified && record.phase === 'ready' ? 'launching' : record.phase
       }
-      const scanFiles = (record: AgentRecord, cwd: string): string[] => record.kind === 'codex'
-        ? codexRolloutFiles(record.t0, Date.now())
-        : sessionRecordPaths(record.kind, { cwd, sessionId: record.sessionId, t0Ms: record.t0, nowMs: Date.now() })
-      /** §2/C7: exactly one rollout for this cwd since T0 proves ownership; 0 or 2+ stays unknown. */
-      const codexOwner = (record: AgentRecord, cwd: string) => {
-        const found = codexCandidates(codexRolloutFiles(record.t0, Date.now()), cwd, record.t0)
-        return found.length === 1 ? found[0]! : null
-      }
-      const sessionOf = (record: AgentRecord, cwd: string) => {
+      /**
+       * §2/C7: the record files corral can prove belong to *this* pane, and nothing else. claude and
+       * grok are named by the session id corral minted. codex has no such id, so the proof is the
+       * scan — exactly one rollout for this cwd since T0 — and 0 or 2+ candidates yield no files at
+       * all. Match count, resolved model and the reported record path are then all read from this
+       * one set (R1): borrowing another session's rollout for any of the three reports a body corral
+       * never delivered, a model it never resolved, or both.
+       */
+      interface OwnedRecords { proven: boolean; files: string[]; sessionId: string | null; source: string | null; path: string | null }
+      const ownedRecords = (record: AgentRecord, cwd: string): OwnedRecords => {
         if (record.kind === 'codex') {
-          const owner = codexOwner(record, cwd)
-          return owner ? { sessionId: owner.sessionId, source: 'record-scan', path: owner.path } : { sessionId: null, source: null, path: null }
+          const found = codexCandidates(codexRolloutFiles(record.t0, Date.now()), cwd, record.t0)
+          const owner = found.length === 1 ? found[0] : undefined
+          if (owner === undefined) return { proven: false, files: [], sessionId: null, source: null, path: null }
+          return { proven: true, files: [owner.path], sessionId: owner.sessionId, source: 'record-scan', path: owner.path }
         }
         const file = sessionRecordPaths(record.kind, { cwd, sessionId: record.sessionId, t0Ms: record.t0, nowMs: Date.now() })[0] ?? null
-        return { sessionId: record.sessionId, source: record.sessionIdSource, path: file }
+        return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file }
       }
       const agentBlock = async (live: TerminalIdentity, record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null) => {
-        const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied)
-        const session = record ? sessionOf(record, live.path) : { sessionId: null, source: null, path: null }
-        // Only an observed value is reported; corral never restates the request as a resolution.
-        const resolved = record ? resolvedIdentity(record.kind, scanFiles(record, live.path)) : { model: null, advisor: null, effort: null }
+        const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied, manifest)
+        const session = record ? ownedRecords(record, live.path) : { sessionId: null, source: null, path: null, files: [] }
+        // Only an observed value is reported; corral never restates the request as a resolution, and
+        // it reads the resolution out of the file set it owns rather than every file it can see (R1).
+        const resolved = record ? resolvedIdentity(record.kind, session.files) : { model: null, advisor: null, effort: null }
         return {
           kind: record?.kind ?? info?.kind ?? null, name: record?.name ?? info?.name ?? null, phase,
           requestedModel: record?.requestedModel ?? null, requestedEffort: record?.requestedEffort ?? null, requestedAdvisor: record?.requestedAdvisor ?? null,
@@ -294,9 +308,13 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         for (;;) {
           ctx.signal.throwIfAborted()
           const pass = await readyGate(live, record, want)
-          const phase = phaseOf(record, pass.views, pass.satisfied)
+          const phase = phaseOf(record, pass.views, pass.satisfied, pass.manifest)
           if (pass.satisfied) { patchAgent(live, { phase }); return { ...pass, phase } }
           if (pass.views[pass.views.length - 1]?.launchExpired) throw new RuntimeError('agent_launch_expired', 'Managed agent binding expired while the provider is still in the foreground', { terminal: handle(live), recovery: 'terminal show / terminal read' }, 'wait', 'not_started')
+          // An unverified manifest is a refusal, not a slow answer (G1): waiting cannot make the gate
+          // pass, so the reason is returned at once the way a blocking screen is, and `create --prompt`
+          // can report `detect_manifest_unverified` instead of a deadline it never had a chance at.
+          if (pass.manifest !== null && !pass.manifest.verified) { patchAgent(live, { phase }); return { ...pass, phase } }
           // A pane where corral never started anything is "not yet", not "exited": it waits out its
           // deadline. Only a pane with a record reports `exited`, which is the D6 case F10 relies on.
           const last = pass.views[pass.views.length - 1]
@@ -306,25 +324,40 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           await delay(Math.min(READY_SAMPLE_INTERVAL_MS, Math.max(1, ctx.deadlineAt - Date.now() - 15)), undefined, { signal: ctx.signal })
         }
       }
-      /** §4.5/§4.6: confirm the body in the provider's own record, inside the submission window. */
+      /**
+       * §4.5/§4.6: confirm the body in the provider's own record, inside the submission window.
+       *
+       * Two questions, answered separately (R3). *Delivery* is the record's: exactly one match in
+       * the window means the body arrived, and that stays true whatever happens next. The *wait* is
+       * the caller's: `--wait responded` also asked to see the turn finish. A deadline, a blocking
+       * screen or an exit ends the wait without answering it — the response then still reports the
+       * delivery it confirmed, with `outcome: unknown` and the reason the wait ended. Only a wait
+       * that was satisfied is `completed`, which is what README and `specs.json` promise.
+       */
       const confirmPrompt = async (live: TerminalIdentity, record: AgentRecord, identity: ReturnType<typeof bodyIdentity>,
         submittedAtMs: number, cursor: CursorEntry[], delivery: Record<string, unknown>, manifest: DetectManifestObservation, want: 'accepted' | 'responded') => {
         let workingObserved = record.workingObserved, view = await observeAgent(live, record)
         for (;;) {
           ctx.signal.throwIfAborted()
           if (view.info?.status === 'working') workingObserved = true
-          const files = scanFiles(record, live.path)
-          const count = countSubmissions({ kind: record.kind, files, identity, submittedAtMs, cursor })
+          const owned = ownedRecords(record, live.path)
+          const count = countSubmissions({ kind: record.kind, files: owned.files, identity, submittedAtMs, cursor })
           // C7: a codex rollout corral cannot prove it owns never confirms, whatever the count says.
-          const unproven = record.kind === 'codex' && codexOwner(record, live.path) === null
-          const reason = unproven ? 'ambiguous' : classifyCount(count, count.scanned.length)
-          const responded = workingObserved && count.assistantAfter && view.info !== null && agentQuiescent(view.info, 'idle')
-          const done = reason === null && (want === 'accepted' || responded)
-          if (done || view.live === 'blocked' || view.live === 'exited' || Date.now() >= ctx.deadlineAt - 15) {
-            const phase: AgentPhase = reason !== null ? 'ready' : responded ? 'responded' : 'accepted'
+          const reason = owned.proven ? classifyCount(count, count.scanned.length) : 'ambiguous'
+          const delivered = reason === null
+          // §3: a finished turn closes on the same N=2 · 750 ms · unchanged-seq gate `agent-idle`
+          // uses (R4). One quiet frame between two tool calls is not the end of a turn.
+          const responded = delivered && want === 'responded' && workingObserved && count.assistantAfter
+            && (await gatePass(live, record, 'idle')).satisfied
+          const satisfied = delivered && (want === 'accepted' || responded)
+          const stopped = view.live === 'blocked' ? 'agent_blocked' : view.live === 'exited' ? 'agent_exited' : null
+          if (satisfied || stopped !== null || Date.now() >= ctx.deadlineAt - 15) {
+            const phase: AgentPhase = !delivered ? 'ready' : responded ? 'responded' : 'accepted'
             const stored = patchAgent(live, { phase, workingObserved }) ?? record
-            return { terminal: handle(live), stage: reason === null ? 'confirmed' : 'submitted', outcome: reason === null ? 'completed' : 'unknown',
-              delivery, record: { path: sessionOf(record, live.path).path ?? count.scanned[0]?.path ?? null, matchCount: count.matchCount, naiveCount: count.naiveCount, assistantAfter: count.assistantAfter, unavailableReason: reason },
+            return { terminal: handle(live), stage: delivered ? 'confirmed' : 'submitted', outcome: satisfied ? 'completed' : 'unknown',
+              wait: { requested: want, satisfied, reason: satisfied ? null : stopped ?? 'deadline' },
+              delivery, record: { path: owned.path, matchCount: count.matchCount, naiveCount: count.naiveCount,
+                assistantAfter: count.assistantAfter, cursorInvalidated: count.cursorInvalidated, unavailableReason: reason },
               agent: await agentBlock(live, stored, [view], false, manifest) }
           }
           await delay(Math.min(READY_SAMPLE_INTERVAL_MS, Math.max(1, ctx.deadlineAt - Date.now() - 15)), undefined, { signal: ctx.signal })
@@ -338,7 +371,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         const manifest = await observeManifest(record.kind)
         if (!manifest.verified) throw manifestGateError(record.kind, manifest)
         const pass = await gatePass(live, record, 'ready')
-        const phase = phaseOf(record, pass.views, pass.satisfied)
+        const phase = phaseOf(record, pass.views, pass.satisfied, manifest)
         if (!pass.satisfied) {
           patchAgent(live, { phase })
           const block = await agentBlock(live, record, pass.views, false, manifest)
@@ -346,18 +379,19 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           throw new RuntimeError('agent_not_ready', 'Agent did not hold the ready gate across two observations', { terminal: handle(live), agent: block }, 'preflight', 'not_started')
         }
         const info = pass.views[pass.views.length - 1]!.info!
-        const text = normalizeBody(raw), identity = bodyIdentity(text), files = scanFiles(record, live.path)
+        const text = normalizeBody(raw), identity = bodyIdentity(text), files = ownedRecords(record, live.path).files
         // §2: codex's first submission has no owning record yet, so it skips the duplicate pre-check.
         if (!(record.kind === 'codex' && record.lastSubmission === null)) {
           // Scan only what corral owns: another session's identical body must not refuse this one.
-          const owner = record.kind === 'codex' ? codexOwner(record, live.path) : null
-          const prior = countSubmissions({ kind: record.kind, files: record.kind === 'codex' ? (owner ? [owner.path] : []) : files, identity, submittedAtMs: 0, cursor: [] })
+          const prior = countSubmissions({ kind: record.kind, files, identity, submittedAtMs: 0, cursor: [] })
           if (prior.matchCount > 0) throw new RuntimeError('prompt_already_delivered', 'The provider record already holds this body', { terminal: handle(live), matchCount: prior.matchCount }, 'preflight', 'not_started')
         }
         const screen = record.lastSubmission === null ? await excerpt(live) : null
         const submittedAtMs = Date.now(), submittedAt = new Date(submittedAtMs).toISOString(), cursor = captureCursor(files)
         // C3/D24: the cursor reaches disk before the effect, so a restart still knows where to look.
-        patchAgent(live, { phase: 'ready', lastSubmission: { sha256: identity.sha256, bytes: identity.bytes, submittedAt, cursor, requestId: null } })
+        // `workingObserved` is reset with it (R4): it is evidence about *this* submission's turn, and
+        // a Working left over from the previous one would otherwise satisfy `responded` on its own.
+        patchAgent(live, { phase: 'ready', workingObserved: false, lastSubmission: { sha256: identity.sha256, bytes: identity.bytes, submittedAt, cursor, requestId: null } })
         await backend.promptAgent(live, text, info.stateChangeSeq, ctx)
         const stored = patchAgent(live, { lastSubmission: { sha256: identity.sha256, bytes: identity.bytes, submittedAt, cursor, requestId } }) ?? record
         const delivery = { bytes: identity.bytes, lines: identity.lines, sha256: identity.sha256, submittedAt, cursor, screen }

@@ -48,10 +48,12 @@ export class TerminalBackend {
       if (error instanceof HerdrRequestError) throw new RuntimeError(error.code === 'timeout' || error.code === 'connect_timeout' ? 'backend_timeout' : 'backend_unavailable', error.message, undefined, 'backend')
       throw error
     })
-    // The guard's compare-and-submit rejection also carries the AgentInfo it observed. The response
-    // envelope keeps only code and message, so corral re-reads `agent.get` for the block it reports
-    // rather than widening the envelope for a value it can observe directly (LIFE-394 §1.4, §4.4).
-    if (response.error) throw new RuntimeError(response.error.code ?? 'backend_error', response.error.message ?? 'Backend rejected request', undefined, 'backend', this.acceptedEffects ? 'unknown' : 'not_started')
+    // The guard's compare-and-submit rejection carries the AgentInfo it observed, and that value is
+    // the whole basis of the refusal — a re-read of `agent.get` afterwards sees a state that has
+    // already moved on. So it travels with the error (LIFE-394 §1.4, §4.4, R7): the envelope passes
+    // it through untouched and it becomes the RuntimeError's `observed` detail, unchanged.
+    if (response.error) throw new RuntimeError(response.error.code ?? 'backend_error', response.error.message ?? 'Backend rejected request',
+      response.error.observed === undefined ? undefined : { observed: response.error.observed }, 'backend', this.acceptedEffects ? 'unknown' : 'not_started')
     if (!isRecord(response.result)) throw new RuntimeError('invalid_backend_response', 'Missing backend result')
     if (mutation) this.acceptedEffects++
     return response.result

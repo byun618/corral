@@ -62,11 +62,17 @@ export function agentStatusSubscriptions(paneIds: readonly string[]): Array<Reco
   return paneIds.map((paneId) => ({ type: 'pane.agent_status_changed', pane_id: paneId }))
 }
 
-/** 응답 봉투. 서버가 준 result/error 를 가공하지 않고 그대로 들고 다닌다. */
+/**
+ * 응답 봉투. 서버가 준 result/error 를 가공하지 않고 그대로 들고 다닌다.
+ *
+ * `observed` 는 가드가 거절하면서 **자기가 본 AgentInfo** 를 실어 보내는 자리다 (LIFE-394 §1.4).
+ * 거절의 근거는 그 관측값 하나뿐인데 봉투가 code·message 만 남기면 호출자는 거절 시점의 상태를
+ * 다시 볼 방법이 없다 — 되읽기는 이미 달라진 상태를 본다. 그래서 **모양을 보지 않고 그대로** 통과시킨다.
+ */
 export type ResponseFrame = {
   id?: string
   result?: unknown
-  error?: { code?: string; message?: string }
+  error?: { code?: string; message?: string; observed?: unknown }
 }
 
 /** 구독 push 봉투. */
@@ -126,7 +132,11 @@ export function asResponseFrame(message: unknown): ResponseFrame | null {
     error:
       error === null
         ? undefined
-        : { code: readString(error, 'code') ?? undefined, message: readString(error, 'message') ?? undefined },
+        : {
+            code: readString(error, 'code') ?? undefined,
+            message: readString(error, 'message') ?? undefined,
+            ...('observed' in error ? { observed: error['observed'] } : {}),
+          },
   }
 }
 

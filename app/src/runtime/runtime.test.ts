@@ -160,7 +160,7 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
     // 1: the same second already holds the previous submission of the same body. The cursor, not the
     //    clock, separates them, and a time-only filter counts two.
     const both = earlier + '\n' + later + '\n', cursor = captureCursor([file], reader({ [file]: earlier + '\n' }))
-    expect(cursor).toEqual([{ path: file, existed: true, bytes: Buffer.byteLength(earlier + '\n'), lines: 1 }])
+    expect(cursor).toEqual([{ path: file, existed: true, bytes: Buffer.byteLength(earlier + '\n'), lines: 1, prefixSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }])
     expect(countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs, cursor, read: reader({ [file]: both }) }).matchCount).toBe(1)
     expect(countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs, cursor: [], read: reader({ [file]: both }) }).matchCount).toBe(2)
     // 2: the provider restarted after the submit and wrote a second file the cursor never saw.
@@ -324,7 +324,7 @@ describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
       }
     }
     const live: TerminalIdentity = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 'tab', workspaceId: 'w', path: cwd, repo: cwd, title: 'fixture' }
-    const info: AgentObservation = { name: 'corral-fixture', kind, status: 'idle', launchPending: false, interactiveReady: true,
+    const info: AgentObservation = { name: agentName('pane'), kind, status: 'idle', launchPending: false, interactiveReady: true,
       stateChangeSeq: 2, stateLabels: {}, session: null, paneId: 'pane', observedAt: new Date().toISOString() }
     const verified = AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
       active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false }))

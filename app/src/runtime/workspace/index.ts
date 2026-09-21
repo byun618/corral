@@ -7,7 +7,7 @@ import { RepoRegistry, repoRootOf, unregisterRepo, expandPath, type RepoRecord, 
 import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, WorktreeMetadata, worktreeSelect, type Metadata, type WorkspaceDesktop, type WorktreeRecord } from './model.js'
 import { isRecord } from '../../shared/json.js'
 import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
-import { AGENT_OPTIONS, derivedRequestId, stageFailure, terminalModule, validateAgentFlags } from '../terminal/index.js'
+import { AGENT_OPTIONS, MAX_INPUT, derivedRequestId, stageFailure, terminalModule, validateAgentFlags } from '../terminal/index.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
 const required: Record<string, string[]> = {
@@ -169,8 +169,17 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
         }
         default: {
           if (inv.command === 'worktree create' && f.agent !== undefined) {
-            const composed = { ...inv, flags: { ...f, 'request-id': f['request-id'] ?? `r1.${Date.now()}.${randomUUID()}` } }
-            result = await receipts.run(composed, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop))
+            // §4.3/R6: `--prompt-file` names a file in the *caller's* directory, and the body it
+            // holds is part of what this request asked for. Reading it here — before the receipt is
+            // admitted and before git creates anything — makes an unreadable file an effect-free
+            // `invalid_argument`, puts the body in the receipt fingerprint so a changed file is a
+            // conflict rather than a replay, and lets the child `terminal create` take the body
+            // corral verified instead of a path that would resolve inside the new worktree.
+            const promptFile = stringFlag(f, 'prompt-file')
+            const body = promptFile === undefined ? undefined : readPromptFile(inv.cwd, promptFile)
+            const composed: Invocation = { ...inv, flags: { ...f, 'request-id': f['request-id'] ?? `r1.${Date.now()}.${randomUUID()}` },
+              ...(body === undefined ? {} : { stdin: body }) }
+            result = await receipts.run(composed, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop, body))
           } else result = await executeWorktree(inv, ctx, registry, metadata, terminal, desktop)
         }
       }
@@ -179,11 +188,20 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
     },
   }
 }
+/** The prompt body a `worktree create --agent` was given by path, read in the caller's directory. */
+function readPromptFile(cwd: string, value: string): string {
+  const file = path.resolve(cwd, value)
+  const refuse = (message: string): never => { throw new RuntimeError('invalid_argument', message, { promptFile: value }, 'preflight', 'not_started') }
+  let content: string
+  try { content = fs.readFileSync(file, 'utf8') } catch (error) { return refuse(`Cannot read prompt file: ${String(error)}`) }
+  if (content.includes('\0') || Buffer.byteLength(content) > MAX_INPUT) refuse(`--prompt-file must be NUL-free UTF-8, at most ${MAX_INPUT} bytes`)
+  return content
+}
 async function verifyRef(root: string, ref: string, ctx: CommandContext): Promise<void> {
   try { await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], ctx.signal) }
   catch { reject(`Invalid commit ref: ${ref}`) }
 }
-async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, terminal: CommandModule, desktop?: WorkspaceDesktop): Promise<unknown> {
+async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, terminal: CommandModule, desktop?: WorkspaceDesktop, promptBody?: string): Promise<unknown> {
   const f = inv.flags, flag = (key: string) => stringFlag(f, key), need = (key: string) => stringFlag(f, key, true)!
   const repos = registry.records(), records = await metadata.list(repos, ctx.signal)
   const select = async (value: string) => worktreeSelect(records, value, inv.cwd, value === 'active' && desktop ? (await desktop.observe()).find(row => row.isActive)?.path ?? '' : undefined)
@@ -267,6 +285,9 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
       const requestId = derivedRequestId(need('request-id'), 'terminal')
       const forwarded: Flags = { worktree: worktree.id, agent: need('agent'), 'request-id': requestId }
       for (const key of AGENT_OPTIONS) if (f[key] !== undefined) forwarded[key] = f[key]!
+      // The body was read and admitted above; it travels as text so the child never resolves the
+      // path again — inside the new checkout that name is either absent or a different file (R6).
+      if (promptBody !== undefined) { delete forwarded['prompt-file']; forwarded.prompt = promptBody }
       let child: unknown = null
       try { child = await terminal.execute({ command: 'terminal create', flags: forwarded, args: [], cwd: target }, ctx) }
       catch (error) { stages.terminal = { ...stageFailure(error), requestId } }

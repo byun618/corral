@@ -12,7 +12,7 @@ import { CommandRegistry, foundationSpecs, validateFoundation } from './registry
 import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
 import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
-import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
+import { TerminalBackend, type AgentManifestObservation, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
 import { isRecord } from '../shared/json.js'
 import type { CommandContext } from './contracts.js'
 const cleanups: (() => Promise<void> | void)[] = []
@@ -354,7 +354,13 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     const verified = AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
       active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false }))
     /** `observe` lets a case answer each `agent.get` differently — a moving seq, one Working frame. */
-    const state = { info, manifests: verified, onPrompt: () => {}, observe: null as ((current: AgentObservation) => AgentObservation) | null }
+    interface FixtureState {
+      info: AgentObservation
+      manifests: AgentManifestObservation[]
+      onPrompt: () => void
+      observe: ((current: AgentObservation) => AgentObservation) | null
+    }
+    const state: FixtureState = { info, manifests: verified, onPrompt: () => {}, observe: null }
     const proto = TerminalBackend.prototype
     const stubs = [
       vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e'),

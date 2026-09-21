@@ -145,22 +145,30 @@ staticCheck('F12-untouched-files-are-byte-identical', () => {
 // G9: `as T` and `as const` are different things and are now reported as two numbers, not one
 // sentence. The old pattern anchored the type name on [A-Z], so every lowercase primitive — the
 // `as string`, `as number`, `as boolean` a reviewer would most expect it to catch — walked past it.
-// The pattern is checked against samples on every run, because a silent checker and a clean file
-// look identical (memory: an empty result is evidence only after a positive control).
+// R14: and a type that *starts with a parenthesis* — `as ((x: A) => B) | null`, the function type
+// this round's own test helper used — walked past both anchors. A type assertion is the word `as`
+// followed by a type, and a type may begin with `(`; the reported `typeAssertions: 0` was a false
+// negative, not a clean file. The pattern is checked against samples on every run, because a silent
+// checker and a clean file look identical (memory: an empty result is evidence only after a
+// positive control) — and this round is what that memory was written for.
 const TYPE_NAMES = ['string', 'number', 'boolean', 'bigint', 'symbol', 'object', 'undefined', 'null', 'never', 'unknown', 'any', 'void']
-const TYPE_ASSERTION = new RegExp(String.raw`\bas\s+(?:readonly\s+)?(?:[A-Z][A-Za-z0-9_]*|(?:${TYPE_NAMES.join('|')})\b)`)
+const TYPE_ASSERTION = new RegExp(String.raw`\bas\s+(?:readonly\s+)?(?:\(|[A-Z][A-Za-z0-9_]*|(?:${TYPE_NAMES.join('|')})\b)`)
 const CONST_ASSERTION = /\bas\s+const\b/
 // Line comments and the body of a block comment are prose: "reports the trust screen as Idle" is
 // English, not a cast, and it is the false positive this strip exists for.
 const codeOf = line => line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '').replace(/^\s*\/\*.*$/, '')
 staticCheck('F14-assertion-pattern-self-check', () => {
   const caught = ['const a = x as string', 'const b = x as number', 'const c = y as AgentRecord',
-    'const d = z as unknown', 'const e = w as readonly string[]', 'const f = v as any']
+    'const d = z as unknown', 'const e = w as readonly string[]', 'const f = v as any',
+    // R14 의 실제 표본: 괄호로 시작하는 함수 타입, 그리고 괄호로 시작하는 readonly 타입.
+    'observe: null as ((current: AgentObservation) => AgentObservation) | null',
+    'const g = h as readonly (string | number)[]']
   const missed = caught.filter(sample => !TYPE_ASSERTION.test(codeOf(sample)))
   assert.deepEqual(missed, [], 'the pattern must catch every sample assertion')
-  // …and must not fire on the two things that are not type assertions.
+  // …and must not fire on the things that are not type assertions.
   assert.equal(TYPE_ASSERTION.test(codeOf('const kinds = [1, 2] as const')), false)
   assert.equal(TYPE_ASSERTION.test(codeOf('  // reports the real trust screen as Idle')), false)
+  assert.equal(TYPE_ASSERTION.test(codeOf('  // same as (the r1 run) above')), false)
   assert.equal(CONST_ASSERTION.test(codeOf('const kinds = [1, 2] as const')), true)
   return { samples: caught.length }
 })

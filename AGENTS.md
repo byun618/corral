@@ -13,7 +13,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   아티팩트가 스파이크 판정과 어긋난 채 계획 근거로 쓰이고 있던 전례가 있다 (LIFE-344 → 00-project.md 정정)
 - 완료 선언 전에 .agents/rules/validation.md 의 완료 조건을 확인한다
 
-## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
+## 작업 플로우 (분석 → 설계·설계 리뷰 → 구현·코드 리뷰 → 판정)
 
 실행 절차(명령 수준)는 스킬을 따른다 — 시작: .agents/skills/task-start/SKILL.md (main 세션),
 진행: .agents/skills/task-coordinate/SKILL.md (코디네이터 세션). 아래는 원칙 요약.
@@ -27,17 +27,19 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
    - **⓪ 킥오프 승인**: 킥오프 문서까지 커밋한 뒤 문제 정의·범위·판정 기준·구현 방식을
      사용자에게 보고하고 승인 후에만 워커를 기동한다 (task-coordinate 게이트 ⓪)
-3. 구현: 기본은 **경쟁 구현(claude ∥ codex)** (2026-09-18 전환 — codex 구독 업그레이드로
-   2026-09-11 전환 사유였던 구독 모델 격차 해소, 경쟁 기대값 회복)
-   - **claude 단독 구현은 예외**: 설계 접근이 갈릴 여지가 거의 없는 단순 작업만 —
-     분석 단계에서 판단해 일감에 명시
-   - 워커 모델·effort 는 분석 단계에서 코디네이터가 정해 02-kickoff.md 정체 표에 기록
-     (기본 페어링 = 플래그십 대 플래그십, 상세는 task-coordinate SKILL.md §4)
-   - 구현 브랜치: 작업 브랜치에서 분기, LIFE-NNN-<슬러그>-claude / -codex (단독 예외면 codex 생략), 각자 전용 worktree
+3. 설계·구현: 기본은 **Opus high 단독 워커 + Fable advisor** (2026-09-21 사용자 승인).
+   - 시작 시 설정 질문 없이 `.agents/skills/task-start/defaults.md`를 적용한다. 명시한 변경만
+     해당 작업에 반영하고 모든 역할·모델·effort를 00-start.md에 기록한다. 재개 시 그대로 따른다.
+   - 워커 설계 → 별도 Codex Astra high 설계 리뷰 → 코디네이터 판정 → 같은 워커 구현.
+     설계와 구현은 별도 Task/Dispatch다. 설계 통과는 내부 판정이며 사용자 승인 게이트를 늘리지 않는다.
+   - advisor는 설계 조언 담당이며 독립 리뷰를 대신하지 않는다. 핵심 계약 변경은 설계 재검토한다.
+   - 경쟁 구현은 사용자 지정 시 적용한다. 후보별 설계·리뷰·구현을 분리한다.
+   - 구현 브랜치는 작업 브랜치에서 분기: LIFE-NNN-<슬러그>-claude (경쟁이면 -codex도 생성).
    - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
    - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
    - 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
-4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
+4. 코드 리뷰: 기본은 별도 Codex Astra xhigh + Grok. 설계 리뷰·advisor와 별도 세션이다.
+   검토 전 .agents/agents/reviewer.md를 읽는다
    → specs/LIFE-NNN-*/review-<도구>.md
 5. 취합·판정: 코디네이터가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
    - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
@@ -51,7 +53,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 ## 상태 전이·보고 (진행: 코디네이터 / 출고: 본체 마무리 세션)
 
 - 플로우 단계마다 LA 상태를 전이한다 (life-assistant issue_transition, forward-only):
-  0 작업 시작 → "진행 중" / 1 분석 → "분석 중" / 3 경쟁 구현 → "개발 중" /
+  0 작업 시작 → "진행 중" / 1 분석 → "분석 중" / 3 구현 → "개발 중" (설계·설계 리뷰는 "분석 중" 유지) /
   4 리뷰 → "검증 중" / 6 main 머지 후 → "완료"
 - **사용자 승인 게이트 (자율 진행 금지 지점)** — 3단: ⓪ 킥오프 승인(구현 워커 기동 전 —
   문제 정의·범위·판정 기준 보고) ① 채택 승인(승자 → 작업 브랜치 머지 전)
@@ -75,10 +77,10 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 코디네이터·판정 = 작업마다 claude 또는 codex 선택. 명시한 선택을 우선하고 신규 작업의
   미지정 기본값은 claude. 시작 시 `specs/LIFE-NNN-*/00-start.md`에 기록하고 재개 시 그대로 따른다.
   기동·전제 점검·선택 충돌 처리는 task-start 스킬을 따른다.
-- claude (Claude Code) = 구현자 A + 코드 검토
-- codex = 구현자 B + 코드 검토
+- claude (Claude Code) = 기본 Fable xhigh 코디네이터, Opus high 설계·구현, Fable advisor
+- codex = 기본 Astra high 설계 리뷰, 별도 Astra xhigh 코드 리뷰
 - grok = 외부 서치·사실 검증 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
-- 코디네이터 선택은 구현자 페어링을 바꾸지 않는다. 모든 리뷰어는 코디네이터·구현자와
+- 코디네이터 선택은 구현자 페어링을 바꾸지 않는다. 모든 리뷰어는 코디네이터·구현자·advisor와
   별도 세션으로 기동한다. 같은 도구여도 세션과 역할은 구분한다.
 
 ## 세션 간 통신

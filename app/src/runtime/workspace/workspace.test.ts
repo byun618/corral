@@ -3,11 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { startRuntime } from '../server.js'
 import { localCall, request, socketPath } from '../transport.js'
 import { CommandRegistry } from '../registry.js'
 import { workspaceModule } from './index.js'
 import { RepoRegistry } from '../../main/registry.js'
+import { isRecord } from '../../shared/json.js'
+import { RuntimeError } from '../contracts.js'
 const env = { ...process.env }
 const cleanups: (() => void | Promise<void>)[] = []
 afterEach(async () => {
@@ -225,4 +228,48 @@ describe('workspace commands against real git and local socket', () => {
     expect(registry.metadata()[original.path]).toEqual({ comment: 'outer owner' })
   })
 
+
+  it('gates the agent flags and keeps every stage of a half-finished composition (F11)', async () => {
+    const { repo, call } = await fixture()
+    expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
+    // Validation runs in the shared parser before a request is ever sent, so it throws here.
+    const rejected = async (...args: string[]): Promise<string | undefined> => {
+      try { return (await call(...args)).error?.code } catch (error) { return error instanceof RuntimeError ? error.code : String(error) }
+    }
+    // §4.1: the agent options exist only next to --agent, and only on worktree create.
+    for (const args of [['worktree', 'create', '--name', 'a', '--model', 'opus'],
+      ['worktree', 'create', '--name', 'a', '--prompt', 'hi'],
+      ['worktree', 'create', '--name', 'a', '--agent', 'gemini'],
+      ['worktree', 'create', '--name', 'a', '--agent', 'codex', '--advisor', 'fable'],
+      ['worktree', 'create', '--name', 'a', '--agent', 'claude', '--prompt', 'hi', '--prompt-file', '/tmp/x']]) {
+      expect([args.join(' '), await rejected(...args)]).toEqual([args.join(' '), 'invalid_request'])
+    }
+    expect(await rejected('worktree', 'set', '--worktree', 'current', '--agent', 'claude')).toBe('invalid_argument')
+    // None of those took a name: they are rejected before git runs.
+    expect((await call('worktree', 'list')).result).toMatchObject({ totalCount: 1 })
+
+    // D15: this fixture has no terminal backend, so the terminal stage fails after git succeeded.
+    // The worktree is a user resource and stays; the composition reports stage by stage instead of
+    // collapsing into one outcome, and it returns the partial result rather than throwing it away.
+    const requestId = `r1.${Date.now()}.${randomUUID()}`
+    const args = ['worktree', 'create', '--name', 'agent-wt', '--repo', repo, '--agent', 'claude', '--effort', 'high', '--prompt', 'start here', '--request-id', requestId]
+    const first = await call(...args)
+    expect(first.ok).toBe(true)
+    const payload = first.result
+    if (!isRecord(payload) || !isRecord(payload.worktree) || !isRecord(payload.stages)) throw new Error(`unexpected result ${JSON.stringify(first)}`)
+    expect(typeof payload.worktree.path).toBe('string')
+    expect(fs.existsSync(path.join(String(payload.worktree.path), '.git'))).toBe(true)
+    expect(Object.fromEntries(Object.entries(payload.stages).map(([key, stage]) => [key, isRecord(stage) ? stage.status : null])))
+      .toEqual({ worktree: 'completed', terminal: 'failed', agent: 'not_started', prompt: 'not_started' })
+    expect(payload.stages.terminal).toMatchObject({ error: 'backend_unavailable', requestId: expect.stringMatching(/^r1\./) })
+    expect(payload.outcome).toBe('completed')
+    expect(payload.agent).toBe(null)
+    expect(payload.replayed).toBe(false)
+
+    // The same request id replays the same partial result: no second worktree, no already_exists.
+    expect(await call(...args)).toMatchObject({ ok: true, result: { replayed: true, stages: payload.stages } })
+    expect((await call('worktree', 'list')).result).toMatchObject({ worktrees: expect.arrayContaining([expect.objectContaining({ path: payload.worktree.path })]) })
+    // A new id for the same name falls back to the existing worktree create failure, unchanged.
+    expect((await call('worktree', 'create', '--name', 'agent-wt', '--repo', repo, '--agent', 'claude')).error?.code).toBe('already_exists')
+  })
 })

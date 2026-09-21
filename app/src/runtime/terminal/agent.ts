@@ -11,11 +11,12 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash } from 'node:crypto'
 import { RuntimeError } from '../contracts.js'
+import { isRecord } from '../../shared/json.js'
 import { atomicWrite, privateDirectory, readFile } from '../storage.js'
 
 export const AGENT_KINDS = ['claude', 'codex', 'grok'] as const
 export type AgentKind = (typeof AGENT_KINDS)[number]
-export const isAgentKind = (value: unknown): value is AgentKind => (AGENT_KINDS as readonly string[]).includes(String(value))
+export const isAgentKind = (value: unknown): value is AgentKind => AGENT_KINDS.some(kind => kind === value)
 
 export type AgentPhase = 'launching' | 'blocked' | 'ready' | 'accepted' | 'responded' | 'exited'
 /** herdr's startup deadline (src/terminal/state.rs); a human may sit on a trust screen for minutes. */
@@ -23,6 +24,23 @@ export const AGENT_START_TIMEOUT_MS = 300000
 export const READY_SAMPLES = 2
 export const READY_SAMPLE_INTERVAL_MS = 750
 export const SCREEN_EXCERPT_BYTES = 4096
+
+// --- §3 ready gate ------------------------------------------------------------------------------
+
+export interface ReadySample { status: string; launchPending: boolean; interactiveReady: boolean; stateChangeSeq: number }
+/** One observation that is quiet: bound, not launching, and either idle or (for `idle`) finished. */
+export const agentQuiescent = (sample: ReadySample, want: 'ready' | 'idle'): boolean =>
+    sample.interactiveReady && !sample.launchPending && (want === 'ready' ? sample.status === 'idle' : sample.status === 'idle' || sample.status === 'done')
+/**
+ * §3: ready is N consecutive quiet observations 750 ms apart whose `state_change_seq` never moved.
+ * The unchanged seq is the real proof — it says herdr recorded no transition between the samples —
+ * so N stays 2 rather than approximating "no transition in flight" with more samples.
+ */
+export function readySatisfied(samples: ReadySample[], want: 'ready' | 'idle'): boolean {
+    const first = samples[0]
+    if (samples.length !== READY_SAMPLES || first === undefined) return false
+    return samples.every(sample => agentQuiescent(sample, want) && sample.stateChangeSeq === first.stateChangeSeq)
+}
 
 // --- §4.5 body identity -------------------------------------------------------------------------
 
@@ -221,8 +239,7 @@ export interface CountResult {
 type RowRole = 'user' | 'assistant' | 'other'
 interface Row { index: number; text: string | null; timeSeconds: number | null; role: RowRole }
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-    typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
+const asRecord = (value: unknown): Record<string, unknown> | null => isRecord(value) ? value : null
 const isoSeconds = (value: unknown): number | null => {
     if (typeof value !== 'string') return null
     const ms = Date.parse(value)
@@ -445,7 +462,7 @@ export const SESSION_MARKER_NAMES = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT'
 export const SESSION_MARKER_PREFIXES = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_'] as const
 export function strippedSessionMarkers(environment: Record<string, string | undefined>): string[] {
     return Object.keys(environment)
-        .filter(name => (SESSION_MARKER_NAMES as readonly string[]).includes(name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix)))
+        .filter(name => SESSION_MARKER_NAMES.some(marker => marker === name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix)))
         .sort()
 }
 export function withoutSessionMarkers(environment: Record<string, string | undefined>): Record<string, string | undefined> {

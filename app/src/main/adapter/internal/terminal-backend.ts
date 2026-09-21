@@ -33,7 +33,11 @@ export interface TerminalOperation {
 /** Private guard protocol is checked by the backend App loop in the same turn as the effect. */
 export class TerminalBackend {
   private acceptedEffects = 0
+  /** Handshake capability: set by `epoch()`. `null` until the handshake has been read once. */
+  private agentOps: boolean | null = null
   constructor(readonly socket: string) {}
+  /** LIFE-394 §1.4/§5.2: the agent arms exist only on a guard build that advertises `agent_ops`. */
+  agentCapable(): boolean { return this.agentOps === true }
   private async call(params: Record<string, unknown>, ctx: TerminalOperation, mutation = false) {
     ctx.signal.throwIfAborted()
     if (Date.now() >= ctx.deadlineAt) throw new RuntimeError('deadline_exceeded', 'Deadline passed before backend request')
@@ -59,6 +63,7 @@ export class TerminalBackend {
       throw error
     }
     if (response.guard_version !== 1 || typeof response.epoch !== 'string') throw new RuntimeError('unsupported_backend', 'Terminal guard protocol v1 required')
+    this.agentOps = response.agent_ops === 1 || response.agent_ops === true
     return response.epoch
   }
   private operation(epoch: string, method: string, params: Record<string, unknown>, ctx: TerminalOperation, target?: TerminalIdentity, mutation = false) {

@@ -13,8 +13,8 @@ import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
-  agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
-  evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, sessionRecordPaths,
+  agentName, agentQuiescent, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
+  evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths,
   type AgentKind, type AgentPhase, type AgentRecord, type CursorEntry, type DetectManifestObservation,
 } from './agent.js'
 export const terminalSpecs: CommandSpec[] = specs
@@ -124,10 +124,6 @@ function blockedReason(labels: Record<string, string>): string {
   if (text.includes('update')) return 'update'
   return 'unknown'
 }
-/** §3 gate predicate. `agent-idle` differs only in accepting a finished turn (`done`). */
-function qualifies(info: AgentObservation, target: 'ready' | 'idle'): boolean {
-  return info.interactiveReady && !info.launchPending && (target === 'ready' ? info.status === 'idle' : info.status === 'idle' || info.status === 'done')
-}
 /** §8.2: report the marker this runtime carries. corral neither repairs it nor restarts the backend. */
 function environmentWarnings(): string[] {
   return process.env.CLAUDE_CODE_CHILD_SESSION === undefined ? [] : ['claude_child_session_marker']
@@ -150,6 +146,11 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       if (!socket) throw new RuntimeError('backend_unavailable', 'Profile has no configured terminal backend')
       const backend = new TerminalBackend(socket)
       const epoch = await backend.epoch(ctx)
+      // §5.2: the agent arms live only on a guard build that advertises agent_ops. Checked before
+      // `terminal create` reaches the backend, so a stock or LIFE-393 build leaves no half-made pane.
+      if (!backend.agentCapable() && ((inv.command === 'terminal create' && f.agent !== undefined) || inv.command === 'terminal prompt'
+        || (inv.command === 'terminal wait' && (f.for === 'agent-ready' || f.for === 'agent-idle'))))
+        throw new RuntimeError('unsupported_backend', 'Backend guard does not advertise agent_ops; rebuild with app/scripts/build-terminal-backend.sh', { recovery: 'app/scripts/build-terminal-backend.sh' }, 'preflight', 'not_started')
       const registry = new RepoRegistry(userData), records = () => new WorktreeMetadata(registry).list(registry.records(), ctx.signal)
       const handle = (target: TerminalIdentity) => codec.encode('t1', { runtimeId: ctx.runtimeId, epoch: target.epoch, ptyId: target.ptyId, paneId: target.paneId })
       const describe = async (target: TerminalIdentity) => {
@@ -221,10 +222,19 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           views.push(view)
           if (view.stale || view.launchExpired || view.phase === 'blocked' || view.phase === 'exited') break
         }
-        const first = views[0]?.info ?? null
-        const satisfied = views.length === READY_SAMPLES && first !== null
-          && views.every(view => view.info !== null && !view.stale && qualifies(view.info, want) && view.info.stateChangeSeq === first.stateChangeSeq)
-        return { views, satisfied }
+        const samples = views.filter(view => view.info !== null && !view.stale).map(view => view.info!)
+        return { views, satisfied: samples.length === views.length && readySatisfied(samples, want) }
+      }
+      /**
+       * §0/§3: `ready` needs the gate *and* a separate guard `server.agent_manifests` call confirming
+       * the active detect manifest. An unverified manifest means a trust dialog can read as idle, so
+       * ready is simply not issued — the reason travels in `evidence.detectManifest`.
+       */
+      const readyGate = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
+        const pass = await gatePass(live, record, want)
+        const kind = record?.kind ?? pass.views[pass.views.length - 1]?.info?.kind ?? null
+        const manifest = pass.satisfied && kind !== null && isAgentKind(kind) ? await observeManifest(kind) : null
+        return { views: pass.views, satisfied: pass.satisfied && manifest !== null && manifest.verified, manifest }
       }
       const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean): AgentPhase => {
         const last = views[views.length - 1]
@@ -271,11 +281,14 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const waitAgent = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
         for (;;) {
           ctx.signal.throwIfAborted()
-          const pass = await gatePass(live, record, want)
+          const pass = await readyGate(live, record, want)
           const phase = phaseOf(record, pass.views, pass.satisfied)
           if (pass.satisfied) { patchAgent(live, { phase }); return { ...pass, phase } }
           if (pass.views[pass.views.length - 1]?.launchExpired) throw new RuntimeError('agent_launch_expired', 'Managed agent binding expired while the provider is still in the foreground', { terminal: handle(live), recovery: 'terminal show / terminal read' }, 'wait', 'not_started')
-          if (phase === 'blocked' || phase === 'exited') { patchAgent(live, { phase }); return { ...pass, phase } }
+          // A pane where corral never started anything is "not yet", not "exited": it waits out its
+          // deadline. Only a pane with a record reports `exited`, which is the D6 case F10 relies on.
+          if ((phase === 'blocked' || phase === 'exited') && record !== null) { patchAgent(live, { phase }); return { ...pass, phase } }
+          if (phase === 'blocked' && record === null) return { ...pass, phase }
           if (Date.now() >= ctx.deadlineAt - 15) throw new RuntimeError('wait_timeout', 'Condition not met before deadline', { terminal: handle(live), condition: want === 'ready' ? 'agent-ready' : 'agent-idle' }, 'wait')
           await delay(Math.min(READY_SAMPLE_INTERVAL_MS, Math.max(1, ctx.deadlineAt - Date.now() - 15)), undefined, { signal: ctx.signal })
         }
@@ -292,7 +305,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           // C7: a codex rollout corral cannot prove it owns never confirms, whatever the count says.
           const unproven = record.kind === 'codex' && codexOwner(record, live.path) === null
           const reason = unproven ? 'ambiguous' : classifyCount(count, count.scanned.length)
-          const responded = workingObserved && count.assistantAfter && view.info !== null && qualifies(view.info, 'idle')
+          const responded = workingObserved && count.assistantAfter && view.info !== null && agentQuiescent(view.info, 'idle')
           const done = reason === null && (want === 'accepted' || responded)
           if (done || view.phase === 'blocked' || view.phase === 'exited' || Date.now() >= ctx.deadlineAt - 15) {
             const phase: AgentPhase = reason !== null ? 'ready' : responded ? 'responded' : 'accepted'
@@ -323,7 +336,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         const text = normalizeBody(raw), identity = bodyIdentity(text), files = scanFiles(record, live.path)
         // §2: codex's first submission has no owning record yet, so it skips the duplicate pre-check.
         if (!(record.kind === 'codex' && record.lastSubmission === null)) {
-          const prior = countSubmissions({ kind: record.kind, files, identity, submittedAtMs: 0, cursor: [] })
+          // Scan only what corral owns: another session's identical body must not refuse this one.
+          const owner = record.kind === 'codex' ? codexOwner(record, live.path) : null
+          const prior = countSubmissions({ kind: record.kind, files: record.kind === 'codex' ? (owner ? [owner.path] : []) : files, identity, submittedAtMs: 0, cursor: [] })
           if (prior.matchCount > 0) throw new RuntimeError('prompt_already_delivered', 'The provider record already holds this body', { terminal: handle(live), matchCount: prior.matchCount }, 'preflight', 'not_started')
         }
         const screen = record.lastSubmission === null ? await excerpt(live) : null
@@ -371,8 +386,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         try { ready = await waitAgent(created, record, 'ready') } catch (error) { stages.prompt = stageFailure(error); return done('agent_started', record, [], false, null) }
         if (!ready.satisfied) {
           // §4.3: a create that met a blocker ends here, complete, and does not hold the prompt.
-          stages.prompt = { status: 'not_started', reason: ready.phase === 'blocked' ? 'agent_blocked' : 'agent_not_ready' }
-          return done('agent_started', record, ready.views, false, null)
+          stages.prompt = { status: 'not_started', reason: ready.phase === 'blocked' ? 'agent_blocked'
+            : ready.manifest !== null && !ready.manifest.verified ? 'detect_manifest_unverified' : 'agent_not_ready' }
+          return { ...await done('agent_started', record, ready.views, false, null), agent: await agentBlock(created, record, ready.views, false, ready.manifest) }
         }
         const promptId = derivedPromptId(required('request-id'))
         const child: Invocation = { command: 'terminal prompt', flags: { terminal: terminal.handle, 'request-id': promptId, stdin: true }, args: [], cwd: inv.cwd, stdin: prompt }
@@ -428,7 +444,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           const live = (await resolve())!, record = loadAgent(live)
           const waited = await waitAgent(live, record, f.for === 'agent-ready' ? 'ready' : 'idle')
           return { terminal: required('terminal'), condition: f.for, satisfied: waited.satisfied,
-            agent: await agentBlock(live, loadAgent(live), waited.views, waited.satisfied, null), stage: 'observed' }
+            agent: await agentBlock(live, loadAgent(live), waited.views, waited.satisfied, waited.manifest), stage: 'observed' }
         }
         if (inv.command === 'terminal wait') {
           let cursor = flag('cursor'), matched = '', baselineSet = !!cursor
@@ -472,8 +488,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           if (record !== null || first.info !== null) {
             // §4.4 D4: without a record corral reports only what herdr answers — it does not guess.
             const pass = first.stale || first.launchExpired || first.phase === 'blocked' || first.phase === 'exited'
-              ? { views: [first], satisfied: false } : await gatePass(live, record, 'ready')
-            agent = await agentBlock(live, record, pass.views, pass.satisfied, record === null ? null : await observeManifest(record.kind))
+              ? { views: [first], satisfied: false, manifest: record === null ? null : await observeManifest(record.kind) }
+              : await readyGate(live, record, 'ready')
+            agent = await agentBlock(live, record, pass.views, pass.satisfied, pass.manifest)
           }
           return { terminal: await describe(live), process: { ...process, observationId: 'p1.' + createHash('sha256').update(JSON.stringify(process)).digest('base64url') },
             connected: true, writable: process.shellPid !== null, agent, capabilities: { atomicTerminal: true, conditionalProcess: false, rawOutput: true, gui: desktop?.available() ?? false } }

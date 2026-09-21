@@ -35,4 +35,4 @@ export {
   type ForegroundProbe,
   type WorktreeOutcome,
 } from './internal/lifecycle.js'
-export { TerminalBackend, type TerminalIdentity, type TerminalOperation } from './internal/terminal-backend.js'
+export { TerminalBackend, type TerminalIdentity, type TerminalOperation, type AgentObservation, type AgentManifestObservation } from './internal/terminal-backend.js'

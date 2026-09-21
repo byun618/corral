@@ -9,7 +9,7 @@
      #[serde(rename = "ping")]
      Ping(PingParams),
      #[serde(rename = "server.stop")]
-@@ -268,3 +270,13 @@
+@@ -268,3 +270,15 @@
  
  #[cfg(test)]
  mod tests;
@@ -22,6 +22,8 @@
 +    #[serde(default)] pub pane_id: Option<String>,
 +    #[serde(default)] pub terminal_id: Option<String>,
 +    #[serde(default)] pub operation: Option<serde_json::Value>,
++    /// agent.prompt only: the state_change_seq corral last observed as ready. Compare-and-submit.
++    #[serde(default)] pub expected_state_change_seq: Option<u64>,
 +}
 --- a/src/api/server.rs
 +++ b/src/api/server.rs
@@ -52,10 +54,10 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,150 @@
 +use super::App;
-+use crate::api::schema::{CorralTerminalParams, Method, Request};
-+use super::responses::encode_error;
++use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
++use super::responses::{encode_error, encode_error_body, encode_success};
 +
 +fn epoch() -> &'static str {
 +    static EPOCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -70,7 +72,7 @@
 +    pub(super) fn handle_corral_terminal(&mut self, id: String, params: CorralTerminalParams) -> String {
 +        let Some(mut operation) = params.operation else {
 +            return serde_json::json!({"id": id, "result": {"epoch": epoch(), "guard_version": 1,
-+                "raw_capacity": 1048576, "conditional_process": false}}).to_string();
++                "raw_capacity": 1048576, "conditional_process": false, "agent_ops": 1}}).to_string();
 +        };
 +        if params.epoch != epoch() { return encode_error(id, "stale_backend", "backend generation changed"); }
 +        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
@@ -84,8 +86,15 @@
 +            Method::PaneClose(p) => Some(p.pane_id.as_str()),
 +            Method::PaneRead(p) => Some(p.pane_id.as_str()),
 +            Method::PaneProcessInfo(p) => p.pane_id.as_deref(),
++            Method::AgentStart(p) => Some(p.pane_id.as_str()),
++            Method::AgentGet(t) => Some(t.target.as_str()),
++            Method::AgentPrompt(p) => Some(p.target.as_str()),
 +            Method::TabRename(_) => params.pane_id.as_deref(),
-+            Method::SessionSnapshot(_) | Method::WorkspaceCreate(_) | Method::TabCreate(_) => None,
++            // Read-only, target-less arms. server.agent_manifests is here so corral can check which
++            // detect manifest is actually active without leaving the guard envelope or widening the
++            // app-side method allowlist; it aims at no pane, so there is no generation to compare.
++            Method::SessionSnapshot(_) | Method::WorkspaceCreate(_) | Method::TabCreate(_)
++            | Method::ServerAgentManifests(_) => None,
 +            _ => return encode_error(id, "unsupported", "operation is outside terminal guard protocol"),
 +        };
 +        if let Some(target) = target {
@@ -101,6 +110,35 @@
 +            }
 +        } else if matches!(&request.method, Method::TabRename(_)) {
 +            return encode_error(id, "invalid_request", "rename needs terminal guard");
++        }
++        // agent.prompt never reaches the app dispatch table: api.rs rejects it and the api server
++        // defers it before dispatch. Check the ready predicate and queue the submission here, in
++        // the same guarded turn — compare-and-submit against the state_change_seq corral observed,
++        // so a transition after that observation cannot be submitted into. The completion receiver
++        // is dropped: queueing is not cancelled by the drop, and delivery is proven from the
++        // provider session record, not from herdr.
++        if matches!(&request.method, Method::AgentPrompt(_)) {
++            let prompt_id = request.id.clone();
++            let Method::AgentPrompt(prompt) = request.method else { unreachable!() };
++            let Some(expected_seq) = params.expected_state_change_seq else {
++                return encode_error(prompt_id, "invalid_request", "agent.prompt requires expected_state_change_seq");
++            };
++            self.reconcile_managed_agent_target(&prompt.target);
++            let observed = match self.agent_info_for_target(&prompt.target) {
++                Ok(agent) => agent,
++                Err(err) => return encode_error_body(prompt_id, self.agent_target_error_body(err)),
++            };
++            if observed.agent_status != AgentStatus::Idle || !observed.interactive_ready
++                || observed.launch_pending || observed.state_change_seq != expected_seq {
++                let code = if observed.agent_status == AgentStatus::Blocked { "agent_blocked" } else { "agent_not_ready" };
++                let message = format!("agent is not the observed ready state (expected state_change_seq {expected_seq}, observed {})", observed.state_change_seq);
++                return serde_json::json!({"id": prompt_id,
++                    "error": {"code": code, "message": message, "observed": observed}}).to_string();
++            }
++            return match self.queue_agent_prompt(prompt_id, prompt) {
++                Ok((id, agent, _completion)) => encode_success(id, ResponseResult::AgentPrompted { agent }),
++                Err(response) => response,
++            };
 +        }
 +        // No await, internal-event drain, or second queue between guard and effect.
 +        let snapshot = matches!(&request.method, Method::SessionSnapshot(_));
@@ -145,11 +183,18 @@
 +            let operation = if method == "pane.close" { serde_json::json!({"method":method,"params":{"pane_id":pane_name}}) }
 +                else { serde_json::json!({"method":method,"params":{"pane_id":pane_name,"text":text}}) };
 +            let response: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
-+                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation),
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None,
 +            })).unwrap();
 +            assert_eq!(response["error"]["code"], "stale_terminal");
 +            assert_eq!(app.lookup_runtime_sender(ws, pane).unwrap().corral_generation(), new_generation);
 +        }
++        let manifests: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: None, terminal_id: None,
++            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None,
++        })).unwrap();
++        assert!(manifests.get("error").is_none(), "{manifests}");
++        assert!(manifests["result"]["manifests"].as_array().is_some_and(|list| !list.is_empty()), "{manifests}");
++        println!("guarded server.agent_manifests: {}", manifests["result"]["manifests"]);
 +        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 +        let (raw, _, _) = app.lookup_runtime_sender(ws, pane).unwrap().corral_raw_snapshot();
 +        use base64::Engine;
@@ -160,6 +205,17 @@
 +        std::fs::remove_dir_all(root).unwrap();
 +    }
 +}
+--- a/src/app/api/agents.rs
++++ b/src/app/api/agents.rs
+@@ -100,7 +100,7 @@
+         true
+     }
+ 
+-    fn queue_agent_prompt(
++    pub(super) fn queue_agent_prompt(
+         &mut self,
+         id: String,
+         params: AgentPromptParams,
 --- a/src/pane/terminal.rs
 +++ b/src/pane/terminal.rs
 @@ -213,12 +213,14 @@
@@ -189,23 +245,23 @@
          use base64::Engine;
 --- a/src/pane.rs
 +++ b/src/pane.rs
-@@ -2920,6 +2920,8 @@
+@@ -2919,6 +2919,8 @@
+     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
          self.terminal.scroll_metrics()
      }
- 
-+    pub(crate) fn corral_generation(&self) -> u64 { self.terminal.corral_generation() }
 +
++    pub(crate) fn corral_generation(&self) -> u64 { self.terminal.corral_generation() }
+ 
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
  
-     pub(crate) fn search_text_window(
 --- a/src/terminal/runtime.rs
 +++ b/src/terminal/runtime.rs
-@@ -348,6 +348,8 @@
+@@ -347,6 +347,8 @@
+     pub fn synchronized_output_active(&self) -> bool {
          self.0.synchronized_output_active()
      }
- 
-+    pub(crate) fn corral_generation(&self) -> u64 { self.0.corral_generation() }
 +
++    pub(crate) fn corral_generation(&self) -> u64 { self.0.corral_generation() }
+ 
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
  
-     pub fn visible_text(&self) -> String {

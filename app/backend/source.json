@@ -5,7 +5,8 @@
   "archiveSHA256": "1e83bff4b05834ed8281e16f1680e8f3e58375a94b2e3f2b3d021e28e293ef9a",
   "patches": [
     "herdr-stream.patch",
-    "herdr-guard.patch"
+    "herdr-guard.patch",
+    "herdr-detect.patch"
   ],
   "platform": "darwin",
   "arch": "arm64",
@@ -14,6 +15,8 @@
   "conditionalProcess": false,
   "patchSHA256": {
     "herdr-stream.patch": "d7ec2e8b6af5fc1ee2fcebaacb5861ffe2f5e67e3394fac3c3a3e7d5c5b1fdce",
-    "herdr-guard.patch": "7cbc73777ab45d803ed325bbb563696b28de8a2fe9e1596bf3350d57f37e71cb"
-  }
+    "herdr-guard.patch": "7c42968fe170927f8a5fb88277762f0cb3634a9bf71c48c75b8e14ea78640844",
+    "herdr-detect.patch": "84aa84f72d78ddfa6ad11db880764850b4c1b7f01bcb3535cff174aa7a4f50d4"
+  },
+  "agentOps": true
 }

@@ -13,10 +13,12 @@ export ZIG_GLOBAL_CACHE_DIR="$work/zig-cache"
 if [ ! -f "$work/herdr.tar.gz" ]; then curl -fSL https://codeload.github.com/herdrdev/herdr/tar.gz/refs/tags/v0.9.0 -o "$work/herdr.tar.gz"; fi
 if [ ! -f "$work/zig.tar.xz" ]; then curl -fSL https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz -o "$work/zig.tar.xz"; fi
 (cd "$work" && printf '%s\n' '1e83bff4b05834ed8281e16f1680e8f3e58375a94b2e3f2b3d021e28e293ef9a  herdr.tar.gz' '3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b  zig.tar.xz' | shasum -a 256 -c -)
-patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" | shasum -a 256 | cut -d " " -f 1)
+# Patch order is fixed: stream, then guard (both touch pane/terminal runtime), then detect
+# (manifests only). The digest covers all three so a changed patch set forces a fresh build root.
+patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" "$repo_root/app/backend/herdr-detect.patch" | shasum -a 256 | cut -d " " -f 1)
 if [ ! -d "$work/herdr-0.9.0" ]; then
  tar -xzf "$work/herdr.tar.gz" -C "$work"
- (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch")
+ (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch" && patch -p1 < "$repo_root/app/backend/herdr-detect.patch")
  printf "%s\n" "$patch_digest" > "$work/herdr-0.9.0/.corral-patches"
 fi
 [ "$(cat "$work/herdr-0.9.0/.corral-patches")" = "$patch_digest" ] || { echo "Patch set changed; use a fresh CORRAL_BACKEND_BUILD_ROOT" >&2; exit 1; }
@@ -41,6 +43,7 @@ export ZIG="$work/zig-aarch64-macos-0.15.2/zig"
 cargo build --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml"
 if [ "${CORRAL_BACKEND_TEST:-0}" = 1 ]; then
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr corral_terminal_ -- --nocapture --test-threads=1
+ cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr trust_directory_requires_live_chooser -- --nocapture --test-threads=1
 fi
 printf 'Managed proof binary: %s\n' "$work/herdr-0.9.0/target/debug/herdr"
 node --input-type=module - "$repo_root" "$work" <<'JS'

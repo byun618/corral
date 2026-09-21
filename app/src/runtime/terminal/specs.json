@@ -10,12 +10,18 @@
     "booleanFlags": [
       "focus"
     ],
-    "summary": "Create one PTY; command is sent once to its shell",
-    "usage": "corral terminal create [--worktree VALUE] [--title VALUE] [--command VALUE] [--focus] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "summary": "Create one PTY; command is sent once to its shell, or --agent starts a provider",
+    "usage": "corral terminal create [--worktree VALUE] [--title VALUE] [--command VALUE] [--agent claude|codex|grok] [--model VALUE] [--effort VALUE] [--advisor VALUE] [--prompt VALUE] [--prompt-file VALUE] [--focus] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
     "flags": [
       "worktree",
       "title",
       "command",
+      "agent",
+      "model",
+      "effort",
+      "advisor",
+      "prompt",
+      "prompt-file",
       "focus",
       "request-id",
       "help",
@@ -26,7 +32,8 @@
     ],
     "positionalArgs": [],
     "examples": [
-      "corral terminal create --worktree current --title worker --json"
+      "corral terminal create --worktree current --title worker --json",
+      "corral terminal create --worktree current --agent claude --model opus --effort high --prompt \"review the diff\" --timeout-ms 600000 --json"
     ],
     "notes": [
       "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
@@ -36,7 +43,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -71,7 +83,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -83,7 +100,7 @@
     "aliases": [],
     "argumentMode": "flags",
     "booleanFlags": [],
-    "summary": "Observe terminal transport and foreground process",
+    "summary": "Observe terminal transport, foreground process and managed agent",
     "usage": "corral terminal show --terminal HANDLE [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
     "flags": [
       "terminal",
@@ -105,7 +122,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -144,7 +166,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -188,7 +215,58 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
+    ]
+  },
+  {
+    "command": "terminal prompt",
+    "path": [
+      "terminal",
+      "prompt"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "stdin"
+    ],
+    "summary": "Submit one prompt body to the managed agent in the selected PTY",
+    "usage": "corral terminal prompt --terminal HANDLE (--text VALUE | --file VALUE | --stdin) [--wait accepted|responded] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "terminal",
+      "text",
+      "file",
+      "stdin",
+      "wait",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral terminal prompt --terminal HANDLE --text \"summarise the failures\" --wait accepted --timeout-ms 120000 --json"
+    ],
+    "notes": [
+      "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
+      "Handles bind profile, backend boot and PTY generation; runtime restart preserves handles when backend survives. Handles are not dispatch authorization.",
+      "Process conditions are unsupported and rejected without effects; general send targets current foreground.",
+      "Raw retention: last 1048576 bytes per PTY, backend lifetime; cursor is byte offset plus UTF-8 decoder carry. bytesBase64 is lossless; text is decoded UTF-8.",
+      "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
+      "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
+      "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -200,8 +278,8 @@
     "aliases": [],
     "argumentMode": "flags",
     "booleanFlags": [],
-    "summary": "Wait for transport ready, new output, or PTY exit",
-    "usage": "corral terminal wait --terminal HANDLE --for ready|output|exit [--cursor VALUE] [--text VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "summary": "Wait for transport ready, new output, PTY exit, or an agent gate",
+    "usage": "corral terminal wait --terminal HANDLE --for ready|output|exit|agent-ready|agent-idle [--cursor VALUE] [--text VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
     "flags": [
       "terminal",
       "for",
@@ -215,7 +293,8 @@
     ],
     "positionalArgs": [],
     "examples": [
-      "corral terminal wait --terminal HANDLE --for output --text done --json"
+      "corral terminal wait --terminal HANDLE --for output --text done --json",
+      "corral terminal wait --terminal HANDLE --for agent-ready --timeout-ms 300000 --json"
     ],
     "notes": [
       "Local macOS terminal backend guard v1 required (app/scripts/build-terminal-backend.sh); no automatic fallback to unguarded effects.",
@@ -225,7 +304,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -264,7 +348,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -299,7 +388,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   },
   {
@@ -334,7 +428,12 @@
       "Read limit: 1..262144 bytes; screen limit: 1..262144 UTF-8 bytes; list limit: 1..10000. Input/command max 65536 UTF-8 bytes, title max 1024 bytes. NUL rejected.",
       "Ready means transport, send means backend accepted, neither means application consumption or task completion. Close exitCode is null.",
       "Request IDs: r1.<13-digit Unix milliseconds>.<UUID>, mint immediately before a new create/send; CLI mints if omitted. Retention 24 hours/10000 receipts; missing receipt for an admitted/older request or a pending receipt is unknown, never re-executed; lost results still count toward this runtime’s capacity.",
-      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab."
+      "Headless supports all commands except switch/focus and create --focus. Rename applies to every pane in the tab.",
+      "Agents (LIFE-394): terminal create --agent claude|codex|grok starts a managed provider in the new PTY. --model/--effort/--advisor/--prompt/--prompt-file require --agent; --command and --agent are mutually exclusive; --prompt and --prompt-file are mutually exclusive; --advisor applies to --agent claude only. Rejections are effect-free invalid_request.",
+      "Agent ready means two observations 750 ms apart that are all idle, interactive_ready and not launch-pending and that share one state_change_seq. wait --for agent-ready uses that gate; --for agent-idle applies the same gate to idle|done after a submission. A blocked screen returns satisfied false immediately instead of waiting for the deadline.",
+      "Prompt submission is fail-closed and effect-free when refused: detect_manifest_unverified when the guard's active detect manifest is not the expected bundled one, agent_blocked on a blocking screen, agent_not_ready when the ready gate or the compare-and-submit state_change_seq check fails, prompt_already_delivered when the provider record already holds the body.",
+      "A prompt without --wait is queued, not completed: herdr acknowledges the queue and corral has not seen the body in the provider record yet. --wait accepted confirms exactly one match inside the submission window (submit second floored, after the pre-submit cursor); --wait responded additionally needs an observed working turn and an assistant record after the match. Anything else is outcome unknown and is never re-submitted automatically.",
+      "create --prompt submits once at ready. If a blocker appears first the create ends there, complete, and does not hold the prompt — resume with terminal prompt under its own request id. The prompt stage of a create files its own receipt under the derived id r1.<create milliseconds>.<sha256(\"<create id>|prompt\") first 16 bytes as a UUID>, and the receipt hash covers the body, so the same id with different content is request_conflict."
     ]
   }
 ]

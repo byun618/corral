@@ -2,9 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import specs from './specs.json'
-import { RuntimeError, stringFlag, reject, type CommandModule, type CommandSpec, type Invocation, type CommandContext } from '../contracts.js'
+import { RuntimeError, stringFlag, reject, type CommandModule, type CommandSpec, type Flags, type Invocation, type CommandContext } from '../contracts.js'
 import { RepoRegistry, repoRootOf, unregisterRepo, expandPath, type RepoRecord, type SetupRecord } from '../../main/registry.js'
 import { contains, git, projects, repoSelect, repoSetup, resolvePath, unique, WorktreeMetadata, worktreeSelect, type Metadata, type WorkspaceDesktop, type WorktreeRecord } from './model.js'
+import { isRecord } from '../../shared/json.js'
+import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
+import { AGENT_OPTIONS, derivedRequestId, stageFailure, terminalModule, validateAgentFlags } from '../terminal/index.js'
 
 export const workspaceSpecs: CommandSpec[] = specs
 const required: Record<string, string[]> = {
@@ -17,7 +20,10 @@ export function validateWorkspace(inv: Invocation): void {
   const f = inv.flags
   for (const key of ['pairing-code', 'environment']) if (key in f) throw new RuntimeError('unsupported', `--${key} requires LIFE-403`)
   if (f.host !== undefined && f.host !== 'local') throw new RuntimeError('unsupported', 'Remote hosts require LIFE-403')
-  for (const key of ['agent', 'prompt']) if (key in f) throw new RuntimeError('unsupported', `--${key} requires LIFE-394`)
+  // LIFE-394 §4.1: worktree create carries the agent flags and synthesizes terminal create --agent.
+  if (inv.command === 'worktree create') validateAgentFlags(inv)
+  else for (const key of ['agent', ...AGENT_OPTIONS]) if (key in f) reject(`--${key} applies to worktree create only`)
+  if (f['request-id'] !== undefined && !REQUEST_ID.test(String(f['request-id']))) reject('--request-id must be r1.<13-digit Unix milliseconds>.<UUID>')
   if (f['run-hooks'] || (inv.command === 'worktree create' && f.setup === 'run')) throw new RuntimeError('unsupported', 'Setup/archive hooks require LIFE-412')
   for (const key of required[inv.command] ?? []) stringFlag(f, key, true)
   if (f['no-parent'] && f['parent-worktree'] !== undefined) reject('--parent-worktree and --no-parent are mutually exclusive')
@@ -44,6 +50,9 @@ const isMutation = (inv: Invocation) => !reads.has(inv.command)
 
 export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): CommandModule {
   const registry = new RepoRegistry(userData), metadata = new WorktreeMetadata(registry)
+  // The synthesis runs the real terminal module rather than a second implementation of it (§4.1).
+  // Built once so its receipt store keeps this runtime's start time, the same as the registered one.
+  const terminal = terminalModule(userData), receipts = new Receipts(userData, Date.now())
   return {
     specs: workspaceSpecs, validate: validateWorkspace, isMutation,
     serialKey: () => 'workspace',
@@ -158,7 +167,12 @@ export function workspaceModule(userData: string, desktop?: WorkspaceDesktop): C
           }
           break
         }
-        default: result = await executeWorktree(inv, ctx, registry, metadata, desktop)
+        default: {
+          if (inv.command === 'worktree create' && f.agent !== undefined) {
+            const composed = { ...inv, flags: { ...f, 'request-id': f['request-id'] ?? `r1.${Date.now()}.${randomUUID()}` } }
+            result = await receipts.run(composed, () => executeWorktree(composed, ctx, registry, metadata, terminal, desktop))
+          } else result = await executeWorktree(inv, ctx, registry, metadata, terminal, desktop)
+        }
       }
       if (isMutation(inv)) await desktop?.changed()
       return result
@@ -169,7 +183,7 @@ async function verifyRef(root: string, ref: string, ctx: CommandContext): Promis
   try { await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], ctx.signal) }
   catch { reject(`Invalid commit ref: ${ref}`) }
 }
-async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, desktop?: WorkspaceDesktop): Promise<unknown> {
+async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: RepoRegistry, metadata: WorktreeMetadata, terminal: CommandModule, desktop?: WorkspaceDesktop): Promise<unknown> {
   const f = inv.flags, flag = (key: string) => stringFlag(f, key), need = (key: string) => stringFlag(f, key, true)!
   const repos = registry.records(), records = await metadata.list(repos, ctx.signal)
   const select = async (value: string) => worktreeSelect(records, value, inv.cwd, value === 'active' && desktop ? (await desktop.observe()).find(row => row.isActive)?.path ?? '' : undefined)
@@ -245,7 +259,21 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
       metadata.put(target, { ...update, repoId: repo.id, createdBranch: true })
       const activated = f.activate ? await desktop!.activate(repo.path, target) : undefined
       const worktree = (await metadata.list(repos, ctx.signal)).find(row => row.path === target)!
-      return { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }
+      const created = { worktree, lineage: { parentWorktreeId: worktree.parentWorktreeId, childWorktreeIds: worktree.childWorktreeIds }, warnings: [], setupReceipt: { policy: flag('setup') ?? 'inherit', status: 'skipped', ...(activated ?? {}) } }
+      if (f.agent === undefined) return created
+      // §4.1 D15: the git worktree stays whatever happens next, and every later stage reports its own
+      // status instead of collapsing into one outcome. Nothing here is undone and nothing is retried.
+      const stages: Record<string, unknown> = { worktree: { status: 'completed', path: target }, terminal: { status: 'not_started' }, agent: { status: 'not_started' }, prompt: { status: 'not_started' } }
+      const requestId = derivedRequestId(need('request-id'), 'terminal')
+      const forwarded: Flags = { worktree: worktree.id, agent: need('agent'), 'request-id': requestId }
+      for (const key of AGENT_OPTIONS) if (f[key] !== undefined) forwarded[key] = f[key]!
+      let child: unknown = null
+      try { child = await terminal.execute({ command: 'terminal create', flags: forwarded, args: [], cwd: target }, ctx) }
+      catch (error) { stages.terminal = { ...stageFailure(error), requestId } }
+      if (isRecord(child) && isRecord(child.stages)) Object.assign(stages, child.stages, { terminal: { ...(isRecord(child.stages.terminal) ? child.stages.terminal : {}), requestId } })
+      const unresolved = Object.values(stages).some(stage => isRecord(stage) && stage.status === 'unknown')
+      return { ...created, stages, outcome: unresolved ? 'unknown' : 'completed',
+        terminal: isRecord(child) ? child.terminal ?? null : null, agent: isRecord(child) ? child.agent ?? null : null, prompt: isRecord(child) ? child.prompt ?? null : null }
     } catch (error) {
       // Inspect without the cancelled request signal: Git may have created the
       // branch before failing checkout. Both names were absent at preflight.

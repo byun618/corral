@@ -346,7 +346,7 @@
     "aliases": [],
     "argumentMode": "parsed",
     "summary": "Create a new corral-managed worktree",
-    "usage": "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent <id>] [--prompt <text>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--json]",
+    "usage": "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent claude|codex|grok] [--model <id>] [--effort <level>] [--advisor <id>] [--prompt <text>|--prompt-file <path>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--request-id <id>] [--timeout-ms <ms>] [--json]",
     "flags": [
       "help",
       "json",
@@ -358,7 +358,13 @@
       "project-host-setup",
       "name",
       "agent",
+      "model",
+      "effort",
+      "advisor",
       "prompt",
+      "prompt-file",
+      "request-id",
+      "timeout-ms",
       "base-branch",
       "issue",
       "linear-issue",
@@ -371,10 +377,14 @@
     ],
     "positionalArgs": [],
     "examples": [
-      "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent <id>] [--prompt <text>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--json]"
+      "corral worktree create --name <name> [--repo <selector>|--project <id> [--host <host-id>]|--project-host-setup <id>] [--agent claude|codex|grok] [--model <id>] [--effort <level>] [--advisor <id>] [--prompt <text>|--prompt-file <path>] [--setup run|skip|inherit] [--base-branch <ref>] [--issue <number>] [--linear-issue <identifier-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--request-id <id>] [--timeout-ms <ms>] [--json]",
+      "corral worktree create --name LIFE-394-spike --repo corral --agent codex --effort high --prompt \"start from specs/00-project.md\" --timeout-ms 600000 --json"
     ],
     "notes": [
-      "Local host only. Remote routing: LIFE-403. Agent launch: LIFE-394. Setup/archive hooks: LIFE-412."
+      "Local host only. Remote routing: LIFE-403. Setup/archive hooks: LIFE-412.",
+      "--agent claude|codex|grok synthesizes terminal create --agent in the new worktree after git succeeds; it is the same command and the same contract, not a second launch path. --model/--effort/--advisor/--prompt/--prompt-file require --agent and --advisor applies to --agent claude only.",
+      "Stages are reported one by one (worktree, terminal, agent, prompt) with status completed, queued, unknown, failed or not_started, and each stage keeps the handle and child request id it reached. A created git worktree is never removed because a later stage failed, and a stage whose effect is unobserved stays unknown and is not retried; the top-level outcome is unknown when any stage is.",
+      "Replay is by request id: the same --request-id replays the same partial result instead of re-running finished stages, failing with already_exists or creating a second terminal. Child stages derive their ids from it, so the composition is deterministic across runtime restarts."
     ],
     "booleanFlags": [
       "no-parent",

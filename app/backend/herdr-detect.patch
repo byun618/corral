@@ -1,0 +1,527 @@
+--- a/src/detect/manifests/codex.toml
++++ b/src/detect/manifests/codex.toml
+@@ -1,7 +1,7 @@
+ id = "codex"
+-version = "2026.09.05.1"
++version = "2026.09.21.3"
+ min_engine_version = 3
+-updated_at = "2026-09-05T00:00:00Z"
++updated_at = "2026-09-21T00:00:00Z"
+ 
+ [[rules]]
+ id = "osc_title_blocked"
+@@ -37,10 +37,39 @@
+ priority = 950
+ region = "top_non_empty_lines(20)"
+ visible_blocker = true
++# LIFE-394 live captures (codex 0.155.1) showed two reasons this rule could never fire on a real
++# launch, and — once those were fixed — a third reason it fired where it must not:
++#   1. the header is drawn inside a box, so the line is `>-You are in <cwd>---\u{256e}` (U+2500 after `>`),
++#      not `> You are in`;
++#   2. the detection text of a launched pane begins with the shell line that started codex
++#      (`sh-3.2$ codex -m ...`), so `\A` never reached the header at all;
++#   3. with the anchor moved to a line start, a multi-line transcript quote of the same header and
++#      question matched too (review r3 fixture `codex-multiline-quote-idle`).
++# So the rule also requires the live chooser's own control lines — the two numbered options on
++# consecutive rows. Live capture:
++#   >-You are in /private/tmp/.../repo---\u{256e}
++#
++#     Do you trust the contents of this directory? Working with untrusted contents comes with ...
++#
++#   \u{203a} 1. Yes, continue
++#     2. No, quit
++#
++#     Press enter to continue
++#
++# The `not` gate below is what separates a live chooser from a quotation of one. Review r4 showed
++# that a plain "the marker appears anywhere in the region" test is wrong in both directions: a cwd
++# that happens to contain the composer placeholder (`.../ask codex to do anything`) silenced a real
++# chooser. So the gate matches the composer placeholder only as a **whole line** and only **after**
++# the chooser's own option rows — that is the one arrangement a quotation produces and a live
++# chooser cannot.
+ all = [
+-  { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
++  { regex = ['(?m)^>[ \x{2500}]You are in [^\r\n]+(?:\r?\n|$)'] },
+   { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
++  { regex = ['(?m)^\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?1\.\s+Yes,\s+continue\s*\r?\n\s*(?:[\x{203a}\x{276f}\x{258c}>]\s+)?2\.\s+No,\s+quit\s*$'] },
+ ]
++not = [
++  { regex = ['(?m)^[ \t]*(?:[\x{203a}\x{276f}\x{258c}>][ \t]+)?2\.[ \t]+No,[ \t]+quit[ \t]*\r?$[\s\S]*?^[ \t]*[\x{203a}\x{276f}\x{258c}>][ \t]+(?i:Ask Codex to do anything)[ \t]*\r?$'] },
++]
+ 
+ [[rules]]
+ id = "startup_update"
+--- a/src/detect/manifests/grok.toml
++++ b/src/detect/manifests/grok.toml
+@@ -1,7 +1,7 @@
+ id = "grok"
+-version = "2026.07.16.2"
++version = "2026.09.21.3"
+ min_engine_version = 3
+-updated_at = "2026-07-16T00:00:00Z"
++updated_at = "2026-09-21T00:00:00Z"
+ aliases = ["grok-build"]
+ 
+ # Evidence: Grok Build 0.2.101 source and live pane reads.
+@@ -37,7 +37,48 @@
+ visible_blocker = true
+ contains = ["Action Required"]
+ 
++# Grok Build 1.0.40 asks for folder trust on startup for some directories. The confirmed trigger is
++# an `AGENTS.md` in the directory: LIFE-394 review r3 ran `grok inspect` on four throwaway repos and
++# only the two carrying `AGENTS.md` reported "Project trusted: no" (an empty repo and one with just
++# `.grok/settings.json {hooks:{}}` both reported "yes"). Which other project-local files trigger it
++# is not established — do not read this rule as "any project-local config".
++#
++# On that screen the OSC title stays the plain idle "grok", so without this rule osc_title_idle
++# (1100) wins and a waiting trust dialog is reported as idle. LIFE-394 live capture:
++#   Do you trust the contents of this directory?
++#   <cwd>
++#   Grok Build may run or modify contents in this directory, posing security risks.
++#   Yes, proceed                 y
++#   No, quit                     n
++#
++# Requiring the two option rows on consecutive lines is NOT enough on its own: review r3's negative
++# fixture `grok-quoted-dialog-idle` quotes exactly those three lines, consecutively, into an
++# otherwise ordinary screen and still matched. The live dialog is a full-screen takeover with no
++# composer and no footer hints, so the `not` gates below are what separate it from a quotation.
++#
++# Review r4 showed that testing for those hints as a bare substring is wrong in both directions: a
++# cwd containing `esc:cancel` silenced a real chooser, and one stale footer line left ABOVE the
++# dialog in the scrollback did the same. So each gate matches live chrome only as a **whole line**
++# — a footer whose `\u{2502}`-separated segments are hint tokens, or the bottom border of the composer
++# box — and only **below** the chooser's own option rows. That is exactly the arrangement a
++# quotation produces, and also the one a pane shows right after a human accepts trust: the footer
++# and composer come back under the trust text that stays in the scrollback feeding `whole_recent`.
+ [[rules]]
++id = "trust_directory"
++state = "blocked"
++priority = 1250
++region = "whole_recent"
++visible_blocker = true
++all = [
++  { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
++  { regex = ['(?m)^\s*Yes,\s+proceed\s+y\s*\r?\n\s*No,\s+quit\s+n\s*$'] },
++]
++not = [
++  { regex = ['(?m)^[ \t]*No,[ \t]+quit[ \t]+n[ \t]*\r?$[\s\S]*?^(?:[^\r\n]*\x{2502})?[ \t]*(?i:Shift\+Tab:mode|Ctrl\+\.:shortcuts|Esc:cancel|Ctrl\+c:cancel|Ctrl\+o:yolo|Tab:scrollback|Shift\+x:dismiss|Esc:unselect)[ \t]*(?:\x{2502}[^\r\n]*)?\r?$'] },
++  { regex = ['(?m)^[ \t]*No,[ \t]+quit[ \t]+n[ \t]*\r?$[\s\S]*?^[ \t]*\x{2570}[\x{2500}\x{2501}\x{2550}-]{2,}[^\r\n]*\x{256f}[ \t]*\r?$'] },
++]
++
++[[rules]]
+ id = "option_dialog_blocked"
+ state = "blocked"
+ priority = 1200
+--- a/src/detect/manifest/tests.rs
++++ b/src/detect/manifest/tests.rs
+@@ -1263,4 +1263,410 @@
+         result.matched_rule.as_ref().map(|r| r.id.as_str()),
+         Some("osc_title_working")
+     );
++}
++
++
++// --- LIFE-394 trust chooser fixtures (implementation round, review conditions C1/D22) ---
++//
++// Screens are stored verbatim. Every constant below is byte-identical to the corresponding file in
++// the LIFE-394 design review raw sets (`raw/review/codex-design-r4/fixtures/`), which in turn keep
++// the live captures and the reviewers' own synthetic counter-examples.
++// LIFE-394 live capture: codex 0.155.1 trust chooser in a plain untrusted git dir.
++const CODEX_TRUST_PLAIN: &str = r#">─You are in /private/tmp/l394-claude-fix2-TvjYd7/repo───╮
++
++  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
++  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
++
++› 1. Yes, continue
++  2. No, quit
++
++  Press enter to continue
++"#;
++// LIFE-394 live capture: same chooser in a subdirectory of a linked git worktree.
++const CODEX_TRUST_WORKTREE: &str = r#">─You are in /private/tmp/l394-claude-fix2-fRT235/linked/sub
++
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l394-claude-fix2-fRT235/repo
++
++  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
++  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
++
++› 1. Yes, continue
++  2. No, quit
++
++  Press enter to continue
++"#;
++// LIFE-394 review r2 capture of the same chooser, kept as a second independent positive.
++const CODEX_TRUST_R2_WORKTREE: &str = r#">─You are in /private/tmp/l394-review-codex-design-r2-DK3PWW/live/linked/sub
++
++  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:
++  /private/tmp/l394-review-codex-design-r2-DK3PWW/live/repo
++
++  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
++  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
++
++› 1. Yes, continue
++  2. No, quit
++
++  Press enter to continue
++"#;
++// LIFE-394 review r3 fixture: the live chooser preceded by the shell line that launched codex.
++const CODEX_TRUST_SHELL_PREFIX: &str = r#"sh-3.2$ codex -m gpt-6-astra
++>─You are in /private/tmp/l394-claude-fix2-TvjYd7/repo───╮
++
++  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
++  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
++
++› 1. Yes, continue
++  2. No, quit
++
++  Press enter to continue
++"#;
++// LIFE-394 review r4 fixture: a live chooser whose cwd contains the composer placeholder text.
++// A region-wide substring test for that placeholder reported this screen as Idle (D22).
++const CODEX_TRUST_CWD_MARKER: &str = r#">─You are in /private/tmp/l394-claude-fix2-TvjYd7/ask codex to do anything───╮
++
++  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
++  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
++
++› 1. Yes, continue
++  2. No, quit
++
++  Press enter to continue
++"#;
++// LIFE-394 live capture: the ordinary composer screen of the same codex build.
++const CODEX_COMPOSER_IDLE: &str = r#"╭────────────────────────────────────────────────────────╮
++│ >_ OpenAI Codex (v0.155.1)                             │
++│                                                        │
++│ model:       gpt-6-astra high   /model to change       │
++│ directory:   /private/tmp/l394-claude-fix2-TvjYd7/repo │
++│ permissions: YOLO mode                                 │
++╰────────────────────────────────────────────────────────╯
++
++  Tip: Switch models or reasoning effort quickly with /model.
++
++
++› Ask Codex to do anything
++
++  gpt-6-astra high · /private/tmp/l394-claude-fix2-TvjYd7/repo
++"#;
++// The same screen captured while the OSC title carries a spinner.
++const CODEX_COMPOSER_WORKING: &str = r#"╭────────────────────────────────────────────────────────╮
++│ >_ OpenAI Codex (v0.155.1)                             │
++│                                                        │
++│ model:       gpt-6-astra high   /model to change       │
++│ directory:   /private/tmp/l394-claude-fix2-TvjYd7/repo │
++│ permissions: YOLO mode                                 │
++╰────────────────────────────────────────────────────────╯
++
++  Tip: Switch models or reasoning effort quickly with /model.
++
++
++› Ask Codex to do anything
++
++  gpt-6-astra high · /private/tmp/l394-claude-fix2-TvjYd7/repo
++"#;
++// LIFE-394 review r3 fixture: a transcript that quotes the header and the question.
++const CODEX_MULTILINE_QUOTE: &str = r#"› Explain this screenshot:
++>─You are in /tmp/example──╮
++Do you trust the contents of this directory?
++
++The text above is an example, not a live dialog.
++
++› Ask Codex to do anything
++"#;
++// LIFE-394 live capture: Grok Build 1.0.40 asking for folder trust (AGENTS.md in the directory).
++const GROK_TRUST_PROJECT: &str = r#"
++   main /p/t/l394-claude-fix2-TF5L8v/repo
++
++
++
++
++                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
++                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
++                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
++                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
++                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
++                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
++                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
++
++
++                                      Do you trust the contents of this directory?
++                                        /private/tmp/l394-claude-fix2-TF5L8v/repo
++
++                                Grok Build may run or modify contents in this directory,
++                                                 posing security risks.
++
++                                             Yes, proceed                 y
++                                             No, quit                     n
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++                                                                                           Grok Build  1.0.40 [stable]
++"#;
++// LIFE-394 review r4 fixture: the same dialog whose cwd contains a footer hint token (D22).
++const GROK_TRUST_CWD_MARKER: &str = r#"
++   main /p/t/l394-claude-fix2-TF5L8v/esc:cancel
++
++
++
++
++                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
++                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
++                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
++                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
++                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
++                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
++                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
++
++
++                                      Do you trust the contents of this directory?
++                                        /private/tmp/l394-claude-fix2-TF5L8v/esc:cancel
++
++                                Grok Build may run or modify contents in this directory,
++                                                 posing security risks.
++
++                                             Yes, proceed                 y
++                                             No, quit                     n
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++                                                                                           Grok Build  1.0.40 [stable]
++"#;
++// LIFE-394 review r4 fixture: the same dialog with one stale footer line left ABOVE it in the
++// scrollback. Live chrome below the chooser is what marks a quotation; chrome above it is not (D22).
++const GROK_TRUST_OLD_FOOTER: &str = r#"Shift+Tab:mode  │  Ctrl+.:shortcuts
++
++   main /p/t/l394-claude-fix2-TF5L8v/repo
++
++
++
++
++                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
++                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
++                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
++                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
++                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
++                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
++                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
++
++
++                                      Do you trust the contents of this directory?
++                                        /private/tmp/l394-claude-fix2-TF5L8v/repo
++
++                                Grok Build may run or modify contents in this directory,
++                                                 posing security risks.
++
++                                             Yes, proceed                 y
++                                             No, quit                     n
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++                                                                                           Grok Build  1.0.40 [stable]
++"#;
++// LIFE-394 live capture: the ordinary grok screen with composer and footer.
++const GROK_IDLE_DEFAULT: &str = r#"
++  main /p/t/l394-claude-fix2-4sbkkR/repo                                                     2.3K / 500K │ [Dashboard]
++
++     ◆ session_start hook (global/cmux-session) failed, ignored: exit code 1: Error: Socket not found at /Users/
++     byun/.local/state/cmux/cmux.sock
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++  Help improve Grok                                                                                 [Opt out] [Opt in]
++  Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, & metrics,
++  for training and debugging purposes. Change anytime via settings.
++  Read Terms and Privacy Policy.
++
++  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
++  │ ❯                                                                                                                │
++  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) ─╯
++
++  Shift+Tab:mode  │  Ctrl+.:shortcuts
++"#;
++// LIFE-394 review r3 fixture: the dialog text quoted into an ordinary screen. This is also the
++// shape a pane takes right after a human accepts trust — chrome returns below the trust text.
++const GROK_QUOTED_DIALOG: &str = r#"The startup dialog offers these choices:
++Do you trust the contents of this directory?
++Yes, proceed                 y
++No, quit                     n
++
++
++  main /p/t/l394-claude-fix2-4sbkkR/repo                                                     2.3K / 500K │ [Dashboard]
++
++     ◆ session_start hook (global/cmux-session) failed, ignored: exit code 1: Error: Socket not found at /Users/
++     byun/.local/state/cmux/cmux.sock
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++  Help improve Grok                                                                                 [Opt out] [Opt in]
++  Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, & metrics,
++  for training and debugging purposes. Change anytime via settings.
++  Read Terms and Privacy Policy.
++
++  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
++  │ ❯                                                                                                                │
++  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) ─╯
++
++  Shift+Tab:mode  │  Ctrl+.:shortcuts
++"#;
++
++#[test]
++fn codex_trust_directory_requires_live_chooser() {
++    // Positive: every captured live chooser stays blocked — including the one whose detection text
++    // starts with the shell line that launched codex, and the one whose cwd happens to contain the
++    // composer placeholder that the `not` gate looks for (review r4, D22).
++    for (label, screen) in [
++        ("plain", CODEX_TRUST_PLAIN),
++        ("worktree", CODEX_TRUST_WORKTREE),
++        ("r2-worktree", CODEX_TRUST_R2_WORKTREE),
++        ("shell-prefix", CODEX_TRUST_SHELL_PREFIX),
++        ("cwd-marker", CODEX_TRUST_CWD_MARKER),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, "repo", "");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        assert_eq!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must match trust_directory"
++        );
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++
++    // Negative: an ordinary composer screen, the same screen while the title spins, and a
++    // multi-line quotation of the header and question must not become blockers.
++    for (label, screen, title) in [
++        ("composer-idle", CODEX_COMPOSER_IDLE, "repo"),
++        ("composer-working", CODEX_COMPOSER_WORKING, "\u{2827} Working"),
++        ("multiline-quote", CODEX_MULTILINE_QUOTE, "repo"),
++    ] {
++        let result = osc_explain(Agent::Codex, screen, title, "");
++        assert_ne!(result.state, AgentState::Blocked, "{label} must not be blocked");
++        assert!(!result.visible_blocker, "{label} must not be a visible blocker");
++    }
+ }
++
++#[test]
++fn grok_trust_directory_requires_live_chooser() {
++    // Positive: the live dialog outranks the plain idle OSC title it is drawn under. The two
++    // review r4 counter-examples — a cwd carrying a hint token, and a stale footer line left above
++    // the dialog — stay blocked because the `not` gates only look for whole chrome lines below the
++    // chooser (D22).
++    for (label, screen) in [
++        ("project", GROK_TRUST_PROJECT),
++        ("cwd-marker", GROK_TRUST_CWD_MARKER),
++        ("old-footer-above", GROK_TRUST_OLD_FOOTER),
++    ] {
++        let result = osc_explain(Agent::Grok, screen, "grok", "4;0;0");
++        assert_eq!(result.state, AgentState::Blocked, "{label} must stay blocked");
++        assert_eq!(
++            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
++            Some("trust_directory"),
++            "{label} must match trust_directory"
++        );
++        assert!(result.visible_blocker, "{label} must be a visible blocker");
++    }
++
++    // Negative: the ordinary screen, and the same screen with the dialog text quoted into it, in
++    // both the idle and the working OSC states the review exercised. The quoted screen is also the
++    // arrangement a pane shows after a human accepts trust, so this case doubles as the guard
++    // against re-reporting `blocked` from scrollback (LIFE-394 F5-grok).
++    for (label, screen) in [
++        ("idle-default", GROK_IDLE_DEFAULT),
++        ("quoted-dialog", GROK_QUOTED_DIALOG),
++    ] {
++        for (state, title, progress) in [
++            ("idle", "grok", "4;0;0"),
++            ("working", "\u{28E7} Working - grok", "4;1;-1"),
++        ] {
++            let result = osc_explain(Agent::Grok, screen, title, progress);
++            assert_ne!(
++                result.state,
++                AgentState::Blocked,
++                "{label} under {state} must not be blocked"
++            );
++            assert!(
++                !result.visible_blocker,
++                "{label} under {state} must not be a visible blocker"
++            );
++        }
++    }
++}

@@ -2,7 +2,7 @@
 
 LIFE-393 CLI는 명시적으로 연결한 corral terminal backend를 쓴다. 설치 herdr 0.9.0에는 이 가드/출력 계약이 없으므로 `unsupported_backend`로 거절하며, 설치본을 교체하거나 가드 없는 제어로 fallback하지 않는다. 기존 GUI 경로는 그대로 설치 backend에도 연결할 수 있다.
 
-`source.json`의 upstream v0.9.0 commit/archive와 두 patch가 빌드 입력이다. stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 이번 구현이다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
+`source.json`의 upstream v0.9.0 commit/archive와 **세 patch**가 빌드 입력이다. stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 LIFE-393 구현이고 LIFE-394가 agent 갈래를 얹었다. detect patch는 LIFE-394가 추가했다. 적용 순서는 stream → guard → detect로 고정이며 `patch_digest`가 세 파일을 모두 덮으므로 patch가 바뀌면 새 build root가 필요하다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
 
 ```sh
 # Node >=22.12.0. 설치 도구나 PATH의 herdr를 덮어쓰지 않는다.
@@ -21,6 +21,9 @@ node app/scripts/l393/receipt-loss.mjs
 node app/scripts/l393/stdin-bom.mjs
 node app/scripts/l393/wait-boundary.mjs
 node app/scripts/l393/installed.mjs
+node app/scripts/l394/fixtures.mjs        # F12: stock / LIFE-393 guard / 새 guard 세 backend
+node app/scripts/l394/l393-regression.mjs # F13: LIFE-393 terminal 계약 회귀 (명령 9 + terminal prompt)
+node app/scripts/l394/global-config-diff.mjs before|after|diff|selftest
 ```
 
 빌드 root 안에 도구 체인·의존성·소스·binary와 `<binary>.json` 영수증이 생긴다. archive SHA-256을 검사하고, patch 집합이 달라진 캐시의 재사용은 거절한다. `verify-backend-source.mjs`는 깨끗한 archive에 patch를 적용한 결과와 빌드 소스의 해당 파일들을 byte 비교한다. `CORRAL_BACKEND_TEST=1`이면 실제 PTY를 같은 terminal ID에 재기동한 뒤 이전 세대의 send/interrupt/close를 거절하는 Rust 테스트도 실행한다. 이 테스트에도 `HERDR_CONFIG_PATH`·`XDG_CONFIG_HOME`을 별도 build root로 지정한다.
@@ -37,6 +40,11 @@ node app/scripts/l393/installed.mjs
 - `--screen`은 herdr의 현재 visible screen snapshot이다. raw 출력과 다르며 cursor가 없다. GUI는 기존 endpoint+xterm을 계속 사용한다.
 - create/send receipt는 효과 전에 fsync한 pending 기록, 효과 후 completed 결과로 남는다. 24시간·10,000개까지 보존한다. `r1.<Unix ms>.<UUID>` ID를 새 요청 직전에 만들며 CLI는 생략 시 생성한다. 같은 ID/같은 입력은 결과 재생, 다른 입력은 conflict다. runtime은 수락한 ID와 fingerprint를 결과 파일과 별도로 기억하므로 파일 유실도 용량을 해제하지 않는다. 만료 ID는 expired, 이미 수락했거나 이전 runtime보다 오래된 missing ID 또는 pending receipt는 unknown으로 거절한다. 입력 본문은 receipt에 저장하지 않고 fingerprint만 저장한다.
 - `--stdin`은 선두 U+FEFF(BOM)를 포함한 유효 UTF-8을 literal bytes로 전달한다. NUL·잘못된 UTF-8·65,536 bytes 초과는 효과 없이 거절한다.
+- **`agent_ops` (LIFE-394).** guard handshake가 `"agent_ops": 1`을 실으면 `agent.start`·`agent.get`·`agent.prompt`가 같은 `corral.terminal` 봉투 안에서 돈다. 싣지 않는 backend(스톡 herdr, LIFE-393 guard 빌드)에서 agent 명령은 **pane을 만들기 전에** `unsupported_backend`로 거절한다 — 반쯤 만들어진 pane이 남지 않는다.
+- **`agent.prompt`는 compare-and-submit이다.** herdr의 app dispatch table에 `agent.prompt`가 없으므로 guard가 직접 `App::queue_agent_prompt`를 부르되, 호출자가 보낸 `expected_state_change_seq`가 현재 값과 다르면 효과 없이 `agent_not_ready`로 거절하고 오류에 관측한 `AgentInfo`를 싣는다. 검사와 효과 사이에 await이 없다.
+- **`server.agent_manifests`는 target 없는 읽기 전용 갈래다.** corral이 어떤 detect 매니페스트가 실제로 활성인지 guard 봉투 안에서 확인한다. pane을 겨냥하지 않으므로 비교할 세대가 없다.
+- **detect patch (LIFE-394).** codex·grok의 `trust_directory` 규칙을 "지금 살아 있는 chooser"까지 좁히고 두 매니페스트 `version`을 `2026.09.21.3`으로 올린다. 인용문과 live 다이얼로그를 가르는 것은 선택지 줄쌍과, 그 **뒤에** 오는 composer/footer **전체 행**을 잡는 `not` 게이트다 — 임의 위치의 부분 문자열이 아니다(cwd에 마커가 들어간 실제 chooser와, chooser 위에 남은 옛 footer 한 줄이 반례였다). corral은 이 버전을 기대값으로 들고 있고, guard가 그 provider의 활성 매니페스트를 기대 버전·`bundled`·그림자 없음으로 답하지 않으면 **제출 자체를 하지 않는다**(`detect_manifest_unverified`). claude 매니페스트는 손대지 않지만 같은 게이트를 지난다 — 기대값은 스톡 bundled 버전 `2026.09.04.1`이다.
+- guard 빌드가 실제로 무엇을 활성 매니페스트로 보는지는 `corral terminal show --terminal HANDLE --json`의 `agent.evidence.detectManifest`, 또는 guard 봉투로 직접 부른 `server.agent_manifests`로 확인한다.
 - GUI focus는 renderer의 worktree/tab 준비 및 실제 선택된 pane의 DOM 키보드 focus와 main의 선택이 일치한다는 ACK 뒤 성공한다. wait의 ready는 transport, send의 성공은 backend 수락이다. 프로그램 소비·agent ready·작업 완료는 별도 계약이다.
 
 `node app/scripts/l393/negative.mjs`는 timeout 전파를 검증하기 위해 **의도적으로 exit 1** 한다. 성공으로 감추면 안 된다.

@@ -14,7 +14,17 @@ node cli/corral.mjs diagnostics memory --json
 
 `--help` and `agent-context` never connect or start the app. All commands support `--json`. Successful calls exit 0; errors exit 1, including a stopped runtime. JSON mode emits one JSON document on stdout (serve emits its ready document and remains in the foreground); plain errors go to stderr. These commands do not consume stdin. Unknown commands/options, positionals and duplicate options fail before effects. No legacy command entry or alternate environment-variable dispatch exists.
 
-The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403. Agent/prompt creation requires LIFE-394; setup/archive hooks require LIFE-412. Terminal, agent, browser and service command groups are not registered. Existing GUI actions remain available through the palette.
+The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands and 10 terminal commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403; setup/archive hooks require LIFE-412. Browser and service command groups are not registered. Existing GUI actions remain available through the palette.
+
+## Terminals and agents
+
+`terminal create/list/show/read/send/wait/switch/rename/close` need a connected corral terminal backend (`app/backend/README.md`); an unpatched herdr is refused with `unsupported_backend` rather than driven without its guard.
+
+`terminal create --agent claude|codex|grok` starts a managed provider in the new PTY and `terminal prompt` submits one body to it. `--model/--effort/--advisor/--prompt/--prompt-file` require `--agent`, `--command` and `--agent` are mutually exclusive, and `--advisor` applies to `--agent claude` only; each rejection is an effect-free `invalid_request`. `worktree create --agent` synthesizes the same `terminal create --agent` after git succeeds and reports the worktree, terminal, agent and prompt stages one by one — a created worktree is never removed because a later stage failed, and a stage whose effect was not observed stays `unknown` and is not retried.
+
+An agent is `ready` only when two observations 750 ms apart are all idle, interactive and not launch-pending with one unchanged `state_change_seq`, **and** the guard reports the expected bundled detect manifest. `wait --for agent-ready` uses that gate, `--for agent-idle` applies it to a finished turn, and both return `satisfied: false` immediately on a blocking screen instead of waiting out the deadline. A trust or login screen is the human's to clear; corral never answers one.
+
+Submission is fail-closed and effect-free when refused: `detect_manifest_unverified`, `agent_blocked`, `agent_not_ready`, `prompt_already_delivered`. A prompt without `--wait` is `queued`, never `completed`: herdr acknowledged the queue and corral has not yet seen the body in the provider's own session record. `--wait accepted` confirms exactly one match inside the submission window, `--wait responded` additionally needs an observed working turn and an assistant record after it; anything else is `outcome_unknown` and is never re-submitted automatically. Bodies are compared by length and digest after trimming only SPACE, TAB, CR and LF — NBSP and BOM are content.
 
 ## Profiles and targets
 

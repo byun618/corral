@@ -396,8 +396,9 @@ export function resolvedIdentity(kind: AgentKind, files: string[], read?: (file:
                 if (typeof row.effort === 'string') found.effort = row.effort
                 continue
             }
-            const context = asRecord(row.turn_context) ?? asRecord(asRecord(row.payload)?.turn_context)
-                ?? (asRecord(row.payload)?.type === 'turn_context' ? asRecord(row.payload) : null)
+            // codex writes one `turn_context` row per turn, carrying the model and effort it resolved.
+            const context = row.type === 'turn_context' || asRecord(row.payload)?.type === 'turn_context'
+                ? asRecord(row.payload) : asRecord(row.turn_context)
             if (typeof context?.model === 'string') found.model = context.model
             if (typeof context?.effort === 'string') found.effort = context.effort
         }

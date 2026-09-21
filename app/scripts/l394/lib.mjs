@@ -106,6 +106,17 @@ export async function fixture(label, options = {}) {
       { version: 1, id: 'ready', invocation: { command: 'status', flags: {}, args: [], cwd: repo } })).ok, 'runtime ready')
     return child
   }
+  /** A pane whose foreground is a FIFO-backed reader, so input and output are observable exactly. */
+  async function receiver(name, environment = env, worktree = repo) {
+    const log = path.join(root, name + '.input'), fifo = path.join(root, name + '.fifo'), starts = path.join(root, name + '.starts')
+    const made = await run('mkfifo', [fifo]); assert.equal(made.exit, 0)
+    // The reader itself is LIFE-393's; reusing it keeps this a regression of that contract, not a new one.
+    const command = ['python3', path.join(app, 'scripts/l393/receiver.py'), log, fifo, starts].map(quote).join(' ')
+    const response = await cli(['terminal', 'create', '--worktree', worktree, '--title', 'same-title', '--command', command], { env: environment })
+    await until(() => fs.existsSync(starts), 'receiver started'); await pause(100)
+    return { terminal: response.result.terminal, command, log, fifo, starts,
+      input: () => fs.existsSync(log) ? fs.readFileSync(log) : Buffer.alloc(0), output: data => fs.writeFileSync(fifo, data) }
+  }
   async function check(id, fn) {
     const at = new Date().toISOString()
     try { const detail = await fn(); checks.push({ id, pass: true, at, detail }) }
@@ -124,5 +135,5 @@ export async function fixture(label, options = {}) {
   for (const args of [['init', '-b', 'main', repo],
     ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'fixture'],
     ['-C', repo, 'worktree', 'add', '-b', 'linked', linked]]) { const r = await run('git', args); assert.equal(r.exit, 0, r.stderr) }
-  return { root, raw, repo, linked, home, socket, session, env, base, runId, stripped, client, override, start, run, cli, backendRpc, stop, startBackend, serve, check, cleanup, observations, checks }
+  return { root, raw, repo, linked, home, socket, session, env, base, runId, stripped, client, override, start, run, cli, backendRpc, stop, startBackend, serve, receiver, check, cleanup, observations, checks }
 }

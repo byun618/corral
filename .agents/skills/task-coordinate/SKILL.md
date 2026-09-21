@@ -92,12 +92,9 @@ description: >-
 
 2026-09-21 신규 기본. 코디네이터 설정은 task-start/00-start.md 그대로 유지한다.
 
-| 역할 | 기본 모델·effort | 세션 |
-| --- | --- | --- |
-| 설계·구현 워커 | Claude Opus / high + native Fable advisor | 설계부터 구현·수정까지 유지 |
-| 설계 리뷰어 | Codex gpt-6-astra / high | 코디네이터·워커와 별도 |
-| 코드 리뷰어 | Codex gpt-6-astra / xhigh | 설계 리뷰와도 별도 |
-| 보완 코드 리뷰 | Grok 설치 기본 모델·effort | 별도, 실제 값을 기록 |
+역할 기본값은 [task-start/defaults.md](../task-start/defaults.md) 한 곳에서 관리한다.
+실제 작업은 `00-start.md`의 전체 역할 구성을 따르며 설정을 다시 묻지 않는다.
+설계 워커는 구현·수정까지 유지하고, 설계 리뷰·코드 리뷰·Grok은 별도 세션이다.
 
 Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화를 시작 화면에서 확인한다.
 모델 접근/사용량 문제로 이 구성을 기동할 수 없으면 차단을 보고한다. advisor를 조용히 빼거나
@@ -105,7 +102,8 @@ Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화�
 
 **기동 전 [설계·구현 실행 절차](references/design-implementation.md)를 읽는다.**
 이 문서가 custom advisor 기동, 워커 보존·재사용·종료, 단계 산출물의 명령 수준 계약이다.
-사용자 지정 경쟁 구현 예외라면 각 후보가 같은 기준으로 이 설계 관문을 거치고 코드는 서로 공유하지 않는다.
+사용자 지정 경쟁 구현이면 후보별 설계·리뷰·판정 파일과 리뷰 세션을 분리한다.
+각 후보가 같은 기준으로 설계 관문을 거치며 상대 설계·코드·판정을 워커에게 공유하지 않는다.
 
 ### 4.1 설계와 판정
 

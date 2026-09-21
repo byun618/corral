@@ -31,7 +31,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    - 킥오프 승인 후 워커가 설계 문서를 먼저 커밋한다. **Codex Astra high 독립 설계 리뷰**와
      코디네이터의 설계 판정이 끝난 뒤 같은 워커가 새 Task/Dispatch로 구현을 이어간다.
    - advisor는 Claude 내장 상담 도구다. 코디네이터·독립 리뷰를 대신하지 않으며 별도 effort를 가정하지 않는다.
-   - 코디네이터 설정은 유지. 역할별 모델·effort·실제 advisor 및 명령을 02-kickoff.md에 기록한다.
+   - 시작 설정 질문 없이 task-start/defaults.md를 적용하고 명시 변경만 덮어쓴다.
+     전체 역할 구성을 00-start.md에 기록하며 재개는 이를 유지한다. 02-kickoff.md에 그대로 인계한다.
    - 설계 검토는 내부 진행 판정이다. 승인된 범위·기준 변경은 사용자에게 재승인을 받는다.
    - 구현 브랜치: 작업 브랜치에서 LIFE-NNN-<슬러그>-claude 분기, 전용 worktree.
    - worktree는 전부 .claude/worktrees/ 아래 형제 폴더 — 중첩 금지. 구현 브랜치 생존 중 작업 브랜치 rebase 금지.

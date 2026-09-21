@@ -4,14 +4,15 @@ task-coordinate §4에서 기동 전에 읽는다. 먼저 `orca skills get orche
 
 ## 1. 준비와 산출물 소유권
 
-- 작업 코디네이터는 00-start의 실제 모델/effort를 유지한다. 워커는 `opus` / `high`, native advisor `fable`.
+- 작업의 모든 역할 모델/effort는 00-start의 기록을 따른다. 아래 명령은 기본 `opus` / `high`,
+  native advisor `fable` 예시다. 명시 변경이 있으면 해당 CLI가 실제 지원하는 옵션으로 반영한다.
   시작 화면의 실제 해소 모델과 advisor 활성화를 기록한다. alias는 버전 고정이 아니므로 요청값과 관측값을 구분한다.
 - `03-design.md`와 제품/구현 raw는 워커가 구현 브랜치에 커밋한다. 분석·기준·킥오프·리뷰·
   `04-design-verdict.md`·최종 verdict는 코디네이터가 작업 브랜치에 커밋한다.
 - 리뷰어는 고정 commit의 설계/코드와 원자료를 읽는다. 결과는 킥오프에서 지정한 별도 임시 출력 경로에 쓴다.
   코디네이터가 `specs/LIFE-NNN-*/review-design-codex.md` 또는 `review-<도구>.md` 및 raw로 회수·커밋한다.
   제품 checkout에서 리뷰어가 git commit/add하거나 구현자 파일을 수정하지 않는다.
-- 워커에게 작업 브랜치 최신 기준은 `git show <작업브랜치>:specs/...`로 읽도록 지시한다.
+- 워커에게 작업 브랜치 기준·판정은 `git show <고정한_작업_commit>:specs/...`로 읽도록 지시한다.
   코디네이터도 설계는 `git show <설계commit>:specs/.../03-design.md`로 읽는다. 리뷰를 위해 제품을 먼저 머지하지 않는다.
 - native advisor는 서버에서 워커의 대화를 받아 상담한다. 별도 구현자·독립 리뷰어로 세지 않는다.
   호출 시점과 횟수는 모델이 정한다. 어려운 설계 판단에서 상담하도록 지시하되 “1회 상한”이나 별도 advisor effort를

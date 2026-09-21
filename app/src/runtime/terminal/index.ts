@@ -216,7 +216,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         return { live: 'launching', info, launchExpired: true, stale: false }
       }
       /** §3: N consecutive qualifying observations 750 ms apart whose state_change_seq never moved. */
-      const gatePass = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
+      const gatePass = async (live: TerminalIdentity, record: AgentRecord | null) => {
         const views: AgentView[] = []
         for (let index = 0; index < READY_SAMPLES; index++) {
           if (index) {
@@ -228,15 +228,15 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           if (view.stale || view.launchExpired || view.live === 'blocked' || view.live === 'exited') break
         }
         const samples = views.filter(view => view.info !== null && !view.stale).map(view => view.info!)
-        return { views, satisfied: samples.length === views.length && readySatisfied(samples, want) }
+        return { views, satisfied: samples.length === views.length && readySatisfied(samples) }
       }
       /**
        * §0/§3: `ready` needs the gate *and* a separate guard `server.agent_manifests` call confirming
        * the active detect manifest. An unverified manifest means a trust dialog can read as idle, so
        * ready is simply not issued — the reason travels in `evidence.detectManifest`.
        */
-      const readyGate = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
-        const pass = await gatePass(live, record, want)
+      const readyGate = async (live: TerminalIdentity, record: AgentRecord | null) => {
+        const pass = await gatePass(live, record)
         const kind = record?.kind ?? pass.views[pass.views.length - 1]?.info?.kind ?? null
         // Observed on every pass, not only on a satisfying one: when it is what withheld `ready`,
         // the caller has to be able to say so (F12b wants the reason, not just satisfied: false).
@@ -244,25 +244,27 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         return { views: pass.views, satisfied: pass.satisfied && manifest !== null && manifest.verified, manifest }
       }
       /**
-       * `manifest` is the gate observed on *this* pass. A stored `ready` was earned under whatever
-       * manifest was active then, so it is not echoed back once the gate no longer holds (R5): the
-       * whole point of the gate is that an unverified manifest may report a trust dialog as idle, and
-       * `show` saying `ready` under one is the same false claim the gate exists to refuse. Only
-       * `ready` is masked — `accepted`/`responded` are facts about a body found in the provider's own
-       * record, which a screen-detection rule cannot make untrue.
+       * A stored `ready` is a claim about a gate that held *then*. It is never echoed back while the
+       * gate does not hold *now*, and the reason does not matter (R5): an unverified manifest, a
+       * Working frame, a `state_change_seq` that moved, a deadline that left room for one sample —
+       * each means the same thing, that corral cannot presently prove this pane will take a prompt.
+       * `launching` is the §4.4 word for that, and `evidence` (`samples`, `detectManifest`) says
+       * which of them it was. `accepted`/`responded` pass through untouched: they are facts about a
+       * body found in the provider's own record, which no screen-detection rule can make untrue.
        */
-      const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null): AgentPhase => {
+      const unprovenPhase = (record: AgentRecord | null): AgentPhase =>
+        record === null || record.phase === 'ready' ? 'launching' : record.phase
+      const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean): AgentPhase => {
         const last = views[views.length - 1]
-        const unverified = manifest !== null && !manifest.verified
-        if (!last || last.stale) return record === null || (unverified && record.phase === 'ready') ? 'launching' : record.phase
+        if (!last || last.stale) return unprovenPhase(record)
         if (last.live === 'blocked') return 'blocked'
         if (last.live === 'exited') return 'exited'
         if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' ? 'ready' : record.phase
         if (last.live === 'launching') return 'launching'
         // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
         // and a pane that has not held the gate has not earned `ready` either.
-        if (record === null || record.phase === 'blocked') return 'launching'
-        return unverified && record.phase === 'ready' ? 'launching' : record.phase
+        if (record.phase === 'blocked') return 'launching'
+        return unprovenPhase(record)
       }
       /**
        * §2/C7: the record files corral can prove belong to *this* pane, and nothing else. claude and
@@ -284,7 +286,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file }
       }
       const agentBlock = async (live: TerminalIdentity, record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null) => {
-        const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied, manifest)
+        const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied)
         const session = record ? ownedRecords(record, live.path) : { sessionId: null, source: null, path: null, files: [] }
         // Only an observed value is reported; corral never restates the request as a resolution, and
         // it reads the resolution out of the file set it owns rather than every file it can see (R1).
@@ -307,8 +309,8 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const waitAgent = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
         for (;;) {
           ctx.signal.throwIfAborted()
-          const pass = await readyGate(live, record, want)
-          const phase = phaseOf(record, pass.views, pass.satisfied, pass.manifest)
+          const pass = await readyGate(live, record)
+          const phase = phaseOf(record, pass.views, pass.satisfied)
           if (pass.satisfied) { patchAgent(live, { phase }); return { ...pass, phase } }
           if (pass.views[pass.views.length - 1]?.launchExpired) throw new RuntimeError('agent_launch_expired', 'Managed agent binding expired while the provider is still in the foreground', { terminal: handle(live), recovery: 'terminal show / terminal read' }, 'wait', 'not_started')
           // An unverified manifest is a refusal, not a slow answer (G1): waiting cannot make the gate
@@ -347,18 +349,23 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           const delivered = reason === null
           // §3: a finished turn closes on the same N=2 · 750 ms · unchanged-seq gate `agent-idle`
           // uses (R4). One quiet frame between two tool calls is not the end of a turn.
-          const responded = delivered && want === 'responded' && workingObserved && count.assistantAfter
-            && (await gatePass(live, record, 'idle')).satisfied
+          const closing = delivered && want === 'responded' && workingObserved && count.assistantAfter
+            ? await gatePass(live, record) : null
+          const responded = closing !== null && closing.satisfied
           const satisfied = delivered && (want === 'accepted' || responded)
           const stopped = view.live === 'blocked' ? 'agent_blocked' : view.live === 'exited' ? 'agent_exited' : null
           if (satisfied || stopped !== null || Date.now() >= ctx.deadlineAt - 15) {
             const phase: AgentPhase = !delivered ? 'ready' : responded ? 'responded' : 'accepted'
             const stored = patchAgent(live, { phase, workingObserved }) ?? record
+            // R12: when the closing gate ran, its observations are the current ones — two samples at
+            // the seq the turn ended on. The single frame this iteration opened with was taken before
+            // the gate and, on a turn that started Working, describes a state already left behind.
+            const observed = closing ?? { views: [view], satisfied: false }
             return { terminal: handle(live), stage: delivered ? 'confirmed' : 'submitted', outcome: satisfied ? 'completed' : 'unknown',
               wait: { requested: want, satisfied, reason: satisfied ? null : stopped ?? 'deadline' },
               delivery, record: { path: owned.path, matchCount: count.matchCount, naiveCount: count.naiveCount,
                 assistantAfter: count.assistantAfter, cursorInvalidated: count.cursorInvalidated, unavailableReason: reason },
-              agent: await agentBlock(live, stored, [view], false, manifest) }
+              agent: await agentBlock(live, stored, observed.views, observed.satisfied, manifest) }
           }
           await delay(Math.min(READY_SAMPLE_INTERVAL_MS, Math.max(1, ctx.deadlineAt - Date.now() - 15)), undefined, { signal: ctx.signal })
           view = await observeAgent(live, record)
@@ -370,8 +377,8 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         // §3 fail-closed: an unverified detect manifest means a trust dialog may read as idle.
         const manifest = await observeManifest(record.kind)
         if (!manifest.verified) throw manifestGateError(record.kind, manifest)
-        const pass = await gatePass(live, record, 'ready')
-        const phase = phaseOf(record, pass.views, pass.satisfied, manifest)
+        const pass = await gatePass(live, record)
+        const phase = phaseOf(record, pass.views, pass.satisfied)
         if (!pass.satisfied) {
           patchAgent(live, { phase })
           const block = await agentBlock(live, record, pass.views, false, manifest)
@@ -536,7 +543,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
             // §4.4 D4: without a record corral reports only what herdr answers — it does not guess.
             const pass = first.stale || first.launchExpired || first.live === 'blocked' || first.live === 'exited'
               ? { views: [first], satisfied: false, manifest: record === null ? null : await observeManifest(record.kind) }
-              : await readyGate(live, record, 'ready')
+              : await readyGate(live, record)
             agent = await agentBlock(live, record, pass.views, pass.satisfied, pass.manifest)
           }
           return { terminal: await describe(live), process: { ...process, observationId: 'p1.' + createHash('sha256').update(JSON.stringify(process)).digest('base64url') },

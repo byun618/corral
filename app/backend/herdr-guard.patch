@@ -54,7 +54,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,242 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -128,7 +128,12 @@
 +                Ok(agent) => agent,
 +                Err(err) => return encode_error_body(prompt_id, self.agent_target_error_body(err)),
 +            };
-+            if observed.agent_status != AgentStatus::Idle || !observed.interactive_ready
++            // Idle and Done are one detect state (AgentState::Idle); api_helpers.rs splits them by
++            // whether a focused active tab has seen the completion, which is GUI attention, not
++            // readiness. A headless pane is never seen, so every finished turn is Done and an
++            // Idle-only guard would accept exactly one prompt per pane. launch_pending still fences
++            // startup, and expected_state_change_seq still fences the observation.
++            if !matches!(observed.agent_status, AgentStatus::Idle | AgentStatus::Done) || !observed.interactive_ready
 +                || observed.launch_pending || observed.state_change_seq != expected_seq {
 +                let code = if observed.agent_status == AgentStatus::Blocked { "agent_blocked" } else { "agent_not_ready" };
 +                let message = format!("agent is not the observed ready state (expected state_change_seq {expected_seq}, observed {})", observed.state_change_seq);
@@ -201,6 +206,93 @@
 +        let output = base64::engine::general_purpose::STANDARD.decode(raw).unwrap();
 +        assert!(!String::from_utf8_lossy(&output).contains("WRONG"));
 +        println!("same terminal={terminal}, old PTY generation={old_generation}, new={new_generation}; send/interrupt/close rejected; replacement alive; output={:?}", String::from_utf8_lossy(&output));
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    /// R11: `done` is `AgentState::Idle` that no focused active tab has *seen*
++    /// (`api_helpers.rs` 96~106), so every pane corral drives reports it once a turn finishes. The
++    /// guard has to take the next prompt in that state and still refuse Working, Blocked and a
++    /// stale `state_change_seq`. No provider is launched here: the managed agent is begun on the
++    /// terminal and the detect transitions are injected, which is how herdr's own state tests drive
++    /// this (`actions.rs` `idle_after_known_unknown_agent_in_background_marks_done`).
++    #[tokio::test]
++    async fn corral_terminal_accepts_a_done_pane_and_refuses_the_rest() {
++        use crate::detect::{Agent, AgentState};
++        use crate::events::AppEvent;
++        use std::time::{Duration, Instant};
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l394-claude-done-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        assert!(response.get("error").is_none(), "{response}");
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        // Nobody is looking at this pane. That is not a corner case: it is every headless pane.
++        app.state.outer_terminal_focus = Some(false);
++        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++            "corral-done".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));
++        fn observe(app: &mut App, pane: crate::layout::PaneId, terminal: &crate::terminal::TerminalId, state: AgentState) {
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude), state,
++                visible_blocker: state == AgentState::Blocked, visible_working: state == AgentState::Working,
++                process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        // Launch, then one whole turn. The first Idle is the launch settling, which herdr does not
++        // count as a completion (`actions.rs` 1873~1875 `suppress_completion`), so it reports `idle`
++        // and the managed agent becomes Active. The Idle that ends the *turn* is a completion
++        // transition on a pane nobody is watching, and that is the `done` this test is about.
++        observe(&mut app, pane, &terminal, AgentState::Unknown);
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let launched = app.agent_info(ws, pane).expect("agent info for the managed pane");
++        assert_eq!(launched.agent_status, AgentStatus::Idle, "{launched:?}");
++        assert!(launched.interactive_ready && !launched.launch_pending, "{launched:?}");
++        observe(&mut app, pane, &terminal, AgentState::Working);
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let info = app.agent_info(ws, pane).expect("agent info for the managed pane");
++        assert_eq!(info.agent_status, AgentStatus::Done, "{info:?}");
++        assert!(info.interactive_ready && !info.launch_pending, "{info:?}");
++        let seq = info.state_change_seq;
++        let generation = app.lookup_runtime_sender(ws, pane).unwrap().corral_generation();
++        let target = format!("{terminal}.{generation}");
++        fn submit(app: &mut App, pane_name: &str, target: &str, expected: u64) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
++                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"second turn"}})),
++                expected_state_change_seq: Some(expected),
++            })).unwrap()
++        }
++        // What this test can and cannot show. It can show that the *guard predicate* accepts a Done
++        // pane: its refusal has one message and that message must not appear. It cannot show the
++        // queued submission landing, because `queue_agent_prompt` then checks that the provider is
++        // the pane's foreground process and no provider runs here — faking one to get past that is
++        // the workaround this round is not taking. That last step is what the live run covers.
++        const REFUSED: &str = "is not the observed ready state";
++        let accepted = submit(&mut app, &pane_name, &target, seq);
++        let message = accepted["error"]["message"].as_str().unwrap_or_default().to_string();
++        assert!(!message.contains(REFUSED), "a done pane must clear the ready predicate: {accepted}");
++        assert!(message.contains("foreground"), "expected the queue step's own check, got {accepted}");
++        // Everything else the predicate fences stays refused *by the predicate*, and the refusal
++        // still carries what the guard saw (R7): a stale seq, a Working turn, a blocking screen.
++        let stale = submit(&mut app, &pane_name, &target, seq + 7);
++        assert_eq!(stale["error"]["code"], "agent_not_ready", "{stale}");
++        assert!(stale["error"]["message"].as_str().unwrap().contains(REFUSED), "{stale}");
++        assert_eq!(stale["error"]["observed"]["state_change_seq"], seq);
++        observe(&mut app, pane, &terminal, AgentState::Working);
++        let working_seq = app.agent_info(ws, pane).unwrap().state_change_seq;
++        let working = submit(&mut app, &pane_name, &target, working_seq);
++        assert_eq!(working["error"]["code"], "agent_not_ready", "{working}");
++        assert!(working["error"]["message"].as_str().unwrap().contains(REFUSED), "{working}");
++        assert_eq!(working["error"]["observed"]["agent_status"], "working");
++        observe(&mut app, pane, &terminal, AgentState::Blocked);
++        let blocked_seq = app.agent_info(ws, pane).unwrap().state_change_seq;
++        let blocked = submit(&mut app, &pane_name, &target, blocked_seq);
++        assert_eq!(blocked["error"]["code"], "agent_blocked", "{blocked}");
++        println!("done pane cleared the ready predicate at seq={seq} (stopped later at {message:?}); stale seq, working and blocked refused by the predicate");
 +        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
 +        std::fs::remove_dir_all(root).unwrap();
 +    }

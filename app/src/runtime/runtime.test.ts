@@ -139,17 +139,23 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
   })
 
   it('issues ready only for two quiet samples that share one state_change_seq (F6)', () => {
-    expect(readySatisfied([sample(), sample()], 'ready')).toBe(true)
+    expect(readySatisfied([sample(), sample()])).toBe(true)
     // A recorded transition between the samples is exactly what N=2 is there to exclude.
-    expect(readySatisfied([sample(), sample({ stateChangeSeq: 8 })], 'ready')).toBe(false)
-    expect(readySatisfied([sample({ status: 'working' }), sample()], 'ready')).toBe(false)
-    expect(readySatisfied([sample(), sample({ launchPending: true })], 'ready')).toBe(false)
-    expect(readySatisfied([sample({ interactiveReady: false }), sample({ interactiveReady: false })], 'ready')).toBe(false)
-    expect(readySatisfied([sample()], 'ready')).toBe(false)
-    expect(readySatisfied([], 'ready')).toBe(false)
-    // agent-idle is the same gate over a finished turn, so `done` counts there and only there.
-    expect(readySatisfied([sample({ status: 'done' }), sample({ status: 'done' })], 'ready')).toBe(false)
-    expect(readySatisfied([sample({ status: 'done' }), sample({ status: 'done' })], 'idle')).toBe(true)
+    expect(readySatisfied([sample(), sample({ stateChangeSeq: 8 })])).toBe(false)
+    expect(readySatisfied([sample({ status: 'working' }), sample()])).toBe(false)
+    expect(readySatisfied([sample(), sample({ launchPending: true })])).toBe(false)
+    expect(readySatisfied([sample({ interactiveReady: false }), sample({ interactiveReady: false })])).toBe(false)
+    expect(readySatisfied([sample()])).toBe(false)
+    expect(readySatisfied([])).toBe(false)
+    // r0 asserted `done` here only for agent-idle. That was wrong about herdr (R11): `done` is not a
+    // state of its own, it is `AgentState::Idle` that no focused active tab has *seen*
+    // (`api_helpers.rs` 96~106), and "nobody looked at it" is not "cannot take a prompt". Both waits
+    // now run one predicate, so a finished turn on a background pane is quiet for either of them.
+    expect(readySatisfied([sample({ status: 'done' }), sample({ status: 'done' })])).toBe(true)
+    // Still not quiet, whoever is looking: a moving seq, a launch in flight, an unbound pane.
+    expect(readySatisfied([sample({ status: 'done' }), sample({ status: 'done', stateChangeSeq: 9 })])).toBe(false)
+    expect(readySatisfied([sample({ status: 'done', launchPending: true }), sample({ status: 'done' })])).toBe(false)
+    expect(readySatisfied([sample({ status: 'unknown' }), sample({ status: 'unknown' })])).toBe(false)
   })
 
   it('counts the body inside the submission window, not by scanning the whole file (F7 1-3)', () => {

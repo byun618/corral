@@ -28,18 +28,29 @@ export const SCREEN_EXCERPT_BYTES = 4096
 // --- §3 ready gate ------------------------------------------------------------------------------
 
 export interface ReadySample { status: string; launchPending: boolean; interactiveReady: boolean; stateChangeSeq: number }
-/** One observation that is quiet: bound, not launching, and either idle or (for `idle`) finished. */
-export const agentQuiescent = (sample: ReadySample, want: 'ready' | 'idle'): boolean =>
-    sample.interactiveReady && !sample.launchPending && (want === 'ready' ? sample.status === 'idle' : sample.status === 'idle' || sample.status === 'done')
+/**
+ * One observation that is quiet: bound to this pane, not still launching, and in a state that can
+ * take a prompt. `idle` and `done` are one detect state, not two (R11) — herdr splits
+ * `AgentState::Idle` by whether a human has *seen* the completion (`api_helpers.rs` 96~106:
+ * `(Idle, false) => Done`), and `seen` turns true only on a completion transition of the active tab
+ * of a focused window (`actions.rs` 57~62·1945~1975). A headless pane is never that, so every turn
+ * it finishes reports `done`, and refusing `done` would let corral submit exactly once per pane.
+ * `seen` is GUI attention information and says nothing about whether a prompt can be taken; startup
+ * is fenced off by `launch_pending` instead, which no Idle can pass while a managed launch is in
+ * flight (`actions.rs` 1873~1875 `suppress_completion`). One predicate, so `agent-ready` and
+ * `agent-idle` ask the same question — §3 keeps them apart by *when* they ask and about what.
+ */
+export const agentQuiescent = (sample: ReadySample): boolean =>
+    sample.interactiveReady && !sample.launchPending && (sample.status === 'idle' || sample.status === 'done')
 /**
  * §3: ready is N consecutive quiet observations 750 ms apart whose `state_change_seq` never moved.
  * The unchanged seq is the real proof — it says herdr recorded no transition between the samples —
  * so N stays 2 rather than approximating "no transition in flight" with more samples.
  */
-export function readySatisfied(samples: ReadySample[], want: 'ready' | 'idle'): boolean {
+export function readySatisfied(samples: ReadySample[]): boolean {
     const first = samples[0]
     if (samples.length !== READY_SAMPLES || first === undefined) return false
-    return samples.every(sample => agentQuiescent(sample, want) && sample.stateChangeSeq === first.stateChangeSeq)
+    return samples.every(sample => agentQuiescent(sample) && sample.stateChangeSeq === first.stateChangeSeq)
 }
 
 // --- §4.5 body identity -------------------------------------------------------------------------
@@ -299,6 +310,13 @@ function projectRow(kind: AgentKind, row: Record<string, unknown>): Omit<Row, 'i
  * this body nor a different one — so a run of consecutive chunks is one user row. The merged row
  * keeps the *first* chunk's line index and timestamp: a turn that began before the cursor or before
  * the submit second stays outside the window instead of being dragged in by its later chunks.
+ *
+ * Only a run of *consecutive* chunk rows is joined (G11). If grok ever interleaves another row
+ * between two chunks of one body, the halves stay separate, neither half matches the identity, and
+ * the submission reports `matchCount: 0` → `outcome_unknown` — the fail-closed answer, not a wrong
+ * one. Skipping rows to bridge such a gap is not implemented because no split has ever been
+ * observed (§9 미확인 13), so there is no evidence of which rows may appear in between; guessing
+ * the shape of an unobserved record is the same mistake the Claude path refuses to make for G7.
  */
 function mergeUserChunks(rows: Row[]): Row[] {
     const merged: Row[] = []

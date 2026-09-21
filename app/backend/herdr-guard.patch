@@ -129,10 +129,10 @@
 +                Err(err) => return encode_error_body(prompt_id, self.agent_target_error_body(err)),
 +            };
 +            // Idle and Done are one detect state (AgentState::Idle); api_helpers.rs splits them by
-+            // whether a focused active tab has seen the completion, which is GUI attention, not
-+            // readiness. A headless pane is never seen, so every finished turn is Done and an
-+            // Idle-only guard would accept exactly one prompt per pane. launch_pending still fences
-+            // startup, and expected_state_change_seq still fences the observation.
++            // whether the completion was seen, and on a completion transition seen is set to
++            // is_active_tab && outer_terminal_focus != Some(false) — GUI attention, not readiness.
++            // So a pane that is not the active tab, or whose window focus is explicitly false, is
++            // Done every finished turn; launch_pending and expected_state_change_seq still fence.
 +            if !matches!(observed.agent_status, AgentStatus::Idle | AgentStatus::Done) || !observed.interactive_ready
 +                || observed.launch_pending || observed.state_change_seq != expected_seq {
 +                let code = if observed.agent_status == AgentStatus::Blocked { "agent_blocked" } else { "agent_not_ready" };
@@ -232,7 +232,7 @@
 +        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
 +        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
 +        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
-+        // Nobody is looking at this pane. That is not a corner case: it is every headless pane.
++        // Nobody is looking at this pane: focus is explicitly false, so a finished turn is Done.
 +        app.state.outer_terminal_focus = Some(false);
 +        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
 +            "corral-done".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));

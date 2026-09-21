@@ -15,7 +15,7 @@
   "conditionalProcess": false,
   "patchSHA256": {
     "herdr-stream.patch": "d7ec2e8b6af5fc1ee2fcebaacb5861ffe2f5e67e3394fac3c3a3e7d5c5b1fdce",
-    "herdr-guard.patch": "8a8659e1c881df4583c937bb91a6e15d679f7ecb0066fc77325feff2b76c7dc2",
+    "herdr-guard.patch": "0a132bdcfbd940b2e5f2fdebdaac805270329102d482d7974a0d5ec1667880a7",
     "herdr-detect.patch": "84aa84f72d78ddfa6ad11db880764850b4c1b7f01bcb3535cff174aa7a4f50d4"
   },
   "agentOps": true

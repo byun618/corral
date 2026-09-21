@@ -1,5 +1,5 @@
 name = "reviewer"
-description = "경쟁 구현 코드 검토"
+description = "설계 및 구현 코드 독립 검토"
 
 developer_instructions = """
 .agents/agents/reviewer.md 를 먼저 읽고 그 지침을 그대로 따른다.

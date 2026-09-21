@@ -2,7 +2,7 @@
 name: task-coordinate
 description: >-
   corral 작업 코디네이터 절차. 작업 worktree의 Claude 또는 Codex 코디네이터가 킥오프 직후 읽는다.
-  분석·판정 기준·킥오프 승인·경쟁 구현·3자 리뷰·판정·세 승인 게이트·본체 마무리 인계를 다룬다.
+  분석·판정 기준·킥오프 승인·설계 리뷰·단일 구현·코드 리뷰·판정·세 승인 게이트·본체 마무리 인계를 다룬다.
   Orca orchestration으로 워커 기동·완료 감지·질의응답을 처리한다.
 ---
 
@@ -22,13 +22,14 @@ description: >-
 - 빠진 도구·권한이 있으면 해결 가능한 설정을 점검하고, 남은 차단 사유를 시작 기록과 사용자에게
   보고한다. 임의로 다른 코디네이터로 바꾸거나 필수 리뷰를 생략하지 않는다.
 - 통과하면 `00-start.md`를 `준비 완료`로 갱신·커밋한다. 코디네이터 선택은 구현자·리뷰어
-  페어링을 바꾸지 않는다. 문서 작성·판정은 코디네이터, 구현은 별도 워커가 맡는다.
+  구성을 바꾸지 않는다. 분석·기준·판정은 코디네이터, 설계·구현은 별도 워커가 맡는다.
 - 각 단계에 필요한 `.agents/rules/` 문서를 읽는다: 글 작성 전 writing.md, 코드 작업 전 coding.md,
   완료 판정 전 validation.md. 디렉터리의 자동 로딩 여부에 기대지 않는다.
 
 ## LA 상태 전이 (life-assistant `issue_transition`, forward-only)
 
-분석 시작 → "분석 중" / 경쟁 구현 시작 → "개발 중" / 리뷰 시작 → "검증 중" / main 머지 후 → "완료"
+분석 시작 → "분석 중" / 설계·설계 리뷰는 "분석 중" 유지 / 구현 시작 → "개발 중" / 코드 리뷰 → "검증 중" / main 머지 후 → "완료"
+설계 리뷰에 "검증 중"을 사용하지 않는다(forward-only라 이후 개발 중으로 돌아갈 수 없다). 코드 리뷰 중 설계 보완도 LA는 검증 중을 유지하고 세부 단계는 specs에 기록한다.
 
 ## 1. 분석 — 4박자 (외부 서치가 수 분 걸리므로 순차가 아니라 겹친다)
 
@@ -37,7 +38,7 @@ description: >-
    대화형으로 병렬 위임한다(공통 grok-search 스킬). Claude Code는 WebSearch/WebFetch,
    Codex는 제공된 웹 검색·페이지 열기 도구를 사용한다. grok 결과는 자체 검색과 대조해 귀속 표기한다.
 3. **서치 대기 중 기준 초안** 작성 (§2)
-4. **서치 취합 → 기준 확정**: 서치 결과가 기준을 바꿀 수 있다. 기준 freeze 는 *구현 시작 시점*이다
+4. **서치 취합 → 기준 확정**: 서치 결과가 기준을 바꿀 수 있다. 기준 freeze는 *킥오프 승인 시점*이다
 - **선행 문서의 사실 주장을 대조표로 검증한다** — 일감 본문·00-project.md 의 전제가 틀렸을 수 있다
   (LIFE-342 에서 5건 중 2건 오류 발견). 산출물: `00-analysis.md` (+ 외부 서치 원문 `00-analysis-grok.md`)
 - 절차가 이 스킬과 어긋나면 `00-analysis.md` 의 "절차 어긋남" 섹션에 누적 기록한다 (스킬 개정 재료)
@@ -54,12 +55,14 @@ description: >-
   ③ **통과선을 낮춰 통과시킨 흔적이 없을 것** (LIFE-342 탈락 사유가 이것이었다)
 - 기준 없이 구현 시작 금지
 
-## 3. 킥오프 문서 — `02-kickoff.md` (양 구현자에게 동일하게 주어지는 지시)
+## 3. 킥오프 문서 — `02-kickoff.md` (설계·구현 워커와 리뷰어의 공통 기준)
 
-- **물류만 정한다. 설계는 지시하지 않는다** — 구조·라이브러리·계측 방법은 구현자 몫이고 그게 채점 대상
+- **설계는 워커가 제안한다.** 코디네이터는 범위·제약·물류·검토 절차를 정한다.
+  구조·라이브러리·계측 방법은 설계 문서로 먼저 제출하고 독립 설계 리뷰·판정 후 구현한다.
 - 정체 표: 브랜치 / worktree / 격리 리소스(예: herdr 세션명) / 원자료 경로 / 결과 파일
 - `00-start.md`의 코디네이터 선택과 지정 모델·effort를 정체 표에 옮긴다. 재선택하지 않는다.
-  구현자·리뷰어의 도구·모델·effort는 역할별로 별도 기록한다.
+  설계/구현 워커·native advisor·설계 리뷰어·코드 리뷰어의 모델/effort와 실제 명령을 구분한다.
+  advisor는 독립 effort 옵션을 가정하지 않는다. 설계→구현 동일 세션 유지 요청, handle/브랜치 실제 반환값도 기록한다.
 - **격리 규칙**: 사용자가 실제 쓰는 리소스(default 세션·소켓 등)를 건드리지 않는다.
   외부 도구 실측은 전용 격리 인스턴스에서. 상대 브랜치 보지 않기, 작업 브랜치에 커밋하지 않기
 - **격리 인스턴스 기동에 "헤드리스는 안 된다" 고 단정하지 않는다.** 정확히는 *TTY 가 없으면* 안 되는
@@ -78,104 +81,100 @@ description: >-
 
 - **문제 정의·범위**: 뭘 구현하기로 했고, 뭘 명시적으로 뺐는지 (분석에서 좁힌 결과)
 - **판정 기준 요약**: 01-criteria 통과선 핵심 몇 줄
-- **구현 방식**: 경쟁/단독 판단과 근거, 워커 페어링(모델·effort), 디자인 브리프 삽입 여부와 사유
+- **진행 방식**: 단일 워커 설계→독립 설계 리뷰→구현, 역할별 모델/effort·advisor, 디자인 브리프 삽입 여부와 사유
 
 승인이 오면 §4 로 진행한다. 지적이 나오면 문서를 고쳐 재보고한다 — 기준 freeze 는 이 승인
-시점이다(§1-4 의 "구현 시작 시점"이 곧 여기). 설계안은 보고 대상이 아니다 — §3 원칙대로
-설계는 구현자 몫이고 채점 대상이다. (게이트 ⓪ 신설 2026-09-20 — 가장 비싼 구간인 구현 전에
+시점이다. 구체 설계는 이 승인 후 워커가 작성하고 §4의 내부 설계 판정을 받는다.
+기존 사용자 승인 범위·기준이 바뀌면 구현을 멈추고 갱신 문서를 커밋해 재승인을 받는다. (게이트 ⓪ 신설 2026-09-20 — 가장 비싼 구간인 구현 전에
 방향 오류를 잡는다. LIFE-342 전제 오류·LIFE-357 디자인 판단 번복이 근거)
 
-## 4. 구현 — 기본 경쟁(claude ∥ codex), 단독은 예외 (2026-09-18 전환)
+## 4. 설계 → 독립 설계 리뷰 → 같은 워커 구현
 
-기본은 claude·codex 워커 2개를 동시에 붙인다. claude 단독은 분석 단계에서 "설계 접근이 갈릴 여지가
-거의 없는 단순 작업"으로 판단해 일감에 명시했을 때만. 워커 모델·effort 는 분석에서 정해
-02-kickoff.md 정체 표에 기록한다 — 둘 다 `orchestration worker-start --model <m> --effort <e>`로
-동일하게 지정한다(모델은 구독 목록 한정).
+2026-09-21 신규 기본. 코디네이터 설정은 task-start/00-start.md 그대로 유지한다.
 
-**기본 페어링은 플래그십 대 플래그십** (2026-09-18, GPT-6 Astra 출시 계기로 명시): codex 쪽에
-Astra(`model = "gpt-6-astra"`, Codex 신규 최상위 모델)를 쓴다면 claude 쪽도 Opus 가 아니라
-**Fable**(Anthropic 신규 최상위 "Mythos급" 모델, `claude-fable-5-1` — FrontierBench 최고점,
-Opus 는 그 아래 등급으로 재배치됨)로 맞춘다. effort 도 양쪽 동일 등급 — **기본은 둘 다 high**
-(경쟁 + 3자 리뷰로 이중 헤지가 있는 자리라 xhigh 는 기본이 아니다, 2026-09-20). 난도가 높다고
-분석 단계에서 판단한 일감만 양쪽 함께 xhigh 로 승격하고 사유를 02-kickoff.md 정체 표에 남긴다.
-한쪽만 급을 낮추면 판정이 모델 격차 때문인지 구현 품질 때문인지 갈리지 않는다. 비용·속도 등
-다른 이유로 급을 다르게 갈 때도 그 사유를 02-kickoff.md 정체 표에 남긴다.
+| 역할 | 기본 모델·effort | 세션 |
+| --- | --- | --- |
+| 설계·구현 워커 | Claude Opus / high + native Fable advisor | 설계부터 구현·수정까지 유지 |
+| 설계 리뷰어 | Codex gpt-6-astra / high | 코디네이터·워커와 별도 |
+| 코드 리뷰어 | Codex gpt-6-astra / xhigh | 설계 리뷰와도 별도 |
+| 보완 코드 리뷰 | Grok 설치 기본 모델·effort | 별도, 실제 값을 기록 |
 
-**워커 기동·완료 감지는 Orca `orchestration` 계층으로 한다** (2026-09-18 전환, 저수준
-`terminal create/send/read` 조합 폐기). 먼저 `orca skills get orchestration`으로 스킬 본문을 읽는다.
-이유: 저수준 조합은 완료 감지를 git 파일 존재(`DONE.md`)로 대체 판단해야 했고 이게 두 번 헛불렀다
-(`specs/LIFE-345-terminal-view/verdict.md` — ① 자리표시자 든 초안을 완료로 오판 ② 워커가 계속
-도는데 파일만 보고 완료로 오판, 사용자가 잡음). `orchestration`은 워커가 보내는 구조화된
-`worker_done` 메시지로 이 문제를 근본에서 없앤다. 워크트리 배치 경로는 그대로
-`.claude/worktrees/<이름>`이다(Orca 기본값 — life-assistant·home-coffing 두 레포에서 실측 확인,
-`orca.yaml` 오버라이드 없이도 이 경로를 씀).
+Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화를 시작 화면에서 확인한다.
+모델 접근/사용량 문제로 이 구성을 기동할 수 없으면 차단을 보고한다. advisor를 조용히 빼거나
+다른 모델로 대체하지 않는다. 기존 작업의 승인된 구성은 소급 변경하지 않는다.
+
+**기동 전 [설계·구현 실행 절차](references/design-implementation.md)를 읽는다.**
+이 문서가 custom advisor 기동, 워커 보존·재사용·종료, 단계 산출물의 명령 수준 계약이다.
+사용자 지정 경쟁 구현 예외라면 각 후보가 같은 기준으로 이 설계 관문을 거치고 코드는 서로 공유하지 않는다.
+
+### 4.1 설계와 판정
+
+- 킥오프 승인 후 `design` Task를 발급한다. 워커는 구현 브랜치에서 `03-design.md`를 작성·커밋하고
+  `worker_done`으로 **설계 완료만** 보고한다. 코디네이터 진행 지시 전 제품 구현을 시작하지 않는다.
+- 설계에는 관련 기존 코드/근거, 구성요소 책임, 인터페이스·상태 전이, 실패/복구·소유권,
+  주요 대안과 선택 이유, 기준별 검증 방법, 남은 불확실성을 적는다. 불확실한 전제는 격리 실험으로 확인한다.
+  실험 코드는 제품 구현과 구분하고 범위·원자료를 남긴다.
+- 코디네이터는 설계 commit을 고정하고 Astra high에 `01-criteria.md`·설계·관련 기존 코드를 맡긴다.
+  리뷰어는 `review-design-codex.md`를 작성한다. 상담한 Fable을 독립 설계 리뷰로 세지 않는다.
+- 코디네이터가 지적을 취합해 `04-design-verdict.md`에 근거·처리를 기록한다. 높음/중간 미해결이나
+  구현 가능성을 좌우하는 미확인이 남으면 통과시키지 않는다. 낮음은 반영/보류 이유를 기록한다.
+  설계 수정은 같은 워커에 새 Task/Dispatch로 최대 2회. 미수렴하면 쟁점·대안을 사용자에게 보고한다.
+- 설계 리뷰 동안 워커를 retain한다. 승인된 재사용 요청을 00-start/02-kickoff에 기록하고,
+  설계 통과 후 `implement` Task를 새 Dispatch로 동일 terminal에 전달한다. 설계 완료 Task를 다시 열지 않는다.
+- 설계 판정은 코디네이터 내부 관문이다. 범위·기준 변경만 사용자 재승인으로 돌아간다.
+  통과한 설계 commit·리뷰 대상 commit·판정 commit을 구현 지시에 명시한다.
+- 구현 중 핵심 인터페이스·상태/소유권·복구 방침이 바뀌면 질문/escalation으로 멈추고
+  설계 변경 부분을 다시 검토한다. 세부 코드 선택은 워커 재량이다.
+
+### 4.2 완료·질문·복구 공통 규칙
+
+먼저 `orca skills get orchestration`을 읽고 Run/Task/Dispatch를 기록한다.
+완료는 파일 존재나 TUI idle이 아니라 해당 Task/Dispatch의 `worker_done`으로 확인한다.
+`succeeded`/`failed` 모두 종료 보고이며 failed를 성공으로 처리하지 않는다.
 
 ```bash
-orca orchestration run-create --objective "LIFE-NNN <슬러그>" --json
-orca orchestration task-create --spec "specs/LIFE-NNN-*/00-analysis.md → 01-criteria.md → 02-kickoff.md 순서로 읽고 구현해." --json
-# → task_claude 발급. codex 도 동일 spec 으로 한 번 더 task-create → task_codex (단독 예외면 생략)
-
-orca orchestration worker-start --task <task_claude> --worktree new-child \
-  --name LIFE-NNN-<슬러그>-claude --agent claude --model <m> --effort <e> --json
-orca orchestration worker-start --task <task_codex> --worktree new-child \
-  --name LIFE-NNN-<슬러그>-codex --agent codex --model <m> --effort <e> --json
+orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 60000 --json
+orca orchestration reply --id <msg_id> --body <답> --json
 ```
 
-- 브랜치·worktree 이름은 `--name`으로 기존 컨벤션(`LIFE-NNN-<슬러그>-<도구>`) 그대로 지정
-- 경쟁 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지
-- **완료 대기는 블로킹으로 건다 — 폴링하지 않는다**:
-  ```bash
-  orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 60000 --json
-  ```
-  타임아웃이나 `{count:0}`은 실패가 아니라 체크포인트다 — 긴 구현은 15~60분 걸리는 게 정상이니
-  받은 배치를 처리하고 `check --ack <delivery_id> --wait ...`로 이어서 다시 건다. 유효한
-  `worker_done`을 받으면 해당 task/dispatch의 `outcome`을 확인한다. `succeeded`와 `failed` 모두
-  종료 보고이며 성공을 뜻하는 것은 아니다. 상태 전이는 Orca가 처리한다(`task-update`로 수동 완료 금지).
-- 호스트 실행 도구도 60초 이내에 제어를 돌려받도록 한다. Codex는 셸 실행의 session ID 또는
-  실행 중 cell ID를 반환받았으면 해당 대기 도구로 이어 받는다. 기존 대기 프로세스가 살아 있는 동안
-  같은 Run의 `check`를 중복 실행하지 않는다. Claude Code는 장기 대기를 백그라운드로 실행할 수 있다.
-- **워커가 막혀서 `question`을 보내면** `orca orchestration reply --id <msg_id> --body <답> --json`으로
-  답하고 계속 대기한다 — "질문 대기 화면을 코디네이터가 키 입력으로 풀어주던" 임시방편(LIFE-356)의
-  정식 대체
-- **완료된 워커는 정리한다**: `orca orchestration worker-release --dispatch <dispatch_id> --json`.
-  수정 라운드로 같은 워커에 바로 이어 맡길 거면 release 하지 말고
-  `orca orchestration worker-start --task <다음_task_id> --terminal <handle> --worktree path:<해당 워커 worktree 절대경로> --json`로 재사용한다.
-  배치의 모든 메시지와 정리·재사용 결정을 처리한 뒤 delivery를 ack한다.
+배치의 모든 메시지를 처리하고 각 종료 워커의 재사용/retain/release를 결정한 뒤
+`check --ack <delivery_id> --wait ...`로 이어간다. 같은 Run의 check를 중복 실행하지 않는다.
+호스트 wait는 60초 이내에 제어를 돌려받는다. timeout/count:0은 새 워커를 만드는 근거가 아니다.
+응답 유실은 request-show·worker-show로 기존 요청/실행을 확인하고 명시된 복구 절차를 따른다.
+실행 중 worker에 release하지 않으며 release_pending/unknown을 terminal close로 우회하지 않는다.
+구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지. 모든 worktree는 형제 폴더다.
 
-## 5. 3자 리뷰
+## 5. 독립 코드 리뷰 — Codex Astra xhigh + Grok
 
-- 검토 전 `.agents/agents/reviewer.md` 필독. **모든 리뷰어는 코디네이터·구현자와 별도 세션**이다.
-  Codex 코디네이터가 Codex 리뷰를 대신하거나, Claude 코디네이터가 Claude 리뷰를 대신하지 않는다.
-- **claude·codex 리뷰어도 §4 와 같은 방식으로 띄운다** — 같은 Run 에 `orchestration worker-start`,
-  완료 대기는 `check --wait --types worker_done,escalation,question`.
-  **리뷰어 기본값 = 플래그십 + xhigh** (claude → Fable xhigh, codex → Astra xhigh, 2026-09-20):
-  리뷰가 안전망이라 뚫리면 헤지가 없고, diff 읽기 중심이라 구현보다 싸서 xhigh 가성비가 가장 좋은
-  자리다. 낮출 때는 사유를 02-kickoff.md 정체 표에 남긴다. grok 리뷰어는 예외 —
-  grok-search 스킬의 기존 Orca 대화형 경로 그대로 쓴다(orchestration `--agent` 대상이 아니라
-  검색 위임 스킬 소관)
-- `git diff LIFE-NNN-<슬러그>..LIFE-NNN-<슬러그>-<도구>` 로 검토 (체크아웃 불필요)
-- **리뷰어 터미널은 구현 worktree 에서 돌려도 된다** (LIFE-356, 사용자 승인 2026-09-13) —
-  원자료 재검산·독립 재실행(하네스 재투입)이 체크아웃 상태를 요구할 때 이쪽이 싸다.
-  판정문·기준서는 `git show <작업브랜치>:specs/...` 로 읽는다. 리뷰 실행 흔적은 리뷰어가
-  스스로 정리(구현자 원자료 불변, git status clean)하고 코디네이터가 취합 전 확인한다
-- 결과: `review-<도구>.md`, 코디네이터가 작업 브랜치에 커밋
+- `.agents/agents/reviewer.md`를 먼저 읽는다. 구현·설계 리뷰·코디네이터와 각각 별도 세션이다.
+  **설계 리뷰 통과는 코드 리뷰 통과가 아니다.** 고정 구현 commit과 실제 실행 원자료를 검토한다.
+- Codex는 새 Task로 `worker-start --agent codex --model gpt-6-astra --effort xhigh`를 사용한다.
+  실제 구현 worktree를 명시하고 제품 파일은 수정하지 않는다. Grok은 grok-search의 별도 대화형 경로다.
+- 결과는 `review-codex.md`·`review-grok.md`. 자기 관측/미실행과 다른 리뷰 근거를 구분한다.
+  코디네이터가 보고서를 작업 브랜치에 회수·커밋한다. 리뷰 중 구현자는 제품 변경을 멈춘다.
+- 두 리뷰 모두 코드 정확성·기준 충족·실행 근거를 보고 Grok은 외부 사실을 추가 대조한다.
+  기본 구성에 독립 Claude 코드 리뷰는 없다. 사용자가 추가 지시하면 별도 세션으로 수행한다.
+- 코드 수정 라운드는 같은 구현 워커에 새 Task/Dispatch로 이어 맡기며 §4.2의 대기·ACK를 따른다.
+  설계·구현 각각의 미해결 지적을 추적하고 세션 보존·정리는 실행 절차를 따른다.
 
 ## 6. 취합·판정 — `verdict.md`
 
-- **패자 raw/ 를 먼저 작업 브랜치로 회수한다** — 브랜치 삭제 전에. 안 하면 판정 재검증 불가
-- 양 브랜치 HEAD 를 태그로 고정: `LIFE-NNN-claude-final` / `LIFE-NNN-codex-final` (리뷰가 줄 번호로 인용하므로)
+- **설계·리뷰·구현 raw/를 작업 브랜치로 회수한다** — 제품 채택 머지와 분리해 문서만 커밋한다.
+  경쟁 예외면 탈락 후보 raw도 보존한다. 구현자의 설계 파일을 코디네이터가 직접 고치지 않는다.
+- 구현 HEAD를 `LIFE-NNN-claude-final`로 고정한다. 다른 도구 예외면 해당 도구 suffix를 사용한다.
+  단일 구현에는 비교 승자/탈락 후보를 꾸며 쓰지 않는다.
 - 기각·탈락엔 사유 기록, 자기 구현분 지적 기각은 특히 상세히
 - 수렴: 높음+중간 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
 
 ## 7. ⛔ 승인 게이트 ① — 채택
 
-판정 결과를 사용자에게 보고하고 **멈춘다**. 이 시점엔 머지 0건 — 승자 변경·추가 수정 요구가 가능하다.
+판정 결과를 사용자에게 보고하고 **멈춘다**. 이 시점엔 머지 0건 — 채택안 변경·추가 수정 요구가 가능하다.
 조용한 완료 금지.
 
 ## 8. (채택 승인 후) 작업 브랜치 머지 → 사용자 확인 → ⛔ 승인 게이트 ② — 출고
 
 ```bash
-git merge LIFE-NNN-<슬러그>-<승자>                      # 승자 → 작업 브랜치
+git merge <기록된_구현_브랜치>                      # 채택 구현 → 작업 브랜치
 ```
 
 - 머지 후 사용자에게 알린다: **작업 worktree 에서 통합 결과를 직접 실행·확인해 달라**
@@ -183,7 +182,7 @@ git merge LIFE-NNN-<슬러그>-<승자>                      # 승자 → 작업
 - **게이트 ① 사용자 수정 라운드** (LIFE-353 fix3 · LIFE-356 G1~G6 전례): 확인 중 나온 지시·결함은
   범위를 문서로 박고(04-gate1-fix.md 류) 워커가 구현 브랜치에 이어 커밋(rN 태그) → 코디네이터가
   diff 정독·게이트 재실행·스모크 원자료 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지.
-  풀 3자 리뷰는 안 돌린다 (범위가 UI/문구 수준일 때 — 가드·기준 경로를 건드리면 재리뷰 판단)
+  전체 코드 리뷰를 반복하지 않는다 (범위가 UI/문구 수준일 때 — 가드·기준 경로를 건드리면 재리뷰 판단)
 - 수정 라운드 워커도 §4 패턴 그대로: 같은 워커에 이어 맡기면
   `orchestration worker-start --task <fix_task_id> --terminal <handle> --worktree path:<해당 워커 worktree 절대경로>`로 재사용, 완료 대기·질문
   응답은 `check --wait`/`reply`로 처리한다(codex 류 승인 프롬프트 정지도 이제 `question` 메시지로

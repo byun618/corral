@@ -13,7 +13,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   아티팩트가 스파이크 판정과 어긋난 채 계획 근거로 쓰이고 있던 전례가 있다 (LIFE-344 → 00-project.md 정정)
 - 완료 선언 전에 .agents/rules/validation.md 의 완료 조건을 확인한다
 
-## 작업 플로우 (분석 → 경쟁 구현 → 3자 리뷰 → 판정)
+## 작업 플로우 (분석 → 설계·독립 리뷰 → 단일 구현 → 코드 리뷰 → 판정)
 
 실행 절차(명령 수준)는 스킬을 따른다 — 시작: .agents/skills/task-start/SKILL.md (main 세션),
 진행: .agents/skills/task-coordinate/SKILL.md (코디네이터 세션). 아래는 원칙 요약.
@@ -27,34 +27,33 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
    - **⓪ 킥오프 승인**: 킥오프 문서까지 커밋한 뒤 문제 정의·범위·판정 기준·구현 방식을
      사용자에게 보고하고 승인 후에만 워커를 기동한다 (task-coordinate 게이트 ⓪)
-3. 구현: 기본은 **경쟁 구현(claude ∥ codex)** (2026-09-18 전환 — codex 구독 업그레이드로
-   2026-09-11 전환 사유였던 구독 모델 격차 해소, 경쟁 기대값 회복)
-   - **claude 단독 구현은 예외**: 설계 접근이 갈릴 여지가 거의 없는 단순 작업만 —
-     분석 단계에서 판단해 일감에 명시
-   - 워커 모델·effort 는 분석 단계에서 코디네이터가 정해 02-kickoff.md 정체 표에 기록
-     (기본 페어링 = 플래그십 대 플래그십, 상세는 task-coordinate SKILL.md §4)
-   - 구현 브랜치: 작업 브랜치에서 분기, LIFE-NNN-<슬러그>-claude / -codex (단독 예외면 codex 생략), 각자 전용 worktree
-   - worktree 는 전부 .claude/worktrees/ 아래 형제 폴더 — worktree 폴더 안에 worktree 중첩 금지
-   - 대시(-claude)인 이유: git ref 제약으로 LIFE-NNN-<슬러그> 와 LIFE-NNN-<슬러그>/claude 는 공존 불가
-   - 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지 (merge-base 붕괴)
-4. 3자 리뷰: claude·codex·grok 모두 리뷰. 검토 전 .agents/agents/reviewer.md 를 읽는다
-   → specs/LIFE-NNN-*/review-<도구>.md
+3. 설계·구현: 기본은 **Claude Opus high + native Fable advisor 단일 워커** (2026-09-21, LIFE-418).
+   - 킥오프 승인 후 워커가 설계 문서를 먼저 커밋한다. **Codex Astra high 독립 설계 리뷰**와
+     코디네이터의 설계 판정이 끝난 뒤 같은 워커가 새 Task/Dispatch로 구현을 이어간다.
+   - advisor는 Claude 내장 상담 도구다. 코디네이터·독립 리뷰를 대신하지 않으며 별도 effort를 가정하지 않는다.
+   - 코디네이터 설정은 유지. 역할별 모델·effort·실제 advisor 및 명령을 02-kickoff.md에 기록한다.
+   - 설계 검토는 내부 진행 판정이다. 승인된 범위·기준 변경은 사용자에게 재승인을 받는다.
+   - 구현 브랜치: 작업 브랜치에서 LIFE-NNN-<슬러그>-claude 분기, 전용 worktree.
+   - worktree는 전부 .claude/worktrees/ 아래 형제 폴더 — 중첩 금지. 구현 브랜치 생존 중 작업 브랜치 rebase 금지.
+   - 사용자 지정 경쟁/다른 모델 예외와 기존 작업은 해당 킥오프를 따른다. 신규 기본은 단일 구현이다.
+4. 코드 리뷰: **Codex Astra xhigh + Grok 보완 리뷰**. 설계 리뷰와도 별도 세션으로 기동한다.
+   .agents/agents/reviewer.md를 읽고 specs/LIFE-NNN-*/review-<도구>.md에 기록한다.
 5. 취합·판정: 코디네이터가 지적 취합 → 채택 판정 → specs/LIFE-NNN-*/verdict.md
    - 기각·탈락에는 반드시 사유 기록. 자기 구현분 지적을 기각할 때는 사유를 특히 상세히
    - 종료 조건: 높음+중간 지적 0건 → 낮음 모아 1회 수정 후 종료. 수정 상한 3회
 6. 마무리 — 승인 게이트 2단:
-   - **① 채택 승인**: 수렴하면 머지 없이 판정 결과 보고 → 승인 후 승자 → 작업 브랜치 머지
-     (머지 전이라 승자 변경·추가 수정 요구 가능)
+   - **① 채택 승인**: 수렴하면 머지 없이 판정 결과 보고 → 승인 후 채택 구현 → 작업 브랜치 머지
+     (머지 전이라 채택안 변경·추가 수정 요구 가능)
    - 사용자 직접 확인: 작업 worktree 에서 통합 결과를 실제로 굴려본다. 문제 발견 시 수정 라운드
    - **② 출고 승인**: 확인이 끝나면 승인 → 인계 문서 커밋 → 본체 세션이 main 머지·정리·반영 확인 → LA 완료
 
 ## 상태 전이·보고 (진행: 코디네이터 / 출고: 본체 마무리 세션)
 
 - 플로우 단계마다 LA 상태를 전이한다 (life-assistant issue_transition, forward-only):
-  0 작업 시작 → "진행 중" / 1 분석 → "분석 중" / 3 경쟁 구현 → "개발 중" /
-  4 리뷰 → "검증 중" / 6 main 머지 후 → "완료"
-- **사용자 승인 게이트 (자율 진행 금지 지점)** — 3단: ⓪ 킥오프 승인(구현 워커 기동 전 —
-  문제 정의·범위·판정 기준 보고) ① 채택 승인(승자 → 작업 브랜치 머지 전)
+  0 작업 시작 → "진행 중" / 1 분석 → "분석 중" / 3 구현 시작 → "개발 중" /
+  4 코드 리뷰 → "검증 중" / 6 main 머지 후 → "완료". 설계·설계 리뷰는 "분석 중" 유지
+- **사용자 승인 게이트 (자율 진행 금지 지점)** — 3단: ⓪ 킥오프 승인(설계 워커 기동 전 —
+  문제 정의·범위·판정 기준 보고) ① 채택 승인(채택 구현 → 작업 브랜치 머지 전)
   ② 출고 승인(main 머지·정리 전). 게이트 사이 구간은 자율 진행하되 게이트에서 멈추고 보고한다.
   worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
@@ -75,18 +74,18 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 - 코디네이터·판정 = 작업마다 claude 또는 codex 선택. 명시한 선택을 우선하고 신규 작업의
   미지정 기본값은 claude. 시작 시 `specs/LIFE-NNN-*/00-start.md`에 기록하고 재개 시 그대로 따른다.
   기동·전제 점검·선택 충돌 처리는 task-start 스킬을 따른다.
-- claude (Claude Code) = 구현자 A + 코드 검토
-- codex = 구현자 B + 코드 검토
+- claude (Claude Code) = Opus high 설계·구현, native Fable advisor 상담
+- codex = Astra high 설계 리뷰 / 별도 Astra xhigh 코드 리뷰
 - grok = 외부 서치·사실 검증 (느림 수 분, 무료 쿼터 주의 — 검색 1회 소진 가능)
-- 코디네이터 선택은 구현자 페어링을 바꾸지 않는다. 모든 리뷰어는 코디네이터·구현자와
-  별도 세션으로 기동한다. 같은 도구여도 세션과 역할은 구분한다.
+- 코디네이터 선택은 워커·리뷰어 기본 구성을 바꾸지 않는다. 설계 리뷰·코드 리뷰는 서로,
+  그리고 코디네이터·구현자와 별도 세션이다. 같은 도구여도 세션과 역할은 구분한다.
 
 ## 세션 간 통신
 
 - 영속 산출물: specs/ 파일 (진실의 원천)
 - 제어 채널: orca `orchestration`(worker-start/check --wait/ask·reply) — 워커 기동·완료 감지·질의응답을
-  구조화된 메시지로 처리 (2026-09-18, 저수준 `terminal create/send/read` 폴링 조합 폐기, 상세는
-  task-coordinate SKILL.md §4). worker-start 도 실제 Orca 탭을 만드니 진행 가시성은 그대로 유지된다
+  구조화된 메시지로 처리. native advisor argv만 terminal create 후 worker-start --terminal 연결 예외를 쓴다.
+  완료 감지는 계속 worker_done/check/ACK다. 상세는 task-coordinate SKILL.md §4
 - 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
 
 ## 어디를 고치나 (증상 → 파일)

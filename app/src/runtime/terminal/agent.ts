@@ -32,9 +32,13 @@ export interface ReadySample { status: string; launchPending: boolean; interacti
  * One observation that is quiet: bound to this pane, not still launching, and in a state that can
  * take a prompt. `idle` and `done` are one detect state, not two (R11) — herdr splits
  * `AgentState::Idle` by whether a human has *seen* the completion (`api_helpers.rs` 96~106:
- * `(Idle, false) => Done`), and `seen` turns true only on a completion transition of the active tab
- * of a focused window (`actions.rs` 57~62·1945~1975). A headless pane is never that, so every turn
- * it finishes reports `done`, and refusing `done` would let corral submit exactly once per pane.
+ * `(Idle, false) => Done`), and on a completion transition `seen` is set to
+ * `is_active_tab && outer_terminal_focus != Some(false)` (`actions.rs` 57~62·1945~1975). So a pane
+ * that is **not the active tab, or whose window focus is explicitly false**, reports `done` at the
+ * end of every turn it finishes — being headless is not by itself the condition (R15: an unknown
+ * focus, `None`, still counts as seen on the active tab, which herdr's own test pins down at
+ * `actions.rs` 3748~3751, and corral's live panes show both — active tab `idle`, background tab
+ * `done`). Refusing `done` would let corral submit exactly once per such pane.
  * `seen` is GUI attention information and says nothing about whether a prompt can be taken; startup
  * is fenced off by `launch_pending` instead, which no Idle can pass while a managed launch is in
  * flight (`actions.rs` 1873~1875 `suppress_completion`). One predicate, so `agent-ready` and

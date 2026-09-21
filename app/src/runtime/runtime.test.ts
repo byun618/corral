@@ -13,7 +13,6 @@ import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SE
 import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
 import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
-import { asResponseFrame } from '../main/adapter/internal/protocol.js'
 import { isRecord } from '../shared/json.js'
 import type { CommandContext } from './contracts.js'
 const cleanups: (() => Promise<void> | void)[] = []
@@ -471,9 +470,32 @@ describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
     expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'not_started', reason: 'detect_manifest_unverified' })
   }, 30000)
 
-  it('R7: the guard rejection keeps the AgentInfo it observed in the error envelope', () => {
+  it('R7: the guard rejection keeps the AgentInfo it observed, all the way to the RuntimeError', async () => {
+    // Driven through the adapter's public surface against a stub guard, not through the envelope
+    // parser: the runtime is not allowed to reach adapter internals (N2), and what has to be true
+    // is what the *caller* receives. A compare-and-submit refusal is justified entirely by the
+    // state the guard saw at that instant; re-reading agent.get afterwards sees a state that has
+    // already moved on, so the observation has to survive the error envelope.
+    const dir = fixture(), guard = path.join(dir, 'guard.sock')
     const observed = { name: 'corral-fixture', kind: 'claude', status: 'working', state_change_seq: 3 }
-    const frame = asResponseFrame({ id: 'r', error: { code: 'agent_not_ready', message: 'state changed', observed } })
-    expect(frame?.error).toMatchObject({ code: 'agent_not_ready', message: 'state changed', observed })
+    const server = net.createServer(connection => {
+      connection.setEncoding('utf8')
+      connection.on('data', chunk => {
+        const message: unknown = JSON.parse(String(chunk))
+        const params = isRecord(message) ? asObject(message).params : undefined
+        const operation = isRecord(params) ? params.operation : undefined
+        const body = operation === undefined
+          ? { id: 'x', result: { guard_version: 1, agent_ops: 1, epoch: 'e' } }
+          : { id: 'x', error: { code: 'agent_not_ready', message: 'state changed; guard observed seq 3', observed } }
+        connection.end(JSON.stringify(body) + '\n')
+      })
+    })
+    await new Promise<void>(resolve => server.listen(guard, resolve))
+    cleanups.push(() => new Promise<void>(resolve => { server.close(() => resolve()) }))
+    const backend = new TerminalBackend(guard)
+    const ctx = { signal: new AbortController().signal, deadlineAt: Date.now() + 5000 }
+    expect(await backend.epoch(ctx)).toBe('e')
+    const target: TerminalIdentity = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: '/tmp', repo: '/tmp', title: '' }
+    await expect(backend.promptAgent(target, 'body', 2, ctx)).rejects.toMatchObject({ code: 'agent_not_ready', resources: { observed } })
   })
 })

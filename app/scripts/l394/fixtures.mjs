@@ -28,7 +28,8 @@ async function withBackend(label, binary, body) {
 
 // --- F12: the same commands against three backends (review 미확인 8) -----------------------------
 await withBackend('f12-stock', binaries.stock, async f => {
-  await f.startBackend('stock')
+  await f.startBackend('stock', { guard: false })
+  await f.serve()
   await f.check('F12-stock-terminal', async () => {
     const result = await f.cli(['terminal', 'list'], { fail: true })
     assert.equal(result.error.code, 'unsupported_backend', JSON.stringify(result))
@@ -43,6 +44,8 @@ await withBackend('f12-stock', binaries.stock, async f => {
 
 await withBackend('f12-l393', binaries.l393, async f => {
   await f.startBackend('l393')
+  await f.serve()
+  await f.cli(['repo', 'add', '--path', f.repo])
   await f.check('F12-l393-handshake-has-no-agent-ops', async () => {
     const handshake = await f.backendRpc('corral.terminal')
     assert.equal(handshake.guard_version, 1)
@@ -67,6 +70,8 @@ await withBackend('f12-l393', binaries.l393, async f => {
 
 await withBackend('f12-impl', binaries.impl, async f => {
   await f.startBackend('impl')
+  await f.serve()
+  await f.cli(['repo', 'add', '--path', f.repo])
   await f.check('F12-impl-handshake-advertises-agent-ops', async () => {
     const handshake = await f.backendRpc('corral.terminal')
     assert.equal(handshake.agent_ops, 1, JSON.stringify(handshake))
@@ -99,7 +104,7 @@ await withBackend('f12-impl', binaries.impl, async f => {
     return timed.error
   })
   await f.check('F12-stale-terminal-after-close', async () => {
-    await f.cli(['terminal', 'close', '--terminal', handle, '--request-id', requestId()])
+    await f.cli(['terminal', 'close', '--terminal', handle])
     const stale = await f.cli(['terminal', 'prompt', '--terminal', handle, '--text', 'gone', '--request-id', requestId()], { fail: true })
     assert.equal(stale.error.code, 'stale_terminal', JSON.stringify(stale))
     return stale.error
@@ -107,40 +112,50 @@ await withBackend('f12-impl', binaries.impl, async f => {
 })
 
 // --- F12/F14: static checks on the source itself ------------------------------------------------
-const sources = ['src/runtime', 'src/main', 'src/shared', 'src/preload'].map(dir => path.join(app, dir))
-const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
-  entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)])
-const files = sources.flatMap(walk).filter(file => file.endsWith('.ts'))
+// Scoped to what LIFE-394 changed. The GUI row-creation path (`adapter/internal/lifecycle.ts`, and
+// the `agent.start` entry ALLOWED_METHODS already carried for it) predates this work and §6 lists it
+// under "do not touch" — the check below proves it is byte-identical to the design commit rather
+// than pretending it does not exist.
+const repoRoot = path.join(app, '..')
+const git = (...rest) => execFileSync('git', ['-C', repoRoot, ...rest], { encoding: 'utf8' })
+const changed = git('diff', '--name-only', '53e748b..HEAD', '--', 'app/src').split('\n').filter(Boolean)
+const files = changed.filter(name => name.endsWith('.ts')).map(name => path.join(repoRoot, name))
+const GUI_AGENT_PATH = ['app/src/main/adapter/internal/lifecycle.ts', 'app/src/main/adapter/internal/request.ts']
 const staticChecks = []
 function staticCheck(id, fn) {
   try { staticChecks.push({ id, pass: true, detail: fn() }) } catch (error) { staticChecks.push({ id, pass: false, error: String(error) }) }
 }
 staticCheck('F12-no-agent-call-outside-the-guard', () => {
-  // Every agent.* call must travel inside a corral.terminal envelope, which only the adapter builds.
+  // In everything LIFE-394 changed, agent.* is named in exactly one place: the adapter method that
+  // wraps it in a corral.terminal envelope. Nothing else reaches herdr's app dispatch table.
   const offenders = files.filter(file => /['"]agent\.(start|get|prompt)['"]/.test(fs.readFileSync(file, 'utf8')))
     .filter(file => !file.endsWith('src/main/adapter/internal/terminal-backend.ts'))
+    .map(file => path.relative(repoRoot, file))
   assert.deepEqual(offenders, [])
-  return { scanned: files.length }
+  return { scanned: files.length, changed }
 })
-staticCheck('F12-allowed-methods-unchanged', () => {
-  const diff = execFileSync('git', ['-C', path.join(app, '..'), 'diff', 'da7498c~2', '--', 'app/src/main/adapter/internal/request.ts', 'app/src/runtime/terminal/receipts.ts', 'app/src/main/lifecycle.ts'], { encoding: 'utf8' })
+staticCheck('F12-untouched-files-are-byte-identical', () => {
+  // §6: ALLOWED_METHODS, the receipt store and the GUI launch path are not this design's to change.
+  const frozen = [...GUI_AGENT_PATH, 'app/src/runtime/terminal/receipts.ts', 'app/src/main/lifecycle.ts']
+    .filter(name => fs.existsSync(path.join(repoRoot, name)))
+  const diff = git('diff', '53e748b..HEAD', '--', ...frozen)
   assert.equal(diff.trim(), '', diff)
-  return { unchanged: ['request.ts (ALLOWED_METHODS)', 'receipts.ts', 'lifecycle.ts'] }
+  return { unchanged: frozen }
 })
 staticCheck('F14-no-type-assertions', () => {
   const pattern = /\bas\s+(?!const\b)[A-Z][A-Za-z0-9_]*|\bas\s+(?:readonly|unknown|any)\b/
   const offenders = []
   for (const file of files) {
     fs.readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
-      const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '')
-      if (pattern.test(code)) offenders.push(`${path.relative(app, file)}:${index + 1}`)
+      const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '').replace(/^\s*\/\*.*$/, '')
+      if (pattern.test(code)) offenders.push(`${path.relative(repoRoot, file)}:${index + 1}`)
     })
   }
   assert.deepEqual(offenders, [])
-  return { scanned: files.length }
+  return { scanned: files.length, note: '`as const` is a const assertion, not a type assertion, and is counted separately' }
 })
 staticCheck('F14-one-new-abstraction', () => {
-  const added = execFileSync('git', ['-C', path.join(app, '..'), 'diff', '--name-status', '--diff-filter=A', '53e748b', '--', 'app/src'], { encoding: 'utf8' })
+  const added = git('diff', '--name-status', '--diff-filter=A', '53e748b', '--', 'app/src')
     .split('\n').filter(Boolean).map(line => line.split('\t')[1])
   assert.deepEqual(added, ['app/src/runtime/terminal/agent.ts'])
   return { added }

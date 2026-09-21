@@ -92,9 +92,18 @@ export async function fixture(label, options = {}) {
     assert(!result.error, JSON.stringify(result)); return result.result
   }
   async function stop(child, signal = 'SIGTERM') { if (!child || child.exitCode !== null || child.signalCode) return; child.kill(signal); await until(() => child.exitCode !== null || child.signalCode, 'child exit') }
-  async function startBackend(name = 'backend', exe = backend) {
-    const child = start(exe, ['--session', session, 'server'], base, name)
-    await until(async () => (await backendRpc('corral.terminal')).guard_version === 1, 'backend guard ready')
+  /** `guard: false` for an unpatched herdr, which answers `ping` but has no corral.terminal method. */
+  async function startBackend(name = 'backend', options = {}) {
+    const child = start(options.exe ?? backend, ['--session', session, 'server'], base, name)
+    if (options.guard === false) await until(async () => (await rpc(socket, { id: 'ping', method: 'ping', params: {} })) !== undefined, 'backend socket ready')
+    else await until(async () => (await backendRpc('corral.terminal')).guard_version === 1, 'backend guard ready')
+    return child
+  }
+  /** The CLI talks to a runtime, not to the backend directly; every fixture needs one. */
+  async function serve(environment = env, name = 'serve') {
+    const child = start(process.execPath, [path.join(app, 'cli/corral.mjs'), 'serve', '--json'], environment, name)
+    await until(async () => (await rpc(path.join(environment.CORRAL_USER_DATA, 'runtime/rpc.sock'),
+      { version: 1, id: 'ready', invocation: { command: 'status', flags: {}, args: [], cwd: repo } })).ok, 'runtime ready')
     return child
   }
   async function check(id, fn) {
@@ -115,5 +124,5 @@ export async function fixture(label, options = {}) {
   for (const args of [['init', '-b', 'main', repo],
     ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'fixture'],
     ['-C', repo, 'worktree', 'add', '-b', 'linked', linked]]) { const r = await run('git', args); assert.equal(r.exit, 0, r.stderr) }
-  return { root, raw, repo, linked, home, socket, session, env, base, runId, stripped, client, override, start, run, cli, backendRpc, stop, startBackend, check, cleanup, observations, checks }
+  return { root, raw, repo, linked, home, socket, session, env, base, runId, stripped, client, override, start, run, cli, backendRpc, stop, startBackend, serve, check, cleanup, observations, checks }
 }

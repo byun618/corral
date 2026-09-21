@@ -272,4 +272,37 @@ describe('workspace commands against real git and local socket', () => {
     // A new id for the same name falls back to the existing worktree create failure, unchanged.
     expect((await call('worktree', 'create', '--name', 'agent-wt', '--repo', repo, '--agent', 'claude')).error?.code).toBe('already_exists')
   })
+
+  // LIFE-394 fix round 1, R6 — rewritten from the code review's `repro.ts` `worktreeRelative` case.
+  // `--prompt-file` is a path in the *caller's* directory, and the body it names is part of what the
+  // request asked for. Reading it inside the freshly created worktree resolves a different file, and
+  // leaving it out of the receipt fingerprint makes a changed body replay the old result.
+  it('reads a relative --prompt-file from the invocation directory and binds its body to the receipt (R6)', async () => {
+    const { repo, call } = await fixture()
+    expect((await call('repo', 'add', '--path', repo)).ok).toBe(true)
+
+    // 1: a body that cannot be read is an effect-free invalid_argument — before git creates anything.
+    const before = (await call('worktree', 'list')).result
+    const missing = await call('worktree', 'create', '--name', 'no-body', '--repo', repo, '--agent', 'claude',
+      '--prompt-file', 'absent.txt', '--request-id', `r1.${Date.now()}.${randomUUID()}`)
+    expect(missing.error?.code).toBe('invalid_argument')
+    expect(missing._meta?.outcome).toBe('not_started')
+    expect(fs.existsSync(path.join(repo, '.claude/worktrees/no-body'))).toBe(false)
+    expect((await call('worktree', 'list')).result).toMatchObject(isRecord(before) ? { totalCount: before.totalCount } : {})
+
+    // 2: the file that exists is the caller's. The new worktree is a fresh checkout and has no copy
+    //    of it, so a create that resolved the path there would read nothing at all.
+    fs.writeFileSync(path.join(repo, 'prompt.txt'), 'original prompt body\n')
+    const requestId = `r1.${Date.now()}.${randomUUID()}`
+    const args = ['worktree', 'create', '--name', 'body-wt', '--repo', repo, '--agent', 'claude', '--prompt-file', 'prompt.txt', '--request-id', requestId]
+    const created = await call(...args)
+    expect(created.ok).toBe(true)
+    const worktree = isRecord(created.result) && isRecord(created.result.worktree) ? String(created.result.worktree.path) : ''
+    expect(fs.existsSync(path.join(worktree, 'prompt.txt'))).toBe(false)
+
+    // 3: same id, same body replays; same id, a changed body is a conflict rather than a replay.
+    expect(await call(...args)).toMatchObject({ ok: true, result: { replayed: true } })
+    fs.writeFileSync(path.join(repo, 'prompt.txt'), 'CHANGED prompt body\n')
+    expect((await call(...args)).error?.code).toBe('request_conflict')
+  })
 })

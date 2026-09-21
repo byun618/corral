@@ -1,13 +1,21 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
+import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { workspaceModule } from './workspace/index.js'
 import { startRuntime } from './server.js'
 import { localCall, request, MAX_REQUEST } from './transport.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
-import { EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, strippedSessionMarkers, withoutSessionMarkers, type ReadySample } from './terminal/agent.js'
+import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
+import { terminalModule } from './terminal/index.js'
+import { Tokens } from './terminal/tokens.js'
+import { TerminalBackend, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
+import { asResponseFrame } from '../main/adapter/internal/protocol.js'
+import { isRecord } from '../shared/json.js'
+import type { CommandContext } from './contracts.js'
 const cleanups: (() => Promise<void> | void)[] = []
 const previous = { ...process.env }
 afterEach(async () => { for (const fn of cleanups.reverse()) await fn(); cleanups.length = 0; process.env = { ...previous } })
@@ -279,5 +287,173 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
     // Dropping these would move the very account and record path under measurement (section 7.3).
     expect(Object.keys(withoutSessionMarkers(environment)).sort()).toEqual(['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME', 'PATH'])
     expect(Object.keys(harness.withoutSessionMarkers(environment)).sort()).toEqual(Object.keys(withoutSessionMarkers(environment)).sort())
+  })
+})
+
+// --- LIFE-394 fix round 1: the code review's reproductions, as regressions -----------------------
+// Rewritten from the review's `repro.ts`/`extra.mts` rather than copied — those files are the work
+// branch's raw material for the review, not source. Each case below fails on r0 (0e61a26) and is
+// what the corresponding fix has to turn green: R1 foreign codex rollout, R2 same-path replacement
+// that grew, R3 an unmet `--wait responded`, R4 a Working carried over from the previous turn,
+// R5 a stored `ready` under an unverified manifest, R7 the guard's `error.observed`.
+describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
+  const PROMPT = 'REVIEW REGRESSION BODY'
+  const claudeRow = (body: string, at = new Date().toISOString()) =>
+    JSON.stringify({ type: 'user', origin: { kind: 'human' }, timestamp: at, message: { content: body } }) + '\n'
+  const assistantRow = (at = new Date().toISOString()) =>
+    JSON.stringify({ type: 'assistant', timestamp: at, message: { content: 'answered' } }) + '\n'
+  const codexMetaRow = (id: string, where: string, at: string) =>
+    JSON.stringify({ type: 'session_meta', payload: { id, cwd: where, timestamp: at } }) + '\n'
+  const codexUserRow = (body: string, at = new Date().toISOString()) =>
+    JSON.stringify({ type: 'response_item', timestamp: at, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: body }] } }) + '\n'
+  const put = (file: string, text: string) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text) }
+
+  interface FixtureOptions { phase?: AgentPhase; workingObserved?: boolean; git?: boolean }
+  /** One pane, one recorded agent and a backend whose every answer this test owns. */
+  function agentFixture(kind: AgentKind, options: FixtureOptions = {}) {
+    const dir = fixture(), data = path.join(dir, 'data'), cwd = path.join(dir, 'repo')
+    fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(cwd, { recursive: true })
+    process.env.CLAUDE_CONFIG_DIR = path.join(dir, 'claude')
+    process.env.CODEX_HOME = path.join(dir, 'codex')
+    process.env.GROK_HOME = path.join(dir, 'grok')
+    process.env.CORRAL_REGISTRY = path.join(data, 'repos.json')
+    process.env.CORRAL_BACKEND_SOCKET = path.join(dir, 'never-connected.sock')
+    if (options.git) {
+      for (const args of [['init', '-b', 'main'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'fixture']]) {
+        execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      }
+    }
+    const live: TerminalIdentity = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 'tab', workspaceId: 'w', path: cwd, repo: cwd, title: 'fixture' }
+    const info: AgentObservation = { name: 'corral-fixture', kind, status: 'idle', launchPending: false, interactiveReady: true,
+      stateChangeSeq: 2, stateLabels: {}, session: null, paneId: 'pane', observedAt: new Date().toISOString() }
+    const verified = AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
+      active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false }))
+    const state = { info, manifests: verified, onPrompt: () => {} }
+    const proto = TerminalBackend.prototype
+    const stubs = [
+      vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e'),
+      vi.spyOn(proto, 'agentCapable').mockImplementation(() => true),
+      vi.spyOn(proto, 'list').mockImplementation(async () => [live]),
+      vi.spyOn(proto, 'create').mockImplementation(async () => live),
+      vi.spyOn(proto, 'agentInfo').mockImplementation(async () => state.info),
+      vi.spyOn(proto, 'agentManifests').mockImplementation(async () => state.manifests),
+      vi.spyOn(proto, 'read').mockImplementation(async () => ({ text: 'fixture', truncated: false, total: 7 })),
+      vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: kind, argv: null }] })),
+      vi.spyOn(proto, 'startAgent').mockImplementation(async () => ({ agent: state.info, argv: [] })),
+      vi.spyOn(proto, 'promptAgent').mockImplementation(async () => { state.onPrompt(); return state.info }),
+    ]
+    cleanups.push(() => { for (const stub of stubs) stub.mockRestore() })
+    const t0 = Date.now() - 1000, store = new AgentStore(data)
+    const sessionId = mintsSessionId(kind) ? randomUUID() : null
+    const record = store.write('pane', { epoch: 'e', ptyGeneration: 'p', kind, name: info.name!, argv: [kind],
+      requestedModel: null, requestedEffort: null, requestedAdvisor: null, sessionId,
+      sessionIdSource: sessionId === null ? null : 'client-minted', t0, launchDeadline: t0 + AGENT_START_TIMEOUT_MS,
+      phase: options.phase ?? 'ready', workingObserved: options.workingObserved ?? false, lastSubmission: null, updatedAt: Date.now() })
+    const token = new Tokens(data).encode('t1', { runtimeId: 'test', epoch: 'e', ptyId: 'p', paneId: 'pane' })
+    const terminal = terminalModule(data)
+    const context = (ms: number): CommandContext => ({ runtimeId: 'test', instanceId: 'test', userData: data,
+      signal: new AbortController().signal, remote: false, deadlineAt: Date.now() + ms })
+    const run = (command: string, flags: Record<string, unknown> = {}, ms = 4000) => terminal.execute({ command,
+      flags: { ...(command === 'terminal create' ? {} : { terminal: token }), ...flags,
+        ...(command === 'terminal prompt' ? { 'request-id': `r1.${Date.now()}.${randomUUID()}` } : {}) },
+      args: [], cwd }, context(ms))
+    const recordFile = () => sessionRecordPaths(kind, { cwd, sessionId: record.sessionId, t0Ms: t0, nowMs: Date.now() })[0]!
+    return { dir, data, cwd, live, state, store, record, token, terminal, context, run, recordFile, t0 }
+  }
+  const asObject = (value: unknown): Record<string, unknown> => { if (!isRecord(value)) throw new Error(`expected an object, got ${JSON.stringify(value)}`); return value }
+  const nested = (value: unknown, ...keys: string[]): Record<string, unknown> => keys.reduce((current, key) => asObject(asObject(current)[key]), asObject(value))
+
+  it('R1: never takes a foreign codex rollout as its own match, model or record path', async () => {
+    const f = agentFixture('codex')
+    const day = codexSessionDates(f.t0, Date.now())[0]!
+    const sessions = path.join(process.env.CODEX_HOME!, 'sessions', day)
+    const owned = path.join(sessions, 'rollout-a-owned.jsonl'), foreign = path.join(sessions, 'rollout-z-foreign.jsonl')
+    const at = new Date(f.t0).toISOString()
+    put(owned, codexMetaRow('owner-session', f.cwd, at))
+    put(foreign, codexMetaRow('foreign-session', path.join(f.dir, 'elsewhere'), at))
+    // Another codex session in another directory answers the same body and resolves another model.
+    f.state.onPrompt = () => fs.appendFileSync(foreign, codexUserRow(PROMPT)
+      + JSON.stringify({ type: 'turn_context', payload: { model: 'FOREIGN-MODEL', effort: 'low' } }) + '\n')
+    const result = asObject(await f.run('terminal prompt', { text: PROMPT, wait: 'accepted' }, 3000))
+    expect(result.outcome).toBe('unknown')
+    expect(nested(result, 'record').matchCount).toBe(0)
+    expect(nested(result, 'record').path).toBe(owned)
+    expect(nested(result, 'agent').resolvedModel).toBe(null)
+  }, 20000)
+
+  it('R2: a same-path record that grew with a different prefix is a replacement, not a continuation', () => {
+    const file = '/records/claude.jsonl', identity = bodyIdentity(PROMPT)
+    const submittedAtMs = Date.parse('2026-09-21T05:55:00.500Z')
+    const before = claudeRow(PROMPT, '2026-09-21T05:55:00.100Z')
+    const cursor = captureCursor([file], reader({ [file]: before }))
+    // The provider replaced the file with a longer one that pushed the OLD row past the old line
+    // cursor. Byte length alone says "it grew", and the row it then counts predates the submission.
+    const replaced = JSON.stringify({ type: 'padding', text: 'x'.repeat(before.length) }) + '\n' + before
+    const swapped = countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs, cursor, read: reader({ [file]: replaced }) })
+    expect(swapped.cursorInvalidated).toBe(true)
+    expect(classifyCount(swapped, swapped.scanned.length)).toBe('ambiguous')
+    // Positive control: the same file appended to, which must stay a plain continuation.
+    const appended = before + claudeRow(PROMPT, '2026-09-21T05:55:00.900Z')
+    const grew = countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs, cursor, read: reader({ [file]: appended }) })
+    expect([grew.cursorInvalidated, grew.matchCount, classifyCount(grew, grew.scanned.length)]).toEqual([false, 1, null])
+  })
+
+  it('R3: an unmet --wait responded is outcome unknown with the delivery still confirmed', async () => {
+    const f = agentFixture('claude')
+    const file = f.recordFile()
+    put(file, '')
+    // The body lands in the record, but the turn never produces an assistant row before the deadline.
+    f.state.onPrompt = () => fs.appendFileSync(file, claudeRow(PROMPT))
+    const result = asObject(await f.run('terminal prompt', { text: PROMPT, wait: 'responded' }, 3000))
+    expect(result.outcome).toBe('unknown')
+    expect(nested(result, 'wait')).toMatchObject({ requested: 'responded', satisfied: false, reason: 'deadline' })
+    // Delivery is a separate fact and survives: one match, and the phase says accepted, not responded.
+    expect(nested(result, 'record')).toMatchObject({ matchCount: 1, unavailableReason: null })
+    expect(nested(result, 'agent').phase).toBe('accepted')
+  }, 20000)
+
+  it('R4: a Working seen before this submission never justifies responded', async () => {
+    const f = agentFixture('claude', { workingObserved: true })
+    const file = f.recordFile()
+    put(file, '')
+    // Answer and question appear at once and the agent is idle throughout: this turn shows no Working.
+    f.state.onPrompt = () => fs.appendFileSync(file, claudeRow(PROMPT) + assistantRow())
+    const result = asObject(await f.run('terminal prompt', { text: PROMPT, wait: 'responded' }, 3000))
+    expect(result.outcome).toBe('unknown')
+    expect(nested(result, 'agent').phase).toBe('accepted')
+    expect(nested(result, 'agent', 'evidence').workingObserved).toBe(false)
+    expect(nested(result, 'wait').satisfied).toBe(false)
+  }, 20000)
+
+  it('R5: a stored ready is not reported while the current manifest gate is false', async () => {
+    const f = agentFixture('claude', { phase: 'ready' })
+    // The override arrives after the session was already promoted to ready.
+    f.state.manifests = [{ agent: 'claude', source_kind: 'local_override', active_version: EXPECTED_MANIFESTS.claude.version, local_override_shadowing_remote: true }]
+    const shown = asObject(await f.run('terminal show', {}, 6000))
+    expect(nested(shown, 'agent').phase).not.toBe('ready')
+    expect(nested(shown, 'agent', 'evidence', 'detectManifest').verified).toBe(false)
+  }, 20000)
+
+  it('R5/G1: an unverified manifest ends the wait at once and leaves create --prompt not_started', async () => {
+    const f = agentFixture('claude', { phase: 'ready', git: true })
+    f.state.manifests = [{ agent: 'claude', source_kind: 'local_override', active_version: EXPECTED_MANIFESTS.claude.version, local_override_shadowing_remote: true }]
+    const started = Date.now()
+    const waited = asObject(await f.run('terminal wait', { for: 'agent-ready' }, 8000))
+    expect(waited.satisfied).toBe(false)
+    expect(nested(waited, 'agent', 'evidence', 'detectManifest').verified).toBe(false)
+    // "Not ready" is answered, not waited out: the gate reports it instead of burning the deadline.
+    expect(Date.now() - started).toBeLessThan(6000)
+    // The same reason is what `create --prompt` must report; today that branch cannot be reached.
+    const workspace = workspaceModule(f.data)
+    await workspace.execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+    const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: PROMPT,
+      'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+    expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'not_started', reason: 'detect_manifest_unverified' })
+  }, 30000)
+
+  it('R7: the guard rejection keeps the AgentInfo it observed in the error envelope', () => {
+    const observed = { name: 'corral-fixture', kind: 'claude', status: 'working', state_change_seq: 3 }
+    const frame = asResponseFrame({ id: 'r', error: { code: 'agent_not_ready', message: 'state changed', observed } })
+    expect(frame?.error).toMatchObject({ code: 'agent_not_ready', message: 'state changed', observed })
   })
 })

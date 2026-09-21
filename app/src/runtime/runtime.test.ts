@@ -315,7 +315,7 @@ describe('LIFE-394 body identity, ready gate and submission window', () => {
 // what the corresponding fix has to turn green: R1 foreign codex rollout, R2 same-path replacement
 // that grew, R3 an unmet `--wait responded`, R4 a Working carried over from the previous turn,
 // R5 a stored `ready` under an unverified manifest, R7 the guard's `error.observed`.
-describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
+describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)', () => {
   const PROMPT = 'REVIEW REGRESSION BODY'
   const claudeRow = (body: string, at = new Date().toISOString()) =>
     JSON.stringify({ type: 'user', origin: { kind: 'human' }, timestamp: at, message: { content: body } }) + '\n'
@@ -347,14 +347,15 @@ describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
       stateChangeSeq: 2, stateLabels: {}, session: null, paneId: 'pane', observedAt: new Date().toISOString() }
     const verified = AGENT_KINDS.map(agent => ({ agent, source_kind: EXPECTED_MANIFESTS[agent].sourceKind,
       active_version: EXPECTED_MANIFESTS[agent].version, local_override_shadowing_remote: false }))
-    const state = { info, manifests: verified, onPrompt: () => {} }
+    /** `observe` lets a case answer each `agent.get` differently — a moving seq, one Working frame. */
+    const state = { info, manifests: verified, onPrompt: () => {}, observe: null as ((current: AgentObservation) => AgentObservation) | null }
     const proto = TerminalBackend.prototype
     const stubs = [
       vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e'),
       vi.spyOn(proto, 'agentCapable').mockImplementation(() => true),
       vi.spyOn(proto, 'list').mockImplementation(async () => [live]),
       vi.spyOn(proto, 'create').mockImplementation(async () => live),
-      vi.spyOn(proto, 'agentInfo').mockImplementation(async () => state.info),
+      vi.spyOn(proto, 'agentInfo').mockImplementation(async () => state.observe === null ? state.info : state.observe(state.info)),
       vi.spyOn(proto, 'agentManifests').mockImplementation(async () => state.manifests),
       vi.spyOn(proto, 'read').mockImplementation(async () => ({ text: 'fixture', truncated: false, total: 7 })),
       vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: kind, argv: null }] })),
@@ -498,4 +499,60 @@ describe('LIFE-394 review r0 reproductions (R1-R5, R7)', () => {
     const target: TerminalIdentity = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: '/tmp', repo: '/tmp', title: '' }
     await expect(backend.promptAgent(target, 'body', 2, ctx)).rejects.toMatchObject({ code: 'agent_not_ready', resources: { observed } })
   })
+
+  it('R11: a finished turn reported as done takes the next prompt on the same pane', async () => {
+    // herdr reports a *seen* idle pane as `idle` and an unseen one as `done` (api_helpers.rs 96~106:
+    // `(AgentState::Idle, false) => Done`). `seen` is set only on a completion transition of the
+    // active tab of a focused window, so headless use — every pane corral drives — reports `done`
+    // after the first turn. A pane that finished its turn is precisely a pane ready for the next
+    // prompt, so `done` has to pass the same gate `idle` does.
+    const f = agentFixture('claude', { phase: 'responded', workingObserved: true })
+    f.state.info = { ...f.state.info, status: 'done' }
+    f.store.update('pane', 'e', 'p', { lastSubmission: { sha256: bodyIdentity('first turn').sha256,
+      bytes: 10, submittedAt: new Date(f.t0).toISOString(), cursor: [], requestId: 'previous' } })
+    // The same pane already satisfies `agent-idle`, which is the contradiction this fixes.
+    const idle = asObject(await f.run('terminal wait', { for: 'agent-idle' }, 8000))
+    expect(idle.satisfied).toBe(true)
+    expect(nested(idle, 'agent', 'evidence').agentStatus).toBe('done')
+    let sends = 0
+    f.state.onPrompt = () => { sends++ }
+    const second = asObject(await f.run('terminal prompt', { text: 'second turn body' }, 8000))
+    expect(second.outcome).toBe('queued')
+    expect(sends).toBe(1)
+  }, 30000)
+
+  // R5 잔여: the r1 fix masked a stored `ready` only when the manifest was unverified. Every other
+  // way the gate can fail — a Working frame, a seq that moved, a single sample — still reported the
+  // phase the record happened to hold.
+  for (const mode of ['working', 'seq-change', 'one-sample'] as const) {
+    it(`R5: a stored ready survives no gate failure (${mode})`, async () => {
+      const f = agentFixture('claude', { phase: 'ready' })
+      let seq = 2
+      if (mode === 'working') f.state.observe = current => ({ ...current, status: 'working' })
+      if (mode === 'seq-change') f.state.observe = current => ({ ...current, stateChangeSeq: ++seq })
+      // `one-sample` leaves the observation alone and starves the gate of its second sample instead.
+      const shown = asObject(await f.run('terminal show', {}, mode === 'one-sample' ? 500 : 6000))
+      expect(nested(shown, 'agent').phase).toBe('launching')
+      expect(nested(shown, 'agent', 'evidence', 'detectManifest').verified).toBe(true)
+      expect(nested(shown, 'agent', 'evidence').samples).toBe(mode === 'one-sample' ? 1 : 2)
+    }, 20000)
+  }
+
+  it('R12: the responded evidence is the observation the idle gate ended on', async () => {
+    const f = agentFixture('claude', { phase: 'ready' })
+    const file = f.recordFile()
+    put(file, '')
+    let submitted = false, after = 0
+    // One Working frame right after the submission, then a quiet turn at a new seq. The response has
+    // to carry what the *gate* saw, not the single pre-gate frame the turn started from.
+    f.state.observe = current => {
+      const working = submitted && after++ === 0
+      return { ...current, status: working ? 'working' : 'idle', stateChangeSeq: working ? 3 : 4 }
+    }
+    f.state.onPrompt = () => { submitted = true; fs.appendFileSync(file, claudeRow(PROMPT) + assistantRow()) }
+    const result = asObject(await f.run('terminal prompt', { text: PROMPT, wait: 'responded' }, 12000))
+    expect(result.outcome).toBe('completed')
+    expect(nested(result, 'agent').phase).toBe('responded')
+    expect(nested(result, 'agent', 'evidence')).toMatchObject({ samples: 2, agentStatus: 'idle', stateChangeSeq: 4, workingObserved: true })
+  }, 30000)
 })

@@ -563,4 +563,17 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(nested(result, 'agent').phase).toBe('responded')
     expect(nested(result, 'agent', 'evidence')).toMatchObject({ samples: 2, agentStatus: 'idle', stateChangeSeq: 4, workingObserved: true })
   }, 30000)
+
+  // R5/R12 를 고치면서 `phaseOf` 의 null 가드를 같이 지웠다가 되돌린 자리다. 기록 없는 bound pane —
+  // 다른 프로파일이 띄운 pane, 또는 epoch·PTY 세대가 바뀌어 기록이 읽히지 않는 pane — 은
+  // `observeAgent` 가 명시적으로 `bound` 로 돌려주므로(208행) 게이트가 불만족이면 이 줄에 도달한다.
+  // 나머지 473건은 전부 기록을 쓰고 시작해서 이 경로를 한 번도 지나지 않았다.
+  it('a bound pane with no record of its own reports launching instead of throwing', async () => {
+    const f = agentFixture('claude')
+    f.store.remove('pane')
+    f.state.info = { ...f.state.info, status: 'working' }
+    const shown = asObject(await f.run('terminal show', {}, 8000))
+    expect(nested(shown, 'agent').phase).toBe('launching')
+    expect(nested(shown, 'agent')).toMatchObject({ kind: 'claude', argv: null, sessionId: null })
+  }, 30000)
 })

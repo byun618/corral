@@ -262,8 +262,10 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' ? 'ready' : record.phase
         if (last.live === 'launching') return 'launching'
         // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
-        // and a pane that has not held the gate has not earned `ready` either.
-        if (record.phase === 'blocked') return 'launching'
+        // and a pane that has not held the gate has not earned `ready` either. A bound pane with no
+        // record of its own — another profile's managed pane, or one whose epoch moved — has nothing
+        // to keep, so it is launching too.
+        if (record === null || record.phase === 'blocked') return 'launching'
         return unprovenPhase(record)
       }
       /**

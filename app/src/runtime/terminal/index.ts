@@ -14,7 +14,7 @@ import { Receipts, REQUEST_ID } from './receipts.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
   agentName, agentQuiescent, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
-  evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths,
+  evaluateManifest, isAgentKind, manifestGateError, mintsSessionId, normalizeBody, providerArgv, readySatisfied, resolvedIdentity, sessionRecordPaths,
   type AgentKind, type AgentPhase, type AgentRecord, type CursorEntry, type DetectManifestObservation,
 } from './agent.js'
 export const terminalSpecs: CommandSpec[] = specs
@@ -128,7 +128,12 @@ function blockedReason(labels: Record<string, string>): string {
 function environmentWarnings(): string[] {
   return process.env.CLAUDE_CODE_CHILD_SESSION === undefined ? [] : ['claude_child_session_marker']
 }
-interface AgentView { phase: AgentPhase; info: AgentObservation | null; launchExpired: boolean; stale: boolean }
+/**
+ * What one observation says about the pane itself, which is not the same thing as the agent's phase:
+ * `bound` only means herdr answers for a managed agent that is interactive. Promotion to `ready` is
+ * the §3 gate's job, and the stored phase is never echoed back as if it had just been observed.
+ */
+interface AgentView { live: 'blocked' | 'exited' | 'launching' | 'bound'; info: AgentObservation | null; launchExpired: boolean; stale: boolean }
 export function terminalModule(userData: string, desktop?: TerminalDesktop): CommandModule {
   const startedAt = Date.now(), receipts = new Receipts(userData, startedAt), agents = new AgentStore(userData)
   let tokens: Tokens | undefined
@@ -196,19 +201,19 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const observeAgent = async (live: TerminalIdentity, record: AgentRecord | null): Promise<AgentView> => {
         let info: AgentObservation | null = null, missing = false
         try { info = await backend.agentInfo(live, ctx) } catch (error) {
-          if (!(error instanceof RuntimeError) || error.code !== 'agent_not_found') return { phase: record?.phase ?? 'launching', info: null, launchExpired: false, stale: true }
+          if (!(error instanceof RuntimeError) || error.code !== 'agent_not_found') return { live: 'launching', info: null, launchExpired: false, stale: true }
           missing = true
         }
-        if (info && info.status === 'blocked') return { phase: 'blocked', info, launchExpired: false, stale: false }
-        if (info && info.interactiveReady && (record === null || info.name === record.name)) return { phase: record?.phase ?? 'ready', info, launchExpired: false, stale: false }
+        if (info && info.status === 'blocked') return { live: 'blocked', info, launchExpired: false, stale: false }
+        if (info && info.interactiveReady && (record === null || info.name === record.name)) return { live: 'bound', info, launchExpired: false, stale: false }
         const kind = record?.kind ?? info?.kind ?? null
-        if (kind === null) return { phase: 'exited', info, launchExpired: false, stale: false }
+        if (kind === null) return { live: 'exited', info, launchExpired: false, stale: false }
         let foreground: boolean
         try { foreground = (await backend.process(live, ctx)).foreground.some(entry => typeof entry.name === 'string' && entry.name.includes(kind)) }
-        catch { return { phase: record?.phase ?? 'launching', info, launchExpired: false, stale: true } }
-        if (!foreground) return { phase: 'exited', info, launchExpired: false, stale: false }
-        if (!missing && record !== null && info !== null && info.launchPending && Date.now() < record.launchDeadline) return { phase: 'launching', info, launchExpired: false, stale: false }
-        return { phase: 'launching', info, launchExpired: true, stale: false }
+        catch { return { live: 'launching', info, launchExpired: false, stale: true } }
+        if (!foreground) return { live: 'exited', info, launchExpired: false, stale: false }
+        if (!missing && record !== null && info !== null && info.launchPending && Date.now() < record.launchDeadline) return { live: 'launching', info, launchExpired: false, stale: false }
+        return { live: 'launching', info, launchExpired: true, stale: false }
       }
       /** §3: N consecutive qualifying observations 750 ms apart whose state_change_seq never moved. */
       const gatePass = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
@@ -220,7 +225,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           }
           const view = await observeAgent(live, record)
           views.push(view)
-          if (view.stale || view.launchExpired || view.phase === 'blocked' || view.phase === 'exited') break
+          if (view.stale || view.launchExpired || view.live === 'blocked' || view.live === 'exited') break
         }
         const samples = views.filter(view => view.info !== null && !view.stale).map(view => view.info!)
         return { views, satisfied: samples.length === views.length && readySatisfied(samples, want) }
@@ -233,15 +238,21 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const readyGate = async (live: TerminalIdentity, record: AgentRecord | null, want: 'ready' | 'idle') => {
         const pass = await gatePass(live, record, want)
         const kind = record?.kind ?? pass.views[pass.views.length - 1]?.info?.kind ?? null
-        const manifest = pass.satisfied && kind !== null && isAgentKind(kind) ? await observeManifest(kind) : null
+        // Observed on every pass, not only on a satisfying one: when it is what withheld `ready`,
+        // the caller has to be able to say so (F12b wants the reason, not just satisfied: false).
+        const manifest = kind !== null && isAgentKind(kind) ? await observeManifest(kind) : null
         return { views: pass.views, satisfied: pass.satisfied && manifest !== null && manifest.verified, manifest }
       }
       const phaseOf = (record: AgentRecord | null, views: AgentView[], satisfied: boolean): AgentPhase => {
         const last = views[views.length - 1]
         if (!last || last.stale) return record?.phase ?? 'launching'
-        if (last.phase === 'blocked' || last.phase === 'exited') return last.phase
-        if (satisfied && (record === null || record.phase === 'launching' || record.phase === 'blocked')) return 'ready'
-        return record?.phase ?? 'launching'
+        if (last.live === 'blocked') return 'blocked'
+        if (last.live === 'exited') return 'exited'
+        if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' ? 'ready' : record.phase
+        if (last.live === 'launching') return 'launching'
+        // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
+        // and a pane that has not held the gate has not earned `ready` either.
+        return record === null || record.phase === 'blocked' ? 'launching' : record.phase
       }
       const scanFiles = (record: AgentRecord, cwd: string): string[] => record.kind === 'codex'
         ? codexRolloutFiles(record.t0, Date.now())
@@ -262,11 +273,12 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const agentBlock = async (live: TerminalIdentity, record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null) => {
         const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied)
         const session = record ? sessionOf(record, live.path) : { sessionId: null, source: null, path: null }
+        // Only an observed value is reported; corral never restates the request as a resolution.
+        const resolved = record ? resolvedIdentity(record.kind, scanFiles(record, live.path)) : { model: null, advisor: null, effort: null }
         return {
           kind: record?.kind ?? info?.kind ?? null, name: record?.name ?? info?.name ?? null, phase,
           requestedModel: record?.requestedModel ?? null, requestedEffort: record?.requestedEffort ?? null, requestedAdvisor: record?.requestedAdvisor ?? null,
-          // Only an observed value is reported; corral does not restate the request as a resolution.
-          resolvedModel: null, resolvedAdvisor: null,
+          resolvedModel: resolved.model, resolvedAdvisor: resolved.advisor,
           argv: record?.argv ?? null, sessionId: session.sessionId, sessionIdSource: session.source,
           sessionRecord: session.path === null ? null : { path: session.path, exists: fs.existsSync(session.path) },
           blocked: phase === 'blocked' ? { reason: blockedReason(info?.stateLabels ?? {}), screen: await excerpt(live) } : null,
@@ -287,8 +299,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           if (pass.views[pass.views.length - 1]?.launchExpired) throw new RuntimeError('agent_launch_expired', 'Managed agent binding expired while the provider is still in the foreground', { terminal: handle(live), recovery: 'terminal show / terminal read' }, 'wait', 'not_started')
           // A pane where corral never started anything is "not yet", not "exited": it waits out its
           // deadline. Only a pane with a record reports `exited`, which is the D6 case F10 relies on.
-          if ((phase === 'blocked' || phase === 'exited') && record !== null) { patchAgent(live, { phase }); return { ...pass, phase } }
-          if (phase === 'blocked' && record === null) return { ...pass, phase }
+          const last = pass.views[pass.views.length - 1]
+          if (last?.live === 'blocked') { patchAgent(live, { phase }); return { ...pass, phase } }
+          if (last?.live === 'exited' && record !== null) { patchAgent(live, { phase }); return { ...pass, phase } }
           if (Date.now() >= ctx.deadlineAt - 15) throw new RuntimeError('wait_timeout', 'Condition not met before deadline', { terminal: handle(live), condition: want === 'ready' ? 'agent-ready' : 'agent-idle' }, 'wait')
           await delay(Math.min(READY_SAMPLE_INTERVAL_MS, Math.max(1, ctx.deadlineAt - Date.now() - 15)), undefined, { signal: ctx.signal })
         }
@@ -307,7 +320,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           const reason = unproven ? 'ambiguous' : classifyCount(count, count.scanned.length)
           const responded = workingObserved && count.assistantAfter && view.info !== null && agentQuiescent(view.info, 'idle')
           const done = reason === null && (want === 'accepted' || responded)
-          if (done || view.phase === 'blocked' || view.phase === 'exited' || Date.now() >= ctx.deadlineAt - 15) {
+          if (done || view.live === 'blocked' || view.live === 'exited' || Date.now() >= ctx.deadlineAt - 15) {
             const phase: AgentPhase = reason !== null ? 'ready' : responded ? 'responded' : 'accepted'
             const stored = patchAgent(live, { phase, workingObserved }) ?? record
             return { terminal: handle(live), stage: reason === null ? 'confirmed' : 'submitted', outcome: reason === null ? 'completed' : 'unknown',
@@ -487,7 +500,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           const first = await observeAgent(live, record)
           if (record !== null || first.info !== null) {
             // §4.4 D4: without a record corral reports only what herdr answers — it does not guess.
-            const pass = first.stale || first.launchExpired || first.phase === 'blocked' || first.phase === 'exited'
+            const pass = first.stale || first.launchExpired || first.live === 'blocked' || first.live === 'exited'
               ? { views: [first], satisfied: false, manifest: record === null ? null : await observeManifest(record.kind) }
               : await readyGate(live, record, 'ready')
             agent = await agentBlock(live, record, pass.views, pass.satisfied, pass.manifest)

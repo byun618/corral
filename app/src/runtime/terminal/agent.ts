@@ -369,6 +369,42 @@ export function classifyCount(result: CountResult, filesSeen: number): RecordUna
     return filesSeen === 0 ? 'not_found' : 'ambiguous'
 }
 
+/**
+ * §4.4: `resolvedModel`/`resolvedAdvisor` are filled only from what the provider itself recorded.
+ * claude writes the model on its assistant rows and the advisor on its own row; codex writes both
+ * in `turn_context`. grok records neither in `updates.jsonl`, and corral does not go looking in a
+ * second file for it, so grok stays `null` — an unconfirmed value is not a resolution.
+ */
+export interface ResolvedIdentity { model: string | null; advisor: string | null; effort: string | null }
+export function resolvedIdentity(kind: AgentKind, files: string[], read?: (file: string) => string | null): ResolvedIdentity {
+    const load = read ?? ((file: string) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } })
+    const found: ResolvedIdentity = { model: null, advisor: null, effort: null }
+    if (kind === 'grok') return found
+    for (const file of files) {
+        const text = load(file)
+        if (text === null) continue
+        for (const line of text.split('\n')) {
+            if (!line.trim()) continue
+            let parsed: unknown
+            try { parsed = JSON.parse(line) } catch { continue }
+            const row = asRecord(parsed)
+            if (!row) continue
+            if (kind === 'claude') {
+                const message = asRecord(row.message)
+                if (typeof message?.model === 'string') found.model = message.model
+                if (typeof row.advisorModel === 'string') found.advisor = row.advisorModel
+                if (typeof row.effort === 'string') found.effort = row.effort
+                continue
+            }
+            const context = asRecord(row.turn_context) ?? asRecord(asRecord(row.payload)?.turn_context)
+                ?? (asRecord(row.payload)?.type === 'turn_context' ? asRecord(row.payload) : null)
+            if (typeof context?.model === 'string') found.model = context.model
+            if (typeof context?.effort === 'string') found.effort = context.effort
+        }
+    }
+    return found
+}
+
 // --- §4.7 per-terminal agent record -------------------------------------------------------------
 
 export interface LastSubmission { sha256: string; bytes: number; submittedAt: string; cursor: CursorEntry[]; requestId: string | null }

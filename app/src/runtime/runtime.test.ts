@@ -530,7 +530,9 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
   // R5 잔여: the r1 fix masked a stored `ready` only when the manifest was unverified. Every other
   // way the gate can fail — a Working frame, a seq that moved, a single sample — still reported the
   // phase the record happened to hold.
-  for (const mode of ['working', 'seq-change', 'one-sample'] as const) {
+  type GateFailure = 'working' | 'seq-change' | 'one-sample'
+  const GATE_FAILURES: readonly GateFailure[] = ['working', 'seq-change', 'one-sample']
+  for (const mode of GATE_FAILURES) {
     it(`R5: a stored ready survives no gate failure (${mode})`, async () => {
       const f = agentFixture('claude', { phase: 'ready' })
       let seq = 2

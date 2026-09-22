@@ -151,6 +151,27 @@ describe('LIFE-409 startability (F4)', () => {
     }
   })
 
+  it('refuses a second attempt on a task walked back to ready through blocked, until reconcile settles the first', () => {
+    // §4.3(2) is unconditional, and `dispatched → blocked → ready` is two legal manual moves, so
+    // this detour is the one way a `ready` task can still own an open attempt. Without the check
+    // in startability it would put two live workers on one task and strand the first attempt.
+    const base = seed()
+    const created = createTask(base.state, { runId: base.runId, spec: 'detour', title: null, deps: [], at: AT })
+    const taskId = created.task.id
+    const first = createDispatch(created.state, { task: created.task, target: target(), agent: null, agentAbsenceReason: null, at: AT })
+    let state = transition(first.state, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }).state
+    state = transition(state, { taskId, to: 'ready', settledBy: 'task-update', at: LATER }).state
+    expect(findTask(state, taskId)!.status).toBe('ready')
+    expect(findDispatch(state, first.dispatch.id)!.status).toBe('dispatched')
+    expect(startability(state, findTask(state, taskId)!)).toMatchObject({ startable: false, reason: 'dispatch_active', activeDispatchId: first.dispatch.id })
+    expect(code(() => createDispatch(state, { task: findTask(state, taskId)!, target: target({ paneId: 'pane-2' }), agent: null, agentAbsenceReason: null, at: LATER }))).toBe('task_not_startable')
+    // The exit is reconcile: once the pane is gone the attempt is unknown and the task is free.
+    const gone = applyReconcile(state, findDispatch(state, first.dispatch.id)!, { kind: 'pane_gone' }, LATER, 'instance-1').state
+    expect(findDispatch(gone, first.dispatch.id)!.status).toBe('unknown')
+    expect(startability(gone, findTask(gone, taskId)!)).toMatchObject({ startable: true })
+    expect(createDispatch(gone, { task: findTask(gone, taskId)!, target: target({ paneId: 'pane-2' }), agent: null, agentAbsenceReason: null, at: LATER }).dispatch.attempt).toBe(2)
+  })
+
   it('names the unmet dependencies rather than only refusing', () => {
     const base = seed()
     const dependent = createTask(base.state, { runId: base.runId, spec: 'dependent', title: null, deps: [base.dep.id], at: AT })

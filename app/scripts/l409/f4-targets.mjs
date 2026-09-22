@@ -64,6 +64,42 @@ try {
     return { response, digest: before }
   })
 
+  // (g) The one detour that can leave a `ready` task owning an open attempt: `dispatched → blocked
+  //     → ready` is two legal manual moves, and neither settles the attempt. §4.3(2) is
+  //     unconditional, so the second dispatch must still be refused — otherwise two live workers
+  //     end up on one task. The exit is reconcile, not a manual move.
+  await f.check('F4g-a-task-walked-back-to-ready-through-blocked-still-has-its-attempt', async () => {
+    const detour = await f.cli(['orchestration', 'task-create', '--spec', 'walked back to ready'])
+    const taskId = detour.result.task.id
+    const pane = await f.pane('f4-detour')
+    const open = await f.cli(['orchestration', 'dispatch', '--task', taskId, '--to', pane.handle])
+    await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'blocked'])
+    const back = await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'ready'])
+    assert.equal(back.result.task.status, 'ready')
+    // `result.dispatch` is what this transition settled — null here, because walking the task back
+    // settles nothing. The attempt is read back from its own record instead.
+    assert.equal(back.result.dispatch, null, 'walking the task back must not settle the attempt')
+    const still = await f.cli(['orchestration', 'dispatch-show', '--id', open.result.dispatch.id])
+    assert.equal(still.result.dispatch.status, 'dispatched')
+    assert.equal(still.result.task.status, 'ready')
+    await f.cli(['orchestration', 'run-current'])
+    const before = f.stateDigest()
+    const refused = await f.cli(['orchestration', 'dispatch', '--task', taskId, '--to', live.handle], { fail: true })
+    assert.equal(refused.error.code, 'task_not_startable')
+    assert.equal(refused.error.resources.reason, 'dispatch_active')
+    assert.equal(refused.error.resources.activeDispatchId, open.result.dispatch.id)
+    assert.equal(f.stateDigest(), before, 'the refusal wrote nothing')
+    // Closing the pane is the only exit: reconcile settles the attempt unknown, then a retry runs.
+    await f.cli(['terminal', 'close', '--terminal', pane.handle])
+    const settled = await f.cli(['orchestration', 'dispatch-show', '--id', open.result.dispatch.id])
+    assert.equal(settled.result.dispatch.status, 'unknown')
+    assert.equal(settled.result.dispatch.settledBy, 'reconcile')
+    const retried = await f.cli(['orchestration', 'dispatch', '--task', taskId, '--to', live.handle])
+    assert.equal(retried.result.dispatch.attempt, 2)
+    await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'failed'])
+    return { open, back, still, refused, settled, retried }
+  })
+
   await f.check('F4e-a-blocked-and-a-completed-task-are-both-refused', async () => {
     const other = await f.cli(['orchestration', 'task-create', '--spec', 'to be blocked'])
     await f.cli(['orchestration', 'task-update', '--id', other.result.task.id, '--status', 'blocked'])

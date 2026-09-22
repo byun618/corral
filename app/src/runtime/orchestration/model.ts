@@ -163,22 +163,29 @@ export type Startability =
   | { startable: false; reason: 'task_completed' | 'task_blocked' | 'unmet_dependencies' | 'dispatch_active'; unmetDependencies: string[]; activeDispatchId: string | null }
 
 export function startability(state: OrchestrationState, task: TaskRecord): Startability {
-  const status: TaskStatus = task.status
+  const status: TaskStatus = task.status, open = activeDispatch(state, task.id)
   switch (status) {
+    // §4.3(2) is unconditional: an open attempt refuses a new one, whatever the Task's own status
+    // says. That is not only the `dispatched` case — `dispatched → blocked → ready` is a legal pair
+    // of manual moves that leaves a Task `ready` with its attempt still open, and without this
+    // check that detour would put two live workers on one Task. Such a Task stays un-startable
+    // until reconcile settles the attempt `unknown`, which is exactly what should happen: the pane
+    // is either still alive (so the attempt is real) or it is gone (so reconcile closes it).
     case 'ready':
+      if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id }
       return { startable: true, from: status }
     case 'completed':
       return { startable: false, reason: 'task_completed', unmetDependencies: [], activeDispatchId: null }
     case 'blocked':
-      return { startable: false, reason: 'task_blocked', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: activeDispatch(state, task.id)?.id ?? null }
+      return { startable: false, reason: 'task_blocked', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: open?.id ?? null }
     case 'pending':
+      if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: open.id }
       return { startable: false, reason: 'unmet_dependencies', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: null }
     case 'dispatched':
     case 'failed': {
       // §4.3(3): a retry needs the previous attempt to have *ended* — observed failure or an
       // unknown a reconcile recorded. An attempt still open is refused, which is what keeps one
       // task from having two live workers.
-      const open = activeDispatch(state, task.id)
       if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id }
       const latest = latestDispatch(state, task.id)
       if (latest && (latest.status === 'failed' || latest.status === 'unknown')) return { startable: true, from: status }

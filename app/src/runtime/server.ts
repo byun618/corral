@@ -9,6 +9,7 @@ import { serveSocket, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
 import type { WorkspaceDesktop } from './workspace/model.js'
 import { terminalModule, type TerminalDesktop } from './terminal/index.js'
+import { orchestrationModule } from './orchestration/index.js'
 import { isRecord } from '../shared/json.js'
 import { memorySnapshot } from './memory.js'
 
@@ -91,6 +92,7 @@ export async function startRuntime(options: {
     } })
     registry.register(workspaceModule(options.userData, options.workspaceDesktop))
     registry.register(terminalModule(options.userData, options.terminalDesktop))
+    registry.register(orchestrationModule(options.userData))
     const lanes = new Map<string, Promise<unknown>>()
     stopSocket = await serveSocket(endpoint, async (req, cancelled): Promise<RpcResponse> => {
       const signal = AbortSignal.any([controller.signal, cancelled, AbortSignal.timeout(req.timeoutMs ?? 10000)])

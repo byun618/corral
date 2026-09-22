@@ -8,6 +8,7 @@ import { defaultUserData, privateDirectory } from './storage.js'
 import { localCall, request, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
 import { terminalModule, MAX_INPUT } from './terminal/index.js'
+import { orchestrationModule } from './orchestration/index.js'
 import { randomUUID } from 'node:crypto'
 import { startRuntime } from './server.js'
 import { isRecord } from '../shared/json.js'
@@ -15,6 +16,7 @@ const registry = new CommandRegistry()
 registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => { throw new Error('Client metadata') } })
 registry.register(workspaceModule(defaultUserData()))
 registry.register(terminalModule(defaultUserData()))
+registry.register(orchestrationModule(defaultUserData()))
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function print(response: RpcResponse, json: boolean): void {
   if (json) console.log(JSON.stringify(response))

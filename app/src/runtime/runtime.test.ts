@@ -14,7 +14,7 @@ import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
 import { TerminalBackend, type AgentManifestObservation, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
 import { isRecord } from '../shared/json.js'
-import type { CommandContext } from './contracts.js'
+import { RuntimeError, type CommandContext } from './contracts.js'
 const cleanups: (() => Promise<void> | void)[] = []
 const previous = { ...process.env }
 afterEach(async () => { for (const fn of cleanups.reverse()) await fn(); cleanups.length = 0; process.env = { ...previous } })
@@ -359,8 +359,11 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       manifests: AgentManifestObservation[]
       onPrompt: () => void
       observe: ((current: AgentObservation) => AgentObservation) | null
+      /** 전경 프로세스 — 네이티브 설치처럼 이름이 kind 가 아닌 경우를 사례가 직접 정한다. */
+      foreground: { pid: number; name: string; argv: string[] | null }[]
     }
-    const state: FixtureState = { info, manifests: verified, onPrompt: () => {}, observe: null }
+    const state: FixtureState = { info, manifests: verified, onPrompt: () => {}, observe: null,
+      foreground: [{ pid: 456, name: kind, argv: null }] }
     const proto = TerminalBackend.prototype
     const stubs = [
       vi.spyOn(proto, 'epoch').mockImplementation(async () => 'e'),
@@ -370,7 +373,7 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       vi.spyOn(proto, 'agentInfo').mockImplementation(async () => state.observe === null ? state.info : state.observe(state.info)),
       vi.spyOn(proto, 'agentManifests').mockImplementation(async () => state.manifests),
       vi.spyOn(proto, 'read').mockImplementation(async () => ({ text: 'fixture', truncated: false, total: 7 })),
-      vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: [{ pid: 456, name: kind, argv: null }] })),
+      vi.spyOn(proto, 'process').mockImplementation(async () => ({ shellPid: 123, foregroundGroupId: null, foreground: state.foreground })),
       vi.spyOn(proto, 'startAgent').mockImplementation(async () => ({ agent: state.info, argv: [] })),
       vi.spyOn(proto, 'promptAgent').mockImplementation(async () => { state.onPrompt(); return state.info }),
     ]
@@ -581,5 +584,62 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     const shown = asObject(await f.run('terminal show', {}, 8000))
     expect(nested(shown, 'agent').phase).toBe('launching')
     expect(nested(shown, 'agent')).toMatchObject({ kind: 'claude', argv: null, sessionId: null })
+  }, 30000)
+  // --- 수정 라운드 4: 게이트 ① 사용자 확인에서 나온 기동 창 `exited` 오판 (06-gate1-fix.md) --------
+  // 사용자 환경에서 `create --prompt` 가 1.07 s 만에 `agent_not_ready` 로 초기 프롬프트를 버렸다.
+  // 두 가지가 겹쳤다: (①) 기동 직후 전경이 아직 비어 있고, (②) 네이티브 설치 claude 는 프로세스
+  // 이름이 버전 문자열(`2.1.252`)이라 이름 포함 검사로는 전경에서 영영 보이지 않는다.
+  it('R-gate1(a): a provider named for its version is still foreground by argv[0], and create --prompt delivers', async () => {
+    const f = agentFixture('claude', { git: true })
+    const workspace = workspaceModule(f.data)
+    await workspace.execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+    // `~/.local/share/claude/versions/2.1.252/claude` 로 설치된 provider 의 실제 모양이다.
+    f.state.foreground = [{ pid: 456, name: '2.1.252', argv: ['/home/u/.local/share/claude/versions/2.1.252/claude', '--model', 'opus'] }]
+    let seen = 0
+    f.state.observe = current => seen++ < 2 ? { ...current, status: 'unknown', launchPending: true, interactiveReady: false } : current
+    let submitted = 0
+    f.state.onPrompt = () => { submitted++ }
+    const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', prompt: PROMPT,
+      'request-id': `r1.${Date.now()}.${randomUUID()}` }, 14000))
+    // r2 에서는 여기가 `{ status: 'not_started', reason: 'agent_not_ready' }` 로 끝났다.
+    expect(created.stage).toBe('agent_prompted')
+    expect(nested(created, 'stages', 'prompt')).toMatchObject({ status: 'queued' })
+    expect(nested(created, 'stages', 'prompt').reason).toBeUndefined()
+    // 제출 뒤 한 번의 관측은 게이트를 다시 증명하지 못하므로 `launching` 이다(R5) — `exited` 가 아니다.
+    expect(nested(created, 'agent').phase).toBe('launching')
+    expect(submitted).toBe(1)
+  }, 40000)
+
+  it('R-gate1(b): an empty foreground inside the launch window is launching, and exited only once it closes', async () => {
+    const f = agentFixture('claude', { phase: 'launching' })
+    // 셸이 아직 provider 를 exec 하기 전 — `agent.get` 은 성공하지만 전경은 비어 있다.
+    f.state.foreground = []
+    let seen = 0
+    f.state.observe = current => {
+      if (seen++ >= 2) return current
+      f.state.foreground = [{ pid: 456, name: '2.1.252', argv: ['claude'] }]
+      return { ...current, status: 'unknown', launchPending: true, interactiveReady: false }
+    }
+    const waited = asObject(await f.run('terminal wait', { for: 'agent-ready' }, 12000))
+    expect(waited.satisfied).toBe(true)
+    expect(nested(waited, 'agent').phase).toBe('ready')
+    // 대조 ①: 기한이 지난 뒤의 빈 전경은 지금까지처럼 `exited` 다 (F10 보존).
+    f.store.update('pane', 'e', 'p', { launchDeadline: Date.now() - 1 })
+    f.state.foreground = []
+    f.state.observe = current => ({ ...current, status: 'unknown', launchPending: false, interactiveReady: false })
+    expect(nested(asObject(await f.run('terminal show', {}, 6000)), 'agent').phase).toBe('exited')
+    // 대조 ②: 같은 조건에서 전경에 provider 가 argv[0] 로 남아 있으면 종료가 아니라 결속 만료다.
+    f.state.foreground = [{ pid: 456, name: '2.1.252', argv: ['/home/u/.local/share/claude/versions/2.1.252/claude'] }]
+    await expect(f.run('terminal wait', { for: 'agent-ready' }, 6000)).rejects.toMatchObject({ code: 'agent_launch_expired' })
+  }, 40000)
+
+  it('R-gate1(c): a stored exited is released the moment the gate holds again, but /exit is not', async () => {
+    const f = agentFixture('claude', { phase: 'exited' })
+    // 살아 있는 결속을 두 번 증명한 pane 이다 — 한 번의 오관측이 pane 수명 내내 남지 않는다.
+    expect(nested(asObject(await f.run('terminal show', {}, 6000)), 'agent').phase).toBe('ready')
+    // `/exit` 뒤에는 `agent.get` 자체가 `agent_not_found` 라 게이트가 성립하지 않는다 (F10).
+    f.state.observe = () => { throw new RuntimeError('agent_not_found', 'no agent for this pane') }
+    f.state.foreground = []
+    expect(nested(asObject(await f.run('terminal show', {}, 6000)), 'agent').phase).toBe('exited')
   }, 30000)
 })

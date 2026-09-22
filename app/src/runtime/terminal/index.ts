@@ -208,11 +208,19 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (info && info.interactiveReady && (record === null || info.name === record.name)) return { live: 'bound', info, launchExpired: false, stale: false }
         const kind = record?.kind ?? info?.kind ?? null
         if (kind === null) return { live: 'exited', info, launchExpired: false, stale: false }
+        // The launch window is asked before the foreground, not after it (D6: before the deadline the
+        // phase stays `launching`). A shell that has not exec'd the provider yet has an empty
+        // foreground, and reading that as `exited` stored a verdict the pane never earned.
+        if (!missing && record !== null && info !== null && info.launchPending && Date.now() < record.launchDeadline) return { live: 'launching', info, launchExpired: false, stale: false }
+        // The process name is the provider's own only when it came from PATH: a natively installed
+        // claude is named for its version (`2.1.252`) and carries `claude` in `argv[0]` instead.
         let foreground: boolean
-        try { foreground = (await backend.process(live, ctx)).foreground.some(entry => typeof entry.name === 'string' && entry.name.includes(kind)) }
+        try { foreground = (await backend.process(live, ctx)).foreground.some(entry => {
+          const argv0 = Array.isArray(entry.argv) ? entry.argv[0] : null
+          return (typeof entry.name === 'string' && entry.name.includes(kind)) || (typeof argv0 === 'string' && path.basename(argv0) === kind)
+        }) }
         catch { return { live: 'launching', info, launchExpired: false, stale: true } }
         if (!foreground) return { live: 'exited', info, launchExpired: false, stale: false }
-        if (!missing && record !== null && info !== null && info.launchPending && Date.now() < record.launchDeadline) return { live: 'launching', info, launchExpired: false, stale: false }
         return { live: 'launching', info, launchExpired: true, stale: false }
       }
       /** §3: N consecutive qualifying observations 750 ms apart whose state_change_seq never moved. */
@@ -259,7 +267,10 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (!last || last.stale) return unprovenPhase(record)
         if (last.live === 'blocked') return 'blocked'
         if (last.live === 'exited') return 'exited'
-        if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' ? 'ready' : record.phase
+        // A stored `exited` is let go here as well: the gate held twice just now, so the pane is
+        // demonstrably bound, and one bad observation (an empty foreground in the launch window) must
+        // not outlive the pane. `/exit` is unaffected — `agent_not_found` never satisfies the gate.
+        if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' || record.phase === 'exited' ? 'ready' : record.phase
         if (last.live === 'launching') return 'launching'
         // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
         // and a pane that has not held the gate has not earned `ready` either. A bound pane with no

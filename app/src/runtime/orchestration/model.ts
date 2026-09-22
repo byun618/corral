@@ -181,11 +181,12 @@ export function startability(state: OrchestrationState, task: TaskRecord): Start
   const status: TaskStatus = task.status, open = activeDispatch(state, task.id)
   switch (status) {
     // §4.3(2) is unconditional: an open attempt refuses a new one, whatever the Task's own status
-    // says. That is not only the `dispatched` case — `dispatched → blocked → ready` is a legal pair
-    // of manual moves that leaves a Task `ready` with its attempt still open, and without this
-    // check that detour would put two live workers on one Task. Such a Task stays un-startable
-    // until reconcile settles the attempt `unknown`, which is exactly what should happen: the pane
-    // is either still alive (so the attempt is real) or it is gone (so reconcile closes it).
+    // says. Since r1 `transition` refuses `dispatched → blocked` while the attempt is open (R1), so
+    // the detour that used to reach `ready` with a live attempt is closed one step earlier and this
+    // is now the second net rather than the first — N5 = G7 corrects the r1 comment, which still
+    // described that detour as legal. A Task can only become startable again once reconcile settles
+    // the attempt `unknown`: the pane is either still alive (so the attempt is real) or gone (so
+    // reconcile closes it).
     case 'ready':
       if (open) return refuse('dispatch_active', [], open.id)
       return { startable: true, from: status }

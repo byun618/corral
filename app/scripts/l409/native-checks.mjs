@@ -13,7 +13,6 @@
 // a read command; the only input to the pane is the one `terminal create` performed.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { until } from './lib.mjs'
 
@@ -41,13 +40,17 @@ export async function waitForLaunch(f, handle, { timeoutMs = 180000, label = 'ag
  * path. `lsof -a -p <pid> -d txt -Fn` prints the mapped executable itself, which is what a
  * comparison against the user's install has to be about. Both are recorded; the realpath of the
  * executable is what is asserted, so a launcher symlink and its versioned binary are the same thing.
+ *
+ * N10 = G10 = R12: the match is the realpath itself, not "somewhere under the install root". Codex
+ * showed the r1 version accepting a `sleep` binary planted at `<install root>/2.1.251/claude` —
+ * any other version, and anything else in that tree, passed a check whose whole point is that the
+ * pane runs the executable the gate quotes a version from.
  */
 export async function foregroundExecutable(f, handle, expected) {
   const shown = await f.cli(['terminal', 'show', '--terminal', handle], { timeout: 60000 })
   const foreground = shown.result.process?.foreground ?? []
   assert.ok(foreground.length > 0, `the pane has no foreground process: ${JSON.stringify(shown.result.process)}`)
   const target = fs.realpathSync(expected)
-  const installRoot = path.dirname(path.dirname(target))
   const observed = foreground.map(entry => {
     const comm = execFileSync('ps', ['-p', String(entry.pid), '-o', 'comm='], { encoding: 'utf8' }).trim()
     let executable = null
@@ -60,9 +63,9 @@ export async function foregroundExecutable(f, handle, expected) {
     try { real = fs.realpathSync(executable ?? comm) } catch { /* the process may already be gone */ }
     return { pid: entry.pid, name: entry.name, argv: entry.argv, comm, executable, realpath: real }
   })
-  const match = observed.find(entry => entry.realpath === target || (entry.realpath !== null && entry.realpath.startsWith(installRoot + '/')))
-  assert.ok(match, `no foreground process resolves to ${target} (install root ${installRoot}): ${JSON.stringify(observed)}`)
-  return { expected: target, installRoot, observed, match, shellPid: shown.result.process.shellPid }
+  const match = observed.find(entry => entry.realpath === target)
+  assert.ok(match, `no foreground process resolves to exactly ${target}: ${JSON.stringify(observed)}`)
+  return { expected: target, observed, match, shellPid: shown.result.process.shellPid }
 }
 
 /** One screen read, no input. The excerpt goes into the raw record whether it matches or not. */

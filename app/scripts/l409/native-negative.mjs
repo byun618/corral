@@ -9,11 +9,12 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fixture } from './lib.mjs'
 import { foregroundExecutable, screenIdentifiesProvider, waitForLaunch } from './native-checks.mjs'
 
 const NATIVE = process.env.L409_NATIVE_CLAUDE ?? path.join(process.env.HOME ?? '', '.local/bin/claude')
-const f = await fixture('fake', { expectedChecks: 1 })
+const f = await fixture('fake', { expectedChecks: 2 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -54,6 +55,50 @@ try {
     const read = await f.cli(['terminal', 'read', '--terminal', handle])
     assert.match(read.result.text, /FAKE_PROVIDER_EXITED/)
     return { fake, nativeCompared: fs.realpathSync(NATIVE), r0AssertionsPassed: ['stages.agent', 'stages.prompt', 'agent.kind', 'dispatch.agent'], results }
+  })
+
+  // N10 = G10 = R12. The second control is about the identity check itself: r1 accepted anything
+  // under the install root, so a binary planted at `<root>/2.1.251/claude` — Codex planted a copy
+  // of `sleep` — passed for a gate that quotes 2.1.252 from `claude --version`. Nothing here goes
+  // near the user's install: the whole tree is built inside the fixture and torn down with it.
+  await f.check('R6-negative-control-a-binary-beside-the-real-install-is-not-the-real-install', async () => {
+    const install = path.join(f.root, 'install')
+    // A *copy* of this node binary, planted under the fake install as `claude`. It has to be a
+    // copy: a hard link shares the inode, and macOS then reports one of the other names for it, so
+    // the impostor would read back as the genuine path — the scaffolding, not the check, deciding
+    // the result. (A copy of a macOS system binary such as `/bin/sleep` is SIGKILLed by code
+    // signing, so that shortcut is not available either.) On APFS this is a clone, not 90 MB of
+    // I/O, and the whole tree dies with the fixture.
+    const planted = version => {
+      const file = path.join(install, 'versions', version, 'claude')
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.copyFileSync(process.execPath, file)
+      fs.chmodSync(file, 0o700)
+      return file
+    }
+    const real = planted('2.1.252'), impostor = planted('2.1.251')
+    const launcher = path.join(install, 'bin', 'claude')
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+    fs.symlinkSync(real, launcher)
+    const running = []
+    const stub = pid => ({ cli: async () => ({ result: { process: { foreground: [{ pid, name: 'claude', argv: ['claude', '--session-id', 'x'] }], shellPid: pid } } }) })
+    try {
+      for (const binary of [impostor, real]) {
+        const child = spawn(binary, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'ignore' })
+        running.push(child)
+        await new Promise(resolve => setTimeout(resolve, 150))
+      }
+      const [fake, genuine] = running
+      let refused = null
+      try { await foregroundExecutable(stub(fake.pid), 'handle', launcher) }
+      catch (error) { refused = String(error).split('\n')[0].slice(0, 400) }
+      assert.ok(refused, `a 2.1.251 binary beside the install satisfied the identity check (pid ${fake.pid})`)
+      // Positive control: the same function, same stub shape, the executable the launcher resolves to.
+      const accepted = await foregroundExecutable(stub(genuine.pid), 'handle', launcher)
+      assert.equal(accepted.expected, fs.realpathSync(launcher))
+      assert.equal(accepted.match.realpath, fs.realpathSync(real))
+      return { launcher, real, impostor, refused, accepted }
+    } finally { for (const child of running) child.kill('SIGKILL') }
   })
 
   f.record('state-after-negative-control', f.stateJson())

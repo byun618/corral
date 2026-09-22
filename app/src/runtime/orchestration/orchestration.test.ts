@@ -470,3 +470,60 @@ describe('LIFE-409 r1 — smaller review findings (C4, C5)', () => {
     expect(code(() => validateOrchestration(inv({ id, status: 'blocked' })))).toBe('no-error')
   })
 })
+
+/**
+ * r2. The second review found four documents the r1 guard still accepted (N1 = C14 = R9): a
+ * pointer that does not point back, two live attempts on one Task, a settled Task still holding an
+ * open attempt, and a dependency on a Task that is not there. Each is a shape the product cannot
+ * write, and each would be carried forward and cemented by the next write.
+ */
+describe('LIFE-409 r2 — the store guard holds the invariants the product maintains (N1 = C14 = R9)', () => {
+  const damaged = (build: (doc: Record<string, unknown>) => void): boolean => {
+    const doc = document(dispatchedWithAgent().state)
+    build(doc)
+    return isOrchestrationState(doc)
+  }
+
+  it('refuses an open attempt the task does not point at', () => {
+    expect(damaged(doc => { entry(doc, 'tasks', 1).currentDispatchId = null })).toBe(false)
+    const { state, taskId } = dispatchedWithAgent()
+    const second = createTask(state, { runId: state.runs[0]!.id, spec: 'other', title: null, deps: [], at: AT })
+    const doc = document(second.state)
+    // Pointing at another Task's attempt was already refused; pointing at nothing is the gap.
+    expect(isOrchestrationState(doc)).toBe(true)
+    entry(doc, 'tasks', 1).currentDispatchId = null
+    expect(isOrchestrationState(doc)).toBe(false)
+    expect(findTask(second.state, taskId)?.currentDispatchId).not.toBe(null)
+  })
+
+  it('refuses two open attempts on one task', () => {
+    expect(damaged(doc => {
+      const first = entry(doc, 'dispatches', 0)
+      const clone: Record<string, unknown> = { ...first, id: `ctx_${'a'.repeat(12)}`, attempt: 2 }
+      const list = doc.dispatches
+      if (Array.isArray(list)) list.push(clone)
+    })).toBe(false)
+  })
+
+  it('refuses a settled task that still holds an open attempt', () => {
+    expect(damaged(doc => {
+      const task = entry(doc, 'tasks', 1)
+      task.status = 'completed'; task.settledAt = LATER; task.result = null
+    })).toBe(false)
+    expect(damaged(doc => {
+      const task = entry(doc, 'tasks', 1)
+      task.status = 'failed'; task.settledAt = LATER; task.result = null
+    })).toBe(false)
+  })
+
+  it('refuses a dependency on a task that is not in the run', () => {
+    expect(damaged(doc => { entry(doc, 'tasks', 1).deps = [mintId('task')] })).toBe(false)
+    const base = seed()
+    const first = createTask(base.state, { runId: base.runId, spec: 'first', title: null, deps: [], at: AT })
+    const second = createTask(first.state, { runId: base.runId, spec: 'second', title: null, deps: [first.task.id], at: AT })
+    expect(isOrchestrationState(document(second.state))).toBe(true)
+    const doc = document(second.state)
+    entry(doc, 'tasks', 1).deps = [entry(doc, 'tasks', 0).id]
+    expect(isOrchestrationState(doc)).toBe(true)
+  })
+})

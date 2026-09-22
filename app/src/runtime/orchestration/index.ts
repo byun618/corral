@@ -12,6 +12,8 @@
  * and the stored bytes are untouched.
  */
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
@@ -65,6 +67,7 @@ function idKindFor(command: string): 'run' | 'task' | 'ctx' {
 }
 
 export function validateOrchestration(inv: Invocation): void {
+  startupSweep?.abort()
   validateFoundation(inv)
   const f = inv.flags
   for (const key of REQUIRED[inv.command] ?? []) stringFlag(f, key, true)
@@ -113,16 +116,25 @@ export type PaneSnapshot =
  * unobserved pass — §4.5's "could not look", which writes nothing.
  */
 export const SWEEP_BUDGET_MS = 2000
+/**
+ * Below this a look is not worth taking: a backend that answers at all answers in single-digit
+ * milliseconds, and a window this small can only end in "could not look" — after spending the time
+ * the caller needed for an answer. N2 = R10: in r1 this was a *floor* on the share, so with less
+ * than 250 ms left the observation claimed more time than the command had.
+ */
+const OBSERVATION_FLOOR_MS = 250
 export interface ObservationBudget { signal: AbortSignal; deadlineAt: number }
-const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget => {
-  // Never more than half of what the caller has left: with `--timeout-ms 1000` a full 2 s sweep
-  // would eat the deadline and the command would answer `outcome_unknown` — the very failure this
-  // budget exists to prevent, just at a smaller scale.
-  const share = Math.max(250, Math.floor((ctx.deadlineAt - Date.now()) / 2))
+const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget | null => {
+  // Never more than half of what the caller has left, and never at all below the floor: with
+  // `--timeout-ms 1000` a full 2 s sweep would eat the deadline and the command would answer
+  // `outcome_unknown` — the very failure this budget exists to prevent, just at a smaller scale.
+  const share = Math.floor((ctx.deadlineAt - Date.now()) / 2)
+  if (share < OBSERVATION_FLOOR_MS) return null
   return { signal: ctx.signal, deadlineAt: Date.now() + Math.min(ms, share) }
 }
 
-async function observePanes(ctx: ObservationBudget): Promise<PaneSnapshot> {
+async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
+  if (ctx === null) return { observed: false, reason: 'observation_failed', detail: 'Not enough of the caller timeout left to observe the panes' }
   const socket = process.env.CORRAL_BACKEND_SOCKET
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
   try {
@@ -169,11 +181,24 @@ function flattenReceiptError(error: unknown): unknown {
   // R7 = C1: the inner error's own recovery is the one that names what to do — `terminal list` for
   // a stale handle, `run-create` for a missing Run. Only an error that carries none gets the
   // receipt's generic advice, and even then only because retrying really is the next step.
+  // N3 = C13: "retry with the same id" is only true for a request that may have taken effect. A
+  // rejection that reaches this line was admitted and its receipt is spent, so retrying that id
+  // answers `outcome_unknown` forever. Every rejection this module can foresee is raised before
+  // the receipt exists (see `admitted` below); anything that still lands here says so plainly.
   const recovery = typeof detail.recovery === 'string' ? detail.recovery
-    : 'Retry with the same --request-id, or inspect orchestration run-show / task-list / dispatch-show'
+    : 'This --request-id is spent: fix the input and send a new --request-id, then inspect orchestration run-show / task-list / dispatch-show'
   return new RuntimeError(error.code, error.message,
     { ...detail, requestId: wrapper.requestId, recovery }, error.stage, error.outcome)
 }
+
+/**
+ * The startup sweep holds the orchestration lane while it looks (R5), and a command queued behind
+ * it waits — which is how a short `--timeout-ms` read died at the client deadline without ever
+ * running (N2 = R10). The command re-observes anyway, so as soon as one arrives the sweep stops
+ * looking and releases the lane; `validateOrchestration` runs before the lane, which is what makes
+ * this reachable at all.
+ */
+let startupSweep: AbortController | null = null
 
 const preflight = (code: string, message: string, resources?: unknown): never => {
   throw new RuntimeError(code, message, resources, 'preflight', 'not_started')
@@ -214,11 +239,22 @@ export async function orchestrationStartupSweep(userData: string, ctx: { instanc
   let state: OrchestrationState
   try { state = store.read() } catch (error) { return { swept: false, changed: false, reason: error instanceof RuntimeError ? error.code : 'unreadable' } }
   if (!state.dispatches.some(entry => entry.status === 'dispatched')) return { swept: false, changed: false, reason: 'no_open_attempt' }
+  // N2: the first command to arrive cuts this short — it will re-observe under its own deadline,
+  // and holding the lane behind a backend that never answers is what made a short `--timeout-ms`
+  // read fail before it ran.
+  const yielded = new AbortController()
+  const relay = () => yielded.abort()
+  ctx.signal.addEventListener('abort', relay, { once: true })
+  startupSweep = yielded
   try {
-    const pass = await reconcilePass(state, { signal: ctx.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
+    const pass = await reconcilePass(state, { signal: yielded.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
     if (pass.changed) store.write(pass.state)
     return { swept: true, changed: pass.changed, reason: pass.snapshot?.observed === false ? pass.snapshot.reason : null }
   } catch (error) { return { swept: false, changed: false, reason: error instanceof Error ? error.message : String(error) } }
+  finally {
+    ctx.signal.removeEventListener('abort', relay)
+    if (startupSweep === yielded) startupSweep = null
+  }
 }
 
 export function orchestrationModule(userData: string): CommandModule {
@@ -228,6 +264,23 @@ export function orchestrationModule(userData: string): CommandModule {
   let store: OrchestrationStore | undefined
   let receipts: Receipts | undefined
   let terminalReads: CommandModule | undefined
+  /**
+   * N3 = C13. Every rejection this module can foresee is now raised *before* the receipt is
+   * written, so a refused mutation leaves the id spendable. That must not cost idempotent replay:
+   * a request `Receipts` will answer from its own record has to reach it unjudged, or a retry of
+   * an applied mutation would be re-checked against the state it already produced and refused
+   * instead of replayed. These are the three cases `Receipts` answers itself — same rule, read
+   * only: an id this runtime admitted, an id with a receipt on disk, and an id older than this
+   * runtime.
+   */
+  const admittedHere = new Set<string>()
+  const admitted = (id: string | undefined): boolean => {
+    if (id === undefined) return false
+    const match = REQUEST_ID.exec(id)
+    if (!match) return false
+    return admittedHere.has(id) || Number(match[1]) < startedAt
+      || fs.existsSync(path.join(userData, 'runtime/terminal-receipts', `${id}.json`))
+  }
   return {
     specs: orchestrationSpecs,
     validate: validateOrchestration,
@@ -286,8 +339,11 @@ export function orchestrationModule(userData: string): CommandModule {
       }
       const mutate = async (body: () => Promise<Record<string, unknown>>): Promise<unknown> => {
         f['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
+        admittedHere.add(String(f['request-id']))
         try { return await log.run(inv, body) } catch (error) { throw flattenReceiptError(error) }
       }
+      /** True when `Receipts` owns the answer, so this call must not be judged again (N3). */
+      const recorded = admitted(flag('request-id'))
 
       /**
        * §4.5, and R2. Every command re-observes the open attempts first, but the result is only
@@ -338,8 +394,10 @@ export function orchestrationModule(userData: string): CommandModule {
         }
         case 'orchestration task-create': {
           const runId = resolveRunId(state)
+          const plan = () => createTask(state, { runId, spec: need('spec'), title: flag('title') ?? null, deps: parseDeps(flag('deps') ?? ''), at: now() })
+          const planned = recorded ? undefined : plan()
           return mutate(async () => {
-            const created = createTask(state, { runId, spec: need('spec'), title: flag('title') ?? null, deps: parseDeps(flag('deps') ?? ''), at: now() })
+            const created = planned ?? plan()
             ctx.onEffect?.()
             records.write(created.state)
             return { run: findRun(created.state, runId) ?? null, task: created.task }
@@ -353,16 +411,24 @@ export function orchestrationModule(userData: string): CommandModule {
         }
         case 'orchestration task-update': {
           const runId = resolveRunId(state)
-          return mutate(async () => {
+          // R7 = C1, widened by N3 = C13: `task_not_found`, an illegal transition, a stale
+          // `--dispatch` and a `--expected-version` mismatch are all decided on the document this
+          // command already read, so none of them needs a receipt to exist first. `transition` is
+          // pure — planning it here is the check, and the accepted plan is what the body writes.
+          const plan = () => {
             const task = taskInRun(state, runId, need('id'))
             const status = need('status')
             if (!isTaskStatus(status)) return preflight('invalid_argument', `--status must be one of ${TASK_STATUSES.join('|')}`)
-            const moved = transition(state, {
+            return transition(state, {
               taskId: task.id, to: status, settledBy: 'task-update', at: now(),
               dispatchId: flag('dispatch'),
               result: f.result === undefined ? undefined : parseResult(need('result')),
               expectedVersion: f['expected-version'] === undefined ? undefined : Number(f['expected-version']),
             })
+          }
+          const planned = recorded ? undefined : plan()
+          return mutate(async () => {
+            const moved = planned ?? plan()
             ctx.onEffect?.()
             records.write(moved.state)
             return { run: findRun(moved.state, runId) ?? null, task: moved.task, dispatch: moved.dispatch, promoted: moved.promoted }
@@ -370,11 +436,17 @@ export function orchestrationModule(userData: string): CommandModule {
         }
         case 'orchestration dispatch': {
           const runId = resolveRunId(state)
-          return mutate(async () => {
-            // §4.3(1): the terminal module's own three-layer check, borrowed as a read command.
+          // N3: `invalid_terminal`, `stale_terminal` and `task_not_startable` are decided before
+          // anything is written, so they no longer spend the caller's `--request-id` either. The
+          // handle check is a read of the terminal module (§4.3(1)) and sends nothing to the pane.
+          const plan = async () => {
             const resolved = await showTerminal(need('to'))
             const task = taskInRun(state, runId, need('task'))
-            const created = createDispatch(state, { task, target: resolved.target, agent: resolved.agent, agentAbsenceReason: resolved.agentAbsenceReason, at: now() })
+            return { resolved, created: createDispatch(state, { task, target: resolved.target, agent: resolved.agent, agentAbsenceReason: resolved.agentAbsenceReason, at: now() }) }
+          }
+          const planned = recorded ? undefined : await plan()
+          return mutate(async () => {
+            const { resolved, created } = planned ?? await plan()
             ctx.onEffect?.()
             records.write(created.state)
             return { run: findRun(created.state, runId) ?? null, task: created.task, dispatch: created.dispatch, terminal: resolved.terminal }

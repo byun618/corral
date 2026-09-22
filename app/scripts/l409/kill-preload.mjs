@@ -22,14 +22,14 @@ const target = process.env.L409_KILL_TARGET ?? ''
 const log = process.env.L409_KILL_LOG ?? ''
 if (window && target) {
   const realRename = fs.renameSync.bind(fs)
-  const realFsync = fs.fsyncSync.bind(fs)
   const realAppend = fs.appendFileSync.bind(fs)
   const note = event => { if (log) realAppend(log, JSON.stringify({ at: new Date().toISOString(), pid: process.pid, ...event }) + '\n') }
   const armFile = process.env.L409_KILL_ARM_FILE ?? ''
   const armed = () => armFile === '' || fs.existsSync(armFile)
   const mine = file => typeof file === 'string' && (file === target || file.startsWith(target + '.'))
-  // fsync is not a kill point, only a witness: it proves the temporary file was fully written.
-  fs.fsyncSync = fd => { const result = realFsync(fd); return result }
+  // N11 = C16: there is no fsync wrapper. The identity one r1 installed looked like a witness and
+  // proved nothing; what actually shows the temporary file was complete before the rename is
+  // `tmpBytes` below, measured on the file itself at the moment of the kill.
   fs.renameSync = (from, to) => {
     if (!mine(String(to)) || !armed()) return realRename(from, to)
     const bytes = (() => { try { return fs.statSync(String(from)).size } catch { return null } })()

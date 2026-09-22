@@ -168,11 +168,14 @@ try {
     const started = Date.now()
     await f.cli(['orchestration', 'task-update', '--id', calibration.taskId, '--status', 'completed'])
     const roundTrip = Date.now() - started
-    const delays = [0.45, 0.7, 0.88, 1.0, 1.06, 1.3, 1.6, 2.2].map(factor => Math.round(roundTrip * factor))
+    const delays = [0.45, 0.6, 0.7, 0.8, 0.88, 0.94, 1.0, 1.06, 1.15, 1.3, 1.6, 2.2].map(factor => Math.round(roundTrip * factor))
     const rounds = []
+    const stateDir = path.dirname(f.stateFile())
+    const strays = () => fs.readdirSync(stateDir).filter(name => name !== 'state.json')
     for (const [round, delayMs] of delays.entries()) {
       const subject = await dispatchedTask(`f8-crash-${round}`)
       const before = JSON.parse(fs.readFileSync(f.stateFile(), 'utf8'))
+      const straysBefore = strays()
       const pending = f.cliRaw(['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed'])
       await pause(delayMs)
       runtime.kill('SIGKILL')
@@ -193,14 +196,23 @@ try {
       // The restarted runtime reads the document without complaint.
       const listed = await f.cli(['orchestration', 'task-list'])
       assert.equal(listed.result.tasks.find(entry => entry.id === subject.taskId).status, task.status)
-      rounds.push({ round, delayMs, status: task.status, cliExit: outcome.exit, cliCode: outcome.json?.error?.code ?? null, cliOutcome: outcome.json?._meta?.outcome ?? null })
+      // N4 = K1 = G6 = R11 = C15. A kill *before* the rename is one of the two legal outcomes, and
+      // `atomicWrite`'s `finally rmSync(tmp)` never runs when the process is SIGKILLed — so the
+      // temporary file it leaves is the expected debris of the branch this check exists to reach,
+      // not a defect. F8b-i hits that window deterministically and records the same file. What the
+      // check owes is that the debris is only ever a state.json temporary, and only from a round
+      // that did not commit; F8d proves the next read ignores it.
+      const appeared = strays().filter(name => !straysBefore.includes(name))
+      for (const name of appeared) assert.match(name, /^state\.json\.[0-9a-f-]{36}\.tmp$/, `unexpected leftover ${name}`)
+      if (appeared.length > 0) assert.equal(task.status, 'dispatched', `a committed round left ${appeared.join(', ')}`)
+      rounds.push({ round, delayMs, status: task.status, strays: appeared, cliExit: outcome.exit, cliCode: outcome.json?.error?.code ?? null, cliOutcome: outcome.json?._meta?.outcome ?? null })
     }
     const statuses = [...new Set(rounds.map(entry => entry.status))].sort()
     // Positive control: a run that only ever saw one branch has not measured atomicity at all.
     assert.deepEqual(statuses, ['completed', 'dispatched'], `the kill window never straddled the commit: ${JSON.stringify(rounds)}`)
-    const leftovers = fs.readdirSync(path.dirname(f.stateFile())).filter(name => name !== 'state.json')
-    assert.deepEqual(leftovers, [], `uncommitted temporary files survived: ${leftovers.join(', ')}`)
-    return { roundTripMs: roundTrip, rounds, statuses, leftoverFiles: leftovers }
+    const leftovers = strays()
+    for (const name of leftovers) assert.match(name, /^state\.json\.[0-9a-f-]{36}\.tmp$/, `unexpected leftover ${name}`)
+    return { roundTripMs: roundTrip, rounds, statuses, leftoverFiles: leftovers, strayRounds: rounds.filter(entry => entry.strays.length > 0).map(entry => entry.round) }
   })
 
   await f.check('F8d-a-leftover-temporary-file-is-ignored-and-the-committed-document-wins', async () => {

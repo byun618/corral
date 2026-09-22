@@ -26,6 +26,32 @@ assert(fs.existsSync(CLAUDE), `The native provider is expected at ${CLAUDE}`)
 const version = execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()
 
 const DIFF_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../l394/global-config-diff.mjs')
+
+/**
+ * N13. Only ever called when F13 is about to fail: which key paths moved, which other `claude`
+ * processes were alive at that moment (pid, start time, the head of argv), and when the file was
+ * last written. No configuration value is read or recorded.
+ */
+function attribution(reported) {
+  const claudeConfig = path.join(os.homedir(), '.claude.json')
+  const changed = Object.fromEntries(Object.entries(reported.files ?? {})
+    .map(([file, detail]) => [file, { added: detail.added ?? [], removed: detail.removed ?? [], changed: detail.changed ?? [] }]))
+  let processes = []
+  try {
+    processes = execFileSync('ps', ['-Ao', 'pid=,lstart=,args='], { encoding: 'utf8' }).split('\n')
+      .filter(line => /claude/i.test(line) && !line.includes('l409-claude-'))
+      .map(line => line.trim())
+      .map(line => {
+        const match = /^(\d+)\s+(\w{3} \w{3} ?\d+ [\d:]+ \d{4})\s+(.*)$/.exec(line)
+        return match === null ? { pid: null, startedAt: null, argv: line.slice(0, 80) }
+          : { pid: Number(match[1]), startedAt: match[2], argv: match[3].slice(0, 80) }
+      })
+      .filter(entry => entry.pid !== process.pid)
+  } catch { /* recorded as an empty list; the diff itself is still the evidence */ }
+  let mtime = null
+  try { mtime = fs.statSync(claudeConfig).mtime.toISOString() } catch { /* absent is itself an answer */ }
+  return { note: 'key paths and process identity only; no configuration values are recorded', changed, claudeConfigMtime: mtime, liveClaudeProcesses: processes }
+}
 const f = await fixture('native', { expectedChecks: 7 })
 // R6, and a finding of its own: `claude` on this machine resolves to an npm-global copy under nvm
 // *before* the user's own launcher, so r0's gate measured `~/.local/bin/claude --version` in one
@@ -145,6 +171,12 @@ try {
   // R6(4): F13 is asserted, not merely printed. r0 wrote whatever the collector found into Markdown
   // and exited 0 either way, so "the diff was zero" rested on someone reading the file.
   await f.check('GATE2-F13-the-users-global-provider-config-did-not-move', async () => {
+    // N13: the assertion is unchanged — a non-zero diff fails the gate. What is new is that the
+    // failing path writes down who else could have written: `~/.claude.json` is shared mutable
+    // state on this machine, and in r1 two of four rounds failed on one counter key with no way to
+    // attribute it except by reasoning. Key *names*, process identity and mtime only — no values.
+    if (summary.changedFiles.length > 0 || summary.changedKeyPaths > 0 || summary.changedDirs.length > 0)
+      f.record('f13-attribution', attribution(JSON.parse(fs.readFileSync(path.join(f.raw, 'global-diff.json'), 'utf8'))))
     assert.deepEqual({ files: summary.changedFiles, dirs: summary.changedDirs, keyPaths: summary.changedKeyPaths },
       { files: [], dirs: [], keyPaths: 0 }, `global provider config changed: ${JSON.stringify(summary)}`)
     return { summary, before, after, reported }

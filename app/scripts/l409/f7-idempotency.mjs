@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fixture, requestId } from './lib.mjs'
 
 const RACERS = 6
-const f = await fixture('f7', { expectedChecks: 7 })
+const f = await fixture('f7', { expectedChecks: 8 })
 try {
   await f.startBackend()
   await f.serve()
@@ -146,6 +146,47 @@ try {
       assert.match(stale.error.resources.recovery, /terminal list/)
       return { refused, accepted, stale }
     } finally { await f.stop(runtime2, 'SIGTERM') }
+  })
+
+  await f.check('F7h-a-rejected-transition-does-not-burn-the-request-id', async () => {
+    // N3 = C13. In r1 only `run_required` was checked before the receipt was written. Every other
+    // rejection — an illegal transition, a stale `--dispatch`, a version conflict — was raised
+    // *inside* the receipt, so the id was admitted, the receipt stayed `pending`, and the advice
+    // it printed ("retry with the same --request-id") led to a permanent `outcome_unknown`.
+    const subject = await dispatchedTask('f7-burn')
+    await f.cli(['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed'])
+    const burn = requestId()
+    const receipt = path.join(f.env.CORRAL_USER_DATA, 'runtime/terminal-receipts', burn + '.json')
+    const args = ['orchestration', 'task-update', '--id', subject.taskId, '--status', 'blocked', '--request-id', burn]
+    const before = f.stateDigest()
+    const first = await f.cli(args, { fail: true })
+    assert.equal(first.error.code, 'illegal_transition')
+    assert.equal(first._meta.outcome, 'not_started')
+    assert.equal(first.error.stage, 'preflight')
+    assert.equal(fs.existsSync(receipt), false, 'a rejected transition must not leave a receipt')
+    assert.doesNotMatch(String(first.error.resources.recovery ?? ''), /same --request-id/)
+    // The advice the caller actually gets must be followable: retrying the same id repeats the
+    // same rejection instead of turning into `outcome_unknown` forever.
+    const again = await f.cli(args, { fail: true })
+    assert.equal(again.error.code, 'illegal_transition')
+    assert.notEqual(again.error.code, 'outcome_unknown')
+    assert.equal(f.stateDigest(), before, 'neither rejection changes the document')
+    // And the id is still spendable once the input is fixed.
+    const other = await dispatchedTask('f7-burn-2')
+    const accepted = await f.cli(['orchestration', 'task-update', '--id', other.taskId, '--status', 'completed', '--request-id', burn])
+    assert.equal(accepted.ok, true)
+    assert.notEqual(accepted.result.replayed, true)
+    // The same holds for the other rejections that used to sit inside the receipt.
+    const stale = requestId()
+    const third = await dispatchedTask('f7-burn-3')
+    const staleAttempt = await f.cli(['orchestration', 'task-update', '--id', third.taskId, '--status', 'completed', '--dispatch', subject.dispatchId, '--request-id', stale], { fail: true })
+    assert.equal(staleAttempt.error.code, 'stale_dispatch')
+    assert.equal(fs.existsSync(path.join(f.env.CORRAL_USER_DATA, 'runtime/terminal-receipts', stale + '.json')), false)
+    const version = requestId()
+    const conflict = await f.cli(['orchestration', 'task-update', '--id', third.taskId, '--status', 'completed', '--expected-version', '1', '--request-id', version], { fail: true })
+    assert.equal(conflict.error.code, 'version_conflict')
+    assert.equal(fs.existsSync(path.join(f.env.CORRAL_USER_DATA, 'runtime/terminal-receipts', version + '.json')), false)
+    return { first, again, accepted, staleAttempt, conflict }
   })
 
   await f.check('F7f-a-mint-free-call-still-gets-a-request-id', async () => {

@@ -57,7 +57,17 @@ for (const command of COMMANDS) {
 // Every code the module raises, read out of the source rather than from a list kept by hand.
 const source = ['model.ts', 'index.ts', 'store.ts'].map(name => fs.readFileSync(path.join(app, 'src/runtime/orchestration', name), 'utf8')).join('\n')
 const INTERNAL = new Set(['operation_failed', 'unsupported'])  // guards for impossible variants, not a caller's contract
-const BORROWED = ['invalid_terminal', 'stale_terminal', 'backend_unavailable', 'request_conflict', 'outcome_unknown']
+// N9 = C17: the borrowed codes are read out of `receipts.ts` and the terminal module too, not kept
+// by hand — the hand-written list silently dropped `receipt_capacity` and `request_expired`, which
+// an orchestration mutation can absolutely answer with, and the check still passed.
+const borrowedSource = [
+  fs.readFileSync(path.join(app, 'src/runtime/terminal/receipts.ts'), 'utf8'),
+  fs.readFileSync(path.join(app, 'src/runtime/orchestration/index.ts'), 'utf8'),
+].join('\n')
+const BORROWED = [...new Set([
+  'invalid_terminal', 'stale_terminal', 'backend_unavailable',
+  ...[...borrowedSource.matchAll(/new RuntimeError\('([a-z_]+)'/g)].map(match => match[1]),
+])].filter(code => !INTERNAL.has(code)).sort()
 const raised = [...new Set([...source.matchAll(/(?:fail|preflight|new RuntimeError)\('([a-z_]+)'/g)].map(match => match[1]))].filter(code => !INTERNAL.has(code))
 const codes = [...new Set([...raised, ...BORROWED])].sort()
 const missing = { readme: codes.filter(code => !readme.includes(code)), specs: codes.filter(code => !specsText.includes(code)) }

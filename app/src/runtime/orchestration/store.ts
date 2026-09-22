@@ -97,9 +97,10 @@ export function isOrchestrationState(value: unknown): value is OrchestrationStat
 
 /**
  * Shape is not enough: a document whose records do not agree with each other is corruption too. An
- * orphan attempt read back as `task: null`, a duplicate id that makes `find` ambiguous, or a
- * `currentDispatchId` pointing at another Task's attempt would all be carried forward into the next
- * write and quietly cemented. §4.5 says no partial recovery — so these are refused at the door.
+ * orphan attempt read back as `task: null`, a duplicate id that makes `find` ambiguous, a
+ * `currentDispatchId` pointing at another Task's attempt, two live attempts on one Task, a settled
+ * Task still holding one, or a dependency on a Task that is not there would all be carried forward
+ * into the next write and quietly cemented. §4.5 says no partial recovery — so these are refused at the door.
  */
 function isConsistent(runs: RunRecord[], tasks: TaskRecord[], dispatches: DispatchRecord[]): boolean {
   if (!unique(runs.map(run => run.id)) || !unique(tasks.map(task => task.id)) || !unique(dispatches.map(entry => entry.id))) return false
@@ -108,6 +109,20 @@ function isConsistent(runs: RunRecord[], tasks: TaskRecord[], dispatches: Dispat
   for (const entry of dispatches) {
     const task = tasks.find(candidate => candidate.id === entry.taskId)
     if (!task || entry.runId !== task.runId) return false
+  }
+  // N1 = C14 = R9. The r1 guard only followed the pointer that existed: a Task with
+  // `currentDispatchId: null` was accepted however many open attempts pointed back at it, a
+  // settled Task could still own a live one, and `deps` were never resolved at all. Each of those
+  // is a document the product cannot write and every one of them survives into the next write.
+  for (const task of tasks) {
+    const open = dispatches.filter(entry => entry.taskId === task.id && entry.status === 'dispatched')
+    if (open.length > 1) return false
+    const attempt = open[0]
+    if (attempt !== undefined) {
+      if (task.currentDispatchId !== attempt.id) return false
+      if (task.status === 'completed' || task.status === 'failed') return false
+    }
+    if (!task.deps.every(id => tasks.some(other => other.id === id && other.runId === task.runId))) return false
   }
   return tasks.every(task => {
     if (task.currentDispatchId === null) return true

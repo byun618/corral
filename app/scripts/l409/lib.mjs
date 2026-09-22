@@ -32,11 +32,18 @@ const RAW_BY_OWNER = {
  * predicate that returns a value cannot say "satisfied, and the value is 0", and a loose check
  * turns those into "not yet" — a timeout that would read as a real failure.
  */
+// N6 = G8: a predicate that *asserts* is stating a fact that will not become true by waiting —
+// `native-checks.mjs` asserting the agent never reached `exited` is the case that matters. Swallow
+// it and a real failure is reported 20 seconds later as a timeout, with the reason buried in a
+// string. Transient errors (a file not written yet, a runtime still starting) are still retried.
 export async function until(predicate, label, ms = 20000) {
   const deadline = Date.now() + ms
   let last
   while (Date.now() < deadline) {
-    try { if (await predicate() === true) return true } catch (error) { last = String(error) }
+    try { if (await predicate() === true) return true } catch (error) {
+      if (error instanceof assert.AssertionError) throw error
+      last = String(error)
+    }
     await pause(40)
   }
   throw Error(`${label} timeout after ${ms}ms; last error ${last ?? 'none'}`)
@@ -69,8 +76,12 @@ export async function fixture(label, options = {}) {
   // `CORRAL_VERIFY_ROUND` separates one review round's raw records from the next (r1 = fix round 1)
   // without touching what an earlier round recorded.
   const round = process.env.CORRAL_VERIFY_ROUND ?? ''
-  const raw = path.resolve(process.env.CORRAL_VERIFY_RAW
-    ?? path.join(app, '../specs/LIFE-409-cli-orchestration-core', RAW_BY_OWNER[owner], round, label, runId))
+  // N12 = C18: the run id is part of the path even when the caller names the directory, so a
+  // re-run records *beside* the earlier attempt instead of on top of it — a failing round that is
+  // re-run is evidence, and r1 lost one that way.
+  const raw = process.env.CORRAL_VERIFY_RAW
+    ? path.resolve(process.env.CORRAL_VERIFY_RAW, runId)
+    : path.resolve(path.join(app, '../specs/LIFE-409-cli-orchestration-core', RAW_BY_OWNER[owner], round, label, runId))
   fs.mkdirSync(raw, { recursive: true })
   const home = path.join(root.replace(/^\/private\/tmp(?=\/)/, '/tmp'), 'c'), repo = path.join(root, 'repo')
   for (const dir of [home, repo]) fs.mkdirSync(dir, { mode: 0o700 })

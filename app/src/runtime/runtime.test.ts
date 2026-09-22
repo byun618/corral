@@ -608,6 +608,10 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     // 제출 뒤 한 번의 관측은 게이트를 다시 증명하지 못하므로 `launching` 이다(R5) — `exited` 가 아니다.
     expect(nested(created, 'agent').phase).toBe('launching')
     expect(submitted).toBe(1)
+    // 술어를 직접 지나는 대조(R17): 결속이 사라져도(`agent_not_found`) 전경에 네이티브 항목이
+    // 있으면 종료가 아니라 결속만 풀린 것이다(D6). 이름 검사만 남기면 여기서 `exited` 가 된다.
+    f.state.observe = () => { throw new RuntimeError('agent_not_found', 'no agent for this pane') }
+    expect(nested(asObject(await f.run('terminal show', {}, 6000)), 'agent').phase).toBe('launching')
   }, 40000)
 
   it('R-gate1(b): an empty foreground inside the launch window is launching, and exited only once it closes', async () => {
@@ -615,10 +619,12 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     // 셸이 아직 provider 를 exec 하기 전 — `agent.get` 은 성공하지만 전경은 비어 있다.
     f.state.foreground = []
     let seen = 0
+    // 전경은 관측이 실제로 bound 가 되는 순간에만 찬다 — 기동 창 동안은 비어 있어야 이 회귀가
+    // 기동 창 조건을 전경 판정 뒤로 되돌린 변형에서 실패한다(R17).
     f.state.observe = current => {
-      if (seen++ >= 2) return current
+      if (seen++ < 2) return { ...current, status: 'unknown', launchPending: true, interactiveReady: false }
       f.state.foreground = [{ pid: 456, name: '2.1.252', argv: ['claude'] }]
-      return { ...current, status: 'unknown', launchPending: true, interactiveReady: false }
+      return current
     }
     const waited = asObject(await f.run('terminal wait', { for: 'agent-ready' }, 12000))
     expect(waited.satisfied).toBe(true)
@@ -641,5 +647,19 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     f.state.observe = () => { throw new RuntimeError('agent_not_found', 'no agent for this pane') }
     f.state.foreground = []
     expect(nested(asObject(await f.run('terminal show', {}, 6000)), 'agent').phase).toBe('exited')
+  }, 30000)
+
+  // 라운드 5 (R18). `gatePass` 의 `satisfied` 는 관측이 *누구의* pane 인지 묻지 않는다 — 조용하고
+  // seq 가 그대로면 만족이다. herdr 은 살아 있는 managed agent 의 이름을 바꿀 수 있으므로
+  // (`agents.rs` `rename_agent_target`), 저장된 `exited` 를 푸는 증거는 "조용한 표본 2회" 가 아니라
+  // "같은 결속의 `bound` 2회" 여야 한다. 입력은 리뷰의 `probes.mts` nameChange 와 같다.
+  it('R-gate1(d) R18: a gate sample that belongs to another name never promotes a stored exited', async () => {
+    const f = agentFixture('claude', { phase: 'exited' })
+    let calls = 0
+    // `terminal show` 는 게이트 앞에서 단일 관측을 한 번 더 한다 — 게이트 표본은 2·3번째 호출이다.
+    f.state.observe = current => ({ ...current, name: ++calls >= 3 ? 'someone-else' : current.name })
+    const shown = asObject(await f.run('terminal show', {}, 6000))
+    expect(nested(shown, 'agent').phase).toBe('exited')
+    expect(calls).toBeGreaterThanOrEqual(3)
   }, 30000)
 })

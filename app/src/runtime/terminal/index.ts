@@ -267,10 +267,13 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (!last || last.stale) return unprovenPhase(record)
         if (last.live === 'blocked') return 'blocked'
         if (last.live === 'exited') return 'exited'
-        // A stored `exited` is let go here as well: the gate held twice just now, so the pane is
-        // demonstrably bound, and one bad observation (an empty foreground in the launch window) must
-        // not outlive the pane. `/exit` is unaffected — `agent_not_found` never satisfies the gate.
-        if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked' || record.phase === 'exited' ? 'ready' : record.phase
+        // A stored `exited` is let go here as well, but only when every observation of this gate was
+        // `bound`: one bad observation (an empty foreground in the launch window) must not outlive the
+        // pane, and a quiet sample that belongs to *another* name is not this binding coming back
+        // (R18 — `satisfied` alone does not say whose pane answered, and herdr can rename a live
+        // managed agent). `/exit` is unaffected either way: `agent_not_found` never reaches here.
+        if (satisfied) return record === null || record.phase === 'launching' || record.phase === 'blocked'
+          || (record.phase === 'exited' && views.every(view => view.live === 'bound')) ? 'ready' : record.phase
         if (last.live === 'launching') return 'launching'
         // Bound but the gate did not hold. A blocker that has been cleared is not a blocker any more,
         // and a pane that has not held the gate has not earned `ready` either. A bound pane with no

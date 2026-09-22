@@ -1,9 +1,13 @@
 // LIFE-409 F6 — an old report cannot settle the current attempt, and a settled Task cannot be
 // settled twice. The two codes differ and the order of the checks is what makes them differ.
+//
+// r1 (R2): the warm-up `run-current` that used to precede each digest is gone. The second attempt
+// is live while these refusals run, so a sweep that persisted from the rejected command's own call
+// would now show up as a digest change — which is the point of the Codex `f6-no-warmup` repro.
 import assert from 'node:assert/strict'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f6')
+const f = await fixture('f6', { expectedChecks: 3 })
 try {
   await f.startBackend()
   await f.serve()
@@ -19,7 +23,6 @@ try {
   const d2 = (await f.cli(['orchestration', 'dispatch', '--task', taskId, '--to', second.handle])).result.dispatch
 
   await f.check('F6a-the-superseded-attempt-cannot-settle-the-task', async () => {
-    await f.cli(['orchestration', 'run-current'])
     const before = f.stateDigest()
     const response = await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'completed', '--dispatch', d1.id], { fail: true })
     assert.equal(response.error.code, 'stale_dispatch')
@@ -39,7 +42,6 @@ try {
     assert.equal(settled.result.dispatch.id, d2.id)
     assert.equal(settled.result.dispatch.status, 'completed')
     assert.equal(settled.result.dispatch.settledBy, 'task-update')
-    await f.cli(['orchestration', 'run-current'])
     const before = f.stateDigest()
     const again = await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'completed', '--dispatch', d2.id], { fail: true })
     assert.equal(again.error.code, 'illegal_transition')

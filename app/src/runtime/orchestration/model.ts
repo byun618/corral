@@ -17,19 +17,19 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 // --- identity -----------------------------------------------------------------------------------
 
 /** Orca's prefixes, so a harness document that says `ctx_…` keeps meaning the same thing. */
-export const ID_PATTERNS = { run: /^run_[0-9a-f]{12}$/, task: /^task_[0-9a-f]{12}$/, ctx: /^ctx_[0-9a-f]{12}$/ } as const
-export type IdKind = keyof typeof ID_PATTERNS
+export type IdKind = 'run' | 'task' | 'ctx'
+export const ID_PATTERNS: Readonly<Record<IdKind, RegExp>> = { run: /^run_[0-9a-f]{12}$/, task: /^task_[0-9a-f]{12}$/, ctx: /^ctx_[0-9a-f]{12}$/ }
 export const isId = (kind: IdKind, value: unknown): value is string => typeof value === 'string' && ID_PATTERNS[kind].test(value)
 export const mintId = (kind: IdKind): string => `${kind}_${randomBytes(6).toString('hex')}`
 
 // --- statuses -----------------------------------------------------------------------------------
 
-export const TASK_STATUSES = ['pending', 'ready', 'dispatched', 'completed', 'failed', 'blocked'] as const
-export type TaskStatus = (typeof TASK_STATUSES)[number]
+export type TaskStatus = 'pending' | 'ready' | 'dispatched' | 'completed' | 'failed' | 'blocked'
+export const TASK_STATUSES: readonly TaskStatus[] = ['pending', 'ready', 'dispatched', 'completed', 'failed', 'blocked']
 export const isTaskStatus = (value: unknown): value is TaskStatus => TASK_STATUSES.some(status => status === value)
 /** `unknown` is reconcile's alone: an attempt whose pane corral can no longer observe (§4.4). */
-export const DISPATCH_STATUSES = ['dispatched', 'completed', 'failed', 'unknown'] as const
-export type DispatchStatus = (typeof DISPATCH_STATUSES)[number]
+export type DispatchStatus = 'dispatched' | 'completed' | 'failed' | 'unknown'
+export const DISPATCH_STATUSES: readonly DispatchStatus[] = ['dispatched', 'completed', 'failed', 'unknown']
 export type SettledBy = 'task-update' | 'reconcile' | 'worker_done'
 
 // --- records ------------------------------------------------------------------------------------
@@ -158,9 +158,24 @@ const replaceDispatch = (state: OrchestrationState, entry: DispatchRecord): Disp
 
 // --- startability (§4.3) ------------------------------------------------------------------------
 
+export type StartabilityReason = 'task_completed' | 'task_blocked' | 'unmet_dependencies' | 'not_ready' | 'dispatch_active'
 export type Startability =
   | { startable: true; from: TaskStatus }
-  | { startable: false; reason: 'task_completed' | 'task_blocked' | 'unmet_dependencies' | 'dispatch_active'; unmetDependencies: string[]; activeDispatchId: string | null }
+  | { startable: false; reason: StartabilityReason; unmetDependencies: string[]; activeDispatchId: string | null; recovery: string }
+
+/** What a person can do about each refusal. §4.3 names the reason; this names the next command. */
+const RECOVERY: Readonly<Record<StartabilityReason, string>> = {
+  task_completed: 'A completed Task is terminal; create a new Task for further work',
+  task_blocked: 'corral orchestration task-update --id <task> --status ready (or pending)',
+  unmet_dependencies: 'Complete the dependencies listed in unmetDependencies, which promotes this Task to ready',
+  // The C4 trap: `blocked → pending` on a Task whose dependencies are already met leaves it in
+  // `pending` with nothing left to wait for, and there is no manual `pending → ready`. Saying
+  // "unmet dependencies" and then naming none is what the review found misleading.
+  not_ready: 'corral orchestration task-update --id <task> --status blocked, then --status ready',
+  dispatch_active: 'corral orchestration dispatch-show --id <dispatch> to reconcile it, or settle the Task with task-update',
+}
+const refuse = (reason: StartabilityReason, unmetDependencies: string[], activeDispatchId: string | null): Startability =>
+  ({ startable: false, reason, unmetDependencies, activeDispatchId, recovery: RECOVERY[reason] })
 
 export function startability(state: OrchestrationState, task: TaskRecord): Startability {
   const status: TaskStatus = task.status, open = activeDispatch(state, task.id)
@@ -172,24 +187,26 @@ export function startability(state: OrchestrationState, task: TaskRecord): Start
     // until reconcile settles the attempt `unknown`, which is exactly what should happen: the pane
     // is either still alive (so the attempt is real) or it is gone (so reconcile closes it).
     case 'ready':
-      if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id }
+      if (open) return refuse('dispatch_active', [], open.id)
       return { startable: true, from: status }
     case 'completed':
-      return { startable: false, reason: 'task_completed', unmetDependencies: [], activeDispatchId: null }
+      return refuse('task_completed', [], null)
     case 'blocked':
-      return { startable: false, reason: 'task_blocked', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: open?.id ?? null }
-    case 'pending':
-      if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: open.id }
-      return { startable: false, reason: 'unmet_dependencies', unmetDependencies: unmetDependencies(state, task.deps), activeDispatchId: null }
+      return refuse('task_blocked', unmetDependencies(state, task.deps), open?.id ?? null)
+    case 'pending': {
+      if (open) return refuse('dispatch_active', unmetDependencies(state, task.deps), open.id)
+      const unmet = unmetDependencies(state, task.deps)
+      return refuse(unmet.length ? 'unmet_dependencies' : 'not_ready', unmet, null)
+    }
     case 'dispatched':
     case 'failed': {
       // §4.3(3): a retry needs the previous attempt to have *ended* — observed failure or an
       // unknown a reconcile recorded. An attempt still open is refused, which is what keeps one
       // task from having two live workers.
-      if (open) return { startable: false, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id }
+      if (open) return refuse('dispatch_active', [], open.id)
       const latest = latestDispatch(state, task.id)
       if (latest && (latest.status === 'failed' || latest.status === 'unknown')) return { startable: true, from: status }
-      return { startable: false, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: latest?.id ?? null }
+      return refuse('dispatch_active', [], latest?.id ?? null)
     }
     default:
       return exhausted(status)
@@ -298,6 +315,15 @@ export function transition(state: OrchestrationState, input: TransitionInput): T
     return fail('illegal_transition', `${task.status} → ${input.to} is not a manual transition`, { taskId: task.id, from: task.status, to: input.to, allowed: MANUAL_TRANSITIONS[task.status] })
 
   const open = activeDispatch(state, task.id)
+  // R1 (1차 판정 계약 해석 1). `* → blocked` stays in the table, but an open attempt refuses it:
+  // moving the Task out of `dispatched` while its attempt is live would leave that attempt with no
+  // manual exit at all (settling goes through `dispatched → completed|failed`), stranding a worker
+  // that is still using the pane. Settle the attempt, or let reconcile close it when the pane is
+  // gone — corral never kills a live pane to unstick a record.
+  if (input.to === 'blocked' && open !== undefined)
+    return fail('illegal_transition', `Task ${task.id} still has an open attempt ${open.id}`,
+      { taskId: task.id, from: task.status, to: input.to, allowed: MANUAL_TRANSITIONS[task.status], reason: 'dispatch_active', activeDispatchId: open.id,
+        recovery: 'Settle it with corral orchestration task-update --status completed|failed, or run dispatch-show --id <dispatch> once the pane is gone so reconcile closes it' })
   if (input.dispatchId !== undefined) {
     const named = findDispatch(state, input.dispatchId)
     if (!named) return fail('dispatch_not_found', `No dispatch ${input.dispatchId}`, { dispatchId: input.dispatchId, activeDispatchId: open?.id ?? null })
@@ -361,7 +387,7 @@ export function createDispatch(state: OrchestrationState, input: DispatchInput):
   const start = startability(state, input.task)
   if (!start.startable)
     return fail('task_not_startable', `Task ${input.task.id} cannot take a new attempt (${start.reason})`,
-      { taskId: input.task.id, status: input.task.status, reason: start.reason, unmetDependencies: start.unmetDependencies, activeDispatchId: start.activeDispatchId })
+      { taskId: input.task.id, status: input.task.status, reason: start.reason, unmetDependencies: start.unmetDependencies, activeDispatchId: start.activeDispatchId, recovery: start.recovery })
   const attempt = input.task.attempts + 1
   const entry: DispatchRecord = {
     id: uniqueId(state, 'ctx'), runId: input.task.runId, taskId: input.task.id, attempt,

@@ -6,6 +6,11 @@
 // digested before and after so F13 can say what, if anything, moved.
 //
 // Nothing is submitted to the provider: no --prompt, no terminal send, no answer to any dialog.
+//
+// r1 (R6): the gate now waits for the provider to leave `launching`, resolves the pane's foreground
+// executable through `ps` and compares it with the realpath of the user's own install, and reads
+// the screen once to see which provider is on it. `native-negative.mjs` runs the same three checks
+// against a fake `claude` that exits immediately and records that each of them fails there.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -14,13 +19,22 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { fixture } from './lib.mjs'
 import { differences, EXCLUDED } from './compare.mjs'
+import { LIVE_PHASES, foregroundExecutable, screenIdentifiesProvider, waitForLaunch } from './native-checks.mjs'
 
 const CLAUDE = process.env.L409_NATIVE_CLAUDE ?? path.join(os.homedir(), '.local/bin/claude')
 assert(fs.existsSync(CLAUDE), `The native provider is expected at ${CLAUDE}`)
 const version = execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()
 
 const DIFF_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../l394/global-config-diff.mjs')
-const f = await fixture('native')
+const f = await fixture('native', { expectedChecks: 7 })
+// R6, and a finding of its own: `claude` on this machine resolves to an npm-global copy under nvm
+// *before* the user's own launcher, so r0's gate measured `~/.local/bin/claude --version` in one
+// place and ran a different install in the pane. The fixture's PATH (fixture-local, nothing global
+// is touched) puts the launcher's directory first, so the pane runs the install this gate is about.
+const NATIVE_BIN = path.dirname(CLAUDE)
+f.base.PATH = NATIVE_BIN + ':' + f.base.PATH
+f.env.PATH = f.base.PATH
+const resolution = execFileSync('/bin/sh', ['-c', 'command -v claude; which -a claude'], { encoding: 'utf8', env: f.base }).trim()
 let runtime
 /** The LIFE-394 collector, writing into this run's raw directory under its own salt. */
 const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
@@ -47,6 +61,18 @@ try {
   })
   const handle = created.result.terminal.handle
 
+  const launched = await f.check('GATE2-R6-the-pane-really-runs-the-users-own-claude', async () => {
+    // (1) the provider comes up. `blocked` is a pass: a trust screen is a running provider, and
+    //     this gate never answers a dialog. `exited` or a timeout fails the gate outright.
+    const phase = await waitForLaunch(f, handle)
+    assert.ok(LIVE_PHASES.includes(phase.phase), phase.phase)
+    // (2) the process in that pane is the user's installed executable, by realpath.
+    const executable = await foregroundExecutable(f, handle, CLAUDE)
+    // (3) the screen says so too — one read, no input.
+    const screen = await screenIdentifiesProvider(f, handle, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252/i, 'native-screen')
+    return { phase, executable, screen, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), pathResolution: resolution }
+  })
+
   let dispatched
   await f.check('GATE2-F3-the-attempt-records-the-native-pane-and-its-agent', async () => {
     const shown = await f.cli(['terminal', 'show', '--terminal', handle], { timeout: 60000 })
@@ -65,7 +91,9 @@ try {
     assert.deepEqual(record.agent.argv, shown.result.agent.argv)
     assert.equal(record.attempt, 1)
     assert.equal(dispatched.result.task.status, 'dispatched')
-    return { providerVersion: version, providerPath: fs.realpathSync(CLAUDE), shown, dispatched }
+    assert.ok(LIVE_PHASES.includes(record.agent.phase) || record.agent.phase === 'launching',
+      `an unexpected phase was frozen into the record: ${record.agent.phase}`)
+    return { providerVersion: version, providerPath: fs.realpathSync(CLAUDE), storedPhase: record.agent.phase, launchedPhase: launched.phase.phase, shown, dispatched }
   })
 
   const snapshot = async () => ({
@@ -93,22 +121,34 @@ try {
     await f.cli(['terminal', 'close', '--terminal', handle], { timeout: 60000 })
     const shown = await f.cli(['orchestration', 'dispatch-show', '--id', dispatched.result.dispatch.id])
     assert.equal(shown.result.terminal.live, false)
+    assert.equal(shown.result.terminal.source, 'observation')
     assert.equal(shown.result.terminal.reason, 'pane_gone')
     assert.equal(shown.result.dispatch.status, 'unknown')
     assert.equal(shown.result.dispatch.settledBy, 'reconcile')
+    // Reading it again touches no backend: the attempt was already settled when that call started.
+    const fromRecord = await f.cli(['orchestration', 'dispatch-show', '--id', dispatched.result.dispatch.id])
+    assert.equal(fromRecord.result.terminal.source, 'record')
+    assert.equal(fromRecord.result.terminal.live, null)
     assert.equal(shown.result.task.status, 'dispatched', 'the Task is never settled by an observation')
     // The identity of the dead attempt, including its agent snapshot, is still on record.
     assert.equal(shown.result.dispatch.agent.kind, 'claude')
     const settled = await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'failed'])
     assert.equal(settled.result.task.status, 'failed')
     assert.equal(settled.result.dispatch, null)
-    return { shown, settled }
+    return { shown, fromRecord, settled }
   })
 
   const after = diff('after')
   const reported = diff('diff')
   f.record('state-after-native', f.stateJson())
   const summary = JSON.parse(fs.readFileSync(path.join(f.raw, 'global-diff.json'), 'utf8')).summary
+  // R6(4): F13 is asserted, not merely printed. r0 wrote whatever the collector found into Markdown
+  // and exited 0 either way, so "the diff was zero" rested on someone reading the file.
+  await f.check('GATE2-F13-the-users-global-provider-config-did-not-move', async () => {
+    assert.deepEqual({ files: summary.changedFiles, dirs: summary.changedDirs, keyPaths: summary.changedKeyPaths },
+      { files: [], dirs: [], keyPaths: 0 }, `global provider config changed: ${JSON.stringify(summary)}`)
+    return { summary, before, after, reported }
+  })
   const markdown = [
     '# LIFE-409 F13 — global provider config, before and after the native gate',
     '',

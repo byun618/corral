@@ -9,7 +9,7 @@ import { serveSocket, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
 import type { WorkspaceDesktop } from './workspace/model.js'
 import { terminalModule, type TerminalDesktop } from './terminal/index.js'
-import { orchestrationModule } from './orchestration/index.js'
+import { orchestrationModule, orchestrationStartupSweep } from './orchestration/index.js'
 import { isRecord } from '../shared/json.js'
 import { memorySnapshot } from './memory.js'
 
@@ -132,6 +132,11 @@ export async function startRuntime(options: {
       }
     }, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
     atomicWrite(lock, { pid: process.pid, instanceId, socket: endpoint, socketInode: fs.lstatSync(endpoint).ino })
+    // LIFE-409 §4.5: reconcile the open attempts once as this runtime becomes ready, so a pane that
+    // died while corral was not running is `unknown` on disk without waiting for a command. It runs
+    // in the orchestration serial lane, so the first command queues behind it rather than racing it,
+    // and it never rejects: a backend it cannot reach writes nothing.
+    lanes.set('orchestration', orchestrationStartupSweep(options.userData, { instanceId, signal: controller.signal }))
     return { runtimeId, status, close: cleanup }
   } catch (error) { await cleanup(); throw error }
 }

@@ -66,8 +66,11 @@ export async function fixture(label, options = {}) {
   assert(RAW_BY_OWNER[owner], `CORRAL_VERIFY_OWNER must be one of ${Object.keys(RAW_BY_OWNER).join(', ')}`)
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/l409-' + owner + '-' + label.slice(0, 4) + '-'))
   const runId = path.basename(root)
+  // `CORRAL_VERIFY_ROUND` separates one review round's raw records from the next (r1 = fix round 1)
+  // without touching what an earlier round recorded.
+  const round = process.env.CORRAL_VERIFY_ROUND ?? ''
   const raw = path.resolve(process.env.CORRAL_VERIFY_RAW
-    ?? path.join(app, '../specs/LIFE-409-cli-orchestration-core', RAW_BY_OWNER[owner], label, runId))
+    ?? path.join(app, '../specs/LIFE-409-cli-orchestration-core', RAW_BY_OWNER[owner], round, label, runId))
   fs.mkdirSync(raw, { recursive: true })
   const home = path.join(root.replace(/^\/private\/tmp(?=\/)/, '/tmp'), 'c'), repo = path.join(root, 'repo')
   for (const dir of [home, repo]) fs.mkdirSync(dir, { mode: 0o700 })
@@ -212,6 +215,12 @@ export async function fixture(label, options = {}) {
   }
   async function cleanup() {
     for (const child of [...children].reverse()) await stop(child, 'SIGTERM').catch(error => observations.push({ cleanupError: String(error), pid: child.pid }))
+    // C8: a run that recorded fewer checks than it promised is a failed run, not an empty pass. An
+    // early return, a skipped branch or a crash before the first check used to exit 0 with
+    // `failed: 0`, and this verdict system reads the exit code as the pass signal.
+    const expected = options.expectedChecks
+    if (expected !== undefined && checks.length !== expected)
+      checks.push({ id: 'harness-expected-check-count', pass: false, at: new Date().toISOString(), error: `expected ${expected} checks, recorded ${checks.length}: ${checks.map(entry => entry.id).join(', ')}` })
     fs.writeFileSync(path.join(raw, 'run.json'), JSON.stringify({
       runId, label, owner, root, appRoot: app, node: process.version, backend,
       binarySHA256: createHash('sha256').update(fs.readFileSync(backend)).digest('hex'),
@@ -228,8 +237,13 @@ export async function fixture(label, options = {}) {
     const result = await run('git', args, base, { record: false })
     assert.equal(result.exit, 0, result.stderr)
   }
+  /** Poll the stored document itself — used where the claim is "without issuing any command". */
+  async function untilState(predicate, label, ms = 20000, environment = env) {
+    await until(() => predicate(fs.existsSync(stateFile(environment)) ? stateJson(environment) : null) === true, label, ms)
+    return stateJson(environment)
+  }
   return {
-    root, raw, repo, home, socket, session, env, base, runId, owner, backend, stripped,
+    root, raw, repo, home, socket, session, env, base, runId, owner, backend, stripped, untilState,
     client, start, run, cli, cliRaw, backendRpc, stop, startBackend, serve, restart, pane, registerRepo,
     stateFile, stateBytes, stateDigest, stateJson, check, record, cleanup, observations, checks, commands,
   }

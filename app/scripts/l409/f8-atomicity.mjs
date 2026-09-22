@@ -4,16 +4,23 @@
 //  (a) while a four-record mutation runs, the file on disk only ever holds the old content or the
 //      new one — never anything in between. Sampled at full speed from a second process's point of
 //      view, so a torn or half-written document would be caught as a third distinct digest.
-//  (b) killing the runtime mid-write leaves the document at one of those same two states, and a
-//      restart reads it without complaint. Repeated with varied timing.
-//  (c) a damaged document is reported as storage_corrupt and is never rewritten or truncated.
+//  (b) the commit window is entered on purpose, not guessed at: a preload (`kill-preload.mjs`,
+//      loaded into `corral serve` with NODE_OPTIONS, product code untouched) kills the runtime
+//      inside `fs.renameSync` for this one file — once before the rename and once after it — and
+//      logs the hit, so each branch is evidence rather than an inference from timing.
+//  (c) killing the runtime at varied points around a measured round trip leaves the document at one
+//      of those same two states, and a restart reads it without complaint.
+//  (d) a damaged document is reported as storage_corrupt and is never rewritten or truncated.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { fixture, pause } from './lib.mjs'
+import { fileURLToPath } from 'node:url'
+import { fixture, pause, requestId } from './lib.mjs'
 
-const f = await fixture('f8')
+const PRELOAD = fileURLToPath(new URL('./kill-preload.mjs', import.meta.url))
+
+const f = await fixture('f8', { expectedChecks: 6 })
 let runtime
 try {
   await f.startBackend()
@@ -65,10 +72,94 @@ try {
     assert.equal(attempt.status, 'completed')
     assert.deepEqual([b, c].map(entry => document.tasks.find(row => row.id === entry.taskId).status), ['ready', 'ready'])
     assert.deepEqual(updated.result.promoted.map(row => row.id).sort(), [b.taskId, c.taskId].sort())
+    // C7 positive control: two distinct documents means the sampler really crossed the write. One
+    // means it never looked while the mutation was running, and the "no third state" claim above
+    // would then be true of nothing at all.
+    assert.ok(seen.size >= 2, `the sampler never observed the write: ${seen.size} distinct document(s) in ${samples} samples`)
+    assert.equal(seen.has('READ_FAILED'), false, 'the document was unreadable at some point during the write')
     return { samples, distinctDocuments: seen.size, before, after, promoted: updated.result.promoted.map(row => row.id) }
   })
 
-  await f.check('F8b-killing-the-runtime-mid-write-leaves-one-of-the-two-states', async () => {
+  /**
+   * Bring the runtime up with the crash injector loaded but **disarmed** (R4). The injector only
+   * fires once `arm()` creates the trigger file, so the runtime-start reconcile sweep — the first
+   * write a fresh runtime makes — cannot be mistaken for the mutation under test.
+   */
+  const injector = async (window, name) => {
+    const log = path.join(f.raw, `kill-${window}.jsonl`)
+    const trigger = path.join(f.root, `arm-${window}`)
+    const env = { ...f.env, NODE_OPTIONS: `--import ${PRELOAD}`, L409_KILL_WINDOW: window, L409_KILL_TARGET: f.stateFile(), L409_KILL_LOG: log, L409_KILL_ARM_FILE: trigger }
+    const child = await f.serve(env, name)
+    // One read first: whatever the startup sweep wanted to write is written and done with.
+    await f.cli(['orchestration', 'run-current'])
+    return { child, log, arm: () => fs.writeFileSync(trigger, 'armed') }
+  }
+  const hits = log => fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.armed !== true)
+
+  await f.check('F8b-i-a-kill-before-the-rename-leaves-the-old-document-and-a-stray-temporary', async () => {
+    const subject = await dispatchedTask('f8-window-before')
+    await f.stop(runtime, 'SIGTERM')
+    const injected = await injector('before_rename', 'serve-window-before')
+    runtime = injected.child
+    const beforeArm = createHash('sha256').update(fs.readFileSync(f.stateFile())).digest('hex')
+    injected.arm()
+    const id = requestId()
+    const outcome = await f.cliRaw(['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed', '--request-id', id])
+    const hit = hits(injected.log)
+    assert.equal(hit.length, 1, `the window was not entered: ${JSON.stringify(hit)}`)
+    assert.equal(hit[0].window, 'before_rename')
+    assert.ok(hit[0].tmpBytes > 0, 'the temporary file was written and fsynced before the kill')
+    // The committed document is untouched, and the temporary nobody renamed is still lying there.
+    assert.equal(createHash('sha256').update(fs.readFileSync(f.stateFile())).digest('hex'), beforeArm, 'the killed write left the document as it was when the injector was armed')
+    const strays = fs.readdirSync(path.dirname(f.stateFile())).filter(name => name !== 'state.json')
+    assert.equal(strays.length, 1, `expected exactly one stray temporary, found ${strays.join(', ') || 'none'}`)
+    runtime = await f.serve(f.env, 'serve-after-window-before')
+    const listed = await f.cli(['orchestration', 'task-list'])
+    assert.equal(listed.result.tasks.find(entry => entry.id === subject.taskId).status, 'dispatched', 'nothing was committed')
+    assert.equal(createHash('sha256').update(fs.readFileSync(f.stateFile())).digest('hex'), beforeArm, 'the restart read the same document, unchanged')
+    // The receipt was reserved before the body ran, so the same id is answered, never re-executed.
+    const retry = await f.cli(['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed', '--request-id', id], { fail: true })
+    assert.equal(retry.error.code, 'outcome_unknown')
+    assert.equal(retry._meta.outcome, 'unknown')
+    assert.equal(listed.result.tasks.find(entry => entry.id === subject.taskId).status, 'dispatched')
+    for (const stray of strays) fs.unlinkSync(path.join(path.dirname(f.stateFile()), stray))
+    return { hit, strays, cliExit: outcome.exit, cliCode: outcome.json?.error?.code ?? null, retry }
+  })
+
+  await f.check('F8b-ii-a-kill-after-the-rename-commits-the-document-and-leaves-the-receipt-pending', async () => {
+    const subject = await dispatchedTask('f8-window-after')
+    await f.stop(runtime, 'SIGTERM')
+    const injected = await injector('after_rename', 'serve-window-after')
+    runtime = injected.child
+    injected.arm()
+    const id = requestId()
+    const args = ['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed', '--result', '{"window":"after_rename"}', '--request-id', id]
+    const outcome = await f.cliRaw(args)
+    const hit = hits(injected.log)
+    assert.equal(hit.length, 1, `the window was not entered: ${JSON.stringify(hit)}`)
+    assert.equal(hit[0].window, 'after_rename')
+    // The rename happened: the document is the new one, whole, with the attempt settled with it.
+    const document = JSON.parse(fs.readFileSync(f.stateFile(), 'utf8'))
+    const task = document.tasks.find(entry => entry.id === subject.taskId)
+    const attempt = document.dispatches.find(entry => entry.id === subject.dispatchId)
+    assert.equal(task.status, 'completed')
+    assert.deepEqual(task.result, { window: 'after_rename' })
+    assert.equal(attempt.status, 'completed')
+    assert.equal(attempt.settledBy, 'task-update')
+    assert.deepEqual(fs.readdirSync(path.dirname(f.stateFile())).filter(name => name !== 'state.json'), [], 'the rename consumed the temporary')
+    runtime = await f.serve(f.env, 'serve-after-window-after')
+    // The client never learned the outcome, and the receipt is still pending: the same id is
+    // `outcome_unknown` for good, and the effect is never applied a second time.
+    // The very same request, byte for byte — a different one would be `request_conflict` instead.
+    const retry = await f.cli(args, { fail: true })
+    assert.equal(retry.error.code, 'outcome_unknown')
+    assert.equal(retry.error.stage, 'receipt')
+    const after = JSON.parse(fs.readFileSync(f.stateFile(), 'utf8')).tasks.find(entry => entry.id === subject.taskId)
+    assert.equal(after.version, task.version, 'the retry must not move the record again')
+    return { hit, cliExit: outcome.exit, cliCode: outcome.json?.error?.code ?? null, cliOutcome: outcome.json?._meta?.outcome ?? null, retry }
+  })
+
+  await f.check('F8c-killing-the-runtime-around-the-round-trip-leaves-one-of-the-two-states', async () => {
     // Calibrate first. A fixed small delay kills the runtime before the CLI has even connected,
     // which only ever exercises the "nothing was written" branch — an empty result that would read
     // as a pass. The delays below straddle a measured round trip, and the check fails unless both
@@ -77,7 +168,7 @@ try {
     const started = Date.now()
     await f.cli(['orchestration', 'task-update', '--id', calibration.taskId, '--status', 'completed'])
     const roundTrip = Date.now() - started
-    const delays = [0.45, 0.6, 0.7, 0.8, 0.88, 0.94, 1.0, 1.06, 1.15, 1.3, 1.6, 2.2].map(factor => Math.round(roundTrip * factor))
+    const delays = [0.45, 0.7, 0.88, 1.0, 1.06, 1.3, 1.6, 2.2].map(factor => Math.round(roundTrip * factor))
     const rounds = []
     for (const [round, delayMs] of delays.entries()) {
       const subject = await dispatchedTask(`f8-crash-${round}`)
@@ -112,7 +203,7 @@ try {
     return { roundTripMs: roundTrip, rounds, statuses, leftoverFiles: leftovers }
   })
 
-  await f.check('F8c-a-leftover-temporary-file-is-ignored-and-the-committed-document-wins', async () => {
+  await f.check('F8d-a-leftover-temporary-file-is-ignored-and-the-committed-document-wins', async () => {
     const stray = `${f.stateFile()}.${randomUUID()}.tmp`
     fs.writeFileSync(stray, '{"schemaVersion":1,"currentRunId":null,"runs":[],"tasks":[],"dispatches":[]}', { mode: 0o600 })
     const listed = await f.cli(['orchestration', 'task-list'])
@@ -124,7 +215,7 @@ try {
     return { stray, tasks: listed.result.tasks.length }
   })
 
-  await f.check('F8d-a-damaged-document-is-storage_corrupt-and-is-left-exactly-as-found', async () => {
+  await f.check('F8e-a-damaged-document-is-storage_corrupt-and-is-left-exactly-as-found', async () => {
     const good = fs.readFileSync(f.stateFile())
     const damaged = good.subarray(0, Math.floor(good.length / 2)) // a torn write
     fs.writeFileSync(f.stateFile(), damaged)

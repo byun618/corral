@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f1')
+const f = await fixture('f1', { expectedChecks: 6 })
 try {
   await f.serve()
 

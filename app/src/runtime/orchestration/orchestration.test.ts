@@ -9,12 +9,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { RuntimeError } from '../contracts.js'
+import { isRecord } from '../../shared/json.js'
 import { OrchestrationStore, isOrchestrationState } from './store.js'
 import { transition as exportedTransition, validateOrchestration, parseDeps, observationFor, type PaneSnapshot } from './index.js'
 import {
   MANUAL_TRANSITIONS, TASK_STATUSES, applyReconcile, createDispatch, createRun, createTask,
-  emptyState, exhausted, findDispatch, findTask, isId, mintId, reconcileDecision, runCounts, startability, transition,
-  type DispatchTarget, type OrchestrationState, type PaneObservation, type TaskRecord, type TaskStatus,
+  activeDispatch, emptyState, exhausted, findDispatch, findTask, isId, latestDispatch, mintId, reconcileDecision, runCounts, startability, transition,
+  type AgentSnapshot, type DispatchTarget, type IdKind, type OrchestrationState, type PaneObservation,
+  type StartabilityReason, type TaskRecord, type TaskStatus,
 } from './model.js'
 
 const AT = '2026-09-22T00:00:00.000Z'
@@ -35,7 +37,7 @@ function seed() {
  * Put a fresh task into `from` using only the product's own moves — no record is ever hand-edited,
  * so a starting shape this helper cannot reach is a shape the product cannot produce either.
  */
-function given(from: TaskStatus): { state: OrchestrationState; taskId: string; runId: string } {
+function given(from: TaskStatus | 'dispatched-reconciled'): { state: OrchestrationState; taskId: string; runId: string } {
   const base = seed()
   const created = createTask(base.state, { runId: base.runId, spec: 'subject', title: null, deps: from === 'pending' ? [base.dep.id] : [], at: AT })
   const taskId = created.task.id, runId = base.runId
@@ -44,6 +46,9 @@ function given(from: TaskStatus): { state: OrchestrationState; taskId: string; r
   if (from === 'blocked') return { state: transition(state, { taskId, to: 'blocked', settledBy: 'task-update', at: AT }).state, taskId, runId }
   state = createDispatch(state, { task: created.task, target: target(), agent: null, agentAbsenceReason: 'no_managed_agent', at: AT }).state
   if (from === 'dispatched') return { state, taskId, runId }
+  // The same status with the attempt already settled `unknown` — the shape a dead pane leaves.
+  if (from === 'dispatched-reconciled')
+    return { state: applyReconcile(state, latestDispatch(state, taskId)!, { kind: 'pane_gone' }, AT, 'seed').state, taskId, runId }
   return { state: transition(state, { taskId, to: from === 'completed' ? 'completed' : 'failed', settledBy: 'task-update', at: AT }).state, taskId, runId }
 }
 
@@ -52,7 +57,10 @@ describe('LIFE-409 transition table (F9)', () => {
     const observed: string[] = []
     for (const from of TASK_STATUSES) {
       for (const to of TASK_STATUSES) {
-        const { state, taskId } = given(from)
+        // The table itself is unconditional, so the `dispatched` row is measured with the attempt
+        // already closed by reconcile. The conditional guard that an *open* attempt puts on
+        // `→ blocked` (R1) is a separate rule and has its own tests below.
+        const { state, taskId } = given(from === 'dispatched' ? 'dispatched-reconciled' : from)
         expect({ from, actual: findTask(state, taskId)!.status }).toEqual({ from, actual: from })
         const result = code(() => transition(state, { taskId, to, settledBy: 'task-update', at: LATER }))
         const allowed = MANUAL_TRANSITIONS[from].includes(to)
@@ -139,36 +147,34 @@ describe('LIFE-409 transition table (F9)', () => {
 
 describe('LIFE-409 startability (F4)', () => {
   it('refuses every non-startable shape with its own reason and allows a retry after a dead attempt', () => {
-    for (const [from, reason] of [['pending', 'unmet_dependencies'], ['blocked', 'task_blocked'], ['dispatched', 'dispatch_active'], ['completed', 'task_completed']] as const) {
+    const refusals: [TaskStatus, StartabilityReason][] = [['pending', 'unmet_dependencies'], ['blocked', 'task_blocked'], ['dispatched', 'dispatch_active'], ['completed', 'task_completed']]
+    for (const [from, reason] of refusals) {
       const { state, taskId } = given(from)
       expect({ from, ...startability(state, findTask(state, taskId)!) }).toMatchObject({ from, startable: false, reason })
       expect(code(() => createDispatch(state, { task: findTask(state, taskId)!, target: target(), agent: null, agentAbsenceReason: null, at: LATER }))).toBe('task_not_startable')
     }
-    for (const from of ['ready', 'failed'] as const) {
+    const startable: TaskStatus[] = ['ready', 'failed']
+    for (const from of startable) {
       const { state, taskId } = given(from)
       expect({ from, ...startability(state, findTask(state, taskId)!) }).toMatchObject({ from, startable: true })
       expect(createDispatch(state, { task: findTask(state, taskId)!, target: target(), agent: null, agentAbsenceReason: null, at: LATER }).dispatch.status).toBe('dispatched')
     }
   })
 
-  it('refuses a second attempt on a task walked back to ready through blocked, until reconcile settles the first', () => {
-    // §4.3(2) is unconditional, and `dispatched → blocked → ready` is two legal manual moves, so
-    // this detour is the one way a `ready` task can still own an open attempt. Without the check
-    // in startability it would put two live workers on one task and strand the first attempt.
+  it('no longer has a blocked detour to walk back through (r0 behaviour, refused since r1)', () => {
+    // In r0 `dispatched → blocked → ready` was legal and left a `ready` Task owning a live attempt;
+    // startability refused the second dispatch. Since r1 the detour is refused at its first step
+    // (R1), so the shape cannot be built at all — the startability guard stays as a second net.
     const base = seed()
     const created = createTask(base.state, { runId: base.runId, spec: 'detour', title: null, deps: [], at: AT })
     const taskId = created.task.id
     const first = createDispatch(created.state, { task: created.task, target: target(), agent: null, agentAbsenceReason: null, at: AT })
-    let state = transition(first.state, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }).state
-    state = transition(state, { taskId, to: 'ready', settledBy: 'task-update', at: LATER }).state
-    expect(findTask(state, taskId)!.status).toBe('ready')
-    expect(findDispatch(state, first.dispatch.id)!.status).toBe('dispatched')
-    expect(startability(state, findTask(state, taskId)!)).toMatchObject({ startable: false, reason: 'dispatch_active', activeDispatchId: first.dispatch.id })
-    expect(code(() => createDispatch(state, { task: findTask(state, taskId)!, target: target({ paneId: 'pane-2' }), agent: null, agentAbsenceReason: null, at: LATER }))).toBe('task_not_startable')
-    // The exit is reconcile: once the pane is gone the attempt is unknown and the task is free.
-    const gone = applyReconcile(state, findDispatch(state, first.dispatch.id)!, { kind: 'pane_gone' }, LATER, 'instance-1').state
-    expect(findDispatch(gone, first.dispatch.id)!.status).toBe('unknown')
-    expect(startability(gone, findTask(gone, taskId)!)).toMatchObject({ startable: true })
+    expect(code(() => transition(first.state, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }))).toBe('illegal_transition')
+    expect(findDispatch(first.state, first.dispatch.id)!.status).toBe('dispatched')
+    expect(startability(first.state, findTask(first.state, taskId)!)).toMatchObject({ startable: false, reason: 'dispatch_active', activeDispatchId: first.dispatch.id })
+    // Reconcile is the exit: the pane is gone, the attempt is unknown, and both moves open up.
+    const gone = applyReconcile(first.state, findDispatch(first.state, first.dispatch.id)!, { kind: 'pane_gone' }, LATER, 'instance-1').state
+    expect(transition(gone, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }).task.status).toBe('blocked')
     expect(createDispatch(gone, { task: findTask(gone, taskId)!, target: target({ paneId: 'pane-2' }), agent: null, agentAbsenceReason: null, at: LATER }).dispatch.attempt).toBe(2)
   })
 
@@ -228,7 +234,8 @@ describe('LIFE-409 reconcile (F5)', () => {
     expect(gone.dispatch).toMatchObject({ status: 'unknown', settledBy: 'reconcile', settledAt: LATER, reconcile: { observed: true, reason: 'pane_gone' } })
     expect(findTask(gone.state, taskId)!.status).toBe('dispatched')
     // Never `failed`, in any row of the table.
-    for (const observation of [{ kind: 'pane_gone' }, { kind: 'pty_replaced', observedPtyId: 'x' }, { kind: 'epoch_changed', observedEpoch: 'y' }] as const)
+    const settling: PaneObservation[] = [{ kind: 'pane_gone' }, { kind: 'pty_replaced', observedPtyId: 'x' }, { kind: 'epoch_changed', observedEpoch: 'y' }]
+    for (const observation of settling)
       expect(applyReconcile(state, entry, observation, LATER, 'i').dispatch.status).toBe('unknown')
   })
 
@@ -285,7 +292,8 @@ describe('LIFE-409 store and validation (F8, F11)', () => {
   })
 
   it('mints ids with Orca prefixes and rejects the other kinds', () => {
-    for (const kind of ['run', 'task', 'ctx'] as const) {
+    const kinds: IdKind[] = ['run', 'task', 'ctx']
+    for (const kind of kinds) {
       const id = mintId(kind)
       expect(isId(kind, id)).toBe(true)
       expect(isId(kind, id.toUpperCase())).toBe(false)
@@ -309,5 +317,156 @@ describe('LIFE-409 store and validation (F8, F11)', () => {
     const ids = [mintId('task'), mintId('task')]
     expect(parseDeps(ids.join(', '))).toEqual(ids)
     expect(code(() => parseDeps(`${ids[0]!},${ids[0]!}`))).toBe('invalid_argument')
+  })
+})
+
+// --- r1 fix round ---------------------------------------------------------------------------------
+// Each case below is a review finding (verdict.md 1차 판정) written as a regression first: R1/C2/G1,
+// R3/C9/G2, C4 and C5. They failed against c26b68a before the fix in this round.
+
+/** A JSON round trip, so a damaged document can be built without a single type assertion. */
+function document(state: OrchestrationState): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(JSON.stringify(state))
+  if (!isRecord(parsed)) throw new Error('a state document is a record')
+  return parsed
+}
+function entry(doc: Record<string, unknown>, key: string, index: number): Record<string, unknown> {
+  const list = doc[key]
+  if (!Array.isArray(list)) throw new Error(`${key} is not an array`)
+  const item: unknown = list[index]
+  if (!isRecord(item)) throw new Error(`${key}[${index}] is not a record`)
+  return item
+}
+/** A dispatched task whose attempt carries a full agent snapshot — the shape the product writes. */
+function dispatchedWithAgent() {
+  const base = seed()
+  const created = createTask(base.state, { runId: base.runId, spec: 'agented', title: null, deps: [], at: AT })
+  const agent: AgentSnapshot = {
+    kind: 'claude', name: 'corral-1', phase: 'launching', requestedModel: null, requestedEffort: null, requestedAdvisor: null,
+    resolvedModel: null, resolvedAdvisor: null, argv: ['claude', '--session-id', 'x'], sessionId: 'x', sessionIdSource: 'client-minted', observedAt: AT,
+  }
+  const open = createDispatch(created.state, { task: created.task, target: target(), agent, agentAbsenceReason: null, at: AT })
+  return { state: open.state, taskId: created.task.id, dispatchId: open.dispatch.id, runId: base.runId }
+}
+
+describe('LIFE-409 r1 — an open attempt pins the task to dispatched (R1 = G1 = C2)', () => {
+  it('refuses dispatched → blocked while the attempt is open and allows it once reconcile closed it', () => {
+    const { state, taskId, dispatchId } = dispatchedWithAgent()
+    const refused = code(() => transition(state, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }))
+    expect(refused).toBe('illegal_transition')
+    try { transition(state, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }) } catch (error) {
+      expect(error instanceof RuntimeError && error.resources).toMatchObject({ reason: 'dispatch_active', activeDispatchId: dispatchId, taskId, from: 'dispatched', to: 'blocked' })
+      expect(error instanceof RuntimeError && isRecord(error.resources) && typeof error.resources.recovery === 'string').toBe(true)
+    }
+    // Settling the task is always available; blocking is what the open attempt refuses.
+    expect(transition(state, { taskId, to: 'completed', settledBy: 'task-update', at: LATER }).task.status).toBe('completed')
+    // The exit that does not touch the pane: reconcile observes it gone and closes the attempt.
+    const closed = applyReconcile(state, findDispatch(state, dispatchId)!, { kind: 'pane_gone' }, LATER, 'i').state
+    expect(transition(closed, { taskId, to: 'blocked', settledBy: 'task-update', at: LATER }).task.status).toBe('blocked')
+  })
+
+  it('reaches no state but dispatched while an attempt is open, over every legal path', () => {
+    // Breadth-first over the product's own moves — every manual transition plus a new attempt —
+    // from every starting status. The invariant is the one §4.3(2) assumes: an open attempt and a
+    // task that is not `dispatched` cannot coexist, so no reachable state hides an orphan attempt.
+    const seen = new Set<string>()
+    const queue: OrchestrationState[] = []
+    const shapes: TaskStatus[] = ['pending', 'ready', 'dispatched', 'completed', 'failed', 'blocked']
+    for (const from of shapes) queue.push(given(from).state)
+    let visited = 0, withOpen = 0
+    while (queue.length) {
+      const current = queue.shift()!
+      const key = JSON.stringify(current.tasks.map(task => [task.id, task.status, task.attempts])) + JSON.stringify(current.dispatches.map(d => [d.id, d.status]))
+      if (seen.has(key)) continue
+      seen.add(key)
+      visited += 1
+      for (const task of current.tasks) {
+        const open = activeDispatch(current, task.id)
+        if (open) { withOpen += 1; expect({ status: task.status, open: open.id }).toEqual({ status: 'dispatched', open: open.id }) }
+        for (const to of shapes) {
+          try { queue.push(transition(current, { taskId: task.id, to, settledBy: 'task-update', at: LATER }).state) } catch { /* refused paths are not states */ }
+        }
+        try { queue.push(createDispatch(current, { task, target: target(), agent: null, agentAbsenceReason: null, at: LATER }).state) } catch { /* not startable */ }
+      }
+      if (visited > 400) break
+    }
+    expect(visited).toBeGreaterThan(20)
+    expect(withOpen).toBeGreaterThan(0)
+  })
+})
+
+describe('LIFE-409 r1 — the store guard holds the union it narrows (R3 ⊃ G2 = C9)', () => {
+  const damaged = (build: (doc: Record<string, unknown>) => void): boolean => {
+    const doc = document(dispatchedWithAgent().state)
+    build(doc)
+    return isOrchestrationState(doc)
+  }
+
+  it('accepts what the product writes', () => {
+    const { state, taskId } = dispatchedWithAgent()
+    expect(isOrchestrationState(document(state))).toBe(true)
+    expect(isOrchestrationState(document(transition(state, { taskId, to: 'failed', result: { why: 'x' }, settledBy: 'task-update', at: LATER }).state))).toBe(true)
+    expect(isOrchestrationState(document(applyReconcile(state, state.dispatches[0]!, { kind: 'pane_gone' }, LATER, 'i').state))).toBe(true)
+  })
+
+  it('refuses a fractional attempt, a foreign settledBy and an impossible status pairing', () => {
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).attempt = 1.5 })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).attempt = 0 })).toBe(false)
+    expect(damaged(doc => { const d = entry(doc, 'dispatches', 0); d.status = 'completed'; d.settledBy = 'whatever'; d.settledAt = AT })).toBe(false)
+    expect(damaged(doc => { const d = entry(doc, 'dispatches', 0); d.status = 'completed'; d.settledBy = 'reconcile'; d.settledAt = AT })).toBe(false)
+    expect(damaged(doc => { const d = entry(doc, 'dispatches', 0); d.status = 'unknown'; d.settledBy = 'task-update'; d.settledAt = AT })).toBe(false)
+  })
+
+  it('refuses a broken agent identity and a broken reconcile record', () => {
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).agent = { kind: 123, argv: 'not-an-array' } })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).agent = { kind: 'claude' } })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).reconcile = { observed: 'yes', reason: 'invented' } })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).reconcile = { at: AT, runtimeInstanceId: 'i', observed: true, reason: 'invented' } })).toBe(false)
+  })
+
+  it('refuses a settled task with no result key', () => {
+    const { state, taskId } = dispatchedWithAgent()
+    const settled = document(transition(state, { taskId, to: 'completed', result: null, settledBy: 'task-update', at: LATER }).state)
+    const task = entry(settled, 'tasks', 1)
+    expect(isOrchestrationState(settled)).toBe(true)
+    delete task.result
+    expect(isOrchestrationState(settled)).toBe(false)
+  })
+
+  it('refuses orphans, duplicates and references that point nowhere', () => {
+    expect(damaged(doc => { doc.tasks = [] })).toBe(false)                                   // orphan dispatch
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).taskId = mintId('task') })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'dispatches', 0).runId = mintId('run') })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'tasks', 1).runId = mintId('run') })).toBe(false)
+    expect(damaged(doc => { entry(doc, 'tasks', 1).currentDispatchId = mintId('ctx') })).toBe(false)
+    expect(damaged(doc => { const list = doc.runs; if (Array.isArray(list)) list.push(list[0]) })).toBe(false)
+    expect(damaged(doc => { const list = doc.tasks; if (Array.isArray(list)) list.push(list[0]) })).toBe(false)
+    expect(damaged(doc => { const list = doc.dispatches; if (Array.isArray(list)) list.push(list[0]) })).toBe(false)
+  })
+})
+
+describe('LIFE-409 r1 — smaller review findings (C4, C5)', () => {
+  it('tells a pending task with nothing unmet apart from one that is actually waiting (C4)', () => {
+    const base = seed()
+    const waiting = createTask(base.state, { runId: base.runId, spec: 'waiting', title: null, deps: [base.dep.id], at: AT })
+    expect(startability(waiting.state, waiting.task)).toMatchObject({ startable: false, reason: 'unmet_dependencies', unmetDependencies: [base.dep.id] })
+    // The C4 trap: `blocked → pending` on a task whose dependencies are all met leaves it pending
+    // with nothing to wait for. The refusal must not claim unmet dependencies it cannot name.
+    const ready = createTask(base.state, { runId: base.runId, spec: 'no deps', title: null, deps: [], at: AT })
+    let state = transition(ready.state, { taskId: ready.task.id, to: 'blocked', settledBy: 'task-update', at: AT }).state
+    state = transition(state, { taskId: ready.task.id, to: 'pending', settledBy: 'task-update', at: AT }).state
+    const stuck = startability(state, findTask(state, ready.task.id)!)
+    expect(stuck).toMatchObject({ startable: false, reason: 'not_ready', unmetDependencies: [] })
+    expect(stuck.startable === false && stuck.recovery.includes('task-update')).toBe(true)
+  })
+
+  it('refuses --result on a transition that does not settle the task (C5)', () => {
+    const inv = (flags: Record<string, string | boolean>) => ({ command: 'orchestration task-update', flags, args: [], cwd: '/tmp' })
+    const id = mintId('task')
+    expect(code(() => validateOrchestration(inv({ id, status: 'blocked', result: '{"kept":true}' })))).toBe('invalid_argument')
+    expect(code(() => validateOrchestration(inv({ id, status: 'ready', result: '1' })))).toBe('invalid_argument')
+    expect(code(() => validateOrchestration(inv({ id, status: 'completed', result: '{"kept":true}' })))).toBe('no-error')
+    expect(code(() => validateOrchestration(inv({ id, status: 'failed', result: 'null' })))).toBe('no-error')
+    expect(code(() => validateOrchestration(inv({ id, status: 'blocked' })))).toBe('no-error')
   })
 })

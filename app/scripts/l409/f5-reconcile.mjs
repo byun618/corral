@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { fixture, until } from './lib.mjs'
 
-const f = await fixture('f5')
+const f = await fixture('f5', { expectedChecks: 8 })
 let runtime
 const rows = []
 try {
@@ -32,6 +32,7 @@ try {
     await f.cli(['terminal', 'close', '--terminal', first.handle])
     const shown = await f.cli(['orchestration', 'dispatch-show', '--id', d1.id])
     assert.equal(shown.result.terminal.live, false)
+    assert.equal(shown.result.terminal.source, 'observation', 'an attempt that was open when the call started is observed')
     assert.equal(shown.result.terminal.reason, 'pane_gone')
     assert.equal(shown.result.dispatch.status, 'unknown')
     assert.equal(shown.result.dispatch.settledBy, 'reconcile')
@@ -50,10 +51,15 @@ try {
     assert.equal(d2.attempt, 2)
     assert.equal(again.result.task.attempts, 2)
     assert.equal(again.result.task.currentDispatchId, d2.id)
-    // The superseded attempt is untouched by the retry.
+    // The superseded attempt is untouched by the retry, and (C11) reading it contacts no backend:
+    // a finished attempt is answered from its own record, with live null and source record.
     const old = await f.cli(['orchestration', 'dispatch-show', '--id', d1.id])
     assert.equal(old.result.dispatch.status, 'unknown')
     assert.equal(old.result.dispatch.attempt, 1)
+    assert.equal(old.result.terminal.source, 'record')
+    assert.equal(old.result.terminal.live, null)
+    assert.equal(old.result.terminal.observed, false)
+    assert.equal(old.result.terminal.reason, 'pane_gone', 'the stored reconcile is what is repeated')
     return { again, old }
   })
 
@@ -105,10 +111,35 @@ try {
     return { d3, stored, listed }
   })
 
+  await f.check('F5h-the-runtime-start-sweep-settles-a-dead-pane-with-no-command-at-all', async () => {
+    // R5 (계약 해석 2). Not "the next command reconciles": the runtime itself reconciles as it
+    // becomes ready. Nothing here issues an orchestration command after the restart — the stored
+    // document is polled directly until the attempt is `unknown`, and the runtime instance that
+    // recorded it has to be the new one.
+    const other = await f.cli(['orchestration', 'task-create', '--spec', 'settled by the runtime start sweep'])
+    const fourth = await f.pane('f5-pane-4')
+    const d4 = (await f.cli(['orchestration', 'dispatch', '--task', other.result.task.id, '--to', fourth.handle])).result.dispatch
+    await f.cli(['terminal', 'close', '--terminal', fourth.handle])
+    const stored = f.stateJson().dispatches.find(entry => entry.id === d4.id)
+    assert.equal(stored.status, 'dispatched', 'the attempt is still open on disk before the restart')
+    await f.stop(runtime, 'SIGKILL')
+    const startedAt = Date.now()
+    runtime = await f.serve(f.env, 'serve-startup-sweep')
+    const document = await f.untilState(doc => doc?.dispatches.some(entry => entry.id === d4.id && entry.status === 'unknown') === true,
+      'runtime-start sweep settles the dead attempt', 20000)
+    const settled = document.dispatches.find(entry => entry.id === d4.id)
+    assert.equal(settled.reconcile.reason, 'pane_gone')
+    assert.equal(settled.settledBy, 'reconcile')
+    assert.equal(document.tasks.find(entry => entry.id === other.result.task.id).status, 'dispatched')
+    const status = await f.cli(['status'])
+    assert.equal(settled.reconcile.runtimeInstanceId, status.result.runtime.instanceId, 'the new instance is the one that recorded it')
+    return { d4, settled, elapsedMs: Date.now() - startedAt, commandsAfterRestart: ['status (foundation, not orchestration)'] }
+  })
+
   await f.check('F5g-nothing-ever-became-failed-and-a-human-can-still-settle', async () => {
     const document = f.stateJson()
     assert.equal(document.dispatches.filter(entry => entry.status === 'failed').length, 0, 'reconcile must never produce failed')
-    assert.deepEqual(document.dispatches.map(entry => entry.status).sort(), ['unknown', 'unknown', 'unknown'])
+    assert.deepEqual(document.dispatches.map(entry => entry.status).sort(), ['unknown', 'unknown', 'unknown', 'unknown'])
     // §4.5: the human settle path is task-update with no --dispatch, because reconcile already
     // closed the attempt.
     const settled = await f.cli(['orchestration', 'task-update', '--id', taskId, '--status', 'failed', '--result', '{"reason":"operator called it"}'])

@@ -13,7 +13,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import specs from './specs.json'
-import { RuntimeError, reject, stringFlag, type CommandContext, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
+import { RuntimeError, reject, stringFlag, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
 import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
 import { terminalModule } from '../terminal/index.js'
@@ -79,7 +79,13 @@ export function validateOrchestration(inv: Invocation): void {
   if (f.status !== undefined && !isTaskStatus(f.status)) reject(`--status must be one of ${TASK_STATUSES.join('|')}`)
   if (f.ready && f.status !== undefined && f.status !== 'ready') reject('--ready and --status disagree')
   if (f.deps !== undefined) parseDeps(String(f.deps))
-  if (f.result !== undefined) parseResult(String(f.result))
+  if (f.result !== undefined) {
+    parseResult(String(f.result))
+    // C5: `--result` is stored only by `completed|failed`. Silently dropping it on any other
+    // transition let a caller believe a record was kept, so it is refused before anything runs.
+    if (inv.command !== 'orchestration task-update' || (f.status !== 'completed' && f.status !== 'failed'))
+      reject('--result belongs to task-update --status completed|failed')
+  }
   if (f['expected-version'] !== undefined && (!/^\d+$/.test(String(f['expected-version'])) || Number(f['expected-version']) < 1)) reject('--expected-version must be a positive integer')
   if (f.limit !== undefined && (!/^\d+$/.test(String(f.limit)) || Number(f.limit) < 1 || Number(f.limit) > 10000)) reject('--limit must be 1..10000')
   if (inv.command === 'orchestration dispatch-show' && (f.id === undefined) === (f.task === undefined)) reject('dispatch-show requires exactly one of --id or --task')
@@ -100,7 +106,23 @@ export type PaneSnapshot =
   | { observed: true; epoch: string; panes: { paneId: string; ptyId: string }[] }
   | { observed: false; reason: 'backend_unavailable' | 'observation_failed'; detail: string | null }
 
-async function observePanes(ctx: CommandContext): Promise<PaneSnapshot> {
+/**
+ * How long corral's own re-observation may take, whatever the caller's timeout is (C3). A sweep is
+ * housekeeping the caller did not ask for: a backend that accepts the connection and then says
+ * nothing must not turn `run-list` into a ten-second `outcome_unknown`. Exceeding it is an
+ * unobserved pass — §4.5's "could not look", which writes nothing.
+ */
+export const SWEEP_BUDGET_MS = 2000
+export interface ObservationBudget { signal: AbortSignal; deadlineAt: number }
+const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget => {
+  // Never more than half of what the caller has left: with `--timeout-ms 1000` a full 2 s sweep
+  // would eat the deadline and the command would answer `outcome_unknown` — the very failure this
+  // budget exists to prevent, just at a smaller scale.
+  const share = Math.max(250, Math.floor((ctx.deadlineAt - Date.now()) / 2))
+  return { signal: ctx.signal, deadlineAt: Date.now() + Math.min(ms, share) }
+}
+
+async function observePanes(ctx: ObservationBudget): Promise<PaneSnapshot> {
   const socket = process.env.CORRAL_BACKEND_SOCKET
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
   try {
@@ -144,13 +166,59 @@ function flattenReceiptError(error: unknown): unknown {
   if (!(error instanceof RuntimeError) || !isRecord(error.resources) || !('requestId' in error.resources)) return error
   const wrapper = error.resources
   const detail = isRecord(wrapper.detail) ? wrapper.detail : {}
+  // R7 = C1: the inner error's own recovery is the one that names what to do — `terminal list` for
+  // a stale handle, `run-create` for a missing Run. Only an error that carries none gets the
+  // receipt's generic advice, and even then only because retrying really is the next step.
+  const recovery = typeof detail.recovery === 'string' ? detail.recovery
+    : 'Retry with the same --request-id, or inspect orchestration run-show / task-list / dispatch-show'
   return new RuntimeError(error.code, error.message,
-    { ...detail, requestId: wrapper.requestId, recovery: 'Retry with the same --request-id, or inspect orchestration run-show / task-list / dispatch-show' },
-    error.stage, error.outcome)
+    { ...detail, requestId: wrapper.requestId, recovery }, error.stage, error.outcome)
 }
 
 const preflight = (code: string, message: string, resources?: unknown): never => {
   throw new RuntimeError(code, message, resources, 'preflight', 'not_started')
+}
+
+/**
+ * §4.5's re-observation, as a pure-ish pass: one look at the backend, applied to every open attempt.
+ * The returned document is *not* written here — the caller decides when it is durable (R2), which
+ * is what keeps a rejected command from leaving bytes behind.
+ */
+async function reconcilePass(state: OrchestrationState, ctx: ObservationBudget, instanceId: string, seen?: PaneSnapshot): Promise<{ state: OrchestrationState; changed: boolean; snapshot: PaneSnapshot | null }> {
+  if (!state.dispatches.some(entry => entry.status === 'dispatched')) return { state, changed: false, snapshot: seen ?? null }
+  const snapshot = seen ?? await observePanes(budgeted(ctx, SWEEP_BUDGET_MS))
+  let next = state, changed = false
+  const at = new Date().toISOString()
+  for (const entry of state.dispatches) {
+    if (entry.status !== 'dispatched') continue
+    const outcome = applyReconcile(next, entry, observationFor(snapshot, entry.target), at, instanceId)
+    next = outcome.state
+    changed ||= outcome.changed
+  }
+  return { state: next, changed, snapshot }
+}
+
+/**
+ * R5 (1차 판정 계약 해석 2). The reconcile the freeze asks for at runtime start, run once by
+ * `server.ts` as the runtime becomes ready — so a pane that died while corral was not running is
+ * `unknown` on disk without anyone having to issue a command first. A backend corral cannot reach
+ * writes nothing, exactly as §4.5 says, and a document it cannot read is left alone: startup is not
+ * the place to turn corruption into an exit code.
+ *
+ * There is no "backend reconnect" event to hook: this runtime holds no backend connection
+ * (`ownership: external, lifecycle: independent`, one connection per call), so the first command
+ * after a reconnect is where that moment is observed.
+ */
+export async function orchestrationStartupSweep(userData: string, ctx: { instanceId: string; signal: AbortSignal }): Promise<{ swept: boolean; changed: boolean; reason: string | null }> {
+  const store = new OrchestrationStore(userData)
+  let state: OrchestrationState
+  try { state = store.read() } catch (error) { return { swept: false, changed: false, reason: error instanceof RuntimeError ? error.code : 'unreadable' } }
+  if (!state.dispatches.some(entry => entry.status === 'dispatched')) return { swept: false, changed: false, reason: 'no_open_attempt' }
+  try {
+    const pass = await reconcilePass(state, { signal: ctx.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
+    if (pass.changed) store.write(pass.state)
+    return { swept: true, changed: pass.changed, reason: pass.snapshot?.observed === false ? pass.snapshot.reason : null }
+  } catch (error) { return { swept: false, changed: false, reason: error instanceof Error ? error.message : String(error) } }
 }
 
 export function orchestrationModule(userData: string): CommandModule {
@@ -182,38 +250,14 @@ export function orchestrationModule(userData: string): CommandModule {
       const limit = Number(f.limit ?? 100)
 
       let snapshot: PaneSnapshot | undefined
-      const observe = async (): Promise<PaneSnapshot> => snapshot ??= await observePanes(ctx)
-
-      /**
-       * §4.5. Re-observe every open attempt before the command runs — a superset of the three
-       * moments the freeze names (runtime start, backend reconnect, `dispatch-show`), because the
-       * first command after any of them passes through here. With no open attempt the backend is
-       * not contacted at all, so `run-list` on a profile with no dispatches needs no backend.
-       * An unreachable backend writes nothing, so "could not look" never becomes a stored verdict.
-       */
-      const sweep = async (): Promise<OrchestrationState> => {
-        let state = records.read()
-        if (!state.dispatches.some(entry => entry.status === 'dispatched')) return state
-        const seen = await observe()
-        let changed = false
-        for (const entry of state.dispatches) {
-          if (entry.status !== 'dispatched') continue
-          const outcome = applyReconcile(state, entry, observationFor(seen, entry.target), now(), ctx.instanceId)
-          state = outcome.state
-          changed ||= outcome.changed
-        }
-        // Not an `onEffect`: this is corral's own re-observation, not the effect the caller asked
-        // for. The caller's outcome still describes the caller's command.
-        if (changed) records.write(state)
-        return state
-      }
+      const observe = async (): Promise<PaneSnapshot> => snapshot ??= await observePanes(budgeted(ctx, SWEEP_BUDGET_MS))
 
       const resolveRunId = (state: OrchestrationState): string => {
         const id = flag('run') ?? state.currentRunId
         if (id === null || id === undefined)
           return preflight('run_required', 'No Run is bound to this profile and --run was not given',
             { currentRun: null, recovery: 'corral orchestration run-create --objective <text>, or corral orchestration run-use --id <run>' })
-        if (!findRun(state, id)) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: state.currentRunId })
+        if (!findRun(state, id)) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: state.currentRunId, recovery: 'corral orchestration run-list, then run-use --id <run> or --run <run>' })
         return id
       }
       const taskInRun = (state: OrchestrationState, runId: string, id: string) => {
@@ -245,25 +289,42 @@ export function orchestrationModule(userData: string): CommandModule {
         try { return await log.run(inv, body) } catch (error) { throw flattenReceiptError(error) }
       }
 
-      const state = await sweep()
+      /**
+       * §4.5, and R2. Every command re-observes the open attempts first, but the result is only
+       * *computed* here. A read persists it (that is the `dispatch-show` moment the freeze names);
+       * a mutation carries it into its own `atomicWrite`, so an accepted mutation still costs one
+       * rename and a **rejected** one leaves the stored bytes byte-identical. Runtime start has its
+       * own pass in `server.ts` (R5). With no open attempt the backend is not contacted at all.
+       */
+      const mutating = MUTATIONS.has(inv.command)
+      const before = records.read()
+      const pass = await reconcilePass(before, ctx, ctx.instanceId)
+      if (pass.snapshot) snapshot ??= pass.snapshot
+      const state = pass.state
+      // Not an `onEffect`: corral's own re-observation is not the effect the caller asked for.
+      if (pass.changed && !mutating) records.write(state)
 
       switch (inv.command) {
         case 'orchestration run-create':
           return mutate(async () => {
-            const created = createRun(records.read(), need('objective'), now())
+            const created = createRun(state, need('objective'), now())
             ctx.onEffect?.()
             records.write(created.state)
             return { run: created.run, currentRunId: created.state.currentRunId }
           })
-        case 'orchestration run-use':
+        case 'orchestration run-use': {
+          // R7: resolving the target happens outside the receipt, like the terminal module's own
+          // preflight — a rejection that never reached the body must not leave a pending receipt.
+          const id = need('id')
+          if (!findRun(state, id)) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: state.currentRunId, recovery: 'corral orchestration run-list, then run-use --id <run>' })
           return mutate(async () => {
-            const fresh = records.read(), id = need('id')
-            const run = findRun(fresh, id)
-            if (!run) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: fresh.currentRunId })
+            const run = findRun(state, id)
+            if (!run) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: state.currentRunId })
             ctx.onEffect?.()
-            records.write({ ...fresh, currentRunId: run.id })
+            records.write({ ...state, currentRunId: run.id })
             return { run, currentRunId: run.id }
           })
+        }
         case 'orchestration run-current':
           return { run: state.currentRunId === null ? null : findRun(state, state.currentRunId) ?? null }
         case 'orchestration run-list': {
@@ -275,27 +336,28 @@ export function orchestrationModule(userData: string): CommandModule {
           if (!run) return preflight('run_not_found', `No run ${id}`, { runId: id, boundRun: state.currentRunId })
           return { run, counts: runCounts(state, run.id) }
         }
-        case 'orchestration task-create':
+        case 'orchestration task-create': {
+          const runId = resolveRunId(state)
           return mutate(async () => {
-            const fresh = records.read(), runId = resolveRunId(fresh)
-            const created = createTask(fresh, { runId, spec: need('spec'), title: flag('title') ?? null, deps: parseDeps(flag('deps') ?? ''), at: now() })
+            const created = createTask(state, { runId, spec: need('spec'), title: flag('title') ?? null, deps: parseDeps(flag('deps') ?? ''), at: now() })
             ctx.onEffect?.()
             records.write(created.state)
             return { run: findRun(created.state, runId) ?? null, task: created.task }
           })
+        }
         case 'orchestration task-list': {
           const runId = resolveRunId(state)
           const wanted: TaskStatus | undefined = f.ready ? 'ready' : isTaskStatus(f.status) ? f.status : undefined
           const tasks = state.tasks.filter(task => task.runId === runId && (wanted === undefined || task.status === wanted))
           return { run: findRun(state, runId) ?? null, tasks: tasks.slice(0, limit), totalCount: tasks.length, truncated: tasks.length > limit }
         }
-        case 'orchestration task-update':
+        case 'orchestration task-update': {
+          const runId = resolveRunId(state)
           return mutate(async () => {
-            const fresh = records.read(), runId = resolveRunId(fresh)
-            const task = taskInRun(fresh, runId, need('id'))
+            const task = taskInRun(state, runId, need('id'))
             const status = need('status')
             if (!isTaskStatus(status)) return preflight('invalid_argument', `--status must be one of ${TASK_STATUSES.join('|')}`)
-            const moved = transition(fresh, {
+            const moved = transition(state, {
               taskId: task.id, to: status, settledBy: 'task-update', at: now(),
               dispatchId: flag('dispatch'),
               result: f.result === undefined ? undefined : parseResult(need('result')),
@@ -305,28 +367,42 @@ export function orchestrationModule(userData: string): CommandModule {
             records.write(moved.state)
             return { run: findRun(moved.state, runId) ?? null, task: moved.task, dispatch: moved.dispatch, promoted: moved.promoted }
           })
-        case 'orchestration dispatch':
+        }
+        case 'orchestration dispatch': {
+          const runId = resolveRunId(state)
           return mutate(async () => {
-            const runId = resolveRunId(records.read())
             // §4.3(1): the terminal module's own three-layer check, borrowed as a read command.
             const resolved = await showTerminal(need('to'))
-            const fresh = records.read()
-            const task = taskInRun(fresh, runId, need('task'))
-            const created = createDispatch(fresh, { task, target: resolved.target, agent: resolved.agent, agentAbsenceReason: resolved.agentAbsenceReason, at: now() })
+            const task = taskInRun(state, runId, need('task'))
+            const created = createDispatch(state, { task, target: resolved.target, agent: resolved.agent, agentAbsenceReason: resolved.agentAbsenceReason, at: now() })
             ctx.onEffect?.()
             records.write(created.state)
             return { run: findRun(created.state, runId) ?? null, task: created.task, dispatch: created.dispatch, terminal: resolved.terminal }
           })
+        }
         case 'orchestration dispatch-show': {
           const entry = f.id === undefined ? latestDispatch(state, need('task')) : findDispatch(state, need('id'))
           if (!entry) return preflight('dispatch_not_found', f.id === undefined ? `No dispatch for task ${need('task')}` : `No dispatch ${need('id')}`,
             { dispatchId: flag('id') ?? null, taskId: flag('task') ?? null })
+          const task = findTask(state, entry.taskId) ?? null
+          // C11: an attempt that was *already* settled when this call started is history. Whether
+          // its pane happens to be alive now says nothing about it, so the answer comes from the
+          // stored reconcile and the backend is not contacted at all — `live: null` means "not
+          // observed", never "observed and gone". An attempt that was still open is observed, and
+          // that observation is reported even when it is the one that just settled it.
+          if (findDispatch(before, entry.id)?.status !== 'dispatched') return {
+            dispatch: entry, task,
+            terminal: {
+              live: null, observed: false, source: 'record', reason: entry.reconcile?.reason ?? null,
+              observedAt: entry.reconcile?.at ?? null, runtimeInstanceId: entry.reconcile?.runtimeInstanceId ?? null, detail: null,
+            },
+          }
           const observation = observationFor(await observe(), entry.target)
           const decision = reconcileDecision(observation)
           return {
-            dispatch: entry, task: findTask(state, entry.taskId) ?? null,
+            dispatch: entry, task,
             terminal: {
-              live: decision.live, observed: decision.observed, reason: decision.reason,
+              live: decision.live, observed: decision.observed, source: 'observation', reason: decision.reason,
               observedAt: now(), runtimeInstanceId: ctx.instanceId,
               detail: observation.kind === 'unobserved' ? observation.detail : null,
             },

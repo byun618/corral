@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { fixture } from './lib.mjs'
 import { differences, EXCLUDED } from './compare.mjs'
 
-const f = await fixture('f2')
+const f = await fixture('f2', { expectedChecks: 4 })
 let runtime
 try {
   await f.startBackend()

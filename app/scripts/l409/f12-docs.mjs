@@ -1,4 +1,10 @@
-// LIFE-409 F12 — capture the shipped help text verbatim.
+// LIFE-409 F12 — capture the shipped help text verbatim, and hold the prose to the same bar.
+//
+// G5: r0 captured `--help` and checked nothing about the README, so a README sentence that had
+// become false (R1's "settle it with task-update") passed F12. The documentation checks below are
+// mechanical, not semantic — every command and every error code this module can answer with has to
+// appear in both the README and `specs.json` — but they close the gap where a whole command or a
+// whole failure mode goes undocumented.
 //
 // `--help` and `agent-context` are client-side: they never connect, never start a runtime and
 // never touch a profile. That is itself part of what is being recorded here, so this script runs
@@ -12,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const cli = path.join(app, 'cli/corral.mjs')
 const owner = process.env.CORRAL_VERIFY_OWNER ?? 'claude'
-const raw = path.resolve(process.env.CORRAL_VERIFY_RAW ?? path.join(app, '../specs/LIFE-409-cli-orchestration-core/raw/worker', owner, 'help'))
+const raw = path.resolve(process.env.CORRAL_VERIFY_RAW ?? path.join(app, '../specs/LIFE-409-cli-orchestration-core/raw/worker', owner, process.env.CORRAL_VERIFY_ROUND ?? '', 'help'))
 const profile = fs.realpathSync(fs.mkdtempSync('/tmp/l409-' + owner + '-help-'))
 fs.mkdirSync(raw, { recursive: true })
 
@@ -41,9 +47,26 @@ for (const forbidden of ['gate-create', 'gate-list', 'gate-resolve', 'reset', 'c
   assert.equal(schema.commands.some(spec => spec.command === `orchestration ${forbidden}`), false, `${forbidden} must not exist in this slice`)
 fs.writeFileSync(path.join(raw, 'agent-context-orchestration.json'), JSON.stringify({ commandCount: schema.commandCount, commands: ours }, null, 2) + '\n')
 
+// --- G5: the shipped prose mentions every command and every error code -------------------------
+const readme = fs.readFileSync(path.join(app, 'cli/README.md'), 'utf8')
+const specsText = fs.readFileSync(path.join(app, 'src/runtime/orchestration/specs.json'), 'utf8')
+for (const command of COMMANDS) {
+  assert.ok(readme.includes(command), `README never mentions ${command}`)
+  assert.ok(specsText.includes(`"orchestration ${command}"`), `specs.json never mentions ${command}`)
+}
+// Every code the module raises, read out of the source rather than from a list kept by hand.
+const source = ['model.ts', 'index.ts', 'store.ts'].map(name => fs.readFileSync(path.join(app, 'src/runtime/orchestration', name), 'utf8')).join('\n')
+const INTERNAL = new Set(['operation_failed', 'unsupported'])  // guards for impossible variants, not a caller's contract
+const BORROWED = ['invalid_terminal', 'stale_terminal', 'backend_unavailable', 'request_conflict', 'outcome_unknown']
+const raised = [...new Set([...source.matchAll(/(?:fail|preflight|new RuntimeError)\('([a-z_]+)'/g)].map(match => match[1]))].filter(code => !INTERNAL.has(code))
+const codes = [...new Set([...raised, ...BORROWED])].sort()
+const missing = { readme: codes.filter(code => !readme.includes(code)), specs: codes.filter(code => !specsText.includes(code)) }
+assert.deepEqual(missing, { readme: [], specs: [] }, `documented codes are missing: ${JSON.stringify(missing)}`)
+fs.writeFileSync(path.join(raw, 'doc-coverage.json'), JSON.stringify({ commands: COMMANDS, codes, raisedInSource: raised.sort(), borrowed: BORROWED, internalNotDocumented: [...INTERNAL], missing }, null, 2) + '\n')
+
 // The metadata path must not have created anything in the profile.
 const created = fs.readdirSync(profile)
 assert.deepEqual(created, [], `--help/agent-context created ${created.join(', ')} in the profile`)
 fs.rmSync(profile, { recursive: true, force: true })
 
-console.log(JSON.stringify({ raw, commands: ours.length, commandCount: schema.commandCount, profileArtifacts: created.length }))
+console.log(JSON.stringify({ raw, commands: ours.length, commandCount: schema.commandCount, profileArtifacts: created.length, documentedCodes: codes.length }))

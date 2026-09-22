@@ -14,7 +14,7 @@ node cli/corral.mjs diagnostics memory --json
 
 `--help` and `agent-context` never connect or start the app. All commands support `--json`. Successful calls exit 0; errors exit 1, including a stopped runtime. JSON mode emits one JSON document on stdout (serve emits its ready document and remains in the foreground); plain errors go to stderr. These commands do not consume stdin. Unknown commands/options, positionals and duplicate options fail before effects. No legacy command entry or alternate environment-variable dispatch exists.
 
-The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands and 10 terminal commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403; setup/archive hooks require LIFE-412. Browser and service command groups are not registered. Existing GUI actions remain available through the palette.
+The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands, 10 terminal commands and 10 orchestration commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403; setup/archive hooks require LIFE-412. Browser and service command groups are not registered. Existing GUI actions remain available through the palette.
 
 ## Terminals and agents
 
@@ -31,6 +31,40 @@ Delivery and the wait are two answers, reported separately. `record.matchCount`/
 corral reads only the session record it can prove the pane owns: the session id it minted for claude and grok, and for codex the single rollout whose `session_meta` cwd is this directory and whose timestamp is at or after the launch. With no such rollout, or with more than one, the match count, the resolved model and the reported record path are all unknown rather than taken from another session's file. For claude the derived record path has one documented limit corral does not work around: a working directory whose `[^A-Za-z0-9] → -` conversion exceeds 200 characters is stored under a truncated name plus an undocumented hash of the full path, and `CLAUDE_CODE_PROJECT_DIR_NAME` replaces the derived name outright. In both cases corral looks where the rule says and reports `not_found` rather than guessing.
 
 Per-stage status is authoritative for a composition. `worktree create --agent` and `create --prompt` report `stages.*.status` one by one, and the synthesized top-level `outcome` is the coarser of the two: an effect-free agent rejection — a refused submission, an unverified manifest — leaves its stage `failed` or `not_started` while `outcome` may still read `unknown` because another stage's effect was not observed. Read the stage, not the summary, before deciding what to retry.
+
+## Orchestration: Runs, Tasks and Dispatches
+
+`orchestration run-create/run-use/run-current/run-list/run-show`, `task-create/task-list/task-update`, `dispatch` and `dispatch-show` keep the local record of what an AI coordinator is doing: which Task a given attempt belongs to, which pane and which agent generation that attempt was bound to, and what is still true after the runtime has been restarted. They start nothing. Launching a worker into a dispatched pane, its messages, its `worker_done` and its capability withdrawal are LIFE-410; this slice sends nothing to any pane and answers no dialog.
+
+A **Run** (`run_<12 hex>`) groups Tasks. A **Task** (`task_<12 hex>`) carries a spec, optional dependencies and a status. A **Dispatch** (`ctx_<12 hex>`) is one *attempt* at a Task, bound to one terminal handle. The id prefixes match the ones the harness documents already use.
+
+The current Run is bound **per profile**, not per calling terminal: a coordinator session works on one Run at a time, and this slice has no channel that carries the caller's terminal identity. `--run <id>` overrides the binding for a single call without rebinding it, so several Runs can be worked with anyway. With neither a binding nor `--run`, a command that needs a Run fails `run_required` before any effect and names `run-create`/`run-use` in `resources.recovery`.
+
+### Statuses and transitions
+
+Task status is `pending|ready|dispatched|completed|failed|blocked`; Dispatch status is `dispatched|completed|failed|unknown`. A Task with no dependencies, or whose dependencies have all completed, is created `ready`; otherwise it is `pending` and is promoted to `ready` inside the same atomic write that completes its last dependency.
+
+`task-update` is the only manual transition, and its table is exactly: `dispatched → completed|failed`, anything except `completed` `→ blocked`, and `blocked → ready|pending`. `ready → dispatched` belongs to `dispatch` alone, `completed` is terminal, and everything else is `illegal_transition` with the allowed set in `resources`. `blocked → ready` additionally requires every dependency completed, which keeps `ready` meaning what it says; `blocked → pending` is always available.
+
+Checks run in a fixed order and every rejection is effect-free: `--expected-version` mismatch is `version_conflict`, then an illegal move is `illegal_transition`, then a `--dispatch` that is not the open attempt is `stale_dispatch`. So settling an already-settled Task is `illegal_transition` even when the caller names the attempt that settled it, while naming a superseded attempt of a still-open Task is `stale_dispatch`. Omitting `--dispatch` settles whichever attempt is open.
+
+`dispatch --task --to <handle>` resolves the handle through the terminal module's own three-layer check — an unverifiable handle is `invalid_terminal`, one from another runtime or backend generation or whose PTY is gone or replaced is `stale_terminal`, and a profile with no reachable backend is `backend_unavailable`. The attempt stores the target identity (`handle`, `runtimeId`, `epoch`, `ptyId`, `paneId`) and a snapshot of the pane's managed agent — kind, name, phase, requested and resolved model/effort/advisor, argv and session id — or `null` with an `agentAbsenceReason` when the pane has none. A Task is startable when it is `ready`, or when its most recent attempt ended `failed` or `unknown`; that retry becomes attempt *n+1* and the superseded attempt is left untouched. Everything else is `task_not_startable` with `reason` and `unmetDependencies`.
+
+`failed` means an **observed** failure and nothing else. An absent pane, a replaced PTY, a moved backend generation and an unreachable backend are never turned into `failed`, and nothing is ever retried automatically.
+
+### Resume
+
+Before every orchestration command, and again inside `dispatch-show`, every open attempt is re-observed. That is a superset of the three moments resume has to cover — runtime start, backend reconnect, and `dispatch-show` — because the first command after any of them passes through it. With no open attempt the backend is not contacted at all.
+
+The same generation alive keeps the attempt `dispatched` and reports `terminal.live: true`. An absent pane, a replaced PTY or a changed backend generation settles the attempt `unknown` with `reason` `pane_gone`/`pty_replaced`/`epoch_changed` and leaves the **Task** `dispatched`, so it can be dispatched again as the next attempt. An unreachable backend records nothing at all: `terminal.live` is `"unknown"`, `observed` is `false`, and the stored document is left byte-identical, because "could not look" must never read as "looked and saw". Only reconcile creates `unknown`, and a human settles the Task afterwards with `task-update` — no `--dispatch` needed, since the attempt is already closed.
+
+`dispatch-show`'s `terminal` block is the observation *that call* made; the record's `reconcile` block is the last observation that changed something, with the runtime instance that recorded it. An observation that repeats what is already stored writes nothing, so repeating the call leaves the document byte-identical.
+
+### Storage and durability
+
+All of it is one JSON document at `<userData>/runtime/orchestration/state.json`, rewritten atomically. A mutation that touches a Task, its attempt and two promoted dependents is still one `rename(2)`, so multi-record atomicity is a property of the layout rather than of a protocol. **The durability promise is the profile's existing one: process-crash safe, not power-loss safe** — the write is `open(O_EXCL)` → write → `fsync` → `rename`, with no directory `fsync` and no `F_FULLFSYNC`. A damaged document is reported as `storage_corrupt` and is never rewritten, truncated or silently reinitialized; an absent one is simply a new profile.
+
+Every mutation accepts `--request-id` and mints one when it is omitted, sharing the profile's existing 24-hour receipt store: a replayed id returns the first result with `replayed: true`, the same id with different input is `request_conflict`, and a receipt still pending is `outcome_unknown` and is never re-executed. Mutations are serialized in one lane per runtime, reads included, because resume can write from a read path. Across processes the profile's single-owner runtime lock is what keeps one writer.
 
 ## Profiles and targets
 

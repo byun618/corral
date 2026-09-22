@@ -96,7 +96,7 @@ export function validateOrchestration(inv: Invocation): void {
  * all of them from "could not look". These are the same two read calls the terminal module's own
  * `resolve()` makes, and neither sends anything to a pane.
  */
-type PaneSnapshot =
+export type PaneSnapshot =
   | { observed: true; epoch: string; panes: { paneId: string; ptyId: string }[] }
   | { observed: false; reason: 'backend_unavailable' | 'observation_failed'; detail: string | null }
 

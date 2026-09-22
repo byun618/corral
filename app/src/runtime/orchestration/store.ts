@@ -122,7 +122,11 @@ function isConsistent(runs: RunRecord[], tasks: TaskRecord[], dispatches: Dispat
       if (task.currentDispatchId !== attempt.id) return false
       if (task.status === 'completed' || task.status === 'failed') return false
     }
-    if (!task.deps.every(id => tasks.some(other => other.id === id && other.runId === task.runId))) return false
+    // M11 = C26: a Task naming itself resolves against the same list it belongs to, so the r2
+    // check accepted it — `dependency_cycle` exists for exactly that document and the guard has to
+    // agree with it. A cycle through two Tasks is not checked: the product cannot mint one (ids are
+    // minted after `--deps` is read) and no reviewer demonstrated one on disk.
+    if (!task.deps.every(id => id !== task.id && tasks.some(other => other.id === id && other.runId === task.runId))) return false
   }
   return tasks.every(task => {
     if (task.currentDispatchId === null) return true

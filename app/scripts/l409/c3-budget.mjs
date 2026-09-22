@@ -15,8 +15,9 @@ import net from 'node:net'
 import { fixture } from './lib.mjs'
 
 const BUDGET_MS = 2000
-const f = await fixture('c3', { expectedChecks: 4 })
+const f = await fixture('c3', { expectedChecks: 5 })
 let runtime, silent
+let contacts = 0
 try {
   const backend = await f.startBackend()
   runtime = await f.serve()
@@ -24,6 +25,19 @@ try {
   const task = await f.cli(['orchestration', 'task-create', '--spec', 'bound to a pane whose backend goes silent'])
   const pane = await f.pane('c3-pane')
   const dispatched = await f.cli(['orchestration', 'dispatch', '--task', task.result.task.id, '--to', pane.handle])
+
+  // M5 = R18. The negative half of this file (a silent backend, a timeout below the floor) passes
+  // just as well when no observation is ever made — Codex proved it by running C3 against a bundle
+  // whose `budgeted()` always returned null and getting 4/4. This is the half that fails there: a
+  // command with its whole default budget really does look, and says so in the response.
+  await f.check('C3-a-command-with-budget-to-spare-actually-observes-the-pane', async () => {
+    const shown = await f.cli(['orchestration', 'dispatch-show', '--id', dispatched.result.dispatch.id])
+    assert.equal(shown.result.terminal.observed, true, 'a live backend and a full budget must produce an observation')
+    assert.equal(shown.result.terminal.live, true)
+    assert.equal(shown.result.terminal.source, 'observation')
+    assert.equal(shown.result.dispatch.status, 'dispatched')
+    return { shown }
+  })
 
   const timed = async (args, options = {}) => {
     const started = Date.now()
@@ -36,7 +50,9 @@ try {
   await f.stop(runtime, 'SIGTERM')
   await f.stop(backend, 'SIGKILL')
   try { fs.unlinkSync(f.socket) } catch { /* the backend removed it on the way out */ }
-  silent = net.createServer(socket => socket.on('data', () => {}))
+  // M5 = R18: every connection to this socket is a backend contact, counted so a check can
+  // assert the observation was *skipped* rather than merely unanswered.
+  silent = net.createServer(socket => { contacts += 1; socket.on('data', () => {}) })
   await new Promise(resolve => silent.listen(f.socket, resolve))
   fs.chmodSync(f.socket, 0o600)
   runtime = await f.serve(f.env, 'serve-silent-backend')
@@ -76,7 +92,9 @@ try {
       const noAttempts = await timed(['orchestration', 'run-list'], { env: quiet })
       assert.equal(noAttempts.ok, true, JSON.stringify(noAttempts))
       // G9: "it answered" is not the control — "it answered without waiting on anything" is.
-      assert.ok(noAttempts.ms < baseline.ms + 1500, `a profile with no open attempt took ${noAttempts.ms} ms`)
+      // M10 = C23: measured at 40 ms against a 182 ms baseline, so 1500 ms of slack could not tell
+      // "never contacted the backend" from "contacted it and waited out a budget". 500 ms can.
+      assert.ok(noAttempts.ms < baseline.ms + 500, `a profile with no open attempt took ${noAttempts.ms} ms`)
       return { short, noAttempts }
     } finally { await f.stop(quietRuntime, 'SIGTERM') }
   })
@@ -102,18 +120,29 @@ try {
 
   await f.check('C3-a-timeout-shorter-than-the-floor-skips-the-observation-instead-of-spending-it', async () => {
     const before = f.stateDigest()
-    const short = []
+    const short = [], observed = []
     for (const ms of [100, 250, 400]) {
       const measured = await timed(['orchestration', 'run-list', '--timeout-ms', String(ms)])
       assert.equal(measured.ok, true, JSON.stringify(measured))
       assert.ok(measured.ms < Number(ms) + 400, `--timeout-ms ${ms} took ${measured.ms} ms`)
       short.push(measured)
+      // M5 = R18: "skipped" is a claim about the response, not only about the clock. Below the
+      // floor the share is worth nothing, so the command must say it did not look — and must not
+      // have opened a connection to say it.
+      const beforeContacts = contacts
+      const shown = await f.cli(['orchestration', 'dispatch-show', '--id', dispatched.result.dispatch.id, '--timeout-ms', String(ms)])
+      assert.equal(shown.result.terminal.observed, false, `--timeout-ms ${ms} claimed an observation`)
+      assert.equal(shown.result.terminal.reason, 'observation_failed')
+      assert.equal(shown.result.terminal.live, 'unknown')
+      assert.equal(shown.result.dispatch.status, 'dispatched')
+      assert.equal(contacts, beforeContacts, `--timeout-ms ${ms} contacted the backend ${contacts - beforeContacts} time(s)`)
+      observed.push({ timeoutMs: ms, terminal: shown.result.terminal })
     }
     // The observation is skipped, not shortened into a wrong answer: the attempt stays open.
     const shown = await f.cli(['orchestration', 'dispatch-show', '--id', dispatched.result.dispatch.id])
     assert.equal(shown.result.dispatch.status, 'dispatched')
     assert.equal(f.stateDigest(), before)
-    return { short, shown }
+    return { short, observed, shown, contacts }
   })
 
   f.record('state-after-c3', f.stateJson())

@@ -184,9 +184,10 @@ export function startability(state: OrchestrationState, task: TaskRecord): Start
     // says. Since r1 `transition` refuses `dispatched → blocked` while the attempt is open (R1), so
     // the detour that used to reach `ready` with a live attempt is closed one step earlier and this
     // is now the second net rather than the first — N5 = G7 corrects the r1 comment, which still
-    // described that detour as legal. A Task can only become startable again once reconcile settles
-    // the attempt `unknown`: the pane is either still alive (so the attempt is real) or gone (so
-    // reconcile closes it).
+    // described that detour as legal. A Task becomes startable again once the open attempt has
+    // *ended* — settled `failed` by a human who observed the failure, or `unknown` by reconcile
+    // (M6 = R19: the r2 sentence named only reconcile, and `dispatched → failed` is the other
+    // half of the same rule, see the `dispatched`/`failed` case below).
     case 'ready':
       if (open) return refuse('dispatch_active', [], open.id)
       return { startable: true, from: status }
@@ -309,11 +310,16 @@ export interface TransitionResult {
  */
 export function transition(state: OrchestrationState, input: TransitionInput): TransitionResult {
   const task = findTask(state, input.taskId)
-  if (!task) return fail('task_not_found', `No task ${input.taskId}`, { taskId: input.taskId })
+  if (!task) return fail('task_not_found', `No task ${input.taskId}`,
+    { taskId: input.taskId, recovery: 'corral orchestration task-list to see the Tasks this Run holds' })
   if (input.expectedVersion !== undefined && input.expectedVersion !== task.version)
-    return fail('version_conflict', `Task ${task.id} is at version ${task.version}`, { taskId: task.id, currentVersion: task.version, expectedVersion: input.expectedVersion })
+    return fail('version_conflict', `Task ${task.id} is at version ${task.version}`,
+      { taskId: task.id, currentVersion: task.version, expectedVersion: input.expectedVersion,
+        recovery: 'Re-read the Task with corral orchestration task-list, then retry with its current --expected-version' })
   if (!MANUAL_TRANSITIONS[task.status].includes(input.to))
-    return fail('illegal_transition', `${task.status} → ${input.to} is not a manual transition`, { taskId: task.id, from: task.status, to: input.to, allowed: MANUAL_TRANSITIONS[task.status] })
+    return fail('illegal_transition', `${task.status} → ${input.to} is not a manual transition`,
+      { taskId: task.id, from: task.status, to: input.to, allowed: MANUAL_TRANSITIONS[task.status],
+        recovery: 'corral orchestration task-list shows the Task status this move starts from; only the listed transitions are manual' })
 
   const open = activeDispatch(state, task.id)
   // R1 (1차 판정 계약 해석 1). `* → blocked` stays in the table, but an open attempt refuses it:
@@ -329,7 +335,9 @@ export function transition(state: OrchestrationState, input: TransitionInput): T
     const named = findDispatch(state, input.dispatchId)
     if (!named) return fail('dispatch_not_found', `No dispatch ${input.dispatchId}`, { dispatchId: input.dispatchId, activeDispatchId: open?.id ?? null })
     if (named.id !== open?.id)
-      return fail('stale_dispatch', `Dispatch ${named.id} is not the open attempt of ${task.id}`, { dispatchId: named.id, dispatchStatus: named.status, taskId: task.id, activeDispatchId: open?.id ?? null })
+      return fail('stale_dispatch', `Dispatch ${named.id} is not the open attempt of ${task.id}`,
+        { dispatchId: named.id, dispatchStatus: named.status, taskId: task.id, activeDispatchId: open?.id ?? null,
+          recovery: 'corral orchestration dispatch-show --task <task> names the open attempt; omit --dispatch to settle whichever one is open' })
   }
   // Unblocking to `ready` keeps the invariant that `ready` means "every dependency completed".
   // `blocked → pending` is always available when the dependencies are not met yet.
@@ -371,7 +379,8 @@ export function createRun(state: OrchestrationState, objective: string, at: stri
 export function createTask(state: OrchestrationState, input: { runId: string; spec: string; title: string | null; deps: string[]; at: string }): { state: OrchestrationState; task: TaskRecord } {
   for (const dep of input.deps) {
     const found = findTask(state, dep)
-    if (!found || found.runId !== input.runId) return fail('task_not_found', `No task ${dep} in run ${input.runId}`, { taskId: dep, runId: input.runId })
+    if (!found || found.runId !== input.runId) return fail('task_not_found', `No task ${dep} in run ${input.runId}`,
+      { taskId: dep, runId: input.runId, recovery: 'corral orchestration task-list --run <run>: every --deps entry must be a Task of the same Run' })
   }
   const id = uniqueId(state, 'task')
   // Unreachable by construction — a new id cannot appear in a list of ids that already exist — but

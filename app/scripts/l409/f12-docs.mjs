@@ -57,9 +57,15 @@ for (const command of COMMANDS) {
 // Every code the module raises, read out of the source rather than from a list kept by hand.
 const source = ['model.ts', 'index.ts', 'store.ts'].map(name => fs.readFileSync(path.join(app, 'src/runtime/orchestration', name), 'utf8')).join('\n')
 const INTERNAL = new Set(['operation_failed', 'unsupported'])  // guards for impossible variants, not a caller's contract
-// N9 = C17: the borrowed codes are read out of `receipts.ts` and the terminal module too, not kept
-// by hand — the hand-written list silently dropped `receipt_capacity` and `request_expired`, which
-// an orchestration mutation can absolutely answer with, and the check still passed.
+// N9 = C17: the receipt store's codes are read out of `receipts.ts` (and out of this module, which
+// re-raises some of them), not kept by hand — the hand-written list silently dropped
+// `receipt_capacity` and `request_expired`, which an orchestration mutation can absolutely answer
+// with, and the check still passed.
+// M9 = C22: the terminal module's three are still written out below, and that is the honest
+// description of this list. They are the handle check's answers (`invalid_terminal`,
+// `stale_terminal`, `backend_unavailable`), and `terminal/index.ts` raises many codes an
+// orchestration command can never produce — extracting them all would widen the README contract
+// rather than pin it. Adding a fourth to that path means changing this line too.
 const borrowedSource = [
   fs.readFileSync(path.join(app, 'src/runtime/terminal/receipts.ts'), 'utf8'),
   fs.readFileSync(path.join(app, 'src/runtime/orchestration/index.ts'), 'utf8'),

@@ -4,10 +4,11 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fixture, requestId } from './lib.mjs'
+import { randomUUID } from 'node:crypto'
+import { fixture, requestId, pause } from './lib.mjs'
 
 const RACERS = 6
-const f = await fixture('f7', { expectedChecks: 8 })
+const f = await fixture('f7', { expectedChecks: 9 })
 try {
   await f.startBackend()
   await f.serve()
@@ -195,6 +196,53 @@ try {
     assert.match(response.result.requestId, /^r1\.\d{13}\.[0-9a-f-]{36}$/)
     assert.equal(response.result.replayed, false)
     return { response }
+  })
+
+  await f.check('F7i-an-id-the-receipt-store-refused-before-admission-is-still-unspent', async () => {
+    // M2 = R15. `Receipts` refuses some ids before it writes anything — a timestamp in the future,
+    // an expired one, a full receipt window. In r2 this module recorded the id as admitted *before*
+    // calling `Receipts`, so the next attempt with that id skipped preflight and was judged inside
+    // the receipt instead: a pending receipt for a rejected mutation, and `outcome_unknown` for
+    // every retry after that. The id must come out of a pre-admission rejection exactly as it went
+    // in — which is what the r2 README already promised.
+    const subject = await dispatchedTask('f7-preadmission')
+    const future = Date.now() + 700
+    const id = `r1.${future}.${randomUUID()}`
+    const receiptFile = candidate => path.join(f.env.CORRAL_USER_DATA, 'runtime/terminal-receipts', candidate + '.json')
+    // The input has to *pass* preflight, or this would only measure preflight: the version is the
+    // Task's current one, so the receipt store is what refuses the call — for the timestamp alone.
+    const args = ['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed', '--expected-version', String(subject.version), '--request-id', id]
+    const refused = await f.cli(args, { fail: true })
+    assert.equal(refused.error.code, 'invalid_argument', JSON.stringify(refused.error))
+    assert.equal(refused._meta.outcome, 'not_started')
+    assert.equal(fs.existsSync(receiptFile(id)), false, 'a pre-admission rejection must not write a receipt')
+    // Settle the Task with a clean id, so the original input is now one version behind.
+    await f.cli(['orchestration', 'task-update', '--id', subject.taskId, '--status', 'completed'])
+    await pause(Math.max(0, future - Date.now() + 100))
+    const before = f.stateDigest()
+    const retried = await f.cli(args, { fail: true })
+    assert.equal(retried.error.code, 'version_conflict', JSON.stringify(retried.error))
+    assert.equal(retried.error.stage, 'preflight', 'the retry must be judged before the receipt, like any other first use')
+    assert.equal(retried._meta.outcome, 'not_started')
+    assert.equal(fs.existsSync(receiptFile(id)), false, 'the retry must not leave a pending receipt behind')
+    assert.equal(f.stateDigest(), before)
+    // A brand-new id with the same input is the control: same code, same stage, same no-receipt.
+    const control = requestId()
+    const fresh = await f.cli([...args.slice(0, -1), control], { fail: true })
+    assert.equal(fresh.error.code, retried.error.code)
+    assert.equal(fresh.error.stage, retried.error.stage)
+    assert.equal(fs.existsSync(receiptFile(control)), false)
+    // And a third attempt is still the same rejection, not `outcome_unknown` forever.
+    const third = await f.cli(args, { fail: true })
+    assert.equal(third.error.code, 'version_conflict')
+    assert.notEqual(third._meta.outcome, 'unknown')
+    // The id was never spent, so a corrected input is admitted under it — the whole point.
+    const other = await dispatchedTask('f7-preadmission-2')
+    const accepted = await f.cli(['orchestration', 'task-update', '--id', other.taskId, '--status', 'completed', '--request-id', id])
+    assert.equal(accepted.ok, true, JSON.stringify(accepted))
+    assert.notEqual(accepted.result.replayed, true)
+    assert.equal(fs.existsSync(receiptFile(id)), true, 'an accepted mutation does write the receipt')
+    return { refused, retried, fresh, third, accepted }
   })
 
   f.record('state-after-f7', f.stateJson())

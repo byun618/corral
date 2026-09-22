@@ -243,10 +243,26 @@ try {
     fs.writeFileSync(f.stateFile(), '{"schemaVersion":1,"currentRunId":"run_deadbeefcafe","runs":[],"tasks":[],"dispatches":[]}')
     const dangling = await f.cli(['orchestration', 'run-current'], { fail: true })
     assert.equal(dangling.error.code, 'storage_corrupt')
+    // M7 = R20. N1 = C14 = R9 widened the guard with four shapes the product cannot write; the
+    // unit tests pin all four, but 2차 판정 asked for at least one of them *here*, where the answer
+    // is a real CLI response and the file on disk is measured before and after. Dangling `deps` is
+    // the shape that is otherwise a well-formed document — nothing about it is torn.
+    const document = JSON.parse(good.toString())
+    document.tasks[0].deps = [`task_${'f'.repeat(12)}`]
+    fs.writeFileSync(f.stateFile(), JSON.stringify(document))
+    const danglingDigest = createHash('sha256').update(fs.readFileSync(f.stateFile())).digest('hex')
+    const deps = {}
+    for (const args of [['orchestration', 'task-list'], ['orchestration', 'task-create', '--spec', 'not on a broken document']]) {
+      const response = await f.cli(args, { fail: true })
+      assert.equal(response.error.code, 'storage_corrupt', JSON.stringify(response.error))
+      deps[args.join(' ')] = response
+    }
+    assert.equal(createHash('sha256').update(fs.readFileSync(f.stateFile())).digest('hex'), danglingDigest,
+      'a document with dangling deps must be left exactly as found')
     fs.writeFileSync(f.stateFile(), good)
     const recovered = await f.cli(['orchestration', 'task-list'])
     assert.ok(recovered.result.tasks.length > 0)
-    return { responses, dangling, recoveredTasks: recovered.result.tasks.length }
+    return { responses, dangling, deps, recoveredTasks: recovered.result.tasks.length }
   })
 
   f.record('state-after-f8', f.stateJson())

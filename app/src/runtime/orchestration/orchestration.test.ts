@@ -4,14 +4,14 @@
  * `scripts/l409/*` against a real backend; these tests pin the rules themselves so a later change
  * to them cannot pass unnoticed.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { OrchestrationStore, isOrchestrationState } from './store.js'
-import { transition as exportedTransition, validateOrchestration, parseDeps, observationFor, type PaneSnapshot } from './index.js'
+import { transition as exportedTransition, validateOrchestration, parseDeps, observationFor, budgeted, flattenReceiptError, receiptsOwnTheAnswer, type PaneSnapshot } from './index.js'
 import {
   MANUAL_TRANSITIONS, TASK_STATUSES, applyReconcile, createDispatch, createRun, createTask,
   activeDispatch, emptyState, exhausted, findDispatch, findTask, isId, latestDispatch, mintId, reconcileDecision, runCounts, startability, transition,
@@ -525,5 +525,115 @@ describe('LIFE-409 r2 — the store guard holds the invariants the product maint
     const doc = document(second.state)
     entry(doc, 'tasks', 1).deps = [entry(doc, 'tasks', 0).id]
     expect(isOrchestrationState(doc)).toBe(true)
+  })
+})
+
+/**
+ * r3. The third review found the parts of r2 that were right in the product and wrong in what it
+ * *said* — or right for one outcome and copied onto another. These pin the three rules that were
+ * only readable in the source until now, plus the document shape M11 left open.
+ */
+describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('refuses a task that depends on itself (M11 = C26)', () => {
+    const base = seed()
+    const first = createTask(base.state, { runId: base.runId, spec: 'first', title: null, deps: [], at: AT })
+    const doc = document(first.state)
+    const task = entry(doc, 'tasks', 1)
+    // A Task depending on a sibling is legal and stays legal — the shape below is the only change.
+    expect(isOrchestrationState(doc)).toBe(true)
+    task.deps = [task.id]
+    // `createTask` answers `dependency_cycle` for this input, so the document is one the product
+    // cannot write; the r2 guard accepted it because a self-reference resolves against the very
+    // list the Task belongs to.
+    expect(isOrchestrationState(doc)).toBe(false)
+    expect(code(() => createTask(first.state, { runId: base.runId, spec: 'self', title: null, deps: [first.task.id], at: AT }))).toBe('no-error')
+  })
+
+  it('never claims more of the caller timeout than is left, at the floor (M12 = C27)', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-23T00:00:00.000Z'))
+    const now = Date.now()
+    const ctx = (remaining: number) => ({ signal: new AbortController().signal, deadlineAt: now + remaining })
+    // The share is half of what is left: 500 ms is the first window worth looking in.
+    expect(budgeted(ctx(499), 2000)).toBe(null)
+    expect(budgeted(ctx(500), 2000)).not.toBe(null)
+    expect(budgeted(ctx(501), 2000)).not.toBe(null)
+    expect(budgeted(ctx(500), 2000)?.deadlineAt).toBe(now + 250)
+    expect(budgeted(ctx(501), 2000)?.deadlineAt).toBe(now + 250)
+    // Never more than half, and never more than the sweep budget, whichever is smaller.
+    expect(budgeted(ctx(1000), 2000)?.deadlineAt).toBe(now + 500)
+    expect(budgeted(ctx(60000), 2000)?.deadlineAt).toBe(now + 2000)
+    // An expired deadline is not a negative window.
+    expect(budgeted(ctx(0), 2000)).toBe(null)
+    expect(budgeted(ctx(-5000), 2000)).toBe(null)
+  })
+
+  it('keeps an unknown outcome from being told to send a new request id (M1 = R14 = C20)', () => {
+    // What `receipts.ts` raises itself: `requestId` and its own recovery, no `detail` key.
+    const own = new RuntimeError('outcome_unknown', 'Recorded request may have taken effect; inspect terminal list/read before a new request',
+      { requestId: 'r1.1758500000000.00000000-0000-0000-0000-000000000000', recovery: 'terminal list / terminal read' }, 'receipt', 'unknown')
+    const flat = flattenReceiptError(own)
+    expect(flat).toBeInstanceOf(RuntimeError)
+    if (!(flat instanceof RuntimeError) || !isRecord(flat.resources)) throw new Error('unreachable')
+    expect(flat.code).toBe('outcome_unknown')
+    expect(flat.stage).toBe('receipt')
+    expect(flat.outcome).toBe('unknown')
+    expect(String(flat.resources.recovery)).toMatch(/orchestration run-show/)
+    expect(String(flat.resources.recovery)).not.toMatch(/send a new --request-id/)
+
+    // The body wrapper whose inner error was not a RuntimeError: `detail` is present but undefined,
+    // and the outcome is still unknown, so it gets the same advice.
+    const wrapped = new RuntimeError('outcome_unknown', 'boom',
+      { requestId: 'r1.1758500000000.00000000-0000-0000-0000-000000000001', terminal: null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: undefined }, 'backend', 'unknown')
+    const flatWrapped = flattenReceiptError(wrapped)
+    if (!(flatWrapped instanceof RuntimeError) || !isRecord(flatWrapped.resources)) throw new Error('unreachable')
+    expect(String(flatWrapped.resources.recovery)).toMatch(/orchestration run-show/)
+    expect(String(flatWrapped.resources.recovery)).not.toMatch(/Retry the same request ID/)
+
+    // A rejection the body raised keeps its own recovery and its own resources, as in r1.
+    const inner = new RuntimeError('task_not_startable', 'no', { reason: 'dispatch_active', recovery: 'corral orchestration dispatch-show --task <task>' }, 'preflight', 'not_started')
+    const rejection = new RuntimeError(inner.code, inner.message,
+      { requestId: 'r1.1758500000000.00000000-0000-0000-0000-000000000002', terminal: null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: inner.resources }, 'preflight', 'not_started')
+    const flatRejection = flattenReceiptError(rejection)
+    if (!(flatRejection instanceof RuntimeError) || !isRecord(flatRejection.resources)) throw new Error('unreachable')
+    expect(flatRejection.resources.reason).toBe('dispatch_active')
+    expect(flatRejection.resources.recovery).toBe('corral orchestration dispatch-show --task <task>')
+
+    // A `not_started` rejection with no recovery of its own is the one case that gets "spent".
+    const bare = new RuntimeError('operation_failed', 'no',
+      { requestId: 'r1.1758500000000.00000000-0000-0000-0000-000000000003', terminal: null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: {} }, 'preflight', 'not_started')
+    const flatBare = flattenReceiptError(bare)
+    if (!(flatBare instanceof RuntimeError) || !isRecord(flatBare.resources)) throw new Error('unreachable')
+    expect(String(flatBare.resources.recovery)).toMatch(/spent/)
+    // An error that never went through the receipt store is returned untouched.
+    const plain = new RuntimeError('run_required', 'no', { currentRun: null }, 'preflight', 'not_started')
+    expect(flattenReceiptError(plain)).toBe(plain)
+  })
+
+  it('mirrors the three cases the receipt store answers itself (M2 = R15, M12)', () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'l409-mirror-'))
+    const startedAt = Date.parse('2026-09-23T00:00:00.000Z')
+    const id = (ms: number, tail = '0'): string => `r1.${ms}.${tail.repeat(8)}-0000-0000-0000-${tail.repeat(12)}`
+    const here = new Map<string, number>()
+    const mirror = (candidate: string | undefined) => receiptsOwnTheAnswer(candidate, { startedAt, userData, here })
+
+    const fresh = id(startedAt + 1000, '1')
+    expect(mirror(fresh)).toBe(false)
+    expect(mirror(undefined)).toBe(false)
+    expect(mirror('not-a-request-id')).toBe(false)
+    // (1) an id this runtime admitted — the branch M2 moved to the other side of admission.
+    here.set(fresh, startedAt + 1000)
+    expect(mirror(fresh)).toBe(true)
+    // (2) an id older than this runtime: `Receipts` refuses to re-execute it, receipt or not.
+    expect(mirror(id(startedAt - 1, '2'))).toBe(true)
+    // (3) a receipt on disk, written by this runtime or a previous one.
+    const onDisk = id(startedAt + 2000, '3')
+    fs.mkdirSync(path.join(userData, 'runtime/terminal-receipts'), { recursive: true })
+    expect(mirror(onDisk)).toBe(false)
+    fs.writeFileSync(path.join(userData, 'runtime/terminal-receipts', `${onDisk}.json`), '{}')
+    expect(mirror(onDisk)).toBe(true)
+    fs.rmSync(userData, { recursive: true, force: true })
   })
 })

@@ -13,8 +13,14 @@ import { fixture, requestId } from './lib.mjs'
 
 /** Codes this module decides itself; everything else is borrowed and carries no stage. */
 const OWN = ['run_not_found', 'task_not_found', 'dispatch_not_found', 'illegal_transition', 'stale_dispatch', 'version_conflict', 'task_not_startable', 'dependency_cycle']
+/**
+ * M8 = C21. r1 gave these a recovery by accident — the receipt wrapper's generic advice filled the
+ * field. N3 moved them before the receipt and the field went `null`, so the four codes a caller is
+ * most likely to hit stopped naming the command that answers them. They carry their own now.
+ */
+const MUST_ADVISE = ['illegal_transition', 'stale_dispatch', 'version_conflict', 'task_not_found']
 
-const f = await fixture('n8', { expectedChecks: 1 })
+const f = await fixture('n8', { expectedChecks: 2 })
 try {
   await f.startBackend()
   await f.serve()
@@ -85,7 +91,48 @@ try {
     assert.deepEqual(burned, [], `rejections left receipts behind: ${JSON.stringify(burned)}`)
     for (const entry of rejections)
       assert.doesNotMatch(String(entry.recovery ?? ''), /same --request-id/, `${entry.label} still advises retrying the same id`)
+    // M8: and the four table-based rejections name the command that answers them.
+    for (const entry of rejections.filter(item => MUST_ADVISE.includes(item.code))) {
+      assert.notEqual(entry.recovery, null, `${entry.label} carries no recovery`)
+      assert.match(String(entry.recovery), /corral orchestration|orchestration task-list|--expected-version/, `${entry.label} recovery names no command: ${entry.recovery}`)
+    }
+    for (const code of MUST_ADVISE)
+      assert.ok(rejections.some(entry => entry.code === code), `no rejection exercised ${code}`)
     return { rejections, borrowed }
+  })
+
+  await f.check('M1-an-unknown-outcome-is-not-told-to-send-a-new-request-id', async () => {
+    // M1 = R14 = C20. `receipts.ts` raises `outcome_unknown` itself, with `{requestId, recovery}`
+    // and no `detail`; in r2 `flattenReceiptError` read that `requestId` as the body wrapper and
+    // replaced the recovery with "spent — send a new --request-id". The coordinator followed that
+    // advice against a pending receipt and got the same Task twice. The envelope is the check.
+    const id = requestId()
+    const args = ['orchestration', 'task-create', '--spec', 'm1-pending', '--request-id', id]
+    const first = await f.cli(args)
+    const receipt = path.join(f.env.CORRAL_USER_DATA, 'runtime/terminal-receipts', id + '.json')
+    const stored = JSON.parse(fs.readFileSync(receipt, 'utf8'))
+    assert.equal(stored.state, 'completed')
+    // Exactly the bytes a crash between the pending write and the completed write leaves behind.
+    fs.writeFileSync(receipt, JSON.stringify({ hash: stored.hash, state: 'pending', createdAt: stored.createdAt }))
+    const before = f.stateDigest()
+    const unknown = await f.cli(args, { fail: true })
+    const recovery = String(unknown.error.resources?.recovery ?? '')
+    assert.equal(unknown.error.code, 'outcome_unknown')
+    assert.equal(unknown.error.stage, 'receipt')
+    assert.equal(unknown._meta.outcome, 'unknown')
+    assert.equal(f.stateDigest(), before, 'a pending receipt must not be re-executed')
+    // Semantic, not textual: it must point at the orchestration reads, and must not send the
+    // caller back with the same input under any id — that is how the duplicate was made.
+    assert.match(recovery, /orchestration run-show|dispatch-show/, `recovery names no read command: ${recovery}`)
+    assert.doesNotMatch(recovery, /send a new --request-id/, `recovery still advises a new id: ${recovery}`)
+    assert.doesNotMatch(recovery, /spent/, `recovery still calls an unknown outcome spent: ${recovery}`)
+    // A replayable receipt is unaffected: put it back and the first result returns, once.
+    fs.writeFileSync(receipt, JSON.stringify(stored))
+    const replayed = await f.cli(args)
+    assert.equal(replayed.result.replayed, true)
+    assert.equal(replayed.result.task.id, first.result.task.id)
+    assert.equal(f.stateJson().tasks.filter(task => task.spec === 'm1-pending').length, 1, 'the replay must not create a second task')
+    return { unknown: { code: unknown.error.code, stage: unknown.error.stage, outcome: unknown._meta.outcome, recovery, message: unknown.error.message }, replayedTask: replayed.result.task.id }
   })
 
   f.record('state-after-n8', f.stateJson())

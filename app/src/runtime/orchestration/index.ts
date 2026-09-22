@@ -17,7 +17,7 @@ import path from 'node:path'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
-import { Receipts, REQUEST_ID } from '../terminal/receipts.js'
+import { Receipts, REQUEST_ID, RECEIPT_TTL } from '../terminal/receipts.js'
 import { terminalModule } from '../terminal/index.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
 import { isRecord, readRecord, readString } from '../../shared/json.js'
@@ -67,7 +67,6 @@ function idKindFor(command: string): 'run' | 'task' | 'ctx' {
 }
 
 export function validateOrchestration(inv: Invocation): void {
-  startupSweep?.abort()
   validateFoundation(inv)
   const f = inv.flags
   for (const key of REQUIRED[inv.command] ?? []) stringFlag(f, key, true)
@@ -93,6 +92,12 @@ export function validateOrchestration(inv: Invocation): void {
   if (f.limit !== undefined && (!/^\d+$/.test(String(f.limit)) || Number(f.limit) < 1 || Number(f.limit) > 10000)) reject('--limit must be 1..10000')
   if (inv.command === 'orchestration dispatch-show' && (f.id === undefined) === (f.task === undefined)) reject('dispatch-show requires exactly one of --id or --task')
   if (inv.command === 'orchestration task-update' && f.status === 'dispatched') throw new RuntimeError('illegal_transition', 'Only orchestration dispatch may move a Task to dispatched', { to: 'dispatched', recovery: 'corral orchestration dispatch --task <task> --to <terminal>' }, 'preflight', 'not_started')
+  // M3 = R16 = C24: only a command that is actually going to run may cut the startup sweep short.
+  // In r2 this was the first line of the function, so a command rejected here — a typo in a flag —
+  // still ended the one-shot pass, and the pane that died while corral was down stayed `dispatched`
+  // until the next real command. The sweep is cut for the *lane*, and a rejected command never
+  // reaches the lane.
+  startupSweep?.abort()
 }
 
 // --- observation --------------------------------------------------------------------------------
@@ -124,7 +129,7 @@ export const SWEEP_BUDGET_MS = 2000
  */
 const OBSERVATION_FLOOR_MS = 250
 export interface ObservationBudget { signal: AbortSignal; deadlineAt: number }
-const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget | null => {
+export const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget | null => {
   // Never more than half of what the caller has left, and never at all below the floor: with
   // `--timeout-ms 1000` a full 2 s sweep would eat the deadline and the command would answer
   // `outcome_unknown` — the very failure this budget exists to prevent, just at a smaller scale.
@@ -174,19 +179,34 @@ function snapshotAgent(block: Record<string, unknown>): AgentSnapshot {
  * `unmetDependencies` at the top of `resources` and the recovery names orchestration commands. The
  * code, stage and outcome are carried through untouched — only the envelope is rewritten.
  */
-function flattenReceiptError(error: unknown): unknown {
+/**
+ * M1 = R14 = C20: what the caller must do next differs by outcome, and in r2 one sentence answered
+ * for both. `not_started` really is spent-and-fix-the-input. `unknown` is the opposite instruction:
+ * the mutation may already be on disk, so sending the same input again — under any id — is how a
+ * duplicate Task gets made. The coordinator's probe followed the r2 advice literally and got two.
+ */
+const SPENT_RECOVERY = 'This --request-id is spent: fix the input and send a new --request-id, then inspect orchestration run-show / task-list / dispatch-show'
+const UNKNOWN_RECOVERY = 'This request may already have taken effect: inspect corral orchestration run-show / task-list / dispatch-show first, and do not send the same input again — that is how a duplicate record is created'
+
+export function flattenReceiptError(error: unknown): unknown {
   if (!(error instanceof RuntimeError) || !isRecord(error.resources) || !('requestId' in error.resources)) return error
   const wrapper = error.resources
+  // M1: `requestId` alone does not mean "wrapped body failure" — `receipts.ts` puts it on the
+  // errors it raises itself (`outcome_unknown`, `request_conflict`, `request_expired`) too, and
+  // those carry their own `recovery` and no `detail` at all. Only the body wrapper sets `detail`
+  // (to `undefined` when the inner error was not a RuntimeError), so that key is the discriminator.
+  const wrapped = 'detail' in wrapper
   const detail = isRecord(wrapper.detail) ? wrapper.detail : {}
   // R7 = C1: the inner error's own recovery is the one that names what to do — `terminal list` for
-  // a stale handle, `run-create` for a missing Run. Only an error that carries none gets the
-  // receipt's generic advice, and even then only because retrying really is the next step.
+  // a stale handle, `run-create` for a missing Run. Only an error that carries none gets generic
+  // advice, and which generic advice depends on the outcome, never on the code.
   // N3 = C13: "retry with the same id" is only true for a request that may have taken effect. A
   // rejection that reaches this line was admitted and its receipt is spent, so retrying that id
   // answers `outcome_unknown` forever. Every rejection this module can foresee is raised before
   // the receipt exists (see `admitted` below); anything that still lands here says so plainly.
-  const recovery = typeof detail.recovery === 'string' ? detail.recovery
-    : 'This --request-id is spent: fix the input and send a new --request-id, then inspect orchestration run-show / task-list / dispatch-show'
+  const inner = typeof detail.recovery === 'string' ? detail.recovery : null
+  const own = !wrapped && typeof wrapper.recovery === 'string' ? wrapper.recovery : null
+  const recovery = error.outcome === 'unknown' ? UNKNOWN_RECOVERY : inner ?? own ?? SPENT_RECOVERY
   return new RuntimeError(error.code, error.message,
     { ...detail, requestId: wrapper.requestId, recovery }, error.stage, error.outcome)
 }
@@ -245,6 +265,10 @@ export async function orchestrationStartupSweep(userData: string, ctx: { instanc
   const yielded = new AbortController()
   const relay = () => yielded.abort()
   ctx.signal.addEventListener('abort', relay, { once: true })
+  // K5: a listener added to an already-aborted signal never fires, so relay alone would let the
+  // sweep run on after its caller gave up. No product path reaches this today (`server.ts` passes a
+  // fresh controller) — it costs one line to stop that from depending on the caller.
+  if (ctx.signal.aborted) yielded.abort()
   startupSweep = yielded
   try {
     const pass = await reconcilePass(state, { signal: yielded.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
@@ -255,6 +279,20 @@ export async function orchestrationStartupSweep(userData: string, ctx: { instanc
     ctx.signal.removeEventListener('abort', relay)
     if (startupSweep === yielded) startupSweep = null
   }
+}
+
+/**
+ * The read-only half of N3 = C13: the three cases `Receipts` answers from its own record, asked
+ * without touching it. A request it owns must reach it unjudged — re-checking an applied mutation
+ * against the state it produced would refuse what `Receipts` is about to replay. M12 = C27 pins the
+ * three branches as a unit; M2 = R15 is the rule about *when* the first of them may be written to.
+ */
+export function receiptsOwnTheAnswer(id: string | undefined, ctx: { startedAt: number; userData: string; here: ReadonlyMap<string, number> }): boolean {
+  if (id === undefined) return false
+  const match = REQUEST_ID.exec(id)
+  if (!match) return false
+  return ctx.here.has(id) || Number(match[1]) < ctx.startedAt
+    || fs.existsSync(path.join(ctx.userData, 'runtime/terminal-receipts', `${id}.json`))
 }
 
 export function orchestrationModule(userData: string): CommandModule {
@@ -273,13 +311,16 @@ export function orchestrationModule(userData: string): CommandModule {
    * only: an id this runtime admitted, an id with a receipt on disk, and an id older than this
    * runtime.
    */
-  const admittedHere = new Set<string>()
-  const admitted = (id: string | undefined): boolean => {
-    if (id === undefined) return false
-    const match = REQUEST_ID.exec(id)
-    if (!match) return false
-    return admittedHere.has(id) || Number(match[1]) < startedAt
-      || fs.existsSync(path.join(userData, 'runtime/terminal-receipts', `${id}.json`))
+  const admittedHere = new Map<string, number>()
+  const admitted = (id: string | undefined): boolean => receiptsOwnTheAnswer(id, { startedAt, userData, here: admittedHere })
+  /**
+   * M4 = R17 = C25. `Receipts` drops its own admissions at the same 24 h the receipt files expire;
+   * a mirror that only ever grew would keep ids alive past the window it is mirroring — and keep
+   * them in memory for the life of the runtime. Same threshold, same trigger point as the original.
+   */
+  const forgetExpired = (): void => {
+    const now = Date.now()
+    for (const [id, createdAt] of admittedHere) if (now - createdAt > RECEIPT_TTL) admittedHere.delete(id)
   }
   return {
     specs: orchestrationSpecs,
@@ -315,7 +356,8 @@ export function orchestrationModule(userData: string): CommandModule {
       }
       const taskInRun = (state: OrchestrationState, runId: string, id: string) => {
         const task = findTask(state, id)
-        if (!task || task.runId !== runId) return preflight('task_not_found', `No task ${id} in run ${runId}`, { taskId: id, runId })
+        if (!task || task.runId !== runId) return preflight('task_not_found', `No task ${id} in run ${runId}`,
+          { taskId: id, runId, recovery: 'corral orchestration task-list --run <run> to see the Tasks this Run holds' })
         return task
       }
       const showTerminal = async (handle: string) => {
@@ -339,8 +381,16 @@ export function orchestrationModule(userData: string): CommandModule {
       }
       const mutate = async (body: () => Promise<Record<string, unknown>>): Promise<unknown> => {
         f['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
-        admittedHere.add(String(f['request-id']))
-        try { return await log.run(inv, body) } catch (error) { throw flattenReceiptError(error) }
+        const id = String(f['request-id'])
+        forgetExpired()
+        // M2 = R15: remember the id where `Receipts` itself does — inside the body, which runs only
+        // after the pending receipt is on disk. In r2 this line stood before `log.run`, so an id
+        // `Receipts` refused *before* admission (a future timestamp, `request_expired`,
+        // `receipt_capacity`) was still recorded as admitted; the next attempt with that id skipped
+        // preflight, was judged inside the receipt instead, and left the pending receipt that makes
+        // every later retry `outcome_unknown` — exactly the shape N3 closed.
+        try { return await log.run(inv, async () => { admittedHere.set(id, Number(REQUEST_ID.exec(id)?.[1] ?? Date.now())); return body() }) }
+        catch (error) { throw flattenReceiptError(error) }
       }
       /** True when `Receipts` owns the answer, so this call must not be judged again (N3). */
       const recorded = admitted(flag('request-id'))

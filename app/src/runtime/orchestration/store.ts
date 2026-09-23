@@ -83,6 +83,7 @@ function isWorker(value: unknown): boolean {
   if (!isRecord(value)) return false
   return oneOf(['created', 'reused'], value.launch) && oneOf(['owned', 'borrowed'], value.ownership)
     && WORKER_STRINGS_OR_NULL.every(key => key in value && isNullOr(isString, value[key]))
+    && 'lead' in value && (value.lead === null || (isRecord(value.lead) && isString(value.lead.requestId) && isStamp(value.lead.at)))
     && (value.retain === null || (isRecord(value.retain) && oneOf(RETAIN_REASONS, value.retain.reason) && isStamp(value.retain.at)))
     && (value.release === null || isRelease(value.release))
 }
@@ -247,7 +248,13 @@ export class OrchestrationStore {
       ? {
         ...fill(fill(stored, 'messages', []), 'deliveries', []),
         dispatches: Array.isArray(stored.dispatches)
-          ? stored.dispatches.map(entry => isRecord(entry) ? fill(entry, 'worker', null) : entry)
+          // V22 added `worker.lead`. Same rule one level down: a key an older document never wrote
+          // is filled, a key it wrote as an explicit null is left exactly as it is.
+          ? stored.dispatches.map(entry => {
+            if (!isRecord(entry)) return entry
+            const withWorkerKey = fill(entry, 'worker', null)
+            return isRecord(withWorkerKey.worker) ? { ...withWorkerKey, worker: fill(withWorkerKey.worker, 'lead', null) } : withWorkerKey
+          })
           : stored.dispatches,
       }
       : stored

@@ -122,6 +122,16 @@ a possible injection, and it is right to: nothing in such a message was written 
 The line carries no newline, so the Enter that submits is still the prompt's own. **A Dispatch is one Enter and
 one `promptRequestId`**, and that is what "once" counts.
 
+That line is its own effect, and it is **recorded before it is typed** (`worker.lead`). A resume reads that
+record and does not type a second one. It matters more than it sounds: herdr appends to whatever is already on
+the input line, so a run that typed the line and then failed leaves it there, and a resume that typed another
+would produce a message beginning with the line twice. Such a message is no longer the body the Dispatch was
+created against — the duplicate pre-check and the delivery judgement would both read one delivery as none, and
+the body would be submitted a second time under a record showing one. corral cannot clear a pane's input line
+(the terminal contract takes printable text only, so there is no Ctrl-U to send), so a resume that finds the
+earlier line still there reports it — `lead: {checked, present}` in the answer, and an `input_line` entry in
+`residualResources` naming the pane and the key a person presses to clear it.
+
 **The preamble reaches a pane exactly once per Dispatch.** The same `--request-id` replays the stored result and
 submits nothing; a different id, while the attempt is open and its preamble delivered, is
 `task_not_startable (dispatch_active)`. The one exception is an attempt whose input stage never completed — a
@@ -131,23 +141,32 @@ tells the two apart by whether `worker.promptRequestId` is set.
 
 **A submission is judged, not assumed.** `state: ready` is reported only when `terminal prompt` answered
 `outcome: completed` with its `wait` satisfied, or when the duplicate pre-check found this exact body already in
-the provider's record (`prompt_already_delivered` — a delivery observed rather than made). Anything else —
-`outcome: unknown`, an unmet wait, queue acceptance — is `state: incomplete` at stage
+the provider's record **exactly once** (`prompt_already_delivered` with `matchCount: 1` — a delivery observed
+rather than made). `prompt_already_delivered` says "this body is in the record", not "exactly once": two or more
+matches mean the one-input rule is already broken for that pane, and reporting that as an accepted delivery
+would bury it under a `ready`. So anything else — `outcome: unknown`, an unmet wait, queue acceptance, or a
+pre-check that matched two or more times — is `state: incomplete` at stage
 `dispatch_input_unconfirmed`, with `stages.input.status: unknown`: the body may well have arrived,
 `promptRequestId` stays null, and the attempt stays resumable. The resume then either finds the body already
 there or submits it for the first time, and that pairing is what keeps "once" true across an answer corral could
 not read. A Dispatch that never reached the pane is never reported as `ready`.
 
 **A resume delivers the body the Dispatch was created against and nothing else.** The digest of that body is
-recorded when the Dispatch is created, before anything is sent; a resume rebuilds it from the stored Task — never
-re-reading `--spec-file`, which may name a file that has changed since — and a disagreement is
-`preamble_mismatch` with no effect. Half a submission carrying text the other half never saw would still read as
-one delivery in the record, which is exactly what the digest refuses.
+recorded when the Dispatch is created, before anything is sent, and it is **the digest — not the flags on this
+command line — that decides what a resume delivers**. Half a submission carrying text the other half never saw
+would still read as one delivery in the record, which is exactly what the digest refuses.
 
-One consequence of that is deliberate and worth stating plainly: **an attempt created with `--spec-file` cannot
-be resumed.** The body it was created against is not in the record, corral will not substitute another one, and
-the refusal names `worker-stop` — end the attempt and start one that carries the body you mean. A Task whose
-spec is the body has no such limit, which is the ordinary path.
+That makes the two cases different without either of them trusting a flag:
+
+- An attempt made from the **Task spec** resumes from the Task. A `--spec-file` left on the line appears in
+  `ignoredOptions` and is **never opened** — so naming a path that has since gone away cannot refuse a resume the
+  file has nothing to do with.
+- An attempt made from a **`--spec-file`** is resumed by naming the same file again. Only when the Task no
+  longer explains the stored digest is the file read, and then it is read to be *compared*: the same body
+  resumes, a changed one is `preamble_mismatch` with no effect and a `recovery` naming both ways out.
+
+A **new** attempt is a different question — there the file *is* the body, so an unreadable one is
+`invalid_argument` before anything is created.
 
 A worker pane inherits its environment from the backend, never from corral — corral cannot put environment
 variables into a pane — so the preamble spells every command with this runtime's socket. This is the body it
@@ -258,7 +277,14 @@ an unobservable pane refuses it rather than recording it. Whether a report can b
 transition it would make, and the mailbox's own capacity — is computed **before** the receipt is admitted, so a
 refused report leaves the receipt directory byte for byte as it was and its `--request-id` unspent.
 
-`sessionVerified` in the answer says whether the session half of that comparison was made at all. An attempt
+That look is taken **inside the document lane the command is about to write under**, and **once per command**:
+the proof a call is admitted on is never older than the write it authorises, and a pane that dies while a
+command waits for the lane cannot have its call admitted on the pane it used to be. `ask` follows the same rule
+as `send` — it was the one path that observed before the lane, so a question could be stored for an attempt
+corral could no longer reach.
+
+`sessionVerified` in the answer says whether the session half of that comparison was made at all, and `ask`
+reports it in both the `pending` and the `answered` envelope and in the stored receipt. An attempt
 started where `CORRAL_SESSION` was unset recorded no session, so there is nothing to compare a caller's against
 and the pane id stands alone — a weaker proof than the usual one, and the caller is told which of the two they
 got rather than left to assume the stronger.
@@ -279,7 +305,9 @@ Do not follow it with `task-update`. Storing the report and settling the attempt
 
 Messages live in the Run mailbox inside the same `state.json` the records use. Ids are `msg_<12 hex>` and
 `delivery_<12 hex>`; `sequence` is monotone within a Run and is what FIFO means here. A Run holds at most 10000
-messages, a body at most 65536 bytes and a subject at most 1024; reaching the ceiling is `message_capacity`, and
+messages, a body at most 65536 bytes and a subject at most 1024; reaching the ceiling is `message_capacity` —
+decided before the receipt exists on **every** path that creates a message, a coordinator `status` and an `ask`
+included, so a refused call leaves its `--request-id` unspent — and
 corral never deletes a stored message to make room.
 
 A Run has **at most one outstanding Delivery**. `check` hands over the oldest undelivered messages matching
@@ -342,7 +370,12 @@ still there. A pane no attempt owns — one a person started with `terminal crea
 the start and corral never closes it.
 
 Whether a pane is busy is a different question from who may close it, and the two are asked separately. Any
-**open** attempt bound to that pane refuses the re-use with `dispatch_active`, borrowed attempts included:
+Both questions are asked again **inside the write itself**, on the document that write is made on, so two
+`worker-start` calls racing for one pane leave one attempt and one owner rather than two — the losing call
+reports `state: failed` at stage `dispatch` with `stages.dispatch.error: dispatch_active` and creates nothing.
+(That refusal is past the receipt, unlike the others: a race is not something preflight can foresee.)
+
+Any **open** attempt bound to that pane refuses the re-use with `dispatch_active`, borrowed attempts included:
 hanging that refusal off ownership answered "nobody is here" for every borrowed pane, which let a second Task be
 started on top of a running one.
 

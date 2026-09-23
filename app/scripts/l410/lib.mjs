@@ -70,7 +70,12 @@ export async function fixture(label, options = {}) {
   const backend = options.backend ?? process.env.CORRAL_TEST_BACKEND
   assert(backend && fs.existsSync(backend), 'Set CORRAL_TEST_BACKEND to the isolated guard build under test')
   const owner = process.env.CORRAL_VERIFY_OWNER ?? 'claude'
-  assert(RAW_BY_OWNER[owner], `CORRAL_VERIFY_OWNER must be one of ${Object.keys(RAW_BY_OWNER).join(', ')}`)
+  // V31. The allow-list decides *where in this repository* an owner's raw goes, so it is only
+  // needed when this script is choosing that path. A caller who names the directory outright with
+  // `CORRAL_VERIFY_RAW` has already made that decision, and refusing an unlisted owner there just
+  // forced every new reviewer to invent a name from the list before their run would start.
+  assert(process.env.CORRAL_VERIFY_RAW || RAW_BY_OWNER[owner],
+    `CORRAL_VERIFY_OWNER must be one of ${Object.keys(RAW_BY_OWNER).join(', ')}, or set CORRAL_VERIFY_RAW to name the directory yourself`)
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/l410-' + owner + '-' + label.slice(0, 4) + '-'))
   const runId = path.basename(root)
   // `CORRAL_VERIFY_ROUND` separates one review round's raw records from the next (r1 = fix round 1)

@@ -85,10 +85,25 @@ const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
  * The r0 rows are migrated once, from the two places they were written, with their `n` preserved.
  */
 const RAW_ROOT = path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw')
-const LEDGER = path.join(RAW_ROOT, 'submissions-ledger.json')
+/**
+ * V27. The ledger a run reads is the ledger of the *task*, and a run started from a checkout that
+ * does not carry the latest rows would start from a smaller number than the one that was really
+ * spent. Naming it explicitly is how a run in an implementation branch — whose own checkout is
+ * always behind the task branch's copy — can be pointed at the real one. The default is the path
+ * the committed ledger has always had, so nothing changes for a run that says nothing.
+ */
+const LEDGER = process.env.CORRAL_VERIFY_LEDGER
+  ? path.resolve(process.env.CORRAL_VERIFY_LEDGER)
+  : path.join(RAW_ROOT, 'submissions-ledger.json')
+/**
+ * Where the r0 rows came from, before the ledger above existed. `migrated()` runs only when there
+ * is no ledger at all, which after r1 never happens — the committed ledger holds every row. Only
+ * the worker's own source is listed now: the coordinator's delta lives in a raw directory this
+ * branch does not carry, so naming it here promised rows that could never be read and would have
+ * produced a silently short ledger on the one path that still calls this (V27).
+ */
 const MIGRATIONS = [
   { owner: 'claude', file: path.join(RAW_ROOT, 'worker/claude/native/submissions.json') },
-  { owner: 'coordinator', file: path.join(RAW_ROOT, 'coordinator/native/native/l410-coordinator-nati-68yKte/submissions-ledger-delta.json') },
 ]
 fs.mkdirSync(path.dirname(LEDGER), { recursive: true })
 const migrated = () => {
@@ -107,8 +122,7 @@ const prompts = rows => rows.filter(entry => entry.typed && entry.kind === 'term
 const spent = () => prompts(submissions.filter(entry => entry.owner === OWNER))
 const total = () => prompts(submissions)
 const keys = () => submissions.filter(entry => entry.typed && entry.kind === 'terminal send').length
-const tally = (kind, what, typed, detail) => {
-  submissions.push({ n: submissions.length + 1, at: new Date().toISOString(), owner: OWNER, runId: f.runId, kind, what, typed, ...detail })
+const writeLedger = () => {
   fs.writeFileSync(LEDGER, JSON.stringify(submissions, null, 2) + '\n')
   const markdown = [
     '# LIFE-410 gate ② — every prompt submission, in order',
@@ -132,10 +146,38 @@ const tally = (kind, what, typed, detail) => {
     '',
   ].join('\n')
   fs.writeFileSync(path.join(f.raw, 'submissions.md'), markdown)
-  fs.writeFileSync(path.join(RAW_ROOT, 'submissions-ledger.md'), markdown)
+  fs.writeFileSync(LEDGER.replace(/\.json$/, '.md'), markdown)
+}
+/**
+ * V27. A budget checked after the call is not a budget. The row is written *before* the call that
+ * could spend it, counted as spent from that moment, and the check that refuses runs before the
+ * row exists — so at 12 of 12 nothing is called at all, and a run killed mid-submission still
+ * leaves the spend on the ledger rather than losing it. `tally` then completes the row with what
+ * the call actually did; a call that returned before anything reached the pane is refunded to
+ * `typed: false`, which is the only direction a reservation is ever revised.
+ */
+const reserve = (kind, what, detail = {}) => {
+  if (kind === 'terminal prompt') {
+    assert.ok(spent() < BUDGET, `the prompt-submission budget of ${BUDGET} for ${OWNER} is spent (${spent()}); this call is not made`)
+    assert.ok(total() < TOTAL_BUDGET, `the prompt-submission budget of ${TOTAL_BUDGET} across owners is spent (${total()}); this call is not made`)
+  }
+  const row = { n: submissions.length + 1, at: new Date().toISOString(), owner: OWNER, runId: f.runId, kind, what, typed: true, settled: false, ...detail }
+  submissions.push(row)
+  writeLedger()
+  return row
+}
+const tally = (row, typed, detail = {}) => {
+  row.typed = typed
+  row.settled = true
+  Object.assign(row, detail)
+  writeLedger()
   assert.ok(spent() <= BUDGET, `the cumulative prompt-submission budget of ${BUDGET} for ${OWNER} is spent: ${JSON.stringify(submissions)}`)
   assert.ok(total() <= TOTAL_BUDGET, `the cumulative prompt-submission budget of ${TOTAL_BUDGET} across owners is spent: ${JSON.stringify(submissions)}`)
 }
+// The gate does not open at all on a spent budget: this runs before the backend is started, before
+// a pane exists, and before the first provider process is launched.
+assert.ok(total() < TOTAL_BUDGET, `the prompt-submission budget of ${TOTAL_BUDGET} across owners is already spent (${total()} in ${LEDGER}); this run does not start`)
+assert.ok(spent() < BUDGET, `the prompt-submission budget of ${BUDGET} for ${OWNER} is already spent (${spent()} in ${LEDGER}); this run does not start`)
 
 const screen = async handle => (await f.cli(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '16384'], { timeout: 60000 })).result.text ?? ''
 
@@ -202,8 +244,9 @@ async function clearDialogs(handle, { rounds = 4 } = {}) {
     seen.push({ round, at: new Date().toISOString(), dialog: dialog?.name ?? null, excerpt: text.slice(-1500) })
     f.record('native/dialogs', seen)
     if (dialog === null) break
-    tally('terminal send', `${dialog.name} dialog`, true, { handle, keys: dialog.keys })
+    const keyRow = reserve('terminal send', `${dialog.name} dialog`, { handle, keys: dialog.keys })
     await f.cli(['terminal', 'send', '--terminal', handle, '--text', dialog.text, '--enter'], { timeout: 60000 })
+    tally(keyRow, true)
     await f.pause(4000)
     // Answering a dialog must never have ended the provider.
     const after = await f.cli(['terminal', 'show', '--terminal', handle], { timeout: 60000 })
@@ -265,13 +308,14 @@ try {
     '--request-id', resumeRequestId, '--timeout-ms', '120000']
   const resumeRequestId = requestId()
   const first = await f.check('GATE2-F1-worker-start-creates-the-pane-and-the-attempt-before-it-submits', async () => {
+    const startRow = reserve('terminal prompt', 'preamble + TASK')
     const started = await f.cli(startArgs, { timeout: 200000 })
     assert.equal(started.result.stages.terminal.status, 'completed', JSON.stringify(started.result.stages))
     assert.equal(started.result.stages.dispatch.status, 'completed', JSON.stringify(started.result.stages))
     assert.ok(started.result.dispatchId, JSON.stringify(started.result))
     // `not_started` means the readiness gate never held and nothing was typed; anything else means
     // the submission call was made, so it spends the budget whether or not it was accepted.
-    tally('terminal prompt', 'preamble + TASK', started.result.stages.input.status !== 'not_started',
+    tally(startRow, started.result.stages.input.status !== 'not_started',
       { dispatchId: started.result.dispatchId, stage: started.result.stages.input.status })
     return started.result
   })
@@ -305,10 +349,11 @@ try {
       assert.equal(ready.result.satisfied, true, JSON.stringify(ready.result))
       // Deliberately non-throwing: if the submission does not take, what the pane looks like at that
       // moment is the evidence, and it is gone once the fixture is cleaned up.
+      const resumeRow = reserve('terminal prompt', 'preamble + TASK (resume)', { dispatchId })
       const attempt = await f.cliRaw(deliveryArgs, { timeout: 200000 })
       const envelope = attempt.json
-      tally('terminal prompt', 'preamble + TASK (resume)', envelope?.result?.stages?.input?.status !== 'not_started',
-        { dispatchId, stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
+      tally(resumeRow, envelope?.result?.stages?.input?.status !== 'not_started',
+        { stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
       if (envelope?.ok !== true) {
         f.record('native/failed-submission', {
           envelope,
@@ -357,8 +402,12 @@ try {
     // with the replay. What a second submission would actually add is a second body in the
     // provider's record, and that is what is asserted.
     const screenBefore = await screen(handle)
+    // Reserved like any other submittable call. A replay is answered from the receipt and types
+    // nothing, but that is only knowable once it has returned — so it is counted first and refunded
+    // after, which is the direction that can never overspend.
+    const replayRow = reserve('terminal prompt', 'replay of a delivered submission', { dispatchId, requestId: response.requestId })
     const replayed = await f.cli(deliveryArgs, { timeout: 200000 })
-    tally('terminal prompt', 'replay of a delivered submission', false, { dispatchId, requestId: response.requestId, replayed: replayed.result.replayed })
+    tally(replayRow, false, { replayed: replayed.result.replayed })
     assert.equal(replayed.result.replayed, true, JSON.stringify(replayed.result))
     assert.equal(replayed.result.dispatchId, dispatchId)
     const afterReplay = countRecord(sessionId)
@@ -465,9 +514,10 @@ try {
       '--request-id', requestId(), '--timeout-ms', '120000']
     // Deliberately non-throwing, for the same reason as the first submission: if it does not take,
     // what the pane looked like at that moment is the evidence and it is gone after cleanup.
+    const reuseRow = reserve('terminal prompt', 'preamble + TASK (F9 reuse)')
     const attempt = await f.cliRaw(reuseArgs, { timeout: 200000 })
     const envelope = attempt.json
-    tally('terminal prompt', 'preamble + TASK (F9 reuse)', envelope?.result?.stages?.input?.status !== 'not_started',
+    tally(reuseRow, envelope?.result?.stages?.input?.status !== 'not_started',
       { dispatchId: envelope?.result?.dispatchId ?? null, stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
     if (envelope?.ok !== true || envelope.result.stages.input.status !== 'completed') {
       f.record('native/failed-reuse-submission', {

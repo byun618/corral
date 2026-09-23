@@ -81,6 +81,17 @@ export function bodyIdentity(text: string): BodyIdentity {
     }
 }
 /**
+ * The one line that is *typed* into a worker's pane, immediately before the preamble is pasted into
+ * it. Without it the provider receives a message made entirely of pasted text and refuses to act on
+ * it — correctly, since nothing in such a message was written by the person at the keyboard. It
+ * ends without a newline: the Enter that submits belongs to the prompt, so a Dispatch is still one
+ * submission and one `promptRequestId`. It lives here rather than beside the submission because the
+ * unwrapper below is what has to recognise it.
+ */
+export const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
+const PASTED_OPEN = '<pasted_content id='
+const PASTED = /^(?<before>[\s\S]*?)<pasted_content id="(?<id>[^"]*)">\n(?<body>[\s\S]*)\n<\/pasted_content id="\k<id>">\s*$/
+/**
  * The provider's own encoding of a pasted body. A body big enough to arrive as a paste is not
  * recorded verbatim: claude stores it wrapped, with a per-paste id, under whatever was typed
  * alongside it —
@@ -98,17 +109,6 @@ export function bodyIdentity(text: string): BodyIdentity {
  * where corral sent one. The count is of opening tags across the whole message, not of the body
  * alone: a first block that differs is still a block, and the old check never looked at it.
  */
-/**
- * The one line that is *typed* into a worker's pane, immediately before the preamble is pasted into
- * it. Without it the provider receives a message made entirely of pasted text and refuses to act on
- * it — correctly, since nothing in such a message was written by the person at the keyboard. It
- * ends without a newline: the Enter that submits belongs to the prompt, so a Dispatch is still one
- * submission and one `promptRequestId`. It lives here rather than beside the submission because the
- * unwrapper above is what has to recognise it.
- */
-export const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
-const PASTED_OPEN = '<pasted_content id='
-const PASTED = /^(?<before>[\s\S]*?)<pasted_content id="(?<id>[^"]*)">\n(?<body>[\s\S]*)\n<\/pasted_content id="\k<id>">\s*$/
 export function unwrapPasted(text: string): string | null {
     if (text.split(PASTED_OPEN).length !== 2) return null
     const groups = PASTED.exec(text)?.groups

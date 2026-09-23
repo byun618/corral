@@ -104,6 +104,14 @@ export interface WorkerBlock {
   /** The backend session the pane lives in. Pane ids repeat across sessions, so both are compared. */
   paneSession: string | null
   preambleSha256: string | null
+  /**
+   * V22. The lead line is typed into the pane's input line as its own effect, before the body is
+   * pasted, and the two are not one submission. Recording that it was typed — before it is typed —
+   * is what keeps a resume from typing it again: a second lead would make the row the provider
+   * records start with two of them, and the body identity this attempt was created against would
+   * no longer match it.
+   */
+  lead: { requestId: string; at: string } | null
   promptRequestId: string | null
   lastHeartbeatAt: string | null
   /** Capability lifetime is not process lifetime (§4.5): a live pane may have lost the right to report. */

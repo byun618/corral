@@ -983,6 +983,27 @@ describe('LIFE-410 mailbox, Delivery and ACK (§4.4, F5)', () => {
     const nulled = load(doc => { if (Array.isArray(doc.dispatches)) doc.dispatches[0] = { ...doc.dispatches[0], worker: null } }).read()
     expect(findDispatch(nulled, base.dispatchId)?.worker).toBe(null)
   })
+
+  it('applies the same rule one level down to the key V22 added (worker.lead)', () => {
+    // An r1 document has a worker block and no `lead` in it. That is the absent-key case, filled
+    // with null; a `lead` that is *present* is checked whole, because a half-written one read back
+    // as "the lead was already typed" is exactly how a resume would skip typing it.
+    const base = worker()
+    const load = (mutate: (block: Record<string, unknown>) => void) => {
+      const doc: Record<string, unknown> = JSON.parse(JSON.stringify(base.state))
+      if (Array.isArray(doc.dispatches)) for (const entry of doc.dispatches) if (entry.worker !== null) mutate(entry.worker)
+      const store = new OrchestrationStore(fixture409())
+      fs.mkdirSync(path.dirname(store.file), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(store.file, JSON.stringify(doc, null, 2) + '\n')
+      return store
+    }
+    const filled = load(block => { delete block.lead }).read()
+    expect(findDispatch(filled, base.dispatchId)?.worker?.lead).toBe(null)
+    const kept = load(block => { block.lead = { requestId: 'r1.1790000000000.00000000-0000-4000-8000-000000000000', at: '2026-09-23T00:00:00.000Z' } }).read()
+    expect(findDispatch(kept, base.dispatchId)?.worker?.lead?.requestId).toMatch(/^r1\./)
+    expect(code(() => load(block => { block.lead = { requestId: 'x' } }).read())).toBe('storage_corrupt')
+    expect(code(() => load(block => { block.lead = 'typed' }).read())).toBe('storage_corrupt')
+  })
 })
 
 describe('LIFE-410 recovery judgment (§4.7, F7)', () => {

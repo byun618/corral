@@ -707,4 +707,20 @@ describe('LIFE-410 — a pasted body is still the same body', () => {
     expect(sameBody(identity, body + '\n')).toBe(true)
     expect(sameBody(identity, 'something else')).toBe(false)
   })
+  // C11 = V22. Why the doubled lead is a problem the *submission* has to prevent rather than the
+  // judgement: a row carrying two leads is not this body, and it is right that it is not — the
+  // second lead is text the provider received that corral did not send. Widening the judgement to
+  // accept it would take V6 back. So this stays false, and the row stops being produced instead.
+  // The two rows are the reviewer's own (`raw/review-r1/claude/raw/c11-double-lead.log`).
+  it('still refuses a row carrying the lead twice — which is why a resume must not type it twice', () => {
+    expect(sameBody(identity, wrap(`${PROMPT_LEAD}${lead}`, body))).toBe(false)
+    expect(unwrapPasted(wrap(`${PROMPT_LEAD}${lead}`, body))).toBe(null)
+    const file = '/records/doubled.jsonl'
+    const row = claudeUser(wrap(`${PROMPT_LEAD}${lead}`, body), '2026-09-21T05:55:00.900Z') + '\n'
+    expect(countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs: 0, cursor: [], read: reader({ [file]: row }) }).matchCount).toBe(0)
+    // The positive control: the same row with one lead is found, so the zero above is the doubling
+    // and not the harness.
+    const single = claudeUser(wrap(lead, body), '2026-09-21T05:55:00.900Z') + '\n'
+    expect(countSubmissions({ kind: 'claude', files: [file], identity, submittedAtMs: 0, cursor: [], read: reader({ [file]: single }) }).matchCount).toBe(1)
+  })
 })

@@ -6,9 +6,9 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fixture } from './lib.mjs'
+import { fixture, requestId } from './lib.mjs'
 
-const f = await fixture('f2', { expectedChecks: 5 })
+const f = await fixture('f2', { expectedChecks: 6 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -107,6 +107,26 @@ try {
     assert.equal(f.stateDigest(), digest)
     return { foreign: foreign.error, wrong: wrong.error, missing: missing.error }
   })
+  await f.check('F2-an-ask-carries-the-sender-proof-it-was-admitted-on', async () => {
+    // V29. `send` reports whether the pane's backend session matched the one the attempt recorded;
+    // an answer a worker is about to act on has exactly as much to say about who asked for it. The
+    // receipt carries it too, because a replayed ask answers from the receipt and not from here.
+    const id = requestId()
+    const pending = await f.cli(['orchestration', 'ask', '--question', 'who is asking?', '--task-id', taskId,
+      '--dispatch-id', dispatchId, '--timeout-ms', '2000', '--request-id', id], { env: worker, timeout: 40000 })
+    assert.equal(pending.result.state, 'pending', JSON.stringify(pending.result))
+    assert.equal(pending.result.sessionVerified, true, JSON.stringify(pending.result))
+    const receipt = await f.cli(['orchestration', 'request-show', '--id', id])
+    assert.equal(receipt.result.state, 'completed', JSON.stringify(receipt.result))
+    assert.equal(receipt.result.result.sessionVerified, true, JSON.stringify(receipt.result.result))
+    // The answered exit says it too, and says the same thing.
+    await f.cli(['orchestration', 'reply', '--id', pending.result.messageId, '--body', 'the pane did'])
+    const answered = await ask(['--resume', pending.result.messageId, '--timeout-ms', '30000'], { timeout: 60000 })
+    assert.equal(answered.result.state, 'answered', JSON.stringify(answered.result))
+    assert.equal(answered.result.sessionVerified, true, JSON.stringify(answered.result))
+    return { pending: pending.result, receipt: receipt.result, answered: answered.result }
+  })
+
   await f.check('F2-the-resume-line-survives-a-profile-path-with-a-space-in-it', async () => {
     // The resume line is a command a worker copies into its own shell, and every variable part of
     // it — the node binary, the CLI entry, the socket — lives under a profile directory a user may

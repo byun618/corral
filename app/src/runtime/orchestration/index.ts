@@ -29,7 +29,7 @@ import {
   DISPATCH_STATUSES, TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
   isDispatchStatus, isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
   type AgentSnapshot, type DispatchRecord, type DispatchTarget, type JsonValue, type OrchestrationState,
-  type PaneObservation, type TaskStatus,
+  type PaneObservation, type TaskRecord, type TaskStatus,
 } from './model.js'
 import {
   DELIVERABLE_TYPES, DELIVERY_ID, MAX_SUBJECT, MESSAGE_ID, MESSAGE_TYPES, acknowledgeDelivery, answerOf, answerQuestion,
@@ -39,7 +39,7 @@ import {
 import {
   activePaneDispatch, composeBody, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
   resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, withWorker,
-  type SubmissionVerdict,
+  type SenderClaim, type SubmissionVerdict,
 } from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
@@ -677,28 +677,37 @@ export function orchestrationModule(userData: string): CommandModule {
           })
           return { appended, moved }
         }
-        const plan = async (): Promise<SendPlan> => {
+        const addressee = async (): Promise<SendPlan> => {
           // `status` is the one type either side sends: naming an attempt makes it that worker's
           // status, naming none makes it a note on the Run. Taking the ids and then ignoring them
           // would be the worst of the three, so the pairing is required or absent, never partial.
           if (type === 'status' && f['task-id'] === undefined) return { kind: 'coordinator', runId: resolveRunId(state) }
           const taskId = need('task-id'), dispatchId = need('dispatch-id')
           const found = findDispatch(state, dispatchId)
-          // One look at the pane, taken here and handed to the rule: the stored ids say which pane
-          // this attempt was bound to, and only an observation says whether that pane is still the
-          // one answering to them (§4.5 / LIFE-393's three layers).
-          const observation = found === undefined ? UNOBSERVABLE : await observeNow(found.target)
+          // One look at the pane, and it is the look this lane already took: `send` runs inside
+          // `session`, whose reconcile pass swept the backend before this line and memoized what it
+          // saw. Sweeping again here was a second round trip under a held lane (V24) and bought
+          // nothing — the memoized snapshot is from inside this lane, which is exactly the proof
+          // admission needs (§4.5 / LIFE-393's three layers).
+          const observation = found === undefined ? UNOBSERVABLE : observationFor(await observe(), found.target)
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
           const verdict = verifySender(state, { taskId, dispatchId, caller, observation }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
-          const target: SendPlan = { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
+          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
+        }
+        const plan = async (): Promise<SendPlan> => {
+          const target = await addressee()
           // N3, extended to the whole command. The mailbox's own capacity and — for a report — the
           // transition are computed here, on this document, and the result is thrown away. Both are
           // pure, so the dry run costs one call and buys the rule the receipt directory depends on:
           // a `send` that is going to be refused is refused before its receipt exists, and the
           // stored receipt bytes after a refusal are the bytes from before it.
+          //
+          // V25. This ran on the worker paths only: a coordinator `status` returned above it and
+          // reached `message_capacity` inside the receipt instead, leaving a pending receipt behind
+          // an effect that never happened. Every message this command can create is dry-run here.
           if (type === 'worker_done' && target.kind === 'worker') settlement(state, target, now())
           else appendMessage(state, commonFor(target, now()), type === 'heartbeat' ? { type: 'heartbeat' } : { type: type === 'escalation' ? 'escalation' : 'status' })
           return target
@@ -862,52 +871,70 @@ export function orchestrationModule(userData: string): CommandModule {
         if (reused !== null && reused.agent === null) return preflight('agent_not_found',
           'This pane carries no corral-managed agent, so corral cannot deliver a preamble to it',
           { terminal: need('terminal'), recovery: 'Start the pane with corral orchestration worker-start --agent claude|codex|grok --worktree <path>' })
-        const readSpec = (): string => {
-          if (f['spec-file'] === undefined) return ''
+        const specFile = (): string => {
           const file = path.resolve(inv.cwd, need('spec-file'))
           try { return fs.readFileSync(file, 'utf8') } catch (error) { return preflight('invalid_argument', `Cannot read --spec-file: ${String(error)}`, { file }) }
         }
-        interface StartPlan { runId: string; spec: string; resume: DispatchRecord | null; owner: DispatchRecord | null }
+        const withinLimit = (spec: string): string => Buffer.byteLength(spec) <= MAX_SPEC ? spec
+          : preflight('invalid_argument', `The TASK body must be at most ${MAX_SPEC} bytes so the preamble fits in one submission`,
+            { bytes: Buffer.byteLength(spec), limit: MAX_SPEC, recovery: 'Put the detail in a file the worker can read and name it from the spec' })
+        const notStartable = (task: TaskRecord, reason: string, activeDispatchId: string | null): never =>
+          preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (${reason})`,
+            { taskId: task.id, status: task.status, reason, unmetDependencies: [], activeDispatchId,
+              recovery: 'corral orchestration worker-show --dispatch <ctx> reports the open attempt; worker-stop or worker-abandon ends it' })
+        const paneBusy = (paneId: string, active: DispatchRecord): never =>
+          preflight('dispatch_active', `Pane ${paneId} still belongs to open attempt ${active.id}`,
+            { dispatchId: active.id, paneId, recovery: 'Settle or stop that attempt before handing its pane to another Task' })
+        interface StartPlan { runId: string; spec: string; resume: DispatchRecord | null; specFileUsed: boolean }
         const plan = async (): Promise<StartPlan> => session(async state => {
           const runId = resolveRunId(state)
           const task = taskInRun(state, runId, taskId)
-          const spec = f['spec-file'] === undefined ? task.spec : readSpec()
-          if (Buffer.byteLength(spec) > MAX_SPEC) return preflight('invalid_argument', `The TASK body must be at most ${MAX_SPEC} bytes so the preamble fits in one submission`,
-            { bytes: Buffer.byteLength(spec), limit: MAX_SPEC, recovery: 'Put the detail in a file the worker can read and name it from the spec' })
           const open = activeDispatch(state, task.id)
           if (open !== undefined) {
             // §4.2. An attempt whose input stage never completed is resumed, not refused: the pane
             // and the record exist and no preamble was delivered, so finishing the submission is
             // still exactly once. An attempt that already received one is `dispatch_active`.
             if (open.worker !== null && open.worker.promptRequestId === null && (reused === null || reused.target.paneId === open.target.paneId)) {
-              // The body a resume delivers is the one the Dispatch was created against, rebuilt
-              // from the stored Task — never re-read from `--spec-file`, which names a file that
-              // may have changed since. The digest recorded at creation is what says so, and a
-              // disagreement is refused here, before the receipt exists: half a submission
-              // carrying text the other half never saw would still read as one delivery.
-              const rebuilt = preambleDigest(composeBody({ corral: corralCommand(), runId, taskId: task.id, dispatchId: open.id, handle: open.target.handle, spec: task.spec }))
-              const decision = resumeDecision({ stored: open.worker.preambleSha256, rebuilt })
-              if (decision.kind === 'refuse') return preflight('preamble_mismatch', `The body dispatch ${open.id} was created against is not the body this run builds`,
-                { dispatchId: open.id, taskId: task.id, expected: decision.expected, actual: decision.actual,
-                  recovery: `corral orchestration worker-stop --dispatch ${open.id} ends the attempt; start a new one for the changed body` })
-              return { runId, spec: task.spec, resume: open, owner: null }
+              // V26 = V28. The resume question is answered before a file is touched, and the stored
+              // digest — not the flags on this command line — says which body this attempt was made
+              // against. An attempt made from the Task's own spec resumes from the Task, and a
+              // `--spec-file` left on the line is *listed* as ignored without ever being opened, so
+              // a path that has since gone away cannot refuse a resume it has nothing to do with.
+              // Only when the Task no longer explains the digest is the named file read, and then
+              // it is read to be compared: the same body resumes, a changed one is still refused
+              // (V4). That is what makes an attempt created with `--spec-file` resumable at all.
+              const digestOf = (spec: string): string =>
+                preambleDigest(composeBody({ corral: corralCommand(), runId, taskId: task.id, dispatchId: open.id, handle: open.target.handle, spec }))
+              const stored = open.worker.preambleSha256
+              const fromTask = digestOf(task.spec)
+              if (resumeDecision({ stored, rebuilt: fromTask }).kind === 'submit') return { runId, spec: task.spec, resume: open, specFileUsed: false }
+              if (f['spec-file'] !== undefined) {
+                const body = withinLimit(specFile())
+                const decision = resumeDecision({ stored, rebuilt: digestOf(body) })
+                if (decision.kind === 'submit') return { runId, spec: body, resume: open, specFileUsed: true }
+                return preflight('preamble_mismatch', `The file named by --spec-file is not the body dispatch ${open.id} was created against`,
+                  { dispatchId: open.id, taskId: task.id, expected: decision.expected, actual: decision.actual,
+                    recovery: `Name the file the attempt was started with, or corral orchestration worker-stop --dispatch ${open.id} to end the attempt and start a new one for the changed body` })
+              }
+              return preflight('preamble_mismatch', `The body dispatch ${open.id} was created against is not the body this run builds`,
+                { dispatchId: open.id, taskId: task.id, expected: stored, actual: fromTask,
+                  recovery: `The attempt was created from a --spec-file: name the same file again with --spec-file to resume it, or corral orchestration worker-stop --dispatch ${open.id} to end it` })
             }
-            return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (dispatch_active)`,
-              { taskId: task.id, status: task.status, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id,
-                recovery: 'corral orchestration worker-show --dispatch <ctx> reports the open attempt; worker-stop or worker-abandon ends it' })
+            return notStartable(task, 'dispatch_active', open.id)
           }
           const start = startability(state, task)
           if (!start.startable) return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (${start.reason})`,
             { taskId: task.id, status: task.status, reason: start.reason, unmetDependencies: start.unmetDependencies, activeDispatchId: start.activeDispatchId, recovery: start.recovery })
-          if (reused === null) return { runId, spec, resume: null, owner: null }
+          const spec = withinLimit(f['spec-file'] === undefined ? task.spec : specFile())
           // Whether the pane is busy and who may close it are separate questions. A borrowed pane
           // has no owner at all and can still hold a worker mid-task, so the duplicate refusal is
-          // asked of every open attempt on this pane rather than of the owner alone.
-          const active = activePaneDispatch(state, reused.target)
-          if (active !== undefined) return preflight('dispatch_active', `Pane ${reused.target.paneId} still belongs to open attempt ${active.id}`,
-            { dispatchId: active.id, paneId: reused.target.paneId, recovery: 'Settle or stop that attempt before handing its pane to another Task' })
-          const owner = paneOwner(state, reused.target)
-          return { runId, spec, resume: null, owner: owner ?? null }
+          // asked of every open attempt on this pane rather than of the owner alone. Both answers
+          // are taken again in the commit lane (V21) — this one only refuses early and cheaply.
+          if (reused !== null) {
+            const active = activePaneDispatch(state, reused.target)
+            if (active !== undefined) return paneBusy(reused.target.paneId, active)
+          }
+          return { runId, spec, resume: null, specFileUsed: f['spec-file'] !== undefined }
         })
         const planned = recorded ? undefined : await plan()
         return mutate(async () => {
@@ -923,7 +950,7 @@ export function orchestrationModule(userData: string): CommandModule {
           // rather than dropped in silence — a caller who passed `--model opus` to a resume has to
           // be able to see that the pane still runs whatever it was started with.
           const ignoredKeys = start.resume !== null
-            ? ['spec-file', 'worktree', 'agent', 'model', 'effort', 'advisor', 'title']
+            ? [...(start.specFileUsed ? [] : ['spec-file']), 'worktree', 'agent', 'model', 'effort', 'advisor', 'title']
             : reused !== null ? ['worktree', 'agent', 'model', 'effort', 'advisor', 'title'] : []
           const ignoredOptions = ignoredKeys.filter(key => f[key] !== undefined).map(key => `--${key}`)
           const launch = start.resume !== null ? 'resumed' : launching ? 'created' : 'reused'
@@ -990,7 +1017,19 @@ export function orchestrationModule(userData: string): CommandModule {
               // be judged from stale bytes and refuse a Task the plan had already accepted.
               dispatch = await session(async current => {
                 const task = taskInRun(current, start.runId, taskId)
-                const owner = start.owner === null ? null : findDispatch(current, start.owner.id) ?? null
+                // V21. `plan()` read a document under its own lane and let it go; between that read
+                // and this write another `worker-start` can have taken the same Task or the same
+                // pane. So both questions are asked again here, on the document this write is about
+                // to be made on, and the answer this lane computes is the one that is written — the
+                // plan's copies are a cheap early refusal and nothing more. A conflict found here is
+                // past the receipt, which is inherent: a race is not foreseeable at preflight, and
+                // the alternative (two dispatched attempts on one pane, either of which may close
+                // it) is the failure the freeze's rule 8 exists to prevent.
+                const openNow = activeDispatch(current, task.id)
+                if (openNow !== undefined) return notStartable(task, 'dispatch_active', openNow.id)
+                const activeNow = reused === null ? undefined : activePaneDispatch(current, reused.target)
+                if (activeNow !== undefined && reused !== null) return paneBusy(reused.target.paneId, activeNow)
+                const owner = reused === null ? null : paneOwner(current, reused.target) ?? null
                 const worker = emptyWorker({
                   launch: launching ? 'created' : 'reused',
                   // Reusing a pane no settled attempt owns — one a person started with
@@ -1052,12 +1091,49 @@ export function orchestrationModule(userData: string): CommandModule {
           // it is right to — nothing in it was typed by whoever is at the keyboard. So one line is
           // typed first. It carries no newline, so the Enter that submits is still the prompt's own:
           // one submission is one Enter and one `promptRequestId`, which is what F1 counts.
+          //
+          // V22. That line is its own effect, and it is not the paste — so a run that types it and
+          // then fails leaves it on the input line, and the next run must not type a second one. A
+          // provider row that begins with two leads is no longer the body this attempt was created
+          // against: `sameBody` (V6) refuses it, the duplicate pre-check of the run after that
+          // refuses it too, and the body is submitted twice while the record shows one delivery.
+          // So the lead is recorded *before* it is typed and the record is what a resume reads.
+          // An effect-free refusal takes the record back — the line was never typed, and a resume
+          // that skipped it would paste alone, which is the injection shape the lead exists for.
+          const markLead = async (value: { requestId: string; at: string } | null): Promise<DispatchRecord> => withDocumentLane(async () => {
+            const current = records.read()
+            const entry = findDispatch(current, dispatch.id)
+            if (entry === undefined) return dispatch
+            const next = replaceDispatchRecord(current, withWorker(entry, { lead: value }, stamp()))
+            records.write(next)
+            return findDispatch(next, dispatch.id) ?? entry
+          })
           const leadId = derivedRequestId(parentId, 'lead')
-          try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
-          catch (error) {
-            stages.input = { ...stageFailure(error), requestId: leadId }
-            unfinished()
-            return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+          const ledAlready = dispatch.worker?.lead ?? null
+          if (ledAlready === null) {
+            dispatch = await markLead({ requestId: leadId, at: stamp() })
+            try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
+            catch (error) {
+              const failure = { ...stageFailure(error), requestId: leadId }
+              if (failure.status === 'failed') dispatch = await markLead(null)
+              stages.input = failure
+              unfinished()
+              return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+            }
+          }
+          /**
+           * What is left of a lead an earlier run typed. corral cannot clear an input line — the
+           * terminal contract takes printable text only, so there is no Ctrl-U to send — and this
+           * is a look, not a repair: the honest answer is to say the line is still there and name
+           * the one hand that can clear it.
+           */
+          const strandedLead = async (): Promise<{ checked: boolean; present: boolean | null; reason: string | null }> => {
+            if (ledAlready === null) return { checked: false, present: null, reason: 'lead_typed_by_this_run' }
+            try {
+              const screen = await terminalChild('terminal read', { terminal: target.handle, screen: true })
+              const text = isRecord(screen) ? readString(screen, 'text') : null
+              return { checked: true, present: text === null ? null : text.trimEnd().endsWith(PROMPT_LEAD), reason: text === null ? 'no_screen_text' : null }
+            } catch (error) { return { checked: false, present: null, reason: error instanceof RuntimeError ? error.code : 'read_failed' } }
           }
           let submitted: unknown
           let verdict: SubmissionVerdict
@@ -1070,8 +1146,19 @@ export function orchestrationModule(userData: string): CommandModule {
             // proof a resumed attempt can have. The identity it matched is the identity of `input`,
             // so it is proof for this body and no other.
             if (error instanceof RuntimeError && error.code === 'prompt_already_delivered') {
-              submitted = { outcome: 'already_present', stage: 'confirmed', detail: error.resources }
-              verdict = { kind: 'delivered', confirmed: 'already_present' }
+              // V23. The pre-check says "this body is in the provider's record", not "exactly
+              // once". Two copies mean the one-input rule is already broken for this pane, and
+              // calling that an accepted delivery would bury it under a `ready`. Only a single
+              // match is this Dispatch's delivery; anything else leaves the attempt unconfirmed
+              // and resumable, with the count the pre-check reported.
+              const matchCount = isRecord(error.resources) ? readNumber(error.resources, 'matchCount') : null
+              if (matchCount === 1) {
+                submitted = { outcome: 'already_present', stage: 'confirmed', detail: error.resources }
+                verdict = { kind: 'delivered', confirmed: 'already_present' }
+              } else {
+                submitted = { outcome: 'already_present', stage: 'ambiguous', detail: error.resources, matchCount }
+                verdict = { kind: 'unknown', reason: matchCount === null ? 'duplicate_count_unknown' : 'duplicate_submissions' }
+              }
             } else {
               stages.input = { ...stageFailure(error), requestId: promptId }
               unfinished()
@@ -1084,7 +1171,7 @@ export function orchestrationModule(userData: string): CommandModule {
             // pre-check decides on the next run what this run could not read.
             stages.input = { status: 'unknown', requestId: promptId, reason: verdict.reason }
             unfinished()
-            return report('incomplete', 'dispatch_input_unconfirmed', { dispatchId: dispatch.id, terminal, dispatch, input: submitted })
+            return report('incomplete', 'dispatch_input_unconfirmed', { dispatchId: dispatch.id, terminal, dispatch, input: submitted, lead: await strandedLead() })
           }
           stages.input = { status: 'completed', requestId: promptId, delivery: verdict.confirmed }
           effects.push({ kind: 'dispatch_input', action: 'submitted', id: promptId, state: 'accepted' })
@@ -1096,8 +1183,14 @@ export function orchestrationModule(userData: string): CommandModule {
             records.write(next)
             return findDispatch(next, dispatch.id) ?? entry
           })
+          // A delivery this run observed rather than made leaves the question of what the *earlier*
+          // run left behind. If its lead is still sitting on the input line it will prefix whatever
+          // is typed there next, and corral has no way to take it back.
+          const lead = await strandedLead()
+          if (lead.present === true) residualResources.push({ kind: 'input_line', id: target.handle,
+            action: `The lead line this attempt typed on an earlier run is still on the pane's input line. corral cannot clear an input line — press Ctrl-U in ${target.handle} before typing anything else there` })
           return report('ready', 'input_accepted', {
-            dispatchId: dispatch.id, terminal, dispatch: stored,
+            dispatchId: dispatch.id, terminal, dispatch: stored, lead,
             preamble: { sha256, bytes: Buffer.byteLength(input), lines: input.split('\n').length },
             input: submitted,
           })
@@ -1156,15 +1249,16 @@ export function orchestrationModule(userData: string): CommandModule {
 
       if (inv.command === 'orchestration ask') {
         const taskId = need('task-id'), dispatchId = need('dispatch-id'), resume = flag('resume')
-        // The pane is observed once, before the lane, for the same reason `send` observes it: the
-        // stored ids say which pane asked, and only a look says whether that pane is still the one
-        // answering to them. It is taken at admission and never again — the wait that follows polls
-        // the mailbox, not the backend, so a backend that stops answering cannot turn a ten-minute
-        // wait into an `outcome_unknown` (§4.6).
-        const asking = findDispatch(records.read(), dispatchId)
-        const claim = { taskId, dispatchId, caller, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
         const opened = await withDocumentLane(async () => {
           const state = records.read()
+          // V24. The look that proves the sender is taken *inside* the lane, not before it. Taken
+          // outside, it was the pane as it stood before the wait for the lane began: a pane that
+          // died during that wait still admitted a question on an attempt corral could no longer
+          // reach. One sweep, under the lane that is about to write, and never again — the wait
+          // that follows polls the mailbox, not the backend, so a backend that stops answering
+          // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6).
+          const asking = findDispatch(state, dispatchId)
+          const claim: SenderClaim = { taskId, dispatchId, caller, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
           // A resume names a question that already exists, so the attempt may already have been
           // settled — `defer` lets a worker collect an answer it asked for before it reported.
           const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')
@@ -1175,22 +1269,30 @@ export function orchestrationModule(userData: string): CommandModule {
             if (question.type !== 'question') return preflight('not_a_question', `Message ${resume} is a ${question.type}`, { messageId: resume, type: question.type })
             if (question.dispatchId !== dispatchId) return preflight('sender_mismatch', `Question ${resume} belongs to dispatch ${String(question.dispatchId)}`,
               { messageId: resume, dispatchId: question.dispatchId, claimedDispatchId: dispatchId, recovery: 'Resume only a question this Dispatch asked' })
-            return { messageId: question.id, runId: question.runId }
+            return { messageId: question.id, runId: question.runId, sessionVerified: verdict.sessionVerified }
           }
+          const draft = (current: OrchestrationState) => appendMessage(current, {
+            runId: verdict.dispatch.runId, taskId, dispatchId,
+            subject: flag('subject') ?? 'question', body: need('question'),
+            payload: messagePayload({ phase: flag('phase') ?? null }), from: workerOrigin(verdict.dispatch), at: now(),
+          }, { type: 'question', options: f.options === undefined ? [] : csv(String(f.options)) })
+          // V25. A question is a message, and a mailbox that is full refuses it. That refusal is
+          // foreseeable on this document, so it is made here rather than inside the receipt — the
+          // rule `send` follows, applied to the one message path that did not.
+          if (!recorded) draft(state)
           return mutate(async () => {
-            const current = records.read()
-            const appended = appendMessage(current, {
-              runId: verdict.dispatch.runId, taskId, dispatchId,
-              subject: flag('subject') ?? 'question', body: need('question'),
-              payload: messagePayload({ phase: flag('phase') ?? null }), from: workerOrigin(verdict.dispatch), at: now(),
-            }, { type: 'question', options: f.options === undefined ? [] : csv(String(f.options)) })
+            const appended = draft(records.read())
             ctx.onEffect?.()
             records.write(appended.state)
-            return { messageId: appended.message.id, runId: verdict.dispatch.runId }
+            // V29. The proof that admitted this question travels with it: `send` reports whether
+            // the pane's backend session matched the recorded one, and an answer a worker collects
+            // has exactly as much to say about who asked.
+            return { messageId: appended.message.id, runId: verdict.dispatch.runId, sessionVerified: verdict.sessionVerified }
           })
         })
         const envelope = isRecord(opened) ? opened : {}
         const messageId = readString(envelope, 'messageId')
+        const sessionVerified = envelope.sessionVerified === true
         if (messageId === null) throw new RuntimeError('operation_failed', 'ask did not record a question id')
         const resumeCommand = `${corralCommand()} orchestration ask --resume ${messageId} --task-id ${taskId} --dispatch-id ${dispatchId} --timeout-ms 600000 --json`
         for (;;) {
@@ -1202,12 +1304,12 @@ export function orchestrationModule(userData: string): CommandModule {
             return reply === null ? null : { question, reply }
           })
           if (answered !== null) return {
-            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false,
+            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false, sessionVerified,
             question: { id: answered.question.id, body: answered.question.body, options: answered.question.question.options, askedAt: answered.question.createdAt },
             reply: { id: answered.reply.id, body: answered.reply.body, subject: answered.reply.subject, answeredAt: answered.reply.createdAt },
           }
           if (Date.now() >= waitDeadline) return {
-            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, question: null, reply: null,
+            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, sessionVerified, question: null, reply: null,
             resumeCommand, recovery: 'The question is stored. Run resumeCommand to keep waiting; asking again would create a second question',
           }
           ctx.signal.throwIfAborted()

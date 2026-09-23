@@ -15,8 +15,25 @@ import { fixture } from './lib.mjs'
 
 const f = await fixture('sender-proof', { expectedChecks: 3 })
 try {
+  /**
+   * V30. The stand-in provider goes on PATH *before* the backend is started, not before the check
+   * that needs it. A pane inherits the backend's environment, and the backend inherits the one it
+   * was started with — so a fakebin added afterwards was never on the PATH the pane would use, and
+   * an `--agent claude` in this fixture could launch the real provider that happened to be on the
+   * operator's own PATH. Nothing was ever submitted to one here, but a pane running a real provider
+   * that reached ready is a pane that could have been: the isolation, not the outcome, is the rule.
+   *
+   * The stub prints a marker unique to this run, which is what the checks below assert on: "the
+   * pane is running *this* stub" is a stronger statement than "the pane is running something".
+   */
+  const MARKER = `L410-PROBE-STUB-${f.runId}`
+  const fakebin = path.join(f.root, 'fakebin')
+  fs.mkdirSync(fakebin, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(fakebin, 'claude'), `#!/bin/sh\nprintf '${MARKER}\\n'\nexec sleep 600\n`, { mode: 0o700 })
+  f.base.PATH = fakebin + ':' + f.base.PATH
+  f.env.PATH = f.base.PATH
   await f.startBackend()
-  await f.serve()
+  const runtime = await f.serve()
   await f.registerRepo()
 
   const observed = await f.check('PROBE-the-pane-shell-names-its-own-pane', async () => {
@@ -62,13 +79,11 @@ try {
     // the same stored document, with the one field set to null, handed to a second profile on the
     // same backend and the same pane. Both halves live in this fixture's own profiles; the user's
     // default session is not read, named or touched.
-    const fakebin = path.join(f.root, 'fakebin')
-    fs.mkdirSync(fakebin, { recursive: true, mode: 0o700 })
-    fs.writeFileSync(path.join(fakebin, 'claude'), '#!/bin/sh\nprintf "STAND_IN_PROVIDER\\n"\nexec sleep 600\n', { mode: 0o700 })
-    f.base.PATH = fakebin + ':' + f.base.PATH
-    f.env.PATH = f.base.PATH
-    const runtime = await f.serve()
-    await f.registerRepo()
+    //
+    // V30. The runtime is the one this fixture started at the top. Serving the same profile a
+    // second time did not start a second runtime — the socket was already held, so the call simply
+    // found the first one ready and returned, which made the line read like a setup step it never
+    // was. There is one runtime in this half of the probe and it is stopped by name below.
     await f.cli(['orchestration', 'run-create', '--objective', 'LIFE-410 sender proof — the session half'])
     const taskId = (await f.cli(['orchestration', 'task-create', '--spec', 'follow the preamble', '--title', 'session'])).result.task.id
     const started = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--agent', 'claude', '--worktree', f.repo], { timeout: 180000 })
@@ -76,6 +91,14 @@ try {
     assert.ok(dispatchId, JSON.stringify(started.result))
     const shown = await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])
     const paneId = shown.result.paneId
+    // The foreground process of the pane is this fixture's stub and nothing else. Without this the
+    // probe would pass just as well against a real provider that the backend found on an inherited
+    // PATH — which is the failure V30 names.
+    const screen = (await f.cli(['terminal', 'read', '--terminal', shown.result.terminal, '--screen', '--limit', '16384'])).result.text ?? ''
+    assert.ok(screen.includes(MARKER), `the pane must be running this run's stand-in provider (${MARKER}), not whatever PATH offered: ${screen.slice(-400)}`)
+    const foreground = await f.cli(['terminal', 'show', '--terminal', shown.result.terminal])
+    assert.equal(foreground.result.agent?.kind, 'claude', JSON.stringify(foreground.result.agent))
+    assert.notEqual(foreground.result.agent?.phase, 'exited', JSON.stringify(foreground.result.agent))
     const report = (env, options = {}) => f.cli(['orchestration', 'send', '--type', 'heartbeat', '--subject', 'alive',
       '--task-id', taskId, '--dispatch-id', dispatchId], { env, ...options })
 

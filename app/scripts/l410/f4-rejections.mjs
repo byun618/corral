@@ -11,9 +11,9 @@ import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fixture } from './lib.mjs'
+import { fixture, requestId } from './lib.mjs'
 
-const f = await fixture('f4', { expectedChecks: 7 })
+const f = await fixture('f4', { expectedChecks: 8 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -22,7 +22,7 @@ try {
   f.env.PATH = f.base.PATH
 
   await f.startBackend()
-  await f.serve()
+  let runtime = await f.serve()
   await f.registerRepo()
   await f.cli(['orchestration', 'run-create', '--objective', 'LIFE-410 F4 — refused reports'])
   const task = async title => (await f.cli(['orchestration', 'task-create', '--spec', 'follow the preamble', '--title', title])).result.task.id
@@ -173,6 +173,62 @@ try {
     const unspent = await f.cli(['orchestration', 'request-show', '--id', requestId])
     assert.equal(unspent.result.state, 'absent', JSON.stringify(unspent.result))
     return { alive: { sessionVerified: alive.result.sessionVerified }, gone: gone.error, requestState: unspent.result.state }
+  })
+  await f.check('F4-a-full-mailbox-refuses-every-message-path-before-its-receipt-exists', async () => {
+    // V25. r1 closed this for `worker_done` only. A coordinator `status` returned from the plan
+    // before the capacity dry-run ran, and `ask` appended inside its mutation — so both reached
+    // `message_capacity` *after* the receipt was admitted, leaving a pending receipt behind an
+    // effect that never happened. The next try with that id then answered `outcome_unknown` about
+    // a message nobody ever stored.
+    //
+    // The ceiling is reached by writing the mailbox full in the shape the product writes it, with
+    // the runtime stopped, and starting it again on that document — 10,000 messages is a real Run
+    // ceiling and sending them one call at a time is not a test, it is an afternoon.
+    const taskF = await task('f')
+    const g = await start(taskF)
+    await f.stop(runtime, 'SIGTERM')
+    const document = f.stateJson()
+    const runId = document.currentRunId
+    const sample = document.messages[0]
+    assert.ok(sample, 'the fixture must have sent at least one message to copy the shape from')
+    const filler = []
+    for (let index = 0; index < 10000 - document.messages.length; index++) filler.push({
+      ...sample, id: 'msg_' + index.toString(16).padStart(12, '0'), runId,
+      taskId: null, dispatchId: null, type: 'status', outcome: null, question: null, replyTo: null,
+      subject: 'filler', body: '', payload: {}, from: { kind: 'coordinator', dispatchId: null, paneId: null },
+      sequence: index + 1, deliveredIn: null, acknowledgedAt: null,
+    })
+    const renumbered = document.messages.map((entry, index) => ({ ...entry, sequence: filler.length + index + 1 }))
+    fs.writeFileSync(f.stateFile(),
+      JSON.stringify({ ...document, messages: [...filler, ...renumbered] }, null, 2) + '\n')
+    runtime = await f.serve()
+    assert.equal(f.stateJson().messages.length, 10000)
+
+    const full = async (label, args, env) => {
+      const id = requestId()
+      const before = f.stateDigest(), receipts = f.receiptsDigest()
+      const result = await f.cli([...args, '--request-id', id], { env, fail: true })
+      assert.equal(result.error.code, 'message_capacity', `${label}: ${JSON.stringify(result)}`)
+      assert.equal(result._meta.outcome, 'not_started', `${label}: ${JSON.stringify(result._meta)}`)
+      assert.equal(f.stateDigest(), before, `${label}: the stored bytes moved`)
+      assert.equal(f.receiptsDigest(), receipts, `${label}: the receipt store moved`)
+      const shown = await f.cli(['orchestration', 'request-show', '--id', id])
+      assert.equal(shown.result.state, 'absent', `${label}: ${JSON.stringify(shown.result)}`)
+      // The same id again: an unspent id is still spendable, and answers the same way.
+      const again = await f.cli([...args, '--request-id', id], { env, fail: true })
+      assert.equal(again.error.code, 'message_capacity', `${label} (retry): ${JSON.stringify(again)}`)
+      assert.equal(f.receiptsDigest(), receipts, `${label} (retry): the receipt store moved`)
+      return { label, error: result.error, requestState: shown.result.state }
+    }
+    const status = await full('coordinator status',
+      ['orchestration', 'send', '--type', 'status', '--subject', 'no room', '--body', 'x'], f.env)
+    const asking = await full('worker ask',
+      ['orchestration', 'ask', '--question', 'no room', '--task-id', taskF, '--dispatch-id', g.dispatchId, '--timeout-ms', '2000'],
+      asPane(g.paneId))
+    const report = await full('worker_done',
+      ['orchestration', 'send', '--type', 'worker_done', '--subject', 'no room', '--body', 'x',
+        '--task-id', taskF, '--dispatch-id', g.dispatchId, '--outcome', 'succeeded'], asPane(g.paneId))
+    return { messages: f.stateJson().messages.length, status, asking, report }
   })
   f.record('f4-state', f.stateJson())
 } finally { await f.cleanup() }

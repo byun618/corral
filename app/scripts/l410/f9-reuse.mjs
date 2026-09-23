@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f9', { expectedChecks: 4 })
+const f = await fixture('f9', { expectedChecks: 5 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -77,6 +77,35 @@ try {
     const after = await show(second.dispatchId)
     assert.equal(after.worker.preambleSha256, second.worker.preambleSha256, 'a resume must not rebuild a different body')
     return { input, preambleSha256: second.worker.preambleSha256, resumed: resumed.result }
+  })
+
+  await f.check('F9-a-reused-pane-started-from-a-file-resumes-from-that-file', async () => {
+    // V26, on the reuse path. An attempt whose body came from `--spec-file` was unresumable in r1 —
+    // the resume rebuilt from `task.spec`, so the digest never matched and the only way out was to
+    // kill a worker that might be mid-task. The file is read at resume time and *compared*, so the
+    // same file resumes and a changed one is still refused (V4 intact).
+    const third = (await f.cli(['orchestration', 'task-create', '--spec', 'the stored task spec', '--title', 'from-file'])).result.task.id
+    const file = path.join(f.root, 'f9-spec.md')
+    fs.writeFileSync(file, 'the body that only this file holds\n')
+    // The pane is busy with `secondTask`, so this attempt gets a pane of its own.
+    const made = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', file], { timeout: 180000 })
+    assert.equal(made.result.state, 'incomplete', JSON.stringify(made.result))
+    const dispatches = f.stateJson().dispatches.length
+    const resumed = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', file], { timeout: 180000 })
+    assert.equal(resumed.result.launch, 'resumed', JSON.stringify(resumed.result))
+    assert.equal(resumed.result.dispatchId, made.result.dispatchId)
+    assert.ok(!resumed.result.ignoredOptions.includes('--spec-file'), JSON.stringify(resumed.result.ignoredOptions))
+    assert.equal(f.stateJson().dispatches.length, dispatches, 'a resume never adds a record')
+    fs.writeFileSync(file, 'a body that is not the one this attempt was made against\n')
+    const before = f.stateDigest()
+    const refused = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', file], { fail: true, timeout: 180000 })
+    assert.equal(refused.error.code, 'preamble_mismatch', JSON.stringify(refused))
+    assert.equal(f.stateDigest(), before, 'a refused resume must not write')
+    await f.cli(['orchestration', 'worker-stop', '--dispatch', made.result.dispatchId], { timeout: 60000 })
+    return { made: made.result.state, resumed: resumed.result.launch, refused: refused.error }
   })
 
   await f.check('F9-the-old-attempt-id-is-stale-and-the-new-one-settles', async () => {

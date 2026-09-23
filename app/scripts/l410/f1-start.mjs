@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fixture, requestId } from './lib.mjs'
 
-const f = await fixture('f1', { expectedChecks: 7 })
+const f = await fixture('f1', { expectedChecks: 8 })
 try {
   // A stand-in named `claude`, first on this fixture's PATH only. Nothing global is touched.
   const fakebin = path.join(f.root, 'fakebin')
@@ -158,14 +158,51 @@ try {
     assert.equal(fromFile.result.state, 'incomplete', JSON.stringify(fromFile.result))
     const before = f.stateDigest()
     const panes = (await f.cli(['terminal', 'list'])).result.totalCount
+    // V26. The same file resumes the attempt it created: the body is read *now*, compared with the
+    // digest the Dispatch stored, and it is the comparison — not the flag — that decides. In r1
+    // this was `preamble_mismatch` however faithful the file was, and the only way out was to kill
+    // a worker that might already be working.
+    const resumed = await f.cli(['orchestration', 'worker-start', '--task', taskD, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', other], { timeout: 180000 })
+    assert.equal(resumed.result.launch, 'resumed', JSON.stringify(resumed.result))
+    assert.equal(resumed.result.dispatchId, fromFile.result.dispatchId)
+    assert.ok(!resumed.result.ignoredOptions.includes('--spec-file'), JSON.stringify(resumed.result.ignoredOptions))
+    // …and a *changed* file is still refused, which is the whole of V4 and is not loosened by V26.
+    fs.writeFileSync(other, 'a different body entirely, changed since the attempt was made\n')
+    const afterChange = f.stateDigest()
     const refused = await f.cli(['orchestration', 'worker-start', '--task', taskD, '--agent', 'claude', '--worktree', f.repo,
       '--spec-file', other], { fail: true, timeout: 180000 })
     assert.equal(refused.error.code, 'preamble_mismatch', JSON.stringify(refused))
     assert.equal(refused._meta.outcome, 'not_started', JSON.stringify(refused._meta))
     assert.match(refused.error.resources.recovery, /worker-stop/)
-    assert.equal(f.stateDigest(), before, 'a refused resume must not write')
+    assert.equal(f.stateDigest(), afterChange, 'a refused resume must not write')
     assert.equal((await f.cli(['terminal', 'list'])).result.totalCount, panes, 'a refused resume must not create a pane')
-    return { ignored: ignored.result.ignoredOptions, refused: refused.error }
+    fs.writeFileSync(other, 'a different body entirely\n')
+    return { ignored: ignored.result.ignoredOptions, resumed: resumed.result.launch, refused: refused.error, digestUnchanged: before === afterChange }
+  })
+
+  await f.check('F1-a-file-a-resume-was-never-going-to-read-is-not-opened', async () => {
+    // V28. `--spec-file` on a resume of a Task-spec attempt is ignored, and "ignored" has to mean
+    // the file is never touched: r1 read it before deciding, so naming a path that no longer
+    // existed refused a resume the file had nothing to do with — and spent the request id doing it.
+    const missing = path.join(f.root, 'there-is-no-such-file.md')
+    assert.ok(!fs.existsSync(missing))
+    const before = f.stateDigest()
+    const ignored = await f.cli(['orchestration', 'worker-start', '--task', taskA, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', missing], { timeout: 180000 })
+    assert.equal(ignored.result.launch, 'resumed', JSON.stringify(ignored.result))
+    assert.ok(ignored.result.ignoredOptions.includes('--spec-file'), JSON.stringify(ignored.result.ignoredOptions))
+    assert.equal(ignored.result.dispatchId, started.result.dispatchId)
+    // A new attempt is a different question: there the file *is* the body, so an unreadable one is
+    // still `invalid_argument` and still writes nothing.
+    const fresh = await task('e')
+    const panes = (await f.cli(['terminal', 'list'])).result.totalCount
+    const refused = await f.cli(['orchestration', 'worker-start', '--task', fresh, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', missing], { fail: true, timeout: 180000 })
+    assert.equal(refused.error.code, 'invalid_argument', JSON.stringify(refused))
+    assert.equal(refused._meta.outcome, 'not_started', JSON.stringify(refused._meta))
+    assert.equal((await f.cli(['terminal', 'list'])).result.totalCount, panes, 'a refused start must not create a pane')
+    return { ignoredOnResume: ignored.result.ignoredOptions, refusedOnStart: refused.error, digestBefore: before }
   })
 
   await f.check('F1-an-unregistered-worktree-fails-the-terminal-stage-and-creates-no-attempt', async () => {

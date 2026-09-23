@@ -107,6 +107,27 @@ const tally = (kind, what, typed, detail) => {
 
 const screen = async handle => (await f.cli(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '16384'], { timeout: 60000 })).result.text ?? ''
 
+/** The line typed before the paste — the product's own constant, repeated here so a drift shows up. */
+const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
+
+/**
+ * The provider's session record for one pane, read straight off disk. This is where corral's own
+ * acceptance rule looks ("the record holds this body once"), so it is where this gate counts.
+ */
+function providerRows(sessionId, cwd) {
+  const dir = path.join(os.homedir(), '.claude/projects', fs.realpathSync(cwd).replaceAll('/', '-').replaceAll('.', '-'))
+  const file = path.join(dir, `${sessionId}.jsonl`)
+  if (!fs.existsSync(file)) return []
+  return fs.readFileSync(file, 'utf8').trim().split('\n').flatMap(line => {
+    let parsed
+    try { parsed = JSON.parse(line) } catch { return [] }
+    const content = parsed?.message?.content
+    const text = typeof content === 'string' ? content
+      : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : ''
+    return [{ role: parsed?.message?.role ?? parsed?.type ?? null, text }]
+  })
+}
+
 /** The screens this gate knows how to answer, and the keys that answer them. */
 const DIALOGS = [
   // The trust dialog's default option is "No, exit" — pressing Enter on it would end the provider,
@@ -187,6 +208,8 @@ try {
   const dispatchId = first.dispatchId
   const shown = await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])
   const handle = shown.result.terminal
+  const sessionId = (await f.cli(['terminal', 'show', '--terminal', handle], { timeout: 60000 })).result.agent.sessionId
+  assert.match(String(sessionId), /^[0-9a-f-]{36}$/, 'the provider session id is how its record is found')
 
   await f.check('GATE2-the-pane-runs-the-users-own-claude', async () => {
     const dialogs = await clearDialogs(handle)
@@ -231,21 +254,23 @@ try {
     assert.match(response.preamble.sha256, /^[0-9a-f]{64}$/)
     const stored = await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])
     assert.equal(stored.result.worker.preambleSha256, response.preamble.sha256)
-    // Counted on the pane's own output, not inferred from the record. A body this size arrives as a
-    // paste, and the provider may render it collapsed (`[Pasted text #1 +N lines]`) rather than in
-    // full — so the count is of *deliveries*, whichever of the two forms the screen shows.
-    const text = (await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? ''
-    const screenText = await screen(handle)
-    const verbatim = (text.match(/You are a corral worker\./g) ?? []).length
-    const collapsed = (text.match(/\[Pasted text #\d+/g) ?? []).length
-    const lead = (text.match(/The block pasted below is this session's task/g) ?? []).length
-    f.record('native/pane-after-submission', {
-      deliveries: verbatim + collapsed, verbatim, collapsed, leadLine: lead,
-      bytes: text.length, screen: screenText, text: text.slice(0, 40000),
+    // Counted in the provider's own session record, which is the invariant itself: "the record
+    // holds this body once". The pane's raw output cannot be used for it — `terminal read` is
+    // cursor-based, so the earlier screen reads have already consumed the submission by now.
+    const rows = providerRows(sessionId, f.repo)
+    const bodies = rows.filter(row => row.role === 'user').map(row => row.text)
+    const delivered = bodies.filter(text => text.includes('You are a corral worker.')).length
+    const wrapped = bodies.filter(text => /<pasted_content id="[^"]*">/.test(text)).length
+    const lead = bodies.filter(text => text.startsWith(PROMPT_LEAD)).length
+    f.record('native/provider-record', {
+      sessionId, rows: rows.length, userRows: bodies.length, delivered, wrapped, leadLine: lead,
+      firstUserRow: bodies[0]?.slice(0, 400) ?? null, tailOfFirstUserRow: bodies[0]?.slice(-200) ?? null,
+      screen: await screen(handle),
     })
-    assert.ok(lead >= 1, 'the typed lead line has to be on the pane')
-    assert.equal(verbatim + collapsed, 1, `the body was delivered ${verbatim + collapsed} times (verbatim ${verbatim}, collapsed ${collapsed})`)
-    return { preamble: response.preamble, verbatim, collapsed, leadLine: lead, promptRequestId: stored.result.worker.promptRequestId }
+    assert.equal(delivered, 1, `the body is in the provider's record ${delivered} times`)
+    assert.equal(lead, 1, 'the typed lead has to be the start of that same message, not a message of its own')
+    assert.equal(wrapped, 1, 'and the body arrived as one pasted block inside it')
+    return { preamble: response.preamble, delivered, wrapped, leadLine: lead, promptRequestId: stored.result.worker.promptRequestId }
   })
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
@@ -254,9 +279,8 @@ try {
     assert.equal(again.error.code, 'task_not_startable', JSON.stringify(again))
     assert.equal(again.error.resources.reason, 'dispatch_active')
     assert.equal(f.stateDigest(), digest, 'a refused start stores nothing')
-    const text = (await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? ''
-    const delivered = (text.match(/You are a corral worker\./g) ?? []).length + (text.match(/\[Pasted text #\d+/g) ?? []).length
-    assert.equal(delivered, 1, 'and delivers nothing further')
+    const again2 = providerRows(sessionId, f.repo).filter(row => row.role === 'user' && row.text.includes('You are a corral worker.')).length
+    assert.equal(again2, 1, 'and delivers nothing further')
     return again.error
   })
 

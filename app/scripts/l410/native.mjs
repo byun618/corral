@@ -9,8 +9,8 @@
 //
 //   1. the pane's foreground process is the user's installed executable, by realpath (l409 R6);
 //   2. the preamble is typed into it exactly once, and the screen is counted, not assumed;
-//   3. the provider's global configuration is isolated (`CLAUDE_CONFIG_DIR` inside the fixture) and
-//      the user's own is digested before and after, so F14 is asserted rather than hoped for.
+//   3. the user's global provider configuration is digested before and after, so what the run left
+//      behind is measured rather than assumed — trust entries listed, everything else asserted.
 //
 // Every byte typed into the pane is tallied as it happens into `native/submissions.md`, because a
 // count reconstructed afterwards is not a count. The budget is 8; the trust dialog is answered by
@@ -35,29 +35,20 @@ const f = await fixture('native', { expectedChecks: 8 })
 // l409 R6: `claude` resolves to an npm-global copy before the user's own launcher on this machine,
 // so the fixture's own PATH puts the launcher's directory first. Nothing global is touched.
 const NATIVE_BIN = path.dirname(CLAUDE)
-// The provider's configuration lives inside the fixture for the length of this run, so the pane
-// cannot write to the user's `~/.claude.json` or `~/.claude/` at all. Panes inherit the backend's
-// environment and nothing else, so both of these have to be set before the backend is started.
-const CONFIG_DIR = path.join(f.root, 'claude-config')
-fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 })
-// Onboarding and the account link, but never trust. A virgin config asks for a theme and a login
-// before it ever asks about the directory, and each of those screens would cost a submission out
-// of the budget — the first attempt at this gate came up "Not logged in · Please run /login".
-//
-// The credentials themselves live in the macOS Keychain, not in this file; what the config holds is
-// only which account they belong to. So the user's `~/.claude.json` is *read* for `oauthAccount`
-// and `userID` and those two are written into the fixture's own config. Nothing is written back,
-// and no token passes through here. The trust dialog is deliberately left to be answered by hand:
-// answering it from the screen is the evidence this gate exists to produce.
-const userConfig = path.join(os.homedir(), '.claude.json')
-const account = fs.existsSync(userConfig) ? JSON.parse(fs.readFileSync(userConfig, 'utf8')) : {}
-fs.writeFileSync(path.join(CONFIG_DIR, '.claude.json'), JSON.stringify({
-  hasCompletedOnboarding: true, theme: 'dark', installMethod: 'native', autoUpdates: false,
-  oauthAccount: account.oauthAccount, userID: account.userID,
-}, null, 2) + '\n', { mode: 0o600 })
+// The provider runs on the user's own configuration, deliberately. LIFE-394 and LIFE-409 measured
+// their native gates the same way (`app/scripts/l394/env.mjs` preserves `CLAUDE_CONFIG_DIR` on
+// purpose — "dropping them moves the very account and record path"), and an isolated config cannot
+// authenticate at all: the Keychain lookup is keyed to the default config directory, so a fixture
+// config comes up "Not logged in · Run /login" and the gate cannot run. That measurement is in
+// `native/auth-isolation-probe.{md,json}`. What the run leaves behind is a project/trust entry for
+// one temporary directory, which is exactly what 01-criteria F14 exempts ("trust 항목 외 diff 0").
+// Nothing is written to the user's settings, hooks or any configuration file by this script.
 for (const target of [f.base, f.env]) {
   target.PATH = NATIVE_BIN + ':' + target.PATH
-  target.CLAUDE_CONFIG_DIR = CONFIG_DIR
+  // The provider updated the user's own install in the middle of the first attempt at this gate
+  // (2.1.252 → 2.1.280). Suppressed the way PATH is pinned — in the fixture's environment, never in
+  // the user's settings file.
+  target.DISABLE_AUTOUPDATER = '1'
   // The session driving this script carries an API key, and a pane inherits the backend's
   // environment: left in place, the provider opens a "Detected a custom API key" dialog and, if
   // answered the other way, would bill this gate to a different credential than the user's own
@@ -80,17 +71,22 @@ const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
 const LEDGER = path.join(path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw/worker/claude'), 'native/submissions.json')
 fs.mkdirSync(path.dirname(LEDGER), { recursive: true })
 const submissions = fs.existsSync(LEDGER) ? JSON.parse(fs.readFileSync(LEDGER, 'utf8')) : []
-const spent = () => submissions.filter(entry => entry.typed).length
+// The budget in the TASK is on *prompt submissions* — bodies put to the provider as work. A key
+// answering a trust dialog is not one of those (LIFE-394 C6 treats dialog handling as its own
+// thing), so the two are counted separately and both are listed. Neither count is reconstructed.
+const spent = () => submissions.filter(entry => entry.typed && entry.kind === 'terminal prompt').length
+const keys = () => submissions.filter(entry => entry.typed && entry.kind === 'terminal send').length
 const tally = (kind, what, typed, detail) => {
   submissions.push({ n: submissions.length + 1, at: new Date().toISOString(), runId: f.runId, kind, what, typed, ...detail })
   fs.writeFileSync(LEDGER, JSON.stringify(submissions, null, 2) + '\n')
   const markdown = [
     '# LIFE-410 gate ② — every prompt submission, in order',
     '',
-    `Budget: ${BUDGET} **cumulative**, across every run of this gate. A submission is anything put into the pane:`,
-    'a `terminal prompt` body, or a `terminal send` answering a dialog. Each row is written at the moment of the',
-    'call, never reconstructed afterwards. `typed: false` is a call that returned before anything reached the pane',
-    '(a submission stage that never started); those are listed and do not spend the budget.',
+    `Budget: ${BUDGET} prompt submissions, **cumulative** across every run of this gate. A prompt submission is a`,
+    'body put to the provider as work (`terminal prompt`). Keys typed to answer a dialog (`terminal send`) are not',
+    'prompt submissions and are counted separately below, but every one of them is listed here too. Each row is',
+    'written at the moment of the call, never reconstructed afterwards. `typed: false` is a call that returned before',
+    'anything reached the pane; those are listed and spend nothing.',
     '',
     '| # | at | run | kind | what | typed | detail |',
     '| --- | --- | --- | --- | --- | --- | --- |',
@@ -100,12 +96,13 @@ const tally = (kind, what, typed, detail) => {
       return `| ${entry.n} | ${entry.at} | ${entry.runId} | ${entry.kind} | ${entry.what} | ${entry.typed} | ${JSON.stringify(rest).replaceAll('|', '\\|')} |`
     }),
     '',
-    `Spent: ${submissions.filter(entry => entry.typed).length} of ${BUDGET} (${submissions.length} calls recorded).`,
+    `Prompt submissions: ${submissions.filter(entry => entry.typed && entry.kind === 'terminal prompt').length} of ${BUDGET}.`,
+    `Dialog keys: ${submissions.filter(entry => entry.typed && entry.kind === 'terminal send').length}. Calls recorded in all: ${submissions.length}.`,
     '',
   ].join('\n')
   fs.writeFileSync(path.join(f.raw, 'submissions.md'), markdown)
   fs.writeFileSync(path.join(path.dirname(LEDGER), 'submissions.md'), markdown)
-  assert.ok(spent() <= BUDGET, `the cumulative submission budget of ${BUDGET} is spent: ${JSON.stringify(submissions)}`)
+  assert.ok(spent() <= BUDGET, `the cumulative prompt-submission budget of ${BUDGET} is spent: ${JSON.stringify(submissions)}`)
 }
 
 const screen = async handle => (await f.cli(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '16384'], { timeout: 60000 })).result.text ?? ''
@@ -177,7 +174,7 @@ try {
   // --- F1: launch, dialog, one submission ------------------------------------------------------
   const first = await f.check('GATE2-F1-worker-start-creates-the-pane-and-the-attempt-before-it-submits', async () => {
     const started = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--agent', 'claude',
-      '--model', MODEL, '--worktree', f.repo], { timeout: 200000 })
+      '--model', MODEL, '--worktree', f.repo, '--timeout-ms', '120000'], { timeout: 200000 })
     assert.equal(started.result.stages.terminal.status, 'completed', JSON.stringify(started.result.stages))
     assert.equal(started.result.stages.dispatch.status, 'completed', JSON.stringify(started.result.stages))
     assert.ok(started.result.dispatchId, JSON.stringify(started.result))
@@ -198,7 +195,7 @@ try {
     const executable = await foregroundExecutable(f, handle, CLAUDE)
     const text = await screen(handle)
     f.record('native/screen-identity', { text })
-    assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'the isolated provider config has to carry the account link')
+    assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'an unauthenticated provider cannot run a single command')
     assert.match(text, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252|\?\s*for shortcuts/i)
     return { dialogs: dialogs.length, phase: phase.phase, executable, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), model: MODEL }
   })
@@ -208,10 +205,26 @@ try {
     if (first.stages.input.status !== 'completed') {
       // The readiness gate did not hold while the dialog was up, which is the documented resume
       // path: the same attempt, the same pane, and the submission that never happened.
-      await f.cli(['terminal', 'wait', '--terminal', handle, '--for', 'agent-ready'], { timeout: 200000 })
-      response = (await f.cli(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle], { timeout: 200000 })).result
-      tally('terminal prompt', 'preamble + TASK (resume)', response.stages.input.status !== 'not_started',
-        { dispatchId, stage: response.stages.input.status })
+      // Every one of these needs an explicit budget: the CLI's own default is ten seconds when
+      // `--timeout-ms` is omitted, which is shorter than a real provider takes to accept a body.
+      const ready = await f.cli(['terminal', 'wait', '--terminal', handle, '--for', 'agent-ready', '--timeout-ms', '120000'], { timeout: 200000 })
+      assert.equal(ready.result.satisfied, true, JSON.stringify(ready.result))
+      // Deliberately non-throwing: if the submission does not take, what the pane looks like at that
+      // moment is the evidence, and it is gone once the fixture is cleaned up.
+      const attempt = await f.cliRaw(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle, '--timeout-ms', '120000'], { timeout: 200000 })
+      const envelope = attempt.json
+      tally('terminal prompt', 'preamble + TASK (resume)', envelope?.result?.stages?.input?.status !== 'not_started',
+        { dispatchId, stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
+      if (envelope?.ok !== true) {
+        f.record('native/failed-submission', {
+          envelope,
+          screen: (await f.cli(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '16384'], { timeout: 60000 })).result.text ?? '',
+          raw: ((await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? '').slice(-8000),
+          terminal: (await f.cli(['terminal', 'show', '--terminal', handle], { timeout: 60000 })).result,
+        })
+        assert.fail(`the submission did not take: ${JSON.stringify(envelope?.error ?? envelope)}`)
+      }
+      response = envelope.result
     }
     assert.equal(response.dispatchId, dispatchId, 'a resume never opens a second attempt')
     assert.equal(response.stages.input.status, 'completed', JSON.stringify(response.stages))
@@ -228,7 +241,7 @@ try {
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
     const digest = f.stateDigest()
-    const again = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle], { fail: true, timeout: 200000 })
+    const again = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle, '--timeout-ms', '120000'], { fail: true, timeout: 200000 })
     assert.equal(again.error.code, 'task_not_startable', JSON.stringify(again))
     assert.equal(again.error.resources.reason, 'dispatch_active')
     assert.equal(f.stateDigest(), digest, 'a refused start stores nothing')
@@ -314,27 +327,29 @@ try {
   const summary = JSON.parse(fs.readFileSync(path.join(f.raw, 'global-diff.json'), 'utf8')).summary
   const full = JSON.parse(fs.readFileSync(path.join(f.raw, 'global-diff.json'), 'utf8'))
 
-  await f.check('GATE2-F14-the-users-own-provider-configuration-was-not-what-this-run-wrote-to', async () => {
-    // The strict half. The pane's configuration lived inside the fixture, so no trust key of the
-    // user's may have moved: if one did, the isolation failed and the gate fails with it.
-    const trustMoved = Object.entries(full.files ?? {}).flatMap(([file, detail]) =>
-      [...(detail.changed ?? []), ...(detail.added ?? []), ...(detail.removed ?? [])]
-        .filter(key => /hasTrustDialogAccepted$|^trusted/.test(String(key)))
-        .map(key => `${file}:${key}`))
-    assert.deepEqual(trustMoved, [], `a trust key of the user's own configuration moved: ${JSON.stringify(trustMoved)}`)
-    // Nothing outside the provider's own JSON may move at all.
+  await f.check('GATE2-F14-what-the-run-left-in-the-users-configuration-is-trust-and-nothing-else', async () => {
+    // The strict half: nothing outside the provider's own JSON may move at all. The fixture owns its
+    // backend, its herdr session and its userData, so a changed directory or a second changed file
+    // would mean this run reached somewhere it had no business reaching.
     assert.deepEqual(summary.changedDirs, [], JSON.stringify(summary.changedDirs))
     const unexpectedFiles = summary.changedFiles.filter(file => !/\.claude\.json$/.test(String(file)))
     assert.deepEqual(unexpectedFiles, [], JSON.stringify(unexpectedFiles))
-    // The listed half, per 01-criteria F14 ("trust 항목 외 diff 0(있으면 목록)"). `~/.claude.json`
-    // is shared mutable state: the session driving this script is itself a `claude` process writing
-    // to it every turn, so key paths that move there are listed and attributed rather than asserted
-    // to zero. Key names only — no value is read or recorded.
+    // The listed half, per 01-criteria F14 ("trust 항목 외 diff 0(있으면 목록)"). Trust keys are the
+    // exempted ones and are expected: the provider records that it was told this temporary
+    // directory is trusted. Every other key path that moved inside `~/.claude.json` is listed by
+    // name — and note that the session running this script is itself a `claude` process writing to
+    // that file on every turn, so a zero there would be a claim about the session, not about the
+    // measured pane. Key names only; no configuration value is read or recorded.
+    const keysOf = detail => [...(detail.changed ?? []), ...(detail.added ?? []), ...(detail.removed ?? [])].map(String)
+    const isTrust = key => /hasTrustDialogAccepted$|^trusted|^projects\./.test(key)
     const listed = Object.fromEntries(Object.entries(full.files ?? {})
-      .filter(([, detail]) => (detail.changed ?? []).length + (detail.added ?? []).length + (detail.removed ?? []).length > 0)
-      .map(([file, detail]) => [file, { added: detail.added ?? [], removed: detail.removed ?? [], changed: detail.changed ?? [] }]))
+      .filter(([, detail]) => keysOf(detail).length > 0)
+      .map(([file, detail]) => [file, {
+        trust: keysOf(detail).filter(isTrust),
+        other: keysOf(detail).filter(key => !isTrust(key)),
+      }]))
     f.record('native/f14-listed-key-paths', { note: 'key paths only; no configuration value is read or recorded', listed, summary })
-    return { summary, trustMoved, listed, configDir: CONFIG_DIR, before, after, reported }
+    return { summary, listed, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), before, after, reported }
   })
 
   const rawRoot = path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw/worker/claude')
@@ -342,16 +357,17 @@ try {
     '# LIFE-410 F14 — the user\'s global provider configuration, before and after gate ②',
     '',
     `- provider: \`${CLAUDE}\` → \`${fs.realpathSync(CLAUDE)}\` (\`${version}\`), \`--model ${MODEL}\``,
-    `- the pane's own provider configuration was redirected into the fixture (\`CLAUDE_CONFIG_DIR=${CONFIG_DIR}\`),`,
-    '  set on the backend environment before the backend started, because a pane inherits the backend\'s environment and nothing else',
-    '- that fixture config was seeded with `hasCompletedOnboarding`, a theme, and the two account-link keys read out of',
-    '  the user\'s `~/.claude.json` (`oauthAccount`, `userID`) — credentials live in the Keychain, not in that file, so no',
-    '  token passes through the fixture. Nothing is written back to the user\'s configuration. Trust was **not** seeded:',
-    '  the trust dialog was answered by reading the screen and typing, and that exchange is in `native/dialogs.json`',
-    '- `ANTHROPIC_API_KEY` was removed from the fixture environment, so the pane used the same credential the user\'s own install uses',
+    '- the provider ran on the user\'s own configuration, deliberately: an isolated `CLAUDE_CONFIG_DIR` cannot',
+    '  authenticate (the Keychain lookup is keyed to the default config directory), so the gate could not run at all.',
+    '  The measurement is in `native/auth-isolation-probe.md`. Nothing was written to the user\'s settings or hooks',
+    '  by this script; what the provider itself records is a project/trust entry for one temporary directory',
+    '- `ANTHROPIC_API_KEY` was removed from the fixture environment, so the pane used the same credential the user\'s',
+    '  own install uses, and `DISABLE_AUTOUPDATER=1` was set there too — in the environment, never in a settings file',
+    '- trust was **not** pre-seeded: the trust dialog was answered by reading the screen and typing (`native/dialogs.json`)',
     '- window: `before` immediately before the backend starts, `after` immediately after the pane is closed',
     '- collector: `app/scripts/l394/global-config-diff.mjs` (salted value digests; no value is written out)',
-    `- prompt submissions: ${spent()} of ${BUDGET} cumulative (${submissions.length} calls recorded) · installed herdr, PATH, the Orca app and the user's default session untouched`,
+    `- prompt submissions: ${spent()} of ${BUDGET} cumulative; dialog keys: ${keys()}; calls recorded in all: ${submissions.length}`,
+    '- installed herdr, the user\'s PATH, the Orca app and the user\'s default session: untouched',
     '',
     '## Result',
     '',
@@ -363,13 +379,13 @@ try {
     '',
     'Two claims, of different strengths:',
     '',
-    '1. **Asserted zero.** No trust key of the user\'s configuration moved, no directory changed, and no file',
-    '   outside `~/.claude.json` changed. The pane could not write to the user\'s configuration at all — its own',
-    '   lived inside the fixture — so any movement in those would mean the isolation failed.',
-    '2. **Listed, not asserted.** Key paths inside `~/.claude.json` are listed in `native/f14-listed-key-paths.json`',
-    '   (names only, never values). That file is shared mutable state on this machine: the worker session that ran',
-    '   this script is itself a `claude` process writing to it on every turn, so a zero there would be a claim about',
-    '   the session, not about the measured pane. 01-criteria F14 asks for exactly this — "trust 항목 외 diff 0(있으면 목록)".',
+    '1. **Asserted zero.** No directory changed, and no file outside `~/.claude.json` changed. This run owned its',
+    '   backend, its herdr session and its userData, so movement in either would mean it reached somewhere it should not.',
+    '2. **Listed, not asserted.** Key paths inside `~/.claude.json` are listed in `native/f14-listed-key-paths.json`,',
+    '   split into trust entries and everything else, by name and never by value. Trust entries are expected and are',
+    '   what 01-criteria F14 exempts: the provider records that it was told one temporary directory is trusted. The',
+    '   rest are listed because that file is shared mutable state — the worker session that ran this script is itself a',
+    '   `claude` process writing to it on every turn, so a zero there would be a claim about the session, not the pane.',
     '',
     `- \`before\`: ${before}`,
     `- \`after\`: ${after}`,

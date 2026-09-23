@@ -410,6 +410,24 @@ describe('V22/V34/V35/V36 — one lead, one body, and a resume that reads receip
     expect(mock.calls.filter(entry => entry.command === 'terminal prompt')).toHaveLength(1)
   })
 
+  it('V45 control — only a real null reads as proven, and a receipt corral did not write does not', async () => {
+    const f = await setup()
+    await f.start()
+    const intent = f.store.read().dispatches[0]!.worker!.prompt!
+    const file = path.join(f.dir, 'runtime/terminal-receipts', intent.requestId + '.json')
+    const receipt = asRecord(JSON.parse(fs.readFileSync(file, 'utf8')))
+    const result = asRecord(receipt.result)
+    // A receipt whose verdict is not a verdict: `null` is the only value that means proven, and
+    // anything else is a file corral did not write.
+    fs.writeFileSync(file, JSON.stringify({ ...receipt,
+      result: { ...result, record: { ...asRecord(result.record), matchCount: 1, unavailableReason: 42 } } }))
+    const second = await f.start(REUSE)
+    expect(second.state).toBe('incomplete')
+    expect(second.stage).toBe('dispatch_input_unprovable')
+    expect(asRecord(asRecord(second.stages).input).reason).toBe('submission_unconfirmed')
+    expect(mock.rows).toHaveLength(1)
+  })
+
   it('V38 — the screen is a diagnostic: it never reports an input line as clear, and never drives a send', async () => {
     const f = await setup()
     await f.start()

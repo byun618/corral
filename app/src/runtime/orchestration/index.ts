@@ -1302,7 +1302,13 @@ export function orchestrationModule(userData: string): CommandModule {
             const record = isRecord(earlier.result) ? readRecord(earlier.result, 'record') : null
             const counted = matchCountOf(record)
             const cursorInvalidated = record !== null && record.cursorInvalidated === true
-            const unavailable = record === null || !('unavailableReason' in record) ? 'no_record' : readString(record, 'unavailableReason')
+            // `null` is the one value that means proven, so it is read as itself and not through a
+            // helper that answers `null` for "missing" and "not a string" as well: a receipt whose
+            // `unavailableReason` is any other shape is a receipt corral did not write, and it is
+            // not going to be the thing that turns an unproven submission into a delivery.
+            const unavailable = record === null ? 'no_record'
+              : typeof record.unavailableReason === 'string' ? record.unavailableReason
+              : record.unavailableReason === null ? null : 'no_record'
             if (recovered.kind === 'delivered') { submitted = earlier.result; verdict = recovered }
             else if (unavailable === null) {
               // `stage: 'confirmed'` at the source: one match, in a file the child proved it owned,

@@ -345,5 +345,480 @@
       "Reconcile re-observes every open attempt before each orchestration command, once when the runtime starts, and again on dispatch-show for an attempt that is still open: the same generation alive keeps the attempt dispatched and reports terminal.live true; an absent pane, a replaced PTY or a changed backend generation settles it unknown with reason pane_gone|pty_replaced|epoch_changed and leaves the Task dispatched so it can be dispatched again; an unreachable backend records nothing at all and reports observed false with terminal.live unknown. The observation has its own budget - 2000 ms, never more than half of the time the caller has left, and skipped entirely below 250 ms of share - so a backend that never answers cannot hold a read command open; too little time to look is the same as could not look. The runtime-start pass also stops as soon as an orchestration command that is going to run arrives, because that command re-observes under its own deadline; a command rejected by validation never reaches the lane and never cuts it short. A reconcile result is stored by a read command - that record stands whether the read then succeeds or fails - or by the mutation it travels with; a rejected mutation writes nothing at all. Only reconcile creates unknown, and it never creates failed.",
       "For an attempt that was still open when the call started the response's terminal block is the observation this call made (source observation), including the one that settles it unknown; for an attempt that was already settled this call makes no observation of its own and the block repeats the stored reconcile with live null and source record - the sweep that precedes every command still contacts the backend once if another attempt is open. The record's reconcile block is the last observation that changed something, with the runtime instance that recorded it. Repeating the call therefore leaves the stored document byte-identical."
     ]
+  },
+  {
+    "command": "orchestration worker-start",
+    "path": [
+      "orchestration",
+      "worker-start"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Start or re-use a worker pane for a Task and deliver its preamble exactly once",
+    "usage": "corral orchestration worker-start [--task VALUE] [--terminal VALUE] [--agent VALUE] [--model VALUE] [--effort VALUE] [--advisor VALUE] [--worktree VALUE] [--title VALUE] [--spec-file VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "task",
+      "terminal",
+      "agent",
+      "model",
+      "effort",
+      "advisor",
+      "worktree",
+      "title",
+      "spec-file",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-start --task task_0123456789ab --agent claude --model opus --worktree /path/to/worktree --timeout-ms 120000 --json",
+      "corral orchestration worker-start --task task_0123456789ab --terminal t1.… --json"
+    ],
+    "notes": [
+      "Exactly one of --terminal (re-use a pane corral already started an agent in) or --agent claude|codex|grok with --worktree (start one). A re-used pane keeps the agent it was started with, so --model, --effort, --advisor and --worktree are refused with --terminal, and a pane that carries no corral-managed agent is agent_not_found with no effect.",
+      "The composition is terminal create --agent, then the Dispatch record, then terminal wait --for agent-ready, then terminal prompt with the preamble and the TASK body. The attempt is created before the body is built because the preamble names it. Each stage reports separately in stages and effects; a stage that fails leaves the earlier ones in place and names them in residualResources rather than undoing them.",
+      "The preamble reaches a pane exactly once per Dispatch. The same --request-id replays the stored result and submits nothing; a different id while the attempt is open and its preamble delivered is task_not_startable with reason dispatch_active. An attempt whose input stage never completed - a trust dialog, a deadline - is the one exception: calling worker-start again for that Task resumes the submission into the same pane and the same Dispatch, which is still exactly once.",
+      "A worker pane inherits its environment from the backend, never from corral, so the preamble spells every command with this runtime socket. The TASK body is --spec-file when given and the Task spec otherwise, and it must be at most 49152 bytes so the preamble fits in one submission.",
+      "Re-using a pane transfers ownership: the settled attempt that owned it becomes borrowed and names the new attempt in ownershipTransferredTo, so releasing the old attempt no longer closes a pane the new worker is using. A pane no settled attempt owns - one a person started with terminal create --agent - is borrowed and is never closed by corral.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration worker-list",
+    "path": [
+      "orchestration",
+      "worker-list"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "List the workers of a Run with their ownership and recovery state",
+    "usage": "corral orchestration worker-list [--run VALUE] [--status VALUE] [--limit VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "run",
+      "status",
+      "limit",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-list --json"
+    ],
+    "notes": [
+      "One row per attempt that was started as a worker, newest first. workerState is working while the attempt is open, reported once a worker_done settled it, settled when a person did, and unknown when reconcile could no longer observe its pane.",
+      "The worker block names launch, ownership, originDispatchId, ownershipTransferredTo, lastHeartbeatAt, capabilityRevokedAt and the retain and release records. --status filters on the Dispatch status."
+    ]
+  },
+  {
+    "command": "orchestration worker-show",
+    "path": [
+      "orchestration",
+      "worker-show"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Show one worker: its attempt, ownership, capability and live pane",
+    "usage": "corral orchestration worker-show [--dispatch VALUE] [--task VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "task",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-show --dispatch ctx_0123456789ab --json"
+    ],
+    "notes": [
+      "Exactly one of --dispatch or --task; --task reports the most recent attempt. An attempt that was already settled when the call started is answered from the record, with terminal.live null meaning not observed - never observed and gone. An attempt still open is observed under the usual reconcile budget.",
+      "messageCounts and lastMessage summarise what this attempt sent. This is the recovery command for a release or stop whose close could not be confirmed; corral does not suggest working around it with terminal close."
+    ]
+  },
+  {
+    "command": "orchestration worker-read",
+    "path": [
+      "orchestration",
+      "worker-read"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "screen"
+    ],
+    "summary": "Read the terminal output of a worker pane",
+    "usage": "corral orchestration worker-read [--dispatch VALUE] [--cursor VALUE] [--limit VALUE] [--run VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "cursor",
+      "limit",
+      "run",
+      "screen",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-read --dispatch ctx_0123456789ab --screen --json"
+    ],
+    "notes": [
+      "A pass-through of terminal read against the pane the Dispatch is bound to, so the cursor is the terminal cursor and stays valid across calls. source is terminal: corral installs no provider hook and reads no transcript.",
+      "Nothing is stored. Reading a worker never changes the record."
+    ]
+  },
+  {
+    "command": "orchestration send",
+    "path": [
+      "orchestration",
+      "send"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Send a message to the Run mailbox; worker_done also settles the attempt",
+    "usage": "corral orchestration send [--type VALUE] [--subject VALUE] [--body VALUE] [--payload VALUE] [--task-id VALUE] [--dispatch-id VALUE] [--outcome VALUE] [--phase VALUE] [--files-modified VALUE] [--report-path VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "type",
+      "subject",
+      "body",
+      "payload",
+      "task-id",
+      "dispatch-id",
+      "outcome",
+      "phase",
+      "files-modified",
+      "report-path",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration send --type worker_done --subject \"done\" --body \"…\" --task-id task_0123456789ab --dispatch-id ctx_0123456789ab --outcome succeeded --json",
+      "corral orchestration send --type heartbeat --subject alive --task-id task_0123456789ab --dispatch-id ctx_0123456789ab --phase implementing --json"
+    ],
+    "notes": [
+      "--type worker_done|heartbeat|escalation are worker reports and require --task-id and --dispatch-id. --type status is the one type either side sends: with --task-id and --dispatch-id it is that worker's status and is verified like any other worker report, with neither it is a note on the Run. One of the two without the other is refused.",
+      "worker_done requires --outcome succeeded|failed and settles the Task and the attempt through the same transition table task-update uses, with settledBy worker_done: succeeded becomes completed and promotes any dependents, failed becomes failed. Do not follow it with task-update. Storing the message and settling the attempt is one write, so the two can never disagree.",
+      "A heartbeat updates lastHeartbeatAt. corral records it and never judges liveness by it.",
+      "A worker report (send --type worker_done|heartbeat|escalation, send --type status naming an attempt, and ask) names --task-id and --dispatch-id and is accepted only from the pane that Dispatch was bound to. The CLI reads HERDR_PANE_ID and HERDR_SESSION from the pane shell herdr starts and sends them beside the flags; the runtime compares them with the Dispatch target. A call from another pane or from outside a pane is sender_mismatch, a superseded attempt is stale_dispatch, a second worker_done is illegal_transition, and an attempt that was stopped, abandoned or released is capability_revoked. Every one of those stores nothing at all. This is proof against confusion, not authentication: the trust boundary is the 0600 runtime socket, and coordinator-side commands carry no proof for that reason.",
+      "Capability lifetime is not process lifetime. Settling, worker-stop, worker-abandon and worker-release all record capabilityRevokedAt, and the first revocation is the one kept. A worker whose pane is still alive can therefore be refused, which is the point: the record says the attempt ended.",
+      "Messages live in the Run mailbox inside the same state.json the records use, so storing a report and settling the attempt it ends is one atomic rename. Ids are msg_<12 hex> and delivery_<12 hex>; sequence is monotone within a Run and is what FIFO order means. A Run holds at most 10000 messages and a body at most 65536 bytes; reaching the ceiling is message_capacity, and corral never deletes a stored message to make room.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration ask",
+    "path": [
+      "orchestration",
+      "ask"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Ask the coordinator a question and block until it is answered",
+    "usage": "corral orchestration ask [--question VALUE] [--resume VALUE] [--options VALUE] [--subject VALUE] [--phase VALUE] [--task-id VALUE] [--dispatch-id VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "question",
+      "resume",
+      "options",
+      "subject",
+      "phase",
+      "task-id",
+      "dispatch-id",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration ask --question \"which approach?\" --options a,b --task-id task_0123456789ab --dispatch-id ctx_0123456789ab --timeout-ms 600000 --json"
+    ],
+    "notes": [
+      "Exactly one of --question (ask a new one) or --resume <msg id> (keep waiting for one already asked). The question is stored durably before the wait begins, so a timeout, a cancelled client or a runtime restart all leave it answerable: --resume never creates a second question, and a question that has already been answered returns its answer at once.",
+      "A deadline is a normal answer, not an error: state pending with the messageId and a resumeCommand to run instead of asking again. An answered question returns state answered with the reply body. --timeout-ms is at most 600000, matching what a Claude Code Bash call can actually spend.",
+      "The lane is not held while waiting, so asking does not block the coordinator that has to answer.",
+      "A worker report (send --type worker_done|heartbeat|escalation, and ask) names --task-id and --dispatch-id and is accepted only from the pane that Dispatch was bound to. The CLI reads HERDR_PANE_ID and HERDR_SESSION from the pane shell herdr starts and sends them beside the flags; the runtime compares them with the Dispatch target. A call from another pane or from outside a pane is sender_mismatch, a superseded attempt is stale_dispatch, a second worker_done is illegal_transition, and an attempt that was stopped, abandoned or released is capability_revoked. Every one of those stores nothing at all. This is proof against confusion, not authentication: the trust boundary is the 0600 runtime socket, and coordinator-side commands carry no proof for that reason.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration reply",
+    "path": [
+      "orchestration",
+      "reply"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Answer one question a worker asked",
+    "usage": "corral orchestration reply [--id VALUE] [--body VALUE] [--subject VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "id",
+      "body",
+      "subject",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration reply --id msg_0123456789ab --body \"use the second one\" --json"
+    ],
+    "notes": [
+      "--id names the question. An id no message carries is message_not_found. A message that is not a question is not_a_question and a question that already has an answer is already_answered; both store nothing, so a second reply can never overwrite an answer the worker may already have read.",
+      "The reply is stored as its own message addressed to the asker and is never part of a check batch.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration check",
+    "path": [
+      "orchestration",
+      "check"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "block",
+      "peek"
+    ],
+    "summary": "Take the next batch of mailbox messages, acknowledge the previous one, and optionally wait",
+    "usage": "corral orchestration check [--ack VALUE] [--types VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "ack",
+      "types",
+      "run",
+      "request-id",
+      "block",
+      "peek",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration check --block --types worker_done,escalation,question --timeout-ms 600000 --json",
+      "corral orchestration check --ack delivery_0123456789ab --json"
+    ],
+    "notes": [
+      "A Run has at most one outstanding Delivery. check hands over the oldest undelivered messages that match --types, at most 50, in sequence order, and keeps handing back that same batch with deliveryReplayed true until it is acknowledged - a message that arrives in the meantime is never mixed into it.",
+      "--ack accepts only the Delivery that is currently outstanding. An id already acknowledged, one from an earlier batch, or one that never existed is delivery_stale and changes nothing. --peek reports what the next batch would hold without creating a Delivery.",
+      "--block waits for a message and reports count 0 with timedOut true when the deadline passes, which is a normal answer rather than an error. --timeout-ms is at most 600000. deliveryReplayed describes the batch; the receipt field replayed describes the --request-id.",
+      "--types defaults to every deliverable type (worker_done, heartbeat, escalation, status, question). A reply belongs to the worker that asked and is never delivered here.",
+      "Orchestration commands serialize on one in-process lane around each read-compute-write of the single document. check and ask drop that lane while they wait, so a coordinator blocked in check --block never blocks the worker_done it is waiting for.",
+      "Messages live in the Run mailbox inside the same state.json the records use, so storing a report and settling the attempt it ends is one atomic rename. Ids are msg_<12 hex> and delivery_<12 hex>; sequence is monotone within a Run and is what FIFO order means. A Run holds at most 10000 messages and a body at most 65536 bytes; reaching the ceiling is message_capacity, and corral never deletes a stored message to make room.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration inbox",
+    "path": [
+      "orchestration",
+      "inbox"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "booleanFlags": [
+      "unread"
+    ],
+    "summary": "List mailbox messages without consuming them",
+    "usage": "corral orchestration inbox [--run VALUE] [--limit VALUE] [--type VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "run",
+      "limit",
+      "type",
+      "unread",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration inbox --type question --json"
+    ],
+    "notes": [
+      "A read. It creates no Delivery, acknowledges nothing, and leaves the record exactly as it was. --unread lists messages that have not been acknowledged.",
+      "outstandingDeliveryId names the batch check is waiting to have acknowledged, if there is one."
+    ]
+  },
+  {
+    "command": "orchestration request-show",
+    "path": [
+      "orchestration",
+      "request-show"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Report what the receipt store knows about one request id",
+    "usage": "corral orchestration request-show [--id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration request-show --id r1.1700000000000.0123abcd-0123-0123-0123-0123456789ab --json"
+    ],
+    "notes": [
+      "completed means the request ran and its result is stored, so the same id replays it. pending means the id was admitted and its outcome was never recorded: it may have taken effect, and corral will not re-execute it.",
+      "absent means no receipt is stored, which is not proof that nothing happened - the id may never have been admitted, or its receipt may have expired after 24 hours. The interpretation field says so in the answer itself.",
+      "A retry in corral is the same --request-id sent again; there is no separate retry flag."
+    ]
+  },
+  {
+    "command": "orchestration worker-retain",
+    "path": [
+      "orchestration",
+      "worker-retain"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Declare that a worker pane is to be kept",
+    "usage": "corral orchestration worker-retain [--dispatch VALUE] [--reason VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "reason",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-retain --dispatch ctx_0123456789ab --reason user_takeover --json"
+    ],
+    "notes": [
+      "Intent only: no process is touched. --reason is user_requested (the default) or user_takeover, which is how a person says they have taken the pane over - corral never detects that on its own, because it has no GUI to detect it from.",
+      "The next worker-release honours the retain once, reports retained with this reason, and clears it; a further worker-release then judges the pane on its own merits.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration worker-release",
+    "path": [
+      "orchestration",
+      "worker-release"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Release a finished worker, closing only a pane this attempt can prove it owns",
+    "usage": "corral orchestration worker-release [--dispatch VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-release --dispatch ctx_0123456789ab --json"
+    ],
+    "notes": [
+      "The attempt has to have ended: an open one is dispatch_active with no effect, and worker-stop is the command that cancels it.",
+      "released happens only when this attempt owns the pane and the pane observed immediately before the close is the same generation. Everything else is retained with a reason and processAction none: borrowed, user_requested or user_takeover, pane_gone, identity_unproven when the PTY or the backend generation moved, observation_failed when corral could not look.",
+      "The ownership decision and the close happen in the same lane hold, with a fresh observation taken immediately before the close, so the pane that is closed is the pane that was judged. A close whose effect could not be observed is release.state unknown; worker-show is the recovery, not a second close.",
+      "Releasing an already released attempt answers from the record and writes nothing.",
+      "Capability lifetime is not process lifetime. Settling, worker-stop, worker-abandon and worker-release all record capabilityRevokedAt, and the first revocation is the one kept. A worker whose pane is still alive can therefore be refused, which is the point: the record says the attempt ended.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration worker-stop",
+    "path": [
+      "orchestration",
+      "worker-stop"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Cancel a running worker: close its pane and settle the attempt failed",
+    "usage": "corral orchestration worker-stop [--dispatch VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-stop --dispatch ctx_0123456789ab --json"
+    ],
+    "notes": [
+      "The attempt has to be open - an attempt that already ended is dispatch_not_active, with worker-release as the recovery - this attempt has to own the pane, and the pane observed right now has to be the same generation. Anything weaker is identity_unproven and does nothing at all - a stop that might have closed the wrong pane is worse than a stop that refused.",
+      "On success the pane is closed and the Task and the attempt are settled failed with reason worker_stopped, and the capability is revoked in the same write. A close corral could not confirm still settles the attempt, with release.state unknown and worker-show as the recovery.",
+      "Capability lifetime is not process lifetime. Settling, worker-stop, worker-abandon and worker-release all record capabilityRevokedAt, and the first revocation is the one kept. A worker whose pane is still alive can therefore be refused, which is the point: the record says the attempt ended.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
+  },
+  {
+    "command": "orchestration worker-abandon",
+    "path": [
+      "orchestration",
+      "worker-abandon"
+    ],
+    "aliases": [],
+    "argumentMode": "flags",
+    "summary": "Give up on a running worker without touching its process",
+    "usage": "corral orchestration worker-abandon [--dispatch VALUE] [--run VALUE] [--request-id VALUE] [--help] [--json] [--timeout-ms VALUE] [--socket VALUE] [--instance VALUE]",
+    "flags": [
+      "dispatch",
+      "run",
+      "request-id",
+      "help",
+      "json",
+      "timeout-ms",
+      "socket",
+      "instance"
+    ],
+    "positionalArgs": [],
+    "examples": [
+      "corral orchestration worker-abandon --dispatch ctx_0123456789ab --json"
+    ],
+    "notes": [
+      "No process action at all: corral does not look at the pane and does not close it. The Task and the attempt are settled failed with reason abandoned, the capability is revoked, and the resource is recorded as retained with reason abandoned.",
+      "Use it when the worker is unreachable or must be left alone; worker-stop is the one that closes the pane.",
+      "Capability lifetime is not process lifetime. Settling, worker-stop, worker-abandon and worker-release all record capabilityRevokedAt, and the first revocation is the one kept. A worker whose pane is still alive can therefore be refused, which is the point: the record says the attempt ended.",
+      "Every mutation accepts --request-id r1.<13-digit Unix milliseconds>.<UUID> and mints one when it is omitted, sharing the profile 24-hour receipt store. A replayed id returns the first result with replayed true, the same id with different input is request_conflict, and a receipt still pending is outcome_unknown and is never re-executed. Rejections this module can foresee are raised before the receipt exists, so a refused call leaves its id unspent and the stored bytes untouched."
+    ]
   }
 ]

@@ -40,10 +40,13 @@ fs.writeFileSync(path.join(raw, 'help.md'), help.join('\n') + '\n')
 
 const schema = JSON.parse(run(['agent-context', '--json']))
 const ours = schema.commands.filter(spec => spec.command.startsWith('orchestration '))
-assert.equal(ours.length, 10, `expected ten orchestration commands, found ${ours.length}`)
-assert.deepEqual(ours.map(spec => spec.command), COMMANDS.map(name => `orchestration ${name}`))
-// Nothing outside the frozen ten was registered.
-for (const forbidden of ['gate-create', 'gate-list', 'gate-resolve', 'reset', 'coordinator-start', 'coordinator-stop', 'request-show', 'worker-list', 'worker-show', 'worker-start'])
+// LIFE-410 adds fourteen worker commands on top of this slice, so the count and the name guard are
+// no longer "exactly ten, nothing else". What this script still pins is what it was written to pin:
+// the LIFE-409 ten are all registered, in their original order, at the head of the module.
+assert.ok(ours.length >= 10, `expected at least the LIFE-409 ten, found ${ours.length}`)
+assert.deepEqual(ours.map(spec => spec.command).slice(0, 10), COMMANDS.map(name => `orchestration ${name}`))
+// Names that were out of scope for LIFE-409 and are out of scope for LIFE-410 too.
+for (const forbidden of ['gate-create', 'gate-list', 'gate-resolve', 'reset', 'coordinator-start', 'coordinator-stop'])
   assert.equal(schema.commands.some(spec => spec.command === `orchestration ${forbidden}`), false, `${forbidden} must not exist in this slice`)
 fs.writeFileSync(path.join(raw, 'agent-context-orchestration.json'), JSON.stringify({ commandCount: schema.commandCount, commands: ours }, null, 2) + '\n')
 

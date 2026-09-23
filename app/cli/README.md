@@ -14,7 +14,7 @@ node cli/corral.mjs diagnostics memory --json
 
 `--help` and `agent-context` never connect or start the app. All commands support `--json`. Successful calls exit 0; errors exit 1, including a stopped runtime. JSON mode emits one JSON document on stdout (serve emits its ready document and remains in the foreground); plain errors go to stderr. These commands do not consume stdin. Unknown commands/options, positionals and duplicate options fail before effects. No legacy command entry or alternate environment-variable dispatch exists.
 
-The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands, 10 terminal commands and 10 orchestration commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403; setup/archive hooks require LIFE-412. Browser and service command groups are not registered. Existing GUI actions remain available through the palette.
+The release supports local Unix sockets on macOS/Linux only. It also ships 19 local repo/project/worktree commands, 10 terminal commands and 24 orchestration commands; see `agent-context` and command `--help` for the complete options. Remote hosts, environments and pairing require LIFE-403; setup/archive hooks require LIFE-412. Browser and service command groups are not registered. Existing GUI actions remain available through the palette.
 
 ## Terminals and agents
 
@@ -77,6 +77,228 @@ For an attempt that was still open when the call started, `dispatch-show`'s `ter
 All of it is one JSON document at `<userData>/runtime/orchestration/state.json`, rewritten atomically. A mutation that touches a Task, its attempt and two promoted dependents is still one `rename(2)`, so multi-record atomicity is a property of the layout rather than of a protocol. **The durability promise is the profile's existing one: process-crash safe, not power-loss safe** — the write is `open(O_EXCL)` → write → `fsync` → `rename`, with no directory `fsync` and no `F_FULLFSYNC`. A damaged document is reported as `storage_corrupt` and is never rewritten, truncated or silently reinitialized; an absent one is simply a new profile.
 
 Every mutation accepts `--request-id` and mints one when it is omitted, sharing the profile's existing receipt store with the terminal and workspace commands — one 24-hour, 10 000-entry window for all three, so heavy use of one module is what limits admission for the others. A replayed id returns the first result with `replayed: true`, the same id with different input is `request_conflict`, and a receipt still pending is `outcome_unknown` and is never re-executed — that answer is `stage: "receipt"`, `outcome: unknown`, and its `recovery` names the orchestration reads rather than a new id. Resolving the Run happens *before* the receipt is written, so a `run_required` rejection costs no id and the same `--request-id` can be used again once a Run exists; the error's own `recovery` survives — `run-create`/`run-use` for a missing Run, `terminal list` for a stale handle. Mutations are serialized in one lane per runtime, reads included, because resume can write from a read path. Across processes the profile's single-owner runtime lock is what keeps one writer.
+
+## Orchestration: workers, messages and recovery
+
+Fourteen commands are the other half of the same record: they put a provider session into a dispatched pane,
+carry what it says back, and take the pane away again when it is done. A coordinator drives all of them except
+`orchestration send` and `orchestration ask`, which are what the worker itself runs.
+
+| Command | Who runs it | What it does |
+| --- | --- | --- |
+| `orchestration worker-start` | coordinator | create or re-use a pane, dispatch the Task into it, submit the preamble once |
+| `orchestration worker-list` | coordinator | every attempt that was started as a worker, newest first |
+| `orchestration worker-show` | coordinator | one attempt: its record, its ownership, its live pane, its last message |
+| `orchestration worker-read` | coordinator | the pane's own output, by screen snapshot or by cursor |
+| `orchestration send` | worker | a `worker_done`, `heartbeat`, `escalation` or `status` message |
+| `orchestration ask` | worker | a question, and a wait for the answer (`--resume` keeps waiting) |
+| `orchestration reply` | coordinator | answer one question, once |
+| `orchestration check` | coordinator | take the next batch, `--block` to wait for one, `--ack` to release it |
+| `orchestration inbox` | coordinator | read the mailbox without taking or acknowledging anything |
+| `orchestration request-show` | either | what a `--request-id` receipt records: completed, pending or absent |
+| `orchestration worker-retain` | coordinator | declare, before the release, that this pane is to be kept |
+| `orchestration worker-release` | coordinator | close the pane of a settled attempt, if that attempt still owns it |
+| `orchestration worker-stop` | coordinator | end an open attempt: close the pane, fail the Task `worker_stopped` |
+| `orchestration worker-abandon` | coordinator | end an open attempt on paper only, leaving the pane exactly as it is |
+
+`worker-start --task <task>` takes **exactly one** of `--terminal <handle>` (re-use a pane corral already started
+an agent in) or `--agent claude|codex|grok --worktree <path>` (start one). It composes four things that already
+existed: `terminal create --agent`, the Dispatch record, `terminal wait --for agent-ready`, and one
+`terminal prompt`. The attempt is created **before** the body is built, because the preamble names it. Each stage
+is reported on its own in `stages` and `effects`; a stage that fails leaves the earlier ones alone and names them
+in `residualResources` rather than undoing them, so a pane is never closed to tidy up a record. A re-used pane
+keeps the agent it was started with, which is why `--model`, `--effort`, `--advisor` and `--worktree` are refused
+with `--terminal`, and a pane with no corral-managed agent is `agent_not_found` with no effect at all.
+
+**The preamble reaches a pane exactly once per Dispatch.** The same `--request-id` replays the stored result and
+submits nothing; a different id, while the attempt is open and its preamble delivered, is
+`task_not_startable (dispatch_active)`. The one exception is an attempt whose input stage never completed — a
+trust dialog, a deadline: calling `worker-start` again for that Task resumes the submission into the same pane
+and the same Dispatch, which is still exactly once, and `worker-show` tells the two apart by whether
+`worker.promptRequestId` is set.
+
+A worker pane inherits its environment from the backend, never from corral — corral cannot put environment
+variables into a pane — so the preamble spells every command with this runtime's socket. This is the body it
+delivers, verbatim:
+
+```text
+You are a corral worker. A coordinator session started this pane and supervises it through the
+corral CLI. You talk to the coordinator only through the commands below — not through Slack,
+not through GitHub, not through a local prompt.
+
+Run: run_<12 hex>
+Task: task_<12 hex>
+Dispatch: ctx_<12 hex>
+Terminal: t1.<handle>
+
+=== CLI COMMANDS ===
+
+```sh
+  # Report the outcome (REQUIRED exactly once).
+  #
+  # RULE: --body is a 3-sentence executive summary (what you did, what you found, what is
+  # left). Never send an empty body. If you produced a long artifact, pass --report-path so
+  # the coordinator can find it without searching.
+  #
+  # RULE: send worker_done exactly once, with --outcome succeeded when the requested work is
+  # done and --outcome failed when it is not. Never encode failure only in prose and never
+  # exit silently. Both --task-id and --dispatch-id are required: a report that names a
+  # superseded attempt is refused (stale_dispatch) and stores nothing.
+  corral --socket <runtime socket> orchestration send \
+    --type worker_done --subject "<short status>" \
+    --body "<3-sentence summary: what you did, what you found, what is left>" \
+    --task-id task_<12 hex> --dispatch-id ctx_<12 hex> --outcome succeeded \
+    --files-modified "path/a,path/b" \
+    --report-path "<optional: path to the full artifact>"
+
+  # BEHAVIOR RULE: send a heartbeat every 5 minutes while actively working. The coordinator
+  # uses it to tell "still thinking" from "hung". Skip heartbeats only while blocked inside
+  # `ask` or `check --block` — those calls are themselves liveness signals.
+  corral --socket <runtime socket> orchestration send \
+    --type heartbeat --subject "alive" \
+    --task-id task_<12 hex> --dispatch-id ctx_<12 hex> \
+    --phase "<short: investigating|implementing|reviewing|waiting>"
+
+  # Ask the coordinator a question and block until it answers.
+  #
+  # BEHAVIOR RULE (MUST NOT VIOLATE): NEVER use AskUserQuestion or any other local prompt.
+  # It opens a dialog the coordinator cannot see and cannot answer, and your session hangs
+  # forever. Every interactive question goes through `ask`.
+  #
+  # `ask` stores the question durably and then blocks. --timeout-ms is at most 600000. If it
+  # times out you get state "pending" and a resumeCommand: run that instead of asking again,
+  # or a duplicate question is created.
+  corral --socket <runtime socket> orchestration ask \
+    --question "<your question>" \
+    --options "<optional,comma,separated>" \
+    --task-id task_<12 hex> --dispatch-id ctx_<12 hex> --timeout-ms 600000
+
+  # Escalate a blocker before completion, when the coordinator must act before you continue:
+  corral --socket <runtime socket> orchestration send \
+    --type escalation --subject "Blocked: <reason>" \
+    --body "<details>" \
+    --task-id task_<12 hex> --dispatch-id ctx_<12 hex>
+```
+
+=== AFTER YOU SEND worker_done ===
+
+worker_done ends your turn for this Task. Stop, return to an idle prompt and take no further
+action: do not start unrelated work, do not poll in a loop, and do not exit the shell. Your
+pane stays available. If the coordinator has more for you it delivers a fresh preamble and
+TASK block into this same pane under a new Dispatch; treat that as new supervised work and
+ignore the settled ids.
+
+A direct instruction from the user takes precedence over this idle rule.
+```
+
+followed by a blank line, `=== TASK ===`, and the Task spec (or `--spec-file`). The TASK body is capped at 49152
+bytes so the whole submission fits in one `terminal prompt`; `worker.preambleSha256` records what was delivered.
+
+### Who may report
+
+`send --type worker_done|heartbeat|escalation` and `ask` are worker calls: they name `--task-id` and
+`--dispatch-id`, and the runtime accepts them **only from the pane that Dispatch was bound to**. `--type status`
+is the one type either side sends — naming an attempt makes it that worker's status and it is verified exactly
+like the others, naming none makes it a note on the Run; one of the two ids without the other is refused rather
+than half-understood. The CLI reads
+`HERDR_PANE_ID` and `HERDR_SESSION` from the shell herdr starts inside a pane and sends them beside the flags;
+the runtime compares both with the Dispatch target, because pane ids repeat across backend sessions. The
+refusals, in the order they are asked:
+
+| It happened | Code |
+| --- | --- |
+| Called from another pane, from outside a pane, or with a `--task-id` that is not that Dispatch's | `sender_mismatch` |
+| Named a Dispatch that does not exist | `dispatch_not_found` |
+| The attempt was stopped, abandoned or released | `capability_revoked` |
+| The attempt ended some other way and this is not a `worker_done` | `stale_dispatch` |
+| A `worker_done` naming a superseded attempt | `stale_dispatch` |
+| A second `worker_done`, or one for a Task that is already settled | `illegal_transition` |
+
+Every one of them stores **nothing**: no message, no record change, and the bytes of `state.json` do not move.
+This is proof against confusion, not authentication — anything that can already write to the 0600 runtime socket
+could state any pane id. The trust boundary is that socket, which is also why coordinator-side commands carry no
+proof at all.
+
+Capability lifetime is not process lifetime. Settling, `worker-stop`, `worker-abandon` and `worker-release` each
+record `capabilityRevokedAt`, and the **first** revocation is the one kept. A worker whose pane is still alive can
+therefore be refused: the record says the attempt ended.
+
+`worker_done` settles the Task and the attempt through the same `transition` table `task-update` uses, with
+`settledBy: worker_done` — `succeeded` becomes `completed` and promotes dependents, `failed` becomes `failed`.
+Do not follow it with `task-update`. Storing the report and settling the attempt is one value and therefore one
+`rename(2)`, so the two can never disagree.
+
+### Messages, Delivery and ACK
+
+Messages live in the Run mailbox inside the same `state.json` the records use. Ids are `msg_<12 hex>` and
+`delivery_<12 hex>`; `sequence` is monotone within a Run and is what FIFO means here. A Run holds at most 10000
+messages, a body at most 65536 bytes and a subject at most 1024; reaching the ceiling is `message_capacity`, and
+corral never deletes a stored message to make room.
+
+A Run has **at most one outstanding Delivery**. `check` hands over the oldest undelivered messages matching
+`--types`, at most 50, and keeps handing back that same batch with `deliveryReplayed: true` until it is
+acknowledged — a message that arrives meanwhile is never mixed in, because one Delivery id must never mean two
+different sets. `--ack` accepts only the batch that is currently outstanding; an id already acknowledged, one from
+an earlier batch, or one that never existed is `delivery_stale` and changes nothing. `--peek` reports what the
+next batch would hold without creating one, and `inbox` lists the mailbox without consuming anything.
+`deliveryReplayed` describes the batch; the `replayed` field beside it describes the `--request-id`.
+
+`ask` stores the question **before** it waits, so a timeout, a cancelled client or a runtime restart all leave it
+answerable. A deadline is a normal answer — `state: pending` with the `messageId` and a `resumeCommand` — and
+`--resume` keeps waiting for that same question rather than asking a second one; a question that already has an
+answer returns it at once. `reply` answers once: a second one is `already_answered`, a target that is not a
+question is `not_a_question`, and an id no message carries is `message_not_found` — all three effect-free. A reply is addressed to the asker and is never part of a `check`
+batch.
+
+### Waiting, and the lane
+
+`check --block` and `ask` are the only two commands that block on another party, and the only two allowed
+`--timeout-ms` up to **600000** — ten minutes, which is what a Claude Code Bash call can actually spend.
+Everything else keeps the 120000 ceiling. Both drop the orchestration lane while they wait and take it again only
+for the length of one write, so a coordinator blocked in `check --block` never blocks the `worker_done` it is
+waiting for. That is also why the lane lives in the module rather than in the runtime's command lane: a
+runtime-wide lane cannot be released across a wait. `worker-start` drops it too, around `terminal create` and
+`terminal prompt`, and re-decides its plan when it comes back.
+
+Two durability limits are worth stating. A child `terminal create`, `terminal prompt` or `terminal close` issued
+by an orchestration command does not take the terminal module's own lane, so a `terminal` command run
+concurrently by hand can interleave with one; each individual call is still atomic and receipted. And a
+`check --block` that is interrupted leaves its `--request-id` in the pending state `request-show` reports — mint
+a new one rather than retrying that one.
+
+### Recovery
+
+`worker-release` needs the attempt to have **ended**; an open one is `dispatch_active` and `worker-stop` is the
+command that cancels it. The mirror of that is `worker-stop` on an attempt that has already ended: `dispatch_not_active`,
+with `worker-release` as the recovery. The decision and the close happen inside one lane hold, with a fresh observation taken
+immediately before the close, so the pane that is closed is the pane that was judged.
+
+| Attempt | Code sees | Result |
+| --- | --- | --- |
+| open | — | `dispatch_active`, nothing happens |
+| ended, owned, same generation | `live` | `released`, `processAction: closed` |
+| ended, owned, pane gone | `pane_gone` | `retained (pane_gone)` |
+| ended, owned, PTY or epoch moved | `pty_replaced` / `epoch_changed` | `retained (identity_unproven)` |
+| ended, owned, backend silent | unobserved | `retained (observation_failed)` |
+| ended, borrowed | anything | `retained (borrowed)` |
+| ended, retain declared | anything | `retained (that reason)`, and the retain is cleared |
+| already released | — | the stored release, written again nowhere |
+| close accepted, removal unobserved | — | `release.state: unknown`; recover with `worker-show`, never a second close |
+
+Ownership moves. `worker-start --terminal` on a pane a settled attempt owns transfers it: that attempt becomes
+`borrowed` and names the new one in `ownershipTransferredTo`, so releasing the old attempt no longer closes a
+pane the new worker is using. A pane no attempt owns — one a person started with `terminal create --agent` — is
+`borrowed` from the start and corral never closes it.
+
+`worker-retain --reason user_requested|user_takeover` is intent only; no process is touched. corral does not
+detect a takeover on its own, because it has no GUI to detect one from. `worker-stop` demands the strongest
+proof there is — the attempt is open, this attempt owns the pane, and the pane observed right now is the same
+generation — and does nothing at all otherwise (`identity_unproven`): a stop that might have closed the wrong pane
+is worse than a stop that refused. `worker-abandon` takes no process action whatsoever, settles the attempt
+`failed (abandoned)`, revokes the capability and records the resource as `retained (abandoned)`.
+
+`unknown` is still reconcile's alone: `worker-stop` and `worker-abandon` settle `failed`, because both are
+outcomes corral observed and intended.
 
 ## Profiles and targets
 

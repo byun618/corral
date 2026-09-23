@@ -18,6 +18,7 @@ import {
   DISPATCH_STATUSES, TASK_STATUSES, emptyState, isId,
   type DispatchRecord, type OrchestrationState, type RunRecord, type TaskRecord,
 } from './model.js'
+import { DELIVERY_ID, MESSAGE_ID, MESSAGE_TYPES, type DeliveryRecord, type MessageRecord } from './messages.js'
 
 const isString = (value: unknown): value is string => typeof value === 'string'
 const isCtxId = (value: unknown): value is string => isId('ctx', value)
@@ -66,6 +67,55 @@ function isTask(value: unknown): value is TaskRecord {
     // A settled Task carries a result *key* — `null` is a result, a missing key is a broken record.
     && (settled ? isStamp(value.settledAt) && 'result' in value : value.settledAt === null && value.result === null)
 }
+/**
+ * LIFE-410. The worker block is optional — a LIFE-409 document has none and must keep loading — but
+ * a block that is *present* is checked whole. A half-written ownership or release record read back
+ * as a verdict about which pane corral may close is exactly what this guard exists to prevent.
+ */
+const WORKER_STRINGS_OR_NULL = ['originDispatchId', 'ownershipTransferredTo', 'paneSession', 'preambleSha256', 'promptRequestId', 'lastHeartbeatAt', 'capabilityRevokedAt', 'capabilityRevokedReason']
+const RELEASE_STATES = ['released', 'retained', 'unknown']
+const RETAIN_REASONS = ['user_requested', 'user_takeover']
+function isRelease(value: unknown): boolean {
+  return isRecord(value) && oneOf(RELEASE_STATES, value.state) && isString(value.reason) && isStamp(value.at)
+    && oneOf(['closed', 'none'], value.processAction)
+}
+function isWorker(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return oneOf(['created', 'reused'], value.launch) && oneOf(['owned', 'borrowed'], value.ownership)
+    && WORKER_STRINGS_OR_NULL.every(key => key in value && isNullOr(isString, value[key]))
+    && (value.retain === null || (isRecord(value.retain) && oneOf(RETAIN_REASONS, value.retain.reason) && isStamp(value.retain.at)))
+    && (value.release === null || isRelease(value.release))
+}
+const ORIGINS = ['worker', 'coordinator']
+function isOrigin(value: unknown): boolean {
+  return isRecord(value) && oneOf(ORIGINS, value.kind) && isNullOr(isCtxId, value.dispatchId) && isNullOr(isString, value.paneId)
+}
+function isMessage(value: unknown): value is MessageRecord {
+  if (!isRecord(value) || !isString(value.type) || !MESSAGE_TYPES.some(type => type === value.type)) return false
+  const base = isString(value.id) && MESSAGE_ID.test(value.id) && isId('run', value.runId)
+    && isNullOr((entry): entry is string => isId('task', entry), value.taskId) && isNullOr(isCtxId, value.dispatchId)
+    && isString(value.subject) && isString(value.body) && 'payload' in value
+    && typeof value.sequence === 'number' && Number.isSafeInteger(value.sequence) && value.sequence >= 1
+    && isStamp(value.createdAt) && isOrigin(value.from)
+    && isNullOr((entry): entry is string => isString(entry) && DELIVERY_ID.test(entry), value.deliveredIn)
+    && isNullOr(isStamp, value.acknowledgedAt)
+  if (!base) return false
+  switch (value.type) {
+    case 'worker_done': return oneOf(['succeeded', 'failed'], value.outcome) && value.question === null && value.replyTo === null
+    case 'question': return value.outcome === null && value.replyTo === null && isRecord(value.question)
+      && isStringList(value.question.options)
+      && isNullOr((entry): entry is string => isString(entry) && MESSAGE_ID.test(entry), value.question.answeredBy)
+      && isNullOr(isStamp, value.question.answeredAt)
+    case 'reply': return value.outcome === null && value.question === null && isString(value.replyTo) && MESSAGE_ID.test(value.replyTo)
+    default: return value.outcome === null && value.question === null && value.replyTo === null
+  }
+}
+function isDelivery(value: unknown): value is DeliveryRecord {
+  return isRecord(value) && isString(value.id) && DELIVERY_ID.test(value.id) && isId('run', value.runId)
+    && Array.isArray(value.messageIds) && value.messageIds.length > 0
+    && value.messageIds.every(entry => isString(entry) && MESSAGE_ID.test(entry))
+    && isStamp(value.createdAt) && isNullOr(isStamp, value.acknowledgedAt)
+}
 function isTarget(value: unknown): boolean {
   return isRecord(value) && isString(value.handle) && isString(value.runtimeId) && isString(value.epoch) && isString(value.ptyId) && isString(value.paneId)
 }
@@ -77,6 +127,7 @@ function isDispatch(value: unknown): value is DispatchRecord {
     && typeof value.attempt === 'number' && Number.isSafeInteger(value.attempt) && value.attempt >= 1
     && isTarget(value.target) && (value.agent === null || isAgent(value.agent)) && isNullOr(isString, value.agentAbsenceReason)
     && (value.reconcile === null || isReconcile(value.reconcile))
+    && (value.worker === null || isWorker(value.worker))
     && isStamp(value.createdAt) && isStamp(value.updatedAt) && isVersion(value.version)
     && (open ? value.settledBy === null && value.settledAt === null
              : oneOf(SETTLED_BY[value.status] ?? [], value.settledBy) && isStamp(value.settledAt))
@@ -92,7 +143,43 @@ export function isOrchestrationState(value: unknown): value is OrchestrationStat
     && Array.isArray(value.runs) && value.runs.every(isRun)
     && Array.isArray(value.tasks) && value.tasks.every(isTask)
     && Array.isArray(value.dispatches) && value.dispatches.every(isDispatch))) return false
-  return isConsistent(value.runs, value.tasks, value.dispatches)
+  // LIFE-410: `read()` fills these in for a LIFE-409 document before validating, so by the time the
+  // guard runs they are arrays and are checked as strictly as the records are.
+  if (!(Array.isArray(value.messages) && value.messages.every(isMessage))) return false
+  if (!(Array.isArray(value.deliveries) && value.deliveries.every(isDelivery))) return false
+  return isConsistent(value.runs, value.tasks, value.dispatches) && isMailboxConsistent(value)
+}
+
+/**
+ * A mailbox that does not agree with itself is corruption for the same reason an orphan attempt is:
+ * duplicate ids make `find` ambiguous, a Delivery naming a message that is not there would be
+ * replayed forever, two outstanding Deliveries in one Run break the "latest ack id only" rule, and
+ * a message marked delivered by a Delivery that does not hold it can never be acknowledged.
+ */
+function isMailboxConsistent(value: Record<string, unknown>): boolean {
+  const messages: MessageRecord[] = Array.isArray(value.messages) ? value.messages.filter(isMessage) : []
+  const deliveries: DeliveryRecord[] = Array.isArray(value.deliveries) ? value.deliveries.filter(isDelivery) : []
+  if (!unique(messages.map(entry => entry.id)) || !unique(deliveries.map(entry => entry.id))) return false
+  const byId = new Map(messages.map(entry => [entry.id, entry]))
+  const runIds = new Set(Array.isArray(value.runs) ? value.runs.filter(isRun).map(run => run.id) : [])
+  if (!messages.every(entry => runIds.has(entry.runId))) return false
+  for (const run of runIds) if (deliveries.filter(entry => entry.runId === run && entry.acknowledgedAt === null).length > 1) return false
+  for (const delivery of deliveries) {
+    if (!runIds.has(delivery.runId)) return false
+    if (!unique(delivery.messageIds)) return false
+    for (const id of delivery.messageIds) {
+      const message = byId.get(id)
+      if (!message || message.runId !== delivery.runId || message.deliveredIn !== delivery.id) return false
+    }
+  }
+  const held = new Set(deliveries.flatMap(delivery => delivery.messageIds))
+  for (const message of messages) {
+    if (message.deliveredIn !== null && !held.has(message.id)) return false
+    if (message.acknowledgedAt !== null && message.deliveredIn === null) return false
+    if (message.type === 'reply' && !byId.has(message.replyTo)) return false
+    if (message.type === 'question' && message.question.answeredBy !== null && !byId.has(message.question.answeredBy)) return false
+  }
+  return true
 }
 
 /**
@@ -139,7 +226,22 @@ export class OrchestrationStore {
   readonly file: string
   constructor(userData: string) { this.file = path.join(userData, 'runtime/orchestration/state.json') }
   read(): OrchestrationState {
-    const loaded = readFile<unknown>(this.file, emptyState)
+    const stored = readFile<unknown>(this.file, emptyState)
+    // A LIFE-409 document has no mailbox. The two arrays are filled in *before* validation and only
+    // in memory — a read never rewrites the file — which is what lets that document load into a
+    // LIFE-410 build without a migration step (01-criteria 9).
+    // `worker` is filled in too, and for a sharper reason than the arrays: the type says
+    // `WorkerBlock | null`, every rule asks `worker === null`, and an *absent* key answers that
+    // question with `false`. A LIFE-409 attempt would then be treated as a worker and the next
+    // field read would throw. Absent means null, and it is made to mean null here, once.
+    const loaded = isRecord(stored)
+      ? {
+        ...stored, messages: stored.messages ?? [], deliveries: stored.deliveries ?? [],
+        dispatches: Array.isArray(stored.dispatches)
+          ? stored.dispatches.map(entry => isRecord(entry) ? { ...entry, worker: entry.worker ?? null } : entry)
+          : stored.dispatches,
+      }
+      : stored
     if (!isOrchestrationState(loaded)) throw new RuntimeError('storage_corrupt', `Orchestration state is not readable: ${this.file}`, { file: this.file, recovery: 'Inspect the file; corral never rewrites or truncates it on its own' })
     // A binding that points at a run this document does not contain would make every later run
     // resolution answer `run_not_found` for a run the caller never chose. Refuse it as corruption.

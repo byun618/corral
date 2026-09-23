@@ -11,6 +11,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { RuntimeError } from '../contracts.js'
+import type { DeliveryRecord, MessageRecord } from './messages.js'
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
@@ -82,6 +83,35 @@ export interface AgentSnapshot {
 export type ReconcileReason = 'pane_live' | 'pane_gone' | 'pty_replaced' | 'epoch_changed' | 'backend_unavailable' | 'observation_failed'
 export interface ReconcileRecord { at: string; runtimeInstanceId: string; observed: boolean; reason: ReconcileReason }
 
+/**
+ * LIFE-410 §4.3 — what makes an attempt a *worker*: who owns its pane, whether it may still report,
+ * and how it was recovered. It is optional so a LIFE-409 document loads unchanged: an attempt
+ * created by `orchestration dispatch` has no worker block and accepts no worker report.
+ */
+export type WorkerLaunch = 'created' | 'reused'
+export type WorkerOwnership = 'owned' | 'borrowed'
+export type CapabilityRevokedReason = 'settled' | 'stopped' | 'abandoned' | 'released'
+export type RetainReason = 'user_requested' | 'user_takeover'
+export type ReleaseState = 'released' | 'retained' | 'unknown'
+export interface WorkerRelease { state: ReleaseState; reason: string; at: string; processAction: 'closed' | 'none' }
+export interface WorkerBlock {
+  launch: WorkerLaunch
+  /** Whether *this* attempt may close the pane. Reuse transfers it; a borrowed pane is never closed. */
+  ownership: WorkerOwnership
+  originDispatchId: string | null
+  ownershipTransferredTo: string | null
+  /** The backend session the pane lives in. Pane ids repeat across sessions, so both are compared. */
+  paneSession: string | null
+  preambleSha256: string | null
+  promptRequestId: string | null
+  lastHeartbeatAt: string | null
+  /** Capability lifetime is not process lifetime (§4.5): a live pane may have lost the right to report. */
+  capabilityRevokedAt: string | null
+  capabilityRevokedReason: CapabilityRevokedReason | null
+  retain: { reason: RetainReason; at: string } | null
+  release: WorkerRelease | null
+}
+
 interface DispatchBase {
   id: string
   runId: string
@@ -93,6 +123,8 @@ interface DispatchBase {
   agentAbsenceReason: string | null
   /** The last observation corral actually made and recorded. Unobserved passes record nothing. */
   reconcile: ReconcileRecord | null
+  /** LIFE-410. `null` for an attempt that was never started as a supervised worker. */
+  worker: WorkerBlock | null
   createdAt: string
   updatedAt: string
   version: number
@@ -110,8 +142,14 @@ export interface OrchestrationState {
   runs: RunRecord[]
   tasks: TaskRecord[]
   dispatches: DispatchRecord[]
+  /**
+   * LIFE-410 §4.8. The Run mailbox lives in the *same* document, which is what makes
+   * "settle the attempt and store the report" one `rename(2)` rather than a two-file protocol.
+   */
+  messages: MessageRecord[]
+  deliveries: DeliveryRecord[]
 }
-export const emptyState = (): OrchestrationState => ({ schemaVersion: 1, currentRunId: null, runs: [], tasks: [], dispatches: [] })
+export const emptyState = (): OrchestrationState => ({ schemaVersion: 1, currentRunId: null, runs: [], tasks: [], dispatches: [], messages: [], deliveries: [] })
 
 /** A switch that forgot a variant is a type error here, not a silent fallthrough at runtime. */
 export function exhausted(value: never): never {
@@ -150,8 +188,8 @@ function settledTask(task: TaskRecord, status: 'completed' | 'failed', result: J
   return { ...taskBase(task), status, result, settledAt: at, updatedAt: at, version: task.version + 1 }
 }
 function dispatchBase(entry: DispatchRecord): DispatchBase {
-  const { id, runId, taskId, attempt, target, agent, agentAbsenceReason, reconcile, createdAt, updatedAt, version } = entry
-  return { id, runId, taskId, attempt, target, agent, agentAbsenceReason, reconcile, createdAt, updatedAt, version }
+  const { id, runId, taskId, attempt, target, agent, agentAbsenceReason, reconcile, worker, createdAt, updatedAt, version } = entry
+  return { id, runId, taskId, attempt, target, agent, agentAbsenceReason, reconcile, worker, createdAt, updatedAt, version }
 }
 const replaceTask = (state: OrchestrationState, task: TaskRecord): TaskRecord[] => state.tasks.map(entry => entry.id === task.id ? task : entry)
 const replaceDispatch = (state: OrchestrationState, entry: DispatchRecord): DispatchRecord[] => state.dispatches.map(row => row.id === entry.id ? entry : row)
@@ -392,7 +430,7 @@ export function createTask(state: OrchestrationState, input: { runId: string; sp
   return { state: { ...state, tasks: [...state.tasks, task] }, task }
 }
 
-export interface DispatchInput { task: TaskRecord; target: DispatchTarget; agent: AgentSnapshot | null; agentAbsenceReason: string | null; at: string }
+export interface DispatchInput { task: TaskRecord; target: DispatchTarget; agent: AgentSnapshot | null; agentAbsenceReason: string | null; worker?: WorkerBlock | null; at: string }
 export function createDispatch(state: OrchestrationState, input: DispatchInput): { state: OrchestrationState; task: TaskRecord; dispatch: DispatchRecord } {
   const start = startability(state, input.task)
   if (!start.startable)
@@ -402,6 +440,7 @@ export function createDispatch(state: OrchestrationState, input: DispatchInput):
   const entry: DispatchRecord = {
     id: uniqueId(state, 'ctx'), runId: input.task.runId, taskId: input.task.id, attempt,
     target: input.target, agent: input.agent, agentAbsenceReason: input.agentAbsenceReason, reconcile: null,
+    worker: input.worker ?? null,
     createdAt: input.at, updatedAt: input.at, version: 1, status: 'dispatched', settledBy: null, settledAt: null,
   }
   const task = openTask(input.task, 'dispatched', input.at, { currentDispatchId: entry.id, attempts: attempt })

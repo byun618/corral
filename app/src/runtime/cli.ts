@@ -3,7 +3,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
-import { RuntimeError, stringFlag, type Invocation, type RpcResponse } from './contracts.js'
+import { RuntimeError, stringFlag, WAITING_COMMANDS, type Invocation, type RpcResponse } from './contracts.js'
 import { defaultUserData, privateDirectory } from './storage.js'
 import { localCall, request, socketPath } from './transport.js'
 import { workspaceModule } from './workspace/index.js'
@@ -118,6 +118,11 @@ export async function runCli(argv: string[]): Promise<void> {
       inv.flags['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
       recovery = { requestId: String(inv.flags['request-id']), terminal: inv.flags.terminal ?? null, command: inv.command, action: 'Retry with the same request ID and input; inspect terminal list/read if unknown' }
     }
+    // LIFE-410 §4.5. herdr puts these in the shell it starts inside a pane, and the probe in
+    // `app/scripts/l410/probe-pane-env.mjs` measured HERDR_PANE_ID to be the very string corral's
+    // own pane listing calls `paneId`. Sent on every call, judged only where a worker report needs
+    // it — a command that does not care never looks.
+    inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null }
     if (inv.flags.socket) process.env.CORRAL_RUNTIME_SOCKET = String(inv.flags.socket)
     const userData = defaultUserData()
     if (inv.command === 'serve') {
@@ -131,7 +136,7 @@ export async function runCli(argv: string[]): Promise<void> {
       } finally { await runtime.close() }
       return
     }
-    const response = inv.command === 'open' ? await open(userData, inv, controller.signal) : await localCall(socketPath(userData), request(inv, stringFlag(inv.flags, 'instance'), Number(inv.flags['timeout-ms'] ?? 10000)), inv.command === 'terminal wait' ? Number(inv.flags['timeout-ms'] ?? 10000) + 500 : undefined, controller.signal)
+    const response = inv.command === 'open' ? await open(userData, inv, controller.signal) : await localCall(socketPath(userData), request(inv, stringFlag(inv.flags, 'instance'), Number(inv.flags['timeout-ms'] ?? 10000)), inv.command === 'terminal wait' || WAITING_COMMANDS.has(inv.command) ? Number(inv.flags['timeout-ms'] ?? 10000) + 500 : undefined, controller.signal)
     print(response, json)
   } catch (error) {
     print({ id: 'local', ok: false, error: { code: error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), resources: error instanceof RuntimeError ? error.resources ?? recovery : recovery, stage: error instanceof RuntimeError ? error.stage : undefined }, _meta: { runtimeId: 'unknown', outcome: error instanceof RuntimeError && ['outcome_unknown', 'request_cancelled'].includes(error.code) ? 'unknown' : 'not_started' } }, json)

@@ -637,3 +637,315 @@ describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () 
     fs.rmSync(userData, { recursive: true, force: true })
   })
 })
+
+// =================================================================================================
+// LIFE-410 — the worker rules, as units (F11).
+//
+// Sender judgment, Delivery/ACK and the recovery table are pure functions over the stored document
+// plus one observation, so they are pinned here; the live behaviour they produce is measured by
+// `scripts/l410/*` against a real backend and a real provider pane.
+// =================================================================================================
+
+import {
+  DELIVERY_BATCH, acknowledgeDelivery, answerOf, answerQuestion, appendMessage,
+  nextSequence, openDelivery, outstandingDelivery, parseTypes, pendingBatch,
+  type MessageOrigin,
+} from './messages.js'
+import {
+  buildPreamble, emptyWorker, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
+  stopDecision, verifySender, withWorker,
+} from './worker.js'
+import type { DispatchRecord, WorkerBlock } from './model.js'
+
+const PANE = { paneId: 'pane-1', session: 'life410-test' }
+const workerBlock = (patch: Partial<WorkerBlock> = {}): WorkerBlock =>
+  ({ ...emptyWorker({ launch: 'created', ownership: 'owned', paneSession: PANE.session, originDispatchId: null }), ...patch })
+
+/** A Run with one dispatched worker attempt, built through the product's own constructors. */
+function worker(patch: Partial<WorkerBlock> = {}) {
+  const run = createRun(emptyState(), 'LIFE-410 units', AT)
+  const made = createTask(run.state, { runId: run.run.id, spec: 'work', title: null, deps: [], at: AT })
+  const dispatched = createDispatch(made.state, {
+    task: made.task, target: target({ paneId: PANE.paneId }), agent: null, agentAbsenceReason: 'no_managed_agent',
+    worker: workerBlock(patch), at: AT,
+  })
+  const self = findDispatch(dispatched.state, dispatched.dispatch.id)!
+  const state = replaceDispatchRecord(dispatched.state, withWorker(self, { originDispatchId: self.id }, AT))
+  return { state, runId: run.run.id, taskId: made.task.id, dispatchId: dispatched.dispatch.id }
+}
+const claimOf = (base: ReturnType<typeof worker>, patch: Partial<{ paneId: string | null; session: string | null }> = {}) =>
+  ({ taskId: base.taskId, dispatchId: base.dispatchId, caller: { paneId: PANE.paneId, session: PANE.session, ...patch } })
+const origin = (dispatchId: string): MessageOrigin => ({ kind: 'worker', dispatchId, paneId: PANE.paneId })
+const coordinator: MessageOrigin = { kind: 'coordinator', dispatchId: null, paneId: null }
+
+describe('LIFE-410 sender judgment (§4.5, F4)', () => {
+  it('accepts the pane the attempt was bound to', () => {
+    const base = worker()
+    expect(verifySender(base.state, claimOf(base), 'reject').ok).toBe(true)
+  })
+
+  it('refuses a call from another pane, from another session and from outside a pane', () => {
+    const base = worker()
+    for (const patch of [{ paneId: 'pane-2' }, { session: 'another-session' }, { paneId: null }]) {
+      const verdict = verifySender(base.state, claimOf(base, patch), 'reject')
+      expect(verdict.ok).toBe(false)
+      if (!verdict.ok) expect(verdict.code).toBe('sender_mismatch')
+    }
+  })
+
+  it('refuses a dispatch that belongs to another Task, and one that never existed', () => {
+    const base = worker()
+    const other = verifySender(base.state, { ...claimOf(base), taskId: mintId('task') }, 'reject')
+    expect(other.ok === false && other.code).toBe('sender_mismatch')
+    const missing = verifySender(base.state, { ...claimOf(base), dispatchId: mintId('ctx') }, 'reject')
+    expect(missing.ok === false && missing.code).toBe('dispatch_not_found')
+  })
+
+  it('refuses an attempt that was never started as a worker', () => {
+    const plain = worker()
+    const entry = findDispatch(plain.state, plain.dispatchId)!
+    const state = replaceDispatchRecord(plain.state, { ...entry, worker: null })
+    const verdict = verifySender(state, claimOf(plain), 'reject')
+    expect(verdict.ok === false && verdict.code).toBe('sender_mismatch')
+  })
+
+  it('separates a revoked capability from a settled attempt, in that order', () => {
+    // stop/abandon/release end the right to report while the process may still be running, and say
+    // so by name. A settlement's own revocation is *not* one of those: it must leave the staleness
+    // question to `transition`, which is the only thing that can tell a superseded attempt from a
+    // second report (F4(b) vs F4(a)).
+    for (const reason of ['stopped', 'abandoned', 'released'] as const) {
+      const base = worker({ capabilityRevokedAt: LATER, capabilityRevokedReason: reason })
+      const verdict = verifySender(base.state, claimOf(base), 'defer')
+      expect(verdict.ok === false && verdict.code).toBe('capability_revoked')
+    }
+    const settled = worker({ capabilityRevokedAt: LATER, capabilityRevokedReason: 'settled' })
+    expect(verifySender(settled.state, claimOf(settled), 'defer').ok).toBe(true)
+  })
+
+  it('refuses a settled attempt for everything but worker_done, which defers to transition', () => {
+    const base = worker()
+    const entry = findDispatch(base.state, base.dispatchId)!
+    const state = replaceDispatchRecord(base.state, { ...entry, status: 'completed', settledBy: 'worker_done', settledAt: LATER })
+    const rejected = verifySender(state, claimOf(base), 'reject')
+    expect(rejected.ok === false && rejected.code).toBe('stale_dispatch')
+    expect(verifySender(state, claimOf(base), 'defer').ok).toBe(true)
+    // …and `transition` is what turns that deferral into the right answer.
+    expect(code(() => transition(state, { taskId: base.taskId, dispatchId: base.dispatchId, to: 'completed', settledBy: 'worker_done', at: LATER })))
+      .toBe('stale_dispatch')
+  })
+})
+
+describe('LIFE-410 mailbox, Delivery and ACK (§4.4, F5)', () => {
+  const seeded = (count: number) => {
+    const base = worker()
+    let state = base.state
+    for (let index = 0; index < count; index++) {
+      state = appendMessage(state, { runId: base.runId, taskId: base.taskId, dispatchId: base.dispatchId,
+        subject: `s${index}`, body: '', payload: null, from: origin(base.dispatchId), at: AT }, { type: 'heartbeat' }).state
+    }
+    return { ...base, state }
+  }
+
+  it('numbers messages monotonically within the Run', () => {
+    const seed = seeded(3)
+    expect(seed.state.messages.map(entry => entry.sequence)).toEqual([1, 2, 3])
+    expect(nextSequence(seed.state, seed.runId)).toBe(4)
+  })
+
+  it('hands back the same batch until it is acknowledged, and never widens it', () => {
+    const seed = seeded(3)
+    const first = openDelivery(seed.state, seed.runId, ['heartbeat'], AT)
+    expect(first.plan.messages.map(entry => entry.subject)).toEqual(['s0', 's1', 's2'])
+    expect(first.plan.replayed).toBe(false)
+    // A message that arrives while the batch is outstanding is not mixed into it.
+    const grown = appendMessage(first.state, { runId: seed.runId, taskId: null, dispatchId: null, subject: 'later', body: '', payload: null, from: coordinator, at: LATER }, { type: 'status' })
+    const again = openDelivery(grown.state, seed.runId, ['heartbeat', 'status'], LATER)
+    expect(again.plan.replayed).toBe(true)
+    expect(again.plan.messages.map(entry => entry.subject)).toEqual(['s0', 's1', 's2'])
+    const acked = acknowledgeDelivery(again.state, seed.runId, first.plan.delivery!.id, LATER)
+    expect(outstandingDelivery(acked.state, seed.runId)).toBeUndefined()
+    const next = openDelivery(acked.state, seed.runId, ['heartbeat', 'status'], LATER)
+    expect(next.plan.messages.map(entry => entry.subject)).toEqual(['later'])
+  })
+
+  it('accepts only the outstanding delivery id, and changes nothing for any other', () => {
+    const seed = seeded(1)
+    const opened = openDelivery(seed.state, seed.runId, ['heartbeat'], AT)
+    const id = opened.plan.delivery!.id
+    const acked = acknowledgeDelivery(opened.state, seed.runId, id, LATER)
+    expect(code(() => acknowledgeDelivery(acked.state, seed.runId, id, LATER))).toBe('delivery_stale')
+    expect(code(() => acknowledgeDelivery(acked.state, seed.runId, 'delivery_0123456789ab', LATER))).toBe('delivery_stale')
+  })
+
+  it('truncates one batch at fifty and leaves the rest for the next one', () => {
+    const seed = seeded(DELIVERY_BATCH + 5)
+    const opened = openDelivery(seed.state, seed.runId, ['heartbeat'], AT)
+    expect(opened.plan.messages).toHaveLength(DELIVERY_BATCH)
+    const acked = acknowledgeDelivery(opened.state, seed.runId, opened.plan.delivery!.id, LATER)
+    expect(openDelivery(acked.state, seed.runId, ['heartbeat'], LATER).plan.messages).toHaveLength(5)
+  })
+
+  it('peeks without creating anything, and filters by type', () => {
+    const seed = seeded(2)
+    expect(pendingBatch(seed.state, seed.runId, ['worker_done'])).toEqual([])
+    expect(pendingBatch(seed.state, seed.runId, ['heartbeat'])).toHaveLength(2)
+    expect(seed.state.deliveries).toEqual([])
+  })
+
+  it('answers a question once, and keeps a reply out of every batch', () => {
+    const base = worker()
+    const asked = appendMessage(base.state, { runId: base.runId, taskId: base.taskId, dispatchId: base.dispatchId,
+      subject: 'q', body: 'which one?', payload: null, from: origin(base.dispatchId), at: AT }, { type: 'question', options: ['a', 'b'] })
+    expect(answerOf(asked.state, asked.message)).toBe(null)
+    const answered = answerQuestion(asked.state, asked.message.id, { body: 'the second', subject: 'reply', from: coordinator, at: LATER })
+    expect(answerOf(answered.state, answered.question)?.body).toBe('the second')
+    expect(code(() => answerQuestion(answered.state, asked.message.id, { body: 'again', subject: 'reply', from: coordinator, at: LATER }))).toBe('already_answered')
+    expect(code(() => answerQuestion(answered.state, answered.reply.id, { body: 'x', subject: 'reply', from: coordinator, at: LATER }))).toBe('not_a_question')
+    expect(code(() => answerQuestion(answered.state, 'msg_0123456789ab', { body: 'x', subject: 'reply', from: coordinator, at: LATER }))).toBe('message_not_found')
+    // A reply is addressed to the asker, so a coordinator batch never carries it.
+    const opened = openDelivery(answered.state, base.runId, ['question'], LATER)
+    expect(opened.plan.messages.map(entry => entry.type)).toEqual(['question'])
+  })
+
+  it('refuses a --types value it does not deliver', () => {
+    expect(parseTypes('worker_done,question')).toEqual(['worker_done', 'question'])
+    expect(code(() => parseTypes('reply'))).toBe('invalid_argument')
+    expect(code(() => parseTypes(''))).toBe('invalid_argument')
+  })
+
+  it('keeps a mailbox that disagrees with itself out of the store (F8)', () => {
+    const seed = seeded(2)
+    const opened = openDelivery(seed.state, seed.runId, ['heartbeat'], AT)
+    expect(isOrchestrationState(JSON.parse(JSON.stringify(opened.state)))).toBe(true)
+    const broken = (mutate: (doc: Record<string, unknown>) => void): boolean => {
+      const doc: Record<string, unknown> = JSON.parse(JSON.stringify(opened.state))
+      mutate(doc)
+      return isOrchestrationState(doc)
+    }
+    // A Delivery naming a message that is not there would be replayed forever.
+    expect(broken(doc => { if (Array.isArray(doc.messages)) doc.messages = [doc.messages[0]] })).toBe(false)
+    // Two outstanding batches in one Run break "only the latest ack id is valid".
+    expect(broken(doc => { if (Array.isArray(doc.deliveries)) doc.deliveries.push({ ...doc.deliveries[0], id: 'delivery_ffffffffffff' }) })).toBe(false)
+    // A message marked delivered by a batch that does not hold it can never be acknowledged.
+    expect(broken(doc => { if (Array.isArray(doc.messages)) doc.messages[0].deliveredIn = 'delivery_ffffffffffff' })).toBe(false)
+    // A reply that answers nothing, and a question whose answer is missing.
+    expect(broken(doc => { if (Array.isArray(doc.messages)) doc.messages[0] = { ...doc.messages[0], type: 'reply', replyTo: 'msg_ffffffffffff' } })).toBe(false)
+  })
+
+  it('loads a LIFE-409 document that has no mailbox at all (01-criteria 9)', () => {
+    const base = worker()
+    const legacy: Record<string, unknown> = JSON.parse(JSON.stringify(base.state))
+    delete legacy.messages
+    delete legacy.deliveries
+    if (Array.isArray(legacy.dispatches)) for (const entry of legacy.dispatches) delete entry.worker
+    const dir = fixture409()
+    const store = new OrchestrationStore(dir)
+    fs.mkdirSync(path.dirname(store.file), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(store.file, JSON.stringify(legacy, null, 2) + '\n')
+    const loaded = store.read()
+    expect(loaded.messages).toEqual([])
+    expect(loaded.deliveries).toEqual([])
+    expect(findDispatch(loaded, base.dispatchId)?.worker).toBe(null)
+    // Reading it did not rewrite it: the bytes on disk are still the LIFE-409 ones.
+    expect(JSON.parse(fs.readFileSync(store.file, 'utf8')).messages).toBeUndefined()
+  })
+})
+
+describe('LIFE-410 recovery judgment (§4.7, F7)', () => {
+  const settled = (patch: Partial<WorkerBlock> = {}): DispatchRecord => {
+    const base = worker(patch)
+    const entry = findDispatch(base.state, base.dispatchId)!
+    return { ...entry, status: 'completed', settledBy: 'worker_done', settledAt: LATER }
+  }
+  const live: PaneObservation = { kind: 'live' }
+
+  it('refuses an open attempt and points at worker-stop', () => {
+    const base = worker()
+    expect(releaseDecision({ dispatch: findDispatch(base.state, base.dispatchId)!, observation: live })).toEqual({ kind: 'refuse', code: 'dispatch_active' })
+  })
+
+  it('closes only an owned pane whose generation still matches', () => {
+    expect(releaseDecision({ dispatch: settled(), observation: live }).kind).toBe('close')
+    const cases: [PaneObservation, string][] = [
+      [{ kind: 'pane_gone' }, 'pane_gone'],
+      [{ kind: 'pty_replaced', observedPtyId: 'other' }, 'identity_unproven'],
+      [{ kind: 'epoch_changed', observedEpoch: 'other' }, 'identity_unproven'],
+      [{ kind: 'unobserved', reason: 'backend_unavailable', detail: null }, 'observation_failed'],
+    ]
+    for (const [observation, reason] of cases) {
+      const decision = releaseDecision({ dispatch: settled(), observation })
+      expect(decision).toEqual({ kind: 'retain', reason, clearsRetain: false })
+    }
+  })
+
+  it('never closes a borrowed pane, whatever the observation says', () => {
+    expect(releaseDecision({ dispatch: settled({ ownership: 'borrowed' }), observation: live }))
+      .toEqual({ kind: 'retain', reason: 'borrowed', clearsRetain: false })
+  })
+
+  it('honours a declared retain once and then spends it', () => {
+    const retained = settled({ retain: { reason: 'user_takeover', at: LATER } })
+    const first = releaseDecision({ dispatch: retained, observation: live })
+    expect(first).toEqual({ kind: 'retain', reason: 'user_takeover', clearsRetain: true })
+    const cleared = withWorker(retained, { retain: null }, LATER)
+    expect(releaseDecision({ dispatch: cleared, observation: live }).kind).toBe('close')
+  })
+
+  it('answers an already released attempt from the record', () => {
+    const released = settled({ release: { state: 'released', reason: 'owned_generation_matches', at: LATER, processAction: 'closed' } })
+    expect(releaseDecision({ dispatch: released, observation: live })).toEqual({ kind: 'settled' })
+  })
+
+  it('stops only what it can prove, and never acts on anything weaker', () => {
+    const base = worker()
+    const open = findDispatch(base.state, base.dispatchId)!
+    expect(stopDecision(open, live)).toEqual({ kind: 'close' })
+    expect(stopDecision(open, { kind: 'pane_gone' })).toEqual({ kind: 'refuse', code: 'identity_unproven' })
+    expect(stopDecision(open, { kind: 'unobserved', reason: 'backend_unavailable', detail: null })).toEqual({ kind: 'refuse', code: 'identity_unproven' })
+    const borrowed = withWorker(open, { ownership: 'borrowed' }, LATER)
+    expect(stopDecision(borrowed, live)).toEqual({ kind: 'refuse', code: 'identity_unproven' })
+    expect(stopDecision(settled(), live)).toEqual({ kind: 'refuse', code: 'dispatch_not_active' })
+  })
+
+  it('finds the settled attempt that still owns a pane, and stops finding it once released', () => {
+    const base = worker()
+    const entry = findDispatch(base.state, base.dispatchId)!
+    expect(paneOwner(base.state, entry.target)?.id).toBe(entry.id)
+    const released = replaceDispatchRecord(base.state, withWorker(entry, { release: { state: 'released', reason: 'owned_generation_matches', at: LATER, processAction: 'closed' } }, LATER))
+    expect(paneOwner(released, entry.target)).toBeUndefined()
+    // A different generation of the same pane is a different pane for ownership purposes.
+    expect(paneOwner(base.state, { ...entry.target, ptyId: 'pty-2' })).toBeUndefined()
+  })
+})
+
+describe('LIFE-410 preamble (§4.2)', () => {
+  const body = buildPreamble({ corral: 'corral --socket /tmp/x.sock', runId: 'run_0123456789ab', taskId: 'task_0123456789ab', dispatchId: 'ctx_0123456789ab', handle: 't1.handle' })
+
+  it('names the attempt it reports under, in every command the worker has to run', () => {
+    for (const command of ['orchestration send', 'orchestration ask']) expect(body).toContain(command)
+    expect(body.match(/--dispatch-id ctx_0123456789ab/g)?.length).toBeGreaterThanOrEqual(4)
+    expect(body).toContain('--task-id task_0123456789ab')
+    // A worker pane has no corral configuration of its own, so every example carries the socket.
+    expect(body).toContain('corral --socket /tmp/x.sock orchestration send')
+  })
+
+  it('states the two rules a worker breaking them would strand the coordinator on', () => {
+    expect(body).toContain('NEVER use AskUserQuestion')
+    expect(body).toContain('exactly once')
+  })
+
+  it('digests the body it actually delivers', () => {
+    expect(preambleDigest(body)).toMatch(/^[0-9a-f]{64}$/)
+    expect(preambleDigest(body)).not.toBe(preambleDigest(body + ' '))
+  })
+})
+
+/** A throwaway profile directory; the 409 helper above is scoped to its own describe block. */
+function fixture409(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l410-unit-'))
+  cleanupDirs.push(dir)
+  return dir
+}
+const cleanupDirs: string[] = []
+afterEach(() => { for (const dir of cleanupDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })

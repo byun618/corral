@@ -1,5 +1,5 @@
 import specs from './foundation-specs.json';
-import { type CommandSpec, type Invocation, type CommandModule, stringFlag, reject } from './contracts.js';
+import { type CommandSpec, type Invocation, type CommandModule, stringFlag, reject, WAITING_COMMANDS, WAITING_TIMEOUT_MAX, DEFAULT_TIMEOUT_MAX } from './contracts.js';
 export const foundationSpecs: CommandSpec[] = specs;
 const commonBooleans = new Set(['help', 'json']);
 export class CommandRegistry {
@@ -95,5 +95,9 @@ export class CommandRegistry {
 export function validateFoundation(inv: Invocation): void {
     for (const key of ['socket', 'instance']) if (inv.flags[key] !== undefined) stringFlag(inv.flags, key, true);
     const timeout = inv.flags['timeout-ms'];
-    if (timeout !== undefined && (!/^\d+$/.test(String(timeout)) || Number(timeout) < 1 || Number(timeout) > 120000)) reject('--timeout-ms must be 1..120000');
+    // LIFE-410 §4.6: the two waiting commands may ask for up to ten minutes; every other command
+    // keeps the ceiling it had. The ceiling is named by command, so a typo in the command name
+    // cannot buy the longer one.
+    const ceiling = WAITING_COMMANDS.has(inv.command) ? WAITING_TIMEOUT_MAX : DEFAULT_TIMEOUT_MAX;
+    if (timeout !== undefined && (!/^\d+$/.test(String(timeout)) || Number(timeout) < 1 || Number(timeout) > ceiling)) reject(`--timeout-ms must be 1..${ceiling}`);
 }

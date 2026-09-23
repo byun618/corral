@@ -14,19 +14,31 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
-import { RuntimeError, reject, stringFlag, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
+import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
 import { Receipts, REQUEST_ID, RECEIPT_TTL } from '../terminal/receipts.js'
-import { terminalModule } from '../terminal/index.js'
+import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
+import { socketPath } from '../transport.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
-import { isRecord, readRecord, readString } from '../../shared/json.js'
+import { isRecord, readNumber, readRecord, readString } from '../../shared/json.js'
 import { OrchestrationStore } from './store.js'
 import {
-  TASK_STATUSES, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
-  isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, transition,
-  type AgentSnapshot, type DispatchTarget, type JsonValue, type OrchestrationState, type PaneObservation, type TaskStatus,
+  TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
+  isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
+  type AgentSnapshot, type DispatchRecord, type DispatchTarget, type JsonValue, type OrchestrationState,
+  type PaneObservation, type TaskStatus,
 } from './model.js'
+import {
+  DELIVERABLE_TYPES, DELIVERY_ID, MAX_SUBJECT, MESSAGE_ID, MESSAGE_TYPES, acknowledgeDelivery, answerOf, answerQuestion,
+  appendMessage, findMessage, isMessageType, isWorkerMessageType, openDelivery, outstandingDelivery, parseTypes, pendingBatch, runMessages,
+  type MessageOrigin, type MessageRecord, type MessageType,
+} from './messages.js'
+import {
+  buildPreamble, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
+  senderError, stopDecision, verifySender, withWorker,
+} from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
 export { transition } from './model.js'
@@ -34,7 +46,13 @@ export { transition } from './model.js'
 /** Same ceiling the terminal commands use for free text, so one limit governs the whole CLI. */
 export const MAX_TEXT = 65536
 export const MAX_DEPS = 64
-const MUTATIONS = new Set(['orchestration run-create', 'orchestration run-use', 'orchestration task-create', 'orchestration task-update', 'orchestration dispatch'])
+const MUTATIONS = new Set([
+  'orchestration run-create', 'orchestration run-use', 'orchestration task-create', 'orchestration task-update', 'orchestration dispatch',
+  // LIFE-410. `check` is here because it opens and acknowledges Deliveries; `ask` because it stores
+  // the question before it waits. Both are mutations that happen to block afterwards.
+  'orchestration worker-start', 'orchestration send', 'orchestration ask', 'orchestration reply', 'orchestration check',
+  'orchestration worker-retain', 'orchestration worker-release', 'orchestration worker-stop', 'orchestration worker-abandon',
+])
 const REQUIRED: Record<string, string[]> = {
   'orchestration run-create': ['objective'],
   'orchestration run-use': ['id'],
@@ -42,8 +60,21 @@ const REQUIRED: Record<string, string[]> = {
   'orchestration task-create': ['spec'],
   'orchestration task-update': ['id', 'status'],
   'orchestration dispatch': ['task', 'to'],
+  'orchestration worker-start': ['task'],
+  'orchestration send': ['type', 'subject'],
+  'orchestration reply': ['id', 'body'],
+  'orchestration request-show': ['id'],
+  'orchestration worker-read': ['dispatch'],
+  'orchestration worker-retain': ['dispatch'],
+  'orchestration worker-release': ['dispatch'],
+  'orchestration worker-stop': ['dispatch'],
+  'orchestration worker-abandon': ['dispatch'],
 }
-const TEXT_LIMITS: Record<string, number> = { objective: MAX_TEXT, spec: MAX_TEXT, title: 1024, result: MAX_TEXT, to: 8192 }
+const TEXT_LIMITS: Record<string, number> = {
+  objective: MAX_TEXT, spec: MAX_TEXT, title: 1024, result: MAX_TEXT, to: 8192,
+  subject: MAX_SUBJECT, body: MAX_TEXT, question: MAX_TEXT, payload: MAX_TEXT, options: MAX_TEXT,
+  'files-modified': 8192, 'report-path': 4096, phase: 256,
+}
 
 function bytes(value: unknown, max: number, name: string): void {
   if (typeof value !== 'string' || value.includes('\0') || Buffer.byteLength(value) > max) reject(`${name} must be NUL-free UTF-8, at most ${max} bytes`)
@@ -60,24 +91,97 @@ export function parseResult(value: string): JsonValue {
   try { return JSON.parse(value) } catch { return reject('--result must be a JSON document') }
 }
 /** `--id` means a different record per command; a mistyped kind is caught before any lookup. */
-function idKindFor(command: string): 'run' | 'task' | 'ctx' {
+type IdShape = 'run' | 'task' | 'ctx' | 'msg' | 'request'
+function idKindFor(command: string): IdShape {
   if (command.startsWith('orchestration run-')) return 'run'
   if (command === 'orchestration task-update') return 'task'
+  // LIFE-410: `reply --id` names a message and `request-show --id` names a receipt, so the shape
+  // check has to ask the command rather than assume every `--id` is a Dispatch.
+  if (command === 'orchestration reply') return 'msg'
+  if (command === 'orchestration request-show') return 'request'
   return 'ctx'
+}
+function idShapeOk(shape: IdShape, value: string): boolean {
+  switch (shape) {
+    case 'msg': return MESSAGE_ID.test(value)
+    case 'request': return REQUEST_ID.test(value)
+    default: return isId(shape, value)
+  }
+}
+const ID_SHAPE_TEXT: Readonly<Record<IdShape, string>> = {
+  run: 'run id (run_<12 hex>)', task: 'task id (task_<12 hex>)', ctx: 'dispatch id (ctx_<12 hex>)',
+  msg: 'message id (msg_<12 hex>)', request: 'request id (r1.<13-digit Unix milliseconds>.<UUID>)',
+}
+
+/**
+ * LIFE-410's own argument rules. They are all shape and pairing — nothing here reads the document,
+ * so every one of them is refused before a receipt exists and leaves the stored bytes untouched.
+ */
+function validateWorkerFlags(inv: Invocation): void {
+  const f = inv.flags
+  const command = inv.command
+  if (f['task-id'] !== undefined && !isId('task', f['task-id'])) reject('--task-id must be a task id (task_<12 hex>)')
+  if (f['dispatch-id'] !== undefined && !isId('ctx', f['dispatch-id'])) reject('--dispatch-id must be a dispatch id (ctx_<12 hex>)')
+  if (f.resume !== undefined && !MESSAGE_ID.test(String(f.resume))) reject('--resume must be a message id (msg_<12 hex>)')
+  if (f.ack !== undefined && !DELIVERY_ID.test(String(f.ack))) reject('--ack must be a delivery id (delivery_<12 hex>)')
+  if (f.types !== undefined) parseTypes(String(f.types))
+  if (f.payload !== undefined) {
+    const parsed = parseResult(String(f.payload))
+    if (!isRecord(parsed)) reject('--payload must be a JSON object')
+  }
+  if (command === 'orchestration send') {
+    if (!isWorkerMessageType(f.type)) reject('--type must be worker_done, heartbeat, escalation or status')
+    const worker = f.type !== 'status'
+    if (worker && (f['task-id'] === undefined || f['dispatch-id'] === undefined))
+      reject('--task-id and --dispatch-id are required for worker_done, heartbeat and escalation')
+    if (!worker && (f['task-id'] === undefined) !== (f['dispatch-id'] === undefined))
+      reject('--type status takes both --task-id and --dispatch-id, or neither')
+    if (f.type === 'worker_done') {
+      if (f.outcome !== 'succeeded' && f.outcome !== 'failed') reject('--outcome must be succeeded or failed for --type worker_done')
+    } else if (f.outcome !== undefined) reject('--outcome belongs to --type worker_done')
+  } else if (f.type !== undefined && command !== 'orchestration inbox') reject('--type belongs to send and inbox')
+  if (command === 'orchestration inbox' && f.type !== undefined && !isMessageType(f.type))
+    reject(`--type must be one of ${MESSAGE_TYPES.join('|')}`)
+  if (command === 'orchestration ask') {
+    if ((f.question === undefined) === (f.resume === undefined)) reject('ask requires exactly one of --question or --resume')
+    if (f['task-id'] === undefined || f['dispatch-id'] === undefined) reject('--task-id and --dispatch-id are required for ask')
+    if (f.options !== undefined && f.resume !== undefined) reject('--options belongs to a new question, not to --resume')
+  }
+  if (command === 'orchestration worker-start') {
+    if ((f.terminal === undefined) === (f.agent === undefined)) reject('worker-start requires exactly one of --terminal or --agent')
+    if (f.agent !== undefined) {
+      if (!['claude', 'codex', 'grok'].includes(String(f.agent))) reject('--agent must be claude, codex or grok')
+      if (f.worktree === undefined) reject('--agent requires --worktree')
+      if (f.advisor !== undefined && f.agent !== 'claude') reject('--advisor applies to --agent claude only')
+    } else for (const key of ['model', 'effort', 'advisor', 'worktree'])
+      // §4.2: a reused pane already resolved its model. Accepting the flag would record a request
+      // that never reached a provider, which is the confusion the agent snapshot exists to prevent.
+      if (f[key] !== undefined) reject(`--${key} belongs to worker-start --agent; a reused terminal keeps the agent it was started with`)
+  } else for (const key of ['agent', 'model', 'effort', 'advisor', 'spec-file', 'terminal', 'worktree'])
+    if (f[key] !== undefined) reject(`--${key} applies to worker-start only`)
+  if (command === 'orchestration worker-retain' && f.reason !== undefined && !isRetainReason(f.reason))
+    reject('--reason must be user_requested or user_takeover')
+  if (command !== 'orchestration worker-retain' && f.reason !== undefined) reject('--reason applies to worker-retain only')
+  if (command === 'orchestration worker-show' && (f.dispatch === undefined) === (f.task === undefined))
+    reject('worker-show requires exactly one of --dispatch or --task')
+  if (f.screen && f.cursor !== undefined) reject('--screen and --cursor are mutually exclusive')
 }
 
 export function validateOrchestration(inv: Invocation): void {
   validateFoundation(inv)
   const f = inv.flags
   for (const key of REQUIRED[inv.command] ?? []) stringFlag(f, key, true)
-  for (const key of ['objective', 'spec', 'title', 'deps', 'result', 'to', 'run', 'id', 'task', 'status', 'dispatch', 'expected-version', 'request-id', 'limit'])
+  for (const key of ['objective', 'spec', 'title', 'deps', 'result', 'to', 'run', 'id', 'task', 'status', 'dispatch', 'expected-version', 'request-id', 'limit',
+    'type', 'types', 'subject', 'body', 'payload', 'question', 'options', 'resume', 'ack', 'outcome', 'phase', 'files-modified', 'report-path',
+    'task-id', 'dispatch-id', 'terminal', 'agent', 'model', 'effort', 'advisor', 'worktree', 'spec-file', 'reason', 'cursor'])
     if (f[key] !== undefined) stringFlag(f, key, true)
   for (const [key, max] of Object.entries(TEXT_LIMITS)) if (f[key] !== undefined) bytes(f[key], max, `--${key}`)
   if (f['request-id'] !== undefined && !REQUEST_ID.test(String(f['request-id']))) reject('--request-id must be r1.<13-digit Unix milliseconds>.<UUID>')
   if (f.run !== undefined && !isId('run', f.run)) reject('--run must be a run id (run_<12 hex>)')
   if (f.task !== undefined && !isId('task', f.task)) reject('--task must be a task id (task_<12 hex>)')
   if (f.dispatch !== undefined && !isId('ctx', f.dispatch)) reject('--dispatch must be a dispatch id (ctx_<12 hex>)')
-  if (f.id !== undefined && !isId(idKindFor(inv.command), f.id)) reject(`--id must be a ${idKindFor(inv.command)} id for ${inv.command}`)
+  if (f.id !== undefined && !idShapeOk(idKindFor(inv.command), String(f.id))) reject(`--id must be a ${ID_SHAPE_TEXT[idKindFor(inv.command)]} for ${inv.command}`)
+  validateWorkerFlags(inv)
   if (f.status !== undefined && !isTaskStatus(f.status)) reject(`--status must be one of ${TASK_STATUSES.join('|')}`)
   if (f.ready && f.status !== undefined && f.status !== 'ready') reject('--ready and --status disagree')
   if (f.deps !== undefined) parseDeps(String(f.deps))
@@ -220,6 +324,29 @@ export function flattenReceiptError(error: unknown): unknown {
  */
 let startupSweep: AbortController | null = null
 
+/**
+ * LIFE-410 §4.6 — the orchestration lane, moved into the module.
+ *
+ * Until r0 of this task the runtime's own lane map serialized *every* orchestration command,
+ * reads included, because reconcile writes from read paths. That is still the rule, but the unit
+ * it applies to has to be smaller now: a coordinator blocked in `check --block` for ten minutes
+ * would otherwise hold the lane the worker's `worker_done` needs, and the two would wait on each
+ * other until the deadline. So the module declares no `serialKey` and takes this lane itself,
+ * around each read-compute-write of the single document — including the ones a waiting command
+ * makes between polls, and including the runtime-start sweep, which runs in the same process.
+ *
+ * Nothing external is awaited while it is held: `worker-start` drops it around `terminal create`
+ * and `terminal prompt` and takes it again for each write, so a launch that takes a minute never
+ * blocks a report. The cost is that its plan is re-checked when it comes back, which is why
+ * `createDispatch` decides startability again inside the write step rather than trusting the plan.
+ */
+let documentLane: Promise<unknown> = Promise.resolve()
+export function withDocumentLane<T>(body: () => Promise<T>): Promise<T> {
+  const next = documentLane.catch(() => {}).then(body)
+  documentLane = next.catch(() => {})
+  return next
+}
+
 const preflight = (code: string, message: string, resources?: unknown): never => {
   throw new RuntimeError(code, message, resources, 'preflight', 'not_started')
 }
@@ -271,9 +398,14 @@ export async function orchestrationStartupSweep(userData: string, ctx: { instanc
   if (ctx.signal.aborted) yielded.abort()
   startupSweep = yielded
   try {
-    const pass = await reconcilePass(state, { signal: yielded.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
-    if (pass.changed) store.write(pass.state)
-    return { swept: true, changed: pass.changed, reason: pass.snapshot?.observed === false ? pass.snapshot.reason : null }
+    return await withDocumentLane(async () => {
+      // Re-read inside the lane: between the readability probe above and this point a command may
+      // already have written, and sweeping a stale document would undo it.
+      const current = store.read()
+      const pass = await reconcilePass(current, { signal: yielded.signal, deadlineAt: Date.now() + SWEEP_BUDGET_MS }, ctx.instanceId)
+      if (pass.changed) store.write(pass.state)
+      return { swept: true, changed: pass.changed, reason: pass.snapshot?.observed === false ? pass.snapshot.reason : null }
+    })
   } catch (error) { return { swept: false, changed: false, reason: error instanceof Error ? error.message : String(error) } }
   finally {
     ctx.signal.removeEventListener('abort', relay)
@@ -301,7 +433,17 @@ export function orchestrationModule(userData: string): CommandModule {
   // invocation, `--help` included, and none of those may touch the profile directory.
   let store: OrchestrationStore | undefined
   let receipts: Receipts | undefined
-  let terminalReads: CommandModule | undefined
+  /**
+   * Built with this module, not on first use. A child `terminal create` carries a request id
+   * *derived* from its parent's, which keeps the parent's timestamp — and `Receipts` refuses an id
+   * older than the receipt store it is asked of. Building the terminal module lazily gave it a
+   * `startedAt` later than the very request that was about to use it, so the first worker-start
+   * after a runtime start failed its terminal stage with `outcome_unknown` every time. Both modules
+   * are constructed together now, so they share one notion of when this runtime began. Neither
+   * constructor touches the profile, which is what `cli.ts` building every module for `--help`
+   * requires.
+   */
+  const terminalReads: CommandModule = terminalModule(userData)
   /**
    * N3 = C13. Every rejection this module can foresee is now raised *before* the receipt is
    * written, so a refused mutation leaves the id spendable. That must not cost idempotent replay:
@@ -328,11 +470,12 @@ export function orchestrationModule(userData: string): CommandModule {
     tracksEffects: true,
     isMutation: inv => MUTATIONS.has(inv.command),
     /**
-     * Reads take the lane too. Reconcile writes from read paths (`dispatch-show`, and the sweep
-     * that runs before every command), so a read outside the lane could lose a concurrent
-     * mutation's update to the single document.
+     * No runtime lane. Reads still have to be serialized against writes — reconcile writes from
+     * read paths — but the serialization now lives in `withDocumentLane` above, which can be held
+     * for a write and released across a wait. A runtime-wide lane cannot do the second thing, and
+     * §4.6 needs it: `check --block` and `ask` must not hold anything while they wait.
      */
-    serialKey: () => 'orchestration',
+    serialKey: () => undefined,
     async execute(original, ctx) {
       const inv: Invocation = { ...original, flags: { ...original.flags } }, f = inv.flags
       store ??= new OrchestrationStore(userData)
@@ -361,7 +504,6 @@ export function orchestrationModule(userData: string): CommandModule {
         return task
       }
       const showTerminal = async (handle: string) => {
-        terminalReads ??= terminalModule(userData)
         const child: Invocation = { command: 'terminal show', flags: { terminal: handle }, args: [], cwd: inv.cwd }
         terminalReads.validate(child)
         const shown = await terminalReads.execute(child, ctx)
@@ -395,6 +537,72 @@ export function orchestrationModule(userData: string): CommandModule {
       /** True when `Receipts` owns the answer, so this call must not be judged again (N3). */
       const recorded = admitted(flag('request-id'))
 
+      // === LIFE-410 ================================================================================
+      const caller: CallerIdentity = original.caller ?? { paneId: null, session: null }
+      /** Leave room for the response to travel before the request deadline destroys the socket. */
+      const waitDeadline = ctx.deadlineAt - 250
+      const rest = () => Math.max(1, waitDeadline - Date.now())
+      /**
+       * How a worker pane should spell `corral`. A pane inherits its environment from the backend,
+       * not from corral (§2: corral cannot inject env into a pane), so the preamble has to carry
+       * the socket explicitly or a worker would talk to whatever profile its PATH happens to find.
+       */
+      const corralCommand = (): string => {
+        const entry = process.argv[1]
+        const base = process.env.CORRAL_CLI ?? (entry !== undefined && entry.endsWith('corral.mjs') ? `${process.execPath} ${entry}` : 'corral')
+        return `${base} --socket ${socketPath(userData)}`
+      }
+      const workerOrigin = (dispatch: DispatchRecord): MessageOrigin => ({ kind: 'worker', dispatchId: dispatch.id, paneId: dispatch.target.paneId })
+      const coordinatorOrigin = (): MessageOrigin => ({ kind: 'coordinator', dispatchId: null, paneId: caller.paneId })
+      const csv = (value: string): string[] => value.split(',').map(part => part.trim()).filter(part => part.length > 0)
+      const messagePayload = (extra: Record<string, JsonValue>): JsonValue => {
+        const custom = f.payload === undefined ? null : parseResult(String(f.payload))
+        const merged: Record<string, JsonValue> = custom !== null && typeof custom === 'object' && !Array.isArray(custom) ? { ...custom } : {}
+        for (const [key, value] of Object.entries(extra)) if (value !== null) merged[key] = value
+        return merged
+      }
+      /** A fresh look, not the one the reconcile pass memoized: §4.7 re-observes just before it acts. */
+      const observeNow = async (target: DispatchTarget): Promise<PaneObservation> =>
+        observationFor(await observePanes(budgeted(ctx, SWEEP_BUDGET_MS)), target)
+      const dispatchInRun = (state: OrchestrationState, runId: string, id: string): DispatchRecord => {
+        const entry = findDispatch(state, id)
+        if (!entry || entry.runId !== runId) return preflight('dispatch_not_found', `No dispatch ${id} in run ${runId}`,
+          { dispatchId: id, runId, recovery: 'corral orchestration worker-list --run <run> shows the attempts this Run holds' })
+        return entry
+      }
+      /** One line of `worker-list`, and the ownership block `worker-show` repeats. */
+      const workerRow = (entry: DispatchRecord) => {
+        const worker = entry.worker
+        const state = entry.status === 'dispatched' ? 'working'
+          : entry.status === 'unknown' ? 'unknown'
+            : entry.settledBy === 'worker_done' ? 'reported' : 'settled'
+        return {
+          dispatchId: entry.id, taskId: entry.taskId, runId: entry.runId, attempt: entry.attempt,
+          dispatchStatus: entry.status, workerState: state, settledBy: entry.settledBy, settledAt: entry.settledAt,
+          terminal: entry.target.handle, paneId: entry.target.paneId,
+          agent: entry.agent === null ? null : { kind: entry.agent.kind, requestedModel: entry.agent.requestedModel, resolvedModel: entry.agent.resolvedModel },
+          worker: worker === null ? null : {
+            launch: worker.launch, ownership: worker.ownership, originDispatchId: worker.originDispatchId,
+            ownershipTransferredTo: worker.ownershipTransferredTo, paneSession: worker.paneSession,
+            lastHeartbeatAt: worker.lastHeartbeatAt, capabilityRevokedAt: worker.capabilityRevokedAt,
+            capabilityRevokedReason: worker.capabilityRevokedReason, retain: worker.retain, release: worker.release,
+            preambleSha256: worker.preambleSha256, promptRequestId: worker.promptRequestId,
+          },
+        }
+      }
+      const revoke = (state: OrchestrationState, entry: DispatchRecord, reason: 'settled' | 'stopped' | 'abandoned' | 'released', at: string): OrchestrationState => {
+        const current = findDispatch(state, entry.id)
+        if (!current || current.worker === null) return state
+        // First revocation wins: a release after a settle must not rewrite when the right ended.
+        if (current.worker.capabilityRevokedAt !== null) return state
+        return replaceDispatchRecord(state, withWorker(current, { capabilityRevokedAt: at, capabilityRevokedReason: reason }, at))
+      }
+      const terminalChild = async (command: string, flags: Record<string, string | boolean>, options: { stdin?: string; deadlineAt?: number } = {}): Promise<unknown> => {
+        const child: Invocation = { command, flags, args: [], cwd: inv.cwd, ...(options.stdin === undefined ? {} : { stdin: options.stdin }) }
+        terminalReads.validate(child)
+        return terminalReads.execute(child, options.deadlineAt === undefined ? ctx : { ...ctx, deadlineAt: options.deadlineAt })
+      }
+
       /**
        * §4.5, and R2. Every command re-observes the open attempts first, but the result is only
        * *computed* here. A read persists it (that is the `dispatch-show` moment the freeze names);
@@ -403,13 +611,508 @@ export function orchestrationModule(userData: string): CommandModule {
        * own pass in `server.ts` (R5). With no open attempt the backend is not contacted at all.
        */
       const mutating = MUTATIONS.has(inv.command)
-      const before = records.read()
-      const pass = await reconcilePass(before, ctx, ctx.instanceId)
-      if (pass.snapshot) snapshot ??= pass.snapshot
-      const state = pass.state
-      // Not an `onEffect`: corral's own re-observation is not the effect the caller asked for.
-      if (pass.changed && !mutating) records.write(state)
+      /** One read-compute-write of the document, under the module lane (§4.6). */
+      const session = async <T>(body: (state: OrchestrationState, before: OrchestrationState) => Promise<T>): Promise<T> => withDocumentLane(async () => {
+        const before = records.read()
+        const pass = await reconcilePass(before, ctx, ctx.instanceId)
+        if (pass.snapshot) snapshot ??= pass.snapshot
+        if (pass.changed && !mutating) records.write(pass.state)
+        return body(pass.state, before)
+      })
 
+      // --- send (§4.4) -----------------------------------------------------------------------------
+      type SendPlan =
+        | { kind: 'coordinator'; runId: string }
+        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord }
+      const sendCommand = async (state: OrchestrationState): Promise<unknown> => {
+        const type = need('type'), subject = need('subject'), body = flag('body') ?? ''
+        const payload = messagePayload({
+          phase: flag('phase') ?? null,
+          filesModified: f['files-modified'] === undefined ? null : csv(String(f['files-modified'])),
+          reportPath: flag('report-path') ?? null,
+        })
+        const plan = (): SendPlan => {
+          // `status` is the one type either side sends: naming an attempt makes it that worker's
+          // status, naming none makes it a note on the Run. Taking the ids and then ignoring them
+          // would be the worst of the three, so the pairing is required or absent, never partial.
+          if (type === 'status' && f['task-id'] === undefined) return { kind: 'coordinator', runId: resolveRunId(state) }
+          const taskId = need('task-id'), dispatchId = need('dispatch-id')
+          // `worker_done` defers the settled question to `transition`, the only place that can tell
+          // "you named a superseded attempt" (stale_dispatch) from "you already reported"
+          // (illegal_transition). Every other worker message is refused once the attempt has ended.
+          const verdict = verifySender(state, { taskId, dispatchId, caller }, type === 'worker_done' ? 'defer' : 'reject')
+          if (!verdict.ok) throw senderError(verdict)
+          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch }
+        }
+        const planned = recorded ? undefined : plan()
+        return mutate(async () => {
+          const target = planned ?? plan()
+          const at = now()
+          const worker = target.kind === 'worker' ? target.dispatch : null
+          const common = {
+            runId: target.runId, taskId: worker === null ? null : worker.taskId, dispatchId: worker === null ? null : worker.id,
+            subject, body, payload, from: worker === null ? coordinatorOrigin() : workerOrigin(worker), at,
+          }
+          if (type === 'worker_done' && target.kind === 'worker') {
+            const outcome = need('outcome') === 'succeeded' ? 'succeeded' : 'failed'
+            // One value, one write: the report and the settlement it causes are two fields of the
+            // same document, so there is no window in which one exists without the other (§4.4).
+            const appended = appendMessage(state, common, { type: 'worker_done', outcome })
+            const moved = transition(appended.state, {
+              taskId: target.taskId, dispatchId: target.dispatchId,
+              to: outcome === 'succeeded' ? 'completed' : 'failed', settledBy: 'worker_done',
+              result: { outcome, subject, body, payload, messageId: appended.message.id }, at,
+            })
+            const settled = findDispatch(moved.state, target.dispatchId)
+            const next = settled === undefined ? moved.state : revoke(moved.state, settled, 'settled', at)
+            ctx.onEffect?.()
+            records.write(next)
+            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done' }
+          }
+          if (type === 'heartbeat' && target.kind === 'worker') {
+            const appended = appendMessage(state, common, { type: 'heartbeat' })
+            const current = findDispatch(appended.state, target.dispatchId)
+            const next = current === undefined ? appended.state : replaceDispatchRecord(appended.state, withWorker(current, { lastHeartbeatAt: at }, at))
+            ctx.onEffect?.()
+            records.write(next)
+            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null }
+          }
+          const appended = appendMessage(state, common, { type: type === 'escalation' ? 'escalation' : 'status' })
+          ctx.onEffect?.()
+          records.write(appended.state)
+          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null }
+        })
+      }
+
+      // --- recovery (§4.7) -------------------------------------------------------------------------
+      /**
+       * What one `terminal close` did, without letting a failure hide the settlement that follows
+       * it. A pane that has already gone is not an error — it is the `pane_gone` answer — and a
+       * close whose effect was not observed is `unknown`, never silently a success.
+       */
+      const closePane = async (dispatch: DispatchRecord): Promise<{ state: 'released' | 'retained' | 'unknown'; reason: string; processAction: 'closed' | 'none'; detail: unknown }> => {
+        try {
+          const detail = await terminalChild('terminal close', { terminal: dispatch.target.handle })
+          return { state: 'released', reason: 'owned_generation_matches', processAction: 'closed', detail }
+        } catch (error) {
+          if (error instanceof RuntimeError && error.code === 'stale_terminal')
+            return { state: 'retained', reason: 'pane_gone', processAction: 'none', detail: { code: error.code, message: error.message } }
+          if (error instanceof RuntimeError) return { state: 'unknown', reason: 'close_outcome_unknown', processAction: 'closed', detail: { code: error.code, message: error.message } }
+          throw error
+        }
+      }
+      const recoveryCommand = async (state: OrchestrationState, kind: 'release' | 'stop' | 'abandon'): Promise<unknown> => {
+        const runId = resolveRunId(state)
+        /**
+         * Everything that can refuse happens here, outside the receipt: the wrong lifecycle state,
+         * a pane this attempt does not own, an identity the backend will not confirm. The
+         * observation is taken here too and carried into the body, so the look that authorised the
+         * close is the one the lane is still holding (LIFE-393 S2).
+         */
+        const prepare = async (): Promise<{ dispatch: DispatchRecord; observation: PaneObservation | null }> => {
+          const dispatch = dispatchInRun(state, runId, need('dispatch'))
+          if (dispatch.worker === null) return preflight('sender_mismatch', `Dispatch ${dispatch.id} was not started as a worker`,
+            { dispatchId: dispatch.id, recovery: 'Only an attempt created by corral orchestration worker-start owns a pane' })
+          if (kind === 'release' && dispatch.status === 'dispatched') return preflight('dispatch_active', `Dispatch ${dispatch.id} is still open`,
+            { dispatchId: dispatch.id, dispatchStatus: dispatch.status, recovery: 'corral orchestration worker-stop --dispatch <ctx> cancels an attempt that is still running' })
+          if (kind !== 'release' && dispatch.status !== 'dispatched') return preflight('dispatch_not_active', `Dispatch ${dispatch.id} is already ${dispatch.status}`,
+            { dispatchId: dispatch.id, dispatchStatus: dispatch.status, recovery: 'corral orchestration worker-release --dispatch <ctx> recovers an attempt that has already ended' })
+          // abandon is defined as taking no process action, so it asks the backend nothing at all.
+          if (kind === 'abandon') return { dispatch, observation: null }
+          const observation = await observeNow(dispatch.target)
+          if (kind === 'stop') {
+            const decision = stopDecision(dispatch, observation)
+            if (decision.kind === 'refuse') return preflight(decision.code, `corral cannot prove the pane of ${dispatch.id} is the one it owns`,
+              { dispatchId: dispatch.id, ownership: dispatch.worker.ownership, observation: observation.kind,
+                recovery: 'corral orchestration worker-show --dispatch <ctx> reports what corral can see; worker-abandon gives the attempt up without touching any process' })
+          }
+          return { dispatch, observation }
+        }
+        const planned = recorded ? undefined : await prepare()
+        return mutate(async () => {
+          const { dispatch, observation } = planned ?? await prepare()
+          const at = now()
+          const settle = (reason: 'abandoned' | 'worker_stopped', release: { state: 'released' | 'retained' | 'unknown'; reason: string; processAction: 'closed' | 'none' }) => {
+            const moved = transition(state, { taskId: dispatch.taskId, dispatchId: dispatch.id, to: 'failed', settledBy: 'task-update', result: { reason, at }, at })
+            const current = findDispatch(moved.state, dispatch.id)
+            const stamped = current === undefined ? moved.state : replaceDispatchRecord(moved.state, withWorker(current, { release: { ...release, at } }, at))
+            const found = findDispatch(stamped, dispatch.id)
+            const next = found === undefined ? stamped : revoke(stamped, found, reason === 'abandoned' ? 'abandoned' : 'stopped', at)
+            ctx.onEffect?.()
+            records.write(next)
+            return { dispatchId: dispatch.id, ...release, task: moved.task, dispatch: findDispatch(next, dispatch.id) ?? null }
+          }
+          if (kind === 'abandon') return {
+            ...settle('abandoned', { state: 'retained', reason: 'abandoned', processAction: 'none' }),
+            note: 'No process was touched. corral stopped expecting reports from this attempt and left the pane exactly where it is',
+          }
+          if (kind === 'stop') {
+            // The close happens before the write so the record states what actually happened. A
+            // close corral could not confirm settles the attempt all the same, with release
+            // `unknown` — `worker-show` is the recovery, never a second close.
+            const closed = await closePane(dispatch)
+            return { ...settle('worker_stopped', { state: closed.state === 'released' ? 'released' : closed.state, reason: closed.state === 'released' ? 'worker_stopped' : closed.reason, processAction: closed.processAction }), close: closed.detail,
+              ...(closed.state === 'unknown' ? { recovery: 'corral orchestration worker-show --dispatch <ctx> re-observes the pane; do not issue a second close' } : {}) }
+          }
+          const decision = releaseDecision({ dispatch, observation: observation ?? { kind: 'unobserved', reason: 'observation_failed', detail: null } })
+          switch (decision.kind) {
+            case 'refuse': return preflight('dispatch_active', `Dispatch ${dispatch.id} is still open`, { dispatchId: dispatch.id })
+            case 'settled': return { dispatchId: dispatch.id, ...(dispatch.worker?.release ?? {}), processAction: 'none', alreadyReleased: true,
+              note: 'This attempt was already released; the stored release is the answer and nothing was written again' }
+            case 'retain': {
+              const stamped = replaceDispatchRecord(state, withWorker(dispatch, {
+                release: { state: 'retained', reason: decision.reason, at, processAction: 'none' },
+                ...(decision.clearsRetain ? { retain: null } : {}),
+              }, at))
+              const found = findDispatch(stamped, dispatch.id)
+              const next = found === undefined ? stamped : revoke(stamped, found, 'released', at)
+              ctx.onEffect?.()
+              records.write(next)
+              return { dispatchId: dispatch.id, state: 'retained', reason: decision.reason, processAction: 'none', dispatch: findDispatch(next, dispatch.id) ?? null,
+                note: decision.clearsRetain ? 'The declared retain was honoured once and has been cleared; a further worker-release judges the pane on its own merits' : 'corral did not close this pane' }
+            }
+            case 'close': {
+              // Re-observe inside the lane, immediately before acting: the decision above was made
+              // on a look taken a moment ago, and this is the LIFE-393 S2 window being closed.
+              const again = await observeNow(dispatch.target)
+              if (again.kind !== 'live') {
+                const reason = again.kind === 'pane_gone' ? 'pane_gone' : again.kind === 'unobserved' ? 'observation_failed' : 'identity_unproven'
+                const stamped = replaceDispatchRecord(state, withWorker(dispatch, { release: { state: 'retained', reason, at, processAction: 'none' } }, at))
+                const found = findDispatch(stamped, dispatch.id)
+                ctx.onEffect?.()
+                records.write(found === undefined ? stamped : revoke(stamped, found, 'released', at))
+                return { dispatchId: dispatch.id, state: 'retained', reason, processAction: 'none', note: 'The pane changed between the decision and the close, so corral closed nothing' }
+              }
+              const closed = await closePane(dispatch)
+              const stamped = replaceDispatchRecord(state, withWorker(dispatch, { release: { state: closed.state, reason: closed.reason, at, processAction: closed.processAction } }, at))
+              const found = findDispatch(stamped, dispatch.id)
+              const next = found === undefined ? stamped : revoke(stamped, found, 'released', at)
+              ctx.onEffect?.()
+              records.write(next)
+              return { dispatchId: dispatch.id, state: closed.state, reason: closed.reason, processAction: closed.processAction, close: closed.detail,
+                dispatch: findDispatch(next, dispatch.id) ?? null,
+                ...(closed.state === 'unknown' ? { recovery: 'corral orchestration worker-show --dispatch <ctx> re-observes the pane; do not work around this with terminal close' } : {}) }
+            }
+          }
+        })
+      }
+
+      // --- worker-start (§4.2) ---------------------------------------------------------------------
+      /** A spec has to leave room for the preamble inside one `terminal prompt` body (65536 bytes). */
+      const MAX_SPEC = MAX_INPUT - 16384
+      const workerStart = async (): Promise<unknown> => {
+        const taskId = need('task')
+        const launching = f.agent !== undefined
+        f['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
+        const parentId = String(f['request-id'])
+        // The handle check first, with no lane held: a pane with no corral-managed agent cannot be
+        // prompted, so it is refused here, before anything is created or written.
+        const reused = launching ? null : await showTerminal(need('terminal'))
+        if (reused !== null && reused.agent === null) return preflight('agent_not_found',
+          'This pane carries no corral-managed agent, so corral cannot deliver a preamble to it',
+          { terminal: need('terminal'), recovery: 'Start the pane with corral orchestration worker-start --agent claude|codex|grok --worktree <path>' })
+        const readSpec = (): string => {
+          if (f['spec-file'] === undefined) return ''
+          const file = path.resolve(inv.cwd, need('spec-file'))
+          try { return fs.readFileSync(file, 'utf8') } catch (error) { return preflight('invalid_argument', `Cannot read --spec-file: ${String(error)}`, { file }) }
+        }
+        interface StartPlan { runId: string; spec: string; resume: DispatchRecord | null; owner: DispatchRecord | null }
+        const plan = async (): Promise<StartPlan> => session(async state => {
+          const runId = resolveRunId(state)
+          const task = taskInRun(state, runId, taskId)
+          const spec = f['spec-file'] === undefined ? task.spec : readSpec()
+          if (Buffer.byteLength(spec) > MAX_SPEC) return preflight('invalid_argument', `The TASK body must be at most ${MAX_SPEC} bytes so the preamble fits in one submission`,
+            { bytes: Buffer.byteLength(spec), limit: MAX_SPEC, recovery: 'Put the detail in a file the worker can read and name it from the spec' })
+          const open = activeDispatch(state, task.id)
+          if (open !== undefined) {
+            // §4.2. An attempt whose input stage never completed is resumed, not refused: the pane
+            // and the record exist and no preamble was delivered, so finishing the submission is
+            // still exactly once. An attempt that already received one is `dispatch_active`.
+            if (open.worker !== null && open.worker.promptRequestId === null && (reused === null || reused.target.paneId === open.target.paneId))
+              return { runId, spec, resume: open, owner: null }
+            return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (dispatch_active)`,
+              { taskId: task.id, status: task.status, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id,
+                recovery: 'corral orchestration worker-show --dispatch <ctx> reports the open attempt; worker-stop or worker-abandon ends it' })
+          }
+          const start = startability(state, task)
+          if (!start.startable) return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (${start.reason})`,
+            { taskId: task.id, status: task.status, reason: start.reason, unmetDependencies: start.unmetDependencies, activeDispatchId: start.activeDispatchId, recovery: start.recovery })
+          if (reused === null) return { runId, spec, resume: null, owner: null }
+          const owner = paneOwner(state, reused.target)
+          if (owner !== undefined && owner.status === 'dispatched') return preflight('dispatch_active', `Pane ${reused.target.paneId} still belongs to open attempt ${owner.id}`,
+            { dispatchId: owner.id, paneId: reused.target.paneId, recovery: 'Settle or stop that attempt before handing its pane to another Task' })
+          return { runId, spec, resume: null, owner: owner ?? null }
+        })
+        const planned = recorded ? undefined : await plan()
+        return mutate(async () => {
+          const start = planned ?? await plan()
+          const stamp = () => new Date().toISOString()
+          const effects: Record<string, unknown>[] = []
+          const residualResources: Record<string, unknown>[] = []
+          const stages: Record<string, Stage> = { terminal: { status: 'not_started' }, dispatch: { status: 'not_started' }, input: { status: 'not_started' } }
+          const report = (state: 'ready' | 'failed' | 'incomplete', stage: string, extra: Record<string, unknown>) =>
+            ({ runId: start.runId, taskId, launch: launching ? 'created' : 'reused', state, stage, stages, effects, residualResources, ...extra })
+
+          // stage 1 — the pane
+          let target: DispatchTarget, agent: AgentSnapshot | null, agentAbsenceReason: string | null, terminal: unknown
+          if (start.resume !== null || reused !== null) {
+            const source = start.resume ?? reused
+            if (source === null) throw new RuntimeError('operation_failed', 'worker-start lost its terminal')
+            target = source.target
+            agent = source.agent
+            agentAbsenceReason = source.agentAbsenceReason
+            terminal = reused?.terminal ?? { handle: target.handle, epoch: target.epoch, ptyId: target.ptyId, paneId: target.paneId }
+            stages.terminal = { status: 'completed', handle: target.handle, action: start.resume === null ? 'reused' : 'resumed' }
+            effects.push({ kind: 'terminal', action: start.resume === null ? 'reused' : 'resumed', id: target.handle, state: 'ready' })
+          } else {
+            const flags: Record<string, string | boolean> = { worktree: need('worktree'), agent: need('agent'), 'request-id': derivedRequestId(parentId, 'terminal') }
+            for (const key of ['model', 'effort', 'advisor', 'title']) if (f[key] !== undefined) flags[key] = need(key)
+            let created: unknown
+            try { created = await terminalChild('terminal create', flags) }
+            catch (error) {
+              stages.terminal = stageFailure(error)
+              // A create that failed may still have left a pane behind if its outcome is unknown.
+              if (stages.terminal.status === 'unknown') residualResources.push({ kind: 'terminal', id: null, action: 'corral terminal list --worktree <path> shows whether a pane was created; close it with corral terminal close' })
+              return report('failed', 'terminal', { dispatchId: null, terminal: null })
+            }
+            const record = isRecord(created) ? created : {}
+            const block = readRecord(record, 'terminal')
+            const handle = block === null ? null : readString(block, 'handle')
+            const epoch = block === null ? null : readString(block, 'epoch')
+            const ptyId = block === null ? null : readString(block, 'ptyId')
+            const paneId = block === null ? null : readString(block, 'paneId')
+            if (block === null || handle === null || epoch === null || ptyId === null || paneId === null) {
+              stages.terminal = { status: 'unknown', error: 'terminal_identity_missing' }
+              residualResources.push({ kind: 'terminal', id: null, action: 'corral terminal list shows the panes this backend holds' })
+              return report('failed', 'terminal', { dispatchId: null, terminal: block })
+            }
+            terminal = block
+            target = { handle, runtimeId: ctx.runtimeId, epoch, ptyId, paneId }
+            stages.terminal = { status: 'completed', handle, action: 'created' }
+            effects.push({ kind: 'terminal', action: 'created', id: handle, state: 'created' })
+            const agentStage = readRecord(readRecord(record, 'stages') ?? {}, 'agent')
+            if (agentStage === null || readString(agentStage, 'status') !== 'completed') {
+              stages.dispatch = { status: 'not_started', reason: 'agent_start_failed' }
+              residualResources.push({ kind: 'terminal', id: handle, action: `corral terminal close --terminal ${handle} once you have read the pane` })
+              return report('failed', 'agent', { dispatchId: null, terminal: block, agentStage, create: created })
+            }
+            const agentBlock = readRecord(record, 'agent')
+            agent = agentBlock === null ? null : snapshotAgent(agentBlock)
+            agentAbsenceReason = agentBlock === null ? 'no_managed_agent' : null
+          }
+
+          // stage 2 — the attempt. Created before the preamble is built, because the preamble names it.
+          let dispatch: DispatchRecord
+          if (start.resume !== null) {
+            dispatch = start.resume
+            stages.dispatch = { status: 'completed', dispatchId: dispatch.id, action: 'resumed' }
+          } else {
+            try {
+              // `session` rather than the bare lane: the plan was made on a reconciled document,
+              // and the write has to be made on one too, or an attempt reconcile just settled would
+              // be judged from stale bytes and refuse a Task the plan had already accepted.
+              dispatch = await session(async current => {
+                const task = taskInRun(current, start.runId, taskId)
+                const owner = start.owner === null ? null : findDispatch(current, start.owner.id) ?? null
+                const worker = emptyWorker({
+                  launch: launching ? 'created' : 'reused',
+                  // Reusing a pane no settled attempt owns — one a person started with
+                  // `terminal create --agent` — is borrowing, and a borrowed pane is never closed.
+                  ownership: launching || owner !== null ? 'owned' : 'borrowed',
+                  paneSession: process.env.CORRAL_SESSION ?? null,
+                  originDispatchId: owner === null ? null : owner.worker?.originDispatchId ?? owner.id,
+                })
+                const made = createDispatch(current, { task, target, agent, agentAbsenceReason, worker, at: stamp() })
+                let next = made.state
+                const self = findDispatch(next, made.dispatch.id)
+                if (launching && self !== undefined) next = replaceDispatchRecord(next, withWorker(self, { originDispatchId: self.id }, stamp()))
+                const previous = owner === null ? undefined : findDispatch(next, owner.id)
+                if (previous !== undefined) next = replaceDispatchRecord(next, withWorker(previous, { ownership: 'borrowed', ownershipTransferredTo: made.dispatch.id }, stamp()))
+                ctx.onEffect?.()
+                records.write(next)
+                return findDispatch(next, made.dispatch.id) ?? made.dispatch
+              })
+            } catch (error) {
+              stages.dispatch = stageFailure(error)
+              if (launching) residualResources.push({ kind: 'terminal', id: target.handle, action: `corral terminal close --terminal ${target.handle}: the pane was created and no attempt records it` })
+              return report('failed', 'dispatch', { dispatchId: null, terminal })
+            }
+            stages.dispatch = { status: 'completed', dispatchId: dispatch.id, attempt: dispatch.attempt }
+            effects.push({ kind: 'dispatch', action: 'created', id: dispatch.id, state: 'dispatched' })
+          }
+          const unfinished = () => residualResources.push({ kind: 'dispatch', id: dispatch.id,
+            action: `The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
+
+          // stage 3 — the one submission
+          const preamble = buildPreamble({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle })
+          const input = `${preamble}\n\n=== TASK ===\n\n${start.spec}\n`
+          const sha256 = preambleDigest(input)
+          const promptId = derivedRequestId(parentId, 'prompt')
+          // The readiness gate gets most of what is left, never all of it: a submission that has no
+          // time to run would report a deadline it never had a chance at (LIFE-394 G1).
+          const readyBy = Math.min(ctx.deadlineAt - 2000, Date.now() + Math.max(1000, Math.floor((ctx.deadlineAt - Date.now()) * 0.6)))
+          let ready: unknown
+          try { ready = await terminalChild('terminal wait', { terminal: target.handle, for: 'agent-ready' }, { deadlineAt: readyBy }) }
+          catch (error) {
+            stages.input = stageFailure(error)
+            unfinished()
+            return report('incomplete', 'agent_not_ready', { dispatchId: dispatch.id, terminal, dispatch })
+          }
+          if (!(isRecord(ready) && ready.satisfied === true)) {
+            const block = isRecord(ready) ? readRecord(ready, 'agent') : null
+            stages.input = { status: 'not_started', reason: block !== null && readString(block, 'phase') === 'blocked' ? 'agent_blocked' : 'agent_not_ready' }
+            unfinished()
+            return report('incomplete', 'agent_not_ready', { dispatchId: dispatch.id, terminal, dispatch, agent: block })
+          }
+          let submitted: unknown
+          try { submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input }) }
+          catch (error) {
+            stages.input = { ...stageFailure(error), requestId: promptId }
+            unfinished()
+            return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+          }
+          stages.input = { status: 'completed', requestId: promptId }
+          effects.push({ kind: 'dispatch_input', action: 'submitted', id: promptId, state: 'accepted' })
+          const stored = await withDocumentLane(async () => {
+            const current = records.read()
+            const entry = findDispatch(current, dispatch.id)
+            if (entry === undefined) return dispatch
+            const next = replaceDispatchRecord(current, withWorker(entry, { preambleSha256: sha256, promptRequestId: promptId }, stamp()))
+            records.write(next)
+            return findDispatch(next, dispatch.id) ?? entry
+          })
+          return report('ready', 'input_accepted', {
+            dispatchId: dispatch.id, terminal, dispatch: stored,
+            preamble: { sha256, bytes: Buffer.byteLength(input), lines: input.split('\n').length },
+            input: submitted,
+          })
+        })
+      }
+
+      // --- the two waiting commands (§4.6) --------------------------------------------------------
+      // They never hold the lane while they wait, and they do not reconcile: a mailbox operation
+      // observes no pane, and a backend that has stopped answering must not turn a ten-minute wait
+      // into an `outcome_unknown`. Their own writes take the lane for the length of one write.
+
+      if (inv.command === 'orchestration check') {
+        const types: MessageType[] = f.types === undefined ? [...DELIVERABLE_TYPES] : parseTypes(String(f.types))
+        const ackId = flag('ack'), peeking = f.peek === true, blocking = f.block === true
+        interface Batch { runId: string; deliveryId: string | null; messages: MessageRecord[]; deliveryReplayed: boolean; acknowledged: string | null; peeked: boolean; timedOut: boolean }
+        const render = (batch: Batch) => ({ ...batch, count: batch.messages.length })
+        // N3's rule: a rejection this module can foresee is raised before the receipt exists, so a
+        // stale `--ack` leaves the caller's --request-id unspent and the stored bytes untouched.
+        if (!recorded) await withDocumentLane(async () => {
+          const state = records.read()
+          const runId = resolveRunId(state)
+          if (ackId !== undefined) acknowledgeDelivery(state, runId, ackId, now())
+        })
+        const collect = async (): Promise<Batch> => withDocumentLane(async () => {
+          const state = records.read()
+          const runId = resolveRunId(state)
+          let working = state, acknowledged: string | null = null
+          if (ackId !== undefined) {
+            const acked = acknowledgeDelivery(working, runId, ackId, now())
+            working = acked.state
+            acknowledged = acked.delivery.id
+          }
+          if (peeking) {
+            if (acknowledged !== null) { ctx.onEffect?.(); records.write(working) }
+            return { runId, deliveryId: null, messages: pendingBatch(working, runId, types), deliveryReplayed: false, acknowledged, peeked: true, timedOut: false }
+          }
+          const opened = openDelivery(working, runId, types, now())
+          if (acknowledged !== null || (opened.plan.delivery !== null && !opened.plan.replayed)) { ctx.onEffect?.(); records.write(opened.state) }
+          return { runId, deliveryId: opened.plan.delivery?.id ?? null, messages: opened.plan.messages, deliveryReplayed: opened.plan.replayed, acknowledged, peeked: false, timedOut: false }
+        })
+        return mutate(async () => {
+          const first = await collect()
+          if (first.messages.length > 0 || peeking || !blocking) return render(first)
+          for (;;) {
+            ctx.signal.throwIfAborted()
+            if (Date.now() >= waitDeadline) return render({ ...first, timedOut: true })
+            await delay(Math.min(150, rest()), undefined, { signal: ctx.signal })
+            const again = await collect()
+            if (again.messages.length > 0) return render({ ...again, acknowledged: first.acknowledged })
+          }
+        })
+      }
+
+      if (inv.command === 'orchestration ask') {
+        const taskId = need('task-id'), dispatchId = need('dispatch-id'), resume = flag('resume')
+        const claim = { taskId, dispatchId, caller }
+        const opened = await withDocumentLane(async () => {
+          const state = records.read()
+          // A resume names a question that already exists, so the attempt may already have been
+          // settled — `defer` lets a worker collect an answer it asked for before it reported.
+          const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')
+          if (!verdict.ok) throw senderError(verdict)
+          if (resume !== undefined) {
+            const question = findMessage(state, resume)
+            if (!question) return preflight('message_not_found', `No message ${resume}`, { messageId: resume, recovery: 'The pending answer of an earlier ask names its own messageId; corral orchestration inbox --type question lists them' })
+            if (question.type !== 'question') return preflight('not_a_question', `Message ${resume} is a ${question.type}`, { messageId: resume, type: question.type })
+            if (question.dispatchId !== dispatchId) return preflight('sender_mismatch', `Question ${resume} belongs to dispatch ${String(question.dispatchId)}`,
+              { messageId: resume, dispatchId: question.dispatchId, claimedDispatchId: dispatchId, recovery: 'Resume only a question this Dispatch asked' })
+            return { messageId: question.id, runId: question.runId }
+          }
+          return mutate(async () => {
+            const current = records.read()
+            const appended = appendMessage(current, {
+              runId: verdict.dispatch.runId, taskId, dispatchId,
+              subject: flag('subject') ?? 'question', body: need('question'),
+              payload: messagePayload({ phase: flag('phase') ?? null }), from: workerOrigin(verdict.dispatch), at: now(),
+            }, { type: 'question', options: f.options === undefined ? [] : csv(String(f.options)) })
+            ctx.onEffect?.()
+            records.write(appended.state)
+            return { messageId: appended.message.id, runId: verdict.dispatch.runId }
+          })
+        })
+        const envelope = isRecord(opened) ? opened : {}
+        const messageId = readString(envelope, 'messageId')
+        if (messageId === null) throw new RuntimeError('operation_failed', 'ask did not record a question id')
+        const resumeCommand = `${corralCommand()} orchestration ask --resume ${messageId} --task-id ${taskId} --dispatch-id ${dispatchId} --timeout-ms 600000 --json`
+        for (;;) {
+          const answered = await withDocumentLane(async () => {
+            const state = records.read()
+            const question = findMessage(state, messageId)
+            if (question === undefined || question.type !== 'question') return null
+            const reply = answerOf(state, question)
+            return reply === null ? null : { question, reply }
+          })
+          if (answered !== null) return {
+            state: 'answered', messageId, runId: readString(envelope, 'runId'), timedOut: false,
+            question: { id: answered.question.id, body: answered.question.body, options: answered.question.question.options, askedAt: answered.question.createdAt },
+            reply: { id: answered.reply.id, body: answered.reply.body, subject: answered.reply.subject, answeredAt: answered.reply.createdAt },
+          }
+          if (Date.now() >= waitDeadline) return {
+            state: 'pending', messageId, runId: readString(envelope, 'runId'), timedOut: true, question: null, reply: null,
+            resumeCommand, recovery: 'The question is stored. Run resumeCommand to keep waiting; asking again would create a second question',
+          }
+          ctx.signal.throwIfAborted()
+          await delay(Math.min(150, rest()), undefined, { signal: ctx.signal })
+        }
+      }
+
+      if (inv.command === 'orchestration request-show') {
+        // Not a document command at all: it reads the shared receipt store the mutations write to.
+        const id = need('id')
+        const file = path.join(userData, 'runtime/terminal-receipts', `${id}.json`)
+        const stored = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+        if (stored === null) return { requestId: id, state: 'absent', createdAt: null, result: null,
+          interpretation: 'No receipt is stored for this request id. Absent is not proof that nothing happened: the id may never have been admitted, or its receipt may have expired (24 hours). Inspect worker-list / task-list / inbox before sending the same input again.' }
+        const receipt: unknown = JSON.parse(stored)
+        const record = isRecord(receipt) ? receipt : {}
+        const state = readString(record, 'state')
+        return {
+          requestId: id, state: state === 'completed' ? 'completed' : 'pending',
+          createdAt: readNumber(record, 'createdAt'), result: state === 'completed' ? record.result ?? null : null,
+          interpretation: state === 'completed'
+            ? 'This request completed and its result is stored. Re-sending the same id replays that result; sending the same input under a new id would create a second record.'
+            : 'This request was admitted and its outcome was never recorded. It may have taken effect. corral never re-executes it: inspect worker-list / task-list / inbox, and do not send the same input under a new id until you know.',
+        }
+      }
+
+      if (inv.command === 'orchestration worker-start') return workerStart()
+
+      return session(async (state, before) => {
       switch (inv.command) {
         case 'orchestration run-create':
           return mutate(async () => {
@@ -530,9 +1233,88 @@ export function orchestrationModule(userData: string): CommandModule {
             },
           }
         }
+        // --- LIFE-410 ---------------------------------------------------------------------------
+        case 'orchestration send': return sendCommand(state)
+        case 'orchestration reply': {
+          const id = need('id')
+          const plan = () => answerQuestion(state, id, { body: need('body'), subject: flag('subject') ?? 'reply', from: coordinatorOrigin(), at: now() })
+          const planned = recorded ? undefined : plan()
+          return mutate(async () => {
+            const answered = planned ?? plan()
+            ctx.onEffect?.()
+            records.write(answered.state)
+            return { question: answered.question, reply: answered.reply }
+          })
+        }
+        case 'orchestration inbox': {
+          const runId = resolveRunId(state)
+          const wanted = flag('type')
+          const rows = runMessages(state, runId)
+            .filter(entry => (wanted === undefined || entry.type === wanted) && (!f.unread || entry.acknowledgedAt === null))
+            .sort((left, right) => right.sequence - left.sequence)
+          const open = outstandingDelivery(state, runId)
+          return { run: findRun(state, runId) ?? null, messages: rows.slice(0, limit), totalCount: rows.length, truncated: rows.length > limit,
+            outstandingDeliveryId: open?.id ?? null, consumed: false }
+        }
+        case 'orchestration worker-list': {
+          const runId = resolveRunId(state)
+          const wanted = flag('status')
+          const rows = state.dispatches.filter(entry => entry.runId === runId && entry.worker !== null && (wanted === undefined || entry.status === wanted)).reverse()
+          return { run: findRun(state, runId) ?? null, workers: rows.slice(0, limit).map(workerRow), totalCount: rows.length, truncated: rows.length > limit }
+        }
+        case 'orchestration worker-show': {
+          const entry = f.dispatch === undefined ? latestDispatch(state, need('task')) : findDispatch(state, need('dispatch'))
+          if (!entry) return preflight('dispatch_not_found', f.dispatch === undefined ? `No dispatch for task ${need('task')}` : `No dispatch ${need('dispatch')}`,
+            { dispatchId: flag('dispatch') ?? null, taskId: flag('task') ?? null })
+          const messages = state.messages.filter(message => message.dispatchId === entry.id)
+          const live = findDispatch(before, entry.id)?.status === 'dispatched'
+            ? (() => { const decision = reconcileDecision(observationFor(snapshot ?? { observed: false, reason: 'observation_failed', detail: null }, entry.target))
+                return { live: decision.live, observed: decision.observed, source: 'observation', reason: decision.reason, observedAt: now(), runtimeInstanceId: ctx.instanceId } })()
+            : { live: null, observed: false, source: 'record', reason: entry.reconcile?.reason ?? null, observedAt: entry.reconcile?.at ?? null, runtimeInstanceId: entry.reconcile?.runtimeInstanceId ?? null }
+          // The live block is `observation`, not `terminal`: `terminal` already names the handle in
+          // every worker row, and letting the observation take that key silently hid the handle.
+          // `dispatch-show` keeps its own LIFE-409 shape, where `terminal` *is* the observation.
+          return {
+            dispatch: entry, task: findTask(state, entry.taskId) ?? null, ...workerRow(entry), observation: live,
+            messageCounts: Object.fromEntries([...DELIVERABLE_TYPES, 'reply'].map(type => [type, messages.filter(message => message.type === type).length])),
+            lastMessage: messages.at(-1) ?? null,
+          }
+        }
+        case 'orchestration worker-read': {
+          const runId = resolveRunId(state)
+          const entry = dispatchInRun(state, runId, need('dispatch'))
+          const flags: Record<string, string | boolean> = { terminal: entry.target.handle }
+          if (f.screen) flags.screen = true
+          if (f.cursor !== undefined) flags.cursor = need('cursor')
+          if (f.limit !== undefined) flags.limit = need('limit')
+          const output = await terminalChild('terminal read', flags)
+          return { dispatchId: entry.id, terminal: entry.target.handle, source: 'terminal', output }
+        }
+        case 'orchestration worker-retain': {
+          const runId = resolveRunId(state)
+          const plan = () => {
+            const entry = dispatchInRun(state, runId, need('dispatch'))
+            if (entry.worker === null) return preflight('sender_mismatch', `Dispatch ${entry.id} was not started as a worker`, { dispatchId: entry.id })
+            return entry
+          }
+          const planned = recorded ? undefined : plan()
+          return mutate(async () => {
+            const entry = planned ?? plan()
+            const at = now()
+            const reason = isRetainReason(f.reason) ? f.reason : 'user_requested'
+            ctx.onEffect?.()
+            records.write(replaceDispatchRecord(state, withWorker(entry, { retain: { reason, at } }, at)))
+            return { dispatchId: entry.id, state: 'retained', reason, processAction: 'none',
+              note: 'Intent only: the process is untouched. The next worker-release honours this retain once and then clears it' }
+          })
+        }
+        case 'orchestration worker-release': return recoveryCommand(state, 'release')
+        case 'orchestration worker-stop': return recoveryCommand(state, 'stop')
+        case 'orchestration worker-abandon': return recoveryCommand(state, 'abandon')
         default:
           throw new RuntimeError('unsupported', `Unknown orchestration command ${inv.command}`)
       }
+      })
     },
   }
 }

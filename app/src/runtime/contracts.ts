@@ -15,6 +15,20 @@ export interface CommandSpec {
     examples: string[];
     notes: string[];
 }
+/**
+ * LIFE-410 §4.5. What the CLI client observed about *itself* when it made the call: which terminal
+ * pane its shell belongs to, and which backend session that pane lives in. Populated from the
+ * environment herdr gives a pane, never from a flag, so it is not part of a receipt hash and cannot
+ * be typed by hand at a prompt.
+ *
+ * It is evidence, not authentication: anything that can already write to the 0600 runtime socket
+ * could state any value. It exists to keep a *confused* caller — a stale preamble, a second worker,
+ * a report pasted into the coordinator's own shell — from settling somebody else's attempt.
+ */
+export interface CallerIdentity {
+    paneId: string | null;
+    session: string | null;
+}
 export interface Invocation {
     command: string;
     flags: Flags;
@@ -24,7 +38,17 @@ export interface Invocation {
     stdin?: string;
     /** Ordered values for explicitly repeatable flags; flags retains the final value. */
     repeatedFlags?: Record<string, string[]>;
+    /** Who the client says it is. Absent means "not called from a corral-managed pane". */
+    caller?: CallerIdentity;
 }
+/**
+ * LIFE-410 §4.6. The only two commands that block on another party — the coordinator waiting for a
+ * worker, the worker waiting for an answer — and so the only two allowed the ten minutes a Claude
+ * Code Bash call can actually spend. Everything else keeps the two-minute ceiling.
+ */
+export const WAITING_COMMANDS: ReadonlySet<string> = new Set(['orchestration check', 'orchestration ask']);
+export const WAITING_TIMEOUT_MAX = 600000;
+export const DEFAULT_TIMEOUT_MAX = 120000;
 export interface RpcRequest {
     version: 1;
     id: string;

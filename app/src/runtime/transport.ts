@@ -17,6 +17,12 @@ export function validateRequest(value: unknown): RpcRequest {
     if (req.expectedUserData !== undefined && (typeof req.expectedUserData !== 'string' || !path.isAbsolute(req.expectedUserData) || req.expectedUserData.includes('\0'))) throw new RuntimeError('invalid_request', 'expectedUserData must be an absolute path');
     if (req.invocation.stdin !== undefined && typeof req.invocation.stdin !== 'string') throw new RuntimeError('invalid_request', 'stdin must be a string');
     if (req.invocation.repeatedFlags !== undefined && (!req.invocation.repeatedFlags || typeof req.invocation.repeatedFlags !== 'object' || Array.isArray(req.invocation.repeatedFlags))) throw new RuntimeError('invalid_request', 'repeatedFlags must be an object');
+    // LIFE-410 §4.5: the caller identity travels beside the flags, and each field is a string or
+    // explicitly absent. A malformed one is refused rather than read as "no pane".
+    const caller = req.invocation.caller;
+    const namedOrAbsent = (value: unknown): boolean => value === null || typeof value === 'string';
+    if (caller !== undefined && (!caller || typeof caller !== 'object' || Array.isArray(caller) || !namedOrAbsent(caller.paneId) || !namedOrAbsent(caller.session)))
+        throw new RuntimeError('invalid_request', 'caller must be { paneId, session } of string or null');
     return req;
 }
 export async function localCall(endpoint: string, req: RpcRequest, timeout = req.timeoutMs ?? 10000, signal?: AbortSignal): Promise<RpcResponse> {

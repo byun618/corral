@@ -89,14 +89,32 @@ export function bodyIdentity(text: string): BodyIdentity {
  *
  * so a byte-exact comparison against the body can never match, and "the record contains this body
  * once" becomes unmeasurable for every body over the paste threshold. Unwrapping is not a loosening
- * of that rule: it reads the provider's encoding of the same bytes. A row carrying more than one
- * pasted block is left alone — two bodies in one message is not this submission.
+ * of that rule: it reads the provider's encoding of the same bytes.
+ *
+ * What it will not read is anything else in the same message. The wrapper is accepted only when the
+ * message is exactly what corral submits — the one typed lead, then one pasted block — because both
+ * of the looser readings let a different message pass for this one: text before the block is a
+ * person's own words wrapped around a quoted body, and a second block means two bodies arrived
+ * where corral sent one. The count is of opening tags across the whole message, not of the body
+ * alone: a first block that differs is still a block, and the old check never looked at it.
  */
+/**
+ * The one line that is *typed* into a worker's pane, immediately before the preamble is pasted into
+ * it. Without it the provider receives a message made entirely of pasted text and refuses to act on
+ * it — correctly, since nothing in such a message was written by the person at the keyboard. It
+ * ends without a newline: the Enter that submits belongs to the prompt, so a Dispatch is still one
+ * submission and one `promptRequestId`. It lives here rather than beside the submission because the
+ * unwrapper above is what has to recognise it.
+ */
+export const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
+const PASTED_OPEN = '<pasted_content id='
 const PASTED = /^(?<before>[\s\S]*?)<pasted_content id="(?<id>[^"]*)">\n(?<body>[\s\S]*)\n<\/pasted_content id="\k<id>">\s*$/
-function unwrapPasted(text: string): string | null {
-    const body = PASTED.exec(text)?.groups?.body
-    if (body === undefined || body.includes('<pasted_content id=')) return null
-    return body
+export function unwrapPasted(text: string): string | null {
+    if (text.split(PASTED_OPEN).length !== 2) return null
+    const groups = PASTED.exec(text)?.groups
+    if (groups === undefined || groups.body === undefined) return null
+    if (normalizeBody(groups.before ?? '') !== PROMPT_LEAD) return null
+    return groups.body
 }
 export function sameBody(identity: BodyIdentity, text: string): boolean {
     const other = bodyIdentity(text)

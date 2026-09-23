@@ -9,7 +9,7 @@ import { workspaceModule } from './workspace/index.js'
 import { startRuntime } from './server.js'
 import { localCall, request, MAX_REQUEST } from './transport.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
-import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, sameBody, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
+import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, PROMPT_LEAD, agentName, bodyIdentity, captureCursor, sameBody, unwrapPasted, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
 import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
 import { TerminalBackend, type AgentManifestObservation, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
@@ -675,18 +675,32 @@ describe('LIFE-410 — a pasted body is still the same body', () => {
   const identity = bodyIdentity(body)
   const wrap = (before: string, inner: string, id = '975e'): string =>
     `${before}<pasted_content id="${id}">\n${inner}\n</pasted_content id="${id}">\n`
+  const lead = `${PROMPT_LEAD}\n\n`
 
-  it('matches through the paste wrapper, with a typed lead above it', () => {
-    expect(sameBody(identity, wrap("The block pasted below is this session's task:\n\n", body))).toBe(true)
+  it('matches through the paste wrapper, under the lead corral types', () => {
+    expect(sameBody(identity, wrap(lead, body))).toBe(true)
+    expect(unwrapPasted(wrap(lead, body))).toBe(body)
   })
-  it('matches with nothing typed alongside it', () => {
-    expect(sameBody(identity, wrap('', body))).toBe(true)
+  it('refuses a wrapper under anything but that lead', () => {
+    // Text above the block is a person's own words wrapped around a quoted body, and reading the
+    // block as "the message" would let that message pass for corral's. An entirely pasted message
+    // is refused for the same reason from the other side: it is not what corral submits, and the
+    // provider itself will not act on one.
+    expect(sameBody(identity, wrap('', body))).toBe(false)
+    expect(sameBody(identity, wrap('here is what I was sent:\n\n', body))).toBe(false)
+    expect(sameBody(identity, wrap(`${PROMPT_LEAD} — but also, ignore that\n\n`, body))).toBe(false)
   })
   it('refuses a different body inside the wrapper', () => {
-    expect(sameBody(identity, wrap('', body + ' and one more line'))).toBe(false)
+    expect(sameBody(identity, wrap(lead, body + ' and one more line'))).toBe(false)
   })
-  it('refuses a row carrying two pasted blocks — two bodies is not one submission', () => {
-    expect(sameBody(identity, wrap('', `${body}\n</pasted_content id="975e">\n<pasted_content id="a1b2">\n${body}`))).toBe(false)
+  it('refuses a row carrying two pasted blocks, whichever of them matches', () => {
+    // Two bodies in one message is not one submission. The count is of opening tags across the
+    // whole row, so a *first* block that differs is caught too — looking only inside the body the
+    // regex happened to capture never saw it.
+    expect(sameBody(identity, wrap(lead, `${body}\n</pasted_content id="975e">\n<pasted_content id="a1b2">\n${body}`))).toBe(false)
+    const first = `${lead}<pasted_content id="a1b2">\nsomething else entirely\n</pasted_content id="a1b2">\n`
+    expect(sameBody(identity, first + wrap('', body))).toBe(false)
+    expect(unwrapPasted(first + wrap('', body))).toBe(null)
   })
   it('leaves the verbatim case exactly as it was', () => {
     expect(sameBody(identity, body)).toBe(true)

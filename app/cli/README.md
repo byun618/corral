@@ -88,7 +88,7 @@ carry what it says back, and take the pane away again when it is done. A coordin
 | --- | --- | --- |
 | `orchestration worker-start` | coordinator | create or re-use a pane, dispatch the Task into it, submit the preamble once |
 | `orchestration worker-list` | coordinator | every attempt that was started as a worker, newest first |
-| `orchestration worker-show` | coordinator | one attempt: its record, its ownership, its live pane, its last message |
+| `orchestration worker-show` | coordinator | one attempt: its record, its ownership, its pane observed now, its last message |
 | `orchestration worker-read` | coordinator | the pane's own output, by screen snapshot or by cursor |
 | `orchestration send` | worker | a `worker_done`, `heartbeat`, `escalation` or `status` message |
 | `orchestration ask` | worker | a question, and a wait for the answer (`--resume` keeps waiting) |
@@ -110,6 +110,11 @@ in `residualResources` rather than undoing them, so a pane is never closed to ti
 keeps the agent it was started with, which is why `--model`, `--effort`, `--advisor` and `--worktree` are refused
 with `--terminal`, and a pane with no corral-managed agent is `agent_not_found` with no effect at all.
 
+`launch` names which of three things happened — `created`, `reused` or `resumed` — and `ignoredOptions` lists the
+options that could not take effect because the attempt already had both a pane and a body. A resume that was
+reported as `created` told a reader a pane had just been made for them; listing what was dropped is the other half
+of the same honesty.
+
 One line is **typed** into the pane immediately before the preamble is pasted into it:
 `The block pasted below is this session's task, delivered by corral. Follow it:`. It is there because a
 provider that receives a message made entirely of pasted text refuses to act on it — claude 2.1.280 names it as
@@ -120,9 +125,29 @@ one `promptRequestId`**, and that is what "once" counts.
 **The preamble reaches a pane exactly once per Dispatch.** The same `--request-id` replays the stored result and
 submits nothing; a different id, while the attempt is open and its preamble delivered, is
 `task_not_startable (dispatch_active)`. The one exception is an attempt whose input stage never completed — a
-trust dialog, a deadline: calling `worker-start` again for that Task resumes the submission into the same pane
-and the same Dispatch, which is still exactly once, and `worker-show` tells the two apart by whether
-`worker.promptRequestId` is set.
+trust dialog, a deadline, a submission whose arrival was never seen: calling `worker-start` again for that Task
+resumes the submission into the same pane and the same Dispatch, which is still exactly once, and `worker-show`
+tells the two apart by whether `worker.promptRequestId` is set.
+
+**A submission is judged, not assumed.** `state: ready` is reported only when `terminal prompt` answered
+`outcome: completed` with its `wait` satisfied, or when the duplicate pre-check found this exact body already in
+the provider's record (`prompt_already_delivered` — a delivery observed rather than made). Anything else —
+`outcome: unknown`, an unmet wait, queue acceptance — is `state: incomplete` at stage
+`dispatch_input_unconfirmed`, with `stages.input.status: unknown`: the body may well have arrived,
+`promptRequestId` stays null, and the attempt stays resumable. The resume then either finds the body already
+there or submits it for the first time, and that pairing is what keeps "once" true across an answer corral could
+not read. A Dispatch that never reached the pane is never reported as `ready`.
+
+**A resume delivers the body the Dispatch was created against and nothing else.** The digest of that body is
+recorded when the Dispatch is created, before anything is sent; a resume rebuilds it from the stored Task — never
+re-reading `--spec-file`, which may name a file that has changed since — and a disagreement is
+`preamble_mismatch` with no effect. Half a submission carrying text the other half never saw would still read as
+one delivery in the record, which is exactly what the digest refuses.
+
+One consequence of that is deliberate and worth stating plainly: **an attempt created with `--spec-file` cannot
+be resumed.** The body it was created against is not in the record, corral will not substitute another one, and
+the refusal names `worker-stop` — end the attempt and start one that carries the body you mean. A Task whose
+spec is the body has no such limit, which is the ordinary path.
 
 A worker pane inherits its environment from the backend, never from corral — corral cannot put environment
 variables into a pane — so the preamble spells every command with this runtime's socket. This is the body it
@@ -209,19 +234,34 @@ is the one type either side sends — naming an attempt makes it that worker's s
 like the others, naming none makes it a note on the Run; one of the two ids without the other is refused rather
 than half-understood. The CLI reads
 `HERDR_PANE_ID` and `HERDR_SESSION` from the shell herdr starts inside a pane and sends them beside the flags;
-the runtime compares both with the Dispatch target, because pane ids repeat across backend sessions. The
+the runtime compares both with the Dispatch target, because pane ids repeat across backend sessions. Then it
+**looks at the pane**. Comparing a claim against the stored ids compares a claim against a memory, and both still
+agree after the pane they name has been closed and its id handed to a new PTY — which is exactly when a report is
+most misleading. The epoch and the pty generation are what make the comparison about the pane that exists now:
+the same three-layer check LIFE-393 makes before it closes anything, asked here before anything is recorded. The
 refusals, in the order they are asked:
 
 | It happened | Code |
 | --- | --- |
 | Called from another pane, from outside a pane, or with a `--task-id` that is not that Dispatch's | `sender_mismatch` |
 | Named a Dispatch that does not exist | `dispatch_not_found` |
+| The pane is gone | `stale_dispatch` |
+| The pane answers with a different pty or epoch, or corral cannot observe it at all | `sender_mismatch` |
 | The attempt was stopped, abandoned or released | `capability_revoked` |
 | The attempt ended some other way and this is not a `worker_done` | `stale_dispatch` |
 | A `worker_done` naming a superseded attempt | `stale_dispatch` |
 | A second `worker_done`, or one for a Task that is already settled | `illegal_transition` |
 
 Every one of them stores **nothing**: no message, no record change, and the bytes of `state.json` do not move.
+`worker_done` is included: a report corral cannot place is worse than no report, because it settles the Task, so
+an unobservable pane refuses it rather than recording it. Whether a report can be accepted at all — the
+transition it would make, and the mailbox's own capacity — is computed **before** the receipt is admitted, so a
+refused report leaves the receipt directory byte for byte as it was and its `--request-id` unspent.
+
+`sessionVerified` in the answer says whether the session half of that comparison was made at all. An attempt
+started where `CORRAL_SESSION` was unset recorded no session, so there is nothing to compare a caller's against
+and the pane id stands alone — a weaker proof than the usual one, and the caller is told which of the two they
+got rather than left to assume the stronger.
 This is proof against confusion, not authentication — anything that can already write to the 0600 runtime socket
 could state any pane id. The trust boundary is that socket, which is also why coordinator-side commands carry no
 proof at all.
@@ -248,7 +288,9 @@ acknowledged — a message that arrives meanwhile is never mixed in, because one
 different sets. `--ack` accepts only the batch that is currently outstanding; an id already acknowledged, one from
 an earlier batch, or one that never existed is `delivery_stale` and changes nothing. `--peek` reports what the
 next batch would hold without creating one, and `inbox` lists the mailbox without consuming anything.
-`deliveryReplayed` describes the batch; the `replayed` field beside it describes the `--request-id`.
+`deliveryReplayed` describes the batch; the `replayed` field beside it describes the `--request-id`. With
+`--block`, the acknowledgement is applied **once, before the wait begins** — an ACK is an effect, and re-applying
+it on every poll made the second poll refuse the batch the first had just closed, turning a wait into an error.
 
 `ask` stores the question **before** it waits, so a timeout, a cancelled client or a runtime restart all leave it
 answerable. A deadline is a normal answer — `state: pending` with the `messageId` and a `resumeCommand` — and
@@ -294,8 +336,15 @@ immediately before the close, so the pane that is closed is the pane that was ju
 
 Ownership moves. `worker-start --terminal` on a pane a settled attempt owns transfers it: that attempt becomes
 `borrowed` and names the new one in `ownershipTransferredTo`, so releasing the old attempt no longer closes a
-pane the new worker is using. A pane no attempt owns — one a person started with `terminal create --agent` — is
-`borrowed` from the start and corral never closes it.
+pane the new worker is using. A **retained** attempt still owns its pane and hands it over the same way — only a
+`released` release ends ownership, and a retain is precisely the case where the attempt is over and the pane is
+still there. A pane no attempt owns — one a person started with `terminal create --agent` — is `borrowed` from
+the start and corral never closes it.
+
+Whether a pane is busy is a different question from who may close it, and the two are asked separately. Any
+**open** attempt bound to that pane refuses the re-use with `dispatch_active`, borrowed attempts included:
+hanging that refusal off ownership answered "nobody is here" for every borrowed pane, which let a second Task be
+started on top of a running one.
 
 `worker-retain --reason user_requested|user_takeover` is intent only; no process is touched. corral does not
 detect a takeover on its own, because it has no GUI to detect one from. `worker-stop` demands the strongest
@@ -306,6 +355,17 @@ is worse than a stop that refused. `worker-abandon` takes no process action what
 
 `unknown` is still reconcile's alone: `worker-stop` and `worker-abandon` settle `failed`, because both are
 outcomes corral observed and intended.
+
+`worker-show` observes the pane whether or not the attempt has ended. `observation.live` is what the pane says
+right now and `observation.record` carries the reconcile reason and time the document already held; the two are
+different facts and neither stands in for the other. Whether a settled attempt's pane survived it is the
+difference between a transcript still open in front of you and nothing left to read, so answering `live: null`
+because the attempt was over reported the record's own age as if it were an observation. The look is read-only:
+`worker-show` reconciles nothing, settles nothing, and reports the Task the document already held.
+
+`worker-list --status` filters on the **Dispatch** status and takes only a Dispatch word — `dispatched`,
+`completed`, `failed`, `unknown`. The Task words `ready` and `blocked` are refused here rather than accepted into
+a filter no row could ever match.
 
 ## Profiles and targets
 

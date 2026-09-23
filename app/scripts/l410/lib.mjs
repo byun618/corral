@@ -114,6 +114,25 @@ export async function fixture(label, options = {}) {
   const stateBytes = (environment = env) => fs.existsSync(stateFile(environment)) ? fs.readFileSync(stateFile(environment)) : Buffer.alloc(0)
   const stateDigest = (environment = env) => createHash('sha256').update(stateBytes(environment)).digest('hex')
   const stateJson = (environment = env) => JSON.parse(stateBytes(environment).toString('utf8') || 'null')
+  /**
+   * The receipt store of a profile, as one digest. A refusal has to leave *this* alone too: a
+   * receipt admitted for a call that is then refused spends the caller's --request-id, and the next
+   * try with the same id answers `outcome_unknown` for something that never happened.
+   */
+  const receiptsDigest = (environment = env) => {
+    const dir = path.join(environment.CORRAL_USER_DATA, 'runtime/terminal-receipts')
+    const hash = createHash('sha256')
+    const walk = current => {
+      if (!fs.existsSync(current)) return
+      for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) { hash.update(`d:${entry.name}\n`); walk(full) }
+        else { hash.update(`f:${entry.name}\n`); hash.update(fs.readFileSync(full)) }
+      }
+    }
+    walk(dir)
+    return hash.digest('hex')
+  }
 
   function start(exe, args, environment, name) {
     const fd = fs.openSync(path.join(raw, name + '.log'), 'a')
@@ -256,6 +275,6 @@ export async function fixture(label, options = {}) {
   return {
     root, raw, repo, home, socket, session, env, base, runId, owner, backend, stripped, untilState, until, pause, app,
     client, start, run, cli, cliRaw, backendRpc, stop, startBackend, serve, restart, pane, registerRepo,
-    stateFile, stateBytes, stateDigest, stateJson, check, record, cleanup, observations, checks, commands,
+    stateFile, stateBytes, stateDigest, stateJson, receiptsDigest, check, record, cleanup, observations, checks, commands,
   }
 }

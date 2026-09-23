@@ -31,6 +31,7 @@ export const isTaskStatus = (value: unknown): value is TaskStatus => TASK_STATUS
 /** `unknown` is reconcile's alone: an attempt whose pane corral can no longer observe (§4.4). */
 export type DispatchStatus = 'dispatched' | 'completed' | 'failed' | 'unknown'
 export const DISPATCH_STATUSES: readonly DispatchStatus[] = ['dispatched', 'completed', 'failed', 'unknown']
+export const isDispatchStatus = (value: unknown): value is DispatchStatus => DISPATCH_STATUSES.some(status => status === value)
 export type SettledBy = 'task-update' | 'reconcile' | 'worker_done'
 
 // --- records ------------------------------------------------------------------------------------

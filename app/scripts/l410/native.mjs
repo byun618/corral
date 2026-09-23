@@ -21,17 +21,26 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { fixture } from './lib.mjs'
+import { fixture, requestId } from './lib.mjs'
 import { LIVE_PHASES, foregroundExecutable, waitForLaunch } from '../l409/native-checks.mjs'
 
 const CLAUDE = process.env.L410_NATIVE_CLAUDE ?? path.join(os.homedir(), '.local/bin/claude')
 assert(fs.existsSync(CLAUDE), `The native provider is expected at ${CLAUDE}`)
 const version = execFileSync(CLAUDE, ['--version'], { encoding: 'utf8' }).trim()
 const MODEL = process.env.L410_NATIVE_MODEL ?? 'sonnet'
-const BUDGET = 8
+// The worker's share of the cumulative budget. It was 8; the coordinator raised it to 9, once, on
+// 2026-09-23 after r1's first run spent one submission and then failed on a harness over-assertion
+// (it required the provider record's *total* row count to be frozen across a replay, and the
+// provider was mid-answer). The frozen ceiling is 01-criteria's cumulative 12 across every party;
+// this run stops the task at 10 of those. A third submission in one run is an `ask`, not a retry.
+const BUDGET = 9
+/** The same budget seen from the task rather than from one party: every owner's prompts together. */
+const TOTAL_BUDGET = 12
 const DIFF_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../l394/global-config-diff.mjs')
 
-const f = await fixture('native', { expectedChecks: 8 })
+const f = await fixture('native', { expectedChecks: 9 })
+/** Who this run's rows belong to in the shared ledger. `f.owner` is `CORRAL_VERIFY_OWNER`. */
+const OWNER = f.owner
 // l409 R6: `claude` resolves to an npm-global copy before the user's own launcher on this machine,
 // so the fixture's own PATH puts the launcher's directory first. Nothing global is touched.
 const NATIVE_BIN = path.dirname(CLAUDE)
@@ -68,16 +77,38 @@ const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
  * entry with `typed: false` is a call that returned before it reached the pane (a submission stage
  * that never started); it is listed, and it does not spend the budget.
  */
-const LEDGER = path.join(path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw/worker/claude'), 'native/submissions.json')
+/**
+ * One ledger for the whole task, not one per party. The budget is cumulative across *everyone* who
+ * runs this gate — worker and coordinator both — and two ledgers in two raw trees could not be
+ * added up without someone re-deriving a total afterwards, which is exactly the number that must
+ * never be reconstructed. So it lives beside the task's raw root and every row says who wrote it.
+ * The r0 rows are migrated once, from the two places they were written, with their `n` preserved.
+ */
+const RAW_ROOT = path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw')
+const LEDGER = path.join(RAW_ROOT, 'submissions-ledger.json')
+const MIGRATIONS = [
+  { owner: 'claude', file: path.join(RAW_ROOT, 'worker/claude/native/submissions.json') },
+  { owner: 'coordinator', file: path.join(RAW_ROOT, 'coordinator/native/native/l410-coordinator-nati-68yKte/submissions-ledger-delta.json') },
+]
 fs.mkdirSync(path.dirname(LEDGER), { recursive: true })
-const submissions = fs.existsSync(LEDGER) ? JSON.parse(fs.readFileSync(LEDGER, 'utf8')) : []
+const migrated = () => {
+  const rows = []
+  for (const source of MIGRATIONS) {
+    if (!fs.existsSync(source.file)) continue
+    for (const row of JSON.parse(fs.readFileSync(source.file, 'utf8'))) rows.push({ ...row, owner: row.owner ?? source.owner })
+  }
+  return rows.sort((a, b) => a.n - b.n)
+}
+const submissions = fs.existsSync(LEDGER) ? JSON.parse(fs.readFileSync(LEDGER, 'utf8')) : migrated()
 // The budget in the TASK is on *prompt submissions* — bodies put to the provider as work. A key
 // answering a trust dialog is not one of those (LIFE-394 C6 treats dialog handling as its own
 // thing), so the two are counted separately and both are listed. Neither count is reconstructed.
-const spent = () => submissions.filter(entry => entry.typed && entry.kind === 'terminal prompt').length
+const prompts = rows => rows.filter(entry => entry.typed && entry.kind === 'terminal prompt').length
+const spent = () => prompts(submissions.filter(entry => entry.owner === OWNER))
+const total = () => prompts(submissions)
 const keys = () => submissions.filter(entry => entry.typed && entry.kind === 'terminal send').length
 const tally = (kind, what, typed, detail) => {
-  submissions.push({ n: submissions.length + 1, at: new Date().toISOString(), runId: f.runId, kind, what, typed, ...detail })
+  submissions.push({ n: submissions.length + 1, at: new Date().toISOString(), owner: OWNER, runId: f.runId, kind, what, typed, ...detail })
   fs.writeFileSync(LEDGER, JSON.stringify(submissions, null, 2) + '\n')
   const markdown = [
     '# LIFE-410 gate ② — every prompt submission, in order',
@@ -88,21 +119,22 @@ const tally = (kind, what, typed, detail) => {
     'written at the moment of the call, never reconstructed afterwards. `typed: false` is a call that returned before',
     'anything reached the pane; those are listed and spend nothing.',
     '',
-    '| # | at | run | kind | what | typed | detail |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| # | at | owner | run | kind | what | typed | detail |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...submissions.map(entry => {
       const rest = { ...entry }
-      for (const key of ['n', 'at', 'runId', 'kind', 'what', 'typed']) delete rest[key]
-      return `| ${entry.n} | ${entry.at} | ${entry.runId} | ${entry.kind} | ${entry.what} | ${entry.typed} | ${JSON.stringify(rest).replaceAll('|', '\\|')} |`
+      for (const key of ['n', 'at', 'owner', 'runId', 'kind', 'what', 'typed']) delete rest[key]
+      return `| ${entry.n} | ${entry.at} | ${entry.owner ?? '?'} | ${entry.runId} | ${entry.kind} | ${entry.what} | ${entry.typed} | ${JSON.stringify(rest).replaceAll('|', '\\|')} |`
     }),
     '',
-    `Prompt submissions: ${submissions.filter(entry => entry.typed && entry.kind === 'terminal prompt').length} of ${BUDGET}.`,
-    `Dialog keys: ${submissions.filter(entry => entry.typed && entry.kind === 'terminal send').length}. Calls recorded in all: ${submissions.length}.`,
+    `Prompt submissions by \`${OWNER}\`: ${spent()} of ${BUDGET}. Across every owner: ${total()} of ${TOTAL_BUDGET}.`,
+    `Dialog keys: ${keys()}. Calls recorded in all: ${submissions.length}.`,
     '',
   ].join('\n')
   fs.writeFileSync(path.join(f.raw, 'submissions.md'), markdown)
-  fs.writeFileSync(path.join(path.dirname(LEDGER), 'submissions.md'), markdown)
-  assert.ok(spent() <= BUDGET, `the cumulative prompt-submission budget of ${BUDGET} is spent: ${JSON.stringify(submissions)}`)
+  fs.writeFileSync(path.join(RAW_ROOT, 'submissions-ledger.md'), markdown)
+  assert.ok(spent() <= BUDGET, `the cumulative prompt-submission budget of ${BUDGET} for ${OWNER} is spent: ${JSON.stringify(submissions)}`)
+  assert.ok(total() <= TOTAL_BUDGET, `the cumulative prompt-submission budget of ${TOTAL_BUDGET} across owners is spent: ${JSON.stringify(submissions)}`)
 }
 
 const screen = async handle => (await f.cli(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '16384'], { timeout: 60000 })).result.text ?? ''
@@ -126,6 +158,26 @@ function providerRows(sessionId, cwd) {
       : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : ''
     return [{ role: parsed?.message?.role ?? parsed?.type ?? null, text }]
   })
+}
+
+/**
+ * What the provider's record actually holds, counted as **occurrences** rather than as rows.
+ *
+ * Counting rows answers "how many messages contain this", which is not the invariant: two copies of
+ * the body inside one message is still two deliveries, and a row-count of 1 would call that once
+ * (V6/R12). Every count here is of the thing itself across the whole record — the preamble's first
+ * line, the typed lead, and the paste wrapper's opening tag — so a second copy anywhere shows up.
+ */
+const occurrences = (text, needle) => text.split(needle).length - 1
+function countRecord(sessionId) {
+  const rows = providerRows(sessionId, f.repo)
+  const bodies = rows.filter(row => row.role === 'user').map(row => row.text)
+  const joined = bodies.join('\n')
+  const delivered = occurrences(joined, 'You are a corral worker.')
+  const wrapped = occurrences(joined, '<pasted_content id=')
+  const lead = occurrences(joined, PROMPT_LEAD)
+  return { rows, bodies, delivered, wrapped, lead,
+    summary: { rows: rows.length, userRows: bodies.length, delivered, wrapped, leadLine: lead } }
 }
 
 /** The screens this gate knows how to answer, and the keys that answer them. */
@@ -184,6 +236,16 @@ const TASK = [
   'Then stop and stay idle. Do not summarise anything to the user.',
 ].join('\n')
 
+/**
+ * The second Task's body, kept deliberately short. F9 is about the *injection* — one more preamble
+ * and one more TASK into the pane a settled attempt owned — not about what the worker then does
+ * with it, and asking for a round trip would cost turns the budget does not have.
+ */
+const REUSE_TASK = [
+  'This pane has been handed a second Task by corral. Do nothing at all: run no command, read no',
+  'file, change nothing. Reply with the single word ACK and then stay idle.',
+].join('\n')
+
 try {
   const before = diff('before')
   await f.startBackend()
@@ -193,9 +255,17 @@ try {
   const taskId = (await f.cli(['orchestration', 'task-create', '--spec', TASK, '--title', 'native worker'])).result.task.id
 
   // --- F1: launch, dialog, one submission ------------------------------------------------------
+  // Both calls that could deliver the body carry an explicit `--request-id`, so whichever of them
+  // does can be replayed *verbatim* afterwards. A replay is only a replay when the input is
+  // identical — the same id with different argv is `request_conflict` — and the whole point of the
+  // check below is to replay the call that landed, not a similar one.
+  const startArgs = ['orchestration', 'worker-start', '--task', taskId, '--agent', 'claude',
+    '--model', MODEL, '--worktree', f.repo, '--request-id', requestId(), '--timeout-ms', '120000']
+  const resumeArgs = () => ['orchestration', 'worker-start', '--task', taskId, '--terminal', handle,
+    '--request-id', resumeRequestId, '--timeout-ms', '120000']
+  const resumeRequestId = requestId()
   const first = await f.check('GATE2-F1-worker-start-creates-the-pane-and-the-attempt-before-it-submits', async () => {
-    const started = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--agent', 'claude',
-      '--model', MODEL, '--worktree', f.repo, '--timeout-ms', '120000'], { timeout: 200000 })
+    const started = await f.cli(startArgs, { timeout: 200000 })
     assert.equal(started.result.stages.terminal.status, 'completed', JSON.stringify(started.result.stages))
     assert.equal(started.result.stages.dispatch.status, 'completed', JSON.stringify(started.result.stages))
     assert.ok(started.result.dispatchId, JSON.stringify(started.result))
@@ -224,8 +294,9 @@ try {
   })
 
   await f.check('GATE2-F1-the-preamble-reaches-the-pane-exactly-once', async () => {
-    let response = first
+    let response = first, deliveryArgs = startArgs
     if (first.stages.input.status !== 'completed') {
+      deliveryArgs = resumeArgs()
       // The readiness gate did not hold while the dialog was up, which is the documented resume
       // path: the same attempt, the same pane, and the submission that never happened.
       // Every one of these needs an explicit budget: the CLI's own default is ten seconds when
@@ -234,7 +305,7 @@ try {
       assert.equal(ready.result.satisfied, true, JSON.stringify(ready.result))
       // Deliberately non-throwing: if the submission does not take, what the pane looks like at that
       // moment is the evidence, and it is gone once the fixture is cleaned up.
-      const attempt = await f.cliRaw(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle, '--timeout-ms', '120000'], { timeout: 200000 })
+      const attempt = await f.cliRaw(deliveryArgs, { timeout: 200000 })
       const envelope = attempt.json
       tally('terminal prompt', 'preamble + TASK (resume)', envelope?.result?.stages?.input?.status !== 'not_started',
         { dispatchId, stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
@@ -257,20 +328,45 @@ try {
     // Counted in the provider's own session record, which is the invariant itself: "the record
     // holds this body once". The pane's raw output cannot be used for it — `terminal read` is
     // cursor-based, so the earlier screen reads have already consumed the submission by now.
-    const rows = providerRows(sessionId, f.repo)
-    const bodies = rows.filter(row => row.role === 'user').map(row => row.text)
-    const delivered = bodies.filter(text => text.includes('You are a corral worker.')).length
-    const wrapped = bodies.filter(text => /<pasted_content id="[^"]*">/.test(text)).length
-    const lead = bodies.filter(text => text.startsWith(PROMPT_LEAD)).length
+    const counted = countRecord(sessionId)
     f.record('native/provider-record', {
-      sessionId, rows: rows.length, userRows: bodies.length, delivered, wrapped, leadLine: lead,
-      firstUserRow: bodies[0]?.slice(0, 400) ?? null, tailOfFirstUserRow: bodies[0]?.slice(-200) ?? null,
+      sessionId, ...counted.summary,
+      firstUserRow: counted.bodies[0]?.slice(0, 400) ?? null, tailOfFirstUserRow: counted.bodies[0]?.slice(-200) ?? null,
       screen: await screen(handle),
     })
-    assert.equal(delivered, 1, `the body is in the provider's record ${delivered} times`)
-    assert.equal(lead, 1, 'the typed lead has to be the start of that same message, not a message of its own')
-    assert.equal(wrapped, 1, 'and the body arrived as one pasted block inside it')
-    return { preamble: response.preamble, delivered, wrapped, leadLine: lead, promptRequestId: stored.result.worker.promptRequestId }
+    assert.equal(counted.delivered, 1, `the body is in the provider's record ${counted.delivered} times`)
+    assert.equal(counted.lead, 1, 'the typed lead has to be there once, as the start of that same message')
+    assert.equal(counted.wrapped, 1, 'and the body arrived as one pasted block inside it')
+
+    // The replay, measured where it matters. `worker-start` with the id this run already spent must
+    // answer from the receipt and put nothing on the pane — and the proof of "nothing" is the
+    // provider's own record, not the absence of an error (V13). It costs no submission: a replay is
+    // by definition a call that does not reach the pane.
+    //
+    // The pass condition is exactly this, and no more: `replayed: true`, and the provider record
+    // still holding `userRows: 1`, `delivered: 1`, `wrapped: 1` — counted as **occurrences** across
+    // the record, not as rows containing them.
+    // Only the delivery counts are compared. The total row count is not one of them: the provider
+    // is answering the body it was just given, so its record grows with assistant rows while this
+    // check runs, and a frozen `rows` would be a claim about the model's timing rather than about
+    // the replay.
+    const deliveries = summary => ({ userRows: summary.userRows, delivered: summary.delivered, wrapped: summary.wrapped, leadLine: summary.leadLine })
+    const before = deliveries(counted.summary)
+    // The pane's screen is recorded on both sides but not compared: the provider is mid-answer, so
+    // it repaints on its own and an equality there would fail for reasons that have nothing to do
+    // with the replay. What a second submission would actually add is a second body in the
+    // provider's record, and that is what is asserted.
+    const screenBefore = await screen(handle)
+    const replayed = await f.cli(deliveryArgs, { timeout: 200000 })
+    tally('terminal prompt', 'replay of a delivered submission', false, { dispatchId, requestId: response.requestId, replayed: replayed.result.replayed })
+    assert.equal(replayed.result.replayed, true, JSON.stringify(replayed.result))
+    assert.equal(replayed.result.dispatchId, dispatchId)
+    const afterReplay = countRecord(sessionId)
+    assert.deepEqual(deliveries(afterReplay.summary), before, 'a replay must put nothing into the provider record')
+    f.record('native/replay-after-delivery', { requestId: response.requestId, before, after: deliveries(afterReplay.summary),
+      afterFull: afterReplay.summary, screenBefore, screenAfter: await screen(handle) })
+    return { preamble: response.preamble, delivered: counted.delivered, wrapped: counted.wrapped, leadLine: counted.lead,
+      promptRequestId: stored.result.worker.promptRequestId, replay: { requestId: response.requestId, replayed: replayed.result.replayed } }
   })
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
@@ -279,9 +375,10 @@ try {
     assert.equal(again.error.code, 'task_not_startable', JSON.stringify(again))
     assert.equal(again.error.resources.reason, 'dispatch_active')
     assert.equal(f.stateDigest(), digest, 'a refused start stores nothing')
-    const again2 = providerRows(sessionId, f.repo).filter(row => row.role === 'user' && row.text.includes('You are a corral worker.')).length
-    assert.equal(again2, 1, 'and delivers nothing further')
-    return again.error
+    const again2 = countRecord(sessionId)
+    assert.equal(again2.delivered, 1, 'and delivers nothing further')
+    assert.equal(again2.wrapped, 1)
+    return { error: again.error, record: again2.summary }
   })
 
   // --- F2 + F5: the question, and the batch it arrives in --------------------------------------
@@ -347,13 +444,70 @@ try {
     assert.equal(late.error.code, 'illegal_transition', JSON.stringify(late))
     assert.equal(f.stateDigest(), digest)
     const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
-    assert.ok((await panes()).includes(handle))
-    const released = await f.cli(['orchestration', 'worker-release', '--dispatch', dispatchId], { timeout: 60000 })
-    assert.equal(released.result.state, 'released', JSON.stringify(released.result))
-    assert.equal(released.result.processAction, 'closed')
-    assert.equal(released.result.reason, 'owned_generation_matches')
-    assert.ok(!(await panes()).includes(handle), 'the pane corral started for this attempt is gone')
-    return { late: late.error, released: released.result }
+    assert.ok((await panes()).includes(handle), 'the settled attempt leaves its pane standing until someone releases it')
+    // The release is not made here: the pane is about to be handed to a second Task, and what F9
+    // has to show is that the *old* attempt's release then closes nothing.
+    return { late: late.error, paneStanding: true }
+  })
+
+  // --- F9: the same pane, a second Task ---------------------------------------------------------
+  await f.check('GATE2-F9-a-second-task-takes-the-pane-over-and-the-old-release-closes-nothing', async () => {
+    const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
+    const before = countRecord(sessionId)
+    assert.equal(before.delivered, 1, 'one body in the record before the second Task')
+    const secondTask = (await f.cli(['orchestration', 'task-create', '--spec', REUSE_TASK, '--title', 'native reuse'])).result.task.id
+    // A read, not a submission: the provider has just finished a turn and the submission below
+    // needs it ready. Waiting here rather than inside worker-start makes a slow provider a slow
+    // check instead of a spent submission.
+    const ready = await f.cli(['terminal', 'wait', '--terminal', handle, '--for', 'agent-ready', '--timeout-ms', '120000'], { timeout: 200000 })
+    assert.equal(ready.result.satisfied, true, JSON.stringify(ready.result))
+    const reuseArgs = ['orchestration', 'worker-start', '--task', secondTask, '--terminal', handle,
+      '--request-id', requestId(), '--timeout-ms', '120000']
+    // Deliberately non-throwing, for the same reason as the first submission: if it does not take,
+    // what the pane looked like at that moment is the evidence and it is gone after cleanup.
+    const attempt = await f.cliRaw(reuseArgs, { timeout: 200000 })
+    const envelope = attempt.json
+    tally('terminal prompt', 'preamble + TASK (F9 reuse)', envelope?.result?.stages?.input?.status !== 'not_started',
+      { dispatchId: envelope?.result?.dispatchId ?? null, stage: envelope?.result?.stages?.input?.status ?? envelope?.error?.code ?? 'unknown' })
+    if (envelope?.ok !== true || envelope.result.stages.input.status !== 'completed') {
+      f.record('native/failed-reuse-submission', {
+        envelope,
+        screen: await screen(handle),
+        raw: ((await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? '').slice(-8000),
+      })
+      assert.fail(`the reuse submission did not take: ${JSON.stringify(envelope?.error ?? envelope?.result?.stages ?? envelope)}`)
+    }
+    const reused = envelope.result
+    assert.notEqual(reused.dispatchId, dispatchId, 'a second Task is a second attempt')
+    assert.equal(reused.launch, 'reused', JSON.stringify(reused))
+    assert.match(reused.preamble.sha256, /^[0-9a-f]{64}$/)
+    // Exactly one more of each, counted as occurrences across the whole record.
+    const after = countRecord(sessionId)
+    f.record('native/provider-record-after-reuse', { sessionId, before: before.summary, after: after.summary })
+    assert.equal(after.delivered, 2, `the record holds the body ${after.delivered} times after one more submission`)
+    assert.equal(after.wrapped, 2, 'one more pasted block, not two')
+    assert.equal(after.lead, 2, 'one more typed lead, not two')
+    // Ownership moved with the pane.
+    const oldOwner = await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])
+    const newOwner = await f.cli(['orchestration', 'worker-show', '--dispatch', reused.dispatchId])
+    assert.equal(newOwner.result.worker.ownership, 'owned', JSON.stringify(newOwner.result.worker))
+    assert.equal(newOwner.result.worker.originDispatchId, dispatchId)
+    assert.equal(oldOwner.result.worker.ownership, 'borrowed', JSON.stringify(oldOwner.result.worker))
+    assert.equal(oldOwner.result.worker.ownershipTransferredTo, reused.dispatchId)
+    // The whole point of F9(b): releasing the attempt that created the pane must not close a pane
+    // the new worker is using.
+    const oldRelease = await f.cli(['orchestration', 'worker-release', '--dispatch', dispatchId], { timeout: 60000 })
+    assert.equal(oldRelease.result.state, 'retained', JSON.stringify(oldRelease.result))
+    assert.equal(oldRelease.result.processAction, 'none')
+    assert.ok((await panes()).includes(handle), 'the pane the new worker holds must survive the old release')
+    // And the current owner ends it. `worker-stop` rather than a second report: the point here is
+    // the pane, and asking the provider for one more turn would cost another submission.
+    const stopped = await f.cli(['orchestration', 'worker-stop', '--dispatch', reused.dispatchId], { timeout: 60000 })
+    assert.equal(stopped.result.state, 'released', JSON.stringify(stopped.result))
+    assert.equal(stopped.result.processAction, 'closed')
+    assert.ok(!(await panes()).includes(handle), 'the pane is gone once its current owner ends')
+    return { secondTask, dispatchId: reused.dispatchId, record: after.summary,
+      oldOwner: oldOwner.result.worker, newOwner: newOwner.result.worker, oldRelease: oldRelease.result, stopped: stopped.result }
   })
 
   const after = diff('after')
@@ -386,7 +540,9 @@ try {
     return { summary, listed, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), before, after, reported }
   })
 
-  const rawRoot = path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw/worker/claude')
+  // This one goes into the run's own directory and nowhere else. A copy at the owner's raw root
+  // was a second, undated file that the *next* run silently overwrote, so the round that wrote it
+  // could not be told from the round that read it (V14).
   const markdown = [
     '# LIFE-410 F14 — the user\'s global provider configuration, before and after gate ②',
     '',
@@ -432,7 +588,6 @@ try {
     '',
   ].join('\n')
   fs.writeFileSync(path.join(f.raw, 'global-config-diff.md'), markdown)
-  fs.writeFileSync(path.join(rawRoot, 'global-config-diff.md'), markdown)
   f.record('native/state', f.stateJson())
   f.record('native/worker-list', (await f.cli(['orchestration', 'worker-list', '--limit', '100'])).result)
   console.log(markdown)

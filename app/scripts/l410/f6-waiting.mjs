@@ -5,13 +5,24 @@
 // The proof is timestamps — the second command's own wall-clock duration, measured while the first
 // one is provably still blocked — because a lane that was held would make it wait out the deadline.
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f6', { expectedChecks: 5 })
+const f = await fixture('f6', { expectedChecks: 6 })
 const ms = async body => { const at = Date.now(); const value = await body(); return { value, elapsed: Date.now() - at } }
 try {
+  // (d) needs a worker pane of its own, so this fixture carries the same stand-in provider the
+  // others do — first on this fixture's PATH only, nothing global touched.
+  const fakebin = path.join(f.root, 'fakebin')
+  fs.mkdirSync(fakebin, { mode: 0o700 })
+  fs.writeFileSync(path.join(fakebin, 'claude'), '#!/bin/sh\nprintf "STAND_IN_PROVIDER\\n"\nexec sleep 600\n', { mode: 0o700 })
+  f.base.PATH = fakebin + ':' + f.base.PATH
+  f.env.PATH = f.base.PATH
+
   await f.startBackend()
   await f.serve()
+  await f.registerRepo()
   await f.cli(['orchestration', 'run-create', '--objective', 'LIFE-410 F6 — waiting and the lane'])
 
   await f.check('F6a-an-empty-wait-ends-at-its-deadline-as-a-normal-answer', async () => {
@@ -77,25 +88,67 @@ try {
     return refused.error
   })
 
-  await f.check('F6d-a-cancelled-wait-leaves-its-delivery-for-the-next-call', async () => {
-    // Ctrl-C on a `check --block` that already opened a batch: the batch stays outstanding and the
-    // next check replays it rather than losing the messages it named.
-    // Clear whatever batch is outstanding first, or the replay rule (correctly) hands that one
-    // back instead of the message this check is about.
+  await f.check('F6d-a-cancelled-wait-consumes-nothing-and-the-next-call-gets-it-all', async () => {
+    // Ctrl-C on a `check --block`. The earlier shape of this check sent the message *before* the
+    // block, so the call returned with a batch at once and the signal landed on a process that had
+    // already exited — it measured nothing (V13). The wait has to be a real wait, so the mailbox is
+    // emptied first and the signal is sent while the call is still blocked; that the cancellation
+    // happened at all is then asserted rather than assumed.
     const outstanding = (await f.cli(['orchestration', 'check'])).result.deliveryId
     if (outstanding !== null) await f.cli(['orchestration', 'check', '--ack', outstanding])
-    await f.cli(['orchestration', 'send', '--type', 'status', '--subject', 'survives-cancel'])
+    const before = f.stateDigest()
     let child
     const cancelled = f.cliRaw(['orchestration', 'check', '--block', '--timeout-ms', '600000'],
       { timeout: 60000, onSpawn: value => { child = value } })
     await f.until(() => child !== undefined, 'check child spawned')
-    await f.pause(1200)
+    await f.pause(1500)
+    assert.equal(child.exitCode, null, 'the block has to still be waiting when the signal arrives')
     child.kill('SIGINT')
     const outcome = await cancelled
+    assert.ok(outcome.signal === 'SIGINT' || outcome.exit !== 0, `the wait was not cancelled: ${JSON.stringify(outcome)}`)
+    // A wait that ended this way took nothing: no Delivery was opened and the document did not move.
+    assert.equal(f.stateDigest(), before, 'a cancelled wait must leave the stored bytes untouched')
+    assert.equal((await f.cli(['orchestration', 'inbox'])).result.outstandingDeliveryId, null, 'a cancelled wait must open no Delivery')
+    // …and the message that arrives afterwards is delivered whole to the next call.
+    await f.cli(['orchestration', 'send', '--type', 'status', '--subject', 'survives-cancel'])
     const after = await f.cli(['orchestration', 'check'])
-    assert.ok(after.result.count >= 1, JSON.stringify(after.result))
     assert.ok(after.result.messages.some(entry => entry.subject === 'survives-cancel'), JSON.stringify(after.result.messages.map(entry => entry.subject)))
-    return { cancelledExit: outcome.exit, cancelledStdout: outcome.stdout.slice(0, 400), replayed: after.result.deliveryReplayed, count: after.result.count }
+    await f.cli(['orchestration', 'check', '--ack', after.result.deliveryId])
+    return { cancelledExit: outcome.exit, cancelledSignal: outcome.signal, cancelledStdout: outcome.stdout.slice(0, 400), count: after.result.count }
+  })
+
+  await f.check('F6d-a-cancelled-ask-is-resumed-and-creates-no-second-question', async () => {
+    // The same cancellation on the other waiting command. An `ask` stores its question before it
+    // waits, so Ctrl-C leaves an answerable question rather than a lost one — and the resume
+    // collects the answer without asking again.
+    const taskId = (await f.cli(['orchestration', 'task-create', '--spec', 'follow the preamble', '--title', 'cancelled-ask'])).result.task.id
+    const started = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--agent', 'claude', '--worktree', f.repo], { timeout: 180000 })
+    const dispatchId = started.result.dispatchId
+    assert.ok(dispatchId, JSON.stringify(started.result))
+    const paneId = (await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])).result.paneId
+    const pane = { ...f.env, HERDR_PANE_ID: paneId }
+    const before = f.stateJson().messages.length
+    let child
+    const asking = f.cliRaw(['orchestration', 'ask', '--question', 'is a cancelled ask still answerable?',
+      '--task-id', taskId, '--dispatch-id', dispatchId, '--timeout-ms', '600000'],
+    { env: pane, timeout: 60000, onSpawn: value => { child = value } })
+    await f.until(() => child !== undefined, 'ask child spawned')
+    await f.until(() => f.stateJson().messages.length > before, 'the question is stored before the wait')
+    await f.pause(500)
+    child.kill('SIGINT')
+    const outcome = await asking
+    assert.ok(outcome.signal === 'SIGINT' || outcome.exit !== 0, `the ask was not cancelled: ${JSON.stringify(outcome)}`)
+    const question = f.stateJson().messages.filter(entry => entry.type === 'question' && entry.dispatchId === dispatchId).at(-1)
+    assert.ok(question, 'the cancelled ask must leave its question behind')
+    const stored = f.stateJson().messages.length
+    await f.cli(['orchestration', 'reply', '--id', question.id, '--body', 'it is'])
+    const resumed = await f.cli(['orchestration', 'ask', '--resume', question.id, '--task-id', taskId,
+      '--dispatch-id', dispatchId, '--timeout-ms', '30000'], { env: pane, timeout: 60000 })
+    assert.equal(resumed.result.state, 'answered', JSON.stringify(resumed.result))
+    assert.equal(resumed.result.reply.body, 'it is')
+    assert.equal(f.stateJson().messages.filter(entry => entry.type === 'question' && entry.dispatchId === dispatchId).length, 1,
+      'a resume must not create a second question')
+    return { cancelledExit: outcome.exit, cancelledSignal: outcome.signal, questionId: question.id, storedBeforeReply: stored, resumed: resumed.result.state }
   })
   f.record('f6-state', f.stateJson())
 } finally { await f.cleanup() }

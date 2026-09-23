@@ -234,11 +234,20 @@ export class OrchestrationStore {
     // `WorkerBlock | null`, every rule asks `worker === null`, and an *absent* key answers that
     // question with `false`. A LIFE-409 attempt would then be treated as a worker and the next
     // field read would throw. Absent means null, and it is made to mean null here, once.
+    //
+    // Only an *absent* key is filled. `??` could not tell "this document predates the mailbox" from
+    // "this document has a mailbox and it reads null", so a `"messages": null` — a truncated or
+    // half-written array, the shape corruption actually takes — was quietly replaced with an empty
+    // mailbox and the document loaded as if nothing were missing. Presence is the question, so
+    // presence is what is asked; a key that is there is handed to the validator as it stands, and a
+    // null or a wrong type is refused as `storage_corrupt` rather than repaired.
+    const fill = (record: Record<string, unknown>, key: string, value: unknown): Record<string, unknown> =>
+      key in record ? record : { ...record, [key]: value }
     const loaded = isRecord(stored)
       ? {
-        ...stored, messages: stored.messages ?? [], deliveries: stored.deliveries ?? [],
+        ...fill(fill(stored, 'messages', []), 'deliveries', []),
         dispatches: Array.isArray(stored.dispatches)
-          ? stored.dispatches.map(entry => isRecord(entry) ? { ...entry, worker: entry.worker ?? null } : entry)
+          ? stored.dispatches.map(entry => isRecord(entry) ? fill(entry, 'worker', null) : entry)
           : stored.dispatches,
       }
       : stored

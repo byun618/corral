@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f7', { expectedChecks: 7 })
+const f = await fixture('f7', { expectedChecks: 9 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -145,6 +145,65 @@ try {
     assert.equal(refused.error.code, 'identity_unproven', JSON.stringify(refused))
     assert.ok((await panes()).includes(handle), 'a refused stop must touch nothing')
     return { worker: shown.result.worker, released: released.result, refused: refused.error }
+  })
+
+  await f.check('F7b-a-retained-pane-is-still-owned-and-hands-itself-over-the-same-way', async () => {
+    // A retain is not a handover. The attempt is over, the pane is still there, and it is still
+    // the thing that may close it — so a re-use has to take ownership from it just as it would
+    // from an attempt that was never retained. Reading "still owns it" as `release === null`
+    // missed exactly this, so the transfer never happened and the first attempt's own release
+    // closed a pane the second was working in (V2).
+    const taskOne = await task('retained-owner')
+    const first = await launch(taskOne)
+    await finish(taskOne, first)
+    await f.cli(['orchestration', 'worker-retain', '--dispatch', first.dispatchId, '--reason', 'user_requested'])
+    const retained = await f.cli(['orchestration', 'worker-release', '--dispatch', first.dispatchId], { timeout: 60000 })
+    assert.equal(retained.result.state, 'retained', JSON.stringify(retained.result))
+    assert.equal(retained.result.reason, 'user_requested')
+    assert.ok((await panes()).includes(first.handle), 'a retained pane stays')
+    const afterRetain = await f.cli(['orchestration', 'worker-show', '--dispatch', first.dispatchId])
+    assert.equal(afterRetain.result.worker.ownership, 'owned', 'a retain does not give the pane up')
+
+    const taskTwo = await task('retained-reuse')
+    const second = await start(taskTwo, ['--terminal', first.handle])
+    assert.equal(second.launch, 'reused', JSON.stringify(second))
+    const shownSecond = await f.cli(['orchestration', 'worker-show', '--dispatch', second.dispatchId])
+    assert.equal(shownSecond.result.worker.ownership, 'owned', 'the new attempt takes the retained pane over')
+    assert.equal(shownSecond.result.worker.originDispatchId, first.dispatchId)
+    const shownFirst = await f.cli(['orchestration', 'worker-show', '--dispatch', first.dispatchId])
+    assert.equal(shownFirst.result.worker.ownership, 'borrowed', 'the retained attempt gave the pane up')
+    assert.equal(shownFirst.result.worker.ownershipTransferredTo, second.dispatchId)
+    // The whole point: releasing the old attempt again must not close the pane the new worker has.
+    const old = await f.cli(['orchestration', 'worker-release', '--dispatch', first.dispatchId], { timeout: 60000 })
+    assert.equal(old.result.state, 'retained', JSON.stringify(old.result))
+    assert.ok((await panes()).includes(first.handle), 'the pane the new worker holds must survive')
+    return { retained: retained.result, first: shownFirst.result.worker, second: shownSecond.result.worker, old: old.result }
+  })
+
+  await f.check('F7-an-open-attempt-holds-its-pane-whether-or-not-it-owns-it', async () => {
+    // Whether a pane is busy and who may close it are separate questions. A borrowed pane has no
+    // owner at all and can still hold a worker mid-task, so asking the *owner* whether the pane was
+    // free answered "nobody is here" for every borrowed pane — and a second Task was started on
+    // top of a running one (V9).
+    const created = await f.cli(['terminal', 'create', '--worktree', f.repo, '--title', 'busy-borrowed', '--agent', 'claude'], { timeout: 180000 })
+    const handle = created.result.terminal.handle
+    const taskOne = await task('borrowed-busy')
+    const busy = await start(taskOne, ['--terminal', handle])
+    const shown = await f.cli(['orchestration', 'worker-show', '--dispatch', busy.dispatchId])
+    assert.equal(shown.result.worker.ownership, 'borrowed', JSON.stringify(shown.result.worker))
+    assert.equal(shown.result.dispatch.status, 'dispatched')
+    const taskTwo = await task('borrowed-duplicate')
+    const before = f.stateDigest()
+    const refused = await f.cli(['orchestration', 'worker-start', '--task', taskTwo, '--terminal', handle], { fail: true, timeout: 180000 })
+    assert.equal(refused.error.code, 'dispatch_active', JSON.stringify(refused))
+    assert.equal(refused.error.resources.dispatchId, busy.dispatchId, JSON.stringify(refused.error.resources))
+    assert.equal(refused._meta.outcome, 'not_started', JSON.stringify(refused._meta))
+    assert.equal(f.stateDigest(), before, 'a refused re-use must not write')
+    // …and once that attempt ends, the same pane takes the next Task.
+    await finish(taskOne, { ...busy, paneId: shown.result.paneId })
+    const next = await start(taskTwo, ['--terminal', handle])
+    assert.equal(next.launch, 'reused', JSON.stringify(next))
+    return { busy: shown.result.worker, refused: refused.error, next: next.dispatchId }
   })
 
   await f.check('F7fg-stop-closes-what-it-owns-and-abandon-touches-nothing', async () => {

@@ -652,10 +652,10 @@ import {
   type MessageOrigin,
 } from './messages.js'
 import {
-  buildPreamble, emptyWorker, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
-  stopDecision, verifySender, withWorker,
+  activePaneDispatch, buildPreamble, composeBody, emptyWorker, paneOwner, preambleDigest, releaseDecision,
+  replaceDispatchRecord, resumeDecision, stopDecision, submissionVerdict, verifySender, withWorker,
 } from './worker.js'
-import type { DispatchRecord, WorkerBlock } from './model.js'
+import type { CapabilityRevokedReason, DispatchRecord, WorkerBlock } from './model.js'
 
 const PANE = { paneId: 'pane-1', session: 'life410-test' }
 const workerBlock = (patch: Partial<WorkerBlock> = {}): WorkerBlock =>
@@ -673,8 +673,9 @@ function worker(patch: Partial<WorkerBlock> = {}) {
   const state = replaceDispatchRecord(dispatched.state, withWorker(self, { originDispatchId: self.id }, AT))
   return { state, runId: run.run.id, taskId: made.task.id, dispatchId: dispatched.dispatch.id }
 }
-const claimOf = (base: ReturnType<typeof worker>, patch: Partial<{ paneId: string | null; session: string | null }> = {}) =>
-  ({ taskId: base.taskId, dispatchId: base.dispatchId, caller: { paneId: PANE.paneId, session: PANE.session, ...patch } })
+const LIVE: PaneObservation = { kind: 'live' }
+const claimOf = (base: ReturnType<typeof worker>, patch: Partial<{ paneId: string | null; session: string | null }> = {}, observation: PaneObservation = LIVE) =>
+  ({ taskId: base.taskId, dispatchId: base.dispatchId, caller: { paneId: PANE.paneId, session: PANE.session, ...patch }, observation })
 const origin = (dispatchId: string): MessageOrigin => ({ kind: 'worker', dispatchId, paneId: PANE.paneId })
 const coordinator: MessageOrigin = { kind: 'coordinator', dispatchId: null, paneId: null }
 
@@ -714,7 +715,8 @@ describe('LIFE-410 sender judgment (§4.5, F4)', () => {
     // so by name. A settlement's own revocation is *not* one of those: it must leave the staleness
     // question to `transition`, which is the only thing that can tell a superseded attempt from a
     // second report (F4(b) vs F4(a)).
-    for (const reason of ['stopped', 'abandoned', 'released'] as const) {
+    const hard: readonly CapabilityRevokedReason[] = ['stopped', 'abandoned', 'released']
+    for (const reason of hard) {
       const base = worker({ capabilityRevokedAt: LATER, capabilityRevokedReason: reason })
       const verdict = verifySender(base.state, claimOf(base), 'defer')
       expect(verdict.ok === false && verdict.code).toBe('capability_revoked')
@@ -733,6 +735,111 @@ describe('LIFE-410 sender judgment (§4.5, F4)', () => {
     // …and `transition` is what turns that deferral into the right answer.
     expect(code(() => transition(state, { taskId: base.taskId, dispatchId: base.dispatchId, to: 'completed', settledBy: 'worker_done', at: LATER })))
       .toBe('stale_dispatch')
+  })
+})
+
+describe('LIFE-410 sender proof is an observation, not a memory (§4.5, V8)', () => {
+  it('refuses a pane that is gone as stale, and one that answers with a different identity as a mismatch', () => {
+    const base = worker()
+    // The stored ids and the caller's environment still agree in every one of these — that is the
+    // point. What differs is what the pane itself says, and a claim that matches a memory of a pane
+    // that is no longer there is exactly the report this check exists to refuse.
+    const gone = verifySender(base.state, claimOf(base, {}, { kind: 'pane_gone' }), 'defer')
+    expect(gone.ok === false && gone.code).toBe('stale_dispatch')
+    const cases: readonly PaneObservation[] = [
+      { kind: 'pty_replaced', observedPtyId: 'pty-9' },
+      { kind: 'epoch_changed', observedEpoch: 'epoch-9' },
+      { kind: 'unobserved', reason: 'observation_failed', detail: null },
+      { kind: 'unobserved', reason: 'backend_unavailable', detail: null },
+    ]
+    for (const observation of cases) {
+      const verdict = verifySender(base.state, claimOf(base, {}, observation), 'defer')
+      expect(verdict.ok === false && verdict.code).toBe('sender_mismatch')
+    }
+  })
+
+  it('reports whether the session half of the proof was made at all', () => {
+    const verified = worker()
+    const accepted = verifySender(verified.state, claimOf(verified), 'reject')
+    expect(accepted.ok && accepted.sessionVerified).toBe(true)
+    // An attempt started where CORRAL_SESSION was unset recorded no session, so there is nothing
+    // to compare the caller's against and the pane id stands alone. The caller is told which of
+    // the two proofs they got rather than left to assume the stronger one.
+    const unset = worker({ paneSession: null })
+    const weaker = verifySender(unset.state, claimOf(unset, { session: 'anything-at-all' }), 'reject')
+    expect(weaker.ok).toBe(true)
+    expect(weaker.ok && weaker.sessionVerified).toBe(false)
+  })
+})
+
+describe('LIFE-410 who owns a pane and who is working in it (§4.7, V2/V9)', () => {
+  const retained = (base: ReturnType<typeof worker>, state: 'retained' | 'released' | 'unknown') => {
+    const entry = findDispatch(base.state, base.dispatchId)!
+    return replaceDispatchRecord(base.state, withWorker({ ...entry, status: 'completed', settledBy: 'worker_done', settledAt: LATER },
+      { release: { state, reason: 'user_requested', at: LATER, processAction: 'none' } }, LATER))
+  }
+
+  it('still counts a retained attempt as the pane\'s owner, and a released one as not', () => {
+    const base = worker()
+    const pane = { paneId: PANE.paneId, epoch: target({}).epoch, ptyId: target({}).ptyId }
+    // A retain is not a handover: the attempt is over, the pane is still there, and it is still
+    // the thing that may close it. Reading `release === null` as "still owns it" missed exactly
+    // this, so a retained pane handed to a second Task transferred nothing — and the first
+    // attempt's own release then closed a pane the second was working in.
+    expect(paneOwner(retained(base, 'retained'), pane)?.id).toBe(base.dispatchId)
+    expect(paneOwner(retained(base, 'unknown'), pane)?.id).toBe(base.dispatchId)
+    expect(paneOwner(retained(base, 'released'), pane)).toBeUndefined()
+    expect(paneOwner(base.state, pane)?.id).toBe(base.dispatchId)
+  })
+
+  it('finds the attempt working in a pane whether or not it owns it', () => {
+    const base = worker({ ownership: 'borrowed' })
+    const pane = { paneId: PANE.paneId, epoch: target({}).epoch, ptyId: target({}).ptyId }
+    // A borrowed pane has no owner at all and can still hold a worker mid-task. Asking the owner
+    // whether the pane was busy answered "nobody is here" for every borrowed pane, which let a
+    // second Task be started on top of a running one.
+    expect(paneOwner(base.state, pane)).toBeUndefined()
+    expect(activePaneDispatch(base.state, pane)?.id).toBe(base.dispatchId)
+    const settled = findDispatch(base.state, base.dispatchId)!
+    const over = replaceDispatchRecord(base.state, { ...settled, status: 'completed', settledBy: 'worker_done', settledAt: LATER })
+    expect(activePaneDispatch(over, pane)).toBeUndefined()
+  })
+})
+
+describe('LIFE-410 the one submission, and the body it is allowed to carry (§4.2/§4.3, V3/V4)', () => {
+  it('calls a submission delivered only when the command said so', () => {
+    expect(submissionVerdict({ outcome: 'completed', wait: { requested: 'accepted', satisfied: true, reason: null } }))
+      .toEqual({ kind: 'delivered', confirmed: 'wait_satisfied' })
+    // Everything else is unknown, and unknown is not failure: the body may well have arrived. What
+    // it may not do is become `ready`, because a coordinator then waits on a worker that was never
+    // asked. `queued` is the same hole under another name (LIFE-393 D9).
+    expect(submissionVerdict({ outcome: 'unknown', wait: { requested: 'accepted', satisfied: false, reason: 'deadline' } }))
+      .toEqual({ kind: 'unknown', reason: 'unknown' })
+    expect(submissionVerdict({ outcome: 'queued' })).toEqual({ kind: 'unknown', reason: 'queued' })
+    expect(submissionVerdict({ outcome: 'completed', wait: { requested: 'accepted', satisfied: false, reason: 'agent_exited' } }))
+      .toEqual({ kind: 'unknown', reason: 'agent_exited' })
+    expect(submissionVerdict({ outcome: 'completed' })).toEqual({ kind: 'unknown', reason: 'wait_unsatisfied' })
+    expect(submissionVerdict(null)).toEqual({ kind: 'unknown', reason: 'no_result' })
+  })
+
+  it('lets a resume submit only the body the attempt was created against', () => {
+    const body = composeBody({ corral: 'corral --socket /tmp/x', runId: mintId('run'), taskId: mintId('task'), dispatchId: mintId('ctx'), handle: 'w1:t1', spec: 'the work' })
+    const digest = preambleDigest(body)
+    expect(resumeDecision({ stored: digest, rebuilt: digest })).toEqual({ kind: 'submit' })
+    // A `--spec-file` that changed between the two halves of one submission would still read as a
+    // single delivery in the record. The digest recorded at creation is what refuses it.
+    const other = preambleDigest(body.replace('the work', 'different work'))
+    expect(resumeDecision({ stored: digest, rebuilt: other })).toEqual({ kind: 'refuse', expected: digest, actual: other })
+    // A document an earlier build wrote recorded the digest only after a successful submission, so
+    // an unfinished attempt has none. There is nothing to compare, and refusing would strand an
+    // attempt that is otherwise perfectly resumable.
+    expect(resumeDecision({ stored: null, rebuilt: digest })).toEqual({ kind: 'submit' })
+  })
+
+  it('spells the body one way, so the digest compares what is sent', () => {
+    const input = { corral: 'corral --socket /tmp/x', runId: mintId('run'), taskId: mintId('task'), dispatchId: mintId('ctx'), handle: 'w1:t1' }
+    expect(composeBody({ ...input, spec: 'the work' })).toBe(`${buildPreamble(input)}\n\n=== TASK ===\n\n${'the work'}\n`)
+    expect(composeBody({ ...input, spec: 'the work' })).toBe(composeBody({ ...input, spec: 'the work' }))
   })
 })
 
@@ -849,6 +956,32 @@ describe('LIFE-410 mailbox, Delivery and ACK (§4.4, F5)', () => {
     expect(findDispatch(loaded, base.dispatchId)?.worker).toBe(null)
     // Reading it did not rewrite it: the bytes on disk are still the LIFE-409 ones.
     expect(JSON.parse(fs.readFileSync(store.file, 'utf8')).messages).toBeUndefined()
+  })
+
+  it('fills in an absent key and refuses a present one that reads null or wrong (V12)', () => {
+    // "This document predates the mailbox" and "this document has a mailbox and it reads null" are
+    // different documents. `??` could not tell them apart, so a truncated or half-written array —
+    // the shape corruption actually takes — was quietly replaced with an empty mailbox and the
+    // document loaded as if nothing were missing. Presence is the question, so presence is asked.
+    const base = worker()
+    const load = (mutate: (doc: Record<string, unknown>) => void) => {
+      const doc: Record<string, unknown> = JSON.parse(JSON.stringify(base.state))
+      mutate(doc)
+      const store = new OrchestrationStore(fixture409())
+      fs.mkdirSync(path.dirname(store.file), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(store.file, JSON.stringify(doc, null, 2) + '\n')
+      return store
+    }
+    expect(code(() => load(doc => { doc.messages = null }).read())).toBe('storage_corrupt')
+    expect(code(() => load(doc => { doc.deliveries = null }).read())).toBe('storage_corrupt')
+    expect(code(() => load(doc => { doc.messages = {} }).read())).toBe('storage_corrupt')
+    expect(code(() => load(doc => {
+      if (Array.isArray(doc.dispatches)) doc.dispatches[0] = { ...doc.dispatches[0], worker: 'owned' }
+    }).read())).toBe('storage_corrupt')
+    // An explicit null `worker` is the legal value for an attempt no worker was started for, and
+    // stays legal — it is the absent key that had to be given a meaning, not this one.
+    const nulled = load(doc => { if (Array.isArray(doc.dispatches)) doc.dispatches[0] = { ...doc.dispatches[0], worker: null } }).read()
+    expect(findDispatch(nulled, base.dispatchId)?.worker).toBe(null)
   })
 })
 

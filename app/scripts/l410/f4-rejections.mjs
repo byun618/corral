@@ -8,11 +8,12 @@
 //
 // Every refusal is followed by a sha256 of the stored document, taken before and after.
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f4', { expectedChecks: 6 })
+const f = await fixture('f4', { expectedChecks: 7 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -33,13 +34,20 @@ try {
     const shown = await f.cli(['orchestration', 'worker-show', '--dispatch', started.result.dispatchId])
     return { dispatchId: started.result.dispatchId, paneId: shown.result.paneId, terminal: shown.result.terminal, live: shown.result.observation }
   }
-  /** Run one call that must be refused, and prove the stored document did not move. */
+  /**
+   * Run one call that must be refused, and prove nothing it could have written moved: the stored
+   * document, and the receipt store beside it. The receipts matter for their own reason — a receipt
+   * admitted for a call that is then refused spends the caller's `--request-id`, and the next try
+   * with that id answers `outcome_unknown` for something that never happened (V10).
+   */
   const refused = async (label, args, env, code) => {
-    const before = f.stateDigest()
+    const before = f.stateDigest(), receipts = f.receiptsDigest()
     const result = await f.cli(args, { env, fail: true })
     assert.equal(result.error.code, code, `${label}: ${JSON.stringify(result)}`)
+    assert.equal(result._meta.outcome, 'not_started', `${label}: ${JSON.stringify(result._meta)}`)
     assert.equal(f.stateDigest(), before, `${label}: the stored bytes moved`)
-    return { label, error: result.error, bytesUnchanged: true }
+    assert.equal(f.receiptsDigest(), receipts, `${label}: the receipt store moved`)
+    return { label, error: result.error, bytesUnchanged: true, receiptsUnchanged: true }
   }
 
   const taskA = await task('a')
@@ -134,6 +142,37 @@ try {
       ['orchestration', 'send', '--type', 'worker_done', '--subject', 'late', '--body', 'x',
         '--task-id', taskD, '--dispatch-id', d.dispatchId, '--outcome', 'succeeded'], asPane(d.paneId), 'stale_dispatch')
     return { dispatch: shown.result.dispatch, late }
+  })
+
+  await f.check('F4-the-pane-itself-is-asked-and-a-refusal-spends-no-receipt', async () => {
+    // The stored ids and the caller's environment still agree after the pane they name is gone —
+    // which is exactly when a report is most misleading. Only a look at the pane can tell, and the
+    // look is taken before anything is admitted (V8).
+    const taskE = await task('e')
+    const e = await start(taskE)
+    const requestId = `r1.${String(Date.now()).padStart(13, '0')}.${crypto.randomUUID()}`
+    // Still live: the same call with the same ids is accepted, so what changes below is the pane
+    // and nothing else. A heartbeat is the cheapest report that goes through the whole check.
+    const alive = await f.cli(['orchestration', 'send', '--type', 'heartbeat', '--subject', 'alive',
+      '--task-id', taskE, '--dispatch-id', e.dispatchId], { env: asPane(e.paneId) })
+    assert.equal(alive.result.sessionVerified, true, JSON.stringify(alive.result))
+    // Take the pane away underneath it. The record still says `dispatched`, the environment still
+    // carries the same pane id, and the report is still refused.
+    await f.cli(['terminal', 'close', '--terminal', e.terminal], { timeout: 60000 })
+    const stateBefore = f.stateDigest(), receiptsBefore = f.receiptsDigest()
+    const gone = await f.cli(['orchestration', 'send', '--type', 'worker_done', '--subject', 'late', '--body', 'x',
+      '--task-id', taskE, '--dispatch-id', e.dispatchId, '--outcome', 'succeeded', '--request-id', requestId],
+    { env: asPane(e.paneId), fail: true })
+    assert.equal(gone.error.code, 'stale_dispatch', JSON.stringify(gone))
+    assert.equal(gone.error.resources.observation, 'pane_gone', JSON.stringify(gone.error.resources))
+    assert.equal(gone._meta.outcome, 'not_started', JSON.stringify(gone._meta))
+    // The document is one thing; the receipt store is another, and a rejection that reached the
+    // receipt would spend this id for a report that never happened.
+    assert.equal(f.stateDigest(), stateBefore, 'a refused report must not write the document')
+    assert.equal(f.receiptsDigest(), receiptsBefore, 'a refused report must not write a receipt')
+    const unspent = await f.cli(['orchestration', 'request-show', '--id', requestId])
+    assert.equal(unspent.result.state, 'absent', JSON.stringify(unspent.result))
+    return { alive: { sessionVerified: alive.result.sessionVerified }, gone: gone.error, requestState: unspent.result.state }
   })
   f.record('f4-state', f.stateJson())
 } finally { await f.cleanup() }

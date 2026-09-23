@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f2', { expectedChecks: 4 })
+const f = await fixture('f2', { expectedChecks: 5 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -106,6 +106,43 @@ try {
     assert.equal(missing.error.code, 'message_not_found', JSON.stringify(missing))
     assert.equal(f.stateDigest(), digest)
     return { foreign: foreign.error, wrong: wrong.error, missing: missing.error }
+  })
+  await f.check('F2-the-resume-line-survives-a-profile-path-with-a-space-in-it', async () => {
+    // The resume line is a command a worker copies into its own shell, and every variable part of
+    // it — the node binary, the CLI entry, the socket — lives under a profile directory a user may
+    // well have put a space in. Concatenating them unquoted produced a line that a shell splits
+    // into the wrong words, so the answer a worker was told to go and collect was unreachable. The
+    // check is the whole round trip through `/bin/sh -c`, because that is what a worker does (V5).
+    const spaced = f.client('profile with a space')
+    assert.ok(spaced.CORRAL_USER_DATA.includes(' '), spaced.CORRAL_USER_DATA)
+    const runtime = await f.serve(spaced, 'serve-spaced')
+    await f.registerRepo(spaced)
+    await f.cli(['orchestration', 'run-create', '--objective', 'LIFE-410 F2 — a socket path with a space'], { env: spaced })
+    const spacedTask = (await f.cli(['orchestration', 'task-create', '--spec', 'follow the preamble', '--title', 'spaced'], { env: spaced })).result.task.id
+    const started = await f.cli(['orchestration', 'worker-start', '--task', spacedTask, '--agent', 'claude', '--worktree', f.repo], { env: spaced, timeout: 180000 })
+    const spacedDispatch = started.result.dispatchId
+    assert.ok(spacedDispatch, JSON.stringify(started.result))
+    const spacedPane = { ...spaced, HERDR_PANE_ID: (await f.cli(['orchestration', 'worker-show', '--dispatch', spacedDispatch], { env: spaced })).result.paneId }
+    const pending = await f.cli(['orchestration', 'ask', '--question', 'does the resume line survive a space?',
+      '--task-id', spacedTask, '--dispatch-id', spacedDispatch, '--timeout-ms', '2000'], { env: spacedPane, timeout: 40000 })
+    assert.equal(pending.result.state, 'pending', JSON.stringify(pending.result))
+    assert.ok(pending.result.resumeCommand.includes(spaced.CORRAL_USER_DATA), pending.result.resumeCommand)
+    await f.cli(['orchestration', 'reply', '--id', pending.result.messageId, '--body', 'it did'], { env: spaced })
+    const shell = await f.run('/bin/sh', ['-c', pending.result.resumeCommand], spacedPane, { timeout: 60000 })
+    assert.equal(shell.exit, 0, JSON.stringify(shell))
+    const answered = JSON.parse(shell.stdout)
+    assert.equal(answered.ok, true, shell.stdout)
+    assert.equal(answered.result.state, 'answered', shell.stdout)
+    assert.equal(answered.result.reply.body, 'it did')
+    // A positive control for the check itself: the same line with the quoting taken back out is
+    // what the product used to emit, and a shell cannot run it. Without this the assertion above
+    // would keep passing if the quoting were quietly dropped again in a path with no space.
+    const unquoted = pending.result.resumeCommand.split("'").join('')
+    const naive = await f.run('/bin/sh', ['-c', unquoted], spacedPane, { timeout: 60000, record: false })
+    assert.notEqual(naive.exit, 0, `the unquoted spelling must not work: ${JSON.stringify(naive)}`)
+    await f.stop(runtime, 'SIGTERM')
+    return { profile: spaced.CORRAL_USER_DATA, resumeCommand: pending.result.resumeCommand, state: answered.result.state,
+      control: { unquoted, exit: naive.exit, stderr: naive.stderr.slice(0, 200) } }
   })
   f.record('f2-state', f.stateJson())
 } finally { await f.cleanup() }

@@ -20,13 +20,14 @@ import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModu
 import { validateFoundation } from '../registry.js'
 import { Receipts, REQUEST_ID, RECEIPT_TTL } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
+import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
 import { isRecord, readNumber, readRecord, readString } from '../../shared/json.js'
 import { OrchestrationStore } from './store.js'
 import {
-  TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
-  isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
+  DISPATCH_STATUSES, TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
+  isDispatchStatus, isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
   type AgentSnapshot, type DispatchRecord, type DispatchTarget, type JsonValue, type OrchestrationState,
   type PaneObservation, type TaskStatus,
 } from './model.js'
@@ -36,8 +37,9 @@ import {
   type MessageOrigin, type MessageRecord, type MessageType,
 } from './messages.js'
 import {
-  buildPreamble, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
-  senderError, stopDecision, verifySender, withWorker,
+  activePaneDispatch, composeBody, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
+  resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, withWorker,
+  type SubmissionVerdict,
 } from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
@@ -114,18 +116,18 @@ const ID_SHAPE_TEXT: Readonly<Record<IdShape, string>> = {
 }
 
 /**
+ * POSIX single-quoting for one word of a command line. The preamble and the ask's resume line are
+ * commands a worker copies into a shell, and every one of their three variable parts — the node
+ * binary, the CLI entry, the socket — lives under a profile directory a user may well have put a
+ * space in. Quoting the whole string once would not do: only the parts corral substitutes are
+ * data, and the flags between them have to stay syntax.
+ */
+const shellQuote = (value: string): string => `'${value.split("'").join("'\\''")}'`
+
+/**
  * LIFE-410's own argument rules. They are all shape and pairing — nothing here reads the document,
  * so every one of them is refused before a receipt exists and leaves the stored bytes untouched.
  */
-/**
- * The one line that is *typed* into a worker's pane, immediately before the preamble is pasted into
- * it. Without it the provider receives a message made entirely of pasted text and refuses to act on
- * it — correctly, since nothing in such a message was written by the person at the keyboard. It
- * ends without a newline: the Enter that submits belongs to the prompt, so a Dispatch is still one
- * submission and one `promptRequestId`.
- */
-const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
-
 function validateWorkerFlags(inv: Invocation): void {
   const f = inv.flags
   const command = inv.command
@@ -191,7 +193,14 @@ export function validateOrchestration(inv: Invocation): void {
   if (f.dispatch !== undefined && !isId('ctx', f.dispatch)) reject('--dispatch must be a dispatch id (ctx_<12 hex>)')
   if (f.id !== undefined && !idShapeOk(idKindFor(inv.command), String(f.id))) reject(`--id must be a ${ID_SHAPE_TEXT[idKindFor(inv.command)]} for ${inv.command}`)
   validateWorkerFlags(inv)
-  if (f.status !== undefined && !isTaskStatus(f.status)) reject(`--status must be one of ${TASK_STATUSES.join('|')}`)
+  // `worker-list --status` filters Dispatch status, and the two vocabularies only look alike:
+  // `ready`/`blocked` are Task words no attempt ever takes, and `dispatched`/`unknown` are attempt
+  // words no Task carries. Judging both by the Task set accepted four words that can never match a
+  // row — a silent empty list — and refused the two that can.
+  if (f.status !== undefined) {
+    if (inv.command === 'orchestration worker-list') { if (!isDispatchStatus(f.status)) reject(`--status must be one of ${DISPATCH_STATUSES.join('|')}`) }
+    else if (!isTaskStatus(f.status)) reject(`--status must be one of ${TASK_STATUSES.join('|')}`)
+  }
   if (f.ready && f.status !== undefined && f.status !== 'ready') reject('--ready and --status disagree')
   if (f.deps !== undefined) parseDeps(String(f.deps))
   if (f.result !== undefined) {
@@ -558,8 +567,8 @@ export function orchestrationModule(userData: string): CommandModule {
        */
       const corralCommand = (): string => {
         const entry = process.argv[1]
-        const base = process.env.CORRAL_CLI ?? (entry !== undefined && entry.endsWith('corral.mjs') ? `${process.execPath} ${entry}` : 'corral')
-        return `${base} --socket ${socketPath(userData)}`
+        const base = process.env.CORRAL_CLI ?? (entry !== undefined && entry.endsWith('corral.mjs') ? `${shellQuote(process.execPath)} ${shellQuote(entry)}` : 'corral')
+        return `${base} --socket ${shellQuote(socketPath(userData))}`
       }
       const workerOrigin = (dispatch: DispatchRecord): MessageOrigin => ({ kind: 'worker', dispatchId: dispatch.id, paneId: dispatch.target.paneId })
       const coordinatorOrigin = (): MessageOrigin => ({ kind: 'coordinator', dispatchId: null, paneId: caller.paneId })
@@ -570,6 +579,11 @@ export function orchestrationModule(userData: string): CommandModule {
         for (const [key, value] of Object.entries(extra)) if (value !== null) merged[key] = value
         return merged
       }
+      /**
+       * The observation for an attempt there is nothing to observe. `verifySender` answers on the
+       * dispatch id long before it reads this, so it is never the reason a caller is given.
+       */
+      const UNOBSERVABLE: PaneObservation = { kind: 'unobserved', reason: 'observation_failed', detail: null }
       /** A fresh look, not the one the reconcile pass memoized: §4.7 re-observes just before it acts. */
       const observeNow = async (target: DispatchTarget): Promise<PaneObservation> =>
         observationFor(await observePanes(budgeted(ctx, SWEEP_BUDGET_MS)), target)
@@ -632,7 +646,7 @@ export function orchestrationModule(userData: string): CommandModule {
       // --- send (§4.4) -----------------------------------------------------------------------------
       type SendPlan =
         | { kind: 'coordinator'; runId: string }
-        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord }
+        | { kind: 'worker'; runId: string; taskId: string; dispatchId: string; dispatch: DispatchRecord; sessionVerified: boolean }
       const sendCommand = async (state: OrchestrationState): Promise<unknown> => {
         const type = need('type'), subject = need('subject'), body = flag('body') ?? ''
         const payload = messagePayload({
@@ -640,43 +654,71 @@ export function orchestrationModule(userData: string): CommandModule {
           filesModified: f['files-modified'] === undefined ? null : csv(String(f['files-modified'])),
           reportPath: flag('report-path') ?? null,
         })
-        const plan = (): SendPlan => {
+        const commonFor = (target: SendPlan, at: string) => {
+          const worker = target.kind === 'worker' ? target.dispatch : null
+          return {
+            runId: target.runId, taskId: worker === null ? null : worker.taskId, dispatchId: worker === null ? null : worker.id,
+            subject, body, payload, from: worker === null ? coordinatorOrigin() : workerOrigin(worker), at,
+          }
+        }
+        /**
+         * The whole of what a report does, as one pure value over one document. It is called twice
+         * — once on the plan to see whether it can be done at all, once inside the write to do it —
+         * and the two calls are the same call, so the judgement that refuses cannot drift from the
+         * judgement that acts.
+         */
+        const settlement = (current: OrchestrationState, target: Extract<SendPlan, { kind: 'worker' }>, at: string) => {
+          const outcome = need('outcome') === 'succeeded' ? 'succeeded' : 'failed'
+          const appended = appendMessage(current, commonFor(target, at), { type: 'worker_done', outcome })
+          const moved = transition(appended.state, {
+            taskId: target.taskId, dispatchId: target.dispatchId,
+            to: outcome === 'succeeded' ? 'completed' : 'failed', settledBy: 'worker_done',
+            result: { outcome, subject, body, payload, messageId: appended.message.id }, at,
+          })
+          return { appended, moved }
+        }
+        const plan = async (): Promise<SendPlan> => {
           // `status` is the one type either side sends: naming an attempt makes it that worker's
           // status, naming none makes it a note on the Run. Taking the ids and then ignoring them
           // would be the worst of the three, so the pairing is required or absent, never partial.
           if (type === 'status' && f['task-id'] === undefined) return { kind: 'coordinator', runId: resolveRunId(state) }
           const taskId = need('task-id'), dispatchId = need('dispatch-id')
+          const found = findDispatch(state, dispatchId)
+          // One look at the pane, taken here and handed to the rule: the stored ids say which pane
+          // this attempt was bound to, and only an observation says whether that pane is still the
+          // one answering to them (§4.5 / LIFE-393's three layers).
+          const observation = found === undefined ? UNOBSERVABLE : await observeNow(found.target)
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
-          const verdict = verifySender(state, { taskId, dispatchId, caller }, type === 'worker_done' ? 'defer' : 'reject')
+          const verdict = verifySender(state, { taskId, dispatchId, caller, observation }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
-          return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch }
+          const target: SendPlan = { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
+          // N3, extended to the whole command. The mailbox's own capacity and — for a report — the
+          // transition are computed here, on this document, and the result is thrown away. Both are
+          // pure, so the dry run costs one call and buys the rule the receipt directory depends on:
+          // a `send` that is going to be refused is refused before its receipt exists, and the
+          // stored receipt bytes after a refusal are the bytes from before it.
+          if (type === 'worker_done' && target.kind === 'worker') settlement(state, target, now())
+          else appendMessage(state, commonFor(target, now()), type === 'heartbeat' ? { type: 'heartbeat' } : { type: type === 'escalation' ? 'escalation' : 'status' })
+          return target
         }
-        const planned = recorded ? undefined : plan()
+        const planned = recorded ? undefined : await plan()
         return mutate(async () => {
-          const target = planned ?? plan()
+          const target = planned ?? await plan()
           const at = now()
           const worker = target.kind === 'worker' ? target.dispatch : null
-          const common = {
-            runId: target.runId, taskId: worker === null ? null : worker.taskId, dispatchId: worker === null ? null : worker.id,
-            subject, body, payload, from: worker === null ? coordinatorOrigin() : workerOrigin(worker), at,
-          }
+          const sessionVerified = target.kind === 'worker' ? target.sessionVerified : null
+          const common = commonFor(target, at)
           if (type === 'worker_done' && target.kind === 'worker') {
-            const outcome = need('outcome') === 'succeeded' ? 'succeeded' : 'failed'
             // One value, one write: the report and the settlement it causes are two fields of the
             // same document, so there is no window in which one exists without the other (§4.4).
-            const appended = appendMessage(state, common, { type: 'worker_done', outcome })
-            const moved = transition(appended.state, {
-              taskId: target.taskId, dispatchId: target.dispatchId,
-              to: outcome === 'succeeded' ? 'completed' : 'failed', settledBy: 'worker_done',
-              result: { outcome, subject, body, payload, messageId: appended.message.id }, at,
-            })
+            const { appended, moved } = settlement(state, target, at)
             const settled = findDispatch(moved.state, target.dispatchId)
             const next = settled === undefined ? moved.state : revoke(moved.state, settled, 'settled', at)
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done' }
+            return { message: appended.message, task: moved.task, dispatch: findDispatch(next, target.dispatchId) ?? null, promoted: moved.promoted, settledBy: 'worker_done', sessionVerified }
           }
           if (type === 'heartbeat' && target.kind === 'worker') {
             const appended = appendMessage(state, common, { type: 'heartbeat' })
@@ -684,12 +726,12 @@ export function orchestrationModule(userData: string): CommandModule {
             const next = current === undefined ? appended.state : replaceDispatchRecord(appended.state, withWorker(current, { lastHeartbeatAt: at }, at))
             ctx.onEffect?.()
             records.write(next)
-            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null }
+            return { message: appended.message, dispatch: findDispatch(next, target.dispatchId) ?? null, sessionVerified }
           }
           const appended = appendMessage(state, common, { type: type === 'escalation' ? 'escalation' : 'status' })
           ctx.onEffect?.()
           records.write(appended.state)
-          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null }
+          return { message: appended.message, dispatch: worker === null ? null : findDispatch(appended.state, worker.id) ?? null, sessionVerified }
         })
       }
 
@@ -837,8 +879,19 @@ export function orchestrationModule(userData: string): CommandModule {
             // §4.2. An attempt whose input stage never completed is resumed, not refused: the pane
             // and the record exist and no preamble was delivered, so finishing the submission is
             // still exactly once. An attempt that already received one is `dispatch_active`.
-            if (open.worker !== null && open.worker.promptRequestId === null && (reused === null || reused.target.paneId === open.target.paneId))
-              return { runId, spec, resume: open, owner: null }
+            if (open.worker !== null && open.worker.promptRequestId === null && (reused === null || reused.target.paneId === open.target.paneId)) {
+              // The body a resume delivers is the one the Dispatch was created against, rebuilt
+              // from the stored Task — never re-read from `--spec-file`, which names a file that
+              // may have changed since. The digest recorded at creation is what says so, and a
+              // disagreement is refused here, before the receipt exists: half a submission
+              // carrying text the other half never saw would still read as one delivery.
+              const rebuilt = preambleDigest(composeBody({ corral: corralCommand(), runId, taskId: task.id, dispatchId: open.id, handle: open.target.handle, spec: task.spec }))
+              const decision = resumeDecision({ stored: open.worker.preambleSha256, rebuilt })
+              if (decision.kind === 'refuse') return preflight('preamble_mismatch', `The body dispatch ${open.id} was created against is not the body this run builds`,
+                { dispatchId: open.id, taskId: task.id, expected: decision.expected, actual: decision.actual,
+                  recovery: `corral orchestration worker-stop --dispatch ${open.id} ends the attempt; start a new one for the changed body` })
+              return { runId, spec: task.spec, resume: open, owner: null }
+            }
             return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (dispatch_active)`,
               { taskId: task.id, status: task.status, reason: 'dispatch_active', unmetDependencies: [], activeDispatchId: open.id,
                 recovery: 'corral orchestration worker-show --dispatch <ctx> reports the open attempt; worker-stop or worker-abandon ends it' })
@@ -847,9 +900,13 @@ export function orchestrationModule(userData: string): CommandModule {
           if (!start.startable) return preflight('task_not_startable', `Task ${task.id} cannot take a new attempt (${start.reason})`,
             { taskId: task.id, status: task.status, reason: start.reason, unmetDependencies: start.unmetDependencies, activeDispatchId: start.activeDispatchId, recovery: start.recovery })
           if (reused === null) return { runId, spec, resume: null, owner: null }
+          // Whether the pane is busy and who may close it are separate questions. A borrowed pane
+          // has no owner at all and can still hold a worker mid-task, so the duplicate refusal is
+          // asked of every open attempt on this pane rather than of the owner alone.
+          const active = activePaneDispatch(state, reused.target)
+          if (active !== undefined) return preflight('dispatch_active', `Pane ${reused.target.paneId} still belongs to open attempt ${active.id}`,
+            { dispatchId: active.id, paneId: reused.target.paneId, recovery: 'Settle or stop that attempt before handing its pane to another Task' })
           const owner = paneOwner(state, reused.target)
-          if (owner !== undefined && owner.status === 'dispatched') return preflight('dispatch_active', `Pane ${reused.target.paneId} still belongs to open attempt ${owner.id}`,
-            { dispatchId: owner.id, paneId: reused.target.paneId, recovery: 'Settle or stop that attempt before handing its pane to another Task' })
           return { runId, spec, resume: null, owner: owner ?? null }
         })
         const planned = recorded ? undefined : await plan()
@@ -859,8 +916,19 @@ export function orchestrationModule(userData: string): CommandModule {
           const effects: Record<string, unknown>[] = []
           const residualResources: Record<string, unknown>[] = []
           const stages: Record<string, Stage> = { terminal: { status: 'not_started' }, dispatch: { status: 'not_started' }, input: { status: 'not_started' } }
+          // §4.2. Three launches, not two: a resume neither created the pane nor took over someone
+          // else's, it finished a submission its own earlier run left open, and reporting that as
+          // `created` told a reader a pane had just been made for them. Options that name a pane or
+          // a body cannot take effect on an attempt that already has both, so they are listed
+          // rather than dropped in silence — a caller who passed `--model opus` to a resume has to
+          // be able to see that the pane still runs whatever it was started with.
+          const ignoredKeys = start.resume !== null
+            ? ['spec-file', 'worktree', 'agent', 'model', 'effort', 'advisor', 'title']
+            : reused !== null ? ['worktree', 'agent', 'model', 'effort', 'advisor', 'title'] : []
+          const ignoredOptions = ignoredKeys.filter(key => f[key] !== undefined).map(key => `--${key}`)
+          const launch = start.resume !== null ? 'resumed' : launching ? 'created' : 'reused'
           const report = (state: 'ready' | 'failed' | 'incomplete', stage: string, extra: Record<string, unknown>) =>
-            ({ runId: start.runId, taskId, launch: launching ? 'created' : 'reused', state, stage, stages, effects, residualResources, ...extra })
+            ({ runId: start.runId, taskId, launch, ignoredOptions, state, stage, stages, effects, residualResources, ...extra })
 
           // stage 1 — the pane
           let target: DispatchTarget, agent: AgentSnapshot | null, agentAbsenceReason: string | null, terminal: unknown
@@ -934,7 +1002,14 @@ export function orchestrationModule(userData: string): CommandModule {
                 const made = createDispatch(current, { task, target, agent, agentAbsenceReason, worker, at: stamp() })
                 let next = made.state
                 const self = findDispatch(next, made.dispatch.id)
-                if (launching && self !== undefined) next = replaceDispatchRecord(next, withWorker(self, { originDispatchId: self.id }, stamp()))
+                // The digest of the body is recorded now, before anything is sent, because it is
+                // what a resume compares against. Recording it only after a successful submission
+                // left exactly the attempts that need the comparison — the unfinished ones — with
+                // nothing to compare against.
+                if (self !== undefined) next = replaceDispatchRecord(next, withWorker(self, {
+                  preambleSha256: preambleDigest(composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: self.id, handle: target.handle, spec: start.spec })),
+                  ...(launching ? { originDispatchId: self.id } : {}),
+                }, stamp()))
                 const previous = owner === null ? undefined : findDispatch(next, owner.id)
                 if (previous !== undefined) next = replaceDispatchRecord(next, withWorker(previous, { ownership: 'borrowed', ownershipTransferredTo: made.dispatch.id }, stamp()))
                 ctx.onEffect?.()
@@ -953,8 +1028,7 @@ export function orchestrationModule(userData: string): CommandModule {
             action: `The attempt exists and holds the pane, with no preamble delivered. corral orchestration worker-start --task ${taskId} --terminal ${target.handle} submits it once the pane is ready; worker-stop --dispatch ${dispatch.id} ends the attempt and closes the pane` })
 
           // stage 3 — the one submission
-          const preamble = buildPreamble({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle })
-          const input = `${preamble}\n\n=== TASK ===\n\n${start.spec}\n`
+          const input = composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle, spec: start.spec })
           const sha256 = preambleDigest(input)
           const promptId = derivedRequestId(parentId, 'prompt')
           // The readiness gate gets most of what is left, never all of it: a submission that has no
@@ -986,13 +1060,33 @@ export function orchestrationModule(userData: string): CommandModule {
             return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
           }
           let submitted: unknown
-          try { submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input }) }
-          catch (error) {
-            stages.input = { ...stageFailure(error), requestId: promptId }
-            unfinished()
-            return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+          let verdict: SubmissionVerdict
+          try {
+            submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input })
+            verdict = submissionVerdict(submitted)
+          } catch (error) {
+            // The duplicate pre-check found this exact body already in the provider's record. That
+            // is this Dispatch's delivery — observed rather than made, which is the only kind of
+            // proof a resumed attempt can have. The identity it matched is the identity of `input`,
+            // so it is proof for this body and no other.
+            if (error instanceof RuntimeError && error.code === 'prompt_already_delivered') {
+              submitted = { outcome: 'already_present', stage: 'confirmed', detail: error.resources }
+              verdict = { kind: 'delivered', confirmed: 'already_present' }
+            } else {
+              stages.input = { ...stageFailure(error), requestId: promptId }
+              unfinished()
+              return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+            }
           }
-          stages.input = { status: 'completed', requestId: promptId }
+          if (verdict.kind === 'unknown') {
+            // Neither a failure nor a delivery: the submission was made and its arrival was never
+            // seen. `promptRequestId` stays null, so the attempt stays resumable, and the duplicate
+            // pre-check decides on the next run what this run could not read.
+            stages.input = { status: 'unknown', requestId: promptId, reason: verdict.reason }
+            unfinished()
+            return report('incomplete', 'dispatch_input_unconfirmed', { dispatchId: dispatch.id, terminal, dispatch, input: submitted })
+          }
+          stages.input = { status: 'completed', requestId: promptId, delivery: verdict.confirmed }
           effects.push({ kind: 'dispatch_input', action: 'submitted', id: promptId, state: 'accepted' })
           const stored = await withDocumentLane(async () => {
             const current = records.read()
@@ -1027,12 +1121,15 @@ export function orchestrationModule(userData: string): CommandModule {
           const runId = resolveRunId(state)
           if (ackId !== undefined) acknowledgeDelivery(state, runId, ackId, now())
         })
-        const collect = async (): Promise<Batch> => withDocumentLane(async () => {
+        // The acknowledgement is an effect, and an effect happens once. `collect` runs again on every
+        // poll of a `--block`, so the id is handed to the first collect only: re-applying it made the
+        // second poll refuse the delivery it had itself just closed, turning a wait into an error.
+        const collect = async (ack: string | undefined): Promise<Batch> => withDocumentLane(async () => {
           const state = records.read()
           const runId = resolveRunId(state)
           let working = state, acknowledged: string | null = null
-          if (ackId !== undefined) {
-            const acked = acknowledgeDelivery(working, runId, ackId, now())
+          if (ack !== undefined) {
+            const acked = acknowledgeDelivery(working, runId, ack, now())
             working = acked.state
             acknowledged = acked.delivery.id
           }
@@ -1045,13 +1142,13 @@ export function orchestrationModule(userData: string): CommandModule {
           return { runId, deliveryId: opened.plan.delivery?.id ?? null, messages: opened.plan.messages, deliveryReplayed: opened.plan.replayed, acknowledged, peeked: false, timedOut: false }
         })
         return mutate(async () => {
-          const first = await collect()
+          const first = await collect(ackId)
           if (first.messages.length > 0 || peeking || !blocking) return render(first)
           for (;;) {
             ctx.signal.throwIfAborted()
             if (Date.now() >= waitDeadline) return render({ ...first, timedOut: true })
             await delay(Math.min(150, rest()), undefined, { signal: ctx.signal })
-            const again = await collect()
+            const again = await collect(undefined)
             if (again.messages.length > 0) return render({ ...again, acknowledged: first.acknowledged })
           }
         })
@@ -1059,7 +1156,13 @@ export function orchestrationModule(userData: string): CommandModule {
 
       if (inv.command === 'orchestration ask') {
         const taskId = need('task-id'), dispatchId = need('dispatch-id'), resume = flag('resume')
-        const claim = { taskId, dispatchId, caller }
+        // The pane is observed once, before the lane, for the same reason `send` observes it: the
+        // stored ids say which pane asked, and only a look says whether that pane is still the one
+        // answering to them. It is taken at admission and never again — the wait that follows polls
+        // the mailbox, not the backend, so a backend that stops answering cannot turn a ten-minute
+        // wait into an `outcome_unknown` (§4.6).
+        const asking = findDispatch(records.read(), dispatchId)
+        const claim = { taskId, dispatchId, caller, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
         const opened = await withDocumentLane(async () => {
           const state = records.read()
           // A resume names a question that already exists, so the attempt may already have been
@@ -1288,10 +1391,19 @@ export function orchestrationModule(userData: string): CommandModule {
           if (!entry) return preflight('dispatch_not_found', f.dispatch === undefined ? `No dispatch for task ${need('task')}` : `No dispatch ${need('dispatch')}`,
             { dispatchId: flag('dispatch') ?? null, taskId: flag('task') ?? null })
           const messages = state.messages.filter(message => message.dispatchId === entry.id)
-          const live = findDispatch(before, entry.id)?.status === 'dispatched'
-            ? (() => { const decision = reconcileDecision(observationFor(snapshot ?? { observed: false, reason: 'observation_failed', detail: null }, entry.target))
-                return { live: decision.live, observed: decision.observed, source: 'observation', reason: decision.reason, observedAt: now(), runtimeInstanceId: ctx.instanceId } })()
-            : { live: null, observed: false, source: 'record', reason: entry.reconcile?.reason ?? null, observedAt: entry.reconcile?.at ?? null, runtimeInstanceId: entry.reconcile?.runtimeInstanceId ?? null }
+          // A settled attempt still had a pane, and whether that pane is there *now* is the thing a
+          // reader of the record needs: it is the difference between "the transcript is still open
+          // in front of me" and "there is nothing left to read". Answering `live: null` because the
+          // attempt is over reported the record's own age as if it were an observation. So the pane
+          // is observed either way and the stored reconcile is carried beside the answer rather than
+          // standing in for it. The observation is read-only: `worker-show` reconciles nothing,
+          // settles nothing, and the Task it reports is the one the document already held.
+          const decision = reconcileDecision(observationFor(await observe(), entry.target))
+          const live = {
+            live: decision.live, observed: decision.observed, source: 'observation', reason: decision.reason,
+            observedAt: now(), runtimeInstanceId: ctx.instanceId,
+            record: { reason: entry.reconcile?.reason ?? null, at: entry.reconcile?.at ?? null, runtimeInstanceId: entry.reconcile?.runtimeInstanceId ?? null },
+          }
           // The live block is `observation`, not `terminal`: `terminal` already names the handle in
           // every worker row, and letting the observation take that key silently hid the handle.
           // `dispatch-show` keeps its own LIFE-409 shape, where `terminal` *is* the observation.

@@ -11,7 +11,7 @@ import { fixture, requestId } from './lib.mjs'
 const COMMANDS = ['worker-start', 'worker-list', 'worker-show', 'worker-read', 'send', 'ask', 'reply',
   'check', 'inbox', 'request-show', 'worker-retain', 'worker-release', 'worker-stop', 'worker-abandon']
 
-const f = await fixture('f10', { expectedChecks: 5 })
+const f = await fixture('f10', { expectedChecks: 7 })
 try {
   const fakebin = path.join(f.root, 'fakebin')
   fs.mkdirSync(fakebin, { mode: 0o700 })
@@ -104,6 +104,65 @@ try {
     const replayed = await f.cli(blockArgs, { fail: true, timeout: 60000 })
     assert.equal(replayed.error.code, 'outcome_unknown', JSON.stringify(replayed))
     return { absent: absent.result, completed: completed.result.state, pending: pending.result, replayed: replayed.error }
+  })
+
+  await f.check('F10-worker-list-status-takes-a-dispatch-word-and-refuses-a-task-word', async () => {
+    // The two vocabularies only look alike. `ready` and `blocked` are Task words no attempt ever
+    // takes, so judging this filter by the Task set accepted four words that could never match a
+    // row — a silent empty list — and refused the two that can (V7).
+    const open = await f.cli(['orchestration', 'worker-list', '--status', 'dispatched'])
+    assert.equal(open.result.totalCount, 1, JSON.stringify(open.result))
+    assert.equal(open.result.workers[0].dispatchId, dispatchId)
+    for (const word of ['completed', 'failed', 'unknown']) {
+      const empty = await f.cli(['orchestration', 'worker-list', '--status', word])
+      assert.equal(empty.result.totalCount, 0, `${word}: ${JSON.stringify(empty.result)}`)
+    }
+    const before = f.stateDigest()
+    const refusals = []
+    for (const word of ['ready', 'blocked', 'nonsense']) {
+      const refused = await f.cli(['orchestration', 'worker-list', '--status', word], { fail: true })
+      assert.equal(refused.error.code, 'invalid_argument', JSON.stringify(refused))
+      assert.match(refused.error.message, /dispatched\|completed\|failed\|unknown/)
+      refusals.push(refused.error.message)
+    }
+    assert.equal(f.stateDigest(), before)
+    // task-list keeps its own vocabulary, which is the reason the two were confused in the first place.
+    assert.ok((await f.cli(['orchestration', 'task-list', '--status', 'ready'])).ok)
+    return { open: open.result.totalCount, refusals }
+  })
+
+  await f.check('F10-worker-show-observes-the-pane-of-a-settled-attempt-too', async () => {
+    // Whether a settled attempt's pane survived it is the difference between a transcript still
+    // open in front of you and nothing left to read. Answering `live: null` because the attempt
+    // was over reported the record's own age as if it were an observation (V11).
+    const settledTask = (await f.cli(['orchestration', 'task-create', '--spec', 'follow the preamble', '--title', 'settled'])).result.task.id
+    const started = await f.cli(['orchestration', 'worker-start', '--task', settledTask, '--agent', 'claude', '--worktree', f.repo], { timeout: 180000 })
+    const settledDispatch = started.result.dispatchId
+    const settledPane = (await f.cli(['orchestration', 'worker-show', '--dispatch', settledDispatch])).result.paneId
+    const handle = (await f.cli(['orchestration', 'worker-show', '--dispatch', settledDispatch])).result.terminal
+    await f.cli(['orchestration', 'send', '--type', 'worker_done', '--subject', 'done', '--body', 'finished.',
+      '--task-id', settledTask, '--dispatch-id', settledDispatch, '--outcome', 'succeeded'],
+    { env: { ...f.env, HERDR_PANE_ID: settledPane } })
+    const live = await f.cli(['orchestration', 'worker-show', '--dispatch', settledDispatch])
+    assert.equal(live.result.dispatch.status, 'completed', JSON.stringify(live.result.dispatch))
+    assert.equal(live.result.observation.live, true, JSON.stringify(live.result.observation))
+    assert.equal(live.result.observation.observed, true)
+    assert.equal(live.result.observation.source, 'observation')
+    // Reading it changed nothing: not the attempt, not the Task, not the stored bytes.
+    const digest = f.stateDigest()
+    assert.deepEqual((await f.cli(['orchestration', 'worker-show', '--dispatch', settledDispatch])).result.task, live.result.task)
+    assert.equal(f.stateDigest(), digest, 'observing a settled attempt must not write')
+    // Take the pane away: the same call now says so, and still settles nothing.
+    await f.cli(['terminal', 'close', '--terminal', handle], { timeout: 60000 })
+    const gone = await f.cli(['orchestration', 'worker-show', '--dispatch', settledDispatch])
+    assert.equal(gone.result.observation.live, false, JSON.stringify(gone.result.observation))
+    assert.equal(gone.result.observation.observed, true)
+    assert.equal(gone.result.observation.reason, 'pane_gone')
+    assert.equal(gone.result.dispatch.status, 'completed', 'a settled attempt is not re-settled by a look')
+    assert.equal(gone.result.dispatch.settledBy, 'worker_done')
+    // The record's own reconcile is carried beside the observation rather than replaced by it.
+    assert.ok('record' in gone.result.observation, JSON.stringify(gone.result.observation))
+    return { live: live.result.observation, gone: gone.result.observation }
   })
 
   await f.check('F13-every-command-is-in-help-and-in-agent-context', async () => {

@@ -51,15 +51,18 @@ try {
 
   await f.check('F9-a-second-start-resumes-the-same-attempt-rather-than-making-another', async () => {
     // What a stand-in provider can show here is the resume, not the submission. This fixture's
-    // `claude` passes the pane's liveness checks but not the agent-ready gate, so `stages.input` is
-    // `not_started` and no preamble digest is recorded — which is the product being right, not the
-    // fixture being weak: corral records `preambleSha256` only once a submission was accepted.
+    // `claude` passes the pane's liveness checks but not the agent-ready gate, so `stages.input`
+    // never completes — which is the product being right, not the fixture being weak.
     const input = secondStart.stages.input
     // `not_started` when the readiness gate simply never held, `failed` when the backend refused the
     // submission outright (this stand-in execs `sleep`, so the pane's foreground stops being the
-    // agent). Either way nothing reached the pane, which is what the next assertion is about.
+    // agent). Either way nothing reached the pane, which is what the next assertions are about.
     assert.ok(['not_started', 'failed'].includes(input.status), JSON.stringify(secondStart.stages))
-    assert.equal(second.worker.preambleSha256, null, 'nothing was delivered, so nothing is recorded as delivered')
+    // The digest of the body is recorded when the attempt is created, before anything is sent — it
+    // is what a resume compares against (V4). What says a body was *delivered* is
+    // `promptRequestId`, and nothing was delivered here.
+    assert.match(second.worker.preambleSha256, /^[0-9a-f]{64}$/, JSON.stringify(second.worker))
+    assert.equal(second.worker.promptRequestId, null, 'nothing was delivered, so nothing is recorded as delivered')
     // Calling again for that Task resumes into the same attempt — the documented exception to
     // once-per-Dispatch, and the only reason it applies is that nothing was submitted yet. A Task
     // whose preamble *was* delivered answers task_not_startable(dispatch_active); that needs a real
@@ -69,6 +72,10 @@ try {
     assert.equal(resumed.result.dispatchId, second.dispatchId, 'a resume never opens a second attempt')
     assert.equal(f.stateJson().dispatches.length, dispatches, 'and never adds a record')
     assert.equal(resumed.result.stages.dispatch.dispatchId, second.dispatchId, JSON.stringify(resumed.result.stages))
+    assert.equal(resumed.result.launch, 'resumed', JSON.stringify(resumed.result))
+    // The body the resume would deliver is the one the attempt was created against, unchanged.
+    const after = await show(second.dispatchId)
+    assert.equal(after.worker.preambleSha256, second.worker.preambleSha256, 'a resume must not rebuild a different body')
     return { input, preambleSha256: second.worker.preambleSha256, resumed: resumed.result }
   })
 

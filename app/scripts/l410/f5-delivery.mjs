@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { fixture } from './lib.mjs'
 
-const f = await fixture('f5', { expectedChecks: 6 })
+const f = await fixture('f5', { expectedChecks: 7 })
 try {
   await f.startBackend()
   await f.serve()
@@ -90,5 +90,40 @@ try {
     f.record('f5-inbox', listed.result.messages.slice(0, 5))
     return { first: batch.result.count, rest: rest.result.count, inbox: listed.result.totalCount }
   })
+  await f.check('F5-an-ack-under-a-block-happens-once-and-the-wait-still-waits', async () => {
+    // An ACK is an effect, and an effect happens once. Re-applying it on every poll of a `--block`
+    // made the second poll refuse the batch the first had just closed, so `check --ack <id>
+    // --block` — the shape a coordinator loop actually uses — answered `delivery_stale` instead of
+    // waiting (V1). The mailbox is drained first so the wait is a real wait.
+    for (;;) {
+      const batch = await f.cli(['orchestration', 'check'])
+      if (batch.result.count === 0) break
+      await f.cli(['orchestration', 'check', '--ack', batch.result.deliveryId])
+    }
+    await say('to-be-acked')
+    const outstanding = (await f.cli(['orchestration', 'check'])).result.deliveryId
+    // Empty mailbox, an ACK to spend, and a deadline to run out: the ACK lands, the wait ends as a
+    // normal answer rather than as an error.
+    const startedAt = Date.now()
+    const timedOut = await f.cli(['orchestration', 'check', '--ack', outstanding, '--block', '--timeout-ms', '3000'], { timeout: 40000 })
+    assert.equal(timedOut.result.acknowledged, outstanding, JSON.stringify(timedOut.result))
+    assert.equal(timedOut.result.timedOut, true, JSON.stringify(timedOut.result))
+    assert.equal(timedOut.result.count, 0, JSON.stringify(timedOut.result))
+    assert.ok(Date.now() - startedAt >= 2500, 'the block has to have waited out its deadline')
+    // …and the same shape when a message arrives late: the ACK is still reported, and the batch is
+    // the one that arrived while it waited.
+    await say('to-be-acked-again')
+    const second = (await f.cli(['orchestration', 'check'])).result.deliveryId
+    const waiting = f.cli(['orchestration', 'check', '--ack', second, '--block', '--timeout-ms', '60000'], { timeout: 80000 })
+    await f.pause(1500)
+    await say('arrived-late')
+    const received = await waiting
+    assert.equal(received.result.acknowledged, second, JSON.stringify(received.result))
+    assert.deepEqual(received.result.messages.map(entry => entry.subject), ['arrived-late'])
+    assert.equal(received.result.timedOut, false)
+    await f.cli(['orchestration', 'check', '--ack', received.result.deliveryId])
+    return { timedOut: timedOut.result, received: received.result }
+  })
+
   f.record('f5-state', f.stateJson())
 } finally { await f.cleanup() }

@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fixture, requestId } from './lib.mjs'
 
-const f = await fixture('f1', { expectedChecks: 6 })
+const f = await fixture('f1', { expectedChecks: 7 })
 try {
   // A stand-in named `claude`, first on this fixture's PATH only. Nothing global is touched.
   const fakebin = path.join(f.root, 'fakebin')
@@ -84,7 +84,10 @@ try {
     assert.equal(shown.result.worker.launch, 'created')
     assert.equal(shown.result.worker.originDispatchId, result.dispatchId)
     assert.equal(shown.result.worker.promptRequestId, null)
-    assert.equal(shown.result.worker.preambleSha256, null)
+    // The digest of the body is recorded when the attempt is created, before anything is sent —
+    // it is what a resume compares against, and an attempt that never delivered is exactly the
+    // one that needs it (V4). `promptRequestId` is still what says whether a body was delivered.
+    assert.match(shown.result.worker.preambleSha256, /^[0-9a-f]{64}$/, JSON.stringify(shown.result.worker))
     assert.equal(shown.result.workerState, 'working')
     return { result, shown: shown.result }
   })
@@ -94,13 +97,23 @@ try {
     const taskB = await task('b')
     const first = await f.cli(['orchestration', 'worker-start', '--task', taskB, '--agent', 'claude', '--worktree', f.repo, '--request-id', id], { timeout: 180000 })
     const panes = (await f.cli(['terminal', 'list'])).result.totalCount
+    // What a replay must not do is put anything else on the screen. The record staying still is
+    // the weaker half of that — a second submission would be visible in the pane whether or not it
+    // were recorded — so the pane's own screen is compared across the replay as well. The half of
+    // this that needs a body actually to have been delivered first is in `native.mjs`: a stand-in
+    // never reaches the ready gate, so nothing here has been submitted to compare against.
+    const screen = async () => (await f.cli(['orchestration', 'worker-read', '--dispatch', first.result.dispatchId, '--screen'], { timeout: 60000 })).result.output.text
+    const beforeScreen = await screen()
+    // Taken after that read, not before it: a read still runs the reconcile pass, and a pass that
+    // changed something writes it. The digest has to bracket the replay alone.
     const digest = f.stateDigest()
     const replayed = await f.cli(['orchestration', 'worker-start', '--task', taskB, '--agent', 'claude', '--worktree', f.repo, '--request-id', id], { timeout: 180000 })
     assert.equal(replayed.result.replayed, true, JSON.stringify(replayed.result))
     assert.equal(replayed.result.dispatchId, first.result.dispatchId)
     assert.equal((await f.cli(['terminal', 'list'])).result.totalCount, panes, 'a replay must not create a second pane')
     assert.equal(f.stateDigest(), digest, 'a replay must not write again')
-    return { dispatchId: first.result.dispatchId, replayed: replayed.result.replayed, panes }
+    assert.equal(await screen(), beforeScreen, 'a replay must not put anything on the pane')
+    return { dispatchId: first.result.dispatchId, replayed: replayed.result.replayed, panes, screen: beforeScreen.slice(0, 200) }
   })
 
   await f.check('F1-a-second-attempt-on-a-task-that-already-delivered-one-is-refused', async () => {
@@ -113,10 +126,46 @@ try {
     const resumed = await f.cli(['orchestration', 'worker-start', '--task', taskA, '--agent', 'claude', '--worktree', f.repo], { timeout: 180000 })
     assert.equal(resumed.result.dispatchId, started.result.dispatchId, 'a resume re-uses the attempt, it does not create one')
     assert.equal(resumed.result.stages.dispatch.action, 'resumed')
+    // A resume is neither `created` nor `reused`, and it says which options it could not honour
+    // rather than dropping them in silence (V17/V18).
+    assert.equal(resumed.result.launch, 'resumed', JSON.stringify(resumed.result))
+    assert.deepEqual([...resumed.result.ignoredOptions].sort(), ['--agent', '--worktree'], JSON.stringify(resumed.result.ignoredOptions))
     assert.equal((await f.cli(['terminal', 'list'])).result.totalCount, panes, 'a resume must not create a second pane')
     const after = await f.cli(['orchestration', 'worker-show', '--dispatch', started.result.dispatchId])
     assert.equal(after.result.dispatch.attempt, 1, 'the attempt number must not move')
-    return { before, dispatchId: resumed.result.dispatchId, stage: resumed.result.stage, stages: resumed.result.stages }
+    assert.equal(after.result.worker.preambleSha256, started.shown.worker.preambleSha256, 'a resume rebuilds the same body it was created against')
+    return { before, dispatchId: resumed.result.dispatchId, stage: resumed.result.stage, stages: resumed.result.stages, ignoredOptions: resumed.result.ignoredOptions }
+  })
+
+  await f.check('F1-a-resume-delivers-the-body-the-attempt-was-created-against-or-nothing', async () => {
+    // Two halves of the same rule. A `--spec-file` handed to a resume of an attempt created from
+    // the Task spec is *ignored* and said so — re-reading it is how the same Dispatch could receive
+    // two different TASK bodies under two promptIds (V4). And an attempt created from a file the
+    // record does not hold cannot be resumed at all: the body it was created against is not
+    // reproducible, the digest says so, and the refusal points at worker-stop rather than
+    // delivering a body nobody chose.
+    const other = path.join(f.root, 'changed-spec.md')
+    fs.writeFileSync(other, 'a different body entirely\n')
+    const ignored = await f.cli(['orchestration', 'worker-start', '--task', taskA, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', other], { timeout: 180000 })
+    assert.equal(ignored.result.launch, 'resumed', JSON.stringify(ignored.result))
+    assert.ok(ignored.result.ignoredOptions.includes('--spec-file'), JSON.stringify(ignored.result.ignoredOptions))
+    assert.equal(ignored.result.dispatchId, started.result.dispatchId)
+
+    const taskD = await task('d')
+    const fromFile = await f.cli(['orchestration', 'worker-start', '--task', taskD, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', other], { timeout: 180000 })
+    assert.equal(fromFile.result.state, 'incomplete', JSON.stringify(fromFile.result))
+    const before = f.stateDigest()
+    const panes = (await f.cli(['terminal', 'list'])).result.totalCount
+    const refused = await f.cli(['orchestration', 'worker-start', '--task', taskD, '--agent', 'claude', '--worktree', f.repo,
+      '--spec-file', other], { fail: true, timeout: 180000 })
+    assert.equal(refused.error.code, 'preamble_mismatch', JSON.stringify(refused))
+    assert.equal(refused._meta.outcome, 'not_started', JSON.stringify(refused._meta))
+    assert.match(refused.error.resources.recovery, /worker-stop/)
+    assert.equal(f.stateDigest(), before, 'a refused resume must not write')
+    assert.equal((await f.cli(['terminal', 'list'])).result.totalCount, panes, 'a refused resume must not create a pane')
+    return { ignored: ignored.result.ignoredOptions, refused: refused.error }
   })
 
   await f.check('F1-an-unregistered-worktree-fails-the-terminal-stage-and-creates-no-attempt', async () => {

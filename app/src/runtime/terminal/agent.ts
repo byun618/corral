@@ -80,9 +80,31 @@ export function bodyIdentity(text: string): BodyIdentity {
         sha256: createHash('sha256').update(normalized).digest('hex'),
     }
 }
+/**
+ * The provider's own encoding of a pasted body. A body big enough to arrive as a paste is not
+ * recorded verbatim: claude stores it wrapped, with a per-paste id, under whatever was typed
+ * alongside it —
+ *
+ *     <typed lead>\n\n<pasted_content id="975e">\n<body>\n</pasted_content id="975e">\n
+ *
+ * so a byte-exact comparison against the body can never match, and "the record contains this body
+ * once" becomes unmeasurable for every body over the paste threshold. Unwrapping is not a loosening
+ * of that rule: it reads the provider's encoding of the same bytes. A row carrying more than one
+ * pasted block is left alone — two bodies in one message is not this submission.
+ */
+const PASTED = /^(?<before>[\s\S]*?)<pasted_content id="(?<id>[^"]*)">\n(?<body>[\s\S]*)\n<\/pasted_content id="\k<id>">\s*$/
+function unwrapPasted(text: string): string | null {
+    const body = PASTED.exec(text)?.groups?.body
+    if (body === undefined || body.includes('<pasted_content id=')) return null
+    return body
+}
 export function sameBody(identity: BodyIdentity, text: string): boolean {
     const other = bodyIdentity(text)
-    return other.bytes === identity.bytes && other.sha256 === identity.sha256
+    if (other.bytes === identity.bytes && other.sha256 === identity.sha256) return true
+    const inner = unwrapPasted(normalizeBody(text))
+    if (inner === null) return false
+    const unwrapped = bodyIdentity(inner)
+    return unwrapped.bytes === identity.bytes && unwrapped.sha256 === identity.sha256
 }
 
 // --- §4.2 argv and §4.1 validation --------------------------------------------------------------

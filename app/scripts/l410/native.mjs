@@ -231,12 +231,21 @@ try {
     assert.match(response.preamble.sha256, /^[0-9a-f]{64}$/)
     const stored = await f.cli(['orchestration', 'worker-show', '--dispatch', dispatchId])
     assert.equal(stored.result.worker.preambleSha256, response.preamble.sha256)
-    // Counted on the pane's own output, not inferred from the record.
+    // Counted on the pane's own output, not inferred from the record. A body this size arrives as a
+    // paste, and the provider may render it collapsed (`[Pasted text #1 +N lines]`) rather than in
+    // full — so the count is of *deliveries*, whichever of the two forms the screen shows.
     const text = (await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? ''
-    const copies = (text.match(/You are a corral worker\./g) ?? []).length
-    f.record('native/pane-after-submission', { copies, bytes: text.length, text: text.slice(0, 20000) })
-    assert.equal(copies, 1, `the preamble appears ${copies} times on the pane`)
-    return { preamble: response.preamble, copies, promptRequestId: stored.result.worker.promptRequestId }
+    const screenText = await screen(handle)
+    const verbatim = (text.match(/You are a corral worker\./g) ?? []).length
+    const collapsed = (text.match(/\[Pasted text #\d+/g) ?? []).length
+    const lead = (text.match(/The block pasted below is this session's task/g) ?? []).length
+    f.record('native/pane-after-submission', {
+      deliveries: verbatim + collapsed, verbatim, collapsed, leadLine: lead,
+      bytes: text.length, screen: screenText, text: text.slice(0, 40000),
+    })
+    assert.ok(lead >= 1, 'the typed lead line has to be on the pane')
+    assert.equal(verbatim + collapsed, 1, `the body was delivered ${verbatim + collapsed} times (verbatim ${verbatim}, collapsed ${collapsed})`)
+    return { preamble: response.preamble, verbatim, collapsed, leadLine: lead, promptRequestId: stored.result.worker.promptRequestId }
   })
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
@@ -246,7 +255,8 @@ try {
     assert.equal(again.error.resources.reason, 'dispatch_active')
     assert.equal(f.stateDigest(), digest, 'a refused start stores nothing')
     const text = (await f.cli(['terminal', 'read', '--terminal', handle, '--limit', '262144'], { timeout: 60000 })).result.text ?? ''
-    assert.equal((text.match(/You are a corral worker\./g) ?? []).length, 1, 'and types nothing')
+    const delivered = (text.match(/You are a corral worker\./g) ?? []).length + (text.match(/\[Pasted text #\d+/g) ?? []).length
+    assert.equal(delivered, 1, 'and delivers nothing further')
     return again.error
   })
 

@@ -110,6 +110,13 @@ in `residualResources` rather than undoing them, so a pane is never closed to ti
 keeps the agent it was started with, which is why `--model`, `--effort`, `--advisor` and `--worktree` are refused
 with `--terminal`, and a pane with no corral-managed agent is `agent_not_found` with no effect at all.
 
+One line is **typed** into the pane immediately before the preamble is pasted into it:
+`The block pasted below is this session's task, delivered by corral. Follow it:`. It is there because a
+provider that receives a message made entirely of pasted text refuses to act on it — claude 2.1.280 names it as
+a possible injection, and it is right to: nothing in such a message was written by the person at the keyboard.
+The line carries no newline, so the Enter that submits is still the prompt's own. **A Dispatch is one Enter and
+one `promptRequestId`**, and that is what "once" counts.
+
 **The preamble reaches a pane exactly once per Dispatch.** The same `--request-id` replays the stored result and
 submits nothing; a different id, while the attempt is open and its preamble delivered, is
 `task_not_startable (dispatch_active)`. The one exception is an attempt whose input stage never completed — a

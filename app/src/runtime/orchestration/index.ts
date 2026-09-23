@@ -117,6 +117,15 @@ const ID_SHAPE_TEXT: Readonly<Record<IdShape, string>> = {
  * LIFE-410's own argument rules. They are all shape and pairing — nothing here reads the document,
  * so every one of them is refused before a receipt exists and leaves the stored bytes untouched.
  */
+/**
+ * The one line that is *typed* into a worker's pane, immediately before the preamble is pasted into
+ * it. Without it the provider receives a message made entirely of pasted text and refuses to act on
+ * it — correctly, since nothing in such a message was written by the person at the keyboard. It
+ * ends without a newline: the Enter that submits belongs to the prompt, so a Dispatch is still one
+ * submission and one `promptRequestId`.
+ */
+const PROMPT_LEAD = 'The block pasted below is this session\'s task, delivered by corral. Follow it:'
+
 function validateWorkerFlags(inv: Invocation): void {
   const f = inv.flags
   const command = inv.command
@@ -963,6 +972,18 @@ export function orchestrationModule(userData: string): CommandModule {
             stages.input = { status: 'not_started', reason: block !== null && readString(block, 'phase') === 'blocked' ? 'agent_blocked' : 'agent_not_ready' }
             unfinished()
             return report('incomplete', 'agent_not_ready', { dispatchId: dispatch.id, terminal, dispatch, agent: block })
+          }
+          // A body delivered as a paste and nothing else reads as untrusted to a provider: claude
+          // 2.1.280 refuses a message that is "entirely pasted content" as a possible injection, and
+          // it is right to — nothing in it was typed by whoever is at the keyboard. So one line is
+          // typed first. It carries no newline, so the Enter that submits is still the prompt's own:
+          // one submission is one Enter and one `promptRequestId`, which is what F1 counts.
+          const leadId = derivedRequestId(parentId, 'lead')
+          try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
+          catch (error) {
+            stages.input = { ...stageFailure(error), requestId: leadId }
+            unfinished()
+            return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
           }
           let submitted: unknown
           try { submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input }) }

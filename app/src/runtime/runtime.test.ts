@@ -9,7 +9,7 @@ import { workspaceModule } from './workspace/index.js'
 import { startRuntime } from './server.js'
 import { localCall, request, MAX_REQUEST } from './transport.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
-import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
+import { AGENT_KINDS, AGENT_START_TIMEOUT_MS, AgentStore, EXPECTED_MANIFESTS, SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, agentName, bodyIdentity, captureCursor, sameBody, classifyCount, codexCandidates, codexSessionDates, countSubmissions, evaluateManifest, mintsSessionId, normalizeBody, providerArgv, readySatisfied, sessionRecordPaths, strippedSessionMarkers, withoutSessionMarkers, type AgentKind, type AgentPhase, type ReadySample } from './terminal/agent.js'
 import { terminalModule } from './terminal/index.js'
 import { Tokens } from './terminal/tokens.js'
 import { TerminalBackend, type AgentManifestObservation, type AgentObservation, type TerminalIdentity } from '../main/adapter/index.js'
@@ -662,4 +662,35 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(nested(shown, 'agent').phase).toBe('exited')
     expect(calls).toBeGreaterThanOrEqual(3)
   }, 30000)
+})
+
+
+// LIFE-410 — a body large enough to arrive as a paste is not recorded verbatim by the provider:
+// claude wraps it, with a per-paste id, under whatever was typed alongside it. A byte-exact
+// comparison therefore never matches, and "the record contains this body once" — the whole basis of
+// `--wait accepted` and of the duplicate pre-check — becomes unmeasurable for every preamble-sized
+// body. Unwrapping reads the provider's own encoding of the same bytes; it does not relax the rule.
+describe('LIFE-410 — a pasted body is still the same body', () => {
+  const body = 'You are a corral worker.\nRun: run_0123456789ab\nDo the thing.'
+  const identity = bodyIdentity(body)
+  const wrap = (before: string, inner: string, id = '975e'): string =>
+    `${before}<pasted_content id="${id}">\n${inner}\n</pasted_content id="${id}">\n`
+
+  it('matches through the paste wrapper, with a typed lead above it', () => {
+    expect(sameBody(identity, wrap("The block pasted below is this session's task:\n\n", body))).toBe(true)
+  })
+  it('matches with nothing typed alongside it', () => {
+    expect(sameBody(identity, wrap('', body))).toBe(true)
+  })
+  it('refuses a different body inside the wrapper', () => {
+    expect(sameBody(identity, wrap('', body + ' and one more line'))).toBe(false)
+  })
+  it('refuses a row carrying two pasted blocks — two bodies is not one submission', () => {
+    expect(sameBody(identity, wrap('', `${body}\n</pasted_content id="975e">\n<pasted_content id="a1b2">\n${body}`))).toBe(false)
+  })
+  it('leaves the verbatim case exactly as it was', () => {
+    expect(sameBody(identity, body)).toBe(true)
+    expect(sameBody(identity, body + '\n')).toBe(true)
+    expect(sameBody(identity, 'something else')).toBe(false)
+  })
 })

@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
-import { Receipts, REQUEST_ID, RECEIPT_TTL } from '../terminal/receipts.js'
+import { Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
 import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
@@ -1069,7 +1069,6 @@ export function orchestrationModule(userData: string): CommandModule {
           // stage 3 — the one submission
           const input = composeBody({ corral: corralCommand(), runId: start.runId, taskId, dispatchId: dispatch.id, handle: target.handle, spec: start.spec })
           const sha256 = preambleDigest(input)
-          const promptId = derivedRequestId(parentId, 'prompt')
           // The readiness gate gets most of what is left, never all of it: a submission that has no
           // time to run would report a deadline it never had a chance at (LIFE-394 G1).
           const readyBy = Math.min(ctx.deadlineAt - 2000, Date.now() + Math.max(1000, Math.floor((ctx.deadlineAt - Date.now()) * 0.6)))
@@ -1092,103 +1091,217 @@ export function orchestrationModule(userData: string): CommandModule {
           // typed first. It carries no newline, so the Enter that submits is still the prompt's own:
           // one submission is one Enter and one `promptRequestId`, which is what F1 counts.
           //
-          // V22. That line is its own effect, and it is not the paste — so a run that types it and
-          // then fails leaves it on the input line, and the next run must not type a second one. A
-          // provider row that begins with two leads is no longer the body this attempt was created
-          // against: `sameBody` (V6) refuses it, the duplicate pre-check of the run after that
-          // refuses it too, and the body is submitted twice while the record shows one delivery.
-          // So the lead is recorded *before* it is typed and the record is what a resume reads.
-          // An effect-free refusal takes the record back — the line was never typed, and a resume
-          // that skipped it would paste alone, which is the injection shape the lead exists for.
-          const markLead = async (value: { requestId: string; at: string } | null): Promise<DispatchRecord> => withDocumentLane(async () => {
+          // V22/V34/V35. The lead is one effect and the body is another, and a run can die between
+          // them. Each is recorded *before* it is made, and each record is a claim taken inside the
+          // document lane rather than a value read out of the plan's snapshot — two runs resuming
+          // the same attempt at once both read `null` in their own snapshots, so only the lane can
+          // decide which of them makes the effect. The run that writes the key is the only run that
+          // makes it. What a later run may do is then decided from those records and the receipts
+          // they name: corral never reads the pane's screen to answer it (`agent.ts` §4.6), and it
+          // never repeats an effect whose outcome it cannot read.
+          interface Intent { requestId: string; at: string }
+          const claim = async (key: 'lead' | 'prompt', requestId: string): Promise<{ mine: boolean; intent: Intent }> => withDocumentLane(async () => {
             const current = records.read()
             const entry = findDispatch(current, dispatch.id)
-            if (entry === undefined) return dispatch
-            const next = replaceDispatchRecord(current, withWorker(entry, { lead: value }, stamp()))
+            const worker = entry?.worker ?? null
+            const held = worker === null ? null : key === 'lead' ? worker.lead : worker.prompt
+            if (held !== null) return { mine: false, intent: held }
+            const intent: Intent = { requestId, at: stamp() }
+            if (entry === undefined) return { mine: true, intent }
+            const next = replaceDispatchRecord(current, withWorker(entry, key === 'lead' ? { lead: intent } : { prompt: intent }, stamp()))
             records.write(next)
-            return findDispatch(next, dispatch.id) ?? entry
+            dispatch = findDispatch(next, dispatch.id) ?? entry
+            return { mine: true, intent }
           })
+          /**
+           * V36. A claim is taken back for one case only: the child refused *before* any effect and
+           * said so (`not_started`). A `failed` carries no outcome at all — that is the shape a
+           * backend produces when it took the request and never answered, and the text may well be
+           * on the input line — and an `unknown` says as much outright. Reading either as "nothing
+           * happened" is what let a resume type a second lead into a pane that already had one.
+           */
+          const release = async (key: 'lead' | 'prompt', error: unknown): Promise<boolean> => {
+            if (!(error instanceof RuntimeError && error.outcome === 'not_started')) return false
+            await withDocumentLane(async () => {
+              const current = records.read()
+              const entry = findDispatch(current, dispatch.id)
+              if (entry === undefined) return
+              const next = replaceDispatchRecord(current, withWorker(entry, key === 'lead' ? { lead: null } : { prompt: null }, stamp()))
+              records.write(next)
+              dispatch = findDispatch(next, dispatch.id) ?? entry
+            })
+            return true
+          }
+          /**
+           * V35. What an effect an *earlier* run made actually returned. A record of intent is not
+           * proof that the text reached the pane, and the screen cannot be asked, so the evidence
+           * this run acts on is the receipt that run's request id names: a completed receipt holds
+           * the child's own result, and a pending or missing one says the effect may have happened
+           * and was never seen. The honest answer to the second is to stop and say so.
+           */
+          const receiptOf = (intent: Intent): { completed: boolean; result: unknown } => {
+            const receipt = readReceipt(userData, intent.requestId)
+            return receipt !== null && receipt.state === 'completed' ? { completed: true, result: receipt.result ?? null } : { completed: false, result: null }
+          }
+          /**
+           * V37. `terminal prompt` runs inside `Receipts.run`, so a refusal that crosses it comes
+           * back re-wrapped and the child's own resources sit under `detail`. The count is read from
+           * either shape — the wrapper is what the real path produces, the bare one is what a direct
+           * call produces — because reading it from the wrong place turned a delivery the provider
+           * had already accepted exactly once into a permanent "count unknown".
+           */
+          const matchCountOf = (resources: unknown): number | null => {
+            let level: unknown = resources
+            for (let depth = 0; depth < 4; depth++) {
+              if (!isRecord(level)) return null
+              const here = readNumber(level, 'matchCount')
+              if (here !== null) return here
+              level = readRecord(level, 'detail')
+            }
+            return null
+          }
+          /**
+           * V35. The two ways this stage ends without submitting anything. `unprovable` is the state
+           * of an attempt whose earlier effect cannot be read: it may still converge — the run that
+           * holds the claim may be mid-flight — so it stays resumable and names what to look at.
+           * `corrupted` is the state of an attempt whose body was submitted and is *not* in the
+           * provider's record: repeating the submission is what V35 exists to stop, so the attempt
+           * ends here and a person decides. Neither path makes a child call.
+           */
+          const stopUnprovable = (reason: string, intent: Intent, what: string) => {
+            stages.input = { status: 'not_started', reason, requestId: intent.requestId }
+            residualResources.push({ kind: 'dispatch', id: dispatch.id,
+              action: `${what} corral cannot prove it from the pane, and it will not repeat the effect. corral orchestration worker-show --dispatch ${dispatch.id} reports the attempt; if another run holds request ${intent.requestId} let it finish, otherwise read the pane with corral terminal read --terminal ${target.handle} and end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}` })
+            return report('incomplete', 'dispatch_input_unprovable',
+              { dispatchId: dispatch.id, terminal, dispatch, input: { requestId: intent.requestId, at: intent.at, receipt: 'pending_or_missing' } })
+          }
           const leadId = derivedRequestId(parentId, 'lead')
-          const ledAlready = dispatch.worker?.lead ?? null
-          if (ledAlready === null) {
-            dispatch = await markLead({ requestId: leadId, at: stamp() })
+          const leadClaim = await claim('lead', leadId)
+          if (leadClaim.mine) {
             try { await terminalChild('terminal send', { terminal: target.handle, text: PROMPT_LEAD, 'request-id': leadId }, {}) }
             catch (error) {
-              const failure = { ...stageFailure(error), requestId: leadId }
-              if (failure.status === 'failed') dispatch = await markLead(null)
-              stages.input = failure
+              const released = await release('lead', error)
+              stages.input = { ...stageFailure(error), requestId: leadId, lead: released ? 'released' : 'kept' }
               unfinished()
               return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
             }
+          } else if (!receiptOf(leadClaim.intent).completed) {
+            return stopUnprovable('lead_outcome_unknown', leadClaim.intent,
+              `An earlier run of this attempt recorded the lead line it was about to type and its receipt does not say what came of it.`)
           }
           /**
-           * What is left of a lead an earlier run typed. corral cannot clear an input line — the
-           * terminal contract takes printable text only, so there is no Ctrl-U to send — and this
-           * is a look, not a repair: the honest answer is to say the line is still there and name
-           * the one hand that can clear it.
+           * V38. A diagnostic, and nothing in this command branches on it. `terminal read --screen`
+           * returns the provider's drawing: a TUI puts the input line in a box with hint rows under
+           * it, so the end of the screen is not the end of the input line, and corral does not parse
+           * provider screens to decide anything (`agent.ts` §4.6). So this says `true` only when the
+           * lead's text is somewhere on the screen, and `null` — never `false` — otherwise. corral
+           * cannot prove an input line is clear, and claiming it is would be the same mistake facing
+           * the other way.
            */
           const strandedLead = async (): Promise<{ checked: boolean; present: boolean | null; reason: string | null }> => {
-            if (ledAlready === null) return { checked: false, present: null, reason: 'lead_typed_by_this_run' }
+            if (leadClaim.mine) return { checked: false, present: null, reason: 'lead_typed_by_this_run' }
             try {
               const screen = await terminalChild('terminal read', { terminal: target.handle, screen: true })
               const text = isRecord(screen) ? readString(screen, 'text') : null
-              return { checked: true, present: text === null ? null : text.trimEnd().endsWith(PROMPT_LEAD), reason: text === null ? 'no_screen_text' : null }
+              if (text === null) return { checked: true, present: null, reason: 'no_screen_text' }
+              return text.includes(PROMPT_LEAD)
+                ? { checked: true, present: true, reason: 'screen_holds_the_lead_text' }
+                : { checked: true, present: null, reason: 'screen_is_not_the_input_line' }
             } catch (error) { return { checked: false, present: null, reason: error instanceof RuntimeError ? error.code : 'read_failed' } }
           }
+          const promptId = derivedRequestId(parentId, 'prompt')
+          const promptClaim = await claim('prompt', promptId)
+          const deliveredBy = promptClaim.mine ? promptId : promptClaim.intent.requestId
           let submitted: unknown
           let verdict: SubmissionVerdict
-          try {
-            submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input })
-            verdict = submissionVerdict(submitted)
-          } catch (error) {
-            // The duplicate pre-check found this exact body already in the provider's record. That
-            // is this Dispatch's delivery — observed rather than made, which is the only kind of
-            // proof a resumed attempt can have. The identity it matched is the identity of `input`,
-            // so it is proof for this body and no other.
-            if (error instanceof RuntimeError && error.code === 'prompt_already_delivered') {
-              // V23. The pre-check says "this body is in the provider's record", not "exactly
-              // once". Two copies mean the one-input rule is already broken for this pane, and
-              // calling that an accepted delivery would bury it under a `ready`. Only a single
-              // match is this Dispatch's delivery; anything else leaves the attempt unconfirmed
-              // and resumable, with the count the pre-check reported.
-              const matchCount = isRecord(error.resources) ? readNumber(error.resources, 'matchCount') : null
-              if (matchCount === 1) {
-                submitted = { outcome: 'already_present', stage: 'confirmed', detail: error.resources }
-                verdict = { kind: 'delivered', confirmed: 'already_present' }
+          if (promptClaim.mine) {
+            try {
+              submitted = await terminalChild('terminal prompt', { terminal: target.handle, stdin: true, wait: 'accepted', 'request-id': promptId }, { stdin: input })
+              verdict = submissionVerdict(submitted)
+            } catch (error) {
+              // The duplicate pre-check found this exact body already in the provider's record. That
+              // is this Dispatch's delivery — observed rather than made, which is the only kind of
+              // proof a resumed attempt can have. The identity it matched is the identity of `input`,
+              // so it is proof for this body and no other.
+              if (error instanceof RuntimeError && error.code === 'prompt_already_delivered') {
+                // V23. The pre-check says "this body is in the provider's record", not "exactly
+                // once". Two copies mean the one-input rule is already broken for this pane, and
+                // calling that an accepted delivery would bury it under a `ready`. Only a single
+                // match is this Dispatch's delivery; anything else leaves the attempt unconfirmed,
+                // with the count the pre-check reported. The refusal is effect-free, so the claim
+                // this run took goes back (V36).
+                const matchCount = matchCountOf(error.resources)
+                await release('prompt', error)
+                if (matchCount === 1) {
+                  submitted = { outcome: 'already_present', stage: 'confirmed', detail: error.resources, matchCount }
+                  verdict = { kind: 'delivered', confirmed: 'already_present' }
+                } else {
+                  submitted = { outcome: 'already_present', stage: 'ambiguous', detail: error.resources, matchCount }
+                  verdict = { kind: 'unknown', reason: matchCount === null ? 'duplicate_count_unknown' : 'duplicate_submissions' }
+                }
               } else {
-                submitted = { outcome: 'already_present', stage: 'ambiguous', detail: error.resources, matchCount }
-                verdict = { kind: 'unknown', reason: matchCount === null ? 'duplicate_count_unknown' : 'duplicate_submissions' }
+                const released = await release('prompt', error)
+                stages.input = { ...stageFailure(error), requestId: promptId, submission: released ? 'released' : 'kept' }
+                unfinished()
+                return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
               }
+            }
+          } else {
+            // V35. An earlier run already submitted this body. Submitting it again under a new id is
+            // exactly the repetition that left an attempt pasting the same body on every resume, so
+            // this run makes no call at all: it reads that run's receipt, and where the receipt is
+            // unreadable or says the provider's record does not hold this body, it stops.
+            const earlier = receiptOf(promptClaim.intent)
+            if (!earlier.completed) {
+              return stopUnprovable('submission_outcome_unknown', promptClaim.intent,
+                `An earlier run of this attempt submitted the body and its receipt does not say what came of it.`)
+            }
+            const recovered = submissionVerdict(earlier.result)
+            const counted = matchCountOf(isRecord(earlier.result) ? readRecord(earlier.result, 'record') : null)
+            if (recovered.kind === 'delivered') { submitted = earlier.result; verdict = recovered }
+            else if (counted !== null && counted >= 1) {
+              submitted = { outcome: 'already_present', stage: 'recovered', detail: earlier.result, matchCount: counted }
+              verdict = counted === 1 ? { kind: 'delivered', confirmed: 'already_present' } : { kind: 'unknown', reason: 'duplicate_submissions' }
+            } else if (counted === 0) {
+              // The submission was made and the provider's record does not hold this body — a lead
+              // that was cleared off the input line before the paste landed makes exactly this
+              // shape, and no number of resumes will turn it into a delivery.
+              stages.input = { status: 'failed', requestId: promptClaim.intent.requestId, reason: 'body_not_in_provider_record', error: 'dispatch_input_corrupted' }
+              residualResources.push({ kind: 'dispatch', id: dispatch.id,
+                action: `The body this attempt submitted is not in the provider's record, so the submission reached the pane as something else. corral will not submit it again: read the pane with corral terminal read --terminal ${target.handle}, end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}, and start a new one for this Task` })
+              return report('failed', 'dispatch_input_corrupted',
+                { dispatchId: dispatch.id, terminal, dispatch, input: { requestId: promptClaim.intent.requestId, at: promptClaim.intent.at, matchCount: counted, detail: earlier.result }, lead: await strandedLead() })
             } else {
-              stages.input = { ...stageFailure(error), requestId: promptId }
-              unfinished()
-              return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
+              return stopUnprovable('submission_count_unknown', promptClaim.intent,
+                `An earlier run of this attempt submitted the body and its receipt does not say whether the provider's record holds it.`)
             }
           }
           if (verdict.kind === 'unknown') {
             // Neither a failure nor a delivery: the submission was made and its arrival was never
-            // seen. `promptRequestId` stays null, so the attempt stays resumable, and the duplicate
-            // pre-check decides on the next run what this run could not read.
-            stages.input = { status: 'unknown', requestId: promptId, reason: verdict.reason }
+            // seen. `promptRequestId` stays null, so the attempt stays resumable — and because the
+            // submission itself is recorded, the run that resumes it reads this run's receipt
+            // instead of submitting the body a second time.
+            stages.input = { status: 'unknown', requestId: deliveredBy, reason: verdict.reason }
             unfinished()
             return report('incomplete', 'dispatch_input_unconfirmed', { dispatchId: dispatch.id, terminal, dispatch, input: submitted, lead: await strandedLead() })
           }
-          stages.input = { status: 'completed', requestId: promptId, delivery: verdict.confirmed }
-          effects.push({ kind: 'dispatch_input', action: 'submitted', id: promptId, state: 'accepted' })
+          stages.input = { status: 'completed', requestId: deliveredBy, delivery: verdict.confirmed }
+          effects.push({ kind: 'dispatch_input', action: 'submitted', id: deliveredBy, state: 'accepted' })
           const stored = await withDocumentLane(async () => {
             const current = records.read()
             const entry = findDispatch(current, dispatch.id)
             if (entry === undefined) return dispatch
-            const next = replaceDispatchRecord(current, withWorker(entry, { preambleSha256: sha256, promptRequestId: promptId }, stamp()))
+            const next = replaceDispatchRecord(current, withWorker(entry, { preambleSha256: sha256, promptRequestId: deliveredBy }, stamp()))
             records.write(next)
             return findDispatch(next, dispatch.id) ?? entry
           })
           // A delivery this run observed rather than made leaves the question of what the *earlier*
           // run left behind. If its lead is still sitting on the input line it will prefix whatever
-          // is typed there next, and corral has no way to take it back.
+          // is typed there next, and corral has no way to take it back. The record — not the screen
+          // — is what says an earlier run typed one (V38).
           const lead = await strandedLead()
-          if (lead.present === true) residualResources.push({ kind: 'input_line', id: target.handle,
-            action: `The lead line this attempt typed on an earlier run is still on the pane's input line. corral cannot clear an input line — press Ctrl-U in ${target.handle} before typing anything else there` })
+          if (!leadClaim.mine) residualResources.push({ kind: 'input_line', id: target.handle,
+            action: `An earlier run of this attempt typed the lead line on ${target.handle}. corral cannot clear an input line — if the pane still shows it, press Ctrl-U there before typing anything else` })
           return report('ready', 'input_accepted', {
             dispatchId: dispatch.id, terminal, dispatch: stored, lead,
             preamble: { sha256, bytes: Buffer.byteLength(input), lines: input.split('\n').length },

@@ -73,6 +73,8 @@ function isTask(value: unknown): value is TaskRecord {
  * as a verdict about which pane corral may close is exactly what this guard exists to prevent.
  */
 const WORKER_STRINGS_OR_NULL = ['originDispatchId', 'ownershipTransferredTo', 'paneSession', 'preambleSha256', 'promptRequestId', 'lastHeartbeatAt', 'capabilityRevokedAt', 'capabilityRevokedReason']
+/** The two effects a Dispatch records before it makes them: the typed lead (V22) and the body (V35). */
+const INTENT_KEYS = ['lead', 'prompt']
 const RELEASE_STATES = ['released', 'retained', 'unknown']
 const RETAIN_REASONS = ['user_requested', 'user_takeover']
 function isRelease(value: unknown): boolean {
@@ -83,7 +85,8 @@ function isWorker(value: unknown): boolean {
   if (!isRecord(value)) return false
   return oneOf(['created', 'reused'], value.launch) && oneOf(['owned', 'borrowed'], value.ownership)
     && WORKER_STRINGS_OR_NULL.every(key => key in value && isNullOr(isString, value[key]))
-    && 'lead' in value && (value.lead === null || (isRecord(value.lead) && isString(value.lead.requestId) && isStamp(value.lead.at)))
+    && INTENT_KEYS.every(key => key in value && (value[key] === null
+      || (isRecord(value[key]) && isString(value[key].requestId) && isStamp(value[key].at))))
     && (value.retain === null || (isRecord(value.retain) && oneOf(RETAIN_REASONS, value.retain.reason) && isStamp(value.retain.at)))
     && (value.release === null || isRelease(value.release))
 }
@@ -248,12 +251,15 @@ export class OrchestrationStore {
       ? {
         ...fill(fill(stored, 'messages', []), 'deliveries', []),
         dispatches: Array.isArray(stored.dispatches)
-          // V22 added `worker.lead`. Same rule one level down: a key an older document never wrote
-          // is filled, a key it wrote as an explicit null is left exactly as it is.
+          // V22 added `worker.lead` and V35 `worker.prompt`. Same rule one level down: a key an
+          // older document never wrote is filled, a key it wrote as an explicit null is left
+          // exactly as it is.
           ? stored.dispatches.map(entry => {
             if (!isRecord(entry)) return entry
             const withWorkerKey = fill(entry, 'worker', null)
-            return isRecord(withWorkerKey.worker) ? { ...withWorkerKey, worker: fill(withWorkerKey.worker, 'lead', null) } : withWorkerKey
+            if (!isRecord(withWorkerKey.worker)) return withWorkerKey
+            const worker = INTENT_KEYS.reduce<Record<string, unknown>>((value, key) => fill(value, key, null), withWorkerKey.worker)
+            return { ...withWorkerKey, worker }
           })
           : stored.dispatches,
       }

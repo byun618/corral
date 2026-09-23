@@ -6,7 +6,16 @@ import { isRecord } from '../../shared/json.js'
 import { RuntimeError, type Invocation } from '../contracts.js'
 export const RECEIPT_TTL = 24 * 60 * 60 * 1000
 export const REQUEST_ID = /^r1\.(\d{13})\.([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/
-interface Receipt { hash: string; state: 'pending' | 'completed'; createdAt: number; result?: unknown }
+export interface Receipt { hash: string; state: 'pending' | 'completed'; createdAt: number; result?: unknown }
+/**
+ * LIFE-410 V35 (freeze rule 11 exception, read-only). What a request id's receipt holds, or `null`
+ * when there is none. A resumed Dispatch asks this instead of making the call again: a completed
+ * receipt is what the earlier run's effect actually returned, and a pending one says the effect may
+ * have happened and was never seen. Nothing here writes, and no command behaviour changes.
+ */
+export function readReceipt(userData: string, requestId: string): Receipt | null {
+  return readFile<Receipt | null>(path.join(userData, 'runtime/terminal-receipts', requestId + '.json'), () => null)
+}
 export class Receipts {
   // Keep admission independent of result files: losing a receipt must not free its ID or capacity.
   // After restart, the timestamp check below rejects missing IDs from the preceding runtime.

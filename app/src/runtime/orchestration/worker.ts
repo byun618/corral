@@ -194,6 +194,7 @@ export const emptyWorker = (input: { launch: 'created' | 'reused'; ownership: 'o
   paneSession: input.paneSession,
   preambleSha256: null,
   lead: null,
+  prompt: null,
   promptRequestId: null,
   lastHeartbeatAt: null,
   capabilityRevokedAt: null,

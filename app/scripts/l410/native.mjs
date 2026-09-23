@@ -96,6 +96,17 @@ const LEDGER = process.env.CORRAL_VERIFY_LEDGER
   ? path.resolve(process.env.CORRAL_VERIFY_LEDGER)
   : path.join(RAW_ROOT, 'submissions-ledger.json')
 /**
+ * V39. A named ledger that is not there is a mistake, never an empty budget. The migration below
+ * rebuilds a *partial* history — the rows that existed before the ledger did — so letting it run
+ * for a path someone typed wrong turned a spent budget of 12 into 6 and handed back six
+ * submissions that were already made. A typo refuses to start; only the default path, which is the
+ * one the committed ledger has always had, may ever be built from the migration.
+ */
+if (process.env.CORRAL_VERIFY_LEDGER && !fs.existsSync(LEDGER)) {
+  assert.fail(`CORRAL_VERIFY_LEDGER names a ledger that does not exist: ${LEDGER}. `
+    + 'Name the ledger that holds the rows already spent — this run does not start, and no submission is made.')
+}
+/**
  * Where the r0 rows came from, before the ledger above existed. `migrated()` runs only when there
  * is no ledger at all, which after r1 never happens — the committed ledger holds every row. Only
  * the worker's own source is listed now: the coordinator's delta lives in a raw directory this

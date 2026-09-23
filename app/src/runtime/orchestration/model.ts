@@ -112,6 +112,13 @@ export interface WorkerBlock {
    * no longer match it.
    */
   lead: { requestId: string; at: string } | null
+  /**
+   * V35. The same rule for the body: the request id is recorded before the submission is made, so a
+   * later run knows one was made at all. `promptRequestId` says a delivery was *confirmed*; this
+   * says one was *attempted*, and the receipt that id names is what a resume reads instead of
+   * submitting again. Only an explicitly effect-free refusal takes it back (V36).
+   */
+  prompt: { requestId: string; at: string } | null
   promptRequestId: string | null
   lastHeartbeatAt: string | null
   /** Capability lifetime is not process lifetime (§4.5): a live pane may have lost the right to report. */

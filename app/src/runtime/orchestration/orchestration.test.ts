@@ -984,7 +984,7 @@ describe('LIFE-410 mailbox, Delivery and ACK (§4.4, F5)', () => {
     expect(findDispatch(nulled, base.dispatchId)?.worker).toBe(null)
   })
 
-  it('applies the same rule one level down to the key V22 added (worker.lead)', () => {
+  it('applies the same rule one level down to the keys V22 and V35 added (worker.lead, worker.prompt)', () => {
     // An r1 document has a worker block and no `lead` in it. That is the absent-key case, filled
     // with null; a `lead` that is *present* is checked whole, because a half-written one read back
     // as "the lead was already typed" is exactly how a resume would skip typing it.
@@ -1003,6 +1003,14 @@ describe('LIFE-410 mailbox, Delivery and ACK (§4.4, F5)', () => {
     expect(findDispatch(kept, base.dispatchId)?.worker?.lead?.requestId).toMatch(/^r1\./)
     expect(code(() => load(block => { block.lead = { requestId: 'x' } }).read())).toBe('storage_corrupt')
     expect(code(() => load(block => { block.lead = 'typed' }).read())).toBe('storage_corrupt')
+    // V35 added `worker.prompt` on the same terms, and for the same reason: a half-written one read
+    // back as "the body was already submitted" would stop a resume that has everything left to do.
+    const withoutPrompt = load(block => { delete block.prompt }).read()
+    expect(findDispatch(withoutPrompt, base.dispatchId)?.worker?.prompt).toBe(null)
+    const storedPrompt = load(block => { block.prompt = { requestId: 'r1.1790000000000.00000000-0000-4000-8000-000000000000', at: '2026-09-23T00:00:00.000Z' } }).read()
+    expect(findDispatch(storedPrompt, base.dispatchId)?.worker?.prompt?.requestId).toMatch(/^r1\./)
+    expect(code(() => load(block => { block.prompt = { at: '2026-09-23T00:00:00.000Z' } }).read())).toBe('storage_corrupt')
+    expect(code(() => load(block => { block.prompt = 'submitted' }).read())).toBe('storage_corrupt')
   })
 })
 

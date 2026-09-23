@@ -84,15 +84,25 @@ try {
     // the resume rebuilt from `task.spec`, so the digest never matched and the only way out was to
     // kill a worker that might be mid-task. The file is read at resume time and *compared*, so the
     // same file resumes and a changed one is still refused (V4 intact).
+    //
+    // V41. Every start below names `--terminal`, which is what this check's name has always
+    // claimed: in r2 all three used `--agent … --worktree`, so the reuse branch — the one where the
+    // pane, the agent and the session are already there and only the body is new — was never
+    // entered and a regression in it could not have been seen here. The pane this borrows is a
+    // hand-started one, because the fixture's other pane is busy with `secondTask`.
     const third = (await f.cli(['orchestration', 'task-create', '--spec', 'the stored task spec', '--title', 'from-file'])).result.task.id
     const file = path.join(f.root, 'f9-spec.md')
     fs.writeFileSync(file, 'the body that only this file holds\n')
-    // The pane is busy with `secondTask`, so this attempt gets a pane of its own.
-    const made = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+    const created = await f.cli(['terminal', 'create', '--worktree', f.repo, '--title', 'from-file-pane', '--agent', 'claude'], { timeout: 180000 })
+    const borrowed = created.result.terminal.handle
+    assert.ok(borrowed, JSON.stringify(created.result))
+    const made = await f.cli(['orchestration', 'worker-start', '--task', third, '--terminal', borrowed,
       '--spec-file', file], { timeout: 180000 })
     assert.equal(made.result.state, 'incomplete', JSON.stringify(made.result))
+    assert.equal(made.result.launch, 'reused', JSON.stringify(made.result))
+    assert.equal((await show(made.result.dispatchId)).worker.ownership, 'borrowed', 'a hand-started pane is borrowed, never owned')
     const dispatches = f.stateJson().dispatches.length
-    const resumed = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+    const resumed = await f.cli(['orchestration', 'worker-start', '--task', third, '--terminal', borrowed,
       '--spec-file', file], { timeout: 180000 })
     assert.equal(resumed.result.launch, 'resumed', JSON.stringify(resumed.result))
     assert.equal(resumed.result.dispatchId, made.result.dispatchId)
@@ -100,12 +110,19 @@ try {
     assert.equal(f.stateJson().dispatches.length, dispatches, 'a resume never adds a record')
     fs.writeFileSync(file, 'a body that is not the one this attempt was made against\n')
     const before = f.stateDigest()
-    const refused = await f.cli(['orchestration', 'worker-start', '--task', third, '--agent', 'claude', '--worktree', f.repo,
+    const refused = await f.cli(['orchestration', 'worker-start', '--task', third, '--terminal', borrowed,
       '--spec-file', file], { fail: true, timeout: 180000 })
     assert.equal(refused.error.code, 'preamble_mismatch', JSON.stringify(refused))
     assert.equal(f.stateDigest(), before, 'a refused resume must not write')
-    await f.cli(['orchestration', 'worker-stop', '--dispatch', made.result.dispatchId], { timeout: 60000 })
-    return { made: made.result.state, resumed: resumed.result.launch, refused: refused.error }
+    // A borrowed pane is never closed by corral, so this attempt is given up rather than stopped —
+    // `worker-stop` on it is `identity_unproven`, which is the freeze's rule 8 answer and is
+    // asserted here so the cleanup cannot quietly become the wrong verb.
+    const stopped = await f.cli(['orchestration', 'worker-stop', '--dispatch', made.result.dispatchId], { fail: true, timeout: 60000 })
+    assert.equal(stopped.error.code, 'identity_unproven', JSON.stringify(stopped))
+    const abandoned = await f.cli(['orchestration', 'worker-abandon', '--dispatch', made.result.dispatchId], { timeout: 60000 })
+    assert.equal(abandoned.result.dispatch.status, 'failed', JSON.stringify(abandoned.result))
+    return { pane: borrowed, made: made.result, resumed: resumed.result.launch, refused: refused.error,
+      stopRefused: stopped.error.code, abandoned: abandoned.result.dispatch.status }
   })
 
   await f.check('F9-the-old-attempt-id-is-stale-and-the-new-one-settles', async () => {

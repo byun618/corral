@@ -1,5 +1,5 @@
 /**
- * LIFE-410 r2 — the admission rules, measured against the real module.
+ * LIFE-410 r3 — the admission rules, measured against the real module.
  *
  * `orchestration.test.ts` tests the pure functions this module is built from. The rules this file
  * is about are not in any one of them: they are about *when* a judgement is made relative to the
@@ -7,6 +7,11 @@
  * itself with the terminal boundary replaced. The mock below is the one the r1 reviewers used to
  * find V21–V25 and V29, kept deliberately close to theirs so the same shapes are being measured —
  * their file asserts the defects are visible, this one asserts they are not.
+ *
+ * r3: the terminal boundary now runs the two mutating child calls through the *real* `Receipts`.
+ * That is not decoration — V37 was a count read out of the wrong place that a wrapper-free mock
+ * could never see, and V35's whole answer to "was this body already submitted?" is the receipt the
+ * earlier run's request id names. A mock that skips receipts cannot measure either.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
@@ -24,50 +29,75 @@ import type { MessageRecord } from './messages.js'
 
 interface MockTerminal {
   mode: 'unknown' | 'completed' | 'refuse'
+  /** What `terminal send` does with the lead: deliver it, refuse before any effect, or take it and never answer. */
+  sendMode: 'ok' | 'refused' | 'lost'
   bodies: string[]
   buffer: string
-  calls: { command: string; flags: Record<string, unknown>; stdin?: string }[]
+  calls: { command: string; flags: Record<string, string | boolean>; stdin?: string }[]
   rows: string[]
   live: boolean
   sweeps: number
   duplicateCount: number
   screen: string
+  waitSatisfied: boolean
+  promptDelayMs: number
 }
 const mock = vi.hoisted((): MockTerminal => ({
-  mode: 'unknown', bodies: [], buffer: '', calls: [], rows: [], live: true, sweeps: 0, duplicateCount: 1, screen: '',
+  mode: 'unknown', sendMode: 'ok', bodies: [], buffer: '', calls: [], rows: [], live: true, sweeps: 0,
+  duplicateCount: 1, screen: '', waitSatisfied: true, promptDelayMs: 0,
 }))
 vi.mock('../terminal/index.js', async importOriginal => {
+  const { Receipts } = await import('../terminal/receipts.js')
   const actual = await importOriginal<typeof import('../terminal/index.js')>()
   return {
     ...actual,
-    terminalModule: () => ({
-      specs: [], validate: () => {}, execute: async (inv: { command: string; flags: Record<string, unknown>; stdin?: string }) => {
-        mock.calls.push(inv)
-        const terminal = { handle: 't1.review', epoch: 'epoch', ptyId: 'pty', paneId: 'pane' }
-        if (inv.command === 'terminal create') return { terminal, agent: { kind: 'claude' }, stages: { agent: { status: 'completed' } } }
-        if (inv.command === 'terminal show') return { terminal, agent: { kind: 'claude' } }
-        if (inv.command === 'terminal wait') return { satisfied: true }
-        if (inv.command === 'terminal read') return { text: mock.screen }
-        if (inv.command === 'terminal close') { mock.live = false; return { outcome: 'completed' } }
-        if (inv.command === 'terminal send') { mock.buffer += String(inv.flags.text); mock.screen = mock.buffer; return { outcome: 'completed' } }
-        if (inv.command === 'terminal prompt') {
-          const body = String(inv.stdin)
-          if (mock.bodies.includes(body)) throw new RuntimeError('prompt_already_delivered', 'Already present', { matchCount: mock.duplicateCount }, 'preflight', 'not_started')
-          if (mock.mode === 'refuse') throw new RuntimeError('agent_not_ready', 'gate changed', null, 'preflight', 'not_started')
-          const row = `${mock.buffer}\n\n<pasted_content id="one">\n${body.trimEnd()}\n</pasted_content id="one">`
-          mock.rows.push(row)
-          mock.buffer = ''
-          mock.screen = ''
-          if (mock.mode === 'unknown') mock.bodies.push(body)
-          const matches = sameBody(bodyIdentity(body), row)
-          return {
-            outcome: mock.mode === 'unknown' || !matches ? 'unknown' : 'completed',
-            wait: { requested: 'accepted', satisfied: mock.mode !== 'unknown' && matches, reason: mock.mode === 'unknown' ? 'deadline' : null },
-          }
+    terminalModule: (userData: string) => {
+      // The real module wraps every mutating command in this, and the wrapper is load-bearing here:
+      // it is what a resumed run reads instead of submitting again (V35), and it is what re-packs a
+      // refusal so the duplicate count moves under `detail` (V37).
+      const receipts = new Receipts(userData, 0)
+      const effect = async (inv: { command: string; flags: Record<string, string | boolean>; stdin?: string }) => {
+        if (inv.command === 'terminal send') {
+          if (mock.sendMode === 'refused') throw new RuntimeError('agent_not_ready', 'refused before any effect', null, 'preflight', 'not_started')
+          mock.buffer += String(inv.flags.text)
+          mock.screen = mock.buffer
+          // A backend that took the text and never answered: the effect happened, the outcome did not.
+          if (mock.sendMode === 'lost') throw new RuntimeError('backend_unavailable', 'no answer from the backend', null, 'backend')
+          return { outcome: 'completed' }
         }
-        throw Error(inv.command)
-      },
-    }),
+        await new Promise(resolve => setTimeout(resolve, mock.promptDelayMs))
+        const body = String(inv.stdin)
+        if (mock.bodies.includes(body)) throw new RuntimeError('prompt_already_delivered', 'Already present', { matchCount: mock.duplicateCount }, 'preflight', 'not_started')
+        if (mock.mode === 'refuse') throw new RuntimeError('agent_not_ready', 'gate changed', null, 'preflight', 'not_started')
+        const row = `${mock.buffer}\n\n<pasted_content id="one">\n${body.trimEnd()}\n</pasted_content id="one">`
+        mock.rows.push(row)
+        mock.buffer = ''
+        mock.screen = ''
+        if (mock.mode === 'unknown') mock.bodies.push(body)
+        const matches = sameBody(bodyIdentity(body), row)
+        // The provider's own record, counted the way `terminal prompt` counts it: how many rows hold
+        // this exact body. A row the lead never reached does not match, and that is what 0 means.
+        const matchCount = mock.rows.filter(entry => sameBody(bodyIdentity(body), entry)).length
+        return {
+          outcome: mock.mode === 'unknown' || !matches ? 'unknown' : 'completed',
+          wait: { requested: 'accepted', satisfied: mock.mode !== 'unknown' && matches, reason: mock.mode === 'unknown' ? 'deadline' : null },
+          record: { path: `${userData}/record.jsonl`, matchCount, naiveCount: matchCount, assistantAfter: false, cursorInvalidated: false, unavailableReason: null },
+        }
+      }
+      return {
+        specs: [], validate: () => {}, execute: async (inv: { command: string; flags: Record<string, string | boolean>; stdin?: string }) => {
+          mock.calls.push(inv)
+          const terminal = { handle: 't1.review', epoch: 'epoch', ptyId: 'pty', paneId: 'pane' }
+          if (inv.command === 'terminal create') return { terminal, agent: { kind: 'claude' }, stages: { agent: { status: 'completed' } } }
+          if (inv.command === 'terminal show') return { terminal, agent: { kind: 'claude' } }
+          if (inv.command === 'terminal wait') return { satisfied: mock.waitSatisfied, agent: { phase: 'launching' } }
+          if (inv.command === 'terminal read') return { text: mock.screen }
+          if (inv.command === 'terminal close') { mock.live = false; return { outcome: 'completed' } }
+          if (inv.command === 'terminal send' || inv.command === 'terminal prompt') return receipts.run({ ...inv, args: [], cwd: userData }, () => effect(inv))
+          throw Error(inv.command)
+        },
+      }
+    },
   }
 })
 const { orchestrationModule, withDocumentLane } = await import('./index.js')
@@ -101,8 +131,8 @@ const asRecord = (value: unknown): Record<string, unknown> => {
   return value
 }
 async function setup(): Promise<Harness> {
-  mock.mode = 'unknown'; mock.buffer = ''; mock.bodies = []; mock.calls = []; mock.rows = []
-  mock.live = true; mock.sweeps = 0; mock.duplicateCount = 1; mock.screen = ''
+  mock.mode = 'unknown'; mock.sendMode = 'ok'; mock.buffer = ''; mock.bodies = []; mock.calls = []; mock.rows = []
+  mock.live = true; mock.sweeps = 0; mock.duplicateCount = 1; mock.screen = ''; mock.waitSatisfied = true; mock.promptDelayMs = 0
   process.env.CORRAL_BACKEND_SOCKET = '/tmp/mock'
   delete process.env.CORRAL_SESSION
   vi.spyOn(TerminalBackend.prototype, 'epoch').mockResolvedValue('epoch')
@@ -169,51 +199,149 @@ describe('V21 — the active check and the ownership decision are made in the la
   })
 })
 
-describe('V22 — the lead is recorded before it is typed, so a resume never types a second one', () => {
-  it('an unconfirmed submission that resumes into already_present types the lead once', async () => {
+describe('V22/V34/V35/V36 — one lead, one body, and a resume that reads receipts instead of repeating', () => {
+  it('a resume recovers the earlier submission from its receipt rather than submitting again', async () => {
     const f = await setup()
     const first = await f.start()
+    expect(first.state).toBe('incomplete')
     const second = await f.start()
     expect(second.dispatchId).toBe(first.dispatchId)
     expect(second.state).toBe('ready')
-    const sends = mock.calls.filter(entry => entry.command === 'terminal send')
-    expect(sends).toHaveLength(1)
+    // One lead and one body for the Dispatch — the second run made no call of its own at all.
+    expect(mock.calls.filter(entry => entry.command === 'terminal send')).toHaveLength(1)
+    expect(mock.calls.filter(entry => entry.command === 'terminal prompt')).toHaveLength(1)
+    expect(mock.rows).toHaveLength(1)
     const stored = f.store.read().dispatches[0]!.worker
     expect(stored?.lead?.requestId).toEqual(expect.stringMatching(/^r1\./))
+    // …and the delivery is recorded under the id that actually submitted it, not this run's.
+    expect(stored?.promptRequestId).toBe(stored?.prompt?.requestId)
   })
 
-  it('a preflight failure after the lead does not make the retry submit a doubled lead', async () => {
+  it('V34 — two resumes racing for an attempt whose lead was never typed type it once', async () => {
     const f = await setup()
-    mock.mode = 'refuse'
-    await f.start()
-    mock.mode = 'completed'
-    const second = await f.start()
+    mock.waitSatisfied = false                       // the first run stops at the ready gate
+    const first = await f.start()
+    expect(first.state).toBe('incomplete')
+    expect(f.store.read().dispatches[0]!.worker?.lead).toBeNull()
+    mock.waitSatisfied = true
+    mock.promptDelayMs = 20                          // hold the winner inside the body so both leads would land
+    const both = await Promise.all([f.start(REUSE), f.start(REUSE)])
     expect(mock.calls.filter(entry => entry.command === 'terminal send')).toHaveLength(1)
-    expect(mock.rows[0]!.startsWith(PROMPT_LEAD + PROMPT_LEAD)).toBe(false)
-    expect(mock.rows[0]!.startsWith(PROMPT_LEAD)).toBe(true)
-    // …and because the row carries one lead, `sameBody` recognises it and the body is delivered.
-    expect(second.state).toBe('ready')
-    expect(second.stage).toBe('input_accepted')
+    expect(mock.rows.filter(row => row.startsWith(PROMPT_LEAD + PROMPT_LEAD))).toHaveLength(0)
+    expect(mock.calls.filter(entry => entry.command === 'terminal prompt').length).toBeLessThanOrEqual(1)
+    // Whichever of the two took the claim, neither ends anywhere but the two honest places: the
+    // one that made the submission reports it unconfirmed, the one that made no effect at all
+    // reports that it could not prove the other's. Nothing reports a delivery it did not see.
+    const stopped = both.filter(entry => entry.state !== 'ready')
+    expect(stopped.length).toBeGreaterThan(0)
+    for (const entry of stopped) expect(['dispatch_input_unprovable', 'dispatch_input_unconfirmed']).toContain(entry.stage)
+    expect(mock.rows.length).toBeLessThanOrEqual(1)
   })
 
-  it('reports whether the earlier run left its lead on the input line', async () => {
+  it('V36 — a send that was taken and never answered keeps its record, and no resume types a second lead', async () => {
+    const f = await setup()
+    mock.sendMode = 'lost'
+    const first = await f.start()
+    expect(first.state).toBe('incomplete')
+    expect(asRecord(asRecord(first.stages).input).error).toBe('backend_unavailable')
+    // The text reached the pane; only the answer was lost. The record stays.
+    expect(f.store.read().dispatches[0]!.worker?.lead).not.toBeNull()
+    expect(mock.buffer).toBe(PROMPT_LEAD)
+    mock.sendMode = 'ok'; mock.mode = 'completed'
+    const second = await f.start(REUSE)
+    expect(mock.calls.filter(entry => entry.command === 'terminal send')).toHaveLength(1)
+    expect(second.state).toBe('incomplete')
+    expect(second.stage).toBe('dispatch_input_unprovable')
+    expect(asRecord(asRecord(second.stages).input).reason).toBe('lead_outcome_unknown')
+  })
+
+  it('V36 control — a send refused before any effect gives the claim back, and the retry types one lead', async () => {
+    const f = await setup()
+    mock.sendMode = 'refused'
+    await f.start()
+    expect(f.store.read().dispatches[0]!.worker?.lead).toBeNull()
+    mock.sendMode = 'ok'; mock.mode = 'completed'
+    const second = await f.start(REUSE)
+    expect(mock.calls.filter(entry => entry.command === 'terminal send')).toHaveLength(2)
+    expect(mock.rows[0]!.startsWith(PROMPT_LEAD)).toBe(true)
+    expect(mock.rows[0]!.startsWith(PROMPT_LEAD + PROMPT_LEAD)).toBe(false)
+    expect(second.state).toBe('ready')
+  })
+
+  it('V35 — a body the provider record does not hold ends the attempt instead of being submitted again', async () => {
+    const f = await setup()
+    mock.mode = 'refuse'                             // lead typed, body refused before any effect
+    await f.start()
+    expect(f.store.read().dispatches[0]!.worker?.lead).not.toBeNull()
+    expect(f.store.read().dispatches[0]!.worker?.prompt).toBeNull()
+    mock.mode = 'completed'
+    mock.buffer = ''; mock.screen = ''               // a person pressed Ctrl-U, as corral itself advises
+    const second = await f.start(REUSE)
+    // corral cannot see an input line, so this run submits once — and the row it makes is not this
+    // body, which is what the next run finds out from the receipt without submitting anything.
+    expect(mock.rows).toHaveLength(1)
+    expect(mock.rows[0]!.startsWith(PROMPT_LEAD)).toBe(false)
+    expect(second.stage).toBe('dispatch_input_unconfirmed')
+    const third = await f.start(REUSE)
+    expect(third.state).toBe('failed')
+    expect(third.stage).toBe('dispatch_input_corrupted')
+    expect(mock.rows).toHaveLength(1)                // …and nothing was submitted a second time
+    expect(f.store.read().dispatches[0]!.worker?.promptRequestId).toBeNull()
+    expect(third.residualResources).toEqual([expect.objectContaining({ kind: 'dispatch' })])
+    const fourth = await f.start(REUSE)
+    expect(fourth.stage).toBe('dispatch_input_corrupted')
+    expect(mock.rows).toHaveLength(1)
+  })
+
+  it('V38 — the screen is a diagnostic: it never reports an input line as clear, and never drives a send', async () => {
     const f = await setup()
     await f.start()
-    mock.screen = PROMPT_LEAD
+    mock.screen = `> ${PROMPT_LEAD}\n──────────\n? for shortcuts`   // the lead, under a TUI footer
     const second = await f.start()
+    expect(second.state).toBe('ready')
     expect(second.lead).toMatchObject({ checked: true, present: true })
     expect(second.residualResources).toEqual([expect.objectContaining({ kind: 'input_line' })])
+    const g = await setup()
+    await g.start()
+    mock.screen = 'a screen with no lead on it at all'
+    const other = await g.start()
+    // Not `false`: corral cannot prove an input line is clear, and it does not act on the answer.
+    expect(other.lead).toMatchObject({ checked: true, present: null, reason: 'screen_is_not_the_input_line' })
+    expect(mock.calls.filter(entry => entry.command === 'terminal send')).toHaveLength(1)
   })
 })
 
-describe('V23 — already_present is a delivery only when it matched exactly once', () => {
-  it('two matching submissions leave the attempt unconfirmed instead of ready', async () => {
+describe('V23/V37 — already_present is a delivery only when it matched exactly once, read through the real wrapper', () => {
+  /** An attempt that submitted once and then lost the claim record, so the next run meets the pre-check. */
+  const forgetTheSubmission = (f: Harness): void => {
+    const current = f.store.read()
+    f.store.write({ ...current, dispatches: current.dispatches.map(entry =>
+      entry.worker === null ? entry : { ...entry, worker: { ...entry.worker, prompt: null } }) })
+  }
+
+  it('one match through the receipt wrapper is this attempt\'s delivery', async () => {
     const f = await setup()
     await f.start()
+    forgetTheSubmission(f)
+    const second = await f.start()
+    expect(second.state).toBe('ready')
+    expect(asRecord(asRecord(second.stages).input).delivery).toBe('already_present')
+    // The count was read out of the shape `Receipts` actually produces: the child's own resources
+    // sit under `detail`, which is exactly where r2 did not look.
+    const input = asRecord(second.input)
+    expect(input.matchCount).toBe(1)
+    expect(asRecord(asRecord(input.detail).detail).matchCount).toBe(1)
+  })
+
+  it('two matches leave the attempt unconfirmed instead of ready', async () => {
+    const f = await setup()
+    await f.start()
+    forgetTheSubmission(f)
     mock.duplicateCount = 2
     const second = await f.start()
     expect(second.state).toBe('incomplete')
     expect(second.stage).toBe('dispatch_input_unconfirmed')
+    expect(asRecord(asRecord(second.stages).input).reason).toBe('duplicate_submissions')
     expect(f.store.read().dispatches[0]!.worker?.promptRequestId).toBeNull()
   })
 })
@@ -227,9 +355,13 @@ describe('V24 — admission observes inside the lane, once', () => {
     expect(mock.sweeps - before).toBe(1)
   })
 
-  it('a pane that dies while ask waits for the lane does not get a question stored', async () => {
+  it('V40 — a pane that dies while ask waits for the lane is refused, and no proof was taken before the lane', async () => {
+    // The check this replaces passed against r1 as well, which made it evidence of nothing (C20).
+    // This one fails there: r1 observed the pane *before* taking the lane, so the sweep below
+    // happens while the lane is held and a question is stored for a pane that is already gone.
     const f = await setup()
     const started = await f.start()
+    const before = mock.sweeps
     let unlock!: () => void
     const held = withDocumentLane(async () => new Promise<void>(resolve => { unlock = resolve }))
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -237,7 +369,11 @@ describe('V24 — admission observes inside the lane, once', () => {
       command: 'orchestration ask',
       flags: { question: 'late', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
       args: [], cwd: f.dir, caller: { paneId: 'pane', session: null },
-    }, { ...f.ctx(), deadlineAt: Date.now() + 800 })
+    }, { ...f.ctx(), deadlineAt: Date.now() + 1500 })
+    // Bounded: give a pre-lane observation every chance to happen, then stop waiting either way.
+    const deadline = Date.now() + 400
+    while (mock.sweeps === before && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+    expect(mock.sweeps).toBe(before)
     mock.live = false
     unlock()
     await held
@@ -295,5 +431,33 @@ describe('V29 — ask carries the sender proof it was admitted on', () => {
     expect(result.sessionVerified).toBe(false)
     const receipt = asRecord(JSON.parse(fs.readFileSync(path.join(f.dir, 'runtime/terminal-receipts', `${id}.json`), 'utf8')))
     expect(asRecord(receipt.result)).toHaveProperty('sessionVerified')
+  })
+
+  it('V43 — a resume that collects an answer says it too, and says the same thing', async () => {
+    process.env.CORRAL_SESSION = 'session-one'
+    const f = await setup()
+    process.env.CORRAL_SESSION = 'session-one'
+    const started = await f.start()
+    const pane = { paneId: 'pane', session: 'session-one' }
+    const pending = asRecord(await f.mod.execute({
+      command: 'orchestration ask',
+      flags: { question: 'who is asking?', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
+      args: [], cwd: f.dir, caller: pane,
+    }, { ...f.ctx(), deadlineAt: Date.now() + 500 }))
+    expect(pending.state).toBe('pending')
+    expect(pending.sessionVerified).toBe(true)
+    const messageId = String(pending.messageId)
+    await f.call('reply', { id: messageId, body: 'the pane did' })
+    // The answered exit of a resume is the one path V29 left unmeasured (C24): a worker acts on
+    // this answer, so it has to carry the same proof the question was admitted on.
+    const answered = asRecord(await f.mod.execute({
+      command: 'orchestration ask',
+      flags: { resume: messageId, 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
+      args: [], cwd: f.dir, caller: pane,
+    }, { ...f.ctx(), deadlineAt: Date.now() + 2000 }))
+    expect(answered.state).toBe('answered')
+    expect(answered.sessionVerified).toBe(true)
+    expect(asRecord(answered.reply).body).toBe('the pane did')
+    delete process.env.CORRAL_SESSION
   })
 })

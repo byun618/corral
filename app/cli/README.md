@@ -122,15 +122,45 @@ a possible injection, and it is right to: nothing in such a message was written 
 The line carries no newline, so the Enter that submits is still the prompt's own. **A Dispatch is one Enter and
 one `promptRequestId`**, and that is what "once" counts.
 
-That line is its own effect, and it is **recorded before it is typed** (`worker.lead`). A resume reads that
-record and does not type a second one. It matters more than it sounds: herdr appends to whatever is already on
-the input line, so a run that typed the line and then failed leaves it there, and a resume that typed another
-would produce a message beginning with the line twice. Such a message is no longer the body the Dispatch was
-created against — the duplicate pre-check and the delivery judgement would both read one delivery as none, and
-the body would be submitted a second time under a record showing one. corral cannot clear a pane's input line
-(the terminal contract takes printable text only, so there is no Ctrl-U to send), so a resume that finds the
-earlier line still there reports it — `lead: {checked, present}` in the answer, and an `input_line` entry in
-`residualResources` naming the pane and the key a person presses to clear it.
+That line is its own effect, and so is the paste. **Each is recorded before it is made** (`worker.lead`,
+`worker.prompt`), and each record is a *claim*: it is written inside the document lane and only when the key is
+still null, so the run that writes it is the only run that makes that effect. Two runs resuming the same
+Dispatch at the same time both see `null` in the snapshots they planned from — the lane is the only place that
+can decide between them — and the one that does not take the claim makes no call at all. **A Dispatch types at
+most one lead and submits at most one body, in any race.** A claim is given back only when the child refused
+*before any effect and said so*; a failure that carries no outcome, or one that says `unknown`, leaves the
+record standing, because the text may well have reached the pane.
+
+It matters more than it sounds: herdr appends to whatever is already on the input line, so a run that typed the
+line and then failed leaves it there, and a resume that typed another would produce a message beginning with
+the line twice. Such a message is no longer the body the Dispatch was created against — the duplicate pre-check
+and the delivery judgement would both read one delivery as none, and the body would be submitted a second time
+under a record showing one.
+
+**What a resume believes, and what it will not do.** It believes two things: the Dispatch's own record, and the
+receipt of the request id that record names. It does not read the pane's screen to decide anything — the screen
+is the provider's drawing, a TUI puts the input line in a box with hint rows under it, and corral never parses
+provider screens. So a resume that did not take a claim looks at the earlier run's receipt:
+
+- **completed** — that is the child's own answer, and the resume acts on it. For the body, a receipt whose
+  result says the provider's record holds it is a delivery this run *observed* rather than made.
+- **pending or missing** — the effect may have happened and was never seen. The resume submits nothing and
+  reports `state: incomplete` at stage `dispatch_input_unprovable`, naming the request id to look at, the pane
+  to read, and `worker-stop` as the way out. Waiting is also an answer here: if another run is still mid-flight,
+  it is that run's receipt this one is waiting to be able to read.
+- **completed, and the provider's record does **not** hold this body** (`record.matchCount: 0`) — the submission
+  was made and what reached the pane was not this body. A lead cleared off the input line before the paste
+  landed makes exactly that shape. No further resume can turn it into a delivery, so the attempt ends there:
+  `state: failed` at stage `dispatch_input_corrupted`, with `worker-stop` and a new attempt as the way out.
+  corral does **not** submit the body again — repeating a paste on every resume is the failure this rule exists
+  to prevent.
+
+corral cannot clear a pane's input line (the terminal contract takes printable text only, so there is no Ctrl-U
+to send). When an *earlier* run typed the lead, the answer carries an `input_line` entry in `residualResources`
+naming the pane and the key a person presses — that comes from the record, not from a screen. The `lead:
+{checked, present}` block in the answer is a diagnostic beside it and nothing branches on it: `present` is
+`true` when the lead's text is somewhere on the screen and `null` otherwise. It is never `false`, because corral
+cannot prove an input line is clear, and no value of it ever causes a line to be typed.
 
 **The preamble reaches a pane exactly once per Dispatch.** The same `--request-id` replays the stored result and
 submits nothing; a different id, while the attempt is open and its preamble delivered, is
@@ -140,16 +170,20 @@ resumes the submission into the same pane and the same Dispatch, which is still 
 tells the two apart by whether `worker.promptRequestId` is set.
 
 **A submission is judged, not assumed.** `state: ready` is reported only when `terminal prompt` answered
-`outcome: completed` with its `wait` satisfied, or when the duplicate pre-check found this exact body already in
-the provider's record **exactly once** (`prompt_already_delivered` with `matchCount: 1` — a delivery observed
-rather than made). `prompt_already_delivered` says "this body is in the record", not "exactly once": two or more
-matches mean the one-input rule is already broken for that pane, and reporting that as an accepted delivery
-would bury it under a `ready`. So anything else — `outcome: unknown`, an unmet wait, queue acceptance, or a
-pre-check that matched two or more times — is `state: incomplete` at stage
+`outcome: completed` with its `wait` satisfied, or when this exact body was found in the provider's record
+**exactly once** — a delivery observed rather than made. That finding reaches corral two ways: the duplicate
+pre-check refusing a new submission (`prompt_already_delivered` with `matchCount: 1`), and the recorded receipt
+of an earlier run's submission (`record.matchCount: 1`). The count is read through the receipt wrapper as well
+as beside it: `terminal prompt` runs inside the receipt store, and a refusal that crosses it comes back with the
+child's own resources under `detail` — reading it from one place only is how a delivery the provider had
+accepted exactly once became a permanent "count unknown". `prompt_already_delivered` says "this body is in the
+record", not "exactly once": two or more matches mean the one-input rule is already broken for that pane, and
+reporting that as an accepted delivery would bury it under a `ready`. So anything else — `outcome: unknown`, an
+unmet wait, queue acceptance, or a count of two or more — is `state: incomplete` at stage
 `dispatch_input_unconfirmed`, with `stages.input.status: unknown`: the body may well have arrived,
-`promptRequestId` stays null, and the attempt stays resumable. The resume then either finds the body already
-there or submits it for the first time, and that pairing is what keeps "once" true across an answer corral could
-not read. A Dispatch that never reached the pane is never reported as `ready`.
+`promptRequestId` stays null, and the attempt stays resumable. The resume then reads this run's receipt rather
+than submitting a second time, and that pairing is what keeps "once" true across an answer corral could not
+read. A Dispatch that never reached the pane is never reported as `ready`.
 
 **A resume delivers the body the Dispatch was created against and nothing else.** The digest of that body is
 recorded when the Dispatch is created, before anything is sent, and it is **the digest — not the flags on this

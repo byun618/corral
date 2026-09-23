@@ -38,22 +38,29 @@ try {
 
   const observed = await f.check('PROBE-the-pane-shell-names-its-own-pane', async () => {
     const pane = await f.pane('l410-probe')
-    // The shell writes its own environment to a file in the fixture root. Reading the file rather
-    // than the screen keeps the answer free of terminal rendering.
-    const dump = path.join(f.root, 'pane-env.txt')
-    await f.cli(['terminal', 'send', '--terminal', pane.handle, '--text', `env | sort > ${dump}`, '--enter'])
-    await f.until(() => fs.existsSync(dump) && fs.readFileSync(dump, 'utf8').includes('PATH='), 'pane env dump')
-    const text = fs.readFileSync(dump, 'utf8')
-    const entries = Object.fromEntries(text.split('\n').filter(line => /^HERDR/.test(line)).map(line => {
-      const cut = line.indexOf('=')
-      return [line.slice(0, cut), line.slice(cut + 1)]
-    }))
+    // V44. The question this probe asks is *which name* carries the pane id, so names are all it
+    // takes — and a pane inherits the shell environment the backend was started from, so a dump of
+    // values writes whatever that shell was carrying (an API key, a token) into a file. Nothing
+    // here ever writes a value: the names come out of `cut -d= -f1`, and the one comparison that
+    // needs a value is made *inside the pane*, which answers `match` or `differs`.
     const listed = await f.cli(['terminal', 'list'])
     const row = listed.result.terminals.find(entry => entry.handle === pane.handle)
     assert.ok(row, 'the pane corral just created must appear in terminal list')
-    const matches = Object.entries(entries).filter(([, value]) => value === row.paneId).map(([name]) => name)
-    return { herdrEnv: entries, corralPaneId: row.paneId, corralPtyId: row.ptyId, corralEpoch: row.epoch,
-      namesMatchingPaneId: matches, paneEnvNames: Object.keys(entries) }
+    // Reading a file rather than the screen keeps the answer free of terminal rendering.
+    const names = path.join(f.root, 'pane-env-names.txt')
+    await f.cli(['terminal', 'send', '--terminal', pane.handle, '--text', `env | cut -d= -f1 | sort > ${names}`, '--enter'])
+    await f.until(() => fs.existsSync(names) && fs.readFileSync(names, 'utf8').includes('PATH'), 'pane env name dump')
+    const dumped = fs.readFileSync(names, 'utf8').split('\n').map(line => line.trim()).filter(Boolean)
+    const herdr = dumped.filter(name => /^HERDR/.test(name))
+    const verdicts = path.join(f.root, 'pane-env-match.txt')
+    const compare = `for n in ${herdr.join(' ') || 'HERDR_NONE'}; do if [ "$(printenv $n)" = "${row.paneId}" ]; then echo "$n match"; else echo "$n differs"; fi; done > ${verdicts}`
+    await f.cli(['terminal', 'send', '--terminal', pane.handle, '--text', compare, '--enter'])
+    await f.until(() => fs.existsSync(verdicts) && fs.readFileSync(verdicts, 'utf8').trim().split('\n').length >= Math.max(1, herdr.length), 'pane env comparison')
+    const compared = Object.fromEntries(fs.readFileSync(verdicts, 'utf8').split('\n').filter(Boolean)
+      .map(line => line.trim().split(/\s+/)).filter(parts => parts.length === 2))
+    const matches = Object.entries(compared).filter(([, verdict]) => verdict === 'match').map(([name]) => name)
+    return { paneEnvNames: herdr, comparedInThePane: compared, corralPaneId: row.paneId, corralPtyId: row.ptyId, corralEpoch: row.epoch,
+      namesMatchingPaneId: matches, valuesRecorded: false }
   })
 
   await f.check('PROBE-record-the-means-this-supports', async () => {

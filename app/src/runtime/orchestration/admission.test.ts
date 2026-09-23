@@ -41,13 +41,19 @@ interface MockTerminal {
   screen: string
   waitSatisfied: boolean
   promptDelayMs: number
+  /** r4. The cursor moved under the count: one match, and `terminal prompt` still calls it unknown. */
+  cursorInvalidated: boolean
+  /** r4. The row is there; the record `confirmPrompt` read at its own deadline had not caught up. */
+  recordLag: boolean
 }
 const mock = vi.hoisted((): MockTerminal => ({
   mode: 'unknown', sendMode: 'ok', bodies: [], buffer: '', calls: [], rows: [], live: true, sweeps: 0,
   duplicateCount: 1, screen: '', waitSatisfied: true, promptDelayMs: 0,
+  cursorInvalidated: false, recordLag: false,
 }))
 vi.mock('../terminal/index.js', async importOriginal => {
   const { Receipts } = await import('../terminal/receipts.js')
+  const { classifyCount } = await import('../terminal/agent.js')
   const actual = await importOriginal<typeof import('../terminal/index.js')>()
   return {
     ...actual,
@@ -78,10 +84,21 @@ vi.mock('../terminal/index.js', async importOriginal => {
         // The provider's own record, counted the way `terminal prompt` counts it: how many rows hold
         // this exact body. A row the lead never reached does not match, and that is what 0 means.
         const matchCount = mock.rows.filter(entry => sameBody(bodyIdentity(body), entry)).length
+        // r4 (V45·V46). The number alone was never the answer: `terminal prompt` reports it beside
+        // its own verdict, and the verdict is what the real `classifyCount` makes of it. `recordLag`
+        // is the provider that has not written its record by the time the deadline runs out — the
+        // row exists, the count taken at that instant is 0 — and `cursorInvalidated` is the count
+        // that landed on one match the child cannot prove is *this* submission's.
+        const counted = mock.recordLag ? 0 : matchCount
+        const unavailableReason = classifyCount(
+          { matchCount: counted, naiveCount: counted, cursorInvalidated: mock.cursorInvalidated, assistantAfter: false, hookBlocked: false, scanned: [] },
+          counted === 0 && mock.recordLag ? 0 : 1)
+        const satisfied = mock.mode !== 'unknown' && matches && unavailableReason === null
         return {
-          outcome: mock.mode === 'unknown' || !matches ? 'unknown' : 'completed',
-          wait: { requested: 'accepted', satisfied: mock.mode !== 'unknown' && matches, reason: mock.mode === 'unknown' ? 'deadline' : null },
-          record: { path: `${userData}/record.jsonl`, matchCount, naiveCount: matchCount, assistantAfter: false, cursorInvalidated: false, unavailableReason: null },
+          outcome: satisfied ? 'completed' : 'unknown',
+          wait: { requested: 'accepted', satisfied, reason: satisfied ? null : 'deadline' },
+          record: { path: `${userData}/record.jsonl`, matchCount: counted, naiveCount: counted, assistantAfter: false,
+            cursorInvalidated: mock.cursorInvalidated, unavailableReason },
         }
       }
       return {
@@ -133,6 +150,7 @@ const asRecord = (value: unknown): Record<string, unknown> => {
 async function setup(): Promise<Harness> {
   mock.mode = 'unknown'; mock.sendMode = 'ok'; mock.buffer = ''; mock.bodies = []; mock.calls = []; mock.rows = []
   mock.live = true; mock.sweeps = 0; mock.duplicateCount = 1; mock.screen = ''; mock.waitSatisfied = true; mock.promptDelayMs = 0
+  mock.cursorInvalidated = false; mock.recordLag = false
   process.env.CORRAL_BACKEND_SOCKET = '/tmp/mock'
   delete process.env.CORRAL_SESSION
   vi.spyOn(TerminalBackend.prototype, 'epoch').mockResolvedValue('epoch')
@@ -165,6 +183,12 @@ async function setup(): Promise<Harness> {
 }
 afterEach(() => { vi.restoreAllMocks(); delete process.env.CORRAL_BACKEND_SOCKET })
 const REUSE = { agent: undefined, worktree: undefined, terminal: 't1.review' }
+/** An attempt that submitted once and then lost the claim record, so the next run meets the pre-check. */
+const forgetTheSubmission = (f: Harness): void => {
+  const current = f.store.read()
+  f.store.write({ ...current, dispatches: current.dispatches.map(entry =>
+    entry.worker === null ? entry : { ...entry, worker: { ...entry.worker, prompt: null } }) })
+}
 
 describe('V21 — the active check and the ownership decision are made in the lane that writes', () => {
   it('two Tasks racing for one pane leave one attempt, not two', async () => {
@@ -268,7 +292,7 @@ describe('V22/V34/V35/V36 — one lead, one body, and a resume that reads receip
     expect(second.state).toBe('ready')
   })
 
-  it('V35 — a body the provider record does not hold ends the attempt instead of being submitted again', async () => {
+  it('V35·V46 — a body the provider record does not hold is not submitted again, and is not called a failure either', async () => {
     const f = await setup()
     mock.mode = 'refuse'                             // lead typed, body refused before any effect
     await f.start()
@@ -283,14 +307,107 @@ describe('V22/V34/V35/V36 — one lead, one body, and a resume that reads receip
     expect(mock.rows[0]!.startsWith(PROMPT_LEAD)).toBe(false)
     expect(second.stage).toBe('dispatch_input_unconfirmed')
     const third = await f.start(REUSE)
-    expect(third.state).toBe('failed')
-    expect(third.stage).toBe('dispatch_input_corrupted')
+    // r4. The count in that receipt is 0, and the same receipt says why the count is not proof
+    // (`unavailableReason`). r3 read the 0 alone and ended the attempt at `dispatch_input_corrupted`
+    // — a verdict corral cannot support, because the same 0 is what a provider that has not written
+    // its record yet produces. The attempt stops where it can still be resumed from.
+    expect(third.state).toBe('incomplete')
+    expect(third.stage).toBe('dispatch_input_unprovable')
+    const reported = asRecord(asRecord(third.stages).input)
+    expect(reported.reason).toBe('submission_unconfirmed')
+    expect(reported.matchCount).toBe(0)
+    expect(reported.unavailableReason).toBe('ambiguous')
     expect(mock.rows).toHaveLength(1)                // …and nothing was submitted a second time
     expect(f.store.read().dispatches[0]!.worker?.promptRequestId).toBeNull()
     expect(third.residualResources).toEqual([expect.objectContaining({ kind: 'dispatch' })])
     const fourth = await f.start(REUSE)
-    expect(fourth.stage).toBe('dispatch_input_corrupted')
+    expect(fourth.stage).toBe('dispatch_input_unprovable')
     expect(mock.rows).toHaveLength(1)
+  })
+
+  it('V45 — a receipt that counted one match on an invalidated cursor is not a delivery', async () => {
+    const f = await setup()
+    mock.cursorInvalidated = true                    // the count is 1; the child still calls it unknown
+    const first = await f.start()
+    expect(first.state).toBe('incomplete')
+    expect(first.stage).toBe('dispatch_input_unconfirmed')
+    expect(mock.rows).toHaveLength(1)
+    const intent = f.store.read().dispatches[0]!.worker!.prompt!
+    const receipt = asRecord(JSON.parse(fs.readFileSync(path.join(f.dir, 'runtime/terminal-receipts', intent.requestId + '.json'), 'utf8')))
+    const record = asRecord(asRecord(receipt.result).record)
+    expect(record.matchCount).toBe(1)
+    expect(record.cursorInvalidated).toBe(true)
+    expect(record.unavailableReason).toBe('ambiguous')
+    // The resume reads that receipt. r3 saw `matchCount >= 1` and reported `ready`; the child's own
+    // verdict says the row it counted cannot be proved to be this submission's.
+    const second = await f.start(REUSE)
+    expect(second.state).toBe('incomplete')
+    expect(second.stage).toBe('dispatch_input_unprovable')
+    const reported = asRecord(asRecord(second.stages).input)
+    expect(reported.reason).toBe('submission_unconfirmed')
+    expect(reported.unavailableReason).toBe('ambiguous')
+    expect(reported.cursorInvalidated).toBe(true)
+    expect(reported.matchCount).toBe(1)
+    expect(f.store.read().dispatches[0]!.worker?.promptRequestId).toBeNull()
+    expect(mock.rows).toHaveLength(1)
+    // …and the record the child proved is still the one thing that recovers a delivery: with the
+    // cursor whole, the same world recovers the body through the duplicate pre-check.
+    mock.cursorInvalidated = false
+    forgetTheSubmission(f)
+    mock.mode = 'completed'
+    const third = await f.start(REUSE)
+    expect(third.state).toBe('ready')
+    expect(asRecord(asRecord(third.stages).input).delivery).toBe('already_present')
+  })
+
+  it('V46 — a record that catches up after the deadline leaves the attempt resumable, not failed', async () => {
+    const f = await setup()
+    mock.recordLag = true                            // the row is written; the count taken at the deadline is 0
+    const first = await f.start()
+    expect(first.stage).toBe('dispatch_input_unconfirmed')
+    expect(mock.rows).toHaveLength(1)
+    const intent = f.store.read().dispatches[0]!.worker!.prompt!
+    const receipt = asRecord(JSON.parse(fs.readFileSync(path.join(f.dir, 'runtime/terminal-receipts', intent.requestId + '.json'), 'utf8')))
+    const record = asRecord(asRecord(receipt.result).record)
+    expect(record.matchCount).toBe(0)
+    expect(record.unavailableReason).toBe('not_found')
+    mock.recordLag = false                           // the provider has written it; nothing else changed
+    const second = await f.start(REUSE)
+    expect(second.state).toBe('incomplete')
+    expect(second.stage).toBe('dispatch_input_unprovable')
+    const third = await f.start(REUSE)
+    expect(third.stage).toBe('dispatch_input_unprovable')
+    expect(mock.rows).toHaveLength(1)                // no resume submits the body a second time
+    // The limit this round keeps, said out loud: corral does not count again on a resume, so the
+    // attempt stays here. What recovers it is the duplicate pre-check on a fresh claim — the same
+    // world, the same row, the claim record taken away — and that path finds the body exactly once.
+    forgetTheSubmission(f)
+    const fourth = await f.start(REUSE)
+    expect(fourth.state).toBe('ready')
+    expect(asRecord(asRecord(fourth.stages).input).delivery).toBe('already_present')
+    expect(asRecord(fourth.input).matchCount).toBe(1)
+    expect(mock.rows).toHaveLength(1)
+  })
+
+  it('V47 — a receipt that cannot be read is reported in an envelope, not thrown', async () => {
+    const f = await setup()
+    const first = await f.start()
+    expect(first.stage).toBe('dispatch_input_unconfirmed')
+    const intent = f.store.read().dispatches[0]!.worker!.prompt!
+    fs.writeFileSync(path.join(f.dir, 'runtime/terminal-receipts', intent.requestId + '.json'), '{"hash":"a","state":"comple')
+    let thrown: unknown = null
+    let envelope: Record<string, unknown> | null = null
+    try { envelope = asRecord(await f.start(REUSE)) } catch (error) { thrown = error }
+    expect(thrown).toBeNull()
+    expect(envelope).not.toBeNull()
+    expect(envelope!.state).toBe('incomplete')
+    expect(envelope!.stage).toBe('dispatch_input_unprovable')
+    const reported = asRecord(asRecord(envelope!.stages).input)
+    expect(reported.reason).toBe('receipt_unreadable')
+    expect(reported.receipt).toBe('storage_corrupt')
+    expect(envelope!.residualResources).toEqual([expect.objectContaining({ kind: 'dispatch' })])
+    expect(mock.rows).toHaveLength(1)                // the unreadable receipt costs no second submission
+    expect(mock.calls.filter(entry => entry.command === 'terminal prompt')).toHaveLength(1)
   })
 
   it('V38 — the screen is a diagnostic: it never reports an input line as clear, and never drives a send', async () => {
@@ -312,13 +429,6 @@ describe('V22/V34/V35/V36 — one lead, one body, and a resume that reads receip
 })
 
 describe('V23/V37 — already_present is a delivery only when it matched exactly once, read through the real wrapper', () => {
-  /** An attempt that submitted once and then lost the claim record, so the next run meets the pre-check. */
-  const forgetTheSubmission = (f: Harness): void => {
-    const current = f.store.read()
-    f.store.write({ ...current, dispatches: current.dispatches.map(entry =>
-      entry.worker === null ? entry : { ...entry, worker: { ...entry.worker, prompt: null } }) })
-  }
-
   it('one match through the receipt wrapper is this attempt\'s delivery', async () => {
     const f = await setup()
     await f.start()

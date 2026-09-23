@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
-import { Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
+import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
 import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
@@ -1138,10 +1138,26 @@ export function orchestrationModule(userData: string): CommandModule {
            * this run acts on is the receipt that run's request id names: a completed receipt holds
            * the child's own result, and a pending or missing one says the effect may have happened
            * and was never seen. The honest answer to the second is to stop and say so.
+           *
+           * V47 (r4). Reading is itself an operation that can fail. `readFile` answers a missing
+           * file with the fallback but rethrows anything else as `storage_corrupt`, and that throw
+           * used to leave this command through the side door — no `stage`, no `stages`, no
+           * `effects`, no dispatch id for the caller to resume with. A receipt that cannot be read
+           * is one more thing corral does not know, so it is reported the way the others are, and
+           * the file is left exactly as it is for a person to look at.
            */
-          const receiptOf = (intent: Intent): { completed: boolean; result: unknown } => {
-            const receipt = readReceipt(userData, intent.requestId)
-            return receipt !== null && receipt.state === 'completed' ? { completed: true, result: receipt.result ?? null } : { completed: false, result: null }
+          type ReceiptRead =
+            | { kind: 'completed'; result: unknown }
+            | { kind: 'absent' }
+            | { kind: 'unreadable'; code: string; detail: string }
+          const receiptOf = (intent: Intent): ReceiptRead => {
+            let receipt: Receipt | null
+            try { receipt = readReceipt(userData, intent.requestId) }
+            catch (error) {
+              return { kind: 'unreadable', code: error instanceof RuntimeError ? error.code : 'receipt_unreadable',
+                detail: error instanceof Error ? error.message : String(error) }
+            }
+            return receipt !== null && receipt.state === 'completed' ? { kind: 'completed', result: receipt.result ?? null } : { kind: 'absent' }
           }
           /**
            * V37. `terminal prompt` runs inside `Receipts.run`, so a refusal that crosses it comes
@@ -1168,12 +1184,23 @@ export function orchestrationModule(userData: string): CommandModule {
            * provider's record: repeating the submission is what V35 exists to stop, so the attempt
            * ends here and a person decides. Neither path makes a child call.
            */
-          const stopUnprovable = (reason: string, intent: Intent, what: string) => {
-            stages.input = { status: 'not_started', reason, requestId: intent.requestId }
+          const stopUnprovable = (reason: string, intent: Intent, what: string,
+            more?: { evidence?: Record<string, unknown>; also?: string }) => {
+            const evidence = more?.evidence ?? { receipt: 'pending_or_missing' }
+            stages.input = { status: 'not_started', reason, requestId: intent.requestId, ...evidence }
             residualResources.push({ kind: 'dispatch', id: dispatch.id,
-              action: `${what} corral cannot prove it from the pane, and it will not repeat the effect. corral orchestration worker-show --dispatch ${dispatch.id} reports the attempt; if another run holds request ${intent.requestId} let it finish, otherwise read the pane with corral terminal read --terminal ${target.handle} and end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}` })
+              action: `${what} corral cannot prove it from the pane, and it will not repeat the effect. corral orchestration worker-show --dispatch ${dispatch.id} reports the attempt; if another run holds request ${intent.requestId} let it finish, otherwise read the pane with corral terminal read --terminal ${target.handle} and end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}${more?.also ?? ''}` })
             return report('incomplete', 'dispatch_input_unprovable',
-              { dispatchId: dispatch.id, terminal, dispatch, input: { requestId: intent.requestId, at: intent.at, receipt: 'pending_or_missing' } })
+              { dispatchId: dispatch.id, terminal, dispatch, input: { requestId: intent.requestId, at: intent.at, ...evidence } })
+          }
+          /** V47. The same stop, for the one thing that is not a verdict about the pane at all. */
+          const stopUnreadable = (intent: Intent, failure: { code: string; detail: string }, what: string) => {
+            stages.input = { status: 'not_started', reason: 'receipt_unreadable', requestId: intent.requestId, receipt: failure.code }
+            residualResources.push({ kind: 'dispatch', id: dispatch.id,
+              action: `The receipt request ${intent.requestId} names cannot be read (${failure.code}), so corral cannot say what the earlier run that ${what} was told. corral will not repeat the effect and it will not rewrite the receipt: read the pane with corral terminal read --terminal ${target.handle} and end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}` })
+            return report('incomplete', 'dispatch_input_unprovable',
+              { dispatchId: dispatch.id, terminal, dispatch,
+                input: { requestId: intent.requestId, at: intent.at, receipt: { unreadable: failure.code, detail: failure.detail } } })
           }
           const leadId = derivedRequestId(parentId, 'lead')
           const leadClaim = await claim('lead', leadId)
@@ -1185,9 +1212,13 @@ export function orchestrationModule(userData: string): CommandModule {
               unfinished()
               return report('incomplete', 'dispatch_input', { dispatchId: dispatch.id, terminal, dispatch })
             }
-          } else if (!receiptOf(leadClaim.intent).completed) {
-            return stopUnprovable('lead_outcome_unknown', leadClaim.intent,
-              `An earlier run of this attempt recorded the lead line it was about to type and its receipt does not say what came of it.`)
+          } else {
+            const held = receiptOf(leadClaim.intent)
+            if (held.kind === 'unreadable') return stopUnreadable(leadClaim.intent, held, 'typed the lead line')
+            if (held.kind === 'absent') {
+              return stopUnprovable('lead_outcome_unknown', leadClaim.intent,
+                `An earlier run of this attempt recorded the lead line it was about to type and its receipt does not say what came of it.`)
+            }
           }
           /**
            * V38. A diagnostic, and nothing in this command branches on it. `terminal read --screen`
@@ -1249,31 +1280,40 @@ export function orchestrationModule(userData: string): CommandModule {
           } else {
             // V35. An earlier run already submitted this body. Submitting it again under a new id is
             // exactly the repetition that left an attempt pasting the same body on every resume, so
-            // this run makes no call at all: it reads that run's receipt, and where the receipt is
-            // unreadable or says the provider's record does not hold this body, it stops.
+            // this run makes no call at all: it reads that run's receipt and answers from it.
+            //
+            // V45·V46 (r4). *How* it answers from it is the whole of this branch. The receipt holds
+            // the child's own verdict next to the number it counted — `record.unavailableReason` is
+            // null exactly when `terminal prompt` proved one match in a file it proved it owned
+            // (`agent.ts classifyCount`), and carries the reason otherwise: an invalidated cursor is
+            // unknown even at one match, and a count of zero at the deadline is a snapshot of a
+            // provider that may simply not have written its record yet. r3 read the number and threw
+            // the verdict away, which promoted an ambiguous 1 to a delivery and froze a perfectly
+            // good submission at 0 into a permanent failure. So the verdict is what this run
+            // follows: delivered, or proven at the source, or — for every other shape, whatever the
+            // number — unprovable, which is a state the attempt can still be resumed out of.
             const earlier = receiptOf(promptClaim.intent)
-            if (!earlier.completed) {
+            if (earlier.kind === 'unreadable') return stopUnreadable(promptClaim.intent, earlier, 'submitted the body')
+            if (earlier.kind === 'absent') {
               return stopUnprovable('submission_outcome_unknown', promptClaim.intent,
                 `An earlier run of this attempt submitted the body and its receipt does not say what came of it.`)
             }
             const recovered = submissionVerdict(earlier.result)
-            const counted = matchCountOf(isRecord(earlier.result) ? readRecord(earlier.result, 'record') : null)
+            const record = isRecord(earlier.result) ? readRecord(earlier.result, 'record') : null
+            const counted = matchCountOf(record)
+            const cursorInvalidated = record !== null && record.cursorInvalidated === true
+            const unavailable = record === null || !('unavailableReason' in record) ? 'no_record' : readString(record, 'unavailableReason')
             if (recovered.kind === 'delivered') { submitted = earlier.result; verdict = recovered }
-            else if (counted !== null && counted >= 1) {
+            else if (unavailable === null) {
+              // `stage: 'confirmed'` at the source: one match, in a file the child proved it owned,
+              // on a cursor it had not lost. There is nothing left for this run to doubt.
               submitted = { outcome: 'already_present', stage: 'recovered', detail: earlier.result, matchCount: counted }
-              verdict = counted === 1 ? { kind: 'delivered', confirmed: 'already_present' } : { kind: 'unknown', reason: 'duplicate_submissions' }
-            } else if (counted === 0) {
-              // The submission was made and the provider's record does not hold this body — a lead
-              // that was cleared off the input line before the paste landed makes exactly this
-              // shape, and no number of resumes will turn it into a delivery.
-              stages.input = { status: 'failed', requestId: promptClaim.intent.requestId, reason: 'body_not_in_provider_record', error: 'dispatch_input_corrupted' }
-              residualResources.push({ kind: 'dispatch', id: dispatch.id,
-                action: `The body this attempt submitted is not in the provider's record, so the submission reached the pane as something else. corral will not submit it again: read the pane with corral terminal read --terminal ${target.handle}, end the attempt with corral orchestration worker-stop --dispatch ${dispatch.id}, and start a new one for this Task` })
-              return report('failed', 'dispatch_input_corrupted',
-                { dispatchId: dispatch.id, terminal, dispatch, input: { requestId: promptClaim.intent.requestId, at: promptClaim.intent.at, matchCount: counted, detail: earlier.result }, lead: await strandedLead() })
+              verdict = { kind: 'delivered', confirmed: 'already_present' }
             } else {
-              return stopUnprovable('submission_count_unknown', promptClaim.intent,
-                `An earlier run of this attempt submitted the body and its receipt does not say whether the provider's record holds it.`)
+              return stopUnprovable('submission_unconfirmed', promptClaim.intent,
+                `An earlier run of this attempt submitted the body and the answer it got does not confirm the provider's record holds it (${unavailable}).`,
+                { evidence: { receipt: 'completed', unavailableReason: unavailable, matchCount: counted, cursorInvalidated, detail: earlier.result },
+                  also: `. corral does not count again on a resume — it asks the pane nothing — so this attempt stays here until a person looks: if the body is in front of the provider the work is already running, and starting a new Dispatch for this Task on the same pane puts the same body in a second time` })
             }
           }
           if (verdict.kind === 'unknown') {

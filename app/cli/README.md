@@ -142,18 +142,31 @@ receipt of the request id that record names. It does not read the pane's screen 
 is the provider's drawing, a TUI puts the input line in a box with hint rows under it, and corral never parses
 provider screens. So a resume that did not take a claim looks at the earlier run's receipt:
 
-- **completed** — that is the child's own answer, and the resume acts on it. For the body, a receipt whose
-  result says the provider's record holds it is a delivery this run *observed* rather than made.
+- **completed, and the answer in it is a delivery** — either the wait was satisfied, or the child's own record
+  block says it proved this body present: `record.unavailableReason: null`, which `terminal prompt` writes only
+  when it counted exactly one match, in a file it proved it owned, on a cursor it had not lost. That is a
+  delivery this run *observed* rather than made, and the attempt goes on to `ready`.
 - **pending or missing** — the effect may have happened and was never seen. The resume submits nothing and
   reports `state: incomplete` at stage `dispatch_input_unprovable`, naming the request id to look at, the pane
   to read, and `worker-stop` as the way out. Waiting is also an answer here: if another run is still mid-flight,
   it is that run's receipt this one is waiting to be able to read.
-- **completed, and the provider's record does **not** hold this body** (`record.matchCount: 0`) — the submission
-  was made and what reached the pane was not this body. A lead cleared off the input line before the paste
-  landed makes exactly that shape. No further resume can turn it into a delivery, so the attempt ends there:
-  `state: failed` at stage `dispatch_input_corrupted`, with `worker-stop` and a new attempt as the way out.
-  corral does **not** submit the body again — repeating a paste on every resume is the failure this rule exists
-  to prevent.
+- **completed, and the answer in it is anything else** — `record.unavailableReason` carries a reason
+  (`ambiguous`, `not_found`, `hook_blocked`), whatever the count beside it says. The resume does not go behind
+  that verdict in either direction: it does not promote a match the child could not prove (a count of one on an
+  invalidated cursor is unknown at the source), and it does not condemn a count of zero, because zero is also
+  what a provider that had not written its record by the deadline answers. It submits nothing and stops at
+  `dispatch_input_unprovable`, with the reason, the count and `cursorInvalidated` in `stages.input` so a person
+  can read the verdict rather than take it on trust.
+- **unreadable** — the receipt file exists and is not readable (`storage_corrupt`). corral neither repeats the
+  effect nor rewrites the file: the same `dispatch_input_unprovable` answer carries `reason:
+  receipt_unreadable` and the underlying code.
+
+A resume does not count again — corral asks the pane nothing, and reading the provider's record is
+`terminal prompt`'s own work, not the resume's. So an attempt that stops at `dispatch_input_unprovable` does not
+converge on its own however many times it is resumed. The way out is a person: read the pane, and if the body is
+in front of the provider the work is already running, so end the attempt with `worker-stop` rather than starting
+over — a new Dispatch for the same Task on the same pane carries a different dispatch id, so the duplicate
+pre-check does not recognise it, and the same body goes in a second time.
 
 corral cannot clear a pane's input line (the terminal contract takes printable text only, so there is no Ctrl-U
 to send). When an *earlier* run typed the lead, the answer carries an `input_line` entry in `residualResources`

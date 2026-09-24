@@ -20,7 +20,9 @@
 // listing them committed the user's project directories. The collector redacts every path-form
 // segment before this file ever sees it (`app/scripts/l394/redact.mjs`), which leaves both ends of
 // a key intact — `projects.<p:…>.hasTrustDialogAccepted` still classifies as trust below. The one
-// path this file adds of its own, the install it measured, is redacted here under the same salt.
+// path this file adds of its own, the install it measured, is redacted here under the same salt —
+// at both of the places that record it (review V8: one of the two was left in plaintext, and this
+// very sentence was what said otherwise).
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -358,7 +360,7 @@ try {
     f.record('native/screen-identity', { text })
     assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'an unauthenticated provider cannot run a single command')
     assert.match(text, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252|\?\s*for shortcuts/i)
-    return { dialogs: dialogs.length, phase: phase.phase, executable, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), model: MODEL }
+    return { dialogs: dialogs.length, phase: phase.phase, executable, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), model: MODEL }
   })
 
   await f.check('GATE2-F1-the-preamble-reaches-the-pane-exactly-once', async () => {

@@ -13,10 +13,12 @@
 // against a fake `claude` that exits immediately and records that each of them fails there.
 //
 // LIFE-426: nothing this gate records names a local path. The collector's key paths arrive already
-// redacted (`app/scripts/l394/redact.mjs`), and the two places this gate adds paths of its own —
-// the head of another `claude` process's argv in N13, and the install this gate measured — are
-// redacted under the same salt the collector digests with. N13 moved to `attribution.mjs` so its
-// failure-only path can be fed a process list and leak-checked without failing F13 to see it
+// redacted (`app/scripts/l394/redact.mjs`), and of the two places this gate adds paths of its own,
+// the install it measured is redacted under the same salt the collector digests with and another
+// `claude` process's argv in N13 is no longer recorded as text at all — only its command name and
+// a salted digest, because a redacted argv string still left the last name of a path with a space
+// in it standing (review V2). N13 moved to `attribution.mjs` so its failure-only path can be fed a
+// process list and leak-checked without failing F13 to see it
 // (`node app/scripts/l409/attribution.mjs selftest`, 01-criteria C5).
 import assert from 'node:assert/strict'
 import fs from 'node:fs'

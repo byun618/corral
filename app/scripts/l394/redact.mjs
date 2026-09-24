@@ -18,6 +18,18 @@ import { createHash, randomBytes } from 'node:crypto'
 export const isPathish = name => name.includes('/') || name.startsWith('~')
 
 /**
+ * Whether a *name* has to be redacted, which is not the same question as whether it is itself
+ * path-form. A finished key path is read back by splitting it on `.`, so a name that is not
+ * path-form as a whole can still produce a path-form segment once it is joined into one: the key
+ * `prefix.~secret` yields the segment `~secret` (review V4 — the checker counted it, the redactor
+ * did not). So the test is applied to every `.`-separated part of the name, and a hit redacts the
+ * *whole* original name — splitting it would cut an absolute path, which carries dots of its own,
+ * in the wrong places. This strictly contains the old rule: a `/` anywhere, or a leading `~`,
+ * still lands in one of the parts.
+ */
+export const hasPathishPart = name => name.split('.').some(isPathish)
+
+/**
  * An absolute or `~`-rooted path inside machine output (a process argv, the output of `command -v`).
  * Redacting it as one run keeps the shape of the line — `-c source <p:…> && claude` still says what
  * the process was doing.
@@ -44,8 +56,11 @@ export function redactor(saltFile) {
   return {
     digest,
     token,
-    /** One key-path segment, or one TOML section part. Non-path names are kept verbatim. */
-    segment: name => (isPathish(name) ? token(name) : name),
+    /**
+     * One key-path segment, or one TOML section part: redacted whole when any `.`-separated part
+     * of it is path-form (`hasPathishPart`). Non-path names are kept verbatim.
+     */
+    segment: name => (hasPathishPart(name) ? token(name) : name),
     /**
      * Machine output, or a bare path: every path in it, replaced. Two passes, absolute runs first
      * so the readable shape survives where it can. Not for prose — it would eat `app/scripts/…`.

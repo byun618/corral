@@ -13,16 +13,31 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { redactor } from '../l394/redact.mjs'
+import { isPathish, redactor } from '../l394/redact.mjs'
 import { inspect } from '../l394/leak-check.mjs'
 
 /**
+ * How one process's argv is recorded (review V2). The first version replaced the paths inside the
+ * argv text and kept the rest, which cannot be made safe: `ps args` is a single string with the
+ * argument boundaries already lost, so `--add-dir /Users/x/repo My Notes` leaves `My Notes`
+ * standing — a directory name with no path shape left on it, which the leak check cannot see and
+ * the reader cannot tell from a flag. So the text is not kept at all. What is kept is the command
+ * name (the basename of the first token, which is a program, not a place) and a salted digest of
+ * the first 80 characters, which still tells two processes apart and still matches across runs.
+ */
+const ARGV_CUT = 80
+const argvOf = (head, redact) => {
+  const cut = String(head).slice(0, ARGV_CUT)
+  const first = cut.trim().replace(/^["']/, '').split(/\s+/)[0] ?? ''
+  const name = first.split('/').pop() ?? ''
+  return { command: name === '' || isPathish(name) ? redact.token(cut) : name, digest: redact.digest(cut) }
+}
+
+/**
  * The shaping half: which key paths moved, which other `claude` processes were alive at that
- * moment (pid, start time, the head of argv), and when the file was last written. No configuration
- * value is read or recorded, and since LIFE-426 no local path either — the key paths arrive from
- * the collector already redacted, and every absolute path in an argv head is replaced by a salted
- * token. The head is cut to 80 characters first and redacted after, so a path the cut left
- * half-written is still a token rather than half a directory name.
+ * moment (pid, start time, how the argv is recorded above), and when the file was last written. No
+ * configuration value is read or recorded, and since LIFE-426 no local path either — the key paths
+ * arrive from the collector already redacted.
  */
 export function attributionFrom({ reported, psOutput, claudeConfigMtime, redact, selfPid }) {
   const changed = Object.fromEntries(Object.entries(reported.files ?? {})
@@ -32,12 +47,12 @@ export function attributionFrom({ reported, psOutput, claudeConfigMtime, redact,
     .map(line => line.trim())
     .map(line => {
       const match = /^(\d+)\s+(\w{3} \w{3} ?\d+ [\d:]+ \d{4})\s+(.*)$/.exec(line)
-      return match === null ? { pid: null, startedAt: null, argv: redact.text(line.slice(0, 80)) }
-        : { pid: Number(match[1]), startedAt: match[2], argv: redact.text(match[3].slice(0, 80)) }
+      return match === null ? { pid: null, startedAt: null, argv: argvOf(line, redact) }
+        : { pid: Number(match[1]), startedAt: match[2], argv: argvOf(match[3], redact) }
     })
     .filter(entry => entry.pid !== selfPid)
   return {
-    note: 'redacted key paths and process identity only; no configuration value and no local path is recorded',
+    note: 'redacted key paths and process identity only; an argv is its command name and a salted digest of the first 80 characters, never its text (LIFE-426 V2)',
     changed,
     claudeConfigMtime,
     liveClaudeProcesses: processes,
@@ -64,12 +79,15 @@ export function attribution(reported, redact) {
 function selftest() {
   const root = fs.mkdtempSync('/tmp/l409-attribution-')
   const redact = redactor(path.join(root, 'salt'))
+  const MARK = 'TOPSECRET'
   const psOutput = [
     '12345 Mon Sep 22 09:14:03 2026 /Users/ghost-l426/.local/bin/claude --model opus',
     '12346 Mon Sep 22 09:14:04 2026 /bin/zsh -c source /Users/ghost-l426/.zshrc && claude',
     // A line `ps` did not lay out the way the regex expects, so it takes the unparsed branch.
     'claude /Users/ghost-l426/Library/Application Support/claude/whatever-this-is',
-    '999 Mon Sep 22 09:14:05 2026 /usr/bin/something-else',
+    // V2's case: the directory name ends after a space, so the tail carries no path shape at all.
+    `12347 Mon Sep 22 09:14:05 2026 claude --add-dir /Users/ghost-l426/repo ${MARK}`,
+    '999 Mon Sep 22 09:14:06 2026 /usr/bin/something-else',
   ].join('\n')
   // What `global-diff.json` looks like after the collector has redacted it.
   const reported = {
@@ -85,15 +103,23 @@ function selftest() {
   const file = path.join(root, 'f13-attribution.json')
   fs.writeFileSync(file, JSON.stringify(record, null, 2) + '\n')
   const leak = inspect([file])
-  // Redacting must not have emptied the record: three `claude` lines in, three out.
-  const kept = record.liveClaudeProcesses.length === 3
-  const tokenised = record.liveClaudeProcesses.every(entry => /<p:[0-9a-f]{16}>/.test(entry.argv))
-  const pass = leak.hits.length === 0 && kept && tokenised
+  const written = fs.readFileSync(file, 'utf8')
+  // Redacting must not have emptied the record: four `claude` lines in, four out.
+  const kept = record.liveClaudeProcesses.length === 4
+  // The shape the record is allowed to have: a command name or a token, and a 16-hex digest.
+  const shaped = record.liveClaudeProcesses.every(entry =>
+    (/^[\w.+-]+$/.test(entry.argv.command) || /^<p:[0-9a-f]{16}>$/.test(entry.argv.command))
+    && /^[0-9a-f]{16}$/.test(entry.argv.digest))
+  // The assertion the leak check cannot make. A half-redacted directory name has no path shape
+  // left, so only the marker's absence says the name is gone (V2).
+  const markerSurvives = written.includes(MARK) || written.includes('ghost-l426')
+  const pass = leak.hits.length === 0 && kept && shaped && !markerSurvives
   console.log(JSON.stringify({
     control: 'C5-attribution-failure-path-names-no-path',
     inputProcessLines: psOutput.split('\n').length,
     keptClaudeLines: record.liveClaudeProcesses.length,
-    everyArgvTokenised: tokenised,
+    everyArgvShaped: shaped,
+    fixtureMarkerSurvives: markerSurvives,
     leakHits: leak.hits,
     argv: record.liveClaudeProcesses.map(entry => entry.argv),
     changed: record.changed,

@@ -25,6 +25,7 @@ node app/scripts/l394/fixtures.mjs        # F12: stock / LIFE-393 guard / 새 gu
 node app/scripts/l394/l393-regression.mjs # F13: LIFE-393 terminal 계약 회귀 (명령 9 + terminal prompt)
 node app/scripts/l394/global-config-diff.mjs before|after|diff|selftest
 node app/scripts/l394/leak-check.mjs <raw 디렉터리>   # LIFE-426 누출 검사 (2중 검사)
+node app/scripts/l394/leak-check.mjs selftest          # 그 검사기 자신의 대조 (V6·V7)
 ```
 
 빌드 root 안에 도구 체인·의존성·소스·binary와 `<binary>.json` 영수증이 생긴다. archive SHA-256을 검사하고, patch 집합이 달라진 캐시의 재사용은 거절한다. `verify-backend-source.mjs`는 깨끗한 archive에 patch를 적용한 결과와 빌드 소스의 해당 파일들을 byte 비교한다. `CORRAL_BACKEND_TEST=1`이면 실제 PTY를 같은 terminal ID에 재기동한 뒤 이전 세대의 send/interrupt/close를 거절하는 Rust 테스트도 실행한다. 이 테스트에도 `HERDR_CONFIG_PATH`·`XDG_CONFIG_HOME`을 별도 build root로 지정한다.
@@ -33,15 +34,15 @@ node app/scripts/l394/leak-check.mjs <raw 디렉터리>   # LIFE-426 누출 검�
 
 ## 전역 설정 수집기 (`l394/global-config-diff.mjs`)
 
-`before`·`after`는 사용자 전역 설정 8개 파일을 읽어 **개수와 salt digest만** 쓴다 — 파일마다 `exists`·`whole`·`keyCount`·`trustKeyCount`·`keysDigest`. 값도 키 경로도 산출물에 남지 않는다. `diff`가 필요로 하는 키 단위 비교본은 **레포 밖 사이드카**(`L394_SIDECAR_DIR`, 기본값은 salt 파일과 같은 디렉터리)에 `l394-keys-<raw 경로 digest>-{before,after}.json` 으로 간다.
+`before`·`after`는 사용자 전역 설정 8개 파일을 읽어 **개수와 salt digest만** 쓴다 — 파일마다 `exists`·`whole`·`keyCount`·`trustKeyCount`·`keysDigest`·`entriesDigest`. 값도 키 경로도 산출물에 남지 않는다. `diff`가 필요로 하는 키 단위 비교본은 **레포 밖 사이드카**(`L394_SIDECAR_DIR`, 기본값은 salt 파일과 같은 디렉터리. 디렉터리 mode 0700 · 파일 0600)에 `l394-keys-<raw 경로 digest>-{before,after}.json` 으로 간다. 사이드카는 키 맵만 담는다 — 자기 자신에서 다시 계산할 수 있는 digest 를 곁에 저장하면 검증이 아니다 (리뷰 V13·claude #6).
 
-키 경로에 남는 **경로형 세그먼트**(`/` 를 포함하거나 `~` 로 시작)는 전부 같은 salt 로 `<p:digest>` 치환한다 (`l394/redact.mjs`). `~/.claude.json` 의 `projects.<절대경로>.*`, `~/.codex/config.toml` 의 `[projects."<절대경로>"]`, `~/.grok/trusted_folders.toml` 의 키 전량이 사용자 디렉터리 이름이었다 (LIFE-426). 치환은 세그먼트 단위라 선두 세그먼트와 말단 키 이름이 그대로 남고, LIFE-409 F13 의 `summary` 판정과 LIFE-410 F14 의 `isTrust` 분류가 형식 변경 전과 같이 동작한다. 수집 파일 이름도 `~/` 를 떼고 구분자를 점으로 바꿔 쓴다 (`~/.claude/settings.json` → `.claude.settings.json`).
+키 경로에 남는 **경로형 세그먼트**(`/` 를 포함하거나 `~` 로 시작)는 전부 같은 salt 로 `<p:digest>` 치환한다 (`l394/redact.mjs`). 판정은 이름을 `.` 으로 나눈 **어느 파트라도** 경로형이면 원래 이름 **전체**를 치환하는 쪽이다 — 완성된 키 경로는 점으로 다시 쪼개 읽히므로 `prefix.~secret` 처럼 통째로는 경로형이 아닌 이름도 세그먼트를 만들면 걸린다 (리뷰 V4). TOML 인용 키는 basic/literal string 규칙과 escape(`\"`·`\\`·`\uXXXX`·`\UXXXXXXXX`)를 해석한 **원래 키 한 개**를 치환하고, 읽을 수 없는 헤더는 파트로 쪼개지 않고 줄 전체를 한 토큰으로 치환한다 (리뷰 V1). 디렉터리 엔트리 이름도 같은 규칙을 지난다 (V12). `~/.claude.json` 의 `projects.<절대경로>.*`, `~/.codex/config.toml` 의 `[projects."<절대경로>"]`, `~/.grok/trusted_folders.toml` 의 키 전량이 사용자 디렉터리 이름이었다 (LIFE-426). 치환은 세그먼트 단위라 선두 세그먼트와 말단 키 이름이 그대로 남고, LIFE-409 F13 의 `summary` 판정과 LIFE-410 F14 의 `isTrust` 분류가 형식 변경 전과 같이 동작한다. 수집 파일 이름도 `~/` 를 떼고 구분자를 점으로 바꿔 쓴다 (`~/.claude/settings.json` → `.claude.settings.json`).
 
-`diff`는 사이드카의 키 목록을 다시 digest 해서 스냅샷의 `keysDigest` 와 대조한다. 사이드카가 없거나 다른 실행의 것이면 **exit 3 으로 멈춘다** — 관문이 "키 경로 0개"를 "아무것도 안 움직였다"로 읽기 때문에 조용한 빈 diff 를 내면 안 된다.
+`diff`는 사이드카의 키 맵을 두 번 다시 digest 해서 스냅샷과 대조한다 — 키 목록은 `keysDigest`, `[키, 값 digest]` 쌍은 `entriesDigest`. 키 목록만 보면 **같은 키·다른 값** 사이드카가 통과해서, `after` 사이드카를 `before` 자리에 두면 exit 0 과 빈 diff 가 나왔다 (리뷰 V3). 사이드카가 없거나 두 digest 중 하나라도 어긋나면 **exit 3 으로 멈춘다** — 관문이 "키 경로 0개"를 "아무것도 안 움직였다"로 읽기 때문에 조용한 빈 diff 를 내면 안 된다.
 
-`selftest`는 양성 대조 다섯이며 하나라도 깨지면 **exit 1** 한다: ① 같은 키 아래 값 변경(D7) ② 키 추가·삭제 ③ trust 키 추가와 F14 분류 유지 ④ 가짜 홈(`/Users/<가짜>` 키가 든 JSON·TOML)을 before→after→diff 로 굴린 뒤 산출물·사이드카 누출 0건 ⑤ `summary` 계수. ②~⑤ 는 이 스크립트를 자식 프로세스로 실제 실행한다.
+`selftest`는 양성 대조 **열**이며 하나라도 깨지면 **exit 1** 한다: ① 같은 키 아래 값 변경(D7) ② 키 추가·삭제 ③ trust 키 추가와 F14 분류 유지 ④ 가짜 홈(`/Users/<가짜>` 키가 든 JSON·TOML)을 before→after→diff 로 굴린 뒤 산출물·사이드카 누출 0건, 그리고 치환 **전** 같은 fixture 는 검출되는지 음성 대조(V9) ⑤ `summary` 계수 ⑥ TOML 인용 키 6형(큰따옴표·작은따옴표·escaped quote·`\u002f`·`key = value` 두 형, V1) ⑦ 점 뒤에 경로형 파트가 오는 JSON 키 3형(V4) ⑧ 다른 스냅샷의 사이드카 → exit 3, 대조군 → exit 0(V3) ⑨ `~` 로 시작하는 hooks 엔트리(V12) ⑩ 사이드카 디렉터리 mode 0700(V13). ① 을 뺀 전부가 이 스크립트를 자식 프로세스로 실제 실행한다. ⑥~⑨ fixture 는 경로형 키 안에 표식(`TOPSECRET`)을 심고 **표식이 어느 산출물에도 없음**을 단언한다 — 반쯤 치환된 디렉터리 이름은 경로 모양이 남지 않아 누출 검사로는 보이지 않는다.
 
-`leak-check.mjs`는 01-criteria 의 누출 검사 2중 검사를 그대로 돌린다 — ① `/Users/`·`/private/`·`/tmp/`·`/Volumes/`·`/home/`·`~/` grep ② JSON 문자열(키와 키 경로 값 모두)의 경로형 세그먼트. 적중은 파일·줄·패턴만 보고하고 적중한 **문자열 자체는 출력하지 않는다** — 이 출력이 그대로 원자료로 커밋되기 때문이다. 적중이 있으면 exit 1.
+`leak-check.mjs`는 01-criteria 의 누출 검사 2중 검사를 그대로 돌린다 — ① `/Users/`·`/private/`·`/tmp/`·`/Volumes/`·`/home/`·`~/` grep ② JSON 문자열(키와 키 경로 값 모두)의 경로형 세그먼트. 적중은 파일·줄·패턴만 보고하고 적중한 **문자열 자체는 출력하지 않는다** — 이 출력이 그대로 원자료로 커밋되기 때문이다. 같은 이유로 파일 경로는 스캔 루트 기준 상대경로로 내고 스캔 루트 자체도 치환한다 (리뷰 V7: 절대경로 인자로 돌리면 출력 자신이 누출이었다). **갈래 ② 는 `.json` 전용**이라 `.md` 산출물은 grep 만 받는다 (V10 — 지금 두 관문의 markdown 은 `summary` 계수만 인라인하고 키 경로를 싣지 않는다). 읽을 수 없는 것은 통과가 아니다: 파싱 안 되는 `.json` 과 NUL 든 `.json` 은 `prong: "unreadable"` 적중으로 세고, 훑은 파일이 0개인 실행도 **exit 1** 이다 (V6). `.json` 이 아닌 바이너리만 조용히 건너뛴다. `selftest` 가 V6·V7 대조를 돌린다.
 
 직접 GUI/runtime을 연결할 때는 같은 backend의 `CORRAL_BACKEND_SOCKET`·`CORRAL_SESSION`을 명시하고 각 GUI의 `CORRAL_USER_DATA`·`CORRAL_CONTROL_SOCKET`을 나눈다. debug backend의 named session 소켓은 `$XDG_CONFIG_HOME/herdr-dev/sessions/$CORRAL_SESSION/herdr.sock`이다. backend는 외부 프로세스로 runtime과 독립적으로 살아 있으며, runtime의 종료/재시작은 backend를 기동하거나 종료하지 않는다. 기존 runtime/profile 저장·복원 규칙을 사용한다.
 

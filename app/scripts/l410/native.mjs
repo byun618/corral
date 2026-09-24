@@ -643,7 +643,7 @@ try {
     '',
     'Two claims, of different strengths:',
     '',
-    '1. **Asserted zero.** No directory changed, and no file outside `~/.claude.json` changed. This run owned its',
+    '1. **Asserted zero.** No directory changed, and no file outside the provider\'s own `.claude.json` changed. This run owned its',
     '   backend, its herdr session and its userData, so movement in either would mean it reached somewhere it should not.',
     '2. **Listed, not asserted.** Key paths inside the provider\'s own JSON are listed in',
     '   `native/f14-listed-key-paths.json`, split into trust entries and everything else, by name and never by value.',

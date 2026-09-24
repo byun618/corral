@@ -191,7 +191,7 @@ try {
     '',
     summary.changedFiles.length === 0 && summary.changedDirs.length === 0
       ? 'No file or directory under the user\'s global provider configuration changed.'
-      : 'The files and key paths listed above changed during the window. Redacted key paths only — no values and no local paths are recorded. Note that the worker session running this script is itself a `claude` process writing to `~/.claude.json`, so changes to that file are expected to come from the session rather than from the measured pane; every other entry needs its own explanation.',
+      : 'The files and key paths listed above changed during the window. Redacted key paths only — no values and no local paths are recorded. Note that the worker session running this script is itself a `claude` process writing to the provider\'s own `.claude.json`, so changes to that file are expected to come from the session rather than from the measured pane; every other entry needs its own explanation.',
     '',
     '## Raw',
     '',

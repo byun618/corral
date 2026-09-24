@@ -15,6 +15,12 @@
 // Every byte typed into the pane is tallied as it happens into `native/submissions.md`, because a
 // count reconstructed afterwards is not a count. The budget is 8; the trust dialog is answered by
 // reading the screen and typing, which is the LIFE-394 G3 path and is itself part of the evidence.
+//
+// LIFE-426: F14 lists key paths, and in `~/.claude.json` a key IS a directory name, so until now
+// listing them committed the user's project directories. The collector redacts every path-form
+// segment before this file ever sees it (`app/scripts/l394/redact.mjs`), which leaves both ends of
+// a key intact — `projects.<p:…>.hasTrustDialogAccepted` still classifies as trust below. The one
+// path this file adds of its own, the install it measured, is redacted here under the same salt.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -22,6 +28,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { fixture, requestId } from './lib.mjs'
+import { redactor } from '../l394/redact.mjs'
 import { LIVE_PHASES, foregroundExecutable, waitForLaunch } from '../l409/native-checks.mjs'
 
 const CLAUDE = process.env.L410_NATIVE_CLAUDE ?? path.join(os.homedir(), '.local/bin/claude')
@@ -37,6 +44,12 @@ const BUDGET = 9
 /** The same budget seen from the task rather than from one party: every owner's prompts together. */
 const TOTAL_BUDGET = 12
 const DIFF_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../l394/global-config-diff.mjs')
+const SALT_FILE = process.env.L410_SALT_FILE ?? '/tmp/l410-claude-salt'
+// The same salt the collector digests with, so a path redacted here and the same path inside a
+// redacted key path carry the same token.
+const redact = redactor(SALT_FILE)
+/** A path as it may be recorded: its own file name, which is never personal, and a salted token. */
+const describePath = file => ({ name: path.basename(file), path: redact.text(file) })
 
 const f = await fixture('native', { expectedChecks: 9 })
 /** Who this run's rows belong to in the shared ledger. `f.owner` is `CORRAL_VERIFY_OWNER`. */
@@ -68,7 +81,7 @@ for (const target of [f.base, f.env]) {
 /** The LIFE-394 collector, writing into this run's raw directory under its own salt. */
 const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
   encoding: 'utf8',
-  env: { ...process.env, L394_RAW: f.raw, L394_SALT_FILE: process.env.L410_SALT_FILE ?? '/tmp/l410-claude-salt' },
+  env: { ...process.env, L394_RAW: f.raw, L394_SALT_FILE: SALT_FILE },
 }).trim()
 
 /**
@@ -597,8 +610,8 @@ try {
         trust: keysOf(detail).filter(isTrust),
         other: keysOf(detail).filter(key => !isTrust(key)),
       }]))
-    f.record('native/f14-listed-key-paths', { note: 'key paths only; no configuration value is read or recorded', listed, summary })
-    return { summary, listed, providerVersion: version, providerPath: fs.realpathSync(CLAUDE), before, after, reported }
+    f.record('native/f14-listed-key-paths', { note: 'redacted key paths only; no configuration value and no directory name is read or recorded (LIFE-426)', listed, summary })
+    return { summary, listed, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), before, after, reported }
   })
 
   // This one goes into the run's own directory and nowhere else. A copy at the owner's raw root
@@ -607,7 +620,7 @@ try {
   const markdown = [
     '# LIFE-410 F14 — the user\'s global provider configuration, before and after gate ②',
     '',
-    `- provider: \`${CLAUDE}\` → \`${fs.realpathSync(CLAUDE)}\` (\`${version}\`), \`--model ${MODEL}\``,
+    `- provider: \`${path.basename(CLAUDE)}\` (\`${version}\`), \`--model ${MODEL}\` — install \`${redact.text(CLAUDE)}\` → \`${redact.text(fs.realpathSync(CLAUDE))}\``,
     '- the provider ran on the user\'s own configuration, deliberately: an isolated `CLAUDE_CONFIG_DIR` cannot',
     '  authenticate (the Keychain lookup is keyed to the default config directory), so the gate could not run at all.',
     '  The measurement is in `native/auth-isolation-probe.md`. Nothing was written to the user\'s settings or hooks',
@@ -616,7 +629,7 @@ try {
     '  own install uses, and `DISABLE_AUTOUPDATER=1` was set there too — in the environment, never in a settings file',
     '- trust was **not** pre-seeded: the trust dialog was answered by reading the screen and typing (`native/dialogs.json`)',
     '- window: `before` immediately before the backend starts, `after` immediately after the pane is closed',
-    '- collector: `app/scripts/l394/global-config-diff.mjs` (salted value digests; no value is written out)',
+    '- collector: `app/scripts/l394/global-config-diff.mjs` (salted value digests; no value and no key path is written out — LIFE-426)',
     `- prompt submissions: ${spent()} of ${BUDGET} cumulative; dialog keys: ${keys()}; calls recorded in all: ${submissions.length}`,
     '- installed herdr, the user\'s PATH, the Orca app and the user\'s default session: untouched',
     '',
@@ -632,8 +645,11 @@ try {
     '',
     '1. **Asserted zero.** No directory changed, and no file outside `~/.claude.json` changed. This run owned its',
     '   backend, its herdr session and its userData, so movement in either would mean it reached somewhere it should not.',
-    '2. **Listed, not asserted.** Key paths inside `~/.claude.json` are listed in `native/f14-listed-key-paths.json`,',
-    '   split into trust entries and everything else, by name and never by value. Trust entries are expected and are',
+    '2. **Listed, not asserted.** Key paths inside the provider\'s own JSON are listed in',
+    '   `native/f14-listed-key-paths.json`, split into trust entries and everything else, by name and never by value.',
+    '   Every path-form segment of those names is a salted token (LIFE-426): a key whose name is a directory —',
+    '   `projects.<p:…>` — names the directory nowhere, and both ends of the key survive, so the split below is',
+    '   the same split it always was. Trust entries are expected and are',
     '   what 01-criteria F14 exempts: the provider records that it was told one temporary directory is trusted. The',
     '   rest are listed because that file is shared mutable state — the worker session that ran this script is itself a',
     '   `claude` process writing to it on every turn, so a zero there would be a claim about the session, not the pane.',

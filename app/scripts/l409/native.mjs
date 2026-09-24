@@ -23,7 +23,15 @@
 //     one complete path (review V15);
 //   · the `foregroundExecutable()` record through `redact.executable` (review V16 — `expected`,
 //     `match` and `observed[]` held the same realpath in plaintext beside a redacted
-//     `providerPath`). The version directory's `name` stays: that is C5's install comparison;
+//     `providerPath`), its `comm` included (review V19 — `ps -o comm=` prints argv[0] on macOS, so
+//     it is the whole launch path for a provider started by absolute path and a command line for
+//     one started through a wrapper, not the accounting name it was taken for). The version
+//     directory's `name` stays: that is C5's install comparison, as do `pid` and `shellPid`;
+//   · that function's *failure* message, at this file's call site (review V21). Its assertions
+//     quote the realpath and the whole `observed` list unredacted, and `lib.mjs` writes a failed
+//     check into `run.json` as `checks[].error`; `native-checks.mjs` and `lib.mjs` are frozen for
+//     this task, so the redaction happens where the error leaves the gate. Stack frames, which
+//     name this repository's own scripts, are out of scope;
 //   · another `claude` process's argv in N13 is not recorded as text at all — only a salted digest
 //     of its first 80 characters. Not its command name either: deriving one from `ps -o args=`
 //     put fragments of directory names back (review V2, then V14).
@@ -109,7 +117,13 @@ try {
     const phase = await waitForLaunch(f, handle)
     assert.ok(LIVE_PHASES.includes(phase.phase), phase.phase)
     // (2) the process in that pane is the user's installed executable, by realpath.
-    const executable = await foregroundExecutable(f, handle, CLAUDE)
+    // Its assertion messages quote the realpath and the whole `observed` list unredacted, and a
+    // failing check reaches `run.json` through `lib.mjs` as `checks[].error` (review V21). Both
+    // of the messages it throws are redacted here, at the call site, because `native-checks.mjs`
+    // and `lib.mjs` are unchanged for this task.
+    let executable
+    try { executable = await foregroundExecutable(f, handle, CLAUDE) }
+    catch (error) { throw new Error(redact.text(error.message)) }
     // (3) the screen says so too — one read, no input.
     const screen = await screenIdentifiesProvider(f, handle, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252/i, 'native-screen')
     return { phase, executable: redact.executable(executable), screen, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), pathResolution: redactResolution(resolution) }

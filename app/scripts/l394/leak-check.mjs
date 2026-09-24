@@ -36,6 +36,7 @@
 //        node app/scripts/l394/leak-check.mjs selftest
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { isPathish, redactor } from './redact.mjs'
 
@@ -118,7 +119,10 @@ export const report = (targets, result, redactTarget = value => String(value)) =
   for (const hit of result.hits) byFile[hit.file] = (byFile[hit.file] ?? 0) + 1
   return {
     targets: targets.map(redactTarget),
-    note: 'paths are relative to their scan root; the roots themselves are redacted (V7)',
+    note: 'scan roots are redacted (V7); names *under* a root — the keys of hitsByFile and '
+      + 'firstHits[].file — are printed as-is, relative and in plaintext (review V22). That is '
+      + 'safe for the committed raw trees this check is for, where those names are already in '
+      + 'git, and it is why this check is not meant to be pointed at a tree outside them.',
     patterns: LEAK_PATTERNS.map(String),
     filesScanned: result.filesScanned,
     binarySkipped: result.skipped.length,
@@ -192,6 +196,24 @@ function selftest() {
     && /^\["<p:[0-9a-f]{16}>"\]$/.test(JSON.stringify(JSON.parse(spacedPrinted).targets)),
     { targets: JSON.parse(spacedPrinted).targets, markerInOwnOutput: spacedPrinted.includes('TOPSECRET'),
       hits: spacedResult.hits.length })
+
+  // V23 — the control above asserts on `report(...)` as the selftest calls it, which is not the
+  //   call the CLI makes. Codex reverted only the CLI's own `redact.token` at the bottom of this
+  //   file and got a clean selftest beside a real run that printed the marker. So this one runs
+  //   the product path end to end: this same file, as a child process, over the spaced root, with
+  //   its salt pointed inside the selftest's own directory so the run leaves nothing behind.
+  const cliSalt = path.join(root, 'cli-salt')
+  let cliPrinted = '', cliExit = 0
+  try {
+    cliPrinted = execFileSync(process.execPath, [fileURLToPath(import.meta.url), spaced],
+      { encoding: 'utf8', env: { ...process.env, L394_SALT_FILE: cliSalt } })
+  } catch (error) { cliPrinted = String(error.stdout ?? ''); cliExit = error.status ?? 1 }
+  let cliTargets = null
+  try { cliTargets = JSON.parse(cliPrinted).targets } catch { /* reported as a failure below */ }
+  record('V23-the-product-CLI-redacts-the-scan-root-it-was-given',
+    cliExit === 0 && !cliPrinted.includes('TOPSECRET')
+    && Array.isArray(cliTargets) && cliTargets.length === 1 && /^<p:[0-9a-f]{16}>$/.test(cliTargets[0]),
+    { targets: cliTargets, markerInOwnOutput: cliPrinted.includes('TOPSECRET'), exit: cliExit })
 
   fs.rmSync(root, { recursive: true, force: true })
   const pass = results.every(entry => entry.pass)

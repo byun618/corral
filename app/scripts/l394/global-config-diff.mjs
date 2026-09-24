@@ -608,6 +608,32 @@ function selftest() {
       markerSurvives: executableText.includes(MARK),
       keptForC5: { name: redactedExecutable.observed[0].name, comm: redactedExecutable.observed[0].comm } })
 
+  // ⑭ V19 — `comm` is not an accounting name. macOS prints argv[0] there, so a process
+  //   started by absolute path reports its whole launch path, and one started through a wrapper
+  //   reports a command line. Both are path-form and both used to be copied through untouched.
+  //   Everything else in this fixture is clean, so only the `comm` rule can fail it.
+  const commEntries = [
+    { pid: 2, name: '2.1.0', argv: [], comm: `/Users/ghost-l426/${MARK} dir/bin/claude`, executable: null, realpath: null },
+    { pid: 3, name: 'node', argv: [], comm: `npm exec /Users/ghost-l426/${MARK}/mcp@latest`, executable: null, realpath: null },
+    { pid: 4, name: '2.1.0', argv: [], comm: 'claude', executable: null, realpath: null },
+    // The V14/V15 shape: the marker sits *after* the space, where `text` stops and leaves it.
+    { pid: 5, name: '2.1.0', argv: [], comm: `/Users/ghost-l426/Work ${MARK} Files/bin/claude`, executable: null, realpath: null },
+  ]
+  const commRecord = { expected: null, observed: commEntries, match: commEntries[1], shellPid: 0 }
+  const redactedComm = redact.executable(commRecord)
+  const commText = JSON.stringify(redactedComm)
+  record('C3-13-the-foreground-comm-may-be-a-path',
+    !commText.includes(MARK) && !commText.includes('/Users/')
+    && /^<p:[0-9a-f]{16}>$/.test(redactedComm.observed[0].comm)
+    && /^<p:[0-9a-f]{16}>$/.test(redactedComm.observed[1].comm)
+    && redactedComm.observed[2].comm === 'claude'
+    && /^<p:[0-9a-f]{16}>$/.test(redactedComm.observed[3].comm)
+    && redactedComm.match === redactedComm.observed[1]
+    && redactedComm.observed[0].pid === 2 && redactedComm.shellPid === 0,
+    { comms: redactedComm.observed.map(entry => entry.comm),
+      markerSurvives: commText.includes(MARK),
+      whatTextWouldHaveLeft: redact.text(commEntries[3].comm).includes(MARK) })
+
   const pass = results.every(entry => entry.pass)
   console.log(JSON.stringify({ controls: results, pass }, null, 1))
   if (!pass) process.exit(1)

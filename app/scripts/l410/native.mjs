@@ -27,8 +27,18 @@
 // path, one token — review V15), and the `foregroundExecutable()` record through
 // `redact.executable` (review V16: `expected`, `match` and every `observed[]` carried the same
 // realpath in plaintext next to a `providerPath` that was redacted, and this header's earlier
-// sentence — "at both of the places that record it", from V8 — was what said otherwise). The
-// version directory's own `name` stays, because that is how C5 compares two installs.
+// sentence — "at both of the places that record it", from V8 — was what said otherwise). That
+// record's `comm` goes through the same rule (review V19): `ps -o comm=` was taken to be an
+// accounting name, but on macOS it is argv[0], so a provider started by absolute path reports its
+// whole launch path there and one started through a wrapper reports a command line. The version
+// directory's own `name` stays, because that is how C5 compares two installs; `pid` and
+// `shellPid` stay because a pid is not a place.
+//
+// A *failing* `foregroundExecutable()` builds its assertion message from the unredacted values,
+// and `lib.mjs` writes a failed check to `run.json` as `checks[].error`. Since `native-checks.mjs`
+// and `lib.mjs` are frozen here, that message is redacted at this file's call site instead
+// (review V21). The stack frames of such an error still name this repository's own scripts, which
+// the leak check counts in the ⓑ bucket and this task does not claim to cover.
 //
 // What `lib.mjs` writes on its own — `commands`, `observations`, `strippedEnv` in `run.json` — is
 // out of this task's scope (02-kickoff; `lib.mjs` and `native-checks.mjs` are unchanged here) and
@@ -366,7 +376,13 @@ try {
     const dialogs = await clearDialogs(handle)
     const phase = await waitForLaunch(f, handle, { timeoutMs: 180000 })
     assert.ok(LIVE_PHASES.includes(phase.phase), phase.phase)
-    const executable = await foregroundExecutable(f, handle, CLAUDE)
+    // The assertions inside this function build their messages from unredacted values, and a
+    // failing check is written to `run.json` as `checks[].error` by `lib.mjs` (review V21).
+    // `native-checks.mjs` and `lib.mjs` are frozen for this task, so the message is redacted
+    // here, where it leaves the gate. Both messages it can throw pass through this catch.
+    let executable
+    try { executable = await foregroundExecutable(f, handle, CLAUDE) }
+    catch (error) { throw new Error(redact.text(error.message)) }
     const text = await screen(handle)
     f.record('native/screen-identity', { text })
     assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'an unauthenticated provider cannot run a single command')

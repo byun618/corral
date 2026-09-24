@@ -98,10 +98,21 @@ export function redactor(saltFile) {
      * path glued inside it still gets that path replaced). Tokenising the element is what makes
      * the fixture below hold: `--add-dir /Users/…/repo TOPSECRET` arrives as its own element, and
      * `text` alone would leave `TOPSECRET` standing exactly as V2 and V14 described.
-     * `pid`, `name`, `comm` and `shellPid` stay —
-     * `name` is the version directory's own name, which is how C5 compares two installs, and a pid
-     * is not a place. The gate's assertions have already run inside `foregroundExecutable` against
-     * the unredacted values, so redacting here cannot change what the gate concluded.
+     * `comm` goes through the same rule as an argv element (review V19). It was left alone at
+     * first on the premise that `ps -o comm=` prints an accounting name; on macOS it prints
+     * argv[0], so a process started by absolute path reports its whole launch path there, and a
+     * provider started through a wrapper reports a command line (`npm exec …/mcp@latest`). Both
+     * are path-form, and a path-form `comm` is one whole path, so it is tokenised whole rather
+     * than run through `text` — the V14 lesson, that a partial pass over a path containing a space
+     * leaves the middle name standing, applies here too. A `comm` that really is a bare name
+     * (`claude`) is unchanged by `text` and survives as itself.
+     *
+     * `pid`, `name` and `shellPid` stay — `name` is the version directory's own name, which is how
+     * C5 compares two installs, and a pid is not a place. The gate's assertions have already run
+     * inside `foregroundExecutable` against the unredacted values, so redacting here cannot change
+     * what the gate concluded. `native-checks.mjs` states the older premise in a comment of its
+     * own; that file is frozen for this task (C9), so the guarantee that is true of what gets
+     * written down is stated here and in the two gate headers.
      *
      * `match` is the same object as one of `observed`, so the redacted `match` is the redacted
      * entry, found by position rather than redacted a second time into a separate copy.
@@ -114,6 +125,7 @@ export function redactor(saltFile) {
         argv: Array.isArray(entry.argv)
           ? entry.argv.map(item => (isPathish(String(item)) ? token(String(item)) : textOf(item)))
           : entry.argv,
+        comm: keep(entry.comm) ? entry.comm : (isPathish(String(entry.comm)) ? token(String(entry.comm)) : textOf(entry.comm)),
         executable: keep(entry.executable) ? entry.executable : token(entry.executable),
         realpath: keep(entry.realpath) ? entry.realpath : token(entry.realpath),
       })

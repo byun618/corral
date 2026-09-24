@@ -27,11 +27,16 @@
 //     it is the whole launch path for a provider started by absolute path and a command line for
 //     one started through a wrapper, not the accounting name it was taken for). The version
 //     directory's `name` stays: that is C5's install comparison, as do `pid` and `shellPid`;
-//   · that function's *failure* message, at this file's call site (review V21). Its assertions
-//     quote the realpath and the whole `observed` list unredacted, and `lib.mjs` writes a failed
-//     check into `run.json` as `checks[].error`; `native-checks.mjs` and `lib.mjs` are frozen for
-//     this task, so the redaction happens where the error leaves the gate. Stack frames, which
-//     name this repository's own scripts, are out of scope;
+//   · that function's *failure* message, at this file's call site, through `redact.diagnostic`
+//     (review V21, then V25). Its assertions quote the realpath and the whole `observed` list
+//     unredacted, and `lib.mjs` writes a failed check into `run.json` as `checks[].error`;
+//     `native-checks.mjs` and `lib.mjs` are frozen for this task, so the redaction happens where
+//     the error leaves the gate. `diagnostic`, not `text`: `text` stops at a space, so round 3
+//     left the middle name of a spaced install path standing — and that word has neither a `/`
+//     nor a home prefix, so neither leak-check prong sees it. Its one limit: with no parseable
+//     JSON tail it falls back to `text`, so a spaced path that the call site did not name in
+//     `paths` can still leave its middle name. Stack frames, which name this repository's own
+//     scripts, are out of scope;
 //   · another `claude` process's argv in N13 is not recorded as text at all — only a salted digest
 //     of its first 80 characters. Not its command name either: deriving one from `ps -o args=`
 //     put fragments of directory names back (review V2, then V14).
@@ -121,9 +126,18 @@ try {
     // failing check reaches `run.json` through `lib.mjs` as `checks[].error` (review V21). Both
     // of the messages it throws are redacted here, at the call site, because `native-checks.mjs`
     // and `lib.mjs` are unchanged for this task.
+    //
+    // `redact.diagnostic`, not `redact.text`: `text` stops at a space, so a message quoting an
+    // install path with a space in it left that middle name standing (review V25). `diagnostic`
+    // replaces the realpath below whole and tokenises every string of the message's JSON tail.
+    // Its limit: with no parseable JSON tail it falls back to `text`, so a *second* spaced path
+    // that is neither in `paths` nor in the tail can still leave a name — `paths` is why the one
+    // path these messages are known to quote does not.
     let executable
+    let claudePaths = []
+    try { claudePaths = [fs.realpathSync(CLAUDE)] } catch { /* not installed there: nothing to pin */ }
     try { executable = await foregroundExecutable(f, handle, CLAUDE) }
-    catch (error) { throw new Error(redact.text(error.message)) }
+    catch (error) { throw new Error(redact.diagnostic(error.message, { paths: claudePaths })) }
     // (3) the screen says so too — one read, no input.
     const screen = await screenIdentifiesProvider(f, handle, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252/i, 'native-screen')
     return { phase, executable: redact.executable(executable), screen, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), pathResolution: redactResolution(resolution) }

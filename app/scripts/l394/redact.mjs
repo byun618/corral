@@ -18,6 +18,11 @@
 // ends the run halfway and the middle name (`Work TOPSECRET Files`, with no `/` on it) survives as
 // a bare word. That is a loss `text` cannot avoid and `token` does not have, so every caller that
 // already holds one whole path must use `token`; `text` is the fallback for text, never for a path.
+// A gate's *failure message* is neither: it is a cause sentence with a JSON tail, so it goes through
+// `diagnostic`, which replaces the paths the caller names whole and tokenises every string of that
+// tail (review V25 — round 3 used `text` here and the spaced path's middle name stayed). Its one
+// limit: with no parseable JSON tail it falls back to `text`, so a spaced path that the caller did
+// not name in `paths` can still leave its middle name standing.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -65,9 +70,52 @@ export function redactor(saltFile) {
   const textOf = value => String(value)
     .replace(ABSOLUTE_PATH, match => token(match))
     .replace(ANY_SLASHED_TOKEN, match => token(match))
+  /**
+   * A gate assertion message, redacted where it leaves the gate (review V21, then V25).
+   *
+   * `native-checks.mjs` builds these from unredacted values and `lib.mjs` writes a failed check
+   * into `run.json` as `checks[].error`; both files are frozen for this task, so the redaction
+   * happens at the call site. Round 3 used `text` for it, which this file's own header already
+   * said not to do with a path: `text` stops at a space, so a message quoting
+   * `…/Work SECRET Files/bin/claude` kept `SECRET` standing — and that remainder has neither a
+   * `/` nor a home prefix, so the leak check's two prongs cannot see it either (review V25).
+   *
+   * Three steps. `paths` are the whole paths the caller already knows (the install realpath), and
+   * they are replaced literally — `split`/`join`, not a regex, so a path containing a space, a
+   * quote or a regex metacharacter is still one token. Then the message's JSON tail is parsed —
+   * these messages are `<cause>: <JSON>` — and every *string* in it goes through the same rule the
+   * `executable` record uses, leaving numbers, booleans, null and key names alone so `pid`,
+   * `shellPid` and `name: "claude"` still say what failed. The cause sentence keeps its wording.
+   *
+   * The limitation, stated because it is the one this function cannot remove: when there is no
+   * JSON tail, or it does not parse, the fallback is `text` over the message, and `text` is what
+   * V25 was about — a path with a space in it can leave its middle name standing. The same is true
+   * of the cause sentence itself, which is always `text`. What covers both is `paths`: the call
+   * sites pass the install realpath they already hold, so the one path a gate message is *known*
+   * to quote is replaced whole before either fallback runs. A path that arrives in neither `paths`
+   * nor the JSON tail is outside what this can promise.
+   */
+  const diagnostic = (message, { paths = [] } = {}) => {
+    let text = String(message)
+    for (const one of paths) if (one) text = text.split(String(one)).join(token(String(one)))
+    const marks = [text.indexOf(': ['), text.indexOf(': {')].filter(at => at >= 0)
+    if (marks.length === 0) return textOf(text)
+    const at = Math.min(...marks)
+    let parsed
+    try { parsed = JSON.parse(text.slice(at + 2)) } catch { return textOf(text) }
+    const walk = value => {
+      if (typeof value === 'string') return isPathish(value) ? token(value) : textOf(value)
+      if (Array.isArray(value)) return value.map(walk)
+      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]))
+      return value
+    }
+    return `${textOf(text.slice(0, at))}: ${JSON.stringify(walk(parsed))}`
+  }
+
   return {
     digest,
     token,
+    diagnostic,
     /**
      * One key-path segment, or one TOML section part: redacted whole when any `.`-separated part
      * of it is path-form (`hasPathishPart`). Non-path names are kept verbatim.

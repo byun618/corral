@@ -37,8 +37,13 @@
 // A *failing* `foregroundExecutable()` builds its assertion message from the unredacted values,
 // and `lib.mjs` writes a failed check to `run.json` as `checks[].error`. Since `native-checks.mjs`
 // and `lib.mjs` are frozen here, that message is redacted at this file's call site instead
-// (review V21). The stack frames of such an error still name this repository's own scripts, which
-// the leak check counts in the ⓑ bucket and this task does not claim to cover.
+// (review V21) — through `redact.diagnostic`, not `redact.text`: `text` stops at a space, so
+// round 3 left the middle name of a spaced install path standing, and that word has neither a `/`
+// nor a home prefix, so neither leak-check prong sees it (review V25). `diagnostic` has one limit:
+// with no parseable JSON tail it falls back to `text`, so a spaced path that the call site did not
+// name in `paths` can still leave its middle name standing. The stack frames of such an error
+// still name this repository's own scripts, which the leak check counts in the ⓑ bucket and this
+// task does not claim to cover.
 //
 // What `lib.mjs` writes on its own — `commands`, `observations`, `strippedEnv` in `run.json` — is
 // out of this task's scope (02-kickoff; `lib.mjs` and `native-checks.mjs` are unchanged here) and
@@ -380,9 +385,18 @@ try {
     // failing check is written to `run.json` as `checks[].error` by `lib.mjs` (review V21).
     // `native-checks.mjs` and `lib.mjs` are frozen for this task, so the message is redacted
     // here, where it leaves the gate. Both messages it can throw pass through this catch.
+    //
+    // `redact.diagnostic`, not `redact.text`: `text` stops at a space, so a message quoting an
+    // install path with a space in it left that middle name standing (review V25). `diagnostic`
+    // replaces the realpath below whole and tokenises every string of the message's JSON tail.
+    // Its limit: with no parseable JSON tail it falls back to `text`, so a *second* spaced path
+    // that is neither in `paths` nor in the tail can still leave a name — `paths` is why the one
+    // path these messages are known to quote does not.
     let executable
+    let claudePaths = []
+    try { claudePaths = [fs.realpathSync(CLAUDE)] } catch { /* not installed there: nothing to pin */ }
     try { executable = await foregroundExecutable(f, handle, CLAUDE) }
-    catch (error) { throw new Error(redact.text(error.message)) }
+    catch (error) { throw new Error(redact.diagnostic(error.message, { paths: claudePaths })) }
     const text = await screen(handle)
     f.record('native/screen-identity', { text })
     assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'an unauthenticated provider cannot run a single command')

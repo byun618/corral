@@ -370,10 +370,15 @@ if (mode === 'before' || mode === 'after') {
  * that proves the check still detects those paths when they are *not* redacted (V9); ⑤ the
  * `summary` the gates assert on. Review round 1 adds: ⑥ the TOML quoted-key forms (V1), ⑦ a JSON
  * key whose path-form part sits behind a dot (V4), ⑧ a substituted sidecar (V3), ⑨ a
- * `~`-prefixed hooks entry (V12), ⑩ the sidecar directory's mode (V13).
+ * `~`-prefixed hooks entry (V12), ⑩ the sidecar directory's mode (V13). Rounds 2-4 add the
+ * redaction rules the gates share: ⑪ a complete path with a space in it (V15), ⑫ the
+ * `foregroundExecutable` record (V16), ⑬ that record's `comm` (V19), ⑭ a gate failure message
+ * through `diagnostic` (V25).
  *
- * Everything but ① drives the real script in child processes over a fake `HOME`, so what is under
- * test is the pipeline that the gates run, not a re-implementation of it.
+ * ②-⑩ drive the real script in child processes over a fake `HOME`, so what is under test there is
+ * the pipeline the gates run, not a re-implementation of it. ① and ⑪-⑭ call the function directly
+ * with a fixture (review V27 — this said "everything but ①" drives a child process, which stopped
+ * being true when ⑪ was added).
  */
 function selftest() {
   const results = []
@@ -633,6 +638,57 @@ function selftest() {
     { comms: redactedComm.observed.map(entry => entry.comm),
       markerSurvives: commText.includes(MARK),
       whatTextWouldHaveLeft: redact.text(commEntries[3].comm).includes(MARK) })
+
+  // A gate assertion message, as `native-checks.mjs` builds it (`:52` and `:67` shapes) and as
+  // `lib.mjs` would write it into `run.json`. Round 3 redacted these with `text`, which is
+  // structurally partial over a path with a space in it — and the name it leaves standing has
+  // neither a `/` nor a home prefix, so neither leak-check prong can see it (review V25).
+  const gateHome = '/Users/ghost-l426'
+  const gateTarget = `${gateHome}/${MARK} dir/bin/claude`
+  const gateObserved = [
+    { pid: 1,
+      name: 'claude',
+      // `--add-dir` carries the V25 shape: the marker sits *after* the space, where `text` stops
+      // and leaves it. Everywhere else the marker precedes the space, where `text` also scrubs it.
+      argv: [gateTarget, '--model', 'opus', '--add-dir', `${gateHome}/Work ${MARK} Files`],
+      comm: gateTarget,
+      executable: `${gateHome}/${MARK} dir/bin/node`,
+      realpath: `${gateHome}/${MARK} dir/bin/node` },
+    { pid: 2, name: 'zsh', argv: ['-zsh'], comm: `npm exec ${gateHome}/${MARK}/mcp@latest`, executable: null, realpath: null },
+  ]
+  const gateMessages = [
+    { cause: 'no foreground process resolves to exactly',
+      message: `no foreground process resolves to exactly ${gateTarget}: ${JSON.stringify(gateObserved)}`,
+      paths: [gateTarget] },
+    { cause: 'the pane has no foreground process',
+      message: `the pane has no foreground process: ${JSON.stringify({ shellPid: 2, foreground: [], cwd: `${gateHome}/${MARK} dir` })}`,
+      paths: [] },
+    // No JSON tail: the documented fallback, which `paths` is what covers.
+    { cause: 'cannot read',
+      message: `cannot read "${gateHome}/${MARK} dir/x"`,
+      paths: [`${gateHome}/${MARK} dir/x`] },
+  ]
+  const gateChecked = gateMessages.map(one => {
+    const redacted = redact.diagnostic(one.message, { paths: one.paths })
+    const marks = [redacted.indexOf(': ['), redacted.indexOf(': {')].filter(at => at >= 0)
+    let reparsed = null
+    if (marks.length > 0) {
+      try { reparsed = JSON.stringify(JSON.parse(redacted.slice(Math.min(...marks) + 2))) } catch { /* left null */ }
+    }
+    return { redacted,
+      reparsed,
+      clean: !redacted.includes(MARK) && !redacted.includes('/Users/'),
+      causeKept: redacted.startsWith(one.cause) }
+  })
+  record('C3-14-a-gate-failure-message-keeps-no-path',
+    gateChecked.every(one => one.clean && one.causeKept)
+    && gateChecked[0].reparsed !== null && gateChecked[1].reparsed !== null
+    && ['"pid":1', '"name":"claude"', '"--model"'].every(needle => gateChecked[0].reparsed.includes(needle))
+    && gateChecked[1].reparsed.includes('"shellPid":2')
+    && gateChecked[2].reparsed === null,
+    { redacted: gateChecked.map(one => one.redacted.slice(0, 150)),
+      markerSurvives: gateChecked.some(one => one.redacted.includes(MARK)),
+      whatTextWouldHaveLeft: redact.text(gateMessages[0].message).includes(MARK) })
 
   const pass = results.every(entry => entry.pass)
   console.log(JSON.stringify({ controls: results, pass }, null, 1))

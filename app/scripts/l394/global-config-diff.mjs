@@ -567,6 +567,47 @@ function selftest() {
   record('C3-10-the-sidecar-directory-is-private', sidecarMode === 0o700,
     { mode: sidecarMode.toString(8), expected: '700' })
 
+  // ⑪ V15 — a complete path goes through `token`, not `text`. `describePath` is the function both
+  //   native gates record an install with; `text` left the middle name of a path with a space in
+  //   it standing (`Work TOPSECRET Files`), which has no path shape and so no checker sees it.
+  const spacedInstall = `/Users/ghost-l426/Work ${MARK} Files/bin/claude`
+  const described = redact.describePath(spacedInstall)
+  record('C3-11-a-full-path-with-a-space-is-one-token',
+    /^<p:[0-9a-f]{16}>$/.test(described.path) && !JSON.stringify(described).includes(MARK)
+    && described.name === 'claude' && redact.text(spacedInstall).includes(MARK),
+    { described, whatTextWouldHaveLeft: redact.text(spacedInstall).includes(MARK) })
+
+  // ⑫ V16 — the `foregroundExecutable()` record is redacted before it is written down. The same
+  //   install realpath `providerPath` tokenises sat in `expected`/`match`/`observed[]` in plain
+  //   text, and `observed[].argv` carried other tools' install paths.
+  const executableEntry = {
+    pid: 1,
+    name: '2.1.0',
+    argv: ['claude', '--add-dir', `/Users/ghost-l426/repo ${MARK}`],
+    comm: 'claude',
+    executable: `/Users/ghost-l426/${MARK} dir/versions/2.1.0`,
+    realpath: `/Users/ghost-l426/${MARK} dir/versions/2.1.0`,
+  }
+  const executableRecord = {
+    expected: `/Users/ghost-l426/${MARK} dir/versions/2.1.0`,
+    observed: [executableEntry],
+    match: executableEntry,
+    shellPid: 0,
+  }
+  const redactedExecutable = redact.executable(executableRecord)
+  const executableText = JSON.stringify(redactedExecutable)
+  record('C3-12-the-foreground-executable-record-names-no-path',
+    !executableText.includes(MARK) && !executableText.includes('/Users/')
+    && /^<p:[0-9a-f]{16}>$/.test(redactedExecutable.expected)
+    && redactedExecutable.match === redactedExecutable.observed[0]
+    && redactedExecutable.observed[0].name === '2.1.0'
+    && redactedExecutable.observed[0].comm === 'claude'
+    && redactedExecutable.observed[0].pid === 1
+    && redactedExecutable.shellPid === 0,
+    { record: redactedExecutable,
+      markerSurvives: executableText.includes(MARK),
+      keptForC5: { name: redactedExecutable.observed[0].name, comm: redactedExecutable.observed[0].comm } })
+
   const pass = results.every(entry => entry.pass)
   console.log(JSON.stringify({ controls: results, pass }, null, 1))
   if (!pass) process.exit(1)

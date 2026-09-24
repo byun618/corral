@@ -107,12 +107,17 @@ export function inspect(targets) {
  */
 export const exitCode = result => (result.hits.length > 0 || result.filesScanned === 0 ? 1 : 0)
 
-/** What the CLI prints. `redactText` is applied to the scan roots (V7). */
-export const report = (targets, result, redactText = value => String(value)) => {
+/**
+ * What the CLI prints. `redactTarget` is applied to the scan roots (V7), and each scan root is one
+ * whole path, so the caller passes `redact.token` — `redact.text` used to be passed here and left
+ * the middle name of a root with a space in it (`…/root TOPSECRET`) standing in the check's own
+ * output (review V15).
+ */
+export const report = (targets, result, redactTarget = value => String(value)) => {
   const byFile = {}
   for (const hit of result.hits) byFile[hit.file] = (byFile[hit.file] ?? 0) + 1
   return {
-    targets: targets.map(redactText),
+    targets: targets.map(redactTarget),
     note: 'paths are relative to their scan root; the roots themselves are redacted (V7)',
     patterns: LEAK_PATTERNS.map(String),
     filesScanned: result.filesScanned,
@@ -142,7 +147,7 @@ function selftest() {
   fs.writeFileSync(path.join(planted, 'artifact.json'),
     JSON.stringify({ projects: { '/Users/ghost-l426/repos/TOPSECRET': { hasTrustDialogAccepted: true } } }, null, 1))
   const found = inspect([planted])
-  const printed = JSON.stringify(report([planted], found, value => redact.text(value)), null, 1)
+  const printed = JSON.stringify(report([planted], found, value => redact.token(value)), null, 1)
   const selfHits = printed.split('\n').flatMap((line, index) =>
     LEAK_PATTERNS.filter(pattern => pattern.test(line)).map(pattern => ({ line: index + 1, pattern: String(pattern) })))
   record('V7-the-report-of-a-hit-does-not-carry-the-path',
@@ -174,6 +179,20 @@ function selftest() {
     cleanResult.hits.length === 0 && cleanResult.filesScanned === 1 && exitCode(cleanResult) === 0,
     { filesScanned: cleanResult.filesScanned, hits: cleanResult.hits.length, exit: exitCode(cleanResult) })
 
+  // V15 — a scan root whose own name contains a space. `redact.text` on the target left the
+  //   middle word standing in `targets`, so the check's own output named a directory it was
+  //   supposed to be hiding. One whole path in, one token out.
+  const spaced = path.join(root, `root ${'TOPSECRET'}`)
+  fs.mkdirSync(spaced)
+  fs.writeFileSync(path.join(spaced, 'artifact.json'), JSON.stringify({ ok: 'no path here' }))
+  const spacedResult = inspect([spaced])
+  const spacedPrinted = JSON.stringify(report([spaced], spacedResult, value => redact.token(value)), null, 1)
+  record('V15-a-scan-root-with-a-space-in-its-name-is-one-token',
+    spacedResult.hits.length === 0 && !spacedPrinted.includes('TOPSECRET')
+    && /^\["<p:[0-9a-f]{16}>"\]$/.test(JSON.stringify(JSON.parse(spacedPrinted).targets)),
+    { targets: JSON.parse(spacedPrinted).targets, markerInOwnOutput: spacedPrinted.includes('TOPSECRET'),
+      hits: spacedResult.hits.length })
+
   fs.rmSync(root, { recursive: true, force: true })
   const pass = results.every(entry => entry.pass)
   console.log(JSON.stringify({ controls: results, pass }, null, 1))
@@ -189,7 +208,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     // The redactor is built here and not inside `inspect`, so importing this module never touches
     // a salt file. Default matches the collector's.
     const redact = redactor(process.env.L394_SALT_FILE ?? '/tmp/l394-claude-salt')
-    console.log(JSON.stringify(report(targets, result, value => redact.text(value)), null, 1))
+    console.log(JSON.stringify(report(targets, result, value => redact.token(value)), null, 1))
     if (result.filesScanned === 0) console.error('leak-check: nothing was scanned — a check that read no files is not a pass.')
     process.exit(exitCode(result))
   }

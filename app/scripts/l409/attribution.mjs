@@ -13,25 +13,30 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { isPathish, redactor } from '../l394/redact.mjs'
+import { redactor } from '../l394/redact.mjs'
 import { inspect } from '../l394/leak-check.mjs'
 
 /**
- * How one process's argv is recorded (review V2). The first version replaced the paths inside the
- * argv text and kept the rest, which cannot be made safe: `ps args` is a single string with the
- * argument boundaries already lost, so `--add-dir /Users/x/repo My Notes` leaves `My Notes`
- * standing — a directory name with no path shape left on it, which the leak check cannot see and
- * the reader cannot tell from a flag. So the text is not kept at all. What is kept is the command
- * name (the basename of the first token, which is a program, not a place) and a salted digest of
- * the first 80 characters, which still tells two processes apart and still matches across runs.
+ * How one process's argv is recorded. **Nothing of the argv text is kept** (review V2, then V14).
+ *
+ * `ps -o args=` is a single string whose argument boundaries are already lost, so replacing the
+ * paths inside it and keeping the rest cannot be made safe: `--add-dir /Users/x/repo My Notes`
+ * leaves `My Notes` standing, a directory name with no path shape on it, which the leak check
+ * cannot see and a reader cannot tell from a flag. V2's fix stopped keeping the text but still
+ * derived a `command` name from it — cut at 80 characters, split on whitespace, basename of the
+ * first piece — and that put the text back in two ways V14 measured: an install path containing a
+ * space (`/Users/x/TOPSECRET dir/bin/claude`) makes the "first piece" end inside a directory name,
+ * and a directory long enough to push the 80-character cut into its middle leaves a fragment of it
+ * (`TOPS`). Neither has a path's shape, so no checker sees either.
+ *
+ * There is no rule that cuts a program name out of that string safely, so this one does not try.
+ * What is left is a salted digest of the first 80 characters: it still tells two processes apart,
+ * still matches the same process across runs, and carries nothing back. A process is identified by
+ * its `pid` and `startedAt`, which are not places. Should an identifying *name* ever be wanted, it
+ * has to arrive as its own column (`ps -o comm=`) and not be carved out of `args`.
  */
 const ARGV_CUT = 80
-const argvOf = (head, redact) => {
-  const cut = String(head).slice(0, ARGV_CUT)
-  const first = cut.trim().replace(/^["']/, '').split(/\s+/)[0] ?? ''
-  const name = first.split('/').pop() ?? ''
-  return { command: name === '' || isPathish(name) ? redact.token(cut) : name, digest: redact.digest(cut) }
-}
+const argvOf = (head, redact) => ({ digest: redact.digest(String(head).slice(0, ARGV_CUT)) })
 
 /**
  * The shaping half: which key paths moved, which other `claude` processes were alive at that
@@ -52,7 +57,7 @@ export function attributionFrom({ reported, psOutput, claudeConfigMtime, redact,
     })
     .filter(entry => entry.pid !== selfPid)
   return {
-    note: 'redacted key paths and process identity only; an argv is its command name and a salted digest of the first 80 characters, never its text (LIFE-426 V2)',
+    note: 'redacted key paths and process identity only; an argv is recorded as a salted digest of its first 80 characters and nothing else — no name and no fragment is carved out of the argv text (LIFE-426 V2, V14)',
     changed,
     claudeConfigMtime,
     liveClaudeProcesses: processes,
@@ -87,6 +92,14 @@ function selftest() {
     'claude /Users/ghost-l426/Library/Application Support/claude/whatever-this-is',
     // V2's case: the directory name ends after a space, so the tail carries no path shape at all.
     `12347 Mon Sep 22 09:14:05 2026 claude --add-dir /Users/ghost-l426/repo ${MARK}`,
+    // V14 ①: the space is *inside* the install path, so any rule that takes "the first piece up to
+    // whitespace" ends inside a directory name and hands back `${MARK}` as the program name.
+    `12348 Mon Sep 22 09:14:07 2026 /Users/ghost-l426/${MARK} dir/bin/claude --resume`,
+    // V14 ②: a directory long enough that an 80-character cut lands in the middle of the *next*
+    //   name, so a truncating rule keeps a fragment of it — `/Users/ghost-l426/` is 18 characters
+    //   and 57 + 1 more puts the 80th inside `TOPSECRET`, leaving `TOPS`. A fragment is not a word
+    //   and not a path, so nothing but this assertion would notice it.
+    `12349 Mon Sep 22 09:14:08 2026 /Users/ghost-l426/${'d'.repeat(57)}/${MARK}/bin/claude`,
     '999 Mon Sep 22 09:14:06 2026 /usr/bin/something-else',
   ].join('\n')
   // What `global-diff.json` looks like after the collector has redacted it.
@@ -104,22 +117,24 @@ function selftest() {
   fs.writeFileSync(file, JSON.stringify(record, null, 2) + '\n')
   const leak = inspect([file])
   const written = fs.readFileSync(file, 'utf8')
-  // Redacting must not have emptied the record: four `claude` lines in, four out.
-  const kept = record.liveClaudeProcesses.length === 4
-  // The shape the record is allowed to have: a command name or a token, and a 16-hex digest.
+  // Redacting must not have emptied the record: six `claude` lines in, six out.
+  const kept = record.liveClaudeProcesses.length === 6
+  // The shape the record is allowed to have, and the *only* shape (V14): a 16-hex digest, with no
+  // second field that could carry a piece of the argv text back.
   const shaped = record.liveClaudeProcesses.every(entry =>
-    (/^[\w.+-]+$/.test(entry.argv.command) || /^<p:[0-9a-f]{16}>$/.test(entry.argv.command))
-    && /^[0-9a-f]{16}$/.test(entry.argv.digest))
+    JSON.stringify(Object.keys(entry.argv)) === '["digest"]' && /^[0-9a-f]{16}$/.test(entry.argv.digest))
   // The assertion the leak check cannot make. A half-redacted directory name has no path shape
-  // left, so only the marker's absence says the name is gone (V2).
-  const markerSurvives = written.includes(MARK) || written.includes('ghost-l426')
+  // left, so only the marker's absence says the name is gone (V2) — and V14 adds the *prefix* of
+  // the marker, because an 80-character cut through a directory name keeps a fragment, not a word.
+  const markerSurvives = written.includes(MARK) || written.includes(MARK.slice(0, 4)) || written.includes('ghost-l426')
   const pass = leak.hits.length === 0 && kept && shaped && !markerSurvives
   console.log(JSON.stringify({
     control: 'C5-attribution-failure-path-names-no-path',
     inputProcessLines: psOutput.split('\n').length,
     keptClaudeLines: record.liveClaudeProcesses.length,
-    everyArgvShaped: shaped,
+    everyArgvIsDigestOnly: shaped,
     fixtureMarkerSurvives: markerSurvives,
+    fixtureMarkerPrefixSurvives: written.includes(MARK.slice(0, 4)),
     leakHits: leak.hits,
     argv: record.liveClaudeProcesses.map(entry => entry.argv),
     changed: record.changed,

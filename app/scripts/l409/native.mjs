@@ -12,14 +12,26 @@
 // the screen once to see which provider is on it. `native-negative.mjs` runs the same three checks
 // against a fake `claude` that exits immediately and records that each of them fails there.
 //
-// LIFE-426: nothing this gate records names a local path. The collector's key paths arrive already
-// redacted (`app/scripts/l394/redact.mjs`), and of the two places this gate adds paths of its own,
-// the install it measured is redacted under the same salt the collector digests with and another
-// `claude` process's argv in N13 is no longer recorded as text at all — only its command name and
-// a salted digest, because a redacted argv string still left the last name of a path with a space
-// in it standing (review V2). N13 moved to `attribution.mjs` so its failure-only path can be fed a
-// process list and leak-checked without failing F13 to see it
-// (`node app/scripts/l409/attribution.mjs selftest`, 01-criteria C5).
+// LIFE-426: nothing this gate records of its own names a local path. The collector's key paths
+// arrive already redacted (`app/scripts/l394/redact.mjs`), and the paths this gate adds are
+// redacted under the same salt:
+//
+//   · the install it measured — `providerPath` and the markdown `install` line — through
+//     `redact.token`, one whole path to one token (review V15, which found that `redact.text`
+//     leaves the middle name of a path containing a space standing);
+//   · `pathResolution` (`command -v claude; which -a claude`) line by line, because each line is
+//     one complete path (review V15);
+//   · the `foregroundExecutable()` record through `redact.executable` (review V16 — `expected`,
+//     `match` and `observed[]` held the same realpath in plaintext beside a redacted
+//     `providerPath`). The version directory's `name` stays: that is C5's install comparison;
+//   · another `claude` process's argv in N13 is not recorded as text at all — only a salted digest
+//     of its first 80 characters. Not its command name either: deriving one from `ps -o args=`
+//     put fragments of directory names back (review V2, then V14).
+//
+// N13 moved to `attribution.mjs` so its failure-only path can be fed a process list and
+// leak-checked without failing F13 to see it (`node app/scripts/l409/attribution.mjs selftest`,
+// 01-criteria C5). What `lib.mjs` writes on its own (`commands`, `observations`, `strippedEnv`) is
+// outside this task's scope — `lib.mjs` and `native-checks.mjs` are unchanged here.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -41,8 +53,20 @@ const SALT_FILE = process.env.L409_SALT_FILE ?? '/tmp/l409-claude-salt'
 // The same salt the collector uses, so a path this file redacts and the same path inside a key
 // path redact to the same token and can still be compared.
 const redact = redactor(SALT_FILE)
-/** A path as it may be recorded: its own file name, which is never personal, and a salted token. */
-const describePath = file => ({ name: path.basename(file), path: redact.text(file) })
+// A path as it may be recorded — one whole path, so one token (review V15; the rule and its fixture
+// live in `redact.mjs` so both gates and the selftest use the same one).
+const describePath = redact.describePath
+/**
+ * `command -v claude; which -a claude` — one complete path per line, so each line is one token
+ * rather than a `text` pass over the whole blob (review V15: a path with a space in it left its
+ * middle name standing). Blank lines are dropped; a line that is not a path is kept as it is, so a
+ * resolver message ("claude: not found") still reads.
+ */
+const redactResolution = text => String(text).split('\n')
+  .map(line => line.trim())
+  .filter(line => line !== '')
+  .map(line => (line.includes('/') || line.startsWith('~') ? redact.token(line) : line))
+  .join('\n')
 
 const f = await fixture('native', { expectedChecks: 7 })
 // R6, and a finding of its own: `claude` on this machine resolves to an npm-global copy under nvm
@@ -88,7 +112,7 @@ try {
     const executable = await foregroundExecutable(f, handle, CLAUDE)
     // (3) the screen says so too — one read, no input.
     const screen = await screenIdentifiesProvider(f, handle, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252/i, 'native-screen')
-    return { phase, executable, screen, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), pathResolution: redact.text(resolution) }
+    return { phase, executable: redact.executable(executable), screen, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), pathResolution: redactResolution(resolution) }
   })
 
   let dispatched
@@ -176,7 +200,7 @@ try {
   const markdown = [
     '# LIFE-409 F13 — global provider config, before and after the native gate',
     '',
-    `- provider: \`${path.basename(CLAUDE)}\` (\`${version}\`) — install \`${redact.text(CLAUDE)}\` → \`${redact.text(fs.realpathSync(CLAUDE))}\``,
+    `- provider: \`${path.basename(CLAUDE)}\` (\`${version}\`) — install \`${redact.token(CLAUDE)}\` → \`${redact.token(fs.realpathSync(CLAUDE))}\``,
     `- window: the \`before\` snapshot is taken immediately before the backend starts, \`after\` immediately after the pane is closed`,
     `- collector: \`app/scripts/l394/global-config-diff.mjs\` (salted value digests; no value and no key path is written out — LIFE-426)`,
     `- prompts submitted: 0 · dialogs answered: 0 · installed herdr, PATH and the user's default session untouched`,

@@ -19,10 +19,20 @@
 // LIFE-426: F14 lists key paths, and in `~/.claude.json` a key IS a directory name, so until now
 // listing them committed the user's project directories. The collector redacts every path-form
 // segment before this file ever sees it (`app/scripts/l394/redact.mjs`), which leaves both ends of
-// a key intact — `projects.<p:…>.hasTrustDialogAccepted` still classifies as trust below. The one
-// path this file adds of its own, the install it measured, is redacted here under the same salt —
-// at both of the places that record it (review V8: one of the two was left in plaintext, and this
-// very sentence was what said otherwise).
+// a key intact — `projects.<p:…>.hasTrustDialogAccepted` still classifies as trust below.
+//
+// The paths this file adds of its own are the install it measured and the foreground process
+// record that proves the pane is running it. Both are redacted here under the same salt as the
+// key paths: `providerPath` and the markdown `install` line through `redact.token` (one whole
+// path, one token — review V15), and the `foregroundExecutable()` record through
+// `redact.executable` (review V16: `expected`, `match` and every `observed[]` carried the same
+// realpath in plaintext next to a `providerPath` that was redacted, and this header's earlier
+// sentence — "at both of the places that record it", from V8 — was what said otherwise). The
+// version directory's own `name` stays, because that is how C5 compares two installs.
+//
+// What `lib.mjs` writes on its own — `commands`, `observations`, `strippedEnv` in `run.json` — is
+// out of this task's scope (02-kickoff; `lib.mjs` and `native-checks.mjs` are unchanged here) and
+// carries tool install paths of its own. The leak check counts those as the ⓒ2 bucket.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -50,8 +60,9 @@ const SALT_FILE = process.env.L410_SALT_FILE ?? '/tmp/l410-claude-salt'
 // The same salt the collector digests with, so a path redacted here and the same path inside a
 // redacted key path carry the same token.
 const redact = redactor(SALT_FILE)
-/** A path as it may be recorded: its own file name, which is never personal, and a salted token. */
-const describePath = file => ({ name: path.basename(file), path: redact.text(file) })
+// A path as it may be recorded — one whole path, so one token (review V15; the rule and its fixture
+// live in `redact.mjs` so both gates and the selftest use the same one).
+const describePath = redact.describePath
 
 const f = await fixture('native', { expectedChecks: 9 })
 /** Who this run's rows belong to in the shared ledger. `f.owner` is `CORRAL_VERIFY_OWNER`. */
@@ -360,7 +371,7 @@ try {
     f.record('native/screen-identity', { text })
     assert.doesNotMatch(text, /Not logged in|Please run \/login/i, 'an unauthenticated provider cannot run a single command')
     assert.match(text, /Claude Code|claude\.ai|Welcome to Claude|2\.1\.252|\?\s*for shortcuts/i)
-    return { dialogs: dialogs.length, phase: phase.phase, executable, providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), model: MODEL }
+    return { dialogs: dialogs.length, phase: phase.phase, executable: redact.executable(executable), providerVersion: version, providerPath: describePath(fs.realpathSync(CLAUDE)), model: MODEL }
   })
 
   await f.check('GATE2-F1-the-preamble-reaches-the-pane-exactly-once', async () => {
@@ -622,7 +633,7 @@ try {
   const markdown = [
     '# LIFE-410 F14 — the user\'s global provider configuration, before and after gate ②',
     '',
-    `- provider: \`${path.basename(CLAUDE)}\` (\`${version}\`), \`--model ${MODEL}\` — install \`${redact.text(CLAUDE)}\` → \`${redact.text(fs.realpathSync(CLAUDE))}\``,
+    `- provider: \`${path.basename(CLAUDE)}\` (\`${version}\`), \`--model ${MODEL}\` — install \`${redact.token(CLAUDE)}\` → \`${redact.token(fs.realpathSync(CLAUDE))}\``,
     '- the provider ran on the user\'s own configuration, deliberately: an isolated `CLAUDE_CONFIG_DIR` cannot',
     '  authenticate (the Keychain lookup is keyed to the default config directory), so the gate could not run at all.',
     '  The measurement is in `native/auth-isolation-probe.md`. Nothing was written to the user\'s settings or hooks',

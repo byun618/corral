@@ -14,9 +14,8 @@ description: >-
   이 선택은 해당 작업에만 적용한다. 현재 대화 도구나 전역 기본 모델로 추측해 바꾸지 않는다.
 - 기존 작업은 `specs/LIFE-NNN-<슬러그>/00-start.md`를 먼저 읽는다. 미지정 재개는 기록된
   코디네이터를 따른다. 기록이 없는 과거 작업은 킥오프·실제 세션을 확인해 기록부터 보완한다.
-- 선택이 기존 기록과 다르거나 `claude`·`codex` 외 도구를 요청하면 새 터미널을 만들지 않는다.
-  작업 도중 교체는 이번 스킬의 자동 처리 범위 밖이다. 기존 코디네이터·워커·Run과 미완 작업을
-  확인하고 인계 범위를 사용자와 정한 뒤 진행한다. 동시에 두 코디네이터를 만들지 않는다.
+- 선택이 기존 기록과 다르거나 `claude`·`codex` 외 도구를 요청하면 새 터미널을 만들지 않는다 — 도중 교체는
+  이 스킬 밖이다. 기존 코디네이터·워커·Run과 미완 작업을 확인하고 인계 범위를 사용자와 정한 뒤 진행한다.
 - 코디네이터 선택과 워커·리뷰어 구성은 별개다. 신규 기본은 **Opus high + native Fable advisor
   단독 구현 → 3자 코드 리뷰(Astra xhigh · 별도 Claude Opus high · Grok)**다(task-coordinate §4–5).
   설계는 별도 단계가 아니라 구현 워커가 흡수한다.
@@ -29,6 +28,10 @@ description: >-
    `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고,
    `command -v <선택 도구>`·`<선택 도구> --help`·`corral status --json`으로 기동 가능 여부를 확인한다.
    LA가 없거나 corral 런타임이 꺼져 있으면(`status`가 exit 1) 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
+   **corral 런타임·herdr backend는 `CLAUDE_CODE_*`·`CLAUDECODE`·`CLAUDE_PID`·`CLAUDE_EFFORT`·`ORCA_AGENT_HOOK_*`를
+   제거한 env로 띄운다**(`app/scripts/l394/env.mjs` 규칙). pane은 backend에서 env를 상속하므로 마커가 남으면
+   provider가 세션 record를 쓰지 않아 `prompt`·`worker-start`의 배달 판정이 조용히 무력화된다 —
+   `record.unavailableReason`이 null이 아니면 마커 상속부터 의심한다.
    슬러그는 타이틀에서 케밥케이스 1~3단어로 파생하며, 기존 LIFE-N의 슬러그는 재사용한다.
 2. **작업 worktree 생성** (신규만, 본체는 main 유지):
    ```bash
@@ -40,9 +43,8 @@ description: >-
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·절대 worktree 경로, 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 [defaults.md](defaults.md):
    claude → `claude-fable-5-1` high, codex → `gpt-6-astra` high, 2026-09-22), 기동 상태.
-   모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 시작 기록으로 복사한다.
-   처음 상태는 `기동 전`. 워커 구성과 구현→3자 리뷰 흐름, 사용자 예외도 기록한다.
-   같은 워커를 리뷰 동안 유지해 수정 라운드에 재사용하는 요청을 기록한다. 재개는 기존 기록에 이력을 추가한다.
+   모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 복사한다. 처음 상태는 `기동 전`.
+   워커 구성·구현→3자 리뷰 흐름·사용자 예외, 수정 라운드용 워커 유지 요청도 기록하고, 재개는 이력을 덧붙인다.
 4. **코디네이터 터미널 기동** (`--worktree path:`에는 기록한 절대경로):
 
    선택은 `--agent claude` 또는 `--agent codex`다 — corral이 pane 안에서 provider를 직접 띄우므로
@@ -57,11 +59,10 @@ description: >-
    ```
    생성 응답의 handle을 확보하고 `00-start.md`에 기록한다. `--focus`는 사용자에게 보여줄
    코디네이터 터미널에만 사용한다(헤드리스에서는 미지원).
-5. **LA 상태 전이**: 시작 세션이 `issue_transition` → `진행 중`을 요청한다.
-   코디네이터가 먼저 다음 단계로 전진했다면 forward-only의 `same`·`backward` 응답을 존중한다.
-   부모가 checkpoint이면 함께 온보드(`issue_update` onBoard:true)하고 `진행 중`으로 전이한다.
-   부모가 project이면 이 동작을 적용하지 않는다. 종료 때 부모 완료는 다른 미완 자식이 없는지
-   확인한 뒤 판단한다 — task 하나 완료만으로 checkpoint 전체를 완료하지 않는다.
+5. **LA 상태 전이**: 시작 세션이 `issue_transition` → `진행 중`을 요청한다. 코디네이터가 먼저 전진했다면
+   forward-only의 `same`·`backward` 응답을 존중한다. 부모가 checkpoint이면 함께 온보드(`issue_update`
+   onBoard:true)하고 `진행 중`으로 전이하되 project이면 적용하지 않는다. 종료 때 부모 완료는 다른 미완
+   자식이 없는지 확인한 뒤 판단한다 — task 하나 완료로 checkpoint 전체를 완료하지 않는다.
 
 6. **준비 확인 후 킥오프 주입**:
    ```bash
@@ -76,7 +77,7 @@ description: >-
    corral terminal prompt --terminal <handle> --wait accepted --json --text \
      "너는 LIFE-NNN 작업의 코디네이터야. specs/LIFE-NNN-<슬러그>/00-start.md와 .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해."
    ```
-   영수증 `--request-id`(`r1.<13자리 ms>.<UUID>`)와 `record.matchCount`를 `00-start.md`에 기록한다.
+   응답의 `requestId`(corral이 민팅한 `r1.<13자리 ms>.<UUID>`)와 `record.matchCount`를 `00-start.md`에 기록한다.
    `outcome: completed`만 배달 확인이고 그 밖(`queued`·`outcome_unknown`)은 중복 주입하지 않는다.
    전달 이후 이 파일과 작업 브랜치는 코디네이터가 맡는다. 시작 세션은 더 수정하지 않는다.
    실제 세션 점검 후 코디네이터가 `준비 완료` 또는 `차단 사유`를 기록한다.

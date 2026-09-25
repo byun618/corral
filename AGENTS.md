@@ -22,7 +22,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    (.claude/worktrees/LIFE-NNN-<슬러그>/) — 본체는 항상 main 에 둔다.
    specs/LIFE-NNN-<슬러그>/ 생성. 분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
 1. 분석: 코디네이터가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
-   (Orca 터미널 대화형, 코디네이터의 웹 검색과 대조) → specs/LIFE-NNN-*/00-analysis.md
+   (grok-search 스킬의 대화형 경로, 코디네이터의 웹 검색과 대조) → specs/LIFE-NNN-*/00-analysis.md
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
    - **네이티브 실행 관문**: 사용자의 네이티브 설치 경로에서 최소 1회 실행한 원자료가 있어야
@@ -100,8 +100,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 ## 세션 간 통신
 
 - 영속 산출물: specs/ 파일 (진실의 원천)
-- 제어 채널: orca `orchestration`(worker-start/check --wait/ask·reply) — 워커 기동·완료 감지·질의응답을
-  구조화된 메시지로 처리. native advisor argv만 terminal create 후 worker-start --terminal 연결 예외를 쓴다.
+- 제어 채널: corral `orchestration`(worker-start/check --block/ask·reply) — 워커 기동·완료 감지·질의응답을
+  구조화된 메시지로 처리. `worker-start` 가 `--advisor` 를 직접 받으므로 예외 경로는 없다.
   완료 감지는 계속 worker_done/check/ACK다. 상세는 task-coordinate SKILL.md §4
 - 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
 

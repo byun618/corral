@@ -27,8 +27,8 @@ description: >-
 
 1. **일감·환경 확인**: life-assistant MCP `issue_by_seq`로 LIFE-N 본문을 읽는다.
    `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고,
-   `command -v <선택 도구>`·`<선택 도구> --help`·`orca status --json`으로 기동 가능 여부를 확인한다.
-   LA가 없거나 Orca 런타임에 연결되지 않으면 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
+   `command -v <선택 도구>`·`<선택 도구> --help`·`corral status --json`으로 기동 가능 여부를 확인한다.
+   LA가 없거나 corral 런타임이 꺼져 있으면(`status`가 exit 1) 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
    슬러그는 타이틀에서 케밥케이스 1~3단어로 파생하며, 기존 LIFE-N의 슬러그는 재사용한다.
 2. **작업 worktree 생성** (신규만, 본체는 main 유지):
    ```bash
@@ -45,23 +45,18 @@ description: >-
    같은 워커를 리뷰 동안 유지해 수정 라운드에 재사용하는 요청을 기록한다. 재개는 기존 기록에 이력을 추가한다.
 4. **코디네이터 터미널 기동** (`--worktree path:`에는 기록한 절대경로):
 
-   | 선택 | 기본 기동 명령 |
-   | --- | --- |
-   | claude | `claude` |
-   | codex | `codex` |
-
-   모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값(플래그십 + xhigh)을 해당 CLI의
-   `--help`를 확인해 명령에 반영하고 기록한다.
-   예: Claude는 `claude --model <모델> --effort <등급>`, Codex는
-   `codex --model <모델> -c model_reasoning_effort='<등급>'`.
-   사용자 문자열을 실행 코드로 이어 붙이지 말고 각 값을 셸 인자로 인용한다.
+   선택은 `--agent claude` 또는 `--agent codex`다 — corral이 pane 안에서 provider를 직접 띄우므로
+   argv를 문자열로 조립하지 않는다. 모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값을
+   `--model`·`--effort` 플래그로 준다. `--advisor`는 `--agent claude`에만 붙고, `--command`와
+   `--agent`는 상호배타다(위반은 효과 없는 `invalid_request`).
 
    ```bash
-   orca terminal create --worktree path:<작업 worktree 절대경로> \
-     --title "LIFE-NNN-<슬러그> · <코디네이터>" --command "<확정한 기동 명령>" --focus --json
+   corral terminal create --worktree path:<작업 worktree 절대경로> \
+     --title "LIFE-NNN-<슬러그> · <코디네이터>" \
+     --agent <claude|codex> --model <모델> --effort <등급> --focus --json
    ```
    생성 응답의 handle을 확보하고 `00-start.md`에 기록한다. `--focus`는 사용자에게 보여줄
-   코디네이터 터미널에만 사용한다.
+   코디네이터 터미널에만 사용한다(헤드리스에서는 미지원).
 5. **LA 상태 전이**: 시작 세션이 `issue_transition` → `진행 중`을 요청한다.
    코디네이터가 먼저 다음 단계로 전진했다면 forward-only의 `same`·`backward` 응답을 존중한다.
    부모가 checkpoint이면 함께 온보드(`issue_update` onBoard:true)하고 `진행 중`으로 전이한다.
@@ -70,19 +65,21 @@ description: >-
 
 6. **준비 확인 후 킥오프 주입**:
    ```bash
-   orca terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
+   corral terminal wait --terminal <handle> --for agent-ready --timeout-ms 60000 --json
    ```
-   반환 결과를 확인하고, `terminal read`로 로그인·trust·권한 확인 화면이 아닌 실제 입력 대기인지
-   확인한다. 타임아웃은 준비 완료가 아니다. 필요한 인증·권한은 해당 도구 절차로 해결한다.
+   `satisfied`를 확인한다. trust·로그인 화면이나 미검증 detect manifest면 기다리지 않고 즉시
+   `satisfied: false`로 돌아온다 — 그 화면은 사람이 치우고 corral은 대답하지 않는다. 타임아웃은
+   준비 완료가 아니며, 어느 쪽이었는지는 `agent.evidence`로 구분한다.
    준비가 확인되면 `00-start.md`의 상태를 `킥오프 전달 준비`로 갱신·커밋한다.
-   그다음 아래 지시를 **한 번만** 보낸다.
+   그다음 아래 지시를 **한 번만** 보낸다(`prompt`가 managed agent 주입의 정본이고 `send`는 raw 입력이다).
    ```bash
-   orca terminal send --terminal <handle> --text \
-     "너는 LIFE-NNN 작업의 코디네이터야. specs/LIFE-NNN-<슬러그>/00-start.md와 .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해." --enter
+   corral terminal prompt --terminal <handle> --wait accepted --json --text \
+     "너는 LIFE-NNN 작업의 코디네이터야. specs/LIFE-NNN-<슬러그>/00-start.md와 .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해."
    ```
+   영수증 `--request-id`(`r1.<13자리 ms>.<UUID>`)와 `record.matchCount`를 `00-start.md`에 기록한다.
+   `outcome: completed`만 배달 확인이고 그 밖(`queued`·`outcome_unknown`)은 중복 주입하지 않는다.
    전달 이후 이 파일과 작업 브랜치는 코디네이터가 맡는다. 시작 세션은 더 수정하지 않는다.
    실제 세션 점검 후 코디네이터가 `준비 완료` 또는 `차단 사유`를 기록한다.
-   주입 응답이 불명확하면 `terminal read`로 수령 여부를 확인하고 중복 주입하지 않는다.
 
 ## 기동 실패·재개
 
@@ -90,6 +87,6 @@ description: >-
   `terminal list`로 해당 도구 터미널을 먼저 찾고, 살아 있으면 그 handle을 기록해 재사용한다.
   확인 없이 재시도해 중복 코디네이터를 만들지 않는다. 남은 상태·다음 조치를 `00-start.md`에 남긴다.
 - 포커스 전환 때문에 문제가 나면 `--focus`를 빼고 생성 후 `terminal switch`를 쓴다.
-- 터미널 읽기는 `orca terminal read --terminal <handle>` — 줄 수 제한은 `--limit`이다.
+- 터미널 읽기는 `corral terminal read --terminal <handle>` — `--limit`은 줄 수가 아니라 **바이트**다(1..262144).
 - 시작 세션은 킥오프 전달 후 구현을 지휘하지 않는다. 이후 과정은 선택된 코디네이터가 맡고,
   출고 승인 후 본체 마무리 담당에게 `handoff-main.md`로 돌아온다(task-coordinate §8).

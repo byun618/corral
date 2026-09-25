@@ -1,6 +1,7 @@
 # 구현 워커 실행 절차
 
-task-coordinate §4에서 기동 전에 읽는다. 먼저 `orca skills get orchestration`의 설치판 계약을 확인한다.
+task-coordinate §4에서 기동 전에 읽는다. 먼저 `corral agent-context --json`으로 플래그를 확인하고
+계약 산문은 `app/cli/README.md`를 읽는다. 설치판 스킬 문서에 해당하는 것은 corral에 없다.
 
 ## 1. 준비와 산출물 소유권
 
@@ -19,47 +20,45 @@ task-coordinate §4에서 기동 전에 읽는다. 먼저 `orca skills get orche
   지원한다고 쓰지 않는다. 실제 상담 여부·실패/미사용은 워커 보고와 transcript로 확인한다.
   **advisor 조언 자체는 리뷰 지적이 아니다.**
 
-## 2. 구현 워커(Opus + advisor) 기동
+## 2. 구현 워커(Opus + advisor) 기동 준비
 
-설치 Orca worker-start에는 advisor 옵션이 없다. 이 조합에 한해 **custom terminal create →
-worker-start --terminal**을 허용한다. 완료 감지는 계속 orchestration이다. --advisor를 worker-start에 붙이지 않는다.
+corral `worker-start`가 `--advisor`를 직접 받고, pane 생성·`wait --for agent-ready`·preamble 주입까지
+한 번에 묶는다. **별도 terminal create → worker-start --terminal 2단 경로를 쓰지 않는다.**
 
 1. 킥오프 승인 후 작업 브랜치 HEAD에서 구현 브랜치와 형제 worktree를 만든다. 기존 것이면 재사용 여부부터 확인한다.
-   현재 corral task-start와 같은 git worktree 경로다. repo setup hook이 새로 생겼다면 먼저 정책대로 실행·준비 확인한다.
-   custom 경로로 wait-for-setup 정책을 건너뛰지 않는다.
+   corral task-start와 같은 git worktree 경로이고, corral에 repo setup/archive hook은 아직 없다(LIFE-412 전)
+   — 기다릴 setup 단계가 없다는 뜻이며 준비 확인은 worktree 생성 결과로 한다.
 
 ```bash
 # 본체 절대경로를 REPO_ROOT에, 현재 작업 브랜치를 TASK_BRANCH에 지정한 뒤 실행
 git -C "$REPO_ROOT" worktree add "$REPO_ROOT/.claude/worktrees/${TASK_BRANCH}-claude" \
   -b "${TASK_BRANCH}-claude" "$TASK_BRANCH"
-orca terminal create --worktree "path:$REPO_ROOT/.claude/worktrees/${TASK_BRANCH}-claude" \
-  --title "${TASK_BRANCH} · opus + advisor" \
-  --command 'claude --model opus --effort high --advisor fable' --json
 ```
 
-2. 반환 handle을 기록한다. timeout이면 terminal list/show로 해당 worktree의 생성 여부부터 확인해 중복 기동을 막는다.
-   `terminal wait --for tui-idle --timeout-ms 60000`와 `terminal read`로 trust/login/권한 대기와 실제 입력 준비를 구분한다.
-   advisor on 알림과 모델을 확인하며 필요하면 `/advisor` picker를 **조회 후 취소**한다. 전역 설정을 저장하지 않는다.
-   사용량/접근 차단이나 advisor 비활성은 코디네이터에게 보고하고 자동 대체하지 않는다.
-3. Run은 기존 것을 우선 사용하고 없을 때만 생성한다. 구현 Task 발급은 §3이다.
+2. Run은 기존 것을 우선 사용하고 없을 때만 `corral orchestration run-create --objective "LIFE-NNN 구현" --json`
+   으로 만든다. Run은 프로필 단위로 묶이므로 명시 선택이 필요한 문맥은 `--run <run_id>`를 쓴다
+   (바인딩은 바뀌지 않는다). 구현 Task 발급은 §3이다.
 
-```bash
-orca orchestration run-create --objective "LIFE-NNN 구현" --json
-```
-
-명시 Run 선택이 필요한 문맥은 `--run <run_id>`를 사용한다. 재사용 --terminal에는 --model/--effort를 함께 줄 수 없다.
-이 터미널은 코디네이터가 만든 **기존 terminal을 빌려 감독하는 형태**다. 생성 handle/worktree/agent 정체와
-종료 책임을 02-kickoff에 기록한다. worker-release가 실제 프로세스를 닫았다고 가정하지 않는다.
+worker-start가 만든 pane은 그 attempt가 **소유**하고, 사람이 `terminal create`로 만든 pane은 처음부터
+`borrowed`라 corral이 닫지 않는다. 생성 handle/worktree/agent 정체와 종료 책임을 02-kickoff에 기록한다.
+worker-release가 실제 프로세스를 닫았다고 가정하지 않는다.
 
 ## 3. 구현 Task 발급
 
 ```bash
-orca orchestration task-create --spec "고정한 기준 commit을 읽고 구현·검증. 승인 범위/기준 유지. 네이티브 설치 경로에서 최소 1회 실행한 원자료 필수. 범위·기준 변경이 필요하면 ask. 제품·raw 커밋 후 worker_done 보고." --json
-orca orchestration worker-start --task <implementation_task> --terminal <opus_handle> \
-  --worktree path:<구현_worktree_절대경로> --json
+corral orchestration task-create --spec "고정한 기준 commit을 읽고 구현·검증. 승인 범위/기준 유지. 네이티브 설치 경로에서 최소 1회 실행한 원자료 필수. 범위·기준 변경이 필요하면 ask. 제품·raw 커밋 후 worker_done 보고." --json
+corral orchestration worker-start --task <implementation_task> \
+  --agent claude --model claude-opus-5 --effort high --advisor fable \
+  --worktree <구현_worktree_절대경로> --timeout-ms 120000 --json
 ```
 
-새 응답의 Task/Dispatch를 저장하고 워커가 새 preamble을 받았는지 확인한다.
+`--terminal <handle>`(pane 재사용)과 `--agent … --worktree <path>`(새로 기동)는 **정확히 하나만** 쓴다 —
+재사용 pane은 기동 때의 agent를 그대로 쓰므로 `--model`·`--effort`·`--advisor`·`--worktree`가 거절된다.
+요약이 아니라 `stages`·`launch`(`created`/`reused`/`resumed`)를 읽고 기록한다. 실패한 단계는 앞 단계를
+되돌리지 않고 `residualResources`에 남긴다. **`--retry-of`류 플래그는 없다** — 주입이 확정되지 않은
+attempt(`dispatch_input_unconfirmed`)는 같은 Task에 `worker-start --terminal <handle>`을 다시 불러
+같은 Dispatch로 재개하고(`launch: resumed`), `dispatch_input_unprovable`은 재개로 수렴하지 않으니
+사람이 pane을 읽고 `worker-stop`으로 끝낸다. 새 Task/Dispatch와 `worker.promptRequestId`를 저장한다.
 retain은 보존 의사 기록이며 새 Task 배정 자체가 아니다. 재사용 실패/세션 종료/사용자 takeover면 상태를 확인하고
 새 세션에는 진행 증거를 인계한다. 새로 기동했다면 동일 세션으로 재개했다고 쓰지 않는다.
 
@@ -71,16 +70,16 @@ retain은 보존 의사 기록이며 새 Task 배정 자체가 아니다. 재사
 아직 실행 중인 구현 Dispatch 위에 같은 terminal의 새 Dispatch를 겹쳐 기동하지 않는다.
 
 경쟁 구현이면 Codex 측은 **모델·effort를 명령에 명시한다**:
-`worker-start --agent codex --model gpt-6-astra --effort high`. 지정이 없으면 세션 기본을 탄다.
+`worker-start --agent codex --model gpt-6-astra --effort high --worktree <절대경로>`. 지정이 없으면 세션 기본을 탄다.
 Codex 워커는 Claude보다 느리고 타임아웃이 잦으므로 대기 예산을 넉넉히 잡는다.
 
 ## 4. 완료·취소 후 정리
 
 - 끝난 모든 Dispatch의 release 결과를 확인한다. failed 완료도 정리 대상이다.
-- custom으로 만든 terminal은 borrowed/pre-existing 사유로 retained일 수 있다. 이 경우
-  원자료를 회수한 뒤 terminal show/worker-show로 기록된 handle·worktree·agent 정체, 활성 Dispatch 없음,
+- 사람이 만든 pane은 `borrowed` 사유로 retained다. 이 경우 원자료를 회수한 뒤
+  terminal show/worker-show로 기록된 handle·worktree·agent 정체, 활성 Dispatch 없음,
   사용자 takeover 없음과 이번 작업의 전용 터미널임을 확인한 경우에만 `terminal close --terminal <handle>`로 정리한다.
-  불확실하면 보존하고 차단 사유를 보고한다. release_pending/unknown을 이 절차로 우회하지 않는다.
+  불확실하면 보존하고 차단 사유를 보고한다. `release.state: unknown`을 두 번째 close로 우회하지 않는다.
 - 재사용된 옛 Dispatch의 release로 현재 워커가 정리됐다고 가정하지 않는다. 최종 Dispatch와 실제 소유권을 확인한다.
 - 사용자 확인용 worktree는 출고 승인까지 유지한다. terminal 유지와 worktree 유지의 수명은 다르다.
 - 역할별 사용량은 도구가 제공하는 값만 기록한다. 제공되지 않는 토큰·비용·절감률을 추정해 실측으로 보고하지 않는다.

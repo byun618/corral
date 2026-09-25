@@ -3,7 +3,7 @@ name: task-coordinate
 description: >-
   corral 작업 코디네이터 절차. 작업 worktree의 Claude 또는 Codex 코디네이터가 킥오프 직후 읽는다.
   분석·판정 기준·킥오프 승인·단독 구현·3자 코드 리뷰·판정·세 승인 게이트·본체 마무리 인계를 다룬다.
-  Orca orchestration으로 워커 기동·완료 감지·질의응답을 처리한다.
+  corral orchestration으로 워커 기동·완료 감지·질의응답을 처리한다.
 ---
 
 # task-coordinate — 코디네이터 절차 (작업 worktree 세션에서 실행)
@@ -17,7 +17,7 @@ description: >-
   현재 세션과 기록이 다르면 작업을 시작하지 말고 `00-start.md`에 불일치를 기록하고 사용자에게 보고한다.
   재개 시 기존 Run·워커·승인 상태부터 확인하고 중복 기동하지 않는다.
 - **이 세션에서** LA `issue_by_seq` 조회, 웹 검색 도구의 사용 가능 여부, `grok-search` 본문 읽기,
-  `command -v grok`, `orca status --json`을 확인한다. 시작 세션에서 됐다는 이유로 생략하지 않는다.
+  `command -v grok`, `corral status --json`을 확인한다. 시작 세션에서 됐다는 이유로 생략하지 않는다.
   MCP를 새로 등록했다면 실제 호출 도구로 나타나는지도 확인한다. 인증값은 문서·프롬프트에 적지 않는다.
 - 빠진 도구·권한이 있으면 해결 가능한 설정을 점검하고, 남은 차단 사유를 시작 기록과 사용자에게
   보고한다. 임의로 다른 코디네이터로 바꾸거나 필수 리뷰를 생략하지 않는다.
@@ -34,8 +34,8 @@ description: >-
 ## 1. 분석 — 4박자 (외부 서치가 수 분 걸리므로 순차가 아니라 겹친다)
 
 1. **일감 본문 확보**: `issue_by_seq` 로 LIFE-N 상세를 읽는다. `specs/LIFE-NNN-<슬러그>/` 생성
-2. **외부 서치 먼저 띄운다**: 코디네이터의 웹 검색으로 개요를 먼저 깔고, grok은 Orca 터미널
-   대화형으로 병렬 위임한다(공통 grok-search 스킬). Claude Code는 WebSearch/WebFetch,
+2. **외부 서치 먼저 띄운다**: 코디네이터의 웹 검색으로 개요를 먼저 깔고, grok은 공통
+   grok-search 스킬의 대화형 경로로 병렬 위임한다. Claude Code는 WebSearch/WebFetch,
    Codex는 제공된 웹 검색·페이지 열기 도구를 사용한다. grok 결과는 자체 검색과 대조해 귀속 표기한다.
 3. **서치 대기 중 기준 초안** 작성 (§2)
 4. **서치 취합 → 기준 확정**: 서치 결과가 기준을 바꿀 수 있다. 기준 freeze는 *킥오프 승인 시점*이다
@@ -129,18 +129,20 @@ Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화�
 
 ### 4.2 완료·질문·복구 공통 규칙
 
-먼저 `orca skills get orchestration`을 읽고 Run/Task/Dispatch를 기록한다.
+먼저 `corral agent-context --json`으로 플래그를, `app/cli/README.md`로 계약을 확인하고 Run/Task/Dispatch를
+기록한다. 설치판 스킬 문서에 해당하는 것은 corral에 **없다** — 이 두 곳이 전부다.
 완료는 파일 존재나 TUI idle이 아니라 해당 Task/Dispatch의 `worker_done`으로 확인한다.
 `succeeded`/`failed` 모두 종료 보고이며 failed를 성공으로 처리하지 않는다.
 
 ```bash
-orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 60000 --json
-orca orchestration reply --id <msg_id> --body <답> --json
+corral orchestration check --block --types worker_done,escalation,question --timeout-ms 60000 --json
+corral orchestration reply --id <msg_id> --body <답> --json
 ```
 
 배치의 모든 메시지를 처리하고 각 종료 워커의 재사용/retain/release를 결정한 뒤
-`check --ack <delivery_id> --wait ...`로 이어간다. 같은 Run의 check를 중복 실행하지 않는다.
-호스트 wait는 60초 이내에 제어를 돌려받는다. timeout/count:0은 새 워커를 만드는 근거가 아니다.
+`check --ack <delivery_id> --block ...`로 이어간다 — `--ack`는 대기 시작 **전에 1회만** 적용된다. 같은 Run의
+check를 중복 실행하지 않는다. `--timeout-ms` 상한은 `check --block`·`ask`만 600000, 나머지는 120000이다.
+timeout/count:0은 새 워커를 만드는 근거가 아니다.
 응답 유실은 request-show·worker-show로 기존 요청/실행을 확인하고 명시된 복구 절차를 따른다.
 실행 중 worker에 release하지 않으며 release_pending/unknown을 terminal close로 우회하지 않는다.
 구현 브랜치가 살아 있는 동안 작업 브랜치 rebase 금지. 모든 worktree는 형제 폴더다.
@@ -196,8 +198,9 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   diff 정독·게이트 재실행·스모크 원자료 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지.
   전체 코드 리뷰를 반복하지 않는다 (범위가 UI/문구 수준일 때 — 가드·기준 경로를 건드리면 재리뷰 판단)
 - 수정 라운드 워커도 §4 패턴 그대로: 같은 워커에 이어 맡기면
-  `orchestration worker-start --task <fix_task_id> --terminal <handle> --worktree path:<해당 워커 worktree 절대경로>`로 재사용, 완료 대기·질문
-  응답은 `check --wait`/`reply`로 처리한다(codex 류 승인 프롬프트 정지도 이제 `question` 메시지로
+  `orchestration worker-start --task <fix_task_id> --terminal <handle>`로 재사용하고(재사용 pane은 기동 때의
+  agent·worktree를 그대로 쓰므로 `--worktree`·`--model`·`--effort`·`--advisor`를 함께 줄 수 없다),
+  완료 대기·질문 응답은 `check --block`/`reply`로 처리한다(codex 류 승인 프롬프트 정지도 이제 `question` 메시지로
   들어오므로 화면 감시가 따로 필요 없다 — LIFE-356 verdict §5 임시방편의 정식 대체)
 - 확인이 끝나 사용자가 **출고 승인**을 주면:
   1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다.

@@ -99,7 +99,8 @@ description: >-
 `00-start.md`의 전체 역할 구성을 따른다(설정 재질문 금지). 워커는 수정 라운드까지 유지, 리뷰 3자는 별도 세션.
 
 **설계 단계는 없다.** 워커가 접근을 정하고 바로 구현하며, 설계 문서·독립 설계 리뷰·설계 판정을 만들지
-않는다. 타당성은 §5 에서 본다. (LIFE-394 는 설계 리뷰만 4라운드·매번 새 높음·기각 0, 대조군 393 은 1라운드.)
+않는다. 타당성은 §5 에서 본다. (LIFE-394 에서 설계 리뷰만 4라운드가 돌았고 매 라운드 새 높음 지적이
+나왔으며 기각은 0이었다. 대조군 LIFE-393 은 설계 단계 없이 리뷰 1라운드로 끝났다.)
 
 Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화를 확인한다 — provider 프로세스·argv는
 `terminal show`(dispatch 스냅샷은 기동 시점 관측이라 `resolvedModel: null`), 배너는 `terminal read`. 모델
@@ -141,14 +142,13 @@ request-show·worker-show로 기존 요청/실행을 확인한다. 실행 중 wo
 
 ## 5. 독립 코드 리뷰 — 3자 (Codex Astra xhigh · Claude Opus high · Grok)
 
-- `.agents/agents/reviewer.md`를 먼저 읽는다. 3자는 서로, 그리고 구현자·코디네이터와 각각 별도 세션이다.
-  고정 구현 commit과 실제 실행 원자료를 검토한다. 설계 문서는 없으므로 접근 타당성도 여기서 본다.
+- `.agents/agents/reviewer.md`를 먼저 읽는다. 3자는 서로, 그리고 구현자·코디네이터와 각각 별도 세션이며 고정 구현 commit과 실제 실행 원자료를 검토한다. 설계 문서는 없으므로 접근 타당성도 여기서 본다.
 - 기동:
-  - Codex — `worker-start --task <review_task> --agent codex --model gpt-6-astra --effort xhigh --worktree path:<구현 worktree 절대경로> --timeout-ms 120000`
+  - Codex — `worker-start --task <review_task> --agent codex --model gpt-6-astra --effort xhigh --worktree path:<구현 worktree 절대경로> --timeout-ms 120000` (§8 codex 주의)
   - Claude — 같은 형태로 `--agent claude --model claude-opus-5 --effort high` (별도 세션)
   - Grok — §1 의 `terminal create --agent grok` 경로를 리뷰 주제로 쓴다
   `--agent`에는 `--worktree`가 필수다(없으면 거절). 리뷰어 3명은 **Task를 각각 따로 발급**한다 —
-  같은 Task로 띄우면 조용히 재개된다. 리뷰어는 제품 파일을 수정하지 않는다.
+  같은 Task로 띄우면 미확정 attempt(`promptRequestId: null`)만 조용히 재개되고, 이미 주입된 attempt가 열려 있으면 `dispatch_active`로 거절된다. 리뷰어는 제품 파일을 수정하지 않는다.
 - 결과는 `review-codex.md`·`review-claude.md`·`review-grok.md` — 자기 관측/미실행과 다른 리뷰 근거를 구분하고 코디네이터가 보고서를 작업 브랜치에 회수·커밋한다. 리뷰 중 구현자는 제품 변경을 멈춘다.
 - 세 리뷰 모두 코드 정확성·기준 충족·실행 근거를 보고 Grok은 외부 사실을 추가 대조한다.
   **구현자와 같은 도구의 리뷰어도 둔다** — 새 세션이면 검출력이 유지된다. 자기 구현분 기각은 사유를 상세히.
@@ -184,7 +184,7 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   (실행 방법을 한 줄로 같이 준다). 문제가 나오면 수정 라운드 → 재확인
 - **게이트 ① 사용자 수정 라운드** (LIFE-353 fix3 · LIFE-356 G1~G6): 확인 중 나온 지시·결함은 범위를
   문서로 박고(04-gate1-fix.md 류) 워커가 구현 브랜치에 이어 커밋(rN 태그) → 코디네이터가 diff 정독·게이트
-  재실행·스모크 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지. 범위가 UI/문구 수준이면 전체 코드
+  재실행·스모크 원자료 검증 후 verdict 에 판정 부록 append → 작업 브랜치 머지. 범위가 UI/문구 수준이면 전체 코드
   리뷰를 반복하지 않는다 (가드·기준 경로를 건드리면 재리뷰 판단)
 - 수정 라운드 워커도 §4 패턴 그대로: 같은 워커에 이어 맡기면
   `orchestration worker-start --task <fix_task_id> --terminal <handle>`로 재사용하고(재개에는
@@ -197,7 +197,7 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   `terminal read`로 화면을 한 번 확인한다. 떠 있으면 사람이 GUI에서 치우거나 `terminal send`로 정리한 뒤
   같은 Task에 `worker-start --task <t> --terminal <h>`로 재개한다(2단). trust 화면은 사람 몫이다
   **`worker-start --agent codex`는 준비→주입이 한 호출 안에서 원자적이라 중간 화면을 볼 자리가 없다**
-  (`orchestration/index.ts:1076-1084`) — 기동 전 사용자 셸에서 `codex --version`이 최신인지 확인하거나,
+  (`orchestration/index.ts:1076-1084`) — 기동 전 사용자 셸에서 codex를 최신으로 올리거나,
   `terminal create --agent codex` → `terminal read` 확인 → 같은 pane에 `--terminal <h>`로 붙인다
 - 확인이 끝나 사용자가 **출고 승인**을 주면:
   1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다.

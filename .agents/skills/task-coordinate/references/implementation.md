@@ -8,7 +8,7 @@ task-coordinate §4에서 기동 전에 읽는다. 먼저 `corral agent-context 
 - 작업의 모든 역할 모델/effort는 00-start의 기록을 따른다. 아래 명령은 기본 `opus` / `high`,
   native advisor `fable` 예시다. 명시 변경이 있으면 해당 CLI가 실제 지원하는 옵션으로 반영한다.
   실제 해소 모델·advisor 활성화는 `terminal show`(provider 프로세스·argv)와 `terminal read`(배너)로 기록한다 —
-  dispatch 스냅샷은 기동 시점 관측이라 갱신되지 않는다. alias는 버전 고정이 아니니 요청값과 관측값을 구분한다.
+  dispatch 스냅샷은 기동 시점 관측이라 갱신되지 않는다. alias는 버전 고정이 아니니 요청값과 관측값을 구분한다. 필요하면 `/advisor` picker를 **조회 후 취소**한다 — 전역 설정을 저장하지 않는다.
 - 제품/구현 raw는 워커가 구현 브랜치에 커밋한다. 분석·기준·킥오프·리뷰·최종 verdict는
   코디네이터가 작업 브랜치에 커밋한다. **별도 설계 문서는 만들지 않는다.**
 - 리뷰어는 고정 commit의 코드·원자료를 읽고 결과를 킥오프가 지정한 임시 경로에 쓴다. 코디네이터가
@@ -72,7 +72,7 @@ retain은 보존 의사 기록이며 새 Task 배정이 아니다. 재사용 실
 아직 실행 중인 구현 Dispatch 위에 같은 terminal의 새 Dispatch를 겹쳐 기동하지 않는다.
 
 경쟁 구현이면 Codex 측은 **모델·effort를 명령에 명시한다**:
-`worker-start --agent codex --model gpt-6-astra --effort high --worktree path:<절대경로>`. 없으면 세션 기본을 탄다.
+`worker-start --agent codex --model gpt-6-astra --effort high --worktree path:<절대경로>`. 없으면 세션 기본을 탄다 (task-coordinate §8 codex 주의).
 Codex 워커는 Claude보다 느리고 타임아웃이 잦으므로 대기 예산을 넉넉히 잡는다.
 
 ## 4. 완료·취소 후 정리

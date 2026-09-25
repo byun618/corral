@@ -16,7 +16,7 @@ task-coordinate §4에서 기동 전에 읽는다. 먼저 `corral agent-context 
 - 워커에게 작업 브랜치 기준·판정은 `git show <고정한_작업_commit>:specs/...`로 읽도록 지시한다.
   리뷰를 위해 제품을 먼저 머지하지 않는다.
 - native advisor는 서버에서 워커의 대화를 받아 상담한다. 별도 구현자·독립 리뷰어로 세지 않고, 호출 시점·
-  횟수는 모델이 정한다. "1회 상한"이나 별도 advisor effort를 지원한다고 쓰지 않는다. 실제 상담 여부·
+  횟수는 모델이 정한다. 어려운 판단에서 상담하도록 지시하되 "1회 상한"이나 별도 advisor effort를 지원한다고 쓰지 않는다. 실제 상담 여부·
   실패/미사용은 워커 보고와 transcript로 확인한다. **advisor 조언 자체는 리뷰 지적이 아니다.**
 
 ## 2. 구현 워커(Opus + advisor) 기동 준비
@@ -57,8 +57,9 @@ corral orchestration worker-start --task <implementation_task> \
 되돌리지 않고 `residualResources`에 남긴다. **`--retry-of`류 플래그는 없다** — 복구는 2단이다:
 `terminal read`로 화면을 보고 차단 화면(승인·업데이트)이면 `terminal send`로 정리한 뒤(trust는 사람 몫)
 같은 Task에 `worker-start --task <t> --terminal <handle>`을 다시 부른다. 주입이 확정되지 않은
-attempt(`dispatch_input_unconfirmed`)는 같은 Dispatch로 재개되고(`launch: resumed`), pane·본문이 이미
-있으면 `launch: reused`다. `dispatch_input_unprovable`은 재개로 수렴하지 않으니 사람이 pane을 읽고
+attempt(`dispatch_input_unconfirmed` = `promptRequestId: null`)는 같은 Dispatch로 재개되고(`launch: resumed`), 이미 주입된
+attempt가 열려 있으면 `dispatch_active`로 거절된다. `reused`는 열린 attempt가 없어 **시작 가능한** Task에
+기존 pane을 배정한 새 attempt다. `dispatch_input_unprovable`은 재개로 수렴하지 않으니 사람이 pane을 읽고
 `worker-stop`으로 끝낸다. 새 Task/Dispatch와 `worker.promptRequestId`를 저장한다.
 retain은 보존 의사 기록이며 새 Task 배정이 아니다. 재사용 실패·세션 종료·사용자 takeover면 상태를 확인하고
 새 세션에 진행 증거를 인계한다 — 새로 기동했다면 동일 세션으로 재개했다고 쓰지 않는다.

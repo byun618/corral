@@ -24,6 +24,7 @@ description: >-
 - 통과하면 `00-start.md`를 `준비 완료`로 갱신·커밋한다. 코디네이터 선택은 구현자·리뷰어 구성을 바꾸지
   않는다 — 분석·기준·판정은 코디네이터, 구현은 별도 워커다.
 - `.agents/rules/` 를 단계마다 읽는다: 글 전 writing.md, 코드 전 coding.md, 완료 판정 전 validation.md.
+  디렉터리의 자동 로딩 여부에 기대지 않는다.
 
 ## LA 상태 전이 (life-assistant `issue_transition`, forward-only)
 
@@ -45,7 +46,7 @@ description: >-
   (LIFE-342 에서 5건 중 2건 오류 발견). 산출물: `00-analysis.md` (+ 외부 서치 원문 `00-analysis-grok.md`)
 - 절차가 이 스킬과 어긋나면 `00-analysis.md` 의 "절차 어긋남" 섹션에 누적 기록한다 (스킬 개정 재료)
 - **UI 비중이 큰 일감이면 `design-brief`/`design-intake` 삽입 여부를 검토한다** — 비주얼 디테일이 판정
-  기준에 안 잡히면 목업 없이 구현자 재량에 맡길 때 재작업 위험이 있다 (LIFE-357 판단 뒤집음).
+  기준에 안 잡히면 목업 없이 구현자 재량에 맡길 때 재작업 위험이 있다 (LIFE-357 판단 뒤집음, 2026-09-13).
   넣으면 `specs/app-screens.md`(없으면 먼저) → `design-brief` → 외부 Claude Design → `design-intake` →
   그 결과로 `01-criteria.md`/`02-kickoff.md` freeze. 안 넣으면 사유를 `00-analysis.md` 에 한 줄 (판단 없이 생략 금지)
 
@@ -63,16 +64,15 @@ description: >-
 - **설계는 워커가 흡수한다.** 코디네이터는 범위·제약·물류·검토 절차를 정하고, 구조·라이브러리·계측은
   워커 재량이다. 별도 설계 문서·설계 리뷰 단계는 없고 접근 타당성은 코드 리뷰에서 함께 본다.
 - 정체 표: 브랜치 / worktree / 격리 리소스(예: herdr 세션명) / 원자료 경로 / 결과 파일
-- `00-start.md`의 코디네이터 선택과 지정 모델·effort를 정체 표에 옮긴다. 재선택하지 않는다.
-  구현 워커·native advisor·코드 리뷰어 3자의 모델/effort와 실제 명령을 구분한다.
-  **Codex 워커·리뷰어는 모델과 effort를 명령에 명시한다** — 지정이 없으면 세션 기본을 탄다.
-  advisor는 독립 effort 옵션을 가정하지 않는다. handle/브랜치 실제 반환값도 기록한다.
+- `00-start.md`의 코디네이터 선택과 지정 모델·effort를 정체 표에 옮긴다(재선택 금지). 구현 워커·native
+  advisor·코드 리뷰어 3자의 모델/effort와 실제 명령을 구분하고 handle/브랜치 실제 반환값도 기록한다.
+  **Codex 워커·리뷰어는 모델·effort를 명령에 명시한다** — 없으면 세션 기본. advisor는 독립 effort가 없다.
 - **경쟁 구현을 쓸 경우 발동 근거를 여기에 적는다** (defaults.md 의 4개 조건 중 무엇인지).
   적지 않으면 단독이다.
 - **격리 규칙**: 사용자가 실제 쓰는 리소스(default 세션·소켓 등)를 건드리지 않는다.
   외부 도구 실측은 전용 격리 인스턴스에서. 상대 브랜치 보지 않기, 작업 브랜치에 커밋하지 않기
 - **격리 기동에 "헤드리스는 안 된다" 고 단정하지 않는다** — 정확히는 *TTY 가 없으면* 안 되는 것이고
-  `script(1)` 류 PTY 래퍼 경로가 있다. LIFE-344 에서 herdr 세션 기동이 Orca 탭 61.5초 · PTY 53ms 로
+  `script(1)` 류 PTY 래퍼 경로가 있다. LIFE-344 에서 herdr 세션 기동이 Orca 탭 경로 61.5초 · PTY 경로 53ms 로
   갈렸다 — 재기동 시간이 통과선에 들면 이 차이가 판정을 뒤집는다 (각 1회 측정, 자릿수로만 쓴다).
 - 원자료 규칙: 로그·스냅샷·타이밍 원본을 `specs/LIFE-NNN-*/raw/<도구>/` 에 커밋한다 — 판정표 "근거" 칸이 가리킬 실물이 없으면 그 항목은 무효
 - **결과 문서**: 전부 커밋 + `raw/<도구>/DONE.md` (한 줄 요약 + 미완 목록) — 이건 감사 추적용
@@ -95,22 +95,19 @@ description: >-
 
 2026-09-22 신규 기본. 코디네이터 설정은 task-start/00-start.md 그대로 유지한다.
 
-역할 기본값은 [task-start/defaults.md](../task-start/defaults.md) 한 곳에서 관리한다.
-실제 작업은 `00-start.md`의 전체 역할 구성을 따르며 설정을 다시 묻지 않는다.
-구현 워커는 수정 라운드까지 유지하고, 코드 리뷰 3자는 각각 별도 세션이다.
+역할 기본값은 [task-start/defaults.md](../task-start/defaults.md) 한 곳에서 관리하고, 실제 작업은
+`00-start.md`의 전체 역할 구성을 따른다(설정 재질문 금지). 워커는 수정 라운드까지 유지, 리뷰 3자는 별도 세션.
 
 **설계 단계는 없다.** 워커가 접근을 정하고 바로 구현하며, 설계 문서·독립 설계 리뷰·설계 판정을 만들지
 않는다. 타당성은 §5 에서 본다. (LIFE-394 는 설계 리뷰만 4라운드·매번 새 높음·기각 0, 대조군 393 은 1라운드.)
 
 Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화를 확인한다 — provider 프로세스·argv는
-`terminal show`(dispatch 스냅샷은 기동 시점 관측이라 `resolvedModel: null`로 남는다), 배너는 `terminal read`.
-모델 접근/사용량 문제로 이 구성을 기동할 수 없으면 차단을 보고한다. advisor를 조용히 빼거나
-다른 모델로 대체하지 않는다. 기존 작업의 승인된 구성은 소급 변경하지 않는다.
+`terminal show`(dispatch 스냅샷은 기동 시점 관측이라 `resolvedModel: null`), 배너는 `terminal read`. 모델
+접근·사용량으로 기동할 수 없으면 차단을 보고한다 — advisor를 조용히 빼거나 다른 모델로 대체하지 않고, 기존 작업의 승인된 구성은 소급 변경하지 않는다.
 
-**기동 전 [구현 워커 실행 절차](references/implementation.md)를 읽는다.**
-이 문서가 custom advisor 기동, 워커 보존·재사용·종료, 단계 산출물의 명령 수준 계약이다.
-경쟁 구현이면 후보별 구현·리뷰·판정 파일과 리뷰 세션을 분리하고,
-각 후보가 같은 기준을 받되 상대 구현·리뷰·판정을 워커에게 공유하지 않는다.
+**기동 전 [구현 워커 실행 절차](references/implementation.md)를 읽는다** — advisor 기동, 워커 보존·재사용·
+종료, 단계 산출물의 명령 수준 계약이 거기 있다. 경쟁 구현이면 후보별 구현·리뷰·판정 파일과 리뷰 세션을
+분리하고, 각 후보가 같은 기준을 받되 상대 구현·리뷰·판정을 워커에게 공유하지 않는다.
 
 ### 4.1 구현 지시와 진행
 
@@ -126,9 +123,8 @@ Claude의 `opus`/`fable` alias가 해소된 실제 버전과 advisor 활성화�
 ### 4.2 완료·질문·복구 공통 규칙
 
 먼저 `corral agent-context --json`으로 플래그를, `app/cli/README.md`로 계약을 확인하고 Run/Task/Dispatch를
-기록한다. 설치판 스킬 문서에 해당하는 것은 corral에 **없다** — 이 두 곳이 전부다.
-완료는 파일 존재나 TUI idle이 아니라 해당 Task/Dispatch의 `worker_done`으로 확인한다.
-`succeeded`/`failed` 모두 종료 보고이며 failed를 성공으로 처리하지 않는다.
+기록한다 — 설치판 스킬 문서에 해당하는 것은 corral에 **없고** 이 두 곳이 전부다. 완료는 파일 존재나
+TUI idle이 아니라 해당 Task/Dispatch의 `worker_done`으로 확인하며, `succeeded`/`failed` 모두 종료 보고다(failed를 성공으로 처리하지 않는다).
 
 ```bash
 corral orchestration check --block --types worker_done,escalation,question --timeout-ms 60000 --json
@@ -153,8 +149,7 @@ request-show·worker-show로 기존 요청/실행을 확인한다. 실행 중 wo
   - Grok — §1 의 `terminal create --agent grok` 경로를 리뷰 주제로 쓴다
   `--agent`에는 `--worktree`가 필수다(없으면 거절). 리뷰어 3명은 **Task를 각각 따로 발급**한다 —
   같은 Task로 띄우면 조용히 재개된다. 리뷰어는 제품 파일을 수정하지 않는다.
-- 결과는 `review-codex.md`·`review-claude.md`·`review-grok.md`. 자기 관측/미실행과 다른 리뷰
-  근거를 구분한다. 코디네이터가 보고서를 작업 브랜치에 회수·커밋한다. 리뷰 중 구현자는 제품 변경을 멈춘다.
+- 결과는 `review-codex.md`·`review-claude.md`·`review-grok.md` — 자기 관측/미실행과 다른 리뷰 근거를 구분하고 코디네이터가 보고서를 작업 브랜치에 회수·커밋한다. 리뷰 중 구현자는 제품 변경을 멈춘다.
 - 세 리뷰 모두 코드 정확성·기준 충족·실행 근거를 보고 Grok은 외부 사실을 추가 대조한다.
   **구현자와 같은 도구의 리뷰어도 둔다** — 새 세션이면 검출력이 유지된다. 자기 구현분 기각은 사유를 상세히.
 - **수정 라운드의 재리뷰는 반드시 새 리뷰 세션으로 기동한다.** 이전 리뷰 세션을 이어 쓰지 않는다
@@ -201,6 +196,9 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   `agent-ready`를 통과한다(실측: codex 0.156.1 업데이트 메뉴). 그래서 codex pane은 첫 `prompt` 전에
   `terminal read`로 화면을 한 번 확인한다. 떠 있으면 사람이 GUI에서 치우거나 `terminal send`로 정리한 뒤
   같은 Task에 `worker-start --task <t> --terminal <h>`로 재개한다(2단). trust 화면은 사람 몫이다
+  **`worker-start --agent codex`는 준비→주입이 한 호출 안에서 원자적이라 중간 화면을 볼 자리가 없다**
+  (`orchestration/index.ts:1076-1084`) — 기동 전 사용자 셸에서 `codex --version`이 최신인지 확인하거나,
+  `terminal create --agent codex` → `terminal read` 확인 → 같은 pane에 `--terminal <h>`로 붙인다
 - 확인이 끝나 사용자가 **출고 승인**을 주면:
   1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다.
      LIFE-N, 본체 경로, 작업 브랜치, 검증한 구현 커밋, 채택·출고 승인 근거, 마무리 명령,

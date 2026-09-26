@@ -165,13 +165,19 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       let target: TerminalIdentity | undefined
       if (f.terminal !== undefined) {
         const decoded = codec.decode<TerminalIdentity & { runtimeId: string }>('t1', required('terminal'))
-        if (decoded.runtimeId !== ctx.runtimeId || decoded.epoch !== epoch) throw new RuntimeError('stale_terminal', 'Handle belongs to another runtime/backend generation', { recovery: 'terminal list' })
+        if (decoded.runtimeId !== ctx.runtimeId || decoded.epoch !== epoch) throw new RuntimeError('stale_terminal', 'Handle belongs to another runtime/backend generation', { recovery: 'terminal list' }, undefined, 'not_started')
         target = decoded
       }
+      // LIFE-423: neither handle check sends anything to a pane — the decode above compares against
+      // the backend's epoch, `resolve()` reads its pane list — so both carry `not_started`. For the
+      // one inside `receipts.run` that is what hands the `--request-id` back (README §59); the
+      // decode throws before the receipt store is reached, so there it is metadata only. The stage
+      // stays unset: §59 records that `stale_terminal` has none, and server.ts already answers
+      // `preflight` for a refusal taken before any effect.
       const resolve = async (allowExit = false) => {
         const current = (await backend.list(epoch, ctx)).find(p => p.paneId === target!.paneId)
         if (!current && allowExit) return undefined
-        if (!current || current.ptyId !== target!.ptyId) throw new RuntimeError('stale_terminal', 'PTY disappeared or was replaced', { terminal: required('terminal'), recovery: 'terminal list' })
+        if (!current || current.ptyId !== target!.ptyId) throw new RuntimeError('stale_terminal', 'PTY disappeared or was replaced', { terminal: required('terminal'), recovery: 'terminal list' }, undefined, 'not_started')
         return current
       }
       const read = async (selected: TerminalIdentity, cursor?: string, limit = 65536) => {

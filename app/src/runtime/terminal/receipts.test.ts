@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Receipts, RECEIPT_TTL, REQUEST_ID } from './receipts.js'
 import { derivedPromptId, derivedRequestId } from './index.js'
-import type { Invocation } from '../contracts.js'
+import { RuntimeError, type Invocation } from '../contracts.js'
 
 describe('terminal receipt admission survives result loss', () => {
   let root: string, now: number, receipts: Receipts
@@ -152,5 +152,80 @@ describe('LIFE-394 create/prompt composition receipts', () => {
     expect(JSON.parse(fs.readFileSync(file(id), 'utf8')).state).toBe('pending')
     await expect(receipts.run(child(parent, 'ONCE'), submit)).rejects.toMatchObject({ code: 'outcome_unknown', stage: 'receipt', outcome: 'unknown' })
     expect(submit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('LIFE-423 a refusal that never started leaves the request id unspent', () => {
+  let root: string, now: number, receipts: Receipts
+  const request = (text = 'ONCE'): Invocation => ({ command: 'terminal prompt', flags: { 'request-id': `r1.${now}.${randomUUID()}`, terminal: 't1.handle', text }, args: [], cwd: '/fixture' })
+  const file = (inv: Invocation) => path.join(root, 'runtime/terminal-receipts', inv.flags['request-id'] + '.json')
+  const refuse = (code: string, outcome?: 'not_started' | 'unknown', stage?: string) =>
+    vi.fn(async (): Promise<unknown> => { throw new RuntimeError(code, code + ' refusal', { terminal: 't1.handle' }, stage, outcome) })
+  beforeEach(() => {
+    root = fs.mkdtempSync('/tmp/l423-claude-receipts-')
+    now = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    receipts = new Receipts(root, now)
+  })
+  afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
+
+  // The bug: the first attempt filed a pending receipt the refusal never cleared, so the retry the
+  // refusal itself recommends answered `outcome_unknown` about an effect that provably never ran.
+  it.each(['agent_not_ready', 'agent_blocked', 'prompt_already_delivered', 'detect_manifest_unverified', 'stale_terminal'])(
+    'repeats %s for the same request id instead of outcome_unknown', async code => {
+      const inv = request(), effect = refuse(code, 'not_started', 'preflight')
+      await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code, outcome: 'not_started' })
+      expect(fs.existsSync(file(inv))).toBe(false)
+      await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code, outcome: 'not_started' })
+      expect(effect).toHaveBeenCalledTimes(2)
+      expect(fs.existsSync(file(inv))).toBe(false)
+    })
+
+  // `stale_terminal` carries no stage of its own (app/cli/README.md §59); the outcome alone decides.
+  it('discriminates on the outcome, not on the stage', async () => {
+    const inv = request(), effect = refuse('stale_terminal', 'not_started')
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'stale_terminal', outcome: 'not_started' })
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'stale_terminal' })
+    expect(effect).toHaveBeenCalledTimes(2)
+  })
+
+  // An unspent id is unspent for the memory record too: `admitted` still holding the hash would
+  // answer `request_conflict` to a corrected body, which is the whole point of fixing the input.
+  it('admits a corrected body under the same id after the refusal', async () => {
+    const inv = request(), effect = refuse('agent_not_ready', 'not_started', 'preflight'), succeed = vi.fn(async () => ({ stage: 'submitted' }))
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'agent_not_ready' })
+    const corrected = { ...inv, flags: { ...inv.flags, text: 'CORRECTED' } }
+    await expect(receipts.run(corrected, succeed)).resolves.toMatchObject({ stage: 'submitted', replayed: false })
+    expect(succeed).toHaveBeenCalledTimes(1)
+  })
+
+  it('files the retry that finally succeeds and replays it afterwards', async () => {
+    const inv = request(), effect = refuse('agent_not_ready', 'not_started', 'preflight'), succeed = vi.fn(async () => ({ stage: 'submitted' }))
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'agent_not_ready' })
+    await expect(receipts.run(inv, succeed)).resolves.toMatchObject({ replayed: false })
+    expect(JSON.parse(fs.readFileSync(file(inv), 'utf8')).state).toBe('completed')
+    await expect(receipts.run(inv, succeed)).resolves.toMatchObject({ replayed: true })
+    expect(succeed).toHaveBeenCalledTimes(1)
+  })
+
+  // Negative control (C4). Only `not_started` frees the id: a refusal that cannot prove nothing ran
+  // keeps its pending receipt, and the same id still answers `outcome_unknown`.
+  it.each([
+    ['a RuntimeError with no outcome', refuse('backend_timeout')],
+    ['a RuntimeError that is explicitly unknown', refuse('outcome_unknown', 'unknown', 'backend')],
+    ['a plain Error', vi.fn(async (): Promise<unknown> => { throw new Error('response lost after effect') })],
+  ])('keeps %s pending and refuses the retry', async (_label, effect) => {
+    const inv = request()
+    await expect(receipts.run(inv, effect)).rejects.toBeInstanceOf(RuntimeError)
+    expect(JSON.parse(fs.readFileSync(file(inv), 'utf8')).state).toBe('pending')
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'outcome_unknown', stage: 'receipt', outcome: 'unknown' })
+    expect(effect).toHaveBeenCalledTimes(1)
+  })
+
+  // The freed id is freed on disk *and* in the capacity count — a refusal must not retain a slot.
+  it('returns the refused id to the 24-hour capacity count', async () => {
+    const inv = request(), effect = refuse('agent_not_ready', 'not_started', 'preflight')
+    await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'agent_not_ready' })
+    expect(fs.readdirSync(path.join(root, 'runtime/terminal-receipts'))).toHaveLength(0)
   })
 })

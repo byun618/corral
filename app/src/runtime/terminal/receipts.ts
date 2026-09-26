@@ -18,7 +18,8 @@ export function readReceipt(userData: string, requestId: string): Receipt | null
 }
 export class Receipts {
   // Keep admission independent of result files: losing a receipt must not free its ID or capacity.
-  // After restart, the timestamp check below rejects missing IDs from the preceding runtime.
+  // After restart, the timestamp check below rejects missing IDs from the preceding runtime. The one
+  // release is LIFE-423's: a refusal that proves nothing ran gives the ID back, file and entry both.
   private readonly admitted = new Map<string, { hash: string; createdAt: number }>()
   constructor(private readonly userData: string, private readonly startedAt: number) {}
   async run(inv: Invocation, execute: () => Promise<unknown>): Promise<unknown> {
@@ -50,6 +51,11 @@ export class Receipts {
     this.admitted.set(id, { hash, createdAt })
     let value: unknown
     try { value = await execute() } catch (error) {
+      // LIFE-423: `not_started` is the runtime's own proof that the effect never began, so the id is
+      // unspent and the retry the refusal asks for repeats the original refusal rather than being
+      // told the outcome is unknown. Everything else — a plain Error, a RuntimeError with no outcome,
+      // an explicit `unknown` — may have taken effect and keeps its pending receipt (394 F8 b).
+      if (error instanceof RuntimeError && error.outcome === 'not_started') { fs.rmSync(file, { force: true }); this.admitted.delete(id) }
       throw new RuntimeError(error instanceof RuntimeError ? error.code : 'outcome_unknown', error instanceof Error ? error.message : String(error),
         { requestId: id, terminal: inv.flags.terminal ?? null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: error instanceof RuntimeError ? error.resources : undefined },
         error instanceof RuntimeError ? error.stage : 'backend', error instanceof RuntimeError ? error.outcome : 'unknown')

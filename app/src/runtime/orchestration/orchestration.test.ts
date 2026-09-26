@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import { OrchestrationStore, isOrchestrationState } from './store.js'
@@ -634,11 +635,12 @@ describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () 
     expect(mirror(onDisk)).toBe(false)
     fs.writeFileSync(path.join(userData, 'runtime/terminal-receipts', `${onDisk}.json`), '{}')
     expect(mirror(onDisk)).toBe(true)
-    // LIFE-423 L-3: a released receipt is a tombstone, and `readReceipt` reads it as no receipt.
-    // This has to read it the same way, or a refused id would look like one `Receipts` still
-    // answers for. Unreachable today — a release made in this runtime leaves the id in `here`, and
-    // one from an earlier runtime is caught by the timestamp above — so this keeps the two readings
-    // of the same file in step rather than fixing an observed failure.
+    // LIFE-423 L-3: a released receipt is a tombstone. `readReceipt` returns it as written and
+    // `receiptOf` folds it into `absent`; this has to agree, or a refused id would look like one
+    // `Receipts` still answers for. R3-2: unreachable only for an id this orchestration instance
+    // admitted (its own `here`, or the timestamp above). The receipt directory is shared, so an id
+    // the terminal or workspace module released and the caller passes back as `--request-id` does
+    // reach it — the case below this one.
     const released = id(startedAt + 3000, '4')
     const releasedFile = path.join(userData, 'runtime/terminal-receipts', `${released}.json`)
     fs.writeFileSync(releasedFile, JSON.stringify({ hash: 'x', state: 'released', createdAt: startedAt + 3000 }))
@@ -647,6 +649,28 @@ describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () 
     fs.writeFileSync(releasedFile, 'not json at all')
     expect(mirror(released)).toBe(true)
     fs.rmSync(userData, { recursive: true, force: true })
+  })
+
+  // LIFE-423 R3-2. The branch above is not future-proofing: the receipt directory is shared, and an
+  // id the *terminal* module released is one this orchestration instance never admitted. Built from
+  // a real `Receipts` refusal rather than a hand-written file, so it breaks if the tombstone's shape
+  // or the reader's reading of it drift apart.
+  it('answers false for a tombstone another module wrote (R3-2)', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'l423-crossmodule-'))
+    try {
+      const startedAt = Date.now() - 1000
+      const id = `r1.${Date.now()}.${randomUUID()}`
+      const { Receipts } = await import('../terminal/receipts.js')
+      const refusal = new RuntimeError('agent_not_ready', 'refused before any effect', null, 'preflight', 'not_started')
+      await expect(new Receipts(userData, startedAt).run(
+        { command: 'terminal send', flags: { 'request-id': id, text: 'x' }, args: [], cwd: userData },
+        async () => { throw refusal })).rejects.toMatchObject({ code: 'agent_not_ready' })
+      const file = path.join(userData, 'runtime/terminal-receipts', `${id}.json`)
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).state).toBe('released')
+      // `here` is empty: this orchestration instance never saw the id, which is exactly the case
+      // the comment used to call unreachable.
+      expect(receiptsOwnTheAnswer(id, { startedAt, userData, here: new Map() })).toBe(false)
+    } finally { fs.rmSync(userData, { recursive: true, force: true }) }
   })
 })
 

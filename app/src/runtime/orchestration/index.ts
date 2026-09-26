@@ -444,12 +444,17 @@ export function receiptsOwnTheAnswer(id: string | undefined, ctx: { startedAt: n
   return ctx.here.has(id) || Number(match[1]) < ctx.startedAt || receiptStanding(ctx.userData, id)
 }
 /**
- * LIFE-423 L-3. Whether a receipt file still speaks for this id. A `released` one does not —
- * `readReceipt` reads a tombstone as no receipt, and the branch above has to read it the same way
- * or a refused id would be treated as one `Receipts` is about to answer for. No caller reaches this
- * with a tombstone today: a release made in this runtime leaves the id in `here`, and one from an
- * earlier runtime is caught by the timestamp first. A file that cannot be read keeps its answer —
- * unreadable is not proof of a release.
+ * LIFE-423 L-3. Whether a receipt file still speaks for this id. A `released` one does not: the
+ * branch above has to read a tombstone the way this module's other reader does — `readReceipt`
+ * returns the record as written, and `receiptOf` (`:1187`) folds `released` into `absent` — or a
+ * refused id would be treated as one `Receipts` is about to answer for.
+ *
+ * R3-2 narrows what "unreachable" means here. It holds only for an id *this* orchestration instance
+ * admitted: `here` is this module's own map, so a release it made leaves the id in it, and an id
+ * from an earlier runtime is caught by the timestamp first. The receipt directory is shared with the
+ * terminal and workspace modules, which do not touch that map — an id one of them released, passed
+ * back as this command's `--request-id`, reaches this line for real, and `false` is the right answer
+ * for it. A file that cannot be read keeps its answer: unreadable is not proof of a release.
  */
 function receiptStanding(userData: string, id: string): boolean {
   const file = path.join(userData, 'runtime/terminal-receipts', `${id}.json`)

@@ -6,12 +6,14 @@ import { isRecord } from '../../shared/json.js'
 import { RuntimeError, type Invocation } from '../contracts.js'
 export const RECEIPT_TTL = 24 * 60 * 60 * 1000
 export const REQUEST_ID = /^r1\.(\d{13})\.([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/
-export interface Receipt { hash: string; state: 'pending' | 'completed'; createdAt: number; result?: unknown }
+export interface Receipt { hash: string; state: 'pending' | 'completed' | 'released'; createdAt: number; result?: unknown }
 /**
  * LIFE-410 V35 (freeze rule 11 exception, read-only). What a request id's receipt holds, or `null`
  * when there is none. A resumed Dispatch asks this instead of making the call again: a completed
  * receipt is what the earlier run's effect actually returned, and a pending one says the effect may
- * have happened and was never seen. Nothing here writes, and no command behaviour changes.
+ * have happened and was never seen. A `released` one (LIFE-423) says the effect never began; every
+ * caller here reads it the way it reads a missing file, which is the conservative answer and the
+ * same one r1 produced by deleting the file. Nothing here writes, and no command behaviour changes.
  */
 export function readReceipt(userData: string, requestId: string): Receipt | null {
   return readFile<Receipt | null>(path.join(userData, 'runtime/terminal-receipts', requestId + '.json'), () => null)
@@ -19,7 +21,9 @@ export function readReceipt(userData: string, requestId: string): Receipt | null
 export class Receipts {
   // Keep admission independent of result files: losing a receipt must not free its ID or capacity.
   // After restart, the timestamp check below rejects missing IDs from the preceding runtime. The one
-  // release is LIFE-423's: a refusal that proves nothing ran gives the ID back, file and entry both.
+  // release is LIFE-423's, and it is written down rather than merely forgotten: a second `Receipts`
+  // on this profile may already have copied the admission off the pending receipt, and the file is
+  // the only thing the two share, so a refusal that proves nothing ran records `released` there.
   private readonly admitted = new Map<string, { hash: string; createdAt: number }>()
   constructor(private readonly userData: string, private readonly startedAt: number) {}
   async run(inv: Invocation, execute: () => Promise<unknown>): Promise<unknown> {
@@ -33,10 +37,14 @@ export class Receipts {
     for (const [key, entry] of this.admitted) if (now - entry.createdAt > RECEIPT_TTL) this.admitted.delete(key)
     const flags = Object.fromEntries(Object.entries(inv.flags).filter(([key]) => !['request-id', 'json', 'timeout-ms', 'socket', 'instance'].includes(key)).sort(([a], [b]) => a.localeCompare(b)))
     const hash = createHash('sha256').update(JSON.stringify({ command: inv.command, flags, cwd: inv.cwd, stdin: inv.stdin })).digest('hex')
+    // The file is read before the memory record is consulted: an instance that copied the admission
+    // off a pending receipt has to see the release the refusing instance wrote there, and it has to
+    // see it before its own copy turns a corrected body into `request_conflict` (LIFE-423 R1).
+    const file = path.join(directory, id + '.json'), prior = readFile<Receipt | null>(file, () => null)
+    if (prior?.state === 'released') this.admitted.delete(id)
     const admitted = this.admitted.get(id)
     if (admitted && admitted.hash !== hash) throw new RuntimeError('request_conflict', 'Request ID was used with different input', { requestId: id })
-    const file = path.join(directory, id + '.json'), prior = readFile<Receipt | null>(file, () => null)
-    if (prior) {
+    if (prior && prior.state !== 'released') {
       this.admitted.set(id, { hash: prior.hash, createdAt })
       if (prior.hash !== hash) throw new RuntimeError('request_conflict', 'Request ID was used with different input', { requestId: id })
       if (prior.state === 'completed' && isRecord(prior.result)) return { ...prior.result, replayed: true }
@@ -46,7 +54,17 @@ export class Receipts {
     const files = fs.readdirSync(directory)
     for (const name of files) if (Number(REQUEST_ID.exec(name.replace(/\.json$/, ''))?.[1] ?? now) < now - RECEIPT_TTL) fs.unlinkSync(path.join(directory, name))
     const retained = new Set([...fs.readdirSync(directory), ...Array.from(this.admitted.keys(), key => key + '.json')])
-    if (retained.size >= 10000) throw new RuntimeError('receipt_capacity', '24-hour receipt capacity (10000) reached')
+    // A released receipt is a tombstone, not a spent id, so it holds no capacity. Reading every file
+    // would cost a parse per admission, so they are counted out only at the cap, where the answer
+    // changes; a file that cannot be read keeps its slot rather than being waved through.
+    if (retained.size >= 10000) {
+      for (const name of retained) {
+        let entry: Receipt | null = null
+        try { entry = readFile<Receipt | null>(path.join(directory, name), () => null) } catch { entry = null }
+        if (entry?.state === 'released') retained.delete(name)
+      }
+      if (retained.size >= 10000) throw new RuntimeError('receipt_capacity', '24-hour receipt capacity (10000) reached')
+    }
     atomicWrite(file, { hash, state: 'pending', createdAt } satisfies Receipt)
     this.admitted.set(id, { hash, createdAt })
     let value: unknown
@@ -55,7 +73,12 @@ export class Receipts {
       // unspent and the retry the refusal asks for repeats the original refusal rather than being
       // told the outcome is unknown. Everything else — a plain Error, a RuntimeError with no outcome,
       // an explicit `unknown` — may have taken effect and keeps its pending receipt (394 F8 b).
-      if (error instanceof RuntimeError && error.outcome === 'not_started') { fs.rmSync(file, { force: true }); this.admitted.delete(id) }
+      // The release replaces the receipt instead of deleting it (r2/R1): deletion is indistinguishable
+      // from a lost result, which must keep failing closed, while `released` says why the file is there.
+      if (error instanceof RuntimeError && error.outcome === 'not_started') {
+        atomicWrite(file, { hash, state: 'released', createdAt } satisfies Receipt)
+        this.admitted.delete(id)
+      }
       throw new RuntimeError(error instanceof RuntimeError ? error.code : 'outcome_unknown', error instanceof Error ? error.message : String(error),
         { requestId: id, terminal: inv.flags.terminal ?? null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: error instanceof RuntimeError ? error.resources : undefined },
         error instanceof RuntimeError ? error.stage : 'backend', error instanceof RuntimeError ? error.outcome : 'unknown')

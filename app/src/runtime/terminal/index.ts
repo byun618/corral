@@ -589,7 +589,10 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           return submitPrompt(live, required('request-id'), body, want === 'accepted' || want === 'responded' ? want : undefined)
         }
         if (inv.command === 'terminal send') {
-          if (f.stdin && inv.stdin === undefined) reject('--stdin requires literal UTF-8 stdin in request')
+          // LIFE-423 M1: `validateTerminal` lets `--stdin` with no body through, so this lands inside
+          // the receipt, before `backend.send`. The shared `reject` cannot say so — it has no outcome
+          // — and without one the refusal spent an id it never used.
+          if (f.stdin && inv.stdin === undefined) throw new RuntimeError('invalid_argument', '--stdin requires literal UTF-8 stdin in request', undefined, undefined, 'not_started')
           const text = f.interrupt ? '\x03' : String(f.stdin ? inv.stdin : f.text ?? '') + (f.enter ? '\r' : '')
           await backend.send(live, text, ctx)
           return { terminal: required('terminal'), stage: 'backend_accepted', bytes: Buffer.byteLength(text), consumed: null, outcome: 'completed' }

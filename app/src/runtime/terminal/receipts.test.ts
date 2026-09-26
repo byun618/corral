@@ -3,8 +3,10 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Receipts, RECEIPT_TTL, REQUEST_ID } from './receipts.js'
-import { derivedPromptId, derivedRequestId } from './index.js'
-import { RuntimeError, type Invocation } from '../contracts.js'
+import { derivedPromptId, derivedRequestId, terminalModule } from './index.js'
+import { Tokens } from './tokens.js'
+import { TerminalBackend } from '../../main/adapter/index.js'
+import { RuntimeError, type CommandContext, type CommandModule, type Flags, type Invocation } from '../contracts.js'
 
 describe('terminal receipt admission survives result loss', () => {
   let root: string, now: number, receipts: Receipts
@@ -175,10 +177,12 @@ describe('LIFE-423 a refusal that never started leaves the request id unspent', 
     'repeats %s for the same request id instead of outcome_unknown', async code => {
       const inv = request(), effect = refuse(code, 'not_started', 'preflight')
       await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code, outcome: 'not_started' })
-      expect(fs.existsSync(file(inv))).toBe(false)
+      // r2: the id is released rather than forgotten, so what is left is a tombstone, never a
+      // pending or completed receipt — the retry below is what proves the id is spendable again.
+      expect(JSON.parse(fs.readFileSync(file(inv), 'utf8')).state).toBe('released')
       await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code, outcome: 'not_started' })
       expect(effect).toHaveBeenCalledTimes(2)
-      expect(fs.existsSync(file(inv))).toBe(false)
+      expect(JSON.parse(fs.readFileSync(file(inv), 'utf8')).state).toBe('released')
     })
 
   // `stale_terminal` carries no stage of its own (app/cli/README.md §59); the outcome alone decides.
@@ -222,10 +226,189 @@ describe('LIFE-423 a refusal that never started leaves the request id unspent', 
     expect(effect).toHaveBeenCalledTimes(1)
   })
 
-  // The freed id is freed on disk *and* in the capacity count — a refusal must not retain a slot.
-  it('returns the refused id to the 24-hour capacity count', async () => {
+  // The freed id is freed in the capacity count too — a refusal must not retain a slot. r2 keeps the
+  // property but moves its evidence: the tombstone stays on disk (that is how another instance learns
+  // of the release) and is counted out at the cap instead, which the r2 capacity block exercises.
+  it('leaves only a released tombstone, which holds no capacity', async () => {
     const inv = request(), effect = refuse('agent_not_ready', 'not_started', 'preflight')
     await expect(receipts.run(inv, effect)).rejects.toMatchObject({ code: 'agent_not_ready' })
-    expect(fs.readdirSync(path.join(root, 'runtime/terminal-receipts'))).toHaveLength(0)
+    const directory = path.join(root, 'runtime/terminal-receipts')
+    expect(fs.readdirSync(directory)).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(file(inv), 'utf8'))).toMatchObject({ state: 'released' })
+  })
+})
+
+/**
+ * LIFE-423 r2. The r1 fix released the id in the refusing instance's own memory, which is not where
+ * the profile keeps its admissions: `server.ts` and orchestration each build a terminal module, so
+ * two `Receipts` objects sit on one userData (codex R1). These run the real `terminalModule`, so the
+ * refusal comes from the product's own `resolve()` rather than from a stubbed effect.
+ */
+describe('LIFE-423 r2 a release is shared by every Receipts instance on the profile', () => {
+  const cleanups: (() => void)[] = []
+  afterEach(() => { for (const undo of cleanups.reverse()) undo(); cleanups.length = 0; vi.restoreAllMocks() })
+
+  /** Two real terminal modules over one userData, with herdr replaced at the adapter boundary. */
+  const setup = () => {
+    const dir = fs.mkdtempSync('/tmp/l423-r2-')
+    const before = { registry: process.env.CORRAL_REGISTRY, socket: process.env.CORRAL_BACKEND_SOCKET }
+    cleanups.push(() => {
+      fs.rmSync(dir, { recursive: true, force: true })
+      for (const [key, value] of [['CORRAL_REGISTRY', before.registry], ['CORRAL_BACKEND_SOCKET', before.socket]] as const)
+        if (value === undefined) delete process.env[key]; else process.env[key] = value
+    })
+    const data = path.join(dir, 'data'), cwd = path.join(dir, 'repo')
+    fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(cwd, { recursive: true })
+    process.env.CORRAL_REGISTRY = path.join(data, 'repos.json')
+    process.env.CORRAL_BACKEND_SOCKET = path.join(dir, 'never.sock')
+    vi.spyOn(TerminalBackend.prototype, 'epoch').mockImplementation(async () => 'e')
+    vi.spyOn(TerminalBackend.prototype, 'agentCapable').mockImplementation(() => true)
+    const list = vi.spyOn(TerminalBackend.prototype, 'list').mockImplementation(async () => [])
+    const send = vi.spyOn(TerminalBackend.prototype, 'send').mockImplementation(async () => undefined)
+    const token = new Tokens(data).encode('t1', { runtimeId: 'test', epoch: 'e', ptyId: 'p', paneId: 'pane' })
+    const ctx = (): CommandContext => ({ runtimeId: 'test', instanceId: 'test', userData: data,
+      signal: new AbortController().signal, remote: false, deadlineAt: Date.now() + 4000 })
+    // Two independently built modules — the shape server.ts and orchestration/index.ts produce.
+    const moduleA = terminalModule(data), moduleB = terminalModule(data)
+    const run = (module: CommandModule, command: string, flags: Flags) =>
+      module.execute({ command, flags, args: [], cwd }, ctx())
+    const receipt = (id: string) => path.join(data, 'runtime/terminal-receipts', id + '.json')
+    const stored = (id: string) => fs.existsSync(receipt(id)) ? JSON.parse(fs.readFileSync(receipt(id), 'utf8')) : null
+    const send1 = (module: CommandModule, id: string, text = 'hi') => run(module, 'terminal send', { terminal: token, text, 'request-id': id })
+    return { data, moduleA, moduleB, run, receipt, stored, send, list, send1, token, cwd }
+  }
+  const caught = async (promise: Promise<unknown>): Promise<RuntimeError> => {
+    try { await promise } catch (error) { if (error instanceof RuntimeError) return error; throw error }
+    throw new Error('expected a rejection')
+  }
+  const newId = () => `r1.${Date.now()}.${randomUUID()}`
+  /** The pending receipt is written after an `await`, so B must not start before it exists. */
+  const settle = async (exists: () => boolean) => { for (let i = 0; i < 200 && !exists(); i++) await new Promise(resolve => setImmediate(resolve)) }
+
+  // R1 itself: B copies the admission off the pending receipt, then A refuses with `not_started`.
+  it('lets the other instance retry after a refusal it watched as pending', async () => {
+    const f = setup()
+    const id = newId()
+    let release!: (panes: never[]) => void
+    f.list.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const first = f.send1(f.moduleA, id)
+    await settle(() => fs.existsSync(f.receipt(id)))
+    // B looks while the effect is still in flight and must answer `outcome_unknown` — that is correct
+    // at this instant, and it is also what copies the admission into B.
+    expect((await caught(f.send1(f.moduleB, id))).code).toBe('outcome_unknown')
+    release([])
+    expect((await caught(first)).code).toBe('stale_terminal')
+    // After the refusal the id is unspent everywhere, not only in A.
+    expect((await caught(f.send1(f.moduleB, id))).code).toBe('stale_terminal')
+    expect((await caught(f.send1(f.moduleA, id))).code).toBe('stale_terminal')
+    // And a corrected body is a fresh admission in B too, not `request_conflict`.
+    expect((await caught(f.send1(f.moduleB, id, 'corrected'))).code).toBe('stale_terminal')
+    expect(f.send).toHaveBeenCalledTimes(0)
+  })
+
+  it('records the release in the receipt file rather than deleting it', async () => {
+    const f = setup()
+    const id = newId()
+    expect((await caught(f.send1(f.moduleA, id))).code).toBe('stale_terminal')
+    expect(f.stored(id)).toMatchObject({ state: 'released', createdAt: Number(REQUEST_ID.exec(id)![1]) })
+    expect(typeof f.stored(id).hash).toBe('string')
+    expect(f.stored(id).result).toBeUndefined()
+  })
+
+  // Contrast (i): a completed result that is lost is NOT a release — absence still fails closed.
+  it('still refuses the other instance when a completed receipt is lost', async () => {
+    const f = setup()
+    const pane = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: f.cwd, repo: f.cwd, title: 'x' }
+    f.list.mockImplementation(async () => [pane])
+    const id = newId()
+    await f.send1(f.moduleA, id)
+    expect(await f.send1(f.moduleB, id)).toMatchObject({ replayed: true })
+    fs.unlinkSync(f.receipt(id))
+    expect((await caught(f.send1(f.moduleB, id))).code).toBe('outcome_unknown')
+    expect((await caught(f.send1(f.moduleA, id))).code).toBe('outcome_unknown')
+  })
+
+  // Contrast (ii): an uncertain failure leaves pending, and losing that file changes nothing.
+  it('still refuses the other instance when an uncertain effect loses its pending receipt', async () => {
+    const f = setup()
+    const pane = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: f.cwd, repo: f.cwd, title: 'x' }
+    f.list.mockImplementation(async () => [pane])
+    f.send.mockImplementation(async () => { throw new Error('response lost after the effect') })
+    const id = newId()
+    expect((await caught(f.send1(f.moduleA, id))).code).toBe('outcome_unknown')
+    expect(f.stored(id)).toMatchObject({ state: 'pending' })
+    expect((await caught(f.send1(f.moduleB, id))).code).toBe('outcome_unknown')
+    fs.unlinkSync(f.receipt(id))
+    expect((await caught(f.send1(f.moduleB, id))).code).toBe('outcome_unknown')
+  })
+
+  // L1: the `index.ts` resolve() refusal, locked in the repo rather than in a reviewer's probe.
+  it('refuses a send whose pane is gone as stale_terminal, not_started, with no stage', async () => {
+    const f = setup()
+    const id = newId()
+    const error = await caught(f.send1(f.moduleA, id))
+    expect(error.code).toBe('stale_terminal')
+    expect(error.outcome).toBe('not_started')
+    expect(error.stage).toBeUndefined()
+    expect(f.send).toHaveBeenCalledTimes(0)
+  })
+
+  // M1: effect-free refusals that r1 left spending the id.
+  it('leaves the id unspent when --worktree names nothing in the registry', async () => {
+    const f = setup()
+    const id = newId()
+    const flags = { worktree: 'path:/nowhere-l423', 'request-id': id }
+    const first = await caught(f.run(f.moduleA, 'terminal create', flags))
+    expect(first.code).toBe('not_found')
+    expect(first.outcome).toBe('not_started')
+    expect(await caught(f.run(f.moduleA, 'terminal create', flags))).toMatchObject({ code: 'not_found' })
+  })
+
+  it('leaves the id unspent when --stdin arrives without a body', async () => {
+    const f = setup()
+    const pane = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: f.cwd, repo: f.cwd, title: 'x' }
+    f.list.mockImplementation(async () => [pane])
+    const id = newId()
+    const flags = { terminal: f.token, stdin: true, 'request-id': id }
+    const first = await caught(f.run(f.moduleA, 'terminal send', flags))
+    expect(first.code).toBe('invalid_argument')
+    expect(first.outcome).toBe('not_started')
+    expect(await caught(f.run(f.moduleA, 'terminal send', flags))).toMatchObject({ code: 'invalid_argument' })
+    expect(f.send).toHaveBeenCalledTimes(0)
+  })
+})
+
+describe('LIFE-423 r2 a released receipt holds no capacity', () => {
+  let root: string, now: number, receipts: Receipts
+  const request = (): Invocation => ({ command: 'terminal send', flags: { 'request-id': `r1.${now}.${randomUUID()}`, text: 'ONCE' }, args: [], cwd: '/fixture' })
+  const file = (inv: Invocation) => path.join(root, 'runtime/terminal-receipts', inv.flags['request-id'] + '.json')
+  beforeEach(() => {
+    root = fs.mkdtempSync('/tmp/l423-r2-cap-')
+    now = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    receipts = new Receipts(root, now)
+  })
+  afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
+
+  // A tombstone is not a spent id, so it must not push the profile into `receipt_capacity`.
+  it('admits a new request although released tombstones fill the directory', async () => {
+    const effect = vi.fn(async () => ({ bytes: 4 }))
+    const seed = request()
+    await receipts.run(seed, effect)
+    const directory = path.dirname(file(seed))
+    for (let i = 0; i < 9999; i++)
+      fs.writeFileSync(file(request()), JSON.stringify({ hash: 'x', state: 'released', createdAt: now }))
+    expect(fs.readdirSync(directory)).toHaveLength(10000)
+    await expect(receipts.run(request(), effect)).resolves.toMatchObject({ replayed: false })
+    expect(effect).toHaveBeenCalledTimes(2)
+  })
+
+  it('still refuses when the directory is full of real receipts', async () => {
+    const effect = vi.fn(async () => ({ bytes: 4 }))
+    const seed = request()
+    await receipts.run(seed, effect)
+    for (let i = 0; i < 9999; i++) fs.writeFileSync(file(request()), '{}')
+    await expect(receipts.run(request(), effect)).rejects.toMatchObject({ code: 'receipt_capacity' })
+    expect(effect).toHaveBeenCalledTimes(1)
   })
 })

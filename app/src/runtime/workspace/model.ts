@@ -19,9 +19,15 @@ export async function git(root: string, args: string[], signal?: AbortSignal): P
 export const resolvePath = (input: string, cwd: string) => canonicalPath(path.resolve(cwd, expandPath(input)))
 export const contains = (root: string, target: string) => target === root || target.startsWith(root + path.sep)
 
+/**
+ * LIFE-423 M1: selecting a repo or worktree is a registry read, so neither refusal has begun an
+ * effect. `terminal create --worktree` and `worktree create` make that selection inside their
+ * `Receipts.run`, where the outcome is what decides whether the `--request-id` stays unspent; the
+ * stage is left alone (b2), since these codes have never carried one.
+ */
 export function unique<T extends { id: string }>(items: T[], selector: string): T {
-  if (!items.length) throw new RuntimeError('not_found', `No match for ${selector}`)
-  if (items.length > 1) throw new RuntimeError('ambiguous_target', `Ambiguous target ${selector}: ${items.map(item => item.id).join(', ')}`, { candidates: items.map(item => item.id) })
+  if (!items.length) throw new RuntimeError('not_found', `No match for ${selector}`, undefined, undefined, 'not_started')
+  if (items.length > 1) throw new RuntimeError('ambiguous_target', `Ambiguous target ${selector}: ${items.map(item => item.id).join(', ')}`, { candidates: items.map(item => item.id) }, undefined, 'not_started')
   return items[0]!
 }
 export function repoSelect(repos: RepoRecord[], selector: string, cwd: string): RepoRecord {

@@ -959,6 +959,12 @@ export function orchestrationModule(userData: string): CommandModule {
 
           // stage 1 — the pane
           let target: DispatchTarget, agent: AgentSnapshot | null, agentAbsenceReason: string | null, terminal: unknown
+          // r6 (R5-2): the create's own agent stage — `retries` among it — is evidence about *this*
+          // launch, and until now only the failure branch below carried it out. A coordinator reading
+          // a successful receipt could not tell a start that re-knocked from one that did not, and
+          // fell back to the log. Only a launch has one: a reused or resumed pane has no create
+          // result behind it, so those reports keep the shape they have.
+          let launchAgentStage: Record<string, unknown> | null = null
           if (start.resume !== null || reused !== null) {
             const source = start.resume ?? reused
             if (source === null) throw new RuntimeError('operation_failed', 'worker-start lost its terminal')
@@ -1000,6 +1006,7 @@ export function orchestrationModule(userData: string): CommandModule {
               residualResources.push({ kind: 'terminal', id: handle, action: `corral terminal close --terminal ${handle} once you have read the pane` })
               return report('failed', 'agent', { dispatchId: null, terminal: block, agentStage, create: created })
             }
+            launchAgentStage = agentStage
             const agentBlock = readRecord(record, 'agent')
             agent = agentBlock === null ? null : snapshotAgent(agentBlock)
             agentAbsenceReason = agentBlock === null ? 'no_managed_agent' : null
@@ -1352,6 +1359,7 @@ export function orchestrationModule(userData: string): CommandModule {
             dispatchId: dispatch.id, terminal, dispatch: stored, lead,
             preamble: { sha256, bytes: Buffer.byteLength(input), lines: input.split('\n').length },
             input: submitted,
+            ...(launchAgentStage === null ? {} : { agentStage: launchAgentStage }),
           })
         })
       }

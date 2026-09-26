@@ -7,7 +7,21 @@ import { request, HerdrRequestError } from './request.js'
 /** LIFE-417 N4: 되걸기 규약. 테스트가 주입할 수 있게 값으로 받는다 — 실제 15초를 기다리지 않는다. */
 export interface BusyRetryPolicy { timeoutMs: number; intervalMs: number }
 const DEFAULT_BUSY_RETRY: BusyRetryPolicy = { timeoutMs: BUSY_RETRY_TIMEOUT_MS, intervalMs: BUSY_RETRY_INTERVAL_MS }
-const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+/**
+ * LIFE-417 r6 (R5-3): 되걸기 간격은 **취소를 즉시 따른다**. 취소가 간격만큼 늦게 반응하면 이미
+ * 끝난 호출이 아직 기다리는 것처럼 보인다. 던지는 값은 `signal.throwIfAborted()` 가 던지는 것
+ * 그대로다 — 기다림을 끝까지 마쳤어도 바로 다음 `call()` 이 같은 오류를 냈을 것이라, 취소를
+ * 빨리 본다고 해서 **호출자가 보는 오류가 달라지지 않는다**.
+ */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cancel = (): void => { try { signal.throwIfAborted() } catch (error) { reject(error) } }
+    if (signal.aborted) { cancel(); return }
+    const abort = (): void => { clearTimeout(timer); cancel() }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, ms)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
 
 /** LIFE-394: herdr's AgentInfo, translated into corral words. Field renaming stops here (N2). */
 export interface AgentObservation {
@@ -140,16 +154,23 @@ export class TerminalBackend {
           { name: params.name, kind: params.kind, pane_id: target.paneId, args: params.args, timeout_ms: params.timeoutMs }, ctx, target, true)
         return { agent: observation(readRecord(result, 'agent'), target.paneId), argv: readArray(result, 'argv').map(String) }
       } catch (error) {
-        // 호출자 deadline 이 더 이르면 그쪽이 상한이다. 다음 시도가 deadline 을 넘길 거면 지금
-        // 멈춘다 — 안 그러면 `call()` 이 `deadline_exceeded`·`backend_timeout` 을 대신 던져서
-        // 진짜 원인(`agent_pane_busy`)이 지워진다.
+        // 멈추는 자리는 **다음 시도를 보내기 전**이다. 두 상한을 같은 기준으로 본다:
+        //   · 되걸기 상한 — 기다림까지 포함해 상한 안에 들어야 한다 (r6 R5-1). `경과 > 상한` 만
+        //     보면 기다린 뒤의 시도가 상한 밖에서 나가, "상한을 넘기면 실패" 계약이 한 칸 샌다
+        //   · 호출자 deadline — 더 이르면 그쪽이 상한이다. 안 그러면 `call()` 이
+        //     `deadline_exceeded`·`backend_timeout` 을 대신 던져 진짜 원인(busy)이 지워진다
         const now = Date.now()
         if (!(error instanceof RuntimeError) || error.code !== 'agent_pane_busy'
-          || now - startedAt > this.busyRetry.timeoutMs || now + this.busyRetry.intervalMs >= ctx.deadlineAt) throw error
+          || now - startedAt + this.busyRetry.intervalMs > this.busyRetry.timeoutMs
+          || now + this.busyRetry.intervalMs >= ctx.deadlineAt) throw error
+        // 세는 것은 **실제로 다시 보낸 횟수**다 (r6 R5-3). 취소로 못 보낸 시도는 여기서 던져지고
+        // `retries` 는 그대로다 — 안 그러면 나가지 않은 시도가 영수증에 한 번으로 남는다.
+        await sleep(this.busyRetry.intervalMs, ctx.signal)
         retries += 1
-        log('lifecycle.agent_busy_retry', { paneId: target.paneId, retries, elapsedMs: now - startedAt })
+        // 태그는 GUI 행 생성과 같게 두고 `path` 로 가른다 (r6 R5-5) — `corral.ndjson` 에서 두 경로가
+        // 섞이면 어느 쪽이 되걸었는지 구분할 수 없다. GUI 쪽 로그 줄은 건드리지 않는다.
+        log('lifecycle.agent_busy_retry', { paneId: target.paneId, retries, elapsedMs: Date.now() - startedAt, path: 'cli' })
         params.onBusyRetry?.(retries)
-        await sleep(this.busyRetry.intervalMs)
       }
     }
   }

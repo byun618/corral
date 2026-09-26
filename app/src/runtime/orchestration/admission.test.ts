@@ -45,11 +45,13 @@ interface MockTerminal {
   cursorInvalidated: boolean
   /** r4. The row is there; the record `confirmPrompt` read at its own deadline had not caught up. */
   recordLag: boolean
+  /** LIFE-417 r6. How many times `terminal create` had to re-knock past `agent_pane_busy` (R5-2). */
+  agentRetries: number
 }
 const mock = vi.hoisted((): MockTerminal => ({
   mode: 'unknown', sendMode: 'ok', bodies: [], buffer: '', calls: [], rows: [], live: true, sweeps: 0,
   duplicateCount: 1, screen: '', waitSatisfied: true, promptDelayMs: 0,
-  cursorInvalidated: false, recordLag: false,
+  cursorInvalidated: false, recordLag: false, agentRetries: 0,
 }))
 vi.mock('../terminal/index.js', async importOriginal => {
   const { Receipts } = await import('../terminal/receipts.js')
@@ -105,7 +107,7 @@ vi.mock('../terminal/index.js', async importOriginal => {
         specs: [], validate: () => {}, execute: async (inv: { command: string; flags: Record<string, string | boolean>; stdin?: string }) => {
           mock.calls.push(inv)
           const terminal = { handle: 't1.review', epoch: 'epoch', ptyId: 'pty', paneId: 'pane' }
-          if (inv.command === 'terminal create') return { terminal, agent: { kind: 'claude' }, stages: { agent: { status: 'completed' } } }
+          if (inv.command === 'terminal create') return { terminal, agent: { kind: 'claude' }, stages: { agent: { status: 'completed', retries: mock.agentRetries } } }
           if (inv.command === 'terminal show') return { terminal, agent: { kind: 'claude' } }
           if (inv.command === 'terminal wait') return { satisfied: mock.waitSatisfied, agent: { phase: 'launching' } }
           if (inv.command === 'terminal read') return { text: mock.screen }
@@ -150,7 +152,7 @@ const asRecord = (value: unknown): Record<string, unknown> => {
 async function setup(): Promise<Harness> {
   mock.mode = 'unknown'; mock.sendMode = 'ok'; mock.buffer = ''; mock.bodies = []; mock.calls = []; mock.rows = []
   mock.live = true; mock.sweeps = 0; mock.duplicateCount = 1; mock.screen = ''; mock.waitSatisfied = true; mock.promptDelayMs = 0
-  mock.cursorInvalidated = false; mock.recordLag = false
+  mock.cursorInvalidated = false; mock.recordLag = false; mock.agentRetries = 0
   process.env.CORRAL_BACKEND_SOCKET = '/tmp/mock'
   delete process.env.CORRAL_SESSION
   vi.spyOn(TerminalBackend.prototype, 'epoch').mockResolvedValue('epoch')
@@ -189,6 +191,31 @@ const forgetTheSubmission = (f: Harness): void => {
   f.store.write({ ...current, dispatches: current.dispatches.map(entry =>
     entry.worker === null ? entry : { ...entry, worker: { ...entry.worker, prompt: null } }) })
 }
+
+describe('LIFE-417 R5-2 — a successful worker-start carries the create\'s agent stage', () => {
+  // The failure branch already reported `agentStage`; the success one did not, so a coordinator
+  // reading a receipt could not tell a launch that re-knocked past `agent_pane_busy` from one that
+  // went through first time, and had to fall back to `corral.ndjson`.
+  it('a launch reports the retry count the create stage carried', async () => {
+    const f = await setup()
+    mock.mode = 'completed'; mock.agentRetries = 2
+    const started = await f.start()
+    expect(started.state).toBe('ready')
+    expect(started.launch).toBe('created')
+    expect(asRecord(started.agentStage)).toEqual({ status: 'completed', retries: 2 })
+  })
+
+  it('a reused pane reports no agent stage — there is no create behind it', async () => {
+    const f = await setup()
+    mock.mode = 'completed'
+    const first = await f.start()
+    await f.call('send', { type: 'worker_done', subject: 'done', 'task-id': f.task, 'dispatch-id': idOf(first), outcome: 'succeeded' }, { paneId: 'pane', session: null })
+    const reused = asRecord(await f.call('worker-start', { task: f.newTask('second'), ...REUSE }))
+    expect(reused.state).toBe('ready')
+    expect(reused.launch).toBe('reused')
+    expect('agentStage' in reused).toBe(false)
+  })
+})
 
 describe('V21 — the active check and the ownership decision are made in the lane that writes', () => {
   it('two Tasks racing for one pane leave one attempt, not two', async () => {

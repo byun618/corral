@@ -517,12 +517,15 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
 
   // LIFE-417 N4: the busy re-knock lives in the backend (its own unit test pins the loop). What the
   // runtime owes is the count — on the failure path too, where there is no return value to carry it.
-  for (const mode of ['succeeds', 'gives up'] as const) {
+  // r6 (R5-6): the stage is pinned as an equality, not a subset, and `no retry` is its own case —
+  // a `retries` that silently went missing on the quiet path would pass a `toMatchObject`.
+  for (const mode of ['no retry', 'succeeds', 'gives up'] as const) {
     it(`N4: stages.agent carries the busy retry count when the start ${mode}`, async () => {
       const f = agentFixture('claude', { git: true })
       const workspace = workspaceModule(f.data)
       await workspace.execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
       const stub = vi.spyOn(TerminalBackend.prototype, 'startAgent').mockImplementation(async (_target, params) => {
+        if (mode === 'no retry') return { agent: f.state.info, argv: [] }
         params.onBusyRetry?.(1)
         if (mode === 'gives up') throw new RuntimeError('agent_pane_busy', 'agent target pane is not an available shell', undefined, 'backend', 'unknown')
         params.onBusyRetry?.(2)
@@ -530,10 +533,15 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
       })
       cleanups.push(() => { stub.mockRestore() })
       const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
-      expect(nested(created, 'stages', 'agent')).toMatchObject(mode === 'gives up'
-        ? { status: 'unknown', error: 'agent_pane_busy', retries: 1 }
-        : { status: 'completed', retries: 2 })
+      // `argv` carries a freshly minted session id, so it is checked apart from the equality — the
+      // point of `toEqual` here is that the stage holds *these keys and no others*.
+      const { argv, ...stage } = nested(created, 'stages', 'agent')
+      expect(stage).toEqual(mode === 'gives up'
+        ? { status: 'unknown', error: 'agent_pane_busy', message: 'agent target pane is not an available shell', retries: 1 }
+        : { status: 'completed', name: agentName('pane'), retries: mode === 'no retry' ? 0 : 2 })
+      expect(mode === 'gives up' ? argv : Array.isArray(argv) && argv[0]).toBe(mode === 'gives up' ? undefined : 'claude')
       expect(created.stage).toBe(mode === 'gives up' ? 'pty_created' : 'agent_started')
+      expect(created.outcome).toBe(mode === 'gives up' ? 'unknown' : 'completed')
     }, 30000)
   }
 

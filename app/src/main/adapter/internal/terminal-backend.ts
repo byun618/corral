@@ -1,6 +1,13 @@
 import { RuntimeError } from '../../../runtime/contracts.js'
 import { isRecord, readArray, readRecord } from '../../../shared/json.js'
+import { log } from '../../log.js'
+import { BUSY_RETRY_INTERVAL_MS, BUSY_RETRY_TIMEOUT_MS } from './lifecycle.js'
 import { request, HerdrRequestError } from './request.js'
+
+/** LIFE-417 N4: 되걸기 규약. 테스트가 주입할 수 있게 값으로 받는다 — 실제 15초를 기다리지 않는다. */
+export interface BusyRetryPolicy { timeoutMs: number; intervalMs: number }
+const DEFAULT_BUSY_RETRY: BusyRetryPolicy = { timeoutMs: BUSY_RETRY_TIMEOUT_MS, intervalMs: BUSY_RETRY_INTERVAL_MS }
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 /** LIFE-394: herdr's AgentInfo, translated into corral words. Field renaming stops here (N2). */
 export interface AgentObservation {
@@ -35,7 +42,7 @@ export class TerminalBackend {
   private acceptedEffects = 0
   /** Handshake capability: set by `epoch()`. `null` until the handshake has been read once. */
   private agentOps: boolean | null = null
-  constructor(readonly socket: string) {}
+  constructor(readonly socket: string, private readonly busyRetry: BusyRetryPolicy = DEFAULT_BUSY_RETRY) {}
   /** LIFE-394 §1.4/§5.2: the agent arms exist only on a guard build that advertises `agent_ops`. */
   agentCapable(): boolean { return this.agentOps === true }
   private async call(params: Record<string, unknown>, ctx: TerminalOperation, mutation = false) {
@@ -114,11 +121,37 @@ export class TerminalBackend {
   /**
    * LIFE-394 agent arms. Every one goes through the same guard envelope as the terminal ops, and
    * always names the pane in `target` rather than relying on herdr resolving an agent name.
+   *
+   * LIFE-417 N4: `agent_pane_busy` 만 되건다 — GUI 행 생성(lifecycle.ts createRow, L2)이 이미 쓰는
+   * 규약을 CLI 경로도 그대로 쓴다. pane 의 zsh 가 rc(pyenv·nvm 초기화)를 도는 동안 전경 그룹이
+   * 셸 하나가 아니라서 herdr 가 거절하는데, 그건 시간이 지나면 풀리는 상태다. 다른 실패(이름 규칙·
+   * 미지원 kind)는 되걸어도 같은 결과라 즉시 던진다. 상한을 넘기면 **마지막 거절을 그대로** 던진다 —
+   * 호출자가 보는 것은 지금과 같은 `agent_pane_busy` RuntimeError 다.
+   *
+   * 되걸기 횟수는 `onBusyRetry` 로 알린다: 실패 경로에서도 세어야 하는데 예외로는 못 싣는다
+   * (에러 모양 보존). `AgentRecord` 는 건드리지 않는다.
    */
-  async startAgent(target: TerminalIdentity, params: { name: string; kind: string; args: string[]; timeoutMs: number }, ctx: TerminalOperation) {
-    const result = await this.operation(target.epoch, 'agent.start',
-      { name: params.name, kind: params.kind, pane_id: target.paneId, args: params.args, timeout_ms: params.timeoutMs }, ctx, target, true)
-    return { agent: observation(readRecord(result, 'agent'), target.paneId), argv: readArray(result, 'argv').map(String) }
+  async startAgent(target: TerminalIdentity, params: { name: string; kind: string; args: string[]; timeoutMs: number; onBusyRetry?: (retries: number) => void }, ctx: TerminalOperation) {
+    const startedAt = Date.now()
+    let retries = 0
+    for (;;) {
+      try {
+        const result = await this.operation(target.epoch, 'agent.start',
+          { name: params.name, kind: params.kind, pane_id: target.paneId, args: params.args, timeout_ms: params.timeoutMs }, ctx, target, true)
+        return { agent: observation(readRecord(result, 'agent'), target.paneId), argv: readArray(result, 'argv').map(String) }
+      } catch (error) {
+        // 호출자 deadline 이 더 이르면 그쪽이 상한이다. 다음 시도가 deadline 을 넘길 거면 지금
+        // 멈춘다 — 안 그러면 `call()` 이 `deadline_exceeded`·`backend_timeout` 을 대신 던져서
+        // 진짜 원인(`agent_pane_busy`)이 지워진다.
+        const now = Date.now()
+        if (!(error instanceof RuntimeError) || error.code !== 'agent_pane_busy'
+          || now - startedAt > this.busyRetry.timeoutMs || now + this.busyRetry.intervalMs >= ctx.deadlineAt) throw error
+        retries += 1
+        log('lifecycle.agent_busy_retry', { paneId: target.paneId, retries, elapsedMs: now - startedAt })
+        params.onBusyRetry?.(retries)
+        await sleep(this.busyRetry.intervalMs)
+      }
+    }
   }
   async agentInfo(target: TerminalIdentity, ctx: TerminalOperation): Promise<AgentObservation> {
     const result = await this.operation(target.epoch, 'agent.get', { target: target.paneId }, ctx, target)

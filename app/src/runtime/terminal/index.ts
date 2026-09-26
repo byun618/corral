@@ -436,19 +436,26 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           agent: record === null && views.length === 0 ? null : await agentBlock(created, record, views, satisfied, null),
         })
         let record: AgentRecord
+        // LIFE-417 N4: a fresh pane whose shell is still running its rc refuses the start as
+        // `agent_pane_busy`; the backend absorbs that the same way the GUI row path does. How many
+        // times it had to re-knock is evidence about *this* create, so it travels in the stage —
+        // on the failure path too, which is why the backend reports it through a callback rather
+        // than in the return value it never gets to produce.
+        let agentRetries = 0
         try {
           const sessionId = mintsSessionId(kind) ? randomUUID() : null
           const argv = providerArgv({ kind, model: flag('model'), effort: flag('effort'), advisor: flag('advisor'), sessionId: sessionId ?? undefined })
           const name = agentName(created.paneId), t0 = Date.now()
           // herdr prepends the provider executable itself, so only the flags travel in `args`.
-          const started = await backend.startAgent(created, { name, kind, args: argv.slice(1), timeoutMs: AGENT_START_TIMEOUT_MS }, ctx)
+          const started = await backend.startAgent(created, { name, kind, args: argv.slice(1), timeoutMs: AGENT_START_TIMEOUT_MS,
+            onBusyRetry: attempt => { agentRetries = attempt } }, ctx)
           record = agents.write(created.paneId, { epoch, ptyGeneration: created.ptyId, kind, name, argv: started.argv.length ? started.argv : argv,
             requestedModel: flag('model') ?? null, requestedEffort: flag('effort') ?? null, requestedAdvisor: flag('advisor') ?? null,
             sessionId, sessionIdSource: sessionId === null ? null : 'client-minted', t0, launchDeadline: t0 + AGENT_START_TIMEOUT_MS,
             phase: 'launching', workingObserved: false, lastSubmission: null, updatedAt: t0 })
-          stages.agent = { status: 'completed', name, argv: record.argv }
+          stages.agent = { status: 'completed', name, argv: record.argv, retries: agentRetries }
         } catch (error) {
-          stages.agent = stageFailure(error)
+          stages.agent = { ...stageFailure(error), retries: agentRetries }
           return done('pty_created', null, [], false, null)
         }
         if (prompt === undefined) return done('agent_started', record, [await observeAgent(created, record)], false, null)

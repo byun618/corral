@@ -14,9 +14,14 @@ import type { AgentKind } from '../../../shared/types.js'
 import { log } from '../../log.js'
 import { request } from './request.js'
 
-/** busy 흡수 — 300ms 간격으로 이 시간까지 되건다. LIFE-346: herdr CLI 도 최대 2초 되건다. */
-const BUSY_RETRY_TIMEOUT_MS = 15_000
-const BUSY_RETRY_INTERVAL_MS = 300
+/**
+ * busy 흡수 — 300ms 간격으로 이 시간까지 되건다. LIFE-346: herdr CLI 도 최대 2초 되건다.
+ *
+ * LIFE-417 N4: 같은 규약을 CLI 경로(`terminal create --agent` = `worker-start` 기동)도 쓴다.
+ * 값은 여기 한 곳에만 둔다 — terminal-backend.ts 가 이 둘을 import 해 기본값으로 쓴다.
+ */
+export const BUSY_RETRY_TIMEOUT_MS = 15_000
+export const BUSY_RETRY_INTERVAL_MS = 300
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 

@@ -515,6 +515,28 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     await expect(backend.promptAgent(target, 'body', 2, ctx)).rejects.toMatchObject({ code: 'agent_not_ready', resources: { observed } })
   })
 
+  // LIFE-417 N4: the busy re-knock lives in the backend (its own unit test pins the loop). What the
+  // runtime owes is the count — on the failure path too, where there is no return value to carry it.
+  for (const mode of ['succeeds', 'gives up'] as const) {
+    it(`N4: stages.agent carries the busy retry count when the start ${mode}`, async () => {
+      const f = agentFixture('claude', { git: true })
+      const workspace = workspaceModule(f.data)
+      await workspace.execute({ command: 'repo add', flags: { path: f.cwd }, args: [], cwd: f.cwd }, f.context(8000))
+      const stub = vi.spyOn(TerminalBackend.prototype, 'startAgent').mockImplementation(async (_target, params) => {
+        params.onBusyRetry?.(1)
+        if (mode === 'gives up') throw new RuntimeError('agent_pane_busy', 'agent target pane is not an available shell', undefined, 'backend', 'unknown')
+        params.onBusyRetry?.(2)
+        return { agent: f.state.info, argv: [] }
+      })
+      cleanups.push(() => { stub.mockRestore() })
+      const created = asObject(await f.run('terminal create', { worktree: f.cwd, agent: 'claude', 'request-id': `r1.${Date.now()}.${randomUUID()}` }, 8000))
+      expect(nested(created, 'stages', 'agent')).toMatchObject(mode === 'gives up'
+        ? { status: 'unknown', error: 'agent_pane_busy', retries: 1 }
+        : { status: 'completed', retries: 2 })
+      expect(created.stage).toBe(mode === 'gives up' ? 'pty_created' : 'agent_started')
+    }, 30000)
+  }
+
   it('R11: a finished turn reported as done takes the next prompt on the same pane', async () => {
     // herdr reports a *seen* idle pane as `idle` and an unseen one as `done` (api_helpers.rs 96~106:
     // `(AgentState::Idle, false) => Done`). `seen` is set only on a completion transition of the

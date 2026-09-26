@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Receipts, RECEIPT_TTL, REQUEST_ID } from './receipts.js'
 import { derivedPromptId, derivedRequestId, terminalModule } from './index.js'
 import { Tokens } from './tokens.js'
+import { WorktreeMetadata, type WorktreeRecord } from '../workspace/model.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
 import { RuntimeError, type CommandContext, type CommandModule, type Flags, type Invocation } from '../contracts.js'
 
@@ -403,12 +404,155 @@ describe('LIFE-423 r2 a released receipt holds no capacity', () => {
     expect(effect).toHaveBeenCalledTimes(2)
   })
 
-  it('still refuses when the directory is full of real receipts', async () => {
+  // L-7: one of the occupants cannot be parsed. The cap loop keeps its slot rather than waving it
+  // through — an unreadable file is not evidence that the id behind it was released.
+  it('still refuses when the directory is full, one of them unreadable', async () => {
     const effect = vi.fn(async () => ({ bytes: 4 }))
     const seed = request()
     await receipts.run(seed, effect)
-    for (let i = 0; i < 9999; i++) fs.writeFileSync(file(request()), '{}')
+    for (let i = 0; i < 9998; i++) fs.writeFileSync(file(request()), '{}')
+    fs.writeFileSync(file(request()), 'not json at all')
     await expect(receipts.run(request(), effect)).rejects.toMatchObject({ code: 'receipt_capacity' })
     expect(effect).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * LIFE-423 r3. r2 made the release durable; these pin the order in which the durable record and the
+ * in-memory copy are believed. The file is the profile's shared truth whenever one exists — the copy
+ * only guards a receipt that has gone missing (codex R2-1).
+ */
+describe('LIFE-423 r3 the receipt file outranks a stale memory admission', () => {
+  const cleanups: (() => void)[] = []
+  afterEach(() => { for (const undo of cleanups.reverse()) undo(); cleanups.length = 0; vi.restoreAllMocks() })
+
+  const setup = () => {
+    const dir = fs.mkdtempSync('/tmp/l423-r3-')
+    const before = { registry: process.env.CORRAL_REGISTRY, socket: process.env.CORRAL_BACKEND_SOCKET }
+    cleanups.push(() => {
+      fs.rmSync(dir, { recursive: true, force: true })
+      for (const [key, value] of [['CORRAL_REGISTRY', before.registry], ['CORRAL_BACKEND_SOCKET', before.socket]] as const)
+        if (value === undefined) delete process.env[key]; else process.env[key] = value
+    })
+    const data = path.join(dir, 'data'), cwd = path.join(dir, 'repo')
+    fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(cwd, { recursive: true })
+    process.env.CORRAL_REGISTRY = path.join(data, 'repos.json')
+    process.env.CORRAL_BACKEND_SOCKET = path.join(dir, 'never.sock')
+    const pane = { epoch: 'e', ptyId: 'p', paneId: 'pane', tabId: 't', workspaceId: 'w', path: cwd, repo: cwd, title: 'x' }
+    vi.spyOn(TerminalBackend.prototype, 'epoch').mockImplementation(async () => 'e')
+    vi.spyOn(TerminalBackend.prototype, 'agentCapable').mockImplementation(() => true)
+    const list = vi.spyOn(TerminalBackend.prototype, 'list').mockImplementation(async () => [pane])
+    const send = vi.spyOn(TerminalBackend.prototype, 'send').mockImplementation(async () => undefined)
+    const token = new Tokens(data).encode('t1', { runtimeId: 'test', epoch: 'e', ptyId: 'p', paneId: 'pane' })
+    const ctx = (): CommandContext => ({ runtimeId: 'test', instanceId: 'test', userData: data,
+      signal: new AbortController().signal, remote: false, deadlineAt: Date.now() + 4000 })
+    const moduleA = terminalModule(data), moduleB = terminalModule(data)
+    const run = (module: CommandModule, command: string, flags: Flags) => module.execute({ command, flags, args: [], cwd }, ctx())
+    const receipt = (id: string) => path.join(data, 'runtime/terminal-receipts', id + '.json')
+    const stored = (id: string) => fs.existsSync(receipt(id)) ? JSON.parse(fs.readFileSync(receipt(id), 'utf8')) : null
+    const send1 = (module: CommandModule, id: string, text: string) => run(module, 'terminal send', { terminal: token, text, 'request-id': id })
+    return { data, cwd, moduleA, moduleB, run, receipt, stored, send, list, send1, token }
+  }
+  const caught = async (promise: Promise<unknown>): Promise<RuntimeError> => {
+    try { await promise } catch (error) { if (error instanceof RuntimeError) return error; throw error }
+    throw new Error('expected a rejection')
+  }
+  const newId = () => `r1.${Date.now()}.${randomUUID()}`
+  const settle = async (ready: () => boolean) => { for (let i = 0; i < 200 && !ready(); i++) await new Promise(resolve => setImmediate(resolve)) }
+
+  /**
+   * codex R2-1, four steps. B never gets to read the release: A reuses the id with a corrected body
+   * and succeeds first. B's copy is then older than the completed receipt, and the file must win.
+   */
+  it('replays a completed receipt to an instance whose copied admission predates it', async () => {
+    const f = setup()
+    const id = newId()
+    let release!: (panes: never[]) => void
+    f.list.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const first = f.send1(f.moduleA, id, 'original')
+    await settle(() => fs.existsSync(f.receipt(id)))
+    expect((await caught(f.send1(f.moduleB, id, 'original'))).code).toBe('outcome_unknown')
+    release([])
+    expect((await caught(first)).code).toBe('stale_terminal')
+    expect(f.stored(id)).toMatchObject({ state: 'released' })
+    // A corrects the body and succeeds. B has not looked since the pending receipt.
+    expect(await f.send1(f.moduleA, id, 'corrected')).toMatchObject({ replayed: false })
+    expect(f.stored(id)).toMatchObject({ state: 'completed' })
+    expect(await f.send1(f.moduleB, id, 'corrected')).toMatchObject({ replayed: true })
+    expect(f.send).toHaveBeenCalledTimes(1)
+  })
+
+  // The contrast codex asked for: while A's corrected run is still in flight the honest answer to B
+  // is `outcome_unknown`, never `request_conflict` — the id is not being used with different input.
+  it('answers outcome_unknown, not conflict, while the corrected run is still pending', async () => {
+    const f = setup()
+    const id = newId()
+    let release!: (panes: never[]) => void
+    f.list.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const first = f.send1(f.moduleA, id, 'original')
+    await settle(() => fs.existsSync(f.receipt(id)))
+    expect((await caught(f.send1(f.moduleB, id, 'original'))).code).toBe('outcome_unknown')
+    release([])
+    expect((await caught(first)).code).toBe('stale_terminal')
+    let finish!: () => void
+    f.send.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(undefined) }))
+    const second = f.send1(f.moduleA, id, 'corrected')
+    await settle(() => f.stored(id)?.state === 'pending')
+    expect((await caught(f.send1(f.moduleB, id, 'corrected'))).code).toBe('outcome_unknown')
+    finish(); await second
+  })
+
+  // L-2: the watching instance's *first* move after the release is the corrected body. r2's test
+  // retried the original body first, which emptied the copy before the corrected body was judged.
+  it('admits a corrected body as the watching instance first move after a release', async () => {
+    const f = setup()
+    const id = newId()
+    let release!: (panes: never[]) => void
+    f.list.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const first = f.send1(f.moduleA, id, 'original')
+    await settle(() => fs.existsSync(f.receipt(id)))
+    expect((await caught(f.send1(f.moduleB, id, 'original'))).code).toBe('outcome_unknown')
+    release([])
+    expect((await caught(first)).code).toBe('stale_terminal')
+    expect(await f.send1(f.moduleB, id, 'corrected')).toMatchObject({ replayed: false })
+    expect(f.send).toHaveBeenCalledTimes(1)
+  })
+
+  // G2-3: `ambiguous_target` carries the same outcome as `not_found`, and nothing locked it.
+  it('leaves the id unspent when --worktree matches more than one worktree', async () => {
+    const f = setup()
+    const twin = (id: string): WorktreeRecord => ({ id, repoId: 'r', projectId: 'p', hostId: 'local', path: `/w/${id}`, branch: null,
+      head: '', displayName: 'dup', isMainWorktree: false, parentWorktreeId: null, childWorktreeIds: [],
+      linkedIssue: null, linkedLinearIssue: null, comment: null, workspaceStatus: null })
+    vi.spyOn(WorktreeMetadata.prototype, 'list').mockImplementation(async () => [twin('one'), twin('two')])
+    const id = newId()
+    const flags = { worktree: 'name:dup', 'request-id': id }
+    const error = await caught(f.run(f.moduleA, 'terminal create', flags))
+    expect(error.code).toBe('ambiguous_target')
+    expect(error.outcome).toBe('not_started')
+    expect(f.stored(id)).toMatchObject({ state: 'released' })
+    expect(await caught(f.run(f.moduleA, 'terminal create', flags))).toMatchObject({ code: 'ambiguous_target' })
+  })
+
+  // L-5: if the tombstone cannot be written the caller still learns why the request was refused —
+  // the id stays spent (fail-closed), but the refusal is not replaced by a storage error.
+  it('keeps the original refusal when the release cannot be written', async () => {
+    const f = setup()
+    const id = newId()
+    f.list.mockImplementationOnce(async () => [])
+    // `atomicWrite` opens a temp file beside the receipt. The first one files the pending receipt;
+    // the second is the release, and that is the one the disk refuses here.
+    const real = fs.openSync
+    let opened = 0
+    const write = vi.spyOn(fs, 'openSync').mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      if (String(args[0]).includes(id) && ++opened === 2) throw new Error('ENOSPC: no space left on device')
+      return real(...args)
+    })
+    const error = await caught(f.send1(f.moduleA, id, 'original'))
+    write.mockRestore()
+    expect(opened).toBe(2)
+    expect(error.code).toBe('stale_terminal')
+    expect(f.stored(id)).toMatchObject({ state: 'pending' })
+    expect((await caught(f.send1(f.moduleA, id, 'original'))).code).toBe('outcome_unknown')
   })
 })

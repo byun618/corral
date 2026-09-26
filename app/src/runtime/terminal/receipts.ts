@@ -37,19 +37,23 @@ export class Receipts {
     for (const [key, entry] of this.admitted) if (now - entry.createdAt > RECEIPT_TTL) this.admitted.delete(key)
     const flags = Object.fromEntries(Object.entries(inv.flags).filter(([key]) => !['request-id', 'json', 'timeout-ms', 'socket', 'instance'].includes(key)).sort(([a], [b]) => a.localeCompare(b)))
     const hash = createHash('sha256').update(JSON.stringify({ command: inv.command, flags, cwd: inv.cwd, stdin: inv.stdin })).digest('hex')
-    // The file is read before the memory record is consulted: an instance that copied the admission
-    // off a pending receipt has to see the release the refusing instance wrote there, and it has to
-    // see it before its own copy turns a corrected body into `request_conflict` (LIFE-423 R1).
+    // LIFE-423 R2-1: a receipt on disk is the profile's shared record of this id, so while one
+    // exists it decides — its hash, not the copy in this instance's memory. An instance that read
+    // the receipt while it was pending holds a hash that a later release and re-run have already
+    // replaced, and judging by that copy refused a request the file says is a replay.
     const file = path.join(directory, id + '.json'), prior = readFile<Receipt | null>(file, () => null)
-    if (prior?.state === 'released') this.admitted.delete(id)
-    const admitted = this.admitted.get(id)
-    if (admitted && admitted.hash !== hash) throw new RuntimeError('request_conflict', 'Request ID was used with different input', { requestId: id })
     if (prior && prior.state !== 'released') {
       this.admitted.set(id, { hash: prior.hash, createdAt })
       if (prior.hash !== hash) throw new RuntimeError('request_conflict', 'Request ID was used with different input', { requestId: id })
       if (prior.state === 'completed' && isRecord(prior.result)) return { ...prior.result, replayed: true }
       throw new RuntimeError('outcome_unknown', 'Recorded request may have taken effect; inspect terminal list/read before a new request', { requestId: id, recovery: 'terminal list / terminal read' }, 'receipt', 'unknown')
     }
+    // No receipt is standing: either none was ever filed, or a refusal released the id. The memory
+    // copy is all that is left, and it exists to keep a *lost* result from freeing its id — so a
+    // release clears it, and anything else still refuses.
+    if (prior?.state === 'released') this.admitted.delete(id)
+    const admitted = this.admitted.get(id)
+    if (admitted && admitted.hash !== hash) throw new RuntimeError('request_conflict', 'Request ID was used with different input', { requestId: id })
     if (admitted || createdAt < this.startedAt) throw new RuntimeError('outcome_unknown', 'Receipt missing for a previously admitted or older request; refusing re-execution', { requestId: id, recovery: 'terminal list / terminal read' }, 'receipt', 'unknown')
     const files = fs.readdirSync(directory)
     for (const name of files) if (Number(REQUEST_ID.exec(name.replace(/\.json$/, ''))?.[1] ?? now) < now - RECEIPT_TTL) fs.unlinkSync(path.join(directory, name))
@@ -75,9 +79,13 @@ export class Receipts {
       // an explicit `unknown` — may have taken effect and keeps its pending receipt (394 F8 b).
       // The release replaces the receipt instead of deleting it (r2/R1): deletion is indistinguishable
       // from a lost result, which must keep failing closed, while `released` says why the file is there.
+      // L-5: if the tombstone cannot be written the id stays spent, which is the safe direction, but
+      // the caller still hears why the request was refused rather than about the disk.
       if (error instanceof RuntimeError && error.outcome === 'not_started') {
-        atomicWrite(file, { hash, state: 'released', createdAt } satisfies Receipt)
-        this.admitted.delete(id)
+        try {
+          atomicWrite(file, { hash, state: 'released', createdAt } satisfies Receipt)
+          this.admitted.delete(id)
+        } catch { /* keep the pending receipt and the admission together, and report the refusal */ }
       }
       throw new RuntimeError(error instanceof RuntimeError ? error.code : 'outcome_unknown', error instanceof Error ? error.message : String(error),
         { requestId: id, terminal: inv.flags.terminal ?? null, recovery: 'Retry the same request ID or inspect terminal list/read', detail: error instanceof RuntimeError ? error.resources : undefined },

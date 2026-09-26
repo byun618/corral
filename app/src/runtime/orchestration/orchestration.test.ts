@@ -634,6 +634,18 @@ describe('LIFE-409 r3 — the rules r2 left unpinned (M11, M12 = C26, C27)', () 
     expect(mirror(onDisk)).toBe(false)
     fs.writeFileSync(path.join(userData, 'runtime/terminal-receipts', `${onDisk}.json`), '{}')
     expect(mirror(onDisk)).toBe(true)
+    // LIFE-423 L-3: a released receipt is a tombstone, and `readReceipt` reads it as no receipt.
+    // This has to read it the same way, or a refused id would look like one `Receipts` still
+    // answers for. Unreachable today — a release made in this runtime leaves the id in `here`, and
+    // one from an earlier runtime is caught by the timestamp above — so this keeps the two readings
+    // of the same file in step rather than fixing an observed failure.
+    const released = id(startedAt + 3000, '4')
+    const releasedFile = path.join(userData, 'runtime/terminal-receipts', `${released}.json`)
+    fs.writeFileSync(releasedFile, JSON.stringify({ hash: 'x', state: 'released', createdAt: startedAt + 3000 }))
+    expect(mirror(released)).toBe(false)
+    // A file that cannot be read keeps its answer: unreadable is not proof of a release.
+    fs.writeFileSync(releasedFile, 'not json at all')
+    expect(mirror(released)).toBe(true)
     fs.rmSync(userData, { recursive: true, force: true })
   })
 })

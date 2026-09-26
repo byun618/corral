@@ -694,7 +694,7 @@
       "corral orchestration request-show --id r1.1700000000000.0123abcd-0123-0123-0123-0123456789ab --json"
     ],
     "notes": [
-      "completed means the request ran and its result is stored, so the same id replays it. pending means the id was admitted and its outcome was never recorded: it may have taken effect, and corral will not re-execute it.",
+      "completed means the request ran and its result is stored, so the same id replays it. pending means the id was admitted and its outcome was never recorded: it may have taken effect, and corral will not re-execute it. released means the request was refused before its effect began, so the id was given back: within the runtime that refused it the same id is judged afresh, and after a restart it answers outcome_unknown instead.",
       "absent means no receipt is stored, which is not proof that nothing happened - the id may never have been admitted, or its receipt may have expired after 24 hours. The interpretation field says so in the answer itself.",
       "A retry in corral is the same --request-id sent again; there is no separate retry flag."
     ]

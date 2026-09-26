@@ -616,3 +616,35 @@ describe('V29 — ask carries the sender proof it was admitted on', () => {
     delete process.env.CORRAL_SESSION
   })
 })
+
+/**
+ * LIFE-423 M-1 = G2-1. `request-show` answers "is this id spent?", and it reads the receipt file
+ * directly rather than through `readReceipt`. r2 added a fourth state to that file; this pins that
+ * the command reports it instead of folding a proven-effect-free refusal into `pending`.
+ */
+describe('LIFE-423 request-show reports a released receipt as released', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('does not call a refused id pending, and says it is adjudicated afresh', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l423-request-show-'))
+    try {
+      const id = `r1.${Date.now()}.${randomUUID()}`
+      const { Receipts } = await import('../terminal/receipts.js')
+      const receipts = new Receipts(dir, Date.now() - 1000)
+      const refusal = new RuntimeError('agent_not_ready', 'refused before any effect', null, 'preflight', 'not_started')
+      await expect(receipts.run({ command: 'terminal send', flags: { 'request-id': id, text: 'x' }, args: [], cwd: dir },
+        async () => { throw refusal })).rejects.toMatchObject({ code: 'agent_not_ready' })
+      const file = path.join(dir, 'runtime/terminal-receipts', `${id}.json`)
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).state).toBe('released')
+
+      const shown = asRecord(await orchestrationModule(dir).execute(
+        { command: 'orchestration request-show', flags: { id }, args: [], cwd: dir },
+        { runtimeId: 'runtime', instanceId: 'instance', userData: dir, signal: new AbortController().signal, deadlineAt: Date.now() + 5000, remote: false }))
+      expect(shown.state).toBe('released')
+      expect(shown.result).toBeNull()
+      expect(String(shown.interpretation)).toMatch(/effect never began/)
+      expect(String(shown.interpretation)).toMatch(/judged afresh/)
+      expect(String(shown.interpretation)).not.toMatch(/may have taken effect/)
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+})

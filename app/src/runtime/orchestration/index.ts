@@ -441,8 +441,23 @@ export function receiptsOwnTheAnswer(id: string | undefined, ctx: { startedAt: n
   if (id === undefined) return false
   const match = REQUEST_ID.exec(id)
   if (!match) return false
-  return ctx.here.has(id) || Number(match[1]) < ctx.startedAt
-    || fs.existsSync(path.join(ctx.userData, 'runtime/terminal-receipts', `${id}.json`))
+  return ctx.here.has(id) || Number(match[1]) < ctx.startedAt || receiptStanding(ctx.userData, id)
+}
+/**
+ * LIFE-423 L-3. Whether a receipt file still speaks for this id. A `released` one does not —
+ * `readReceipt` reads a tombstone as no receipt, and the branch above has to read it the same way
+ * or a refused id would be treated as one `Receipts` is about to answer for. No caller reaches this
+ * with a tombstone today: a release made in this runtime leaves the id in `here`, and one from an
+ * earlier runtime is caught by the timestamp first. A file that cannot be read keeps its answer —
+ * unreadable is not proof of a release.
+ */
+function receiptStanding(userData: string, id: string): boolean {
+  const file = path.join(userData, 'runtime/terminal-receipts', `${id}.json`)
+  if (!fs.existsSync(file)) return false
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return !isRecord(parsed) || parsed.state !== 'released'
+  } catch { return true }
 }
 
 export function orchestrationModule(userData: string): CommandModule {
@@ -1494,12 +1509,19 @@ export function orchestrationModule(userData: string): CommandModule {
         const receipt: unknown = JSON.parse(stored)
         const record = isRecord(receipt) ? receipt : {}
         const state = readString(record, 'state')
+        // LIFE-423 M-1: `released` is the fourth thing this file can say, and folding it into
+        // `pending` inverted both halves of that answer — the effect provably never began, and the
+        // id is the one case corral *does* adjudicate again.
+        const reported = state === 'completed' ? 'completed' : state === 'released' ? 'released' : 'pending'
+        const interpretation = {
+          completed: 'This request completed and its result is stored. Re-sending the same id replays that result; sending the same input under a new id would create a second record.',
+          released: 'This request was refused and its effect never began, so the refusal released the id. Within the runtime that refused it, sending the same id again is judged afresh: it may be admitted and succeed, or repeat the refusal. After a restart the id is older than the runtime and answers outcome_unknown instead.',
+          pending: 'This request was admitted and its outcome was never recorded. It may have taken effect. corral never re-executes it: inspect worker-list / task-list / inbox, and do not send the same input under a new id until you know.',
+        }[reported]
         return {
-          requestId: id, state: state === 'completed' ? 'completed' : 'pending',
+          requestId: id, state: reported,
           createdAt: readNumber(record, 'createdAt'), result: state === 'completed' ? record.result ?? null : null,
-          interpretation: state === 'completed'
-            ? 'This request completed and its result is stored. Re-sending the same id replays that result; sending the same input under a new id would create a second record.'
-            : 'This request was admitted and its outcome was never recorded. It may have taken effect. corral never re-executes it: inspect worker-list / task-list / inbox, and do not send the same input under a new id until you know.',
+          interpretation,
         }
       }
 

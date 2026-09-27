@@ -23,6 +23,13 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 - 공통 플래그는 `--json`·`--timeout-ms`·`--request-id`. **`--timeout-ms` 상한은 `orchestration check` ·
   `orchestration ask` 만 600000 이고 나머지는 120000 이다** (초과는 `--timeout-ms must be 1..120000` 거절 —
   `raw/corral/a-03-wait-timeout-120001.json`).
+- **⚠ 호출자 자신의 타임아웃이 `--timeout-ms` 보다 커야 한다.** 여기 적힌 상한은 corral 쪽 예산이고,
+  명령을 실행하는 셸·도구에도 따로 예산이 있다(에이전트의 셸 도구는 보통 120초). 더 짧은 쪽이 먼저 죽으면
+  **corral 은 계속 돌고 있는데 호출자만 끊긴다** — 그러면 `request_cancelled`("수락된 효과는 이미 일어났을 수
+  있다") 뒤에 `--ack` 를 다시 쳐서 `delivery_stale` 로 가는, 이 문서가 『완료 감지』 복구에서 경고하는 바로 그
+  사고다. **두 예산을 함께 정해라**: corral `--timeout-ms N` 이면 호출자 예산은 N + 여유. 호출자 예산을 늘릴 수
+  없으면 corral 쪽을 그보다 작게 잡아라 — `check --block --timeout-ms 600000` 을 120초 셸에서 그대로 치지 않는다.
+  (LIFE-440 새 독자 순환에서 이 규칙이 없어 독자가 스스로 세워야 했다: `raw/claude/fix1-l10-newreader-report.md` G5)
 - **거절 응답은 복구 명령을 스스로 알려준다** — `error.resources.recovery` 필드를 먼저 읽는다.
   거절의 `stage`(`preflight`·`receipt`·단계 이름)가 "효과가 시작됐는지" 를 가른다.
 - 재시도는 **같은 `--request-id` 를 다시 보내는 것**이다. 별도 retry 플래그는 없다. 같은 id + 다른 입력은
@@ -154,6 +161,11 @@ corral agent-context --json               # 명령별 시그니처·주의사항
   (`app/scripts/l394/env.mjs` 규칙). pane 이 backend 에서 env 를 상속하므로 마커가 남으면 provider 가 세션
   기록을 쓰지 않아 『본문 주입』의 배달 판정이 조용히 무력화된다 — `record.unavailableReason` 이 null 이 아니면
   마커 상속부터 의심한다.
+- **이 점검이 보지 않는 것 — 자식 pane 의 PATH.** `capability-check` 와 `status` 는 **내 셸**에서 corral 이
+  보이는지만 본다. 워커가 완료 보고를 치려면 **그 pane 의 셸에서도** corral 이 보여야 하는데(H7),
+  그것을 미리 재는 수단은 없다 — **공백이다.** 워커가 조용히 보고를 못 하면 이 자리를 의심한다
+  (실측에서는 `claude` 가 node v20 bin, corral 이 v22 bin 인 기계에서도 자식이 corral 을 찾았다:
+  `raw/claude/fix1-l10/nr-08b-preamble-full.txt` 의 preamble 이 소켓 경로까지 박아 준다).
 - **하지 말 우회**: 시작 세션에서 됐다는 이유로 이 점검을 생략하지 않는다. 대조 불일치를 "아마 될 것" 으로
   넘기지 않는다.
 
@@ -259,6 +271,17 @@ corral orchestration worker-start --task <task_id> --terminal <handle> --run <ru
 
 corral 에는 repo setup/archive hook 이 아직 없다(LIFE-412 전) — **기다릴 setup 단계가 없다는 뜻**이고,
 worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에 주는 경로는 git worktree 경로 그대로다.
+**그 worktree 를 만드는 것은 git 작업이고 이 매핑 밖이다** — corral 에는 worktree 생성 명령이 없다.
+명령은 절차 문서(`.agents/skills/task-coordinate/references/implementation.md` §2)에 있다. 여기서 짐작하지 않는다.
+
+**`--spec-file` 을 생략하면 그 Task 의 `--spec` 본문이 배달된다** — 일감 명세를 `task-create --spec` 에만
+담아도 pane 에 들어간다. 두 곳에 나눠 담지 않는다. (실측: 새 독자 순환에서 `--spec-file` 없이 기동한 뒤
+『세션 기록 오라클』로 배달 본문을 읽어 확인했다 — `raw/claude/fix1-l10/nr-08b-delivered-body.txt`)
+
+**preamble 이 워커에게 무엇을 주는가** (코디네이터가 일감 명세에 안 적어도 되는 것): 워커 쪽 `ask` 와
+`send --type worker_done|heartbeat|escalation` 의 명령줄이 **`--task-id`·`--dispatch-id` 가 치환된 채로**,
+소켓 경로까지 붙어 preamble 에 들어간다. 그래서 **코디네이터는 일감 명세에 보고 명령을 적지 않는다** —
+적으면 중복이고, id 를 손으로 옮기다 틀린다. (실측 원문: `raw/claude/fix1-l10/nr-08b-preamble-full.txt`)
 
 ### 보장 수준
 **증명.** `worker-start` 는 pane 생성 → Dispatch 기록 → 준비 대기 → preamble+본문 주입을 **한 호출로 묶고
@@ -352,6 +375,9 @@ Run 은 미확인 Delivery 를 **하나만** 갖고, `--ack` 전까지 같은 �
   다(실측: `raw/claude/c6r2-10a`·`10b`). 그때의 복구는 **`--ack` 를 떼고 `check` 를 다시 부르는 것**이다.
   취소를 배달 실패로 읽지 않는다. Run 메시지 상한은 10000건·본문 65536바이트이고
   한계에 닿으면 `message_capacity` 다 — corral 은 자리를 만들려고 메시지를 지우지 않는다.
+- **ack 만 하고 싶을 때**: `--ack` 는 **대기 시작 전에 한 번** 적용되므로, 확인만 하려면 **아주 짧은 대기를
+  연다** — `check --ack <delivery_id> --block --timeout-ms 3000`. 답은 `acknowledged: <그 delivery>` ·
+  `count: 0` · `timedOut: true` 이고 **이것이 정상이다**(빈 배치는 실패가 아니다). ack 없는 조회는 `inbox` 다.
 - **하지 말 우회**: 화면에 "다 했다" 가 보인다는 이유로 완료로 적지 않는다. `DONE.md` 같은 파일은 감사 기록이지
   완료 신호가 아니다. 두 번째 `worker_done` 은 `illegal_transition` 이므로 워커에게 다시 보내게 하지 않는다.
 

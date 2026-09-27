@@ -314,6 +314,11 @@ corral orchestration worker-start --task <task_id> --terminal <handle> --run <ru
 corral 에는 repo setup/archive hook 이 아직 없다(LIFE-412 전) — **기다릴 setup 단계가 없다는 뜻**이고,
 worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에 주는 경로는 git worktree 경로 그대로다.
 
+**전용 worktree 가 필요 없는 과제도 있다.** 스모크·검증 순환처럼 저장소를 고치지 않는 짧은 일감은
+**지금 서 있는 worktree 절대경로를 그대로 `--worktree path:` 에 준다** — 새로 만들지 않는다. 기동은 그것으로
+성립한다(2026-09-27 새 독자 실측: 같은 worktree 경로로 `state: ready`·`matchCount: 1`).
+**구현 작업은 다르다** — 브랜치가 갈려야 하므로 아래대로 전용 worktree 를 만든다.
+
 **그 worktree 를 만드는 방법 — 두 길이 있고, 이 매핑이 쓰는 길은 git 이다.**
 corral 광고에는 worktree 계열 명령이 **있다**: `worktree create` · `worktree rm` · `worktree set` ·
 `worktree list` · `worktree current` · `worktree show` · `worktree ps` (『전제 점검』 응답의 능력 목록에서 확인된다).
@@ -494,7 +499,13 @@ corral orchestration worker-read --dispatch <ctx_id> [--screen] [--limit <바이
 ### 상황 → 행동
 - **차단 화면**: 이것이 차단 화면을 **볼 수 있는 유일한 능력**이다. detect manifest 가 label 하지 않은 모달은
   구조화된 조회로는 보이지 않으므로, codex pane 은 첫 주입 전에 여기서 한 번 본다.
-- **타임아웃·빈 결과**: **`--limit` 은 줄 수가 아니라 바이트다**(읽기 1..262144, 화면 1..262144, 목록 1..10000).
+- **타임아웃·빈 결과**: **`--limit` 은 줄 수가 아니라 바이트고, 상한이 명령마다 다르다.**
+  `terminal read` 는 1..262144(화면도 262144), **`orchestration worker-read` 는 1..10000** 이다.
+  계약은 `worker-read` 를 *a pass-through of terminal read* 라고만 적어 262144 로 읽히는데 **실측은 10000 이다** —
+  넘기면 `invalid_argument: --limit must be 1..10000` 이고 `_meta.outcome: not_started` 다(부작용 없음).
+  목록(`corral terminal list --limit`)도 1..10000. 실측 원자료:
+  `raw/claude/fix3-b1-read-limit-probe.txt` · 새 독자가 먼저 밟은 거절 `raw/claude/fix3-l10c/13-worker-read.json`.
+  **계약과 실측이 갈리면 실측을 믿는다**(『전제 점검』 부분 실패 규칙).
   빈 출력은 "아무 일도 없었다" 가 아니라 "이 창에서 볼 게 없었다" 다. 보존은 PTY 당 마지막 1048576 바이트다.
 - **부분 실패**: `--cursor` 는 바이트 오프셋 + UTF-8 디코더 carry 다. 잘린 문자는 다음 읽기에서 이어진다.
 - **복구**: 사람 개입이 의심되면 화면을 읽어 원자료로 남기고, 사람이 잡은 pane 이면
@@ -626,3 +637,7 @@ corral orchestration run-use --id <run_id> --json            # 바인딩 복원
   바꾼 구간이 자식 워커의 보고·회수를 덮으면 그 구간이 끝날 때까지 되돌리지 않는다.
 - **하지 말 우회**: 남의 Run 에 `run-use` 하거나 남의 Run 의 메시지를 `--ack` 하지 않는다. 잔존 Run 을
   "아무도 안 쓰는 것 같으니" 재사용하지 않는다 — 새로 만들고 끝나면 복원한다.
+  **절차 문서의 "기존 Run 을 우선 쓴다" 와 충돌하지 않는다 — 가르는 것은 소유다**: 그 Run 이 **내 작업의 것**
+  (내가·내 코디네이터 세션이 이 일감으로 만든 것, `run-show` 의 `objective` 로 확인)이면 재사용한다.
+  **남의 것이거나 누구 것인지 모르면 새로 만들고 끝나면 복원한다.** 모르는 채 재사용하면 남의 배치를
+  `--ack` 하게 되고 그건 되돌릴 수 없다. (2026-09-27 새 독자가 두 문장 사이에서 스스로 판단해야 했던 자리)

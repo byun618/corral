@@ -15,15 +15,19 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 ## 작업 플로우 (분석 → 단독 구현 → 3자 리뷰 → 판정)
 
-실행 절차(명령 수준)는 스킬을 따른다 — 시작: .agents/skills/task-start/SKILL.md (main 세션),
-진행: .agents/skills/task-coordinate/SKILL.md (코디네이터 세션). 아래는 원칙 요약.
+실행 절차는 스킬을 따른다 — 시작: .agents/skills/task-start/SKILL.md (main 세션),
+진행: .agents/skills/task-coordinate/SKILL.md (코디네이터 세션). 스킬은 **능력 이름**으로만 말하고,
+명령 수준은 .agents/harness/ 의 도구별 매핑에 있다 — 어느 매핑을 열지는
+.agents/harness/capabilities.md 의 「매핑 선택」 한 곳에서 정한다. 아래는 원칙 요약.
 
 0. 작업 시작: main 에서 작업 브랜치 LIFE-NNN-<슬러그> 분기, 전용 worktree 로 체크아웃
    (.claude/worktrees/LIFE-NNN-<슬러그>/) — 본체는 항상 main 에 둔다.
    specs/LIFE-NNN-<슬러그>/ 생성. 분석·기준·리뷰·판정 문서는 모두 작업 브랜치에 커밋한다
 1. 분석: 코디네이터가 일감을 읽고 "모르는 것 목록" 작성 → grok에 외부 서치 위임
-   (corral terminal create --agent grok → wait --for agent-ready → prompt --wait accepted → terminal read,
-   코디네이터의 웹 검색과 대조. 전역 grok-search 스킬에서는 리서치 규칙만 가져온다) → specs/LIFE-NNN-*/00-analysis.md
+   (『세션 기동』 → 『준비 대기』 → 『본문 주입』 → 『화면 관측』으로 회수, 코디네이터의 웹 검색과 대조.
+   전역 grok-search 스킬에서는 리서치 규칙만 가져온다) → specs/LIFE-NNN-*/00-analysis.md
+   - 읽은 일감 본문은 00-analysis.md 에 스냅샷한다 — specs 가 진실의 원천이라 워커가 LA 를 못 읽어도
+     내용이 빠지지 않는다
 2. 판정 기준 선행: 구현 시작 전 specs/LIFE-NNN-*/01-criteria.md 에 채택 기준을 박는다
    (테스트 통과·단순성·엣지케이스 등). 기준 없이 구현 시작 금지
    - **네이티브 실행 관문**: 사용자의 네이티브 설치 경로에서 최소 1회 실행한 원자료가 있어야
@@ -97,13 +101,17 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   Opus 워커 23회). Fable 사용량 천장이 가까우면 리뷰어 advisor 부터 해제한다
 - 코디네이터 선택은 워커·리뷰어 기본 구성을 바꾸지 않는다. 코드 리뷰 3자는 서로,
   그리고 코디네이터·구현자와 별도 세션이다. 같은 도구여도 세션과 역할은 구분한다.
+- **제어 도구(pane·배달·완료 감지)는 절차와 분리한다.** 절차는 능력 이름으로 쓰고 명령은 매핑에 둔다 —
+  목표는 "어디서나 같은 보장" 이 아니라 **"어디서나 돌고, 못 하는 것은 판정표에서 공백"** 이다
+  (.agents/harness/capabilities.md)
 
 ## 세션 간 통신
 
 - 영속 산출물: specs/ 파일 (진실의 원천)
-- 제어 채널: corral `orchestration`(worker-start/check --block/ask·reply) — 워커 기동·완료 감지·질의응답을
-  구조화된 메시지로 처리. `worker-start` 가 `--advisor` 를 직접 받으므로 예외 경로는 없다.
-  완료 감지는 계속 worker_done/check/ACK다. 상세는 task-coordinate SKILL.md §4
+- 제어 채널: 『감독 워커 기동』·『완료 감지』·『질의응답』 — 워커 기동·완료 감지·질의응답을 구조화된
+  메시지로 처리한다. 완료는 워커의 종료 보고로만 본다 (파일·화면·프로세스 종료가 아니다).
+  **명령과 보장 수준은 선택한 매핑(.agents/harness/<도구>.md)에서 읽는다** — 능력이 공백인 도구에서는
+  그 판정 칸이 공백이다. 절차 쪽 상세는 task-coordinate SKILL.md §4
 - 보조: Claude 세션 간 SendMessage (claude↔claude 한정)
 
 ## 어디를 고치나 (증상 → 파일)
@@ -115,6 +123,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 | 코드 스타일·파일 이름이 제각각이다 | .agents/rules/coding.md |
 | "다 됐습니다"인데 안 되어 있다 | .agents/rules/validation.md |
 | 리뷰 품질·형식이 도구마다 흔들린다 | .agents/agents/reviewer.md |
+| 도구가 바뀌면 절차 문서를 다시 쓰게 된다 | .agents/harness/capabilities.md (능력 이름·보장 어휘) |
+| 명령·플래그가 실제와 다르거나 빠져 있다 | .agents/harness/<도구>.md (corral·orca·bare 매핑) |
 | 같은 다단계 절차를 매번 다시 설명한다 | .agents/skills/<이름>/SKILL.md 신설 |
 | 무엇을 만들어야 하는지가 흔들린다 | 해당 작업의 01-criteria.md |
 

@@ -1,12 +1,15 @@
 ---
 name: task-start
 description: >-
-  corral 작업 시작. LIFE-N 일감의 작업 worktree를 만들고 선택한 Claude 또는 Codex
+  작업 시작. LIFE-N 일감의 작업 worktree를 만들고 선택한 Claude 또는 Codex
   코디네이터를 기동한다. main 세션에서 "LIFE-N 시작하자", "작업 시작",
   "이번 코디네이터는 Codex로" 같은 요청에 사용한다.
 ---
 
 # task-start — 작업 시작 (main 세션에서 실행)
+
+**이 문서에는 도구 명령이 없다.** 능력 이름은 겹낫표로 감싸 적고, 명령은
+[하네스 능력 계약](../../harness/capabilities.md)의 「매핑 선택」으로 고른 도구별 매핑에서 읽는다. 어느 매핑을 골랐는지는 `00-start.md` 에 기록한다.
 
 ## 코디네이터 선택
 
@@ -26,13 +29,13 @@ description: >-
 ## 절차
 
 1. **일감·환경 확인**: life-assistant MCP `issue_by_seq`로 LIFE-N 본문을 읽는다.
-   `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고,
-   `command -v <선택 도구>`·`<선택 도구> --help`·`corral status --json`으로 기동 가능 여부를 확인한다.
-   LA가 없거나 corral 런타임이 꺼져 있으면(`status`가 exit 1) 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
-   **corral 런타임·herdr backend는 `CLAUDE_CODE_*`·`CLAUDECODE`·`CLAUDE_PID`·`CLAUDE_EFFORT`·`ORCA_AGENT_HOOK_*`를
-   제거한 env로 띄운다**(`app/scripts/l394/env.mjs` 규칙). pane은 backend에서 env를 상속하므로 마커가 남으면
-   provider가 세션 record를 쓰지 않아 `prompt`·`worker-start`의 배달 판정이 조용히 무력화된다 —
-   `record.unavailableReason`이 null이 아니면 마커 상속부터 의심한다.
+   `git status`·`git worktree list`로 본체 main과 기존 작업을 확인하고, 선택한 코디네이터 도구가 실제로
+   실행 가능한지 확인한 뒤 **하네스 매핑을 고르고 그 매핑의 『전제 점검』을 실행한다**.
+   제어 런타임이 꺼져 있거나 LA가 없으면 이 단계에서 원인을 보고한다. 다른 도구로 몰래 대체하지 않는다.
+   **『전제 점검』이 불일치를 내면 멈춘다** — 매핑이 요구하는 능력을 런타임이 광고하지 않으면 추측으로
+   진행하지 않는다. 광고를 대조할 수 없는 도구는 그 사실을 기록하고 판정표의 공백으로 낸다.
+   **제어 런타임을 띄울 때의 환경 조건(상속되면 배달 판정이 무력화되는 env 마커 등)은 매핑의
+   『전제 점검』에 적혀 있다** — 런타임을 새로 띄우는 경우 그 조건을 먼저 읽는다.
    슬러그는 타이틀에서 케밥케이스 1~3단어로 파생하며, 기존 LIFE-N의 슬러그는 재사용한다.
 2. **작업 worktree 생성** (신규만, 본체는 main 유지):
    ```bash
@@ -43,52 +46,47 @@ description: >-
 3. **기동 전에 선택 기록**: 작업 worktree에서 `specs/LIFE-NNN-<슬러그>/00-start.md`를 작성·커밋한다.
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·절대 worktree 경로, 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 [defaults.md](defaults.md):
-   claude → `claude-fable-5-1` high, codex → `gpt-6-astra` high, 2026-09-22), 기동 상태.
-   모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 복사한다. 처음 상태는 `기동 전`.
+   claude → `claude-fable-5-1` high, codex → `gpt-6-astra` high, 2026-09-22), **선택한 하네스 매핑**,
+   기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 복사한다.
+   처음 상태는 `기동 전`.
    워커 구성·구현→3자 리뷰 흐름·사용자 예외, 수정 라운드용 워커 유지 요청도 기록하고, 재개는 이력을 덧붙인다.
-4. **코디네이터 터미널 기동** (`--worktree path:`에는 기록한 절대경로):
+4. **코디네이터 세션 기동** — 『세션 기동』. 작업 폴더는 3단계에 기록한 **절대경로**로 준다.
 
-   선택은 `--agent claude` 또는 `--agent codex`다 — corral이 pane 안에서 provider를 직접 띄우므로
-   argv를 문자열로 조립하지 않는다. 모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값을
-   `--model`·`--effort` 플래그로 준다. `--advisor`는 `--agent claude`에만 붙고, `--command`와
-   `--agent`는 상호배타다(위반은 효과 없는 `invalid_request`).
-
-   ```bash
-   corral terminal create --worktree path:<작업 worktree 절대경로> \
-     --title "LIFE-NNN-<슬러그> · <코디네이터>" \
-     --agent <claude|codex> --model <모델> --effort <등급> --focus --json
-   ```
-   생성 응답의 handle을 확보하고 `00-start.md`에 기록한다. `--focus`는 사용자에게 보여줄
-   코디네이터 터미널에만 사용한다(헤드리스에서는 미지원).
+   선택은 `claude` 또는 `codex`다. 모델·effort는 사용자 지정값, 미지정이면 3단계의 기본값을 **명령에
+   명시한다** — 환경 기본이 medium 이라 지정하지 않으면 조용히 내려간다. advisor 지정이 그 매핑에서
+   불가능하면 그 사실을 기록한다(조용히 빼지 않는다).
+   반환된 세션 handle 을 확보하고 `00-start.md`에 기록한다. 사용자에게 보여줄 코디네이터 세션에만
+   포커스 전환을 쓴다(매핑에 따라 헤드리스에서는 미지원).
 5. **LA 상태 전이**: 시작 세션이 `issue_transition` → `진행 중`을 요청한다. 코디네이터가 먼저 전진했다면
    forward-only의 `same`·`backward` 응답을 존중한다. 부모가 checkpoint이면 함께 온보드(`issue_update`
    onBoard:true)하고 `진행 중`으로 전이하되 project이면 적용하지 않는다. 종료 때 부모 완료는 다른 미완
    자식이 없는지 확인한 뒤 판단한다 — task 하나 완료로 checkpoint 전체를 완료하지 않는다.
 
 6. **준비 확인 후 킥오프 주입**:
-   ```bash
-   corral terminal wait --terminal <handle> --for agent-ready --timeout-ms 60000 --json
-   ```
-   `satisfied`를 확인한다. trust·로그인 화면이나 미검증 detect manifest면 기다리지 않고 즉시
-   `satisfied: false`로 돌아온다 — 그 화면은 사람이 치우고 corral은 대답하지 않는다. 타임아웃은
-   준비 완료가 아니며, 어느 쪽이었는지는 `agent.evidence`로 구분한다.
-   준비가 확인되면 `00-start.md`의 상태를 `킥오프 전달 준비`로 갱신·커밋한다.
-   그다음 아래 지시를 **한 번만** 보낸다(`prompt`가 managed agent 주입의 정본이고 `send`는 raw 입력이다).
-   ```bash
-   corral terminal prompt --terminal <handle> --wait accepted --json --text \
-     "너는 LIFE-NNN 작업의 코디네이터야. specs/LIFE-NNN-<슬러그>/00-start.md와 .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해."
-   ```
-   응답의 `requestId`(corral이 민팅한 `r1.<13자리 ms>.<UUID>`)와 `record.matchCount`를 `00-start.md`에 기록한다.
-   `outcome: completed`만 배달 확인이고 그 밖(`queued`·`outcome_unknown`)은 중복 주입하지 않는다.
-   전달 이후 이 파일과 작업 브랜치는 코디네이터가 맡는다. 시작 세션은 더 수정하지 않는다.
-   실제 세션 점검 후 코디네이터가 `준비 완료` 또는 `차단 사유`를 기록한다.
+   - 『준비 대기』로 지시를 받을 수 있는 상태인지 확인한다. **trust·로그인 화면이나 미검증 화면은
+     사람이 치운다 — 제어 도구는 그 화면에 대답하지 않는다.** 타임아웃은 준비 완료가 아니며, 차단이었는지
+     느렸을 뿐인지는 매핑이 지정한 근거 필드로 가른다. 『준비 대기』가 차단을 가리지 못하는 도구에서는
+     주입 전에 『화면 관측』을 반드시 한 번 한다.
+   - 준비가 확인되면 `00-start.md`의 상태를 `킥오프 전달 준비`로 갱신한다.
+     **전달 기록의 커밋은 전달 *전*에 끝낸다** — 전달 뒤에 시작 세션이 커밋하면 이미 일을 시작한
+     코디네이터의 미커밋 편집까지 쓸어 담고 인덱스 잠금으로 코디네이터 커밋이 실패한다
+     (2026-09-27 LIFE-440 에서 실제로 났다). 전달 후의 기록은 코디네이터가 맡는다.
+   - 『본문 주입』으로 아래 지시를 **한 번만** 보낸다. 배달 확인값(요청 id·일치 건수)과 결과를
+     `00-start.md`에 기록한다. **확인된 배달만 배달이고, 큐 수락·결과 불명은 중복 주입하지 않는다.**
+     배달 증명이 공백인 도구라면 그 사실을 적고 사람이 화면으로 확인한 시각을 남긴다.
+     ```
+     너는 LIFE-NNN 작업의 코디네이터야. specs/LIFE-NNN-<슬러그>/00-start.md와
+     .agents/skills/task-coordinate/SKILL.md를 읽고, 실제 세션에서 전제 도구를 확인한 뒤 절차대로 진행해.
+     ```
+   - 전달 이후 이 파일과 작업 브랜치는 코디네이터가 맡는다. 시작 세션은 더 수정하지 않는다.
+     실제 세션 점검 후 코디네이터가 `준비 완료` 또는 `차단 사유`를 기록한다.
 
 ## 기동 실패·재개
 
-- `terminal create` 응답 타임아웃은 실패가 아니라 지연일 수 있다. 같은 worktree의
-  `terminal list`로 해당 도구 터미널을 먼저 찾고, 살아 있으면 그 handle을 기록해 재사용한다.
+- **세션 생성 응답의 타임아웃은 실패가 아니라 지연일 수 있다.** 같은 worktree의 세션 목록에서 그 도구
+  터미널을 먼저 찾고, 살아 있으면 그 handle을 기록해 재사용한다.
   확인 없이 재시도해 중복 코디네이터를 만들지 않는다. 남은 상태·다음 조치를 `00-start.md`에 남긴다.
-- 포커스 전환 때문에 문제가 나면 `--focus`를 빼고 생성 후 `terminal switch`를 쓴다.
-- 터미널 읽기는 `corral terminal read --terminal <handle>` — `--limit`은 줄 수가 아니라 **바이트**다(1..262144).
+- 포커스 전환 때문에 문제가 나면 포커스 없이 만든 뒤 별도로 전환한다.
+- 화면 읽기·목록·본문 길이의 **수치 상한은 매핑에서 확인한다** — 줄 수와 바이트를 혼동하면 원자료가 잘린다.
 - 시작 세션은 킥오프 전달 후 구현을 지휘하지 않는다. 이후 과정은 선택된 코디네이터가 맡고,
   출고 승인 후 본체 마무리 담당에게 `handoff-main.md`로 돌아온다(task-coordinate §8).

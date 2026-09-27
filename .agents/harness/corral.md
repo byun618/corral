@@ -167,6 +167,9 @@ corral orchestration worker-start --task <task_id> \
 corral orchestration worker-start --task <task_id> --terminal <handle> --run <run_id> --json   # pane 재사용
 ```
 
+corral 에는 repo setup/archive hook 이 아직 없다(LIFE-412 전) — **기다릴 setup 단계가 없다는 뜻**이고,
+worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에 주는 경로는 git worktree 경로 그대로다.
+
 ### 보장 수준
 **증명.** `worker-start` 는 pane 생성 → Dispatch 기록 → 준비 대기 → preamble+본문 주입을 **한 호출로 묶고
 제출을 판정한다**: `state: ready` 는 주입이 `outcome: completed` + 만족한 대기였을 때, 또는 그 본문이 provider
@@ -191,7 +194,8 @@ corral orchestration worker-start --task <task_id> --terminal <handle> --run <ru
   Dispatch 로 재개되고(`launch: resumed`), **이미 주입된 시도가 열려 있으면 `dispatch_active` 로 거절된다.**
   `launch: reused` 는 열린 시도가 없어 시작 가능한 Task 에 기존 pane 을 배정한 **새 시도**다. 재개는 Dispatch
   생성 시 기록된 본문 digest 를 배달하며, 명령줄에 남은 `--spec-file` 은 `ignoredOptions` 에 들어간다.
-- **하지 말 우회**: `--terminal` 과 `--agent … --worktree` 를 **동시에 쓰지 않는다**(재사용 pane 은 기동 때의
+- **하지 말 우회**: **기본 경로는 이 한 호출이다** — 따로 pane 을 만들고 `--terminal` 로 붙이는 2단 경로를
+  평소에 쓰지 않는다(2단은 아래 차단 화면 복구용이다). `--terminal` 과 `--agent … --worktree` 를 **동시에 쓰지 않는다**(재사용 pane 은 기동 때의
   agent 를 그대로 쓰므로 `--model`·`--effort`·`--advisor`·`--worktree` 가 거절된다). `--agent` 에는 `--worktree`
   가 필수다. **리뷰어 3명은 Task 를 각각 따로 발급한다** — 같은 Task 로 띄우면 미확정 시도만 조용히 재개되거나
   `dispatch_active` 로 거절된다. 실행 중 Dispatch 위에 같은 terminal 의 새 Dispatch 를 겹쳐 기동하지 않는다.

@@ -5,31 +5,53 @@
 //     절차 문서가 쓰는 능력 이름 ⊆ capabilities.md 정본 ⊆ 매핑 3개의 절. 매달린 능력 0.
 //   node .agents/harness/capability-check.mjs shape
 //     매핑의 능력별 절이 명령 · 보장 수준 · 상황→행동(5항목)을 모두 갖는지.
-//     **한계(K9)**: 라벨 존재와 "라벨만 있고 비었나" 만 본다. 적힌 내용이 그 상황에 맞는 행동인지,
+//     **한계(K9)**: 라벨 존재 · "라벨만 있고 비었나" · 사유 없는 `해당 없음.`(P9) 까지만 본다. 적힌 내용이 그 상황에 맞는 행동인지,
 //     보장 수준 칸의 어휘가 실제 보장과 맞는지는 **기계가 보지 않는다 — 리뷰어가 본다.**
 //   node .agents/harness/capability-check.mjs runtime --tool corral|orca|bare
 //     매핑이 **선언한** 명령 ↔ 런타임이 광고하는 것 ↔ 매핑 본문이 실제로 쓰는 명령.
 //
-// ── 표기 규약 (이 관문의 핵심. 산문에서 명령을 추측으로 뽑지 않기 위한 것) ─────────────
-// 매핑 본문의 인라인 코드 스팬(`…`)에 명령이 나오면 아래를 지킨다. 어기면 **불일치(1)** 다.
-//   R1. **명령줄이면 도구 접두사 완전 표기.** 플래그(`--x`)나 자리표시자(`<…>`)가 있는 스팬은
-//       `corral orchestration send …` 처럼 도구 이름부터 적는다. `send --type …` 는 오류다.
-//   R2. **이름만 적는 스팬**은 접두사를 생략할 수 있으나 레지스트리에서 **유일하게** 해소돼야 한다.
-//       `check` 는 되고 `send`(terminal send ↔ orchestration send)는 오류다 — 완전 표기로 쓴다.
-//   R1b. **명령줄로 쓴 명령은 `required-commands` 에 있어야 한다.** `mentioned-commands` 는 이름 언급 전용이다 —
-//       거기 적힌 이름으로 실행을 지시하면 오류다.
-//   R3. 해소된 모든 이름은 ```required-commands 또는 ```mentioned-commands 에 **선언되어 있어야** 한다.
-//   R4. `required` ⊆ 광고/레지스트리. `mentioned` 는 광고와 대조하지 않되 **사유 주석이 필수**다
-//       (없는 명령·폐기된 별칭·"쓰지 말라" 를 적기 위한 칸이다).
-//   R5. 선언 항목은 본문에 나와야 한다 (죽은 선언 금지).
-// 왜 규약을 강제하나: 라운드 1·2 에서 **추출 휴리스틱을 늘리는 방식이 두 번 연속 새 사각을 냈다**
-// (M1·L6 → N1). 규약은 "모르는 표기" 를 통과가 아니라 오류로 만든다 — 관문이 커지지 않고 좁아진다.
+// ── 표기 허용 목록 (이 관문의 핵심) ───────────────────────────────────────────
+// **아는 표기만 허용한다. 목록에 없는 형태는 전부 오류다.** 매핑이 어떤 표기를 꼭 써야 하면
+// 아래 목록(ALLOWED)에 추가한다 — 추가하면 그 형태도 검사를 받는다. 목록 밖을 조용히 지나가게 두지 않는다.
+//
+//   A1. `<도구> [전역옵션…] <그룹> <명령> [플래그…]`      예: corral orchestration send --type …
+//   A2. `<도구> [전역옵션…] <명령> [플래그…]`             예: corral status --json
+//   A3. `node <경로>/corral.mjs …` · `…/orca.mjs …`      → **도구 접두사로 정규화해 A1·A2 로 검사한다**
+//       (매핑 스스로 권하는 대체 호출형이다. 정규화하지 않으면 이 표기로 쓴 오기가 조용히 지나간다)
+//   A4. `tmux [전역옵션…] <명령> [플래그…]`               bare 의 도구 표기. `-L`·`-S`·`-f` 는 전역옵션이다
+//   A5. `async_<이름>(…)`                                 iTerm2 Python API
+//   A6. **플래그 없는 이름 언급** — 접두사를 생략할 수 있으나 레지스트리에서 **유일 해소**돼야 한다
+//       (`check` 는 되고 `send` 는 terminal/orchestration 로 갈려 오류다)
+//   A7. 허용된 **외부 명령** 목록(EXTERNAL)으로 시작하는 줄 — 이 관문의 대상이 아니다
+//
+// 전역옵션은 도구별로 목록(GLOBAL_OPTS)에 있다. **목록에 없는 옵션이 명령 앞에 오면 오류다** —
+// 옛 판은 도구 뒤에 옵션이 오면 스팬 전체를 버려서 `corral --socket … worker-stop --reason` 이 통과했다.
+//
+// 그 위에 선언 대조 규칙:
+//   R1  명령줄(플래그가 있는 스팬)은 A1~A4 중 하나여야 한다. 접두사 없는 명령줄은 오류다.
+//   R1b 명령줄로 쓴 명령은 `required-commands` 에 있어야 한다 — `mentioned-commands` 는 이름 언급 전용이고,
+//       **레지스트리에 없는 이름이라도** 명령줄로 쓰면 오류다(선언에 있다는 이유로 명령줄을 이름으로 낮추지 않는다).
+//   R3  해소된 모든 이름은 두 선언 블록 중 하나에 있어야 한다.
+//   R4  `required` ⊆ 광고/레지스트리. `mentioned` 는 광고와 대조하지 않되 **사유 주석이 필수**다.
+//   R5  선언 항목은 본문에 나와야 한다 (죽은 선언 금지).
+// 왜 이렇게 좁히나: 라운드 1·2·3 에서 **"산문에서 명령을 더 똑똑하게 뽑는" 방식이 세 번 연속 새 사각을 냈다**
+// (M1 → L6·N1 → P1). 허용 목록은 반대 방향이다 — 모르는 표기가 통과 쪽으로 떨어지지 않는다.
+//
+// ── 알려진 한계 (이 관문이 보지 못하는 것) ────────────────────────────────────
+//   L-a. **백틱 없는 산문의 명령줄.** 검사 대상은 인라인 코드 스팬과 펜스 블록 줄이다. 산문에 그냥 쓴
+//        `worker-stop --dispatch <ctx>` 는 어느 규칙에도 걸리지 않는다 → **명령은 반드시 코드 스팬으로 쓴다.**
+//   L-b. **플래그 값의 의미.** 플래그 이름이 그 명령에 있는지는 c3c4-crosscheck 가 보고, 이 관문은 이름만 본다.
+//   L-c. **다른 도구의 명령.** `--tool corral` 로 돌리면 `orca …` 스팬은 외부 명령으로 지난다.
+//        세 도구를 각각 돌려야 세 매핑이 다 검사된다.
+//   L-d. **보장 수준·상황 설명의 내용.** 형식만 본다(K9).
 //
 // 종료 코드: 0 통과 · 1 불일치(멈춘다) · 2 사용법·읽기 오류 · 3 대조 불가(광고가 없는 도구)
 //   bare 는 규약·선언 검사를 **전부 돌린 뒤** 광고 대조만 공백이라 3 으로 끝난다. 규약을 어기면 1 이다.
 // 뒷문(양성 대조 전용): `--mapping <경로>` 매핑 갈아끼우기 · `--advertised <경로>` 광고 목록 주입.
 // 프로필 선택(K8): `--socket <경로>`·`--instance <id>` 를 주면 그 런타임에 그대로 넘긴다 —
 //   주지 않으면 기본 프로필을 본다. **다른 프로필을 쓰면서 이 관문을 기본으로 돌리면 쓰지 않는 런타임을 점검한다.**
+//   **corral 전용이다**(P11): orca 는 두 인자를 받지 않고 bare 는 런타임이 없다 —
+//   그 도구에 주면 여기서 exit 2 로 거절한다(그대로 넘겨 orca 가 사용법 오류로 죽는 것보다 원인이 분명하다).
 
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -159,6 +181,11 @@ function checkShape() {
         // 임계 3자: `해당 없음.` 같은 정당한 짧은 답은 통과시키고 **라벨만 있고 빈 칸**만 잡는다.
         // 내용이 타당한지는 이 관문이 판단하지 않는다 — 리뷰어 몫이다(K9 의 한계로 문서화).
         if (filled.length < 3) problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 라벨만 있고 비었다(유효 ${filled.length}자)`);
+        // P9 — C2 문구는 **"해당 없음 — 이유"** 다. 사유 없는 `해당 없음.` 은 통과시키지 않는다.
+        // (라운드 3 까지 12칸이 사유 없이 있었고, 옛 판이 그 형태를 의도적으로 통과시켰다)
+        else if (/^\s*:?\s*해당\s*없음\s*[.。]?\s*$/.test(rest.split('\n')[0])) {
+          problems.push(`${file} 『${starts[k].name}』: 상황 항목 "${s}" 가 사유 없는 "해당 없음." 이다 — C2 는 \`해당 없음 — 이유\` 를 요구한다`);
+        }
       }
     }
     note(`${file}: 절 ${starts.length}개 × (절 3개 + 상황 5개) 검사`);
@@ -170,7 +197,7 @@ function checkShape() {
 // ── 선언 블록 ───────────────────────────────────────────────────────────────
 // ```required-commands / ```mentioned-commands / ```required-tokens 를 읽는다.
 // `#` 뒤는 주석(mentioned 에서는 **사유**라 필수), 빈 줄은 무시.
-function declaredBlock(text, kind) {
+export function declaredBlock(text, kind) {
   const re = new RegExp('```' + kind + '\\n([\\s\\S]*?)```', 'g');
   const entries = [];
   const noReason = [];
@@ -193,7 +220,7 @@ function declaredBlock(text, kind) {
 // ── 표기 규약 검사 ──────────────────────────────────────────────────────────
 // 펜스 블록과 그 밖의 산문을 갈라 준다. ``` 의 세 번째 백틱이 산문과 짝지어 **가짜 스팬**을 만들기 때문에
 // 인라인 스팬은 반드시 "펜스 밖" 에서만 센다 (라운드 3 에서 실제로 밟았다).
-function splitFences(text) {
+export function splitFences(text) {
   const fences = [];
   const outside = text.replace(/```[a-z-]*\n[\s\S]*?```/g, (m) => {
     fences.push(m.replace(/^```[a-z-]*\n/, '').replace(/```$/, ''));
@@ -204,7 +231,7 @@ function splitFences(text) {
 
 
 // 도구별 어휘. corral·orca 는 런타임이 알려 주고, bare 는 광고가 없으니 **선언이 어휘다**.
-function lexicon(tool, oracleNames) {
+export function lexicon(tool, oracleNames) {
   const names = [...new Set(oracleNames)];
   const byLast = new Map();
   const firsts = new Set();
@@ -218,36 +245,113 @@ function lexicon(tool, oracleNames) {
   return { names, byLast, firsts };
 }
 
-// 스팬 하나를 규약에 비춰 본다. 반환: {kind, name?, msg?}
-//   kind: 'none'(명령이 아니다) · 'name'(이름만, 해소됨) · 'line'(완전 표기 명령줄) · 'error'
-function classifySpan(span, tool, lex, declared) {
+// ── 허용 표기 목록 (ALLOWED). 여기 없는 형태는 오류다 ─────────────────────────
+// 전역옵션: 값을 먹는 것과 안 먹는 것을 구분한다. 목록 밖 옵션이 명령 앞에 오면 오류.
+const GLOBAL_OPTS = {
+  corral: { valued: ['--socket', '--instance', '--timeout-ms', '--request-id'], plain: ['--json'] },
+  orca: { valued: ['--timeout-ms', '--request-id', '--on'], plain: ['--json'] },
+  tmux: { valued: ['-L', '-S', '-f'], plain: [] },
+};
+// 도구 CLI 를 다른 경로로 부르는 형태 (A3) — 도구 접두사로 정규화한다
+const TOOL_SCRIPT = /(?:^|\/)(corral|orca)\.mjs$/;
+// 매핑에 나와도 되는 외부 명령 (A7). **목록에 없는 첫 단어 + 플래그 = 오류다.**
+// 늘릴 때는 "매핑이 정말 그 명령을 적어야 하나" 를 먼저 묻는다.
+const EXTERNAL = new Set([
+  'node',              // 이 관문 자신을 부르는 줄 (`node .agents/harness/capability-check.mjs …`)
+  'capability-check',  // 같은 것을 이름만으로 부르는 줄
+  'claude', 'codex', 'grok',  // 에이전트 CLI (세션 기동 원자료 설명)
+  'jq', 'git', 'sh', 'shasum', 'osascript', 'export', 'command',
+]);
+
+// 스팬 하나를 허용 목록에 비춰 본다. 반환: {kind, name?, msg?}
+//   kind: 'none'(검사 대상이 아니다) · 'name'(이름 언급, 해소됨) · 'line'(도구 명령줄) · 'error'
+export function classifySpan(span, tool, lex, declared) {
   const s = span.trim();
   if (!s) return { kind: 'none' };
-  const words = s.split(/\s+/);
-  const isLine = /--[a-z]/.test(s) || /<[^>]+>/.test(s);
-  const prefixes = tool === 'bare' ? ['tmux'] : [tool];
-  if (prefixes.includes(words[0])) {
-    // 도구 이름만, `corral <명령> --help` 류 일반형, `corral --help` 같은 전역 플래그는 명령 표기가 아니다
-    if (words.length === 1 || /^[<[-]/.test(words[1])) return { kind: 'none' };
-    const two = words[1] && words[2] ? `${words[1]} ${words[2]}` : null;
-    const one = words[1] ? words[1] : null;
-    if (tool === 'bare') {
-      const pair = one ? `tmux ${one}` : null;
-      if (pair && lex.names.includes(pair)) return { kind: isLine ? 'line' : 'name', name: pair };
+  // A8 — `invalid_argument: …` 류 **오류 메시지 인용**. 명령 표기가 아니다
+  if (/^[a-z][a-z_]*:\s/.test(s)) return { kind: 'none' };
+  let words = s.split(/\s+/);
+  const hasFlag = /(^|\s)--[a-z]/.test(s);
+  const isLine = hasFlag || /<[^>]+>/.test(s);
+  const toolWord = tool === 'bare' ? 'tmux' : tool;
+
+  // A3 — `node <경로>/corral.mjs …` 를 도구 표기로 정규화한다
+  if (words[0] === 'node' && words[1] && TOOL_SCRIPT.test(words[1])) {
+    const which = TOOL_SCRIPT.exec(words[1])[1];
+    if (which !== toolWord) return { kind: 'none' };      // 다른 도구의 CLI (L-c)
+    words = [toolWord, ...words.slice(2)];
+  }
+
+  if (words[0] === toolWord) {
+    // 전역옵션을 먼저 걷어낸다 (옛 판은 여기서 스팬을 버렸다 — P1 의 뿌리)
+    const opts = GLOBAL_OPTS[toolWord] || { valued: [], plain: [] };
+    let i = 1;
+    // 값 하나를 먹는다. `<전용 소켓 이름>` 처럼 자리표시자에 공백이 있으면 `>` 까지 먹는다
+    const eatValue = (at) => {
+      if (at >= words.length) return at;
+      if (!words[at].startsWith('<') || words[at].endsWith('>')) return at + 1;
+      let j = at;
+      while (j < words.length && !words[j].endsWith('>')) j += 1;
+      return j + 1;
+    };
+    while (i < words.length && /^-/.test(words[i])) {
+      const w = words[i];
+      const bare = w.split('=')[0];
+      if (opts.valued.includes(bare)) { i = w.includes('=') ? i + 1 : eatValue(i + 1); continue; }
+      if (opts.plain.includes(bare)) { i += 1; continue; }
+      if (bare === '--help') { i += 1; continue; }
+      // 명령 앞의 모르는 옵션 — 허용 목록에 없다
+      return { kind: 'error', msg: `허용하지 않는 전역옵션 표기: \`${s}\` (전역옵션 목록: ${[...opts.valued, ...opts.plain].join(' ')})` };
+    }
+    const rest = words.slice(i);
+    if (rest.length === 0) return { kind: 'none' };        // 도구 이름 + 전역옵션만
+    if (/^[<[]/.test(rest[0])) return { kind: 'none' };     // `corral <명령> --help` 류 일반형
+    const two = rest[0] && rest[1] && /^[a-z][a-z-]*$/.test(rest[1]) ? `${rest[0]} ${rest[1]}` : null;
+    const one = /^[a-z][a-z-]*$/.test(rest[0]) ? rest[0] : null;
+    if (!one) return { kind: 'error', msg: `도구 뒤에 명령 이름이 아닌 것이 왔다: \`${s}\`` };
+    if (toolWord === 'tmux') {
+      const pair = `tmux ${one}`;
+      if (lex.names.includes(pair)) return { kind: isLine ? 'line' : 'name', name: pair };
+      if (declared.has(pair)) return isLine
+        ? { kind: 'error', msg: `R1b 위반 — 선언(언급만)에 있는 이름을 명령줄로 지시한다: \`${s}\`` }
+        : { kind: 'name', name: pair };
       return { kind: 'error', msg: `선언에 없는 tmux 명령: \`${s}\`` };
     }
-    if (two && lex.names.includes(two)) return { kind: isLine ? 'line' : 'name', name: two };
-    if (one && lex.names.includes(one)) return { kind: isLine ? 'line' : 'name', name: one };
-    // 레지스트리에 없다 — mentioned-commands 에 사유와 함께 선언했으면 "없다는 사실을 적은 것" 으로 받는다
-    if (two && declared.has(two)) return { kind: 'name', name: two };
-    if (one && declared.has(one)) return { kind: 'name', name: one };
+    for (const cand of [two, one]) {
+      if (!cand) continue;
+      if (lex.names.includes(cand)) return { kind: isLine ? 'line' : 'name', name: cand };
+    }
+    // 레지스트리에 없다. 선언(언급만)에 있으면 **이름 언급일 때만** 받는다 —
+    // 명령줄이면 R1b 다. 옛 판은 여기서 명령줄을 이름으로 낮춰 R1b 를 건너뛰었다(P1·G1).
+    for (const cand of [two, one]) {
+      if (!cand) continue;
+      if (declared.has(cand)) {
+        return isLine
+          ? { kind: 'error', msg: `R1b 위반 — 광고·레지스트리에 없는 이름(언급만 선언)을 명령줄로 지시한다: \`${s}\`` }
+          : { kind: 'name', name: cand };
+      }
+    }
     return { kind: 'error', msg: `광고·레지스트리에 없는 명령 표기: \`${s}\` (없다는 사실을 적는 것이면 mentioned-commands 에 사유와 함께 선언한다)` };
   }
-  if (/^async_[a-z_]+$/.test(words[0])) {
-    if (lex.names.includes(words[0])) return { kind: isLine ? 'line' : 'name', name: words[0] };
+
+  // A5 — iTerm2 Python API
+  if (/^async_[a-z_]+/.test(words[0])) {
+    const name = words[0].replace(/\(.*$/, '');
+    if (lex.names.includes(name)) return { kind: isLine ? 'line' : 'name', name };
     return { kind: 'error', msg: `선언에 없는 iTerm2 API: \`${s}\`` };
   }
-  // 접두사가 없다 — 알려진 명령 단어로 시작하면 규약 위반 후보다
+
+  // A7 — 허용된 외부 명령
+  if (EXTERNAL.has(words[0])) return { kind: 'none' };
+  // 플래그 이름만 적는 스팬 (`--run`, `--timeout-ms 120000`)
+  if (/^-/.test(words[0])) return { kind: 'none' };
+
+  // 여기부터 접두사가 없다.
+  // **플래그가 있으면 무조건 오류다** — 알려진 명령이든(R1 위반) 오타든(허용 목록 밖) 같다.
+  if (hasFlag) {
+    return { kind: 'error', msg: `허용 표기 목록에 없는 명령줄: \`${s}\` — 도구 이름부터 쓴다(A1·A2). 외부 명령이면 EXTERNAL 에 올린다` };
+  }
+  // 플래그 없는 이름 언급 (A6) — 유일 해소를 요구한다
   const two = words[1] ? `${words[0]} ${words[1]}` : null;
   let resolved = null;
   let ambiguous = null;
@@ -258,17 +362,12 @@ function classifySpan(span, tool, lex, declared) {
     if (cands.length === 1) [resolved] = cands;
     else ambiguous = cands;
   } else if (lex.firsts.has(words[0])) {
-    // 그룹 이름으로 시작하는데 뒤가 레지스트리에 없다
     if (two && declared.has(two)) return { kind: 'name', name: two };
     return { kind: 'error', msg: `알려진 그룹으로 시작하지만 해소되지 않는다: \`${s}\` (없는 명령이면 mentioned-commands 에 선언한다)` };
   }
   if (!resolved && !ambiguous) return { kind: 'none' };
-  if (isLine) {
-    return { kind: 'error', msg: `R1 위반 — 명령줄은 \`${tool} …\` 완전 표기로 쓴다: \`${s}\`` };
-  }
-  if (ambiguous) {
-    return { kind: 'error', msg: `R2 위반 — \`${s}\` 는 ${ambiguous.join(' / ')} 로 갈린다. 완전 표기로 쓴다` };
-  }
+  if (isLine) return { kind: 'error', msg: `R1 위반 — 명령줄은 \`${toolWord} …\` 완전 표기로 쓴다: \`${s}\`` };
+  if (ambiguous) return { kind: 'error', msg: `R2 위반 — \`${s}\` 는 ${ambiguous.join(' / ')} 로 갈린다. 완전 표기로 쓴다` };
   return { kind: 'name', name: resolved };
 }
 
@@ -302,6 +401,9 @@ function checkRuntime() {
   const profile = [];
   if (flag('--socket')) profile.push('--socket', flag('--socket'));
   if (flag('--instance')) profile.push('--instance', flag('--instance'));
+  if (profile.length && tool !== 'corral') {
+    fail(2, `${tool} 는 --socket·--instance 를 받지 않는다 — 프로필 선택은 corral 전용이다(P11). 그 축은 ${tool} 에서 공백이다`);
+  }
   note(profile.length ? `프로필 인자: ${profile.join(' ')}` : '프로필: 기본 (--socket·--instance 없음)');
 
   // (1) 선언 블록
@@ -364,7 +466,8 @@ function checkRuntime() {
   for (const body of split.fences) {
     for (const raw of body.split('\n')) {
       const line = raw.replace(/\\$/, '').replace(/\s+#.*$/, '').trim();
-      if (!line || line.startsWith('#') || line.startsWith('--') || line.startsWith('|')) continue;
+      // 건너뛰는 줄: 주석 · 플래그로 시작하는 **이어짐 줄**(`--x …`, `[--x …]`) · 표 줄
+      if (!line || line.startsWith('#') || line.startsWith('--') || line.startsWith('[--') || line.startsWith('|')) continue;
       fenced += 1;
       take(line);
     }
@@ -416,7 +519,12 @@ function checkRuntime() {
   verdict(`runtime --tool ${tool}`);
 }
 
-if (mode === 'names') checkNames();
-else if (mode === 'shape') checkShape();
-else if (mode === 'runtime') checkRuntime();
-else fail(2, '사용법: capability-check.mjs names|shape|runtime [--tool corral|orca|bare]');
+// 직접 실행일 때만 검사를 돈다. `c3c4-crosscheck.mjs` 가 **같은 허용 목록**을 쓰도록 import 하기 때문이다 —
+// 목록이 두 벌이면 한쪽만 좁아진다(라운드 1~3 이 그 자리에서 셋 다 샜다).
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  if (mode === 'names') checkNames();
+  else if (mode === 'shape') checkShape();
+  else if (mode === 'runtime') checkRuntime();
+  else fail(2, '사용법: capability-check.mjs names|shape|runtime [--tool corral|orca|bare]');
+}

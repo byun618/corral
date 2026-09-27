@@ -10,7 +10,9 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 - **H7 — `corral` 은 npm-link 로 본체 `app/cli` 에 풀린다. 셸의 node 버전에 따라 아예 보이지 않는다.**
   이 머신에서는 `$HOME/.nvm/versions/node/v22.22.2/bin` 에만 있다. PATH 앞에 그 경로를 두거나
   `node <worktree>/app/cli/corral.mjs` 절대경로로 부른다. `command -v corral` 이 비면 도구 부재가 아니라
-  PATH 문제로 먼저 의심한다.
+  PATH 문제로 먼저 의심한다. **이 대체 호출형도 표기 허용 목록에 있다**(A3) — 그렇게 적은 명령줄도
+  접두사 표기와 똑같이 플래그·선언 대조를 받는다. 전역옵션(`--socket`·`--instance` …)을 명령 앞에 두는
+  표기도 허용 목록에 있고 같은 검사를 받는다.
 - 모든 명령은 로컬 Unix 소켓 클라이언트다. `--socket` 을 생략하면 기본 프로필 소켓
   (`~/Library/Application Support/corral/runtime/rpc.sock`)에 붙는다 — 실측으로 같은 `runtimeId` 였다
   (`raw/claude/c6-socket-default.txt`). 다른 프로필·인스턴스를 쓸 때만 `--socket`·`--instance` 를 명시한다.
@@ -63,14 +65,18 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 적는지를 읽은 것이다. 그중 실제로 돌려 확인한 경로와 계약만 읽은 경로를 갈라 둔다 — 계약을 실행으로
 착각하지 않기 위해서다. 실측은 `specs/LIFE-440-harness-capability-map/raw/claude/c6-smoke-record.md`.
 
+**이 표의 기준 시점**: 이 매핑의 마지막 수정 라운드(2026-09-27, 수정 3/3). 회차의 정본은 표가 아니라
+**실행 목록**이다 — `specs/LIFE-440-harness-capability-map/raw/claude/fix3-executions.md` (합계는 `fix3-tally.mjs`).
+표가 목록보다 뒤처지면 목록이 맞다. 라운드 2·3 에서 이 표가 두 번 뒤처졌다(K3 → P7).
+
 | 경로 | 이 문서를 쓸 때 |
 | --- | --- |
-| 정상 순환 (Run → 일감 → 감독 워커 기동 → 질문·답 → 완료 보고 → 본문 주입 → 확인 → 회수 → 바인딩 복원) | **실행 4회** (라운드 1 의 3회 + 라운드 2 의 새 독자 순환 1회. 배달 `matchCount: 1`, 회수 `owned_generation_matches` → `pane_gone`) |
+| 정상 순환 (Run → 일감 → 감독 워커 기동 → 질문·답 → 완료 보고 → 본문 주입 → 확인 → 회수 → 바인딩 복원) | **실행 6회** (라운드 1 의 3회 + 라운드 2·3·4 의 새 독자 순환 각 1회. 배달 `matchCount: 1`, 회수 `owned_generation_matches` → `pane_gone`) |
 | 취소된 대기의 뒤처리 (`request_cancelled` → `delivery_stale`) | **실행 1회** (2회차) |
 | 오래된·다른 pane 의 보고 거절 (`sender_mismatch`·`stale_dispatch`·`illegal_transition`·`capability_revoked`) | 계약만 읽음 — 미실행 |
 | 차단 화면 거절 (`agent_blocked`·`detect_manifest_unverified`·`agent_not_ready`) | 계약만 읽음 — 미실행 |
 | 재개 경로 (`dispatch_input_unconfirmed`·`dispatch_active`·`dispatch_input_unprovable`·`launch: resumed|reused`) | 계약만 읽음 — 미실행 |
-| 빌린 pane 회수 (`retained`·`borrowed`, 따로 닫기 — H5) | **실행 1회** — 라운드 2 에서 내가 만들어 새 독자에게 빌려준 pane 을 정체(`title`·`path`·`paneId`·`sessionId`·argv) 확인 후 `corral terminal close` 로 닫았다(`stage: closed`, 남은 pane 6개 = 기준값). 근거 `raw/claude/fix1-l10-run-restore.txt` |
+| 빌린 pane 회수 (`retained`·`borrowed`, 따로 닫기 — H5) | **실행 3회** — 라운드 2·3·4 에서 각각, 내가 만들어 새 독자에게 빌려준 pane 을 정체(`title`·`path`·`paneId`·`sessionId`·argv) 확인 후 `corral terminal close` 로 닫았다(`stage: closed`, 남은 pane 수 = 기준값). 근거 `raw/claude/fix1-l10-run-restore.txt` · `fix2-l10b-pane-recovery.txt` · `fix3-l10c-pane-recovery.txt` |
 | 플래그 거절 3형태 (H3) | **실행** — `raw/corral/a-03`·`a-04`·`a-05` |
 
 ## 응답에서 어디를 읽나 (필드 경로)
@@ -564,7 +570,7 @@ Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므�
 관측이다 — 어느 기록에도 **사람이 친 입력과 주입된 입력을 가르는 필드가 없다**(H1·H2).
 
 ### 상황 → 행동
-- **차단 화면**: 해당 없음.
+- **차단 화면**: 해당 없음 — 기록 파일을 읽는 것뿐이라 화면을 거치지 않는다.
 - **타임아웃·빈 결과**: 기록 파일이 없는 것은 배달 실패의 증거가 **아니다** — provider 가 아직 쓰지 않았거나
   기록을 끄고 있을 수 있다(H1).
 - **부분 실패**: 같은 cwd 에 세션이 여럿이면 어느 것이 이 pane 인지 corral 도 unknown 으로 답한다 —
@@ -610,7 +616,7 @@ corral orchestration run-use --id <run_id> --json            # 바인딩 복원
 `worker-*` 에는 있다) — 질문은 현재 바인딩을 따라간다.
 
 ### 상황 → 행동
-- **차단 화면**: 해당 없음.
+- **차단 화면**: 해당 없음 — Run 바인딩 조회·전환은 화면과 무관하다.
 - **타임아웃·빈 결과**: `run-use` 의 모르는 `--id` 는 `run_not_found` 이고 **이전 바인딩을 건드리지 않는다.**
 - **부분 실패**: 두 코디네이터(또는 순환 검증 중인 워커)가 한 프로필에서 `run-create` 하면 상대의
   `corral orchestration check`·`corral orchestration send` 가 엉뚱한 Run 으로 간다. **규율: `--run` 을 받는 15개 명령에는 빠짐없이 `--run` 을 명시하고,

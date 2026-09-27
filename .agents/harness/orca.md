@@ -43,7 +43,6 @@ orchestration dispatch-show         # 『감독 워커 기동』
 orchestration check                 # 『완료 감지』 — --wait (corral 의 --block 이 아니다)
 orchestration inbox                 # 『완료 감지』 — 확인 없이 들여다본다
 orchestration send                  # 『완료 감지』 — **워커가** worker_done 을 보낸다
-orchestration request-show          # 『완료 감지』 — 영수증 (--request 로 받는다, --id 가 아니다)
 orchestration ask                   # 『질의응답』 (corral 과 달리 --run 을 받는다)
 orchestration reply                 # 『질의응답』
 orchestration worker-show           # 『회수·정리』·사람 개입(observation.agentWait)
@@ -214,12 +213,17 @@ orca 는 빼면 잘못된 작업 공간으로 붙는다. 그래서 절차 문서
 orca orchestration check [--run <run_id>] [--ack <delivery_id>] [--types <type,...>] [--wait] \
   [--timeout-ms <n>] --json
 orca orchestration worker-show --dispatch <dispatch_id> --json
-orca orchestration inbox [--run <run_id>] --json            # 확인(ACK) 없이 들여다본다
-orca orchestration request-show --request <request_id> --json  # 영수증. corral 과 달리 --request 다
+orca orchestration inbox [--limit <n>] [--terminal <handle>] [--full] --json   # 확인(ACK) 없이 들여다본다
 # ↓ 워커 쪽이 치는 명령. 코디네이터가 "완료 감지" 를 말할 때 반대편에서 이게 돌고 있다
-orca orchestration send --type worker_done|heartbeat|escalation --task <task_id> \
-  --dispatch <dispatch_id> --subject <제목> --body <본문> --json
+orca orchestration send --type <type> --task-id <task_id> --dispatch-id <dispatch_id> \
+  --subject <제목> [--body <본문>] [--outcome succeeded|failed] [--run <run_id>] --json
 ```
+
+**인자 이름이 corral 과 어긋나는 곳** — 여기서 틀리면 `invalid_argument` 다: 보고는 `--task-id`·`--dispatch-id`
+(corral 도 같다) 이지만 **`inbox` 는 `--run` 을 받지 않는다**(`--limit`·`--terminal`·`--full` 뿐이다).
+그리고 영수증 조회는 레지스트리에 `orchestration request-show --request <id>` 로 있으나
+**361줄 `--help` 목록에는 나오지 않는다** — 두 오라클이 갈리는 자리다. 이 매핑은 그것에 기대지 않는다
+(그래서 위 선언에도 넣지 않았다). 필요해지면 실행해서 확인한 뒤 적는다.
 
 ### 보장 수준
 **증명(계약).** 완료는 `send --type worker_done` 이고 `--outcome succeeded|failed` 가 필수다. 계약이

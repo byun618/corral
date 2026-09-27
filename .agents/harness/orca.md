@@ -18,7 +18,7 @@ orca 는 **사용자가 실제로 쓰는 앱**이다. 이 매핑을 만들 때 �
 | 증명 대상 | 수준 | 근거 |
 | --- | --- | --- |
 | 본문이 정확히 한 번 전달됐다 | **공백** | managed 에이전트에 본문을 넣고 **도착을 판정하는 명령이 없다.** `terminal send` 는 raw 입력이고 ack 가 없다. 본문 전달 경로는 `worker-start`(일감 본문)·`orca worktree create --prompt`·`orca terminal create --command` 뿐이고, 그 어느 것도 "provider 기록에 정확히 1건" 을 값으로 돌려준다고 적지 않는다 |
-| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **공백** | 계약이 pane 의 **세대·epoch 값을 돌려주는 명령이 없다** — 명령 234개 레지스트리에 `generation`·`pty_replaced`·`pane_gone` 은 0회 등장한다(`grep -i` 로 확인, epoch 1회는 `orca cookie set` 의 `--expires <epoch>` 뿐이다). `worker-release` 의 "unproven identities / reused or pre-existing terminals 는 절대 닫지 않는다" 는 **닫기 부작용을 제한하는 정책**이고(그 근거는 『회수·정리』에 따로 적었다), 호출자가 "내가 주입한 그 pane 이 그새 교체됐는지" 를 **가려낼 값이 아니다.** 그래서 corral 의 `epoch_changed` 같은 판정을 여기서 기대하지 않는다 |
+| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **공백** | 계약이 pane 의 **세대·epoch 값을 돌려주는 명령이 없다** — 명령 234개 레지스트리에 `generation`·`pty_replaced`·`pane_gone` 은 0회 등장한다(`grep -i` 로 확인, epoch 1회는 레지스트리의 `cookie set` 항목이 가진 `--expires <epoch>` 뿐이다). `worker-release` 의 "unproven identities / reused or pre-existing terminals 는 절대 닫지 않는다" 는 **닫기 부작용을 제한하는 정책**이고(그 근거는 『회수·정리』에 따로 적었다), 호출자가 "내가 주입한 그 pane 이 그새 교체됐는지" 를 **가려낼 값이 아니다.** 그래서 corral 의 `epoch_changed` 같은 판정을 여기서 기대하지 않는다 |
 | 보고가 오래된 시도에서 온 게 아니다 | **증명(계약)** | `orca orchestration send --type worker_done` 은 "완료는 그 task/dispatch id 로, **dispatched pane 에서만** Task 를 완료시킨다. 안정적인 pane 신원이 없으면 발신 handle 이 dispatch assignee 와 정확히 일치해야 한다" 고 적는다 |
 | 사람 개입 흔적 | **관측(+ 계약 한 조각)** | `terminal read` 화면(H2). 더해 `worker-show` 의 `observation.agentWait` 가 **사람만 답할 수 있는 프롬프트에 멈춘 워커**를 그 근거(hook·prompt-text·title)와 함께 이름 짓는다. null 은 "보고 없었다", **필드 부재는 "보지 않았다" 이고 절대 "안 기다린다" 가 아니다** |
 
@@ -408,7 +408,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 
 ### 상황 → 행동
 - **차단 화면**: 해당 없음.
-- **타임아웃·빈 결과**: 없음.
+- **타임아웃·빈 결과**: 바인딩 조회는 로컬 상태라 기다릴 것이 없다. **빈 결과는 "아직 어느 Run 에도 바인딩되지 않았다" 는 뜻**이고 실패가 아니다 — 그 상태에서 `--run` 없이 치면 엉뚱한 곳으로 가지 않고 거절되거나 새로 만든다.
 - **부분 실패**: `--takeover-legacy` 는 **바인딩할 실제 코디네이터 에이전트 터미널 안에서** 실행해야 하고
   기존 워커 배정을 보존한다 — 다른 pane 에서 쓰지 않는다.
 - **복구**: 바인딩이 의심되면 `orca orchestration run-current --from <handle>` 로 그 handle 기준으로 확인한다.

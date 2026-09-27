@@ -191,6 +191,18 @@ function declaredBlock(text, kind) {
 }
 
 // ── 표기 규약 검사 ──────────────────────────────────────────────────────────
+// 펜스 블록과 그 밖의 산문을 갈라 준다. ``` 의 세 번째 백틱이 산문과 짝지어 **가짜 스팬**을 만들기 때문에
+// 인라인 스팬은 반드시 "펜스 밖" 에서만 센다 (라운드 3 에서 실제로 밟았다).
+function splitFences(text) {
+  const fences = [];
+  const outside = text.replace(/```[a-z-]*\n[\s\S]*?```/g, (m) => {
+    fences.push(m.replace(/^```[a-z-]*\n/, '').replace(/```$/, ''));
+    return '\n\n';
+  });
+  return { outside, fences };
+}
+
+
 // 도구별 어휘. corral·orca 는 런타임이 알려 주고, bare 는 광고가 없으니 **선언이 어휘다**.
 function lexicon(tool, oracleNames) {
   const names = [...new Set(oracleNames)];
@@ -344,12 +356,13 @@ function checkRuntime() {
       if (r.kind === 'line') { lines += 1; ranAsLine.add(r.name); }
     }
   };
-  // ⓐ 인라인 코드 스팬
-  for (const m of prose.matchAll(/`([^`\n]+)`/g)) take(m[1]);
+  const split = splitFences(prose);
+  // ⓐ 인라인 코드 스팬 — 펜스 **밖**에서만
+  for (const m of split.outside.matchAll(/`([^`\n]+)`/g)) take(m[1]);
   // ⓑ 펜스 블록의 각 줄 — 『명령』 절이 바로 여기다. 주석·이어지는 플래그 줄은 건너뛴다
   let fenced = 0;
-  for (const m of prose.matchAll(/```(?:bash|sh|text)?\n([\s\S]*?)```/g)) {
-    for (const raw of m[1].split('\n')) {
+  for (const body of split.fences) {
+    for (const raw of body.split('\n')) {
       const line = raw.replace(/\\$/, '').replace(/\s+#.*$/, '').trim();
       if (!line || line.startsWith('#') || line.startsWith('--') || line.startsWith('|')) continue;
       fenced += 1;

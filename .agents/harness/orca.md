@@ -17,9 +17,9 @@ orca 는 **사용자가 실제로 쓰는 앱**이다. 이 매핑을 만들 때 �
 
 | 증명 대상 | 수준 | 근거 |
 | --- | --- | --- |
-| 본문이 정확히 한 번 전달됐다 | **공백** | managed 에이전트에 본문을 넣고 **도착을 판정하는 명령이 없다.** `terminal send` 는 raw 입력이고 ack 가 없다. 본문 전달 경로는 `worker-start`(일감 본문)·`worktree create --prompt`·`terminal create --command` 뿐이고, 그 어느 것도 "provider 기록에 정확히 1건" 을 값으로 돌려준다고 적지 않는다 |
-| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **공백** | 계약이 pane 의 **세대·epoch 값을 돌려주는 명령이 없다** — 명령 234개 레지스트리에 `generation`·`pty_replaced`·`pane_gone` 은 0회 등장한다(`grep -i` 로 확인, epoch 1회는 `cookie set --expires`). `worker-release` 의 "unproven identities / reused or pre-existing terminals 는 절대 닫지 않는다" 는 **닫기 부작용을 제한하는 정책**이고(그 근거는 『회수·정리』에 따로 적었다), 호출자가 "내가 주입한 그 pane 이 그새 교체됐는지" 를 **가려낼 값이 아니다.** 그래서 corral 의 `epoch_changed` 같은 판정을 여기서 기대하지 않는다 |
-| 보고가 오래된 시도에서 온 게 아니다 | **증명(계약)** | `send --type worker_done` 은 "완료는 그 task/dispatch id 로, **dispatched pane 에서만** Task 를 완료시킨다. 안정적인 pane 신원이 없으면 발신 handle 이 dispatch assignee 와 정확히 일치해야 한다" 고 적는다 |
+| 본문이 정확히 한 번 전달됐다 | **공백** | managed 에이전트에 본문을 넣고 **도착을 판정하는 명령이 없다.** `terminal send` 는 raw 입력이고 ack 가 없다. 본문 전달 경로는 `worker-start`(일감 본문)·`orca worktree create --prompt`·`orca terminal create --command` 뿐이고, 그 어느 것도 "provider 기록에 정확히 1건" 을 값으로 돌려준다고 적지 않는다 |
+| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **공백** | 계약이 pane 의 **세대·epoch 값을 돌려주는 명령이 없다** — 명령 234개 레지스트리에 `generation`·`pty_replaced`·`pane_gone` 은 0회 등장한다(`grep -i` 로 확인, epoch 1회는 `orca cookie set` 의 `--expires <epoch>` 뿐이다). `worker-release` 의 "unproven identities / reused or pre-existing terminals 는 절대 닫지 않는다" 는 **닫기 부작용을 제한하는 정책**이고(그 근거는 『회수·정리』에 따로 적었다), 호출자가 "내가 주입한 그 pane 이 그새 교체됐는지" 를 **가려낼 값이 아니다.** 그래서 corral 의 `epoch_changed` 같은 판정을 여기서 기대하지 않는다 |
+| 보고가 오래된 시도에서 온 게 아니다 | **증명(계약)** | `orca orchestration send --type worker_done` 은 "완료는 그 task/dispatch id 로, **dispatched pane 에서만** Task 를 완료시킨다. 안정적인 pane 신원이 없으면 발신 handle 이 dispatch assignee 와 정확히 일치해야 한다" 고 적는다 |
 | 사람 개입 흔적 | **관측(+ 계약 한 조각)** | `terminal read` 화면(H2). 더해 `worker-show` 의 `observation.agentWait` 가 **사람만 답할 수 있는 프롬프트에 멈춘 워커**를 그 근거(hook·prompt-text·title)와 함께 이름 짓는다. null 은 "보고 없었다", **필드 부재는 "보지 않았다" 이고 절대 "안 기다린다" 가 아니다** |
 
 ---
@@ -67,6 +67,18 @@ terminal.multiplex.v1                     # 『세션 기동』·『화면 관�
 orchestration.worker-stop-verdict.v1      # 『회수·정리』 — worker-stop 의 판정
 ```
 
+```mentioned-commands
+terminal prompt                     # **orca 에 없다** — 배달 증명이 공백인 근거. 이름만 적는다
+orchestration request-show          # 레지스트리엔 있고 361줄 --help 목록엔 없다 — 실행 지시로 쓰지 않는다(위 「두 오라클」)
+orchestration gate-list             # --run 을 받는 명령 목록에만 나온다 — 이 매핑은 호출하지 않는다
+orchestration dispatch              # 문맥 전용 Dispatch — H5 설명에만 나온다
+orchestration reset                 # Run·Task·메시지를 지우는 명령 — "격리 수단으로 쓰지 말라" 를 적기 위한 언급
+orchestration coordinator-start     # 폐기된 레거시 별칭 — 쓰지 않는다
+orchestration coordinator-stop      # 같은 위
+terminal stop                       # 폐기 예정 별칭 — 쓰지 않는다
+cookie set                          # M2 근거(레지스트리에서 epoch 이 나오는 유일한 자리)로만 인용
+```
+
 **『세션 기록 오라클』은 orca 명령이 아니다** — `jq` 로 기록을 직접 읽는다.
 
 ## 『전제 점검』
@@ -106,8 +118,8 @@ orca terminal show [--terminal <handle>] --json     # 미실행
 
 ### 보장 수준
 **관측.** `terminal create` 에는 `--agent` 가 **없다** — provider 는 `--command` 로 띄운다(계약이 명시적으로
-"기존 체크아웃에 새 에이전트를 띄울 때는 `terminal create --worktree active --command "codex"` 를 쓰라" 고 적는다).
-모델·effort 는 `worker-start --model/--effort` 로만 주고 **`--effort` 는 `--model` 을 요구하며 둘 다 `--terminal`
+"기존 체크아웃에 새 에이전트를 띄울 때는 `orca terminal create --worktree active --command "codex"` 를 쓰라" 고 적는다).
+모델·effort 는 `orca orchestration worker-start --model/--effort` 로만 주고 **`--effort` 는 `--model` 을 요구하며 둘 다 `--terminal`
 과 함께 쓸 수 없다.** **advisor 를 지정하는 플래그는 어디에도 없다 — advisor 지정은 공백이다.**
 
 ### 상황 → 행동
@@ -139,7 +151,7 @@ orca terminal wait [--terminal <handle>] --for exit|tui-idle [--timeout-ms <ms>]
   한 번 본다 — corral 에서 codex pane 에만 하던 것을 여기서는 모든 pane 에 한다.
 - **타임아웃·빈 결과**: `tui-idle` 만족은 준비의 증거가 아니라 **조용함의 증거**다. 타임아웃을 준비로 읽지 않는다.
 - **부분 실패**: 없음(대기는 아무것도 바꾸지 않는다).
-- **복구**: 차단이면 사람이 GUI 에서 치운다. `terminal send --text … --enter` 로 치우는 것은 **화면을 읽어
+- **복구**: 차단이면 사람이 GUI 에서 치운다. `orca terminal send --text … --enter` 로 치우는 것은 **화면을 읽어
   무엇인지 확인한 뒤에만** 한다 — 무엇에 답하는지 모르는 입력을 보내지 않는다.
 - **하지 말 우회**: `tui-idle` 을 `agent-ready` 인 것처럼 판정표에 적지 않는다. 이 칸은 관측이다.
 
@@ -157,7 +169,7 @@ orca worktree create --name <name> --agent <id> --prompt "<본문>" --json    # 
 **판정표 공백**이다. 사후 확인은 『세션 기록 오라클』(관측)로만 한다.
 
 ### 상황 → 행동
-- **차단 화면**: 차단 화면에 `send` 를 하면 그 화면에 대한 대답으로 먹힌다 — 본문이 사라지고 흔적도 남지 않는다.
+- **차단 화면**: 차단 화면에 `orca terminal send` 를 하면 그 화면에 대한 대답으로 먹힌다 — 본문이 사라지고 흔적도 남지 않는다.
   그래서 **보내기 전에 반드시 화면을 읽는다.**
 - **타임아웃·빈 결과**: 해당 없음 — 기다릴 대상이 없다(그게 공백의 뜻이다).
 - **부분 실패**: 두 번 보내면 두 번 들어간다. **중복 방지 장치가 없으므로 사람이 세야 한다** — 보낸 시각과
@@ -189,18 +201,18 @@ orca orchestration dispatch-show --task <task_id> [--preamble] --json
 - **타임아웃·빈 결과**: `outcome_unknown` 은 exit 1 이고 `residualResources`·복구 명령을 낸다. `--timeout-ms`
   상한은 레지스트리에 수치로 적혀 있지 않다(corral 의 120000/600000 같은 값 — **공백**, 필요하면 실측해 적는다).
 - **부분 실패**: 실패한 단계가 앞 단계를 되돌리지 않고 `residualResources` 에 남는다(corral 과 같은 모양).
-  `--on` 은 **워커 서버만** 고르고 Run 과 이 명령은 현재 호스트에 남는다. 원격에서 `current`·`new-child` 는 무효다.
+  `--on` 은 **워커 서버만** 고르고 Run 과 이 명령은 현재 호스트에 남는다. 원격에서 `--worktree current`·`--worktree new-child` 는 무효다.
 - **복구**: `--retry-of <dispatch_id>` 로 교체 시도를 연결한다 — 배치는 물려받지 않으니 다시 적는다.
-  `request-show --request <request_id>` 로 잃어버린 응답을 조회한다(**`--id` 가 아니라 `--request` 다**).
+  잃어버린 응답은 `orca orchestration inbox` 로 다시 본다 — **영수증 조회 명령으로 복구를 지시하지 않는다**(아래 「두 오라클이 갈리는 자리」).
 - **하지 말 우회**: `dispatch` 로 만든 문맥 전용 Dispatch 를 감독 워커로 세지 않는다 — 계약이 그것을
-  `unsupervised`·terminal state `retained` 로 보고한다. 레거시 `coordinator-start`/`coordinator-stop` 은
+  `unsupervised`·terminal state `retained` 로 보고한다. 레거시 `orchestration coordinator-start`/`orchestration coordinator-stop` 은
   아무 효과가 없는 명령이다(계약 스스로 그렇게 적는다) — 쓰지 않는다.
 
 ### 재사용 인자 규칙 (절차 문서가 가리키는 그 규칙)
 
 **재사용 때 `--terminal <handle>` 과 그 터미널의 `--worktree` 를 함께 준다.** 계약이 그대로 적는다:
 "When reusing --terminal, pass --worktree for that terminal; current means the coordinator worktree."
-`current` 는 코디네이터 worktree 를 뜻하므로, **워커 worktree 를 쓰려면 그 selector 를 명시해야 한다.**
+`--worktree current` 는 코디네이터 worktree 를 뜻하므로, **워커 worktree 를 쓰려면 그 selector 를 명시해야 한다.**
 
 **corral 과 정반대라는 점이 이 규칙의 핵심이다** — corral 은 재사용에 `--worktree` 를 붙이면 거절하고,
 orca 는 빼면 잘못된 작업 공간으로 붙는다. 그래서 절차 문서는 "매핑의 재사용 인자 규칙을 따른다" 만 적고
@@ -221,15 +233,17 @@ orca orchestration send --type <type> --task-id <task_id> --dispatch-id <dispatc
 
 **인자 이름이 corral 과 어긋나는 곳** — 여기서 틀리면 `invalid_argument` 다: 보고는 `--task-id`·`--dispatch-id`
 (corral 도 같다) 이지만 **`inbox` 는 `--run` 을 받지 않는다**(`--limit`·`--terminal`·`--full` 뿐이다).
-그리고 영수증 조회는 레지스트리에 `orchestration request-show --request <id>` 로 있으나
-**361줄 `--help` 목록에는 나오지 않는다** — 두 오라클이 갈리는 자리다. 이 매핑은 그것에 기대지 않는다
-(그래서 위 선언에도 넣지 않았다). 필요해지면 실행해서 확인한 뒤 적는다.
+**두 오라클이 갈리는 자리 — 영수증 조회.** `orchestration request-show` 는 레지스트리에는 있고
+**361줄 `orca --help` 목록에는 없다**(사용자 기계 실측). C4 의 통과선이 `--help` 실측 존재이므로
+**이 매핑은 그 명령으로 실행을 지시하지 않는다** — 복구는 `orca orchestration inbox` 로 적었고,
+이름은 `mentioned-commands` 에 사유와 함께만 올렸다. 『전제 점검』은 이 이름이 **명령줄로 다시 등장하면 멈춘다**
+(R1b). 필요해지면 두 오라클의 불일치를 먼저 해소하고(예: 사용자 확인 하에 서브명령 도움말 실행) 그 결과를 적는다.
 
 ### 보장 수준
-**증명(계약).** 완료는 `send --type worker_done` 이고 `--outcome succeeded|failed` 가 필수다. 계약이
+**증명(계약).** 완료는 `orca orchestration send --type worker_done` 이고 `--outcome succeeded|failed` 가 필수다. 계약이
 "활성 task/dispatch id 를 담은 `worker_done` 은 **그 dispatched pane 에서만** 그 Task 를 완료시키고, 안정적인
 pane 신원이 없으면 발신 handle 이 dispatch assignee 와 정확히 일치해야 한다" 고 적는다 — 오래된 시도·다른
-pane 의 보고를 배제하는 장치가 계약에 있다. `check` 는 바인딩된 Run 의 **가장 오래된 미확인 FIFO 배치**를
+pane 의 보고를 배제하는 장치가 계약에 있다. `orca orchestration check` 는 바인딩된 Run 의 **가장 오래된 미확인 FIFO 배치**를
 돌려주고 `--ack` 전까지 같은 Delivery 를 되돌린다. 미실행.
 
 ### 상황 → 행동
@@ -240,9 +254,9 @@ pane 의 보고를 배제하는 장치가 계약에 있다. `check` 는 바인�
   `_keepalive` 는 heartbeat 메시지와 무관하다. 빈 배치는 새 워커를 만드는 근거가 아니다.
 - **부분 실패**: 바인딩된 Run 은 `--ack` 전까지 같은 Delivery 를 되돌린다 — **확인 전에 배치의 모든 메시지를
   처리한다.** `--ack` 는 직전 배치 전체에만 적용된다.
-- **복구**: `inbox --full` 로 수신자별 전체를 본다. `--peek` 는 읽음 표시 없이, `--all` 은 그 handle 의 전체를
+- **복구**: `orca orchestration inbox --full` 로 수신자별 전체를 본다. `--peek` 는 읽음 표시 없이, `--all` 은 그 handle 의 전체를
   읽음 표시 없이 준다.
-- **하지 말 우회**: `terminal wait --for exit` 을 완료로 쓰지 않는다 — provider 가 죽은 것과 일을 끝낸 것은 다르다.
+- **하지 말 우회**: `orca terminal wait --for exit` 을 완료로 쓰지 않는다 — provider 가 죽은 것과 일을 끝낸 것은 다르다.
   `--format` 은 로컬 텍스트 렌더일 뿐 **다른 터미널에 아무것도 쓰지 않는다** — 그걸 전달로 착각하지 않는다.
 
 ## 『질의응답』
@@ -265,7 +279,7 @@ orca orchestration reply --id <msg_id> --body "<답>" [--run <run_id>] --json
   타임아웃 뒤에는 `--resume <원래 id>` 를 쓴다. 다시 물으면 중복 질문이 된다.
 - **부분 실패**: 워커 보고(`worker_done`·`heartbeat`)는 그룹 주소로 보낼 수 없고 `--to` 를 비워 Dispatch 의
   Run mailbox 로 보낸다.
-- **복구**: 답을 보낼 때는 **같은 orca 실행 파일**로 `reply --id` 를 쓴다(계약이 명시).
+- **복구**: 답을 보낼 때는 **같은 orca 실행 파일**로 `orca orchestration reply --id` 를 쓴다(계약이 명시).
 - **하지 말 우회**: `--payload` 로 raw JSON 을 조립하지 않는다 — 계약이 `--task-id`/`--dispatch-id` 류 전용
   플래그를 쓰라고 적는다. 로컬 대화형 프롬프트로 사람에게 묻지 않는다.
 
@@ -289,7 +303,7 @@ orca orchestration worker-show --dispatch <dispatch_id> --json     # observation
 - **차단 화면**: 이 능력으로 본다. 『준비 대기』가 차단을 가리지 못하므로 **첫 지시 전 화면 읽기가 이 도구에서는
   선택이 아니다.**
 - **타임아웃·빈 결과**: 기본 읽기는 **누적 출력**이고 escape 가 제거된 상태라, 줄을 다시 그리는 프로그램은
-  조각으로 쌓여 온다(계약의 예: `clear` 한 번이 `cclclecleaclear` 로 보인다). **렌더된 화면이 필요하면
+  조각으로 쌓여 온다(계약의 예: 셸에서 clear 한 번이 `cclclecleaclear` 로 보인다). **렌더된 화면이 필요하면
   `--screen`** 을 쓴다. `--screen` 과 `--cursor` 는 상호배타다.
 - **부분 실패**: 응답의 `source` 가 `stream`·`screen`·`screen-unavailable` 을 구분한다. 필드 부재는 오래된
   호스트다. `draft` 는 UI 전용 작성 중 텍스트이니 **출력이나 제출된 지시로 읽지 않는다.**
@@ -329,9 +343,9 @@ orca terminal close ([--terminal <handle>] [--tab] | --worktree <selector> --all
 - **복구**: `worker-abandon` 은 **살아 있을 수 있는 자원을 모두 보존하고 프로세스·파일시스템에 아무 조치도 하지
   않는다** — 손댈 수 없는 워커에 쓴다. `worker-stop` 은 그 Dispatch 만 fence 하고 worktree·setup 터미널·설정된
   탭·무관한 프로세스를 **절대 지우지 않는다.**
-- **하지 말 우회**: `terminal close --worktree <selector> --all` 은 그 작업 공간의 **모든** 터미널 프로세스를
+- **하지 말 우회**: `orca terminal close --worktree <selector> --all` 은 그 작업 공간의 **모든** 터미널 프로세스를
   멈추고 탭·레이아웃·재개 기록까지 지운다 — 워커 하나 정리하는 데 쓰지 않는다. 나중에 재개할 것이면
-  계약이 작업 공간 Sleep 을 쓰라고 적는다. `terminal stop` 은 폐기 예정 별칭이다.
+  계약이 작업 공간 Sleep 을 쓰라고 적는다. `terminal stop` 은 폐기 예정 별칭이다(쓰지 않는다).
 
 ## 『세션 기록 오라클』
 
@@ -389,7 +403,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 ### 보장 수준
 **증명(계약), 그리고 corral 보다 넓다.** 계약이 `run-use` 를 "**이 코디네이터 터미널**을 기존 Run 에 바인딩",
 `run-current` 를 "**이 터미널의** 바인딩된 Run" 이라고 적는다 — 바인딩이 터미널 단위다. 더해
-**`ask` 도 `--run` 을 받고**, `gate-list --run` 은 바인딩하지 않고 들여다본다. `--from <handle>` 로 호출자
+**`ask` 도 `--run` 을 받고**, `orchestration gate-list` 는 `--run` 을 받되 바인딩하지 않고 들여다본다. `--from <handle>` 로 호출자
 정체를 명시할 수 있다. 미실행.
 
 ### 상황 → 행동
@@ -397,6 +411,6 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 - **타임아웃·빈 결과**: 없음.
 - **부분 실패**: `--takeover-legacy` 는 **바인딩할 실제 코디네이터 에이전트 터미널 안에서** 실행해야 하고
   기존 워커 배정을 보존한다 — 다른 pane 에서 쓰지 않는다.
-- **복구**: 바인딩이 의심되면 `run-current --from <handle>` 로 그 handle 기준으로 확인한다.
+- **복구**: 바인딩이 의심되면 `orca orchestration run-current --from <handle>` 로 그 handle 기준으로 확인한다.
 - **하지 말 우회**: `orchestration reset` 은 Run·Task·메시지를 지우는 명령이다 — **격리 수단으로 쓰지 않는다.**
   격리는 새 Run 과 `--run` 명시로 한다.

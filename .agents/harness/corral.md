@@ -93,6 +93,8 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | 회수 결과 | `worker-release` → `result.state`(`released`\|`retained`)·`result.reason`(예: `owned_generation_matches`·`borrowed`·`pane_gone`·`identity_unproven`)·`result.processAction`·`result.close.stage` |
 | pane 생존 | `worker-show` → `result.observation.{live,observed,reason}`(`pane_live`·`pane_gone`) · `result.messageCounts` |
 | 세션 목록 | `terminal list` → `result.terminals[].{paneId,tabId,path,title}` |
+| **화면 텍스트 (두 명령의 모양이 다르다)** | `terminal read` → **`result.text`** (형제 필드 `result.{source,truncated,generation,cursor}`) · `worker-read` → **`result.output.text`** (`result` 키는 dispatchId · terminal · source · output). 같은 화면인데 한 단 깊이가 다르다 — `result.screen.text` 는 **어느 쪽에도 없다** |
+| 읽기 잘림·이어 읽기 | 두 명령 모두 `…truncated`(bool)·`…cursor`·`…generation`. `--limit` 은 줄이 아니라 **바이트**(상한 262144)이고 `truncated: true` 면 잘린 것이다 |
 
 ---
 
@@ -141,6 +143,13 @@ orchestration dispatch         # 같은 위 (문맥 전용 Dispatch — 이 매�
 orchestration worker-list      # 같은 위
 orchestration run-list         # 같은 위
 orchestration run-show         # 같은 위
+worktree create                # 광고에는 있다. 이 매핑은 실행하지 않는다 — 구현 worktree 는 git 으로 만든다(『감독 워커 기동』)
+worktree rm                    # 같은 위
+worktree set                   # 같은 위
+worktree list                  # 같은 위
+worktree current               # 같은 위
+worktree show                  # 같은 위
+worktree ps                    # 같은 위
 ```
 
 `mentioned-commands` 는 **이름만 나오고 호출하지 않는 명령**의 칸이다. 사유 주석이 없으면 『전제 점검』이 멈춘다 —
@@ -183,6 +192,11 @@ PATH 와 다른 프로필(`--socket`·`--instance`)은 이 점검 밖이다. `st
   **그대로 넘겨 주지만**(그 인자를 주지 않으면) **기본 프로필**을 본다. 다른 프로필로 일하면서 이 점검을
   기본으로 돌리면 **쓰지 않는 런타임을 점검하고 통과를 준다** — 그 경우 점검 명령에도 같은 `--socket`·`--instance`
   를 붙인다. 붙이지 않았다면 그 판정 칸은 **다른 런타임의 것**이다(K8).
+- **이 점검이 보지 않는 것 — "없다" 고 적은 문장.** 대조는 *요구 ⊆ 광고* 한 방향이다. 매핑이 **광고에 있는
+  명령을 없다고 적어도** 어느 방향에도 걸리지 않는다 — `mentioned-commands` 는 사유만 요구하고 사유의 사실
+  여부는 보지 않는다. 실제로 이 매핑은 "corral 에 worktree 생성 명령이 없다" 고 틀리게 적은 채 두 라운드를
+  통과했고, 새 독자가 `status` 광고를 읽고 잡았다(`raw/claude/fix2-l10b/report.md` B1). **역방향 대조는
+  공백이다** — 매핑에 "없다·못 한다" 를 적을 때는 광고 목록을 그 자리에서 눈으로 대조한다.
 - **하지 말 우회**: 시작 세션에서 됐다는 이유로 이 점검을 생략하지 않는다. 대조 불일치를 "아마 될 것" 으로
   넘기지 않는다.
 
@@ -293,8 +307,18 @@ corral orchestration worker-start --task <task_id> --terminal <handle> --run <ru
 
 corral 에는 repo setup/archive hook 이 아직 없다(LIFE-412 전) — **기다릴 setup 단계가 없다는 뜻**이고,
 worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에 주는 경로는 git worktree 경로 그대로다.
-**그 worktree 를 만드는 것은 git 작업이고 이 매핑 밖이다** — corral 에는 worktree 생성 명령이 없다.
-명령은 절차 문서(`.agents/skills/task-coordinate/references/implementation.md` §2)에 있다. 여기서 짐작하지 않는다.
+
+**그 worktree 를 만드는 방법 — 두 길이 있고, 이 매핑이 쓰는 길은 git 이다.**
+corral 광고에는 worktree 계열 명령이 **있다**: `worktree create` · `worktree rm` · `worktree set` ·
+`worktree list` · `worktree current` · `worktree show` · `worktree ps` (『전제 점검』 응답의 능력 목록에서 확인된다).
+다만 이 매핑은 그중 어느 것도 실행해 본 적이 없다 — **이 절의 worktree 생성 보장 수준은 공백이다.**
+그래서 구현 worktree 는 절차 문서(`.agents/skills/task-coordinate/references/implementation.md` §2)의
+git 명령으로 만든다. `worktree create` 로 만드는 길은 원자료가 없으니 여기서 짐작하지 않는다.
+
+> 이 자리는 2026-09-27 새 독자 측정에서 잡혔다. 그 전까지 이 매핑은 "corral 에 worktree 생성 명령이 없다" 고
+> **사실과 다르게** 적고 있었다. 관문이 못 잡은 이유는 방향이다 — 『전제 점검』은 *요구 ⊆ 광고* 한 방향만 보므로
+> 매핑이 "그런 명령은 없다" 고 적은 문장은 어느 방향에도 걸리지 않는다. 광고에 있는데 매핑이 없다고 적는
+> **역방향 대조는 이 점검의 공백이다** (「이 점검이 보지 않는 것」 참조).
 
 **`--spec-file` 을 생략하면 그 Task 의 `--spec` 본문이 배달된다** — 일감 명세를 `corral orchestration task-create --spec` 에만
 담아도 pane 에 들어간다. 두 곳에 나눠 담지 않는다. (실측: 새 독자 순환에서 `--spec-file` 없이 기동한 뒤
@@ -347,6 +371,18 @@ worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에
 재사용 pane 은 기동 때의 도구를 그대로 쓴다. 위 인자를 붙이면 거절되거나 `ignoredOptions` 에 담겨 조용히
 무시된다 — **무시된 것을 반영됐다고 읽지 않는다.** `--worktree` 는 corral 에서 **새 기동 전용**이다
 (같은 이름의 플래그를 재사용 때 **요구하는** 도구가 있다 — 매핑을 갈아 쓸 때 여기서 틀린다).
+
+**`--model`·`--effort` 에 넣을 값은 어디서 오나 — 이 매핑에서는 공백이다.**
+열거하는 플래그는 열거한다(`--agent claude|codex|grok`, `corral terminal wait --for ready|output|exit|agent-ready|agent-idle`,
+`corral orchestration worker-retain --reason user_requested|user_takeover`). 그런데 **`--model`·`--effort`·`--advisor` 의 유효값 집합은
+두 오라클(`--help`·`agent-context`) 어디에도 없다** — `--help` 는 `VALUE`/`<level>`/`<id>` 로만 쓰고
+`agent-context` 는 "`--agent` 를 요구한다" 는 제약만 적는다. 값 집합의 원본은 corral 이 아니라 **에이전트 CLI 쪽**이고
+이 매핑 밖이다. 역할별 기본값은 `.agents/skills/task-start/defaults.md` 한 곳이다(절차 쪽 원본).
+- **corral 은 값을 검증하지 않는다.** `--effort bogus-effort` 가 거절되지 않고 argv 로 그대로 넘어가
+  pane 이 생겼다(`requestedEffort: "bogus-effort"`, `argv: ["claude","--effort","bogus-effort",…]`).
+  즉 잘못된 값은 기동 관문이 아니라 **에이전트 쪽에서** 드러나고, 그때는 이미 pane 이 만들어져 있다 —
+  치우는 것은 내 몫이다. 원자료: `raw/claude/fix2-b2-effort-probe.txt`
+- 그래서 **값은 지시받은 것을 그대로 넘기고, 짐작해서 채우지 않는다.** 지시가 없으면 묻는다(『질의응답』).
 
 ### Run 명시 규칙 (절차 문서가 가리키는 그 규칙)
 
@@ -444,6 +480,10 @@ corral orchestration worker-read --dispatch <ctx_id> [--screen] [--limit <바이
 줄을 다시 그리는 프로그램(셸·진행 표시·TUI)은 기본 읽기에서 조각으로 쌓여 온다. `worker-read` 는 그 Dispatch 가
 묶인 pane 에 대한 `terminal read` 의 pass-through 이고 **corral 은 provider 훅을 설치하지 않고 transcript 를
 읽지 않는다.** 읽기는 아무것도 저장하지 않는다.
+
+**꺼내는 자리가 두 명령에서 다르다**: `terminal read` → `result.text`, `worker-read` → `result.output.text`.
+`result.screen.text` 는 어느 쪽에도 없다 — 짐작해서 뒤지지 말고 「응답에서 어디를 읽나」 표를 본다.
+(새 독자가 여기서 걸려 응답 키를 직접 열거해야 했다: `raw/claude/fix2-l10b/report.md` B3)
 
 ### 상황 → 행동
 - **차단 화면**: 이것이 차단 화면을 **볼 수 있는 유일한 능력**이다. detect manifest 가 label 하지 않은 모달은

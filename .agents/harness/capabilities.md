@@ -79,6 +79,12 @@
 `specs/LIFE-440-harness-capability-map/raw/claude/fix1-m1-declaration-controls.txt` ·
 규약 쪽 6건 `…/fix2-n1-convention-controls.txt`.
 
+**네 방향이 보지 않는 것 — 역방향.** 넷 다 "매핑이 쓰는 것" 을 검사한다. 매핑이 **광고에 있는 능력을
+"없다·못 한다" 고 적으면 어느 방향에도 걸리지 않는다** — 언급만 칸은 사유를 요구하지만 사유의 사실 여부는
+보지 않는다. 실측으로 잡힌 자리다(2026-09-27 새 독자 측정, `…/fix2-l10b/report.md` B1): 한 매핑이
+"이 도구에 worktree 생성 명령이 없다" 고 두 라운드 동안 틀리게 적은 채 통과했다. **"없다" 를 적을 때는
+광고 목록을 그 자리에서 대조한다** — 관문은 이 문장을 지켜 주지 않는다.
+
 ## 도구 무관 사실 (LIFE-417 이 알아낸 것, LIFE-440 에서 정정)
 
 - **H1 — codex 의 `$HOME/.codex/history.jsonl` 은 완료 오라클이 아니다.** TUI 의 **입력 재호출 로그**이고

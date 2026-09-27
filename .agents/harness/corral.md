@@ -15,6 +15,11 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
   (`~/Library/Application Support/corral/runtime/rpc.sock`)에 붙는다 — 실측으로 같은 `runtimeId` 였다
   (`raw/claude/c6-socket-default.txt`). 다른 프로필·인스턴스를 쓸 때만 `--socket`·`--instance` 를 명시한다.
   **예외: `agent-context` 는 순수 로컬 레지스트리 읽기라 `--socket` 을 거절한다**(`invalid_argument`).
+- **계약을 알 수 있는 곳은 두 곳이 전부다** — `agent-context`(기계용 시그니처·주의사항)와
+  `app/cli/README.md`(계약 산문 494줄). 설치판 스킬 문서에 해당하는 것은 corral 에 **없다**.
+  이 매핑에 없는 세부를 찾을 때 그 두 곳을 본다.
+- **`--run` 은 orchestration 명령 전부가 받는 플래그가 아니다** — 받지 않는 9개는 『제어 문맥 격리』에
+  목록으로 적었다. 없는 명령에 붙이면 `invalid_argument` 로 튕긴다.
 - 공통 플래그는 `--json`·`--timeout-ms`·`--request-id`. **`--timeout-ms` 상한은 `orchestration check` ·
   `orchestration ask` 만 600000 이고 나머지는 120000 이다** (초과는 `--timeout-ms must be 1..120000` 거절 —
   `raw/corral/a-03-wait-timeout-120001.json`).
@@ -28,8 +33,13 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
   `--dispatch` 아님 · `terminal wait --timeout-ms` 상한 120000. 근거
   `raw/corral/a-04-worker-stop-reason.json` · `a-05-dispatch-show-dispatch.json` · `a-03-wait-timeout-120001.json`.
 - **H1' — 큰 본문은 파일로 넣는다.** `terminal prompt --file <경로>` 또는 `orchestration worker-start --spec-file <경로>`.
-  `task-create` 에는 `--spec-file` 이 **없다**(`--spec` 만). 워커 본문은 preamble 이 한 번에 들어가야 하므로
-  **49152 바이트 이하**여야 한다.
+  `task-create` 에는 `--spec-file` 이 **없다**(`--spec` 만).
+  **⚠ `--file` 은 상한을 올려 주지 않는다.** `--text`·`--file`·`--stdin` 에 **같은 65536 UTF-8 바이트** 상한이
+  걸린다 (`app/src/runtime/terminal/index.ts:21` `MAX_INPUT`, `:498` 이 파일을 읽은 직후 같은 검사를 한다 —
+  초과는 `--file must be NUL-free UTF-8, at most 65536 bytes`). `--file` 의 효용은 argv·따옴표·이스케이프를
+  피하는 것뿐이다. **상한을 넘으면 상세를 파일로 저장하고 짧은 지시에 그 경로를 적어 워커가 읽게 한다.**
+  `worker-start --spec-file` 의 **TASK 본문 상한은 49152 바이트**이고 이것은 preamble 을 **포함하지 않는**
+  본문 단독 값이다 (preamble 몫 16384 바이트는 그 밖에 있다 — `orchestration/index.ts:882` `MAX_SPEC = MAX_INPUT - 16384`).
 
 ## 보장 요약 (네 가지 증명 대상)
 
@@ -193,7 +203,8 @@ matchCount·resolvedModel·record.path 가 모두 unknown 이다 — **다른 �
 - **복구**: 큐 수락(`queued`)·`outcome_unknown` 에서 **중복 주입하지 않는다.** 같은 `--request-id` 로 재전송해
   영수증을 replay 하거나, `corral orchestration request-show --id <request_id>` 로 무엇이 일어났는지 먼저 본다.
 - **하지 말 우회**: `terminal send` 는 raw 입력이라 배달 판정이 없다 — managed 에이전트에 지시를 넣는 정본은
-  `terminal prompt` 다. 65536 UTF-8 바이트를 넘는 본문은 `--file` 로 넣는다(H1'). NUL 은 거절된다.
+  `terminal prompt` 다. **`--text`·`--file`·`--stdin` 의 상한은 모두 65536 UTF-8 바이트로 같다 — `--file` 로
+  상한을 넘기지 못한다**(H1'). 넘으면 상세를 파일로 저장하고 짧은 지시에 그 경로를 적는다. NUL 은 거절된다.
 
 ## 『감독 워커 기동』
 
@@ -249,6 +260,16 @@ corral orchestration check --block --types worker_done,escalation,question \
 corral orchestration check --ack <delivery_id> --block --types … --run <run_id> --json
 corral orchestration worker-show --dispatch <ctx_id> --json    # 유실 의심 시 현재 상태 조회
 corral orchestration dispatch-show --task <task_id> --json     # 시도 상태·reconcile 기록
+
+# 워커 쪽(preamble 이 주는 형태) — 이 명령이 없으면 완료 감지 자체가 성립하지 않는다
+corral orchestration send --type worker_done --subject "<상태>" --body "<3문장>" \
+  --task-id <task_id> --dispatch-id <ctx_id> --outcome succeeded|failed --json
+corral orchestration send --type heartbeat --subject alive \
+  --task-id <task_id> --dispatch-id <ctx_id> --phase "<단계>" --json
+corral orchestration send --type escalation --subject "Blocked: <이유>" --body "<상세>" \
+  --task-id <task_id> --dispatch-id <ctx_id> --json
+corral orchestration inbox --run <run_id> --json               # 배치를 놓쳤을 때 Run 전체 조회
+corral orchestration request-show --id <request_id> --json     # 응답 유실 시 영수증 조회
 ```
 
 ### 보장 수준
@@ -343,7 +364,9 @@ corral terminal close --terminal <handle> --json                                
 그 밖은 전부 `retained` + 이유(`borrowed`·`user_requested`·`user_takeover`·`pane_gone`·`identity_unproven`·
 `observation_failed`)이고 프로세스에 손대지 않는다. 소유 판정과 닫기가 같은 lane 안에서 일어나므로
 **판정한 pane 이 닫히는 pane 이다.** `worker-retain` 은 **보존 의사 기록일 뿐** 프로세스에 손대지 않고 새 Task
-배정도 아니다. `worker-abandon` 은 pane 을 보지도 닫지도 않는다.
+배정도 아니다. **그리고 보존은 다음 회수 한 번만 존중되고 지워진다** — 계약 원문: "The next worker-release
+honours the retain once, reports retained with this reason, and clears it; a further worker-release then judges
+the pane on its own merits." 즉 **`worker-release` 를 두 번 부르면 두 번째는 pane 을 닫는다.** `worker-abandon` 은 pane 을 보지도 닫지도 않는다.
 
 ### 상황 → 행동
 - **차단 화면**: 해당 없음 — 정리 명령은 화면을 대답하지 않는다.
@@ -364,9 +387,27 @@ corral terminal close --terminal <handle> --json                                
 
 ### 명령
 ```bash
-# provider 가 남기는 기록을 직접 읽는다 (corral 명령이 아니다 — 경로는 capabilities.md H6)
-node specs/LIFE-417-harness-validation/raw/orca/b2-oracle-claude.mjs   # codex·grok 판도 같은 폴더
+# 1) 이 pane 이 소유한 기록의 경로를 응답에서 꺼낸다 (짐작하지 않는다)
+#    worker-start → result.input.agent.sessionRecord.path · terminal prompt → result.record.path
+# 2) 그 경로를 인자로 주고 읽는다 — 무엇이 들어갔고(user) 무엇이 응답됐나(assistant)
+jq -r 'select(.type=="user" or .type=="assistant")
+       | [.type, (.message.role // "-"),
+          ((.message.content | if type=="array"
+             then (map(.text // ("["+(.type//"?")+"]")) | join(" "))
+             else (. // "") end) | tostring | gsub("\\s+";" ") | .[0:80])]
+       | @tsv' <세션 기록 .jsonl 절대경로>
+# 3) 줄 종류만 세고 싶으면
+jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn
 ```
+
+**이 방법은 이 일감에서 1회 실행했다** — `raw/claude/fix1-m5-session-record-read.txt`
+(C6 3회차 자식 워커의 기록 62줄 중 user 4·assistant 4. 주입 본문 2건과 응답 2건이 그대로 보였고,
+**두 user 줄의 모양이 같아 사람 입력과 주입 입력을 가를 필드가 없다는 것이 재확인됐다**).
+Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므로 **먼저 한 줄을 열어 키를 확인한 뒤** 같은 요령으로 읽는다.
+
+**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
+문자열을 `<p:…>` 로 치환해 커밋한 것이라 **문법부터 깨져 있다**(`b2-oracle-*.mjs` 3개 모두 `node --check` 실패).
+근거로 **인용**만 하고, 실행 방법은 위처럼 이 매핑에 직접 적는다.
 
 ### 보장 수준
 **관측.** corral 은 provider 훅을 설치하지 않는다. `terminal prompt` 의 `record.matchCount` 는 corral 이
@@ -389,8 +430,23 @@ node specs/LIFE-417-harness-validation/raw/orca/b2-oracle-claude.mjs   # codex·
 corral orchestration run-current --json                      # 지금 바인딩된 Run
 corral orchestration run-create --objective "<목적>" --json   # ⚠ 만든 Run 으로 현재 바인딩을 재설정한다
 corral orchestration run-use --id <run_id> --json            # 바인딩 복원
-# 그리고 모든 orchestration 명령에 --run <run_id> 를 명시한다
+# 그리고 --run 을 받는 orchestration 명령 전부에 --run <run_id> 를 명시한다 (아래 목록 참고)
 ```
+
+### `--run` 을 받는 명령 / 받지 않는 명령 (M3, 실측 `raw/claude/fix1-m3-run-flag-audit.txt`)
+
+**받는다 (15개)** — 여기에는 반드시 명시한다:
+`task-create` · `task-list` · `task-update` · `dispatch` · `worker-start` · `worker-list` · `worker-read` ·
+`send` · `reply` · `check` · `inbox` · `worker-retain` · `worker-release` · `worker-stop` · `worker-abandon`
+
+**받지 않는다 (9개)** — 붙이면 `invalid_argument: Invalid flag for orchestration <명령>: --run` 으로 **튕긴다**:
+`run-create` · `run-use` · `run-current` · `run-list` · `run-show` · `dispatch-show` · `worker-show` ·
+`ask` · `request-show`
+
+**이 9개는 전부 현재 바인딩(또는 `--id`/`--task`/`--dispatch` 로 지목한 대상)을 따라간다.**
+그중 **복구 국면에서 쓰는 조회 명령(`dispatch-show`·`worker-show`·`request-show`)** 에 `--run` 을 붙이면
+복구 중에 거절당한다 — "런타임이 이상하다" 로 오진하기 쉬운 지점이다. `ask` 는 특히 위험하다(아래 하지 말 우회).
+
 
 ### 보장 수준
 **증명(단 구멍 하나).** **현재 Run 은 프로필 단위로 바인딩된다 — 부르는 터미널 단위가 아니다.**
@@ -402,7 +458,8 @@ corral orchestration run-use --id <run_id> --json            # 바인딩 복원
 - **차단 화면**: 해당 없음.
 - **타임아웃·빈 결과**: `run-use` 의 모르는 `--id` 는 `run_not_found` 이고 **이전 바인딩을 건드리지 않는다.**
 - **부분 실패**: 두 코디네이터(또는 순환 검증 중인 워커)가 한 프로필에서 `run-create` 하면 상대의
-  `check`·`send` 가 엉뚱한 Run 으로 간다. **규율: 모든 orchestration 명령에 `--run` 을 명시한다.**
+  `check`·`send` 가 엉뚱한 Run 으로 간다. **규율: `--run` 을 받는 15개 명령에는 빠짐없이 `--run` 을 명시하고,
+  받지 않는 9개를 쓸 때는 지금 바인딩이 무엇인지 먼저 확인한다**(`run-current`).
 - **복구**: 바인딩을 바꿨다면 **바꾼 쪽이 복원한다** — `run-use --id <원래 Run>` 뒤 `run-current` 로 확인하고
   그 출력을 원자료로 남긴다. 워커 preamble 의 보고 명령에는 `--run` 이 없어 바인딩에 의존하므로, 바인딩을
   바꾼 구간이 자식 워커의 보고·회수를 덮으면 그 구간이 끝날 때까지 되돌리지 않는다.

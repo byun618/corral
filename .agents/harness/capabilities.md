@@ -61,10 +61,21 @@
   보지 못한다. 어느 도구에서도 이것은 관측이고 증명이 될 수 없다.
 - **H5 — 빌린 pane 과 소유한 pane 의 회수가 다르다.** 내가 띄운 pane 은 정리하면 닫히고, 사람이 띄워 준 pane
   (또는 재사용으로 소유권이 넘어간 pane)은 **남아서 따로 닫아야 한다.** 남은 pane 을 정리했다고 보고하지 않는다.
-- **H6 — 세션 기록 위치**: Claude `$HOME/.claude/projects/` · Codex `$HOME/.codex/sessions/` ·
-  Grok `$HOME/.grok/sessions/<URL 인코딩된 cwd>/<id>/updates.jsonl`.
-  오라클 스크립트는 `specs/LIFE-417-harness-validation/raw/orca/b2-oracle-*.mjs` 를 재사용한다.
+- **H6 — 세션 기록 위치.** 아래는 **기본값**이고, 각 provider 는 홈을 옮기는 환경변수를 가진다 —
+  **경로를 짐작하지 말고 도구가 돌려주는 값을 쓴다**(corral 은 주입 응답의 `agent.sessionRecord.path`).
+
+  | provider | 기본 경로 | 홈을 옮기는 환경변수 |
+  | --- | --- | --- |
+  | Claude | `$HOME/.claude/projects/<인코딩된 cwd>/<session-id>.jsonl` | `CLAUDE_CONFIG_DIR` |
+  | Codex | `$HOME/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (**날짜 샤드**) · 입력 재호출은 `$HOME/.codex/history.jsonl` | `CODEX_HOME` |
+  | Grok | `$HOME/.grok/sessions/<URL 인코딩된 cwd>/<id>/updates.jsonl` | `GROK_HOME` |
+
+  환경변수가 설정돼 있으면 `$HOME/...` 경로는 **틀린다**. 읽는 방법은 각 매핑의 『세션 기록 오라클』에 있다.
   세 기록 모두 **사람이 친 입력과 주입된 입력을 가르는 필드가 없다** — 그래서 H2 가 남는다.
+  codex `history.jsonl` 은 `max_bytes` 가 걸리면 오래된 줄을 버리기도 한다 — 줄이 없다는 것이 더더욱 증거가 아니다.
+- **`specs/*/raw/` 의 커밋된 스크립트를 실행 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을
+  `<p:…>` 로 치환해 커밋하므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패 — LIFE-440 라운드 1
+  리뷰에서 확인). 근거로 **인용**만 하고, 실행 방법은 매핑에 직접 적는다.
 - **H4 — 워커가 일감 본문을 읽었는지를 판정 가능하게 한다.** 워커 preamble 은 제어 도구의 제품 코드이고
   이 절차는 그것을 고치지 않는다. 대신 두 가지로 막는다: ⓐ 코디네이터가 착수 시 일감 본문을
   `specs/LIFE-NNN-*/00-analysis.md` 에 스냅샷한다 (specs 가 진실의 원천이므로 워커가 일감 조회 도구를 못 써도

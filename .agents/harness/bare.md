@@ -238,10 +238,30 @@ tmux kill-session -t <세션명>
 ## 『세션 기록 오라클』
 
 ### 명령
+이 도구에서는 이것이 유일한 사후 확인 수단이다. 경로 규칙은 capabilities.md H6.
+
 ```bash
-# 경로는 capabilities.md H6. 이 도구에서는 이것이 유일한 사후 확인 수단이다
-node specs/LIFE-417-harness-validation/raw/orca/b2-oracle-claude.mjs
+# 1) 이 pane 이 소유한 기록의 경로를 응답에서 꺼낸다 (짐작하지 않는다)
+#    worker-start → result.input.agent.sessionRecord.path · terminal prompt → result.record.path
+# 2) 그 경로를 인자로 주고 읽는다 — 무엇이 들어갔고(user) 무엇이 응답됐나(assistant)
+jq -r 'select(.type=="user" or .type=="assistant")
+       | [.type, (.message.role // "-"),
+          ((.message.content | if type=="array"
+             then (map(.text // ("["+(.type//"?")+"]")) | join(" "))
+             else (. // "") end) | tostring | gsub("\\s+";" ") | .[0:80])]
+       | @tsv' <세션 기록 .jsonl 절대경로>
+# 3) 줄 종류만 세고 싶으면
+jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn
 ```
+
+**이 방법은 이 일감에서 1회 실행했다** — `raw/claude/fix1-m5-session-record-read.txt`
+(C6 3회차 자식 워커의 기록 62줄 중 user 4·assistant 4. 주입 본문 2건과 응답 2건이 그대로 보였고,
+**두 user 줄의 모양이 같아 사람 입력과 주입 입력을 가를 필드가 없다는 것이 재확인됐다**).
+Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므로 **먼저 한 줄을 열어 키를 확인한 뒤** 같은 요령으로 읽는다.
+
+**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
+문자열을 `<p:…>` 로 치환해 커밋한 것이라 **문법부터 깨져 있다**(`b2-oracle-*.mjs` 3개 모두 `node --check` 실패).
+근거로 **인용**만 하고, 실행 방법은 위처럼 이 매핑에 직접 적는다.
 
 ### 보장 수준
 **관측.** 그리고 이 도구에서는 **배달의 유일한 사후 단서**다. 기록에 본문이 있으면 "들어갔다" 를 관측한 것이고,

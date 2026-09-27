@@ -18,7 +18,7 @@ orca 는 **사용자가 실제로 쓰는 앱**이다. 이 매핑을 만들 때 �
 | 증명 대상 | 수준 | 근거 |
 | --- | --- | --- |
 | 본문이 정확히 한 번 전달됐다 | **공백** | managed 에이전트에 본문을 넣고 **도착을 판정하는 명령이 없다.** `terminal send` 는 raw 입력이고 ack 가 없다. 본문 전달 경로는 `worker-start`(일감 본문)·`worktree create --prompt`·`terminal create --command` 뿐이고, 그 어느 것도 "provider 기록에 정확히 1건" 을 값으로 돌려준다고 적지 않는다 |
-| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **증명(계약)** | `worker-release` 가 "unproven identities" 와 "reused or pre-existing terminals" 를 **절대 닫지 않는다**고 적는다. 신원이 증명되지 않으면 닫지 않는 쪽으로 fail-closed 다 |
+| 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **공백** | 계약이 pane 의 **세대·epoch 값을 돌려주는 명령이 없다** — 명령 234개 레지스트리에 `generation`·`pty_replaced`·`pane_gone` 은 0회 등장한다(`grep -i` 로 확인, epoch 1회는 `cookie set --expires`). `worker-release` 의 "unproven identities / reused or pre-existing terminals 는 절대 닫지 않는다" 는 **닫기 부작용을 제한하는 정책**이고(그 근거는 『회수·정리』에 따로 적었다), 호출자가 "내가 주입한 그 pane 이 그새 교체됐는지" 를 **가려낼 값이 아니다.** 그래서 corral 의 `epoch_changed` 같은 판정을 여기서 기대하지 않는다 |
 | 보고가 오래된 시도에서 온 게 아니다 | **증명(계약)** | `send --type worker_done` 은 "완료는 그 task/dispatch id 로, **dispatched pane 에서만** Task 를 완료시킨다. 안정적인 pane 신원이 없으면 발신 handle 이 dispatch assignee 와 정확히 일치해야 한다" 고 적는다 |
 | 사람 개입 흔적 | **관측(+ 계약 한 조각)** | `terminal read` 화면(H2). 더해 `worker-show` 의 `observation.agentWait` 가 **사람만 답할 수 있는 프롬프트에 멈춘 워커**를 그 근거(hook·prompt-text·title)와 함께 이름 짓는다. null 은 "보고 없었다", **필드 부재는 "보지 않았다" 이고 절대 "안 기다린다" 가 아니다** |
 
@@ -151,6 +151,16 @@ orca orchestration dispatch-show --task <task_id> [--preamble] --json
   `unsupervised`·terminal state `retained` 로 보고한다. 레거시 `coordinator-start`/`coordinator-stop` 은
   아무 효과가 없는 명령이다(계약 스스로 그렇게 적는다) — 쓰지 않는다.
 
+### 재사용 인자 규칙 (절차 문서가 가리키는 그 규칙)
+
+**재사용 때 `--terminal <handle>` 과 그 터미널의 `--worktree` 를 함께 준다.** 계약이 그대로 적는다:
+"When reusing --terminal, pass --worktree for that terminal; current means the coordinator worktree."
+`current` 는 코디네이터 worktree 를 뜻하므로, **워커 worktree 를 쓰려면 그 selector 를 명시해야 한다.**
+
+**corral 과 정반대라는 점이 이 규칙의 핵심이다** — corral 은 재사용에 `--worktree` 를 붙이면 거절하고,
+orca 는 빼면 잘못된 작업 공간으로 붙는다. 그래서 절차 문서는 "매핑의 재사용 인자 규칙을 따른다" 만 적고
+실제 인자는 이 표에서 읽는다. 미실행(읽기 전용 매핑).
+
 ## 『완료 감지』
 
 ### 명령
@@ -246,7 +256,9 @@ orca terminal close ([--terminal <handle>] [--tab] | --worktree <selector> --all
 ```
 
 ### 보장 수준
-**증명(계약).** `worker-release` 는 정산된(succeeded/failed) 워커의 **정확히 그 코디네이터 소유 에이전트
+**증명(계약) — 단 "닫아도 되는가" 에 대해서만이다.** 이 칸은 보장 요약의 세대 불변(공백)과 다른 것을 말한다:
+계약은 **잘못된 대상을 닫지 않겠다**고 약속하고, **내가 맡긴 pane 이 그대로인지 알려주겠다**고는 약속하지 않는다.
+`worker-release` 는 정산된(succeeded/failed) 워커의 **정확히 그 코디네이터 소유 에이전트
 터미널만** 닫고, **setup 터미널·설정된 탭·재사용되거나 이미 있던 터미널·사용자가 가져간 터미널·증명되지 않은
 신원은 절대 닫지 않는다.** 멱등이고 반복하면 `already_released` 다. **`release_unknown` 만 exit 1** 이고
 `retained`·`release_pending`·`already_released` 는 exit 0 이다 — **exit 0 을 "닫혔다" 로 읽으면 틀린다.**

@@ -251,6 +251,24 @@ worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에
   `dispatch_active` 로 거절된다. 실행 중 Dispatch 위에 같은 terminal 의 새 Dispatch 를 겹쳐 기동하지 않는다.
   pane 재사용은 **소유권을 옮긴다** — 이전 시도는 `borrowed` 가 되고 `ownershipTransferredTo` 에 새 시도가 적힌다.
 
+### 재사용 인자 규칙 (절차 문서가 가리키는 그 규칙)
+
+| 경로 | 반드시 준다 | 절대 붙이지 않는다 |
+| --- | --- | --- |
+| 새 기동 | `--agent` + `--worktree path:<절대경로>` + `--model` + `--effort` (+ 필요하면 `--advisor`) | — |
+| pane 재사용 | `--terminal <handle>` 만 | `--agent`·`--model`·`--effort`·`--advisor`·**`--worktree`** |
+
+재사용 pane 은 기동 때의 도구를 그대로 쓴다. 위 인자를 붙이면 거절되거나 `ignoredOptions` 에 담겨 조용히
+무시된다 — **무시된 것을 반영됐다고 읽지 않는다.** `--worktree` 는 corral 에서 **새 기동 전용**이다
+(같은 이름의 플래그를 재사용 때 **요구하는** 도구가 있다 — 매핑을 갈아 쓸 때 여기서 틀린다).
+
+### Run 명시 규칙 (절차 문서가 가리키는 그 규칙)
+
+`--run` 을 **받는 명령에만** 붙인다. 받지 않는 명령에 붙이면 `invalid_argument` 로 거절된다 —
+받는 15개·받지 않는 9개 목록은 「전제」의 해당 절에 있다. 바인딩은 **프로필 단위**라
+`run-create`·`run-use` 는 그 프로필의 기본 Run 을 바꾼다. 바꿨으면 바꾼 쪽이 `run-use` 로 되돌리고
+`run-current` 로 확인한다.
+
 ## 『완료 감지』
 
 ### 명령

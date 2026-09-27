@@ -18,6 +18,8 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 - 공통 플래그는 `--json`·`--timeout-ms`·`--request-id`. **`--timeout-ms` 상한은 `orchestration check` ·
   `orchestration ask` 만 600000 이고 나머지는 120000 이다** (초과는 `--timeout-ms must be 1..120000` 거절 —
   `raw/corral/a-03-wait-timeout-120001.json`).
+- **거절 응답은 복구 명령을 스스로 알려준다** — `error.resources.recovery` 필드를 먼저 읽는다.
+  거절의 `stage`(`preflight`·`receipt`·단계 이름)가 "효과가 시작됐는지" 를 가른다.
 - 재시도는 **같은 `--request-id` 를 다시 보내는 것**이다. 별도 retry 플래그는 없다. 같은 id + 다른 입력은
   `request_conflict`, 아직 기록되지 않은 영수증은 `outcome_unknown` 이고 **절대 자동 재실행되지 않는다**.
   영수증 보존은 24시간이다. `absent` 는 "아무 일도 없었다" 가 아니다.
@@ -37,6 +39,43 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **증명** | handle 에 프로필·backend 부팅·PTY 세대가 묶여 있고, reconcile 이 `pane_gone`·`pty_replaced`·`epoch_changed` 로 시도를 `unknown` 으로 정산한다. 정리는 닫기 직전 같은 세대를 다시 관측하고 같은 lane 안에서 닫는다 |
 | 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다** |
 | 사람 개입 흔적 | **관측** | `terminal read` 화면뿐(H2). 구조화된 조회는 GUI 직접 입력을 보지 못한다. `worker-retain --reason user_takeover` 는 **사람이 선언하는 기록**이지 감지가 아니다 |
+
+## 이 매핑의 근거 — 실행으로 확인한 것 / 계약만 읽은 것
+
+위 「보장 수준」은 **corral 의 공개 계약**(`agent-context` 의 시그니처·주의사항)이 무엇을 값으로 돌려준다고
+적는지를 읽은 것이다. 그중 실제로 돌려 확인한 경로와 계약만 읽은 경로를 갈라 둔다 — 계약을 실행으로
+착각하지 않기 위해서다. 실측은 `specs/LIFE-440-harness-capability-map/raw/claude/c6-smoke-record.md`.
+
+| 경로 | 이 문서를 쓸 때 |
+| --- | --- |
+| 정상 순환 (Run → 일감 → 감독 워커 기동 → 질문·답 → 완료 보고 → 본문 주입 → 확인 → 회수 → 바인딩 복원) | **실행 3회** (배달 `matchCount: 1`, 회수 `owned_generation_matches` → `pane_gone`) |
+| 취소된 대기의 뒤처리 (`request_cancelled` → `delivery_stale`) | **실행 1회** (2회차) |
+| 오래된·다른 pane 의 보고 거절 (`sender_mismatch`·`stale_dispatch`·`illegal_transition`·`capability_revoked`) | 계약만 읽음 — 미실행 |
+| 차단 화면 거절 (`agent_blocked`·`detect_manifest_unverified`·`agent_not_ready`) | 계약만 읽음 — 미실행 |
+| 재개 경로 (`dispatch_input_unconfirmed`·`dispatch_active`·`dispatch_input_unprovable`·`launch: resumed|reused`) | 계약만 읽음 — 미실행 |
+| 빌린 pane 회수 (`retained`·`borrowed`, 따로 닫기 — H5) | 계약만 읽음 — 미실행 (근거는 LIFE-417·423 의 잔존 pane 6개) |
+| 플래그 거절 3형태 (H3) | **실행** — `raw/corral/a-03`·`a-04`·`a-05` |
+
+## 응답에서 어디를 읽나 (필드 경로)
+
+식별자와 판정값이 응답의 **어디**에 있는지다. 이걸 모르면 명령은 알아도 다음 명령에 넣을 값을 못 꺼낸다.
+
+| 무엇 | 어느 응답의 어디 |
+| --- | --- |
+| Run id | `run-current`·`run-create`·`run-use` → `result.run.id` (`run_<12 hex>`) |
+| 일감(Task) id | `task-create` → `result.task.id` (`task_<12 hex>`) |
+| 시도(Dispatch) id | `worker-start` → `result.dispatchId` (`ctx_<12 hex>`) · `worker-show`·`dispatch-show` → `result.dispatch.id` |
+| pane handle | `worker-start` → `result.terminal.handle` (= `result.stages.terminal.handle`) · `terminal create` → `result.terminal.handle` |
+| 기동 단계별 상태 | `worker-start` → `result.state`·`result.stage`·`result.launch`·`result.stages.{terminal,dispatch,input}.status`·`result.residualResources`·`result.ignoredOptions` |
+| **배달 확인** | `terminal prompt` → `result.stage`(`confirmed`)·`result.wait.satisfied`·`result.record.matchCount`·`result.record.unavailableReason`, 그리고 `_meta.outcome`(`completed`). `worker-start` 는 같은 값을 `result.input.*` 아래에 담는다 |
+| 요청 영수증 | `result.requestId`(`r1.<13자리 ms>.<UUID>`)·`result.replayed` |
+| 실제 모델·advisor | `worker-start` → `result.input.agent.{requestedModel,requestedEffort,requestedAdvisor,resolvedModel,argv,sessionId,sessionRecord}` · `terminal show` → `result.process.foreground[].argv` · 배너는 `result.input.delivery.screen` 또는 `terminal read --screen` |
+| 준비 근거 | `terminal wait` / `worker-start` → `…agent.evidence.{agentStatus,launchPending,interactiveReady,stateChangeSeq,samples,detectManifest}` |
+| 배치·확인 | `check` → `result.deliveryId`(`delivery_<12 hex>`)·`result.count`·`result.timedOut`·`result.deliveryReplayed`·`result.acknowledged`·`result.peeked` |
+| 메시지·질문 id | `check` → `result.messages[].{id,type,subject,body,taskId,dispatchId}` (`msg_<12 hex>`). 질문에 답할 때 그 `id` 를 `reply --id` 에 넣는다 |
+| 회수 결과 | `worker-release` → `result.state`(`released`\|`retained`)·`result.reason`(예: `owned_generation_matches`·`borrowed`·`pane_gone`·`identity_unproven`)·`result.processAction`·`result.close.stage` |
+| pane 생존 | `worker-show` → `result.observation.{live,observed,reason}`(`pane_live`·`pane_gone`) · `result.messageCounts` |
+| 세션 목록 | `terminal list` → `result.terminals[].{paneId,tabId,path,title}` |
 
 ---
 
@@ -228,7 +267,11 @@ Run 은 미확인 Delivery 를 **하나만** 갖고, `--ack` 전까지 같은 �
   이어간다. `--ack` 는 대기 시작 **전에 한 번만** 적용된다. 같은 Run 의 check 를 중복 실행하지 않는다.
   시도가 `unknown` 으로 정산됐다면 이유는 `pane_gone|pty_replaced|epoch_changed` 이고 Task 는 다시 기동
   가능한 상태로 남는다 — `unknown` 은 실패가 아니다.
-- **복구**: `--peek` 로 다음 배치를 만들지 않고 들여다볼 수 있다. Run 메시지 상한은 10000건·본문 65536바이트이고
+- **복구**: `--peek` 로 다음 배치를 만들지 않고 들여다볼 수 있다. **중간에 취소된(Ctrl-C·타임아웃으로 죽인)
+  `check --block` 은 `--ack` 를 이미 적용했을 수 있다** — 응답은 `request_cancelled`("accepted effects may
+  already have occurred")로 오고, 같은 id 로 다시 `--ack` 하면 `delivery_stale` + `deliveryState: acknowledged`
+  다(실측: `raw/claude/c6r2-10a`·`10b`). 그때의 복구는 **`--ack` 를 떼고 `check` 를 다시 부르는 것**이다.
+  취소를 배달 실패로 읽지 않는다. Run 메시지 상한은 10000건·본문 65536바이트이고
   한계에 닿으면 `message_capacity` 다 — corral 은 자리를 만들려고 메시지를 지우지 않는다.
 - **하지 말 우회**: 화면에 "다 했다" 가 보인다는 이유로 완료로 적지 않는다. `DONE.md` 같은 파일은 감사 기록이지
   완료 신호가 아니다. 두 번째 `worker_done` 은 `illegal_transition` 이므로 워커에게 다시 보내게 하지 않는다.

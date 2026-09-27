@@ -272,30 +272,34 @@ tmux kill-session -t <세션명>
 ## 『세션 기록 오라클』
 
 ### 명령
-이 도구에서는 이것이 유일한 사후 확인 수단이다. 경로 규칙은 capabilities.md H6.
+
+이 도구에서는 이것이 **유일한 사후 확인 수단**이다. 그리고 **경로를 얻는 수단이 없다** —
+tmux·iTerm2 는 JSON 응답을 돌려주지 않으므로 corral 의 `sessionRecord.path` 에 해당하는 값이 없다(N2 정정).
+그래서 경로는 **사람이 기동 때 스스로 정해 두는 것**이 유일한 방법이다:
+
+1. **기동할 때 세션 id 를 직접 박는다** — 예: `claude --session-id <내가 만든 UUID>`.
+   그러면 H6 의 홈 경로 + 그 UUID 로 파일이 특정된다. **이것이 유일하게 증명에 가까운 경로다**
+   (id 를 박지 않으면 provider 가 스스로 만들고, 그 값을 돌려받을 창구가 없다).
+2. 박지 않았다면 H6 의 홈 경로에서 **cwd·시각으로 후보를 좁힌다.** 동시에 여러 세션을 띄웠으면
+   **어느 파일이 그 pane 의 것인지 가릴 수 없다 — 공백이다.** 추측한 파일을 근거로 쓰지 않는다.
+3. 기동 명령·시각·고른 파일 경로를 **specs 에 적어 둔다.** 이 도구에서는 그 기록이 유일한 연결 고리다.
 
 ```bash
-# 1) 이 pane 이 소유한 기록의 경로를 응답에서 꺼낸다 (짐작하지 않는다)
-#    worker-start → result.input.agent.sessionRecord.path · terminal prompt → result.record.path
-# 2) 그 경로를 인자로 주고 읽는다 — 무엇이 들어갔고(user) 무엇이 응답됐나(assistant)
+# 무엇이 들어갔고(user) 무엇이 응답됐나(assistant) — 경로를 인자로 준다
 jq -r 'select(.type=="user" or .type=="assistant")
        | [.type, (.message.role // "-"),
           ((.message.content | if type=="array"
              then (map(.text // ("["+(.type//"?")+"]")) | join(" "))
              else (. // "") end) | tostring | gsub("\\s+";" ") | .[0:80])]
        | @tsv' <세션 기록 .jsonl 절대경로>
-# 3) 줄 종류만 세고 싶으면
-jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn
+jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn   # 줄 종류만 세기
 ```
 
-**이 방법은 이 일감에서 1회 실행했다** — `raw/claude/fix1-m5-session-record-read.txt`
-(C6 3회차 자식 워커의 기록 62줄 중 user 4·assistant 4. 주입 본문 2건과 응답 2건이 그대로 보였고,
-**두 user 줄의 모양이 같아 사람 입력과 주입 입력을 가를 필드가 없다는 것이 재확인됐다**).
-Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므로 **먼저 한 줄을 열어 키를 확인한 뒤** 같은 요령으로 읽는다.
+**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
+치환해 커밋했으므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패). 근거로 **인용**만 한다.
 
-**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
-문자열을 `<p:…>` 로 치환해 커밋한 것이라 **문법부터 깨져 있다**(`b2-oracle-*.mjs` 3개 모두 `node --check` 실패).
-근거로 **인용**만 하고, 실행 방법은 위처럼 이 매핑에 직접 적는다.
+**이 절의 실행 근거**: bare 순환은 **미실행**이다. 위 jq 는 corral 로 띄운 Claude 세션에서 1회 실행했고
+(`raw/claude/fix1-m5-session-record-read.txt`) **읽는 방법의 근거일 뿐 bare 경로 확보의 근거가 아니다.**
 
 ### 보장 수준
 **관측.** 그리고 이 도구에서는 **배달의 유일한 사후 단서**다. 기록에 본문이 있으면 "들어갔다" 를 관측한 것이고,

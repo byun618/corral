@@ -52,7 +52,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 
 | 증명 대상 | 수준 | 무엇이 그것을 돌려주는가 |
 | --- | --- | --- |
-| 본문이 정확히 한 번 전달됐다 | **증명** | `corral terminal prompt --wait accepted` 의 `outcome: completed` + `record.matchCount: 1` + `wait.satisfied`. 제출 창 안에서 정확히 1건 일치일 때만 `stage: confirmed`·`phase: accepted`. 2건 이상은 "확인된 1회" 가 아니라 **한 입력 규칙이 깨진 것**으로 보고된다 |
+| 본문이 정확히 한 번 전달됐다 | **증명(소유 증명 가능한 세션 기록이 있을 때)** — 기록이 없거나 둘 이상이면 `unknown`(공백)이다 | `corral terminal prompt --wait accepted` 의 `outcome: completed` + `record.matchCount: 1` + `wait.satisfied`. 제출 창 안에서 정확히 1건 일치일 때만 `stage: confirmed`·`phase: accepted`. 2건 이상은 "확인된 1회" 가 아니라 **한 입력 규칙이 깨진 것**으로 보고된다 |
 | 이 pane 이 맡긴 그 pane 이다 (세대 불변) | **증명** | handle 에 프로필·backend 부팅·PTY 세대가 묶여 있고, reconcile 이 `pane_gone`·`pty_replaced`·`epoch_changed` 로 시도를 `unknown` 으로 정산한다. 정리는 닫기 직전 같은 세대를 다시 관측하고 같은 lane 안에서 닫는다 |
 | 보고가 오래된 시도에서 온 게 아니다 | **증명** | 워커 보고는 `--task-id`·`--dispatch-id` + pane 신원(`HERDR_PANE_ID`·`HERDR_SESSION`)으로 검사된다. 다른 pane = `sender_mismatch`, 사라진 pane·교체된 시도 = `stale_dispatch`, 두 번째 완료 보고 = `illegal_transition`, 정산·중단·회수된 시도 = `capability_revoked`. **거절은 아무것도 저장하지 않는다** |
 | 사람 개입 흔적 | **관측** | `terminal read` 화면뿐(H2). 구조화된 조회는 GUI 직접 입력을 보지 못한다. `corral orchestration worker-retain --reason user_takeover` 는 **사람이 선언하는 기록**이지 감지가 아니다 |
@@ -65,12 +65,12 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 
 | 경로 | 이 문서를 쓸 때 |
 | --- | --- |
-| 정상 순환 (Run → 일감 → 감독 워커 기동 → 질문·답 → 완료 보고 → 본문 주입 → 확인 → 회수 → 바인딩 복원) | **실행 3회** (배달 `matchCount: 1`, 회수 `owned_generation_matches` → `pane_gone`) |
+| 정상 순환 (Run → 일감 → 감독 워커 기동 → 질문·답 → 완료 보고 → 본문 주입 → 확인 → 회수 → 바인딩 복원) | **실행 4회** (라운드 1 의 3회 + 라운드 2 의 새 독자 순환 1회. 배달 `matchCount: 1`, 회수 `owned_generation_matches` → `pane_gone`) |
 | 취소된 대기의 뒤처리 (`request_cancelled` → `delivery_stale`) | **실행 1회** (2회차) |
 | 오래된·다른 pane 의 보고 거절 (`sender_mismatch`·`stale_dispatch`·`illegal_transition`·`capability_revoked`) | 계약만 읽음 — 미실행 |
 | 차단 화면 거절 (`agent_blocked`·`detect_manifest_unverified`·`agent_not_ready`) | 계약만 읽음 — 미실행 |
 | 재개 경로 (`dispatch_input_unconfirmed`·`dispatch_active`·`dispatch_input_unprovable`·`launch: resumed|reused`) | 계약만 읽음 — 미실행 |
-| 빌린 pane 회수 (`retained`·`borrowed`, 따로 닫기 — H5) | 계약만 읽음 — 미실행 (근거는 LIFE-417·423 의 잔존 pane 6개) |
+| 빌린 pane 회수 (`retained`·`borrowed`, 따로 닫기 — H5) | **실행 1회** — 라운드 2 에서 내가 만들어 새 독자에게 빌려준 pane 을 정체(`title`·`path`·`paneId`·`sessionId`·argv) 확인 후 `corral terminal close` 로 닫았다(`stage: closed`, 남은 pane 6개 = 기준값). 근거 `raw/claude/fix1-l10-run-restore.txt` |
 | 플래그 거절 3형태 (H3) | **실행** — `raw/corral/a-03`·`a-04`·`a-05` |
 
 ## 응답에서 어디를 읽나 (필드 경로)
@@ -158,7 +158,8 @@ corral agent-context --json               # 명령별 시그니처·주의사항
 ```
 
 ### 보장 수준
-**증명.** `status` 의 `runtime.capabilities` 는 **명령 이름 집합**이다(`terminal prompt`,
+**증명(이 프로필·이 셸의 광고에 한정).** 아래 「이 점검이 보지 않는 것」 두 줄이 자격의 이유다 — 자식 pane 의
+PATH 와 다른 프로필(`--socket`·`--instance`)은 이 점검 밖이다. `status` 의 `runtime.capabilities` 는 **명령 이름 집합**이다(`terminal prompt`,
 `orchestration worker-start` …). 대조 스크립트가 이 매핑이 요구하는 명령 이름을 그 집합과 차집합으로 비교하고
 빠진 것이 있으면 0 이 아닌 종료로 멈춘다. `status` 가 exit 1 이면 런타임이 꺼진 것이다.
 
@@ -178,6 +179,10 @@ corral agent-context --json               # 명령별 시그니처·주의사항
   그것을 미리 재는 수단은 없다 — **공백이다.** 워커가 조용히 보고를 못 하면 이 자리를 의심한다
   (실측에서는 `claude` 가 node v20 bin, corral 이 v22 bin 인 기계에서도 자식이 corral 을 찾았다:
   `raw/claude/fix1-l10/nr-08b-preamble-full.txt` 의 preamble 이 소켓 경로까지 박아 준다).
+- **이 점검이 보지 않는 것 — 다른 프로필·인스턴스.** `capability-check runtime` 은 `--socket`·`--instance` 를
+  **그대로 넘겨 주지만**(그 인자를 주지 않으면) **기본 프로필**을 본다. 다른 프로필로 일하면서 이 점검을
+  기본으로 돌리면 **쓰지 않는 런타임을 점검하고 통과를 준다** — 그 경우 점검 명령에도 같은 `--socket`·`--instance`
+  를 붙인다. 붙이지 않았다면 그 판정 칸은 **다른 런타임의 것**이다(K8).
 - **하지 말 우회**: 시작 세션에서 됐다는 이유로 이 점검을 생략하지 않는다. 대조 불일치를 "아마 될 것" 으로
   넘기지 않는다.
 
@@ -220,7 +225,11 @@ corral terminal wait --terminal <handle> --for agent-ready --timeout-ms 60000 --
 ```
 
 ### 보장 수준
-**증명.** 준비·차단·타임아웃이 서로 다른 값으로 돌아온다. agent-ready 는 750ms 간격 두 관측이 모두
+**증명(단 label 된 차단에 한정) — label 되지 않은 모달은 공백이고 『화면 관측』이 메운다.**
+자격을 붙이는 이유는 이 절 아래 「상황 → 행동」의 반례다: 차단 판정의 유일한 근거가 detect manifest 의
+label 이므로, **label 되지 않은 모달은 "준비" 와 같은 값으로 돌아온다**(실측: codex 0.156.1 업데이트 메뉴,
+이 일감의 코디네이터가 2회 겪었다). 그래서 이 칸은 무자격 증명이 아니다 — 판정표에 옮길 때도 자격을 함께 옮긴다.
+label 된 차단에 대해서는 준비·차단·타임아웃이 서로 다른 값으로 돌아온다. agent-ready 는 750ms 간격 두 관측이 모두
 idle/done·interactive_ready·launch 대기 아님이고 같은 `state_change_seq` 를 공유하며, **가드가 그 provider 의
 기대 detect manifest 를 보고한 경우**에만 만족이다. 차단 화면과 미검증 manifest 는 **기다리지 않고 즉시**
 `satisfied: false` 로 돌아오고 이유가 `agent.evidence` 에 담긴다.
@@ -247,7 +256,8 @@ corral terminal prompt --terminal <handle> (--text "<본문>" | --file <경로> 
 ```
 
 ### 보장 수준
-**증명.** `--wait accepted` 가 만족된 `outcome: completed` + `record.matchCount: 1` 이 "정확히 한 번 도착" 이다.
+**증명(이 pane 이 소유한 세션 기록이 있을 때) — 없거나 둘 이상이면 그 판정은 `unknown` 이고 그때는 공백이다.**
+`--wait accepted` 가 만족된 `outcome: completed` + `record.matchCount: 1` 이 "정확히 한 번 도착" 이다.
 배달과 대기는 **따로 보고된다**: `record.matchCount`/`unavailableReason` 이 배달을, `wait.requested/satisfied/reason`
 이 대기를 답한다. `--wait` 없는 주입은 **큐에 들어간 것이지 완료가 아니다.** 응답의 `requestId` 형식은
 `r1.<13자리 ms>.<UUID>` 이고, corral 은 **이 pane 이 소유했음을 증명할 수 있는 세션 기록만** 읽는다
@@ -296,7 +306,8 @@ worktree 준비 확인은 git worktree 생성 결과로 한다. `--worktree` 에
 적으면 중복이고, id 를 손으로 옮기다 틀린다. (실측 원문: `raw/claude/fix1-l10/nr-08b-preamble-full.txt`)
 
 ### 보장 수준
-**증명.** `worker-start` 는 pane 생성 → Dispatch 기록 → 준비 대기 → preamble+본문 주입을 **한 호출로 묶고
+**증명(단 준비 관문의 자격이 그대로 따라온다 — label 되지 않은 차단 화면은 여기서도 공백이다).**
+`worker-start` 는 pane 생성 → Dispatch 기록 → 준비 대기 → preamble+본문 주입을 **한 호출로 묶고
 제출을 판정한다**: `state: ready` 는 주입이 `outcome: completed` + 만족한 대기였을 때, 또는 그 본문이 provider
 기록에 정확히 1건 있을 때만이다. 그 밖은 전부 `state: incomplete`·`stage: dispatch_input_unconfirmed` 이고
 `promptRequestId` 가 null 로 남아 **재개 가능**하다. **pane 에 도달하지 못한 Dispatch 가 ready 로 보고되는
@@ -366,7 +377,8 @@ corral orchestration request-show --id <request_id> --json     # 응답 유실 �
 ```
 
 ### 보장 수준
-**증명.** 완료는 그 Task·그 Dispatch 의 `worker_done` 이다. `succeeded`/`failed` 모두 종료 보고이고
+**증명(보고가 왔을 때). 보고가 없는 상태는 "완료가 아니다" 가 아니라 "모른다" 다** — 그 칸은 공백으로 적는다.
+완료는 그 Task·그 Dispatch 의 `worker_done` 이다. `succeeded`/`failed` 모두 종료 보고이고
 (`failed` 를 성공으로 처리하지 않는다), 메시지 저장과 시도 정산이 **한 번의 원자적 쓰기**라 둘이 어긋날 수 없다.
 Run 은 미확인 Delivery 를 **하나만** 갖고, `--ack` 전까지 같은 배치를 `deliveryReplayed: true` 로 계속 돌려준다
 (배치 최대 50건, 그 사이 도착한 메시지는 섞이지 않는다). 파일 존재·TUI idle·프로세스 종료는 완료가 아니다.
@@ -456,7 +468,8 @@ corral terminal close --terminal <handle> --json                                
 ```
 
 ### 보장 수준
-**증명.** `released` 는 **이 시도가 pane 을 소유하고, 닫기 직전 관측한 pane 이 같은 세대일 때만** 나온다.
+**증명(닫기 판정에 한정) — 프로세스가 실제로 죽었는지는 관측이다(H5).**
+`released` 는 **이 시도가 pane 을 소유하고, 닫기 직전 관측한 pane 이 같은 세대일 때만** 나온다.
 그 밖은 전부 `retained` + 이유(`borrowed`·`user_requested`·`user_takeover`·`pane_gone`·`identity_unproven`·
 `observation_failed`)이고 프로세스에 손대지 않는다. 소유 판정과 닫기가 같은 lane 안에서 일어나므로
 **판정한 pane 이 닫히는 pane 이다.** `worker-retain` 은 **보존 의사 기록일 뿐** 프로세스에 손대지 않고 새 Task

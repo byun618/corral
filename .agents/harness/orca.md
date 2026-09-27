@@ -350,32 +350,41 @@ orca terminal close ([--terminal <handle>] [--tab] | --worktree <selector> --all
 ## 『세션 기록 오라클』
 
 ### 명령
+
+**orca 의 1차 수단은 자기 계약의 transcript 다** — corral 의 응답 필드를 여기 옮겨 적지 않는다(N2 정정).
+
 ```bash
-# 1) 이 pane 이 소유한 기록의 경로를 응답에서 꺼낸다 (짐작하지 않는다)
-#    worker-start → result.input.agent.sessionRecord.path · terminal prompt → result.record.path
-# 2) 그 경로를 인자로 주고 읽는다 — 무엇이 들어갔고(user) 무엇이 응답됐나(assistant)
+orca orchestration worker-read --dispatch <dispatch_id> --source transcript --json   # 훅 transcript 가 있을 때만
+orca orchestration worker-read --dispatch <dispatch_id> --json                       # auto: transcript 없으면 터미널 출력
+```
+
+**provider 기록 파일을 직접 읽어야 하면 경로를 어떻게 얻나 — 여기가 이 도구의 공백이다.**
+레지스트리 명령 234개에 **`sessionRecord` 는 0회** 등장한다(`grep -c` 로 확인). 즉 orca 는 "이 pane 이 소유한
+기록 파일" 을 값으로 돌려주지 않는다. 그래서 순서는 이렇다:
+
+1. `worker-read` 의 transcript 로 **먼저** 본다. 응답이 transcript 인지 터미널 출력인지 **구분해 적는다.**
+2. 그래도 파일을 봐야 하면 H6 의 홈 경로에서 **후보를 좁힌다** — worktree(cwd)와 기동 시각으로 고른다.
+   **어느 파일이 이 pane 의 것인지 증명할 수단은 없다**(corral 의 소유 증명에 해당하는 것이 없다).
+   그러므로 이 경로로 얻은 것은 "후보 파일의 관측" 이고, 판정표에는 **공백**으로 적는다.
+3. 파일을 골랐으면 읽는 방법은 corral 과 같다:
+
+```bash
+# 무엇이 들어갔고(user) 무엇이 응답됐나(assistant) — 경로를 인자로 준다
 jq -r 'select(.type=="user" or .type=="assistant")
        | [.type, (.message.role // "-"),
           ((.message.content | if type=="array"
              then (map(.text // ("["+(.type//"?")+"]")) | join(" "))
              else (. // "") end) | tostring | gsub("\\s+";" ") | .[0:80])]
        | @tsv' <세션 기록 .jsonl 절대경로>
-# 3) 줄 종류만 세고 싶으면
-jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn
+jq -r '.type' <세션 기록 .jsonl 절대경로> | sort | uniq -c | sort -rn   # 줄 종류만 세기
 ```
 
-**이 방법은 이 일감에서 1회 실행했다** — `raw/claude/fix1-m5-session-record-read.txt`
-(C6 3회차 자식 워커의 기록 62줄 중 user 4·assistant 4. 주입 본문 2건과 응답 2건이 그대로 보였고,
-**두 user 줄의 모양이 같아 사람 입력과 주입 입력을 가를 필드가 없다는 것이 재확인됐다**).
-Codex·Grok 판도 같은 형태의 JSONL 이지만 필드 이름이 다르므로 **먼저 한 줄을 열어 키를 확인한 뒤** 같은 요령으로 읽는다.
+**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 누출 점검 도구가 절대경로류 문자열을 `<p:…>` 로
+치환해 커밋했으므로 문법부터 깨져 있다(`b2-oracle-*.mjs` 3개 `node --check` 실패). 근거로 **인용**만 한다.
 
-**⚠ `specs/*/raw/` 의 옛 스크립트를 명령으로 적지 않는다.** 그 폴더의 파일은 누출 점검 도구가 절대경로류
-문자열을 `<p:…>` 로 치환해 커밋한 것이라 **문법부터 깨져 있다**(`b2-oracle-*.mjs` 3개 모두 `node --check` 실패).
-근거로 **인용**만 하고, 실행 방법은 위처럼 이 매핑에 직접 적는다.
-
-```bash
-orca orchestration worker-read --dispatch <dispatch_id> --source transcript --json   # 훅 transcript 가 있을 때만
-```
+**이 절의 실행 근거**: `worker-read` 는 **미실행**이다(읽기 전용 매핑). 아래 jq 는 corral 로 띄운 Claude
+세션에서 1회 실행했고(`raw/claude/fix1-m5-session-record-read.txt`) **그것은 읽는 방법의 근거일 뿐
+orca 경로 확보의 근거가 아니다.** Codex·Grok 판은 필드 이름이 달라 **먼저 한 줄을 열어 키를 확인한다.**
 
 ### 보장 수준
 **관측.** 기본 소스(`auto`)는 "훅이 보고한 정확한 transcript 가 **있을 때** 그것을, 없으면 라벨 붙은 터미널

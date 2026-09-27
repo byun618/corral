@@ -100,7 +100,7 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
 | pane 생존 | `worker-show` → `result.observation.{live,observed,reason}`(`pane_live`·`pane_gone`) · `result.messageCounts` |
 | 세션 목록 | `terminal list` → `result.terminals[].{paneId,tabId,path,title}` |
 | **화면 텍스트 (두 명령의 모양이 다르다)** | `terminal read` → **`result.text`** (형제 필드 `result.{source,truncated,generation,cursor}`) · `worker-read` → **`result.output.text`** (`result` 키는 dispatchId · terminal · source · output). 같은 화면인데 한 단 깊이가 다르다 — `result.screen.text` 는 **어느 쪽에도 없다** |
-| 읽기 잘림·이어 읽기 | 두 명령 모두 `…truncated`(bool)·`…cursor`·`…generation`. `--limit` 은 줄이 아니라 **바이트**(상한 262144)이고 `truncated: true` 면 잘린 것이다 |
+| 읽기 잘림·이어 읽기 | 두 명령 모두 `…truncated`(bool)·`…cursor`·`…generation`. `--limit` 은 줄이 아니라 **바이트고 상한이 명령마다 다르다** — `terminal read` 1..262144 · **`orchestration worker-read` 1..10000**(계약의 *pass-through* 문구 때문에 262144 로 읽히지만 **실측은 10000**, 넘기면 `invalid_argument: --limit must be 1..10000` · `_meta.outcome: not_started`. 원자료 `raw/claude/fix3-b1-read-limit-probe.txt`). `truncated: true` 면 잘린 것이다 |
 
 ---
 

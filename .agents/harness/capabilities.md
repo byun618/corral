@@ -115,15 +115,26 @@ A1~A8 이고, 거기 없는 형태는 통과가 아니라 **오류**다. 매핑�
 
   | provider | 기본 경로 | 홈을 옮기는 환경변수 |
   | --- | --- | --- |
-  | Claude | `$HOME/.claude/projects/<인코딩된 cwd>/<session-id>.jsonl` | `CLAUDE_CONFIG_DIR` (홈) · **`CLAUDE_CODE_PROJECT_DIR_NAME`(폴더 이름 자체)** |
+  | Claude | `$HOME/.claude/projects/<인코딩된 cwd>/<session-id>.jsonl` | `CLAUDE_CONFIG_DIR` (홈). **`CLAUDE_CODE_PROJECT_DIR_NAME` 은 독립 축이 아니다** — `CLAUDE_CONFIG_DIR` 와 **함께일 때만** 폴더 이름을 바꾼다(아래 조건) |
   | Codex | `$HOME/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (**날짜 샤드**) · 입력 재호출은 `$HOME/.codex/history.jsonl` | `CODEX_HOME` |
   | Grok | `$HOME/.grok/sessions/<URL 인코딩된 cwd>/<id>/` — **디렉터리다.** 아래 표 참조 | `GROK_HOME` |
 
   환경변수가 설정돼 있으면 `$HOME/...` 경로는 **틀린다**. 읽는 방법은 각 매핑의 『세션 기록 오라클』에 있다.
-  **Claude 는 축이 둘이다** — `CLAUDE_CONFIG_DIR` 은 홈을 옮기고, `CLAUDE_CODE_PROJECT_DIR_NAME` 은
-  `<인코딩된 cwd>` **폴더 이름 자체**를 바꾼다(공식 세션 문서 2026-09-25, Claude Code v2.1.234+).
-  후자가 켜져 있으면 cwd 로 계산한 경로는 그 세션의 기록이 아니다. 인코딩 규칙도 짐작하지 않는다 —
-  비영숫자를 `-` 로 바꾸고 200자를 넘으면 자른 뒤 전체 경로 해시를 붙인다.
+  인코딩 규칙도 짐작하지 않는다 — 비영숫자를 `-` 로 바꾸고 200자를 넘으면 자른 뒤 전체 경로 해시를 붙인다.
+
+  **Claude 의 폴더 이름을 바꾸는 변수는 조건이 붙는다 — 독립 축이 아니다.**
+  공식 세션 문서(`https://code.claude.com/docs/en/sessions` 「Name the project directory yourself」)대로:
+  - **`CLAUDE_CONFIG_DIR` 와 함께 두어야 한다.** `CLAUDE_CONFIG_DIR` 이 없으면 `CLAUDE_CODE_PROJECT_DIR_NAME` 은
+    **무시된다** — 그때 기록은 파생 이름(인코딩된 cwd) 그대로다.
+  - **값은 1–64자의 영숫자·하이픈·밑줄만.** 그 밖의 값은 **무시하고 파생 이름**을 쓴다.
+  - **`claude` 를 띄우는 셸 환경에서만** 먹는다 — 설정 파일의 `env` 블록으로는 설정되지 않는다.
+  - Claude Code **v2.1.234 이상**.
+
+  그 조건이 모두 맞을 때 기록은 `$CLAUDE_CONFIG_DIR/projects/<그 이름>/<session-id>.jsonl` 이다. 같은
+  `CLAUDE_CONFIG_DIR` 로 띄우면서 이 변수만 빼면 **다시 파생 이름 디렉터리를 읽고 쓴다.**
+  즉 **이름 변수만 켰다고 cwd 로 계산한 경로가 틀리는 것이 아니다** — 무시되는 세 경우(홈 변수 미설정 ·
+  값 형식 위반 · settings `env` 설정)에는 파생 경로가 맞다. 그래도 **경로는 짐작하지 말고 도구가 돌려주는
+  값을 쓴다**(위 첫 줄). 확인 원문: `specs/LIFE-440-harness-capability-map/raw/coordinator/verify-r4/g-r4-2-claude-sessions-doc.md`
 
   **Grok 은 한 세션이 디렉터리 하나다. 어느 파일을 여는지가 판정을 바꾼다** (실측 2026-09-27,
   `specs/LIFE-440-harness-capability-map/raw/claude/fix3-p5-grok-session-files.txt`):

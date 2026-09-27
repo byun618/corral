@@ -6,7 +6,9 @@
 //   node .agents/harness/capability-check.mjs shape
 //     매핑의 능력별 절이 명령 · 보장 수준 · 상황→행동(5항목)을 모두 갖는지.
 //   node .agents/harness/capability-check.mjs runtime --tool corral|orca|bare
-//     매핑이 요구하는 능력 ↔ 런타임이 광고하는 능력. 불일치면 멈춘다.
+//     매핑이 **선언한** 요구 명령(```required-commands 블록) ↔ 런타임이 광고하는 것. 불일치면 멈춘다.
+//     세 방향을 본다: 선언이 비지 않았나 · 본문이 쓰는 명령 ⊆ 선언 · 선언 ⊆ 광고.
+//     선언 블록이 없거나 비어 있으면 "요구 0개 = 통과" 가 아니라 불일치(1)로 멈춘다.
 //
 // 종료 코드: 0 통과 · 1 불일치(멈춘다) · 2 사용법·읽기 오류 · 3 대조 불가(광고가 없는 도구)
 // 자기 검증용 뒷문: --mapping <경로> 로 매핑 파일을, --advertised <경로> 로 광고 목록(JSON 배열 또는
@@ -141,6 +143,24 @@ function checkShape() {
   verdict('shape');
 }
 
+// ── 선언 블록 ───────────────────────────────────────────────────────────────
+// ```required-commands ... ``` / ```required-tokens ... ``` 을 읽는다.
+// `#` 뒤는 주석, 빈 줄은 무시. 반환값은 { found, entries }.
+function declaredBlock(text, kind) {
+  const re = new RegExp('```' + kind + '\\n([\\s\\S]*?)```', 'g');
+  const entries = [];
+  let found = false;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    found = true;
+    for (const raw of m[1].split('\n')) {
+      const line = raw.replace(/#.*$/, '').trim();
+      if (line) entries.push(line);
+    }
+  }
+  return { found, entries: [...new Set(entries)].sort() };
+}
+
 // ── runtime ────────────────────────────────────────────────────────────────
 function advertisedFromFile(path) {
   const raw = readFileSync(path, 'utf8');
@@ -181,10 +201,27 @@ function checkRuntime() {
   const mappingPath = flag('--mapping') || join(ROOT, '.agents/harness', MAPPINGS[tool]);
   const mapping = readFileSync(mappingPath, 'utf8');
   const advFile = flag('--advertised');
+  // 실제로 읽은 파일을 적는다 — 뒷문으로 갈아 끼웠는데 원본 이름을 찍으면 양성 대조가 거짓말이 된다
+  note(`매핑: ${mappingPath}`);
+
+  // (1) 선언 블록 — 어느 도구든 먼저 본다. 광고가 없는 도구도 선언은 해야 한다
+  // 선언 블록 자신을 지운 본문. 죽은 항목을 선언 자신으로 확인하면 무조건 통과한다
+  const prose = mapping.replace(/```required-(?:commands|tokens)\n[\s\S]*?```/g, '');
+  const decl = declaredBlock(mapping, 'required-commands');
+  if (!decl.found) problems.push('```required-commands 선언 블록이 없다 (요구를 안 적었다)');
+  else if (decl.entries.length === 0) problems.push('```required-commands 선언이 비어 있다 — 요구 0개는 통과가 아니다');
+  note(`선언한 요구 명령 ${decl.entries.length}개`);
+  const declSet = new Set(decl.entries);
 
   if (tool === 'bare') {
+    // 죽은 항목(선언에만 있고 본문에 없는 것)은 광고 없이도 잡을 수 있다
+    for (const c of decl.entries) {
+      if (!prose.includes(c)) problems.push(`선언에만 있고 본문에 없는 명령: ${c}`);
+    }
+    if (problems.length > 0) verdict('runtime --tool bare');
     note('bare: 이 도구는 능력을 광고하지 않는다.');
     note('  tmux·iTerm2 어느 쪽도 "무엇을 보장하는가" 를 기계가 읽을 형태로 내놓지 않는다.');
+    note(`  선언 ${decl.entries.length}개는 형식·생존만 확인했다 — 광고와 대조한 것이 아니다.`);
     note('  → 런타임 대조 불가. 일치도 불일치도 아니다. 판정표에 공백으로 적어라 (bare.md 『전제 점검』).');
     process.exit(3);
   }
@@ -203,24 +240,40 @@ function checkRuntime() {
   const advSet = new Set(advertised);
   note(`광고 ${advSet.size}개`);
 
-  if (tool === 'corral') {
-    // corral 의 광고는 명령 이름 집합이다.
-    const required = commandNamesIn(mapping, 'corral', advSet);
-    note(`${MAPPINGS[tool]} 가 요구하는 명령 ${required.length}개`);
-    for (const c of required) if (!advSet.has(c)) problems.push(`광고에 없는 명령: corral ${c}`);
-  } else {
-    // orca 의 광고는 기능 토큰이다. 명령 이름은 레지스트리(agent-context)와 따로 대조한다.
-    const tokens = new Set();
-    for (const m of mapping.matchAll(/\b([a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+\.v\d+)\b/g)) tokens.add(m[1]);
-    note(`${MAPPINGS[tool]} 가 요구하는 기능 토큰 ${tokens.size}개`);
-    for (const t of tokens) if (!advSet.has(t)) problems.push(`광고에 없는 기능 토큰: ${t}`);
+  // 명령 이름을 대조하는 집합: corral 은 광고 자체, orca 는 레지스트리
+  let registry = advSet;
+  if (tool === 'orca') {
     const reg = JSON.parse(run(tool, ['agent-context', '--json']));
-    const registry = new Set((reg.commands || []).map((c) => c.command));
+    registry = new Set((reg.commands || []).map((c) => c.command));
     if (registry.size === 0) fail(2, `${tool} agent-context --json 에 commands 가 없다`);
     note(`명령 레지스트리 ${registry.size}개`);
-    const required = commandNamesIn(mapping, 'orca', registry);
-    note(`${MAPPINGS[tool]} 가 요구하는 명령 ${required.length}개`);
-    for (const c of required) if (!registry.has(c)) problems.push(`레지스트리에 없는 명령: orca ${c}`);
+
+    const tdecl = declaredBlock(mapping, 'required-tokens');
+    if (!tdecl.found) problems.push('```required-tokens 선언 블록이 없다 (orca 의 광고는 기능 토큰이다)');
+    else if (tdecl.entries.length === 0) problems.push('```required-tokens 선언이 비어 있다');
+    note(`선언한 요구 기능 토큰 ${tdecl.entries.length}개`);
+    for (const t of tdecl.entries) if (!advSet.has(t)) problems.push(`광고에 없는 기능 토큰: ${t}`);
+    // 본문이 쓰는 토큰 ⊆ 선언
+    const proseTokens = new Set();
+    for (const m of prose.matchAll(/\b([a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+\.v\d+)\b/g)) proseTokens.add(m[1]);
+    for (const t of [...proseTokens].sort()) {
+      if (!tdecl.entries.includes(t)) problems.push(`선언에 없는데 본문이 쓰는 기능 토큰: ${t}`);
+    }
+  }
+
+  // (2) 본문이 쓰는 명령 ⊆ 선언 — 선언에서 빼고 본문에 남겨두는 것을 잡는다
+  const inProse = commandNamesIn(prose, tool, registry);
+  note(`본문이 쓰는 명령 ${inProse.length}개`);
+  for (const c of inProse) {
+    if (!declSet.has(c)) problems.push(`선언에 없는데 본문이 쓰는 명령: ${tool} ${c}`);
+  }
+  // (3) 선언 ⊆ 광고/레지스트리
+  for (const c of decl.entries) {
+    if (!registry.has(c)) problems.push(`${tool === 'orca' ? '레지스트리' : '광고'}에 없는 명령: ${tool} ${c}`);
+  }
+  // (4) 죽은 선언 — 선언에만 있고 본문 어디에도 안 나오는 것
+  for (const c of decl.entries) {
+    if (!prose.includes(c)) problems.push(`선언에만 있고 본문에 없는 명령: ${tool} ${c}`);
   }
   verdict(`runtime --tool ${tool}`);
 }

@@ -24,6 +24,52 @@ orca 는 **사용자가 실제로 쓰는 앱**이다. 이 매핑을 만들 때 �
 
 ---
 
+## 이 매핑이 요구하는 명령·토큰 — 선언
+
+`capability-check runtime --tool orca` 가 이 두 블록을 읽어 대조한다. 명령 이름은 **레지스트리**
+(`agent-context`)와, 기능 토큰은 **`status` 의 광고**와 대조한다. 어느 블록이든 없거나 비어 있으면
+통과가 아니라 **불일치(exit 1)** 다.
+
+```required-commands
+status                              # 『전제 점검』
+agent-context                       # 『전제 점검』 — 명령 234개 레지스트리
+open                                # 앱 열기 (이 매핑을 만들 때 미실행)
+orchestration run-create            # 『제어 문맥 격리』
+orchestration run-use               # 『제어 문맥 격리』
+orchestration run-current           # 『제어 문맥 격리』
+orchestration task-create           # 『감독 워커 기동』
+orchestration worker-start          # 『감독 워커 기동』
+orchestration dispatch-show         # 『감독 워커 기동』
+orchestration check                 # 『완료 감지』 — --wait (corral 의 --block 이 아니다)
+orchestration inbox                 # 『완료 감지』 — 확인 없이 들여다본다
+orchestration send                  # 『완료 감지』 — **워커가** worker_done 을 보낸다
+orchestration request-show          # 『완료 감지』 — 영수증 (--request 로 받는다, --id 가 아니다)
+orchestration ask                   # 『질의응답』 (corral 과 달리 --run 을 받는다)
+orchestration reply                 # 『질의응답』
+orchestration worker-show           # 『회수·정리』·사람 개입(observation.agentWait)
+orchestration worker-read           # 『회수·정리』 — 닫은 뒤에도 답한다
+orchestration worker-list           # 『회수·정리』 — terminal state 회계
+orchestration worker-retain         # 『회수·정리』
+orchestration worker-release        # 『회수·정리』 — release_unknown 만 exit 1
+orchestration worker-stop           # 『회수·정리』
+orchestration worker-abandon        # 『회수·정리』
+terminal create                     # 『세션 기동』
+terminal wait                       # 『준비 대기』 — --for exit|tui-idle 뿐 (agent-ready 없음)
+terminal read                       # 『화면 관측』
+terminal show                       # 『세션 기동』 관측
+terminal send                       # 『본문 주입』 — ack 가 없다 (배달 = 공백)
+terminal close                      # 『회수·정리』
+worktree create                     # 『세션 기동』 — --prompt 로 본문을 실을 수 있다
+```
+
+```required-tokens
+orchestration.contract.v1                 # 『감독 워커 기동』·『완료 감지』·『질의응답』
+terminal.multiplex.v1                     # 『세션 기동』·『화면 관측』 — pane 다중화
+orchestration.worker-stop-verdict.v1      # 『회수·정리』 — worker-stop 의 판정
+```
+
+**『세션 기록 오라클』은 orca 명령이 아니다** — `jq` 로 기록을 직접 읽는다.
+
 ## 『전제 점검』
 
 ### 명령
@@ -168,6 +214,11 @@ orca 는 빼면 잘못된 작업 공간으로 붙는다. 그래서 절차 문서
 orca orchestration check [--run <run_id>] [--ack <delivery_id>] [--types <type,...>] [--wait] \
   [--timeout-ms <n>] --json
 orca orchestration worker-show --dispatch <dispatch_id> --json
+orca orchestration inbox [--run <run_id>] --json            # 확인(ACK) 없이 들여다본다
+orca orchestration request-show --request <request_id> --json  # 영수증. corral 과 달리 --request 다
+# ↓ 워커 쪽이 치는 명령. 코디네이터가 "완료 감지" 를 말할 때 반대편에서 이게 돌고 있다
+orca orchestration send --type worker_done|heartbeat|escalation --task <task_id> \
+  --dispatch <dispatch_id> --subject <제목> --body <본문> --json
 ```
 
 ### 보장 수준

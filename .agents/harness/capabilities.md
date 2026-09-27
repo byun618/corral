@@ -88,7 +88,7 @@ A1~A8 이고, 거기 없는 형태는 통과가 아니라 **오류**다. 매핑�
 (bare 의 어휘는 그 매핑의 선언 자신이다). 양성 대조: 선언 쪽 7건
 `specs/LIFE-440-harness-capability-map/raw/claude/fix1-m1-declaration-controls.txt` ·
 표기 쪽 라운드 2 6건 `…/fix2-n1-convention-controls.txt` · **라운드 3 10건**
-`…/fix3-p1-controls.mjs`(출력 `…/fix3-p1-controls.txt`).
+`…/fix3-p1-controls.mjs` (출력은 관문 회차별 출력의 `p1.txt` — `…/fix3-gates-final2/p1.txt`).
 
 **검사기는 자기가 못 보는 것을 스스로 적는다.** 두 스크립트 머리 주석에 「알려진 한계」 절이 있다. 그중 하나는
 매핑을 쓰는 사람이 반드시 알아야 한다 — **검사 대상은 코드 스팬과 펜스 블록 줄뿐이다.** 백틱 없는 산문에

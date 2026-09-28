@@ -722,22 +722,27 @@ async function main() {
     ]
 
     // 이 회차를 돌린 **코드의 지문** — 어느 판으로 쟀는지 원자료 안에서 되짚을 수 있게 남긴다.
+    //
+    // **working tree 를 해시한다** (`git hash-object`). 이전 판은 `git ls-files -s`(인덱스 해시)를 적어서,
+    // 커밋 전에 돈 회차의 `blobs` 가 **앞 커밋의 내용**이었다 — 수정은 `uncommitted` 목록으로만 남고
+    // 정작 돌린 코드의 지문이 없었다(리뷰 「최종 코드 실행 정체 — 미확인 범위」). 파일 mtime 주장은
+    // 실행 지문을 대신하지 못한다. 추적되지 않는 새 파일(`-o`)도 함께 해시한다.
     const codeManifest = (() => {
-      const files = spawnSync('git', ['ls-files', '-s', '--', 'app/scripts/gui-diff'], { cwd: repoRoot, encoding: 'utf8' })
+      const files = spawnSync('git', ['ls-files', '-co', '--exclude-standard', '--', 'app/scripts/gui-diff'], {
+        cwd: repoRoot,
+        encoding: 'utf8'
+      })
       const dirty = spawnSync('git', ['status', '--porcelain', '--', 'app/scripts/gui-diff'], { cwd: repoRoot, encoding: 'utf8' })
       const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' })
+      const list = files.stdout.trim().split('\n').filter(Boolean)
+      const hashed = spawnSync('git', ['hash-object', ...list], { cwd: repoRoot, encoding: 'utf8' })
+      const hashes = hashed.stdout.trim().split('\n').filter(Boolean)
       return {
         head: head.stdout.trim() || null,
-        // 커밋 안 된 수정이 있으면 그 사실을 적는다 — "커밋된 코드로 쟀다" 를 조용히 주장하지 않는다.
+        // 커밋 안 된 수정이 있으면 그 사실도 적는다 — "커밋된 코드로 쟀다" 를 조용히 주장하지 않는다.
         uncommitted: dirty.stdout.trim().split('\n').filter(Boolean),
-        blobs: files.stdout
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => {
-            const [meta, file] = line.split('\t')
-            return { file, blob: meta.split(' ')[1] }
-          })
+        hashedWith: 'git hash-object (working tree)',
+        blobs: list.map((file, index) => ({ file, blob: hashes[index] ?? null }))
       }
     })()
 

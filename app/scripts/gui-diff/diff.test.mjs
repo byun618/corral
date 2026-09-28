@@ -5,7 +5,9 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { diffBox, diffStyle, diffSnapshots, selfDiff, compareMeta } from './lib/diff.mjs'
+import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, selfDiff, compareMeta } from './lib/diff.mjs'
+import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
+import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
 
 const unit = (id, extra = {}) => ({ id, note: `${id} 설명`, ...extra })
 const el = (over = {}) => ({
@@ -47,13 +49,66 @@ test('diffStyle: 값이 같으면 빈 배열', () => {
   assert.deepEqual(diffStyle({ color: 'a', gap: '4px' }, { gap: '4px', color: 'a' }), [])
 })
 
-test('존재/부재 차이는 missing 한 건으로 끝난다 — 박스·스타일을 덧붙이지 않는다 (K7)', () => {
+test('선언상 부재는 missing 한 건으로 끝난다 — 박스·스타일을 덧붙이지 않는다 (K7)', () => {
   const left = snap('orca', { pill: el({ box: { x: 0, y: 0, w: 60, h: 18 } }) })
-  const right = snap('corral', { pill: el({ present: false, count: 0, box: undefined, style: undefined }) })
+  const right = snap('corral', { pill: el({ present: false, count: 0, box: undefined, style: undefined, declaredAbsent: true }) })
   const result = diffSnapshots(left, right, { units: [unit('pill')], tolerance: 0.5 })
   assert.equal(result.findings.length, 1)
   assert.equal(result.findings[0].kind, 'missing')
-  assert.deepEqual(result.summary, { total: 1, unpaired: 0, missing: 1, count: 0, box: 0, style: 0 })
+  assert.equal(result.findings[0].detail.absentSide, 'right')
+  assert.equal(result.summary.total, 1)
+  assert.equal(result.summary.missing, 1)
+})
+
+test('선택자가 0개를 찾은 것은 missing 이 아니라 selector-miss 다 (F11)', () => {
+  // 선언이 아니라 **실패**다. 447~450 이 DOM 을 고친 뒤 예정된 사건이고, 차이로 내보내면
+  // 「corral 에 없음」이라는 거짓 차이가 나간다.
+  const left = snap('orca', { row: el() })
+  const right = snap('corral', { row: el({ present: false, count: 0, box: undefined, style: undefined, declaredAbsent: false }) })
+  const result = diffSnapshots(left, right, { units: [unit('row')] })
+  assert.equal(result.findings[0].kind, 'selector-miss')
+  assert.equal(result.summary.missing, 0)
+  assert.equal(result.summary['selector-miss'], 1)
+})
+
+test('둘째 요소만 다른 경우도 잡는다 — 대표 1개만 재던 자리 (F7)', () => {
+  const same = { box: { x: 0, y: 0, w: 100, h: 20 }, style: { color: 'x' } }
+  const other = { box: { x: 0, y: 40, w: 100, h: 20 }, style: { color: 'x' } }
+  const left = snap('orca', { card: el({ count: 2, countAll: 2, items: [same, other] }) })
+  const right = snap('corral', {
+    card: el({ count: 2, countAll: 2, items: [same, { ...other, style: { color: 'y' } }] })
+  })
+  const result = diffSnapshots(left, right, { units: [unit('card')], tolerance: 0.5 })
+  assert.equal(result.findings.length, 1)
+  assert.equal(result.findings[0].kind, 'style')
+  assert.equal(result.findings[0].index, 1)
+})
+
+test('허용치 이하 박스 차이는 판정에서 빼되 belowTolerance 로 센다 (F12)', () => {
+  const left = snap('orca', { a: el({ box: { x: 0, y: 0, w: 100, h: 20 } }) })
+  const right = snap('corral', { a: el({ box: { x: 0.3, y: 0, w: 100, h: 20 } }) })
+  const result = diffSnapshots(left, right, { units: [unit('a')], tolerance: 0.5 })
+  assert.equal(result.summary.total, 0)
+  assert.equal(result.summary.belowTolerance, 1)
+  assert.equal(result.belowTolerance[0].detail[0].prop, 'x')
+})
+
+test('반올림은 부호 대칭이다 — +0.505 와 -0.505 가 같은 쪽으로 간다 (G7)', () => {
+  const box = (x) => ({ x, y: 0, w: 0, h: 0 })
+  const plus = diffBoxWithBelow(box(0), box(0.505), 0.5)
+  const minus = diffBoxWithBelow(box(0), box(-0.505), 0.5)
+  assert.equal(plus.over.length, minus.over.length)
+  assert.equal(Math.abs(plus.over[0].delta), Math.abs(minus.over[0].delta))
+})
+
+test('렌더 폰트는 선언과 따로 나온다 — 빈 목록은 "같다" 가 아니다 (F14)', () => {
+  assert.equal(diffFonts([{ family: 'Geist' }], [{ family: 'Geist' }]), null)
+  assert.equal(diffFonts([{ family: 'Geist' }], [{ family: '.SF NS' }]).kind, 'differs')
+  assert.equal(diffFonts([{ family: 'Geist' }], []).kind, 'unmeasured')
+  const left = snap('orca', { a: el({ platformFonts: [{ family: 'Geist' }] }) })
+  const right = snap('corral', { a: el({ platformFonts: [{ family: '.SF NS' }] }) })
+  const result = diffSnapshots(left, right, { units: [unit('a')] })
+  assert.ok(result.findings.some((finding) => finding.kind === 'font'))
 })
 
 test('둘 다 없으면 차이가 아니다', () => {
@@ -142,4 +197,130 @@ test('compareMeta: 개발 오버레이가 있으면 캡처 오염을 경고한�
 
 test('compareMeta: 완전히 대칭이면 경고 없음', () => {
   assert.deepEqual(compareMeta(snap('orca', {}), snap('corral', {})), [])
+})
+
+// ---- 양성 대조의 판별력 (F9) — 「차이가 있다」와 「그 차이를 잡았다」는 다르다 ----
+
+const controlResults = (findings, { area = 'sidebar', state = 'agents-2' } = {}) => [
+  { area, states: [{ state, findings }] }
+]
+const PREREQ = { orcaCompact: true, orcaNotSendTarget: true }
+const controlA = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓐ')
+const controlB = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓑ')
+
+test('C6ⓐ — Orca 있음 / corral 없음이면 통과', () => {
+  const rows = evaluateControls({
+    results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선언)', absentSide: 'right' } }]),
+    prerequisites: PREREQ,
+    controls: controlA
+  })
+  assert.equal(rows[0].pass, true)
+})
+
+test('C6ⓐ — 방향이 반대면(우리 쪽 선택자가 썩어 Orca 가 없음) 실패', () => {
+  const rows = evaluateControls({
+    results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { left: '없음(선택자 0개)', right: '있음 (1)', absentSide: 'left' } }]),
+    prerequisites: PREREQ,
+    controls: controlA
+  })
+  assert.equal(rows[0].pass, false)
+  assert.match(rows[0].verdict, /방향/)
+})
+
+test('C6ⓐ — 측정 불가(unpaired·selector-miss) 행은 통과 근거가 아니다', () => {
+  for (const kind of ['unpaired', 'selector-miss']) {
+    const rows = evaluateControls({
+      results: controlResults([{ id: 'agent-group-pill', kind, detail: { reason: 'cannot measure' } }]),
+      prerequisites: PREREQ,
+      controls: controlA
+    })
+    assert.equal(rows[0].pass, false, kind)
+  }
+})
+
+test('C6ⓐ — compact·send-target 전제를 못 확인하면 실패', () => {
+  const rows = evaluateControls({
+    results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { absentSide: 'right' } }]),
+    prerequisites: { orcaCompact: false, orcaNotSendTarget: true },
+    controls: controlA
+  })
+  assert.equal(rows[0].pass, false)
+  assert.match(rows[0].verdict, /전제/)
+})
+
+test('C6ⓐ — 그 영역·상태를 재지 않았으면 「측정 안 됨」 실패 (통과도 아니고 침묵도 아니다)', () => {
+  const rows = evaluateControls({ results: [{ area: 'tabbar', states: [{ state: 'default', findings: [] }] }], prerequisites: PREREQ, controls: controlA })
+  assert.equal(rows[0].pass, false)
+  assert.match(rows[0].verdict, /측정 안 됨/)
+})
+
+test('C6ⓑ — box+style 둘 다 있어야 통과, 하나만이면 실패', () => {
+  const both = evaluateControls({
+    results: controlResults(
+      [
+        { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'w', left: 16, right: 20, delta: 4 }] },
+        { id: 'repo-header-icon', kind: 'style', detail: [{ prop: 'backgroundColor', left: 'a', right: 'b' }] }
+      ],
+      { state: 'default' }
+    ),
+    prerequisites: PREREQ,
+    controls: controlB
+  })
+  assert.equal(both[0].pass, true)
+  const onlyBox = evaluateControls({
+    results: controlResults([{ id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'w', left: 16, right: 17, delta: 1 }] }], { state: 'default' }),
+    prerequisites: PREREQ,
+    controls: controlB
+  })
+  assert.equal(onlyBox[0].pass, false)
+  assert.match(onlyBox[0].verdict, /종류/)
+})
+
+// ---- C10 검사기 (F10) — 아무것도 재지 않은 것은 「같은 것」이 아니다 ----
+
+const runOf = (label, keys, summary) => ({
+  dir: `/tmp/${label}`,
+  label,
+  keys: new Map(Object.entries(keys).map(([key, elements]) => [key, { total: elements.length, elements: new Set(elements) }])),
+  summary
+})
+const SUMMARY = { args: { areas: ['sidebar'], states: ['default'] }, gate: { pass: true } }
+
+test('compare-runs — diff 가 없는 빈 회차 둘은 통과가 아니다 (F10)', () => {
+  const result = compareRuns([runOf('r6', {}, null), runOf('r10', {}, null)])
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /유효하지 않은/)
+})
+
+test('compare-runs — 요청한 칸이 빠진 회차는 유효하지 않다', () => {
+  const partial = runOf('rA', { 'sidebar-default': ['x'] }, { args: { areas: ['sidebar', 'tabbar'], states: ['default'] }, gate: { pass: true } })
+  assert.equal(validateRun(partial).ok, false)
+  assert.deepEqual(expectedKeys(partial.summary), ['sidebar-default', 'tabbar-default'])
+})
+
+test('compare-runs — 자기 관문을 통과하지 못한 회차는 유효하지 않다', () => {
+  const failed = runOf('rB', { 'sidebar-default': ['x'] }, { args: { areas: ['sidebar'], states: ['default'] }, gate: { pass: false, why: '잡음 3건' } })
+  assert.equal(validateRun(failed).ok, false)
+})
+
+test('compare-runs — 같은 집합 두 회차는 통과, 원소가 다르면 미달', () => {
+  const same = compareRuns([runOf('r1', { 'sidebar-default': ['a', 'b'] }, SUMMARY), runOf('r2', { 'sidebar-default': ['b', 'a'] }, SUMMARY)])
+  assert.equal(same.ok, true)
+  const differ = compareRuns([runOf('r1', { 'sidebar-default': ['a', 'b'] }, SUMMARY), runOf('r2', { 'sidebar-default': ['a', 'c'] }, SUMMARY)])
+  assert.equal(differ.ok, false)
+  assert.equal(differ.mismatches.length, 2)
+})
+
+test('compare-runs — 회차가 하나면 재현성을 말하지 않는다', () => {
+  assert.equal(compareRuns([runOf('r1', { 'sidebar-default': ['a'] }, SUMMARY)]).ok, false)
+})
+
+test('조건부 단위의 0개는 selector-miss 가 아니라 missing 이다 (임계·hover 의존)', () => {
+  const left = snap('orca', { pill: el() })
+  const right = snap('corral', { pill: el({ present: false, count: 0, declaredAbsent: false }) })
+  const asRot = diffSnapshots(left, right, { units: [unit('pill')] })
+  assert.equal(asRot.findings[0].kind, 'selector-miss')
+  const asConditional = diffSnapshots(left, right, { units: [{ ...unit('pill'), conditional: true }] })
+  assert.equal(asConditional.findings[0].kind, 'missing')
+  assert.equal(asConditional.findings[0].detail.absentSide, 'right')
 })

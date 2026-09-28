@@ -15,7 +15,12 @@ export function describeFinding(finding) {
     case 'unpaired':
       return { orca: '(못 잼)', corral: '(못 잼)', diff: `짝짓기 불가 — ${finding.detail.reason}` }
     case 'missing':
-      return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff: '한쪽에만 있음' }
+      return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff: '한쪽에만 있음(선언)' }
+    case 'selector-miss':
+      // 「없다」가 아니라 **못 찾았다** — 선택자 부패다. 차이로 읽으면 없는 것을 만들러 간다.
+      return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff: '선택자가 0개를 찾음 — 측정 실패' }
+    case 'font':
+      return { orca: clip(finding.detail.left, 60), corral: clip(finding.detail.right, 60), diff: '렌더 폰트(platformFonts)' }
     case 'count':
       return { orca: `${finding.detail.left}개`, corral: `${finding.detail.right}개`, diff: '개수' }
     case 'box':
@@ -71,20 +76,45 @@ export function renderReport({ date, runs, areas, notes }) {
     }
     lines.push('')
   }
+  lines.push('## 상태 재현 검증 (C9) — 요청한 상태가 두 앱에 **같게** 만들어졌는가')
+  lines.push('')
+  lines.push('축이 하나라도 어긋나면 그 상태의 차이 행은 분류에서 「보류」로 내려간다 — 제품 차이인지')
+  lines.push('하네스가 만든 차이인지 그 회차로는 가를 수 없기 때문이다.')
+  lines.push('')
+  lines.push('| 상태 | 축 | 요청 | Orca | corral | 일치 |')
+  lines.push('| --- | --- | --- | --- | --- | --- |')
+  for (const entry of notes.stateAxes ?? []) {
+    for (const axis of entry.axes ?? []) {
+      lines.push(
+        `| ${cell(entry.state)} | ${cell(axis.label)} | ${cell(axis.requested)} | ${cell(axis.orca)} | ${cell(axis.corral)} | ${axis.ok ? '○' : '✗'} |`
+      )
+    }
+  }
+  lines.push('')
   lines.push('## 잡음 바닥 (C5 음성 대조)')
   lines.push('')
-  lines.push('| 앱 | 같은 상태 2회 자기 diff | 허용치 | 결과 |')
-  lines.push('| --- | --- | --- | --- |')
+  lines.push('허용치의 근거는 **허용치 없이 잰 흔들림**이다 — 그래서 회차마다 `허용치 0` 칸도 함께 낸다.')
+  lines.push('')
+  lines.push('| 앱 | 자기 diff(허용치 적용) | 허용치 | 자기 diff(허용치 0) | 허용치 0 에서 최대 델타 | 결과 |')
+  lines.push('| --- | --- | --- | --- | --- | --- |')
   for (const row of notes.noiseFloor) {
-    lines.push(`| ${cell(row.app)} | ${cell(row.total)}건 | ${cell(row.tolerance)}px | ${cell(row.verdict)} |`)
+    lines.push(
+      `| ${cell(row.app)} | ${cell(row.total)}건 | ${cell(row.tolerance)}px | ${cell(row.totalAtZero ?? '(안 냄)')}건 | ${cell(row.maxDeltaAtZero ?? '(안 냄)')}px | ${cell(row.verdict)} |`
+    )
   }
   lines.push('')
   lines.push('## 양성 대조 (C6) — 알려진 차이를 도구가 잡는가')
   lines.push('')
-  lines.push('| # | 알려진 차이 | 도구가 낸 행 | 판정 |')
-  lines.push('| --- | --- | --- | --- |')
-  for (const row of notes.positiveControls) {
-    lines.push(`| ${cell(row.id)} | ${cell(row.claim)} | ${cell(row.evidence)} | ${cell(row.verdict)} |`)
+  if (!notes.controlsMode) {
+    lines.push('이 회차는 `--controls` 없이 돌았다 — **양성 대조를 돌지 않았다.** 이 회차는 C6 의 근거가 아니다.')
+    lines.push('(왜 기본이 아닌가: 대조를 모든 실행의 관문으로 두면 부분 측정이 실패하고, 447~450 이 그 차이를')
+    lines.push('실제로 해소했을 때 도구가 그 회차를 실패로 만든다.)')
+  } else {
+    lines.push('| # | 알려진 차이 | 도구가 낸 행 | 판정 |')
+    lines.push('| --- | --- | --- | --- |')
+    for (const row of notes.positiveControls) {
+      lines.push(`| ${cell(row.id)} | ${cell(row.claim)} | ${cell(row.evidence)} | ${cell(row.verdict)} |`)
+    }
   }
   lines.push('')
 
@@ -112,13 +142,48 @@ export function renderReport({ date, runs, areas, notes }) {
       }
       for (const finding of state.findings) {
         const described = describeFinding(finding)
-        const classification = finding.kind === 'unpaired' ? '보류 — 도구가 못 잰다' : (finding.classification ?? '(초안 미정)')
+        const classification =
+          finding.kind === 'unpaired'
+            ? '보류 — 도구가 못 잰다'
+            : finding.kind === 'selector-miss'
+              ? '보류 — 측정 실패(선택자 부패). 차이로 읽지 않는다'
+              : (finding.classification ?? '(초안 미정)')
+        const label = `${area.area} › ${finding.note ?? finding.id}${finding.index ? ` [${finding.index + 1}번째]` : ''}`
         lines.push(
-          `| ${cell(`${area.area} › ${finding.note ?? finding.id}`)} | ${cell(state.state)} | ${cell(described.orca)} | ${cell(described.corral)} | ${cell(described.diff)} | ${cell(classification)} | ${cell(state.raw)} |`
+          `| ${cell(label)} | ${cell(state.state)} | ${cell(described.orca)} | ${cell(described.corral)} | ${cell(described.diff)} | ${cell(classification)} | ${cell(state.raw)} |`
         )
       }
     }
     lines.push('')
+    // 허용치가 가린 것 — 판정에서 뺐다는 말과 **없었다는 말**은 다르다 (F12).
+    const below = area.states.flatMap((state) => (state.belowTolerance ?? []).map((entry) => ({ state: state.state, ...entry })))
+    if (below.length > 0) {
+      lines.push(`### 허용치 이하로 걸러진 박스 차이 — ${below.length}건 (판정에서 빼되 세어 둔다)`)
+      lines.push('')
+      lines.push('| 단위 | 상태 | 속성 | Orca | corral | 델타 |')
+      lines.push('| --- | --- | --- | --- | --- | --- |')
+      for (const entry of below) {
+        for (const item of entry.detail) {
+          lines.push(
+            `| ${cell(entry.note ?? entry.id)}${entry.index ? ` [${entry.index + 1}번째]` : ''} | ${cell(entry.state)} | ${cell(item.prop)} | ${cell(item.left)} | ${cell(item.right)} | ${cell(item.delta)}px |`
+          )
+        }
+      }
+      lines.push('')
+    }
+    const fontGaps = area.states.flatMap((state) => (state.fontUnmeasured ?? []).map((entry) => ({ state: state.state, ...entry })))
+    if (fontGaps.length > 0) {
+      lines.push(`### 렌더 폰트를 못 잰 자리 — ${fontGaps.length}건`)
+      lines.push('')
+      lines.push('한쪽 노드에 글리프가 없으면 CDP 가 빈 목록을 준다. **빈 목록은 「선언과 같다」가 아니다.**')
+      lines.push('')
+      lines.push('| 단위 | 상태 | Orca | corral |')
+      lines.push('| --- | --- | --- | --- |')
+      for (const entry of fontGaps) {
+        lines.push(`| ${cell(entry.note ?? entry.id)} | ${cell(entry.state)} | ${cell(entry.detail.left)} | ${cell(entry.detail.right)} |`)
+      }
+      lines.push('')
+    }
   }
 
   lines.push('## 재현한 상태 / 재현 못 한 상태 (C7)')
@@ -126,7 +191,9 @@ export function renderReport({ date, runs, areas, notes }) {
   lines.push('| 영역 | 상태 | 재현 | 사유 |')
   lines.push('| --- | --- | --- | --- |')
   for (const row of notes.stateMatrix) {
-    lines.push(`| ${cell(row.area)} | ${cell(row.state)} | ${cell(row.reproduced ? '○' : '✗')} | ${cell(row.reason ?? '')} |`)
+    lines.push(
+      `| ${cell(row.area)} | ${cell(row.state)} | ${cell(row.reproduced ? '○' : '✗')} | ${cell(row.reason ?? '')}${(row.mismatched ?? []).length > 0 ? ` (어긋난 축: ${row.mismatched.join(',')})` : ''} |`
+    )
   }
   lines.push('')
   lines.push('## 실행 회차')

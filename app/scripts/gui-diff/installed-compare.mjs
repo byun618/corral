@@ -119,6 +119,19 @@ if (args.phase === 'installed' || args.phase === 'both') {
       // 미리 떠 둔 읽기 전용 전체 화면 캡처에서 영역만 잘라 쓴다. 언제 찍은 것인지 함께 남긴다 —
       // 개발 인스턴스 기동 **전**에 찍은 것이어야 의미가 있다.
       const [cx, cy, cw, ch] = args.crop.split(',').map(Number)
+      // 크롭이 **그 창 안**인지 검증한다 (L7). 이전 판은 고정 상수로 자르고 `window.bounds` 는
+      // 나란히 적기만 했다 — 두 값을 잇는 검사가 없어 바탕화면을 찍은 회차가 「통과(명령)」로 남았다.
+      const bounds = target.bounds ?? {}
+      const inside =
+        cx >= (bounds.X ?? 0) &&
+        cy >= (bounds.Y ?? 0) &&
+        cx + cw <= (bounds.X ?? 0) + (bounds.Width ?? 0) &&
+        cy + ch <= (bounds.Y ?? 0) + (bounds.Height ?? 0)
+      if (!inside) {
+        throw new Error(
+          `크롭 ${args.crop} 이 설치본 창 영역 밖이다 (창 ${JSON.stringify(bounds)}) — 엉뚱한 그림을 남기지 않는다`
+        )
+      }
       const cropPath = path.join(args.out, `${stamp}-installed-${args.area}.png`)
       fs.copyFileSync(args.screenshot, cropPath)
       const cropped = spawnSync('sips', ['-c', String(ch), String(cw), '--cropOffset', String(cy), String(cx), cropPath], { encoding: 'utf8' })

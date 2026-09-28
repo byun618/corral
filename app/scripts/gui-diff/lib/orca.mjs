@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { connect, pickTarget, until, setViewport, assertPortFree } from './cdp.mjs'
+import { connect, pickTarget, until, setViewport, assertPortFree, clickElement } from './cdp.mjs'
 
 /** 훅 설치기가 건드릴 수 있는 env 는 전부 떼고 우리 것으로 덮는다 (Orca 자신의 e2e 경계와 같은 목록). */
 const STRIPPED_ENV = new Set([
@@ -230,53 +230,141 @@ export async function seedOrcaRepo(handle, repoPath, { expectedWorktrees = 2 } =
  * `createTab` 으로 탭(=pane 권한)을 만들고 `setAgentStatus(paneKey, …)` 로 상태를 꽂는다.
  * Orca e2e 가 쓰는 바로 그 호출이다 (`tests/e2e/worktree-lineage-agent-expansion.spec.ts:43-53`).
  */
-export async function setOrcaAgents(handle, { repoId, count, states }) {
-  return handle.cdp.evaluate(
-    async ({ repoId, count, states }) => {
+/**
+ * 상태를 **정확히** 맞춘다 — 탭 `tabCount` 개, 에이전트 `agents.length` 개(탭 하나에 하나).
+ *
+ * 왜 「덧붙이기」가 아니라 「수렴」인가 (F2): 이전 판은 상태를 바꿀 때마다 새 `randomUUID` 키로
+ * `setAgentStatus` 만 했고, Orca 스토어는 `{ ...previousLive, [paneKey]: entry }` 로 **누적**한다
+ * (`agent-status-live-reducer.ts`). 그래서 `agents-2` 뒤의 `agents-5` 는 에이전트 7개였고,
+ * 카드 알약이 `+2` 로 그 흔적을 남겼다. 지금은 ① 이 도구가 앞서 넣은 탭의 상태를 **지우고**
+ * ② 탭 수를 목표에 맞춰 만들고/닫고 ③ 다시 넣은 뒤 ④ **스토어와 화면에서 관측값을 돌려준다**.
+ * 판정은 호출자(`verifyState`)가 한다 — 여기서 「맞췄다」고 선언하지 않는다.
+ */
+export async function applyOrcaState(handle, { repoId, tabCount, agents }) {
+  const observed = await handle.cdp.evaluate(
+    async ({ repoId, tabCount, agents }) => {
       const store = window.__store
       if (!store) throw new Error('window.__store 없음')
-      const worktreeId = store.getState().activeWorktreeId ?? store.getState().worktreesByRepo[repoId]?.[0]?.id
+      const get = () => store.getState()
+      const worktreeId = get().activeWorktreeId ?? get().worktreesByRepo[repoId]?.[0]?.id
       if (!worktreeId) throw new Error('worktree 없음')
-      const state = store.getState()
       // 에이전트 행이 카드 안에 그려지려면 이 표시 속성이 켜져 있어야 한다.
-      if (!state.worktreeCardProperties.includes('inline-agents')) state.toggleWorktreeCardProperty('inline-agents')
-      while ((store.getState().tabsByWorktree[worktreeId] ?? []).length < count) {
-        store.getState().createTab(worktreeId)
+      if (!get().worktreeCardProperties.includes('inline-agents')) get().toggleWorktreeCardProperty('inline-agents')
+
+      const tabIdsOf = () => (get().tabsByWorktree[worktreeId] ?? []).map((tab) => tab.id)
+
+      // ① 앞선 상태가 남긴 주입을 **탭 접두사로 싹 지운다**. 개별 키를 기억하지 않아도 되고,
+      //    이 도구가 만든 탭 말고는 손대지 않는다.
+      for (const tabId of tabIdsOf()) get().removeAgentStatusByTabPrefix?.(tabId)
+
+      // ② 탭 수를 목표로 수렴시킨다. 만들기만 하면 상태를 거슬러 내려갈 수 없다(5 → 2).
+      let guard = 0
+      while (tabIdsOf().length < tabCount && guard++ < 50) get().createTab(worktreeId)
+      guard = 0
+      while (tabIdsOf().length > tabCount && guard++ < 50) {
+        const extra = tabIdsOf()[tabIdsOf().length - 1]
+        get().closeTab(extra, { reason: 'l443-measure' })
       }
-      const tabs = (store.getState().tabsByWorktree[worktreeId] ?? []).slice(0, count)
-      // 시각은 **지금**이어야 한다: 오래된 타임스탬프는 신선도 검사(`isExplicitAgentStatusFresh`,
-      // `AGENT_STATUS_STALE_AFTER_MS`)에 걸려 행이 통째로 사라진다 (실측: 고정 시각이면 0건).
+
+      // ③ 탭 하나에 에이전트 하나. 시각은 **지금**이어야 한다 — 오래된 값은 신선도 검사
+      //    (`AGENT_STATUS_STALE_AFTER_MS`)에 걸려 행이 통째로 사라진다.
+      const tabs = tabIdsOf().slice(0, agents.length)
       const now = Date.now()
       const paneKeys = []
-      tabs.forEach((tab, index) => {
-        const spec = states[index % states.length]
-        // leaf id 는 **UUID 여야 한다** — `parsePaneKey` 가 못 읽는 모양이면 행이 조용히 빠진다
-        // (실측: `<tabId>:l443-0` 은 0건, `<tabId>:<uuid>` 는 렌더됨).
-        const paneKey = `${tab.id}:${crypto.randomUUID()}`
+      tabs.forEach((tabId, index) => {
+        const spec = agents[index]
+        // leaf id 는 **UUID 여야 한다** — `parsePaneKey` 가 못 읽는 모양이면 행이 조용히 빠진다.
+        const paneKey = `${tabId}:${crypto.randomUUID()}`
         paneKeys.push(paneKey)
-        store
-          .getState()
-          .setAgentStatus(
-            paneKey,
-            { state: spec.state, prompt: spec.prompt, agentType: spec.agentType },
-            spec.agentType,
-            { updatedAt: now, stateStartedAt: now }
-          )
+        get().setAgentStatus(
+          paneKey,
+          { state: spec.state, prompt: spec.prompt, agentType: spec.agentType },
+          spec.agentType,
+          { updatedAt: now, stateStartedAt: now }
+        )
       })
+
+      // ④ 관측값. **주입한 키가 아니라 스토어 전체**를 센다 — F2 는 "넣은 것만 세어" 못 잡혔다.
+      const live = get().agentStatusByPaneKey ?? {}
+      const mine = new Set(tabIdsOf())
+      const rows = Object.entries(live)
+        .filter(([key]) => mine.has(String(key).split(':')[0]))
+        .map(([key, entry]) => ({ paneKey: key, state: entry?.status?.state ?? entry?.state ?? null }))
       return {
         worktreeId,
+        tabIds: tabIdsOf(),
         paneKeys,
-        tabs: tabs.map((tab) => tab.id),
-        // 양성 대조(C6ⓐ)의 전제를 **새 프로필의 실제 값**으로 확인한다 — 코드로 미루지 않는다.
-        // 양성 대조(C6ⓐ)의 전제 — 묶음 알약은 compact 표시에서만 뜬다. 코드의 기본값이 아니라
-        // **이 프로필의 실제 값**을 원자료로 남긴다.
-        agentActivityDisplayMode: store.getState().agentActivityDisplayMode ?? null,
-        isAgentSendTargetModeActive: Boolean(store.getState().agentSendPopoverTargetMode),
-        worktreeCardProperties: store.getState().worktreeCardProperties
+        activeTabId: get().activeTabIdByWorktree?.[worktreeId] ?? null,
+        // DOM 에서 본 활성 탭 순번 — corral 과 **같은 축으로** 견주려고 순번으로 적는다.
+        activeTabIndex: (() => {
+          const all = [...document.querySelectorAll('[data-testid="sortable-tab"]')]
+          return all.findIndex((tab) => tab.getAttribute('data-active') === 'true')
+        })(),
+        domTabs: document.querySelectorAll('[data-testid="sortable-tab"]').length,
+        liveAgents: rows.length,
+        liveAgentsAll: Object.keys(live).length,
+        statuses: rows.map((row) => row.state),
+        // 양성 대조(C6ⓐ)의 전제 — 코드의 기본값이 아니라 **이 프로필의 실제 값**을 남긴다.
+        agentActivityDisplayMode: get().agentActivityDisplayMode ?? null,
+        isAgentSendTargetModeActive: Boolean(get().agentSendPopoverTargetMode),
+        worktreeCardProperties: get().worktreeCardProperties
       }
     },
-    { repoId, count, states }
+    { repoId, tabCount, agents }
   )
+
+  // 화면이 스토어를 따라왔는지 **기다린다** (L9). 이전 판은 `pause(900)` 한 줄이었고, 그 흔들림은
+  // 같은 회차의 두 캡처 사이에 안 나타나므로 자기 diff(C5)로도 안 잡힌다.
+  //
+  // 무엇을 기다리나: ① 탭이 목표 수만큼 그려졌는지 ② 카드의 **표현 모양**이 주입 수에 맞는지.
+  // compact 표시에서 에이전트가 2명 이상이면 카드는 요약 패널 하나를 그리고, 1명이면 행 하나를 그린다
+  // (`WorktreeCardAgents.tsx` `shouldUseSummaryRow`). **개수 오라클은 스토어**가 맡는다 —
+  // 화면의 "N agents" 문구는 `aria-label` 안에 있고 번역 대상이라 관문으로 쓰지 않는다(증거로만 남긴다).
+  const wantShape = agents.length === 0 ? 'none' : agents.length > 1 ? 'summary' : 'row'
+  const readRendered = () =>
+    handle.cdp.evaluate(() => {
+      const list = document.querySelector('[data-compact-agent-list]')
+      const summary = document.querySelector('.compact-agent-summary-panel')
+      const button = document.querySelector('.compact-agent-summary-button')
+      const slots = list ? list.children.length : 0
+      const tabs = [...document.querySelectorAll('[data-testid="sortable-tab"]')]
+      return {
+        shape: summary ? 'summary' : slots > 0 ? 'row' : 'none',
+        slots,
+        activeTabIndex: tabs.findIndex((tab) => tab.getAttribute('data-active') === 'true'),
+        // 증거용 — 번역 대상 문구라 판정에는 쓰지 않는다.
+        summaryAriaLabel: button ? (button.getAttribute('aria-label') ?? null) : null,
+        summaryText: summary ? (summary.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120) : null,
+        tabs: document.querySelectorAll('[data-testid="sortable-tab"]').length
+      }
+    })
+  // 활성 탭은 **첫 탭을 눌러서** 맞춘다 (제품 클릭 경로, 두 앱 대칭). 폴링 안에서 다시 눌러 본다 —
+  // 탭이 아직 안 그려졌으면 첫 시도는 누를 대상이 없다.
+  const rendered = await until(
+    async () => {
+      const seen = await readRendered()
+      if (seen.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-testid="sortable-tab"]')
+      // 활성 탭도 기다린다 — 탭을 누른 직후 같은 turn 에 읽으면 React 갱신 전 값이 나온다.
+      return seen.shape === wantShape && seen.tabs === tabCount && seen.activeTabIndex === 0 ? seen : null
+    },
+    `orca 화면이 탭 ${tabCount}개 · 표현 ${wantShape} · 첫 탭 활성을 그림`,
+    20_000
+  ).catch(async (error) => {
+    // 못 그렸으면 **관측값을 들고 돌아간다** — 여기서 던지면 회차가 죽고, 「재현 실패」를 원자료로
+    // 남길 기회를 잃는다. 판정은 호출자가 한다.
+    const seen = await readRendered().catch(() => ({ shape: null, slots: null, tabs: null }))
+    return { ...seen, waitError: String(error.message ?? error) }
+  })
+
+  return {
+    ...observed,
+    wantShape,
+    rendered,
+    domTabs: rendered.tabs ?? observed.domTabs,
+    // 클릭 뒤 **수렴한 값**을 쓴다. 주입 evaluate 안에서 읽은 값은 낡았다.
+    activeTabIndex: rendered.activeTabIndex ?? observed.activeTabIndex
+  }
+
 }
 
 /** 창 크기를 맞춘다 (대칭성) — 브라우저 수준 세션으로 붙어야 `Browser.*` 가 있다. */

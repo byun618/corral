@@ -138,7 +138,9 @@ export function collectSnapshot(spec) {
     htmlClass: document.documentElement.className || null,
     htmlDataTheme: document.documentElement.getAttribute('data-theme'),
     bodyClass: document.body?.className || null,
-    fontsReady: true,
+    // 관측값이다 — 리터럴 `true` 를 적어 두면 스냅샷을 읽는 사람이 「이 회차는 폰트가 준비됐었다」로
+    // 읽는다 (L1). 준비 자체는 `settlePage` 의 `await document.fonts.ready` 가 한다.
+    fontsStatus: document.fonts?.status ?? null,
     // **오류 오버레이**가 떠 있으면 화면을 덮으므로 그 캡처는 못 믿는다 (K4). 0 이어야 한다.
     devOverlays: document.querySelectorAll('vite-error-overlay, #vite-error-overlay').length,
     // dev 서버가 CSS 를 주입하는 <style> 태그 수. head 안이라 화면을 가리지 않으므로 경고가 아니라
@@ -161,16 +163,16 @@ export function collectSnapshot(spec) {
       const rect = el.getBoundingClientRect()
       return rect.width > 0 || rect.height > 0
     })
-    const record = { present: visible.length > 0, countAll: found.length, count: visible.length }
-    const el = visible[0] ?? null
-    if (el) {
+    const record = {
+      present: visible.length > 0,
+      countAll: found.length,
+      count: visible.length,
+      // **선언상 없음**(짝짓기 파일에 그 앱 선택자가 없다)과 **선택자가 0개를 찾음**을 갈라 둔다 (F11).
+      // 앞은 선언이고 뒤는 실패다 — 447~450 이 DOM 을 고친 뒤 뒤엣것은 드문 사고가 아니라 예정된 사건이다.
+      declaredAbsent: unit.selector === null || unit.selector === undefined
+    }
+    const measure = (el) => {
       const rect = el.getBoundingClientRect()
-      record.box = {
-        x: round(rect.left - rootRect.left),
-        y: round(rect.top - rootRect.top),
-        w: round(rect.width),
-        h: round(rect.height)
-      }
       const computed = getComputedStyle(el)
       const style = {}
       const wanted = new Set()
@@ -182,10 +184,28 @@ export function collectSnapshot(spec) {
         if (raw === undefined || raw === null) continue
         style[prop] = isColorProp(prop) ? normalizeColor(String(raw)) : normalizeComposite(raw)
       }
-      record.style = style
-      // 비교하지 않는 기록값 — 판정 문서에서 "무엇이 거기 있었나" 를 사람이 읽을 자리.
-      record.text = (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160)
-      record.tag = el.tagName.toLowerCase()
+      return {
+        box: {
+          x: round(rect.left - rootRect.left),
+          y: round(rect.top - rootRect.top),
+          w: round(rect.width),
+          h: round(rect.height)
+        },
+        style,
+        // 비교하지 않는 기록값 — 판정 문서에서 "무엇이 거기 있었나" 를 사람이 읽을 자리.
+        text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        tag: el.tagName.toLowerCase()
+      }
+    }
+    // **걸린 요소를 전부 잰다** (F7). 이전 판은 `visible[0]` 만 재서, 첫 요소와 총수가 같으면
+    // 둘째 이후 카드·행·탭의 간격·폰트·색이 달라도 본 diff 와 자기 diff 가 모두 0 이었다.
+    // 개수 상한을 둔다 — 한 선택자에 수십 개가 걸리는 자리는 짝짓기 규약이 잘못된 것이다.
+    const MAX_ITEMS = 12
+    record.items = visible.slice(0, MAX_ITEMS).map((el) => measure(el))
+    record.itemsTruncated = visible.length > MAX_ITEMS
+    if (record.items.length > 0) {
+      // 첫 요소는 예전 모양 그대로도 남긴다 — 기존 원자료·보고서와 읽는 자리를 맞춘다.
+      Object.assign(record, record.items[0])
     }
     elements[unit.id] = record
   }

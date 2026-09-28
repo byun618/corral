@@ -180,6 +180,29 @@ export async function connectBrowser(port) {
  * 이 함수는 항상 두 앱에 같은 인자로 불린다. `deviceScaleFactor: 0` 은 "시스템 기본을 쓰라" 는 뜻이라
  * DPR 은 건드리지 않는다. 적용 사실은 보고서의 「측정 조건」에 적는다.
  */
+/**
+ * 선택자가 가리키는 요소를 **진짜 마우스로** 누른다.
+ *
+ * 왜 `element.click()` 이 아닌가: Orca 탭은 dnd-kit 센서가 `pointerdown`/`mousedown` 을 듣고
+ * 선택을 처리한다. `click()` 은 click 이벤트 하나만 보내므로 **탭이 바뀌지 않는다** —
+ * 실측: 첫 탭을 `click()` 해도 활성 탭이 마지막 탭에 그대로 남았다.
+ * CDP 입력은 제품이 실제로 받는 경로라 두 앱에 같은 방식으로 쓸 수 있다.
+ */
+export async function clickElement(cdp, selector) {
+  const point = await cdp.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    if (rect.width === 0 && rect.height === 0) return null
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  }, selector)
+  if (!point) return false
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, buttons: 0 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
+  return true
+}
+
 export async function setViewport(cdp, { width, height }) {
   await cdp.send('Emulation.setDeviceMetricsOverride', {
     width,

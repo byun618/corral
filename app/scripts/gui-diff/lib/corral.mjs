@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { connect, pickTarget, until, setViewport, assertPortFree } from './cdp.mjs'
+import { connect, pickTarget, until, setViewport, assertPortFree, clickElement } from './cdp.mjs'
 
 /** 한 줄 NDJSON 요청/응답. control 소켓과 herdr backend 소켓이 같은 모양이다. */
 export function rpc(socketPath, request, timeoutMs = 15_000) {
@@ -33,7 +33,13 @@ export function rpc(socketPath, request, timeoutMs = 15_000) {
       if (!buffer.includes('\n')) return
       clearTimeout(timer)
       socket.destroy()
-      resolve(JSON.parse(buffer.split('\n')[0]))
+      // 파싱 실패를 **reject 로** 돌린다 (L5). 핸들러에서 던지면 이 Promise 는 영원히 pending 이고
+      // 미처리 예외로 프로세스가 죽어, 비정상 응답을 준 회차의 원인이 사라진다.
+      try {
+        resolve(JSON.parse(buffer.split('\n')[0]))
+      } catch (error) {
+        reject(new Error(`[corral] rpc 응답이 JSON 이 아니다: ${buffer.slice(0, 200)} (${error.message})`))
+      }
     })
   })
 }
@@ -221,69 +227,129 @@ export async function seedCorralRepo(handle, repoPath, { expectedWorktrees = 2 }
  * corral 은 상태를 넷만 구분한다(idle·working·blocked·unknown) — Orca 의 10종을 그대로 못 받는다.
  * 그 사실 자체가 차이 행이지 이 함수가 메울 구멍이 아니다 (00-analysis U6).
  */
-export async function setCorralAgents(handle, { count, states }) {
-  // **pane 순서를 고정한다.** `pane.list` 가 돌려주는 순서는 보장이 없고, 순서가 흔들리면
-  // 어느 pane 이 어느 상태를 받는지가 회차마다 달라진다 — 실측: 탭 점 색이
-  // rgba(58,65,64) / rgba(125,211,160) 로 갈려 C10 이 깨졌다. id 의 숫자 꼬리로 자연 정렬한다.
-  const sortPanes = (list) =>
-    [...list].sort((a, b) => {
-      const n = (id) => Number(String(id).replace(/^.*?p(\d+)$/, '$1')) || 0
-      return n(a.pane_id) - n(b.pane_id) || String(a.pane_id).localeCompare(String(b.pane_id))
-    })
-  const listed = await backendRpc(handle, 'pane.list')
-  const panes = sortPanes(listed.panes ?? [])
-  // pane 이 모자라면 workspace 를 늘려 만든다 — 사이드바가 그릴 것은 pane 이다.
-  while (panes.length < count) {
-    const created = await backendRpc(handle, 'pane.split', { pane_id: panes[panes.length - 1].pane_id, direction: 'right' })
-    const refreshed = await backendRpc(handle, 'pane.list')
-    panes.length = 0
-    panes.push(...sortPanes(refreshed.panes ?? []))
-    if (!created) break
+/**
+ * 상태를 **정확히** 맞춘다 — 탭 `tabCount` 개(각 탭에 루트 pane 하나), 에이전트 `agents.length` 개.
+ *
+ * 왜 `pane.split` 이 아니라 `tab.create` 인가 (F4): 이전 판은 pane 만 쪼개 **탭 1개**에 pane 5개를
+ * 만들었고, Orca 는 탭 5개를 만들었다. 그 비대칭이 탭바 개수·활성 위치·점 색·닫기 수 차이로 보고서에
+ * 실려 LIFE-449 해소 대상에 들어갔다 — 제품 차이가 아니라 하네스가 만든 차이다.
+ * 제품이 새 탭을 만드는 경로는 `tab.create` 다 (`app/src/main/adapter/internal/lifecycle.ts`).
+ *
+ * 판정은 하지 않는다 — 관측값만 돌려주고 호출자(`verifyState`)가 요청과 견준다.
+ */
+export async function applyCorralState(handle, { tabCount, agents }) {
+  const workspaceId = handle.workspaceId ?? 'w1'
+  const listTabs = async () => {
+    const snapshot = await backendRpc(handle, 'session.snapshot')
+    return {
+      tabs: readSnapshotTabs(snapshot).filter((tab) => tab.workspace_id === workspaceId),
+      panes: readSnapshotPanes(snapshot).filter((pane) => pane.workspace_id === workspaceId),
+      focusedTabId: snapshot?.snapshot?.focused_tab_id ?? null
+    }
   }
+  const natural = (id) => Number(String(id).replace(/^.*?[tp](\d+)$/, '$1')) || 0
+  const sorted = (rows, key) =>
+    [...rows].sort((a, b) => natural(a[key]) - natural(b[key]) || String(a[key]).localeCompare(String(b[key])))
+
+  // ① **새 탭을 만들고 옛 탭을 닫는다.** 상태를 갈아탈 때 같은 pane 을 다시 쓰면 herdr 의 상태
+  //    전이가 끼어든다 — 실측: `working` 이던 pane 에 `idle` 을 보고하면 그 pane 은 `done` 으로
+  //    집계됐고(working→idle 은 「끝났다」로 읽힌다), 두 앱의 상태 분포가 갈렸다.
+  //    깨끗한 pane 에 한 번만 보고하면 요청한 상태가 그대로 남는다. 만들기·닫기 모두 제품 경로다.
+  const before = (await listTabs()).tabs.map((tab) => tab.tab_id)
+  let guard = 0
+  const fresh = []
+  while (fresh.length < tabCount && guard++ < 50) {
+    const created = await backendRpc(handle, 'tab.create', { workspace_id: workspaceId })
+    const tabId = created?.tab?.tab_id ?? null
+    if (!tabId) throw new Error(`[corral] tab.create 응답에 tab_id 가 없다: ${JSON.stringify(created).slice(0, 160)}`)
+    fresh.push(tabId)
+  }
+  for (const tabId of before) await backendRpc(handle, 'tab.close', { tab_id: tabId })
+  guard = 0
+  // 그래도 남는 탭이 있으면(제품이 마지막 탭을 지키는 등) 목표 수에 맞춰 뒤에서 닫는다.
+  while ((await listTabs()).tabs.length > tabCount && guard++ < 50) {
+    const { tabs } = await listTabs()
+    await backendRpc(handle, 'tab.close', { tab_id: sorted(tabs, 'tab_id')[tabs.length - 1].tab_id })
+  }
+
+  // ② 탭 하나에 에이전트 하나 — 그 탭의 루트 pane 에 보고한다.
+  const orderedTabs = sorted((await listTabs()).tabs, 'tab_id')
   const applied = []
-  for (let index = 0; index < Math.min(count, panes.length); index += 1) {
-    const spec = states[index % states.length]
+  for (let index = 0; index < Math.min(agents.length, orderedTabs.length); index += 1) {
+    const spec = agents[index]
+    const tabId = orderedTabs[index].tab_id
+    const { panes } = await listTabs()
+    const rootPane = sorted(panes.filter((pane) => pane.tab_id === tabId), 'pane_id')[0]
+    if (!rootPane) throw new Error(`[corral] 탭 ${tabId} 에 pane 이 없다`)
     await backendRpc(handle, 'pane.report_agent', {
-      pane_id: panes[index].pane_id,
+      pane_id: rootPane.pane_id,
       source: 'l443-gui-diff',
       agent: spec.agentType,
       state: spec.state,
       message: spec.prompt
     })
-    applied.push({ pane: panes[index].pane_id, ...spec })
+    applied.push({ tab: tabId, pane: rootPane.pane_id, ...spec })
   }
-  // 탭 점(`.main-tab-dot`)은 **탭 단위 집계 상태**를 쓰고, 그 집계는 herdr 가 준다
-  // (`store.ts` TabRow.agent_status). pane 단위 push(`pane.agent_status_changed`)만으로는
-  // 탭 행이 새로 오지 않아, 회차마다 「보고 전 스냅샷」이 남는다 — 실측: 같은 상태에서
-  // 탭 점이 accent/neutral 로 갈려 C10 이 깨졌다. 그래서 ① 전체 재동기화를 시킨 뒤
-  // ② **우리 쪽 backend 연결**(제3 오라클)로 정답을 떠서 ③ 화면이 그 값에 수렴할 때까지 기다린다.
+
+  // ③ 탭 점(`.main-tab-dot`)은 **탭 단위 집계 상태**를 쓰고 그 집계는 herdr 가 준다. pane 단위
+  //    push 만으로는 탭 행이 새로 오지 않아 「보고 전 집계」가 화면에 남을 수 있다 — 전체 재동기화를
+  //    시키고 **우리 쪽 backend 연결**(제3 오라클)의 값에 화면이 수렴할 때까지 기다린다.
+  //    못 수렴하면 던지지 않고 관측값으로 남긴다 (판정은 호출자 몫).
   await rpc(handle.control, { cmd: 'resync', reason: 'l443-agents' }, 20_000)
   const expected = await until(
     async () => {
-      const tabs = readSnapshotTabs(await backendRpc(handle, 'session.snapshot'))
-      return tabs.length > 0 ? tabs : null
+      const { tabs: rows } = await listTabs()
+      return rows.length > 0 ? sorted(rows, 'tab_id') : null
     },
     'corral 탭 집계 상태(backend)',
     20_000
   )
-  const readDots = () =>
-    handle.cdp.evaluate(() =>
-      [...document.querySelectorAll('[data-main-tabbar] .main-tab-dot')].map((dot) =>
-        dot.classList.contains('tone-accent') ? 'accent' : 'neutral'
-      )
-    )
-  // 순서가 아니라 **모음**으로 견준다 — DOM 탭 순서와 backend 스냅샷 순서는 서로 보장이 없다.
+  const readDom = () =>
+    handle.cdp.evaluate(() => {
+      const all = [...document.querySelectorAll('[data-main-tabbar] [data-main-tab]')]
+      return {
+        dots: [...document.querySelectorAll('[data-main-tabbar] .main-tab-dot')].map((dot) =>
+          dot.classList.contains('tone-accent') ? 'accent' : 'neutral'
+        ),
+        domTabs: all.length,
+        activeTabIndex: all.findIndex((tab) => tab.classList.contains('is-active')),
+        panes: document.querySelectorAll('[data-pane]').length
+      }
+    })
   const wanted = expected.map((tab) => (tab.agent_status === 'working' ? 'accent' : 'neutral')).sort().join(',')
-  let dots = []
-  await until(
+  let dom = await readDom()
+  const dotsConverged = await until(
     async () => {
-      dots = await readDots()
-      return [...dots].sort().join(',') === wanted
+      dom = await readDom()
+      // 활성 탭은 **첫 탭을 눌러서** 맞춘다 (Orca 와 같은 제품 클릭 경로). 갱신은 다음 폴링에서 본다.
+      if (dom.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-main-tabbar] [data-main-tab]')
+      return [...dom.dots].sort().join(',') === wanted && dom.activeTabIndex === 0 && dom.domTabs === tabCount
     },
-    `corral 탭 점이 backend 집계에 수렴 (기대 ${wanted})`,
+    `corral 탭 점이 backend 집계에 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,
     20_000
+  ).then(
+    () => true,
+    () => false
   )
-  return { applied, paneCount: panes.length, tabsFromBackend: expected, tabDots: dots }
+
+  const final = await listTabs()
+  return {
+    workspaceId,
+    applied,
+    tabIds: sorted(final.tabs, 'tab_id').map((tab) => tab.tab_id),
+    paneIds: sorted(final.panes, 'pane_id').map((pane) => pane.pane_id),
+    tabsFromBackend: sorted(final.tabs, 'tab_id'),
+    agentStatuses: sorted(final.panes, 'pane_id')
+      .map((pane) => pane.agent_status)
+      .filter((status) => status !== 'unknown'),
+    paneStatusesAll: sorted(final.panes, 'pane_id').map((pane) => pane.agent_status),
+    focusedTabId: final.focusedTabId,
+    tabDots: dom.dots,
+    domTabs: dom.domTabs,
+    activeTabIndex: dom.activeTabIndex,
+    domPanes: dom.panes,
+    dotsConverged
+  }
 }
 
 /**
@@ -294,7 +360,20 @@ export async function setCorralAgents(handle, { count, states }) {
 function readSnapshotTabs(response) {
   const tabs = response?.snapshot?.tabs
   if (!Array.isArray(tabs)) return []
-  return tabs.map((tab) => ({ tab_id: tab.tab_id, agent_status: tab.agent_status }))
+  return tabs.map((tab) => ({ tab_id: tab.tab_id, workspace_id: tab.workspace_id, agent_status: tab.agent_status, focused: tab.focused }))
+}
+
+/** 같은 스냅샷의 **pane 행**. 탭 행과 칸 이름이 겹쳐서 모양이 아니라 경로로 읽는다. */
+function readSnapshotPanes(response) {
+  const panes = response?.snapshot?.panes
+  if (!Array.isArray(panes)) return []
+  return panes.map((pane) => ({
+    pane_id: pane.pane_id,
+    tab_id: pane.tab_id,
+    workspace_id: pane.workspace_id,
+    agent_status: pane.agent_status,
+    focused: pane.focused
+  }))
 }
 
 /** 창 크기 맞추기 — 두 앱을 같은 크기로 세운다 (브라우저 수준 세션). */
@@ -302,13 +381,4 @@ export async function setWindowBounds(handle, size) {
   return setViewport(handle.cdp, size)
 }
 
-/** 끝나면 닫는다 (C12). 닫았다는 것을 호출자가 원자료로 남길 수 있게 pid 를 돌려준다. */
-export async function shutdownCorral(handle) {
-  const pids = { backend: handle.backend?.pid ?? null }
-  try {
-    await rpc(handle.control, { cmd: 'quit' }, 5_000)
-  } catch {
-    /* control 에 quit 가 없으면 아래 status 로 pid 를 잡아 끝낸다 */
-  }
-  return pids
-}
+

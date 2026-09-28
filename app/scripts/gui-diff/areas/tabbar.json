@@ -16,7 +16,8 @@
         "paint"
       ],
       "classify": "보류",
-      "classifyWhy": "루트 계층 차이의 표현이다 — Orca 는 편집 영역 전체가 탭 줄 하나, corral 은 영역(group)마다 탭바. 폭 차이는 스타일이 아니라 구조라 449 가 구조를 먼저 정해야 한다"
+      "classifyWhy": "루트 계층 차이의 표현이다 — Orca 는 편집 영역 전체가 탭 줄 하나, corral 은 영역(group)마다 탭바. 폭 차이는 스타일이 아니라 구조라 449 가 구조를 먼저 정해야 한다",
+      "axis": "tabCount"
     },
     {
       "id": "tab-strip",
@@ -29,7 +30,8 @@
       ],
       "global": true,
       "classify": "보류",
-      "classifyWhy": "corral 은 탭바 자체가 스트립이라 루트와 같은 요소를 가리킨다 — 위와 같은 구조 차이"
+      "classifyWhy": "corral 은 탭바 자체가 스트립이라 루트와 같은 요소를 가리킨다 — 위와 같은 구조 차이",
+      "axis": "tabCount"
     },
     {
       "id": "tab",
@@ -42,7 +44,8 @@
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "탭 폭·높이·padding 은 449 범위 (Orca 고정 폭 180/220px vs corral 내용 폭)"
+      "classifyWhy": "탭 폭·높이·padding 은 449 범위 (Orca 고정 폭 180/220px vs corral 내용 폭)",
+      "axis": "tabCount"
     },
     {
       "id": "tab-active",
@@ -54,31 +57,40 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "활성 탭 배경·인디케이터는 449 범위"
+      "classifyWhy": "활성 탭 배경·인디케이터는 449 범위",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 하나라도 있을 때만"
     },
     {
       "id": "tab-status-dot",
-      "note": "탭 선두 상태 점",
-      "orca": "[data-testid=\"tab-agent-activity-indicator\"]",
+      "note": "탭 선두 **상태 표시 하나** — Orca 는 상태 표시와 로고를 한 span 에 담으므로 그 안의 첫 자식(상태 표시)만 짝짓는다. Orca 는 working 을 스피너로, corral 은 칠한 원으로 그린다 (그 차이는 진짜다)",
+      "orca": "[data-testid=\"tab-agent-activity-indicator\"] > span:first-child",
       "corral": ".main-tab-dot",
       "props": [
         "box",
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "선두 상태 점 크기·색은 449 범위"
+      "classifyWhy": "상태 표시의 모양·크기·색은 449 범위. Orca 스피너 vs corral 원은 표현 선택 차이라 449 가 어휘를 먼저 정해야 한다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭에 에이전트 활동이 있을 때만 (Orca). corral 은 항상 점을 그린다 — 그 차이가 기록 대상이다"
     },
     {
       "id": "tab-agent-icon",
-      "note": "탭 안 에이전트 로고",
-      "orca": "[data-testid=\"sortable-tab\"] svg",
+      "note": "탭 안 에이전트 로고 — Orca 는 `[data-agent-icon]`(provider 로고 전용), corral 은 `[data-agent-kind]`. 탭 안 모든 svg 를 세면 닫기 아이콘까지 섞인다",
+      "orca": "[data-testid=\"sortable-tab\"] [data-agent-icon]",
       "corral": "[data-main-tab] [data-agent-kind]",
       "props": [
         "box",
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "탭 안 에이전트 로고는 449 범위"
+      "classifyWhy": "탭 안 에이전트 로고는 449 범위",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭에 에이전트가 붙었을 때만"
     },
     {
       "id": "tab-unread-bell",
@@ -89,7 +101,9 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "Orca 전용 unread 벨 — corral 에 unread 개념이 없다 (00-analysis §4 는 447 몫으로 본다)"
+      "classifyWhy": "Orca 전용 unread 벨 — corral 에 unread 개념이 없다 (00-analysis §4 는 447 몫으로 본다)",
+      "conditional": true,
+      "conditionalWhy": "unread 가 있을 때만"
     },
     {
       "id": "tab-label",
@@ -112,7 +126,10 @@
       ],
       "orca": "[data-testid=\"sortable-tab\"] button:has(svg.lucide-x)",
       "classify": "해소 대상",
-      "classifyWhy": "닫기 버튼 노출 규칙·크기는 449 범위 (Orca 활성 상시 vs corral hover)"
+      "classifyWhy": "닫기 버튼 노출 규칙·크기는 449 범위 (Orca 활성 상시 vs corral hover)",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "corral 은 hover 에서만, Orca 는 활성 탭 상시"
     },
     {
       "id": "tab-add",
@@ -124,7 +141,8 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "새 탭 버튼은 449 범위 (Orca 드롭다운 vs corral 빈 탭)"
+      "classifyWhy": "새 탭 버튼은 449 범위 (Orca 드롭다운 vs corral 빈 탭)",
+      "axis": "tabCount"
     },
     {
       "id": "tab-overflow-indicator",
@@ -135,7 +153,10 @@
         "paint"
       ],
       "classify": "보류",
-      "classifyWhy": "Orca 전용 overflow 표시 — corral 은 탭이 넘칠 때의 표현을 아직 정하지 않았다"
+      "classifyWhy": "Orca 전용 overflow 표시 — corral 은 탭이 넘칠 때의 표현을 아직 정하지 않았다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 넘칠 때만"
     },
     {
       "id": "group-actions",
@@ -146,7 +167,10 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "corral 전용 영역 분할·메뉴 액션 묶음 — Orca 는 같은 기능을 우클릭 메뉴에 둔다"
+      "classifyWhy": "corral 전용 영역 분할·메뉴 액션 묶음 — Orca 는 같은 기능을 우클릭 메뉴에 둔다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "corral 영역 액션은 그룹이 있을 때만"
     }
   ]
 }

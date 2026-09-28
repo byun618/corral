@@ -15,14 +15,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-import { pause, until } from './lib/cdp.mjs'
+import { pause, until, assertPortFree } from './lib/cdp.mjs'
 import { collectSnapshot, settlePage, PROP_SETS, EXCLUDED_PROPS } from './lib/probe.mjs'
 import { diffSnapshots, selfDiff, compareMeta } from './lib/diff.mjs'
 import { renderReport, writeJson } from './lib/report.mjs'
 import { ensureFixtureRepo } from './lib/fixture.mjs'
-import { launchOrca, seedOrcaRepo, setOrcaAgents, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
-import { launchCorral, seedCorralRepo, setCorralAgents, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
-import { ensureLedger, appendRun, nextRunId } from './lib/runs.mjs'
+import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
+import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
+import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
+import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 
 // 이 도구는 전역 `WebSocket`(raw CDP) 을 쓴다 — node 20 에는 플래그 뒤에 있다.
 // corral 자신도 node >= 22.12 를 요구한다(`app/package.json` engines). 조용히 죽는 대신 여기서 말한다.
@@ -33,6 +34,25 @@ if (NODE_MAJOR < 22 || typeof globalThis.WebSocket !== 'function') {
       '        node 22 이상으로 돌려라. 예: ~/.nvm/versions/node/v24.14.1/bin/node app/scripts/gui-diff/measure.mjs …\n'
   )
   process.exit(2)
+}
+
+/**
+ * 그 경로를 쓰는 **앱** 프로세스만 고른다.
+ *
+ * 왜 필터가 필요한가: `pgrep -f <경로>` 는 그 경로를 **입에 올린** 아무 명령이나 잡는다 —
+ * 실측: 회차를 지켜보던 셸(`tail /tmp/l443/r2b.log`)이 걸려 프로필 삭제 가드가 헛돌았다.
+ * 그래서 명령줄이 Electron·Orca·herdr 인 줄만 남긴다. 우리가 남길 수 있는 것은 그것뿐이다.
+ */
+function appsUsingPath(target) {
+  const found = spawnSync('pgrep', ['-fl', target], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
+  return found
+    .map((line) => {
+      const space = line.indexOf(' ')
+      return { pid: Number(line.slice(0, space)), command: line.slice(space + 1) }
+    })
+    .filter((entry) => Number.isFinite(entry.pid) && entry.pid !== process.pid)
+    .filter((entry) => /Electron|electron|Orca|herdr/.test(entry.command))
+    .filter((entry) => !/^\/bin\/(z|ba)?sh|^-?sh\b|pgrep|\btail\b|\bgrep\b/.test(entry.command))
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -54,6 +74,7 @@ function parseArgs(argv) {
     keep: false,
     fresh: true,
     dumpDom: false,
+    controls: false,
     label: null
   }
   for (let i = 0; i < argv.length; i += 1) {
@@ -72,6 +93,8 @@ function parseArgs(argv) {
     else if (arg === '--keep') out.keep = true
     else if (arg === '--no-fresh') out.fresh = false
     else if (arg === '--dump-dom') out.dumpDom = true
+    // 양성 대조(C6)는 **명시할 때만** 돈다 (F8) — 일반 측정의 관문이 아니다.
+    else if (arg === '--controls') out.controls = true
     else if (arg === '--help' || arg === '-h') out.help = true
     else throw new Error(`알 수 없는 인자: ${arg}`)
   }
@@ -119,6 +142,11 @@ async function capture(app, handle, area, { outDir, tag }) {
   spec.units = spec.units.filter((unit) => typeof unit.selector === 'string')
   const snapshot = await handle.cdp.evaluate(collectSnapshot, spec)
   snapshot.app = app
+  // 영역 루트를 못 찾았으면 **그 자리에서 멈춘다** (L2). 이전 판은 `meta.rootFound` 와
+  // `error` 를 아무도 읽지 않아 캡처가 조용히 이어졌고, 막아 준 것은 잡음 관문의 부수효과였다.
+  if (snapshot.meta?.rootFound === false || snapshot.error) {
+    throw new Error(`[l443] ${app} 영역 루트를 못 찾았다: ${snapshot.error ?? area.root[app]}`)
+  }
   // 선택자를 안 준 단위는 명시적으로 부재로 채운다 — 빠뜨린 것과 없는 것을 구분한다.
   for (const unit of area.units) {
     if (typeof unit[app] !== 'string') snapshot.elements[unit.id] = { present: false, count: 0, countAll: 0, declaredAbsent: true }
@@ -196,36 +224,115 @@ async function dumpDom(handle, rootSelector, depth = 6) {
  * 두 앱을 같은 상태로 맞춘다. 상태마다 "무엇을 맞췄나" 를 돌려주고, 못 맞춘 것은 사유와 함께 돌려준다 —
  * 재현 못 한 상태를 공백으로 적는 것이 C7 의 요구다.
  */
+const STATE_TARGETS = {
+  default: { tabCount: 1, agents: [], detail: 'fixture 레포 1개 + linked worktree + 열린 탭 1개, 에이전트 없음' },
+  'agents-1': {
+    tabCount: 1,
+    agents: [{ state: 'working', prompt: 'L443 agent 1', agentType: 'claude' }],
+    detail: '루트 에이전트 1개 (Orca 묶음 임계 아래)'
+  },
+  'agents-2': {
+    tabCount: 2,
+    agents: [
+      { state: 'working', prompt: 'L443 fixture agent one', agentType: 'claude' },
+      { state: 'working', prompt: 'L443 fixture agent two', agentType: 'codex' }
+    ],
+    detail: '루트 에이전트 2개 (양성 대조 C6ⓐ 의 상태)'
+  },
+  'agents-5': {
+    tabCount: 5,
+    agents: [
+      { state: 'working', prompt: 'L443 agent 1', agentType: 'claude' },
+      { state: 'idle', prompt: 'L443 agent 2', agentType: 'codex' },
+      { state: 'blocked', prompt: 'L443 agent 3', agentType: 'claude' },
+      { state: 'working', prompt: 'L443 agent 4', agentType: 'codex' },
+      { state: 'idle', prompt: 'L443 agent 5', agentType: 'claude' }
+    ],
+    detail: '루트 에이전트 5개 (탭 5개, 탭마다 하나)'
+  }
+}
+
+/**
+ * 두 앱을 같은 상태로 맞추고 **맞춰졌는지 검증한다** (F2·F4).
+ *
+ * 이전 판은 두 호출이 예외 없이 끝나면 `reproduced: true` 였다. 그래서 Orca 에이전트가 7개(누적)이고
+ * corral 탭이 1개(pane 분할)인 회차가 「에이전트 5개 상태」로 보고서에 실렸고, 그 비대칭이
+ * LIFE-449 해소 대상 목록에 들어갔다. 지금은 축마다 요청값·관측값을 적고, **어긋난 축은 이름으로 남긴다** —
+ * 그 축에 달린 차이 행은 보고서에서 「해소 대상」이 아니라 「보류(하네스가 만든 차이)」로 내려간다.
+ */
 async function applyState(state, { orca, corral, orcaRepoId }) {
-  switch (state) {
-    case 'default':
-      // 기준선(ensureBaseline)이 이미 두 앱에 워크스페이스·탭 하나씩을 열어 뒀다. 에이전트는 없다.
-      return { reproduced: true, detail: 'fixture 레포 1개 + linked worktree + 열린 탭 1개, 에이전트 없음' }
-    case 'agents-2': {
-      const specs = [
-        { state: 'working', prompt: 'L443 fixture agent one', agentType: 'claude' },
-        { state: 'working', prompt: 'L443 fixture agent two', agentType: 'codex' }
-      ]
-      const o = await setOrcaAgents(orca, { repoId: orcaRepoId, count: 2, states: specs })
-      const c = await setCorralAgents(corral, { count: 2, states: specs })
-      await pause(900)
-      return { reproduced: true, detail: '루트 에이전트 2개 (양성 대조 C6ⓐ 의 상태)', orca: o, corral: c }
+  const target = STATE_TARGETS[state]
+  if (!target) return { reproduced: false, reason: `상태 '${state}' 는 이 도구가 아직 재현하지 못한다`, mismatched: ['정의없음'] }
+
+  const o = await applyOrcaState(orca, { repoId: orcaRepoId, tabCount: target.tabCount, agents: target.agents })
+  const c = await applyCorralState(corral, { tabCount: target.tabCount, agents: target.agents })
+
+  const wantStatuses = target.agents.map((agent) => agent.state).slice().sort().join(',')
+  const axes = [
+    {
+      axis: 'tabCount',
+      label: '탭 수',
+      requested: target.tabCount,
+      orca: o.domTabs ?? o.tabIds?.length ?? null,
+      corral: c.domTabs ?? c.tabIds?.length ?? null
+    },
+    {
+      axis: 'agentCount',
+      label: '에이전트 수',
+      requested: target.agents.length,
+      // Orca 는 **스토어 전체**를 센다 — 넣은 것만 세면 누적을 못 잡는다.
+      orca: o.liveAgents ?? null,
+      corral: c.applied?.length ?? null
+    },
+    {
+      axis: 'agentStatuses',
+      label: '상태 분포',
+      requested: wantStatuses,
+      orca: (o.statuses ?? []).filter(Boolean).slice().sort().join(','),
+      corral: (c.agentStatuses ?? []).slice().sort().join(',')
+    },
+    {
+      axis: 'activeTab',
+      label: '활성 탭 순번',
+      requested: 0,
+      orca: o.activeTabIndex ?? null,
+      corral: c.activeTabIndex ?? null
+    },
+    {
+      // 두 앱의 **표현 방식이 다르다** — Orca 는 2명 이상을 요약 한 줄로 접고, corral 은 pane 행을
+      // 그대로 그린다. 그래서 「같은 숫자」를 요구하지 않고 **각자 자기 기대와 맞는지**만 본다.
+      axis: 'renderedShape',
+      label: '화면 표현 (각 앱의 자기 기대)',
+      requested: `orca=${o.wantShape ?? '?'} / corral=pane ${target.agents.length}개`,
+      orca: o.rendered?.shape ?? null,
+      corral: c.domPanes ?? null,
+      expectOrca: o.wantShape ?? null,
+      expectCorral: target.agents.length
     }
-    case 'agents-5': {
-      const specs = [
-        { state: 'working', prompt: 'L443 agent 1', agentType: 'claude' },
-        { state: 'idle', prompt: 'L443 agent 2', agentType: 'codex' },
-        { state: 'blocked', prompt: 'L443 agent 3', agentType: 'claude' },
-        { state: 'working', prompt: 'L443 agent 4', agentType: 'codex' },
-        { state: 'idle', prompt: 'L443 agent 5', agentType: 'claude' }
-      ]
-      const o = await setOrcaAgents(orca, { repoId: orcaRepoId, count: 5, states: specs })
-      const c = await setCorralAgents(corral, { count: 5, states: specs })
-      await pause(900)
-      return { reproduced: true, detail: '루트 에이전트 5개', orca: o, corral: c }
+  ]
+  const compare = (axis) => {
+    if (axis.axis === 'renderedShape') {
+      return String(axis.orca) === String(axis.expectOrca) && String(axis.corral) === String(axis.expectCorral)
     }
-    default:
-      return { reproduced: false, reason: `상태 '${state}' 는 이 도구가 아직 재현하지 못한다` }
+    if (axis.axis === 'agentStatuses') {
+      return axis.orca === axis.requested && axis.corral === axis.requested
+    }
+    return String(axis.orca) === String(axis.requested) && String(axis.corral) === String(axis.requested)
+  }
+  for (const axis of axes) axis.ok = compare(axis)
+  const mismatched = axes.filter((axis) => !axis.ok).map((axis) => axis.axis)
+
+  return {
+    // **축 하나라도 어긋나면 「재현했다」고 적지 않는다.** 그 상태의 차이 목록은 남기지만
+    // 분류는 보류로 내려가고, 판정표에서 C9 는 그 회차를 실패로 센다.
+    reproduced: mismatched.length === 0,
+    reason: mismatched.length === 0 ? null : `축 불일치: ${mismatched.join(', ')}`,
+    detail: target.detail,
+    target,
+    axes,
+    mismatched,
+    orca: o,
+    corral: c
   }
 }
 
@@ -266,23 +373,43 @@ async function main() {
   const outDir = path.join(args.out, args.label ? `${stamp}-${args.label}` : stamp)
   fs.mkdirSync(outDir, { recursive: true })
   ensureLedger(args.ledger)
-  const runId = nextRunId(args.ledger)
   const command = `node app/scripts/gui-diff/measure.mjs ${process.argv.slice(2).join(' ')}`
   const rawRel = path.relative(repoRoot, outDir)
 
+  /**
+   * 이 회차가 **실제로 거는 기준**을 도구가 스스로 적는다 (M8·F5).
+   * 이전 판은 짧은 고정 템플릿만 쓰고 사람이 나중에 칸을 고쳤다 — 그래서 원장의 출처 보증이 깨졌고
+   * 정리하지 않은 `--keep` 회차에까지 C12 가 붙었다. 여기서 조건을 코드로 적는다.
+   */
+  const criterionOf = () => {
+    const parts = ['C1', 'C4', 'C5', 'C7', 'C8']
+    if (args.states.some((state) => state !== 'default')) parts.push('C9')
+    parts.push('C10')
+    if (args.controls) parts.push('C6')
+    parts.push(args.keep ? 'C12 해당 없음 — --keep (정리를 돌지 않는다)' : 'C12')
+    return `${parts.join('·')} (areas=${args.areas.join('+')} states=${args.states.join('+')}${args.controls ? ' +controls' : ''})`
+  }
+  const criterion = criterionOf()
+  const runId = beginRun(args.ledger, { criterion, command, raw: rawRel })
   const record = (result, extra = {}) =>
-    appendRun(args.ledger, {
-      id: runId,
-      criterion: extra.criterion ?? `C1·C4·C5·C6·C7·C10 (areas=${args.areas.join('+')} states=${args.states.join('+')})`,
+    finishRun(args.ledger, runId, {
+      criterion: extra.criterion ?? criterion,
       command,
       expectedExit: 0,
-      actualExit: extra.exit ?? (result === '통과' ? 0 : 1),
+      actualExit: extra.exit ?? (result.startsWith('통과') ? 0 : 1),
       raw: rawRel,
       result
     })
 
   let orca = null
   let corral = null
+  // **소유 목록** (F1): 이번 실행이 띄운 것만 적는다. 정리는 이 목록만 보고 한다 —
+  // 이름으로 훑어 죽이던 이전 판은 사용자가 따로 띄운 Orca 개발 서버까지 잡을 수 있었다.
+  const owned = { pids: [], paths: [] }
+  const own = (entry) => {
+    if (entry?.pid) owned.pids.push(entry)
+    return entry
+  }
   const log = (message) => process.stderr.write(`[l443] ${message}\n`)
 
   try {
@@ -292,6 +419,22 @@ async function main() {
     // (실측: 두 번째 회차의 탭바 차이가 16→17 로 달라졌고, 원인은 남은 탭 1개였다).
     // fixture 레포는 지우지 않는다: 커밋 해시·브랜치 이름이 바뀌면 그것대로 흔들린다.
     if (args.fresh) {
+      // **지우기 전에** 두 CDP 포트가 비었는지, 작업 폴더를 쓰는 프로세스가 없는지 본다 (F6).
+      // 이전 판은 삭제가 먼저였고 포트 검사는 기동 직전이었다 — `--keep` 으로 사람이 보고 있던
+      // 인스턴스나 앞선 회차의 프로필을 **먼저 없앤 뒤** "포트 사용 중" 으로 멈췄다.
+      await assertPortFree(9444, 'orca-dev (프로필 삭제 전 확인)')
+      await assertPortFree(9445, 'corral (프로필 삭제 전 확인)')
+      const profiles = ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr'].map((name) =>
+        path.join(args.work, name)
+      )
+      const inUse = profiles.flatMap((target) => appsUsingPath(target))
+      if (inUse.length > 0) {
+        throw new Error(
+          `[l443] 격리 프로필을 쓰는 앱 프로세스가 있다 — 프로필을 지우지 않고 멈춘다:\n${inUse
+            .map((entry) => `  ${entry.pid} ${entry.command.slice(0, 120)}`)
+            .join('\n')}`
+        )
+      }
       for (const name of ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr']) {
         fs.rmSync(path.join(args.work, name), { recursive: true, force: true })
       }
@@ -306,17 +449,24 @@ async function main() {
       port: 9444,
       logPath: path.join(outDir, 'orca-dev.log')
     })
+    own({ pid: orca.child?.pid ?? null, label: 'orca dev 런너(프로세스 그룹)', group: true })
+    owned.paths.push(orca.paths?.userData, orca.paths?.home)
     const orcaRepoId = await seedOrcaRepo(orca, fixture.root)
     const orcaBounds = await setOrcaBounds(orca, { width: args.width, height: args.height })
 
     log('corral 격리 인스턴스 기동…')
     corral = await launchCorral({ appRoot, workDir: args.work, port: 9445, logDir: outDir })
+    own({ pid: corral.status?.runtime?.pid ?? null, label: 'corral desktop' })
+    own({ pid: corral.backend?.pid ?? null, label: 'herdr backend' })
+    owned.paths.push(corral.paths?.userData)
+    corral.workspaceId = null
     await seedCorralRepo(corral, fixture.root)
     const corralBounds = await setCorralBounds(corral, { width: args.width, height: args.height })
     await pause(1200)
 
     const areas = args.areas.map(loadArea)
     const baseline = await ensureBaseline({ orca, corral, fixtureRoot: fixture.root })
+    corral.workspaceId = baseline.corral?.workspace?.workspace_id ?? 'w1'
     log(`기준선: orca 탭 ${baseline.orca.tabs}개 / corral workspace ${baseline.corral?.workspace?.workspace_id ?? '?'}`)
 
     const byArea = new Map(areas.map((area) => [area.name, { area: area.name, description: area.description, states: [] }]))
@@ -327,12 +477,30 @@ async function main() {
     // **상태가 바깥 고리다.** 영역을 바깥에 두면 sidebar/agents-2 에서 꽂은 에이전트가
     // tabbar/default 까지 따라와 "기본 상태" 가 기본이 아니게 된다. 상태는 누적이므로
     // `--states` 에 준 순서대로 적용되고, 그 순서가 곧 의미다 (default 를 먼저 둔다).
+    const prerequisites = {}
+    const stateAxes = []
     for (const state of args.states) {
       const applied = await applyState(state, { orca, corral, orcaRepoId })
+      // 양성 대조(C6ⓐ)의 전제는 **이 프로필의 실제 값**이다 — 코드 기본값으로 미루지 않는다.
+      if (applied.orca) {
+        prerequisites.orcaCompact = applied.orca.agentActivityDisplayMode === 'compact'
+        prerequisites.orcaNotSendTarget = applied.orca.isAgentSendTargetModeActive === false
+      }
+      stateAxes.push({ state, reproduced: applied.reproduced, axes: applied.axes ?? [], mismatched: applied.mismatched ?? [] })
+      if (!applied.reproduced) log(`상태 ${state}: 재현 불일치 — ${applied.reason}`)
       writeJson(path.join(outDir, `state-${state}.json`), applied)
       for (const area of areas) {
-        stateMatrix.push({ area: area.name, state, reproduced: applied.reproduced, reason: applied.reason ?? applied.detail })
-        if (!applied.reproduced) {
+        stateMatrix.push({
+          area: area.name,
+          state,
+          reproduced: applied.reproduced,
+          reason: applied.reason ?? applied.detail,
+          mismatched: applied.mismatched ?? []
+        })
+        // **재현 실패라도 측정은 한다.** 다만 그 회차의 차이 행은 분류에서 「보류(하네스가 만든 차이)」로
+        // 내려간다 — 공백으로 비우면 무엇이 어긋났는지 다음 사람이 못 본다. 상태 정의 자체가 없으면
+        // 잴 것이 없으니 그때만 건너뛴다.
+        if ((applied.mismatched ?? []).includes('정의없음')) {
           byArea.get(area.name).states.push({ state, skipped: applied.reason })
           continue
         }
@@ -345,12 +513,27 @@ async function main() {
         const corralB = await capture('corral', corral, area, { outDir, tag: `${tag}-corral-b` })
         for (const [app, first, second] of [['orca', orcaA, orcaB], ['corral', corralA, corralB]]) {
           const self = selfDiff(first, second, { units: area.units, tolerance: args.tolerance })
-          writeJson(path.join(outDir, `${tag}-${app}-selfdiff.json`), self)
+          // **허용치 0 에서도 같이 낸다** (F12). 0.5px 의 근거는 「0.5 를 적용한 뒤 0건」이 아니라
+          // 「허용치 없이 재도 흔들림이 얼마였나」다 — 그 숫자를 회차마다 원자료로 남긴다.
+          const selfZero = selfDiff(first, second, { units: area.units, tolerance: 0 })
+          writeJson(path.join(outDir, `${tag}-${app}-selfdiff.json`), { atTolerance: self, atZero: selfZero })
           noiseFloor.push({
             app: `${app} (${area.name}/${state})`,
             total: self.summary.total,
+            totalAtZero: selfZero.summary.total,
+            maxDeltaAtZero: Math.max(
+              0,
+              ...selfZero.findings.flatMap((finding) =>
+                finding.kind === 'box' ? finding.detail.map((entry) => Math.abs(entry.delta ?? 0)) : [0]
+              )
+            ),
             tolerance: args.tolerance,
-            verdict: self.summary.total === 0 ? '잡음 0 — 통과' : '잡음 있음 — 아래 차이는 그만큼 의심스럽다',
+            verdict:
+              self.summary.total === 0
+                ? selfZero.summary.total === 0
+                  ? '잡음 0 — 통과 (허용치 없이도 0)'
+                  : '잡음 0 — 통과 (허용치가 가린 흔들림은 아래 숫자)'
+                : '잡음 있음 — 이 회차의 차이는 그만큼 의심스럽다',
             raw: `${rawRel}/${tag}-${app}-selfdiff.json`,
             findings: self.findings
           })
@@ -366,9 +549,20 @@ async function main() {
         const classifyById = new Map(
           area.units.map((unit) => [unit.id, unit.classify ? `${unit.classify} — ${unit.classifyWhy ?? '사유 미기재'}` : null])
         )
+        // 상태 재현이 어긋난 축(F2·F4)에 달린 단위는 **해소 대상으로 내보내지 않는다.**
+        // 그 행의 차이는 제품 차이가 아니라 하네스가 만든 차이일 수 있다.
+        const axisById = new Map(area.units.filter((unit) => unit.axis).map((unit) => [unit.id, unit.axis]))
+        const demoted = new Set(applied.mismatched ?? [])
         byArea.get(area.name).states.push({
           state,
           findings: result.findings.map((finding) => {
+            const axis = axisById.get(finding.id)
+            if (axis && demoted.has(axis)) {
+              return {
+                ...finding,
+                classification: `보류 — 상태 재현 불일치(축 ${axis})에 달린 행이다. 제품 차이인지 하네스가 만든 차이인지 이 회차로는 못 가른다`
+              }
+            }
             const classification = classifyById.get(finding.id)
             return classification ? { ...finding, classification } : finding
           }),
@@ -380,8 +574,9 @@ async function main() {
     }
     const results = [...byArea.values()]
 
-    // 양성 대조 (C6) — 도구 출력에서 **자동으로** 해당 행을 찾는다. 사람의 해석이 끼면 대조가 아니다.
-    const positiveControls = evaluatePositiveControls(results)
+    // 양성 대조 (C6) — **명시 모드에서만** 돈다 (F8). 방향·종류·전제까지 보는 판정은
+    // `lib/controls.mjs` 에 있고 단위 테스트가 판별력을 잠근다 (F9).
+    const positiveControls = args.controls ? evaluateControls({ results, prerequisites }) : []
 
     if (args.dumpDom) {
       for (const area of areas) {
@@ -401,41 +596,84 @@ async function main() {
       { label: 'dev 주입 style 태그 수', orca: '아래 각 스냅샷 meta.devStyleTags', corral: '아래 각 스냅샷 meta.devStyleTags' }
     ]
 
+    // 이 회차를 돌린 **코드의 지문** — 어느 판으로 쟀는지 원자료 안에서 되짚을 수 있게 남긴다.
+    const codeManifest = (() => {
+      const files = spawnSync('git', ['ls-files', '-s', '--', 'app/scripts/gui-diff'], { cwd: repoRoot, encoding: 'utf8' })
+      const dirty = spawnSync('git', ['status', '--porcelain', '--', 'app/scripts/gui-diff'], { cwd: repoRoot, encoding: 'utf8' })
+      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' })
+      return {
+        head: head.stdout.trim() || null,
+        // 커밋 안 된 수정이 있으면 그 사실을 적는다 — "커밋된 코드로 쟀다" 를 조용히 주장하지 않는다.
+        uncommitted: dirty.stdout.trim().split('\n').filter(Boolean),
+        blobs: files.stdout
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            const [meta, file] = line.split('\t')
+            return { file, blob: meta.split(' ')[1] }
+          })
+      }
+    })()
+
     const report = renderReport({
       date: new Date().toISOString().slice(0, 10),
       runs: path.relative(repoRoot, args.ledger),
       areas: results,
-      notes: { conditions, warnings, noiseFloor, positiveControls, stateMatrix }
+      notes: { conditions, warnings, noiseFloor, positiveControls, stateMatrix, stateAxes, controlsMode: args.controls }
     })
     const reportPath = path.join(outDir, 'report.md')
     fs.writeFileSync(reportPath, report)
+    // **관문**: 이 회차의 차이 목록을 근거로 쓸 수 있는가. 종료코드와 원장 행이 이 판정을 따른다.
+    const noisy = noiseFloor.filter((entry) => entry.total > 0)
+    const selectorMiss = results.flatMap((area) =>
+      area.states.flatMap((state) =>
+        (state.findings ?? [])
+          .filter((finding) => finding.kind === 'selector-miss')
+          .map((finding) => `${area.area}/${state.state}:${finding.id}`)
+      )
+    )
+    const unreproduced = stateAxes.filter((entry) => !entry.reproduced)
+    const missedControls = positiveControls.filter((entry) => !entry.pass)
+    const gateWhy = [
+      ...noisy.map((entry) => `잡음 바닥 ${entry.app} ${entry.total}건`),
+      // 선택자가 0개를 찾은 자리는 **측정 실패**다 (F11) — 「없음」이라는 거짓 차이로 나가면 안 된다.
+      ...(selectorMiss.length > 0 ? [`선택자 0개: ${selectorMiss.join(', ')}`] : []),
+      ...unreproduced.map((entry) => `상태 재현 불일치 ${entry.state}(${entry.mismatched.join(',')})`),
+      ...missedControls.map((entry) => `양성 대조 ${entry.id}: ${entry.verdict}`)
+    ]
+    const gate = { pass: gateWhy.length === 0, why: gateWhy.join(' / ') || null, controlsMode: args.controls }
+
     writeJson(path.join(outDir, 'summary.json'), {
       runId,
       command,
       args,
+      codeManifest,
+      gate,
       conditions,
       warnings,
       noiseFloor,
       positiveControls,
       stateMatrix,
+      stateAxes,
       excludedProps: EXCLUDED_PROPS,
       propSets: PROP_SETS,
-      areas: results.map((area) => ({ area: area.area, states: area.states.map((s) => ({ state: s.state, summary: s.summary ?? null, skipped: s.skipped ?? null })) }))
+      areas: results.map((area) => ({
+        area: area.area,
+        states: area.states.map((s) => ({
+          state: s.state,
+          summary: s.summary ?? null,
+          skipped: s.skipped ?? null,
+          stateReproduced: s.stateReproduced ?? null,
+          demotedAxes: s.demotedAxes ?? []
+        }))
+      }))
     })
     log(`결과: ${reportPath}`)
 
-    // **관문은 종료코드다.** 잡음 바닥(C5)이 0 이 아니거나 양성 대조(C6)를 못 잡았으면
-    // 그 회차의 차이 목록은 못 믿는다 — 그런데도 exit 0 이면 447~450 이 "같은 명령을 돌려
-    // 통과했다" 고 읽는다. 실측: 잡음 1/1 인 회차가 종료코드 0 으로 통과 행에 남았다.
-    const noisy = noiseFloor.filter((entry) => entry.total > 0)
-    const missedControls = positiveControls.filter((entry) => !entry.verdict.includes('통과'))
-    if (noisy.length > 0 || missedControls.length > 0) {
-      const why = [
-        ...noisy.map((entry) => `잡음 바닥 ${entry.app} ${entry.total}건`),
-        ...missedControls.map((entry) => `양성 대조 ${entry.id} 못 잡음`)
-      ].join(' / ')
-      log(`관문 미달: ${why} — 이 회차의 차이 목록은 근거로 쓰지 않는다`)
-      record(`실패 — 관문 미달: ${why}`, { exit: 1 })
+    if (!gate.pass) {
+      log(`관문 미달: ${gate.why} — 이 회차의 차이 목록은 근거로 쓰지 않는다`)
+      record(`실패 — 관문 미달: ${gate.why}`, { exit: 1 })
       return 1
     }
     record('통과')
@@ -446,8 +684,16 @@ async function main() {
     process.stderr.write(`[l443] 실패: ${String(error?.stack ?? error)}\n`)
     return 1
   } finally {
-    if (!args.keep) await shutdown({ orca, corral, outDir })
-    else {
+    if (!args.keep) {
+      const closed = await shutdown({ orca, corral, owned, outDir })
+      // **정리 실패는 실행 결과다.** 이전 판은 `clean` 을 읽지도 않았다 — 고아를 남긴 회차가
+      // 통과 행으로 남고 다음 회차가 그 고아에 붙었다.
+      if (closed.clean === false) {
+        log(`정리 실패: 소유 pid ${closed.survivorPids?.join(',') ?? '?'} 가 살아 있다`)
+        record(`실패 — C12 정리 실패(소유 pid 생존: ${closed.survivorPids?.join(',') ?? '?'})`, { exit: 1 })
+        process.exitCode = 1
+      }
+    } else {
       // 앱은 남기되 **소켓은 닫는다** — 열린 WebSocket 이 이 프로세스의 이벤트 루프를 붙잡는다.
       await orca?.cdp.close().catch(() => {})
       await corral?.cdp.close().catch(() => {})
@@ -457,97 +703,90 @@ async function main() {
 }
 
 /** 양성 대조 판정 — 도구가 낸 차이 목록에서 해당 행이 실제로 있는지 본다 (C6). */
-function evaluatePositiveControls(results) {
-  const find = (areaName, stateName, unitId) => {
-    const area = results.find((entry) => entry.area === areaName)
-    const state = area?.states.find((entry) => entry.state === stateName)
-    return state?.findings?.filter((finding) => finding.id === unitId) ?? []
-  }
-  const controls = [
-    {
-      id: 'C6ⓐ',
-      area: 'sidebar',
-      state: 'agents-2',
-      unit: 'agent-group-pill',
-      claim: '에이전트 2개에서 Orca 는 "N agents" 묶음이 있고 corral 은 없다 (임계 2 vs 3)'
-    },
-    {
-      id: 'C6ⓑ',
-      area: 'sidebar',
-      state: 'default',
-      unit: 'repo-header-icon',
-      claim: '레포 헤더가 Orca 폴더 아이콘 vs corral 이니셜 사각형'
-    }
-  ]
-  return controls.map((control) => {
-    const hits = find(control.area, control.state, control.unit)
-    const missing = hits.find((finding) => finding.kind === 'missing')
-    const any = hits.length > 0
-    return {
-      ...control,
-      evidence: any ? hits.map((h) => `${h.kind}: ${JSON.stringify(h.detail).slice(0, 90)}`).join(' / ') : '(행 없음)',
-      // C6ⓐ 는 **존재/부재**로 잡혀야 한다 — 스타일만 다르게 잡히면 "묶음이 없다" 를 증명하지 못한다.
-      verdict:
-        control.id === 'C6ⓐ'
-          ? missing
-            ? '잡았다(존재/부재) — 통과'
-            : any
-              ? '차이는 잡았으나 존재/부재가 아니다 — 확인 필요'
-              : '못 잡았다 — 실패'
-          : any
-            ? '잡았다 — 통과'
-            : '못 잡았다 — 실패'
-    }
-  })
-}
-
 /**
- * C12 — 띄운 것을 닫는다. **닫혔는지 확인까지 하고** 기록한다.
+ * C12 — 띄운 것을 닫는다. **이번 실행이 소유한 것만** 닫고, 닫혔는지 확인까지 해서 기록한다.
  *
- * corral CLI 에는 종료 명령이 없고(`corral --help`: open·serve·status…) 제어 채널에도 `quit` 이 없다.
- * 그래서 `corral open --json` 이 돌려준 `runtime.pid` 를 그대로 끝낸다 — 그 pid 가 우리가 띄운
- * 데스크톱이다. 실측으로 이 자리를 고쳤다: 백엔드만 끄고 끝냈더니 Electron 이 계속 살아남아
- * 다음 회차까지 넘어갔다(회차 r14 의 `shutdown.json` survivors 참고).
+ * 왜 소유 목록인가 (F1): 이전 판은 `pgrep -f 'orca-dev-userdata|corral-userdata|…'` 에 걸린 pid 를
+ * 6번째 시도에 전부 SIGTERM 했다. 사용자가 따로 띄운 Orca 개발 서버나 다른 측정 인스턴스도
+ * 그 정규식에 걸린다 — 핸들이 하나도 없는 실행(`orca=null, corral=null`)에서도 돌았다.
+ * 이름 검색은 **진단**으로만 남긴다: 무엇이 남아 있는지 적기만 하고 죽이지 않는다.
+ *
+ * corral CLI 에는 종료 명령이 없고 제어 채널에도 `quit` 이 없다. 그래서 `corral open --json` 이
+ * 돌려준 `runtime.pid`(우리가 띄운 데스크톱)를 끝낸다. dev 러너는 detached 라 프로세스 그룹째 끝낸다.
  */
-async function shutdown({ orca, corral, outDir }) {
-  const closed = { at: new Date().toISOString(), orca: null, corral: null }
-  const term = (pid, how = 'SIGTERM') => {
-    if (!pid) return null
+async function shutdown({ orca, corral, owned, outDir }) {
+  const closed = { at: new Date().toISOString(), owned: [], diagnostics: null }
+  const alive = (pid) => {
     try {
-      process.kill(how === 'group' ? -pid : pid, 'SIGTERM')
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      return error?.code === 'EPERM'
+    }
+  }
+  const signal = (pid, group) => {
+    try {
+      process.kill(group ? -pid : pid, 'SIGTERM')
       return 'SIGTERM'
     } catch (error) {
       return String(error?.code ?? error)
     }
   }
   try {
-    if (corral) {
-      const desktopPid = corral.status?.runtime?.pid ?? null
-      closed.corral = { desktopPid, backendPid: corral.backend?.pid ?? null }
-      await corral.cdp.close().catch(() => {})
-      closed.corral.desktopSignal = term(desktopPid)
-      closed.corral.backendSignal = term(corral.backend?.pid ?? null)
+    // 소켓을 먼저 닫는다 — 열린 WebSocket 이 이 프로세스의 이벤트 루프를 붙잡는다.
+    await orca?.cdp?.close().catch(() => {})
+    await corral?.cdp?.close().catch(() => {})
+
+    for (const entry of owned.pids) {
+      closed.owned.push({ pid: entry.pid, label: entry.label, group: Boolean(entry.group), sent: signal(entry.pid, entry.group) })
     }
-    if (orca) {
-      closed.orca = { devRunnerPid: orca.child?.pid ?? null }
-      await orca.cdp.close().catch(() => {})
-      // dev 러너는 자기 프로세스 그룹의 우두머리다(detached) — 그룹째 끝내야 electron-vite·Electron 이 같이 간다.
-      closed.orca.signal = term(orca.child?.pid ?? null, 'group') ?? term(orca.child?.pid ?? null)
-    }
-    // 신호를 보낸 것과 죽은 것은 다르다. 기다렸다가 **직접 세어** 본다.
+    // 신호를 보낸 것과 죽은 것은 다르다. **소유 pid 하나하나**를 확인한다.
     for (let attempt = 0; attempt < 12; attempt += 1) {
       await pause(1000)
-      const survivors = spawnSync('pgrep', ['-f', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], {
-        encoding: 'utf8'
-      })
-      closed.survivorPids = survivors.stdout.trim().split('\n').filter(Boolean)
-      if (closed.survivorPids.length === 0) break
-      if (attempt === 5) for (const pid of closed.survivorPids) term(Number(pid))
+      const survivors = closed.owned.filter((entry) => alive(entry.pid))
+      if (survivors.length === 0) break
+      // 한 번 더 보내 본다(그룹 우두머리가 자식을 늦게 정리할 수 있다). 그래도 남으면 그대로 적는다.
+      if (attempt === 5) for (const entry of survivors) entry.sentAgain = signal(entry.pid, entry.group)
     }
-    closed.clean = (closed.survivorPids ?? []).length === 0
-    closed.survivors = closed.clean ? '(없음)' : spawnSync('pgrep', ['-fl', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], { encoding: 'utf8' }).stdout.trim()
+    for (const entry of closed.owned) entry.alive = alive(entry.pid)
+    closed.clean = closed.owned.every((entry) => entry.alive === false)
+    closed.survivorPids = closed.owned.filter((entry) => entry.alive).map((entry) => entry.pid)
+    // **경로로 소유를 잇는다.** pid 목록만으로는 손자 프로세스(crashpad 헬퍼 등)가 남는다 —
+    // 실측: dev 런너 그룹을 끝낸 뒤에도 우리 userData 를 쓰는 crashpad 헬퍼가 잠깐 남았다.
+    // 이름이 아니라 **이번 실행이 만든 절대경로**로 거른다: 그 경로는 이 회차가 만들고 지우는 것이라
+    // 그것을 쓰는 프로세스는 이 도구의 것이다(같은 작업 폴더의 동시 실행은 포트 가드가 막는다).
+    // 일반 이름 패턴으로 훑어 죽이던 이전 판과 다른 점이 이것이다 (F1).
+    const ownedPaths = owned.paths.filter(Boolean)
+    const byPath = []
+    for (const target of ownedPaths) {
+      for (const entry of appsUsingPath(target)) {
+        if (closed.owned.some((owned) => owned.pid === entry.pid)) continue
+        if (byPath.some((seen) => seen.pid === entry.pid)) continue
+        byPath.push({ pid: entry.pid, path: target, command: entry.command.slice(0, 120), sent: signal(entry.pid, false) })
+      }
+    }
+    if (byPath.length > 0) {
+      await pause(2000)
+      for (const entry of byPath) entry.alive = alive(entry.pid)
+    }
+    closed.ownedByPath = byPath
+    closed.clean = closed.clean && byPath.every((entry) => entry.alive === false)
+    closed.survivorPids = [
+      ...closed.owned.filter((entry) => entry.alive).map((entry) => entry.pid),
+      ...byPath.filter((entry) => entry.alive).map((entry) => entry.pid)
+    ]
+    // **진단**: 넓은 이름 패턴으로 훑은 결과. 죽이지 않는다 — 소유 밖이라 이 실행의 몫이 아니다.
+    const probe = spawnSync('pgrep', ['-fl', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], {
+      encoding: 'utf8'
+    })
+    closed.diagnostics = {
+      note: '넓은 이름 검색 결과다. 소유(pid·경로) 밖 프로세스는 이 도구가 건드리지 않는다 (F1).',
+      matches: probe.stdout.trim().split('\n').filter(Boolean),
+      ownedPaths
+    }
   } catch (error) {
     closed.error = String(error?.message ?? error)
+    closed.clean = false
   }
   try {
     writeJson(path.join(outDir, 'shutdown.json'), closed)
@@ -557,4 +796,6 @@ async function shutdown({ orca, corral, outDir }) {
   return closed
 }
 
-process.exitCode = await main()
+// `finally` 의 정리 실패도 종료코드에 남는다 — `main()` 의 반환값이 그것을 덮지 않게 합친다.
+const code = await main()
+process.exitCode = process.exitCode === 1 ? 1 : code

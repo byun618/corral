@@ -17,11 +17,17 @@ LIFE-447~450 은 **착수 전과 끝난 뒤에 같은 명령을 다시 돌려** 
 그 폴더의 `report.md` 가 사람이 읽는 표다. 실행 한 번은 `specs/LIFE-443-gui-diff/raw/claude/runs.md`
 (명시 실행 목록)에 **도구가 스스로** 한 행 적는다 — 실패 회차도 적는다.
 
+양성 대조(C6)까지 보려면 `--controls` 를 준다 — 기본 실행은 대조를 돌지 않는다(아래 「양성 대조」).
+
 재현성 확인(C10):
 
 ```sh
-node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회차폴더C> …] --out <md>
+node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회차폴더C> …] --out <md> --ledger <원장>
 ```
+
+이 검사는 집합 비교 **전에 회차 유효성**을 본다 — diff 가 한 칸도 없거나 요청한 칸이 빠졌거나
+그 회차가 자기 관문을 통과하지 못했으면 비교하지 않고 실패한다. **아무것도 재지 않은 회차 둘은
+「같은」 회차가 아니다.** 판정 알맹이는 `lib/compare.mjs` 에 있고 단위 테스트가 있다.
 
 ## 전제 (없으면 못 돈다)
 
@@ -43,12 +49,13 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
 | `--ledger` | `specs/LIFE-443-gui-diff/raw/claude/runs.md` | 명시 실행 목록 |
 | `--work` | `/tmp/l443` | 격리 userData·HOME·fixture 를 두는 작업 폴더 |
 | `--orca-repo` | `/tmp/l443/orca-198` | Orca 소스 체크아웃 |
-| `--tolerance` | `0.5` | 박스 허용치(px). 잡음 바닥의 근거는 `report.md` 「잡음 바닥」 |
+| `--tolerance` | `0.5` | 박스 허용치(px). 근거는 회차마다 함께 내는 **허용치 0 자기 diff** 다 (`report.md` 「잡음 바닥」의 두 칸) |
 | `--width` `--height` | `1440` `900` | 두 앱에 **같은 인자**로 주는 뷰포트 |
 | `--label` | (없음) | 결과 폴더 이름 꼬리표 |
-| `--keep` | 끔 | 끝나고 두 앱을 남긴다 (사람이 눈으로 볼 때만) |
+| `--controls` | 끔 | 양성 대조(C6)를 함께 돌고 판정한다. **방향과 종류까지** 본다 — 부재 방향이 뒤집히거나 차이 종류가 다르면 실패 |
+| `--keep` | 끔 | 끝나고 두 앱을 남긴다 (사람이 눈으로 볼 때만). **정리(C12)를 돌지 않으므로** 그 회차는 원장에서 C12 `해당 없음` 으로 적힌다 |
 | `--no-fresh` | 끔(=매번 새로) | 격리 userData 를 지우지 않고 재사용 |
-| `--dump-dom` | 끔 | 영역 루트의 outerHTML 도 덤프 (선택자 짜맞출 때) |
+| `--dump-dom` | 끔 | 영역 루트 아래 DOM 윤곽(태그·속성·박스)을 덤프 (선택자 짜맞출 때). outerHTML 이 아니다 |
 
 ## 영역을 늘리는 법 — 코드가 아니라 데이터 (C1)
 
@@ -65,17 +72,27 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
       "corral": "<선택자>",
       "props": ["box", "paint", "text"],
       "global": true,              // 루트 밖(document 기준)에서 찾는다
-      "unpaired": "왜 못 재는지"    // 요소는 있는데 안정 선택자가 없을 때
+      "unpaired": "왜 못 재는지",   // 요소는 있는데 **같은 의미의 짝**이 없거나 안정 선택자가 없을 때
+      "conditional": true,          // 조건부 렌더(임계·hover·상태 의존) — 안 잡혀도 선택자 부패가 아니다
+      "conditionalWhy": "왜 조건부인지",
+      "axis": "tabCount"            // 이 단위가 어느 상태 축에 달려 있는지 (사람이 읽는 표시)
     }
   ]
 }
 ```
 
-세 가지를 **구분해서** 적는다. 이걸 섞으면 447~450 이 없는 것을 만들러 간다.
+네 가지를 **구분해서** 적는다. 이걸 섞으면 447~450 이 없는 것을 만들러 간다.
 
-- 한쪽 선택자 **없음** = 그 앱에 그 요소가 없다 → `missing` 행
-- `unpaired` = 요소는 있는데 안정 선택자가 없어 **못 잰다** → `unpaired` 행 (분류 자동 `보류`)
+- 한쪽 선택자 **없음** = 그 앱에 그 요소가 없다 → `missing` 행 (「선언한 부재」)
+- `unpaired` = 요소는 있는데 **같은 의미의 짝이 없거나** 안정 선택자가 없어 **못 잰다** → `unpaired` 행 (분류 자동 `보류`)
+- 양쪽 선택자가 다 있는데 한쪽에서 **안 잡혔다** = `conditional` 로 표시한 단위면 `missing`,
+  아니면 `selector-miss` 로 내고 **그 회차의 관문을 실패시킨다** — 선택자 부패를 「차이 없음」으로
+  조용히 넘기지 않는다
 - 양쪽 다 없음 = 차이 아님
+
+**같은 의미의 요소끼리만 짝짓는다.** 점↔점, 로고↔로고, 행↔행이다. Orca 의 요약 패널과 corral 의
+세션 행처럼 의미가 다른 둘을 짝지으면 그 행의 박스·스타일 차이는 제품 차이가 아니라 짝짓기 오류다.
+여러 개 잡히는 단위는 **순번별로 전부** 잰다(`[N번째]`, 상한 12 — 넘치면 `itemsTruncated`).
 
 짝짓기 키는 **data 속성 > 구조 경로** 순이다. 글자(문구)와 `aria-label` 은 조인 키로 쓰지 않는다 —
 번역·문구 차이가 있는 칸에서 짝이 조용히 깨진다.
@@ -84,6 +101,14 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
 
 `lib/probe.mjs` 의 `PROP_SETS` 가 재는 목록, `EXCLUDED_PROPS` 가 **사유와 함께** 뺀 목록이다.
 `width`/`height` computed 값은 빼고 박스(`getBoundingClientRect`)만 본다 — 같은 값을 두 번 세지 않는다.
+
+폰트는 **선언값과 렌더 폰트를 따로** 낸다 — `font-family`(선언)는 `style` 차이로, Chromium 이 실제로
+고른 글꼴(`CSS.getPlatformFontsForNode`)은 `font` 차이로 낸다. 선언이 같아도 렌더가 다를 수 있다.
+글꼴 목록이 비면 차이 없음이 아니라 `unmeasured` 로 적는다.
+
+박스 차이는 **허용치 아래도 버리지 않는다** — `belowTolerance` 로 세어 보고서에 따로 적고,
+반올림은 부호 대칭이다(`sign(raw) * round(abs(raw)*100)/100`). 허용치의 근거는 같은 회차의
+**허용치 0 자기 diff** 다 — 보고서 「잡음 바닥」에 허용치 0 칸과 그 최대 델타를 함께 낸다.
 
 측정 조건은 두 앱에 똑같이 건다: `Emulation.setDeviceMetricsOverride`(같은 인자) ·
 `Emulation.setFocusEmulationEnabled`(포커스 비대칭 제거) · `document.fonts.ready` ·
@@ -98,7 +123,10 @@ diff.test.mjs         diff 로직 단위 테스트 (node --test, I/O 없음)
 areas/*.json          영역 정의 (데이터)
 lib/cdp.mjs           raw CDP 클라이언트 (Playwright 안 씀 — 아래 「선택과 사유」)
 lib/probe.mjs         페이지 안에서 도는 수집기 + 안정화
-lib/diff.mjs          순수 diff (unpaired/missing/count/box/style)
+lib/diff.mjs          순수 diff (unpaired/selector-miss/missing/count/box/style/font)
+lib/controls.mjs      양성 대조 정의와 판정 (방향·종류까지 본다)
+lib/compare.mjs       C10 회차 유효성·집합 비교 (순수)
+lib/runs.mjs          명시 실행 목록(runs.md) 행 쓰기 — 시작 때 쓰고 끝에 고쳐 쓴다
 lib/report.mjs        json + md 쓰기 (C7 7칸 표)
 lib/fixture.mjs       버리는 fixture git 레포
 lib/orca.mjs          Orca 개발 인스턴스 기동·시딩·상태 주입
@@ -119,11 +147,37 @@ installed-compare.mjs C3 설치본 읽기 전용 대조
 - **OS 창 크기 대신 뷰포트 override** — Electron 은 `Browser.getWindowForTarget`/`setWindowBounds` 를
   구현하지 않는다(두 앱 모두 `-32601`). `Emulation.setDeviceMetricsOverride` 를 **같은 인자로** 걸어
   대칭을 만들고, 그 사실을 보고서 「측정 조건」에 적는다.
-- **상태는 주입** (C9) — Orca `window.__store.setAgentStatus`, corral `pane.report_agent`(backend RPC).
-  실제 에이전트를 띄우면 시각·진행률이 회차마다 달라 C10 이 성립하지 않는다.
-  Orca pane 키는 `${tabId}:${crypto.randomUUID()}` 여야 하고 타임스탬프는 `Date.now()` 여야 한다 —
-  형식이 안 맞거나 과거 시각이면 Orca 가 조용히 버린다.
-  corral pane 은 `pN` 숫자 순으로 정렬해 물린다 — `pane.list` 순서가 보장되지 않아 상태가 뒤바뀐다.
+- **상태는 주입하고, 주입 결과를 검증한다** (C9) — 실제 에이전트를 띄우면 시각·진행률이 회차마다
+  달라 C10 이 성립하지 않는다. 그래서 두 앱 모두 **제품 경로**로 상태를 만든다:
+  Orca `window.__store` 의 `createTab`/`closeTab`/`setAgentStatus`, corral herdr RPC
+  `tab.create`/`tab.close`/`pane.report_agent`.
+  주입 뒤 **다섯 축**을 두 앱에서 읽어 요청과 견주고, 한 축이라도 어긋나면 그 회차는 **실패**다:
+  탭 수 · 에이전트 수 · 상태 분포 · 활성 탭 순번 · 화면 표현(각 앱의 자기 기대). 못 맞추는 축은
+  `reproduced:false` + 사유로 남기고, 그 상태의 차이 행은 분류에서 「보류」로 내려간다 —
+  **하네스가 만든 차이를 제품 차이로 보고하지 않기 위한 관문이다.**
+  알게 된 제약:
+  - Orca pane 키는 `${tabId}:${crypto.randomUUID()}` 여야 하고 타임스탬프는 `Date.now()` 여야 한다 —
+    형식이 안 맞거나 과거 시각이면 Orca 가 조용히 버린다(30분 staleness 필터). 새 상태를 넣기 전에
+    이전 주입을 `removeAgentStatusByTabPrefix` 로 지운다.
+  - Orca 요약 패널의 "N agents" 문구는 `aria-label` 에만 있고 **번역된다** — 오라클로 못 쓴다.
+    그래서 개수 오라클은 스토어 행 수이고, 화면 오라클은 **표현 모양**(none/row/summary)이다.
+  - Orca 탭 선택은 **실제 마우스 입력**이어야 한다(dnd-kit) — CDP `Input.dispatchMouseEvent`.
+    `element.click()` 으로는 활성 탭이 바뀌지 않는다.
+  - corral 은 이미 `working` 이던 pane 에 `idle` 을 보고하면 `done` 으로 바꾼다 — 그래서 상태마다
+    **새 탭**을 만들고 이전 탭을 닫는다. pane 재사용은 요청한 상태 분포를 조용히 바꾼다.
+  - corral 탭 점은 탭 단위 집계라, 제어 소켓 `resync` 뒤 **우리 쪽 herdr 연결**의 `snapshot.tabs` 에
+    화면이 수렴할 때까지 기다린다(제3 오라클).
+
+## 양성 대조 (C6) — 기본이 아니라 `--controls`
+
+알려진 차이 둘(Orca 에만 있는 "N agents" 묶음 · 레포 헤더 아이콘 vs 이니셜 사각형)을 도구가 잡는지
+본다. 판정은 **존재/부재만 보지 않고 방향과 종류까지** 본다 — 부재 방향이 뒤집혀도 통과가 되던
+자리를 막았다. 전제(Orca `compact` 표시 + send-target 모드 아님)가 깨진 회차는 통과로 세지 않는다.
+
+**왜 모든 실행의 관문이 아닌가**: 447~450 이 그 차이를 실제로 해소하면 대조는 실패해야 정상이다.
+관문으로 두면 도구가 성공한 회차를 실패로 만든다. 그리고 `--areas`/`--states` 를 좁혀 부분만 재는
+회차에서는 대조 상태가 아예 없다. 그래서 명시 모드다 — `--controls` 없이 돈 회차는 **C6 의 근거가
+아니다**(보고서가 그렇게 적는다).
 
 ## 격리 (C2) — 사용자 자원 무접촉
 
@@ -137,7 +191,16 @@ installed-compare.mjs C3 설치본 읽기 전용 대조
 - fixture 는 `<work>/gui-diff-fixture` 의 버리는 git 레포다. corral 레포 자체를 두 앱에 등록하지 않는다.
 - 설치본 Orca 는 이 하네스의 제어 런타임이다 — **재시작·입력 금지**, 읽기 전용으로만 본다.
 
-## 정리 (C12)
+## 정리 (C12) — **소유한 것만** 닫는다
 
-기본값으로 끝나면 corral desktop · herdr backend · Orca dev 런너(프로세스 그룹)를 닫고
-생존 프로세스를 세어 `shutdown.json` 에 남긴다. `--keep` 을 주면 남긴다.
+기동 때 pid·프로세스 그룹·경로를 등록부에 적고, 끝나면 **그 목록만** 신호를 보낸다. pid 마다
+`process.kill(pid, 0)` 으로 죽었는지 확인해 `shutdown.json` 에 적고, 정리에 실패하면 **종료코드 1** 과
+원장 행에 남긴다(조용히 넘기지 않는다).
+
+- **이름 검색(`pgrep -f`)은 진단이다 — 죽이는 근거가 아니다.** 넓은 패턴은 사용자의 다른 프로세스나
+  이 하네스를 지켜보는 셸까지 잡는다. 그래서 검색 결과는 `diagnostics.matches` 에만 적는다.
+- 소유 경로(이 회차가 만든 격리 userData·HOME)를 쓰는 프로세스는 `ownedByPath` 로 함께 닫는다 —
+  런너 그룹만 닫으면 헬퍼가 살아남는다.
+- **격리 userData 삭제는 포트·사용 중 검사 뒤에만** 한다(`assertPortFree`, 프로필 사용 중 검사).
+  순서가 반대면 아직 살아 있는 인스턴스의 프로필을 지운다.
+- `--keep` 을 주면 남긴다 — 그 회차는 정리를 돌지 않으므로 원장에 C12 `해당 없음` 으로 적힌다.

@@ -76,6 +76,12 @@ import { refusalDelta, describeDelta, snapshot, unobservedOpenAttempts } from '.
  * 이름 붙인 `dispatch-show` 의 순간이다). 그래서 이 한 번이 이 attempt 뿐 아니라 **다른 열린 attempt**
  * 까지 함께 세운다 (r2 지적 L-a).
  *
+ * **한계 (r3 지적 L).** 도장을 먼저 찍으면 그 창에서는 제품 가드(`index.ts:662`
+ * `pass.changed && !mutating`)의 회귀가 **잡히지 않는다** — 도장이 이미 서 있어 돌연변이가 쓸 것이
+ * 없기 때문이다(`model.ts:316`). 그 회귀는 이 관문이 아니라 커밋된 제품 경로 검사가 잡는다:
+ * `app/src/runtime/orchestration/admission.test.ts` 의 "a rejected mutation leaves the document
+ * byte-identical" — 도장이 **없는** 조용한 창을 일부러 만들어 거절을 돌린다 (05-result T2-L).
+ *
  * 세우지 못하면 관문은 **멈추되 문장이 다르다** — "거절이 썼다" 가 아니라 "전제 미충족" 이다.
  * 그 멈춤은 백엔드 관측이 N회 내내 실패할 때만 난다(`observePanes` 가 `unobserved` 를 돌려주면
  * `applyReconcile` 은 아무것도 쓰지 않는다 — `model.ts:296`). 그 상태면 네이티브 관문 자체가 돌 수 없다.

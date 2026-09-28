@@ -54,9 +54,102 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { fixture, requestId } from './lib.mjs'
+import { app as APP_ROOT, fixture, requestId } from './lib.mjs'
 import { redactor } from '../l394/redact.mjs'
 import { LIVE_PHASES, foregroundExecutable, waitForLaunch } from '../l409/native-checks.mjs'
+// LIFE-430 C3. `f.stateDigest()` 두 번으로 "거절은 아무것도 저장하지 않는다" 를 재면, 두 관측 사이에
+// 들어온 **거절과 무관한 쓰기**가 검사를 실패시킨다 — LIFE-426 에서 5회 중 2회가 그랬다. 무엇이
+// 바뀌었고 무엇이 그것을 설명하는지를 키 단위로 묻는 비교로 바꾼다. 규칙·검출력·한계는 그 파일에,
+// 기제 증명(양성 대조·20회·음성 대조 6종)은 `l430/refusal-race.mjs` 에 있다.
+import { refusalDelta, describeDelta, snapshot } from '../l430/state-delta.mjs'
+
+// === the ledger, before anything else ============================================================
+//
+// V49 (LIFE-430 C1). This whole block used to sit below `fixture()`, which is below the line that
+// runs the installed provider to read its version. That order is what let the gate open on a
+// checkout it could not count: with no `CORRAL_VERIFY_LEDGER`, no ledger at the default path and no
+// migration source, `migrated()` answered `[]`, `spent()` answered 0, and the budget assertions
+// below passed a run that had counted **nothing** — a gate reporting "0 of 12" as a pass. Worse,
+// the `mkdirSync` further down ran unconditionally, so a run that should never have started created
+// directories under another task's raw tree on its way through.
+//
+// So the ledger is read first, and a run that cannot count does not start. "Cannot count" is
+// exactly one case — there is no ledger **and** nothing to build one from — and it is fatal here,
+// above `CLAUDE`, above `fixture()`, above the first `execFileSync`. Nothing has been spawned and
+// nothing has been created when it fires.
+//
+// The named-ledger case keeps its own answer (V39, below): a path someone typed wrong is a mistake,
+// never an empty budget, and it must not fall through to the migration.
+/**
+ * Every byte this run puts into the pane, written down at the moment it is put there — and kept in
+ * a ledger that survives across runs, because the budget in the TASK is cumulative, not per-run. An
+ * entry with `typed: false` is a call that returned before it reached the pane (a submission stage
+ * that never started); it is listed, and it does not spend the budget.
+ */
+/**
+ * One ledger for the whole task, not one per party. The budget is cumulative across *everyone* who
+ * runs this gate — worker and coordinator both — and two ledgers in two raw trees could not be
+ * added up without someone re-deriving a total afterwards, which is exactly the number that must
+ * never be reconstructed. So it lives beside the task's raw root and every row says who wrote it.
+ * The r0 rows are migrated once, from the two places they were written, with their `n` preserved.
+ */
+const RAW_ROOT = path.resolve(APP_ROOT, '../specs/LIFE-410-cli-orchestration-workers/raw')
+/**
+ * V27. The ledger a run reads is the ledger of the *task*, and a run started from a checkout that
+ * does not carry the latest rows would start from a smaller number than the one that was really
+ * spent. Naming it explicitly is how a run in an implementation branch — whose own checkout is
+ * always behind the task branch's copy — can be pointed at the real one. The default is the path
+ * the committed ledger has always had, so nothing changes for a run that says nothing.
+ */
+const LEDGER = process.env.CORRAL_VERIFY_LEDGER
+  ? path.resolve(process.env.CORRAL_VERIFY_LEDGER)
+  : path.join(RAW_ROOT, 'submissions-ledger.json')
+/**
+ * Where the r0 rows came from, before the ledger above existed. `migrated()` runs only when there
+ * is no ledger at all, which after r1 never happens — the committed ledger holds every row. Only
+ * the worker's own source is listed now: the coordinator's delta lives in a raw directory this
+ * branch does not carry, so naming it here promised rows that could never be read and would have
+ * produced a silently short ledger on the one path that still calls this (V27).
+ */
+const MIGRATIONS = [
+  { owner: 'claude', file: path.join(RAW_ROOT, 'worker/claude/native/submissions.json') },
+]
+/** A refusal says where it looked without writing a local absolute path down (LIFE-426). */
+const fromRepo = target => {
+  const relative = path.relative(path.resolve(APP_ROOT, '..'), target)
+  return relative.startsWith('..') || path.isAbsolute(relative) ? '(outside this checkout)' : relative
+}
+if (!fs.existsSync(LEDGER)) {
+  /**
+   * V39. A named ledger that is not there is a mistake, never an empty budget. The migration
+   * rebuilds a *partial* history — the rows that existed before the ledger did — so letting it run
+   * for a path someone typed wrong turned a spent budget of 12 into 6 and handed back six
+   * submissions that were already made. A typo refuses to start; only the default path, which is
+   * the one the committed ledger has always had, may ever be built from the migration.
+   */
+  if (process.env.CORRAL_VERIFY_LEDGER) {
+    assert.fail(`CORRAL_VERIFY_LEDGER names a ledger that does not exist: ${fromRepo(LEDGER)}. `
+      + 'Name the ledger that holds the rows already spent — this run does not start, and no submission is made.')
+  }
+  // V49. No ledger, and nothing the migration could rebuild one from. A budget of 0 spent is not a
+  // fact here, it is the absence of one, and a gate that counts nothing must not report a pass.
+  if (!MIGRATIONS.some(source => fs.existsSync(source.file))) {
+    assert.fail(`there is no ledger at ${fromRepo(LEDGER)} and no source to rebuild one from `
+      + `(${MIGRATIONS.map(source => fromRepo(source.file)).join(', ')}). This run would count nothing and `
+      + 'report a budget of 0 spent as a pass, so it does not start: no backend, no pane, no submission. '
+      + 'Name the ledger that holds the rows already spent with CORRAL_VERIFY_LEDGER.')
+  }
+}
+fs.mkdirSync(path.dirname(LEDGER), { recursive: true })
+const migrated = () => {
+  const rows = []
+  for (const source of MIGRATIONS) {
+    if (!fs.existsSync(source.file)) continue
+    for (const row of JSON.parse(fs.readFileSync(source.file, 'utf8'))) rows.push({ ...row, owner: row.owner ?? source.owner })
+  }
+  return rows.sort((a, b) => a.n - b.n)
+}
+const submissions = fs.existsSync(LEDGER) ? JSON.parse(fs.readFileSync(LEDGER, 'utf8')) : migrated()
 
 const CLAUDE = process.env.L410_NATIVE_CLAUDE ?? path.join(os.homedir(), '.local/bin/claude')
 assert(fs.existsSync(CLAUDE), `The native provider is expected at ${CLAUDE}`)
@@ -112,61 +205,6 @@ const diff = mode => execFileSync(process.execPath, [DIFF_SCRIPT, mode], {
   env: { ...process.env, L394_RAW: f.raw, L394_SALT_FILE: SALT_FILE },
 }).trim()
 
-/**
- * Every byte this run puts into the pane, written down at the moment it is put there — and kept in
- * a ledger that survives across runs, because the budget in the TASK is cumulative, not per-run. An
- * entry with `typed: false` is a call that returned before it reached the pane (a submission stage
- * that never started); it is listed, and it does not spend the budget.
- */
-/**
- * One ledger for the whole task, not one per party. The budget is cumulative across *everyone* who
- * runs this gate — worker and coordinator both — and two ledgers in two raw trees could not be
- * added up without someone re-deriving a total afterwards, which is exactly the number that must
- * never be reconstructed. So it lives beside the task's raw root and every row says who wrote it.
- * The r0 rows are migrated once, from the two places they were written, with their `n` preserved.
- */
-const RAW_ROOT = path.resolve(f.app, '../specs/LIFE-410-cli-orchestration-workers/raw')
-/**
- * V27. The ledger a run reads is the ledger of the *task*, and a run started from a checkout that
- * does not carry the latest rows would start from a smaller number than the one that was really
- * spent. Naming it explicitly is how a run in an implementation branch — whose own checkout is
- * always behind the task branch's copy — can be pointed at the real one. The default is the path
- * the committed ledger has always had, so nothing changes for a run that says nothing.
- */
-const LEDGER = process.env.CORRAL_VERIFY_LEDGER
-  ? path.resolve(process.env.CORRAL_VERIFY_LEDGER)
-  : path.join(RAW_ROOT, 'submissions-ledger.json')
-/**
- * V39. A named ledger that is not there is a mistake, never an empty budget. The migration below
- * rebuilds a *partial* history — the rows that existed before the ledger did — so letting it run
- * for a path someone typed wrong turned a spent budget of 12 into 6 and handed back six
- * submissions that were already made. A typo refuses to start; only the default path, which is the
- * one the committed ledger has always had, may ever be built from the migration.
- */
-if (process.env.CORRAL_VERIFY_LEDGER && !fs.existsSync(LEDGER)) {
-  assert.fail(`CORRAL_VERIFY_LEDGER names a ledger that does not exist: ${LEDGER}. `
-    + 'Name the ledger that holds the rows already spent — this run does not start, and no submission is made.')
-}
-/**
- * Where the r0 rows came from, before the ledger above existed. `migrated()` runs only when there
- * is no ledger at all, which after r1 never happens — the committed ledger holds every row. Only
- * the worker's own source is listed now: the coordinator's delta lives in a raw directory this
- * branch does not carry, so naming it here promised rows that could never be read and would have
- * produced a silently short ledger on the one path that still calls this (V27).
- */
-const MIGRATIONS = [
-  { owner: 'claude', file: path.join(RAW_ROOT, 'worker/claude/native/submissions.json') },
-]
-fs.mkdirSync(path.dirname(LEDGER), { recursive: true })
-const migrated = () => {
-  const rows = []
-  for (const source of MIGRATIONS) {
-    if (!fs.existsSync(source.file)) continue
-    for (const row of JSON.parse(fs.readFileSync(source.file, 'utf8'))) rows.push({ ...row, owner: row.owner ?? source.owner })
-  }
-  return rows.sort((a, b) => a.n - b.n)
-}
-const submissions = fs.existsSync(LEDGER) ? JSON.parse(fs.readFileSync(LEDGER, 'utf8')) : migrated()
 // The budget in the TASK is on *prompt submissions* — bodies put to the provider as work. A key
 // answering a trust dialog is not one of those (LIFE-394 C6 treats dialog handling as its own
 // thing), so the two are counted separately and both are listed. Neither count is reconstructed.
@@ -486,15 +524,22 @@ try {
   })
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
-    const digest = f.stateDigest()
+    // 관측은 바이트 한 번에서 digest 와 문서를 함께 뜬다. 두 번 읽으면 그 사이가 또 창이 된다.
+    const before = snapshot(f.stateBytes())
     const again = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle, '--timeout-ms', '120000'], { fail: true, timeout: 200000 })
     assert.equal(again.error.code, 'task_not_startable', JSON.stringify(again))
     assert.equal(again.error.resources.reason, 'dispatch_active')
-    assert.equal(f.stateDigest(), digest, 'a refused start stores nothing')
+    const after = snapshot(f.stateBytes())
+    const delta = refusalDelta(before.state, after.state, { dispatchId })
+    // 통과해도 남긴다. 이 pane 의 모델이 이 창에서 **실제로 무엇을 썼는지**가 네이티브 회차의 증거이고,
+    // 조용히 통과한 회차는 그 증거를 남기지 않는다.
+    const described = describeDelta(delta, before.state, after.state)
+    f.record('native/refusal-delta-f1a', { ...described, bytesMoved: before.digest !== after.digest })
+    assert.ok(delta.clean, 'a refused start stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const again2 = countRecord(sessionId)
     assert.equal(again2.delivered, 1, 'and delivers nothing further')
     assert.equal(again2.wrapped, 1)
-    return { error: again.error, record: again2.summary }
+    return { error: again.error, record: again2.summary, delta: { ...described.counts, clean: delta.clean, explainedBy: described.explainedBy, bytesMoved: before.digest !== after.digest } }
   })
 
   // --- F2 + F5: the question, and the batch it arrives in --------------------------------------
@@ -553,17 +598,23 @@ try {
   })
 
   await f.check('GATE2-F4-F7-a-settled-native-worker-cannot-report-again-and-its-pane-is-taken-back', async () => {
-    const digest = f.stateDigest()
+    // 같은 비교를 여기서도 쓴다. 이 자리에서 막아야 할 쓰기는 pane 의 `worker_done` 이고, 그것은
+    // 허용 목록에 없다 — 그래서 검출력은 그대로고, 흔들리는 쪽만 빠진다 (`l430/state-delta.mjs`).
+    const before = snapshot(f.stateBytes())
     const late = await f.cli(['orchestration', 'send', '--type', 'worker_done', '--subject', 'again', '--body', 'x',
       '--task-id', taskId, '--dispatch-id', dispatchId, '--outcome', 'succeeded'],
     { env: { ...f.env, HERDR_PANE_ID: shown.result.paneId }, fail: true })
     assert.equal(late.error.code, 'illegal_transition', JSON.stringify(late))
-    assert.equal(f.stateDigest(), digest)
+    const after = snapshot(f.stateBytes())
+    const delta = refusalDelta(before.state, after.state, { dispatchId })
+    const described = describeDelta(delta, before.state, after.state)
+    f.record('native/refusal-delta-f4-f7', { ...described, bytesMoved: before.digest !== after.digest })
+    assert.ok(delta.clean, 'a refused late report stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
     assert.ok((await panes()).includes(handle), 'the settled attempt leaves its pane standing until someone releases it')
     // The release is not made here: the pane is about to be handed to a second Task, and what F9
     // has to show is that the *old* attempt's release then closes nothing.
-    return { late: late.error, paneStanding: true }
+    return { late: late.error, paneStanding: true, delta: { ...described.counts, clean: delta.clean, explainedBy: described.explainedBy, bytesMoved: before.digest !== after.digest } }
   })
 
   // --- F9: the same pane, a second Task ---------------------------------------------------------

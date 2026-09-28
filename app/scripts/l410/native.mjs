@@ -61,7 +61,55 @@ import { LIVE_PHASES, foregroundExecutable, waitForLaunch } from '../l409/native
 // 들어온 **거절과 무관한 쓰기**가 검사를 실패시킨다 — LIFE-426 에서 5회 중 2회가 그랬다. 무엇이
 // 바뀌었고 무엇이 그것을 설명하는지를 키 단위로 묻는 비교로 바꾼다. 규칙·검출력·한계는 그 파일에,
 // 기제 증명(양성 대조·20회·음성 대조 6종)은 `l430/refusal-race.mjs` 에 있다.
-import { refusalDelta, describeDelta, snapshot } from '../l430/state-delta.mjs'
+import { refusalDelta, describeDelta, snapshot, unobservedOpenAttempts } from '../l430/state-delta.mjs'
+
+/**
+ * r2 지적 H — 창을 열기 전에 **전제를 능동적으로 세운다**.
+ *
+ * 재관측 기록(`dispatch.reconcile`)은 열린 attempt 를 **처음** 재관측하는 명령 한 번만 쓰인다. 그 명령이
+ * 창 안에 들어오면 — 선행 `worker-show` 의 pane 관측이 실패해 기록이 서지 못했다가, 창 안의 정상
+ * heartbeat 가 도장을 같이 찍는 모양 — 거절이 아무것도 쓰지 않았는데도 `version` 이 +2 로 움직인다.
+ * 그 두 쓰기는 바이트로 구분되지 않는다. 그래서 비교를 느슨하게 하는 대신 창을 열기 전에 도장을 찍는다.
+ *
+ * 세우는 방법은 읽기 명령 한 번이다. 제품의 재관측 훑기는 `status === 'dispatched'` 인 **모든** attempt 에
+ * 적용되고(`index.ts:378-383`), 읽기는 그 결과를 그 자리에서 저장한다(`index.ts:651-663` — 동결이
+ * 이름 붙인 `dispatch-show` 의 순간이다). 그래서 이 한 번이 이 attempt 뿐 아니라 **다른 열린 attempt**
+ * 까지 함께 세운다 (r2 지적 L-a).
+ *
+ * 세우지 못하면 관문은 **멈추되 문장이 다르다** — "거절이 썼다" 가 아니라 "전제 미충족" 이다.
+ * 그 멈춤은 백엔드 관측이 N회 내내 실패할 때만 난다(`observePanes` 가 `unobserved` 를 돌려주면
+ * `applyReconcile` 은 아무것도 쓰지 않는다 — `model.ts:296`). 그 상태면 네이티브 관문 자체가 돌 수 없다.
+ */
+async function primeReconcile(f, { label, dispatchId, requireDispatched, rounds = 5, waitMs = 400 }) {
+  const tries = []
+  for (let round = 1; round <= rounds; round += 1) {
+    await f.cli(['orchestration', 'dispatch-show', '--id', dispatchId])
+    const state = snapshot(f.stateBytes()).state
+    const entries = state?.dispatches ?? []
+    const open = entries.filter(entry => entry.status === 'dispatched').map(entry => entry.id)
+    const unset = unobservedOpenAttempts(state)
+    const status = entries.find(entry => entry.id === dispatchId)?.status ?? null
+    tries.push({ round, open, unset, status })
+    // 세 번째 결과: 재관측이 pane 이 사라진 것을 보고 이 attempt 를 `unknown` 으로 정산한 경우
+    // (`model.ts:313`). 전제 미충족도 아니고 거절의 쓰기도 아니다 — 창을 열 대상 자체가 없어졌다.
+    if (requireDispatched && status !== null && status !== 'dispatched') {
+      f.record(`native/precondition-${label}`, { established: false, reason: 'attempt-settled', dispatchId, tries })
+      assert.fail(`창을 열 attempt 가 사라졌다 — ${label}: ${dispatchId} 의 상태가 '${status}' 다. `
+        + '재관측이 pane 을 못 찾아 정산한 것이고, 거절이 무엇을 썼는지와는 무관하다.')
+    }
+    if (unset.length === 0) {
+      f.record(`native/precondition-${label}`, { established: true, dispatchId, tries })
+      return { open, rounds: round, status }
+    }
+    await new Promise(resolve => setTimeout(resolve, waitMs))
+  }
+  const last = tries[tries.length - 1]
+  f.record(`native/precondition-${label}`, { established: false, reason: 'not-observed', dispatchId, tries })
+  assert.fail(`전제 미충족 — ${label}: 창을 열기 전에 열린 attempt 의 재관측 기록을 세우지 못했다 `
+    + `(${rounds}회 시도, 아직 비어 있는 attempt ${last.unset.length}개). `
+    + '이 회차는 "거절이 무엇을 썼나" 를 판정하지 않는다 — 창 안의 첫 재관측 도장과 거절의 쓰기는 '
+    + '바이트로 구분되지 않기 때문이다. 백엔드 관측이 회복된 뒤 다시 돌린다.')
+}
 
 // === the ledger, before anything else ============================================================
 //
@@ -524,6 +572,8 @@ try {
   })
 
   await f.check('GATE2-F1-a-second-start-of-a-delivered-attempt-is-refused-and-types-nothing', async () => {
+    // 창을 열기 전에 전제를 세운다 (r2 지적 H). 못 세우면 여기서 다른 문장으로 멈춘다.
+    const precondition = await primeReconcile(f, { label: 'f1a', dispatchId, requireDispatched: true })
     // 관측은 바이트 한 번에서 digest 와 문서를 함께 뜬다. 두 번 읽으면 그 사이가 또 창이 된다.
     const before = snapshot(f.stateBytes())
     const again = await f.cli(['orchestration', 'worker-start', '--task', taskId, '--terminal', handle, '--timeout-ms', '120000'], { fail: true, timeout: 200000 })
@@ -534,7 +584,7 @@ try {
     // 통과해도 남긴다. 이 pane 의 모델이 이 창에서 **실제로 무엇을 썼는지**가 네이티브 회차의 증거이고,
     // 조용히 통과한 회차는 그 증거를 남기지 않는다.
     const described = describeDelta(delta, before.state, after.state)
-    f.record('native/refusal-delta-f1a', { ...described, bytesMoved: before.digest !== after.digest })
+    f.record('native/refusal-delta-f1a', { ...described, precondition, bytesMoved: before.digest !== after.digest })
     assert.ok(delta.clean, 'a refused start stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const again2 = countRecord(sessionId)
     assert.equal(again2.delivered, 1, 'and delivers nothing further')
@@ -600,6 +650,9 @@ try {
   await f.check('GATE2-F4-F7-a-settled-native-worker-cannot-report-again-and-its-pane-is-taken-back', async () => {
     // 같은 비교를 여기서도 쓴다. 이 자리에서 막아야 할 쓰기는 pane 의 `worker_done` 이고, 그것은
     // 허용 목록에 없다 — 그래서 검출력은 그대로고, 흔들리는 쪽만 빠진다 (`l430/state-delta.mjs`).
+    // 여기서도 전제를 세운다. 이 attempt 는 이미 정산됐지만, 같은 pane 에 **다른 열린 attempt** 가
+    // 있으면 그쪽 첫 도장이 창 안에서 찍혀 같은 거짓 실패가 난다 (r2 지적 L-a).
+    const precondition = await primeReconcile(f, { label: 'f4-f7', dispatchId, requireDispatched: false })
     const before = snapshot(f.stateBytes())
     const late = await f.cli(['orchestration', 'send', '--type', 'worker_done', '--subject', 'again', '--body', 'x',
       '--task-id', taskId, '--dispatch-id', dispatchId, '--outcome', 'succeeded'],
@@ -608,7 +661,7 @@ try {
     const after = snapshot(f.stateBytes())
     const delta = refusalDelta(before.state, after.state, { dispatchId })
     const described = describeDelta(delta, before.state, after.state)
-    f.record('native/refusal-delta-f4-f7', { ...described, bytesMoved: before.digest !== after.digest })
+    f.record('native/refusal-delta-f4-f7', { ...described, precondition, bytesMoved: before.digest !== after.digest })
     assert.ok(delta.clean, 'a refused late report stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
     assert.ok((await panes()).includes(handle), 'the settled attempt leaves its pane standing until someone releases it')

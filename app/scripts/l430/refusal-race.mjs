@@ -22,13 +22,20 @@
 // 사용법: node app/scripts/l430/refusal-race.mjs [반복횟수]   (기본 20)
 // 출력: 한 줄 JSON 요약. 하나라도 어긋나면 종료코드 1.
 import assert from 'node:assert/strict'
-import { refusalDelta, describeDelta, snapshot } from './state-delta.mjs'
+import { refusalDelta, describeDelta, snapshot, unobservedOpenAttempts } from './state-delta.mjs'
 
 const rounds = Number(process.argv[2] ?? 20)
 const iso = ms => new Date(ms).toISOString()
 
-/** 관문이 F1(a) 를 재는 그 순간의 문서와 같은 모양. 값은 고정이라 회차마다 같은 입력이 된다. */
-function baseline(seed) {
+/**
+ * 관문이 F1(a) 를 재는 그 순간의 문서와 같은 모양. 값은 고정이라 회차마다 같은 입력이 된다.
+ *
+ * `primed` 는 **창을 열기 전 전제**다 (r2 지적 H): 열린 attempt 의 재관측 기록이 서 있는 상태.
+ * 관문은 창을 열기 전에 이 도장을 능동적으로 찍는다(`native.mjs` 의 `primeReconcile`). 기본값이
+ * `true` 인 이유가 그것이다 — 이 장치의 기본 입력은 **관문이 실제로 여는 창**이어야 한다.
+ * `second` 는 같은 pane 에 열려 있는 **다른** attempt 를 하나 더 둔다 (L-a).
+ */
+function baseline(seed, { primed = true } = {}) {
   const runId = 'run_0000000000aa', taskId = 'task_0000000000bb', dispatchId = 'ctx_0000000000cc'
   const at = iso(1_800_000_000_000 + seed)
   const paneId = 'pane-1'
@@ -41,7 +48,8 @@ function baseline(seed) {
         attempts: 1, status: 'dispatched', result: null, settledAt: null, createdAt: at, updatedAt: at, version: 2 }],
       dispatches: [{ id: dispatchId, runId, taskId, attempt: 1,
         target: { handle: 't1.device', runtimeId: 'runtime', epoch: 'epoch', ptyId: 'pty', paneId },
-        agent: { kind: 'claude', requestedModel: 'sonnet', resolvedModel: 'sonnet' }, agentAbsenceReason: null, reconcile: null,
+        agent: { kind: 'claude', requestedModel: 'sonnet', resolvedModel: 'sonnet' }, agentAbsenceReason: null,
+        reconcile: primed ? { at, runtimeInstanceId: 'instance', observed: true, reason: 'pane_live' } : null,
         worker: { launch: 'created', ownership: 'owned', originDispatchId: null, ownershipTransferredTo: null,
           paneSession: 'session-one', preambleSha256: 'a'.repeat(64), lead: { requestId: 'r1.1.lead', at }, prompt: { requestId: 'r1.1.body', at },
           promptRequestId: 'r1.1.body', lastHeartbeatAt: null, capabilityRevokedAt: null, capabilityRevokedReason: null, retain: null, release: null },
@@ -53,6 +61,17 @@ function baseline(seed) {
     },
   }
 }
+
+/** 같은 pane 에 열려 있는 **다른** attempt 를 하나 더 붙인다 (L-a). 그 쪽 도장 여부는 따로 준다. */
+function withSecondAttempt(shape, { primed }) {
+  const next = clone(shape.state)
+  const open = next.dispatches[0]
+  next.dispatches.push({ ...clone(open), id: 'ctx_0000000000ee', attempt: 2, taskId: open.taskId,
+    target: { ...open.target, handle: 't2.device' },
+    reconcile: primed ? { at: open.createdAt, runtimeInstanceId: 'instance', observed: true, reason: 'pane_live' } : null,
+    version: 1 })
+  return { ...shape, state: next, secondId: 'ctx_0000000000ee' }
+}
 const clone = value => JSON.parse(JSON.stringify(value))
 const nextSequence = state => state.messages.reduce((high, entry) => Math.max(high, entry.sequence), 0) + 1
 
@@ -63,10 +82,24 @@ const message = (state, { id, type, at, from, dispatchId, taskId, extra = {} }) 
   deliveredIn: null, acknowledgedAt: null, outcome: null, question: null, replyTo: null, ...extra,
 })
 
-/** `send --type heartbeat` 가 worker 자격으로 할 때 제품이 하는 것 전부 (index.ts send-heartbeat). */
+/**
+ * `send --type heartbeat` 가 worker 자격으로 할 때 제품이 하는 것 전부 (index.ts send-heartbeat).
+ *
+ * 그리고 **하나 더** (r2 지적 H): 제품은 모든 명령 앞에 재관측 훑기를 돌리고, 변이 명령은 그 결과를
+ * 자기 쓰기에 실어 보낸다(`index.ts:651-663`). 그래서 도장이 아직 없는 열린 attempt 가 있으면
+ * heartbeat 한 번이 **도장 + 자기 갱신**을 함께 저장하고 `version` 은 +2 가 된다 — Codex 의
+ * `product-baseline-summary.json` 두 번째 경우가 정확히 `versionDelta: 2` 다. 이 장치가 그 모양을
+ * 흉내내지 않으면 H 를 잠글 수 없다.
+ */
 function paneHeartbeat(state, dispatchId, at) {
   const next = clone(state)
   const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+  for (const entry of next.dispatches) {
+    if (entry.status !== 'dispatched' || entry.reconcile?.observed === true) continue
+    entry.reconcile = { at, runtimeInstanceId: 'instance', observed: true, reason: 'pane_live' }
+    entry.updatedAt = at
+    entry.version += 1
+  }
   next.messages.push(message(next, { id: 'msg_0000000000b1', type: 'heartbeat', at, dispatchId,
     taskId: dispatch.taskId, from: { kind: 'worker', dispatchId, paneId: dispatch.target.paneId } }))
   dispatch.worker.lastHeartbeatAt = at
@@ -132,6 +165,13 @@ const LEAKS = [
       taskId: dispatch.taskId, from: { kind: 'worker', dispatchId, paneId: dispatch.target.paneId } }))
     dispatch.worker.lastHeartbeatAt = '2029-01-01T00:00:00.000Z'
     dispatch.updatedAt = '2029-01-01T00:00:00.000Z'; dispatch.version += 1; return next } },
+  // --- r2 지적 L-b: 요구값이 없는 종류(status·question·escalation)를 위조해도, **그 옆에서** 파생 칸이
+  // 움직이면 걸린다. 위조 자체를 가려내지는 못한다 — 그것이 state-delta.mjs 머리말의 한계 문장이다.
+  { name: 'status-message-beside-an-unexplained-version-bump', apply: (state, dispatchId, at) => {
+    const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+    next.messages.push(message(next, { id: 'msg_0000000000e1', type: 'status', at, dispatchId,
+      taskId: dispatch.taskId, from: { kind: 'worker', dispatchId, paneId: dispatch.target.paneId } }))
+    dispatch.version += 1; dispatch.updatedAt = at; return next } },
   // 관문의 두 번째 사용처(정산된 워커가 다시 보고할 수 없다)에서 막아야 하는 쓰기.
   { name: 'settled-pane-reports-again', apply: (state, dispatchId, at) => {
     const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
@@ -196,11 +236,84 @@ for (let round = 0; round < rounds; round++) {
   }
 }
 
+// --- r2 지적 H: 창을 열기 전 전제 -----------------------------------------------------------------
+//
+// 재관측 도장은 열린 attempt 를 **처음** 재관측하는 명령 한 번만 쓰인다. 그 명령이 창 안에 들어오면
+// (선행 `worker-show` 의 pane 관측이 실패해 도장이 못 섰다가 창 안의 정상 heartbeat 가 함께 찍는 모양)
+// 거절이 아무것도 안 썼는데도 `version` 이 +2 로 움직인다 — 두 쓰기는 바이트로 구분되지 않는다.
+// 그래서 관문은 창을 열기 전에 도장을 찍고(`primeReconcile`), 못 찍으면 **다른 문장으로** 멈춘다.
+// 여기서 잠그는 것은 그 두 모양이다.
+results.precondition = {
+  unprimedIsFlagged: 0, unprimedHeartbeatIsUnclean: 0,
+  primedHeartbeatIsClean: 0, primedQuietIsClean: 0,
+  otherAttemptUnprimedIsFlagged: 0, otherAttemptPrimedIsClean: 0,
+  reconcileWriteCaughtOnPrimedBaseline: 0,
+}
+const stamp = LEAKS.find(entry => entry.name === 'refusal-persisted-its-reconcile')
+for (let round = 0; round < rounds; round++) {
+  const at = iso(1_800_000_000_000 + round + 11)
+
+  // (a) 도장이 없는 창 — 관문이라면 여기서 "전제 미충족" 으로 멈춘다.
+  const unprimed = baseline(round, { primed: false })
+  const beforeU = snapshot(bytes(unprimed.state))
+  if (unobservedOpenAttempts(beforeU.state).length === 1) results.precondition.unprimedIsFlagged += 1
+  else failures.push({ round, what: 'an unstamped open attempt was not flagged by the precondition' })
+  const afterU = snapshot(bytes(paneHeartbeat(unprimed.state, unprimed.dispatchId, at)))
+  // 그 창에서 비교는 통과하지 못한다. 이것은 결함이 아니라 **구분 불가**이고, 그래서 창을 열지 않는다.
+  if (!refusalDelta(beforeU.state, afterU.state, { dispatchId: unprimed.dispatchId }).clean) results.precondition.unprimedHeartbeatIsUnclean += 1
+  else failures.push({ round, what: 'the unstamped-window heartbeat came out clean — the device no longer models the first stamp' })
+
+  // (b) 전제를 세운 창 — 통과선 ①. 정상 heartbeat 가 거짓 실패를 내지 않는다.
+  const primed = baseline(round)
+  const beforeP = snapshot(bytes(primed.state))
+  if (unobservedOpenAttempts(beforeP.state).length !== 0) failures.push({ round, what: 'a stamped attempt was still flagged' })
+  const afterP = snapshot(bytes(paneHeartbeat(primed.state, primed.dispatchId, at)))
+  if (refusalDelta(beforeP.state, afterP.state, { dispatchId: primed.dispatchId }).clean) results.precondition.primedHeartbeatIsClean += 1
+  else failures.push({ round, what: 'a heartbeat in a stamped window was called unclean (the false failure H names)' })
+  if (refusalDelta(beforeP.state, snapshot(bytes(clone(primed.state))).state, { dispatchId: primed.dispatchId }).clean) results.precondition.primedQuietIsClean += 1
+  else failures.push({ round, what: 'an untouched stamped window was called unclean' })
+
+  // (c) L-a — 같은 pane 의 **다른** 열린 attempt. 그쪽 도장이 없으면 그것도 전제 미충족이다.
+  const twoUnprimed = withSecondAttempt(baseline(round), { primed: false })
+  if (unobservedOpenAttempts(snapshot(bytes(twoUnprimed.state)).state).length === 1) results.precondition.otherAttemptUnprimedIsFlagged += 1
+  else failures.push({ round, what: "the other open attempt's missing stamp was not flagged" })
+  const twoPrimed = withSecondAttempt(baseline(round), { primed: true })
+  const beforeT = snapshot(bytes(twoPrimed.state))
+  const afterT = snapshot(bytes(paneHeartbeat(twoPrimed.state, twoPrimed.dispatchId, at)))
+  if (refusalDelta(beforeT.state, afterT.state, { dispatchId: twoPrimed.dispatchId }).clean) results.precondition.otherAttemptPrimedIsClean += 1
+  else failures.push({ round, what: 'a legitimate re-observation of another stamped attempt was called unclean' })
+
+  // (d) 통과선 ② 의 비교 쪽: 전제를 세운 기준선 위에서도 **거절이 재관측을 남기는 쓰기 모양**은 잡힌다.
+  //     (제품 쪽 차이는 05-result 에 적는다 — 도장을 찍고 나면 그 돌연변이는 쓸 것이 없어진다.)
+  const stamped = snapshot(bytes(stamp.apply(primed.state, primed.dispatchId, at)))
+  if (!refusalDelta(beforeP.state, stamped.state, { dispatchId: primed.dispatchId }).clean) results.precondition.reconcileWriteCaughtOnPrimedBaseline += 1
+  else failures.push({ round, what: 'a reconcile write on a stamped baseline was called clean' })
+}
+
+// --- r2 지적 I: 「본 것이 없다」를 「깨끗하다」로 읽지 않는다 ---------------------------------------
+results.unobservable = { missingDispatchIsUnclean: 0, nonDocumentThrows: 0 }
+for (let round = 0; round < rounds; round++) {
+  const { state, dispatchId } = baseline(round)
+  const document = snapshot(bytes(state)).state
+  const verdict = refusalDelta(document, document, { dispatchId: 'ctx_0000000fffff' })
+  if (!verdict.clean && verdict.unobservable.length === 1) results.unobservable.missingDispatchIsUnclean += 1
+  else failures.push({ round, what: 'a dispatchId present in neither document was called clean' })
+  let threw = 0
+  for (const pair of [[null, document], [document, null], [null, null], ['x', document]]) {
+    try { refusalDelta(pair[0], pair[1], { dispatchId }) } catch { threw += 1 }
+  }
+  if (threw === 4) results.unobservable.nonDocumentThrows += 1
+  else failures.push({ round, what: `comparing a non-document did not throw (${threw}/4)` })
+}
+
+
 results.ok = failures.length === 0
   && results.quietWindow.unchangedIsClean === rounds && results.quietWindow.bareVersionBumpCaught === rounds
   && results.quietWindow.leaksMissed === 0
   && results.oldComparisonFailed === rounds && results.newComparisonClean === rounds
   && LEAKS.every(leak => results.negatives[leak.name].caught === rounds && results.negatives[leak.name].missed === 0)
+  && Object.values(results.precondition).every(count => count === rounds)
+  && Object.values(results.unobservable).every(count => count === rounds)
 results.failures = failures.slice(0, 10)
 console.log(JSON.stringify(results, null, 2))
 assert.ok(results.ok, 'the isolated device did not hold')

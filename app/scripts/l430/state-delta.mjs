@@ -49,9 +49,20 @@
 //   - 거절이 메시지를 쓰면 → coordinator 자격이라 `from.kind` 가 다르다. 설명되지 않는 추가
 //   - 무엇이 지워지는 것은 어느 경우에도 설명되지 않는다
 //
-// 남는 한계: pane 이 자기 이름으로 쓸 수 있는 종류의 메시지를 거절 경로가 **위조해서**, 그 메시지가
-// 요구하는 값까지 맞춰 쓴다면 이 비교는 설명된 것으로 읽는다. 거절은 coordinator 자격으로 도는
-// 호출이라 그 경로가 실제로 있지는 않지만, 비교가 거기까지 증명하지는 않는다.
+// 남는 한계 (r2 지적 L-b 로 문장을 정정한다): 위조의 난이도는 **종류마다 다르다.** `heartbeat` 는
+// `lastHeartbeatAt`·`updatedAt`·`version` 을 정확히 맞춰야 설명된 것으로 읽히지만, `status`·`question`·
+// `escalation` 은 **요구값이 하나도 없다** — 메시지 한 줄을 워커 자격으로 덧붙이는 것만으로 설명된다.
+// 그래서 "요구값까지 맞춰야 한다" 는 heartbeat 에만 해당하는 말이고, 나머지 세 종류에 대해서는
+// 이 비교가 위조를 가려내지 못한다. 거절은 coordinator 자격으로 도는 호출이라 그 경로가 실제로
+// 있지는 않지만, 비교가 거기까지 증명하지는 않는다. 다만 위조한 메시지 **옆에서** 파생 칸이 움직이면
+// 그것은 여전히 걸린다 (음성 대조 `status-message-beside-an-unexplained-version-bump`).
+//
+// 그리고 이 비교는 **창이 열릴 때의 전제**에 기대고 있다 (r2 지적 H). 재관측 기록은 열린 attempt 를
+// **처음** 재관측하는 명령 한 번만 쓰이는데, 그 명령이 창 **안**에 있으면 — 선행 `worker-show` 의 pane
+// 관측이 실패해 기록이 서지 못했다가 창 안의 정상 heartbeat 가 도장을 같이 찍는 모양 — 거절이 아무것도
+// 쓰지 않았는데도 `version` 이 +2 로 움직여 `clean:false` 가 된다. 바이트로 구분할 방법이 없다.
+// 그래서 비교를 느슨하게 하는 대신 **창을 열기 전에 전제를 세운다**: `unobservedOpenAttempts()` 가
+// 비어 있어야 창을 연다. 세우지 못하면 관문은 "거절이 썼다" 가 아니라 **"전제 미충족"** 으로 멈춘다.
 import { createHash } from 'node:crypto'
 
 /** 같은 바이트에서 digest 와 문서를 함께 뜬다 — 두 번 읽으면 그 사이가 또 창이 된다. */
@@ -81,6 +92,18 @@ function walk(value, prefix, out) {
 /** 문서 하나를 키→값(JSON 문자열) 지도로. 값까지 펼치므로 변경 키는 값 비교에서 나온다. */
 export const flattenState = state => walk(state ?? null, '', new Map())
 
+/**
+ * 창을 열기 전 전제 (r2 지적 H): **열린 attempt 는 전부 재관측 기록이 서 있어야 한다.**
+ * 서 있지 않은 attempt 의 id 목록을 돌려준다 — 비어 있어야 창을 연다.
+ *
+ * 열린 attempt 전부를 보는 이유는 L-a 다: 제품의 재관측 훑기(`index.ts:378-383`)는 `status ==='dispatched'`
+ * 인 **모든** attempt 에 적용되므로, 창 안에서 다른 attempt 의 첫 도장이 찍혀도 같은 거짓 실패가 난다.
+ * 읽기 명령 한 번이 그 전부를 한꺼번에 세운다.
+ */
+export const unobservedOpenAttempts = state => (state?.dispatches ?? [])
+  .filter(entry => entry?.status === 'dispatched' && entry?.reconcile?.observed !== true)
+  .map(entry => entry.id)
+
 /** pane 이 자기 attempt 위에서 쓸 수 있는, 보고가 아닌 메시지. worker_done 은 여기 없다 (위 주석). */
 const CONCURRENT_TYPES = new Set(['heartbeat', 'question', 'status', 'escalation'])
 
@@ -92,6 +115,19 @@ const CONCURRENT_TYPES = new Set(['heartbeat', 'question', 'status', 'escalation
  * @param {{dispatchId: string}} options  pane 이 자기 이름으로 쓸 수 있는 attempt
  */
 export function refusalDelta(before, after, { dispatchId }) {
+  // r2 지적 I. 「본 것이 없다」를 「깨끗하다」로 읽지 않는다.
+  // 문서가 아예 아니면 그것은 이 함수를 잘못 부른 것이다 — 조용히 통과시키지 않고 던진다.
+  const document = (value, side) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value))
+      throw new TypeError(`refusalDelta: ${side} 가 문서가 아니다 (${value === null ? 'null' : typeof value}). `
+        + '두 관측 중 하나를 못 뜬 것이고, 그것은 "아무것도 안 바뀌었다" 가 아니다.')
+    return value
+  }
+  document(before, 'before'); document(after, 'after')
+  // 검사 중인 attempt 가 양쪽 문서 어디에도 없으면 비교할 대상이 없다. 실패다.
+  const present = side => (side?.dispatches ?? []).some(entry => entry?.id === dispatchId)
+  const unobservable = present(before) || present(after) ? [] : [`dispatches[${dispatchId}]`]
+
   const left = flattenState(before), right = flattenState(after)
   const added = [...right.keys()].filter(key => !left.has(key)).sort()
   const removed = [...left.keys()].filter(key => !right.has(key)).sort()
@@ -136,8 +172,9 @@ export function refusalDelta(before, after, { dispatchId }) {
     required: Object.fromEntries([...required].map(([key, value]) => [key, JSON.parse(value)])),
     ignored: appeared.filter(entry => !explainableIds.has(entry.id))
       .map(entry => ({ id: entry.id, type: entry.type, from: entry.from?.kind ?? null, dispatchId: entry.dispatchId ?? null })),
+    unobservable,
     added, removed, changed, unexplained,
-    clean: unexplained.added.length === 0 && unexplained.removed.length === 0
+    clean: unobservable.length === 0 && unexplained.added.length === 0 && unexplained.removed.length === 0
       && unexplained.changed.length === 0 && unexplained.mismatched.length === 0,
   }
 }
@@ -177,6 +214,8 @@ export function describeDelta(delta, before, after) {
     counts: delta.counts,
     explainedBy: delta.explainedBy,
     reconcile: delta.reconcile,
+    /** 비어 있지 않으면 「비교할 대상을 못 봤다」이고, 그것은 통과가 아니다 (r2 지적 I). */
+    unobservable: delta.unobservable,
     ignored: delta.ignored,
     unexplained: { added: rows(delta.unexplained.added), removed: rows(delta.unexplained.removed),
       changed: rows(delta.unexplained.changed), mismatched: rows(delta.unexplained.mismatched) },

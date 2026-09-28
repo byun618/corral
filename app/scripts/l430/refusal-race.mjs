@@ -102,6 +102,11 @@ const LEAKS = [
     const next = clone(state)
     next.messages.push(message(next, { id: 'msg_0000000000c1', type: 'status', at, dispatchId,
       from: { kind: 'coordinator', dispatchId: null, paneId: null } })); return next } },
+  // 재관측 기록은 `observed: true` 일 때만 설명으로 받는다. 관측이 실패했다는 기록은 걸려야 한다.
+  { name: 'reconcile-unobserved', apply: (state, dispatchId, at) => {
+    const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+    dispatch.reconcile = { at, runtimeInstanceId: 'instance', observed: false, reason: 'observation_failed' }
+    dispatch.updatedAt = at; dispatch.version += 1; return next } },
   // 관문의 두 번째 사용처(정산된 워커가 다시 보고할 수 없다)에서 막아야 하는 쓰기.
   { name: 'settled-pane-reports-again', apply: (state, dispatchId, at) => {
     const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
@@ -145,7 +150,30 @@ for (let round = 0; round < rounds; round++) {
   }
 }
 
+// --- 조용한 창: 동시 쓰기가 하나도 없을 때 -------------------------------------------------------
+// 설명할 것이 없으면 `updatedAt`·`version` 도 움직일 수 없다. 파생 칸의 허용이 "언제나" 가 아니라
+// "설명된 실질 변경 뒤에만" 이라는 것을 여기서 잰다.
+results.quietWindow = { unchangedIsClean: 0, bareVersionBumpCaught: 0, leaksCaught: 0, leaksMissed: 0 }
+for (let round = 0; round < rounds; round++) {
+  const { state, dispatchId } = baseline(round)
+  const before = snapshot(bytes(state))
+  const at = iso(1_800_000_000_000 + round + 9)
+  if (refusalDelta(before.state, snapshot(bytes(clone(state))).state, { dispatchId }).clean) results.quietWindow.unchangedIsClean += 1
+  else failures.push({ round, what: 'an untouched document was called unclean' })
+  const bumped = clone(state)
+  const dispatch = bumped.dispatches.find(entry => entry.id === dispatchId)
+  dispatch.updatedAt = at; dispatch.version += 1
+  if (!refusalDelta(before.state, snapshot(bytes(bumped)).state, { dispatchId }).clean) results.quietWindow.bareVersionBumpCaught += 1
+  else failures.push({ round, what: 'a bare version bump with nothing to explain it was called clean' })
+  for (const leak of LEAKS) {
+    if (!refusalDelta(before.state, snapshot(bytes(leak.apply(state, dispatchId, at))).state, { dispatchId }).clean) results.quietWindow.leaksCaught += 1
+    else { results.quietWindow.leaksMissed += 1; failures.push({ round, what: `quiet-window leak ${leak.name} was not caught` }) }
+  }
+}
+
 results.ok = failures.length === 0
+  && results.quietWindow.unchangedIsClean === rounds && results.quietWindow.bareVersionBumpCaught === rounds
+  && results.quietWindow.leaksMissed === 0
   && results.oldComparisonFailed === rounds && results.newComparisonClean === rounds
   && LEAKS.every(leak => results.negatives[leak.name].caught === rounds && results.negatives[leak.name].missed === 0)
 results.failures = failures.slice(0, 10)

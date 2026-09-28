@@ -149,8 +149,10 @@ interface Harness {
  *
  * `WAITS_OUT` is for a call that has to *reach* its deadline: an `ask` that must come back
  * `pending`. Every run pays it in wall time (the ask returns at `D - 250`), so it is the smallest
- * value that still leaves real slack — 1000 ms, against a measured maximum prefix of **1 ms** over
- * 40 samples taken under that load and under four times it (`…/raw/worker/claude/c2/probe/`).
+ * value that still leaves real slack: **1500 ms**, which by `D - 500` is a slack of **1000 ms** —
+ * against a measured maximum prefix of **1 ms** over 40 samples taken under that load and under
+ * four times it (`…/raw/worker/claude/c2/probe/`). The 1500 is the deadline, the 1000 is the slack
+ * it buys; an earlier draft of this comment wrote the slack where the value goes (r3 지적 L-k).
  *
  * `RETURNS_EARLY` is for a call that answers, or is refused, long before its deadline. Nothing waits
  * on it, so it can be generous: 9500 ms of slack at no cost in run time.
@@ -672,4 +674,46 @@ describe('LIFE-423 request-show reports a released receipt as released', () => {
       expect(String(shown.interpretation)).not.toMatch(/may have taken effect/)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+/**
+ * LIFE-430 (r3 지적 L) — **제품 가드 `index.ts:663` 의 회귀를 여기서 잡는다.**
+ *
+ * `session()` 은 명령마다 재관측 훑기를 돌리고 그 결과를 `if (pass.changed && !mutating)` 일 때만
+ * 저장한다. `!mutating` 이 빠지면 **거절된** 변이 명령이 제 관측을 문서에 남긴다 — 「거절된 기동은
+ * 아무것도 저장하지 않는다」가 깨진다.
+ *
+ * 그 회귀를 네이티브 관문(F1(a))이 잡을 수는 없다. 관문은 창을 열기 전에 재관측 도장을 찍는데
+ * (`native.mjs` 의 `primeReconcile` — 그러지 않으면 창 안의 첫 도장과 거절의 쓰기가 바이트로
+ * 구분되지 않는다), 도장이 서고 나면 `applyReconcile` 이 같은 관측에 `changed:false` 를 돌려주므로
+ * 그 돌연변이는 **쓸 것이 없다**. 관문의 판정("이 창에서 거절은 아무것도 저장하지 않았다")은 참이고,
+ * 잡아야 할 회귀는 그 창 **밖**에 있다.
+ *
+ * 그래서 여기서 잡는다. 이 검사는 도장이 **없는** 조용한 창을 일부러 만들어 거절을 돌리고, 문서가
+ * 바이트 그대로인지 본다. 임시로 `!mutating` 을 빼면 실패하고, 그대로면 통과한다.
+ */
+describe('LIFE-430 — a rejected mutation leaves the document byte-identical, even with a re-observation pending', () => {
+  it('a refused second start stores nothing when the attempt has no reconcile record yet', async () => {
+    const f = await setup()
+    mock.mode = 'completed'
+    const started = await f.start()
+    const dispatchId = idOf(started)
+
+    // 선행 관측이 실패해 도장이 못 선 상태 — `observePanes` 가 `unobserved` 를 돌려주면
+    // `applyReconcile` 은 아무것도 쓰지 않는다(`model.ts:296`). 결과 문서가 이 모양이다.
+    const wiped = f.store.read()
+    f.store.write({ ...wiped, dispatches: wiped.dispatches.map(entry => ({ ...entry, reconcile: null })) })
+
+    // 창 안에 동시 쓰기를 두지 않는다. 오직 거절 하나만 돈다.
+    const before = JSON.stringify(f.store.read())
+    await expect(f.call('worker-start', { task: f.task, ...REUSE })).rejects.toMatchObject({ code: 'task_not_startable' })
+    const after = JSON.stringify(f.store.read())
+
+    // 「그 attempt 의」 도장이 그대로 비어 있는지 본다. 위치(`[0]`)가 아니라 id 로 찾는다.
+    const stored: { dispatches: { id: string; reconcile: unknown }[] } = JSON.parse(after)
+    const attempt = stored.dispatches.find(entry => entry.id === dispatchId)
+    expect(attempt).toBeDefined()
+    expect(attempt?.reconcile).toBeNull()
+    expect(after).toBe(before)
+  }, 60000)
 })

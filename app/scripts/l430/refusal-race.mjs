@@ -291,7 +291,7 @@ for (let round = 0; round < rounds; round++) {
 }
 
 // --- r2 지적 I: 「본 것이 없다」를 「깨끗하다」로 읽지 않는다 ---------------------------------------
-results.unobservable = { missingDispatchIsUnclean: 0, nonDocumentThrows: 0 }
+results.unobservable = { missingDispatchIsUnclean: 0, nonDocumentThrows: 0, preconditionRefusesNonDocument: 0 }
 for (let round = 0; round < rounds; round++) {
   const { state, dispatchId } = baseline(round)
   const document = snapshot(bytes(state)).state
@@ -304,6 +304,57 @@ for (let round = 0; round < rounds; round++) {
   }
   if (threw === 4) results.unobservable.nonDocumentThrows += 1
   else failures.push({ round, what: `comparing a non-document did not throw (${threw}/4)` })
+  // r3 지적 L-h — 전제 확인도 같다. `null` 에 `[]` 를 돌려주면 「문서를 못 읽었다」가 「전제가 섰다」다.
+  let refused = 0
+  for (const bad of [null, undefined, 'x', []]) { try { unobservedOpenAttempts(bad) } catch { refused += 1 } }
+  if (refused === 4) results.unobservable.preconditionRefusesNonDocument += 1
+  else failures.push({ round, what: `unobservedOpenAttempts did not throw on a non-document (${refused}/4)` })
+}
+
+
+// --- r3 지적 M: 전제를 세운 창에도 남는 두 모양 ---------------------------------------------------
+//
+// 전제(도장)를 세워도 창 안에서 일어날 수 있는 일이 둘 더 있다. 하나는 **고쳤고**(귀속을 나눴다)
+// 하나는 **한계로 남긴다**. 둘 다 여기서 잰다 — 적어만 두고 재지 않으면 다음 라운드에 다시 나온다.
+//
+//   R3 창 안에서 재관측 **이유가 바뀌어** attempt 가 정산된다 (`pane_live` → `pane_gone`).
+//      `applyReconcile` 의 멱등은 이유가 같을 때만이라(`model.ts:316`) 문서가 움직인다.
+//      → `clean` 은 여전히 거짓이지만 `settledInWindow` 가 원인을 따로 말한다. 관문은 그걸 보고
+//        "거절이 썼다" 가 아니라 "pane 이 사라졌다" 로 멈춘다.
+//   R4 pane 이 창 안에서 `orchestration check` 를 돌린다 (Delivery 생성 + 수신 표시).
+//      → **한계다.** 설명 목록은 메시지 4종과 그 파생 칸뿐이고, pane 이 낸 다른 정당한 명령은
+//        설명되지 않는다. 넓히면 음성 대조 `delivery-record-created` 가 같이 무너진다 — 그 둘은
+//        같은 모양이다. 네이티브 TASK 가 「do nothing else at all」로 금지하는 것이 이 자리의 방어다.
+results.residual = { settledIsAttributed: 0, settledNotBlamedOnRefusal: 0, paneCheckIsUnexplained: 0, refusalWriteHasNoSettlement: 0 }
+for (let round = 0; round < rounds; round++) {
+  const { state, dispatchId } = baseline(round)
+  const before = snapshot(bytes(state))
+  const at = iso(1_800_000_000_000 + round + 13)
+
+  // R3 — pane 이 사라져 정산된다. 그 쓰기는 창 안의 heartbeat(변이 명령)가 실어 나른다.
+  const gone = clone(state)
+  const dying = gone.dispatches.find(entry => entry.id === dispatchId)
+  dying.reconcile = { at, runtimeInstanceId: 'instance', observed: true, reason: 'pane_gone' }
+  dying.status = 'unknown'; dying.settledBy = 'reconcile'; dying.settledAt = at
+  dying.updatedAt = at; dying.version += 1
+  const settled = refusalDelta(before.state, snapshot(bytes(paneHeartbeat(gone, dispatchId, at))).state, { dispatchId })
+  if (!settled.clean) results.residual.settledIsAttributed += 1
+  else failures.push({ round, what: 'a settlement inside the window came out clean' })
+  if (settled.settledInWindow.length === 1 && settled.settledInWindow[0].reason === 'pane_gone') results.residual.settledNotBlamedOnRefusal += 1
+  else failures.push({ round, what: 'a settlement inside the window was not attributed to the pane', detail: settled.settledInWindow })
+
+  // R4 — pane 이 `check` 를 돌린다. 한계: 설명되지 않는다. 여기서는 **그 사실**을 고정한다.
+  const checked = clone(state)
+  checked.deliveries.push({ id: 'delivery_00000000bb', runId: checked.currentRunId, messageIds: [checked.messages[0].id], openedAt: at, acknowledgedAt: null })
+  checked.messages[0].deliveredIn = 'delivery_00000000bb'
+  const paneCheck = refusalDelta(before.state, snapshot(bytes(checked)).state, { dispatchId })
+  if (!paneCheck.clean && paneCheck.settledInWindow.length === 0) results.residual.paneCheckIsUnexplained += 1
+  else failures.push({ round, what: 'the pane-check shape no longer reads as unexplained' })
+
+  // 대조 — 거절이 재관측을 남긴 경우는 정산이 아니다. 두 원인이 섞이면 귀속이 무의미해진다.
+  const wrote = refusalDelta(before.state, snapshot(bytes(stamp.apply(state, dispatchId, at))).state, { dispatchId })
+  if (!wrote.clean && wrote.settledInWindow.length === 0) results.residual.refusalWriteHasNoSettlement += 1
+  else failures.push({ round, what: "a refusal's own write was attributed to a settlement" })
 }
 
 
@@ -314,6 +365,7 @@ results.ok = failures.length === 0
   && LEAKS.every(leak => results.negatives[leak.name].caught === rounds && results.negatives[leak.name].missed === 0)
   && Object.values(results.precondition).every(count => count === rounds)
   && Object.values(results.unobservable).every(count => count === rounds)
+  && Object.values(results.residual).every(count => count === rounds)
 results.failures = failures.slice(0, 10)
 console.log(JSON.stringify(results, null, 2))
 assert.ok(results.ok, 'the isolated device did not hold')

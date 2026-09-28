@@ -19,9 +19,14 @@ import {app} from './lib.mjs'
 //      아직 없는 디렉터리는 가장 가까운 존재하는 조상을 풀고 나머지 이름을 잇는다.
 //   ③ **허용 목록.** 다음 둘 중 하나일 때만 지나간다.
 //        (ㄱ) 이 스크립트를 돌리는 worktree **자신의 일감 폴더** 아래.
-//        (ㄴ) **어느 git 저장소에도 속하지 않는 곳** (`/tmp/…` 등).
+//        (ㄴ) 어느 저장소에도 속하지 않는다고 **증명된** 곳 (`/tmp/…` 등).
 //      나머지는 전부 거절이다 — 다른 일감의 폴더, `specs/` 루트, 저장소 루트, 다른 worktree,
 //      격리 fixture 저장소까지.
+//      (ㄴ)의 **증명**은 둘이 함께 설 때만 성립한다: 조상에 `.git` 이 하나도 없다(파일 시스템 사실)
+//      **그리고** git 이 「저장소가 아니다」라고 말했다. r3 은 git 이 답하지 못한 것을 (ㄴ)로 읽었고,
+//      `GIT_DIR=<없는 경로>` 한 줄·`GIT_CEILING_DIRECTORIES` 한 줄·실패하는 git 스텁·git 없는 PATH
+//      넷 다 그 길로 동결 트리에 **실제 파일을 만들었다** (r3 지적 K). 대답을 못 들은 것은
+//      「저장소 밖」이 아니라 **공백**이고, 공백은 허용이 아니다.
 //   ④ 허용된 자리 안에서도, 이미 커밋된 파일을 담은 디렉터리는 거절한다. git 이 답하지 못하면
 //      통과가 아니라 거절이다 — 답을 못 들은 것은 「추적 없음」이 아니다.
 //   ⑤ 쓰려는 파일이 이미 있으면 거절한다. 쓰기는 `'wx'` — 판정과 쓰기 사이의 창을 커널이 닫는다.
@@ -37,10 +42,24 @@ import {app} from './lib.mjs'
 // 트리를 자기 것이라고 선언하게 해 줬고, 거절 메시지가 그 변수를 복구 방법으로 가르치기까지 했다.
 // 번호는 실행하는 worktree 자신에서만 나온다: 브랜치 이름, 없으면 worktree 폴더 이름.
 //
-// 한계. ③(ㄴ) 때문에 저장소 밖 아무 디렉터리나 쓸 수 있다 — 그래도 동결 증거는 전부 저장소 안이라
-// 그 길로는 닿지 않는다. 검증·리뷰 worktree 가 detached 이고 폴더 이름에도 일감 번호가 없으면
-// 자기 일감 폴더를 못 찾는다. 그때는 저장소 **밖** 디렉터리로 돌리면 된다(③(ㄴ)). 그리고 격리
-// git fixture 도 거절된다 — 가드를 시험하려면 저장소가 아닌 임시 디렉터리를 쓴다.
+// 한계 (r3 리뷰 뒤 실제에 맞게 고쳐 적는다).
+//
+//   - **git 이 없으면 아무 데도 쓰지 않는다.** (ㄱ)은 ④층(추적 파일 확인)을 통과해야 하고 ④층은
+//     git 의 답을 요구하며, (ㄴ)은 git 의 「저장소가 아니다」를 요구한다. 답을 못 들으면 둘 다
+//     증명되지 않는다. 불편하지만 방향이 맞다 — 증명 없이 쓰는 쪽이 r3 의 결함이었다.
+//   - ③(ㄴ)이 서면 저장소 밖 아무 디렉터리에나 쓴다. 동결 증거는 전부 저장소 안이고, 그 안으로
+//     들어오는 모든 경로는 ③(ㄱ)·④·⑤ 를 지난다. (r3 의 "닿지 않는다" 는 git 무응답 경로를 빠뜨린
+//     **틀린 문장**이었다 — K 가 그 경로로 실제 파일을 만들었다.)
+//   - **일감 번호를 재사용한 worktree 는 그 일감의 동결 트리에 (ㄱ) 권한을 얻는다** (r3 지적 L-j).
+//     예: 출고된 LIFE-393 의 후속 작업을 `LIFE-393-<새 슬러그>` 로 따면 `specs/LIFE-393-cli-terminal/`
+//     이 그 실행의 「자기 일감 폴더」가 된다. ④층이 *이미 커밋된 파일을 담은* 디렉터리는 막으므로
+//     기존 기록은 안전하고, 열리는 것은 **그 트리 안의 새 하위 폴더**다. 막지 않았다 — 「자기 일감
+//     폴더」와 「출고된 동결 증거」가 같은 폴더인 상태 자체가 사람이 만든 것이고, 스크립트가 그 둘을
+//     가를 사실을 갖고 있지 않기 때문이다. 번호를 재사용하지 않는 것이 규약이고, 재사용해야 하면
+//     저장소 밖 디렉터리로 돌린다.
+//   - 검증·리뷰 worktree 가 detached 이고 폴더 이름에도 일감 번호가 없으면 자기 일감 폴더를 못
+//     찾는다. 그때는 저장소 **밖** 디렉터리로 돌린다(③(ㄴ)). 격리 git fixture 도 거절된다 —
+//     가드를 시험하려면 저장소가 아닌 임시 디렉터리를 쓴다.
 //
 // 이 판정은 `CORRAL_BACKEND_BUILD_ROOT` 검사보다 **먼저** 오고, 어떤 파일·임시 디렉터리보다 앞에
 // 선다 (아래 `mkdtempSync` 도 쓰기다).
@@ -53,10 +72,36 @@ const refuse=(why,detail)=>{
  for(const [key,value] of Object.entries(detail))console.error(`  ${key}: ${value}`)
  process.exit(2)
 }
-/** git 한 번. 답하지 못하면 `null` 이다 — 저장소 밖이거나 git 이 죽은 경우. 출력이 커도 자르지 않는다. */
+/**
+ * git 한 번. 결과를 **세 가지로** 나눈다 (r3 지적 K). r3 은 실행 실패와 모든 비0 종료를 `null` 하나로
+ * 합쳤고, 그 `null` 을 「어느 저장소에도 속하지 않는 곳」으로 읽었다 — `GIT_DIR=<없는 경로>` 한 줄,
+ * `GIT_CEILING_DIRECTORIES` 한 줄, PATH 앞의 실패 스텁, git 없는 PATH 넷 다 그 길로 동결 트리에
+ * **실제 파일을 만들었다.**
+ *
+ *   answered     — git 이 답했다
+ *   not-a-repo   — git 이 「여기는 저장소가 아니다」라고 **말했다**
+ *   unavailable  — 대답을 못 들었다 (실행 실패·다른 오류). 이것은 「저장소 밖」이 **아니다**
+ *
+ * 그리고 상속된 `GIT_*` 를 전부 걷어낸다. 판정을 호출자의 환경이 바꾸면 그것은 판정이 아니다.
+ */
+const GIT_ENV=Object.fromEntries(Object.entries(process.env).filter(([name])=>!name.startsWith('GIT_')))
 const git=(cwd,args)=>{
- const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8',maxBuffer:256*1024*1024})
- return result.error!==undefined||result.status!==0?null:result.stdout
+ const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8',maxBuffer:256*1024*1024,env:GIT_ENV})
+ if(result.error!==undefined)return {kind:'unavailable',detail:`git 을 실행하지 못했다 (${result.error.code ?? 'spawn 실패'})`}
+ if(result.status===0)return {kind:'answered',out:result.stdout}
+ const said=String(result.stderr??'').trim()
+ if(/not a git repository|저장소가 아닙니다/i.test(said))return {kind:'not-a-repo',detail:said.slice(0,120)}
+ return {kind:'unavailable',detail:`git 이 ${result.status} 로 끝났다: ${said.slice(0,120)}`}
+}
+/** git 에 묻지 않고 파일 시스템 사실로 본다: 조상에 `.git` 이 있는가 (worktree 는 파일, 본체는 디렉터리). */
+const repoMarkerAbove=target=>{
+ let current=target
+ for(;;){
+  if(fs.existsSync(path.join(current,'.git')))return current
+  const parent=path.dirname(current)
+  if(parent===current)return null
+  current=parent
+ }
 }
 /** 경로의 신원. 문자열이 달라도 같은 디렉터리면 같은 값이다 (macOS 의 `SPECS`/`specs` 별칭). */
 const identity=target=>{try{const info=fs.statSync(target);return `${info.dev}:${info.ino}`}catch{return null}}
@@ -102,7 +147,8 @@ const raw=resolved.path
 const target=path.join(raw,OUTPUT_NAME)
 // ③ 허용 목록. 이 worktree 자신의 일감 폴더이거나, 어느 저장소에도 속하지 않는 곳.
 const mine=(()=>{
- const branch=git(repoRoot,['symbolic-ref','--short','HEAD'])?.trim()??null
+ const asked=git(repoRoot,['symbolic-ref','--short','HEAD'])
+ const branch=asked.kind==='answered'?asked.out.trim():null
  if(branch!==null&&TASK.test(branch))return {task:TASK.exec(branch)[1],from:`브랜치 ${branch}`}
  const folder=path.basename(repoRoot)
  if(TASK.test(folder))return {task:TASK.exec(folder)[1],from:`worktree 폴더 ${folder}`}
@@ -120,23 +166,34 @@ const home=(()=>{
 })()
 const allowed=under(raw,home.identity)
 if(!allowed){
- // 저장소 밖이면 지나간다. 저장소 안인데 내 일감 폴더가 아니면 거절이다 — 어느 저장소든.
- const inside=git(resolved.anchor,['rev-parse','--show-toplevel'])?.trim()??null
- if(inside!==null)refuse(
-  'CORRAL_VERIFY_RAW 가 허용되지 않은 자리를 가리킨다. 이 스크립트는 **이 worktree 자신의 일감 폴더** 아래이거나, 어느 git 저장소에도 속하지 않는 곳에만 쓴다.',
-  {디렉터리:describe(raw,inside),대상이_속한_저장소:inside===repoRoot?'이 worktree':'다른 저장소 또는 다른 worktree',
+ // **거절이 기본이다** (r3 지적 K). 지나가려면 「어느 저장소에도 속하지 않는다」가 **증명**돼야 하고,
+ // 증명은 둘이 함께 설 때만 성립한다: 조상에 `.git` 이 하나도 없다(파일 시스템 사실) **그리고**
+ // git 이 「저장소가 아니다」라고 말했다. 대답을 못 들은 것은 증명이 아니라 공백이다.
+ const marker=repoMarkerAbove(resolved.anchor)
+ const asked=git(resolved.anchor,['rev-parse','--show-toplevel'])
+ const inside=asked.kind==='answered'?asked.out.trim():null
+ if(!(marker===null&&asked.kind==='not-a-repo'))refuse(
+  'CORRAL_VERIFY_RAW 가 허용되지 않은 자리를 가리킨다. 이 스크립트는 **이 worktree 자신의 일감 폴더** 아래이거나, **어느 저장소에도 속하지 않는다고 증명된** 곳에만 쓴다.',
+  {디렉터리:describe(raw,inside??repoRoot),
+   대상이_속한_저장소:inside===null?'git 이 확인해 주지 않았다':(inside===repoRoot?'이 worktree':'다른 저장소 또는 다른 worktree'),
+   파일_시스템_사실:marker===null?'조상에 .git 없음':`조상에 .git 이 있다 (${describe(marker,inside??repoRoot)})`,
+   git_의_답:asked.kind==='answered'?'저장소 안이라고 답했다':asked.detail,
    이_실행의_일감:mine.task===null?`알 수 없음 — ${mine.from}`:`LIFE-${mine.task} (${mine.from})`,
    허용되는_자리:home.identity===null?`정하지 못했다 — ${home.why}`:describe(home.path),
-   복구:'이 일감 폴더 아래 이 회차만의 새 디렉터리를 주거나, 저장소 밖 디렉터리(예: 임시 폴더)를 준다'})
+   복구:'이 일감 폴더 아래 이 회차만의 새 디렉터리를 주거나, git 이 답하는 상태에서 저장소 밖 디렉터리를 준다'})
 }
 // ④ 허용된 자리 안에도 이미 커밋된 원자료가 있다. 그 위에는 쓰지 않는다.
-const inRepo=git(resolved.anchor,['rev-parse','--show-toplevel'])?.trim()??null
-if(inRepo!==null){
+const top=git(resolved.anchor,['rev-parse','--show-toplevel'])
+const inRepo=top.kind==='answered'?top.out.trim():null
+if(inRepo!==null||repoMarkerAbove(resolved.anchor)!==null){
+ if(inRepo===null)refuse(
+  '조상에 `.git` 이 있는데 git 이 그 저장소를 확인해 주지 않았다. 답을 못 들은 것을 「저장소 밖」으로도 「추적 없음」으로도 읽지 않는다.',
+  {디렉터리:describe(raw),git_의_답:top.detail,복구:'git 이 답하는 상태에서 다시 돌린다'})
  const listed=git(inRepo,['ls-files','--',raw])
- if(listed===null)refuse(
+ if(listed.kind!=='answered')refuse(
   'git 이 이 디렉터리의 추적 파일을 답하지 못했다. 답을 못 들은 것을 「추적 없음」으로 읽지 않는다.',
-  {디렉터리:describe(raw,inRepo),복구:'git 이 답하는 상태에서 다시 돌리거나, 저장소 밖 디렉터리를 준다'})
- const committed=listed.split('\n').filter(line=>line.length>0)
+  {디렉터리:describe(raw,inRepo),git_의_답:listed.detail,복구:'git 이 답하는 상태에서 다시 돌리거나, 저장소 밖 디렉터리를 준다'})
+ const committed=listed.out.split('\n').filter(line=>line.length>0)
  if(committed.length>0)refuse(
   'CORRAL_VERIFY_RAW 가 이미 커밋된 원자료를 담은 디렉터리를 가리킨다. 기존 기록 위에는 쓰지 않는다.',
   {디렉터리:describe(raw,inRepo),추적중인_파일수:committed.length,첫_파일:committed[0],

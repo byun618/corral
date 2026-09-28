@@ -85,14 +85,28 @@ async function primeReconcile(f, { label, dispatchId, requireDispatched, rounds 
   for (let round = 1; round <= rounds; round += 1) {
     await f.cli(['orchestration', 'dispatch-show', '--id', dispatchId])
     const state = snapshot(f.stateBytes()).state
-    const entries = state?.dispatches ?? []
+    // r3 지적 L-h. 「아무것도 못 봤다」를 「전제가 섰다」로 적지 않는다. 문서가 없거나 검사할
+    // attempt 가 문서에 없으면 그것은 성립이 아니라 **실패**다 — 오늘은 `dispatch-show` 가 먼저
+    // 죽어서 여기 닿지 않지만, 그 보호는 이 함수 밖에 있고 호출부가 바뀌면 그대로 열린다.
+    if (state === null || typeof state !== 'object') {
+      f.record(`native/precondition-${label}`, { established: false, reason: 'no-document', dispatchId, tries })
+      assert.fail(`전제를 확인할 문서가 없다 — ${label}: state.json 을 읽지 못했다. `
+        + '이 회차는 "거절이 무엇을 썼나" 를 판정하지 않는다.')
+    }
+    const entries = state.dispatches ?? []
     const open = entries.filter(entry => entry.status === 'dispatched').map(entry => entry.id)
     const unset = unobservedOpenAttempts(state)
-    const status = entries.find(entry => entry.id === dispatchId)?.status ?? null
-    tries.push({ round, open, unset, status })
+    const record = entries.find(entry => entry.id === dispatchId)
+    const status = record?.status ?? null
+    tries.push({ round, open, unset, status, present: record !== undefined })
+    if (record === undefined) {
+      f.record(`native/precondition-${label}`, { established: false, reason: 'dispatch-absent', dispatchId, tries })
+      assert.fail(`전제를 확인할 attempt 가 문서에 없다 — ${label}: ${dispatchId} 가 state.json 에 없다. `
+        + '이 회차는 "거절이 무엇을 썼나" 를 판정하지 않는다.')
+    }
     // 세 번째 결과: 재관측이 pane 이 사라진 것을 보고 이 attempt 를 `unknown` 으로 정산한 경우
     // (`model.ts:313`). 전제 미충족도 아니고 거절의 쓰기도 아니다 — 창을 열 대상 자체가 없어졌다.
-    if (requireDispatched && status !== null && status !== 'dispatched') {
+    if (requireDispatched && status !== 'dispatched') {
       f.record(`native/precondition-${label}`, { established: false, reason: 'attempt-settled', dispatchId, tries })
       assert.fail(`창을 열 attempt 가 사라졌다 — ${label}: ${dispatchId} 의 상태가 '${status}' 다. `
         + '재관측이 pane 을 못 찾아 정산한 것이고, 거절이 무엇을 썼는지와는 무관하다.')
@@ -585,6 +599,10 @@ try {
     // 조용히 통과한 회차는 그 증거를 남기지 않는다.
     const described = describeDelta(delta, before.state, after.state)
     f.record('native/refusal-delta-f1a', { ...described, precondition, bytesMoved: before.digest !== after.digest })
+    // r3 지적 M(R3). 창 안에서 pane 이 사라져 attempt 가 정산됐다면 문장이 다르다 — 거절의 쓰기가
+    // 아니라 pane 의 죽음이고, 그렇게 말해야 다음 사람이 엉뚱한 곳을 본다.
+    assert.equal(delta.settledInWindow.length, 0,
+      'pane 이 창 안에서 사라져 attempt 가 정산됐다 (거절의 쓰기가 아니다): ' + JSON.stringify(delta.settledInWindow))
     assert.ok(delta.clean, 'a refused start stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const again2 = countRecord(sessionId)
     assert.equal(again2.delivered, 1, 'and delivers nothing further')
@@ -662,6 +680,8 @@ try {
     const delta = refusalDelta(before.state, after.state, { dispatchId })
     const described = describeDelta(delta, before.state, after.state)
     f.record('native/refusal-delta-f4-f7', { ...described, precondition, bytesMoved: before.digest !== after.digest })
+    assert.equal(delta.settledInWindow.length, 0,
+      'pane 이 창 안에서 사라져 attempt 가 정산됐다 (거절의 쓰기가 아니다): ' + JSON.stringify(delta.settledInWindow))
     assert.ok(delta.clean, 'a refused late report stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
     const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
     assert.ok((await panes()).includes(handle), 'the settled attempt leaves its pane standing until someone releases it')

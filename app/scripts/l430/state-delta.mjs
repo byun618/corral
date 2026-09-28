@@ -71,7 +71,17 @@ export const snapshot = bytes => ({
   state: JSON.parse(bytes.toString('utf8') || 'null'),
 })
 
-/** 원소가 전부 고유한 문자열 `id` 를 가진 배열인가. 그렇다면 위치가 아니라 id 로 키를 잡는다. */
+/**
+ * 원소가 전부 고유한 문자열 `id` 를 가진 배열인가. 그렇다면 위치가 아니라 id 로 키를 잡는다 —
+ * 배열 중간에 하나가 끼어들어도 뒤쪽 원소가 통째로 "바뀐 키" 로 보이지 않게.
+ *
+ * **아니면 위치 키로 돌아간다** (`[0]`, `[1]`, …), 그리고 그때 비교는 더 거칠다 (r3 지적 L-k):
+ * `id` 없는 배열(또는 `id` 가 겹치는 배열)에서는 **원소 하나가 앞에 삽입되면 그 뒤 전부가 변경 키로
+ * 잡힌다.** 거짓 통과가 아니라 거짓 실패 쪽이라 관문으로는 안전한 방향이지만, 문서가 그 모양이 되면
+ * 「거절이 아무것도 저장하지 않는다」의 diff 가 읽기 어려워진다. `state.json` 의 배열
+ * (`runs`·`tasks`·`dispatches`·`messages`·`deliveries`)은 전부 고유 `id` 를 가지므로 지금은
+ * 늘 id 키다 — 위치 키로 내려가는 것은 스키마가 바뀌었다는 신호다.
+ */
 const keyedById = value =>
   value.length > 0
   && value.every(entry => entry !== null && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.id === 'string')
@@ -100,9 +110,16 @@ export const flattenState = state => walk(state ?? null, '', new Map())
  * 인 **모든** attempt 에 적용되므로, 창 안에서 다른 attempt 의 첫 도장이 찍혀도 같은 거짓 실패가 난다.
  * 읽기 명령 한 번이 그 전부를 한꺼번에 세운다.
  */
-export const unobservedOpenAttempts = state => (state?.dispatches ?? [])
-  .filter(entry => entry?.status === 'dispatched' && entry?.reconcile?.observed !== true)
-  .map(entry => entry.id)
+export const unobservedOpenAttempts = state => {
+  // r3 지적 L-h. `null` 에 `[]` 를 돌려주면 「문서를 못 읽었다」가 「전제가 섰다」로 읽힌다 —
+  // r2 지적 I 를 고친 라운드의 새 코드에 같은 모양이 들어갔다. 문서가 아니면 던진다.
+  if (state === null || typeof state !== 'object' || Array.isArray(state))
+    throw new TypeError(`unobservedOpenAttempts: 문서가 아니다 (${state === null ? 'null' : typeof state}). `
+      + '문서를 못 뜬 것이고, 그것은 "열린 attempt 가 전부 관측됐다" 가 아니다.')
+  return (state.dispatches ?? [])
+    .filter(entry => entry?.status === 'dispatched' && entry?.reconcile?.observed !== true)
+    .map(entry => entry.id)
+}
 
 /** pane 이 자기 attempt 위에서 쓸 수 있는, 보고가 아닌 메시지. worker_done 은 여기 없다 (위 주석). */
 const CONCURRENT_TYPES = new Set(['heartbeat', 'question', 'status', 'escalation'])
@@ -169,6 +186,18 @@ export function refusalDelta(before, after, { dispatchId }) {
     counts: { added: added.length, removed: removed.length, changed: changed.length },
     explainedBy: explainable.map(entry => ({ id: entry.id, type: entry.type, at: entry.createdAt, from: entry.from?.kind ?? null })),
     reconcile: { touched: [...added, ...removed, ...changed].some(key => key === `${record}.reconcile` || key.startsWith(`${record}.reconcile.`)), inScope: true },
+    /**
+     * r3 지적 M(R3). 창 안에서 재관측 **이유가 바뀌면** (`pane_live` → `pane_gone` 등)
+     * `applyReconcile` 의 멱등이 풀려 attempt 가 `unknown` 으로 정산되고 `status`·`settledBy`·
+     * `settledAt`·`version` 이 함께 움직인다 (`model.ts:313,316`). 그것은 거절의 쓰기가 아니라
+     * **pane 이 사라진 것**이다. `clean` 은 여전히 거짓이지만(문서는 실제로 움직였다) 호출부가
+     * 「거절이 썼다」가 아닌 문장을 고를 수 있도록 원인을 따로 내준다 — H 가 고친 것과 같은 종류의
+     * 오귀속을 여기서도 막는다.
+     */
+    settledInWindow: (after?.dispatches ?? []).filter(entry => {
+      const was = (before?.dispatches ?? []).find(older => older.id === entry.id)
+      return was?.status === 'dispatched' && entry.status !== 'dispatched' && entry.settledBy === 'reconcile'
+    }).map(entry => ({ id: entry.id, status: entry.status, reason: entry.reconcile?.reason ?? null })),
     required: Object.fromEntries([...required].map(([key, value]) => [key, JSON.parse(value)])),
     ignored: appeared.filter(entry => !explainableIds.has(entry.id))
       .map(entry => ({ id: entry.id, type: entry.type, from: entry.from?.kind ?? null, dispatchId: entry.dispatchId ?? null })),
@@ -216,6 +245,8 @@ export function describeDelta(delta, before, after) {
     reconcile: delta.reconcile,
     /** 비어 있지 않으면 「비교할 대상을 못 봤다」이고, 그것은 통과가 아니다 (r2 지적 I). */
     unobservable: delta.unobservable,
+    /** 비어 있지 않으면 창 안에서 pane 이 사라져 attempt 가 정산된 것이다 (r3 지적 M). */
+    settledInWindow: delta.settledInWindow,
     ignored: delta.ignored,
     unexplained: { added: rows(delta.unexplained.added), removed: rows(delta.unexplained.removed),
       changed: rows(delta.unexplained.changed), mismatched: rows(delta.unexplained.mismatched) },

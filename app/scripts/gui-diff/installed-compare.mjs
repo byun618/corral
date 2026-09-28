@@ -15,8 +15,13 @@
 //
 // **이 대조의 한계를 먼저 적는다**(C3 가 요구한다): 설치본 창에는 fixture 가 아니라 사용자의 실제
 // 작업 상태가 떠 있다. 그러므로 이것은 **크롬·타이포·개발 표시 수준의 대조**이지 fixture 내용 비교가
-// 아니다. 두 캡처에서 같은 요소의 픽셀을 겹쳐 보는 것이 아니라, "개발 빌드라서 눈에 띄게 달라진
-// 것이 있는가" 를 사람이 확인할 재료를 남긴다.
+// 아니다.
+//
+// 그 수준에서는 **픽셀을 실제로 겹친다** (H4): 상태와 무관하게 두 앱에 똑같이 떠 있는 왼쪽 정렬
+// 크롬(검색 아이콘·「검색」 문구, 작업·자동화·Orca 모바일 행, Projects 라벨)을 같은 ROI 로 맞춰
+// 비교하고 차이를 값으로 적는다. 배경 밴드만 보던 이전 판은 「배경색이 같다」까지밖에 말하지 못했다 —
+// 글꼴·글자 위치·아이콘은 그 안에 없다(리뷰 R3-04). 오른쪽 정렬 요소와 본문은 폭·내용이 달라
+// 여전히 비교 대상이 아니며, 그 목록을 `limits` 에 적는다.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -53,7 +58,13 @@ function parseArgs(argv) {
     roiInstalled: { x: 4, y: 48, w: 40, h: 8 },
     roiDev: { x: 4, y: 40, w: 40, h: 8 },
     // 구조(글자·테두리)가 있는 ROI — 기하 변화 민감도는 여기서만 볼 수 있다.
-    roiStructure: { x: 8, y: 8, w: 264, h: 32 }
+    roiStructure: { x: 8, y: 8, w: 264, h: 32 },
+    // **공통 크롬 ROI** (H4). 두 앱에 똑같이 떠 있는 **왼쪽 정렬** 크롬: 검색 아이콘·「검색」 문구,
+    // 작업·자동화·Orca 모바일 행의 아이콘+문구, Projects 라벨. 좌표는 **개발본 기준**이고
+    // 설치본 쪽은 `--align-scan` 이 찾은 정수 y 이동 하나를 그대로 더해 쓴다.
+    // 오른쪽 정렬 요소(신규 배지·헤더 아이콘)는 사이드바 폭이 달라 자리가 다르므로 **뺀다**.
+    roiChrome: { x: 4, y: 8, w: 186, h: 128 },
+    alignScan: 12
   }
   for (let i = 0; i < argv.length; i += 1) {
     const value = () => argv[++i]
@@ -72,6 +83,8 @@ function parseArgs(argv) {
     else if (argv[i] === '--roi-installed') out.roiInstalled = ROI(value())
     else if (argv[i] === '--roi-dev') out.roiDev = ROI(value())
     else if (argv[i] === '--roi-structure') out.roiStructure = ROI(value())
+    else if (argv[i] === '--roi-chrome') out.roiChrome = ROI(value())
+    else if (argv[i] === '--align-scan') out.alignScan = Number(value())
     else throw new Error(`알 수 없는 인자: ${argv[i]}`)
   }
   out.out ??= path.join(repoRoot, 'specs/LIFE-443-gui-diff/raw/claude/c3')
@@ -158,26 +171,69 @@ if (args.control) {
   // ① 방법 민감도: 배경 밴드(색)와 구조 ROI(기하)에서 각각 음성·양성 대조
   const background = evaluateRoiControls(devImage, args.roiDev)
   const structure = evaluateRoiControls(devImage, args.roiStructure)
-  // ② 실제 대조: 설치본 ↔ 개발본, 같은 크기의 배경 밴드. 이것이 C3 가 요구한 「외관 1회 대조」다.
+  // ② 실제 대조: 설치본 ↔ 개발본, 같은 크기의 배경 밴드.
   const actual = compareRoi(installedImage, devImage, args.roiInstalled, args.roiDev)
+
+  // ③ **공통 크롬·타이포 실대조** (H4). 배경 밴드는 「배경색이 같다」만 말한다 — 글꼴·글자 위치·
+  // 아이콘·개발 표시는 거기 없다. 그래서 두 앱에 똑같이 떠 있는 **왼쪽 정렬 크롬**을 같은 ROI 로
+  // 맞춰 실제로 비교한다.
+  //
+  // 정렬은 **정수 y 이동 하나**다. 두 캡처의 크롭 원점이 다르므로(설치본은 창 y+30) 어긋남을
+  // 먼저 값으로 찾고, 그 스캔 표를 통째로 남긴다 — 행마다 따로 맞추는 fitting 이 아니고,
+  // 스캔 자체가 **양성 대조**다: 1px 만 어긋나도 차이가 수천 픽셀로 나온다는 것을 같은 표가 보인다.
+  const chromeScan = []
+  for (let dy = 0; dy <= args.alignScan; dy += 1) {
+    const roi = { ...args.roiChrome, y: args.roiChrome.y + dy }
+    if (roi.y + roi.h > installedImage.height) break
+    chromeScan.push({ dy, ...compareRoi(installedImage, devImage, roi, args.roiChrome) })
+  }
+  const bestAlign = chromeScan.reduce((best, entry) => {
+    if (!best) return entry
+    if (entry.differing !== best.differing) return entry.differing < best.differing ? entry : best
+    return entry.meanDelta < best.meanDelta ? entry : best
+  }, null)
+  const roiChromeInstalled = { ...args.roiChrome, y: args.roiChrome.y + (bestAlign?.dy ?? 0) }
+  const chromeActual = compareRoi(installedImage, devImage, roiChromeInstalled, args.roiChrome)
+  // 크롬 ROI 에서도 음성·양성 대조를 돌린다 — 「0 이 나왔다」가 빈 검사가 아님을 같은 영역에서 보인다.
+  const chromeControls = evaluateRoiControls(devImage, args.roiChrome)
+  // 어떤 줄에서 차이가 났는지 사람이 볼 수 있게 행 단위로도 쪼갠다.
+  const chromeRows = []
+  for (let y = args.roiChrome.y; y < args.roiChrome.y + args.roiChrome.h; y += 16) {
+    const h = Math.min(16, args.roiChrome.y + args.roiChrome.h - y)
+    const roi = { x: args.roiChrome.x, y, w: args.roiChrome.w, h }
+    chromeRows.push({ y, h, ...compareRoi(installedImage, devImage, { ...roi, y: y + (bestAlign?.dy ?? 0) }, roi) })
+  }
 
   // 양성 대조에 쓴 사본을 **사람이 볼 수 있게** 남긴다 — 원자료 없이는 주장일 뿐이다.
   const mutants = []
   for (const [name, image] of [
     [`color+4`, mutateColor(devImage, args.roiDev, 4)],
-    [`shift+2`, mutateShift(devImage, args.roiStructure, 2)]
+    [`shift+2`, mutateShift(devImage, args.roiStructure, 2)],
+    [`chrome-color+1`, mutateColor(devImage, args.roiChrome, 1)],
+    [`chrome-shift+1`, mutateShift(devImage, args.roiChrome, 1)]
   ]) {
     const file = path.join(args.out, `${stamp}-c3-control-${name}.png`)
     fs.writeFileSync(file, encodePng(image))
     mutants.push({ name, file: path.relative(repoRoot, file) })
   }
 
-  const detectorOk = background.negativeOk && structure.negativeOk && background.minColorDelta === 1 && structure.minShift !== null
+  const detectorOk =
+    background.negativeOk &&
+    structure.negativeOk &&
+    background.minColorDelta === 1 &&
+    structure.minShift !== null &&
+    // 크롬 ROI 의 판별력도 같이 본다 — 이 영역의 대조가 C3 의 본체이기 때문이다 (H4).
+    chromeControls.negativeOk &&
+    chromeControls.minColorDelta === 1 &&
+    chromeControls.minShift !== null &&
+    // 정렬 스캔이 **하나의 최소점**을 보여야 한다. 어디를 맞춰도 같으면 그 대조는 아무것도 안 본 것이다.
+    chromeScan.length > 2 &&
+    chromeScan.some((entry) => entry.differing > chromeActual.differing)
   const result = {
     stamp,
     mode: 'control',
     method:
-      'ROI(관심 영역)의 RGB 채널 최대·평균 차이. 알파는 보지 않는다 — screencapture 는 RGBA, CDP 는 RGB 로 주므로 알파를 넣으면 채널 수 차이가 곧 차이가 된다',
+      '공통 크롬 ROI(검색 줄·행 아이콘/문구·Projects 라벨)와 배경 밴드를 같은 좌표로 맞춰 비교한다. 값은 ROI 의 RGB 채널 최대·평균 차이. 알파는 보지 않는다 — screencapture 는 RGBA, CDP 는 RGB 로 주므로 알파를 넣으면 채널 수 차이가 곧 차이가 된다',
     inputs: {
       installed: path.relative(repoRoot, args.installedPng),
       dev: path.relative(repoRoot, args.devPng),
@@ -187,22 +243,41 @@ if (args.control) {
       roiDev: args.roiDev,
       roiStructure: args.roiStructure
     },
-    controls: { background, structure },
+    controls: { background, structure, chrome: chromeControls },
     mutants,
     actual,
+    // **C3 가 요구한 「같은 영역을 두 쪽에서 캡처해 차이를 기록」의 본체**가 이 칸이다 (H4).
+    chrome: {
+      what: '두 앱에 공통으로 떠 있는 왼쪽 정렬 크롬 — 검색 아이콘·「검색」 문구, 작업·자동화·Orca 모바일 행의 아이콘+문구, Projects 라벨',
+      roiDev: args.roiChrome,
+      roiInstalled: roiChromeInstalled,
+      alignment: {
+        dy: bestAlign?.dy ?? null,
+        how: '정수 y 이동 하나를 ROI 전체에 적용. 행마다 따로 맞추지 않는다',
+        scan: chromeScan
+      },
+      actual: chromeActual,
+      rows: chromeRows
+    },
     detector: {
       ok: detectorOk,
       minColorDelta: background.minColorDelta,
       minShift: structure.minShift,
+      minChromeColorDelta: chromeControls.minColorDelta,
+      minChromeShift: chromeControls.minShift,
       why: detectorOk
-        ? '음성 대조 0 · 색 Δ1 검출 · 구조 ROI 에서 이동 검출 — 이 방법은 이 크기부터 본다'
+        ? '음성 대조 0 · 색 Δ1 검출 · 구조/크롬 ROI 에서 1px 이동 검출 · 정렬 스캔에 최소점이 하나 — 이 방법은 이 크기부터 본다'
         : '판별력을 못 보였다 — 이 방법으로 낸 「차이 없음」은 근거가 아니다'
     },
     limits: [
-      '이 대조는 **선언한 ROI 안**만 본다. 그 밖(레이아웃·문구·아이콘)은 비교하지 않았다 — 전체 동일성 증명이 아니다',
-      '균일한 배경 ROI 에서는 **이동을 검출하지 못한다**(구조가 없으면 밀어도 픽셀이 그대로다). 그래서 기하 민감도는 구조 ROI 에서만 말한다',
-      '설치본 창에는 fixture 가 아니라 사용자의 실제 작업 상태가 떠 있다. 그래서 두 캡처의 **내용**은 겹칠 수 없고, 겹칠 수 있는 것은 크롬 배경 밴드다',
-      '두 캡처의 크롭 원점이 다르다(설치본은 창 y+30) — ROI 좌표를 이미지마다 따로 선언한다'
+      '이 대조는 **선언한 ROI 안**만 본다. 그 밖은 비교하지 않았다 — 전체 동일성 증명이 아니다',
+      '균일한 배경 ROI 에서는 **이동을 검출하지 못한다**(구조가 없으면 밀어도 픽셀이 그대로다). 그래서 기하 민감도는 구조·크롬 ROI 에서만 말한다',
+      '설치본 창에는 fixture 가 아니라 사용자의 실제 작업 상태가 떠 있다. 그래서 두 캡처의 **내용**(프로젝트·에이전트 행)은 겹칠 수 없다. 겹치는 것은 상태와 무관한 **왼쪽 정렬 크롬**이고 그것이 `chrome` 칸이다',
+      '두 캡처의 크롭 원점이 다르다 — 크롬 ROI 는 정수 y 이동 하나(`chrome.alignment.dy`)로 맞추고 스캔 표를 남긴다. 배경 밴드 ROI 는 이 스캔 전에 눈으로 고른 좌표(y48/y40)라 균일한 색만 보는 값이다',
+      '**비교하지 않은 것**: 오른쪽 정렬 요소(「신규」 배지·Projects 헤더 아이콘) — 사이드바 폭이 설치본 460px / 개발본 280px 로 달라 같은 ROI 로 맞출 수 없다. 사용자 창이라 폭을 맞추려면 설치본에 입력해야 하고, 설치본은 읽기 전용이다',
+      '**비교하지 않은 것**: 크롬 아래 본문(프로젝트 목록·에이전트 행). 두 창의 내용이 다르다',
+      '**개발 표시**는 이 픽셀 안에 없다 — 개발본은 창 소유자 이름이 `Orca Dev`(설치본은 `Orca`)로 갈린다. 그 차이는 창 목록 원자료에 있고 사이드바 픽셀에는 나타나지 않는다',
+      '두 캡처가 **같은 래스터 배율**이라는 것은 가정이 아니라 결과다 — 같은 글자·아이콘이 픽셀 단위로 겹친다. 화면 배율(DPR) 값 자체는 이 도구가 읽지 않았다'
     ]
   }
   const jsonPath = path.join(args.out, `${stamp}-c3-control.json`)
@@ -214,7 +289,7 @@ if (args.control) {
       actualExit: detectorOk ? 0 : 1,
       raw: path.relative(repoRoot, jsonPath),
       result: detectorOk
-        ? `통과 — 음성 0 · 색 Δ${background.minColorDelta} 검출 · 구조 ROI 이동 ${structure.minShift}px 검출 · 실제 대조 maxDelta ${actual.maxDelta}`
+        ? `통과 — 음성 0 · 색 Δ${background.minColorDelta} 검출 · 구조 ROI 이동 ${structure.minShift}px 검출 · 크롬 ROI 이동 ${chromeControls.minShift}px 검출 · 공통 크롬 실대조(${chromeActual.pixels}px, dy=${bestAlign?.dy}) maxDelta ${chromeActual.maxDelta} 차이 ${chromeActual.differing}px · 배경 밴드 maxDelta ${actual.maxDelta}`
         : '실패 — 방법의 판별력을 못 보였다'
     })
   }

@@ -4,8 +4,9 @@
 // 실제 프로세스 없이 반례로 확인할 수 있어야 한다. 리뷰가 낸 반례가 바로 그것이다 —
 // `pgrep -f /tmp/l443/corral-userdata` 는 `/tmp/l443/corral-userdata-other` 를 쓰는 Electron 도 잡는다.
 //
-// 소유의 1순위는 **기동 때 받은 pid 와 그 자손(프로세스 그룹)** 이다. 경로 검사는 **보조**이고,
-// 자손 추적이 놓치는 손자(crashpad 헬퍼 등)를 잇는 용도다. 그래서 경로 검사는 좁아야 한다.
+// 소유 = **기동 때 받은 pid 와 그 자손(PPID 사슬)**, 그게 전부다. 경로 일치는 **신호 근거가 아니다** —
+// 평탄한 명령줄에서 argv 경계를 복원할 수 없어(공백 든 경로) 남의 프로필을 소유로 만들 수 있다(R3-01).
+// 그래서 `selectOwnedByPath` 는 이제 **진단 전용**이고, 신호는 `planSignals` 만 정한다 (H1).
 
 /** macOS 는 같은 폴더를 `/tmp/...` 와 `/private/tmp/...` 두 이름으로 준다. 비교 전에 하나로 모은다. */
 export function normalizePath(value) {
@@ -58,7 +59,10 @@ export function looksLikeApp(command) {
 }
 
 /**
- * 경로 기준 소유 판정. **소유 경로 아래를 실제로 쓰는 앱 프로세스만** 고른다.
+ * 경로 기준 **후보 추림 — 진단 전용**이다 (H1). 이 결과로 신호하지 않는다.
+ *
+ * 왜 남겨 두나: 「우리 경로를 쓰는 프로세스가 아직 살아 있다」는 사실은 정리 실패의 증거다.
+ * 죽일 근거로는 못 쓰지만(argv 경계를 복원할 수 없다), **보고할 근거로는 쓴다** — `classifyPathSurvivors`.
  *
  * @param processes `[{pid, command}]` — 후보(넓게 훑은 결과여도 된다)
  * @param targets   이번 실행이 만든 절대경로들
@@ -91,4 +95,68 @@ export function selectOwnedByPath({ processes = [], targets = [], exclude = [], 
     owned.push({ pid, command, path: hit })
   }
   return { owned, rejected }
+}
+
+/**
+ * **신호 대상 계획** (H1). 이번 실행이 spawn 한 pid 와 그 **자손(PPID 사슬)** 뿐이다.
+ *
+ * 왜 경로를 빼는가: 평탄한 명령줄 문자열은 argv 경계의 증거가 아니다 — 공백이 든 경로
+ * (`--user-data-dir=/tmp/l443/corral-userdata backup`)는 토큰이 갈려 **남의 프로필**을 소유로
+ * 만들고, 반대로 이번 실행의 Electron 을 놓친 채 `clean:true` 를 쓴다(리뷰 R3-01).
+ * 그래서 경로 일치는 **신호 근거에서 내린다.** 경로는 `classifyPathSurvivors` 의 진단으로만 쓴다.
+ *
+ * @param owned `[{pid, label, group}]` — 기동 때 받은 pid (dev 러너처럼 detached 면 `group:true`)
+ * @param descendantsOf `(pid) => number[]` — PPID 사슬 조회. **신호 전에** 부른다(부모를 끝내면 사슬이 끊긴다)
+ * @returns 신호할 항목 배열. 이 배열 **밖으로는 신호하지 않는다**
+ */
+export function planSignals({ owned = [], descendantsOf = () => [] } = {}) {
+  const out = []
+  const seen = new Set()
+  for (const entry of owned) {
+    const pid = Number(entry?.pid)
+    if (!Number.isFinite(pid) || seen.has(pid)) continue
+    seen.add(pid)
+    const label = entry?.label ?? 'spawn'
+    const descendants = (descendantsOf(pid) ?? []).map(Number).filter((value) => Number.isFinite(value))
+    out.push({ pid, label, group: Boolean(entry?.group), descendants, via: 'spawn' })
+    for (const kid of descendants) {
+      if (seen.has(kid)) continue
+      seen.add(kid)
+      out.push({ pid: kid, label: `${label} 의 자손`, group: false, viaParent: pid, via: 'descendant' })
+    }
+  }
+  return out
+}
+
+/**
+ * 소유 경로를 쓰는 **생존** 프로세스 — **죽이지 않는다** (H1, fail closed).
+ *
+ * 신호 목록 밖인데 우리 경로가 명령줄에 보이면, 그것은 「우리가 놓쳤을 수도 있다」는 **신호가 아니라
+ * 보고 사유**다. 경로가 맞다고 죽이면 R3-01 의 반례(공백 경로·남의 프로필)가 그대로 살아난다.
+ * 그래서 목록으로만 남기고 회차를 미정리(`clean:false` → C12 실패)로 둔다.
+ *
+ * @param signalled 이미 신호한 pid 들 (`planSignals` 결과)
+ * @param alive `(pid) => boolean` — 살아 있는지
+ */
+export function classifyPathSurvivors({
+  processes = [],
+  targets = [],
+  exclude = [],
+  signalled = [],
+  selfPid = null,
+  alive = () => true
+} = {}) {
+  const sent = new Set(signalled.map(Number).filter((value) => Number.isFinite(value)))
+  const { owned, rejected } = selectOwnedByPath({ processes, targets, exclude, selfPid })
+  const survivors = []
+  for (const entry of owned) {
+    if (sent.has(entry.pid)) continue
+    if (!alive(entry.pid)) continue
+    survivors.push({
+      ...entry,
+      signalled: false,
+      why: '이번 실행이 spawn 한 pid 도 그 자손도 아니다 — 경로 일치만으로는 신호하지 않는다 (H1). 미정리로 보고한다'
+    })
+  }
+  return { survivors, rejected }
 }

@@ -24,7 +24,7 @@ import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBou
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
-import { selectOwnedByPath } from './lib/own.mjs'
+import { selectOwnedByPath, planSignals, classifyPathSurvivors } from './lib/own.mjs'
 
 // 이 도구는 전역 `WebSocket`(raw CDP) 을 쓴다 — node 20 에는 플래그 뒤에 있다.
 // corral 자신도 node >= 22.12 를 요구한다(`app/package.json` engines). 조용히 죽는 대신 여기서 말한다.
@@ -38,12 +38,11 @@ if (NODE_MAJOR < 22 || typeof globalThis.WebSocket !== 'function') {
 }
 
 /**
- * 소유 판정의 **보조** 경로: 그 경로를 경계까지 정확히 쓰는 앱 프로세스만 고른다 (G1).
+ * 경로로 후보를 훑는다 — **진단 전용**이다 (H1). 이 목록으로 신호하지 않는다.
  *
- * 1순위는 기동 때 받은 pid 와 그 자손이다(`descendantPids`). 이 함수는 그것이 놓치는 손자
- * (crashpad 헬퍼 등)를 잇는 용도이고, 판정 규칙은 `lib/own.mjs` 의 순수 함수에 있다 —
- * `pgrep -f <경로>` 는 **부분 문자열** 일치라서 `<경로>-other` 를 쓰는 남의 Electron 도 잡는다.
- * 그래서 pgrep 은 후보만 만들고, 소유 여부는 argv 옵션 값을 경계까지 비교해 정한다.
+ * 신호는 기동 때 받은 pid 와 그 자손(`descendantPids`)만 받는다. 경로를 신호 근거에서 내린 이유는
+ * `lib/own.mjs` 머리말에 있다 — 평탄한 명령줄에서는 argv 경계를 복원할 수 없어, 공백이 든 경로에서
+ * 남의 프로필 Electron 을 소유로 만들 수 있다(리뷰 R3-01). 대신 **살아남은 것을 보고**한다.
  */
 function candidatesUsingPath(target) {
   const found = spawnSync('pgrep', ['-fl', target], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
@@ -55,7 +54,7 @@ function candidatesUsingPath(target) {
     .filter((entry) => Number.isFinite(entry.pid) && entry.pid !== process.pid)
 }
 
-/** 경로 기준 소유 프로세스. 거른 것과 이유도 함께 돌려준다 — 판정을 원자료로 남긴다. */
+/** 경로가 겹치는 후보와 거른 이유 (진단). 신호 판단에는 쓰지 않는다 — `classifyPathSurvivors` 로 넘긴다. */
 function appsUsingPath(target, { exclude = [] } = {}) {
   return selectOwnedByPath({ processes: candidatesUsingPath(target), targets: [target], exclude, selfPid: process.pid })
 }
@@ -197,6 +196,12 @@ async function capture(app, handle, area, { outDir, tag }) {
   // 이전 판은 `DOM.querySelector` 로 첫 노드만 집어서, 탭 5개의 둘째 이후 fallback 변화가
   // 본 diff·자기 diff 모두에서 0 이었다. 수집에 실패한 자리는 **공백(사유)** 로 남긴다.
   snapshot.meta.fontsCollected = false
+  // **요소별 실패도 관문으로 보낸다** (H2). 이전 판은 개별 요청이 전부 실패해도 바깥 try 가 정상
+  // 종료하면 `fontsCollected:true` 였다 — 특히 자기 대조의 B 캡처에서만 실패하면 본 보고서에도
+  // 자기 diff 총계에도 흔적이 없어, 「폰트가 같다」가 아니라 「폰트를 못 쟀다」가 통과로 샜다.
+  snapshot.meta.fontErrors = []
+  snapshot.meta.fontsRequested = 0
+  snapshot.meta.fontsMeasured = 0
   try {
     await handle.cdp.send('DOM.enable')
     await handle.cdp.send('CSS.enable')
@@ -208,6 +213,7 @@ async function capture(app, handle, area, { outDir, tag }) {
       for (const item of entry.items) {
         if (!item.present) continue
         const key = `${unit.id}#${item.parentIndex ?? item.index ?? 0}`
+        snapshot.meta.fontsRequested += 1
         try {
           const { nodeId } = await handle.cdp.send('DOM.querySelector', {
             nodeId: root.nodeId,
@@ -216,12 +222,16 @@ async function capture(app, handle, area, { outDir, tag }) {
           })
           if (!nodeId) {
             item.fontsError = '표시한 노드를 CDP 에서 다시 못 찾았다'
+            snapshot.meta.fontErrors.push({ unit: unit.id, key, error: item.fontsError })
             continue
           }
           const fonts = await handle.cdp.send('CSS.getPlatformFontsForNode', { nodeId })
+          // 빈 배열은 **정상**이다 — 글리프가 없는 노드(아이콘·빈 칸)다. 오류로 세지 않는다.
           item.platformFonts = (fonts.fonts ?? []).map((font) => ({ family: font.familyName, glyphs: font.glyphCount }))
+          snapshot.meta.fontsMeasured += 1
         } catch (error) {
           item.fontsError = String(error?.message ?? error)
+          snapshot.meta.fontErrors.push({ unit: unit.id, key, error: item.fontsError })
         }
       }
       const first = entry.items.find((item) => item.present)
@@ -588,6 +598,13 @@ async function main() {
       if (snapshot?.meta?.fontsCollected === false) {
         captureFailures.push(`${label}: ${snapshot.meta.platformFontsError ?? '사유 미기재'}`)
       }
+      // **요소별 실패도 같은 관문으로 간다** (H2). 네 캡처(A·B × 두 앱) 전부를 본다 — 본 diff 에
+      // 쓰지 않는 B 캡처의 실패도 여기서 걸린다. 「차이 0」과 「못 쟀다」를 가르는 자리가 여기다.
+      const perElement = snapshot?.meta?.fontErrors ?? []
+      if (perElement.length > 0) {
+        const head = perElement.slice(0, 3).map((entry) => `${entry.key}: ${entry.error}`).join(' / ')
+        captureFailures.push(`${label}: 요소별 폰트 수집 실패 ${perElement.length}건 — ${head}${perElement.length > 3 ? ' …' : ''}`)
+      }
       return snapshot
     }
     const noiseFloor = []
@@ -823,8 +840,10 @@ async function main() {
       // **정리 실패는 실행 결과다.** 이전 판은 `clean` 을 읽지도 않았다 — 고아를 남긴 회차가
       // 통과 행으로 남고 다음 회차가 그 고아에 붙었다.
       if (closed.clean === false) {
-        log(`정리 실패: 소유 pid ${closed.survivorPids?.join(',') ?? '?'} 가 살아 있다`)
-        record(`실패 — C12 정리 실패(소유 pid 생존: ${closed.survivorPids?.join(',') ?? '?'})`, { exit: 1 })
+        const uncleaned = closed.survivorPids?.join(',') ?? '?'
+        const orphans = (closed.pathSurvivors ?? []).map((entry) => entry.pid).join(',')
+        log(`정리 실패: 미정리 pid ${uncleaned}${orphans ? ` (경로만 겹쳐 신호하지 않은 것: ${orphans})` : ''}`)
+        record(`실패 — C12 정리 실패(미정리 pid: ${uncleaned}${orphans ? `; 경로 겹침 미신호: ${orphans}` : ''})`, { exit: 1 })
         process.exitCode = 1
       }
     } else {
@@ -845,8 +864,14 @@ async function main() {
  * 그 정규식에 걸린다 — 핸들이 하나도 없는 실행(`orca=null, corral=null`)에서도 돌았다.
  * 이름 검색은 **진단**으로만 남긴다: 무엇이 남아 있는지 적기만 하고 죽이지 않는다.
  *
+ * **경로 검색도 같은 자리로 내렸다 (H1).** 평탄한 명령줄은 argv 경계의 증거가 아니라서, 공백이 든
+ * 경로에서 남의 프로필 Electron 을 소유로 만들 수 있다(리뷰 R3-01). 그래서 신호는 spawn pid 와 그
+ * 자손뿐이고, 경로가 겹치는 생존 프로세스는 **죽이지 않고 `pathSurvivors` 로 보고**한다 —
+ * 그 회차는 `clean:false`, 곧 C12 실패다(fail closed). 놓친 고아를 조용한 통과로 덮지 않는다.
+ *
  * corral CLI 에는 종료 명령이 없고 제어 채널에도 `quit` 이 없다. 그래서 `corral open --json` 이
  * 돌려준 `runtime.pid`(우리가 띄운 데스크톱)를 끝낸다. dev 러너는 detached 라 프로세스 그룹째 끝낸다.
+ * 응답이 실패해 그 pid 를 못 받았고 자손으로도 못 잇는다면, 그 고아는 `pathSurvivors` 에 남는다.
  */
 async function shutdown({ orca, corral, owned, outDir }) {
   const closed = { at: new Date().toISOString(), owned: [], diagnostics: null }
@@ -871,22 +896,17 @@ async function shutdown({ orca, corral, owned, outDir }) {
     await orca?.cdp?.close().catch(() => {})
     await corral?.cdp?.close().catch(() => {})
 
-    // **1순위는 pid 와 그 자손**이다 (G1). 죽이기 전에 자손을 먼저 적어 둔다 — 부모를 먼저 끝내면
-    // 부모 관계가 끊겨 손자를 더 못 찾는다. 이름·경로 추측이 아니라 부모 관계로만 잇는 목록이다.
-    for (const entry of owned.pids) {
-      const descendants = descendantPids(entry.pid)
-      closed.owned.push({
-        pid: entry.pid,
-        label: entry.label,
-        group: Boolean(entry.group),
-        descendants,
-        sent: signal(entry.pid, entry.group)
-      })
-      for (const pid of descendants) {
-        if (closed.owned.some((seen) => seen.pid === pid)) continue
-        closed.owned.push({ pid, label: `${entry.label} 의 자손`, group: false, viaParent: entry.pid, command: commandOf(pid), sent: signal(pid, false) })
-      }
+    // **신호 대상은 이번 실행이 spawn 한 pid 와 그 자손(PPID 사슬)뿐이다** (H1). 죽이기 전에 자손을
+    // 먼저 적어 둔다 — 부모를 먼저 끝내면 부모 관계가 끊겨 손자를 더 못 찾는다. 계획은
+    // `lib/own.mjs` 의 순수 함수(`planSignals`)가 정하고, 이 고리는 그 목록 **밖으로 신호하지 않는다**.
+    const planned = planSignals({ owned: owned.pids, descendantsOf: (pid) => descendantPids(pid) })
+    for (const entry of planned) {
+      const record = { ...entry }
+      if (entry.via === 'descendant') record.command = commandOf(entry.pid)
+      record.sent = signal(entry.pid, entry.group)
+      closed.owned.push(record)
     }
+    closed.signalRule = 'spawn pid 와 그 자손(PPID 사슬)만 신호한다. 경로 일치로는 신호하지 않는다 (H1)'
     // 신호를 보낸 것과 죽은 것은 다르다. **소유 pid 하나하나**를 확인한다.
     for (let attempt = 0; attempt < 12; attempt += 1) {
       await pause(1000)
@@ -897,42 +917,51 @@ async function shutdown({ orca, corral, owned, outDir }) {
     }
     for (const entry of closed.owned) entry.alive = alive(entry.pid)
     closed.clean = closed.owned.every((entry) => entry.alive === false)
-    closed.survivorPids = closed.owned.filter((entry) => entry.alive).map((entry) => entry.pid)
-    // **경로로 소유를 잇는다.** pid 목록만으로는 손자 프로세스(crashpad 헬퍼 등)가 남는다 —
-    // 실측: dev 런너 그룹을 끝낸 뒤에도 우리 userData 를 쓰는 crashpad 헬퍼가 잠깐 남았다.
-    // 이름이 아니라 **이번 실행이 만든 절대경로**로 거른다: 그 경로는 이 회차가 만들고 지우는 것이라
-    // 그것을 쓰는 프로세스는 이 도구의 것이다(같은 작업 폴더의 동시 실행은 포트 가드가 막는다).
-    // 일반 이름 패턴으로 훑어 죽이던 이전 판과 다른 점이 이것이다 (F1).
+    // **경로는 진단이다 — 죽이지 않는다** (H1, fail closed). 소유 경로를 명령줄에 가진 프로세스가
+    // 신호 목록 밖에서 살아 있으면, 그것은 죽일 근거가 아니라 **정리가 끝나지 않았다는 보고 사유**다:
+    // 평탄한 명령줄에서 argv 경계를 복원할 수 없어(공백 든 경로) 남의 프로필을 우리 것으로 만들 수
+    // 있기 때문이다(리뷰 R3-01). corral CLI 처럼 pid 를 응답으로만 받는 경로에서 응답이 실패해
+    // 자손을 PPID 로 못 찾는 경우가 정확히 여기로 떨어진다 — 조용한 `clean:true` 대신 목록이 남는다.
     const ownedPaths = [...new Set(owned.paths.filter(Boolean))]
-    const byPath = []
+    const signalledPids = closed.owned.map((entry) => entry.pid)
+    const pathSurvivors = []
     const rejected = []
     for (const target of ownedPaths) {
-      const result = appsUsingPath(target, { exclude: owned.preexisting ?? [] })
+      const result = classifyPathSurvivors({
+        processes: candidatesUsingPath(target),
+        targets: [target],
+        exclude: owned.preexisting ?? [],
+        signalled: signalledPids,
+        selfPid: process.pid,
+        alive
+      })
       for (const entry of result.rejected) {
         if (!rejected.some((seen) => seen.pid === entry.pid)) rejected.push({ ...entry, command: entry.command.slice(0, 120), target })
       }
-      for (const entry of result.owned) {
-        if (closed.owned.some((own) => own.pid === entry.pid)) continue
-        if (byPath.some((seen) => seen.pid === entry.pid)) continue
-        byPath.push({ pid: entry.pid, path: target, command: entry.command.slice(0, 120), sent: signal(entry.pid, false) })
+      for (const entry of result.survivors) {
+        if (pathSurvivors.some((seen) => seen.pid === entry.pid)) continue
+        pathSurvivors.push({ pid: entry.pid, path: target, command: entry.command.slice(0, 120), signalled: false, why: entry.why })
       }
     }
-    if (byPath.length > 0) {
-      await pause(2000)
-      for (const entry of byPath) entry.alive = alive(entry.pid)
+    // 죽이지는 않되 **기다려는 준다** — 부모를 끝내면 헬퍼가 몇 초 뒤에 따라 죽는 일이 있다.
+    // 기다림은 규칙을 무르게 하지 않는다: 끝까지 살아 있는 것만 미정리로 적는다.
+    for (let attempt = 0; attempt < 8 && pathSurvivors.length > 0; attempt += 1) {
+      if (pathSurvivors.every((entry) => !alive(entry.pid))) break
+      await pause(1000)
     }
-    closed.ownedByPath = byPath
-    closed.clean = closed.clean && byPath.every((entry) => entry.alive === false)
+    closed.pathSurvivors = pathSurvivors.filter((entry) => alive(entry.pid))
+    closed.pathSurvivorsGone = pathSurvivors.filter((entry) => !alive(entry.pid)).map((entry) => entry.pid)
+    if (closed.pathSurvivors.length > 0) closed.clean = false
     closed.survivorPids = [
       ...closed.owned.filter((entry) => entry.alive).map((entry) => entry.pid),
-      ...byPath.filter((entry) => entry.alive).map((entry) => entry.pid)
+      ...closed.pathSurvivors.map((entry) => entry.pid)
     ]
     // **진단**: 넓은 이름 패턴으로 훑은 결과. 죽이지 않는다 — 소유 밖이라 이 실행의 몫이 아니다.
     const probe = spawnSync('pgrep', ['-fl', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], {
       encoding: 'utf8'
     })
     closed.diagnostics = {
-      note: '넓은 이름 검색 결과다. 소유(pid·자손·경로) 밖 프로세스는 이 도구가 건드리지 않는다 (F1·G1).',
+      note: '넓은 이름 검색 결과다. 신호는 spawn pid·자손만 받는다 — 이 목록과 경로 후보는 진단이고 건드리지 않는다 (F1·G1·H1).',
       matches: probe.stdout.trim().split('\n').filter(Boolean),
       ownedPaths,
       // **거른 후보와 이유**를 남긴다 — 「왜 이 pid 는 안 죽였나」를 원자료에서 되짚을 수 있게.

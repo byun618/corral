@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta } from './lib/diff.mjs'
-import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath } from './lib/own.mjs'
+import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
@@ -508,4 +508,94 @@ test('PNG 왕복: 디코드→인코드→디코드가 같은 픽셀 (G9 원자�
   assert.equal(round.width, 9)
   assert.equal(round.height, 5)
   assert.ok(round.data.equals(image.data))
+})
+
+// ---- H1: 신호는 spawn pid 와 그 자손만 -------------------------------------
+//
+// 리뷰 R3-01 의 반례를 그대로 시험한다. 셋 다 **신호 0건**이어야 한다 — 평탄한 명령줄은
+// argv 경계의 증거가 아니라서, 경로가 맞아 보인다는 이유로 남의 프로세스를 죽이면 안 된다.
+// 대신 「우리 경로를 쓰는데 우리 것이 아닌 생존 프로세스」는 **보고**되어 회차를 미정리로 만든다.
+
+const PATH_COUNTEREXAMPLES = [
+  {
+    name: '공백 든 경로 — 남의 프로필 Electron 을 토큰 분할이 우리 것으로 만든다',
+    process: {
+      pid: 71002,
+      command: '/Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=/tmp/l443/corral-userdata backup'
+    },
+    survivor: true
+  },
+  {
+    name: '`-other` 접미사 — 부분 문자열만 겹친다',
+    process: { pid: 71003, command: '/Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=/tmp/l443/corral-userdata-other' },
+    survivor: false
+  },
+  {
+    name: 'python 이 프로필 경로를 인자로 들고 있다 — 앱이 아니다',
+    process: { pid: 71004, command: '/usr/bin/python3 /tmp/l443/corral-userdata/inspect.py' },
+    survivor: true
+  }
+]
+
+for (const example of PATH_COUNTEREXAMPLES) {
+  test(`H1 — ${example.name}: 신호 0건, spawn 자손만 신호한다`, () => {
+    const spawned = { pid: 90001, label: 'corral backend', group: false }
+    const descendants = { 90001: [90002, 90003], 90002: [], 90003: [] }
+    const signals = planSignals({ owned: [spawned], descendantsOf: (pid) => descendants[pid] ?? [] })
+    // ① 신호 대상은 spawn pid 와 그 자손뿐이다 — 후보 프로세스는 목록에 들어오지도 않는다
+    assert.deepEqual(
+      signals.map((entry) => entry.pid),
+      [90001, 90002, 90003]
+    )
+    assert.equal(signals.some((entry) => entry.pid === example.process.pid), false)
+    // ② 경로 분류는 **신호를 만들지 않는다**. 살아 있으면 미정리로 보고할 뿐이다
+    const { survivors, rejected } = classifyPathSurvivors({
+      processes: [example.process],
+      targets: ['/tmp/l443/corral-userdata'],
+      signalled: signals.map((entry) => entry.pid),
+      alive: () => true
+    })
+    assert.equal(survivors.every((entry) => entry.signalled === false), true)
+    if (example.survivor) {
+      assert.deepEqual(survivors.map((entry) => entry.pid), [example.process.pid])
+    } else {
+      assert.deepEqual(survivors, [])
+      assert.equal(rejected.some((entry) => entry.pid === example.process.pid), true)
+    }
+  })
+}
+
+test('H1 — 자손 조회는 신호 전에 끝난다(부모를 죽이면 사슬이 끊긴다) · 중복 pid 는 한 번만', () => {
+  const asked = []
+  const signals = planSignals({
+    owned: [
+      { pid: 8001, label: 'orca dev runner', group: true },
+      { pid: 8002, label: 'corral backend', group: false },
+      { pid: 8001, label: '중복', group: true }
+    ],
+    descendantsOf: (pid) => {
+      asked.push(pid)
+      return pid === 8001 ? [8010, 8011] : [8010]
+    }
+  })
+  assert.deepEqual(asked, [8001, 8002])
+  assert.deepEqual(signals.map((entry) => entry.pid), [8001, 8010, 8011, 8002])
+  assert.equal(signals[0].group, true)
+  assert.equal(signals[1].viaParent, 8001)
+  // 8002 의 자손 8010 은 이미 8001 의 자손으로 신호 목록에 있다 — 두 번 보내지 않는다
+  assert.equal(signals.filter((entry) => entry.pid === 8010).length, 1)
+})
+
+test('H1 — 이미 죽었거나 신호한 pid 는 미정리 목록에 넣지 않는다', () => {
+  const processes = [
+    { pid: 90002, command: '/Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=/tmp/l443/corral-userdata' },
+    { pid: 71005, command: '/Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=/tmp/l443/corral-userdata' }
+  ]
+  const { survivors } = classifyPathSurvivors({
+    processes,
+    targets: ['/tmp/l443/corral-userdata'],
+    signalled: [90001, 90002],
+    alive: (pid) => pid !== 71005
+  })
+  assert.deepEqual(survivors, [])
 })

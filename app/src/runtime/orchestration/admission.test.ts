@@ -132,6 +132,31 @@ interface Harness {
   newTask: (spec: string) => string
   receiptDigest: () => string
 }
+/**
+ * LIFE-430 C2 (V48). Every command below observes the pane through `observeNow`, and `budgeted()`
+ * gives that observation `floor((deadlineAt - Date.now()) / 2)` — refusing outright below
+ * `OBSERVATION_FLOOR_MS` (250). So a caller deadline of D leaves the *prefix* of the command —
+ * argument validation, the wait for the document lane, the store read — a slack of exactly `D - 500`
+ * ms. Past that the observation is never taken, and the call comes back
+ * `sender_mismatch (observation_failed)` instead of whatever it was measuring.
+ *
+ * V43 was written with `D = 500`, which is a slack of **zero**: the observation survived only while
+ * `Date.now()` had not ticked once since the test computed the deadline. That is what r4 saw fail 4
+ * times in 16 (LIFE-410 verdict round 4, F12), and 18 `yes` processes on this machine's 18 cores
+ * reproduce it 2 times in 10 (`specs/LIFE-430-gate-reliability/raw/worker/claude/c2/positive/`).
+ * The deadline was never the thing under test in any of these — it is the budget the observation is
+ * carved out of — so naming the two shapes is the fix, not a looser assertion and not a retry.
+ *
+ * `WAITS_OUT` is for a call that has to *reach* its deadline: an `ask` that must come back
+ * `pending`. Every run pays it in wall time (the ask returns at `D - 250`), so it is the smallest
+ * value that still leaves real slack — 1000 ms, against a measured maximum prefix of **1 ms** over
+ * 40 samples taken under that load and under four times it (`…/raw/worker/claude/c2/probe/`).
+ *
+ * `RETURNS_EARLY` is for a call that answers, or is refused, long before its deadline. Nothing waits
+ * on it, so it can be generous: 9500 ms of slack at no cost in run time.
+ */
+const WAITS_OUT = 1500
+const RETURNS_EARLY = 10000
 const LIVE_PANE: TerminalIdentity = { epoch: 'epoch', ptyId: 'pty', paneId: 'pane', tabId: 'tab', workspaceId: 'w', path: '/tmp', repo: '/tmp', title: 'admission' }
 /** The dispatch id out of a `worker-start` envelope, stated as the string it is. */
 const idOf = (value: Record<string, unknown>): string => {
@@ -524,7 +549,7 @@ describe('V24 — admission observes inside the lane, once', () => {
       command: 'orchestration ask',
       flags: { question: 'late', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
       args: [], cwd: f.dir, caller: { paneId: 'pane', session: null },
-    }, { ...f.ctx(), deadlineAt: Date.now() + 1500 })
+    }, { ...f.ctx(), deadlineAt: Date.now() + RETURNS_EARLY })
     // Bounded: give a pre-lane observation every chance to happen, then stop waiting either way.
     const deadline = Date.now() + 400
     while (mock.sweeps === before && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
@@ -550,7 +575,7 @@ describe('V25 — a question that cannot be stored is refused before its receipt
       command: 'orchestration ask',
       flags: { question: 'no room', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': id },
       args: [], cwd: f.dir, caller: { paneId: 'pane', session: null },
-    }, { ...f.ctx(), deadlineAt: Date.now() + 800 })).rejects.toMatchObject({ code: 'message_capacity' })
+    }, { ...f.ctx(), deadlineAt: Date.now() + RETURNS_EARLY })).rejects.toMatchObject({ code: 'message_capacity' })
     expect(f.receiptDigest()).toBe(before)
     expect(fs.existsSync(path.join(f.dir, 'runtime/terminal-receipts', `${id}.json`))).toBe(false)
   })
@@ -579,7 +604,7 @@ describe('V29 — ask carries the sender proof it was admitted on', () => {
       command: 'orchestration ask',
       flags: { question: 'q', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': id },
       args: [], cwd: f.dir, caller: { paneId: 'pane', session: 'foreign' },
-    }, { ...f.ctx(), deadlineAt: Date.now() + 750 }))
+    }, { ...f.ctx(), deadlineAt: Date.now() + WAITS_OUT }))
     expect(result).toHaveProperty('sessionVerified')
     // This attempt was created with no recorded session, so the session half proves nothing — and
     // says so, rather than looking like the stronger proof.
@@ -598,7 +623,7 @@ describe('V29 — ask carries the sender proof it was admitted on', () => {
       command: 'orchestration ask',
       flags: { question: 'who is asking?', 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
       args: [], cwd: f.dir, caller: pane,
-    }, { ...f.ctx(), deadlineAt: Date.now() + 500 }))
+    }, { ...f.ctx(), deadlineAt: Date.now() + WAITS_OUT }))
     expect(pending.state).toBe('pending')
     expect(pending.sessionVerified).toBe(true)
     const messageId = String(pending.messageId)
@@ -609,7 +634,7 @@ describe('V29 — ask carries the sender proof it was admitted on', () => {
       command: 'orchestration ask',
       flags: { resume: messageId, 'task-id': f.task, 'dispatch-id': idOf(started), 'request-id': `r1.${Date.now()}.${randomUUID()}` },
       args: [], cwd: f.dir, caller: pane,
-    }, { ...f.ctx(), deadlineAt: Date.now() + 2000 }))
+    }, { ...f.ctx(), deadlineAt: Date.now() + RETURNS_EARLY }))
     expect(answered.state).toBe('answered')
     expect(answered.sessionVerified).toBe(true)
     expect(asRecord(answered.reply).body).toBe('the pane did')

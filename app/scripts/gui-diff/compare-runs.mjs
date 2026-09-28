@@ -94,11 +94,12 @@ function render({ dirs, runs, result }) {
 
 function main(argv) {
   const { dirs, out, ledger } = parseArgs(argv)
+  let written = out
   const command = `node app/scripts/gui-diff/compare-runs.mjs ${argv.join(' ')}`
   const runId = ledger ? beginRun(ledger, { criterion: 'C10 (재현성 검사)', command, raw: out ?? '(stdout)' }) : null
   const finish = (exit, verdict) => {
     if (ledger && runId) {
-      finishRun(ledger, runId, { criterion: 'C10 (재현성 검사)', command, actualExit: exit, raw: out ?? '(stdout)', result: verdict })
+      finishRun(ledger, runId, { criterion: 'C10 (재현성 검사)', command, actualExit: exit, raw: written ?? out ?? '(stdout)', result: verdict })
     }
     return exit
   }
@@ -112,8 +113,15 @@ function main(argv) {
   const text = render({ dirs, runs, result })
   if (out) {
     fs.mkdirSync(path.dirname(out), { recursive: true })
-    fs.writeFileSync(out, text)
-    process.stdout.write(`[l443] ${out}\n`)
+    // **먼저 쓴 판정을 덮지 않는다** (G3). 실패 회차의 출력이 뒤이은 통과 회차에 덮여 사라진 적이
+    // 있다(R067 → R068) — 원장에는 실패 행이 남았는데 그 근거 파일이 없어져 `미확정` 이 됐다.
+    if (fs.existsSync(out)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      written = out.replace(/(\.md)?$/, `-${stamp}$1`)
+      process.stdout.write(`[l443] ${out} 가 이미 있다 — 덮지 않고 ${written} 에 쓴다\n`)
+    }
+    fs.writeFileSync(written, text)
+    process.stdout.write(`[l443] ${written}\n`)
   }
   process.stdout.write(text)
   return finish(result.ok ? 0 : 1, result.ok ? '통과 — 집합 상세까지 동일' : `실패 — ${result.reason}`)

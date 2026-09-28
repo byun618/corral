@@ -154,59 +154,107 @@ export function collectSnapshot(spec) {
   meta.rootBox = { w: round(rootRect.width), h: round(rootRect.height) }
 
   const elements = {}
+  const MAX_ITEMS = 12
+  const isVisible = (el) => {
+    const rect = el.getBoundingClientRect()
+    return rect.width > 0 || rect.height > 0
+  }
+  const measure = (el, unit) => {
+    const rect = el.getBoundingClientRect()
+    const computed = getComputedStyle(el)
+    const style = {}
+    const wanted = new Set()
+    for (const setName of unit.props ?? ['box', 'paint', 'text']) {
+      for (const prop of spec.props[setName] ?? []) wanted.add(prop)
+    }
+    for (const prop of wanted) {
+      const raw = computed[prop]
+      if (raw === undefined || raw === null) continue
+      style[prop] = isColorProp(prop) ? normalizeColor(String(raw)) : normalizeComposite(raw)
+    }
+    return {
+      box: {
+        x: round(rect.left - rootRect.left),
+        y: round(rect.top - rootRect.top),
+        w: round(rect.width),
+        h: round(rect.height)
+      },
+      style,
+      // 비교하지 않는 기록값 — 판정 문서에서 "무엇이 거기 있었나" 를 사람이 읽을 자리.
+      text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      tag: el.tagName.toLowerCase()
+    }
+  }
+  // 폰트(`CSS.getPlatformFontsForNode`)는 CDP 쪽에서 **노드마다** 받아야 한다 (G7). 여기서 잰
+  // 요소에 표시를 남겨, 호출자가 같은 요소를 다시 집을 수 있게 한다 — 첫 요소만 재던 자리를 막는다.
+  const mark = (el, unitId, index) => {
+    try {
+      // **한 요소가 여러 단위에 걸릴 수 있다** — 예: Orca 의 첫 내비 버튼은 `search-row` 이면서
+      // `nav-buttons[0]` 이고, 탭 요소는 `tab` 이면서 `tab-active` 다. 덮어쓰면 앞 단위의 표시가
+      // 사라져 그 요소의 폰트가 「수집 실패」로 남는다(실측). 그래서 **덧붙이고** `~=` 로 찾는다.
+      const key = `${unitId}#${index}`
+      const before = el.getAttribute('data-l443-node')
+      const parts = before ? before.split(/\s+/).filter(Boolean) : []
+      if (!parts.includes(key)) parts.push(key)
+      el.setAttribute('data-l443-node', parts.join(' '))
+    } catch {
+      /* 표시를 못 달면 그 요소의 폰트는 「수집 실패」로 남는다 — 조용히 같다고 하지 않는다 */
+    }
+  }
+
   for (const unit of spec.units) {
     const scope = unit.global ? document : rootEl
-    const found = Array.from(scope.querySelectorAll(unit.selector))
-    // 화면에 없는 것(display:none 조상 포함)은 "부재" 다 — 박스가 0 인 요소를 존재로 세면
-    // 조건부 렌더링 차이가 스타일 차이로 둔갑한다.
-    const visible = found.filter((el) => {
-      const rect = el.getBoundingClientRect()
-      return rect.width > 0 || rect.height > 0
-    })
     const record = {
-      present: visible.length > 0,
-      countAll: found.length,
-      count: visible.length,
       // **선언상 없음**(짝짓기 파일에 그 앱 선택자가 없다)과 **선택자가 0개를 찾음**을 갈라 둔다 (F11).
-      // 앞은 선언이고 뒤는 실패다 — 447~450 이 DOM 을 고친 뒤 뒤엣것은 드문 사고가 아니라 예정된 사건이다.
       declaredAbsent: unit.selector === null || unit.selector === undefined
     }
-    const measure = (el) => {
-      const rect = el.getBoundingClientRect()
-      const computed = getComputedStyle(el)
-      const style = {}
-      const wanted = new Set()
-      for (const setName of unit.props ?? ['box', 'paint', 'text']) {
-        for (const prop of spec.props[setName] ?? []) wanted.add(prop)
-      }
-      for (const prop of wanted) {
-        const raw = computed[prop]
-        if (raw === undefined || raw === null) continue
-        style[prop] = isColorProp(prop) ? normalizeColor(String(raw)) : normalizeComposite(raw)
-      }
-      return {
-        box: {
-          x: round(rect.left - rootRect.left),
-          y: round(rect.top - rootRect.top),
-          w: round(rect.width),
-          h: round(rect.height)
-        },
-        style,
-        // 비교하지 않는 기록값 — 판정 문서에서 "무엇이 거기 있었나" 를 사람이 읽을 자리.
-        text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
-        tag: el.tagName.toLowerCase()
-      }
+    if (typeof unit.parentSelector === 'string') {
+      // **부모 단위로 잰다** (G2). 전역 순번으로 묶으면 자식이 없는 부모를 건너뛰면서
+      // 다른 탭·다른 카드의 자식끼리 비교된다 — 실측으로 보고서에 거짓 차이가 실렸다.
+      // 자식이 없는 부모는 **그 자리에 부재를 적는다**: 순번이 밀리지 않는다.
+      const parents = Array.from(scope.querySelectorAll(unit.parentSelector)).filter(isVisible)
+      record.parentScoped = true
+      record.parentSelector = unit.parentSelector
+      record.parents = parents.length
+      record.items = parents.slice(0, MAX_ITEMS).map((parent, parentIndex) => {
+        // 자식은 부모 **아래**를 먼저 보고, 없으면 **부모 자신**이 그 선택자인지 본다 —
+        // 카드·탭처럼 「부모 자신의 상태」를 재는 단위(`.main-tab.is-active`)도 같은 순번 규약으로
+        // 묶이게 하려는 것이다. 순번이 곧 의미인 자리라 예외를 만들지 않는다.
+        let found = Array.from(parent.querySelectorAll(unit.selector)).filter(isVisible)
+        if (found.length === 0) {
+          try {
+            if (parent.matches(unit.selector) && isVisible(parent)) found = [parent]
+          } catch {
+            /* 선택자가 matches 에서 깨지면 부재로 남는다 — 조용히 같다고 하지 않는다 */
+          }
+        }
+        if (found.length === 0) return { parentIndex, present: false }
+        mark(found[0], unit.id, parentIndex)
+        return { parentIndex, present: true, siblings: found.length, ...measure(found[0], unit) }
+      })
+      record.itemsTruncated = parents.length > MAX_ITEMS
+      record.countAll = record.items.reduce((sum, item) => sum + (item.present ? item.siblings : 0), 0)
+      record.count = record.items.filter((item) => item.present).length
+      record.present = record.count > 0
+    } else {
+      const found = Array.from(scope.querySelectorAll(unit.selector))
+      // 화면에 없는 것(display:none 조상 포함)은 "부재" 다 — 박스가 0 인 요소를 존재로 세면
+      // 조건부 렌더링 차이가 스타일 차이로 둔갑한다.
+      const visible = found.filter(isVisible)
+      record.present = visible.length > 0
+      record.countAll = found.length
+      record.count = visible.length
+      // **걸린 요소를 전부 잰다** (F7). 개수 상한을 둔다 — 한 선택자에 수십 개가 걸리는 자리는
+      // 짝짓기 규약이 잘못된 것이다.
+      record.items = visible.slice(0, MAX_ITEMS).map((el, index) => {
+        mark(el, unit.id, index)
+        return { index, present: true, ...measure(el, unit) }
+      })
+      record.itemsTruncated = visible.length > MAX_ITEMS
     }
-    // **걸린 요소를 전부 잰다** (F7). 이전 판은 `visible[0]` 만 재서, 첫 요소와 총수가 같으면
-    // 둘째 이후 카드·행·탭의 간격·폰트·색이 달라도 본 diff 와 자기 diff 가 모두 0 이었다.
-    // 개수 상한을 둔다 — 한 선택자에 수십 개가 걸리는 자리는 짝짓기 규약이 잘못된 것이다.
-    const MAX_ITEMS = 12
-    record.items = visible.slice(0, MAX_ITEMS).map((el) => measure(el))
-    record.itemsTruncated = visible.length > MAX_ITEMS
-    if (record.items.length > 0) {
-      // 첫 요소는 예전 모양 그대로도 남긴다 — 기존 원자료·보고서와 읽는 자리를 맞춘다.
-      Object.assign(record, record.items[0])
-    }
+    const first = record.items?.find((item) => item.present)
+    // 첫 요소는 예전 모양 그대로도 남긴다 — 기존 원자료·보고서와 읽는 자리를 맞춘다.
+    if (first) Object.assign(record, { box: first.box, style: first.style, text: first.text, tag: first.tag })
     elements[unit.id] = record
   }
   return { meta, elements }

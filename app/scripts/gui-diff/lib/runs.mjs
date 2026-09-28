@@ -57,38 +57,6 @@ export function appendRun(ledgerPath, row) {
 }
 
 /**
- * 한 번의 `measure.mjs` 실행을 감싼다. **어떤 경로로 끝나든 행이 남는다** —
- * 던져서 끝나도, 0 이 아닌 코드로 끝나도. 그것이 이 함수가 존재하는 이유다.
- */
-export async function recordRun(ledgerPath, { criterion, command, expectedExit = 0, raw }, body) {
-  const id = nextRunId(ledgerPath)
-  try {
-    const value = await body(id)
-    appendRun(ledgerPath, {
-      id,
-      criterion,
-      command,
-      expectedExit,
-      actualExit: 0,
-      raw: typeof raw === 'function' ? raw(id) : raw,
-      result: expectedExit === 0 ? '통과' : '실패 (기대와 다름)'
-    })
-    return value
-  } catch (error) {
-    appendRun(ledgerPath, {
-      id,
-      criterion,
-      command,
-      expectedExit,
-      actualExit: 1,
-      raw: typeof raw === 'function' ? raw(id) : raw,
-      result: `실패 — ${String(error?.message ?? error).slice(0, 180)}`
-    })
-    throw error
-  }
-}
-
-/**
  * 회차 **시작**에 행을 먼저 적는다 (L3).
  *
  * 왜: 이전 판은 시작할 때 번호만 잡고(`nextRunId`) 끝에만 행을 썼다. SIGINT·OOM·강제 종료로 중간에

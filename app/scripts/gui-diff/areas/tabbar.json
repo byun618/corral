@@ -60,7 +60,9 @@
       "classifyWhy": "활성 탭 배경·인디케이터는 449 범위",
       "axis": "tabCount",
       "conditional": true,
-      "conditionalWhy": "탭이 하나라도 있을 때만"
+      "conditionalWhy": "탭이 하나라도 있을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 본다 — 「몇 번째 탭이 활성인가」가 그 자체로 의미다 (G2)"
     },
     {
       "id": "tab-status-dot",
@@ -75,13 +77,15 @@
       "classifyWhy": "상태 표시의 모양·크기·색은 449 범위. Orca 스피너 vs corral 원은 표현 선택 차이라 449 가 어휘를 먼저 정해야 한다",
       "axis": "tabCount",
       "conditional": true,
-      "conditionalWhy": "탭에 에이전트 활동이 있을 때만 (Orca). corral 은 항상 점을 그린다 — 그 차이가 기록 대상이다"
+      "conditionalWhy": "탭에 에이전트 활동이 있을 때만 (Orca). corral 은 항상 점을 그린다 — 그 차이가 기록 대상이다",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
     },
     {
       "id": "tab-agent-icon",
       "note": "탭 안 에이전트 로고 — Orca 는 `[data-agent-icon]`(provider 로고 전용), corral 은 `[data-agent-kind]`. 탭 안 모든 svg 를 세면 닫기 아이콘까지 섞인다",
-      "orca": "[data-testid=\"sortable-tab\"] [data-agent-icon]",
-      "corral": "[data-main-tab] [data-agent-kind]",
+      "orca": "[data-agent-icon]",
+      "corral": "[data-agent-kind]",
       "props": [
         "box",
         "paint"
@@ -90,7 +94,9 @@
       "classifyWhy": "탭 안 에이전트 로고는 449 범위",
       "axis": "tabCount",
       "conditional": true,
-      "conditionalWhy": "탭에 에이전트가 붙었을 때만"
+      "conditionalWhy": "탭에 에이전트가 붙었을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
     },
     {
       "id": "tab-unread-bell",
@@ -103,7 +109,9 @@
       "classify": "의도적",
       "classifyWhy": "Orca 전용 unread 벨 — corral 에 unread 개념이 없다 (00-analysis §4 는 447 몫으로 본다)",
       "conditional": true,
-      "conditionalWhy": "unread 가 있을 때만"
+      "conditionalWhy": "unread 가 있을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
     },
     {
       "id": "tab-label",
@@ -124,12 +132,14 @@
         "box",
         "paint"
       ],
-      "orca": "[data-testid=\"sortable-tab\"] button:has(svg.lucide-x)",
+      "orca": "button:has(svg.lucide-x)",
       "classify": "해소 대상",
       "classifyWhy": "닫기 버튼 노출 규칙·크기는 449 범위 (Orca 활성 상시 vs corral hover)",
       "axis": "tabCount",
       "conditional": true,
-      "conditionalWhy": "corral 은 hover 에서만, Orca 는 활성 탭 상시"
+      "conditionalWhy": "corral 은 hover 에서만, Orca 는 활성 탭 상시",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
     },
     {
       "id": "tab-add",

@@ -53,13 +53,15 @@ export function rpc(socketPath, request, timeoutMs = 15_000) {
  * Orca 는 dev, corral 은 빌드 — **비대칭이고, 그 사실을 보고서에 적는다**(C11). 이 비대칭이
  * 실제로 값에 얼마나 새는지는 C3 의 설치본 대조가 같은 축(개발 vs 패키징)으로 재 준다.
  */
-export async function launchCorral({ appRoot, workDir, port, logDir }) {
+export async function launchCorral({ appRoot, workDir, port, logDir, onSpawn = null }) {
   await assertPortFree(port, 'corral')
   const userData = path.join(workDir, 'corral-userdata')
   const herdrHome = path.join(workDir, 'corral-herdr')
   const control = path.join(workDir, 'corral-control.sock')
   const session = 'l443-gui-diff'
   for (const dir of [userData, herdrHome, logDir]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // 경로 소유는 폴더를 만든 순간부터다 (G5) — 기동이 중간에 실패해도 정리가 이 경로를 본다.
+  onSpawn?.({ paths: [userData, herdrHome] })
   fs.writeFileSync(
     path.join(herdrHome, 'config.toml'),
     'onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\nshell_mode = "non_login"\n'
@@ -79,6 +81,7 @@ export async function launchCorral({ appRoot, workDir, port, logDir }) {
   const backendLog = fs.openSync(path.join(logDir, 'corral-backend.log'), 'a')
   const backend = spawn('herdr', ['--session', session, 'server'], { env, stdio: ['ignore', backendLog, backendLog] })
   fs.closeSync(backendLog)
+  onSpawn?.({ pid: backend.pid, label: 'herdr backend' })
   const backendSocket = path.join(herdrHome, 'herdr/sessions', session, 'herdr.sock')
   await until(() => fs.existsSync(backendSocket), 'corral herdr backend socket', 30_000)
   env.CORRAL_BACKEND_SOCKET = backendSocket
@@ -100,9 +103,12 @@ export async function launchCorral({ appRoot, workDir, port, logDir }) {
     timeout: 120_000
   })
   if (opened.status !== 0) {
+    // 기동 실패다 — 그래도 `open` 이 Electron 을 띄웠을 수 있다. 소유 목록에 이미 backend 와
+    // 경로가 들어가 있어야 정리가 그것을 찾는다 (G5). 그래서 등록을 이 줄 **앞**에서 한다.
     throw new Error(`[corral] open → ${opened.status}\n${opened.stdout}\n${opened.stderr}`)
   }
   const status = JSON.parse(opened.stdout).result
+  onSpawn?.({ pid: status?.runtime?.pid ?? null, label: 'corral desktop' })
 
   await until(() => fs.existsSync(control), 'corral control socket', 60_000)
   await until(async () => (await rpc(control, { cmd: 'state' })).state?.link?.phase === 'live', 'corral GUI link live', 60_000)
@@ -308,6 +314,13 @@ export async function applyCorralState(handle, { tabCount, agents }) {
     handle.cdp.evaluate(() => {
       const all = [...document.querySelectorAll('[data-main-tabbar] [data-main-tab]')]
       return {
+        // **탭 id 를 키로 함께 읽는다** (G4). 점 목록만 정렬해 견주면 「어느 탭의 점인지」를
+        // 확인하지 않는다 — 탭 3개가 accent 라는 사실은 맞고 그것이 다른 탭일 수 있다.
+        tabs: all.map((tab) => ({
+          id: tab.getAttribute('data-main-tab'),
+          dot: tab.querySelector('.main-tab-dot')?.classList.contains('tone-accent') ? 'accent' : 'neutral',
+          active: tab.classList.contains('is-active')
+        })),
         dots: [...document.querySelectorAll('[data-main-tabbar] .main-tab-dot')].map((dot) =>
           dot.classList.contains('tone-accent') ? 'accent' : 'neutral'
         ),
@@ -316,16 +329,23 @@ export async function applyCorralState(handle, { tabCount, agents }) {
         panes: document.querySelectorAll('[data-pane]').length
       }
     })
-  const wanted = expected.map((tab) => (tab.agent_status === 'working' ? 'accent' : 'neutral')).sort().join(',')
+  // 기대값은 **탭 id → 점 색** 의 대응이다. `working` 이면 accent, 나머지는 neutral
+  // (`MainTabBar.tsx:214`). 이 대응이 어긋나면 상태 재현 실패다 — 화면이 낡은 집계를 그리고 있다.
+  const wantedByTab = new Map(expected.map((tab) => [tab.tab_id, tab.agent_status === 'working' ? 'accent' : 'neutral']))
+  const wanted = [...wantedByTab.entries()].map(([id, tone]) => `${id}=${tone}`).join(', ')
   let dom = await readDom()
+  const dotsMatch = (observed) => {
+    if (observed.tabs.length !== wantedByTab.size) return false
+    return observed.tabs.every((tab) => wantedByTab.get(tab.id) === tab.dot)
+  }
   const dotsConverged = await until(
     async () => {
       dom = await readDom()
       // 활성 탭은 **첫 탭을 눌러서** 맞춘다 (Orca 와 같은 제품 클릭 경로). 갱신은 다음 폴링에서 본다.
       if (dom.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-main-tabbar] [data-main-tab]')
-      return [...dom.dots].sort().join(',') === wanted && dom.activeTabIndex === 0 && dom.domTabs === tabCount
+      return dotsMatch(dom) && dom.activeTabIndex === 0 && dom.domTabs === tabCount
     },
-    `corral 탭 점이 backend 집계에 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,
+    `corral 탭 점이 backend 집계에 **탭마다** 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,
     20_000
   ).then(
     () => true,
@@ -345,6 +365,8 @@ export async function applyCorralState(handle, { tabCount, agents }) {
     paneStatusesAll: sorted(final.panes, 'pane_id').map((pane) => pane.agent_status),
     focusedTabId: final.focusedTabId,
     tabDots: dom.dots,
+    tabDotsByTab: dom.tabs,
+    tabDotsWanted: wanted,
     domTabs: dom.domTabs,
     activeTabIndex: dom.activeTabIndex,
     domPanes: dom.panes,

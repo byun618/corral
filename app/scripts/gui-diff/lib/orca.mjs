@@ -100,7 +100,7 @@ export function seedOrcaProfile(userDataDir, repoRoot) {
  * `pnpm dev` 가 아니라 그 뒷단 스크립트를 직접 부른다: pnpm 은 자기 설정을 HOME 에서 읽어서
  * 버리는 HOME 아래에서는 엉뚱한 곳을 본다. 의존성 설치는 진짜 HOME 으로 미리 끝내 둔다.
  */
-export async function launchOrca({ repoRoot, workDir, port, logPath, headless = false }) {
+export async function launchOrca({ repoRoot, workDir, port, logPath, headless = false, onSpawn = null }) {
   await assertPortFree(port, 'orca-dev')
   const userData = path.join(workDir, 'orca-dev-userdata') // 경로에 'orca-dev' 필수 (C2ⓑ, 00-analysis F3)
   const home = path.join(workDir, 'orca-dev-home')
@@ -109,6 +109,9 @@ export async function launchOrca({ repoRoot, workDir, port, logPath, headless = 
   if (path.resolve(realHome) === path.resolve(process.env.HOME ?? '')) {
     throw new Error('[orca] 버리는 HOME 이 실제 홈과 같다 — 기동을 거부한다')
   }
+  // **소유는 만든 순간부터**다 (G5). 경로는 이 함수가 만들고, pid 는 spawn 직후에 알린다 —
+  // 호출자가 성공 handle 을 받는 시점과 소유가 생기는 시점은 다르다.
+  onSpawn?.({ paths: [userData, realHome] })
   const seeded = seedOrcaProfile(userData, repoRoot)
 
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !STRIPPED_ENV.has(key)))
@@ -141,6 +144,7 @@ export async function launchOrca({ repoRoot, workDir, port, logPath, headless = 
     { cwd: repoRoot, env, stdio: ['ignore', logFd, logFd], detached: true }
   )
   fs.closeSync(logFd)
+  onSpawn?.({ pid: child.pid, label: 'orca dev 런너(프로세스 그룹)', group: true, paths: [userData, realHome] })
   // 부모(측정 프로세스)가 이 자식 때문에 못 끝나면 안 된다 — 종료는 C12 가 명시적으로 한다.
   child.unref()
 

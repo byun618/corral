@@ -82,6 +82,38 @@ export function diffFonts(left, right) {
 }
 
 /**
+ * 한 요소의 폰트 수집 상태 (G7). **「같다」와 「못 쟀다」를 가른다** — 이전 판은 수집 실패
+ * (`platformFonts` 없음·CDP 오류)를 `null` 로 돌려 차이 0 과 같은 자리에 넣었다.
+ */
+export function fontState(item) {
+  if (!item || item.present === false) return { state: 'absent', why: '그 자리에 요소가 없다' }
+  if (item.fontsError) return { state: 'error', why: `수집 실패: ${item.fontsError}` }
+  if (!Array.isArray(item.platformFonts)) return { state: 'uncollected', why: '이 요소의 렌더 폰트를 받지 못했다' }
+  const families = [...new Set(item.platformFonts.map((font) => font.family))].sort()
+  if (families.length === 0) return { state: 'noglyph', why: '글리프가 없다 (그릴 글자가 없는 요소)' }
+  return { state: 'ok', families }
+}
+
+/**
+ * 요소 한 쌍의 렌더 폰트 판정. 셋 중 하나를 돌려준다:
+ * `null`(같다) · `{kind:'differs'}`(차이) · `{kind:'unmeasured', why}`(공백 — 사유와 함께).
+ */
+export function diffItemFonts(leftItem, rightItem) {
+  const a = fontState(leftItem)
+  const b = fontState(rightItem)
+  if (a.state === 'ok' && b.state === 'ok') {
+    if (a.families.join(', ') === b.families.join(', ')) return null
+    return { kind: 'differs', left: a.families.join(', '), right: b.families.join(', ') }
+  }
+  return {
+    kind: 'unmeasured',
+    left: a.state === 'ok' ? a.families.join(', ') : `(${a.why})`,
+    right: b.state === 'ok' ? b.families.join(', ') : `(${b.why})`,
+    why: [a.state === 'ok' ? null : `orca: ${a.why}`, b.state === 'ok' ? null : `corral: ${b.why}`].filter(Boolean).join(' · ')
+  }
+}
+
+/**
  * 스냅샷 한 쌍을 견준다.
  *
  * @param left  기준 쪽 스냅샷 (보통 Orca)
@@ -99,11 +131,26 @@ export function diffSnapshots(left, right, options = {}) {
   // 선택자 부패로 읽으면 알려진 제품 차이(C6ⓐ 의 묶음 알약 같은 것)가 측정 실패로 둔갑한다.
   // 반대로 구조 단위(껍데기·검색 줄)가 0개면 그것은 부패다 — 그래서 **영역 정의가 선언한다.**
   const conditionalById = new Set(units.filter((unit) => unit.conditional).map((unit) => unit.id))
+  // 렌더 폰트를 **요청한 단위**만 폰트 판정에 넣는다 (G7). `props` 에 `text` 가 없는 단위(점·아이콘)는
+  // 애초에 폰트를 재지 않으므로 「못 쟀다」가 아니라 **해당 없음**이다 — 공백 표가 그것으로 차면
+  // 정작 봐야 할 수집 실패가 묻힌다.
+  const fontsRequested = new Set(
+    units.filter((unit) => (unit.props ?? ['box', 'paint', 'text']).includes('text')).map((unit) => unit.id)
+  )
+  const wantsFonts = (id) => units.length === 0 || fontsRequested.has(id)
 
   const ids = order ?? [...new Set([...Object.keys(left.elements ?? {}), ...Object.keys(right.elements ?? {})])]
+  // 자기 diff(C5)는 **같은 앱을 두 번 찍은 것**이다. 짝짓기 불가·양쪽 선택자 부재는 두 앱을 견줄 때의
+  // 성질이지 캡처의 흔들림이 아니라서, 자기 diff 에서는 세지 않는다 — 세면 잡음 바닥이 거짓으로 오른다.
+  const self = options.self === true || options.includeUnpaired === false
   const findings = []
   const belowTolerance = []
   const fontUnmeasured = []
+  /** 잰 요소 목록. 예전 모양(첫 요소가 record 에 펼쳐진 것)도 받아 준다. */
+  const itemsOf = (record) => {
+    if (Array.isArray(record?.items) && record.items.length > 0) return record.items
+    return record?.box ? [{ index: 0, present: true, box: record.box, style: record.style, platformFonts: record.platformFonts }] : []
+  }
   for (const id of ids) {
     const a = left.elements?.[id]
     const b = right.elements?.[id]
@@ -112,9 +159,7 @@ export function diffSnapshots(left, right, options = {}) {
     // "없음" 으로 적으면 그것은 거짓 차이다 — 447~450 이 없는 것을 만들러 간다.
     const unpaired = unpairedById.get(id)
     if (unpaired) {
-      // 자기 diff(C5 잡음 바닥)에서는 건너뛴다. 짝짓기 불가는 **두 앱을 견줄 때의 성질**이지
-      // 같은 앱을 두 번 찍은 것 사이의 흔들림이 아니다 — 여기에 세면 잡음 바닥이 거짓으로 오른다.
-      if (options.includeUnpaired !== false) findings.push({ id, note, kind: 'unpaired', detail: { reason: unpaired } })
+      if (!self) findings.push({ id, note, kind: 'unpaired', detail: { reason: unpaired } })
       continue
     }
     // 둘 다 안 쟀다 — 영역 정의에는 있는데 스냅샷에 없는 경우다. 조용히 넘기지 않는다.
@@ -130,48 +175,113 @@ export function diffSnapshots(left, right, options = {}) {
       // 「corral 에 없음」이라는 거짓 차이가 나간다. 그래서 종류를 갈라 내고, 관문도 따로 본다.
       const absentSide = leftPresent ? 'right' : 'left'
       const absentRecord = leftPresent ? b : a
-      const kind = absentRecord?.declaredAbsent === true || conditionalById.has(id) ? 'missing' : 'selector-miss'
+      const declared = absentRecord?.declaredAbsent === true
+      const kind = declared || conditionalById.has(id) ? 'missing' : 'selector-miss'
       findings.push({
         id,
         note,
         kind,
         detail: {
-          left: leftPresent ? `있음 (${a.count})` : absentRecord === a && a?.declaredAbsent ? '없음(선언)' : '없음(선택자 0개)',
-          right: rightPresent ? `있음 (${b.count})` : absentRecord === b && b?.declaredAbsent ? '없음(선언)' : '없음(선택자 0개)',
-          absentSide
+          left: leftPresent ? `있음 (${a.count})` : a?.declaredAbsent ? '없음(선언)' : '없음(선택자 0개)',
+          right: rightPresent ? `있음 (${b.count})` : b?.declaredAbsent ? '없음(선언)' : '없음(선택자 0개)',
+          absentSide,
+          // 표기가 두 뜻을 다시 합치지 않게 **어느 부재인지**를 값으로 남긴다 (R2-L1).
+          absence: declared ? 'declared' : conditionalById.has(id) ? 'conditional' : 'selector'
         }
       })
       continue // 한쪽에 없으면 박스·스타일은 견주지 않는다 (K7)
     }
-    if (!leftPresent) continue // 둘 다 없다 = 차이 없음
+    if (!leftPresent) {
+      // **양쪽 다 0개**다. 선언된 부재나 조건부 부재면 차이가 아니지만, 필수 단위가 양쪽에서
+      // 0개면 그것은 「같다」가 아니라 **측정 실패**다 (G6) — 선택자 오타·양쪽 DOM 변경이 이 모양이다.
+      const declared = a?.declaredAbsent === true || b?.declaredAbsent === true
+      if (!self && !declared && !conditionalById.has(id)) {
+        findings.push({
+          id,
+          note,
+          kind: 'selector-miss',
+          detail: { left: '없음(선택자 0개)', right: '없음(선택자 0개)', absentSide: 'both', absence: 'selector' }
+        })
+      }
+      continue
+    }
 
     if (a.count !== b.count) {
       findings.push({ id, note, kind: 'count', detail: { left: a.count, right: b.count } })
     }
-    // **걸린 요소를 전부 순번으로 견준다** (F7). 이전 판은 첫 요소만 봐서 둘째 이후 카드·행·탭의
-    // 차이가 본 diff 와 자기 diff 모두에서 0 이었다. 개수가 다르면 겹치는 순번까지만 본다 —
-    // 개수 차이는 위에서 이미 한 건으로 나갔다.
-    const leftItems = Array.isArray(a.items) && a.items.length > 0 ? a.items : a.box ? [{ box: a.box, style: a.style }] : []
-    const rightItems = Array.isArray(b.items) && b.items.length > 0 ? b.items : b.box ? [{ box: b.box, style: b.style }] : []
-    const pairs = Math.min(leftItems.length, rightItems.length)
-    for (let index = 0; index < pairs; index += 1) {
-      const boxDiff = diffBoxWithBelow(leftItems[index].box, rightItems[index].box, tolerance)
+
+    // ---- 요소 짝짓기 -------------------------------------------------------
+    // **부모 단위로 묶는다** (G2). 부모(탭·카드)의 순번을 키로 쓰고 그 **안에서** 자식을 견준다.
+    // 전역 순번으로 묶으면 자식이 없는 부모를 건너뛰며 다른 탭끼리 비교된다 — 최종 보고서에
+    // x −122.78px 같은 거짓 차이가 실렸다.
+    const parentScoped = a.parentScoped === true || b.parentScoped === true
+    const leftItems = itemsOf(a)
+    const rightItems = itemsOf(b)
+    const pairs = []
+    if (parentScoped) {
+      const keys = [...new Set([...leftItems.map((item) => item.parentIndex), ...rightItems.map((item) => item.parentIndex)])]
+        .filter((key) => Number.isFinite(key))
+        .sort((x, y) => x - y)
+      for (const key of keys) {
+        pairs.push({
+          index: key,
+          label: `부모 ${key}`,
+          left: leftItems.find((item) => item.parentIndex === key) ?? null,
+          right: rightItems.find((item) => item.parentIndex === key) ?? null
+        })
+      }
+    } else {
+      const count = Math.min(leftItems.length, rightItems.length)
+      for (let index = 0; index < count; index += 1) {
+        pairs.push({ index, label: `${index}번째`, left: leftItems[index], right: rightItems[index] })
+      }
+    }
+
+    for (const pair of pairs) {
+      const l = pair.left
+      const r = pair.right
+      const lHas = Boolean(l && l.present !== false)
+      const rHas = Boolean(r && r.present !== false)
+      if (lHas !== rHas) {
+        // **부모 안에서의 부재**다. 부모끼리는 짝이 맞고 그 안에 자식이 한쪽만 있다 —
+        // 다른 부모의 자식과 비교하는 것보다 이것이 사실이다.
+        findings.push({
+          id,
+          note,
+          kind: 'missing',
+          ...(pair.index > 0 ? { index: pair.index } : {}),
+          detail: {
+            left: lHas ? '있음' : l ? '없음(그 부모 안에 없음)' : '없음(부모 자체가 없음)',
+            right: rHas ? '있음' : r ? '없음(그 부모 안에 없음)' : '없음(부모 자체가 없음)',
+            absentSide: lHas ? 'right' : 'left',
+            absence: parentScoped ? 'parent-scoped' : 'selector',
+            parentIndex: parentScoped ? pair.index : undefined
+          }
+        })
+        continue
+      }
+      if (!lHas) continue // 그 부모 안에 양쪽 다 없다 = 차이 없음
+
+      const boxDiff = diffBoxWithBelow(l.box, r.box, tolerance)
       if (boxDiff.over.length > 0) {
-        findings.push({ id, note, kind: 'box', detail: boxDiff.over, ...(index > 0 ? { index } : {}) })
+        findings.push({ id, note, kind: 'box', detail: boxDiff.over, ...(pair.index > 0 ? { index: pair.index } : {}) })
       }
       if (boxDiff.below.length > 0) {
         // 판정에서 빼되 **세기는 한다** — 허용치가 무엇을 가렸는지 보고서에 남는다.
-        belowTolerance.push({ id, note, index, detail: boxDiff.below })
+        belowTolerance.push({ id, note, index: pair.index, detail: boxDiff.below })
       }
-      const styleDiff = diffStyle(leftItems[index].style, rightItems[index].style)
+      const styleDiff = diffStyle(l.style, r.style)
       if (styleDiff.length > 0) {
-        findings.push({ id, note, kind: 'style', detail: styleDiff, ...(index > 0 ? { index } : {}) })
+        findings.push({ id, note, kind: 'style', detail: styleDiff, ...(pair.index > 0 ? { index: pair.index } : {}) })
+      }
+      // 렌더 폰트 (F14·G7) — **요소마다** 본다. 선언값과 따로 내고, 못 쟀으면 공백(사유)로 적는다.
+      const fonts = wantsFonts(id) ? diffItemFonts(l, r) : null
+      if (fonts && fonts.kind === 'differs') {
+        findings.push({ id, note, kind: 'font', detail: fonts, ...(pair.index > 0 ? { index: pair.index } : {}) })
+      } else if (fonts) {
+        fontUnmeasured.push({ id, note, index: pair.index, detail: fonts })
       }
     }
-    // 렌더 폰트 (F14) — 선언값과 **따로** 낸다.
-    const fonts = diffFonts(a.platformFonts, b.platformFonts)
-    if (fonts && fonts.kind === 'differs') findings.push({ id, note, kind: 'font', detail: fonts })
-    else if (fonts) fontUnmeasured.push({ id, note, detail: fonts })
   }
   return {
     left: { app: left.app ?? null, meta: left.meta ?? null },
@@ -193,7 +303,7 @@ export function diffSnapshots(left, right, options = {}) {
  * 앱의 차이가 아니다. 두 앱 비교와 같은 코드를 타야 의미가 있으므로 같은 함수를 부른다.
  */
 export function selfDiff(first, second, options = {}) {
-  return diffSnapshots(first, second, { ...options, includeUnpaired: false })
+  return diffSnapshots(first, second, { ...options, self: true, includeUnpaired: false })
 }
 
 /**

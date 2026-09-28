@@ -154,7 +154,9 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "표면 배경·테두리·radius 는 448 범위"
+      "classifyWhy": "표면 배경·테두리·radius 는 448 범위",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
     },
     {
       "id": "worktree-card-active",
@@ -168,7 +170,9 @@
       "classify": "해소 대상",
       "classifyWhy": "선택 표시는 448 범위",
       "conditional": true,
-      "conditionalWhy": "선택된 카드가 있을 때만"
+      "conditionalWhy": "선택된 카드가 있을 때만",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
     },
     {
       "id": "worktree-status-slot",
@@ -183,7 +187,9 @@
       "classifyWhy": "Orca 는 unread·PR·브랜치를 함께 담고 corral 은 점 하나다 — 묶음 구성 차이라 448 이 정보 구성을 먼저 정해야 한다",
       "axis": "agentCount",
       "conditional": true,
-      "conditionalWhy": "상태가 있을 때만"
+      "conditionalWhy": "상태가 있을 때만",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
     },
     {
       "id": "worktree-card-body",
@@ -196,7 +202,9 @@
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "본문 줄 타이포·간격은 448 범위. 이름 span 은 짝을 못 지어 컨테이너 수준만 잰다 (도구 한계)"
+      "classifyWhy": "본문 줄 타이포·간격은 448 범위. 이름 span 은 짝을 못 지어 컨테이너 수준만 잰다 (도구 한계)",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
     },
     {
       "id": "worktree-secondary-line",
@@ -223,7 +231,9 @@
       "classifyWhy": "양성 대조 C6ⓐ 자리 — 묶음 임계 2 vs 3 은 449 가 정한다",
       "axis": "agentCount",
       "conditional": true,
-      "conditionalWhy": "묶음 알약은 임계(Orca 2 / corral 3) 위에서만 그려진다 — 0개가 곧 알려진 차이다 (양성 대조 C6ⓐ)"
+      "conditionalWhy": "묶음 알약은 임계(Orca 2 / corral 3) 위에서만 그려진다 — 0개가 곧 알려진 차이다 (양성 대조 C6ⓐ)",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
     },
     {
       "id": "agent-group-summary",
@@ -252,9 +262,7 @@
     },
     {
       "id": "agent-kind-icon",
-      "note": "에이전트 종류 아이콘",
-      "orca": "[data-compact-agent-list] svg",
-      "corral": "[data-agent-kind]",
+      "note": "에이전트 종류 아이콘 — 짝짓기 불가(요약 그룹 ↔ 세션 행)",
       "props": [
         "box",
         "paint"
@@ -263,7 +271,8 @@
       "classifyWhy": "종류 아이콘 크기·색은 449 범위",
       "axis": "agentCount",
       "conditional": true,
-      "conditionalWhy": "에이전트가 있을 때만"
+      "conditionalWhy": "에이전트가 있을 때만",
+      "unpaired": "Orca 는 요약 패널에서 에이전트 아이콘을 **상태 그룹별로 최대 3개**만 그리고 나머지를 `+N` 으로 접는다 (`worktree-card-compact-agents.tsx:146`) — corral 은 세션마다 하나다. 개수도 순서도 대응되지 않아 순번으로 묶을 수 없다. 이전 판은 `[data-compact-agent-list] svg` 로 잡아 마지막 `ChevronDown` 까지 provider 로 세고(6↔5) 순번으로 짝지었다 (G2)"
     },
     {
       "id": "sidebar-footer",

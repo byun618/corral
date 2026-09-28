@@ -14,8 +14,21 @@ export function describeFinding(finding) {
   switch (finding.kind) {
     case 'unpaired':
       return { orca: '(못 잼)', corral: '(못 잼)', diff: `짝짓기 불가 — ${finding.detail.reason}` }
-    case 'missing':
-      return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff: '한쪽에만 있음(선언)' }
+    case 'missing': {
+      // **두 뜻을 합치지 않는다** (R2-L1). 선언된 부재·조건부 관측 부재·부모 안의 부재는 다른 사실이다.
+      const absence = finding.detail?.absence
+      const diff =
+        absence === 'declared'
+          ? '한쪽에만 있음(선언)'
+          : absence === 'conditional'
+            ? '한쪽에만 있음(관측 — 조건부 렌더)'
+            : absence === 'parent-scoped'
+              ? `같은 부모(${finding.detail.parentIndex ?? '?'}번째) 안에서 한쪽에만 있음`
+              : finding.detail?.left === 'unmeasured'
+                ? '양쪽 다 측정 안 됨'
+                : '한쪽에만 있음(관측)'
+      return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff }
+    }
     case 'selector-miss':
       // 「없다」가 아니라 **못 찾았다** — 선택자 부패다. 차이로 읽으면 없는 것을 만들러 간다.
       return { orca: clip(finding.detail.left), corral: clip(finding.detail.right), diff: '선택자가 0개를 찾음 — 측정 실패' }
@@ -175,12 +188,14 @@ export function renderReport({ date, runs, areas, notes }) {
     if (fontGaps.length > 0) {
       lines.push(`### 렌더 폰트를 못 잰 자리 — ${fontGaps.length}건`)
       lines.push('')
-      lines.push('한쪽 노드에 글리프가 없으면 CDP 가 빈 목록을 준다. **빈 목록은 「선언과 같다」가 아니다.**')
+      lines.push('**「같다」가 아니라 「못 쟀다」다** — 수집 실패·글리프 없음·한쪽 부재를 사유 칸에 적는다 (G7).')
       lines.push('')
-      lines.push('| 단위 | 상태 | Orca | corral |')
-      lines.push('| --- | --- | --- | --- |')
+      lines.push('| 단위 | 상태 | Orca | corral | 사유 |')
+      lines.push('| --- | --- | --- | --- | --- |')
       for (const entry of fontGaps) {
-        lines.push(`| ${cell(entry.note ?? entry.id)} | ${cell(entry.state)} | ${cell(entry.detail.left)} | ${cell(entry.detail.right)} |`)
+        lines.push(
+          `| ${cell(entry.note ?? entry.id)}${entry.index ? ` [${entry.index + 1}번째]` : ''} | ${cell(entry.state)} | ${cell(entry.detail.left)} | ${cell(entry.detail.right)} | ${cell(entry.detail.why ?? '한쪽 노드에 글리프가 없다')} |`
+        )
       }
       lines.push('')
     }

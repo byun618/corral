@@ -5,7 +5,9 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, selfDiff, compareMeta } from './lib/diff.mjs'
+import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta } from './lib/diff.mjs'
+import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath } from './lib/own.mjs'
+import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
 
@@ -111,10 +113,25 @@ test('렌더 폰트는 선언과 따로 나온다 — 빈 목록은 "같다" 가
   assert.ok(result.findings.some((finding) => finding.kind === 'font'))
 })
 
-test('둘 다 없으면 차이가 아니다', () => {
-  const left = snap('orca', { pill: el({ present: false, count: 0 }) })
-  const right = snap('corral', { pill: el({ present: false, count: 0 }) })
+test('양쪽 다 선언·조건부 부재면 차이가 아니다', () => {
+  const left = snap('orca', { pill: el({ present: false, count: 0, declaredAbsent: true }) })
+  const right = snap('corral', { pill: el({ present: false, count: 0, declaredAbsent: true }) })
   assert.equal(diffSnapshots(left, right, { units: [unit('pill')] }).findings.length, 0)
+  const cond = diffSnapshots(snap('orca', { pill: el({ present: false, count: 0 }) }), snap('corral', { pill: el({ present: false, count: 0 }) }), {
+    units: [unit('pill', { conditional: true })]
+  })
+  assert.equal(cond.findings.length, 0)
+})
+
+test('필수 단위가 **양쪽 다** 0개면 차이 0 이 아니라 측정 실패다 (G6)', () => {
+  const left = snap('orca', { shell: el({ present: false, count: 0 }) })
+  const right = snap('corral', { shell: el({ present: false, count: 0 }) })
+  const result = diffSnapshots(left, right, { units: [unit('shell')] })
+  assert.equal(result.findings.length, 1)
+  assert.equal(result.findings[0].kind, 'selector-miss')
+  assert.equal(result.findings[0].detail.absentSide, 'both')
+  // 자기 diff 에서는 세지 않는다 — 같은 앱을 두 번 찍은 흔들림이 아니다
+  assert.equal(selfDiff(left, left, { units: [unit('shell')] }).findings.length, 0)
 })
 
 test('영역 정의에 있는데 양쪽 스냅샷에 없으면 unmeasured 로 드러낸다', () => {
@@ -323,4 +340,172 @@ test('조건부 단위의 0개는 selector-miss 가 아니라 missing 이다 (�
   const asConditional = diffSnapshots(left, right, { units: [{ ...unit('pill'), conditional: true }] })
   assert.equal(asConditional.findings[0].kind, 'missing')
   assert.equal(asConditional.findings[0].detail.absentSide, 'right')
+})
+
+
+// ---- G2 부모 단위 짝짓기 ------------------------------------------------------
+// 왜 이 자리에 테스트가 필요한가: 전역 순번으로 묶던 판은 자식이 없는 부모를 건너뛰면서
+// **다른 탭의 점끼리** 비교했고, 그 거짓 차이(x −122.78px)가 최종 보고서에 「해소 대상」으로 실렸다.
+
+const child = (parentIndex, box, style = { color: 'x' }) => ({ parentIndex, present: true, box, style })
+const noChild = (parentIndex) => ({ parentIndex, present: false })
+const box = (x) => ({ x, y: 0, w: 8, h: 8 })
+
+test('가운데 부모에 자식이 없으면 다른 부모끼리 짝지어지지 않는다 (G2)', () => {
+  // Orca: 0·2번 탭에만 점이 있다. corral: 세 탭 모두 있다.
+  const left = snap('orca', {
+    dot: el({ parentScoped: true, parents: 3, count: 2, items: [child(0, box(6)), noChild(1), child(2, box(287))] })
+  })
+  const right = snap('corral', {
+    dot: el({ parentScoped: true, parents: 3, count: 3, items: [child(0, box(6)), child(1, box(164)), child(2, box(287))] })
+  })
+  const result = diffSnapshots(left, right, { units: [unit('dot')], tolerance: 0.5 })
+  // 0번·2번 부모는 값이 같으므로 박스 차이가 없어야 한다 — 밀려서 (2↔1) 로 묶이면 여기서 터진다
+  assert.equal(result.findings.filter((finding) => finding.kind === 'box').length, 0)
+  // 1번 부모는 **그 부모 안의 부재**로 한 건
+  const missing = result.findings.filter((finding) => finding.kind === 'missing')
+  assert.equal(missing.length, 1)
+  assert.equal(missing[0].detail.parentIndex, 1)
+  assert.equal(missing[0].detail.absentSide, 'left')
+  // 개수 차이는 따로 한 건
+  assert.equal(result.findings.filter((finding) => finding.kind === 'count').length, 1)
+})
+
+test('부모 단위 짝짓기에서 같은 부모의 값 차이는 그대로 잡는다', () => {
+  const left = snap('orca', { dot: el({ parentScoped: true, parents: 2, count: 2, items: [child(0, box(6)), child(1, box(100))] }) })
+  const right = snap('corral', { dot: el({ parentScoped: true, parents: 2, count: 2, items: [child(0, box(6)), child(1, box(120))] }) })
+  const result = diffSnapshots(left, right, { units: [unit('dot')], tolerance: 0.5 })
+  assert.equal(result.findings.length, 1)
+  assert.equal(result.findings[0].kind, 'box')
+  assert.equal(result.findings[0].index, 1)
+  assert.equal(result.findings[0].detail[0].delta, 20)
+})
+
+test('부모 자체가 한쪽에만 있으면 그 사실로 적는다 (자식 값 비교가 아니다)', () => {
+  const left = snap('orca', { dot: el({ parentScoped: true, parents: 2, count: 2, items: [child(0, box(6)), child(1, box(100))] }) })
+  const right = snap('corral', { dot: el({ parentScoped: true, parents: 1, count: 1, items: [child(0, box(6))] }) })
+  const result = diffSnapshots(left, right, { units: [unit('dot')], tolerance: 0.5 })
+  const missing = result.findings.filter((finding) => finding.kind === 'missing')
+  assert.equal(missing.length, 1)
+  assert.equal(missing[0].detail.right, '없음(부모 자체가 없음)')
+})
+
+// ---- G7 렌더 폰트 -----------------------------------------------------------
+
+test('폰트 수집 실패는 "같다" 가 아니라 공백(사유)로 나온다 (G7)', () => {
+  assert.equal(fontState({ present: true, platformFonts: [{ family: 'Geist' }] }).state, 'ok')
+  assert.equal(fontState({ present: true }).state, 'uncollected')
+  assert.equal(fontState({ present: true, fontsError: 'boom' }).state, 'error')
+  assert.equal(fontState({ present: true, platformFonts: [] }).state, 'noglyph')
+  const unmeasured = diffItemFonts({ present: true, platformFonts: [{ family: 'Geist' }] }, { present: true })
+  assert.equal(unmeasured.kind, 'unmeasured')
+  assert.match(unmeasured.why, /corral/)
+})
+
+test('둘째 요소의 렌더 폰트 차이도 잡는다 — 대표 하나만 보던 자리 (G7)', () => {
+  const item = (index, family) => ({ index, present: true, box: box(0), style: { color: 'x' }, platformFonts: [{ family }] })
+  const left = snap('orca', { label: el({ count: 2, items: [item(0, 'Geist'), item(1, 'Geist')] }) })
+  const right = snap('corral', { label: el({ count: 2, items: [item(0, 'Geist'), item(1, '.SF NS')] }) })
+  const result = diffSnapshots(left, right, { units: [unit('label')], tolerance: 0.5 })
+  const fonts = result.findings.filter((finding) => finding.kind === 'font')
+  assert.equal(fonts.length, 1)
+  assert.equal(fonts[0].index, 1)
+})
+
+// ---- G1 소유 경계 -----------------------------------------------------------
+// 왜: 부분 문자열 일치로 남의 Electron 에 SIGTERM 을 보낼 수 있었다. 실제 프로세스 없이 반례로 본다.
+
+const proc = (pid, command) => ({ pid, command })
+const ELECTRON = '/path/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
+
+test('소유 경로의 접두사만 같은 프로필은 소유가 아니다 (G1)', () => {
+  const result = selectOwnedByPath({
+    processes: [
+      proc(456, `${ELECTRON} --user-data-dir=/tmp/l443/corral-userdata-other`),
+      proc(457, `${ELECTRON} --user-data-dir=/tmp/l443/corral-userdata`)
+    ],
+    targets: ['/tmp/l443/corral-userdata']
+  })
+  assert.deepEqual(result.owned.map((entry) => entry.pid), [457])
+  assert.equal(result.rejected.length, 1)
+  assert.match(result.rejected[0].why, /부분 문자열/)
+})
+
+test('소유 경로 **아래**를 쓰는 헬퍼는 소유다 (crashpad 등)', () => {
+  const result = selectOwnedByPath({
+    processes: [proc(98526, `${ELECTRON} Framework --database=/private/tmp/l443/orca-dev-userdata/Crashpad`)],
+    targets: ['/tmp/l443/orca-dev-userdata']
+  })
+  assert.deepEqual(result.owned.map((entry) => entry.pid), [98526])
+})
+
+test('셸·검색 명령은 소유가 아니다 — 회차를 지켜보던 tail 이 걸렸던 자리', () => {
+  const result = selectOwnedByPath({
+    processes: [proc(1, '/bin/zsh -c tail -f /tmp/l443/corral-userdata/x.log'), proc(2, 'tail -f /tmp/l443/corral-userdata/x.log')],
+    targets: ['/tmp/l443/corral-userdata']
+  })
+  assert.equal(result.owned.length, 0)
+})
+
+test('--no-fresh 의 기존 인스턴스는 소유에서 뺀다 (G1)', () => {
+  const processes = [proc(700, `${ELECTRON} --user-data-dir=/tmp/l443/corral-userdata`)]
+  const targets = ['/tmp/l443/corral-userdata']
+  assert.equal(selectOwnedByPath({ processes, targets }).owned.length, 1)
+  const excluded = selectOwnedByPath({ processes, targets, exclude: [700] })
+  assert.equal(excluded.owned.length, 0)
+  assert.match(excluded.rejected[0].why, /이번 실행 전부터/)
+})
+
+test('경로 토큰 추출: --opt=값 · --opt 값 · 맨 토큰', () => {
+  const tokens = new Set(commandPathTokens('/bin/app --user-data-dir=/a/b --session /c/d -x plain /e/f'))
+  for (const expected of ['/bin/app', '/a/b', '/c/d', '/e/f']) assert.ok(tokens.has(expected), expected)
+  assert.ok(!tokens.has('plain'), '경로가 아닌 값은 경로 토큰이 아니다')
+  assert.equal(isPathInside('/private/tmp/x/y', '/tmp/x'), true)
+  assert.equal(isPathInside('/tmp/x-other', '/tmp/x'), false)
+  assert.equal(normalizePath('/private/tmp/x/'), '/tmp/x')
+})
+
+// ---- G9 C3 대조 방법의 판별력 --------------------------------------------------
+// 왜: 「사람이 보기에 차이를 못 찾았다」는 *차이 없음* 과 *이 방법으로는 못 봄* 을 가르지 못한다.
+// 그래서 비교 함수 자체에 음성·양성 대조를 붙이고, 그 판별력을 여기서 시험한다.
+
+const flat = (w, h, value) => ({ width: w, height: h, channels: 3, data: Buffer.alloc(w * h * 3, value) })
+const striped = (w, h) => {
+  const image = flat(w, h, 30)
+  for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) {
+    if (x % 4 === 0) image.data.fill(200, (y * w + x) * 3, (y * w + x) * 3 + 3)
+  }
+  return image
+}
+
+test('C3 대조: 원본↔원본은 0, 색 Δ1 은 검출한다 (G9)', () => {
+  const image = flat(20, 10, 37)
+  const roi = { x: 2, y: 2, w: 8, h: 4 }
+  const result = evaluateRoiControls(image, roi)
+  assert.equal(result.negativeOk, true)
+  assert.equal(result.negative.maxDelta, 0)
+  assert.equal(result.minColorDelta, 1)
+})
+
+test('C3 대조: **균일한** ROI 는 이동을 검출하지 못한다 — 그 한계를 값으로 낸다 (G9)', () => {
+  const uniform = evaluateRoiControls(flat(20, 10, 37), { x: 2, y: 2, w: 8, h: 4 })
+  assert.equal(uniform.minShift, null)
+  assert.equal(uniform.uniform, true)
+  // 구조가 있으면 1px 이동도 잡힌다 — 기하 민감도는 이 ROI 에서만 말할 수 있다
+  const structured = evaluateRoiControls(striped(20, 10), { x: 2, y: 2, w: 8, h: 4 })
+  assert.equal(structured.minShift, 1)
+  assert.equal(structured.uniform, false)
+})
+
+test('C3 대조: ROI 가 이미지 밖이면 던진다 — 밖을 0 으로 채워 「차이 없음」을 만들지 않는다', () => {
+  assert.throws(() => compareRoi(flat(10, 10, 0), flat(10, 10, 0), { x: 5, y: 5, w: 10, h: 10 }, { x: 0, y: 0, w: 10, h: 10 }), /밖이다/)
+  assert.throws(() => compareRoi(flat(10, 10, 0), flat(10, 10, 0), { x: 0, y: 0, w: 4, h: 4 }, { x: 0, y: 0, w: 5, h: 4 }), /ROI 크기가 다르다/)
+})
+
+test('PNG 왕복: 디코드→인코드→디코드가 같은 픽셀 (G9 원자료를 사람이 볼 수 있게 남기려면)', () => {
+  const image = striped(9, 5)
+  const round = decodePng(encodePng(image))
+  assert.equal(round.width, 9)
+  assert.equal(round.height, 5)
+  assert.ok(round.data.equals(image.data))
 })

@@ -24,6 +24,7 @@ import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBou
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
+import { selectOwnedByPath } from './lib/own.mjs'
 
 // 이 도구는 전역 `WebSocket`(raw CDP) 을 쓴다 — node 20 에는 플래그 뒤에 있다.
 // corral 자신도 node >= 22.12 를 요구한다(`app/package.json` engines). 조용히 죽는 대신 여기서 말한다.
@@ -37,13 +38,14 @@ if (NODE_MAJOR < 22 || typeof globalThis.WebSocket !== 'function') {
 }
 
 /**
- * 그 경로를 쓰는 **앱** 프로세스만 고른다.
+ * 소유 판정의 **보조** 경로: 그 경로를 경계까지 정확히 쓰는 앱 프로세스만 고른다 (G1).
  *
- * 왜 필터가 필요한가: `pgrep -f <경로>` 는 그 경로를 **입에 올린** 아무 명령이나 잡는다 —
- * 실측: 회차를 지켜보던 셸(`tail /tmp/l443/r2b.log`)이 걸려 프로필 삭제 가드가 헛돌았다.
- * 그래서 명령줄이 Electron·Orca·herdr 인 줄만 남긴다. 우리가 남길 수 있는 것은 그것뿐이다.
+ * 1순위는 기동 때 받은 pid 와 그 자손이다(`descendantPids`). 이 함수는 그것이 놓치는 손자
+ * (crashpad 헬퍼 등)를 잇는 용도이고, 판정 규칙은 `lib/own.mjs` 의 순수 함수에 있다 —
+ * `pgrep -f <경로>` 는 **부분 문자열** 일치라서 `<경로>-other` 를 쓰는 남의 Electron 도 잡는다.
+ * 그래서 pgrep 은 후보만 만들고, 소유 여부는 argv 옵션 값을 경계까지 비교해 정한다.
  */
-function appsUsingPath(target) {
+function candidatesUsingPath(target) {
   const found = spawnSync('pgrep', ['-fl', target], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
   return found
     .map((line) => {
@@ -51,8 +53,34 @@ function appsUsingPath(target) {
       return { pid: Number(line.slice(0, space)), command: line.slice(space + 1) }
     })
     .filter((entry) => Number.isFinite(entry.pid) && entry.pid !== process.pid)
-    .filter((entry) => /Electron|electron|Orca|herdr/.test(entry.command))
-    .filter((entry) => !/^\/bin\/(z|ba)?sh|^-?sh\b|pgrep|\btail\b|\bgrep\b/.test(entry.command))
+}
+
+/** 경로 기준 소유 프로세스. 거른 것과 이유도 함께 돌려준다 — 판정을 원자료로 남긴다. */
+function appsUsingPath(target, { exclude = [] } = {}) {
+  return selectOwnedByPath({ processes: candidatesUsingPath(target), targets: [target], exclude, selfPid: process.pid })
+}
+
+/** pid 의 **자손 전부**. 소유의 1순위다 — 이름·경로 추측이 아니라 부모 관계로만 잇는다. */
+function descendantPids(pid, seen = new Set()) {
+  const out = []
+  const kids = spawnSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' })
+    .stdout.trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(Number)
+    .filter((value) => Number.isFinite(value))
+  for (const kid of kids) {
+    if (seen.has(kid)) continue
+    seen.add(kid)
+    out.push(kid, ...descendantPids(kid, seen))
+  }
+  return out
+}
+
+/** 기록용 명령줄 한 줄. 없으면 null — 이미 죽은 pid 다. */
+function commandOf(pid) {
+  const out = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()
+  return out ? out.slice(0, 160) : null
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -137,7 +165,20 @@ function loadArea(name) {
  */
 async function capture(app, handle, area, { outDir, tag }) {
   await settlePage(handle.cdp)
-  const spec = { root: area.root[app], units: area.units.map((u) => ({ id: u.id, selector: u[app], props: u.props, global: u.global })), props: PROP_SETS }
+  // **부모 단위 짝짓기** (G2): 자식 단위는 `parent` 에 부모 단위 id 를 적고, 그 앱의 부모 선택자를
+  // 여기서 풀어 넘긴다. 부모 선택자가 그 앱에 없으면 자식도 그 앱에서 못 재므로 `parentMissing` 이다.
+  const byId = new Map(area.units.map((unit) => [unit.id, unit]))
+  const spec = {
+    root: area.root[app],
+    units: area.units.map((unit) => ({
+      id: unit.id,
+      selector: unit[app],
+      props: unit.props,
+      global: unit.global,
+      parentSelector: unit.parent ? byId.get(unit.parent)?.[app] : undefined
+    })),
+    props: PROP_SETS
+  }
   // 짝짓기 파일이 그 앱에 선택자를 안 준 단위는 "이 앱에는 해당 요소가 없다" 는 선언이다.
   spec.units = spec.units.filter((unit) => typeof unit.selector === 'string')
   const snapshot = await handle.cdp.evaluate(collectSnapshot, spec)
@@ -152,7 +193,10 @@ async function capture(app, handle, area, { outDir, tag }) {
     if (typeof unit[app] !== 'string') snapshot.elements[unit.id] = { present: false, count: 0, countAll: 0, declaredAbsent: true }
   }
 
-  // 실제로 렌더된 폰트 (C7 분류 규칙: 선언값 ≠ 렌더 폰트)
+  // 실제로 렌더된 폰트 (C7 분류 규칙: 선언값 ≠ 렌더 폰트). **잰 요소 전부**에 대해 받는다 (G7) —
+  // 이전 판은 `DOM.querySelector` 로 첫 노드만 집어서, 탭 5개의 둘째 이후 fallback 변화가
+  // 본 diff·자기 diff 모두에서 0 이었다. 수집에 실패한 자리는 **공백(사유)** 로 남긴다.
+  snapshot.meta.fontsCollected = false
   try {
     await handle.cdp.send('DOM.enable')
     await handle.cdp.send('CSS.enable')
@@ -160,15 +204,42 @@ async function capture(app, handle, area, { outDir, tag }) {
     for (const unit of area.units) {
       if (!unit.props?.includes('text') || typeof unit[app] !== 'string') continue
       const entry = snapshot.elements[unit.id]
-      if (!entry?.present) continue
-      const { nodeId } = await handle.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: `${area.root[app]} ${unit[app]}` })
-      if (!nodeId) continue
-      const fonts = await handle.cdp.send('CSS.getPlatformFontsForNode', { nodeId })
-      entry.platformFonts = (fonts.fonts ?? []).map((font) => ({ family: font.familyName, glyphs: font.glyphCount }))
+      if (!Array.isArray(entry?.items)) continue
+      for (const item of entry.items) {
+        if (!item.present) continue
+        const key = `${unit.id}#${item.parentIndex ?? item.index ?? 0}`
+        try {
+          const { nodeId } = await handle.cdp.send('DOM.querySelector', {
+            nodeId: root.nodeId,
+            // `~=` : 한 요소에 여러 단위 표시가 공백으로 붙는다 (`search-row#0 nav-buttons#0`)
+            selector: `[data-l443-node~="${key}"]`
+          })
+          if (!nodeId) {
+            item.fontsError = '표시한 노드를 CDP 에서 다시 못 찾았다'
+            continue
+          }
+          const fonts = await handle.cdp.send('CSS.getPlatformFontsForNode', { nodeId })
+          item.platformFonts = (fonts.fonts ?? []).map((font) => ({ family: font.familyName, glyphs: font.glyphCount }))
+        } catch (error) {
+          item.fontsError = String(error?.message ?? error)
+        }
+      }
+      const first = entry.items.find((item) => item.present)
+      if (first?.platformFonts) entry.platformFonts = first.platformFonts
+      if (first?.fontsError) entry.platformFontsError = first.fontsError
     }
+    snapshot.meta.fontsCollected = true
   } catch (error) {
     snapshot.meta.platformFontsError = String(error?.message ?? error)
   }
+  // 표시는 지운다 — 측정 대상 DOM 에 우리 흔적을 남기지 않는다(두 앱에 같은 처리이고, 캡처 전에
+  // 되돌린다). 못 지워도 값 비교 대상이 아닌 속성이라 차이가 되지 않는다.
+  await handle.cdp
+    .evaluate(() => {
+      for (const el of document.querySelectorAll('[data-l443-node]')) el.removeAttribute('data-l443-node')
+      return true
+    })
+    .catch(() => {})
 
   const shotPath = path.join(outDir, `${tag}-${app}.png`)
   const box = snapshot.meta.rootBox
@@ -308,9 +379,22 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
       corral: c.domPanes ?? null,
       expectOrca: o.wantShape ?? null,
       expectCorral: target.agents.length
+    },
+    {
+      // **화면이 낡은 집계를 그리고 있으면 재현이 아니다** (G4). 이전 판은 수렴 대기가 타임아웃되면
+      // `dotsConverged:false` 를 관측값으로만 남기고 아무도 읽지 않았다 — 탭 수·상태·활성 탭이 맞고
+      // **점만 낡은** 회차가 C9 통과로 들어갔다. 대기 실패를 그대로 축 불일치로 올린다.
+      axis: 'tabDots',
+      label: '탭 점이 backend 집계에 탭마다 수렴 (corral)',
+      requested: 'true',
+      orca: '해당 없음 — Orca 는 탭 집계 점이 없다',
+      corral: String(c.dotsConverged === true),
+      expectCorral: 'true',
+      corralOnly: true
     }
   ]
   const compare = (axis) => {
+    if (axis.corralOnly === true) return String(axis.corral) === String(axis.expectCorral)
     if (axis.axis === 'renderedShape') {
       return String(axis.orca) === String(axis.expectOrca) && String(axis.corral) === String(axis.expectCorral)
     }
@@ -381,10 +465,13 @@ async function main() {
    * 이전 판은 짧은 고정 템플릿만 쓰고 사람이 나중에 칸을 고쳤다 — 그래서 원장의 출처 보증이 깨졌고
    * 정리하지 않은 `--keep` 회차에까지 C12 가 붙었다. 여기서 조건을 코드로 적는다.
    */
+  // **그 회차가 실제로 시험한 기준만 적는다** (G3). 여기 적힌 기준이 곧 판정표의 분모다 —
+  // 시험하지 않은 기준을 적으면 그 회차가 그 기준의 분모·분자로 들어간다.
+  // C10(재현성)은 **한 회차로 시험할 수 없다**: 회차 둘 이상을 견주는 `compare-runs` 만 그 기준을
+  // 시험한다. 이전 판은 측정 회차마다 C10 을 붙여 단일 회차를 재현성 통과로 셌다.
   const criterionOf = () => {
     const parts = ['C1', 'C4', 'C5', 'C7', 'C8']
     if (args.states.some((state) => state !== 'default')) parts.push('C9')
-    parts.push('C10')
     if (args.controls) parts.push('C6')
     parts.push(args.keep ? 'C12 해당 없음 — --keep (정리를 돌지 않는다)' : 'C12')
     return `${parts.join('·')} (areas=${args.areas.join('+')} states=${args.states.join('+')}${args.controls ? ' +controls' : ''})`
@@ -405,7 +492,7 @@ async function main() {
   let corral = null
   // **소유 목록** (F1): 이번 실행이 띄운 것만 적는다. 정리는 이 목록만 보고 한다 —
   // 이름으로 훑어 죽이던 이전 판은 사용자가 따로 띄운 Orca 개발 서버까지 잡을 수 있었다.
-  const owned = { pids: [], paths: [] }
+  const owned = { pids: [], paths: [], preexisting: [] }
   const own = (entry) => {
     if (entry?.pid) owned.pids.push(entry)
     return entry
@@ -427,7 +514,7 @@ async function main() {
       const profiles = ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr'].map((name) =>
         path.join(args.work, name)
       )
-      const inUse = profiles.flatMap((target) => appsUsingPath(target))
+      const inUse = profiles.flatMap((target) => appsUsingPath(target).owned)
       if (inUse.length > 0) {
         throw new Error(
           `[l443] 격리 프로필을 쓰는 앱 프로세스가 있다 — 프로필을 지우지 않고 멈춘다:\n${inUse
@@ -439,26 +526,51 @@ async function main() {
         fs.rmSync(path.join(args.work, name), { recursive: true, force: true })
       }
     }
+    if (!args.fresh) {
+      // **재사용과 소유를 가른다** (G1). `--no-fresh` 는 격리 프로필을 남겨 두므로, 이번 실행이
+      // 띄우지 않은 인스턴스가 그 프로필을 쓰고 있을 수 있다. 시작 시점의 그 pid 들을 적어 두고
+      // 정리에서 **건드리지 않는다** — 소유는 이번 실행이 만든 것에 한한다.
+      const profiles = ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr'].map((name) =>
+        path.join(args.work, name)
+      )
+      owned.preexisting = [
+        ...new Set(profiles.flatMap((target) => candidatesUsingPath(target).map((entry) => entry.pid)))
+      ]
+      if (owned.preexisting.length > 0) {
+        log(`--no-fresh: 이번 실행 전부터 격리 경로를 쓰는 pid ${owned.preexisting.join(', ')} — 소유에서 뺀다`)
+      }
+    }
     const fixture = ensureFixtureRepo(args.work)
     log(`fixture: ${fixture.root} (+worktree ${fixture.worktree})`)
 
     log('Orca 개발 인스턴스 기동…')
+    // **기동이 중간에 실패해도 이미 띄운 것은 소유다** (G5). 그래서 등록은 `launchOrca` 가
+    // 성공 handle 을 돌려준 뒤가 아니라, **spawn 직후 콜백**에서 한다. 이전 판은 CDP 대기가
+    // 타임아웃되면 Electron 이 떠 있는데 정리 목록이 비었다.
     orca = await launchOrca({
       repoRoot: args.orcaRepo,
       workDir: args.work,
       port: 9444,
-      logPath: path.join(outDir, 'orca-dev.log')
+      logPath: path.join(outDir, 'orca-dev.log'),
+      onSpawn: (entry) => {
+        if (entry.pid) own({ pid: entry.pid, label: entry.label ?? 'orca dev 런너(프로세스 그룹)', group: entry.group === true })
+        for (const item of entry.paths ?? []) owned.paths.push(item)
+      }
     })
-    own({ pid: orca.child?.pid ?? null, label: 'orca dev 런너(프로세스 그룹)', group: true })
-    owned.paths.push(orca.paths?.userData, orca.paths?.home)
     const orcaRepoId = await seedOrcaRepo(orca, fixture.root)
     const orcaBounds = await setOrcaBounds(orca, { width: args.width, height: args.height })
 
     log('corral 격리 인스턴스 기동…')
-    corral = await launchCorral({ appRoot, workDir: args.work, port: 9445, logDir: outDir })
-    own({ pid: corral.status?.runtime?.pid ?? null, label: 'corral desktop' })
-    own({ pid: corral.backend?.pid ?? null, label: 'herdr backend' })
-    owned.paths.push(corral.paths?.userData)
+    corral = await launchCorral({
+      appRoot,
+      workDir: args.work,
+      port: 9445,
+      logDir: outDir,
+      onSpawn: (entry) => {
+        if (entry.pid) own({ pid: entry.pid, label: entry.label ?? 'corral', group: entry.group === true })
+        for (const item of entry.paths ?? []) owned.paths.push(item)
+      }
+    })
     corral.workspaceId = null
     await seedCorralRepo(corral, fixture.root)
     const corralBounds = await setCorralBounds(corral, { width: args.width, height: args.height })
@@ -470,6 +582,14 @@ async function main() {
     log(`기준선: orca 탭 ${baseline.orca.tabs}개 / corral workspace ${baseline.corral?.workspace?.workspace_id ?? '?'}`)
 
     const byArea = new Map(areas.map((area) => [area.name, { area: area.name, description: area.description, states: [] }]))
+    // 캡처가 **폰트를 못 받은** 자리를 모은다 (G7). 「차이 0」과 「못 쟀다」를 관문에서도 가른다.
+    const captureFailures = []
+    const noteCapture = (label, snapshot) => {
+      if (snapshot?.meta?.fontsCollected === false) {
+        captureFailures.push(`${label}: ${snapshot.meta.platformFontsError ?? '사유 미기재'}`)
+      }
+      return snapshot
+    }
     const noiseFloor = []
     const stateMatrix = []
     const warnings = []
@@ -507,10 +627,10 @@ async function main() {
         const tag = `${area.name}-${state}`
 
         // C5 — 음성 대조를 **본 diff 와 같은 경로로**, 연달아 두 번 찍어서 낸다.
-        const orcaA = await capture('orca', orca, area, { outDir, tag: `${tag}-orca-a` })
-        const orcaB = await capture('orca', orca, area, { outDir, tag: `${tag}-orca-b` })
-        const corralA = await capture('corral', corral, area, { outDir, tag: `${tag}-corral-a` })
-        const corralB = await capture('corral', corral, area, { outDir, tag: `${tag}-corral-b` })
+        const orcaA = noteCapture(`${tag}-orca-a`, await capture('orca', orca, area, { outDir, tag: `${tag}-orca-a` }))
+        const orcaB = noteCapture(`${tag}-orca-b`, await capture('orca', orca, area, { outDir, tag: `${tag}-orca-b` }))
+        const corralA = noteCapture(`${tag}-corral-a`, await capture('corral', corral, area, { outDir, tag: `${tag}-corral-a` }))
+        const corralB = noteCapture(`${tag}-corral-b`, await capture('corral', corral, area, { outDir, tag: `${tag}-corral-b` }))
         for (const [app, first, second] of [['orca', orcaA, orcaB], ['corral', corralA, corralB]]) {
           const self = selfDiff(first, second, { units: area.units, tolerance: args.tolerance })
           // **허용치 0 에서도 같이 낸다** (F12). 0.5px 의 근거는 「0.5 를 적용한 뒤 0건」이 아니라
@@ -567,6 +687,11 @@ async function main() {
             return classification ? { ...finding, classification } : finding
           }),
           summary: result.summary,
+          // **보고서까지 넘긴다** (G8). 이전 판은 diff 가 만든 이 두 배열을 `states.push()` 가
+          // 버려서, 보고서의 두 보조 표가 아예 그려지지 않았다 — raw JSON 을 따로 열지 않는
+          // 다음 작업자에게는 「허용치가 가린 것」과 「못 잰 폰트」가 없는 것으로 보였다.
+          belowTolerance: result.belowTolerance,
+          fontUnmeasured: result.fontUnmeasured,
           raw: `${rawRel}/${tag}-diff.json`
         })
         log(`${area.name}/${state}: 차이 ${result.summary.total}건 (자기 diff 잡음 ${noiseFloor.slice(-2).map((n) => n.total).join('/')})`)
@@ -635,7 +760,11 @@ async function main() {
     )
     const unreproduced = stateAxes.filter((entry) => !entry.reproduced)
     const missedControls = positiveControls.filter((entry) => !entry.pass)
+    // 폰트 **수집 자체**가 깨진 회차는 그 회차의 폰트 차이 0 을 근거로 쓸 수 없다 (G7).
+    // 글리프 없는 노드(정상)와 구분해서, 수집 오류만 관문으로 본다.
+    const fontCollectionFailures = captureFailures.filter(Boolean)
     const gateWhy = [
+      ...fontCollectionFailures.map((entry) => `렌더 폰트 수집 실패 ${entry}`),
       ...noisy.map((entry) => `잡음 바닥 ${entry.app} ${entry.total}건`),
       // 선택자가 0개를 찾은 자리는 **측정 실패**다 (F11) — 「없음」이라는 거짓 차이로 나가면 안 된다.
       ...(selectorMiss.length > 0 ? [`선택자 0개: ${selectorMiss.join(', ')}`] : []),
@@ -737,8 +866,21 @@ async function shutdown({ orca, corral, owned, outDir }) {
     await orca?.cdp?.close().catch(() => {})
     await corral?.cdp?.close().catch(() => {})
 
+    // **1순위는 pid 와 그 자손**이다 (G1). 죽이기 전에 자손을 먼저 적어 둔다 — 부모를 먼저 끝내면
+    // 부모 관계가 끊겨 손자를 더 못 찾는다. 이름·경로 추측이 아니라 부모 관계로만 잇는 목록이다.
     for (const entry of owned.pids) {
-      closed.owned.push({ pid: entry.pid, label: entry.label, group: Boolean(entry.group), sent: signal(entry.pid, entry.group) })
+      const descendants = descendantPids(entry.pid)
+      closed.owned.push({
+        pid: entry.pid,
+        label: entry.label,
+        group: Boolean(entry.group),
+        descendants,
+        sent: signal(entry.pid, entry.group)
+      })
+      for (const pid of descendants) {
+        if (closed.owned.some((seen) => seen.pid === pid)) continue
+        closed.owned.push({ pid, label: `${entry.label} 의 자손`, group: false, viaParent: entry.pid, command: commandOf(pid), sent: signal(pid, false) })
+      }
     }
     // 신호를 보낸 것과 죽은 것은 다르다. **소유 pid 하나하나**를 확인한다.
     for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -756,11 +898,16 @@ async function shutdown({ orca, corral, owned, outDir }) {
     // 이름이 아니라 **이번 실행이 만든 절대경로**로 거른다: 그 경로는 이 회차가 만들고 지우는 것이라
     // 그것을 쓰는 프로세스는 이 도구의 것이다(같은 작업 폴더의 동시 실행은 포트 가드가 막는다).
     // 일반 이름 패턴으로 훑어 죽이던 이전 판과 다른 점이 이것이다 (F1).
-    const ownedPaths = owned.paths.filter(Boolean)
+    const ownedPaths = [...new Set(owned.paths.filter(Boolean))]
     const byPath = []
+    const rejected = []
     for (const target of ownedPaths) {
-      for (const entry of appsUsingPath(target)) {
-        if (closed.owned.some((owned) => owned.pid === entry.pid)) continue
+      const result = appsUsingPath(target, { exclude: owned.preexisting ?? [] })
+      for (const entry of result.rejected) {
+        if (!rejected.some((seen) => seen.pid === entry.pid)) rejected.push({ ...entry, command: entry.command.slice(0, 120), target })
+      }
+      for (const entry of result.owned) {
+        if (closed.owned.some((own) => own.pid === entry.pid)) continue
         if (byPath.some((seen) => seen.pid === entry.pid)) continue
         byPath.push({ pid: entry.pid, path: target, command: entry.command.slice(0, 120), sent: signal(entry.pid, false) })
       }
@@ -780,9 +927,12 @@ async function shutdown({ orca, corral, owned, outDir }) {
       encoding: 'utf8'
     })
     closed.diagnostics = {
-      note: '넓은 이름 검색 결과다. 소유(pid·경로) 밖 프로세스는 이 도구가 건드리지 않는다 (F1).',
+      note: '넓은 이름 검색 결과다. 소유(pid·자손·경로) 밖 프로세스는 이 도구가 건드리지 않는다 (F1·G1).',
       matches: probe.stdout.trim().split('\n').filter(Boolean),
-      ownedPaths
+      ownedPaths,
+      // **거른 후보와 이유**를 남긴다 — 「왜 이 pid 는 안 죽였나」를 원자료에서 되짚을 수 있게.
+      rejectedCandidates: rejected,
+      preexisting: owned.preexisting ?? []
     }
   } catch (error) {
     closed.error = String(error?.message ?? error)

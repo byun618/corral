@@ -24,12 +24,37 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connect, pickTarget } from './lib/cdp.mjs'
 import { settlePage } from './lib/probe.mjs'
+import { decodePng, encodePng, compareRoi, mutateColor, mutateShift, evaluateRoiControls } from './lib/png.mjs'
+import { beginRun, finishRun } from './lib/runs.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '../../..')
 
+const ROI = (value) => {
+  const [x, y, w, h] = String(value).split(',').map(Number)
+  return { x, y, w, h }
+}
+
 function parseArgs(argv) {
-  const out = { out: null, crop: '0,30,470,1410', port: 9444, area: 'sidebar', work: process.env.L443_WORK ?? '/tmp/l443', phase: 'both', tag: null }
+  const out = {
+    out: null,
+    crop: '0,30,470,1410',
+    port: 9444,
+    area: 'sidebar',
+    work: process.env.L443_WORK ?? '/tmp/l443',
+    phase: 'both',
+    tag: null,
+    ledger: null,
+    // ---- 대조 모드 (G9): 앱을 건드리지 않고 **이미 찍어 둔 캡처의 사본**으로만 돈다 ----
+    control: false,
+    installedPng: null,
+    devPng: null,
+    // 두 캡처에서 **균일한 사이드바 배경 밴드**. 크롭 원점이 달라 좌표가 다르다(설치본은 창 y+30 부터).
+    roiInstalled: { x: 4, y: 48, w: 40, h: 8 },
+    roiDev: { x: 4, y: 40, w: 40, h: 8 },
+    // 구조(글자·테두리)가 있는 ROI — 기하 변화 민감도는 여기서만 볼 수 있다.
+    roiStructure: { x: 8, y: 8, w: 264, h: 32 }
+  }
   for (let i = 0; i < argv.length; i += 1) {
     const value = () => argv[++i]
     if (argv[i] === '--out') out.out = path.resolve(value())
@@ -40,6 +65,13 @@ function parseArgs(argv) {
     else if (argv[i] === '--phase') out.phase = value()
     else if (argv[i] === '--tag') out.tag = value()
     else if (argv[i] === '--screenshot') out.screenshot = path.resolve(value())
+    else if (argv[i] === '--control') out.control = true
+    else if (argv[i] === '--ledger') out.ledger = path.resolve(value())
+    else if (argv[i] === '--installed') out.installedPng = path.resolve(value())
+    else if (argv[i] === '--dev') out.devPng = path.resolve(value())
+    else if (argv[i] === '--roi-installed') out.roiInstalled = ROI(value())
+    else if (argv[i] === '--roi-dev') out.roiDev = ROI(value())
+    else if (argv[i] === '--roi-structure') out.roiStructure = ROI(value())
     else throw new Error(`알 수 없는 인자: ${argv[i]}`)
   }
   out.out ??= path.join(repoRoot, 'specs/LIFE-443-gui-diff/raw/claude/c3')
@@ -107,6 +139,90 @@ function findInstalledOrcaWindow(workDir) {
 const args = parseArgs(process.argv.slice(2))
 fs.mkdirSync(args.out, { recursive: true })
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+
+// ---- 대조 모드 (G9): 비교 방법의 **판별력**을 먼저 보인다 -------------------
+//
+// 왜 필요한가: 이전 판의 C3 는 두 캡처를 남기고 「사람이 보기에 차이를 못 찾았다」로 끝났다.
+// 그것은 *차이가 없다* 와 *이 방법으로는 못 본다* 를 가르지 못한다(리뷰 F13·G9). 그래서
+// **원본은 그대로 두고 사본**에 알려진 크기의 변화를 심어, 같은 비교 함수로
+// 원본↔원본(음성 0)·원본↔사본(양성 검출)을 돌리고 **검출 하한**을 값으로 낸다.
+// 설치본에는 입력도 재시작도 하지 않는다 — 이미 찍어 둔 PNG 파일만 읽는다.
+if (args.control) {
+  if (!args.installedPng || !args.devPng) throw new Error('--control 에는 --installed <png> --dev <png> 가 필요하다')
+  // 실행 한 번 = 원장 한 행. **도구가 스스로 적는다** — 사람이 옮겨 적으면 빠진다.
+  const command = `node app/scripts/gui-diff/installed-compare.mjs ${process.argv.slice(2).join(' ')}`
+  const controlRunId = args.ledger ? beginRun(args.ledger, { criterion: 'C3 (외관 대조 방법의 양성·음성 대조)', command, raw: path.relative(repoRoot, args.out) }) : null
+  const installedImage = decodePng(fs.readFileSync(args.installedPng))
+  const devImage = decodePng(fs.readFileSync(args.devPng))
+
+  // ① 방법 민감도: 배경 밴드(색)와 구조 ROI(기하)에서 각각 음성·양성 대조
+  const background = evaluateRoiControls(devImage, args.roiDev)
+  const structure = evaluateRoiControls(devImage, args.roiStructure)
+  // ② 실제 대조: 설치본 ↔ 개발본, 같은 크기의 배경 밴드. 이것이 C3 가 요구한 「외관 1회 대조」다.
+  const actual = compareRoi(installedImage, devImage, args.roiInstalled, args.roiDev)
+
+  // 양성 대조에 쓴 사본을 **사람이 볼 수 있게** 남긴다 — 원자료 없이는 주장일 뿐이다.
+  const mutants = []
+  for (const [name, image] of [
+    [`color+4`, mutateColor(devImage, args.roiDev, 4)],
+    [`shift+2`, mutateShift(devImage, args.roiStructure, 2)]
+  ]) {
+    const file = path.join(args.out, `${stamp}-c3-control-${name}.png`)
+    fs.writeFileSync(file, encodePng(image))
+    mutants.push({ name, file: path.relative(repoRoot, file) })
+  }
+
+  const detectorOk = background.negativeOk && structure.negativeOk && background.minColorDelta === 1 && structure.minShift !== null
+  const result = {
+    stamp,
+    mode: 'control',
+    method:
+      'ROI(관심 영역)의 RGB 채널 최대·평균 차이. 알파는 보지 않는다 — screencapture 는 RGBA, CDP 는 RGB 로 주므로 알파를 넣으면 채널 수 차이가 곧 차이가 된다',
+    inputs: {
+      installed: path.relative(repoRoot, args.installedPng),
+      dev: path.relative(repoRoot, args.devPng),
+      installedSize: { w: installedImage.width, h: installedImage.height, channels: installedImage.channels },
+      devSize: { w: devImage.width, h: devImage.height, channels: devImage.channels },
+      roiInstalled: args.roiInstalled,
+      roiDev: args.roiDev,
+      roiStructure: args.roiStructure
+    },
+    controls: { background, structure },
+    mutants,
+    actual,
+    detector: {
+      ok: detectorOk,
+      minColorDelta: background.minColorDelta,
+      minShift: structure.minShift,
+      why: detectorOk
+        ? '음성 대조 0 · 색 Δ1 검출 · 구조 ROI 에서 이동 검출 — 이 방법은 이 크기부터 본다'
+        : '판별력을 못 보였다 — 이 방법으로 낸 「차이 없음」은 근거가 아니다'
+    },
+    limits: [
+      '이 대조는 **선언한 ROI 안**만 본다. 그 밖(레이아웃·문구·아이콘)은 비교하지 않았다 — 전체 동일성 증명이 아니다',
+      '균일한 배경 ROI 에서는 **이동을 검출하지 못한다**(구조가 없으면 밀어도 픽셀이 그대로다). 그래서 기하 민감도는 구조 ROI 에서만 말한다',
+      '설치본 창에는 fixture 가 아니라 사용자의 실제 작업 상태가 떠 있다. 그래서 두 캡처의 **내용**은 겹칠 수 없고, 겹칠 수 있는 것은 크롬 배경 밴드다',
+      '두 캡처의 크롭 원점이 다르다(설치본은 창 y+30) — ROI 좌표를 이미지마다 따로 선언한다'
+    ]
+  }
+  const jsonPath = path.join(args.out, `${stamp}-c3-control.json`)
+  fs.writeFileSync(jsonPath, `${JSON.stringify(result, null, 2)}\n`)
+  if (args.ledger && controlRunId) {
+    finishRun(args.ledger, controlRunId, {
+      criterion: 'C3 (외관 대조 방법의 양성·음성 대조)',
+      command,
+      actualExit: detectorOk ? 0 : 1,
+      raw: path.relative(repoRoot, jsonPath),
+      result: detectorOk
+        ? `통과 — 음성 0 · 색 Δ${background.minColorDelta} 검출 · 구조 ROI 이동 ${structure.minShift}px 검출 · 실제 대조 maxDelta ${actual.maxDelta}`
+        : '실패 — 방법의 판별력을 못 보였다'
+    })
+  }
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  process.stdout.write(`[l443] ${path.relative(repoRoot, jsonPath)}\n`)
+  // **판별력을 못 보이면 실패다.** 실제 대조 수치 자체는 관문이 아니다 — 차이가 있으면 기록한다.
+  process.exit(detectorOk ? 0 : 1)
+}
 
 // ---- 설치본: 화면 캡처(읽기 전용) -------------------------------------------
 let installed = { skipped: 'phase=dev' }

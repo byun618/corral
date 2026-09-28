@@ -16,43 +16,42 @@
 //   3. 그 변화 하나하나를 **관측된 동시 쓰기로 설명할 수 있는지** 본다. 설명되지 않는 변화가 하나라도
 //      있으면 실패이고, 실패 메시지는 그 키들을 말한다.
 //
-// 설명이 되는 것은 둘이다.
+// 설명이 되는 것은 **하나**다: 이 attempt 의 pane 이 저 자신 이름으로 쓴, 보고가 아닌 메시지.
+// `from.kind === 'worker'` 이고 `from.dispatchId` 와 `dispatchId` 가 검사 중인 attempt 이며 종류가
+// heartbeat·question·status·escalation 인 것. `worker_done` 은 없다 — 그래서 이 비교는 "정산된 워커가
+// 다시 보고할 수 없다" 자리에서도 그대로 쓸 수 있고, 거기서 막아야 할 쓰기가 바로 그것이다.
 //
-// **첫째, 이 attempt 의 pane 이 저 자신 이름으로 쓴, 보고가 아닌 메시지.**
-// 구체적으로 `from.kind === 'worker'` 이고 `from.dispatchId` 와 `dispatchId` 가 검사 중인 attempt 이며
-// 종류가 heartbeat·question·status·escalation 인 것. 그리고 그 쓰기가 제품 안에서 **함께** 움직이는
-// 칸들 — heartbeat 는 `dispatch.worker.lastHeartbeatAt` 을 그 메시지의 시각으로 옮기고
-// (`orchestration/index.ts` 의 send heartbeat 경로), 그러면서 `updatedAt` 을 같은 값으로 두고
-// `version` 을 1 올린다. 그 셋은 **값이 정확히 맞을 때만** 설명된 것으로 센다. "이 칸은 원래 흔들리니까
-// 빼자" 가 아니라 "이 쓰기가 이 값으로 만들었어야 한다" 이다.
+// 그리고 설명은 **양방향으로 값에 묶인다** (r2 지적 B). "이 칸이 흔들려도 된다" 가 아니라 "이 쓰기가
+// **정확히 이 값으로** 만들었어야 한다" 이고, 그 값이 아니면 — 움직이지 않았더라도 — 실패다:
 //
-// **둘째, §4.5 의 재관측 기록.** 제품의 모든 명령은 열린 attempt 를 다시 관측하고, 받아들여진
-// 변경은 그 관측을 자기 쓰기에 실어 보낸다 (`orchestration/index.ts` 의 `session()`). 그래서 pane 이
-// 창 안에서 명령을 하나라도 돌리면 `dispatch.reconcile` 이 `null` 에서 기록으로 바뀌고, 그와 함께
-// `updatedAt`·`version` 이 움직인다. 이것은 **읽어서 안 것이 아니라 제품을 돌려서 본 것**이다
-// (`raw/worker/claude/c3/product-shape/`) — 손으로 만든 장치는 이 칸을 몰랐고, 프로브가 잡았다.
+//   messages#count                    == 이전 수 + 설명 가능한 메시지 수
+//   dispatches[d].worker.lastHeartbeatAt == 마지막 heartbeat 메시지의 createdAt
+//   dispatches[d].updatedAt              == 같은 값
+//   dispatches[d].version                == 이전 version + heartbeat 수
 //
-// 재관측 기록은 "누가 썼는지" 를 문서만 보고 가릴 수 없다. pane 의 명령이 남긴 것과 거절된 호출이
-// 남겼을 것이 같은 칸이다. 그래서 **이 비교는 재관측 기록을 "거절이 아무것도 저장하지 않는다" 의
-// 대상에서 뺀다** — 대신 `observed: true` 인 것만 설명으로 받고(관측이 실패했거나 pane 이 사라졌다는
-// 기록은 그대로 걸린다), 그 공백은 **격리 측정**이 메운다: 같은 거절을 pane 이 조용한 상태에서 돌려
-// 문서가 바이트 그대로인지를 따로 잰다 (`c3/product-shape/`, 아래 `refused start writes nothing`).
-// `updatedAt` 과 `version` 은 그 두 가지 중 **무엇이든 하나가 실제로 설명된 뒤에만**, 그리고 앞으로만
-// 움직일 수 있다 — 아무것도 설명되지 않았는데 움직이면 걸린다.
+// heartbeat 가 하나도 없으면 저 세 칸은 **움직여서는 안 된다**. 그래서 설명 없는 `version` 증가(+1 이든
+// +50 이든)도, 미래로 간 `updatedAt` 도, 부작용 없이 덧붙은 heartbeat 메시지도 전부 걸린다.
 //
-// 검출력은 그래서 이렇게 남는다:
+// **재관측 기록(`dispatch.reconcile`)은 대상 안에 있다.** r1 은 이것을 대상에서 뺐다가 A 지적을 받았다 —
+// 제품 `index.ts:663` 의 `if (pass.changed && !mutating)` 를 `if (pass.changed)` 로 바꾸면 거절된 호출이
+// 제 관측을 문서에 남기는데, 그것을 `clean` 으로 읽었다. 빼야 할 이유가 없다는 것이 계측으로 나왔다
+// (`raw/worker/claude/r2/probe/`): 재관측 기록은 **열린 attempt 를 처음 재관측하는 명령 한 번만** 바뀌고,
+// 그 뒤로는 heartbeat 를 몇 번 보내든 읽기를 몇 번 하든 그대로다(`changed=false`). 네이티브 관문에서
+// F1(a) 창이 열릴 때는 worker-start·worker-show·terminal show 가 이미 지나가 기록이 서 있으므로, 정상
+// 창에서는 이 칸이 움직이지 않는다 — r1 의 네이티브 4회(워커 3·코디 1)가 모두 `touched: false` 였다.
+// 그러니 이 칸이 창 안에서 움직였다면 그것은 **설명되지 않는 쓰기**이고, 그렇게 읽는다.
+//
+// 검출력:
 //   - 거절이 Task·Dispatch 레코드를 건드리면 → 설명되지 않는 값변경
-//   - 거절이 새 Dispatch 를 만들면 → 설명되지 않는 추가 (메시지가 아니다)
-//   - 거절이 새 수신(delivery) 기록을 만들면 → 설명되지 않는 추가
-//   - 거절이 메시지를 쓰면 → 그것은 coordinator 가 쓴 것이라 `from.kind` 가 다르다. 설명되지 않는 추가
-//   - **`worker_done` 은 허용 목록에 없다.** 그래서 이 비교는 "정산된 워커가 다시 보고할 수 없다" 를
-//     재는 자리에서도 그대로 쓸 수 있다 — 거기서 막아야 할 쓰기가 바로 worker_done 이다
+//   - 거절이 제 재관측을 남기면 → 설명되지 않는 추가·값변경 (A)
+//   - 거절이 `version`·`updatedAt` 만 밀면 → 요구값과 어긋난다 (B)
+//   - 거절이 새 Dispatch·새 delivery 를 만들면 → 설명되지 않는 추가
+//   - 거절이 메시지를 쓰면 → coordinator 자격이라 `from.kind` 가 다르다. 설명되지 않는 추가
 //   - 무엇이 지워지는 것은 어느 경우에도 설명되지 않는다
 //
-// 남는 한계 둘. ① pane 이 자기 이름으로 쓸 수 있는 종류의 메시지를 **거절 경로가 위조해서** 쓴다면
-// 이 비교는 그것을 설명된 것으로 읽는다. 거절은 coordinator 자격으로 도는 호출이라 그 경로가 실제로
-// 존재하지는 않지만, 비교가 거기까지 증명하지는 않는다. ② 위에 적은 대로 재관측 기록은 대상 밖이다 —
-// 거절이 **오직** 그 칸만 건드렸다면 이 비교는 통과한다. 그 한 경우는 격리 측정이 따로 답한다.
+// 남는 한계: pane 이 자기 이름으로 쓸 수 있는 종류의 메시지를 거절 경로가 **위조해서**, 그 메시지가
+// 요구하는 값까지 맞춰 쓴다면 이 비교는 설명된 것으로 읽는다. 거절은 coordinator 자격으로 도는
+// 호출이라 그 경로가 실제로 있지는 않지만, 비교가 거기까지 증명하지는 않는다.
 import { createHash } from 'node:crypto'
 
 /** 같은 바이트에서 digest 와 문서를 함께 뜬다 — 두 번 읽으면 그 사이가 또 창이 된다. */
@@ -107,46 +106,39 @@ export function refusalDelta(before, after, { dispatchId }) {
   const explainableIds = new Set(explainable.map(entry => entry.id))
   const beats = explainable.filter(entry => entry.type === 'heartbeat')
 
-  // 설명된 변경은 "이 칸이 흔들려도 된다" 가 아니라 "이 쓰기가 이 값으로 만들었어야 한다" 이다.
+  // 요구값: 관측된 동시 쓰기가 문서를 **정확히 이 값으로** 만들었어야 한다. 값이 다르면 실패이고,
+  // 움직이지 않았어도 실패다 — 양쪽을 다 봐야 "부작용 없는 heartbeat" 가 걸린다 (B).
   const record = `dispatches[${dispatchId}]`
-  const expected = new Map()
-  if (explainable.length > 0) expected.set('messages#count', JSON.stringify(priorMessages.length + explainable.length))
-  if (beats.length > 0) expected.set(`${record}.worker.lastHeartbeatAt`, JSON.stringify(beats[beats.length - 1].createdAt))
-
-  // §4.5 재관측 기록. 값은 못 고정하고(누가 썼는지 문서가 말하지 않는다) `observed: true` 만 받는다.
-  const isReconcile = key => key === `${record}.reconcile` || key.startsWith(`${record}.reconcile.`)
-  const reconcileObserved = (after?.dispatches ?? []).find(entry => entry.id === dispatchId)?.reconcile?.observed === true
-  const reconcileAllowed = reconcileObserved
-    && [...added, ...removed, ...changed].some(isReconcile)
-
-  // `updatedAt`·`version` 은 파생 칸이다. 설명된 실질 변경이 **먼저** 있어야, 그리고 앞으로만.
-  const substantive = beats.length > 0 || reconcileAllowed
-  const forwards = key => {
-    if (!substantive) return false
-    const from = JSON.parse(left.get(key) ?? 'null'), to = JSON.parse(right.get(key) ?? 'null')
-    if (key.endsWith('.version')) return typeof from === 'number' && typeof to === 'number' && to > from
-    return typeof to === 'string' && (from === null || (typeof from === 'string' && to >= from))
+  const priorVersion = (before?.dispatches ?? []).find(entry => entry.id === dispatchId)?.version
+  const required = new Map()
+  if (explainable.length > 0) required.set('messages#count', JSON.stringify(priorMessages.length + explainable.length))
+  if (beats.length > 0) {
+    const at = beats[beats.length - 1].createdAt
+    required.set(`${record}.worker.lastHeartbeatAt`, JSON.stringify(at))
+    required.set(`${record}.updatedAt`, JSON.stringify(at))
+    if (typeof priorVersion === 'number') required.set(`${record}.version`, JSON.stringify(priorVersion + beats.length))
   }
-  const allowedChange = key =>
-    (expected.has(key) && expected.get(key) === right.get(key))
-    || (isReconcile(key) && reconcileAllowed)
-    || ((key === `${record}.updatedAt` || key === `${record}.version`) && forwards(key))
+  /** 요구했는데 그 값이 아닌 칸. `changed` 에 없어도 (= 안 움직였어도) 걸린다. */
+  const mismatched = [...required.keys()].filter(key => right.get(key) !== required.get(key)).sort()
 
   const messageOf = key => /^messages\[([^\]]+)\]/.exec(key)?.[1] ?? null
   const unexplained = {
-    added: added.filter(key => !explainableIds.has(messageOf(key) ?? '') && !(isReconcile(key) && reconcileAllowed)),
-    removed: removed.filter(key => !(isReconcile(key) && reconcileAllowed)),
-    changed: changed.filter(key => !allowedChange(key)),
+    added: added.filter(key => !explainableIds.has(messageOf(key) ?? '')),
+    removed,
+    changed: changed.filter(key => !(required.has(key) && required.get(key) === right.get(key))),
+    mismatched,
   }
   return {
     dispatchId,
     counts: { added: added.length, removed: removed.length, changed: changed.length },
     explainedBy: explainable.map(entry => ({ id: entry.id, type: entry.type, at: entry.createdAt, from: entry.from?.kind ?? null })),
-    reconcile: { touched: [...added, ...removed, ...changed].some(isReconcile), observedTrue: reconcileObserved, allowed: reconcileAllowed },
+    reconcile: { touched: [...added, ...removed, ...changed].some(key => key === `${record}.reconcile` || key.startsWith(`${record}.reconcile.`)), inScope: true },
+    required: Object.fromEntries([...required].map(([key, value]) => [key, JSON.parse(value)])),
     ignored: appeared.filter(entry => !explainableIds.has(entry.id))
       .map(entry => ({ id: entry.id, type: entry.type, from: entry.from?.kind ?? null, dispatchId: entry.dispatchId ?? null })),
     added, removed, changed, unexplained,
-    clean: unexplained.added.length === 0 && unexplained.removed.length === 0 && unexplained.changed.length === 0,
+    clean: unexplained.added.length === 0 && unexplained.removed.length === 0
+      && unexplained.changed.length === 0 && unexplained.mismatched.length === 0,
   }
 }
 
@@ -186,7 +178,9 @@ export function describeDelta(delta, before, after) {
     explainedBy: delta.explainedBy,
     reconcile: delta.reconcile,
     ignored: delta.ignored,
-    unexplained: { added: rows(delta.unexplained.added), removed: rows(delta.unexplained.removed), changed: rows(delta.unexplained.changed) },
+    unexplained: { added: rows(delta.unexplained.added), removed: rows(delta.unexplained.removed),
+      changed: rows(delta.unexplained.changed), mismatched: rows(delta.unexplained.mismatched) },
+    required: delta.required,
     // 설명된 변경도 값까지 적는다 — "무엇이 흔들렸고 무엇이 그것을 설명했나" 가 이 기록의 전부다.
     explainedChanges: rows(delta.changed.filter(key => !delta.unexplained.changed.includes(key))),
     addedMessages: delta.added.filter(key => key.startsWith('messages[')).length,

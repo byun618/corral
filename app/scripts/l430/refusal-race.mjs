@@ -102,11 +102,36 @@ const LEAKS = [
     const next = clone(state)
     next.messages.push(message(next, { id: 'msg_0000000000c1', type: 'status', at, dispatchId,
       from: { kind: 'coordinator', dispatchId: null, paneId: null } })); return next } },
-  // 재관측 기록은 `observed: true` 일 때만 설명으로 받는다. 관측이 실패했다는 기록은 걸려야 한다.
-  { name: 'reconcile-unobserved', apply: (state, dispatchId, at) => {
+  // --- r2 지적 A: 거절이 제 재관측을 문서에 남기는 회귀 --------------------------------------------
+  // 제품 `index.ts:663` 의 `if (pass.changed && !mutating)` 를 `if (pass.changed)` 로 바꾸면 거절된
+  // 호출이 이 모양을 남긴다. r1 의 비교는 이것을 `clean` 으로 읽었다.
+  { name: 'refusal-persisted-its-reconcile', apply: (state, dispatchId, at) => {
+    const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+    dispatch.reconcile = { at, runtimeInstanceId: 'instance', observed: true, reason: 'pane_live' }
+    dispatch.updatedAt = at; dispatch.version += 1; return next } },
+  { name: 'refusal-persisted-an-unobserved-reconcile', apply: (state, dispatchId, at) => {
     const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
     dispatch.reconcile = { at, runtimeInstanceId: 'instance', observed: false, reason: 'observation_failed' }
     dispatch.updatedAt = at; dispatch.version += 1; return next } },
+  // --- r2 지적 B: 설명된 쓰기 수와 무관한 파생 칸 이동 ----------------------------------------------
+  { name: 'version-bumped-by-one-more', apply: (state, dispatchId) => {
+    const next = clone(state); next.dispatches.find(entry => entry.id === dispatchId).version += 1; return next } },
+  { name: 'version-bumped-by-fifty', apply: (state, dispatchId) => {
+    const next = clone(state); next.dispatches.find(entry => entry.id === dispatchId).version += 50; return next } },
+  { name: 'updatedAt-pushed-into-the-future', apply: (state, dispatchId) => {
+    const next = clone(state); next.dispatches.find(entry => entry.id === dispatchId).updatedAt = '2030-03-17T17:46:40.000Z'; return next } },
+  // Grok 의 `heartbeat-message-without-side-effects`: 메시지는 덧붙었는데 worker 블록이 따라가지 않는다.
+  { name: 'heartbeat-message-without-its-side-effects', apply: (state, dispatchId, at) => {
+    const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+    next.messages.push(message(next, { id: 'msg_0000000000d1', type: 'heartbeat', at, dispatchId,
+      taskId: dispatch.taskId, from: { kind: 'worker', dispatchId, paneId: dispatch.target.paneId } }))
+    return next } },
+  { name: 'heartbeat-whose-timestamp-does-not-match-the-worker-block', apply: (state, dispatchId, at) => {
+    const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)
+    next.messages.push(message(next, { id: 'msg_0000000000d2', type: 'heartbeat', at, dispatchId,
+      taskId: dispatch.taskId, from: { kind: 'worker', dispatchId, paneId: dispatch.target.paneId } }))
+    dispatch.worker.lastHeartbeatAt = '2029-01-01T00:00:00.000Z'
+    dispatch.updatedAt = '2029-01-01T00:00:00.000Z'; dispatch.version += 1; return next } },
   // 관문의 두 번째 사용처(정산된 워커가 다시 보고할 수 없다)에서 막아야 하는 쓰기.
   { name: 'settled-pane-reports-again', apply: (state, dispatchId, at) => {
     const next = clone(state); const dispatch = next.dispatches.find(entry => entry.id === dispatchId)

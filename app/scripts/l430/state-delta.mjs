@@ -142,7 +142,7 @@ const safeValue = json => {
   return digest12(json)
 }
 /** 키에도 워커가 정한 이름(`--payload` 의 키)이 섞일 수 있다. 같은 이유로 허용 목록으로 거른다. */
-const safeKey = key => /^[A-Za-z0-9_.#\[\]-]+$/.test(key) ? key : digest12(key)
+const safeKey = key => /^[A-Za-z0-9_.#[\]-]+$/.test(key) ? key : digest12(key)
 
 /** 판정과 기록에 쓰는 형태. 통과하든 실패하든 남긴다 — 통과한 회차의 설명도 증거다. */
 export function describeDelta(delta, before, after) {

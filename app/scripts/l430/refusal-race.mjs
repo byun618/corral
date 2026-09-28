@@ -22,7 +22,7 @@
 // 사용법: node app/scripts/l430/refusal-race.mjs [반복횟수]   (기본 20)
 // 출력: 한 줄 JSON 요약. 하나라도 어긋나면 종료코드 1.
 import assert from 'node:assert/strict'
-import { refusalDelta, describeDelta, snapshot, unobservedOpenAttempts } from './state-delta.mjs'
+import { refusalDelta, describeDelta, snapshot, stopReason, unobservedOpenAttempts } from './state-delta.mjs'
 
 const rounds = Number(process.argv[2] ?? 20)
 const iso = ms => new Date(ms).toISOString()
@@ -325,7 +325,22 @@ for (let round = 0; round < rounds; round++) {
 //      → **한계다.** 설명 목록은 메시지 4종과 그 파생 칸뿐이고, pane 이 낸 다른 정당한 명령은
 //        설명되지 않는다. 넓히면 음성 대조 `delivery-record-created` 가 같이 무너진다 — 그 둘은
 //        같은 모양이다. 네이티브 TASK 가 「do nothing else at all」로 금지하는 것이 이 자리의 방어다.
-results.residual = { settledIsAttributed: 0, settledNotBlamedOnRefusal: 0, paneCheckIsUnexplained: 0, refusalWriteHasNoSettlement: 0 }
+results.residual = {
+  settledIsAttributed: 0, settledNotBlamedOnRefusal: 0, paneCheckIsUnexplained: 0, refusalWriteHasNoSettlement: 0,
+  // r4 지적 Z1 — 정산은 `reconcile` 만이 아니다. `worker_done`·`task-update` 로 닫힌 attempt 도
+  // 창 안에서 문서를 움직이고, 그것도 거절의 쓰기가 아니다.
+  workerDoneSettlementIsAttributed: 0, taskUpdateSettlementIsAttributed: 0,
+  // r4 지적 Z2 — 정산과 설명불가 쓰기가 같은 창이면 **설명불가 쪽을 먼저 말한다.**
+  settlementAloneStopsAsSettled: 0, unexplainedBeatsSettlement: 0,
+}
+/** 창 안에서 attempt 를 `to` 로 닫는다 (제품 `model.ts:409` 의 모양). */
+const settleAttempt = (state, dispatchId, { to, settledBy, at }) => {
+  const next = clone(state)
+  const entry = next.dispatches.find(row => row.id === dispatchId)
+  entry.status = to; entry.settledBy = settledBy; entry.settledAt = at
+  entry.updatedAt = at; entry.version += 1
+  return next
+}
 for (let round = 0; round < rounds; round++) {
   const { state, dispatchId } = baseline(round)
   const before = snapshot(bytes(state))
@@ -350,6 +365,29 @@ for (let round = 0; round < rounds; round++) {
   const paneCheck = refusalDelta(before.state, snapshot(bytes(checked)).state, { dispatchId })
   if (!paneCheck.clean && paneCheck.settledInWindow.length === 0) results.residual.paneCheckIsUnexplained += 1
   else failures.push({ round, what: 'the pane-check shape no longer reads as unexplained' })
+
+  // Z1 — `worker_done` 으로 닫힌다. pane 이 끝났다고 말한 것이지 거절이 쓴 것이 아니다.
+  const done = settleAttempt(state, dispatchId, { to: 'completed', settledBy: 'worker_done', at })
+  const doneDelta = refusalDelta(before.state, snapshot(bytes(paneHeartbeat(done, dispatchId, at))).state, { dispatchId })
+  if (doneDelta.settledInWindow.length === 1 && doneDelta.settledInWindow[0].settledBy === 'worker_done') results.residual.workerDoneSettlementIsAttributed += 1
+  else failures.push({ round, what: 'a worker_done settlement inside the window was not attributed', detail: doneDelta.settledInWindow })
+
+  // Z1 — 코디네이터의 `task-update` 로 닫힌다.
+  const updated = settleAttempt(state, dispatchId, { to: 'failed', settledBy: 'task-update', at })
+  const updatedDelta = refusalDelta(before.state, snapshot(bytes(paneHeartbeat(updated, dispatchId, at))).state, { dispatchId })
+  if (updatedDelta.settledInWindow.length === 1 && updatedDelta.settledInWindow[0].settledBy === 'task-update') results.residual.taskUpdateSettlementIsAttributed += 1
+  else failures.push({ round, what: 'a task-update settlement inside the window was not attributed', detail: updatedDelta.settledInWindow })
+
+  // Z2 — 정산만 있으면 정산으로 멈추고, 설명불가 쓰기가 함께 오면 **그쪽을 먼저** 말한다.
+  const settledStop = stopReason(settled)
+  if (settledStop?.kind === 'settled') results.residual.settlementAloneStopsAsSettled += 1
+  else failures.push({ round, what: 'a settlement-only window did not stop as a settlement', detail: settledStop })
+  const both = clone(gone)
+  both.deliveries.push({ id: 'delivery_00000000cc', runId: both.currentRunId, messageIds: [both.messages[0].id], openedAt: at, acknowledgedAt: null })
+  both.messages[0].deliveredIn = 'delivery_00000000cc'
+  const bothStop = stopReason(refusalDelta(before.state, snapshot(bytes(paneHeartbeat(both, dispatchId, at))).state, { dispatchId }))
+  if (bothStop?.kind === 'unexplained' && JSON.stringify(bothStop.detail).includes('deliveries')) results.residual.unexplainedBeatsSettlement += 1
+  else failures.push({ round, what: 'a window holding both a settlement and an unexplained write stopped as a settlement', detail: bothStop })
 
   // 대조 — 거절이 재관측을 남긴 경우는 정산이 아니다. 두 원인이 섞이면 귀속이 무의미해진다.
   const wrote = refusalDelta(before.state, snapshot(bytes(stamp.apply(state, dispatchId, at))).state, { dispatchId })

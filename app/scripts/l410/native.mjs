@@ -61,7 +61,7 @@ import { LIVE_PHASES, foregroundExecutable, waitForLaunch } from '../l409/native
 // 들어온 **거절과 무관한 쓰기**가 검사를 실패시킨다 — LIFE-426 에서 5회 중 2회가 그랬다. 무엇이
 // 바뀌었고 무엇이 그것을 설명하는지를 키 단위로 묻는 비교로 바꾼다. 규칙·검출력·한계는 그 파일에,
 // 기제 증명(양성 대조·20회·음성 대조 6종)은 `l430/refusal-race.mjs` 에 있다.
-import { refusalDelta, describeDelta, snapshot, unobservedOpenAttempts } from '../l430/state-delta.mjs'
+import { refusalDelta, describeDelta, snapshot, stopReason, unobservedOpenAttempts } from '../l430/state-delta.mjs'
 
 /**
  * r2 지적 H — 창을 열기 전에 **전제를 능동적으로 세운다**.
@@ -605,11 +605,11 @@ try {
     // 조용히 통과한 회차는 그 증거를 남기지 않는다.
     const described = describeDelta(delta, before.state, after.state)
     f.record('native/refusal-delta-f1a', { ...described, precondition, bytesMoved: before.digest !== after.digest })
-    // r3 지적 M(R3). 창 안에서 pane 이 사라져 attempt 가 정산됐다면 문장이 다르다 — 거절의 쓰기가
-    // 아니라 pane 의 죽음이고, 그렇게 말해야 다음 사람이 엉뚱한 곳을 본다.
-    assert.equal(delta.settledInWindow.length, 0,
-      'pane 이 창 안에서 사라져 attempt 가 정산됐다 (거절의 쓰기가 아니다): ' + JSON.stringify(delta.settledInWindow))
-    assert.ok(delta.clean, 'a refused start stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
+    // r3 지적 M(R3) · r4 지적 Z1·Z2. 멈출 이유는 한 곳에서 고른다 (`stopReason`): 설명되지 않는
+    // 쓰기가 있으면 **그것을** 말하고, 정산뿐이면 정산을 말한다. 두 단언을 순서로 걸면 둘이 같은
+    // 창에 올 때 실패 문장이 정산만 말했다.
+    const stop = stopReason(delta)
+    assert.equal(stop, null, 'a refused start stores nothing — ' + JSON.stringify(stop))
     const again2 = countRecord(sessionId)
     assert.equal(again2.delivered, 1, 'and delivers nothing further')
     assert.equal(again2.wrapped, 1)
@@ -686,9 +686,8 @@ try {
     const delta = refusalDelta(before.state, after.state, { dispatchId })
     const described = describeDelta(delta, before.state, after.state)
     f.record('native/refusal-delta-f4-f7', { ...described, precondition, bytesMoved: before.digest !== after.digest })
-    assert.equal(delta.settledInWindow.length, 0,
-      'pane 이 창 안에서 사라져 attempt 가 정산됐다 (거절의 쓰기가 아니다): ' + JSON.stringify(delta.settledInWindow))
-    assert.ok(delta.clean, 'a refused late report stores nothing; unexplained: ' + JSON.stringify(described.unexplained))
+    const stop = stopReason(delta)
+    assert.equal(stop, null, 'a refused late report stores nothing — ' + JSON.stringify(stop))
     const panes = async () => (await f.cli(['terminal', 'list'])).result.terminals.map(entry => entry.handle)
     assert.ok((await panes()).includes(handle), 'the settled attempt leaves its pane standing until someone releases it')
     // The release is not made here: the pane is about to be handed to a second Task, and what F9

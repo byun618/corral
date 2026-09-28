@@ -677,7 +677,7 @@ describe('LIFE-423 request-show reports a released receipt as released', () => {
 })
 
 /**
- * LIFE-430 (r3 지적 L) — **제품 가드 `index.ts:663` 의 회귀를 여기서 잡는다.**
+ * LIFE-430 (r3 지적 L) — **제품 가드 `index.ts:662` 의 회귀를 여기서 잡는다.**
  *
  * `session()` 은 명령마다 재관측 훑기를 돌리고 그 결과를 `if (pass.changed && !mutating)` 일 때만
  * 저장한다. `!mutating` 이 빠지면 **거절된** 변이 명령이 제 관측을 문서에 남긴다 — 「거절된 기동은
@@ -703,6 +703,17 @@ describe('LIFE-430 — a rejected mutation leaves the document byte-identical, e
     // `applyReconcile` 은 아무것도 쓰지 않는다(`model.ts:296`). 결과 문서가 이 모양이다.
     const wiped = f.store.read()
     f.store.write({ ...wiped, dispatches: wiped.dispatches.map(entry => ({ ...entry, reconcile: null })) })
+
+    // 양성 대조 (r4 지적 Z9). 이 검사의 판별력은 **재관측 훑기가 이 하네스에서 실제로 돌고, 변이가
+    // 아닌 읽기가 그 결과를 저장한다**는 데 기댄다. 그것이 깨지면 아래 본 단언은 "쓸 것이 없어서"
+    // 통과한다 — 공허해진 것을 스위트가 스스로 말하도록 여기서 한 번 확인한다.
+    await f.call('dispatch-show', { id: dispatchId })
+    const restamped = f.store.read().dispatches.find(entry => entry.id === dispatchId)?.reconcile
+    expect(restamped, '읽기가 재관측 기록을 다시 세우지 못했다 — 이 검사는 공허하다').not.toBeNull()
+
+    // 대조를 봤으니 다시 지운다. 본 단언의 창은 도장이 **없는** 창이어야 한다.
+    const cleared = f.store.read()
+    f.store.write({ ...cleared, dispatches: cleared.dispatches.map(entry => ({ ...entry, reconcile: null })) })
 
     // 창 안에 동시 쓰기를 두지 않는다. 오직 거절 하나만 돈다.
     const before = JSON.stringify(f.store.read())

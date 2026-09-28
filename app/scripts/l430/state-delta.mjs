@@ -193,11 +193,15 @@ export function refusalDelta(before, after, { dispatchId }) {
      * **pane 이 사라진 것**이다. `clean` 은 여전히 거짓이지만(문서는 실제로 움직였다) 호출부가
      * 「거절이 썼다」가 아닌 문장을 고를 수 있도록 원인을 따로 내준다 — H 가 고친 것과 같은 종류의
      * 오귀속을 여기서도 막는다.
+     *
+     * r4 지적 Z1. 정산은 재관측만이 아니다 — pane 의 `worker_done` 과 코디네이터의 `task-update` 도
+     * attempt 를 닫는다(`model.ts:150-151,409`). 셋 다 거절의 쓰기가 아니므로 `settledBy` 가 선
+     * 모든 닫힘을 귀속한다. 어느 쪽이었는지는 `settledBy` 칸이 말한다.
      */
     settledInWindow: (after?.dispatches ?? []).filter(entry => {
       const was = (before?.dispatches ?? []).find(older => older.id === entry.id)
-      return was?.status === 'dispatched' && entry.status !== 'dispatched' && entry.settledBy === 'reconcile'
-    }).map(entry => ({ id: entry.id, status: entry.status, reason: entry.reconcile?.reason ?? null })),
+      return was?.status === 'dispatched' && entry.status !== 'dispatched' && entry.settledBy !== null
+    }).map(entry => ({ id: entry.id, status: entry.status, settledBy: entry.settledBy, reason: entry.reconcile?.reason ?? null })),
     required: Object.fromEntries([...required].map(([key, value]) => [key, JSON.parse(value)])),
     ignored: appeared.filter(entry => !explainableIds.has(entry.id))
       .map(entry => ({ id: entry.id, type: entry.type, from: entry.from?.kind ?? null, dispatchId: entry.dispatchId ?? null })),
@@ -206,6 +210,37 @@ export function refusalDelta(before, after, { dispatchId }) {
     clean: unobservable.length === 0 && unexplained.added.length === 0 && unexplained.removed.length === 0
       && unexplained.changed.length === 0 && unexplained.mismatched.length === 0,
   }
+}
+
+/**
+ * r4 지적 Z2 — **무엇 때문에 멈췄는지 한 곳에서 고른다.**
+ *
+ * 창 안에 정산과 **설명되지 않는 쓰기**가 함께 오면, 호출부가 정산 단언을 먼저 걸어 둔 탓에 실패
+ * 문장이 정산만 말했다. 정산은 설명 가능한 쪽이고 설명불가 쓰기가 이 관문이 잡으려는 것이므로
+ * **설명불가 쪽을 먼저 말한다.** 정산이 움직인 칸은 그 attempt 의 키라서 `unexplained` 에도 들어
+ * 있다 — 그 키를 빼고 남는 것이 "정산으로 설명되지 않는 쓰기" 다.
+ *
+ * `null` 이면 멈출 이유가 없다 (= `clean`).
+ */
+export const stopReason = delta => {
+  if (delta === null || typeof delta !== 'object' || Array.isArray(delta))
+    throw new TypeError(`stopReason: 비교 결과가 아니다 (${Object.prototype.toString.call(delta)}).`)
+  const settled = delta.settledInWindow ?? []
+  const mine = key => settled.some(entry => key === `dispatches[${entry.id}]` || key.startsWith(`dispatches[${entry.id}].`))
+  const residual = {
+    added: delta.unexplained.added.filter(key => !mine(key)),
+    removed: delta.unexplained.removed.filter(key => !mine(key)),
+    changed: delta.unexplained.changed.filter(key => !mine(key)),
+    mismatched: delta.unexplained.mismatched.filter(key => !mine(key)),
+    unobservable: delta.unobservable,
+  }
+  if (Object.values(residual).some(list => list.length > 0))
+    return { kind: 'unexplained', message: '거절이 아무것도 저장하지 않아야 하는데 설명되지 않는 쓰기가 있다', detail: residual }
+  if (settled.length > 0)
+    return { kind: 'settled', message: 'attempt 가 창 안에서 정산됐다 (거절의 쓰기가 아니다)', detail: settled }
+  if (!delta.clean)
+    return { kind: 'unexplained', message: '비교가 깨끗하지 않은데 남은 키가 없다 — 비교기 자신을 의심한다', detail: residual }
+  return null
 }
 
 // --- 기록 (C3d) -----------------------------------------------------------------------------------

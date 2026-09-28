@@ -194,6 +194,10 @@ if (args.control) {
   }, null)
   const roiChromeInstalled = { ...args.roiChrome, y: args.roiChrome.y + (bestAlign?.dy ?? 0) }
   const chromeActual = compareRoi(installedImage, devImage, roiChromeInstalled, args.roiChrome)
+  // 같은 정렬로 **사이드바 폭 전체**(오른쪽 정렬 요소가 들어오는 구간)도 재 둔다. 여기 나오는 차이는
+  // 「비교하지 않았다」가 아니라 **값으로 적은 차이**다 — 폭이 460↔280 이라 오른쪽 요소의 자리가 다르다.
+  const widerRoi = { x: 0, y: args.roiChrome.y, w: Math.min(installedImage.width, devImage.width), h: args.roiChrome.h }
+  const chromeWider = compareRoi(installedImage, devImage, { ...widerRoi, y: widerRoi.y + (bestAlign?.dy ?? 0) }, widerRoi)
   // 크롬 ROI 에서도 음성·양성 대조를 돌린다 — 「0 이 나왔다」가 빈 검사가 아님을 같은 영역에서 보인다.
   const chromeControls = evaluateRoiControls(devImage, args.roiChrome)
   // 어떤 줄에서 차이가 났는지 사람이 볼 수 있게 행 단위로도 쪼갠다.
@@ -257,7 +261,12 @@ if (args.control) {
         scan: chromeScan
       },
       actual: chromeActual,
-      rows: chromeRows
+      rows: chromeRows,
+      wider: {
+        what: '같은 정렬로 폭 전체(오른쪽 정렬 요소 포함)를 잰 값. 통과 근거가 아니라 **차이의 기록**이다 — 사이드바 폭이 설치본 460px / 개발본 280px 라 「신규」 배지·Projects 헤더 아이콘의 자리가 다르다',
+        roiDev: widerRoi,
+        result: chromeWider
+      }
     },
     detector: {
       ok: detectorOk,

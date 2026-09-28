@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
-import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors } from './lib/own.mjs'
+import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
@@ -536,6 +536,35 @@ const PATH_COUNTEREXAMPLES = [
     survivor: true
   }
 ]
+
+test('H1 — **우리 경로에 공백이 있어도** 고아를 놓치지 않는다 (R3-01 의 반대 방향)', () => {
+  // corral CLI 응답이 실패해 데스크톱 pid 를 못 받았고 PPID 로도 못 잇는 고아. 토큰 분할이면
+  // `/virtual/my` 로 잘려 「경계 일치 없음」이 되고 `clean:true` 가 나온다 — 그 자리를 막는다.
+  const target = '/virtual/my work/corral-userdata'
+  const orphan = { pid: 81003, command: `/Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=${target}` }
+  const signals = planSignals({ owned: [{ pid: 81002, label: 'corral backend' }], descendantsOf: () => [] })
+  assert.deepEqual(signals.map((entry) => entry.pid), [81002])
+  const { survivors } = classifyPathSurvivors({
+    processes: [orphan],
+    targets: [target],
+    signalled: signals.map((entry) => entry.pid),
+    alive: () => true
+  })
+  assert.equal(survivors.length, 1)
+  assert.equal(survivors[0].pid, 81003)
+  assert.equal(survivors[0].signalled, false)
+})
+
+test('H1 — 경로 언급 판정은 경계를 본다 (`-other` 는 다른 경로, 자식 폴더는 같은 경로)', () => {
+  const t = '/tmp/l443/corral-userdata'
+  assert.equal(commandMentionsPath(`Electron --user-data-dir=${t}`, t), true)
+  assert.equal(commandMentionsPath(`Electron --user-data-dir=${t} backup`, t), true)
+  assert.equal(commandMentionsPath(`Electron --database=${t}/Crashpad`, t), true)
+  assert.equal(commandMentionsPath(`Electron --user-data-dir=${t}-other`, t), false)
+  assert.equal(commandMentionsPath(`Electron --user-data-dir=${t}x/deep`, t), false)
+  // /private/tmp 와 /tmp 는 같은 폴더의 두 이름이다
+  assert.equal(commandMentionsPath('Electron --user-data-dir=/private/tmp/l443/corral-userdata', t), true)
+})
 
 for (const example of PATH_COUNTEREXAMPLES) {
   test(`H1 — ${example.name}: 신호 0건, spawn 자손만 신호한다`, () => {

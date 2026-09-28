@@ -128,6 +128,26 @@ export function planSignals({ owned = [], descendantsOf = () => [] } = {}) {
   return out
 }
 
+/** 정규식 메타문자를 막는다 — 경로에 `+`·`(` 가 들어가도 그대로 찾는다. */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 명령줄이 그 경로를 **경계까지** 언급하는가. 공백으로 쪼개지 않는다 (H1 보고 경로).
+ *
+ * 왜 토큰 분할을 버렸나: 평탄한 명령줄에서 argv 경계는 복원할 수 없다. 공백으로 쪼개면
+ * `--user-data-dir=/virtual/my work/corral-userdata` 의 우리 프로필이 `/virtual/my` 로 잘려
+ * **우리가 띄운 고아를 못 보고 `clean:true`** 를 쓴다(리뷰 R3-01 의 반대 방향). 그래서 보고 쪽은
+ * 경로를 **문자열로** 찾되 앞뒤 경계를 본다 — 뒤가 `-` 면(`…-other`) 다른 경로다.
+ */
+export function commandMentionsPath(command, target) {
+  const wanted = normalizePath(target)
+  if (!wanted || typeof command !== 'string') return false
+  const flat = command.replace(/\/private(\/(tmp|var)\/)/g, '$1')
+  return new RegExp(`(^|[\\s='"])${escapeRegExp(wanted)}($|[\\s/'"])`).test(flat)
+}
+
 /**
  * 소유 경로를 쓰는 **생존** 프로세스 — **죽이지 않는다** (H1, fail closed).
  *
@@ -147,15 +167,33 @@ export function classifyPathSurvivors({
   alive = () => true
 } = {}) {
   const sent = new Set(signalled.map(Number).filter((value) => Number.isFinite(value)))
-  const { owned, rejected } = selectOwnedByPath({ processes, targets, exclude, selfPid })
+  const skip = new Set(exclude.filter((pid) => Number.isFinite(pid)))
   const survivors = []
-  for (const entry of owned) {
-    if (sent.has(entry.pid)) continue
-    if (!alive(entry.pid)) continue
+  const rejected = []
+  for (const entry of processes) {
+    const pid = Number(entry?.pid)
+    const command = entry?.command ?? ''
+    if (!Number.isFinite(pid) || pid === selfPid) continue
+    if (sent.has(pid)) continue
+    if (skip.has(pid)) {
+      rejected.push({ pid, command, why: '이번 실행 전부터 있던 프로세스 — 소유 아님' })
+      continue
+    }
+    const hit = targets.find((target) => commandMentionsPath(command, target))
+    if (!hit) {
+      rejected.push({ pid, command, why: '소유 경로를 경계까지 가진 인자가 없다 (부분 문자열 일치는 소유가 아니다)' })
+      continue
+    }
+    if (!alive(pid)) continue
     survivors.push({
-      ...entry,
+      pid,
+      command,
+      path: normalizePath(hit),
       signalled: false,
-      why: '이번 실행이 spawn 한 pid 도 그 자손도 아니다 — 경로 일치만으로는 신호하지 않는다 (H1). 미정리로 보고한다'
+      // **앱처럼 보이는가는 묻지 않는다.** 죽이는 판단이 아니라 보고이므로, 애매하면 보고하는 쪽
+      // (fail closed)이 맞다 — `looksLikeApp()` 은 명령줄 전체를 봐서 `python3 …/inspect.py` 도
+      // 앱으로 잡았고(리뷰 R3-01), 반대로 우리가 띄운 셸 래퍼를 앱이 아니라고 뺄 수도 있었다.
+      why: '이번 실행이 spawn 한 pid 도 그 자손도 아닌데 소유 경로를 쓴다 — 신호하지 않고 미정리로 보고한다 (H1)'
     })
   }
   return { survivors, rejected }

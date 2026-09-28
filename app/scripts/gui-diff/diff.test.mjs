@@ -5,7 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta } from './lib/diff.mjs'
+import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
@@ -598,4 +598,33 @@ test('H1 — 이미 죽었거나 신호한 pid 는 미정리 목록에 넣지 �
     alive: (pid) => pid !== 71005
   })
   assert.deepEqual(survivors, [])
+})
+
+// ---- H2: 요소별 폰트 수집 실패는 관문으로 간다 -----------------------------
+
+test('H2 — 요소별 폰트 실패가 있으면 관문 사유가 나온다 (수집 자체는 성공해도)', () => {
+  const why = fontCaptureFailures('tabbar-default-orca-b', {
+    fontsCollected: true,
+    fontsRequested: 5,
+    fontsMeasured: 4,
+    fontErrors: [{ unit: 'tab', key: 'tab#0', error: 'mock font transport failure' }]
+  })
+  assert.equal(why.length, 1)
+  assert.match(why[0], /tabbar-default-orca-b: 요소별 폰트 수집 실패 1건/)
+  assert.match(why[0], /tab#0: mock font transport failure/)
+})
+
+test('H2 — 글리프 없는 노드(빈 목록)는 실패가 아니다 · 수집 자체 실패는 따로 센다', () => {
+  assert.deepEqual(fontCaptureFailures('x', { fontsCollected: true, fontsRequested: 3, fontsMeasured: 3, fontErrors: [] }), [])
+  const both = fontCaptureFailures('y', {
+    fontsCollected: false,
+    platformFontsError: 'CSS.enable 실패',
+    fontErrors: [
+      { key: 'a#0', error: 'e1' },
+      { key: 'b#0', error: 'e2' }
+    ]
+  })
+  assert.equal(both.length, 2)
+  assert.match(both[0], /CSS\.enable 실패/)
+  assert.match(both[1], /2건/)
 })

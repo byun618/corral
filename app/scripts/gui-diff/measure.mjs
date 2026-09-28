@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process'
 
 import { pause, until, assertPortFree } from './lib/cdp.mjs'
 import { collectSnapshot, settlePage, PROP_SETS, EXCLUDED_PROPS } from './lib/probe.mjs'
-import { diffSnapshots, selfDiff, compareMeta } from './lib/diff.mjs'
+import { diffSnapshots, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { renderReport, writeJson } from './lib/report.mjs'
 import { ensureFixtureRepo } from './lib/fixture.mjs'
 import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
@@ -594,17 +594,10 @@ async function main() {
     const byArea = new Map(areas.map((area) => [area.name, { area: area.name, description: area.description, states: [] }]))
     // 캡처가 **폰트를 못 받은** 자리를 모은다 (G7). 「차이 0」과 「못 쟀다」를 관문에서도 가른다.
     const captureFailures = []
+    // 네 캡처(A·B × 두 앱) 전부를 본다 — 본 diff 에 쓰지 않는 B 캡처의 실패도 여기서 걸린다 (H2).
+    // 판단은 `lib/diff.mjs` 의 순수 함수에 있다 — 반례를 단위 테스트로 세우려고 뺐다.
     const noteCapture = (label, snapshot) => {
-      if (snapshot?.meta?.fontsCollected === false) {
-        captureFailures.push(`${label}: ${snapshot.meta.platformFontsError ?? '사유 미기재'}`)
-      }
-      // **요소별 실패도 같은 관문으로 간다** (H2). 네 캡처(A·B × 두 앱) 전부를 본다 — 본 diff 에
-      // 쓰지 않는 B 캡처의 실패도 여기서 걸린다. 「차이 0」과 「못 쟀다」를 가르는 자리가 여기다.
-      const perElement = snapshot?.meta?.fontErrors ?? []
-      if (perElement.length > 0) {
-        const head = perElement.slice(0, 3).map((entry) => `${entry.key}: ${entry.error}`).join(' / ')
-        captureFailures.push(`${label}: 요소별 폰트 수집 실패 ${perElement.length}건 — ${head}${perElement.length > 3 ? ' …' : ''}`)
-      }
+      captureFailures.push(...fontCaptureFailures(label, snapshot?.meta))
       return snapshot
     }
     const noiseFloor = []

@@ -332,3 +332,28 @@ export function compareMeta(left, right) {
   }
   return warnings
 }
+
+/**
+ * 캡처 하나가 **폰트를 못 잰** 사유들 — 관문 문자열로 낸다 (H2).
+ *
+ * 왜 순수 함수인가: 이 판단이 틀리면 「폰트가 같다」와 「폰트를 못 쟀다」가 한 칸에 섞인다.
+ * 이전 판은 바깥 try 가 정상 종료하면 `fontsCollected:true` 였고, 요소별 실패는 아이템에만
+ * 적혔다 — 특히 자기 대조의 **B 캡처**에서만 실패하면 본 보고서에도 총계에도 흔적이 없었다
+ * (리뷰 R3-02). 여기서 나온 줄은 전부 관문 사유가 되고, 그래서 반례를 단위 테스트로 세울 수 있다.
+ *
+ * 글리프가 없는 노드(빈 배열)는 **정상**이다 — 실패로 세지 않는다.
+ */
+export function fontCaptureFailures(label, meta) {
+  const out = []
+  if (!meta) return out
+  if (meta.fontsCollected === false) out.push(`${label}: ${meta.platformFontsError ?? '사유 미기재'}`)
+  const perElement = meta.fontErrors ?? []
+  if (perElement.length > 0) {
+    const head = perElement
+      .slice(0, 3)
+      .map((entry) => `${entry.key}: ${entry.error}`)
+      .join(' / ')
+    out.push(`${label}: 요소별 폰트 수집 실패 ${perElement.length}건 — ${head}${perElement.length > 3 ? ' …' : ''}`)
+  }
+  return out
+}

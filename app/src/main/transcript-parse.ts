@@ -541,14 +541,22 @@ function codexEvent(record: Record<string, unknown>): { type: string; payload: R
 }
 
 /**
- * codex **사람 발화** — `payload.type === 'user_message'` 의 `message`. 머리(`parseCodexHead`)와 같은
- * 함수다(T4). 하네스 주입(`response_item/message/user`)은 이 레코드가 아니다.
+ * codex **사람 발화** — 머리(`parseCodexHead`)와 같은 함수다(T4). 모양이 **둘**이다(버전마다 한쪽만 쓴다):
+ *   · `event_msg/user_message` 의 `message` — 옛 모양(LIFE-366 이 실측한 16/16)
+ *   · `event_msg/item_completed` 의 `item.type === 'UserMessage'` 의 text 블록 — codex 0.158 이 쓰는 모양.
+ *     네이티브 관문에서 옛 모양이 **안 나와** 최근 발화·첫 발화가 모두 비었다(`raw/claude/t10/runs/n10-codex-esc.json`).
+ *     전수 실측: 129 rollout 중 111 에 252건, 전부 사람이 친 텍스트, 옛 `user_message` 와 같은 글이 겹친 파일 0
+ *     (`raw/claude/u5-codex-usermessage.txt`)
+ * 하네스 주입(`response_item/message/user` — AGENTS.md·환경 봉투)은 둘 다 아니다.
  */
 export function codexHumanText(record: Record<string, unknown>): string | null {
   const payload = record['payload']
   if (!isRecord(payload)) return null
-  if (payload['type'] !== 'user_message') return null
-  return readString(payload, 'message')
+  if (payload['type'] === 'user_message') return readString(payload, 'message')
+  if (readString(record, 'type') !== 'event_msg' || payload['type'] !== 'item_completed') return null
+  const item = payload['item']
+  if (!isRecord(item) || item['type'] !== 'UserMessage') return null
+  return textFromContent(item['content'])
 }
 
 /**

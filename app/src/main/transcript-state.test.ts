@@ -114,6 +114,12 @@ const xUserMessage = (text: string) => {
   dig(record, 'payload')['message'] = text
   return record
 }
+/** codex 0.158 의 사람 발화 모양 — `item_completed` 의 `UserMessage` (u5 실측). */
+const xUserItem = (text: string) => {
+  const record = shape('codex.event.item_completed_user_message')
+  dig(record, 'payload', 'item', 'content', 0)['text'] = text
+  return record
+}
 const xAborted = () => shape('codex.event.turn_aborted')
 const xComplete = () => shape('codex.event.task_complete')
 const xCompleteError = (info: string) => {
@@ -352,6 +358,13 @@ describe('T4 최근 사용자 발화 — 머리와 같은 규칙', () => {
     const chunk = chunkOf([xUserMessage('첫 말'), xAssistant(), xUserMessage('둘째 말')])
     expect(parseCodexTail({ chunk, partial: false }).lastPrompt).toBe('둘째 말')
     expect(parseCodexHead({ chunk })).toBe('첫 말')
+  })
+  it('codex 0.158 — item_completed/UserMessage 도 사람 발화다(머리·꼬리 같은 함수)', () => {
+    const injected = shape('codex.response.assistant')
+    dig(injected, 'payload')['role'] = 'user' // 하네스 주입 자리(response_item/message/user) — 사람 발화 아님
+    const chunk = chunkOf([xTaskStarted(), injected, xUserItem('첫 부탁'), xAssistant(), xAborted(), xTaskStarted(), xUserItem('다음 부탁')])
+    expect(parseCodexTail({ chunk, partial: false }).lastPrompt).toBe('다음 부탁')
+    expect(parseCodexHead({ chunk })).toBe('첫 부탁')
   })
   it('grok — <user_query> 봉투 안쪽만, 합성 user 줄은 아니다', () => {
     const chunk = chunkOf([gChatUser('첫 말'), gChatAssistant('grok-4.7'), gChatUser('둘째 말'), gChatSynthetic()])

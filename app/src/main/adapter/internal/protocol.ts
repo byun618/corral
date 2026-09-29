@@ -13,6 +13,14 @@ import { log } from '../../log.js'
  * 확인한 것만** 넣는다. 하나라도 모르는 타입을 섞으면 요청 전체가 거부된다 (스파이크 제약 4).
  *
  * R1 은 worktree 열림/닫힘도 그린다 — `worktree.*` 3종이 그래서 들어 있다.
+ *
+ * **이 배열의 순서가 푸시 도착 순서다** (F17 실측). herdr 서버는 구독 항목마다 커서를 따로
+ * 두고 **여기 적힌 순서대로** 한 바퀴에 한 건씩 흘린다(`src/api/server.rs:749-753`). 그래서
+ * 마지막 탭을 닫으면 서버가 `TabClosed` → `WorkspaceClosed` 로 내는데도
+ * (`src/app/api/tabs.rs:248-261`) corral 에는 `workspace.closed` 가 먼저 도착한다 —
+ * 이 목록에서 앞에 있기 때문이다. 목록 순서만 뒤집은 두 구독으로 같은 닫기를 동시에 받아
+ * 도착 순서가 그대로 뒤집히는 것을 실측했다(`raw/claude/s9-r1/08-f17-retained-and-order.md`).
+ * **재정렬하면 도착 순서가 조용히 바뀐다** — 순서에 기대는 판정을 새로 만들지 말 것.
  */
 export const SUBSCRIPTION_TYPES: readonly string[] = [
   'workspace.created',

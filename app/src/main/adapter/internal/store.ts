@@ -973,10 +973,19 @@ export class WorkspaceStore {
    *
    * **치움과 완료를 가르는 것은 이벤트 종류가 아니라 억제 표다.** 한때 `workspace_closed` 를
    * 「접는 것은 치움이니 보존 안 함」으로 뒀는데, 네이티브에서 탭이 **하나뿐인** 워크스페이스의
-   * 탭을 닫자 herdr 가 `workspace_closed` 를 먼저 보내고 `tab_closed` 는 멱등 무시로 왔다 —
+   * 탭을 닫자 `workspace_closed` 가 먼저 도착하고 `tab_closed` 는 멱등 무시로 왔다 —
    * 같은 손짓(탭 닫기)이 탭 수에 따라 다르게 판정됐다 (`raw/claude/s9/s9b-retained-tabclose.txt`).
    * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
    * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
+   *
+   * **「herdr 가 workspace 를 먼저 보낸다」가 아니다** (F17 정정). v0.9.0 소스는 그 반대로
+   * 낸다 — `src/app/api/tabs.rs:248-261` 이 `TabClosed` → `WorkspaceClosed` 순으로 emit 하고
+   * 같은 파일 테스트가 그 순서를 검증한다. **도착 순서를 정하는 것은 corral 자신의 구독 목록**
+   * 이다: 서버가 구독 항목을 클라이언트가 적은 순서대로 한 바퀴에 한 건씩 흘리기 때문에
+   * (`src/api/server.rs:749-753`), `SUBSCRIPTION_TYPES` 에서 앞에 적힌 쪽이 먼저 온다.
+   * 목록 순서만 뒤집어 같은 닫기를 동시에 받아 그대로 뒤집히는 것을 실측했다
+   * (`raw/claude/s9-r1/08-f17-retained-and-order.md` §3).
+   * → **보존 판정이 도착 순서에 기대면 안 된다.** 억제 표는 순서와 무관하다.
    */
   /**
    * pane 의 상태가 정해질 때마다 blocked 삽화 번호를 맞춘다 (F1·F4).

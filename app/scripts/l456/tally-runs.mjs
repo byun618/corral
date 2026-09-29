@@ -12,11 +12,20 @@
 // **원자료를 패턴으로 훑지 않는다.** 입력은 runs.md 의 표 한 곳뿐이다 (LIFE-440 재발 방지).
 //
 // 사용: node app/scripts/l456/tally-runs.mjs <runs.md> [--json]
+//       node app/scripts/l456/tally-runs.mjs <runs.md> --check <인용문서…>
+//
+// `--check` 는 R3-F2 의 교차검사다. 규칙 ①("인용한 회차는 그 항목 태그를 가져야 한다")은
+// 라운드 2 까지 **사람 눈으로만** 지켜졌고, 그래서 S6 가 근거로 쓴 r109 에 `S6` 태그가 없는
+// 채로 통과했다. 인용이 태그보다 넓으면 분모가 실제보다 작고, 그 분모로 만든 「n/총 m」 은
+// 그 항목을 판정한 실행을 전부 세지 않은 수다. 이제 기계가 센다 — 어긋나면 종료코드 1.
 
 import { readFileSync } from 'node:fs'
 
 const ROW = /^\| (r\d{3}) \|/
-const TAG = /(?:R2-)?[SHF]\d+(?:-②)?/g
+// 라운드 접두사는 **한 자리 라운드 전부**를 받는다. `(?:R2-)?` 였을 때 `R3-F2` 는
+// 접두사를 놓치고 3번째 글자부터 `F2` 로 잡혀 **라운드 1 의 F2 행에 얹혔다** — 라운드 3 태그를
+// 붙이는 순간 조용히 남의 분모를 불리는 모양이라, 태그를 달기 전에 먼저 고쳤다.
+const TAG = /(?:R\d-)?[SHF]\d+(?:-②)?/g
 
 /** 한 행을 칸으로 자른다. 칸 안에 `|` 가 섞이면 **집계가 조용히 어긋나므로** 즉시 실패한다. */
 function cells(line, id) {
@@ -71,13 +80,61 @@ export function tally(markdown) {
   return { rows, tags: [...byTag.values()].sort(order) }
 }
 
-/** S1·S2… → S9-② → F… → R2-F… → H… 순. 숫자는 사전순이 아니라 수로 센다. */
+/** S1·S2… → S9-② → F… → R2-F…·R3-F… → H… 순. 숫자는 사전순이 아니라 수로 센다. */
 function order(a, b) {
-  const rank = (tag) => (tag.startsWith('R2-F') ? 3 : tag.startsWith('F') ? 2 : tag.startsWith('H') ? 4 : 1)
+  const rank = (tag) => (/^R\d-F/.test(tag) ? 3 : tag.startsWith('F') ? 2 : tag.startsWith('H') ? 4 : 1)
   if (rank(a.tag) !== rank(b.tag)) return rank(a.tag) - rank(b.tag)
   const num = (tag) => Number(/\d+/.exec(tag)?.[0] ?? '0')
   if (num(a.tag) !== num(b.tag)) return num(a.tag) - num(b.tag)
   return a.tag.localeCompare(b.tag)
+}
+
+/** 판정표 행의 첫 칸에 오는 기준 항목 이름. 비교표(4칸)·회차표(9칸)와 섞이지 않게 **7칸**만 본다. */
+const VERDICT_CELLS = 7
+const CRITERION = /^\*{0,2}(S\d+(?:-②)?)\*{0,2}$/
+const CITED = /r\d{3}/g
+
+/**
+ * **인용 ↔ 태그 교차검사** (R3-F2).
+ *
+ * 판정표 한 행이 인용한 회차는 runs.md 에서 그 행의 기준 항목 태그를 가져야 한다.
+ * 안 가진 것이 하나라도 있으면 실패다 — 「인용은 했는데 안 세었다」가 정확히 그 모양이다.
+ *
+ * 표 **밖**의 산문 인용은 실패로 세지 않고 목록으로만 낸다. 산문은 어느 항목을 판정하는지
+ * 스스로 말하지 않아서, 기계가 고를 수 있는 기준이 없다 — 고를 수 없는 것을 고른 척하면
+ * 그게 또 조용한 오집계다. 대신 전부 세어서 사람이 훑을 수 있게 남긴다.
+ */
+export function crossCheck(runs, documents) {
+  const byId = new Map(runs.rows.map((row) => [row.id, row]))
+  const failures = []
+  const prose = []
+  for (const { path, text } of documents) {
+    const lines = text.split('\n')
+    for (const [index, line] of lines.entries()) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) {
+        for (const id of trimmed.match(CITED) ?? []) prose.push({ path, line: index + 1, id })
+        continue
+      }
+      const parts = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map((part) => part.trim())
+      const criterion = parts.length === VERDICT_CELLS ? CRITERION.exec(parts[0])?.[1] : undefined
+      if (criterion === undefined) {
+        for (const id of trimmed.match(CITED) ?? []) prose.push({ path, line: index + 1, id })
+        continue
+      }
+      for (const id of [...new Set(trimmed.match(CITED) ?? [])]) {
+        const row = byId.get(id)
+        if (row === undefined) {
+          failures.push({ path, line: index + 1, criterion, id, why: 'runs.md 에 그 회차가 없다' })
+          continue
+        }
+        if (!row.tags.includes(criterion)) {
+          failures.push({ path, line: index + 1, criterion, id, why: `runs.md 의 태그가 ${row.tags.join('·')} 라 ${criterion} 를 안 센다` })
+        }
+      }
+    }
+  }
+  return { failures, prose }
 }
 
 /** 판정표에 그대로 붙일 「n/총 m」 문자열. 미확정은 분자·분모 양쪽에서 갈라 적는다(③). */
@@ -88,7 +145,32 @@ export function cell(bucket) {
 }
 
 const [file, ...flags] = process.argv.slice(2)
-if (file !== undefined) {
+if (file !== undefined && flags[0] === '--check') {
+  const result = tally(readFileSync(file, 'utf8'))
+  const documents = flags.slice(1).map((path) => ({ path, text: readFileSync(path, 'utf8') }))
+  if (documents.length === 0) {
+    console.error('--check 는 인용 문서를 하나 이상 받는다 — 0개면 아무것도 검사하지 않고 통과한다')
+    process.exit(2)
+  }
+  const { failures, prose } = crossCheck(result, documents)
+  console.log(`# 인용 ↔ 태그 교차검사 — 판정표 인용 ${String(failures.length)}건 불일치`)
+  console.log(`# runs.md: ${file}`)
+  for (const document of documents) console.log(`# 인용 문서: ${document.path}`)
+  console.log('')
+  if (failures.length > 0) {
+    console.log('| 문서 | 줄 | 기준 항목 | 회차 | 왜 |')
+    console.log('| --- | --- | --- | --- | --- |')
+    for (const item of failures) console.log(`| ${item.path} | ${String(item.line)} | ${item.criterion} | ${item.id} | ${item.why} |`)
+    console.log('')
+  }
+  const byDocument = new Map()
+  for (const item of prose) byDocument.set(item.path, (byDocument.get(item.path) ?? new Set()).add(item.id))
+  console.log('표 밖 산문 인용 (실패로 세지 않는다 — 사람이 훑는다):')
+  for (const [path, ids] of byDocument) console.log(`  ${path}: ${[...ids].sort().join(' ')}`)
+  console.log('')
+  console.log(failures.length === 0 ? '판정: 통과' : '판정: 미달')
+  process.exit(failures.length === 0 ? 0 : 1)
+} else if (file !== undefined) {
   const result = tally(readFileSync(file, 'utf8'))
   if (flags.includes('--json')) {
     console.log(JSON.stringify(result, null, 1))

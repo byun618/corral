@@ -139,6 +139,22 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
     expect(store.retainedRows()[0]?.paneId).toBe(`w1:p${panes.length - 1}`)
   })
 
+  it('**마지막 pane 이 exit 해 탭·workspace 까지 사라져도 남는다** — 그게 흔한 완료 경로다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    // 사용자가 셸에 exit 를 친 경로: pane_exited 한 건만 오고 탭·workspace 가 연쇄로 사라진다.
+    store.applyEvent({ event: 'pane_exited', data: { pane_id: 'w1:p1' } })
+    expect(store.rows()).toEqual([])
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('workspace 를 통째로 닫으면 보존하지 않는다 — 완료가 아니라 치움이다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.applyEvent({ event: 'workspace_closed', data: { workspace_id: 'w1' } })
+    expect(store.retainedRows()).toEqual([])
+  })
+
   it('보존 기록은 완료 시각·이력을 함께 들고 간다 (S15ⓐⓑⓒ)', () => {
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))

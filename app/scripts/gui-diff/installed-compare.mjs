@@ -264,7 +264,7 @@ if (args.control) {
       actual: chromeActual,
       rows: chromeRows,
       wider: {
-        what: '같은 정렬로 폭 전체(오른쪽 정렬 요소 포함)를 잰 값. 통과 근거가 아니라 **차이의 기록**이다 — 사이드바 폭이 설치본 460px / 개발본 280px 라 「신규」 배지·Projects 헤더 아이콘의 자리가 다르다',
+        what: '같은 정렬로 **폭만 넓혀** 잰 값. 통과 근거가 아니라 **차이의 기록**이다 — 사이드바 폭이 설치본 460px / 개발본 280px 라 오른쪽 구간의 자리가 다르다. 세로 범위는 크롬 ROI 와 같은 개발본 기준 y∈[8,136) 이므로 **Projects 라벨과 그 헤더 아이콘(y=160)은 이 값에도 들어가지 않는다.** 어떤 요소가 이 차이의 얼마를 차지하는지는 따로 재지 않았다',
         roiDev: widerRoi,
         result: chromeWider
       }

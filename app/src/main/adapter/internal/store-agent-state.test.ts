@@ -4,7 +4,7 @@
 // 여기서 그 둘을 못박는다 — 실행 원자료는 `raw/claude/` 쪽이고, 이 파일은 규칙이다.
 
 import { describe, expect, it } from 'vitest'
-import { WorkspaceStore } from './store.js'
+import { RETAINED_LIMIT, WorkspaceStore } from './store.js'
 
 const snapshot = (input: {
   panes: Array<{ id: string; tab: string; status?: string }>
@@ -88,6 +88,65 @@ describe('H4 — 키 없는 이벤트가 값을 unknown 으로 지우지 않는�
     store.applyEvent({ event: 'workspace_updated', data: { workspace_id: 'w1', label: 'repo', number: 1 } })
     // pane 롤업이 진실이라 working 이 남는다 — 키 없는 봉투가 unknown 으로 밀지 못한다.
     expect(store.rows()[0]?.agentStatus).toBe('working')
+  })
+})
+
+describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
+  const closed = (store: WorkspaceStore, paneId: string) =>
+    store.applyEvent({ event: 'pane_closed', data: { pane_id: paneId } })
+
+  it('마지막 상태가 done 이면 남는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    closed(store, 'w1:p1')
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+    expect(store.retainedRows()[0]?.agentStatus).toBe('done')
+  })
+
+  it('done 이 아니면 안 남는다 — 완료만 남길 값이 있다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }, { id: 'w1:p2', tab: 'w1:t2', status: 'idle' }],
+    }))
+    closed(store, 'w1:p1')
+    closed(store, 'w1:p2')
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('**명시적으로 닫으면 안 남는다** — 닫기가 안 먹은 것처럼 보이면 안 된다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:p1')
+    closed(store, 'w1:p1')
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('탭을 명시적으로 닫으면 그 탭의 pane 도 안 남는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:t1')
+    closed(store, 'w1:p1')
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('최신 우선이고 상한(20)에서 잘린다', () => {
+    const store = new WorkspaceStore()
+    const panes = Array.from({ length: RETAINED_LIMIT + 5 }, (_, i) => ({ id: `w1:p${i}`, tab: `w1:t${i}`, status: 'done' }))
+    store.applySnapshot(snapshot({ panes }))
+    for (const pane of panes) closed(store, pane.id)
+    expect(store.retainedRows()).toHaveLength(RETAINED_LIMIT)
+    // 마지막에 닫은 것이 맨 앞이다.
+    expect(store.retainedRows()[0]?.paneId).toBe(`w1:p${panes.length - 1}`)
+  })
+
+  it('보존 기록은 완료 시각·이력을 함께 들고 간다 (S15ⓐⓑⓒ)', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'done' } })
+    closed(store, 'w1:p1')
+    const row = store.retainedRows()[0]
+    expect(typeof row?.agentState.enteredDoneAt).toBe('number')
+    expect(row?.agentState.history.map((h) => h.status)).toEqual(['working'])
   })
 })
 

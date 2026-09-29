@@ -46,6 +46,22 @@ export type BlockedReason = 'trust' | 'login' | 'permission' | 'question' | 'upd
  */
 export type AgentObservedVia = 'event' | 'snapshot'
 
+/**
+ * 닫힌 pane 하나의 **마지막 기록** (S15ⓓ). `PaneRow` 와 모양이 겹치지만 **다른 것**이다 —
+ * 이 pane 은 더 이상 없다. 그래서 `focused`·`cwd`·`digest` 처럼 "지금" 을 말하는 칸이 없다.
+ */
+export type RetainedAgentRow = {
+  paneId: string
+  tabId: string
+  workspaceId: string
+  title: string
+  agent: string | null
+  agentStatus: AgentStatus
+  agentState: AgentState
+  /** corral 이 그 pane 을 잃은 시각. */
+  retainedAt: number
+}
+
 /** 지나간 상태 전이 한 칸 (S15ⓒ 이력). */
 export type AgentTransition = {
   status: AgentStatus
@@ -589,6 +605,13 @@ export type AppState = {
    * 화면은 "미설치" 와 "아직 모름" 을 구분해야 하므로 빈 배열을 미설치로 읽지 않는다.
    */
   integrations: IntegrationRow[]
+  /**
+   * 닫힌 pane 의 **마지막 완료 기록** (LIFE-456 S15ⓓ, 최신 우선).
+   *
+   * 산 pane 목록과 **섞지 않는다** — 섞으면 화면이 이미 없는 pane 에 입력을 보내려 든다.
+   * 메모리에만 있고 앱을 다시 켜면 비어 있다(그 사이에 끝난 턴을 확인할 길이 없어서다).
+   */
+  retainedAgents: readonly RetainedAgentRow[]
   /** 개발·계측 실행에서만 켜지는 진단 표시. */
   diagnostics: boolean
   /**

@@ -17,7 +17,7 @@
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
-import type { AgentSessionRef, AgentState, AgentStatus, BlockedReason, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
+import type { AgentSessionRef, AgentState, AgentStatus, BlockedReason, PaneRow, RetainedAgentRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
 import { blockedReason, emptyAgentState, recordAgentTransition, rollupAgentStatus } from '../../../shared/agent-state.js'
 import { readAgentStatus, readStateLabels, type PushFrame } from './protocol.js'
 
@@ -65,6 +65,12 @@ type Pane = {
   agentSession: AgentSessionRef | null
   knownAt: number
 }
+
+/** 보존 상한 — 이력 상한과 같은 20 (Orca 198 `stateHistory` 에 맞춘 자리). */
+export const RETAINED_LIMIT = 20
+
+/** 닫힌 pane 의 마지막 기록 — 모양은 경계 타입 하나다(`shared/types.ts`). */
+export type RetainedAgent = RetainedAgentRow
 
 export type ApplyResult = {
   changed: boolean
@@ -157,6 +163,10 @@ export class WorkspaceStore {
    * pane id 도 workspace·tab 과 같이 서버 생애 안에서 재사용되지 않으므로 규칙도 같다.
    */
   private closedPanes = new Map<string, number>()
+  /** S15ⓓ — 닫힌 뒤에도 남기는 **마지막 기록**. 최신 우선, `RETAINED_LIMIT` 개. */
+  private retained: RetainedAgent[] = []
+  /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
+  private retentionSuppressed = new Set<string>()
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -166,6 +176,8 @@ export class WorkspaceStore {
     this.closed.clear()
     this.closedTabs.clear()
     this.closedPanes.clear()
+    this.retained = []
+    this.retentionSuppressed.clear()
     this.orphans = []
   }
 
@@ -512,6 +524,7 @@ export class WorkspaceStore {
         // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
         this.closedPanes.set(id, at)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
+        this.retain(pane, at)
         this.panes.delete(id)
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: true, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
@@ -880,6 +893,49 @@ export class WorkspaceStore {
       note: `agent_status_changed: ${pane.agentStatus} → ${status}`,
       ...(status === 'blocked' ? { blockedEntry: paneId } : {}),
     }
+  }
+
+  /**
+   * **닫힌 pane 의 마지막 기록을 남긴다** (S15ⓓ — Orca 198 `useRetainedAgents` 대조).
+   *
+   * 198 의 규칙 세 줄을 그대로 옮긴다(`useRetainedAgents.ts:298-309`):
+   *   ① 마지막 상태가 `done` 일 때만 남긴다 — 「끝났는데 아직 안 본 것」만 남길 값이 있다.
+   *      working 중에 죽은 pane 은 완료가 아니고, idle 은 이미 본 것이다
+   *   ② **명시적으로 닫은 것은 남기지 않는다.** 사용자가 직접 닫은 탭을 완료 행으로 되살리면
+   *      닫기가 안 먹은 것처럼 보인다. corral 이 자기 손으로 `pane.close`·`tab.close` 를 쏠 때
+   *      `suppressRetention` 으로 미리 찍어 둔다
+   *   ③ 198 의 `interrupted` 대응은 **공백**이다 — corral 에 그 신호가 없다(LIFE-458 몫).
+   *      그래서 「중단 아님」을 확인하지 못한 채 남긴다는 한계가 결과 문서에 적힌다
+   *
+   * 수명: **메모리에만 둔다.** 재시작하면 사라진다 — 디스크에 남기면 「그 사이에 끝난 턴」을
+   * 확인 못 한 채 완료 행으로 되살리게 되고, 그건 198 도 `restoredUnconfirmed` 로 따로
+   * 막아 둔 자리다. 이 작업은 그 층을 만들지 않는다(S12 범위).
+   */
+  private retain(pane: Pane, at: number): void {
+    if (pane.agentStatus !== 'done') return
+    if (this.retentionSuppressed.has(pane.paneId) || this.retentionSuppressed.has(pane.tabId)) {
+      this.retentionSuppressed.delete(pane.paneId)
+      return
+    }
+    this.retained = [
+      { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
+        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
+      ...this.retained.filter((row) => row.paneId !== pane.paneId),
+    ].slice(0, RETAINED_LIMIT)
+  }
+
+  /**
+   * **corral 이 스스로 닫는 중이다** — 그 pane·탭의 닫힘은 보존하지 않는다 (S15ⓓ ②).
+   * `pane.close`·`tab.close` 를 쏘기 **전에** 부른다. 닫힘 통보가 안 와도 새는 것이 없도록
+   * 보존 시점에 표를 지운다.
+   */
+  suppressRetention(id: string): void {
+    this.retentionSuppressed.add(id)
+  }
+
+  /** 보존된 마지막 기록 — 최신 우선. */
+  retainedRows(): readonly RetainedAgent[] {
+    return this.retained
   }
 
   /**

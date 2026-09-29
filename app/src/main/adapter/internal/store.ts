@@ -273,10 +273,11 @@ export class WorkspaceStore {
         keptNewer.push(`pane:${id}`)
         continue
       }
-      this.panes.delete(id)
       // 탭 삭제와 같은 규칙으로 묘비를 세운다 (H1ⓓ). 위의 `knownAt` 으로 살려 둔 행
       // (keptNewer)은 여기 오지 않는다 — 산 행에 묘비를 세우면 그 행이 영영 못 돌아온다.
-      this.closedPanes.set(id, at)
+      // 재동기 정리는 **사라진 것을 뒤늦게 아는** 자리다. 닫힘을 못 본 채 사진으로만
+      // 아는 것이라 「끝나 있었다」를 주장할 근거가 없다 — 보존하지 않는다.
+      this.forgetPane({ pane: row, at, retain: false })
       removed.panes.push(id)
     }
 
@@ -430,12 +431,11 @@ export class WorkspaceStore {
         const had = this.tabs.delete(id)
         this.closedTabs.set(id, at)
         let orphaned = 0
-        for (const [paneId, pane] of this.panes) {
+        for (const pane of this.panes.values()) {
           if (pane.tabId !== id) continue
-          this.panes.delete(paneId)
           // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비. 탭이 닫혔다는 **관측**에서 바로 따라 나오는
           // 사실이라(닫힌 탭의 pane 은 herdr 에도 없다) 이쪽은 추정이 아니다.
-          this.closedPanes.set(paneId, at)
+          this.forgetPane({ pane, at, retain: true })
           orphaned += 1
         }
         // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
@@ -524,8 +524,7 @@ export class WorkspaceStore {
         // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
         this.closedPanes.set(id, at)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
-        this.retain(pane, at)
-        this.panes.delete(id)
+        this.forgetPane({ pane, at, retain: true })
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: true, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
         /**
@@ -595,10 +594,10 @@ export class WorkspaceStore {
       this.tabs.delete(tabId)
       this.closedTabs.set(tabId, at)
     }
-    for (const [paneId, pane] of this.panes) {
+    for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
-      this.panes.delete(paneId)
-      this.closedPanes.set(paneId, at) // H1ⓑ — workspace 연쇄로 죽은 pane 에도 묘비
+      // workspace 를 통째로 닫는 것은 **치움이지 완료가 아니다** — 보존하지 않는다.
+      this.forgetPane({ pane, at, retain: false }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
     return had
   }
@@ -913,8 +912,15 @@ export class WorkspaceStore {
    */
   private retain(pane: Pane, at: number): void {
     if (pane.agentStatus !== 'done') return
-    if (this.retentionSuppressed.has(pane.paneId) || this.retentionSuppressed.has(pane.tabId)) {
-      this.retentionSuppressed.delete(pane.paneId)
+    const suppressedBy = this.retentionSuppressed.has(pane.paneId)
+      ? pane.paneId
+      : this.retentionSuppressed.has(pane.tabId)
+        ? pane.tabId
+        : null
+    if (suppressedBy !== null) {
+      // 찍은 표는 **쓰고 나서 지운다** — 탭 id 로 찍고 pane id 로만 지우면 표가 남아,
+      // 같은 id 가 재사용될 때 남의 닫힘까지 조용히 삼킨다.
+      this.retentionSuppressed.delete(suppressedBy)
       return
     }
     this.retained = [
@@ -922,6 +928,32 @@ export class WorkspaceStore {
         agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
       ...this.retained.filter((row) => row.paneId !== pane.paneId),
     ].slice(0, RETAINED_LIMIT)
+  }
+
+  /**
+   * **pane 하나를 잊는다** — 사라짐을 알게 된 **모든 경로**가 여기를 지난다.
+   *
+   * pane 이 없어지는 길은 넷이고, **묘비는 넷 다 찍지만 보존은 갈래마다 다르다.** 그래서
+   * `retain` 을 호출자가 그 자리에서 밝힌다 — 숨은 기본값을 두면 길이 하나 늘 때마다
+   * 조용히 한쪽으로 붙는다. 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
+   *
+   *   · `pane_closed`·`pane_exited`  보존한다 — pane 하나가 끝나고 사라진 자리다
+   *   · `tab_closed`                 보존한다 — 탭을 닫으면 herdr 는 **`tab_closed` 한 건만**
+   *     주고 `pane_closed` 를 안 준다(위 G1 주석). 에이전트 pane 은 탭 하나에 하나씩 살기
+   *     때문에 **이 길이 완료가 사라지는 흔한 길이다.** 전에는 여기서 기록이 통째로 날아갔다
+   *     (`raw/claude/s9/s9b-retained-tabclose.txt` — `herdr tab close` 로 재현)
+   *   · workspace 연쇄                보존하지 않는다 — 워크스페이스를 접는 것은 **치움**이다
+   *   · 재동기 정리                   보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
+   *     「끝나 있었다」를 주장할 근거가 없다
+   *
+   * 가르는 잣대는 **"사라졌나"가 아니라 "완료가 사라졌나"** 다. 치움과 뒤늦은 앎에는
+   * 완료를 주장할 근거가 없고, 거기서 행을 되살리면 사용자가 치운 것이 다시 올라온다.
+   */
+  private forgetPane(input: { pane: Pane; at: number; retain: boolean }): void {
+    const { pane, at, retain } = input
+    if (retain) this.retain(pane, at)
+    this.panes.delete(pane.paneId)
+    this.closedPanes.set(pane.paneId, at)
   }
 
   /**

@@ -155,6 +155,29 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
     expect(store.retainedRows()).toEqual([])
   })
 
+  it('**탭이 닫혀 사라진 done pane 도 남는다** — herdr 는 `tab_closed` 한 건만 준다', () => {
+    // 네이티브 관문에서 잡은 결함: `herdr tab close w1H:t3` 로 grok(done) 탭을 닫았는데
+    // 보존 행이 0 이었다. 보존이 `pane_closed` 갈래에만 붙어 있었기 때문이다.
+    // 에이전트 pane 은 탭 하나에 하나씩 살아서 **이 길이 완료가 사라지는 흔한 길**이다.
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t2', status: 'idle' }],
+    }))
+    store.applyEvent({ event: 'tab_closed', data: { tab_id: 'w1:t1', workspace_id: 'w1' } })
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('**재동기 정리로 없어진 것은 안 남긴다** — 닫힘을 못 본 채 사진으로만 아는 자리다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    // 사진에 그 pane 이 없다 = 언젠가 사라졌다. 「끝나 있었다」를 주장할 근거가 없다.
+    store.applySnapshot(snapshot({ panes: [] }))
+    // 양성 대조 — 정리 경로가 **실제로 돌았다**(행이 없어졌다). 이게 없으면 "안 남았다" 가
+    // "경로가 안 돌았다" 와 같은 모양이 된다.
+    expect(store.rows().flatMap((w) => w.tabs.flatMap((t) => t.panes))).toEqual([])
+    expect(store.retainedRows()).toEqual([])
+  })
+
   it('보존 기록은 완료 시각·이력을 함께 들고 간다 (S15ⓐⓑⓒ)', () => {
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))

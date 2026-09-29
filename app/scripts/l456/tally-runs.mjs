@@ -101,12 +101,21 @@ if (file !== undefined) {
     for (const bucket of result.tags) {
       console.log(`| ${bucket.tag} | ${cell(bucket)} | ${String(bucket.passed)} | ${String(bucket.failed)} | ${String(bucket.unresolved)} | ${bucket.ids.join(' ')} |`)
     }
+    // **라운드별 수와 미확정 수는 「행」을 센다.** 위 표의 미확정 칸은 태그별이라 한 회차가
+    // 여러 항목에 잡히면 여러 번 세어진다 — 산문에 그 합계를 옮겨 적으면 틀린다
+    // (실제로 「라운드 0 미확정 10회차」라고 적혀 있었고 행으로 세면 9다).
     const rounds = new Map()
-    for (const row of result.rows) rounds.set(row.round, (rounds.get(row.round) ?? 0) + 1)
-    console.log('')
-    for (const [round, count] of [...rounds].sort((a, b) => a[0] - b[0])) {
-      console.log(`라운드 ${String(round)}: ${String(count)} 회차`)
+    for (const row of result.rows) {
+      const bucket = rounds.get(row.round) ?? { total: 0, unresolved: 0, ids: [] }
+      bucket.total += 1
+      if (row.unresolved) { bucket.unresolved += 1; bucket.ids.push(row.id) }
+      rounds.set(row.round, bucket)
     }
-    console.log(`합계: ${String(result.rows.length)} 회차`)
+    console.log('')
+    for (const [round, bucket] of [...rounds].sort((a, b) => a[0] - b[0])) {
+      const tail = bucket.unresolved === 0 ? '미확정 0' : `미확정 ${String(bucket.unresolved)} (${bucket.ids.join(' ')})`
+      console.log(`라운드 ${String(round)}: ${String(bucket.total)} 회차 · ${tail}`)
+    }
+    console.log(`합계: ${String(result.rows.length)} 회차 · 미확정 ${String(result.rows.filter((row) => row.unresolved).length)} 회차`)
   }
 }

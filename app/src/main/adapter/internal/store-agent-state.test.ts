@@ -292,7 +292,7 @@ describe('F1 — blocked 사유는 진입 경로와 무관하게 한 번 물어�
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
     const entry = store.blockedNeedingReason()[0]
     expect(entry).toBeDefined()
-    store.applyBlockedReason({ paneId: 'w1:p1', entry: entry?.entry ?? 0, reason: 'permission' })
+    store.applyBlockedRule({ paneId: 'w1:p1', entry: entry?.entry ?? 0, ruleId: 'bash_permission_prompt' })
     expect(store.blockedNeedingReason()).toEqual([])
   })
 
@@ -316,7 +316,7 @@ describe('F4 — 지난 진입의 늦은 explain 응답은 버린다', () => {
     store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'working' } })
     store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'blocked' } })
     // 옛 삽화의 응답이 이제야 도착한다 — 새 삽화의 사유를 덮으면 안 된다.
-    const result = store.applyBlockedReason({ paneId: 'w1:p1', entry: stale, reason: 'trust' })
+    const result = store.applyBlockedRule({ paneId: 'w1:p1', entry: stale, ruleId: 'trust_directory' })
     expect(result.changed).toBe(false)
     expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBeNull()
   })
@@ -325,7 +325,7 @@ describe('F4 — 지난 진입의 늦은 explain 응답은 버린다', () => {
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
     const entry = store.blockedNeedingReason()[0]?.entry ?? 0
-    expect(store.applyBlockedReason({ paneId: 'w1:p1', entry, reason: 'permission' }).changed).toBe(true)
+    expect(store.applyBlockedRule({ paneId: 'w1:p1', entry, ruleId: 'bash_permission_prompt' }).changed).toBe(true)
     expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBe('permission')
   })
 })

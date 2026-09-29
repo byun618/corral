@@ -2,6 +2,8 @@
 //
 // 이 파일이 못박는 것은 **규칙**이지 화면이 아니다. 화면 모양은 448·449 몫이라 여기 없다.
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   AGENT_HISTORY_LIMIT,
@@ -13,6 +15,7 @@ import {
   pickBlockedRule,
   rollupAgentStatus,
 } from './agent-state.js'
+import { isRecord } from './json.js'
 import type { AgentState, AgentStatus } from './types.js'
 
 describe('parseAgentStatus — herdr 다섯 값 (S1)', () => {
@@ -195,64 +198,143 @@ describe('recordAgentTransition — 관측 시각·완료 시각·이력 (S1·S1
   })
 })
 
-describe('pickBlockedRule — 거친 규칙이 구체적 규칙을 가리지 않게 (F2)', () => {
-  const explain = (matched: string | null, evaluated: Array<{ id: string; matched: boolean; priority?: number }>) => ({
-    ...(matched === null ? {} : { matched_rule: { id: matched } }),
-    evaluated_rules: evaluated,
-  })
+describe('pickBlockedRule — 구체성은 조건 개수다 (F2 · R2-F4)', () => {
+  /**
+   * **대역이 아니라 네이티브 실화면의 explain 응답 그대로**를 읽는다 (R2 「대역 함수 금지」).
+   * 라운드 1 의 이 스위트는 `{id, matched, priority}` 만 있는 손으로 지은 객체를 먹여서
+   * `state` 칸 미필터와 구체성 정의 오류를 **둘 다 못 잡았다.**
+   */
+  const screensDir = fileURLToPath(new URL('../../../specs/LIFE-456-agent-state/raw/claude/s9-r1/f2/', import.meta.url))
+  const screen = (name: string): Record<string, unknown> => {
+    const raw: unknown = JSON.parse(readFileSync(`${screensDir}${name}`, 'utf8'))
+    if (!isRecord(raw)) throw new Error(`원자료가 객체가 아니다: ${name}`)
+    const result = raw['result']
+    const explain = isRecord(result) ? result['explain'] : raw
+    if (!isRecord(explain)) throw new Error(`explain 을 못 찾았다: ${name}`)
+    return explain
+  }
 
-  it('`matched_rule` 이 이미 사유를 주면 그걸 쓴다 — 응답을 더 뒤지지 않는다', () => {
-    const picked = pickBlockedRule(explain('bash_permission_prompt', [{ id: 'trust_directory', matched: true }]))
-    expect(picked).toEqual({ ruleId: 'bash_permission_prompt', matchedRuleId: 'bash_permission_prompt', source: 'matched' })
-  })
-
-  it('**거친 규칙이 이겼으면 같이 맞은 구체적 규칙을 집는다** — 이게 F2 의 반례다', () => {
-    // 실제 우선순위: osc_title_blocked(1300) > bash_permission_prompt. herdr 는 앞의 것을
-    // matched_rule 로 주는데 그 규칙은 「막혔다」만 뜻해서 우리 표에서 unknown 으로 떨어진다.
-    const picked = pickBlockedRule(explain('osc_title_blocked', [
-      { id: 'osc_title_blocked', matched: true, priority: 1300 },
-      { id: 'bash_permission_prompt', matched: true, priority: 900 },
-    ]))
+  it('claude 권한 화면 — 조건 7개짜리를 집는다 (herdr 승자와 같다)', () => {
+    // bash_permission_prompt(850, 조건 7) vs generic_permission_prompt(840, 조건 3).
+    // **여기서는 구체적인 쪽의 번호가 더 높다** — 라운드 1 의 「번호가 낮을수록 구체적」이
+    // 틀렸다는 반례다. 그 규칙이었다면 generic(840)을 골랐다.
+    const picked = pickBlockedRule(screen('claude-explain.json'))
     expect(picked.ruleId).toBe('bash_permission_prompt')
-    expect(picked.source).toBe('evaluated')
-    // 원래 herdr 가 고른 것도 들고 간다 — 원자료에서 대조할 수 있어야 한다.
-    expect(picked.matchedRuleId).toBe('osc_title_blocked')
-  })
-
-  it('**여럿이 맞으면 가장 구체적인 것(priority 최소)을 집는다** — 네이티브 실측 그대로', () => {
-    // `raw/claude/s9-r1/f2/grok-explain.json` 의 실제 응답이다. 배열 순서(우선순위 내림차순)
-    // 로 훑으면 `option_dialog_blocked`(question)가 먼저 걸리는데, 화면은 **권한** 상자다.
-    const picked = pickBlockedRule(explain('osc_title_blocked', [
-      { id: 'osc_title_blocked', matched: true, priority: 1300 },
-      { id: 'option_dialog_blocked', matched: true, priority: 1200 },
-      { id: 'permission_scope_selector', matched: true, priority: 1180 },
-      { id: 'osc_title_working', matched: true, priority: 1000 },
-    ]))
-    expect(picked.ruleId).toBe('permission_scope_selector')
+    expect(picked.matchedRuleId).toBe('bash_permission_prompt')
     expect(blockedReason({ ruleId: picked.ruleId })).toBe('permission')
   })
 
-  it('priority 가 없는 규칙은 맨 뒤다 — 순서를 모르는 것을 구체적이라고 우기지 않는다', () => {
-    const picked = pickBlockedRule(explain('osc_title_blocked', [
-      { id: 'mcp_elicitation_prompt', matched: true },
-      { id: 'permission_scope_selector', matched: true, priority: 1180 },
-    ]))
+  it('grok 권한 화면 — 거친 승자를 지나 조건 4개짜리를 집는다 (반대 방향 반례)', () => {
+    // osc_title_blocked(1300, 매핑 없음) 이 이겼고, option_dialog_blocked(1200, 조건 1,
+    // question) 과 permission_scope_selector(1180, 조건 4, permission) 가 같이 맞았다.
+    // 화면은 **권한** 상자다. 여기서는 구체적인 쪽의 번호가 더 **낮다**.
+    const picked = pickBlockedRule(screen('grok-explain-final.json'))
     expect(picked.ruleId).toBe('permission_scope_selector')
+    expect(picked.source).toBe('evaluated')
+    expect(picked.matchedRuleId).toBe('osc_title_blocked')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('permission')
+  })
+
+  it('claude 질문 화면 — 매핑된 후보가 없으면 승자를 그대로 둔다 (unknown)', () => {
+    const picked = pickBlockedRule(screen('claude-question-explain.json'))
+    expect(picked.ruleId).toBe('live_blocked_form')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('unknown')
+  })
+
+  it('codex 권한 화면 — 같이 맞은 것도 일부러 매핑 안 한 규칙이라 unknown 이 옳다', () => {
+    const picked = pickBlockedRule(screen('codex-explain.json'))
+    expect(picked.ruleId).toBe('osc_title_blocked')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('unknown')
+  })
+
+  it('blocked 가 아닌 규칙은 같이 맞아도 후보가 아니다 (R2-F4 — state 칸 미필터가 결함이었다)', () => {
+    // grok 권한 화면에는 osc_title_working(state=working) 이, claude 화면에는
+    // osc_title_idle·live_prompt_box(state=idle) 가 **함께 맞는다**(실측). 조건수만 보면
+    // live_prompt_box(6) 가 permission 규칙을 이길 수 있다 — state 로 먼저 걸러야 한다.
+    const withIdleWinner = {
+      matched_rule: { id: 'osc_title_blocked', priority: 1300, state: 'blocked' },
+      evaluated_rules: [
+        { id: 'osc_title_blocked', matched: true, priority: 1300, state: 'blocked', evidence: { contains: ['x'] } },
+        // 사유가 있는 규칙인데 state 가 idle 이다 — 집으면 안 된다.
+        { id: 'permission_hints_blocked', matched: true, priority: 1190, state: 'idle',
+          evidence: { contains: ['a', 'b', 'c', 'd', 'e'] } },
+        { id: 'permission_scope_selector', matched: true, priority: 1180, state: 'blocked',
+          evidence: { contains: ['yes, proceed'], any_count: 1 } },
+      ],
+    }
+    expect(pickBlockedRule(withIdleWinner).ruleId).toBe('permission_scope_selector')
+  })
+
+  it('**매핑된 거친 승자도 특권이 없다** — 더 구체적인 매치가 있으면 그것 (R2-F4)', () => {
+    // herdr 가 option_dialog_blocked(question) 를 승자로 준 경우. 라운드 1 코드는
+    // 「matched 가 매핑돼 있으면 거기서 끝」이라 question 을 냈다.
+    const coarseWinnerIsMapped = {
+      matched_rule: { id: 'option_dialog_blocked', priority: 1200, state: 'blocked' },
+      evaluated_rules: [
+        { id: 'option_dialog_blocked', matched: true, priority: 1200, state: 'blocked',
+          evidence: { line_regex: ['^x'] } },
+        { id: 'permission_scope_selector', matched: true, priority: 1180, state: 'blocked',
+          evidence: { contains: ['yes, proceed', 'no, reject'], any_count: 2 } },
+      ],
+    }
+    const picked = pickBlockedRule(coarseWinnerIsMapped)
+    expect(picked.ruleId).toBe('permission_scope_selector')
+    expect(picked.matchedRuleId).toBe('option_dialog_blocked')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('permission')
+  })
+
+  it('조건수가 같으면 herdr 의 승부 규칙을 빌린다 — 번호가 높은 쪽 (grok 1190/1185)', () => {
+    // 매니페스트 실측: 둘 다 region=bottom_non_empty_lines(2) 로 **같은 자리**를 보고
+    // 조건수는 3 대 2 다. 조건수를 같게 맞춰 두면 priority 가 갈라야 한다.
+    const tie = {
+      matched_rule: { id: 'osc_title_blocked', priority: 1300, state: 'blocked' },
+      evaluated_rules: [
+        { id: 'question_dialog_hints_blocked', matched: true, priority: 1185, state: 'blocked',
+          evidence: { contains: ['tab:scrollback', 'shift+x:dismiss', 'z'] } },
+        { id: 'permission_hints_blocked', matched: true, priority: 1190, state: 'blocked',
+          evidence: { contains: [':select', 'ctrl+o:yolo', 'ctrl+c:cancel'] } },
+      ],
+    }
+    const picked = pickBlockedRule(tie)
+    expect(picked.ruleId).toBe('permission_hints_blocked')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('permission')
+  })
+
+  it('실제 1190/1185 조건수(3 대 2)로는 조건수가 먼저 가른다 — 두 축이 같은 답을 준다', () => {
+    const real = {
+      matched_rule: { id: 'osc_title_blocked', priority: 1300, state: 'blocked' },
+      evaluated_rules: [
+        { id: 'permission_hints_blocked', matched: true, priority: 1190, state: 'blocked',
+          evidence: { contains: [':select', 'ctrl+o:yolo', 'ctrl+c:cancel'] } },
+        { id: 'question_dialog_hints_blocked', matched: true, priority: 1185, state: 'blocked',
+          evidence: { contains: ['tab:scrollback', 'shift+x:dismiss'] } },
+      ],
+    }
+    expect(pickBlockedRule(real).ruleId).toBe('permission_hints_blocked')
   })
 
   it('맞지 않은(`matched:false`) 규칙은 안 집는다', () => {
-    const picked = pickBlockedRule(explain('osc_title_blocked', [
-      { id: 'osc_title_blocked', matched: true },
-      { id: 'bash_permission_prompt', matched: false },
-    ]))
+    const picked = pickBlockedRule({
+      matched_rule: { id: 'osc_title_blocked', state: 'blocked' },
+      evaluated_rules: [
+        { id: 'osc_title_blocked', matched: true, state: 'blocked', evidence: { contains: ['x'] } },
+        { id: 'bash_permission_prompt', matched: false, state: 'blocked', evidence: { contains: ['a', 'b'] } },
+      ],
+    })
     expect(picked.ruleId).toBe('osc_title_blocked')
     expect(picked.source).toBe('matched')
   })
 
-  it('아무 데서도 갈래가 안 나오면 `matched_rule` 을 그대로 둔다 — unknown 과 null 을 안 뭉갠다', () => {
-    const picked = pickBlockedRule(explain('live_blocked_form', [{ id: 'live_blocked_form', matched: true }]))
-    expect(picked.ruleId).toBe('live_blocked_form')
-    expect(blockedReason({ ruleId: picked.ruleId })).toBe('unknown')
+  it('evidence 가 없으면 조건수 0 이다 — 없는 근거를 구체적이라고 우기지 않는다', () => {
+    const picked = pickBlockedRule({
+      matched_rule: { id: 'osc_title_blocked', state: 'blocked' },
+      evaluated_rules: [
+        { id: 'permission_scope_selector', matched: true, priority: 1180, state: 'blocked' },
+        { id: 'option_dialog_blocked', matched: true, priority: 1200, state: 'blocked' },
+      ],
+    })
+    // 둘 다 조건수 0 → priority 가 높은 쪽(herdr 승부 규칙).
+    expect(picked.ruleId).toBe('option_dialog_blocked')
   })
 
   it('explain 이 없으면 아무 말도 안 한 것이다 (null ≠ unknown)', () => {

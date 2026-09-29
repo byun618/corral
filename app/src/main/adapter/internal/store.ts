@@ -168,6 +168,33 @@ export class WorkspaceStore {
    */
   private blockedEntries = new Map<string, number>()
   private blockedEntrySeq = 0
+  /**
+   * **사유의 두 입력을 pane 마다 기억한다** (R2-F2 — 「한 입력 규칙」).
+   *
+   * 사유는 `blockedReason({ labels, ruleId })` 한 함수가 정하는데, 두 입력이 **다른 순간에**
+   * 도착한다: `labels` 는 스냅샷·`pane_updated` 봉투에, `ruleId` 는 나중에 오는 `agent.explain`
+   * 응답에 실린다. 라운드 1 은 자리마다 **한쪽만** 먹였다 — `putPane` 은 labels 만,
+   * `explainBlocked` 는 ruleId 만, `agent_status_changed` 는 아무것도. 그래서 labels 가 채운
+   * 사유가 있으면 `blockedNeedingReason` 이 그 pane 을 건너뛰어 **explain 이 영영 안 돌았고**,
+   * CLI 는 둘 다 먹여서 같은 pane 에 다른 답이 나올 수 있었다.
+   *
+   * 여기 모아 두면 **어느 입력이 먼저 오든 항상 둘 다 먹인 값**이 나온다. CLI 도 같은 함수에
+   * 같은 두 입력을 준다 — 그것이 S6 「한 어휘」의 실제 내용이다.
+   */
+  private blockedLabels = new Map<string, Readonly<Record<string, string>>>()
+  /** 그 삽화에 대해 explain 응답을 이미 반영했나 (paneId → entry). */
+  private blockedExplained = new Map<string, number>()
+
+  /** 사유를 정하는 **유일한 자리**. 두 입력을 항상 함께 먹인다 (R2-F2). */
+  private resolveBlockedReason(paneId: string, labels?: Readonly<Record<string, string>> | null): BlockedReason | null {
+    if (labels !== undefined && labels !== null) this.blockedLabels.set(paneId, labels)
+    return blockedReason({
+      labels: this.blockedLabels.get(paneId) ?? null,
+      ruleId: this.blockedRuleIds.get(paneId) ?? null,
+    })
+  }
+  /** explain 이 고른 규칙 id (paneId → ruleId). 삽화가 끝나면 지운다. */
+  private blockedRuleIds = new Map<string, string | null>()
 
   /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
   private retentionSuppressed = new Set<string>()
@@ -183,6 +210,9 @@ export class WorkspaceStore {
     this.retained = []
     this.retentionSuppressed.clear()
     this.blockedEntries.clear()
+    this.blockedLabels.clear()
+    this.blockedExplained.clear()
+    this.blockedRuleIds.clear()
     this.orphans = []
   }
 
@@ -838,7 +868,8 @@ export class WorkspaceStore {
         previousStatus: before?.agentStatus ?? null,
         previousState: before?.agentState ?? emptyAgentState(at),
         nextStatus,
-        blockedReason: blockedReason({ labels: readStateLabels(value) }),
+        // **두 입력을 함께** 먹인다 (R2-F2). explain 이 이미 답한 삽화면 그 ruleId 가 이긴다.
+        blockedReason: this.resolveBlockedReason(id, readStateLabels(value)),
         observedAt: at,
         // 스냅샷·`pane_updated` 로 알게 된 값이다 — **진입 시각이 아니다**(`AgentObservedVia`).
         observedVia: 'snapshot',
@@ -906,9 +937,14 @@ export class WorkspaceStore {
       previousState: pane.agentState,
       nextStatus: status,
       // 이 봉투에는 `state_labels` 가 안 실린다(실측 — `{agent, agent_status, pane_id, workspace_id}`).
-      // 사유는 스냅샷 경로에서만 올 수 있으므로 알던 값을 지키지 않고 **그대로 둔다**:
-      // 전이가 일어났으면 이전 사유는 이미 지난 상태의 것이라 들고 가면 거짓이 된다.
-      blockedReason: null,
+      // 전이가 일어났으면 **지난 삽화의 입력 둘 다** 버린다 (R2-F2) — 들고 가면 옛 화면의
+      // 사유가 새 화면에 남는다. 비운 뒤 같은 함수를 부르므로 결과는 `null` 이고,
+      // 그래야 `blockedNeedingReason` 이 이 pane 을 다시 집는다.
+      blockedReason: (() => {
+        this.blockedLabels.delete(paneId)
+        this.blockedRuleIds.delete(paneId)
+        return this.resolveBlockedReason(paneId)
+      })(),
       observedAt: Date.now(),
       // 전이 이벤트다 — 이것만이 **진입 시각에 가까운** 관측이다.
       observedVia: 'event',
@@ -997,6 +1033,9 @@ export class WorkspaceStore {
   private trackBlockedEntry(paneId: string, previousStatus: AgentStatus | null, nextStatus: AgentStatus): void {
     if (nextStatus !== 'blocked') {
       this.blockedEntries.delete(paneId)
+      this.blockedLabels.delete(paneId)
+      this.blockedExplained.delete(paneId)
+      this.blockedRuleIds.delete(paneId)
       return
     }
     // 이미 blocked 였고 번호도 있으면 **같은 삽화**다 — 번호를 바꾸지 않는다(같은 값 재관측).
@@ -1017,7 +1056,13 @@ export class WorkspaceStore {
     for (const [paneId, entry] of this.blockedEntries) {
       const pane = this.panes.get(paneId)
       if (pane === undefined || pane.agentStatus !== 'blocked') continue
-      if (pane.agentState.blockedReason !== null) continue
+      /**
+       * **「사유가 비었나」가 아니라 「이 삽화에 explain 이 답했나」로 가른다** (R2-F2).
+       * 전에는 사유가 차 있으면 건너뛰었는데, `state_labels` 가 먼저 사유를 채우면 그 pane 은
+       * explain 을 **영영 못 받았다** — labels 가 지은 사유는 교정될 기회가 없었다.
+       * (오늘 세 provider 의 labels 는 비어 와서 증상이 안 보일 뿐, 규칙이 틀려 있었다.)
+       */
+      if (this.blockedExplained.get(paneId) === entry) continue
       rows.push({ paneId, entry })
     }
     return rows
@@ -1032,6 +1077,9 @@ export class WorkspaceStore {
     const { pane, at, retain } = input
     if (retain) this.retain(pane, at)
     this.blockedEntries.delete(pane.paneId)
+    this.blockedLabels.delete(pane.paneId)
+    this.blockedExplained.delete(pane.paneId)
+    this.blockedRuleIds.delete(pane.paneId)
     this.panes.delete(pane.paneId)
     this.closedPanes.set(pane.paneId, at)
   }
@@ -1071,7 +1119,7 @@ export class WorkspaceStore {
    * 상태의 사유를 지금 상태에 붙이면 화면이 거짓말을 한다. 상태 자체는 건드리지 않으므로
    * 관측 시각·이력도 그대로다(같은 값 갈래를 타고 사유만 갈린다).
    */
-  applyBlockedReason(input: { paneId: string; entry: number; reason: BlockedReason | null }): ApplyResult {
+  applyBlockedRule(input: { paneId: string; entry: number; ruleId: string | null }): ApplyResult {
     const pane = this.panes.get(input.paneId)
     if (pane === undefined) return { changed: false, note: `blocked_reason: 모르는 pane (${input.paneId})` }
     if (pane.agentStatus !== 'blocked') {
@@ -1086,12 +1134,17 @@ export class WorkspaceStore {
     if (current !== input.entry) {
       return { changed: false, note: `blocked_reason: 지난 진입의 응답 (${input.entry} ≠ ${String(current)})` }
     }
-    if (pane.agentState.blockedReason === input.reason) {
-      return { changed: false, note: `blocked_reason: 같은 값 (${String(input.reason)})` }
+    // 답을 받았다는 사실은 **사유가 바뀌었든 아니든** 기록한다 — 안 그러면 매 훑기마다 다시 묻는다.
+    this.blockedExplained.set(input.paneId, input.entry)
+    this.blockedRuleIds.set(input.paneId, input.ruleId)
+    const reason = this.resolveBlockedReason(input.paneId)
+    if (pane.agentState.blockedReason === reason) {
+      return { changed: false, note: `blocked_reason: 같은 값 (${String(reason)})` }
     }
-    this.panes.set(input.paneId, { ...pane, agentState: { ...pane.agentState, blockedReason: input.reason } })
-    return { changed: true, note: `blocked_reason: ${String(pane.agentState.blockedReason)} → ${String(input.reason)}` }
+    this.panes.set(input.paneId, { ...pane, agentState: { ...pane.agentState, blockedReason: reason } })
+    return { changed: true, note: `blocked_reason: ${String(pane.agentState.blockedReason)} → ${String(reason)}` }
   }
+
 
   /**
    * 보류함에 담는다. 담을 때마다 창 지난 것을 턴다 — 별도 타이머를 두지 않기 위해서다.

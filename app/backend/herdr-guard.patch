@@ -54,7 +54,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,249 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -88,6 +88,13 @@
 +            Method::PaneProcessInfo(p) => p.pane_id.as_deref(),
 +            Method::AgentStart(p) => Some(p.pane_id.as_str()),
 +            Method::AgentGet(t) => Some(t.target.as_str()),
++            // Read-only, and it carries the same AgentTarget as agent.get, so it gets the same
++            // identity check: params.pane_id must equal the target and the PTY generation must
++            // still match. LIFE-456 R2-F1 — without this arm the CLI's blocked reason is always
++            // `unknown`, because the only reason source (matched detect rule) lives behind
++            // agent.explain and the guard answered `unsupported`. Widening the allowlist by one
++            // read-only method does not change the envelope, so guard_version stays 1.
++            Method::AgentExplain(t) => Some(t.target.as_str()),
 +            Method::AgentPrompt(p) => Some(p.target.as_str()),
 +            Method::TabRename(_) => params.pane_id.as_deref(),
 +            // Read-only, target-less arms. server.agent_manifests is here so corral can check which

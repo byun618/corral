@@ -195,51 +195,109 @@ export function recordAgentTransition(input: {
 }
 
 /** `agent.explain` 이 고른 규칙과, 우리가 사유로 쓰기로 한 규칙. */
-type PickedRule = { ruleId: string | null; matchedRuleId: string | null; source: 'matched' | 'evaluated' | 'none' }
+type PickedRule = {
+  ruleId: string | null
+  matchedRuleId: string | null
+  source: 'matched' | 'evaluated' | 'none'
+}
 
 /**
- * `agent.explain` 응답에서 **사유로 쓸 규칙 하나**를 고른다 (S3 · F2).
+ * 규칙 하나가 화면을 얼마나 **좁게** 집는가 (R2-F4).
+ *
+ * `evaluated_rules[].evidence` 가 그 규칙이 요구한 조건을 그대로 센다 — 문자열 포함 몇 개,
+ * 정규식 몇 개, `any`/`all`/`not` 묶음 몇 개. **explain 응답이 직접 주는 값이라 매니페스트를
+ * 따로 읽지 않는다.** 조건이 많을수록 그 규칙이 통과시키는 화면이 좁다.
+ */
+function conditionCount(entry: Record<string, unknown>): number {
+  const evidence = readRecord(entry, 'evidence')
+  if (evidence === null) return 0
+  const lists = ['contains', 'line_regex', 'regex'] as const
+  const counts = ['any_count', 'all_count', 'not_count'] as const
+  let total = 0
+  for (const key of lists) total += readArray(evidence, key).length
+  for (const key of counts) {
+    const raw = evidence[key]
+    if (typeof raw === 'number' && Number.isFinite(raw)) total += raw
+  }
+  return total
+}
+
+/**
+ * `agent.explain` 응답에서 **사유로 쓸 규칙 하나**를 고른다 (S3 · F2 · R2-F4).
  *
  * herdr 는 규칙을 우선순위로 정렬해 먼저 맞는 하나를 `matched_rule` 로 준다. 그런데 화면
  * 종류를 **안 가르는** 거친 규칙(`osc_title_blocked` 1300, `live_blocked_form` 980 …)이
- * 권한·질문 규칙보다 위에 있을 수 있고, 그러면 우리 사유가 늘 `unknown` 으로 수렴한다 —
- * 리뷰 R1 의 지적이다. 같은 응답에 `evaluated_rules` 가 이미 들어 있으므로 **요청은 그대로**
- * 두고 거기서 「맞았고(`matched:true`) 우리 표에 사유가 있는」 규칙을 찾는다.
+ * 권한·질문 규칙보다 위에 있을 수 있다. 같은 응답에 `evaluated_rules` 가 이미 들어 있으므로
+ * **요청은 그대로** 두고 거기서 고른다.
  *
- * 고르는 순서는 **구체적인 것 우선**이다: `matched_rule` 이 이미 사유를 주면 그걸 쓰고,
- * 주지 못할 때만(`unknown` 으로 떨어질 때만) `evaluated_rules` 를 본다.
+ * **「구체성 = priority 가 낮은 것」은 틀렸다** (R2-F4 — 라운드 1 의 전제를 실측이 깼다).
+ * 방향이 화면마다 반대다:
+ *   · claude 권한 — `bash_permission_prompt`(850)가 `generic_permission_prompt`(840)보다
+ *     구체적인데 번호가 **높다**
+ *   · grok 권한 — `permission_scope_selector`(1180)가 `option_dialog_blocked`(1200)보다
+ *     구체적인데 번호가 **낮다**
+ * herdr 에서 priority 는 「누가 이기나」이지 「얼마나 좁은가」가 아니다. 그래서 구체성은
+ * **조건 개수**(`conditionCount`)로 재고, priority 는 **동점일 때의 승부**로만 쓴다 —
+ * 그 자리에서는 herdr 자신의 규칙(높은 번호가 이긴다)을 그대로 빌린다.
+ * 근거 표: `specs/LIFE-456-agent-state/raw/claude/s9-r2/00-f4-specificity.md`
  *
- * **구체성은 `priority` 가 낮을수록 높다.** herdr 는 거친 규칙이 먼저 걸리도록 높은 번호를
- * 주기 때문에, 배열 순서(= 우선순위 내림차순)로 훑으면 **가장 거친 매핑**을 집게 된다.
- * 실측이 그 함정을 보여 줬다(`raw/claude/s9-r1/03-f2-masking.md`): grok 권한 상자에서
- * `osc_title_blocked`(1300, 매핑 없음) · `option_dialog_blocked`(1200, question) ·
- * `permission_scope_selector`(1180, permission) 셋이 함께 맞았는데, 배열 순서로는
- * `question` 이 나왔다 — 화면은 권한 상자다. 그래서 **번호가 가장 낮은 것**을 고른다.
+ * 고르는 절차:
+ *   1. `matched === true` **그리고 `state === 'blocked'`** 인 규칙만 본다 — 같은 화면에서
+ *      `osc_title_idle`·`live_prompt_box`·`osc_title_working` 도 함께 맞는다(실측). 그것들은
+ *      다른 상태를 말하는 규칙이라 blocked 사유가 아니다
+ *   2. 그중 **우리 표에 사유가 있는 것**만 후보다. `matched_rule` 도 **같은 자격으로** 넣는다 —
+ *      거친 승자가 매핑돼 있다고 특권을 주지 않는다(R2-F4 의 요구: 매핑된 `option_dialog_blocked`
+ *      가 이겨도 `permission_scope_selector` 가 있으면 그것을 쓴다)
+ *   3. 조건수 최대 → priority 최대 → `matched_rule` → 배열 첫 번째 순으로 하나를 정한다.
+ *      마지막 갈래는 **결정성 확보용**이지 구체성 판단이 아니다
  *
- * **아무 데서도 사유가 안 나오면 `matched_rule` 을 그대로 돌려준다** — 「말은 했는데 갈래가
- * 없다(`unknown`)」와 「아무 말도 없다(`null`)」의 구분을 여기서 뭉개지 않는다.
+ * **후보가 없으면 `matched_rule` 을 그대로 돌려준다** — 「말은 했는데 갈래가 없다(`unknown`)」와
+ * 「아무 말도 없다(`null`)」의 구분을 여기서 뭉개지 않는다.
  */
 export function pickBlockedRule(explain: Record<string, unknown> | null): PickedRule {
   if (explain === null) return { ruleId: null, matchedRuleId: null, source: 'none' }
   const matchedRuleId = readString(readRecord(explain, 'matched_rule') ?? {}, 'id')
-  if (matchedRuleId !== null && blockedReason({ ruleId: matchedRuleId }) !== 'unknown') {
-    return { ruleId: matchedRuleId, matchedRuleId, source: 'matched' }
-  }
-  const candidates: Array<{ id: string; priority: number }> = []
+
+  type Candidate = { id: string; conditions: number; priority: number; order: number }
+  const candidates: Candidate[] = []
+  let order = 0
   for (const entry of readArray(explain, 'evaluated_rules')) {
-    if (!isRecord(entry) || entry['matched'] !== true) continue
+    order += 1
+    if (!isRecord(entry)) continue
+    if (entry['matched'] !== true) continue
+    if (readString(entry, 'state') !== 'blocked') continue
     const id = readString(entry, 'id')
     if (id === null) continue
     const reason = blockedReason({ ruleId: id })
     if (reason === null || reason === 'unknown') continue
-    // 번호가 없으면 맨 뒤로 — 순서를 모르는 것을 구체적이라고 우기지 않는다.
-    const raw = entry['priority']
-    candidates.push({ id, priority: typeof raw === 'number' ? raw : Number.POSITIVE_INFINITY })
+    const rawPriority = entry['priority']
+    candidates.push({
+      id,
+      conditions: conditionCount(entry),
+      // 번호가 없으면 **가장 약한 승부값**을 준다 — 모르는 것을 세다고 우기지 않는다.
+      priority: typeof rawPriority === 'number' && Number.isFinite(rawPriority) ? rawPriority : Number.NEGATIVE_INFINITY,
+      order,
+    })
   }
-  if (candidates.length > 0) {
-    let best = candidates[0]
-    for (const item of candidates) if (best === undefined || item.priority < best.priority) best = item
-    if (best !== undefined) return { ruleId: best.id, matchedRuleId, source: 'evaluated' }
+
+  let best: Candidate | null = null
+  for (const item of candidates) {
+    if (best === null || beats(item, best, matchedRuleId)) best = item
+  }
+  if (best !== null) {
+    return { ruleId: best.id, matchedRuleId, source: best.id === matchedRuleId ? 'matched' : 'evaluated' }
   }
   return { ruleId: matchedRuleId, matchedRuleId, source: matchedRuleId === null ? 'none' : 'matched' }
+
+  function beats(
+    challenger: { id: string; conditions: number; priority: number; order: number },
+    champion: { id: string; conditions: number; priority: number; order: number },
+    matched: string | null,
+  ): boolean {
+    if (challenger.conditions !== champion.conditions) return challenger.conditions > champion.conditions
+    if (challenger.priority !== champion.priority) return challenger.priority > champion.priority
+    if (challenger.id === matched) return true
+    if (champion.id === matched) return false
+    return challenger.order < champion.order
+  }
 }

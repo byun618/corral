@@ -11,7 +11,7 @@
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
 
 import type { LinkPhase, LinkState } from '../../../shared/types.js'
-import { blockedReason, pickBlockedRule } from '../../../shared/agent-state.js'
+import { pickBlockedRule } from '../../../shared/agent-state.js'
 import { isRecord, readRecord } from '../../../shared/json.js'
 import type { SessionHandle } from './sessions.js'
 import { log } from '../../log.js'
@@ -537,7 +537,11 @@ export class SessionLink {
 
   /**
    * 한 삽화의 사유를 물어 온다. 기다리지 않는다(이벤트 처리를 막지 않는다) — 응답이 오는
-   * 사이에 삽화가 끝났으면 `applyBlockedReason` 이 **삽화 번호를 보고** 그 값을 버린다(F4).
+   * 사이에 삽화가 끝났으면 `applyBlockedRule` 이 **삽화 번호를 보고** 그 값을 버린다(F4).
+   *
+   * **여기서 사유를 계산하지 않는다** (R2-F2). 고른 규칙 id 만 넘기고, store 가 그것을 자기가
+   * 기억한 `state_labels` 와 **함께** 한 함수에 먹인다. 전에는 여기서 `blockedReason({ruleId})`
+   * 만 불러 labels 를 빠뜨렸고, 그래서 같은 pane 이 CLI(둘 다 먹임)와 다른 답을 낼 수 있었다.
    */
   private explainBlocked(paneId: string, entry: number): void {
     const session = this.session
@@ -548,11 +552,10 @@ export class SessionLink {
         if (this.stopped || generation !== this.generation) return
         const explain = readRecord(isRecord(frame.result) ? frame.result : {}, 'explain')
         const picked = pickBlockedRule(explain)
-        const reason = blockedReason({ ruleId: picked.ruleId })
-        const result = this.store.applyBlockedReason({ paneId, entry, reason })
+        const result = this.store.applyBlockedRule({ paneId, entry, ruleId: picked.ruleId })
         log('agent_explain.reason', {
           paneId, entry, ruleId: picked.ruleId, source: picked.source, matchedRuleId: picked.matchedRuleId,
-          reason, changed: result.changed, note: result.note,
+          changed: result.changed, note: result.note,
         })
         if (result.changed) this.hooks.onChange()
       })

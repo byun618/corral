@@ -84,6 +84,18 @@ export const SIDECAR_WINDOW_BYTES = 256 * 1024
  */
 export const SUMMARY_MAX_BYTES = 256 * 1024
 
+/**
+ * **이어 나르기 닻** (수정 r2·R2-F1) — 지난 판독에서 온전히 읽은 끝 위치 바로 앞의 바이트 몇 개를 쥐고 있다가,
+ * 다음 판독에서 **같은 위치에 같은 바이트가 그대로 있을 때만** "같은 파일이 뒤로만 자랐다" 고 본다.
+ * 경로·크기만으로는 같은 경로 rename 교체도, 같은 inode truncate 뒤 재성장도 연속 append 와 구별이 안 된다
+ * (codex 리뷰 r2 R2-1). JSONL 줄 끝에는 id·시각이 있어 1KiB 가 우연히 같을 일은 사실상 없다.
+ * 대개 이미 읽은 꼬리 창 안에 있어 추가 읽기가 없고, 창 밖이면 이 크기만큼만 더 읽는다(T7).
+ */
+export const CARRY_ANCHOR_BYTES = 1024
+
+/** 이어 나르기 기준점 — 온전한 줄까지 읽은 끝 위치와 그 앞 닻 바이트(`[end - anchor.length, end)`). */
+type Observed = { end: number; anchor: Buffer }
+
 /** 아무것도 못 읽은 지문. */
 const EMPTY: SessionDigest = EMPTY_SESSION_DIGEST
 
@@ -111,10 +123,10 @@ type CacheEntry = {
   /** 형제 파일을 합치기 **전**의 본 파일 지문 — 이어 나르기는 본 파일 값만 잇는다(형제 값이 섞이면 안 된다). */
   mainDigest: SessionDigest
   /**
-   * 이어 나르기의 기준점 (수정 r1·F4) — 지난 판독에서 **온전한 줄로 끝까지 읽은** 파일 위치.
-   * 이번 판독 구간이 여기서부터 끊김 없이 이어질 때만 모델·최근 발화를 잇는다. 모르면 null.
+   * 이어 나르기의 기준점 (수정 r1·F4, r2·R2-F1) — 지난 판독에서 **온전한 줄로 끝까지 읽은** 파일 위치와 그 앞 닻.
+   * 닻이 그대로이고 이번 판독 구간이 여기서부터 끊김 없이 이어질 때만 모델·최근 발화를 잇는다. 모르면 null.
    */
-  observedEnd: number | null
+  observed: Observed | null
   /**
    * 이 파일에서 **provider 제목을 상한(2MB)까지 한 번 훑어봤나** (수정 라운드 1, V2).
    * 한 번 훑었으면 다시 안 훑는다 — 이 깃발이 없으면 제목 없는 긴 파일이 갱신될 때마다
@@ -300,11 +312,12 @@ export function resolveTranscriptFile(ref: AgentSessionRef): string | null {
  * JSON 파싱이 실패해 건너뛴다 — 여기서 따로 다루지 않는다.
  */
 function readRange(file: string, from: number, to: number): string {
-  return readBytes(file, from, to).toString('utf8')
+  return readBytes({ file, from, to }).toString('utf8')
 }
 
 /** `readRange` 의 바이트판 — 줄 경계를 **파일 위치**로 재야 할 때(F4) 쓴다. */
-function readBytes(file: string, from: number, to: number): Buffer {
+function readBytes(input: { file: string; from: number; to: number }): Buffer {
+  const { file, from, to } = input
   const handle = fs.openSync(file, 'r')
   try {
     const length = Math.max(0, to - from)
@@ -345,8 +358,8 @@ function readDigest(input: {
   sessionId: string | null
   titleScanned: boolean
   headDone: boolean
-  /** 이어 나를 값이 있을 때 그 값의 기준점(`CacheEntry.observedEnd`). 이을 것이 없으면 null. */
-  carryFrom: number | null
+  /** 이어 나를 값이 있을 때 그 값의 기준점(`CacheEntry.observed`). 이을 것이 없으면 null. */
+  carry: Observed | null
 }): {
   digest: SessionDigest
   bytes: number
@@ -354,12 +367,12 @@ function readDigest(input: {
   titleScanned: boolean
   headDone: boolean
   firstPrompt: string | null
-  /** 이번 판독 구간이 `carryFrom` 에서 끊김 없이 이어지나 — 이어 나르기를 해도 되나 (F4). */
+  /** 같은 파일이 뒤로만 자랐고(닻) 이번 판독 구간이 `carry` 에서 끊김 없이 이어지나 — 이어 나르기를 해도 되나 (F4·R2-F1). */
   contiguous: boolean
-  observedEnd: number | null
+  observed: Observed | null
 } {
   const firstFrom = Math.max(0, input.size - TAIL_WINDOW_BYTES)
-  let buffer = readBytes(input.file, firstFrom, input.size)
+  let buffer = readBytes({ file: input.file, from: firstFrom, to: input.size })
   let chunk = buffer.toString('utf8')
   let bytes = input.size - firstFrom
   let from = firstFrom
@@ -371,13 +384,26 @@ function readDigest(input: {
   // **틈 확인** (수정 r1·F4). 지난 판독 뒤로 창보다 많이 붙어 읽지 않은 구간이 생겼는데 이번 창에 모델·최근
   // 발화가 없으면, 그 틈에 더 새 값이 있을 수 있다 — 전에 본 값을 그대로 이으면 낡은 값을 최신이라고 말한다.
   // 같은 확장(상한 2MB, A6)으로 틈을 덮어 확인한다. 틈이 없거나 이을 값이 없으면 넓히지 않는다.
-  const gap = input.carryFrom !== null && lineSpan({ buffer, from }).start > input.carryFrom
-  const needsCarryCheck = gap && (parsed.model === null || parsed.lastPrompt === null)
+  //
+  // **닻 확인** (수정 r2·R2-F1). 그 전에 "지난번과 같은 파일이 뒤로만 자랐나" 를 본다 — 아니면(교체·재작성)
+  // 전에 본 값은 이 파일의 값이 아니다. 잇지 않고, 이번 창에 값이 없으면 같은 확장으로 새 파일의 값을 찾는다.
+  // 닻은 판독 구간이 기준점에 닿을 때만 본다 — 틈이면 확장 뒤에 본다(닿지 못하면 어차피 안 잇는다).
+  let carry = input.carry
+  let verified = false
+  if (carry !== null && lineSpan({ buffer, from }).start <= carry.end) {
+    const anchor = anchorHolds({ file: input.file, buffer, from, carry, budget: TAIL_MAX_BYTES - bytes })
+    bytes += anchor.bytes
+    verified = anchor.holds
+    if (!anchor.holds) carry = null
+  }
+  const broken = input.carry !== null && carry === null
+  const gap = carry !== null && !verified
+  const needsCarryCheck = (gap || broken) && (parsed.model === null || parsed.lastPrompt === null)
   // 첫 창에서 못 찾은 게 있고 아직 앞에 남은 게 있으면 **한 번만** 더 넓힌다.
   if ((needsText || needsTitle || needsCarryCheck) && from > 0) {
     const secondFrom = Math.max(0, input.size - TAIL_MAX_BYTES)
     if (secondFrom < from) {
-      buffer = Buffer.concat([readBytes(input.file, secondFrom, from), buffer]) // 두 구간은 붙어 있다 — 겹치지 않는다
+      buffer = Buffer.concat([readBytes({ file: input.file, from: secondFrom, to: from }), buffer]) // 두 구간은 붙어 있다 — 겹치지 않는다
       chunk = buffer.toString('utf8')
       bytes += from - secondFrom
       from = secondFrom
@@ -415,9 +441,19 @@ function readDigest(input: {
 
   // 틈이 끝내 안 덮였으면(2MB 밖) 이어 나르지 않는다 — 그 칸은 이번 창에서 본 값, 없으면 null 이다.
   const span = lineSpan({ buffer, from })
-  const contiguous = input.carryFrom !== null && span.start <= input.carryFrom
+  if (carry !== null && !verified && span.start <= carry.end) {
+    const anchor = anchorHolds({ file: input.file, buffer, from, carry, budget: TAIL_MAX_BYTES - bytes })
+    bytes += anchor.bytes
+    verified = anchor.holds
+  }
+  const contiguous = carry !== null && verified && span.start <= carry.end
   // 온전한 줄이 하나도 없는 창(한 줄이 창보다 긴 경우)이면 새로 확인한 위치가 없다 — 이어졌으면 전 기준점을 둔다.
-  const observedEnd = span.end >= span.start ? span.end : contiguous ? input.carryFrom : null
+  const observed =
+    span.end >= span.start
+      ? { end: span.end, anchor: Buffer.from(buffer.subarray(Math.max(0, span.end - from - CARRY_ANCHOR_BYTES), span.end - from)) }
+      : contiguous
+        ? carry
+        : null
 
   return {
     titleScanned,
@@ -425,7 +461,7 @@ function readDigest(input: {
     firstPrompt,
     headBytes,
     contiguous,
-    observedEnd,
+    observed,
     digest: {
       activity: parsed.activity,
       providerTitle: parsed.providerTitle,
@@ -549,7 +585,7 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
       mtimeMs: stat.mtimeMs,
       digest,
       mainDigest: main.digest,
-      observedEnd: main.observedEnd,
+      observed: main.observed,
       titleScanned: main.titleScanned,
       headDone: main.headDone,
       sidecar,
@@ -596,7 +632,7 @@ type MainRead = {
   headBytes: number
   titleScanned: boolean
   headDone: boolean
-  observedEnd: number | null
+  observed: Observed | null
 }
 
 /** 본 파일이 안 바뀌었다 — 읽지 않고 캐시 값을 쓴다 (형제 파일만 바뀐 주기). */
@@ -607,8 +643,27 @@ function reuseMain(cached: CacheEntry): MainRead {
     headBytes: 0,
     titleScanned: cached.titleScanned,
     headDone: cached.headDone,
-    observedEnd: cached.observedEnd,
+    observed: cached.observed,
   }
+}
+
+/**
+ * 닻 확인 (R2-F1) — 지난 기준점 앞 닻 바이트가 지금 파일의 같은 위치에 그대로 있나.
+ * 이미 읽은 조각 안이면 거기서 비교하고(추가 0바이트), 조각 밖이면 닻 길이만큼만 읽는다 — 그만큼도 남은
+ * 꼬리 예산(`budget`, 총 2MB 에서 이미 읽은 것을 뺀 값)에 안 들어가면 **확인 못 함 = 안 잇는다**.
+ */
+function anchorHolds(input: { file: string; buffer: Buffer; from: number; carry: Observed; budget: number }): {
+  holds: boolean
+  bytes: number
+} {
+  const { carry } = input
+  const start = carry.end - carry.anchor.length
+  if (start >= input.from && carry.end <= input.from + input.buffer.length) {
+    return { holds: input.buffer.subarray(start - input.from, carry.end - input.from).equals(carry.anchor), bytes: 0 }
+  }
+  if (carry.anchor.length > input.budget) return { holds: false, bytes: 0 }
+  const here = readBytes({ file: input.file, from: start, to: carry.end })
+  return { holds: here.equals(carry.anchor), bytes: here.length }
 }
 
 /**
@@ -652,7 +707,8 @@ function readMain(input: {
   cached: CacheEntry | null
 }): MainRead {
   const { cached } = input
-  // 이어 나를 값이 있고 **같은 파일이 줄지 않았을 때만** 기준점을 넘긴다 (F4).
+  // 이어 나를 값이 있고 **같은 파일이 줄지 않았을 때만** 기준점을 넘긴다 (F4). 경로·크기는 필요조건일 뿐이고
+  // 교체·재작성은 `readDigest` 가 닻으로 가린다 (R2-F1).
   const carryable =
     cached !== null &&
     cached.file === input.file &&
@@ -670,7 +726,7 @@ function readMain(input: {
     // 머리는 **끝났을 때만** 이어진다 (C6′-④). 안 끝난 파일은 자랄 때마다 다시 읽는데,
     // 그런 파일은 창보다 작아서 그 재판독이 추가 0바이트다.
     headDone: cached?.headDone ?? false,
-    carryFrom: carryable ? cached.observedEnd : null,
+    carry: carryable ? cached.observed : null,
   })
   // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
   // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
@@ -684,7 +740,7 @@ function readMain(input: {
     // 것과 같은 결함).
     firstPrompt: read.digest.firstPrompt ?? cached?.mainDigest.firstPrompt ?? null,
     // **모델·최근 발화는 이어질 때만 잇는다** (LIFE-458 T3·T4, 수정 r1·F4). 둘 다 "가장 최근 값" 이라
-    // 지난 판독 끝에서 이번 판독 구간이 **끊김 없이** 이어지면 더 새 값은 이번 창 안에 있다 — 창에 없으면
+    // **같은 파일이 뒤로만 자랐고**(닻, R2-F1) 지난 판독 끝에서 이번 판독 구간이 **끊김 없이** 이어지면 더 새 값은 이번 창 안에 있다 — 창에 없으면
     // 전에 본 값이 여전히 최신이다. 폴링 사이에 창보다 많이 붙어 틈이 생기면 그 틈에 새 값이 있을 수 있어
     // `readDigest` 가 같은 2MB 확장으로 확인하고, 그래도 안 덮이면 **잇지 않는다**(null). 턴 결과·질문은
     // 아예 안 잇는다 — "지금" 의 값이라 창에 없으면 null 이다.
@@ -697,7 +753,7 @@ function readMain(input: {
     headBytes: read.headBytes,
     titleScanned: read.titleScanned,
     headDone: read.headDone,
-    observedEnd: read.observedEnd,
+    observed: read.observed,
   }
 }
 

@@ -225,6 +225,69 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     expect(next.bytes - next.headBytes).toBe(TAIL_WINDOW_BYTES)
   })
 
+  // 리뷰 r2 R2-1 모양 — 옛 값을 읽고 창보다 적게 여러 번 붙여 ~494KB 로 키운 뒤, 다음 폴링 전에 **같은 경로**가
+  // 새 값(앞쪽)+filler 로 된 더 큰 파일로 바뀐다. 새 값은 마지막 256KB 창 밖·2MB 안이다.
+  const grown = () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    for (let round = 0; round < 4; round += 1) {
+      fs.appendFileSync(file, jsonl(filler(TAIL_WINDOW_BYTES / 2)))
+      readSessionDigest(ref)
+    }
+    return fs.statSync(file)
+  }
+  const replacement = (bytes: number) => jsonl([human('new-prompt'), assistant('ok', 'new-model'), ...filler(bytes)])
+
+  it('같은 경로 rename 교체(inode 바뀜) — 옛 값을 잇지 않고 새 파일의 값을 찾는다', () => {
+    const before = grown()
+    const next = `${file}.next`
+    fs.writeFileSync(next, replacement(before.size + 30_000))
+    fs.renameSync(next, file)
+    const after = fs.statSync(file)
+    expect(after.ino).not.toBe(before.ino)
+    expect(after.size).toBeGreaterThan(before.size)
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+    expect(read.bytes - read.headBytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+  })
+
+  it('같은 inode truncate 뒤 재성장 — 옛 값을 잇지 않는다', () => {
+    const before = grown()
+    fs.writeFileSync(file, replacement(before.size + 30_000)) // 같은 경로·같은 inode 를 비우고 다시 쓴다
+    const after = fs.statSync(file)
+    expect(after.ino).toBe(before.ino)
+    expect(after.size).toBeGreaterThan(before.size)
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  it('교체된 파일에 값이 2MB 안에 없으면 null — 옛 값이 아니다', () => {
+    const before = grown()
+    fs.writeFileSync(file, jsonl(filler(before.size + 30_000)))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBeNull()
+    expect(read.digest.lastPrompt).toBeNull()
+  })
+
+  it('축소가 다음 stat 에 보이면 잇지 않는다', () => {
+    grown()
+    fs.writeFileSync(file, jsonl([assistant('short')]))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBeNull()
+    expect(read.digest.lastPrompt).toBeNull()
+  })
+
+  it('정상 append 는 닻 확인이 이미 읽은 창 안에서 끝난다 — 추가 읽기 0', () => {
+    const before = grown()
+    fs.appendFileSync(file, jsonl(filler(20_000)))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('old-model')
+    expect(read.bytes - read.headBytes).toBe(TAIL_WINDOW_BYTES)
+    expect(fs.statSync(file).ino).toBe(before.ino)
+  })
+
   it('틈이 있어도 새 값이 없으면(옛 값이 여전히 최신) 확인 뒤 옛 값을 잇는다', () => {
     fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
     readSessionDigest(ref)

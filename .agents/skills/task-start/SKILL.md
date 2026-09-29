@@ -20,8 +20,8 @@ description: >-
 - 선택이 기존 기록과 다르거나 `claude`·`codex` 외 도구를 요청하면 새 터미널을 만들지 않는다 — 도중 교체는
   이 스킬 밖이다. 기존 코디네이터·워커·Run과 미완 작업을 확인하고 인계 범위를 사용자와 정한 뒤 진행한다.
   동시에 두 코디네이터를 만들지 않는다.
-- 코디네이터 선택과 워커·리뷰어 구성은 별개다. 신규 기본은 **Opus high + native Fable advisor
-  단독 구현 → 3자 코드 리뷰(Astra xhigh · 별도 Claude Opus high · Grok)**다(task-coordinate §4–5).
+- 코디네이터 선택과 워커·리뷰어 구성은 별개다. 신규 기본은 **Opus 5.5 high 단독 구현
+  → 3자 코드 리뷰(Astra xhigh · 별도 Claude Sonnet 5.5 high · Grok)**다(task-coordinate §4–5).
   설계는 별도 단계가 아니라 구현 워커가 흡수한다.
   신규 작업은 [기본 구성](defaults.md)을 설정 질문 없이 적용하고 명시한 변경만 덮어쓴다.
   기존 작업 재개는 기록된 구성을 유지한다. 사용자 변경 지시는 예외 범위와 함께 기록한다.
@@ -46,7 +46,7 @@ description: >-
 3. **기동 전에 선택 기록**: 작업 worktree에서 `specs/LIFE-NNN-<슬러그>/00-start.md`를 작성·커밋한다.
    최소 항목: LIFE-N, 슬러그, 작업 브랜치·절대 worktree 경로, 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 [defaults.md](defaults.md):
-   claude → `claude-fable-5-1` high, codex → `gpt-6-astra` high, 2026-09-22), **선택한 하네스 매핑**,
+   claude → `claude-opus-5-5` high, codex → `gpt-6-astra` high, 2026-09-29), **선택한 하네스 매핑**,
    기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 복사한다.
    처음 상태는 `기동 전`.
    워커 구성·구현→3자 리뷰 흐름·사용자 예외, 수정 라운드용 워커 유지 요청도 기록하고, 재개는 이력을 덧붙인다.

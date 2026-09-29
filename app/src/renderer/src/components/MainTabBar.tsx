@@ -179,7 +179,7 @@ function MainTab({
   const collapsed = compact && !editing
   // LIFE-387 B1 F-B1-5 — 툴팁이 드래그를 안내한다(§2 "탭 툴팁"). 상태 라벨은 사용자 카피라 한글로 —
   // AgentStatus 자체(herdr 타입)를 노출하지 않는다.
-  const statusLabel: Record<typeof tab.agentStatus, string> = { idle: '대기', working: '작업 중', blocked: '막힘', unknown: '알 수 없음' }
+  const statusLabel: Record<typeof tab.agentStatus, string> = { idle: '대기', working: '작업 중', blocked: '막힘', done: '완료', unknown: '알 수 없음' }
   const tooltip = editing ? undefined : `${seed} · ${kind?.label ?? '셸'} · ${statusLabel[tab.agentStatus]} — 끌어서 옮기기`
   return (
     <div

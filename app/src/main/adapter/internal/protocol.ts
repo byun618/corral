@@ -4,6 +4,7 @@
 // 봉투는 {"event":"pane_created","data":{…}}.
 
 import { isRecord, readRecord, readString } from '../../../shared/json.js'
+import { parseAgentStatus } from '../../../shared/agent-state.js'
 import type { AgentStatus } from '../../../shared/types.js'
 import { log } from '../../log.js'
 
@@ -81,28 +82,33 @@ export type PushFrame = { event: string; data: Record<string, unknown> }
 /**
  * herdr 의 상태 문자열을 **corral 의** AgentStatus 로 옮긴다 (경계를 건너는 건 이쪽이다).
  *
- * herdr 0.9.0 스키마의 `AgentStatus` 는 다섯이다 — idle·working·blocked·**done**·unknown.
- * corral 이 칩으로 구분하는 것은 넷이고 `done` 은 없다 (`shared/types.ts` 에 사유).
- * 그래서 `done` 은 **여기서 미상으로 옮기고 로그에 남긴다** (수정 1회차 M7).
- * 조용히 삼키지 않는 이유: 0.9.0 은 `done` 을 만들지 않지만 스키마는 허용한다 —
- * 언젠가 실제로 오면 그 사실이 로그에 있어야 칩을 늘릴 근거가 된다.
+ * **다섯 값을 전부 산다** (LIFE-456). 전에는 `done` 을 미상으로 접고 로그만 남겼는데,
+ * 그 근거였던 "0.9.0 은 done 을 만들지 않는다" 가 거짓이었다 — 그건 `pane.report_agent` 의
+ * **입력** 스키마였고 herdr 가 파생해 내보내는 출력은 done 을 낸다(`shared/types.ts` 참조).
+ * 사용자 로그의 `agent_status.unmapped` 11,463 건이 전부 `wire:"done"` 이었던 것이 그 증거다.
+ *
+ * 이제 이 로그에는 **정말 모르는 값만** 남는다 — 그래서 로그가 다시 신호가 된다.
  */
 export function readAgentStatus(source: Record<string, unknown>, key: string): AgentStatus {
   const value = source[key]
-  if (typeof value !== 'string') return 'unknown'
-  switch (value) {
-    case 'idle':
-      return 'idle'
-    case 'working':
-      return 'working'
-    case 'blocked':
-      return 'blocked'
-    case 'unknown':
-      return 'unknown'
-    default:
-      log('agent_status.unmapped', { wire: value, key })
-      return 'unknown'
-  }
+  const parsed = parseAgentStatus(value)
+  if (parsed !== null) return parsed
+  if (typeof value === 'string') log('agent_status.unmapped', { wire: value, key })
+  return 'unknown'
+}
+
+/**
+ * herdr `state_labels` 를 읽는다 — blocked 사유의 입력 (S3).
+ *
+ * 키가 없으면 `null`(= herdr 가 말하지 않았다)이고 빈 객체와 구분하지 않는다: 둘 다
+ * 「사유 없음」이다. **실측상 claude·codex·grok 에서는 항상 이 자리가 비어 온다.**
+ */
+export function readStateLabels(source: Record<string, unknown>): Record<string, string> | null {
+  const raw = source['state_labels']
+  if (!isRecord(raw)) return null
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) if (typeof value === 'string') out[key] = value
+  return Object.keys(out).length === 0 ? null : out
 }
 
 /**

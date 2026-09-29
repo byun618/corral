@@ -1,0 +1,122 @@
+// LIFE-456 — 저장소가 상태를 **잃지 않고 일관되게** 들고 있나 (기준 S1·S5·S15).
+//
+// c3 가 짚은 두 결함(H3 탭 지연 · H4 키 없는 이벤트의 리셋)에 회귀 테스트가 없었다.
+// 여기서 그 둘을 못박는다 — 실행 원자료는 `raw/claude/` 쪽이고, 이 파일은 규칙이다.
+
+import { describe, expect, it } from 'vitest'
+import { WorkspaceStore } from './store.js'
+
+const snapshot = (input: {
+  panes: Array<{ id: string; tab: string; status?: string }>
+  tabStatus?: string
+  workspaceStatus?: string
+}): unknown => ({
+  workspaces: [{ workspace_id: 'w1', label: 'repo', number: 1, focused: true, agent_status: input.workspaceStatus ?? 'unknown' }],
+  tabs: [...new Set(input.panes.map((pane) => pane.tab))].map((tabId, index) => ({
+    tab_id: tabId, workspace_id: 'w1', label: tabId, number: index + 1, agent_status: input.tabStatus ?? 'unknown',
+  })),
+  panes: input.panes.map((pane) => ({
+    pane_id: pane.id, tab_id: pane.tab, workspace_id: 'w1',
+    ...(pane.status === undefined ? {} : { agent_status: pane.status }),
+  })),
+})
+
+const paneOf = (store: WorkspaceStore, paneId: string) =>
+  store.rows().flatMap((w) => w.tabs).flatMap((t) => t.panes).find((p) => p.paneId === paneId)
+const tabOf = (store: WorkspaceStore, tabId: string) =>
+  store.rows().flatMap((w) => w.tabs).find((t) => t.tabId === tabId)
+
+describe('done 을 잃지 않는다 (S1)', () => {
+  it('스냅샷의 done 이 그대로 pane 에 실린다 — unknown 으로 접히지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    expect(paneOf(store, 'w1:p1')?.agentStatus).toBe('done')
+  })
+
+  it('전이 이벤트의 done 도 그대로 실린다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'done' } })
+    expect(paneOf(store, 'w1:p1')?.agentStatus).toBe('done')
+  })
+})
+
+describe('H3 — 탭·워크스페이스가 pane 전이를 30초 기다리지 않는다 (S5ⓐ)', () => {
+  it('pane 이 blocked 가 되면 같은 순간 탭도 blocked 다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'idle' }], tabStatus: 'idle' }))
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('idle')
+
+    // herdr 은 탭 봉투를 안 보냈다 — 전에는 재동기(30초)까지 탭이 idle 로 남았다.
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'blocked' } })
+    expect(paneOf(store, 'w1:p1')?.agentStatus).toBe('blocked')
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('blocked')
+    expect(store.rows()[0]?.agentStatus).toBe('blocked')
+  })
+
+  it('탭 값은 그 탭 pane 들의 롤업이다 — 형제 pane 중 가장 급한 것이 이긴다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'idle' }, { id: 'w1:p2', tab: 'w1:t1', status: 'done' }],
+    }))
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('done')
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'working' } })
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('working')
+  })
+
+  it('herdr 이 준 탭 값과 pane 집합이 어긋나면 **pane 집합이 이긴다**', () => {
+    const store = new WorkspaceStore()
+    // herdr 은 탭을 idle 이라 하는데 그 탭의 pane 은 blocked 다 (재동기 사이의 낡은 롤업).
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }], tabStatus: 'idle' }))
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('blocked')
+  })
+})
+
+describe('H4 — 키 없는 이벤트가 값을 unknown 으로 지우지 않는다 (S5ⓑ)', () => {
+  it('`agent_status` 없는 tab_created 가 알던 탭 값을 안 지운다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }], tabStatus: 'blocked' }))
+    // 키가 아예 없는 봉투 — herdr 이 그 필드를 말하지 않은 것이다.
+    store.applyEvent({ event: 'tab_created', data: { tab_id: 'w1:t2', workspace_id: 'w1', label: '2', number: 2 } })
+    expect(tabOf(store, 'w1:t2')?.agentStatus).toBe('unknown') // 아는 pane 이 없으니 unknown 이 맞다
+    expect(tabOf(store, 'w1:t1')?.agentStatus).toBe('blocked') // 알던 탭은 그대로다
+  })
+
+  it('`agent_status` 없는 workspace 봉투가 워크스페이스 값을 안 지운다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }], workspaceStatus: 'working' }))
+    store.applyEvent({ event: 'workspace_updated', data: { workspace_id: 'w1', label: 'repo', number: 1 } })
+    // pane 롤업이 진실이라 working 이 남는다 — 키 없는 봉투가 unknown 으로 밀지 못한다.
+    expect(store.rows()[0]?.agentStatus).toBe('working')
+  })
+})
+
+describe('전이 기록 (S1 관측 시각 · S15)', () => {
+  it('전이 이벤트는 observedVia=event, 스냅샷은 snapshot 이다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))
+    expect(paneOf(store, 'w1:p1')?.agentState.observedVia).toBe('snapshot')
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'done' } })
+    expect(paneOf(store, 'w1:p1')?.agentState.observedVia).toBe('event')
+  })
+
+  it('done 진입이 완료 시각으로 남고 이력이 쌓인다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'done' } })
+    const afterDone = paneOf(store, 'w1:p1')?.agentState
+    expect(afterDone?.enteredDoneAt).not.toBeNull()
+    expect(afterDone?.history.map((h) => h.status)).toEqual(['working'])
+
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'idle' } })
+    const afterSeen = paneOf(store, 'w1:p1')?.agentState
+    expect(afterSeen?.enteredDoneAt).toBe(afterDone?.enteredDoneAt)
+    expect(afterSeen?.history.map((h) => h.status)).toEqual(['done', 'working'])
+  })
+
+  it('사유는 herdr 이 안 주면 null 이다 (S3 공백)', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBeNull()
+  })
+})

@@ -16,16 +16,18 @@
 //      "어떤 상태인가" 를 각각 훑을 수 있어야 한다). corral 의 H-6 두 칸 규칙과 같은 말이다
 
 import type { AgentKind, AgentStatus, PaneRow } from '../../shared/types.js'
+import { AGENT_STATUS_ROLLUP_ORDER } from '../../shared/agent-state.js'
 import { agentIcon } from './session-glyphs.js'
 
 /**
- * 상태 정렬 순서. **corral 의 상태는 넷뿐**이라 Orca 의 8단을 그대로 못 쓴다
- * (`waiting`·`monitoring`·`interrupted`·`done` 은 corral 에 값 자체가 없다 — `session-glyphs.ts`).
+ * 상태 정렬 순서 — **탭·워크스페이스 롤업과 같은 순서를 쓴다** (LIFE-456 S6 「한 어휘」).
  *
- * `unknown` 이 `idle` 위인 것은 Orca 의 `unverifiable` 자리를 잇는 것이다. 거기 주석이
- * "보고하는 상태들 아래, 진짜 idle 위 — pane 은 아직 잡혀 있다" 라고 사유를 박아 뒀다.
+ * 전에는 이 파일이 자기 배열을 따로 들고 있었다. 접힘 요약과 탭 점이 같은 pane 집합을
+ * 다르게 접으면 같은 카드가 접었을 때와 폈을 때 다른 말을 한다 — 그래서 순서의 출처를
+ * `shared/agent-state.ts` 한 곳으로 모았다. `done` 이 그 배열에 들어오면서
+ * "corral 에 done 이 없다" 던 옛 주석도 같이 없어진다.
  */
-export const SUMMARY_STATUS_ORDER: readonly AgentStatus[] = ['blocked', 'working', 'unknown', 'idle']
+export const SUMMARY_STATUS_ORDER: readonly AgentStatus[] = AGENT_STATUS_ROLLUP_ORDER
 
 /** 클러스터 상한 · 클러스터당 아이콘 상한 — Orca 의 리터럴 3 두 자리 그대로. */
 export const MAX_CLUSTERS = 3

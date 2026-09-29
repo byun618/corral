@@ -17,8 +17,9 @@
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
-import type { AgentSessionRef, AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
-import { readAgentStatus, type PushFrame } from './protocol.js'
+import type { AgentSessionRef, AgentState, AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
+import { blockedReasonFromLabels, emptyAgentState, recordAgentTransition, rollupAgentStatus } from '../../../shared/agent-state.js'
+import { readAgentStatus, readStateLabels, type PushFrame } from './protocol.js'
 
 type Workspace = {
   workspaceId: string
@@ -54,6 +55,8 @@ type Pane = {
   workspaceId: string
   tabId: string
   agentStatus: AgentStatus
+  /** 사유·관측 시각·완료 시각·이력 (LIFE-456). `agentStatus` 와 짝으로만 갱신한다. */
+  agentState: AgentState
   agent: string | null
   title: string
   cwd: string | null
@@ -589,6 +592,7 @@ export class WorkspaceStore {
         title: pane.title,
         agent: pane.agent,
         agentStatus: pane.agentStatus,
+        agentState: pane.agentState,
         cwd: pane.cwd,
         focused: pane.focused,
         agentSession: pane.agentSession,
@@ -609,7 +613,11 @@ export class WorkspaceStore {
         label: tab.label,
         number: tab.number,
         order: tab.order,
-        agentStatus: tab.agentStatus,
+        // **롤업은 corral 이 자기 pane 집합에서 접는다** (S5ⓐ — H3 수정). herdr 가 탭 봉투에
+        // 실어 주는 `agent_status` 는 pane 전이보다 늦게(스냅샷·30초 재동기) 오므로 그것을
+        // 쓰면 같은 순간에 사이드바(pane)와 탭바(tab)가 다른 말을 한다. 아는 pane 이 하나도
+        // 없을 때만 herdr 가 준 값으로 물러선다 — 그때는 접을 재료가 없다.
+        agentStatus: rollupOrFallback(panesByTab.get(tab.tabId), tab.agentStatus),
         focused: tab.focused,
         panes: panesByTab.get(tab.tabId) ?? [],
         // **판독은 어댑터의 일이 아니다** (LIFE-366 기준 E1). 트랜스크립트를 읽는 층은 herdr 를
@@ -630,7 +638,11 @@ export class WorkspaceStore {
         workspaceId: workspace.workspaceId,
         label: workspace.label,
         number: workspace.number,
-        agentStatus: workspace.agentStatus,
+        // 같은 규칙으로 한 층 더 접는다 (S5ⓐ) — 이미 접힌 탭 값을 다시 접는다.
+        agentStatus: rollupOrFallback(
+          (tabsByWorkspace.get(workspace.workspaceId) ?? []).flatMap((tab) => tab.panes),
+          workspace.agentStatus,
+        ),
         focused: workspace.focused,
         tabs: tabsByWorkspace.get(workspace.workspaceId) ?? [],
       })
@@ -683,7 +695,9 @@ export class WorkspaceStore {
       workspaceId: id,
       label: readString(value, 'label') ?? id,
       number: readNumber(value, 'number') ?? 0,
-      agentStatus: readAgentStatus(value, 'agent_status'),
+      // `pickAgentStatus` 로 읽는다 — `agent_status` 키가 **없는** 봉투가 알던 값을 `unknown`
+      // 으로 지우던 것이 H4 다 (pane 에만 있던 보호를 여기에도 준다, S5ⓑ).
+      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
@@ -712,7 +726,8 @@ export class WorkspaceStore {
       // 목록을 통째로 받은 자리에서는 그 인덱스가 진실이고, 낱개 봉투(tab_created)는
       // 알던 자리를 지키거나 `number` 를 힌트로 삼는다.
       order: order ?? before?.order ?? this.initialTabOrder(value, workspaceId),
-      agentStatus: readAgentStatus(value, 'agent_status'),
+      // H4 — 같은 이유로 여기도 `pickAgentStatus` 다 (S5ⓑ).
+      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
@@ -761,13 +776,24 @@ export class WorkspaceStore {
       return false
     }
     const before = this.panes.get(id) ?? null
+    const nextStatus = pickAgentStatus(value, before?.agentStatus ?? null)
     this.panes.set(id, {
       paneId: id,
       workspaceId,
       tabId,
       // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다 —
       // 주석이 약속한 이 보호가 1회차 코드에는 이름(agent)에만 있었다 (수정 1회차 M2).
-      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
+      agentStatus: nextStatus,
+      agentState: recordAgentTransition({
+        // `null` = 이 pane 을 이제 막 처음 봤다 (아래 함수 주석 — 이력을 만들지 않는다).
+        previousStatus: before?.agentStatus ?? null,
+        previousState: before?.agentState ?? emptyAgentState(at),
+        nextStatus,
+        blockedReason: blockedReasonFromLabels(readStateLabels(value)),
+        observedAt: at,
+        // 스냅샷·`pane_updated` 로 알게 된 값이다 — **진입 시각이 아니다**(`AgentObservedVia`).
+        observedVia: 'snapshot',
+      }),
       agent: pickAgent(value, before?.agent ?? null),
       // **원문 제목을 먼저 읽는다** (LIFE-366 C11ⓑ, 수정 라운드 8). r7 까지는 `title` →
       // `terminal_title_stripped` 순이라 herdr 가 `✳` 를 벗긴 값이 먼저 잡혔고, 그래서 corral 은
@@ -826,7 +852,19 @@ export class WorkspaceStore {
     if (pane.agentStatus === status) {
       return { changed: false, note: `agent_status_changed: 같은 값 (${status})` }
     }
-    this.panes.set(paneId, { ...pane, agentStatus: status })
+    const agentState = recordAgentTransition({
+      previousStatus: pane.agentStatus,
+      previousState: pane.agentState,
+      nextStatus: status,
+      // 이 봉투에는 `state_labels` 가 안 실린다(실측 — `{agent, agent_status, pane_id, workspace_id}`).
+      // 사유는 스냅샷 경로에서만 올 수 있으므로 알던 값을 지키지 않고 **그대로 둔다**:
+      // 전이가 일어났으면 이전 사유는 이미 지난 상태의 것이라 들고 가면 거짓이 된다.
+      blockedReason: null,
+      observedAt: Date.now(),
+      // 전이 이벤트다 — 이것만이 **진입 시각에 가까운** 관측이다.
+      observedVia: 'event',
+    })
+    this.panes.set(paneId, { ...pane, agentStatus: status, agentState })
     return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
 
@@ -875,6 +913,15 @@ export class WorkspaceStore {
  * `agent_status` 를 안 싣고 온 `pane_updated` 한 건이 칩을 `막힘 → 미상` 으로 지웠다
  * (리뷰 부록 C). 키가 없으면 herdr 가 그 필드를 말하지 않은 것이다 — 알던 값을 지킨다.
  */
+/**
+ * pane 집합에서 탭·워크스페이스 값을 접는다 (S5ⓐ). **아는 pane 이 없을 때만** herdr 가 준
+ * 값으로 물러선다 — 접을 재료가 없는데 `unknown` 을 만들어 내면 갓 열린 탭이 깜빡인다.
+ */
+function rollupOrFallback(panes: readonly PaneRow[] | undefined, fallback: AgentStatus): AgentStatus {
+  if (panes === undefined || panes.length === 0) return fallback
+  return rollupAgentStatus(panes.map((pane) => pane.agentStatus))
+}
+
 function pickAgentStatus(source: Record<string, unknown>, fallback: AgentStatus | null): AgentStatus {
   if ('agent_status' in source) return readAgentStatus(source, 'agent_status')
   return fallback ?? 'unknown'

@@ -4,19 +4,25 @@
 import type { AgentKind, AgentStatus } from '../../shared/types.js'
 
 /**
- * §2.5 SessionRow **상태** 글리프 표. corral 의 `AgentStatus` 네 값에 대응시킨다.
+ * §2.5 SessionRow **상태** 글리프 표. corral 의 `AgentStatus` **다섯 값**에 대응시킨다.
  *
- * 스펙에 있으나 **못 그리는 두 칸**(09-gate1-fix.md E — 만들지 않고 명시한다):
- *   · 완료 `✓` `--accent` — corral 에 `done` 상태가 없다. herdr 0.9.0 이 `pane.report_agent`
- *     경로로 `done` 을 만들지 않기 때문이다 (`shared/types.ts` AgentStatus 주석).
+ * `done` 은 LIFE-456 에서 생겼다 — 「끝났는데 아직 안 봄」이다. **이 작업은 표시를 새로
+ * 그리지 않는다**(기준 S7 — 아이콘·색·배치는 LIFE-448·449 몫). 그래서 스펙이 적어 둔
+ * 완료 `✓` 를 만들지 않고 **기존 글리프·톤 중 가장 가까운 것**을 임시로 쓴다:
+ * 글리프는 idle·unknown 과 같은 `◉`, 톤은 이미 있는 `accent`(탭바 점이 쓰는 토큰)다.
+ * 새 글자도 새 색도 늘리지 않으면서 idle 과 눈으로 갈린다. 대응표는 결과 문서에 있다.
+ *
+ * 스펙에 있으나 아직 **못 그리는 칸**(09-gate1-fix.md E — 만들지 않고 명시한다):
  *   · 에러 `✕` `--st-error` — `AgentStatus` 에 `error` 가 없다. 가장 가까운 `blocked` 는
- *     "막혔다"이지 "실패했다"가 아니라 같은 칸으로 셈하지 않는다.
+ *     "막혔다"이지 "실패했다"가 아니라 같은 칸으로 셈하지 않는다 (출처는 LIFE-458 몫).
  * 미상은 §2.5 원문대로 `◉` + `--fg-faint` 다 (실행 중 `◉` 와 글리프가 같고 색으로 갈린다).
  */
 export const GLYPH: Record<AgentStatus, { glyph: string; tone: 'accent' | 'dirty' | 'behind' | 'error' | 'faint' }> = {
   working: { glyph: '⚡', tone: 'dirty' },
   idle: { glyph: '◉', tone: 'behind' },
   blocked: { glyph: '!', tone: 'error' },
+  /** 임시 대응 — 기존 `◉` + 기존 `accent` 토큰 (위 주석, 448·449 가 바꿀 자리). */
+  done: { glyph: '◉', tone: 'accent' },
   unknown: { glyph: '◉', tone: 'faint' },
 }
 
@@ -24,6 +30,7 @@ export const STATUS_LABEL: Record<AgentStatus, string> = {
   idle: '대기',
   working: '작업중',
   blocked: '막힘',
+  done: '완료',
   unknown: '미상',
 }
 

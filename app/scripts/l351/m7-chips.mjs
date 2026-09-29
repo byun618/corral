@@ -18,6 +18,18 @@
 // 칩 어휘에서 뺐다. 어댑터는 `done` 이 와도 **미상으로 옮기고 로그에 남긴다** — 그 동작을
 // 여기서 실측으로 확인한다 (아래 `done 처리 재생`).
 //
+// ────────────────────────────────────────────────────────────────────────────────
+// **정정 (LIFE-456, 2026-09-29) — 위 문단의 결론 「0.9.0 은 done 을 만들지 않는다」는 거짓이다.**
+// 세 줄의 사실관계는 맞는데 결론이 틀렸다: `PaneAgentState` 는 hook 이 **보고할 수 있는 값**의
+// 입력 스키마이지 herdr 가 **파생해 내보내는 값**의 목록이 아니다. herdr 는 「idle 인데 아직
+// 안 봄」을 `done` 으로 만들어 내보낸다 — 배경 pane 에 `report-agent --state idle` 을 넣으면
+// 바로 `done` 이 관측된다(`specs/LIFE-456-agent-state/raw/claude/u1/positive-control.txt`).
+// 사용자 corral 로그의 `agent_status.unmapped` 11,463 건도 전부 `wire:"done"` 이었다.
+// 그래서 LIFE-456 이 `done` 을 칩 어휘에 **넣었고**, 어댑터는 더 이상 미상으로 옮기지 않는다.
+// 이 하네스의 아래 `done 처리 재생` 절은 **그 시절 동작을 재는 것**이라 지금 제품과 어긋난다 —
+// 이 스크립트를 다시 쓸 때 같이 고친다(LIFE-456 범위 밖이라 여기서는 정정만 적는다).
+// ────────────────────────────────────────────────────────────────────────────────
+//
 // 읽는 쪽은 **DOM 이다**: 앱 상태 객체가 아니라 화면에 실제로 그려진 `data-chip-value` 를 읽는다.
 
 import { REPO_DIR, look, request, sleep, startApp, tidySession, until, writeRaw } from './lib.mjs'
@@ -191,7 +203,7 @@ async function chipValue(attr, key) {
       거절응답: doneRejection,
       '거절은 스키마와 일치한다': String(doneRejection).includes('unknown variant'),
       탐지매니페스트가쓰는state: manifestStates,
-      결론: '0.9.0 은 done 을 만들지 않는다 → 칩 어휘에서 뺐다. 오면 미상으로 옮기고 로그에 남긴다',
+      결론: '[LIFE-456 정정] 이 결론은 거짓이었다. herdr 는 「idle + 아직 안 봄」을 done 으로 파생해 내보낸다 — report_agent 입력 스키마를 출력으로 오해한 것. 지금 corral 은 done 을 칩 어휘에 두고 그대로 받는다',
     },
   }
   out.노출하는칩['③ pane 에이전트 이름'] = { 오라클: 'herdr pane.list 의 agent', 값: '문자열 또는 없음' }

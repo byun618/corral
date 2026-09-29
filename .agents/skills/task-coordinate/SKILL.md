@@ -159,6 +159,9 @@ description: >-
 
 ## 5. 독립 코드 리뷰 — 3자 (Codex Astra xhigh · Claude Opus high · Grok)
 
+> **2026-09-30 부터 일시 중지 — 당분간 Codex 단독 리뷰.** Claude·Grok 리뷰어는 기동하지 않는다.
+> 아래 3자 절차는 Codex 한 명에게만 적용하고, 판정문에 단독 리뷰임을 적는다. 상세·재개 조건은 `task-start/defaults.md`.
+
 - `.agents/agents/reviewer.md`를 먼저 읽는다. 3자는 서로, 그리고 구현자·코디네이터와 각각 별도 세션이며 고정 구현 commit과 실제 실행 원자료를 검토한다. 설계 문서는 없으므로 접근 타당성도 여기서 본다.
 - 기동: 세 리뷰어 모두 『감독 워커 기동』(또는 grok 처럼 감독 경로가 없으면 『세션 기동』+『준비 대기』+
   『본문 주입』)으로 띄우고 모델·effort를 명시한다 — Codex Astra xhigh, 별도 Claude Opus high, Grok.

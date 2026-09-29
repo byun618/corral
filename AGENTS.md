@@ -46,6 +46,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
    - worktree는 전부 .claude/worktrees/ 아래 형제 폴더 — 중첩 금지. 구현 브랜치 생존 중 작업 브랜치 rebase 금지
    - 사용자 지정 예외와 기존 작업은 해당 킥오프를 따른다. 신규 기본은 단독 구현이다
 4. 3자 리뷰: **codex·claude·grok 모두 리뷰**. 서로, 그리고 코디네이터·구현자와 별도 세션이다.
+   - **2026-09-30 부터 일시 중지 — 당분간 Codex 단독 리뷰** (claude·grok 리뷰 미기동). 상세 .agents/skills/task-start/defaults.md
    .agents/agents/reviewer.md 를 읽고 specs/LIFE-NNN-*/review-<도구>.md 에 기록한다
    - **재리뷰는 반드시 새 세션으로 한다.** 같은 세션 반복은 검출력이 오르지 않는다
    - 자기 구현분도 리뷰한다. 단 자기 구현 브랜치 리뷰는 경쟁 승자 판정 근거로 쓰지 않는다

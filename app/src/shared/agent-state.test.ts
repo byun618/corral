@@ -196,7 +196,7 @@ describe('recordAgentTransition — 관측 시각·완료 시각·이력 (S1·S1
 })
 
 describe('pickBlockedRule — 거친 규칙이 구체적 규칙을 가리지 않게 (F2)', () => {
-  const explain = (matched: string | null, evaluated: Array<{ id: string; matched: boolean }>) => ({
+  const explain = (matched: string | null, evaluated: Array<{ id: string; matched: boolean; priority?: number }>) => ({
     ...(matched === null ? {} : { matched_rule: { id: matched } }),
     evaluated_rules: evaluated,
   })
@@ -210,13 +210,34 @@ describe('pickBlockedRule — 거친 규칙이 구체적 규칙을 가리지 않
     // 실제 우선순위: osc_title_blocked(1300) > bash_permission_prompt. herdr 는 앞의 것을
     // matched_rule 로 주는데 그 규칙은 「막혔다」만 뜻해서 우리 표에서 unknown 으로 떨어진다.
     const picked = pickBlockedRule(explain('osc_title_blocked', [
-      { id: 'osc_title_blocked', matched: true },
-      { id: 'bash_permission_prompt', matched: true },
+      { id: 'osc_title_blocked', matched: true, priority: 1300 },
+      { id: 'bash_permission_prompt', matched: true, priority: 900 },
     ]))
     expect(picked.ruleId).toBe('bash_permission_prompt')
     expect(picked.source).toBe('evaluated')
     // 원래 herdr 가 고른 것도 들고 간다 — 원자료에서 대조할 수 있어야 한다.
     expect(picked.matchedRuleId).toBe('osc_title_blocked')
+  })
+
+  it('**여럿이 맞으면 가장 구체적인 것(priority 최소)을 집는다** — 네이티브 실측 그대로', () => {
+    // `raw/claude/s9-r1/f2/grok-explain.json` 의 실제 응답이다. 배열 순서(우선순위 내림차순)
+    // 로 훑으면 `option_dialog_blocked`(question)가 먼저 걸리는데, 화면은 **권한** 상자다.
+    const picked = pickBlockedRule(explain('osc_title_blocked', [
+      { id: 'osc_title_blocked', matched: true, priority: 1300 },
+      { id: 'option_dialog_blocked', matched: true, priority: 1200 },
+      { id: 'permission_scope_selector', matched: true, priority: 1180 },
+      { id: 'osc_title_working', matched: true, priority: 1000 },
+    ]))
+    expect(picked.ruleId).toBe('permission_scope_selector')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('permission')
+  })
+
+  it('priority 가 없는 규칙은 맨 뒤다 — 순서를 모르는 것을 구체적이라고 우기지 않는다', () => {
+    const picked = pickBlockedRule(explain('osc_title_blocked', [
+      { id: 'mcp_elicitation_prompt', matched: true },
+      { id: 'permission_scope_selector', matched: true, priority: 1180 },
+    ]))
+    expect(picked.ruleId).toBe('permission_scope_selector')
   })
 
   it('맞지 않은(`matched:false`) 규칙은 안 집는다', () => {

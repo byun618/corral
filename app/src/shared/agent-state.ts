@@ -207,8 +207,15 @@ type PickedRule = { ruleId: string | null; matchedRuleId: string | null; source:
  * 두고 거기서 「맞았고(`matched:true`) 우리 표에 사유가 있는」 규칙을 찾는다.
  *
  * 고르는 순서는 **구체적인 것 우선**이다: `matched_rule` 이 이미 사유를 주면 그걸 쓰고,
- * 주지 못할 때만(`unknown` 으로 떨어질 때만) `evaluated_rules` 를 본다. 거친 규칙이 위에
- * 있어도 아래의 구체적 규칙이 같이 맞았다면 그 뜻이 더 정확하기 때문이다.
+ * 주지 못할 때만(`unknown` 으로 떨어질 때만) `evaluated_rules` 를 본다.
+ *
+ * **구체성은 `priority` 가 낮을수록 높다.** herdr 는 거친 규칙이 먼저 걸리도록 높은 번호를
+ * 주기 때문에, 배열 순서(= 우선순위 내림차순)로 훑으면 **가장 거친 매핑**을 집게 된다.
+ * 실측이 그 함정을 보여 줬다(`raw/claude/s9-r1/03-f2-masking.md`): grok 권한 상자에서
+ * `osc_title_blocked`(1300, 매핑 없음) · `option_dialog_blocked`(1200, question) ·
+ * `permission_scope_selector`(1180, permission) 셋이 함께 맞았는데, 배열 순서로는
+ * `question` 이 나왔다 — 화면은 권한 상자다. 그래서 **번호가 가장 낮은 것**을 고른다.
+ *
  * **아무 데서도 사유가 안 나오면 `matched_rule` 을 그대로 돌려준다** — 「말은 했는데 갈래가
  * 없다(`unknown`)」와 「아무 말도 없다(`null`)」의 구분을 여기서 뭉개지 않는다.
  */
@@ -218,12 +225,21 @@ export function pickBlockedRule(explain: Record<string, unknown> | null): Picked
   if (matchedRuleId !== null && blockedReason({ ruleId: matchedRuleId }) !== 'unknown') {
     return { ruleId: matchedRuleId, matchedRuleId, source: 'matched' }
   }
+  const candidates: Array<{ id: string; priority: number }> = []
   for (const entry of readArray(explain, 'evaluated_rules')) {
     if (!isRecord(entry) || entry['matched'] !== true) continue
     const id = readString(entry, 'id')
     if (id === null) continue
     const reason = blockedReason({ ruleId: id })
-    if (reason !== null && reason !== 'unknown') return { ruleId: id, matchedRuleId, source: 'evaluated' }
+    if (reason === null || reason === 'unknown') continue
+    // 번호가 없으면 맨 뒤로 — 순서를 모르는 것을 구체적이라고 우기지 않는다.
+    const raw = entry['priority']
+    candidates.push({ id, priority: typeof raw === 'number' ? raw : Number.POSITIVE_INFINITY })
+  }
+  if (candidates.length > 0) {
+    let best = candidates[0]
+    for (const item of candidates) if (best === undefined || item.priority < best.priority) best = item
+    if (best !== undefined) return { ruleId: best.id, matchedRuleId, source: 'evaluated' }
   }
   return { ruleId: matchedRuleId, matchedRuleId, source: matchedRuleId === null ? 'none' : 'matched' }
 }

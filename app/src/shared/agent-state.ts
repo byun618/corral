@@ -4,6 +4,7 @@
 // `types.ts` 는 타입만 두는 파일이라(그 파일 머리 주석) 값과 함수는 이 형제 모듈에 있다.
 // herdr 의 와이어 모양은 여기에도 없다 — 어댑터가 옮겨 담은 뒤의 corral 타입만 다룬다.
 
+import { isRecord, readArray, readRecord, readString } from './json.js'
 import type {
   AgentObservedVia,
   AgentState,
@@ -79,10 +80,14 @@ const BLOCKED_REASON_BY_RULE: Readonly<Record<string, BlockedReason>> = {
  * `blocked` 의 사유를 **한 곳에서** 판정한다 (S3 — CLI 와 GUI 가 같은 함수를 쓴다).
  *
  * 입력이 둘이다:
- *   · `labels`  — herdr `state_labels`. **실측상 claude·codex·grok 에서는 항상 비어 온다**
- *     (`raw/claude/s3/s3-state-labels-findings.md` §①④). 그래서 이 입력만 쓰던 기존 CLI
- *     `blockedReason` 은 세 provider 에서 사실상 죽은 값이었다
- *   · `ruleId`  — `agent.explain` 의 `matched_rule.id`. **사유의 실제 출처다**
+ *   · `labels`  — herdr `state_labels`. **실측상 claude·codex·grok 에서는 늘 비어 온다**
+ *     (`raw/claude/s3/s3-state-labels-findings.md` §①④). 다른 provider·다음 herdr 를 위해
+ *     남겨 둔 입력이지 지금 사유가 나오는 자리가 아니다
+ *   · `ruleId`  — `agent.explain` 이 고른 규칙 id(`pickBlockedRule`). **사유의 실제 출처다**
+ *
+ * **CLI 와 GUI 가 이 함수에 같은 것을 먹인다** (fix-r1 F3). 전에는 GUI 만 `ruleId` 를 주고
+ * CLI 는 `labels` 만 줘서, 같은 pane 이 창에서는 `permission`·CLI 에서는 `unknown` 이었다 —
+ * 한 함수를 쓰는 것만으로는 한 어휘가 되지 않는다는 실례다.
  *
  * 돌려주는 `null` 과 `'unknown'` 은 다르다:
  *   · `null`    = herdr 가 **아무 말도 안 했다** (라벨도 규칙 id 도 없다 — 공백)
@@ -187,4 +192,38 @@ export function recordAgentTransition(input: {
     enteredDoneAt: nextStatus === 'done' ? observedAt : previousState.enteredDoneAt,
     history: [previous, ...previousState.history].slice(0, AGENT_HISTORY_LIMIT),
   }
+}
+
+/** `agent.explain` 이 고른 규칙과, 우리가 사유로 쓰기로 한 규칙. */
+type PickedRule = { ruleId: string | null; matchedRuleId: string | null; source: 'matched' | 'evaluated' | 'none' }
+
+/**
+ * `agent.explain` 응답에서 **사유로 쓸 규칙 하나**를 고른다 (S3 · F2).
+ *
+ * herdr 는 규칙을 우선순위로 정렬해 먼저 맞는 하나를 `matched_rule` 로 준다. 그런데 화면
+ * 종류를 **안 가르는** 거친 규칙(`osc_title_blocked` 1300, `live_blocked_form` 980 …)이
+ * 권한·질문 규칙보다 위에 있을 수 있고, 그러면 우리 사유가 늘 `unknown` 으로 수렴한다 —
+ * 리뷰 R1 의 지적이다. 같은 응답에 `evaluated_rules` 가 이미 들어 있으므로 **요청은 그대로**
+ * 두고 거기서 「맞았고(`matched:true`) 우리 표에 사유가 있는」 규칙을 찾는다.
+ *
+ * 고르는 순서는 **구체적인 것 우선**이다: `matched_rule` 이 이미 사유를 주면 그걸 쓰고,
+ * 주지 못할 때만(`unknown` 으로 떨어질 때만) `evaluated_rules` 를 본다. 거친 규칙이 위에
+ * 있어도 아래의 구체적 규칙이 같이 맞았다면 그 뜻이 더 정확하기 때문이다.
+ * **아무 데서도 사유가 안 나오면 `matched_rule` 을 그대로 돌려준다** — 「말은 했는데 갈래가
+ * 없다(`unknown`)」와 「아무 말도 없다(`null`)」의 구분을 여기서 뭉개지 않는다.
+ */
+export function pickBlockedRule(explain: Record<string, unknown> | null): PickedRule {
+  if (explain === null) return { ruleId: null, matchedRuleId: null, source: 'none' }
+  const matchedRuleId = readString(readRecord(explain, 'matched_rule') ?? {}, 'id')
+  if (matchedRuleId !== null && blockedReason({ ruleId: matchedRuleId }) !== 'unknown') {
+    return { ruleId: matchedRuleId, matchedRuleId, source: 'matched' }
+  }
+  for (const entry of readArray(explain, 'evaluated_rules')) {
+    if (!isRecord(entry) || entry['matched'] !== true) continue
+    const id = readString(entry, 'id')
+    if (id === null) continue
+    const reason = blockedReason({ ruleId: id })
+    if (reason !== null && reason !== 'unknown') return { ruleId: id, matchedRuleId, source: 'evaluated' }
+  }
+  return { ruleId: matchedRuleId, matchedRuleId, source: matchedRuleId === null ? 'none' : 'matched' }
 }

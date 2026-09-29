@@ -24,14 +24,16 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown'
 
 /**
- * `blocked` 의 사유. **herdr 0.9.0 은 claude·codex·grok 에 이것을 공급하지 않는다** —
- * `state_labels` 가 비어 오고 매니페스트에 `label` 키가 없다
- * (실측 `raw/claude/s3/s3-state-labels-findings.md`). 그래서 지금은 **항상 `null`** 이고,
- * 그 공백은 결과 문서의 provider 표에 사유와 함께 적힌다.
+ * `blocked` 의 사유.
  *
- * 값을 지우지 않고 자리를 남기는 이유: 사유의 출처(`agent.explain` 의 `matched_rule.id`)는
- * herdr 에 실재하고, 받기로 하면 채우는 자리가 여기다. 「없는 값」과 「안 받는 값」을
- * 화면이 구분할 수 있어야 한다.
+ * **출처는 `agent.explain` 의 규칙 id 다**(`shared/agent-state.ts` 의 `pickBlockedRule`).
+ * herdr 0.9.0 은 claude·codex·grok 의 `pane.agent_status_changed`·스냅샷 봉투에 `state_labels`
+ * 를 **안 싣는다**(실측 `raw/claude/s3/s3-state-labels-findings.md`) — 그래서 봉투만 보면 늘
+ * 비어 있고, corral 은 blocked 인 pane 마다 explain 을 한 번 물어 이 칸을 채운다.
+ *
+ * `null` 과 `'unknown'` 은 다르다: `null` = herdr 가 아무 말도 안 했다(공백),
+ * `'unknown'` = 말은 했는데 그 규칙이 권한·질문을 안 가른다. 화면이 그 둘을 구분할 수 있어야
+ * 「출처에 없다」와 「우리가 못 읽는다」가 같은 모양으로 안 보인다.
  */
 export type BlockedReason = 'trust' | 'login' | 'permission' | 'question' | 'update' | 'unknown'
 
@@ -76,7 +78,7 @@ export type AgentTransition = {
  * `status` 는 여기 **없다** — `PaneRow.agentStatus` 하나가 그 값의 자리다. 두 군데 두면 갈린다.
  */
 export type AgentState = {
-  /** S3 — 공급할 수 없으면 `null`(공백). 지금은 항상 null 이다(위 `BlockedReason` 주석). */
+  /** S3 — `agent.explain` 이 채운다. `null` = 아무 말도 없었다, `'unknown'` = 갈래가 없다. */
   blockedReason: BlockedReason | null
   /** **지금 상태**를 corral 이 처음 관측한 시각. 같은 값이 다시 와도 갱신하지 않는다. */
   observedAt: number

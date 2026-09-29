@@ -75,13 +75,6 @@ export type RetainedAgent = RetainedAgentRow
 export type ApplyResult = {
   changed: boolean
   note: string
-  /**
-   * 이 이벤트가 그 pane 을 **blocked 로 들여보냈다** (LIFE-456 S3).
-   *
-   * 사유는 이 봉투에 안 실린다 — 링크가 이 신호를 보고 `agent.explain` 을 **한 번** 쏜다.
-   * 진입 전이에만 세운다: 스냅샷·재동기에서 세우면 blocked 인 pane 마다 매 주기 요청이 된다.
-   */
-  blockedEntry?: string
 }
 
 /** 재동기 한 판이 실제로 무엇을 고쳤나 — N7 의 근거로 그대로 로그·상태에 실린다. */
@@ -165,6 +158,17 @@ export class WorkspaceStore {
   private closedPanes = new Map<string, number>()
   /** S15ⓓ — 닫힌 뒤에도 남기는 **마지막 기록**. 최신 우선, `RETAINED_LIMIT` 개. */
   private retained: RetainedAgent[] = []
+  /**
+   * **blocked 삽화마다 붙는 번호** (F1·F4). pane 이 blocked 로 **들어갈 때** 새 번호를 받고,
+   * 떠나거나 사라지면 지운다. 두 가지를 동시에 푼다:
+   *   · F1 — 사유를 물어야 할 대상을 **상태에서** 뽑는다. 「어느 경로로 들어왔나」가 아니라
+   *     「지금 blocked 인데 사유가 없나」가 기준이라, 부팅 snapshot·재동기·버퍼 재생 어디로
+   *     들어와도 빠지지 않는다. 전에는 live push 전이에만 붙어 있어서 나머지가 영영 공백이었다
+   *   · F4 — 응답에 이 번호를 되돌려 받아 **지난 삽화의 늦은 응답을 버린다**
+   */
+  private blockedEntries = new Map<string, number>()
+  private blockedEntrySeq = 0
+
   /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
   private retentionSuppressed = new Set<string>()
   private orphans: Orphan[] = []
@@ -178,6 +182,7 @@ export class WorkspaceStore {
     this.closedPanes.clear()
     this.retained = []
     this.retentionSuppressed.clear()
+    this.blockedEntries.clear()
     this.orphans = []
   }
 
@@ -254,7 +259,8 @@ export class WorkspaceStore {
         keptNewer.push(`workspace:${id}`)
         continue
       }
-      this.dropWorkspace(id, at)
+      // 재동기 정리 — 닫힘을 못 본 자리라 보존하지 않는다 (F5).
+      this.dropWorkspace(id, at, false)
       removed.workspaces.push(id)
     }
     for (const [id, row] of [...this.tabs]) {
@@ -354,7 +360,8 @@ export class WorkspaceStore {
       case 'workspace_closed': {
         const id = readString(data, 'workspace_id')
         if (id === null) return { changed: false, note: 'workspace_closed 필드 부족' }
-        const had = this.dropWorkspace(id, at)
+        // herdr 가 「닫혔다」고 말해 준 자리다 — 보존한다 (F5 의 반대 갈래).
+        const had = this.dropWorkspace(id, at, true)
         return { changed: had, note: had ? frame.event : 'workspace_closed: 이미 없음(멱등)' }
       }
 
@@ -460,7 +467,7 @@ export class WorkspaceStore {
           this.workspaces.has(workspaceId) &&
           [...this.tabs.values()].every((item) => item.workspaceId !== workspaceId) &&
           [...this.panes.values()].every((item) => item.workspaceId !== workspaceId)
-        if (workspaceGone) this.dropWorkspace(workspaceId, at)
+        if (workspaceGone) this.dropWorkspace(workspaceId, at, true)
         const changed = had || orphaned > 0 || workspaceGone
         return {
           changed,
@@ -543,7 +550,7 @@ export class WorkspaceStore {
         const siblingPanes = [...this.panes.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const workspaceGone =
           tabGone && siblingTabs === 0 && siblingPanes === 0 && this.workspaces.has(pane.workspaceId)
-        if (workspaceGone) this.dropWorkspace(pane.workspaceId, at)
+        if (workspaceGone) this.dropWorkspace(pane.workspaceId, at, true)
         return {
           changed: true,
           note: tabGone
@@ -586,8 +593,16 @@ export class WorkspaceStore {
     }
   }
 
-  /** workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. 묘비에는 **세운 시각**이 든다. */
-  private dropWorkspace(id: string, at: number): boolean {
+  /**
+   * workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. 묘비에는 **세운 시각**이 든다.
+   *
+   * `retain` 은 **사라짐의 출처**다 (F5). 같은 함수가 두 곳에서 불리는데 뜻이 다르다:
+   *   · `workspace_closed` 이벤트 → `true`. herdr 가 "닫혔다"고 말해 준 것이다
+   *   · 재동기 정리          → `false`. 사진에 없더라는 **뒤늦은 앎**이라 「끝나 있었다」를
+   *     주장할 근거가 없다. 이 갈래가 `true` 로 굳어 있어서 「재동기는 보존하지 않는다」 규칙이
+   *     workspace 째 사라질 때만 뒤집혀 있었다(코디 재현 C4)
+   */
+  private dropWorkspace(id: string, at: number, retain: boolean): boolean {
     const had = this.workspaces.delete(id)
     this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
@@ -606,7 +621,7 @@ export class WorkspaceStore {
     }
     for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
-      this.forgetPane({ pane, at, retain: true }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
+      this.forgetPane({ pane, at, retain }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
     for (const tabId of droppedTabs) this.releaseTabSuppression(tabId)
     this.retentionSuppressed.delete(id)
@@ -810,6 +825,7 @@ export class WorkspaceStore {
     }
     const before = this.panes.get(id) ?? null
     const nextStatus = pickAgentStatus(value, before?.agentStatus ?? null)
+    this.trackBlockedEntry(id, before?.agentStatus ?? null, nextStatus)
     this.panes.set(id, {
       paneId: id,
       workspaceId,
@@ -897,12 +913,9 @@ export class WorkspaceStore {
       // 전이 이벤트다 — 이것만이 **진입 시각에 가까운** 관측이다.
       observedVia: 'event',
     })
+    this.trackBlockedEntry(paneId, pane.agentStatus, status)
     this.panes.set(paneId, { ...pane, agentStatus: status, agentState })
-    return {
-      changed: true,
-      note: `agent_status_changed: ${pane.agentStatus} → ${status}`,
-      ...(status === 'blocked' ? { blockedEntry: paneId } : {}),
-    }
+    return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
 
   /**
@@ -965,6 +978,42 @@ export class WorkspaceStore {
    * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
    * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
    */
+  /**
+   * pane 의 상태가 정해질 때마다 blocked 삽화 번호를 맞춘다 (F1·F4).
+   *
+   * **pane 을 쓰는 모든 자리가 여기를 지난다** — snapshot·재동기·`pane_created/updated`·
+   * 전이 이벤트. 진입 경로마다 따로 붙이면 꼭 한 군데가 빠지는데, 실제로 그렇게 빠져서
+   * 부팅 때 이미 blocked 이던 pane 은 사유를 영영 못 받았다(F1).
+   */
+  private trackBlockedEntry(paneId: string, previousStatus: AgentStatus | null, nextStatus: AgentStatus): void {
+    if (nextStatus !== 'blocked') {
+      this.blockedEntries.delete(paneId)
+      return
+    }
+    // 이미 blocked 였고 번호도 있으면 **같은 삽화**다 — 번호를 바꾸지 않는다(같은 값 재관측).
+    if (previousStatus === 'blocked' && this.blockedEntries.has(paneId)) return
+    this.blockedEntrySeq += 1
+    this.blockedEntries.set(paneId, this.blockedEntrySeq)
+  }
+
+  /**
+   * **사유를 아직 못 받은 blocked pane 들** (F1). 호출자(link)가 이 목록을 보고 한 번씩 묻는다.
+   *
+   * 목록이 상태에서 나오므로 폴링이 아니다: 사유가 채워지면 **그 다음 호출부터 빠진다**.
+   * 물어봤는데 못 받은 것(실패·빈 응답)은 호출자가 삽화 번호로 기억해 다시 묻지 않는다 —
+   * 「실패」와 「아직 안 물어봄」을 가르는 자리가 거기다.
+   */
+  blockedNeedingReason(): Array<{ paneId: string; entry: number }> {
+    const rows: Array<{ paneId: string; entry: number }> = []
+    for (const [paneId, entry] of this.blockedEntries) {
+      const pane = this.panes.get(paneId)
+      if (pane === undefined || pane.agentStatus !== 'blocked') continue
+      if (pane.agentState.blockedReason !== null) continue
+      rows.push({ paneId, entry })
+    }
+    return rows
+  }
+
   /** 탭이 실제로 사라졌다 — 그 탭에 걸어 둔 억제 표를 **한 번에** 걷는다. */
   private releaseTabSuppression(tabId: string): void {
     this.retentionSuppressed.delete(tabId)
@@ -973,6 +1022,7 @@ export class WorkspaceStore {
   private forgetPane(input: { pane: Pane; at: number; retain: boolean }): void {
     const { pane, at, retain } = input
     if (retain) this.retain(pane, at)
+    this.blockedEntries.delete(pane.paneId)
     this.panes.delete(pane.paneId)
     this.closedPanes.set(pane.paneId, at)
   }
@@ -984,6 +1034,20 @@ export class WorkspaceStore {
    */
   suppressRetention(id: string): void {
     this.retentionSuppressed.add(id)
+  }
+
+  /**
+   * **찍은 억제 표를 되돌린다** (F6) — 닫기가 **확정 거절**되거나 실패했을 때 부른다.
+   *
+   * 표를 찍는 것은 「지금 닫는 중이다」는 약속인데, 닫기가 거절되면 그 약속이 거짓이 된다.
+   * 그대로 두면 그 pane 이 **나중에 진짜로 끝나서 사라질 때** 완료 기록을 조용히 삼킨다.
+   *
+   * **timeout 은 부르지 않는다.** 결과 불명이라 닫혔을 수도 있고, 그때 표를 걷으면 사용자가
+   * 닫은 것이 완료 행으로 되살아난다. 둘 중 덜 나쁜 쪽을 고른다 — 「끝난 것 하나를 못 남김」이
+   * 「사용자가 닫은 것이 되살아남」보다 낫다. 호출자는 이 구분을 로그에 남긴다.
+   */
+  releaseSuppression(id: string): void {
+    this.retentionSuppressed.delete(id)
   }
 
   /** 보존된 마지막 기록 — 최신 우선. */
@@ -998,11 +1062,20 @@ export class WorkspaceStore {
    * 상태의 사유를 지금 상태에 붙이면 화면이 거짓말을 한다. 상태 자체는 건드리지 않으므로
    * 관측 시각·이력도 그대로다(같은 값 갈래를 타고 사유만 갈린다).
    */
-  applyBlockedReason(input: { paneId: string; reason: BlockedReason | null }): ApplyResult {
+  applyBlockedReason(input: { paneId: string; entry: number; reason: BlockedReason | null }): ApplyResult {
     const pane = this.panes.get(input.paneId)
     if (pane === undefined) return { changed: false, note: `blocked_reason: 모르는 pane (${input.paneId})` }
     if (pane.agentStatus !== 'blocked') {
       return { changed: false, note: `blocked_reason: 이미 blocked 가 아니다 (${pane.agentStatus})` }
+    }
+    /**
+     * **F4 — 지난 삽화의 응답은 버린다.** 상태가 blocked → working → blocked 로 돌아오면
+     * 값은 다시 `blocked` 라 위 검사를 통과한다. 그때 먼저 보낸 요청의 늦은 응답이 도착하면
+     * **새 삽화의 사유를 옛 화면의 것으로 덮는다**. 삽화 번호가 그 둘을 가른다.
+     */
+    const current = this.blockedEntries.get(input.paneId)
+    if (current !== input.entry) {
+      return { changed: false, note: `blocked_reason: 지난 진입의 응답 (${input.entry} ≠ ${String(current)})` }
     }
     if (pane.agentState.blockedReason === input.reason) {
       return { changed: false, note: `blocked_reason: 같은 값 (${String(input.reason)})` }

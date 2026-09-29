@@ -36,3 +36,8 @@ export {
   type WorktreeOutcome,
 } from './internal/lifecycle.js'
 export { TerminalBackend, type TerminalIdentity, type TerminalOperation, type AgentObservation, type AgentManifestObservation } from './internal/terminal-backend.js'
+/**
+ * 요청 실패의 **코드**를 바깥에서 가를 수 있게 낸다 (LIFE-456 F6). main 이 「확정 거절」과
+ * 「결과 불명(timeout)」을 구분해야 억제 표를 언제 걷을지 정할 수 있다.
+ */
+export { HerdrRequestError } from './internal/request.js'

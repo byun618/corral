@@ -10,6 +10,7 @@ import {
   emptyAgentState,
   parseAgentStatus,
   recordAgentTransition,
+  pickBlockedRule,
   rollupAgentStatus,
 } from './agent-state.js'
 import type { AgentState, AgentStatus } from './types.js'
@@ -191,5 +192,50 @@ describe('recordAgentTransition — 관측 시각·완료 시각·이력 (S1·S1
     expect(snap.observedVia).toBe('snapshot')
     // 재시작 뒤 첫 스냅샷이 이 갈래다 — 화면은 이 칸을 보고 「관측 시각」이라고 말해야 한다.
     expect(snap.enteredDoneAt).toBe(5000)
+  })
+})
+
+describe('pickBlockedRule — 거친 규칙이 구체적 규칙을 가리지 않게 (F2)', () => {
+  const explain = (matched: string | null, evaluated: Array<{ id: string; matched: boolean }>) => ({
+    ...(matched === null ? {} : { matched_rule: { id: matched } }),
+    evaluated_rules: evaluated,
+  })
+
+  it('`matched_rule` 이 이미 사유를 주면 그걸 쓴다 — 응답을 더 뒤지지 않는다', () => {
+    const picked = pickBlockedRule(explain('bash_permission_prompt', [{ id: 'trust_directory', matched: true }]))
+    expect(picked).toEqual({ ruleId: 'bash_permission_prompt', matchedRuleId: 'bash_permission_prompt', source: 'matched' })
+  })
+
+  it('**거친 규칙이 이겼으면 같이 맞은 구체적 규칙을 집는다** — 이게 F2 의 반례다', () => {
+    // 실제 우선순위: osc_title_blocked(1300) > bash_permission_prompt. herdr 는 앞의 것을
+    // matched_rule 로 주는데 그 규칙은 「막혔다」만 뜻해서 우리 표에서 unknown 으로 떨어진다.
+    const picked = pickBlockedRule(explain('osc_title_blocked', [
+      { id: 'osc_title_blocked', matched: true },
+      { id: 'bash_permission_prompt', matched: true },
+    ]))
+    expect(picked.ruleId).toBe('bash_permission_prompt')
+    expect(picked.source).toBe('evaluated')
+    // 원래 herdr 가 고른 것도 들고 간다 — 원자료에서 대조할 수 있어야 한다.
+    expect(picked.matchedRuleId).toBe('osc_title_blocked')
+  })
+
+  it('맞지 않은(`matched:false`) 규칙은 안 집는다', () => {
+    const picked = pickBlockedRule(explain('osc_title_blocked', [
+      { id: 'osc_title_blocked', matched: true },
+      { id: 'bash_permission_prompt', matched: false },
+    ]))
+    expect(picked.ruleId).toBe('osc_title_blocked')
+    expect(picked.source).toBe('matched')
+  })
+
+  it('아무 데서도 갈래가 안 나오면 `matched_rule` 을 그대로 둔다 — unknown 과 null 을 안 뭉갠다', () => {
+    const picked = pickBlockedRule(explain('live_blocked_form', [{ id: 'live_blocked_form', matched: true }]))
+    expect(picked.ruleId).toBe('live_blocked_form')
+    expect(blockedReason({ ruleId: picked.ruleId })).toBe('unknown')
+  })
+
+  it('explain 이 없으면 아무 말도 안 한 것이다 (null ≠ unknown)', () => {
+    expect(pickBlockedRule(null)).toEqual({ ruleId: null, matchedRuleId: null, source: 'none' })
+    expect(blockedReason({ ruleId: null })).toBeNull()
   })
 })

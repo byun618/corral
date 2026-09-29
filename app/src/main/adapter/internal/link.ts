@@ -11,8 +11,8 @@
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
 
 import type { LinkPhase, LinkState } from '../../../shared/types.js'
-import { blockedReason } from '../../../shared/agent-state.js'
-import { isRecord, readRecord, readString } from '../../../shared/json.js'
+import { blockedReason, pickBlockedRule } from '../../../shared/agent-state.js'
+import { isRecord, readRecord } from '../../../shared/json.js'
 import type { SessionHandle } from './sessions.js'
 import { log } from '../../log.js'
 import { checkUnixSocketPath } from '../../unix-socket-path.js'
@@ -89,6 +89,12 @@ export class SessionLink {
    * 돌면 **먼저 나간 시도가 뒤늦게 돌아온다**. 그대로 두면 옛 스냅샷이 새 저장소에 부어진다.
    */
   private generation = 0
+  /**
+   * 이미 사유를 물어본 blocked 삽화 (`paneId:entry`). **실패한 것도 남는다** —
+   * 「실패」와 「아직 안 물어봄」을 가르는 자리이고, 그래서 매 주기 재시도가 안 생긴다 (F1).
+   * 삽화가 끝나거나 사유가 채워지면 `sweepBlockedReasons` 가 턴다.
+   */
+  private reasonAttempts = new Set<string>()
   private session: SessionHandle | null = null
   private subscription: Subscription | null = null
   private agentSubscription: Subscription | null = null
@@ -160,6 +166,7 @@ export class SessionLink {
     this.stopped = false
     this.session = session
     this.store.reset()
+    this.reasonAttempts.clear()
     this.state = {
       ...this.state,
       sessionName: session.name,
@@ -289,6 +296,8 @@ export class SessionLink {
         })
       }
       log('boot.converged', { buffered: buffered.length, ...this.store.ids() })
+      // 부팅 스냅샷·버퍼 재생으로 이미 blocked 인 pane 이 있을 수 있다 — 여기서 훑는다 (F1).
+      this.sweepBlockedReasons()
       // 성공했으면 재시도 카운터를 턴다 — 안 털면 다음 끊김의 백오프가 늘 상한에서 시작한다.
       this.state = { ...this.state, bufferedAtSnapshot: buffered.length, lastError: null, attempt: 0 }
       this.setPhase('live')
@@ -357,6 +366,8 @@ export class SessionLink {
         lastResyncNote: note,
         resyncCount: this.state.resyncCount + 1,
       }
+      // 재동기로 알게 된 blocked 도 사유를 받는다 (F1).
+      this.sweepBlockedReasons()
       log('resync.applied', {
         reason,
         requestedAt,
@@ -419,7 +430,7 @@ export class SessionLink {
         const result = this.store.applyEvent(frame)
         log('agent.push.applied', { event: frame.event, changed: result.changed, note: result.note })
         if (result.changed) this.hooks.onChange()
-        if (result.blockedEntry !== undefined) this.explainBlocked(result.blockedEntry)
+        this.sweepBlockedReasons()
       },
       onDrop: (reason, detail) => {
         if (generation !== this.generation) return
@@ -485,40 +496,70 @@ export class SessionLink {
     // 에이전트가 붙었다 — 곧 통합 훅이 세션 id 를 알린다. 그 보고에는 push 가 없으므로
     // 여기서 재동기를 두 번 당겨 준다 (`AGENT_SESSION_NUDGE_MS` 주석에 실측 근거).
     if (frame.event === 'pane_agent_detected' && frame.data['released'] !== true) this.nudgeForAgentSession()
-    if (result.blockedEntry !== undefined) this.explainBlocked(result.blockedEntry)
+    this.sweepBlockedReasons()
   }
 
   /**
-   * **blocked 사유를 한 번 물어 온다** (LIFE-456 S3).
+   * **사유 없는 blocked pane 을 훑어 한 번씩 물어본다** (LIFE-456 S3 · 수정 라운드 1 F1).
    *
    * 왜 따로 묻나: 사유가 실려 오는 자리가 없다. `pane.agent_status_changed` 봉투는
    * `{agent, agent_status, pane_id, workspace_id}` 뿐이고, herdr 0.9.0 은 claude·codex·grok 에
    * `state_labels` 를 **아예 안 싣는다**(실측 — `raw/claude/s3/s3-state-labels-findings.md`).
-   * 사유를 주는 유일한 자리가 `agent.explain` 의 `matched_rule.id` 다.
+   * 사유를 주는 유일한 자리가 `agent.explain` 이다.
    *
-   * **진입 1회다.** 폴링이 아니다 — blocked 로 들어가는 전이에서만 부르고, 스냅샷·재동기에서는
-   * 안 부른다. blocked 진입은 드물어서 요청 1건(커넥션 1개, 0.3ms)이면 충분하다.
-   * 기다리지 않는다(이벤트 처리를 막지 않는다). 응답이 오는 사이 상태가 바뀌었으면
-   * `applyBlockedReason` 이 그 값을 버린다.
+   * **왜 전이가 아니라 훑기인가** (F1): 처음에는 blocked 로 들어가는 live push 전이에서만
+   * 불렀다. 그래서 **부팅 스냅샷에 이미 blocked 이던 pane · 부팅 버퍼로 재생된 전이 ·
+   * 재동기로 알게 된 blocked · 같은 값 재관측 · explain 이 실패한 뒤** 는 사유를 영영 못 받았다.
+   * 진입 경로마다 훅을 다는 대신 **상태를 본다**: "지금 blocked 인데 사유가 없는 pane".
+   *
+   * **폴링이 아니다.** 두 겹으로 막는다:
+   *   ① 사유가 채워지면 저장소 목록에서 빠진다
+   *   ② 물어본 삽화는 `reasonAttempts` 에 남아 **다시 묻지 않는다** — 실패해도 그렇다.
+   *      「실패」와 「아직 안 물어봄」을 가르는 자리가 여기다. 실패를 자동 재시도로 덮으면
+   *      죽은 백엔드에 매 주기 요청을 쏘게 된다
+   * blocked 를 떠났다 다시 들어오면 삽화 번호가 바뀌므로 **새 삽화로 한 번 더** 묻는다.
    */
-  private explainBlocked(paneId: string): void {
+  private sweepBlockedReasons(): void {
+    const session = this.session
+    if (this.stopped || session === null) return
+    const pending = this.store.blockedNeedingReason()
+    // 끝난 삽화의 기억은 버린다 — 표가 무한히 자라지 않게. 남는 것은 아직 사유가 없는 삽화뿐이다.
+    const live = new Set(pending.map(({ paneId, entry }) => `${paneId}:${String(entry)}`))
+    for (const key of [...this.reasonAttempts]) if (!live.has(key)) this.reasonAttempts.delete(key)
+
+    for (const { paneId, entry } of pending) {
+      const key = `${paneId}:${String(entry)}`
+      if (this.reasonAttempts.has(key)) continue
+      this.reasonAttempts.add(key)
+      this.explainBlocked(paneId, entry)
+    }
+  }
+
+  /**
+   * 한 삽화의 사유를 물어 온다. 기다리지 않는다(이벤트 처리를 막지 않는다) — 응답이 오는
+   * 사이에 삽화가 끝났으면 `applyBlockedReason` 이 **삽화 번호를 보고** 그 값을 버린다(F4).
+   */
+  private explainBlocked(paneId: string, entry: number): void {
     const session = this.session
     if (this.stopped || session === null) return
     const generation = this.generation
     void request(session.socketPath, 'agent.explain', { target: paneId }, { reason: 'blocked-reason' })
       .then((frame) => {
         if (this.stopped || generation !== this.generation) return
-        // 7KB 응답에서 **한 칸만** 읽는다 — `evaluated_rules` 는 버린다.
         const explain = readRecord(isRecord(frame.result) ? frame.result : {}, 'explain')
-        const ruleId = explain === null ? null : readString(readRecord(explain, 'matched_rule') ?? {}, 'id')
-        const reason = blockedReason({ ruleId })
-        const result = this.store.applyBlockedReason({ paneId, reason })
-        log('agent_explain.reason', { paneId, ruleId, reason, changed: result.changed, note: result.note })
+        const picked = pickBlockedRule(explain)
+        const reason = blockedReason({ ruleId: picked.ruleId })
+        const result = this.store.applyBlockedReason({ paneId, entry, reason })
+        log('agent_explain.reason', {
+          paneId, entry, ruleId: picked.ruleId, source: picked.source, matchedRuleId: picked.matchedRuleId,
+          reason, changed: result.changed, note: result.note,
+        })
         if (result.changed) this.hooks.onChange()
       })
       .catch((error: unknown) => {
         // 사유를 못 받은 것은 상태를 못 받은 것이 아니다 — blocked 는 이미 화면에 있다.
-        log('agent_explain.failed', { paneId, error: error instanceof Error ? error.message : String(error) })
+        // `reasonAttempts` 에 이미 올라가 있으므로 **자동 재시도는 없다**(F1 — 실패 ≠ 미시도).
+        log('agent_explain.failed', { paneId, entry, error: error instanceof Error ? error.message : String(error) })
       })
   }
 

@@ -270,3 +270,100 @@ describe('전이 기록 (S1 관측 시각 · S15)', () => {
     expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBeNull()
   })
 })
+
+// --- 수정 라운드 1 (F1·F4·F5·F6) — 각 지적의 **반례**. 수정 전 실패해야 한다. ----------
+
+describe('F1 — blocked 사유는 진입 경로와 무관하게 한 번 물어본다', () => {
+  it('부팅 snapshot 으로 처음 본 blocked pane 도 「사유를 물어야 할 것」에 오른다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    expect(store.blockedNeedingReason().map((row) => row.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('재동기로 들어온 blocked 도 오른다 — live push 진입만 보던 것이 결함이었다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'idle' }] }))
+    store.reconcile(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }), Date.now() + 1000)
+    expect(store.blockedNeedingReason().map((row) => row.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('사유가 채워지면 목록에서 빠진다 — 매 주기 다시 묻지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    const entry = store.blockedNeedingReason()[0]
+    expect(entry).toBeDefined()
+    store.applyBlockedReason({ paneId: 'w1:p1', entry: entry?.entry ?? 0, reason: 'permission' })
+    expect(store.blockedNeedingReason()).toEqual([])
+  })
+
+  it('blocked 를 떠났다 다시 들어오면 **새 진입**이라 다시 묻는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    const first = store.blockedNeedingReason()[0]?.entry ?? 0
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'working' } })
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'blocked' } })
+    const second = store.blockedNeedingReason()[0]?.entry ?? 0
+    expect(second).not.toBe(first)
+  })
+})
+
+describe('F4 — 지난 진입의 늦은 explain 응답은 버린다', () => {
+  it('진입 토큰이 다르면 사유를 안 쓴다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    const stale = store.blockedNeedingReason()[0]?.entry ?? 0
+    // 그 삽화가 끝나고 새 blocked 삽화가 시작된다.
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'working' } })
+    store.applyEvent({ event: 'pane_agent_status_changed', data: { pane_id: 'w1:p1', agent_status: 'blocked' } })
+    // 옛 삽화의 응답이 이제야 도착한다 — 새 삽화의 사유를 덮으면 안 된다.
+    const result = store.applyBlockedReason({ paneId: 'w1:p1', entry: stale, reason: 'trust' })
+    expect(result.changed).toBe(false)
+    expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBeNull()
+  })
+
+  it('같은 진입의 응답은 그대로 쓴다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'blocked' }] }))
+    const entry = store.blockedNeedingReason()[0]?.entry ?? 0
+    expect(store.applyBlockedReason({ paneId: 'w1:p1', entry, reason: 'permission' }).changed).toBe(true)
+    expect(paneOf(store, 'w1:p1')?.agentState.blockedReason).toBe('permission')
+  })
+})
+
+describe('F5 — 재동기로 workspace 가 사라져도 보존하지 않는다', () => {
+  it('빈 snapshot 으로 workspace 째 사라지면 보존 0 — 닫힘이 아니라 뒤늦은 앎이다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.reconcile({ workspaces: [], tabs: [], panes: [] }, Date.now() + 1000)
+    // 양성 대조 — 정리 경로가 실제로 돌았다.
+    expect(store.rows()).toEqual([])
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('대조군: 닫힘 이벤트로 workspace 가 사라지면 보존한다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.applyEvent({ event: 'workspace_closed', data: { workspace_id: 'w1' } })
+    expect(store.retainedRows().map((row) => row.paneId)).toEqual(['w1:p1'])
+  })
+})
+
+describe('F6 — 억제 표는 확정 거절·실패면 되돌린다', () => {
+  it('닫기가 거절되면 표를 걷는다 — 뒤의 진짜 완료를 삼키지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:t1')
+    store.releaseSuppression('w1:t1') // 거절·실패 → 되돌린다
+    store.applyEvent({ event: 'tab_closed', data: { tab_id: 'w1:t1', workspace_id: 'w1' } })
+    expect(store.retainedRows().map((row) => row.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('결과 불명(timeout)이면 표를 **그대로 둔다** — 닫혔을 수도 있다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:t1')
+    // timeout 은 확정 거절이 아니다 — 되돌리지 않는다.
+    store.applyEvent({ event: 'tab_closed', data: { tab_id: 'w1:t1', workspace_id: 'w1' } })
+    expect(store.retainedRows()).toEqual([])
+  })
+})

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AGENT_HISTORY_LIMIT,
   AGENT_STATUS_ROLLUP_ORDER,
-  blockedReasonFromLabels,
+  blockedReason,
   emptyAgentState,
   parseAgentStatus,
   recordAgentTransition,
@@ -33,23 +33,53 @@ describe('parseAgentStatus — herdr 다섯 값 (S1)', () => {
   })
 })
 
-describe('blockedReasonFromLabels — 사유 한 벌 (S3)', () => {
+describe('blockedReason — 사유 한 벌 (S3)', () => {
   it('herdr 가 아무 말도 안 하면 null 이다 — 공백이지 unknown 이 아니다', () => {
     // 실측: claude·codex·grok 은 항상 이 갈래다 (raw/claude/s3/s3-state-labels-findings.md).
-    expect(blockedReasonFromLabels(null)).toBeNull()
-    expect(blockedReasonFromLabels(undefined)).toBeNull()
-    expect(blockedReasonFromLabels({})).toBeNull()
+    expect(blockedReason({ labels: null })).toBeNull()
+    expect(blockedReason({})).toBeNull()
+    expect(blockedReason({ labels: {} })).toBeNull()
   })
 
   it('라벨이 있는데 어느 갈래도 아니면 unknown 이다 — null 과 구분된다', () => {
-    expect(blockedReasonFromLabels({ a: '처음 보는 문구' })).toBe('unknown')
+    expect(blockedReason({ labels: { a: '처음 보는 문구' } })).toBe('unknown')
   })
 
   it('CLI 가 쓰던 갈래를 그대로 가른다 (두 벌 판정 금지)', () => {
-    expect(blockedReasonFromLabels({ a: 'Do you trust this directory?' })).toBe('trust')
-    expect(blockedReasonFromLabels({ a: 'Please sign in to continue' })).toBe('login')
-    expect(blockedReasonFromLabels({ a: 'Grant permission?' })).toBe('permission')
-    expect(blockedReasonFromLabels({ a: 'Update available!' })).toBe('update')
+    expect(blockedReason({ labels: { a: 'Do you trust this directory?' } })).toBe('trust')
+    expect(blockedReason({ labels: { a: 'Please sign in to continue' } })).toBe('login')
+    expect(blockedReason({ labels: { a: 'Grant permission?' } })).toBe('permission')
+    expect(blockedReason({ labels: { a: 'Update available!' } })).toBe('update')
+  })
+
+  it('규칙 id 가 라벨을 이긴다 — 사유의 실제 출처는 agent.explain 이다', () => {
+    expect(blockedReason({ labels: { a: 'trust me' }, ruleId: 'bash_permission_prompt' })).toBe('permission')
+  })
+
+  it('매니페스트에서 갈리는 규칙만 사유가 된다 (실측 근거 있는 것만)', () => {
+    // 권한 — claude 둘, grok 둘
+    expect(blockedReason({ ruleId: 'bash_permission_prompt' })).toBe('permission')
+    expect(blockedReason({ ruleId: 'generic_permission_prompt' })).toBe('permission')
+    expect(blockedReason({ ruleId: 'permission_hints_blocked' })).toBe('permission')
+    expect(blockedReason({ ruleId: 'permission_scope_selector' })).toBe('permission')
+    // 질문
+    expect(blockedReason({ ruleId: 'question_dialog_hints_blocked' })).toBe('question')
+    expect(blockedReason({ ruleId: 'option_dialog_blocked' })).toBe('question')
+    expect(blockedReason({ ruleId: 'mcp_elicitation_prompt' })).toBe('question')
+    // 그 밖
+    expect(blockedReason({ ruleId: 'trust_directory' })).toBe('trust')
+    expect(blockedReason({ ruleId: 'startup_update' })).toBe('update')
+  })
+
+  it('**갈리지 않는 규칙은 unknown 으로 남긴다** — 없는 구분을 지어내지 않는다', () => {
+    // codex `live_strong_blocker` 의 `any` 는 `allow command?`(권한)와
+    // `enter to submit answer`(질문)를 함께 받는다 — 어느 쪽인지 herdr 도 말하지 않는다.
+    expect(blockedReason({ ruleId: 'live_strong_blocker' })).toBe('unknown')
+    // claude `live_blocked_form` 도 같은 이유다.
+    expect(blockedReason({ ruleId: 'live_blocked_form' })).toBe('unknown')
+    expect(blockedReason({ ruleId: 'osc_title_blocked' })).toBe('unknown')
+    expect(blockedReason({ ruleId: 'weak_blocker' })).toBe('unknown')
+    expect(blockedReason({ ruleId: 'legacy_no_prompt_blocker' })).toBe('unknown')
   })
 })
 
@@ -131,6 +161,26 @@ describe('recordAgentTransition — 관측 시각·완료 시각·이력 (S1·S1
     expect(state.history).toHaveLength(AGENT_HISTORY_LIMIT)
     // 최신 우선 — 첫 칸이 가장 최근에 떠난 상태다.
     expect(state.history[0]?.observedAt).toBeGreaterThan(state.history[1]?.observedAt ?? 0)
+  })
+
+  it('재동기의 빈 사유가 explain 이 채운 사유를 지우지 않는다 (실측으로 잡은 결함)', () => {
+    // agent.explain 이 permission 을 채운 뒤…
+    const withReason: AgentState = { ...emptyAgentState(1000), blockedReason: 'permission' }
+    // …30초 재동기가 같은 blocked 를 labels 없이(=사유 null) 다시 실어 온다.
+    const afterResync = recordAgentTransition({
+      previousStatus: 'blocked', previousState: withReason, nextStatus: 'blocked',
+      blockedReason: null, observedAt: 2000, observedVia: 'snapshot',
+    })
+    expect(afterResync.blockedReason).toBe('permission')
+  })
+
+  it('상태가 바뀌면 사유는 따라서 비워진다 — 지난 상태의 사유를 들고 가지 않는다', () => {
+    const withReason: AgentState = { ...emptyAgentState(1000), blockedReason: 'permission' }
+    const unblocked = recordAgentTransition({
+      previousStatus: 'blocked', previousState: withReason, nextStatus: 'working',
+      blockedReason: null, observedAt: 2000, observedVia: 'event',
+    })
+    expect(unblocked.blockedReason).toBeNull()
   })
 
   it('observedVia 가 snapshot 이면 진입 시각이 아니라는 뜻이다 (S1 한계)', () => {

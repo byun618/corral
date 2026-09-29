@@ -11,6 +11,8 @@
 // 진실은 스냅샷이다. 그래서 커넥션이 멀쩡해도 주기적으로 스냅샷을 다시 받아 맞춘다.
 
 import type { LinkPhase, LinkState } from '../../../shared/types.js'
+import { blockedReason } from '../../../shared/agent-state.js'
+import { isRecord, readRecord, readString } from '../../../shared/json.js'
 import type { SessionHandle } from './sessions.js'
 import { log } from '../../log.js'
 import { checkUnixSocketPath } from '../../unix-socket-path.js'
@@ -417,6 +419,7 @@ export class SessionLink {
         const result = this.store.applyEvent(frame)
         log('agent.push.applied', { event: frame.event, changed: result.changed, note: result.note })
         if (result.changed) this.hooks.onChange()
+        if (result.blockedEntry !== undefined) this.explainBlocked(result.blockedEntry)
       },
       onDrop: (reason, detail) => {
         if (generation !== this.generation) return
@@ -482,6 +485,41 @@ export class SessionLink {
     // 에이전트가 붙었다 — 곧 통합 훅이 세션 id 를 알린다. 그 보고에는 push 가 없으므로
     // 여기서 재동기를 두 번 당겨 준다 (`AGENT_SESSION_NUDGE_MS` 주석에 실측 근거).
     if (frame.event === 'pane_agent_detected' && frame.data['released'] !== true) this.nudgeForAgentSession()
+    if (result.blockedEntry !== undefined) this.explainBlocked(result.blockedEntry)
+  }
+
+  /**
+   * **blocked 사유를 한 번 물어 온다** (LIFE-456 S3).
+   *
+   * 왜 따로 묻나: 사유가 실려 오는 자리가 없다. `pane.agent_status_changed` 봉투는
+   * `{agent, agent_status, pane_id, workspace_id}` 뿐이고, herdr 0.9.0 은 claude·codex·grok 에
+   * `state_labels` 를 **아예 안 싣는다**(실측 — `raw/claude/s3/s3-state-labels-findings.md`).
+   * 사유를 주는 유일한 자리가 `agent.explain` 의 `matched_rule.id` 다.
+   *
+   * **진입 1회다.** 폴링이 아니다 — blocked 로 들어가는 전이에서만 부르고, 스냅샷·재동기에서는
+   * 안 부른다. blocked 진입은 드물어서 요청 1건(커넥션 1개, 0.3ms)이면 충분하다.
+   * 기다리지 않는다(이벤트 처리를 막지 않는다). 응답이 오는 사이 상태가 바뀌었으면
+   * `applyBlockedReason` 이 그 값을 버린다.
+   */
+  private explainBlocked(paneId: string): void {
+    const session = this.session
+    if (this.stopped || session === null) return
+    const generation = this.generation
+    void request(session.socketPath, 'agent.explain', { target: paneId }, { reason: 'blocked-reason' })
+      .then((frame) => {
+        if (this.stopped || generation !== this.generation) return
+        // 7KB 응답에서 **한 칸만** 읽는다 — `evaluated_rules` 는 버린다.
+        const explain = readRecord(isRecord(frame.result) ? frame.result : {}, 'explain')
+        const ruleId = explain === null ? null : readString(readRecord(explain, 'matched_rule') ?? {}, 'id')
+        const reason = blockedReason({ ruleId })
+        const result = this.store.applyBlockedReason({ paneId, reason })
+        log('agent_explain.reason', { paneId, ruleId, reason, changed: result.changed, note: result.note })
+        if (result.changed) this.hooks.onChange()
+      })
+      .catch((error: unknown) => {
+        // 사유를 못 받은 것은 상태를 못 받은 것이 아니다 — blocked 는 이미 화면에 있다.
+        log('agent_explain.failed', { paneId, error: error instanceof Error ? error.message : String(error) })
+      })
   }
 
   private nudgeForAgentSession(): void {

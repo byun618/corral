@@ -17,8 +17,8 @@
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
-import type { AgentSessionRef, AgentState, AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
-import { blockedReasonFromLabels, emptyAgentState, recordAgentTransition, rollupAgentStatus } from '../../../shared/agent-state.js'
+import type { AgentSessionRef, AgentState, AgentStatus, BlockedReason, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
+import { blockedReason, emptyAgentState, recordAgentTransition, rollupAgentStatus } from '../../../shared/agent-state.js'
 import { readAgentStatus, readStateLabels, type PushFrame } from './protocol.js'
 
 type Workspace = {
@@ -66,7 +66,17 @@ type Pane = {
   knownAt: number
 }
 
-export type ApplyResult = { changed: boolean; note: string }
+export type ApplyResult = {
+  changed: boolean
+  note: string
+  /**
+   * 이 이벤트가 그 pane 을 **blocked 로 들여보냈다** (LIFE-456 S3).
+   *
+   * 사유는 이 봉투에 안 실린다 — 링크가 이 신호를 보고 `agent.explain` 을 **한 번** 쏜다.
+   * 진입 전이에만 세운다: 스냅샷·재동기에서 세우면 blocked 인 pane 마다 매 주기 요청이 된다.
+   */
+  blockedEntry?: string
+}
 
 /** 재동기 한 판이 실제로 무엇을 고쳤나 — N7 의 근거로 그대로 로그·상태에 실린다. */
 export type ReconcileResult = {
@@ -789,7 +799,7 @@ export class WorkspaceStore {
         previousStatus: before?.agentStatus ?? null,
         previousState: before?.agentState ?? emptyAgentState(at),
         nextStatus,
-        blockedReason: blockedReasonFromLabels(readStateLabels(value)),
+        blockedReason: blockedReason({ labels: readStateLabels(value) }),
         observedAt: at,
         // 스냅샷·`pane_updated` 로 알게 된 값이다 — **진입 시각이 아니다**(`AgentObservedVia`).
         observedVia: 'snapshot',
@@ -865,7 +875,31 @@ export class WorkspaceStore {
       observedVia: 'event',
     })
     this.panes.set(paneId, { ...pane, agentStatus: status, agentState })
-    return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
+    return {
+      changed: true,
+      note: `agent_status_changed: ${pane.agentStatus} → ${status}`,
+      ...(status === 'blocked' ? { blockedEntry: paneId } : {}),
+    }
+  }
+
+  /**
+   * `agent.explain` 이 늦게 물어다 준 **blocked 사유**를 붙인다 (LIFE-456 S3).
+   *
+   * 응답이 오는 사이에 그 pane 이 blocked 를 떠났을 수 있다 — 그때는 **버린다**. 지나간
+   * 상태의 사유를 지금 상태에 붙이면 화면이 거짓말을 한다. 상태 자체는 건드리지 않으므로
+   * 관측 시각·이력도 그대로다(같은 값 갈래를 타고 사유만 갈린다).
+   */
+  applyBlockedReason(input: { paneId: string; reason: BlockedReason | null }): ApplyResult {
+    const pane = this.panes.get(input.paneId)
+    if (pane === undefined) return { changed: false, note: `blocked_reason: 모르는 pane (${input.paneId})` }
+    if (pane.agentStatus !== 'blocked') {
+      return { changed: false, note: `blocked_reason: 이미 blocked 가 아니다 (${pane.agentStatus})` }
+    }
+    if (pane.agentState.blockedReason === input.reason) {
+      return { changed: false, note: `blocked_reason: 같은 값 (${String(input.reason)})` }
+    }
+    this.panes.set(input.paneId, { ...pane, agentState: { ...pane.agentState, blockedReason: input.reason } })
+    return { changed: true, note: `blocked_reason: ${String(pane.agentState.blockedReason)} → ${String(input.reason)}` }
   }
 
   /**

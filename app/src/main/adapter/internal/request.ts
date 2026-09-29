@@ -48,6 +48,7 @@ const ALLOWED_METHODS: readonly string[] = [
   'worktree.list',
   'pane.process_info',
   'integration.list',
+  'agent.explain',
   'tab.create',
   'agent.start',
   'tab.close',

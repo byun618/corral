@@ -11,6 +11,7 @@ import { isRecord } from '../../shared/json.js'
 import { WorktreeMetadata, worktreeSelect } from '../workspace/model.js'
 import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
+import { blockedReason } from '../../shared/agent-state.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
   agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
@@ -115,14 +116,19 @@ export function derivedRequestId(parentId: string, stage: string): string {
   return `r1.${match[1]}.${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`
 }
 export const derivedPromptId = (createId: string): string => derivedRequestId(createId, 'prompt')
-/** herdr's own labels are the only source; an unlabelled blocker stays `unknown` and stays blocked. */
-function blockedReason(labels: Record<string, string>): string {
-  const text = Object.values(labels).join(' ').toLowerCase()
-  if (text.includes('trust')) return 'trust'
-  if (text.includes('login') || text.includes('sign in') || text.includes('auth')) return 'login'
-  if (text.includes('permission') || text.includes('allow')) return 'permission'
-  if (text.includes('update')) return 'update'
-  return 'unknown'
+/**
+ * The CLI and the GUI ask the same function, so one pane never gets two different reasons
+ * (LIFE-456 S3 — the judgment lives in `shared/agent-state.ts`).
+ *
+ * Measured: herdr 0.9.0 sends no `state_labels` for claude/codex/grok, so this path reports
+ * `unknown` for every real blocker today — it was dead code before anyone noticed
+ * (`specs/LIFE-456-agent-state/raw/claude/s3/s3-state-labels-findings.md`). The GUI fills the
+ * reason from `agent.explain`'s `matched_rule.id` instead; this call site stays on labels because
+ * the CLI's `AgentObservation` carries labels and not a rule id. `null` (herdr said nothing)
+ * collapses to `'unknown'` here because the CLI field has always been a plain string.
+ */
+function blockedReasonOf(labels: Record<string, string>): string {
+  return blockedReason({ labels }) ?? 'unknown'
 }
 /** §8.2: report the marker this runtime carries. corral neither repairs it nor restarts the backend. */
 function environmentWarnings(): string[] {
@@ -319,7 +325,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           resolvedModel: resolved.model, resolvedAdvisor: resolved.advisor,
           argv: record?.argv ?? null, sessionId: session.sessionId, sessionIdSource: session.source,
           sessionRecord: session.path === null ? null : { path: session.path, exists: fs.existsSync(session.path) },
-          blocked: phase === 'blocked' ? { reason: blockedReason(info?.stateLabels ?? {}), screen: await excerpt(live) } : null,
+          blocked: phase === 'blocked' ? { reason: blockedReasonOf(info?.stateLabels ?? {}), screen: await excerpt(live) } : null,
           evidence: {
             agentStatus: info?.status ?? null, launchPending: info?.launchPending ?? null, interactiveReady: info?.interactiveReady ?? null,
             stateChangeSeq: info?.stateChangeSeq ?? null, samples: views.length, workingObserved: record?.workingObserved ?? false,

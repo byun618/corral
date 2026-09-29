@@ -367,3 +367,101 @@ describe('F6 — 억제 표는 확정 거절·실패면 되돌린다', () => {
     expect(store.retainedRows()).toEqual([])
   })
 })
+
+describe('R2-F3 — 닫기 결과를 확정 거절과 결과 불명으로 가른다 (실제 store)', () => {
+  const closed = (store: WorkspaceStore) => {
+    store.applyEvent({ event: 'pane_closed', data: { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1' } })
+    return store.retainedRows().map((row) => row.paneId)
+  }
+  const prepared = (): WorkspaceStore => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:p1')
+    return store
+  }
+
+  it('확정 거절이면 표를 걷는다 — 뒤의 진짜 완료를 삼키지 않는다', () => {
+    const store = prepared()
+    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'method_not_allowed' })
+    expect(settled.effect).toBe('refused')
+    expect(store.isSuppressed('w1:p1')).toBe(false)
+    expect(closed(store)).toContain('w1:p1')
+  })
+
+  it('전송 전에 막힌 것(sent:false)도 확정 거절이다', () => {
+    const store = prepared()
+    expect(store.settleSuppression({ ids: ['w1:p1'], sent: false }).effect).toBe('refused')
+    expect(store.isSuppressed('w1:p1')).toBe(false)
+  })
+
+  it('**타임아웃은 결과 불명이라 표를 남긴다** — CLI 가 여기서 반대로 판정했다 (R2-F3)', () => {
+    const store = prepared()
+    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'timeout' })
+    expect(settled.effect).toBe('unknown')
+    expect(settled.kept).toEqual(['w1:p1'])
+    expect(store.isSuppressed('w1:p1')).toBe(true)
+    expect(closed(store)).not.toContain('w1:p1')
+  })
+
+  for (const code of ['backend_timeout', 'closed', 'request_cancelled', 'outcome_unknown']) {
+    it(`\`${code}\` 도 결과 불명이다 — 전송 뒤라 효과가 있었을 수 있다`, () => {
+      const store = prepared()
+      expect(store.settleSuppression({ ids: ['w1:p1'], code }).effect).toBe('unknown')
+      expect(store.isSuppressed('w1:p1')).toBe(true)
+    })
+  }
+
+  it('**모르는 코드는 불명으로 떨어진다** — 새 코드가 조용히 「걷는다」로 가지 않게', () => {
+    const store = prepared()
+    expect(store.settleSuppression({ ids: ['w1:p1'], code: 'some_future_code' }).effect).toBe('unknown')
+    expect(store.settleSuppression({ ids: ['w1:p1'], code: null }).effect).toBe('unknown')
+    expect(store.isSuppressed('w1:p1')).toBe(true)
+  })
+})
+
+describe('R2-F9 — 워크스페이스는 **탭 값**을 접는다 (pane 을 모르는 탭도 센다)', () => {
+  it('pane 을 모르는 탭이 blocked 면 워크스페이스도 blocked 다', () => {
+    const store = new WorkspaceStore()
+    // 탭 둘: t1 은 pane 을 아는 idle, t2 는 **pane 목록이 없는** blocked (herdr 값으로 물러선다).
+    store.applySnapshot({
+      workspaces: [{ workspace_id: 'w1', label: 'repo', number: 1, focused: true, agent_status: 'idle' }],
+      tabs: [
+        { tab_id: 'w1:t1', workspace_id: 'w1', label: '1', number: 1, agent_status: 'idle' },
+        { tab_id: 'w1:t2', workspace_id: 'w1', label: '2', number: 2, agent_status: 'blocked' },
+      ],
+      panes: [{ pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', agent_status: 'idle' }],
+    })
+    expect(tabOf(store, 'w1:t2')?.agentStatus).toBe('blocked')
+    // 전에는 워크스페이스가 pane 만 모아 접어서 t2 가 **없는 셈**이 됐고 `idle` 이 나왔다.
+    expect(store.rows()[0]?.agentStatus).toBe('blocked')
+  })
+
+  it('탭이 자기 pane 으로 접은 값도 그대로 워크스페이스에 올라간다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'idle' }, { id: 'w1:p2', tab: 'w1:t2', status: 'done' }],
+      workspaceStatus: 'idle',
+    }))
+    expect(store.rows()[0]?.agentStatus).toBe('done')
+  })
+})
+
+describe('R2-F12 — 억제 표는 done 이 아니어도 걷힌다', () => {
+  it('done 이 아닌 pane 이 사라져도 그 표는 남지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'working' }] }))
+    store.suppressRetention('w1:p1')
+    store.applyEvent({ event: 'pane_closed', data: { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1' } })
+    // 전에는 `retain` 이 `done` 이 아니면 바로 돌아서서 표가 영영 남았다.
+    expect(store.isSuppressed('w1:p1')).toBe(false)
+  })
+
+  it('done pane 이 표를 쓰고 사라져도 표는 남지 않는다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
+    store.suppressRetention('w1:p1')
+    store.applyEvent({ event: 'pane_closed', data: { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1' } })
+    expect(store.isSuppressed('w1:p1')).toBe(false)
+    expect(store.retainedRows()).toHaveLength(0)
+  })
+})

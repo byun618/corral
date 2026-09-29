@@ -599,19 +599,17 @@ async function withRetentionSuppressed<T extends { outcome: string }>(
   try {
     const outcome = await input.run()
     if (outcome.outcome === 'rejected' || outcome.outcome === 'error') {
-      for (const id of input.ids) link.store.releaseSuppression(id)
-      log('retention.suppress.released', { what: input.what, ids: input.ids, why: outcome.outcome })
+      // 우리 자신의 게이트가 막은 것이다 — **소켓에 나가지 않았다.** 확정 거절.
+      const settled = link.store.settleSuppression({ ids: input.ids, sent: false })
+      log('retention.suppress.settled', { what: input.what, ...settled, why: outcome.outcome })
     }
     return outcome
   } catch (error) {
-    const code = error instanceof HerdrRequestError ? error.code : 'unknown'
-    if (code === 'timeout') {
-      // 결과 불명 — 표를 남긴다. 되살아나는 것보다 못 남기는 쪽이 낫다.
-      log('retention.suppress.kept_unknown', { what: input.what, ids: input.ids, code })
-    } else {
-      for (const id of input.ids) link.store.releaseSuppression(id)
-      log('retention.suppress.released', { what: input.what, ids: input.ids, why: code })
-    }
+    // **분류는 CLI 와 같은 함수가 한다** (R2-F3). 전에는 여기서 `timeout` 만 불명으로 봤고
+    // CLI 는 타임아웃까지 걷어서 같은 상황을 반대로 판정했다.
+    const code = error instanceof HerdrRequestError ? error.code : null
+    const settled = link.store.settleSuppression({ ids: input.ids, code })
+    log('retention.suppress.settled', { what: input.what, ...settled, code })
     throw error
   }
 }
@@ -819,6 +817,11 @@ const terminalDesktop: TerminalDesktop = {
   retention: {
     suppress: (id) => { link.store.suppressRetention(id) },
     release: (id) => { link.store.releaseSuppression(id) },
+    settle: (input) => {
+      const settled = link.store.settleSuppression(input)
+      log('retention.suppress.settled', { what: 'cli terminal close', ...settled, code: input.code ?? null })
+      return { effect: settled.effect }
+    },
   },
   async reveal(target, context) {
     const client = window

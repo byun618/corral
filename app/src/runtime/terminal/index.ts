@@ -32,7 +32,15 @@ export interface TerminalDesktop {
    * in the window. Optional because a headless runtime (`corral serve`) keeps no such ledger:
    * there is nothing to suppress, not a suppression we skipped.
    */
-  retention?: { suppress(id: string): void; release(id: string): void }
+  /**
+   * 억제 표(누가 닫았나). `settle` 은 **닫기가 끝난 뒤** 표를 걷을지 남길지 GUI 와 **같은
+   * 분류 함수**로 정한다 (R2-F3) — CLI 가 혼자 판단하면 타임아웃에서 둘이 갈린다.
+   */
+  retention?: {
+    suppress(id: string): void
+    release(id: string): void
+    settle(input: { ids: readonly string[]; code?: string | null; sent?: boolean }): { effect: 'refused' | 'unknown' }
+  }
 }
 const reads = new Set(['terminal list', 'terminal show', 'terminal read', 'terminal wait'])
 function bytes(value: unknown, max: number, name: string) {
@@ -637,9 +645,11 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           try {
             await backend.close(live, ctx)
           } catch (error) {
-            // The close did not happen (or we cannot say it did): drop the mark, or a later real
-            // completion of this pane would be swallowed by a promise we never kept.
-            desktop?.retention?.release(live.paneId)
+            // R2-F3: a refusal with no effect drops the mark; an unknown outcome KEEPS it, the
+            // same call the GUI makes. Before, this dropped the mark on every throw — including
+            // `backend_timeout`, where the GUI kept it. One pane, two opposite verdicts.
+            const code = error instanceof RuntimeError ? error.code : null
+            desktop?.retention?.settle({ ids: [live.paneId], code })
             throw error
           }
           if ((await backend.list(epoch, ctx)).some(p => p.ptyId === live.ptyId)) {

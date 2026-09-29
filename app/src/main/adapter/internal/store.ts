@@ -18,7 +18,7 @@
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
 import type { AgentSessionRef, AgentState, AgentStatus, BlockedReason, PaneRow, RetainedAgentRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
-import { blockedReason, emptyAgentState, recordAgentTransition, rollupAgentStatus } from '../../../shared/agent-state.js'
+import { blockedReason, closeEffect, emptyAgentState, recordAgentTransition, rollupAgentStatus, type CloseEffect } from '../../../shared/agent-state.js'
 import { readAgentStatus, readStateLabels, type PushFrame } from './protocol.js'
 
 type Workspace = {
@@ -695,7 +695,7 @@ export class WorkspaceStore {
         // 실어 주는 `agent_status` 는 pane 전이보다 늦게(스냅샷·30초 재동기) 오므로 그것을
         // 쓰면 같은 순간에 사이드바(pane)와 탭바(tab)가 다른 말을 한다. 아는 pane 이 하나도
         // 없을 때만 herdr 가 준 값으로 물러선다 — 그때는 접을 재료가 없다.
-        agentStatus: rollupOrFallback(panesByTab.get(tab.tabId), tab.agentStatus),
+        agentStatus: rollupOrFallback(panesByTab.get(tab.tabId)?.map((pane) => pane.agentStatus), tab.agentStatus),
         focused: tab.focused,
         panes: panesByTab.get(tab.tabId) ?? [],
         // **판독은 어댑터의 일이 아니다** (LIFE-366 기준 E1). 트랜스크립트를 읽는 층은 herdr 를
@@ -718,7 +718,8 @@ export class WorkspaceStore {
         number: workspace.number,
         // 같은 규칙으로 한 층 더 접는다 (S5ⓐ) — 이미 접힌 탭 값을 다시 접는다.
         agentStatus: rollupOrFallback(
-          (tabsByWorkspace.get(workspace.workspaceId) ?? []).flatMap((tab) => tab.panes),
+          // **탭 값**을 접는다 (R2-F9) — pane 을 모르는 탭도 자기 값을 갖고 있다.
+          (tabsByWorkspace.get(workspace.workspaceId) ?? []).map((tab) => tab.agentStatus),
           workspace.agentStatus,
         ),
         focused: workspace.focused,
@@ -971,12 +972,11 @@ export class WorkspaceStore {
    * 막아 둔 자리다. 이 작업은 그 층을 만들지 않는다(S12 범위).
    */
   private retain(pane: Pane, at: number): void {
+    // **표는 여기서 지우지 않는다** (R2-F12). 지우는 자리는 `forgetPane` 이다 — 여기서
+    // 지우면 `done` 이 아닌 pane 이 사라질 때 그 표가 **영영 안 걷힌다**. pane id 는 서버
+    // 생애 안에서 재사용될 수 있고, 남은 표는 그 다음 pane 의 완료를 조용히 삼킨다.
     if (pane.agentStatus !== 'done') return
-    if (this.retentionSuppressed.has(pane.paneId)) {
-      // pane 표는 그 pane 이 쓰고 버린다 — 한 번 닫히면 다시 쓸 일이 없다.
-      this.retentionSuppressed.delete(pane.paneId)
-      return
-    }
+    if (this.retentionSuppressed.has(pane.paneId)) return
     /**
      * **탭 표는 여기서 지우지 않는다.** 탭 하나에 pane 이 여럿일 수 있고(갈라진 탭),
      * 첫 pane 이 표를 먹어 치우면 **둘째 pane 이 되살아난다** — 사용자가 닫은 탭에서
@@ -992,37 +992,6 @@ export class WorkspaceStore {
     ].slice(0, RETAINED_LIMIT)
   }
 
-  /**
-   * **pane 하나를 잊는다** — 사라짐을 알게 된 **모든 경로**가 여기를 지난다.
-   *
-   * pane 이 없어지는 길은 넷이다. **묘비는 넷 다 찍고, 보존은 셋만 한다** — `retain` 을
-   * 호출자가 그 자리에서 밝힌다. 숨은 기본값을 두면 길이 하나 늘 때마다 조용히 한쪽으로
-   * 붙는데, 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
-   *
-   *   · `pane_closed`·`pane_exited`  보존한다 — pane 하나가 끝나고 사라진 자리다
-   *   · `tab_closed`                 보존한다 — 탭을 닫으면 herdr 는 **`tab_closed` 한 건만**
-   *     주고 `pane_closed` 를 안 준다(위 G1 주석). 에이전트 pane 은 탭 하나에 하나씩 살기
-   *     때문에 **이 길이 완료가 사라지는 흔한 길이다.** 전에는 여기서 기록이 통째로 날아갔다
-   *   · workspace 연쇄               보존한다 — **탭이 하나뿐이면 같은 손짓이 이 길로 온다**
-   *   · 재동기 정리                  보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
-   *     「끝나 있었다」를 주장할 근거가 없다
-   *
-   * **치움과 완료를 가르는 것은 이벤트 종류가 아니라 억제 표다.** 한때 `workspace_closed` 를
-   * 「접는 것은 치움이니 보존 안 함」으로 뒀는데, 네이티브에서 탭이 **하나뿐인** 워크스페이스의
-   * 탭을 닫자 `workspace_closed` 가 먼저 도착하고 `tab_closed` 는 멱등 무시로 왔다 —
-   * 같은 손짓(탭 닫기)이 탭 수에 따라 다르게 판정됐다 (`raw/claude/s9/s9b-retained-tabclose.txt`).
-   * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
-   * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
-   *
-   * **「herdr 가 workspace 를 먼저 보낸다」가 아니다** (F17 정정). v0.9.0 소스는 그 반대로
-   * 낸다 — `src/app/api/tabs.rs:248-261` 이 `TabClosed` → `WorkspaceClosed` 순으로 emit 하고
-   * 같은 파일 테스트가 그 순서를 검증한다. **도착 순서를 정하는 것은 corral 자신의 구독 목록**
-   * 이다: 서버가 구독 항목을 클라이언트가 적은 순서대로 한 바퀴에 한 건씩 흘리기 때문에
-   * (`src/api/server.rs:749-753`), `SUBSCRIPTION_TYPES` 에서 앞에 적힌 쪽이 먼저 온다.
-   * 목록 순서만 뒤집어 같은 닫기를 동시에 받아 그대로 뒤집히는 것을 실측했다
-   * (`raw/claude/s9-r1/08-f17-retained-and-order.md` §3).
-   * → **보존 판정이 도착 순서에 기대면 안 된다.** 억제 표는 순서와 무관하다.
-   */
   /**
    * pane 의 상태가 정해질 때마다 blocked 삽화 번호를 맞춘다 (F1·F4).
    *
@@ -1073,9 +1042,43 @@ export class WorkspaceStore {
     this.retentionSuppressed.delete(tabId)
   }
 
+  /**
+   * **pane 하나를 잊는다** — 사라짐을 알게 된 **모든 경로**가 여기를 지난다.
+   *
+   * pane 이 없어지는 길은 넷이다. **묘비는 넷 다 찍고, 보존은 셋만 한다** — `retain` 을
+   * 호출자가 그 자리에서 밝힌다. 숨은 기본값을 두면 길이 하나 늘 때마다 조용히 한쪽으로
+   * 붙는데, 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
+   *
+   *   · `pane_closed`·`pane_exited`  보존한다 — pane 하나가 끝나고 사라진 자리다
+   *   · `tab_closed`                 보존한다 — 탭을 닫으면 herdr 는 **`tab_closed` 한 건만**
+   *     주고 `pane_closed` 를 안 준다(위 G1 주석). 에이전트 pane 은 탭 하나에 하나씩 살기
+   *     때문에 **이 길이 완료가 사라지는 흔한 길이다.** 전에는 여기서 기록이 통째로 날아갔다
+   *   · workspace 연쇄               보존한다 — **탭이 하나뿐이면 같은 손짓이 이 길로 온다**
+   *   · 재동기 정리                  보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
+   *     「끝나 있었다」를 주장할 근거가 없다
+   *
+   * **치움과 완료를 가르는 것은 이벤트 종류가 아니라 억제 표다.** 한때 `workspace_closed` 를
+   * 「접는 것은 치움이니 보존 안 함」으로 뒀는데, 네이티브에서 탭이 **하나뿐인** 워크스페이스의
+   * 탭을 닫자 `workspace_closed` 가 먼저 도착하고 `tab_closed` 는 멱등 무시로 왔다 —
+   * 같은 손짓(탭 닫기)이 탭 수에 따라 다르게 판정됐다 (`raw/claude/s9/s9b-retained-tabclose.txt`).
+   * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
+   * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
+   *
+   * **「herdr 가 workspace 를 먼저 보낸다」가 아니다** (F17 정정). v0.9.0 소스는 그 반대로
+   * 낸다 — `src/app/api/tabs.rs:248-261` 이 `TabClosed` → `WorkspaceClosed` 순으로 emit 하고
+   * 같은 파일 테스트가 그 순서를 검증한다. **도착 순서를 정하는 것은 corral 자신의 구독 목록**
+   * 이다: 서버가 구독 항목을 클라이언트가 적은 순서대로 한 바퀴에 한 건씩 흘리기 때문에
+   * (`src/api/server.rs:749-753`), `SUBSCRIPTION_TYPES` 에서 앞에 적힌 쪽이 먼저 온다.
+   * 목록 순서만 뒤집어 같은 닫기를 동시에 받아 그대로 뒤집히는 것을 실측했다
+   * (`raw/claude/s9-r1/08-f17-retained-and-order.md` §3).
+   * → **보존 판정이 도착 순서에 기대면 안 된다.** 억제 표는 순서와 무관하다.
+   */
   private forgetPane(input: { pane: Pane; at: number; retain: boolean }): void {
     const { pane, at, retain } = input
     if (retain) this.retain(pane, at)
+    // pane 표는 그 pane 이 쓰고 버린다 — **상태와 무관하게** 걷는다 (R2-F12).
+    // 탭·workspace 표는 여기서 건드리지 않는다: 갈라진 탭이면 둘째 pane 이 아직 써야 한다.
+    this.retentionSuppressed.delete(pane.paneId)
     this.blockedEntries.delete(pane.paneId)
     this.blockedLabels.delete(pane.paneId)
     this.blockedExplained.delete(pane.paneId)
@@ -1105,6 +1108,31 @@ export class WorkspaceStore {
    */
   releaseSuppression(id: string): void {
     this.retentionSuppressed.delete(id)
+  }
+
+  /**
+   * 닫기 요청이 끝난 뒤 **억제 표를 걷을지 남길지** 한 자리에서 정한다 (R2-F3).
+   *
+   * GUI(`withRetentionSuppressed`)와 CLI(`terminal close`)가 **여기를 같이 지난다.**
+   * 전에는 두 쪽이 따로 판단해서 타임아웃을 **반대로** 처리했다 — GUI 는 남기고 CLI 는 걷었다.
+   * 분류는 `closeEffect` 한 함수가 하고, 이 메서드는 그 답대로 표만 만진다.
+   */
+  settleSuppression(input: { ids: readonly string[]; code?: string | null; sent?: boolean }): {
+    effect: CloseEffect
+    released: readonly string[]
+    kept: readonly string[]
+  } {
+    const effect = closeEffect({ code: input.code ?? null, sent: input.sent })
+    if (effect === 'refused') {
+      for (const id of input.ids) this.retentionSuppressed.delete(id)
+      return { effect, released: [...input.ids], kept: [] }
+    }
+    return { effect, released: [], kept: [...input.ids] }
+  }
+
+  /** 그 id 에 억제 표가 걸려 있나 (테스트·진단용 — 표는 「누가 닫았나」의 유일한 축이다). */
+  isSuppressed(id: string): boolean {
+    return this.retentionSuppressed.has(id)
   }
 
   /** 보존된 마지막 기록 — 최신 우선. */
@@ -1192,12 +1220,19 @@ export class WorkspaceStore {
  * (리뷰 부록 C). 키가 없으면 herdr 가 그 필드를 말하지 않은 것이다 — 알던 값을 지킨다.
  */
 /**
- * pane 집합에서 탭·워크스페이스 값을 접는다 (S5ⓐ). **아는 pane 이 없을 때만** herdr 가 준
- * 값으로 물러선다 — 접을 재료가 없는데 `unknown` 을 만들어 내면 갓 열린 탭이 깜빡인다.
+ * 아래 층의 값들을 한 값으로 접는다 (S5ⓐ). **접을 재료가 없을 때만** herdr 가 준 값으로
+ * 물러선다 — 재료가 없는데 `unknown` 을 만들어 내면 갓 열린 탭이 깜빡인다.
+ *
+ * **워크스페이스는 탭 값을 접는다. pane 을 직접 접지 않는다** (R2-F9).
+ * 전에는 워크스페이스가 `tabs.flatMap(t => t.panes)` 로 **pane 을 모아** 접었는데, corral 이
+ * pane 을 아직 모르는 탭은 그 목록에 **아무것도 안 넣는다**. 그 탭은 자기 자리에서 herdr
+ * 값(`blocked`)으로 물러서 화면에 blocked 로 뜨는데, 워크스페이스는 그 탭이 없는 셈 치고
+ * `idle` 을 냈다 — 같은 화면의 두 줄이 서로 다른 말을 했다. 탭이 이미 자기 몫을 접었으므로
+ * 워크스페이스는 **그 결과를 접으면** 두 층이 같은 재료를 본다.
  */
-function rollupOrFallback(panes: readonly PaneRow[] | undefined, fallback: AgentStatus): AgentStatus {
-  if (panes === undefined || panes.length === 0) return fallback
-  return rollupAgentStatus(panes.map((pane) => pane.agentStatus))
+function rollupOrFallback(statuses: readonly AgentStatus[] | undefined, fallback: AgentStatus): AgentStatus {
+  if (statuses === undefined || statuses.length === 0) return fallback
+  return rollupAgentStatus(statuses)
 }
 
 function pickAgentStatus(source: Record<string, unknown>, fallback: AgentStatus | null): AgentStatus {

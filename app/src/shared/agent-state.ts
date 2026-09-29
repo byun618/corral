@@ -194,6 +194,47 @@ export function recordAgentTransition(input: {
   }
 }
 
+/**
+ * 닫기 요청이 **효과 없이 끝난 것이 확실한가**, 아니면 **결과를 모르는가** (R2-F3).
+ *
+ * 억제 표(누가 닫았나)를 언제 걷느냐가 여기 달렸다:
+ *   · `refused` — 확정 거절. 전송 전에 막혔거나 서버가 **손대지 않고** 거절했다.
+ *     표를 걷는다. 안 걷으면 나중에 그 pane 이 진짜로 끝났을 때 완료 기록이 삼켜진다
+ *   · `unknown` — 전송은 됐는데 결과를 모른다(타임아웃·연결 끊김·취소·미관측).
+ *     **표를 남긴다.** 닫힌 pane 이 되살아나는 쪽이, 완료 행 하나를 잃는 쪽보다 나쁘다
+ *
+ * **모르는 코드는 `unknown` 이다.** 라운드 1 은 GUI 가 `timeout` 만 불명으로 보고 나머지를
+ * 전부 걷었고, CLI 는 **타임아웃까지 걷어** 둘이 반대로 판정했다(R2-F3, 3자 일치).
+ * 새 코드가 생길 때 조용히 「걷는다」로 떨어지지 않게 기본값을 안전한 쪽에 둔다.
+ *
+ * CLI(`RuntimeError.code`)와 GUI(`HerdrRequestError.code`)가 **이 함수 하나**를 쓴다.
+ */
+export type CloseEffect = 'refused' | 'unknown'
+
+/**
+ * 효과가 없다고 **말할 수 있는** 코드만 적는다. 근거:
+ *   · `method_not_allowed`  — corral 이 안 보내는 메서드. 소켓에 나가지도 않는다(`request.ts`)
+ *   · `invalid_request`·`invalid_argument` — guard/서버가 봉투를 까기 전에 거절
+ *   · `stale_terminal`·`stale_backend`·`deadline_exceeded` — guard 가 **효과 시작 전에** 막는다
+ *     (`herdr-guard.patch`: "no effect started")
+ *   · `unsupported`·`unsupported_backend` — 그 backend 에 그 연산이 없다
+ *   · `not_found`·`tab_not_found`·`pane_not_found` — 대상이 없어 할 일이 없었다
+ */
+const CLOSE_REFUSED_CODES: readonly string[] = [
+  'method_not_allowed', 'invalid_request', 'invalid_argument',
+  'stale_terminal', 'stale_backend', 'deadline_exceeded',
+  'unsupported', 'unsupported_backend',
+  'not_found', 'tab_not_found', 'pane_not_found',
+]
+
+export function closeEffect(input: { code?: string | null; sent?: boolean }): CloseEffect {
+  // 보내지도 못한 것은 효과가 없다 — 호출부가 그것을 아는 자리에서만 준다.
+  if (input.sent === false) return 'refused'
+  const code = input.code ?? null
+  if (code === null) return 'unknown'
+  return CLOSE_REFUSED_CODES.includes(code) ? 'refused' : 'unknown'
+}
+
 /** `agent.explain` 이 고른 규칙과, 우리가 사유로 쓰기로 한 규칙. */
 type PickedRule = {
   ruleId: string | null

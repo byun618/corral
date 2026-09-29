@@ -56,6 +56,7 @@ terminal create                     # 『세션 기동』
 terminal wait                       # 『준비 대기』 — --for exit|tui-idle 뿐 (agent-ready 없음)
 terminal read                       # 『화면 관측』
 terminal show                       # 『세션 기동』 관측
+terminal list                       # 『세션 기동』 — create 시간 초과 뒤 생성된 터미널 찾기 (LIFE-443 실측)
 terminal send                       # 『본문 주입』 — ack 가 없다 (배달 = 공백)
 terminal close                      # 『회수·정리』
 worktree create                     # 『세션 기동』 — --prompt 로 본문을 실을 수 있다
@@ -449,7 +450,7 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 첫 orchestration 실사용에서 관측한 것. 위 본문의 "미실행" 추정보다 이 기록이 앞선다. 원자료 `specs/LIFE-443-gui-diff/raw/coordinator/`.
 
 - **`run-create` 가 스스로 바인딩한다** — 이어서 `run-use` 를 부를 필요가 없었다(c2·c3).
-- **`check --wait --ack` 동시 사용 가능** — 직전 배치 확인과 다음 대기를 한 호출로. heartbeat 는 같은 방식으로 흘려 보낸다.
+- **`orca orchestration check --wait --ack` 동시 사용 가능** — 직전 배치 확인과 다음 대기를 한 호출로. heartbeat 는 같은 방식으로 흘려 보낸다.
 - **지난 시도의 보고는 거부된다** — 새 dispatch 로 넘어간 뒤 옛 dispatch id 로 보낸 `worker_done` 은 `dispatch_capability_invalid`. stale 시도 배제의 첫 증거(관측, b6495701).
 - **`worker-release` 는 `terminal create` 로 따로 띄운 터미널을 닫지 않는다** — `retained`/`external_terminal`, `processAction: none`. 정리는 `terminal close`(→ `ptyKilled: true`)를 따로 부른다.
-- **`terminal create` 가 `runtime_error: Timed out waiting for terminal handle after creation` 을 내고도 터미널은 생긴다** — 재시도하면 중복이다. `terminal list` 에서 worktree 로 찾고(`--title` 은 적용 안 됨) 화면으로 새 세션임을 확인한 뒤 그 handle 을 쓴다(c28).
+- **`terminal create` 가 `runtime_error: Timed out waiting for terminal handle after creation` 을 내고도 터미널은 생긴다** — 재시도하면 중복이다. `orca terminal list` 에서 worktree 로 찾고(`--title` 은 적용 안 됨) 화면으로 새 세션임을 확인한 뒤 그 handle 을 쓴다(c28).

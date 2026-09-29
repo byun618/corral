@@ -14,6 +14,7 @@ import type { SessionDigest } from '../shared/types.js'
 import {
   cleanFirstPrompt,
   cleanPromptLine,
+  codexHumanText,
   parseClaudeHead,
   parseClaudeTail,
   parseCodexHead,
@@ -422,6 +423,15 @@ describe('T5 대기 중인 질문 — 답 전/후', () => {
       expect(answered.turnOutcome).toBeNull()
       expect(codex([...asked, xUserMessage('예')]).pendingQuestions).toBeNull()
       expect(codex([...asked, xUserItem('예'), xAssistant(), xComplete()]).pendingQuestions).toBeNull()
+    })
+    it('질문 UI 의 답 봉투 — 해소하되 최근 발화로는 안 싣는다(도구 결과, claude tool_result 와 같은 자리)', () => {
+      const reply = xUserItem(
+        `<send_user_message_question_reply>\n${JSON.stringify([{ answer: '예', question: '계속할까요?', questionItemId: 'ID' }])}\n</send_user_message_question_reply>`,
+      )
+      const answered = codex([...asked, reply])
+      expect(answered.pendingQuestions).toBeNull()
+      expect(answered.lastPrompt).toBe('부탁')
+      expect(codexHumanText(reply)).toBeNull()
     })
     it('중단 뒤 — 해소, 턴 결과는 interrupted', () => {
       const aborted = codex([...asked, xAborted()])

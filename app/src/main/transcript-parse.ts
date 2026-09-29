@@ -551,6 +551,21 @@ function codexEvent(record: Record<string, unknown>): { type: string; payload: R
  * 하네스 주입(`response_item/message/user` — AGENTS.md·환경 봉투)은 둘 다 아니다.
  */
 export function codexHumanText(record: Record<string, unknown>): string | null {
+  const text = codexUserText(record)
+  if (text === null || text.trimStart().startsWith(CODEX_QUESTION_REPLY)) return null
+  return text
+}
+
+/**
+ * codex 질문 도구의 **답 봉투** (수정 r1 네이티브 관측, `t10/fix-r1`) — 질문 UI 에서 고른 답이 `UserMessage` 로
+ * `<send_user_message_question_reply>[{answer,question,questionItemId}]</…>` 모양으로 기록된다. 사람이 고른 답이지만
+ * **도구 결과**다 — claude 의 AskUserQuestion 답(`tool_result`)이 최근 발화에서 빠지는 것과 같은 자리라 T4 에서
+ * 뺀다. 질문 해소(T5)에는 쓴다. 기존 사용자 기록 252건에는 0건이다(`u5-codex-usermessage.txt`, `<` 로 시작 0).
+ */
+const CODEX_QUESTION_REPLY = '<send_user_message_question_reply>'
+
+/** codex 사용자 줄의 원문 — 사람 발화와 질문 답 봉투를 가르기 **전**. 두 모양(옛 `user_message`·0.158 `UserMessage`). */
+function codexUserText(record: Record<string, unknown>): string | null {
   const payload = record['payload']
   if (!isRecord(payload)) return null
   if (payload['type'] === 'user_message') return readString(payload, 'message')
@@ -639,6 +654,7 @@ const CODEX_ASK_TOOL = 'request_user_input_async'
  * 온다 — 같은 턴 안에 올 수도, 턴이 끝난 뒤 다음 턴으로 올 수도 있다(실측 4건: 같은 턴 발화 2 · 턴 완료 뒤
  * 새 턴 1 · 중단 1, `u6-codex-boundaries.txt`). 그래서 규칙은 **마지막 질문 호출 뒤에 무엇이 왔나** 다:
  *   · 사람 발화(`codexHumanText` — 옛 `user_message`·0.158 `UserMessage`) → 답했다, 해소
+ *   · 질문 UI 의 답 봉투(`CODEX_QUESTION_REPLY`, 최근 발화에서는 빠진다) → 답했다, 해소
  *   · `turn_aborted` → 중단했다, 해소 (중단은 질문째 버린다)
  *   · `task_started` → 새 턴, 해소
  *   · `task_complete` → **해소 아님** — 비동기 질문은 턴이 끝나도 답을 기다린다
@@ -650,7 +666,7 @@ export function codexPendingQuestions(records: readonly Record<string, unknown>[
     if (record === undefined) continue
     const event = codexEvent(record)
     if (event !== null && (event.type === 'task_started' || event.type === 'turn_aborted')) return null
-    if (codexHumanText(record) !== null) return null
+    if (codexUserText(record) !== null) return null
     if (readString(record, 'type') !== 'response_item') continue
     const payload = record['payload']
     if (!isRecord(payload) || payload['type'] !== 'function_call' || payload['name'] !== CODEX_ASK_TOOL) continue

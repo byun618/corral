@@ -13,6 +13,7 @@
 //
 // 사용: node app/scripts/l456/tally-runs.mjs <runs.md> [--json]
 //       node app/scripts/l456/tally-runs.mjs <runs.md> --check <인용문서…>
+//       node app/scripts/l456/tally-runs.mjs <runs.md> --compare <옛 runs.md>
 //
 // `--check` 는 R3-F2 의 교차검사다. 규칙 ①("인용한 회차는 그 항목 태그를 가져야 한다")은
 // 라운드 2 까지 **사람 눈으로만** 지켜졌고, 그래서 S6 가 근거로 쓴 r109 에 `S6` 태그가 없는
@@ -100,12 +101,15 @@ const CITED = /r\d{3}/g
  * 판정표 한 행이 인용한 회차는 runs.md 에서 그 행의 기준 항목 태그를 가져야 한다.
  * 안 가진 것이 하나라도 있으면 실패다 — 「인용은 했는데 안 세었다」가 정확히 그 모양이다.
  *
+ * 같은 행의 「실행 n/총 m」 칸도 집계와 대조한다 — 손으로 옮기는 칸이라 태그가 바뀌면 늙는다.
+ *
  * 표 **밖**의 산문 인용은 실패로 세지 않고 목록으로만 낸다. 산문은 어느 항목을 판정하는지
  * 스스로 말하지 않아서, 기계가 고를 수 있는 기준이 없다 — 고를 수 없는 것을 고른 척하면
  * 그게 또 조용한 오집계다. 대신 전부 세어서 사람이 훑을 수 있게 남긴다.
  */
 export function crossCheck(runs, documents) {
   const byId = new Map(runs.rows.map((row) => [row.id, row]))
+  const byTag = new Map(runs.tags.map((bucket) => [bucket.tag, bucket]))
   const failures = []
   const prose = []
   for (const { path, text } of documents) {
@@ -121,6 +125,15 @@ export function crossCheck(runs, documents) {
       if (criterion === undefined) {
         for (const id of trimmed.match(CITED) ?? []) prose.push({ path, line: index + 1, id })
         continue
+      }
+      // 「실행 n/총 m」 칸(7번째)도 집계와 대조한다. 손으로 옮겨 적는 칸이라, 태그가 바뀌면
+      // 조용히 늙는다 — 라운드 3 에서 태그를 고칠 때마다 실제로 어긋났다.
+      const counted = byTag.get(criterion)
+      const written = parts[6]
+      const expected = counted === undefined ? null : cell(counted)
+      if (expected !== null && written !== expected && !written.startsWith('해당 없음')) {
+        failures.push({ path, line: index + 1, criterion, id: '실행 n/총 m',
+          why: `칸은 \`${written}\` 인데 집계는 \`${expected}\` 다` })
       }
       for (const id of [...new Set(trimmed.match(CITED) ?? [])]) {
         const row = byId.get(id)
@@ -144,8 +157,45 @@ export function cell(bucket) {
   return `${numerator} / ${denominator}`
 }
 
+/**
+ * 두 runs.md 를 태그별로 견준다 (R3-F2).
+ *
+ * 「라운드 N 표와 달라진 곳」을 **손으로 적으면 늙는다** — 라운드 2 에서 실제로 그 표가
+ * 스무 줄 아래 판정표와 어긋난 채 남아 있었다(advisor 가 잡았다). 그래서 그 표도 만든다.
+ */
+export function compare(before, after) {
+  const old = new Map(before.tags.map((bucket) => [bucket.tag, bucket]))
+  const now = new Map(after.tags.map((bucket) => [bucket.tag, bucket]))
+  const tags = [...new Set([...old.keys(), ...now.keys()])]
+  const rows = []
+  for (const tag of tags) {
+    const a = old.get(tag)
+    const b = now.get(tag)
+    const from = a === undefined ? '—(없던 항목)' : cell(a)
+    const to = b === undefined ? '—(사라진 항목)' : cell(b)
+    if (from === to) continue
+    const added = b === undefined ? [] : b.ids.filter((id) => !(a?.ids ?? []).includes(id))
+    const removed = a === undefined ? [] : a.ids.filter((id) => !(b?.ids ?? []).includes(id))
+    rows.push({ tag, from, to, added, removed })
+  }
+  return rows.sort((x, y) => order({ tag: x.tag }, { tag: y.tag }))
+}
+
 const [file, ...flags] = process.argv.slice(2)
-if (file !== undefined && flags[0] === '--check') {
+if (file !== undefined && flags[0] === '--compare') {
+  const [older] = flags.slice(1)
+  if (older === undefined) { console.error('--compare 는 옛 runs.md 경로를 받는다'); process.exit(2) }
+  const rows = compare(tally(readFileSync(older, 'utf8')), tally(readFileSync(file, 'utf8')))
+  console.log(`# 태그별로 달라진 곳 — ${older} → ${file}`)
+  console.log('')
+  console.log('| 기준 항목 | 그때 | 지금 | 들어온 회차 | 나간 회차 |')
+  console.log('| --- | --- | --- | --- | --- |')
+  for (const row of rows) {
+    console.log(`| ${row.tag} | \`${row.from}\` | \`${row.to}\` | ${row.added.join(' ') || '—'} | ${row.removed.join(' ') || '—'} |`)
+  }
+  console.log('')
+  console.log(`달라진 항목 ${String(rows.length)}개`)
+} else if (file !== undefined && flags[0] === '--check') {
   const result = tally(readFileSync(file, 'utf8'))
   const documents = flags.slice(1).map((path) => ({ path, text: readFileSync(path, 'utf8') }))
   if (documents.length === 0) {

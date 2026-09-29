@@ -53,7 +53,7 @@ import path from 'node:path'
 import type { AgentSessionRef, SessionDigest, SessionQuestion, TranscriptAgent, TurnOutcome } from '../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
-import { parseGrokUpdates, parseHead, parseTail } from './transcript-parse.js'
+import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail } from './transcript-parse.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -78,6 +78,12 @@ export const HEAD_WINDOW_BYTES = 256 * 1024
  */
 export const SIDECAR_WINDOW_BYTES = 256 * 1024
 
+/**
+ * grok `summary.json` 상한 (LIFE-458 수정 r1·F3). JSON 한 덩어리라 꼬리만 잘라 읽을 수 없다 — 이보다 크면
+ * **안 읽고** 그 칸을 null 로 둔다. 실측 143개 최대 1,627B(`raw/claude/u7-grok-summary-model.txt`).
+ */
+export const SUMMARY_MAX_BYTES = 256 * 1024
+
 /** 아무것도 못 읽은 지문. */
 const EMPTY: SessionDigest = EMPTY_SESSION_DIGEST
 
@@ -89,12 +95,26 @@ type SidecarEntry = {
   pendingQuestions: SessionQuestion[] | null
 }
 
+/** grok `summary.json` 에서 읽은 모델과 그때의 stat (F3). */
+type SummaryEntry = {
+  size: number
+  mtimeMs: number
+  model: string | null
+}
+
 type CacheEntry = {
   /** 해소된 파일 경로. 못 찾았으면 null (다음 갱신에 다시 훑는다). */
   file: string | null
   size: number
   mtimeMs: number
   digest: SessionDigest
+  /** 형제 파일을 합치기 **전**의 본 파일 지문 — 이어 나르기는 본 파일 값만 잇는다(형제 값이 섞이면 안 된다). */
+  mainDigest: SessionDigest
+  /**
+   * 이어 나르기의 기준점 (수정 r1·F4) — 지난 판독에서 **온전한 줄로 끝까지 읽은** 파일 위치.
+   * 이번 판독 구간이 여기서부터 끊김 없이 이어질 때만 모델·최근 발화를 잇는다. 모르면 null.
+   */
+  observedEnd: number | null
   /**
    * 이 파일에서 **provider 제목을 상한(2MB)까지 한 번 훑어봤나** (수정 라운드 1, V2).
    * 한 번 훑었으면 다시 안 훑는다 — 이 깃발이 없으면 제목 없는 긴 파일이 갱신될 때마다
@@ -118,6 +138,8 @@ type CacheEntry = {
   headDone: boolean
   /** grok 형제 파일 판독 결과. grok 이 아니거나 그 파일이 없으면 null (LIFE-458). */
   sidecar: SidecarEntry | null
+  /** grok `summary.json` 판독 결과. grok 이 아니거나 그 파일이 없으면 null (F3). */
+  summary: SummaryEntry | null
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -278,6 +300,11 @@ export function resolveTranscriptFile(ref: AgentSessionRef): string | null {
  * JSON 파싱이 실패해 건너뛴다 — 여기서 따로 다루지 않는다.
  */
 function readRange(file: string, from: number, to: number): string {
+  return readBytes(file, from, to).toString('utf8')
+}
+
+/** `readRange` 의 바이트판 — 줄 경계를 **파일 위치**로 재야 할 때(F4) 쓴다. */
+function readBytes(file: string, from: number, to: number): Buffer {
   const handle = fs.openSync(file, 'r')
   try {
     const length = Math.max(0, to - from)
@@ -288,7 +315,7 @@ function readRange(file: string, from: number, to: number): string {
       if (chunk === 0) break
       read += chunk
     }
-    return buffer.subarray(0, read).toString('utf8')
+    return buffer.subarray(0, read)
   } finally {
     fs.closeSync(handle)
   }
@@ -318,6 +345,8 @@ function readDigest(input: {
   sessionId: string | null
   titleScanned: boolean
   headDone: boolean
+  /** 이어 나를 값이 있을 때 그 값의 기준점(`CacheEntry.observedEnd`). 이을 것이 없으면 null. */
+  carryFrom: number | null
 }): {
   digest: SessionDigest
   bytes: number
@@ -325,9 +354,13 @@ function readDigest(input: {
   titleScanned: boolean
   headDone: boolean
   firstPrompt: string | null
+  /** 이번 판독 구간이 `carryFrom` 에서 끊김 없이 이어지나 — 이어 나르기를 해도 되나 (F4). */
+  contiguous: boolean
+  observedEnd: number | null
 } {
   const firstFrom = Math.max(0, input.size - TAIL_WINDOW_BYTES)
-  let chunk = readRange(input.file, firstFrom, input.size)
+  let buffer = readBytes(input.file, firstFrom, input.size)
+  let chunk = buffer.toString('utf8')
   let bytes = input.size - firstFrom
   let from = firstFrom
   let parsed = parseTail({ agent: input.agent, chunk, partial: from > 0, sessionId: input.sessionId })
@@ -335,11 +368,17 @@ function readDigest(input: {
 
   const needsText = parsed.activity.state !== 'text'
   const needsTitle = input.agent === 'claude' && parsed.providerTitle === null && !titleScanned
+  // **틈 확인** (수정 r1·F4). 지난 판독 뒤로 창보다 많이 붙어 읽지 않은 구간이 생겼는데 이번 창에 모델·최근
+  // 발화가 없으면, 그 틈에 더 새 값이 있을 수 있다 — 전에 본 값을 그대로 이으면 낡은 값을 최신이라고 말한다.
+  // 같은 확장(상한 2MB, A6)으로 틈을 덮어 확인한다. 틈이 없거나 이을 값이 없으면 넓히지 않는다.
+  const gap = input.carryFrom !== null && lineSpan({ buffer, from }).start > input.carryFrom
+  const needsCarryCheck = gap && (parsed.model === null || parsed.lastPrompt === null)
   // 첫 창에서 못 찾은 게 있고 아직 앞에 남은 게 있으면 **한 번만** 더 넓힌다.
-  if ((needsText || needsTitle) && from > 0) {
+  if ((needsText || needsTitle || needsCarryCheck) && from > 0) {
     const secondFrom = Math.max(0, input.size - TAIL_MAX_BYTES)
     if (secondFrom < from) {
-      chunk = readRange(input.file, secondFrom, from) + chunk // 두 구간은 붙어 있다 — 겹치지 않는다
+      buffer = Buffer.concat([readBytes(input.file, secondFrom, from), buffer]) // 두 구간은 붙어 있다 — 겹치지 않는다
+      chunk = buffer.toString('utf8')
       bytes += from - secondFrom
       from = secondFrom
       parsed = parseTail({ agent: input.agent, chunk, partial: from > 0, sessionId: input.sessionId })
@@ -374,11 +413,19 @@ function readDigest(input: {
     headDone = firstPrompt !== null || input.size >= HEAD_WINDOW_BYTES
   }
 
+  // 틈이 끝내 안 덮였으면(2MB 밖) 이어 나르지 않는다 — 그 칸은 이번 창에서 본 값, 없으면 null 이다.
+  const span = lineSpan({ buffer, from })
+  const contiguous = input.carryFrom !== null && span.start <= input.carryFrom
+  // 온전한 줄이 하나도 없는 창(한 줄이 창보다 긴 경우)이면 새로 확인한 위치가 없다 — 이어졌으면 전 기준점을 둔다.
+  const observedEnd = span.end >= span.start ? span.end : contiguous ? input.carryFrom : null
+
   return {
     titleScanned,
     headDone,
     firstPrompt,
     headBytes,
+    contiguous,
+    observedEnd,
     digest: {
       activity: parsed.activity,
       providerTitle: parsed.providerTitle,
@@ -455,11 +502,15 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
 
   // grok 은 **파일이 둘**이다 (LIFE-458). 턴이 중단되면 `updates.jsonl` 만 자라고 `chat_history` 는
   // 그대로일 수 있어서, 두 파일을 따로 stat 하고 **바뀐 쪽만** 읽는다 — 무변경 파일은 읽기 0바이트(T7).
+  // `summary.json`(모델, F3)도 같은 식으로 따로 stat 한다.
   const sidecarFile = agent === 'grok' ? path.join(path.dirname(file), 'updates.jsonl') : null
   const sidecarStat = sidecarFile === null ? null : statOrNull(sidecarFile)
+  const summaryFile = agent === 'grok' ? path.join(path.dirname(file), 'summary.json') : null
+  const summaryStat = summaryFile === null ? null : statOrNull(summaryFile)
   const mainFresh = cached !== null && cached.file === file && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs
-  const sidecarFresh = sameStat(cached?.sidecar ?? null, sidecarStat)
-  if (cached !== null && mainFresh && sidecarFresh) {
+  const sidecarFresh = sameStat({ entry: cached?.sidecar ?? null, stat: sidecarStat })
+  const summaryFresh = sameStat({ entry: cached?.summary ?? null, stat: summaryStat })
+  if (cached !== null && mainFresh && sidecarFresh && summaryFresh) {
     return { digest: cached.digest, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: true }
   }
 
@@ -472,19 +523,37 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
       sidecar = read?.entry ?? null
       sidecarBytes = read?.bytes ?? 0
     }
+    let summary = cached?.summary ?? null
+    if (summaryFile !== null && !summaryFresh) {
+      const read = summaryStat === null ? null : readSummary({ file: summaryFile, stat: summaryStat })
+      summary = read?.entry ?? null
+      // 형제 파일 바이트에 함께 센다 — 둘 다 grok 이 더 읽는 파일이고 파일마다 ≤256KB 다(T7).
+      sidecarBytes += read?.bytes ?? 0
+    }
     // grok 이 아니면 턴 결과·질문은 본 파일 판독이 이미 채웠다. grok 이면 형제 파일 값으로 덮는다.
+    // 모델은 **응답 기록(`chat_history` 의 `model_id`) 이 먼저**, 없을 때만 `summary.json` 이다 (F3):
+    // 응답 기록은 실제로 답한 모델이고 식별자도 더 자세하다(`-build` 변형, 98 중 95). summary 는 세션에 고른
+    // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
     const digest: SessionDigest =
       sidecarFile === null
         ? main.digest
-        : { ...main.digest, turnOutcome: sidecar?.turnOutcome ?? null, pendingQuestions: sidecar?.pendingQuestions ?? null }
+        : {
+            ...main.digest,
+            turnOutcome: sidecar?.turnOutcome ?? null,
+            pendingQuestions: sidecar?.pendingQuestions ?? null,
+            model: main.digest.model ?? summary?.model ?? null,
+          }
     cache.set(key, {
       file,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       digest,
+      mainDigest: main.digest,
+      observedEnd: main.observedEnd,
       titleScanned: main.titleScanned,
       headDone: main.headDone,
       sidecar,
+      summary,
     })
     return {
       digest,
@@ -515,16 +584,52 @@ function statOrNull(file: string): fs.Stats | null {
 }
 
 /** 캐시의 형제 파일 stat 과 지금 stat 이 같은가. 둘 다 없으면 같다. */
-function sameStat(entry: SidecarEntry | null, stat: fs.Stats | null): boolean {
+function sameStat(input: { entry: { size: number; mtimeMs: number } | null; stat: fs.Stats | null }): boolean {
+  const { entry, stat } = input
   if (stat === null) return entry === null
   return entry !== null && entry.size === stat.size && entry.mtimeMs === stat.mtimeMs
 }
 
-type MainRead = { digest: SessionDigest; bytes: number; headBytes: number; titleScanned: boolean; headDone: boolean }
+type MainRead = {
+  digest: SessionDigest
+  bytes: number
+  headBytes: number
+  titleScanned: boolean
+  headDone: boolean
+  observedEnd: number | null
+}
 
 /** 본 파일이 안 바뀌었다 — 읽지 않고 캐시 값을 쓴다 (형제 파일만 바뀐 주기). */
 function reuseMain(cached: CacheEntry): MainRead {
-  return { digest: cached.digest, bytes: 0, headBytes: 0, titleScanned: cached.titleScanned, headDone: cached.headDone }
+  return {
+    digest: cached.mainDigest,
+    bytes: 0,
+    headBytes: 0,
+    titleScanned: cached.titleScanned,
+    headDone: cached.headDone,
+    observedEnd: cached.observedEnd,
+  }
+}
+
+/**
+ * 조각에서 **온전히 읽힌 줄**이 차지하는 파일 구간 `[start, end)` (F4).
+ * `from > 0` 이면 첫 줄은 잘린 줄이라 버려지므로(`tailLines`) 첫 줄바꿈 뒤부터가 시작이다.
+ * 끝은 마지막 줄바꿈 뒤 — 줄바꿈 없는 끝줄은 쓰다 만 것일 수 있어 확인한 것으로 치지 않는다.
+ * 온전한 줄이 없으면 `end < start` 다.
+ */
+function lineSpan(input: { buffer: Buffer; from: number }): { start: number; end: number } {
+  const { buffer, from } = input
+  const first = from === 0 ? -1 : buffer.indexOf(0x0a)
+  const start = from === 0 ? 0 : first === -1 ? from + buffer.length : from + first + 1
+  return { start, end: from + buffer.lastIndexOf(0x0a) + 1 }
+}
+
+/** grok `summary.json` 을 통째로 읽는다 — 상한보다 크면 안 읽는다 (F3, T7). */
+function readSummary(input: { file: string; stat: fs.Stats }): { entry: SummaryEntry; bytes: number } {
+  const entry = { size: input.stat.size, mtimeMs: input.stat.mtimeMs }
+  if (input.stat.size > SUMMARY_MAX_BYTES) return { entry: { ...entry, model: null }, bytes: 0 }
+  const text = readRange(input.file, 0, input.stat.size)
+  return { entry: { ...entry, model: parseGrokSummary(text) }, bytes: input.stat.size }
 }
 
 /** 형제 파일 꼬리 한 창을 읽는다 — 확장 없음 (T7). */
@@ -547,6 +652,12 @@ function readMain(input: {
   cached: CacheEntry | null
 }): MainRead {
   const { cached } = input
+  // 이어 나를 값이 있고 **같은 파일이 줄지 않았을 때만** 기준점을 넘긴다 (F4).
+  const carryable =
+    cached !== null &&
+    cached.file === input.file &&
+    input.stat.size >= cached.size &&
+    (cached.mainDigest.model !== null || cached.mainDigest.lastPrompt !== null)
   const read = readDigest({
     file: input.file,
     size: input.stat.size,
@@ -559,6 +670,7 @@ function readMain(input: {
     // 머리는 **끝났을 때만** 이어진다 (C6′-④). 안 끝난 파일은 자랄 때마다 다시 읽는데,
     // 그런 파일은 창보다 작아서 그 재판독이 추가 0바이트다.
     headDone: cached?.headDone ?? false,
+    carryFrom: carryable ? cached.observedEnd : null,
   })
   // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
   // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
@@ -566,18 +678,27 @@ function readMain(input: {
   // 이미 끝난 값이다.
   const digest: SessionDigest = {
     ...read.digest,
-    providerTitle: read.digest.providerTitle ?? cached?.digest.providerTitle ?? null,
+    providerTitle: read.digest.providerTitle ?? cached?.mainDigest.providerTitle ?? null,
     // **첫 발화도 이어 나른다.** 머리 판독이 끝난 뒤로는 이번 판독에 값이 아예 안 실린다 —
     // 안 이으면 다음 갱신에서 제목이 폴백으로 되돌아간다 (V2 가 provider 제목에서 잡았던
     // 것과 같은 결함).
-    firstPrompt: read.digest.firstPrompt ?? cached?.digest.firstPrompt ?? null,
-    // **모델·최근 발화도 이어 나른다** (LIFE-458 T3·T4). 둘 다 "가장 최근 값" 이라 더 새 값은
-    // 반드시 꼬리 창 안에 있다(JSONL 은 뒤에 붙는다) — 창에 없으면 전에 본 값이 여전히 최신이다.
-    // 창을 넓혀 찾지 않는다(T7). 턴 결과·질문은 **안 잇는다** — "지금" 의 값이라 창에 없으면 null 이다.
-    model: read.digest.model ?? cached?.digest.model ?? null,
-    lastPrompt: read.digest.lastPrompt ?? cached?.digest.lastPrompt ?? null,
+    firstPrompt: read.digest.firstPrompt ?? cached?.mainDigest.firstPrompt ?? null,
+    // **모델·최근 발화는 이어질 때만 잇는다** (LIFE-458 T3·T4, 수정 r1·F4). 둘 다 "가장 최근 값" 이라
+    // 지난 판독 끝에서 이번 판독 구간이 **끊김 없이** 이어지면 더 새 값은 이번 창 안에 있다 — 창에 없으면
+    // 전에 본 값이 여전히 최신이다. 폴링 사이에 창보다 많이 붙어 틈이 생기면 그 틈에 새 값이 있을 수 있어
+    // `readDigest` 가 같은 2MB 확장으로 확인하고, 그래도 안 덮이면 **잇지 않는다**(null). 턴 결과·질문은
+    // 아예 안 잇는다 — "지금" 의 값이라 창에 없으면 null 이다.
+    model: read.digest.model ?? (read.contiguous ? (cached?.mainDigest.model ?? null) : null),
+    lastPrompt: read.digest.lastPrompt ?? (read.contiguous ? (cached?.mainDigest.lastPrompt ?? null) : null),
   }
-  return { digest, bytes: read.bytes, headBytes: read.headBytes, titleScanned: read.titleScanned, headDone: read.headDone }
+  return {
+    digest,
+    bytes: read.bytes,
+    headBytes: read.headBytes,
+    titleScanned: read.titleScanned,
+    headDone: read.headDone,
+    observedEnd: read.observedEnd,
+  }
 }
 
 /**
@@ -588,8 +709,8 @@ function readMain(input: {
  * 파일의 같은 코드 경로가 만들어 키 순서가 일정하다 — 순서가 달라지면 틀리는 쪽은 "같은데 다르다"
  * (emit 한 번 더)이지 "다른데 같다"(갱신 유실)가 아니다.
  */
-export function digestsEqual(a: SessionDigest, b: SessionDigest): boolean {
-  return JSON.stringify(a) === JSON.stringify(b)
+export function digestsEqual(input: { a: SessionDigest; b: SessionDigest }): boolean {
+  return JSON.stringify(input.a) === JSON.stringify(input.b)
 }
 
 /**

@@ -1,14 +1,23 @@
 // 판독층 입구 테스트 (LIFE-458 T7·T3·T4) — 파일을 실제로 깔고 `readSessionDigest` 를 부른다.
 //
 // ① grok 형제 파일(`updates.jsonl`) — 본 파일과 **따로** stat 하고 바뀐 쪽만 읽는가, 창이 256KB 로 묶이는가
-// ② 모델·최근 발화 이어 나르기 — 꼬리 창 밖으로 밀려나도 같은 파일에서 전에 본 값이 남는가
+// ② 모델·최근 발화 이어 나르기 — 꼬리 창 밖으로 밀려나도 같은 파일에서 전에 본 값이 남는가,
+//    읽지 않은 틈이 생기면 그 틈의 새 값을 찾거나 null 인가 (수정 r1·F4)
+// ③ grok summary.json 모델 — 응답 기록에 모델이 없을 때 메우는가, 따로 stat 하는가 (수정 r1·F3)
 // HOME 은 매번 임시 폴더다 (사용자 HOME 을 안 만진다).
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SIDECAR_WINDOW_BYTES, TAIL_WINDOW_BYTES, clearTranscriptCache, readSessionDigest } from './transcript'
+import {
+  SIDECAR_WINDOW_BYTES,
+  SUMMARY_MAX_BYTES,
+  TAIL_MAX_BYTES,
+  TAIL_WINDOW_BYTES,
+  clearTranscriptCache,
+  readSessionDigest,
+} from './transcript'
 import type { AgentSessionRef } from '../shared/types'
 
 const SESSION_ID = '11111111-2222-4333-8444-666666666666'
@@ -95,6 +104,61 @@ describe('grok 형제 파일 updates.jsonl (T7)', () => {
   })
 })
 
+describe('grok summary.json 모델 (T3·T7, 수정 r1·F3)', () => {
+  const ref: AgentSessionRef = { kind: 'id', agent: 'grok', source: 'herdr:grok', id: SESSION_ID }
+  let dir = ''
+  // n23 의 null 4 세션 모양 — 사람 발화만 있고 응답(assistant) 줄이 없다. summary 키는 실물 순서의 일부.
+  const summary = (model: unknown) =>
+    JSON.stringify({ agent_id: 'ID', created_at: 'T', current_model_id: model, num_chat_messages: 1, reasoning_effort: 'high' })
+  const userOnly = jsonl([{ type: 'user', content: [{ type: 'text', text: '<user_query>해 줘</user_query>' }] }])
+
+  beforeEach(() => {
+    dir = path.join(home, '.grok', 'sessions', '%2Ftmp%2Fl458', SESSION_ID)
+    fs.mkdirSync(dir, { recursive: true })
+  })
+
+  it('응답 줄이 없으면 summary 의 current_model_id 로 메운다 — 파일 크기만큼 읽는다', () => {
+    fs.writeFileSync(path.join(dir, 'chat_history.jsonl'), userOnly)
+    fs.writeFileSync(path.join(dir, 'summary.json'), summary('grok-4.7'))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('grok-4.7')
+    expect(read.sidecarBytes).toBe(fs.statSync(path.join(dir, 'summary.json')).size)
+  })
+
+  it('응답 줄의 model_id 가 먼저다', () => {
+    fs.writeFileSync(
+      path.join(dir, 'chat_history.jsonl'),
+      userOnly + jsonl([{ type: 'assistant', content: '했다', model_id: 'grok-4.7-build' }]),
+    )
+    fs.writeFileSync(path.join(dir, 'summary.json'), summary('grok-4.7'))
+    expect(readSessionDigest(ref).digest.model).toBe('grok-4.7-build')
+  })
+
+  it('summary 만 바뀌면 그 파일만 읽는다 — 무변경이면 stat 만', () => {
+    fs.writeFileSync(path.join(dir, 'chat_history.jsonl'), userOnly)
+    fs.writeFileSync(path.join(dir, 'summary.json'), summary('grok-4.6'))
+    readSessionDigest(ref)
+    expect(readSessionDigest(ref).statOnly).toBe(true)
+    fs.writeFileSync(path.join(dir, 'summary.json'), summary('grok-4.7 '))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('grok-4.7')
+    expect(read.bytes).toBe(read.sidecarBytes)
+  })
+
+  it('summary 가 없거나·깨졌거나·비었거나·상한보다 크면 null — 던지지 않는다, 큰 파일은 안 읽는다', () => {
+    fs.writeFileSync(path.join(dir, 'chat_history.jsonl'), userOnly)
+    expect(readSessionDigest(ref).digest.model).toBeNull()
+    for (const text of ['{"current_model_id":', summary(''), summary(7), '[]']) {
+      fs.writeFileSync(path.join(dir, 'summary.json'), text)
+      expect(readSessionDigest(ref).digest.model).toBeNull()
+    }
+    fs.writeFileSync(path.join(dir, 'summary.json'), summary('grok-4.7') + ' '.repeat(SUMMARY_MAX_BYTES))
+    const big = readSessionDigest(ref)
+    expect(big.digest.model).toBeNull()
+    expect(big.sidecarBytes).toBe(0)
+  })
+})
+
 describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
   const ref: AgentSessionRef = { kind: 'id', agent: 'claude', source: 'herdr:claude', id: SESSION_ID }
   let file = ''
@@ -112,18 +176,62 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     file = path.join(dir, `${SESSION_ID}.jsonl`)
   })
 
-  it('창 밖으로 밀려나도 같은 파일에서 본 값이 남는다 — 창은 넓히지 않는다', () => {
+  // 모델 없는 assistant 텍스트 한 덩어리 — 텍스트가 있으니 활동 때문에 확장이 돌지는 않는다.
+  const filler = (bytes: number): unknown[] => {
+    const records: unknown[] = []
+    while (records.length * 10_000 < bytes) records.push(assistant('z'.repeat(10_000)))
+    return records
+  }
+
+  it('이어서 읽으면 창 밖으로 밀려나도 같은 파일에서 본 값이 남는다 — 창은 넓히지 않는다', () => {
     fs.writeFileSync(file, jsonl([human('처음 부탁'), assistant('네', 'claude-opus-5-5')]))
     expect(readSessionDigest(ref).digest.model).toBe('claude-opus-5-5')
 
-    // 모델 없는 assistant 텍스트로 첫 창을 넘치게 채운다 — 텍스트가 있으니 확장도 안 돈다.
-    const filler: unknown[] = []
-    while (filler.length * 10_000 < TAIL_WINDOW_BYTES * 2) filler.push(assistant('z'.repeat(10_000)))
-    fs.appendFileSync(file, jsonl(filler))
-    const read = readSessionDigest(ref)
+    // 폴링마다 창보다 적게 붙는다 — 판독 구간이 매번 지난 끝에서 이어진다. 합계는 창의 두 배를 넘는다.
+    let read = readSessionDigest(ref)
+    for (let round = 0; round < 4; round += 1) {
+      fs.appendFileSync(file, jsonl(filler(TAIL_WINDOW_BYTES / 2)))
+      read = readSessionDigest(ref)
+    }
+    expect(fs.statSync(file).size).toBeGreaterThan(TAIL_WINDOW_BYTES * 2)
     expect(read.bytes - read.headBytes).toBe(TAIL_WINDOW_BYTES)
     expect(read.digest.model).toBe('claude-opus-5-5')
     expect(read.digest.lastPrompt).toBe('처음 부탁')
+  })
+
+  it('틈 안에 새 값 — 리뷰 재현 모양(창보다 많이 한 번에 붙음): 같은 2MB 확장으로 새 값을 찾는다', () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    fs.appendFileSync(file, jsonl([human('new-prompt'), assistant('ok', 'new-model'), ...filler(TAIL_WINDOW_BYTES + 70_000)]))
+    const read = readSessionDigest(ref)
+    expect(read.bytes - read.headBytes).toBeGreaterThan(TAIL_WINDOW_BYTES)
+    expect(read.bytes - read.headBytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  it('틈이 2MB 밖까지 이어져 확인 못 하면 잇지 않는다 — 낡은 값 대신 null', () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    fs.appendFileSync(file, jsonl([human('new-prompt'), assistant('ok', 'new-model'), ...filler(TAIL_MAX_BYTES + 100_000)]))
+    const read = readSessionDigest(ref)
+    expect(read.bytes - read.headBytes).toBe(TAIL_MAX_BYTES)
+    expect(read.digest.model).toBeNull()
+    expect(read.digest.lastPrompt).toBeNull()
+    // 그 뒤로 이어서 읽으면 null 이 이어진다 — 옛 값이 되살아나지 않는다.
+    fs.appendFileSync(file, jsonl(filler(10_000)))
+    const next = readSessionDigest(ref)
+    expect(next.digest.model).toBeNull()
+    expect(next.bytes - next.headBytes).toBe(TAIL_WINDOW_BYTES)
+  })
+
+  it('틈이 있어도 새 값이 없으면(옛 값이 여전히 최신) 확인 뒤 옛 값을 잇는다', () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    fs.appendFileSync(file, jsonl(filler(TAIL_WINDOW_BYTES * 2)))
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('old-model')
+    expect(read.digest.lastPrompt).toBe('old-prompt')
   })
 
   it('더 새 값이 오면 그 값으로 바뀐다', () => {

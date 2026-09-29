@@ -937,7 +937,7 @@ function refreshDigests(): void {
   if (!changed) {
     for (const [tabId, digest] of read.digests) {
       const before = digests.get(tabId)
-      if (before === undefined || !digestsEqual(before, digest)) {
+      if (before === undefined || !digestsEqual({ a: before, b: digest })) {
         changed = true
         break
       }

@@ -255,6 +255,7 @@ describe('T1·T2 codex 턴 결과 — 네 모양', () => {
   it('ⓑ 뒤에 task_started 가 오면 풀린다', () => {
     expect(codex([xAborted(), xTaskStarted(), xTurnContext('gpt-6')]).turnOutcome).toBeNull()
     expect(codex([xAborted(), xUserMessage('다시')]).turnOutcome).toBeNull()
+    expect(codex([xAborted(), xUserItem('다시')]).turnOutcome).toBeNull()
   })
   it('ⓒ 새 턴이 정상 종료하면 completed', () => {
     expect(codex([xAborted(), xTaskStarted(), xAssistant(), xComplete()]).turnOutcome).toEqual({ outcome: 'completed' })
@@ -397,9 +398,9 @@ describe('T5 대기 중인 질문 — 답 전/후', () => {
   it('claude — 가장 최근 질문만 본다(앞 질문이 답을 받았어도 새 질문은 대기)', () => {
     expect(claude([cAsk('q1'), cAskResult('q1', 'answered'), cAsk('q2')]).pendingQuestions).toEqual(expected)
   })
-  it('codex — 이 턴에 질문 호출이 있으면 대기(비동기 — 호출 출력은 답이 아니다), 새 턴이면 풀린다', () => {
-    const pending = codex([xTaskStarted(), xAssistant(), xAsk(), xCallOutput(), xAssistant()]).pendingQuestions
-    expect(pending).toEqual([
+  describe('codex — 비동기 질문(호출 출력은 답이 아니다): 질문 호출 뒤에 무엇이 왔나', () => {
+    const asked = [xTaskStarted(), xUserItem('부탁'), xAssistant(), xAsk(), xCallOutput(), xAssistant()]
+    const expected = [
       {
         question: '계속할까요?',
         header: null,
@@ -409,8 +410,31 @@ describe('T5 대기 중인 질문 — 답 전/후', () => {
         ],
         multiSelect: null,
       },
-    ])
-    expect(codex([xAsk(), xCallOutput(), xComplete(), xTaskStarted()]).pendingQuestions).toBeNull()
+    ]
+    it('답 전 — 대기. 턴이 끝나도(task_complete) 답을 기다린다', () => {
+      expect(codex(asked).pendingQuestions).toEqual(expected)
+      expect(codex([...asked, xComplete()]).pendingQuestions).toEqual(expected)
+    })
+    it('같은 턴 안의 답 — 0.158 UserMessage·옛 user_message 둘 다 해소, 최근 발화는 답', () => {
+      const answered = codex([...asked, xUserItem('예')])
+      expect(answered.pendingQuestions).toBeNull()
+      expect(answered.lastPrompt).toBe('예')
+      expect(answered.turnOutcome).toBeNull()
+      expect(codex([...asked, xUserMessage('예')]).pendingQuestions).toBeNull()
+      expect(codex([...asked, xUserItem('예'), xAssistant(), xComplete()]).pendingQuestions).toBeNull()
+    })
+    it('중단 뒤 — 해소, 턴 결과는 interrupted', () => {
+      const aborted = codex([...asked, xAborted()])
+      expect(aborted.pendingQuestions).toBeNull()
+      expect(aborted.turnOutcome).toEqual({ outcome: 'interrupted', reason: 'interrupted' })
+    })
+    it('새 턴 — 해소', () => {
+      expect(codex([...asked, xComplete(), xTaskStarted()]).pendingQuestions).toBeNull()
+      expect(codex([...asked, xComplete(), xTaskStarted(), xUserItem('예')]).pendingQuestions).toBeNull()
+    })
+    it('해소된 뒤 새 질문 — 새 질문만 대기', () => {
+      expect(codex([...asked, xUserItem('예'), xAsk()]).pendingQuestions).toEqual(expected)
+    })
   })
   it('grok — 답 전: status 없는 ask_user_question, 답 후: 같은 id 의 tool_call_update status', () => {
     expect(grokUpdates([gUserChunk(), gAsk('t1'), gHook()]).pendingQuestions).toEqual([
@@ -501,9 +525,9 @@ describe('T8 digestsEqual — 필드 하나만 바뀌어도 다르다', () => {
     expect(variants.map((variant) => variant.field).sort()).toEqual(Object.keys(EMPTY_SESSION_DIGEST).sort())
   })
   it.each(variants)('$field 만 바뀌면 emit', ({ digest }) => {
-    expect(digestsEqual(base, digest)).toBe(false)
+    expect(digestsEqual({ a: base, b: digest })).toBe(false)
   })
   it('같으면 emit 하지 않는다', () => {
-    expect(digestsEqual(base, { ...base })).toBe(true)
+    expect(digestsEqual({ a: base, b: { ...base } })).toBe(true)
   })
 })

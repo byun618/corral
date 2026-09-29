@@ -68,9 +68,9 @@ export function tailLines(chunk: string, { partial }: { partial: boolean }): str
  *
  * LIFE-458 에서 한 조각을 **여러 번** 훑게 되어(턴 결과·모델·최근 발화·질문) 파싱을 한 번으로 모았다.
  */
-export function tailRecords(chunk: string, { partial }: { partial: boolean }): Record<string, unknown>[] {
+export function tailRecords(input: { chunk: string; partial: boolean }): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = []
-  for (const line of tailLines(chunk, { partial })) {
+  for (const line of tailLines(input.chunk, { partial: input.partial })) {
     const record = safeParse(line)
     if (isRecord(record)) records.push(record)
   }
@@ -163,7 +163,7 @@ export function cleanActivityText(raw: string): string | null {
  * 쓴다 (`agent-row-conversation-name.ts:139-148`).
  */
 export function parseClaudeTail(input: { chunk: string; partial: boolean; sessionId: string | null }): TranscriptDigest {
-  const records = tailRecords(input.chunk, { partial: input.partial })
+  const records = tailRecords({ chunk: input.chunk, partial: input.partial })
   let activity: SessionActivity | null = null
   let providerTitle: string | null = null
   let tool: SessionTool | null = null
@@ -304,8 +304,9 @@ function hasToolResult(message: Record<string, unknown>): boolean {
  * 사람 발화면 원문, 아니면 null.
  *
  * 건너뛰는 것은 관측된 것뿐이다. LIFE-366 머리 판독 실측(`c5-b9-shapes-r5.json`)의 넷에, 꼬리에서
- * 새로 관측된 셋을 더했다(`u1-claude-sequences.txt`·`u4-misc.txt`) — 머리에서는 0건이라 첫 발화
- * 결과는 그대로다:
+ * 새로 관측된 셋을 더했다(`u1-claude-sequences.txt`·`u4-misc.txt`). 머리(첫 발화)에도 영향이 있다 —
+ * 기준 커밋 대비 사용자 파일 459개 중 **2개가 non-null → null** 로 바뀐다(`isCompactSummary` 1 · 중단 표지 1,
+ * codex 리뷰 r1 R6). 그 둘은 사람 발화가 아닌 것을 첫 발화로 잡던 경우라 같은 규칙을 쓰는 쪽으로 둔다:
  *
  * | 건너뛰는 것 | 관측 |
  * | --- | --- |
@@ -496,7 +497,7 @@ function readQuestions(input: { items: unknown; textKey: string }): SessionQuest
  * "content":[{"type":"output_text","text":…}]}}`. provider 제목에 해당하는 레코드는 없다.
  */
 export function parseCodexTail(input: { chunk: string; partial: boolean }): TranscriptDigest {
-  const records = tailRecords(input.chunk, { partial: input.partial })
+  const records = tailRecords({ chunk: input.chunk, partial: input.partial })
   let activity: SessionActivity | null = null
   let lastActivityAt: number | null = null
 
@@ -564,7 +565,9 @@ export function codexHumanText(record: Record<string, unknown>): string | null {
  *   · `event_msg/turn_aborted` → `interrupted` (reason = `payload.reason` 원문 — 실측 19건 전부 `interrupted`)
  *   · `event_msg/task_complete` 에 `error` 가 있으면 `failed` (error = `error.codex_error_info` 원문 문자열 —
  *     실측 `usage_limit_exceeded` 6·`other` 1), 없으면 `completed`
- *   · `event_msg/task_started`·`user_message` → null — 새 턴이 시작됐다(T2, 실측: 중단·오류 뒤는 전부 `task_started`)
+ *   · `event_msg/task_started`·사람 발화(`codexHumanText` — 옛 `user_message`·0.158 `UserMessage` 둘 다) → null
+ *     — 새 턴이 시작됐다(T2, 실측: 중단·오류 뒤는 전부 `task_started`). 사람 발화는 실측상 늘 `task_started`
+ *     뒤에 온다(288/288, `u6-codex-boundaries.txt`) — 경계로 거는 것은 두 모양을 같은 자리에 두려는 것이다
  * codex 의 `error`·`stream_error` 이벤트는 rollout 에 안 남는다(00-analysis §9, 로컬 0건) — failed 는 `task_complete.error` 로만 본다.
  */
 export function codexTurnOutcome(records: readonly Record<string, unknown>[]): TurnOutcome | null {
@@ -582,9 +585,9 @@ export function codexTurnOutcome(records: readonly Record<string, unknown>[]): T
         return { outcome: 'failed', error: isRecord(error) ? readString(error, 'codex_error_info') : null }
       }
       case 'task_started':
-      case 'user_message':
         return null
     }
+    if (codexHumanText(record) !== null) return null
   }
   return null
 }
@@ -632,16 +635,22 @@ const CODEX_ASK_TOOL = 'request_user_input_async'
  * codex 대기 중인 질문 (T5).
  *
  * `request_user_input_async` 는 **비동기**다 — 호출 즉시 `{"accepted":…}` 출력이 오고 에이전트는
- * 계속 일한다(실측 4/4, `u3-codex-ask-skeleton.txt`). 그래서 tool 출력은 "답" 이 아니다. 답은 다음
- * 사용자 턴으로 온다 — **이 턴 안(마지막 `task_started` 뒤)에 질문 호출이 있으면 대기 중**으로 본다.
- * 새 턴(`task_started`·`user_message`)이 시작되면 풀린다. 선택지는 문자열 배열이고 문항 키는 `title` 이다.
+ * 계속 일한다(실측 4/4, `u3-codex-ask-skeleton.txt`). 그래서 tool 출력은 "답" 이 아니다. 답은 사람 발화로
+ * 온다 — 같은 턴 안에 올 수도, 턴이 끝난 뒤 다음 턴으로 올 수도 있다(실측 4건: 같은 턴 발화 2 · 턴 완료 뒤
+ * 새 턴 1 · 중단 1, `u6-codex-boundaries.txt`). 그래서 규칙은 **마지막 질문 호출 뒤에 무엇이 왔나** 다:
+ *   · 사람 발화(`codexHumanText` — 옛 `user_message`·0.158 `UserMessage`) → 답했다, 해소
+ *   · `turn_aborted` → 중단했다, 해소 (중단은 질문째 버린다)
+ *   · `task_started` → 새 턴, 해소
+ *   · `task_complete` → **해소 아님** — 비동기 질문은 턴이 끝나도 답을 기다린다
+ * 선택지는 문자열 배열이고 문항 키는 `title` 이다.
  */
 export function codexPendingQuestions(records: readonly Record<string, unknown>[]): SessionQuestion[] | null {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const record = records[i]
     if (record === undefined) continue
     const event = codexEvent(record)
-    if (event !== null && (event.type === 'task_started' || event.type === 'user_message')) return null
+    if (event !== null && (event.type === 'task_started' || event.type === 'turn_aborted')) return null
+    if (codexHumanText(record) !== null) return null
     if (readString(record, 'type') !== 'response_item') continue
     const payload = record['payload']
     if (!isRecord(payload) || payload['type'] !== 'function_call' || payload['name'] !== CODEX_ASK_TOOL) continue
@@ -670,7 +679,7 @@ function codexContent(content: unknown): unknown {
  * 떨어진다 (`transcript.ts` 가 메운다).
  */
 export function parseGrokTail(input: { chunk: string; partial: boolean }): TranscriptDigest {
-  const records = tailRecords(input.chunk, { partial: input.partial })
+  const records = tailRecords({ chunk: input.chunk, partial: input.partial })
   let activity: SessionActivity | null = null
   let lastActivityAt: number | null = null
 
@@ -705,7 +714,8 @@ export function parseGrokTail(input: { chunk: string; partial: boolean }): Trans
 
 /**
  * grok 마지막 모델 (T3) — `chat_history` assistant 줄의 `model_id` (실측 1,585/1,585).
- * 이미 읽는 파일이라 `summary.json` 을 따로 열지 않는다(T7 비용 0).
+ * 응답이 없는 세션(첫 응답 전 실패 등)은 여기서 null 이고, `transcript.ts` 가 `summary.json` 의
+ * `current_model_id`(`parseGrokSummary`)로 메운다 — 우선순위는 이 값이 먼저다(수정 r1·F3).
  */
 export function grokModel(records: readonly Record<string, unknown>[]): string | null {
   for (let i = records.length - 1; i >= 0; i -= 1) {
@@ -716,6 +726,18 @@ export function grokModel(records: readonly Record<string, unknown>[]): string |
     if (model !== null && model.length > 0) return model
   }
   return null
+}
+
+/**
+ * grok `summary.json` 의 `current_model_id` — 세션에 고른 모델 (수정 r1·F3). 실측 143/143 에 있고
+ * 응답 기록의 `model_id` 와 모양이 다르다(`grok-4.7` ↔ `grok-4.7-build`, `u7-grok-summary-model.txt`).
+ * 깨졌거나 비었으면 null — 던지지 않는다.
+ */
+export function parseGrokSummary(text: string): string | null {
+  const parsed = safeParse(text)
+  if (!isRecord(parsed)) return null
+  const model = readString(parsed, 'current_model_id')?.trim() ?? null
+  return model !== null && model.length > 0 ? model : null
 }
 
 /**
@@ -780,7 +802,7 @@ export function parseGrokUpdates(input: { chunk: string; partial: boolean }): {
   turnOutcome: TurnOutcome | null
   pendingQuestions: SessionQuestion[] | null
 } {
-  const records = tailRecords(input.chunk, { partial: input.partial })
+  const records = tailRecords({ chunk: input.chunk, partial: input.partial })
   let turnOutcome: TurnOutcome | null = null
   let outcomeSettled = false
   let pendingQuestions: SessionQuestion[] | null = null

@@ -1,5 +1,12 @@
 // LIFE-456 R2-F2 — **같은 pane 에 두 사유가 나오지 않는다.** 이번엔 대역이 아니라 실제 store 로.
 //
+// **이 파일이 어댑터 안에 있는 이유** (R2 · 경계 검사): 이 테스트는 GUI 쪽 `WorkspaceStore`
+// (`adapter/internal`) 와 CLI 쪽 `blockedReasonOf` (`runtime/terminal`) 를 **같은 입력으로
+// 나란히 굴려** 비교한다. 그러려면 어댑터 내부를 import 해야 하는데, `src/runtime/` 에 두면
+// R1-internal·R4-wire-leak 위반이다(실제로 걸렸다 — `s11-r2/r2-02-boundary.txt` 1회차).
+// 경계를 낮추는 대신 **테스트를 어댑터 쪽으로 옮겼다.** 비교 대상이 어댑터의 공급값이므로
+// 여기가 제자리다.
+//
 // 라운드 1 의 이 파일은 GUI 쪽을 `blockedReason({labels, ruleId: pickBlockedRule(x).ruleId})` 로
 // **손으로 다시 조립해서** 쟀다. 그건 CLI 쪽 조립과 글자까지 같은 식이라 **무슨 짓을 해도
 // 두 값이 갈릴 수 없었다** — 고쳤다고 적은 속성을 재지 못하는 테스트였다(리뷰 R2 claude C3).
@@ -10,13 +17,12 @@
 //   · GUI `explainBlocked`   → ruleId 만
 //   · CLI `terminal show`    → labels + ruleId **둘 다**
 // 그래서 여기서는 **진짜 `WorkspaceStore` 를 굴려** 그 결과와 CLI 조립을 비교한다.
-// 공개 CLI 전 구간(guard 포함)은 단위 테스트가 아니라 `app/scripts/l456/cli-blocked-reason.mjs`
-// 와 네이티브 대조 원자료가 맡는다 (R2-F1).
+// 공개 CLI 전 구간(guard 포함)은 `runtime.test.ts` 의 R2-F1 두 회차와 네이티브 대조 원자료가 맡는다.
 
 import { describe, expect, it } from 'vitest'
-import { pickBlockedRule } from '../../shared/agent-state.js'
-import { WorkspaceStore } from '../../main/adapter/internal/store.js'
-import { blockedReasonOf } from './index.js'
+import { pickBlockedRule } from '../../../shared/agent-state.js'
+import { WorkspaceStore } from './store.js'
+import { blockedReasonOf } from '../../../runtime/terminal/index.js'
 
 /** herdr 스냅샷 한 장 — pane 하나가 blocked 이고 labels 가 실려 있다. */
 const snapshot = (labels: Record<string, string> | null): unknown => ({

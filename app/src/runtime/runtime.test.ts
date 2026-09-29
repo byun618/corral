@@ -643,14 +643,14 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(nested(shown, 'agent', 'blocked').reason).toBe('permission')
     expect(explain).toHaveBeenCalled()
   }, 30000)
-  it('R2-F1 반례: guard 가 `agent.explain` 을 막으면 같은 화면이 `unknown` 이 된다', async () => {
+  it('R2-F1 반례: guard 가 explain 호출을 막으면 같은 화면이 `unknown` 이 된다', async () => {
     // 라운드 1 의 상태를 그대로 재현한다 — 허용 목록에 없는 메서드에 guard 가 주는 응답이
     // `unsupported` 다. **사유가 `unknown` 인 것이 규칙 탓이 아니라 guard 탓**이라는 것을
     // 이 대조가 보인다. 위 회차와 다른 것은 백엔드 응답 하나뿐이다.
     const f = agentFixture('claude', { phase: 'blocked' })
     f.state.info = { ...f.state.info, status: 'blocked' }
     const explain = vi.spyOn(TerminalBackend.prototype, 'agentExplain')
-      .mockImplementation(async () => { throw new RuntimeError('unsupported', 'corral_terminal refused agent.explain', {}, 'show', 'not_started') })
+      .mockImplementation(async () => { throw new RuntimeError('unsupported', 'corral_terminal refused the explain call', {}, 'show', 'not_started') })
     cleanups.push(() => { explain.mockRestore() })
     const shown = asObject(await f.run('terminal show', {}, 8000))
     expect(nested(shown, 'agent').phase).toBe('blocked')

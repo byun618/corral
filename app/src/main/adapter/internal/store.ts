@@ -17,8 +17,9 @@
 
 import { isRecord, readNumber, readRecord, readString } from '../../../shared/json.js'
 import { EMPTY_SESSION_DIGEST } from '../../../shared/types.js'
-import type { AgentSessionRef, AgentStatus, PaneRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
-import { readAgentStatus, type PushFrame } from './protocol.js'
+import type { AgentSessionRef, AgentState, AgentStatus, BlockedReason, PaneRow, RetainedAgentRow, TabRow, WorkspaceRow } from '../../../shared/types.js'
+import { blockedReason, closeEffect, emptyAgentState, recordAgentTransition, rollupAgentStatus, type CloseEffect } from '../../../shared/agent-state.js'
+import { readAgentStatus, readStateLabels, type PushFrame } from './protocol.js'
 
 type Workspace = {
   workspaceId: string
@@ -54,6 +55,8 @@ type Pane = {
   workspaceId: string
   tabId: string
   agentStatus: AgentStatus
+  /** 사유·관측 시각·완료 시각·이력 (LIFE-456). `agentStatus` 와 짝으로만 갱신한다. */
+  agentState: AgentState
   agent: string | null
   title: string
   cwd: string | null
@@ -63,7 +66,16 @@ type Pane = {
   knownAt: number
 }
 
-export type ApplyResult = { changed: boolean; note: string }
+/** 보존 상한 — 이력 상한과 같은 20 (Orca 198 `stateHistory` 에 맞춘 자리). */
+export const RETAINED_LIMIT = 20
+
+/** 닫힌 pane 의 마지막 기록 — 모양은 경계 타입 하나다(`shared/types.ts`). */
+export type RetainedAgent = RetainedAgentRow
+
+export type ApplyResult = {
+  changed: boolean
+  note: string
+}
 
 /** 재동기 한 판이 실제로 무엇을 고쳤나 — N7 의 근거로 그대로 로그·상태에 실린다. */
 export type ReconcileResult = {
@@ -144,6 +156,48 @@ export class WorkspaceStore {
    * pane id 도 workspace·tab 과 같이 서버 생애 안에서 재사용되지 않으므로 규칙도 같다.
    */
   private closedPanes = new Map<string, number>()
+  /** S15ⓓ — 닫힌 뒤에도 남기는 **마지막 기록**. 최신 우선, `RETAINED_LIMIT` 개. */
+  private retained: RetainedAgent[] = []
+  /**
+   * **blocked 삽화마다 붙는 번호** (F1·F4). pane 이 blocked 로 **들어갈 때** 새 번호를 받고,
+   * 떠나거나 사라지면 지운다. 두 가지를 동시에 푼다:
+   *   · F1 — 사유를 물어야 할 대상을 **상태에서** 뽑는다. 「어느 경로로 들어왔나」가 아니라
+   *     「지금 blocked 인데 사유가 없나」가 기준이라, 부팅 snapshot·재동기·버퍼 재생 어디로
+   *     들어와도 빠지지 않는다. 전에는 live push 전이에만 붙어 있어서 나머지가 영영 공백이었다
+   *   · F4 — 응답에 이 번호를 되돌려 받아 **지난 삽화의 늦은 응답을 버린다**
+   */
+  private blockedEntries = new Map<string, number>()
+  private blockedEntrySeq = 0
+  /**
+   * **사유의 두 입력을 pane 마다 기억한다** (R2-F2 — 「한 입력 규칙」).
+   *
+   * 사유는 `blockedReason({ labels, ruleId })` 한 함수가 정하는데, 두 입력이 **다른 순간에**
+   * 도착한다: `labels` 는 스냅샷·`pane_updated` 봉투에, `ruleId` 는 나중에 오는 `agent.explain`
+   * 응답에 실린다. 라운드 1 은 자리마다 **한쪽만** 먹였다 — `putPane` 은 labels 만,
+   * `explainBlocked` 는 ruleId 만, `agent_status_changed` 는 아무것도. 그래서 labels 가 채운
+   * 사유가 있으면 `blockedNeedingReason` 이 그 pane 을 건너뛰어 **explain 이 영영 안 돌았고**,
+   * CLI 는 둘 다 먹여서 같은 pane 에 다른 답이 나올 수 있었다.
+   *
+   * 여기 모아 두면 **어느 입력이 먼저 오든 항상 둘 다 먹인 값**이 나온다. CLI 도 같은 함수에
+   * 같은 두 입력을 준다 — 그것이 S6 「한 어휘」의 실제 내용이다.
+   */
+  private blockedLabels = new Map<string, Readonly<Record<string, string>>>()
+  /** 그 삽화에 대해 explain 응답을 이미 반영했나 (paneId → entry). */
+  private blockedExplained = new Map<string, number>()
+
+  /** 사유를 정하는 **유일한 자리**. 두 입력을 항상 함께 먹인다 (R2-F2). */
+  private resolveBlockedReason(paneId: string, labels?: Readonly<Record<string, string>> | null): BlockedReason | null {
+    if (labels !== undefined && labels !== null) this.blockedLabels.set(paneId, labels)
+    return blockedReason({
+      labels: this.blockedLabels.get(paneId) ?? null,
+      ruleId: this.blockedRuleIds.get(paneId) ?? null,
+    })
+  }
+  /** explain 이 고른 규칙 id (paneId → ruleId). 삽화가 끝나면 지운다. */
+  private blockedRuleIds = new Map<string, string | null>()
+
+  /** corral 이 스스로 닫은 pane·탭 — 그 닫힘은 보존하지 않는다 (아래 `suppressRetention`). */
+  private retentionSuppressed = new Set<string>()
   private orphans: Orphan[] = []
 
   reset(): void {
@@ -153,6 +207,12 @@ export class WorkspaceStore {
     this.closed.clear()
     this.closedTabs.clear()
     this.closedPanes.clear()
+    this.retained = []
+    this.retentionSuppressed.clear()
+    this.blockedEntries.clear()
+    this.blockedLabels.clear()
+    this.blockedExplained.clear()
+    this.blockedRuleIds.clear()
     this.orphans = []
   }
 
@@ -229,7 +289,8 @@ export class WorkspaceStore {
         keptNewer.push(`workspace:${id}`)
         continue
       }
-      this.dropWorkspace(id, at)
+      // 재동기 정리 — 닫힘을 못 본 자리라 보존하지 않는다 (F5).
+      this.dropWorkspace(id, at, false)
       removed.workspaces.push(id)
     }
     for (const [id, row] of [...this.tabs]) {
@@ -240,6 +301,7 @@ export class WorkspaceStore {
       }
       this.tabs.delete(id)
       this.closedTabs.set(id, at)
+      this.releaseTabSuppression(id)
       removed.tabs.push(id)
     }
     for (const [id, row] of [...this.panes]) {
@@ -248,10 +310,11 @@ export class WorkspaceStore {
         keptNewer.push(`pane:${id}`)
         continue
       }
-      this.panes.delete(id)
       // 탭 삭제와 같은 규칙으로 묘비를 세운다 (H1ⓓ). 위의 `knownAt` 으로 살려 둔 행
       // (keptNewer)은 여기 오지 않는다 — 산 행에 묘비를 세우면 그 행이 영영 못 돌아온다.
-      this.closedPanes.set(id, at)
+      // 재동기 정리는 **사라진 것을 뒤늦게 아는** 자리다. 닫힘을 못 본 채 사진으로만
+      // 아는 것이라 「끝나 있었다」를 주장할 근거가 없다 — 보존하지 않는다.
+      this.forgetPane({ pane: row, at, retain: false })
       removed.panes.push(id)
     }
 
@@ -327,7 +390,8 @@ export class WorkspaceStore {
       case 'workspace_closed': {
         const id = readString(data, 'workspace_id')
         if (id === null) return { changed: false, note: 'workspace_closed 필드 부족' }
-        const had = this.dropWorkspace(id, at)
+        // herdr 가 「닫혔다」고 말해 준 자리다 — 보존한다 (F5 의 반대 갈래).
+        const had = this.dropWorkspace(id, at, true)
         return { changed: had, note: had ? frame.event : 'workspace_closed: 이미 없음(멱등)' }
       }
 
@@ -405,14 +469,14 @@ export class WorkspaceStore {
         const had = this.tabs.delete(id)
         this.closedTabs.set(id, at)
         let orphaned = 0
-        for (const [paneId, pane] of this.panes) {
+        for (const pane of this.panes.values()) {
           if (pane.tabId !== id) continue
-          this.panes.delete(paneId)
           // H1ⓒ — 탭과 함께 죽은 pane 에도 묘비. 탭이 닫혔다는 **관측**에서 바로 따라 나오는
           // 사실이라(닫힌 탭의 pane 은 herdr 에도 없다) 이쪽은 추정이 아니다.
-          this.closedPanes.set(paneId, at)
+          this.forgetPane({ pane, at, retain: true })
           orphaned += 1
         }
+        this.releaseTabSuppression(id)
         // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
         const before = this.orphans.length
         this.orphans = this.orphans.filter((item) => readString(item.value, 'tab_id') !== id)
@@ -433,7 +497,7 @@ export class WorkspaceStore {
           this.workspaces.has(workspaceId) &&
           [...this.tabs.values()].every((item) => item.workspaceId !== workspaceId) &&
           [...this.panes.values()].every((item) => item.workspaceId !== workspaceId)
-        if (workspaceGone) this.dropWorkspace(workspaceId, at)
+        if (workspaceGone) this.dropWorkspace(workspaceId, at, true)
         const changed = had || orphaned > 0 || workspaceGone
         return {
           changed,
@@ -499,7 +563,7 @@ export class WorkspaceStore {
         // 한다 — 닫힘 통보가 create 보다 먼저 오는 구간이 실제로 있기 때문이다.
         this.closedPanes.set(id, at)
         if (pane === null) return { changed: false, note: `${frame.event}: 이미 없음(멱등)` }
-        this.panes.delete(id)
+        this.forgetPane({ pane, at, retain: true })
         const siblings = [...this.panes.values()].filter((item) => item.tabId === pane.tabId).length
         if (siblings > 0) return { changed: true, note: `${frame.event}: 탭에 pane ${siblings}개 남음` }
         /**
@@ -511,11 +575,12 @@ export class WorkspaceStore {
          */
         const tabGone = this.tabs.delete(pane.tabId)
         this.closedTabs.set(pane.tabId, at)
+        this.releaseTabSuppression(pane.tabId)
         const siblingTabs = [...this.tabs.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const siblingPanes = [...this.panes.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const workspaceGone =
           tabGone && siblingTabs === 0 && siblingPanes === 0 && this.workspaces.has(pane.workspaceId)
-        if (workspaceGone) this.dropWorkspace(pane.workspaceId, at)
+        if (workspaceGone) this.dropWorkspace(pane.workspaceId, at, true)
         return {
           changed: true,
           note: tabGone
@@ -558,22 +623,38 @@ export class WorkspaceStore {
     }
   }
 
-  /** workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. 묘비에는 **세운 시각**이 든다. */
-  private dropWorkspace(id: string, at: number): boolean {
+  /**
+   * workspace 하나를 그 아래 것들과 함께 버리고 묘비를 세운다. 묘비에는 **세운 시각**이 든다.
+   *
+   * `retain` 은 **사라짐의 출처**다 (F5). 같은 함수가 두 곳에서 불리는데 뜻이 다르다:
+   *   · `workspace_closed` 이벤트 → `true`. herdr 가 "닫혔다"고 말해 준 것이다
+   *   · 재동기 정리          → `false`. 사진에 없더라는 **뒤늦은 앎**이라 「끝나 있었다」를
+   *     주장할 근거가 없다. 이 갈래가 `true` 로 굳어 있어서 「재동기는 보존하지 않는다」 규칙이
+   *     workspace 째 사라질 때만 뒤집혀 있었다(코디 재현 C4)
+   */
+  private dropWorkspace(id: string, at: number, retain: boolean): boolean {
     const had = this.workspaces.delete(id)
     this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
     this.orphans = this.orphans.filter((item) => item.workspaceId !== id)
+    /**
+     * **pane 을 먼저 잊고 표는 나중에 걷는다.** 순서가 거꾸로면 탭 표가 pane 보존 판정보다
+     * 먼저 지워져, 사용자가 닫은 탭인데도 완료 행이 올라온다 — 탭이 하나뿐인 워크스페이스를
+     * corral 로 닫자 실제로 그렇게 샜다(`s9b-retained-tabclose.txt` r049).
+     */
+    const droppedTabs: string[] = []
     for (const [tabId, tab] of this.tabs) {
       if (tab.workspaceId !== id) continue
       this.tabs.delete(tabId)
       this.closedTabs.set(tabId, at)
+      droppedTabs.push(tabId)
     }
-    for (const [paneId, pane] of this.panes) {
+    for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
-      this.panes.delete(paneId)
-      this.closedPanes.set(paneId, at) // H1ⓑ — workspace 연쇄로 죽은 pane 에도 묘비
+      this.forgetPane({ pane, at, retain }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
+    for (const tabId of droppedTabs) this.releaseTabSuppression(tabId)
+    this.retentionSuppressed.delete(id)
     return had
   }
 
@@ -589,6 +670,7 @@ export class WorkspaceStore {
         title: pane.title,
         agent: pane.agent,
         agentStatus: pane.agentStatus,
+        agentState: pane.agentState,
         cwd: pane.cwd,
         focused: pane.focused,
         agentSession: pane.agentSession,
@@ -609,7 +691,11 @@ export class WorkspaceStore {
         label: tab.label,
         number: tab.number,
         order: tab.order,
-        agentStatus: tab.agentStatus,
+        // **롤업은 corral 이 자기 pane 집합에서 접는다** (S5ⓐ — H3 수정). herdr 가 탭 봉투에
+        // 실어 주는 `agent_status` 는 pane 전이보다 늦게(스냅샷·30초 재동기) 오므로 그것을
+        // 쓰면 같은 순간에 사이드바(pane)와 탭바(tab)가 다른 말을 한다. 아는 pane 이 하나도
+        // 없을 때만 herdr 가 준 값으로 물러선다 — 그때는 접을 재료가 없다.
+        agentStatus: rollupOrFallback(panesByTab.get(tab.tabId)?.map((pane) => pane.agentStatus), tab.agentStatus),
         focused: tab.focused,
         panes: panesByTab.get(tab.tabId) ?? [],
         // **판독은 어댑터의 일이 아니다** (LIFE-366 기준 E1). 트랜스크립트를 읽는 층은 herdr 를
@@ -630,7 +716,12 @@ export class WorkspaceStore {
         workspaceId: workspace.workspaceId,
         label: workspace.label,
         number: workspace.number,
-        agentStatus: workspace.agentStatus,
+        // 같은 규칙으로 한 층 더 접는다 (S5ⓐ) — 이미 접힌 탭 값을 다시 접는다.
+        agentStatus: rollupOrFallback(
+          // **탭 값**을 접는다 (R2-F9) — pane 을 모르는 탭도 자기 값을 갖고 있다.
+          (tabsByWorkspace.get(workspace.workspaceId) ?? []).map((tab) => tab.agentStatus),
+          workspace.agentStatus,
+        ),
         focused: workspace.focused,
         tabs: tabsByWorkspace.get(workspace.workspaceId) ?? [],
       })
@@ -683,7 +774,9 @@ export class WorkspaceStore {
       workspaceId: id,
       label: readString(value, 'label') ?? id,
       number: readNumber(value, 'number') ?? 0,
-      agentStatus: readAgentStatus(value, 'agent_status'),
+      // `pickAgentStatus` 로 읽는다 — `agent_status` 키가 **없는** 봉투가 알던 값을 `unknown`
+      // 으로 지우던 것이 H4 다 (pane 에만 있던 보호를 여기에도 준다, S5ⓑ).
+      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
@@ -712,7 +805,8 @@ export class WorkspaceStore {
       // 목록을 통째로 받은 자리에서는 그 인덱스가 진실이고, 낱개 봉투(tab_created)는
       // 알던 자리를 지키거나 `number` 를 힌트로 삼는다.
       order: order ?? before?.order ?? this.initialTabOrder(value, workspaceId),
-      agentStatus: readAgentStatus(value, 'agent_status'),
+      // H4 — 같은 이유로 여기도 `pickAgentStatus` 다 (S5ⓑ).
+      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
       focused: value['focused'] === true,
       knownAt: before?.knownAt ?? at,
     })
@@ -761,13 +855,26 @@ export class WorkspaceStore {
       return false
     }
     const before = this.panes.get(id) ?? null
+    const nextStatus = pickAgentStatus(value, before?.agentStatus ?? null)
+    this.trackBlockedEntry(id, before?.agentStatus ?? null, nextStatus)
     this.panes.set(id, {
       paneId: id,
       workspaceId,
       tabId,
       // 상태·정체는 pane.agent_status_changed 로도 들어온다. 그쪽이 더 새것이면 그걸 지킨다 —
       // 주석이 약속한 이 보호가 1회차 코드에는 이름(agent)에만 있었다 (수정 1회차 M2).
-      agentStatus: pickAgentStatus(value, before?.agentStatus ?? null),
+      agentStatus: nextStatus,
+      agentState: recordAgentTransition({
+        // `null` = 이 pane 을 이제 막 처음 봤다 (아래 함수 주석 — 이력을 만들지 않는다).
+        previousStatus: before?.agentStatus ?? null,
+        previousState: before?.agentState ?? emptyAgentState(at),
+        nextStatus,
+        // **두 입력을 함께** 먹인다 (R2-F2). explain 이 이미 답한 삽화면 그 ruleId 가 이긴다.
+        blockedReason: this.resolveBlockedReason(id, readStateLabels(value)),
+        observedAt: at,
+        // 스냅샷·`pane_updated` 로 알게 된 값이다 — **진입 시각이 아니다**(`AgentObservedVia`).
+        observedVia: 'snapshot',
+      }),
       agent: pickAgent(value, before?.agent ?? null),
       // **원문 제목을 먼저 읽는다** (LIFE-366 C11ⓑ, 수정 라운드 8). r7 까지는 `title` →
       // `terminal_title_stripped` 순이라 herdr 가 `✳` 를 벗긴 값이 먼저 잡혔고, 그래서 corral 은
@@ -826,9 +933,246 @@ export class WorkspaceStore {
     if (pane.agentStatus === status) {
       return { changed: false, note: `agent_status_changed: 같은 값 (${status})` }
     }
-    this.panes.set(paneId, { ...pane, agentStatus: status })
+    const agentState = recordAgentTransition({
+      previousStatus: pane.agentStatus,
+      previousState: pane.agentState,
+      nextStatus: status,
+      // 이 봉투에는 `state_labels` 가 안 실린다(실측 — `{agent, agent_status, pane_id, workspace_id}`).
+      // 전이가 일어났으면 **지난 삽화의 입력 둘 다** 버린다 (R2-F2) — 들고 가면 옛 화면의
+      // 사유가 새 화면에 남는다. 비운 뒤 같은 함수를 부르므로 결과는 `null` 이고,
+      // 그래야 `blockedNeedingReason` 이 이 pane 을 다시 집는다.
+      blockedReason: (() => {
+        this.blockedLabels.delete(paneId)
+        this.blockedRuleIds.delete(paneId)
+        return this.resolveBlockedReason(paneId)
+      })(),
+      observedAt: Date.now(),
+      // 전이 이벤트다 — 이것만이 **진입 시각에 가까운** 관측이다.
+      observedVia: 'event',
+    })
+    this.trackBlockedEntry(paneId, pane.agentStatus, status)
+    this.panes.set(paneId, { ...pane, agentStatus: status, agentState })
     return { changed: true, note: `agent_status_changed: ${pane.agentStatus} → ${status}` }
   }
+
+  /**
+   * **닫힌 pane 의 마지막 기록을 남긴다** (S15ⓓ — Orca 198 `useRetainedAgents` 대조).
+   *
+   * 198 의 규칙 세 줄을 그대로 옮긴다(`useRetainedAgents.ts:298-309`):
+   *   ① 마지막 상태가 `done` 일 때만 남긴다 — 「끝났는데 아직 안 본 것」만 남길 값이 있다.
+   *      working 중에 죽은 pane 은 완료가 아니고, idle 은 이미 본 것이다
+   *   ② **명시적으로 닫은 것은 남기지 않는다.** 사용자가 직접 닫은 탭을 완료 행으로 되살리면
+   *      닫기가 안 먹은 것처럼 보인다. corral 이 자기 손으로 `pane.close`·`tab.close` 를 쏠 때
+   *      `suppressRetention` 으로 미리 찍어 둔다
+   *   ③ 198 의 `interrupted` 대응은 **공백**이다 — corral 에 그 신호가 없다(LIFE-458 몫).
+   *      그래서 「중단 아님」을 확인하지 못한 채 남긴다는 한계가 결과 문서에 적힌다
+   *
+   * 수명: **메모리에만 둔다.** 재시작하면 사라진다 — 디스크에 남기면 「그 사이에 끝난 턴」을
+   * 확인 못 한 채 완료 행으로 되살리게 되고, 그건 198 도 `restoredUnconfirmed` 로 따로
+   * 막아 둔 자리다. 이 작업은 그 층을 만들지 않는다(S12 범위).
+   */
+  private retain(pane: Pane, at: number): void {
+    // **표는 여기서 지우지 않는다** (R2-F12). 지우는 자리는 `forgetPane` 이다 — 여기서
+    // 지우면 `done` 이 아닌 pane 이 사라질 때 그 표가 **영영 안 걷힌다**. pane id 는 서버
+    // 생애 안에서 재사용될 수 있고, 남은 표는 그 다음 pane 의 완료를 조용히 삼킨다.
+    if (pane.agentStatus !== 'done') return
+    if (this.retentionSuppressed.has(pane.paneId)) return
+    /**
+     * **탭 표는 여기서 지우지 않는다.** 탭 하나에 pane 이 여럿일 수 있고(갈라진 탭),
+     * 첫 pane 이 표를 먹어 치우면 **둘째 pane 이 되살아난다** — 사용자가 닫은 탭에서
+     * 완료 행이 하나 올라오는 것이고, 그건 ② 가 막으려던 바로 그 모양이다.
+     * 표는 탭·워크스페이스가 실제로 없어지는 자리에서 한 번에 걷는다.
+     */
+    if (this.retentionSuppressed.has(pane.tabId)) return
+    if (this.retentionSuppressed.has(pane.workspaceId)) return
+    this.retained = [
+      { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
+        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
+      ...this.retained.filter((row) => row.paneId !== pane.paneId),
+    ].slice(0, RETAINED_LIMIT)
+  }
+
+  /**
+   * pane 의 상태가 정해질 때마다 blocked 삽화 번호를 맞춘다 (F1·F4).
+   *
+   * **pane 을 쓰는 모든 자리가 여기를 지난다** — snapshot·재동기·`pane_created/updated`·
+   * 전이 이벤트. 진입 경로마다 따로 붙이면 꼭 한 군데가 빠지는데, 실제로 그렇게 빠져서
+   * 부팅 때 이미 blocked 이던 pane 은 사유를 영영 못 받았다(F1).
+   */
+  private trackBlockedEntry(paneId: string, previousStatus: AgentStatus | null, nextStatus: AgentStatus): void {
+    if (nextStatus !== 'blocked') {
+      this.blockedEntries.delete(paneId)
+      this.blockedLabels.delete(paneId)
+      this.blockedExplained.delete(paneId)
+      this.blockedRuleIds.delete(paneId)
+      return
+    }
+    // 이미 blocked 였고 번호도 있으면 **같은 삽화**다 — 번호를 바꾸지 않는다(같은 값 재관측).
+    if (previousStatus === 'blocked' && this.blockedEntries.has(paneId)) return
+    this.blockedEntrySeq += 1
+    this.blockedEntries.set(paneId, this.blockedEntrySeq)
+  }
+
+  /**
+   * **사유를 아직 못 받은 blocked pane 들** (F1). 호출자(link)가 이 목록을 보고 한 번씩 묻는다.
+   *
+   * 목록이 상태에서 나오므로 폴링이 아니다: 사유가 채워지면 **그 다음 호출부터 빠진다**.
+   * 물어봤는데 못 받은 것(실패·빈 응답)은 호출자가 삽화 번호로 기억해 다시 묻지 않는다 —
+   * 「실패」와 「아직 안 물어봄」을 가르는 자리가 거기다.
+   */
+  blockedNeedingReason(): Array<{ paneId: string; entry: number }> {
+    const rows: Array<{ paneId: string; entry: number }> = []
+    for (const [paneId, entry] of this.blockedEntries) {
+      const pane = this.panes.get(paneId)
+      if (pane === undefined || pane.agentStatus !== 'blocked') continue
+      /**
+       * **「사유가 비었나」가 아니라 「이 삽화에 explain 이 답했나」로 가른다** (R2-F2).
+       * 전에는 사유가 차 있으면 건너뛰었는데, `state_labels` 가 먼저 사유를 채우면 그 pane 은
+       * explain 을 **영영 못 받았다** — labels 가 지은 사유는 교정될 기회가 없었다.
+       * (오늘 세 provider 의 labels 는 비어 와서 증상이 안 보일 뿐, 규칙이 틀려 있었다.)
+       */
+      if (this.blockedExplained.get(paneId) === entry) continue
+      rows.push({ paneId, entry })
+    }
+    return rows
+  }
+
+  /** 탭이 실제로 사라졌다 — 그 탭에 걸어 둔 억제 표를 **한 번에** 걷는다. */
+  private releaseTabSuppression(tabId: string): void {
+    this.retentionSuppressed.delete(tabId)
+  }
+
+  /**
+   * **pane 하나를 잊는다** — 사라짐을 알게 된 **모든 경로**가 여기를 지난다.
+   *
+   * pane 이 없어지는 길은 넷이다. **묘비는 넷 다 찍고, 보존은 셋만 한다** — `retain` 을
+   * 호출자가 그 자리에서 밝힌다. 숨은 기본값을 두면 길이 하나 늘 때마다 조용히 한쪽으로
+   * 붙는데, 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
+   *
+   *   · `pane_closed`·`pane_exited`  보존한다 — pane 하나가 끝나고 사라진 자리다
+   *   · `tab_closed`                 보존한다 — 탭을 닫으면 herdr 는 **`tab_closed` 한 건만**
+   *     주고 `pane_closed` 를 안 준다(위 G1 주석). 에이전트 pane 은 탭 하나에 하나씩 살기
+   *     때문에 **이 길이 완료가 사라지는 흔한 길이다.** 전에는 여기서 기록이 통째로 날아갔다
+   *   · workspace 연쇄               보존한다 — **탭이 하나뿐이면 같은 손짓이 이 길로 온다**
+   *   · 재동기 정리                  보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
+   *     「끝나 있었다」를 주장할 근거가 없다
+   *
+   * **치움과 완료를 가르는 것은 이벤트 종류가 아니라 억제 표다.** 한때 `workspace_closed` 를
+   * 「접는 것은 치움이니 보존 안 함」으로 뒀는데, 네이티브에서 탭이 **하나뿐인** 워크스페이스의
+   * 탭을 닫자 `workspace_closed` 가 먼저 도착하고 `tab_closed` 는 멱등 무시로 왔다 —
+   * 같은 손짓(탭 닫기)이 탭 수에 따라 다르게 판정됐다 (`raw/claude/s9/s9b-retained-tabclose.txt`).
+   * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
+   * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
+   *
+   * **「herdr 가 workspace 를 먼저 보낸다」가 아니다** (F17 정정). v0.9.0 소스는 그 반대로
+   * 낸다 — `src/app/api/tabs.rs:248-261` 이 `TabClosed` → `WorkspaceClosed` 순으로 emit 하고
+   * 같은 파일 테스트가 그 순서를 검증한다. **도착 순서를 정하는 것은 corral 자신의 구독 목록**
+   * 이다: 서버가 구독 항목을 클라이언트가 적은 순서대로 한 바퀴에 한 건씩 흘리기 때문에
+   * (`src/api/server.rs:749-753`), `SUBSCRIPTION_TYPES` 에서 앞에 적힌 쪽이 먼저 온다.
+   * 목록 순서만 뒤집어 같은 닫기를 동시에 받아 그대로 뒤집히는 것을 실측했다
+   * (`raw/claude/s9-r1/08-f17-retained-and-order.md` §3).
+   * → **보존 판정이 도착 순서에 기대면 안 된다.** 억제 표는 순서와 무관하다.
+   */
+  private forgetPane(input: { pane: Pane; at: number; retain: boolean }): void {
+    const { pane, at, retain } = input
+    if (retain) this.retain(pane, at)
+    // pane 표는 그 pane 이 쓰고 버린다 — **상태와 무관하게** 걷는다 (R2-F12).
+    // 탭·workspace 표는 여기서 건드리지 않는다: 갈라진 탭이면 둘째 pane 이 아직 써야 한다.
+    this.retentionSuppressed.delete(pane.paneId)
+    this.blockedEntries.delete(pane.paneId)
+    this.blockedLabels.delete(pane.paneId)
+    this.blockedExplained.delete(pane.paneId)
+    this.blockedRuleIds.delete(pane.paneId)
+    this.panes.delete(pane.paneId)
+    this.closedPanes.set(pane.paneId, at)
+  }
+
+  /**
+   * **corral 이 스스로 닫는 중이다** — 그 pane·탭의 닫힘은 보존하지 않는다 (S15ⓓ ②).
+   * `pane.close`·`tab.close` 를 쏘기 **전에** 부른다. 닫힘 통보가 안 와도 새는 것이 없도록
+   * 보존 시점에 표를 지운다.
+   */
+  suppressRetention(id: string): void {
+    this.retentionSuppressed.add(id)
+  }
+
+  /**
+   * **찍은 억제 표를 되돌린다** (F6) — 닫기가 **확정 거절**되거나 실패했을 때 부른다.
+   *
+   * 표를 찍는 것은 「지금 닫는 중이다」는 약속인데, 닫기가 거절되면 그 약속이 거짓이 된다.
+   * 그대로 두면 그 pane 이 **나중에 진짜로 끝나서 사라질 때** 완료 기록을 조용히 삼킨다.
+   *
+   * **timeout 은 부르지 않는다.** 결과 불명이라 닫혔을 수도 있고, 그때 표를 걷으면 사용자가
+   * 닫은 것이 완료 행으로 되살아난다. 둘 중 덜 나쁜 쪽을 고른다 — 「끝난 것 하나를 못 남김」이
+   * 「사용자가 닫은 것이 되살아남」보다 낫다. 호출자는 이 구분을 로그에 남긴다.
+   */
+  releaseSuppression(id: string): void {
+    this.retentionSuppressed.delete(id)
+  }
+
+  /**
+   * 닫기 요청이 끝난 뒤 **억제 표를 걷을지 남길지** 한 자리에서 정한다 (R2-F3).
+   *
+   * GUI(`withRetentionSuppressed`)와 CLI(`terminal close`)가 **여기를 같이 지난다.**
+   * 전에는 두 쪽이 따로 판단해서 타임아웃을 **반대로** 처리했다 — GUI 는 남기고 CLI 는 걷었다.
+   * 분류는 `closeEffect` 한 함수가 하고, 이 메서드는 그 답대로 표만 만진다.
+   */
+  settleSuppression(input: { ids: readonly string[]; code?: string | null; sent: boolean }): {
+    effect: CloseEffect
+    released: readonly string[]
+    kept: readonly string[]
+  } {
+    const effect = closeEffect({ code: input.code ?? null, sent: input.sent })
+    if (effect === 'refused') {
+      for (const id of input.ids) this.retentionSuppressed.delete(id)
+      return { effect, released: [...input.ids], kept: [] }
+    }
+    return { effect, released: [], kept: [...input.ids] }
+  }
+
+  /** 그 id 에 억제 표가 걸려 있나 (테스트·진단용 — 표는 「누가 닫았나」의 유일한 축이다). */
+  isSuppressed(id: string): boolean {
+    return this.retentionSuppressed.has(id)
+  }
+
+  /** 보존된 마지막 기록 — 최신 우선. */
+  retainedRows(): readonly RetainedAgent[] {
+    return this.retained
+  }
+
+  /**
+   * `agent.explain` 이 늦게 물어다 준 **blocked 사유**를 붙인다 (LIFE-456 S3).
+   *
+   * 응답이 오는 사이에 그 pane 이 blocked 를 떠났을 수 있다 — 그때는 **버린다**. 지나간
+   * 상태의 사유를 지금 상태에 붙이면 화면이 거짓말을 한다. 상태 자체는 건드리지 않으므로
+   * 관측 시각·이력도 그대로다(같은 값 갈래를 타고 사유만 갈린다).
+   */
+  applyBlockedRule(input: { paneId: string; entry: number; ruleId: string | null }): ApplyResult {
+    const pane = this.panes.get(input.paneId)
+    if (pane === undefined) return { changed: false, note: `blocked_reason: 모르는 pane (${input.paneId})` }
+    if (pane.agentStatus !== 'blocked') {
+      return { changed: false, note: `blocked_reason: 이미 blocked 가 아니다 (${pane.agentStatus})` }
+    }
+    /**
+     * **F4 — 지난 삽화의 응답은 버린다.** 상태가 blocked → working → blocked 로 돌아오면
+     * 값은 다시 `blocked` 라 위 검사를 통과한다. 그때 먼저 보낸 요청의 늦은 응답이 도착하면
+     * **새 삽화의 사유를 옛 화면의 것으로 덮는다**. 삽화 번호가 그 둘을 가른다.
+     */
+    const current = this.blockedEntries.get(input.paneId)
+    if (current !== input.entry) {
+      return { changed: false, note: `blocked_reason: 지난 진입의 응답 (${input.entry} ≠ ${String(current)})` }
+    }
+    // 답을 받았다는 사실은 **사유가 바뀌었든 아니든** 기록한다 — 안 그러면 매 훑기마다 다시 묻는다.
+    this.blockedExplained.set(input.paneId, input.entry)
+    this.blockedRuleIds.set(input.paneId, input.ruleId)
+    const reason = this.resolveBlockedReason(input.paneId)
+    if (pane.agentState.blockedReason === reason) {
+      return { changed: false, note: `blocked_reason: 같은 값 (${String(reason)})` }
+    }
+    this.panes.set(input.paneId, { ...pane, agentState: { ...pane.agentState, blockedReason: reason } })
+    return { changed: true, note: `blocked_reason: ${String(pane.agentState.blockedReason)} → ${String(reason)}` }
+  }
+
 
   /**
    * 보류함에 담는다. 담을 때마다 창 지난 것을 턴다 — 별도 타이머를 두지 않기 위해서다.
@@ -875,6 +1219,22 @@ export class WorkspaceStore {
  * `agent_status` 를 안 싣고 온 `pane_updated` 한 건이 칩을 `막힘 → 미상` 으로 지웠다
  * (리뷰 부록 C). 키가 없으면 herdr 가 그 필드를 말하지 않은 것이다 — 알던 값을 지킨다.
  */
+/**
+ * 아래 층의 값들을 한 값으로 접는다 (S5ⓐ). **접을 재료가 없을 때만** herdr 가 준 값으로
+ * 물러선다 — 재료가 없는데 `unknown` 을 만들어 내면 갓 열린 탭이 깜빡인다.
+ *
+ * **워크스페이스는 탭 값을 접는다. pane 을 직접 접지 않는다** (R2-F9).
+ * 전에는 워크스페이스가 `tabs.flatMap(t => t.panes)` 로 **pane 을 모아** 접었는데, corral 이
+ * pane 을 아직 모르는 탭은 그 목록에 **아무것도 안 넣는다**. 그 탭은 자기 자리에서 herdr
+ * 값(`blocked`)으로 물러서 화면에 blocked 로 뜨는데, 워크스페이스는 그 탭이 없는 셈 치고
+ * `idle` 을 냈다 — 같은 화면의 두 줄이 서로 다른 말을 했다. 탭이 이미 자기 몫을 접었으므로
+ * 워크스페이스는 **그 결과를 접으면** 두 층이 같은 재료를 본다.
+ */
+function rollupOrFallback(statuses: readonly AgentStatus[] | undefined, fallback: AgentStatus): AgentStatus {
+  if (statuses === undefined || statuses.length === 0) return fallback
+  return rollupAgentStatus(statuses)
+}
+
 function pickAgentStatus(source: Record<string, unknown>, fallback: AgentStatus | null): AgentStatus {
   if ('agent_status' in source) return readAgentStatus(source, 'agent_status')
   return fallback ?? 'unknown'

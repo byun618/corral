@@ -4,6 +4,7 @@ import type { TerminalDesktop } from '../runtime/terminal/index.js'
 import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
+import { withRetentionSuppressed } from './close-retention.js'
 import { matchBinding } from '../shared/keybindings.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -226,6 +227,12 @@ function currentState(): AppState {
     terminal: stream.terminalState(),
     terminalGroups: stream.groupStates(),
     integrations,
+    /**
+     * 닫힌 뒤에도 남긴 **마지막 완료 기록** (LIFE-456 S15ⓓ). 산 pane 목록(`repos`)과 섞지
+     * 않는다 — 섞으면 화면이 없는 pane 에 입력을 보내려 든다. 표시는 448·449 몫이고,
+     * 여기서는 렌더러가 고를 수 있게 **공급만** 한다.
+     */
+    retainedAgents: link.store.retainedRows(),
     // 진단 표시는 개발·계측 실행에서만. 패키징된 앱의 평시 화면에는 안 나온다.
     diagnostics: !app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined,
     // 셸 탭 폴백이 경로를 접는 데 쓴다 (C9·C11ⓒ). `os.homedir()` 은 `HOME` 을 따르므로 격리
@@ -588,7 +595,13 @@ async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Pro
     if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
   }
 
-  const outcome = await closeTab(socketPath, input.tabId)
+  // S15ⓓ ② — 사용자가 **명시적으로** 닫는 탭이다. 그 닫힘은 완료 행으로 되살리지 않는다.
+  const outcome = await withRetentionSuppressed({
+    store: link.store,
+    ids: [input.tabId],
+    what: 'tab',
+    run: hooks => closeTab(socketPath, input.tabId, hooks),
+  })
   if (outcome.outcome === 'closed') {
     scheduleEmit()
     return { outcome: 'closed' }
@@ -637,7 +650,13 @@ async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?
     if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
   }
 
-  const outcome = await closeWorkspace(socketPath, input.workspaceId)
+  // S15ⓓ ② — 사용자가 **명시적으로** 접는 워크스페이스다. 완료 행으로 되살리지 않는다.
+  const outcome = await withRetentionSuppressed({
+    store: link.store,
+    ids: [input.workspaceId],
+    what: 'workspace',
+    run: hooks => closeWorkspace(socketPath, input.workspaceId, hooks),
+  })
   if (outcome.outcome === 'closed') {
     scheduleTree()
     scheduleEmit()
@@ -759,6 +778,17 @@ const workspaceDesktop: WorkspaceDesktop = {
 const terminalDesktop: TerminalDesktop = {
   available: () => !!window && !window.isDestroyed() && !window.webContents.isLoadingMainFrame(),
   async changed() { await link.resync('terminal-cli'); await rebuildTree() },
+  // F6 — CLI `terminal close` 도 **명시 종료**다. GUI 와 같은 표를 찍어야 사용자가 CLI 로
+  // 닫은 pane 이 창에서 완료 행으로 되살아나지 않는다.
+  retention: {
+    suppress: (id) => { link.store.suppressRetention(id) },
+    release: (id) => { link.store.releaseSuppression(id) },
+    settle: (input) => {
+      const settled = link.store.settleSuppression(input)
+      log('retention.suppress.settled', { what: 'cli terminal close', ...settled, code: input.code ?? null, sent: input.sent })
+      return { effect: settled.effect }
+    },
+  },
   async reveal(target, context) {
     const client = window
     if (!client || client.isDestroyed() || currentSocketPath() !== process.env.CORRAL_BACKEND_SOCKET) throw new RuntimeError('ui_unavailable', 'GUI no longer addresses this backend')
@@ -1312,7 +1342,13 @@ app.whenReady().then(async () => {
     if (!fromOurWindow(event)) return { ok: false, error: '허용되지 않은 창' }
     const socketPath = currentSocketPath()
     if (socketPath === null) return { ok: false, error: '세션이 없다' }
-    return paneResult(await closePane({ socketPath, paneId: input.paneId }))
+    // S15ⓓ ② — 명시적 pane 닫기도 같다.
+    return paneResult(await withRetentionSuppressed({
+      store: link.store,
+      ids: [input.paneId],
+      what: 'pane',
+      run: hooks => closePane({ socketPath, paneId: input.paneId, onSent: hooks.onSent }),
+    }))
   })
   // 인접 pane 은 **서버가 계산한다**(F2-4). corral 은 id 만 받아 자기 연결의 pane.focus 로 옮긴다.
   ipcMain.handle(

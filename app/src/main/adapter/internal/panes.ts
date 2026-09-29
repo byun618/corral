@@ -129,8 +129,9 @@ export async function zoomPane(input: {
 }
 
 /** pane 을 닫는다 (F2-5). 마지막 pane 이면 herdr 가 탭째 닫는다 — corral 이 따로 판정하지 않는다. */
-export async function closePane(input: { socketPath: string; paneId: string }): Promise<PaneOutcome> {
-  const response = await request(input.socketPath, 'pane.close', { pane_id: input.paneId }, { reason: 'pane-close' })
+export async function closePane(input: { socketPath: string; paneId: string; onSent?: () => void }): Promise<PaneOutcome> {
+  // R3-F1 — `onSent` 는 「바이트가 나갔다」를 호출부에 그대로 넘긴다 (`lifecycle.ts` 의 `CloseHooks` 와 같은 뜻).
+  const response = await request(input.socketPath, 'pane.close', { pane_id: input.paneId }, { reason: 'pane-close', onSent: input.onSent })
   return outcomeOf({ response, event: 'pane.close', detail: { paneId: input.paneId } })
 }
 

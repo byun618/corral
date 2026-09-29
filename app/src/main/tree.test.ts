@@ -3,13 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type PaneRow, type WorkspaceRow } from '../shared/types.js'
+import { emptyAgentState } from '../shared/agent-state.js'
 vi.mock('./adapter/index.js', () => ({ readOpenWorkspaces: vi.fn() }))
 import { attachDigests, collectSessionRefs } from './tree.js'
 import { readSessionDigests } from './transcript.js'
 
 function pane(id: string, sessionId: string | null): PaneRow {
   return { paneId: id, tabId: 't1', workspaceId: 'w1', title: id, agent: sessionId && 'claude',
-    agentStatus: 'idle', cwd: null, focused: false, digest: EMPTY_SESSION_DIGEST,
+    agentStatus: 'idle', agentState: emptyAgentState(0), cwd: null, focused: false, digest: EMPTY_SESSION_DIGEST,
     agentSession: sessionId ? { kind: 'id', agent: 'claude', source: 'herdr:claude', id: sessionId } : null }
 }
 function workspace(panes: PaneRow[]): WorkspaceRow {

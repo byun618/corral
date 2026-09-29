@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import { elapsedLabel, paneSecondaryLine, secondaryLine, sessionRowText } from './session-activity.js'
+import { emptyAgentState } from '../../shared/agent-state.js'
 
 function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): PaneRow {
   // `??` 를 안 쓴다 — `agent: null`(셸 pane)을 「안 줬다」와 구분해야 한다.
@@ -17,7 +18,7 @@ function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): Pane
     workspaceId: 'wA',
     title: '',
     agent,
-    agentStatus: input.agentStatus ?? 'idle',
+    agentStatus: input.agentStatus ?? 'idle', agentState: emptyAgentState(0),
     cwd: null,
     focused: false,
     agentSession: null,

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type PaneRow, type WorktreeRow } from '../../../shared/types.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
+import { emptyAgentState } from '../../../shared/agent-state.js'
 
 const captured = vi.hoisted(() => {
   const rows: Array<{ pane: PaneRow; onSelect: () => void; onClose: () => void }> = []
@@ -20,7 +21,7 @@ vi.mock('./SessionRow.js', async (importOriginal) => {
 
 function pane(id: string, agent: string | null): PaneRow {
   return {
-    paneId: id, tabId: 't1', workspaceId: 'w1', title: id, agent, agentStatus: 'idle',
+    paneId: id, tabId: 't1', workspaceId: 'w1', title: id, agent, agentStatus: 'idle', agentState: emptyAgentState(0),
     cwd: null, focused: false, agentSession: null,
     digest: { ...EMPTY_SESSION_DIGEST, providerTitle: `title-${id}`,
       activity: { state: 'text', text: `message-${id}`, at: null }, lastActivityAt: id === 'p1' ? 0 : 60000 },

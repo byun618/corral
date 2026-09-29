@@ -4,6 +4,7 @@
 // 봉투는 {"event":"pane_created","data":{…}}.
 
 import { isRecord, readRecord, readString } from '../../../shared/json.js'
+import { parseAgentStatus } from '../../../shared/agent-state.js'
 import type { AgentStatus } from '../../../shared/types.js'
 import { log } from '../../log.js'
 
@@ -12,6 +13,14 @@ import { log } from '../../log.js'
  * 확인한 것만** 넣는다. 하나라도 모르는 타입을 섞으면 요청 전체가 거부된다 (스파이크 제약 4).
  *
  * R1 은 worktree 열림/닫힘도 그린다 — `worktree.*` 3종이 그래서 들어 있다.
+ *
+ * **이 배열의 순서가 푸시 도착 순서다** (F17 실측). herdr 서버는 구독 항목마다 커서를 따로
+ * 두고 **여기 적힌 순서대로** 한 바퀴에 한 건씩 흘린다(`src/api/server.rs:749-753`). 그래서
+ * 마지막 탭을 닫으면 서버가 `TabClosed` → `WorkspaceClosed` 로 내는데도
+ * (`src/app/api/tabs.rs:248-261`) corral 에는 `workspace.closed` 가 먼저 도착한다 —
+ * 이 목록에서 앞에 있기 때문이다. 목록 순서만 뒤집은 두 구독으로 같은 닫기를 동시에 받아
+ * 도착 순서가 그대로 뒤집히는 것을 실측했다(`raw/claude/s9-r1/08-f17-retained-and-order.md`).
+ * **재정렬하면 도착 순서가 조용히 바뀐다** — 순서에 기대는 판정을 새로 만들지 말 것.
  */
 export const SUBSCRIPTION_TYPES: readonly string[] = [
   'workspace.created',
@@ -81,28 +90,33 @@ export type PushFrame = { event: string; data: Record<string, unknown> }
 /**
  * herdr 의 상태 문자열을 **corral 의** AgentStatus 로 옮긴다 (경계를 건너는 건 이쪽이다).
  *
- * herdr 0.9.0 스키마의 `AgentStatus` 는 다섯이다 — idle·working·blocked·**done**·unknown.
- * corral 이 칩으로 구분하는 것은 넷이고 `done` 은 없다 (`shared/types.ts` 에 사유).
- * 그래서 `done` 은 **여기서 미상으로 옮기고 로그에 남긴다** (수정 1회차 M7).
- * 조용히 삼키지 않는 이유: 0.9.0 은 `done` 을 만들지 않지만 스키마는 허용한다 —
- * 언젠가 실제로 오면 그 사실이 로그에 있어야 칩을 늘릴 근거가 된다.
+ * **다섯 값을 전부 산다** (LIFE-456). 전에는 `done` 을 미상으로 접고 로그만 남겼는데,
+ * 그 근거였던 "0.9.0 은 done 을 만들지 않는다" 가 거짓이었다 — 그건 `pane.report_agent` 의
+ * **입력** 스키마였고 herdr 가 파생해 내보내는 출력은 done 을 낸다(`shared/types.ts` 참조).
+ * 사용자 로그의 `agent_status.unmapped` 11,463 건이 전부 `wire:"done"` 이었던 것이 그 증거다.
+ *
+ * 이제 이 로그에는 **정말 모르는 값만** 남는다 — 그래서 로그가 다시 신호가 된다.
  */
 export function readAgentStatus(source: Record<string, unknown>, key: string): AgentStatus {
   const value = source[key]
-  if (typeof value !== 'string') return 'unknown'
-  switch (value) {
-    case 'idle':
-      return 'idle'
-    case 'working':
-      return 'working'
-    case 'blocked':
-      return 'blocked'
-    case 'unknown':
-      return 'unknown'
-    default:
-      log('agent_status.unmapped', { wire: value, key })
-      return 'unknown'
-  }
+  const parsed = parseAgentStatus(value)
+  if (parsed !== null) return parsed
+  if (typeof value === 'string') log('agent_status.unmapped', { wire: value, key })
+  return 'unknown'
+}
+
+/**
+ * herdr `state_labels` 를 읽는다 — blocked 사유의 입력 (S3).
+ *
+ * 키가 없으면 `null`(= herdr 가 말하지 않았다)이고 빈 객체와 구분하지 않는다: 둘 다
+ * 「사유 없음」이다. **실측상 claude·codex·grok 에서는 항상 이 자리가 비어 온다.**
+ */
+export function readStateLabels(source: Record<string, unknown>): Record<string, string> | null {
+  const raw = source['state_labels']
+  if (!isRecord(raw)) return null
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) if (typeof value === 'string') out[key] = value
+  return Object.keys(out).length === 0 ? null : out
 }
 
 /**

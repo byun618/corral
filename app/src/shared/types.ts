@@ -10,15 +10,85 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 /**
  * corral 이 **칩으로 구분하는** 에이전트 상태. herdr 와 값이 겹치지만 corral 의 정의다.
  *
- * `done` 이 여기 없는 이유 (수정 1회차 M7 — 기준 N8 은 "노출한 것 전부를 대조" 다):
- *   · herdr 0.9.0 스키마의 `AgentStatus`(이벤트·스냅샷·응답)에는 `done` 이 **있다**
- *   · `pane.report_agent` 가 받는 `PaneAgentState` 에는 **없다** — 그래서 그 거절은 스키마와 일치한다
- *   · 설치된 탐지 매니페스트(remote/*.toml)가 쓰는 state 는 blocked·idle·unknown·working 넷뿐이다
- * 즉 0.9.0 은 `done` 을 **만들지 않는다**. 만들 수 없는 값을 칩으로 노출하면 그 칩은 영영
- * 오라클과 대조할 수 없다. 어댑터는 `done` 이 와도 읽을 수 있고(미상으로 옮기고 로그에 남긴다),
- * 실제로 오기 시작하면 그때 칩을 늘린다 (이월).
+ * **`done` 이 여기 있다** (LIFE-456 — 그 전 주석의 판단을 실측으로 뒤집었다).
+ * 옛 주석은 "0.9.0 은 done 을 만들지 않는다" 였고 근거는 `pane.report_agent` 가 받는
+ * `PaneAgentState` 에 done 이 없다는 것이었다. 그건 **입력** 스키마다 — herdr 가 파생해
+ * 내보내는 **출력**과 다른 것이었다. 실측(`raw/claude/u1/positive-control.txt`):
+ * 배경 pane 에 `report-agent --state idle` 을 넣으면 herdr 가 `done` 을 내놓는다.
+ * 사용자 corral 로그의 `agent_status.unmapped` 11,463 건도 전부 `wire:"done"` 이었다.
+ *
+ * 뜻: `done` = **idle 인데 아직 그 pane 을 안 봤다**. 보면 herdr 가 `idle` 로 내린다
+ * (seen 은 herdr 가 pane 별로 들고 있고, corral 의 endpoint `pane.focus` 가 그것을 찍는다 —
+ * 실측 `raw/claude/u1/u1-result-r004-polled.json`, done→idle 535ms).
  */
-export type AgentStatus = 'idle' | 'working' | 'blocked' | 'unknown'
+export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown'
+
+/**
+ * `blocked` 의 사유.
+ *
+ * **출처는 `agent.explain` 의 규칙 id 다**(`shared/agent-state.ts` 의 `pickBlockedRule`).
+ * herdr 0.9.0 은 claude·codex·grok 의 `pane.agent_status_changed`·스냅샷 봉투에 `state_labels`
+ * 를 **안 싣는다**(실측 `raw/claude/s3/s3-state-labels-findings.md`) — 그래서 봉투만 보면 늘
+ * 비어 있고, corral 은 blocked 인 pane 마다 explain 을 한 번 물어 이 칸을 채운다.
+ *
+ * `null` 과 `'unknown'` 은 다르다: `null` = herdr 가 아무 말도 안 했다(공백),
+ * `'unknown'` = 말은 했는데 그 규칙이 권한·질문을 안 가른다. 화면이 그 둘을 구분할 수 있어야
+ * 「출처에 없다」와 「우리가 못 읽는다」가 같은 모양으로 안 보인다.
+ */
+export type BlockedReason = 'trust' | 'login' | 'permission' | 'question' | 'update' | 'unknown'
+
+/**
+ * corral 이 그 상태를 **어떻게** 알게 됐나.
+ *
+ * `snapshot` 은 **진입 시각이 아니다**: 부팅·30초 재동기·재연결 뒤의 첫 스냅샷은 "지금 이 값이더라"
+ * 일 뿐이고 그 상태로 언제 들어갔는지는 모른다. herdr 0.9.0 스키마에 에이전트 상태 **시각** 필드가
+ * 없어서(`state_change_seq` 뿐 — `raw/coordinator/c9-herdr-schema-time-fields.txt`) 진입 시각은
+ * 애초에 공급할 수 없다. 화면이 경과 시간을 그릴 때 이 칸을 보고 "이건 관측 시각이지 진입 시각이
+ * 아니다" 를 말할 수 있어야 한다 (표시 선택은 LIFE-448 몫).
+ */
+export type AgentObservedVia = 'event' | 'snapshot'
+
+/**
+ * 닫힌 pane 하나의 **마지막 기록** (S15ⓓ). `PaneRow` 와 모양이 겹치지만 **다른 것**이다 —
+ * 이 pane 은 더 이상 없다. 그래서 `focused`·`cwd`·`digest` 처럼 "지금" 을 말하는 칸이 없다.
+ */
+export type RetainedAgentRow = {
+  paneId: string
+  tabId: string
+  workspaceId: string
+  title: string
+  agent: string | null
+  agentStatus: AgentStatus
+  agentState: AgentState
+  /** corral 이 그 pane 을 잃은 시각. */
+  retainedAt: number
+}
+
+/** 지나간 상태 전이 한 칸 (S15ⓒ 이력). */
+export type AgentTransition = {
+  status: AgentStatus
+  /** corral 이 그 상태를 **처음 관측한** 시각. */
+  observedAt: number
+  observedVia: AgentObservedVia
+}
+
+/**
+ * pane 하나의 상태 **부가 정보** (LIFE-456 S1·S15).
+ *
+ * `status` 는 여기 **없다** — `PaneRow.agentStatus` 하나가 그 값의 자리다. 두 군데 두면 갈린다.
+ */
+export type AgentState = {
+  /** S3 — `agent.explain` 이 채운다. `null` = 아무 말도 없었다, `'unknown'` = 갈래가 없다. */
+  blockedReason: BlockedReason | null
+  /** **지금 상태**를 corral 이 처음 관측한 시각. 같은 값이 다시 와도 갱신하지 않는다. */
+  observedAt: number
+  observedVia: AgentObservedVia
+  /** S15ⓑ 완료 시각 — 마지막으로 `done` 에 들어간 관측 시각 (Orca `lastEnteredDoneAt` 대응). */
+  enteredDoneAt: number | null
+  /** S15ⓒ 지나간 전이 **최신 우선**, 지금 상태는 빼고 최대 `AGENT_HISTORY_LIMIT` 개
+   *  (상수는 `shared/agent-state.ts` — 이 파일은 타입만 둔다). */
+  history: readonly AgentTransition[]
+}
 
 /**
  * herdr 세션 하나 — **렌더러가 보는 만큼**.
@@ -100,6 +170,8 @@ export type PaneRow = {
   title: string
   agent: string | null
   agentStatus: AgentStatus
+  /** 상태의 부가 정보 — 사유·관측 시각·완료 시각·이력 (LIFE-456 S1·S15). */
+  agentState: AgentState
   cwd: string | null
   focused: boolean
   /** 에이전트가 밝힌 세션 참조. 셸 탭·통합 미설치·보고 전에는 null. */
@@ -535,6 +607,13 @@ export type AppState = {
    * 화면은 "미설치" 와 "아직 모름" 을 구분해야 하므로 빈 배열을 미설치로 읽지 않는다.
    */
   integrations: IntegrationRow[]
+  /**
+   * 닫힌 pane 의 **마지막 완료 기록** (LIFE-456 S15ⓓ, 최신 우선).
+   *
+   * 산 pane 목록과 **섞지 않는다** — 섞으면 화면이 이미 없는 pane 에 입력을 보내려 든다.
+   * 메모리에만 있고 앱을 다시 켜면 비어 있다(그 사이에 끝난 턴을 확인할 길이 없어서다).
+   */
+  retainedAgents: readonly RetainedAgentRow[]
   /** 개발·계측 실행에서만 켜지는 진단 표시. */
   diagnostics: boolean
   /**

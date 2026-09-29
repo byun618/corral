@@ -11,6 +11,7 @@ import { isRecord } from '../../shared/json.js'
 import { WorktreeMetadata, worktreeSelect } from '../workspace/model.js'
 import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
+import { blockedReason, pickBlockedRule } from '../../shared/agent-state.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
   agentName, bodyIdentity, captureCursor, classifyCount, codexCandidates, codexRolloutFiles, countSubmissions,
@@ -23,6 +24,23 @@ export interface TerminalDesktop {
   available(): boolean
   changed(): Promise<void>
   reveal(target: TerminalIdentity, context: CommandContext): Promise<void>
+  /**
+   * The GUI's retained-completions ledger (LIFE-456 S15ⓓ / fix-r1 F6).
+   *
+   * `terminal close` is an explicit close just like the GUI's own, so it must mark the pane the
+   * same way — otherwise closing a finished agent from the CLI resurrects it as a completion row
+   * in the window. Optional because a headless runtime (`corral serve`) keeps no such ledger:
+   * there is nothing to suppress, not a suppression we skipped.
+   */
+  /**
+   * 억제 표(누가 닫았나). `settle` 은 **닫기가 끝난 뒤** 표를 걷을지 남길지 GUI 와 **같은
+   * 분류 함수**로 정한다 (R2-F3) — CLI 가 혼자 판단하면 타임아웃에서 둘이 갈린다.
+   */
+  retention?: {
+    suppress(id: string): void
+    release(id: string): void
+    settle(input: { ids: readonly string[]; code?: string | null; sent: boolean }): { effect: 'refused' | 'unknown' }
+  }
 }
 const reads = new Set(['terminal list', 'terminal show', 'terminal read', 'terminal wait'])
 function bytes(value: unknown, max: number, name: string) {
@@ -115,14 +133,22 @@ export function derivedRequestId(parentId: string, stage: string): string {
   return `r1.${match[1]}.${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`
 }
 export const derivedPromptId = (createId: string): string => derivedRequestId(createId, 'prompt')
-/** herdr's own labels are the only source; an unlabelled blocker stays `unknown` and stays blocked. */
-function blockedReason(labels: Record<string, string>): string {
-  const text = Object.values(labels).join(' ').toLowerCase()
-  if (text.includes('trust')) return 'trust'
-  if (text.includes('login') || text.includes('sign in') || text.includes('auth')) return 'login'
-  if (text.includes('permission') || text.includes('allow')) return 'permission'
-  if (text.includes('update')) return 'update'
-  return 'unknown'
+/**
+ * The CLI and the GUI report the same reason for the same pane (LIFE-456 S3 / fix-r1 F3).
+ *
+ * They now agree because they feed the **same judgment** (`shared/agent-state.ts`) from the
+ * **same field**. Before, this side passed `state_labels` — which herdr 0.9.0 never sends for
+ * claude/codex/grok (`raw/claude/s3/s3-state-labels-findings.md`) — while the GUI passed the
+ * rule id from `agent.explain`. One pane therefore read `permission` in the GUI and `unknown`
+ * in `terminal show`: two verdicts from one function, which is exactly what S6 forbids.
+ *
+ * Labels stay in the call as the second input, not as a fallback ranking of our own: when herdr
+ * does start sending them, `blockedReason` already knows the rule id wins. `null` (herdr said
+ * nothing at all) collapses to `'unknown'` here because the CLI field has always been a plain
+ * string — the GUI keeps the `null`/`unknown` distinction in `agentState.blockedReason`.
+ */
+export function blockedReasonOf(input: { labels: Record<string, string>; ruleId: string | null }): string {
+  return blockedReason(input) ?? 'unknown'
 }
 /** §8.2: report the marker this runtime carries. corral neither repairs it nor restarts the backend. */
 function environmentWarnings(): string[] {
@@ -307,6 +333,20 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         const file = sessionRecordPaths(record.kind, { cwd, sessionId: record.sessionId, t0Ms: record.t0, nowMs: Date.now() })[0] ?? null
         return { proven: true, files: file === null ? [] : [file], sessionId: record.sessionId, source: record.sessionIdSource, path: file }
       }
+      /**
+       * The rule id behind a blocked screen, or `null` when herdr cannot say (F3).
+       *
+       * A reason is a nicety on a read command, so a failure here degrades to `null` (which
+       * `blockedReasonOf` renders as `unknown`) rather than failing `terminal show` — the
+       * blocked *state* is already known and is the answer the caller asked for.
+       */
+      const blockedRuleId = async (live: TerminalIdentity): Promise<string | null> => {
+        try {
+          return pickBlockedRule(await backend.agentExplain(live, ctx)).ruleId
+        } catch {
+          return null
+        }
+      }
       const agentBlock = async (live: TerminalIdentity, record: AgentRecord | null, views: AgentView[], satisfied: boolean, manifest: DetectManifestObservation | null) => {
         const last = views[views.length - 1], info = last?.info ?? null, phase = phaseOf(record, views, satisfied)
         const session = record ? ownedRecords(record, live.path) : { sessionId: null, source: null, path: null, files: [] }
@@ -319,7 +359,9 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           resolvedModel: resolved.model, resolvedAdvisor: resolved.advisor,
           argv: record?.argv ?? null, sessionId: session.sessionId, sessionIdSource: session.source,
           sessionRecord: session.path === null ? null : { path: session.path, exists: fs.existsSync(session.path) },
-          blocked: phase === 'blocked' ? { reason: blockedReason(info?.stateLabels ?? {}), screen: await excerpt(live) } : null,
+          blocked: phase === 'blocked'
+            ? { reason: blockedReasonOf({ labels: info?.stateLabels ?? {}, ruleId: await blockedRuleId(live) }), screen: await excerpt(live) }
+            : null,
           evidence: {
             agentStatus: info?.status ?? null, launchPending: info?.launchPending ?? null, interactiveReady: info?.interactiveReady ?? null,
             stateChangeSeq: info?.stateChangeSeq ?? null, samples: views.length, workingObserved: record?.workingObserved ?? false,
@@ -598,8 +640,31 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
           return { terminal: required('terminal'), stage: 'backend_accepted', bytes: Buffer.byteLength(text), consumed: null, outcome: 'completed' }
         }
         if (inv.command === 'terminal close') {
-          await backend.close(live, ctx)
-          if ((await backend.list(epoch, ctx)).some(p => p.ptyId === live.ptyId)) throw new RuntimeError('outcome_unknown', 'Close accepted but PTY removal not observed', { terminal: required('terminal') }, 'close', 'unknown')
+          // F6 — an explicit close from the CLI marks the pane exactly as the GUI's does.
+          desktop?.retention?.suppress(live.paneId)
+          // R3-F1 — 전송 여부를 **여기서 실제로 잡는다**. `TerminalBackend` 는 변경 연산에서
+          // `ctx.onEffect` 를 `request()` 의 `onSent` 로 넘기고, 그 훅은 소켓에 바이트를 쓰기
+          // 직전에 불린다. 그래서 이 불리언은 "이 닫기 요청이 나갔는가" 그 자체다.
+          //
+          // `RuntimeError.outcome` 은 쓰지 않는다 — 그 값은 backend 인스턴스가 **누적으로**
+          // 받아들인 효과 수(`acceptedEffects`)에서 나오므로 이 요청 한 번이 나갔는지와 다르다.
+          let sent = false
+          const closeCtx = { ...ctx, onEffect: () => { sent = true; ctx.onEffect?.() } }
+          try {
+            await backend.close(live, closeCtx)
+          } catch (error) {
+            // R2-F3: a refusal with no effect drops the mark; an unknown outcome KEEPS it, the
+            // same call the GUI makes. Before, this dropped the mark on every throw — including
+            // `backend_timeout`, where the GUI kept it. One pane, two opposite verdicts.
+            const code = error instanceof RuntimeError ? error.code : null
+            desktop?.retention?.settle({ ids: [live.paneId], code, sent })
+            throw error
+          }
+          if ((await backend.list(epoch, ctx)).some(p => p.ptyId === live.ptyId)) {
+            // Accepted but the PTY is still listed — the result is unknown, so the mark STAYS.
+            // Resurrecting a pane the user closed is worse than losing one completion row.
+            throw new RuntimeError('outcome_unknown', 'Close accepted but PTY removal not observed', { terminal: required('terminal') }, 'close', 'unknown')
+          }
           agents.remove(live.paneId)
           await desktop?.changed()
           return { terminal: required('terminal'), stage: 'closed', exitCode: null, outcome: 'completed' }

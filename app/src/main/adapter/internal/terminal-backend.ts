@@ -184,6 +184,19 @@ export class TerminalBackend {
       expected_state_change_seq: expectedStateChangeSeq, operation: { method: 'agent.prompt', params: { target: target.paneId, text } } }, ctx, true)
     return observation(readRecord(result, 'agent'), target.paneId)
   }
+  /**
+   * Why a pane is blocked, as herdr's detection rules see it (LIFE-456 S3 / fix-r1 F3).
+   *
+   * The GUI already asks this and derives the reason from the rule id. The CLI used to read
+   * `state_labels` instead — which herdr never sends for claude/codex/grok — so the same pane
+   * reported `permission` in the GUI and `unknown` in `terminal show`. Both sides now feed the
+   * same judgment (`shared/agent-state.ts`) from the same field, which is what "one vocabulary"
+   * was supposed to mean.
+   */
+  async agentExplain(target: TerminalIdentity, ctx: TerminalOperation): Promise<Record<string, unknown> | null> {
+    const result = await this.operation(target.epoch, 'agent.explain', { target: target.paneId }, ctx, target)
+    return readRecord(result, 'explain')
+  }
   /** Target-less read-only arm: which detect manifest is actually active (LIFE-394 §3, D17). */
   async agentManifests(epoch: string, ctx: TerminalOperation): Promise<AgentManifestObservation[]> {
     const result = await this.operation(epoch, 'server.agent_manifests', {}, ctx)

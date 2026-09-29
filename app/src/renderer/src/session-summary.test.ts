@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneRow, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import { collapsedSummary, MAX_CLUSTERS, MAX_ICONS_PER_CLUSTER, SUMMARY_STATUS_ORDER } from './session-summary.js'
+import { emptyAgentState } from '../../shared/agent-state.js'
 
 let seq = 0
 
@@ -20,7 +21,7 @@ function tab(input: { status: AgentStatus; agent?: string | null }): TabRow {
     workspaceId: 'wA',
     title: '',
     agent,
-    agentStatus: input.status,
+    agentStatus: input.status, agentState: emptyAgentState(0),
     cwd: null,
     focused: false,
     agentSession: null,
@@ -45,8 +46,14 @@ describe('collapsedSummary — 상태 클러스터 (C7)', () => {
     expect(collapsedSummary({ panes: tabs.flatMap((tab) => tab.panes) }).clusters.map((cluster) => cluster.status)).toEqual(['blocked', 'working', 'idle'])
   })
 
-  it('순서표는 corral 의 네 상태 전부를 덮는다', () => {
-    expect([...SUMMARY_STATUS_ORDER].sort()).toEqual(['blocked', 'idle', 'unknown', 'working'])
+  it('순서표는 corral 의 다섯 상태 전부를 덮는다 (LIFE-456 — done 이 늘었다)', () => {
+    expect([...SUMMARY_STATUS_ORDER].sort()).toEqual(['blocked', 'done', 'idle', 'unknown', 'working'])
+  })
+
+  it('done 은 working 아래·unknown 위로 묶인다 (끝났는데 아직 안 봄)', () => {
+    const tabs = [tab({ status: 'idle' }), tab({ status: 'done' }), tab({ status: 'working' }), tab({ status: 'blocked' })]
+    expect(collapsedSummary({ panes: tabs.flatMap((row) => row.panes) }).clusters.map((c) => c.status))
+      .toEqual(['blocked', 'working', 'done'])
   })
 
   it('같은 상태의 세션은 한 클러스터로 뭉친다', () => {

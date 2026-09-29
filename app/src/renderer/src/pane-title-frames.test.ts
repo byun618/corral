@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
 import type { PaneRow, RepoRow, TabRow } from '../../shared/types.js'
 import { createTitleFrameBook, decorativeTitleSignature, stabilizePaneTitles } from './pane-title-frames.js'
+import { emptyAgentState } from '../../shared/agent-state.js'
 
 /** claude 2.1.228+ 의 사분원 + 흔한 점자 스피너. 둘 다 C12 가 장식으로 본다. */
 const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼']
@@ -102,7 +103,7 @@ function pane(input: { paneId: string; title: string }): PaneRow {
     workspaceId: 'wA',
     title: input.title,
     agent: 'claude',
-    agentStatus: 'working',
+    agentStatus: 'working', agentState: emptyAgentState(0),
     cwd: null,
     focused: true,
     agentSession: null,

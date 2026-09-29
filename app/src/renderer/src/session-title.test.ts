@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentSessionRef, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
+import { emptyAgentState } from '../../shared/agent-state.js'
 import {
   agentPanes,
   paneSessionTitle,
@@ -59,7 +60,7 @@ function pane(input: {
     workspaceId: 'wA',
     title: input.title ?? '',
     agent: input.agent ?? null,
-    agentStatus: 'idle',
+    agentStatus: 'idle', agentState: emptyAgentState(0),
     cwd: input.cwd ?? null,
     focused: input.focused ?? false,
     agentSession: input.agentSession ?? null,

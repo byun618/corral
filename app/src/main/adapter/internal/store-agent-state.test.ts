@@ -148,10 +148,36 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
     expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
   })
 
-  it('workspace 를 통째로 닫으면 보존하지 않는다 — 완료가 아니라 치움이다', () => {
+  it('**워크스페이스가 연쇄로 사라져도 남는다** — 탭이 하나뿐이면 같은 손짓이 이 길로 온다', () => {
+    // 네이티브 실측: 탭이 하나뿐인 워크스페이스에서 `herdr tab close` 를 하면 herdr 는
+    // `workspace_closed` 를 먼저 보내고 `tab_closed` 는 멱등 무시로 온다. 이벤트 종류로
+    // 가르면 **같은 손짓이 탭 수에 따라 다르게 판정된다** — 그래서 종류가 아니라 억제 표로 가른다.
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
     store.applyEvent({ event: 'workspace_closed', data: { workspace_id: 'w1' } })
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('**탭이 하나뿐인 워크스페이스를 corral 이 닫으면 안 남는다** — 표를 pane 보다 먼저 걷지 않는다', () => {
+    // 탭이 하나면 herdr 는 `workspace_closed` 로 온다. 억제 표는 탭 id 에 찍혀 있으므로
+    // workspace 연쇄가 **탭 표를 pane 보존 판정보다 먼저 지우면** 완료 행이 되살아난다.
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t1', status: 'done' }],
+    }))
+    store.suppressRetention('w1:t1') // corral 의 closeRowByTab 이 찍는 표
+    store.applyEvent({ event: 'workspace_closed', data: { workspace_id: 'w1' } })
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('**사용자가 접은 워크스페이스는 안 남는다** — 치움은 억제 표로 가른다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t2', status: 'done' }],
+    }))
+    store.suppressRetention('w1') // corral 의 closeWorktreeByWorkspace 가 찍는 표
+    store.applyEvent({ event: 'workspace_closed', data: { workspace_id: 'w1' } })
+    // pane 이 둘이어도 둘 다 안 남는다 — 표가 먼저 소진되지 않는다.
     expect(store.retainedRows()).toEqual([])
   })
 

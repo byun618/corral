@@ -592,17 +592,24 @@ export class WorkspaceStore {
     this.closed.set(id, at)
     // 주인이 닫혔으면 그 주인을 기다리던 보류분도 의미가 없다.
     this.orphans = this.orphans.filter((item) => item.workspaceId !== id)
+    /**
+     * **pane 을 먼저 잊고 표는 나중에 걷는다.** 순서가 거꾸로면 탭 표가 pane 보존 판정보다
+     * 먼저 지워져, 사용자가 닫은 탭인데도 완료 행이 올라온다 — 탭이 하나뿐인 워크스페이스를
+     * corral 로 닫자 실제로 그렇게 샜다(`s9b-retained-tabclose.txt` r049).
+     */
+    const droppedTabs: string[] = []
     for (const [tabId, tab] of this.tabs) {
       if (tab.workspaceId !== id) continue
       this.tabs.delete(tabId)
       this.closedTabs.set(tabId, at)
-      this.releaseTabSuppression(tabId)
+      droppedTabs.push(tabId)
     }
     for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
-      // workspace 를 통째로 닫는 것은 **치움이지 완료가 아니다** — 보존하지 않는다.
-      this.forgetPane({ pane, at, retain: false }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
+      this.forgetPane({ pane, at, retain: true }) // H1ⓑ — 연쇄로 죽은 pane 에도 묘비
     }
+    for (const tabId of droppedTabs) this.releaseTabSuppression(tabId)
+    this.retentionSuppressed.delete(id)
     return had
   }
 
@@ -925,9 +932,10 @@ export class WorkspaceStore {
      * **탭 표는 여기서 지우지 않는다.** 탭 하나에 pane 이 여럿일 수 있고(갈라진 탭),
      * 첫 pane 이 표를 먹어 치우면 **둘째 pane 이 되살아난다** — 사용자가 닫은 탭에서
      * 완료 행이 하나 올라오는 것이고, 그건 ② 가 막으려던 바로 그 모양이다.
-     * 표는 탭이 실제로 없어지는 자리에서 `releaseTabSuppression` 이 한 번에 걷는다.
+     * 표는 탭·워크스페이스가 실제로 없어지는 자리에서 한 번에 걷는다.
      */
     if (this.retentionSuppressed.has(pane.tabId)) return
+    if (this.retentionSuppressed.has(pane.workspaceId)) return
     this.retained = [
       { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
         agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
@@ -938,21 +946,24 @@ export class WorkspaceStore {
   /**
    * **pane 하나를 잊는다** — 사라짐을 알게 된 **모든 경로**가 여기를 지난다.
    *
-   * pane 이 없어지는 길은 넷이고, **묘비는 넷 다 찍지만 보존은 갈래마다 다르다.** 그래서
-   * `retain` 을 호출자가 그 자리에서 밝힌다 — 숨은 기본값을 두면 길이 하나 늘 때마다
-   * 조용히 한쪽으로 붙는다. 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
+   * pane 이 없어지는 길은 넷이다. **묘비는 넷 다 찍고, 보존은 셋만 한다** — `retain` 을
+   * 호출자가 그 자리에서 밝힌다. 숨은 기본값을 두면 길이 하나 늘 때마다 조용히 한쪽으로
+   * 붙는데, 실제로 그렇게 새던 것을 네이티브 관문에서 잡았다:
    *
    *   · `pane_closed`·`pane_exited`  보존한다 — pane 하나가 끝나고 사라진 자리다
    *   · `tab_closed`                 보존한다 — 탭을 닫으면 herdr 는 **`tab_closed` 한 건만**
    *     주고 `pane_closed` 를 안 준다(위 G1 주석). 에이전트 pane 은 탭 하나에 하나씩 살기
    *     때문에 **이 길이 완료가 사라지는 흔한 길이다.** 전에는 여기서 기록이 통째로 날아갔다
-   *     (`raw/claude/s9/s9b-retained-tabclose.txt` — `herdr tab close` 로 재현)
-   *   · workspace 연쇄                보존하지 않는다 — 워크스페이스를 접는 것은 **치움**이다
-   *   · 재동기 정리                   보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
+   *   · workspace 연쇄               보존한다 — **탭이 하나뿐이면 같은 손짓이 이 길로 온다**
+   *   · 재동기 정리                  보존하지 않는다 — 닫힘을 못 본 채 사진으로만 아는 자리라
    *     「끝나 있었다」를 주장할 근거가 없다
    *
-   * 가르는 잣대는 **"사라졌나"가 아니라 "완료가 사라졌나"** 다. 치움과 뒤늦은 앎에는
-   * 완료를 주장할 근거가 없고, 거기서 행을 되살리면 사용자가 치운 것이 다시 올라온다.
+   * **치움과 완료를 가르는 것은 이벤트 종류가 아니라 억제 표다.** 한때 `workspace_closed` 를
+   * 「접는 것은 치움이니 보존 안 함」으로 뒀는데, 네이티브에서 탭이 **하나뿐인** 워크스페이스의
+   * 탭을 닫자 herdr 가 `workspace_closed` 를 먼저 보내고 `tab_closed` 는 멱등 무시로 왔다 —
+   * 같은 손짓(탭 닫기)이 탭 수에 따라 다르게 판정됐다 (`raw/claude/s9/s9b-retained-tabclose.txt`).
+   * 그래서 판정을 **누가 닫았나** 한 축으로 모았다: corral 이 스스로 닫을 때만 억제하고
+   * (pane·탭·workspace 셋 다 `suppressRetention` 을 찍는다) 나머지 사라짐은 보존한다.
    */
   /** 탭이 실제로 사라졌다 — 그 탭에 걸어 둔 억제 표를 **한 번에** 걷는다. */
   private releaseTabSuppression(tabId: string): void {

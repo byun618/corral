@@ -645,6 +645,8 @@ async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?
     if (!gate.clear) return { outcome: 'needs-confirm', foreground: gate.foreground }
   }
 
+  // S15ⓓ ② — 사용자가 **명시적으로** 접는 워크스페이스다. 완료 행으로 되살리지 않는다.
+  link.store.suppressRetention(input.workspaceId)
   const outcome = await closeWorkspace(socketPath, input.workspaceId)
   if (outcome.outcome === 'closed') {
     scheduleTree()

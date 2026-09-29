@@ -615,6 +615,47 @@ describe('LIFE-394 review reproductions (r0 R1-R5·R7, r1 R11·R5 잔여·R12)',
     expect(nested(shown, 'agent').phase).toBe('launching')
     expect(nested(shown, 'agent')).toMatchObject({ kind: 'claude', argv: null, sessionId: null })
   }, 30000)
+
+  // --- LIFE-456 R2-F1: **공개 CLI → guard → 사유** 경로 --------------------------------------
+  // 라운드 1 은 `blockedReasonOf` 를 단위로만 쟀다. 그래서 그 함수가 옳아도 **CLI 가 사유를
+  // 영영 `unknown` 으로 낸다**는 것을 못 봤다: guard 허용 목록에 `agent.explain` 이 없어
+  // `backend.agentExplain` 이 `unsupported` 로 거절당하고, `terminal show` 는 그 실패를
+  // `null` 로 접어 `unknown` 을 냈다. 사유가 없는 것과 규칙이 사유를 안 가르는 것이
+  // **같은 글자**로 나온 것이다.
+  //
+  // 여기서는 `terminal show` 명령을 실제로 실행해 그 경로 전체(명령 → `agentBlock` →
+  // `blockedRuleId` → `pickBlockedRule` → `blockedReasonOf`)를 탄다. 대역으로 두는 것은
+  // **Rust 백엔드 프로세스 하나뿐**이고, guard 자체는 같은 이름의 Rust 테스트가 맡는다
+  // (`app/backend/herdr-guard.patch` — `corral_terminal_allows_agent_explain_with_the_same_identity_fence`).
+  // 끝에서 끝까지는 네이티브 회차가 잰다.
+  const claudeExplain = (): Record<string, unknown> => {
+    const file = new URL('../../../specs/LIFE-456-agent-state/raw/claude/s9-r1/f2/claude-explain.json', import.meta.url)
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return asObject(parsed)
+  }
+  it('R2-F1: `terminal show` 가 blocked pane 의 사유를 실제로 낸다 (실화면 explain 원자료)', async () => {
+    const f = agentFixture('claude', { phase: 'blocked' })
+    f.state.info = { ...f.state.info, status: 'blocked' }
+    const explain = vi.spyOn(TerminalBackend.prototype, 'agentExplain').mockImplementation(async () => claudeExplain())
+    cleanups.push(() => { explain.mockRestore() })
+    const shown = asObject(await f.run('terminal show', {}, 8000))
+    expect(nested(shown, 'agent').phase).toBe('blocked')
+    expect(nested(shown, 'agent', 'blocked').reason).toBe('permission')
+    expect(explain).toHaveBeenCalled()
+  }, 30000)
+  it('R2-F1 반례: guard 가 `agent.explain` 을 막으면 같은 화면이 `unknown` 이 된다', async () => {
+    // 라운드 1 의 상태를 그대로 재현한다 — 허용 목록에 없는 메서드에 guard 가 주는 응답이
+    // `unsupported` 다. **사유가 `unknown` 인 것이 규칙 탓이 아니라 guard 탓**이라는 것을
+    // 이 대조가 보인다. 위 회차와 다른 것은 백엔드 응답 하나뿐이다.
+    const f = agentFixture('claude', { phase: 'blocked' })
+    f.state.info = { ...f.state.info, status: 'blocked' }
+    const explain = vi.spyOn(TerminalBackend.prototype, 'agentExplain')
+      .mockImplementation(async () => { throw new RuntimeError('unsupported', 'corral_terminal refused agent.explain', {}, 'show', 'not_started') })
+    cleanups.push(() => { explain.mockRestore() })
+    const shown = asObject(await f.run('terminal show', {}, 8000))
+    expect(nested(shown, 'agent').phase).toBe('blocked')
+    expect(nested(shown, 'agent', 'blocked').reason).toBe('unknown')
+  }, 30000)
   // --- 수정 라운드 4: 게이트 ① 사용자 확인에서 나온 기동 창 `exited` 오판 (06-gate1-fix.md) --------
   // 사용자 환경에서 `create --prompt` 가 1.07 s 만에 `agent_not_ready` 로 초기 프롬프트를 버렸다.
   // 두 가지가 겹쳤다: (①) 기동 직후 전경이 아직 비어 있고, (②) 네이티브 설치 claude 는 프로세스

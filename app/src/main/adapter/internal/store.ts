@@ -265,6 +265,7 @@ export class WorkspaceStore {
       }
       this.tabs.delete(id)
       this.closedTabs.set(id, at)
+      this.releaseTabSuppression(id)
       removed.tabs.push(id)
     }
     for (const [id, row] of [...this.panes]) {
@@ -438,6 +439,7 @@ export class WorkspaceStore {
           this.forgetPane({ pane, at, retain: true })
           orphaned += 1
         }
+        this.releaseTabSuppression(id)
         // 이 탭을 기다리던 보류분도 의미가 없다 — 주인 탭이 이미 없다.
         const before = this.orphans.length
         this.orphans = this.orphans.filter((item) => readString(item.value, 'tab_id') !== id)
@@ -536,6 +538,7 @@ export class WorkspaceStore {
          */
         const tabGone = this.tabs.delete(pane.tabId)
         this.closedTabs.set(pane.tabId, at)
+        this.releaseTabSuppression(pane.tabId)
         const siblingTabs = [...this.tabs.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const siblingPanes = [...this.panes.values()].filter((item) => item.workspaceId === pane.workspaceId).length
         const workspaceGone =
@@ -593,6 +596,7 @@ export class WorkspaceStore {
       if (tab.workspaceId !== id) continue
       this.tabs.delete(tabId)
       this.closedTabs.set(tabId, at)
+      this.releaseTabSuppression(tabId)
     }
     for (const pane of this.panes.values()) {
       if (pane.workspaceId !== id) continue
@@ -912,17 +916,18 @@ export class WorkspaceStore {
    */
   private retain(pane: Pane, at: number): void {
     if (pane.agentStatus !== 'done') return
-    const suppressedBy = this.retentionSuppressed.has(pane.paneId)
-      ? pane.paneId
-      : this.retentionSuppressed.has(pane.tabId)
-        ? pane.tabId
-        : null
-    if (suppressedBy !== null) {
-      // 찍은 표는 **쓰고 나서 지운다** — 탭 id 로 찍고 pane id 로만 지우면 표가 남아,
-      // 같은 id 가 재사용될 때 남의 닫힘까지 조용히 삼킨다.
-      this.retentionSuppressed.delete(suppressedBy)
+    if (this.retentionSuppressed.has(pane.paneId)) {
+      // pane 표는 그 pane 이 쓰고 버린다 — 한 번 닫히면 다시 쓸 일이 없다.
+      this.retentionSuppressed.delete(pane.paneId)
       return
     }
+    /**
+     * **탭 표는 여기서 지우지 않는다.** 탭 하나에 pane 이 여럿일 수 있고(갈라진 탭),
+     * 첫 pane 이 표를 먹어 치우면 **둘째 pane 이 되살아난다** — 사용자가 닫은 탭에서
+     * 완료 행이 하나 올라오는 것이고, 그건 ② 가 막으려던 바로 그 모양이다.
+     * 표는 탭이 실제로 없어지는 자리에서 `releaseTabSuppression` 이 한 번에 걷는다.
+     */
+    if (this.retentionSuppressed.has(pane.tabId)) return
     this.retained = [
       { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
         agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
@@ -949,6 +954,11 @@ export class WorkspaceStore {
    * 가르는 잣대는 **"사라졌나"가 아니라 "완료가 사라졌나"** 다. 치움과 뒤늦은 앎에는
    * 완료를 주장할 근거가 없고, 거기서 행을 되살리면 사용자가 치운 것이 다시 올라온다.
    */
+  /** 탭이 실제로 사라졌다 — 그 탭에 걸어 둔 억제 표를 **한 번에** 걷는다. */
+  private releaseTabSuppression(tabId: string): void {
+    this.retentionSuppressed.delete(tabId)
+  }
+
   private forgetPane(input: { pane: Pane; at: number; retain: boolean }): void {
     const { pane, at, retain } = input
     if (retain) this.retain(pane, at)

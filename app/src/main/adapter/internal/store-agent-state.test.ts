@@ -170,11 +170,37 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
   it('**재동기 정리로 없어진 것은 안 남긴다** — 닫힘을 못 본 채 사진으로만 아는 자리다', () => {
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }] }))
-    // 사진에 그 pane 이 없다 = 언젠가 사라졌다. 「끝나 있었다」를 주장할 근거가 없다.
-    store.applySnapshot(snapshot({ panes: [] }))
-    // 양성 대조 — 정리 경로가 **실제로 돌았다**(행이 없어졌다). 이게 없으면 "안 남았다" 가
-    // "경로가 안 돌았다" 와 같은 모양이 된다.
+    // **`applySnapshot` 이 아니라 `reconcile` 로 잰다.** 부트스트랩 스냅샷은 `reset()` 을
+    // 부르므로 보존을 통째로 비운다 — 그걸로 재면 "정리가 안 남겼다" 와 "리셋이 지웠다" 가
+    // 같은 모양이 되어 테스트가 엉뚱한 이유로 통과한다(처음에 그렇게 썼다).
+    store.reconcile(snapshot({ panes: [] }), Date.now() + 1000)
+    // 양성 대조 — 정리 경로가 **실제로 돌았다**(행이 없어졌다).
     expect(store.rows().flatMap((w) => w.tabs.flatMap((t) => t.panes))).toEqual([])
+    expect(store.retainedRows()).toEqual([])
+  })
+
+  it('**30초 재동기가 보존 기록을 지우지 않는다** — 지우면 S15ⓓ 는 30초짜리다', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t2', status: 'idle' }],
+    }))
+    store.applyEvent({ event: 'tab_closed', data: { tab_id: 'w1:t1', workspace_id: 'w1' } })
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+    // 재동기가 남은 pane 만 실어 온다 — 보존 행은 산 목록이 아니라 별도 장부다.
+    store.reconcile(snapshot({ panes: [{ id: 'w1:p2', tab: 'w1:t2', status: 'idle' }] }), Date.now() + 1000)
+    expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('**한 탭에 done pane 이 둘이면 둘 다 안 남는다** — 억제 표가 먼저 소진되면 안 된다', () => {
+    // 표를 pane 마다 지우면 첫 pane 이 탭 표를 먹어 치우고 둘째가 살아 남는다 —
+    // 갈라진 탭(사용자 세션에 실제로 있다: w1F:t2, pane 2개)을 닫으면 완료 행 하나가
+    // 되살아난다. 「닫기가 안 먹은 것처럼 보이면 안 된다」가 그 자리에서 깨진다.
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({
+      panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t1', status: 'done' }],
+    }))
+    store.suppressRetention('w1:t1')
+    store.applyEvent({ event: 'tab_closed', data: { tab_id: 'w1:t1', workspace_id: 'w1' } })
     expect(store.retainedRows()).toEqual([])
   })
 

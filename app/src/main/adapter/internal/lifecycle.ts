@@ -137,6 +137,15 @@ export async function probeForeground(socketPath: string, paneId: string): Promi
   }
 }
 
+/**
+ * **요청 바이트가 실제로 나갔는가** 를 호출부에 돌려주는 훅 (R3-F1).
+ *
+ * 닫기 결과를 「확정 거절」과 「결과 불명」으로 가르는 축은 둘이다 — herdr 가 낸 코드와,
+ * 애초에 요청이 나갔는가. 두 번째는 **여기서만 알 수 있다**: `request()` 가 소켓에 쓰기
+ * 직전에 이 훅을 부른다(`request.ts`). 호출부가 추측하지 않고 이 값을 그대로 쓴다.
+ */
+export interface CloseHooks { onSent?: () => void }
+
 export type CloseTabOutcome =
   | { outcome: 'closed' }
   | { outcome: 'rejected'; rejection: { code: string; message: string } }
@@ -146,8 +155,8 @@ export type CloseTabOutcome =
  * 탭을 닫는다. herdr 가 그룹 닫기를 거절하면(`confirmation_required` — L9a) 그 거절을
  * **그대로 돌려준다**. corral 이 close_group/force 로 승격하지 않는다 (기준).
  */
-export async function closeTab(socketPath: string, tabId: string): Promise<CloseTabOutcome> {
-  const response = await request(socketPath, 'tab.close', { tab_id: tabId }, { reason: 'close-row' })
+export async function closeTab(socketPath: string, tabId: string, hooks: CloseHooks = {}): Promise<CloseTabOutcome> {
+  const response = await request(socketPath, 'tab.close', { tab_id: tabId }, { reason: 'close-row', onSent: hooks.onSent })
   if (response.error) {
     const rejection = { code: response.error.code ?? 'error', message: response.error.message ?? '' }
     log('lifecycle.tab_close_rejected', { tabId, ...rejection })
@@ -190,8 +199,8 @@ export async function renameTab(socketPath: string, tabId: string, label: string
  * herdr 가 `workspace_group_close_required` 로 거절한다 — **그대로 돌려준다**.
  * corral 이 close_group:true 로 승격하지 않는다 (기준). 승격은 사람이 정한다.
  */
-export async function closeWorkspace(socketPath: string, workspaceId: string): Promise<CloseTabOutcome> {
-  const response = await request(socketPath, 'workspace.close', { workspace_id: workspaceId }, { reason: 'close-worktree' })
+export async function closeWorkspace(socketPath: string, workspaceId: string, hooks: CloseHooks = {}): Promise<CloseTabOutcome> {
+  const response = await request(socketPath, 'workspace.close', { workspace_id: workspaceId }, { reason: 'close-worktree', onSent: hooks.onSent })
   if (response.error) {
     const rejection = { code: response.error.code ?? 'error', message: response.error.message ?? '' }
     log('lifecycle.workspace_close_rejected', { workspaceId, ...rejection })

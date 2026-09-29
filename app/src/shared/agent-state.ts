@@ -212,24 +212,56 @@ export function recordAgentTransition(input: {
 export type CloseEffect = 'refused' | 'unknown'
 
 /**
- * 효과가 없다고 **말할 수 있는** 코드만 적는다. 근거:
- *   · `method_not_allowed`  — corral 이 안 보내는 메서드. 소켓에 나가지도 않는다(`request.ts`)
- *   · `invalid_request`·`invalid_argument` — guard/서버가 봉투를 까기 전에 거절
- *   · `stale_terminal`·`stale_backend`·`deadline_exceeded` — guard 가 **효과 시작 전에** 막는다
- *     (`herdr-guard.patch`: "no effect started")
- *   · `unsupported`·`unsupported_backend` — 그 backend 에 그 연산이 없다
- *   · `not_found`·`tab_not_found`·`pane_not_found` — 대상이 없어 할 일이 없었다
+ * **확정 거절 집합** — 효과가 없다고 *말할 수 있는* 코드만 적는다 (R3-F1).
+ *
+ * 라운드 2 까지의 목록은 corral 쪽 코드만 보고 적어서, **herdr 가 실제로 닫기 경로에서
+ * 내는 코드**가 빠져 있었다. 그래서 이번에는 herdr v0.9.0 소스에서 닫기 세 경로를 끝까지
+ * 읽고, 「돌아가기 전에 아무것도 닫지 않은 것이 소스에서 보이는」 코드만 넣는다.
+ * (읽은 트리: `/private/tmp/l456-r2-build/herdr-0.9.0`, `source.json` 의 v0.9.0 과 같은 것)
+ *
+ * corral 쪽 — 소켓에 나가기 전:
+ *   · `method_not_allowed`  — corral 이 안 보내는 메서드. `request()` 가 연결 전에 던진다
+ *     (`adapter/internal/request.ts:85`)
+ * guard — 봉투를 까기 전 (`src/app/api/corral.rs`):
+ *   · `stale_backend`(:20) · `deadline_exceeded`(:22, 메시지가 그대로 "no effect started")
+ *   · `invalid_request`(:23·:51·:62) · `unsupported`(:48) · `stale_terminal`(:52·:54·:57)
+ *   · `unsupported_backend` — corral 이 핸드셰이크에서 붙이는 이름(`terminal-backend.ts`)
+ * herdr 닫기 경로 — 효과 **전에** 돌아간다:
+ *   · `pane.close` → `close_pane` (`src/app/api/panes.rs:1852-1867`):
+ *     `pane_not_found`, `confirmation_required`("closing this pane would close a worktree group")
+ *   · `tab.close` → `handle_tab_close` (`src/app/api/tabs.rs:216-268`):
+ *     `tab_not_found`, `confirmation_required`, `tab_close_failed`
+ *     — `tab_close_failed` 는 `Workspace::close_tab` 이 `false` 를 준 것이고, 그 false 는
+ *       `tabs.len() <= 1 || idx >= tabs.len()` 이라는 **이른 가드**뿐이라 부분 효과가 없다
+ *       (`src/workspace.rs:579-582`)
+ *   · `workspace.close` (`src/app/api/workspaces.rs:311-330`):
+ *     `workspace_not_found`, `workspace_group_close_required`
+ * 서버 파싱 (`src/api/server.rs:185`): `invalid_request`
+ *
+ * 나머지(`not_found`·`invalid_argument`)는 대상이 없어 할 일이 없었던 경우다.
+ *
+ * **`confirmation_required` 가 빠져 있던 것이 라운드 2 의 결함이다** — GUI 는 그 거절을
+ * `rejected` 로 받아 `sent:false` 로 걷었고 CLI 는 코드 목록에 없어 남겼다. 같은 상황을
+ * 반대로 판정했다.
  */
 const CLOSE_REFUSED_CODES: readonly string[] = [
   'method_not_allowed', 'invalid_request', 'invalid_argument',
   'stale_terminal', 'stale_backend', 'deadline_exceeded',
   'unsupported', 'unsupported_backend',
   'not_found', 'tab_not_found', 'pane_not_found',
+  'confirmation_required', 'tab_close_failed',
+  'workspace_group_close_required', 'workspace_not_found',
 ]
 
-export function closeEffect(input: { code?: string | null; sent?: boolean }): CloseEffect {
+/**
+ * `sent` 는 **선택이 아니다** (R3-F1). 라운드 2 는 `sent?: boolean` 이라 호출부가 안 주면
+ * 조용히 코드만으로 판정했고, GUI 는 반대로 늘 `false` 를 박아 서버 거절까지 「안 나갔다」로
+ * 셌다. 둘 다 "하지 않은 일이 기대한 모양으로 통과" 하는 모양이라, 빠뜨리면 컴파일이
+ * 멈추게 타입으로 막는다 — 값은 `request()` 의 `onSent`(바이트를 쓰기 직전)가 준다.
+ */
+export function closeEffect(input: { code?: string | null; sent: boolean }): CloseEffect {
   // 보내지도 못한 것은 효과가 없다 — 호출부가 그것을 아는 자리에서만 준다.
-  if (input.sent === false) return 'refused'
+  if (!input.sent) return 'refused'
   const code = input.code ?? null
   if (code === null) return 'unknown'
   return CLOSE_REFUSED_CODES.includes(code) ? 'refused' : 'unknown'

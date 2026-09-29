@@ -368,6 +368,10 @@ describe('F6 — 억제 표는 확정 거절·실패면 되돌린다', () => {
   })
 })
 
+// R3-F1 이후 이 describe 가 재는 것은 **분류표**다 — 어떤 코드가 확정 거절인가.
+// 「호출부가 sent 를 실제로 넘기는가」는 여기서 안 잰다: 그건 close-retention.test.ts 가
+// 실제 CLI caller·실제 GUI wrapper 를 태워서 잰다. 여기 `sent: true` 는 "요청은 나갔다,
+// 그 뒤 이 코드가 왔다" 는 뜻이다.
 describe('R2-F3 — 닫기 결과를 확정 거절과 결과 불명으로 가른다 (실제 store)', () => {
   const closed = (store: WorkspaceStore) => {
     store.applyEvent({ event: 'pane_closed', data: { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1' } })
@@ -382,7 +386,7 @@ describe('R2-F3 — 닫기 결과를 확정 거절과 결과 불명으로 가른
 
   it('확정 거절이면 표를 걷는다 — 뒤의 진짜 완료를 삼키지 않는다', () => {
     const store = prepared()
-    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'method_not_allowed' })
+    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'method_not_allowed', sent: true })
     expect(settled.effect).toBe('refused')
     expect(store.isSuppressed('w1:p1')).toBe(false)
     expect(closed(store)).toContain('w1:p1')
@@ -396,7 +400,7 @@ describe('R2-F3 — 닫기 결과를 확정 거절과 결과 불명으로 가른
 
   it('**타임아웃은 결과 불명이라 표를 남긴다** — CLI 가 여기서 반대로 판정했다 (R2-F3)', () => {
     const store = prepared()
-    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'timeout' })
+    const settled = store.settleSuppression({ ids: ['w1:p1'], code: 'timeout', sent: true })
     expect(settled.effect).toBe('unknown')
     expect(settled.kept).toEqual(['w1:p1'])
     expect(store.isSuppressed('w1:p1')).toBe(true)
@@ -406,15 +410,24 @@ describe('R2-F3 — 닫기 결과를 확정 거절과 결과 불명으로 가른
   for (const code of ['backend_timeout', 'closed', 'request_cancelled', 'outcome_unknown']) {
     it(`\`${code}\` 도 결과 불명이다 — 전송 뒤라 효과가 있었을 수 있다`, () => {
       const store = prepared()
-      expect(store.settleSuppression({ ids: ['w1:p1'], code }).effect).toBe('unknown')
+      expect(store.settleSuppression({ ids: ['w1:p1'], code, sent: true }).effect).toBe('unknown')
       expect(store.isSuppressed('w1:p1')).toBe(true)
+    })
+  }
+
+  // R3-F1 — herdr 가 **닫기 전에** 내는 거절들. 소스에서 효과 전 반환이 보이는 것만 넣었다.
+  for (const code of ['confirmation_required', 'tab_close_failed', 'workspace_group_close_required', 'workspace_not_found']) {
+    it(`\`${code}\` 는 전송 뒤에 와도 확정 거절이다 — herdr 가 손대기 전에 돌아간다`, () => {
+      const store = prepared()
+      expect(store.settleSuppression({ ids: ['w1:p1'], code, sent: true }).effect).toBe('refused')
+      expect(store.isSuppressed('w1:p1')).toBe(false)
     })
   }
 
   it('**모르는 코드는 불명으로 떨어진다** — 새 코드가 조용히 「걷는다」로 가지 않게', () => {
     const store = prepared()
-    expect(store.settleSuppression({ ids: ['w1:p1'], code: 'some_future_code' }).effect).toBe('unknown')
-    expect(store.settleSuppression({ ids: ['w1:p1'], code: null }).effect).toBe('unknown')
+    expect(store.settleSuppression({ ids: ['w1:p1'], code: 'some_future_code', sent: true }).effect).toBe('unknown')
+    expect(store.settleSuppression({ ids: ['w1:p1'], code: null, sent: true }).effect).toBe('unknown')
     expect(store.isSuppressed('w1:p1')).toBe(true)
   })
 })

@@ -39,7 +39,7 @@ export interface TerminalDesktop {
   retention?: {
     suppress(id: string): void
     release(id: string): void
-    settle(input: { ids: readonly string[]; code?: string | null; sent?: boolean }): { effect: 'refused' | 'unknown' }
+    settle(input: { ids: readonly string[]; code?: string | null; sent: boolean }): { effect: 'refused' | 'unknown' }
   }
 }
 const reads = new Set(['terminal list', 'terminal show', 'terminal read', 'terminal wait'])
@@ -642,14 +642,22 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
         if (inv.command === 'terminal close') {
           // F6 — an explicit close from the CLI marks the pane exactly as the GUI's does.
           desktop?.retention?.suppress(live.paneId)
+          // R3-F1 — 전송 여부를 **여기서 실제로 잡는다**. `TerminalBackend` 는 변경 연산에서
+          // `ctx.onEffect` 를 `request()` 의 `onSent` 로 넘기고, 그 훅은 소켓에 바이트를 쓰기
+          // 직전에 불린다. 그래서 이 불리언은 "이 닫기 요청이 나갔는가" 그 자체다.
+          //
+          // `RuntimeError.outcome` 은 쓰지 않는다 — 그 값은 backend 인스턴스가 **누적으로**
+          // 받아들인 효과 수(`acceptedEffects`)에서 나오므로 이 요청 한 번이 나갔는지와 다르다.
+          let sent = false
+          const closeCtx = { ...ctx, onEffect: () => { sent = true; ctx.onEffect?.() } }
           try {
-            await backend.close(live, ctx)
+            await backend.close(live, closeCtx)
           } catch (error) {
             // R2-F3: a refusal with no effect drops the mark; an unknown outcome KEEPS it, the
             // same call the GUI makes. Before, this dropped the mark on every throw — including
             // `backend_timeout`, where the GUI kept it. One pane, two opposite verdicts.
             const code = error instanceof RuntimeError ? error.code : null
-            desktop?.retention?.settle({ ids: [live.paneId], code })
+            desktop?.retention?.settle({ ids: [live.paneId], code, sent })
             throw error
           }
           if ((await backend.list(epoch, ctx)).some(p => p.ptyId === live.ptyId)) {

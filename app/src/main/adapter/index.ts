@@ -29,6 +29,7 @@ export {
   openWorkspace,
   openWorktree,
   probeForeground,
+  type CloseHooks,
   type CloseTabOutcome,
   type RenameTabOutcome,
   type CreateRowOutcome,

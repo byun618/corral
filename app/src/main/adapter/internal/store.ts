@@ -1117,7 +1117,7 @@ export class WorkspaceStore {
    * 전에는 두 쪽이 따로 판단해서 타임아웃을 **반대로** 처리했다 — GUI 는 남기고 CLI 는 걷었다.
    * 분류는 `closeEffect` 한 함수가 하고, 이 메서드는 그 답대로 표만 만진다.
    */
-  settleSuppression(input: { ids: readonly string[]; code?: string | null; sent?: boolean }): {
+  settleSuppression(input: { ids: readonly string[]; code?: string | null; sent: boolean }): {
     effect: CloseEffect
     released: readonly string[]
     kept: readonly string[]

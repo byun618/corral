@@ -4,6 +4,7 @@ import type { TerminalDesktop } from '../runtime/terminal/index.js'
 import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
+import { withRetentionSuppressed } from './close-retention.js'
 import { matchBinding } from '../shared/keybindings.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
@@ -60,7 +61,6 @@ import {
   splitPane,
   zoomPane,
   type SessionHandle,
-  HerdrRequestError,
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { canonicalPath } from './canonical-path.js'
@@ -578,42 +578,6 @@ async function checkCloseGate(
   return running.length > 0 ? { clear: false, foreground: running } : { clear: true }
 }
 
-/**
- * **닫기 한 번을 억제 표와 함께 감싼다** (S15ⓓ ② · 수정 라운드 1 F6).
- *
- * 표를 찍는 것은 「지금 corral 이 이걸 닫는 중이다」는 약속이다. 그 약속이 깨졌는데 표가
- * 남으면, 그 pane 이 **나중에 진짜로 끝나서 사라질 때** 완료 기록을 조용히 삼킨다.
- * 그래서 결과를 세 갈래로 가른다:
- *
- *   · 닫혔다        → 표를 그대로 둔다. 곧 올 닫힘 통보를 그 표가 받는다
- *   · **확정 거절·확정 실패** → 표를 걷는다. herdr 가 "안 닫았다"고 답했거나 요청이 나가지도
- *     못했다 — 약속이 거짓이 됐다
- *   · **결과 불명(timeout)** → 표를 **그대로 둔다**. 닫혔을 수도 있고, 그때 걷으면 사용자가
- *     닫은 것이 완료 행으로 되살아난다. 둘 중 덜 나쁜 쪽을 고른다: 「끝난 것 하나를 못 남김」이
- *     「사용자가 닫은 것이 되살아남」보다 낫다. 어느 갈래였는지는 로그에 남긴다
- */
-async function withRetentionSuppressed<T extends { outcome: string }>(
-  input: { ids: readonly string[]; what: string; run: () => Promise<T> },
-): Promise<T> {
-  for (const id of input.ids) link.store.suppressRetention(id)
-  try {
-    const outcome = await input.run()
-    if (outcome.outcome === 'rejected' || outcome.outcome === 'error') {
-      // 우리 자신의 게이트가 막은 것이다 — **소켓에 나가지 않았다.** 확정 거절.
-      const settled = link.store.settleSuppression({ ids: input.ids, sent: false })
-      log('retention.suppress.settled', { what: input.what, ...settled, why: outcome.outcome })
-    }
-    return outcome
-  } catch (error) {
-    // **분류는 CLI 와 같은 함수가 한다** (R2-F3). 전에는 여기서 `timeout` 만 불명으로 봤고
-    // CLI 는 타임아웃까지 걷어서 같은 상황을 반대로 판정했다.
-    const code = error instanceof HerdrRequestError ? error.code : null
-    const settled = link.store.settleSuppression({ ids: input.ids, code })
-    log('retention.suppress.settled', { what: input.what, ...settled, code })
-    throw error
-  }
-}
-
 /** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
 async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> {
   const socketPath = currentSocketPath()
@@ -633,9 +597,10 @@ async function closeRowByTab(input: { tabId: string; confirmed?: boolean }): Pro
 
   // S15ⓓ ② — 사용자가 **명시적으로** 닫는 탭이다. 그 닫힘은 완료 행으로 되살리지 않는다.
   const outcome = await withRetentionSuppressed({
+    store: link.store,
     ids: [input.tabId],
     what: 'tab',
-    run: () => closeTab(socketPath, input.tabId),
+    run: hooks => closeTab(socketPath, input.tabId, hooks),
   })
   if (outcome.outcome === 'closed') {
     scheduleEmit()
@@ -687,9 +652,10 @@ async function closeWorktreeByWorkspace(input: { workspaceId: string; confirmed?
 
   // S15ⓓ ② — 사용자가 **명시적으로** 접는 워크스페이스다. 완료 행으로 되살리지 않는다.
   const outcome = await withRetentionSuppressed({
+    store: link.store,
     ids: [input.workspaceId],
     what: 'workspace',
-    run: () => closeWorkspace(socketPath, input.workspaceId),
+    run: hooks => closeWorkspace(socketPath, input.workspaceId, hooks),
   })
   if (outcome.outcome === 'closed') {
     scheduleTree()
@@ -819,7 +785,7 @@ const terminalDesktop: TerminalDesktop = {
     release: (id) => { link.store.releaseSuppression(id) },
     settle: (input) => {
       const settled = link.store.settleSuppression(input)
-      log('retention.suppress.settled', { what: 'cli terminal close', ...settled, code: input.code ?? null })
+      log('retention.suppress.settled', { what: 'cli terminal close', ...settled, code: input.code ?? null, sent: input.sent })
       return { effect: settled.effect }
     },
   },
@@ -1378,9 +1344,10 @@ app.whenReady().then(async () => {
     if (socketPath === null) return { ok: false, error: '세션이 없다' }
     // S15ⓓ ② — 명시적 pane 닫기도 같다.
     return paneResult(await withRetentionSuppressed({
+      store: link.store,
       ids: [input.paneId],
       what: 'pane',
-      run: () => closePane({ socketPath, paneId: input.paneId }),
+      run: hooks => closePane({ socketPath, paneId: input.paneId, onSent: hooks.onSent }),
     }))
   })
   // 인접 pane 은 **서버가 계산한다**(F2-4). corral 은 id 만 받아 자기 연결의 pane.focus 로 옮긴다.

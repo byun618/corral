@@ -1,0 +1,1260 @@
+{
+ "claude.assistant.api_error.rate_limit": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "type": "assistant",
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "message": {
+   "diagnostics": null,
+   "id": "ID",
+   "container": null,
+   "model": "MODEL",
+   "role": "assistant",
+   "stop_details": null,
+   "stop_reason": "stop_sequence",
+   "stop_sequence": "x",
+   "type": "message",
+   "usage": {
+    "output_tokens_details": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": null,
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": null,
+    "iterations": null,
+    "speed": null
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "x"
+    }
+   ],
+   "context_management": null
+  },
+  "requestId": "ID",
+  "apiError": "x",
+  "error": "rate_limit",
+  "errorDetails": "x",
+  "isApiErrorMessage": true,
+  "apiErrorStatus": 0,
+  "perTurnEffort": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.assistant.api_error.server_error": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "type": "assistant",
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "message": {
+   "diagnostics": null,
+   "id": "ID",
+   "container": null,
+   "model": "MODEL",
+   "role": "assistant",
+   "stop_details": null,
+   "stop_reason": "stop_sequence",
+   "stop_sequence": "x",
+   "type": "message",
+   "usage": {
+    "output_tokens_details": null,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": null,
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": null,
+    "iterations": null,
+    "speed": null
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "x"
+    }
+   ],
+   "context_management": null
+  },
+  "requestId": "ID",
+  "error": "server_error",
+  "isApiErrorMessage": true,
+  "apiErrorStatus": 0,
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.assistant.ask": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "message": {
+   "model": "MODEL",
+   "id": "ID",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "ID",
+     "name": "AskUserQuestion",
+     "input": {
+      "questions": [
+       {
+        "question": "x",
+        "header": "x",
+        "multiSelect": false,
+        "options": [
+         {
+          "label": "x",
+          "description": "x"
+         },
+         {
+          "label": "x",
+          "description": "x"
+         }
+        ]
+       }
+      ]
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "container": null,
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 0,
+    "output_tokens_details": {
+     "thinking_tokens": 0
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "x",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "x",
+    "iterations": [
+     {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 0
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "x"
+   },
+   "input_transformations": [],
+   "diagnostics": null,
+   "context_management": null
+  },
+  "wireToolInputs": {
+   "toolu_015EhECzb7rA2cbRnxSYSWxL": {
+    "questions": [
+     {
+      "question": "x",
+      "header": "x",
+      "multiSelect": false,
+      "options": [
+       {
+        "label": "x",
+        "description": "x"
+       },
+       {
+        "label": "x",
+        "description": "x"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "apiBlockIndex": 0,
+  "requestId": "ID",
+  "type": "assistant",
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "advisorModel": "x",
+  "effort": "x",
+  "perTurnEffort": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.assistant.text": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "message": {
+   "model": "MODEL",
+   "id": "ID",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "x"
+    }
+   ],
+   "container": null,
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 0,
+    "output_tokens_details": {
+     "thinking_tokens": 0
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "x",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "x",
+    "iterations": [
+     {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 0
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "x"
+   },
+   "input_transformations": [],
+   "diagnostics": null,
+   "context_management": null
+  },
+  "apiBlockIndex": 0,
+  "requestId": "ID",
+  "type": "assistant",
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "advisorModel": "x",
+  "effort": "x",
+  "perTurnEffort": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.assistant.tool_use": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "message": {
+   "model": "MODEL",
+   "id": "ID",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "ID",
+     "name": "Bash",
+     "input": {
+      "command": "x"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "container": null,
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 0,
+    "output_tokens_details": {
+     "thinking_tokens": 0
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "x",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "x",
+    "iterations": [
+     {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 0
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "x"
+   },
+   "input_transformations": [],
+   "diagnostics": null,
+   "context_management": null
+  },
+  "wireToolInputs": {
+   "toolu_01Ei4K43D7vcPcpW4eopmkqh": {
+    "command": "x"
+   }
+  },
+  "wireIngestContext": {
+   "toolu_01Ei4K43D7vcPcpW4eopmkqh": {
+    "cwd": "x"
+   }
+  },
+  "apiBlockIndex": 0,
+  "requestId": "ID",
+  "type": "assistant",
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "advisorModel": "x",
+  "effort": "x",
+  "perTurnEffort": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.system.turn_duration": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "type": "system",
+  "subtype": "turn_duration",
+  "durationMs": 0,
+  "messageCount": 0,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "uuid": "ID",
+  "isMeta": false,
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.ask_answered": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "content": "x",
+     "tool_use_id": "ID"
+    }
+   ]
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "toolUseResult": {
+   "questions": [
+    {
+     "question": "x",
+     "header": "x",
+     "options": [
+      {
+       "label": "x",
+       "description": "x"
+      },
+      {
+       "label": "x",
+       "description": "x"
+      }
+     ],
+     "multiSelect": false
+    }
+   ],
+   "answers": {
+    "Q0": "x"
+   },
+   "annotations": {}
+  },
+  "sourceToolAssistantUUID": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.command": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "x"
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x",
+  "slug": "x"
+ },
+ "claude.user.compact_summary": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "x"
+  },
+  "isVisibleInTranscriptOnly": true,
+  "isCompactSummary": true,
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "turnOrigin": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x",
+  "slug": "x"
+ },
+ "claude.user.human": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "x"
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "permissionMode": "x",
+  "origin": {
+   "kind": "human"
+  },
+  "promptSource": "typed",
+  "turnOrigin": "x",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.interrupt": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "[Request interrupted by user]"
+    }
+   ]
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "interruptedMessageId": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.interrupt_tool": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "[Request interrupted by user for tool use]"
+    }
+   ]
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.local_stdout": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "x"
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x",
+  "slug": "x"
+ },
+ "claude.user.meta": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "x"
+    }
+   ]
+  },
+  "isMeta": true,
+  "turnCompanion": true,
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "sourceToolUseID": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.task_notification": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "x"
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "permissionMode": "x",
+  "origin": {
+   "kind": "task-notification"
+  },
+  "promptSource": "system",
+  "turnOrigin": "x",
+  "queueSkipAttachments": true,
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.tool_result": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "ID",
+     "content": [
+      {
+       "type": "tool_reference",
+       "tool_name": "x"
+      }
+     ]
+    }
+   ]
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "toolUseResult": {
+   "matches": [
+    "x"
+   ],
+   "query": "x",
+   "total_deferred_tools": 0
+  },
+  "sourceToolAssistantUUID": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "claude.user.tool_result_error": {
+  "parentUuid": "ID",
+  "isSidechain": false,
+  "promptId": "x",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "content": "x",
+     "is_error": true,
+     "tool_use_id": "ID"
+    }
+   ]
+  },
+  "uuid": "ID",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "toolUseResult": "x",
+  "sourceToolAssistantUUID": "x",
+  "session_id": "ID",
+  "userType": "external",
+  "entrypoint": "x",
+  "cwd": "x",
+  "sessionId": "ID",
+  "version": "x",
+  "gitBranch": "x"
+ },
+ "codex.event.task_complete": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "event_msg",
+  "payload": {
+   "type": "task_complete",
+   "turn_id": "ID",
+   "last_agent_message": null,
+   "started_at": 0,
+   "completed_at": 0,
+   "duration_ms": 0,
+   "time_to_first_token_ms": 0
+  }
+ },
+ "codex.event.task_complete_error": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "event_msg",
+  "payload": {
+   "type": "task_complete",
+   "turn_id": "ID",
+   "last_agent_message": null,
+   "error": {
+    "message": "x",
+    "codex_error_info": "other"
+   },
+   "started_at": 0,
+   "completed_at": 0,
+   "duration_ms": 0
+  }
+ },
+ "codex.event.task_started": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "event_msg",
+  "payload": {
+   "type": "task_started",
+   "turn_id": "ID",
+   "root_turn_id": "ID",
+   "started_at": 0,
+   "model_context_window": 0,
+   "collaboration_mode_kind": "x"
+  }
+ },
+ "codex.event.thread_settings_applied": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "event_msg",
+  "payload": {
+   "type": "thread_settings_applied",
+   "thread_id": "ID",
+   "thread_settings": {
+    "model": "MODEL",
+    "model_provider_id": "x",
+    "service_tier": "x",
+    "approval_policy": "x",
+    "approvals_reviewer": "x",
+    "permission_profile": {
+     "type": "managed",
+     "file_system": {
+      "type": "restricted",
+      "entries": [
+       {
+        "path": {
+         "type": "special",
+         "value": {
+          "kind": "root"
+         }
+        },
+        "access": "x"
+       }
+      ]
+     },
+     "network": "x"
+    },
+    "cwd": "x",
+    "runtime_workspace_roots": [
+     "x"
+    ],
+    "reasoning_effort": "x",
+    "reasoning_summary": "x",
+    "collaboration_mode": {
+     "mode": "x",
+     "settings": {
+      "model": "MODEL",
+      "reasoning_effort": "x",
+      "developer_instructions": "x"
+     }
+    },
+    "disabled_plugin_ids": []
+   }
+  }
+ },
+ "codex.event.turn_aborted": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "event_msg",
+  "payload": {
+   "type": "turn_aborted",
+   "turn_id": "ID",
+   "reason": "interrupted",
+   "started_at": 0,
+   "completed_at": 0,
+   "duration_ms": 0
+  }
+ },
+ "codex.event.user_message": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "type": "event_msg",
+  "payload": {
+   "type": "user_message",
+   "message": "x",
+   "images": [],
+   "local_images": [],
+   "text_elements": []
+  }
+ },
+ "codex.response.ask_call": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "response_item",
+  "payload": {
+   "type": "function_call",
+   "id": "ID",
+   "name": "request_user_input_async",
+   "arguments": "{\"questions\": [{\"title\": \"x\", \"options\": [\"x\", \"x\"]}]}",
+   "call_id": "ID",
+   "internal_chat_message_metadata_passthrough": {
+    "turn_id": "ID",
+    "create_time": 0
+   }
+  }
+ },
+ "codex.response.assistant": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "response_item",
+  "payload": {
+   "type": "message",
+   "id": "ID",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "output_text",
+     "text": "x"
+    }
+   ],
+   "phase": "x",
+   "internal_chat_message_metadata_passthrough": {
+    "turn_id": "ID",
+    "create_time": 0,
+    "content_item_kinds": [
+     "x"
+    ]
+   }
+  },
+  "metadata": {
+   "retained_source": {
+    "id": {
+     "message_id": "x",
+     "turn_id": "ID",
+     "role": "assistant"
+    },
+    "revision": "x",
+    "complete": true
+   },
+   "client_authored": false,
+   "user_input_order": 0
+  }
+ },
+ "codex.response.call_output": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "response_item",
+  "payload": {
+   "type": "function_call_output",
+   "id": "ID",
+   "call_id": "ID",
+   "output": "x",
+   "internal_chat_message_metadata_passthrough": {
+    "turn_id": "ID",
+    "create_time": 0
+   }
+  },
+  "metadata": {
+   "client_authored": false,
+   "fallback_token_limit_override": 0
+  }
+ },
+ "codex.turn_context": {
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "ordinal": 0,
+  "type": "turn_context",
+  "payload": {
+   "turn_id": "ID",
+   "root_turn_id": "ID",
+   "disabled_plugin_ids": [],
+   "cwd": "x",
+   "workspace_roots": [
+    "x"
+   ],
+   "current_date": "x",
+   "timezone": "x",
+   "approval_policy": "x",
+   "approvals_reviewer": "x",
+   "sandbox_policy": {
+    "type": "danger-full-access"
+   },
+   "permission_profile": {
+    "type": "disabled"
+   },
+   "model": "MODEL",
+   "comp_hash": "x",
+   "collaboration_mode": {
+    "mode": "x",
+    "settings": {
+     "model": "MODEL",
+     "reasoning_effort": "x",
+     "developer_instructions": "x"
+    }
+   },
+   "multi_agent_version": "x",
+   "realtime_active": false,
+   "effort": "x",
+   "summary": "x"
+  }
+ },
+ "grok.chat.assistant": {
+  "type": "assistant",
+  "content": "x",
+  "tool_calls": [
+   {
+    "id": "ID",
+    "name": "write",
+    "arguments": "{\"file_path\": \"x\", \"content\": \"x\"}"
+   }
+  ],
+  "model_id": "MODEL",
+  "model_fingerprint": "x",
+  "reasoning_effort": "x"
+ },
+ "grok.chat.user_query": {
+  "type": "user",
+  "content": [
+   {
+    "type": "text",
+    "text": "x"
+   }
+  ],
+  "prompt_index": 0
+ },
+ "grok.chat.user_synthetic": {
+  "type": "user",
+  "content": [
+   {
+    "type": "text",
+    "text": "x"
+   }
+  ],
+  "synthetic_reason": "x"
+ },
+ "grok.update.ask": {
+  "timestamp": 0,
+  "method": "session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "ID",
+    "title": "ask_user_question",
+    "rawInput": {
+     "questions": [
+      {
+       "question": "x",
+       "options": [
+        {
+         "label": "x",
+         "description": "x"
+        },
+        {
+         "label": "x",
+         "description": "x"
+        }
+       ]
+      }
+     ]
+    },
+    "_meta": {
+     "x.ai/tool": {
+      "version": 0,
+      "name": "ask_user_question",
+      "kind": "ask_user",
+      "namespace": "x",
+      "label": "x",
+      "read_only": true
+     }
+    }
+   },
+   "_meta": {
+    "totalTokens": 0,
+    "eventId": "x",
+    "agentTimestampMs": 0,
+    "promptId": "x",
+    "streamStartMs": 0,
+    "turnStartMs": 0,
+    "updateType": "x",
+    "updateParams": {
+     "toolCallId": "ID",
+     "title": "ask_user_question",
+     "kind": "Other",
+     "status": "Pending"
+    }
+   }
+  }
+ },
+ "grok.update.ask_answered": {
+  "timestamp": 0,
+  "method": "session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "ID",
+    "status": "completed",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "x"
+      }
+     }
+    ],
+    "rawOutput": {
+     "type": "AskUserQuestion",
+     "UserAnswered": {
+      "message": "x"
+     }
+    }
+   },
+   "_meta": {
+    "totalTokens": 0,
+    "eventId": "x",
+    "agentTimestampMs": 0,
+    "promptId": "x",
+    "streamStartMs": 0,
+    "turnStartMs": 0,
+    "updateType": "x",
+    "updateParams": {
+     "toolCallId": "ID",
+     "status": "Completed"
+    }
+   }
+  }
+ },
+ "grok.update.hook_execution": {
+  "timestamp": 0,
+  "method": "_x.ai/session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "hook_execution",
+    "event_name": "x",
+    "runs": [
+     {
+      "name": "x",
+      "status": {
+       "status": "failed",
+       "error": "x",
+       "elapsed_ms": 0
+      }
+     },
+     {
+      "name": "x",
+      "status": {
+       "status": "success",
+       "elapsed_ms": 0
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0
+   }
+  }
+ },
+ "grok.update.turn_completed.cancelled": {
+  "timestamp": 0,
+  "method": "_x.ai/session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "turn_completed",
+    "prompt_id": "ID",
+    "stop_reason": "cancelled",
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "totalTokens": 0,
+     "cachedReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 0,
+     "modelCalls": 0,
+     "apiDurationMs": 0,
+     "costUsdTicks": 0,
+     "modelUsage": {
+      "grok-4.7-build": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "totalTokens": 0,
+       "cachedReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "reasoningTokens": 0,
+       "modelCalls": 0,
+       "apiDurationMs": 0,
+       "costUsdTicks": 0
+      }
+     },
+     "numTurns": 0
+    },
+    "elapsed_ms": 0
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0,
+    "cancellationCategory": "x"
+   }
+  }
+ },
+ "grok.update.turn_completed.end_turn": {
+  "timestamp": 0,
+  "method": "_x.ai/session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "turn_completed",
+    "prompt_id": "ID",
+    "stop_reason": "end_turn",
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "totalTokens": 0,
+     "cachedReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 0,
+     "modelCalls": 0,
+     "apiDurationMs": 0,
+     "costUsdTicks": 0,
+     "modelUsage": {
+      "grok-4.7-build": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "totalTokens": 0,
+       "cachedReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "reasoningTokens": 0,
+       "modelCalls": 0,
+       "apiDurationMs": 0,
+       "costUsdTicks": 0
+      }
+     },
+     "numTurns": 0
+    },
+    "elapsed_ms": 0
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0
+   }
+  }
+ },
+ "grok.update.turn_completed.error": {
+  "timestamp": 0,
+  "method": "_x.ai/session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "turn_completed",
+    "prompt_id": "ID",
+    "stop_reason": "error",
+    "agent_result": "x",
+    "elapsed_ms": 0
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0
+   }
+  }
+ },
+ "grok.update.turn_completed.rate_limit": {
+  "timestamp": 0,
+  "method": "_x.ai/session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "turn_completed",
+    "prompt_id": "ID",
+    "stop_reason": "rate_limit",
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "totalTokens": 0,
+     "cachedReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 0,
+     "modelCalls": 0,
+     "apiDurationMs": 0,
+     "costUsdTicks": 0,
+     "modelUsage": {
+      "grok-4.6": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "totalTokens": 0,
+       "cachedReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "reasoningTokens": 0,
+       "modelCalls": 0,
+       "apiDurationMs": 0,
+       "costUsdTicks": 0
+      }
+     },
+     "numTurns": 0
+    }
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0
+   }
+  }
+ },
+ "grok.update.user_message_chunk": {
+  "timestamp": 0,
+  "method": "session/update",
+  "params": {
+   "sessionId": "ID",
+   "update": {
+    "sessionUpdate": "user_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "x"
+    },
+    "_meta": {
+     "modelId": "x",
+     "promptIndex": 0
+    }
+   },
+   "_meta": {
+    "eventId": "x",
+    "agentTimestampMs": 0
+   }
+  }
+ }
+}

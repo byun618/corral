@@ -211,6 +211,37 @@ export type SessionActivity =
 export type SessionTool = { name: string; input: string | null }
 
 /**
+ * **마지막으로 끝난 턴의 결과** (LIFE-458 #8·#9) — provider 세션 기록의 턴 끝 표지에서 읽는다.
+ *
+ * `null` 은 "보고할 결과가 없다" 다: 꼬리 창에서 턴 끝 표지를 못 찾았거나, 표지 **뒤에 새 턴이
+ * 시작돼** 그 결과가 풀렸다(T2). `completed` 는 정상 종료 표지를 **실제로 본** 경우에만 선다 —
+ * 표지 부재를 정상 종료로 읽지 않는다.
+ *
+ * `interrupted` 는 "중단 표지로 끝난 턴" 이다. **사용자가 눌렀다고 단정하지 않는다** — Claude 의
+ * 중단 문자열은 ESC 전용이 아니다(00-analysis §9). `reason` 은 provider 원문 값이다.
+ * `failed` 의 `error` 도 원문 값이다(`rate_limit`·`server_error`·`usage_limit_exceeded` …) —
+ * enum 으로 닫지 않는다. 못 읽으면 null.
+ */
+export type TurnOutcome =
+  | { outcome: 'completed' }
+  | { outcome: 'interrupted'; reason: string | null }
+  | { outcome: 'failed'; error: string | null }
+
+/** 대기 중인 질문의 선택지 하나. */
+export type SessionQuestionOption = { label: string; description: string | null }
+
+/**
+ * 에이전트가 **지금 답을 기다리는** 질문 한 문항 (LIFE-458 #7). 답이 도착한 질문은 싣지 않는다.
+ * `header`·`multiSelect` 는 claude 만 준다 — 다른 provider 는 null.
+ */
+export type SessionQuestion = {
+  question: string
+  header: string | null
+  options: SessionQuestionOption[]
+  multiSelect: boolean | null
+}
+
+/**
  * 트랜스크립트에서 읽어 낸 한 세션의 지문 — 2차 줄·제목 티어·경과 시간이 전부 여기서 나온다.
  * herdr 를 모르는 층이 만든다 (`main/transcript.ts`, `main/git-status.ts` 와 같은 결).
  */
@@ -240,6 +271,18 @@ export type SessionDigest = {
    * **렌더러가 그 행을 처음 본 시각이 아니다** — 09-gate1-fix.md E 가 지웠던 결함이 그것이었다.
    */
   lastActivityAt: number | null
+  /** 마지막으로 끝난 턴의 결과 (LIFE-458 #8·#9). 없거나 새 턴이 시작돼 풀렸으면 null. */
+  turnOutcome: TurnOutcome | null
+  /** 마지막으로 관측된 모델 식별자 (LIFE-458 #12). 합성·오류 레코드의 값은 쓰지 않는다. 없으면 null. */
+  model: string | null
+  /**
+   * **사람이 친 마지막 발화** (LIFE-458 #13) — 한 줄로 접은 원문(앞 2,000자). 없으면 null.
+   * 고르는 규칙은 `firstPrompt` 와 같다(하네스 주입·메타·슬래시 봉투·도구 결과 제외). 다만
+   * `firstPrompt` 는 40자 **제목**으로 다듬은 값이라 같은 발화여도 문자열은 다르다.
+   */
+  lastPrompt: string | null
+  /** 지금 답을 기다리는 질문 (LIFE-458 #7). 없으면 null — 빈 배열은 오지 않는다. */
+  pendingQuestions: SessionQuestion[] | null
 }
 
 /** 아무것도 못 읽은 상태의 지문. 셸 탭·통합 미설치가 여기 선다. */
@@ -249,6 +292,10 @@ export const EMPTY_SESSION_DIGEST: SessionDigest = {
   firstPrompt: null,
   tool: null,
   lastActivityAt: null,
+  turnOutcome: null,
+  model: null,
+  lastPrompt: null,
+  pendingQuestions: null,
 }
 
 export type TabRow = {

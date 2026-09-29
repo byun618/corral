@@ -50,9 +50,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { AgentSessionRef, SessionDigest, TranscriptAgent } from '../shared/types.js'
+import type { AgentSessionRef, SessionDigest, SessionQuestion, TranscriptAgent, TurnOutcome } from '../shared/types.js'
+import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
-import { parseHead, parseTail } from './transcript-parse.js'
+import { parseGrokUpdates, parseHead, parseTail } from './transcript-parse.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -69,8 +70,24 @@ export const TAIL_MAX_BYTES = 2 * 1024 * 1024
  */
 export const HEAD_WINDOW_BYTES = 256 * 1024
 
+/**
+ * **형제 파일 창** — grok 의 턴 결과·질문은 `chat_history.jsonl` 이 아니라 같은 폴더의
+ * `updates.jsonl` 에 있다(LIFE-458, 00-analysis P3). 그 파일은 p50 0.6MB · 최대 6.8MB 라
+ * (`raw/claude/u1-grok-sequences.txt`) 꼬리 256KB 만 읽고 확장하지 않는다 — 기준 T7 이 박은
+ * 「파일당 ≤256KB 꼬리 창 + mtime·size 캐시」다. 창 안에 턴 끝 표지가 없으면 null 이다.
+ */
+export const SIDECAR_WINDOW_BYTES = 256 * 1024
+
 /** 아무것도 못 읽은 지문. */
-const EMPTY: SessionDigest = { activity: { state: 'none' }, providerTitle: null, firstPrompt: null, tool: null, lastActivityAt: null }
+const EMPTY: SessionDigest = EMPTY_SESSION_DIGEST
+
+/** 형제 파일(grok `updates.jsonl`)에서 읽은 것과 그때의 stat. */
+type SidecarEntry = {
+  size: number
+  mtimeMs: number
+  turnOutcome: TurnOutcome | null
+  pendingQuestions: SessionQuestion[] | null
+}
 
 type CacheEntry = {
   /** 해소된 파일 경로. 못 찾았으면 null (다음 갱신에 다시 훑는다). */
@@ -99,6 +116,8 @@ type CacheEntry = {
    * **0바이트**다 — 재판독을 열어도 C6′-② (주기당 ≤256KB)가 안 깨지는 이유다.
    */
   headDone: boolean
+  /** grok 형제 파일 판독 결과. grok 이 아니거나 그 파일이 없으면 null (LIFE-458). */
+  sidecar: SidecarEntry | null
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -131,7 +150,15 @@ function shouldResolveNow(key: string, now: number): boolean {
  * `statOnly` 는 **읽기 0바이트로 끝난 참조** 수다: 파일이 안 바뀌어 `stat` 한 번으로 끝났거나,
  * 못 찾은 참조라 이번 주기엔 훑기조차 건너뛴 경우.
  */
-export type ReadCost = { files: number; statOnly: number; bytes: number; headBytes: number; ms: number }
+export type ReadCost = {
+  files: number
+  statOnly: number
+  bytes: number
+  headBytes: number
+  /** 그중 grok 형제 파일(`updates.jsonl`) 몫 — 파일당 ≤256KB 인지 따로 본다 (LIFE-458 T7). */
+  sidecarBytes: number
+  ms: number
+}
 
 /**
  * 판독 캐시를 통째로 비운다 — **세션을 갈아탈 때** main 이 부른다 (수정 라운드 1, V10).
@@ -360,6 +387,10 @@ function readDigest(input: {
       // 레코드에 시각이 없는 포맷(grok)은 파일 mtime 으로 떨어진다 — **실재하는 시각**이다
       // (기준 D1: 렌더러가 처음 본 시각을 쓰면 미달).
       lastActivityAt: parsed.lastActivityAt ?? input.mtimeMs,
+      turnOutcome: parsed.turnOutcome,
+      model: parsed.model,
+      lastPrompt: parsed.lastPrompt,
+      pendingQuestions: parsed.pendingQuestions,
     },
     bytes,
   }
@@ -375,18 +406,20 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
   digest: SessionDigest
   bytes: number
   headBytes: number
+  sidecarBytes: number
   statOnly: boolean
 } {
-  if (ref === null) return { digest: EMPTY, bytes: 0, headBytes: 0, statOnly: false }
+  if (ref === null) return { digest: EMPTY, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: false }
   const agent = transcriptAgent(ref.agent)
-  if (agent === null) return { digest: EMPTY, bytes: 0, headBytes: 0, statOnly: false }
+  if (agent === null) return { digest: EMPTY, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: false }
 
   const key = cacheKey(ref)
   const cached = cache.get(key) ?? null
-  const unresolved: { digest: SessionDigest; bytes: number; headBytes: number } = {
+  const unresolved: { digest: SessionDigest; bytes: number; headBytes: number; sidecarBytes: number } = {
     digest: { ...EMPTY, activity: { state: 'unresolved' } },
     bytes: 0,
     headBytes: 0,
+    sidecarBytes: 0,
   }
   let file = cached?.file ?? null
   if (file === null) {
@@ -415,58 +448,148 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
       bytes: 0,
       headBytes: 0,
+      sidecarBytes: 0,
       statOnly: false,
     }
   }
 
-  if (cached !== null && cached.file === file && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-    return { digest: cached.digest, bytes: 0, headBytes: 0, statOnly: true }
+  // grok 은 **파일이 둘**이다 (LIFE-458). 턴이 중단되면 `updates.jsonl` 만 자라고 `chat_history` 는
+  // 그대로일 수 있어서, 두 파일을 따로 stat 하고 **바뀐 쪽만** 읽는다 — 무변경 파일은 읽기 0바이트(T7).
+  const sidecarFile = agent === 'grok' ? path.join(path.dirname(file), 'updates.jsonl') : null
+  const sidecarStat = sidecarFile === null ? null : statOrNull(sidecarFile)
+  const mainFresh = cached !== null && cached.file === file && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs
+  const sidecarFresh = sameStat(cached?.sidecar ?? null, sidecarStat)
+  if (cached !== null && mainFresh && sidecarFresh) {
+    return { digest: cached.digest, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: true }
   }
 
   try {
-    const read = readDigest({
-      file,
-      size: stat.size,
-      mtimeMs: stat.mtimeMs,
-      agent,
-      sessionId: ref.kind === 'id' ? ref.id : null,
-      // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
-      // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
-      titleScanned: cached?.titleScanned ?? false,
-      // 머리는 **끝났을 때만** 이어진다 (C6′-④). 안 끝난 파일은 자랄 때마다 다시 읽는데,
-      // 그런 파일은 창보다 작아서 그 재판독이 추가 0바이트다.
-      headDone: cached?.headDone ?? false,
-    })
-    // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
-    // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
-    // 이름이 대화 중에 폴백으로 **되돌아간다**. 같은 파일 = 같은 세션이라 소유자 확인(C2)은
-    // 이미 끝난 값이다.
-    const digest: SessionDigest = {
-      ...read.digest,
-      providerTitle: read.digest.providerTitle ?? cached?.digest.providerTitle ?? null,
-      // **첫 발화도 이어 나른다.** 머리 판독이 끝난 뒤로는 이번 판독에 값이 아예 안 실린다 —
-      // 안 이으면 다음 갱신에서 제목이 폴백으로 되돌아간다 (V2 가 provider 제목에서 잡았던
-      // 것과 같은 결함).
-      firstPrompt: read.digest.firstPrompt ?? cached?.digest.firstPrompt ?? null,
+    const main = cached !== null && mainFresh ? reuseMain(cached) : readMain({ file, stat, agent, ref, cached })
+    let sidecar = cached?.sidecar ?? null
+    let sidecarBytes = 0
+    if (sidecarFile !== null && !sidecarFresh) {
+      const read = sidecarStat === null ? null : readSidecar({ file: sidecarFile, stat: sidecarStat })
+      sidecar = read?.entry ?? null
+      sidecarBytes = read?.bytes ?? 0
     }
+    // grok 이 아니면 턴 결과·질문은 본 파일 판독이 이미 채웠다. grok 이면 형제 파일 값으로 덮는다.
+    const digest: SessionDigest =
+      sidecarFile === null
+        ? main.digest
+        : { ...main.digest, turnOutcome: sidecar?.turnOutcome ?? null, pendingQuestions: sidecar?.pendingQuestions ?? null }
     cache.set(key, {
       file,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       digest,
-      titleScanned: read.titleScanned,
-      headDone: read.headDone,
+      titleScanned: main.titleScanned,
+      headDone: main.headDone,
+      sidecar,
     })
-    return { digest, bytes: read.bytes, headBytes: read.headBytes, statOnly: false }
+    return {
+      digest,
+      bytes: main.bytes + sidecarBytes,
+      headBytes: main.headBytes,
+      sidecarBytes,
+      statOnly: false,
+    }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
     return {
       digest: { ...EMPTY, activity: { state: 'unreadable', reason: String(error) } },
       bytes: 0,
       headBytes: 0,
+      sidecarBytes: 0,
       statOnly: false,
     }
   }
+}
+
+/** stat, 없거나 못 읽으면 null — 형제 파일은 없을 수 있다(없으면 그 칸이 null 일 뿐이다). */
+function statOrNull(file: string): fs.Stats | null {
+  try {
+    return fs.statSync(file)
+  } catch {
+    return null
+  }
+}
+
+/** 캐시의 형제 파일 stat 과 지금 stat 이 같은가. 둘 다 없으면 같다. */
+function sameStat(entry: SidecarEntry | null, stat: fs.Stats | null): boolean {
+  if (stat === null) return entry === null
+  return entry !== null && entry.size === stat.size && entry.mtimeMs === stat.mtimeMs
+}
+
+type MainRead = { digest: SessionDigest; bytes: number; headBytes: number; titleScanned: boolean; headDone: boolean }
+
+/** 본 파일이 안 바뀌었다 — 읽지 않고 캐시 값을 쓴다 (형제 파일만 바뀐 주기). */
+function reuseMain(cached: CacheEntry): MainRead {
+  return { digest: cached.digest, bytes: 0, headBytes: 0, titleScanned: cached.titleScanned, headDone: cached.headDone }
+}
+
+/** 형제 파일 꼬리 한 창을 읽는다 — 확장 없음 (T7). */
+function readSidecar(input: { file: string; stat: fs.Stats }): { entry: SidecarEntry; bytes: number } {
+  const from = Math.max(0, input.stat.size - SIDECAR_WINDOW_BYTES)
+  const chunk = readRange(input.file, from, input.stat.size)
+  const parsed = parseGrokUpdates({ chunk, partial: from > 0 })
+  return {
+    entry: { size: input.stat.size, mtimeMs: input.stat.mtimeMs, ...parsed },
+    bytes: input.stat.size - from,
+  }
+}
+
+/** 본 파일을 읽어 지문을 만든다 — 한 번 확인한 값은 창 밖으로 밀려나도 이어 나른다. */
+function readMain(input: {
+  file: string
+  stat: fs.Stats
+  agent: TranscriptAgent
+  ref: AgentSessionRef
+  cached: CacheEntry | null
+}): MainRead {
+  const { cached } = input
+  const read = readDigest({
+    file: input.file,
+    size: input.stat.size,
+    mtimeMs: input.stat.mtimeMs,
+    agent: input.agent,
+    sessionId: input.ref.kind === 'id' ? input.ref.id : null,
+    // **파일을 건너 이어진다.** 파일이 자라 mtime 이 바뀌어도 "이 파일은 이미 상한까지
+    // 훑어봤다" 는 사실은 그대로다 — 안 이으면 갱신마다 2MB 를 다시 읽는다.
+    titleScanned: cached?.titleScanned ?? false,
+    // 머리는 **끝났을 때만** 이어진다 (C6′-④). 안 끝난 파일은 자랄 때마다 다시 읽는데,
+    // 그런 파일은 창보다 작아서 그 재판독이 추가 0바이트다.
+    headDone: cached?.headDone ?? false,
+  })
+  // **한 번 확인한 provider 제목은 창 밖으로 밀려나도 유지한다** (수정 라운드 1, V2).
+  // 파일이 자라면 `ai-title` 이 첫 창 밖으로 나가는데, 그때 제목이 사라지면 사용자가 보는
+  // 이름이 대화 중에 폴백으로 **되돌아간다**. 같은 파일 = 같은 세션이라 소유자 확인(C2)은
+  // 이미 끝난 값이다.
+  const digest: SessionDigest = {
+    ...read.digest,
+    providerTitle: read.digest.providerTitle ?? cached?.digest.providerTitle ?? null,
+    // **첫 발화도 이어 나른다.** 머리 판독이 끝난 뒤로는 이번 판독에 값이 아예 안 실린다 —
+    // 안 이으면 다음 갱신에서 제목이 폴백으로 되돌아간다 (V2 가 provider 제목에서 잡았던
+    // 것과 같은 결함).
+    firstPrompt: read.digest.firstPrompt ?? cached?.digest.firstPrompt ?? null,
+    // **모델·최근 발화도 이어 나른다** (LIFE-458 T3·T4). 둘 다 "가장 최근 값" 이라 더 새 값은
+    // 반드시 꼬리 창 안에 있다(JSONL 은 뒤에 붙는다) — 창에 없으면 전에 본 값이 여전히 최신이다.
+    // 창을 넓혀 찾지 않는다(T7). 턴 결과·질문은 **안 잇는다** — "지금" 의 값이라 창에 없으면 null 이다.
+    model: read.digest.model ?? cached?.digest.model ?? null,
+    lastPrompt: read.digest.lastPrompt ?? cached?.digest.lastPrompt ?? null,
+  }
+  return { digest, bytes: read.bytes, headBytes: read.headBytes, titleScanned: read.titleScanned, headDone: read.headDone }
+}
+
+/**
+ * 두 지문이 **화면에 보낼 만큼 다른가** — `index.ts` 의 emit 판정 (LIFE-458 T8).
+ *
+ * 필드를 하나씩 고르던 옛 비교는 `firstPrompt`·`tool` 을 빠뜨려(00-analysis P7) 그 둘만 바뀐 주기가
+ * emit 되지 않았다. 필드가 늘 때마다 같은 구멍이 다시 열리므로 **구조 전체**를 비교한다. 지문은 이
+ * 파일의 같은 코드 경로가 만들어 키 순서가 일정하다 — 순서가 달라지면 틀리는 쪽은 "같은데 다르다"
+ * (emit 한 번 더)이지 "다른데 같다"(갱신 유실)가 아니다.
+ */
+export function digestsEqual(a: SessionDigest, b: SessionDigest): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**
@@ -487,6 +610,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   let statOnly = 0
   let bytes = 0
   let headBytes = 0
+  let sidecarBytes = 0
   for (const [id, ref] of refs) {
     const read = readSessionDigest(ref)
     digests.set(id, read.digest)
@@ -495,6 +619,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     if (read.statOnly) statOnly += 1
     bytes += read.bytes
     headBytes += read.headBytes
+    sidecarBytes += read.sidecarBytes
   }
-  return { digests, cost: { files, statOnly, bytes, headBytes, ms: Date.now() - startedAt } }
+  return { digests, cost: { files, statOnly, bytes, headBytes, sidecarBytes, ms: Date.now() - startedAt } }
 }

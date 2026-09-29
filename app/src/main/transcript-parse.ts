@@ -12,7 +12,14 @@
 // 예외를 밖으로 던지지도 않는다 — 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 된다.
 
 import { isRecord, readString, safeParse } from '../shared/json.js'
-import type { SessionActivity, SessionTool, TranscriptAgent } from '../shared/types.js'
+import type {
+  SessionActivity,
+  SessionQuestion,
+  SessionQuestionOption,
+  SessionTool,
+  TranscriptAgent,
+  TurnOutcome,
+} from '../shared/types.js'
 
 /** 꼬리 조각에서 뽑아낸 것. 못 찾은 자리는 전부 null 이다. */
 export type TranscriptDigest = {
@@ -21,6 +28,14 @@ export type TranscriptDigest = {
   /** 마지막 어시스턴트 턴이 도구 호출뿐일 때 그 도구 (B9). 텍스트가 있으면 null. */
   tool: SessionTool | null
   lastActivityAt: number | null
+  /** LIFE-458 #8·#9 — grok 은 이 파일(`chat_history`)에 표지가 없어 `parseGrokUpdates` 가 채운다. */
+  turnOutcome: TurnOutcome | null
+  /** LIFE-458 #12 */
+  model: string | null
+  /** LIFE-458 #13 */
+  lastPrompt: string | null
+  /** LIFE-458 #7 — grok 은 `parseGrokUpdates` 가 채운다. */
+  pendingQuestions: SessionQuestion[] | null
 }
 
 export const EMPTY_DIGEST: TranscriptDigest = {
@@ -28,6 +43,10 @@ export const EMPTY_DIGEST: TranscriptDigest = {
   providerTitle: null,
   tool: null,
   lastActivityAt: null,
+  turnOutcome: null,
+  model: null,
+  lastPrompt: null,
+  pendingQuestions: null,
 }
 
 
@@ -42,6 +61,20 @@ export function tailLines(chunk: string, { partial }: { partial: boolean }): str
   const lines = chunk.split('\n')
   if (partial) lines.shift()
   return lines.filter((line) => line.trim().length > 0)
+}
+
+/**
+ * 꼬리 조각 → 파싱된 레코드 (파일 순서). 객체가 아닌 줄·깨진 줄은 조용히 빠진다 (T6).
+ *
+ * LIFE-458 에서 한 조각을 **여러 번** 훑게 되어(턴 결과·모델·최근 발화·질문) 파싱을 한 번으로 모았다.
+ */
+export function tailRecords(chunk: string, { partial }: { partial: boolean }): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = []
+  for (const line of tailLines(chunk, { partial })) {
+    const record = safeParse(line)
+    if (isRecord(record)) records.push(record)
+  }
+  return records
 }
 
 /** ISO 시각 → epoch ms. 모양이 아니면 null (Date 가 NaN 을 조용히 흘리는 것을 여기서 막는다). */
@@ -130,16 +163,16 @@ export function cleanActivityText(raw: string): string | null {
  * 쓴다 (`agent-row-conversation-name.ts:139-148`).
  */
 export function parseClaudeTail(input: { chunk: string; partial: boolean; sessionId: string | null }): TranscriptDigest {
-  const lines = tailLines(input.chunk, { partial: input.partial })
+  const records = tailRecords(input.chunk, { partial: input.partial })
   let activity: SessionActivity | null = null
   let providerTitle: string | null = null
   let tool: SessionTool | null = null
   let sawAssistant = false
   let lastActivityAt: number | null = null
 
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const record = safeParse(lines[i] ?? '')
-    if (!isRecord(record)) continue
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
 
     const at = readTimestamp(record['timestamp'])
     if (at !== null && (lastActivityAt === null || at > lastActivityAt)) lastActivityAt = at
@@ -179,6 +212,10 @@ export function parseClaudeTail(input: { chunk: string; partial: boolean; sessio
     providerTitle,
     tool,
     lastActivityAt,
+    turnOutcome: claudeTurnOutcome({ records, sessionId: input.sessionId }),
+    model: claudeModel(records),
+    lastPrompt: claudeLastPrompt({ records, sessionId: input.sessionId }),
+    pendingQuestions: claudePendingQuestions({ records, sessionId: input.sessionId }),
   }
 }
 
@@ -225,6 +262,232 @@ function toolInputPreview(input: unknown): string | null {
   return null
 }
 
+// --- 턴 결과·모델·최근 발화·질문 (LIFE-458 #8·#9·#12·#13·#7) -----------------------
+//
+// 전부 **꼬리 창 안의 가장 최근 것**만 본다 — 새 항목 때문에 창을 넓히지 않는다(T7). 표지 모양은
+// 사용자 기록 실측이다(`specs/LIFE-458-state-sources/raw/claude/u1-*·u4-misc.txt`). 관측된 모양만
+// 읽고, 모르는 모양은 null 이다 — 표지를 지어내지 않는다(T1).
+
+/** 사람 발화 하나로 잘라 볼 원문 길이 — 붙여넣기 수십 KB 를 IPC 로 나르지 않는다(T4, 워커 재량). */
+export const LAST_PROMPT_SCAN_LIMIT = 2000
+
+/** 최근 사용자 발화를 한 줄로 (T4). 앞 `LAST_PROMPT_SCAN_LIMIT` 자만 접는다. */
+export function cleanPromptLine(raw: string): string | null {
+  return cleanActivityText(raw.slice(0, LAST_PROMPT_SCAN_LIMIT))
+}
+
+/** Claude 중단 표지 — user 텍스트가 **정확히** 이 문자열일 때만 (실측 114 · 26, `u1-claude-sequences.txt`). */
+const CLAUDE_INTERRUPT_MARKERS: readonly string[] = [
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
+]
+
+/** user 레코드가 중단 표지면 그 원문, 아니면 null. */
+function claudeInterruptMarker(record: Record<string, unknown>): string | null {
+  if (readString(record, 'type') !== 'user') return null
+  const message = record['message']
+  if (!isRecord(message)) return null
+  const text = textFromContent(message['content'])?.trim() ?? null
+  if (text === null) return null
+  return CLAUDE_INTERRUPT_MARKERS.includes(text) ? text : null
+}
+
+/** user 레코드의 content 에 `tool_result` 블록이 있나 — 도구 결과는 사람 발화가 아니다. */
+function hasToolResult(message: Record<string, unknown>): boolean {
+  const content = message['content']
+  if (!Array.isArray(content)) return false
+  return content.some((block) => isRecord(block) && block['type'] === 'tool_result')
+}
+
+/**
+ * claude **사람 발화** 판정 — 머리(첫 발화)와 꼬리(마지막 발화)가 **같은 규칙**을 쓴다 (T4, 두 벌 금지).
+ * 사람 발화면 원문, 아니면 null.
+ *
+ * 건너뛰는 것은 관측된 것뿐이다. LIFE-366 머리 판독 실측(`c5-b9-shapes-r5.json`)의 넷에, 꼬리에서
+ * 새로 관측된 셋을 더했다(`u1-claude-sequences.txt`·`u4-misc.txt`) — 머리에서는 0건이라 첫 발화
+ * 결과는 그대로다:
+ *
+ * | 건너뛰는 것 | 관측 |
+ * | --- | --- |
+ * | `type` 이 `user` 가 아닌 레코드 · `isMeta: true` | 머리·꼬리 |
+ * | `<command-message>`·`<command-name>` 봉투 · `<local-command-stdout>` | 머리·꼬리 |
+ * | 도구 결과(`tool_result` 블록) | 꼬리 — 텍스트가 없어 원래도 null 이었다 |
+ * | 중단 표지 `[Request interrupted by user…]` | 꼬리 140 |
+ * | `<task-notification>` (하네스가 넣는 백그라운드 작업 통지) | 꼬리 791 |
+ * | `isCompactSummary: true` (대화 압축 요약) | 꼬리 288 |
+ */
+export function claudeHumanText(input: { record: Record<string, unknown>; sessionId: string | null }): string | null {
+  const { record } = input
+  if (input.sessionId === null) return null
+  if (readString(record, 'type') !== 'user') return null
+  if (record['isMeta'] === true) return null
+  if (record['isCompactSummary'] === true) return null
+  if (readString(record, 'sessionId') !== input.sessionId) return null
+  const message = record['message']
+  if (!isRecord(message)) return null
+  if (hasToolResult(message)) return null
+  const text = textFromContent(message['content'])
+  if (text === null) return null
+  if (text.includes('<command-message>') || text.includes('<command-name>')) return null
+  if (text.includes('<local-command-stdout>')) return null
+  if (text.includes('<task-notification>')) return null
+  if (CLAUDE_INTERRUPT_MARKERS.includes(text.trim())) return null
+  return text
+}
+
+/**
+ * claude 마지막 턴 결과 (T1·T2).
+ *
+ * 뒤에서 앞으로 훑어 **처음 만나는 턴 레코드**가 답을 정한다:
+ *   · user 중단 표지 → `interrupted` (reason = 표지 원문)
+ *   · assistant `isApiErrorMessage: true` → `failed` (error = 레코드 `error` 원문)
+ *   · 그 밖의 assistant → 뒤에 `system/turn_duration` 을 봤으면 `completed`, 아니면 null (아직 도는 턴)
+ *   · 사람 발화·`<task-notification>`·도구 결과 → null — **새 턴이 시작됐다**(표지가 풀린다, T2)
+ *
+ * 턴과 무관한 레코드(메타·슬래시 명령 봉투·`local-command-stdout`·다른 system·attachment 류)는
+ * 건너뛴다 — 중단 뒤 `/model` 같은 로컬 명령을 쳐도 턴은 새로 시작하지 않는다(실측 8건).
+ * `turn_duration` 은 정상 종료 뒤에만 있는 게 아니라(오류·도구 중단 뒤에도 온다) **표지 판정은
+ * 표지 레코드가 한다** — `turn_duration` 은 "끝났다" 만 말한다. 정상 종료 뒤 `turn_duration` 이
+ * 없는 기록도 있다(실측 467) — 그때는 null 이다. 부재를 정상 종료로 읽지 않는다.
+ */
+export function claudeTurnOutcome(input: { records: readonly Record<string, unknown>[]; sessionId: string | null }): TurnOutcome | null {
+  const { records } = input
+  let sawTurnEnd = false
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const type = readString(record, 'type')
+    if (type === 'system') {
+      if (readString(record, 'subtype') === 'turn_duration') sawTurnEnd = true
+      continue
+    }
+    if (type === 'assistant') {
+      if (record['isApiErrorMessage'] === true) return { outcome: 'failed', error: readString(record, 'error') }
+      return sawTurnEnd ? { outcome: 'completed' } : null
+    }
+    if (type !== 'user') continue
+    const marker = claudeInterruptMarker(record)
+    if (marker !== null) return { outcome: 'interrupted', reason: marker }
+    const message = record['message']
+    if (isRecord(message) && hasToolResult(message)) return null
+    const text = isRecord(message) ? textFromContent(message['content']) : null
+    if (text !== null && text.includes('<task-notification>')) return null
+    if (claudeHumanText({ record, sessionId: input.sessionId }) !== null) return null
+  }
+  return null
+}
+
+/**
+ * claude 마지막 모델 (T3) — assistant `message.model`. 합성 값 `<synthetic>` 과 API 오류 레코드는
+ * 건너뛴다(실측: `<synthetic>` 22 = 오류 레코드 15 + 합성 텍스트 7, `u1-claude-sequences.txt`).
+ */
+export function claudeModel(records: readonly Record<string, unknown>[]): string | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    if (readString(record, 'type') !== 'assistant') continue
+    if (record['isApiErrorMessage'] === true) continue
+    const message = record['message']
+    if (!isRecord(message)) continue
+    const model = readString(message, 'model')?.trim() ?? null
+    if (model === null || model.length === 0 || model === '<synthetic>') continue
+    return model
+  }
+  return null
+}
+
+/** claude 마지막 사람 발화 (T4) — `claudeHumanText` 와 같은 규칙. */
+export function claudeLastPrompt(input: { records: readonly Record<string, unknown>[]; sessionId: string | null }): string | null {
+  for (let i = input.records.length - 1; i >= 0; i -= 1) {
+    const record = input.records[i]
+    if (record === undefined) continue
+    const text = claudeHumanText({ record, sessionId: input.sessionId })
+    if (text === null) continue
+    const line = cleanPromptLine(text)
+    if (line !== null) return line
+  }
+  return null
+}
+
+/**
+ * claude 대기 중인 질문 (T5) — 가장 최근 `AskUserQuestion` tool_use 가 **아직 `tool_result` 를
+ * 못 받았을 때만**. 답하면 `toolUseResult.answers` 가 붙은 tool_result 가, 중단하면 `is_error`
+ * tool_result 가 온다(실측 147 · 15, `u1-claude-sequences.txt`) — 어느 쪽이든 끝난 질문이다.
+ * 사람 발화를 먼저 만나면 그 앞의 질문은 이미 지나간 것이다.
+ */
+export function claudePendingQuestions(input: {
+  records: readonly Record<string, unknown>[]
+  sessionId: string | null
+}): SessionQuestion[] | null {
+  const { records } = input
+  const answered = new Set<string>()
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const type = readString(record, 'type')
+    const message = record['message']
+    if (!isRecord(message)) continue
+    const content = message['content']
+    if (type === 'user') {
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (!isRecord(block) || block['type'] !== 'tool_result') continue
+          const id = readString(block, 'tool_use_id')
+          if (id !== null) answered.add(id)
+        }
+      }
+      if (claudeHumanText({ record, sessionId: input.sessionId }) !== null) return null
+      continue
+    }
+    if (type !== 'assistant' || !Array.isArray(content)) continue
+    for (const block of content) {
+      if (!isRecord(block) || block['type'] !== 'tool_use' || block['name'] !== 'AskUserQuestion') continue
+      const id = readString(block, 'id')
+      if (id !== null && answered.has(id)) return null // 가장 최근 질문이 답을 받았다
+      const toolInput = block['input']
+      return isRecord(toolInput) ? readQuestions({ items: toolInput['questions'], textKey: 'question' }) : null
+    }
+  }
+  return null
+}
+
+/**
+ * provider 의 질문 배열 → `SessionQuestion[]`. 문항 문자열이 없는 원소·label 없는 선택지는 버리고,
+ * 남는 게 없으면 null (T6 — 던지지 않고 칸이 비는 것).
+ * 선택지는 `{label, description}` 객체(claude·grok) 또는 문자열(codex)로 온다 — 둘 다 관측된 모양이다.
+ */
+function readQuestions(input: { items: unknown; textKey: string }): SessionQuestion[] | null {
+  if (!Array.isArray(input.items)) return null
+  const questions: SessionQuestion[] = []
+  for (const item of input.items) {
+    if (!isRecord(item)) continue
+    const question = readString(item, input.textKey)
+    if (question === null || question.trim().length === 0) continue
+    const options: SessionQuestionOption[] = []
+    const rawOptions = item['options']
+    if (Array.isArray(rawOptions)) {
+      for (const option of rawOptions) {
+        if (typeof option === 'string') {
+          if (option.trim().length > 0) options.push({ label: option, description: null })
+          continue
+        }
+        if (!isRecord(option)) continue
+        const label = readString(option, 'label')
+        if (label === null || label.trim().length === 0) continue
+        options.push({ label, description: readString(option, 'description') })
+      }
+    }
+    const multiSelect = item['multiSelect']
+    questions.push({
+      question,
+      header: readString(item, 'header'),
+      options,
+      multiSelect: typeof multiSelect === 'boolean' ? multiSelect : null,
+    })
+  }
+  return questions.length === 0 ? null : questions
+}
+
 /**
  * codex `rollout-*.jsonl` 꼬리 판독.
  *
@@ -233,13 +496,13 @@ function toolInputPreview(input: unknown): string | null {
  * "content":[{"type":"output_text","text":…}]}}`. provider 제목에 해당하는 레코드는 없다.
  */
 export function parseCodexTail(input: { chunk: string; partial: boolean }): TranscriptDigest {
-  const lines = tailLines(input.chunk, { partial: input.partial })
+  const records = tailRecords(input.chunk, { partial: input.partial })
   let activity: SessionActivity | null = null
   let lastActivityAt: number | null = null
 
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const record = safeParse(lines[i] ?? '')
-    if (!isRecord(record)) continue
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
     const at = readTimestamp(record['timestamp'])
     if (at !== null && (lastActivityAt === null || at > lastActivityAt)) lastActivityAt = at
     if (activity !== null) continue
@@ -256,7 +519,129 @@ export function parseCodexTail(input: { chunk: string; partial: boolean }): Tran
   // codex 의 도구 호출은 어시스턴트 메시지 **밖**(`response_item/function_call`)에 산다 —
   // B9 은 "마지막 어시스턴트 턴이 tool_use 뿐일 때" 라 codex 에는 해당하는 자리가 없다.
   // 실측 결과는 `raw/claude/c5-b9-shapes-r5.json` 에 부재로 적었다 (기준 A10).
-  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, tool: null, lastActivityAt }
+  return {
+    activity: activity ?? { state: 'unknown-format' },
+    providerTitle: null,
+    tool: null,
+    lastActivityAt,
+    turnOutcome: codexTurnOutcome(records),
+    model: codexModel(records),
+    lastPrompt: codexLastPrompt(records),
+    pendingQuestions: codexPendingQuestions(records),
+  }
+}
+
+/** codex `event_msg` 의 payload 종류. event_msg 가 아니면 null. */
+function codexEvent(record: Record<string, unknown>): { type: string; payload: Record<string, unknown> } | null {
+  if (readString(record, 'type') !== 'event_msg') return null
+  const payload = record['payload']
+  if (!isRecord(payload)) return null
+  const type = readString(payload, 'type')
+  return type === null ? null : { type, payload }
+}
+
+/**
+ * codex **사람 발화** — `payload.type === 'user_message'` 의 `message`. 머리(`parseCodexHead`)와 같은
+ * 함수다(T4). 하네스 주입(`response_item/message/user`)은 이 레코드가 아니다.
+ */
+export function codexHumanText(record: Record<string, unknown>): string | null {
+  const payload = record['payload']
+  if (!isRecord(payload)) return null
+  if (payload['type'] !== 'user_message') return null
+  return readString(payload, 'message')
+}
+
+/**
+ * codex 마지막 턴 결과 (T1·T2). 뒤에서 처음 만나는 턴 사건이 정한다:
+ *   · `event_msg/turn_aborted` → `interrupted` (reason = `payload.reason` 원문 — 실측 19건 전부 `interrupted`)
+ *   · `event_msg/task_complete` 에 `error` 가 있으면 `failed` (error = `error.codex_error_info` 원문 문자열 —
+ *     실측 `usage_limit_exceeded` 6·`other` 1), 없으면 `completed`
+ *   · `event_msg/task_started`·`user_message` → null — 새 턴이 시작됐다(T2, 실측: 중단·오류 뒤는 전부 `task_started`)
+ * codex 의 `error`·`stream_error` 이벤트는 rollout 에 안 남는다(00-analysis §9, 로컬 0건) — failed 는 `task_complete.error` 로만 본다.
+ */
+export function codexTurnOutcome(records: readonly Record<string, unknown>[]): TurnOutcome | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const event = codexEvent(record)
+    if (event === null) continue
+    switch (event.type) {
+      case 'turn_aborted':
+        return { outcome: 'interrupted', reason: readString(event.payload, 'reason') }
+      case 'task_complete': {
+        const error = event.payload['error']
+        if (error === undefined || error === null) return { outcome: 'completed' }
+        return { outcome: 'failed', error: isRecord(error) ? readString(error, 'codex_error_info') : null }
+      }
+      case 'task_started':
+      case 'user_message':
+        return null
+    }
+  }
+  return null
+}
+
+/**
+ * codex 마지막 모델 (T3) — `turn_context.model` 또는 `event_msg/thread_settings_applied` 의
+ * `thread_settings.model` 중 **더 뒤의 것**(둘 다 턴 시작에 온다, 실측 296 · 176).
+ * 턴 하나가 꼬리 창보다 길면 창 안에 없다(실측 49/126 파일) — 그때 이번 판독은 null 이고,
+ * 같은 파일에서 전에 본 값을 `transcript.ts` 가 이어 나른다.
+ */
+export function codexModel(records: readonly Record<string, unknown>[]): string | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const payload = record['payload']
+    if (!isRecord(payload)) continue
+    let model: string | null = null
+    if (readString(record, 'type') === 'turn_context') model = readString(payload, 'model')
+    else if (readString(record, 'type') === 'event_msg' && payload['type'] === 'thread_settings_applied') {
+      const settings = payload['thread_settings']
+      model = isRecord(settings) ? readString(settings, 'model') : null
+    }
+    if (model !== null && model.trim().length > 0) return model.trim()
+  }
+  return null
+}
+
+/** codex 마지막 사람 발화 (T4) — `codexHumanText` 와 같은 규칙. */
+export function codexLastPrompt(records: readonly Record<string, unknown>[]): string | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const text = codexHumanText(record)
+    if (text === null) continue
+    const line = cleanPromptLine(text)
+    if (line !== null) return line
+  }
+  return null
+}
+
+/** codex 의 질문 도구 — **관측된 이름**이다. 공식 소스의 `request_user_input` 과 다르다(00-analysis §9). */
+const CODEX_ASK_TOOL = 'request_user_input_async'
+
+/**
+ * codex 대기 중인 질문 (T5).
+ *
+ * `request_user_input_async` 는 **비동기**다 — 호출 즉시 `{"accepted":…}` 출력이 오고 에이전트는
+ * 계속 일한다(실측 4/4, `u3-codex-ask-skeleton.txt`). 그래서 tool 출력은 "답" 이 아니다. 답은 다음
+ * 사용자 턴으로 온다 — **이 턴 안(마지막 `task_started` 뒤)에 질문 호출이 있으면 대기 중**으로 본다.
+ * 새 턴(`task_started`·`user_message`)이 시작되면 풀린다. 선택지는 문자열 배열이고 문항 키는 `title` 이다.
+ */
+export function codexPendingQuestions(records: readonly Record<string, unknown>[]): SessionQuestion[] | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const event = codexEvent(record)
+    if (event !== null && (event.type === 'task_started' || event.type === 'user_message')) return null
+    if (readString(record, 'type') !== 'response_item') continue
+    const payload = record['payload']
+    if (!isRecord(payload) || payload['type'] !== 'function_call' || payload['name'] !== CODEX_ASK_TOOL) continue
+    const args = readString(payload, 'arguments')
+    const parsed = args === null ? null : safeParse(args)
+    return isRecord(parsed) ? readQuestions({ items: parsed['questions'], textKey: 'title' }) : null
+  }
+  return null
 }
 
 /** codex 블록의 `output_text` 를 공용 `text` 모양으로 옮긴다 — `textFromContent` 를 그대로 쓰려고. */
@@ -277,13 +662,13 @@ function codexContent(content: unknown): unknown {
  * 떨어진다 (`transcript.ts` 가 메운다).
  */
 export function parseGrokTail(input: { chunk: string; partial: boolean }): TranscriptDigest {
-  const lines = tailLines(input.chunk, { partial: input.partial })
+  const records = tailRecords(input.chunk, { partial: input.partial })
   let activity: SessionActivity | null = null
   let lastActivityAt: number | null = null
 
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const record = safeParse(lines[i] ?? '')
-    if (!isRecord(record)) continue
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
     const at = readTimestamp(record['timestamp'] ?? record['ts'])
     if (at !== null && (lastActivityAt === null || at > lastActivityAt)) lastActivityAt = at
     if (activity !== null) continue
@@ -296,7 +681,133 @@ export function parseGrokTail(input: { chunk: string; partial: boolean }): Trans
   }
 
   // grok 도 같다 — 한 줄이 한 메시지이고 도구 레코드가 어시스턴트 메시지 안에 없다.
-  return { activity: activity ?? { state: 'unknown-format' }, providerTitle: null, tool: null, lastActivityAt }
+  return {
+    activity: activity ?? { state: 'unknown-format' },
+    providerTitle: null,
+    tool: null,
+    lastActivityAt,
+    // 턴 결과·질문은 이 파일에 없다(`chat_history` 의 type 은 대화 메시지뿐, 00-analysis P3) —
+    // 형제 파일 `updates.jsonl` 을 `parseGrokUpdates` 가 읽고 `transcript.ts` 가 합친다.
+    turnOutcome: null,
+    model: grokModel(records),
+    lastPrompt: grokLastPrompt(records),
+    pendingQuestions: null,
+  }
+}
+
+/**
+ * grok 마지막 모델 (T3) — `chat_history` assistant 줄의 `model_id` (실측 1,585/1,585).
+ * 이미 읽는 파일이라 `summary.json` 을 따로 열지 않는다(T7 비용 0).
+ */
+export function grokModel(records: readonly Record<string, unknown>[]): string | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    if (record['type'] !== 'assistant' && record['role'] !== 'assistant') continue
+    const model = readString(record, 'model_id')?.trim() ?? null
+    if (model !== null && model.length > 0) return model
+  }
+  return null
+}
+
+/**
+ * grok **사람 발화** — user 줄의 `<user_query>` 봉투 안쪽. 머리(`parseGrokHead`)와 같은 함수다(T4).
+ * 봉투 없는 user 줄은 하네스 주입이다.
+ */
+export function grokHumanText(record: Record<string, unknown>): string | null {
+  if (record['type'] !== 'user' && record['role'] !== 'user') return null
+  const text = textFromContent(record['content'])
+  if (text === null) return null
+  const inside = GROK_USER_QUERY.exec(text)
+  return inside === null ? null : (inside[1] ?? null)
+}
+
+/** grok 마지막 사람 발화 (T4) — `grokHumanText` 와 같은 규칙. */
+export function grokLastPrompt(records: readonly Record<string, unknown>[]): string | null {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const text = grokHumanText(record)
+    if (text === null) continue
+    const line = cleanPromptLine(text)
+    if (line !== null) return line
+  }
+  return null
+}
+
+/** `updates.jsonl` 한 줄의 `params.update`. 모양이 아니면 null. */
+function grokUpdate(record: Record<string, unknown>): Record<string, unknown> | null {
+  const params = record['params']
+  if (!isRecord(params)) return null
+  const update = params['update']
+  return isRecord(update) ? update : null
+}
+
+/** grok `turn_completed.stop_reason` 중 **관측된 것만** 턴 결과로 옮긴다(`u1-grok-sequences.txt`). */
+function grokStopOutcome(stopReason: string | null): TurnOutcome | null {
+  switch (stopReason) {
+    case 'end_turn':
+      return { outcome: 'completed' }
+    case 'cancelled':
+      return { outcome: 'interrupted', reason: stopReason }
+    case 'error':
+    case 'rate_limit':
+      return { outcome: 'failed', error: stopReason }
+    default:
+      return null // 안 본 값 — 지어내지 않는다
+  }
+}
+
+/**
+ * grok 형제 파일 `updates.jsonl` 꼬리 판독 — 턴 결과(T1·T2)와 대기 질문(T5).
+ *
+ * 한 줄 = `{timestamp, method, params:{update:{sessionUpdate,…}}}`. 뒤에서 앞으로:
+ *   · `turn_completed.stop_reason` — `end_turn` 137 · `cancelled` 2 · `error` 5 · `rate_limit` 1 (실측)
+ *   · `user_message_chunk` = 새 턴 시작 → 턴 결과·질문 둘 다 풀린다 (T2)
+ *   · 질문: `tool_call` 제목 `ask_user_question` 의 `rawInput.questions[{question, options[{label,description}]}]`.
+ *     같은 `toolCallId` 의 `tool_call_update` 에 `status` 가 붙으면(`completed` + `rawOutput.UserAnswered`) 끝난 질문이다
+ *     (실측 1건, `u3-grok-ask-skeleton.txt`)
+ */
+export function parseGrokUpdates(input: { chunk: string; partial: boolean }): {
+  turnOutcome: TurnOutcome | null
+  pendingQuestions: SessionQuestion[] | null
+} {
+  const records = tailRecords(input.chunk, { partial: input.partial })
+  let turnOutcome: TurnOutcome | null = null
+  let outcomeSettled = false
+  let pendingQuestions: SessionQuestion[] | null = null
+  let questionSettled = false
+  const settledCalls = new Set<string>()
+  for (let i = records.length - 1; i >= 0 && !(outcomeSettled && questionSettled); i -= 1) {
+    const record = records[i]
+    if (record === undefined) continue
+    const update = grokUpdate(record)
+    if (update === null) continue
+    const kind = readString(update, 'sessionUpdate')
+    if (kind === 'user_message_chunk') {
+      outcomeSettled = true
+      questionSettled = true
+      continue
+    }
+    if (kind === 'turn_completed' && !outcomeSettled) {
+      turnOutcome = grokStopOutcome(readString(update, 'stop_reason'))
+      outcomeSettled = true
+      continue
+    }
+    if (questionSettled) continue
+    const callId = readString(update, 'toolCallId')
+    if (kind === 'tool_call_update' && callId !== null && readString(update, 'status') !== null) {
+      settledCalls.add(callId)
+      continue
+    }
+    if (kind === 'tool_call' && update['title'] === 'ask_user_question') {
+      questionSettled = true
+      if (callId !== null && settledCalls.has(callId)) continue
+      const rawInput = update['rawInput']
+      pendingQuestions = isRecord(rawInput) ? readQuestions({ items: rawInput['questions'], textKey: 'question' }) : null
+    }
+  }
+  return { turnOutcome, pendingQuestions }
 }
 
 /** 에이전트별 판독기 한 자리 — 갈래를 switch 로 좁힌다 (기준 E3). */
@@ -441,15 +952,9 @@ export function parseClaudeHead(input: { chunk: string; sessionId: string | null
   for (const line of headLines(input.chunk)) {
     const record = safeParse(line)
     if (!isRecord(record)) continue
-    if (readString(record, 'type') !== 'user') continue
-    if (record['isMeta'] === true) continue
-    if (readString(record, 'sessionId') !== input.sessionId) continue
-    const message = record['message']
-    if (!isRecord(message)) continue
-    const text = textFromContent(message['content'])
+    // 사람 발화 판정은 꼬리(최근 발화, LIFE-458 T4)와 **같은 함수**다 — 규칙 표는 `claudeHumanText`.
+    const text = claudeHumanText({ record, sessionId: input.sessionId })
     if (text === null) continue
-    if (text.includes('<command-message>') || text.includes('<command-name>')) continue
-    if (text.includes('<local-command-stdout>')) continue
     const title = cleanFirstPrompt(text)
     if (title !== null) return title
   }
@@ -471,10 +976,7 @@ export function parseCodexHead(input: { chunk: string }): string | null {
   for (const line of headLines(input.chunk)) {
     const record = safeParse(line)
     if (!isRecord(record)) continue
-    const payload = record['payload']
-    if (!isRecord(payload)) continue
-    if (payload['type'] !== 'user_message') continue
-    const message = readString(payload, 'message')
+    const message = codexHumanText(record)
     if (message === null) continue
     const title = cleanFirstPrompt(message)
     if (title !== null) return title
@@ -498,12 +1000,9 @@ export function parseGrokHead(input: { chunk: string }): string | null {
   for (const line of headLines(input.chunk)) {
     const record = safeParse(line)
     if (!isRecord(record)) continue
-    if (record['type'] !== 'user' && record['role'] !== 'user') continue
-    const text = textFromContent(record['content'])
-    if (text === null) continue
-    const inside = GROK_USER_QUERY.exec(text)
+    const inside = grokHumanText(record)
     if (inside === null) continue
-    const title = cleanFirstPrompt(inside[1] ?? '')
+    const title = cleanFirstPrompt(inside)
     if (title !== null) return title
   }
   return null

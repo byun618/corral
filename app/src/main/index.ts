@@ -69,7 +69,7 @@ import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
-import { clearTranscriptCache, readSessionDigests } from './transcript.js'
+import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -925,14 +925,6 @@ function paneResult(outcome: { outcome: 'ok' } | { outcome: 'rejected'; rejectio
  * 바뀐 것이 없으면 **emit 도 안 한다** — 1.5초마다 화면 전체를 다시 그리면 그게 곧 A7 의 비용이다.
  */
 const DIGEST_POLL_MS = 1500
-
-function digestsEqual(a: SessionDigest, b: SessionDigest): boolean {
-  if (a.providerTitle !== b.providerTitle) return false
-  if (a.lastActivityAt !== b.lastActivityAt) return false
-  if (a.activity.state !== b.activity.state) return false
-  if (a.activity.state === 'text' && b.activity.state === 'text') return a.activity.text === b.activity.text
-  return true
-}
 
 function refreshDigests(): void {
   const refs = collectSessionRefs(link.store.rows())

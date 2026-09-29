@@ -1,0 +1,301 @@
+{
+  "description": "좌측 사이드바 — 상단 내비·검색, 레포 헤더, 워크트리 카드, 에이전트 표시, 하단 도구 줄 (LIFE-448 대상).\n\n짝짓기 원칙(K7): 조인 키는 **data 속성 > 구조 경로** 순. 글자는 조인 키로 쓰지 않는다 — 두 앱의 문구가 다른 칸(양성 대조 C6ⓑ 같은 자리)에서 짝이 깨진다.\n두 앱 중 한쪽에 선택자가 **없는 단위**는 그 앱에 그 요소가 없다는 선언이고, 도구는 그것을 `missing` 행으로 낸다.\n요소는 있는데 **안정적인 선택자가 없어 못 재는** 단위는 `unpaired` 로 따로 적는다 — 「없다」와 「못 잰다」를 같은 칸에 쓰면 447~450 이 없는 것을 만들러 간다.",
+  "root": {
+    "orca": "[data-native-file-drop-target=\"project-sidebar\"]",
+    "corral": "[data-sidebar]"
+  },
+  "notes": {
+    "orca-root": "좌측 패널 전체. `[data-worktree-sidebar]` 는 그 안의 목록 스크롤러라 검색·푸터가 빠진다",
+    "locale": "aria-label 을 선택자로 쓰지 않는다 — 두 앱 다 한국어 UI 지만 라벨은 번역 대상이라 다음 버전에서 조용히 깨진다"
+  },
+  "units": [
+    {
+      "id": "sidebar-shell",
+      "note": "사이드바 패널 전체 (폭·배경·테두리)",
+      "global": true,
+      "orca": "[data-native-file-drop-target=\"project-sidebar\"]",
+      "corral": "[data-sidebar]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "패널 폭·배경·테두리는 LIFE-448 의 직접 대상이다"
+    },
+    {
+      "id": "brandbar",
+      "note": "상단 브랜드 줄 — corral 전용 (Orca 는 창 크롬이 그 자리를 쓴다)",
+      "corral": "[data-brandbar]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "corral 전용 브랜드 줄 — Orca 는 창 크롬이 그 자리를 쓴다. 지울지 남길지는 448 착수 때 결정"
+    },
+    {
+      "id": "search-row",
+      "note": "검색 진입 줄 (Orca: ⌘J 팔레트 버튼 / corral: 입력 상자)",
+      "orca": "[data-contextual-tour-target=\"sidebar-navigation\"] > button:first-child",
+      "corral": "[data-sidebar-search]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "검색 진입 줄은 448 범위. 다만 Orca 는 팔레트 버튼, corral 은 입력 상자라 「같게」의 뜻을 448 이 먼저 정해야 한다"
+    },
+    {
+      "id": "search-glyph",
+      "note": "검색 글리프",
+      "orca": "[data-contextual-tour-target=\"sidebar-navigation\"] svg.lucide-search",
+      "corral": ".sidebar-search-glyph",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "글리프 크기·색은 448 범위"
+    },
+    {
+      "id": "nav-buttons",
+      "note": "상단 내비 버튼 묶음 (작업·자동화·모바일) — Orca 전용. LIFE-448 경계상 「의도적 차이」 후보",
+      "orca": "[data-contextual-tour-target=\"sidebar-navigation\"] > *",
+      "props": [
+        "box"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "Orca 전용 상단 내비(작업·자동화·모바일) — corral 에 대응 기능이 없다 (00-analysis §4)"
+    },
+    {
+      "id": "section-title",
+      "note": "「프로젝트/레포」 구획 제목",
+      "orca": "[data-sidebar-section-title=\"projects\"]",
+      "corral": ".repos-header-label",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "구획 제목 타이포·간격은 448 범위"
+    },
+    {
+      "id": "repo-header-row",
+      "note": "레포 헤더 행 (높이·배경·sticky)",
+      "orca": "[data-repo-header-id]",
+      "corral": "[data-repo-toggle]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "레포 헤더 행 높이·배경은 447 범위"
+    },
+    {
+      "id": "repo-header-icon",
+      "note": "레포 헤더 아이콘 — **양성 대조 C6ⓑ**: Orca 폴더 아이콘(lucide) vs corral 이니셜 사각형",
+      "orca": "[data-repo-header-id] svg.lucide-folder",
+      "corral": "[data-repo-name]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "양성 대조 C6ⓑ 자리 — Orca 폴더 아이콘 vs corral 이니셜 사각형. 어느 쪽으로 맞출지는 447 이 정한다"
+    },
+    {
+      "id": "repo-header-caret",
+      "note": "접기 캐럿 (Orca lucide chevron / corral ▸▾ 글자)",
+      "orca": "[data-repo-header-id] svg.lucide-chevron-down",
+      "corral": "[data-repo-caret]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "Orca lucide chevron vs corral ▸▾ 글자 — 447 범위"
+    },
+    {
+      "id": "repo-header-actions",
+      "note": "레포 헤더 우측 액션 묶음",
+      "orca": "[data-repo-header-actions]",
+      "corral": "[data-repo-row-actions]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "우측 액션 묶음 간격·크기는 447 범위"
+    },
+    {
+      "id": "worktree-card",
+      "note": "워크트리 카드 한 장 (행 높이·간격)",
+      "orca": "[data-worktree-id]",
+      "corral": "[data-worktree]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "카드 행 높이·간격은 448 범위"
+    },
+    {
+      "id": "worktree-card-surface",
+      "note": "카드 표면 (선택 배경·테두리·radius)",
+      "orca": "[data-worktree-card-surface]",
+      "corral": ".worktree-block",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "표면 배경·테두리·radius 는 448 범위",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
+    },
+    {
+      "id": "worktree-card-active",
+      "note": "선택된 카드 — Orca 는 `data-worktree-card-active` 값(primary/secondary), corral 은 `.is-selected`",
+      "orca": "[data-worktree-card-active]",
+      "corral": ".worktree-block.is-selected",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "선택 표시는 448 범위",
+      "conditional": true,
+      "conditionalWhy": "선택된 카드가 있을 때만",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
+    },
+    {
+      "id": "worktree-status-slot",
+      "note": "카드 좌측 상태 슬롯 (Orca: unread 점·PR·브랜치 / corral: 상태 점 하나)",
+      "orca": "[data-worktree-card-status-slot]",
+      "corral": ".worktree-dot",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "Orca 는 unread·PR·브랜치를 함께 담고 corral 은 점 하나다 — 묶음 구성 차이라 448 이 정보 구성을 먼저 정해야 한다",
+      "axis": "agentCount",
+      "conditional": true,
+      "conditionalWhy": "상태가 있을 때만",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
+    },
+    {
+      "id": "worktree-card-body",
+      "note": "카드 본문 줄 — 이름·배지가 들어가는 자리. Orca 이름 span 에는 안정 식별자가 없어 **본문 컨테이너 수준에서만** 짝짓는다 (도구의 한계, 문서화 대상)",
+      "orca": "[data-worktree-card-hover-trigger]",
+      "corral": ".worktree-block-line1",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "본문 줄 타이포·간격은 448 범위. 이름 span 은 짝을 못 지어 컨테이너 수준만 잰다 (도구 한계)",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
+    },
+    {
+      "id": "worktree-secondary-line",
+      "note": "카드 둘째 줄 (메타/브랜치) — Orca 도 둘째 줄을 그리지만 안정 식별자가 없어 짝을 못 짓는다",
+      "corral": ".worktree-block-line2",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "unpaired": "Orca 카드 둘째 줄에 data 속성·role 이 없다 (Tailwind 클래스뿐) — 없는 것이 아니라 못 재는 것이다"
+    },
+    {
+      "id": "agent-group-pill",
+      "note": "에이전트 묶음 알약 — **양성 대조 C6ⓐ**: 임계 Orca 2 vs corral 3",
+      "orca": ".compact-agent-summary-panel",
+      "corral": "[data-agent-group]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "양성 대조 C6ⓐ 자리 — 묶음 임계 2 vs 3 은 449 가 정한다",
+      "axis": "agentCount",
+      "conditional": true,
+      "conditionalWhy": "묶음 알약은 임계(Orca 2 / corral 3) 위에서만 그려진다 — 0개가 곧 알려진 차이다 (양성 대조 C6ⓐ)",
+      "parent": "worktree-card",
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
+    },
+    {
+      "id": "agent-group-summary",
+      "note": "접힘 요약 행 — corral 전용 표현",
+      "corral": "[data-agent-group-summary]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "corral 전용 접힘 요약 — Orca 에 대응 표현이 없어 449 가 표현을 먼저 정해야 한다",
+      "axis": "agentCount",
+      "conditional": true,
+      "conditionalWhy": "corral 접힘 요약은 그룹 임계 위에서만"
+    },
+    {
+      "id": "agent-row",
+      "note": "에이전트/세션 행 한 줄 — **짝이 없다**: compact 표시에서 Orca 는 에이전트가 2명 이상이면 개별 행 대신 요약 패널 하나만 그린다(`WorktreeCardAgents.tsx` `shouldUseSummaryRow`). corral 은 그룹을 펼친 채 세션 행을 그린다",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "unpaired": "Orca 의 `[data-compact-agent-list] > *` 는 에이전트 2명 이상에서 **요약 패널**이고 corral 의 `[data-pane]` 는 **세션 행**이다 — 같은 의미의 요소가 아니다. 개별 행을 보려면 요약을 펼쳐야 하고(hover/클릭) 그 상태는 이 도구가 재현 못 한다",
+      "axis": "agentCount"
+    },
+    {
+      "id": "agent-kind-icon",
+      "note": "에이전트 종류 아이콘 — 짝짓기 불가(요약 그룹 ↔ 세션 행)",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "종류 아이콘 크기·색은 449 범위",
+      "axis": "agentCount",
+      "conditional": true,
+      "conditionalWhy": "에이전트가 있을 때만",
+      "unpaired": "Orca 는 요약 패널에서 에이전트 아이콘을 **상태 그룹별로 최대 3개**만 그리고 나머지를 `+N` 으로 접는다 (`worktree-card-compact-agents.tsx:146`) — corral 은 세션마다 하나다. 개수도 순서도 대응되지 않아 순번으로 묶을 수 없다. 이전 판은 `[data-compact-agent-list] svg` 로 잡아 마지막 `ChevronDown` 까지 provider 로 세고(6↔5) 순번으로 짝지었다 (G2)"
+    },
+    {
+      "id": "sidebar-footer",
+      "note": "하단 도구 줄",
+      "orca": ".mt-auto.shrink-0",
+      "corral": "[data-sidebar-footer]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "하단 도구 줄은 448 범위"
+    },
+    {
+      "id": "sidebar-resize-handle",
+      "note": "사이드바 폭 조절 손잡이 — Orca 전용",
+      "orca": "[data-sidebar-resize-handle]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "Orca 전용 폭 조절 손잡이 — corral 에 폭 조절 기능 자체가 없다. 기능 결정이 먼저다"
+    }
+  ]
+}

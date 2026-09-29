@@ -1,0 +1,186 @@
+{
+  "description": "상단 탭바 — 탭 모양·선두 아이콘·닫기·+ 버튼·overflow (LIFE-449 대상).\n\n루트가 서로 다른 계층이라는 것 자체가 구조 차이다: Orca 는 편집 영역 전체가 탭 줄 하나를 갖고, corral 은 **영역(group) 마다** 탭바를 둔다. 폭 차이 행은 그 구조 차이의 표현이지 스타일 차이가 아니다.",
+  "root": {
+    "orca": "[data-native-file-drop-target=\"editor\"]",
+    "corral": "[data-main-tabbar]"
+  },
+  "units": [
+    {
+      "id": "tabbar-shell",
+      "note": "탭바 줄 전체 (높이·배경)",
+      "global": true,
+      "orca": "[data-native-file-drop-target=\"editor\"]",
+      "corral": "[data-main-tabbar]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "루트 계층 차이의 표현이다 — Orca 는 편집 영역 전체가 탭 줄 하나, corral 은 영역(group)마다 탭바. 폭 차이는 스타일이 아니라 구조라 449 가 구조를 먼저 정해야 한다",
+      "axis": "tabCount"
+    },
+    {
+      "id": "tab-strip",
+      "note": "탭이 늘어서는 스트립 — corral 은 탭바 자체가 스트립이라 루트와 같은 요소를 가리킨다 (구조 차이 자체가 기록이다)",
+      "orca": ".terminal-tab-strip",
+      "corral": "[data-main-tabbar]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "classify": "보류",
+      "classifyWhy": "corral 은 탭바 자체가 스트립이라 루트와 같은 요소를 가리킨다 — 위와 같은 구조 차이",
+      "axis": "tabCount"
+    },
+    {
+      "id": "tab",
+      "note": "탭 한 개 (폭·높이·padding) — Orca 는 고정 폭 180/220px, corral 은 내용 폭",
+      "orca": "[data-testid=\"sortable-tab\"]",
+      "corral": "[data-main-tab]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "탭 폭·높이·padding 은 449 범위 (Orca 고정 폭 180/220px vs corral 내용 폭)",
+      "axis": "tabCount"
+    },
+    {
+      "id": "tab-active",
+      "note": "활성 탭 (배경·하단 인디케이터)",
+      "orca": "[data-testid=\"sortable-tab\"][data-active=\"true\"]",
+      "corral": ".main-tab.is-active",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "활성 탭 배경·인디케이터는 449 범위",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 하나라도 있을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 본다 — 「몇 번째 탭이 활성인가」가 그 자체로 의미다 (G2)"
+    },
+    {
+      "id": "tab-status-dot",
+      "note": "탭 선두 **상태 표시 하나** — Orca 는 상태 표시와 로고를 한 span 에 담으므로 그 안의 첫 자식(상태 표시)만 짝짓는다. Orca 는 working 을 스피너로, corral 은 칠한 원으로 그린다 (그 차이는 진짜다)",
+      "orca": "[data-testid=\"tab-agent-activity-indicator\"] > span:first-child",
+      "corral": ".main-tab-dot",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "상태 표시의 모양·크기·색은 449 범위. Orca 스피너 vs corral 원은 표현 선택 차이라 449 가 어휘를 먼저 정해야 한다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭에 에이전트 활동이 있을 때만 (Orca). corral 은 항상 점을 그린다 — 그 차이가 기록 대상이다",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
+    },
+    {
+      "id": "tab-agent-icon",
+      "note": "탭 안 에이전트 로고 — Orca 는 `[data-agent-icon]`(provider 로고 전용), corral 은 `[data-agent-kind]`. 탭 안 모든 svg 를 세면 닫기 아이콘까지 섞인다",
+      "orca": "[data-agent-icon]",
+      "corral": "[data-agent-kind]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "탭 안 에이전트 로고는 449 범위",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭에 에이전트가 붙었을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
+    },
+    {
+      "id": "tab-unread-bell",
+      "note": "unread 벨 — Orca 전용 (corral 에는 unread 표시가 없다, 00-analysis §4 447)",
+      "orca": "[data-testid=\"tab-activity-bell\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "Orca 전용 unread 벨 — corral 에 unread 개념이 없다 (00-analysis §4 는 447 몫으로 본다)",
+      "conditional": true,
+      "conditionalWhy": "unread 가 있을 때만",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
+    },
+    {
+      "id": "tab-label",
+      "note": "탭 라벨 — Orca 도 라벨을 그리지만 안정 식별자가 없다",
+      "corral": ".main-tab-label",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "unpaired": "Orca 라벨 span 에 data 속성이 없다 (TAB_LABEL_WIDTH_CLASSES 뿐) — 없는 것이 아니라 못 재는 것이다"
+    },
+    {
+      "id": "tab-close",
+      "note": "탭 닫기 버튼 (Orca: 활성 탭 상시·비활성 hover / corral: hover ×)",
+      "corral": "[data-main-tab-close]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "orca": "button:has(svg.lucide-x)",
+      "classify": "해소 대상",
+      "classifyWhy": "닫기 버튼 노출 규칙·크기는 449 범위 (Orca 활성 상시 vs corral hover)",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "corral 은 hover 에서만, Orca 는 활성 탭 상시",
+      "parent": "tab",
+      "parentWhy": "탭 순번 안에서 견준다 — 전역 순번으로 묶으면 다른 탭의 표시끼리 비교된다 (G2)"
+    },
+    {
+      "id": "tab-add",
+      "note": "새 탭 버튼 (Orca: 드롭다운 / corral: 빈 탭)",
+      "orca": ":scope > button",
+      "corral": "[data-main-tabbar-add]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "새 탭 버튼은 449 범위 (Orca 드롭다운 vs corral 빈 탭)",
+      "axis": "tabCount"
+    },
+    {
+      "id": "tab-overflow-indicator",
+      "note": "overflow 스크롤 표시 — Orca 전용",
+      "orca": "[data-testid=\"tab-strip-scroll-indicator\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "보류",
+      "classifyWhy": "Orca 전용 overflow 표시 — corral 은 탭이 넘칠 때의 표현을 아직 정하지 않았다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 넘칠 때만"
+    },
+    {
+      "id": "group-actions",
+      "note": "영역 분할·메뉴 액션 묶음 — corral 전용 (Orca 는 같은 기능을 우클릭 메뉴에 둔다)",
+      "corral": "[data-group-actions]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "corral 전용 영역 분할·메뉴 액션 묶음 — Orca 는 같은 기능을 우클릭 메뉴에 둔다",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "corral 영역 액션은 그룹이 있을 때만"
+    }
+  ]
+}

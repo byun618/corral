@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   SIDECAR_WINDOW_BYTES,
   SUMMARY_MAX_BYTES,
@@ -194,7 +194,9 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
       read = readSessionDigest(ref)
     }
     expect(fs.statSync(file).size).toBeGreaterThan(TAIL_WINDOW_BYTES * 2)
-    expect(read.bytes - read.headBytes).toBe(TAIL_WINDOW_BYTES)
+    // 창은 넓히지 않는다 — 더 읽는 것은 창 밖 근거 줄(값을 낸 레코드 한 줄)의 지문 확인뿐이다 (R3-F2).
+    expect(read.bytes - read.headBytes).toBeGreaterThan(TAIL_WINDOW_BYTES)
+    expect(read.bytes - read.headBytes).toBeLessThan(TAIL_WINDOW_BYTES + 1024)
     expect(read.digest.model).toBe('claude-opus-5-5')
     expect(read.digest.lastPrompt).toBe('처음 부탁')
   })
@@ -279,13 +281,88 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     expect(read.digest.lastPrompt).toBeNull()
   })
 
-  it('정상 append 는 닻 확인이 이미 읽은 창 안에서 끝난다 — 추가 읽기 0', () => {
+  it('정상 append 는 옛 값을 잇되, 더 읽는 것은 근거 줄뿐이다', () => {
     const before = grown()
     fs.appendFileSync(file, jsonl(filler(20_000)))
     const read = readSessionDigest(ref)
     expect(read.digest.model).toBe('old-model')
-    expect(read.bytes - read.headBytes).toBe(TAIL_WINDOW_BYTES)
+    expect(read.digest.lastPrompt).toBe('old-prompt')
+    expect(read.bytes - read.headBytes).toBeLessThan(TAIL_WINDOW_BYTES + 1024)
     expect(fs.statSync(file).ino).toBe(before.ino)
+  })
+
+  // 리뷰 r3 R3-2 모양 — 끝 1KiB(r2 닻)를 그대로 둔 채 **앞쪽 근거 줄만** 같은 길이로 고쳐 쓴다. 값의 근거 줄 지문이 가린다.
+  const sameTail = () => {
+    const before = grown()
+    const old = fs.readFileSync(file, 'utf8')
+    const next = old.replace('old-model', 'new-model').replace('old-prompt', 'new-prompt') + jsonl([assistant('continued')])
+    return { before, next }
+  }
+
+  it('끝 닻을 보존한 rename 교체 — 정체성(dev·ino)이 바뀌어 잇지 않고 새 값을 찾는다', () => {
+    const { before, next } = sameTail()
+    fs.writeFileSync(`${file}.next`, next)
+    fs.renameSync(`${file}.next`, file)
+    expect(fs.statSync(file).ino).not.toBe(before.ino)
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  it('끝 닻을 보존한 같은 inode 재작성 — 근거 줄 지문이 달라 잇지 않고 새 값을 찾는다', () => {
+    const { before, next } = sameTail()
+    fs.writeFileSync(file, next)
+    expect(fs.statSync(file).ino).toBe(before.ino)
+    const read = readSessionDigest(ref)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  // R3-F1 — 계측값이 아니라 **실제 `fs.readSync` 바이트**를 센다. 머리는 이미 끝나 0 이어야 꼬리만 남는다.
+  const tailReadSync = (run: () => ReturnType<typeof readSessionDigest>) => {
+    const spy = vi.spyOn(fs, 'readSync')
+    try {
+      const read = run()
+      const actual = spy.mock.results.reduce((sum, result) => sum + (typeof result.value === 'number' ? result.value : 0), 0)
+      return { read, actual }
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('R3-F1 예산 경우 — 근거 확인 뒤 텍스트 없는 창이 확장을 불러도 실제 꼬리 읽기 ≤ TAIL_MAX_BYTES', () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    for (let round = 0; round < 25; round += 1) {
+      fs.appendFileSync(file, jsonl(filler(120_000)))
+      readSessionDigest(ref)
+    }
+    // 창 전체를 덮는 텍스트 없는 한 줄 — 활동 확장이 돈다
+    const tool = { type: 'user', sessionId: SESSION_ID, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }] } }
+    tool.message.content[0]!.content = 'y'.repeat(TAIL_WINDOW_BYTES - 400)
+    fs.appendFileSync(file, jsonl([tool]))
+    const { read, actual } = tailReadSync(() => readSessionDigest(ref))
+    expect(read.headBytes).toBe(0)
+    expect(actual).toBe(read.bytes)
+    expect(actual).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+  })
+
+  it('R3-F1 틈 뒤 근거 확인 경로 — 확장이 예산을 다 쓰면 근거 확인 판독을 안 한다: 실제 꼬리 읽기 ≤ TAIL_MAX_BYTES, 값은 null', () => {
+    fs.writeFileSync(file, jsonl([human('old-prompt'), assistant('ready', 'old-model')]))
+    readSessionDigest(ref)
+    for (let round = 0; round < 18; round += 1) {
+      fs.appendFileSync(file, jsonl(filler(120_000))) // 끊김 없이 2MB 넘게 — 근거 줄(맨 앞)은 2MB 밖으로
+      readSessionDigest(ref)
+    }
+    expect(readSessionDigest(ref).digest.model).toBe('old-model')
+    fs.appendFileSync(file, jsonl(filler(TAIL_WINDOW_BYTES + 60_000))) // 틈 — 확장이 남은 예산을 다 쓴다
+    const { read, actual } = tailReadSync(() => readSessionDigest(ref))
+    expect(read.headBytes).toBe(0)
+    expect(actual).toBe(read.bytes)
+    expect(actual).toBeLessThanOrEqual(TAIL_MAX_BYTES)
+    // 틈은 덮였지만 근거 줄을 예산 안에서 다시 못 읽는다 — 확인 못 하면 잇지 않는다
+    expect(read.digest.model).toBeNull()
+    expect(read.digest.lastPrompt).toBeNull()
   })
 
   it('틈이 있어도 새 값이 없으면(옛 값이 여전히 최신) 확인 뒤 옛 값을 잇는다', () => {

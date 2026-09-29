@@ -873,6 +873,58 @@ export function parseTail(input: {
   }
 }
 
+/**
+ * 모델·최근 발화를 준 **근거 줄**의 위치 (수정 r3·R3-F2) — `chunk.split('\n')` 의 줄 번호. 없으면 null.
+ *
+ * 값 판독과 **같은 함수**(`claudeModel`·`codexLastPrompt` …)를 레코드 **하나씩**에 적용해, 뒤에서 처음 값을 내는
+ * 줄을 고른다 — 값 판독도 뒤에서 처음 값을 고르므로 같은 줄이다. `want` 가 false 인 칸은 찾지 않는다(비용).
+ * `transcript.ts` 가 이 줄의 바이트 위치·지문을 쥐었다가, 그 값을 이어 나르기 전에 **그 줄이 그대로인지** 대조한다.
+ */
+export function valueLines(input: {
+  agent: TranscriptAgent
+  chunk: string
+  partial: boolean
+  sessionId: string | null
+  want: { model: boolean; lastPrompt: boolean }
+}): { model: number | null; lastPrompt: number | null } {
+  const lines = input.chunk.split('\n')
+  let model: number | null = null
+  let lastPrompt: number | null = null
+  const stop = input.partial ? 1 : 0 // 잘린 첫 줄은 판독도 버린다
+  for (let i = lines.length - 1; i >= stop; i -= 1) {
+    if ((!input.want.model || model !== null) && (!input.want.lastPrompt || lastPrompt !== null)) break
+    const line = lines[i]
+    if (line === undefined || line.trim().length === 0) continue
+    const record = safeParse(line)
+    if (!isRecord(record)) continue
+    if (input.want.model && model === null && singleModel({ agent: input.agent, record }) !== null) model = i
+    if (input.want.lastPrompt && lastPrompt === null && singlePrompt({ agent: input.agent, record, sessionId: input.sessionId }) !== null) lastPrompt = i
+  }
+  return { model, lastPrompt }
+}
+
+function singleModel(input: { agent: TranscriptAgent; record: Record<string, unknown> }): string | null {
+  switch (input.agent) {
+    case 'claude':
+      return claudeModel([input.record])
+    case 'codex':
+      return codexModel([input.record])
+    case 'grok':
+      return grokModel([input.record])
+  }
+}
+
+function singlePrompt(input: { agent: TranscriptAgent; record: Record<string, unknown>; sessionId: string | null }): string | null {
+  switch (input.agent) {
+    case 'claude':
+      return claudeLastPrompt({ records: [input.record], sessionId: input.sessionId })
+    case 'codex':
+      return codexLastPrompt([input.record])
+    case 'grok':
+      return grokLastPrompt([input.record])
+  }
+}
+
 // --- 머리 읽기: 세션의 첫 사용자 발화 (C5, 수정 라운드 5) ---------------------------
 //
 // 여기 위의 모든 함수는 **꼬리**를 본다. 첫 발화만 방향이 반대다 — 15MB 파일의 맨 앞이라

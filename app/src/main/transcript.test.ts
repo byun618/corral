@@ -124,8 +124,9 @@ describe('머리 재판독 (C6′)', () => {
     const before = fs.statSync(file).size
     append([assistantRecord('그 뒤로 파일이 자란다')])
     const grown = readSessionDigest(ref)
-    // 머리를 다시 안 읽으므로 이번 주기 읽기는 **꼬리 창뿐**이다.
-    expect(grown.bytes).toBeLessThanOrEqual(TAIL_WINDOW_BYTES)
+    // 머리를 다시 안 읽는다. 꼬리는 창 + (LIFE-458 R3-F2) 창 밖 최근 발화의 근거 줄 확인 판독 — 꼬리 상한 안이다.
+    expect(grown.headBytes).toBe(0)
+    expect(grown.bytes).toBeLessThanOrEqual(TAIL_MAX_BYTES)
     expect(before).toBeGreaterThan(HEAD_WINDOW_BYTES)
   })
 

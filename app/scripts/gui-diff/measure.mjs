@@ -24,7 +24,14 @@ import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBou
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
-import { selectOwnedByPath, planSignals, classifyPathSurvivors } from './lib/own.mjs'
+import {
+  selectOwnedByPath,
+  planSignals,
+  pathDiagnosis,
+  cleanVerdict,
+  parseProcessList,
+  commandIncludesPath
+} from './lib/own.mjs'
 
 // 이 도구는 전역 `WebSocket`(raw CDP) 을 쓴다 — node 20 에는 플래그 뒤에 있다.
 // corral 자신도 node >= 22.12 를 요구한다(`app/package.json` engines). 조용히 죽는 대신 여기서 말한다.
@@ -43,20 +50,24 @@ if (NODE_MAJOR < 22 || typeof globalThis.WebSocket !== 'function') {
  * 신호는 기동 때 받은 pid 와 그 자손(`descendantPids`)만 받는다. 경로를 신호 근거에서 내린 이유는
  * `lib/own.mjs` 머리말에 있다 — 평탄한 명령줄에서는 argv 경계를 복원할 수 없어, 공백이 든 경로에서
  * 남의 프로필 Electron 을 소유로 만들 수 있다(리뷰 R3-01). 대신 **살아남은 것을 보고**한다.
+ *
+ * **검색은 정규식이 아니라 문자열이다** (I1). `pgrep -f <경로>` 의 패턴은 확장 정규식이라
+ * `--work '/tmp/l443[1]'` 같은 경로에서 우리 고아가 조용히 빠졌다(리뷰 R4-01). 그래서 `ps` 로
+ * **전체 목록**을 받아 JS 에서 거르고, 목록 자체를 못 읽으면 「후보 없음」이 아니라 **진단 실패**다.
  */
-function candidatesUsingPath(target) {
-  const found = spawnSync('pgrep', ['-fl', target], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
-  return found
-    .map((line) => {
-      const space = line.indexOf(' ')
-      return { pid: Number(line.slice(0, space)), command: line.slice(space + 1) }
-    })
-    .filter((entry) => Number.isFinite(entry.pid) && entry.pid !== process.pid)
+function probeProcesses() {
+  const out = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  if (out.error) return { ok: false, processes: [], error: `ps 실행 실패 — ${String(out.error.message ?? out.error)}` }
+  if (out.status !== 0) return { ok: false, processes: [], error: `ps → 종료코드 ${out.status} ${String(out.stderr ?? '').slice(0, 160)}` }
+  const parsed = parseProcessList(out.stdout).filter((entry) => entry.pid !== process.pid)
+  // 이 프로세스 자신은 반드시 목록에 있다. 비었다면 읽은 것이 목록이 아니다.
+  if (parsed.length === 0) return { ok: false, processes: [], error: 'ps 출력이 비었다 — 경로 진단을 못 했다' }
+  return { ok: true, processes: parsed, error: null }
 }
 
-/** 경로가 겹치는 후보와 거른 이유 (진단). 신호 판단에는 쓰지 않는다 — `classifyPathSurvivors` 로 넘긴다. */
-function appsUsingPath(target, { exclude = [] } = {}) {
-  return selectOwnedByPath({ processes: candidatesUsingPath(target), targets: [target], exclude, selfPid: process.pid })
+function candidatesUsingPath(target, probe = probeProcesses()) {
+  if (probe.ok !== true) return []
+  return probe.processes.filter((entry) => commandIncludesPath(entry.command, target))
 }
 
 /** pid 의 **자손 전부**. 소유의 1순위다 — 이름·경로 추측이 아니라 부모 관계로만 잇는다. */
@@ -524,7 +535,19 @@ async function main() {
       const profiles = ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr'].map((name) =>
         path.join(args.work, name)
       )
-      const inUse = profiles.flatMap((target) => appsUsingPath(target).owned)
+      // 진단 실패(목록을 못 읽음)를 「쓰는 프로세스 없음」으로 읽지 않는다 — 지우기 전이라 더 그렇다 (I1).
+      const precheckProbe = probeProcesses()
+      if (precheckProbe.ok !== true) {
+        throw new Error(`[l443] 프로세스 목록을 읽지 못해 격리 프로필 사용 여부를 확인할 수 없다 — 지우지 않고 멈춘다: ${precheckProbe.error}`)
+      }
+      const inUse = profiles.flatMap(
+        (target) =>
+          selectOwnedByPath({
+            processes: candidatesUsingPath(target, precheckProbe),
+            targets: [target],
+            selfPid: process.pid
+          }).owned
+      )
       if (inUse.length > 0) {
         throw new Error(
           `[l443] 격리 프로필을 쓰는 앱 프로세스가 있다 — 프로필을 지우지 않고 멈춘다:\n${inUse
@@ -543,8 +566,12 @@ async function main() {
       const profiles = ['orca-dev-userdata', 'orca-dev-home', 'corral-userdata', 'corral-herdr'].map((name) =>
         path.join(args.work, name)
       )
+      const reuseProbe = probeProcesses()
+      if (reuseProbe.ok !== true) {
+        throw new Error(`[l443] 프로세스 목록을 읽지 못해 --no-fresh 의 기존 pid 를 가를 수 없다 — 멈춘다: ${reuseProbe.error}`)
+      }
       owned.preexisting = [
-        ...new Set(profiles.flatMap((target) => candidatesUsingPath(target).map((entry) => entry.pid)))
+        ...new Set(profiles.flatMap((target) => candidatesUsingPath(target, reuseProbe).map((entry) => entry.pid)))
       ]
       if (owned.preexisting.length > 0) {
         log(`--no-fresh: 이번 실행 전부터 격리 경로를 쓰는 pid ${owned.preexisting.join(', ')} — 소유에서 뺀다`)
@@ -909,7 +936,6 @@ async function shutdown({ orca, corral, owned, outDir }) {
       if (attempt === 5) for (const entry of survivors) entry.sentAgain = signal(entry.pid, entry.group)
     }
     for (const entry of closed.owned) entry.alive = alive(entry.pid)
-    closed.clean = closed.owned.every((entry) => entry.alive === false)
     // **경로는 진단이다 — 죽이지 않는다** (H1, fail closed). 소유 경로를 명령줄에 가진 프로세스가
     // 신호 목록 밖에서 살아 있으면, 그것은 죽일 근거가 아니라 **정리가 끝나지 않았다는 보고 사유**다:
     // 평탄한 명령줄에서 argv 경계를 복원할 수 없어(공백 든 경로) 남의 프로필을 우리 것으로 만들 수
@@ -917,24 +943,31 @@ async function shutdown({ orca, corral, owned, outDir }) {
     // 자손을 PPID 로 못 찾는 경우가 정확히 여기로 떨어진다 — 조용한 `clean:true` 대신 목록이 남는다.
     const ownedPaths = [...new Set(owned.paths.filter(Boolean))]
     const signalledPids = closed.owned.map((entry) => entry.pid)
-    const pathSurvivors = []
-    const rejected = []
-    for (const target of ownedPaths) {
-      const result = classifyPathSurvivors({
-        processes: candidatesUsingPath(target),
-        targets: [target],
-        exclude: owned.preexisting ?? [],
-        signalled: signalledPids,
-        selfPid: process.pid,
-        alive
-      })
-      for (const entry of result.rejected) {
-        if (!rejected.some((seen) => seen.pid === entry.pid)) rejected.push({ ...entry, command: entry.command.slice(0, 120), target })
-      }
-      for (const entry of result.survivors) {
-        if (pathSurvivors.some((seen) => seen.pid === entry.pid)) continue
-        pathSurvivors.push({ pid: entry.pid, path: target, command: entry.command.slice(0, 120), signalled: false, why: entry.why })
-      }
+    // 목록은 **한 번** 받는다(경로마다 다시 받으면 회차 안에서 서로 다른 순간을 본다). 목록을 못 받으면
+    // 그 자체가 진단 실패다 — 「남은 게 없다」가 아니다 (I1).
+    const probe = probeProcesses()
+    const diagnosis = pathDiagnosis({
+      probe,
+      targets: ownedPaths,
+      exclude: owned.preexisting ?? [],
+      signalled: signalledPids,
+      selfPid: process.pid,
+      alive
+    })
+    const pathSurvivors = diagnosis.survivors.map((entry) => ({
+      pid: entry.pid,
+      path: entry.path,
+      command: entry.command.slice(0, 120),
+      signalled: false,
+      why: entry.why
+    }))
+    const rejected = diagnosis.rejected.map((entry) => ({ ...entry, command: entry.command.slice(0, 120) }))
+    closed.pathProbe = {
+      ok: probe.ok,
+      error: probe.error,
+      listed: probe.processes.length,
+      candidates: diagnosis.candidates ?? 0,
+      method: 'ps -axo pid=,command= 전체 목록 + 문자열 포함 (정규식 아님, I1)'
     }
     // 죽이지는 않되 **기다려는 준다** — 부모를 끝내면 헬퍼가 몇 초 뒤에 따라 죽는 일이 있다.
     // 기다림은 규칙을 무르게 하지 않는다: 끝까지 살아 있는 것만 미정리로 적는다.
@@ -944,18 +977,21 @@ async function shutdown({ orca, corral, owned, outDir }) {
     }
     closed.pathSurvivors = pathSurvivors.filter((entry) => alive(entry.pid))
     closed.pathSurvivorsGone = pathSurvivors.filter((entry) => !alive(entry.pid)).map((entry) => entry.pid)
-    if (closed.pathSurvivors.length > 0) closed.clean = false
-    closed.survivorPids = [
-      ...closed.owned.filter((entry) => entry.alive).map((entry) => entry.pid),
-      ...closed.pathSurvivors.map((entry) => entry.pid)
-    ]
+    // **판단은 순수 함수가 한다** — 「확인하지 못한 것은 통과가 아니다」를 단위 테스트로 세울 수 있게.
+    const verdict = cleanVerdict({
+      signalled: closed.owned.map((entry) => ({ pid: entry.pid, alive: entry.alive })),
+      diagnosis: { ...diagnosis, survivors: closed.pathSurvivors }
+    })
+    closed.clean = verdict.clean
+    closed.survivorPids = verdict.survivorPids
+    closed.uncleanWhy = verdict.why
     // **진단**: 넓은 이름 패턴으로 훑은 결과. 죽이지 않는다 — 소유 밖이라 이 실행의 몫이 아니다.
-    const probe = spawnSync('pgrep', ['-fl', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], {
+    const nameProbe = spawnSync('pgrep', ['-fl', 'orca-dev-userdata|corral-userdata|run-electron-vite-dev|herdr --session l443'], {
       encoding: 'utf8'
     })
     closed.diagnostics = {
       note: '넓은 이름 검색 결과다. 신호는 spawn pid·자손만 받는다 — 이 목록과 경로 후보는 진단이고 건드리지 않는다 (F1·G1·H1).',
-      matches: probe.stdout.trim().split('\n').filter(Boolean),
+      matches: nameProbe.stdout.trim().split('\n').filter(Boolean),
       ownedPaths,
       // **거른 후보와 이유**를 남긴다 — 「왜 이 pid 는 안 죽였나」를 원자료에서 되짚을 수 있게.
       rejectedCandidates: rejected,

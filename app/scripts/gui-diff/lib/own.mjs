@@ -198,3 +198,78 @@ export function classifyPathSurvivors({
   }
   return { survivors, rejected }
 }
+
+/**
+ * `ps -axo pid=,command=` 출력을 `[{pid, command}]` 로 (I1).
+ *
+ * 왜 `pgrep -f <경로>` 를 버렸나: pgrep 의 패턴은 **확장 정규식**이다. `--work '/tmp/l443[1]'` 처럼
+ * 경로에 `[`·`+`·`(`·`.`·`*` 가 들어가면 그 경로를 쓰는 **우리 고아**가 검색에서 빠지고
+ * `pathSurvivors: []` · `clean:true` 가 나온다(리뷰 R4-01). 목록은 전부 받아 **문자열로** 거른다.
+ */
+export function parseProcessList(stdout) {
+  if (typeof stdout !== 'string') return []
+  const out = []
+  for (const line of stdout.split('\n')) {
+    const text = line.trim()
+    if (!text) continue
+    const space = text.indexOf(' ')
+    if (space <= 0) continue
+    const pid = Number(text.slice(0, space))
+    if (!Number.isFinite(pid)) continue
+    out.push({ pid, command: text.slice(space + 1).trim() })
+  }
+  return out
+}
+
+/** 후보 추림용 **느슨한** 포함 검사 — 정규식이 아니라 문자열이다. 경계 판정은 `commandMentionsPath` 가 한다. */
+export function commandIncludesPath(command, target) {
+  const wanted = normalizePath(target)
+  if (!wanted || typeof command !== 'string') return false
+  return command.replace(/\/private(\/(tmp|var)\/)/g, '$1').includes(wanted)
+}
+
+/**
+ * 경로 진단 한 번 — **검색 실패와 「후보 없음」을 가른다** (I1, fail closed).
+ *
+ * `probe.ok === false` 면 살아남은 것이 없다고 말할 수 없다. 그 회차는 정리를 확인하지 **못한** 것이고,
+ * 확인하지 못한 것은 통과가 아니다 — `clean:false` 로 간다.
+ */
+export function pathDiagnosis({ probe, targets = [], exclude = [], signalled = [], selfPid = null, alive = () => true } = {}) {
+  if (!probe || probe.ok !== true) {
+    return { ok: false, survivors: [], rejected: [], error: probe?.error ?? '프로세스 목록을 읽지 못했다 — 경로 진단 실패' }
+  }
+  // 전체 목록에서 **후보**만 추린다 — 경로를 문자열로 포함하는 것들. 나머지는 「거른 후보」도 아니다
+  // (수백 줄이 원자료에 쌓이면 진짜 후보가 묻힌다). 경계 판정은 그다음 `commandMentionsPath` 가 한다.
+  const candidates = (probe.processes ?? []).filter((entry) =>
+    targets.some((target) => commandIncludesPath(entry?.command ?? '', target))
+  )
+  const { survivors, rejected } = classifyPathSurvivors({
+    processes: candidates,
+    targets,
+    exclude,
+    signalled,
+    selfPid,
+    alive
+  })
+  return { ok: true, survivors, rejected, candidates: candidates.length, error: null }
+}
+
+/**
+ * 「정리가 끝났는가」의 최종 판단. **확인하지 못한 것은 통과가 아니다.**
+ *
+ * @param signalled `[{pid, alive}]` — 신호한 pid 와 생존 여부
+ * @param diagnosis `pathDiagnosis()` 결과
+ */
+export function cleanVerdict({ signalled = [], diagnosis = null } = {}) {
+  const stillAlive = signalled.filter((entry) => entry.alive).map((entry) => entry.pid)
+  const orphans = (diagnosis?.survivors ?? []).map((entry) => entry.pid)
+  const why = []
+  if (stillAlive.length > 0) why.push(`신호한 pid 가 살아 있다: ${stillAlive.join(', ')}`)
+  if (diagnosis && diagnosis.ok !== true) why.push(`경로 진단 실패 — ${diagnosis.error}`)
+  if (orphans.length > 0) why.push(`소유 경로를 쓰는 프로세스가 남았다(신호하지 않음): ${orphans.join(', ')}`)
+  return {
+    clean: why.length === 0,
+    survivorPids: [...stillAlive, ...orphans],
+    why: why.join(' / ') || null
+  }
+}

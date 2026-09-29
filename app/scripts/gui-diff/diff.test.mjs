@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
-import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath } from './lib/own.mjs'
+import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath, parseProcessList, commandIncludesPath, pathDiagnosis, cleanVerdict } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
@@ -656,4 +656,66 @@ test('H2 — 글리프 없는 노드(빈 목록)는 실패가 아니다 · 수�
   assert.equal(both.length, 2)
   assert.match(both[0], /CSS\.enable 실패/)
   assert.match(both[1], /2건/)
+})
+
+// ---- I1: 경로 진단은 정규식이 아니라 문자열이고, 검색 실패는 통과가 아니다 -----
+
+const PS_OUTPUT = [
+  '  101 /bin/zsh -l',
+  '  900 /Applications/Electron.app/Contents/MacOS/Electron --user-data-dir=WORK/corral-userdata --remote-debugging-port=9445',
+  ' 1001 /usr/sbin/cupsd -l',
+  ''
+].join('\n')
+
+for (const work of ['/tmp/l443[1]', '/tmp/l443+', '/tmp/l443(2)', '/tmp/l443.d', '/tmp/l443*']) {
+  test(`I1 — 정규식 문자가 든 작업 경로(${work})에서도 고아를 찾아 clean:false 로 간다`, () => {
+    const target = `${work}/corral-userdata`
+    const probe = { ok: true, processes: parseProcessList(PS_OUTPUT.replaceAll('WORK', work)), error: null }
+    // ① 목록 파싱: pid 와 명령줄이 갈린다
+    assert.deepEqual(probe.processes.map((entry) => entry.pid), [101, 900, 1001])
+    // ② 리터럴 포함 — `pgrep -f <경로>` 였다면 이 경로들은 ERE 로 해석돼 못 찾았다
+    assert.equal(commandIncludesPath(probe.processes[1].command, target), true)
+    // ③ spawn 한 backend(101) 만 신호했고, CLI 응답 실패로 잃은 데스크톱(900)은 자손도 아니다
+    const diagnosis = pathDiagnosis({ probe, targets: [target], signalled: [101], alive: () => true })
+    assert.equal(diagnosis.ok, true)
+    assert.deepEqual(diagnosis.survivors.map((entry) => entry.pid), [900])
+    assert.equal(diagnosis.survivors[0].signalled, false)
+    // ④ 그 회차는 정리 실패다
+    const verdict = cleanVerdict({ signalled: [{ pid: 101, alive: false }], diagnosis })
+    assert.equal(verdict.clean, false)
+    assert.deepEqual(verdict.survivorPids, [900])
+  })
+}
+
+test('I1 — 검색 명령이 실패하면 「후보 없음」이 아니라 진단 실패 → clean:false (fail closed)', () => {
+  for (const probe of [
+    { ok: false, processes: [], error: 'ps → 종료코드 1' },
+    { ok: false, processes: [], error: 'ps 출력이 비었다 — 경로 진단을 못 했다' },
+    null
+  ]) {
+    const diagnosis = pathDiagnosis({ probe, targets: ['/tmp/l443/corral-userdata'], signalled: [101] })
+    assert.equal(diagnosis.ok, false)
+    assert.deepEqual(diagnosis.survivors, [])
+    const verdict = cleanVerdict({ signalled: [{ pid: 101, alive: false }], diagnosis })
+    // 신호한 pid 는 전부 죽었지만 **확인하지 못했으므로** 통과가 아니다
+    assert.equal(verdict.clean, false)
+    assert.match(verdict.why, /경로 진단 실패/)
+  }
+})
+
+test('I1 — 정상 진단에서 후보가 정말 없으면 clean:true (양성/음성 대조)', () => {
+  const probe = { ok: true, processes: parseProcessList(PS_OUTPUT.replaceAll('WORK', '/tmp/other')), error: null }
+  const diagnosis = pathDiagnosis({ probe, targets: ['/tmp/l443/corral-userdata'], signalled: [101] })
+  assert.equal(diagnosis.ok, true)
+  assert.deepEqual(diagnosis.survivors, [])
+  assert.equal(diagnosis.candidates, 0)
+  assert.equal(cleanVerdict({ signalled: [{ pid: 101, alive: false }], diagnosis }).clean, true)
+})
+
+test('I1 — 목록 파싱은 공백·빈 줄·잘린 줄을 버리고 명령줄의 공백을 지킨다', () => {
+  const parsed = parseProcessList(['', '  12 /bin/sh -c "a b  c"', 'nope', '  x /bin/true', ' 13 ', '  14 /usr/bin/foo'].join('\n'))
+  assert.deepEqual(parsed, [
+    { pid: 12, command: '/bin/sh -c "a b  c"' },
+    { pid: 14, command: '/usr/bin/foo' }
+  ])
 })

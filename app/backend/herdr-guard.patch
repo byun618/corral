@@ -54,7 +54,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,306 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -300,6 +300,63 @@
 +        let blocked = submit(&mut app, &pane_name, &target, blocked_seq);
 +        assert_eq!(blocked["error"]["code"], "agent_blocked", "{blocked}");
 +        println!("done pane cleared the ready predicate at seq={seq} (stopped later at {message:?}); stale seq, working and blocked refused by the predicate");
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    /// LIFE-456 R2-F1 — the guard must let `agent.explain` through, with the same identity
++    /// fence as `agent.get`. Without this arm the CLI's blocked reason was always `unknown`:
++    /// the envelope answered `unsupported`, the caller caught it and reported no rule id.
++    #[tokio::test(flavor = "current_thread")]
++    async fn corral_terminal_allows_agent_explain_with_the_same_identity_fence() {
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l456-explain-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        assert!(response.get("error").is_none(), "{response}");
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        let generation = app.lookup_runtime_sender(ws, pane).unwrap().corral_generation();
++        let target = format!("{terminal}.{generation}");
++        // A managed agent has to exist for the agent layer to have anything to explain; without
++        // one the handler answers `agent_not_found` and the test could not tell "the guard let it
++        // through" from "the guard answered for it".
++        {
++            use crate::detect::{Agent, AgentState};
++            use crate::events::AppEvent;
++            use std::time::{Duration, Instant};
++            app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++                "corral-explain".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude),
++                state: AgentState::Idle, visible_blocker: false, visible_working: false,
++                process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(&terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        fn explain(app: &mut App, pane_id: Option<&str>, terminal_id: Option<&str>, operation_target: &str) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX,
++                pane_id: pane_id.map(str::to_string), terminal_id: terminal_id.map(str::to_string),
++                operation: Some(serde_json::json!({"method":"agent.explain","params":{"target":operation_target}})),
++                expected_state_change_seq: None,
++            })).unwrap()
++        }
++        // ① Matching identity: the envelope must not refuse it any more. There is no provider in
++        //    this harness, so the *body* is whatever detect says about a bare shell — what this
++        //    test fences is that the guard stopped answering `unsupported`.
++        let ok = explain(&mut app, Some(&pane_name), Some(&target), &pane_name);
++        assert_ne!(ok["error"]["code"], "unsupported", "agent.explain must be inside the guard protocol: {ok}");
++        assert!(ok.get("result").is_some(), "expected an explain body, got {ok}");
++        // ② The operation target must be the pane the envelope names — no reading another pane.
++        let mismatch = explain(&mut app, Some(&pane_name), Some(&target), "w9:p9");
++        assert_eq!(mismatch["error"]["code"], "invalid_request", "{mismatch}");
++        // ③ A stale PTY generation is refused exactly as it is for the other target-bearing arms.
++        let stale = explain(&mut app, Some(&pane_name), Some(&format!("{terminal}.{}", generation + 1)), &pane_name);
++        assert_eq!(stale["error"]["code"], "stale_terminal", "{stale}");
++        println!("agent.explain: accepted with matching identity, refused on target mismatch and stale generation");
 +        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
 +        std::fs::remove_dir_all(root).unwrap();
 +    }

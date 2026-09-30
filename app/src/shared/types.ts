@@ -283,7 +283,68 @@ export type SessionDigest = {
   lastPrompt: string | null
   /** 지금 답을 기다리는 질문 (LIFE-458 #7). 없으면 null — 빈 배열은 오지 않는다. */
   pendingQuestions: SessionQuestion[] | null
+  /**
+   * 지금 열려 있는 백그라운드 작업·서브에이전트 (LIFE-462 #10·#11). 꼬리 창이 아니라 기록 **누적 판독**에서 온다
+   * (`main/transcript-lifecycle.ts`). monitoring 판단은 `shared/lifecycle.ts` 의 `isMonitoring` 한 곳이다.
+   */
+  lifecycle: SessionLifecycle
 }
+
+/**
+ * 백그라운드 작업 하나 (LIFE-462 #10). `kind` 가 `agent` 면 비동기 서브에이전트고, 나머지는 **에이전트가 아닌 작업**이다 —
+ * monitoring 은 에이전트가 아닌 작업만 센다.
+ */
+export type BackgroundTask = {
+  /** provider 가 준 작업 id (claude `backgroundTaskId`·`taskId`·`agentId`, grok `task_id`). */
+  id: string
+  /** `shell` 셸 명령(claude 백그라운드 Bash · grok `bash`) · `monitor` claude Monitor · `agent` 비동기 서브에이전트. */
+  kind: 'shell' | 'monitor' | 'agent'
+  /** 사람이 읽을 이름 — 도구 설명, 없으면 명령 한 줄 미리보기. 둘 다 없으면 null. */
+  label: string | null
+  /** 시작 시각(epoch ms) — 시작 레코드의 시각. 없으면 null. */
+  startedAt: number | null
+}
+
+/**
+ * 아직 안 끝난 서브에이전트 하나 (LIFE-462 #11) — 부모 세션의 자식 행 재료. 자식은 자기 pane 이 없다(클릭 = 부모 pane).
+ * `status` 는 기록에서 가를 수 있는 것만 싣는다 — 지금은 `running` 하나다.
+ */
+export type SessionSubagent = {
+  /** 비동기는 `agentId`, 동기는 부르는 `tool_use` id (동기는 끝나기 전엔 agentId 가 기록에 없다). */
+  id: string
+  /** `Agent` 호출의 `name`. 없으면 null — 화면은 `description` 으로 떨어진다. */
+  name: string | null
+  description: string | null
+  /** `subagent_type`. 없으면 null. */
+  agentType: string | null
+  /** 부모가 결과를 기다리지 않는가 (`run_in_background` → `async_launched`). */
+  background: boolean
+  startedAt: number | null
+  status: 'running'
+}
+
+/** 싣는 개수 상한 — 넘친 수는 `*Overflow` 로 함께 싣는다 (Orca `AGENT_STATUS_MAX_SUBAGENTS` 와 같은 32). */
+export const LIFECYCLE_MAX_ITEMS = 32
+
+/**
+ * 한 세션의 백그라운드 작업·서브에이전트 목록 (LIFE-462).
+ *
+ * `unknown` 과 빈 목록은 다르다 — 빈 목록은 "읽었는데 열린 게 없다" 다.
+ *   · `no-source`   이 provider·세션에는 읽을 출처가 없다 (codex — 기록에 끝 표지가 없다, 참조 없음)
+ *   · `catching-up` 긴 파일을 앞에서부터 따라잡는 중이다 — 주기당 예산(2MB)으로 나눠 읽어 아직 끝에 못 닿았다
+ *   · `unreadable`  읽다 실패했다
+ *   · `not-running` 이 세션을 가진 살아 있는 provider 프로세스를 못 찾았다 — 프로세스가 끝나면 그 작업도 끝 통지 없이 같이
+ *                   죽는다(#72171). 기록에 남은 "열림" 을 도는 중으로 싣지 않는다(L8)
+ */
+export type SessionLifecycle =
+  | { state: 'unknown'; reason: 'no-source' | 'catching-up' | 'unreadable' | 'not-running' }
+  | {
+      state: 'known'
+      tasks: BackgroundTask[]
+      taskOverflow: number
+      subagents: SessionSubagent[]
+      subagentOverflow: number
+    }
 
 /** 아무것도 못 읽은 상태의 지문. 셸 탭·통합 미설치가 여기 선다. */
 export const EMPTY_SESSION_DIGEST: SessionDigest = {
@@ -296,6 +357,7 @@ export const EMPTY_SESSION_DIGEST: SessionDigest = {
   model: null,
   lastPrompt: null,
   pendingQuestions: null,
+  lifecycle: { state: 'unknown', reason: 'no-source' },
 }
 
 export type TabRow = {

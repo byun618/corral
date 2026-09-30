@@ -519,6 +519,7 @@ describe('T8 digestsEqual — 필드 하나만 바뀌어도 다르다', () => {
     model: 'claude-opus-5-5',
     lastPrompt: '최근 말',
     pendingQuestions: [{ question: 'q', header: null, options: [{ label: 'a', description: null }], multiSelect: null }],
+    lifecycle: { state: 'known', tasks: [], taskOverflow: 0, subagents: [], subagentOverflow: 0 },
   }
   const variants: { field: keyof SessionDigest; digest: SessionDigest }[] = [
     { field: 'activity', digest: { ...base, activity: { state: 'text', text: '다른 말', at: 1 } } },
@@ -530,6 +531,7 @@ describe('T8 digestsEqual — 필드 하나만 바뀌어도 다르다', () => {
     { field: 'model', digest: { ...base, model: 'claude-fable-5-1' } },
     { field: 'lastPrompt', digest: { ...base, lastPrompt: '다른 최근 말' } },
     { field: 'pendingQuestions', digest: { ...base, pendingQuestions: null } },
+    { field: 'lifecycle', digest: { ...base, lifecycle: { state: 'unknown', reason: 'catching-up' } } },
   ]
   it('모든 필드가 표에 있다', () => {
     expect(variants.map((variant) => variant.field).sort()).toEqual(Object.keys(EMPTY_SESSION_DIGEST).sort())

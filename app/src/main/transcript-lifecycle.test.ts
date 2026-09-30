@@ -452,8 +452,26 @@ describe('L5 grok updates.jsonl — background_tasks 스냅샷', () => {
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'chat_history.jsonl'), jsonl([{ type: 'user', content: [{ type: 'text', text: '<user_query>해</user_query>' }] }]))
     updates = path.join(dir, 'updates.jsonl')
+    registerGrok([{ session_id: SESSION_ID, pid: process.pid, cwd: '/tmp' }])
   })
   const grokLife = () => readSessionDigest(grokRef).digest.lifecycle
+  // 키 순서 = `~/.grok/active_sessions.json` 관측(runs-r2/n44 원자료 옆 모양)
+  const registerGrok = (rows: unknown[]) => fs.writeFileSync(path.join(home, '.grok', 'active_sessions.json'), JSON.stringify(rows))
+
+  it('L8 grok — /exit(레지스트리 행 삭제)·강제 종료(죽은 pid) 뒤엔 not-running, 재개(새 pid + 빈 스냅샷)면 다시 known', () => {
+    fs.writeFileSync(updates, jsonl([snapshot([task('1', 'running')])]))
+    expect(known(grokLife()).tasks.map((row) => row.id)).toEqual(['1'])
+    registerGrok([{ session_id: 'other', pid: process.pid, cwd: '/tmp' }])
+    expect(grokLife()).toEqual({ state: 'unknown', reason: 'not-running' })
+    registerGrok([{ session_id: SESSION_ID, pid: 2 ** 22 + 12345, cwd: '/tmp' }])
+    expect(grokLife()).toEqual({ state: 'unknown', reason: 'not-running' })
+    fs.writeFileSync(path.join(home, '.grok', 'active_sessions.json'), '[{"session_id": ')
+    expect(grokLife()).toEqual({ state: 'unknown', reason: 'not-running' })
+    registerGrok([{ session_id: SESSION_ID, pid: process.pid, cwd: '/tmp' }])
+    expect(known(grokLife()).tasks.map((row) => row.id)).toEqual(['1'])
+    fs.appendFileSync(updates, jsonl([snapshot([])]))
+    expect(known(grokLife()).tasks).toEqual([])
+  })
 
   it('마지막 스냅샷의 running 만 — 끝난 것(completed·failed)과 모르는 kind 는 빼고', () => {
     fs.writeFileSync(updates, jsonl([snapshot([task('1', 'running'), task('2', 'completed'), task('3', 'failed'), task('4', 'running', 'mystery')])]))

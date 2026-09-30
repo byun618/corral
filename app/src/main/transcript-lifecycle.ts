@@ -507,7 +507,48 @@ function processAlive(pid: number): boolean {
   }
 }
 
+// --- grok 프로세스 레지스트리 (L8) -------------------------------------------------------
+
+let grokRegistry: { size: number; mtimeMs: number; entries: { sessionId: string; pid: number }[] } | null = null
+
+/**
+ * 이 세션 id 를 가진 **살아 있는** grok 프로세스가 있나 — `<HOME>/.grok/active_sessions.json`(`[{session_id, pid, cwd}]`)을 본다
+ * (네이티브 관측 `raw/claude/l10/runs-r2/n44`·`n45`, 계약 아님). grok 은 `/exit` 에 그 행을 지우고, `--resume` 에 새 pid 로 다시 쓴다.
+ * 강제 종료는 행을 남기므로 `kill(pid, 0)` 으로 본다. mtime·size 캐시, 못 읽으면 "없다" — claude 레지스트리와 같은 규칙.
+ */
+export function grokSessionAlive(input: { file: string; sessionId: string }): { alive: boolean; bytes: number } {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(input.file)
+  } catch {
+    grokRegistry = null
+    return { alive: false, bytes: 0 }
+  }
+  let bytes = 0
+  if (grokRegistry === null || grokRegistry.size !== stat.size || grokRegistry.mtimeMs !== stat.mtimeMs) {
+    let parsed: unknown = null
+    try {
+      parsed = JSON.parse(fs.readFileSync(input.file, 'utf8'))
+      bytes = stat.size
+    } catch {
+      parsed = null // 쓰는 중·깨진 파일 — 이 주기엔 없는 것으로 본다
+    }
+    const entries: { sessionId: string; pid: number }[] = []
+    if (Array.isArray(parsed)) {
+      for (const row of parsed) {
+        const sessionId = isRecord(row) ? readString(row, 'session_id') : null
+        const pid = isRecord(row) && typeof row['pid'] === 'number' ? row['pid'] : null
+        if (sessionId !== null && pid !== null) entries.push({ sessionId, pid })
+      }
+    }
+    grokRegistry = { size: stat.size, mtimeMs: stat.mtimeMs, entries }
+  }
+  const alive = grokRegistry.entries.some((entry) => entry.sessionId === input.sessionId && processAlive(entry.pid))
+  return { alive, bytes }
+}
+
 /** 레지스트리 캐시를 비운다 — `clearTranscriptCache` 가 같이 부른다. */
 export function clearClaudeRegistry(): void {
   registry.clear()
+  grokRegistry = null
 }

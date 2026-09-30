@@ -56,7 +56,7 @@ import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
 import type { Ledger } from './transcript-lifecycle.js'
-import { advanceLedger, claudeSessionAlive, clearClaudeRegistry, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
+import { advanceLedger, claudeSessionAlive, clearClaudeRegistry, grokSessionAlive, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
 export const TAIL_WINDOW_BYTES = 256 * 1024
@@ -615,7 +615,12 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
           dir: path.join(homeDir(), '.claude', 'sessions'),
           sessionId: ref.kind === 'id' ? ref.id : path.basename(ref.path, '.jsonl'),
         })
-      : null
+      : agent === 'grok'
+        ? grokSessionAlive({
+            file: path.join(homeDir(), '.grok', 'active_sessions.json'),
+            sessionId: ref.kind === 'id' ? ref.id : path.basename(path.dirname(ref.path)),
+          })
+        : null
   const live = liveness?.alive ?? null
   const registryBytes = liveness?.bytes ?? 0
   if (cached !== null && mainFresh && sidecarFresh && summaryFresh && ledgerFresh && cached.live === live) {

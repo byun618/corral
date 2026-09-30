@@ -391,6 +391,39 @@ test('부모 자체가 한쪽에만 있으면 그 사실로 적는다 (자식 �
   assert.equal(missing[0].detail.right, '없음(부모 자체가 없음)')
 })
 
+// ---- R4 부모 안 자식 전부 --------------------------------------------------------
+// 왜: 부모 하나에 자식(행·무리)이 여럿이어도 첫 자식만 재던 판은 **둘째 행만 다른** 화면을 같다고 봤다.
+
+const kid = (parentIndex, childIndex, x) => ({ parentIndex, childIndex, present: true, box: box(x), style: { color: 'x' } })
+
+test('둘째 자식만 다르면 그 자리를 잡는다 — 합성 판별력 대조 (R4)', () => {
+  const left = snap('orca', { row: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6), kid(0, 1, 40)] }) })
+  const right = snap('corral', { row: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6), kid(0, 1, 52)] }) })
+  const result = diffSnapshots(left, right, { units: [unit('row')], tolerance: 0.5 })
+  assert.equal(result.findings.length, 1)
+  assert.equal(result.findings[0].kind, 'box')
+  assert.equal(result.findings[0].childIndex, 1)
+  assert.equal(result.findings[0].detail[0].delta, 12)
+  // 대조: 첫 자식만 남기면(예전 도구가 본 모양) 같은 두 화면이 「차이 0」 이 된다 — 도구가 무엇을 못 봤는지
+  const firstOnly = (snapshot) => snap(snapshot.app, { row: { ...snapshot.elements.row, items: snapshot.elements.row.items.filter((item) => item.childIndex === 0) } })
+  assert.equal(diffSnapshots(firstOnly(left), firstOnly(right), { units: [unit('row')], tolerance: 0.5 }).findings.length, 0)
+})
+
+test('같은 부모 안에서 자식 수가 다르면 그 부모 안의 부재로 적는다 (R4)', () => {
+  const left = snap('orca', { row: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6), kid(0, 1, 40)] }) })
+  const right = snap('corral', { row: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6)] }) })
+  const missing = diffSnapshots(left, right, { units: [unit('row')], tolerance: 0.5 }).findings.filter((finding) => finding.kind === 'missing')
+  assert.equal(missing.length, 1)
+  assert.equal(missing[0].detail.childIndex, 1)
+  assert.equal(missing[0].detail.right, '없음(그 부모 안에 없음)')
+})
+
+test('자식 순번이 없는 예전 원자료는 첫 자식으로 읽는다 (R4 하위 호환)', () => {
+  const left = snap('orca', { dot: el({ parentScoped: true, parents: 1, count: 1, items: [child(0, box(6))] }) })
+  const right = snap('corral', { dot: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6)] }) })
+  assert.equal(diffSnapshots(left, right, { units: [unit('dot')], tolerance: 0.5 }).findings.length, 0)
+})
+
 // ---- G7 렌더 폰트 -----------------------------------------------------------
 
 test('폰트 수집 실패는 "같다" 가 아니라 공백(사유)로 나온다 (G7)', () => {

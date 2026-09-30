@@ -156,6 +156,9 @@ export function collectSnapshot(spec) {
   const elements = {}
   const MAX_ITEMS = 12
   const isVisible = (el) => {
+    // `[inert]` 조상 아래는 박스가 있어도 **화면에서 쓸 수 없는** 자리다 (R4 — 접힌 무리 안에 남은 행을
+    // present 로 세던 자리). 박스만 보면 숨은 행이 있는 것으로 잡힌다.
+    if (el.closest('[inert]') !== null) return false
     const rect = el.getBoundingClientRect()
     return rect.width > 0 || rect.height > 0
   }
@@ -187,12 +190,12 @@ export function collectSnapshot(spec) {
   }
   // 폰트(`CSS.getPlatformFontsForNode`)는 CDP 쪽에서 **노드마다** 받아야 한다 (G7). 여기서 잰
   // 요소에 표시를 남겨, 호출자가 같은 요소를 다시 집을 수 있게 한다 — 첫 요소만 재던 자리를 막는다.
-  const mark = (el, unitId, index) => {
+  const mark = (el, unitId, index, childIndex) => {
     try {
       // **한 요소가 여러 단위에 걸릴 수 있다** — 예: Orca 의 첫 내비 버튼은 `search-row` 이면서
       // `nav-buttons[0]` 이고, 탭 요소는 `tab` 이면서 `tab-active` 다. 덮어쓰면 앞 단위의 표시가
       // 사라져 그 요소의 폰트가 「수집 실패」로 남는다(실측). 그래서 **덧붙이고** `~=` 로 찾는다.
-      const key = `${unitId}#${index}`
+      const key = childIndex === undefined ? `${unitId}#${index}` : `${unitId}#${index}.${childIndex}`
       const before = el.getAttribute('data-l443-node')
       const parts = before ? before.split(/\s+/).filter(Boolean) : []
       if (!parts.includes(key)) parts.push(key)
@@ -216,7 +219,7 @@ export function collectSnapshot(spec) {
       record.parentScoped = true
       record.parentSelector = unit.parentSelector
       record.parents = parents.length
-      record.items = parents.slice(0, MAX_ITEMS).map((parent, parentIndex) => {
+      record.items = parents.slice(0, MAX_ITEMS).flatMap((parent, parentIndex) => {
         // 자식은 부모 **아래**를 먼저 보고, 없으면 **부모 자신**이 그 선택자인지 본다 —
         // 카드·탭처럼 「부모 자신의 상태」를 재는 단위(`.main-tab.is-active`)도 같은 순번 규약으로
         // 묶이게 하려는 것이다. 순번이 곧 의미인 자리라 예외를 만들지 않는다.
@@ -228,13 +231,17 @@ export function collectSnapshot(spec) {
             /* 선택자가 matches 에서 깨지면 부재로 남는다 — 조용히 같다고 하지 않는다 */
           }
         }
-        if (found.length === 0) return { parentIndex, present: false }
-        mark(found[0], unit.id, parentIndex)
-        return { parentIndex, present: true, siblings: found.length, ...measure(found[0], unit) }
+        if (found.length === 0) return [{ parentIndex, childIndex: 0, present: false }]
+        // **부모 안의 자식을 전부 잰다** (R4). 첫 자식만 재던 판은 둘째 행·둘째 무리의 차이를 못 봤다.
+        return found.slice(0, MAX_ITEMS).map((el, childIndex) => {
+          mark(el, unit.id, parentIndex, childIndex)
+          return { parentIndex, childIndex, present: true, siblings: found.length, ...measure(el, unit) }
+        })
       })
       record.itemsTruncated = parents.length > MAX_ITEMS
-      record.countAll = record.items.reduce((sum, item) => sum + (item.present ? item.siblings : 0), 0)
-      record.count = record.items.filter((item) => item.present).length
+      record.countAll = record.items.reduce((sum, item) => sum + (item.present && item.childIndex === 0 ? item.siblings : 0), 0)
+      // count 는 예전 뜻(자식이 있는 부모 수) 그대로 — 자식 수 차이는 부모별 (부모, 자식) 짝에서 부재로 나온다.
+      record.count = new Set(record.items.filter((item) => item.present).map((item) => item.parentIndex)).size
       record.present = record.count > 0
     } else {
       const found = Array.from(scope.querySelectorAll(unit.selector))
@@ -251,6 +258,17 @@ export function collectSnapshot(spec) {
         return { index, present: true, ...measure(el, unit) }
       })
       record.itemsTruncated = visible.length > MAX_ITEMS
+    }
+    // 양성 대조 (R4) — `[inert]` 라서 뺀 요소 수. 0 이 아니면 「숨은 행이 DOM 에 있었고 부재로 셌다」 는 뜻이다.
+    if (typeof unit.selector === 'string') {
+      try {
+        record.inertExcluded = Array.from(scope.querySelectorAll(unit.selector)).filter((el) => {
+          const rect = el.getBoundingClientRect()
+          return el.closest('[inert]') !== null && (rect.width > 0 || rect.height > 0)
+        }).length
+      } catch {
+        /* 선택자가 깨지면 기록하지 않는다 — 위에서 이미 부재로 남는다 */
+      }
     }
     const first = record.items?.find((item) => item.present)
     // 첫 요소는 예전 모양 그대로도 남긴다 — 기존 원자료·보고서와 읽는 자리를 맞춘다.

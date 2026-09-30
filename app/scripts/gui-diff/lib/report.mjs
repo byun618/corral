@@ -4,6 +4,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const cell = (value) => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', ' ')
+// 자리 표기 — 둘째 이후 부모는 `[n번째]`, 둘째 이후 자식은 `· 자식 m번째` 를 붙인다 (R4).
+const where = (entry) => {
+  const parent = entry.index ? ` [${entry.index + 1}번째]` : ''
+  return entry.childIndex ? `${parent || ' [1번째]'} · 자식 ${entry.childIndex + 1}번째` : parent
+}
 
 /** 차이 한 건을 사람이 읽는 한 줄로. 값이 길면 자른다 — 표가 깨지면 아무도 안 읽는다. */
 export function describeFinding(finding) {
@@ -161,7 +166,7 @@ export function renderReport({ date, runs, areas, notes }) {
             : finding.kind === 'selector-miss'
               ? '보류 — 측정 실패(선택자 부패). 차이로 읽지 않는다'
               : (finding.classification ?? '(초안 미정)')
-        const label = `${area.area} › ${finding.note ?? finding.id}${finding.index ? ` [${finding.index + 1}번째]` : ''}`
+        const label = `${area.area} › ${finding.note ?? finding.id}${where(finding)}`
         lines.push(
           `| ${cell(label)} | ${cell(state.state)} | ${cell(described.orca)} | ${cell(described.corral)} | ${cell(described.diff)} | ${cell(classification)} | ${cell(state.raw)} |`
         )
@@ -178,7 +183,7 @@ export function renderReport({ date, runs, areas, notes }) {
       for (const entry of below) {
         for (const item of entry.detail) {
           lines.push(
-            `| ${cell(entry.note ?? entry.id)}${entry.index ? ` [${entry.index + 1}번째]` : ''} | ${cell(entry.state)} | ${cell(item.prop)} | ${cell(item.left)} | ${cell(item.right)} | ${cell(item.delta)}px |`
+            `| ${cell(entry.note ?? entry.id)}${where(entry)} | ${cell(entry.state)} | ${cell(item.prop)} | ${cell(item.left)} | ${cell(item.right)} | ${cell(item.delta)}px |`
           )
         }
       }
@@ -194,7 +199,7 @@ export function renderReport({ date, runs, areas, notes }) {
       lines.push('| --- | --- | --- | --- | --- |')
       for (const entry of fontGaps) {
         lines.push(
-          `| ${cell(entry.note ?? entry.id)}${entry.index ? ` [${entry.index + 1}번째]` : ''} | ${cell(entry.state)} | ${cell(entry.detail.left)} | ${cell(entry.detail.right)} | ${cell(entry.detail.why ?? '한쪽 노드에 글리프가 없다')} |`
+          `| ${cell(entry.note ?? entry.id)}${where(entry)} | ${cell(entry.state)} | ${cell(entry.detail.left)} | ${cell(entry.detail.right)} | ${cell(entry.detail.why ?? '한쪽 노드에 글리프가 없다')} |`
         )
       }
       lines.push('')

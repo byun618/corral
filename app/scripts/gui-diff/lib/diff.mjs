@@ -121,6 +121,9 @@ export function diffItemFonts(leftItem, rightItem) {
  * @param options.tolerance 박스 허용치 px
  * @param options.units 영역 정의의 단위 목록 — 보고 순서와 설명을 여기서 가져온다
  */
+// 차이 한 건의 자리 — 부모 순번(`index`)과, 둘째 이후 자식이면 자식 순번(`childIndex`, R4).
+const position = (pair) => ({ ...(pair.index > 0 ? { index: pair.index } : {}), ...(pair.childIndex > 0 ? { childIndex: pair.childIndex } : {}) })
+
 export function diffSnapshots(left, right, options = {}) {
   const tolerance = options.tolerance ?? 0
   const units = options.units ?? []
@@ -219,15 +222,23 @@ export function diffSnapshots(left, right, options = {}) {
     const rightItems = itemsOf(b)
     const pairs = []
     if (parentScoped) {
-      const keys = [...new Set([...leftItems.map((item) => item.parentIndex), ...rightItems.map((item) => item.parentIndex)])]
-        .filter((key) => Number.isFinite(key))
-        .sort((x, y) => x - y)
+      // **(부모, 자식) 짝 전부**를 견준다 (R4). 자식 순번이 없는 예전 원자료는 첫 자식(0)이다.
+      const childOf = (item) => (Number.isFinite(item.childIndex) ? item.childIndex : 0)
+      const keyOf = (item) => `${item.parentIndex}:${childOf(item)}`
+      const keys = [...new Map([...leftItems, ...rightItems].filter((item) => Number.isFinite(item.parentIndex)).map((item) => [keyOf(item), item])).values()]
+        .map((item) => ({ parentIndex: item.parentIndex, childIndex: childOf(item) }))
+        .sort((x, y) => x.parentIndex - y.parentIndex || x.childIndex - y.childIndex)
+      const parentOn = (items, parentIndex) => items.some((item) => item.parentIndex === parentIndex)
       for (const key of keys) {
+        const find = (items) => items.find((item) => item.parentIndex === key.parentIndex && childOf(item) === key.childIndex) ?? null
+        // 부모는 있는데 그 순번의 자식 기록이 없으면 **그 부모 안의 부재**다 — 부모 자체의 부재와 가른다.
+        const side = (items) => find(items) ?? (parentOn(items, key.parentIndex) ? { parentIndex: key.parentIndex, childIndex: key.childIndex, present: false } : null)
         pairs.push({
-          index: key,
-          label: `부모 ${key}`,
-          left: leftItems.find((item) => item.parentIndex === key) ?? null,
-          right: rightItems.find((item) => item.parentIndex === key) ?? null
+          index: key.parentIndex,
+          childIndex: key.childIndex,
+          label: `부모 ${key.parentIndex} · 자식 ${key.childIndex}`,
+          left: side(leftItems),
+          right: side(rightItems)
         })
       }
     } else {
@@ -249,13 +260,14 @@ export function diffSnapshots(left, right, options = {}) {
           id,
           note,
           kind: 'missing',
-          ...(pair.index > 0 ? { index: pair.index } : {}),
+          ...position(pair),
           detail: {
             left: lHas ? '있음' : l ? '없음(그 부모 안에 없음)' : '없음(부모 자체가 없음)',
             right: rHas ? '있음' : r ? '없음(그 부모 안에 없음)' : '없음(부모 자체가 없음)',
             absentSide: lHas ? 'right' : 'left',
             absence: parentScoped ? 'parent-scoped' : 'selector',
-            parentIndex: parentScoped ? pair.index : undefined
+            parentIndex: parentScoped ? pair.index : undefined,
+            childIndex: parentScoped ? pair.childIndex : undefined
           }
         })
         continue
@@ -264,22 +276,22 @@ export function diffSnapshots(left, right, options = {}) {
 
       const boxDiff = diffBoxWithBelow(l.box, r.box, tolerance)
       if (boxDiff.over.length > 0) {
-        findings.push({ id, note, kind: 'box', detail: boxDiff.over, ...(pair.index > 0 ? { index: pair.index } : {}) })
+        findings.push({ id, note, kind: 'box', detail: boxDiff.over, ...position(pair) })
       }
       if (boxDiff.below.length > 0) {
         // 판정에서 빼되 **세기는 한다** — 허용치가 무엇을 가렸는지 보고서에 남는다.
-        belowTolerance.push({ id, note, index: pair.index, detail: boxDiff.below })
+        belowTolerance.push({ id, note, index: pair.index, ...(pair.childIndex > 0 ? { childIndex: pair.childIndex } : {}), detail: boxDiff.below })
       }
       const styleDiff = diffStyle(l.style, r.style)
       if (styleDiff.length > 0) {
-        findings.push({ id, note, kind: 'style', detail: styleDiff, ...(pair.index > 0 ? { index: pair.index } : {}) })
+        findings.push({ id, note, kind: 'style', detail: styleDiff, ...position(pair) })
       }
       // 렌더 폰트 (F14·G7) — **요소마다** 본다. 선언값과 따로 내고, 못 쟀으면 공백(사유)로 적는다.
       const fonts = wantsFonts(id) ? diffItemFonts(l, r) : null
       if (fonts && fonts.kind === 'differs') {
-        findings.push({ id, note, kind: 'font', detail: fonts, ...(pair.index > 0 ? { index: pair.index } : {}) })
+        findings.push({ id, note, kind: 'font', detail: fonts, ...position(pair) })
       } else if (fonts) {
-        fontUnmeasured.push({ id, note, index: pair.index, detail: fonts })
+        fontUnmeasured.push({ id, note, index: pair.index, ...(pair.childIndex > 0 ? { childIndex: pair.childIndex } : {}), detail: fonts })
       }
     }
   }

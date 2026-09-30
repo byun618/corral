@@ -224,7 +224,7 @@ async function capture(app, handle, area, { outDir, tag }) {
       if (!Array.isArray(entry?.items)) continue
       for (const item of entry.items) {
         if (!item.present) continue
-        const key = `${unit.id}#${item.parentIndex ?? item.index ?? 0}`
+        const key = Number.isFinite(item.childIndex) ? `${unit.id}#${item.parentIndex}.${item.childIndex}` : `${unit.id}#${item.parentIndex ?? item.index ?? 0}`
         snapshot.meta.fontsRequested += 1
         try {
           const { nodeId } = await handle.cdp.send('DOM.querySelector', {
@@ -354,6 +354,17 @@ const STATE_TARGETS = {
     ],
     detail: '루트 에이전트 3개, 알약을 **펼친** 상태 — 펼친 행↔펼친 행 짝 (두 앱 다 알약을 눌러 연다)'
   },
+  // R4 — 펼친 뒤 다시 접은 무리. Orca 는 한 번 펼친 행을 접은 뒤에도 `[inert]` 로 DOM 에 남긴다 —
+  // 측정기가 그 숨은 행을 present 로 세는지 보는 자리다. **`expanded` 바로 뒤에** 둔다(같은 에이전트, 접힘만 다름).
+  collapsed: {
+    tabCount: 3,
+    agents: [
+      { state: 'working', prompt: 'L467 expanded 1', agentType: 'claude' },
+      { state: 'idle', prompt: 'L467 expanded 2', agentType: 'codex' },
+      { state: 'blocked', prompt: 'L467 expanded 3', agentType: 'claude' }
+    ],
+    detail: '`expanded` 와 같은 에이전트 3개를 **다시 접은** 상태 — 접힌 무리 안의 숨은(inert) 행이 부재로 잡혀야 한다 (R4)'
+  },
   done: {
     tabCount: 2,
     agents: [{ state: 'done', prompt: 'L467 finished agent', agentType: 'claude' }],
@@ -391,7 +402,7 @@ const STATE_TARGETS = {
 const UNINJECTABLE_STATES = [
   { state: '계보 자식 행', why: 'corral 계보는 orca orchestration 원장(orchestrationLineage)에서만 온다 — 격리 인스턴스에 원장을 만드는 제품 경로가 없다. K1 #19 네이티브 덤프가 원자료' },
   { state: '서브에이전트 자식 행', why: 'corral 서브에이전트는 claude 세션 파일(lifecycle.subagents)에서만 온다 — RPC 보고로 못 선다. 단위 테스트(sidebar-agents.test.ts)가 모양을 잠근다' },
-  { state: '보존(retained) 행', why: 'herdr 가 에이전트 pane 이 닫힐 때 보존하는데, RPC 보고로 만든 pane 은 에이전트 세션이 없어 보존 대상이 되는지 보장이 없다. K1 #20 네이티브 덤프가 원자료' },
+  { state: '보존(retained) 행', why: '**만들 수는 있지만 독립 제어·초기화가 안 된다.** 보존은 corral main 이 herdr 에서 사라진 done pane 을 기록하는 것이라 RPC 보고 pane 으로도 선다(실측 R013 — `done` 뒤 탭을 닫자 보존 행이 생겨 다음 상태 `wait` 를 오염시켰다). 그러나 도구에 보존 목록을 비우는 경로가 없어 상태 사이에 끌려가고, Orca 에 대응 행도 없다. 모양은 단위 테스트, 실제 경로는 K1 #20·fix-r1 R1 네이티브 덤프가 원자료' },
   { state: '모델 칸', why: 'corral 모델은 세션 파일 digest.model 에서만 온다. Orca 는 hook 페이로드. K1 네이티브 덤프(claude-opus-5-5 · grok-4.7-build)가 원자료' },
   { state: '긴 이름 (corral 쪽)', why: 'corral 행 제목의 주입 가능한 원천은 터미널 제목(OSC 2)뿐인데 기존 규칙(`truncatePathLeft`)이 15자로 왼쪽을 자른다 — 긴 글은 세션 파일의 provider 제목·첫 프롬프트에서만 선다. 상태 `long-name` 은 Orca 쪽 긴 글만 재고, corral 한 줄 잘림은 단위 테스트(C8)와 네이티브 관문(K11 실제 프롬프트)이 맡는다' },
   { state: '질문/권한 아이콘(waiting)', why: 'blockedReason 은 herdr agent.explain 규칙 id·pendingQuestions 에서만 온다 — 상태 `wait` 은 blocked 점으로 잰다. K1 R010 네이티브 덤프가 원자료' }

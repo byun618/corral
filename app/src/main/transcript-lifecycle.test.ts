@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isMonitoring } from '../shared/lifecycle'
-import type { AgentSessionRef, AgentStatus, BackgroundTask, SessionLifecycle, SessionSubagent } from '../shared/types'
+import type { AgentSessionRef, AgentStatus, BackgroundTask, SessionLifecycle, SessionSubagent, TurnOutcome } from '../shared/types'
 import { LIFECYCLE_MAX_ITEMS } from '../shared/types'
 import { LIFECYCLE_READ_MAX_BYTES, advanceLedger, ledgerView } from './transcript-lifecycle'
 import type { Ledger } from './transcript-lifecycle'
@@ -388,24 +388,32 @@ describe('L4 isMonitoring — 턴 진행/끝 × 작업 없음/에이전트 아�
     both: lifecycleOf({ tasks: [shell, agentTask], subagents: [sub] }),
     bothSync: lifecycleOf({ tasks: [shell], subagents: [syncSub] }),
   }
-  const table: { status: AgentStatus; set: keyof typeof sets; want: boolean }[] = [
-    { status: 'working', set: 'none', want: false },
-    { status: 'working', set: 'nonAgent', want: false },
-    { status: 'working', set: 'subagentOnly', want: false },
-    { status: 'working', set: 'both', want: false },
-    { status: 'blocked', set: 'nonAgent', want: false },
-    { status: 'idle', set: 'none', want: false },
-    { status: 'idle', set: 'nonAgent', want: true },
-    { status: 'idle', set: 'subagentOnly', want: false },
-    { status: 'idle', set: 'syncSubagentOnly', want: false },
-    { status: 'idle', set: 'both', want: false },
-    { status: 'idle', set: 'bothSync', want: false },
-    { status: 'done', set: 'nonAgent', want: true },
-    { status: 'done', set: 'both', want: false },
-    { status: 'unknown', set: 'nonAgent', want: false },
+  // 턴 진행 = herdr working + 턴 결과 없음(새 턴이 시작됨). 턴 끝 = idle·done, 또는 working 인데 턴 결과가 있음(grok — n34)
+  const completed: TurnOutcome = { outcome: 'completed' }
+  const table: { status: AgentStatus; turn: TurnOutcome | null; set: keyof typeof sets; want: boolean }[] = [
+    { status: 'working', turn: null, set: 'none', want: false },
+    { status: 'working', turn: null, set: 'nonAgent', want: false },
+    { status: 'working', turn: null, set: 'subagentOnly', want: false },
+    { status: 'working', turn: null, set: 'both', want: false },
+    { status: 'blocked', turn: completed, set: 'nonAgent', want: false },
+    { status: 'idle', turn: completed, set: 'none', want: false },
+    { status: 'idle', turn: completed, set: 'nonAgent', want: true },
+    { status: 'idle', turn: null, set: 'nonAgent', want: true },
+    { status: 'idle', turn: completed, set: 'subagentOnly', want: false },
+    { status: 'idle', turn: completed, set: 'syncSubagentOnly', want: false },
+    { status: 'idle', turn: completed, set: 'both', want: false },
+    { status: 'idle', turn: completed, set: 'bothSync', want: false },
+    { status: 'done', turn: completed, set: 'nonAgent', want: true },
+    { status: 'done', turn: completed, set: 'both', want: false },
+    { status: 'working', turn: completed, set: 'none', want: false },
+    { status: 'working', turn: completed, set: 'nonAgent', want: true },
+    { status: 'working', turn: { outcome: 'interrupted', reason: null }, set: 'nonAgent', want: true },
+    { status: 'working', turn: completed, set: 'subagentOnly', want: false },
+    { status: 'working', turn: completed, set: 'both', want: false },
+    { status: 'unknown', turn: completed, set: 'nonAgent', want: false },
   ]
-  it.each(table)('$status × $set → $want', ({ status, set, want }) => {
-    expect(isMonitoring({ agentStatus: status, lifecycle: sets[set] })).toBe(want)
+  it.each(table)('$status · turn=$turn.outcome × $set → $want', ({ status, turn, set, want }) => {
+    expect(isMonitoring({ agentStatus: status, turnOutcome: turn, lifecycle: sets[set] })).toBe(want)
   })
   it('모름(따라잡기·출처 없음·프로세스 없음)은 monitoring 이 아니다', () => {
     const unknowns: SessionLifecycle[] = [
@@ -414,7 +422,7 @@ describe('L4 isMonitoring — 턴 진행/끝 × 작업 없음/에이전트 아�
       { state: 'unknown', reason: 'unreadable' },
       { state: 'unknown', reason: 'not-running' },
     ]
-    for (const lifecycle of unknowns) expect(isMonitoring({ agentStatus: 'idle', lifecycle })).toBe(false)
+    for (const lifecycle of unknowns) expect(isMonitoring({ agentStatus: 'idle', turnOutcome: { outcome: 'completed' }, lifecycle })).toBe(false)
   })
 })
 

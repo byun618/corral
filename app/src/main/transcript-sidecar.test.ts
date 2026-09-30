@@ -100,6 +100,39 @@ describe('grok 형제 파일 updates.jsonl (T7)', () => {
     expect(second.digest.turnOutcome).toEqual({ outcome: 'interrupted', reason: 'cancelled' })
   })
 
+  // LIFE-467 fix-r2 S1 — 결과 시각은 **결과와 같은 출처**(updates.jsonl 의 turn_completed)에서 온다. review r2 재현 순서:
+  // chat_history 활동 4000 → herdr working 이벤트 5000 → updates 에만 현재 턴 결과 6000(초 단위 6). chat_history 는 그대로.
+  // 여기서는 실제 판독 함수가 **결과 시각을 형제 파일에서** 내는지를 잠근다. 같은 숫자로 점이 결과를 고르는지는
+  // `renderer/src/agent-dot.test.ts` 의 S1 칸이 잠근다(tsconfig 경계 — main 테스트는 렌더러를 못 가져온다).
+  it.each([
+    ['cancelled', 'interrupted'],
+    ['error', 'failed'],
+    ['rate_limit', 'failed'],
+  ] as const)('형제 파일에만 쌓인 최신 결과(%s → %s)의 시각은 updates 레코드 시각이다 — chat_history 활동 시각이 아니다 (fix-r2 S1)', (stop, want) => {
+    const main = path.join(dir, 'chat_history.jsonl')
+    fs.utimesSync(main, 4, 4)
+    fs.writeFileSync(
+      path.join(dir, 'updates.jsonl'),
+      jsonl([{ ...userChunk, timestamp: 3 }, { ...turn(stop), timestamp: 6 }]),
+    )
+    const { digest } = readSessionDigest(ref)
+    expect(digest.lastActivityAt).toBe(4000) // 활동 시각은 chat_history 의 것 — 결과 시각과 다른 시계다
+    expect(digest.turnOutcomeAt).toBe(6999) // 초 단위 레코드 시각의 상한 — working 이벤트(5000)보다 늦다
+    expect(digest.turnOutcome?.outcome).toBe(want)
+  })
+
+  it('지난 턴 결과의 시각은 그 레코드 시각 그대로 — 뒤에 온 working 이벤트(5000)보다 이르다: r1 반례 재료 (fix-r2 S1)', () => {
+    fs.writeFileSync(path.join(dir, 'updates.jsonl'), jsonl([{ ...userChunk, timestamp: 1 }, { ...turn('cancelled'), timestamp: 2 }]))
+    expect(readSessionDigest(ref).digest.turnOutcomeAt).toBe(2999)
+  })
+
+  it('결과 레코드에 시각이 없으면 결과 시각은 형제 파일 mtime (fix-r2 S1)', () => {
+    const side = path.join(dir, 'updates.jsonl')
+    fs.writeFileSync(side, jsonl([turn('error')]))
+    fs.utimesSync(side, 7, 7)
+    expect(readSessionDigest(ref).digest.turnOutcomeAt).toBe(7000)
+  })
+
   it('둘 다 안 바뀌면 stat 만 — 읽기 0바이트', () => {
     fs.writeFileSync(path.join(dir, 'updates.jsonl'), jsonl([turn('end_turn')]))
     readSessionDigest(ref)
@@ -205,6 +238,17 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     while (records.length * 10_000 < bytes) records.push(assistant('z'.repeat(10_000)))
     return records
   }
+
+  it('claude 결과 시각은 결과를 읽은 같은 파일의 마지막 활동 시각이다 — 결과가 없으면 null (fix-r2 S1)', () => {
+    const failed = { ...assistant('API Error'), isApiErrorMessage: true, error: 'rate_limit' }
+    fs.writeFileSync(file, jsonl([human('부탁'), failed]))
+    const digest = readSessionDigest(ref).digest
+    expect(digest.turnOutcome).toEqual({ outcome: 'failed', error: 'rate_limit' })
+    expect(digest.turnOutcomeAt).toBe(Date.parse('2026-09-30T00:00:00.000Z'))
+    expect(digest.turnOutcomeAt).toBe(digest.lastActivityAt)
+    fs.appendFileSync(file, jsonl([human('다시')]))
+    expect(readSessionDigest(ref).digest.turnOutcomeAt).toBeNull()
+  })
 
   it('이어서 읽으면 창 밖으로 밀려나도 같은 파일에서 본 값이 남는다 — 창은 넓히지 않는다', () => {
     fs.writeFileSync(file, jsonl([human('처음 부탁'), assistant('네', 'claude-opus-5-5')]))

@@ -479,7 +479,7 @@ describe('T6 망가뜨린 입력 — 던지지 않고 칸이 null', () => {
       expect(digest.lastPrompt).toBeNull()
       expect(digest.pendingQuestions).toBeNull()
     }
-    expect(parseGrokUpdates({ chunk, partial: false })).toEqual({ turnOutcome: null, pendingQuestions: null })
+    expect(parseGrokUpdates({ chunk, partial: false })).toEqual({ turnOutcome: null, turnOutcomeAt: null, pendingQuestions: null })
   })
   it('필드 누락·타입 어긋남', () => {
     const noError = cApiError('rate_limit')
@@ -516,6 +516,7 @@ describe('T8 digestsEqual — 필드 하나만 바뀌어도 다르다', () => {
     tool: { name: 'Bash', input: 'ls' },
     lastActivityAt: 1,
     turnOutcome: { outcome: 'completed' },
+    turnOutcomeAt: 1,
     model: 'claude-opus-5-5',
     lastPrompt: '최근 말',
     pendingQuestions: [{ question: 'q', header: null, options: [{ label: 'a', description: null }], multiSelect: null }],
@@ -528,6 +529,7 @@ describe('T8 digestsEqual — 필드 하나만 바뀌어도 다르다', () => {
     { field: 'tool', digest: { ...base, tool: { name: 'Bash', input: 'pwd' } } },
     { field: 'lastActivityAt', digest: { ...base, lastActivityAt: 2 } },
     { field: 'turnOutcome', digest: { ...base, turnOutcome: { outcome: 'interrupted', reason: 'interrupted' } } },
+    { field: 'turnOutcomeAt', digest: { ...base, turnOutcomeAt: 2 } },
     { field: 'model', digest: { ...base, model: 'claude-fable-5-1' } },
     { field: 'lastPrompt', digest: { ...base, lastPrompt: '다른 최근 말' } },
     { field: 'pendingQuestions', digest: { ...base, pendingQuestions: null } },

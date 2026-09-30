@@ -104,6 +104,8 @@ type SidecarEntry = {
   size: number
   mtimeMs: number
   turnOutcome: TurnOutcome | null
+  /** 그 결과 레코드의 시각 상한 — 레코드에 시각이 없으면 이 파일 mtime (S1). */
+  turnOutcomeAt: number | null
   pendingQuestions: SessionQuestion[] | null
 }
 
@@ -538,6 +540,8 @@ function readDigest(input: {
       // (기준 D1: 렌더러가 처음 본 시각을 쓰면 미달).
       lastActivityAt: parsed.lastActivityAt ?? input.mtimeMs,
       turnOutcome: parsed.turnOutcome,
+      // 결과와 같은 파일의 시각 — 결과 레코드는 마지막 활동보다 늦을 수 없으니 상한이다 (fix-r2 S1).
+      turnOutcomeAt: parsed.turnOutcome === null ? null : (parsed.lastActivityAt ?? input.mtimeMs),
       // 이번 창 값, 없으면 근거가 그대로인 지난 값 (F4·R3-F2). 2MB 안에서 확인 못 하면 null.
       model: model?.value ?? null,
       lastPrompt: lastPrompt?.value ?? null,
@@ -719,6 +723,8 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
         : {
             ...main.digest,
             turnOutcome: sidecar?.turnOutcome ?? null,
+            // 결과의 시각도 형제 파일에서 — `chat_history` 의 활동 시각과 섞으면 두 시계를 견주게 된다(fix-r2 S1).
+            turnOutcomeAt: sidecar?.turnOutcomeAt ?? null,
             pendingQuestions: sidecar?.pendingQuestions ?? null,
             model: main.digest.model ?? summary?.model ?? null,
           }
@@ -922,8 +928,9 @@ function readSidecar(input: { file: string; stat: fs.Stats }): { entry: SidecarE
   const from = Math.max(0, input.stat.size - SIDECAR_WINDOW_BYTES)
   const chunk = readRange(input.file, from, input.stat.size)
   const parsed = parseGrokUpdates({ chunk, partial: from > 0 })
+  const turnOutcomeAt = parsed.turnOutcome === null ? null : (parsed.turnOutcomeAt ?? input.stat.mtimeMs)
   return {
-    entry: { size: input.stat.size, mtimeMs: input.stat.mtimeMs, ...parsed },
+    entry: { size: input.stat.size, mtimeMs: input.stat.mtimeMs, ...parsed, turnOutcomeAt },
     bytes: input.stat.size - from,
   }
 }

@@ -43,10 +43,10 @@ export function agentDot(input: {
   turnOutcome: TurnOutcome | null
   lifecycle: SessionLifecycle
   /**
-   * 결과의 **신선도** 재료 (LIFE-467 R2) — 지금 상태에 들어선 시각과 그 관측 경로(`agentState`), 그리고
-   * 결과를 실은 기록의 마지막 활동 시각(`digest.lastActivityAt`). 없으면 결과를 그대로 믿는다(옛 동작).
+   * 결과의 **신선도** 재료 (LIFE-467 R2 · fix-r2 S1) — 지금 상태에 들어선 시각과 그 관측 경로(`agentState`), 그리고
+   * 결과가 기록된 시각의 상한(`digest.turnOutcomeAt` — **결과와 같은 출처**). 없으면 결과를 그대로 믿는다(옛 동작).
    */
-  freshness: { observedAt: number; observedVia: AgentObservedVia; lastActivityAt: number | null } | null
+  freshness: { observedAt: number; observedVia: AgentObservedVia; outcomeAt: number | null } | null
 }): AgentDot {
   const { agentStatus, blockedReason, pendingQuestions, lifecycle, freshness } = input
   const turnOutcome = staleOutcome({ agentStatus, freshness }) ? null : input.turnOutcome
@@ -73,21 +73,25 @@ export function agentDot(input: {
 }
 
 /**
- * 새 턴이 이미 시작됐는데 **지난 턴의 결과**가 아직 붙어 있는가 (LIFE-467 R2).
+ * 새 턴이 이미 시작됐는데 **지난 턴의 결과**가 아직 붙어 있는가 (LIFE-467 R2 · fix-r2 S1).
  *
  * herdr 의 `working` 전이는 곧장 화면에 오고, 결과(`turnOutcome`)를 푸는 기록 판독은 별도 폴링(1.5s)이다 — 그 사이
- * 중단·실패 결과가 새 working 을 덮는다. 그래서 **working 에 들어선 시각이 결과를 실은 기록의 마지막 활동보다 뒤**면
+ * 중단·실패 결과가 새 working 을 덮는다. 그래서 **working 에 들어선 시각이 결과가 기록된 시각(상한)보다 뒤**면
  * 그 결과는 지난 턴의 것으로 보고 뺀다. 진입 시각이 실제 전이(`event`)일 때만 따진다 — `snapshot` 은 진입 시각이
  * 아니라 corral 이 처음 본 시각이라 비교 근거가 못 된다(그때는 결과를 믿는다).
+ *
+ * 결과 시각은 **결과와 같은 출처**여야 한다(`digest.turnOutcomeAt`). r1 은 기록의 마지막 활동 시각(`lastActivityAt`)과
+ * 견줬는데, grok 은 결과가 `updates.jsonl` 에, 활동 시각이 `chat_history` 에 있어 두 시계를 견준 셈이 됐다 — 새 결과가
+ * 형제 파일에만 쌓이면 최신 중단·실패를 버렸다(review r2 S1). 결과 시각이 없으면 추정하지 않는다.
  *
  * grok 은 턴이 끝난 뒤에도 working 을 준다 — 그 working 은 결과보다 **먼저** 시작됐으므로 이 규칙에서 결과가 이긴다.
  */
 function staleOutcome(input: {
   agentStatus: AgentStatus
-  freshness: { observedAt: number; observedVia: AgentObservedVia; lastActivityAt: number | null } | null
+  freshness: { observedAt: number; observedVia: AgentObservedVia; outcomeAt: number | null } | null
 }): boolean {
   const { agentStatus, freshness } = input
   if (agentStatus !== 'working' || freshness === null) return false
-  if (freshness.observedVia !== 'event' || freshness.lastActivityAt === null) return false
-  return freshness.observedAt > freshness.lastActivityAt
+  if (freshness.observedVia !== 'event' || freshness.outcomeAt === null) return false
+  return freshness.observedAt > freshness.outcomeAt
 }

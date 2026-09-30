@@ -160,7 +160,7 @@ function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonl
     pendingQuestions: pane.digest.pendingQuestions,
     turnOutcome: pane.digest.turnOutcome,
     lifecycle: pane.digest.lifecycle,
-    freshness: { observedAt: pane.agentState.observedAt, observedVia: pane.agentState.observedVia, lastActivityAt: pane.digest.lastActivityAt },
+    freshness: { observedAt: pane.agentState.observedAt, observedVia: pane.agentState.observedVia, outcomeAt: pane.digest.turnOutcomeAt },
   })
   const kind = agentIcon(pane.agent)?.kind ?? null
   const title = paneSessionTitle({ pane, ordinal, home: input.home })

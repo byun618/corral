@@ -816,10 +816,13 @@ function grokStopOutcome(stopReason: string | null): TurnOutcome | null {
  */
 export function parseGrokUpdates(input: { chunk: string; partial: boolean }): {
   turnOutcome: TurnOutcome | null
+  /** 그 `turn_completed` 레코드 시각의 상한(ms) — 레코드에 시각이 없거나 결과가 없으면 null (fix-r2 S1). */
+  turnOutcomeAt: number | null
   pendingQuestions: SessionQuestion[] | null
 } {
   const records = tailRecords({ chunk: input.chunk, partial: input.partial })
   let turnOutcome: TurnOutcome | null = null
+  let turnOutcomeAt: number | null = null
   let outcomeSettled = false
   let pendingQuestions: SessionQuestion[] | null = null
   let questionSettled = false
@@ -837,6 +840,7 @@ export function parseGrokUpdates(input: { chunk: string; partial: boolean }): {
     }
     if (kind === 'turn_completed' && !outcomeSettled) {
       turnOutcome = grokStopOutcome(readString(update, 'stop_reason'))
+      turnOutcomeAt = turnOutcome === null ? null : grokRecordTimeCeiling(record['timestamp'])
       outcomeSettled = true
       continue
     }
@@ -853,7 +857,17 @@ export function parseGrokUpdates(input: { chunk: string; partial: boolean }): {
       pendingQuestions = isRecord(rawInput) ? readQuestions({ items: rawInput['questions'], textKey: 'question' }) : null
     }
   }
-  return { turnOutcome, pendingQuestions }
+  return { turnOutcome, turnOutcomeAt, pendingQuestions }
+}
+
+/**
+ * grok 레코드 시각 → 그 시각의 **상한**(ms). 실측 `updates.jsonl` 의 `timestamp` 는 초 단위 정수다(2026-09-30 확인) —
+ * 초 안의 어느 순간인지 모르므로 그 초의 끝을 준다. 1e12 이상 숫자는 ms 로, 문자열은 ISO 로 읽는다. 모양이 아니면 null.
+ * 상한을 주는 까닭: 렌더러는 「working 전이가 결과보다 **확실히** 늦을 때만」 결과를 버린다 — 모르면 결과를 남긴다.
+ */
+function grokRecordTimeCeiling(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value >= 1e12 ? value : Math.floor(value) * 1000 + 999
+  return readTimestamp(value)
 }
 
 /** 에이전트별 판독기 한 자리 — 갈래를 switch 로 좁힌다 (기준 E3). */

@@ -154,6 +154,7 @@ export function collectSnapshot(spec) {
   meta.rootBox = { w: round(rootRect.width), h: round(rootRect.height) }
 
   const elements = {}
+  // 부모당 자식 상한도 이 값이다 — `diff.mjs` `MAX_CHILDREN` 과 같아야 한다(페이지 안에서 도는 함수라 가져올 수 없다).
   const MAX_ITEMS = 12
   const isVisible = (el) => {
     // `[inert]` 조상 아래는 박스가 있어도 **화면에서 쓸 수 없는** 자리다 (R4 — 접힌 무리 안에 남은 행을
@@ -219,6 +220,7 @@ export function collectSnapshot(spec) {
       record.parentScoped = true
       record.parentSelector = unit.parentSelector
       record.parents = parents.length
+      const childCounts = []
       record.items = parents.slice(0, MAX_ITEMS).flatMap((parent, parentIndex) => {
         // 자식은 부모 **아래**를 먼저 보고, 없으면 **부모 자신**이 그 선택자인지 본다 —
         // 카드·탭처럼 「부모 자신의 상태」를 재는 단위(`.main-tab.is-active`)도 같은 순번 규약으로
@@ -231,6 +233,7 @@ export function collectSnapshot(spec) {
             /* 선택자가 matches 에서 깨지면 부재로 남는다 — 조용히 같다고 하지 않는다 */
           }
         }
+        childCounts[parentIndex] = found.length
         if (found.length === 0) return [{ parentIndex, childIndex: 0, present: false }]
         // **부모 안의 자식을 전부 잰다** (R4). 첫 자식만 재던 판은 둘째 행·둘째 무리의 차이를 못 봤다.
         return found.slice(0, MAX_ITEMS).map((el, childIndex) => {
@@ -239,6 +242,10 @@ export function collectSnapshot(spec) {
         })
       })
       record.itemsTruncated = parents.length > MAX_ITEMS
+      // 부모별 **실제** 자식 수 (fix-r2 S2) — 재는 것은 부모당 MAX_ITEMS 개까지라, 그 뒤가 있었는지는 이 칸만 안다.
+      // diff 가 부모별 자식 수 차이를 이 값으로 견주고, 상한을 넘은 부모는 「미측정」 으로 드러낸다.
+      record.childCounts = childCounts
+      record.childrenTruncated = record.childCounts.some((n) => n > MAX_ITEMS)
       record.countAll = record.items.reduce((sum, item) => sum + (item.present && item.childIndex === 0 ? item.siblings : 0), 0)
       // count 는 예전 뜻(자식이 있는 부모 수) 그대로 — 자식 수 차이는 부모별 (부모, 자식) 짝에서 부재로 나온다.
       record.count = new Set(record.items.filter((item) => item.present).map((item) => item.parentIndex)).size

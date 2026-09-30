@@ -40,7 +40,17 @@ export function describeFinding(finding) {
     case 'font':
       return { orca: clip(finding.detail.left, 60), corral: clip(finding.detail.right, 60), diff: '렌더 폰트(platformFonts)' }
     case 'count':
-      return { orca: `${finding.detail.left}개`, corral: `${finding.detail.right}개`, diff: '개수' }
+      return {
+        orca: `${finding.detail.left}개`,
+        corral: `${finding.detail.right}개`,
+        diff: finding.detail.scope === 'children' ? `같은 부모(${finding.detail.parentIndex}번째) 안 자식 개수` : '개수'
+      }
+    case 'truncated':
+      return {
+        orca: `${finding.detail.left}개`,
+        corral: `${finding.detail.right}개`,
+        diff: `부모(${finding.detail.parentIndex}번째) 안 자식이 상한 ${finding.detail.measured}개를 넘음 — 그 뒤는 미측정`
+      }
     case 'box':
       return {
         orca: finding.detail.map((d) => `${d.prop}=${d.left}`).join(' '),
@@ -165,7 +175,9 @@ export function renderReport({ date, runs, areas, notes }) {
             ? '보류 — 도구가 못 잰다'
             : finding.kind === 'selector-miss'
               ? '보류 — 측정 실패(선택자 부패). 차이로 읽지 않는다'
-              : (finding.classification ?? '(초안 미정)')
+              : finding.kind === 'truncated'
+                ? '보류 — 도구 상한(상한 뒤 자식 미측정). 「차이 없음」이 아니다'
+                : (finding.classification ?? '(초안 미정)')
         const label = `${area.area} › ${finding.note ?? finding.id}${where(finding)}`
         lines.push(
           `| ${cell(label)} | ${cell(state.state)} | ${cell(described.orca)} | ${cell(described.corral)} | ${cell(described.diff)} | ${cell(classification)} | ${cell(state.raw)} |`

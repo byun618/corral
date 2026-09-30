@@ -35,7 +35,7 @@ export const POSITIVE_CONTROLS = [
   }
 ]
 
-const DISQUALIFYING = new Set(['unpaired', 'selector-miss'])
+const DISQUALIFYING = new Set(['unpaired', 'selector-miss', 'truncated'])
 
 /**
  * @param results 영역별 결과 `[{ area, states: [{ state, findings, skipped }] }]`

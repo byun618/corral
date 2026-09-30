@@ -5,7 +5,10 @@
 // "구조가 다르다" 는 가장 큰 차이가 잔글씨에 묻힌다.
 
 /** 차이 한 건의 종류. 순서가 곧 보고 순서이자 심각도다. */
-export const KINDS = ['unpaired', 'selector-miss', 'missing', 'count', 'box', 'style', 'font']
+/** probe 가 부모당 재는 자식 상한 (`probe.mjs` MAX_ITEMS 와 같은 값). */
+export const MAX_CHILDREN = 12
+
+export const KINDS = ['unpaired', 'selector-miss', 'missing', 'count', 'truncated', 'box', 'style', 'font']
 
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 
@@ -222,6 +225,33 @@ export function diffSnapshots(left, right, options = {}) {
     const rightItems = itemsOf(b)
     const pairs = []
     if (parentScoped) {
+      // **부모별 실제 자식 수**를 먼저 견준다 (fix-r2 S2). 짝은 잰 자식(부모당 상한까지)끼리만 지어지므로, 상한 뒤에만 있는
+      // 자식·자식 수 차이는 짝짓기로는 안 보인다. `childCounts` 가 없는 예전 원자료는 잰 자식의 `siblings` 로 읽는다.
+      const countsOf = (record, items) => {
+        if (Array.isArray(record?.childCounts)) return record.childCounts
+        const counts = []
+        for (const item of items) {
+          if (!Number.isFinite(item.parentIndex)) continue
+          counts[item.parentIndex] = item.present === false ? 0 : Number.isFinite(item.siblings) ? item.siblings : 1
+        }
+        return counts
+      }
+      const leftCounts = countsOf(a, leftItems)
+      const rightCounts = countsOf(b, rightItems)
+      for (let parentIndex = 0; parentIndex < Math.max(leftCounts.length, rightCounts.length); parentIndex += 1) {
+        const left = leftCounts[parentIndex] ?? null
+        const right = rightCounts[parentIndex] ?? null
+        // 부모 자체가 한쪽에만 있으면 아래 짝짓기가 「부모 자체가 없음」으로 적는다 — 여기서 겹쳐 세지 않는다.
+        if (left === null || right === null) continue
+        // 한쪽이 0 이면 그 부모 안의 부재다 — 아래 짝짓기가 `missing` 으로 적으니 겹쳐 세지 않는다.
+        if (left !== right && left > 0 && right > 0) {
+          findings.push({ id, note, kind: 'count', ...(parentIndex > 0 ? { index: parentIndex } : {}), detail: { left, right, parentIndex, scope: 'children' } })
+        }
+        if (left > MAX_CHILDREN || right > MAX_CHILDREN) {
+          // 상한 뒤 자식은 **못 쟀다** — 「차이 없음」이 아니라 미측정이다.
+          findings.push({ id, note, kind: 'truncated', ...(parentIndex > 0 ? { index: parentIndex } : {}), detail: { left, right, parentIndex, measured: MAX_CHILDREN } })
+        }
+      }
       // **(부모, 자식) 짝 전부**를 견준다 (R4). 자식 순번이 없는 예전 원자료는 첫 자식(0)이다.
       const childOf = (item) => (Number.isFinite(item.childIndex) ? item.childIndex : 0)
       const keyOf = (item) => `${item.parentIndex}:${childOf(item)}`

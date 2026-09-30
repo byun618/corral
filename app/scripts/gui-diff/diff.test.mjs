@@ -5,7 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
+import { MAX_CHILDREN, diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath, parseProcessList, commandIncludesPath, pathDiagnosis, cleanVerdict } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
 import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
@@ -422,6 +422,36 @@ test('자식 순번이 없는 예전 원자료는 첫 자식으로 읽는다 (R4
   const left = snap('orca', { dot: el({ parentScoped: true, parents: 1, count: 1, items: [child(0, box(6))] }) })
   const right = snap('corral', { dot: el({ parentScoped: true, parents: 1, count: 1, items: [kid(0, 0, 6)] }) })
   assert.equal(diffSnapshots(left, right, { units: [unit('dot')], tolerance: 0.5 }).findings.length, 0)
+})
+
+// ---- fix-r2 S2 부모당 자식 상한 --------------------------------------------------
+// 왜: 부모당 12개까지만 재면서 잘림 표시도, 부모별 자식 수 비교도 없어 12 ↔ 13(13번째만 다름)이 「차이 0」 이었다(review r2).
+
+const kids = (n, lastX = 6) => Array.from({ length: Math.min(n, MAX_CHILDREN) }, (_, i) => kid(0, i, i === n - 1 ? lastX : 6))
+const scoped = (n, lastX) => el({ parentScoped: true, parents: 1, count: 1, childCounts: [n], childrenTruncated: n > MAX_CHILDREN, items: kids(n, lastX) })
+
+test('12 ↔ 13 (13번째만 다름) — 부모 안 자식 수 차이와 상한 뒤 미측정을 드러낸다 (S2 판별력)', () => {
+  const result = diffSnapshots(snap('orca', { row: scoped(12) }), snap('corral', { row: scoped(13, 99) }), { units: [unit('row')], tolerance: 0.5 })
+  const count = result.findings.filter((finding) => finding.kind === 'count')
+  assert.equal(count.length, 1)
+  assert.deepEqual(count[0].detail, { left: 12, right: 13, parentIndex: 0, scope: 'children' })
+  const truncated = result.findings.filter((finding) => finding.kind === 'truncated')
+  assert.equal(truncated.length, 1)
+  assert.equal(truncated[0].detail.measured, MAX_CHILDREN)
+  // 대조: 자식 수 칸이 없으면(수정 전 모양) 잰 12개끼리는 같아서 차이 0 이 된다 — 도구가 무엇을 못 봤는지
+  const blind = (n, lastX) => el({ parentScoped: true, parents: 1, count: 1, items: kids(n, lastX) })
+  assert.equal(diffSnapshots(snap('orca', { row: blind(12) }), snap('corral', { row: blind(13, 99) }), { units: [unit('row')], tolerance: 0.5 }).findings.length, 0)
+})
+
+test('13 ↔ 13 (13번째만 다름) — 수는 같아도 상한 뒤는 「차이 없음」 이 아니라 미측정 (S2)', () => {
+  const result = diffSnapshots(snap('orca', { row: scoped(13) }), snap('corral', { row: scoped(13, 99) }), { units: [unit('row')], tolerance: 0.5 })
+  assert.equal(result.findings.filter((finding) => finding.kind === 'count').length, 0)
+  assert.equal(result.findings.filter((finding) => finding.kind === 'truncated').length, 1)
+})
+
+test('상한 안의 같은 수 — count·truncated 없음 (S2 음성 대조)', () => {
+  const result = diffSnapshots(snap('orca', { row: scoped(3) }), snap('corral', { row: scoped(3) }), { units: [unit('row')], tolerance: 0.5 })
+  assert.equal(result.findings.length, 0)
 })
 
 // ---- G7 렌더 폰트 -----------------------------------------------------------

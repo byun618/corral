@@ -160,6 +160,8 @@ type CacheEntry = {
    * 읽을 출처가 없으면 null.
    */
   ledger: Ledger | null
+  /** 그 장부의 `ledgers` 키. 교체로 키가 바뀌면 옛 장부를 아무 참조도 안 쓸 때 회수한다(R3-F2). */
+  ledgerKey: string | null
   /** 이 세션의 소유 프로세스 판정(L8). claude·grok 이 아니면 null. 바뀌면 파일이 그대로여도 다시 싣는다. */
   owner: Owner | null
 }
@@ -167,10 +169,22 @@ type CacheEntry = {
 const cache = new Map<string, CacheEntry>()
 
 /**
- * 누적 판독 상태는 **실제 파일마다 하나**다 (LIFE-462 F2·R2-F2) — 키는 파일 정체성 `dev:ino` 다. 같은 세션을 가리키는 pane 이
- * 여럿이어도(참조 키·경로 별칭이 달라도) 한 주기에 한 번만 나아가고 모든 pane 이 같은 값을 받는다. `cycle` 은 그 판독이 일어난 주기 번호다.
+ * 누적 판독 상태는 **provider 별 실제 파일마다 하나**다 (LIFE-462 F2·R2-F2·R3-F1) — 키는 `<agent>:<dev>:<ino>` 다. 같은 세션을 가리키는 pane 이
+ * 여럿이어도(참조 키·경로 별칭이 달라도) 한 주기에 한 번만 나아가고 모든 pane 이 같은 값을 받는다. provider 가 다르면 parser 가 달라
+ * 장부를 나누지 않는다. `cycle` 은 그 판독이 일어난 주기 번호, `seen` 은 마지막으로 어느 참조가 쓴 주기 번호다(R3-F2 회수).
  */
-const ledgers = new Map<string, { ledger: Ledger; cycle: number }>()
+const ledgers = new Map<string, { ledger: Ledger; cycle: number; seen: number }>()
+/**
+ * 이번 주기에 기록 파일(정체성 `dev:ino`)을 처음 쓴 provider (R3-F1). 다른 provider 참조가 같은 파일을 가리키면 `conflict` —
+ * 그 파일은 이번 주기 한 번만 읽고(예산 공유, R2-F2) 두 참조 모두 `unreadable` 로 둔다. 어느 참조가 먼저든 결과가 같다.
+ * 주기마다 비운다.
+ */
+const fileClaims = new Map<string, { agent: TranscriptAgent; conflict: boolean }>()
+
+/** 테스트용 — 살아 있는 장부 수(R3-F2). */
+export function lifecycleLedgerCount(): number {
+  return ledgers.size
+}
 /** 판독 주기 번호 — `readSessionDigests`(주기 하나)·`readSessionDigest`(단독 호출 하나)마다 1 씩 는다. */
 let cycle = 0
 
@@ -233,6 +247,7 @@ export type ReadCost = {
 export function clearTranscriptCache(): void {
   cache.clear()
   ledgers.clear()
+  fileClaims.clear()
   misses.clear()
   clearClaudeRegistry()
 }
@@ -542,6 +557,7 @@ function readDigest(input: {
  */
 export function readSessionDigest(ref: AgentSessionRef | null): DigestRead {
   cycle += 1
+  fileClaims.clear()
   return readOne(ref)
 }
 
@@ -625,12 +641,20 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   const ledgerStat = agent === 'claude' ? stat : agent === 'grok' ? sidecarStat : null
   const ledgerFile = agent === 'claude' ? file : ledgerStat === null ? null : sidecarFile
   // 누적 상태는 파일에 붙는다 — 이번 주기에 다른 참조가 이미 나아갔으면 다시 읽지 않고 그 값을 쓴다(F2).
-  // 키는 경로가 아니라 **파일 정체성**(dev·ino)이다 — 같은 파일을 다른 경로(심볼릭 링크 등)로 가리켜도 장부·주기 판독·비용이 하나다(R2-F2).
+  // 파일 키는 경로가 아니라 **파일 정체성**(dev·ino)이다 — 같은 파일을 다른 경로(심볼릭 링크 등)로 가리켜도 장부·주기 판독·비용이 하나다(R2-F2).
+  // 장부 키는 거기에 provider 를 붙인다 — 다른 provider 의 parser 상태를 이어받지 않는다(R3-F1).
   // 교체(rename)된 파일은 정체성이 달라 새 장부로 처음부터 읽는다 — `advanceLedger` 의 ①(정체성) 초기화와 같은 뜻이다.
-  const ledgerKey = ledgerStat === null ? null : `${ledgerStat.dev}:${ledgerStat.ino}`
+  const fileKey = ledgerStat === null ? null : `${ledgerStat.dev}:${ledgerStat.ino}`
+  const ledgerKey = fileKey === null ? null : `${agent}:${fileKey}`
+  const claim = fileKey === null ? undefined : fileClaims.get(fileKey)
+  if (claim !== undefined && claim.agent !== agent) claim.conflict = true
+  else if (fileKey !== null && claim === undefined) fileClaims.set(fileKey, { agent, conflict: false })
+  const conflict = claim !== undefined && claim.agent !== agent
   const shared = ledgerKey === null ? undefined : ledgers.get(ledgerKey)
+  if (shared !== undefined) shared.seen = cycle
   const priorLedger = shared?.ledger ?? null
-  const advance = ledgerFile !== null && ledgerStat !== null && shared?.cycle !== cycle && !ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
+  const advance =
+    ledgerFile !== null && ledgerStat !== null && !conflict && shared?.cycle !== cycle && !ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
   // 강제 종료는 기록에 아무것도 안 남긴다 — 생존은 파일 변화와 따로 매 주기 본다(L8, `transcript-lifecycle.ts`).
   const liveness =
     agent === 'claude'
@@ -661,7 +685,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: 0,
       sidecarBytes: 0,
       statOnly: true,
-      lifecycle: { ...NO_LIFECYCLE_READ, key: ledgerKey, registryBytes },
+      lifecycle: { ...NO_LIFECYCLE_READ, key: fileKey, registryBytes, conflict },
     }
   }
 
@@ -685,7 +709,10 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     // 모델은 **응답 기록(`chat_history` 의 `model_id`) 이 먼저**, 없을 때만 `summary.json` 이다 (F3):
     // 응답 기록은 실제로 답한 모델이고 식별자도 더 자세하다(`-build` 변형, 98 중 95). summary 는 세션에 고른
     // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
-    const life = readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
+    const life = conflict
+      ? { lifecycle: UNREADABLE, ledger: priorLedger, read: { bytes: 0, ms: 0 } }
+      : readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
+    if (cached !== null && cached.ledgerKey !== null && cached.ledgerKey !== ledgerKey) releaseLedger({ key: cached.ledgerKey, except: key })
     const merged: SessionDigest =
       sidecarFile === null
         ? main.digest
@@ -709,7 +736,9 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headDone: main.headDone,
       sidecar,
       summary,
-      ledger: life.ledger,
+      // 충돌 주기의 지문은 빠른 반환에 다시 쓰지 않는다 — 충돌이 풀린 주기에 낡은 `unreadable` 이 남지 않게(R3-F1).
+      ledger: conflict ? null : life.ledger,
+      ledgerKey,
       owner,
     })
     return {
@@ -718,7 +747,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: main.headBytes,
       sidecarBytes,
       statOnly: false,
-      lifecycle: { ...life.read, key: ledgerKey, registryBytes },
+      lifecycle: { ...life.read, key: fileKey, registryBytes, conflict },
     }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
@@ -733,9 +762,18 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   }
 }
 
-/** 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일(정체성 `key` = dev:ino) 몫, `registryBytes` 는 프로세스 레지스트리 몫. */
-type LifecycleRead = { bytes: number; ms: number; key: string | null; registryBytes: number }
-const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryBytes: 0 }
+/**
+ * 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일(정체성 `key` = dev:ino) 몫, `registryBytes` 는 프로세스 레지스트리 몫.
+ * `conflict` 는 이번 주기에 다른 provider 참조가 먼저 이 파일을 썼다는 뜻이다(R3-F1).
+ */
+type LifecycleRead = { bytes: number; ms: number; key: string | null; registryBytes: number; conflict: boolean }
+const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryBytes: 0, conflict: false }
+
+/** 교체로 참조가 떠난 장부를, 그 참조(`except`) 말고 아무 캐시 항목도 안 쓰면 회수한다(R3-F2). 별칭이 쓰는 장부는 남는다. */
+function releaseLedger(input: { key: string; except: string }): void {
+  for (const [cacheKey, entry] of cache) if (cacheKey !== input.except && entry.ledgerKey === input.key) return
+  ledgers.delete(input.key)
+}
 
 function sameOwner(input: { a: Owner | null; b: Owner | null }): boolean {
   const { a, b } = input
@@ -771,7 +809,7 @@ function readLifecycle(input: {
   try {
     const step = advanceLedger({ file, stat, agent, prior })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent, reason: step.reset })
-    ledgers.set(key, { ledger: step.ledger, cycle })
+    ledgers.set(key, { ledger: step.ledger, cycle, seen: cycle })
     return { lifecycle: view(step.ledger), ledger: step.ledger, read: { bytes: step.bytes, ms: Date.now() - startedAt } }
   } catch (error) {
     log('transcript.error', { where: 'lifecycle', agent, error: String(error) })
@@ -785,6 +823,7 @@ function readLifecycle(input: {
 }
 
 const NO_SOURCE: SessionLifecycle = { state: 'unknown', reason: 'no-source' }
+const UNREADABLE: SessionLifecycle = { state: 'unknown', reason: 'unreadable' }
 const NOT_RUNNING: SessionLifecycle = { state: 'unknown', reason: 'not-running' }
 
 /** stat, 없거나 못 읽으면 null — 형제 파일은 없을 수 있다(없으면 그 칸이 null 일 뿐이다). */
@@ -972,7 +1011,10 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
 } {
   const startedAt = Date.now()
   cycle += 1
+  fileClaims.clear()
   const digests = new Map<string, SessionDigest>()
+  /** 참조 id → 파일 키 — 주기 끝에 provider 충돌 파일의 참조를 모두 `unreadable` 로 덮는다(R3-F1, 순서 무관). */
+  const fileOf = new Map<string, string>()
   /** 이번 주기에 기록 파일(정체성 dev:ino)마다 읽은 누적 판독 바이트 합 (L7 — 파일 하나·주기 1회 ≤2MB 를 파일 단위로 본다). */
   const lifecycleFileBytes = new Map<string, number>()
   let lifecycleRegistryBytes = 0
@@ -999,7 +1041,14 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     if (lifecycleKey !== null) lifecycleFileBytes.set(lifecycleKey, (lifecycleFileBytes.get(lifecycleKey) ?? 0) + read.lifecycle.bytes)
     if (read.digest.lifecycle.state === 'unknown' && read.digest.lifecycle.reason === 'catching-up') lifecycleCatchingUp += 1
     lifecycleMs += read.lifecycle.ms
+    if (lifecycleKey !== null) fileOf.set(id, lifecycleKey)
   }
+  for (const [id, fileKey] of fileOf) {
+    const digest = digests.get(id)
+    if (fileClaims.get(fileKey)?.conflict === true && digest !== undefined) digests.set(id, { ...digest, lifecycle: UNREADABLE })
+  }
+  // 이번 주기에 아무 참조도 안 쓴 장부는 회수한다 — 교체돼 떠난 inode·닫힌 pane 의 장부가 쌓이지 않는다(R3-F2).
+  for (const [key, entry] of ledgers) if (entry.seen !== cycle) ledgers.delete(key)
   return {
     digests,
     cost: {

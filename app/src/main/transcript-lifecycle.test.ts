@@ -14,7 +14,7 @@ import type { AgentSessionRef, AgentStatus, BackgroundTask, SessionLifecycle, Se
 import { LIFECYCLE_MAX_ITEMS } from '../shared/types'
 import { LIFECYCLE_READ_MAX_BYTES, advanceLedger, ledgerView } from './transcript-lifecycle'
 import type { Ledger } from './transcript-lifecycle'
-import { clearTranscriptCache, digestsEqual, readSessionDigest, readSessionDigests } from './transcript'
+import { clearTranscriptCache, digestsEqual, lifecycleLedgerCount, readSessionDigest, readSessionDigests } from './transcript'
 
 const SESSION_ID = '11111111-2222-4333-8444-777777777777'
 const T0 = Date.parse('2026-09-30T01:00:00.000Z')
@@ -979,5 +979,111 @@ describe('R2-F2 같은 실제 파일을 다른 경로(별칭)로 가리켜도 �
     const read = readSessionDigests(both)
     expect(read.cost.lifecycleBytes).toBe(0)
     expect(JSON.stringify(read.digests.get('p2')!.lifecycle)).toBe(JSON.stringify(read.digests.get('p1')!.lifecycle))
+  })
+})
+
+describe('R3-F1 provider 가 다른 참조가 같은 실제 파일을 가리켜도 서로의 parser 상태를 안 쓴다 — 참조 순서 무관', () => {
+  const G0 = Math.floor(Date.now() / 1000) * 1000 + 60_000
+  const grokRef: AgentSessionRef = { kind: 'id', agent: 'grok', source: 'herdr:grok', id: SESSION_ID }
+  const running = {
+    timestamp: 1,
+    method: 'session/update',
+    params: {
+      sessionId: 'ID',
+      update: { sessionUpdate: 'background_tasks', tasks: [{ task_id: 'g1', kind: 'bash', description: 'd', started_at: new Date(G0).toISOString(), status: 'running' }] },
+      _meta: { eventId: 'e', agentTimestampMs: 1 },
+    },
+  }
+  function crossSetup(link: 'symlink' | 'hardlink') {
+    const dir = path.join(home, '.grok', 'sessions', '%2Ftmp', SESSION_ID)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'chat_history.jsonl'), jsonl([{ type: 'user', content: [{ type: 'text', text: '<user_query>해</user_query>' }] }]))
+    const updates = path.join(dir, 'updates.jsonl')
+    fs.writeFileSync(updates, jsonl([running]))
+    fs.writeFileSync(path.join(home, '.grok', 'active_sessions.json'), JSON.stringify([{ session_id: SESSION_ID, pid: process.pid, cwd: '/tmp' }]))
+    registerLive({ startedAt: 0 })
+    const alias = path.join(home, `${SESSION_ID}.jsonl`)
+    if (link === 'symlink') fs.symlinkSync(updates, alias)
+    else fs.linkSync(updates, alias)
+    const claudeAlias: AgentSessionRef = { kind: 'path', agent: 'claude', source: 'herdr:claude', path: alias }
+    return claudeAlias
+  }
+  const lifecycles = (read: ReturnType<typeof readSessionDigests>) => JSON.stringify(Object.fromEntries([...read.digests].sort(([a], [b]) => a.localeCompare(b)).map(([id, digest]) => [id, digest.lifecycle])))
+
+  for (const link of ['symlink', 'hardlink'] as const) {
+    it(`${link} — 한 주기에 둘이 같이 있으면 두 순서 모두 둘 다 unreadable(거짓 항목 0), 파일은 한 번만 읽고, 풀리면 grok 은 제 작업을 낸다`, () => {
+      const claudeAlias = crossSetup(link)
+      const results: string[] = []
+      for (const order of [
+        [['grok', grokRef], ['claude', claudeAlias]],
+        [['claude', claudeAlias], ['grok', grokRef]],
+      ] as const) {
+        clearTranscriptCache()
+        const refs = new Map<string, AgentSessionRef>(order)
+        const read = readSessionDigests(refs)
+        expect(read.cost.lifecycleMaxFileBytes).toBeLessThanOrEqual(LIFECYCLE_READ_MAX_BYTES)
+        expect(read.cost.lifecycleBytes).toBe(read.cost.lifecycleMaxFileBytes) // 파일 하나를 한 번만 읽었다
+        results.push(lifecycles(readSessionDigests(refs)))
+        expect(read.digests.get('grok')!.lifecycle).toEqual({ state: 'unknown', reason: 'unreadable' })
+        expect(read.digests.get('claude')!.lifecycle).toEqual({ state: 'unknown', reason: 'unreadable' })
+        const alone = readSessionDigests(new Map([['grok', grokRef]]))
+        expect(known(alone.digests.get('grok')!.lifecycle).tasks.map((task) => task.id)).toEqual(['g1'])
+      }
+      expect(results[0]).toBe(results[1])
+    })
+  }
+
+  it('따로 읽는 주기(단독 호출)에서도 어느 쪽을 먼저 읽든 grok 은 제 작업, claude 는 grok 항목을 안 낸다', () => {
+    const claudeAlias = crossSetup('symlink')
+    const seen: string[] = []
+    for (const first of ['grok', 'claude'] as const) {
+      clearTranscriptCache()
+      const firstLife = readSessionDigest(first === 'grok' ? grokRef : claudeAlias).digest.lifecycle
+      const secondLife = readSessionDigest(first === 'grok' ? claudeAlias : grokRef).digest.lifecycle
+      const grok = first === 'grok' ? firstLife : secondLife
+      const claude = first === 'grok' ? secondLife : firstLife
+      expect(known(grok).tasks.map((task) => task.id)).toEqual(['g1'])
+      expect(JSON.stringify(claude)).not.toContain('g1')
+      seen.push(JSON.stringify({ grok, claude }))
+    }
+    expect(seen[0]).toBe(seen[1])
+  })
+})
+
+describe('R3-F2 교체돼 아무 참조도 안 쓰는 inode 의 장부는 회수한다', () => {
+  const swap = (at: number) => {
+    fs.writeFileSync(`${claudeFile}.tmp`, jsonl(bashBg({ toolId: `t${at}`, taskId: `b${at}`, at })))
+    fs.renameSync(`${claudeFile}.tmp`, claudeFile)
+  }
+
+  it('같은 경로 20회 교체 → 장부 1, 참조 0 주기 뒤 0', () => {
+    setupClaude({ records: bashBg({ toolId: 't0', taskId: 'b0', at: 1 }) })
+    for (let n = 1; n <= 20; n += 1) {
+      swap(n)
+      expect(taskIds()).toEqual([`b${n}`])
+      expect(lifecycleLedgerCount()).toBe(1)
+    }
+    readSessionDigests(new Map())
+    expect(lifecycleLedgerCount()).toBe(0)
+  })
+
+  it('별칭 두 참조 + 교체 → 장부 1(공유 유지), 한쪽만 남아도 공유 장부는 산다', () => {
+    setupClaude({ records: bashBg({ toolId: 't0', taskId: 'b0', at: 1 }) })
+    const alias = path.join(home, 'alias-dir')
+    fs.symlinkSync(path.dirname(claudeFile), alias)
+    const aliasRef: AgentSessionRef = { kind: 'path', agent: 'claude', source: 'herdr:claude', path: path.join(alias, path.basename(claudeFile)) }
+    const both = new Map<string, AgentSessionRef>([
+      ['p1', claudeRef],
+      ['p2', aliasRef],
+    ])
+    for (let n = 1; n <= 5; n += 1) {
+      swap(n)
+      const read = readSessionDigests(both)
+      expect(lifecycleLedgerCount()).toBe(1)
+      expect(known(read.digests.get('p2')!.lifecycle).tasks.map((task) => task.id)).toEqual([`b${n}`])
+    }
+    const read = readSessionDigests(new Map([['p2', aliasRef]]))
+    expect(read.cost.lifecycleBytes).toBe(0)
+    expect(lifecycleLedgerCount()).toBe(1)
   })
 })

@@ -95,6 +95,19 @@ export type CapabilityRevokedReason = 'settled' | 'stopped' | 'abandoned' | 'rel
 export type RetainReason = 'user_requested' | 'user_takeover'
 export type ReleaseState = 'released' | 'retained' | 'unknown'
 export interface WorkerRelease { state: ReleaseState; reason: string; at: string; processAction: 'closed' | 'none' }
+/**
+ * LIFE-459. Who ran the `worker-start` that made this attempt — the parent the lineage is drawn
+ * from. It is what the CLI said about itself (`HERDR_PANE_ID`/`HERDR_SESSION`), plus the pane's
+ * generation as the runtime saw it at that moment, so a later reader can tell "that pane" from "a
+ * new PTY wearing the same id". A generation the runtime could not see is recorded as null, and a
+ * null generation never resolves to a parent: no parent is better than a wrong one.
+ *
+ * `outside_pane` is a real answer (the call came from a plain shell), not a missing one; the
+ * missing one is `spawner: null` on an attempt written before this field existed.
+ */
+export type WorkerSpawner =
+  | { kind: 'outside_pane' }
+  | { kind: 'pane'; paneId: string; session: string | null; epoch: string | null; ptyId: string | null }
 export interface WorkerBlock {
   launch: WorkerLaunch
   /** Whether *this* attempt may close the pane. Reuse transfers it; a borrowed pane is never closed. */
@@ -126,6 +139,8 @@ export interface WorkerBlock {
   capabilityRevokedReason: CapabilityRevokedReason | null
   retain: { reason: RetainReason; at: string } | null
   release: WorkerRelease | null
+  /** LIFE-459. `null` = recorded before the field existed, so the parent is unknown. */
+  spawner: WorkerSpawner | null
 }
 
 interface DispatchBase {

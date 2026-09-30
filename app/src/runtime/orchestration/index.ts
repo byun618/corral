@@ -29,8 +29,9 @@ import {
   DISPATCH_STATUSES, TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
   isDispatchStatus, isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
   type AgentSnapshot, type DispatchRecord, type DispatchTarget, type JsonValue, type OrchestrationState,
-  type PaneObservation, type TaskRecord, type TaskStatus,
+  type PaneObservation, type TaskRecord, type TaskStatus, type WorkerSpawner,
 } from './model.js'
+import { sameBackendSession } from './lineage.js'
 import {
   DELIVERABLE_TYPES, DELIVERY_ID, MAX_SUBJECT, MESSAGE_ID, MESSAGE_TYPES, acknowledgeDelivery, answerOf, answerQuestion,
   appendMessage, findMessage, isMessageType, isWorkerMessageType, openDelivery, outstandingDelivery, parseTypes, pendingBatch, runMessages,
@@ -260,7 +261,7 @@ export const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget 
   return { signal: ctx.signal, deadlineAt: Date.now() + Math.min(ms, share) }
 }
 
-async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
+export async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
   if (ctx === null) return { observed: false, reason: 'observation_failed', detail: 'Not enough of the caller timeout left to observe the panes' }
   const socket = process.env.CORRAL_BACKEND_SOCKET
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
@@ -607,6 +608,22 @@ export function orchestrationModule(userData: string): CommandModule {
       /** A fresh look, not the one the reconcile pass memoized: §4.7 re-observes just before it acts. */
       const observeNow = async (target: DispatchTarget): Promise<PaneObservation> =>
         observationFor(await observePanes(budgeted(ctx, SWEEP_BUDGET_MS)), target)
+      /**
+       * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
+       * from. Its generation is read from the backend this runtime drives, and only when the caller
+       * says it lives in that backend's session — pane ids repeat across sessions, so a pane found
+       * under the same id elsewhere is not the caller. A generation that cannot be read stays null,
+       * and the lineage never resolves a null generation to a parent.
+       */
+      const callerSpawner = async (): Promise<WorkerSpawner> => {
+        const paneId = caller.paneId, session = caller.session
+        if (paneId === null) return { kind: 'outside_pane' }
+        const spawner = (epoch: string | null, ptyId: string | null): WorkerSpawner => ({ kind: 'pane', paneId, session, epoch, ptyId })
+        if (!sameBackendSession(session, process.env.CORRAL_SESSION ?? null)) return spawner(null, null)
+        const seen = await observe()
+        const pane = seen.observed ? seen.panes.find(entry => entry.paneId === paneId) : undefined
+        return seen.observed && pane !== undefined ? spawner(seen.epoch, pane.ptyId) : spawner(null, null)
+      }
       const dispatchInRun = (state: OrchestrationState, runId: string, id: string): DispatchRecord => {
         const entry = findDispatch(state, id)
         if (!entry || entry.runId !== runId) return preflight('dispatch_not_found', `No dispatch ${id} in run ${runId}`,
@@ -1038,6 +1055,9 @@ export function orchestrationModule(userData: string): CommandModule {
             dispatch = start.resume
             stages.dispatch = { status: 'completed', dispatchId: dispatch.id, action: 'resumed' }
           } else {
+            // Read before the lane is taken: the caller's pane existed before this call began, so the
+            // look the plan already made (if any) answers it, and a fresh one is not held under the lane.
+            const spawner = await callerSpawner()
             try {
               // `session` rather than the bare lane: the plan was made on a reconciled document,
               // and the write has to be made on one too, or an attempt reconcile just settled would
@@ -1064,6 +1084,7 @@ export function orchestrationModule(userData: string): CommandModule {
                   ownership: launching || owner !== null ? 'owned' : 'borrowed',
                   paneSession: process.env.CORRAL_SESSION ?? null,
                   originDispatchId: owner === null ? null : owner.worker?.originDispatchId ?? owner.id,
+                  spawner,
                 })
                 const made = createDispatch(current, { task, target, agent, agentAbsenceReason, worker, at: stamp() })
                 let next = made.state

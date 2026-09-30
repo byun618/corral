@@ -71,6 +71,9 @@ import { RepoRegistry } from './registry.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
+import { LineageFeed } from './orchestration-lineage.js'
+import { observePanes } from '../runtime/orchestration/index.js'
+import { OrchestrationStore } from '../runtime/orchestration/store.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -238,6 +241,7 @@ function currentState(): AppState {
     // 셸 탭 폴백이 경로를 접는 데 쓴다 (C9·C11ⓒ). `os.homedir()` 은 `HOME` 을 따르므로 격리
     // 실행에서 격리 HOME 이 실린다 — 판독층이 트랜스크립트를 찾는 뿌리와 같은 값이다.
     home: homeDirReal(),
+    orchestrationLineage: lineage.current(),
   }
 }
 
@@ -947,6 +951,45 @@ function refreshDigests(): void {
   if (changed) scheduleEmit()
 }
 
+/**
+ * orchestration 계보 (LIFE-459). 런타임 저장소에 변경 이벤트가 없어서 주기 조회로 안다 —
+ * 비용과 지연은 `specs/LIFE-459-lineage/raw/claude/result.md` 에 실측이 있다.
+ */
+const LINEAGE_POLL_MS = 1000
+const realSocket = (socket: string): string => {
+  try {
+    return fs.realpathSync(socket)
+  } catch {
+    return socket
+  }
+}
+const lineage = new LineageFeed(
+  {
+    runtimeBackend: () => {
+      const socket = process.env.CORRAL_BACKEND_SOCKET, session = process.env.CORRAL_SESSION
+      return socket && session ? { socket, session } : null
+    },
+    guiSocket: () => currentSocketPath(),
+    livePaneIds: () => new Set(link.store.paneIds()),
+    stamp: () => {
+      try {
+        const stat = fs.statSync(path.join(app.getPath('userData'), 'runtime/orchestration/state.json'))
+        return `${stat.ino}:${stat.size}:${stat.mtimeMs}`
+      } catch {
+        return null
+      }
+    },
+    read: () => new OrchestrationStore(app.getPath('userData')).read(),
+    observe: () => observePanes({ signal: AbortSignal.timeout(2000), deadlineAt: Date.now() + 2000 }),
+    sameSocket: (a, b) => realSocket(a) === realSocket(b),
+  },
+  () => {
+    const current = lineage.current()
+    log('lineage.change', current.state === 'ready' ? { state: current.state, entries: current.entries.length } : current)
+    scheduleEmit()
+  },
+)
+
 /** 통합 설치 상태는 잘 안 바뀐다 — 세션을 고를 때와 주기 재조회에서만 읽는다 (A1). */
 async function refreshIntegrations(): Promise<void> {
   const socketPath = currentSocketPath()
@@ -1370,6 +1413,7 @@ app.whenReady().then(async () => {
   // LIFE-366 — 세션 지문·통합 상태. 지문은 짧은 주기(캐시가 막는다), 통합은 세션 폴링에 얹는다.
   digestTimer = setInterval(() => refreshDigests(), DIGEST_POLL_MS)
   setInterval(() => void refreshIntegrations(), SESSION_POLL_MS * 4)
+  setInterval(() => void lineage.refresh(), LINEAGE_POLL_MS)
   scheduleTree()
 
   startControlServer({

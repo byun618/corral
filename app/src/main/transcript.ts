@@ -567,7 +567,16 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
   const sidecarStat = sidecarFile === null ? null : statOrNull(sidecarFile)
   const summaryFile = agent === 'grok' ? path.join(path.dirname(file), 'summary.json') : null
   const summaryStat = summaryFile === null ? null : statOrNull(summaryFile)
-  const mainFresh = cached !== null && cached.file === file && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs
+  // 파일 정체성(dev·ino)도 본다 (R4-F1) — 크기·mtime 을 보존한 교체(시간 보존 복사 뒤 rename)는 경로·크기·mtime 이
+  // 같아도 다른 파일이다. 빠른 반환·`reuseMain` 둘 다 이 판정을 쓰므로 정체성이 바뀌면 `readMain` 으로 간다.
+  // 무변경 파일은 stat 값만 비교하므로 여전히 읽기 0바이트다(T7).
+  const mainFresh =
+    cached !== null &&
+    cached.file === file &&
+    cached.dev === stat.dev &&
+    cached.ino === stat.ino &&
+    cached.size === stat.size &&
+    cached.mtimeMs === stat.mtimeMs
   const sidecarFresh = sameStat({ entry: cached?.sidecar ?? null, stat: sidecarStat })
   const summaryFresh = sameStat({ entry: cached?.summary ?? null, stat: summaryStat })
   if (cached !== null && mainFresh && sidecarFresh && summaryFresh) {

@@ -77,6 +77,29 @@ describe('grok 형제 파일 updates.jsonl (T7)', () => {
     expect(second.digest.model).toBe('grok-4.7-build') // 본 파일 값은 캐시에서 그대로
   })
 
+  // R4-F1 — 형제 파일만 바뀐 것처럼 보여도 본 파일이 크기·mtime 을 보존한 채 교체됐으면 캐시 재사용(`reuseMain`) 대신 다시 읽는다.
+  it('updates 가 자라는 사이 본 파일이 크기·mtime 보존 rename 으로 교체되면 본 파일도 다시 읽는다', () => {
+    const main = path.join(dir, 'chat_history.jsonl')
+    fs.writeFileSync(path.join(dir, 'updates.jsonl'), jsonl([userChunk, turn('end_turn')]))
+    fs.utimesSync(main, 1_800_000_000, 1_800_000_000)
+    expect(readSessionDigest(ref).digest.model).toBe('grok-4.7-build')
+
+    const before = fs.statSync(main)
+    fs.writeFileSync(`${main}.next`, fs.readFileSync(main, 'utf8').replace('grok-4.7-build', 'grok-4.8-build'))
+    fs.utimesSync(`${main}.next`, 1_800_000_000, 1_800_000_000)
+    fs.renameSync(`${main}.next`, main)
+    const after = fs.statSync(main)
+    expect(after.ino).not.toBe(before.ino)
+    expect(after.size).toBe(before.size)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+    fs.appendFileSync(path.join(dir, 'updates.jsonl'), jsonl([userChunk, turn('cancelled')]))
+
+    const second = readSessionDigest(ref)
+    expect(second.digest.model).toBe('grok-4.8-build')
+    expect(second.bytes).toBeGreaterThan(second.sidecarBytes) // 본 파일도 읽었다
+    expect(second.digest.turnOutcome).toEqual({ outcome: 'interrupted', reason: 'cancelled' })
+  })
+
   it('둘 다 안 바뀌면 stat 만 — 읽기 0바이트', () => {
     fs.writeFileSync(path.join(dir, 'updates.jsonl'), jsonl([turn('end_turn')]))
     readSessionDigest(ref)
@@ -316,6 +339,35 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     const read = readSessionDigest(ref)
     expect(read.digest.model).toBe('new-model')
     expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  // 리뷰 r4 R4-1 모양 — 같은 길이로 값만 바꾼 사본의 mtime 을 원본과 같게 맞춰 rename 한다(시간 보존 복사·복원).
+  // 경로·크기·mtime 이 모두 같아 캐시 빠른 반환이 먼저 참이 되던 자리 — 정체성(dev·ino)으로 가려 다시 읽는다.
+  it('크기·mtime 을 보존한 rename 교체 — 캐시 빠른 반환을 건너뛰고 새 값을 찾는다', () => {
+    const before = grown()
+    fs.utimesSync(file, 1_800_000_000, 1_800_000_000)
+    readSessionDigest(ref)
+    const next = fs.readFileSync(file, 'utf8').replace('old-model', 'new-model').replace('old-prompt', 'new-prompt')
+    fs.writeFileSync(`${file}.next`, next)
+    fs.utimesSync(`${file}.next`, 1_800_000_000, 1_800_000_000)
+    const kept = fs.statSync(file)
+    fs.renameSync(`${file}.next`, file)
+    const after = fs.statSync(file)
+    expect(after.ino).not.toBe(before.ino)
+    expect(after.size).toBe(kept.size)
+    expect(after.mtimeMs).toBe(kept.mtimeMs)
+    const read = readSessionDigest(ref)
+    expect(read.statOnly).toBe(false)
+    expect(read.digest.model).toBe('new-model')
+    expect(read.digest.lastPrompt).toBe('new-prompt')
+  })
+
+  it('무변경 파일은 정체성까지 같아 여전히 stat 만 — 읽기 0바이트', () => {
+    grown()
+    const again = readSessionDigest(ref)
+    expect(again.statOnly).toBe(true)
+    expect(again.bytes).toBe(0)
+    expect(again.digest.model).toBe('old-model')
   })
 
   // R3-F1 — 계측값이 아니라 **실제 `fs.readSync` 바이트**를 센다. 머리는 이미 끝나 0 이어야 꼬리만 남는다.

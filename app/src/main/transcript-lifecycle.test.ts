@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isMonitoring } from '../shared/lifecycle'
-import type { AgentSessionRef, AgentStatus, SessionLifecycle } from '../shared/types'
+import type { AgentSessionRef, AgentStatus, BackgroundTask, SessionLifecycle, SessionSubagent } from '../shared/types'
 import { LIFECYCLE_MAX_ITEMS } from '../shared/types'
 import { LIFECYCLE_READ_MAX_BYTES, advanceLedger, ledgerView } from './transcript-lifecycle'
 import type { Ledger } from './transcript-lifecycle'
@@ -369,11 +369,11 @@ describe('L3 서브에이전트 — 동기·비동기, 이름·유형·시작 �
 // === L4 monitoring ===================================================================
 
 describe('L4 isMonitoring — 턴 진행/끝 × 작업 없음/에이전트 아닌 작업/서브에이전트만/둘 다', () => {
-  const shell = { id: 'b1', kind: 'shell' as const, label: null, startedAt: 1 }
-  const agentTask = { id: 'a1', kind: 'agent' as const, label: null, startedAt: 1 }
-  const sub = { id: 'a1', name: null, description: null, agentType: null, background: true, startedAt: 1, status: 'running' as const }
-  const syncSub = { ...sub, id: 't1', background: false }
-  const lifecycleOf = (input: { tasks: (typeof shell | typeof agentTask)[]; subagents: (typeof sub)[] }): SessionLifecycle => ({
+  const shell: BackgroundTask = { id: 'b1', kind: 'shell', label: null, startedAt: 1 }
+  const agentTask: BackgroundTask = { id: 'a1', kind: 'agent', label: null, startedAt: 1 }
+  const sub: SessionSubagent = { id: 'a1', name: null, description: null, agentType: null, background: true, startedAt: 1, status: 'running' }
+  const syncSub: SessionSubagent = { ...sub, id: 't1', background: false }
+  const lifecycleOf = (input: { tasks: BackgroundTask[]; subagents: SessionSubagent[] }): SessionLifecycle => ({
     state: 'known',
     tasks: input.tasks,
     taskOverflow: 0,
@@ -408,9 +408,13 @@ describe('L4 isMonitoring — 턴 진행/끝 × 작업 없음/에이전트 아�
     expect(isMonitoring({ agentStatus: status, lifecycle: sets[set] })).toBe(want)
   })
   it('모름(따라잡기·출처 없음·프로세스 없음)은 monitoring 이 아니다', () => {
-    for (const reason of ['catching-up', 'no-source', 'unreadable', 'not-running'] as const) {
-      expect(isMonitoring({ agentStatus: 'idle', lifecycle: { state: 'unknown', reason } })).toBe(false)
-    }
+    const unknowns: SessionLifecycle[] = [
+      { state: 'unknown', reason: 'catching-up' },
+      { state: 'unknown', reason: 'no-source' },
+      { state: 'unknown', reason: 'unreadable' },
+      { state: 'unknown', reason: 'not-running' },
+    ]
+    for (const lifecycle of unknowns) expect(isMonitoring({ agentStatus: 'idle', lifecycle })).toBe(false)
   })
 })
 
@@ -633,7 +637,7 @@ describe('L9 낯선 모양에서 던지지 않는다 · 한 세션 실패가 다
   it('한 참조의 판독 실패가 다른 참조를 무너뜨리지 않는다', () => {
     setupClaude(bashBg({ toolId: 't1', taskId: 'b1', at: 1 }))
     const broken: AgentSessionRef = { kind: 'path', agent: 'claude', source: 'herdr:claude', path: path.join(home, 'no-such.jsonl') }
-    const read = readSessionDigests(new Map([['a', broken], ['b', claudeRef]]))
+    const read = readSessionDigests(new Map<string, AgentSessionRef>([['a', broken], ['b', claudeRef]]))
     expect(read.digests.get('a')?.lifecycle.state).toBe('unknown')
     expect(known(read.digests.get('b')!.lifecycle).tasks.map((task) => task.id)).toEqual(['b1'])
   })

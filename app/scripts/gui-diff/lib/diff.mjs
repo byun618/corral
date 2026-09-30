@@ -227,7 +227,7 @@ export function diffSnapshots(left, right, options = {}) {
     if (parentScoped) {
       // **부모별 실제 자식 수**를 먼저 견준다 (fix-r2 S2). 짝은 잰 자식(부모당 상한까지)끼리만 지어지므로, 상한 뒤에만 있는
       // 자식·자식 수 차이는 짝짓기로는 안 보인다. `childCounts` 가 없는 예전 원자료는 잰 자식의 `siblings` 로 읽는다.
-      const countsOf = (record, items) => {
+      const countsOf = ({ record, items }) => {
         if (Array.isArray(record?.childCounts)) return record.childCounts
         const counts = []
         for (const item of items) {
@@ -236,8 +236,8 @@ export function diffSnapshots(left, right, options = {}) {
         }
         return counts
       }
-      const leftCounts = countsOf(a, leftItems)
-      const rightCounts = countsOf(b, rightItems)
+      const leftCounts = countsOf({ record: a, items: leftItems })
+      const rightCounts = countsOf({ record: b, items: rightItems })
       for (let parentIndex = 0; parentIndex < Math.max(leftCounts.length, rightCounts.length); parentIndex += 1) {
         const left = leftCounts[parentIndex] ?? null
         const right = rightCounts[parentIndex] ?? null

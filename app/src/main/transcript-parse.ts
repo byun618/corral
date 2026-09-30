@@ -30,6 +30,11 @@ export type TranscriptDigest = {
   lastActivityAt: number | null
   /** LIFE-458 #8·#9 — grok 은 이 파일(`chat_history`)에 표지가 없어 `parseGrokUpdates` 가 채운다. */
   turnOutcome: TurnOutcome | null
+  /**
+   * 그 결과를 고른 **레코드 자신의** timestamp (LIFE-467 fix-r3 T1). 그 레코드에 시각이 없거나 못 읽으면 null —
+   * 다른 레코드의 시각·파일 mtime 으로 메우지 않는다(비교 근거가 없으면 렌더러는 결과를 믿는다).
+   */
+  turnOutcomeAt: number | null
   /** LIFE-458 #12 */
   model: string | null
   /** LIFE-458 #13 */
@@ -44,6 +49,7 @@ export const EMPTY_DIGEST: TranscriptDigest = {
   tool: null,
   lastActivityAt: null,
   turnOutcome: null,
+  turnOutcomeAt: null,
   model: null,
   lastPrompt: null,
   pendingQuestions: null,
@@ -212,7 +218,7 @@ export function parseClaudeTail(input: { chunk: string; partial: boolean; sessio
     providerTitle,
     tool,
     lastActivityAt,
-    turnOutcome: claudeTurnOutcome({ records, sessionId: input.sessionId }),
+    ...outcomeFields(claudeTurnOutcome({ records, sessionId: input.sessionId })),
     model: claudeModel(records),
     lastPrompt: claudeLastPrompt({ records, sessionId: input.sessionId }),
     pendingQuestions: claudePendingQuestions({ records, sessionId: input.sessionId }),
@@ -351,7 +357,20 @@ export function claudeHumanText(input: { record: Record<string, unknown>; sessio
  * 표지 레코드가 한다** — `turn_duration` 은 "끝났다" 만 말한다. 정상 종료 뒤 `turn_duration` 이
  * 없는 기록도 있다(실측 467) — 그때는 null 이다. 부재를 정상 종료로 읽지 않는다.
  */
-export function claudeTurnOutcome(input: { records: readonly Record<string, unknown>[]; sessionId: string | null }): TurnOutcome | null {
+/** 결과와 그 결과를 고른 레코드의 시각 (fix-r3 T1) — 시각은 그 레코드의 `timestamp` 만 본다. */
+export type OutcomeHit = { outcome: TurnOutcome; at: number | null }
+
+const outcomeHit = (input: { record: Record<string, unknown>; outcome: TurnOutcome }): OutcomeHit => ({
+  outcome: input.outcome,
+  at: readTimestamp(input.record['timestamp']),
+})
+
+const outcomeFields = (hit: OutcomeHit | null): { turnOutcome: TurnOutcome | null; turnOutcomeAt: number | null } => ({
+  turnOutcome: hit?.outcome ?? null,
+  turnOutcomeAt: hit?.at ?? null,
+})
+
+export function claudeTurnOutcome(input: { records: readonly Record<string, unknown>[]; sessionId: string | null }): OutcomeHit | null {
   const { records } = input
   let sawTurnEnd = false
   for (let i = records.length - 1; i >= 0; i -= 1) {
@@ -363,12 +382,12 @@ export function claudeTurnOutcome(input: { records: readonly Record<string, unkn
       continue
     }
     if (type === 'assistant') {
-      if (record['isApiErrorMessage'] === true) return { outcome: 'failed', error: readString(record, 'error') }
-      return sawTurnEnd ? { outcome: 'completed' } : null
+      if (record['isApiErrorMessage'] === true) return outcomeHit({ record, outcome: { outcome: 'failed', error: readString(record, 'error') } })
+      return sawTurnEnd ? outcomeHit({ record, outcome: { outcome: 'completed' } }) : null
     }
     if (type !== 'user') continue
     const marker = claudeInterruptMarker(record)
-    if (marker !== null) return { outcome: 'interrupted', reason: marker }
+    if (marker !== null) return outcomeHit({ record, outcome: { outcome: 'interrupted', reason: marker } })
     const message = record['message']
     if (isRecord(message) && hasToolResult(message)) return null
     const text = isRecord(message) ? textFromContent(message['content']) : null
@@ -525,7 +544,7 @@ export function parseCodexTail(input: { chunk: string; partial: boolean }): Tran
     providerTitle: null,
     tool: null,
     lastActivityAt,
-    turnOutcome: codexTurnOutcome(records),
+    ...outcomeFields(codexTurnOutcome(records)),
     model: codexModel(records),
     lastPrompt: codexLastPrompt(records),
     pendingQuestions: codexPendingQuestions(records),
@@ -585,7 +604,7 @@ function codexUserText(record: Record<string, unknown>): string | null {
  *     뒤에 온다(288/288, `u6-codex-boundaries.txt`) — 경계로 거는 것은 두 모양을 같은 자리에 두려는 것이다
  * codex 의 `error`·`stream_error` 이벤트는 rollout 에 안 남는다(00-analysis §9, 로컬 0건) — failed 는 `task_complete.error` 로만 본다.
  */
-export function codexTurnOutcome(records: readonly Record<string, unknown>[]): TurnOutcome | null {
+export function codexTurnOutcome(records: readonly Record<string, unknown>[]): OutcomeHit | null {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const record = records[i]
     if (record === undefined) continue
@@ -593,11 +612,11 @@ export function codexTurnOutcome(records: readonly Record<string, unknown>[]): T
     if (event === null) continue
     switch (event.type) {
       case 'turn_aborted':
-        return { outcome: 'interrupted', reason: readString(event.payload, 'reason') }
+        return outcomeHit({ record, outcome: { outcome: 'interrupted', reason: readString(event.payload, 'reason') } })
       case 'task_complete': {
         const error = event.payload['error']
-        if (error === undefined || error === null) return { outcome: 'completed' }
-        return { outcome: 'failed', error: isRecord(error) ? readString(error, 'codex_error_info') : null }
+        if (error === undefined || error === null) return outcomeHit({ record, outcome: { outcome: 'completed' } })
+        return outcomeHit({ record, outcome: { outcome: 'failed', error: isRecord(error) ? readString(error, 'codex_error_info') : null } })
       }
       case 'task_started':
         return null
@@ -722,6 +741,7 @@ export function parseGrokTail(input: { chunk: string; partial: boolean }): Trans
     // 턴 결과·질문은 이 파일에 없다(`chat_history` 의 type 은 대화 메시지뿐, 00-analysis P3) —
     // 형제 파일 `updates.jsonl` 을 `parseGrokUpdates` 가 읽고 `transcript.ts` 가 합친다.
     turnOutcome: null,
+    turnOutcomeAt: null,
     model: grokModel(records),
     lastPrompt: grokLastPrompt(records),
     pendingQuestions: null,

@@ -239,7 +239,7 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     return records
   }
 
-  it('claude 결과 시각은 결과를 읽은 같은 파일의 마지막 활동 시각이다 — 결과가 없으면 null (fix-r2 S1)', () => {
+  it('claude 결과 시각은 결과를 고른 레코드의 timestamp 다 — 새 턴이면 null (fix-r2 S1 · fix-r3 T1)', () => {
     const failed = { ...assistant('API Error'), isApiErrorMessage: true, error: 'rate_limit' }
     fs.writeFileSync(file, jsonl([human('부탁'), failed]))
     const digest = readSessionDigest(ref).digest
@@ -479,5 +479,69 @@ describe('모델·최근 발화 이어 나르기 (T3·T4)', () => {
     const read = readSessionDigest(ref)
     expect(read.digest.model).toBe('claude-fable-5-1')
     expect(read.digest.lastPrompt).toBe('다음')
+  })
+})
+
+// LIFE-467 fix-r3 T1 — claude·codex 결과 시각은 **결과를 고른 레코드 자신의** timestamp 다. review r3 재현 순서:
+// 앞 레코드 timestamp 4000 → herdr working 이벤트 5000 → timestamp 없는 새 결과 레코드, 파일 mtime 7000.
+// r2 판은 `lastActivityAt`(=4000)을 결과 시각으로 써서 새 결과를 지난 결과로 버렸다(표시 working).
+// 시각이 없으면 null — 렌더러는 null 이면 결과를 믿는다(`agent-dot.test.ts` 의 T1 칸이 같은 입력으로 잠근다).
+describe('claude·codex 결과 시각 = 결과 레코드의 timestamp (fix-r3 T1)', () => {
+  const at = (ms: number) => new Date(ms).toISOString()
+  const write = (input: { file: string; records: unknown[] }) => {
+    fs.mkdirSync(path.dirname(input.file), { recursive: true })
+    fs.writeFileSync(input.file, jsonl(input.records))
+    fs.utimesSync(input.file, 7, 7)
+  }
+
+  describe('claude — isApiErrorMessage', () => {
+    const ref: AgentSessionRef = { kind: 'id', agent: 'claude', source: 'herdr:claude', id: SESSION_ID }
+    const file = () => path.join(home, '.claude', 'projects', 'l467t1', `${SESSION_ID}.jsonl`)
+    const human = { type: 'user', sessionId: SESSION_ID, timestamp: at(4000), message: { role: 'user', content: '부탁' } }
+    const failed = (timestamp?: string) => ({
+      type: 'assistant',
+      sessionId: SESSION_ID,
+      ...(timestamp === undefined ? {} : { timestamp }),
+      isApiErrorMessage: true,
+      error: 'rate_limit',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'API Error' }] },
+    })
+
+    it('결과 레코드에 시각이 있으면 그 시각', () => {
+      write({ file: file(), records: [human, failed(at(6000))] })
+      const digest = readSessionDigest(ref).digest
+      expect(digest.turnOutcome).toEqual({ outcome: 'failed', error: 'rate_limit' })
+      expect(digest.turnOutcomeAt).toBe(6000)
+    })
+
+    it('결과 레코드에 시각이 없으면 null — 앞 레코드 시각(4000)·mtime(7000)으로 메우지 않는다', () => {
+      write({ file: file(), records: [human, failed()] })
+      const digest = readSessionDigest(ref).digest
+      expect(digest.turnOutcome).toEqual({ outcome: 'failed', error: 'rate_limit' })
+      expect(digest.lastActivityAt).toBe(4000)
+      expect(digest.turnOutcomeAt).toBeNull()
+    })
+  })
+
+  describe('codex — turn_aborted', () => {
+    const file = () => path.join(home, '.codex', 'sessions', '2026', '09', '30', `rollout-2026-09-30T00-00-00-${SESSION_ID}.jsonl`)
+    const ref = (): AgentSessionRef => ({ kind: 'path', agent: 'codex', source: 'herdr:codex', path: file() })
+    const started = { timestamp: at(4000), type: 'event_msg', payload: { type: 'task_started' } }
+    const aborted = (timestamp?: string) => ({ ...(timestamp === undefined ? {} : { timestamp }), type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } })
+
+    it('결과 레코드에 시각이 있으면 그 시각', () => {
+      write({ file: file(), records: [started, aborted(at(6000))] })
+      const digest = readSessionDigest(ref()).digest
+      expect(digest.turnOutcome).toEqual({ outcome: 'interrupted', reason: 'interrupted' })
+      expect(digest.turnOutcomeAt).toBe(6000)
+    })
+
+    it('결과 레코드에 시각이 없으면 null — 앞 레코드 시각(4000)·mtime(7000)으로 메우지 않는다', () => {
+      write({ file: file(), records: [started, aborted()] })
+      const digest = readSessionDigest(ref()).digest
+      expect(digest.turnOutcome).toEqual({ outcome: 'interrupted', reason: 'interrupted' })
+      expect(digest.lastActivityAt).toBe(4000)
+      expect(digest.turnOutcomeAt).toBeNull()
+    })
   })
 })

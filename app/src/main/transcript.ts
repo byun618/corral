@@ -540,8 +540,9 @@ function readDigest(input: {
       // (기준 D1: 렌더러가 처음 본 시각을 쓰면 미달).
       lastActivityAt: parsed.lastActivityAt ?? input.mtimeMs,
       turnOutcome: parsed.turnOutcome,
-      // 결과와 같은 파일의 시각 — 결과 레코드는 마지막 활동보다 늦을 수 없으니 상한이다 (fix-r2 S1).
-      turnOutcomeAt: parsed.turnOutcome === null ? null : (parsed.lastActivityAt ?? input.mtimeMs),
+      // 결과를 고른 **그 레코드**의 시각 (fix-r3 T1). 없으면 null — 다른 레코드 시각(`lastActivityAt`)이나 mtime 으로
+      // 메우지 않는다: 시각 없는 결과 레코드 앞의 레코드 시각을 쓰면 새 결과를 지난 결과로 버린다(review r3 T1).
+      turnOutcomeAt: parsed.turnOutcomeAt,
       // 이번 창 값, 없으면 근거가 그대로인 지난 값 (F4·R3-F2). 2MB 안에서 확인 못 하면 null.
       model: model?.value ?? null,
       lastPrompt: lastPrompt?.value ?? null,

@@ -279,9 +279,10 @@ export type SessionDigest = {
   /** 마지막으로 끝난 턴의 결과 (LIFE-458 #8·#9). 없거나 새 턴이 시작돼 풀렸으면 null. */
   turnOutcome: TurnOutcome | null
   /**
-   * `turnOutcome` 이 **기록된 시각의 상한** (epoch ms, LIFE-467 fix-r2 S1) — 결과와 **같은 출처**에서 온다:
-   * claude·codex 는 그 결과를 읽은 본 파일의 마지막 활동 시각, grok 은 `updates.jsonl` 의 그 `turn_completed` 레코드 시각
-   * (초 단위라 그 초의 끝, 없으면 그 파일 mtime). 결과가 없으면 null. 렌더러가 herdr working 전이와 견줘 지난 턴 결과를 거른다.
+   * `turnOutcome` 이 **기록된 시각** (epoch ms, LIFE-467 fix-r2 S1 · fix-r3 T1) — 결과와 **같은 출처**에서 온다:
+   * claude·codex 는 그 결과를 고른 **레코드 자신의** `timestamp`(없으면 null — 다른 레코드 시각·mtime 으로 메우지 않는다),
+   * grok 은 `updates.jsonl` 의 그 `turn_completed` 레코드 시각(초 단위라 그 초의 끝, 없으면 그 파일 mtime — 레코드가 쓰인
+   * 뒤의 시각이라 상한이고, 결과를 남기는 쪽으로 틀린다). 결과가 없으면 null. 렌더러가 herdr working 전이와 견줘 지난 턴 결과를 거르고, null 이면 결과를 믿는다.
    */
   turnOutcomeAt: number | null
   /** 마지막으로 관측된 모델 식별자 (LIFE-458 #12). 합성·오류 레코드의 값은 쓰지 않는다. 없으면 null. */

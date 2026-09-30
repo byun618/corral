@@ -78,6 +78,14 @@ describe('agentDot — K4 대응표', () => {
     expect(dot({ status: 'working', outcome, freshness: { observedAt: 5000, observedVia: 'event', outcomeAt: 6999 } })).toBe(want))
   it('지난 턴 결과(2999) 뒤 working 이벤트(5000) → working — r1 반례는 그대로 (S1)', () =>
     expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: 'cancelled' }, freshness: { observedAt: 5000, observedVia: 'event', outcomeAt: 2999 } })).toBe('working'))
+  // fix-r3 T1 — review r3 재현 입력: working 이벤트 5000, 결과 레코드에 시각이 없어 판독층이 outcomeAt null 을 준다
+  // (`main/transcript-sidecar.test.ts` 가 claude·codex 판독 값을 잠근다). r2 판은 앞 레코드 시각 4000 을 받아 working 이었다.
+  it('claude 결과 레코드에 시각 없음(outcomeAt null) → failed 유지 (T1)', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'failed', error: 'rate_limit' }, freshness: { observedAt: 5000, observedVia: 'event', outcomeAt: null } })).toBe('failed'))
+  it('codex 결과 레코드에 시각 없음(outcomeAt null) → interrupted 유지 (T1)', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: 'interrupted' }, freshness: { observedAt: 5000, observedVia: 'event', outcomeAt: null } })).toBe('interrupted'))
+  it('r2 판이 준 값(앞 레코드 시각 4000)이면 working 이었다 — 대조 (T1)', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'failed', error: 'rate_limit' }, freshness: { observedAt: 5000, observedVia: 'event', outcomeAt: 4000 } })).toBe('working'))
   it('idle + turnOutcome failed → failed(빨간 점)', () => expect(dot({ status: 'idle', outcome: { outcome: 'failed', error: 'rate_limit' } })).toBe('failed'))
   it('idle + turnOutcome completed → idle', () => expect(dot({ status: 'idle', outcome: { outcome: 'completed' } })).toBe('idle'))
   it('interrupted 는 monitoring 보다 앞선다 (Orca interrupted 우선)', () =>

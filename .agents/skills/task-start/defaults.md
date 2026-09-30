@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | 본체 세션 (시작·마무리) | Claude `claude-sonnet-5-5` | high | 없음 |
 | 코디네이터·판정 | Claude `claude-opus-5-5` | high | 없음 |
-| 구현 워커 (단독·기본) | Claude `claude-opus-5-5` | high | 없음 |
+| 구현 워커 (단독·기본) | Claude `claude-opus-5-5` | **medium** (2026-09-30) | 없음 |
 | 구현 워커 (경쟁 시 Codex 측) | Codex `gpt-6-astra` | high | 해당 없음 |
 | 코드 리뷰 ① | 별도 Codex `gpt-6-astra` | xhigh | 해당 없음 |
 | 코드 리뷰 ② — **일시 중지** (아래) | 별도 Claude `claude-sonnet-5-5` | high | 없음 |
@@ -34,7 +34,8 @@
   불리하지 않다 — Opus 5.5 는 입력 $4 × 캐시 읽기 5% = $0.20/MTok, Fable 5.1 은 $10 × 2.5%
   = $0.25/MTok (2026-09-29 공식 모델 개요 기준). Fable 의 별도 주간 천장에서도 벗어난다.
   effort 는 high — API 기본값이 medium 이라 명시하지 않으면 내려간다.
-- **구현 = Opus 5.5**: 구현 품질이 리뷰 라운드 수를 정한다.
+- **구현 = Opus 5.5 medium** (2026-09-30 사용자 지시, high → medium): 구현 품질이 리뷰 라운드 수를 정한다.
+  effort 는 기동 플래그로 **명시**한다(`--effort medium`) — 기본값에 맡기지 않는다. 리뷰 라운드가 늘면 high 로 되돌리는 신호로 본다.
 - **advisor 기본 해제**: advisor 는 실행 모델과 등급 차가 있을 때만 발동한다(LIFE-394 실측:
   Fable 코디 0회, Opus 5 워커 23회). Opus 5.5 위의 등급이 없으므로 걸 대상이 없다.
 - **코드 리뷰 ② = Sonnet 5.5**: 구현자와 다른 모델로 리뷰어 3자의 모델 다양성을 올린다 — 같은
@@ -71,7 +72,7 @@
 - 기본은 단독이다. 코디네이터 추천 또는 사용자 요구로 발동하며 **발동 근거를 킥오프에 명시한다**:
   ① 접근이 갈리고 문서로 우열이 안 날 때 ② 되돌리기 비싼 변경 ③ 터미널·에이전트 제어 계층
   ④ Claude 주간 쿼터가 임계에 근접했을 때
-- 경쟁 페어는 Claude `claude-opus-5-5` high ∥ Codex `gpt-6-astra` high 다. 명시한 구현자 모델이
+- 경쟁 페어는 Claude `claude-opus-5-5` medium ∥ Codex `gpt-6-astra` high 다. 명시한 구현자 모델이
   있으면 그 지정이 우선한다. Claude 쪽 워커 수는 단독일 때와 같으므로 경쟁이 Claude 쿼터를
   늘리지 않는다 — Codex 는 별도 구독이다.
 - 각 후보는 같은 킥오프·같은 기준을 받고 독립 구현한다. 상대 구현·리뷰·판정을 공유하지 않는다.

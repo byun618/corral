@@ -55,7 +55,7 @@ import type { AgentSessionRef, SessionDigest, SessionLifecycle, SessionQuestion,
 import { EMPTY_SESSION_DIGEST } from '../shared/types.js'
 import { log } from './log.js'
 import { parseGrokSummary, parseGrokUpdates, parseHead, parseTail, valueLines } from './transcript-parse.js'
-import type { Ledger } from './transcript-lifecycle.js'
+import type { Ledger, Owner } from './transcript-lifecycle.js'
 import { advanceLedger, claudeSessionAlive, clearClaudeRegistry, grokSessionAlive, ledgerSettled, ledgerView } from './transcript-lifecycle.js'
 
 /** 첫 꼬리 창. 실측 평균 한 턴이 ~46KB 라 대략 5턴을 덮는다. */
@@ -156,15 +156,23 @@ type CacheEntry = {
   /** grok `summary.json` 판독 결과. grok 이 아니거나 그 파일이 없으면 null (F3). */
   summary: SummaryEntry | null
   /**
-   * 백그라운드 작업·서브에이전트 누적 판독 (LIFE-462) — claude 는 본 파일, grok 은 `updates.jsonl`. 읽을 출처가 없으면 null.
-   * 꼬리 판독과 **따로** 간다 — 본 파일이 그대로여도 따라잡기 중이면 이것만 읽는다.
+   * 이 지문의 `lifecycle` 을 만든 누적 판독 상태 (LIFE-462) — `ledgers` 의 그 파일 항목과 **같은 객체**일 때만 빠른 반환을 쓴다.
+   * 읽을 출처가 없으면 null.
    */
   ledger: Ledger | null
-  /** 이 세션을 가진 살아 있는 claude 프로세스가 있었나(L8). claude 가 아니면 null. 바뀌면 파일이 그대로여도 다시 싣는다. */
-  live: boolean | null
+  /** 이 세션의 소유 프로세스 판정(L8). claude·grok 이 아니면 null. 바뀌면 파일이 그대로여도 다시 싣는다. */
+  owner: Owner | null
 }
 
 const cache = new Map<string, CacheEntry>()
+
+/**
+ * 누적 판독 상태는 **해소된 파일마다 하나**다 (LIFE-462 F2) — 같은 세션을 가리키는 pane 이 여럿이어도(참조 키가 달라도)
+ * 한 주기에 한 번만 나아가고 모든 pane 이 같은 값을 받는다. `cycle` 은 그 판독이 일어난 주기 번호다.
+ */
+const ledgers = new Map<string, { ledger: Ledger; cycle: number }>()
+/** 판독 주기 번호 — `readSessionDigests`(주기 하나)·`readSessionDigest`(단독 호출 하나)마다 1 씩 는다. */
+let cycle = 0
 
 /**
  * **못 찾은 참조의 재탐색 간격** — 처음 30초는 매 주기 훑고, 그 뒤로는 15초에 한 번만 훑는다.
@@ -203,11 +211,13 @@ export type ReadCost = {
   sidecarBytes: number
   ms: number
   /**
-   * 누적 판독(LIFE-462) — **별도 계정**이다. `bytes` 에 안 들어간다. `lifecycleMaxFileBytes` 는 이번 주기에 파일 하나가 읽은
-   * 최대 바이트(통과선 ≤2MB, L7), `lifecycleCatchingUp` 은 아직 끝에 못 닿은 참조 수, `lifecycleMs` 는 그 판독에 든 시간이다.
+   * 누적 판독(LIFE-462) — **별도 계정**이다. `bytes` 에 안 들어간다. `lifecycleMaxFileBytes` 는 이번 주기에 **파일 하나**가 읽은
+   * 바이트 합의 최댓값(통과선 ≤2MB, L7 — 참조가 여럿이어도 파일별로 합한다), `lifecycleCatchingUp` 은 아직 끝에 못 닿은 참조 수,
+   * `lifecycleMs` 는 그 판독에 든 시간이다. 프로세스 레지스트리 판독은 기록 파일이 아니라서 `lifecycleRegistryBytes` 로 따로 센다.
    */
   lifecycleBytes: number
   lifecycleMaxFileBytes: number
+  lifecycleRegistryBytes: number
   lifecycleCatchingUp: number
   lifecycleMs: number
 }
@@ -222,6 +232,7 @@ export type ReadCost = {
  */
 export function clearTranscriptCache(): void {
   cache.clear()
+  ledgers.clear()
   misses.clear()
   clearClaudeRegistry()
 }
@@ -529,14 +540,22 @@ function readDigest(input: {
  * **던지지 않는다.** 한 세션의 판독 실패가 목록 전체를 무너뜨리면 안 되므로 모든 실패는
  * `activity` 의 갈래로 내려앉는다 (기준 A8).
  */
-export function readSessionDigest(ref: AgentSessionRef | null): {
+export function readSessionDigest(ref: AgentSessionRef | null): DigestRead {
+  cycle += 1
+  return readOne(ref)
+}
+
+type DigestRead = {
   digest: SessionDigest
   bytes: number
   headBytes: number
   sidecarBytes: number
   statOnly: boolean
   lifecycle: LifecycleRead
-} {
+}
+
+/** 이번 주기(`cycle`) 안에서 참조 하나를 읽는다. */
+function readOne(ref: AgentSessionRef | null): DigestRead {
   if (ref === null) return { digest: EMPTY, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: false, lifecycle: NO_LIFECYCLE_READ }
   const agent = transcriptAgent(ref.agent)
   if (agent === null) return { digest: EMPTY, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: false, lifecycle: NO_LIFECYCLE_READ }
@@ -605,9 +624,10 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
   // 누적 판독 출처 (LIFE-462) — claude 는 본 파일, grok 은 `updates.jsonl`, codex 는 없다(끝 표지가 기록에 없다, 00-analysis P12).
   const ledgerStat = agent === 'claude' ? stat : agent === 'grok' ? sidecarStat : null
   const ledgerFile = agent === 'claude' ? file : ledgerStat === null ? null : sidecarFile
-  // 참조가 다른 파일로 해소됐으면 누적 상태를 잇지 않는다.
-  const priorLedger = cached !== null && cached.file === file ? cached.ledger : null
-  const ledgerFresh = ledgerStat === null ? priorLedger === null : ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
+  // 누적 상태는 파일에 붙는다 — 이번 주기에 다른 참조가 이미 나아갔으면 다시 읽지 않고 그 값을 쓴다(F2).
+  const shared = ledgerFile === null ? undefined : ledgers.get(ledgerFile)
+  const priorLedger = shared?.ledger ?? null
+  const advance = ledgerFile !== null && ledgerStat !== null && shared?.cycle !== cycle && !ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
   // 강제 종료는 기록에 아무것도 안 남긴다 — 생존은 파일 변화와 따로 매 주기 본다(L8, `transcript-lifecycle.ts`).
   const liveness =
     agent === 'claude'
@@ -621,10 +641,25 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
             sessionId: ref.kind === 'id' ? ref.id : path.basename(path.dirname(ref.path)),
           })
         : null
-  const live = liveness?.alive ?? null
+  const owner = liveness?.owner ?? null
   const registryBytes = liveness?.bytes ?? 0
-  if (cached !== null && mainFresh && sidecarFresh && summaryFresh && ledgerFresh && cached.live === live) {
-    return { digest: cached.digest, bytes: 0, headBytes: 0, sidecarBytes: 0, statOnly: true, lifecycle: { bytes: registryBytes, ms: 0 } }
+  if (
+    cached !== null &&
+    mainFresh &&
+    sidecarFresh &&
+    summaryFresh &&
+    !advance &&
+    cached.ledger === priorLedger &&
+    sameOwner({ a: cached.owner, b: owner })
+  ) {
+    return {
+      digest: cached.digest,
+      bytes: 0,
+      headBytes: 0,
+      sidecarBytes: 0,
+      statOnly: true,
+      lifecycle: { ...NO_LIFECYCLE_READ, file: ledgerFile, registryBytes },
+    }
   }
 
   try {
@@ -647,7 +682,7 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
     // 모델은 **응답 기록(`chat_history` 의 `model_id`) 이 먼저**, 없을 때만 `summary.json` 이다 (F3):
     // 응답 기록은 실제로 답한 모델이고 식별자도 더 자세하다(`-build` 변형, 98 중 95). summary 는 세션에 고른
     // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
-    const life = readLifecycle({ file: ledgerFile, stat: ledgerStat, agent, prior: priorLedger, fresh: ledgerFresh, live })
+    const life = readLifecycle({ file: ledgerFile, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
     const merged: SessionDigest =
       sidecarFile === null
         ? main.digest
@@ -672,7 +707,7 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
       sidecar,
       summary,
       ledger: life.ledger,
-      live,
+      owner,
     })
     return {
       digest,
@@ -680,7 +715,7 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
       headBytes: main.headBytes,
       sidecarBytes,
       statOnly: false,
-      lifecycle: { bytes: life.read.bytes + registryBytes, ms: life.read.ms },
+      lifecycle: { ...life.read, file: ledgerFile, registryBytes },
     }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
@@ -695,12 +730,19 @@ export function readSessionDigest(ref: AgentSessionRef | null): {
   }
 }
 
-/** 누적 판독 한 참조의 비용 (LIFE-462 L7). */
-type LifecycleRead = { bytes: number; ms: number }
-const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0 }
+/** 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일 `file` 몫, `registryBytes` 는 프로세스 레지스트리 몫. */
+type LifecycleRead = { bytes: number; ms: number; file: string | null; registryBytes: number }
+const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, file: null, registryBytes: 0 }
+
+function sameOwner(input: { a: Owner | null; b: Owner | null }): boolean {
+  const { a, b } = input
+  if (a === null || b === null) return a === b
+  if (!a.alive || !b.alive) return a.alive === b.alive
+  return a.since === b.since
+}
 
 /**
- * 누적 판독 한 걸음 (LIFE-462) — 출처가 없으면 `no-source`, 따라잡았고 그대로면 읽지 않는다.
+ * 누적 판독 한 걸음 (LIFE-462) — 출처가 없으면 `no-source`, `advance` 가 아니면(따라잡았고 그대로 · 이번 주기에 이미 나아감) 읽지 않는다.
  * **던지지 않는다** — 실패는 이 칸만 `unreadable` 로 떨어지고 지문의 나머지는 산다(L9). 누적 상태는 버린다(다음에 0 부터).
  */
 function readLifecycle(input: {
@@ -708,21 +750,27 @@ function readLifecycle(input: {
   stat: fs.Stats | null
   agent: TranscriptAgent
   prior: Ledger | null
-  fresh: boolean
-  /** 살아 있는 소유 프로세스가 있나(claude 만, L8). false 면 누적은 계속하되 목록은 `not-running`. null = 이 provider 는 안 본다. */
-  live: boolean | null
-}): { lifecycle: SessionLifecycle; ledger: Ledger | null; read: LifecycleRead } {
-  const { file, stat, agent, prior, live } = input
-  if (file === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: NO_LIFECYCLE_READ }
-  const view = (ledger: Ledger): SessionLifecycle => (live === false ? NOT_RUNNING : ledgerView(ledger))
-  if (input.fresh && prior !== null) return { lifecycle: view(prior), ledger: prior, read: NO_LIFECYCLE_READ }
+  advance: boolean
+  /** 소유 프로세스 판정(L8). 죽었으면 누적은 계속하되 목록은 `not-running`, 시작 시각을 모르면 세대를 못 갈라 `unreadable`. */
+  owner: Owner | null
+}): { lifecycle: SessionLifecycle; ledger: Ledger | null; read: { bytes: number; ms: number } } {
+  const { file, stat, agent, prior, owner } = input
+  if (file === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: { bytes: 0, ms: 0 } }
+  const view = (ledger: Ledger): SessionLifecycle => {
+    if (owner === null || !owner.alive) return NOT_RUNNING
+    if (owner.since === null) return { state: 'unknown', reason: 'unreadable' }
+    return ledgerView({ ledger, since: owner.since })
+  }
+  if (!input.advance && prior !== null) return { lifecycle: view(prior), ledger: prior, read: { bytes: 0, ms: 0 } }
   const startedAt = Date.now()
   try {
     const step = advanceLedger({ file, stat, agent, prior })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent, reason: step.reset })
+    ledgers.set(file, { ledger: step.ledger, cycle })
     return { lifecycle: view(step.ledger), ledger: step.ledger, read: { bytes: step.bytes, ms: Date.now() - startedAt } }
   } catch (error) {
     log('transcript.error', { where: 'lifecycle', agent, error: String(error) })
+    ledgers.delete(file)
     return {
       lifecycle: { state: 'unknown', reason: 'unreadable' },
       ledger: null,
@@ -918,18 +966,21 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   cost: ReadCost
 } {
   const startedAt = Date.now()
+  cycle += 1
   const digests = new Map<string, SessionDigest>()
+  /** 이번 주기에 기록 파일마다 읽은 누적 판독 바이트 합 (L7 — 파일 하나·주기 1회 ≤2MB 를 파일 단위로 본다). */
+  const lifecycleFileBytes = new Map<string, number>()
+  let lifecycleRegistryBytes = 0
   let files = 0
   let statOnly = 0
   let bytes = 0
   let headBytes = 0
   let sidecarBytes = 0
   let lifecycleBytes = 0
-  let lifecycleMaxFileBytes = 0
   let lifecycleCatchingUp = 0
   let lifecycleMs = 0
   for (const [id, ref] of refs) {
-    const read = readSessionDigest(ref)
+    const read = readOne(ref)
     digests.set(id, read.digest)
     if (ref === null) continue
     files += 1
@@ -938,7 +989,9 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     headBytes += read.headBytes
     sidecarBytes += read.sidecarBytes
     lifecycleBytes += read.lifecycle.bytes
-    lifecycleMaxFileBytes = Math.max(lifecycleMaxFileBytes, read.lifecycle.bytes)
+    lifecycleRegistryBytes += read.lifecycle.registryBytes
+    const lifecycleFile = read.lifecycle.file
+    if (lifecycleFile !== null) lifecycleFileBytes.set(lifecycleFile, (lifecycleFileBytes.get(lifecycleFile) ?? 0) + read.lifecycle.bytes)
     if (read.digest.lifecycle.state === 'unknown' && read.digest.lifecycle.reason === 'catching-up') lifecycleCatchingUp += 1
     lifecycleMs += read.lifecycle.ms
   }
@@ -952,7 +1005,8 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
       sidecarBytes,
       ms: Date.now() - startedAt,
       lifecycleBytes,
-      lifecycleMaxFileBytes,
+      lifecycleMaxFileBytes: Math.max(0, ...lifecycleFileBytes.values()),
+      lifecycleRegistryBytes,
       lifecycleCatchingUp,
       lifecycleMs,
     },

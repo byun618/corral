@@ -14,7 +14,9 @@
 // # 비용 — 파일 하나·주기 1회 ≤2MB (L7)
 //
 // 첫 판독(따라잡기)도 이 한도로 나눈다. 끝에 못 닿은 동안은 목록을 **모름**(`catching-up`)으로 싣는다 — 빈 목록이 아니다.
-// 한 줄이 한도보다 길면 그 줄은 건너뛴다(`skipping`) — 시작·끝 표지 레코드는 짧다(도구 결과 본문이 든 긴 줄이 아니다).
+// 한 줄이 한도보다 길면 그 줄은 건너뛴다(`skipping`). 그 줄이 끝 표지(예: 긴 동기 Agent 결과)였을 수 있으므로 **그때 열려 있던 것**은
+// 불확실(`uncertain`)로 적어 두고, 그중 하나라도 아직 열려 있으면 목록 전체를 모름(`unreadable`)으로 싣는다 — 뒤에 다른 표지로
+// 닫히거나 세대가 바뀌면(아래) 풀린다. 건너뛴 줄이 시작 표지였다면 그 작업은 목록에 없다(거짓 도는 중은 아니다 — 한계).
 //
 // # 표지 — 전부 실측(관측)이다. 형식 계약이 아니다
 //
@@ -36,14 +38,25 @@
 // 강제 종료(SIGKILL·pane 닫기)는 `cost-state` 도 안 남긴다 — 사용자 기록에서 끝에 "열림" 이 남은 파일 21 이 전부 cost-state 가
 // 없었다(`raw/claude/u3b-open-at-eof-out.txt`). 그래서 claude 는 **살아 있는 소유 프로세스**를 따로 본다: claude 는 대화형
 // 프로세스마다 `~/.claude/sessions/<pid>.json`(`pid`·`sessionId`…)을 쓴다(관측). 그 세션 id 를 가진 항목의 pid 가 살아 있을
-// 때만 목록을 싣고, 아니면 `not-running` 이다. 누적 상태는 계속 쌓는다 — 재개하면 하네스의 `stopped` 통지가 옛 id 를 닫는다.
+// 때만 목록을 싣고, 아니면 `not-running` 이다. 누적 상태는 계속 쌓는다.
+//
+// # 세대 경계 — 재개 뒤의 옛 열림 (L8)
+//
+// 강제 종료 뒤 재개하면 같은 파일에 잇는다. 옛 프로세스의 열린 작업·자식은 끝 표지 없이 남는다 — claude 는 재개 때 옛 셸에
+// `stopped` 통지를 쓰지만 모든 종류에 쓴다는 근거가 없고, grok 은 빈 `background_tasks` 스냅샷만 쓴다(자식은 안 닫힌다).
+// 그래서 **살아 있는 소유 프로세스의 시작 시각**(claude 레지스트리 `startedAt`, grok 은 `ps` 의 시작 시각 — 초 단위)보다 먼저
+// 열린 것은 싣지 않는다(제외). 캐시 없이 처음부터 다시 읽어도 같은 답이다 — 기록 순서가 아니라 시각으로 가르기 때문이다.
+// 시작 시각이 없는 항목은 어느 세대인지 증명할 수 없어 뺀다.
 // grok (`updates.jsonl`, 00-analysis P6):
 //   `background_tasks` 는 **전체 스냅샷**이라 마지막 스냅샷의 `status:'running'` 이 지금 도는 작업이다. `task_completed` 는
 //   스냅샷이 오기 전의 끝을 보탠다. 형제 파일 꼬리 창(256KB) 밖의 스냅샷도 누적 판독이라 잃지 않는다(P1 — 12 중 8).
-//   서브에이전트(네이티브 유도 표본 1건, grok 1.0.44 — `raw/claude/l10/runs/n37-grok-subagent-attempt.txt`·`n38-grok-subagent-shape.txt`):
+//   서브에이전트(네이티브 유도 표본 — `raw/claude/l10/runs/n38-grok-subagent-shape.txt`, `runs-r2/n41`·`n42`):
 //   `subagent_spawned{subagent_id, subagent_type, description…}` 가 시작, `subagent_finished{subagent_id, status}` 가 끝이다.
-//   시작 시각은 줄의 `params._meta.agentTimestampMs`. `background` 는 앞선 `spawn_subagent` 호출의 `rawInput.background` 를
-//   **호출 순서대로** 짝짓는다(시작 레코드에 호출 id 가 없다) — 짝이 없으면 false.
+//   시작 시각은 줄의 `params._meta.agentTimestampMs`. 시작 레코드에는 호출 id 가 없다 — `background` 는 **그 자식 id 를 돌려준
+//   호출**로만 확정한다: `tool_call{toolCallId, title:'spawn_subagent', rawInput.background}` 의 호출 id 와 같은 id 의
+//   `tool_call_update` 결과 본문 `subagent_id: <id>` 를 묶는다(네이티브 표본 `runs-r2/n41` 의 기록). 못 묶으면 null 이다.
+//   `tasks` 가 배열이 아닌 `background_tasks` 는 "작업 없음" 의 증거로 쓰지 않는다 — 다음 온전한 스냅샷까지 모름이다.
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { isRecord, readString } from '../shared/json.js'
 import type { BackgroundTask, SessionLifecycle, SessionSubagent } from '../shared/types.js'
@@ -70,8 +83,12 @@ export type LedgerState =
       agent: 'grok'
       tasks: Map<string, BackgroundTask>
       subagents: Map<string, SessionSubagent>
-      /** 아직 `subagent_spawned` 를 못 본 `spawn_subagent` 호출의 `background` — 호출 순서대로 짝짓는다. */
-      spawnQueue: boolean[]
+      /** 결과를 아직 못 본 `spawn_subagent` 호출 — toolCallId → `rawInput.background`(없으면 null). */
+      spawnCalls: Map<string, boolean | null>
+      /** 호출 결과가 `subagent_spawned` 보다 먼저 온 자식 — subagent_id → background. */
+      spawnedBackground: Map<string, boolean | null>
+      /** 마지막 `background_tasks` 의 `tasks` 가 배열이 아니었다 — 다음 온전한 스냅샷까지 작업 목록은 모름. */
+      tasksInvalid: boolean
     }
 
 /** 파일 하나의 누적 판독 상태. */
@@ -88,13 +105,15 @@ export type Ledger = {
   skipping: boolean
   /** 지난 판독이 파일 끝에 닿았나. 아니면 목록은 `catching-up` 이다. */
   caughtUp: boolean
+  /** 긴 줄을 건너뛸 때 열려 있던 작업·자식 id — 그중 하나라도 아직 열려 있으면 목록은 모름이다(U3). */
+  uncertain: Set<string>
   state: LedgerState
 }
 
 export function emptyLedgerState(agent: 'claude' | 'grok'): LedgerState {
   return agent === 'claude'
     ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map() }
-    : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnQueue: [] }
+    : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnCalls: new Map(), spawnedBackground: new Map(), tasksInvalid: false }
 }
 
 /** 이번 stat 에서 다시 읽을 게 없나 — 끝까지 따라잡았고 파일이 그대로다. */
@@ -140,6 +159,7 @@ export function advanceLedger(input: { file: string; stat: fs.Stats; agent: 'cla
   const chunk = readBytes({ file, from: start, to })
   bytes += chunk.length
   const state = prior?.state ?? emptyLedgerState(agent)
+  const uncertain = prior?.uncertain ?? new Set<string>()
   let skipping = prior?.skipping ?? false
   let consumed = 0
   const lastNewline = chunk.lastIndexOf(0x0a)
@@ -153,9 +173,14 @@ export function advanceLedger(input: { file: string; stat: fs.Stats; agent: 'cla
     if (begin < consumed) applyLines({ state, text: chunk.subarray(begin, consumed).toString('utf8') })
   } else if (start + chunk.length < stat.size) {
     // 한도를 다 채웠는데 줄바꿈이 없다 — 한도보다 긴 줄이다. 건너뛰고 다음 줄바꿈부터 다시 읽는다.
+    // 그 줄이 지금 열린 것의 끝 표지였을 수 있다 — 열린 id 를 불확실로 적는다(U3).
     consumed = chunk.length
     skipping = true
+    for (const id of openIds(state)) uncertain.add(id)
   }
+  // 불확실한 것 중 그 뒤 다른 표지로 닫힌 것은 풀린다.
+  const open = new Set(openIds(state))
+  for (const id of uncertain) if (!open.has(id)) uncertain.delete(id)
   const offset = start + consumed
   const anchor = Buffer.concat([prior?.anchor ?? Buffer.alloc(0), chunk.subarray(0, consumed)])
   const ledger: Ledger = {
@@ -168,20 +193,35 @@ export function advanceLedger(input: { file: string; stat: fs.Stats; agent: 'cla
     skipping,
     // 파일 끝까지 읽었으면 따라잡은 것이다 — 줄바꿈 없는 끝줄은 아직 쓰는 중이라 다음 주기에 온다.
     caughtUp: to === stat.size,
+    uncertain,
     state,
   }
   return { ledger, bytes, reset }
 }
 
-/** 지금 목록 — 따라잡기 전이면 모름. 시작 시각 순, 상한 32 + 넘친 수. */
-export function ledgerView(ledger: Ledger): SessionLifecycle {
-  if (!ledger.caughtUp) return { state: 'unknown', reason: 'catching-up' }
-  return stateView(ledger.state)
+function openIds(state: LedgerState): string[] {
+  return [...state.tasks.keys(), ...state.subagents.keys()]
 }
 
-export function stateView(state: LedgerState): SessionLifecycle {
-  const tasks = byStart([...state.tasks.values()])
-  const subagents = byStart([...state.subagents.values()])
+/**
+ * 지금 목록 — 따라잡기 전이면 모름. `since`(살아 있는 소유 프로세스의 시작 시각, epoch ms)보다 먼저 열린 것은 이전 세대라 뺀다.
+ * 시작 시각 순, 상한 32 + 넘친 수.
+ */
+export function ledgerView(input: { ledger: Ledger; since: number }): SessionLifecycle {
+  const { ledger, since } = input
+  if (!ledger.caughtUp) return { state: 'unknown', reason: 'catching-up' }
+  const current = (item: { startedAt: number | null }) => item.startedAt !== null && item.startedAt >= since
+  const tasks = [...ledger.state.tasks.values()].filter(current)
+  const subagents = [...ledger.state.subagents.values()].filter(current)
+  const shown = new Set([...tasks, ...subagents].map((item) => item.id))
+  if ([...ledger.uncertain].some((id) => shown.has(id))) return { state: 'unknown', reason: 'unreadable' }
+  if (ledger.state.agent === 'grok' && ledger.state.tasksInvalid) return { state: 'unknown', reason: 'unreadable' }
+  return listView({ tasks, subagents })
+}
+
+function listView(input: { tasks: BackgroundTask[]; subagents: SessionSubagent[] }): SessionLifecycle {
+  const tasks = byStart(input.tasks)
+  const subagents = byStart(input.subagents)
   return {
     state: 'known',
     tasks: tasks.slice(0, LIFECYCLE_MAX_ITEMS),
@@ -201,8 +241,9 @@ function byStart<T extends { startedAt: number | null; id: string }>(items: T[])
  * claude 는 표지가 들 수 있는 줄만 파싱한다 — 대부분의 줄(훅 결과·첨부·텍스트 응답)은 문자열 검사로 건너뛴다.
  * 걸러도 틀리지 않는 이유: 아래 표지 전부가 이 문자열 중 하나를 원문 그대로 품는다.
  */
-const CLAUDE_MARKERS = ['"tool_use"', '"toolUseResult"', '<task-notification>', '"agents_killed"', '"cost-state"']
-const GROK_MARKERS = ['"background_tasks"', '"task_completed"', '"spawn_subagent"', '"subagent_spawned"', '"subagent_finished"']
+const CLAUDE_MARKERS = ['"tool_use"', '"tool_result"', '"toolUseResult"', '<task-notification>', '"agents_killed"', '"cost-state"']
+// `subagent_id` 는 `subagent_spawned`·`subagent_finished` 와 자식 id 를 돌려준 `tool_call_update` 결과 본문(`subagent_id: …`)을 함께 잡는다.
+const GROK_MARKERS = ['"background_tasks"', '"task_completed"', '"spawn_subagent"', 'subagent_id']
 
 export function applyLines(input: { state: LedgerState; text: string }): void {
   const markers = input.state.agent === 'claude' ? CLAUDE_MARKERS : GROK_MARKERS
@@ -371,18 +412,36 @@ function applyGrokRecord(input: { state: GrokState; record: Record<string, unkno
   if (update === null) return
   const meta = isRecord(params) && isRecord(params['_meta']) ? params['_meta'] : null
   const at = meta !== null && typeof meta['agentTimestampMs'] === 'number' ? meta['agentTimestampMs'] : null
+  const { state } = input
   switch (readString(update, 'sessionUpdate')) {
     case 'tool_call': {
-      if (update['title'] !== 'spawn_subagent') return
-      const rawInput = update['rawInput']
-      input.state.spawnQueue.push(isRecord(rawInput) && rawInput['background'] === true)
+      const callId = readString(update, 'toolCallId')
+      if (update['title'] !== 'spawn_subagent' || callId === null) return
+      const background = isRecord(update['rawInput']) ? update['rawInput']['background'] : undefined
+      state.spawnCalls.set(callId, typeof background === 'boolean' ? background : null)
+      return
+    }
+    case 'tool_call_update': {
+      const callId = readString(update, 'toolCallId')
+      const status = readString(update, 'status')
+      if (callId === null || !state.spawnCalls.has(callId) || (status !== 'completed' && status !== 'failed')) return
+      const background = state.spawnCalls.get(callId) ?? null
+      state.spawnCalls.delete(callId)
+      // 이 호출이 만든 자식 — 결과 본문의 `subagent_id: <id>` 로만 묶는다. 실패·본문 없음이면 아무 자식에도 안 붙는다(F4).
+      const id = status === 'completed' ? spawnedId(update) : null
+      if (id === null) return
+      const child = state.subagents.get(id)
+      // 새 객체로 바꾼다 — 이미 내보낸 지문이 같은 객체를 쥐고 있어 제자리 수정은 변화 감지(emit)를 가린다.
+      if (child !== undefined) state.subagents.set(id, { ...child, background })
+      else state.spawnedBackground.set(id, background)
       return
     }
     case 'subagent_spawned': {
       const id = readString(update, 'subagent_id')
-      const background = input.state.spawnQueue.shift() ?? false
       if (id === null) return
-      input.state.subagents.set(id, {
+      const background = state.spawnedBackground.get(id) ?? null
+      state.spawnedBackground.delete(id)
+      state.subagents.set(id, {
         id,
         name: null,
         description: oneLine(readString(update, 'description')),
@@ -395,31 +454,59 @@ function applyGrokRecord(input: { state: GrokState; record: Record<string, unkno
     }
     case 'subagent_finished': {
       const id = readString(update, 'subagent_id')
-      if (id !== null) input.state.subagents.delete(id)
+      if (id !== null) state.subagents.delete(id)
       return
     }
     case 'background_tasks': {
       // 전체 스냅샷 — 지금 도는 것만 남긴다. `kind` 는 관측된 `bash` 만 옮긴다(다른 값은 지어내지 않는다).
-      const tasks = Array.isArray(update['tasks']) ? update['tasks'] : []
-      input.state.tasks.clear()
+      // `tasks` 가 배열이 아니면 작업 없음의 증거가 아니다 — 지난 목록을 버리고 모름으로 둔다(F3).
+      const tasks = update['tasks']
+      state.tasks.clear()
+      state.tasksInvalid = !Array.isArray(tasks)
+      if (!Array.isArray(tasks)) return
       for (const task of tasks) {
         if (!isRecord(task) || task['status'] !== 'running' || task['kind'] !== 'bash') continue
         const id = readString(task, 'task_id')
         if (id === null) continue
         const label = oneLine(readString(task, 'description')) ?? oneLine(readString(task, 'command'))
-        input.state.tasks.set(id, { id, kind: 'shell', label, startedAt: readTimestamp(task['started_at']) })
+        state.tasks.set(id, { id, kind: 'shell', label, startedAt: readTimestamp(task['started_at']) })
       }
       return
     }
     case 'task_completed': {
       const snapshot = update['task_snapshot']
       const id = isRecord(snapshot) ? readString(snapshot, 'task_id') : null
-      if (id !== null) input.state.tasks.delete(id)
+      if (id !== null) state.tasks.delete(id)
       return
     }
     default:
       return
   }
+}
+
+const SPAWNED_ID = /subagent_id:\s*([0-9A-Za-z-]+)/
+
+/** `spawn_subagent` 호출 결과 본문(`rawOutput.text` 또는 `content[].content.text`)의 `subagent_id: <id>`. */
+function spawnedId(update: Record<string, unknown>): string | null {
+  const texts: string[] = []
+  const rawOutput = update['rawOutput']
+  if (isRecord(rawOutput)) {
+    const text = readString(rawOutput, 'text')
+    if (text !== null) texts.push(text)
+  }
+  const content = update['content']
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const inner = isRecord(block) ? block['content'] : null
+      const text = isRecord(inner) ? readString(inner, 'text') : null
+      if (text !== null) texts.push(text)
+    }
+  }
+  for (const text of texts) {
+    const match = SPAWNED_ID.exec(text)
+    if (match?.[1] !== undefined) return match[1]
+  }
+  return null
 }
 
 /** 이름 한 줄 상한 — 명령 미리보기가 수 KB 여도 IPC 로 통째 나르지 않는다(워커 재량). */
@@ -450,7 +537,20 @@ function readBytes(input: { file: string; from: number; to: number }): Buffer {
 
 // --- claude 프로세스 레지스트리 (L8) -----------------------------------------------------
 
-type RegistryEntry = { size: number; mtimeMs: number; pid: number | null; sessionId: string | null }
+type RegistryEntry = { size: number; mtimeMs: number; pid: number | null; sessionId: string | null; startedAt: number | null }
+
+/**
+ * 소유 프로세스 판정 — `alive` 면 `since` 는 살아 있는 소유 프로세스(여럿이면 가장 오래된 것)의 시작 시각(epoch ms)이다.
+ * 시작 시각을 못 구했으면 null — 세대를 가를 수 없다.
+ */
+export type Owner = { alive: false } | { alive: true; since: number | null }
+
+/** 살아 있는 소유자들의 시작 시각 중 가장 이른 것. 하나라도 모르면 null. */
+function ownerOf(starts: (number | null)[]): Owner {
+  if (starts.length === 0) return { alive: false }
+  if (starts.some((start) => start === null)) return { alive: true, since: null }
+  return { alive: true, since: Math.min(...starts.filter((start) => start !== null)) }
+}
 const registry = new Map<string, RegistryEntry>()
 
 /**
@@ -458,16 +558,16 @@ const registry = new Map<string, RegistryEntry>()
  * 파일마다 mtime·size 캐시라 안 바뀐 파일은 `stat` 만 한다. 읽은 바이트를 같이 돌려준다(L7 누적 판독 계정).
  * 폴더가 없거나 못 읽으면 "없다" 다 — 모르는 생존을 살아 있다고 치지 않는다. pid 재사용은 가리지 못한다(한계).
  */
-export function claudeSessionAlive(input: { dir: string; sessionId: string }): { alive: boolean; bytes: number } {
+export function claudeSessionAlive(input: { dir: string; sessionId: string }): { owner: Owner; bytes: number } {
   let names: string[]
   try {
     names = fs.readdirSync(input.dir).filter((name) => name.endsWith('.json'))
   } catch {
     registry.clear()
-    return { alive: false, bytes: 0 }
+    return { owner: { alive: false }, bytes: 0 }
   }
   let bytes = 0
-  let alive = false
+  const starts: (number | null)[] = []
   const seen = new Set<string>()
   for (const name of names) {
     const file = `${input.dir}/${name}`
@@ -488,13 +588,15 @@ export function claudeSessionAlive(input: { dir: string; sessionId: string }): {
         parsed = null // 쓰는 중·깨진 파일 — 이 주기엔 없는 것으로 본다
       }
       const pid = isRecord(parsed) && typeof parsed['pid'] === 'number' ? parsed['pid'] : null
-      entry = { size: stat.size, mtimeMs: stat.mtimeMs, pid, sessionId: isRecord(parsed) ? readString(parsed, 'sessionId') : null }
+      // `startedAt` — 프로세스 시작 시각(epoch ms, `ps` 시작 시각과 1초 안 — 관측)
+      const startedAt = isRecord(parsed) && typeof parsed['startedAt'] === 'number' ? parsed['startedAt'] : null
+      entry = { size: stat.size, mtimeMs: stat.mtimeMs, pid, sessionId: isRecord(parsed) ? readString(parsed, 'sessionId') : null, startedAt }
       registry.set(file, entry)
     }
-    if (!alive && entry.sessionId === input.sessionId && entry.pid !== null && processAlive(entry.pid)) alive = true
+    if (entry.sessionId === input.sessionId && entry.pid !== null && processAlive(entry.pid)) starts.push(entry.startedAt)
   }
   for (const file of registry.keys()) if (!seen.has(file)) registry.delete(file)
-  return { alive, bytes }
+  return { owner: ownerOf(starts), bytes }
 }
 
 function processAlive(pid: number): boolean {
@@ -509,20 +611,22 @@ function processAlive(pid: number): boolean {
 
 // --- grok 프로세스 레지스트리 (L8) -------------------------------------------------------
 
-let grokRegistry: { size: number; mtimeMs: number; entries: { sessionId: string; pid: number }[] } | null = null
+type GrokEntry = { sessionId: string; pid: number; startedAt: number | null | undefined }
+let grokRegistry: { size: number; mtimeMs: number; entries: GrokEntry[] } | null = null
 
 /**
  * 이 세션 id 를 가진 **살아 있는** grok 프로세스가 있나 — `<HOME>/.grok/active_sessions.json`(`[{session_id, pid, cwd}]`)을 본다
  * (네이티브 관측 `raw/claude/l10/runs-r2/n44`·`n45`, 계약 아님). grok 은 `/exit` 에 그 행을 지우고, `--resume` 에 새 pid 로 다시 쓴다.
  * 강제 종료는 행을 남기므로 `kill(pid, 0)` 으로 본다. mtime·size 캐시, 못 읽으면 "없다" — claude 레지스트리와 같은 규칙.
+ * 레지스트리에 시작 시각이 없어서 세대 경계는 `ps` 의 프로세스 시작 시각으로 본다 — 행마다 한 번만 묻는다(파일이 바뀌면 다시).
  */
-export function grokSessionAlive(input: { file: string; sessionId: string }): { alive: boolean; bytes: number } {
+export function grokSessionAlive(input: { file: string; sessionId: string }): { owner: Owner; bytes: number } {
   let stat: fs.Stats
   try {
     stat = fs.statSync(input.file)
   } catch {
     grokRegistry = null
-    return { alive: false, bytes: 0 }
+    return { owner: { alive: false }, bytes: 0 }
   }
   let bytes = 0
   if (grokRegistry === null || grokRegistry.size !== stat.size || grokRegistry.mtimeMs !== stat.mtimeMs) {
@@ -533,18 +637,37 @@ export function grokSessionAlive(input: { file: string; sessionId: string }): { 
     } catch {
       parsed = null // 쓰는 중·깨진 파일 — 이 주기엔 없는 것으로 본다
     }
-    const entries: { sessionId: string; pid: number }[] = []
+    const entries: GrokEntry[] = []
     if (Array.isArray(parsed)) {
       for (const row of parsed) {
         const sessionId = isRecord(row) ? readString(row, 'session_id') : null
         const pid = isRecord(row) && typeof row['pid'] === 'number' ? row['pid'] : null
-        if (sessionId !== null && pid !== null) entries.push({ sessionId, pid })
+        if (sessionId !== null && pid !== null) entries.push({ sessionId, pid, startedAt: undefined })
       }
     }
     grokRegistry = { size: stat.size, mtimeMs: stat.mtimeMs, entries }
   }
-  const alive = grokRegistry.entries.some((entry) => entry.sessionId === input.sessionId && processAlive(entry.pid))
-  return { alive, bytes }
+  const starts: (number | null)[] = []
+  for (const entry of grokRegistry.entries) {
+    if (entry.sessionId !== input.sessionId || !processAlive(entry.pid)) continue
+    if (entry.startedAt === undefined) entry.startedAt = processStartMs(entry.pid)
+    starts.push(entry.startedAt)
+  }
+  return { owner: ownerOf(starts), bytes }
+}
+
+/**
+ * 프로세스 시작 시각(epoch ms, 초 단위 내림) — `ps -o lstart=`. 못 구하면 null.
+ * 초 단위라 새 프로세스의 항목은 늘 이 값 이상이다. 옛 항목이 새 프로세스와 같은 초에 열렸으면 못 가른다(한계).
+ */
+function processStartMs(pid: number): number | null {
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, env: { LC_ALL: 'C' } })
+    const at = Date.parse(out.trim())
+    return Number.isNaN(at) ? null : at
+  } catch {
+    return null
+  }
 }
 
 /** 레지스트리 캐시를 비운다 — `clearTranscriptCache` 가 같이 부른다. */

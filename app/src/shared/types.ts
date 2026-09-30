@@ -317,8 +317,11 @@ export type SessionSubagent = {
   description: string | null
   /** `subagent_type`. 없으면 null. */
   agentType: string | null
-  /** 부모가 결과를 기다리지 않는가 (`run_in_background` → `async_launched`). */
-  background: boolean
+  /**
+   * 부모가 결과를 기다리지 않는가 (`run_in_background` → `async_launched`). null = 기록으로 **증명을 못 했다** —
+   * grok 은 시작 레코드에 호출 id 가 없어서, 그 자식 id 를 돌려준 `spawn_subagent` 호출 결과와 묶일 때만 확정한다.
+   */
+  background: boolean | null
   startedAt: number | null
   status: 'running'
 }
@@ -332,9 +335,15 @@ export const LIFECYCLE_MAX_ITEMS = 32
  * `unknown` 과 빈 목록은 다르다 — 빈 목록은 "읽었는데 열린 게 없다" 다.
  *   · `no-source`   이 provider·세션에는 읽을 출처가 없다 (codex — 기록에 끝 표지가 없다, 참조 없음)
  *   · `catching-up` 긴 파일을 앞에서부터 따라잡는 중이다 — 주기당 예산(2MB)으로 나눠 읽어 아직 끝에 못 닿았다
- *   · `unreadable`  읽다 실패했다
+ *   · `unreadable`  읽다 실패했다 — 또는 읽은 것만으로는 답할 수 없다: 모양이 낯선 스냅샷(grok `tasks` 가 배열이 아님),
+ *                   한도보다 긴 줄을 건너뛰어 그때 열려 있던 것의 끝을 놓쳤을 수 있음, 살아 있는 소유 프로세스의 시작 시각을 몰라
+ *                   이전 프로세스의 열림과 가르지 못함
  *   · `not-running` 이 세션을 가진 살아 있는 provider 프로세스를 못 찾았다 — 프로세스가 끝나면 그 작업도 끝 통지 없이 같이
- *                   죽는다(#72171). 기록에 남은 "열림" 을 도는 중으로 싣지 않는다(L8)
+ *                   죽는다(#72171). 기록에 남은 "열림" 을 도는 중으로 싣지 않는다(L8). **끝났다는 증명은 아니다** —
+ *                   레지스트리 형식이 바뀌었거나 다른 HOME 이면 살아 있어도 여기로 떨어진다(모름 쪽으로 보수적)
+ *
+ * `known` 의 목록은 **지금 살아 있는 소유 프로세스가 시작된 뒤** 열린 것만이다 — 그 전 프로세스(강제 종료 뒤 재개)의 열림은
+ * 끝 표지가 없어도 싣지 않는다(L8, 세대 경계).
  */
 export type SessionLifecycle =
   | { state: 'unknown'; reason: 'no-source' | 'catching-up' | 'unreadable' | 'not-running' }

@@ -86,6 +86,7 @@ function isSpawner(value: unknown): boolean {
   if (!isRecord(value)) return false
   if (value.kind === 'outside_pane') return true
   return value.kind === 'pane' && isString(value.paneId)
+    && (value.verifiedBy === null || value.verifiedBy === 'socket' || value.verifiedBy === 'session_name')
     && ['session', 'epoch', 'ptyId'].every(key => key in value && isNullOr(isString, value[key]))
 }
 function isWorker(value: unknown): boolean {

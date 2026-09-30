@@ -12,17 +12,10 @@
 import type { OrchestrationLineageEntry } from '../../shared/types.js'
 import type { DispatchRecord, OrchestrationState } from './model.js'
 
-/**
- * herdr names the default session by leaving `HERDR_SESSION` unset in its panes, while a runtime
- * started with `CORRAL_SESSION=default` spells it out. Both mean the same session.
- */
-const sessionName = (session: string | null): string => session === null || session === '' ? 'default' : session
-export const sameBackendSession = (a: string | null, b: string | null): boolean => sessionName(a) === sessionName(b)
-
 /** One successful look at the backend the runtime drives: its generation, and every pane's PTY. */
 export interface LivePanes { session: string | null; epoch: string; panes: { paneId: string; ptyId: string }[] }
 
-export function resolveLineage(state: OrchestrationState, live: LivePanes): OrchestrationLineageEntry[] {
+export function resolveLineage({ state, live }: { state: OrchestrationState; live: LivePanes }): OrchestrationLineageEntry[] {
   const ptyOf = new Map(live.panes.map(pane => [pane.paneId, pane.ptyId]))
   // L3ⓐ: attempts are appended, so the last worker attempt bound to a pane id is the only one that
   // may speak for it. An older attempt on a reused pane never lends it its parent.
@@ -38,8 +31,10 @@ export function resolveLineage(state: OrchestrationState, live: LivePanes): Orch
     if (entry.target.epoch !== live.epoch || ptyOf.get(paneId) !== entry.target.ptyId) continue
     // L3ⓒ: a released pane has been handed back, so it is no longer this attempt's worker pane.
     if (worker.release?.state === 'released') continue
-    if (!sameBackendSession(worker.paneSession, live.session)) continue
-    children.push({ entry, parentPaneId: parentOf(entry, live, ptyOf) })
+    // L2ⓑ: the attempt was made by a runtime driving this very session. Names are compared as they
+    // are, never normalised: an unset session is not taken to mean any particular one.
+    if (worker.paneSession !== live.session) continue
+    children.push({ entry, parentPaneId: parentOf({ entry, live, ptyOf }) })
   }
 
   // L4: reuse can close a loop (A starts a worker in B, later B hands A a Task). Cut the edge whose
@@ -48,7 +43,7 @@ export function resolveLineage(state: OrchestrationState, live: LivePanes): Orch
   const parent = new Map(children.map(child => [child.entry.target.paneId, child.parentPaneId]))
   const order = new Map(state.dispatches.map((entry, index) => [entry.id, index]))
   for (const child of children) {
-    const loop = cycleThrough(child.entry.target.paneId, parent)
+    const loop = cycleThrough({ start: child.entry.target.paneId, parent })
     if (loop.length === 0) continue
     const oldest = children
       .filter(candidate => loop.includes(candidate.entry.target.paneId))
@@ -66,18 +61,27 @@ export function resolveLineage(state: OrchestrationState, live: LivePanes): Orch
   }))
 }
 
-/** L2ⓐⓑ: the recorded caller, if it is still the same pane in the same session. */
-function parentOf(entry: DispatchRecord, live: LivePanes, ptyOf: ReadonlyMap<string, string>): string | null {
+/**
+ * L2ⓐⓑ: the recorded caller, if it is still the same pane. Only a caller the runtime placed in its
+ * own backend when the attempt was made (`verifiedBy`) has a generation to compare — one that could
+ * not be placed never becomes a parent, however well its pane id happens to match.
+ */
+function parentOf({ entry, live, ptyOf }: { entry: DispatchRecord; live: LivePanes; ptyOf: ReadonlyMap<string, string> }): string | null {
   const spawner = entry.worker?.spawner ?? null
-  if (spawner === null || spawner.kind === 'outside_pane') return null
-  if (spawner.epoch === null || spawner.ptyId === null) return null
-  if (!sameBackendSession(spawner.session, entry.worker?.paneSession ?? null)) return null
-  if (spawner.epoch !== live.epoch || ptyOf.get(spawner.paneId) !== spawner.ptyId) return null
-  return spawner.paneId
+  if (spawner === null) return null
+  switch (spawner.kind) {
+    case 'outside_pane': return null
+    case 'pane':
+      if (spawner.verifiedBy === null || spawner.epoch === null || spawner.ptyId === null) return null
+      // A name that placed the caller is the one the attempt was made in; any other is a record out of step.
+      if (spawner.verifiedBy === 'session_name' && spawner.session !== entry.worker?.paneSession) return null
+      if (spawner.epoch !== live.epoch || ptyOf.get(spawner.paneId) !== spawner.ptyId) return null
+      return spawner.paneId
+  }
 }
 
 /** The panes on the loop that starts at `start`, or nothing when following parents ends at a root. */
-function cycleThrough(start: string, parent: ReadonlyMap<string, string | null>): string[] {
+function cycleThrough({ start, parent }: { start: string; parent: ReadonlyMap<string, string | null> }): string[] {
   const path: string[] = []
   let at: string | null | undefined = start
   while (at !== null && at !== undefined) {

@@ -963,8 +963,8 @@ const realSocket = (socket: string): string => {
     return socket
   }
 }
-const lineage = new LineageFeed(
-  {
+const lineage = new LineageFeed({
+  source: {
     runtimeBackend: () => {
       const socket = process.env.CORRAL_BACKEND_SOCKET, session = process.env.CORRAL_SESSION
       return socket && session ? { socket, session } : null
@@ -983,12 +983,12 @@ const lineage = new LineageFeed(
     observe: () => observePanes({ signal: AbortSignal.timeout(2000), deadlineAt: Date.now() + 2000 }),
     sameSocket: (a, b) => realSocket(a) === realSocket(b),
   },
-  () => {
+  onChange: () => {
     const current = lineage.current()
     log('lineage.change', current.state === 'ready' ? { state: current.state, entries: current.entries.length } : current)
     scheduleEmit()
   },
-)
+})
 
 /** 통합 설치 상태는 잘 안 바뀐다 — 세션을 고를 때와 주기 재조회에서만 읽는다 (A1). */
 async function refreshIntegrations(): Promise<void> {

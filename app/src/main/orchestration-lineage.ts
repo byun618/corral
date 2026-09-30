@@ -6,6 +6,9 @@
  * 워커 pane 이 화면 세션에 하나도 살아 있지 않으면 백엔드도 부르지 않는다. 세대 대조에 필요한
  * pane 목록은 그때만 한 번 본다. 결과가 **바뀌었을 때만** `onChange` 를 부른다 — 바뀐 게 없는데
  * emit 하면 화면 전체를 다시 그리게 된다.
+ *
+ * 값은 **계산한 화면 세션**에 묶인다 (R1). 화면이 다른 세션으로 옮겨 가면 이전 세션의 계보는 즉시
+ * 내주지 않고, 옮겨 가는 사이에 끝난 계산도 버린다 — pane id 는 세션마다 다른 이름공간이다.
  */
 import type { OrchestrationLineage } from '../shared/types.js'
 import type { PaneSnapshot } from '../runtime/orchestration/index.js'
@@ -27,13 +30,27 @@ export interface LineageSource {
   sameSocket: (a: string, b: string) => boolean
 }
 
+const UNOBSERVED: OrchestrationLineage = { state: 'unavailable', reason: 'unobserved' }
+
 export class LineageFeed {
-  private lineage: OrchestrationLineage = { state: 'unavailable', reason: 'unobserved' }
+  /** 마지막 값과, 그 값을 계산할 때의 화면 세션 소켓. */
+  private last: { lineage: OrchestrationLineage; gui: string | null } = { lineage: UNOBSERVED, gui: null }
   private cached: { stamp: string; state: OrchestrationState } | null = null
+  private readonly source: LineageSource
+  private readonly onChange: () => void
 
-  constructor(private readonly source: LineageSource, private readonly onChange: () => void) {}
+  constructor({ source, onChange }: { source: LineageSource; onChange: () => void }) {
+    this.source = source
+    this.onChange = onChange
+  }
 
-  current(): OrchestrationLineage { return this.lineage }
+  current(): OrchestrationLineage {
+    return this.sameGui(this.last.gui, this.source.guiSocket()) ? this.last.lineage : UNOBSERVED
+  }
+
+  private sameGui(a: string | null, b: string | null): boolean {
+    return a === null || b === null ? a === b : this.source.sameSocket(a, b)
+  }
 
   private refreshing = false
 
@@ -42,17 +59,19 @@ export class LineageFeed {
     if (this.refreshing) return
     this.refreshing = true
     try {
-      const next = await this.compute()
-      if (JSON.stringify(next) === JSON.stringify(this.lineage)) return
-      this.lineage = next
-      this.onChange()
+      const gui = this.source.guiSocket()
+      const next = await this.compute(gui)
+      // 계산하는 사이 화면 세션이 바뀌었으면 이 값은 이전 세션의 것이다 — 버리고 다음 회차에 맡긴다.
+      if (!this.sameGui(gui, this.source.guiSocket())) return
+      const changed = JSON.stringify(next) !== JSON.stringify(this.current())
+      this.last = { lineage: next, gui }
+      if (changed) this.onChange()
     } finally { this.refreshing = false }
   }
 
-  private async compute(): Promise<OrchestrationLineage> {
+  private async compute(gui: string | null): Promise<OrchestrationLineage> {
     const backend = this.source.runtimeBackend()
     if (backend === null) return { state: 'unavailable', reason: 'no_backend' }
-    const gui = this.source.guiSocket()
     // 런타임과 화면이 다른 세션이면 pane id 가 다른 이름공간이다 — 같은 `w1:p1` 이 다른 pane 이다.
     if (gui === null || !this.source.sameSocket(gui, backend.socket)) return { state: 'unavailable', reason: 'session_mismatch' }
     const stamp = this.source.stamp()
@@ -69,6 +88,6 @@ export class LineageFeed {
     if (!state.dispatches.some(entry => entry.worker !== null && live.has(entry.target.paneId))) return { state: 'ready', entries: [] }
     const seen = await this.source.observe()
     if (!seen.observed) return { state: 'unavailable', reason: 'unobserved' }
-    return { state: 'ready', entries: resolveLineage(state, { session: backend.session, epoch: seen.epoch, panes: seen.panes }) }
+    return { state: 'ready', entries: resolveLineage({ state, live: { session: backend.session, epoch: seen.epoch, panes: seen.panes } }) }
   }
 }

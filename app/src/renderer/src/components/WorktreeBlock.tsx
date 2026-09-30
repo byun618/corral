@@ -264,7 +264,7 @@ export function WorktreeBlock({
 
       {isOpen && roots.length > 0 ? (
         // 목록 한 덩어리 — 카드 안쪽 여백을 조금 먹고 들어간다(Orca `[data-compact-agent-list]` 음수 여백).
-        <div className="agent-list" data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
+        <div className={`agent-list ${hasGroup ? 'is-grouped' : ''}`} data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
           {hasGroup && summary !== null ? (
             <AgentGroupHeader
               worktreePath={worktree.path}

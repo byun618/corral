@@ -254,6 +254,8 @@ button { font: inherit; }
   display: flex; flex-direction: column; gap: 2px;
   margin-top: 4px; padding-left: calc(var(--indent-session) - 4px);
 }
+/* 묶음이 서면 목록이 Orca `.compact-agent-summary-panel`(padding 2px) 몫까지 진다 — 알약·펼친 행이 2px 안쪽에 선다. */
+.agent-list.is-grouped { padding-top: 2px; padding-bottom: 2px; padding-right: 2px; padding-left: calc(var(--indent-session) - 4px + 2px); }
 .agent-list-rows, .agent-branch { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* 펼칠 때의 등장 — Orca `compact-agent-expansion-reveal` 180ms. 접힌 자식은 DOM 에 없으므로(C3ⓑ) 접힘 쪽 전환은 없다. */
 @keyframes agent-list-reveal { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
@@ -270,7 +272,7 @@ button { font: inherit; }
   text-align: left; cursor: pointer;
 }
 .agent-group-pill:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
-.agent-group-pill.is-expanded { border-color: transparent; background: transparent; }
+.agent-group-pill.is-expanded { border-width: 0; background: transparent; }
 .agent-group-pill.is-expanded:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
 .agent-group-label { flex: 1 1 auto; min-width: 0; padding: 0 4px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-group-clusters { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; overflow: hidden; }

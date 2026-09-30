@@ -46,7 +46,8 @@
 // `stopped` 통지를 쓰지만 모든 종류에 쓴다는 근거가 없고, grok 은 빈 `background_tasks` 스냅샷만 쓴다(자식은 안 닫힌다).
 // 그래서 **살아 있는 소유 프로세스의 시작 시각**(claude 레지스트리 `startedAt`, grok 은 `ps` 의 시작 시각 — 초 단위)보다 먼저
 // 열린 것은 싣지 않는다(제외). 캐시 없이 처음부터 다시 읽어도 같은 답이다 — 기록 순서가 아니라 시각으로 가르기 때문이다.
-// 시작 시각이 없는 항목은 어느 세대인지 증명할 수 없어 뺀다.
+// 시작 시각이 없는 **열린** 항목이 하나라도 있으면 세대를 가를 수 없으므로 목록 전체를 모름(`unreadable`)으로 싣는다 —
+// 빼고 `known` 을 내면 열린 자식이 없는 것처럼 보여 monitoring 이 잘못 선다(수정 r2 R2-F1). 그 항목의 끝 표지를 보면 풀린다.
 // grok (`updates.jsonl`, 00-analysis P6):
 //   `background_tasks` 는 **전체 스냅샷**이라 마지막 스냅샷의 `status:'running'` 이 지금 도는 작업이다. `task_completed` 는
 //   스냅샷이 오기 전의 끝을 보탠다. 형제 파일 꼬리 창(256KB) 밖의 스냅샷도 누적 판독이라 잃지 않는다(P1 — 12 중 8).
@@ -54,7 +55,9 @@
 //   `subagent_spawned{subagent_id, subagent_type, description…}` 가 시작, `subagent_finished{subagent_id, status}` 가 끝이다.
 //   시작 시각은 줄의 `params._meta.agentTimestampMs`. 시작 레코드에는 호출 id 가 없다 — `background` 는 **그 자식 id 를 돌려준
 //   호출**로만 확정한다: `tool_call{toolCallId, title:'spawn_subagent', rawInput.background}` 의 호출 id 와 같은 id 의
-//   `tool_call_update` 결과 본문 `subagent_id: <id>` 를 묶는다(네이티브 표본 `runs-r2/n41` 의 기록). 못 묶으면 null 이다.
+//   `tool_call_update` 결과 본문을 묶는다. 본문은 **맨 앞이** `Subagent started in background.\nsubagent_id: <id>\n` 인 봉투만 믿는다
+//   (네이티브 표본 4/4 — `raw/claude/r2-u6-spawn-envelope.txt`). 다른 자리의 `subagent_id:`(자식 응답 인용 등)는 쓰지 않는다(U6).
+//   못 묶으면 null 이다. 전경 spawn 의 결과 모양은 표본이 없어 `background:false` 는 확정하지 않는다(한계).
 //   `tasks` 가 배열이 아닌 `background_tasks` 는 "작업 없음" 의 증거로 쓰지 않는다 — 다음 온전한 스냅샷까지 모름이다.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -210,6 +213,9 @@ function openIds(state: LedgerState): string[] {
 export function ledgerView(input: { ledger: Ledger; since: number }): SessionLifecycle {
   const { ledger, since } = input
   if (!ledger.caughtUp) return { state: 'unknown', reason: 'catching-up' }
+  const open = [...ledger.state.tasks.values(), ...ledger.state.subagents.values()]
+  // 시작 시각을 모르는 열린 항목 — 어느 세대인지 못 가른다(R2-F1)
+  if (open.some((item) => item.startedAt === null)) return { state: 'unknown', reason: 'unreadable' }
   const current = (item: { startedAt: number | null }) => item.startedAt !== null && item.startedAt >= since
   const tasks = [...ledger.state.tasks.values()].filter(current)
   const subagents = [...ledger.state.subagents.values()].filter(current)
@@ -245,10 +251,24 @@ const CLAUDE_MARKERS = ['"tool_use"', '"tool_result"', '"toolUseResult"', '<task
 // `subagent_id` 는 `subagent_spawned`·`subagent_finished` 와 자식 id 를 돌려준 `tool_call_update` 결과 본문(`subagent_id: …`)을 함께 잡는다.
 const GROK_MARKERS = ['"background_tasks"', '"task_completed"', '"spawn_subagent"', 'subagent_id']
 
+/**
+ * 이 줄이 상태를 바꿀 수 있나. grok 은 결과를 기다리는 `spawn_subagent` 호출이 있는 동안 `tool_call_update` 도 본다 —
+ * 실패 결과(`subagent_id` 없음)도 그 호출을 치워야 하기 때문이다(R2-F5). 기다리는 호출이 없으면 도구 결과 줄은 파싱하지 않는다.
+ */
+function mayMatter(input: { state: LedgerState; line: string }): boolean {
+  const { state, line } = input
+  switch (state.agent) {
+    case 'claude':
+      return CLAUDE_MARKERS.some((marker) => line.includes(marker))
+    case 'grok':
+      return GROK_MARKERS.some((marker) => line.includes(marker)) || (state.spawnCalls.size > 0 && line.includes('"tool_call_update"'))
+  }
+}
+
 export function applyLines(input: { state: LedgerState; text: string }): void {
-  const markers = input.state.agent === 'claude' ? CLAUDE_MARKERS : GROK_MARKERS
+  const { state } = input
   for (const line of input.text.split('\n')) {
-    if (!markers.some((marker) => line.includes(marker))) continue
+    if (!mayMatter({ state, line })) continue
     let record: unknown
     try {
       record = JSON.parse(line)
@@ -484,9 +504,10 @@ function applyGrokRecord(input: { state: GrokState; record: Record<string, unkno
   }
 }
 
-const SPAWNED_ID = /subagent_id:\s*([0-9A-Za-z-]+)/
+/** 백그라운드 spawn 결과 봉투 — 본문 **맨 앞** 두 줄(네이티브 표본 4/4). 다른 자리의 `subagent_id:` 는 쓰지 않는다(U6). */
+const SPAWNED_ID = /^Subagent started in background\.\nsubagent_id: ([0-9A-Za-z-]+)\n/
 
-/** `spawn_subagent` 호출 결과 본문(`rawOutput.text` 또는 `content[].content.text`)의 `subagent_id: <id>`. */
+/** `spawn_subagent` 호출 결과 본문(`rawOutput.text` 또는 `content[].content.text`)의 봉투에서 자식 id. */
 function spawnedId(update: Record<string, unknown>): string | null {
   const texts: string[] = []
   const rawOutput = update['rawOutput']

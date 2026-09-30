@@ -167,8 +167,8 @@ type CacheEntry = {
 const cache = new Map<string, CacheEntry>()
 
 /**
- * 누적 판독 상태는 **해소된 파일마다 하나**다 (LIFE-462 F2) — 같은 세션을 가리키는 pane 이 여럿이어도(참조 키가 달라도)
- * 한 주기에 한 번만 나아가고 모든 pane 이 같은 값을 받는다. `cycle` 은 그 판독이 일어난 주기 번호다.
+ * 누적 판독 상태는 **실제 파일마다 하나**다 (LIFE-462 F2·R2-F2) — 키는 파일 정체성 `dev:ino` 다. 같은 세션을 가리키는 pane 이
+ * 여럿이어도(참조 키·경로 별칭이 달라도) 한 주기에 한 번만 나아가고 모든 pane 이 같은 값을 받는다. `cycle` 은 그 판독이 일어난 주기 번호다.
  */
 const ledgers = new Map<string, { ledger: Ledger; cycle: number }>()
 /** 판독 주기 번호 — `readSessionDigests`(주기 하나)·`readSessionDigest`(단독 호출 하나)마다 1 씩 는다. */
@@ -625,7 +625,10 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   const ledgerStat = agent === 'claude' ? stat : agent === 'grok' ? sidecarStat : null
   const ledgerFile = agent === 'claude' ? file : ledgerStat === null ? null : sidecarFile
   // 누적 상태는 파일에 붙는다 — 이번 주기에 다른 참조가 이미 나아갔으면 다시 읽지 않고 그 값을 쓴다(F2).
-  const shared = ledgerFile === null ? undefined : ledgers.get(ledgerFile)
+  // 키는 경로가 아니라 **파일 정체성**(dev·ino)이다 — 같은 파일을 다른 경로(심볼릭 링크 등)로 가리켜도 장부·주기 판독·비용이 하나다(R2-F2).
+  // 교체(rename)된 파일은 정체성이 달라 새 장부로 처음부터 읽는다 — `advanceLedger` 의 ①(정체성) 초기화와 같은 뜻이다.
+  const ledgerKey = ledgerStat === null ? null : `${ledgerStat.dev}:${ledgerStat.ino}`
+  const shared = ledgerKey === null ? undefined : ledgers.get(ledgerKey)
   const priorLedger = shared?.ledger ?? null
   const advance = ledgerFile !== null && ledgerStat !== null && shared?.cycle !== cycle && !ledgerSettled({ ledger: priorLedger, stat: ledgerStat })
   // 강제 종료는 기록에 아무것도 안 남긴다 — 생존은 파일 변화와 따로 매 주기 본다(L8, `transcript-lifecycle.ts`).
@@ -658,7 +661,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: 0,
       sidecarBytes: 0,
       statOnly: true,
-      lifecycle: { ...NO_LIFECYCLE_READ, file: ledgerFile, registryBytes },
+      lifecycle: { ...NO_LIFECYCLE_READ, key: ledgerKey, registryBytes },
     }
   }
 
@@ -682,7 +685,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
     // 모델은 **응답 기록(`chat_history` 의 `model_id`) 이 먼저**, 없을 때만 `summary.json` 이다 (F3):
     // 응답 기록은 실제로 답한 모델이고 식별자도 더 자세하다(`-build` 변형, 98 중 95). summary 는 세션에 고른
     // 모델이라 첫 응답 전에 실패한 세션(143 중 45 가 응답 모델 없음)에서도 있다 — `u7-grok-summary-model.txt`.
-    const life = readLifecycle({ file: ledgerFile, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
+    const life = readLifecycle({ file: ledgerFile, key: ledgerKey, stat: ledgerStat, agent, prior: priorLedger, advance, owner })
     const merged: SessionDigest =
       sidecarFile === null
         ? main.digest
@@ -715,7 +718,7 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
       headBytes: main.headBytes,
       sidecarBytes,
       statOnly: false,
-      lifecycle: { ...life.read, file: ledgerFile, registryBytes },
+      lifecycle: { ...life.read, key: ledgerKey, registryBytes },
     }
   } catch (error) {
     log('transcript.error', { where: 'read', agent, error: String(error) })
@@ -730,9 +733,9 @@ function readOne(ref: AgentSessionRef | null): DigestRead {
   }
 }
 
-/** 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일 `file` 몫, `registryBytes` 는 프로세스 레지스트리 몫. */
-type LifecycleRead = { bytes: number; ms: number; file: string | null; registryBytes: number }
-const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, file: null, registryBytes: 0 }
+/** 누적 판독 한 참조의 비용 (LIFE-462 L7) — `bytes` 는 기록 파일(정체성 `key` = dev:ino) 몫, `registryBytes` 는 프로세스 레지스트리 몫. */
+type LifecycleRead = { bytes: number; ms: number; key: string | null; registryBytes: number }
+const NO_LIFECYCLE_READ: LifecycleRead = { bytes: 0, ms: 0, key: null, registryBytes: 0 }
 
 function sameOwner(input: { a: Owner | null; b: Owner | null }): boolean {
   const { a, b } = input
@@ -747,6 +750,8 @@ function sameOwner(input: { a: Owner | null; b: Owner | null }): boolean {
  */
 function readLifecycle(input: {
   file: string | null
+  /** 장부 키 — 파일 정체성(dev:ino). */
+  key: string | null
   stat: fs.Stats | null
   agent: TranscriptAgent
   prior: Ledger | null
@@ -754,8 +759,8 @@ function readLifecycle(input: {
   /** 소유 프로세스 판정(L8). 죽었으면 누적은 계속하되 목록은 `not-running`, 시작 시각을 모르면 세대를 못 갈라 `unreadable`. */
   owner: Owner | null
 }): { lifecycle: SessionLifecycle; ledger: Ledger | null; read: { bytes: number; ms: number } } {
-  const { file, stat, agent, prior, owner } = input
-  if (file === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: { bytes: 0, ms: 0 } }
+  const { file, key, stat, agent, prior, owner } = input
+  if (file === null || key === null || stat === null || agent === 'codex') return { lifecycle: NO_SOURCE, ledger: null, read: { bytes: 0, ms: 0 } }
   const view = (ledger: Ledger): SessionLifecycle => {
     if (owner === null || !owner.alive) return NOT_RUNNING
     if (owner.since === null) return { state: 'unknown', reason: 'unreadable' }
@@ -766,11 +771,11 @@ function readLifecycle(input: {
   try {
     const step = advanceLedger({ file, stat, agent, prior })
     if (step.reset !== null) log('transcript.lifecycle.reset', { agent, reason: step.reset })
-    ledgers.set(file, { ledger: step.ledger, cycle })
+    ledgers.set(key, { ledger: step.ledger, cycle })
     return { lifecycle: view(step.ledger), ledger: step.ledger, read: { bytes: step.bytes, ms: Date.now() - startedAt } }
   } catch (error) {
     log('transcript.error', { where: 'lifecycle', agent, error: String(error) })
-    ledgers.delete(file)
+    ledgers.delete(key)
     return {
       lifecycle: { state: 'unknown', reason: 'unreadable' },
       ledger: null,
@@ -968,7 +973,7 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
   const startedAt = Date.now()
   cycle += 1
   const digests = new Map<string, SessionDigest>()
-  /** 이번 주기에 기록 파일마다 읽은 누적 판독 바이트 합 (L7 — 파일 하나·주기 1회 ≤2MB 를 파일 단위로 본다). */
+  /** 이번 주기에 기록 파일(정체성 dev:ino)마다 읽은 누적 판독 바이트 합 (L7 — 파일 하나·주기 1회 ≤2MB 를 파일 단위로 본다). */
   const lifecycleFileBytes = new Map<string, number>()
   let lifecycleRegistryBytes = 0
   let files = 0
@@ -990,8 +995,8 @@ export function readSessionDigests(refs: ReadonlyMap<string, AgentSessionRef | n
     sidecarBytes += read.sidecarBytes
     lifecycleBytes += read.lifecycle.bytes
     lifecycleRegistryBytes += read.lifecycle.registryBytes
-    const lifecycleFile = read.lifecycle.file
-    if (lifecycleFile !== null) lifecycleFileBytes.set(lifecycleFile, (lifecycleFileBytes.get(lifecycleFile) ?? 0) + read.lifecycle.bytes)
+    const lifecycleKey = read.lifecycle.key
+    if (lifecycleKey !== null) lifecycleFileBytes.set(lifecycleKey, (lifecycleFileBytes.get(lifecycleKey) ?? 0) + read.lifecycle.bytes)
     if (read.digest.lifecycle.state === 'unknown' && read.digest.lifecycle.reason === 'catching-up') lifecycleCatchingUp += 1
     lifecycleMs += read.lifecycle.ms
   }

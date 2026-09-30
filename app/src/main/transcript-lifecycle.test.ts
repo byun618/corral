@@ -213,6 +213,9 @@ function registerLive(input: { startedAt: number; pid?: number }) {
 
 const append = (records: unknown[]) => fs.appendFileSync(claudeFile, jsonl(records))
 
+/** 키 하나를 뺀 레코드 — 필드 누락 모양. */
+const without = (input: { record: Record<string, unknown>; key: string }) => Object.fromEntries(Object.entries(input.record).filter(([key]) => key !== input.key))
+
 function known(lifecycle: SessionLifecycle) {
   if (lifecycle.state !== 'known') throw new Error(`known 이 아니다: ${JSON.stringify(lifecycle)}`)
   return lifecycle
@@ -513,7 +516,8 @@ describe('L5 grok updates.jsonl — background_tasks 스냅샷', () => {
     },
   })
   const callResult = (input: { callId: string; status: 'completed' | 'failed'; subagentId?: string }) => {
-    const text = input.subagentId === undefined ? 'spawn failed' : `Subagent started in background.\nsubagent_id: ${input.subagentId}`
+    // 봉투 = 네이티브 표본 4/4 (`raw/claude/r2-u6-spawn-envelope.txt`)
+    const text = input.subagentId === undefined ? 'spawn failed' : `Subagent started in background.\nsubagent_id: ${input.subagentId}\ndescription: d\n`
     return {
       timestamp: 1,
       method: 'session/update',
@@ -609,6 +613,40 @@ describe('L5 grok updates.jsonl — background_tasks 스냅샷', () => {
     } finally {
       owner.kill()
     }
+  })
+
+  it('R2-F5 — 실패한 spawn 호출 결과도 사전 필터를 지나 기다리는 호출에서 치워진다(applyLines 경로)', () => {
+    fs.writeFileSync(updates, jsonl([spawnCall({ callId: 'c1', background: true }), callResult({ callId: 'c1', status: 'failed' })]))
+    const step = advanceLedger({ file: updates, stat: fs.statSync(updates), agent: 'grok', prior: null })
+    expect(step.ledger.state.agent === 'grok' ? step.ledger.state.spawnCalls.size : -1).toBe(0)
+  })
+
+  it('U6 — 봉투 맨 앞이 아닌 자리의 subagent_id: (인용·자식 응답)는 짝으로 쓰지 않는다', () => {
+    const quoted = (input: { callId: string; text: string }) => ({
+      timestamp: 1,
+      method: 'session/update',
+      params: { sessionId: 'ID', update: { sessionUpdate: 'tool_call_update', toolCallId: input.callId, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: input.text } }], rawOutput: { type: 'Text', text: input.text } }, _meta: meta(G0) },
+    })
+    fs.writeFileSync(
+      updates,
+      jsonl([
+        spawnCall({ callId: 'c1', background: false }),
+        spawned('s1', G0 + 1_000),
+        quoted({ callId: 'c1', text: 'child said:\nsubagent_id: s1\nok' }),
+        spawnCall({ callId: 'c2', background: true }),
+        spawned('s2', G0 + 2_000),
+        quoted({ callId: 'c2', text: 'Subagent started in background.\nsubagent_id: s2\ndescription: d\n' }),
+      ]),
+    )
+    expect(backgrounds()).toEqual({ s1: null, s2: true })
+  })
+
+  it('R2-F1 grok — started_at 없는 running 작업이 열려 있으면 모름, 끝나면 회복', () => {
+    const noTime = without({ record: task('9', 'running'), key: 'started_at' })
+    fs.writeFileSync(updates, jsonl([snapshot([task('1', 'running'), noTime])]))
+    expect(grokLife()).toEqual({ state: 'unknown', reason: 'unreadable' })
+    fs.appendFileSync(updates, jsonl([completed('9')]))
+    expect(known(grokLife()).tasks.map((row) => row.id)).toEqual(['1'])
   })
 
   it('updates.jsonl 이 없으면 출처 없음', () => {
@@ -889,5 +927,57 @@ describe('U3 한도보다 긴 줄을 건너뛰면 그때 열려 있던 것은 �
     let lifecycle = life()
     for (let step = 0; step < 3 && lifecycle.state === 'unknown'; step += 1) lifecycle = life()
     expect(known(lifecycle).tasks).toEqual([])
+  })
+})
+
+// === 수정 라운드 2 (07-fix-r2) ======================================================
+
+describe('R2-F1 claude — 시작 시각을 모르는 열린 항목이 있으면 모름(빼고 known 을 내지 않는다)', () => {
+  it('시각 없는 동기 Agent + 시각 있는 셸 → unreadable·monitoring false, 결과가 오면 회복', () => {
+    const noTime = without({ record: agentCall({ toolId: 't1', at: 1, background: false }), key: 'timestamp' })
+    setupClaude({ records: [noTime, ...bashBg({ toolId: 't2', taskId: 'b1', at: 2 })] })
+    const lifecycle = life()
+    expect(lifecycle).toEqual({ state: 'unknown', reason: 'unreadable' })
+    expect(isMonitoring({ agentStatus: 'idle', turnOutcome: null, lifecycle })).toBe(false)
+    append([toolResult({ id: 't1', at: 3, result: { status: 'completed' } })])
+    expect(taskIds()).toEqual(['b1'])
+  })
+})
+
+describe('R2-F2 같은 실제 파일을 다른 경로(별칭)로 가리켜도 장부·주기 판독·비용이 하나', () => {
+  function aliasSetup() {
+    setupClaude({ records: [...bashBg({ toolId: 't1', taskId: 'b1', at: 1 }), ...filler(3_000_000), ...bashBg({ toolId: 't2', taskId: 'b2', at: 2 })] })
+    const alias = path.join(home, 'alias-dir')
+    fs.symlinkSync(path.dirname(claudeFile), alias)
+    const aliasRef: AgentSessionRef = { kind: 'path', agent: 'claude', source: 'herdr:claude', path: path.join(alias, path.basename(claudeFile)) }
+    return aliasRef
+  }
+
+  it('id 참조 + 심볼릭 링크 경로 참조 → 파일당 주기 ≤2MB, lifecycleMaxFileBytes = 실제 파일 합, 두 pane 같은 값', () => {
+    const aliasRef = aliasSetup()
+    const refs = new Map<string, AgentSessionRef>([
+      ['p1', claudeRef],
+      ['p2', aliasRef],
+    ])
+    for (let round = 0; round < 3; round += 1) {
+      const read = readSessionDigests(refs)
+      expect(read.cost.lifecycleBytes).toBeLessThanOrEqual(LIFECYCLE_READ_MAX_BYTES)
+      expect(read.cost.lifecycleMaxFileBytes).toBe(read.cost.lifecycleBytes) // 파일이 하나다
+      expect(JSON.stringify(read.digests.get('p1')!.lifecycle)).toBe(JSON.stringify(read.digests.get('p2')!.lifecycle))
+    }
+  })
+
+  it('별칭 pane 이 따라잡은 뒤에 추가돼도 같은 주기에 같은 값(다시 따라잡지 않는다)', () => {
+    const aliasRef = aliasSetup()
+    const only = new Map<string, AgentSessionRef>([['p1', claudeRef]])
+    readSessionDigests(only)
+    expect(known(readSessionDigests(only).digests.get('p1')!.lifecycle).tasks.map((task) => task.id)).toEqual(['b1', 'b2'])
+    const both = new Map<string, AgentSessionRef>([
+      ['p1', claudeRef],
+      ['p2', aliasRef],
+    ])
+    const read = readSessionDigests(both)
+    expect(read.cost.lifecycleBytes).toBe(0)
+    expect(JSON.stringify(read.digests.get('p2')!.lifecycle)).toBe(JSON.stringify(read.digests.get('p1')!.lifecycle))
   })
 })

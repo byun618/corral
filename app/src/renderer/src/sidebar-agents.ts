@@ -18,11 +18,13 @@
 // # 정렬 — 기준 시각이 없어서 Orca 정렬 사슬의 다음 키를 쓴다 (U5)
 //
 // Orca 는 `startedAt` 오름차순 → `tab.sortOrder` → `tab.createdAt` → paneKey 다(`worktree-agent-row-order.ts:17-23`).
-// corral 에는 에이전트 **시작 시각이 없다** — herdr 0.9.0 스키마에 에이전트 시각 필드가 없고(`shared/types.ts`
-// `AgentObservedVia` 주석), `agentState.observedAt` 은 "지금 상태를 처음 본 시각" 이라 상태가 바뀔 때마다 움직이며
-// `history` 는 20칸에서 잘린다. 움직이는 키로 정렬하면 행이 제멋대로 자리를 바꾼다. 그래서 사슬의 둘째 키인
-// **탭 목록 순서**(새 탭은 끝에 붙는다 = 만든 순서)와 탭 안 pane 순서를 쓴다. retained 행은 살아 있는 행 뒤에
-// 보존된 순서(오래된 것 먼저)로 붙는다.
+// 렌더러가 받는 `PaneRow` 에는 에이전트 **시작 시각이 없다** — herdr 0.9.0 스키마에 에이전트 시각 필드가 없고
+// (`shared/types.ts` `AgentObservedVia` 주석), `agentState.observedAt` 은 "지금 상태를 처음 본 시각" 이라 상태가 바뀔
+// 때마다 움직이며 `history` 는 20칸에서 잘린다. (원천에 없는 것은 아니다 — runtime 은 codex `session_meta.payload.timestamp`
+// 를 이미 읽는다(`runtime/terminal/agent.ts`). 렌더러까지 공급되지 않았을 뿐이다.) 움직이는 키로 정렬하면 행이 제멋대로
+// 자리를 바꾼다. 그래서 사슬의 둘째 키인 **탭 목록 순서**(새 탭은 끝에 붙는다 = 만든 순서)와 탭 안 pane 순서를 쓴다 —
+// 사용자가 탭을 옮기면 행도 옮겨진다. 이 차이는 사용자가 의도적 차이로 승인했다(01-criteria 「기준 변경 1」).
+// retained 행은 살아 있는 행 뒤에 보존된 순서(오래된 것 먼저)로 붙는다.
 
 import type { AgentKind, IntegrationRow, OrchestrationLineage, PaneRow, RetainedAgentRow, TabRow } from '../../shared/types.js'
 import { AGENT_DOT_LABEL, agentDot, type AgentDot } from './agent-dot.js'
@@ -65,12 +67,12 @@ export const SUMMARY_MIN_ROOTS = 2
 /**
  * 이 worktree 의 루트 행 목록.
  *
- * `tabs` 는 이 worktree 의 열린 탭(탭 목록 순서), `retained` 는 앱 전체의 보존 목록, `livePaneIds` 는 **앱 전체**의
+ * `tabs` 는 이 worktree 의 열린 탭(탭 목록 순서), `retained` 는 이 worktree 의 보존 목록, `livePaneIds` 는 **앱 전체**의
  * 살아 있는 pane — retained 행의 pane 이 다른 곳에 살아 있으면 그리로 간다.
  */
 export function buildAgentRows(input: {
   tabs: readonly TabRow[]
-  workspaceId: string | null
+  /** **이 worktree 의** 보존 목록(최신 우선) — `retainedByWorktree()` 가 가른다. 열린 workspace 유무와 무관하다(R1). */
   retained: readonly RetainedAgentRow[]
   lineage: OrchestrationLineage
   livePaneIds: ReadonlySet<string>
@@ -119,13 +121,13 @@ export function buildAgentRows(input: {
 
   const roots: AgentRowNode[] = []
   const placed = new Set<string>()
-  const flatten = (node: AgentRowNode, into: AgentRowNode[]): void => {
-    for (const sub of subagentsOf(node)) into.push(sub)
-    for (const child of childrenOf.get(node.paneId) ?? []) {
+  const flatten = (at: { node: AgentRowNode; into: AgentRowNode[] }): void => {
+    for (const sub of subagentsOf(at.node)) at.into.push(sub)
+    for (const child of childrenOf.get(at.node.paneId) ?? []) {
       if (placed.has(child.paneId)) continue
       placed.add(child.paneId)
-      into.push(child)
-      flatten(child, into)
+      at.into.push(child)
+      flatten({ node: child, into: at.into })
     }
   }
   for (const node of liveNodes) {
@@ -133,7 +135,7 @@ export function buildAgentRows(input: {
     if (!isRoot(node.paneId) || placed.has(node.paneId)) continue
     placed.add(node.paneId)
     const children: AgentRowNode[] = []
-    flatten(node, children)
+    flatten({ node, into: children })
     roots.push({ ...node, children })
   }
   // 순환에 갇혀 어느 루트에도 안 닿은 pane 은 루트로 살린다 — 행이 사라지는 것보다 낫다.
@@ -144,7 +146,7 @@ export function buildAgentRows(input: {
   }
 
   const liveHere = new Set(liveNodes.map((node) => node.paneId))
-  const retainedRows = input.workspaceId === null ? [] : input.retained.filter((row) => row.workspaceId === input.workspaceId && !liveHere.has(row.paneId))
+  const retainedRows = input.retained.filter((row) => !liveHere.has(row.paneId))
   // `retainedAgents` 는 최신 우선이다(`AppState` 주석) — 행은 오래된 것부터 쌓는다.
   for (const row of [...retainedRows].reverse()) roots.push(retainedNode({ row, livePaneIds: input.livePaneIds }))
   return roots
@@ -158,10 +160,10 @@ function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonl
     pendingQuestions: pane.digest.pendingQuestions,
     turnOutcome: pane.digest.turnOutcome,
     lifecycle: pane.digest.lifecycle,
+    freshness: { observedAt: pane.agentState.observedAt, observedVia: pane.agentState.observedVia, lastActivityAt: pane.digest.lastActivityAt },
   })
   const kind = agentIcon(pane.agent)?.kind ?? null
   const title = paneSessionTitle({ pane, ordinal, home: input.home })
-  const done = pane.agentStatus === 'idle' || pane.agentStatus === 'done'
   return {
     key: pane.paneId,
     source: 'live',
@@ -174,11 +176,26 @@ function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonl
     unseenDone: pane.agentStatus === 'done',
     text: liveText({ pane, dot, title, ordinalTitle: title === `${pane.agent ?? 'terminal'} ${ordinal}`, kind, integrations: input.integrations }),
     model: pane.digest.model,
-    // Orca: 끝난 에이전트는 「끝난 지 얼마」, 아니면 시작부터(`getCompactAgentTime`). corral 은 시작 시각이 없어
-    // **지금 상태를 처음 본 시각**을 쓴다 — 결과 문서에 기준 시각으로 적는다.
-    timeAt: done && pane.agentState.enteredDoneAt !== null ? pane.agentState.enteredDoneAt : pane.agentState.observedAt,
+    timeAt: rowTime(pane),
     children: [],
   }
+}
+
+/**
+ * 행 경과 시간의 기준 시각. Orca: 끝난 에이전트는 「끝난 지 얼마」, 아니면 시작부터(`getCompactAgentTime`). 렌더러에 시작 시각이
+ * 없어 **지금 상태를 처음 본 시각**(`observedAt`)을 쓰되, 끝난 행(idle·done)은 **이번 완료에 속한** done 진입 시각을 쓴다.
+ *
+ * `enteredDoneAt` 은 「마지막 done 진입」이라 지난 턴의 것일 수 있다 (LIFE-467 R3): `done → idle(봄) → working → idle(보던
+ * pane 에서 끝남)` 이면 마지막 idle 에는 새 done 이 없고 `enteredDoneAt` 은 첫 완료 시각 그대로다. 그래서 이력의 **마지막
+ * working 진입**보다 뒤인 done 만 이번 완료로 센다. 이력(20칸)에 working 이 없으면 그 done 이 이번 것이다.
+ */
+function rowTime(pane: PaneRow): number {
+  const { agentStatus, agentState } = pane
+  if (agentStatus !== 'idle' && agentStatus !== 'done') return agentState.observedAt
+  if (agentState.enteredDoneAt === null) return agentState.observedAt
+  const lastWorking = agentState.history.find((entry) => entry.status === 'working')
+  if (lastWorking !== undefined && lastWorking.observedAt > agentState.enteredDoneAt) return agentState.observedAt
+  return agentState.enteredDoneAt
 }
 
 /**
@@ -267,4 +284,44 @@ export function livePaneIdsOf(repos: readonly { worktrees: readonly { workspace:
   const ids = new Set<string>()
   for (const repo of repos) for (const worktree of repo.worktrees) for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) ids.add(pane.paneId)
   return ids
+}
+
+/**
+ * 보존 행을 **worktree 경로별로** 가른다 (LIFE-467 R1).
+ *
+ * 전에는 열린 workspace 의 id 로만 걸렀다 — 마지막 pane 이 끝나고 workspace 가 통째로 사라지면 그 worktree 에는 열린
+ * workspace 가 없어 보존 행이 어디에도 안 섰다. 그래서 보존 기록이 잃은 순간의 pane `cwd` 를 들고 오게 했고(`RetainedAgentRow.cwd`)
+ * 그 경로를 품는 **가장 구체적인(가장 긴) worktree** 에 붙인다. cwd 가 없거나 어느 worktree 밖이면, 그 id 의 workspace 가
+ * 아직 열려 있는 worktree 에 붙인다. 둘 다 안 되면 그 행은 그릴 자리가 없다.
+ *
+ * cwd 를 먼저 보는 이유: herdr workspace id 는 서버 생애 안에서 재사용될 수 있어, 닫힌 workspace 의 id 가 지금 다른
+ * worktree 의 workspace 를 가리킬 수 있다.
+ */
+export function retainedByWorktree(input: {
+  repos: readonly { worktrees: readonly { path: string; workspace: { workspaceId: string } | null }[] }[]
+  retained: readonly RetainedAgentRow[]
+}): ReadonlyMap<string, readonly RetainedAgentRow[]> {
+  const worktrees = input.repos.flatMap((repo) => repo.worktrees)
+  const out = new Map<string, RetainedAgentRow[]>()
+  for (const row of input.retained) {
+    const path = worktreeOfCwd({ cwd: row.cwd, paths: worktrees.map((worktree) => worktree.path) })
+      ?? worktrees.find((worktree) => worktree.workspace?.workspaceId === row.workspaceId)?.path
+      ?? null
+    if (path === null) continue
+    const list = out.get(path)
+    if (list === undefined) out.set(path, [row])
+    else list.push(row)
+  }
+  return out
+}
+
+function worktreeOfCwd(input: { cwd: string | null; paths: readonly string[] }): string | null {
+  const { cwd } = input
+  if (cwd === null) return null
+  let best: string | null = null
+  for (const path of input.paths) {
+    const inside = cwd === path || cwd.startsWith(path.endsWith('/') ? path : `${path}/`)
+    if (inside && (best === null || path.length > best.length)) best = path
+  }
+  return best
 }

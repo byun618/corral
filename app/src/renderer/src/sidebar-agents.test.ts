@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type OrchestrationLineage, type PaneRow, type RetainedAgentRow, type TabRow } from '../../shared/types.js'
 import { emptyAgentState } from '../../shared/agent-state.js'
-import { buildAgentRows, livePaneIdsOf, SUMMARY_MIN_ROOTS } from './sidebar-agents.js'
+import { buildAgentRows, livePaneIdsOf, retainedByWorktree, SUMMARY_MIN_ROOTS } from './sidebar-agents.js'
 
 function pane(id: string, agent: string | null, extra: Partial<PaneRow> = {}): PaneRow {
   return {
@@ -21,7 +21,7 @@ const lineageOf = (pairs: Array<[string, string | null]>): OrchestrationLineage 
 })
 function build(panes: PaneRow[], options: { lineage?: OrchestrationLineage; retained?: RetainedAgentRow[]; live?: string[] } = {}) {
   return buildAgentRows({
-    tabs: tabs(panes), workspaceId: 'w1', retained: options.retained ?? [], lineage: options.lineage ?? { state: 'ready', entries: [] },
+    tabs: tabs(panes), retained: options.retained ?? [], lineage: options.lineage ?? { state: 'ready', entries: [] },
     livePaneIds: new Set(options.live ?? panes.map((row) => row.paneId)), integrations: [], home: '/home',
   })
 }
@@ -65,6 +65,27 @@ describe('시간 기준 (K7 · D14)', () => {
     const [row] = build([pane('p1', 'claude', { agentStatus: 'done', agentState: { ...emptyAgentState(5000), enteredDoneAt: 4000 } })])
     expect(row?.timeAt).toBe(4000)
   })
+  it('이번 완료가 아닌 옛 done 시각은 안 쓴다 — done→idle(봄)→working→idle(보던 pane) 이면 지금 idle 관측 시각 (R3)', () => {
+    const agentState = {
+      ...emptyAgentState(660000), observedVia: 'event' as const, enteredDoneAt: 1000,
+      history: [
+        { status: 'working' as const, observedAt: 600000, observedVia: 'event' as const },
+        { status: 'idle' as const, observedAt: 2000, observedVia: 'event' as const },
+        { status: 'done' as const, observedAt: 1000, observedVia: 'event' as const },
+      ],
+    }
+    expect(build([pane('p1', 'claude', { agentStatus: 'idle', agentState })])[0]?.timeAt).toBe(660000)
+  })
+  it('done→idle(봄) 직후는 그 done 시각을 지킨다 (R3)', () => {
+    const agentState = {
+      ...emptyAgentState(2000), observedVia: 'event' as const, enteredDoneAt: 1000,
+      history: [
+        { status: 'done' as const, observedAt: 1000, observedVia: 'event' as const },
+        { status: 'working' as const, observedAt: 500, observedVia: 'event' as const },
+      ],
+    }
+    expect(build([pane('p1', 'claude', { agentStatus: 'idle', agentState })])[0]?.timeAt).toBe(1000)
+  })
   it('완료 기록이 없으면 지금 상태를 처음 본 시각(observedAt)', () => {
     expect(build([pane('p1', 'claude', { agentStatus: 'working', agentState: { ...emptyAgentState(7000), enteredDoneAt: 4000 } })])[0]?.timeAt).toBe(7000)
     expect(build([pane('p1', 'claude', { agentStatus: 'idle', agentState: emptyAgentState(7000) })])[0]?.timeAt).toBe(7000)
@@ -99,7 +120,7 @@ describe('계보 (K6ⓑ)', () => {
     expect(all.sort()).toEqual(['p1', 'p2'])
   })
   it('계보가 unavailable 이면 전부 루트다', () => {
-    const roots = buildAgentRows({ tabs: tabs([pane('p1', 'claude'), pane('p2', 'codex')]), workspaceId: 'w1', retained: [], lineage: { state: 'unavailable', reason: 'unobserved' }, livePaneIds: new Set(), integrations: [], home: '/' })
+    const roots = buildAgentRows({ tabs: tabs([pane('p1', 'claude'), pane('p2', 'codex')]), retained: [], lineage: { state: 'unavailable', reason: 'unobserved' }, livePaneIds: new Set(), integrations: [], home: '/' })
     expect(roots).toHaveLength(2)
   })
 })
@@ -127,7 +148,7 @@ describe('서브에이전트 자식 행 (K6ⓐ)', () => {
 
 describe('보존 행 (K6ⓒ · B2)', () => {
   const kept = (paneId: string, workspaceId = 'w1'): RetainedAgentRow => ({
-    paneId, tabId: 't', workspaceId, title: `job-${paneId}`, agent: 'grok', agentStatus: 'done', agentState: { ...emptyAgentState(0), enteredDoneAt: 900 }, retainedAt: 1000,
+    paneId, tabId: 't', workspaceId, title: `job-${paneId}`, agent: 'grok', agentStatus: 'done', agentState: { ...emptyAgentState(0), enteredDoneAt: 900 }, cwd: null, retainedAt: 1000,
   })
   it('pane 이 없으면 무반응(activation null), 살아 있으면 그 pane', () => {
     const roots = build([pane('p1', 'claude')], { retained: [kept('dead'), kept('alive')], live: ['p1', 'alive'] })
@@ -137,11 +158,38 @@ describe('보존 행 (K6ⓒ · B2)', () => {
     const [, row] = build([pane('p1', 'claude')], { retained: [kept('dead')] })
     expect([row?.dot, row?.unseenDone, row?.timeAt, row?.text.full]).toEqual(['done', false, 900, 'job-dead - 닫힌 탭'])
   })
-  it('다른 workspace 의 보존 행과 이미 산 행과 같은 pane 은 빠진다', () => {
-    expect(build([pane('p1', 'claude')], { retained: [kept('x', 'w2'), kept('p1')] }).map((row) => row.key)).toEqual(['p1'])
+  it('이미 산 행과 같은 pane 의 보존 행은 빠진다', () => {
+    expect(build([pane('p1', 'claude')], { retained: [kept('p1')] }).map((row) => row.key)).toEqual(['p1'])
   })
-  it('workspace 가 닫힌 worktree 는 보존 행을 안 그린다', () => {
-    expect(buildAgentRows({ tabs: [], workspaceId: null, retained: [kept('a')], lineage: { state: 'ready', entries: [] }, livePaneIds: new Set(), integrations: [], home: '/' })).toEqual([])
+  it('workspace 가 닫힌 worktree 도 보존 행을 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 경로 (R1)', () => {
+    expect(buildAgentRows({ tabs: [], retained: [kept('a')], lineage: { state: 'ready', entries: [] }, livePaneIds: new Set(), integrations: [], home: '/' }).map((row) => row.key)).toEqual(['retained:a'])
+  })
+})
+
+describe('retainedByWorktree — 보존 행을 worktree 에 붙인다 (R1)', () => {
+  const row = (paneId: string, workspaceId: string, cwd: string | null): RetainedAgentRow => ({
+    paneId, tabId: 't', workspaceId, title: paneId, agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), cwd, retainedAt: 1,
+  })
+  const repos = [{ worktrees: [
+    { path: '/r', workspace: null },
+    { path: '/r/.wt/feat', workspace: { workspaceId: 'w2' } },
+    { path: '/other', workspace: { workspaceId: 'w9' } },
+  ] }]
+  it('workspace 가 사라져도 cwd 로 원래 worktree 를 찾는다 — 가장 구체적인 경로가 이긴다', () => {
+    const got = retainedByWorktree({ repos, retained: [row('a', 'gone', '/r/src'), row('b', 'gone', '/r/.wt/feat/x')] })
+    expect(got.get('/r')?.map((entry) => entry.paneId)).toEqual(['a'])
+    expect(got.get('/r/.wt/feat')?.map((entry) => entry.paneId)).toEqual(['b'])
+  })
+  it('cwd 가 먼저다 — 재사용된 workspace id 가 다른 worktree 를 가리켜도 cwd 쪽에 붙는다', () => {
+    expect(retainedByWorktree({ repos, retained: [row('a', 'w9', '/r')] }).get('/r')?.length).toBe(1)
+  })
+  it('cwd 가 없거나 밖이면 아직 열린 workspace 의 worktree 에 붙는다', () => {
+    const got = retainedByWorktree({ repos, retained: [row('a', 'w2', null), row('b', 'w9', '/elsewhere')] })
+    expect(got.get('/r/.wt/feat')?.map((entry) => entry.paneId)).toEqual(['a'])
+    expect(got.get('/other')?.map((entry) => entry.paneId)).toEqual(['b'])
+  })
+  it('둘 다 안 되면 어디에도 안 붙는다 — 접두사만 같은 형제 경로(/r2)에 새지 않는다', () => {
+    expect([...retainedByWorktree({ repos, retained: [row('a', 'gone', '/r2/x')] }).keys()]).toEqual([])
   })
 })
 

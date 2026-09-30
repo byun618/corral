@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { RETAINED_LIMIT, WorkspaceStore } from './store.js'
 
 const snapshot = (input: {
-  panes: Array<{ id: string; tab: string; status?: string }>
+  panes: Array<{ id: string; tab: string; status?: string; cwd?: string }>
   tabStatus?: string
   workspaceStatus?: string
 }): unknown => ({
@@ -18,6 +18,7 @@ const snapshot = (input: {
   panes: input.panes.map((pane) => ({
     pane_id: pane.id, tab_id: pane.tab, workspace_id: 'w1',
     ...(pane.status === undefined ? {} : { agent_status: pane.status }),
+    ...(pane.cwd === undefined ? {} : { cwd: pane.cwd }),
   })),
 })
 
@@ -146,6 +147,13 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
     store.applyEvent({ event: 'pane_exited', data: { pane_id: 'w1:p1' } })
     expect(store.rows()).toEqual([])
     expect(store.retainedRows().map((r) => r.paneId)).toEqual(['w1:p1'])
+  })
+
+  it('보존 기록은 잃은 순간의 pane cwd 를 싣는다 — workspace 가 사라진 뒤 사이드바가 worktree 를 찾는 열쇠 (LIFE-467 R1)', () => {
+    const store = new WorkspaceStore()
+    store.applySnapshot(snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done', cwd: '/repo/sub' }] }))
+    store.applyEvent({ event: 'pane_exited', data: { pane_id: 'w1:p1' } })
+    expect(store.retainedRows().map((r) => [r.paneId, r.cwd])).toEqual([['w1:p1', '/repo/sub']])
   })
 
   it('**워크스페이스가 연쇄로 사라져도 남는다** — 탭이 하나뿐이면 같은 손짓이 이 길로 온다', () => {

@@ -987,7 +987,7 @@ export class WorkspaceStore {
     if (this.retentionSuppressed.has(pane.workspaceId)) return
     this.retained = [
       { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
-        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, retainedAt: at },
+        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, cwd: pane.cwd, retainedAt: at },
       ...this.retained.filter((row) => row.paneId !== pane.paneId),
     ].slice(0, RETAINED_LIMIT)
   }

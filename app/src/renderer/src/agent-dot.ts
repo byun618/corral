@@ -10,7 +10,7 @@
 // **점선 원(unverifiable)** 이다 — "모른다" 를 "쉬고 있다" 로 그리면 화면이 아는 척을 한다.
 
 import { isMonitoring } from '../../shared/lifecycle.js'
-import type { AgentStatus, BlockedReason, SessionLifecycle, SessionQuestion, TurnOutcome } from '../../shared/types.js'
+import type { AgentObservedVia, AgentStatus, BlockedReason, SessionLifecycle, SessionQuestion, TurnOutcome } from '../../shared/types.js'
 
 export type AgentDot = 'waiting' | 'blocked' | 'working' | 'monitoring' | 'interrupted' | 'failed' | 'done' | 'unverifiable' | 'idle'
 
@@ -42,8 +42,14 @@ export function agentDot(input: {
   pendingQuestions: readonly SessionQuestion[] | null
   turnOutcome: TurnOutcome | null
   lifecycle: SessionLifecycle
+  /**
+   * 결과의 **신선도** 재료 (LIFE-467 R2) — 지금 상태에 들어선 시각과 그 관측 경로(`agentState`), 그리고
+   * 결과를 실은 기록의 마지막 활동 시각(`digest.lastActivityAt`). 없으면 결과를 그대로 믿는다(옛 동작).
+   */
+  freshness: { observedAt: number; observedVia: AgentObservedVia; lastActivityAt: number | null } | null
 }): AgentDot {
-  const { agentStatus, blockedReason, pendingQuestions, turnOutcome, lifecycle } = input
+  const { agentStatus, blockedReason, pendingQuestions, lifecycle, freshness } = input
+  const turnOutcome = staleOutcome({ agentStatus, freshness }) ? null : input.turnOutcome
   switch (agentStatus) {
     case 'blocked':
       // 사유만 보면 안 된다 — 네이티브 실측에서 claude 질문 대기가 `blockedReason: 'unknown'` 으로 왔다
@@ -64,4 +70,24 @@ export function agentDot(input: {
       return agentStatus
     }
   }
+}
+
+/**
+ * 새 턴이 이미 시작됐는데 **지난 턴의 결과**가 아직 붙어 있는가 (LIFE-467 R2).
+ *
+ * herdr 의 `working` 전이는 곧장 화면에 오고, 결과(`turnOutcome`)를 푸는 기록 판독은 별도 폴링(1.5s)이다 — 그 사이
+ * 중단·실패 결과가 새 working 을 덮는다. 그래서 **working 에 들어선 시각이 결과를 실은 기록의 마지막 활동보다 뒤**면
+ * 그 결과는 지난 턴의 것으로 보고 뺀다. 진입 시각이 실제 전이(`event`)일 때만 따진다 — `snapshot` 은 진입 시각이
+ * 아니라 corral 이 처음 본 시각이라 비교 근거가 못 된다(그때는 결과를 믿는다).
+ *
+ * grok 은 턴이 끝난 뒤에도 working 을 준다 — 그 working 은 결과보다 **먼저** 시작됐으므로 이 규칙에서 결과가 이긴다.
+ */
+function staleOutcome(input: {
+  agentStatus: AgentStatus
+  freshness: { observedAt: number; observedVia: AgentObservedVia; lastActivityAt: number | null } | null
+}): boolean {
+  const { agentStatus, freshness } = input
+  if (agentStatus !== 'working' || freshness === null) return false
+  if (freshness.observedVia !== 'event' || freshness.lastActivityAt === null) return false
+  return freshness.observedAt > freshness.lastActivityAt
 }

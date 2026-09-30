@@ -33,6 +33,8 @@ const READY_EMPTY: OrchestrationLineage = { state: 'ready', entries: [] }
 
 function render(panes: PaneRow[], options: {
   expanded?: boolean
+  /** workspace 가 사라진 worktree (R1) */
+  closed?: boolean
   retained?: RetainedAgentRow[]
   lineage?: OrchestrationLineage
   livePaneIds?: string[]
@@ -40,10 +42,10 @@ function render(panes: PaneRow[], options: {
   onCloseSession?: (paneId: string) => void
 } = {}): string {
   const worktree: WorktreeRow = {
-    path: '/repo', branch: 'main', isLinked: false, openWorkspaceId: 'w1',
+    path: '/repo', branch: 'main', isLinked: false, openWorkspaceId: options.closed === true ? null : 'w1',
     gitStatus: { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0,
       unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
-    workspace: { workspaceId: 'w1', label: 'repo', number: 1, focused: true, agentStatus: 'idle',
+    workspace: options.closed === true ? null : { workspaceId: 'w1', label: 'repo', number: 1, focused: true, agentStatus: 'idle',
       tabs: [{ tabId: 't1', workspaceId: 'w1', label: 'renamed tab', number: 1, order: 0,
         focused: true, agentStatus: 'blocked', panes,
         digest: { ...EMPTY_SESSION_DIGEST, providerTitle: 'wrong tab digest' } }] },
@@ -137,16 +139,18 @@ describe('WorktreeBlock 에이전트 목록 (LIFE-467 K2·K3)', () => {
     expect(subRow.slice(0, subRow.indexOf('</div>'))).not.toContain('data-agent-kind=')
   })
 
-  it('보존 행(retained)은 이 workspace 의 것만, 살아 있는 행 뒤에 선다', () => {
-    const retained: RetainedAgentRow[] = [
-      { paneId: 'gone', tabId: 't9', workspaceId: 'w1', title: 'finished job', agent: 'grok', agentStatus: 'done', agentState: { ...emptyAgentState(0), enteredDoneAt: 60000 }, retainedAt: 90000 },
-      { paneId: 'other', tabId: 't8', workspaceId: 'w2', title: 'elsewhere', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 90000 },
-    ]
-    const html = render([pane('p1', 'claude')], { retained, expanded: true })
+  const gone: RetainedAgentRow = { paneId: 'gone', tabId: 't9', workspaceId: 'w1', title: 'finished job', agent: 'grok', agentStatus: 'done', agentState: { ...emptyAgentState(0), enteredDoneAt: 60000 }, cwd: '/repo', retainedAt: 90000 }
+  it('보존 행(retained)은 살아 있는 행 뒤에 선다 (worktree 로 가르는 일은 Sidebar 의 retainedByWorktree)', () => {
+    const html = render([pane('p1', 'claude')], { retained: [gone], expanded: true })
     expect(html).toContain('finished job - 닫힌 탭')
-    expect(html).not.toContain('elsewhere')
     expect(html.indexOf('data-agent-row="p1"')).toBeLessThan(html.indexOf('data-agent-row="retained:gone"'))
     expect(html).toContain('is-inert') // pane 이 없다 — 무반응
+  })
+
+  it('workspace 가 사라진 worktree 에도 보존 행이 선다 (R1)', () => {
+    const html = render([], { closed: true, retained: [gone] })
+    expect(html).toContain('data-compact-agent-list="/repo"')
+    expect(html).toContain('data-agent-row="retained:gone"')
   })
 })
 
@@ -155,8 +159,8 @@ it('행 콜백은 그 pane 을 고르고 그 pane 만 닫는다 — 죽은 보�
   const onSelectSession = vi.fn()
   const onCloseSession = vi.fn()
   const retained: RetainedAgentRow[] = [
-    { paneId: 'dead', tabId: 't9', workspaceId: 'w1', title: 'a', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 1 },
-    { paneId: 'movedAway', tabId: 't8', workspaceId: 'w1', title: 'b', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 1 },
+    { paneId: 'dead', tabId: 't9', workspaceId: 'w1', title: 'a', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), cwd: null, retainedAt: 1 },
+    { paneId: 'movedAway', tabId: 't8', workspaceId: 'w1', title: 'b', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), cwd: null, retainedAt: 1 },
   ]
   render([pane('p1', 'claude'), pane('p2', 'codex')], { expanded: true, retained, livePaneIds: ['p1', 'p2', 'movedAway'], onSelectSession, onCloseSession })
   const row = captured.find((props) => props.node.key === 'p2')!

@@ -7,7 +7,7 @@ import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { pickPane } from '../pane-utils.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
-import { livePaneIdsOf } from '../sidebar-agents.js'
+import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
 import { sortWorktrees } from '../worktree-name.js'
 import { RepoRow } from './RepoRow.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
@@ -101,6 +101,7 @@ export function Sidebar({
     return null
   }
   const livePaneIds = livePaneIdsOf(state.repos)
+  const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
 
   return (
     <div className="sidebar" data-sidebar ref={sidebarRef} style={{ width }}>
@@ -131,7 +132,7 @@ export function Sidebar({
                     integrations={state.integrations}
                     home={state.home}
                     now={now}
-                    retained={state.retainedAgents}
+                    retained={retainedOf.get(worktree.path) ?? []}
                     lineage={state.orchestrationLineage}
                     livePaneIds={livePaneIds}
                     selected={selected}

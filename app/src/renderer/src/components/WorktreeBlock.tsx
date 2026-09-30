@@ -71,7 +71,7 @@ export function WorktreeBlock({
   home: string
   /** 흐르는 「지금」 — 경과 시간용 (LIFE-366 D1). */
   now: number
-  /** 닫힌 탭의 완료 기록 — 앱 전체 목록이다. 이 worktree 의 workspace 것만 행이 된다 (LIFE-467 D9). */
+  /** 닫힌 탭의 완료 기록 — **이 worktree 의 것만** (`retainedByWorktree`, LIFE-467 D9 · R1). 열린 workspace 가 없어도 행이 된다. */
   retained: readonly RetainedAgentRow[]
   /** orchestration 계보 (LIFE-459) — 부모·자식 행 (LIFE-467 D8). */
   lineage: OrchestrationLineage
@@ -97,7 +97,6 @@ export function WorktreeBlock({
   // 계보·서브에이전트·보존 행을 한 번에 엮는다 — 알약 임계·요약·펼친 목록이 전부 이 루트 목록 하나를 본다.
   const roots = buildAgentRows({
     tabs: worktree.workspace?.tabs ?? [],
-    workspaceId: worktree.workspace?.workspaceId ?? null,
     retained,
     lineage,
     livePaneIds,
@@ -118,7 +117,7 @@ export function WorktreeBlock({
   // 예외인데, 그건 규칙의 예외가 아니라 쓸 이름이 없어서다(절대경로는 §2.5 가 행에 금지).
   const line2Branch = branch
 
-  const renderRow = (node: AgentRowNode, child: boolean): React.JSX.Element => {
+  const renderRow = ({ node, child }: { node: AgentRowNode; child: boolean }): React.JSX.Element => {
     const hasChildren = !child && node.children.length > 0
     return (
       <SessionRow
@@ -150,10 +149,10 @@ export function WorktreeBlock({
   }
   const renderBranch = (node: AgentRowNode): React.JSX.Element => (
     <div className="agent-branch" key={node.key}>
-      {renderRow(node, false)}
+      {renderRow({ node, child: false })}
       {node.children.length > 0 && !foldedParents.has(node.key) ? (
         <div className="agent-lineage-children" data-agent-children={node.key}>
-          {node.children.map((childNode) => renderRow(childNode, true))}
+          {node.children.map((childNode) => renderRow({ node: childNode, child: true }))}
         </div>
       ) : null}
     </div>
@@ -262,7 +261,8 @@ export function WorktreeBlock({
         </div>
       ) : null}
 
-      {isOpen && roots.length > 0 ? (
+      {/* 열린 workspace 가 없어도 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 worktree 의 보존 행(R1). */}
+      {roots.length > 0 ? (
         // 목록 한 덩어리 — 카드 안쪽 여백을 조금 먹고 들어간다(Orca `[data-compact-agent-list]` 음수 여백).
         <div className={`agent-list ${hasGroup ? 'is-grouped' : ''}`} data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
           {hasGroup && summary !== null ? (

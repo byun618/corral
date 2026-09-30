@@ -19,6 +19,7 @@ function dot(input: {
   questions?: SessionQuestion[] | null
   outcome?: TurnOutcome | null
   lifecycle?: SessionLifecycle
+  freshness?: { observedAt: number; observedVia: 'event' | 'snapshot'; lastActivityAt: number | null } | null
 }) {
   return agentDot({
     agentStatus: input.status,
@@ -26,6 +27,7 @@ function dot(input: {
     pendingQuestions: input.questions ?? null,
     turnOutcome: input.outcome ?? null,
     lifecycle: input.lifecycle ?? NO_SOURCE,
+    freshness: input.freshness ?? null,
   })
 }
 
@@ -53,6 +55,19 @@ describe('agentDot — K4 대응표', () => {
   it('done + turnOutcome interrupted → interrupted', () => expect(dot({ status: 'done', outcome: { outcome: 'interrupted', reason: 'x' } })).toBe('interrupted'))
   it('working + turnOutcome interrupted → interrupted (grok 은 턴 뒤에도 working 을 준다)', () =>
     expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: null } })).toBe('interrupted'))
+  // R2 — 새 턴의 working 이 결과 판독(1.5s 폴링)보다 먼저 온 시간차
+  it('working 진입(event)이 결과 기록의 마지막 활동보다 뒤면 → working (지난 턴의 중단을 안 그린다)', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: null }, freshness: { observedAt: 5000, observedVia: 'event', lastActivityAt: 4000 } })).toBe('working'))
+  it('같은 시간차의 failed 도 → working', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'failed', error: 'x' }, freshness: { observedAt: 5000, observedVia: 'event', lastActivityAt: 4000 } })).toBe('working'))
+  it('working 이 결과보다 먼저 시작됐으면(grok 의 턴 뒤 working) → 결과가 이긴다', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: null }, freshness: { observedAt: 3000, observedVia: 'event', lastActivityAt: 4000 } })).toBe('interrupted'))
+  it('진입 시각이 snapshot(처음 본 시각)이면 비교 근거가 없다 → 결과를 믿는다', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'interrupted', reason: null }, freshness: { observedAt: 5000, observedVia: 'snapshot', lastActivityAt: 4000 } })).toBe('interrupted'))
+  it('기록 활동 시각이 없으면 → 결과를 믿는다', () =>
+    expect(dot({ status: 'working', outcome: { outcome: 'failed', error: null }, freshness: { observedAt: 5000, observedVia: 'event', lastActivityAt: null } })).toBe('failed'))
+  it('idle 은 신선도와 무관하게 결과를 쓴다 — 끝난 턴이다', () =>
+    expect(dot({ status: 'idle', outcome: { outcome: 'interrupted', reason: null }, freshness: { observedAt: 5000, observedVia: 'event', lastActivityAt: 4000 } })).toBe('interrupted'))
   it('idle + turnOutcome failed → failed(빨간 점)', () => expect(dot({ status: 'idle', outcome: { outcome: 'failed', error: 'rate_limit' } })).toBe('failed'))
   it('idle + turnOutcome completed → idle', () => expect(dot({ status: 'idle', outcome: { outcome: 'completed' } })).toBe('idle'))
   it('interrupted 는 monitoring 보다 앞선다 (Orca interrupted 우선)', () =>

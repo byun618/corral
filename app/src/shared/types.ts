@@ -60,6 +60,11 @@ export type RetainedAgentRow = {
   agent: string | null
   agentStatus: AgentStatus
   agentState: AgentState
+  /**
+   * 잃은 순간의 pane cwd (LIFE-467 R1). workspace 가 통째로 사라지면 `workspaceId` 로는 worktree 를 못 찾는다 —
+   * 사이드바가 이 경로로 보존 행을 원래 worktree 에 붙인다. herdr 가 cwd 를 모르면 null.
+   */
+  cwd: string | null
   /** corral 이 그 pane 을 잃은 시각. */
   retainedAt: number
 }

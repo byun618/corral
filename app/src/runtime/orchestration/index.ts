@@ -29,7 +29,7 @@ import {
   DISPATCH_STATUSES, TASK_STATUSES, activeDispatch, applyReconcile, createDispatch, createRun, createTask, findDispatch, findRun, findTask,
   isDispatchStatus, isId, isTaskStatus, latestDispatch, reconcileDecision, runCounts, startability, transition,
   type AgentSnapshot, type DispatchRecord, type DispatchTarget, type JsonValue, type OrchestrationState,
-  type PaneObservation, type TaskRecord, type TaskStatus,
+  type PaneObservation, type TaskRecord, type TaskStatus, type WorkerSpawner,
 } from './model.js'
 import {
   DELIVERABLE_TYPES, DELIVERY_ID, MAX_SUBJECT, MESSAGE_ID, MESSAGE_TYPES, acknowledgeDelivery, answerOf, answerQuestion,
@@ -260,7 +260,7 @@ export const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget 
   return { signal: ctx.signal, deadlineAt: Date.now() + Math.min(ms, share) }
 }
 
-async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
+export async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
   if (ctx === null) return { observed: false, reason: 'observation_failed', detail: 'Not enough of the caller timeout left to observe the panes' }
   const socket = process.env.CORRAL_BACKEND_SOCKET
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
@@ -607,6 +607,39 @@ export function orchestrationModule(userData: string): CommandModule {
       /** A fresh look, not the one the reconcile pass memoized: §4.7 re-observes just before it acts. */
       const observeNow = async (target: DispatchTarget): Promise<PaneObservation> =>
         observationFor(await observePanes(budgeted(ctx, SWEEP_BUDGET_MS)), target)
+      /**
+       * LIFE-459. Whether the pane this call came from lives in the backend this runtime drives.
+       * The socket the pane was given (`HERDR_SOCKET_PATH`) settles it when both sides have one —
+       * a default-session pane carries no `HERDR_SESSION`, so for it the socket is the only witness.
+       * Otherwise a session name the caller states, equal to the runtime's, is taken. Nothing is
+       * assumed from a missing name: pane ids repeat across sessions.
+       */
+      const callerPlacement = (): 'socket' | 'session_name' | null => {
+        const backendSocket = process.env.CORRAL_BACKEND_SOCKET, backendSession = process.env.CORRAL_SESSION
+        const callerSocket = caller.socket ?? null
+        if (callerSocket !== null && backendSocket) {
+          try { return fs.realpathSync(callerSocket) === fs.realpathSync(backendSocket) ? 'socket' : null } catch { return null }
+        }
+        return caller.session && backendSession && caller.session === backendSession ? 'session_name' : null
+      }
+      /**
+       * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
+       * from, with its generation read from the backend when the caller could be placed in it. The
+       * look runs beside the start and is never waited for (R2): the attempt is committed with
+       * whatever it has found by then, so recording a parent cannot move a deadline or change what
+       * the start answers. A generation not yet read stays null, and a null one is never a parent.
+       */
+      const probeCaller = (): (() => WorkerSpawner) => {
+        const paneId = caller.paneId
+        if (paneId === null) return () => ({ kind: 'outside_pane' })
+        const verifiedBy = callerPlacement()
+        let found: WorkerSpawner = { kind: 'pane', paneId, session: caller.session, verifiedBy, epoch: null, ptyId: null }
+        if (verifiedBy !== null) void observePanes(budgeted(ctx, SWEEP_BUDGET_MS)).then(seen => {
+          const pane = seen.observed ? seen.panes.find(entry => entry.paneId === paneId) : undefined
+          if (seen.observed && pane !== undefined) found = { kind: 'pane', paneId, session: caller.session, verifiedBy, epoch: seen.epoch, ptyId: pane.ptyId }
+        })
+        return () => found
+      }
       const dispatchInRun = (state: OrchestrationState, runId: string, id: string): DispatchRecord => {
         const entry = findDispatch(state, id)
         if (!entry || entry.runId !== runId) return preflight('dispatch_not_found', `No dispatch ${id} in run ${runId}`,
@@ -885,6 +918,7 @@ export function orchestrationModule(userData: string): CommandModule {
         const launching = f.agent !== undefined
         f['request-id'] ??= `r1.${Date.now()}.${randomUUID()}`
         const parentId = String(f['request-id'])
+        const spawnerSoFar = probeCaller()
         // The handle check first, with no lane held: a pane with no corral-managed agent cannot be
         // prompted, so it is refused here, before anything is created or written.
         const reused = launching ? null : await showTerminal(need('terminal'))
@@ -1038,6 +1072,7 @@ export function orchestrationModule(userData: string): CommandModule {
             dispatch = start.resume
             stages.dispatch = { status: 'completed', dispatchId: dispatch.id, action: 'resumed' }
           } else {
+            const spawner = spawnerSoFar()
             try {
               // `session` rather than the bare lane: the plan was made on a reconciled document,
               // and the write has to be made on one too, or an attempt reconcile just settled would
@@ -1064,6 +1099,7 @@ export function orchestrationModule(userData: string): CommandModule {
                   ownership: launching || owner !== null ? 'owned' : 'borrowed',
                   paneSession: process.env.CORRAL_SESSION ?? null,
                   originDispatchId: owner === null ? null : owner.worker?.originDispatchId ?? owner.id,
+                  spawner,
                 })
                 const made = createDispatch(current, { task, target, agent, agentAbsenceReason, worker, at: stamp() })
                 let next = made.state

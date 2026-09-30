@@ -743,7 +743,36 @@ export type AppState = {
    * 격리 실행에서 접히지 않는다.
    */
   home: string
+  /**
+   * orchestration 계보 — 어느 워커 pane 이 어느 pane 에서 띄워졌나 (LIFE-459). 표시는 LIFE-448.
+   * 서브에이전트 계보(LIFE-462)와 섞지 않으려고 이름에 orchestration 을 박는다.
+   */
+  orchestrationLineage: OrchestrationLineage
 }
+
+/**
+ * 워커 pane 하나의 계보 (LIFE-459). `paneId`·`parentPaneId` 는 `PaneRow.paneId` 와 같은 이름공간이다 —
+ * 단 `OrchestrationLineage.state === 'ready'` 일 때만. 부모는 **틀릴 바에야 없다**: 세션·세대가 하나라도
+ * 어긋나면 `null` 이다. 공급 단계에서 순환 없는 숲을 보장한다.
+ */
+export type OrchestrationLineageEntry = {
+  /** 워커(자식) pane. 그 pane 에 붙은 **최신** worker Dispatch 하나만 싣는다. */
+  paneId: string
+  runId: string
+  taskId: string
+  dispatchId: string
+  dispatchStatus: 'dispatched' | 'completed' | 'failed' | 'unknown'
+  /** 이 Dispatch 를 띄운 `worker-start` 호출자 pane. herdr pane 밖·세대 불일치·순환 절단이면 null. */
+  parentPaneId: string | null
+}
+
+/**
+ * `unavailable` 은 "계보가 없다" 가 아니라 "지금은 판단할 수 없다" 다 — 빈 배열과 구분한다.
+ * 사유: 런타임에 백엔드 없음 · 화면 세션과 런타임 세션이 다름 · 저장소를 못 읽음 · pane 을 못 봄.
+ */
+export type OrchestrationLineage =
+  | { state: 'ready'; entries: OrchestrationLineageEntry[] }
+  | { state: 'unavailable'; reason: 'no_backend' | 'session_mismatch' | 'store_unreadable' | 'unobserved' }
 
 /** preload 가 렌더러에 노출하는 표면. 여기 없는 것은 렌더러가 부를 수 없다. */
 /**

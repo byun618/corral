@@ -17,7 +17,7 @@ import { RuntimeError } from '../contracts.js'
 import { isRecord } from '../../shared/json.js'
 import {
   activeDispatch, exhausted, findDispatch,
-  type DispatchRecord, type OrchestrationState, type PaneObservation, type RetainReason, type WorkerBlock,
+  type DispatchRecord, type OrchestrationState, type PaneObservation, type RetainReason, type WorkerBlock, type WorkerSpawner,
 } from './model.js'
 
 /** What the CLI client observed about itself, carried on the invocation (see `contracts.ts`). */
@@ -186,7 +186,7 @@ export function stopDecision(dispatch: DispatchRecord, observation: PaneObservat
 
 // --- worker block helpers -------------------------------------------------------------------------
 
-export const emptyWorker = (input: { launch: 'created' | 'reused'; ownership: 'owned' | 'borrowed'; paneSession: string | null; originDispatchId: string | null }): WorkerBlock => ({
+export const emptyWorker = (input: { launch: 'created' | 'reused'; ownership: 'owned' | 'borrowed'; paneSession: string | null; originDispatchId: string | null; spawner?: WorkerSpawner | null }): WorkerBlock => ({
   launch: input.launch,
   ownership: input.ownership,
   originDispatchId: input.originDispatchId,
@@ -201,6 +201,7 @@ export const emptyWorker = (input: { launch: 'created' | 'reused'; ownership: 'o
   capabilityRevokedReason: null,
   retain: null,
   release: null,
+  spawner: input.spawner ?? null,
 })
 
 const samePane = (entry: DispatchRecord, target: PaneIdentity): boolean =>

@@ -454,3 +454,16 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 - **지난 시도의 보고는 거부된다** — 새 dispatch 로 넘어간 뒤 옛 dispatch id 로 보낸 `worker_done` 은 `dispatch_capability_invalid`. stale 시도 배제의 첫 증거(관측, b6495701).
 - **`worker-release` 는 `terminal create` 로 따로 띄운 터미널을 닫지 않는다** — `retained`/`external_terminal`, `processAction: none`. 정리는 `terminal close`(→ `ptyKilled: true`)를 따로 부른다.
 - **`terminal create` 가 `runtime_error: Timed out waiting for terminal handle after creation` 을 내고도 터미널은 생긴다** — 재시도하면 중복이다. `orca terminal list` 에서 worktree 로 찾고(`--title` 은 적용 안 됨) 화면으로 새 세션임을 확인한 뒤 그 handle 을 쓴다(c28).
+
+## 실측 부록 — LIFE-459·462 착수 (2026-09-30, 설치본 1.4.198)
+
+본체 세션이 코디네이터 둘을 병렬 기동하면서 겪은 것. 기록 `specs/LIFE-462-task-lifecycle/00-start.md` 「코디네이터 터미널」.
+
+- **시간 초과 뒤 터미널은 8초 넘게 늦게 나타날 수 있다** — `orca terminal create` 가 `runtime_error: Timed out waiting for terminal handle after creation`
+  을 낸 뒤 8초 시점의 `orca terminal list`(같은 조회로 형제 작업 터미널은 보였다 = 조회 자체는 양성)와 `pgrep` 이 모두 비어 있었다.
+  이를 부재로 읽고 재시도하자 첫 터미널이 늦게 나타나 **같은 `--session-id` 의 claude 가 2개** 떴다. 입력 전에 늦게 뜬 쪽을 `terminal close` 로 정리했다.
+  **시간 초과 뒤의 빈 목록은 부재 근거가 아니다.** 위 LIFE-443 항목대로 재시도하지 않는다 — 나타날 때까지 `orca terminal list` 를 반복 조회하고,
+  끝내 나타나지 않으면 사람에게 보고한다. 재시도가 불가피하면 **다른 session id** 로 띄워 기록 오라클이 섞이지 않게 한다.
+- **`orca terminal send` 에서 `--terminal` 값이 비면 호출한 쪽 터미널로 간다** — 셸 변수 전개 실수(zsh 는 인용 없는 변수 전개를 단어로 쪼개지 않는다)로
+  handle 이 빈 문자열이 되자 `accepted: true` 로 성공하며 본문이 **보낸 세션 자신의 입력창**에 들어갔다. 대상 코디네이터에는 아무것도 가지 않았다.
+  응답의 `handle` 이 의도한 handle 과 같은지 대조하고, 스크립트는 빈 handle 이면 보내기 전에 중단한다. `accepted: true` 는 대상 확인이 아니다.

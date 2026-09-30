@@ -28,6 +28,8 @@ export interface CommandSpec {
 export interface CallerIdentity {
     paneId: string | null;
     session: string | null;
+    /** LIFE-459: `HERDR_SOCKET_PATH`, the backend socket the pane belongs to. Absent from older CLIs. */
+    socket?: string | null;
 }
 export interface Invocation {
     command: string;

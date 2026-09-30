@@ -81,6 +81,14 @@ function isRelease(value: unknown): boolean {
   return isRecord(value) && oneOf(RELEASE_STATES, value.state) && isString(value.reason) && isStamp(value.at)
     && oneOf(['closed', 'none'], value.processAction)
 }
+/** LIFE-459. A present spawner is checked whole, like the rest of the block. */
+function isSpawner(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (value.kind === 'outside_pane') return true
+  return value.kind === 'pane' && isString(value.paneId)
+    && (value.verifiedBy === null || value.verifiedBy === 'socket' || value.verifiedBy === 'session_name')
+    && ['session', 'epoch', 'ptyId'].every(key => key in value && isNullOr(isString, value[key]))
+}
 function isWorker(value: unknown): boolean {
   if (!isRecord(value)) return false
   return oneOf(['created', 'reused'], value.launch) && oneOf(['owned', 'borrowed'], value.ownership)
@@ -89,6 +97,7 @@ function isWorker(value: unknown): boolean {
       || (isRecord(value[key]) && isString(value[key].requestId) && isStamp(value[key].at))))
     && (value.retain === null || (isRecord(value.retain) && oneOf(RETAIN_REASONS, value.retain.reason) && isStamp(value.retain.at)))
     && (value.release === null || isRelease(value.release))
+    && 'spawner' in value && (value.spawner === null || isSpawner(value.spawner))
 }
 const ORIGINS = ['worker', 'coordinator']
 function isOrigin(value: unknown): boolean {
@@ -258,7 +267,8 @@ export class OrchestrationStore {
             if (!isRecord(entry)) return entry
             const withWorkerKey = fill(entry, 'worker', null)
             if (!isRecord(withWorkerKey.worker)) return withWorkerKey
-            const worker = INTENT_KEYS.reduce<Record<string, unknown>>((value, key) => fill(value, key, null), withWorkerKey.worker)
+            // LIFE-459 `worker.spawner`: same rule — absent means "recorded before the field existed".
+            const worker = [...INTENT_KEYS, 'spawner'].reduce<Record<string, unknown>>((value, key) => fill(value, key, null), withWorkerKey.worker)
             return { ...withWorkerKey, worker }
           })
           : stored.dispatches,

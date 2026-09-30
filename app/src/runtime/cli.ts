@@ -122,7 +122,7 @@ export async function runCli(argv: string[]): Promise<void> {
     // `app/scripts/l410/probe-pane-env.mjs` measured HERDR_PANE_ID to be the very string corral's
     // own pane listing calls `paneId`. Sent on every call, judged only where a worker report needs
     // it — a command that does not care never looks.
-    inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null }
+    inv.caller = { paneId: process.env.HERDR_PANE_ID ?? null, session: process.env.HERDR_SESSION ?? null, socket: process.env.HERDR_SOCKET_PATH ?? null }
     if (inv.flags.socket) process.env.CORRAL_RUNTIME_SOCKET = String(inv.flags.socket)
     const userData = defaultUserData()
     if (inv.command === 'serve') {

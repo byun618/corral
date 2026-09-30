@@ -464,6 +464,6 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
   이를 부재로 읽고 재시도하자 첫 터미널이 늦게 나타나 **같은 `--session-id` 의 claude 가 2개** 떴다. 입력 전에 늦게 뜬 쪽을 `terminal close` 로 정리했다.
   **시간 초과 뒤의 빈 목록은 부재 근거가 아니다.** 위 LIFE-443 항목대로 재시도하지 않는다 — 나타날 때까지 `orca terminal list` 를 반복 조회하고,
   끝내 나타나지 않으면 사람에게 보고한다. 재시도가 불가피하면 **다른 session id** 로 띄워 기록 오라클이 섞이지 않게 한다.
-- **`orca terminal send` 에서 `--terminal` 값이 비면 호출한 쪽 터미널로 간다** — 셸 변수 전개 실수(zsh 는 `set -- $x` 로 단어 분할하지 않는다)로
+- **`orca terminal send` 에서 `--terminal` 값이 비면 호출한 쪽 터미널로 간다** — 셸 변수 전개 실수(zsh 는 인용 없는 변수 전개를 단어로 쪼개지 않는다)로
   handle 이 빈 문자열이 되자 `accepted: true` 로 성공하며 본문이 **보낸 세션 자신의 입력창**에 들어갔다. 대상 코디네이터에는 아무것도 가지 않았다.
   응답의 `handle` 이 의도한 handle 과 같은지 대조하고, 스크립트는 빈 handle 이면 보내기 전에 중단한다. `accepted: true` 는 대상 확인이 아니다.

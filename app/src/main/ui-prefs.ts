@@ -23,6 +23,8 @@ export type UiPrefs = {
   sidebarCollapsed: boolean
   collapsedRepos: string[]
   collapsedGroups: string[]
+  /** 에이전트 묶음 알약을 펼쳐 둔 worktree 경로 (LIFE-467) — `shared/types.ts` 의 같은 칸 주석. */
+  expandedAgentGroups: string[]
   /**
    * 폴백 번호 배정표 (LIFE-366 C13, 수정 라운드 8).
    *
@@ -46,7 +48,7 @@ export type UiPrefs = {
 }
 
 const VERSION = 1
-const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }
+const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], expandedAgentGroups: [], tabOrdinals: [], groupLayouts: [] }
 
 /** 저장된 배정표를 **모양을 확인하며** 읽는다 — 손으로 고친 파일이 화면을 깨뜨리지 않게. */
 function readTabOrdinals(value: unknown): TabOrdinal[] {
@@ -85,11 +87,13 @@ export class UiPrefsStore {
       const width = parsed['sidebarWidth']
       const repos = parsed['collapsedRepos']
       const groups = parsed['collapsedGroups']
+      const expanded = parsed['expandedAgentGroups']
       this.prefs = {
         sidebarWidth: typeof width === 'number' ? width : null,
         sidebarCollapsed: parsed['sidebarCollapsed'] === true,
         collapsedRepos: Array.isArray(repos) ? repos.filter((item): item is string => typeof item === 'string') : [],
         collapsedGroups: Array.isArray(groups) ? groups.filter((item): item is string => typeof item === 'string') : [],
+        expandedAgentGroups: Array.isArray(expanded) ? expanded.filter((item): item is string => typeof item === 'string') : [],
         tabOrdinals: readTabOrdinals(parsed['tabOrdinals']),
         groupLayouts: Array.isArray(parsed['groupLayouts']) ? parsed['groupLayouts'] : [],
       }
@@ -105,6 +109,7 @@ export class UiPrefsStore {
       ...this.prefs,
       collapsedRepos: [...this.prefs.collapsedRepos],
       collapsedGroups: [...this.prefs.collapsedGroups],
+      expandedAgentGroups: [...this.prefs.expandedAgentGroups],
       tabOrdinals: this.prefs.tabOrdinals.map((row) => ({ ...row })),
       groupLayouts: [...this.prefs.groupLayouts],
     }

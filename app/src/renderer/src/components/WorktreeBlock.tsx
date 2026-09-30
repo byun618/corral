@@ -21,12 +21,10 @@
 // 빈 탭 생성 · 에이전트 즉시 기동(L1/L2 자산 보존) · worktree 닫기(기존 확인 게이트 경로 유지,
 // §6 "액션을 추가하지 않았다"는 상시 노출 버튼 얘기라 hover 메뉴 항목으로는 기능을 지우지 않는다).
 import { useState } from 'react'
-import type { AgentKind, IntegrationRow, PaneRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, IntegrationRow, OrchestrationLineage, RetainedAgentRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
-import { GLYPH, STATUS_LABEL } from '../session-glyphs.js'
-import { AgentIcon } from './AgentIcon.js'
-import { agentPanes } from '../session-title.js'
 import { collapsedSummary } from '../session-summary.js'
+import { buildAgentRows, SUMMARY_MIN_ROOTS, type AgentRowNode } from '../sidebar-agents.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { SessionRow } from './SessionRow.js'
@@ -37,9 +35,6 @@ const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
   { kind: 'grok', label: 'grok 기동' },
 ]
 
-// 07-criteria-pane-sessions C-P5 — 에이전트 pane 3개부터 압축한다.
-const GROUP_THRESHOLD = 3
-
 export function WorktreeBlock({
   worktree,
   selected,
@@ -48,7 +43,10 @@ export function WorktreeBlock({
   integrations,
   home,
   now,
-  groupCollapsed,
+  retained,
+  lineage,
+  livePaneIds,
+  groupExpanded,
   onToggleGroup,
   onSelectBlock,
   onSelectSession,
@@ -73,10 +71,17 @@ export function WorktreeBlock({
   home: string
   /** 흐르는 「지금」 — 경과 시간용 (LIFE-366 D1). */
   now: number
-  groupCollapsed: boolean
+  /** 닫힌 탭의 완료 기록 — 앱 전체 목록이다. 이 worktree 의 workspace 것만 행이 된다 (LIFE-467 D9). */
+  retained: readonly RetainedAgentRow[]
+  /** orchestration 계보 (LIFE-459) — 부모·자식 행 (LIFE-467 D8). */
+  lineage: OrchestrationLineage
+  /** 앱 전체의 살아 있는 pane — 보존 행이 갈 곳이 있나 (B2). */
+  livePaneIds: ReadonlySet<string>
+  /** 묶음 알약이 펼쳐져 있나 — worktree 별로 영속한다(ui-prefs `expandedAgentGroups`). 기본은 접힘(Orca 와 같다). */
+  groupExpanded: boolean
   onToggleGroup: () => void
   onSelectBlock: () => void
-  onSelectSession: (pane: PaneRow) => void
+  onSelectSession: (paneId: string) => void
   onCloseSession: (paneId: string) => void
   onCloseWorktree: () => void
   onCreateShell: () => void
@@ -84,21 +89,25 @@ export function WorktreeBlock({
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  /** 접은 계보 부모 — 기본은 펼침이다(Orca: "spawned child agents are actionable work", `WorktreeCardAgents.tsx:256`). */
+  const [foldedParents, setFoldedParents] = useState<ReadonlySet<string>>(() => new Set())
   const tone = gitTone(worktree.gitStatus)
   const markLabel = gitMarkLabel(worktree.gitStatus)
-  // **사이드바는 에이전트 세션만 그린다** (09-gate1-fix.md D · 01-criteria.md 부록).
-  // 한 번 거른 목록을 행·그룹 임계값·헤더 카운트가 모두 공유한다 — 임계값 의미가 저절로 따라온다.
-  // 탭바는 그대로 전체 탭을 받는다(App.tsx `tabs={activeWorkspace.tabs}`) — 두 곳의 역할이
-  // 갈리는 것이 목적이다: 사이드바 = AI 세션, 탭바 = 그 worktree 의 모든 탭.
-  const panes = agentPanes(worktree.workspace?.tabs ?? [])
-  const hasGroup = panes.length >= GROUP_THRESHOLD
-  const showSessions = !hasGroup || !groupCollapsed
-  // H-5 — 접힘은 "사라짐"이 아니라 **"압축됨"**으로 읽혀야 한다.
-  //
-  // 수정 라운드 5 (P6/C7): 압축의 단위가 **세션**에서 **상태 클러스터**로 바뀌었다. 첫 세션 하나의
-  // 글리프 + `+N` 은 "무엇이 어떤 상태인가" 를 못 말한다 — 접힌 카드에서 사용자가 알고 싶은 것이
-  // 그것이다. 규칙은 `session-summary.ts` 에 있고 여기서는 그리기만 한다.
-  const summary = hasGroup && groupCollapsed && panes.length > 0 ? collapsedSummary({ panes }) : null
+  // **사이드바는 에이전트 세션만 그린다** (09-gate1-fix.md D). 행 나무(`sidebar-agents.ts`)가 셸 탭을 거르고
+  // 계보·서브에이전트·보존 행을 한 번에 엮는다 — 알약 임계·요약·펼친 목록이 전부 이 루트 목록 하나를 본다.
+  const roots = buildAgentRows({
+    tabs: worktree.workspace?.tabs ?? [],
+    workspaceId: worktree.workspace?.workspaceId ?? null,
+    retained,
+    lineage,
+    livePaneIds,
+    integrations,
+    home,
+  })
+  const hasGroup = roots.length >= SUMMARY_MIN_ROOTS
+  const showRows = !hasGroup || groupExpanded
+  const summary = hasGroup ? collapsedSummary({ rows: roots }) : null
+  const anyRootHasChildren = roots.some((node) => node.children.length > 0)
   const isOpen = worktree.workspace !== null
 
   const branch = worktree.branch
@@ -108,6 +117,47 @@ export function WorktreeBlock({
   // 2줄은 **항상** 풀네임이다 — 1줄과 같아도 그린다 (H-2). 브랜치가 없는 worktree 만
   // 예외인데, 그건 규칙의 예외가 아니라 쓸 이름이 없어서다(절대경로는 §2.5 가 행에 금지).
   const line2Branch = branch
+
+  const renderRow = (node: AgentRowNode, child: boolean): React.JSX.Element => {
+    const hasChildren = !child && node.children.length > 0
+    return (
+      <SessionRow
+        key={node.key}
+        node={node}
+        now={now}
+        focused={node.source === 'live' && node.paneId === selectedPane}
+        child={child}
+        disclosure={
+          hasChildren
+            ? {
+                expanded: !foldedParents.has(node.key),
+                count: node.children.length,
+                onToggle: () =>
+                  setFoldedParents((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(node.key)) next.delete(node.key)
+                    else next.add(node.key)
+                    return next
+                  }),
+              }
+            : null
+        }
+        reserveGutter={!child && !hasChildren && anyRootHasChildren}
+        onActivate={onSelectSession}
+        onClose={onCloseSession}
+      />
+    )
+  }
+  const renderBranch = (node: AgentRowNode): React.JSX.Element => (
+    <div className="agent-branch" key={node.key}>
+      {renderRow(node, false)}
+      {node.children.length > 0 && !foldedParents.has(node.key) ? (
+        <div className="agent-lineage-children" data-agent-children={node.key}>
+          {node.children.map((childNode) => renderRow(childNode, true))}
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <div
@@ -212,80 +262,30 @@ export function WorktreeBlock({
         </div>
       ) : null}
 
-      {isOpen && hasGroup ? (
-        <AgentGroupHeader
-          worktreePath={worktree.path}
-          count={panes.length}
-          collapsed={groupCollapsed}
-          onToggle={(event) => {
-            event.stopPropagation()
-            onToggleGroup()
-          }}
-        />
-      ) : null}
-
-      {/* 접힘 요약 행 — **`data-tab` 을 쓰지 않는다.** C3ⓑ 하네스가 "접힌 자식은 DOM 미존재"를
-          `[data-tab]` 개수로 검사하므로, 여기에 그 속성을 달면 접혀도 세션 행이 남은 것으로
-          집계돼 통과선이 깨진다. 세션 행이 아니라 헤더의 접힘 표현이라 별도 마크업이 맞다. */}
-      {isOpen && summary !== null ? (
-        <div
-          className="agent-group-summary"
-          data-agent-group-summary={worktree.path}
-          data-summary-clusters={summary.clusters.length}
-          title={`세션 ${summary.total}개 — 펼치기`}
-          onClick={(event) => {
-            event.stopPropagation()
-            onToggleGroup()
-          }}
-        >
-          {summary.clusters.map((cluster) => (
-            <span
-              key={cluster.status}
-              className="agent-group-cluster"
-              data-summary-cluster={cluster.status}
-              data-summary-count={cluster.count}
-              title={`${STATUS_LABEL[cluster.status]} ${cluster.count}`}
-            >
-              <span className={`session-row-glyph tone-${GLYPH[cluster.status].tone}`}>{GLYPH[cluster.status].glyph}</span>
-              {cluster.icons.map((icon) => (
-                <span key={icon.kind} className={`session-row-agent agent-${icon.kind}`} data-agent-kind={icon.kind} title={icon.label}>
-                  <AgentIcon kind={icon.kind} glyph={icon.glyph} />
-                </span>
-              ))}
-              {/* `+N` 첫 층 — 이 클러스터에서 **아이콘이 안 붙은 세션 수**다(총수가 아니다). */}
-              {cluster.hiddenIcons > 0 ? (
-                <span className="agent-group-cluster-more" data-summary-hidden-icons={cluster.hiddenIcons}>
-                  +{cluster.hiddenIcons}
-                </span>
-              ) : null}
-            </span>
-          ))}
-          {/* `+N` 둘째 층 — 클러스터 상한(3)에 **잘려나간 클러스터들의 세션 합**이다. */}
-          {summary.hiddenSessions > 0 ? (
-            <span className="agent-group-summary-more" data-agent-group-hidden={summary.hiddenSessions}>
-              +{summary.hiddenSessions}
-            </span>
+      {isOpen && roots.length > 0 ? (
+        // 목록 한 덩어리 — 카드 안쪽 여백을 조금 먹고 들어간다(Orca `[data-compact-agent-list]` 음수 여백).
+        <div className="agent-list" data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
+          {hasGroup && summary !== null ? (
+            <AgentGroupHeader
+              worktreePath={worktree.path}
+              count={roots.length}
+              summary={summary}
+              expanded={groupExpanded}
+              onToggle={(event) => {
+                event.stopPropagation()
+                onToggleGroup()
+              }}
+            />
           ) : null}
-          <div className="agent-group-spacer" />
-          <span className="agent-group-summary-caret">›</span>
+          {/* 접힌 알약 아래 행은 **DOM 에 없다** — C3ⓑ 하네스가 `[data-tab]` 개수로 「접힌 자식 DOM 미존재」를 본다.
+              펼칠 때만 짧은 등장 애니메이션을 준다(`agent-list-rows` — Orca reveal 키프레임). */}
+          {showRows ? (
+            <div className={`agent-list-rows ${hasGroup ? 'is-revealed' : ''}`}>
+              {roots.map((node) => renderBranch(node))}
+            </div>
+          ) : null}
         </div>
       ) : null}
-
-      {isOpen && showSessions
-        ? panes.map((pane, index) => (
-            <SessionRow
-              key={pane.paneId}
-              pane={pane}
-              ordinal={index + 1}
-              active={pane.paneId === selectedPane}
-              integrations={integrations}
-              home={home}
-              now={now}
-              onSelect={() => onSelectSession(pane)}
-              onClose={() => onCloseSession(pane.paneId)}
-            />
-          ))
-        : null}
       {/* 세션 없는 worktree 에 플레이스홀더를 넣지 않는다 — §2.5 "세션이 없는 worktree" 명시 금지,
           목업에도 없다. 블록만 남고 아래가 비는 게 정상이다. */}
     </div>

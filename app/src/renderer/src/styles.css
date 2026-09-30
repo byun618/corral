@@ -246,72 +246,126 @@ button { font: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* --- AgentGroupHeader (§2, 세션 3개 이상) ------------------------------------------------------ */
+/* --- 에이전트 목록 · 알약 · 행 (LIFE-467 S1 — Orca 1.4.198 compact, c4 §5) ---------------------- */
 
-.agent-group-header { display: flex; align-items: center; gap: 7px; height: var(--h-group-row); padding-left: var(--indent-session); cursor: pointer; }
-.agent-group-label { font-size: 12px; color: var(--fg-muted); }
-.agent-group-spacer { flex: 1; }
-.agent-group-caret { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
+/* 목록 한 덩어리 — Orca `[data-compact-agent-list]` (`flex flex-col mt-1 gap-0.5`). 가로 자리는 corral 세션 행의
+   들여쓰기를 지킨다(카드 외관은 S2 몫): 행 안쪽 여백(4px)만큼 당겨 점 열이 옛 글리프 자리에 선다. */
+.agent-list {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-top: 4px; padding-left: calc(var(--indent-session) - 4px);
+}
+.agent-list-rows, .agent-branch { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* 펼칠 때의 등장 — Orca `compact-agent-expansion-reveal` 180ms. 접힌 자식은 DOM 에 없으므로(C3ⓑ) 접힘 쪽 전환은 없다. */
+@keyframes agent-list-reveal { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
+.agent-list-rows.is-revealed { animation: agent-list-reveal 180ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 
-/* --- SessionRow (§2) --------------------------------------------------------------------------- */
+/* 알약 — Orca `CompactAgentSummaryButton` (`flex h-6 items-center gap-1 rounded-sm px-1 text-[11px] leading-none`).
+   접혔을 때만 테두리·바탕이 있다(`border-worktree-sidebar-border/70 bg-worktree-sidebar-accent/35`). */
+.agent-group-pill {
+  display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0;
+  height: var(--h-agent-row); padding: 0 4px; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-menu-hover) 35%, transparent);
+  font-family: var(--font-ui); font-size: var(--fs-agent-row); line-height: 1; color: var(--fg-muted);
+  text-align: left; cursor: pointer;
+}
+.agent-group-pill:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
+.agent-group-pill.is-expanded { border-color: transparent; background: transparent; }
+.agent-group-pill.is-expanded:hover { background: color-mix(in srgb, var(--fg) 3.5%, transparent); }
+.agent-group-label { flex: 1 1 auto; min-width: 0; padding: 0 4px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-group-clusters { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 4px; overflow: hidden; }
+/* 상태 무리 하나 — 점 + 겹친 종류 아이콘 (`inline-flex gap-0.5 rounded-sm bg-worktree-sidebar/70 px-1 py-0.5`). */
+.agent-group-cluster {
+  display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; min-width: 0;
+  padding: 2px 4px; border-radius: 4px; background: color-mix(in srgb, var(--bg-window) 70%, transparent);
+}
+.agent-group-cluster-icons { display: inline-flex; align-items: center; flex: 0 0 auto; padding-left: 2px; }
+.agent-group-cluster-icon + .agent-group-cluster-icon { margin-left: -2px; }
+.agent-group-cluster-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; line-height: 0;
+  border-radius: 50%; border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent); background: var(--bg-window);
+}
+.agent-group-cluster-more, .agent-group-summary-more {
+  flex: 0 0 auto; font-size: var(--fs-agent-meta); font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+}
+.agent-group-caret { flex: 0 0 auto; width: 12px; height: 12px; transform: rotate(-90deg); transition: transform 150ms; }
+.agent-group-pill.is-expanded .agent-group-caret { transform: none; }
 
-/* LIFE-366 C8 (수정 라운드 7) — 세션 행은 **한 줄**이다. Orca 의 사이드바 행이 그렇고
-   (`flex h-6 items-center`), 사용자 지시가 "한줄로 가자" 였다. B1 이 2줄로 바꾸면서 LIFE-357
-   C9(b) 의 21px 통과선을 대체했는데, 그 사유(2차 줄 자리)가 없어졌으므로 **원래 값이 다시
-   산다** — `--h-session-row` 하나로 돌아가고 2줄 토큰은 사라진다.
-   높이가 한 줄로 고정되니 B4(빈 슬롯 유지)도 폐기다 (C8-②): 2차 줄이 있든 없든 높이가 같다. */
+/* 에이전트 행 — Orca `CompactAgentRow` (`flex h-6 items-center gap-1 rounded-sm px-1 text-[11px] leading-none`).
+   LIFE-366 C8 의 한 줄 규칙은 그대로다: 앞·뒤 글이 한 칸에서 같이 잘린다. */
 .session-row {
-  display: flex; align-items: center; gap: 6px;
-  height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
-  /* 행 사이 여백은 margin 으로만 — height 는 통과선이라 행 안에서 벌리지 않는다 (H-3). */
-  margin-top: var(--gap-session-row);
-  overflow: hidden;
+  position: relative; display: flex; align-items: center; gap: 4px; min-width: 0;
+  height: var(--h-agent-row); padding: 0 4px; border-radius: 4px; overflow: hidden; cursor: pointer;
+  font-family: var(--font-ui); font-size: var(--fs-agent-row); line-height: 1; color: var(--fg-muted);
 }
-/* **글 칸 하나** — 제목과 2차 줄이 여기서 **같이** 잘린다 (C8). 칸을 둘로 나누면 잘림이
-   칸마다 따로 일어나 Orca 와 다른 자리에서 끊긴다. 전문은 `title` 툴팁이 쥔다. */
-.session-row-text {
-  flex: 1 1 auto; min-width: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  line-height: 1;
-}
-/* 2차 줄 (B2·B5) — 한 급 흐리다. Orca 도 같은 자리에서 `/90` 대 `/65` 로만 가른다
-   (`worktree-card-compact-agent-row.tsx:236-244`) — 글자 크기는 안 줄인다. 한 줄 안에서 크기를
-   섞으면 baseline 이 흔들려 행이 들썩인다.
-   **없으면 안 그린다** (C8-② — B4 폐기). */
-.session-row-second { color: var(--fg-dim); }
-/* corral 이 **못 읽는 상태**임을 알리는 줄 — 에이전트가 한 말과 섞이면 안 된다 (B8). */
-.session-row-second.is-notice { color: var(--fg-faint); font-style: italic; }
-/* 활성 행에서는 **둘 다** 밝아진다 (C8, Orca 의 `isFocusedPane` 분기와 같은 결) — 채워진
-   바탕이 흐린 글자를 씻어내서, 2차 줄만 어두우면 한 줄 안에서 끊겨 보인다. */
-.session-row.is-active .session-row-second { color: var(--fg-muted); }
-/* 마지막 활동 경과 (D1) — 핸드오프 §2 의 우측 메타 칸. 값이 실재할 때만 DOM 에 있다. */
-.session-row-elapsed {
-  flex: 0 0 auto; margin-right: 4px;
-  font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-faint);
-  font-variant-numeric: tabular-nums;
-}
-.session-row:hover, .session-row.is-active { background: var(--bg-row-hover); }
-.session-row-glyph { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-badge); }
-.session-row-glyph.tone-accent { color: var(--accent); }
-.session-row-glyph.tone-dirty { color: var(--st-dirty); }
-.session-row-glyph.tone-behind { color: var(--st-behind); }
-.session-row-glyph.tone-error { color: var(--st-error); }
-.session-row-glyph.tone-faint { color: var(--fg-faint); }
-/* 제목 — 2차 줄과 **같은 칸 안의 인라인 조각**이다 (C8). 자기 상자에서 따로 자르지 않는다:
-   자르면 칸 하나에서 같이 잘린다는 규칙이 깨진다. 글꼴·크기는 칸 전체가 물려받는다. */
-.session-row-text { font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; }
-.session-row-title { color: var(--fg-muted); }
+/* 행 hover 는 **카드보다 옅다** (Orca `main.css:1220-1222` "nested rows quieter than the workspace card" —
+   다크 `accent 18%`). 선택된 pane 의 행은 채운다(다크 `accent 70%`). corral 의 중립 accent 자리는 `--line-strong`. */
+.session-row:hover { background: color-mix(in srgb, var(--line-strong) 18%, transparent); }
+.session-row.is-active { background: color-mix(in srgb, var(--line-strong) 70%, transparent); }
+.session-row.is-inert { cursor: default; }
+/* **글 칸 하나** — 앞·뒤가 여기서 **같이** 잘린다 (C8). 전문은 `title` 툴팁이 쥔다. */
+.session-row-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 앞 글 `/90` · 뒤 글 `/65` — 선택된 pane 이면 둘 다 밝힌다(채운 바탕이 흐린 글자를 씻는다, Orca `:236-244`). */
+.session-row-title { color: color-mix(in srgb, var(--fg-muted) 90%, transparent); }
+.session-row-second { color: color-mix(in srgb, var(--fg-muted) 65%, transparent); }
 .session-row.is-active .session-row-title { color: var(--fg); }
-/* H-6 에이전트 종류 아이콘 — 상태 글리프와 **별도 칸**. 색은 토큰만 쓴다. */
-/* 아이콘 칸 (I-2) — 안에 인라인 SVG 가 들어온다. `inline-flex` 로 두어 **행 높이에 관여하지
-   않게** 한다: 텍스트 흐름에 SVG 를 그냥 얹으면 baseline 아래 여유분이 붙어 행이 밀리고,
-   --h-session-row(21px) 는 C9(b) 통과선이다. `shell` 은 여전히 글자(`$`)라 font-* 도 남긴다.
-   색은 `.agent-*` 가 정하고 SVG 는 `currentColor` 로 받는다. */
+.session-row.is-active .session-row-second { color: color-mix(in srgb, var(--fg) 70%, transparent); }
+/* 안 본 완료 — 굵고 밝게 (B1: 1.4.217 #23327 · full 행 `font-semibold text-foreground`). 보면 herdr 가 idle 로 내린다. */
+.session-row.is-unseen-done .session-row-title { font-weight: 600; color: var(--fg); }
+.agent-row-model {
+  flex: 0 1 auto; min-width: 0; max-width: var(--w-agent-model-max);
+  font-family: var(--font-mono); font-size: var(--fs-agent-meta);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+}
+.agent-row-child-count, .session-row-elapsed { flex: 0 0 auto; font-size: var(--fs-agent-meta); font-variant-numeric: tabular-nums; }
+.agent-row-child-count { color: color-mix(in srgb, var(--fg-muted) 70%, transparent); }
+.session-row-elapsed { color: color-mix(in srgb, var(--fg-muted) 60%, transparent); }
+.session-row.is-active .agent-row-model, .session-row.is-active .agent-row-child-count, .session-row.is-active .session-row-elapsed {
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+/* 자식 펼침 셰브론 (`size-4` 버튼 · `size-3` 아이콘, 펼치면 90° 회전) · 형제 정렬용 빈 칸. */
+.agent-row-disclosure {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: 4px; background: none; color: var(--fg-muted); cursor: pointer;
+}
+.agent-row-disclosure:hover { background: var(--bg-menu-hover); color: var(--fg); }
+.agent-row-chevron { width: 12px; height: 12px; transition: transform 150ms; }
+.agent-row-chevron.is-expanded { transform: rotate(90deg); }
+.agent-row-gutter { flex: 0 0 auto; width: 16px; height: 16px; }
+/* 계보 자식 무리 — 들여쓰기 12px + 왼쪽 1px 선 (Orca `.worktree-agent-lineage-children`, 목록 안에서는 16% 선). */
+.agent-lineage-children {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  margin-left: 12px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--fg) 16%, transparent);
+}
+
+/* 상태 점 — Orca `AgentStateDot` size sm: 상자 10px · 점 6px · 아이콘 10px. */
+.agent-dot { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 10px; height: 10px; }
+.agent-dot-icon { display: block; width: 10px; height: 10px; }
+.agent-dot-fill { display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--agent-dot-idle); }
+.dot-blocked .agent-dot-fill, .dot-interrupted .agent-dot-fill, .dot-failed .agent-dot-fill { background: var(--agent-dot-alert); }
+.dot-monitoring { color: var(--agent-dot-working); }
+.dot-done { color: var(--agent-dot-done); }
+.dot-unverifiable { color: var(--agent-dot-unverifiable); }
+.dot-waiting { color: var(--agent-dot-question); }
+/* 작업중 스피너 — **CSS 컴포지터 애니메이션**으로 고정한다 (Orca `main.css:1521-1529`, STA-3328: JS 시계로 돌리면
+   입력 스레드를 막는다). `steps(12)` 로 옛 박자를 지킨다. reduced-motion 이면 멈추고 고리를 닫는다(#9515). */
+@keyframes agent-dot-spin { to { transform: rotate(360deg); } }
+.agent-dot-spinner {
+  display: block; width: 6px; height: 6px; border-radius: 50%;
+  border: 2px solid var(--agent-dot-working); border-top-color: transparent;
+  animation: agent-dot-spin 1s steps(12, end) infinite;
+}
+
+/* H-6 에이전트 종류 아이콘 — 상태 점과 **별도 칸**. 색은 토큰만 쓴다. `inline-flex` 라 행 높이에 관여하지 않는다(I-2).
+   탭바(`.main-tab-agent`)는 14px 칸, 에이전트 행은 Orca 처럼 아이콘 크기(13px) 그대로다. */
 .session-row-agent, .main-tab-agent {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; line-height: 0;
   font-family: var(--font-mono); font-size: var(--fs-badge);
 }
+.session-row .session-row-agent { width: 13px; height: 13px; }
 .agent-claude { color: var(--agent-claude); }
 /* codex 만 **브랜드 색을 안 씌운다** — Orca 원본이 그렇다 (`OpenAIIcon` 은 `fill="currentColor"`,
    `components/status-bar/icons.tsx:4-17`). OpenAI 마크가 흑백이라 주변 글자 색을 그대로 쓴다.
@@ -324,32 +378,21 @@ button { font: inherit; }
 .agent-grok { color: var(--agent-grok); }
 .agent-shell { color: var(--agent-shell); }
 
-/* H-5 접힘 요약 행 — 접힘이 "사라짐"이 아니라 "압축됨"으로 읽히게. 세션 행과 같은 들여쓰기를
-   쓰되 `[data-tab]` 이 아니라서 C3ⓑ 의 세션 행 집계에는 안 잡힌다.
-   **높이가 다시 같아졌다** (C8): 세션 행이 한 줄로 돌아와 둘 다 `--h-session-row`(21px) 다. */
-.agent-group-summary {
-  display: flex; align-items: center; gap: 6px;
-  height: var(--h-session-row); padding-left: var(--indent-session); border-radius: 4px; cursor: pointer;
-  margin-top: var(--gap-session-row);
-}
-.agent-group-summary:hover { background: var(--bg-row-hover); }
-/* 상태 클러스터 하나 — 상태 점 + 종류 아이콘들이 **한 덩어리**로 읽히게 묶는다 (C7).
-   Orca 도 같은 자리에 옅은 바탕을 깔아 클러스터 경계를 만든다(`bg-worktree-sidebar/70`). */
-.agent-group-cluster {
-  display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto;
-  padding: 0 4px; border-radius: 4px; background: var(--bg-row-hover);
-}
-.agent-group-cluster-more { font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-dim); }
-.agent-group-summary-more { font-family: var(--font-mono); font-size: var(--fs-badge); color: var(--fg-dim); }
-.agent-group-summary-caret { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
-
+/* hover 닫기 (D18 — 남긴다, `SessionRow.tsx` 주석). 쉴 때 자리를 차지하지 않게 **행 오른쪽 끝에 겹쳐** 띄운다 —
+   흐름 안에 두면 보이지 않는 16px 이 시간 칸을 밀어 Orca 와 다른 자리에 선다. */
 .session-row-close {
-  flex: 0 0 auto; margin-right: 6px; width: 16px; height: 16px; border-radius: 3px;
-  background: none; border: none; color: var(--fg-muted); font-size: 13px; line-height: 1; cursor: pointer;
+  position: absolute; right: 2px; top: 4px; width: 16px; height: 16px; border-radius: 3px;
+  background: var(--bg-window); border: none; color: var(--fg-muted); font-size: 13px; line-height: 1; cursor: pointer;
   opacity: 0; /* 항상 DOM 에 있다 — hover 시에만 보인다(WorktreeBlock 액션과 같은 결) */
 }
 .session-row-close.is-active { opacity: 1; }
 .session-row-close:hover { background: var(--bg-danger-hover); color: var(--st-error-hi); }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-list-rows.is-revealed { animation-duration: 0ms; }
+  .agent-group-caret, .agent-row-chevron { transition-duration: 0ms; }
+  .agent-dot-spinner { animation: none; border-top-color: var(--agent-dot-working); }
+}
 
 /* --- SidebarFooterToolbar (§2) ------------------------------------------------------------------ */
 
@@ -623,6 +666,16 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .term-group[data-pane-count="1"] > .term-pane-stack > .term-pane { opacity: 1; }
 .term-pane:not(.is-selected) { opacity: 0.95; }
 .term-pane-inner { position: absolute; display: flex; overflow: hidden; }
+/* 사이드바 행 클릭 뒤 림 플래시 (LIFE-467 D11) — Orca `terminal.css:163-206` 이식: 1.5px 테두리 + 2px 고리 + 18px 번짐,
+   1.5s 동안 1 → .42(24%) → 0(46%). 붙이고 떼는 것은 `pane-rim-flash.ts`. reduced-motion 이면 움직이지 않고 떼일 때 사라진다. */
+.term-pane.pane-rim-flash::before {
+  content: ''; position: absolute; inset: 1px; z-index: 30; pointer-events: none;
+  border: 1.5px solid color-mix(in srgb, var(--pane-locate) 68%, transparent); border-radius: 2px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pane-locate) 34%, transparent), 0 0 18px color-mix(in srgb, var(--pane-locate) 36%, transparent);
+  animation: pane-rim-flash 1.5s ease-out forwards;
+}
+@keyframes pane-rim-flash { 0% { opacity: 1; } 24% { opacity: 0.42; } 46% { opacity: 0; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .term-pane.pane-rim-flash::before { animation: none; } }
 /* 장식 행 위의 pane 메타 (§10-R17-1) — herdr 가 비워 둔 한 행에 얹으므로 **추가 픽셀 0**.
    좌 장식 열 한 칸 뒤에서 시작한다. 클릭은 아래 pane 으로 흘려보낸다. */
 

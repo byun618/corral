@@ -7,11 +7,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { UiPrefs } from '../../../shared/types.js'
 
-type CollapseField = 'collapsedRepos' | 'collapsedGroups'
+type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups'
 
-/** `field` 별로 독립된 접힘 집합 하나. repo 접기(C3ⓐ)·agent group 접기(C3ⓑ)가 각자 쓴다. */
+/**
+ * `field` 별로 독립된 id 집합 하나. repo 접기(C3ⓐ)가 쓰고, 에이전트 알약 펼침(LIFE-467)은 같은 모양을
+ * **펼친 집합**으로 쓴다(`expandedAgentGroups` — 알약은 기본 접힘이라 펼친 것만 담는다).
+ */
 export function usePersistentCollapse(field: CollapseField): {
-  isCollapsed: (id: string) => boolean
+  has: (id: string) => boolean
   toggle: (id: string) => void
 } {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
@@ -45,7 +48,7 @@ export function usePersistentCollapse(field: CollapseField): {
     [field],
   )
 
-  const isCollapsed = useCallback((id: string) => collapsed.has(id), [collapsed])
+  const has = useCallback((id: string) => collapsed.has(id), [collapsed])
 
-  return { isCollapsed, toggle }
+  return { has, toggle }
 }

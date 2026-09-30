@@ -2,10 +2,12 @@
 // C6 이 나열한 개별 컴포넌트(SidebarBrandBar 등)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
 // 자유롭게 구조화했다.
 import type { RefObject } from 'react'
-import type { AgentKind, AppState, PaneRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, AppState, WorktreeRow } from '../../../shared/types.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { pickPane } from '../pane-utils.js'
+import { flashPaneRim } from '../pane-rim-flash.js'
+import { livePaneIdsOf } from '../sidebar-agents.js'
 import { sortWorktrees } from '../worktree-name.js'
 import { RepoRow } from './RepoRow.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
@@ -27,8 +29,8 @@ export function Sidebar({
   actions,
   isRepoCollapsed,
   toggleRepoCollapsed,
-  isGroupCollapsed,
-  toggleGroupCollapsed,
+  isGroupExpanded,
+  toggleGroupExpanded,
   onAddRepo,
   onRemoveRepo,
   onRefresh,
@@ -46,8 +48,9 @@ export function Sidebar({
   actions: LifecycleActions
   isRepoCollapsed: (root: string) => boolean
   toggleRepoCollapsed: (root: string) => void
-  isGroupCollapsed: (worktreePath: string) => boolean
-  toggleGroupCollapsed: (worktreePath: string) => void
+  /** 에이전트 묶음 알약이 펼쳐져 있나 (LIFE-467 — 기본 접힘, 펼친 것만 영속). */
+  isGroupExpanded: (worktreePath: string) => boolean
+  toggleGroupExpanded: (worktreePath: string) => void
   onAddRepo: () => void
   onRemoveRepo: (root: string) => void
   onRefresh: () => void
@@ -80,11 +83,24 @@ export function Sidebar({
    * 탭바·상태바는 딴 workspace 를 계속 가리켰다 — `App.tsx` 의 `activeWorkspace` 가
    * `activeWorkspaceId` 를 따르기 때문이다. `onSelectBlock` 이
    * `activateWorkspace` → `selectFirstSession` 순으로 하는 것과 같은 결로 맞춘다.
+   *
+   * 행이 주는 것은 pane id 하나다(LIFE-467 — 서브에이전트 행은 부모 pane, 보존 행은 아직 살아 있는 그 pane).
+   * 그 pane 의 workspace 는 지금 상태에서 찾는다. 고른 뒤 pane 테두리를 한 번 번쩍인다(D11 — Orca 림 플래시 1.5s).
    */
-  const onSelectSession = (pane: PaneRow): void => {
-    if (pane.workspaceId !== activeWorkspaceId) actions.activateWorkspace(pane.workspaceId)
-    selectPane(pane.paneId)
+  const onSelectSession = (paneId: string): void => {
+    const workspaceId = workspaceOfPane(paneId)
+    if (workspaceId === null) return
+    if (workspaceId !== activeWorkspaceId) actions.activateWorkspace(workspaceId)
+    selectPane(paneId)
+    flashPaneRim(paneId)
   }
+  const workspaceOfPane = (paneId: string): string | null => {
+    for (const repo of state.repos)
+      for (const worktree of repo.worktrees)
+        for (const tab of worktree.workspace?.tabs ?? []) if (tab.panes.some((pane) => pane.paneId === paneId)) return tab.workspaceId
+    return null
+  }
+  const livePaneIds = livePaneIdsOf(state.repos)
 
   return (
     <div className="sidebar" data-sidebar ref={sidebarRef} style={{ width }}>
@@ -115,11 +131,14 @@ export function Sidebar({
                     integrations={state.integrations}
                     home={state.home}
                     now={now}
+                    retained={state.retainedAgents}
+                    lineage={state.orchestrationLineage}
+                    livePaneIds={livePaneIds}
                     selected={selected}
                     selectedPane={selectedPane}
                     groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
-                    groupCollapsed={isGroupCollapsed(worktree.path)}
-                    onToggleGroup={() => toggleGroupCollapsed(worktree.path)}
+                    groupExpanded={isGroupExpanded(worktree.path)}
+                    onToggleGroup={() => toggleGroupExpanded(worktree.path)}
                     onSelectBlock={() => {
                       const workspace = worktree.workspace
                       if (workspace === null) {

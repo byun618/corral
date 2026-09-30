@@ -1,12 +1,12 @@
 import { createElement, type ComponentProps } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { EMPTY_SESSION_DIGEST, type PaneRow, type WorktreeRow } from '../../../shared/types.js'
+import { EMPTY_SESSION_DIGEST, type OrchestrationLineage, type PaneRow, type RetainedAgentRow, type WorktreeRow } from '../../../shared/types.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
 import { emptyAgentState } from '../../../shared/agent-state.js'
 
 const captured = vi.hoisted(() => {
-  const rows: Array<{ pane: PaneRow; onSelect: () => void; onClose: () => void }> = []
+  const rows: Array<{ node: { key: string; activationPaneId: string | null; paneId: string }; onActivate: (paneId: string) => void; onClose: (paneId: string) => void }> = []
   return rows
 })
 vi.mock('./SessionRow.js', async (importOriginal) => {
@@ -19,17 +19,24 @@ vi.mock('./SessionRow.js', async (importOriginal) => {
   }
 })
 
-function pane(id: string, agent: string | null): PaneRow {
+function pane(id: string, agent: string | null, extra: Partial<PaneRow> = {}): PaneRow {
   return {
-    paneId: id, tabId: 't1', workspaceId: 'w1', title: id, agent, agentStatus: 'idle', agentState: emptyAgentState(0),
+    paneId: id, tabId: 't1', workspaceId: 'w1', title: id, agent, agentStatus: 'idle', agentState: { ...emptyAgentState(0), observedAt: id === 'p1' ? 0 : 60000 },
     cwd: null, focused: false, agentSession: null,
     digest: { ...EMPTY_SESSION_DIGEST, providerTitle: `title-${id}`,
-      activity: { state: 'text', text: `message-${id}`, at: null }, lastActivityAt: id === 'p1' ? 0 : 60000 },
+      activity: { state: 'text', text: `message-${id}`, at: null }, lastActivityAt: null },
+    ...extra,
   }
 }
 
-function render(panes: PaneRow[], collapsed = false, actions: {
-  onSelectSession?: (pane: PaneRow) => void
+const READY_EMPTY: OrchestrationLineage = { state: 'ready', entries: [] }
+
+function render(panes: PaneRow[], options: {
+  expanded?: boolean
+  retained?: RetainedAgentRow[]
+  lineage?: OrchestrationLineage
+  livePaneIds?: string[]
+  onSelectSession?: (paneId: string) => void
   onCloseSession?: (paneId: string) => void
 } = {}): string {
   const worktree: WorktreeRow = {
@@ -44,54 +51,119 @@ function render(panes: PaneRow[], collapsed = false, actions: {
   const noop = (): void => {}
   return renderToStaticMarkup(createElement(WorktreeBlock, {
     worktree, selected: true, selectedPane: 'p2', groupGlyph: null, integrations: [],
-    home: '/home', now: 120000, groupCollapsed: collapsed, onToggleGroup: noop,
-    onSelectBlock: noop, onSelectSession: noop, onCloseSession: noop, onCloseWorktree: noop,
-    onCreateShell: noop, onCreateAgent: noop, ...actions,
+    home: '/home', now: 120000, retained: options.retained ?? [], lineage: options.lineage ?? READY_EMPTY,
+    livePaneIds: new Set(options.livePaneIds ?? panes.map((row) => row.paneId)),
+    groupExpanded: options.expanded ?? false, onToggleGroup: noop,
+    onSelectBlock: noop, onSelectSession: options.onSelectSession ?? noop, onCloseSession: options.onCloseSession ?? noop, onCloseWorktree: noop,
+    onCreateShell: noop, onCreateAgent: noop,
   }))
 }
 
-describe('WorktreeBlock pane sessions', () => {
-  it('one tab with two agents and a shell renders two independently titled rows', () => {
-    const html = render([pane('p1', 'claude'), pane('p2', 'codex'), pane('p3', null)])
-    expect(html.match(/class="session-row /g)).toHaveLength(2)
+const rowsOf = (html: string): number => html.match(/data-agent-row="/g)?.length ?? 0
+
+describe('WorktreeBlock 에이전트 목록 (LIFE-467 K2·K3)', () => {
+  it('루트 1개면 알약 없이 단일 행이다', () => {
+    const html = render([pane('p1', 'claude'), pane('p3', null)])
+    expect(html).not.toContain('data-agent-group=')
+    expect(rowsOf(html)).toBe(1)
     expect(html).toContain('title-p1 - message-p1')
-    expect(html).toContain('title-p2 - message-p2')
-    expect(html).toContain('data-elapsed="2m"')
-    expect(html).toContain('data-elapsed="1m"')
-    expect(html).toContain('class="session-row is-active" data-tab="t1" data-pane="p2"')
-    expect(html).toContain('data-close-pane="p2"')
+    expect(html).not.toContain('data-pane="p3"') // 셸은 사이드바에 없다
     expect(html).not.toContain('wrong tab digest')
     expect(html).not.toContain('renamed tab')
-    expect(html).not.toContain('data-pane="p3"')
-    expect(html).not.toContain('agent-group-header')
   })
 
-  it('three panes in one tab reach the group threshold and collapse to three sessions', () => {
-    const panes = [pane('p1', 'claude'), pane('p2', 'codex'), pane('p3', 'claude')]
-    const expanded = render(panes)
-    expect(expanded).toContain('3 agents')
-    expect(expanded.match(/class="session-row /g)).toHaveLength(3)
-    const collapsed = render(panes, true)
-    expect(collapsed).toContain('3 agents')
-    expect(collapsed).toContain('data-summary-count="3"')
-    expect(collapsed).not.toContain('class="session-row ')
+  it('루트 2개부터 알약이다 — 기본 접힘이고 행은 DOM 에 없다 (C3ⓑ)', () => {
+    const html = render([pane('p1', 'claude'), pane('p2', 'codex')])
+    expect(html).toContain('data-agent-group="/repo"')
+    expect(html).toContain('data-agent-group-expanded="false"')
+    expect(html).toContain('data-summary-cluster="idle"')
+    expect(html).toContain('data-summary-count="2"')
+    expect(rowsOf(html)).toBe(0)
+    expect(html).not.toContain('data-tab=')
   })
 
-  it('shell-only tabs have no sidebar rows', () => {
-    expect(render([pane('shell', null)])).not.toContain('class="session-row ')
+  it('펼치면 알약이 「N agents」 머리줄이 되고 행이 선다', () => {
+    const html = render([pane('p1', 'claude'), pane('p2', 'codex'), pane('p3', 'claude')], { expanded: true })
+    expect(html).toContain('3 agents')
+    expect(html).toContain('data-agent-group-expanded="true"')
+    expect(rowsOf(html)).toBe(3)
+    expect(html).toContain('data-pane="p2"')
+    expect(html).toContain('data-focused-agent-pane="true"')
+    expect(html).toContain('data-close-pane="p2"')
+    // 시간 — observedAt 기준 (p1 0 → 2m, p2 60000 → 1m)
+    expect(html).toContain('data-elapsed="2m"')
+    expect(html).toContain('data-elapsed="1m"')
+  })
+
+  it('shell-only 탭에는 행이 없다', () => {
+    const html = render([pane('shell', null)])
+    expect(rowsOf(html)).toBe(0)
+    expect(html).not.toContain('data-compact-agent-list')
+  })
+
+  it('안 본 완료(done) 행은 굵게 표시된다 (B1) — idle 은 아니다', () => {
+    const html = render([pane('p1', 'claude', { agentStatus: 'done' })])
+    expect(html).toContain('data-unseen-done="true"')
+    expect(html).toContain('is-unseen-done')
+    expect(render([pane('p1', 'claude')])).not.toContain('is-unseen-done')
+  })
+
+  it('모델이 있으면 mono 칸으로 그린다', () => {
+    const html = render([pane('p1', 'claude', { digest: { ...EMPTY_SESSION_DIGEST, model: 'claude-opus-5-5' } })])
+    expect(html).toContain('class="agent-row-model" title="claude-opus-5-5">claude-opus-5-5<')
+  })
+
+  it('계보 자식은 부모 아래 들여 쓰이고 루트 수에서 빠진다 — 루트가 1개면 알약이 없다', () => {
+    const lineage: OrchestrationLineage = { state: 'ready', entries: [{ paneId: 'p2', runId: 'r', taskId: 't', dispatchId: 'd', dispatchStatus: 'dispatched', parentPaneId: 'p1' }] }
+    const html = render([pane('p1', 'claude'), pane('p2', 'codex')], { lineage })
+    expect(html).not.toContain('data-agent-group=')
+    expect(html).toContain('data-agent-children="p1"')
+    expect(html).toContain('data-agent-row-toggle="p1"')
+    expect(html).toContain('data-agent-row="p2" data-agent-row-source="live" data-agent-row-depth="1"')
+  })
+
+  it('서브에이전트 자식 행은 아이콘이 없고 부모 아래에 선다', () => {
+    const parent = pane('p1', 'claude', {
+      digest: {
+        ...EMPTY_SESSION_DIGEST,
+        lifecycle: { state: 'known', tasks: [], taskOverflow: 0, subagentOverflow: 0,
+          subagents: [{ id: 's1', name: 'reviewer', description: 'check the diff', agentType: 'general-purpose', background: false, startedAt: 60000, status: 'running' }] },
+      },
+    })
+    const html = render([parent])
+    expect(html).toContain('data-agent-row-source="subagent"')
+    expect(html).toContain('reviewer - check the diff')
+    const subRow = html.slice(html.indexOf('data-agent-row-source="subagent"'))
+    expect(subRow.slice(0, subRow.indexOf('</div>'))).not.toContain('data-agent-kind=')
+  })
+
+  it('보존 행(retained)은 이 workspace 의 것만, 살아 있는 행 뒤에 선다', () => {
+    const retained: RetainedAgentRow[] = [
+      { paneId: 'gone', tabId: 't9', workspaceId: 'w1', title: 'finished job', agent: 'grok', agentStatus: 'done', agentState: { ...emptyAgentState(0), enteredDoneAt: 60000 }, retainedAt: 90000 },
+      { paneId: 'other', tabId: 't8', workspaceId: 'w2', title: 'elsewhere', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 90000 },
+    ]
+    const html = render([pane('p1', 'claude')], { retained, expanded: true })
+    expect(html).toContain('finished job - 닫힌 탭')
+    expect(html).not.toContain('elsewhere')
+    expect(html.indexOf('data-agent-row="p1"')).toBeLessThan(html.indexOf('data-agent-row="retained:gone"'))
+    expect(html).toContain('is-inert') // pane 이 없다 — 무반응
   })
 })
 
-it('row callbacks select the exact pane and close only that pane', () => {
+it('행 콜백은 그 pane 을 고르고 그 pane 만 닫는다 — 죽은 보존 행은 무반응, 산 보존 행은 그 pane (B2)', () => {
   captured.length = 0
-  const first = pane('p1', 'claude')
-  const second = pane('p2', 'codex')
   const onSelectSession = vi.fn()
   const onCloseSession = vi.fn()
-  render([first, second], false, { onSelectSession, onCloseSession })
-  const row = captured.find((props) => props.pane.paneId === 'p2')!
-  row.onSelect()
-  row.onClose()
-  expect(onSelectSession).toHaveBeenCalledExactlyOnceWith(second)
+  const retained: RetainedAgentRow[] = [
+    { paneId: 'dead', tabId: 't9', workspaceId: 'w1', title: 'a', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 1 },
+    { paneId: 'movedAway', tabId: 't8', workspaceId: 'w1', title: 'b', agent: 'grok', agentStatus: 'done', agentState: emptyAgentState(0), retainedAt: 1 },
+  ]
+  render([pane('p1', 'claude'), pane('p2', 'codex')], { expanded: true, retained, livePaneIds: ['p1', 'p2', 'movedAway'], onSelectSession, onCloseSession })
+  const row = captured.find((props) => props.node.key === 'p2')!
+  row.onActivate(row.node.activationPaneId!)
+  row.onClose(row.node.paneId)
+  expect(onSelectSession).toHaveBeenCalledExactlyOnceWith('p2')
   expect(onCloseSession).toHaveBeenCalledExactlyOnceWith('p2')
+  expect(captured.find((props) => props.node.key === 'retained:dead')?.node.activationPaneId).toBeNull()
+  expect(captured.find((props) => props.node.key === 'retained:movedAway')?.node.activationPaneId).toBe('movedAway')
 })

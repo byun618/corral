@@ -100,7 +100,8 @@ export function App(): React.JSX.Element {
   const sidebarRef = useRef<HTMLDivElement | null>(null)
   const { width, onHandleMouseDown } = useSidebarResize(sidebarRef)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
-  const groupCollapse = usePersistentCollapse('collapsedGroups')
+  // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
+  const groupExpand = usePersistentCollapse('expandedAgentGroups')
   const memoryLabel = useMemoryLabel()
 
   /**
@@ -1139,10 +1140,10 @@ export function App(): React.JSX.Element {
           selectPane={revealPane}
           closePane={(paneId) => void closePaneAt(paneId)}
           actions={lifecycle.actions}
-          isRepoCollapsed={repoCollapse.isCollapsed}
+          isRepoCollapsed={repoCollapse.has}
           toggleRepoCollapsed={repoCollapse.toggle}
-          isGroupCollapsed={groupCollapse.isCollapsed}
-          toggleGroupCollapsed={groupCollapse.toggle}
+          isGroupExpanded={groupExpand.has}
+          toggleGroupExpanded={groupExpand.toggle}
           onAddRepo={() => setModalOpen(true)}
           onRemoveRepo={(root) => {
             const repo = state.repos.find((item) => item.root === root)

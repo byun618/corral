@@ -106,6 +106,21 @@
   --agent-claude: #d97757;
   --agent-grok: #8fa7c4;
   --agent-shell: #6b7473;
+
+  /* LIFE-467 에이전트 행·알약 (Orca 1.4.198 compact 행 — c4 §5.4). 값은 Orca 의 Tailwind v4 팔레트(oklch) 그대로 —
+     상태 점 색은 Orca `AgentStateDot.tsx:80-170` 의 yellow-500 · emerald-500 · amber-500 · red-500 · neutral-500/40,
+     질문 아이콘은 다크 `--agent-question`(orange-500), 림 플래시는 다크 `--terminal-pane-locate`(blue-400). */
+  --h-agent-row: 24px;          /* Orca `h-6` — LIFE-357 C9(b) 21px 를 에이전트 행에서 대체한다(LIFE-467 D4) */
+  --fs-agent-row: 11px;         /* Orca `text-[11px]` */
+  --fs-agent-meta: 10px;        /* 모델·자식 수·시간 `text-[10px]` */
+  --w-agent-model-max: 96px;    /* 모델 `max-w-24` */
+  --agent-dot-working: oklch(79.5% 0.184 86.047);
+  --agent-dot-done: oklch(69.6% 0.17 162.48);
+  --agent-dot-unverifiable: oklch(76.9% 0.188 70.08);
+  --agent-dot-question: oklch(70.5% 0.213 47.604);
+  --agent-dot-alert: oklch(63.7% 0.237 25.331);
+  --agent-dot-idle: oklch(55.6% 0 0 / 0.4);
+  --pane-locate: oklch(70.7% 0.165 254.624);
   /* LIFE-373 §3 (H): 풀 폼 고정 요소 81px + 라벨 ≥ 39px → 120. 접힘 26 = 아이콘 14 + 6×2. */
   --tab-min-w: 120px;
   --tab-max-w: 230px;

@@ -15,19 +15,16 @@
 //   ⑤ 상태 점과 종류 아이콘은 **안 합친다** (Orca `AgentStateDot.tsx:18-21` 의 명문 — "누가" 와
 //      "어떤 상태인가" 를 각각 훑을 수 있어야 한다). corral 의 H-6 두 칸 규칙과 같은 말이다
 
-import type { AgentKind, AgentStatus, PaneRow } from '../../shared/types.js'
-import { AGENT_STATUS_ROLLUP_ORDER } from '../../shared/agent-state.js'
-import { agentIcon } from './session-glyphs.js'
+import type { AgentKind } from '../../shared/types.js'
+import { AGENT_DOT_ORDER, type AgentDot } from './agent-dot.js'
+import { AGENT_ICON } from './session-glyphs.js'
 
 /**
- * 상태 정렬 순서 — **탭·워크스페이스 롤업과 같은 순서를 쓴다** (LIFE-456 S6 「한 어휘」).
- *
- * 전에는 이 파일이 자기 배열을 따로 들고 있었다. 접힘 요약과 탭 점이 같은 pane 집합을
- * 다르게 접으면 같은 카드가 접었을 때와 폈을 때 다른 말을 한다 — 그래서 순서의 출처를
- * `shared/agent-state.ts` 한 곳으로 모았다. `done` 이 그 배열에 들어오면서
- * "corral 에 done 이 없다" 던 옛 주석도 같이 없어진다.
+ * 상태 그룹 순서 — **LIFE-467 부터 점(`AgentDot`) 순서**다. Orca 알약은 점 상태로 묶는다(`buildSummaryAgentGroups`
+ * 가 `getAgentDotState` 로 묶는다) — corral 도 행이 그리는 점과 같은 값으로 묶어야 알약과 펼친 행이 같은 말을 한다.
+ * 전에는 `AgentStatus` 다섯 값으로 묶어서 질문 대기·중단·monitoring 이 각각 막힘·대기·대기 무리에 섞였다.
  */
-export const SUMMARY_STATUS_ORDER: readonly AgentStatus[] = AGENT_STATUS_ROLLUP_ORDER
+export const SUMMARY_STATUS_ORDER: readonly AgentDot[] = AGENT_DOT_ORDER
 
 /** 클러스터 상한 · 클러스터당 아이콘 상한 — Orca 의 리터럴 3 두 자리 그대로. */
 export const MAX_CLUSTERS = 3
@@ -36,48 +33,51 @@ export const MAX_ICONS_PER_CLUSTER = 3
 export type SummaryIcon = { kind: AgentKind; glyph: string; label: string }
 
 export type SummaryCluster = {
-  status: AgentStatus
+  dot: AgentDot
   /** 이 상태의 **종류별 대표** 아이콘 (최대 3). 종류를 모르면 아이콘이 안 실린다. */
   icons: SummaryIcon[]
-  /** 이 클러스터에서 **아이콘이 안 붙은** 세션 수 (`+N` 첫 층). */
+  /** 이 클러스터에서 **아이콘이 안 붙은** 행 수 (`+N` 첫 층). */
   hiddenIcons: number
-  /** 이 상태의 세션 수. */
+  /** 이 상태의 행 수. */
   count: number
 }
 
 export type CollapsedSummary = {
   clusters: SummaryCluster[]
-  /** 상한에 잘려나간 클러스터들의 **세션 합** (`+N` 둘째 층). */
+  /** 상한에 잘려나간 클러스터들의 **행 합** (`+N` 둘째 층). */
   hiddenSessions: number
-  /** 접힌 세션 총수 — 툴팁에만 쓴다. `+N` 두 개와 **다른 수**다. */
+  /** 요약한 행 총수 — 툴팁에만 쓴다. `+N` 두 개와 **다른 수**다. */
   total: number
 }
 
+/** 요약 한 칸의 재료 — 사이드바 루트 행(`sidebar-agents.ts`)이 이 모양을 갖는다. */
+export type SummaryItem = { dot: AgentDot; kind: AgentKind | null }
+
 /**
- * 접힌 카드의 요약 한 줄.
+ * 알약 한 줄.
  *
- * 입력은 **이미 걸러진 에이전트 pane 목록**이다 (`WorktreeBlock.panes`) — 사이드바가 그리는
- * 세션과 같은 집합이어야 접힘/펼침이 같은 것을 말한다.
+ * 입력은 **루트 행 목록**이다 — 계보 자식·서브에이전트 자식은 빠진다(Orca `summaryAgents = hasLineage ? rootAgents : agents`,
+ * `WorktreeCardAgents.tsx:363`). 알약과 펼친 목록이 같은 루트 집합을 말해야 한다.
  */
-export function collapsedSummary(input: { panes: readonly PaneRow[] }): CollapsedSummary {
-  const byStatus = new Map<AgentStatus, PaneRow[]>()
-  for (const pane of input.panes) {
-    const rows = byStatus.get(pane.agentStatus)
-    if (rows === undefined) byStatus.set(pane.agentStatus, [pane])
-    else rows.push(pane)
+export function collapsedSummary(input: { rows: readonly SummaryItem[] }): CollapsedSummary {
+  const byDot = new Map<AgentDot, SummaryItem[]>()
+  for (const row of input.rows) {
+    const rows = byDot.get(row.dot)
+    if (rows === undefined) byDot.set(row.dot, [row])
+    else rows.push(row)
   }
 
   const ordered: SummaryCluster[] = []
-  for (const status of SUMMARY_STATUS_ORDER) {
-    const rows = byStatus.get(status)
+  for (const dot of SUMMARY_STATUS_ORDER) {
+    const rows = byDot.get(dot)
     if (rows === undefined || rows.length === 0) continue
     const icons = representativeIcons(rows)
-    ordered.push({ status, icons, hiddenIcons: Math.max(0, rows.length - icons.length), count: rows.length })
+    ordered.push({ dot, icons, hiddenIcons: Math.max(0, rows.length - icons.length), count: rows.length })
   }
 
   const clusters = ordered.slice(0, MAX_CLUSTERS)
   const hiddenSessions = ordered.slice(clusters.length).reduce((sum, cluster) => sum + cluster.count, 0)
-  return { clusters, hiddenSessions, total: input.panes.length }
+  return { clusters, hiddenSessions, total: input.rows.length }
 }
 
 /**
@@ -85,16 +85,14 @@ export function collapsedSummary(input: { panes: readonly PaneRow[] }): Collapse
  *
  * 종류로 묶어 **많은 종류부터**, 동률이면 먼저 나온 것부터 하나씩 집는다. 그래서 같은 상태에
  * claude 5개 + codex 1개가 있으면 아이콘은 `claude` · `codex` **둘**이고 `+4` 가 붙는다.
- * 종류를 모르는 세션(`agentIcon` 이 null)은 대표를 못 내므로 숨은 수로 간다 — 없는 아이콘을
- * 지어내지 않는다 (H-6 과 같은 규칙).
+ * 종류를 모르는 행은 대표를 못 내므로 숨은 수로 간다 — 없는 아이콘을 지어내지 않는다 (H-6 과 같은 규칙).
  */
-function representativeIcons(rows: readonly PaneRow[]): SummaryIcon[] {
+function representativeIcons(rows: readonly SummaryItem[]): SummaryIcon[] {
   const byKind = new Map<AgentKind, { icon: SummaryIcon; count: number; firstIndex: number }>()
-  rows.forEach((pane, index) => {
-    const icon = agentIcon(pane.agent)
-    if (icon === null) return
-    const seen = byKind.get(icon.kind)
-    if (seen === undefined) byKind.set(icon.kind, { icon, count: 1, firstIndex: index })
+  rows.forEach((row, index) => {
+    if (row.kind === null) return
+    const seen = byKind.get(row.kind)
+    if (seen === undefined) byKind.set(row.kind, { icon: { kind: row.kind, ...AGENT_ICON[row.kind] }, count: 1, firstIndex: index })
     else seen.count += 1
   })
   return [...byKind.values()]

@@ -584,6 +584,11 @@ export type UiPrefs = {
   sidebarCollapsed: boolean
   collapsedRepos: string[]
   collapsedGroups: string[]
+  /**
+   * 에이전트 묶음 알약을 **펼쳐 둔** worktree 경로 (LIFE-467). 알약은 기본 접힘(Orca compact 와 같다)이라 펼친 것만 담는다.
+   * `collapsedGroups`(옛 헤더의 접힌 목록, 기본 펼침)와 뜻이 반대라 같은 칸을 재해석하지 않고 따로 둔다.
+   */
+  expandedAgentGroups: string[]
   /** 폴백 번호 배정표 (C13) — 재기동해도 같은 탭이 같은 번호를 쓴다. */
   tabOrdinals: TabOrdinal[]
   /**

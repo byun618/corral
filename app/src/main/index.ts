@@ -1244,7 +1244,7 @@ app.whenReady().then(async () => {
     event.sender.setIgnoreMenuShortcuts(shortcutRecording)
   })
   ipcMain.handle('corral:getUiPrefs', (event) =>
-    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], tabOrdinals: [], groupLayouts: [] }) : null,
+    fromOurWindow(event) ? (uiPrefs?.get() ?? { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], expandedAgentGroups: [], tabOrdinals: [], groupLayouts: [] }) : null,
   )
   ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
     if (fromOurWindow(event)) uiPrefs?.update(patch)

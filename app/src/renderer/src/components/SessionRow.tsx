@@ -1,112 +1,139 @@
-// design-handoff.md §2 SessionRow — 상태 글리프 + `제목 - 2차 줄`(한 칸에서 같이 잘린다) + 경과 시간.
-// 클릭 → 해당 worktree 선택 + 세션(탭) 활성 (§4). 탭 닫기(L3·L4·L9a, 01-criteria C1)는 핸드오프
-// 목업에 없는 동작이라 hover 시에만 드러나는 보조 버튼으로 얹는다(RepoRowActions 와 같은 결 —
-// 밀도 유지 + 없어지지 않는 계약).
+// 사이드바 에이전트 행 한 줄 (LIFE-467 D4) — Orca 1.4.198 compact 행(`worktree-card-compact-agent-row.tsx:94-310`) 해부.
 //
-// ## 2줄 → **다시 1줄** (LIFE-366 C8, 수정 라운드 7) — 사용자 지시 "한줄로 가자"
+// 좌→우: 자식 셰브론(자식 있을 때, 없으면 정렬용 빈 칸) · 상태 점 · 종류 아이콘(서브에이전트 행은 숨김) ·
+// `앞 - 뒤` 한 칸(잘림 + 전문 툴팁) · 모델(mono, 폭 상한) · 접힌 자식 `+N` · 경과 시간 · hover 닫기(live 만).
+// 높이 24px · 글자 11px (c4 §5.4). 한 줄이다 — LIFE-366 C8 의 "제목과 2차 줄을 같은 칸에서 같이 자른다" 가 그대로 산다.
 //
-// B1 이 이 행을 2줄로 만들었고(`--h-session-row-2` 30px), 그게 Orca 와 다른 자리였다. Orca 의
-// 사이드바 행은 `flex h-6 items-center` 한 줄이고 제목과 2차 줄을 ` - ` 로 잇는다
-// (`worktree-card-compact-agent-row.tsx:141-145`, `:230-245`). 사용자가 그 화면을 짚었다 —
-// *"한줄로 가자. 아예 ORCA랑 같이 맞춰버려"*. 그래서 높이 토큰이 LIFE-357 C9(b) 의 21px 로
-// 돌아온다: B1 이 그 통과선을 대체한 사유(2차 줄 자리)가 없어졌으니 원래 값이 다시 산다.
+// ## 굵기 — 1.4.217 기준 (B1)
 //
-// ## **B4 는 폐기됐다** (C8-②)
+// herdr `done` 은 「끝났는데 아직 안 봄」이다. 그 행의 앞 글을 굵고 밝게 그리고, 그 pane 을 보면 herdr 가 `idle` 로
+// 내려 보통 굵기로 돌아온다. 198 compact 행은 이 굵기가 없다(#22857) — 1.4.217(#23327)이 고친 쪽을 따른다.
 //
-// B4 는 "값이 없어도 2차 줄 슬롯을 남긴다" 였다 — 텍스트가 도착·소멸할 때 행 높이가 들썩이는
-// 것을 막으려는 규칙. 한 줄이면 **구조상** 높이가 고정돼서 그 목적이 저절로 달성된다. 규칙이
-// 필요 없어졌으므로 빈 슬롯(`\u{a0}`)을 그리지 않는다 — 2차 줄이 없으면 ` - ` 도 안 그린다.
+// ## hover 닫기 버튼은 남긴다 (D18)
+//
+// Orca 행에는 없다(retained 만 dismiss). corral 사이드바에서 세션을 닫는 진입점이 이 버튼 하나라(LIFE-357 C1 계약,
+// 탭바는 2개 이상일 때만 선다) 지우면 기능이 사라진다. hover 에만 드러나 쉴 때의 행 모양은 Orca 와 같다.
 import { useState } from 'react'
-import type { IntegrationRow, PaneRow } from '../../../shared/types.js'
-import { elapsedLabel, paneSecondaryLine, sessionRowText } from '../session-activity.js'
-import { agentIcon, GLYPH, STATUS_LABEL } from '../session-glyphs.js'
+import type { AgentRowNode } from '../sidebar-agents.js'
+import { elapsedLabel } from '../session-activity.js'
+import { AGENT_ICON } from '../session-glyphs.js'
 import { AgentIcon } from './AgentIcon.js'
-import { paneSessionTitle } from '../session-title.js'
+import { AgentStateDot, Chevron } from './AgentStateDot.js'
+
 export function SessionRow({
-  pane,
-  ordinal,
-  home,
-  active,
-  integrations,
+  node,
   now,
-  onSelect,
+  focused,
+  child,
+  disclosure,
+  reserveGutter,
+  onActivate,
   onClose,
 }: {
-  pane: PaneRow
-  ordinal: number
-  home: string
-  active: boolean
-  integrations: readonly IntegrationRow[]
+  node: AgentRowNode
   /** 흐르는 「지금」 — 경과 시간이 얼지 않게 한 곳에서 틱을 받는다 (`useNowTick`). */
   now: number
-  onSelect: () => void
-  onClose: () => void
+  /** 이 행의 pane 이 지금 선택된 pane 인가 — 글자를 밝게 올린다(Orca `isFocusedPane`). */
+  focused: boolean
+  /** 계보·서브에이전트 자식 행인가 (시각 깊이 1). */
+  child: boolean
+  /** 자식이 있으면 셰브론. 없으면 null. */
+  disclosure: { expanded: boolean; count: number; onToggle: () => void } | null
+  /** 자식 없는 루트가 셰브론 칸을 비워 두나 — 형제 중 셰브론이 있으면 점 열을 맞춘다(Orca `reserveDisclosureGutter`). */
+  reserveGutter: boolean
+  onActivate: (paneId: string) => void
+  onClose: (paneId: string) => void
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
-  const { glyph, tone } = GLYPH[pane.agentStatus]
-  // H-6 — 상태 글리프와 **별도 칸**이다. 모르는 종류면 칸 자체를 안 그린다(부재, 빈 칸 아님).
-  const kind = agentIcon(pane.agent)
-  const secondary = paneSecondaryLine({ pane, integrations })
-  const text = sessionRowText({ title: paneSessionTitle({ pane, ordinal, home }), secondary })
-  const elapsed = elapsedLabel(pane.digest.lastActivityAt, now)
+  const elapsed = node.timeAt === null ? null : elapsedLabel(node.timeAt, now)
+  const inert = node.activationPaneId === null
+  const classes = [
+    'session-row',
+    `source-${node.source}`,
+    focused ? 'is-active' : '',
+    node.unseenDone ? 'is-unseen-done' : '',
+    child ? 'is-child' : '',
+    disclosure !== null ? 'is-parent' : '',
+    inert ? 'is-inert' : '',
+  ]
   return (
     <div
-      className={`session-row ${active ? 'is-active' : ''}`}
-      data-tab={pane.tabId}
-      data-pane={pane.paneId}
-      data-secondary={secondary.kind}
+      className={classes.filter((item) => item.length > 0).join(' ')}
+      data-agent-row={node.key}
+      data-agent-row-source={node.source}
+      data-agent-row-depth={child ? 1 : 0}
+      // 하네스(C3ⓑ·I-6)가 세는 속성은 **살아 있는 pane 행에만** 단다 — 자식·보존 행까지 세면 탭 수와 어긋난다.
+      data-tab={node.source === 'live' ? (node.tabId ?? undefined) : undefined}
+      data-pane={node.source === 'live' ? node.paneId : undefined}
+      data-unseen-done={node.unseenDone ? 'true' : undefined}
+      data-focused-agent-pane={focused ? 'true' : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      // ⚠ 버블링을 끊는다 (11-gate1-fix3.md I-6). 이 행은 `.worktree-block` **안에** 있고
-      // 그 블록의 onClick 은 `selectFirstSession` 이다 — 안 끊으면 "클릭한 세션 선택" 직후
-      // "그 worktree 의 첫 세션 선택"이 덮어써서, 어느 행을 눌러도 첫 탭이 열린다.
-      // 실측으로 잡았다(raw/gate1-fix3/i6-session-click.json 1차 실행: activeTabId 가 t1 고정).
-      // 같은 파일의 닫기 버튼이 이미 쓰는 관용구다.
+      // ⚠ 버블링을 끊는다 (11-gate1-fix3.md I-6) — 이 행은 `.worktree-block` 안에 있고 그 블록의 onClick 은
+      // 「첫 세션 선택」이다. 무반응 행(B2 — 죽은 pane 의 보존 행)도 끊는다: 눌렀는데 엉뚱한 탭이 열리면 안 된다.
       onClick={(event) => {
         event.stopPropagation()
-        onSelect()
+        if (node.activationPaneId !== null) onActivate(node.activationPaneId)
       }}
     >
-      {/* 상태 말은 **글리프가 쥔다** — 행 툴팁은 이제 글 전문의 것이다 (C8). 둘을 같은
-          `title` 에 겹치면 전문이 상태 단어에 가려진다. */}
-      <span className={`session-row-glyph tone-${tone}`} title={STATUS_LABEL[pane.agentStatus]}>
-        {glyph}
-      </span>
-      {kind === null ? null : (
-        <span className={`session-row-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
-          <AgentIcon kind={kind.kind} glyph={kind.glyph} />
+      {disclosure !== null ? (
+        <button
+          className="agent-row-disclosure"
+          data-agent-row-toggle={node.key}
+          aria-expanded={disclosure.expanded}
+          title={`자식 ${disclosure.count}개 ${disclosure.expanded ? '접기' : '펼치기'}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            disclosure.onToggle()
+          }}
+        >
+          <Chevron direction="right" className={`agent-row-chevron ${disclosure.expanded ? 'is-expanded' : ''}`} />
+        </button>
+      ) : reserveGutter ? (
+        <span className="agent-row-gutter" aria-hidden />
+      ) : null}
+      <AgentStateDot dot={node.dot} />
+      {node.showIcon && node.kind !== null ? (
+        <span className={`session-row-agent agent-${node.kind}`} data-agent-kind={node.kind} title={AGENT_ICON[node.kind].label}>
+          <AgentIcon kind={node.kind} glyph={AGENT_ICON[node.kind].glyph} />
         </span>
-      )}
-      {/* **글 칸 하나** — 제목과 2차 줄이 여기서 같이 잘린다. 전문은 툴팁이 쥔다 (C8,
-          Orca `worktree-card-compact-agent-row.tsx:230-245` 와 같은 모양). */}
-      <span className="session-row-text" title={text.full}>
-        <span className="session-row-title">{text.leading}</span>
-        {text.trailing === null ? null : (
-          <span className={`session-row-second ${secondary.kind === 'notice' ? 'is-notice' : ''}`} data-second-kind={secondary.kind}>
+      ) : null}
+      {/* **글 칸 하나** — 앞·뒤가 여기서 같이 잘린다. 전문은 툴팁이 쥔다 (LIFE-366 C8, Orca `:230-245`). */}
+      <span className="session-row-text" title={node.text.full}>
+        <span className="session-row-title">{node.text.leading}</span>
+        {node.text.trailing === null ? null : (
+          <span className="session-row-second">
             {' - '}
-            {text.trailing}
+            {node.text.trailing}
           </span>
         )}
       </span>
+      {node.model === null ? null : (
+        <span className="agent-row-model" title={node.model}>
+          {node.model}
+        </span>
+      )}
+      {disclosure !== null && !disclosure.expanded ? <span className="agent-row-child-count">+{disclosure.count}</span> : null}
       {/* 경과 시각이 **실재할 때만** 그린다 (D1). 없으면 칸 자체가 없다 — 지어낸 수 대신 부재. */}
       {elapsed === null ? null : (
         <span className="session-row-elapsed" data-elapsed={elapsed}>
           {elapsed}
         </span>
       )}
-      {/* hover 로만 opacity 를 바꾼다 — 조건부 렌더링하면 좌표/elementFromPoint 클릭이
-          hover 없이는(mousemove 없이 click 만 보내는 계측 채널) 못 찾는다(WorktreeBlock 과 같은 결). */}
-      <button
-        className={`session-row-close ${hovered ? 'is-active' : ''}`}
-        data-close-pane={pane.paneId}
-        title="세션 닫기"
-        onClick={(event) => {
-          event.stopPropagation()
-          onClose()
-        }}
-      >
-        ×
-      </button>
+      {/* hover 로만 opacity 를 바꾼다 — 조건부 렌더링하면 좌표 클릭 계측이 hover 없이 못 찾는다. */}
+      {node.source === 'live' ? (
+        <button
+          className={`session-row-close ${hovered ? 'is-active' : ''}`}
+          data-close-pane={node.paneId}
+          title="세션 닫기"
+          onClick={(event) => {
+            event.stopPropagation()
+            onClose(node.paneId)
+          }}
+        >
+          ×
+        </button>
+      ) : null}
     </div>
   )
 }

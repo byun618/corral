@@ -12,14 +12,16 @@
 /** 알려진 차이 둘. `expect` 가 방향·종류까지 적는다 — 여기가 판별력의 전부다. */
 export const POSITIVE_CONTROLS = [
   {
+    // LIFE-467 K8ⓓ — 옛 ⓐ(에이전트 2개 묶음 알약: Orca 있음 / corral 없음, 임계 2 vs 3)는 S1 이 **해소**했다.
+    // 해소되면 뒤집히는 것이 정상이라, 그 뒤집힘은 `specs/LIFE-467-sidebar/raw/claude/k9-diff-before-after.md` 에
+    // 원자료와 함께 적고 대조는 **S1 이 건드리지 않는** 알려진 부재로 옮긴다: Orca 전용 상단 내비 묶음.
     id: 'C6ⓐ',
     area: 'sidebar',
-    state: 'agents-2',
-    unit: 'agent-group-pill',
-    claim: '에이전트 2개에서 Orca 는 "N agents" 묶음이 있고 corral 은 없다 (임계 2 vs 3)',
+    state: 'default',
+    unit: 'nav-buttons',
+    claim: 'Orca 는 상단 내비 버튼 묶음(작업·자동화·모바일)이 있고 corral 은 없다',
     expect: { kind: 'missing', absentSide: 'right' },
-    // 전제: Orca 묶음은 compact 표시 + send-target 모드 아님일 때만 켜진다. 못 확인하면 통과가 아니다.
-    requires: ['orcaCompact', 'orcaNotSendTarget']
+    requires: []
   },
   {
     id: 'C6ⓑ',

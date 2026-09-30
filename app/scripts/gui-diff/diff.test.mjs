@@ -222,12 +222,13 @@ const controlResults = (findings, { area = 'sidebar', state = 'agents-2' } = {})
   { area, states: [{ state, findings }] }
 ]
 const PREREQ = { orcaCompact: true, orcaNotSendTarget: true }
+const controlResultsA = (findings) => controlResults(findings, { state: 'default' })
 const controlA = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓐ')
 const controlB = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓑ')
 
 test('C6ⓐ — Orca 있음 / corral 없음이면 통과', () => {
   const rows = evaluateControls({
-    results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선언)', absentSide: 'right' } }]),
+    results: controlResultsA([{ id: 'nav-buttons', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선언)', absentSide: 'right' } }]),
     prerequisites: PREREQ,
     controls: controlA
   })
@@ -236,7 +237,7 @@ test('C6ⓐ — Orca 있음 / corral 없음이면 통과', () => {
 
 test('C6ⓐ — 방향이 반대면(우리 쪽 선택자가 썩어 Orca 가 없음) 실패', () => {
   const rows = evaluateControls({
-    results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { left: '없음(선택자 0개)', right: '있음 (1)', absentSide: 'left' } }]),
+    results: controlResultsA([{ id: 'nav-buttons', kind: 'missing', detail: { left: '없음(선택자 0개)', right: '있음 (1)', absentSide: 'left' } }]),
     prerequisites: PREREQ,
     controls: controlA
   })
@@ -247,7 +248,7 @@ test('C6ⓐ — 방향이 반대면(우리 쪽 선택자가 썩어 Orca 가 없�
 test('C6ⓐ — 측정 불가(unpaired·selector-miss) 행은 통과 근거가 아니다', () => {
   for (const kind of ['unpaired', 'selector-miss']) {
     const rows = evaluateControls({
-      results: controlResults([{ id: 'agent-group-pill', kind, detail: { reason: 'cannot measure' } }]),
+      results: controlResultsA([{ id: 'nav-buttons', kind, detail: { reason: 'cannot measure' } }]),
       prerequisites: PREREQ,
       controls: controlA
     })
@@ -255,11 +256,11 @@ test('C6ⓐ — 측정 불가(unpaired·selector-miss) 행은 통과 근거가 �
   }
 })
 
-test('C6ⓐ — compact·send-target 전제를 못 확인하면 실패', () => {
+test('전제(requires)를 못 확인하면 실패 — 옛 C6ⓐ 의 compact·send-target 전제 모양', () => {
   const rows = evaluateControls({
     results: controlResults([{ id: 'agent-group-pill', kind: 'missing', detail: { absentSide: 'right' } }]),
     prerequisites: { orcaCompact: false, orcaNotSendTarget: true },
-    controls: controlA
+    controls: [{ id: 'prereq', area: 'sidebar', state: 'agents-2', unit: 'agent-group-pill', claim: 'x', expect: { kind: 'missing', absentSide: 'right' }, requires: ['orcaCompact', 'orcaNotSendTarget'] }]
   })
   assert.equal(rows[0].pass, false)
   assert.match(rows[0].verdict, /전제/)

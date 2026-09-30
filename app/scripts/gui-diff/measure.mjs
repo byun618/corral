@@ -10,12 +10,13 @@
 // 영역 정의(두 앱 요소 짝짓기)는 코드가 아니라 `areas/<영역>.json` 이다 (C1) — 영역을 늘리는 일은
 // 파일 하나 더 두는 일이지 이 파일을 고치는 일이 아니다.
 
+/* global document -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-import { pause, until, assertPortFree } from './lib/cdp.mjs'
+import { pause, until, assertPortFree, clickElement } from './lib/cdp.mjs'
 import { collectSnapshot, settlePage, PROP_SETS, EXCLUDED_PROPS } from './lib/probe.mjs'
 import { diffSnapshots, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { renderReport, writeJson } from './lib/report.mjs'
@@ -341,7 +342,110 @@ const STATE_TARGETS = {
       { state: 'idle', prompt: 'L443 agent 5', agentType: 'claude' }
     ],
     detail: '루트 에이전트 5개 (탭 5개, 탭마다 하나)'
+  },
+  // ---- LIFE-467 K8ⓑ — S1(에이전트 행·묶음) 상태 ----
+  expanded: {
+    tabCount: 3,
+    expand: true,
+    agents: [
+      { state: 'working', prompt: 'L467 expanded 1', agentType: 'claude' },
+      { state: 'idle', prompt: 'L467 expanded 2', agentType: 'codex' },
+      { state: 'blocked', prompt: 'L467 expanded 3', agentType: 'claude' }
+    ],
+    detail: '루트 에이전트 3개, 알약을 **펼친** 상태 — 펼친 행↔펼친 행 짝 (두 앱 다 알약을 눌러 연다)'
+  },
+  done: {
+    tabCount: 2,
+    agents: [{ state: 'done', prompt: 'L467 finished agent', agentType: 'claude' }],
+    // 첫 탭은 포커스된 탭이라 corral(herdr)에서 done 이 곧장 idle 로 내려간다. 그래서 **빈 첫 탭** 뒤에 둔다.
+    leadingEmptyTabs: 1,
+    detail:
+      '끝났는데 아직 안 본(done) 에이전트 1개 — 포커스 안 된 둘째 탭. corral 은 굵게(B1, 1.4.217 기준), Orca 198 compact 는 안 굵다. ' +
+      '**`--states` 의 맨 끝에 둔다**: 다음 상태가 이 탭을 닫으면 corral 은 done 에이전트를 보존 행(retained)으로 남겨 루트가 하나 늘어난다 ' +
+      '(제품 동작 — 실측 R013 `wait` 불일치)'
+  },
+  wait: {
+    tabCount: 1,
+    agents: [{ state: 'blocked', prompt: 'L467 waiting for approval', agentType: 'claude' }],
+    detail:
+      '입력 대기(blocked) 에이전트 1개. **질문 아이콘 변형(Orca `waiting` ↔ corral `waiting` 점)은 corral 에 주입 못 한다** — ' +
+      'corral 의 질문/권한 사유는 herdr `agent.explain` 규칙 id 나 세션 파일의 pendingQuestions 에서만 오고 RPC 보고로는 안 선다. 네이티브 관문(K11)이 맡는다'
+  },
+  'long-name': {
+    tabCount: 1,
+    agents: [
+      {
+        state: 'working',
+        prompt: 'L467 long name',
+        title: 'L467 a deliberately long agent title that must be truncated in a single line together with its secondary text so the row never wraps',
+        agentType: 'codex'
+      }
+    ],
+    detail: '긴 이름 에이전트 1개 — 한 줄 잘림(앞·뒤 같은 칸) 확인. 주입 원천이 두 앱에서 다르다: corral 은 터미널 제목(OSC 2 → 앞 칸), Orca 는 마지막 답 줄(hook → 뒤 칸). 두 앱 다 **같은 글 칸 하나**에서 잘리는지를 본다'
   }
+}
+
+/**
+ * 측정 도구가 **주입 못 하는** S1 상태 (U3). 보고서에 보류 + 사유로 싣는다 — 「없다」가 아니라 「못 만든다」다.
+ */
+const UNINJECTABLE_STATES = [
+  { state: '계보 자식 행', why: 'corral 계보는 orca orchestration 원장(orchestrationLineage)에서만 온다 — 격리 인스턴스에 원장을 만드는 제품 경로가 없다. K1 #19 네이티브 덤프가 원자료' },
+  { state: '서브에이전트 자식 행', why: 'corral 서브에이전트는 claude 세션 파일(lifecycle.subagents)에서만 온다 — RPC 보고로 못 선다. 단위 테스트(sidebar-agents.test.ts)가 모양을 잠근다' },
+  { state: '보존(retained) 행', why: 'herdr 가 에이전트 pane 이 닫힐 때 보존하는데, RPC 보고로 만든 pane 은 에이전트 세션이 없어 보존 대상이 되는지 보장이 없다. K1 #20 네이티브 덤프가 원자료' },
+  { state: '모델 칸', why: 'corral 모델은 세션 파일 digest.model 에서만 온다. Orca 는 hook 페이로드. K1 네이티브 덤프(claude-opus-5-5 · grok-4.7-build)가 원자료' },
+  { state: '긴 이름 (corral 쪽)', why: 'corral 행 제목의 주입 가능한 원천은 터미널 제목(OSC 2)뿐인데 기존 규칙(`truncatePathLeft`)이 15자로 왼쪽을 자른다 — 긴 글은 세션 파일의 provider 제목·첫 프롬프트에서만 선다. 상태 `long-name` 은 Orca 쪽 긴 글만 재고, corral 한 줄 잘림은 단위 테스트(C8)와 네이티브 관문(K11 실제 프롬프트)이 맡는다' },
+  { state: '질문/권한 아이콘(waiting)', why: 'blockedReason 은 herdr agent.explain 규칙 id·pendingQuestions 에서만 온다 — 상태 `wait` 은 blocked 점으로 잰다. K1 R010 네이티브 덤프가 원자료' }
+]
+
+/**
+ * 묶음 알약의 펼침을 **요청대로** 맞추고 화면 표현을 읽는다 (LIFE-467 K8).
+ *
+ * 상태는 누적이라 앞 상태가 펼쳐 둔 알약이 다음 상태로 따라온다 — 그래서 모든 상태가 원하는 펼침을
+ * 명시하고(기본 접힘) 여기서 다르면 **알약을 눌러** 맞춘다(두 앱 다 제품 클릭 경로).
+ * 표현(shape)은 두 앱을 같은 어휘로 읽는다: 알약이 있으면 summary, 행만 있으면 row, 없으면 none.
+ * 행 수는 **보이는 행**만 센다 — Orca 는 한 번 펼친 내용을 접은 뒤에도 inert 로 남겨 둔다.
+ */
+async function applyExpansion({ orca, corral, want, roots }) {
+  const read = (handle, selectors) =>
+    handle.cdp.evaluate(({ pill, row }) => {
+      const button = document.querySelector(pill)
+      const rows = [...document.querySelectorAll(row)].filter((el) => el.closest('[inert]') === null && el.getClientRects().length > 0)
+      const expandedAttr = button?.getAttribute('aria-expanded') ?? null
+      return {
+        shape: button ? 'summary' : rows.length > 0 ? 'row' : 'none',
+        expanded: expandedAttr === null ? null : expandedAttr === 'true',
+        rows: rows.length
+      }
+    }, selectors)
+  const apps = [
+    { name: 'orca', handle: orca, selectors: { pill: '.compact-agent-summary-button', row: '.compact-agent-row' } },
+    { name: 'corral', handle: corral, selectors: { pill: '.agent-group-pill', row: '.session-row' } }
+  ]
+  const wantShape = roots === 0 ? 'none' : roots > 1 ? 'summary' : 'row'
+  const wantRows = roots === 0 ? 0 : roots === 1 || want ? roots : 0
+  const out = {}
+  for (const app of apps) {
+    let seen = await read(app.handle, app.selectors)
+    const converged = await until(
+      async () => {
+        seen = await read(app.handle, app.selectors)
+        if (seen.shape === 'summary' && seen.expanded !== want) {
+          await clickElement(app.handle.cdp, app.selectors.pill)
+          // 포인터를 알약에서 치운다 — hover 칠이 캡처에 남지 않게.
+          await app.handle.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1200, y: 700, buttons: 0 })
+          return false
+        }
+        return seen.shape === wantShape && seen.rows === wantRows
+      },
+      `${app.name} 알약 펼침=${want} · 표현 ${wantShape} · 보이는 행 ${wantRows}`,
+      20_000
+    ).then(
+      () => true,
+      () => false
+    )
+    out[app.name] = { ...seen, converged }
+  }
+  return { want, wantShape, wantRows, ...out }
 }
 
 /**
@@ -356,8 +460,10 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
   const target = STATE_TARGETS[state]
   if (!target) return { reproduced: false, reason: `상태 '${state}' 는 이 도구가 아직 재현하지 못한다`, mismatched: ['정의없음'] }
 
-  const o = await applyOrcaState(orca, { repoId: orcaRepoId, tabCount: target.tabCount, agents: target.agents })
-  const c = await applyCorralState(corral, { tabCount: target.tabCount, agents: target.agents })
+  const agentOffset = target.leadingEmptyTabs ?? 0
+  const o = await applyOrcaState(orca, { repoId: orcaRepoId, tabCount: target.tabCount, agents: target.agents, agentOffset })
+  const c = await applyCorralState(corral, { tabCount: target.tabCount, agents: target.agents, agentOffset })
+  const expansion = await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length })
 
   const wantStatuses = target.agents.map((agent) => agent.state).slice().sort().join(',')
   const axes = [
@@ -391,15 +497,14 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
       corral: c.activeTabIndex ?? null
     },
     {
-      // 두 앱의 **표현 방식이 다르다** — Orca 는 2명 이상을 요약 한 줄로 접고, corral 은 pane 행을
-      // 그대로 그린다. 그래서 「같은 숫자」를 요구하지 않고 **각자 자기 기대와 맞는지**만 본다.
+      // LIFE-467 — 두 앱이 **같은 표현**을 쓴다 (루트 2개 이상 → 알약, 1개 → 행). 전에는 corral 이 pane 행을
+      // 그대로 그려서 「각자 자기 기대」만 봤다. 이제 표현·펼침·보이는 행 수를 같은 기대에 견준다.
       axis: 'renderedShape',
-      label: '화면 표현 (각 앱의 자기 기대)',
-      requested: `orca=${o.wantShape ?? '?'} / corral=pane ${target.agents.length}개`,
-      orca: o.rendered?.shape ?? null,
-      corral: c.domPanes ?? null,
-      expectOrca: o.wantShape ?? null,
-      expectCorral: target.agents.length
+      label: '화면 표현 (알약/행 · 펼침 · 보이는 행 수)',
+      requested: `${expansion.wantShape} · 펼침=${expansion.want} · 행 ${expansion.wantRows}`,
+      orca: `${expansion.orca.shape} · 펼침=${expansion.orca.expanded} · 행 ${expansion.orca.rows}`,
+      corral: `${expansion.corral.shape} · 펼침=${expansion.corral.expanded} · 행 ${expansion.corral.rows}`,
+      ok: expansion.orca.converged && expansion.corral.converged
     },
     {
       // **화면이 낡은 집계를 그리고 있으면 재현이 아니다** (G4). 이전 판은 수렴 대기가 타임아웃되면
@@ -415,6 +520,7 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
     }
   ]
   const compare = (axis) => {
+    if (typeof axis.ok === 'boolean') return axis.ok
     if (axis.corralOnly === true) return String(axis.corral) === String(axis.expectCorral)
     if (axis.axis === 'renderedShape') {
       return String(axis.orca) === String(axis.expectOrca) && String(axis.corral) === String(axis.expectCorral)
@@ -437,7 +543,8 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
     axes,
     mismatched,
     orca: o,
-    corral: c
+    corral: c,
+    expansion
   }
 }
 
@@ -732,6 +839,13 @@ async function main() {
           raw: `${rawRel}/${tag}-diff.json`
         })
         log(`${area.name}/${state}: 차이 ${result.summary.total}건 (자기 diff 잡음 ${noiseFloor.slice(-2).map((n) => n.total).join('/')})`)
+      }
+    }
+    // LIFE-467 U3 — 도구가 **주입 못 하는** S1 상태를 보류 + 사유로 싣는다 (관문 축이 아니다 — 재지 않은 것을
+    // 재현 실패로 세지 않고, 빈칸으로도 두지 않는다).
+    if (areas.some((area) => area.name === 'sidebar')) {
+      for (const entry of UNINJECTABLE_STATES) {
+        stateMatrix.push({ area: 'sidebar', state: entry.state, reproduced: false, reason: `보류 — 도구가 주입 못 함: ${entry.why}`, mismatched: [] })
       }
     }
     const results = [...byArea.values()]

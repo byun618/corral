@@ -244,9 +244,9 @@ export async function seedOrcaRepo(handle, repoPath, { expectedWorktrees = 2 } =
  * ② 탭 수를 목표에 맞춰 만들고/닫고 ③ 다시 넣은 뒤 ④ **스토어와 화면에서 관측값을 돌려준다**.
  * 판정은 호출자(`verifyState`)가 한다 — 여기서 「맞췄다」고 선언하지 않는다.
  */
-export async function applyOrcaState(handle, { repoId, tabCount, agents }) {
+export async function applyOrcaState(handle, { repoId, tabCount, agents, agentOffset = 0 }) {
   const observed = await handle.cdp.evaluate(
-    async ({ repoId, tabCount, agents }) => {
+    async ({ repoId, tabCount, agents, agentOffset }) => {
       const store = window.__store
       if (!store) throw new Error('window.__store 없음')
       const get = () => store.getState()
@@ -272,7 +272,8 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents }) {
 
       // ③ 탭 하나에 에이전트 하나. 시각은 **지금**이어야 한다 — 오래된 값은 신선도 검사
       //    (`AGENT_STATUS_STALE_AFTER_MS`)에 걸려 행이 통째로 사라진다.
-      const tabs = tabIdsOf().slice(0, agents.length)
+      // `agentOffset` — 앞쪽 빈 탭 수 (LIFE-467 `done` 상태: 에이전트를 포커스 안 된 탭에 둔다).
+      const tabs = tabIdsOf().slice(agentOffset, agentOffset + agents.length)
       const now = Date.now()
       const paneKeys = []
       tabs.forEach((tabId, index) => {
@@ -282,7 +283,8 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents }) {
         paneKeys.push(paneKey)
         get().setAgentStatus(
           paneKey,
-          { state: spec.state, prompt: spec.prompt, agentType: spec.agentType },
+          // 긴 이름 (LIFE-467 K8 `long-name`) — Orca 행 글 칸의 주입 가능한 원천은 hook 페이로드의 마지막 답 줄이다.
+          { state: spec.state, prompt: spec.prompt, agentType: spec.agentType, ...(spec.title ? { lastAssistantMessage: spec.title } : {}) },
           spec.agentType,
           { updatedAt: now, stateStartedAt: now }
         )
@@ -314,7 +316,7 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents }) {
         worktreeCardProperties: get().worktreeCardProperties
       }
     },
-    { repoId, tabCount, agents }
+    { repoId, tabCount, agents, agentOffset }
   )
 
   // 화면이 스토어를 따라왔는지 **기다린다** (L9). 이전 판은 `pause(900)` 한 줄이었고, 그 흔들림은

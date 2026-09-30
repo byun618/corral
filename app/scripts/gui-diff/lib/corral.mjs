@@ -8,6 +8,7 @@
 // 래퍼로 `--remote-debugging-port` 를 Electron 바이너리에 직접 넘긴다 —
 // `app/scripts/l391-first/gui-verify.mjs:38-41` 이 Electron 44 에서 이 방법으로 붙은 전례다.
 
+/* global document -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
@@ -243,7 +244,7 @@ export async function seedCorralRepo(handle, repoPath, { expectedWorktrees = 2 }
  *
  * 판정은 하지 않는다 — 관측값만 돌려주고 호출자(`verifyState`)가 요청과 견준다.
  */
-export async function applyCorralState(handle, { tabCount, agents }) {
+export async function applyCorralState(handle, { tabCount, agents, agentOffset = 0 }) {
   const workspaceId = handle.workspaceId ?? 'w1'
   const listTabs = async () => {
     const snapshot = await backendRpc(handle, 'session.snapshot')
@@ -253,7 +254,9 @@ export async function applyCorralState(handle, { tabCount, agents }) {
       focusedTabId: snapshot?.snapshot?.focused_tab_id ?? null
     }
   }
-  const natural = (id) => Number(String(id).replace(/^.*?[tp](\d+)$/, '$1')) || 0
+  // herdr id 의 번호는 10 을 넘으면 `tA`·`pB` 처럼 글자로 간다 (실측 — LIFE-467 K8 첫 회차 `w1:tA`).
+  // 10진으로만 읽으면 `tA` 가 0 이 되어 **맨 앞**으로 정렬되고, 첫 에이전트가 화면상 마지막 탭에 꽂혔다.
+  const natural = (id) => parseInt(String(id).replace(/^.*?[tp]([0-9a-z]+)$/i, '$1'), 36) || 0
   const sorted = (rows, key) =>
     [...rows].sort((a, b) => natural(a[key]) - natural(b[key]) || String(a[key]).localeCompare(String(b[key])))
 
@@ -281,19 +284,46 @@ export async function applyCorralState(handle, { tabCount, agents }) {
   // ② 탭 하나에 에이전트 하나 — 그 탭의 루트 pane 에 보고한다.
   const orderedTabs = sorted((await listTabs()).tabs, 'tab_id')
   const applied = []
-  for (let index = 0; index < Math.min(agents.length, orderedTabs.length); index += 1) {
+  for (let index = 0; index < Math.min(agents.length, orderedTabs.length - agentOffset); index += 1) {
     const spec = agents[index]
-    const tabId = orderedTabs[index].tab_id
+    // `agentOffset` — 앞쪽 빈 탭 수 (LIFE-467 `done` 상태: 에이전트를 포커스 안 된 탭에 둔다).
+    const tabId = orderedTabs[index + agentOffset].tab_id
     const { panes } = await listTabs()
     const rootPane = sorted(panes.filter((pane) => pane.tab_id === tabId), 'pane_id')[0]
     if (!rootPane) throw new Error(`[corral] 탭 ${tabId} 에 pane 이 없다`)
-    await backendRpc(handle, 'pane.report_agent', {
-      pane_id: rootPane.pane_id,
-      source: 'l443-gui-diff',
-      agent: spec.agentType,
-      state: spec.state,
-      message: spec.prompt
-    })
+    // `done` 은 herdr 가 **보고로 받는 상태가 아니다** — 「끝났는데 아직 안 봄」이라 herdr 가 working→idle 전이를
+    // 포커스 안 된 pane 에서 볼 때 스스로 매긴다(①의 실측과 같은 규칙). 그래서 두 번 보고한다. 이 pane 이
+    // 포커스된 첫 탭이면 곧장 idle 로 내려가니, 상태 정의가 done 을 첫 탭에 두지 않는다 (LIFE-467 K8).
+    const reports = spec.state === 'done' ? ['working', 'idle'] : [spec.state]
+    for (const state of reports) {
+      await backendRpc(handle, 'pane.report_agent', {
+        pane_id: rootPane.pane_id,
+        source: 'l443-gui-diff',
+        agent: spec.agentType,
+        state,
+        message: spec.prompt
+      })
+    }
+    // 긴 이름 (LIFE-467 K8 `long-name`) — corral 행 제목의 주입 가능한 유일한 원천은 **터미널 제목(OSC 2)** 이다
+    // (provider 제목·첫 프롬프트는 세션 파일에서만 온다). 셸 precmd 가 제목을 덮지 않게 `sleep` 을 뒤에 붙인다.
+    if (typeof spec.title === 'string') {
+      const quoted = spec.title.replace(/'/g, `'\\''`)
+      await backendRpc(handle, 'pane.send_text', { pane_id: rootPane.pane_id, text: `printf '\\033]2;%s\\007' '${quoted}'; sleep 900\r` })
+      await until(
+        () =>
+          handle.cdp.evaluate(
+            // 끝 글자로 본다 — corral 은 터미널 제목을 **왼쪽에서 15자로** 자른다(`truncatePathLeft`, 기존 동작 —
+            // 실측 `..w never wraps`). 그래서 이 경로로는 corral 에 긴 글이 안 선다 (UNINJECTABLE_STATES 에 보류로 적었다).
+            (tail) => [...document.querySelectorAll('.session-row-title')].some((el) => (el.textContent ?? '').endsWith(tail)),
+            spec.title.slice(-12)
+          ),
+        `corral 행 제목이 주입한 긴 이름 (${spec.title.slice(0, 24)}…)`,
+        15_000
+      ).catch(async (error) => {
+        const seen = await handle.cdp.evaluate(() => [...document.querySelectorAll('.session-row-title')].map((el) => el.textContent))
+        throw new Error(`${error.message} — 화면의 행 제목: ${JSON.stringify(seen)}`)
+      })
+    }
     applied.push({ tab: tabId, pane: rootPane.pane_id, ...spec })
   }
 

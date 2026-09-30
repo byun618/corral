@@ -40,6 +40,10 @@
 // grok (`updates.jsonl`, 00-analysis P6):
 //   `background_tasks` 는 **전체 스냅샷**이라 마지막 스냅샷의 `status:'running'` 이 지금 도는 작업이다. `task_completed` 는
 //   스냅샷이 오기 전의 끝을 보탠다. 형제 파일 꼬리 창(256KB) 밖의 스냅샷도 누적 판독이라 잃지 않는다(P1 — 12 중 8).
+//   서브에이전트(네이티브 유도 표본 1건, grok 1.0.44 — `raw/claude/l10/runs/n37-grok-subagent-attempt.txt`·`n38-grok-subagent-shape.txt`):
+//   `subagent_spawned{subagent_id, subagent_type, description…}` 가 시작, `subagent_finished{subagent_id, status}` 가 끝이다.
+//   시작 시각은 줄의 `params._meta.agentTimestampMs`. `background` 는 앞선 `spawn_subagent` 호출의 `rawInput.background` 를
+//   **호출 순서대로** 짝짓는다(시작 레코드에 호출 id 가 없다) — 짝이 없으면 false.
 import fs from 'node:fs'
 import { isRecord, readString } from '../shared/json.js'
 import type { BackgroundTask, SessionLifecycle, SessionSubagent } from '../shared/types.js'
@@ -62,7 +66,13 @@ export type LedgerState =
       /** 도는 서브에이전트 — 동기는 tool_use id, 비동기는 agentId 로 잡는다. */
       subagents: Map<string, SessionSubagent>
     }
-  | { agent: 'grok'; tasks: Map<string, BackgroundTask> }
+  | {
+      agent: 'grok'
+      tasks: Map<string, BackgroundTask>
+      subagents: Map<string, SessionSubagent>
+      /** 아직 `subagent_spawned` 를 못 본 `spawn_subagent` 호출의 `background` — 호출 순서대로 짝짓는다. */
+      spawnQueue: boolean[]
+    }
 
 /** 파일 하나의 누적 판독 상태. */
 export type Ledger = {
@@ -84,7 +94,7 @@ export type Ledger = {
 export function emptyLedgerState(agent: 'claude' | 'grok'): LedgerState {
   return agent === 'claude'
     ? { agent: 'claude', tasks: new Map(), calls: new Map(), subagents: new Map() }
-    : { agent: 'grok', tasks: new Map() }
+    : { agent: 'grok', tasks: new Map(), subagents: new Map(), spawnQueue: [] }
 }
 
 /** 이번 stat 에서 다시 읽을 게 없나 — 끝까지 따라잡았고 파일이 그대로다. */
@@ -171,7 +181,7 @@ export function ledgerView(ledger: Ledger): SessionLifecycle {
 
 export function stateView(state: LedgerState): SessionLifecycle {
   const tasks = byStart([...state.tasks.values()])
-  const subagents = state.agent === 'claude' ? byStart([...state.subagents.values()]) : []
+  const subagents = byStart([...state.subagents.values()])
   return {
     state: 'known',
     tasks: tasks.slice(0, LIFECYCLE_MAX_ITEMS),
@@ -192,7 +202,7 @@ function byStart<T extends { startedAt: number | null; id: string }>(items: T[])
  * 걸러도 틀리지 않는 이유: 아래 표지 전부가 이 문자열 중 하나를 원문 그대로 품는다.
  */
 const CLAUDE_MARKERS = ['"tool_use"', '"toolUseResult"', '<task-notification>', '"agents_killed"', '"cost-state"']
-const GROK_MARKERS = ['"background_tasks"', '"task_completed"']
+const GROK_MARKERS = ['"background_tasks"', '"task_completed"', '"spawn_subagent"', '"subagent_spawned"', '"subagent_finished"']
 
 export function applyLines(input: { state: LedgerState; text: string }): void {
   const markers = input.state.agent === 'claude' ? CLAUDE_MARKERS : GROK_MARKERS
@@ -359,7 +369,35 @@ function applyGrokRecord(input: { state: GrokState; record: Record<string, unkno
   const params = input.record['params']
   const update = isRecord(params) && isRecord(params['update']) ? params['update'] : null
   if (update === null) return
+  const meta = isRecord(params) && isRecord(params['_meta']) ? params['_meta'] : null
+  const at = meta !== null && typeof meta['agentTimestampMs'] === 'number' ? meta['agentTimestampMs'] : null
   switch (readString(update, 'sessionUpdate')) {
+    case 'tool_call': {
+      if (update['title'] !== 'spawn_subagent') return
+      const rawInput = update['rawInput']
+      input.state.spawnQueue.push(isRecord(rawInput) && rawInput['background'] === true)
+      return
+    }
+    case 'subagent_spawned': {
+      const id = readString(update, 'subagent_id')
+      const background = input.state.spawnQueue.shift() ?? false
+      if (id === null) return
+      input.state.subagents.set(id, {
+        id,
+        name: null,
+        description: oneLine(readString(update, 'description')),
+        agentType: readString(update, 'subagent_type'),
+        background,
+        startedAt: at,
+        status: 'running',
+      })
+      return
+    }
+    case 'subagent_finished': {
+      const id = readString(update, 'subagent_id')
+      if (id !== null) input.state.subagents.delete(id)
+      return
+    }
     case 'background_tasks': {
       // 전체 스냅샷 — 지금 도는 것만 남긴다. `kind` 는 관측된 `bash` 만 옮긴다(다른 값은 지어내지 않는다).
       const tasks = Array.isArray(update['tasks']) ? update['tasks'] : []

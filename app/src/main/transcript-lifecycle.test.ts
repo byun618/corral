@@ -478,6 +478,29 @@ describe('L5 grok updates.jsonl — background_tasks 스냅샷', () => {
     expect(known(grokLife()).tasks.map((row) => row.id)).toEqual(['1'])
   })
 
+  it('서브에이전트 — subagent_spawned 부터 subagent_finished 까지, background 는 spawn_subagent 호출과 순서로 짝', () => {
+    const meta = (ms: number) => ({ eventId: 'e', agentTimestampMs: ms })
+    const spawnCall = (background: boolean) => ({ timestamp: 1, method: 'session/update', params: { sessionId: 'ID', update: { sessionUpdate: 'tool_call', toolCallId: 'c', title: 'spawn_subagent', rawInput: { background, description: 'd', prompt: 'p' } }, _meta: meta(1) } })
+    // 키 순서 = 네이티브 표본(n38)
+    const spawned = (id: string, ms: number) => ({
+      timestamp: 1,
+      method: 'session/update',
+      params: {
+        sessionId: 'ID',
+        update: { sessionUpdate: 'subagent_spawned', subagent_id: id, attempt_id: 'a', parent_session_id: 'p', parent_prompt_id: 'q', child_session_id: 'c', subagent_type: 'general', description: `서브 ${id}`, effective_context_source: 'x', model: 'm' },
+        _meta: meta(ms),
+      },
+    })
+    const finished = (id: string) => ({ timestamp: 1, method: 'session/update', params: { sessionId: 'ID', update: { sessionUpdate: 'subagent_finished', subagent_id: id, attempt_id: 'a', child_session_id: 'c', status: 'completed', tool_calls: 1, turns: 1, duration_ms: 1, tokens_used: 1, output: 'o', will_wake: true }, _meta: meta(9) } })
+    fs.writeFileSync(updates, jsonl([spawnCall(true), spawned('s1', 1_000), spawnCall(false), spawned('s2', 2_000)]))
+    expect(known(grokLife()).subagents).toEqual([
+      { id: 's1', name: null, description: '서브 s1', agentType: 'general', background: true, startedAt: 1_000, status: 'running' },
+      { id: 's2', name: null, description: '서브 s2', agentType: 'general', background: false, startedAt: 2_000, status: 'running' },
+    ])
+    fs.appendFileSync(updates, jsonl([finished('s1'), finished('ghost')]))
+    expect(known(grokLife()).subagents.map((row) => row.id)).toEqual(['s2'])
+  })
+
   it('updates.jsonl 이 없으면 출처 없음', () => {
     expect(grokLife()).toEqual({ state: 'unknown', reason: 'no-source' })
   })

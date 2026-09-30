@@ -43,7 +43,8 @@ export function resolveLineage(state: OrchestrationState, live: LivePanes): Orch
   }
 
   // L4: reuse can close a loop (A starts a worker in B, later B hands A a Task). Cut the edge whose
-  // attempt is oldest — the newer attempt describes the panes as they are now.
+  // attempt is oldest — the newer attempt describes the panes as they are now. A pane named as its own
+  // parent (`worker-start --terminal` run from the pane it reuses) is a loop of one and is cut here too.
   const parent = new Map(children.map(child => [child.entry.target.paneId, child.parentPaneId]))
   const order = new Map(state.dispatches.map((entry, index) => [entry.id, index]))
   for (const child of children) {
@@ -72,8 +73,6 @@ function parentOf(entry: DispatchRecord, live: LivePanes, ptyOf: ReadonlyMap<str
   if (spawner.epoch === null || spawner.ptyId === null) return null
   if (!sameBackendSession(spawner.session, entry.worker?.paneSession ?? null)) return null
   if (spawner.epoch !== live.epoch || ptyOf.get(spawner.paneId) !== spawner.ptyId) return null
-  // A pane cannot be its own parent — `worker-start --terminal` run from the pane it reuses.
-  if (spawner.paneId === entry.target.paneId) return null
   return spawner.paneId
 }
 

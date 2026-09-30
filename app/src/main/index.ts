@@ -981,7 +981,7 @@ const lineage = new LineageFeed({
     },
     read: () => new OrchestrationStore(app.getPath('userData')).read(),
     observe: () => observePanes({ signal: AbortSignal.timeout(2000), deadlineAt: Date.now() + 2000 }),
-    sameSocket: (a, b) => realSocket(a) === realSocket(b),
+    sameSocket: ({ a, b }) => realSocket(a) === realSocket(b),
   },
   onChange: () => {
     const current = lineage.current()

@@ -54,7 +54,7 @@ function harness() {
       return world.state
     },
     observe: async () => { world.observes++; await world.pending; return world.snapshot },
-    sameSocket: (a, b) => a === b,
+    sameSocket: ({ a, b }) => a === b,
   }
   const feed = new LineageFeed({ source, onChange: () => { world.emits++ } })
   return { world, feed }

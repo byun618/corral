@@ -27,7 +27,7 @@ export interface LineageSource {
   read: () => OrchestrationState
   observe: () => Promise<PaneSnapshot>
   /** 두 소켓 경로가 같은 파일인가 (심링크·`/private` 접두를 푼다). */
-  sameSocket: (a: string, b: string) => boolean
+  sameSocket: (pair: { a: string; b: string }) => boolean
 }
 
 const UNOBSERVED: OrchestrationLineage = { state: 'unavailable', reason: 'unobserved' }
@@ -45,11 +45,11 @@ export class LineageFeed {
   }
 
   current(): OrchestrationLineage {
-    return this.sameGui(this.last.gui, this.source.guiSocket()) ? this.last.lineage : UNOBSERVED
+    return this.sameGui({ a: this.last.gui, b: this.source.guiSocket() }) ? this.last.lineage : UNOBSERVED
   }
 
-  private sameGui(a: string | null, b: string | null): boolean {
-    return a === null || b === null ? a === b : this.source.sameSocket(a, b)
+  private sameGui({ a, b }: { a: string | null; b: string | null }): boolean {
+    return a === null || b === null ? a === b : this.source.sameSocket({ a, b })
   }
 
   private refreshing = false
@@ -62,7 +62,7 @@ export class LineageFeed {
       const gui = this.source.guiSocket()
       const next = await this.compute(gui)
       // 계산하는 사이 화면 세션이 바뀌었으면 이 값은 이전 세션의 것이다 — 버리고 다음 회차에 맡긴다.
-      if (!this.sameGui(gui, this.source.guiSocket())) return
+      if (!this.sameGui({ a: gui, b: this.source.guiSocket() })) return
       const changed = JSON.stringify(next) !== JSON.stringify(this.current())
       this.last = { lineage: next, gui }
       if (changed) this.onChange()
@@ -73,7 +73,7 @@ export class LineageFeed {
     const backend = this.source.runtimeBackend()
     if (backend === null) return { state: 'unavailable', reason: 'no_backend' }
     // 런타임과 화면이 다른 세션이면 pane id 가 다른 이름공간이다 — 같은 `w1:p1` 이 다른 pane 이다.
-    if (gui === null || !this.source.sameSocket(gui, backend.socket)) return { state: 'unavailable', reason: 'session_mismatch' }
+    if (gui === null || !this.source.sameSocket({ a: gui, b: backend.socket })) return { state: 'unavailable', reason: 'session_mismatch' }
     const stamp = this.source.stamp()
     if (stamp === null) return { state: 'ready', entries: [] }
     let state: OrchestrationState

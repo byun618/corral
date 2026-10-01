@@ -64,7 +64,7 @@ describe('R1-04 — GUI 로 제거한 레포 키는 옛 목록으로 되살아�
   it('[B,A,C] 에서 B 제거(트리 갱신 전) → D 등록 → B 재등록 = [A,C,D,B] (리뷰 r1 재현 removeThenRegister)', () => {
     const t = setup(['/a', '/b', '/c'])
     let api = t.render()
-    api.hydrate({ manualRepoOrder: ['/b', '/a', '/c'], manualWorktreeOrder: { '/a': [], '/b': [], '/c': [] } })
+    api.hydrate({ manualRepoOrder: ['/b', '/a', '/c'], manualWorktreeOrder: { '/a': ['/a'], '/b': ['/b'], '/c': ['/c'] } })
     api = t.render()
     // 제거 IPC 응답 — 트리도, 렌더러가 본 레지스트리도 아직 B 를 담고 있다.
     api.forget({ root: '/b', registryGeneration: t.remove('/b') })
@@ -143,17 +143,17 @@ describe('R2-01 — 제거·재등록 사이의 「B 없는」 스냅샷이 오�
     return { reposAfter, bWorktrees: t.visibleWorktrees(api, '/b'), storedB: api.order.worktrees['/b'] }
   }
 
-  it('B 없는 트리 없이 재등록 → D 추가 = [A,C,B,D], B 새 워크트리 zulu = [main, zulu, alpha]', () => {
+  it('B 없는 트리 없이 재등록 → D 추가 = [A,C,B,D], B 새 워크트리 zulu = [zulu, main, alpha](새것은 main 위 — 게이트 ① 수정 1)', () => {
     const got = removeThenReaddWithoutAbsentTree({ deliverAbsentTree: false })
     expect(got.reposAfter).toEqual({ stored: ['/a', '/c', '/b', '/d'], visible: ['/a', '/c', '/b', '/d'] })
-    expect(got.bWorktrees).toEqual(['/b', '/b-wt/zulu', '/b-wt/alpha'])
-    expect(got.storedB).toEqual(['/b-wt/zulu', '/b-wt/alpha'])
+    expect(got.bWorktrees).toEqual(['/b-wt/zulu', '/b', '/b-wt/alpha'])
+    expect(got.storedB).toEqual(['/b-wt/zulu', '/b', '/b-wt/alpha'])
   })
 
   it('양성 대조 — B 없는 트리를 한 번 받아도 같은 결과', () => {
     const got = removeThenReaddWithoutAbsentTree({ deliverAbsentTree: true })
     expect(got.reposAfter).toEqual({ stored: ['/a', '/c', '/b', '/d'], visible: ['/a', '/c', '/b', '/d'] })
-    expect(got.bWorktrees).toEqual(['/b', '/b-wt/zulu', '/b-wt/alpha'])
+    expect(got.bWorktrees).toEqual(['/b-wt/zulu', '/b', '/b-wt/alpha'])
   })
 
   it('제거 뒤 세대라도 B 가 레지스트리에 없으면(다른 레포 추가) 대기는 유지 — 옛 트리가 B 를 다시 끼우지 않는다', () => {

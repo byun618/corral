@@ -12,8 +12,11 @@
 //   --stop-after <검사 id>  그 검사까지만 돌고 정리한다(재현 시도용)
 //   --no-focus-emulation    포커스 에뮬레이션을 끈다(run3 조건 재현)
 //   --trace                 입력 이벤트(좌표·buttons·시각·표시 줄 위치·카드 경계)를 페이지 안팎에서 기록 → <out>/trace-<검사 id>.json
+//
+// 게이트 ① 사용자 수정 1 — 주 체크아웃도 옮긴다(K2ⓑ'): 카드 경계 번호는 **주 체크아웃 포함** 그 레포 카드 전체 기준이다.
+// 옛 K2b-main-no-drag·K2b-not-above-main 은 K2b'-main-drag·K2b'-above-main 으로 바꿨다. K3ⓗ 미리 보기 검사를 더했다.
 
-/* global document, window, getComputedStyle, KeyboardEvent, Event -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
+/* global document, window, getComputedStyle, KeyboardEvent, Event, DOMMatrixReadOnly -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -57,8 +60,27 @@ function moveTo(list, key, slot) {
   rest.splice(to, 0, key)
   return rest
 }
-/** 카드 기대 순서 — 주 체크아웃(첫 행)은 고정, 연결 워크트리 안에서 옮긴다. */
-const moveLinked = (rows, key, slot) => [rows[0], ...moveTo(rows.slice(1), key, slot)]
+
+/**
+ * 미리 보기 기대값 — 제품(`buildReorderPreview`)과 따로 쓴 같은 규칙(198 `buildWorktreeDragPreviewOffsets`): 바뀐 순서를 밀리기
+ * 전 높이와 각 항목 뒤 틈(마지막은 틈 중앙값)으로 첫 윗변부터 다시 쌓는다. `offsets[i]` = 새 윗변 − 지금 윗변(끄는 항목 0),
+ * `landedTop` = 끄는 항목이 들어갈 윗변(제자리면 지금 윗변).
+ */
+function expectedPreview(rects, from, slot) {
+  const order = moveTo(rects.map((_, index) => index), from, slot)
+  const gaps = rects.slice(1).map((rect, index) => Math.max(0, rect.top - rects[index].bottom))
+  const sorted = [...gaps].sort((a, b) => a - b)
+  const fallback = sorted[Math.floor(sorted.length / 2)] ?? 0
+  const offsets = rects.map(() => 0)
+  let top = rects[0].top
+  let landedTop = rects[from].top
+  for (const index of order) {
+    if (index === from) landedTop = top
+    else offsets[index] = Math.abs(top - rects[index].top) < 0.5 ? 0 : top - rects[index].top
+    top += rects[index].bottom - rects[index].top + (gaps[index] ?? fallback)
+  }
+  return { offsets, landedTop }
+}
 
 // --- fixture ------------------------------------------------------------------------------------------
 const git = (cwd, ...rest) => execFileSync('git', rest, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -364,7 +386,7 @@ async function main() {
   fs.writeFileSync(path.join(out, 'prefs-after-first-launch.json'), JSON.stringify(firstPrefs, null, 2))
   const legacyKept = Object.entries(legacy).every(([key, value]) => same(firstPrefs?.[key], value))
   check('K6b-1', 'K6ⓑ 첫 기동 뒤 기존 칸 7종+version 보존', legacyKept, { legacyHash, after: prefsHash() })
-  check('K6c-1', 'K6ⓒ 첫 드래그 전 materialize 기록(파일을 쓴다)', same(firstPrefs?.manualRepoOrder, byName) && same(firstPrefs?.manualWorktreeOrder?.[alpha], expectAlpha.slice(1)), {
+  check('K6c-1', 'K6ⓒ 첫 드래그 전 materialize 기록(파일을 쓴다 — 주 체크아웃 포함, 게이트 ① 수정 1)', same(firstPrefs?.manualRepoOrder, byName) && same(firstPrefs?.manualWorktreeOrder?.[alpha], expectAlpha), {
     manualRepoOrder: firstPrefs?.manualRepoOrder,
     alpha: firstPrefs?.manualWorktreeOrder?.[alpha],
   })
@@ -429,51 +451,54 @@ async function main() {
   // ── K2ⓐ 카드 — 맨 위·맨 아래·가운데. ⓒ 종류: detached(a-det)·닫힘(a-two)·열림 비선택(a-three)·선택+에이전트(a-one) ──
   const alphaWts = () => snapshot().then((s) => wtOrder(s, alpha))
   let before = await alphaWts()
-  let want = moveLinked(before, wtA('a-two'), 0)
-  await dragFor('K2a-top-closed', await cardPoint(wtA('a-two')), await cardSlotPoint(alpha, 0))
+  // 카드 경계 번호는 주 체크아웃 포함 — 1 = 주 체크아웃 바로 아래(연결 맨 위).
+  let want = moveTo(before, wtA('a-two'), 1)
+  await dragFor('K2a-top-closed', await cardPoint(wtA('a-two')), await cardSlotPoint(alpha, 1))
   let after = await alphaWts()
   await traceDump('K2a-top-closed')
   check('K2a-top-closed', 'K2ⓐ·ⓒ 닫힌 카드 a-two → 맨 위(주 체크아웃 아래) — 기대 배열 전체 대조', same(after, want) && !same(before, want), { before, want, after })
   before = after
-  want = moveLinked(before, wtA('a-det'), before.length)
+  want = moveTo(before, wtA('a-det'), before.length)
   await dragFor('K2a-bottom-detached', await cardPoint(wtA('a-det')), await cardSlotPoint(alpha, 9))
   after = await alphaWts()
   check('K2a-bottom-detached', 'K2ⓐ·ⓒ detached 카드 a-det → 맨 아래 — 기대 배열 전체 대조', same(after, want) && !same(before, want), { before, want, after })
   before = after
   snap = await snapshot()
   const selBefore = snap.repos.find((repo) => repo.root === alpha).selected
-  // 연결 경계 3 = 셋째 연결 카드 앞. a-one 이 이미 가운데여도 자리는 바뀐다(run10: [two,one,three,det] → [two,three,one,det]).
-  want = moveLinked(before, wtA('a-one'), 3)
-  await dragFor('K2a-middle-selected-agent', await cardPoint(wtA('a-one')), await cardSlotPoint(alpha, 3))
+  // 경계 4 = 셋째 연결 카드 앞(주 체크아웃 포함 번호). a-one 이 이미 가운데여도 자리는 바뀐다(run10: [two,one,three,det] → [two,three,one,det]).
+  want = moveTo(before, wtA('a-one'), 4)
+  await dragFor('K2a-middle-selected-agent', await cardPoint(wtA('a-one')), await cardSlotPoint(alpha, 4))
   after = await alphaWts()
   snap = await snapshot()
   const alphaNow = snap.repos.find((repo) => repo.root === alpha)
   check('K2a-middle-selected-agent', 'K2ⓐ·ⓒ 선택+에이전트 카드 a-one → 가운데 — 기대 배열 전체 대조(이동 없음이면 실패)', same(after, want) && !same(before, want), { before, want, after })
   check('K2e-selected-kept', 'K2ⓔ 드래그 뒤 선택·열림·에이전트 행 유지', same(alphaNow.selected, selBefore) && alphaNow.open.includes(wtA('a-one')) && alphaNow.agentRows[wtA('a-one')] > 0, alphaNow)
   before = after
-  want = moveLinked(before, wtA('a-three'), 0)
-  await dragFor('K2c-open-unselected', await cardPoint(wtA('a-three')), await cardSlotPoint(alpha, 0))
+  want = moveTo(before, wtA('a-three'), 1)
+  await dragFor('K2c-open-unselected', await cardPoint(wtA('a-three')), await cardSlotPoint(alpha, 1))
   after = await alphaWts()
   snap = await snapshot()
-  check('K2c-open-unselected', 'K2ⓒ 열린 비선택 카드 a-three → 맨 위(기대 배열 전체), 드래그 뒤 선택 무변경(클릭 없음)', same(after, want) && !same(before, want) && same(snap.repos.find((repo) => repo.root === alpha).selected, selBefore), { before, want, after, selected: snap.repos.find((repo) => repo.root === alpha).selected })
+  check('K2c-open-unselected', 'K2ⓒ 열린 비선택 카드 a-three → 연결 맨 위(주 체크아웃 아래, 기대 배열 전체), 드래그 뒤 선택 무변경(클릭 없음)', same(after, want) && !same(before, want) && same(snap.repos.find((repo) => repo.root === alpha).selected, selBefore), { before, want, after, selected: snap.repos.find((repo) => repo.root === alpha).selected })
   const fileWt = readPrefs().manualWorktreeOrder[alpha]
-  check('K2a-file', 'K2ⓐ 파일의 alpha 순서 = 화면(주 체크아웃 제외)', same(fileWt, after.slice(1)), { file: fileWt, screen: after })
+  check('K2a-file', 'K2ⓐ 파일의 alpha 순서 = 화면(주 체크아웃 포함 — 게이트 ① 수정 1)', same(fileWt, after), { file: fileWt, screen: after })
 
-  // ── K2ⓑ 주 체크아웃: 끌리지 않는다 · 그 위로 놓을 수 없다 ──
+  // ── K2ⓑ' 주 체크아웃 이동(게이트 ① 사용자 수정 1 — K2ⓑ 고정 폐지). 옛 K2b-main-no-drag·K2b-not-above-main 을 바꿨다 ──
+  // ① 다른 카드를 주 체크아웃 위(경계 0)에 놓는다 → 그 카드가 맨 위, 주 체크아웃이 둘째.
   before = await alphaWts()
   let hash = prefsHash()
-  const mainP = await cardPoint(alpha)
-  const mainMid = await drag(mainP, { x: mainP.x, y: mainP.y + 120 }, { during: async () => snapshot() })
-  after = await alphaWts()
-  check('K2b-main-no-drag', 'K2ⓑ 주 체크아웃 카드는 끌리지 않는다(드래그 상태·표시 줄 없음, 순서·파일 무변경)', !mainMid.reordering && !mainMid.indicator && same(before, after) && prefsHash() === hash, { during: { reordering: mainMid.reordering, indicator: mainMid.indicator }, before, after })
-  await click(await cardPoint(wtA('a-one'))) // 주 체크아웃 클릭으로 선택이 바뀌었을 수 있다 — 되돌린다
-  before = await alphaWts()
   const lastLinked = before[before.length - 1]
-  const mainTop = await pointOf({ attr: 'data-worktree', value: alpha, fy: 0.2 })
-  want = moveLinked(before, lastLinked, 0)
-  await dragFor('K2b-not-above-main', await cardPoint(lastLinked), mainTop)
+  want = moveTo(before, lastLinked, 0)
+  const aboveMid = await dragFor("K2b'-above-main", await cardPoint(lastLinked), await cardSlotPoint(alpha, 0), { during: async () => snapshot() })
   after = await alphaWts()
-  check('K2b-not-above-main', 'K2ⓑ 주 체크아웃 위에 놓으면 주 체크아웃 바로 아래(연결 맨 위)로 — 주 체크아웃은 맨 위 그대로, 기대 배열 전체', same(after, want) && !same(before, want) && after[0] === alpha, { before, want, after, dropped: lastLinked })
+  check("K2b'-above-main", "K2ⓑ' 다른 카드를 주 체크아웃 위에 놓으면 맨 위로(주 체크아웃이 둘째) — 표시 줄 있음, 기대 배열 전체, 파일 = 화면", aboveMid?.indicator === true && same(after, want) && !same(before, want) && after[1] === alpha && same(readPrefs().manualWorktreeOrder[alpha], after), { before, want, after, dropped: lastLinked, file: readPrefs().manualWorktreeOrder[alpha], duringIndicator: aboveMid?.indicator ?? null })
+  // ② 주 체크아웃 카드를 끌어 맨 아래로 → 재시작 뒤에도 맨 아래(K4ⓐ 에서 K2b'-restart 로 본다).
+  before = after
+  want = moveTo(before, alpha, before.length)
+  const mainMid = await dragFor("K2b'-main-drag", await cardPoint(alpha), await cardSlotPoint(alpha, 99), { during: async () => snapshot() })
+  after = await alphaWts()
+  snap = await snapshot()
+  check("K2b'-main-drag", "K2ⓑ' 주 체크아웃 카드가 끌린다 — 드래그 상태·표시 줄 있음, 맨 아래로(기대 배열 전체), 파일 = 화면, 선택 무변경", mainMid?.reordering === true && mainMid?.indicator === true && same(after, want) && !same(before, want) && same(readPrefs().manualWorktreeOrder[alpha], after) && same(snap.repos.find((repo) => repo.root === alpha).selected, selBefore), { before, want, after, file: readPrefs().manualWorktreeOrder[alpha], during: { reordering: mainMid?.reordering ?? null, indicator: mainMid?.indicator ?? null }, selected: snap.repos.find((repo) => repo.root === alpha).selected })
+  const mainMovedOrder = after
 
   // ── K2ⓓ 다른 레포 위에 놓기 = 취소 ──
   before = await alphaWts()
@@ -674,6 +699,205 @@ async function main() {
     indicatorProbe,
   )
 
+  // ── K3ⓗ 드래그 미리 보기(게이트 ① 사용자 수정 1) — 사본·행 밀림(198 값)·밀리기 전 판정·표시 줄 = 결과·취소 잔존 없음·캡처 ──
+  /** 드래그 중 미리 보기 상태. `kind` 'card' 면 `root` 레포의 카드, 'repo' 면 레포 묶음의 밀림을 읽는다. */
+  const previewProbe = (query) =>
+    cdp.evaluate((q) => {
+      const list = document.querySelector('[data-repo-list]')
+      const groups = [...list.querySelectorAll(':scope > [data-repo]')]
+      const items = q.kind === 'card' ? [...groups.find((g) => g.getAttribute('data-repo') === q.root).querySelectorAll('[data-reorder-card]')] : groups
+      const keyOf = (el) => el.getAttribute(q.kind === 'card' ? 'data-reorder-card' : 'data-repo')
+      const m42 = (el) => {
+        const t = getComputedStyle(el).transform
+        return t === 'none' ? 0 : new DOMMatrixReadOnly(t).m42
+      }
+      const previews = [...document.querySelectorAll('[data-sidebar-drag-preview="true"]')]
+      const p = previews[0]
+      const ps = p ? getComputedStyle(p) : null
+      const ind = document.querySelector('[data-reorder-indicator]')
+      const ir = ind?.getBoundingClientRect()
+      const src = list.querySelector('.is-reorder-source')
+      return {
+        previewCount: previews.length,
+        preview: p
+          ? {
+              kind: p.getAttribute('data-sidebar-drag-preview-kind'),
+              top: p.getBoundingClientRect().top,
+              left: p.getBoundingClientRect().left,
+              opacity: ps.opacity,
+              filter: ps.filter,
+              zIndex: ps.zIndex,
+              transform: ps.transform,
+              position: ps.position,
+              pointerEvents: ps.pointerEvents,
+              inSidebar: p.closest('.sidebar') !== null,
+              text: p.textContent.slice(0, 80),
+            }
+          : null,
+        shifts: Object.fromEntries(items.map((el) => [keyOf(el), m42(el)])),
+        inlineShifts: [...list.querySelectorAll('[style*="transform"]')].length,
+        transition: items[0] ? getComputedStyle(items[0]).transition : null,
+        sourceOpacity: src ? getComputedStyle(src).opacity : null,
+        shiftingClass: list.classList.contains('is-reorder-shifting'),
+        indicatorY: ir ? ir.top + ir.height / 2 : null,
+        scrollTop: list.scrollTop,
+      }
+    }, query)
+  /** 밀리기 전(드래그 전) 사각형 — 화면 좌표. */
+  const itemRects = (query) =>
+    cdp.evaluate((q) => {
+      const list = document.querySelector('[data-repo-list]')
+      const groups = [...list.querySelectorAll(':scope > [data-repo]')]
+      const items = q.kind === 'card' ? [...groups.find((g) => g.getAttribute('data-repo') === q.root).querySelectorAll('[data-reorder-card]')] : groups
+      return items.map((el) => ({ key: el.getAttribute(q.kind === 'card' ? 'data-reorder-card' : 'data-repo'), top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom }))
+    }, query)
+  /** 놓은 뒤 그 항목 윗변(화면). */
+  const topOf = (query, key) => itemRects(query).then((rows) => rows.find((row) => row.key === key)?.top ?? null)
+  const near = (a, b, tolerance = 1.5) => typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= tolerance
+  const shiftsMatch = (got, rects, offsets) => rects.every((rect, index) => near(got[rect.key] ?? 0, offsets[index], 0.6))
+
+  for (const kind of ['card', 'repo']) {
+    const query = kind === 'card' ? { kind, root: alpha } : { kind }
+    const rects = await itemRects(query)
+    const keys = rects.map((rect) => rect.key)
+    // 카드: 셋째 카드를 경계 1(첫 카드 아래)로. 레포: 마지막 레포를 경계 1 로(gamma 아래) — 둘 다 들어갈 자리가 화면 안이다.
+    const moving = kind === 'card' ? keys[2] : keys[keys.length - 1]
+    const slot = 1
+    const from = keys.indexOf(moving)
+    const wantOrder = moveTo(keys, moving, slot)
+    const expected = expectedPreview(rects, from, slot)
+    const start = kind === 'card' ? await cardPoint(moving) : await headerPoint(moving)
+    const grabTop = kind === 'card' ? rects[from].top : (await pointOf({ attr: 'data-repo', value: moving, inner: '[data-repo-head]' })).rect.top
+    const end = kind === 'card' ? await cardSlotPoint(alpha, slot) : await repoSlotPoint(slot)
+    hash = prefsHash()
+    const mid = await dragFor(`K3h-${kind}`, start, end, {
+      release: false,
+      holdMs: 400,
+      during: async () => {
+        // 같은 자리에 머무는 동안 여러 번 읽는다 — 밀린 행 위에서도 판정·표시 줄이 흔들리지 않는다(ⓒ).
+        const samples = []
+        for (let index = 0; index < 4; index++) {
+          await mouse('mouseMoved', end)
+          await pause(80)
+          samples.push(await previewProbe(query))
+        }
+        await shot(`k3h-${kind}-drag-preview`)
+        return samples
+      },
+    })
+    await mouse('mouseReleased', end)
+    await pause(300)
+    const afterOrder = kind === 'card' ? wtOrder(await snapshot(), alpha) : repoOrder(await snapshot())
+    const landedTop = await topOf(query, moving)
+    const last = mid?.at(-1) ?? null
+    const stable = mid !== null && mid.every((sample) => sample.indicatorY === last.indicatorY && same(sample.shifts, last.shifts))
+    fs.writeFileSync(path.join(out, `k3h-${kind}-probe.json`), JSON.stringify({ rects, moving, slot, start, end, grabTop, expected, samples: mid, afterOrder, landedTop }, null, 2))
+    check(
+      `K3h-a-${kind}`,
+      `K3ⓗⓐ ${kind === 'card' ? '카드' : '레포 헤더(묶음)'} 반투명 사본 1개가 커서를 따라온다 — 198 값(opacity .96·drop-shadow·z 2147483000·scale 1.015·fixed·포인터 무시), 잡은 점 유지, 원래 행 투명`,
+      last !== null && last.previewCount === 1 && last.preview.kind === kind && last.preview.opacity === '0.96' && last.preview.filter.includes('drop-shadow') &&
+        last.preview.zIndex === '2147483000' && last.preview.transform.startsWith('matrix(1.015') && last.preview.position === 'fixed' &&
+        last.preview.pointerEvents === 'none' && last.preview.inSidebar && near(last.preview.top, end.y - (start.y - grabTop)) && last.sourceOpacity === '0',
+      { preview: last?.preview ?? null, previewCount: last?.previewCount ?? null, sourceOpacity: last?.sourceOpacity ?? null, wantTop: end.y - (start.y - grabTop) },
+    )
+    check(
+      `K3h-b-${kind}`,
+      `K3ⓗⓑ 다른 행이 밀려 자리를 벌린다 — 이동량 = 바뀐 순서를 실측 높이·틈으로 다시 쌓은 값(198 buildWorktreeDragPreviewOffsets), 전환 transform 150ms ease-out`,
+      last !== null && shiftsMatch(last.shifts, rects, expected.offsets) && expected.offsets.some((offset) => offset !== 0) && last.shiftingClass && String(last.transition).includes('transform 0.15s ease-out'),
+      { got: last?.shifts ?? null, want: Object.fromEntries(rects.map((rect, index) => [rect.key, expected.offsets[index]])), transition: last?.transition ?? null },
+    )
+    check(
+      `K3h-c-${kind}`,
+      `K3ⓗⓒ 판정은 밀리기 전 기하 — 머무는 동안 표시 줄·밀림이 흔들리지 않고, 표시 줄 = 놓은 뒤 그 항목 윗변(= 기대 자리), 결과 = 기대 배열 전체`,
+      stable && same(afterOrder, wantOrder) && !same(keys, wantOrder) && near(last.indicatorY, expected.landedTop) && near(landedTop, last.indicatorY),
+      { stable, indicatorY: last?.indicatorY ?? null, expectedLandedTop: expected.landedTop, landedTop, before: keys, want: wantOrder, after: afterOrder },
+    )
+    const residue = await previewProbe(query)
+    check(
+      `K3h-d-drop-${kind}`,
+      `K3ⓗⓓ 놓은 뒤 사본·밀림·밀림 class 잔존 없음`,
+      residue.previewCount === 0 && residue.inlineShifts === 0 && !residue.shiftingClass && residue.sourceOpacity === null,
+      residue,
+    )
+    // 되돌린다 — 뒤 검사(K3ⓕ 의 gamma 맨 위 등)가 기대는 순서.
+    if (kind === 'repo') {
+      await drag(await headerPoint(moving), await repoSlotPoint(keys.length))
+      const restored = repoOrder(await snapshot())
+      check('K3h-repo-restore', 'K3ⓗ 레포 순서 되돌리기', same(restored, keys), { want: keys, got: restored })
+    }
+  }
+
+  // ── K3ⓗⓓ 취소 — Escape · blur · 목록 밖 놓기 · 드래그 중 목록 갱신으로 source 소멸: 사본 제거·행 원위치·잔존 없음 ──
+  const cancelWays = {
+    escape: async () => {
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    },
+    blur: async () => cdp.evaluate(() => window.dispatchEvent(new Event('blur'))),
+    outside: async () => {
+      await mouse('mouseMoved', { x: 900, y: 300 })
+    },
+  }
+  for (const [way, cancel] of Object.entries(cancelWays)) {
+    const query = { kind: 'card', root: alpha }
+    const before = wtOrder(await snapshot(), alpha)
+    hash = prefsHash()
+    const end = await cardSlotPoint(alpha, 1)
+    const releaseAt = way === 'outside' ? { x: 900, y: 300 } : end
+    const mid = await drag(await cardPoint(before[2]), end, {
+      release: false,
+      during: async () => {
+        const during = await previewProbe(query)
+        await cancel()
+        await pause(250)
+        return during
+      },
+    })
+    await mouse('mouseReleased', releaseAt)
+    await pause(250)
+    const residue = await previewProbe(query)
+    const after = wtOrder(await snapshot(), alpha)
+    check(
+      `K3h-d-${way}`,
+      `K3ⓗⓓ ${way === 'escape' ? 'Escape' : way === 'blur' ? '창 blur' : '목록 밖 놓기'} 취소 — 드래그 중 사본·밀림 있었고, 취소 뒤 사본 제거·행 원위치(인라인 transform 0)·class 해제·원래 행 다시 보임, 순서·파일 무변경`,
+      mid.previewCount === 1 && Object.values(mid.shifts).some((y) => y !== 0) && residue.previewCount === 0 && residue.inlineShifts === 0 && !residue.shiftingClass && residue.sourceOpacity === null && Object.values(residue.shifts).every((y) => y === 0) && same(before, after) && prefsHash() === hash,
+      { during: { previewCount: mid.previewCount, shifts: mid.shifts }, residue, before, after },
+    )
+  }
+  {
+    // source 소멸 — 드래그 중 그 워크트리를 앱 밖에서 지우고 트리를 다시 받는다(목록 갱신).
+    const vanish = addWorktree(beta, { name: 'b-vanish' })
+    await waitFor(async () => {
+      await rebuild()
+      return wtOrder(await snapshot(), beta)?.includes(vanish)
+    }, 'b-vanish rendered', 60_000)
+    const query = { kind: 'card', root: beta }
+    const before = wtOrder(await snapshot(), beta)
+    const end = await cardSlotPoint(beta, before.length)
+    const mid = await drag(await cardPoint(vanish), end, {
+      release: false,
+      during: async () => {
+        const during = await previewProbe(query)
+        git(beta, 'worktree', 'remove', '--force', vanish)
+        await rebuild()
+        await waitFor(async () => !wtOrder(await snapshot(), beta)?.includes(vanish), 'b-vanish gone', 30_000)
+        await pause(200)
+        const afterVanish = await previewProbe(query)
+        await shot('k3h-cancel-vanish')
+        return { during, afterVanish, reordering: (await snapshot()).reordering }
+      },
+    })
+    await mouse('mouseReleased', end)
+    await pause(250)
+    const after = wtOrder(await snapshot(), beta)
+    check(
+      'K3h-d-vanish',
+      'K3ⓗⓓ 드래그 중 목록 갱신으로 끄는 카드가 사라지면 취소 — 사본 제거·밀림 원위치·class 해제, 남은 순서 그대로',
+      mid.during.previewCount === 1 && mid.afterVanish.previewCount === 0 && mid.afterVanish.inlineShifts === 0 && !mid.afterVanish.shiftingClass && mid.reordering === false && same(after, before.filter((p) => p !== vanish)),
+      { ...mid, before, after },
+    )
+  }
+
   // ── K3ⓕ 자동 스크롤 — 창을 낮춰 목록이 넘치게 하고, 화면 밖 자리에 놓는다 ──
   await setViewport(cdp, { width: 1200, height: 420 })
   await pause(300)
@@ -754,12 +978,16 @@ async function main() {
     }, gamma)
     await pause(200)
     const upBefore = wtOrder(await snapshot(), gamma)
-    const upWant = moveLinked(upBefore, geo.moving, 0)
+    // 첫 카드 = gamma 주 체크아웃 — 그 윗부분에 놓으면 레포 맨 위(주 체크아웃 위, 게이트 ① 수정 1).
+    const upWant = moveTo(upBefore, geo.moving, 0)
+    // 밀리기 전 자리 — 드래그 중 다른 카드는 밀려 있다(K3ⓗ). 판정은 밀리기 전 기하라 겨냥도 거기에 한다.
     const firstRect = () =>
       cdp.evaluate((q) => {
         const el = [...document.querySelectorAll('[data-reorder-card]')].find((node) => node.getAttribute('data-reorder-card') === q)
         const r = el.getBoundingClientRect()
-        return { x: r.left + 40, top: r.top, bottom: r.bottom }
+        const t = getComputedStyle(el).transform
+        const shift = t === 'none' ? 0 : new DOMMatrixReadOnly(t).m42
+        return { x: r.left + 40, top: r.top - shift, bottom: r.bottom - shift }
       }, geo.first)
     // 붙은 헤더(28px) 바로 아래, 위 가장자리 띠(56px) 안.
     const edge = { x: listRect.left + 80, y: listRect.top + 34 }
@@ -786,7 +1014,7 @@ async function main() {
     await mouse('mouseReleased', upMid.p)
     await pause(250)
     const upAfter = wtOrder(await snapshot(), gamma)
-    check('K3f-autoscroll-up', 'K3ⓕ 위 가장자리에서 자동 스크롤(위로) → 화면 밖(위)이던 연결 맨 위 자리에 놓인다 — 기대 배열 전체', !geo.firstVisible && upMid.scrollTopAtEdgeEnd < geo.scrollTop && upMid.indicator && same(upAfter, upWant) && !same(upBefore, upWant), { geo, during: upMid, before: upBefore, want: upWant, after: upAfter })
+    check('K3f-autoscroll-up', 'K3ⓕ 위 가장자리에서 자동 스크롤(위로) → 화면 밖(위)이던 레포 맨 위 자리(주 체크아웃 위)에 놓인다 — 기대 배열 전체', !geo.firstVisible && upMid.scrollTopAtEdgeEnd < geo.scrollTop && upMid.indicator && same(upAfter, upWant) && !same(upBefore, upWant), { geo, during: upMid, before: upBefore, want: upWant, after: upAfter })
   }
 
   // ── R1-01 스크롤된 목록 — 보이는 헤더를 목록 위 80px(자동 스크롤 띠 48px 도 넘음)에 놓으면 취소(리뷰 재현) ──
@@ -986,7 +1214,7 @@ async function main() {
   }, 'fresh worktree', 60_000)
   snap = await snapshot()
   const alphaWithNew = wtOrder(snap, alpha)
-  check('K5a-new-worktree-top', 'K5ⓐ 앱 밖 git worktree add → 주 체크아웃 바로 아래, 기존 상대 순서 무변경', alphaWithNew[1] === fresh && same(alphaWithNew.filter((p) => p !== fresh), alphaBeforeAdd), { before: alphaBeforeAdd, after: alphaWithNew })
+  check("K5a'-new-worktree-top", "K5ⓐ' 앱 밖 git worktree add → 그 레포 카드 목록 맨 위(주 체크아웃이 아래로 옮겨져 있어도 맨 위), 기존 상대 순서 무변경", alphaWithNew[0] === fresh && alphaBeforeAdd[0] !== alpha && same(alphaWithNew.filter((p) => p !== fresh), alphaBeforeAdd), { before: alphaBeforeAdd, after: alphaWithNew })
   git(alpha, 'worktree', 'remove', '--force', wtA('a-two'))
   await waitFor(async () => {
     await rebuild()
@@ -1219,6 +1447,11 @@ async function main() {
     await settle()
     const got = await snapshot()
     check(`K4a-restart-${round}`, `K4ⓐ 재시작 ${round}회차 — 레포·카드 순서 그대로`, same(repoOrder(got), want.repos) && same(Object.fromEntries(got.repos.map((repo) => [repo.root, repo.worktrees])), want.wts), { want, got: { repos: repoOrder(got) }, fileUnchangedByRestart: prefsHash() === fileBefore })
+    if (round === 1) {
+      // K2ⓑ' 재시작 보존 — 맨 아래로 옮긴 주 체크아웃이 재시작 뒤에도 맨 아래(맨 위로 돌아가지 않는다).
+      const gotAlpha = wtOrder(got, alpha)
+      check("K2b'-restart", "K2ⓑ' 맨 아래로 옮긴 주 체크아웃이 재시작 뒤에도 맨 아래 — 재시작 전 화면과 같은 배열", gotAlpha.at(-1) === alpha && gotAlpha[0] !== alpha && same(gotAlpha, want.wts[alpha]), { mainMovedOrder, beforeQuit: want.wts[alpha], afterRestart: gotAlpha })
+    }
     await shot(`k4a-restart-${round}`)
   }
 

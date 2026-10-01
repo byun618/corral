@@ -143,8 +143,8 @@ export function Sidebar({
                     worktree={worktree}
                     reordering={reorder.state !== null}
                     dragging={dragSource?.kind === 'card' && dragSource.path === worktree.path}
-                    // 주 체크아웃은 맨 위 고정 — 끌기 핸들을 달지 않는다(198 `section-order.ts:66-74`, K2ⓑ).
-                    onCardMouseDown={worktree.isLinked ? (event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: worktree.path }) : undefined}
+                    // 주 체크아웃도 옮긴다(게이트 ① 사용자 수정 1 — 198 `section-order.ts:66-74` 고정과 의도적 차이).
+                    onCardMouseDown={(event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: worktree.path })}
                     integrations={state.integrations}
                     home={state.home}
                     now={now}

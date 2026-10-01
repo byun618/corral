@@ -56,8 +56,8 @@ export function WorktreeBlock({
   reordering: boolean
   /** 이 카드를 끄는 중. */
   dragging: boolean
-  /** 카드 끌기 시작 (LIFE-469). 주 체크아웃은 `undefined` — 맨 위 고정이라 끌리지 않는다. */
-  onCardMouseDown: ((event: React.MouseEvent) => void) | undefined
+  /** 카드 끌기 시작 (LIFE-469) — 주 체크아웃 포함 모든 카드(게이트 ① 사용자 수정 1). */
+  onCardMouseDown: (event: React.MouseEvent) => void
   selected: boolean
   /**
    * 보존된 영역 레이아웃의 예고 (LIFE-373 L-③ · §2 Sidebar WorktreeBlock).
@@ -166,7 +166,7 @@ export function WorktreeBlock({
     <div
       className={`worktree-row ${dragging ? 'is-reorder-source' : ''}`}
       data-worktree={worktree.path}
-      data-reorder-card={onCardMouseDown === undefined ? undefined : worktree.path}
+      data-reorder-card={worktree.path}
       onMouseDown={onCardMouseDown}
     >
       <div

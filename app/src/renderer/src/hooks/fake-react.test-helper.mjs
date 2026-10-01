@@ -82,12 +82,70 @@ export class FakeElement {
   }
 }
 
+/** 사본·틀 노드 — 붙이기·떼기·속성만. `HTMLElement` 자리에 끼운다(hook 의 `instanceof HTMLElement`). */
+export class FakeNode {
+  constructor(tag, attrs = {}) {
+    this.tag = tag
+    this.attrs = { ...attrs }
+    this.children = []
+    this.parent = null
+    this.style = fakeStyle()
+    this.classes = new Set()
+    this.classList = { add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), contains: (c) => this.classes.has(c) }
+  }
+  setAttribute(name, value) {
+    this.attrs[name] = String(value)
+  }
+  getAttribute(name) {
+    return this.attrs[name] ?? null
+  }
+  removeAttribute(name) {
+    delete this.attrs[name]
+  }
+  querySelectorAll() {
+    return []
+  }
+  appendChild(child) {
+    child.parent = this
+    this.children.push(child)
+    return child
+  }
+  remove() {
+    if (this.parent === null) return
+    this.parent.children = this.parent.children.filter((child) => child !== this)
+    this.parent = null
+  }
+}
+
+/** 인라인 style — `transform` 칸과 `removeProperty` 만 실제로 쓴다. */
+function fakeStyle() {
+  const style = { transform: '' }
+  style.removeProperty = (name) => {
+    style[name] = ''
+  }
+  return style
+}
+
+/** `translateY(Npx)` 의 N. 다른 모양·빈 값은 0. */
+function translateYOfStyle(element) {
+  const match = /translateY\((-?[\d.]+)px\)/.exec(element?.style?.transform ?? '')
+  return match === null ? 0 : Number(match[1])
+}
+
+class FakeMatrix {
+  constructor(text) {
+    const values = /matrix\(([^)]*)\)/.exec(text)?.[1].split(',').map(Number) ?? [1, 0, 0, 1, 0, 0]
+    this.m42 = values[5] ?? 0
+  }
+}
+
 const box = (top, bottom) => ({ top, bottom, left: 0, right: 280, width: 280, height: bottom - top })
 
 /**
  * 가짜 사이드바 목록. 좌표는 **스크롤 내용 기준**으로 주고 화면 좌표는 `top − scrollTop` 으로 만든다.
  * repos: [{ root, top, bottom, head: [top, bottom] | 'sticky', cards: [{ path, top, bottom }] }]
  * `head: 'sticky'` = 헤더가 목록 윗변에 붙었다(묶음 범위 안에서) — 헤더 높이 28.
+ * `noise` = getComputedStyle 이 돌려주는 이동에 읽을 때마다 달라지는 소수 오차(±noise)를 섞는다(브라우저 전환 중 실측 오차 흉내).
  */
 export function fakeDom(options) {
   const doc = new FakeTarget()
@@ -95,8 +153,15 @@ export function fakeDom(options) {
   const timers = []
   const frames = new Map()
   const classes = new Set()
+  const listClasses = new Set()
   let nextFrame = 0
-  doc.body = { classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c) } }
+  let noiseCalls = 0
+  const body = new FakeNode('body')
+  body.classList = { add: (c) => classes.add(c), remove: (c) => classes.delete(c) }
+  doc.body = body
+  doc.createElement = (tag) => new FakeNode(tag)
+  /** `.sidebar` — 사본이 붙는 곳. */
+  const sidebar = new FakeNode('div', { 'data-sidebar': '' })
   win.getSelection = () => ({ removeAllRanges() {} })
   win.setTimeout = (fn) => timers.push(fn)
   const listTop = options.listTop ?? 0
@@ -108,31 +173,89 @@ export function fakeDom(options) {
     clientHeight: listBottom - listTop,
     getBoundingClientRect: () => box(listTop, listBottom),
     querySelectorAll: () => repos.map(group),
+    closest: () => sidebar,
+    classList: { add: (c) => listClasses.add(c), remove: (c) => listClasses.delete(c) },
   }
-  const screen = (top, bottom) => () => box(listTop + top - list.scrollTop, listTop + bottom - list.scrollTop)
-  const headRect = (repo) => () => {
-    if (repo.head !== 'sticky') return screen(repo.head[0], repo.head[1])()
+  /** 화면 사각형 — 자기와 조상(묶음)에 걸린 translateY 를 더한다(브라우저 getBoundingClientRect 처럼). */
+  const screen = (top, bottom, element) => () => {
+    let shift = 0
+    for (let node = element; node !== undefined && node !== null && node !== list; node = node.parentElement) shift += translateYOfStyle(node)
+    return box(listTop + top - list.scrollTop + shift, listTop + bottom - list.scrollTop + shift)
+  }
+  const headRect = (repo, head) => () => {
+    if (repo.head !== 'sticky') return screen(repo.head[0], repo.head[1], head)()
     const stuckTop = Math.min(Math.max(repo.top, list.scrollTop), repo.bottom - 28)
-    return screen(stuckTop, stuckTop + 28)()
+    return screen(stuckTop, stuckTop + 28, head)()
   }
-  const group = (repo) => ({
-    getAttribute: () => repo.root,
-    getBoundingClientRect: screen(repo.top, repo.bottom),
-    querySelector: () => ({ getBoundingClientRect: headRect(repo) }),
-    querySelectorAll: () =>
-      (repo.cards ?? []).map((card) => ({ getAttribute: () => card.path, getBoundingClientRect: screen(card.top, card.bottom) })),
-  })
+  // 요소는 키마다 한 번 만든다 — hook 이 건 style.transform 이 다음 질의에도 남아 있게(실제 DOM 처럼).
+  const groups = new Map()
+  const cardElements = new Map()
+  const group = (repo) => {
+    let element = groups.get(repo.root)
+    if (element === undefined) {
+      element = { style: fakeStyle(), parentElement: list }
+      groups.set(repo.root, element)
+    }
+    const current = element
+    const head = { style: fakeStyle(), parentElement: current }
+    head.getBoundingClientRect = headRect(repo, head)
+    Object.assign(current, {
+      getAttribute: () => repo.root,
+      getBoundingClientRect: screen(repo.top, repo.bottom, current),
+      querySelector: () => head,
+      querySelectorAll: () => (repo.cards ?? []).map((card) => cardElement(card, current)),
+      cloneNode: () => new FakeNode('div', { 'data-repo': repo.root }),
+    })
+    return current
+  }
+  const cardElement = (card, parent) => {
+    let element = cardElements.get(card.path)
+    if (element === undefined) {
+      element = { style: fakeStyle() }
+      cardElements.set(card.path, element)
+    }
+    const current = element
+    Object.assign(current, {
+      parentElement: parent,
+      getAttribute: () => card.path,
+      getBoundingClientRect: screen(card.top, card.bottom, current),
+      cloneNode: () => new FakeNode('div', { 'data-reorder-card': card.path }),
+    })
+    return current
+  }
   return {
     doc,
     win,
     list,
     classes,
+    listClasses,
+    sidebar,
     timers,
     frames,
+    /** 지금 걸린 행 밀림 — 키 → px(0 은 빼고). */
+    shifts() {
+      const out = {}
+      for (const [key, element] of [...groups, ...cardElements]) {
+        const y = translateYOfStyle(element)
+        if (y !== 0) out[key] = y
+      }
+      return out
+    },
+    /** 붙어 있는 사본 틀들. */
+    previews() {
+      return [...sidebar.children, ...body.children].filter((node) => node.getAttribute('data-sidebar-drag-preview') === 'true')
+    },
     globals: {
       document: doc,
       window: win,
       Element: FakeElement,
+      HTMLElement: FakeNode,
+      DOMMatrixReadOnly: FakeMatrix,
+      getComputedStyle: (element) => {
+        const y = translateYOfStyle(element)
+        noiseCalls++
+        return { transform: y === 0 ? 'none' : `matrix(1, 0, 0, 1, 0, ${y + Math.sin(noiseCalls) * (options.noise ?? 0)})` }
+      },
       requestAnimationFrame: (fn) => {
         frames.set(++nextFrame, fn)
         return nextFrame

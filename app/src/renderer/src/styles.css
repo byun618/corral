@@ -874,9 +874,28 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 }
 .reorder-drop-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 9999px; background: var(--ring-sidebar); box-shadow: 0 0 0 2px var(--bg-sidebar); }
 .reorder-drop-bar { flex: 1; height: 2px; border-radius: 9999px; background: var(--ring-sidebar); box-shadow: 0 0 0 2px var(--bg-sidebar); }
-/* 끄는 중인 항목 — 제자리에 흐리게 남긴다(198 은 행을 밀어 미리 보여 준다 — 의도적 단순화, RESULT.md). */
-.repo-row-group.is-reorder-source > .repo-row-head .repo-row,
-.worktree-row.is-reorder-source { opacity: 0.5; }
+/* 끄는 중인 원래 항목 — 투명하게 자리만 남긴다(198 `item-row.tsx` `pointer-events-none opacity-0`: 따라오는 사본이 표지다).
+   레포는 묶음 전체(헤더+카드). 게이트 ① 사용자 수정 1 — 옛 0.5 흐림을 바꿨다. */
+.repo-row-group.is-reorder-source,
+.worktree-row.is-reorder-source { opacity: 0; pointer-events: none; }
+/* 다른 행 밀림 — 198 `virtual-row-dispatch.tsx` `transition-transform duration-150 ease-out will-change-transform`(끄는 동안만).
+   이동량은 hook 이 행마다 `transform: translateY()` 로 건다. */
+.repo-list.is-reorder-shifting > [data-repo],
+.repo-list.is-reorder-shifting [data-reorder-card] { transition: transform 150ms ease-out; will-change: transform; }
+/* 커서를 따라오는 사본 — 198 `[data-worktree-sidebar-drag-preview='true']`: 고정 위치 · 좌상단 기준 · z 2147483000 ·
+   opacity .96 · drop-shadow(0 10px 24px foreground 18%) · 포인터 무시 · 자식 grabbing. 크기·위치는 hook 이 인라인으로. */
+[data-sidebar-drag-preview='true'] {
+  position: fixed; left: 0; top: 0; z-index: 2147483000; pointer-events: none; transform-origin: top left;
+  overflow: visible; border-radius: var(--radius); opacity: 0.96; will-change: transform;
+  filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--fg) 18%, transparent));
+}
+[data-sidebar-drag-preview='true'] * { cursor: grabbing !important; }
+/* 바탕 — corral 카드는 평소 바탕이 투명이라 사본 아래 행이 비쳐 글자가 겹친다(198 은 브라우저 drag image 처럼 카드 면이 있다). */
+[data-sidebar-drag-preview='true'] { background: var(--bg-sidebar); }
+/* 레포 사본 = 묶음. 헤더는 사본 안에서 sticky 로 뜨지 않고, 높이는 240px 까지(펼친 큰 레포가 목록을 덮지 않게 — 198 레포 헤더
+   드래그에는 사본이 없어 대응 값이 없다, RESULT.md 의도적 차이). */
+[data-sidebar-drag-preview='true'] .repo-row-head { position: static; }
+[data-sidebar-drag-preview-kind='repo'] { max-height: 240px; overflow: hidden; }
 /* 드래그 중에는 hover 액션(셰브론·⋯·+, 카드 +·⋯)과 hover 칠이 뜨지 않는다(K3ⓖ). */
 .sidebar.is-reordering .repo-row-actions,
 .sidebar.is-reordering .worktree-block-actions { opacity: 0; pointer-events: none; }

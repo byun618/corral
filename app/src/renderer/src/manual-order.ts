@@ -5,8 +5,12 @@
 // 필요 없다 — 배열의 자리가 곧 순서라 간격 고갈·재색인이 생길 수 없다(00-analysis §6 「rank 표현은 재량」).
 //
 // 198 에서 가져온 규칙:
-//   · 주 체크아웃은 맨 위 고정(`section-order.ts:66-74`) — 저장 목록에 넣지 않고 끌 수도 없다.
-//   · 새 워크트리 → 연결 워크트리 맨 위(198 `sortOrder: Date.now()`), 새 레포 → 맨 아래(`manual-repo-order.ts:43-69`).
+//   · 새 워크트리 → 그 레포 카드 목록 맨 위(198 `sortOrder: Date.now()`), 새 레포 → 맨 아래(`manual-repo-order.ts:43-69`).
+// 198 과 의도적으로 다른 것(게이트 ① 사용자 수정 1, 사용자 결정): 198 은 주 체크아웃을 맨 위에 고정하지만
+// (`section-order.ts:66-74`) corral 은 주 체크아웃도 다른 카드처럼 옮긴다 — 저장 목록에 주 체크아웃 path 도 담는다.
+// 새 워크트리는 주 체크아웃보다도 위(목록 맨 위)에 온다.
+//   · **이전**: 주 체크아웃 path 가 없는 저장 목록(469 수정 1 전 빌드는 연결 워크트리만 적었다)은 「주 체크아웃 먼저 →
+//     저장 순서」로 읽는다 — 업그레이드로 화면이 바뀌지 않는다(K6ⓐ). 정규화가 그 자리에 주 체크아웃을 적어 둔다.
 // 따라 하지 않는 것(C1, #22285): 기동·갱신 때 도는 정규화(`reconcileManualOrder`)는 **저장된 키의 상대 순서를
 // 다시 매기지 않는다** — 새 키를 끼워 넣거나 확실히 사라진 키를 빼기만 한다.
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
@@ -16,7 +20,7 @@ import { sortWorktrees } from './worktree-name.js'
 export type ManualOrder = {
   /** 레포 root, 위에서 아래 순. */
   repos: string[]
-  /** 레포 root → 연결 워크트리 path(주 체크아웃 제외), 위에서 아래 순. */
+  /** 레포 root → 워크트리 path(주 체크아웃 포함 — 없으면 맨 앞으로 읽는다), 위에서 아래 순. */
   worktrees: Record<string, string[]>
 }
 
@@ -53,22 +57,32 @@ export function orderRepos(input: { repos: readonly RepoRow[]; stored: readonly 
 }
 
 /**
- * 한 레포의 워크트리 표시 순서 — 주 체크아웃 → 저장 목록에 없는 연결 워크트리(새것, 기본 순서) → 저장 순서.
+ * 저장 목록을 주 체크아웃이 든 모양으로 읽는다 — 주 체크아웃 path 가 빠져 있으면 맨 앞에 붙인다(이전, K6ⓐ).
+ * `worktrees` 는 기본 순서(`sortWorktrees`)여야 한다 — 주 체크아웃이 여럿이면 그 순서로 붙는다.
+ */
+function withMains(input: { worktrees: readonly WorktreeRow[]; stored: readonly string[] }): string[] {
+  const storedSet = new Set(input.stored)
+  const missingMains = input.worktrees.filter((worktree) => !worktree.isLinked && !storedSet.has(worktree.path)).map((worktree) => worktree.path)
+  return missingMains.length === 0 ? [...input.stored] : [...missingMains, ...input.stored]
+}
+
+/**
+ * 한 레포의 워크트리 표시 순서 — 저장 목록에 없는 워크트리(새것, 기본 순서) → 저장 순서(주 체크아웃 포함).
+ * 주 체크아웃 path 가 없는 저장 목록은 주 체크아웃을 맨 앞으로 읽는다(`withMains`, 이전).
  * 저장 목록이 아예 없으면(`undefined`, 469 이전 사용자) 기본 순서(`sortWorktrees`) 그대로다(K6ⓐ).
  */
 export function orderWorktrees(input: { worktrees: readonly WorktreeRow[]; stored: readonly string[] | undefined }): WorktreeRow[] {
   const base = sortWorktrees([...input.worktrees])
   if (input.stored === undefined) return base
-  const mains = base.filter((worktree) => !worktree.isLinked)
-  const linked = base.filter((worktree) => worktree.isLinked)
-  const byPath = new Map(linked.map((worktree) => [worktree.path, worktree]))
-  const storedSet = new Set(input.stored)
+  const stored = withMains({ worktrees: base, stored: input.stored })
+  const byPath = new Map(base.map((worktree) => [worktree.path, worktree]))
+  const storedSet = new Set(stored)
   const known: WorktreeRow[] = []
-  for (const path of input.stored) {
+  for (const path of stored) {
     const worktree = byPath.get(path)
     if (worktree !== undefined) known.push(worktree)
   }
-  return [...mains, ...linked.filter((worktree) => !storedSet.has(worktree.path)), ...known]
+  return [...base.filter((worktree) => !storedSet.has(worktree.path)), ...known]
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
@@ -80,7 +94,8 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
  *
  * - 레포: 처음 보는 root 를 맨 뒤에 붙인다. 지금 목록에 없는 root 는 **지우지 않는다** — 기동 직후 빈 목록이나
  *   일시 오류로 순서를 잃는 경로(#22285 의 결)를 막는다. 레포를 지울 때는 `forgetRepo` 가 명시로 뺀다.
- * - 워크트리: 처음 보는 연결 워크트리를 맨 앞(주 체크아웃 바로 아래)에 끼운다. 저장 목록이 없던 레포는 지금
+ * - 워크트리: 처음 보는 워크트리를 그 레포 맨 앞(주 체크아웃보다도 위)에 끼운다(K5ⓐ). 주 체크아웃 path 가 없는
+ *   저장 목록은 먼저 주 체크아웃을 맨 앞에 적는다(이전 — 지금 화면 그대로, K6ⓐ). 저장 목록이 없던 레포는 지금
  *   기본 순서를 그대로 적는다(materialize) — 그래야 이후의 새 워크트리를 「새것」으로 알아본다(K5ⓐ).
  *   사라진 path 는 **그 레포의 git 목록이 성공했을 때만**(오류 없음 + 주 체크아웃 있음) 뺀다.
  *
@@ -94,20 +109,20 @@ export function reconcileManualOrder(input: { order: ManualOrder; repos: readonl
 
   const nextWorktrees: Record<string, string[]> = { ...order.worktrees }
   for (const repo of repos) {
-    const linked = sortWorktrees([...repo.worktrees])
-      .filter((worktree) => worktree.isLinked)
-      .map((worktree) => worktree.path)
+    const base = sortWorktrees([...repo.worktrees])
+    const paths = base.map((worktree) => worktree.path)
     const stored = order.worktrees[repo.root]
     let next: string[]
     if (stored === undefined) {
       if (repo.error !== null) continue
-      next = linked
+      next = paths
     } else {
-      const storedSet = new Set(stored)
-      const fresh = linked.filter((path) => !storedSet.has(path))
+      const migrated = withMains({ worktrees: base, stored })
+      const migratedSet = new Set(migrated)
+      const fresh = paths.filter((path) => !migratedSet.has(path))
       const listed = repo.error === null && repo.worktrees.some((worktree) => !worktree.isLinked)
-      const present = new Set(linked)
-      next = [...fresh, ...(listed ? stored.filter((path) => present.has(path)) : stored)]
+      const present = new Set(paths)
+      next = [...fresh, ...(listed ? migrated.filter((path) => present.has(path)) : migrated)]
       if (sameList(next, stored)) continue
     }
     nextWorktrees[repo.root] = next
@@ -148,7 +163,7 @@ export function applyRepoMove(input: { order: ManualOrder; visibleRoots: readonl
   return { ...input.order, repos: [...moved, ...input.order.repos.filter((root) => !visible.has(root))] }
 }
 
-/** 워크트리 드롭 반영 — `visiblePaths` 는 그 레포의 **연결 워크트리** 화면 순서(주 체크아웃 제외). */
+/** 워크트리 드롭 반영 — `visiblePaths` 는 그 레포의 카드 화면 순서(주 체크아웃 포함). */
 export function applyWorktreeMove(input: {
   order: ManualOrder
   repoRoot: string

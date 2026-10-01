@@ -6,6 +6,9 @@
 //   · 경계 밖 8px 여유 · 끝 슬롯 56px (`worktree-sidebar-drag-autoscroll.ts` `getWorktreeSidebarBoundaryDrop`)
 //   · 자동 스크롤 가장자리 56px · 최대 960px/s · 한 프레임 최대 32ms · 바깥 48px 까지 (같은 파일)
 //   · 헤더 띠 위면 헤더 중점으로, 구획 본문 위면 가까운 경계로(`worktree-sidebar-header-drop-preview.ts`, #8879 수정 — C5)
+//   · 행 밀림 미리 보기 = 바뀐 순서를 실측 높이·틈으로 다시 쌓은 자리 − 지금 자리, 0.5px 미만 무시, 끄는 항목 제외
+//     (`worktree-drag-preview-offsets.ts` `buildWorktreeDragPreviewOffsets`). 표시 줄 = 끄는 항목이 들어갈 자리 윗변
+//     (`worktree-sidebar-drop-preview.ts` `getWorktreeSidebarDropIndicatorY` — placeholderTop, 제자리면 끄는 항목 윗변)
 
 export const REORDER_DRAG_THRESHOLD_PX = 4
 const DROP_BOUNDS_PADDING_PX = 8
@@ -29,39 +32,22 @@ export type RepoSlotRect = { top: number; bottom: number; headTop: number; headB
 /** 카드 하나 — 카드 행 윗변·아랫변. */
 export type ItemRect = { top: number; bottom: number }
 
-export type DropSlot = { slot: number; indicatorY: number }
-
-/** 경계 `slot` 의 표시 줄 y — 두 항목 사이 틈 가운데. 맨 앞·맨 뒤는 바깥쪽으로 2px. */
-function boundaryY(rects: readonly ItemRect[], slot: number): number {
-  const prev = rects[slot - 1]
-  const next = rects[slot]
-  if (prev !== undefined && next !== undefined) return (prev.bottom + next.top) / 2
-  if (next !== undefined) return next.top
-  return prev !== undefined ? prev.bottom : 0
-}
-
-/** 붙은 헤더 앞 슬롯의 표시 줄 — 경계(묶음 윗변)는 화면 위로 숨었으니 헤더 윗변 바로 안쪽에 그린다(점 3px + 테두리 2px). */
-const STUCK_HEAD_INDICATOR_INSET_PX = 5
-
 /** 목록 위·아래 바깥 판정 (198 `getWorktreeSidebarBoundaryDrop`) — 끝 슬롯 56px 안이면 그 끝, 더 멀면 바깥(=취소). */
-function edgeSlot(rects: readonly ItemRect[], y: number): DropSlot | 'outside' | 'inside' {
+function edgeSlot(rects: readonly ItemRect[], y: number): number | 'outside' | 'inside' {
   const first = rects[0]
   const last = rects[rects.length - 1]
   if (first === undefined || last === undefined) return 'outside'
-  if (y < first.top - DROP_BOUNDS_PADDING_PX) {
-    return y >= first.top - EDGE_ZONE_PX ? { slot: 0, indicatorY: boundaryY(rects, 0) } : 'outside'
-  }
-  if (y > last.bottom + DROP_BOUNDS_PADDING_PX) {
-    return y <= last.bottom + EDGE_ZONE_PX ? { slot: rects.length, indicatorY: boundaryY(rects, rects.length) } : 'outside'
-  }
+  if (y < first.top - DROP_BOUNDS_PADDING_PX) return y >= first.top - EDGE_ZONE_PX ? 0 : 'outside'
+  if (y > last.bottom + DROP_BOUNDS_PADDING_PX) return y <= last.bottom + EDGE_ZONE_PX ? rects.length : 'outside'
   return 'inside'
 }
 
 /**
- * 레포 헤더를 끄는 중 — 놓일 경계. 헤더 위면 **헤더 실제 범위의 중점** 기준 위/아래(붙은 헤더 포함 — R1-05), 펼친
- * 구획의 카드 위면 **가까운 경계**(C5: 카드 영역 위에서도 표시가 사라지지 않는다). 목록에서 멀리 벗어나면 `null`(놓으면 취소).
+ * 레포 헤더를 끄는 중 — 놓일 경계 번호(0 = 맨 앞). 헤더 위면 **헤더 실제 범위의 중점** 기준 위/아래(붙은 헤더 포함 —
+ * R1-05), 펼친 구획의 카드 위면 **가까운 경계**(C5: 카드 영역 위에서도 표시가 사라지지 않는다). 목록에서 멀리 벗어나면
+ * `null`(놓으면 취소). 사각형은 **밀리기 전** 자리여야 한다(K3ⓗⓒ — 밀린 자리로 재면 판정이 흔들린다).
  */
-export function resolveRepoDropSlot(input: { rects: readonly RepoSlotRect[]; y: number }): DropSlot | null {
+export function resolveRepoDropSlot(input: { rects: readonly RepoSlotRect[]; y: number }): number | null {
   const { rects, y } = input
   const edge = edgeSlot(rects, y)
   if (edge === 'outside') return null
@@ -70,27 +56,23 @@ export function resolveRepoDropSlot(input: { rects: readonly RepoSlotRect[]; y: 
   for (let index = 0; index < rects.length; index++) {
     const rect = rects[index]
     if (rect === undefined || y < rect.headTop || y > rect.headBottom) continue
-    if (y >= (rect.headTop + rect.headBottom) / 2) return { slot: index + 1, indicatorY: boundaryY(rects, index + 1) }
-    const stuck = rect.headTop > rect.top
-    return { slot: index, indicatorY: stuck ? rect.headTop + STUCK_HEAD_INDICATOR_INSET_PX : boundaryY(rects, index) }
+    return y >= (rect.headTop + rect.headBottom) / 2 ? index + 1 : index
   }
   for (let index = 0; index < rects.length; index++) {
     const rect = rects[index]
     if (rect === undefined || y < rect.top || y > rect.bottom) continue
-    const slot = y < (rect.top + rect.bottom) / 2 ? index : index + 1
-    return { slot, indicatorY: boundaryY(rects, slot) }
+    return y < (rect.top + rect.bottom) / 2 ? index : index + 1
   }
   // 묶음 사이 틈 — 아래쪽 묶음의 윗경계.
   const slot = rects.findIndex((rect) => y < rect.top)
-  const resolved = slot < 0 ? rects.length : slot
-  return { slot: resolved, indicatorY: boundaryY(rects, resolved) }
+  return slot < 0 ? rects.length : slot
 }
 
 /**
- * 카드를 끄는 중 — 같은 레포 **연결 워크트리** 사이 경계. `groupRange` 는 그 레포 묶음의 위·아래(다른 레포 위 = 취소,
- * K2ⓓ). 주 체크아웃은 `rects` 에 없으므로 맨 앞 경계(0)가 곧 「주 체크아웃 바로 아래」다 — 그 위로는 놓을 수 없다(K2ⓑ).
+ * 카드를 끄는 중 — 같은 레포 카드(주 체크아웃 포함) 사이 경계 번호. `groupRange` 는 그 레포 묶음의 위·아래(다른 레포
+ * 위 = 취소, K2ⓓ). 주 체크아웃도 `rects` 에 들어 있어 그 위(경계 0)에도 놓인다(게이트 ① 사용자 수정 1 — K2ⓑ 폐지).
  */
-export function resolveCardDropSlot(input: { rects: readonly ItemRect[]; groupRange: ItemRect; y: number }): DropSlot | null {
+export function resolveCardDropSlot(input: { rects: readonly ItemRect[]; groupRange: ItemRect; y: number }): number | null {
   const { rects, groupRange, y } = input
   if (y < groupRange.top || y > groupRange.bottom) return null
   const edge = edgeSlot(rects, y)
@@ -99,10 +81,66 @@ export function resolveCardDropSlot(input: { rects: readonly ItemRect[]; groupRa
   for (let index = 0; index < rects.length; index++) {
     const rect = rects[index]
     if (rect === undefined || y > rect.bottom + DROP_BOUNDS_PADDING_PX) continue
-    const slot = y < (rect.top + rect.bottom) / 2 ? index : index + 1
-    return { slot, indicatorY: boundaryY(rects, slot) }
+    return y < (rect.top + rect.bottom) / 2 ? index : index + 1
   }
-  return { slot: rects.length, indicatorY: boundaryY(rects, rects.length) }
+  return rects.length
+}
+
+/** 표시 줄을 보이는 범위 안쪽으로 당기는 여유 — 붙은 헤더 윗변 바로 안쪽(점 3px + 테두리 2px). */
+const INDICATOR_VIEW_INSET_PX = 5
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)] ?? null
+}
+
+/**
+ * 놓일 자리 미리 보기 (198 `buildWorktreeDragPreviewOffsets` + `getWorktreeSidebarDropIndicatorY` 대응, K3ⓗⓑⓒ).
+ *
+ * `rects` 는 지금 순서의 **밀리기 전** 사각형, `from` 은 끄는 항목 자리, `slot` 은 놓일 경계. 바뀐 순서를 실측 높이와
+ * 각 항목 뒤 틈(마지막은 틈의 중앙값)으로 첫 윗변부터 다시 쌓아 — `offsets[i]` = 다시 쌓은 윗변 − 지금 윗변(끄는 항목은 0,
+ * 0.5px 미만 0). 표시 줄 = 끄는 항목이 들어갈 자리 윗변(placeholder), 제자리 놓기면 끄는 항목 윗변. 그 자리가 보이는
+ * 범위 `view` 밖이면(붙은 헤더 앞 경계가 화면 위로 숨은 때 등) 범위 끝 안쪽 5px 로 당긴다 — 표시가 사라지지 않게.
+ */
+export function buildReorderPreview(input: {
+  rects: readonly ItemRect[]
+  from: number
+  slot: number
+  view: ItemRect
+}): { offsets: number[]; indicatorY: number } {
+  const { rects, from, view } = input
+  const count = rects.length
+  const offsets = rects.map(() => 0)
+  const source = rects[from]
+  if (source === undefined) return { offsets, indicatorY: clampToView({ y: view.top, view }) }
+  const slot = Math.max(0, Math.min(count, Math.trunc(input.slot)))
+  const to = slot > from ? slot - 1 : slot
+  if (to === from) return { offsets, indicatorY: clampToView({ y: source.top, view }) }
+  const order = rects.map((_, index) => index).filter((index) => index !== from)
+  order.splice(to, 0, from)
+  const gaps: number[] = []
+  for (let index = 1; index < count; index++) gaps.push(Math.max(0, (rects[index]?.top ?? 0) - (rects[index - 1]?.bottom ?? 0)))
+  const fallbackGap = median(gaps) ?? 0
+  const gapAfter = (index: number): number => gaps[index] ?? fallbackGap
+  let nextTop = rects[0]?.top ?? 0
+  let placeholderTop = source.top
+  for (const index of order) {
+    const rect = rects[index]
+    if (rect === undefined) continue
+    if (index === from) placeholderTop = nextTop
+    else {
+      const offset = nextTop - rect.top
+      offsets[index] = Math.abs(offset) < 0.5 ? 0 : offset
+    }
+    nextTop += rect.bottom - rect.top + gapAfter(index)
+  }
+  return { offsets, indicatorY: clampToView({ y: placeholderTop, view }) }
+}
+
+function clampToView(input: { y: number; view: ItemRect }): number {
+  const { y, view } = input
+  return Math.max(view.top + INDICATOR_VIEW_INSET_PX, Math.min(view.bottom - INDICATOR_VIEW_INSET_PX, y))
 }
 
 /** 가장자리 자동 스크롤 (198 `getWorktreeSidebarDragAutoscroll`) — 다음 scrollTop, 움직일 게 없으면 `null`. */

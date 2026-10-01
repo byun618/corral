@@ -155,10 +155,10 @@ describe('R3-01 — GUI 제거 → CLI repo add 재등록(B 없는 트리 없이
     const stored = api.order.repos
     r.linked[b] = [`${b}-wt/alpha`, `${b}-wt/zulu`]
     api = r.tree([a, b, c, d])
-    return { want: [a, c, b, d], visible, stored, cards: r.cards(api, b), wantCards: [b, `${b}-wt/zulu`, `${b}-wt/alpha`] }
+    return { want: [a, c, b, d], visible, stored, cards: r.cards(api, b), wantCards: [`${b}-wt/zulu`, b, `${b}-wt/alpha`] }
   }
 
-  it('실제 workspaceModule repo add 경로 = [A,C,B,D] · B 카드 [main, zulu, alpha] (리뷰 r3 부록 C 재현)', async () => {
+  it('실제 workspaceModule repo add 경로 = [A,C,B,D] · B 카드 [zulu, main, alpha] — 새 워크트리는 main 보다 위(게이트 ① 수정 1) (리뷰 r3 부록 C 재현)', async () => {
     const got = await scenario({ readdBy: 'cli', deliverAbsentTree: false })
     expect(got.visible).toEqual(got.want)
     expect(got.stored).toEqual(got.want)
@@ -224,10 +224,10 @@ describe('R4-01 — 제거 트랜잭션이 잠금을 푼 직후·main 이 다시
     const stored = api.order.repos
     r.linked[b] = [`${b}-wt/alpha`, `${b}-wt/zulu`]
     api = r.tree([a, b, c])
-    return { raced, stateAfter, stored, visible: r.visible(api), cards: r.cards(api, b), want: [a, c, b], wantCards: [b, `${b}-wt/zulu`, `${b}-wt/alpha`] }
+    return { raced, stateAfter, stored, visible: r.visible(api), cards: r.cards(api, b), want: [a, c, b], wantCards: [`${b}-wt/zulu`, b, `${b}-wt/alpha`] }
   }
 
-  it('경합 — 잠금 해제 직후 외부 재등록: 저장 [A,C,B] · B 새 카드 [main, zulu, alpha] (리뷰 r4 external-race 재현)', async () => {
+  it('경합 — 잠금 해제 직후 외부 재등록: 저장 [A,C,B] · B 새 카드 [zulu, main, alpha] (리뷰 r4 external-race 재현)', async () => {
     const got = await scenario({ raceInsideRemove: true })
     expect(got.raced).toBe(true)
     expect(got.stateAfter.generation).toBeGreaterThan(got.stateAfter.removedAt)

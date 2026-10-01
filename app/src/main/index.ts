@@ -68,7 +68,7 @@ import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
-import { RegistryGeneration } from './registry-generation.js'
+import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
@@ -363,8 +363,8 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
 }
 
 /**
- * 레지스트리 세대 — 등록 목록이 바뀐 것을 관측할 때마다 오른다(LIFE-469 R2-01·R3-01, `AppState.registryGeneration`).
- * GUI·CLI(`workspaceModule`)·앱 밖 편집을 가리지 않는다 — 관측 지점은 `currentState` 와 `removeRepo`.
+ * 레지스트리 세대 — 관측한 등록 목록이 직전과 다를 때 오른다(LIFE-469 R2-01·R3-01·R4-01, `AppState.registryGeneration`).
+ * GUI·CLI(`workspaceModule`)·앱 밖 편집을 가리지 않는다 — 관측 지점은 `currentState` 와 `removeRepo`(제거 트랜잭션 안의 목록).
  */
 const registryGeneration = new RegistryGeneration()
 
@@ -383,16 +383,11 @@ function addRepo(input: string): AddRepoResult {
  * 다시 읽기 위해서고, 뺀 레포에 대해서는 아무 요청도 안 나간다.
  */
 function removeRepo(input: string): RemoveRepoResult {
-  const result = registry?.remove(input) ?? { ok: false, error: '레지스트리 미초기화' }
-  if (!result.ok) {
-    scheduleEmit()
-    return result
-  }
-  // 제거를 지금 관측한다 — 응답의 세대가 「제거가 반영된 목록」의 세대다. 이 뒤 그 root 가 다시 보이면 세대가 더 크다.
-  const generation = registryGeneration.observe(registry?.list() ?? [])
-  scheduleTree()
+  // 제거와 관측을 한 트랜잭션의 목록으로 묶는다(R4-01) — 응답 세대 = 그 root 가 없는 목록의 세대.
+  const result = registry === null ? { ok: false, error: '레지스트리 미초기화' } : removeObserved({ registry, generation: registryGeneration, root: input })
+  if (result.ok) scheduleTree()
   scheduleEmit()
-  return { ...result, registryGeneration: generation }
+  return result
 }
 
 /**

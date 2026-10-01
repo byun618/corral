@@ -14,7 +14,7 @@ const { HookHost } = await import('./fake-react.test-helper.mjs')
 const { useManualOrder } = await import('./useManualOrder.js')
 const { orderRepos, orderWorktrees } = await import('../manual-order.js')
 const { RepoRegistry } = await import('../../../main/registry.js')
-const { RegistryGeneration } = await import('../../../main/registry-generation.js')
+const { RegistryGeneration, removeObserved } = await import('../../../main/registry-generation.js')
 const { workspaceModule } = await import('../../../runtime/workspace/index.js')
 const { CommandRegistry } = await import('../../../runtime/registry.js')
 
@@ -57,10 +57,36 @@ function world() {
     guiAdd(root) {
       expect(mainRegistry.add(root).ok).toBe(true)
     },
-    /** main `removeRepo` 와 같다 — 제거 직후 관측한 세대를 응답에 싣는다. */
+    /** main `removeRepo` 가 쓰는 실제 `removeObserved` — 응답 세대 = 제거 트랜잭션 안 목록의 세대(R4-01). */
     guiRemove(root) {
-      expect(mainRegistry.remove(root).ok).toBe(true)
-      return generation.observe(mainRegistry.list())
+      const result = removeObserved({ registry: mainRegistry, generation, root })
+      expect(result.ok).toBe(true)
+      expect(result).not.toHaveProperty('rootsAfter')
+      return result.registryGeneration
+    },
+    /**
+     * 다른 작성자 — 같은 파일을 자기 `RepoRegistry` 로 고친다(CLI·앱 밖과 같은 결). 잠금·rename 은 실제 것을 쓴다.
+     * `afterNextUnlock` 이면 다음 잠금 해제(`fs.rmdirSync`) **바로 뒤**에 등록한다 — 리뷰 r4 부록 D 의 스케줄(제거 트랜잭션이
+     * 잠금을 푼 뒤, main 이 다음으로 읽기 전)을 결정적으로 고정한다. 제품 코드·파일 내용은 건드리지 않는다.
+     */
+    externalRegister(root, { afterNextUnlock = false } = {}) {
+      const register = () => new RepoRegistry(data).register(root)
+      if (!afterNextUnlock) return register()
+      const original = fs.rmdirSync
+      let fired = false
+      const spy = vi.spyOn(fs, 'rmdirSync').mockImplementation((...args) => {
+        const out = original.apply(fs, args)
+        if (!fired) {
+          fired = true
+          spy.mockRestore()
+          register()
+        }
+        return out
+      })
+      return () => {
+        if (!fired) spy.mockRestore()
+        return fired
+      }
     },
     async cliAdd(root) {
       const inv = parser.parse(['repo', 'add', '--path', root], tmp)
@@ -170,5 +196,50 @@ describe('R3-01 — GUI 제거 → CLI repo add 재등록(B 없는 트리 없이
     // 옛 트리(B 포함)가 아직 화면에 있다.
     api = r.tree([a, b, c, w.roots.d])
     expect(api.order.repos).toEqual([a, c, w.roots.d])
+  })
+})
+
+describe('R4-01 — 제거 트랜잭션이 잠금을 푼 직후·main 이 다시 읽기 전에 다른 작성자가 재등록해도 대기 키가 풀린다', () => {
+  async function scenario({ raceInsideRemove }) {
+    const w = world()
+    const { a, b, c } = w.roots
+    for (const root of [a, b, c]) w.guiAdd(root)
+    const r = renderer(w)
+    r.linked[b] = [`${b}-wt/alpha`]
+    let api = r.tree([a, b, c])
+    api.hydrate({ manualRepoOrder: [b, a, c], manualWorktreeOrder: { [a]: [], [b]: [`${b}-wt/alpha`], [c]: [] } })
+    api = r.render()
+    api = r.emit()
+    // 리뷰 부록 D: 제거의 잠금 해제 바로 뒤에 외부 재등록(경합) / 양성 대조: 제거 응답을 받은 뒤 외부 재등록.
+    const armed = raceInsideRemove ? w.externalRegister(b, { afterNextUnlock: true }) : null
+    const removedAt = w.guiRemove(b)
+    const raced = armed === null ? null : armed()
+    if (!raceInsideRemove) w.externalRegister(b)
+    api.forget({ root: b, registryGeneration: removedAt })
+    api = r.render()
+    api = r.emit()
+    const stateAfter = { generation: w.state().generation, removedAt }
+    // B 가 든 새 트리까지 받는다(B 없는 트리는 한 번도 오지 않는다).
+    api = r.tree([a, b, c])
+    const stored = api.order.repos
+    r.linked[b] = [`${b}-wt/alpha`, `${b}-wt/zulu`]
+    api = r.tree([a, b, c])
+    return { raced, stateAfter, stored, visible: r.visible(api), cards: r.cards(api, b), want: [a, c, b], wantCards: [b, `${b}-wt/zulu`, `${b}-wt/alpha`] }
+  }
+
+  it('경합 — 잠금 해제 직후 외부 재등록: 저장 [A,C,B] · B 새 카드 [main, zulu, alpha] (리뷰 r4 external-race 재현)', async () => {
+    const got = await scenario({ raceInsideRemove: true })
+    expect(got.raced).toBe(true)
+    expect(got.stateAfter.generation).toBeGreaterThan(got.stateAfter.removedAt)
+    expect(got.stored).toEqual(got.want)
+    expect(got.visible).toEqual(got.want)
+    expect(got.cards).toEqual(got.wantCards)
+  })
+
+  it('양성 대조 — 제거 응답 뒤 외부 재등록도 같다', async () => {
+    const got = await scenario({ raceInsideRemove: false })
+    expect(got.raced).toBeNull()
+    expect(got.stored).toEqual(got.want)
+    expect(got.cards).toEqual(got.wantCards)
   })
 })

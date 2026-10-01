@@ -548,7 +548,7 @@ export type AddRepoResult = { ok: boolean; root?: string; error?: string }
  * 빼는 것은 **corral 레지스트리의 그 줄 하나**뿐이다. 디스크의 폴더도, herdr 세션도 건드리지
  * 않는다 — 그래서 여기 돌려줄 것도 "어느 루트가 빠졌나" 하나로 족하다.
  */
-/** `registryGeneration` = 제거가 반영된 레지스트리 세대(성공일 때만) — 렌더러가 제거 뒤의 상태를 알아본다(LIFE-469 R2-01). */
+/** `registryGeneration` = 제거 트랜잭션 안의 목록(그 root 가 없는 목록)을 관측한 세대(성공일 때만) — 렌더러가 제거 뒤의 상태를 알아본다(LIFE-469 R2-01·R4-01). */
 export type RemoveRepoResult = { ok: boolean; root?: string; error?: string; registryGeneration?: number }
 
 /**
@@ -740,8 +740,10 @@ export type AppState = {
   link: LinkState
   registry: RegistryState
   /**
-   * 레지스트리 세대 — 앱이 레포를 추가·제거할 때마다 1 씩 오른다(LIFE-469 R2-01). `registry.roots` 와 같은 순간의 값이다.
-   * 렌더러가 「제거 뒤에 다시 등록됐다」를 옛 스냅샷과 구분하는 데 쓴다.
+   * 레지스트리 세대 — main 이 관측한 등록 목록이 **직전 관측과 다를 때** 1 오른다(LIFE-469 R2-01·R3-01·R4-01,
+   * `main/registry-generation.ts`). 변경 횟수가 아니다 — 관측 사이의 여러 변경은 한 번으로 합쳐지고, 관측 사이에 원래
+   * 목록으로 돌아온 변경·이미 등록된 레포의 중복 추가는 세지 않는다. 출처는 GUI·CLI·앱 밖 편집을 가리지 않는다.
+   * `registry.roots` 와 같은 읽기의 값이다. 렌더러가 「제거 뒤에 다시 등록됐다」를 옛 스냅샷과 구분하는 데 쓴다.
    */
   registryGeneration: number
   repos: RepoRow[]

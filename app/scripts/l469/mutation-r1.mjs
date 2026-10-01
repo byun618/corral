@@ -1,4 +1,4 @@
-// LIFE-469 수정 라운드 1·2·3 — hook 시험의 음성 대조. 고친 줄을 하나씩 옛 동작으로 되돌려(변이) 시험이 **실패하는지** 본다.
+// LIFE-469 수정 라운드 1~4 — hook 시험의 음성 대조. 고친 줄을 하나씩 옛 동작으로 되돌려(변이) 시험이 **실패하는지** 본다.
 // 변이마다 원본 바이트로 되돌리고, 끝에 원본 해시를 대조한다. 사용: node mutation-r1.mjs <out 폴더>
 import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -50,6 +50,13 @@ const MUTANTS = [
     file: path.join(app, 'src/main/registry-generation.ts'),
     from: 'if (this.seen !== null && key !== this.seen) this.generation++',
     to: 'if (this.seen !== null && key !== this.seen && key.length < this.seen.length) this.generation++',
+  },
+  // 수정 라운드 4 — 제거 응답 세대를 잠금이 풀린 뒤 다시 읽은 목록으로 관측하던 라운드 3 동작.
+  {
+    id: 'R4-01',
+    file: path.join(app, 'src/main/registry-generation.ts'),
+    from: 'registryGeneration: input.generation.observe(rootsAfter)',
+    to: 'registryGeneration: input.generation.observe(input.registry.list())',
   },
   { id: 'R1-05', file: src('hooks/useSidebarReorder.ts'), from: 'headTop: headBox.top,', to: 'headTop: box.top,' },
 ]

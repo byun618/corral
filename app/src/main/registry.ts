@@ -171,7 +171,11 @@ export class RepoRegistry {
     } catch (error) { return { ok: false, error: String(error) } }
   }
 
-  remove(input: string): RemoveRepoResult {
+  /**
+   * 제거 성공이면 `rootsAfter` = 제거를 쓴 **그 트랜잭션 안(잠금 보유 중)** 의 등록 목록 — 잠금이 풀린 뒤 다른 작성자가
+   * 바꾼 내용이 섞이지 않는다(LIFE-469 R4-01, 세대 관측용). IPC 로 내보내기 전에 main 이 떼어 낸다.
+   */
+  remove(input: string): RemoveRepoResult & { rootsAfter?: string[] } {
     try {
       const resolved = canonicalPath(expandPath(input))
       const records = this.records()
@@ -179,7 +183,7 @@ export class RepoRegistry {
       return this.change(data => {
         if (!data.repos.some(repo => repo.path === root)) throw new Error(`목록에 없다: ${root}`)
         unregisterRepo(data, data.repos.find(repo => repo.path === root)!.id)
-        return { ok: true as const, root }
+        return { ok: true as const, root, rootsAfter: data.repos.map(repo => repo.path).sort() }
       })
     } catch (error) { return { ok: false, error: String(error) } }
   }

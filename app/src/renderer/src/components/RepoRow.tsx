@@ -3,7 +3,7 @@
 // 행은 레포 묶음 안에서 **sticky** 다 — 스크롤하면 위에 붙고 다음 레포 헤더가 밀어낸다(묶음이 sticky 의 경계).
 // sticky 는 행과 ⋯ 메뉴를 함께 감싼 `.repo-row-head` 에 건다 — 메뉴의 기준점이 붙은 헤더를 따라간다(LIFE-468 r1 CDX-R1).
 // corral 은 가상 목록이 아니라 붙은 헤더가 첫 행을 덮거나 접힌 레포 아래 빈 칸을 남기는 경로(Orca #18667)가 없다.
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { RepoRow as RepoRowData } from '../../../shared/types.js'
 import { FolderIcon } from './AgentStateDot.js'
 import { RepoRowActions } from './RepoRowActions.js'
@@ -11,6 +11,9 @@ import { RepoRowMenu } from './RepoRowMenu.js'
 
 export function RepoRow({
   repo,
+  reordering,
+  dragging,
+  onHeadMouseDown,
   collapsed,
   onToggleCollapse,
   onCreateWorktree,
@@ -18,6 +21,12 @@ export function RepoRow({
   children,
 }: {
   repo: RepoRowData
+  /** 사이드바에서 끌어 옮기는 중 (LIFE-469) — 열린 메뉴를 닫는다(K3ⓖ). hover 액션은 CSS 가 숨긴다. */
+  reordering: boolean
+  /** 이 레포 헤더를 끄는 중. */
+  dragging: boolean
+  /** 헤더 끌기 시작 (LIFE-469) — 셰브론·⋯·+ 에서는 컨트롤러가 스스로 거른다(U14). */
+  onHeadMouseDown: (event: React.MouseEvent) => void
   collapsed: boolean
   onToggleCollapse: () => void
   onCreateWorktree: () => void
@@ -28,14 +37,19 @@ export function RepoRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const active = hovered || menuOpen
 
+  useEffect(() => {
+    if (reordering) setMenuOpen(false)
+  }, [reordering])
+
   return (
-    <div className="repo-row-group" data-repo={repo.root}>
-      <div className={`repo-row-head ${menuOpen ? 'is-menu-open' : ''}`}>
+    <div className={`repo-row-group ${dragging ? 'is-reorder-source' : ''}`} data-repo={repo.root}>
+      <div className={`repo-row-head ${menuOpen ? 'is-menu-open' : ''}`} data-repo-head="">
         <div
           className={`repo-row ${active ? 'is-active' : ''}`}
           data-repo-toggle={repo.root}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
+          onMouseDown={onHeadMouseDown}
           onClick={() => {
             setMenuOpen(false)
             onToggleCollapse()

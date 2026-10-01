@@ -1,14 +1,15 @@
 // design-handoff.md §1 — 사이드바 4단 전개(repo 헤더 → worktree 2줄 블록 → 세션 행). 이 파일은
 // C6 이 나열한 개별 컴포넌트(SidebarBrandBar 등)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
 // 자유롭게 구조화했다.
-import type { RefObject } from 'react'
+import { useRef, type RefObject } from 'react'
 import type { AgentKind, AppState, WorktreeRow } from '../../../shared/types.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
+import { useSidebarReorder, type ReorderCommit } from '../hooks/useSidebarReorder.js'
+import { orderRepos, orderWorktrees, type ManualOrder } from '../manual-order.js'
 import { pickPane } from '../pane-utils.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
 import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
-import { sortWorktrees } from '../worktree-name.js'
 import { RepoRow } from './RepoRow.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarBrandBar } from './SidebarBrandBar.js'
@@ -27,6 +28,8 @@ export function Sidebar({
   selectPane,
   closePane,
   actions,
+  manualOrder,
+  onReorder,
   isRepoCollapsed,
   toggleRepoCollapsed,
   isGroupExpanded,
@@ -46,6 +49,9 @@ export function Sidebar({
   selectPane: (paneId: string) => void
   closePane: (paneId: string) => void
   actions: LifecycleActions
+  /** 레포·워크트리 수동 순서 (LIFE-469) — 표시 순서는 여기서 나온다. */
+  manualOrder: ManualOrder
+  onReorder: (commit: ReorderCommit) => void
   isRepoCollapsed: (root: string) => boolean
   toggleRepoCollapsed: (root: string) => void
   /** 에이전트 묶음 알약이 펼쳐져 있나 (LIFE-467 — 기본 접힘, 펼친 것만 영속). */
@@ -100,35 +106,45 @@ export function Sidebar({
         for (const tab of worktree.workspace?.tabs ?? []) if (tab.panes.some((pane) => pane.paneId === paneId)) return tab.workspaceId
     return null
   }
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const reorder = useSidebarReorder({ listRef, onCommit: onReorder })
+  const dragSource = reorder.state?.source ?? null
   const livePaneIds = livePaneIdsOf(state.repos)
   const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
 
   return (
-    <div className="sidebar" data-sidebar ref={sidebarRef} style={{ width }}>
+    <div className={`sidebar ${reorder.state !== null ? 'is-reordering' : ''}`} data-sidebar ref={sidebarRef} style={{ width }}>
       <SidebarBrandBar onToggle={onToggleSidebar} shortcutHint={shortcutHint} />
       <SidebarSearch />
       <ReposSectionHeader onAddRepo={onAddRepo} />
-      <div className="repo-list" data-repo-list>
+      <div className="repo-list" data-repo-list ref={listRef}>
         {state.repos.length === 0 ? (
           <p className="sidebar-empty" data-empty>
             등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.
           </p>
         ) : (
-          state.repos.map((repo) => (
+          orderRepos({ repos: state.repos, stored: manualOrder.repos }).map((repo) => (
             <RepoRow
               key={repo.root}
               repo={repo}
+              reordering={reorder.state !== null}
+              dragging={dragSource?.kind === 'repo' && dragSource.root === repo.root}
+              onHeadMouseDown={(event) => reorder.onRepoMouseDown(event, repo.root)}
               collapsed={isRepoCollapsed(repo.root)}
               onToggleCollapse={() => toggleRepoCollapsed(repo.root)}
               onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
               onRemove={() => onRemoveRepo(repo.root)}
             >
-              {sortWorktrees(repo.worktrees).map((worktree) => {
+              {orderWorktrees({ worktrees: repo.worktrees, stored: manualOrder.worktrees[repo.root] }).map((worktree) => {
                 const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
                 return (
                   <WorktreeBlock
                     key={worktree.path}
                     worktree={worktree}
+                    reordering={reorder.state !== null}
+                    dragging={dragSource?.kind === 'card' && dragSource.path === worktree.path}
+                    // 주 체크아웃은 맨 위 고정 — 끌기 핸들을 달지 않는다(198 `section-order.ts:66-74`, K2ⓑ).
+                    onCardMouseDown={worktree.isLinked ? (event) => reorder.onCardMouseDown(event, repo.root, worktree.path) : undefined}
                     integrations={state.integrations}
                     home={state.home}
                     now={now}
@@ -166,8 +182,23 @@ export function Sidebar({
             </RepoRow>
           ))
         )}
+        {reorder.state?.indicatorY != null ? <ReorderDropIndicator y={reorder.state.indicatorY} /> : null}
       </div>
       <SidebarFooterToolbar onRefresh={onRefresh} />
+    </div>
+  )
+}
+
+/**
+ * 드롭 표시 줄 — 198 `WorktreeSidebarDropIndicator.tsx:17-25` 대응: 양끝 점 6px(`size-1.5`) + 가운데 막대 2px(`h-0.5`),
+ * 색 `--worktree-sidebar-ring`, 바탕색 2px 그림자 테두리, `left-3 right-2 z-30`(sticky 헤더 z 20 위), 세로 가운데 맞춤.
+ */
+function ReorderDropIndicator({ y }: { y: number }): React.JSX.Element {
+  return (
+    <div className="reorder-drop-indicator" data-reorder-indicator="" role="presentation" style={{ top: `${y}px` }}>
+      <span className="reorder-drop-dot" />
+      <span className="reorder-drop-bar" />
+      <span className="reorder-drop-dot" />
     </div>
   )
 }

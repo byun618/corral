@@ -45,10 +45,39 @@ export type UiPrefs = {
    * 거기고, 저장소는 **통째로 실어 나르기만** 한다(여기서 또 검사하면 두 진실이 생긴다).
    */
   groupLayouts: unknown[]
+  /**
+   * 사이드바 수동 순서 (LIFE-469) — 레포 root 목록, 레포 root → 연결 워크트리 path 목록. 키를 경로로 잡는 이유는
+   * `groupLayouts` 와 같다. 여기서는 모양(문자열 배열·중복 없음)만 지킨다 — 순서의 뜻은 렌더러 `manual-order.ts` 가 안다.
+   */
+  manualRepoOrder: string[]
+  manualWorktreeOrder: Record<string, string[]>
 }
 
 const VERSION = 1
-const DEFAULT_PREFS: UiPrefs = { sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], expandedAgentGroups: [], tabOrdinals: [], groupLayouts: [] }
+const DEFAULT_PREFS: UiPrefs = {
+  sidebarWidth: null,
+  sidebarCollapsed: false,
+  collapsedRepos: [],
+  collapsedGroups: [],
+  expandedAgentGroups: [],
+  tabOrdinals: [],
+  groupLayouts: [],
+  manualRepoOrder: [],
+  manualWorktreeOrder: {},
+}
+
+/** 문자열 목록 — 문자열 아닌 칸·빈 문자열·중복은 버린다(손상된 칸이 다른 칸까지 깨뜨리지 않게, LIFE-469 K4ⓓ). */
+function readKeyList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))]
+}
+
+function readKeyListMap(value: unknown): Record<string, string[]> {
+  if (!isRecord(value)) return {}
+  const out: Record<string, string[]> = {}
+  for (const [key, list] of Object.entries(value)) if (key.length > 0 && Array.isArray(list)) out[key] = readKeyList(list)
+  return out
+}
 
 /** 저장된 배정표를 **모양을 확인하며** 읽는다 — 손으로 고친 파일이 화면을 깨뜨리지 않게. */
 function readTabOrdinals(value: unknown): TabOrdinal[] {
@@ -96,6 +125,8 @@ export class UiPrefsStore {
         expandedAgentGroups: Array.isArray(expanded) ? expanded.filter((item): item is string => typeof item === 'string') : [],
         tabOrdinals: readTabOrdinals(parsed['tabOrdinals']),
         groupLayouts: Array.isArray(parsed['groupLayouts']) ? parsed['groupLayouts'] : [],
+        manualRepoOrder: readKeyList(parsed['manualRepoOrder']),
+        manualWorktreeOrder: readKeyListMap(parsed['manualWorktreeOrder']),
       }
       log('ui_prefs.load', { file: this.file })
     } catch (error) {
@@ -112,6 +143,8 @@ export class UiPrefsStore {
       expandedAgentGroups: [...this.prefs.expandedAgentGroups],
       tabOrdinals: this.prefs.tabOrdinals.map((row) => ({ ...row })),
       groupLayouts: [...this.prefs.groupLayouts],
+      manualRepoOrder: [...this.prefs.manualRepoOrder],
+      manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
     }
   }
 

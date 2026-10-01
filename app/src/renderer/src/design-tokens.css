@@ -26,6 +26,7 @@
   --bg-sidebar: #2a2a2a;  /* 사이드바 패널 — Orca --worktree-sidebar */
   --bg-sidebar-accent: #353535; /* 사이드바 안 칠(알약 바탕 등) — Orca --worktree-sidebar-accent */
   --bg-sidebar-hover: #262626;  /* 카드 hover 의 섞는 색 — Orca --sidebar-accent */
+  --ring-sidebar: #737373;      /* 사이드바 드롭 표시 줄 (LIFE-469) — Orca 다크 --worktree-sidebar-ring */
   --bg-surface: #0a0a0a;  /* 메인/터미널 영역 · 활성 탭 — Orca --background */
   --bg-raised: #171717;   /* 모달·메뉴 패널 — Orca --popover */
   --bg-input: rgb(255 255 255 / 0.045); /* 입력 — Orca ui/input `dark:bg-input/30` (--input .15 × 30%) */

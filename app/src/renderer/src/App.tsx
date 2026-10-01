@@ -43,6 +43,7 @@ import { useGroupLayout } from './hooks/useGroupLayout.js'
 import { useLifecycleActions } from './hooks/useLifecycleActions.js'
 import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSync.js'
 import { useMemoryLabel } from './hooks/useMemoryLabel.js'
+import { useManualOrder } from './hooks/useManualOrder.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
@@ -74,6 +75,8 @@ function blurTerminal(): void {
  * MRU 홀드 무동작 상한 (F3-3). `Control` keyup 도 창 blur 도 못 받은 회차를 여기서 끝낸다 —
  * 10초는 "홀드"로 볼 수 있는 상한을 넉넉히 넘긴 값이고, 넘겨 끝내는 쪽은 **취소**다.
  */
+/** 상태가 오기 전 — 매 렌더 새 배열을 만들면 순서 정규화 effect 가 매번 돈다. */
+const NO_REPOS: AppState['repos'] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 
 export function App(): React.JSX.Element {
@@ -102,6 +105,8 @@ export function App(): React.JSX.Element {
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
+  // LIFE-469 — 레포·워크트리 수동 순서. 읽기는 아래 첫 getUiPrefs 에 얹는다(부트 화면이 내려가기 전에 순서가 선다).
+  const manualOrder = useManualOrder(state?.repos ?? NO_REPOS)
   const memoryLabel = useMemoryLabel()
 
   /**
@@ -142,12 +147,14 @@ export function App(): React.JSX.Element {
       .then((prefs) => {
         if (cancelled) return
         tabOrdinals.hydrate(prefs.tabOrdinals)
+        manualOrder.hydrate(prefs)
         setStoredLayouts(prefs.groupLayouts)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
       })
       .catch(() => {
         // 읽기 실패 — 빈 배정표로 간다.
+        manualOrder.hydrate(null)
       })
       .finally(() => {
         if (!cancelled) setOrdinalsReady(true)
@@ -804,6 +811,7 @@ export function App(): React.JSX.Element {
       return
     }
     setPendingRemove(null)
+    manualOrder.forget(repo.root)
   }
 
   /**
@@ -1140,6 +1148,8 @@ export function App(): React.JSX.Element {
           selectPane={revealPane}
           closePane={(paneId) => void closePaneAt(paneId)}
           actions={lifecycle.actions}
+          manualOrder={manualOrder.order}
+          onReorder={manualOrder.commit}
           isRepoCollapsed={repoCollapse.has}
           toggleRepoCollapsed={repoCollapse.toggle}
           isGroupExpanded={groupExpand.has}

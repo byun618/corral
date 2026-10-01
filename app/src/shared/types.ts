@@ -609,6 +609,13 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 하므로 `unknown[]` 이다(저장소가 트리 모양을 또 알면 두 진실이 된다).
    */
   groupLayouts: unknown[]
+  /**
+   * 사이드바 레포 수동 순서 — 레포 root, 위에서 아래 (LIFE-469). 목록에 없는 레포는 맨 아래(198 과 같다).
+   * 정렬 **모드** 칸은 따로 없다 — S4(Sort by·Project order)가 이 데이터 옆에 모드를 얹는다.
+   */
+  manualRepoOrder: string[]
+  /** 레포 root → 연결 워크트리 path 수동 순서(주 체크아웃 제외, 맨 위 고정) (LIFE-469). 없는 레포는 기본 순서. */
+  manualWorktreeOrder: Record<string, string[]>
 }
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------

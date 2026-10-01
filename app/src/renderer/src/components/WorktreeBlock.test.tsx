@@ -52,7 +52,7 @@ function render(panes: PaneRow[], options: {
   }
   const noop = (): void => {}
   return renderToStaticMarkup(createElement(WorktreeBlock, {
-    worktree, selected: true, selectedPane: 'p2', groupGlyph: null, integrations: [],
+    worktree, reordering: false, dragging: false, onCardMouseDown: undefined, selected: true, selectedPane: 'p2', groupGlyph: null, integrations: [],
     home: '/home', now: 120000, retained: options.retained ?? [], lineage: options.lineage ?? READY_EMPTY,
     livePaneIds: new Set(options.livePaneIds ?? panes.map((row) => row.paneId)),
     groupExpanded: options.expanded ?? false, onToggleGroup: noop,

@@ -10,7 +10,7 @@
 // · hover `+`/`⋯`(빈 탭·에이전트 기동·worktree 닫기)는 corral 고유 진입점이라 유지한다 — 제목 줄 오른쪽에 겹쳐 hover 때만.
 //   01-criteria C1 의 「세션(탭) 생성·닫기」 진입점이다(MainTabBar 는 탭 2개 이상에서만 선다).
 // · 선택 표시는 표면만 바꾼다 — 옛 「이름 밝힘·점 accent 강제」는 198 에 없어 뺐다(K6ⓔ).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { AgentKind, IntegrationRow, OrchestrationLineage, RetainedAgentRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { collapsedSummary } from '../session-summary.js'
@@ -30,6 +30,9 @@ const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
 
 export function WorktreeBlock({
   worktree,
+  reordering,
+  dragging,
+  onCardMouseDown,
   selected,
   selectedPane,
   groupGlyph,
@@ -49,6 +52,12 @@ export function WorktreeBlock({
   onCreateAgent,
 }: {
   worktree: WorktreeRow
+  /** 사이드바에서 끌어 옮기는 중 (LIFE-469) — 열린 ⋯ 메뉴를 닫는다(K3ⓖ). */
+  reordering: boolean
+  /** 이 카드를 끄는 중. */
+  dragging: boolean
+  /** 카드 끌기 시작 (LIFE-469). 주 체크아웃은 `undefined` — 맨 위 고정이라 끌리지 않는다. */
+  onCardMouseDown: ((event: React.MouseEvent) => void) | undefined
   selected: boolean
   /**
    * 보존된 영역 레이아웃의 예고 (LIFE-373 L-③ · §2 Sidebar WorktreeBlock).
@@ -84,6 +93,9 @@ export function WorktreeBlock({
   const [menuOpen, setMenuOpen] = useState(false)
   /** 접은 계보 부모 — 기본은 펼침이다(Orca: "spawned child agents are actionable work", `WorktreeCardAgents.tsx:256`). */
   const [foldedParents, setFoldedParents] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    if (reordering) setMenuOpen(false)
+  }, [reordering])
   const tone = gitTone(worktree.gitStatus)
   const markLabel = gitMarkLabel(worktree.gitStatus)
   // **사이드바는 에이전트 세션만 그린다** (09-gate1-fix.md D). 행 나무(`sidebar-agents.ts`)가 셸 탭을 거르고
@@ -151,7 +163,12 @@ export function WorktreeBlock({
   )
 
   return (
-    <div className="worktree-row" data-worktree={worktree.path}>
+    <div
+      className={`worktree-row ${dragging ? 'is-reorder-source' : ''}`}
+      data-worktree={worktree.path}
+      data-reorder-card={onCardMouseDown === undefined ? undefined : worktree.path}
+      onMouseDown={onCardMouseDown}
+    >
       <div
         className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'}`}
         data-worktree-card-surface=""

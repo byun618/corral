@@ -77,6 +77,7 @@ function blurTerminal(): void {
  */
 /** 상태가 오기 전 — 매 렌더 새 배열을 만들면 순서 정규화 effect 가 매번 돈다. */
 const NO_REPOS: AppState['repos'] = []
+const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
 
 export function App(): React.JSX.Element {
@@ -106,7 +107,7 @@ export function App(): React.JSX.Element {
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
   // LIFE-469 — 레포·워크트리 수동 순서. 읽기는 아래 첫 getUiPrefs 에 얹는다(부트 화면이 내려가기 전에 순서가 선다).
-  const manualOrder = useManualOrder(state?.repos ?? NO_REPOS)
+  const manualOrder = useManualOrder({ repos: state?.repos ?? NO_REPOS, registry: { roots: state?.registry.roots ?? NO_ROOTS, generation: state?.registryGeneration ?? 0 } })
   const memoryLabel = useMemoryLabel()
 
   /**
@@ -811,7 +812,7 @@ export function App(): React.JSX.Element {
       return
     }
     setPendingRemove(null)
-    manualOrder.forget(repo.root)
+    manualOrder.forget({ root: repo.root, registryGeneration: result.registryGeneration ?? null })
   }
 
   /**

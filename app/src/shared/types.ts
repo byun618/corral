@@ -548,7 +548,8 @@ export type AddRepoResult = { ok: boolean; root?: string; error?: string }
  * 빼는 것은 **corral 레지스트리의 그 줄 하나**뿐이다. 디스크의 폴더도, herdr 세션도 건드리지
  * 않는다 — 그래서 여기 돌려줄 것도 "어느 루트가 빠졌나" 하나로 족하다.
  */
-export type RemoveRepoResult = { ok: boolean; root?: string; error?: string }
+/** `registryGeneration` = 제거가 반영된 레지스트리 세대(성공일 때만) — 렌더러가 제거 뒤의 상태를 알아본다(LIFE-469 R2-01). */
+export type RemoveRepoResult = { ok: boolean; root?: string; error?: string; registryGeneration?: number }
 
 /**
  * 「폴더 찾아보기」 한 번의 결과 (게이트 ① 2번째 지시, 2026-09-12).
@@ -738,6 +739,11 @@ export type AppState = {
   sessionNote: string | null
   link: LinkState
   registry: RegistryState
+  /**
+   * 레지스트리 세대 — 앱이 레포를 추가·제거할 때마다 1 씩 오른다(LIFE-469 R2-01). `registry.roots` 와 같은 순간의 값이다.
+   * 렌더러가 「제거 뒤에 다시 등록됐다」를 옛 스냅샷과 구분하는 데 쓴다.
+   */
+  registryGeneration: number
   repos: RepoRow[]
   terminal: TerminalState
   /**

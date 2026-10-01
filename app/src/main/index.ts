@@ -226,6 +226,7 @@ function currentState(): AppState {
     sessionNote,
     link: link.linkState(),
     registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
+    registryGeneration,
     repos: tree.repos,
     terminal: stream.terminalState(),
     terminalGroups: stream.groupStates(),
@@ -358,9 +359,15 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
   return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
 }
 
+/** 레지스트리 세대 — 앱 안 추가·제거 성공마다 오른다(LIFE-469 R2-01, `AppState.registryGeneration`). */
+let registryGeneration = 0
+
 function addRepo(input: string): AddRepoResult {
   const result = registry?.add(input) ?? { ok: false, error: '레지스트리 미초기화' }
-  if (result.ok) scheduleTree()
+  if (result.ok) {
+    registryGeneration++
+    scheduleTree()
+  }
   scheduleEmit()
   return result
 }
@@ -374,9 +381,14 @@ function addRepo(input: string): AddRepoResult {
  */
 function removeRepo(input: string): RemoveRepoResult {
   const result = registry?.remove(input) ?? { ok: false, error: '레지스트리 미초기화' }
-  if (result.ok) scheduleTree()
+  if (!result.ok) {
+    scheduleEmit()
+    return result
+  }
+  registryGeneration++
+  scheduleTree()
   scheduleEmit()
-  return result
+  return { ...result, registryGeneration }
 }
 
 /**

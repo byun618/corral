@@ -1134,6 +1134,39 @@ async function main() {
     await shot('r1-04-gui-remove-readd')
   }
 
+  // ── R2-01 GUI 제거 → **바로** 재등록(80ms 트리 예약 안) → 새 레포 = 재등록 레포는 맨 아래, 그 뒤 새 레포 ──
+  // main 이 「epsilon 없는」 트리를 합쳐 건너뛰면 옛 구현은 대기 키를 영영 못 내렸다. 이 검사가 그 경합을 실제로 만들었는지는
+  // 화면만으로는 모른다 — 옛 동작(변이)으로 빌드한 앱에서 이 검사가 실패하는지로 따로 본다(RESULT 수정 라운드 2).
+  {
+    const epsilon = fs.realpathSync(path.join(reposDir, 'epsilon'))
+    const order0 = repoOrder(await snapshot())
+    await mouse('mouseMoved', await headerPoint(epsilon), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-repo-menu-toggle', value: epsilon }))
+    await click(await pointOf({ attr: 'data-repo-menu-remove', value: epsilon }))
+    await waitFor(async () => (await pointOf({ attr: 'data-confirm-ok' })) !== null, 'remove confirm (epsilon)', 10_000)
+    const ok = await pointOf({ attr: 'data-confirm-ok' })
+    await mouse('mouseMoved', ok, { buttons: 0 })
+    await mouse('mousePressed', ok)
+    await mouse('mouseReleased', ok)
+    const readdAt = Date.now()
+    const readd = await rpc(control, { cmd: 'add-repo', root: epsilon })
+    const readdMs = Date.now() - readdAt
+    await waitFor(async () => repoOrder(await snapshot()).includes(epsilon), 'epsilon present after readd', 30_000)
+    await pause(1_000)
+    const afterReadd = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    const zeta = makeRepo('zeta', [])
+    await rpc(control, { cmd: 'add-repo', root: zeta })
+    await waitFor(async () => {
+      await rebuild()
+      return repoOrder(await snapshot()).includes(zeta)
+    }, 'zeta added', 60_000)
+    await settle()
+    const want = [...order0.filter((root) => root !== epsilon), epsilon, zeta]
+    const got = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    check('K5b-gui-remove-immediate-readd', 'K5ⓑ(R2-01) GUI 제거 직후 바로 재등록 → 새 레포 = 재등록 레포 맨 아래·그 뒤 새 레포, 화면·파일 같음(기대 배열 전체)', readd.ok === true && same(got.screen, want) && same(got.file, want), { before: order0, readdOk: readd.ok, readdMs, afterReadd, want, got })
+  }
+
   // ── K4ⓐ 재시작 3회 — 순서 그대로 ──
   for (let round = 1; round <= 3; round++) {
     const beforeQuit = await snapshot()

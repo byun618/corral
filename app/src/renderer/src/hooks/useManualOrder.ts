@@ -36,20 +36,28 @@ function applyCommit(input: { order: ManualOrder; commit: ReorderCommit }): Manu
   }
 }
 
-export function useManualOrder(repos: readonly RepoRow[]): {
+/** 지금 상태의 레지스트리 — 등록된 root 와 그 세대(`AppState.registry.roots` · `registryGeneration`). */
+export type RegistrySnapshot = { roots: readonly string[]; generation: number }
+
+export function useManualOrder(input: { repos: readonly RepoRow[]; registry: RegistrySnapshot }): {
   order: ManualOrder
   /** 첫 `getUiPrefs` 결과(읽기 실패면 `null`)로 한 번 싣는다. 싣기 전에는 정규화·저장을 하지 않는다. */
   hydrate: (prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder'> | null) => void
   commit: (commit: ReorderCommit) => void
-  forget: (root: string) => void
+  /** GUI 제거 성공 뒤 — `registryGeneration` 은 제거 응답의 세대(없으면 `null`). */
+  forget: (removed: { root: string; registryGeneration: number | null }) => void
 } {
+  const { repos, registry } = input
   const [order, setOrder] = useState<ManualOrder | null>(null)
   /**
-   * GUI 로 제거했지만 목록에는 아직 남은 레포 root(R1-04). 제거 IPC 는 트리 재조립(main `scheduleTree`, 80ms 뒤)보다
-   * 먼저 답하므로, 그 사이 정규화가 옛 목록을 보고 키를 다시 끼우지 않게 뺀다. 목록에서 사라지는 걸 보면 내린다 —
-   * 그 뒤 같은 경로를 다시 등록하면 새 레포로(맨 아래) 들어온다.
+   * GUI 로 제거했지만 목록에는 아직 남은 레포 root → 제거가 반영된 레지스트리 세대(R1-04·R2-01). 제거 IPC 는 트리
+   * 재조립(main `scheduleTree`, 80ms 뒤)보다 먼저 답하므로, 그 사이 정규화가 옛 목록을 보고 키를 다시 끼우지 않게 뺀다.
+   * 내리는 때는 둘 중 먼저 오는 것 — 시간으로는 내리지 않는다(옛 스냅샷이 R1-04 를 다시 연다):
+   *   · 목록에서 그 root 가 사라진 걸 본다(제거가 트리에 반영됨)
+   *   · 레지스트리가 제거 **뒤 세대**인데 그 root 가 다시 등록돼 있다(재등록 — main 은 80ms 예약을 합치고 낡은 세대의
+   *     조립을 버리므로 「root 없는 스냅샷」이 오지 않을 수 있다, R2-01). 이때 키는 이미 지웠으니 새 레포로(맨 아래) 들어온다.
    */
-  const removingRef = useRef(new Set<string>())
+  const removingRef = useRef(new Map<string, number | null>())
 
   const hydrate = useCallback((prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder'> | null) => {
     setOrder(
@@ -63,13 +71,17 @@ export function useManualOrder(repos: readonly RepoRow[]): {
   useEffect(() => {
     if (order === null) return
     const removing = removingRef.current
-    for (const root of removing) if (!repos.some((repo) => repo.root === root)) removing.delete(root)
+    for (const [root, removedAt] of removing) {
+      const gone = !repos.some((repo) => repo.root === root)
+      const reRegistered = removedAt !== null && registry.generation > removedAt && registry.roots.includes(root)
+      if (gone || reRegistered) removing.delete(root)
+    }
     const listed = removing.size === 0 ? repos : repos.filter((repo) => !removing.has(repo.root))
     const reconciled = reconcileManualOrder({ order, repos: listed })
     if (!reconciled.changed) return
     setOrder(reconciled.order)
     persist(reconciled.order)
-  }, [order, repos])
+  }, [order, repos, registry.roots, registry.generation])
 
   const commit = useCallback((input: ReorderCommit) => {
     setOrder((prev) => {
@@ -81,8 +93,9 @@ export function useManualOrder(repos: readonly RepoRow[]): {
     })
   }, [])
 
-  const forget = useCallback((root: string) => {
-    removingRef.current.add(root)
+  const forget = useCallback((removed: { root: string; registryGeneration: number | null }) => {
+    const { root } = removed
+    removingRef.current.set(root, removed.registryGeneration)
     setOrder((prev) => {
       if (prev === null) return prev
       const next = forgetRepo({ order: prev, root })

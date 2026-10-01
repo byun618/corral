@@ -49,7 +49,14 @@ export const RESOLVED_CONTROLS = [
     unit: 'repo-header-icon',
     claim: '레포 헤더가 Orca 폴더 아이콘(lucide) vs corral 이니셜 사각형 — LIFE-468 K4ⓐ 가 해소',
     // 양쪽 다 있어야 하고, **모양과 칠 둘 다** 달라야 한다 — 1px 박스 차이 하나로는 아이콘 차이가 아니다.
-    expect: { bothPresent: true, kinds: ['box', 'style'] },
+    // 옛 차이를 **정의한 속성만** 본다(R001 원자료: 크기 14↔15 · 배경 칠 · radius 3 · flex · 모노 글꼴 · 색). 해소 뒤에도 남는
+    // 영역 공통 y 오프셋(상단 줄 — S4)과 컨테이너 상속 fontSize/lineHeight(글리프 없는 svg — 그릴 글자가 없다)는
+    // 아이콘 모양 차이가 아니라서 세지 않는다 — 그 둘로 「다시 잡혔다」고 하면 뒤집힘을 못 본다(iter9 R010).
+    expect: {
+      bothPresent: true,
+      kinds: ['box', 'style'],
+      props: ['w', 'h', 'backgroundColor', 'borderTopLeftRadius', 'display', 'fontFamily', 'color']
+    },
     requires: [],
     resolvedBy: 'LIFE-468'
   }
@@ -71,7 +78,11 @@ export function evaluateControls({ results = [], prerequisites = {}, controls = 
     if (!area || !state || state.skipped) {
       return { ...row, pass: false, evidence: '(그 영역·상태를 재지 않았다)', verdict: '측정 안 됨 — 실패' }
     }
-    const hits = (state.findings ?? []).filter((finding) => finding.id === control.unit)
+    const onlyProps = control.expect.props ? new Set(control.expect.props) : null
+    // `expect.props` 가 있으면 box·style 행은 그 속성이 하나라도 든 행만 센다(존재/부재·측정 불가 행은 그대로).
+    const relevant = (finding) =>
+      !onlyProps || !Array.isArray(finding.detail) || finding.detail.some((entry) => onlyProps.has(entry.prop))
+    const hits = (state.findings ?? []).filter((finding) => finding.id === control.unit && relevant(finding))
     const evidence = hits.length > 0 ? hits.map((hit) => `${hit.kind}: ${JSON.stringify(hit.detail).slice(0, 90)}`).join(' / ') : '(행 없음)'
 
     const missingPrereq = (control.requires ?? []).filter((key) => prerequisites[key] !== true)

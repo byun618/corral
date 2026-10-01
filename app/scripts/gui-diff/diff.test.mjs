@@ -301,6 +301,35 @@ test('C6ⓑ(옛) — 해소 뒤 행이 없으면 「못 잡았다」 = 뒤집힘
   assert.match(rows[0].verdict, /못 잡았다/)
 })
 
+test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 아이콘 차이가 아니다 = 뒤집힘 (iter9 모양)', () => {
+  const offsetOnly = evaluateControls({
+    results: controlResults(
+      [
+        { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'y', left: 192, right: 120, delta: -72 }] },
+        { id: 'repo-header-icon', kind: 'style', detail: [{ prop: 'fontSize', left: '16px', right: '13px' }, { prop: 'lineHeight', left: '24px', right: 'normal' }] }
+      ],
+      { state: 'default' }
+    ),
+    prerequisites: PREREQ,
+    controls: resolvedB
+  })
+  assert.equal(offsetOnly[0].pass, false)
+  assert.match(offsetOnly[0].verdict, /못 잡았다/)
+  // R001 모양(크기 + 칠·글꼴)은 여전히 잡는다 — 판별력이 남아 있다.
+  const before = evaluateControls({
+    results: controlResults(
+      [
+        { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'y', left: 192, right: 105.5, delta: -86.5 }, { prop: 'w', left: 14, right: 15, delta: 1 }] },
+        { id: 'repo-header-icon', kind: 'style', detail: [{ prop: 'fontSize', left: '16px', right: '9px' }, { prop: 'fontFamily', left: 'Geist', right: 'JetBrains Mono' }] }
+      ],
+      { state: 'default' }
+    ),
+    prerequisites: PREREQ,
+    controls: resolvedB
+  })
+  assert.equal(before[0].pass, true)
+})
+
 test('C6ⓑ(새) — corral 있음 / Orca 없음(브랜드 줄)이면 통과, 방향이 반대면 실패', () => {
   const ok = evaluateControls({
     results: controlResultsA([{ id: 'brandbar', kind: 'missing', detail: { left: '없음(선언)', right: '있음 (1)', absentSide: 'left' } }]),

@@ -9,6 +9,7 @@
 // 장면은 상태마다 **처음부터 다시 맞춘다**(`resetScene`): 앞 상태의 hover·접힘·스크롤·폭이 다음 상태로 끌려가면
 // 「기본 상태」가 기본이 아니게 된다.
 
+/* global document, window, getComputedStyle, Event -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'

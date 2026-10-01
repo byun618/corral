@@ -84,13 +84,13 @@ export class FakeElement {
 
 /** 사본·틀 노드 — 붙이기·떼기·속성만. `HTMLElement` 자리에 끼운다(hook 의 `instanceof HTMLElement`). */
 export class FakeNode {
-  constructor(tag, attrs = {}) {
+  constructor(tag, attrs = {}, classes = []) {
     this.tag = tag
     this.attrs = { ...attrs }
     this.children = []
     this.parent = null
     this.style = fakeStyle()
-    this.classes = new Set()
+    this.classes = new Set(classes)
     this.classList = { add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), contains: (c) => this.classes.has(c) }
   }
   setAttribute(name, value) {
@@ -102,8 +102,26 @@ export class FakeNode {
   removeAttribute(name) {
     delete this.attrs[name]
   }
-  querySelectorAll() {
-    return []
+  /** 단순 선택자만 — 쉼표 목록의 `*` · `.class` · `[attr="value"]`. 자손을 문서 순서로. */
+  matches(selector) {
+    return selector.split(',').some((part) => {
+      const one = part.trim()
+      if (one === '*') return true
+      if (one.startsWith('.')) return this.classes.has(one.slice(1))
+      const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(one)
+      return attr !== null && this.attrs[attr[1]] === attr[2]
+    })
+  }
+  querySelectorAll(selector) {
+    const out = []
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (child.matches(selector)) out.push(child)
+        walk(child)
+      }
+    }
+    walk(this)
+    return out
   }
   appendChild(child) {
     child.parent = this
@@ -145,6 +163,7 @@ const box = (top, bottom) => ({ top, bottom, left: 0, right: 280, width: 280, he
  * 가짜 사이드바 목록. 좌표는 **스크롤 내용 기준**으로 주고 화면 좌표는 `top − scrollTop` 으로 만든다.
  * repos: [{ root, top, bottom, head: [top, bottom] | 'sticky', cards: [{ path, top, bottom }] }]
  * `head: 'sticky'` = 헤더가 목록 윗변에 붙었다(묶음 범위 안에서) — 헤더 높이 28.
+ * 카드·레포에 `menu: true` 면 그 사본(cloneNode)에 열린 `⋯` 메뉴(`.repo-row-menu`)가 든다 — 복제 순간 메뉴가 열려 있던 상태(R6-01).
  * `noise` = getComputedStyle 이 돌려주는 이동에 읽을 때마다 달라지는 소수 오차(±noise)를 섞는다(브라우저 전환 중 실측 오차 흉내).
  */
 export function fakeDom(options) {
@@ -204,7 +223,13 @@ export function fakeDom(options) {
       getBoundingClientRect: screen(repo.top, repo.bottom, current),
       querySelector: () => head,
       querySelectorAll: () => (repo.cards ?? []).map((card) => cardElement(card, current)),
-      cloneNode: () => new FakeNode('div', { 'data-repo': repo.root }),
+      cloneNode: () => {
+        const node = new FakeNode('div', { 'data-repo': repo.root }, ['repo-row-group'])
+        const headNode = node.appendChild(new FakeNode('div', { 'data-repo-head': '' }, repo.menu ? ['repo-row-head', 'is-menu-open'] : ['repo-row-head']))
+        if (repo.menu) headNode.appendChild(new FakeNode('div', { 'data-repo-menu': repo.root }, ['repo-row-menu']))
+        for (const card of repo.cards ?? []) node.appendChild(cardElement(card, current).cloneNode())
+        return node
+      },
     })
     return current
   }
@@ -219,7 +244,11 @@ export function fakeDom(options) {
       parentElement: parent,
       getAttribute: () => card.path,
       getBoundingClientRect: screen(card.top, card.bottom, current),
-      cloneNode: () => new FakeNode('div', { 'data-reorder-card': card.path }),
+      cloneNode: () => {
+        const node = new FakeNode('div', { 'data-reorder-card': card.path }, ['worktree-row'])
+        if (card.menu) node.appendChild(new FakeNode('div', { 'data-worktree-menu': card.path }, ['repo-row-menu', 'worktree-menu']))
+        return node
+      },
     })
     return current
   }

@@ -355,6 +355,29 @@ describe('K3ⓗ — 드래그 미리 보기 (198 createSidebarDragPreview·build
     }
   })
 
+  // R6-01 — 복제 순간 열려 있던 ⋯ 메뉴가 사본에 남지 않는다(라이브 메뉴는 reordering 효과가 렌더 뒤에 닫는다).
+  it('R6-01 ⓐ 카드 ⋯ 메뉴를 연 채 그 카드를 끌면 — 사본 안 메뉴 0, 사본 자체는 있다', () => {
+    const repos = [{ ...FOUR[0], cards: FOUR[0].cards.map((card) => (card.path === '/c' ? { ...card, menu: true } : card)) }]
+    const api = mount({ repos, listTop: 0, listBottom: 600 })
+    api.onCardMouseDown({ event: dom.down(40, 230), repoRoot: '/r', path: '/c' })
+    dom.doc.emit('mousemove', { clientX: 40, clientY: 100, buttons: 1 })
+    const [preview] = dom.previews()
+    expect(preview.children).toHaveLength(1)
+    expect(preview.querySelectorAll('.repo-row-menu')).toHaveLength(0)
+  })
+
+  it('R6-01 ⓑ 같은 레포 카드 메뉴·레포 메뉴를 연 채 그 레포 헤더를 끌면 — 묶음 사본 안 메뉴 0 · is-menu-open 없음, 카드 사본은 그대로', () => {
+    const repos = THREE_REPOS.map((repo) => (repo.root === '/c' ? { ...repo, menu: true, cards: [{ path: '/c/1', top: 640, bottom: 690, menu: true }, { path: '/c/2', top: 700, bottom: 750 }] } : repo))
+    const api = mount({ repos, listTop: 0, listBottom: 600 })
+    api.onRepoMouseDown({ event: dom.down(40, 610), root: '/c' })
+    dom.doc.emit('mousemove', { clientX: 40, clientY: 10, buttons: 1 })
+    const [preview] = dom.previews()
+    const clone = preview.children[0]
+    expect(clone.querySelectorAll('.repo-row-menu')).toHaveLength(0)
+    expect(clone.querySelectorAll('.is-menu-open')).toHaveLength(0)
+    expect(clone.querySelectorAll('.worktree-row')).toHaveLength(2)
+  })
+
   it('놓으면 사본·밀림이 정리되고 commit 한다', () => {
     const api = mount({ repos: FOUR, listTop: 0, listBottom: 600 })
     api.onCardMouseDown({ event: dom.down(40, 230), repoRoot: '/r', path: '/c' })

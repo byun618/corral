@@ -106,6 +106,8 @@ const MUTANTS = [
     from: 'next.set(element, current !== undefined && Math.abs(current - offset) < 0.5 ? current : offset)',
     to: 'next.set(element, offset)',
   },
+  // 게이트 ① 수정 1 2차 R6-01 — 사본에서 열린 ⋯ 메뉴 등 일시 UI 를 떼지 않던 fcd40544 동작.
+  { id: 'R6-01-transient-ui', file: src('hooks/useSidebarReorder.ts'), from: '    for (const node of clone.querySelectorAll(TRANSIENT_UI_SELECTOR)) node.remove()\n', to: '' },
 ]
 const TESTS = [
   'src/renderer/src/hooks/useSidebarReorder.test.mjs',

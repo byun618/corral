@@ -180,9 +180,12 @@ button, input { font: inherit; letter-spacing: inherit; }
 /* 빈 목록 — Orca `EmptyState` (`flex flex-col items-center gap-2 px-4 py-6 text-center text-[11px] text-muted-foreground`). 문구는 한국어(의도적). */
 .sidebar-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0; padding: 24px 16px; text-align: center; color: var(--fg-muted); font-size: 11px; line-height: 1.5; }
 
-/* 레포 묶음 — 헤더가 이 묶음 안에서 sticky 라 다음 묶음의 헤더가 밀어낸다. 묶음 사이는 Orca `pt-1`. */
+/* 레포 묶음 — 헤더가 이 묶음 안에서 sticky 라 다음 묶음의 헤더가 밀어낸다. 묶음 사이는 Orca `pt-1`(4px).
+   LIFE-469 R6-02: 4px 를 묶음 **안**(padding)이 아니라 **사이**(margin)에 둔다 — padding 이면 첫 묶음만 4px 낮아 묶음 높이가 자리에
+   따라 바뀌고, 끌기 미리 보기(높이로 다시 쌓기)가 첫 레포가 바뀌는 이동에서 놓은 뒤 기하와 4px 어긋났다. 보이는 결과(헤더·카드 자리,
+   첫 레포 위 여백 없음)는 같다 — 묶음 사각형만 4px 짧아지고 그 4px 는 묶음 사이 틈이 된다. */
 .repo-row-group { position: relative; }
-.repo-row-group + .repo-row-group { padding-top: 4px; }
+.repo-row-group + .repo-row-group { margin-top: 4px; }
 /* LIFE-468 D21 — Orca 레포 헤더 (`group relative flex h-7 w-full items-center gap-1.5 pr-2`, 왼쪽 10px).
    행 자체엔 hover 칠이 없다(198) — hover 는 액션만 드러낸다. sticky = Orca `sticky z-20 bg-worktree-sidebar -top-px`.
    sticky 는 행과 ⋯ 메뉴를 감싼 `.repo-row-head` 가 진다 — 메뉴(absolute)가 붙은 헤더를 기준으로 열린다(r1 CDX-R1).

@@ -139,6 +139,13 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
   }
 }
 
+/**
+ * 사본에서 떼어 낼 일시 UI — 열린 `⋯` 메뉴(레포·카드 모두 `.repo-row-menu`)와 role 로 표시한 메뉴·툴팁·대화상자(R6-01).
+ * 사본은 끄는 항목의 모양만 보여야 한다. 라이브 메뉴는 `reordering` 효과가 닫지만 그 효과는 렌더 뒤라, 복제하는 순간에는
+ * 아직 열려 있다 — CSS 로 숨기는 대신 복제본에서 노드를 빼서, 사본 안에서 그 UI 가 어떤 상태로도 다시 보이지 않게 한다.
+ */
+const TRANSIENT_UI_SELECTOR = '.repo-row-menu, [role="menu"], [role="tooltip"], [role="dialog"]'
+
 /** 198 `createSidebarDragPreview` 의 확대율 — 사본이 원래 행보다 살짝 커 「들려 있다」. */
 const DRAG_PREVIEW_SCALE = 1.015
 
@@ -172,6 +179,9 @@ function createDragPreview(input: { list: HTMLElement; sourceElement: HTMLElemen
       for (const name of ['data-repo', 'data-repo-head', 'data-reorder-card', 'data-worktree']) node.removeAttribute(name)
     }
     clone.classList.remove('is-reorder-source')
+    for (const node of clone.querySelectorAll(TRANSIENT_UI_SELECTOR)) node.remove()
+    // 메뉴가 열린 헤더의 z 올림 표식도 뗀다 — 메뉴가 없는 사본에는 의미가 없다.
+    for (const node of clone.querySelectorAll('.is-menu-open')) node.classList.remove('is-menu-open')
     element.appendChild(clone)
   }
   const host = list.closest('[data-sidebar]') ?? document.body

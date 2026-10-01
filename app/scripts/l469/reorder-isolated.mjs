@@ -898,6 +898,124 @@ async function main() {
     )
   }
 
+  // ── R6-02 첫 레포가 바뀌는 이동 — 미리 보기(밀린 윗변·표시 줄) = 놓은 뒤 묶음 윗변 (리뷰 r6: 위치 의존 4px 간격) ──
+  for (const [label, pick, slotOf] of [
+    ['first-to-last', (keys) => keys[0], (keys) => keys.length],
+    ['last-to-first', (keys) => keys[keys.length - 1], () => 0],
+  ]) {
+    const query = { kind: 'repo' }
+    const rects = await itemRects(query)
+    const keys = rects.map((rect) => rect.key)
+    const moving = pick(keys)
+    const slot = slotOf(keys)
+    const from = keys.indexOf(moving)
+    const wantOrder = moveTo(keys, moving, slot)
+    const expected = expectedPreview(rects, from, slot)
+    // 놓는 점은 누르기 전(밀리기 전)에 정한다 — 드래그 중 묶음 사각형은 밀려 있다.
+    const end = await repoSlotPoint(slot)
+    const mid = await dragFor(`R6-02-${label}`, await headerPoint(moving), end, {
+      release: false,
+      holdMs: 400,
+      during: async () => {
+        const probe = await previewProbe(query)
+        await shot(`r6-02-${label}-drag`)
+        return probe
+      },
+    })
+    await mouse('mouseReleased', end)
+    await pause(300)
+    const afterRects = await itemRects(query)
+    const afterOrder = afterRects.map((rect) => rect.key)
+    // 미리 보기에서 각 묶음이 보인 윗변(밀리기 전 + 밀림, 끄는 묶음은 표시 줄) vs 놓은 뒤 실제 윗변.
+    const shown = Object.fromEntries(rects.map((rect) => [rect.key, rect.key === moving ? mid?.indicatorY ?? null : rect.top + (mid?.shifts?.[rect.key] ?? 0)]))
+    const landed = Object.fromEntries(afterRects.map((rect) => [rect.key, rect.top]))
+    // 끄는 묶음의 표시 줄은 들어갈 윗변이되, 보이는 목록 끝이면 안쪽 5px 로 당긴다(수정 1 규칙 — 맨 위 슬롯은 목록 윗변 + 5).
+    const view = await cdp.evaluate(() => {
+      const r = document.querySelector('[data-repo-list]').getBoundingClientRect()
+      return { top: r.top, bottom: r.bottom }
+    })
+    const indicatorWant = Math.max(view.top + 5, Math.min(view.bottom - 5, landed[moving]))
+    const errors = Object.fromEntries(keys.map((key) => [key, shown[key] === null ? null : Number((shown[key] - (key === moving ? indicatorWant : landed[key])).toFixed(2))]))
+    fs.writeFileSync(path.join(out, `r6-02-${label}-probe.json`), JSON.stringify({ rects, moving, slot, expected, mid, afterRects, shown, landed, view, indicatorWant, errors }, null, 2))
+    check(
+      `R6-02-${label}`,
+      `R6-02 첫 레포가 바뀌는 이동(${label === 'first-to-last' ? '맨 앞 → 맨 뒤' : '맨 뒤 → 맨 앞'}) — 밀린 윗변 = 놓은 뒤 묶음 윗변, 표시 줄 = 놓은 뒤 끄는 묶음 윗변(보이는 범위 끝이면 안쪽 5px), 각 1px 안 · 이동량 = 기대값 · 결과 = 기대 배열 전체`,
+      mid !== null && same(afterOrder, wantOrder) && !same(keys, wantOrder) && Object.values(errors).every((error) => error !== null && Math.abs(error) <= 1) && shiftsMatch(mid.shifts, rects, expected.offsets),
+      { before: keys, want: wantOrder, after: afterOrder, errors, shifts: mid?.shifts ?? null, wantShifts: Object.fromEntries(rects.map((rect, index) => [rect.key, expected.offsets[index]])) },
+    )
+  }
+
+  // ── R6-01 열린 ⋯ 메뉴가 사본에 남지 않는다 — ⓐ 카드 메뉴를 연 채 그 카드 ⓑ 그 레포 카드 메뉴를 연 채 그 레포 헤더 ──
+  const openCardMenu = async (wtPath) => {
+    await mouse('mouseMoved', await cardPoint(wtPath), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-worktree-menu-toggle', value: wtPath }))
+    return cdp.evaluate((p) => [...document.querySelectorAll('[data-worktree-menu]')].some((el) => el.getAttribute('data-worktree-menu') === p), wtPath)
+  }
+  const menuProbe = () =>
+    cdp.evaluate(() => ({
+      previewCount: document.querySelectorAll('[data-sidebar-drag-preview="true"]').length,
+      previewMenus: document.querySelectorAll('[data-sidebar-drag-preview="true"] .repo-row-menu').length,
+      previewMenuOpenHeads: document.querySelectorAll('[data-sidebar-drag-preview="true"] .is-menu-open').length,
+      liveMenus: document.querySelectorAll('[data-repo-list] .repo-row-menu').length,
+    }))
+  {
+    const before = wtOrder(await snapshot(), alpha)
+    const card = before[2]
+    const menuOpenBefore = await openCardMenu(card)
+    const want = moveTo(before, card, 1)
+    const end = await cardSlotPoint(alpha, 1)
+    const mid = await dragFor('R6-01-card-own-menu', await cardPoint(card), end, {
+      release: false,
+      holdMs: 200,
+      during: async () => {
+        const probe = await menuProbe()
+        await shot('r6-01-card-own-menu-drag')
+        return probe
+      },
+    })
+    await mouse('mouseReleased', end)
+    await pause(300)
+    const after = wtOrder(await snapshot(), alpha)
+    const afterMenus = await menuProbe()
+    check(
+      'R6-01-card-own-menu',
+      'R6-01ⓐ 카드 ⋯ 메뉴를 연 채 그 카드를 끌기 — 드래그 중 사본 1 · 사본 안 메뉴 0 · 라이브 메뉴 0, 놓은 뒤 기대 배열 전체·메뉴 0',
+      menuOpenBefore && mid !== null && mid.previewCount === 1 && mid.previewMenus === 0 && mid.liveMenus === 0 && same(after, want) && !same(before, want) && afterMenus.liveMenus === 0 && afterMenus.previewCount === 0,
+      { card, menuOpenBefore, during: mid, before, want, after, afterMenus },
+    )
+  }
+  {
+    const repos0 = repoOrder(await snapshot())
+    const card = wtOrder(await snapshot(), alpha)[1]
+    const menuOpenBefore = await openCardMenu(card)
+    const want = moveTo(repos0, alpha, 1)
+    const end = await repoSlotPoint(1)
+    const mid = await dragFor('R6-01-repo-card-menu', await headerPoint(alpha), end, {
+      release: false,
+      holdMs: 200,
+      during: async () => {
+        const probe = await menuProbe()
+        await shot('r6-01-repo-card-menu-drag')
+        return probe
+      },
+    })
+    await mouse('mouseReleased', end)
+    await pause(300)
+    const after = repoOrder(await snapshot())
+    const afterMenus = await menuProbe()
+    check(
+      'R6-01-repo-card-menu',
+      'R6-01ⓑ 같은 레포 카드 메뉴를 연 채 그 레포 헤더를 끌기 — 드래그 중 묶음 사본 1 · 사본 안 메뉴 0(열린 헤더 표식 0) · 라이브 메뉴 0, 놓은 뒤 기대 배열 전체·메뉴 0',
+      menuOpenBefore && mid !== null && mid.previewCount === 1 && mid.previewMenus === 0 && mid.previewMenuOpenHeads === 0 && mid.liveMenus === 0 && same(after, want) && !same(repos0, want) && afterMenus.liveMenus === 0,
+      { card, menuOpenBefore, during: mid, before: repos0, want, after, afterMenus },
+    )
+    // 되돌린다 — 뒤 검사가 기대는 레포 순서.
+    await drag(await headerPoint(alpha), await repoSlotPoint(repos0.length))
+    const restored = repoOrder(await snapshot())
+    check('R6-01-repo-restore', 'R6-01 레포 순서 되돌리기', same(restored, repos0), { want: repos0, got: restored })
+  }
+
   // ── K3ⓕ 자동 스크롤 — 창을 낮춰 목록이 넘치게 하고, 화면 밖 자리에 놓는다 ──
   await setViewport(cdp, { width: 1200, height: 420 })
   await pause(300)

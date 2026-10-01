@@ -155,6 +155,73 @@ describe('미리 보기 — 행 밀림·표시 줄 (K3ⓗⓑⓒ, 198 buildWorktr
   })
 })
 
+// R6-02 — 레포 묶음 배치 모형(styles.css): 목록 윗변 pt-px → 첫 묶음 윗변 1, 묶음 **사이** margin-top 4px(위치와 무관한 높이).
+function layoutGroups(heights: readonly number[]): Array<{ top: number; bottom: number }> {
+  let top = 1
+  return heights.map((height, index) => {
+    if (index > 0) top += 4
+    const rect = { top, bottom: top + height }
+    top += height
+    return rect
+  })
+}
+/** 옛 CSS(R6-02 전) — 둘째 묶음부터 묶음 **안** padding-top 4px: 묶음 높이가 자리에 따라 4px 바뀐다. */
+function layoutGroupsPadding(heights: readonly number[]): Array<{ top: number; bottom: number }> {
+  let top = 1
+  return heights.map((height, index) => {
+    const rect = { top, bottom: top + height + (index > 0 ? 4 : 0) }
+    top = rect.bottom
+    return rect
+  })
+}
+function moved(keys: readonly number[], from: number, slot: number): number[] {
+  const to = slot > from ? slot - 1 : slot
+  const rest = keys.filter((key) => key !== from)
+  rest.splice(to, 0, from)
+  return rest
+}
+/** 미리 보기(밀린 윗변·표시 줄)가 놓은 뒤 배치와 같은가 — 어긋난 px 목록(빈 배열 = 같음). */
+function previewMismatch(input: { layout: typeof layoutGroups; heights: readonly number[]; from: number; slot: number }): number[] {
+  const { layout, heights, from, slot } = input
+  const before = layout(heights)
+  const built = buildReorderPreview({ rects: before, from, slot, view: { top: -1000, bottom: 10_000 } })
+  const order = moved(heights.map((_, index) => index), from, slot)
+  const after = layout(order.map((index) => heights[index] ?? 0))
+  const errors: number[] = []
+  order.forEach((index, position) => {
+    const landed = after[position]?.top ?? NaN
+    const shown = index === from ? built.indicatorY : (before[index]?.top ?? 0) + (built.offsets[index] ?? 0)
+    if (shown !== landed) errors.push(shown - landed)
+  })
+  return errors
+}
+
+describe('R6-02 — 첫 레포가 바뀌는 이동도 미리 보기 = 놓은 뒤 기하 (묶음 사이 margin 4px)', () => {
+  // 접힌 28 · 펼친 228 · 오류 표시 32 · 펼친 140 — 높이가 다른 묶음.
+  const HEIGHTS = [28, 228, 32, 140]
+
+  it('첫 레포 A 를 맨 뒤로 · 맨 뒤를 맨 앞으로 — 밀린 윗변·표시 줄이 놓은 뒤 윗변과 같다', () => {
+    expect(previewMismatch({ layout: layoutGroups, heights: HEIGHTS, from: 0, slot: 4 })).toEqual([])
+    expect(previewMismatch({ layout: layoutGroups, heights: HEIGHTS, from: 3, slot: 0 })).toEqual([])
+    // 리뷰 재현(접힌 A/B/C 28px): A → 맨 뒤 = 표시 줄 65 · 놓은 뒤 A 윗변 65.
+    const before = layoutGroups([28, 28, 28])
+    const built = buildReorderPreview({ rects: before, from: 0, slot: 3, view: { top: -100, bottom: 1000 } })
+    expect(built).toEqual({ offsets: [0, -32, -32], indicatorY: 65 })
+    expect(layoutGroups([28, 28, 28])[2]?.top).toBe(65)
+  })
+
+  it('모든 (from, slot) 조합에서 같다', () => {
+    for (let from = 0; from < HEIGHTS.length; from++)
+      for (let slot = 0; slot <= HEIGHTS.length; slot++) expect(previewMismatch({ layout: layoutGroups, heights: HEIGHTS, from, slot }), `from ${from} slot ${slot}`).toEqual([])
+  })
+
+  it('대조 — 옛 padding 배치였다면 첫 레포가 바뀌는 이동에서 4px 어긋났다(리뷰 r6 재현)', () => {
+    expect(previewMismatch({ layout: layoutGroupsPadding, heights: [28, 28, 28], from: 0, slot: 3 })).toEqual([4, 4]) // C 미리 보기 33 · 최종 29, A 표시 줄 65 · 최종 61(B 는 맞다)
+    // 첫 레포가 그대로인 이동은 옛 배치에서도 맞았다 — 그래서 격리 K3h-c-repo([gamma,beta,alpha] → [gamma,alpha,beta])가 놓쳤다.
+    expect(previewMismatch({ layout: layoutGroupsPadding, heights: [28, 28, 28], from: 2, slot: 1 })).toEqual([])
+  })
+})
+
 describe('자동 스크롤 (K3ⓕ, 198 56px · 960px/s)', () => {
   const base = { containerRect: { left: 0, right: 280, top: 100, bottom: 700 }, scrollTop: 300, scrollHeight: 2000, clientHeight: 600, elapsedMs: 16 }
 

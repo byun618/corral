@@ -1158,8 +1158,12 @@ export function App(): React.JSX.Element {
             return layout.splitDirectionOf(worktreePath) === 'column' ? '⊟' : '◫'
           }}
         />
-        <div className="sidebar-resizer" data-sidebar-resizer onMouseDown={onHandleMouseDown}>
-          <div className="sidebar-resizer-line" data-sidebar-resizer-line />
+        {/* LIFE-468 D19 — 리사이저는 레이아웃 폭 0 의 닻 위에 겹쳐 뜬다(Orca `absolute -right-1.5 w-3`). 패널과 본문의 구분선은
+            본문 왼쪽 테두리가 진다(Orca `border-l border-border`). */}
+        <div className="sidebar-resizer-anchor">
+          <div className="sidebar-resizer" data-sidebar-resizer onMouseDown={onHandleMouseDown}>
+            <div className="sidebar-resizer-line" data-sidebar-resizer-line />
+          </div>
         </div>
 
         </>}

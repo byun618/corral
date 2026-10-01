@@ -101,11 +101,25 @@ async function centerOf(handle, selector, index = 0) {
 async function mouse(handle, type, x, y, buttons = 0) {
   const extra = type === 'mouseMoved' ? {} : { button: 'left', clickCount: 1 }
   await handle.cdp.send('Input.dispatchMouseEvent', { type, x, y, buttons, ...extra })
+  if (type === 'mouseMoved' && buttons === 0) handle.scenePointer = { x, y }
+}
+
+const AWAY_POINT = { x: 1200, y: 700 }
+
+/**
+ * 캡처 직전에 장면 포인터를 다시 건다. `Page.captureScreenshot` 이 프레임을 새로 그리면 Chromium 은 **실제 OS 커서
+ * 위치**로 hover 를 다시 계산한다 — 그 창 위에 사람 커서가 있으면 CDP 로 건 hover 가 빠지고 커서 밑 요소가 hover 된다
+ * (실측: corral 에서 캡처 뒤 `.session-row` hover → `xterm-screen`, 커서가 창 밖인 Orca 는 유지. iter6 R007 자기 diff 잡음).
+ * 그래서 DOM 수집 전과 스크린숏 전에 마지막 장면 포인터(없으면 사이드바 밖)를 다시 보낸다.
+ */
+export async function reapplyPointer(handle) {
+  const { x, y } = handle.scenePointer ?? AWAY_POINT
+  await handle.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 })
 }
 
 /** 포인터를 사이드바 밖으로 — hover 칠이 다음 캡처에 남지 않게. */
 async function pointerAway(handle) {
-  await mouse(handle, 'mouseMoved', 1200, 700)
+  await mouse(handle, 'mouseMoved', AWAY_POINT.x, AWAY_POINT.y)
 }
 
 async function click(handle, selector) {

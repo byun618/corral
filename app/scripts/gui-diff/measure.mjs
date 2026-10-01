@@ -25,7 +25,7 @@ import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBou
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
 import { evaluateControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
-import { applyScene, describeScene, resetFixtureScene, resetScene } from './lib/scene.mjs'
+import { applyScene, describeScene, reapplyPointer, resetFixtureScene, resetScene } from './lib/scene.mjs'
 import {
   selectOwnedByPath,
   planSignals,
@@ -176,6 +176,7 @@ function loadArea(name) {
  * 나머지 화면은 잡음이다 (킥오프 원자료 규칙).
  */
 async function capture(app, handle, area, { outDir, tag }) {
+  await reapplyPointer(handle)
   await settlePage(handle.cdp)
   // **부모 단위 짝짓기** (G2): 자식 단위는 `parent` 에 부모 단위 id 를 적고, 그 앱의 부모 선택자를
   // 여기서 풀어 넘긴다. 부모 선택자가 그 앱에 없으면 자식도 그 앱에서 못 재므로 `parentMissing` 이다.
@@ -272,6 +273,7 @@ async function capture(app, handle, area, { outDir, tag }) {
       const r = el.getBoundingClientRect()
       return { x: r.left, y: r.top, width: r.width, height: r.height }
     }, area.root[app])
+    await reapplyPointer(handle)
     const shot = await handle.cdp.send('Page.captureScreenshot', {
       format: 'png',
       clip: { ...rect, scale: 1 },
@@ -532,8 +534,13 @@ async function applyState(state, { orca, corral, orcaRepoId, fixture, base }) {
   const agentOffset = target.leadingEmptyTabs ?? 0
   const o = await applyOrcaState(orca, { repoId: orcaRepoId, tabCount: target.tabCount, agents: target.agents, agentOffset })
   const c = await applyCorralState(corral, { tabCount: target.tabCount, agents: target.agents, agentOffset })
-  const expansion = await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length })
+  // 빈 목록(`scene.empty`)은 레포를 걷은 **뒤** 표현을 본다 — 앞 상태(`done`)가 남긴 보존 행이 레포 제거 전
+  // 20초 수렴 창 안에 안 걷히는 회차가 있어(iter8 R009: corral 「row · 행 1」, iter5 는 「none · 행 0」) 장면과
+  // 무관한 축이 재현 불일치로 떨어졌다. 다른 장면은 펼침이 먼저여야 한다(접힘·hover 가 펼친 행을 전제).
+  const emptyScene = target.scene?.empty === true
+  const expansionFirst = emptyScene ? null : await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length })
   const scene = await applyScene({ orca, corral, orcaRepoId, fixture, base, scene: target.scene })
+  const expansion = expansionFirst ?? (await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length }))
 
   const wantStatuses = target.agents.map((agent) => agent.state).slice().sort().join(',')
   const axes = [

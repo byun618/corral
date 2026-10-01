@@ -22,7 +22,8 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 9px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-button { font: inherit; }
+/* Orca(Tailwind preflight)처럼 컨트롤도 글꼴·자간을 물려받는다 — UA 의 `letter-spacing: normal` 이 Geist 자간(0.16px)을 끊지 않게. */
+button, input { font: inherit; letter-spacing: inherit; }
 
 .boot { padding: 24px; color: var(--fg-muted); }
 
@@ -39,29 +40,30 @@ button { font: inherit; }
   display: flex;
   flex-direction: column;
   /* LIFE-468 D19 — Orca 패널(`bg-worktree-sidebar`, 오른쪽 테두리 0). 메인과의 구분은 리사이저 가시선이 진다. */
+  position: relative;
   background: var(--bg-sidebar);
   overflow: hidden;
 }
-/* 수정 2회차(08-fix-orca2.md D-2) — 히트존(넓음, 비가시)과 가시선(얇음)을 분리한다(Orca 구조).
-   히트존 자체는 배경을 안 칠해 사이드바/메인 캔버스와 안 섞이게만 하고, 실제로 보이는 건
-   가운데 얇은 줄(.sidebar-resizer-line)뿐이다. */
+/* 리사이저 (LIFE-468 D19 — Orca `WORKTREE_SIDEBAR_RESIZE_HANDLE_CLASS_NAME`): 폭 0 의 닻에 12px 히트존을 겹쳐 띄운다 —
+   레이아웃 폭을 먹지 않는다(옛 판은 히트존 12px 이 사이드바와 본문 사이에 자리를 차지했다). 가시선은 평소 투명,
+   hover 때만 보인다(Orca `bg-transparent group-hover:bg-ring/50`). hover 색은 corral 상태 신호 accent 를 유지한다(K1 — accent 무변경). */
+.sidebar-resizer-anchor { position: relative; flex: 0 0 0; width: 0; z-index: 10; }
 .sidebar-resizer {
+  position: absolute; top: 0; bottom: 0; left: calc(var(--resizer-hit-w) / -2);
   width: var(--resizer-hit-w);
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: center;
+  display: flex; justify-content: center;
   background: transparent;
   cursor: col-resize;
 }
 .sidebar-resizer-line {
   width: var(--resizer-line-w);
   align-self: stretch;
-  background: var(--line-strong);
+  background: transparent;
   pointer-events: none; /* 클릭·드래그는 부모 히트존이 받는다 */
 }
 .sidebar-resizer:hover .sidebar-resizer-line { background: var(--accent); }
 
-.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; border-left: 1px solid var(--line); }
 
 /* --- MruSwitcher (§2 · LIFE-373 ③) ---------------------------------------------------------- */
 /*
@@ -148,7 +150,6 @@ button { font: inherit; }
 .repos-header-label {
   min-width: 0; padding: 0 2px 0 8px; font-size: 12px; font-weight: 600; line-height: 16px;
   color: color-mix(in srgb, var(--fg-muted) 80%, transparent);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .repos-header-spacer { flex: 1; }
 .repos-header-glyph {
@@ -161,9 +162,14 @@ button { font: inherit; }
 /* --- 레포 목록 / RepoRow (§2) ------------------------------------------------------------------ */
 
 /* 목록 스크롤러 — Orca `worktree-sidebar-scrollbar … pl-1 pt-px`. pt-px 가 있어야 sticky `-top-px` 헤더가 스크롤러 윗변에 맞붙는다. */
-.repo-list { flex: 1; min-height: 0; overflow-y: auto; padding: 1px 4px 8px; }
+.repo-list {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 1px 4px 8px;
+  /* Orca `scrollbar-sleek` + `worktree-sidebar-scrollbar`: 얇은 스크롤바, 평소 투명, 사이드바 hover 때 보인다. */
+  scrollbar-width: thin; scrollbar-color: transparent transparent;
+}
+.sidebar:hover .repo-list { scrollbar-color: color-mix(in srgb, var(--fg-muted) 48%, transparent) transparent; }
 /* 빈 목록 — Orca `EmptyState` (`flex flex-col items-center gap-2 px-4 py-6 text-center text-[11px] text-muted-foreground`). 문구는 한국어(의도적). */
-.sidebar-empty { margin: 0; padding: 24px 16px; text-align: center; color: var(--fg-muted); font-size: 11px; }
+.sidebar-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0; padding: 24px 16px; text-align: center; color: var(--fg-muted); font-size: 11px; line-height: 1.5; }
 
 /* 레포 묶음 — 헤더가 이 묶음 안에서 sticky 라 다음 묶음의 헤더가 밀어낸다. 묶음 사이는 Orca `pt-1`. */
 .repo-row-group { position: relative; }
@@ -173,7 +179,7 @@ button { font: inherit; }
 .repo-row {
   position: sticky; top: -1px; z-index: 20;
   display: flex; align-items: center; gap: 6px;
-  height: var(--h-repo-row); padding: 0 8px 0 10px; cursor: pointer;
+  height: var(--h-repo-row); padding: 0 8px 0 10px; cursor: pointer; overflow: hidden; text-align: left;
   background: var(--bg-sidebar);
 }
 /* 아이콘 칸 16px · 글리프 14px (`size-4` · `size-3.5`), 색은 Orca 실측 #737373 (--fg-dim). */
@@ -181,7 +187,7 @@ button { font: inherit; }
 .repo-row-icon-glyph { display: block; width: 14px; height: 14px; }
 /* 이름 — `text-[13px] font-semibold leading-none truncate`. */
 .repo-row-name {
-  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1; color: var(--fg);
+  flex: 0 1 auto; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1; color: var(--fg);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .repo-row-error { margin: 0; padding: 2px 12px 4px 33px; color: var(--st-error); font-size: 11px; }
@@ -198,7 +204,7 @@ button { font: inherit; }
 /* 버튼 — `size-5 rounded-md text-muted-foreground hover:bg-accent/70 hover:text-foreground`. */
 .repo-row-action-btn {
   display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  width: 20px; height: 20px; padding: 0; border-radius: 8px;
+  width: 20px; height: 20px; padding: 0; border-radius: 8px; text-align: inherit;
   background: none; border: 0 solid; color: var(--fg-muted); cursor: pointer;
 }
 .repo-row-action-btn:hover { background: color-mix(in srgb, var(--bg-accent) 70%, transparent); color: var(--fg); }
@@ -263,8 +269,8 @@ button { font: inherit; }
 .worktree-status-fill.is-small { width: 6px; height: 6px; background: var(--agent-dot-alert); }
 .st-inactive .worktree-status-fill { background: var(--dot-neutral); }
 .worktree-status-icon { display: block; width: 12px; height: 12px; }
-.st-monitoring { color: var(--agent-dot-working); }
-.st-permission { color: var(--agent-dot-question); }
+.st-monitoring .worktree-status-icon { color: var(--agent-dot-working); }
+.st-permission .worktree-status-icon { color: var(--agent-dot-question); }
 .worktree-status-spinner {
   display: block; width: 8px; height: 8px; border-radius: 50%;
   border: 2px solid var(--agent-dot-working); border-top-color: transparent;
@@ -282,7 +288,7 @@ button { font: inherit; }
    바탕보다 진해 구분된다(B2, #15971 — 대비 원자료 raw/claude/k6-contrast.md). */
 .worktree-chip {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  height: 16px; padding: 0 6px; border-radius: 4px;
+  height: 16px; padding: 2px 6px; gap: 4px; overflow: hidden; border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
   background: color-mix(in srgb, var(--fg) 6%, transparent);
   font-size: 10px; font-weight: 500; line-height: 1; color: color-mix(in srgb, var(--fg) 70%, transparent);

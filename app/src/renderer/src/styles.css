@@ -893,8 +893,10 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
   filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--fg) 18%, transparent));
 }
 [data-sidebar-drag-preview='true'] * { cursor: grabbing !important; }
-/* 바탕 — corral 카드는 평소 바탕이 투명이라 사본 아래 행이 비쳐 글자가 겹친다(198 은 브라우저 drag image 처럼 카드 면이 있다). */
-[data-sidebar-drag-preview='true'] { background: var(--bg-sidebar); }
+/* 바탕 없음 — 198 처럼 사본 뒤가 비친다(게이트 ① 사용자 수정 2: 옛 단색 `--bg-sidebar` 바탕을 뺐다). 사본 안에 남는 면은 198 카드 면과
+   같은 결의 corral 카드 면뿐이다 — 선택(활성) 카드의 반투명 칠·테두리(`data-worktree-card-active`), 비선택 카드는 면 없음(198 `border-transparent`).
+   레포 사본 안 헤더 행의 sticky 가림용 단색 바탕도 사본에서는 걷는다(같은 규칙). */
+[data-sidebar-drag-preview='true'] .repo-row { background: transparent; }
 /* 레포 사본 = 묶음. 헤더는 사본 안에서 sticky 로 뜨지 않고, 높이는 240px 까지(펼친 큰 레포가 목록을 덮지 않게 — 198 레포 헤더
    드래그에는 사본이 없어 대응 값이 없다, RESULT.md 의도적 차이). */
 [data-sidebar-drag-preview='true'] .repo-row-head { position: static; }

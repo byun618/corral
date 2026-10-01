@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { MAX_CHILDREN, diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath, parseProcessList, commandIncludesPath, pathDiagnosis, cleanVerdict } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
-import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
+import { evaluateControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
 
 const unit = (id, extra = {}) => ({ id, note: `${id} 설명`, ...extra })
@@ -225,6 +225,7 @@ const PREREQ = { orcaCompact: true, orcaNotSendTarget: true }
 const controlResultsA = (findings) => controlResults(findings, { state: 'default' })
 const controlA = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓐ')
 const controlB = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓑ')
+const resolvedB = RESOLVED_CONTROLS.filter((control) => control.id === 'C6ⓑ(옛)')
 
 test('C6ⓐ — Orca 있음 / corral 없음이면 통과', () => {
   const rows = evaluateControls({
@@ -272,7 +273,7 @@ test('C6ⓐ — 그 영역·상태를 재지 않았으면 「측정 안 됨」 �
   assert.match(rows[0].verdict, /측정 안 됨/)
 })
 
-test('C6ⓑ — box+style 둘 다 있어야 통과, 하나만이면 실패', () => {
+test('C6ⓑ(옛, 해소됨) — box+style 둘 다 있어야 잡힘, 하나만이면 못 잡음 (판별력은 그대로)', () => {
   const both = evaluateControls({
     results: controlResults(
       [
@@ -282,16 +283,38 @@ test('C6ⓑ — box+style 둘 다 있어야 통과, 하나만이면 실패', () 
       { state: 'default' }
     ),
     prerequisites: PREREQ,
-    controls: controlB
+    controls: resolvedB
   })
   assert.equal(both[0].pass, true)
   const onlyBox = evaluateControls({
     results: controlResults([{ id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'w', left: 16, right: 17, delta: 1 }] }], { state: 'default' }),
     prerequisites: PREREQ,
-    controls: controlB
+    controls: resolvedB
   })
   assert.equal(onlyBox[0].pass, false)
   assert.match(onlyBox[0].verdict, /종류/)
+})
+
+test('C6ⓑ(옛) — 해소 뒤 행이 없으면 「못 잡았다」 = 뒤집힘 (LIFE-468 K4ⓕ)', () => {
+  const rows = evaluateControls({ results: controlResults([], { state: 'default' }), prerequisites: PREREQ, controls: resolvedB })
+  assert.equal(rows[0].pass, false)
+  assert.match(rows[0].verdict, /못 잡았다/)
+})
+
+test('C6ⓑ(새) — corral 있음 / Orca 없음(브랜드 줄)이면 통과, 방향이 반대면 실패', () => {
+  const ok = evaluateControls({
+    results: controlResultsA([{ id: 'brandbar', kind: 'missing', detail: { left: '없음(선언)', right: '있음 (1)', absentSide: 'left' } }]),
+    prerequisites: PREREQ,
+    controls: controlB
+  })
+  assert.equal(ok[0].pass, true)
+  const flipped = evaluateControls({
+    results: controlResultsA([{ id: 'brandbar', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선택자 0개)', absentSide: 'right' } }]),
+    prerequisites: PREREQ,
+    controls: controlB
+  })
+  assert.equal(flipped[0].pass, false)
+  assert.match(flipped[0].verdict, /방향/)
 })
 
 // ---- C10 검사기 (F10) — 아무것도 재지 않은 것은 「같은 것」이 아니다 ----

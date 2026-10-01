@@ -1,7 +1,10 @@
-// design-handoff.md §2 RepoRow — 레포 스퀘어(이니셜) + 이름 + [RepoRowActions] + 캐럿.
-// hover/메뉴 열림일 때만 배경·액션이 보인다(레이아웃 점유는 유지 — opacity 만 바뀐다, §2 표).
+// 레포 헤더 (LIFE-468 D21) — Orca 1.4.198 `SectionHeader` 레포 행: lucide `Folder` + 이름 + [RepoRowActions(셰브론·⋯·+)].
+// 액션은 행 위에 겹쳐 hover/메뉴 열림 때만 보인다(제목 폭을 상시 점유하지 않는다 — Orca `ProjectHeaderActions`).
+// 행은 레포 묶음 안에서 **sticky** 다 — 스크롤하면 위에 붙고 다음 레포 헤더가 밀어낸다(묶음이 sticky 의 경계).
+// corral 은 가상 목록이 아니라 붙은 헤더가 첫 행을 덮거나 접힌 레포 아래 빈 칸을 남기는 경로(Orca #18667)가 없다.
 import { useState } from 'react'
 import type { RepoRow as RepoRowData } from '../../../shared/types.js'
+import { FolderIcon } from './AgentStateDot.js'
 import { RepoRowActions } from './RepoRowActions.js'
 import { RepoRowMenu } from './RepoRowMenu.js'
 
@@ -23,7 +26,6 @@ export function RepoRow({
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const active = hovered || menuOpen
-  const initial = repo.name.slice(0, 1).toUpperCase()
 
   return (
     <div className="repo-row-group" data-repo={repo.root}>
@@ -37,15 +39,20 @@ export function RepoRow({
           onToggleCollapse()
         }}
       >
-        <span className="repo-row-avatar" data-repo-name={repo.root}>
-          {initial}
+        <span className="repo-row-icon" data-repo-name={repo.root}>
+          <FolderIcon className="repo-row-icon-glyph" />
         </span>
-        <span className="repo-row-name" title={repo.root}>
+        <span className="repo-row-name" title={`${repo.name}\n${repo.root}`}>
           {repo.name}
         </span>
-        <div className="repo-row-spacer" />
         <RepoRowActions
           repoRoot={repo.root}
+          collapsed={collapsed}
+          onToggleCollapse={(event) => {
+            event.stopPropagation()
+            setMenuOpen(false)
+            onToggleCollapse()
+          }}
           onCreateWorktree={(event) => {
             event.stopPropagation()
             setMenuOpen(false)
@@ -56,9 +63,6 @@ export function RepoRow({
             setMenuOpen((prev) => !prev)
           }}
         />
-        <span className="repo-row-caret" data-repo-caret={repo.root}>
-          {collapsed ? '▸' : '▾'}
-        </span>
       </div>
       {menuOpen ? (
         <RepoRowMenu

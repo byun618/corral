@@ -143,6 +143,16 @@ export function renderReport({ date, runs, areas, notes }) {
     for (const row of notes.positiveControls) {
       lines.push(`| ${cell(row.id)} | ${cell(row.claim)} | ${cell(row.evidence)} | ${cell(row.verdict)} |`)
     }
+    if ((notes.resolvedControls ?? []).length > 0) {
+      lines.push('')
+      lines.push('### 해소로 뒤집힌 옛 대조 — **관문 아님**, 「못 잡았다」가 정상')
+      lines.push('')
+      lines.push('| # | 옛 알려진 차이 | 도구가 낸 행 | 판정기 결과 | 뒤집힘 |')
+      lines.push('| --- | --- | --- | --- | --- |')
+      for (const row of notes.resolvedControls) {
+        lines.push(`| ${cell(row.id)} | ${cell(row.claim)} | ${cell(row.evidence)} | ${cell(row.verdict)} | ${row.pass ? '아니오 — 다시 잡힌다(해소가 되돌아갔나 확인)' : '예 — 해소 유지'} |`)
+      }
+    }
   }
   lines.push('')
 

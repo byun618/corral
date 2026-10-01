@@ -1,33 +1,26 @@
-// design-handoff.md §2 WorktreeBlock — 1줄(상태 도트+이름+기본칩+git마크) + 2줄(브랜치명),
-// 선택 시에만 카드로 올라온다(별도 컴포넌트가 아니라 같은 블록의 선택 상태 — §1).
+// 워크트리 카드 (LIFE-468 D22·D23) — Orca 1.4.198 **Detailed(기본)·구 카드** 해부:
+//   [data-worktree] 행 래퍼(Orca `[data-worktree-id]`) → 카드 표면(`data-worktree-card-surface`, 선택 시
+//   `data-worktree-card-active="primary"`) → [상태 슬롯 | 본문 열(제목 줄 · 메타 줄 · 에이전트 목록)].
 //
-// **§2.5 필드 매핑** (10-gate1-fix2.md H-2, 2026-09-15 재조정):
-//   · 1줄 이름 = **브랜치 풀네임**, 2줄도 **브랜치 풀네임** — 둘이 항상 같은 문자열이다.
-//     `feature/LIFE-358` → 1줄 `feature/LIFE-358` / 2줄 `feature/LIFE-358`.
-//     leaf 만 자르던 이전(1줄 `LIFE-358`)은 Orca 대조 스크린샷을 본 사용자가
-//     "접두사가 잘려 정보 손실"이라 판단해 되돌렸다(`worktree-name.ts` 참고) — 1줄·2줄이
-//     같아진 건 이 되돌림의 결과지, 새로 정한 중복 규칙이 아니다.
-//   · §2.5 의 "1줄과 같으면 2줄을 숨기고 블록 높이를 줄인다"는 **철회된 채로 유지**(H-2). 사용자가
-//     실물 Orca 스크린샷으로 반례를 냈다 — `main`/`main`, `ticket/012-…`/`ticket/012-…` 가
-//     전부 2줄이고, 목업도 같은 47px 2줄 블록이다. 디자이너의 §2.5 는 화면을 안 보고 쓴 규칙이라
-//     실물 대조가 이긴다.
-//   · 절대경로는 행에 안 넣는다 — 1줄 이름의 `title` 툴팁과 CreateWorktreeModal 경로 필드에서만.
-//     그래서 브랜치가 없는(detached) worktree 만은 2줄에 쓸 이름 자체가 없어 2줄을 비운다.
-//   · 세션이 하나도 없는 worktree 도 2줄 블록 그대로다 — 블록만 남고 아래가 비는 게 정답이다.
-//
-// 핸드오프 목업에는 없지만 01-criteria.md C1(필수)이 요구하는 "세션(탭) 생성·닫기" 진입점을
-// 여기 얹는다 — MainTabBar 는 sessionCount>=2 에서만 존재해(C5) 0/1개일 때 "+" 를 못 둔다.
-// RepoRow 의 hover-액션(+/⋯) idiom 을 그대로 재사용해 새 시각 어휘를 늘리지 않는다: "⋯" 메뉴에
-// 빈 탭 생성 · 에이전트 즉시 기동(L1/L2 자산 보존) · worktree 닫기(기존 확인 게이트 경로 유지,
-// §6 "액션을 추가하지 않았다"는 상시 노출 버튼 얘기라 hover 메뉴 항목으로는 기능을 지우지 않는다).
+// · 상태 슬롯 = 워크트리의 **에이전트 활동 집계**(`worktree-status.ts`) — git 상태가 아니다(Orca `StatusIndicator`).
+// · 제목 = 표시 이름(`worktreeDisplayName` — 브랜치 풀네임), 메타 줄 = 브랜치. **같아도 둘 다 그린다** — 198 Detailed 가
+//   그렇다(`showBranch` 는 Detailed 에서 같아도 참, 01-criteria 기준 변경 1 · LIFE-357 H-2 사용자 결정과 일치).
+// · 주 워크트리 = 외곽선 배지(Orca `primary` 배지 외관, 문구 「기본」 — 한국어 UI). 별은 Compact 전용이라 없다.
+// · git 상태(dirty/ahead/behind)는 corral 고유 정보라 메타 줄 오른쪽(Orca 의 상세·포트 자리)에 둔다 — 의도적 추가.
+// · hover `+`/`⋯`(빈 탭·에이전트 기동·worktree 닫기)는 corral 고유 진입점이라 유지한다 — 제목 줄 오른쪽에 겹쳐 hover 때만.
+//   01-criteria C1 의 「세션(탭) 생성·닫기」 진입점이다(MainTabBar 는 탭 2개 이상에서만 선다).
+// · 선택 표시는 표면만 바꾼다 — 옛 「이름 밝힘·점 accent 강제」는 198 에 없어 뺐다(K6ⓔ).
 import { useState } from 'react'
 import type { AgentKind, IntegrationRow, OrchestrationLineage, RetainedAgentRow, WorktreeRow } from '../../../shared/types.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { collapsedSummary } from '../session-summary.js'
 import { buildAgentRows, SUMMARY_MIN_ROOTS, type AgentRowNode } from '../sidebar-agents.js'
 import { worktreeDisplayName } from '../worktree-name.js'
+import { worktreeStatus } from '../worktree-status.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
+import { EllipsisIcon, PlusIcon } from './AgentStateDot.js'
 import { SessionRow } from './SessionRow.js'
+import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
 
 const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
   { kind: 'claude', label: 'claude 기동' },
@@ -109,13 +102,12 @@ export function WorktreeBlock({
   const anyRootHasChildren = roots.some((node) => node.children.length > 0)
   const isOpen = worktree.workspace !== null
 
-  const branch = worktree.branch
   // 표시 이름은 **정렬 키와 같은 함수**에서 온다 — 둘이 갈라져서 보이는 이름 기준 역순이
   // 나온 적이 있다(worktree-name.ts 주석).
-  const line1Name = worktreeDisplayName(worktree)
-  // 2줄은 **항상** 풀네임이다 — 1줄과 같아도 그린다 (H-2). 브랜치가 없는 worktree 만
-  // 예외인데, 그건 규칙의 예외가 아니라 쓸 이름이 없어서다(절대경로는 §2.5 가 행에 금지).
-  const line2Branch = branch
+  const title = worktreeDisplayName(worktree)
+  // 메타 줄 = 브랜치. 브랜치가 없는(detached) worktree 만 비운다 — 절대경로는 행에 안 넣는다(§2.5, 툴팁에만).
+  const branch = worktree.branch
+  const status = worktreeStatus({ rows: roots, hasOpenTabs: (worktree.workspace?.tabs.length ?? 0) > 0 })
 
   const renderRow = ({ node, child }: { node: AgentRowNode; child: boolean }): React.JSX.Element => {
     const hasChildren = !child && node.children.length > 0
@@ -159,135 +151,148 @@ export function WorktreeBlock({
   )
 
   return (
-    <div
-      className={`worktree-block ${selected ? 'is-selected' : ''}`}
-      data-worktree={worktree.path}
-      data-chip-worktree={worktree.path}
-      data-chip-value={worktree.openWorkspaceId !== null ? 'open' : 'closed'}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={onSelectBlock}
-    >
-      <div className="worktree-block-line1">
-        <span className={`worktree-dot tone-${selected ? 'accent' : tone}`} />
-        {/* `data-worktree-branch` 의 **값**은 하네스의 요소 위치 지정자다 — 건드리지 않는다
-            (09-gate1-fix.md B 경고). 바뀌는 것은 렌더 텍스트뿐이다.
-            절대경로는 여기 `title` 툴팁에서만 노출한다 (§2.5). */}
-        <span className="worktree-name" data-worktree-branch={worktree.path} title={worktree.path}>
-          {line1Name}
-        </span>
-        {groupGlyph === null ? null : (
-          <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
-            {groupGlyph}
-          </span>
-        )}
-        {!worktree.isLinked ? <span className="worktree-chip">기본</span> : null}
-        <div className="worktree-block-spacer" />
-        {isOpen ? (
-          <div className={`worktree-block-actions ${hovered || menuOpen ? 'is-active' : ''}`} data-worktree-actions={worktree.path}>
-            <button
-              className="repo-row-action-btn"
-              data-create-row={worktree.openWorkspaceId ?? ''}
-              data-kind="shell"
-              title="빈 탭"
-              onClick={(event) => {
-                event.stopPropagation()
+    <div className="worktree-row" data-worktree={worktree.path}>
+      <div
+        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'}`}
+        data-worktree-card-surface=""
+        data-worktree-card-active={selected ? 'primary' : undefined}
+        data-chip-worktree={worktree.path}
+        data-chip-value={worktree.openWorkspaceId !== null ? 'open' : 'closed'}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={onSelectBlock}
+      >
+        <div className="worktree-card-content" data-worktree-card-parent-content="">
+          <WorktreeStatusSlot status={status} />
+          <div className="worktree-card-main">
+            <div className="worktree-card-identity" data-worktree-card-hover-trigger="">
+              <div className="worktree-block-line1">
+                {/* `data-worktree-branch` 의 **값**은 하네스의 요소 위치 지정자다 — 건드리지 않는다
+                    (09-gate1-fix.md B 경고). 툴팁 = 제목 전문 + 절대경로 — 절대경로는 여기서만 노출한다 (§2.5, K7 긴 이름). */}
+                <span className="worktree-name" data-worktree-branch={worktree.path} data-worktree-title="" title={`${title}\n${worktree.path}`}>
+                  {title}
+                </span>
+                {groupGlyph === null ? null : (
+                  <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
+                    {groupGlyph}
+                  </span>
+                )}
+                {!worktree.isLinked ? (
+                  <span className="worktree-chip" data-worktree-primary-badge="" title="주 워크트리 (원래 클론 폴더)">
+                    기본
+                  </span>
+                ) : null}
+                {isOpen ? (
+                  <div className={`worktree-block-actions ${hovered || menuOpen ? 'is-active' : ''}`} data-worktree-actions={worktree.path}>
+                    <button
+                      className="repo-row-action-btn"
+                      data-create-row={worktree.openWorkspaceId ?? ''}
+                      data-kind="shell"
+                      title="빈 탭"
+                      aria-label="빈 탭"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onCreateShell()
+                      }}
+                    >
+                      <PlusIcon className="repo-row-action-icon is-small" />
+                    </button>
+                    <button
+                      className="repo-row-action-btn"
+                      data-worktree-menu-toggle={worktree.path}
+                      title="더보기"
+                      aria-label="더보기"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setMenuOpen((prev) => !prev)
+                      }}
+                    >
+                      <EllipsisIcon className="repo-row-action-icon" />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              {branch === null && markLabel === null ? null : (
+                <div className="worktree-block-line2" data-worktree-card-meta-row="">
+                  {branch === null ? null : (
+                    <span className="worktree-sub" data-worktree-meta-branch="" title={branch}>
+                      {branch}
+                    </span>
+                  )}
+                  {markLabel !== null ? <span className={`worktree-mark tone-${tone}`}>{markLabel}</span> : null}
+                </div>
+              )}
+            </div>
+            {/* 열린 workspace 가 없어도 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 worktree 의 보존 행(R1). */}
+            {roots.length > 0 ? (
+              // 목록 한 덩어리 — 본문 열에서 왼쪽으로 8px 내어 나간다(Orca `[data-compact-agent-list]` `-ml-2`, 이관 ④).
+              <div className={`agent-list ${hasGroup ? 'is-grouped' : ''}`} data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
+                {hasGroup && summary !== null ? (
+                  <AgentGroupHeader
+                    worktreePath={worktree.path}
+                    count={roots.length}
+                    summary={summary}
+                    expanded={groupExpanded}
+                    onToggle={(event) => {
+                      event.stopPropagation()
+                      onToggleGroup()
+                    }}
+                  />
+                ) : null}
+                {/* 접힌 알약 아래 행은 **DOM 에 없다** — C3ⓑ 하네스가 `[data-tab]` 개수로 「접힌 자식 DOM 미존재」를 본다.
+                    펼칠 때만 짧은 등장 애니메이션을 준다(`agent-list-rows` — Orca reveal 키프레임). */}
+                {showRows ? (
+                  <div className={`agent-list-rows ${hasGroup ? 'is-revealed' : ''}`}>
+                    {roots.map((node) => renderBranch(node))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {menuOpen ? (
+          <div className="repo-row-menu worktree-menu" data-worktree-menu={worktree.path} onClick={(event) => event.stopPropagation()}>
+            <div
+              className="repo-row-menu-item"
+              data-worktree-create-shell={worktree.path}
+              onClick={() => {
+                setMenuOpen(false)
                 onCreateShell()
               }}
             >
-              +
-            </button>
-            <button
-              className="repo-row-action-btn"
-              data-worktree-menu-toggle={worktree.path}
-              title="더보기"
-              onClick={(event) => {
-                event.stopPropagation()
-                setMenuOpen((prev) => !prev)
-              }}
-            >
-              ⋯
-            </button>
-          </div>
-        ) : null}
-        {markLabel !== null ? <span className={`worktree-mark tone-${tone}`}>{markLabel}</span> : null}
-      </div>
-      {line2Branch === null ? null : (
-        <div className="worktree-block-line2">
-          <span className="worktree-sub">{line2Branch}</span>
-        </div>
-      )}
-
-      {menuOpen ? (
-        <div className="repo-row-menu worktree-menu" data-worktree-menu={worktree.path} onClick={(event) => event.stopPropagation()}>
-          <div
-            className="repo-row-menu-item"
-            data-worktree-create-shell={worktree.path}
-            onClick={() => {
-              setMenuOpen(false)
-              onCreateShell()
-            }}
-          >
-            <span className="repo-row-menu-glyph">+</span>
-            <span>빈 탭</span>
-          </div>
-          {AGENT_KINDS.map(({ kind, label }) => (
+              <span className="repo-row-menu-glyph">+</span>
+              <span>빈 탭</span>
+            </div>
+            {AGENT_KINDS.map(({ kind, label }) => (
+              <div
+                key={kind}
+                className="repo-row-menu-item"
+                data-worktree-create-agent={worktree.path}
+                data-kind={kind}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onCreateAgent(kind)
+                }}
+              >
+                <span className="repo-row-menu-glyph">›</span>
+                <span>{label}</span>
+              </div>
+            ))}
+            <div className="repo-row-menu-sep" />
             <div
-              key={kind}
-              className="repo-row-menu-item"
-              data-worktree-create-agent={worktree.path}
-              data-kind={kind}
+              className="repo-row-menu-item repo-row-menu-danger"
+              data-close-worktree={worktree.path}
               onClick={() => {
                 setMenuOpen(false)
-                onCreateAgent(kind)
+                onCloseWorktree()
               }}
             >
-              <span className="repo-row-menu-glyph">›</span>
-              <span>{label}</span>
+              <span className="repo-row-menu-glyph">−</span>
+              <span>worktree 닫기</span>
             </div>
-          ))}
-          <div className="repo-row-menu-sep" />
-          <div
-            className="repo-row-menu-item repo-row-menu-danger"
-            data-close-worktree={worktree.path}
-            onClick={() => {
-              setMenuOpen(false)
-              onCloseWorktree()
-            }}
-          >
-            <span className="repo-row-menu-glyph">−</span>
-            <span>worktree 닫기</span>
           </div>
-        </div>
-      ) : null}
-
-      {/* 열린 workspace 가 없어도 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 worktree 의 보존 행(R1). */}
-      {roots.length > 0 ? (
-        // 목록 한 덩어리 — 카드 안쪽 여백을 조금 먹고 들어간다(Orca `[data-compact-agent-list]` 음수 여백).
-        <div className={`agent-list ${hasGroup ? 'is-grouped' : ''}`} data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
-          {hasGroup && summary !== null ? (
-            <AgentGroupHeader
-              worktreePath={worktree.path}
-              count={roots.length}
-              summary={summary}
-              expanded={groupExpanded}
-              onToggle={(event) => {
-                event.stopPropagation()
-                onToggleGroup()
-              }}
-            />
-          ) : null}
-          {/* 접힌 알약 아래 행은 **DOM 에 없다** — C3ⓑ 하네스가 `[data-tab]` 개수로 「접힌 자식 DOM 미존재」를 본다.
-              펼칠 때만 짧은 등장 애니메이션을 준다(`agent-list-rows` — Orca reveal 키프레임). */}
-          {showRows ? (
-            <div className={`agent-list-rows ${hasGroup ? 'is-revealed' : ''}`}>
-              {roots.map((node) => renderBranch(node))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {/* 세션 없는 worktree 에 플레이스홀더를 넣지 않는다 — §2.5 "세션이 없는 worktree" 명시 금지,
-          목업에도 없다. 블록만 남고 아래가 비는 게 정상이다. */}
+        ) : null}
+      </div>
     </div>
   )
 }

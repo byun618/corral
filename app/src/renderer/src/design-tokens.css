@@ -1,39 +1,53 @@
-/* corral · LIFE-357 layout redesign — design tokens (dark only, 단일 테마)
-   원본: specs/design-tokens.css (design-intake 산출물). **게이트 ① 수정 라운드(09-gate1-fix.md
-   선행 결정 1)로 원안에 복귀했다** — `-claude-orca` 라운드가 C9′(Orca 를 그라운드 트루스로)
-   때문에 뒤집어 놨던 배경 서열·`--line-weak`·사이드바 폭 경계를 되돌린다. 그 축(C9′)을 접고
-   design-handoff 기반 C9 로 갈아탄 것이 사용자 결정이라, Orca 리터럴을 채택할 근거가 사라졌다.
-   목업 실측(코디네이터, 2026-09-14)이 원안 값과 일치함을 확인했다: 사이드바 rgb(14,16,17)
-   = #0e1011, 메인 rgb(20,23,24) = #141718, 선택 카드 rgb(29,33,34) = #1d2122.
-   원안에 없는 신설 토큰은 `specs/design-tokens.css` 에 역반영한다(토큰 원본은 specs 다).
-   surface: desktop · 근거: specs/reference/layout-reference-2026-09-13.md */
+/* corral · design tokens (dark only, 단일 테마)
+   원본 이력: LIFE-357 layout redesign → specs/design-tokens.css (design-intake 산출물).
+   **LIFE-468 (2026-10-01, 00-analysis §4.1 사용자 결정 U1 = A 안 「전역 Orca」)로 팔레트·글꼴을 Orca 1.4.198
+   다크 값으로 옮긴다.** LIFE-357 게이트 ① 수정 라운드(09-gate1-fix.md 선행 결정 1, 2026-09-14)가 Orca 리터럴
+   (배경 서열·`--line-weak`·폭 220/500)을 되돌려 design-handoff 원안(#0e1011 · 236–560)으로 복귀했던 결정을,
+   LIFE-414 「GUI·UIUX 가 Orca 와 거의 같아」 방향 아래 **사용자가 이 작업에서 명시적으로 뒤집었다.**
+   - 배경·경계·글자 계열 = Orca `assets/main.css` 다크 블록(`.dark`, 256-330줄) 값. 사이드바가 본문보다 **밝다**
+     (`--worktree-sidebar #2a2a2a` 가 `--background #0a0a0a` 위에 뜬다 — Orca 주석 그대로의 서열).
+   - UI 글꼴 = Geist variable(오프라인 번들, OFL 1.1 — `assets/fonts/Geist-OFL.txt`). 모노 글꼴은 그대로.
+   - **바꾸지 않는 것**: 강조색(accent 초록)·상태색(dirty/ahead/behind/error)·에이전트 색·림 플래시 — 상태 신호라
+     Orca 의 무채색 `--primary` 와 1:1 대응이 아니다(00-analysis §4 「A 에서 accent 를 유지하는 이유」).
+   토큰별 옛 값 → 새 값 · Orca 출처 줄은 specs/LIFE-468-sidebar-cards/raw/claude/k1-token-map.md 에 있다.
+   surface: desktop */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
-  /* 배경 3단 — 원안 복귀(09-gate1-fix.md A). 목업 리터럴과 일치:
-     사이드바 컨테이너 #0e1011, JetBrains Mono 터미널 블록 #141718. */
-  --bg-window: #0e1011;   /* 사이드바 · 탭바 스트립 · 창 크롬 */
-  --bg-surface: #141718;  /* 메인/터미널 영역 · 활성 탭 · 카드 내 탭 리스트 */
-  --bg-raised: #181b1c;   /* 모달 패널(CreateWorktreeModal 등) — design-handoff §2 원문 그대로 */
-  --bg-input: #16191a;    /* 검색 입력 */
-  --bg-chip: #202425;     /* 배지 pill */
-  --bg-selected: #1d2122;  /* 선택된 worktree 블록 */
-  --bg-row-hover: #1e2223;
-  --bg-statusbar: #0b0d0e;
-  --bg-menu-hover: #262b2c;   /* RepoRowMenu 항목 hover */
-  --bg-danger-hover: #2a1e1d; /* 파괴적 항목 hover */
+  /* 배경 — Orca 다크(LIFE-468 A 안). 캔버스가 가장 어둡고 사이드바가 그 위로 뜬다. */
+  --bg-window: #171717;   /* 탭바 스트립 · 창 크롬 — Orca --card/--sidebar */
+  --bg-sidebar: #2a2a2a;  /* 사이드바 패널 — Orca --worktree-sidebar */
+  --bg-sidebar-accent: #353535; /* 사이드바 안 칠(알약 바탕 등) — Orca --worktree-sidebar-accent */
+  --bg-sidebar-hover: #262626;  /* 카드 hover 의 섞는 색 — Orca --sidebar-accent */
+  --bg-surface: #0a0a0a;  /* 메인/터미널 영역 · 활성 탭 — Orca --background */
+  --bg-raised: #171717;   /* 모달·메뉴 패널 — Orca --popover */
+  --bg-input: rgb(255 255 255 / 0.045); /* 입력 — Orca ui/input `dark:bg-input/30` (--input .15 × 30%) */
+  --bg-chip: #262626;     /* 배지 pill — Orca --secondary */
+  --bg-accent: #404040;    /* 중립 강조 칠 — Orca --accent (행 hover 18%·선택 행 70%·버튼 hover 70%) */
+  --bg-selected: var(--bg-accent);  /* 선택 항목(MRU·팔레트) — Orca `bg-accent` */
+  --bg-row-hover: #262626; /* 행 hover — Orca --muted */
+  --bg-statusbar: #171717; /* 상태바 — Orca --sidebar(창 크롬과 같은 단) */
+  --bg-menu-hover: var(--bg-accent);   /* 메뉴 항목 hover — Orca `focus:bg-accent` */
+  --bg-danger-hover: #2a1e1d; /* 파괴적 항목 hover — 상태색 계열이라 유지 */
 
-  /* 경계 */
-  --line-strong: #2b3132; /* 카드 · 버튼 테두리 */
-  --line: #23282a;        /* 영역 구획 */
-  --line-weak: #1f2324;   /* 창 내부 미세 구획 — 원안 복귀(09-gate1-fix.md A) */
+  /* 경계 — Orca 는 반투명 흰색 한 단(7%)과 입력 테두리(15%)를 쓴다. */
+  --line-strong: rgb(255 255 255 / 0.15); /* 카드 · 버튼 · 모달 테두리 — Orca --input */
+  --line: rgb(255 255 255 / 0.07);        /* 영역 구획 — Orca --border */
+  --line-weak: rgb(255 255 255 / 0.07);   /* 창 내부 미세 구획 — Orca --worktree-sidebar-border */
 
-  /* 텍스트 2단 + 보조 */
-  --fg: #e6e9e8;
-  --fg-muted: #9aa3a1;
-  --fg-dim: #6e7877;      /* 메타 · 수치 */
-  --fg-faint: #5f6968;    /* 비활성 글리프 */
-  /* 메뉴 항목 텍스트 — 목업/핸드오프 §2 RepoRowMenu 리터럴(#c4cbc9), 토큰 없어 신설(구현 자유 재량). */
-  --fg-menu: #c4cbc9;
+  /* 텍스트 — Orca 무채색 단계 */
+  --fg: #fafafa;          /* Orca --foreground */
+  --fg-muted: #a1a1a1;    /* Orca --muted-foreground */
+  --fg-dim: #737373;      /* 메타 · 수치 — Orca --ring (neutral-500) */
+  --fg-faint: #525252;    /* 비활성 글리프 — Orca --sidebar-ring (neutral-600) */
+  --fg-menu: #e5e5e5;     /* 메뉴 항목 텍스트 — Orca --primary (neutral-200) */
 
   /* 강조 1단 */
   --accent: #7dd3a0;      /* 활성 상태 · 실행 중 에이전트 · 커서 · 리사이저 hover */
@@ -47,9 +61,8 @@
   --st-error-hi: #ea867b;
   --fg-on-accent: #0e1011;    /* accent 버튼 위 텍스트 */
   --fg-on-danger: #140d0c;
-  /* git 상태 없음(clean·not-ahead·not-behind) 도트 색 — 핸드오프 §2 WorktreeBlock 표·목업 리터럴
-     (#3a4140, 비활성 탭 도트와 동일 값)에 있으나 토큰 diff(§3)에는 없던 값이라 신설한다. */
-  --dot-neutral: #3a4140;
+  /* 조용한(비활성) 점 — Orca StatusIndicator inactive `bg-neutral-500/40` (LIFE-468 A 안). */
+  --dot-neutral: oklch(55.6% 0 0 / 0.4);
   /* InlineNotice(경고류) 배경/경계/텍스트 — 목업의 showNotice 블록 리터럴, 토큰 diff 에는 없음. */
   --bg-notice: #1a1614;
   --line-notice: #3a2a22;
@@ -61,7 +74,10 @@
   --shadow-menu: 0 8px 24px rgba(0, 0, 0, .5);
 
   /* 타입 */
-  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  /* Orca `--app-font-family` 그대로 — Geist 는 위 @font-face 로 앱에 번들한다(네트워크 없이 로드). */
+  --font-ui: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Orca body `letter-spacing: 0.01em` 은 16px body 에서 계산돼 0.16px 로 상속된다 — corral body 는 13px 라 px 로 고정한다. */
+  --ls-ui: 0.16px;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
   --fs-ui: 13px;       /* 창 기본 */
   --fs-row: 11.5px;    /* 트리/탭 라벨 (mono) */
@@ -129,11 +145,11 @@
   --w-repo-menu: 168px;
   --w-modal-create: 400px;
   --w-modal-confirm: 380px;
-  --sidebar-w: 322px;
-  /* 원안 복귀(09-gate1-fix.md A) — Orca 리터럴(220/500)을 채택했던 근거가 C9′ 축을 접으며
-     사라졌다. `--sidebar-max` 는 specs 원안에 없던 corral 자기 토큰이라 이번에 역반영한다. */
-  --sidebar-min: 236px;
-  --sidebar-max: 560px;
+  /* LIFE-468 A 안 — Orca `sidebar/index.tsx:33-34` MIN 220 / MAX 500, `shared/constants.ts:246` 기본 280.
+     저장된 폭은 새 경계로 clamp 된다(useSidebarResize). */
+  --sidebar-w: 280px;
+  --sidebar-min: 220px;
+  --sidebar-max: 500px;
   /* **명시적 편차** (09-gate1-fix.md A 에서 유지 결정) — 핸드오프 §4 는 `--resizer-w: 3px`
      단일이지만, 히트존(집기)과 가시선(보이기)을 분리하면 *보이는 선은 1px* 이라 "테두리 최소"
      기조에 오히려 더 맞고 집기는 더 쉽다. 편차인 채로 결과 문서에 기록한다. */

@@ -24,14 +24,34 @@ export const POSITIVE_CONTROLS = [
     requires: []
   },
   {
+    // LIFE-468 K4ⓕ — 옛 ⓑ(레포 헤더 아이콘: Orca 폴더 vs corral 이니셜 사각형)는 S2 가 **해소**했다(K4ⓐ lucide Folder).
+    // 해소되면 뒤집히는 것이 정상이라 옛 정의는 `RESOLVED_CONTROLS` 로 옮겨 **뒤집힘을 회차마다 원자료로 남기고**,
+    // 대조는 S2 가 건드리지 않는 알려진 부재로 옮긴다: corral 전용 브랜드 줄(Orca 는 창 크롬 — S4 LIFE-470 몫).
     id: 'C6ⓑ',
     area: 'sidebar',
     state: 'default',
+    unit: 'brandbar',
+    claim: 'corral 은 상단 브랜드 줄이 있고 Orca 는 없다(창 크롬이 그 자리를 쓴다)',
+    expect: { kind: 'missing', absentSide: 'left' },
+    requires: []
+  }
+]
+
+/**
+ * **해소로 뒤집힌 대조** — 관문이 아니다. `--controls` 회차마다 같은 판정기로 돌려 **뒤집혔는지**(= 더는 못 잡는지)를
+ * 보고서에 남긴다. 여기서 `pass: false` 가 정상이다 — 다시 잡히면 해소가 되돌아갔다는 뜻이다.
+ */
+export const RESOLVED_CONTROLS = [
+  {
+    id: 'C6ⓑ(옛)',
+    area: 'sidebar',
+    state: 'default',
     unit: 'repo-header-icon',
-    claim: '레포 헤더가 Orca 폴더 아이콘(lucide) vs corral 이니셜 사각형',
+    claim: '레포 헤더가 Orca 폴더 아이콘(lucide) vs corral 이니셜 사각형 — LIFE-468 K4ⓐ 가 해소',
     // 양쪽 다 있어야 하고, **모양과 칠 둘 다** 달라야 한다 — 1px 박스 차이 하나로는 아이콘 차이가 아니다.
     expect: { bothPresent: true, kinds: ['box', 'style'] },
-    requires: []
+    requires: [],
+    resolvedBy: 'LIFE-468'
   }
 ]
 

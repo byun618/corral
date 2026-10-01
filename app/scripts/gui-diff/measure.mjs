@@ -24,7 +24,8 @@ import { ensureFixtureRepo } from './lib/fixture.mjs'
 import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
-import { evaluateControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
+import { evaluateControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
+import { applyScene, describeScene, resetFixtureScene, resetScene } from './lib/scene.mjs'
 import {
   selectOwnedByPath,
   planSignals,
@@ -393,6 +394,61 @@ const STATE_TARGETS = {
       }
     ],
     detail: '긴 이름 에이전트 1개 — 한 줄 잘림(앞·뒤 같은 칸) 확인. 주입 원천이 두 앱에서 다르다: corral 은 터미널 제목(OSC 2 → 앞 칸), Orca 는 마지막 답 줄(hook → 뒤 칸). 두 앱 다 **같은 글 칸 하나**에서 잘리는지를 본다'
+  },
+  // ---- LIFE-468 K8ⓑ — S2(카드·선택) 장면 상태. 장면은 `lib/scene.mjs` 가 두 앱에 같은 제품 경로로 만들고 검증한다 ----
+  'card-hover': {
+    tabCount: 1,
+    agents: [],
+    scene: { hover: 'card' },
+    detail: '둘째 카드(비선택) 위에 **실제 마우스**(CDP mouseMoved) — 카드 hover 칠(K6ⓑ)'
+  },
+  'row-hover': {
+    tabCount: 2,
+    leadingEmptyTabs: 1,
+    agents: [{ state: 'working', prompt: 'L468 row hover', agentType: 'claude' }],
+    scene: { hover: 'row' },
+    detail: '포커스 안 된 둘째 탭의 에이전트 행 위에 실제 마우스 — 행 hover 칠(K6ⓒ). 포커스 pane 행은 선택 칠이라 hover 가 안 보여서 빈 첫 탭 뒤에 둔다'
+  },
+  'repo-collapsed': {
+    tabCount: 1,
+    agents: [],
+    scene: { collapsed: true },
+    detail: '레포 헤더를 실제 마우스로 눌러 접은 상태 — 카드 0장, 헤더만 (K7 접힘 · B1 빈 칸 없음)'
+  },
+  'long-worktree': {
+    tabCount: 1,
+    agents: [],
+    scene: { longWorktree: true },
+    detail: '긴 브랜치 이름의 linked worktree 를 fixture 에 더하고 두 앱이 다시 읽은 상태 — 카드 3장, 제목·메타 줄 한 줄 잘림 (K7)'
+  },
+  sticky: {
+    tabCount: 3,
+    expand: true,
+    agents: [
+      { state: 'working', prompt: 'L468 sticky 1', agentType: 'claude' },
+      { state: 'idle', prompt: 'L468 sticky 2', agentType: 'codex' },
+      { state: 'blocked', prompt: 'L468 sticky 3', agentType: 'claude' }
+    ],
+    scene: { longWorktree: true, viewportHeight: 360, scroll: 60 },
+    detail: '뷰포트 높이 360 으로 목록을 넘치게 하고 60px 스크롤 — 레포 헤더가 스크롤러 윗변에 붙는가 (K4ⓔ sticky)'
+  },
+  'width-min': {
+    tabCount: 1,
+    agents: [],
+    scene: { width: 220 },
+    detail: '리사이저를 실제 마우스로 끌어 최소 폭(Orca 220) — 두 앱 다 220 에서 멈추는가 (K7 폭)'
+  },
+  'width-max': {
+    tabCount: 1,
+    agents: [],
+    scene: { width: 500 },
+    detail: '리사이저를 끌어 최대 폭(Orca 500) (K7 폭)'
+  },
+  empty: {
+    tabCount: 1,
+    agents: [],
+    scene: { empty: true },
+    detail: '두 앱에서 fixture 레포를 제품 경로로 제거한 빈 목록 (K7). **`--states` 의 맨 끝에 둔다** — 되돌리지 않는다'
   }
 }
 
@@ -467,14 +523,17 @@ async function applyExpansion({ orca, corral, want, roots }) {
  * LIFE-449 해소 대상 목록에 들어갔다. 지금은 축마다 요청값·관측값을 적고, **어긋난 축은 이름으로 남긴다** —
  * 그 축에 달린 차이 행은 보고서에서 「해소 대상」이 아니라 「보류(하네스가 만든 차이)」로 내려간다.
  */
-async function applyState(state, { orca, corral, orcaRepoId }) {
+async function applyState(state, { orca, corral, orcaRepoId, fixture, base }) {
   const target = STATE_TARGETS[state]
   if (!target) return { reproduced: false, reason: `상태 '${state}' 는 이 도구가 아직 재현하지 못한다`, mismatched: ['정의없음'] }
+  // LIFE-468 — 앞 상태의 장면(hover·접힘·스크롤·폭·긴 워크트리)을 걷고 시작한다.
+  await resetScene({ orca, corral, orcaRepoId, fixture, base })
 
   const agentOffset = target.leadingEmptyTabs ?? 0
   const o = await applyOrcaState(orca, { repoId: orcaRepoId, tabCount: target.tabCount, agents: target.agents, agentOffset })
   const c = await applyCorralState(corral, { tabCount: target.tabCount, agents: target.agents, agentOffset })
   const expansion = await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length })
+  const scene = await applyScene({ orca, corral, orcaRepoId, fixture, base, scene: target.scene })
 
   const wantStatuses = target.agents.map((agent) => agent.state).slice().sort().join(',')
   const axes = [
@@ -530,6 +589,17 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
       corralOnly: true
     }
   ]
+  if (scene) {
+    // LIFE-468 K8ⓑ — 장면이 **두 앱에서** 요청대로 섰는가(hover 대상·접힘·카드 수·sticky·폭·빈 목록).
+    axes.push({
+      axis: 'scene',
+      label: '장면 (hover·접힘·긴 이름·sticky·폭·빈 목록)',
+      requested: JSON.stringify(target.scene),
+      orca: describeScene(scene.orca),
+      corral: describeScene(scene.corral),
+      ok: scene.ok
+    })
+  }
   const compare = (axis) => {
     if (typeof axis.ok === 'boolean') return axis.ok
     if (axis.corralOnly === true) return String(axis.corral) === String(axis.expectCorral)
@@ -555,7 +625,8 @@ async function applyState(state, { orca, corral, orcaRepoId }) {
     mismatched,
     orca: o,
     corral: c,
-    expansion
+    expansion,
+    scene
   }
 }
 
@@ -696,6 +767,8 @@ async function main() {
       }
     }
     const fixture = ensureFixtureRepo(args.work)
+    // 앞 회차가 남긴 긴 이름 워크트리(LIFE-468 장면)를 걷는다 — 두 앱이 뜨기 전에 fixture 를 기본 모양으로.
+    resetFixtureScene(fixture)
     log(`fixture: ${fixture.root} (+worktree ${fixture.worktree})`)
 
     log('Orca 개발 인스턴스 기동…')
@@ -734,6 +807,16 @@ async function main() {
     const areas = args.areas.map(loadArea)
     const baseline = await ensureBaseline({ orca, corral, fixtureRoot: fixture.root })
     corral.workspaceId = baseline.corral?.workspace?.workspace_id ?? 'w1'
+    // LIFE-468 장면의 기준 — 두 앱의 **기본 폭은 각자 관측한 값**이다(제품 기본값을 도구가 가정하지 않는다).
+    const sidebarWidthOf = (handle, selector) => handle.cdp.evaluate((sel) => Math.round(document.querySelector(sel)?.getBoundingClientRect().width ?? 0), selector)
+    const base = {
+      width: args.width,
+      height: args.height,
+      sidebarWidth: {
+        orca: await sidebarWidthOf(orca, '[data-native-file-drop-target="project-sidebar"]'),
+        corral: await sidebarWidthOf(corral, '[data-sidebar]')
+      }
+    }
     log(`기준선: orca 탭 ${baseline.orca.tabs}개 / corral workspace ${baseline.corral?.workspace?.workspace_id ?? '?'}`)
 
     const byArea = new Map(areas.map((area) => [area.name, { area: area.name, description: area.description, states: [] }]))
@@ -755,7 +838,7 @@ async function main() {
     const prerequisites = {}
     const stateAxes = []
     for (const state of args.states) {
-      const applied = await applyState(state, { orca, corral, orcaRepoId })
+      const applied = await applyState(state, { orca, corral, orcaRepoId, fixture, base })
       // 양성 대조(C6ⓐ)의 전제는 **이 프로필의 실제 값**이다 — 코드 기본값으로 미루지 않는다.
       if (applied.orca) {
         prerequisites.orcaCompact = applied.orca.agentActivityDisplayMode === 'compact'
@@ -864,6 +947,8 @@ async function main() {
     // 양성 대조 (C6) — **명시 모드에서만** 돈다 (F8). 방향·종류·전제까지 보는 판정은
     // `lib/controls.mjs` 에 있고 단위 테스트가 판별력을 잠근다 (F9).
     const positiveControls = args.controls ? evaluateControls({ results, prerequisites }) : []
+    // 해소로 뒤집힌 옛 대조 — **관문이 아니다.** 뒤집혔는지(못 잡는지)를 회차마다 원자료로 남긴다 (LIFE-468 K4ⓕ).
+    const resolvedControls = args.controls ? evaluateControls({ results, prerequisites, controls: RESOLVED_CONTROLS }) : []
 
     if (args.dumpDom) {
       for (const area of areas) {
@@ -912,7 +997,7 @@ async function main() {
       date: new Date().toISOString().slice(0, 10),
       runs: path.relative(repoRoot, args.ledger),
       areas: results,
-      notes: { conditions, warnings, noiseFloor, positiveControls, stateMatrix, stateAxes, controlsMode: args.controls }
+      notes: { conditions, warnings, noiseFloor, positiveControls, resolvedControls, stateMatrix, stateAxes, controlsMode: args.controls }
     })
     const reportPath = path.join(outDir, 'report.md')
     fs.writeFileSync(reportPath, report)
@@ -950,6 +1035,7 @@ async function main() {
       warnings,
       noiseFloor,
       positiveControls,
+      resolvedControls,
       stateMatrix,
       stateAxes,
       excludedProps: EXCLUDED_PROPS,

@@ -11,11 +11,31 @@ import { AGENT_DOT_LABEL, type AgentDot } from '../agent-dot.js'
 
 const STROKE: React.SVGProps<SVGSVGElement> = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
 
-function Lucide({ children }: { children: React.ReactNode }): React.JSX.Element {
+function Lucide({ children, className = 'agent-dot-icon' }: { children: React.ReactNode; className?: string }): React.JSX.Element {
   return (
-    <svg className="agent-dot-icon" viewBox="0 0 24 24" aria-hidden {...STROKE}>
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
       {children}
     </svg>
+  )
+}
+
+/** lucide `Activity` — 감시 중(monitoring). 워크트리 상태 슬롯(LIFE-468)도 같은 글리프를 쓴다. */
+export function ActivityGlyph({ className = 'agent-dot-icon' }: { className?: string }): React.JSX.Element {
+  return (
+    <Lucide className={className}>
+      <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+    </Lucide>
+  )
+}
+
+/** lucide `MessageCircleQuestionMark` — 입력 대기. Orca `AgentQuestionIcon`. */
+export function QuestionGlyph({ className = 'agent-dot-icon' }: { className?: string }): React.JSX.Element {
+  return (
+    <Lucide className={className}>
+      <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </Lucide>
   )
 }
 
@@ -24,11 +44,7 @@ function DotGlyph({ dot }: { dot: AgentDot }): React.JSX.Element {
     case 'working':
       return <span className="agent-dot-spinner" />
     case 'monitoring':
-      return (
-        <Lucide>
-          <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
-        </Lucide>
-      )
+      return <ActivityGlyph />
     case 'done':
       return (
         <Lucide>
@@ -50,13 +66,7 @@ function DotGlyph({ dot }: { dot: AgentDot }): React.JSX.Element {
         </Lucide>
       )
     case 'waiting':
-      return (
-        <Lucide>
-          <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
-          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-          <path d="M12 17h.01" />
-        </Lucide>
-      )
+      return <QuestionGlyph />
     case 'blocked':
     case 'interrupted':
     case 'failed':
@@ -80,6 +90,36 @@ export function Chevron({ direction, className }: { direction: 'right' | 'down';
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
       <path d={direction === 'right' ? 'm9 18 6-6-6-6' : 'm6 9 6 6 6-6'} />
+    </svg>
+  )
+}
+
+/** lucide `Folder` — 레포 헤더 아이콘 (LIFE-468 D21, Orca `RepoIconGlyph` 폴백의 끝). corral 은 아이콘 지정이 없어 항상 이것이다. */
+export function FolderIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  )
+}
+
+/** lucide `Ellipsis` — 더보기. */
+export function EllipsisIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </svg>
+  )
+}
+
+/** lucide `Plus`. */
+export function PlusIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
     </svg>
   )
 }

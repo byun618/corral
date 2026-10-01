@@ -20,7 +20,7 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "패널 폭·배경·테두리는 LIFE-448 의 직접 대상이다"
+      "classifyWhy": "패널 폭·배경·테두리는 S2(LIFE-468 D19) 범위"
     },
     {
       "id": "brandbar",
@@ -31,7 +31,7 @@
         "paint"
       ],
       "classify": "보류",
-      "classifyWhy": "corral 전용 브랜드 줄 — Orca 는 창 크롬이 그 자리를 쓴다. 지울지 남길지는 448 착수 때 결정"
+      "classifyWhy": "corral 전용 브랜드 줄 — Orca 는 창 크롬이 그 자리를 쓴다. 상단 줄은 S4(LIFE-470) 몫. 양성 대조 C6ⓑ(새)"
     },
     {
       "id": "search-row",
@@ -79,7 +79,7 @@
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "구획 제목 타이포·간격은 448 범위"
+      "classifyWhy": "구획 제목 타이포는 S2(LIFE-468 D20) 범위. 문구 \"Repos\" 는 의도적(corral 용어)"
     },
     {
       "id": "repo-header-row",
@@ -92,33 +92,54 @@
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "레포 헤더 행 높이·배경은 447 범위"
+      "classifyWhy": "레포 헤더 행 높이·배경·sticky 는 S2(LIFE-468 D21) 범위",
+      "conditional": true,
+      "conditionalWhy": "레포가 있을 때만 — 상태 empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "repo-header-icon",
-      "note": "레포 헤더 아이콘 — **양성 대조 C6ⓑ**: Orca 폴더 아이콘(lucide) vs corral 이니셜 사각형",
+      "note": "레포 헤더 아이콘 — Orca lucide `Folder` ↔ corral lucide `Folder`(LIFE-468 K4ⓐ). 옛 양성 대조 C6ⓑ 자리 — 해소되어 대조를 brandbar 로 옮겼다(K4ⓕ)",
       "orca": "[data-repo-header-id] svg.lucide-folder",
-      "corral": "[data-repo-name]",
+      "corral": "[data-repo-name] svg",
       "props": [
         "box",
         "paint",
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "양성 대조 C6ⓑ 자리 — Orca 폴더 아이콘 vs corral 이니셜 사각형. 어느 쪽으로 맞출지는 447 이 정한다"
+      "classifyWhy": "S2(LIFE-468 D21) 범위 — svg↔svg 짝",
+      "conditional": true,
+      "conditionalWhy": "레포가 있을 때만 — 상태 empty(빈 목록)에서는 두 앱 다 없다"
+    },
+    {
+      "id": "repo-header-label",
+      "note": "레포 헤더 이름 (Orca `text-[13px] font-semibold leading-none truncate`) — 구조 경로로 잡는다(안정 식별자 없음)",
+      "orca": "[data-repo-header-id] div.truncate",
+      "corral": ".repo-row-name",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "S2(LIFE-468 D21) 범위",
+      "conditional": true,
+      "conditionalWhy": "레포가 있을 때만 — 상태 empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "repo-header-caret",
-      "note": "접기 캐럿 (Orca lucide chevron / corral ▸▾ 글자)",
+      "note": "접기 셰브론 — Orca lucide `ChevronDown` ↔ corral lucide `ChevronDown`(svg↔svg). 두 앱 다 hover 때만 보인다",
       "orca": "[data-repo-header-id] svg.lucide-chevron-down",
-      "corral": "[data-repo-caret]",
+      "corral": "[data-repo-caret] svg",
       "props": [
         "box",
         "paint",
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "Orca lucide chevron vs corral ▸▾ 글자 — 447 범위"
+      "classifyWhy": "S2(LIFE-468 D21) 범위",
+      "conditional": true,
+      "conditionalWhy": "레포가 있을 때만 — 상태 empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "repo-header-actions",
@@ -130,11 +151,13 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "우측 액션 묶음 간격·크기는 447 범위"
+      "classifyWhy": "우측 액션 묶음 외관(크기·간격·hover 노출)은 S2(LIFE-468 D21) 범위, 항목·동작은 S4",
+      "conditional": true,
+      "conditionalWhy": "레포가 있을 때만 — 상태 empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "worktree-card",
-      "note": "워크트리 카드 한 장 (행 높이·간격)",
+      "note": "워크트리 카드 행 래퍼 (Orca `[data-worktree-id]` ↔ corral `[data-worktree]`)",
       "orca": "[data-worktree-id]",
       "corral": "[data-worktree]",
       "props": [
@@ -142,49 +165,53 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "카드 행 높이·간격은 448 범위"
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
+      "conditional": true,
+      "conditionalWhy": "카드는 레포가 펼쳐져 있을 때만 — 상태 repo-collapsed(접힘)·empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "worktree-card-surface",
       "note": "카드 표면 (선택 배경·테두리·radius)",
       "orca": "[data-worktree-card-surface]",
-      "corral": ".worktree-block",
+      "corral": "[data-worktree-card-surface]",
       "props": [
         "box",
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "표면 배경·테두리·radius 는 448 범위",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
       "parent": "worktree-card",
-      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "카드는 레포가 펼쳐져 있을 때만 — 상태 repo-collapsed(접힘)·empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
       "id": "worktree-card-active",
-      "note": "선택된 카드 — Orca 는 `data-worktree-card-active` 값(primary/secondary), corral 은 `.is-selected`",
+      "note": "선택된 카드 — 두 앱 다 `data-worktree-card-active` 값(primary/secondary)",
       "orca": "[data-worktree-card-active]",
-      "corral": ".worktree-block.is-selected",
+      "corral": "[data-worktree-card-active]",
       "props": [
         "box",
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "선택 표시는 448 범위",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
       "conditional": true,
       "conditionalWhy": "선택된 카드가 있을 때만",
       "parent": "worktree-card",
-      "parentWhy": "카드 순번 안에서 본다 — corral 은 카드 자신이 `.worktree-block` 이라 「부모 자신」으로 잡힌다 (G2)"
+      "parentWhy": "카드 순번 안에서 본다 (G2)"
     },
     {
       "id": "worktree-status-slot",
-      "note": "카드 좌측 상태 슬롯 (Orca: unread 점·PR·브랜치 / corral: 상태 점 하나)",
+      "note": "카드 좌측 상태 슬롯 — 두 앱 다 `data-worktree-card-status-slot` (워크트리 에이전트 활동 집계, LIFE-468 K5ⓑ)",
       "orca": "[data-worktree-card-status-slot]",
-      "corral": ".worktree-dot",
+      "corral": "[data-worktree-card-status-slot]",
       "props": [
         "box",
         "paint"
       ],
-      "classify": "보류",
-      "classifyWhy": "Orca 는 unread·PR·브랜치를 함께 담고 corral 은 점 하나다 — 묶음 구성 차이라 448 이 정보 구성을 먼저 정해야 한다",
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다 — 슬롯 의미를 Orca 집계로 바꿨다(k5-status-slot.md)",
       "axis": "agentCount",
       "conditional": true,
       "conditionalWhy": "상태가 있을 때만",
@@ -192,30 +219,105 @@
       "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
     },
     {
+      "id": "worktree-status-indicator",
+      "note": "상태 슬롯 안 표시 (12px 칸 — Orca `StatusIndicator` `h-3 w-3`)",
+      "orca": "[data-worktree-card-status-slot] span.h-3.w-3",
+      "corral": "[data-worktree-status]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "카드는 레포가 펼쳐져 있을 때만 — 상태 repo-collapsed(접힘)·empty(빈 목록)에서는 두 앱 다 없다"
+    },
+    {
       "id": "worktree-card-body",
-      "note": "카드 본문 줄 — 이름·배지가 들어가는 자리. Orca 이름 span 에는 안정 식별자가 없어 **본문 컨테이너 수준에서만** 짝짓는다 (도구의 한계, 문서화 대상)",
+      "note": "카드 본문(제목 줄 + 메타 줄) — 두 앱 다 `data-worktree-card-hover-trigger`",
       "orca": "[data-worktree-card-hover-trigger]",
-      "corral": ".worktree-block-line1",
+      "corral": "[data-worktree-card-hover-trigger]",
       "props": [
         "box",
         "paint",
         "text"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "본문 줄 타이포·간격은 448 범위. 이름 span 은 짝을 못 지어 컨테이너 수준만 잰다 (도구 한계)",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
       "parent": "worktree-card",
-      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)"
+      "parentWhy": "워크트리 카드 순번 안에서 견준다 — 카드가 여러 개일 때 다른 카드의 자식끼리 비교되지 않게 (G2)",
+      "conditional": true,
+      "conditionalWhy": "카드는 레포가 펼쳐져 있을 때만 — 상태 repo-collapsed(접힘)·empty(빈 목록)에서는 두 앱 다 없다"
     },
     {
-      "id": "worktree-secondary-line",
-      "note": "카드 둘째 줄 (메타/브랜치) — Orca 도 둘째 줄을 그리지만 안정 식별자가 없어 짝을 못 짓는다",
-      "corral": ".worktree-block-line2",
+      "id": "worktree-card-title",
+      "note": "카드 제목 — Orca `data-worktree-title-inline-rename` ↔ corral `data-worktree-title`",
+      "orca": "[data-worktree-title-inline-rename]",
+      "corral": "[data-worktree-title]",
       "props": [
         "box",
         "paint",
         "text"
       ],
-      "unpaired": "Orca 카드 둘째 줄에 data 속성·role 이 없다 (Tailwind 클래스뿐) — 없는 것이 아니라 못 재는 것이다"
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "카드는 레포가 펼쳐져 있을 때만 — 상태 repo-collapsed(접힘)·empty(빈 목록)에서는 두 앱 다 없다"
+    },
+    {
+      "id": "worktree-secondary-line",
+      "note": "카드 메타 줄 — 두 앱 다 `data-worktree-card-meta-row` (LIFE-468 에서 짝을 지었다 — 옛 unpaired)",
+      "corral": "[data-worktree-card-meta-row]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "orca": "[data-worktree-card-meta-row]",
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "브랜치가 있을 때만(detached worktree 는 비운다)"
+    },
+    {
+      "id": "worktree-meta-branch",
+      "note": "메타 줄 브랜치 글 (Orca `TruncatedSidebarLabel` `block min-w-0 truncate` — 구조 경로)",
+      "orca": "[data-worktree-card-meta-row] span.truncate",
+      "corral": "[data-worktree-meta-branch]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "브랜치가 있을 때만"
+    },
+    {
+      "id": "worktree-primary-badge",
+      "note": "주 워크트리 배지 — Orca Detailed 외곽선 `primary` 배지 ↔ corral 「기본」 배지 (문구는 의도적 — 한국어 UI)",
+      "orca": "[data-worktree-card-hover-trigger] [data-variant=\"outline\"]",
+      "corral": "[data-worktree-primary-badge]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-468 S2 범위 — 카드·선택·레포 헤더를 Orca 1.4.198 Detailed 해부로 맞췄다 — 외관만. 문구 primary↔기본 은 의도적",
+      "parent": "worktree-card",
+      "parentWhy": "카드 순번 안에서 본다 (G2)",
+      "conditional": true,
+      "conditionalWhy": "주 워크트리 카드에만"
     },
     {
       "id": "agent-list",
@@ -368,6 +470,21 @@
       ],
       "classify": "해소 대상",
       "classifyWhy": "하단 도구 줄은 448 범위"
+    },
+    {
+      "id": "sidebar-empty",
+      "note": "빈 목록 문구 (레포 0개) — Orca `EmptyState` 안쪽 칸 ↔ corral `[data-empty]`",
+      "orca": "[data-worktree-sidebar-container] div.items-center.text-center",
+      "corral": "[data-empty]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "S2(LIFE-468 D24) 범위 — 외관. 문구는 한국어(의도적)",
+      "conditional": true,
+      "conditionalWhy": "레포가 없을 때만 (상태 empty)"
     },
     {
       "id": "sidebar-resize-handle",

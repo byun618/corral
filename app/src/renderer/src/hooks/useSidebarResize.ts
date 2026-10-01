@@ -26,7 +26,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 // 되돌리며, 같은 값을 JS 리터럴로 또 적어 두면 토큰과 코드가 따로 노는 것을 실제로 겪었다
 // (`-claude-orca` 라운드에서 토큰만 바꾸고 이 상수가 남아 클램프가 안 따라왔다). freeze v2
 // 승계 요구사항 "값은 `--*` 변수로만 참조한다" 의 JS 쪽 이행이다.
-const TOKEN_FALLBACK = { width: 322, min: 236, max: 560 } as const
+const TOKEN_FALLBACK = { width: 280, min: 220, max: 500 } as const
 
 function tokenPx(name: string, fallback: number): number {
   if (typeof document === 'undefined') return fallback

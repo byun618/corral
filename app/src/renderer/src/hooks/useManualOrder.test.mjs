@@ -16,7 +16,7 @@ afterEach(() => {
 
 function setup(initial) {
   const writes = []
-  vi.stubGlobal('window', { corral: { setUiPrefs: (patch) => writes.push(structuredClone(patch)) } })
+  vi.stubGlobal('window', { corral: { setUiPrefs: (patch) => writes.push(JSON.parse(JSON.stringify(patch))) } })
   const host = new HookHost()
   let repos = initial.map(repo)
   const render = () => host.render(() => useManualOrder(repos))

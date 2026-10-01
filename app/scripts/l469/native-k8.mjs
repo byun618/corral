@@ -60,6 +60,21 @@ async function shot(name) {
   return res.ok ? path.join('shots', `${name}.png`) : null
 }
 
+/** 드래그 뒤 기대 순서 — 레포: 끈 레포가 맨 위. 카드: 끈 카드가 연결 워크트리 맨 위(주 체크아웃 바로 아래). 나머지는 원래 상대 순서. */
+function expectedOrder({ step, before, moving, key }) {
+  if (step === 'drag-repo') {
+    const roots = before.repos.map((repo) => repo.root)
+    return [moving, ...roots.filter((root) => root !== moving)]
+  }
+  const rows = before.repos.find((repo) => repo.root === key)?.worktrees ?? []
+  const [main, ...linked] = rows
+  return [main, moving, ...linked.filter((row) => row !== moving)]
+}
+function observedOrder({ step, after, key }) {
+  if (step === 'drag-repo') return after.repos.map((repo) => repo.root)
+  return after.repos.find((repo) => repo.root === key)?.worktrees ?? []
+}
+
 /** 창 안 좌표 → 화면 좌표. 정수로 내린다(cliclick 은 정수 포인트). */
 const toScreen = (origin, p) => ({ x: Math.round(origin.x + p.x), y: Math.round(origin.y + p.y) })
 
@@ -192,6 +207,11 @@ async function main() {
         out.frontAfter = win('front')
         out.arrived = out.events.down.length > 0 && out.events.up.length > 0
         if (!out.arrived) throw new Error(`ARRIVAL: 누르기·놓기가 앱에 오지 않았다 ${JSON.stringify(out.events)}`)
+        // 판정은 이벤트 도착이 아니라 **기대 순서**로 한다(수정 라운드 1 R1-07) — 끈 항목이 첫 자리로 가고 나머지 상대 순서는 그대로.
+        out.expected = expectedOrder({ step, before, moving: pts.moving, key: arg })
+        out.observed = observedOrder({ step, after: out.after, key: arg })
+        out.orderAsExpected = JSON.stringify(out.expected) === JSON.stringify(out.observed)
+        if (!out.orderAsExpected) throw new Error(`ORDER: 기대 ${JSON.stringify(out.expected)} ≠ 관측 ${JSON.stringify(out.observed)}`)
       } catch (error) {
         out.stopped = String(error?.message ?? error)
         save()

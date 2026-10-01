@@ -4,11 +4,12 @@
 //
 // 쓰는 법: 시험 파일에서 `vi.mock('react', () => import('./fake-react.test-helper.mjs'))` 로 갈아 끼운다.
 
-let current = null
+/** 지금 그리는 host — 가짜 hook 이 여기로 위임한다. */
+const active = { host: null }
 
-export const useState = (initial) => current.useState(initial)
-export const useRef = (initial) => current.useRef(initial)
-export const useEffect = (effect, deps) => current.useEffect(effect, deps)
+export const useState = (initial) => active.host.useState(initial)
+export const useRef = (initial) => active.host.useRef(initial)
+export const useEffect = (effect, deps) => active.host.useEffect(effect, deps)
 export const useCallback = (fn) => fn
 
 /** 렌더 한 번 = hook 호출 → 바뀐 deps 의 효과 실행. 효과가 상태를 바꾸면 안정될 때까지 다시 그린다. */
@@ -44,7 +45,7 @@ export class HookHost {
 
   render(fn) {
     for (let pass = 0; pass < 20; pass++) {
-      current = this
+      active.host = this
       this.index = 0
       this.dirty = false
       const value = fn()

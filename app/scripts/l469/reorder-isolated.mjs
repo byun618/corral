@@ -6,6 +6,12 @@
 //
 // 사용: node app/scripts/l469/reorder-isolated.mjs --out <raw 폴더> [--work /tmp/l469i] [--port 9469]
 // 결과: <out>/result.json (검사 행 전부) · <out>/shots/*.png · <out>/prefs-*.json. 종료코드 0 = 전 검사 통과.
+//
+// 수정 라운드 1 옵션 —
+//   --omit-drag <검사 id>   그 검사의 드래그를 빼먹는다(음성 대조 — 그 검사가 **실패해야** 판정이 살아 있다, R1-07)
+//   --stop-after <검사 id>  그 검사까지만 돌고 정리한다(재현 시도용)
+//   --no-focus-emulation    포커스 에뮬레이션을 끈다(run3 조건 재현)
+//   --trace                 입력 이벤트(좌표·buttons·시각·표시 줄 위치·카드 경계)를 페이지 안팎에서 기록 → <out>/trace-<검사 id>.json
 
 /* global document, window, getComputedStyle, KeyboardEvent, Event -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
@@ -30,10 +36,29 @@ fs.mkdirSync(shots, { recursive: true })
 const checks = []
 const t0 = Date.now()
 const log = (...parts) => console.log(`[l469 +${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...parts)
+class StopAfter extends Error {}
+const cdpTrace = []
 function check(id, criterion, pass, observed) {
   checks.push({ id, criterion, pass: pass === true, observed })
   log(pass ? 'PASS' : 'FAIL', id, criterion, JSON.stringify(observed).slice(0, 300))
+  if (args['stop-after'] === id) throw new StopAfter(id)
 }
+
+/**
+ * 기대 순서 — `slot` 은 제품과 같은 경계 번호(0 = 맨 앞, 길이 = 맨 뒤). 판정은 이 배열 **전체**와 대조한다(R1-07:
+ * 「가운데에 있다」 같은 느슨한 조건은 움직이지 않아도 통과했다).
+ */
+function moveTo(list, key, slot) {
+  const from = list.indexOf(key)
+  if (from < 0) return null
+  const bounded = Math.max(0, Math.min(list.length, slot))
+  const to = bounded > from ? bounded - 1 : bounded
+  const rest = list.filter((item) => item !== key)
+  rest.splice(to, 0, key)
+  return rest
+}
+/** 카드 기대 순서 — 주 체크아웃(첫 행)은 고정, 연결 워크트리 안에서 옮긴다. */
+const moveLinked = (rows, key, slot) => [rows[0], ...moveTo(rows.slice(1), key, slot)]
 
 // --- fixture ------------------------------------------------------------------------------------------
 const git = (cwd, ...rest) => execFileSync('git', rest, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -104,7 +129,8 @@ async function launch(label) {
   const { target } = await pickTarget(port, { label: 'corral', match: (entry) => /out\/renderer\/index\.html/.test(entry.url) })
   cdp = await connect(target.webSocketDebuggerUrl)
   // 창이 뒤에 있으면 Chromium 이 프레임을 늦춰 입력 한 번이 수백 ms 씩 걸린다(run3 실측: 33검사에 9분) — gui-diff 와 같이 포커스를 에뮬레이션한다.
-  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+  if (args['no-focus-emulation'] !== true) await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+  if (args.trace === true) await cdp.evaluate(installTrace)
   await setViewport(cdp, { width: 1200, height: Number(args.height ?? 1500) })
   await until(() => cdp.evaluate(() => document.querySelector('[data-repo-list]') !== null), 'sidebar rendered', 30_000)
   log('launched', label, 'pid', desktopPid)
@@ -131,6 +157,37 @@ async function quit(label) {
   await until(() => !fs.existsSync(control), 'control socket gone', 15_000).catch(() => fs.rmSync(control, { force: true }))
   desktopPid = null
   await pause(500)
+}
+
+// --- 계측(--trace, run3 재현 시도) ----------------------------------------------------------------------
+// 페이지 쪽: 문서 capture 리스너(제품 hook 보다 먼저 등록돼 mouseup 때 표시 줄이 아직 있다)가 좌표·buttons·시각·표시 줄 y·
+// 스크롤·(mouseup 때) 카드 경계를 남긴다. 하네스 쪽: CDP 로 보낸 입력의 보낸 시각·응답 시각.
+function installTrace() {
+  window.__l469trace = []
+  const record = (event) => {
+    const list = document.querySelector('[data-repo-list]')
+    const indicator = document.querySelector('[data-reorder-indicator]')
+    const row = { type: event.type, x: event.clientX, y: event.clientY, button: event.button, buttons: event.buttons, t: performance.now(), wall: Date.now(), indicatorTop: indicator ? parseFloat(indicator.style.top) : null, scrollTop: list?.scrollTop ?? null }
+    if (event.type === 'mouseup' && list) {
+      const top = list.getBoundingClientRect().top - list.scrollTop
+      row.cards = [...document.querySelectorAll('[data-reorder-card]')].map((card) => {
+        const r = card.getBoundingClientRect()
+        return { path: card.getAttribute('data-reorder-card'), top: r.top - top, bottom: r.bottom - top }
+      })
+    }
+    window.__l469trace.push(row)
+  }
+  for (const type of ['mousedown', 'mousemove', 'mouseup', 'click']) document.addEventListener(type, record, true)
+  return true
+}
+async function traceDump(id) {
+  if (args.trace !== true) return
+  const page = await cdp.evaluate(() => {
+    const rows = window.__l469trace ?? []
+    window.__l469trace = []
+    return rows
+  })
+  fs.writeFileSync(path.join(out, `trace-${id}.json`), JSON.stringify({ id, focusEmulation: args['no-focus-emulation'] !== true, cdp: cdpTrace.splice(0), page }, null, 1))
 }
 
 // --- 화면 읽기 ------------------------------------------------------------------------------------------
@@ -175,8 +232,13 @@ const pointOf = (spec) =>
 const headerPoint = (root, fx = 0.4) => pointOf({ attr: 'data-repo-toggle', value: root, inner: '.repo-row-name', fx })
 const cardPoint = (wtPath) => pointOf({ attr: 'data-worktree', value: wtPath, inner: '.worktree-name', fx: 0.3 })
 
-const mouse = (type, p, extra = {}) =>
-  cdp.send('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: type === 'mouseMoved' ? 'none' : 'left', buttons: extra.buttons ?? (type === 'mouseReleased' ? 0 : 1), clickCount: type === 'mouseMoved' ? 0 : 1, ...extra })
+async function mouse(type, p, extra = {}) {
+  const params = { type, x: p.x, y: p.y, button: type === 'mouseMoved' ? 'none' : 'left', buttons: extra.buttons ?? (type === 'mouseReleased' ? 0 : 1), clickCount: type === 'mouseMoved' ? 0 : 1, ...extra }
+  const sent = Date.now()
+  const result = await cdp.send('Input.dispatchMouseEvent', params)
+  if (args.trace === true) cdpTrace.push({ type, x: p.x, y: p.y, buttons: params.buttons, sent, acked: Date.now() })
+  return result
+}
 
 /** 실제 드래그 흉내 — 눌러서 여러 걸음 옮기고(중간 `during` 콜백) 놓는다. `end` 는 좌표 또는 좌표를 주는 함수. */
 async function drag(start, end, { steps = 12, during = null, release = true, holdMs = 0 } = {}) {
@@ -200,6 +262,14 @@ async function drag(start, end, { steps = 12, during = null, release = true, hol
   if (release) await mouse('mouseReleased', target)
   await pause(150)
   return mid
+}
+/** 순서를 바꾸는 드래그 — `--omit-drag <id>` 면 빼먹는다(음성 대조). */
+async function dragFor(id, start, end, options) {
+  if (args['omit-drag'] === id) {
+    log('OMIT drag for', id, '(음성 대조)')
+    return null
+  }
+  return drag(start, end, options)
 }
 async function click(p) {
   await mouse('mouseMoved', p, { buttons: 0 })
@@ -323,14 +393,15 @@ async function main() {
   check('prep', '준비: a-one 선택·열림·에이전트 행, a-three 열림', alphaBefore.selected[0] === wtA('a-one') && alphaBefore.open.includes(wtA('a-three')) && alphaBefore.agentRows[wtA('a-one')] > 0, alphaBefore)
 
   // ── K1ⓐ 레포 헤더 — 맨 위·맨 아래·가운데 ──
-  await drag(await headerPoint(gamma), await repoSlotPoint(0))
+  await dragFor('K1a-top', await headerPoint(gamma), await repoSlotPoint(0))
   snap = await snapshot()
+  await traceDump('K1a-top')
   check('K1a-top', 'K1ⓐ gamma 헤더 → 맨 위', same(repoOrder(snap), [gamma, alpha, beta]), repoOrder(snap))
   check('K1a-top-file', 'K1ⓐ 파일에도 같은 순서', same(readPrefs().manualRepoOrder, [gamma, alpha, beta]), readPrefs().manualRepoOrder)
-  await drag(await headerPoint(alpha), await repoSlotPoint(3))
+  await dragFor('K1a-bottom', await headerPoint(alpha), await repoSlotPoint(3))
   snap = await snapshot()
   check('K1a-bottom', 'K1ⓐ alpha 헤더 → 맨 아래', same(repoOrder(snap), [gamma, beta, alpha]), repoOrder(snap))
-  await drag(await headerPoint(alpha), await repoSlotPoint(1))
+  await dragFor('K1a-middle', await headerPoint(alpha), await repoSlotPoint(1))
   snap = await snapshot()
   check('K1a-middle', 'K1ⓐ alpha 헤더 → 가운데', same(repoOrder(snap), [gamma, alpha, beta]), repoOrder(snap))
   // K1ⓓ — 레포를 옮겨도 카드·선택·열림·에이전트 행이 그대로 따라간다.
@@ -358,27 +429,33 @@ async function main() {
   // ── K2ⓐ 카드 — 맨 위·맨 아래·가운데. ⓒ 종류: detached(a-det)·닫힘(a-two)·열림 비선택(a-three)·선택+에이전트(a-one) ──
   const alphaWts = () => snapshot().then((s) => wtOrder(s, alpha))
   let before = await alphaWts()
-  await drag(await cardPoint(wtA('a-two')), await cardSlotPoint(alpha, 0))
+  let want = moveLinked(before, wtA('a-two'), 0)
+  await dragFor('K2a-top-closed', await cardPoint(wtA('a-two')), await cardSlotPoint(alpha, 0))
   let after = await alphaWts()
-  check('K2a-top-closed', 'K2ⓐ·ⓒ 닫힌 카드 a-two → 맨 위(주 체크아웃 아래)', after[0] === alpha && after[1] === wtA('a-two'), { before, after })
+  await traceDump('K2a-top-closed')
+  check('K2a-top-closed', 'K2ⓐ·ⓒ 닫힌 카드 a-two → 맨 위(주 체크아웃 아래) — 기대 배열 전체 대조', same(after, want) && !same(before, want), { before, want, after })
   before = after
-  await drag(await cardPoint(wtA('a-det')), await cardSlotPoint(alpha, 9))
+  want = moveLinked(before, wtA('a-det'), before.length)
+  await dragFor('K2a-bottom-detached', await cardPoint(wtA('a-det')), await cardSlotPoint(alpha, 9))
   after = await alphaWts()
-  check('K2a-bottom-detached', 'K2ⓐ·ⓒ detached 카드 a-det → 맨 아래', after[after.length - 1] === wtA('a-det') && after[0] === alpha, { before, after })
+  check('K2a-bottom-detached', 'K2ⓐ·ⓒ detached 카드 a-det → 맨 아래 — 기대 배열 전체 대조', same(after, want) && !same(before, want), { before, want, after })
   before = after
   snap = await snapshot()
   const selBefore = snap.repos.find((repo) => repo.root === alpha).selected
-  await drag(await cardPoint(wtA('a-one')), await cardSlotPoint(alpha, 3))
+  // 연결 경계 3 = 셋째 연결 카드 앞. a-one 이 이미 가운데여도 자리는 바뀐다(run10: [two,one,three,det] → [two,three,one,det]).
+  want = moveLinked(before, wtA('a-one'), 3)
+  await dragFor('K2a-middle-selected-agent', await cardPoint(wtA('a-one')), await cardSlotPoint(alpha, 3))
   after = await alphaWts()
   snap = await snapshot()
   const alphaNow = snap.repos.find((repo) => repo.root === alpha)
-  check('K2a-middle-selected-agent', 'K2ⓐ·ⓒ 선택+에이전트 카드 a-one → 가운데', after.indexOf(wtA('a-one')) > 1 && after.indexOf(wtA('a-one')) < after.length - 1, { before, after })
+  check('K2a-middle-selected-agent', 'K2ⓐ·ⓒ 선택+에이전트 카드 a-one → 가운데 — 기대 배열 전체 대조(이동 없음이면 실패)', same(after, want) && !same(before, want), { before, want, after })
   check('K2e-selected-kept', 'K2ⓔ 드래그 뒤 선택·열림·에이전트 행 유지', same(alphaNow.selected, selBefore) && alphaNow.open.includes(wtA('a-one')) && alphaNow.agentRows[wtA('a-one')] > 0, alphaNow)
   before = after
-  await drag(await cardPoint(wtA('a-three')), await cardSlotPoint(alpha, 0))
+  want = moveLinked(before, wtA('a-three'), 0)
+  await dragFor('K2c-open-unselected', await cardPoint(wtA('a-three')), await cardSlotPoint(alpha, 0))
   after = await alphaWts()
   snap = await snapshot()
-  check('K2c-open-unselected', 'K2ⓒ 열린 비선택 카드 a-three → 맨 위, 드래그 뒤 선택 무변경(클릭 없음)', after[1] === wtA('a-three') && same(snap.repos.find((repo) => repo.root === alpha).selected, selBefore), { before, after, selected: snap.repos.find((repo) => repo.root === alpha).selected })
+  check('K2c-open-unselected', 'K2ⓒ 열린 비선택 카드 a-three → 맨 위(기대 배열 전체), 드래그 뒤 선택 무변경(클릭 없음)', same(after, want) && !same(before, want) && same(snap.repos.find((repo) => repo.root === alpha).selected, selBefore), { before, want, after, selected: snap.repos.find((repo) => repo.root === alpha).selected })
   const fileWt = readPrefs().manualWorktreeOrder[alpha]
   check('K2a-file', 'K2ⓐ 파일의 alpha 순서 = 화면(주 체크아웃 제외)', same(fileWt, after.slice(1)), { file: fileWt, screen: after })
 
@@ -393,9 +470,10 @@ async function main() {
   before = await alphaWts()
   const lastLinked = before[before.length - 1]
   const mainTop = await pointOf({ attr: 'data-worktree', value: alpha, fy: 0.2 })
-  await drag(await cardPoint(lastLinked), mainTop)
+  want = moveLinked(before, lastLinked, 0)
+  await dragFor('K2b-not-above-main', await cardPoint(lastLinked), mainTop)
   after = await alphaWts()
-  check('K2b-not-above-main', 'K2ⓑ 주 체크아웃 위에 놓아도 주 체크아웃은 맨 위 그대로', after[0] === alpha, { before, after, dropped: lastLinked })
+  check('K2b-not-above-main', 'K2ⓑ 주 체크아웃 위에 놓으면 주 체크아웃 바로 아래(연결 맨 위)로 — 주 체크아웃은 맨 위 그대로, 기대 배열 전체', same(after, want) && !same(before, want) && after[0] === alpha, { before, want, after, dropped: lastLinked })
 
   // ── K2ⓓ 다른 레포 위에 놓기 = 취소 ──
   before = await alphaWts()
@@ -468,13 +546,60 @@ async function main() {
     after = await snapshot()
     check(`K3b-outside-${kind}`, `K3ⓑ ${kind === 'header' ? '헤더' : '카드'} 목록 밖 놓기 = 취소`, !mid.indicator && same(repoOrder(before), repoOrder(after)) && same(wtOrder(before, alpha), wtOrder(after, alpha)) && prefsHash() === hash, { duringIndicator: mid.indicator })
   }
+  // ── R1-01 목록과 x 는 같고 y 만 위·아래 바깥 — 놓으면 취소(자동 스크롤 허용 띠 안이어도) ──
+  for (const kind of ['header', 'card']) {
+    for (const side of ['above', 'below']) {
+      before = await snapshot()
+      hash = prefsHash()
+      const lr = await cdp.evaluate(() => {
+        const r = document.querySelector('[data-repo-list]').getBoundingClientRect()
+        return { top: r.top, bottom: r.bottom, innerHeight: window.innerHeight }
+      })
+      const start = kind === 'header' ? await headerPoint(alpha) : await cardPoint(wtA('a-two'))
+      const end = { x: start.x, y: side === 'above' ? lr.top - 20 : Math.min(lr.innerHeight - 2, lr.bottom + 20) }
+      const mid = await drag(start, end, { during: async () => snapshot() })
+      after = await snapshot()
+      check(`K3b-outside-y-${kind}-${side}`, `K3ⓑ(R1-01) ${kind === 'header' ? '헤더' : '카드'} 목록 ${side === 'above' ? '위' : '아래'} 20px 바깥 놓기 = 취소(표시 줄 없음·화면·파일 무변경)`, !mid.indicator && same(repoOrder(before), repoOrder(after)) && same(wtOrder(before, alpha), wtOrder(after, alpha)) && prefsHash() === hash, { list: lr, end, duringIndicator: mid.indicator, before: repoOrder(before), after: repoOrder(after) })
+    }
+  }
+
+  // ── R1-02 같은 헤더 안 6px → Escape → 100ms 뒤 놓기 = 접힘 무변경 · 그 뒤 정상 클릭 = 접힘 ──
+  {
+    before = await snapshot()
+    hash = prefsHash()
+    const hp = await headerPoint(beta)
+    const collapsedBefore = before.repos.find((repo) => repo.root === beta).collapsed
+    const moved = { x: hp.x + 6, y: hp.y }
+    const mid = await drag(hp, moved, {
+      steps: 3,
+      release: false,
+      during: async () => {
+        const s = await snapshot()
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        await pause(100)
+        return s
+      },
+    })
+    await mouse('mouseReleased', moved)
+    await pause(250)
+    const afterLate = await snapshot()
+    const lateCollapsed = afterLate.repos.find((repo) => repo.root === beta).collapsed
+    // 파일 대조는 정상 클릭 **전**에 한다 — 정상 클릭은 접힘 칸을 바꾼다(run11: 클릭 뒤에 대조해 실패로 셌다).
+    const lateFileSame = prefsHash() === hash
+    await click(await headerPoint(beta))
+    const normalCollapsed = (await snapshot()).repos.find((repo) => repo.root === beta).collapsed
+    check('K3b-escape-late-release', 'K3ⓑ(R1-02) 같은 헤더 6px → Escape → 100ms 뒤 놓기 = 접힘 무변경·순서·파일 무변경, 그 뒤 정상 클릭 = 접힘 토글', mid.reordering && lateCollapsed === collapsedBefore && same(repoOrder(before), repoOrder(afterLate)) && lateFileSame && normalCollapsed === !collapsedBefore, { duringReordering: mid.reordering, collapsedBefore, lateCollapsed, lateFileSame, normalCollapsed })
+    await click(await headerPoint(beta)) // 되돌린다
+  }
 
   // ── K3ⓒ C4 SVG 아이콘에서 끌기 → 드래그 열림 + 글자 선택 없음 ──
   before = await snapshot()
   const iconP = await pointOf({ attr: 'data-repo-toggle', value: beta, inner: '.repo-row-icon-glyph' })
+  const iconWant = moveTo(repoOrder(before), beta, before.repos.length)
   const iconMid = await drag(iconP, await repoSlotPoint(3), { during: async () => snapshot() })
   after = await snapshot()
-  check('K3c-svg-icon', 'K3ⓒ SVG 폴더 아이콘에서 끌어도 드래그가 열리고 놓인다, 글자 선택 없음', iconMid.reordering && iconMid.indicator && repoOrder(after)[2] === beta && iconMid.selection === '' && after.selection === '', { during: { reordering: iconMid.reordering, selection: iconMid.selection }, after: repoOrder(after), selection: after.selection })
+  check('K3c-svg-icon', 'K3ⓒ SVG 폴더 아이콘에서 끌어도 드래그가 열리고 놓인다(기대 배열 전체), 글자 선택 없음', iconMid.reordering && iconMid.indicator && same(repoOrder(after), iconWant) && !same(repoOrder(before), iconWant) && iconMid.selection === '' && after.selection === '', { during: { reordering: iconMid.reordering, selection: iconMid.selection }, want: iconWant, after: repoOrder(after), selection: after.selection })
 
   // ── K3ⓓ C5 펼친 레포의 카드 영역 위로 헤더를 끌어도 표시 유지, 가까운 경계에 들어간다 ──
   // 지금 순서 [gamma, alpha, beta]. beta 헤더를 alpha 카드 영역 아래쪽(마지막 카드 위)에 놓으면 alpha 아래 경계(slot 2) = 제자리,
@@ -487,13 +612,29 @@ async function main() {
   check('K3d-c5', 'K3ⓓ C5 카드 영역 위에서 표시 줄 유지 → 놓으면 그 레포 윗경계', c5Mid.indicator && same(repoOrder(after), [gamma, beta, alpha]), { duringIndicator: c5Mid.indicator, after: repoOrder(after) })
 
   // ── K3ⓔ 드롭 표시 줄 값 + sticky 헤더에 가리지 않음 + 캡처 ──
-  const indicatorProbe = await drag(await cardPoint(wtA('a-two')), await cardSlotPoint(alpha, 2), {
+  const k3eStart = await cardPoint(wtA('a-two'))
+  const k3eEnd = await cardSlotPoint(alpha, 2)
+  const indicatorProbe = await drag(k3eStart, k3eEnd, {
     release: false,
     during: async () => {
       await shot('k3e-card-drag-indicator')
       return cdp.evaluate(() => {
         const ind = document.querySelector('[data-reorder-indicator]')
-        if (!ind) return null
+        if (!ind) {
+          // run11 에서 한 번 표시 줄이 없었다(원인 미확정) — 그때의 상태를 남긴다.
+          const list = document.querySelector('[data-repo-list]')
+          const lr = list.getBoundingClientRect()
+          const src = document.querySelector('.is-reorder-source')
+          return {
+            missing: true,
+            reordering: document.querySelector('.sidebar.is-reordering') !== null,
+            bodyClass: document.body.className,
+            hasFocus: document.hasFocus(),
+            list: { top: lr.top, bottom: lr.bottom, left: lr.left, right: lr.right, scrollTop: list.scrollTop },
+            source: src ? src.getAttribute('data-reorder-card') ?? src.getAttribute('data-repo') : null,
+            cards: [...document.querySelectorAll('[data-reorder-card]')].map((card) => ({ path: card.getAttribute('data-reorder-card'), top: card.getBoundingClientRect().top, bottom: card.getBoundingClientRect().bottom })),
+          }
+        }
         const dots = ind.querySelectorAll('.reorder-drop-dot')
         const bar = ind.querySelector('.reorder-drop-bar')
         const cs = (el) => getComputedStyle(el)
@@ -518,11 +659,12 @@ async function main() {
   await mouse('mouseMoved', { x: 900, y: 300 })
   await mouse('mouseReleased', { x: 900, y: 300 })
   await pause(200)
-  fs.writeFileSync(path.join(out, 'k3e-indicator-probe.json'), JSON.stringify(indicatorProbe, null, 2))
+  fs.writeFileSync(path.join(out, 'k3e-indicator-probe.json'), JSON.stringify({ start: k3eStart, end: k3eEnd, probe: indicatorProbe }, null, 2))
+  await traceDump('K3e-indicator-values')
   check(
     'K3e-indicator-values',
     'K3ⓔ 표시 줄 = 198 값(점 6px 둥근·막대 2px·ring #737373·바탕 2px 그림자·z30>헤더 z20·left 12/right 8)',
-    indicatorProbe !== null &&
+    indicatorProbe !== null && indicatorProbe.missing !== true &&
       indicatorProbe.dotCount === 2 &&
       indicatorProbe.dot.w === 6 && indicatorProbe.dot.h === 6 && indicatorProbe.bar.h === 2 &&
       indicatorProbe.dot.bg === 'rgb(115, 115, 115)' && indicatorProbe.bar.bg === 'rgb(115, 115, 115)' &&
@@ -592,6 +734,78 @@ async function main() {
   snap = await snapshot()
   const gAfter = wtOrder(snap, gamma)
   check('K3f-autoscroll', 'K3ⓕ 가장자리에서 자동 스크롤 → 화면 밖이던 자리(맨 아래)에 놓인다', listRect.scrollHeight > listRect.clientHeight && !lastGVisibleBefore && scrollMid.scrollTop > 0 && gAfter[gAfter.length - 1] === firstG, { listRect, lastGVisibleBefore, during: scrollMid, gBefore: gOrder, gAfter })
+  // ── K3ⓕ 위쪽 — 목록 위 가장자리를 잡고 있으면 위로 스크롤된다 → 화면 밖(위)이던 첫 연결 자리에 놓는다 ──
+  {
+    const geo = await cdp.evaluate((root) => {
+      const list = document.querySelector('[data-repo-list]')
+      const group = [...list.querySelectorAll(':scope > [data-repo]')].find((el) => el.getAttribute('data-repo') === root)
+      const cards = [...group.querySelectorAll('[data-reorder-card]')]
+      const lr = list.getBoundingClientRect()
+      const content = (el) => el.getBoundingClientRect().bottom - lr.top + list.scrollTop
+      // 첫 연결 카드가 위로 완전히 숨도록 내린다.
+      list.scrollTop = content(cards[0]) + 20
+      const visible = cards.filter((card) => {
+        const r = card.getBoundingClientRect()
+        return r.top >= lr.top + 60 && r.bottom <= lr.bottom - 60
+      })
+      const pick = visible[visible.length - 1] ?? cards[cards.length - 1]
+      const r0 = cards[0].getBoundingClientRect()
+      return { scrollTop: list.scrollTop, firstVisible: r0.bottom > lr.top && r0.top < lr.bottom, moving: pick.getAttribute('data-reorder-card'), first: cards[0].getAttribute('data-reorder-card') }
+    }, gamma)
+    await pause(200)
+    const upBefore = wtOrder(await snapshot(), gamma)
+    const upWant = moveLinked(upBefore, geo.moving, 0)
+    const firstRect = () =>
+      cdp.evaluate((q) => {
+        const el = [...document.querySelectorAll('[data-reorder-card]')].find((node) => node.getAttribute('data-reorder-card') === q)
+        const r = el.getBoundingClientRect()
+        return { x: r.left + 40, top: r.top, bottom: r.bottom }
+      }, geo.first)
+    // 붙은 헤더(28px) 바로 아래, 위 가장자리 띠(56px) 안.
+    const edge = { x: listRect.left + 80, y: listRect.top + 34 }
+    const upMid = await drag(await cardPoint(geo.moving), edge, {
+      release: false,
+      during: async (edgePoint) => {
+        const deadline = Date.now() + 8_000
+        let rect = await firstRect()
+        // 첫 연결 카드 윗변이 가장자리 띠 아래로 내려올 때까지 잡고 있는다.
+        while (rect.top < listRect.top + 60 && Date.now() < deadline) {
+          await mouse('mouseMoved', edgePoint)
+          await pause(30)
+          rect = await firstRect()
+        }
+        const s0 = await snapshot()
+        const p = { x: rect.x, y: rect.top + 4 }
+        await mouse('mouseMoved', p)
+        await pause(120)
+        await shot('k3f-autoscroll-up-drag')
+        const s1 = await snapshot()
+        return { scrollTopAtEdgeEnd: s0.scrollTop, scrollTopAtDrop: s1.scrollTop, indicator: s1.indicator, p }
+      },
+    })
+    await mouse('mouseReleased', upMid.p)
+    await pause(250)
+    const upAfter = wtOrder(await snapshot(), gamma)
+    check('K3f-autoscroll-up', 'K3ⓕ 위 가장자리에서 자동 스크롤(위로) → 화면 밖(위)이던 연결 맨 위 자리에 놓인다 — 기대 배열 전체', !geo.firstVisible && upMid.scrollTopAtEdgeEnd < geo.scrollTop && upMid.indicator && same(upAfter, upWant) && !same(upBefore, upWant), { geo, during: upMid, before: upBefore, want: upWant, after: upAfter })
+  }
+
+  // ── R1-01 스크롤된 목록 — 보이는 헤더를 목록 위 80px(자동 스크롤 띠 48px 도 넘음)에 놓으면 취소(리뷰 재현) ──
+  {
+    await cdp.evaluate(() => {
+      const list = document.querySelector('[data-repo-list]')
+      list.scrollTop = list.scrollHeight
+    })
+    await pause(200)
+    const scrolledBefore = await snapshot()
+    hash = prefsHash()
+    const lastRoot = repoOrder(scrolledBefore)[scrolledBefore.repos.length - 1]
+    const hp = await headerPoint(lastRoot)
+    // 창 안에 머문다(run2: 창 밖 좌표 입력으로 하네스가 멈춘 전례).
+    const mid = await drag(hp, { x: hp.x, y: Math.max(2, listRect.top - 80) }, { during: async () => snapshot() })
+    const scrolledAfter = await snapshot()
+    check('K3b-outside-y-scrolled', 'K3ⓑ(R1-01) 스크롤된 목록에서 헤더를 목록 위 80px 에 놓기 = 취소(순서·파일 무변경)', scrolledBefore.scrollTop > 0 && listRect.top - Math.max(2, listRect.top - 80) > 48 && !mid.indicator && same(repoOrder(scrolledBefore), repoOrder(scrolledAfter)) && prefsHash() === hash, { scrollTop: scrolledBefore.scrollTop, moving: lastRoot, duringIndicator: mid.indicator, before: repoOrder(scrolledBefore), after: repoOrder(scrolledAfter) })
+  }
+
   // ── K3ⓔ 후반 — 표시 줄이 붙은(sticky) 레포 헤더와 겹치는 자리에서도 헤더 위에 그려진다 ──
   // gamma 의 주 체크아웃·g-1 경계가 붙은 gamma 헤더 한가운데 오도록 스크롤하고, 아래 카드를 끌어 그 경계(slot 0)를 가리킨다.
   const stickyGeo = await cdp.evaluate(
@@ -639,11 +853,90 @@ async function main() {
   await mouse('mouseReleased', stickyPoint)
   await pause(200)
   check('K3e-sticky', 'K3ⓔ 붙은 레포 헤더와 겹친 자리에서 표시 줄이 헤더 위에 그려진다', stickyProbe.indicator === true && stickyProbe.headStuck === true && stickyProbe.overlap === true && stickyProbe.onTop === true, { stickyGeo, ...stickyProbe })
+
+  // ── R1-05 붙은 헤더 상반부에 다음 레포 헤더를 놓으면 = 그 레포 앞 (스크롤된 상태) ──
+  {
+    const order0 = repoOrder(await snapshot())
+    const stuckRoot = order0[0]
+    const mover = order0[1]
+    const geo = await cdp.evaluate((root) => {
+      const list = document.querySelector('[data-repo-list]')
+      const group = [...list.querySelectorAll(':scope > [data-repo]')].find((el) => el.getAttribute('data-repo') === root)
+      const lr = list.getBoundingClientRect()
+      const groupBottom = group.getBoundingClientRect().bottom - lr.top + list.scrollTop
+      // 첫 묶음 끝이 목록 아래쪽에 보이게 — 그 묶음 헤더는 위에 붙고, 다음 레포 헤더는 화면 안.
+      list.scrollTop = Math.max(0, groupBottom - (lr.bottom - lr.top) + 90)
+      return { scrollTop: list.scrollTop, groupBottom }
+    }, stuckRoot)
+    await pause(200)
+    const headOf = (root) =>
+      cdp.evaluate((r) => {
+        const list = document.querySelector('[data-repo-list]')
+        const group = [...list.querySelectorAll(':scope > [data-repo]')].find((el) => el.getAttribute('data-repo') === r)
+        const h = group.querySelector('[data-repo-head]').getBoundingClientRect()
+        const g = group.getBoundingClientRect()
+        const lr = list.getBoundingClientRect()
+        return { top: h.top, bottom: h.bottom, left: h.left, width: h.width, groupTop: g.top, listTop: lr.top, scrollTop: list.scrollTop }
+      }, root)
+    const stuckHead = await headOf(stuckRoot)
+    const target = { x: stuckHead.left + stuckHead.width * 0.4, y: stuckHead.top + 6 }
+    // ⓐ 표시 줄 확인(놓지 않음) — 앞 슬롯 경계는 화면 위로 숨었으니 붙은 헤더 윗변 안쪽에 보여야 한다.
+    const probeStart = await headerPoint(mover)
+    await mouse('mouseMoved', probeStart, { buttons: 0 })
+    await mouse('mousePressed', probeStart)
+    for (let index = 1; index <= 4; index++) {
+      await mouse('mouseMoved', { x: probeStart.x + ((target.x - probeStart.x) * index) / 4, y: probeStart.y + ((target.y - probeStart.y) * index) / 4 })
+      await pause(16)
+    }
+    const indicatorProbe = await cdp.evaluate(() => {
+      const ind = document.querySelector('[data-reorder-indicator] .reorder-drop-bar')
+      const lr = document.querySelector('[data-repo-list]').getBoundingClientRect()
+      if (!ind) return null
+      const r = ind.getBoundingClientRect()
+      return { barTop: r.top, barBottom: r.bottom, listTop: lr.top, visible: r.top >= lr.top && r.bottom <= lr.bottom }
+    })
+    await shot('r1-05-sticky-head-indicator')
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await mouse('mouseReleased', target)
+    await pause(300)
+    // ⓑ 실제 놓기 — 붙은 헤더가 가장자리 띠 안이라 자동 스크롤이 돈다. 걸음을 줄여 붙은 상태에서 바로 놓는다.
+    await cdp.evaluate((top) => {
+      document.querySelector('[data-repo-list]').scrollTop = top
+    }, geo.scrollTop)
+    await pause(200)
+    hash = prefsHash()
+    const dropStart = await headerPoint(mover)
+    const stuckAtStart = await headOf(stuckRoot)
+    await mouse('mouseMoved', dropStart, { buttons: 0 })
+    await mouse('mousePressed', dropStart)
+    for (let index = 1; index <= 4; index++) {
+      await mouse('mouseMoved', { x: dropStart.x + ((target.x - dropStart.x) * index) / 4, y: dropStart.y + ((target.y - dropStart.y) * index) / 4 })
+    }
+    await mouse('mouseReleased', target)
+    await pause(300)
+    const stuckAtEnd = await headOf(stuckRoot)
+    const dropWant = moveTo(order0, mover, 0)
+    const dropAfter = repoOrder(await snapshot())
+    await shot('r1-05-sticky-head-drop-after')
+    // 놓은 뒤 스크롤이 0 보다 크면 놓는 순간 그 헤더는 아직 붙어 있었다(묶음 윗변이 화면 위).
+    check('K1a-sticky-head-upper', 'K1ⓐ·K3(R1-05) 붙은 헤더 상반부에 다음 레포를 놓으면 그 레포 앞 — 기대 배열 전체, 표시 줄은 화면 안', stuckAtStart.groupTop < stuckAtStart.listTop - 20 && stuckAtEnd.scrollTop > 0 && indicatorProbe?.visible === true && same(dropAfter, dropWant) && prefsHash() !== hash, { geo, stuckAtStart, stuckAtEnd, target, indicatorProbe, before: order0, want: dropWant, after: dropAfter })
+  }
   await setViewport(cdp, { width: 1200, height: Number(args.height ?? 1500) })
   await cdp.evaluate(() => {
     document.querySelector('[data-repo-list]').scrollTop = 0
   })
   await pause(300)
+  // R1-05 가 바꾼 레포 순서를 되돌린다(뒤 검사들이 [gamma, beta, alpha] 를 전제한다) — 이것도 기대 배열 대조.
+  {
+    const now = repoOrder(await snapshot())
+    const restoreWant = [gamma, beta, alpha]
+    if (!same(now, restoreWant)) {
+      const slot = restoreWant.indexOf(now[0])
+      await drag(await headerPoint(now[0]), await repoSlotPoint(slot + 1))
+    }
+    const restored = repoOrder(await snapshot())
+    check('K1a-restore-after-sticky', 'K1ⓐ R1-05 뒤 순서 되돌리기 = [gamma, beta, alpha]', same(restored, restoreWant), { before: now, after: restored })
+  }
 
   // ── K3ⓖ 드래그 중 hover 액션·메뉴 — 열린 ⋯ 메뉴는 닫히고 액션은 숨는다 ──
   await mouse('mouseMoved', await headerPoint(gamma), { buttons: 0 })
@@ -810,6 +1103,37 @@ async function main() {
     check('K9b-sticky', 'K9ⓑ sticky 헤더(스크롤해 붙은 상태) 클릭 → 접힘', stuck.stuck && stuck.scrollTop > 0 && stuckCollapsed === true && (await snapshot()).repos.find((repo) => repo.root === top).collapsed === false, { stuck, stuckCollapsed })
   }
 
+  // ── R1-04 GUI 로 레포 제거 → 새 레포 등록 → 같은 레포 재등록 = 맨 아래(옛 자리로 되살아나지 않는다) ──
+  {
+    const order0 = repoOrder(await snapshot())
+    await mouse('mouseMoved', await headerPoint(beta), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-repo-menu-toggle', value: beta }))
+    await click(await pointOf({ attr: 'data-repo-menu-remove', value: beta }))
+    await waitFor(async () => (await pointOf({ attr: 'data-confirm-ok' })) !== null, 'remove confirm', 10_000)
+    await click(await pointOf({ attr: 'data-confirm-ok' }))
+    await waitFor(async () => !repoOrder(await snapshot()).includes(beta), 'beta removed', 30_000)
+    await pause(600)
+    const afterRemove = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    const epsilon = makeRepo('epsilon', [])
+    await rpc(control, { cmd: 'add-repo', root: epsilon })
+    await waitFor(async () => {
+      await rebuild()
+      return repoOrder(await snapshot()).includes(epsilon)
+    }, 'epsilon added', 60_000)
+    await rpc(control, { cmd: 'add-repo', root: beta })
+    await waitFor(async () => {
+      await rebuild()
+      return repoOrder(await snapshot()).includes(beta)
+    }, 'beta re-added', 60_000)
+    await settle()
+    const removedWant = order0.filter((root) => root !== beta)
+    const readdWant = [...removedWant, epsilon, beta]
+    const readd = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    check('K5b-gui-remove-readd', 'K5ⓑ(R1-04) GUI 제거 직후 파일·화면에서 빠짐 → 새 레포 → 같은 레포 재등록 = 맨 아래(기대 배열 전체)', same(afterRemove.screen, removedWant) && same(afterRemove.file, removedWant) && same(readd.screen, readdWant) && same(readd.file, readdWant), { before: order0, afterRemove, want: readdWant, readd })
+    await shot('r1-04-gui-remove-readd')
+  }
+
   // ── K4ⓐ 재시작 3회 — 순서 그대로 ──
   for (let round = 1; round <= 3; round++) {
     const beforeQuit = await snapshot()
@@ -857,10 +1181,14 @@ try {
   // 멈춘 회차가 영영 안 끝나지 않게 — 상한을 넘기면 실패로 정리한다(run2 에서 화면 밖 좌표로 멈춘 전례).
   await Promise.race([main(), pause(Number(args.limitMs ?? 540_000)).then(() => Promise.reject(new Error('하네스 시간 상한 초과')))])
 } catch (error) {
-  exitCode = 2
-  checks.push({ id: 'harness', criterion: '하네스 완주', pass: false, observed: String(error?.stack ?? error) })
-  log('ERROR', error)
-  if (cdp) await shot('zz-error').catch(() => {})
+  if (error instanceof StopAfter) {
+    log('stop-after', error.message)
+  } else {
+    exitCode = 2
+    checks.push({ id: 'harness', criterion: '하네스 완주', pass: false, observed: String(error?.stack ?? error) })
+    log('ERROR', error)
+    if (cdp) await shot('zz-error').catch(() => {})
+  }
 } finally {
   await quit('final').catch(() => {})
   if (backend?.pid) {
@@ -884,7 +1212,7 @@ try {
   if (exitCode === 0 && failed.length > 0) exitCode = 1
   fs.writeFileSync(
     path.join(out, 'result.json'),
-    JSON.stringify({ work, port, spawned, aliveAfterCleanup: alive, total: checks.length, failed: failed.map((row) => row.id), exitCode, checks }, null, 2),
+    JSON.stringify({ work, port, options: { omitDrag: args['omit-drag'] ?? null, stopAfter: args['stop-after'] ?? null, focusEmulation: args['no-focus-emulation'] !== true, trace: args.trace === true }, spawned, aliveAfterCleanup: alive, total: checks.length, failed: failed.map((row) => row.id), exitCode, checks }, null, 2),
   )
   log(`checks ${checks.length - failed.length}/${checks.length} pass; alive after cleanup: ${JSON.stringify(alive)}`)
   process.exit(exitCode)

@@ -58,7 +58,7 @@ describe('K6ⓐ 저장된 순서가 없으면 이전 빌드 순서 그대로', (
 
   it("이전 — 주 체크아웃 키가 없는 저장 목록(수정 1 전 469 빌드 = 연결만)은 주 체크아웃 먼저로 읽고, 정규화가 그 자리에 적는다(화면 무변경)", () => {
     const repos = [repo('/r/a', [['/r/a/b', 'b'], ['/r/a/m', 'm'], ['/r/a/z', 'z']])]
-    const legacy: ManualOrder = { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a/m'] } }
+    const legacy: ManualOrder = { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a/m'] }, all: [] }
     const before = paths(orderWorktrees({ worktrees: repos[0]!.worktrees, stored: legacy.worktrees['/r/a'] }))
     expect(before).toEqual(['/r/a', '/r/a/z', '/r/a/b', '/r/a/m'])
     const { order, changed } = reconcileManualOrder({ order: legacy, repos })
@@ -71,7 +71,7 @@ describe('K6ⓐ 저장된 순서가 없으면 이전 빌드 순서 그대로', (
 })
 
 describe('K4ⓒ 정규화는 저장된 상대 순서를 다시 매기지 않는다 (C1)', () => {
-  const stored: ManualOrder = { repos: ['/r/c', '/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a/m'] } }
+  const stored: ManualOrder = { repos: ['/r/c', '/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a/m'] }, all: [] }
   const repos = [
     repo('/r/a', [['/r/a/b', 'b'], ['/r/a/m', 'm'], ['/r/a/z', 'z']]),
     repo('/r/b', []),
@@ -130,7 +130,7 @@ describe('K4ⓒ 정규화는 저장된 상대 순서를 다시 매기지 않는�
 })
 
 describe('K5 새 항목 자리 = 198', () => {
-  const stored: ManualOrder = { repos: ['/r/c', '/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b'] } }
+  const stored: ManualOrder = { repos: ['/r/c', '/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b'] }, all: [] }
 
   it("ⓐ' 새 워크트리 → 그 레포 카드 목록 맨 위(주 체크아웃보다 위), 기존 상대 순서 무변경 (게이트 ① 수정 1)", () => {
     const repos = [repo('/r/a', [['/r/a/b', 'b'], ['/r/a/z', 'z'], ['/r/a/new', 'aaa-new']]), repo('/r/c', [])]
@@ -141,7 +141,7 @@ describe('K5 새 항목 자리 = 198', () => {
     const more = [repo('/r/a', [['/r/a/b', 'b'], ['/r/a/z', 'z'], ['/r/a/new', 'aaa-new'], ['/r/a/newer', 'zzz']]), repo('/r/c', [])]
     expect(reconcileManualOrder({ order, repos: more }).order.worktrees['/r/a']).toEqual(['/r/a/newer', '/r/a/new', '/r/a', '/r/a/z', '/r/a/b'])
     // 주 체크아웃을 아래로 옮겨 둔 레포에서도 새 워크트리는 맨 위다.
-    const moved: ManualOrder = { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a'] } }
+    const moved: ManualOrder = { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/z', '/r/a/b', '/r/a'] }, all: [] }
     expect(reconcileManualOrder({ order: moved, repos: [repos[0]!] }).order.worktrees['/r/a']).toEqual(['/r/a/new', '/r/a/z', '/r/a/b', '/r/a'])
   })
 
@@ -189,27 +189,27 @@ describe('K7 옮기기 (moveKey·applyRepoMove·applyWorktreeMove)', () => {
   })
 
   it('레포 옮기기는 화면 순서로 다시 적고, 화면에 없던 저장 키는 뒤에 그대로 둔다', () => {
-    const order: ManualOrder = { repos: ['/r/a', '/gone', '/r/b', '/r/c'], worktrees: {} }
+    const order: ManualOrder = { repos: ['/r/a', '/gone', '/r/b', '/r/c'], worktrees: {}, all: [] }
     const next = applyRepoMove({ order, visibleRoots: ['/r/a', '/r/b', '/r/c'], root: '/r/c', slot: 0 })
     expect(next?.repos).toEqual(['/r/c', '/r/a', '/r/b', '/gone'])
   })
 
   it('워크트리 옮기기는 그 레포 목록만 바꾼다 — 다른 레포·레포 순서 무변경', () => {
-    const order: ManualOrder = { repos: ['/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/1', '/r/a/2', '/r/a/3'], '/r/b': ['/r/b/1'] } }
-    const next = applyWorktreeMove({ order, repoRoot: '/r/a', visiblePaths: ['/r/a/1', '/r/a/2', '/r/a/3'], path: '/r/a/3', slot: 0 })
-    expect(next).toEqual({ repos: ['/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/3', '/r/a/1', '/r/a/2'], '/r/b': ['/r/b/1'] } })
+    const order: ManualOrder = { repos: ['/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/1', '/r/a/2', '/r/a/3'], '/r/b': ['/r/b/1'] }, all: [] }
+    const next = applyWorktreeMove({ order, repoRoot: '/r/a', worktrees: ['/r/a/1', '/r/a/2', '/r/a/3'].map((path) => wt(path, path)), visiblePaths: ['/r/a/1', '/r/a/2', '/r/a/3'], path: '/r/a/3', slot: 0 })
+    expect(next).toEqual({ repos: ['/r/a', '/r/b'], worktrees: { '/r/a': ['/r/a/3', '/r/a/1', '/r/a/2'], '/r/b': ['/r/b/1'] }, all: [] })
   })
 
   it("주 체크아웃도 옮겨지고 저장된다 — 맨 아래로·다른 카드를 그 위로 (K2ⓑ', 게이트 ① 수정 1)", () => {
     const r = repo('/r/a', [['/r/a/1', 'x'], ['/r/a/2', 'y']])
     const visible = ['/r/a', '/r/a/1', '/r/a/2']
-    const down = applyWorktreeMove({ order: EMPTY_MANUAL_ORDER, repoRoot: '/r/a', visiblePaths: visible, path: '/r/a', slot: 3 })
+    const down = applyWorktreeMove({ order: EMPTY_MANUAL_ORDER, repoRoot: '/r/a', worktrees: r.worktrees, visiblePaths: visible, path: '/r/a', slot: 3 })
     expect(down?.worktrees['/r/a']).toEqual(['/r/a/1', '/r/a/2', '/r/a'])
     expect(paths(orderWorktrees({ worktrees: r.worktrees, stored: down?.worktrees['/r/a'] }))).toEqual(['/r/a/1', '/r/a/2', '/r/a'])
-    const above = applyWorktreeMove({ order: EMPTY_MANUAL_ORDER, repoRoot: '/r/a', visiblePaths: visible, path: '/r/a/2', slot: 0 })
+    const above = applyWorktreeMove({ order: EMPTY_MANUAL_ORDER, repoRoot: '/r/a', worktrees: r.worktrees, visiblePaths: visible, path: '/r/a/2', slot: 0 })
     expect(paths(orderWorktrees({ worktrees: r.worktrees, stored: above?.worktrees['/r/a'] }))).toEqual(['/r/a/2', '/r/a', '/r/a/1'])
     // 저장된 주 체크아웃 자리는 정규화가 다시 맨 위로 올리지 않는다(C1).
-    const reconciled = reconcileManualOrder({ order: { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/1', '/r/a/2', '/r/a'] } }, repos: [r] })
+    const reconciled = reconcileManualOrder({ order: { repos: ['/r/a'], worktrees: { '/r/a': ['/r/a/1', '/r/a/2', '/r/a'] }, all: [] }, repos: [r] })
     expect(reconciled.changed).toBe(false)
   })
 

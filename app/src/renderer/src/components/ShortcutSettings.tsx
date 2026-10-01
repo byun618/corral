@@ -72,7 +72,8 @@ export function ShortcutSettings({ overrides, onChange, onClose }: { overrides: 
       <p>키를 선택해 새 조합을 누르세요. Esc는 기록 취소 · 방향별로 변경할 수 있습니다.</p>
       <div className="shortcut-list">{ACTIONS.map((action) => <div className="shortcut-row" key={action.id} data-shortcut-action={action.id}>
         <strong>{action.title}</strong>
-        <div className="shortcut-bindings">{bindingsFor(action.id, overrides).map((binding, variant) => {
+        {/* 칸 수는 기본 조합 수 — 비켜 선 기본값(LIFE-470 ⌘J)은 빈 칸(「없음」)으로 남아 다시 배정할 수 있다. */}
+        <div className="shortcut-bindings">{action.defaultBinding.map((_, variant) => bindingsFor(action.id, overrides)[variant] ?? null).map((binding, variant) => {
           const capturing = recording?.id === action.id && recording.variant === variant
           const pending = candidate?.id === action.id && candidate.variant === variant ? candidate : null
           return <div key={variant}>
@@ -84,9 +85,9 @@ export function ShortcutSettings({ overrides, onChange, onClose }: { overrides: 
               setRecording(recordingRef.current)
               try { await window.corral.setShortcutRecording(true) }
               catch (failure) { recordingRef.current = null; setRecording(null); setError(String(failure)) }
-            }}>{capturing ? '키 입력… (Esc 취소)' : formatBinding(pending?.binding ?? binding)}</button>
+            }}>{capturing ? '키 입력… (Esc 취소)' : pending !== null ? formatBinding(pending.binding) : binding !== null ? formatBinding(binding) : '없음'}</button>
             {pending ? <button disabled={busy} data-save-binding onClick={() => {
-              const bindings = [...bindingsFor(action.id, overrides)]; bindings[variant] = pending.binding
+              const bindings = action.defaultBinding.map((fallback, index) => bindingsFor(action.id, overrides)[index] ?? fallback); bindings[variant] = pending.binding
               void save({ ...overrides, [action.id]: bindings })
             }}>저장</button> : null}
           </div>

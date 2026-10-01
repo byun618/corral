@@ -44,6 +44,7 @@ import { useLifecycleActions } from './hooks/useLifecycleActions.js'
 import { useTermGroupSync, type GroupDeclaration } from './hooks/useTermGroupSync.js'
 import { useMemoryLabel } from './hooks/useMemoryLabel.js'
 import { useManualOrder } from './hooks/useManualOrder.js'
+import { useSidebarView } from './hooks/useSidebarView.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
@@ -108,6 +109,8 @@ export function App(): React.JSX.Element {
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
   // LIFE-469 — 레포·워크트리 수동 순서. 읽기는 아래 첫 getUiPrefs 에 얹는다(부트 화면이 내려가기 전에 순서가 선다).
   const manualOrder = useManualOrder({ repos: state?.repos ?? NO_REPOS, registry: { roots: state?.registry.roots ?? NO_ROOTS, generation: state?.registryGeneration ?? 0 } })
+  // LIFE-470 — Workspace options(그룹·정렬·필터). 읽기는 manualOrder 와 같은 첫 getUiPrefs 에 얹는다.
+  const sidebarView = useSidebarView()
   const memoryLabel = useMemoryLabel()
 
   /**
@@ -149,6 +152,7 @@ export function App(): React.JSX.Element {
         if (cancelled) return
         tabOrdinals.hydrate(prefs.tabOrdinals)
         manualOrder.hydrate(prefs)
+        sidebarView.hydrate(prefs)
         setStoredLayouts(prefs.groupLayouts)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
@@ -770,6 +774,7 @@ export function App(): React.JSX.Element {
       void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
     },
     'sidebar.toggle': toggleSidebar,
+    'palette.search': openPalette,
   }
   const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
@@ -1099,7 +1104,7 @@ export function App(): React.JSX.Element {
   const connected = state.link.phase === 'live'
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
-    if (action.id === 'palette.open') continue
+    if (action.id === 'palette.open' || action.id === 'palette.search') continue
     for (let variant = 0; variant < action.variants.length; variant++) {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
@@ -1150,7 +1155,18 @@ export function App(): React.JSX.Element {
           closePane={(paneId) => void closePaneAt(paneId)}
           actions={lifecycle.actions}
           manualOrder={manualOrder.order}
-          onReorder={manualOrder.commit}
+          onReorder={({ commit, layout }) => {
+            // 비-manual 모드에서 카드를 끌어 **순서가 바뀌면** Sort by → Manual(198 `use-status-mutations.ts:135-160`, K7ⓐ).
+            // 그 드롭은 보이는 전 그룹의 지금 배치를 먼저 수동 순서로 확정한다(R2-01) — 끌지 않은 레포도 Manual 화면에서 그대로다.
+            // 안 바뀐 드래그는 모드를 안 건드린다(K7ⓑ).
+            const toManual = commit.source.kind !== 'repo' && sidebarView.view.sortBy !== 'manual'
+            const changed = manualOrder.commit({ commit, layout: toManual ? layout : null })
+            if (changed && toManual) sidebarView.change({ sortBy: 'manual' })
+          }}
+          view={sidebarView.view}
+          onChangeView={sidebarView.change}
+          onOpenSearch={openPalette}
+          searchShortcut={((binding) => (binding === undefined ? null : formatBinding(binding)))(bindingsFor('palette.search', keymap.overrides)[0])}
           isRepoCollapsed={repoCollapse.has}
           toggleRepoCollapsed={repoCollapse.toggle}
           isGroupExpanded={groupExpand.has}

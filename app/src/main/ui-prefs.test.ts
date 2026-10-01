@@ -10,7 +10,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { UiPrefsStore } from './ui-prefs.js'
+import { DEFAULT_SIDEBAR_VIEW, sidebarViewToPrefs } from '../shared/sidebar-view.js'
+import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
+
+/** LIFE-470 이 더한 칸의 기본값 — 470 이전 파일을 읽으면 이 값으로 선다. */
+const L470_DEFAULTS = { manualFlatOrder: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW) }
 
 let dir = ''
 let file = ''
@@ -89,7 +93,7 @@ describe('폴백 번호 영속 (C13)', () => {
     fs.writeFileSync(file, '{ 이건 JSON 이 아니다')
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], expandedAgentGroups: [], tabOrdinals: [], groupLayouts: [], manualRepoOrder: [], manualWorktreeOrder: {} })
+    expect(store.get()).toEqual({ sidebarWidth: null, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: [], expandedAgentGroups: [], tabOrdinals: [], groupLayouts: [], manualRepoOrder: [], manualWorktreeOrder: {}, ...L470_DEFAULTS })
   })
 
   it('`get()` 이 준 배열을 고쳐도 스토어 안이 안 바뀐다 (복사본이다)', () => {
@@ -123,7 +127,7 @@ describe('사이드바 수동 순서 영속 (LIFE-469 K4·K6)', () => {
     const { manualRepoOrder, manualWorktreeOrder, ...rest } = store.get()
     expect(manualRepoOrder).toEqual([])
     expect(manualWorktreeOrder).toEqual({})
-    expect({ version: 1, ...rest }).toEqual(LEGACY)
+    expect({ version: 1, ...rest }).toEqual({ ...LEGACY, ...L470_DEFAULTS })
   })
 
   it('K6ⓑ 469 이전 파일 → 첫 순서 저장 뒤 파일에 기존 칸이 바이트 값 그대로 남는다', () => {
@@ -132,7 +136,7 @@ describe('사이드바 수동 순서 영속 (LIFE-469 K4·K6)', () => {
     store.load()
     store.update({ manualRepoOrder: ['/r/a', '/r/b'], manualWorktreeOrder: { '/r/a': ['/r/a/wt'] } })
     const written: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
-    expect(written).toEqual({ ...LEGACY, manualRepoOrder: ['/r/a', '/r/b'], manualWorktreeOrder: { '/r/a': ['/r/a/wt'] } })
+    expect(written).toEqual({ ...LEGACY, manualRepoOrder: ['/r/a', '/r/b'], manualWorktreeOrder: { '/r/a': ['/r/a/wt'] }, ...L470_DEFAULTS })
   })
 
   it('K4ⓐ 순서를 쓰고 → 새 스토어로 읽으면 같은 순서다(재시작)', () => {
@@ -177,5 +181,96 @@ describe('사이드바 수동 순서 영속 (LIFE-469 K4·K6)', () => {
     store.update({ manualWorktreeOrder: { '/r/a': ['/r/a/1'] } })
     store.get().manualWorktreeOrder['/r/a']!.push('/r/a/2')
     expect(store.get().manualWorktreeOrder).toEqual({ '/r/a': ['/r/a/1'] })
+  })
+})
+
+describe('Workspace options 영속 (LIFE-470 K9)', () => {
+  /** 469 출고 직후 사용자 파일의 키 구성(raw/claude/k9b-user-ui-prefs-keys.md) — 값은 지어낸 것. */
+  const L469_BODY = {
+    sidebarWidth: 300,
+    sidebarCollapsed: false,
+    collapsedRepos: ['/r/b'],
+    collapsedGroups: [],
+    expandedAgentGroups: ['/r/a/wt'],
+    tabOrdinals: [{ tabId: 'wA:t1', groupId: 'wA', ordinal: 1 }],
+    groupLayouts: [{ worktree: '/r/a', tree: { kind: 'leaf' } }],
+    manualRepoOrder: ['/r/b', '/r/a'],
+    manualWorktreeOrder: { '/r/a': ['/r/a/wt', '/r/a'] },
+  }
+  const L469 = { version: 1, ...L469_BODY }
+
+  it('K9ⓑ 470 이전 파일 — 옵션 칸은 기본값(Manual·Project·필터 없음), 469 칸은 그대로', () => {
+    fs.writeFileSync(file, JSON.stringify(L469))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get()).toEqual({ ...L469_BODY, ...L470_DEFAULTS })
+    expect(store.get().sidebarSortBy).toBe('manual')
+    expect(store.get().sidebarGroupBy).toBe('repo')
+    expect(store.get().sidebarProjectOrderBy).toBe('manual')
+  })
+
+  it('K9ⓐ 모든 옵션을 쓰고 → 새 스토어로 읽으면 같은 값(재시작)', () => {
+    fs.writeFileSync(file, JSON.stringify(L469))
+    const first = new UiPrefsStore(dir)
+    first.load()
+    const patch: Partial<UiPrefs> = {
+      sidebarGroupBy: 'none',
+      sidebarSortBy: 'smart',
+      sidebarProjectOrderBy: 'recent',
+      sidebarRepoFilter: ['/r/a'],
+      sidebarHideDefaultBranch: true,
+      sidebarHideDetachedHead: true,
+      manualFlatOrder: ['/r/a/wt', '/r/b'],
+    }
+    first.update(patch)
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject(patch)
+    expect(second.get().manualRepoOrder).toEqual(L469.manualRepoOrder)
+  })
+
+  it('K9ⓒ 옵션 하나를 써도 파일의 기존 칸은 값 그대로 남는다', () => {
+    fs.writeFileSync(file, JSON.stringify(L469))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.update({ sidebarSortBy: 'name' })
+    const written: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    expect(written).toEqual({ ...L469, ...L470_DEFAULTS, sidebarSortBy: 'name' })
+  })
+
+  it('K9ⓓ 손상된 새 칸(타입 틀림·모르는 모드 문자열)은 칸마다 기본값, 다른 칸은 살아남는다', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        ...L469,
+        sidebarGroupBy: 'status',
+        sidebarSortBy: 42,
+        sidebarProjectOrderBy: 'manual',
+        sidebarRepoFilter: ['/r/a', 3, '', '/r/a', null],
+        sidebarHideDefaultBranch: 'yes',
+        sidebarHideDetachedHead: true,
+        manualFlatOrder: 'nope',
+      }),
+    )
+    const store = new UiPrefsStore(dir)
+    store.load()
+    const got = store.get()
+    expect(got.sidebarGroupBy).toBe('repo')
+    expect(got.sidebarSortBy).toBe('manual')
+    expect(got.sidebarProjectOrderBy).toBe('manual')
+    expect(got.sidebarRepoFilter).toEqual(['/r/a'])
+    expect(got.sidebarHideDefaultBranch).toBe(false)
+    expect(got.sidebarHideDetachedHead).toBe(true)
+    expect(got.manualFlatOrder).toEqual([])
+    expect(got.manualRepoOrder).toEqual(L469.manualRepoOrder)
+    expect(got.tabOrdinals).toEqual(L469.tabOrdinals)
+  })
+
+  it('`get()` 의 필터 목록을 고쳐도 스토어 안이 안 바뀐다', () => {
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.update({ sidebarRepoFilter: ['/r/a'] })
+    store.get().sidebarRepoFilter.push('/x')
+    expect(store.get().sidebarRepoFilter).toEqual(['/r/a'])
   })
 })

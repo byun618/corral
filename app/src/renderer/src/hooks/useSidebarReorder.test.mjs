@@ -7,6 +7,8 @@ vi.mock('react', () => import('./fake-react.test-helper.mjs'))
 const { HookHost, fakeDom } = await import('./fake-react.test-helper.mjs')
 const { useSidebarReorder } = await import('./useSidebarReorder.js')
 const { applyRepoMove, applyWorktreeMove } = await import('../manual-order.js')
+/** 화면 키 → 워크트리 행(LIFE-470 R1-02 — applyWorktreeMove 가 그 레포 워크트리 전부를 받는다). '/r' 가 주 체크아웃. */
+const rows = (paths) => paths.map((path) => ({ path, branch: path.slice(1) || 'main', isLinked: path !== '/r', openWorkspaceId: null, workspace: null, gitStatus: null }))
 
 let dom
 let host
@@ -155,8 +157,9 @@ describe('R1-03 — 드래그 중 목록이 바뀌면 지금 DOM 으로 다시 �
     const commit = commits[0]
     expect(commit.keys).toEqual(['/d', '/a', '/b', '/c'])
     const applied = applyWorktreeMove({
-      order: { repos: ['/r'], worktrees: { '/r': ['/d', '/a', '/b', '/c'] } },
+      order: { repos: ['/r'], worktrees: { '/r': ['/d', '/a', '/b', '/c'] }, all: [] },
       repoRoot: '/r',
+      worktrees: rows(commit.keys),
       visiblePaths: commit.keys,
       path: '/c',
       slot: commit.slot,
@@ -216,7 +219,7 @@ describe('R1-05 — 붙은(sticky) 헤더 상반부 = 그 레포 앞', () => {
     // 이 시험은 자동 스크롤 프레임을 돌리지 않는다 — 놓기 직전 스크롤이 움직이지 않은 상태의 판정.
     dom.doc.emit('mouseup', { clientX: 40, clientY: 105 })
     expect(commits).toHaveLength(1)
-    const moved = applyRepoMove({ order: { repos: ['/a', '/b'], worktrees: {} }, visibleRoots: commits[0].keys, root: '/b', slot: commits[0].slot })
+    const moved = applyRepoMove({ order: { repos: ['/a', '/b'], worktrees: {}, all: [] }, visibleRoots: commits[0].keys, root: '/b', slot: commits[0].slot })
     expect(moved?.repos).toEqual(['/b', '/a'])
   })
 })
@@ -272,7 +275,7 @@ describe('K3ⓗ — 드래그 미리 보기 (198 createSidebarDragPreview·build
       expect(dom.shifts()).toEqual({ '/b': 60 })
     }
     dom.doc.emit('mouseup', { clientX: 40, clientY: 160 })
-    const moved = applyWorktreeMove({ order: { repos: ['/r'], worktrees: {} }, repoRoot: '/r', visiblePaths: commits[0].keys, path: '/c', slot: commits[0].slot })
+    const moved = applyWorktreeMove({ order: { repos: ['/r'], worktrees: {}, all: [] }, repoRoot: '/r', worktrees: rows(commits[0].keys), visiblePaths: commits[0].keys, path: '/c', slot: commits[0].slot })
     // 표시 줄 150 = 놓은 뒤 c 의 윗변(main 30 · a 90 · c 150).
     expect(moved?.worktrees['/r']).toEqual(['/r', '/a', '/c', '/b'])
   })
@@ -285,7 +288,7 @@ describe('K3ⓗ — 드래그 미리 보기 (198 createSidebarDragPreview·build
     expect(render().state?.indicatorY).toBe(210)
     dom.doc.emit('mouseup', { clientX: 40, clientY: 255 })
     expect(commits[0].keys).toEqual(['/r', '/a', '/b', '/c'])
-    expect(applyWorktreeMove({ order: { repos: ['/r'], worktrees: {} }, repoRoot: '/r', visiblePaths: commits[0].keys, path: '/r', slot: commits[0].slot })?.worktrees['/r']).toEqual(['/a', '/b', '/c', '/r'])
+    expect(applyWorktreeMove({ order: { repos: ['/r'], worktrees: {}, all: [] }, repoRoot: '/r', worktrees: rows(commits[0].keys), visiblePaths: commits[0].keys, path: '/r', slot: commits[0].slot })?.worktrees['/r']).toEqual(['/a', '/b', '/c', '/r'])
 
     api = mount({ repos: FOUR, listTop: 0, listBottom: 600 })
     api.onCardMouseDown({ event: dom.down(40, 120), repoRoot: '/r', path: '/a' })
@@ -293,7 +296,7 @@ describe('K3ⓗ — 드래그 미리 보기 (198 createSidebarDragPreview·build
     expect(dom.shifts()).toEqual({ '/r': 60 })
     expect(render().state?.indicatorY).toBe(30)
     dom.doc.emit('mouseup', { clientX: 40, clientY: 40 })
-    expect(applyWorktreeMove({ order: { repos: ['/r'], worktrees: {} }, repoRoot: '/r', visiblePaths: commits[0].keys, path: '/a', slot: commits[0].slot })?.worktrees['/r']).toEqual(['/a', '/r', '/b', '/c'])
+    expect(applyWorktreeMove({ order: { repos: ['/r'], worktrees: {}, all: [] }, repoRoot: '/r', worktrees: rows(commits[0].keys), visiblePaths: commits[0].keys, path: '/a', slot: commits[0].slot })?.worktrees['/r']).toEqual(['/a', '/r', '/b', '/c'])
   })
 
   it('레포 헤더 = 묶음 사본(헤더 기준 잡은 점) + 다른 묶음 밀림', () => {

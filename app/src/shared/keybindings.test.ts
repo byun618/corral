@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, matchBinding, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
-  it('keeps the nine actions and adds a rebindable palette without collisions', () => {
-    expect(ACTIONS).toHaveLength(10)
+  it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
+    expect(ACTIONS).toHaveLength(11)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -48,5 +48,38 @@ describe('shortcut catalog and compatibility', () => {
     expect(overrides).toEqual({ 'sidebar.toggle': ['Mod+Shift+J'] })
     expect(matchBinding('Mod+B', overrides)).toBeNull()
     expect(matchBinding('Mod+Shift+J', overrides)?.id).toBe('sidebar.toggle')
+  })
+})
+describe('LIFE-470 K1 — ⌘J search chord', () => {
+  it('opens through its own action by default and leaves ⌘K on the palette', () => {
+    expect(matchBinding('Mod+J', {})).toEqual({ id: 'palette.search', variant: 0 })
+    expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
+  })
+  it('yields to an existing override that already uses ⌘J — the user file is not discarded', () => {
+    // 469 출고 시점 사용자가 ⌘J 를 다른 액션에 걸어 둔 파일 모양.
+    const legacy = { 'sidebar.toggle': ['Mod+J'] }
+    expect(validateOverrides(legacy, true)).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+    expect(validateOverrides(legacy)).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+    expect(matchBinding('Mod+J', legacy)?.id).toBe('sidebar.toggle')
+    expect(bindingsFor('palette.search', legacy)).toEqual([])
+    expect(bindingConflict(legacy)).toBeNull()
+  })
+  it('can be reassigned and reset to the default', () => {
+    const moved = validateOverrides({ 'palette.search': ['Mod+Shift+J'] })
+    expect(matchBinding('Mod+Shift+J', moved)).toEqual({ id: 'palette.search', variant: 0 })
+    expect(matchBinding('Mod+J', moved)).toBeNull()
+    const { 'palette.search': _dropped, ...reset } = moved
+    expect(_dropped).toEqual(['Mod+Shift+J'])
+    expect(matchBinding('Mod+J', reset)).toEqual({ id: 'palette.search', variant: 0 })
+  })
+  it('explicitly re-saving the yielded default against a claiming override is a conflict, not a silent no-op', () => {
+    expect(() => validateOverrides({ 'sidebar.toggle': ['Mod+J'], 'palette.search': ['Mod+J'] })).toThrow(/충돌/)
+    // 읽기(손상 허용)에서는 카탈로그 뒤쪽(나중 액션)을 버린다 — 기존 재정의가 남는다.
+    expect(validateOverrides({ 'sidebar.toggle': ['Mod+J'], 'palette.search': ['Mod+J'] }, true)).toEqual({ 'sidebar.toggle': ['Mod+J'] })
+  })
+  it('a user who rebinds the palette to ⌘J keeps it; the search chord steps aside', () => {
+    const overrides = validateOverrides({ 'palette.open': ['Mod+J'] })
+    expect(matchBinding('Mod+J', overrides)?.id).toBe('palette.open')
+    expect(bindingsFor('palette.search', overrides)).toEqual([])
   })
 })

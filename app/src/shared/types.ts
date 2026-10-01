@@ -1,4 +1,5 @@
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
+import type { SidebarViewPrefs } from './sidebar-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -617,7 +618,12 @@ export type UiPrefs = {
   manualRepoOrder: string[]
   /** 레포 root → 연결 워크트리 path 수동 순서(주 체크아웃 제외, 맨 위 고정) (LIFE-469). 없는 레포는 기본 순서. */
   manualWorktreeOrder: Record<string, string[]>
-}
+  /**
+   * Group by None 의 수동 순서 — 워크트리 path, 위에서 아래 (LIFE-470). None 에서 끌어 놓을 때만 적는다. 비면 레포 순서 →
+   * 레포 안 순서를 이어 붙인 순서로 읽는다(`manual-order.ts` `orderAll`).
+   */
+  manualFlatOrder: string[]
+} & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
 

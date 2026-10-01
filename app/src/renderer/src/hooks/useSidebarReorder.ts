@@ -31,7 +31,8 @@ import {
   type RepoSlotRect,
 } from '../sidebar-reorder.js'
 
-export type ReorderSource = { kind: 'repo'; root: string } | { kind: 'card'; repoRoot: string; path: string }
+/** `all-card` = Group by None 의 단일 「All」 구획 카드 (LIFE-470) — 레포가 섞여 있어 레포 묶음이 아니라 그 구획 안에서 잰다. */
+export type ReorderSource = { kind: 'repo'; root: string } | { kind: 'card'; repoRoot: string; path: string } | { kind: 'all-card'; path: string }
 
 export type ReorderState = { source: ReorderSource; indicatorY: number | null }
 
@@ -90,9 +91,8 @@ function measureRepos(list: HTMLElement): Measured<RepoSlotRect> {
   return { keys, rects, elements }
 }
 
-function measureCards(input: { list: HTMLElement; repoRoot: string }): (Measured<ItemRect> & { groupRange: ItemRect }) | null {
-  const { list, repoRoot } = input
-  const group = repoGroups(list).find((element) => element.getAttribute('data-repo') === repoRoot)
+function measureCards(input: { list: HTMLElement; group: HTMLElement | undefined }): (Measured<ItemRect> & { groupRange: ItemRect }) | null {
+  const { list, group } = input
   if (group === undefined) return null
   const keys: string[] = []
   const rects: ItemRect[] = []
@@ -112,6 +112,7 @@ function sourceKey(source: ReorderSource): string {
     case 'repo':
       return source.root
     case 'card':
+    case 'all-card':
       return source.path
   }
 }
@@ -131,8 +132,13 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
       const repos = measureRepos(list)
       return { ...repos, slot: outside ? null : resolveRepoDropSlot({ rects: repos.rects, y }) }
     }
-    case 'card': {
-      const cards = measureCards({ list, repoRoot: source.repoRoot })
+    case 'card':
+    case 'all-card': {
+      const group =
+        source.kind === 'card'
+          ? repoGroups(list).find((element) => element.getAttribute('data-repo') === source.repoRoot)
+          : (list.querySelector<HTMLElement>(':scope > [data-reorder-all]') ?? undefined)
+      const cards = measureCards({ list, group })
       if (cards === null) return { slot: null, keys: [], rects: [], elements: [] }
       return { ...cards, slot: outside ? null : resolveCardDropSlot({ rects: cards.rects, groupRange: cards.groupRange, y }) }
     }
@@ -203,6 +209,8 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
   onRepoMouseDown: (input: { event: React.MouseEvent; root: string }) => void
   /** 워크트리 카드의 `onMouseDown` — 주 체크아웃 카드에도 붙는다(게이트 ① 사용자 수정 1, K2ⓑ 폐지). */
   onCardMouseDown: (input: { event: React.MouseEvent; repoRoot: string; path: string }) => void
+  /** Group by None 구획 카드의 `onMouseDown` (LIFE-470). */
+  onAllCardMouseDown: (input: { event: React.MouseEvent; path: string }) => void
 } {
   const [state, setState] = useState<ReorderState | null>(null)
   const inputRef = useRef(input)
@@ -224,6 +232,7 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
         event.preventDefault()
         break
       case 'card':
+      case 'all-card':
         break
     }
     const key = sourceKey(source)
@@ -391,7 +400,12 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
     [arm],
   )
 
-  return { state, onRepoMouseDown, onCardMouseDown }
+  const onAllCardMouseDown = useCallback(
+    (handler: { event: React.MouseEvent; path: string }) => arm({ event: handler.event, source: { kind: 'all-card', path: handler.path } }),
+    [arm],
+  )
+
+  return { state, onRepoMouseDown, onCardMouseDown, onAllCardMouseDown }
 }
 
 /**

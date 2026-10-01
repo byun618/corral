@@ -138,34 +138,119 @@ button, input { font: inherit; letter-spacing: inherit; }
 .brandbar-name { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
 .brandbar-hint { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); letter-spacing: .04em; }
 
-/* --- SidebarSearch (§2 — 시각 스펙만) ------------------------------------------------------- */
+/* --- Search 줄 (LIFE-470 D28a) ------------------------------------------------------------------ */
 
+/* 198 `SidebarNav.tsx:88-121` — 묶음 `flex-col gap-0.5 px-2 pt-2 pb-1`, 버튼 `px-2 py-1.5 rounded-md bg-worktree-sidebar-foreground/5
+   text-[13px] font-medium`, `Search` size-4 30% 불투명, ⌘J 키캡 9px 는 hover·focus 때만. 198 의 나머지 내비 4종은 D33 의도적. */
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 8px 8px 4px; flex: 0 0 auto; }
 .sidebar-search {
-  display: flex; align-items: center; gap: 7px;
-  height: 26px; margin: 0 10px 8px; padding: 0 8px;
-  background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--radius-sm);
-  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; border: 0 solid; border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  font-family: var(--font-ui); font-size: 13px; font-weight: 500; line-height: 19.5px; letter-spacing: -0.025em;
+  color: color-mix(in srgb, var(--fg) 60%, transparent); text-align: left; cursor: pointer;
 }
-.sidebar-search-glyph { color: var(--fg-faint); font-size: 13px; }
-.sidebar-search-input { flex: 1; min-width: 0; background: transparent; border: 0 solid; outline: none; color: var(--fg); font-size: 11.5px; }
-.sidebar-search-input::placeholder { color: var(--fg-faint); }
+.sidebar-search:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.sidebar-search:focus-visible { outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.sidebar-search-glyph { width: 16px; height: 16px; flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 30%, transparent); }
+.sidebar-search-label { flex: 1; min-width: 0; }
+.sidebar-search-keys {
+  display: none; font-family: var(--font-ui); font-size: 9px; line-height: 1; color: color-mix(in srgb, var(--fg) 55%, transparent);
+  padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 4px; background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.sidebar-search:hover .sidebar-search-keys, .sidebar-search:focus-visible .sidebar-search-keys { display: inline-flex; }
 
-/* --- ReposSectionHeader (§2) ----------------------------------------------------------------- */
+/* --- 헤더 줄 (LIFE-468 D20 · LIFE-470 D20') --------------------------------------------------- */
 
-/* LIFE-468 D20 — Orca `SidebarHeader` (`mt-2 flex h-8 items-center gap-1.5 px-2`, 제목 `pl-2 pr-0.5 text-xs font-semibold
-   text-muted-foreground/80`). 대문자·자간 강조는 198 에 없다. 문구 "Repos" 는 corral 용어(의도적). */
+/* Orca `SidebarHeader` (`mt-2 flex h-8 items-center gap-1.5 px-2`, 제목 `pl-2 pr-0.5 text-xs font-semibold
+   text-muted-foreground/80`). 제목 문구는 그룹 방식을 따른다(프로젝트/워크스페이스 — 198 Projects/Workspaces). 오른쪽 `gap-1`. */
 .repos-header { display: flex; align-items: center; gap: 6px; height: 32px; margin-top: 8px; padding: 0 8px; flex: 0 0 auto; }
 .repos-header-label {
   min-width: 0; padding: 0 2px 0 8px; font-size: 12px; font-weight: 600; line-height: 16px;
   color: color-mix(in srgb, var(--fg-muted) 80%, transparent);
 }
 .repos-header-spacer { flex: 1; }
+.repos-header-actions { display: flex; align-items: center; gap: 4px; }
+/* 198 `Button variant="ghost" size="icon-xs"` — 24px 정사각, 아이콘 size-3.5. */
 .repos-header-glyph {
-  background: none; border: 0 solid; padding: 0; margin: 0;
-  font-size: 15px; color: var(--fg-muted); cursor: default;
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; background: none; border: 0 solid; border-radius: 6px; padding: 0; margin: 0;
+  color: var(--fg-muted); cursor: pointer;
 }
-.repos-header-add { font-family: var(--font-mono); font-size: 16px; cursor: pointer; }
-.repos-header-add:hover, .repos-header-glyph:hover { color: var(--fg); }
+.repos-header-glyph:hover, .repos-header-glyph.is-open { color: var(--fg); background: color-mix(in srgb, var(--bg-accent) 70%, transparent); }
+.repos-header-glyph:focus-visible { outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.repos-header-icon, .options-trigger-icon { width: 14px; height: 14px; }
+/* 198 `:61-70` — 오른쪽 위 `-top-0.5 -right-0.5 h-3 min-w-3 rounded-full bg-primary px-0.5 text-[9px]`. */
+.options-trigger-badge {
+  position: absolute; top: -2px; right: -2px; display: flex; align-items: center; justify-content: center;
+  height: 12px; min-width: 12px; padding: 0 2px; border-radius: 999px;
+  background: var(--fg); color: var(--bg-sidebar); font-size: 9px; font-weight: 500; line-height: 1;
+}
+
+/* --- Workspace options 메뉴 (LIFE-470 D29a) ----------------------------------------------------- */
+
+/* 198 `DropdownMenuContent className="w-72 pb-2"` — 288px. 서브메뉴 `w-44`(176px), Projects 패널 `w-64`(256px). */
+.options-menu {
+  position: fixed; z-index: 60; width: 288px; padding: 4px 4px 8px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-menu); color: var(--fg-menu); font-size: 13px;
+  /* 창보다 길면(레포가 많은 Projects·낮은 창) 화면 안 높이로 자르고 안에서 스크롤한다(K2ⓒ · R1-06). 포커스 항목은 focus() 가 스크롤해 보인다. */
+  max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain;
+}
+.options-menu:focus { outline: none; }
+.options-submenu { width: 176px; padding: 4px; }
+.options-submenu.is-wide { width: 256px; }
+.options-menu-title { padding: 6px 8px 0; font-size: 14px; font-weight: 600; color: var(--fg); }
+.options-menu-section-label { padding: 6px 8px 4px; font-size: 11px; font-weight: 600; color: var(--fg-muted); }
+.options-menu-sep { height: 1px; margin: 4px -4px; background: var(--line-strong); }
+.options-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 28px; padding: 0 8px;
+  background: none; border: 0 solid; border-radius: 4px; color: var(--fg-menu); font-family: var(--font-ui); font-size: 13px;
+  text-align: left; cursor: default;
+}
+.options-menu-item:hover, .options-menu-item:focus, .options-menu-subtrigger.is-open { background: var(--bg-menu-hover); color: var(--fg); outline: none; }
+.options-menu-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.options-menu-value { flex: 0 0 auto; font-size: 11px; font-weight: 500; color: var(--fg-muted); max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.options-menu-chevron { width: 14px; height: 14px; flex: 0 0 auto; color: var(--fg-muted); }
+.options-menu-icon { width: 14px; height: 14px; flex: 0 0 auto; color: var(--fg-muted); }
+/* Group by 토글 — 198 `SidebarGroupByToggle` (`h-6 w-full`, 항목 `text-[10px]`, 켠 항목 `bg-foreground/10 font-semibold`). */
+.options-group-toggle { display: flex; margin: 2px 8px 4px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+.options-group-toggle-item {
+  flex: 1 1 0; height: 24px; padding: 0 4px; background: none; border: 0 solid; border-left: 1px solid var(--line-strong);
+  color: var(--fg-muted); font-family: var(--font-ui); font-size: 10px; cursor: default;
+}
+.options-group-toggle-item:first-child { border-left: 0 solid; }
+.options-group-toggle-item.is-on { background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg); font-weight: 600; }
+.options-group-toggle-item:hover, .options-group-toggle-item:focus { color: var(--fg); outline: none; background: var(--bg-menu-hover); }
+.options-radio-mark { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: 0 0 auto; }
+.options-radio-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+.options-check-box { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 3px; }
+.options-check-icon { width: 12px; height: 12px; }
+.options-submenu-head { position: sticky; top: -4px; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; background: var(--bg-raised); font-size: 11px; font-weight: 600; color: var(--fg-muted); }
+.options-submenu-clear { background: none; border: 0 solid; padding: 2px 4px; border-radius: 4px; color: var(--fg-muted); font-size: 11px; cursor: pointer; }
+.options-submenu-clear:hover:not(:disabled), .options-submenu-clear:focus { color: var(--fg); background: var(--bg-menu-hover); outline: none; }
+.options-submenu-clear:disabled { opacity: .4; cursor: default; }
+/* Filters 스위치 행 — 198 `FilterToggleRow` (`py-1.5 pl-2 pr-2 text-[12px] font-medium`, 오른쪽 compact 스위치). */
+.options-switch-row { justify-content: space-between; height: auto; padding: 6px 8px; font-size: 12px; font-weight: 500; color: var(--fg); }
+.options-switch-label { display: inline-flex; align-items: center; gap: 8px; }
+.options-switch { position: relative; width: 24px; height: 14px; flex: 0 0 auto; border-radius: 999px; background: var(--line-strong); transition: background .12s; }
+.options-switch.is-on { background: var(--fg); }
+.options-switch-thumb { position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 999px; background: var(--bg-raised); transition: transform .12s; }
+.options-switch.is-on .options-switch-thumb { transform: translateX(10px); }
+
+/* --- Group by None 「전체」 구획 (LIFE-470 D29d) — 198 `SectionHeader` None 헤더: `List` 아이콘 + "All" + 개수, 셰브론 없음. */
+.all-group-head { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 10px; font-size: 13px; font-weight: 600; color: var(--fg); }
+.all-group-icon { width: 16px; height: 16px; color: var(--fg-muted); flex: 0 0 auto; }
+.all-group-label { flex: 0 1 auto; }
+.all-group-count { font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+/* 카드 둘째 줄 앞의 레포 이름(None 구획) — 같은 브랜치 이름 카드를 가른다. */
+.worktree-repo-label { flex: 0 0 auto; max-width: 45%; font-size: 11px; line-height: 1; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 필터로 빈 목록 — 198 `EmptyState.tsx` 「Clear Filters」 (`variant="secondary" size="xs" border text-[11px]`). */
+.sidebar-empty-clear {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px;
+  background: var(--bg-accent); border: 1px solid var(--line-strong); border-radius: 6px; color: var(--fg); font-size: 11px; cursor: pointer;
+}
+.sidebar-empty-clear-icon { width: 14px; height: 14px; }
 
 /* --- 레포 목록 / RepoRow (§2) ------------------------------------------------------------------ */
 

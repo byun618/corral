@@ -3,10 +3,13 @@
 // 자유롭게 구조화했다.
 import { useRef, type RefObject } from 'react'
 import type { AgentKind, AppState, WorktreeRow } from '../../../shared/types.js'
+import type { SidebarView } from '../../../shared/sidebar-view.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
+import { useSettledSections } from '../hooks/useSettledSections.js'
 import { useSidebarReorder, type ReorderCommit } from '../hooks/useSidebarReorder.js'
-import { orderRepos, orderWorktrees, type ManualOrder } from '../manual-order.js'
+import type { LayoutGroup, ManualOrder } from '../manual-order.js'
+import { activeFilterCount, buildSidebarSections, sectionLayout, visibleCardCount, type SortItem } from '../sidebar-sections.js'
 import { pickPane } from '../pane-utils.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
 import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
@@ -15,6 +18,7 @@ import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarBrandBar } from './SidebarBrandBar.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
+import { CircleXIcon, ListIcon } from './SidebarIcons.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
 
 export function Sidebar({
@@ -30,6 +34,10 @@ export function Sidebar({
   actions,
   manualOrder,
   onReorder,
+  view,
+  onChangeView,
+  onOpenSearch,
+  searchShortcut,
   isRepoCollapsed,
   toggleRepoCollapsed,
   isGroupExpanded,
@@ -51,7 +59,15 @@ export function Sidebar({
   actions: LifecycleActions
   /** 레포·워크트리 수동 순서 (LIFE-469) — 표시 순서는 여기서 나온다. */
   manualOrder: ManualOrder
-  onReorder: (commit: ReorderCommit) => void
+  /** `layout` = 놓는 순간 화면에 보이는 그룹별 카드 배치(필터 뒤) — 비-manual → Manual 전환 드롭에서 확정에 쓴다(LIFE-470 R2-01). */
+  onReorder: (input: { commit: ReorderCommit; layout: LayoutGroup[] }) => void
+  /** Workspace options 값 (LIFE-470) — 그룹·정렬·필터. */
+  view: SidebarView
+  onChangeView: (patch: Partial<SidebarView>) => void
+  /** Search 줄 → 391 팔레트 (LIFE-470 D28a). */
+  onOpenSearch: () => void
+  /** Search 줄 hover 키캡 — ⌘J 의 지금 조합(비켜 서 없으면 null). */
+  searchShortcut: string | null
   isRepoCollapsed: (root: string) => boolean
   toggleRepoCollapsed: (root: string) => void
   /** 에이전트 묶음 알약이 펼쳐져 있나 (LIFE-467 — 기본 접힘, 펼친 것만 영속). */
@@ -107,80 +123,139 @@ export function Sidebar({
     return null
   }
   const listRef = useRef<HTMLDivElement | null>(null)
-  const reorder = useSidebarReorder({ listRef, onCommit: onReorder })
+  // 놓는 때 부른다 — 그 렌더의 `sections`(아래에서 계산, 잡아 둔 배치 포함)가 화면 그대로다.
+  const reorder = useSidebarReorder({ listRef, onCommit: (commit) => onReorder({ commit, layout: sectionLayout(sections) }) })
   const dragSource = reorder.state?.source ?? null
   const livePaneIds = livePaneIdsOf(state.repos)
   const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
+  const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now }), view, order: manualOrder })
+  const filtersOn = activeFilterCount({ view, repos: state.repos }) > 0
+  /** 레포 헤더 드래그 게이트 — Project 그룹 + Project order Manual 일 때만(198 `use-header-drag.ts:81-82`, K6ⓒ). 그 밖은 클릭(접기)만. */
+  const repoDragEnabled = view.groupBy === 'repo' && view.projectOrderBy === 'manual'
+
+  const renderCard = (input: { item: SortItem; onCardMouseDown: (event: React.MouseEvent) => void; dragging: boolean; repoLabel: string | null }): React.JSX.Element => {
+    const { worktree, repoRoot } = input.item
+    const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
+    return (
+      <WorktreeBlock
+        key={worktree.path}
+        worktree={worktree}
+        repoLabel={input.repoLabel}
+        reordering={reorder.state !== null}
+        dragging={input.dragging}
+        // 주 체크아웃도 옮긴다(게이트 ① 사용자 수정 1 — 198 `section-order.ts:66-74` 고정과 의도적 차이).
+        onCardMouseDown={input.onCardMouseDown}
+        integrations={state.integrations}
+        home={state.home}
+        now={now}
+        retained={retainedOf.get(worktree.path) ?? []}
+        lineage={state.orchestrationLineage}
+        livePaneIds={livePaneIds}
+        selected={selected}
+        selectedPane={selectedPane}
+        groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
+        groupExpanded={isGroupExpanded(worktree.path)}
+        onToggleGroup={() => toggleGroupExpanded(worktree.path)}
+        onSelectBlock={() => {
+          const workspace = worktree.workspace
+          if (workspace === null) {
+            actions.openWorktree(repoRoot, worktree)
+            return
+          }
+          actions.activateWorkspace(workspace.workspaceId)
+          selectFirstSession(worktree)
+        }}
+        onSelectSession={onSelectSession}
+        onCloseSession={closePane}
+        onCloseWorktree={() => {
+          if (worktree.openWorkspaceId !== null) actions.closeWorktree(worktree.openWorkspaceId)
+        }}
+        onCreateShell={() => {
+          if (worktree.openWorkspaceId !== null) actions.createRow(worktree.openWorkspaceId, 'shell')
+        }}
+        onCreateAgent={(kind: AgentKind) => {
+          if (worktree.openWorkspaceId !== null) actions.createRow(worktree.openWorkspaceId, kind)
+        }}
+      />
+    )
+  }
 
   return (
     <div className={`sidebar ${reorder.state !== null ? 'is-reordering' : ''}`} data-sidebar ref={sidebarRef} style={{ width }}>
       <SidebarBrandBar onToggle={onToggleSidebar} shortcutHint={shortcutHint} />
-      <SidebarSearch />
-      <ReposSectionHeader onAddRepo={onAddRepo} />
+      <SidebarSearch shortcut={searchShortcut} onOpen={onOpenSearch} />
+      <ReposSectionHeader view={view} repos={state.repos} onChangeView={onChangeView} onAddRepo={onAddRepo} />
       <div className="repo-list" data-repo-list ref={listRef}>
         {state.repos.length === 0 ? (
           <p className="sidebar-empty" data-empty>
             등록된 레포가 없다. 위의 「+」 로 폴더를 고른다.
           </p>
-        ) : (
-          orderRepos({ repos: state.repos, stored: manualOrder.repos }).map((repo) => (
-            <RepoRow
-              key={repo.root}
-              repo={repo}
-              reordering={reorder.state !== null}
-              dragging={dragSource?.kind === 'repo' && dragSource.root === repo.root}
-              onHeadMouseDown={(event) => reorder.onRepoMouseDown({ event, root: repo.root })}
-              collapsed={isRepoCollapsed(repo.root)}
-              onToggleCollapse={() => toggleRepoCollapsed(repo.root)}
-              onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
-              onRemove={() => onRemoveRepo(repo.root)}
+        ) : filtersOn && visibleCardCount(sections) === 0 ? (
+          // 198 `EmptyState.tsx` — 필터로 목록이 비면 문구 + 「필터 지우기」(K2ⓕ).
+          <div className="sidebar-empty" data-empty-filtered="">
+            <span>워크스페이스가 없다</span>
+            <button
+              type="button"
+              className="sidebar-empty-clear"
+              data-clear-filters=""
+              onClick={() => onChangeView({ repoFilter: [], hideDefaultBranch: false, hideDetachedHead: false })}
             >
-              {orderWorktrees({ worktrees: repo.worktrees, stored: manualOrder.worktrees[repo.root] }).map((worktree) => {
-                const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
+              <CircleXIcon className="sidebar-empty-clear-icon" />
+              필터 지우기
+            </button>
+          </div>
+        ) : (
+          sections.map((section) => {
+            switch (section.kind) {
+              case 'all':
                 return (
-                  <WorktreeBlock
-                    key={worktree.path}
-                    worktree={worktree}
-                    reordering={reorder.state !== null}
-                    dragging={dragSource?.kind === 'card' && dragSource.path === worktree.path}
-                    // 주 체크아웃도 옮긴다(게이트 ① 사용자 수정 1 — 198 `section-order.ts:66-74` 고정과 의도적 차이).
-                    onCardMouseDown={(event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: worktree.path })}
-                    integrations={state.integrations}
-                    home={state.home}
-                    now={now}
-                    retained={retainedOf.get(worktree.path) ?? []}
-                    lineage={state.orchestrationLineage}
-                    livePaneIds={livePaneIds}
-                    selected={selected}
-                    selectedPane={selectedPane}
-                    groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
-                    groupExpanded={isGroupExpanded(worktree.path)}
-                    onToggleGroup={() => toggleGroupExpanded(worktree.path)}
-                    onSelectBlock={() => {
-                      const workspace = worktree.workspace
-                      if (workspace === null) {
-                        actions.openWorktree(repo.root, worktree)
-                        return
-                      }
-                      actions.activateWorkspace(workspace.workspaceId)
-                      selectFirstSession(worktree)
-                    }}
-                    onSelectSession={onSelectSession}
-                    onCloseSession={closePane}
-                    onCloseWorktree={() => {
-                      if (worktree.openWorkspaceId !== null) actions.closeWorktree(worktree.openWorkspaceId)
-                    }}
-                    onCreateShell={() => {
-                      if (worktree.openWorkspaceId !== null) actions.createRow(worktree.openWorkspaceId, 'shell')
-                    }}
-                    onCreateAgent={(kind: AgentKind) => {
-                      if (worktree.openWorkspaceId !== null) actions.createRow(worktree.openWorkspaceId, kind)
-                    }}
-                  />
+                  <div key="*all" className="repo-row-group all-group" data-reorder-all="">
+                    <div className="all-group-head" data-all-group-head="">
+                      <ListIcon className="all-group-icon" />
+                      <span className="all-group-label">전체</span>
+                      <span className="all-group-count" data-all-group-count="">
+                        {section.items.length}
+                      </span>
+                    </div>
+                    {section.items.map((item) =>
+                      renderCard({
+                        item,
+                        repoLabel: item.repoName,
+                        dragging: dragSource?.kind === 'all-card' && dragSource.path === item.worktree.path,
+                        onCardMouseDown: (event) => reorder.onAllCardMouseDown({ event, path: item.worktree.path }),
+                      }),
+                    )}
+                  </div>
                 )
-              })}
-            </RepoRow>
-          ))
+              case 'repo': {
+                const repo = section.repo
+                return (
+                  <RepoRow
+                    key={repo.root}
+                    repo={repo}
+                    reordering={reorder.state !== null}
+                    dragging={dragSource?.kind === 'repo' && dragSource.root === repo.root}
+                    onHeadMouseDown={(event) => {
+                      if (repoDragEnabled) reorder.onRepoMouseDown({ event, root: repo.root })
+                    }}
+                    collapsed={isRepoCollapsed(repo.root)}
+                    onToggleCollapse={() => toggleRepoCollapsed(repo.root)}
+                    onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
+                    onRemove={() => onRemoveRepo(repo.root)}
+                  >
+                    {section.items.map((item) =>
+                      renderCard({
+                        item,
+                        repoLabel: null,
+                        dragging: dragSource?.kind === 'card' && dragSource.path === item.worktree.path,
+                        onCardMouseDown: (event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: item.worktree.path }),
+                      }),
+                    )}
+                  </RepoRow>
+                )
+              }
+            }
+          })
         )}
         {reorder.state?.indicatorY != null ? <ReorderDropIndicator y={reorder.state.indicatorY} /> : null}
       </div>

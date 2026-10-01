@@ -10,29 +10,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RepoRow, UiPrefs } from '../../../shared/types.js'
 import {
+  applyAllMove,
   applyRepoMove,
   applyWorktreeMove,
   EMPTY_MANUAL_ORDER,
   forgetRepo,
+  materializeLayout,
   readKeyList,
   readWorktreeOrder,
   reconcileManualOrder,
+  type LayoutGroup,
   type ManualOrder,
 } from '../manual-order.js'
 import type { ReorderCommit } from './useSidebarReorder.js'
 
 function persist(order: ManualOrder): void {
-  window.corral.setUiPrefs({ manualRepoOrder: order.repos, manualWorktreeOrder: order.worktrees })
+  window.corral.setUiPrefs({ manualRepoOrder: order.repos, manualWorktreeOrder: order.worktrees, manualFlatOrder: order.all })
 }
 
-function applyCommit(input: { order: ManualOrder; commit: ReorderCommit }): ManualOrder | null {
-  const { order, commit } = input
+function applyCommit(input: { order: ManualOrder; commit: ReorderCommit; repos: readonly RepoRow[] }): ManualOrder | null {
+  const { order, commit, repos } = input
   const source = commit.source
   switch (source.kind) {
     case 'repo':
       return applyRepoMove({ order, visibleRoots: commit.keys, root: source.root, slot: commit.slot })
     case 'card':
-      return applyWorktreeMove({ order, repoRoot: source.repoRoot, visiblePaths: commit.keys, path: source.path, slot: commit.slot })
+      return applyWorktreeMove({
+        order,
+        repoRoot: source.repoRoot,
+        worktrees: repos.find((repo) => repo.root === source.repoRoot)?.worktrees ?? [],
+        visiblePaths: commit.keys,
+        path: source.path,
+        slot: commit.slot,
+      })
+    case 'all-card':
+      return applyAllMove({ order, repos, visiblePaths: commit.keys, path: source.path, slot: commit.slot })
   }
 }
 
@@ -42,13 +54,22 @@ export type RegistrySnapshot = { roots: readonly string[]; generation: number }
 export function useManualOrder(input: { repos: readonly RepoRow[]; registry: RegistrySnapshot }): {
   order: ManualOrder
   /** 첫 `getUiPrefs` 결과(읽기 실패면 `null`)로 한 번 싣는다. 싣기 전에는 정규화·저장을 하지 않는다. */
-  hydrate: (prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder'> | null) => void
-  commit: (commit: ReorderCommit) => void
+  hydrate: (prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder' | 'manualFlatOrder'> | null) => void
+  /**
+   * 순서가 실제로 바뀌었으면 `true` (LIFE-470 — 비-manual 모드에서 끌어 순서가 바뀌면 Manual 로 바꾸는 근거).
+   * `layout` 은 비-manual → Manual 전환 드롭일 때만 — 보이는 전 그룹의 지금 배치를 먼저 확정한다(R2-01). 이미 Manual 이면 `null`.
+   */
+  commit: (input: { commit: ReorderCommit; layout: readonly LayoutGroup[] | null }) => boolean
   /** GUI 제거 성공 뒤 — `registryGeneration` 은 제거 응답의 세대(없으면 `null`). */
   forget: (removed: { root: string; registryGeneration: number | null }) => void
 } {
   const { repos, registry } = input
   const [order, setOrder] = useState<ManualOrder | null>(null)
+  /** 커밋이 같은 이벤트 안에서 결과(바뀌었나)를 돌려줘야 해서 최신 값을 ref 로도 든다. */
+  const orderRef = useRef<ManualOrder | null>(null)
+  orderRef.current = order
+  const reposRef = useRef(repos)
+  reposRef.current = repos
   /**
    * GUI 로 제거했지만 목록에는 아직 남은 레포 root → 제거가 반영된 레지스트리 세대(R1-04·R2-01). 제거 IPC 는 트리
    * 재조립(main `scheduleTree`, 80ms 뒤)보다 먼저 답하므로, 그 사이 정규화가 옛 목록을 보고 키를 다시 끼우지 않게 뺀다.
@@ -59,11 +80,15 @@ export function useManualOrder(input: { repos: readonly RepoRow[]; registry: Reg
    */
   const removingRef = useRef(new Map<string, number | null>())
 
-  const hydrate = useCallback((prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder'> | null) => {
+  const hydrate = useCallback((prefs: Pick<UiPrefs, 'manualRepoOrder' | 'manualWorktreeOrder' | 'manualFlatOrder'> | null) => {
     setOrder(
       prefs === null
         ? EMPTY_MANUAL_ORDER
-        : { repos: readKeyList(prefs.manualRepoOrder), worktrees: readWorktreeOrder(prefs.manualWorktreeOrder) },
+        : {
+            repos: readKeyList(prefs.manualRepoOrder),
+            worktrees: readWorktreeOrder(prefs.manualWorktreeOrder),
+            all: readKeyList(prefs.manualFlatOrder),
+          },
     )
   }, [])
 
@@ -83,14 +108,16 @@ export function useManualOrder(input: { repos: readonly RepoRow[]; registry: Reg
     persist(reconciled.order)
   }, [order, repos, registry.roots, registry.generation])
 
-  const commit = useCallback((input: ReorderCommit) => {
-    setOrder((prev) => {
-      const base = prev ?? EMPTY_MANUAL_ORDER
-      const next = applyCommit({ order: base, commit: input })
-      if (next === null) return prev
-      persist(next)
-      return next
-    })
+  const commit = useCallback((input: { commit: ReorderCommit; layout: readonly LayoutGroup[] | null }): boolean => {
+    const current = orderRef.current ?? EMPTY_MANUAL_ORDER
+    const base = input.layout === null ? current : materializeLayout({ order: current, repos: reposRef.current, layout: input.layout })
+    // 제자리 드롭이면 확정한 배치도 버린다 — 순서가 안 바뀌었으니 Manual 로도 안 바뀐다.
+    const next = applyCommit({ order: base, commit: input.commit, repos: reposRef.current })
+    if (next === null) return false
+    orderRef.current = next
+    setOrder(next)
+    persist(next)
+    return true
   }, [])
 
   const forget = useCallback((removed: { root: string; registryGeneration: number | null }) => {

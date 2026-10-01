@@ -10,6 +10,8 @@ export const ACTIONS = [
   { id: 'terminal.zoom', title: 'pane 줌 전환', defaultBinding: ['Mod+Shift+Z', 'Mod+Alt+Shift+Z'], bindingVariants: [0, 0], variants: ['전환'] },
   { id: 'terminal.close', title: 'pane / 탭 닫기', defaultBinding: ['Mod+W'], bindingVariants: [0], variants: ['닫기'] },
   { id: 'sidebar.toggle', title: '사이드바 접기 / 펼치기', defaultBinding: ['Mod+B'], bindingVariants: [0], variants: ['전환'] },
+  // LIFE-470 D28b — 198 `worktree.palette`(⌘J). 같은 391 팔레트를 연다(⌘K 는 그대로 — 게이트 ⓪ Q3).
+  { id: 'palette.search', title: '검색 (팔레트)', defaultBinding: ['Mod+J'], bindingVariants: [0], variants: ['열기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 export type Keybindings = Partial<Record<ActionId, string[]>>
@@ -32,8 +34,27 @@ export function bindingFromEvent(event: KeyInput): string | null {
   if (event.code && /^(Key[A-Z]|Digit[0-9])$/.test(event.code)) key = event.code.replace(/^(Key|Digit)/, '')
   return normalizeBinding([...event.metaKey ? ['Mod'] : [], ...event.ctrlKey ? ['Control'] : [], ...event.altKey ? ['Alt'] : [], ...event.shiftKey ? ['Shift'] : [], key].join('+'))
 }
+/**
+ * 나중에 기본 바인딩을 얻은 액션 — **기존 재정의가 그 조합을 이미 쓰면 기본값이 비켜 선다**(LIFE-470 K1ⓑ). ⌘J 를 다른 액션에
+ * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
+ * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
+ */
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search']
+
+function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
+  const claimed = new Set<string>()
+  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && Array.isArray(bindings)) for (const binding of bindings) claimed.add(binding)
+  return claimed
+}
+
+/** 표시·매칭에 쓰는 조합 — 비켜 선 기본 조합은 빠진다(그 자리는 빈 칸, 단축키 설정에서 「없음」). */
 export function bindingsFor(id: ActionId, overrides: Keybindings): readonly string[] {
-  return overrides[id] ?? ACTIONS.find((action) => action.id === id)!.defaultBinding
+  const own = overrides[id]
+  if (own !== undefined) return own
+  const defaults = ACTIONS.find((action) => action.id === id)!.defaultBinding
+  if (!YIELDING_DEFAULTS.includes(id)) return defaults
+  const claimed = claimedByOtherOverrides({ id, overrides })
+  return defaults.filter((binding) => !claimed.has(binding))
 }
 
 /** Matching and collision checks use exactly the displayed/stored chords. */
@@ -74,6 +95,17 @@ export function validateOverrides(value: unknown, discardInvalid = false): Keybi
     }
     const normalized = bindings.map((binding: string) => normalizeBinding(binding)!)
     if (JSON.stringify(normalized) !== JSON.stringify(action.defaultBinding)) result[action.id] = normalized
+  }
+  // 비켜 서는 기본값(YIELDING_DEFAULTS)을 **명시로** 다시 적은 재정의는 남긴다 — 다른 재정의가 그 조합을 쓰면 기본값과 같아도
+  // 그냥 버리면 저장이 조용히 무시된다. 남겨 두면 아래 충돌 검사가 잡는다(저장 = 오류 문구, 읽기 = 나중 액션을 버림).
+  for (const id of YIELDING_DEFAULTS) {
+    const raw: unknown = Reflect.get(value, id)
+    const action = ACTIONS.find((row) => row.id === id)!
+    if (result[id] !== undefined || !Array.isArray(raw) || raw.length !== action.defaultBinding.length) continue
+    const normalized = raw.map((binding) => (typeof binding === 'string' ? normalizeBinding(binding) : null))
+    if (normalized.some((binding) => binding === null)) continue
+    const claimed = claimedByOtherOverrides({ id, overrides: result })
+    if (normalized.some((binding) => binding !== null && claimed.has(binding))) result[id] = [...action.defaultBinding]
   }
   // Defaults win over corrupt overrides; between overrides catalog order wins.
   // Recheck after each deletion because restoring a default can reveal another conflict.

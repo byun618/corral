@@ -36,11 +36,24 @@ export class HookHost {
     return this.slots[i]
   }
 
+  /** 효과가 돌려준 정리 함수 — deps 가 바뀌어 다시 돌기 전에 부른다(React 와 같다, LIFE-470 R1-05 타이머 정리). */
+  cleanups = []
+
   useEffect(effect, deps) {
     const i = this.index++
     const old = this.slots[i]
-    if (old === undefined || deps.some((value, j) => value !== old[j])) this.effects.push(effect)
+    if (old === undefined || deps.some((value, j) => value !== old[j]))
+      this.effects.push(() => {
+        const cleanup = this.cleanups[i]
+        if (typeof cleanup === 'function') cleanup()
+        this.cleanups[i] = effect()
+      })
     this.slots[i] = deps
+  }
+
+  /** 언마운트 — 남은 정리 함수를 모두 부른다. */
+  unmount() {
+    for (const cleanup of this.cleanups.splice(0)) if (typeof cleanup === 'function') cleanup()
   }
 
   render(fn) {

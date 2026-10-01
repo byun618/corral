@@ -13,6 +13,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { isRecord, safeParse } from '../shared/json.js'
+import { DEFAULT_SIDEBAR_VIEW, readSidebarView, sidebarViewToPrefs, type SidebarViewPrefs } from '../shared/sidebar-view.js'
 import { log } from './log.js'
 
 /** 폴백 번호 배정 한 칸 (LIFE-366 C13) — `shared/types.ts` 의 `TabOrdinal` 과 같은 모양이다. */
@@ -51,7 +52,9 @@ export type UiPrefs = {
    */
   manualRepoOrder: string[]
   manualWorktreeOrder: Record<string, string[]>
-}
+  /** Group by None 수동 순서 (LIFE-470) — 워크트리 path 목록. 모양만 지킨다(뜻은 렌더러 `manual-order.ts`). */
+  manualFlatOrder: string[]
+} & SidebarViewPrefs
 
 const VERSION = 1
 const DEFAULT_PREFS: UiPrefs = {
@@ -64,6 +67,9 @@ const DEFAULT_PREFS: UiPrefs = {
   groupLayouts: [],
   manualRepoOrder: [],
   manualWorktreeOrder: {},
+  manualFlatOrder: [],
+  // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
+  ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
 
 /** 문자열 목록 — 문자열 아닌 칸·빈 문자열·중복은 버린다(손상된 칸이 다른 칸까지 깨뜨리지 않게, LIFE-469 K4ⓓ). */
@@ -127,6 +133,9 @@ export class UiPrefsStore {
         groupLayouts: Array.isArray(parsed['groupLayouts']) ? parsed['groupLayouts'] : [],
         manualRepoOrder: readKeyList(parsed['manualRepoOrder']),
         manualWorktreeOrder: readKeyListMap(parsed['manualWorktreeOrder']),
+        manualFlatOrder: readKeyList(parsed['manualFlatOrder']),
+        // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
+        ...sidebarViewToPrefs(readSidebarView(parsed)),
       }
       log('ui_prefs.load', { file: this.file })
     } catch (error) {
@@ -145,6 +154,8 @@ export class UiPrefsStore {
       groupLayouts: [...this.prefs.groupLayouts],
       manualRepoOrder: [...this.prefs.manualRepoOrder],
       manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
+      manualFlatOrder: [...this.prefs.manualFlatOrder],
+      sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
     }
   }
 

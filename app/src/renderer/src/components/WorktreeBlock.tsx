@@ -50,8 +50,14 @@ export function WorktreeBlock({
   onCloseWorktree,
   onCreateShell,
   onCreateAgent,
+  repoLabel = null,
 }: {
   worktree: WorktreeRow
+  /**
+   * 레포 이름 (LIFE-470) — Group by None 처럼 레포 헤더가 없는 구획에서만 준다. 둘째 줄 앞에 붙어 같은 브랜치 이름(`main`)의
+   * 카드가 어느 레포인지 가른다(198 은 카드 메타의 프로젝트 배지). 레포 헤더 아래에서는 null.
+   */
+  repoLabel?: string | null
   /** 사이드바에서 끌어 옮기는 중 (LIFE-469) — 열린 ⋯ 메뉴를 닫는다(K3ⓖ). */
   reordering: boolean
   /** 이 카드를 끄는 중. */
@@ -229,8 +235,13 @@ export function WorktreeBlock({
                   </div>
                 ) : null}
               </div>
-              {branch === null && markLabel === null ? null : (
+              {branch === null && markLabel === null && repoLabel === null ? null : (
                 <div className="worktree-block-line2" data-worktree-card-meta-row="">
+                  {repoLabel === null ? null : (
+                    <span className="worktree-repo-label" data-worktree-repo-label="" title={repoLabel}>
+                      {repoLabel}
+                    </span>
+                  )}
                   {branch === null ? null : (
                     <span className="worktree-sub" data-worktree-meta-branch="" title={branch}>
                       {branch}

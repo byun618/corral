@@ -68,6 +68,7 @@ import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
 import { RepoRegistry } from './registry.js'
+import { RegistryGeneration } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
@@ -217,6 +218,8 @@ function homeDirReal(): string {
 
 function currentState(): AppState {
   const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests))
+  // 등록 목록과 그 세대는 **같은 읽기**에서 낸다 — 렌더러가 둘을 한 순간의 값으로 믿는다(R3-01).
+  const registryState = registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' }
   return {
     revision,
     // 소켓 경로를 떼고 내보낸다 — 경계의 약속이 화면 상태로 새지 않게 (L9).
@@ -225,8 +228,8 @@ function currentState(): AppState {
     selectedSession,
     sessionNote,
     link: link.linkState(),
-    registry: registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' },
-    registryGeneration,
+    registry: registryState,
+    registryGeneration: registryGeneration.observe(registryState.roots),
     repos: tree.repos,
     terminal: stream.terminalState(),
     terminalGroups: stream.groupStates(),
@@ -359,15 +362,15 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
   return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
 }
 
-/** 레지스트리 세대 — 앱 안 추가·제거 성공마다 오른다(LIFE-469 R2-01, `AppState.registryGeneration`). */
-let registryGeneration = 0
+/**
+ * 레지스트리 세대 — 등록 목록이 바뀐 것을 관측할 때마다 오른다(LIFE-469 R2-01·R3-01, `AppState.registryGeneration`).
+ * GUI·CLI(`workspaceModule`)·앱 밖 편집을 가리지 않는다 — 관측 지점은 `currentState` 와 `removeRepo`.
+ */
+const registryGeneration = new RegistryGeneration()
 
 function addRepo(input: string): AddRepoResult {
   const result = registry?.add(input) ?? { ok: false, error: '레지스트리 미초기화' }
-  if (result.ok) {
-    registryGeneration++
-    scheduleTree()
-  }
+  if (result.ok) scheduleTree()
   scheduleEmit()
   return result
 }
@@ -385,10 +388,11 @@ function removeRepo(input: string): RemoveRepoResult {
     scheduleEmit()
     return result
   }
-  registryGeneration++
+  // 제거를 지금 관측한다 — 응답의 세대가 「제거가 반영된 목록」의 세대다. 이 뒤 그 root 가 다시 보이면 세대가 더 크다.
+  const generation = registryGeneration.observe(registry?.list() ?? [])
   scheduleTree()
   scheduleEmit()
-  return { ...result, registryGeneration }
+  return { ...result, registryGeneration: generation }
 }
 
 /**

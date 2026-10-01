@@ -1167,6 +1167,44 @@ async function main() {
     check('K5b-gui-remove-immediate-readd', 'K5ⓑ(R2-01) GUI 제거 직후 바로 재등록 → 새 레포 = 재등록 레포 맨 아래·그 뒤 새 레포, 화면·파일 같음(기대 배열 전체)', readd.ok === true && same(got.screen, want) && same(got.file, want), { before: order0, readdOk: readd.ok, readdMs, afterReadd, want, got })
   }
 
+  // ── R3-01 GUI 제거 → **CLI `corral repo add`** 로 바로 재등록 → CLI 로 새 레포 = 재등록 레포 맨 아래·그 뒤 새 레포 ──
+  // CLI 는 main `addRepo` 를 타지 않고 runtime `workspaceModule` 이 레지스트리 파일을 고친다(리뷰 r3). 제어 소켓 add-repo(위
+  // 검사)와 다른 경로다.
+  {
+    const cliRun = (...argv) => {
+      const started = Date.now()
+      const res = spawnSync(process.execPath, [path.join(appRoot, 'cli/corral.mjs'), ...argv, '--json'], { env, encoding: 'utf8', timeout: 60_000 })
+      return { status: res.status, ms: Date.now() - started, stdout: res.stdout.slice(0, 400), stderr: res.stderr.slice(0, 400) }
+    }
+    const order0 = repoOrder(await snapshot())
+    // 맨 위 레포를 쓴다 — 맨 아래 레포는 ⋯ 메뉴가 창 아래로 넘쳐 「제거」를 못 누른다(M061·M062 하네스 실패).
+    await cdp.evaluate(() => {
+      document.querySelector('[data-repo-list]').scrollTop = 0
+    })
+    await pause(200)
+    const zeta = order0[0]
+    await mouse('mouseMoved', await headerPoint(zeta), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-repo-menu-toggle', value: zeta }))
+    await click(await pointOf({ attr: 'data-repo-menu-remove', value: zeta }))
+    await waitFor(async () => (await pointOf({ attr: 'data-confirm-ok' })) !== null, 'remove confirm (zeta)', 10_000)
+    const ok = await pointOf({ attr: 'data-confirm-ok' })
+    await mouse('mouseMoved', ok, { buttons: 0 })
+    await mouse('mousePressed', ok)
+    await mouse('mouseReleased', ok)
+    const readd = cliRun('repo', 'add', '--path', zeta)
+    await waitFor(async () => repoOrder(await snapshot()).includes(zeta), 'zeta present after CLI readd', 30_000)
+    await pause(1_000)
+    const afterReadd = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    const eta = makeRepo('eta', [])
+    const addEta = cliRun('repo', 'add', '--path', eta)
+    await waitFor(async () => repoOrder(await snapshot()).includes(eta), 'eta added (CLI)', 60_000)
+    await settle()
+    const want = [...order0.filter((root) => root !== zeta), zeta, eta]
+    const got = { screen: repoOrder(await snapshot()), file: readPrefs().manualRepoOrder }
+    check('K5b-gui-remove-cli-readd', 'K5ⓑ(R3-01) GUI 제거 직후 CLI repo add 재등록 → CLI 새 레포 = 재등록 레포 맨 아래·그 뒤 새 레포, 화면·파일 같음(기대 배열 전체)', readd.status === 0 && addEta.status === 0 && same(got.screen, want) && same(got.file, want), { before: order0, readd, addEta, afterReadd, want, got })
+  }
+
   // ── K4ⓐ 재시작 3회 — 순서 그대로 ──
   for (let round = 1; round <= 3; round++) {
     const beforeQuit = await snapshot()

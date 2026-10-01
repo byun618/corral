@@ -1,6 +1,7 @@
 // LIFE-469 K8 네이티브 관문 드라이버 — 제어 소켓으로 **읽기**(순서·창 기하·캡처)만 하고, 끌기는 **실제 OS 입력(cliclick)** 으로 한다.
-// CDP 를 쓰지 않는다(디버깅 포트 없이 띄운다). OS 입력 전마다 그 화면 점의 맨 위 창이 우리 앱 pid 인지 CoreGraphics 로 확인하고,
-// 아니면 입력하지 않고 실패로 멈춘다(킥오프 격리 5 — 다른 앱 창 위로 입력 금지).
+// CDP 를 쓰지 않는다(디버깅 포트 없이 띄운다). 끌기마다 pid 활성화 → 맨 앞 앱·두 점의 맨 위 창·창 bounds 확인(guard) →
+// 누르기 없는 커서 이동 탐침(앱에 mousemove 도착) → 다시 guard → 누르기. 하나라도 어긋나면 입력하지 않고 멈춘다(킥오프 격리 5,
+// 1차 회차 사건 뒤 코디네이터 재시도 조건 2~4). 결과는 <raw>/<단계>-try<L469_ATTEMPT>.json.
 //
 // 사용: node native-k8.mjs <ROOT> <raw 폴더> <단계> [인자]
 //   order <꼬리표>          순서·창 기하 읽기 + 캡처 → <raw>/order-<꼬리표>.json
@@ -59,23 +60,8 @@ async function shot(name) {
   return res.ok ? path.join('shots', `${name}.png`) : null
 }
 
-/** 우리 창(가장 큰 레이어 0 창)의 화면 위 내용 원점. 제목 막대 높이 = 창 높이 − innerHeight. */
-function contentOrigin(geo) {
-  const windows = win('windows', appPid).filter((w) => w.layer === 0)
-  if (windows.length === 0) throw new Error(`pid ${appPid} 의 화면 위 창이 없다`)
-  const main = windows.reduce((a, b) => (a.bounds.w * a.bounds.h >= b.bounds.w * b.bounds.h ? a : b))
-  return { x: main.bounds.x + (main.bounds.w - geo.win.innerWidth), y: main.bounds.y + (main.bounds.h - geo.win.innerHeight), window: main.bounds }
-}
-
 /** 창 안 좌표 → 화면 좌표. 정수로 내린다(cliclick 은 정수 포인트). */
 const toScreen = (origin, p) => ({ x: Math.round(origin.x + p.x), y: Math.round(origin.y + p.y) })
-
-/** 그 화면 점의 맨 위 창이 우리 앱인지 — 아니면 입력하지 않는다. */
-function assertOurs(point, label) {
-  const top = win('top', point.x, point.y)
-  if (top.pid !== appPid) throw new Error(`✘ 입력 중단 — ${label} (${point.x},${point.y}) 맨 위 창 = ${JSON.stringify(top)} (우리 앱 ${appPid} 아님)`)
-  return top
-}
 
 const fmt = (p) => `=${p.x},=${p.y}`
 
@@ -88,16 +74,43 @@ function osDrag(from, to, steps = 10) {
   return cmd.join(' ')
 }
 
-/** 입력이 실제로 이 창에 왔는지 — 수동 기록기(상태를 바꾸지 않는다)를 걸어 OS 이벤트 좌표를 받는다. */
-const ARM_RECORDER = `(() => { window.__l469 = []; for (const type of ['mousedown','mouseup']) window.addEventListener(type, (e) => window.__l469.push({ type, x: e.clientX, y: e.clientY, trusted: e.isTrusted }), { capture: true, passive: true }); return true })()`
+/**
+ * 입력이 실제로 이 창에 왔는지 — 수동 기록기(상태를 바꾸지 않는다, passive capture 리스너)를 걸어 OS 이벤트의 창 안·화면 좌표를 받는다.
+ * 한 번만 건다(`__l469armed`) — 기록 배열만 비운다. 탐침(누르기 없는 커서 이동)의 도착 확인에도 쓴다(코디네이터 재시도 조건 3).
+ */
+const ARM_RECORDER = `(() => { window.__l469 = []; if (!window.__l469armed) { window.__l469armed = true; for (const type of ['mousemove','mousedown','mouseup']) window.addEventListener(type, (e) => { if (type === 'mousemove' && window.__l469.length > 400) return; window.__l469.push({ type, x: e.clientX, y: e.clientY, sx: e.screenX, sy: e.screenY, buttons: e.buttons, trusted: e.isTrusted, t: Date.now() }) }, { capture: true, passive: true }) } return true })()`
 
-async function activate() {
+/** 우리 앱의 화면 위(현재 Space) 레이어 0 주 창 — 없으면 null. */
+function ourWindow() {
+  const windows = win('windows', appPid).filter((w) => w.layer === 0)
+  if (windows.length === 0) return null
+  return windows.reduce((a, b) => (a.bounds.w * a.bounds.h >= b.bounds.w * b.bounds.h ? a : b))
+}
+const sameBounds = (a, b) => a !== null && b !== null && ['x', 'y', 'w', 'h'].every((key) => a.bounds[key] === b.bounds[key])
+
+/** 입력 보호 (코디네이터 재시도 조건 2) — 하나라도 어긋나면 던진다(입력하지 않는다). */
+function guard(label, expected, points) {
   const front = win('front')
-  if (front.pid !== appPid) {
-    win('activate', appPid)
-    await pause(600)
+  if (front.pid !== appPid) throw new Error(`GUARD ${label}: 맨 앞 앱 ${JSON.stringify(front)} ≠ corral ${appPid}`)
+  const now = ourWindow()
+  if (now === null) throw new Error(`GUARD ${label}: corral 창이 현재 화면(Space)에 없다`)
+  if (!sameBounds(now, expected)) throw new Error(`GUARD ${label}: 창 bounds 가 바뀌었다 ${JSON.stringify(expected.bounds)} → ${JSON.stringify(now.bounds)}`)
+  const tops = points.map((p) => ({ p, top: win('top', p.x, p.y) }))
+  for (const { p, top } of tops) {
+    if (top.pid !== appPid || !sameBounds(top, expected)) throw new Error(`GUARD ${label}: (${p.x},${p.y}) 맨 위 창 ${JSON.stringify(top)} ≠ corral 창`)
   }
-  return win('front')
+  return { front, window: now.bounds, tops }
+}
+
+/** 누르기 없는 커서 이동 탐침 — 앱에 그 화면 좌표의 mousemove 가 도착해야 통과(조건 3). */
+async function probeMove(p, label) {
+  await evaluate(ARM_RECORDER)
+  execFileSync('/opt/homebrew/bin/cliclick', ['-e', '20', `m:${fmt(p)}`, 'w:250'], { encoding: 'utf8' })
+  await pause(150)
+  const events = await evaluate('window.__l469')
+  const hit = events.find((e) => e.type === 'mousemove' && Math.abs(e.sx - p.x) <= 2 && Math.abs(e.sy - p.y) <= 2)
+  if (!hit) throw new Error(`PROBE ${label}: (${p.x},${p.y}) 의 mousemove 가 앱에 오지 않았다 — 받은 것 ${JSON.stringify(events.slice(-3))}`)
+  return hit
 }
 
 async function main() {
@@ -129,43 +142,64 @@ async function main() {
     }
     case 'drag-repo':
     case 'drag-card': {
-      out.front = await activate()
-      if (out.front.pid !== appPid) throw new Error(`✘ 우리 앱이 앞으로 오지 않았다: ${JSON.stringify(out.front)}`)
-      const before = await read()
-      const origin = contentOrigin(before)
-      out.origin = origin
-      // 잡을 점·놓을 점 (창 안 좌표)
-      const pts = await evaluate(`(() => {
-        const step = ${JSON.stringify(step)}, key = ${JSON.stringify(arg)}
-        const groups = [...document.querySelectorAll('[data-repo-list] > [data-repo]')]
-        const center = (el, fx = 0.5, fy = 0.5) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width * fx, y: r.top + r.height * fy } }
-        if (step === 'drag-repo') {
+      const tag = process.env.L469_ATTEMPT ?? '1'
+      const outFile = path.join(rawd, `${step}-try${tag}.json`)
+      const save = () => fs.writeFileSync(outFile, JSON.stringify(out, null, 2))
+      try {
+        // ⓐ pid 로 활성화
+        out.activate = win('activate', appPid)
+        await pause(900)
+        const expected = ourWindow()
+        if (expected === null) throw new Error('GUARD 활성화 뒤: corral 창이 현재 화면(Space)에 없다')
+        out.window = expected.bounds
+        const before = await read()
+        // 창 안 좌표 원점 = CG 창 원점 + (창 크기 − inner 크기). 페이지가 아는 screenX·screenY 와도 대조해 둔다.
+        const origin = { x: expected.bounds.x + (expected.bounds.w - before.win.innerWidth), y: expected.bounds.y + (expected.bounds.h - before.win.innerHeight) }
+        out.origin = { ...origin, pageScreenX: before.win.screenX, pageScreenY: before.win.screenY }
+        const pts = await evaluate(`(() => {
+          const step = ${JSON.stringify(step)}, key = ${JSON.stringify(arg)}
+          const groups = [...document.querySelectorAll('[data-repo-list] > [data-repo]')]
+          const center = (el, fx = 0.5, fy = 0.5) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width * fx, y: r.top + r.height * fy } }
+          if (step === 'drag-repo') {
+            const group = groups.find((g) => g.getAttribute('data-repo') === key)
+            const first = groups[0].querySelector('[data-repo-head]').getBoundingClientRect()
+            return { from: center(group.querySelector('.repo-row-name'), 0.4), to: { x: first.left + first.width * 0.4, y: first.top + first.height * 0.2 }, moving: key }
+          }
           const group = groups.find((g) => g.getAttribute('data-repo') === key)
-          const first = groups[0].querySelector('[data-repo-head]').getBoundingClientRect()
-          return { from: center(group.querySelector('.repo-row-name'), 0.4), to: { x: first.left + first.width * 0.4, y: first.top + first.height * 0.2 }, moving: key }
-        }
-        const group = groups.find((g) => g.getAttribute('data-repo') === key)
-        const list = document.querySelector('[data-repo-list]').getBoundingClientRect()
-        const cards = [...group.querySelectorAll('[data-reorder-card]')].filter((c) => { const r = c.getBoundingClientRect(); return r.top >= list.top && r.bottom <= list.bottom })
-        const moving = cards[2] ?? cards[cards.length - 1]
-        const first = cards[0].getBoundingClientRect()
-        return { from: center(moving.querySelector('.worktree-name'), 0.3), to: { x: first.left + first.width * 0.3, y: first.top + 4 }, moving: moving.getAttribute('data-reorder-card') }
-      })()`)
-      const from = toScreen(origin, pts.from)
-      const to = toScreen(origin, pts.to)
-      out.points = { client: pts, screen: { from, to } }
-      out.topAtFrom = assertOurs(from, '잡는 점')
-      out.topAtTo = assertOurs(to, '놓는 점')
-      await evaluate(ARM_RECORDER)
-      out.before = before
-      out.shotBefore = await shot(`${step}-before`)
-      out.cliclick = osDrag(from, to)
-      await pause(500)
-      out.events = await evaluate('window.__l469')
-      out.after = await read()
-      out.shotAfter = await shot(`${step}-after`)
-      out.frontAfter = win('front')
-      break
+          const list = document.querySelector('[data-repo-list]').getBoundingClientRect()
+          const cards = [...group.querySelectorAll('[data-reorder-card]')].filter((c) => { const r = c.getBoundingClientRect(); return r.top >= list.top && r.bottom <= list.bottom })
+          const moving = cards[2] ?? cards[cards.length - 1]
+          const first = cards[0].getBoundingClientRect()
+          return { from: center(moving.querySelector('.worktree-name'), 0.3), to: { x: first.left + first.width * 0.3, y: first.top + 4 }, moving: moving.getAttribute('data-reorder-card') }
+        })()`)
+        const from = toScreen(origin, pts.from)
+        const to = toScreen(origin, pts.to)
+        out.points = { client: pts, screen: { from, to } }
+        // ⓑ·ⓒ·ⓓ 보호 → 탐침(누르기 없이 두 점) → 다시 보호 → 누르기
+        out.guard1 = guard('탐침 전', expected, [from, to])
+        out.probeTo = await probeMove(to, '놓는 점')
+        out.probeFrom = await probeMove(from, '잡는 점')
+        out.guard2 = guard('누르기 직전', expected, [from, to])
+        await evaluate(ARM_RECORDER)
+        out.before = before
+        out.shotBefore = await shot(`${step}-try${tag}-before`)
+        out.cliclick = osDrag(from, to)
+        await pause(500)
+        const events = await evaluate('window.__l469')
+        out.events = { down: events.filter((e) => e.type === 'mousedown'), up: events.filter((e) => e.type === 'mouseup'), moves: events.filter((e) => e.type === 'mousemove').length }
+        out.after = await read()
+        out.shotAfter = await shot(`${step}-try${tag}-after`)
+        out.frontAfter = win('front')
+        out.arrived = out.events.down.length > 0 && out.events.up.length > 0
+        if (!out.arrived) throw new Error(`ARRIVAL: 누르기·놓기가 앱에 오지 않았다 ${JSON.stringify(out.events)}`)
+      } catch (error) {
+        out.stopped = String(error?.message ?? error)
+        save()
+        throw error
+      }
+      save()
+      log('wrote', outFile)
+      return
     }
     default:
       throw new Error(`단계 모름: ${step}`)

@@ -82,11 +82,11 @@ function observePage(sel) {
   }
 }
 
-async function observe(handle, app) {
+async function observe({ handle, app }) {
   return handle.cdp.evaluate(observePage, SCENE_SELECTORS[app])
 }
 
-async function centerOf(handle, selector, index = 0) {
+async function centerOf({ handle, selector, index = 0 }) {
   return handle.cdp.evaluate(
     ({ selector, index }) => {
       const el = document.querySelectorAll(selector)[index]
@@ -99,7 +99,7 @@ async function centerOf(handle, selector, index = 0) {
   )
 }
 
-async function mouse(handle, type, x, y, buttons = 0) {
+async function mouse({ handle, type, x, y, buttons = 0 }) {
   const extra = type === 'mouseMoved' ? {} : { button: 'left', clickCount: 1 }
   await handle.cdp.send('Input.dispatchMouseEvent', { type, x, y, buttons, ...extra })
   if (type === 'mouseMoved' && buttons === 0) handle.scenePointer = { x, y }
@@ -120,23 +120,23 @@ export async function reapplyPointer(handle) {
 
 /** 포인터를 사이드바 밖으로 — hover 칠이 다음 캡처에 남지 않게. */
 async function pointerAway(handle) {
-  await mouse(handle, 'mouseMoved', AWAY_POINT.x, AWAY_POINT.y)
+  await mouse({ handle, type: 'mouseMoved', x: AWAY_POINT.x, y: AWAY_POINT.y })
 }
 
-async function click(handle, selector) {
-  const point = await centerOf(handle, selector)
+async function click({ handle, selector }) {
+  const point = await centerOf({ handle, selector })
   if (!point) return false
-  await mouse(handle, 'mouseMoved', point.x, point.y)
-  await mouse(handle, 'mousePressed', point.x, point.y, 1)
-  await mouse(handle, 'mouseReleased', point.x, point.y)
+  await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
+  await mouse({ handle, type: 'mousePressed', x: point.x, y: point.y, buttons: 1 })
+  await mouse({ handle, type: 'mouseReleased', x: point.x, y: point.y })
   await pointerAway(handle)
   return true
 }
 
 /** 리사이저를 **실제 마우스로** 끈다 — 두 앱 다 제품 드래그 경로(rAF 배칭 + 놓을 때 커밋). */
-async function dragWidth(handle, app, target) {
+async function dragWidth({ handle, app, target }) {
   const sel = SCENE_SELECTORS[app]
-  const before = (await observe(handle, app)).width
+  const before = (await observe({ handle, app })).width
   if (before === null || before === target) return before
   // 손잡이의 **실제로 눌리는 점**을 찾는다 — Orca 손잡이(`-right-1.5`, 12px)는 오른쪽 절반이 본문 영역 밑에 깔려 가운데를
   // 누르면 본문이 받는다(실측: elementFromPoint 가 본문 div). 왼쪽부터 훑어 손잡이(또는 그 자식)가 맞는 첫 점을 쓴다.
@@ -153,20 +153,20 @@ async function dragWidth(handle, app, target) {
   }, sel.resizer)
   if (!point) return before
   const delta = target - before
-  await mouse(handle, 'mouseMoved', point.x, point.y)
-  await mouse(handle, 'mousePressed', point.x, point.y, 1)
+  await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
+  await mouse({ handle, type: 'mousePressed', x: point.x, y: point.y, buttons: 1 })
   const steps = 8
   for (let i = 1; i <= steps; i += 1) {
-    await mouse(handle, 'mouseMoved', point.x + (delta * i) / steps, point.y, 1)
+    await mouse({ handle, type: 'mouseMoved', x: point.x + (delta * i) / steps, y: point.y, buttons: 1 })
     await pause(16)
   }
-  await mouse(handle, 'mouseReleased', point.x + delta, point.y)
+  await mouse({ handle, type: 'mouseReleased', x: point.x + delta, y: point.y })
   await pointerAway(handle)
   await pause(200)
-  return (await observe(handle, app)).width
+  return (await observe({ handle, app })).width
 }
 
-async function setScroll(handle, app, top) {
+async function setScroll({ handle, app, top }) {
   return handle.cdp.evaluate(
     ({ sel, top }) => {
       const first = document.querySelector(sel.cardRow) ?? document.querySelector(sel.repoHeader)
@@ -186,12 +186,12 @@ async function setScroll(handle, app, top) {
 /** 레포 묶음이 접혔나 — 헤더는 있는데 카드가 0. */
 const isCollapsed = (seen) => seen.repos > 0 && seen.cards === 0
 
-async function setCollapsed(handle, app, want) {
-  const seen = await observe(handle, app)
+async function setCollapsed({ handle, app, want }) {
+  const seen = await observe({ handle, app })
   if (seen.repos === 0 || isCollapsed(seen) === want) return true
-  await click(handle, SCENE_SELECTORS[app].repoHeader)
+  await click({ handle, selector: SCENE_SELECTORS[app].repoHeader })
   try {
-    await until(async () => isCollapsed(await observe(handle, app)) === want, `${app} 레포 접힘=${want}`, 10_000)
+    await until(async () => isCollapsed(await observe({ handle, app })) === want, `${app} 레포 접힘=${want}`, 10_000)
     return true
   } catch {
     return false
@@ -266,9 +266,9 @@ export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
   for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
     await pointerAway(handle)
     await setViewport(handle.cdp, { width: base.width, height: base.height })
-    await setScroll(handle, app, 0)
-    await setCollapsed(handle, app, false)
-    if ((await observe(handle, app)).width !== base.sidebarWidth[app]) await dragWidth(handle, app, base.sidebarWidth[app])
+    await setScroll({ handle, app, top: 0 })
+    await setCollapsed({ handle, app, want: false })
+    if ((await observe({ handle, app })).width !== base.sidebarWidth[app]) await dragWidth({ handle, app, target: base.sidebarWidth[app] })
   }
   if (fs.existsSync(path.join(path.dirname(fixture.root), 'gui-diff-fixture-long'))) {
     await setLongWorktree({ orca, corral, orcaRepoId, fixture, want: false })
@@ -292,26 +292,26 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     }, orcaRepoId)
     await corral.cdp.evaluate(async (root) => window.corral.removeRepo(root), fixture.root)
     for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
-      await until(async () => (await observe(handle, app)).repos === 0, `${app} 레포 0개`, 30_000).catch(() => null)
+      await until(async () => (await observe({ handle, app })).repos === 0, `${app} 레포 0개`, 30_000).catch(() => null)
     }
   }
   const out = { requested: scene }
   for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
-    if (scene.width) await dragWidth(handle, app, scene.width)
+    if (scene.width) await dragWidth({ handle, app, target: scene.width })
     if (scene.viewportHeight) await setViewport(handle.cdp, { width: base.width, height: scene.viewportHeight })
-    if (scene.collapsed) await setCollapsed(handle, app, true)
+    if (scene.collapsed) await setCollapsed({ handle, app, want: true })
     if (scene.scroll) {
       await pause(300)
-      await setScroll(handle, app, scene.scroll)
+      await setScroll({ handle, app, top: scene.scroll })
       await pause(300)
     }
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
-      const point = scene.hover === 'card' ? await centerOf(handle, sel.card, 1) : await centerOf(handle, sel.agentRow, 0)
-      if (point) await mouse(handle, 'mouseMoved', point.x, point.y)
+      const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
+      if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = await observe(handle, app)
+    out[app] = await observe({ handle, app })
   }
   const check = (seen) => {
     if (!seen) return false

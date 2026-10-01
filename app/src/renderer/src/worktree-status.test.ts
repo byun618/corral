@@ -4,7 +4,7 @@ import { AGENT_DOT_ORDER, type AgentDot } from './agent-dot.js'
 import type { AgentRowNode, AgentRowSource } from './sidebar-agents.js'
 import { WORKTREE_STATUS_LABEL, worktreeStatus, type WorktreeStatus } from './worktree-status.js'
 
-function row(dot: AgentDot, { source = 'live', children = [] }: { source?: AgentRowSource; children?: AgentRowNode[] } = {}): AgentRowNode {
+function row({ dot, source = 'live', children = [] }: { dot: AgentDot; source?: AgentRowSource; children?: AgentRowNode[] }): AgentRowNode {
   return {
     key: `${source}:${dot}:${children.length}`,
     source,
@@ -36,7 +36,7 @@ describe('worktreeStatus — 행 점 하나 → 슬롯 (열린 탭 있음)', () 
   }
   for (const dot of AGENT_DOT_ORDER) {
     it(`${dot} → ${expected[dot]}`, () => {
-      expect(worktreeStatus({ rows: [row(dot)], hasOpenTabs: true })).toBe(expected[dot])
+      expect(worktreeStatus({ rows: [row({ dot })], hasOpenTabs: true })).toBe(expected[dot])
     })
   }
 })
@@ -52,7 +52,7 @@ describe('worktreeStatus — 우선순위 (Orca resolveWorktreeStatus)', () => {
   ]
   for (const [a, b, want] of order) {
     it(`${a} + ${b} → ${want}`, () => {
-      expect(worktreeStatus({ rows: [row(a), row(b)], hasOpenTabs: true })).toBe(want)
+      expect(worktreeStatus({ rows: [row({ dot: a }), row({ dot: b })], hasOpenTabs: true })).toBe(want)
     })
   }
 })
@@ -68,10 +68,10 @@ describe('worktreeStatus — 에이전트 없는 워크트리 = 조용한 상태
 
 describe('worktreeStatus — 출처', () => {
   it('보존 행은 점이 무엇이든 done 칸 (Orca hasRetainedDone)', () => {
-    expect(worktreeStatus({ rows: [row('interrupted', { source: 'retained' })], hasOpenTabs: false })).toBe('done')
+    expect(worktreeStatus({ rows: [row({ dot: 'interrupted', source: 'retained' })], hasOpenTabs: false })).toBe('done')
   })
   it('자식 행(계보·서브에이전트)도 집계에 든다', () => {
-    expect(worktreeStatus({ rows: [row('idle', { children: [row('waiting', { source: 'subagent' })] })], hasOpenTabs: true })).toBe('permission')
+    expect(worktreeStatus({ rows: [row({ dot: 'idle', children: [row({ dot: 'waiting', source: 'subagent' })] })], hasOpenTabs: true })).toBe('permission')
   })
 })
 

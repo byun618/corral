@@ -7,6 +7,8 @@
 .palette-entry { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 5px; cursor: pointer; }
 .palette-entry.selected { background: var(--bg-selected); outline: 1px solid var(--line-strong); }
 .palette-entry[aria-disabled=true] { color: var(--fg-dim); cursor: default; }
+/* 선택된 비활성 항목 — 선택 칠(#404040) 위 --fg-dim 은 2.19:1 (r1 CDX-R2). Orca 는 비활성을 `opacity-50`(≈ #9d9d9d)으로 그린다 — 가까운 단 --fg-muted. */
+.palette-entry.selected[aria-disabled=true] { color: var(--fg-muted); }
 .palette-label { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 4px; }
 .palette-label strong, .palette-label small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .palette-label small { color: var(--fg-muted); }

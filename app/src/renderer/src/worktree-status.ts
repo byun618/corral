@@ -44,18 +44,18 @@ function flagOf(dot: AgentDot): WorktreeStatus | null {
 
 const PRIORITY: readonly WorktreeStatus[] = ['permission', 'working', 'monitoring', 'interrupted', 'done']
 
-function collect(rows: readonly AgentRowNode[], into: Set<WorktreeStatus>): void {
+function collect({ rows, into }: { rows: readonly AgentRowNode[]; into: Set<WorktreeStatus> }): void {
   for (const row of rows) {
     // 보존 행은 끝난 기록이다 — Orca `hasRetainedDone` 처럼 점이 무엇이든 done 칸만 켠다.
     const flag = row.source === 'retained' ? 'done' : flagOf(row.dot)
     if (flag !== null) into.add(flag)
-    collect(row.children, into)
+    collect({ rows: row.children, into })
   }
 }
 
 export function worktreeStatus({ rows, hasOpenTabs }: { rows: readonly AgentRowNode[]; hasOpenTabs: boolean }): WorktreeStatus {
   const flags = new Set<WorktreeStatus>()
-  collect(rows, flags)
+  collect({ rows, into: flags })
   for (const status of PRIORITY) if (flags.has(status)) return status
   return hasOpenTabs ? 'active' : 'inactive'
 }

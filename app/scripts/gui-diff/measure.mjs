@@ -24,7 +24,7 @@ import { ensureFixtureRepo } from './lib/fixture.mjs'
 import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
-import { evaluateControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
+import { evaluateControls, evaluateResolvedControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
 import { applyScene, describeScene, reapplyPointer, resetFixtureScene, resetScene } from './lib/scene.mjs'
 import {
   selectOwnedByPath,
@@ -954,8 +954,8 @@ async function main() {
     // 양성 대조 (C6) — **명시 모드에서만** 돈다 (F8). 방향·종류·전제까지 보는 판정은
     // `lib/controls.mjs` 에 있고 단위 테스트가 판별력을 잠근다 (F9).
     const positiveControls = args.controls ? evaluateControls({ results, prerequisites }) : []
-    // 해소로 뒤집힌 옛 대조 — **관문이 아니다.** 뒤집혔는지(못 잡는지)를 회차마다 원자료로 남긴다 (LIFE-468 K4ⓕ).
-    const resolvedControls = args.controls ? evaluateControls({ results, prerequisites, controls: RESOLVED_CONTROLS }) : []
+    // 해소로 뒤집힌 옛 대조 — **관문이 아니다.** 판정 불가 / 해소 유지 / 관련 차이 있음 을 회차마다 원자료로 남긴다 (LIFE-468 K4ⓕ·r1 CDX-R3).
+    const resolvedControls = args.controls ? evaluateResolvedControls({ results }) : []
 
     if (args.dumpDom) {
       for (const area of areas) {

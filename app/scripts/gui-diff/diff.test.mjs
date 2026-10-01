@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import { MAX_CHILDREN, diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath, parseProcessList, commandIncludesPath, pathDiagnosis, cleanVerdict } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
-import { evaluateControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
+import { evaluateControls, evaluateResolvedControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
+import { renderReport } from './lib/report.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
 
 const unit = (id, extra = {}) => ({ id, note: `${id} 설명`, ...extra })
@@ -295,14 +296,14 @@ test('C6ⓑ(옛, 해소됨) — box+style 둘 다 있어야 잡힘, 하나만이
   assert.match(onlyBox[0].verdict, /종류/)
 })
 
-test('C6ⓑ(옛) — 해소 뒤 행이 없으면 「못 잡았다」 = 뒤집힘 (LIFE-468 K4ⓕ)', () => {
-  const rows = evaluateControls({ results: controlResults([], { state: 'default' }), prerequisites: PREREQ, controls: resolvedB })
-  assert.equal(rows[0].pass, false)
-  assert.match(rows[0].verdict, /못 잡았다/)
+test('C6ⓑ(옛) — 해소 뒤 두 앱 다 관측되고 행이 없으면 「해소 유지」 (LIFE-468 K4ⓕ)', () => {
+  const rows = evaluateResolvedControls({ results: controlResults([], { state: 'default' }), controls: resolvedB })
+  assert.equal(rows[0].status, 'clear')
+  assert.match(rows[0].verdict, /해소 유지/)
 })
 
-test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 아이콘 차이가 아니다 = 뒤집힘 (iter9 모양)', () => {
-  const offsetOnly = evaluateControls({
+test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 아이콘 차이가 아니다 = 해소 유지 (iter9 모양)', () => {
+  const offsetOnly = evaluateResolvedControls({
     results: controlResults(
       [
         { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'y', left: 192, right: 120, delta: -72 }] },
@@ -310,13 +311,11 @@ test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 �
       ],
       { state: 'default' }
     ),
-    prerequisites: PREREQ,
     controls: resolvedB
   })
-  assert.equal(offsetOnly[0].pass, false)
-  assert.match(offsetOnly[0].verdict, /못 잡았다/)
-  // R001 모양(크기 + 칠·글꼴)은 여전히 잡는다 — 판별력이 남아 있다.
-  const before = evaluateControls({
+  assert.equal(offsetOnly[0].status, 'clear')
+  // R001 모양(크기 + 칠·글꼴)은 관련 차이 있음 — 판별력이 남아 있다.
+  const before = evaluateResolvedControls({
     results: controlResults(
       [
         { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'y', left: 192, right: 105.5, delta: -86.5 }, { prop: 'w', left: 14, right: 15, delta: 1 }] },
@@ -324,10 +323,41 @@ test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 �
       ],
       { state: 'default' }
     ),
-    prerequisites: PREREQ,
     controls: resolvedB
   })
-  assert.equal(before[0].pass, true)
+  assert.equal(before[0].status, 'present')
+  assert.match(before[0].verdict, /box\.w/)
+  assert.match(before[0].verdict, /style\.fontFamily/)
+})
+
+// r1 CDX-R3 — 리뷰어 합성 음성 4건(raw/codex-r1/control-negative.log). 넷 다 「해소 유지」가 아니어야 한다.
+const RESOLVED_NEGATIVES = [
+  { label: '미측정', results: [], status: 'unknown' },
+  { label: 'selector-miss', results: controlResults([{ id: 'repo-header-icon', kind: 'selector-miss', detail: { left: 0, right: 0 } }], { state: 'default' }), status: 'unknown' },
+  { label: '한쪽 부재', results: controlResults([{ id: 'repo-header-icon', kind: 'missing', detail: { absentSide: 'right' } }], { state: 'default' }), status: 'unknown' },
+  {
+    label: '색만 회귀',
+    results: controlResults([{ id: 'repo-header-icon', kind: 'style', detail: [{ prop: 'color', left: 'rgb(115,115,115)', right: 'rgb(255,0,0)' }] }], { state: 'default' }),
+    status: 'present'
+  }
+]
+
+test('C6ⓑ(옛) — 합성 음성 4건(미측정·selector-miss·한쪽 부재·색만 회귀)은 해소 유지가 아니다 (r1 CDX-R3)', () => {
+  for (const negative of RESOLVED_NEGATIVES) {
+    const rows = evaluateResolvedControls({ results: negative.results, controls: resolvedB })
+    assert.equal(rows[0].status, negative.status, negative.label)
+    assert.doesNotMatch(rows[0].verdict, /해소 유지/, negative.label)
+  }
+})
+
+test('C6ⓑ(옛) — 보고서 칸도 같은 상태를 적는다: 음성 4건은 「해소 유지」가 안 나오고, 행 없음만 나온다 (r1 CDX-R3)', () => {
+  const line = (results) => {
+    const resolvedControls = evaluateResolvedControls({ results, controls: resolvedB })
+    const report = renderReport({ date: 'synthetic', runs: 'synthetic', areas: [], notes: { conditions: [], warnings: [], stateMatrix: [], noiseFloor: [], controlsMode: true, positiveControls: [], resolvedControls } })
+    return report.split('\n').find((entry) => entry.startsWith('| C6ⓑ(옛)'))
+  }
+  for (const negative of RESOLVED_NEGATIVES) assert.doesNotMatch(line(negative.results), /해소 유지/, negative.label)
+  assert.match(line(controlResults([], { state: 'default' })), /해소 유지/)
 })
 
 test('C6ⓑ(새) — corral 있음 / Orca 없음(브랜드 줄)이면 통과, 방향이 반대면 실패', () => {

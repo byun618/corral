@@ -114,6 +114,14 @@ button, input { font: inherit; letter-spacing: inherit; }
 }
 .mru-row-worktree.is-other { color: var(--fg-muted); }
 .mru-row-elapsed { flex: 0 0 auto; width: 30px; text-align: right; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-muted); }
+/* 선택 행 위 보조 글자 — 선택 칠이 Orca `bg-accent`(#404040)로 밝아져 --fg-faint·--fg-dim 이 바탕에 묻혔다(LIFE-468 r1 CDX-R2, 1.33:1·2.19:1).
+   Orca `RecentTabSwitcher` 선택 행(`bg-accent`) 의 보조 정보 색 `text-muted-foreground` 로 올리고, 다른 영역 표시(is-other)는 한 단 위로 둬 구분을 유지한다. */
+.mru-row.is-selected .mru-row-index,
+.mru-row.is-selected .mru-row-place,
+.mru-row.is-selected .mru-row-status.tone-faint,
+.mru-row.is-selected .mru-row-worktree { color: var(--fg-muted); }
+.mru-row.is-selected .mru-row-place.is-other,
+.mru-row.is-selected .mru-row-worktree.is-other { color: var(--fg-menu); }
 .mru-more {
   display: flex; align-items: center; height: 24px; padding: 0 12px; margin-top: 2px;
   font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint);
@@ -175,9 +183,13 @@ button, input { font: inherit; letter-spacing: inherit; }
 .repo-row-group { position: relative; }
 .repo-row-group + .repo-row-group { padding-top: 4px; }
 /* LIFE-468 D21 — Orca 레포 헤더 (`group relative flex h-7 w-full items-center gap-1.5 pr-2`, 왼쪽 10px).
-   행 자체엔 hover 칠이 없다(198) — hover 는 액션만 드러낸다. sticky = Orca `sticky z-20 bg-worktree-sidebar -top-px`. */
+   행 자체엔 hover 칠이 없다(198) — hover 는 액션만 드러낸다. sticky = Orca `sticky z-20 bg-worktree-sidebar -top-px`.
+   sticky 는 행과 ⋯ 메뉴를 감싼 `.repo-row-head` 가 진다 — 메뉴(absolute)가 붙은 헤더를 기준으로 열린다(r1 CDX-R1).
+   메뉴가 열린 묶음은 z 를 올린다 — 다음 묶음의 붙는 헤더(z 20)가 열린 메뉴를 덮지 않게. */
+.repo-row-head { position: sticky; top: -1px; z-index: 20; }
+.repo-row-head.is-menu-open { z-index: 30; }
 .repo-row {
-  position: sticky; top: -1px; z-index: 20;
+  position: relative;
   display: flex; align-items: center; gap: 6px;
   height: var(--h-repo-row); padding: 0 8px 0 10px; cursor: pointer; overflow: hidden; text-align: left;
   background: var(--bg-sidebar);

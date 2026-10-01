@@ -38,8 +38,9 @@ export const POSITIVE_CONTROLS = [
 ]
 
 /**
- * **해소로 뒤집힌 대조** — 관문이 아니다. `--controls` 회차마다 같은 판정기로 돌려 **뒤집혔는지**(= 더는 못 잡는지)를
- * 보고서에 남긴다. 여기서 `pass: false` 가 정상이다 — 다시 잡히면 해소가 되돌아갔다는 뜻이다.
+ * **해소로 뒤집힌 대조** — 관문이 아니다. `--controls` 회차마다 `evaluateResolvedControls` 로 상태를 셋으로 갈라 보고서에 남긴다:
+ * 판정 불가(미측정·측정 불가 행·한쪽 부재) / 관련 차이 없음(= 해소 유지) / 관련 차이 있음. 「해소 유지」는 두 앱 다 관측됐고
+ * 옛 차이를 정의한 속성의 차이가 **하나도** 없을 때만이다 — 양성 대조가 실패했다는 사실만으로는 같아졌다는 증거가 아니다(r1 CDX-R3).
  */
 export const RESOLVED_CONTROLS = [
   {
@@ -120,5 +121,47 @@ export function evaluateControls({ results = [], prerequisites = {}, controls = 
     }
 
     return { ...row, pass: false, evidence, verdict: '대조 정의가 기대를 적지 않았다 — 실패' }
+  })
+}
+
+/** 해소된 옛 대조의 상태 — 판정 불가 / 관련 차이 없음(해소 유지) / 관련 차이 있음. */
+export const RESOLVED_STATUS = {
+  unknown: '판정 불가',
+  clear: '관련 차이 없음 — 해소 유지',
+  present: '관련 차이 있음 — 해소가 되돌아갔나 확인'
+}
+
+/**
+ * 해소된 옛 대조를 판정한다. 양성 대조 판정기(`evaluateControls`)의 「못 잡았다」를 뒤집어 쓰지 않는다 — 측정 불가도 「못 잡았다」로 가기 때문이다.
+ * - 판정 불가: 그 영역·상태를 재지 않았다 · 그 단위에 측정 불가 행(unpaired·selector-miss·truncated)이 있다 · 한쪽이 없다(missing).
+ *   diff 는 한쪽이라도 선택자가 0개면 selector-miss/missing 을 내므로, 이 셋이 없으면 두 앱 다 관측된 것이다.
+ * - 관련 차이 있음: 옛 차이를 정의한 속성(`expect.props`) 중 **하나라도** 다르다 — box·style 둘 다일 필요가 없다(색만 바뀌어도 해소 유지가 아니다).
+ *   속성 목록이 없는 행(font·count)도 관련 차이로 센다.
+ * - 관련 차이 없음: 위 둘이 아니다.
+ * @param results 영역별 결과 `[{ area, states: [{ state, findings, skipped }] }]`
+ * @param controls 기본은 `RESOLVED_CONTROLS`
+ */
+export function evaluateResolvedControls({ results = [], controls = RESOLVED_CONTROLS } = {}) {
+  return controls.map((control) => {
+    const area = results.find((entry) => entry.area === control.area)
+    const state = area?.states?.find((entry) => entry.state === control.state)
+    const row = { id: control.id, area: control.area, state: control.state, unit: control.unit, claim: control.claim }
+    if (!area || !state || state.skipped) {
+      return { ...row, status: 'unknown', evidence: '(그 영역·상태를 재지 않았다)', verdict: `${RESOLVED_STATUS.unknown} — 측정 안 됨` }
+    }
+    const all = (state.findings ?? []).filter((finding) => finding.id === control.unit)
+    const evidence = all.length > 0 ? all.map((hit) => `${hit.kind}: ${JSON.stringify(hit.detail).slice(0, 90)}`).join(' / ') : '(행 없음)'
+    const blocked = all.filter((hit) => DISQUALIFYING.has(hit.kind) || hit.kind === 'missing')
+    if (blocked.length > 0) {
+      return { ...row, status: 'unknown', evidence, verdict: `${RESOLVED_STATUS.unknown} — ${[...new Set(blocked.map((hit) => hit.kind))].join(',')}` }
+    }
+    const onlyProps = control.expect.props ? new Set(control.expect.props) : null
+    const relevantProps = all.flatMap((hit) =>
+      Array.isArray(hit.detail) ? hit.detail.filter((entry) => !onlyProps || onlyProps.has(entry.prop)).map((entry) => `${hit.kind}.${entry.prop}`) : [hit.kind]
+    )
+    if (relevantProps.length > 0) {
+      return { ...row, status: 'present', evidence, verdict: `${RESOLVED_STATUS.present} (${relevantProps.join(', ')})` }
+    }
+    return { ...row, status: 'clear', evidence, verdict: RESOLVED_STATUS.clear }
   })
 }

@@ -7,6 +7,7 @@
 // 사용: node app/scripts/l469/reorder-isolated.mjs --out <raw 폴더> [--work /tmp/l469i] [--port 9469]
 // 결과: <out>/result.json (검사 행 전부) · <out>/shots/*.png · <out>/prefs-*.json. 종료코드 0 = 전 검사 통과.
 
+/* global document, window, getComputedStyle, KeyboardEvent, Event -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -115,7 +116,9 @@ async function quit(label) {
   if (desktopPid !== null) {
     try {
       process.kill(desktopPid, 'SIGTERM')
-    } catch {}
+    } catch {
+      // 이미 끝났다 — 아래 대기가 확인한다.
+    }
     await until(() => {
       try {
         process.kill(desktopPid, 0)
@@ -722,6 +725,91 @@ async function main() {
   snap = await snapshot()
   check('K4b-refresh', 'K4ⓑ 목록 새로고침 뒤 순서 무변경', same({ repos: repoOrder(snap), alpha: wtOrder(snap, alpha), beta: wtOrder(snap, beta) }, orderBeforeSession), { repos: repoOrder(snap) })
 
+  // ── K9ⓑ 스모크 — S3 가 건드린 사이드바의 기존 동작 ──
+  {
+    const sb = () => cdp.evaluate(() => ({ present: document.querySelector('[data-sidebar]') !== null, width: document.querySelector('[data-sidebar]')?.getBoundingClientRect().width ?? null }))
+    const w0 = await sb()
+    await click(await pointOf({ attr: 'data-sidebar-toggle' }))
+    const hidden = await sb()
+    await click(await pointOf({ attr: 'data-sidebar-show' }))
+    await waitFor(async () => (await sb()).present, 'sidebar back', 10_000).catch(() => null)
+    const shown = await sb()
+    check('K9b-sidebar-collapse', 'K9ⓑ 사이드바 접기·펼치기', w0.present && !hidden.present && shown.present, { w0, hidden, shown })
+    const handle = await pointOf({ attr: 'data-sidebar-resizer' })
+    await drag(handle, { x: handle.x + 60, y: handle.y }, { steps: 8 })
+    const widened = await sb()
+    check('K9b-sidebar-resize', 'K9ⓑ 사이드바 폭 조절(+60px 끌기 → 넓어짐)', widened.width > shown.width + 30, { before: shown.width, after: widened.width })
+    await drag(await pointOf({ attr: 'data-sidebar-resizer' }), { x: handle.x, y: handle.y }, { steps: 8 })
+
+    const caretBefore = (await snapshot()).repos.find((repo) => repo.root === gamma).collapsed
+    await mouse('mouseMoved', await headerPoint(gamma), { buttons: 0 })
+    await pause(120)
+    await click(await pointOf({ attr: 'data-repo-caret', value: gamma }))
+    const caretAfter = (await snapshot()).repos.find((repo) => repo.root === gamma).collapsed
+    await click(await pointOf({ attr: 'data-repo-caret', value: gamma }))
+    check('K9b-repo-collapse', 'K9ⓑ 레포 셰브론 접기/펼치기', caretBefore === false && caretAfter === true && (await snapshot()).repos.find((repo) => repo.root === gamma).collapsed === false, { caretBefore, caretAfter })
+
+    // 에이전트 묶음 — a-one workspace 에 에이전트 탭을 하나 더 → 루트 2개 = 알약(기본 접힘) → 눌러 펼침.
+    const st = (await rpc(control, { cmd: 'state' })).state
+    const aOneRow = st.repos.find((repo) => repo.root === alpha).worktrees.find((row) => row.path === wtA('a-one'))
+    const created = await backendRpc('tab.create', { workspace_id: aOneRow.openWorkspaceId })
+    const snapshotTabs = await backendRpc('session.snapshot')
+    const newPane = (snapshotTabs?.snapshot?.panes ?? []).find((pane) => pane.tab_id === created?.tab?.tab_id)?.pane_id
+    if (newPane) await backendRpc('pane.report_agent', { pane_id: newPane, source: 'l469', agent: 'codex', state: 'idle', message: 'l469 second' })
+    const groupP = await waitFor(async () => pointOf({ attr: 'data-agent-group', value: wtA('a-one') }), 'agent group pill', 20_000).then(() => pointOf({ attr: 'data-agent-group', value: wtA('a-one') })).catch(() => null)
+    const rowsCollapsed = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
+    if (groupP) await click(groupP)
+    const rowsExpanded = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
+    check('K9b-agent-group', 'K9ⓑ 에이전트 묶음 알약 펼침(접힘 0행 → 펼침 2행)', groupP !== null && rowsCollapsed === 0 && rowsExpanded === 2, { groupP: groupP !== null, rowsCollapsed, rowsExpanded, newPane: newPane ?? null })
+
+    await mouse('mouseMoved', await cardPoint(wtA('a-one')), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-worktree-menu-toggle', value: wtA('a-one') }))
+    const wtMenu = await cdp.evaluate(() => document.querySelector('[data-worktree-menu]') !== null)
+    await click(await pointOf({ attr: 'data-worktree-menu-toggle', value: wtA('a-one') }))
+    await mouse('mouseMoved', await headerPoint(beta), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-repo-menu-toggle', value: beta }))
+    const repoMenu = await cdp.evaluate(() => document.querySelector('.repo-row-menu[data-repo-menu], .repo-row-menu:not([data-worktree-menu])') !== null)
+    await click(await pointOf({ attr: 'data-repo-menu-toggle', value: beta }))
+    check('K9b-menus', 'K9ⓑ 워크트리 ⋯ 메뉴·레포 ⋯ 메뉴 열림', wtMenu && repoMenu, { wtMenu, repoMenu })
+
+    await mouse('mouseMoved', await headerPoint(beta), { buttons: 0 })
+    await pause(150)
+    await click(await pointOf({ attr: 'data-create-worktree', value: beta }))
+    const modal = await waitFor(async () => cdp.evaluate(() => document.querySelector('[data-create-worktree-modal]') !== null), 'create modal', 5_000).then(() => true).catch(() => false)
+    await click(await pointOf({ attr: 'data-create-worktree-cancel' }))
+    const modalGone = await cdp.evaluate(() => document.querySelector('[data-create-worktree-modal]') === null)
+    check('K9b-create-plus', 'K9ⓑ 레포 + → 워크트리 생성 모달 열림·취소', modal && modalGone, { modal, modalGone })
+
+    check('K9b-session-close', 'K9ⓑ 세션 닫기(worktree 닫기) 실제로 닫힘', afterClose.bTwoOpen === false, { bTwoOpen: afterClose.bTwoOpen })
+
+    // sticky — 스크롤해 붙은 헤더를 눌러도 접힌다(붙은 헤더가 클릭을 먹지 않는다, Orca #12532 결).
+    await setViewport(cdp, { width: 1200, height: 420 })
+    await pause(200)
+    const top = repoOrder(await snapshot())[0]
+    await cdp.evaluate(() => {
+      // 맨 위 묶음 높이 안쪽으로만 스크롤한다 — 묶음 끝에 가까우면 다음 헤더가 밀어 올려 붙은 상태가 아니다(run8: 120px 은 delta 묶음 끝).
+      document.querySelector('[data-repo-list]').scrollTop = 40
+    })
+    await pause(200)
+    const stuck = await cdp.evaluate((root) => {
+      const list = document.querySelector('[data-repo-list]')
+      const head = [...list.querySelectorAll(':scope > [data-repo]')].find((el) => el.getAttribute('data-repo') === root).querySelector('[data-repo-head]')
+      return { stuck: Math.abs(head.getBoundingClientRect().top - list.getBoundingClientRect().top) <= 2, scrollTop: list.scrollTop }
+    }, top)
+    await click(await headerPoint(top))
+    const stuckCollapsed = (await snapshot()).repos.find((repo) => repo.root === top).collapsed
+    await cdp.evaluate(() => {
+      document.querySelector('[data-repo-list]').scrollTop = 0
+    })
+    await pause(150)
+    await click(await headerPoint(top))
+    await setViewport(cdp, { width: 1200, height: Number(args.height ?? 1500) })
+    await pause(200)
+    check('K9b-sticky', 'K9ⓑ sticky 헤더(스크롤해 붙은 상태) 클릭 → 접힘', stuck.stuck && stuck.scrollTop > 0 && stuckCollapsed === true && (await snapshot()).repos.find((repo) => repo.root === top).collapsed === false, { stuck, stuckCollapsed })
+  }
+
   // ── K4ⓐ 재시작 3회 — 순서 그대로 ──
   for (let round = 1; round <= 3; round++) {
     const beforeQuit = await snapshot()
@@ -729,7 +817,10 @@ async function main() {
     const fileBefore = prefsHash()
     await quit(`R${round}`)
     await launch(`L${round + 1}`)
-    await waitFor(async () => (await snapshot()).repos.length === want.repos.length && (await snapshot()).repos.every((repo) => repo.worktrees.length > 0), 'relaunch rendered', 90_000)
+    await waitFor(async () => {
+      const got = await snapshot()
+      return got.repos.length === want.repos.length && got.repos.every((repo) => repo.collapsed || repo.worktrees.length === want.wts[repo.root]?.length)
+    }, 'relaunch rendered', 90_000)
     await settle()
     const got = await snapshot()
     check(`K4a-restart-${round}`, `K4ⓐ 재시작 ${round}회차 — 레포·카드 순서 그대로`, same(repoOrder(got), want.repos) && same(Object.fromEntries(got.repos.map((repo) => [repo.root, repo.worktrees])), want.wts), { want, got: { repos: repoOrder(got) }, fileUnchangedByRestart: prefsHash() === fileBefore })
@@ -775,7 +866,9 @@ try {
   if (backend?.pid) {
     try {
       process.kill(backend.pid, 'SIGTERM')
-    } catch {}
+    } catch {
+      // 이미 끝났다 — aliveAfterCleanup 이 확인한다.
+    }
   }
   await pause(800)
   const alive = spawned.filter((row) => {

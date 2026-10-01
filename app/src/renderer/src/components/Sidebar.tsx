@@ -129,7 +129,7 @@ export function Sidebar({
               repo={repo}
               reordering={reorder.state !== null}
               dragging={dragSource?.kind === 'repo' && dragSource.root === repo.root}
-              onHeadMouseDown={(event) => reorder.onRepoMouseDown(event, repo.root)}
+              onHeadMouseDown={(event) => reorder.onRepoMouseDown({ event, root: repo.root })}
               collapsed={isRepoCollapsed(repo.root)}
               onToggleCollapse={() => toggleRepoCollapsed(repo.root)}
               onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
@@ -144,7 +144,7 @@ export function Sidebar({
                     reordering={reorder.state !== null}
                     dragging={dragSource?.kind === 'card' && dragSource.path === worktree.path}
                     // 주 체크아웃은 맨 위 고정 — 끌기 핸들을 달지 않는다(198 `section-order.ts:66-74`, K2ⓑ).
-                    onCardMouseDown={worktree.isLinked ? (event) => reorder.onCardMouseDown(event, repo.root, worktree.path) : undefined}
+                    onCardMouseDown={worktree.isLinked ? (event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: worktree.path }) : undefined}
                     integrations={state.integrations}
                     home={state.home}
                     now={now}

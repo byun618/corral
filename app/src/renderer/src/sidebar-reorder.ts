@@ -16,12 +16,16 @@ const MAX_FRAME_MS = 32
 
 export type Point = { x: number; y: number }
 
-export function hasCrossedReorderThreshold(start: Point, current: Point): boolean {
+export function hasCrossedReorderThreshold(input: { start: Point; current: Point }): boolean {
+  const { start, current } = input
   return Math.hypot(current.x - start.x, current.y - start.y) >= REORDER_DRAG_THRESHOLD_PX
 }
 
-/** 레포 묶음 하나 — `top`=묶음 윗변, `headerBottom`=헤더 아랫변, `bottom`=묶음 아랫변. */
-export type RepoSlotRect = { top: number; headerBottom: number; bottom: number }
+/**
+ * 레포 묶음 하나 — `top`·`bottom`=묶음 윗변·아랫변, `headTop`·`headBottom`=헤더가 **지금 그려진** 윗변·아랫변.
+ * 헤더는 묶음 안에서 sticky 라 스크롤되면 묶음 윗변과 떨어진다 — 둘을 따로 받아야 붙은 헤더의 중점이 맞는다(R1-05).
+ */
+export type RepoSlotRect = { top: number; bottom: number; headTop: number; headBottom: number }
 /** 카드 하나 — 카드 행 윗변·아랫변. */
 export type ItemRect = { top: number; bottom: number }
 
@@ -35,6 +39,9 @@ function boundaryY(rects: readonly ItemRect[], slot: number): number {
   if (next !== undefined) return next.top
   return prev !== undefined ? prev.bottom : 0
 }
+
+/** 붙은 헤더 앞 슬롯의 표시 줄 — 경계(묶음 윗변)는 화면 위로 숨었으니 헤더 윗변 바로 안쪽에 그린다(점 3px + 테두리 2px). */
+const STUCK_HEAD_INDICATOR_INSET_PX = 5
 
 /** 목록 위·아래 바깥 판정 (198 `getWorktreeSidebarBoundaryDrop`) — 끝 슬롯 56px 안이면 그 끝, 더 멀면 바깥(=취소). */
 function edgeSlot(rects: readonly ItemRect[], y: number): DropSlot | 'outside' | 'inside' {
@@ -51,19 +58,26 @@ function edgeSlot(rects: readonly ItemRect[], y: number): DropSlot | 'outside' |
 }
 
 /**
- * 레포 헤더를 끄는 중 — 놓일 경계. 헤더 띠 위면 헤더 중점 기준 위/아래, 펼친 구획의 카드 위면 **가까운 경계**(C5:
- * 카드 영역 위에서도 표시가 사라지지 않는다). 목록에서 멀리 벗어나면 `null`(놓으면 취소).
+ * 레포 헤더를 끄는 중 — 놓일 경계. 헤더 위면 **헤더 실제 범위의 중점** 기준 위/아래(붙은 헤더 포함 — R1-05), 펼친
+ * 구획의 카드 위면 **가까운 경계**(C5: 카드 영역 위에서도 표시가 사라지지 않는다). 목록에서 멀리 벗어나면 `null`(놓으면 취소).
  */
 export function resolveRepoDropSlot(input: { rects: readonly RepoSlotRect[]; y: number }): DropSlot | null {
   const { rects, y } = input
   const edge = edgeSlot(rects, y)
   if (edge === 'outside') return null
   if (edge !== 'inside') return edge
+  // 헤더를 먼저 본다 — 붙은 헤더는 자기 묶음 본문 위에 겹쳐 그려진다.
+  for (let index = 0; index < rects.length; index++) {
+    const rect = rects[index]
+    if (rect === undefined || y < rect.headTop || y > rect.headBottom) continue
+    if (y >= (rect.headTop + rect.headBottom) / 2) return { slot: index + 1, indicatorY: boundaryY(rects, index + 1) }
+    const stuck = rect.headTop > rect.top
+    return { slot: index, indicatorY: stuck ? rect.headTop + STUCK_HEAD_INDICATOR_INSET_PX : boundaryY(rects, index) }
+  }
   for (let index = 0; index < rects.length; index++) {
     const rect = rects[index]
     if (rect === undefined || y < rect.top || y > rect.bottom) continue
-    const pivot = y <= rect.headerBottom ? (rect.top + rect.headerBottom) / 2 : (rect.top + rect.bottom) / 2
-    const slot = y < pivot ? index : index + 1
+    const slot = y < (rect.top + rect.bottom) / 2 ? index : index + 1
     return { slot, indicatorY: boundaryY(rects, slot) }
   }
   // 묶음 사이 틈 — 아래쪽 묶음의 윗경계.

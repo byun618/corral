@@ -13,17 +13,17 @@ import {
 describe('시작 임계 (K3ⓐ, 198 4px)', () => {
   it('4px 미만은 클릭, 4px 부터 드래그', () => {
     expect(REORDER_DRAG_THRESHOLD_PX).toBe(4)
-    expect(hasCrossedReorderThreshold({ x: 0, y: 0 }, { x: 0, y: 3 })).toBe(false)
-    expect(hasCrossedReorderThreshold({ x: 0, y: 0 }, { x: 2, y: 2 })).toBe(false)
-    expect(hasCrossedReorderThreshold({ x: 0, y: 0 }, { x: 0, y: 4 })).toBe(true)
+    expect(hasCrossedReorderThreshold({ start: { x: 0, y: 0 }, current: { x: 0, y: 3 } })).toBe(false)
+    expect(hasCrossedReorderThreshold({ start: { x: 0, y: 0 }, current: { x: 2, y: 2 } })).toBe(false)
+    expect(hasCrossedReorderThreshold({ start: { x: 0, y: 0 }, current: { x: 0, y: 4 } })).toBe(true)
   })
 })
 
 // 레포 셋: 0 = 펼친 레포(헤더 28 + 카드 영역 200), 1 = 접힌 레포, 2 = 펼친 레포. 묶음 사이 4px 틈 포함.
 const REPOS: RepoSlotRect[] = [
-  { top: 0, headerBottom: 28, bottom: 228 },
-  { top: 228, headerBottom: 260, bottom: 260 },
-  { top: 260, headerBottom: 292, bottom: 400 },
+  { top: 0, bottom: 228, headTop: 0, headBottom: 28 },
+  { top: 228, bottom: 260, headTop: 228, headBottom: 260 },
+  { top: 260, bottom: 400, headTop: 260, headBottom: 292 },
 ]
 
 describe('레포 드롭 경계 (K1·K3ⓓ C5)', () => {
@@ -47,9 +47,24 @@ describe('레포 드롭 경계 (K1·K3ⓓ C5)', () => {
   it('맨 위·맨 아래 — 끝 56px 안이면 끝 슬롯, 더 멀면 null(놓으면 취소)', () => {
     expect(resolveRepoDropSlot({ rects: REPOS, y: 440 })?.slot).toBe(3)
     expect(resolveRepoDropSlot({ rects: REPOS, y: 500 })).toBeNull()
-    const shifted = REPOS.map((rect) => ({ top: rect.top + 100, headerBottom: rect.headerBottom + 100, bottom: rect.bottom + 100 }))
+    const shifted = REPOS.map((rect) => ({ top: rect.top + 100, bottom: rect.bottom + 100, headTop: rect.headTop + 100, headBottom: rect.headBottom + 100 }))
     expect(resolveRepoDropSlot({ rects: shifted, y: 60 })?.slot).toBe(0)
     expect(resolveRepoDropSlot({ rects: shifted, y: 10 })).toBeNull()
+  })
+
+  it('R1-05 — 붙은(sticky) 헤더는 묶음 윗변이 아니라 헤더 실제 범위의 중점으로 가른다', () => {
+    // 리뷰 재현: A 묶음 0..600, scrollTop 300 이라 A 헤더가 300..328 에 붙어 있다. 상반부(305) = A 앞.
+    const stuck: RepoSlotRect[] = [
+      { top: 0, bottom: 600, headTop: 300, headBottom: 328 },
+      { top: 600, bottom: 750, headTop: 600, headBottom: 628 },
+    ]
+    const upper = resolveRepoDropSlot({ rects: stuck, y: 305 })
+    expect(upper?.slot).toBe(0)
+    // 앞 경계(0)는 화면 위로 숨었다 — 표시 줄은 붙은 헤더 윗변 바로 안쪽에.
+    expect(upper?.indicatorY).toBe(305)
+    expect(resolveRepoDropSlot({ rects: stuck, y: 320 })?.slot).toBe(1)
+    // 붙은 헤더 아래 카드 영역은 그대로 가까운 경계(C5).
+    expect(resolveRepoDropSlot({ rects: stuck, y: 400 })?.slot).toBe(1)
   })
 
   it('표시 줄 y 는 경계(틈 가운데·첫 윗변·끝 아랫변)', () => {

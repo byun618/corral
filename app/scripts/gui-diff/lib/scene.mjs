@@ -42,7 +42,7 @@ export const SCENE_SELECTORS = {
 
 export const LONG_WORKTREE_BRANCH = 'feature/LIFE-468-a-deliberately-long-worktree-branch-name-that-must-truncate-in-one-line'
 
-const git = (args, cwd) =>
+const git = ({ args, cwd }) =>
   spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
@@ -233,18 +233,18 @@ async function setLongWorktree({ orca, corral, orcaRepoId, fixture, want }) {
   const wtPath = path.join(path.dirname(fixture.root), 'gui-diff-fixture-long')
   const exists = fs.existsSync(wtPath)
   if (want && !exists) {
-    const added = git(['worktree', 'add', '-b', LONG_WORKTREE_BRANCH, wtPath], fixture.root)
+    const added = git({ args: ['worktree', 'add', '-b', LONG_WORKTREE_BRANCH, wtPath], cwd: fixture.root })
     if (added.status !== 0) {
       // 브랜치가 남아 있으면 그 브랜치로 다시 붙인다.
-      const again = git(['worktree', 'add', wtPath, LONG_WORKTREE_BRANCH], fixture.root)
+      const again = git({ args: ['worktree', 'add', wtPath, LONG_WORKTREE_BRANCH], cwd: fixture.root })
       if (again.status !== 0) throw new Error(`[scene] git worktree add: ${added.stderr}${again.stderr}`)
     }
   } else if (!want && exists) {
-    git(['worktree', 'remove', '--force', wtPath], fixture.root)
-    git(['branch', '-D', LONG_WORKTREE_BRANCH], fixture.root)
+    git({ args: ['worktree', 'remove', '--force', wtPath], cwd: fixture.root })
+    git({ args: ['branch', '-D', LONG_WORKTREE_BRANCH], cwd: fixture.root })
   } else if (!want && !exists) {
     // 지난 회차가 남긴 브랜치 — 워크트리가 없으면 카드도 없다. 지우기만 한다.
-    git(['branch', '-D', LONG_WORKTREE_BRANCH], fixture.root)
+    git({ args: ['branch', '-D', LONG_WORKTREE_BRANCH], cwd: fixture.root })
     return
   }
   await refreshWorktrees({ orca, corral, orcaRepoId, expected: want ? 3 : 2 })
@@ -253,9 +253,9 @@ async function setLongWorktree({ orca, corral, orcaRepoId, fixture, want }) {
 /** 회차 시작 때 fixture 를 기본 모양(워크트리 2개)으로 — 앞 회차가 남긴 긴 워크트리를 걷는다. 앱을 띄우기 **전에** 부른다. */
 export function resetFixtureScene(fixture) {
   const wtPath = path.join(path.dirname(fixture.root), 'gui-diff-fixture-long')
-  if (fs.existsSync(wtPath)) git(['worktree', 'remove', '--force', wtPath], fixture.root)
-  git(['worktree', 'prune'], fixture.root)
-  git(['branch', '-D', LONG_WORKTREE_BRANCH], fixture.root)
+  if (fs.existsSync(wtPath)) git({ args: ['worktree', 'remove', '--force', wtPath], cwd: fixture.root })
+  git({ args: ['worktree', 'prune'], cwd: fixture.root })
+  git({ args: ['branch', '-D', LONG_WORKTREE_BRANCH], cwd: fixture.root })
 }
 
 /**

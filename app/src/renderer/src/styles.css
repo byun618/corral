@@ -729,6 +729,9 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 
 .tab-menu-section { padding: 6px 10px 2px; font-size: var(--fs-meta); color: var(--fg-faint); }
 .tab-menu-key { margin-left: auto; padding-left: 12px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint); }
+/* hover 된 항목의 단축키 — hover 칠 --bg-menu-hover(#404040) 위 --fg-faint 는 1.33:1 로 묻힌다(LIFE-468 r2 CDX-R2-2).
+   Orca `ContextMenuShortcut` 전경 `text-muted-foreground/85` 로 올린다. 쉴 때(메뉴 바탕 위)는 그대로 둔다. */
+.repo-row-menu-item:hover .tab-menu-key { color: color-mix(in srgb, var(--fg-muted) 85%, transparent); }
 /* LIFE-387 B1 — 헤더 모드 첫 줄("탭 · {이름}") + "다른 영역으로" 배지(숫자). */
 .tab-menu-header-mode { color: var(--fg-dim); padding-top: 8px; }
 .tab-menu-group-badge {

@@ -133,8 +133,9 @@ export const RESOLVED_STATUS = {
 
 /**
  * 해소된 옛 대조를 판정한다. 양성 대조 판정기(`evaluateControls`)의 「못 잡았다」를 뒤집어 쓰지 않는다 — 측정 불가도 「못 잡았다」로 가기 때문이다.
- * - 판정 불가: 그 영역·상태를 재지 않았다 · 그 단위에 측정 불가 행(unpaired·selector-miss·truncated)이 있다 · 한쪽이 없다(missing).
- *   diff 는 한쪽이라도 선택자가 0개면 selector-miss/missing 을 내므로, 이 셋이 없으면 두 앱 다 관측된 것이다.
+ * - 판정 불가: 그 영역·상태를 재지 않았다 · 그 단위에 측정 불가 행(unpaired·selector-miss·truncated)이 있다 · 한쪽이 없다(missing) ·
+ *   **두 앱 중 하나라도 그 단위를 실제로 관측하지 못했다**(`state.observed[unit]` 의 left/right 가 0 이거나 관측 기록이 없다).
+ *   차이 행이 없다는 것은 관측 근거가 아니다 — 조건부 단위는 양쪽 다 0개여도 diff 가 행을 내지 않는다(r2 CDX-R2-1).
  * - 관련 차이 있음: 옛 차이를 정의한 속성(`expect.props`) 중 **하나라도** 다르다 — box·style 둘 다일 필요가 없다(색만 바뀌어도 해소 유지가 아니다).
  *   속성 목록이 없는 행(font·count)도 관련 차이로 센다.
  * - 관련 차이 없음: 위 둘이 아니다.
@@ -162,6 +163,12 @@ export function evaluateResolvedControls({ results = [], controls = RESOLVED_CON
     if (relevantProps.length > 0) {
       return { ...row, status: 'present', evidence, verdict: `${RESOLVED_STATUS.present} (${relevantProps.join(', ')})` }
     }
-    return { ...row, status: 'clear', evidence, verdict: RESOLVED_STATUS.clear }
+    // 「해소 유지」는 두 앱이 그 단위를 **봤을 때만**이다. box·style 행은 양쪽이 있을 때만 생기므로 위 「관련 차이 있음」은 이 근거가 필요 없다.
+    const seen = state.observed?.[control.unit]
+    if (!seen || !(seen.left > 0) || !(seen.right > 0)) {
+      const observedText = seen ? `Orca ${seen.left}개 · corral ${seen.right}개` : '관측 기록 없음'
+      return { ...row, status: 'unknown', evidence: `${evidence} · 관측 ${observedText}`, verdict: `${RESOLVED_STATUS.unknown} — 두 앱 관측 근거 없음(${observedText})` }
+    }
+    return { ...row, status: 'clear', evidence: `${evidence} · 관측 Orca ${seen.left}개 · corral ${seen.right}개`, verdict: RESOLVED_STATUS.clear }
   })
 }

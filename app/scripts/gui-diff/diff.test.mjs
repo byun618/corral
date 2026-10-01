@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { MAX_CHILDREN, diffBox, diffBoxWithBelow, diffStyle, diffSnapshots, diffFonts, diffItemFonts, fontState, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { selectOwnedByPath, commandPathTokens, isPathInside, normalizePath, planSignals, classifyPathSurvivors, commandMentionsPath, parseProcessList, commandIncludesPath, pathDiagnosis, cleanVerdict } from './lib/own.mjs'
 import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png.mjs'
@@ -219,9 +220,11 @@ test('compareMeta: 완전히 대칭이면 경고 없음', () => {
 
 // ---- 양성 대조의 판별력 (F9) — 「차이가 있다」와 「그 차이를 잡았다」는 다르다 ----
 
-const controlResults = (findings, { area = 'sidebar', state = 'agents-2' } = {}) => [
-  { area, states: [{ state, findings }] }
+const controlResults = (findings, { area = 'sidebar', state = 'agents-2', observed } = {}) => [
+  { area, states: [{ state, findings, ...(observed ? { observed } : {}) }] }
 ]
+// 해소된 옛 대조 단위를 두 앱이 실제로 본 기록 — diffSnapshots 의 `observed` 모양 (r2 CDX-R2-1)
+const ICON_SEEN = { 'repo-header-icon': { left: 1, right: 1 } }
 const PREREQ = { orcaCompact: true, orcaNotSendTarget: true }
 const controlResultsA = (findings) => controlResults(findings, { state: 'default' })
 const controlA = POSITIVE_CONTROLS.filter((control) => control.id === 'C6ⓐ')
@@ -297,7 +300,7 @@ test('C6ⓑ(옛, 해소됨) — box+style 둘 다 있어야 잡힘, 하나만이
 })
 
 test('C6ⓑ(옛) — 해소 뒤 두 앱 다 관측되고 행이 없으면 「해소 유지」 (LIFE-468 K4ⓕ)', () => {
-  const rows = evaluateResolvedControls({ results: controlResults([], { state: 'default' }), controls: resolvedB })
+  const rows = evaluateResolvedControls({ results: controlResults([], { state: 'default', observed: ICON_SEEN }), controls: resolvedB })
   assert.equal(rows[0].status, 'clear')
   assert.match(rows[0].verdict, /해소 유지/)
 })
@@ -309,7 +312,7 @@ test('C6ⓑ(옛) — 영역 공통 y 오프셋·상속 fontSize 만 남으면 �
         { id: 'repo-header-icon', kind: 'box', detail: [{ prop: 'y', left: 192, right: 120, delta: -72 }] },
         { id: 'repo-header-icon', kind: 'style', detail: [{ prop: 'fontSize', left: '16px', right: '13px' }, { prop: 'lineHeight', left: '24px', right: 'normal' }] }
       ],
-      { state: 'default' }
+      { state: 'default', observed: ICON_SEEN }
     ),
     controls: resolvedB
   })
@@ -357,7 +360,9 @@ test('C6ⓑ(옛) — 보고서 칸도 같은 상태를 적는다: 음성 4건은
     return report.split('\n').find((entry) => entry.startsWith('| C6ⓑ(옛)'))
   }
   for (const negative of RESOLVED_NEGATIVES) assert.doesNotMatch(line(negative.results), /해소 유지/, negative.label)
-  assert.match(line(controlResults([], { state: 'default' })), /해소 유지/)
+  assert.match(line(controlResults([], { state: 'default', observed: ICON_SEEN })), /해소 유지/)
+  // 관측 기록이 없으면 행이 없어도 해소 유지가 아니다 (r2 CDX-R2-1)
+  assert.doesNotMatch(line(controlResults([], { state: 'default' })), /해소 유지/)
 })
 
 test('C6ⓑ(새) — corral 있음 / Orca 없음(브랜드 줄)이면 통과, 방향이 반대면 실패', () => {
@@ -864,4 +869,47 @@ test('I1 — 목록 파싱은 공백·빈 줄·잘린 줄을 버리고 명령줄
     { pid: 12, command: '/bin/sh -c "a b  c"' },
     { pid: 14, command: '/usr/bin/foo' }
   ])
+})
+
+// r2 CDX-R2-1 — 실제 diffSnapshots → evaluateResolvedControls → renderReport 전체 경로. 영역 정의의 진짜 단위(conditional)를 쓴다.
+// 리뷰어 반례(raw/codex-r2/pure-checks.mjs): 조건부 단위가 양쪽 0개면 diff 가 행을 안 내서 「해소 유지」로 떨어졌다.
+const SIDEBAR_AREA = JSON.parse(fs.readFileSync(new URL('./areas/sidebar.json', import.meta.url), 'utf8'))
+const ICON_UNIT = SIDEBAR_AREA.units.find((unit) => unit.id === 'repo-header-icon')
+const iconItem = (style) => ({ index: 0, present: true, box: { x: 15, y: 120, w: 14, h: 14 }, style, text: '', tag: 'svg', platformFonts: [] })
+const iconRecord = (style) => (style ? { declaredAbsent: false, present: true, count: 1, countAll: 1, items: [iconItem(style)] } : { present: false, count: 0, countAll: 0, items: [] })
+const ICON_STYLE = { display: 'block', color: 'rgb(115, 115, 115)', backgroundColor: 'rgba(0, 0, 0, 0)' }
+const fullPath = ({ left, right }) => {
+  const diff = diffSnapshots({ app: 'orca', elements: { [ICON_UNIT.id]: iconRecord(left) } }, { app: 'corral', elements: { [ICON_UNIT.id]: iconRecord(right) } }, { units: [ICON_UNIT] })
+  const resolvedControls = evaluateResolvedControls({ results: [{ area: 'sidebar', states: [{ state: 'default', findings: diff.findings, observed: diff.observed }] }], controls: resolvedB })
+  const report = renderReport({ date: 'synthetic', runs: 'synthetic', areas: [], notes: { conditions: [], warnings: [], stateMatrix: [], noiseFloor: [], controlsMode: true, positiveControls: [], resolvedControls } })
+  return { diff, row: resolvedControls[0], line: report.split('\n').find((entry) => entry.startsWith('| C6ⓑ(옛)')) }
+}
+
+test('C6ⓑ(옛) 전체 경로 — 조건부 단위가 양쪽 0개면 판정 불가(리뷰어 반례, r2 CDX-R2-1)', () => {
+  assert.equal(ICON_UNIT.conditional, true)
+  const { diff, row, line } = fullPath({ left: null, right: null })
+  assert.deepEqual(diff.findings, [])
+  assert.deepEqual(diff.observed[ICON_UNIT.id], { left: 0, right: 0 })
+  assert.equal(row.status, 'unknown')
+  assert.doesNotMatch(line, /해소 유지/)
+  assert.match(line, /판정 불가/)
+})
+
+test('C6ⓑ(옛) 전체 경로 — 양쪽 관측 · 차이 없음이면 해소 유지', () => {
+  const { diff, row, line } = fullPath({ left: ICON_STYLE, right: ICON_STYLE })
+  assert.deepEqual(diff.findings, [])
+  assert.equal(row.status, 'clear')
+  assert.match(line, /해소 유지/)
+})
+
+test('C6ⓑ(옛) 전체 경로 — 양쪽 관측 · 관련 속성(색) 차이면 관련 차이 있음', () => {
+  const { diff, row, line } = fullPath({ left: ICON_STYLE, right: { ...ICON_STYLE, color: 'rgb(255, 0, 0)' } })
+  assert.ok(diff.findings.some((finding) => finding.kind === 'style'))
+  assert.equal(row.status, 'present')
+  assert.match(line, /관련 차이 있음/)
+})
+
+test('C6ⓑ(옛) 전체 경로 — 한쪽만 0개면 판정 불가', () => {
+  const { row } = fullPath({ left: ICON_STYLE, right: null })
+  assert.equal(row.status, 'unknown')
 })

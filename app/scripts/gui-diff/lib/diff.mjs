@@ -325,11 +325,17 @@ export function diffSnapshots(left, right, options = {}) {
       }
     }
   }
+  // 단위별 **실제 관측 수** — 차이 행이 없다는 것만으로는 「같다」와 「양쪽 다 0개(조건부 부재)」를 못 가른다.
+  // 해소된 옛 대조(`evaluateResolvedControls`)가 「두 앱 다 그 단위를 봤다」를 근거로 쓴다 (LIFE-468 r2 CDX-R2-1).
+  const observed = Object.fromEntries(
+    ids.map((id) => [id, { left: left.elements?.[id]?.present ? left.elements[id].count ?? 1 : 0, right: right.elements?.[id]?.present ? right.elements[id].count ?? 1 : 0 }])
+  )
   return {
     left: { app: left.app ?? null, meta: left.meta ?? null },
     right: { app: right.app ?? null, meta: right.meta ?? null },
     tolerance,
     findings,
+    observed,
     // 허용치가 가린 것과 렌더 폰트를 못 잰 자리 — 차이 목록이 아니라 **기록**이다.
     belowTolerance,
     fontUnmeasured,

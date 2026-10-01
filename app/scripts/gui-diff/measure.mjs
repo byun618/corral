@@ -815,13 +815,13 @@ async function main() {
     const baseline = await ensureBaseline({ orca, corral, fixtureRoot: fixture.root })
     corral.workspaceId = baseline.corral?.workspace?.workspace_id ?? 'w1'
     // LIFE-468 장면의 기준 — 두 앱의 **기본 폭은 각자 관측한 값**이다(제품 기본값을 도구가 가정하지 않는다).
-    const sidebarWidthOf = (handle, selector) => handle.cdp.evaluate((sel) => Math.round(document.querySelector(sel)?.getBoundingClientRect().width ?? 0), selector)
+    const sidebarWidthOf = ({ handle, selector }) => handle.cdp.evaluate((sel) => Math.round(document.querySelector(sel)?.getBoundingClientRect().width ?? 0), selector)
     const base = {
       width: args.width,
       height: args.height,
       sidebarWidth: {
-        orca: await sidebarWidthOf(orca, '[data-native-file-drop-target="project-sidebar"]'),
-        corral: await sidebarWidthOf(corral, '[data-sidebar]')
+        orca: await sidebarWidthOf({ handle: orca, selector: '[data-native-file-drop-target="project-sidebar"]' }),
+        corral: await sidebarWidthOf({ handle: corral, selector: '[data-sidebar]' })
       }
     }
     log(`기준선: orca 탭 ${baseline.orca.tabs}개 / corral workspace ${baseline.corral?.workspace?.workspace_id ?? '?'}`)
@@ -937,6 +937,8 @@ async function main() {
           // 다음 작업자에게는 「허용치가 가린 것」과 「못 잰 폰트」가 없는 것으로 보였다.
           belowTolerance: result.belowTolerance,
           fontUnmeasured: result.fontUnmeasured,
+          // 해소된 옛 대조의 관측 근거 (r2 CDX-R2-1)
+          observed: result.observed,
           raw: `${rawRel}/${tag}-diff.json`
         })
         log(`${area.name}/${state}: 차이 ${result.summary.total}건 (자기 diff 잡음 ${noiseFloor.slice(-2).map((n) => n.total).join('/')})`)

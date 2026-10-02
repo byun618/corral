@@ -114,7 +114,22 @@ function ourWindow() {
 }
 const sameBounds = (a, b) => a !== null && b !== null && ['x', 'y', 'w', 'h'].every((key) => a.bounds[key] === b.bounds[key])
 class GuardStop extends Error {}
+/** 가드 지점별 로그(r3 L-10) — 통과·중단과 입력·재기동 표지를 한 시간축에. 결과 원자료 `guardLog`. */
+const mark = (event, detail = {}) => {
+  out.guardLog = out.guardLog ?? []
+  out.guardLog.push({ t: Date.now() - t0, event, ...detail })
+}
 function guard(label, expected, points) {
+  try {
+    const result = guardChecks(label, expected, points)
+    mark('guard-pass', { label, points: points.length })
+    return result
+  } catch (error) {
+    mark('guard-stop', { label, reason: String(error?.message ?? error).slice(0, 160) })
+    throw error
+  }
+}
+function guardChecks(label, expected, points) {
   const front = win('front')
   if (front.pid !== appPid) throw new GuardStop(`GUARD ${label}: 맨 앞 앱 pid ${front.pid} ≠ corral ${appPid} — 사용자가 Mac 을 쓰는 신호일 수 있다`)
   const now = ourWindow()
@@ -400,6 +415,7 @@ async function onlyM2() {
   save()
   // 실제 ⌘Q → 재기동.
   await cmdKey('m2-cmd-q', 12, 'q')
+  mark('os-input-last', { label: 'm2-cmd-q — 이 단계의 마지막 OS 입력, 이후는 제어 소켓 읽기만' })
   const oldPid = appPid
   await until(() => {
     try {
@@ -409,10 +425,13 @@ async function onlyM2() {
       return true
     }
   }, 'app exit after ⌘Q', 30_000)
+  mark('app-exited', { oldPid })
   const relaunch = spawnSync('sh', [path.join(path.dirname(new URL(import.meta.url).pathname), '../l470/native-app.sh'), root, appDir, rawd, 'second'], { encoding: 'utf8' })
   if (relaunch.status !== 0) throw new Error(`relaunch: ${relaunch.stdout}\n${relaunch.stderr}`)
   appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
+  mark('relaunched', { newPid: appPid })
   await until(async () => Object.keys((await read().catch(() => ({ cards: {} }))).cards).length === 2, 'gate cards after restart', 60_000)
+  mark('series-start', { input: 'none — read only' })
   // 재기동 뒤 10초 시간축 — A 벨이 한 번이라도 켜지는지, p7 행이 굵게 서는지.
   const series = []
   const startedAt = Date.now()
@@ -428,6 +447,7 @@ async function onlyM2() {
     series.push({ t: Date.now() - startedAt, bellA: r.cards[A]?.bell ?? null, bellB: r.cards[B]?.bell ?? null, p7: r.rows[p7] ?? null, afterExpand: true })
   }
   const last = series.at(-1)
+  mark('series-end', { samples: series.length })
   out.series = series
   out.herdrP7After = herdrP7()
   check('K10d-restart-fix1', 'K10ⓓ(fix1) 실제 ⌘Q → 재기동 → B 벨 유지 · prefs 그대로', last?.bellB === 'unread' && prefsBells()?.gate.length === 1 && prefsBells()?.gate[0] === B, { oldPid, newPid: appPid, last: { bellB: last?.bellB }, prefsGate: prefsBells()?.gate.length })

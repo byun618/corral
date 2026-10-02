@@ -60,11 +60,30 @@ function electronPid() {
   return line === undefined ? null : Number(line.trim().split(/\s+/)[0])
 }
 /** 활성화 직전 확인 — 맨 앞 앱이 이 회차의 것인가(469·478 ⓑ, 사용자 활동 감지). 처음 한 번은 회차 시작 전 앞 앱을 적어 둔다. */
+// 직전 자기 앱 이벤트(활성화·미끼·기동·종료) — guard 가 걸리면 그 간격과 미끼 생존을 원자료로(r3 코디 지시 ask-5).
+let lastOwn = null
+const ownEvent = (label) => {
+  lastOwn = { label, at: Date.now() - t0 }
+}
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 function guardFront(label) {
   const front = winctl('front')
   const ours = new Set([corralPid, decoy?.pid].filter((pid) => pid !== null && pid !== undefined))
-  fronts.push({ label, frontPid: front.pid, ours: ours.has(front.pid), at: Date.now() - t0 })
-  if (!ours.has(front.pid)) throw new UserActive(`맨 앞 앱이 이 회차의 것이 아니다(${label}) — 사용자 활동으로 보고 중단`)
+  const at = Date.now() - t0
+  const entry = { label, frontPid: front.pid, ours: ours.has(front.pid), at }
+  fronts.push(entry)
+  if (!entry.ours) {
+    entry.lastOwn = lastOwn === null ? null : { ...lastOwn, gapMs: at - lastOwn.at }
+    entry.decoyAlive = decoy === null ? null : alive(decoy.pid)
+    throw new UserActive(`맨 앞 앱이 이 회차의 것이 아니다(${label}) — 사용자 활동으로 보고 중단`)
+  }
 }
 async function attention() {
   return app.cdp.evaluate(() => document.documentElement.dataset.windowAttention ?? null)
@@ -77,6 +96,7 @@ async function waitAttention(want, label) {
 async function focusCorral(label) {
   guardFront(`focus-corral:${label}`)
   winctl('activate', corralPid)
+  ownEvent(`activate-corral:${label}`)
   await pause(400)
   const front = winctl('front')
   fronts.push({ label: `after-focus-corral:${label}`, frontPid: front.pid, ours: front.pid === corralPid, at: Date.now() - t0 })
@@ -89,10 +109,25 @@ async function decoyFront(label) {
     const pid = await new Promise((resolve) => child.stdout.once('data', (chunk) => resolve(Number(String(chunk).trim()))))
     decoy = { child, pid }
     spawned.push({ pid, label: 'decoy window' })
-  } else process.kill(decoy.pid, 'SIGUSR1')
-  await pause(400)
-  const front = winctl('front')
-  fronts.push({ label: `after-decoy:${label}`, frontPid: front.pid, ours: front.pid === decoy.pid, at: Date.now() - t0 })
+    ownEvent(`decoy-spawn:${label}`)
+  } else {
+    process.kill(decoy.pid, 'SIGUSR1')
+    ownEvent(`decoy-activate:${label}`)
+  }
+  // 미끼가 실제로 앞에 왔는지 표본으로 확인한다(최대 2초) — run7 은 고정 400ms 뒤 미끼가 아니었다.
+  const waitedFrom = Date.now()
+  let front = winctl('front')
+  while (front.pid !== decoy.pid && Date.now() - waitedFrom < 2000) {
+    await pause(100)
+    front = winctl('front')
+  }
+  fronts.push({ label: `after-decoy:${label}`, frontPid: front.pid, ours: front.pid === decoy.pid, waitedMs: Date.now() - waitedFrom, at: Date.now() - t0 })
+  if (front.pid !== decoy.pid) {
+    const entry = fronts.at(-1)
+    entry.lastOwn = { ...lastOwn, gapMs: entry.at - lastOwn.at }
+    entry.decoyAlive = alive(decoy.pid)
+    throw new UserActive(`미끼가 2초 안에 앞에 오지 않았다(${label}) — 사용자 활동일 수 있어 중단`)
+  }
   return waitAttention('away', label)
 }
 
@@ -212,6 +247,7 @@ async function launch(label) {
   ui = inputs(app.cdp)
   corralPid = electronPid()
   spawned.push({ pid: corralPid, label: `corral Electron main (${label})` })
+  ownEvent(`launch:${label}`)
   log('launched', label, 'electron pid', corralPid)
 }
 
@@ -571,6 +607,7 @@ try {
     const before = { prefs: readPrefs()?.unreadWorktrees?.map((p) => path.basename(p)) ?? null, herdr: { p5: await herdr(p5), p6: await herdr(p6), p7: await herdr(p7) } }
     // 둘째 회차는 미끼가 앞인 채 기동한다(창이 포커스가 아닌 시작 복원 — K3ⓑ·K9ⓑ 의 다른 갈래).
     if (round === 2) await decoyFront(`restart-${round}-before`)
+    ownEvent(`quit:R${round}`)
     await quitCorral({ iso, app })
     const launchAt = Date.now()
     await launch(`R${round}`)

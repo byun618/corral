@@ -14,7 +14,8 @@ export function buildIdentity(appRoot) {
   const hash = crypto.createHash('sha256')
   for (const file of outFiles) hash.update(path.relative(appRoot, file)).update('\0').update(fs.readFileSync(file)).update('\0')
   const newest = (files) => files.reduce((max, file) => Math.max(max, fs.statSync(file).mtimeMs), 0)
-  const srcNewest = newest(walk(path.join(appRoot, 'src')))
+  // 시험 파일은 번들에 안 들어간다 — 시험만 고친 뒤 번들을 「낡음」 으로 잘못 읽지 않게 뺀다(LIFE-478 fix2 run17).
+  const srcNewest = newest(walk(path.join(appRoot, 'src')).filter((file) => !/\.test\.[cm]?[jt]sx?$/.test(file)))
   const outNewest = newest(outFiles)
   return {
     head: git('rev-parse', 'HEAD'),

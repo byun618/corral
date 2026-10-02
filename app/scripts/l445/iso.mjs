@@ -12,7 +12,7 @@
 // 결과: <out>/<mode>[-herdr].json — 종료코드 0 = 그 모드의 통과선 전부 충족(before 모드는 기록용으로 항상 0, 판정은 result 에).
 // 창 포커스 아님: 미끼 창(l471 decoy)을 앞에 두고 회차마다 `window-visibility read` 와 맨 앞 앱 pid 를 기록한다.
 
-/* global document, CSS */
+/* global document, CSS, console */
 import fs from 'node:fs'
 import path from 'node:path'
 import { buildIdentity } from '../l478/build-identity.mjs'
@@ -442,6 +442,10 @@ function seedCascade(A) {
   )
   result.cascadePaths = paths
 }
+/** 상태의 열림 바인딩 — 어느 worktree 에 어느 workspace 가 붙었나. */
+function bindings(state) {
+  return (state.state?.repos ?? []).flatMap((repo) => repo.worktrees.filter((w) => w.openWorkspaceId !== null).map((w) => ({ path: w.path, ws: w.openWorkspaceId })))
+}
 async function domOrder() {
   return corral.cdp.evaluate(() => Array.from(document.querySelectorAll('[data-worktree]')).map((el) => el.getAttribute('data-worktree')))
 }
@@ -468,15 +472,25 @@ async function cascade(A, roots) {
     { id: 'K6c-parent', name: 'par' },
   ]
   if (herdrOn) {
-    // ⓓ 열려 있고 선택된 worktree — 격리 herdr 에 셸 터미널을 열고, 카드를 눌러 선택한다(CDP 입력 — 이 인스턴스 페이지에만).
-    const opened = corral.cli(paths['ord-2'], 'terminal', 'create', '--worktree', `path:${paths['ord-2']}`, '--title', 'l445-k6d', '--command', 'sh')
-    await pause(2500)
-    await corral.click(`[data-worktree="${paths['ord-2']}"] [data-worktree-card-surface]`)
-    await pause(2500)
+    // ⓓ 열려 있고 선택된 worktree — 카드를 눌러(CDP 입력 — 이 인스턴스 페이지에만) 격리 herdr 에 workspace 를 열고 선택한다.
+    // (a10 1회차는 CLI `terminal create` 를 먼저 불렀다 — 격리 herdr 가 `corral.terminal` 을 모른다고 거절해 오류 로그 1건이 섞였다.)
+    // a11: 첫 클릭은 workspace.create(w1, 레포 root 에 붙음) + worktree.open(w2) 이었고 스트림은 w1:t1 이었다 —
+    // 스트림을 그 worktree 의 pane 에 세우려고 열린 뒤 한 번 더 누른다(--k6d-clicks, 기본 2).
+    for (let i = 0; i < Number(args['k6d-clicks'] ?? 2); i += 1) {
+      await corral.click(`[data-worktree="${paths['ord-2']}"] [data-worktree-card-surface]`)
+      await pause(3000)
+    }
     const state = await rpc(corral.control, { cmd: 'state' })
-    result.k6dSetup = { opened: opened.ok ?? opened.status, terminal: state.state?.terminal ?? null, groups: (state.state?.terminalGroups ?? []).length }
+    result.k6dSetup = { terminal: state.state?.terminal ?? null, groups: (state.state?.terminalGroups ?? []).length, bindings: bindings(state) }
     cases.push({ id: 'K6d-open-selected', name: 'ord-2', force: true })
   }
+  // 양성 대조 — 콘솔 수집기가 실제로 console.error 를 잡는가(빈 결과는 대조 뒤에야 근거다).
+  await corral.cdp.evaluate(() => console.error('l445-positive-control'))
+  await pause(300)
+  result.consoleControlCaptured = consoleErrors.some((e) => String(e.text).includes('l445-positive-control'))
+  consoleErrors.length = 0
+  const errorsFrom = Date.now() // 오류 집계는 첫 외부 삭제부터 — 준비 단계(클릭·열기)의 로그는 따로 적는다
+  result.k6setupErrors = corral.logLines().filter((e) => e.at >= logFrom && /error|fail|uncaught/i.test(e.tag)).map((e) => ({ tag: e.tag, method: e.method }))
   for (const item of cases) {
     const before = await domOrder()
     const target = paths[item.name]
@@ -500,18 +514,19 @@ async function cascade(A, roots) {
     if (item.id === 'K6d-open-selected') {
       await pause(2000)
       const state = await rpc(corral.control, { cmd: 'state' })
-      row.streamAfter = { terminal: state.state?.terminal ?? null, groups: (state.state?.terminalGroups ?? []).length }
+      row.streamAfter = { terminal: state.state?.terminal ?? null, groups: (state.state?.terminalGroups ?? []).length, bindings: bindings(state) }
+      row.panelInDom = await corral.cdp.evaluate(() => document.querySelectorAll('[data-pane-id], .terminal-pane').length)
       row.streamLog = corral.logLines().filter((e) => e.at >= logFrom && /^stream\.|^tree\.binding_drift/.test(e.tag)).map((e) => ({ tag: e.tag, at: e.at - logFrom, panes: e.panes }))
     }
     row.pass = row.pass && !row.ghost && row.orderKept
   }
-  const mainErrors = corral.logLines().filter((e) => e.at >= logFrom && /error|fail|uncaught/i.test(e.tag))
-  result.k6errors = { console: consoleErrors, main: mainErrors.map((e) => ({ tag: e.tag, at: e.at - logFrom })) }
+  const mainErrors = corral.logLines().filter((e) => e.at >= errorsFrom && /error|fail|uncaught/i.test(e.tag))
+  result.k6errors = { console: consoleErrors, main: mainErrors.map((e) => ({ tag: e.tag, method: e.method, at: e.at - errorsFrom })) }
   for (const item of cases) {
     const row = result.rounds.find((r) => r.id === item.id)
     check(item.id, '유령 카드 없음 · 남은 순서 유지 · ≤ 5초', row.pass, { ms: row.ms, ghost: row.ghost, orderKept: row.orderKept })
   }
-  check('K6-errors', '앱 오류 없음(렌더러 예외·console.error · main 오류 로그)', consoleErrors.length === 0 && mainErrors.length === 0, result.k6errors)
+  check('K6-errors', '앱 오류 없음(렌더러 예외·console.error · main 오류 로그) — 콘솔 수집 양성 대조 포함', result.consoleControlCaptured === true && consoleErrors.length === 0 && mainErrors.length === 0, { ...result.k6errors, consoleControlCaptured: result.consoleControlCaptured })
   return 0
 }
 

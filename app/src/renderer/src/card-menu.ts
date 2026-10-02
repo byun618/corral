@@ -128,3 +128,15 @@ export function deleteResultNotice(input: { name: string; preservedBranch: strin
   const branch = input.preservedBranch === null ? '' : ` — 브랜치 ${input.preservedBranch} 는 남았습니다`
   return `워크트리 ${input.name} 를 삭제했습니다${branch}${input.warning === null ? '' : ` (${input.warning})`}`
 }
+
+/**
+ * ⌘⇧⌫ 를 무시할 포커스인가 (K7ⓗ · 198 `lib/editable-target.ts`) — 입력란·편집 영역이면 그 키는 글자 지우기다.
+ * **터미널(xterm 의 숨은 `xterm-helper-textarea`)은 입력란으로 치지 않는다** — 터미널이 포커스인 것이 평상시라 이것을 막으면
+ * 단축키가 거의 안 듣는다(격리 run9 에서 실제로 안 들었다).
+ */
+export function isEditableFocus(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false
+  if (element.classList.contains('xterm-helper-textarea')) return false
+  if (element.isContentEditable) return true
+  return element.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null
+}

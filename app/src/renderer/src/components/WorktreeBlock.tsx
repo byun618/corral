@@ -554,9 +554,23 @@ function InlineRename({ title, path, onCommit, onCancel }: { title: string; path
   const [value, setValue] = useState(title)
   const ref = useRef<HTMLInputElement | null>(null)
   const done = useRef(false)
+  /** 사용자가 입력을 떠났나 — 바깥 포인터 누름 · Tab. 그 밖의 blur 는 프로그램이 포커스를 가져간 것이다. */
+  const userLeft = useRef(false)
   useEffect(() => {
     ref.current?.focus()
     ref.current?.select()
+    const onPointer = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node && ref.current?.contains(event.target))) userLeft.current = true
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Tab') userLeft.current = true
+    }
+    window.addEventListener('pointerdown', onPointer, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('pointerdown', onPointer, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
   }, [])
   const finish = (commit: boolean): void => {
     if (done.current) return
@@ -576,7 +590,17 @@ function InlineRename({ title, path, onCommit, onCancel }: { title: string; path
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
-      onBlur={() => finish(true)}
+      // 제목 더블클릭의 첫 클릭이 카드를 활성화하면 뒤늦게 터미널이 포커스를 가져간다 — 그 blur 로 rename 이 바로 닫히지 않게
+      // 입력으로 되돌린다. 바깥을 누르거나 Tab · 창 전환(document 포커스 잃음)으로 떠나면 198 처럼 확정.
+      onBlur={() => {
+        if (!userLeft.current && document.hasFocus()) {
+          requestAnimationFrame(() => {
+            if (!done.current) ref.current?.focus()
+          })
+          return
+        }
+        finish(true)
+      }}
       onKeyDown={(event) => {
         if (event.nativeEvent.isComposing) return
         if (event.key === 'Enter') {

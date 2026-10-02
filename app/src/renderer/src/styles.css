@@ -1191,3 +1191,10 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 /* 하단 바 Reveal 단추 — 198 Crosshair. */
 .sidebar-footer-icon-btn { display: inline-flex; align-items: center; }
 .sidebar-footer-icon { width: 15px; height: 15px; }
+
+/* LIFE-478 K5ⓕ — 목록 스크롤 앵커링 끔(198 `VirtualizedWorktreeViewport.tsx:32-35` 와 같은 값). 고정 구획이 맨 위에 있으면 붙은 레포
+   헤더에 다른 레포를 놓는 순간 Chromium 앵커링이 옮겨진 묶음을 따라가 목록을 맨 위로 튕겼다(469 끌기 회귀 K1a-sticky-head-upper,
+   raw/claude/reorder-pin/diag-list). 순서·스크롤은 사이드바 코드(끌기 자동 스크롤·Reveal 최소 스크롤)가 정한다. */
+.repo-list {
+  overflow-anchor: none;
+}

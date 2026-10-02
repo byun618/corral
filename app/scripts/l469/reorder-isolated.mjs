@@ -18,6 +18,11 @@
 //                                    Compact 카드는 에이전트 목록을 그리지 않으므로(198 F4) 「에이전트 행」 기대는 0 행으로,
 //                                    Full list 는 알약이 없으므로 묶음 기대는 「알약 없이 행 2개」로 바뀐다. 그 밖의 검사는 같다.
 //
+// LIFE-478 K5ⓕ 옵션 —
+//   --pin   gamma 에 워크트리 g-pin 을 하나 더 만들고 시작 prefs 에 고정(pinnedWorktrees)해 둔다. 고정 카드는 맨 위 「고정됨」 구획에만
+//           있고(단일 위치) 끌기 대상이 아니므로 gamma 그룹 카드 수·순서 기대는 그대로다. 끝에 고정 구획이 그대로인지 검사를 더한다.
+//           sticky 검사의 고정 스크롤 값(40px)은 고정 구획 높이만큼 더한다(구획이 맨 위에 하나 더 있다).
+//
 // 게이트 ① 사용자 수정 1 — 주 체크아웃도 옮긴다(K2ⓑ'): 카드 경계 번호는 **주 체크아웃 포함** 그 레포 카드 전체 기준이다.
 // 옛 K2b-main-no-drag·K2b-not-above-main 은 K2b'-main-drag·K2b'-above-main 으로 바꿨다. K3ⓗ 미리 보기 검사를 더했다.
 
@@ -44,6 +49,7 @@ const DISPLAY_PREFS = {
   full: { sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'full' },
 }[display]
 /** 에이전트 행 기대 — Compact 카드는 목록이 없다(0 행), 그 밖은 1 행 이상. */
+const pinMode = args.pin === true
 const agentRowsOk = (count) => (display === 'compact' ? count === 0 : count > 0)
 const out = path.resolve(String(args.out ?? 'l469-iso-out'))
 const port = Number(args.port ?? 9469)
@@ -367,6 +373,7 @@ async function main() {
   const alpha = makeRepo('alpha', [{ name: 'a-one' }, { name: 'a-two' }, { name: 'a-three' }, { name: 'a-det', detached: true }])
   const beta = makeRepo('beta', [{ name: 'b-one' }, { name: 'b-two' }])
   const gamma = makeRepo('gamma', Array.from({ length: 7 }, (_, index) => ({ name: `g-${index + 1}` })))
+  const gPin = pinMode ? addWorktree(gamma, { name: 'g-pin' }) : null
   // 경로는 미리 정규화해 둔다 — 삭제 뒤(git worktree remove)에도 같은 키로 찾는다.
   const realRepos = fs.realpathSync(reposDir)
   const wtA = (name) => path.join(realRepos, 'alpha-wt', name)
@@ -374,7 +381,7 @@ async function main() {
 
   // K6 — 469 이전 모양 ui-prefs(사용자 파일 키 구성 k6-user-ui-prefs-keys.json 과 같은 칸, 값은 지어낸 것).
   const legacy = { version: 1, sidebarWidth: 300, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: ['/x/old'], expandedAgentGroups: ['/x/exp'], tabOrdinals: [{ tabId: 'w9:t1', groupId: 'w9', ordinal: 3 }], groupLayouts: [{ worktree: '/x/wt', v: 1 }] }
-  fs.writeFileSync(prefsFile, JSON.stringify({ ...legacy, ...DISPLAY_PREFS }, null, 2) + '\n')
+  fs.writeFileSync(prefsFile, JSON.stringify({ ...legacy, ...DISPLAY_PREFS, ...(pinMode ? { pinnedWorktrees: [gPin] } : {}) }, null, 2) + '\n')
   const legacyHash = prefsHash()
 
   await startBackend()
@@ -1452,7 +1459,9 @@ async function main() {
     const top = repoOrder(await snapshot())[0]
     await cdp.evaluate(() => {
       // 맨 위 묶음 높이 안쪽으로만 스크롤한다 — 묶음 끝에 가까우면 다음 헤더가 밀어 올려 붙은 상태가 아니다(run8: 120px 은 delta 묶음 끝).
-      document.querySelector('[data-repo-list]').scrollTop = 40
+      const list = document.querySelector('[data-repo-list]')
+      const pinned = list.querySelector(':scope > [data-pinned-section]')
+      list.scrollTop = 40 + (pinned === null ? 0 : pinned.getBoundingClientRect().height)
     })
     await pause(200)
     const stuck = await cdp.evaluate((root) => {
@@ -1597,6 +1606,18 @@ async function main() {
   }
 
   // ── K4ⓑ 레포 제거(앱 밖 레지스트리) + K1ⓒ 레포 1개면 드래그 안 됨 ──
+  if (pinMode) {
+    // LIFE-478 K5ⓕ — 끌기 검사 전부를 지난 뒤에도 고정 카드는 고정 구획에만, 끌기 표지 없음, prefs 그대로.
+    const pinState = await cdp.evaluate(() => {
+      const section = document.querySelector('[data-repo-list] > [data-pinned-section]')
+      return {
+        first: document.querySelector('[data-repo-list] > :first-child')?.hasAttribute('data-pinned-section') ?? false,
+        cards: section === null ? null : [...section.querySelectorAll('[data-worktree]')].map((row) => ({ path: row.getAttribute('data-worktree'), reorder: row.hasAttribute('data-reorder-card') })),
+      }
+    })
+    const inGroups = (await snapshot()).repos.some((repo) => repo.worktrees.includes(gPin))
+    check('L478-K5f-pinned-kept', 'LIFE-478 K5ⓕ 끌기 검사 뒤에도 고정 카드는 맨 위 고정 구획에만(그룹에 없음) · 끌기 표지 없음 · prefs 그대로', pinState.first && same(pinState.cards, [{ path: gPin, reorder: false }]) && !inGroups && same(readPrefs().pinnedWorktrees, [gPin]), { pinState, inGroups, prefs: readPrefs().pinnedWorktrees })
+  }
   const reg = JSON.parse(fs.readFileSync(env.CORRAL_REGISTRY, 'utf8'))
   const remaining = repoOrder(await snapshot()).filter((root) => root !== gamma)
   await quit('pre-remove')

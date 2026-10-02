@@ -4,7 +4,7 @@
 // 결과는 다음 상태 내보내기(`desktop.changed()` → 트리 재조립)로 화면에 온다. 실패는 알림·대화 안 오류로 보인다(K1ⓓ).
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AppState, RepoRow, WorktreeDeletePreview, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
-import { deleteResultNotice } from '../card-menu.js'
+import { deleteResultNotice, isEditableFocus } from '../card-menu.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { pickPane } from '../pane-utils.js'
 import { worktreeDisplayName } from '../worktree-name.js'
@@ -126,12 +126,11 @@ export function useCardActions(input: {
     setRevealRequest((prev) => ({ path: active.path, rename: true, seq: (prev?.seq ?? 0) + 1 }))
   }
 
-  /** ⌘⇧⌫ (198 `workspace.delete` — hover 중인 카드). 입력란 포커스·주 체크아웃·삭제 중이면 무시(대화 열림은 단축키 막힘이 거른다). */
+  /** ⌘⇧⌫ (198 `workspace.delete` — hover 중인 카드). 입력란 포커스(터미널은 아니다)·주 체크아웃·삭제 중이면 무시(대화 열림은 단축키 막힘이 거른다). */
   const deleteHovered = (): void => {
     const path = hoveredRef.current
     if (path === null) return
-    const focused = document.activeElement
-    if (focused instanceof HTMLElement && (focused.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName))) return
+    if (isEditableFocus(document.activeElement)) return
     const found = findRow(latest.current.stateRef.current, path)
     if (found !== null) requestDelete(found.worktree)
   }

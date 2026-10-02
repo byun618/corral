@@ -23,6 +23,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connect, pickTarget, until, setViewport, assertPortFree, pause } from '../gui-diff/lib/cdp.mjs'
 import { rpc } from '../gui-diff/lib/corral.mjs'
+import { buildIdentity } from './build-identity.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const appRoot = path.resolve(here, '../..')
@@ -32,6 +33,8 @@ const args = Object.fromEntries(
 const work = path.resolve(String(args.work ?? '/tmp/l478i'))
 if (!work.startsWith('/tmp/l478')) throw new Error(`--work 는 /tmp/l478* 아래여야 한다(G8): ${work}`)
 const out = path.resolve(String(args.out ?? 'l478-iso-out'))
+/** 이 회차가 잰 소스·번들 (리뷰 r1 C-01ⓑ) — 시작 시점에 한 번. 검사 수는 그대로 두고 result.json 에만 싣는다. */
+const build = buildIdentity(appRoot)
 const port = Number(args.port ?? 9478)
 const restarts = Number(args.restarts ?? 3)
 const shots = path.join(out, 'shots')
@@ -1473,7 +1476,7 @@ try {
   })
   const failed = checks.filter((row) => !row.pass)
   if (exitCode === 0 && failed.length > 0) exitCode = 1
-  fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify({ work, port, spawned, aliveAfterCleanup: alive, total: checks.length, failed: failed.map((row) => row.id), exitCode, checks }, null, 2))
+  fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify({ build, work, port, spawned, aliveAfterCleanup: alive, total: checks.length, failed: failed.map((row) => row.id), exitCode, checks }, null, 2))
   log(`checks ${checks.length - failed.length}/${checks.length} pass; alive after cleanup: ${JSON.stringify(alive)}`)
   process.exit(exitCode)
 }

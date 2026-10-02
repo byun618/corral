@@ -6,6 +6,8 @@
 // corral 창인지 확인한 뒤 우클릭한다. 절차·관측은 그 단계 JSON 에.
 // **G7**: 사용자 레포·워크트리는 개수·익명 키만, 카드 글자(표시 이름·comment·브랜치)는 관문 레포(<ROOT>/repos 아래) 카드만 읽는다.
 // 캡처는 비공개 위치(`/tmp/l478-private`)에만, 해시만 적는다. 경로는 470 `anon.mjs` 키로(대응표도 비공개).
+// **진단 입력도 이 드라이버(guard)로만 보낸다** — 드라이버 밖에서 cliclick·keypost 를 직접 부르지 않는다(R029 보호 규칙 위반 15키가 그 경로였다).
+// 직전 단계가 실패로 끝났으면 다음 입력 단계는 거절된다(`native-k11-gate.mjs` — R030 type-06 뒤 Enter 재발 방지). 실패를 본 뒤 `ack` 로 확인한다.
 //
 // 사용: L470_PRIVATE_DIR=/tmp/l478-private node native-k11.mjs <ROOT> <raw 폴더> <단계> <꼬리표> [인자…]
 //   state <꼬리표>                     화면 상태 + 캡처
@@ -14,6 +16,7 @@
 //   key <꼬리표> <esc|enter|shift-enter|down|up|left|right|backspace|cmd-alt-r|cmd-shift-backspace|select-all>
 //   type <꼬리표> <글자>               포커스된 입력란에 클립보드 붙여넣기로 글자 입력(백업·원복·해시 대조)
 //   vscode <꼬리표>                     VS Code 창 개수·관문 창 수(읽기만)
+//   ack <꼬리표> <실패한 꼬리표>          직전 실패를 확인했다고 기록 — 그 뒤에야 입력 단계가 다시 나간다
 //   unfocused <꼬리표> <selector>       K2ⓕ — TextEdit 를 앞에 둔 채 corral 카드를 우클릭 → hover 강조 → ↓ 키 → Esc
 
 import crypto from 'node:crypto'
@@ -22,13 +25,14 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 import { anonymizeValue, loadMap, PRIVATE_DIR, registerRead, saveMap } from '../l470/anon.mjs'
+import { clipboardVerdict, readLastStep, stepGate, writeLastStep } from './native-k11-gate.mjs'
 
 if (!PRIVATE_DIR.startsWith('/tmp/l478-private')) throw new Error(`L470_PRIVATE_DIR=/tmp/l478-private 로 돌린다 (지금 ${PRIVATE_DIR})`)
 const [root, rawd, step, tag, ...rest] = process.argv.slice(2)
 if (!root.startsWith('/tmp/l478n')) throw new Error(`ROOT 는 /tmp/l478n*: ${root}`)
 const ctl = path.join(root, 'ctl.sock')
 const winctl = process.env.L478_WINCTL ?? '/tmp/l478nbin/winctl'
-const cliclick = '/opt/homebrew/bin/cliclick'
+const cliclick = process.env.L478_CLICLICK ?? '/opt/homebrew/bin/cliclick'
 /** 키코드를 정확히 싣는 키 입력(keypost.swift) — ⌘ 조합은 이것으로(cliclick t: 는 키코드 0 이라 ⌘A 로 읽혔다). */
 const keypost = process.env.L478_KEYPOST ?? '/tmp/l478nbin/keypost'
 const appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
@@ -203,8 +207,22 @@ async function main() {
     saveMap(map)
     fs.writeFileSync(file, JSON.stringify(safe, null, 2) + '\n')
   }
+  // 문지기 — 어떤 활성화·입력보다 먼저. 거절은 원자료로 남기되 직전 단계 기록은 건드리지 않는다(실패한 단계의 꼬리표가 그대로 남게).
+  const gate = stepGate({ last: readLastStep(root), step, ackTag: step === 'ack' ? rest[0] : undefined })
+  out.gate = gate
+  if (gate.kind === 'refuse') {
+    out.stopped = gate.reason
+    save()
+    throw new Error(gate.reason)
+  }
   try {
     switch (step) {
+      case 'ack': {
+        writeLastStep({ root, step, tag, ok: true, ack: rest[0] })
+        save()
+        log('ack', rest[0])
+        return
+      }
       case 'state': {
         for (let i = 0; i < 60; i++) {
           const geo = await read().catch(() => null)
@@ -291,7 +309,9 @@ async function main() {
           // 클립보드 백업(텍스트만 — 다른 형식이 있으면 멈춘다) → pbcopy → (위 보호 확인 뒤) ⌘V → 입력값 대조 → 클립보드 원복·해시 대조.
           const text = rest[0]
           const info = execFileSync('osascript', ['-e', 'clipboard info'], { encoding: 'utf8' })
-          if (/«class (PNGf|TIFF|furl|8BPS|GIFf|JPEG)»|picture/i.test(info)) throw new Error(`클립보드에 텍스트 아닌 형식이 있다 — 멈춘다: ${info.slice(0, 120)}`)
+          // 허용 목록(평문 텍스트 형식만, 리뷰 r1 C-06) — 서식·이미지·파일이 하나라도 있으면 텍스트 원복이 그것을 잃는다.
+          const clip = clipboardVerdict(info)
+          if (clip.kind === 'refuse') throw new Error(clip.reason)
           const backup = execFileSync('pbpaste')
           const backupHash = crypto.createHash('sha256').update(backup).digest('hex')
           fs.writeFileSync(path.join(PRIVATE_DIR, `clipboard-${tag}.bin`), backup, { mode: 0o600 })
@@ -384,9 +404,11 @@ async function main() {
   } catch (error) {
     out.stopped = String(error?.message ?? error)
     save()
+    writeLastStep({ root, step, tag, ok: false })
     throw error
   }
   save()
+  writeLastStep({ root, step, tag, ok: true })
   log('wrote', file)
 }
 

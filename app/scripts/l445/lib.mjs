@@ -283,7 +283,19 @@ export class Corral {
     }
   }
   /** CDP 마우스로 버튼을 누른다 — 이 인스턴스 페이지에만 간다(OS 입력 아님). 히트테스트를 먼저 본다. */
-  async click(selector) {
+  async click(selector, { hover = null } = {}) {
+    // hover 로만 드러나는 버튼(레포 헤더 「+」·카드 ⋯) — 먼저 그 상자 위로 커서를 옮긴다(사람이 하는 순서).
+    if (hover !== null) {
+      const at = await this.cdp.evaluate((sel) => {
+        const el = document.querySelector(sel)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      }, hover)
+      if (at === null) throw new Error(`hover ${hover}: 없음`)
+      await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y, buttons: 0 })
+      await pause(250)
+    }
     const point = await this.cdp.evaluate((sel) => {
       const el = document.querySelector(sel)
       if (!el) return null

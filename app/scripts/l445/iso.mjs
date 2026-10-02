@@ -140,6 +140,8 @@ async function main() {
       return refresh(A, roots)
     case 'cascade':
       return cascade(A, roots)
+    case 'smoke':
+      return smoke(A, roots)
     default:
       throw new Error(`mode ${mode}`)
   }
@@ -528,6 +530,49 @@ async function cascade(A, roots) {
   }
   check('K6-errors', '앱 오류 없음(렌더러 예외·console.error · main 오류 로그) — 콘솔 수집 양성 대조 포함', result.consoleControlCaptured === true && consoleErrors.length === 0 && mainErrors.length === 0, { ...result.k6errors, consoleControlCaptured: result.consoleControlCaptured })
   return 0
+}
+
+/**
+ * K9ⓑ 스모크 보강 — GUI 로 worktree 생성(모달) → 열기(카드 클릭) → 닫기(카드 ⋯ 「worktree 닫기」) → 카드 선택.
+ * 469·470·478 격리 회귀가 덮지 않는 GUI 생성·닫기 경로를 폴러가 있는 빌드에서 한 번 지난다. 입력은 CDP(이 인스턴스 페이지에만).
+ */
+async function smoke(A, roots) {
+  await corral.click(`[data-create-worktree="${A}"]`, { hover: `[data-repo-toggle="${A}"] .repo-row-name` })
+  await pause(500)
+  await corral.click('[data-worktree-branch-input]')
+  await corral.cdp.send('Input.insertText', { text: 'smoke-1' })
+  await pause(300)
+  await corral.click('[data-worktree-create-submit]')
+  const created = path.join(A, '.claude/worktrees/smoke-1')
+  const seen = await waitReflect(corral, (set) => set.includes(created), { from: Date.now(), timeoutMs: 20_000 })
+  check('smoke-create', 'GUI 생성 → 사이드바 등장', seen.ms !== null, { ms: seen.ms, gitHas: work.gitSet(A).includes(created) })
+  const readBinding = async () => bindings(await rpc(corral.control, { cmd: 'state' })).find((b) => b.path === created)?.ws ?? null
+  let ws = await readBinding()
+  if (ws === null) {
+    await corral.click(`[data-worktree="${created}"] [data-worktree-card-surface]`)
+    await pause(3000)
+    ws = await readBinding()
+  }
+  check('smoke-open', 'GUI 열기 → herdr workspace 바인딩', ws !== null, ws)
+  await corral.click(`[data-worktree-menu-toggle="${created}"]`, { hover: `[data-worktree="${created}"] [data-worktree-card-surface]` })
+  await pause(400)
+  await corral.click(`[data-close-worktree="${created}"]`)
+  await pause(3000)
+  const closed = await readBinding()
+  check('smoke-close', 'GUI 닫기 → 바인딩 해제 · 카드는 남음', closed === null && (await corral.domSet()).includes(created), { closed })
+  await corral.click(`[data-worktree="${fs.realpathSync(work.worktreePath(A, 'keep'))}"] [data-worktree-card-surface]`)
+  await pause(2000)
+  check('smoke-select', '다른 카드 선택 → 열림', (await readBinding()) === null && bindings(await rpc(corral.control, { cmd: 'state' })).some((b) => b.path.endsWith('/keep')), bindings(await rpc(corral.control, { cmd: 'state' })))
+  const errors = corral.logLines().filter((e) => /error|fail|uncaught/i.test(e.tag)).map((e) => ({ tag: e.tag, method: e.method }))
+  result.smokeErrors = errors
+  check('smoke-errors', 'main 오류 로그 0', errors.length === 0, errors)
+  // 정리 — GUI 가 만든 worktree 도 이 실행의 fixture 아래다(G8): 외부 삭제로 지운다.
+  if (!work.owns(created)) throw new Error('G8')
+  git(A, 'worktree', 'remove', '--force', created)
+  work.deleteBranch(A, 'smoke-1')
+  const gone = await waitReflect(corral, (set) => !set.includes(created), { from: Date.now(), timeoutMs: 10_000 })
+  check('smoke-external-cleanup', '정리(외부 삭제) 반영', gone.ms !== null, gone.ms)
+  return roots
 }
 
 let code = 1

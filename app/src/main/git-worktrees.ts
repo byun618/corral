@@ -5,6 +5,7 @@
 // herdr 에게는 **열림상태만** 묻는다 (adapter/internal/worktrees.ts).
 
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import { promisify } from 'node:util'
 import { canonicalPath } from './canonical-path.js'
 
@@ -20,14 +21,14 @@ export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeSca
     const { stdout } = await run('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { timeout: 5000 })
     const worktrees: GitWorktree[] = []
     let current: { path: string; branch: string | null } | null = null
+    let records = 0
     const flush = (): void => {
       if (current === null) return
-      worktrees.push({
-        path: current.path,
-        branch: current.branch,
-        // 첫 레코드가 주 체크아웃이다 — git 이 그 순서를 보장한다.
-        isLinked: worktrees.length > 0,
-      })
+      // 첫 레코드가 주 체크아웃이다 — git 이 그 순서를 보장한다. 걸러진 레코드도 순번은 센다.
+      const isLinked = records > 0
+      records += 1
+      // 디렉터리가 없는 항목(`rm -rf` 뒤 prunable)은 뺀다 — runtime `workspace/model.ts` 와 같은 규칙 (LIFE-445 S3).
+      if (fs.existsSync(current.path)) worktrees.push({ path: current.path, branch: current.branch, isLinked })
       current = null
     }
     for (const line of stdout.split('\n')) {

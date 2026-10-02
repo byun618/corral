@@ -871,6 +871,8 @@ export type CorralShortcut = ShortcutMatch
 
 export type CorralApi = {
   getState: () => Promise<AppState>
+  /** 새로고침 버튼 (LIFE-445) — git 을 다시 읽어 골격을 세운 뒤의 상태. */
+  refreshTree: () => Promise<AppState>
   onTerminalFocus: (listener: (request: { id: string; paneId: string; deadlineAt: number }) => void) => () => void
   terminalFocused: (id: string, paneId: string) => void
   onRevealPane: (listener: (paneId: string) => void) => () => void

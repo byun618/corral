@@ -127,7 +127,7 @@ async function main() {
 
   switch (mode) {
     case 'repro':
-      return repro(A, roots)
+      return repro(A)
     case 'baseline':
       return baseline(roots)
     case 'timing':
@@ -145,7 +145,7 @@ async function main() {
   }
 }
 
-async function repro(A, roots) {
+async function repro(A) {
   const victim = work.addWorktree(A, 'victim')
   await pause(3000)
   // before 코드에서는 외부 추가도 안 보일 수 있다 — 기록하고, 삭제 재현을 위해 앱이 알게 rebuild 한 번(기존 트리거: control rebuild-tree).

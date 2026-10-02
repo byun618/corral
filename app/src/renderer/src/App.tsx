@@ -1209,7 +1209,7 @@ export function App(): React.JSX.Element {
             setRemoveError(null)
             setPendingRemove(repo)
           }}
-          onRefresh={() => void window.corral.getState().then(setState)}
+          onRefresh={() => void window.corral.refreshTree().then(setState)}
           cards={{ ...cardActions.sidebarCards, unread, deleteShortcut: ((binding) => (binding === undefined ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
           onOpenShortcuts={() => { mruCancel(); setShortcutsOpen(true) }}
           groupGlyphOf={(worktreePath) => {

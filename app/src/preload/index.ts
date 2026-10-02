@@ -31,6 +31,7 @@ import type {
 
 const EXPOSED = [
   'getState',
+  'refreshTree',
   'onState',
   'addRepo',
   'removeRepo',
@@ -76,6 +77,7 @@ const api: CorralApi = {
   saveKeybindings: (overrides) => ipcRenderer.invoke('corral:saveKeybindings', overrides),
   setShortcutRecording: (active) => ipcRenderer.invoke('corral:setShortcutRecording', active),
   getState: () => ipcRenderer.invoke('corral:getState'),
+  refreshTree: () => ipcRenderer.invoke('corral:refreshTree'),
   onState: (listener: (state: AppState) => void) => {
     const handler = (_event: unknown, state: AppState): void => listener(state)
     ipcRenderer.on('corral:state', handler)

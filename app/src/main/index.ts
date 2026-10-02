@@ -77,6 +77,7 @@ import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
+import { WORKTREE_POLL_MS, WorktreePoller } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
@@ -376,6 +377,26 @@ async function refreshBindings(reason: string): Promise<{ changed: boolean; note
   dropStreamIfPaneUnviewable() // 바인딩이 걷히며 스트리밍 pane 이 트리 밖이 될 수 있다 (C2)
   scheduleEmit()
   return { changed: true, note: `바인딩 ${drift.length}건 갱신` }
+}
+
+/**
+ * 외부 git worktree 변경 감지 (LIFE-445) — 셸 `git worktree add/remove/prune` 이 사이드바에 닿는 유일한 길.
+ * herdr 링크와 무관하게 돈다(재동기·창 포커스는 링크 live 일 때만 돈다 — 00-analysis P5). 지문이 바뀐 틱에만
+ * `scheduleTree` 를 부르므로 재빌드는 기존 뭉침·세대 가드(L6)·refreshBindings 경합 규칙을 그대로 탄다.
+ */
+const worktreePoller = new WorktreePoller({
+  roots: () => registry?.list() ?? [],
+  onChange: (changed) => {
+    log('worktree.changed', { roots: changed })
+    scheduleTree()
+  },
+  onRoots: (count) => log('worktree.poll_roots', { count }),
+})
+
+/** `CORRAL_WORKTREE_POLL_MS` — 계측이 자동 경로를 끌 때(0) 쓴다. 숫자가 아니면 기본값. */
+function worktreePollMs(): number {
+  const raw = Number(process.env.CORRAL_WORKTREE_POLL_MS)
+  return process.env.CORRAL_WORKTREE_POLL_MS !== undefined && Number.isFinite(raw) && raw >= 0 ? raw : WORKTREE_POLL_MS
 }
 
 /**
@@ -1246,6 +1267,13 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle('corral:getState', (event) => (fromOurWindow(event) ? currentState() : null))
+  // 새로고침 버튼 (LIFE-445 S4) — 캐시가 아니라 git 을 **다시 읽은** 골격을 돌려준다. 이 회차가 더 새 회차에 밀려(tree.stale)
+  // 버려져도 currentState 는 그 시점 가장 새 골격이고, 더 새 회차는 끝날 때 따로 민다.
+  ipcMain.handle('corral:refreshTree', async (event) => {
+    if (!fromOurWindow(event)) return null
+    await rebuildTree()
+    return currentState()
+  })
   ipcMain.handle('corral:addRepo', (event, root: string) =>
     fromOurWindow(event) ? addRepo(root) : { ok: false, error: '허용되지 않은 발신자' },
   )
@@ -1476,6 +1504,7 @@ app.whenReady().then(async () => {
   setInterval(() => void refreshIntegrations(), SESSION_POLL_MS * 4)
   setInterval(() => void lineage.refresh(), LINEAGE_POLL_MS)
   scheduleTree()
+  worktreePoller.start(worktreePollMs())
 
   startControlServer({
     capture,
@@ -1514,6 +1543,7 @@ app.on('before-quit', event => {
 app.on('window-all-closed', () => {
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null
+  worktreePoller.stop()
   stream.closeAll()
   link.close()
   log('app.quit', { logFile: logFile() })

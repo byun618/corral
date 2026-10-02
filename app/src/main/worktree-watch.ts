@@ -120,7 +120,7 @@ export class WorktreePoller {
         return [] // 레지스트리 읽기 실패 — 상태를 건드리지 않는다(일시 오류로 전부 「새 레포」가 되지 않게)
       }
       const fingerprint = this.options.fingerprint ?? worktreeFingerprint
-      const fresh = await Promise.all(roots.map(async (root) => [root, await fingerprint(root)] as const))
+      const fresh = await Promise.all(roots.map(async (root): Promise<[string, string]> => [root, await fingerprint(root)]))
       const changed = fresh.filter(([root, print]) => this.prints.get(root) !== print).map(([root]) => root)
       const sizeBefore = this.prints.size
       const live = new Set(roots)

@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { WorktreeRow } from '../../../shared/types.js'
 import { filterCandidates } from '../card-menu.js'
-import { useMenuBus } from '../menu-bus.js'
+import { useMenuBus, useWindowEscape } from '../menu-bus.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 
 const WIDTH = 320
@@ -30,8 +30,11 @@ export function ParentPicker({
   const [active, setActive] = useState(0)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
   const [top, setTop] = useState(anchor.top)
   useMenuBus({ open: true, close: onClose })
+  // Esc 는 포커스와 무관하게(r2 R2B-01) — 안쪽 빈 곳을 눌러 포커스가 body 로 가도 닫힌다.
+  useWindowEscape({ onEscape: onClose })
   const rows = filterCandidates({ candidates, query, nameOf: worktreeDisplayName })
   const left = anchor.right + MARGIN + WIDTH <= window.innerWidth ? anchor.right + MARGIN : Math.max(MARGIN, anchor.left - MARGIN - WIDTH)
 
@@ -41,6 +44,10 @@ export function ParentPicker({
   }, [anchor.top, rows.length])
   useEffect(() => inputRef.current?.focus(), [])
   useEffect(() => setActive(0), [query])
+  // 강조 행이 보이는 영역 밖이면 그만큼만 스크롤(r2 R2B-03) — Enter 가 안 보이는 행을 지정하지 않게. 포커스는 검색 입력에 둔다.
+  useEffect(() => {
+    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [active])
   useEffect(() => {
     const onDown = (event: MouseEvent): void => {
       if (!(event.target instanceof Node) || rootRef.current?.contains(event.target) !== true) onClose()
@@ -74,9 +81,6 @@ export function ParentPicker({
         if (row !== undefined) onPick(row)
         break
       }
-      case 'Escape':
-        onClose()
-        break
       default:
         return
     }
@@ -105,7 +109,7 @@ export function ParentPicker({
         value={query}
         onChange={(event) => setQuery(event.target.value)}
       />
-      <div className="parent-picker-list" role="listbox">
+      <div ref={listRef} className="parent-picker-list" role="listbox">
         {rows.length === 0 ? (
           <div className="parent-picker-empty" data-parent-picker-empty="">
             지정할 수 있는 워크트리가 없습니다

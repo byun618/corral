@@ -30,3 +30,28 @@ export function useMenuBus(input: { open: boolean; close: () => void }): void {
     return onMenuOpen(owner, () => closeRef.current())
   }, [input.open, owner])
 }
+
+/** 카드 대화·피커가 떴다 — 열린 메뉴·hover 카드가 닫힌다(LIFE-478 r2 R2B-02 · K2ⓔ 「대화」 도 위층). 대화는 다른 메뉴 알림에 닫히지 않는다. */
+export function useAnnounceDialog(): void {
+  const owner = useId()
+  useEffect(() => announceMenuOpen(owner), [owner])
+}
+
+/**
+ * 대화·피커의 Esc (LIFE-478 r2 R2B-01·07) — 포커스가 어디 있든(터미널·body) window 캡처로 받는다. 메뉴(`ContextMenu`·`RepoRowMenu`)와 같은 방식.
+ * IME 조합 중 Esc 는 글자 조합 취소라 무시한다. 받은 Esc 는 전파를 끊어 터미널·단축키로 새지 않는다.
+ */
+export function useWindowEscape(input: { onEscape: () => void }): void {
+  const onEscapeRef = useRef(input.onEscape)
+  onEscapeRef.current = input.onEscape
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.isComposing) return
+      event.preventDefault()
+      event.stopPropagation()
+      onEscapeRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+}

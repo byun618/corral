@@ -856,6 +856,31 @@ async function main() {
   check('K2e-no-hover-under-menu', 'K2ⓔ 카드 메뉴가 열린 동안 노트 배지 hover → HoverCard 없음', hoverWhileMenu === null, { hoverWhileMenu })
   await mouse('mouseMoved', { x: 900, y: 600 })
 
+  // ── r2 R2B-02: 열려 있는 hover 카드는 카드 대화가 뜨면 닫힌다 — 커서는 배지 위에 그대로(떠나서 닫히는 경로가 아니다) ──
+  const badge = `[data-worktree="${wtA('a-one')}"] [data-worktree-note-badge]`
+  const dialogPaths = {}
+  for (const via of ['cmd-shift-backspace', 'dblclick-badge']) {
+    await hover(badge)
+    const opened = await tryWait(async () => /첫 줄/.test((await snapshot()).hoverCard ?? ''), `note hover ${via}`, 5000)
+    if (via === 'cmd-shift-backspace') await key('Backspace', 4 | 8)
+    else await dblclick(await pointOf(badge))
+    const dialogUp = await tryWait(async () => {
+      const snap = await snapshot()
+      return snap.deleteDialog !== null || snap.metaDialog !== null
+    }, `dialog ${via}`, 5000)
+    await pause(300)
+    const after = await snapshot()
+    dialogPaths[via] = { opened, dialogUp, deleteDialog: after.deleteDialog?.path ?? null, metaDialog: after.metaDialog, hoverCard: after.hoverCard }
+    await key('Escape')
+    await tryWait(async () => {
+      const snap = await snapshot()
+      return snap.deleteDialog === null && snap.metaDialog === null
+    }, `dialog closed ${via}`, 5000)
+    await mouse('mouseMoved', { x: 900, y: 600 })
+    await pause(300)
+  }
+  check('K2e-dialog-closes-hovercard', 'r2 R2B-02 · K2ⓔ 노트 hover 카드가 열린 채(커서 그대로) ⌘⇧⌫ → 삭제 대화 · 배지 더블클릭 → 정보 수정 대화 — 둘 다 hover 카드 닫힘', Object.values(dialogPaths).every((r) => r.opened && r.dialogUp && r.hoverCard === null) && dialogPaths['cmd-shift-backspace'].deleteDialog === wtA('a-one') && dialogPaths['dblclick-badge'].metaDialog === wtA('a-one'), dialogPaths)
+
   // ── K1ⓔ·ⓕ 레지스트리 형식·다른 칸 보존 ──
   const metaAfter = readRegistry()
   const regKeysBefore = Object.keys(metaBefore ?? {}).sort()
@@ -1197,7 +1222,31 @@ async function main() {
   {
     const wt = wtD('d-locked')
     const d = await openDelete(wt)
-    await clickSel('[data-delete-cancel]')
+    // r2 R2B-10 — 막힘 대화 캡처(익명 격리 데이터) + 사유 문구 들여쓰기가 본문과 같은지(`.delete-blocked` 패딩).
+    await shot('70-delete-blocked')
+    const blockedLayout = await cdp.evaluate(() => {
+      const left = (selector) => document.querySelector(selector)?.getBoundingClientRect().left ?? null
+      const focused = document.activeElement
+      return { desc: left('[data-delete-worktree-dialog] .modal-desc'), path: left('[data-delete-path]'), blocked: left('[data-delete-blocked]'), firstFocus: focused?.hasAttribute('data-delete-cancel') ? 'cancel' : (focused?.tagName ?? null), cancelLabel: document.querySelector('[data-delete-cancel]')?.textContent ?? null }
+    })
+    check('R2B-10-blocked-padding', 'r2 R2B-10 · R2B-01 막힘 대화 — 사유 문구가 본문과 같은 들여쓰기 · 첫 포커스 「닫기」', blockedLayout.blocked !== null && Math.abs(blockedLayout.blocked - blockedLayout.desc) <= 1 && blockedLayout.firstFocus === 'cancel' && blockedLayout.cancelLabel === '닫기', blockedLayout)
+    // r2 R2B-01 — 포커스가 대화 밖(터미널 입력란이 있으면 그것, 없으면 body)에 있어도 Esc 가 대화를 닫고, 그 Esc 는 포커스 쪽·창 bubble 로 가지 않는다.
+    const escTarget = await cdp.evaluate(() => {
+      Reflect.set(window, '__l478esc', { focused: 0, bubbled: 0 })
+      const terminal = document.querySelector('.xterm-helper-textarea')
+      const target = terminal instanceof HTMLElement ? terminal : document.body
+      if (terminal instanceof HTMLElement) terminal.focus()
+      else if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+      const counts = Reflect.get(window, '__l478esc')
+      target.addEventListener('keydown', (event) => { if (event.key === 'Escape') counts.focused++ })
+      window.addEventListener('keydown', (event) => { if (event.key === 'Escape') counts.bubbled++ })
+      return { target: terminal instanceof HTMLElement ? 'xterm-helper-textarea' : 'body', active: document.activeElement?.className ?? document.activeElement?.tagName ?? null }
+    })
+    await key('Escape')
+    const escClosed = await tryWait(async () => (await snapshot()).deleteDialog === null, 'blocked dialog esc', 5000)
+    const escCounts = await cdp.evaluate(() => Reflect.get(window, '__l478esc'))
+    check('R2B-01-blocked-esc-outside-focus', 'r2 R2B-01 막힘 대화 — 포커스가 대화 밖(터미널/body)이어도 Esc 로 닫힘 · Esc 가 포커스 요소·창 bubble 로 새지 않음', escClosed && escCounts.focused === 0 && escCounts.bubbled === 0, { escTarget, escClosed, escCounts })
+    if (!escClosed) await clickSel('[data-delete-cancel]')
     const cliRm = cli(del, 'worktree', 'rm', '--worktree', `path:${wt}`, '--force')
     const disk = diskState(del, wt, 'd-locked')
     record({ case: 'locked', target: wt, gateOwned: gateOwned(wt), dialog: d, cli: cliRm.error ?? cliRm, disk })

@@ -6,6 +6,7 @@
 import { useEffect, useRef } from 'react'
 import type { WorktreeDeletePreview } from '../../../shared/types.js'
 import { deleteDecision } from '../card-menu.js'
+import { useAnnounceDialog, useWindowEscape } from '../menu-bus.js'
 
 export function DeleteWorktreeDialog({
   name,
@@ -22,11 +23,27 @@ export function DeleteWorktreeDialog({
   onClose: () => void
 }): React.JSX.Element {
   const confirmRef = useRef<HTMLButtonElement | null>(null)
+  const cancelRef = useRef<HTMLButtonElement | null>(null)
   const decision = preview === null || !preview.ok ? null : deleteDecision(preview)
+  const focusKind = preview === null ? 'loading' : (decision?.kind ?? 'error')
+  useAnnounceDialog()
+  useWindowEscape({ onEscape: onClose })
   useEffect(() => {
-    // 198 — 확인 단추에 처음 포커스(Delete 다음 Enter).
-    if (decision !== null && decision.kind !== 'blocked') confirmRef.current?.focus()
-  }, [decision?.kind])
+    // 첫 포커스 — 「삭제」(깨끗·한가)만 198 처럼 확인 단추(Delete 다음 Enter). 「강제 삭제」 는 Enter 한 번이 미커밋 변경을 지우므로
+    // 「취소」 에(r2 R2B-08), 막힘·읽기 실패는 「닫기」/「취소」 에(R2B-01). 읽는 중에는 옮기지 않는다(Esc 는 포커스와 무관하게 닫는다).
+    switch (focusKind) {
+      case 'delete':
+        confirmRef.current?.focus()
+        return
+      case 'force':
+      case 'blocked':
+      case 'error':
+        cancelRef.current?.focus()
+        return
+      case 'loading':
+        return
+    }
+  }, [focusKind])
 
   return (
     <div className="modal-scrim" data-modal-scrim onMouseDown={onClose}>
@@ -38,12 +55,6 @@ export function DeleteWorktreeDialog({
         role="dialog"
         aria-label="워크트리 삭제"
         onMouseDown={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            onClose()
-          }
-        }}
       >
         <div className="modal-head modal-head-plain">
           <h2 className="modal-title">워크트리 삭제</h2>
@@ -95,7 +106,7 @@ export function DeleteWorktreeDialog({
           ) : null}
         </div>
         <div className="modal-footer">
-          <button className="btn-ghost" data-delete-cancel="" onClick={onClose}>
+          <button ref={cancelRef} className="btn-ghost" data-delete-cancel="" onClick={onClose}>
             {decision?.kind === 'blocked' ? '닫기' : '취소'}
           </button>
           {decision !== null && decision.kind !== 'blocked' ? (

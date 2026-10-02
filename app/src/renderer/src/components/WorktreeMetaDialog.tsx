@@ -6,6 +6,7 @@
 //   · 실패는 대화 안에 오류로, 대화는 남는다 · 성공이면 닫힌다
 import { useEffect, useRef, useState } from 'react'
 import type { WorktreeRow } from '../../../shared/types.js'
+import { useAnnounceDialog, useWindowEscape } from '../menu-bus.js'
 
 export function WorktreeMetaDialog({
   worktree,
@@ -17,8 +18,10 @@ export function WorktreeMetaDialog({
   onSave: (patch: { displayName?: string | null; comment?: string | null }) => Promise<string | null>
   onClose: () => void
 }): React.JSX.Element {
-  const [name, setName] = useState(worktree.displayName ?? '')
-  const [comment, setComment] = useState(worktree.comment ?? '')
+  // 비교 기준 = 연 순간의 값(r2 R2B-06) — 연 동안 상태가 바뀌어도 건드리지 않은 칸은 보내지 않는다(새 값을 옛 값으로 덮지 않게).
+  const [initial] = useState(() => ({ name: worktree.displayName ?? '', comment: worktree.comment ?? '' }))
+  const [name, setName] = useState(initial.name)
+  const [comment, setComment] = useState(initial.comment)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const nameRef = useRef<HTMLInputElement | null>(null)
@@ -28,32 +31,39 @@ export function WorktreeMetaDialog({
     nameRef.current?.select()
   }, [])
 
+  // 저장 중에는 닫지 않는다(r2 R2B-05) — 닫으면 뒤이은 실패가 어디에도 안 보인다(K3ⓒ 「실패는 대화 안에」).
+  const close = (): void => {
+    if (!busy) onClose()
+  }
+  useAnnounceDialog()
+  useWindowEscape({ onEscape: close })
+
   const submit = async (): Promise<void> => {
     if (busy) return
     const patch: { displayName?: string | null; comment?: string | null } = {}
-    if (name.trim() !== (worktree.displayName ?? '')) patch.displayName = name.trim() === '' ? null : name.trim()
-    if (comment.trim() !== (worktree.comment ?? '')) patch.comment = comment.trim() === '' ? null : comment.trim()
+    if (name.trim() !== initial.name) patch.displayName = name.trim() === '' ? null : name.trim()
+    if (comment.trim() !== initial.comment) patch.comment = comment.trim() === '' ? null : comment.trim()
     if (Object.keys(patch).length === 0) {
       onClose()
       return
     }
     setBusy(true)
     setError(null)
-    const failure = await onSave(patch)
-    setBusy(false)
+    // 저장이 던져도(IPC reject) 「저장 중…」 에 갇히지 않고 오류를 대화 안에 보인다(r2 R2B-04).
+    let failure: string | null
+    try {
+      failure = await onSave(patch)
+    } catch (thrown) {
+      failure = thrown instanceof Error ? thrown.message : String(thrown)
+    } finally {
+      setBusy(false)
+    }
     if (failure === null) onClose()
     else setError(failure)
   }
 
-  const onKeyDown = (event: React.KeyboardEvent): void => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
-    }
-  }
-
   return (
-    <div className="modal-scrim" data-modal-scrim onMouseDown={onClose}>
+    <div className="modal-scrim" data-modal-scrim onMouseDown={close}>
       <div
         className="modal modal-create"
         data-card-dialog=""
@@ -61,14 +71,13 @@ export function WorktreeMetaDialog({
         role="dialog"
         aria-label="워크트리 정보 수정"
         onMouseDown={(event) => event.stopPropagation()}
-        onKeyDown={onKeyDown}
       >
         <div className="modal-head">
           <div>
             <h2 className="modal-title">워크트리 정보 수정</h2>
             <p className="modal-subtitle">{worktree.path}</p>
           </div>
-          <button className="modal-close" aria-label="닫기" onClick={onClose}>
+          <button className="modal-close" aria-label="닫기" disabled={busy} onClick={close}>
             ✕
           </button>
         </div>
@@ -117,7 +126,7 @@ export function WorktreeMetaDialog({
           </p>
         )}
         <div className="modal-footer">
-          <button className="btn-ghost" data-meta-cancel="" onClick={onClose}>
+          <button className="btn-ghost" data-meta-cancel="" disabled={busy} onClick={close}>
             취소
           </button>
           <button className="btn-accent" data-meta-save="" disabled={busy} onClick={() => void submit()}>

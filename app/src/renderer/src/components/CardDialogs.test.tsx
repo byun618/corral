@@ -1,0 +1,206 @@
+// @vitest-environment happy-dom
+// 카드 대화·피커 (LIFE-478 r2 R2B-01~08) — 삭제 대화·정보 수정 대화·상위 피커를 실제로 그려 본다.
+//   · Esc 는 포커스와 무관하게 닫고(터미널 자리의 입력란이 포커스여도), 그 키는 터미널로 새지 않는다 · IME 조합 중 Esc 는 무시
+//   · 첫 포커스: 「삭제」 = 확인 단추, 「강제 삭제」·막힘·읽기 실패 = 취소/닫기
+//   · 대화가 뜨면 열려 있던 hover 카드가 닫힌다(K2ⓔ)
+//   · 피커 강조 행이 밖으로 가면 스크롤한다 · 정보 수정 대화: 저장 실패·저장 중 닫기·연 순간 값 기준 비교
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { WorktreeDeletePreview, WorktreeRow } from '../../../shared/types.js'
+import { DeleteWorktreeDialog } from './DeleteWorktreeDialog.js'
+import { HoverCard } from './HoverCard.js'
+import { ParentPicker } from './ParentPicker.js'
+import { WorktreeMetaDialog } from './WorktreeMetaDialog.js'
+
+Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
+
+const row = (input: { path: string; displayName?: string | null; comment?: string | null }): WorktreeRow => ({
+  path: input.path, branch: input.path.split('/').at(-1) ?? null, isLinked: true, openWorkspaceId: null,
+  gitStatus: { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
+  workspace: null, displayName: input.displayName ?? null, comment: input.comment ?? null, parentPath: null,
+})
+const preview = (input: { dirtyCount?: number; locked?: boolean; isMain?: boolean }): WorktreeDeletePreview => ({
+  ok: true, path: '/r-wt/a', branch: 'a', isMain: input.isMain ?? false, locked: input.locked ?? false, dirtyCount: input.dirtyCount ?? 0,
+  liveSessions: 0, backendError: null, childPaths: [],
+})
+
+let host: HTMLDivElement
+let root: Root
+/** 터미널 자리 — xterm 의 숨은 입력란처럼 포커스를 쥐고 keydown 을 받는다. */
+let terminal: HTMLTextAreaElement
+let terminalKeys: string[]
+
+const render = (element: React.ReactElement): void => act(() => root.render(element))
+const escapeFrom = (target: EventTarget, init: { isComposing?: boolean } = {}): void =>
+  act(() => void target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: init.isComposing ?? false })))
+
+beforeEach(() => {
+  host = document.createElement('div')
+  terminal = document.createElement('textarea')
+  terminal.className = 'xterm-helper-textarea'
+  terminalKeys = []
+  terminal.addEventListener('keydown', (event) => terminalKeys.push(event.key))
+  document.body.append(terminal, host)
+  root = createRoot(host)
+})
+afterEach(() => {
+  act(() => root.unmount())
+  host.remove()
+  terminal.remove()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+describe('삭제 대화 — Esc·첫 포커스 (R2B-01·08)', () => {
+  const states: Array<{ id: string; preview: WorktreeDeletePreview | null; focus: string | null }> = [
+    { id: '읽는 중', preview: null, focus: null },
+    { id: '읽기 실패', preview: { ok: false, code: 'x', error: 'y' }, focus: '[data-delete-cancel]' },
+    { id: '막힘(잠김)', preview: preview({ locked: true }), focus: '[data-delete-cancel]' },
+    { id: '막힘(주 체크아웃)', preview: preview({ isMain: true }), focus: '[data-delete-cancel]' },
+    { id: '강제', preview: preview({ dirtyCount: 2 }), focus: '[data-delete-cancel]' },
+    { id: '삭제', preview: preview({}), focus: '[data-delete-confirm="delete"]' },
+  ]
+  for (const state of states) {
+    it(`${state.id}: 터미널이 포커스여도 Esc 로 닫히고 그 Esc 는 터미널로 가지 않는다`, () => {
+      const onClose = vi.fn()
+      terminal.focus()
+      render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: state.preview, onConfirm: () => {}, onClose }))
+      if (state.focus === null) expect(document.activeElement).toBe(terminal)
+      else expect(document.activeElement).toBe(document.querySelector(state.focus))
+      escapeFrom(document.activeElement ?? document.body)
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(terminalKeys).toEqual([])
+    })
+  }
+  it('막힘이면 취소 단추 글자가 「닫기」', () => {
+    render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({ locked: true }), onConfirm: () => {}, onClose: () => {} }))
+    expect(document.querySelector('[data-delete-cancel]')?.textContent).toBe('닫기')
+  })
+  it('IME 조합 중 Esc 는 닫지 않는다', () => {
+    const onClose = vi.fn()
+    render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: null, onConfirm: () => {}, onClose }))
+    escapeFrom(document.body, { isComposing: true })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+describe('대화가 뜨면 열린 hover 카드가 닫힌다 (R2B-02 · K2ⓔ)', () => {
+  const openCard = (): void => {
+    vi.useFakeTimers()
+    render(
+      createElement('div', null, [
+        createElement(HoverCard, {
+          key: 'card',
+          content: createElement('div', null, '메모'),
+          suppressed: false,
+          testId: 't',
+          render: (trigger) => createElement('span', { ...trigger, id: 'trigger' }, 'title'),
+        }),
+      ]),
+    )
+    act(() => void document.querySelector('#trigger')?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    act(() => void vi.advanceTimersByTime(150))
+    expect(document.querySelector('[data-hover-card]')).not.toBeNull()
+  }
+  const withDialog = (dialog: React.ReactElement): void =>
+    render(
+      createElement('div', null, [
+        createElement(HoverCard, {
+          key: 'card',
+          content: createElement('div', null, '메모'),
+          suppressed: false,
+          testId: 't',
+          render: (trigger) => createElement('span', { ...trigger, id: 'trigger' }, 'title'),
+        }),
+        createElement('div', { key: 'dialog' }, dialog),
+      ]),
+    )
+  it('삭제 대화(⌘⇧⌫·휴지통 경로)', () => {
+    openCard()
+    withDialog(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: null, onConfirm: () => {}, onClose: () => {} }))
+    expect(document.querySelector('[data-hover-card]')).toBeNull()
+  })
+  it('정보 수정 대화(제목 밖 더블클릭 경로)', () => {
+    openCard()
+    withDialog(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a' }), onSave: () => Promise.resolve(null), onClose: () => {} }))
+    expect(document.querySelector('[data-hover-card]')).toBeNull()
+  })
+})
+
+describe('상위 피커 (R2B-01·03)', () => {
+  const candidates = Array.from({ length: 20 }, (_, index) => row({ path: `/r-wt/c${String(index).padStart(2, '0')}` }))
+  const mount = (onClose: () => void): void =>
+    render(createElement(ParentPicker, { child: row({ path: '/r-wt/child' }), candidates, anchor: { left: 0, right: 100, top: 10 }, activePath: null, onPick: () => {}, onClose }))
+  it('End → 마지막 행이 강조되고 그 행을 보이는 영역으로 스크롤한다', () => {
+    const scrolled: string[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this.getAttribute('data-parent-candidate') ?? '')
+    })
+    mount(() => {})
+    const input = document.querySelector('[data-parent-picker-search]')
+    if (input === null) throw new Error('검색 입력 없음')
+    act(() => void input.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+    expect(document.querySelector('[aria-selected="true"]')?.getAttribute('data-parent-candidate')).toBe('/r-wt/c19')
+    expect(scrolled.at(-1)).toBe('/r-wt/c19')
+  })
+  it('안쪽 빈 곳을 눌러 포커스가 body 로 가도 Esc 로 닫힌다 · 조합 중 Esc 는 무시', () => {
+    const onClose = vi.fn()
+    mount(onClose)
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    escapeFrom(document.body, { isComposing: true })
+    expect(onClose).not.toHaveBeenCalled()
+    escapeFrom(document.body)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('정보 수정 대화 (R2B-01·04·05·06·07)', () => {
+  it('포커스가 body 여도 Esc 로 닫힌다 · 조합 중 Esc 는 무시', () => {
+    const onClose = vi.fn()
+    render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a' }), onSave: () => Promise.resolve(null), onClose }))
+    act(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined))
+    escapeFrom(document.body, { isComposing: true })
+    expect(onClose).not.toHaveBeenCalled()
+    escapeFrom(document.body)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+  const typeName = (value: string): void => {
+    const input = document.querySelector<HTMLInputElement>('[data-meta-display-name]')
+    if (input === null) throw new Error('이름 입력 없음')
+    act(() => {
+      Reflect.get(Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ?? {}, 'set')?.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+  const save = (): void => act(() => void document.querySelector<HTMLButtonElement>('[data-meta-save]')?.click())
+  it('저장이 던지면 「저장 중…」 에 갇히지 않고 오류를 대화 안에 보인다', async () => {
+    render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a' }), onSave: () => Promise.reject(new Error('ipc down')), onClose: () => {} }))
+    typeName('새 이름')
+    await act(async () => save())
+    expect(document.querySelector('[data-meta-error]')?.textContent).toContain('ipc down')
+    expect(document.querySelector<HTMLButtonElement>('[data-meta-save]')?.disabled).toBe(false)
+  })
+  it('저장 중에는 Esc·scrim·✕·취소로 닫히지 않고, 뒤이은 실패가 대화 안에 보인다', async () => {
+    let finish: (failure: string | null) => void = () => {}
+    const onClose = vi.fn()
+    render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a' }), onSave: () => new Promise<string | null>((resolve) => (finish = resolve)), onClose }))
+    typeName('새 이름')
+    save()
+    escapeFrom(document.body)
+    act(() => void document.querySelector('[data-modal-scrim]')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    act(() => void document.querySelector<HTMLButtonElement>('.modal-close')?.click())
+    act(() => void document.querySelector<HTMLButtonElement>('[data-meta-cancel]')?.click())
+    expect(onClose).not.toHaveBeenCalled()
+    await act(async () => finish('Registry busy'))
+    expect(document.querySelector('[data-meta-error]')?.textContent).toContain('Registry busy')
+  })
+  it('연 동안 바뀐 칸(코멘트)은 건드리지 않았으면 보내지 않는다 — 비교 기준 = 연 순간의 값', async () => {
+    const onSave = vi.fn((_patch: { displayName?: string | null; comment?: string | null }) => Promise.resolve(null))
+    render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a', comment: '처음' }), onSave, onClose: () => {} }))
+    render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a', comment: 'CLI 가 바꾼 값' }), onSave, onClose: () => {} }))
+    typeName('새 이름')
+    await act(async () => save())
+    expect(onSave).toHaveBeenCalledWith({ displayName: '새 이름' })
+  })
+})

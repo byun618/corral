@@ -72,6 +72,13 @@ describe('K6ⓐ 상위 후보 (198 `worktree-parent-candidates.ts` · `worktree-
     expect(filterCandidates({ candidates: rows, query: 'beta', nameOf }).map((row) => row.path)).toEqual(['/r/a/beta'])
     expect(filterCandidates({ candidates: rows, query: '  ', nameOf })).toHaveLength(2)
   })
+  it('검색 — 이름으로는 안 맞고 경로·브랜치로만 맞는 입력(r2 R2B-09 M11·M12)', () => {
+    // 이름(nameOf)을 표시 이름만 돌려주게 해서, 경로·브랜치 칸이 없으면 못 찾는 입력을 만든다.
+    const rows = [wt('/r/a/payments-wt', { displayName: '결제', branch: 'feat/checkout' }), wt('/r/a/other', { displayName: '기타', branch: 'main' })]
+    const nameOf = (row: WorktreeRow): string => row.displayName ?? ''
+    expect(filterCandidates({ candidates: rows, query: 'payments-wt', nameOf }).map((row) => row.path)).toEqual(['/r/a/payments-wt'])
+    expect(filterCandidates({ candidates: rows, query: 'CHECKOUT', nameOf }).map((row) => row.path)).toEqual(['/r/a/payments-wt'])
+  })
 })
 
 describe('K7ⓑⓓⓔ 삭제 대화 단추', () => {
@@ -80,6 +87,8 @@ describe('K7ⓑⓓⓔ 삭제 대화 단추', () => {
   it('dirty·바쁨 = 「강제 삭제」 + 넘기는 것을 하나씩(Orca #16526)', () => {
     expect(deleteDecision({ ...clean, dirtyCount: 3, liveSessions: 2 })).toEqual({ kind: 'force', warnings: ['커밋하지 않은 변경 3개가 디스크에서 사라집니다', '실행 중인 세션 2개가 종료됩니다'] })
     expect(deleteDecision({ ...clean, liveSessions: 1 })).toEqual({ kind: 'force', warnings: ['실행 중인 세션 1개가 종료됩니다'] })
+    // 경계 1개(r2 R2B-09 M7) — 변경 하나도 강제다.
+    expect(deleteDecision({ ...clean, dirtyCount: 1 })).toEqual({ kind: 'force', warnings: ['커밋하지 않은 변경 1개가 디스크에서 사라집니다'] })
   })
   it('잠김·herdr 링크 없음·주 체크아웃 = 막힘(강제 단추 없음)', () => {
     expect(deleteDecision({ ...clean, locked: true, dirtyCount: 5 }).kind).toBe('blocked')

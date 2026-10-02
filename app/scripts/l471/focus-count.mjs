@@ -49,15 +49,51 @@ function electronPid() {
 }
 const startFront = frontPid()
 const corralPids = new Set()
-const fronts = { startClass: 'start', samples: [], stop: null }
+// macOS 폴백(코디 판정 2026-10-02, ask-5): 자기가 띄운 corral 이 **종료되는 동안·직후 1.5초 안**의 other 는 OS 가 활성 앱을 넘긴 것으로
+// 기록만 한다(fallback) — 다음 표본이 corral/start 로 돌아오거나 측정이 끝나야 한다. 창 밖의 other 는 중단. 이 도구는 OS 입력이 없다.
+const FALLBACK_MS = 1500
+const fronts = { startClass: 'start', samples: [], quits: [], fallbacks: [], stop: null }
+let measuring = true
+let openFallback = null
+function inQuitWindow(t) {
+  return fronts.quits.some((quit) => t >= quit.start && (quit.end === null || t <= quit.end + FALLBACK_MS))
+}
 function sampleFront(label) {
   const live = electronPid()
   if (live !== null) corralPids.add(live)
   const pid = frontPid()
+  const t = Date.now() - t0
   const cls = corralPids.has(pid) ? 'corral' : pid === startFront ? 'start' : 'other'
   const last = fronts.samples.at(-1)
-  if (label !== null || last?.cls !== cls) fronts.samples.push({ t: Date.now() - t0, label, cls })
-  if (cls === 'other' && fronts.stop === null && label !== 'after-cleanup') fronts.stop = { t: Date.now() - t0, label }
+  if (label !== null || last?.cls !== cls) fronts.samples.push({ t, label, cls })
+  if (cls !== 'other') {
+    if (openFallback !== null) {
+      openFallback.returnedAt = t
+      openFallback.returnedTo = cls
+      openFallback = null
+    }
+    return
+  }
+  if (!measuring || fronts.stop !== null) return
+  if (inQuitWindow(t)) {
+    if (openFallback === null) {
+      const quit = fronts.quits.at(-1)
+      openFallback = { at: t, quit: quit.label, quitStart: quit.start, quitEnd: quit.end, gapFromQuitStartMs: t - quit.start, returnedAt: null, returnedTo: null }
+      fronts.fallbacks.push(openFallback)
+    }
+    return
+  }
+  fronts.stop = { t, label }
+}
+/** 자기 corral 종료 — 종료 구간을 적어 폴백 창을 연다. */
+async function quitOwn(label) {
+  const quit = { label, start: Date.now() - t0, end: null }
+  fronts.quits.push(quit)
+  try {
+    await quitCorral({ iso, app })
+  } finally {
+    quit.end = Date.now() - t0
+  }
 }
 sampleFront('before')
 const watcher = setInterval(() => {
@@ -143,7 +179,7 @@ try {
     }
   })
   await phase('P4-restart-restore', async () => {
-    await quitCorral({ iso, app })
+    await quitOwn('P4-restart')
     app = await launchCorral({ iso, appRoot, port, socket: iso.proxySocket, spawned })
     ui = inputs(app.cdp)
     await pause(3000)
@@ -173,12 +209,14 @@ try {
   log('control', JSON.stringify(result.control.delta))
   if (result.control.delta['tab.focus'] !== 1) throw new Error(`양성 대조 실패: 합성 tab.focus 1건이 ${result.control.delta['tab.focus']} 로 세졌다`)
   assertFront('측정 끝')
+  measuring = false
   result.ok = true
 } catch (error) {
   result.error = String(error?.stack ?? error)
   log('ERROR', result.error)
 } finally {
-  if (app !== null) await quitCorral({ iso, app }).catch(() => {})
+  measuring = false
+  if (app !== null) await quitOwn('cleanup').catch(() => {})
   proxy?.close()
   await stopPid(backend?.pid, 'backend').catch(() => {})
   clearInterval(watcher)

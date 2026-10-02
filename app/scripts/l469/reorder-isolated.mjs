@@ -23,6 +23,10 @@
 //           있고(단일 위치) 끌기 대상이 아니므로 gamma 그룹 카드 수·순서 기대는 그대로다. 끝에 고정 구획이 그대로인지 검사를 더한다.
 //           sticky 검사의 고정 스크롤 값(40px)은 고정 구획 높이만큼 더한다(구획이 맨 위에 하나 더 있다).
 //
+// LIFE-471 C1 옵션 —
+//   --bell  a-three 카드에 안 읽음 벨을 켜고(벨 클릭) 끌기와의 관계를 본다: 벨 클릭이 끌기·카드 선택을 시작하지 않는다 ·
+//           벨 위에서 누른 채 끌면 카드 끌기가 무장되지 않는다(벨 버튼이 mousedown 을 끊는다 — 의도) · 벨 켜진 카드도 몸통에서 끌면 옮겨지고 벨은 그대로.
+//
 // 게이트 ① 사용자 수정 1 — 주 체크아웃도 옮긴다(K2ⓑ'): 카드 경계 번호는 **주 체크아웃 포함** 그 레포 카드 전체 기준이다.
 // 옛 K2b-main-no-drag·K2b-not-above-main 은 K2b'-main-drag·K2b'-above-main 으로 바꿨다. K3ⓗ 미리 보기 검사를 더했다.
 
@@ -50,6 +54,7 @@ const DISPLAY_PREFS = {
 }[display]
 /** 에이전트 행 기대 — Compact 카드는 목록이 없다(0 행), 그 밖은 1 행 이상. */
 const pinMode = args.pin === true
+const bellMode = args.bell === true
 const agentRowsOk = (count) => (display === 'compact' ? count === 0 : count > 0)
 const out = path.resolve(String(args.out ?? 'l469-iso-out'))
 const port = Number(args.port ?? 9469)
@@ -1603,6 +1608,30 @@ async function main() {
       check("K2b'-restart", "K2ⓑ' 맨 아래로 옮긴 주 체크아웃이 재시작 뒤에도 맨 아래 — 재시작 전 화면과 같은 배열", gotAlpha.at(-1) === alpha && gotAlpha[0] !== alpha && same(gotAlpha, want.wts[alpha]), { mainMovedOrder, beforeQuit: want.wts[alpha], afterRestart: gotAlpha })
     }
     await shot(`k4a-restart-${round}`)
+  }
+
+  if (bellMode) {
+    // LIFE-471 C1 — 안 읽음 벨과 끌기.
+    const target = wtA('a-three')
+    const bellOf = () => cdp.evaluate((p) => [...document.querySelectorAll('[data-worktree]')].find((row) => row.getAttribute('data-worktree') === p)?.querySelector('[data-worktree-unread-toggle]')?.getAttribute('data-worktree-unread-toggle') ?? null, target)
+    const bellPoint = () => pointOf({ attr: 'data-worktree', value: target, inner: '[data-worktree-unread-toggle]' })
+    let before = await snapshot()
+    await click(await bellPoint())
+    await pause(300)
+    let after = await snapshot()
+    check('L471-C1-bell-click', 'LIFE-471 C1 벨 클릭 = 벨 켜짐 · 끌기 상태 없음 · 순서·선택 그대로', (await bellOf()) === 'unread' && !after.reordering && same(wtOrder(after, alpha), wtOrder(before, alpha)) && same(after.repos.find((repo) => repo.root === alpha).selected, before.repos.find((repo) => repo.root === alpha).selected), { bell: await bellOf(), reordering: after.reordering })
+    before = await snapshot()
+    const fromBell = await bellPoint()
+    const bellMid = await drag(fromBell, { x: fromBell.x, y: fromBell.y - 90 }, { during: async () => snapshot() })
+    after = await snapshot()
+    check('L471-C1-drag-from-bell', 'LIFE-471 C1 벨 위에서 누른 채 끌기 → 카드 끌기 무장 안 됨(표시 줄·끌기 상태 없음) · 순서 그대로 · 벨 그대로(놓은 곳이 벨 밖이라 클릭 아님)', !bellMid.reordering && !bellMid.indicator && same(wtOrder(after, alpha), wtOrder(before, alpha)) && (await bellOf()) === 'unread', { during: { reordering: bellMid.reordering, indicator: bellMid.indicator }, before: wtOrder(before, alpha), after: wtOrder(after, alpha), bell: await bellOf() })
+    before = await snapshot()
+    const bodyMid = await drag(await cardPoint(target), await cardSlotPoint(alpha, 1), { during: async () => snapshot() })
+    await pause(300)
+    after = await snapshot()
+    const moved = wtOrder(after, alpha)
+    check('L471-C1-drag-belled-card', 'LIFE-471 C1 벨 켜진 카드를 몸통에서 끌면 옮겨진다(양성 대조) · 벨은 그대로 · prefs 벨 = 그 경로', bodyMid.reordering && !same(moved, wtOrder(before, alpha)) && moved[1] === target && (await bellOf()) === 'unread' && same(readPrefs().unreadWorktrees, [target]), { before: wtOrder(before, alpha), after: moved, bell: await bellOf(), prefs: readPrefs().unreadWorktrees })
+    await shot('l471-c1-bell-drag')
   }
 
   // ── K4ⓑ 레포 제거(앱 밖 레지스트리) + K1ⓒ 레포 1개면 드래그 안 됨 ──

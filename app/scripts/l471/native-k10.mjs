@@ -9,6 +9,7 @@
 //
 // 사용: node native-k10.mjs <ROOT=/tmp/l471n*> <raw 폴더> <app 디렉터리> [e]
 //   e = ⓔ 만(관문 레포·배치가 이미 있을 때). 원자료는 k10e.json.
+//   m2 = fix1 짧은 재실행 — K10ⓓ(재기동 뒤 벨 유지) + M2(Mark Read 한 비활성 탭 herdr done 이 재기동 뒤 굵게 서되 벨은 새로 안 켜짐). 원자료 k10m2.json.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -35,7 +36,7 @@ const win = (...args) => JSON.parse(execFileSync(winctl, args.map(String), { enc
 let appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
 
 const out = { at: new Date().toISOString(), steps: [], checks: [], attempts: {}, spawned: [], stopped: null }
-const outFile = path.join(rawd, phase === 'e' ? 'k10e.json' : 'k10.json')
+const outFile = path.join(rawd, { e: 'k10e.json', m2: 'k10m2.json' }[phase] ?? 'k10.json')
 const save = () => fs.writeFileSync(outFile, JSON.stringify(out, null, 2) + '\n')
 function check(id, criterion, pass, observed) {
   out.checks.push({ id, criterion, pass, observed })
@@ -342,6 +343,100 @@ async function onlyE() {
   out.finalPrefs = prefsBells()
 }
 
+/** 접혀 있으면 실제 클릭으로 에이전트 묶음을 편다. */
+async function expandAgents(name, p) {
+  const group = `[data-agent-group="${p}"]`
+  if (await evaluate(`document.querySelector(${JSON.stringify(`${group}[data-agent-group-expanded="false"]`)}) !== null`)) await mouse('click', `expand-agents-${name}`, group)
+}
+
+/** fix1 짧은 재실행 (수정 명세 8) — K10ⓓ + M2. 실제 OS 입력: 카드 클릭·우클릭·메뉴 클릭·벨 클릭·⌘Q. */
+async function onlyM2() {
+  const reposDir = path.join(root, 'repos')
+  const { root: A, worktrees } = makeRepo({ reposDir, name: 'gate', linked: ['gate-b'] })
+  const B = worktrees['gate-b']
+  gatePrefix = fs.realpathSync(reposDir)
+  out.paths = { A: 'gate', B: 'gate-wt/gate-b' }
+  const added = await rpc(ctl, { cmd: 'add-repo', root: A }, 30_000)
+  if (!added.ok) throw new Error(`add-repo: ${JSON.stringify(added).slice(0, 200)}`)
+  await until(async () => Object.keys((await read()).cards).length === 2, 'gate cards', 60_000)
+  for (const [name, p] of [['B', B], ['A', A]]) {
+    await mouse('click', `open-${name}`, cardSel(p))
+    await until(async () => (await wsOf(p))?.tabs?.length > 0, `workspace ${name}`, 60_000)
+  }
+  // A 의 비활성 탭 pane p7 — 보지 않는 중의 완료(herdr done) → A 벨.
+  const wsA = await wsOf(A)
+  const known = new Set(wsA.tabs.flatMap((t) => t.panes.map((p) => p.paneId)))
+  await herdrRpc('tab.create', { workspace_id: wsA.workspaceId, focus: false })
+  const p7 = await until(async () => (await wsOf(A))?.tabs.flatMap((t) => t.panes).find((p) => !known.has(p.paneId))?.paneId ?? null, 'A t2 pane', 20_000)
+  gatePanes = [p7]
+  out.ids = { p7 }
+  report(p7, 'idle')
+  await pause(800)
+  await expandAgents('A', A)
+  await complete(p7, 'm2-p7-inactive-tab')
+  const findStatus = (value) => {
+    if (value === null || typeof value !== 'object') return null
+    if (typeof value.agent_status === 'string') return value.agent_status
+    for (const child of Object.values(value)) {
+      const found = findStatus(child)
+      if (found !== null) return found
+    }
+    return null
+  }
+  const herdrP7 = () => findStatus(JSON.parse(herdrCli('pane', 'get', p7)))
+  const afterDone = await read()
+  // 실제 우클릭 → 「읽음으로 표시」 → A 벨 꺼짐(herdr 는 done 그대로).
+  await mouse('rclick', 'm2-menu-A', cardSel(A))
+  await until(async () => (await read()).menu !== null, 'menu', 5000)
+  const menu = (await read()).menu
+  await mouse('click', 'm2-mark-read-A', '[data-card-menu] [data-menu-action="toggle-unread"]')
+  await pause(600)
+  const afterRead = await read()
+  // B 벨 — 실제 벨 클릭(K10ⓓ 재기동 유지용).
+  await mouse('click', 'm2-bell-B', bellSel(B))
+  await pause(600)
+  const beforeQuit = { read: await read(), prefs: prefsBells(), herdrP7: herdrP7() }
+  out.prep = { afterDone: { p7: afterDone.rows[p7], bellA: afterDone.cards[A]?.bell }, menu: menu?.items.map((i) => i.label), afterRead: { p7: afterRead.rows[p7], bellA: afterRead.cards[A]?.bell }, beforeQuit: { bellA: beforeQuit.read.cards[A]?.bell, bellB: beforeQuit.read.cards[B]?.bell, prefs: beforeQuit.prefs === null ? null : { gate: beforeQuit.prefs.gate.map((p) => (p === B ? 'B' : p === A ? 'A' : '?')), others: beforeQuit.prefs.others }, herdrP7: beforeQuit.herdrP7 } }
+  save()
+  // 실제 ⌘Q → 재기동.
+  await cmdKey('m2-cmd-q', 12, 'q')
+  const oldPid = appPid
+  await until(() => {
+    try {
+      process.kill(oldPid, 0)
+      return false
+    } catch {
+      return true
+    }
+  }, 'app exit after ⌘Q', 30_000)
+  const relaunch = spawnSync('sh', [path.join(path.dirname(new URL(import.meta.url).pathname), '../l470/native-app.sh'), root, appDir, rawd, 'second'], { encoding: 'utf8' })
+  if (relaunch.status !== 0) throw new Error(`relaunch: ${relaunch.stdout}\n${relaunch.stderr}`)
+  appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
+  await until(async () => Object.keys((await read().catch(() => ({ cards: {} }))).cards).length === 2, 'gate cards after restart', 60_000)
+  // 재기동 뒤 10초 시간축 — A 벨이 한 번이라도 켜지는지, p7 행이 굵게 서는지.
+  const series = []
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 10_000) {
+    const r = await read()
+    series.push({ t: Date.now() - startedAt, bellA: r.cards[A]?.bell ?? null, bellB: r.cards[B]?.bell ?? null, p7: r.rows[p7] ?? null })
+    await pause(500)
+  }
+  if (series.at(-1)?.p7 === null) {
+    await expandAgents('A-after', A)
+    await pause(600)
+    const r = await read()
+    series.push({ t: Date.now() - startedAt, bellA: r.cards[A]?.bell ?? null, bellB: r.cards[B]?.bell ?? null, p7: r.rows[p7] ?? null, afterExpand: true })
+  }
+  const last = series.at(-1)
+  out.series = series
+  out.herdrP7After = herdrP7()
+  check('K10d-restart-fix1', 'K10ⓓ(fix1) 실제 ⌘Q → 재기동 → B 벨 유지 · prefs 그대로', last?.bellB === 'unread' && prefsBells()?.gate.length === 1 && prefsBells()?.gate[0] === B, { oldPid, newPid: appPid, last: { bellB: last?.bellB }, prefsGate: prefsBells()?.gate.length })
+  check('M2-native', 'M2(fix1) 실제 우클릭 Mark Read 한 비활성 탭 herdr done(p7) → 재기동 뒤 행은 굵게, A 벨은 10초 동안 한 번도 안 켜짐', out.prep.afterRead.bellA === 'read' && out.prep.beforeQuit.herdrP7 === 'done' && out.herdrP7After === 'done' && last?.p7?.unseen === true && series.every((row) => row.bellA === 'read'), { prep: out.prep, herdrP7After: out.herdrP7After, last, bellAValues: [...new Set(series.map((row) => row.bellA))] })
+  out.shot = await shot('m2-after-restart')
+  out.final = await read()
+  out.finalPrefs = prefsBells()
+}
+
 async function main() {
   // ── 준비: 관문 레포(A = 메인, B = linked) ──
   // 다시 돌려도 되게(1차 시도가 행 대기에서 멈췄다) — 관문 레포·카드·배치가 이미 있으면 그대로 쓴다.
@@ -486,7 +581,7 @@ async function main() {
   out.finalPrefs = prefsBells()
 }
 
-;(phase === 'e' ? onlyE() : main())
+;(phase === 'e' ? onlyE() : phase === 'm2' ? onlyM2() : main())
   .then(() => {
     out.ok = out.checks.every((c) => c.pass)
     out.attempts.total = Object.values(out.attempts).reduce((a, b) => a + b, 0)

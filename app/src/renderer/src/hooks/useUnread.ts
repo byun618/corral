@@ -96,10 +96,17 @@ export function useUnread(input: {
   const hydrated = useRef(false)
   const written = useRef<string | null>(null)
   const pending = useRef<Array<{ kind: 'read' | 'unread'; path: string }>>([])
+  // 읽기가 재시도까지 실패했다 — 이번 실행은 저장하지 않으니 다시 적용할 기록도 쌓지 않는다(r2 F-D).
+  const failed = useRef(false)
   useEffect(() => {
     let cancelled = false
+    // 읽기 실패는 한 번 다시 읽는다(r2 F-D).
     window.corral
       .getUiPrefs()
+      .catch((error: unknown) => {
+        console.warn('[unread] ui-prefs 읽기 실패 — 한 번 다시 읽는다', error)
+        return window.corral.getUiPrefs()
+      })
       .then((prefs: UiPrefs) => {
         if (cancelled) return
         const stored = Array.isArray(prefs.unreadWorktrees) ? prefs.unreadWorktrees : []
@@ -115,7 +122,10 @@ export function useUnread(input: {
         })
       })
       .catch((error: unknown) => {
-        console.warn('[unread] ui-prefs 읽기 실패 — 이번 실행 동안 벨을 저장하지 않는다', error)
+        if (cancelled) return
+        failed.current = true
+        pending.current = []
+        console.warn('[unread] ui-prefs 다시 읽기도 실패 — 이번 실행 동안 벨을 저장하지 않는다', error)
       })
     return () => {
       cancelled = true
@@ -153,7 +163,7 @@ export function useUnread(input: {
   const modelRef = useRef(model)
   modelRef.current = model
   const apply = useCallback((kind: 'read' | 'unread', path: string) => {
-    if (!hydrated.current) pending.current.push({ kind, path })
+    if (!hydrated.current && !failed.current) pending.current.push({ kind, path })
     setModel((prev) => (kind === 'read' ? markRead(prev, path) : markUnread(prev, path)))
   }, [])
   const read = useCallback((path: string) => apply('read', path), [apply])

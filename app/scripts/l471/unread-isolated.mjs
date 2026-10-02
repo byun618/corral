@@ -465,6 +465,39 @@ try {
   const prefsAfterC = readPrefs()?.unreadWorktrees ?? null
   check('K8d-ghost', 'K8ⓓ 벨 켠 worktree(C)를 지우면 ui-prefs 벨 목록에서도 빠진다', Array.isArray(prefsWithC) && prefsWithC.includes(C) && Array.isArray(prefsAfterC) && !prefsAfterC.includes(C), { withC: prefsWithC?.map((p) => path.basename(p)), afterC: prefsAfterC?.map((p) => path.basename(p)) })
 
+  // ── r2 F-E 첫 묶음 뒤에 처음 나타난 pane — 세션 중 레포 추가 ──
+  // corral 이 그 레포를 모르는 동안 herdr 에서 working → idle 이 지나간 pane 을 add-repo 로 처음 보게 한다(main 거울에는 이력이 있다).
+  // 기대: 그 이력은 벨·굵기를 만들지 않는다(첫 묶음 규칙) · 대조: 그 뒤 새 working → idle 은 벨 + 굵기.
+  {
+    const late = makeRepo({ reposDir: path.join(work, 'repos'), name: 'late', linked: [] })
+    const L = late.root
+    result.paths.L = 'late'
+    const created = await backendRpc(iso, 'workspace.create', { cwd: L, focus: false })
+    const pL = findKey(created, 'root_pane')?.pane_id ?? findKey(created, 'pane_id')
+    if (pL === undefined) throw new Error(`F-E: workspace.create 응답에 pane id 없음 ${JSON.stringify(created).slice(0, 200)}`)
+    await report(pL, 'working')
+    await pause(400)
+    await report(pL, 'idle')
+    await pause(800)
+    const addedL = await ctl({ cmd: 'add-repo', root: L })
+    if (!addedL.ok) throw new Error(`add-repo late: ${JSON.stringify(addedL)}`)
+    await until(() => app.cdp.evaluate((id) => document.querySelector(`[data-agent-row="${id}"]`) !== null, pL), 'late row', 60_000)
+    await pause(1500)
+    const lateState = (await state()).repos.flatMap((r) => r.worktrees).find((w) => w.path === L)
+    const latePane = lateState?.workspace?.tabs.flatMap((t) => t.panes).find((pane) => pane.paneId === pL)
+    const historyOnFirstSight = latePane?.agentState.history.map((step) => step.status) ?? null
+    s = await snap()
+    const first = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: await herdr(pL), historyOnFirstSight }
+    const c = await complete(pL, 'F-E late new transition')
+    s = await snap()
+    const after = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: c.herdrAfter }
+    check('FE-late-pane', 'r2 F-E 세션 중 추가한 레포의 pane(이력 working → idle 이 이미 있음) → 처음 볼 때 벨·굵기 없음 · 그 뒤 새 완료는 벨 + 굵기',
+      Array.isArray(historyOnFirstSight) && historyOnFirstSight.includes('working') && first.row?.unseen === false && first.bell === 'read' && after.row?.unseen === true && after.bell === 'unread',
+      { first, after })
+    // 벨을 꺼 둔다(control 에 레포 제거가 없어 late 는 남는다 — 이후 재시작 검사는 A·B 만 본다).
+    await menuAction(L, 'toggle-unread')
+  }
+
   // ── 재시작 준비: 벨 B(수동) · 비활성 탭 done(p5, B) · 456 R3-F3 「활성 탭 + done」(A) ──
   await menuAction(B, 'toggle-unread')
   const tB = await backendRpc(iso, 'tab.create', { workspace_id: b.workspaceId })

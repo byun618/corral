@@ -158,6 +158,56 @@ describe('r1 L2 하이드레이션 경계', () => {
   })
 })
 
+describe('r2 F-D 읽기 재시도', () => {
+  async function settle(): Promise<void> {
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve()
+    })
+  }
+  it('첫 읽기가 실패하면 한 번 다시 읽는다 — 다시 읽기가 되면 저장값과 합치고 그 뒤 변경은 저장된다', async () => {
+    store.update({ unreadWorktrees: ['/r/kept'] })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let reads = 0
+    Reflect.set(window, 'corral', {
+      getUiPrefs: (): Promise<Partial<UiPrefs>> => {
+        reads += 1
+        return reads === 1 ? Promise.reject(new Error('ipc down')) : Promise.resolve(store.get())
+      },
+      setUiPrefs: (patch: Partial<UiPrefs>): void => store.update(patch),
+    })
+    await mount()
+    await settle()
+    expect(reads).toBe(2)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect([...(probe.view?.worktrees ?? [])]).toEqual(['/r/kept'])
+    act(() => probe.view?.markUnread('/r/a'))
+    expect(disk.unreadWorktrees).toEqual(['/r/a', '/r/kept'])
+  })
+  it('다시 읽기도 실패하면 두 번에서 멈추고 남긴다 — 저장값을 덮지 않는다', async () => {
+    const writes: Array<Partial<UiPrefs>> = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let reads = 0
+    Reflect.set(window, 'corral', {
+      getUiPrefs: (): Promise<Partial<UiPrefs>> => {
+        reads += 1
+        return Promise.reject(new Error('ipc down'))
+      },
+      setUiPrefs: (patch: Partial<UiPrefs>): void => {
+        writes.push(patch)
+      },
+    })
+    await mount()
+    await settle()
+    act(() => probe.view?.markUnread('/r/a'))
+    act(() => probe.view?.toggle('/r/a'))
+    await settle()
+    expect(reads).toBe(2)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(String(warn.mock.calls[1]?.[0])).toContain('다시 읽기도 실패')
+    expect(writes).toEqual([])
+  })
+})
+
 describe('터미널 입력 키 (198 terminal-keydown-fit)', () => {
   it('수식키 단독·자동 반복·⌘ 조합은 입력이 아니다', () => {
     expect(isTerminalInputKey({ key: 'a', repeat: false, metaKey: false })).toBe(true)

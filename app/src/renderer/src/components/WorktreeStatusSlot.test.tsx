@@ -89,6 +89,28 @@ describe('K5 카드 벨', () => {
     expect(spies.select).not.toHaveBeenCalled()
     expect(spies.drag).not.toHaveBeenCalled()
   })
+  it('r2 F-T② pointerdown 도 벨에서 끊긴다 — 카드 바깥(버블)까지 올라가지 않는다 · 대조: 카드 본문의 pointerdown 은 올라간다', () => {
+    mount({ unread: false })
+    const reached: EventTarget[] = []
+    const listen = (event: Event): void => {
+      if (event.target !== null) reached.push(event.target)
+    }
+    document.body.addEventListener('pointerdown', listen)
+    try {
+      const card = host.firstElementChild
+      if (card === null) throw new Error('카드 없음')
+      act(() => {
+        toggle().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      })
+      expect(reached).toEqual([])
+      act(() => {
+        card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      })
+      expect(reached).toEqual([card])
+    } finally {
+      document.body.removeEventListener('pointerdown', listen)
+    }
+  })
   it('삭제 중 카드 — 벨 모양은 남고 토글은 안 된다(198 삭제 중 클릭 삼킴)', () => {
     mount({ unread: true, deleting: true })
     act(() => toggle().dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 })))

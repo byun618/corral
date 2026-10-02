@@ -50,34 +50,48 @@ export function makeRepo({ reposDir, name, linked }) {
 
 // --- 세는 프록시 ---------------------------------------------------------------------------------------------
 const METHODS = ['pane.focus', 'tab.focus']
-/** 한 방향 바이트 흐름에서 메서드 이름 등장 횟수를 센다 — 청크 경계를 넘는 이름을 놓치지 않게 꼬리를 잇는다. */
+/**
+ * 한 방향 바이트 흐름에서 메서드 이름 등장 횟수를 센다 — **완결 메시지 단위**(r2 F-B). 끝나지 않은 메시지는 다음 청크까지 들고
+ * 있다가 끝나면 센다. 메시지 = control 소켓은 JSON-RPC 한 줄(`\n`), endpoint 소켓은 길이 접두 프레임(u32 LE + 본문,
+ * `vendor/bincode.ts encodeFrame`). 이름이 메시지 경계에 걸쳐 쪼개질 일이 없어 청크가 어디서 끊겨도 같은 수를 센다.
+ * `state` = 연결 하나의 상태 — `newState('line' | 'frame')`.
+ */
 export function makeCounter() {
   const counts = Object.fromEntries(METHODS.map((m) => [m, 0]))
   const events = []
-  const feed = (state, chunk) => {
-    const text = state.tail + chunk.toString('latin1')
+  const countMessage = (text) => {
     for (const method of METHODS) {
-      let from = 0
-      for (;;) {
-        const at = text.indexOf(method, from)
-        if (at < 0) break
-        from = at + method.length
-        // 꼬리 영역(이미 센 곳)에서 시작한 것은 건너뛴다.
-        if (at + method.length <= state.tail.length) continue
+      for (let at = text.indexOf(method); at >= 0; at = text.indexOf(method, at + method.length)) {
         const next = text[at + method.length]
-        if (next === undefined) {
-          // 이름 뒤 글자를 아직 못 봤다 — 다음 청크에서 판정(꼬리에 남긴다).
-          from = at
-          break
-        }
-        if (/[A-Za-z0-9_.]/.test(next)) continue
+        if (next !== undefined && /[A-Za-z0-9_.]/.test(next)) continue
         counts[method] += 1
         events.push({ method, at: Date.now() })
       }
     }
-    state.tail = text.slice(-24)
   }
-  return { counts, events, feed }
+  const newState = (mode) => ({ mode, buffer: Buffer.alloc(0) })
+  const feed = (state, chunk) => {
+    let buffer = Buffer.concat([state.buffer, chunk])
+    if (state.mode === 'line') {
+      for (let end = buffer.indexOf(10); end >= 0; end = buffer.indexOf(10)) {
+        countMessage(buffer.subarray(0, end).toString('latin1'))
+        buffer = buffer.subarray(end + 1)
+      }
+    } else {
+      while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE(0)) {
+        const length = buffer.readUInt32LE(0)
+        countMessage(buffer.subarray(4, 4 + length).toString('latin1'))
+        buffer = buffer.subarray(4 + length)
+      }
+    }
+    state.buffer = buffer
+  }
+  /** 연결이 닫힐 때 — 끝나지 않은 마지막 메시지도 센다. */
+  const flush = (state) => {
+    countMessage(state.buffer.toString('latin1'))
+    state.buffer = Buffer.alloc(0)
+  }
+  return { counts, events, newState, feed, flush }
 }
 
 /** control(`herdr.sock`)과 endpoint(`herdr-client.sock`) 둘 다 같은 계수기로 프록시한다. */
@@ -85,23 +99,24 @@ export async function startProxies({ iso, counter }) {
   fs.mkdirSync(path.dirname(iso.proxySocket), { recursive: true })
   const realClient = path.join(path.dirname(iso.realSocket), 'herdr-client.sock')
   const servers = [
-    await startProxy({ listenPath: iso.proxySocket, targetPath: iso.realSocket, counter }),
-    await startProxy({ listenPath: path.join(path.dirname(iso.proxySocket), 'herdr-client.sock'), targetPath: realClient, counter }),
+    await startProxy({ listenPath: iso.proxySocket, targetPath: iso.realSocket, counter, mode: 'line' }),
+    await startProxy({ listenPath: path.join(path.dirname(iso.proxySocket), 'herdr-client.sock'), targetPath: realClient, counter, mode: 'frame' }),
   ]
   return { close: () => servers.forEach((server) => server.close()) }
 }
 
-export function startProxy({ listenPath, targetPath, counter }) {
+export function startProxy({ listenPath, targetPath, counter, mode }) {
   fs.rmSync(listenPath, { force: true })
   const server = net.createServer((client) => {
     const upstream = net.createConnection(targetPath)
-    const state = { tail: '' }
+    const state = counter.newState(mode)
     client.on('data', (chunk) => {
       counter.feed(state, chunk)
       upstream.write(chunk)
     })
     upstream.on('data', (chunk) => client.write(chunk))
     const end = () => {
+      if (!client.destroyed) counter.flush(state)
       client.destroy()
       upstream.destroy()
     }

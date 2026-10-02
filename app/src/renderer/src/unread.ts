@@ -88,8 +88,9 @@ export type Completion = { at: number; bell: boolean }
  */
 export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined }): Completion[] {
   const { obs, firstBatch, since } = input
-  // 처음 보는 done — 첫 묶음이거나 main 이 처음 본 pane. 굵기만, 벨 없음.
-  if (firstBatch || obs.history.length === 0) return obs.status === 'done' && obs.enteredAt !== since ? [{ at: obs.enteredAt, bell: false }] : []
+  // 처음 보는 done — 첫 묶음, 이 세션에 처음 보는 pane(r2 F-E: 첫 묶음 뒤에 나타난 pane 의 옛 이력은 세지 않는다),
+  // main 이 처음 본 pane. 굵기만, 벨 없음.
+  if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' && obs.enteredAt !== since ? [{ at: obs.enteredAt, bell: false }] : []
   const timeline = [...obs.history].reverse().concat([{ status: obs.status, enteredAt: obs.enteredAt }])
   const found: Completion[] = []
   for (let i = 1; i < timeline.length; i += 1) {
@@ -133,9 +134,6 @@ export function ingest(model: UnreadModel, input: {
     panes.set(obs.paneId, { worktreePath: obs.worktreePath, at: last.at })
     if (unseen.some((completion) => completion.bell)) worktrees.add(obs.worktreePath)
   }
-  const live = new Set(input.panes.map((obs) => obs.paneId))
-  for (const paneId of panes.keys()) if (!live.has(paneId) && !input.retainedPaneIds.has(paneId)) panes.delete(paneId)
-
   // 사라진 worktree 의 벨 (K8ⓓ · r1 M1·L1).
   //   · 스캔이 실패한 레포(error)는 worktree 가 빈 목록으로 온다 — 그 레포에서 알던 경로는 「사라짐」이 아니라 「모름」이다(벨·present 유지).
   //   · 이번 세션에 본 적 없는 저장 벨(앱이 꺼진 사이 지운 worktree)은 **모든 레포가 에러 없이 적재된** 묶음에서만 지운다.
@@ -144,6 +142,15 @@ export function ingest(model: UnreadModel, input: {
   const errored = new Set(input.repos.filter((repo) => repo.error).map((repo) => repo.root))
   const present = new Map(model.present)
   for (const repo of input.repos) for (const path of repo.worktreePaths) present.set(path, repo.root)
+
+  // 사라진 pane 의 안 읽음 — 에러 레포의 worktree 에 있던 pane 은 벨과 같은 규칙으로 남긴다(r2 F-A).
+  const live = new Set(input.panes.map((obs) => obs.paneId))
+  for (const [paneId, entry] of panes) {
+    if (live.has(paneId) || input.retainedPaneIds.has(paneId)) continue
+    const root = present.get(entry.worktreePath)
+    if (root !== undefined && errored.has(root)) continue
+    panes.delete(paneId)
+  }
   if (seen.size > 0) {
     const clean = errored.size === 0
     for (const path of [...worktrees]) {

@@ -211,8 +211,14 @@ export class Corral {
     fs.writeFileSync(wrapper, `#!/bin/sh\nexec '${path.join(appRoot, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')}' --remote-debugging-port=${this.port} "$@"\n`, { mode: 0o755 })
     this.env.CORRAL_ELECTRON = wrapper
     const opened = spawnSync(process.execPath, [path.join(appRoot, 'cli/corral.mjs'), 'open', '--json'], { env: this.env, encoding: 'utf8', timeout: 120_000 })
-    if (opened.status !== 0) throw new Error(`open → ${opened.status}\n${opened.stdout}\n${opened.stderr}`)
+    if (opened.status !== 0 && !opened.stdout.includes('outcome_unknown')) throw new Error(`open → ${opened.status}\n${opened.stdout}\n${opened.stderr}`)
     this.desktopPid = JSON.parse(opened.stdout).result?.runtime?.pid ?? null
+    if (this.desktopPid === null) {
+      // fix1 f1-baseline-off: CLI 가 `outcome_unknown`(「launch may have taken effect」)을 냈는데 앱은 떠서 고아로 남았다 — 디버깅 포트의 주인 pid 를 잡아 끝에 끈다.
+      this.log('open outcome_unknown — 포트 주인으로 pid 를 찾는다', opened.stdout.slice(0, 200))
+      this.openNote = opened.stdout.slice(0, 300)
+      this.desktopPid = await until(() => Number(spawnSync('lsof', ['-tiTCP:' + this.port, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim().split('\n')[0]) || null, 'desktop pid by port', 60_000)
+    }
     this.spawned.push({ pid: this.desktopPid, label: 'corral desktop' })
     await until(() => fs.existsSync(this.control), 'control socket', 60_000)
     if (this.herdr) await until(async () => (await rpc(this.control, { cmd: 'state' })).state?.link?.phase === 'live', 'link live', 60_000)

@@ -619,11 +619,14 @@ async function bigrm(roots) {
     const focus = await ensureUnfocused()
     const builtBefore = corral.count('tree.built', 0)
     const startedAt = Date.now()
+    // `--git-first`: `.git` 파일을 먼저 지우고 나머지를 rm -rf — r1 F1 의 순서(.git 이 먼저 사라지는 삭제)를 확정적으로 만든다.
+    // macOS `rm -rf` 는 디렉터리 읽기 순서를 따라 `.git` 을 늦게 지우기도 한다(f1-bigrm-old 실측) — 그때는 경합 창이 안 열린다.
+    if (args['git-first']) fs.rmSync(path.join(big.path, '.git'))
     const rm = spawnSync('rm', ['-rf', big.path])
     const endedAt = Date.now()
     if (rm.status !== 0) throw new Error(`rm -rf → ${rm.status}`)
     const seen = await waitReflect(corral, (set) => !set.includes(big.path), { from: endedAt, timeoutMs: 15_000 })
-    const row = { id: `K3c-big-${i}`, jitterMs, files, rmMs: endedAt - startedAt, ms: seen.ms, msFromRmStart: seen.at === null ? null : seen.at - startedAt, ghost: seen.ms === null, treeBuilt: corral.count('tree.built', 0) - builtBefore, focusBefore: focus, focusAfter: await focusSample(), load: load() }
+    const row = { id: `K3c-big-${i}`, jitterMs, files, gitFirst: args['git-first'] === true, rmMs: endedAt - startedAt, ms: seen.ms, msFromRmStart: seen.at === null ? null : seen.at - startedAt, ghost: seen.ms === null, treeBuilt: corral.count('tree.built', 0) - builtBefore, focusBefore: focus, focusAfter: await focusSample(), load: load() }
     row.pass = row.ms !== null && focus.corralFocused === false
     result.rounds.push(row)
     log(row.ghost ? 'GHOST' : 'ok  ', row.id, `rm ${row.rmMs}ms`, `reflect ${row.ms}ms`, `built+${row.treeBuilt}`)

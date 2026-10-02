@@ -178,7 +178,8 @@ export function useCardActions(input: {
     </>
   )
 
-  const sidebarCards: SidebarCardProps = {
+  // 안 읽음 장부(`unread`)는 App 이 `useUnread` 로 얹는다(LIFE-471).
+  const sidebarCards: Omit<SidebarCardProps, 'unread'> = {
     pinned: pins.values,
     togglePin: pins.toggle,
     deleting,

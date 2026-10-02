@@ -50,6 +50,7 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
+import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { agentPanes, sessionTitle } from './session-title.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
@@ -334,6 +335,17 @@ export function App(): React.JSX.Element {
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+
+  /**
+   * 안 읽음 장부 (LIFE-471) — 「보고 있는」 pane 후보 = **활성 영역의 선택 pane**(198 활성 worktree·탭·leaf). 아래 `renderGroup` 의
+   * `groupSelectedPaneId` 와 같은 규칙: 창 전체 선택 pane 이 그 영역 탭에 있으면 그것, 아니면 그 탭이 보던 pane. 창이 보이고 포커스인지는 훅이 본다.
+   */
+  const activeGroupTab = tabById(layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null)
+  const viewedPaneId =
+    activeGroupTab === null
+      ? null
+      : (activeGroupTab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(activeGroupTab)?.paneId ?? null)
+  const unread = useUnread({ state, viewedPaneId, activeWorktree: activeWorktreeRow?.path ?? null })
 
   /**
    * LIFE-387 A1 — 탭 드래그. 판정은 `useTabDrag`(순수 함수 `tab-drag.ts` 를 DOM 에 잇는 층)가
@@ -1198,7 +1210,7 @@ export function App(): React.JSX.Element {
             setPendingRemove(repo)
           }}
           onRefresh={() => void window.corral.getState().then(setState)}
-          cards={{ ...cardActions.sidebarCards, deleteShortcut: ((binding) => (binding === undefined ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
+          cards={{ ...cardActions.sidebarCards, unread, deleteShortcut: ((binding) => (binding === undefined ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
           onOpenShortcuts={() => { mruCancel(); setShortcutsOpen(true) }}
           groupGlyphOf={(worktreePath) => {
             // R17-2 공백 2 — 영속 스키마(R3-h)가 영역 수를 그대로 주므로 **넣는다**(비용 0).

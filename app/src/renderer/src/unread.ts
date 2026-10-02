@@ -1,0 +1,181 @@
+// 사이드바 **안 읽음** 판정 (LIFE-471 S5) — 순수 함수. 화면·창 신호·영속은 `hooks/useUnread.ts` 가 묶는다.
+//
+// Orca 1.4.198 의 두 층을 옮긴다(게이트 ⓪ Q1):
+//   · pane 안 읽음 (메모리) — 198 `unreadAgentCompletionPanes` + ack 장부. 행 굵기·행 점·카드 상태 칸이 이것 **하나**를 본다(#20940 따라 하지 않기).
+//   · worktree 벨 (영속, ui-prefs `unreadWorktrees` 경로 키) — 198 `worktree.isUnread`. 카드 벨·메뉴 Mark Read/Unread.
+//
+// # 왜 herdr `done` 을 그대로 쓰지 않나 (00-analysis F1·F2·F5)
+//
+// herdr 0.9.0 은 API 클라이언트만 붙으면 활성 탭 pane 의 완료를 **늘 seen** 으로 친다(외부 포커스가 `None`) — 창을 숨긴 채 끝난
+// 활성 탭 에이전트는 `done` 이 안 된다. API 로 그 값을 바꿀 길도 없다. 그래서 corral 이 완료 **전이**를 직접 보고, 그 순간
+// 사용자가 그 pane 을 보고 있었는지를 자기 판정으로 정한다. herdr `done` 은 「처음 보는 pane 이 이미 끝나 있다」는 신호로만 쓴다.
+//
+// # 완료 (01-criteria 용어)
+//
+// working/blocked → idle/done 전이. main 이 전이마다 이력(`agentState.history`)을 남기므로 화면이 상태 묶음을 건너뛰어도
+// 「지금 상태의 직전 상태」로 전이를 안다. 완료 하나의 표식 = 그 상태에 들어선 시각(`agentState.observedAt`).
+//   · main 이 처음 본 pane 이 이미 `done` (이력 없음) → 완료(herdr 가 안 본 완료라고 말한다)
+//   · 처음 본 `idle` · 기동 직후 첫 idle(herdr 가 완료를 억제 → 직전이 working 이 아니다) → 완료 아님
+//   · `done → idle`(herdr 가 조용히 seen 처리 — 재동기에서야 보인다) → 직전이 done 이라 새 완료 아님
+//   · unknown → idle/done 은 세지 않는다 — herdr #4825 류(바뀌지 않은 에이전트를 다시 「새 활동」으로)를 안 읽음으로 세지 않게
+// 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 완료로 본다.
+//
+// # 보고 있음 (watched)
+//
+// 창이 보이고 앱이 포커스이며 그 pane 이 활성 영역의 선택 pane 이다(198 `isVisibleForegroundPaneKey` 의 네 조건). 완료 시각 T 에
+// 보고 있었나는 **시각으로** 판정한다 — 그 pane 을 보기 시작한 시각 `since` 가 T 이하면 보고 있던 중의 완료다. 처리가 늦게
+// 돌아도(숨은 창의 렌더러 지연) 판정이 「처리한 순간」이 아니라 「끝난 순간」에 묶인다.
+
+import type { AgentStatus } from '../../shared/types.js'
+
+/** 문구 (K12 문구 표) — 198 `Mark read`/`Mark unread`(툴팁·메뉴 `Mark Read`/`Mark Unread`)를 한국어 UI 로. 벨 툴팁·aria·카드 메뉴가 같이 쓴다. */
+export const UNREAD_ACTION_LABEL = { read: '읽음으로 표시', unread: '안 읽음으로 표시' } as const
+
+export type PaneObservation = {
+  paneId: string
+  /** 그 pane 이 속한 worktree 경로 — 벨의 키. */
+  worktreePath: string
+  status: AgentStatus
+  /** 지금 상태에 들어선 시각(main `agentState.observedAt`). 완료 하나의 표식이다. */
+  enteredAt: number
+  /** 직전 상태(이력 맨 앞). 이력이 없으면 null — main 이 이 pane 을 처음 본 것이다. */
+  previousStatus: AgentStatus | null
+}
+
+export type PaneUnread = { worktreePath: string; at: number }
+
+export type UnreadModel = {
+  /** 첫 묶음을 받았나 — 렌더러 재적재 뒤 지나간 전이를 다시 세지 않는다. */
+  initialized: boolean
+  /** pane → 마지막으로 살핀 상태 진입 시각. 같으면 이미 처리한 상태다. */
+  examined: ReadonlyMap<string, number>
+  /** 확인 안 된 완료 — pane → 그 완료. 닫힌 탭(보존 행)의 것도 여기 남는다. */
+  panes: ReadonlyMap<string, PaneUnread>
+  /** 벨 켜진 worktree 경로 (영속). */
+  worktrees: ReadonlySet<string>
+  /** 마지막으로 본 (null 아닌) 활성 worktree — 활성화(사용자 전환) 감지용. 닫힘 사이의 null 은 건너뛴다. */
+  activeWorktree: string | null
+  /** 이번 세션에 화면에 있었던 worktree 경로 — 사라지면 그 벨을 지운다(삭제·레포 제거 유령 방지, K8ⓓ). */
+  present: ReadonlySet<string>
+}
+
+export const EMPTY_UNREAD: UnreadModel = {
+  initialized: false,
+  examined: new Map(),
+  panes: new Map(),
+  worktrees: new Set(),
+  activeWorktree: null,
+  present: new Set(),
+}
+
+/** 지금 보고 있는 pane 과 그 시작 시각. 창이 숨었거나 앱이 포커스가 아니면 null. */
+export type Watched = { paneId: string; since: number } | null
+
+const FINISHED: readonly AgentStatus[] = ['idle', 'done']
+const RUNNING: readonly AgentStatus[] = ['working', 'blocked']
+
+export function isCompletion(input: { obs: PaneObservation; firstBatch: boolean }): boolean {
+  const { obs } = input
+  if (!FINISHED.includes(obs.status)) return false
+  if (input.firstBatch) return obs.status === 'done'
+  if (obs.previousStatus === null) return obs.status === 'done'
+  return RUNNING.includes(obs.previousStatus)
+}
+
+/**
+ * 상태 묶음 하나를 받아 장부를 갱신한다 — 완료 기록 → 사라진 것 정리 → 활성화 해제 → 보고 있는 pane 자동 확인 순.
+ *
+ * `livePaneIds` 밖이고 `retainedPaneIds` 에도 없는 pane 의 안 읽음은 버린다. `worktreePaths` 는 지금 화면의 worktree 경로 전부 —
+ * 비어 있으면(첫 적재 전) 벨 정리를 건너뛴다.
+ */
+export function ingest(model: UnreadModel, input: {
+  panes: readonly PaneObservation[]
+  retainedPaneIds: ReadonlySet<string>
+  worktreePaths: ReadonlySet<string>
+  activeWorktree: string | null
+  /** 창이 보이고 앱이 포커스인가 — 활성화가 사용자의 것인지 가른다. */
+  attentive: boolean
+  watched: Watched
+}): UnreadModel {
+  const examined = new Map(model.examined)
+  const panes = new Map(model.panes)
+  const worktrees = new Set(model.worktrees)
+  const firstBatch = !model.initialized
+  for (const obs of input.panes) {
+    if (examined.get(obs.paneId) === obs.enteredAt) continue
+    const fresh = isCompletion({ obs, firstBatch })
+    examined.set(obs.paneId, obs.enteredAt)
+    if (!fresh) continue
+    const watched = input.watched !== null && input.watched.paneId === obs.paneId && input.watched.since <= obs.enteredAt
+    if (watched) continue
+    panes.set(obs.paneId, { worktreePath: obs.worktreePath, at: obs.enteredAt })
+    worktrees.add(obs.worktreePath)
+  }
+  const live = new Set(input.panes.map((obs) => obs.paneId))
+  for (const paneId of panes.keys()) if (!live.has(paneId) && !input.retainedPaneIds.has(paneId)) panes.delete(paneId)
+
+  // 사라진 worktree 의 벨 — 이번 세션에 화면에 있었던 경로만 지운다(첫 적재가 늦어 빈 목록이 와도 저장된 벨을 잃지 않게).
+  const present = new Set(model.present)
+  for (const path of input.worktreePaths) present.add(path)
+  if (input.worktreePaths.size > 0) {
+    for (const path of [...worktrees]) if (present.has(path) && !input.worktreePaths.has(path)) worktrees.delete(path)
+    for (const path of [...present]) if (!input.worktreePaths.has(path)) present.delete(path)
+  }
+
+  // worktree 활성화 (198 `set-active-worktree.ts:82,97`) — 보고 있는 중에 활성 worktree 가 **다른 것으로 바뀌면** 그 벨을 끈다.
+  // 창이 숨은 채 바뀐 활성(CLI activate)·시작 복원(null → X)은 사용자의 활성화가 아니다(K3ⓑ).
+  const activated = input.attentive && input.activeWorktree !== null && model.activeWorktree !== null && input.activeWorktree !== model.activeWorktree
+  if (activated && input.activeWorktree !== null) worktrees.delete(input.activeWorktree)
+
+  const next: UnreadModel = {
+    // pane 이 하나도 없는 묶음(링크가 서기 전)은 첫 묶음으로 치지 않는다 — 그다음 묶음에서 지나간 전이를 다시 세게 된다.
+    initialized: model.initialized || input.panes.length > 0,
+    examined,
+    panes,
+    worktrees,
+    activeWorktree: input.activeWorktree ?? model.activeWorktree,
+    present,
+  }
+  return acknowledgeWatched(next, input.watched)
+}
+
+/**
+ * 보고 있는 pane 의 안 읽음을 확인한다 (198 `useAutoAckViewedAgent`). 그 worktree 에 다른 안 읽음 pane 이 남아 있지 않을 때만 벨도 끈다
+ * (198 `shouldClearViewedAgentWorktreeUnread`). 확인할 것이 없으면 벨은 그대로 — 수동 Mark Unread 가 바로 지워지지 않는 이유다.
+ */
+export function acknowledgeWatched(model: UnreadModel, watched: Watched): UnreadModel {
+  if (watched === null) return model
+  const entry = model.panes.get(watched.paneId)
+  if (entry === undefined) return model
+  const panes = new Map(model.panes)
+  panes.delete(watched.paneId)
+  const othersLeft = [...panes.values()].some((other) => other.worktreePath === entry.worktreePath)
+  if (othersLeft) return { ...model, panes }
+  const worktrees = new Set(model.worktrees)
+  worktrees.delete(entry.worktreePath)
+  return { ...model, panes, worktrees }
+}
+
+/** Mark Read (메뉴·벨) — 벨을 끄고 그 worktree 의 pane 안 읽음을 전부 확인한다(K6ⓒ). */
+export function markRead(model: UnreadModel, worktreePath: string): UnreadModel {
+  const panes = new Map([...model.panes].filter(([, entry]) => entry.worktreePath !== worktreePath))
+  const worktrees = new Set(model.worktrees)
+  worktrees.delete(worktreePath)
+  return { ...model, panes, worktrees }
+}
+
+/** Mark Unread (메뉴·벨) — 벨만 켠다. 완료가 없는 worktree 에도 된다(198). */
+export function markUnread(model: UnreadModel, worktreePath: string): UnreadModel {
+  if (model.worktrees.has(worktreePath)) return model
+  return { ...model, worktrees: new Set(model.worktrees).add(worktreePath) }
+}
+
+/** 터미널에 실제 입력이 들어갔다 (198 `terminal-keydown-fit.ts`) — 그 pane 을 확인하고 그 worktree 벨을 끈다. */
+export function acknowledgeInput(model: UnreadModel, input: { paneId: string; worktreePath: string }): UnreadModel {
+  if (!model.panes.has(input.paneId) && !model.worktrees.has(input.worktreePath)) return model
+  const panes = new Map(model.panes)
+  panes.delete(input.paneId)
+  const worktrees = new Set(model.worktrees)
+  worktrees.delete(input.worktreePath)
+  return { ...model, panes, worktrees }
+}

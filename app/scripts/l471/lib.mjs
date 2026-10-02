@@ -7,7 +7,7 @@
 // 그대로 넘기면서 **corral → herdr 방향**에서 메서드 이름 `pane.focus`·`tab.focus` 가 나온 횟수를 센다(JSON-RPC 줄과 endpoint
 // bincode 프레임 둘 다 메서드 이름이 ASCII 그대로 실린다). `pane.focus_direction` 같은 긴 이름은 뒤 글자로 거른다.
 // 하네스가 상태를 꽂는 RPC(`pane.report_agent` 등)는 진짜 소켓으로 직접 가므로 세지 않는다.
-/* global document, window -- CDP evaluate 클로저 */
+/* global document -- CDP evaluate 클로저 */
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'

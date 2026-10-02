@@ -11,12 +11,12 @@ const wt = (path: string, patch: Partial<WorktreeRow> = {}): WorktreeRow => ({
 })
 const shape = (entries: MenuEntry<CardMenuAction>[]): string[] =>
   entries.map((entry) => (entry.kind === 'item' ? `${entry.action}:${entry.label}${entry.disabled ? '(off)' : ''}${entry.submenu ? `[${entry.submenu.map((sub) => (sub.kind === 'item' ? sub.label : '')).join('|')}]` : ''}` : entry.kind === 'sep' ? '—' : `#${entry.label}`))
-const base = { pinned: false, deleting: false, candidateCount: 2, parentInTree: false, deleteShortcut: '⌘⇧⌫' }
+const base = { pinned: false, unread: false, deleting: false, candidateCount: 2, parentInTree: false, deleteShortcut: '⌘⇧⌫' }
 
 describe('K2ⓐ 메뉴 항목·순서 = 198 단일 선택 메뉴 − 의도적 항목', () => {
   it('링크 워크트리 · 부모 없음', () => {
     expect(shape(cardMenuEntries({ ...base, worktree: wt('/r/a/x') }))).toEqual([
-      '#워크스페이스', 'update:업데이트', '—', 'open-in:열기[Finder|VS Code]', 'copy-path:경로 복사', '—', 'toggle-pin:고정', '—',
+      '#워크스페이스', 'update:업데이트', '—', 'open-in:열기[Finder|VS Code]', 'copy-path:경로 복사', '—', 'toggle-pin:고정', 'toggle-unread:안 읽음으로 표시', '—',
       'set-parent:상위 워크트리 지정…', '—', 'delete:워크트리 삭제',
     ])
     const del = cardMenuEntries({ ...base, worktree: wt('/r/a/x') }).at(-1)
@@ -24,7 +24,7 @@ describe('K2ⓐ 메뉴 항목·순서 = 198 단일 선택 메뉴 − 의도적 �
   })
   it('부모 있음 → 변경… · 열기(트리에 있을 때만) · 빼기 · 고정 해제', () => {
     const entries = cardMenuEntries({ ...base, pinned: true, parentInTree: true, worktree: wt('/r/a/x', { parentPath: '/r/a' }) })
-    expect(shape(entries).slice(6)).toEqual(['toggle-pin:고정 해제', '—', 'set-parent:상위 워크트리 변경…', 'open-parent:상위 워크트리 열기', 'remove-parent:상위에서 빼기', '—', 'delete:워크트리 삭제'])
+    expect(shape(entries).slice(6)).toEqual(['toggle-pin:고정 해제', 'toggle-unread:안 읽음으로 표시', '—', 'set-parent:상위 워크트리 변경…', 'open-parent:상위 워크트리 열기', 'remove-parent:상위에서 빼기', '—', 'delete:워크트리 삭제'])
     const orphan = cardMenuEntries({ ...base, parentInTree: false, worktree: wt('/r/a/x', { parentPath: '/gone' }) })
     expect(shape(orphan)).not.toContain('open-parent:상위 워크트리 열기')
     expect(shape(orphan)).toContain('remove-parent:상위에서 빼기')
@@ -44,6 +44,21 @@ describe('K2ⓐ 메뉴 항목·순서 = 198 단일 선택 메뉴 − 의도적 �
     const entries = cardMenuEntries({ ...base, deleting: true, worktree: wt('/r/a/x') })
     expect(entries.at(-1)).toMatchObject({ label: '삭제 중…', disabled: true, shortcut: null })
     expect(entries.filter((entry) => entry.kind === 'item').every((entry) => entry.kind === 'item' && entry.disabled === true)).toBe(true)
+  })
+})
+
+describe('LIFE-471 K6 Mark Read/Unread — Pin 바로 아래 · 라벨 토글 · disabled = 삭제 중뿐', () => {
+  it('ⓐ 벨 꺼짐 → 「안 읽음으로 표시」, 켜짐 → 「읽음으로 표시」 — 같은 자리(toggle-pin 다음, 같은 구분선 묶음)', () => {
+    for (const unread of [false, true]) {
+      const items = shape(cardMenuEntries({ ...base, unread, worktree: wt('/r/a/x') }))
+      const pin = items.indexOf('toggle-pin:고정')
+      expect(items[pin + 1]).toBe(unread ? 'toggle-unread:읽음으로 표시' : 'toggle-unread:안 읽음으로 표시')
+      expect(items[pin + 2]).toBe('—')
+    }
+  })
+  it('ⓑ 주 체크아웃에도 있다 · 삭제 중이면 disabled', () => {
+    expect(shape(cardMenuEntries({ ...base, worktree: wt('/r/a', { isLinked: false }) }))).toContain('toggle-unread:안 읽음으로 표시')
+    expect(shape(cardMenuEntries({ ...base, deleting: true, worktree: wt('/r/a/x') }))).toContain('toggle-unread:안 읽음으로 표시(off)')
   })
 })
 

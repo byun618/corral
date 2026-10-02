@@ -1,12 +1,13 @@
 // 카드 우클릭 메뉴 모델 (LIFE-478 K2ⓐ·K6ⓐ·K7ⓐ) — 순수 함수. 화면(`ContextMenu`)은 그리기만 한다.
 //
 // 198 단일 선택 메뉴(`WorktreeContextMenuView.tsx:155-379`) 순서:
-//   [Workspace] Update · (Move to Status) | Open in ▸ · Copy Path | Pin/Unpin · (Mark Read) · (그룹 3) | Set/Change Parent… ·
+//   [Workspace] Update · (Move to Status) | Open in ▸ · Copy Path | Pin/Unpin · Mark Read/Unread(LIFE-471) · (그룹 3) | Set/Change Parent… ·
 //   Open Parent · Remove from Parent | (Developer) · (Sleep) | Delete (주 체크아웃이면 disabled Delete + Remove Project)
 // 괄호 항목은 의도적으로 뺐다(RESULT 대응표). **주 체크아웃 카드에 「프로젝트 제거」 를 두지 않는다** — Orca #17645(Delete 를 누르려다
 // 프로젝트 전체를 뺐다). 레포 제거는 레포 ⋯ 한 곳.
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
 import type { MenuEntry } from './components/ContextMenu.js'
+import { UNREAD_ACTION_LABEL } from './unread.js'
 
 export type CardMenuAction =
   | 'update'
@@ -15,6 +16,7 @@ export type CardMenuAction =
   | 'open-editor'
   | 'copy-path'
   | 'toggle-pin'
+  | 'toggle-unread'
   | 'set-parent'
   | 'open-parent'
   | 'remove-parent'
@@ -26,6 +28,8 @@ export const NO_PARENT_CANDIDATES = '같은 프로젝트에 상위로 지정할 
 export function cardMenuEntries(input: {
   worktree: WorktreeRow
   pinned: boolean
+  /** 안 읽음 벨이 켜져 있나 (LIFE-471 K6) — 라벨이 토글된다. */
+  unread: boolean
   deleting: boolean
   /** 상위 후보 수(`parentCandidates`) — 0 이면 지정 항목 disabled(198 `policy.ts:116-121`). */
   candidateCount: number
@@ -53,6 +57,8 @@ export function cardMenuEntries(input: {
     { kind: 'item', action: 'copy-path', label: '경로 복사', disabled: deleting },
     { kind: 'sep', key: 'sep-pin' },
     { kind: 'item', action: 'toggle-pin', label: input.pinned ? '고정 해제' : '고정', disabled: deleting },
+    // 198 `WorktreeContextMenuView.tsx:191-203` — Pin 바로 아래, disabled = 삭제 중뿐, 완료 없는 워크트리에도 Mark Unread.
+    { kind: 'item', action: 'toggle-unread', label: input.unread ? UNREAD_ACTION_LABEL.read : UNREAD_ACTION_LABEL.unread, disabled: deleting },
     { kind: 'sep', key: 'sep-parent' },
     {
       kind: 'item',

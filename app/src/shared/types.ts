@@ -665,6 +665,11 @@ export type UiPrefs = {
    * 레지스트리가 아니라 여기 두는 이유: 접힘·수동 순서와 같은 사이드바 화면 상태다. 없는 경로는 화면이 무시한다.
    */
   pinnedWorktrees: string[]
+  /**
+   * 안 읽음 벨이 켜진 워크트리 경로 (LIFE-471 · 게이트 ⓪ Q1 — 198 `worktree.isUnread`). 경로 키인 이유는 `pinnedWorktrees` 와 같다.
+   * pane 단위 안 읽음은 여기 두지 않는다 — paneId 는 herdr 재기동 때 다시 매겨진다(00-analysis F13).
+   */
+  unreadWorktrees: string[]
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------

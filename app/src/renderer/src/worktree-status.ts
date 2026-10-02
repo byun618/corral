@@ -46,8 +46,9 @@ const PRIORITY: readonly WorktreeStatus[] = ['permission', 'working', 'monitorin
 
 function collect({ rows, into }: { rows: readonly AgentRowNode[]; into: Set<WorktreeStatus> }): void {
   for (const row of rows) {
-    // 보존 행은 끝난 기록이다 — Orca `hasRetainedDone` 처럼 점이 무엇이든 done 칸만 켠다.
-    const flag = row.source === 'retained' ? 'done' : flagOf(row.dot)
+    // 보존 행도 점이 확인 경계를 따른다(LIFE-471 K4ⓓ — 확인 안 된 완료만 done 점). Orca `hasRetainedDone` 은 확인을 안 봐
+    // 확인 뒤에도 카드가 Done 이다(#20940) — 따라 하지 않는다.
+    const flag = flagOf(row.dot)
     if (flag !== null) into.add(flag)
     collect({ rows: row.children, into })
   }

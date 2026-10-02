@@ -56,6 +56,7 @@ export function WorktreeBlock({
   retained,
   lineage,
   livePaneIds,
+  unreadPanes = NO_UNREAD,
   groupExpanded,
   onToggleGroup,
   onSelectBlock,
@@ -111,6 +112,8 @@ export function WorktreeBlock({
   lineage: OrchestrationLineage
   /** 앱 전체의 살아 있는 pane — 보존 행이 갈 곳이 있나 (B2). */
   livePaneIds: ReadonlySet<string>
+  /** 확인 안 된 완료가 있는 pane (LIFE-471 `useUnread`) — 행 굵기·행 점·상태 칸. 기본은 없음(옛 호출부·시험). */
+  unreadPanes?: ReadonlySet<string>
   /** 묶음 알약이 펼쳐져 있나 — worktree 별로 영속한다(ui-prefs `expandedAgentGroups`). 기본은 접힘(Orca 와 같다). */
   groupExpanded: boolean
   onToggleGroup: () => void
@@ -162,6 +165,7 @@ export function WorktreeBlock({
     livePaneIds,
     integrations,
     home,
+    unreadPanes,
   })
   const hasGroup = roots.length >= SUMMARY_MIN_ROOTS
   const showRows = !hasGroup || groupExpanded
@@ -291,7 +295,10 @@ export function WorktreeBlock({
         }}
       >
         <div className="worktree-card-content" data-worktree-card-parent-content="">
-          <WorktreeStatusSlot status={status} />
+          {/* 삭제 중 카드는 클릭을 삼킨다(198) — 벨 모양은 그대로 두고 토글만 막는다. */}
+          <WorktreeStatusSlot status={status} unread={card.unread} onToggleUnread={() => {
+            if (!card.deleting) card.onToggleUnread()
+          }} />
           <div className="worktree-card-main">
             <div className="worktree-card-identity" data-worktree-card-hover-trigger="">
               <div className="worktree-block-line1">
@@ -629,6 +636,10 @@ export type CardActions = {
   showTrash: boolean
   /** 상위 워크트리 표시 이름 — 없으면 null. */
   parentName: string | null
+  /** 안 읽음 벨이 켜져 있나 (LIFE-471 K5). */
+  unread: boolean
+  /** 벨 클릭 — 메뉴 Mark Read/Unread 와 같은 동작. */
+  onToggleUnread: () => void
   onContextMenu: (point: { x: number; y: number }) => void
   onBeginRename: () => void
   onRenameCommit: (name: string) => void
@@ -639,6 +650,7 @@ export type CardActions = {
 }
 
 const noop = (): void => {}
+const NO_UNREAD: ReadonlySet<string> = new Set()
 export const NO_CARD_ACTIONS: CardActions = {
   reorderable: true,
   pinned: false,
@@ -647,6 +659,8 @@ export const NO_CARD_ACTIONS: CardActions = {
   flash: false,
   showTrash: false,
   parentName: null,
+  unread: false,
+  onToggleUnread: noop,
   onContextMenu: noop,
   onBeginRename: noop,
   onRenameCommit: noop,

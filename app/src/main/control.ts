@@ -328,8 +328,13 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         const action = readString(parsed, 'action')
         if (action === 'hide') target.hide()
         else if (action === 'minimize') target.minimize()
-        else if (action !== 'read') throw new Error('hide/minimize/read 필요')
-        reply({ ok: true, visible: target.isVisible(), minimized: target.isMinimized() })
+        // LIFE-471 — 숨긴·최소화한 창을 되살린다(창 복귀 확인 시험). `show` 는 앞으로 가져오며 포커스까지 준다.
+        else if (action === 'restore') target.restore()
+        else if (action === 'show') {
+          target.show()
+          target.focus()
+        } else if (action !== 'read') throw new Error('hide/minimize/restore/show/read 필요')
+        reply({ ok: true, visible: target.isVisible(), minimized: target.isMinimized(), focused: target.isFocused() })
         return
       }
       /** S5 — 창 크기 변경. 리사이즈→fit→요청→수렴 경로 전체가 진짜로 돈다. */

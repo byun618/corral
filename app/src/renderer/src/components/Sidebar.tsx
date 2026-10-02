@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AgentKind, AppState, RepoRow as RepoRowData, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
 import { showsInlineAgents, type SidebarView } from '../../../shared/sidebar-view.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
+import type { UnreadView } from '../hooks/useUnread.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { useSettledSections } from '../hooks/useSettledSections.js'
 import { useSidebarReorder, type ReorderCommit } from '../hooks/useSidebarReorder.js'
@@ -33,6 +34,8 @@ import { WorktreeBlock } from './WorktreeBlock.js'
 export type SidebarCardProps = {
   pinned: ReadonlySet<string>
   togglePin: (path: string) => void
+  /** 안 읽음 장부 (LIFE-471) — pane 안 읽음(행)·벨(카드)·Mark Read/Unread. */
+  unread: UnreadView
   deleting: ReadonlySet<string>
   /** Option 을 누르고 있다 — hover 카드에 휴지통(K7ⓗ). */
   altHeld: boolean
@@ -291,6 +294,10 @@ export function Sidebar({
       case 'toggle-pin':
         cards.togglePin(worktree.path)
         return
+      case 'toggle-unread':
+        if (cards.unread.worktrees.has(worktree.path)) cards.unread.markRead(worktree.path)
+        else cards.unread.markUnread(worktree.path)
+        return
       case 'set-parent': {
         const surface = listRef.current?.querySelector<HTMLElement>(`[data-worktree="${CSS.escape(worktree.path)}"] [data-worktree-card-surface]`)
         const rect = surface?.getBoundingClientRect()
@@ -334,6 +341,8 @@ export function Sidebar({
           flash: flashPath === worktree.path,
           showTrash: cards.altHeld,
           parentName: parent === undefined ? null : worktreeDisplayName(parent.worktree),
+          unread: cards.unread.worktrees.has(worktree.path),
+          onToggleUnread: () => cards.unread.toggle(worktree.path),
           onContextMenu: (point) => {
             // #14545 — 다른 앱이 앞이면 창부터 앞으로(키보드가 메뉴로 오게). 강조는 hover 상태라 포커스 없이도 선다.
             window.corral.activateWindow()
@@ -366,6 +375,7 @@ export function Sidebar({
         retained={retainedOf.get(worktree.path) ?? []}
         lineage={state.orchestrationLineage}
         livePaneIds={livePaneIds}
+        unreadPanes={cards.unread.panes}
         selected={selected}
         selectedPane={selectedPane}
         groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
@@ -511,6 +521,7 @@ export function Sidebar({
           entries={cardMenuEntries({
             worktree: menuRow.worktree,
             pinned: cards.pinned.has(menu.path),
+            unread: cards.unread.worktrees.has(menu.path),
             deleting: cards.deleting.has(menu.path),
             candidateCount: parentCandidates({ worktree: menuRow.worktree, repo: menuRow.repo }).length,
             parentInTree: menuRow.worktree.parentPath !== null && rowsByPath.has(menuRow.worktree.parentPath),

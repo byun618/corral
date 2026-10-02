@@ -51,6 +51,8 @@ function render(panes: PaneRow[], options: {
   comment?: string | null
   parentPath?: string | null
   card?: Partial<CardActions>
+  /** LIFE-471 확인 안 된 완료가 있는 pane */
+  unread?: string[]
 } = {}): string {
   const worktree: WorktreeRow = {
     path: '/repo', branch: 'main', isLinked: options.linked ?? false, openWorkspaceId: options.closed === true ? null : 'w1',
@@ -66,7 +68,7 @@ function render(panes: PaneRow[], options: {
   return renderToStaticMarkup(createElement(WorktreeBlock, {
     worktree, reordering: false, dragging: false, onCardMouseDown: noop, selected: true, selectedPane: 'p2', groupGlyph: null, integrations: [],
     home: '/home', now: 120000, retained: options.retained ?? [], lineage: options.lineage ?? READY_EMPTY,
-    livePaneIds: new Set(options.livePaneIds ?? panes.map((row) => row.paneId)),
+    livePaneIds: new Set(options.livePaneIds ?? panes.map((row) => row.paneId)), unreadPanes: new Set(options.unread ?? []),
     groupExpanded: options.expanded ?? false, onToggleGroup: noop,
     onSelectBlock: noop, onSelectSession: options.onSelectSession ?? noop, onCloseSession: options.onCloseSession ?? noop, onCloseWorktree: noop,
     onCreateShell: noop, onCreateAgent: noop,
@@ -117,10 +119,14 @@ describe('WorktreeBlock 에이전트 목록 (LIFE-467 K2·K3)', () => {
     expect(html).not.toContain('data-compact-agent-list')
   })
 
-  it('안 본 완료(done) 행은 굵게 표시된다 (B1) — idle 은 아니다', () => {
-    const html = render([pane('p1', 'claude', { agentStatus: 'done' })])
+  it('안 본 완료 행은 굵게 표시된다 (B1) — 출처는 corral 안 읽음 장부(LIFE-471), herdr done 이 아니다', () => {
+    const html = render([pane('p1', 'claude', { agentStatus: 'idle' })], { unread: ['p1'] })
     expect(html).toContain('data-unseen-done="true"')
     expect(html).toContain('is-unseen-done')
+    // K4ⓑ — herdr 가 아직 done 이어도 확인했으면(장부에 없음) 굵지 않고 완료 점도 아니다(#20940).
+    const acked = render([pane('p1', 'claude', { agentStatus: 'done' })])
+    expect(acked).not.toContain('is-unseen-done')
+    expect(acked).not.toContain('data-worktree-status="done"')
     expect(render([pane('p1', 'claude')])).not.toContain('is-unseen-done')
   })
 

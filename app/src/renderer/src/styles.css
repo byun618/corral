@@ -381,6 +381,26 @@ button, input { font: inherit; letter-spacing: inherit; }
   animation: agent-dot-spin 1s steps(12, end) infinite;
 }
 
+/* 안 읽음 토글 (LIFE-471 K5) — 198 classic `group/unread relative size-4 rounded hover:bg-accent/80 active:scale-95`. 칸 크기·위치는
+   `.worktree-status-box` 그대로라 벨이 없을 때 카드 모양이 같다(K5ⓕ). 벨 = `size-[13px] text-amber-500 drop-shadow-sm`,
+   hover 흐린 벨 = `absolute size-3 text-muted-foreground/40`(상태 표시는 그동안 `opacity-0`). */
+.worktree-unread-toggle {
+  position: relative; padding: 0; margin: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit;
+  cursor: pointer; transition: background-color 150ms, transform 150ms;
+}
+.worktree-unread-toggle:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.worktree-unread-toggle:active { transform: scale(0.95); }
+.worktree-unread-toggle:focus { outline: none; }
+.worktree-unread-toggle:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
+.worktree-unread-bell { display: block; width: 13px; height: 13px; color: var(--unread-bell); filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.05)); }
+.worktree-unread-hint {
+  position: absolute; width: 12px; height: 12px; color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  opacity: 0; transition: opacity 150ms; pointer-events: none;
+}
+.worktree-unread-toggle .worktree-status { transition: opacity 150ms; }
+.worktree-unread-toggle:hover .worktree-unread-hint, .worktree-unread-toggle:focus-visible .worktree-unread-hint { opacity: 1; }
+.worktree-unread-toggle:hover .worktree-status, .worktree-unread-toggle:focus-visible .worktree-status { opacity: 0; }
+
 /* 제목 줄 — `flex min-w-0 items-center gap-1.5`. 제목 `text-[13px] leading-5 font-normal text-foreground truncate`. */
 .worktree-block-line1 { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .worktree-name {

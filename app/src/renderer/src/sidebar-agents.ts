@@ -26,7 +26,7 @@
 // 사용자가 탭을 옮기면 행도 옮겨진다. 이 차이는 사용자가 의도적 차이로 승인했다(01-criteria 「기준 변경 1」).
 // retained 행은 살아 있는 행 뒤에 보존된 순서(오래된 것 먼저)로 붙는다.
 
-import type { AgentKind, IntegrationRow, OrchestrationLineage, PaneRow, RetainedAgentRow, TabRow } from '../../shared/types.js'
+import type { AgentKind, AgentStatus, IntegrationRow, OrchestrationLineage, PaneRow, RetainedAgentRow, TabRow } from '../../shared/types.js'
 import { AGENT_DOT_LABEL, agentDot, type AgentDot } from './agent-dot.js'
 import { paneMessageLine, paneSecondaryLine, sessionRowText, type SessionRowText } from './session-activity.js'
 import { agentIcon, AGENT_ICON } from './session-glyphs.js'
@@ -70,7 +70,10 @@ export type AgentRowNode = {
   /** 종류 아이콘을 그리나 — 서브에이전트 행은 숨긴다(부모 들여쓰기가 정체성을 대신한다, Orca `:112-116`). */
   showIcon: boolean
   dot: AgentDot
-  /** 안 본 완료(herdr `done`) — 굵게 그린다(B1, 1.4.217 기준). live 행만. */
+  /**
+   * 확인 안 된 완료 — 굵게 그린다(B1, 1.4.217 기준). 출처는 herdr `done` 이 아니라 corral 안 읽음 장부다(LIFE-471 — `unread.ts`).
+   * 행 점·카드 상태 칸도 같은 판정을 본다(#20940 따라 하지 않기).
+   */
   unseenDone: boolean
   text: SessionRowText
   /** Full list 행 재료 (LIFE-477). */
@@ -99,9 +102,11 @@ export function buildAgentRows(input: {
   livePaneIds: ReadonlySet<string>
   integrations: readonly IntegrationRow[]
   home: string
+  /** 확인 안 된 완료가 있는 pane (LIFE-471 `useUnread`) — 보존 행의 pane 도 담긴다. */
+  unreadPanes: ReadonlySet<string>
 }): AgentRowNode[] {
   const panes = input.tabs.flatMap((tab) => tab.panes.filter((pane) => pane.agent !== null))
-  const liveNodes = panes.map((pane, index) => liveNode({ pane, ordinal: index + 1, integrations: input.integrations, home: input.home }))
+  const liveNodes = panes.map((pane, index) => liveNode({ pane, ordinal: index + 1, integrations: input.integrations, home: input.home, unread: input.unreadPanes.has(pane.paneId) }))
   const byPane = new Map(liveNodes.map((node) => [node.paneId, node]))
   const paneOf = new Map(panes.map((pane) => [pane.paneId, pane]))
   const subagentsOf = (node: AgentRowNode): AgentRowNode[] => {
@@ -169,14 +174,24 @@ export function buildAgentRows(input: {
   const liveHere = new Set(liveNodes.map((node) => node.paneId))
   const retainedRows = input.retained.filter((row) => !liveHere.has(row.paneId))
   // `retainedAgents` 는 최신 우선이다(`AppState` 주석) — 행은 오래된 것부터 쌓는다.
-  for (const row of [...retainedRows].reverse()) roots.push(retainedNode({ row, livePaneIds: input.livePaneIds }))
+  for (const row of [...retainedRows].reverse()) roots.push(retainedNode({ row, livePaneIds: input.livePaneIds, unread: input.unreadPanes.has(row.paneId) }))
   return roots
 }
 
-function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonly IntegrationRow[]; home: string }): AgentRowNode {
+/**
+ * 끝난 pane 의 표시 상태 (LIFE-471 K4) — idle·done 은 herdr 값이 아니라 **corral 확인**으로 가른다: 확인 안 된 완료면 `done`,
+ * 아니면 `idle`. herdr 가 아직 `done` 이어도 확인했으면 done 으로 안 보이고(#20940), herdr 가 seen 처리해 `idle` 이어도
+ * 확인 안 된 완료면 done 으로 보인다(창이 숨은 중의 활성 탭 완료 — 00-analysis F1).
+ */
+export function displayStatus(input: { agentStatus: AgentStatus; unread: boolean }): AgentStatus {
+  if (input.agentStatus !== 'idle' && input.agentStatus !== 'done') return input.agentStatus
+  return input.unread ? 'done' : 'idle'
+}
+
+function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonly IntegrationRow[]; home: string; unread: boolean }): AgentRowNode {
   const { pane, ordinal } = input
   const dot = agentDot({
-    agentStatus: pane.agentStatus,
+    agentStatus: displayStatus({ agentStatus: pane.agentStatus, unread: input.unread }),
     blockedReason: pane.agentState.blockedReason,
     pendingQuestions: pane.digest.pendingQuestions,
     turnOutcome: pane.digest.turnOutcome,
@@ -194,7 +209,7 @@ function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonl
     kind,
     showIcon: true,
     dot,
-    unseenDone: pane.agentStatus === 'done',
+    unseenDone: input.unread && (pane.agentStatus === 'idle' || pane.agentStatus === 'done'),
     text: liveText({ pane, dot, title, ordinalTitle: title === `${pane.agent ?? 'terminal'} ${ordinal}`, kind, integrations: input.integrations }),
     full: liveFull({ pane, dot, title, integrations: input.integrations }),
     model: pane.digest.model,
@@ -298,7 +313,7 @@ function subagentNodes(input: { parent: AgentRowNode; pane: PaneRow }): AgentRow
   })
 }
 
-function retainedNode(input: { row: RetainedAgentRow; livePaneIds: ReadonlySet<string> }): AgentRowNode {
+function retainedNode(input: { row: RetainedAgentRow; livePaneIds: ReadonlySet<string>; unread: boolean }): AgentRowNode {
   const { row } = input
   const kind = agentIcon(row.agent)?.kind ?? null
   const leading = row.title.trim().length > 0 ? row.title : kind === null ? '에이전트' : AGENT_ICON[kind].label
@@ -311,10 +326,10 @@ function retainedNode(input: { row: RetainedAgentRow; livePaneIds: ReadonlySet<s
     activationPaneId: input.livePaneIds.has(row.paneId) ? row.paneId : null,
     kind,
     showIcon: true,
-    // 보존은 `done` 인 pane 만 한다(`store.ts` `retain`) — 완료 점 하나다.
-    dot: 'done',
-    // 닫힌 탭은 「봤다」 로 바꿀 길이 없다 — 굵게 두면 영영 안 풀린다. 굵기는 live 행만.
-    unseenDone: false,
+    // 보존은 herdr `done` 인 pane 만 한다(`store.ts` `retain`). 표시는 live 행과 같은 확인 경계(K4ⓓ): 닫히기 전에 확인 안 된 완료면
+    // 완료 점 + 굵게, 확인했으면 대기 점. 닫힌 탭은 볼 수 없으니 확인 길은 Mark Read(카드 메뉴·벨)다.
+    dot: input.unread ? 'done' : 'idle',
+    unseenDone: input.unread,
     text: { leading, trailing, full: `${leading} - ${trailing}` },
     full: { label: leading, tool: { kind: 'none' }, interrupted: false, message: trailing },
     model: null,

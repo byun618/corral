@@ -68,8 +68,10 @@ describe('worktreeStatus — 에이전트 없는 워크트리 = 조용한 상태
 })
 
 describe('worktreeStatus — 출처', () => {
-  it('보존 행은 점이 무엇이든 done 칸 (Orca hasRetainedDone)', () => {
-    expect(worktreeStatus({ rows: [row({ dot: 'interrupted', source: 'retained' })], hasOpenTabs: false })).toBe('done')
+  // LIFE-471 K4ⓓ — Orca `hasRetainedDone` 은 확인을 안 봐 확인 뒤에도 Done 이다(#20940). 보존 행도 점(= 확인 경계)을 따른다.
+  it('보존 행: 확인 안 된 완료(done 점)면 done, 확인했으면(idle 점) 칸을 안 켠다', () => {
+    expect(worktreeStatus({ rows: [row({ dot: 'done', source: 'retained' })], hasOpenTabs: false })).toBe('done')
+    expect(worktreeStatus({ rows: [row({ dot: 'idle', source: 'retained' })], hasOpenTabs: false })).toBe('inactive')
   })
   it('자식 행(계보·서브에이전트)도 집계에 든다', () => {
     expect(worktreeStatus({ rows: [row({ dot: 'idle', children: [row({ dot: 'waiting', source: 'subagent' })] })], hasOpenTabs: true })).toBe('permission')

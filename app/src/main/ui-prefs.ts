@@ -59,6 +59,8 @@ export type UiPrefs = {
    * 레지스트리가 아니라 여기 두는 이유: 접힘·수동 순서와 같은 사이드바 화면 상태다. 없는 경로는 화면이 무시한다.
    */
   pinnedWorktrees: string[]
+  /** 안 읽음 벨이 켜진 워크트리 경로 (LIFE-471) — `shared/types.ts` 의 같은 칸 주석. 없는 경로는 화면이 무시한다. */
+  unreadWorktrees: string[]
 } & SidebarViewPrefs
 
 const VERSION = 1
@@ -74,6 +76,7 @@ const DEFAULT_PREFS: UiPrefs = {
   manualWorktreeOrder: {},
   manualFlatOrder: [],
   pinnedWorktrees: [],
+  unreadWorktrees: [],
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
@@ -141,6 +144,7 @@ export class UiPrefsStore {
         manualWorktreeOrder: readKeyListMap(parsed['manualWorktreeOrder']),
         manualFlatOrder: readKeyList(parsed['manualFlatOrder']),
         pinnedWorktrees: readKeyList(parsed['pinnedWorktrees']),
+        unreadWorktrees: readKeyList(parsed['unreadWorktrees']),
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
         ...sidebarViewToPrefs(readSidebarView(parsed)),
       }
@@ -163,6 +167,7 @@ export class UiPrefsStore {
       manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
       manualFlatOrder: [...this.prefs.manualFlatOrder],
       pinnedWorktrees: [...this.prefs.pinnedWorktrees],
+      unreadWorktrees: [...this.prefs.unreadWorktrees],
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
       sidebarCardProperties: [...this.prefs.sidebarCardProperties],
     }

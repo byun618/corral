@@ -19,10 +19,10 @@ const lineageOf = (pairs: Array<[string, string | null]>): OrchestrationLineage 
   state: 'ready',
   entries: pairs.map(([paneId, parentPaneId]) => ({ paneId, parentPaneId, runId: 'r', taskId: 't', dispatchId: `d-${paneId}`, dispatchStatus: 'dispatched' })),
 })
-function build(panes: PaneRow[], options: { lineage?: OrchestrationLineage; retained?: RetainedAgentRow[]; live?: string[] } = {}) {
+function build(panes: PaneRow[], options: { lineage?: OrchestrationLineage; retained?: RetainedAgentRow[]; live?: string[]; unread?: string[] } = {}) {
   return buildAgentRows({
     tabs: tabs(panes), retained: options.retained ?? [], lineage: options.lineage ?? { state: 'ready', entries: [] },
-    livePaneIds: new Set(options.live ?? panes.map((row) => row.paneId)), integrations: [], home: '/home',
+    livePaneIds: new Set(options.live ?? panes.map((row) => row.paneId)), integrations: [], home: '/home', unreadPanes: new Set(options.unread ?? []),
   })
 }
 
@@ -120,7 +120,7 @@ describe('계보 (K6ⓑ)', () => {
     expect(all.sort()).toEqual(['p1', 'p2'])
   })
   it('계보가 unavailable 이면 전부 루트다', () => {
-    const roots = buildAgentRows({ tabs: tabs([pane('p1', 'claude'), pane('p2', 'codex')]), retained: [], lineage: { state: 'unavailable', reason: 'unobserved' }, livePaneIds: new Set(), integrations: [], home: '/' })
+    const roots = buildAgentRows({ tabs: tabs([pane('p1', 'claude'), pane('p2', 'codex')]), retained: [], lineage: { state: 'unavailable', reason: 'unobserved' }, livePaneIds: new Set(), integrations: [], home: '/', unreadPanes: new Set() })
     expect(roots).toHaveLength(2)
   })
 })
@@ -155,14 +155,17 @@ describe('보존 행 (K6ⓒ · B2)', () => {
     expect(roots.map((row) => [row.key, row.activationPaneId])).toEqual([['p1', 'p1'], ['retained:alive', 'alive'], ['retained:dead', null]])
   })
   it('완료 점 · 굵기 없음 · 시간은 완료 시각', () => {
+    // LIFE-471 K4ⓓ — 보존 행도 확인 경계를 따른다: 확인 안 된 완료면 완료 점 + 굵게, 확인했으면 대기 점.
     const [, row] = build([pane('p1', 'claude')], { retained: [kept('dead')] })
-    expect([row?.dot, row?.unseenDone, row?.timeAt, row?.text.full]).toEqual(['done', false, 900, 'job-dead - 닫힌 탭'])
+    expect([row?.dot, row?.unseenDone, row?.timeAt, row?.text.full]).toEqual(['idle', false, 900, 'job-dead - 닫힌 탭'])
+    const [, unread] = build([pane('p1', 'claude')], { retained: [kept('dead')], unread: ['dead'] })
+    expect([unread?.dot, unread?.unseenDone]).toEqual(['done', true])
   })
   it('이미 산 행과 같은 pane 의 보존 행은 빠진다', () => {
     expect(build([pane('p1', 'claude')], { retained: [kept('p1')] }).map((row) => row.key)).toEqual(['p1'])
   })
   it('workspace 가 닫힌 worktree 도 보존 행을 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 경로 (R1)', () => {
-    expect(buildAgentRows({ tabs: [], retained: [kept('a')], lineage: { state: 'ready', entries: [] }, livePaneIds: new Set(), integrations: [], home: '/' }).map((row) => row.key)).toEqual(['retained:a'])
+    expect(buildAgentRows({ tabs: [], retained: [kept('a')], lineage: { state: 'ready', entries: [] }, livePaneIds: new Set(), integrations: [], home: '/', unreadPanes: new Set() }).map((row) => row.key)).toEqual(['retained:a'])
   })
 })
 

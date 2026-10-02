@@ -77,7 +77,7 @@ import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
-import { WORKTREE_POLL_MS, WorktreePoller } from './worktree-watch.js'
+import { WorktreePoller, parsePollMs } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
@@ -392,12 +392,6 @@ const worktreePoller = new WorktreePoller({
   },
   onRoots: (count) => log('worktree.poll_roots', { count }),
 })
-
-/** `CORRAL_WORKTREE_POLL_MS` — 계측이 자동 경로를 끌 때(0) 쓴다. 숫자가 아니면 기본값. */
-function worktreePollMs(): number {
-  const raw = Number(process.env.CORRAL_WORKTREE_POLL_MS)
-  return process.env.CORRAL_WORKTREE_POLL_MS !== undefined && Number.isFinite(raw) && raw >= 0 ? raw : WORKTREE_POLL_MS
-}
 
 /**
  * 레지스트리 세대 — 관측한 등록 목록이 직전과 다를 때 오른다(LIFE-469 R2-01·R3-01·R4-01, `AppState.registryGeneration`).
@@ -1504,7 +1498,8 @@ app.whenReady().then(async () => {
   setInterval(() => void refreshIntegrations(), SESSION_POLL_MS * 4)
   setInterval(() => void lineage.refresh(), LINEAGE_POLL_MS)
   scheduleTree()
-  worktreePoller.start(worktreePollMs())
+  // `CORRAL_WORKTREE_POLL_MS` — 계측이 자동 경로를 끌 때(0) 쓴다.
+  worktreePoller.start(parsePollMs(process.env.CORRAL_WORKTREE_POLL_MS))
 
   startControlServer({
     capture,

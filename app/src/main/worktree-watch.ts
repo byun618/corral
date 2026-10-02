@@ -1,7 +1,10 @@
 // 외부 git worktree 변경 감지 (LIFE-445) — 셸 `git worktree add/remove/prune` 은 corral 이벤트를 하나도 내지 않는다.
 //
 // **값싼 지문 폴링**이다. 레포마다 git 공통 디렉터리의 `worktrees/` 이름 목록과, 각 항목의 `gitdir` 파일(그 worktree 의
-// `.git` 파일 경로)과 그 대상의 존재만 읽는다 — git 프로세스를 띄우지 않는다. 지문이 바뀐 틱에만 재빌드를 부른다.
+// `.git` 파일 경로)과 **그 worktree 디렉터리**의 존재만 읽는다 — git 프로세스를 띄우지 않는다. 지문이 바뀐 틱에만 재빌드를 부른다.
+// 원칙: 지문은 재빌드 필터가 보는 입력을 모두 덮는다. 필터(`git-worktrees.ts`)는 worktree 디렉터리 존재로 거르므로 지문도
+// 디렉터리를 본다 — `.git` 파일을 보면 `rm -rf` 도중(.git 먼저, 디렉터리 나중) 재빌드가 디렉터리를 아직 보고, 그 뒤 디렉터리가
+// 사라져도 지문이 그대로라 유령 카드가 남는다(리뷰 r1 F1).
 //
 // 왜 네이티브 감시(fs.watch)가 아닌가 (00-analysis E2·F1):
 //   · macOS libuv 는 감시를 열고 닫을 때마다 FSEventStream 을 다시 만들고 그 사이 이벤트를 버린다 — 「반드시 반영」 근거가 못 된다
@@ -14,6 +17,13 @@ import path from 'node:path'
 
 /** 기본 주기 — 반영 통과선 5초(기준 Q4) 안에 뭉침 80ms·재빌드가 넉넉히 들어간다. `CORRAL_WORKTREE_POLL_MS=0` 이면 끈다(계측용). */
 export const WORKTREE_POLL_MS = 1000
+
+/** `CORRAL_WORKTREE_POLL_MS` 해석 — 비었거나 공백·숫자 아님·음수면 기본값, `0` 은 끔(리뷰 r1 F6). */
+export function parsePollMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return WORKTREE_POLL_MS
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : WORKTREE_POLL_MS
+}
 
 /**
  * 레포 root 의 git 공통 디렉터리 — `git rev-parse --git-common-dir` 과 같은 답을 파일만 읽어 낸다.
@@ -55,8 +65,10 @@ export async function worktreeFingerprint(root: string): Promise<string> {
   const parts = await Promise.all(
     names.map(async (name) => {
       const target = await fs.readFile(path.join(dir, name, 'gitdir'), 'utf8').then((text) => text.trim(), () => '')
-      // 대상의 존재 — `rm -rf` 한 worktree(prunable, F2)도 지문이 바뀐다.
-      const exists = target === '' ? false : await fs.access(target).then(() => true, () => false)
+      // worktree 디렉터리(= gitdir 이 가리키는 `.git` 의 부모)의 존재 — `rm -rf` 한 worktree(prunable)도 지문이 바뀐다.
+      // 상대경로 gitdir(`worktree.useRelativePaths`)은 `worktrees/<이름>` 기준으로 푼다(리뷰 r1 F2).
+      const worktreeDir = target === '' ? null : path.dirname(path.resolve(dir, name, target))
+      const exists = worktreeDir === null ? false : await fs.access(worktreeDir).then(() => true, () => false)
       return `${name}\t${target}\t${exists ? 1 : 0}`
     }),
   )

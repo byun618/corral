@@ -16,7 +16,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { buildIdentity } from '../l478/build-identity.mjs'
-import { Work, Corral, Decoy, frontPid, waitReflect, pause, git, load, yesCount, makeLogger, rpc } from './lib.mjs'
+import { spawnSync } from 'node:child_process'
+import { Work, Corral, Decoy, frontPid, waitReflect, pause, git, load, yesCount, makeLogger, rpc, appRoot } from './lib.mjs'
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, token, index, all) => (token.startsWith('--') ? [...pairs, [token.slice(2), all[index + 1]?.startsWith('--') ? true : (all[index + 1] ?? true)]] : pairs), []),
@@ -29,8 +30,17 @@ const out = path.resolve(String(args.out))
 fs.mkdirSync(out, { recursive: true })
 const tag = `${mode}${herdrOn ? '-herdr' : ''}${args.poll === 'off' ? '-polloff' : ''}${args.label ? `-${args.label}` : ''}`
 const log = makeLogger()
+/** 빌드 신원 — git 밖 사본(L445_APP_ROOT = git archive)이면 사본에 적어 둔 커밋(`.l445-commit`)과 번들 존재만. */
+function identity() {
+  try {
+    return buildIdentity(appRoot)
+  } catch {
+    const marker = path.join(appRoot, '.l445-commit')
+    return { archiveCopy: true, commit: fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : null, outExists: fs.existsSync(path.join(appRoot, 'out')) }
+  }
+}
 const LIMIT_MS = 5000
-const result = { mode, herdr: herdrOn, tag, build: buildIdentity(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..')), startedAt: new Date().toISOString(), env: { load: load(), yes: yesCount() }, checks: [], rounds: [], notes: [] }
+const result = { mode, herdr: herdrOn, tag, appRoot, build: identity(), startedAt: new Date().toISOString(), env: { load: load(), yes: yesCount() }, checks: [], rounds: [], notes: [] }
 function check(id, criterion, pass, observed) {
   result.checks.push({ id, criterion, pass: pass === true, observed })
   log(pass ? 'PASS' : 'FAIL', id, criterion, JSON.stringify(observed).slice(0, 300))
@@ -69,7 +79,11 @@ async function settleTo(roots, label) {
 }
 
 /** 한 회차 — op() 가 외부 git 을 돌리고 마지막 명령의 종료 시각을 돌려준다. */
+/** 회차 사이 무작위 쉼(fix1 F9-2) — 1초 폴 위상을 흩는다. `--jitter <최대 ms>`, 기본 0(끔). 값은 회차 행에 남긴다. */
+const jitterMax = Number(args.jitter ?? 0)
 async function measure(id, roots, op, extra = {}) {
+  const jitterMs = Math.round(Math.random() * jitterMax)
+  await pause(jitterMs)
   const focus = await ensureUnfocused()
   const before = await corral.domSet()
   const builtBefore = corral.count('tree.built', 0)
@@ -79,6 +93,7 @@ async function measure(id, roots, op, extra = {}) {
   const focusAfter = await focusSample()
   const row = {
     id,
+    jitterMs,
     ms: seen.ms,
     msFromFirstCommand: seen.at === null || firstEndedAt === undefined ? null : seen.at - firstEndedAt,
     pass: seen.ms !== null && seen.ms <= LIMIT_MS && focus.corralFocused === false && focusAfter.corralFocused === false,
@@ -142,6 +157,8 @@ async function main() {
       return cascade(A, roots)
     case 'smoke':
       return smoke(A, roots)
+    case 'bigrm':
+      return bigrm(roots)
     default:
       throw new Error(`mode ${mode}`)
   }
@@ -573,6 +590,51 @@ async function smoke(A, roots) {
   const gone = await waitReflect(corral, (set) => !set.includes(created), { from: Date.now(), timeoutMs: 10_000 })
   check('smoke-external-cleanup', '정리(외부 삭제) 반영', gone.ms !== null, gone.ms)
   return roots
+}
+
+/**
+ * K3ⓒ 큰 worktree rm -rf (fix1 — 리뷰 r1 F1). 파일 수만 개라 `rm -rf` 가 폴 주기(1초)보다 오래 걸린다 — 그 사이 `.git` 이
+ * 먼저 사라진 틱이 끼는 경우를 일부러 만든다. 반영 시간 = rm 종료 → 카드 소멸(통과선 아님 — 기록. 단 끝내 남으면 유령 = 실패).
+ * `--files <수>`(기본 30000). 수정 전 빌드(L445_APP_ROOT)에서 돌리면 카드 잔존이 기대값이다(음성 대조, `--expect ghost`).
+ */
+async function bigrm(roots) {
+  const files = Number(args.files ?? 30000)
+  const E = work.makeRepo('echo', [])
+  for (let d = 0; d < Math.ceil(files / 1000); d += 1) {
+    const dir = path.join(E, 'bulk', `d${d}`)
+    fs.mkdirSync(dir, { recursive: true })
+    for (let f = 0; f < 1000 && d * 1000 + f < files; f += 1) fs.writeFileSync(path.join(dir, `f${f}.txt`), `${d}-${f}\n`)
+  }
+  git(E, 'add', '-A')
+  git(E, '-c', 'user.email=l445@example.invalid', '-c', 'user.name=l445', 'commit', '-q', '-m', 'bulk')
+  await rpc(corral.control, { cmd: 'add-repo', root: E })
+  const all = [...roots, E]
+  await settleTo(all, 'echo register')
+  for (let i = 1; i <= rounds; i += 1) {
+    const big = work.addWorktree(E, `big-${i}`)
+    await settleTo(all, `big-${i} prep`)
+    if (!work.owns(big.path)) throw new Error('G8')
+    const jitterMs = Math.round(Math.random() * jitterMax)
+    await pause(jitterMs)
+    const focus = await ensureUnfocused()
+    const builtBefore = corral.count('tree.built', 0)
+    const startedAt = Date.now()
+    const rm = spawnSync('rm', ['-rf', big.path])
+    const endedAt = Date.now()
+    if (rm.status !== 0) throw new Error(`rm -rf → ${rm.status}`)
+    const seen = await waitReflect(corral, (set) => !set.includes(big.path), { from: endedAt, timeoutMs: 15_000 })
+    const row = { id: `K3c-big-${i}`, jitterMs, files, rmMs: endedAt - startedAt, ms: seen.ms, msFromRmStart: seen.at === null ? null : seen.at - startedAt, ghost: seen.ms === null, treeBuilt: corral.count('tree.built', 0) - builtBefore, focusBefore: focus, focusAfter: await focusSample(), load: load() }
+    row.pass = row.ms !== null && focus.corralFocused === false
+    result.rounds.push(row)
+    log(row.ghost ? 'GHOST' : 'ok  ', row.id, `rm ${row.rmMs}ms`, `reflect ${row.ms}ms`, `built+${row.treeBuilt}`)
+    git(E, 'worktree', 'prune')
+    work.deleteBranch(E, `big-${i}`)
+    await settleTo(all, `big-${i} cleanup`)
+  }
+  const rows = result.rounds.filter((r) => r.id.startsWith('K3c-big-'))
+  if (args.expect === 'ghost') check('K3c-big-negative', '수정 전 빌드 — 큰 worktree rm -rf 뒤 카드 잔존(음성 대조)', rows.some((r) => r.ghost), rows.map((r) => ({ rmMs: r.rmMs, ms: r.ms })))
+  else check('K3c-big', `큰 worktree rm -rf ${rows.length}회 — 유령 없이 자동 반영(시간은 기록)`, rows.length >= rounds && rows.every((r) => r.pass), rows.map((r) => ({ rmMs: r.rmMs, ms: r.ms })))
+  return 0
 }
 
 let code = 1

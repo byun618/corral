@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { listGitWorktrees } from './git-worktrees.js'
-import { gitCommonDir, worktreeFingerprint, WorktreePoller } from './worktree-watch.js'
+import { gitCommonDir, parsePollMs, worktreeFingerprint, WORKTREE_POLL_MS, WorktreePoller } from './worktree-watch.js'
 
 const cleanups: string[] = []
 afterEach(() => {
@@ -65,6 +65,20 @@ describe('worktreeFingerprint', () => {
     git(root, 'status', '--porcelain=v2', '--branch')
     git(root, 'worktree', 'list', '--porcelain')
     expect(await worktreeFingerprint(root)).toBe(before)
+  })
+
+  it('상대경로 gitdir(worktree.useRelativePaths)도 rm -rf 를 감지한다 (r1 F2)', async () => {
+    const { root, base } = repo()
+    const rel = path.join(base, 'rel')
+    git(root, '-c', 'worktree.useRelativePaths=true', 'worktree', 'add', '-q', '-b', 'rel', rel)
+    const gitdir = fs.readFileSync(path.join(root, '.git', 'worktrees', 'rel', 'gitdir'), 'utf8').trim()
+    expect(path.isAbsolute(gitdir)).toBe(false) // 전제: 정말 상대경로다
+    const before = await worktreeFingerprint(root)
+    expect(before.endsWith('\t1')).toBe(true) // 존재 = 1 (cwd 기준으로 풀면 0 이 된다)
+    fs.rmSync(rel, { recursive: true, force: true })
+    const after = await worktreeFingerprint(root)
+    expect(after).not.toBe(before)
+    expect(after.endsWith('\t0')).toBe(true)
   })
 
   it('등록 root 가 linked worktree 여도 공통 디렉터리를 찾는다', async () => {
@@ -157,6 +171,44 @@ describe('WorktreePoller', () => {
     release()
     expect(await first).toEqual(['/a'])
     expect(calls).toBe(1)
+  })
+})
+
+describe('폴러 + 재빌드 필터 수렴 (r1 F1)', () => {
+  it('rm -rf 가 .git 을 먼저 지운 틱에 재빌드해도, 디렉터리가 마지막에 사라지는 틱이 다시 재빌드를 불러 git 진실로 수렴한다', async () => {
+    const { root, base } = repo()
+    const w1 = path.join(base, 'w1')
+    git(root, 'worktree', 'add', '-q', '-b', 'w1', w1)
+    // 사이드바 모사 = 바뀐 틱마다 재빌드 필터(listGitWorktrees) 결과
+    let sidebar: string[] = []
+    const poller = new WorktreePoller({ roots: () => [root], onChange: () => {} })
+    const tick = async (): Promise<boolean> => {
+      const changed = (await poller.tick()).length > 0
+      if (changed) sidebar = (await listGitWorktrees(root)).worktrees.map((row) => path.basename(row.path))
+      return changed
+    }
+    expect(await tick()).toBe(true)
+    expect(sidebar).toEqual(['repo', 'w1'])
+    fs.rmSync(path.join(w1, '.git')) // rm -rf 도중 — .git 만 먼저 사라진 순간
+    await tick() // 바뀌든 아니든 재빌드는 디렉터리가 아직 있어 w1 을 남긴다
+    expect(sidebar).toEqual(['repo', 'w1'])
+    fs.rmSync(w1, { recursive: true, force: true }) // 디렉터리가 마지막에 사라진다
+    expect(await tick()).toBe(true) // 이 틱이 바뀌어야 유령이 안 남는다
+    const truth = (await listGitWorktrees(root)).worktrees.map((row) => path.basename(row.path))
+    expect(sidebar).toEqual(truth)
+    expect(sidebar).toEqual(['repo'])
+  })
+})
+
+describe('parsePollMs (r1 F6)', () => {
+  it('비었거나 공백·숫자 아님·음수면 기본값, 0 은 끔, 숫자는 그대로', () => {
+    expect(parsePollMs(undefined)).toBe(WORKTREE_POLL_MS)
+    expect(parsePollMs('')).toBe(WORKTREE_POLL_MS)
+    expect(parsePollMs('   ')).toBe(WORKTREE_POLL_MS)
+    expect(parsePollMs('abc')).toBe(WORKTREE_POLL_MS)
+    expect(parsePollMs('-5')).toBe(WORKTREE_POLL_MS)
+    expect(parsePollMs('0')).toBe(0)
+    expect(parsePollMs('250')).toBe(250)
   })
 })
 

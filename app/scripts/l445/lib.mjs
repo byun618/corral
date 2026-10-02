@@ -15,7 +15,8 @@ import { connect, pickTarget, until, setViewport, assertPortFree } from '../gui-
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-export const appRoot = path.resolve(here, '../..')
+/** 띄울 앱 — 기본은 이 스크립트가 든 app/. `L445_APP_ROOT` 로 다른 빌드(예: 수정 전 커밋의 git archive 사본)를 띄운다(fix1 음성 대조). */
+export const appRoot = process.env.L445_APP_ROOT ? path.resolve(process.env.L445_APP_ROOT) : path.resolve(here, '../..')
 export const REAL_GIT = '/usr/bin/git'
 export const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export { until, rpc }

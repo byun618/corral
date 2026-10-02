@@ -229,9 +229,9 @@ export function sectionLayout(sections: readonly SidebarSection[]): LayoutGroup[
     const paths = section.items.map((item) => item.worktree.path)
     switch (section.kind) {
       case 'repo':
-        return [{ kind: 'repo' as const, root: section.repo.root, paths }]
+        return [{ kind: 'repo', root: section.repo.root, paths }]
       case 'all':
-        return [{ kind: 'all' as const, paths }]
+        return [{ kind: 'all', paths }]
       // 고정 카드는 끌기 대상이 아니다(K5ⓕ) — 그룹 배치에 없고, 원래 그룹 목록의 자리는 `refillSlots` 가 지킨다(가려진 카드와 같다).
       case 'pinned':
         return []

@@ -140,3 +140,11 @@ export function isEditableFocus(element: Element | null): boolean {
   if (element.isContentEditable) return true
   return element.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null
 }
+
+/**
+ * 삭제 중 활성이 사용자 손으로 옮겨 갔나 (K7ⓖ · 리뷰 r1 C-03) — 활성 id 가 바뀐 순간에 지우는 워크스페이스가 **아직 살아 있으면** 사용자가 고른 것이다.
+ * 이미 사라진 뒤의 변화는 닫힘에 따른 자동 승격(`useLifecycleActions` 동기화 effect)이라 사용자의 선택이 아니다.
+ */
+export function userMovedActive(input: { deletedWorkspaceId: string; activeWorkspaceId: string | null; liveWorkspaceIds: ReadonlySet<string> }): boolean {
+  return input.activeWorkspaceId !== input.deletedWorkspaceId && input.liveWorkspaceIds.has(input.deletedWorkspaceId)
+}

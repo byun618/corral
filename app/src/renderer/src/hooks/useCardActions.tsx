@@ -4,7 +4,7 @@
 // 결과는 다음 상태 내보내기(`desktop.changed()` → 트리 재조립)로 화면에 온다. 실패는 알림·대화 안 오류로 보인다(K1ⓓ).
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AppState, RepoRow, WorktreeDeletePreview, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
-import { deleteResultNotice, isEditableFocus } from '../card-menu.js'
+import { deleteResultNotice, isEditableFocus, userMovedActive } from '../card-menu.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { pickPane } from '../pane-utils.js'
 import { worktreeDisplayName } from '../worktree-name.js'
@@ -12,6 +12,9 @@ import type { SidebarCardProps } from '../components/Sidebar.js'
 import { DeleteWorktreeDialog } from '../components/DeleteWorktreeDialog.js'
 import { WorktreeMetaDialog } from '../components/WorktreeMetaDialog.js'
 import { usePersistentCollapse } from './usePersistentCollapse.js'
+
+/** 이 훅이 읽는 상태는 레포 목록뿐이다(시험이 전체 AppState 없이 돌게). */
+type ReposState = Pick<AppState, 'repos'>
 
 type DeleteTarget = { path: string; name: string; preview: WorktreeDeletePreview | null }
 
@@ -33,14 +36,14 @@ function useAltHeld(): boolean {
   return held
 }
 
-function findRow(state: AppState | null, path: string): { repo: RepoRow; worktree: WorktreeRow } | null {
+function findRow(state: ReposState | null, path: string): { repo: RepoRow; worktree: WorktreeRow } | null {
   for (const repo of state?.repos ?? []) for (const worktree of repo.worktrees) if (worktree.path === path) return { repo, worktree }
   return null
 }
 
 export function useCardActions(input: {
-  stateRef: RefObject<AppState | null>
-  state: AppState | null
+  stateRef: RefObject<ReposState | null>
+  state: ReposState | null
   activeWorkspaceId: string | null
   actions: LifecycleActions
   revealPane: (paneId: string) => void
@@ -59,6 +62,19 @@ export function useCardActions(input: {
   const hoveredRef = useRef<string | null>(null)
   const latest = useRef(input)
   latest.current = input
+  /**
+   * 활성 워크트리를 지우는 중인 것 (리뷰 r1 C-03) — 경로 → 그 워크스페이스 id · 사용자가 그동안 다른 곳을 골랐나.
+   * 삭제가 끝난 시점에 이 값으로 다시 판정한다(확인 시점의 값에 고정하면 그사이 고른 활성을 빼앗는다).
+   */
+  const activeDeletes = useRef(new Map<string, { workspaceId: string; userMoved: boolean }>())
+  useEffect(() => {
+    const liveWorkspaceIds = new Set(
+      (latest.current.state?.repos ?? []).flatMap((repo) => repo.worktrees).flatMap((row) => (row.workspace === null ? [] : [row.workspace.workspaceId])),
+    )
+    for (const record of activeDeletes.current.values()) {
+      if (userMovedActive({ deletedWorkspaceId: record.workspaceId, activeWorkspaceId: input.activeWorkspaceId, liveWorkspaceIds })) record.userMoved = true
+    }
+  }, [input.activeWorkspaceId])
 
   const setMeta = useCallback(async (update: WorktreeMetaUpdate): Promise<string | null> => {
     const result = await window.corral.setWorktreeMeta(update)
@@ -100,7 +116,8 @@ export function useCardActions(input: {
     if (target === null) return
     setDeleteTarget(null)
     const found = findRow(latest.current.stateRef.current, target.path)
-    const wasActive = found !== null && found.worktree.openWorkspaceId !== null && found.worktree.openWorkspaceId === latest.current.activeWorkspaceId
+    const workspaceId = found?.worktree.openWorkspaceId ?? null
+    if (workspaceId !== null && workspaceId === latest.current.activeWorkspaceId) activeDeletes.current.set(target.path, { workspaceId, userMoved: false })
     setDeleting((prev) => new Set(prev).add(target.path))
     void window.corral.deleteWorktree({ path: target.path, force }).then((result) => {
       setDeleting((prev) => {
@@ -108,13 +125,16 @@ export function useCardActions(input: {
         next.delete(target.path)
         return next
       })
+      const activeDelete = activeDeletes.current.get(target.path)
+      activeDeletes.current.delete(target.path)
       if (!result.ok) {
         latest.current.notify(`워크트리 ${target.name} 를 삭제하지 못했습니다: ${result.error} (${result.code})`)
         return
       }
       pins.remove(target.path)
       latest.current.notify(deleteResultNotice({ name: target.name, preservedBranch: result.preservedBranch, warning: result.warning }))
-      if (wasActive && found !== null) moveActiveAway({ repoRoot: found.repo.root, path: target.path })
+      // 삭제가 끝난 지금 다시 판정 — 그사이 사용자가 다른 카드를 골랐으면 그대로 둔다.
+      if (activeDelete !== undefined && !activeDelete.userMoved && found !== null) moveActiveAway({ repoRoot: found.repo.root, path: target.path })
     })
   }
 

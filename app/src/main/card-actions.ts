@@ -10,7 +10,7 @@ import type { Invocation, RpcResponse } from '../runtime/contracts.js'
 import type { ProcessObservation } from '../runtime/workspace/model.js'
 import { isLockedWorktree } from '../runtime/workspace/index.js'
 import { git } from '../runtime/workspace/model.js'
-import type { ShellActionResult, WorktreeDeletePreview, WorktreeDeleteResult, WorktreeMetaResult, WorktreeMetaUpdate } from '../shared/types.js'
+import type { CardActionError, ShellActionResult, WorktreeDeletePreview, WorktreeDeleteResult, WorktreeMetaResult, WorktreeMetaUpdate } from '../shared/types.js'
 import { isRecord } from '../shared/json.js'
 
 export type CardActionDeps = {
@@ -30,7 +30,7 @@ export type CardActionDeps = {
   cwd: string
 }
 
-const refused = (error: string) => ({ ok: false as const, code: 'invalid_argument', error })
+const refused = (error: string): CardActionError => ({ ok: false, code: 'invalid_argument', error })
 
 /** 렌더러 경로 검사 (K4ⓔ) — 절대경로 · 지금 트리에 있는 워크트리 · 디스크에 있다. */
 function knownWorktree(deps: CardActionDeps, target: unknown) {

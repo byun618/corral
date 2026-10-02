@@ -28,6 +28,7 @@ import type {
   AgentKind,
   AppState,
   BrowseReposResult,
+  CardActionError,
   CloseRowResult,
   CreateRowResult,
   IntegrationRow,
@@ -1325,7 +1326,7 @@ app.whenReady().then(async () => {
       }),
     cwd: os.homedir(),
   }
-  const cardDenied = { ok: false as const, code: 'denied', error: '허용되지 않은 발신자' }
+  const cardDenied: CardActionError = { ok: false, code: 'denied', error: '허용되지 않은 발신자' }
   ipcMain.handle('corral:setWorktreeMeta', (event, input) => (fromOurWindow(event) ? setWorktreeMeta(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:previewWorktreeDelete', (event, input) => (fromOurWindow(event) ? previewWorktreeDelete(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:deleteWorktree', (event, input) => (fromOurWindow(event) ? deleteWorktree(cardDeps, input) : cardDenied))

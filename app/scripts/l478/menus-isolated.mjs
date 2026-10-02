@@ -15,7 +15,7 @@
 // 결과: <out>/result.json · <out>/shots/*.png · <out>/deletes.json · <out>/prefs-*.json. 종료코드 0 = 전 검사 통과.
 // 기동·종료·CDP 도우미는 l477 `display-isolated.mjs` 와 같다(검증된 경로를 그대로 옮겼다).
 
-/* global document, window, getComputedStyle, CSS, KeyboardEvent, Event, HTMLInputElement -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
+/* global document, window, getComputedStyle, CSS, KeyboardEvent, Event, HTMLInputElement, HTMLElement -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'

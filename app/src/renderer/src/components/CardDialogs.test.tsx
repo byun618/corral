@@ -196,7 +196,7 @@ describe('정보 수정 대화 (R2B-01·04·05·06·07)', () => {
     expect(document.querySelector('[data-meta-error]')?.textContent).toContain('Registry busy')
   })
   it('연 동안 바뀐 칸(코멘트)은 건드리지 않았으면 보내지 않는다 — 비교 기준 = 연 순간의 값', async () => {
-    const onSave = vi.fn((_patch: { displayName?: string | null; comment?: string | null }) => Promise.resolve(null))
+    const onSave = vi.fn<(patch: { displayName?: string | null; comment?: string | null }) => Promise<string | null>>(() => Promise.resolve(null))
     render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a', comment: '처음' }), onSave, onClose: () => {} }))
     render(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a', comment: 'CLI 가 바꾼 값' }), onSave, onClose: () => {} }))
     typeName('새 이름')

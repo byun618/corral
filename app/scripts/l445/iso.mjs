@@ -264,11 +264,16 @@ async function timing(A, C, roots) {
   return 0
 }
 
+/** 조건별 최소 회차 — K1·K2 5회, K7 각 3회, 겹침 1회 이상(01-criteria). */
+function minRounds(group) {
+  if (group === 'K7-overlap') return 1
+  return group.startsWith('K7') ? 3 : 5
+}
 function summarize(groups) {
   for (const group of groups) {
     const rows = result.rounds.filter((row) => row.id.startsWith(`${group}-`))
     const ms = rows.map((row) => row.ms)
-    check(group, `조건별 ${rows.length}회 전 회차 ≤ ${LIMIT_MS}ms · 포커스 아님`, rows.length >= (group.startsWith('K7') ? 3 : Math.min(rounds, 5)) && rows.every((row) => row.pass), { n: rows.length, ms })
+    check(group, `${rows.length}회(최소 ${minRounds(group)}) 전 회차 ≤ ${LIMIT_MS}ms · 포커스 아님`, rows.length >= minRounds(group) && rows.every((row) => row.pass), { n: rows.length, ms })
   }
 }
 

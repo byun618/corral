@@ -533,10 +533,11 @@ try {
     // ① 새 pane 까지 덮은 상태 구독 — workspace.create 뒤에 열린 agent.sub.open.
     fe.steps.push({ step: 'agent.sub.open after create', ok: await waitLog('F-E sub open', createdAt, (e) => e.tag === 'agent.sub.open') })
     // ② idle(정체 감지) → working → idle, 매번 거울 반영(agent.push.applied note) 확인 뒤 다음.
-    for (const [state, arrow] of [['idle', '→ idle'], ['working', '→ working'], ['idle', '→ idle']]) {
+    // 포커스 없는 pane 의 working → idle 보고는 herdr 가 done 으로 바꾼다(run8 거울 로그 `working → done`) — 마지막은 idle·done 둘 다 받는다.
+    for (const [state, arrows] of [['idle', ['→ idle']], ['working', ['→ working']], ['idle', ['→ idle', '→ done']]]) {
       const from = Date.now()
       await report(pL, state)
-      fe.steps.push({ step: `report ${state}`, ok: await waitLog(`F-E ${state}`, from, (e) => e.tag === 'agent.push.applied' && String(e.note ?? '').includes(arrow)) })
+      fe.steps.push({ step: `report ${state}`, ok: await waitLog(`F-E ${state}`, from, (e) => e.tag === 'agent.push.applied' && arrows.some((arrow) => String(e.note ?? '').includes(arrow))) })
     }
     fe.mirrorLog = logSince(createdAt)
       .filter((e) => e.tag === 'agent.sub.open' || e.tag === 'agent.push.applied')
@@ -555,8 +556,9 @@ try {
     const after = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: c.herdrAfter }
     const premise = Array.isArray(historyOnFirstSight) && historyOnFirstSight.includes('working')
     result.fe = { ...fe, premise }
-    check('FE-late-pane', 'r2 F-E 세션 중 추가한 레포의 pane(전제: 처음 볼 때 이력에 working → idle 이 있음) → 처음 볼 때 벨·굵기 없음 · 그 뒤 새 완료는 벨 + 굵기',
-      premise && first.row?.unseen === false && first.bell === 'read' && after.row?.unseen === true && after.bell === 'unread',
+    // 처음 볼 때 지금 상태가 done 이면 첫 묶음 규칙대로 굵기만 선다(벨 없음) — 그 밖이면 굵기도 없다(r2 F-E 명세).
+    check('FE-late-pane', 'r2 F-E 세션 중 추가한 레포의 pane(전제: 처음 볼 때 이력에 working 이 있음) → 처음 볼 때 벨 없음 · 굵기는 지금 done 일 때만 · 그 뒤 새 완료는 벨 + 굵기',
+      premise && first.row?.unseen === (first.status === 'done') && first.bell === 'read' && after.row?.unseen === true && after.bell === 'unread',
       { premise, steps: fe.steps, first, after })
     // 벨을 꺼 둔다(control 에 레포 제거가 없어 late 는 남는다 — 이후 재시작 검사는 A·B 만 본다).
     await menuAction(L, 'toggle-unread')

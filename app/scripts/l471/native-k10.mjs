@@ -7,7 +7,8 @@
 // 완료는 provider 없는 `herdr pane report-agent`(셸 pane working→idle) + 실제 claude 1회(`corral terminal create --agent claude`, 한 줄 프롬프트).
 // **G7**: 화면 읽기는 관문 레포(<ROOT>/repos) 카드와 관문 pane 행만. 캡처는 비공개(/tmp/l471-private)에 두고 해시만 적는다.
 //
-// 사용: node native-k10.mjs <ROOT=/tmp/l471n*> <raw 폴더> <app 디렉터리>
+// 사용: node native-k10.mjs <ROOT=/tmp/l471n*> <raw 폴더> <app 디렉터리> [e]
+//   e = ⓔ 만(관문 레포·배치가 이미 있을 때). 원자료는 k10e.json.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,7 +16,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 import { makeRepo } from './lib.mjs'
 
-const [root, rawd, appDir] = process.argv.slice(2)
+const [root, rawd, appDir, phase = 'all'] = process.argv.slice(2)
 if (!root?.startsWith('/tmp/l471n')) throw new Error(`ROOT 는 /tmp/l471n*: ${root}`)
 const PRIVATE = '/tmp/l471-private'
 const ctl = path.join(root, 'ctl.sock')
@@ -24,7 +25,6 @@ const keypost = '/tmp/l471-bin/keypost'
 const decoyBin = '/tmp/l471-bin/decoy'
 const cliclick = '/opt/homebrew/bin/cliclick'
 const HERDR = '/opt/homebrew/bin/herdr'
-const NODE = process.execPath
 const shots = path.join(PRIVATE, 'native-shots', path.basename(rawd))
 fs.mkdirSync(shots, { recursive: true, mode: 0o700 })
 fs.mkdirSync(rawd, { recursive: true })
@@ -35,7 +35,8 @@ const win = (...args) => JSON.parse(execFileSync(winctl, args.map(String), { enc
 let appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
 
 const out = { at: new Date().toISOString(), steps: [], checks: [], attempts: {}, spawned: [], stopped: null }
-const save = () => fs.writeFileSync(path.join(rawd, 'k10.json'), JSON.stringify(out, null, 2) + '\n')
+const outFile = path.join(rawd, phase === 'e' ? 'k10e.json' : 'k10.json')
+const save = () => fs.writeFileSync(outFile, JSON.stringify(out, null, 2) + '\n')
 function check(id, criterion, pass, observed) {
   out.checks.push({ id, criterion, pass, observed })
   log(pass ? '✔' : '✘', id)
@@ -73,7 +74,7 @@ const READ = `((gate, panes) => {
   for (const id of panes) {
     const el = document.querySelector('[data-agent-row="' + id + '"]')
     if (el === null) { rows[id] = null; continue }
-    rows[id] = { unseen: el.getAttribute('data-unseen-done') === 'true', dot: el.querySelector('[data-agent-dot]')?.getAttribute('data-agent-dot') ?? null, weight: getComputedStyle(el.querySelector('[data-agent-row-title]') ?? el).fontWeight, focused: el.getAttribute('data-focused-agent-pane') === 'true' }
+    rows[id] = { unseen: el.getAttribute('data-unseen-done') === 'true', dot: el.querySelector('[data-agent-dot]')?.getAttribute('data-agent-dot') ?? null, weight: getComputedStyle(el.querySelector('.session-row-title, .agent-full-label') ?? el).fontWeight, focused: el.getAttribute('data-focused-agent-pane') === 'true' }
   }
   const menu = document.querySelector('[data-card-menu]')
   const menuFor = menu?.getAttribute('data-card-menu') ?? null
@@ -250,26 +251,105 @@ async function backToCorral(label) {
   await pause(800)
 }
 
+/**
+ * ⓔ 실제 claude 완료 1회 — B 에서(보지 않는 카드). corral `terminal create` 는 설치본 herdr 에서 `unsupported_backend`
+ * (atomic terminal guards 없음)라 herdr 로 B 에 새 탭(포커스 이동 없음)을 만들고 그 pane 에서 claude 를 한 줄 프롬프트로 띄운다.
+ * 관문이 만든 pane 에만 입력한다(복구된 사용자 세션 입력 0). 답이 끝나면(herdr idle/done + B 벨) pane 을 닫는다.
+ * `blocked`(입력 대기)가 되면 그 관문 pane 화면을 비공개에만 저장하고 멈춘다 — 답하지 않는다.
+ */
+async function claudeCompletion({ A, B, p4 }) {
+  if ((await read()).cards[B]?.bell === 'unread') await mouse('click', 'e-bell-off', bellSel(B))
+  await pause(600)
+  if ((await read()).cards[A]?.selected !== true) await mouse('click', 'e-select-A', cardSel(A))
+  await pause(600)
+  const before = await read()
+  const wsB = await wsOf(B)
+  const known = new Set(wsB.tabs.flatMap((t) => t.panes.map((p) => p.paneId)))
+  await herdrRpc('tab.create', { workspace_id: wsB.workspaceId, focus: false })
+  const claudePane = await until(async () => (await wsOf(B))?.tabs.flatMap((t) => t.panes).find((p) => !known.has(p.paneId))?.paneId ?? null, 'B new tab pane', 20_000)
+  gatePanes = [...gatePanes, claudePane]
+  await pause(1500)
+  const command = "claude --model haiku 'Reply with exactly: ok'"
+  const ran = spawnSync(HERDR, ['--session', 'default', 'pane', 'run', claudePane, command], { encoding: 'utf8', timeout: 20_000 })
+  out.claude = { pane: claudePane, command, run: { status: ran.status, stderr: ran.stderr.slice(0, 200) }, cliCreate: 'corral terminal create → unsupported_backend (설치본 herdr, k10-attempt2.json)' }
+  save()
+  const seen = []
+  const deadline = Date.now() + 180_000
+  let claudeDone = null
+  while (Date.now() < deadline) {
+    const r = await read()
+    const pane = (await wsOf(B))?.tabs.flatMap((t) => t.panes).find((p) => p.paneId === claudePane) ?? null
+    const status = pane === null ? 'gone' : `${pane.agent ?? '-'}:${pane.agentStatus}`
+    if (seen.at(-1) !== status) seen.push(status)
+    if (status.endsWith(':blocked')) {
+      const screen = spawnSync(HERDR, ['--session', 'default', 'pane', 'read', claudePane], { encoding: 'utf8', timeout: 20_000 })
+      fs.writeFileSync(path.join(PRIVATE, `claude-blocked-${Date.now()}.txt`), screen.stdout, { mode: 0o600 })
+      out.claude.blockedScreen = { savedPrivately: true, status: screen.status }
+      break
+    }
+    if (pane?.agent === 'claude' && seen.some((x) => x.endsWith(':working')) && (pane.agentStatus === 'idle' || pane.agentStatus === 'done') && r.cards[B]?.bell === 'unread') {
+      claudeDone = { status: pane.agentStatus, row: r.rows[claudePane] ?? null, bell: r.cards[B]?.bell, aSelected: r.cards[A]?.selected, attention: r.attention, at: Date.now() - t0 }
+      break
+    }
+    await pause(1000)
+  }
+  out.claude.statuses = seen
+  check('K10e-claude', 'K10ⓔ 실제 claude 한 줄 프롬프트 완료(보지 않는 카드 B, 관문 pane) → B 벨 켜짐 · 그 행 굵기', claudeDone !== null && claudeDone.row?.unseen === true, { before: before.cards[B], claudeDone, statuses: seen, p4Excluded: p4 })
+  out.eShot = await shot('e-claude')
+  // 관문 pane 닫기(claude 프로세스도 함께 끝난다). 대화 내용은 원자료에 싣지 않는다.
+  const closed = spawnSync(HERDR, ['--session', 'default', 'pane', 'close', claudePane], { encoding: 'utf8', timeout: 20_000 })
+  out.claude.closed = { status: closed.status }
+}
+
+/** ⓔ 만 — 관문 레포·카드·배치는 앞 회차 것을 읽어 쓴다. */
+async function onlyE() {
+  const reposDir = path.join(root, 'repos')
+  gatePrefix = fs.realpathSync(reposDir)
+  const A = fs.realpathSync(path.join(reposDir, 'gate'))
+  const B = fs.realpathSync(path.join(reposDir, 'gate-wt', 'gate-b'))
+  out.paths = { A: 'gate', B: 'gate-wt/gate-b' }
+  const a = await wsOf(A)
+  const b = await wsOf(B)
+  const [p1, p2] = a.tabs[0].panes.map((p) => p.paneId)
+  const p3 = a.tabs[1].panes[0].paneId
+  const p4 = b.tabs[0].panes[0].paneId
+  gatePanes = [p1, p2, p3, p4]
+  out.ids = { p1, p2, p3, p4 }
+  out.start = await read()
+  await claudeCompletion({ A, B, p4 })
+  out.final = await read()
+  out.finalPrefs = prefsBells()
+}
+
 async function main() {
   // ── 준비: 관문 레포(A = 메인, B = linked) ──
-  const { root: A, worktrees } = makeRepo({ reposDir: path.join(root, 'repos'), name: 'gate', linked: ['gate-b'] })
+  // 다시 돌려도 되게(1차 시도가 행 대기에서 멈췄다) — 관문 레포·카드·배치가 이미 있으면 그대로 쓴다.
+  const reposDir = path.join(root, 'repos')
+  const reuse = fs.existsSync(path.join(reposDir, 'gate'))
+  const { root: A, worktrees } = reuse
+    ? { root: fs.realpathSync(path.join(reposDir, 'gate')), worktrees: { 'gate-b': fs.realpathSync(path.join(reposDir, 'gate-wt', 'gate-b')) } }
+    : makeRepo({ reposDir, name: 'gate', linked: ['gate-b'] })
   const B = worktrees['gate-b']
-  gatePrefix = fs.realpathSync(path.join(root, 'repos'))
+  gatePrefix = fs.realpathSync(reposDir)
   out.paths = { A: 'gate', B: 'gate-wt/gate-b' }
+  out.reuse = reuse
   out.frontAtStart = win('front').pid === appPid ? 'corral' : '(다른 앱)'
-  const added = await rpc(ctl, { cmd: 'add-repo', root: A }, 30_000)
-  if (!added.ok) throw new Error(`add-repo: ${JSON.stringify(added).slice(0, 200)}`)
+  if (Object.keys((await read()).cards).length < 2) {
+    const added = await rpc(ctl, { cmd: 'add-repo', root: A }, 30_000)
+    if (!added.ok) throw new Error(`add-repo: ${JSON.stringify(added).slice(0, 200)}`)
+  }
   await until(async () => Object.keys((await read()).cards).length === 2, 'gate cards', 60_000)
 
   // 두 카드를 실제 클릭으로 열어 workspace 를 만든다.
   for (const [name, p] of [['B', B], ['A', A]]) {
+    if ((await wsOf(p))?.tabs?.length > 0) continue
     await mouse('click', `open-${name}`, cardSel(p))
     await until(async () => (await wsOf(p))?.tabs?.length > 0, `workspace ${name}`, 60_000)
   }
   // A: t1 = p1 | p2 (split, 포커스 이동 없음) · t2 = p3. B: p4.
   const wsA = await wsOf(A)
-  await herdrRpc('pane.split', { target_pane_id: wsA.tabs[0].panes[0].paneId, direction: 'right', focus: false })
-  await herdrRpc('tab.create', { workspace_id: wsA.workspaceId, focus: false }).catch((error) => herdrRpc('tab.create', { workspace_id: wsA.workspaceId }).catch(() => { throw error }))
+  if (wsA.tabs[0].panes.length < 2) await herdrRpc('pane.split', { target_pane_id: wsA.tabs[0].panes[0].paneId, direction: 'right', focus: false })
+  if (wsA.tabs.length < 2) await herdrRpc('tab.create', { workspace_id: wsA.workspaceId, focus: false })
   await until(async () => {
     const ws = await wsOf(A)
     return ws?.tabs.length === 2 && ws.tabs[0].panes.length === 2
@@ -284,6 +364,12 @@ async function main() {
   for (const id of gatePanes) report(id, 'idle')
   // 활성 = A · 탭 t1(그 탭으로 돌아가게 카드 클릭) · p1 선택.
   await mouse('click', 'select-A', cardSel(A))
+  // 에이전트 묶음이 접혀 있으면(사용자 prefs 기본) 실제 클릭으로 펼친다 — 행이 있어야 굵기·선택을 본다(1차 시도가 여기서 멈췄다).
+  for (const [name, p] of [['A', A], ['B', B]]) {
+    const group = `[data-agent-group="${p}"]`
+    await until(async () => evaluate(`document.querySelector(${JSON.stringify(group)}) !== null || document.querySelector(${JSON.stringify(`[data-worktree="${p}"] [data-agent-row]`)}) !== null`), `agent list ${name}`, 15_000)
+    if (await evaluate(`document.querySelector(${JSON.stringify(`${group}[data-agent-group-expanded="false"]`)}) !== null`)) await mouse('click', `expand-agents-${name}`, group)
+  }
   await until(async () => (await read()).rows[p1] !== null, 'row p1', 30_000)
   await mouse('click', 'select-p1', rowSel(p1))
   await pause(800)
@@ -374,52 +460,12 @@ async function main() {
   check('K10d-restart', 'K10ⓓ 실제 ⌘Q 로 앱 종료 → 재기동 → 벨 유지(B 켜짐 · A 꺼짐)', s.cards[B]?.bell === 'unread' && s.cards[A]?.bell === 'read', { oldPid, newPid: appPid, cards: { A: s.cards[A], B: s.cards[B] }, prefs: prefsBells()?.gate.length })
   out.dShot = await shot('d-restart')
 
-  // ── ⓔ 실제 claude 완료 1회 — B 에서(보지 않는 카드). 벨은 먼저 끈다. paneId 는 재시작 뒤에도 같다(herdr 는 그대로). ──
-  await mouse('click', 'e-bell-off', bellSel(B))
-  await pause(600)
-  await mouse('click', 'e-select-A', cardSel(A))
-  await pause(600)
-  const before = await read()
-  const created = spawnSync(NODE, [path.join(appDir, 'cli/corral.mjs'), 'terminal', 'create', '--worktree', B, '--agent', 'claude', '--model', 'haiku', '--prompt', 'Reply with exactly: ok', '--json'], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CORRAL_CONTROL_SOCKET: undefined } })
-  const createdJson = (() => {
-    try {
-      return JSON.parse(created.stdout)
-    } catch {
-      return null
-    }
-  })()
-  const claudePane = createdJson?.result?.terminal?.paneId ?? createdJson?.result?.paneId ?? null
-  out.claude = { status: created.status, ok: createdJson?.ok ?? false, paneKnown: claudePane !== null, stderr: created.stderr.slice(0, 300) }
-  if (claudePane !== null) gatePanes = [...gatePanes, claudePane]
-  const seen = []
-  const deadline = Date.now() + 180_000
-  let claudeDone = null
-  while (Date.now() < deadline) {
-    const r = await read()
-    const ws = await wsOf(B)
-    const panes = ws?.tabs.flatMap((t) => t.panes) ?? []
-    const agentPane = panes.find((p) => p.agent === 'claude' && p.paneId !== p4) ?? null
-    if (agentPane !== null && !gatePanes.includes(agentPane.paneId)) gatePanes = [...gatePanes, agentPane.paneId]
-    const status = agentPane?.agentStatus ?? null
-    if (seen.at(-1) !== status) seen.push(status)
-    if (agentPane !== null && seen.includes('working') && (status === 'idle' || status === 'done') && r.cards[B]?.bell === 'unread') {
-      claudeDone = { pane: agentPane.paneId, status, row: r.rows[agentPane.paneId] ?? null, bell: r.cards[B]?.bell, at: Date.now() - t0 }
-      break
-    }
-    await pause(1000)
-  }
-  out.claude.statuses = seen
-  check('K10e-claude', 'K10ⓔ 실제 claude 한 줄 프롬프트 완료(보지 않는 카드 B) → B 벨 켜짐 · 그 행 굵기', claudeDone !== null && claudeDone.row?.unseen === true, { before: before.cards[B], claudeDone, statuses: seen })
-  out.eShot = await shot('e-claude')
-  if (claudeDone !== null) {
-    const closed = spawnSync(NODE, [path.join(appDir, 'cli/corral.mjs'), 'terminal', 'close', '--terminal', claudeDone.pane, '--json'], { encoding: 'utf8', timeout: 60_000 })
-    out.claude.closed = { status: closed.status }
-  }
+  await claudeCompletion({ A, B, p4 })
   out.final = await read()
   out.finalPrefs = prefsBells()
 }
 
-main()
+;(phase === 'e' ? onlyE() : main())
   .then(() => {
     out.ok = out.checks.every((c) => c.pass)
     out.attempts.total = Object.values(out.attempts).reduce((a, b) => a + b, 0)
@@ -433,6 +479,6 @@ main()
   .finally(() => {
     if (decoy !== null) decoy.kill('SIGTERM')
     save()
-    log('wrote', path.join(rawd, 'k10.json'), 'ok', out.ok)
+    log('wrote', outFile, 'ok', out.ok)
     process.exit(out.ok ? 0 : out.guardStop ? 4 : 1)
   })

@@ -13,7 +13,8 @@ const baseIndex = process.argv.indexOf('--base-prefs')
 const basePrefs = baseIndex > 0 ? JSON.parse(fs.readFileSync(process.argv[baseIndex + 1], 'utf8')) : null
 const map = loadMap()
 /** 옵션·레이아웃 열거값 — 사용자 데이터가 아니라 스키마 값이라 대조에서 뺀다. */
-const ENUMS = new Set(['none', 'repo', 'name', 'smart', 'recent', 'manual', 'row', 'column'])
+// LIFE-478: 카드 레이아웃·속성 열거값(shared/sidebar-view.ts SIDEBAR_CARD_LAYOUT·SIDEBAR_CARD_PROPERTIES·SIDEBAR_AGENT_ACTIVITY_LAYOUT) 추가 — 기본값이라 모든 fixture prefs 에 나온다.
+const ENUMS = new Set(['none', 'repo', 'name', 'smart', 'recent', 'manual', 'row', 'column', 'detailed', 'compact', 'full', 'inline-agents'])
 
 /** 잎 문자열 값 + 식별자 모양이 아닌 객체 키(경로·id 를 키로 쓰는 칸). `tabOrdinals` 같은 스키마 필드 이름은 데이터가 아니다. */
 const leaves = (value) =>

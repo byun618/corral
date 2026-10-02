@@ -75,6 +75,14 @@ export function paneSecondaryLine(input: { pane: PaneRow; integrations: readonly
   })
 }
 
+/**
+ * Full list 3줄(LIFE-477) — 진행 중 도구를 **빼고** 마지막 말(또는 통지)만. 198 은 도구(2줄)와 메시지(3줄)를 나눠 그린다
+ * (`DashboardAgentRow.tsx:298-309`) — compact 한 줄은 둘을 한 칸에 합친다(`paneSecondaryLine`).
+ */
+export function paneMessageLine(input: { pane: PaneRow; integrations: readonly IntegrationRow[] }): SecondaryLine {
+  return activityLine({ digest: input.pane.digest, agent: input.pane.agent, working: false, integrations: input.integrations })
+}
+
 function activityLine(input: {
   digest: SessionDigest
   agent: string | null
@@ -164,6 +172,21 @@ export function sessionRowText(input: { title: string; secondary: SecondaryLine 
     trailing,
     full: trailing === null ? input.title : `${input.title} - ${trailing}`,
   }
+}
+
+/**
+ * Full list 1줄 시간 문구 (LIFE-477 B13) — 198 `formatTimeAgo`(`DashboardAgentRow.tsx:19-25`): 1분 미만 "just now", 그 밖
+ * `formatCompactDuration` + " ago"(분·시간·일 내림). 한국어 문구 표: 방금 / N분 전 / N시간 전 / N일 전. 음수(시계 어긋남)는 방금.
+ */
+export function elapsedAgoLabel(input: { at: number | null; now: number }): string | null {
+  if (input.at === null) return null
+  const delta = input.now - input.at
+  if (delta < 60_000) return '방금'
+  const minutes = Math.floor(delta / 60_000)
+  if (minutes < 60) return `${minutes}분 전`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}시간 전`
+  return `${Math.floor(hours / 24)}일 전`
 }
 
 /**

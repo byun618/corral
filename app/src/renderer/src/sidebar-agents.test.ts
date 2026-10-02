@@ -197,3 +197,71 @@ it('livePaneIdsOf 는 앱 전체의 pane 을 모은다', () => {
   const repos = [{ worktrees: [{ workspace: { tabs: tabs([pane('a', 'claude'), pane('b', null)]) } }, { workspace: null }] }]
   expect([...livePaneIdsOf(repos)].sort()).toEqual(['a', 'b'])
 })
+
+describe('Full list 2·3줄 재료 (LIFE-477 K6ⓒⓓ) — 198 규칙 × provider', () => {
+  const TOOL = { name: 'Bash', input: 'npm test' }
+  const MSG = { state: 'text' as const, text: 'all green', at: null }
+  const QUESTION = [{ header: null, question: 'proceed?', options: [], multiSelect: null }]
+  const cases = [
+    // [provider, 상태, 도구 있음] → 2줄
+    { agent: 'claude', status: 'working', tool: true, want: 'tool' },
+    { agent: 'claude', status: 'working', tool: false, want: 'placeholder' },
+    { agent: 'claude', status: 'blocked', tool: true, waiting: true, want: 'tool' },
+    { agent: 'claude', status: 'blocked', tool: false, waiting: true, want: 'none' },
+    { agent: 'claude', status: 'idle', tool: true, want: 'none' },
+    { agent: 'claude', status: 'done', tool: true, want: 'none' },
+    { agent: 'codex', status: 'working', tool: false, want: 'placeholder' },
+    { agent: 'codex', status: 'blocked', tool: false, waiting: true, want: 'none' },
+    { agent: 'codex', status: 'idle', tool: false, want: 'none' },
+    { agent: 'grok', status: 'working', tool: false, want: 'placeholder' },
+    { agent: 'grok', status: 'blocked', tool: false, waiting: true, want: 'none' },
+    { agent: 'grok', status: 'done', tool: false, want: 'none' },
+  ] as const
+  for (const item of cases) {
+    it(`${item.agent} ${item.status}${'waiting' in item ? '(질문 대기)' : ''} 도구 ${item.tool ? '있음' : '없음'} → 2줄 ${item.want}`, () => {
+      const [row] = build([
+        pane('p1', item.agent, {
+          agentStatus: item.status,
+          digest: { ...EMPTY_SESSION_DIGEST, tool: item.tool ? TOOL : null, activity: MSG, pendingQuestions: 'waiting' in item ? QUESTION : null },
+        }),
+      ])
+      expect(row?.full.tool.kind).toBe(item.want)
+      if (item.want === 'tool') expect(row?.full.tool).toEqual({ kind: 'tool', name: 'Bash', input: 'npm test' })
+      // 3줄은 도구와 따로 — 마지막 말이 그대로 남는다(compact 한 줄은 working 이면 도구가 말을 가린다).
+      expect(row?.full.message).toBe('all green')
+    })
+  }
+
+  it('monitoring 은 2줄이 없다(198 `!isMonitoring`) — 라벨은 앞뒤를 바꾸지 않은 제목 그대로', () => {
+    const lifecycle = { state: 'known' as const, tasks: [{ id: 'b', kind: 'shell' as const, label: 'x', startedAt: 1 }], taskOverflow: 0, subagents: [], subagentOverflow: 0 }
+    const [row] = build([pane('p1', 'claude', { digest: { ...EMPTY_SESSION_DIGEST, providerTitle: 'Build', lifecycle, tool: TOOL } })])
+    expect(row?.dot).toBe('monitoring')
+    expect(row?.full.tool.kind).toBe('none')
+    expect(row?.full.label).toBe('Build')
+  })
+
+  it('중단된 턴 — 3줄 앞 「중단됨」 태그 + 마지막 말', () => {
+    const [row] = build([pane('p1', 'codex', { digest: { ...EMPTY_SESSION_DIGEST, activity: MSG, turnOutcome: { outcome: 'interrupted', reason: null } } })])
+    expect(row?.full.interrupted).toBe(true)
+    expect(row?.full.message).toBe('all green')
+  })
+
+  it('말이 없으면 3줄 재료는 null(빈 자리) — 통지가 있으면 통지', () => {
+    expect(build([pane('p1', 'grok')])[0]?.full.message).toBeNull()
+    const [notice] = build([pane('p1', 'claude', { digest: { ...EMPTY_SESSION_DIGEST, activity: { state: 'unreadable', reason: 'EACCES' } } })])
+    expect(notice?.full.message).toBe('기록을 읽지 못했다')
+  })
+
+  it('라벨 = compact 행 제목과 같은 출처(U1) — codex 는 첫 발화, 없으면 `codex 1`', () => {
+    expect(build([pane('p1', 'codex', { digest: { ...EMPTY_SESSION_DIGEST, firstPrompt: 'fix lint' } })])[0]?.full.label).toBe('fix lint')
+    expect(build([pane('p1', 'codex')])[0]?.full.label).toBe('codex 1')
+  })
+
+  it('보존 행 — 2줄 없음, 3줄 「닫힌 탭」', () => {
+    const retained: RetainedAgentRow = {
+      paneId: 'gone', tabId: 'tg', workspaceId: 'w1', agent: 'claude', agentStatus: 'done', title: 'old work', cwd: null, retainedAt: 5, agentState: emptyAgentState(1),
+    }
+    const rows = build([], { retained: [retained], live: [] })
+    expect(rows[0]?.full).toEqual({ label: 'old work', tool: { kind: 'none' }, interrupted: false, message: '닫힌 탭' })
+  })
+})

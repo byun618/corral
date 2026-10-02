@@ -200,6 +200,9 @@ button, input { font: inherit; letter-spacing: inherit; }
 .options-menu:focus { outline: none; }
 .options-submenu { width: 176px; padding: 4px; }
 .options-submenu.is-wide { width: 256px; }
+/* 「표시 속성」 — 198 `w-48`(192px). 「에이전트 활동 레이아웃」 라벨 `px-2 py-1 text-[11px] font-medium text-muted-foreground` (LIFE-477). */
+.options-submenu.is-properties { width: 192px; }
+.options-submenu-label { padding: 4px 8px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--fg-muted); }
 .options-menu-title { padding: 6px 8px 0; font-size: 14px; font-weight: 600; color: var(--fg); }
 .options-menu-section-label { padding: 6px 8px 4px; font-size: 11px; font-weight: 600; color: var(--fg-muted); }
 .options-menu-sep { height: 1px; margin: 4px -4px; background: var(--line-strong); }
@@ -404,6 +407,41 @@ button, input { font: inherit; letter-spacing: inherit; }
 }
 .worktree-block-actions.is-active { opacity: 1; pointer-events: auto; }
 
+/* Compact 카드 (LIFE-477 B3 — 198 `worktree-card-surface.tsx:50` 제목만 카드 `py-2`, `worktree-card-header.tsx:158-289`). */
+.worktree-block.is-compact { padding-top: 8px; padding-bottom: 8px; }
+/* 인라인 레포 칩 — 198 은 레포 아이콘 칩(`size-4`), corral 은 아이콘이 없어 메타 줄 레포 알약 외관(`text-[10px] font-semibold
+   lowercase max-w-[6rem] px-1.5 py-0.5 rounded`)으로 제목 앞에 둔다(Group by None 일 때만). */
+.worktree-repo-chip {
+  flex: 0 1 auto; min-width: 0; max-width: 6rem; padding: 2px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  font-size: 10px; font-weight: 600; line-height: 1; text-transform: lowercase; color: var(--fg-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* ★ — `ml-auto pr-1.5` 칸 안 `Star size-3 fill-amber-400`. 주 워크트리 「기본」 칩 대신. */
+.worktree-primary-star { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: auto; padding-right: 6px; color: var(--primary-star); }
+.worktree-primary-star-icon { width: 12px; height: 12px; }
+/* 제목이 hover 카드 트리거면 포커스로도 열린다(198 `tabIndex=0`) — 키보드 포커스만 링을 그린다. */
+.worktree-name:focus { outline: none; }
+.worktree-name:focus-visible { outline: 1px solid var(--line-strong); outline-offset: 1px; border-radius: 3px; }
+
+/* hover 카드 (LIFE-477 B4 — 198 `HoverCardContent` `w-80 max-h-[28rem] overflow-y-auto p-3 text-xs`, popover 외관,
+   `fade-in-0 zoom-in-95 slide-in-from-left-2`). 478 이 재사용할 수 있게 카드 틀과 내용 클래스를 나눈다. */
+@keyframes hover-card-in { from { opacity: 0; transform: translateX(-8px) scale(.95); } to { opacity: 1; transform: none; } }
+.hover-card {
+  position: fixed; z-index: 70; width: 320px; overflow-y: auto; padding: 12px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-menu);
+  font-family: var(--font-ui); font-size: 12px; line-height: 16px; color: var(--fg);
+  animation: hover-card-in 150ms ease-out both; cursor: default;
+}
+.hover-card-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* identity header(branch-first) — 브랜치 `font-mono text-[11px] leading-snug text-muted-foreground break-words`,
+   제목 `mt-1 text-[13px] font-semibold leading-snug`. */
+.hover-card-branch { font-family: var(--font-mono); font-size: 11px; line-height: var(--lh-snug); color: var(--fg-muted); overflow-wrap: anywhere; }
+.hover-card-title { margin-top: 4px; font-size: 13px; font-weight: 600; line-height: var(--lh-snug); color: var(--fg); overflow-wrap: anywhere; }
+/* 상세 구획 — 198 상세 구획의 왼쪽 선. corral 은 git 상태 한 줄(Q-W1). */
+.hover-card-section { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--fg-muted); }
+.hover-card-section .worktree-mark { margin-left: 0; padding-right: 0; }
+
 /* 메타 줄 — `flex items-center gap-1.5 min-w-0`, 브랜치 `text-[11px] text-muted-foreground leading-none truncate`. */
 .worktree-block-line2 { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .worktree-sub {
@@ -563,7 +601,74 @@ button, input { font: inherit; letter-spacing: inherit; }
 .session-row-close.is-active { opacity: 1; }
 .session-row-close:hover { background: var(--bg-danger-hover); color: var(--st-error-hi); }
 
+/* --- Agent activity layout: Full list (LIFE-477 B12·D16 — Orca 1.4.198 `DashboardAgentRow` 인라인 변형) -------------- */
+
+/* 목록 — 198 `flex flex-col mt-1`(행 사이 틈 없음). 가로 자리는 compact 목록과 같은 -8px(198 행의 `-ml-2`). */
+.agent-list.is-full, .agent-full-branch, .agent-lineage-children.is-full { gap: 0; }
+.agent-full-branch { display: flex; flex-direction: column; min-width: 0; }
+/* 행 — `relative flex flex-col py-1 px-2 rounded-sm`, 자식 `pl-5 pr-2`. hover·선택 칠은 compact 행과 같은 토큰. */
+.agent-full-row {
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  padding: 4px 8px; border-radius: 4px; cursor: pointer;
+  font-family: var(--font-ui); color: var(--fg-muted);
+}
+.agent-full-row.is-child { padding-left: 20px; }
+.agent-full-row:hover { background: color-mix(in srgb, var(--bg-accent) 18%, transparent); }
+.agent-full-row.is-active { background: color-mix(in srgb, var(--bg-accent) 70%, transparent); }
+.agent-full-row.is-inert { cursor: default; }
+/* 1줄 — `flex items-center gap-1.5`. */
+.agent-full-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.agent-full-icon {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; line-height: 0;
+  font-family: var(--font-mono); font-size: var(--fs-badge);
+}
+/* 라벨 — `block min-w-0 flex-1 overflow-hidden text-[11px] leading-snug h-[1lh] truncate font-normal text-muted-foreground`. */
+.agent-full-label {
+  display: block; flex: 1 1 auto; min-width: 0; height: 1lh; overflow: hidden;
+  font-size: var(--fs-agent-row); line-height: var(--lh-snug); white-space: nowrap; text-overflow: ellipsis;
+}
+/* 모델 — `max-w-24 shrink-0 truncate`(198 full 행은 라벨이 먼저 줄어든다 — compact 행과 다르다). */
+.agent-full-row .agent-row-model { flex-shrink: 0; }
+.agent-full-row.is-active .agent-full-label { color: color-mix(in srgb, var(--fg) 90%, transparent); }
+.agent-full-row.is-unseen-done .agent-full-label { font-weight: 600; color: var(--fg); }
+/* 오른쪽 칸 — `relative ml-auto flex h-3.5 w-12 shrink-0 items-center justify-end`. 시간과 닫기가 한 칸을 나눈다. */
+.agent-full-trailing { position: relative; flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; width: 48px; height: 14px; margin-left: auto; }
+.agent-full-time {
+  font-size: var(--fs-agent-meta); line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--fg-muted) 60%, transparent); transition: opacity 150ms;
+}
+.agent-full-time.is-hidden { opacity: 0; }
+.agent-full-close {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; padding: 0;
+  background: none; border: 0 solid; border-radius: 3px; font-size: 13px; line-height: 1; cursor: pointer;
+  color: color-mix(in srgb, var(--fg-muted) 70%, transparent); opacity: 0; transition: opacity 150ms;
+}
+.agent-full-close.is-active { opacity: 1; }
+.agent-full-close:hover { color: var(--fg); }
+/* 2줄 도구 — `mt-0.5 min-w-0 pl-5 text-[10px] leading-snug text-muted-foreground/70`, 머리 `flex h-[1lh] items-center gap-1`. */
+.agent-full-tool {
+  min-width: 0; margin-top: 2px; padding-left: 20px;
+  font-size: var(--fs-agent-meta); line-height: var(--lh-snug); color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
+}
+.agent-full-tool-header { display: flex; align-items: center; gap: 4px; height: 1lh; min-width: 0; overflow: hidden; }
+.agent-full-tool-icon { flex: 0 0 auto; width: 10px; height: 10px; }
+.agent-full-tool-name { flex: 0 0 auto; font-family: var(--font-mono); font-size: var(--fs-agent-meta); }
+.agent-full-tool-input { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: color-mix(in srgb, var(--fg-muted) 60%, transparent); }
+.agent-full-tool-placeholder { display: block; height: 1lh; }
+/* 3줄 메시지 — `mt-0.5 flex min-w-0 items-start gap-1.5 pl-5`, 글 `text-[10px] leading-snug text-muted-foreground/80 h-[1lh] truncate`.
+   빈 경우는 198 그대로 공백 1자 든 블록(`mt-0.5 pl-5 text-[10px] leading-snug`) — 공백뿐인 줄 상자는 높이가 0 이다. */
+.agent-full-message {
+  display: flex; align-items: flex-start; gap: 6px; min-width: 0; margin-top: 2px; padding-left: 20px;
+  font-size: var(--fs-agent-meta); line-height: var(--lh-snug); color: color-mix(in srgb, var(--fg-muted) 80%, transparent);
+}
+.agent-full-message.is-empty { display: block; color: color-mix(in srgb, var(--fg-muted) 70%, transparent); }
+.agent-full-message-text { flex: 1 1 auto; min-width: 0; height: 1lh; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agent-full-interrupted { flex: 0 0 auto; }
+
 @media (prefers-reduced-motion: reduce) {
+  .agent-full-time, .agent-full-close { transition-duration: 0ms; }
+  .hover-card { animation-duration: 0ms; }
   .agent-list-rows.is-revealed { animation-duration: 0ms; }
   .agent-group-caret, .agent-row-chevron { transition-duration: 0ms; }
   .agent-dot-spinner { animation: none; border-top-color: var(--agent-dot-working); }

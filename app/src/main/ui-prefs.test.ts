@@ -274,3 +274,86 @@ describe('Workspace options 영속 (LIFE-470 K9)', () => {
     expect(store.get().sidebarRepoFilter).toEqual(['/r/a'])
   })
 })
+
+describe('카드 표시 영속 (LIFE-477 K7)', () => {
+  /** 470 출고 직후 사용자 파일의 키 구성(raw/claude/k7b-user-ui-prefs-keys.md, 17칸) — 값은 지어낸 것. */
+  const L470 = {
+    version: 1,
+    sidebarWidth: 300,
+    sidebarCollapsed: false,
+    collapsedRepos: ['/r/b'],
+    collapsedGroups: [],
+    expandedAgentGroups: ['/r/a/wt'],
+    tabOrdinals: [{ tabId: 'wA:t1', groupId: 'wA', ordinal: 1 }],
+    groupLayouts: [{ worktree: '/r/a', tree: { kind: 'leaf' } }],
+    manualRepoOrder: ['/r/b', '/r/a'],
+    manualWorktreeOrder: { '/r/a': ['/r/a/wt', '/r/a'] },
+    manualFlatOrder: ['/r/a/wt'],
+    sidebarGroupBy: 'none',
+    sidebarSortBy: 'recent',
+    sidebarProjectOrderBy: 'recent',
+    sidebarRepoFilter: ['/r/a'],
+    sidebarHideDefaultBranch: true,
+    sidebarHideDetachedHead: false,
+  }
+  const { version: _version, ...L470_BODY } = L470
+  void _version
+
+  it('K7ⓑ 477 이전 파일 — 카드 표시 칸은 기본값(Detailed·에이전트 활동 켬·Compact 에이전트), 470 칸은 그대로', () => {
+    fs.writeFileSync(file, JSON.stringify(L470))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    expect(store.get()).toEqual({ ...L470_BODY, sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'compact' })
+  })
+
+  it('K7ⓐ 세 칸을 쓰고 → 새 스토어로 읽으면 같은 값(재시작)', () => {
+    fs.writeFileSync(file, JSON.stringify(L470))
+    const first = new UiPrefsStore(dir)
+    first.load()
+    const patch: Partial<UiPrefs> = { sidebarCardLayout: 'compact', sidebarCardProperties: [], sidebarAgentActivityLayout: 'full' }
+    first.update(patch)
+    const second = new UiPrefsStore(dir)
+    second.load()
+    expect(second.get()).toMatchObject(patch)
+  })
+
+  it('K7ⓒ 카드 표시 칸 하나를 써도 파일의 기존 칸은 값 그대로 남는다(전후 JSON 대조)', () => {
+    fs.writeFileSync(file, JSON.stringify(L470))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.update({ sidebarAgentActivityLayout: 'full' })
+    const written: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    expect(written).toEqual({ ...L470, sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'full' })
+  })
+
+  it('K7ⓓ 손상된 새 칸(타입 틀림·모르는 값·모르는 속성 id)은 기본값/정규화, 다른 칸은 살아남는다', () => {
+    fs.writeFileSync(file, JSON.stringify({ ...L470, sidebarCardLayout: 'dense', sidebarCardProperties: ['branch', 'inline-agents', 7, 'inline-agents'], sidebarAgentActivityLayout: 3 }))
+    const store = new UiPrefsStore(dir)
+    store.load()
+    const got = store.get()
+    expect(got.sidebarCardLayout).toBe('detailed')
+    expect(got.sidebarCardProperties).toEqual(['inline-agents'])
+    expect(got.sidebarAgentActivityLayout).toBe('compact')
+    expect(got.sidebarGroupBy).toBe('none')
+    expect(got.manualFlatOrder).toEqual(['/r/a/wt'])
+    expect(got.expandedAgentGroups).toEqual(['/r/a/wt'])
+  })
+
+  it('K7ⓓ 속성 칸이 배열이 아니면 기본값, 빈 배열은 빈 배열(= 에이전트 활동 끔 — 198 `[]` 규칙)', () => {
+    fs.writeFileSync(file, JSON.stringify({ ...L470, sidebarCardProperties: 'inline-agents' }))
+    const a = new UiPrefsStore(dir)
+    a.load()
+    expect(a.get().sidebarCardProperties).toEqual(['inline-agents'])
+    fs.writeFileSync(file, JSON.stringify({ ...L470, sidebarCardProperties: [] }))
+    const b = new UiPrefsStore(dir)
+    b.load()
+    expect(b.get().sidebarCardProperties).toEqual([])
+  })
+
+  it('`get()` 의 속성 목록을 고쳐도 스토어 안이 안 바뀐다', () => {
+    const store = new UiPrefsStore(dir)
+    store.load()
+    store.get().sidebarCardProperties.push('inline-agents')
+    expect(store.get().sidebarCardProperties).toEqual(['inline-agents'])
+  })
+})

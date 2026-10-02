@@ -25,16 +25,28 @@ export function useSidebarView(): {
     const next = { ...viewRef.current, ...patch }
     viewRef.current = next
     setView(next)
-    const prefs = sidebarViewToPrefs(next)
-    const written: Partial<UiPrefs> = {}
-    if (patch.groupBy !== undefined) written.sidebarGroupBy = prefs.sidebarGroupBy
-    if (patch.sortBy !== undefined) written.sidebarSortBy = prefs.sidebarSortBy
-    if (patch.projectOrderBy !== undefined) written.sidebarProjectOrderBy = prefs.sidebarProjectOrderBy
-    if (patch.repoFilter !== undefined) written.sidebarRepoFilter = prefs.sidebarRepoFilter
-    if (patch.hideDefaultBranch !== undefined) written.sidebarHideDefaultBranch = prefs.sidebarHideDefaultBranch
-    if (patch.hideDetachedHead !== undefined) written.sidebarHideDetachedHead = prefs.sidebarHideDetachedHead
-    window.corral.setUiPrefs(written)
+    window.corral.setUiPrefs(sidebarPrefsPatch({ patch, next }))
   }, [])
 
   return { view, hydrate, change }
+}
+
+/**
+ * 바꾼 칸만 `ui-prefs` 칸 이름으로 — **저장 화이트리스트**다. 새 칸을 `SidebarView` 에 더하면 여기에도 한 줄 더해야 저장된다
+ * (LIFE-477 F10 — 빠뜨리면 화면만 바뀌고 재시작 뒤 사라진다). `useSidebarView.test.ts` 가 모든 칸이 빠짐없이 쓰이는지 본다.
+ */
+export function sidebarPrefsPatch(input: { patch: Partial<SidebarView>; next: SidebarView }): Partial<UiPrefs> {
+  const { patch } = input
+  const prefs = sidebarViewToPrefs(input.next)
+  const written: Partial<UiPrefs> = {}
+  if (patch.groupBy !== undefined) written.sidebarGroupBy = prefs.sidebarGroupBy
+  if (patch.sortBy !== undefined) written.sidebarSortBy = prefs.sidebarSortBy
+  if (patch.projectOrderBy !== undefined) written.sidebarProjectOrderBy = prefs.sidebarProjectOrderBy
+  if (patch.repoFilter !== undefined) written.sidebarRepoFilter = prefs.sidebarRepoFilter
+  if (patch.hideDefaultBranch !== undefined) written.sidebarHideDefaultBranch = prefs.sidebarHideDefaultBranch
+  if (patch.hideDetachedHead !== undefined) written.sidebarHideDetachedHead = prefs.sidebarHideDetachedHead
+  if (patch.cardLayout !== undefined) written.sidebarCardLayout = prefs.sidebarCardLayout
+  if (patch.cardProperties !== undefined) written.sidebarCardProperties = prefs.sidebarCardProperties
+  if (patch.agentActivityLayout !== undefined) written.sidebarAgentActivityLayout = prefs.sidebarAgentActivityLayout
+  return written
 }

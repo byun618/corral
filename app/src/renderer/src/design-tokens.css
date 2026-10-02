@@ -138,6 +138,10 @@
   --agent-dot-question: oklch(70.5% 0.213 47.604);
   --agent-dot-alert: oklch(63.7% 0.237 25.331);
   --agent-dot-idle: oklch(55.6% 0 0 / 0.4);
+  /* LIFE-477 카드 표시 — Compact 카드 주 워크트리 ★(Orca `fill-amber-400 text-amber-400`, Tailwind v4 amber-400) ·
+     Full list 행 글 크기(`text-[11px]`·`text-[10px]` `leading-snug` 1.375). */
+  --primary-star: oklch(82.8% 0.189 84.429);
+  --lh-snug: 1.375;
   --pane-locate: oklch(70.7% 0.165 254.624);
   /* LIFE-373 §3 (H): 풀 폼 고정 요소 81px + 라벨 ≥ 39px → 120. 접힘 26 = 아이콘 14 + 6×2. */
   --tab-min-w: 120px;

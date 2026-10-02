@@ -304,7 +304,22 @@ function sectionKey(section: SidebarSection): string {
 export function layoutSignature(input: { sections: readonly SidebarSection[]; view: SidebarView; order: ManualOrder }): LayoutSignature {
   const layout = input.sections.map((section) => ({ key: sectionKey(section), paths: section.items.map((item) => item.worktree.path) }))
   const membership = layout.map((entry) => ({ key: entry.key, paths: [...entry.paths].sort() })).sort((a, b) => a.key.localeCompare(b.key))
-  return { order: JSON.stringify(layout), membership: JSON.stringify(membership), options: JSON.stringify(input.view), manual: JSON.stringify(input.order), layout }
+  return { order: JSON.stringify(layout), membership: JSON.stringify(membership), options: JSON.stringify(arrangementOptions(input.view)), manual: JSON.stringify(input.order), layout }
+}
+
+/**
+ * 배치를 정하는 옵션만 (LIFE-477 F11·U6) — 카드 표시 칸(레이아웃·속성·에이전트 레이아웃)은 구획·순서를 바꾸지 않으므로 서명에서 뺀다.
+ * 넣으면 표시만 바꿔도 `settleDecision` 이 메타 변경으로 보고 대기 중인 활동 재정렬을 즉시 풀어 버린다.
+ */
+function arrangementOptions(view: SidebarView): Omit<SidebarView, 'cardLayout' | 'cardProperties' | 'agentActivityLayout'> {
+  return {
+    groupBy: view.groupBy,
+    sortBy: view.sortBy,
+    projectOrderBy: view.projectOrderBy,
+    repoFilter: view.repoFilter,
+    hideDefaultBranch: view.hideDefaultBranch,
+    hideDetachedHead: view.hideDetachedHead,
+  }
 }
 
 /** 지금 옵션이 활동 시각으로 순서가 움직이는가 — 지연을 거는 모드. */

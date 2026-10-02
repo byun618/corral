@@ -403,8 +403,9 @@ async function main() {
                   : el.tagName,
     ),
   )
-  const wantStructure = ['title:워크스페이스 옵션', 'label:표시', 'sub:projects', 'sep', 'label:그룹', 'group-toggle', 'sep', 'sub:sort', 'sub:project-order', 'sep', 'label:필터', 'filter:hide-default-branch', 'filter:hide-detached-head']
-  check('K2a-structure', 'K2ⓐ 구획 순서 = 198(라벨·Show·Group by·Sort by·Project order·Filters)', same(structure, wantStructure), { got: structure })
+  // LIFE-477 K1ⓕ — 카드 표시 구획(Card layout · Show properties)이 Project order 와 Filters 사이에 선다(198 `workspace-options-menu-items.tsx:235-237`).
+  const wantStructure = ['title:워크스페이스 옵션', 'label:표시', 'sub:projects', 'sep', 'label:그룹', 'group-toggle', 'sep', 'sub:sort', 'sub:project-order', 'sub:card-layout', 'sub:card-properties', 'sep', 'label:필터', 'filter:hide-default-branch', 'filter:hide-detached-head']
+  check('K2a-structure', 'K2ⓐ 구획 순서 = 198(라벨·Show·Group by·Sort by·Project order·Card layout·Show properties·Filters)', same(structure, wantStructure), { got: structure })
   const menuBox = await cdp.evaluate(() => {
     const r = document.querySelector('[data-sidebar-options-menu]').getBoundingClientRect()
     const b = document.querySelector('[data-sidebar-options]').getBoundingClientRect()

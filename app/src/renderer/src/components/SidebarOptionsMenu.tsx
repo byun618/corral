@@ -1,6 +1,6 @@
 // Workspace options 메뉴 (LIFE-470 · D29a) — 198 `SidebarWorkspaceOptionsMenu.tsx` + `workspace-options-menu-items.tsx:109-239`.
 //
-// 구획 순서 = 198: 라벨 · Show(Projects) · Group by · Sort by · Project order · [Card layout·Show properties = B 조각 LIFE-477 자리] · Filters.
+// 구획 순서 = 198: 라벨 · Show(Projects) · Group by · Sort by · Project order · Card layout · Show properties(LIFE-477) · Filters.
 // 메뉴 라이브러리가 없어(react·xterm 만) 자체 부품이다(00-analysis U6). 198 Radix DropdownMenu 의 동작 중 지키는 것:
 //   · `side="right" align="start" sideOffset 8 w-72` — 버튼 오른쪽에 붙고 화면 밖이면 안으로 민다
 //   · 라디오·스위치·토글은 고른 뒤에도 메뉴가 열려 있다(198 `:147-190` `onSelect preventDefault`)
@@ -8,12 +8,22 @@
 //     Enter/Space = 누르기(항목이 <button> 이라 기본 동작)
 //   · 바깥 mousedown 으로 닫힌다. 서브메뉴는 트리거에 마우스를 올리면 열린다
 //
-// B 조각(Card layout·Show properties·Agent activity layout)은 Project order 와 Filters 사이(198 `:235` 자리, 아래 「B 조각 자리」
-// 주석)에 구획을 더한다 — 서브메뉴는 `Submenu` 에 id 를 더하고 `subTrigger`·`RadioItem` 을 그대로 쓴다. RESULT 「B·C 인계」.
+// 카드 표시 구획(LIFE-477 · 198 `WorktreeCardDisplayMenuSection.tsx:95-198` 기본 경로)은 Project order 와 Filters 사이(198
+// `workspace-options-menu-items.tsx:235-237`): 「카드 레이아웃」 라디오(`w-44`) · 「표시 속성」 체크 + 「에이전트 활동 레이아웃」 라디오(`w-48`).
+// 새 서브메뉴는 `SUBMENUS` 에 id 를 더하면 → 키·자리 잡기가 따라온다.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RepoRow } from '../../../shared/types.js'
-import type { SidebarGroupBy, SidebarProjectOrder, SidebarSortBy, SidebarView } from '../../../shared/sidebar-view.js'
+import {
+  cardLayoutPreset,
+  type SidebarAgentActivityLayout,
+  type SidebarCardLayout,
+  type SidebarCardProperty,
+  type SidebarGroupBy,
+  type SidebarProjectOrder,
+  type SidebarSortBy,
+  type SidebarView,
+} from '../../../shared/sidebar-view.js'
 import { activeFilterCount, effectiveRepoFilter, filterBadgeLabel } from '../sidebar-sections.js'
 import { CheckIcon, ChevronRightIcon, GitBranchIcon, GitCommitIcon, SlidersIcon } from './SidebarIcons.js'
 
@@ -33,6 +43,24 @@ export const GROUP_BY_OPTIONS: readonly { id: SidebarGroupBy; label: string }[] 
   { id: 'none', label: '없음' },
   { id: 'repo', label: '프로젝트' },
 ]
+/** 198 `sidebar-workspace-option-items.ts:35-48` Detailed / Compact. */
+export const CARD_LAYOUT_OPTIONS: readonly { id: SidebarCardLayout; label: string }[] = [
+  { id: 'detailed', label: '자세히' },
+  { id: 'compact', label: '간단히' },
+]
+/** 198 `worktree-card-display-property-options.ts:4-71` 중 corral 이 가진 것 — Agent activity(`inline-agents`) 하나(게이트 ⓪ Q1). */
+export const CARD_PROPERTY_OPTIONS: readonly { id: SidebarCardProperty; label: string }[] = [{ id: 'inline-agents', label: '에이전트 활동' }]
+/** 198 `sidebar-workspace-option-items.ts:50-69` Compact / Full list. */
+export const AGENT_ACTIVITY_LAYOUT_OPTIONS: readonly { id: SidebarAgentActivityLayout; label: string }[] = [
+  { id: 'compact', label: '간단히' },
+  { id: 'full', label: '전체 목록' },
+]
+/** Show properties 트리거 오른쪽 — Compact 면 「hover 시」(198 "Hover"), Detailed 면 켠 속성 수(0 이면 없음, 198 `:143-154`). */
+export function cardPropertiesValue(view: Pick<SidebarView, 'cardLayout' | 'cardProperties'>): string {
+  if (view.cardLayout === 'compact') return 'hover 시'
+  const count = CARD_PROPERTY_OPTIONS.filter((option) => view.cardProperties.includes(option.id)).length
+  return count > 0 ? String(count) : ''
+}
 
 /** Show › Projects 트리거 값 — 전체 / 한 개면 이름 / N개(198 `SidebarRepositoryFilterSection.tsx:86-100`). */
 export function projectFilterLabel(input: { view: SidebarView; repos: readonly RepoRow[] }): string {
@@ -42,7 +70,11 @@ export function projectFilterLabel(input: { view: SidebarView; repos: readonly R
   return `${selected.length}개 프로젝트`
 }
 
-type Submenu = 'projects' | 'sort' | 'project-order'
+const SUBMENUS = ['projects', 'sort', 'project-order', 'card-layout', 'card-properties'] as const
+type Submenu = (typeof SUBMENUS)[number]
+function isSubmenu(value: string | null): value is Submenu {
+  return SUBMENUS.some((id) => id === value)
+}
 
 const ITEM_SELECTOR = '[data-menu-item]:not([disabled])'
 
@@ -181,7 +213,7 @@ export function SidebarOptionsMenu({
       case 'ArrowRight': {
         if (inSubmenu || !(active instanceof HTMLElement)) return
         const id = active.getAttribute('data-submenu-trigger')
-        if (id === 'projects' || id === 'sort' || id === 'project-order') {
+        if (isSubmenu(id)) {
           event.preventDefault()
           // hover 로 이미 열린 그 서브메뉴면 상태가 그대로라 포커스 effect 가 다시 돌지 않는다 — 바로 첫 항목으로 옮긴다(R1-07).
           const firstItem = submenu === id && submenuPosition !== null ? submenuRef.current?.querySelector<HTMLElement>(ITEM_SELECTOR) : null
@@ -211,6 +243,12 @@ export function SidebarOptionsMenu({
   const toggleRepo = (root: string): void => {
     const current = effectiveRepoFilter({ view, repos })
     onChange({ repoFilter: current.includes(root) ? current.filter((item) => item !== root) : [...current, root] })
+  }
+
+  const toggleProperty = (property: SidebarCardProperty): void => {
+    // 198 `handleWorktreeCardPropertyChange` — 켜면 덧붙이고 끄면 뺀다. 정규화(순서·중복)는 저장 칸을 읽을 때와 같은 규칙.
+    const next = view.cardProperties.includes(property) ? view.cardProperties.filter((item) => item !== property) : [...view.cardProperties, property]
+    onChange({ cardProperties: next })
   }
 
   const sortLabel = SORT_OPTIONS.find((option) => option.id === view.sortBy)?.label ?? '수동'
@@ -315,7 +353,12 @@ export function SidebarOptionsMenu({
             <div className="options-menu-sep" role="separator" />
             {subTrigger({ id: 'sort', label: '정렬', value: sortLabel })}
             {view.groupBy === 'repo' ? subTrigger({ id: 'project-order', label: '프로젝트 순서', value: projectOrderLabel }) : null}
-            {/* B 조각 자리 — Card layout · Show properties(198 `WorktreeCardDisplayMenuSection`) */}
+            {subTrigger({
+              id: 'card-layout',
+              label: '카드 레이아웃',
+              value: CARD_LAYOUT_OPTIONS.find((option) => option.id === view.cardLayout)?.label ?? '자세히',
+            })}
+            {subTrigger({ id: 'card-properties', label: '표시 속성', value: cardPropertiesValue(view) })}
             <div className="options-menu-sep" role="separator" />
             <div className="options-menu-section-label">필터</div>
             <FilterSwitch
@@ -338,7 +381,7 @@ export function SidebarOptionsMenu({
           {submenu !== null ? (
             <div
               ref={submenuRef}
-              className={`options-menu options-submenu ${submenu === 'projects' ? 'is-wide' : ''}`}
+              className={`options-menu options-submenu ${submenu === 'projects' ? 'is-wide' : ''} ${submenu === 'card-properties' ? 'is-properties' : ''}`}
               data-options-submenu={submenu}
               role="menu"
               style={submenuPosition === null ? { visibility: 'hidden', left: 0, top: 0 } : { left: submenuPosition.left, top: submenuPosition.top }}
@@ -367,6 +410,53 @@ export function SidebarOptionsMenu({
                     />
                   ))
                 : null}
+              {submenu === 'card-layout'
+                ? CARD_LAYOUT_OPTIONS.map((option) => (
+                    <RadioItem
+                      key={option.id}
+                      label={option.label}
+                      title={null}
+                      checked={view.cardLayout === option.id}
+                      dataKey={`card-layout-${option.id}`}
+                      // 레이아웃은 프리셋이다 — 이미 고른 값을 다시 골라도 속성이 프리셋으로 돌아간다(198, `cardLayoutPreset` 주석).
+                      onSelect={() => onChange(cardLayoutPreset(option.id))}
+                    />
+                  ))
+                : null}
+              {submenu === 'card-properties' ? (
+                <>
+                  {CARD_PROPERTY_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="options-menu-item options-check-item"
+                      data-menu-item=""
+                      data-options-property={option.id}
+                      role="menuitemcheckbox"
+                      aria-checked={view.cardProperties.includes(option.id)}
+                      onClick={() => toggleProperty(option.id)}
+                    >
+                      <span className="options-check-box">{view.cardProperties.includes(option.id) ? <CheckIcon className="options-check-icon" /> : null}</span>
+                      <span className="options-menu-label">{option.label}</span>
+                    </button>
+                  ))}
+                  <div className="options-menu-sep" role="separator" />
+                  {/* 198 `DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground"` — 비활성 처리 없음(에이전트 활동이 꺼져도 고를 수 있다). */}
+                  <div className="options-submenu-label" data-options-agent-layout-label="">
+                    에이전트 활동 레이아웃
+                  </div>
+                  {AGENT_ACTIVITY_LAYOUT_OPTIONS.map((option) => (
+                    <RadioItem
+                      key={option.id}
+                      label={option.label}
+                      title={null}
+                      checked={view.agentActivityLayout === option.id}
+                      dataKey={`agent-layout-${option.id}`}
+                      onSelect={() => onChange({ agentActivityLayout: option.id })}
+                    />
+                  ))}
+                </>
+              ) : null}
               {submenu === 'projects' ? (
                 <>
                   <div className="options-submenu-head">

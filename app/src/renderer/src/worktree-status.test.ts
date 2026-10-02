@@ -16,6 +16,7 @@ function row({ dot, source = 'live', children = [] }: { dot: AgentDot; source?: 
     dot,
     unseenDone: false,
     text: { leading: 'x', trailing: null, full: 'x' },
+    full: { label: 'x', tool: { kind: 'none' }, interrupted: false, message: null },
     model: null,
     timeAt: null,
     children,

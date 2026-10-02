@@ -16,7 +16,7 @@ const basePrefsFile = baseIndex > 0 ? process.argv[baseIndex + 1] : null
 const map = loadMap()
 const log = []
 const NATIVE_DIRS = fs.readdirSync(raw, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^native/.test(entry.name)).map((entry) => entry.name)
-const VIEW_FIELDS = ['sidebarGroupBy', 'sidebarSortBy', 'sidebarProjectOrderBy', 'sidebarRepoFilter', 'sidebarHideDefaultBranch', 'sidebarHideDetachedHead']
+const VIEW_FIELDS = ['sidebarGroupBy', 'sidebarSortBy', 'sidebarProjectOrderBy', 'sidebarRepoFilter', 'sidebarHideDefaultBranch', 'sidebarHideDetachedHead', 'sidebarCardLayout', 'sidebarCardProperties', 'sidebarAgentActivityLayout'] // LIFE-477: 표시 옵션 3칸(열거값)
 
 const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]))
 const sha256 = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex')

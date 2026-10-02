@@ -40,11 +40,18 @@ function render(panes: PaneRow[], options: {
   livePaneIds?: string[]
   onSelectSession?: (paneId: string) => void
   onCloseSession?: (paneId: string) => void
+  /** LIFE-477 카드 표시 */
+  layout?: 'detailed' | 'compact'
+  showAgents?: boolean
+  agentLayout?: 'compact' | 'full'
+  dirty?: boolean
+  linked?: boolean
+  repoLabel?: string | null
 } = {}): string {
   const worktree: WorktreeRow = {
-    path: '/repo', branch: 'main', isLinked: false, openWorkspaceId: options.closed === true ? null : 'w1',
+    path: '/repo', branch: 'main', isLinked: options.linked ?? false, openWorkspaceId: options.closed === true ? null : 'w1',
     gitStatus: { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0,
-      unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
+      unstaged: options.dirty === true ? 2 : 0, untracked: 0, conflicted: 0, dirty: options.dirty === true, error: null },
     workspace: options.closed === true ? null : { workspaceId: 'w1', label: 'repo', number: 1, focused: true, agentStatus: 'idle',
       tabs: [{ tabId: 't1', workspaceId: 'w1', label: 'renamed tab', number: 1, order: 0,
         focused: true, agentStatus: 'blocked', panes,
@@ -58,6 +65,7 @@ function render(panes: PaneRow[], options: {
     groupExpanded: options.expanded ?? false, onToggleGroup: noop,
     onSelectBlock: noop, onSelectSession: options.onSelectSession ?? noop, onCloseSession: options.onCloseSession ?? noop, onCloseWorktree: noop,
     onCreateShell: noop, onCreateAgent: noop,
+    layout: options.layout, showAgents: options.showAgents, agentLayout: options.agentLayout, repoLabel: options.repoLabel,
   }))
 }
 
@@ -170,4 +178,85 @@ it('행 콜백은 그 pane 을 고르고 그 pane 만 닫는다 — 죽은 보�
   expect(onCloseSession).toHaveBeenCalledExactlyOnceWith('p2')
   expect(captured.find((props) => props.node.key === 'retained:dead')?.node.activationPaneId).toBeNull()
   expect(captured.find((props) => props.node.key === 'retained:movedAway')?.node.activationPaneId).toBe('movedAway')
+})
+
+describe('카드 표시 (LIFE-477 K2·K3·K4·K6)', () => {
+  const two = (): PaneRow[] => [pane('p1', 'claude'), pane('p2', 'codex')]
+  const fullRows = (html: string): number => html.match(/data-agent-full-row=""/g)?.length ?? 0
+
+  it('기본(props 없음)은 지금 화면 — Detailed · 메타 줄 · 「기본」 칩 · compact 목록', () => {
+    const html = render(two())
+    expect(html).toContain('data-card-layout="detailed"')
+    expect(html).toContain('data-worktree-card-meta-row')
+    expect(html).toContain('data-worktree-primary-badge')
+    expect(html).not.toContain('data-worktree-primary-star')
+    expect(html).toContain('data-compact-agent-list="/repo"')
+    expect(html).not.toContain('data-full-agent-list')
+  })
+
+  it('K2ⓐ Compact — 메타 줄 없음 · ★ · 「기본」 칩 없음 · 레포 칩(None 그룹) · git 마크는 제목 줄에 없다', () => {
+    const html = render(two(), { layout: 'compact', showAgents: false, dirty: true, repoLabel: 'corral' })
+    expect(html).toContain('data-card-layout="compact"')
+    expect(html).toContain('is-compact')
+    expect(html).not.toContain('data-worktree-card-meta-row')
+    expect(html).not.toContain('data-worktree-meta-branch')
+    expect(html).toContain('data-worktree-primary-star')
+    expect(html).not.toContain('data-worktree-primary-badge')
+    expect(html).toContain('data-worktree-repo-chip="" title="corral">corral</span>')
+    expect(html).not.toContain('worktree-mark')
+  })
+
+  it('K2ⓑ Compact 카드는 에이전트 목록이 없고 상태 점은 남는다', () => {
+    const html = render(two(), { layout: 'compact', showAgents: false })
+    expect(rowsOf(html)).toBe(0)
+    expect(html).not.toContain('data-agent-group=')
+    expect(html).toContain('worktree-status-slot')
+  })
+
+  it('K3ⓐ Compact 제목 — git 마크가 있으면 hover 트리거(tabIndex 0, 네이티브 툴팁 없음), 없으면 트리거 아님', () => {
+    const dirty = render([], { layout: 'compact', showAgents: false, dirty: true })
+    expect(dirty).toContain('data-hover-card-trigger="/repo"')
+    expect(dirty).toMatch(/data-hover-card-trigger="\/repo"[^>]*tabindex="0"|tabindex="0"[^>]*data-hover-card-trigger/)
+    const clean = render([], { layout: 'compact', showAgents: false })
+    expect(clean).not.toContain('data-hover-card-trigger')
+    expect(clean).toContain('title="main\n/repo"')
+  })
+
+  it('K3ⓒ Detailed 는 제목 hover 트리거가 없고 git 마크는 메타 줄 그대로', () => {
+    const html = render([], { dirty: true })
+    expect(html).not.toContain('data-hover-card-trigger')
+    expect(html).toContain('worktree-mark tone-dirty')
+  })
+
+  it('K4ⓐ 에이전트 활동 끔 — 목록(알약·행) 전부 없고 상태 점은 남는다', () => {
+    const html = render(two(), { showAgents: false, expanded: true })
+    expect(rowsOf(html)).toBe(0)
+    expect(html).not.toContain('data-agent-group=')
+    expect(html).not.toContain('data-compact-agent-list')
+    expect(html).toContain('worktree-status-slot')
+    expect(html).toContain('data-worktree-card-meta-row')
+  })
+
+  it('K6ⓐ Full list — 루트마다 3줄 행, 묶음 알약 없음(접힘 상태와 무관)', () => {
+    const html = render(two(), { agentLayout: 'full', expanded: false })
+    expect(html).not.toContain('data-agent-group=')
+    expect(fullRows(html)).toBe(2)
+    expect(html).toContain('data-full-agent-list="/repo"')
+    expect(html).not.toContain('session-row')
+    expect(html.match(/data-agent-row-message/g)?.length).toBe(2)
+  })
+
+  it('K6ⓔ Full list 자식은 기본 펼침 — 부모에 셰브론', () => {
+    const lineage: OrchestrationLineage = { state: 'ready', entries: [{ paneId: 'p2', parentPaneId: 'p1', runId: 'r', taskId: 't', dispatchId: 'd', dispatchStatus: 'dispatched' }] }
+    const html = render(two(), { agentLayout: 'full', lineage })
+    expect(fullRows(html)).toBe(2)
+    expect(html).toContain('data-agent-children="p1"')
+    expect(html).toContain('data-agent-row-toggle="p1"')
+    expect(html).toContain('aria-expanded="true"')
+  })
+
+  it('K6ⓖ 에이전트 레이아웃 Full list 여도 Compact 카드는 목록이 없다', () => {
+    const html = render(two(), { layout: 'compact', showAgents: false, agentLayout: 'full' })
+    expect(fullRows(html)).toBe(0)
+  })
 })

@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneRow, SessionDigest, TabRow } from '../../shared/types.js'
 import { EMPTY_SESSION_DIGEST } from '../../shared/types.js'
-import { elapsedLabel, paneSecondaryLine, secondaryLine, sessionRowText } from './session-activity.js'
+import { elapsedAgoLabel, elapsedLabel, paneSecondaryLine, secondaryLine, sessionRowText } from './session-activity.js'
 import { emptyAgentState } from '../../shared/agent-state.js'
 
 function pane(input: { agent?: string | null; agentStatus?: AgentStatus }): PaneRow {
@@ -177,5 +177,28 @@ describe('pane secondary lines', () => {
         tool: { name: 'Bash', input: 'old command' } } }
     expect(paneSecondaryLine({ pane: first, integrations: [] })).toEqual({ kind: 'text', text: 'Read: first.ts' })
     expect(paneSecondaryLine({ pane: second, integrations: [] })).toEqual({ kind: 'text', text: 'second message' })
+  })
+})
+
+describe('elapsedAgoLabel — Full list 시간 (LIFE-477 B13, 198 `formatTimeAgo`)', () => {
+  it('1분 미만 방금 · 분·시간·일 내림 + 「전」', () => {
+    const now = 10_000_000_000
+    expect(elapsedAgoLabel({ at: null, now })).toBeNull()
+    expect(elapsedAgoLabel({ at: now, now })).toBe('방금')
+    expect(elapsedAgoLabel({ at: now - 59_999, now })).toBe('방금')
+    expect(elapsedAgoLabel({ at: now - 60_000, now })).toBe('1분 전')
+    expect(elapsedAgoLabel({ at: now - 59 * 60_000 - 59_999, now })).toBe('59분 전')
+    expect(elapsedAgoLabel({ at: now - 60 * 60_000, now })).toBe('1시간 전')
+    expect(elapsedAgoLabel({ at: now - 23 * 3_600_000 - 3_599_999, now })).toBe('23시간 전')
+    expect(elapsedAgoLabel({ at: now - 24 * 3_600_000, now })).toBe('1일 전')
+    expect(elapsedAgoLabel({ at: now + 5_000, now })).toBe('방금') // 시계 어긋남
+  })
+  it('경계가 compact `elapsedLabel` 과 같다 — 문구만 다르다', () => {
+    const now = 10_000_000_000
+    for (const delta of [0, 59_999, 60_000, 3_599_999, 3_600_000, 86_399_999, 86_400_000, 5 * 86_400_000]) {
+      const short = elapsedLabel(now - delta, now)
+      const ago = elapsedAgoLabel({ at: now - delta, now })
+      expect(short === 'now' ? '방금' : `${short?.replace('m', '분').replace('h', '시간').replace('d', '일')} 전`).toBe(ago)
+    }
   })
 })

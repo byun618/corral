@@ -10,16 +10,29 @@
 // · hover `+`/`⋯`(빈 탭·에이전트 기동·worktree 닫기)는 corral 고유 진입점이라 유지한다 — 제목 줄 오른쪽에 겹쳐 hover 때만.
 //   01-criteria C1 의 「세션(탭) 생성·닫기」 진입점이다(MainTabBar 는 탭 2개 이상에서만 선다).
 // · 선택 표시는 표면만 바꾼다 — 옛 「이름 밝힘·점 accent 강제」는 198 에 없어 뺐다(K6ⓔ).
+//
+// ## Card layout · Show properties · Agent activity layout (LIFE-477 · 448 S4-B)
+//
+// · Compact(198 `worktree-card-presentation.tsx:73-111`): 메타 줄 없음 · 세로 패딩 8px(`py-2` 제목만 카드) · 「기본」 칩 대신 오른쪽 끝 ★ ·
+//   레포 이름은 제목 앞 칩(Group by None 일 때 — 198 인라인 repo 칩, corral 은 레포 아이콘이 없어 이름 칩) · **에이전트 목록 없음**(상태 점은 남는다).
+//   git 마크는 제목 줄에 안 그리고 제목 hover 카드로 옮긴다(Q-W1 사용자 결정 — `card-display.ts`).
+// · 에이전트 활동 끔(`cardProperties` 에 `inline-agents` 없음) → 목록(알약·행) 전체가 사라지고 상태 점은 남는다.
+// · Full list → 루트마다 3줄 행(`AgentFullRow`), 묶음 알약 없음, 자식은 기본 펼침.
 import { useEffect, useState } from 'react'
 import type { AgentKind, IntegrationRow, OrchestrationLineage, RetainedAgentRow, WorktreeRow } from '../../../shared/types.js'
+import type { SidebarAgentActivityLayout, SidebarCardLayout } from '../../../shared/sidebar-view.js'
+import { compactHoverContent, type CompactHover } from '../card-display.js'
 import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { collapsedSummary } from '../session-summary.js'
 import { buildAgentRows, SUMMARY_MIN_ROOTS, type AgentRowNode } from '../sidebar-agents.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { worktreeStatus } from '../worktree-status.js'
+import { AgentFullRow } from './AgentFullRow.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { EllipsisIcon, PlusIcon } from './AgentStateDot.js'
+import { HoverCard } from './HoverCard.js'
 import { SessionRow } from './SessionRow.js'
+import { StarIcon } from './SidebarIcons.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
 
 const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
@@ -51,7 +64,16 @@ export function WorktreeBlock({
   onCreateShell,
   onCreateAgent,
   repoLabel = null,
+  layout = 'detailed',
+  showAgents = true,
+  agentLayout = 'compact',
 }: {
+  /** Card layout (LIFE-477) — 기본 Detailed. */
+  layout?: SidebarCardLayout
+  /** 에이전트 목록을 그리나 — `showsInlineAgents(view)`(에이전트 활동 켬 + Detailed). 상태 점과는 무관하다. */
+  showAgents?: boolean
+  /** Agent activity layout — Compact(467 알약·한 줄) / Full list(3줄). */
+  agentLayout?: SidebarAgentActivityLayout
   worktree: WorktreeRow
   /**
    * 레포 이름 (LIFE-470) — Group by None 처럼 레포 헤더가 없는 구획에서만 준다. 둘째 줄 앞에 붙어 같은 브랜치 이름(`main`)의
@@ -126,6 +148,17 @@ export function WorktreeBlock({
   // 메타 줄 = 브랜치. 브랜치가 없는(detached) worktree 만 비운다 — 절대경로는 행에 안 넣는다(§2.5, 툴팁에만).
   const branch = worktree.branch
   const status = worktreeStatus({ rows: roots, hasOpenTabs: (worktree.workspace?.tabs.length ?? 0) > 0 })
+  const compact = layout === 'compact'
+  const hover = compact ? compactHoverContent({ branch, title, gitStatus: worktree.gitStatus }) : null
+  const full = agentLayout === 'full'
+
+  const toggleFolded = (key: string): void =>
+    setFoldedParents((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   const renderRow = ({ node, child }: { node: AgentRowNode; child: boolean }): React.JSX.Element => {
     const hasChildren = !child && node.children.length > 0
@@ -141,13 +174,7 @@ export function WorktreeBlock({
             ? {
                 expanded: !foldedParents.has(node.key),
                 count: node.children.length,
-                onToggle: () =>
-                  setFoldedParents((prev) => {
-                    const next = new Set(prev)
-                    if (next.has(node.key)) next.delete(node.key)
-                    else next.add(node.key)
-                    return next
-                  }),
+                onToggle: () => toggleFolded(node.key),
               }
             : null
         }
@@ -167,6 +194,33 @@ export function WorktreeBlock({
       ) : null}
     </div>
   )
+  // Full list — 같은 나무·같은 접힘 상태, 행만 3줄(`AgentFullRow`). 198 `renderAgentBranch`(`WorktreeCardAgents.tsx:243-303`).
+  const renderFullRow = ({ node, child }: { node: AgentRowNode; child: boolean }): React.JSX.Element => {
+    const hasChildren = !child && node.children.length > 0
+    return (
+      <AgentFullRow
+        key={node.key}
+        node={node}
+        now={now}
+        focused={node.source === 'live' && node.paneId === selectedPane}
+        child={child}
+        disclosure={hasChildren ? { expanded: !foldedParents.has(node.key), count: node.children.length, onToggle: () => toggleFolded(node.key) } : null}
+        reserveGutter={!child && !hasChildren && anyRootHasChildren}
+        onActivate={onSelectSession}
+        onClose={onCloseSession}
+      />
+    )
+  }
+  const renderFullBranch = (node: AgentRowNode): React.JSX.Element => (
+    <div className="agent-full-branch" key={node.key}>
+      {renderFullRow({ node, child: false })}
+      {node.children.length > 0 && !foldedParents.has(node.key) ? (
+        <div className="agent-lineage-children is-full" data-agent-children={node.key}>
+          {node.children.map((childNode) => renderFullRow({ node: childNode, child: true }))}
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <div
@@ -176,8 +230,9 @@ export function WorktreeBlock({
       onMouseDown={onCardMouseDown}
     >
       <div
-        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'}`}
+        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'} ${compact ? 'is-compact' : ''}`}
         data-worktree-card-surface=""
+        data-card-layout={layout}
         data-worktree-card-active={selected ? 'primary' : undefined}
         data-chip-worktree={worktree.path}
         data-chip-value={worktree.openWorkspaceId !== null ? 'open' : 'closed'}
@@ -192,17 +247,41 @@ export function WorktreeBlock({
               <div className="worktree-block-line1">
                 {/* `data-worktree-branch` 의 **값**은 하네스의 요소 위치 지정자다 — 건드리지 않는다
                     (09-gate1-fix.md B 경고). 툴팁 = 제목 전문 + 절대경로 — 절대경로는 여기서만 노출한다 (§2.5, K7 긴 이름). */}
-                <span className="worktree-name" data-worktree-branch={worktree.path} data-worktree-title="" title={`${title}\n${worktree.path}`}>
-                  {title}
-                </span>
+                {compact && repoLabel !== null ? (
+                  <span className="worktree-repo-chip" data-worktree-repo-chip="" title={repoLabel}>
+                    {repoLabel}
+                  </span>
+                ) : null}
+                <HoverCard
+                  content={hover === null ? null : <CompactHoverBody hover={hover} />}
+                  suppressed={reordering}
+                  testId={worktree.path}
+                  render={(trigger) => (
+                    // hover 카드가 있으면 네이티브 툴팁을 겹치지 않는다(198 `titleWrapper` 주석 — 「don't stack the title's truncation tooltip」).
+                    <span
+                      {...trigger}
+                      className="worktree-name"
+                      data-worktree-branch={worktree.path}
+                      data-worktree-title=""
+                      title={hover === null ? `${title}\n${worktree.path}` : undefined}
+                    >
+                      {title}
+                    </span>
+                  )}
+                />
                 {groupGlyph === null ? null : (
                   <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
                     {groupGlyph}
                   </span>
                 )}
-                {!worktree.isLinked ? (
+                {!worktree.isLinked && !compact ? (
                   <span className="worktree-chip" data-worktree-primary-badge="" title="주 워크트리 (원래 클론 폴더)">
                     기본
+                  </span>
+                ) : null}
+                {!worktree.isLinked && compact ? (
+                  <span className="worktree-primary-star" data-worktree-primary-star="" title="주 워크트리 (원래 클론 폴더)" aria-label="주 워크트리">
+                    <StarIcon className="worktree-primary-star-icon" />
                   </span>
                 ) : null}
                 {isOpen ? (
@@ -235,7 +314,7 @@ export function WorktreeBlock({
                   </div>
                 ) : null}
               </div>
-              {branch === null && markLabel === null && repoLabel === null ? null : (
+              {compact || (branch === null && markLabel === null && repoLabel === null) ? null : (
                 <div className="worktree-block-line2" data-worktree-card-meta-row="">
                   {repoLabel === null ? null : (
                     <span className="worktree-repo-label" data-worktree-repo-label="" title={repoLabel}>
@@ -252,7 +331,12 @@ export function WorktreeBlock({
               )}
             </div>
             {/* 열린 workspace 가 없어도 그린다 — 마지막 pane 이 끝나고 workspace 가 사라진 worktree 의 보존 행(R1). */}
-            {roots.length > 0 ? (
+            {showAgents && roots.length > 0 && full ? (
+              <div className="agent-list is-full" data-full-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
+                {roots.map((node) => renderFullBranch(node))}
+              </div>
+            ) : null}
+            {showAgents && roots.length > 0 && !full ? (
               // 목록 한 덩어리 — 본문 열에서 왼쪽으로 8px 내어 나간다(Orca `[data-compact-agent-list]` `-ml-2`, 이관 ④).
               <div className={`agent-list ${hasGroup ? 'is-grouped' : ''}`} data-compact-agent-list={worktree.path} onClick={(event) => event.stopPropagation()}>
                 {hasGroup && summary !== null ? (
@@ -321,6 +405,26 @@ export function WorktreeBlock({
           </div>
         ) : null}
       </div>
+    </div>
+  )
+}
+
+/** Compact 제목 hover 카드 내용 — 198 `WorktreeCardHoverIdentityHeader`(branch-first: 브랜치 mono → 제목) + corral git 상태(Q-W1). */
+function CompactHoverBody({ hover }: { hover: CompactHover }): React.JSX.Element {
+  return (
+    <div className="hover-card-body">
+      {hover.branch === null && hover.title === null ? null : (
+        <div className="hover-card-identity" data-worktree-hover-identity-header="">
+          {hover.branch === null ? null : <div className="hover-card-branch">{hover.branch}</div>}
+          {hover.title === null ? null : <div className="hover-card-title">{hover.title}</div>}
+        </div>
+      )}
+      {hover.git === null ? null : (
+        <div className="hover-card-section" data-hover-git="">
+          <span className={`worktree-mark tone-${hover.git.tone}`}>{hover.git.mark}</span>
+          <span className="hover-card-git-words">{hover.git.words}</span>
+        </div>
+      )}
     </div>
   )
 }

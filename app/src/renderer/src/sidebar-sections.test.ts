@@ -563,3 +563,44 @@ describe('U3 재정렬 지연', () => {
     expect(isActivityDriven(view({ groupBy: 'none', projectOrderBy: 'recent' }))).toBe(false)
   })
 })
+
+describe('LIFE-477 K8 — 카드 표시 옵션은 구획·순서·정렬 지연에 끼지 않는다', () => {
+  const DISPLAY: Partial<SidebarView>[] = [
+    { cardLayout: 'detailed', cardProperties: ['inline-agents'], agentActivityLayout: 'compact' },
+    { cardLayout: 'compact', cardProperties: [], agentActivityLayout: 'compact' },
+    { cardLayout: 'detailed', cardProperties: [], agentActivityLayout: 'full' },
+    { cardLayout: 'detailed', cardProperties: ['inline-agents'], agentActivityLayout: 'full' },
+  ]
+  const many = (): RepoRow[] =>
+    ['/r1', '/r2', '/r3', '/r4', '/r5', '/r6'].map((root, index) =>
+      repo(root, [
+        wt({ path: root, branch: 'main', linked: false, panes: [pane({ id: `${root}-m`, status: index % 2 === 0 ? 'working' : 'idle', observedAt: 100 + index })] }),
+        wt({ path: `${root}/x`, branch: `x${index}`, panes: [pane({ id: `${root}-x`, status: 'blocked', observedAt: 300 - index })] }),
+      ]),
+    )
+
+  it('ⓐ Group Project·None × 정렬 모드 전부에서 표시 옵션 네 조합의 구획 구성·카드 순서가 같다(#19434 교정)', () => {
+    for (const groupBy of ['repo', 'none'] as const) {
+      for (const sortBy of ['name', 'smart', 'recent', 'repo', 'manual'] as const) {
+        const shapes = DISPLAY.map((display) => {
+          const sections = buildSidebarSections({ repos: many(), view: view({ groupBy, sortBy, ...display }), order: EMPTY_MANUAL_ORDER, now: NOW })
+          return JSON.stringify(sections.map((section) => [section.kind, section.items.map((item) => item.worktree.path)]))
+        })
+        expect(new Set(shapes).size, `${groupBy}/${sortBy}`).toBe(1)
+      }
+    }
+  })
+
+  it('ⓑ 표시 옵션만 바꾸면 정렬 지연 서명이 같다 — 대기 중 재정렬을 즉시 풀지 않는다(U6)', () => {
+    const v = view({ sortBy: 'smart' })
+    const sections = buildSidebarSections({ repos: many(), view: v, order: EMPTY_MANUAL_ORDER, now: NOW })
+    const shown = layoutSignature({ sections, view: v, order: EMPTY_MANUAL_ORDER })
+    for (const display of DISPLAY) {
+      const next = layoutSignature({ sections, view: { ...v, ...display }, order: EMPTY_MANUAL_ORDER })
+      expect(settleDecision({ shown, next, activityDriven: true })).toBe('same')
+    }
+    // 대조 — 배치 옵션(정렬)을 바꾸면 여전히 now.
+    const sorted = layoutSignature({ sections, view: { ...v, sortBy: 'name' }, order: EMPTY_MANUAL_ORDER })
+    expect(settleDecision({ shown, next: sorted, activityDriven: true })).toBe('now')
+  })
+})

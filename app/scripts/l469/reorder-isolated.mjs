@@ -13,6 +13,11 @@
 //   --no-focus-emulation    포커스 에뮬레이션을 끈다(run3 조건 재현)
 //   --trace                 입력 이벤트(좌표·buttons·시각·표시 줄 위치·카드 경계)를 페이지 안팎에서 기록 → <out>/trace-<검사 id>.json
 //
+// LIFE-477 K9 옵션 —
+//   --display detailed|compact|full  시작 prefs 에 카드 표시 칸을 싣는다(Detailed 기본 · Compact 카드 · Detailed+Full list).
+//                                    Compact 카드는 에이전트 목록을 그리지 않으므로(198 F4) 「에이전트 행」 기대는 0 행으로,
+//                                    Full list 는 알약이 없으므로 묶음 기대는 「알약 없이 행 2개」로 바뀐다. 그 밖의 검사는 같다.
+//
 // 게이트 ① 사용자 수정 1 — 주 체크아웃도 옮긴다(K2ⓑ'): 카드 경계 번호는 **주 체크아웃 포함** 그 레포 카드 전체 기준이다.
 // 옛 K2b-main-no-drag·K2b-not-above-main 은 K2b'-main-drag·K2b'-above-main 으로 바꿨다. K3ⓗ 미리 보기 검사를 더했다.
 
@@ -31,6 +36,15 @@ const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, token, index, all) => (token.startsWith('--') ? [...pairs, [token.slice(2), all[index + 1]?.startsWith('--') ? true : (all[index + 1] ?? true)]] : pairs), []),
 )
 const work = path.resolve(String(args.work ?? '/tmp/l469i'))
+const display = String(args.display ?? 'detailed')
+if (!['detailed', 'compact', 'full'].includes(display)) throw new Error(`--display ${display}`)
+const DISPLAY_PREFS = {
+  detailed: {},
+  compact: { sidebarCardLayout: 'compact', sidebarCardProperties: [], sidebarAgentActivityLayout: 'compact' },
+  full: { sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'full' },
+}[display]
+/** 에이전트 행 기대 — Compact 카드는 목록이 없다(0 행), 그 밖은 1 행 이상. */
+const agentRowsOk = (count) => (display === 'compact' ? count === 0 : count > 0)
 const out = path.resolve(String(args.out ?? 'l469-iso-out'))
 const port = Number(args.port ?? 9469)
 const shots = path.join(out, 'shots')
@@ -360,7 +374,7 @@ async function main() {
 
   // K6 — 469 이전 모양 ui-prefs(사용자 파일 키 구성 k6-user-ui-prefs-keys.json 과 같은 칸, 값은 지어낸 것).
   const legacy = { version: 1, sidebarWidth: 300, sidebarCollapsed: false, collapsedRepos: [], collapsedGroups: ['/x/old'], expandedAgentGroups: ['/x/exp'], tabOrdinals: [{ tabId: 'w9:t1', groupId: 'w9', ordinal: 3 }], groupLayouts: [{ worktree: '/x/wt', v: 1 }] }
-  fs.writeFileSync(prefsFile, JSON.stringify(legacy, null, 2) + '\n')
+  fs.writeFileSync(prefsFile, JSON.stringify({ ...legacy, ...DISPLAY_PREFS }, null, 2) + '\n')
   const legacyHash = prefsHash()
 
   await startBackend()
@@ -406,13 +420,13 @@ async function main() {
   const aOne = snapState.repos.find((repo) => repo.root === alpha).worktrees.find((row) => row.path === wtA('a-one'))
   const paneId = aOne.workspace?.tabs?.[0]?.panes?.[0]?.paneId
   if (paneId) await backendRpc('pane.report_agent', { pane_id: paneId, source: 'l469', agent: 'claude', state: 'working', message: 'l469 agent' })
-  await waitFor(async () => ((await snapshot()).repos.find((repo) => repo.root === alpha)?.agentRows?.[wtA('a-one')] ?? 0) > 0, 'agent row', 30_000).catch(() => null)
+  if (display !== 'compact') await waitFor(async () => ((await snapshot()).repos.find((repo) => repo.root === alpha)?.agentRows?.[wtA('a-one')] ?? 0) > 0, 'agent row', 30_000).catch(() => null)
   // 새로 연 worktree 는 열기만 하고 활성으로 바꾸지 않는 경로가 있다(기존 동작) — 한 번 더 눌러 고른다.
   await click(await cardPoint(wtA('a-one')))
   await waitFor(async () => (await snapshot()).repos.find((repo) => repo.root === alpha)?.selected?.[0] === wtA('a-one'), 'a-one selected', 15_000).catch(() => null)
   snap = await snapshot()
   const alphaBefore = snap.repos.find((repo) => repo.root === alpha)
-  check('prep', '준비: a-one 선택·열림·에이전트 행, a-three 열림', alphaBefore.selected[0] === wtA('a-one') && alphaBefore.open.includes(wtA('a-three')) && alphaBefore.agentRows[wtA('a-one')] > 0, alphaBefore)
+  check('prep', '준비: a-one 선택·열림·에이전트 행, a-three 열림', alphaBefore.selected[0] === wtA('a-one') && alphaBefore.open.includes(wtA('a-three')) && agentRowsOk(alphaBefore.agentRows[wtA('a-one')]), { display, ...alphaBefore })
 
   // ── K1ⓐ 레포 헤더 — 맨 위·맨 아래·가운데 ──
   await dragFor('K1a-top', await headerPoint(gamma), await repoSlotPoint(0))
@@ -472,7 +486,7 @@ async function main() {
   snap = await snapshot()
   const alphaNow = snap.repos.find((repo) => repo.root === alpha)
   check('K2a-middle-selected-agent', 'K2ⓐ·ⓒ 선택+에이전트 카드 a-one → 가운데 — 기대 배열 전체 대조(이동 없음이면 실패)', same(after, want) && !same(before, want), { before, want, after })
-  check('K2e-selected-kept', 'K2ⓔ 드래그 뒤 선택·열림·에이전트 행 유지', same(alphaNow.selected, selBefore) && alphaNow.open.includes(wtA('a-one')) && alphaNow.agentRows[wtA('a-one')] > 0, alphaNow)
+  check('K2e-selected-kept', 'K2ⓔ 드래그 뒤 선택·열림·에이전트 행 유지', same(alphaNow.selected, selBefore) && alphaNow.open.includes(wtA('a-one')) && agentRowsOk(alphaNow.agentRows[wtA('a-one')]), { display, ...alphaNow })
   before = after
   want = moveTo(before, wtA('a-three'), 1)
   await dragFor('K2c-open-unselected', await cardPoint(wtA('a-three')), await cardSlotPoint(alpha, 1))
@@ -1395,11 +1409,20 @@ async function main() {
     const snapshotTabs = await backendRpc('session.snapshot')
     const newPane = (snapshotTabs?.snapshot?.panes ?? []).find((pane) => pane.tab_id === created?.tab?.tab_id)?.pane_id
     if (newPane) await backendRpc('pane.report_agent', { pane_id: newPane, source: 'l469', agent: 'codex', state: 'idle', message: 'l469 second' })
-    const groupP = await waitFor(async () => pointOf({ attr: 'data-agent-group', value: wtA('a-one') }), 'agent group pill', 20_000).then(() => pointOf({ attr: 'data-agent-group', value: wtA('a-one') })).catch(() => null)
-    const rowsCollapsed = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
-    if (groupP) await click(groupP)
-    const rowsExpanded = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
-    check('K9b-agent-group', 'K9ⓑ 에이전트 묶음 알약 펼침(접힘 0행 → 펼침 2행)', groupP !== null && rowsCollapsed === 0 && rowsExpanded === 2, { groupP: groupP !== null, rowsCollapsed, rowsExpanded, newPane: newPane ?? null })
+    if (display === 'detailed') {
+      const groupP = await waitFor(async () => pointOf({ attr: 'data-agent-group', value: wtA('a-one') }), 'agent group pill', 20_000).then(() => pointOf({ attr: 'data-agent-group', value: wtA('a-one') })).catch(() => null)
+      const rowsCollapsed = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
+      if (groupP) await click(groupP)
+      const rowsExpanded = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
+      check('K9b-agent-group', 'K9ⓑ 에이전트 묶음 알약 펼침(접힘 0행 → 펼침 2행)', groupP !== null && rowsCollapsed === 0 && rowsExpanded === 2, { groupP: groupP !== null, rowsCollapsed, rowsExpanded, newPane: newPane ?? null })
+    } else {
+      // LIFE-477 — Full list 는 알약 없이 루트마다 행(2행), Compact 카드는 목록 자체가 없다(0행·알약 없음).
+      const want = display === 'full' ? 2 : 0
+      await waitFor(async () => (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')] === want, 'agent rows (display)', 20_000).catch(() => null)
+      const rows = (await snapshot()).repos.find((repo) => repo.root === alpha).agentRows[wtA('a-one')]
+      const pill = (await pointOf({ attr: 'data-agent-group', value: wtA('a-one') })) !== null
+      check('K9b-agent-group', `K9ⓑ(${display}) 에이전트 2개 — 알약 없음, 행 ${want}개`, !pill && rows === want, { display, pill, rows, newPane: newPane ?? null })
+    }
 
     await mouse('mouseMoved', await cardPoint(wtA('a-one')), { buttons: 0 })
     await pause(150)

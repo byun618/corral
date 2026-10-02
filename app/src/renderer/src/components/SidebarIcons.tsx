@@ -92,3 +92,21 @@ export function GitCommitIcon({ className }: { className?: string }): React.JSX.
     </svg>
   )
 }
+
+/** lucide `Wrench` — Full list 2줄 도구(198 `DashboardAgentRowToolStep.tsx` `size-2.5`). */
+export function WrenchIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" />
+    </svg>
+  )
+}
+
+/** lucide `Star` — Compact 카드의 주 워크트리 표시(198 `worktree-card-header.tsx` `Star size-3 fill-amber-400 text-amber-400`). */
+export function StarIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE} fill="currentColor">
+      <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
+    </svg>
+  )
+}

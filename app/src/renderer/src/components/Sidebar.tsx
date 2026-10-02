@@ -3,7 +3,7 @@
 // 자유롭게 구조화했다.
 import { useRef, type RefObject } from 'react'
 import type { AgentKind, AppState, WorktreeRow } from '../../../shared/types.js'
-import type { SidebarView } from '../../../shared/sidebar-view.js'
+import { showsInlineAgents, type SidebarView } from '../../../shared/sidebar-view.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { useSettledSections } from '../hooks/useSettledSections.js'
@@ -133,6 +133,9 @@ export function Sidebar({
   /** 레포 헤더 드래그 게이트 — Project 그룹 + Project order Manual 일 때만(198 `use-header-drag.ts:81-82`, K6ⓒ). 그 밖은 클릭(접기)만. */
   const repoDragEnabled = view.groupBy === 'repo' && view.projectOrderBy === 'manual'
 
+  /** 에이전트 목록을 카드에 그리나 (LIFE-477) — 에이전트 활동 켬 + Detailed. Compact 카드는 그리지 않는다(198 F4). */
+  const showAgents = showsInlineAgents(view)
+
   const renderCard = (input: { item: SortItem; onCardMouseDown: (event: React.MouseEvent) => void; dragging: boolean; repoLabel: string | null }): React.JSX.Element => {
     const { worktree, repoRoot } = input.item
     const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
@@ -141,6 +144,9 @@ export function Sidebar({
         key={worktree.path}
         worktree={worktree}
         repoLabel={input.repoLabel}
+        layout={view.cardLayout}
+        showAgents={showAgents}
+        agentLayout={view.agentActivityLayout}
         reordering={reorder.state !== null}
         dragging={input.dragging}
         // 주 체크아웃도 옮긴다(게이트 ① 사용자 수정 1 — 198 `section-order.ts:66-74` 고정과 의도적 차이).

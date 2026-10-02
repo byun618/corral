@@ -156,6 +156,7 @@ export class UiPrefsStore {
       manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
       manualFlatOrder: [...this.prefs.manualFlatOrder],
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
+      sidebarCardProperties: [...this.prefs.sidebarCardProperties],
     }
   }
 

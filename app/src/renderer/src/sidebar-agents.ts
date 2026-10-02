@@ -28,11 +28,30 @@
 
 import type { AgentKind, IntegrationRow, OrchestrationLineage, PaneRow, RetainedAgentRow, TabRow } from '../../shared/types.js'
 import { AGENT_DOT_LABEL, agentDot, type AgentDot } from './agent-dot.js'
-import { paneSecondaryLine, sessionRowText, type SessionRowText } from './session-activity.js'
+import { paneMessageLine, paneSecondaryLine, sessionRowText, type SessionRowText } from './session-activity.js'
 import { agentIcon, AGENT_ICON } from './session-glyphs.js'
 import { paneSessionTitle } from './session-title.js'
 
 export type AgentRowSource = 'live' | 'subagent' | 'retained'
+
+/**
+ * Full list 행(LIFE-477 D16)의 2·3줄 재료 — 198 `DashboardAgentRow`(`DashboardAgentRow.tsx:131-144`).
+ * 1줄의 점·아이콘·모델·시간은 compact 행과 같은 칸(`dot`·`kind`·`model`·`timeAt`)을 쓴다.
+ */
+export type AgentFullContent = {
+  /** 1줄 라벨 — compact 행의 제목과 같은 출처(U1 대응표: 198 대화 이름 → 프롬프트 → 상태 이름 ↔ corral `paneSessionTitle`). monitoring 이어도 앞뒤를 바꾸지 않는다(198 full 행엔 그 규칙이 없다). */
+  label: string
+  /**
+   * 2줄 도구 — 198 `DashboardAgentRowToolStep.tsx:20-22` + `agent-row-tool-preview.ts:12-14`: working·waiting 이고(monitoring 제외)
+   * 도구가 있으면 `tool`, working 인데 도구가 아직 없으면 자리만(`placeholder`, `h-[1lh]`), 그 밖은 줄 없음(`none`).
+   * 도구는 claude 만 있다 — codex·grok 은 구조적 null(LIFE-466)이라 working 이면 자리만, waiting 이면 줄 없음.
+   */
+  tool: { kind: 'none' } | { kind: 'placeholder' } | { kind: 'tool'; name: string; input: string | null }
+  /** 3줄 앞 「중단됨」 태그 — 198 `entry.interrupted`. */
+  interrupted: boolean
+  /** 3줄 — 마지막 어시스턴트 메시지(또는 corral 이 못 읽는 상태의 통지). 없으면 null(빈 자리 — 198 공백 1자 div). */
+  message: string | null
+}
 
 export type AgentRowNode = {
   /** 행 키 — live 는 paneId, subagent 는 `<부모 paneId>\u0000subagent:<id>`(Orca 합성 키와 같은 NUL 구분), retained 는 `retained:<paneId>`. */
@@ -54,6 +73,8 @@ export type AgentRowNode = {
   /** 안 본 완료(herdr `done`) — 굵게 그린다(B1, 1.4.217 기준). live 행만. */
   unseenDone: boolean
   text: SessionRowText
+  /** Full list 행 재료 (LIFE-477). */
+  full: AgentFullContent
   model: string | null
   /** 경과 시간의 기준 시각. 없으면 시간 칸이 없다. */
   timeAt: number | null
@@ -175,6 +196,7 @@ function liveNode(input: { pane: PaneRow; ordinal: number; integrations: readonl
     dot,
     unseenDone: pane.agentStatus === 'done',
     text: liveText({ pane, dot, title, ordinalTitle: title === `${pane.agent ?? 'terminal'} ${ordinal}`, kind, integrations: input.integrations }),
+    full: liveFull({ pane, dot, title, integrations: input.integrations }),
     model: pane.digest.model,
     timeAt: rowTime(pane),
     children: [],
@@ -224,6 +246,25 @@ function liveText(input: {
   return sessionRowText({ title, secondary: { kind: 'text', text: AGENT_ICON[input.kind].label } })
 }
 
+/** live 행의 Full list 재료 — 규칙은 `AgentFullContent` 주석. */
+function liveFull(input: { pane: PaneRow; dot: AgentDot; title: string; integrations: readonly IntegrationRow[] }): AgentFullContent {
+  const { pane, dot } = input
+  const showsTool = dot === 'working' || dot === 'waiting'
+  const tool = pane.digest.tool
+  const message = paneMessageLine({ pane, integrations: input.integrations })
+  return {
+    label: input.title,
+    tool:
+      showsTool && tool !== null
+        ? { kind: 'tool', name: tool.name, input: tool.input }
+        : dot === 'working'
+          ? { kind: 'placeholder' }
+          : { kind: 'none' },
+    interrupted: dot === 'interrupted',
+    message: message.kind === 'empty' ? null : message.text,
+  }
+}
+
 /** 서브에이전트 자식 행 — 462 `lifecycle.subagents`. 기록에서 가를 수 있는 상태는 `running` 하나라 점은 작업중이다. */
 function subagentNodes(input: { parent: AgentRowNode; pane: PaneRow }): AgentRowNode[] {
   const { parent, pane } = input
@@ -248,6 +289,8 @@ function subagentNodes(input: { parent: AgentRowNode; pane: PaneRow }): AgentRow
       dot: 'working',
       unseenDone: false,
       text: { leading, trailing, full: trailing === null ? leading : `${leading} - ${trailing}` },
+      // 점이 작업중이라 도구 자리를 잡는다(198 working 규칙) — 서브에이전트의 도구는 기록에 없다.
+      full: { label: leading, tool: { kind: 'placeholder' }, interrupted: false, message: trailing },
       model: null,
       timeAt: sub.startedAt,
       children: [],
@@ -273,6 +316,7 @@ function retainedNode(input: { row: RetainedAgentRow; livePaneIds: ReadonlySet<s
     // 닫힌 탭은 「봤다」 로 바꿀 길이 없다 — 굵게 두면 영영 안 풀린다. 굵기는 live 행만.
     unseenDone: false,
     text: { leading, trailing, full: `${leading} - ${trailing}` },
+    full: { label: leading, tool: { kind: 'none' }, interrupted: false, message: trailing },
     model: null,
     timeAt: row.agentState.enteredDoneAt ?? row.retainedAt,
     children: [],

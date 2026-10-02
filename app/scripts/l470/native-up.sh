@@ -6,8 +6,8 @@
 #     + ~/.config/herdr 의 최상위 파일(session.json 바이트 · 로그는 길이·해시). 코디네이터 q1 답 「그 회차가 쓰는 다른 userData 파일」.
 #   · fixture 는 여기서 등록하지 않는다 — K8ⓒ 첫 기동 캡처를 원래 상태(레포 1개)로 먼저 찍는다(q1).
 #   · provider 설정은 해시만 적는다(대조만, 되쓰기 금지 — 킥오프 격리 2).
-# 하나라도 어긋나면 아무것도 바꾸기 전에 멈춘다(exit 3 = corral 가동 중, 5 = profile 원본 아님, 6 = herdr default 가동 중).
-# 사용: sh native-up.sh <ROOT=/tmp/l470n*> <app 디렉터리> <raw 폴더>
+# 하나라도 어긋나면 아무것도 바꾸기 전에 멈춘다(exit 3 = corral 가동 중, 5 = profile 원본 아님, 6 = herdr default 가동 중, 7 = 복구될 에이전트 세션 있음·session.json 구조 모름).
+# 사용: sh native-up.sh <ROOT=/tmp/l470n*> <app 디렉터리> <raw 폴더> [--allow-session-restore]
 set -eu
 ROOT=$1; APP=$2; RAWD=$3
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,6 +20,13 @@ case "$ROOT" in /tmp/l470n*) ;; *) echo "ROOT 는 /tmp/l470n*"; exit 2 ;; esac
 [ -e "$ROOT" ] && { echo "$ROOT 이미 있음"; exit 2; }
 mkdir -p "$ROOT/backup" "$RAWD"
 echo "# ⓪ 전제"
+# LIFE-477 r1 R2 — 서버를 띄우면 session.json 의 에이전트 세션이 다시 붙는다(477 K10: claude 1·grok 2). 띄우기 **전에** 세고 1개 이상이면 멈춘다(exit 7).
+# 개수·종류만 찍는다. 승인된 경우에만 4번째 인자 --allow-session-restore.
+# 파이프(| tee)는 쓰지 않는다 — sh 에서 파이프 종료코드는 tee 의 것이라 실패가 가려진다(470 R2-03 과 같은 함정).
+if ! "$NODE" "$HERE/../l477/session-restore-check.mjs" "$HCFG/session.json" ${4:-} > "$RAWD/session-restore-check.txt"; then
+  cat "$RAWD/session-restore-check.txt"; echo "✘ 복구될 에이전트 세션이 있거나(7) session.json 구조를 모른다(8) — 서버를 띄우지 않고 멈춘다"; exit 7
+fi
+cat "$RAWD/session-restore-check.txt"
 OWNER=$("$NODE" -e "try{const o=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));try{process.kill(o.pid,0);console.log(o.pid)}catch{console.log('dead:'+o.pid)}}catch{console.log('none')}" "$UD/runtime/owner.json")
 echo "owner: $OWNER" | tee "$RAWD/precheck.txt"
 case "$OWNER" in none|dead:*) ;; *) echo "✘ 살아 있는 소유자 $OWNER — 멈춘다"; exit 3 ;; esac

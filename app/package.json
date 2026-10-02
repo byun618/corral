@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "corral \u2014 herdr \uae30\ubc18 AI \uc6cc\ud06c\uc2a4\ud398\uc774\uc2a4 \ubbf8\uc158 \ucee8\ud2b8\ub864 (LIFE-351 R1: \uc571 \uace8\uaca9 + \uc5b4\ub311\ud130 control \uce35)",
+  "description": "corral — herdr 기반 AI 워크스페이스 미션 컨트롤 (LIFE-351 R1: 앱 골격 + 어댑터 control 층)",
   "main": "./out/main/index.js",
   "engines": {
     "node": ">=22.12.0"
@@ -27,6 +27,7 @@
     "electron-vite": "^5.0.0",
     "esbuild": "^0.25.0",
     "eslint": "^9.17.0",
+    "happy-dom": "^20.11.8",
     "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",

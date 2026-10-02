@@ -243,6 +243,32 @@ async function gate() {
     addRow.worktreesDirBack = fs.existsSync(path.join(R, '.git/worktrees'))
     await pause(1200)
   }
+  // fix1 — 큰 worktree(파일 --bigrm 개) `.git` 먼저 → rm -rf (r1 F1 순서). 반영 시간은 기록, 유령이면 실패.
+  const bigFiles = Number(args.bigrm ?? 0)
+  if (bigFiles > 0) {
+    for (let d = 0; d < Math.ceil(bigFiles / 1000); d += 1) {
+      const dir = path.join(R, 'bulk', `d${d}`)
+      fs.mkdirSync(dir, { recursive: true })
+      for (let f = 0; f < 1000 && d * 1000 + f < bigFiles; f += 1) fs.writeFileSync(path.join(dir, `f${f}.txt`), `${d}-${f}\n`)
+    }
+    git(R, 'add', '-A')
+    git(R, '-c', 'user.email=l445@example.invalid', '-c', 'user.name=l445', 'commit', '-q', '-m', 'bulk')
+    const big = wt('nbig')
+    git(R, 'worktree', 'add', '-q', '-b', 'nbig', big)
+    await waitState({ present: [big] }, Date.now())
+    await pause(1500)
+    const row = await measure('K8-bigrm', { absent: [big] }, () => {
+      const startedAt = Date.now()
+      fs.rmSync(path.join(owned(big), '.git'))
+      const rm = spawnSync('rm', ['-rf', owned(big)])
+      if (rm.status !== 0) throw new Error(`rm -rf → ${rm.status}`)
+      return { firstEndedAt: startedAt, endedAt: Date.now(), commands: [`rm <wt>/.git 먼저 → rm -rf <wt> (${bigFiles} 파일)`] }
+    })
+    row.rmMs = row.msFromFirstCommand === null || row.ms === null ? null : row.msFromFirstCommand - row.ms
+    git(R, 'worktree', 'prune')
+    git(R, 'branch', '-D', 'nbig')
+    check('K8-bigrm', '큰 worktree rm -rf — 유령 없이 자동 반영(시간 기록)', row.ms !== null, { ms: row.ms, rmMs: row.rmMs })
+  }
   for (const group of ['K8a', 'K8b', 'K8c-remove', 'K8c-readd']) {
     const rows = result.rounds.filter((row) => row.id.startsWith(`${group}-`))
     check(group, `${rows.length}회 전 회차 ≤ ${LIMIT_MS}ms · corral 포커스 아님`, rows.length >= rounds && rows.every((row) => row.pass), rows.map((row) => row.ms))

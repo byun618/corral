@@ -9,7 +9,7 @@
 //
 // 사용: node app/scripts/l471/unread-isolated.mjs --out <raw 폴더> [--work /tmp/l471i] [--port 9472] [--restarts 3] [--ledger <runs.md> --label <이름>]
 // 결과: <out>/result.json(검사 목록·시간축) · <out>/shots/*.png. 종료코드 0 = 전 검사 통과 · 1 = 검사 실패 · 2 = 하네스 오류 · 3 = 사용자 활동으로 중단.
-/* global document, getComputedStyle -- CDP evaluate 클로저 */
+/* global document, getComputedStyle, PointerEvent, MouseEvent -- CDP evaluate 클로저 */
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync, execFileSync } from 'node:child_process'
@@ -71,6 +71,7 @@ async function attention() {
 }
 async function waitAttention(want, label) {
   const ok = await until(async () => ((await attention()) === want ? true : null), `attention ${want} (${label})`, 8000, 150).then(() => true).catch(() => false)
+  if (!ok) return { ok, value: await attention(), raw: await app.cdp.evaluate(() => ({ hasFocus: document.hasFocus(), visibility: document.visibilityState })) }
   return { ok, value: await attention() }
 }
 async function focusCorral(label) {
@@ -88,7 +89,7 @@ async function decoyFront(label) {
     const pid = await new Promise((resolve) => child.stdout.once('data', (chunk) => resolve(Number(String(chunk).trim()))))
     decoy = { child, pid }
     spawned.push({ pid, label: 'decoy window' })
-  } else winctl('activate', decoy.pid)
+  } else process.kill(decoy.pid, 'SIGUSR1')
   await pause(400)
   const front = winctl('front')
   fronts.push({ label: `after-decoy:${label}`, frontPid: front.pid, ours: front.pid === decoy.pid, at: Date.now() - t0 })
@@ -103,7 +104,13 @@ let app = null
 let ui = null
 const ctl = (request) => rpc(iso.control, request, 30_000)
 const visibility = (action) => ctl({ cmd: 'window-visibility', action })
+/** 캡처 — 창이 숨김·최소화면 Page.captureScreenshot 이 응답하지 않는다(run1 30초 타임아웃). 그때는 건너뛰고 이유를 남긴다. */
 const shot = async (name) => {
+  const visible = await app.cdp.evaluate(() => document.visibilityState === 'visible')
+  if (!visible) {
+    timeline.push({ label: `shot-skipped:${name}`, reason: 'window hidden', at: Date.now() - t0 })
+    return
+  }
   const { data } = await app.cdp.send('Page.captureScreenshot', { format: 'png' })
   fs.writeFileSync(path.join(shots, `${name}.png`), Buffer.from(data, 'base64'))
 }
@@ -166,6 +173,16 @@ async function complete(paneId, label) {
   timeline.push(entry)
   return entry
 }
+/** 포커스를 주지 않는 클릭 — 페이지 안 DOM 이벤트만(React 핸들러가 받는다). */
+async function domClick(selector) {
+  const ok = await app.cdp.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    if (el === null) return false
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0 }))
+    return true
+  }, selector)
+  if (!ok) throw new Error(`domClick: ${selector} 없음`)
+}
 async function openMenu(p) {
   await ui.rightClick(cardSel(p))
   await until(() => app.cdp.evaluate(() => document.querySelector('[data-card-menu]') !== null), 'card menu', 5000).catch(() => {})
@@ -221,14 +238,18 @@ try {
   fs.writeFileSync(iso.prefsFile, JSON.stringify(legacy, null, 2) + '\n')
   backend = await startBackend({ iso, logFile: path.join(out, 'backend.log'), spawned })
   await launch('L1')
+  // K8ⓒ 파일 대조는 add-repo **전에** — add-repo 는 순서 칸(manualRepoOrder 등)을 정상적으로 쓰고, main 은 쓸 때 전체 prefs 를 정규화해
+  // 새 칸(`unreadWorktrees: []`)도 함께 싣는다(run1 에서 파일 전체 동일을 기대해 오판). 벨 칸은 없거나 빈 배열이어야 한다.
+  const prefs0 = readPrefs()
   const added = await ctl({ cmd: 'add-repo', root: A })
   if (!added.ok) throw new Error(`add-repo: ${JSON.stringify(added)}`)
   await until(() => app.cdp.evaluate(() => document.querySelectorAll('[data-worktree]').length === 3), 'three cards', 60_000)
 
   // ── K8ⓒ 478 모양 prefs → 벨 없음 · 다른 칸 그대로 ──
   let s = await snap()
-  const prefs0 = readPrefs()
-  check('K8c-legacy-no-bells', 'K8ⓒ 478 모양 ui-prefs 로 기동 → 벨 0 · 파일의 기존 칸 값 그대로(벨 칸 아직 없음)', Object.values(s.cards).every((card) => card.bell === 'read') && JSON.stringify({ ...prefs0 }) === JSON.stringify(legacy), { bells: Object.values(s.cards).map((c) => c.bell), prefsKeys: Object.keys(prefs0 ?? {}) })
+  const legacyKept = Object.entries(legacy).every(([key, value]) => JSON.stringify(prefs0?.[key]) === JSON.stringify(value))
+  const bellField = prefs0?.unreadWorktrees ?? null
+  check('K8c-legacy-no-bells', 'K8ⓒ 478 모양 ui-prefs 로 기동 → 벨 0 · (add-repo 전) 파일의 기존 칸 값 그대로 · 벨 칸은 없거나 빈 배열', Object.values(s.cards).every((card) => card.bell === 'read') && legacyKept && (bellField === null || (Array.isArray(bellField) && bellField.length === 0)), { bells: Object.values(s.cards).map((c) => c.bell), legacyKept, bellField, prefsKeys: Object.keys(prefs0 ?? {}) })
 
   // ── 배치: A = t1(p1|p2 split) + t2(p3) · B = t1(p4) ──
   const state = async () => (await ctl({ cmd: 'state' })).state
@@ -349,15 +370,17 @@ try {
   await ui.click(rowSel(p1))
   await decoyFront('K3b-other-app')
   await complete(p3, 'K3b-away-p3')
-  await ui.click(`[data-main-tab="${t2}"]`).catch(() => {})
-  await ui.click(rowSel(p3))
+  // 선택 변경은 DOM 이벤트로 — CDP Input 클릭은 페이지에 포커스를 줘 다른 앱이 앞인데도 hasFocus 가 참이 된다(run2·run3 오판).
+  // 실제로 다른 앱이 앞인 채 선택이 바뀌는 길은 클릭이 아니라 CLI·herdr 쪽 전환이다 — 여기서는 같은 React 핸들러를 포커스 없이 부른다.
+  await domClick(`[data-main-tab="${t2}"]`)
+  await domClick(rowSel(p3))
   await pause(800)
   s = await snap()
   const stillUnreadAway = s.rows[p3].unseen
   await focusCorral('K3b-focus')
   await pause(800)
   s2 = await snap()
-  check('K3b-away-select', 'K3ⓑ 다른 앱이 앞인 채 선택이 p3 으로 바뀌어도 확인 아님 → 포커스 복귀 때 확인', stillUnreadAway && !s2.rows[p3].unseen, { away: { row: s.rows[p3], attention: s.attention }, back: { row: s2.rows[p3], bell: s2.cards[A].bell } })
+  check('K3b-away-select', 'K3ⓑ 다른 앱이 앞인 채 선택이 p3 으로 바뀌어도 확인 아님 → 포커스 복귀 때 확인', stillUnreadAway && s.rows[p3].focused && s.attention === 'away' && !s2.rows[p3].unseen, { away: { row: s.rows[p3], attention: s.attention }, back: { row: s2.rows[p3], bell: s2.cards[A].bell } })
   await ui.click(`[data-main-tab="${t1}"]`).catch(() => {})
   await ui.click(rowSel(p1))
   await pause(600)
@@ -430,7 +453,7 @@ try {
   await menuAction(A, 'toggle-unread')
   s2 = await snap()
   const retainedAfter = s2.rows[`retained:${p3}`] ?? null
-  check('K4d-retained', 'K4ⓓ 닫힌 탭의 확인 안 된 완료 → 보존 행 굵게 + 완료 점 + 카드 done · Mark Read → 대기 점, 카드 done 아님', retained?.unseen === true && retained?.dot === 'done' && s.cards[A].status === 'done' && retainedAfter?.unseen === false && retainedAfter?.dot === 'idle' && s2.cards[A].status !== 'done', { retained, cardBefore: s.cards[A].status, retainedAfter, cardAfter: s2.cards[A].status })
+  check('K4d-retained', 'K4ⓓ 닫힌 탭의 확인 안 된 완료 → 보존 행 굵게 + 완료 점 + 카드 벨(벨이 상태 칸을 대체 — K5ⓐ) · Mark Read → 대기 점, 카드 done 아님', retained?.unseen === true && retained?.dot === 'done' && s.cards[A].bell === 'unread' && retainedAfter?.unseen === false && retainedAfter?.dot === 'idle' && s2.cards[A].status !== 'done', { retained, cardBefore: { bell: s.cards[A].bell, status: s.cards[A].status }, retainedAfter, cardAfter: s2.cards[A].status })
 
   // ── K8ⓓ 지운 worktree 의 벨은 유령으로 안 남는다 ──
   await menuAction(C, 'toggle-unread')

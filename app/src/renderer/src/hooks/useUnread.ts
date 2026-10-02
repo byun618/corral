@@ -63,6 +63,8 @@ export function useUnread(input: {
     document.addEventListener('visibilitychange', update)
     window.addEventListener('focus', update)
     window.addEventListener('blur', update)
+    // 첫 렌더(초기값)와 리스너 등록 사이에 온 focus 를 놓치지 않게 붙인 직후 한 번 다시 읽는다(격리 run3 — 기동 직후 앞 창인데 away 로 남았다).
+    update()
     return () => {
       document.removeEventListener('visibilitychange', update)
       window.removeEventListener('focus', update)

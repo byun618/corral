@@ -95,8 +95,9 @@ export function useUnread(input: {
   // 읽기 전에 누른 Mark Read/Unread 는 합친 **뒤에** 누른 순서대로 다시 적용한다(r1 L2ⓑ — 읽음 처리한 벨이 합집합으로 되살아나지 않게).
   const hydrated = useRef(false)
   const written = useRef<string | null>(null)
-  const pending = useRef<Array<{ kind: 'read' | 'unread'; path: string }>>([])
-  // 읽기가 재시도까지 실패했다 — 이번 실행은 저장하지 않으니 다시 적용할 기록도 쌓지 않는다(r2 F-D).
+  // 읽기 전의 Mark 기록. `null` = 더 모으지 않는다 — 읽기가 끝났다(성공이면 다시 적용한 뒤, 재시도까지 실패면 버린다 — r2 F-D · r3 L-5).
+  const pending = useRef<Array<{ kind: 'read' | 'unread'; path: string }> | null>([])
+  // 읽기가 재시도까지 실패했다 — 이번 실행은 저장하지 않는다. 저장 이펙트도 이것을 본다(r3 L-6: `hydrated` 와 함께 서도 저장 안 함).
   const failed = useRef(false)
   useEffect(() => {
     let cancelled = false
@@ -112,8 +113,8 @@ export function useUnread(input: {
         const stored = Array.isArray(prefs.unreadWorktrees) ? prefs.unreadWorktrees : []
         written.current = JSON.stringify([...stored].sort())
         hydrated.current = true
-        const replay = pending.current
-        pending.current = []
+        const replay = pending.current ?? []
+        pending.current = null
         // 늘 새 집합 — 읽기 전에 켜진 벨이 있으면 아래 쓰기 이펙트가 합친 값을 쓴다.
         setModel((prev) => {
           let merged: UnreadModel = { ...prev, worktrees: new Set([...prev.worktrees, ...stored]) }
@@ -124,7 +125,7 @@ export function useUnread(input: {
       .catch((error: unknown) => {
         if (cancelled) return
         failed.current = true
-        pending.current = []
+        pending.current = null
         console.warn('[unread] ui-prefs 다시 읽기도 실패 — 이번 실행 동안 벨을 저장하지 않는다', error)
       })
     return () => {
@@ -132,7 +133,7 @@ export function useUnread(input: {
     }
   }, [])
   useEffect(() => {
-    if (!hydrated.current) return
+    if (!hydrated.current || failed.current) return
     const next = JSON.stringify([...model.worktrees].sort())
     if (next === written.current) return
     written.current = next
@@ -163,7 +164,7 @@ export function useUnread(input: {
   const modelRef = useRef(model)
   modelRef.current = model
   const apply = useCallback((kind: 'read' | 'unread', path: string) => {
-    if (!hydrated.current && !failed.current) pending.current.push({ kind, path })
+    pending.current?.push({ kind, path })
     setModel((prev) => (kind === 'read' ? markRead(prev, path) : markUnread(prev, path)))
   }, [])
   const read = useCallback((path: string) => apply('read', path), [apply])

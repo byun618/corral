@@ -329,6 +329,7 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (action === 'hide') target.hide()
         else if (action === 'minimize') target.minimize()
         // LIFE-471 — 숨긴·최소화한 창을 되살린다(창 복귀 확인 시험). `show` 는 앞으로 가져오며 포커스까지 준다.
+        // 제품 빌드에 있어도 의도대로다 — 이 채널은 `CORRAL_CONTROL_SOCKET` 이 설정된 계측 실행에서만 열린다(r3 L-8).
         else if (action === 'restore') target.restore()
         else if (action === 'show') {
           target.show()

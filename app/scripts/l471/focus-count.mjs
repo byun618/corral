@@ -3,11 +3,16 @@
 // 시나리오(단계마다 프록시 계수를 앞뒤로 찍는다):
 //   P1 같은 탭 split pane 선택 전환(사이드바 행 클릭 ×4) · P2 탭 전환(탭바 클릭 ×4) · P3 워크트리 전환(카드 클릭 ×4)
 //   P4 재기동(시작 복원·attach — 앱 종료 → 다시 띄우고 안정까지)
+// 판정 합계(totals)는 P0~P4 까지다. 그 뒤 양성 대조(r3 L-4): 프록시 control 소켓에 합성 `tab.focus` 1건 — `control.tab.focus` 가 1 이어야 한다.
+// 맨 앞 앱 감시(r3 M-1, 조건 ②): 회차 전·중·후 맨 앞 앱을 분류(corral = 이 회차 Electron · start = 회차 시작 때 앞이던 앱 · other)로만
+// 기록한다(이름은 적지 않는다). 회차 중 other 가 보이면 다음 단계 경계에서 중단한다(사용자가 Mac 을 쓰는 신호). 이 도구의 입력은 CDP 뿐이다.
 // 사용: node app/scripts/l471/focus-count.mjs --app <app 폴더> --out <raw 폴더> [--work /tmp/l471f] [--port 9471] [--ledger <runs.md> --label <이름>]
 // 결과: <out>/focus-count.json. 종료코드 0 = 시나리오를 끝까지 돌았다(횟수 판정은 before/after 대조에서 — 이 도구는 세기만 한다).
 /* global document */
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   appendRun, backendRpc, guardWork, inputs, isolation, launchCorral, loadSample, makeCounter, makeRepo, parseArgs, pause, quitCorral, rpc,
@@ -33,6 +38,40 @@ const phases = []
 let proxy = null
 let app = null
 let backend = null
+// ── 맨 앞 앱 감시 ──
+const winctl = '/tmp/l471-bin/winctl'
+if (!fs.existsSync(winctl)) throw new Error(`${winctl} 없음 — unread-isolated.mjs 가 만든다`)
+const frontPid = () => JSON.parse(execFileSync(winctl, ['front'], { encoding: 'utf8' })).pid
+function electronPid() {
+  const ps = execFileSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' })
+  const line = ps.split('\n').find((row) => row.includes(`--remote-debugging-port=${port}`) && row.includes('Electron.app/Contents/MacOS/Electron') && !row.includes('Helper'))
+  return line === undefined ? null : Number(line.trim().split(/\s+/)[0])
+}
+const startFront = frontPid()
+const corralPids = new Set()
+const fronts = { startClass: 'start', samples: [], stop: null }
+function sampleFront(label) {
+  const live = electronPid()
+  if (live !== null) corralPids.add(live)
+  const pid = frontPid()
+  const cls = corralPids.has(pid) ? 'corral' : pid === startFront ? 'start' : 'other'
+  const last = fronts.samples.at(-1)
+  if (label !== null || last?.cls !== cls) fronts.samples.push({ t: Date.now() - t0, label, cls })
+  if (cls === 'other' && fronts.stop === null && label !== 'after-cleanup') fronts.stop = { t: Date.now() - t0, label }
+}
+sampleFront('before')
+const watcher = setInterval(() => {
+  try {
+    sampleFront(null)
+  } catch {
+    // ps·winctl 일시 실패는 다음 표본에서
+  }
+}, 300)
+const assertFront = (label) => {
+  sampleFront(label)
+  if (fronts.stop !== null) throw new Error(`맨 앞 앱이 이 회차의 것도 시작 앱도 아니다(${fronts.stop.label ?? '표본'} +${fronts.stop.t}ms) — 사용자 활동으로 보고 중단`)
+}
+
 const result = { appRoot, build: null, load: { before: loadSample() }, phases, totals: null, spawned, ok: false, error: null }
 try {
   const build = path.join(appRoot, 'out/main/index.js')
@@ -73,6 +112,7 @@ try {
   await pause(2500)
 
   const phase = async (name, run) => {
+    assertFront(`${name} 전`)
     const before = { ...counter.counts }
     const at = Date.now()
     await run()
@@ -80,6 +120,7 @@ try {
     const after = { ...counter.counts }
     phases.push({ name, startedAt: at, delta: Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - before[k]])) })
     log(name, JSON.stringify(phases.at(-1).delta))
+    assertFront(`${name} 뒤`)
   }
   // 기동~안정 동안 나간 횟수(준비 단계) — 판정 단계와 따로 적는다.
   phases.push({ name: 'P0-setup', startedAt: t0, delta: { ...counter.counts } })
@@ -112,6 +153,26 @@ try {
   result.ids = { root: 'fc', wtB: 'fc-wt/wt-b', panes: { p1, p2, b: B.tabs[0].panes[0].paneId }, tabs: { t1, t2 } }
   result.totals = { ...counter.counts }
   result.events = counter.events.map((e) => ({ ...e, t: e.at - t0 }))
+  // 양성 대조(r3 L-4) — corral 은 tab.focus 를 보내지 않으니 0 은 항등이다. 프록시에 합성 tab.focus 1건을 흘려 1 이 세지는지 본다.
+  const beforeControl = { ...counter.counts }
+  const reply = await new Promise((resolve, reject) => {
+    const socket = net.createConnection(iso.proxySocket)
+    let text = ''
+    socket.on('data', (chunk) => {
+      text += chunk.toString('utf8')
+      if (text.includes('\n')) {
+        socket.end()
+        resolve(text.trim())
+      }
+    })
+    socket.on('error', reject)
+    socket.write(JSON.stringify({ id: 'l471-fc-control', method: 'tab.focus', params: { tab_id: t1 } }) + '\n')
+  })
+  await pause(800)
+  result.control = { sent: 'tab.focus ×1 (합성, 프록시 control 소켓)', reply: reply.slice(0, 200), delta: Object.fromEntries(Object.keys(counter.counts).map((k) => [k, counter.counts[k] - beforeControl[k]])) }
+  log('control', JSON.stringify(result.control.delta))
+  if (result.control.delta['tab.focus'] !== 1) throw new Error(`양성 대조 실패: 합성 tab.focus 1건이 ${result.control.delta['tab.focus']} 로 세졌다`)
+  assertFront('측정 끝')
   result.ok = true
 } catch (error) {
   result.error = String(error?.stack ?? error)
@@ -120,6 +181,9 @@ try {
   if (app !== null) await quitCorral({ iso, app }).catch(() => {})
   proxy?.close()
   await stopPid(backend?.pid, 'backend').catch(() => {})
+  clearInterval(watcher)
+  sampleFront('after-cleanup')
+  result.fronts = { ...fronts, corralPidCount: corralPids.size }
   result.load.after = loadSample()
   result.cleanup = spawned.map((s) => {
     let alive = false

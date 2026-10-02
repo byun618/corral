@@ -317,3 +317,39 @@ describe('r2 F-T① — 창이 숨었거나 포커스가 아닌 채 바뀐 활�
     expect(bells(run([{ ...START, attentive: true, active: B }], start))).toEqual([])
   })
 })
+
+describe('r3 — 경계·중복 관측·레포 제거', () => {
+  it('L-1 보기 시작한 시각과 같은 ms 의 완료는 본 것이다 — 같은 worktree 에 다른 안 읽음(벨 없음)이 있어도 벨을 켜지 않는다', () => {
+    // p2 = 처음 보는 done(굵기만, 벨 없음) · p1 을 since 200 부터 보는 중 p1 이 200 에 완료.
+    let model = run([{ panes: [obs('p1', 'working', 100, null), obs('p2', 'done', 50, null)] }])
+    expect(unreadOf(model)).toEqual(['p2'])
+    model = run([{ panes: [obs('p1', 'idle', 200, 'working'), obs('p2', 'done', 50, null)], watched: { paneId: 'p1', since: 200 } }], model)
+    expect(bells(model)).toEqual([])
+    expect(unreadOf(model)).toEqual(['p2'])
+  })
+  it('L-2 같은 상태를 다시 본 관측은 다시 세지 않는다 — Mark Read 한 처음 보는 done 이 같은 관측으로 되살아나지 않는다', () => {
+    let model = run([{ panes: [obs('p3', 'done', 100, null, B)] }])
+    expect(unreadOf(model)).toEqual(['p3'])
+    model = markRead(model, B)
+    model = run([{ panes: [obs('p3', 'done', 100, null, B)] }], model)
+    expect(unreadOf(model)).toEqual([])
+  })
+  it('L-7 에러 레포가 레지스트리에서 빠지면 그 pane 안 읽음·경로 기억을 정리한다(다른 레포가 남아 있어도)', () => {
+    const W = '/r1/w1'
+    const other: RepoScan = { root: '/r2', error: false, worktreePaths: ['/r2/w2'] }
+    let model = run([{ panes: [obs('p1', 'working', 100, null, W)], repos: [{ root: '/r1', error: false, worktreePaths: [W] }, other] }])
+    model = run([{ panes: [obs('p1', 'idle', 200, 'working', W)], repos: [{ root: '/r1', error: false, worktreePaths: [W] }, other] }], model)
+    model = run([{ panes: [], repos: [{ root: '/r1', error: true, worktreePaths: [] }, other] }], model)
+    expect(unreadOf(model)).toEqual(['p1'])
+    model = run([{ panes: [], repos: [other] }], model)
+    expect(unreadOf(model)).toEqual([])
+    expect(model.present.has(W)).toBe(false)
+  })
+  it('L-7 레포가 하나도 안 남아도(빈 목록) 빠진 레포의 경로 기억은 지운다', () => {
+    const W = '/r1/w1'
+    let model = run([{ panes: [obs('p1', 'working', 100, null, W)], repos: [{ root: '/r1', error: true, worktreePaths: [] }] }])
+    model = run([{ panes: [obs('p1', 'working', 100, null, W)], repos: [{ root: '/r1', error: false, worktreePaths: [W] }] }], model)
+    model = run([{ panes: [], repos: [] }], model)
+    expect(model.present.size).toBe(0)
+  })
+})

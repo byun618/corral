@@ -63,12 +63,12 @@ describe('r2 F-B 계수기 청크 경계 — endpoint(길이 접두 프레임, �
 })
 
 describe('끝나지 않은 마지막 메시지', () => {
-  it('flush 에서 센다', () => {
+  it('세지 않는다 — 메시지가 끝나야 센다(r3 L-3)', () => {
     const counter = makeCounter()
     const state = counter.newState('line')
     counter.feed(state, Buffer.from('{"method":"tab.focus"}', 'latin1'))
     expect(counter.counts['tab.focus']).toBe(0)
-    counter.flush(state)
+    counter.feed(state, Buffer.from('\n', 'latin1'))
     expect(counter.counts['tab.focus']).toBe(1)
   })
 })

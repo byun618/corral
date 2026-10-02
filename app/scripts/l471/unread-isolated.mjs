@@ -465,20 +465,46 @@ try {
   const prefsAfterC = readPrefs()?.unreadWorktrees ?? null
   check('K8d-ghost', 'K8ⓓ 벨 켠 worktree(C)를 지우면 ui-prefs 벨 목록에서도 빠진다', Array.isArray(prefsWithC) && prefsWithC.includes(C) && Array.isArray(prefsAfterC) && !prefsAfterC.includes(C), { withC: prefsWithC?.map((p) => path.basename(p)), afterC: prefsAfterC?.map((p) => path.basename(p)) })
 
-  // ── r2 F-E 첫 묶음 뒤에 처음 나타난 pane — 세션 중 레포 추가 ──
-  // corral 이 그 레포를 모르는 동안 herdr 에서 working → idle 이 지나간 pane 을 add-repo 로 처음 보게 한다(main 거울에는 이력이 있다).
-  // 기대: 그 이력은 벨·굵기를 만들지 않는다(첫 묶음 규칙) · 대조: 그 뒤 새 working → idle 은 벨 + 굵기.
+  // ── r2 F-E 첫 묶음 뒤에 처음 나타난 pane — 세션 중 레포 추가 (r3 M-2ⓐ 재설계) ──
+  // corral 이 그 레포를 모르는 동안 herdr 에서 working → idle 이 지나간 pane 을 add-repo 로 처음 보게 한다.
+  // R055 실패 원인: main 은 에이전트 상태를 **pane id 목록 구독**으로 받고 그 구독은 토폴로지 변경 뒤 debounce 로 다시 열린다
+  // (`link.ts` scheduleAgentSubscription · `agent.sub.open`). 구독이 새 pane 을 덮기 전에 보고한 전이는 거울에 안 남는다 →
+  // 이번에는 main 로그(`corral.ndjson`)로 ① 새 pane 을 덮은 구독이 열린 뒤 ② 각 전이가 거울에 반영된 뒤에 다음 단계로 간다.
+  // 기대: 처음 볼 때 이력에 working 이 있다(전제) · 그 이력은 벨·굵기를 만들지 않는다 · 대조: 그 뒤 새 working → idle 은 벨 + 굵기.
   {
+    const mainLog = path.join(iso.userData, 'corral.ndjson')
+    const logSince = (from) =>
+      (fs.existsSync(mainLog) ? fs.readFileSync(mainLog, 'utf8').split('\n') : [])
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line)
+          } catch {
+            return null
+          }
+        })
+        .filter((entry) => entry !== null && entry.at >= from)
+    const waitLog = async (label, from, test) =>
+      until(() => (logSince(from).some(test) ? true : null), label, 10_000, 100).then(() => true, () => false)
     const late = makeRepo({ reposDir: path.join(work, 'repos'), name: 'late', linked: [] })
     const L = late.root
     result.paths.L = 'late'
+    const fe = { steps: [] }
+    const createdAt = Date.now()
     const created = await backendRpc(iso, 'workspace.create', { cwd: L, focus: false })
     const pL = findKey(created, 'root_pane')?.pane_id ?? findKey(created, 'pane_id')
     if (pL === undefined) throw new Error(`F-E: workspace.create 응답에 pane id 없음 ${JSON.stringify(created).slice(0, 200)}`)
-    await report(pL, 'working')
-    await pause(400)
-    await report(pL, 'idle')
-    await pause(800)
+    // ① 새 pane 까지 덮은 상태 구독 — workspace.create 뒤에 열린 agent.sub.open.
+    fe.steps.push({ step: 'agent.sub.open after create', ok: await waitLog('F-E sub open', createdAt, (e) => e.tag === 'agent.sub.open') })
+    // ② idle(정체 감지) → working → idle, 매번 거울 반영(agent.push.applied note) 확인 뒤 다음.
+    for (const [state, arrow] of [['idle', '→ idle'], ['working', '→ working'], ['idle', '→ idle']]) {
+      const from = Date.now()
+      await report(pL, state)
+      fe.steps.push({ step: `report ${state}`, ok: await waitLog(`F-E ${state}`, from, (e) => e.tag === 'agent.push.applied' && String(e.note ?? '').includes(arrow)) })
+    }
+    fe.mirrorLog = logSince(createdAt)
+      .filter((e) => e.tag === 'agent.sub.open' || e.tag === 'agent.push.applied')
+      .map((e) => ({ t: e.at - createdAt, tag: e.tag, note: e.note ?? null, panes: e.panes ?? null }))
     const addedL = await ctl({ cmd: 'add-repo', root: L })
     if (!addedL.ok) throw new Error(`add-repo late: ${JSON.stringify(addedL)}`)
     await until(() => app.cdp.evaluate((id) => document.querySelector(`[data-agent-row="${id}"]`) !== null, pL), 'late row', 60_000)
@@ -487,13 +513,15 @@ try {
     const latePane = lateState?.workspace?.tabs.flatMap((t) => t.panes).find((pane) => pane.paneId === pL)
     const historyOnFirstSight = latePane?.agentState.history.map((step) => step.status) ?? null
     s = await snap()
-    const first = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: await herdr(pL), historyOnFirstSight }
+    const first = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: await herdr(pL), status: latePane?.agentStatus ?? null, historyOnFirstSight }
     const c = await complete(pL, 'F-E late new transition')
     s = await snap()
     const after = { row: s.rows[pL], bell: s.cards[L]?.bell, herdr: c.herdrAfter }
-    check('FE-late-pane', 'r2 F-E 세션 중 추가한 레포의 pane(이력 working → idle 이 이미 있음) → 처음 볼 때 벨·굵기 없음 · 그 뒤 새 완료는 벨 + 굵기',
-      Array.isArray(historyOnFirstSight) && historyOnFirstSight.includes('working') && first.row?.unseen === false && first.bell === 'read' && after.row?.unseen === true && after.bell === 'unread',
-      { first, after })
+    const premise = Array.isArray(historyOnFirstSight) && historyOnFirstSight.includes('working')
+    result.fe = { ...fe, premise }
+    check('FE-late-pane', 'r2 F-E 세션 중 추가한 레포의 pane(전제: 처음 볼 때 이력에 working → idle 이 있음) → 처음 볼 때 벨·굵기 없음 · 그 뒤 새 완료는 벨 + 굵기',
+      premise && first.row?.unseen === false && first.bell === 'read' && after.row?.unseen === true && after.bell === 'unread',
+      { premise, steps: fe.steps, first, after })
     // 벨을 꺼 둔다(control 에 레포 제거가 없어 late 는 남는다 — 이후 재시작 검사는 A·B 만 본다).
     await menuAction(L, 'toggle-unread')
   }

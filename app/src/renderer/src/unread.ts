@@ -89,8 +89,8 @@ export type Completion = { at: number; bell: boolean }
 export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined }): Completion[] {
   const { obs, firstBatch, since } = input
   // 처음 보는 done — 첫 묶음, 이 세션에 처음 보는 pane(r2 F-E: 첫 묶음 뒤에 나타난 pane 의 옛 이력은 세지 않는다),
-  // main 이 처음 본 pane. 굵기만, 벨 없음.
-  if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' && obs.enteredAt !== since ? [{ at: obs.enteredAt, bell: false }] : []
+  // main 이 처음 본 pane. 굵기만, 벨 없음. (같은 상태를 다시 본 관측은 `ingest` 가 `since === enteredAt` 로 먼저 거른다 — r3 L-2)
+  if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' ? [{ at: obs.enteredAt, bell: false }] : []
   const timeline = [...obs.history].reverse().concat([{ status: obs.status, enteredAt: obs.enteredAt }])
   const found: Completion[] = []
   for (let i = 1; i < timeline.length; i += 1) {
@@ -128,7 +128,7 @@ export function ingest(model: UnreadModel, input: {
     const found = completionsOf({ obs, firstBatch, since })
     examined.set(obs.paneId, obs.enteredAt)
     const watching = input.watched !== null && input.watched.paneId === obs.paneId ? input.watched.since : null
-    // 같은 ms 경계(완료 시각 = 보기 시작한 시각)는 보지 않은 완료로 둔다 — 놓친 완료를 지우는 쪽보다 한 번 더 보이는 쪽이 안전하다(r2 F-T, 의도).
+    // 보기 시작한 시각과 같은 ms 의 완료는 **본 것**으로 친다(`<` — 보기 시작한 순간의 완료는 본 것, r3 L-1).
     const unseen = found.filter((completion) => watching === null || completion.at < watching)
     const last = unseen.at(-1)
     if (last === undefined) continue
@@ -143,6 +143,9 @@ export function ingest(model: UnreadModel, input: {
   const errored = new Set(input.repos.filter((repo) => repo.error).map((repo) => repo.root))
   const present = new Map(model.present)
   for (const repo of input.repos) for (const path of repo.worktreePaths) present.set(path, repo.root)
+  // 입력에서 빠진 레포(레지스트리에서 제거)의 경로는 더 「모름」이 아니다 — 지운다. 그 레포의 pane·벨은 아래 정리 규칙을 따른다(r3 L-7).
+  const roots = new Set(input.repos.map((repo) => repo.root))
+  for (const [path, root] of [...present]) if (!roots.has(root)) present.delete(path)
 
   // 사라진 pane 의 안 읽음 — 에러 레포의 worktree 에 있던 pane 은 벨과 같은 규칙으로 남긴다(r2 F-A).
   const live = new Set(input.panes.map((obs) => obs.paneId))

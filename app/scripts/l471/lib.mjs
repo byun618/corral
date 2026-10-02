@@ -54,7 +54,7 @@ const METHODS = ['pane.focus', 'tab.focus']
  * 한 방향 바이트 흐름에서 메서드 이름 등장 횟수를 센다 — **완결 메시지 단위**(r2 F-B). 끝나지 않은 메시지는 다음 청크까지 들고
  * 있다가 끝나면 센다. 메시지 = control 소켓은 JSON-RPC 한 줄(`\n`), endpoint 소켓은 길이 접두 프레임(u32 LE + 본문,
  * `vendor/bincode.ts encodeFrame`). 이름이 메시지 경계에 걸쳐 쪼개질 일이 없어 청크가 어디서 끊겨도 같은 수를 센다.
- * `state` = 연결 하나의 상태 — `newState('line' | 'frame')`.
+ * `state` = 연결 하나의 상태 — `newState('line' | 'frame')`. 연결이 끝날 때 남은 미완결 조각은 메시지가 아니라 세지 않는다(r3 L-3).
  */
 export function makeCounter() {
   const counts = Object.fromEntries(METHODS.map((m) => [m, 0]))
@@ -86,12 +86,7 @@ export function makeCounter() {
     }
     state.buffer = buffer
   }
-  /** 연결이 닫힐 때 — 끝나지 않은 마지막 메시지도 센다. */
-  const flush = (state) => {
-    countMessage(state.buffer.toString('latin1'))
-    state.buffer = Buffer.alloc(0)
-  }
-  return { counts, events, newState, feed, flush }
+  return { counts, events, newState, feed }
 }
 
 /** control(`herdr.sock`)과 endpoint(`herdr-client.sock`) 둘 다 같은 계수기로 프록시한다. */
@@ -116,7 +111,6 @@ export function startProxy({ listenPath, targetPath, counter, mode }) {
     })
     upstream.on('data', (chunk) => client.write(chunk))
     const end = () => {
-      if (!client.destroyed) counter.flush(state)
       client.destroy()
       upstream.destroy()
     }

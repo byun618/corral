@@ -9,11 +9,11 @@ LEDGER="$TOP/specs/LIFE-445-worktree-refresh/raw/claude/runs.md"
 mkdir -p "$TOP/$RAWD"
 LOG="$RAWD/$ID.log"
 START=$(date '+%F %T')
-{ echo "# $ID · $ITEM · $START · $(uptime) · yes=$(pgrep -x yes | wc -l | tr -d ' ')"; echo "\$ $*"; } > "$TOP/$LOG"
+{ echo "# $ID · $ITEM · $START · $(uptime) · yes=$(pgrep -x yes | wc -l | tr -d ' ')"; echo "\$ $*" | sed "s#$HOME#~#g"; } > "$TOP/$LOG"
 "$@" >> "$TOP/$LOG" 2>&1
 CODE=$?
 echo "# exit=$CODE · $(date '+%F %T') · $(uptime)" >> "$TOP/$LOG"
 [ "$CODE" = "$EXPECT" ] && VERDICT=통과 || VERDICT=실패
-CMD=$(echo "$*" | sed "s#$TOP/##g; s#|#\\\\|#g")
+CMD=$(echo "$*" | sed "s#$TOP/##g; s#$HOME#~#g; s#|#\\\\|#g")
 echo "| $ID | $ITEM | \`$CMD\` | $EXPECT | $CODE | \`$LOG\` | $VERDICT |" >> "$LEDGER"
 echo "$ID exit=$CODE ($VERDICT) → $LOG"

@@ -1308,7 +1308,9 @@ async function main() {
     const wt = wtD('d-pin')
     await hover(cardSel(wt))
     await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Alt', code: 'AltLeft', windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18, modifiers: 1 })
-    await pause(200)
+    // 고정 pause 뒤 단일 스냅샷은 hover·Option 상태 반영 지연에 약하다(r3 L-05) — 휴지통이 뜰 때까지 조건 대기(5초).
+    // 주 체크아웃 휴지통 없음은 같은 Option 상태에서 함께 본다. run15(R051) 실패의 원인을 이 변경이 증명하지는 않는다.
+    const trashAppeared = await tryWait(async () => (await snapshot()).cards[wt].trash, 'alt trash', 5000)
     const withAlt = await snapshot()
     const trashLinked = withAlt.cards[wt].trash
     const trashMain = withAlt.cards[del].trash
@@ -1345,7 +1347,7 @@ async function main() {
     await key('Backspace', 4 | 8)
     const inputIgnored = (await snapshot()).deleteDialog === null
     await key('Escape')
-    check('K7h-trash-shortcut', 'K7ⓗ Option+hover → 링크 카드 휴지통(주 체크아웃 없음) → 같은 대화 · Option 떼면 사라짐 · 터미널 포커스에서 ⌘⇧⌫ hover 카드 → 대화(1개), 주 체크아웃·입력 포커스면 무시', trashLinked && !trashMain && trashDialog && trashGone && termFocused && shortcutDialog && stillOne === 1 && mainIgnored && inputIgnored, { trashLinked, trashMain, altState, trashDialog, trashGone, termFocused, shortcutDialog, stillOne, mainIgnored, inputIgnored })
+    check('K7h-trash-shortcut', 'K7ⓗ Option+hover → 링크 카드 휴지통(주 체크아웃 없음) → 같은 대화 · Option 떼면 사라짐 · 터미널 포커스에서 ⌘⇧⌫ hover 카드 → 대화(1개), 주 체크아웃·입력 포커스면 무시', trashLinked && !trashMain && trashDialog && trashGone && termFocused && shortcutDialog && stillOne === 1 && mainIgnored && inputIgnored, { trashLinked, trashAppeared, trashMain, altState, trashDialog, trashGone, termFocused, shortcutDialog, stillOne, mainIgnored, inputIgnored })
   }
   // K5ⓗ 고정한 워크트리를 지우면 핀도 정리 — d-pin 고정 후 삭제.
   {

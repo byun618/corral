@@ -18,11 +18,12 @@ import { pickPane } from '../pane-utils.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
 import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
 import { RepoRow } from './RepoRow.js'
+import { RevealConfirmDialog } from './RevealConfirmDialog.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarBrandBar } from './SidebarBrandBar.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
-import { CircleXIcon, CrosshairIcon, ListIcon, PinIcon } from './SidebarIcons.js'
+import { CircleXIcon, ListIcon, PinIcon } from './SidebarIcons.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
 
 /**
@@ -535,38 +536,15 @@ export function Sidebar({
         />
       ) : null}
       {revealConfirm === null ? null : (
-        // 198 「Reveal hidden workspace?」(`use-reveal-requests.ts:113-146`) — 확인에 처음 포커스, 「필터 유지」 면 아무 것도 안 바뀐다.
-        <div className="modal-scrim" data-modal-scrim onMouseDown={() => setRevealConfirm(null)}>
-          <div className="modal modal-confirm" data-card-dialog="" data-reveal-confirm={revealConfirm.path} role="dialog" aria-label="숨겨진 워크스페이스 보기" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
-            if (event.key === 'Escape') setRevealConfirm(null)
-          }}>
-            <div className="modal-head modal-head-plain">
-              <h2 className="modal-title">
-                <CrosshairIcon className="reveal-confirm-icon" /> 숨겨진 워크스페이스를 보일까요?
-              </h2>
-            </div>
-            <div className="modal-body">
-              <p className="modal-desc">활성 워크스페이스가 사이드바에서 숨겨져 있습니다. 보이려면 사이드바 필터를 지웁니다.</p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn-ghost" data-reveal-keep-filters="" onClick={() => setRevealConfirm(null)}>
-                필터 유지
-              </button>
-              <button
-                className="btn-accent"
-                data-reveal-clear-filters=""
-                autoFocus
-                onClick={() => {
-                  revealAfterFilters.current = revealConfirm
-                  setRevealConfirm(null)
-                  onChangeView({ repoFilter: [], hideDefaultBranch: false, hideDetachedHead: false })
-                }}
-              >
-                필터 지우고 보기
-              </button>
-            </div>
-          </div>
-        </div>
+        <RevealConfirmDialog
+          path={revealConfirm.path}
+          onKeep={() => setRevealConfirm(null)}
+          onClear={() => {
+            revealAfterFilters.current = revealConfirm
+            setRevealConfirm(null)
+            onChangeView({ repoFilter: [], hideDefaultBranch: false, hideDetachedHead: false })
+          }}
+        />
       )}
     </div>
   )

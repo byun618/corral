@@ -11,7 +11,9 @@ import type { WorktreeDeletePreview, WorktreeRow } from '../../../shared/types.j
 import { DeleteWorktreeDialog } from './DeleteWorktreeDialog.js'
 import { HoverCard } from './HoverCard.js'
 import { ParentPicker } from './ParentPicker.js'
+import { RevealConfirmDialog } from './RevealConfirmDialog.js'
 import { WorktreeMetaDialog } from './WorktreeMetaDialog.js'
+import { useWindowEscape } from '../menu-bus.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -61,8 +63,11 @@ describe('삭제 대화 — Esc·첫 포커스 (R2B-01·08)', () => {
     { id: '강제', preview: preview({ dirtyCount: 2 }), focus: '[data-delete-cancel]' },
     { id: '삭제', preview: preview({}), focus: '[data-delete-confirm="delete"]' },
   ]
+  // 「터미널로 가지 않는다」 단언이 판별력을 갖는 것은 **읽는 중 상태 한정**이다(r3 L-04) — 첫 포커스가 없어 터미널이
+  // 포커스를 쥔 채 Esc 가 터미널에서 출발한다. 다른 상태는 대화가 첫 포커스를 가져가 Esc 가 대화 안에서 출발하므로
+  // 터미널에 닿을 경로가 없다 — 거기서는 「포커스와 무관하게 닫힘」·첫 포커스만 판별한다.
   for (const state of states) {
-    it(`${state.id}: 터미널이 포커스여도 Esc 로 닫히고 그 Esc 는 터미널로 가지 않는다`, () => {
+    it(`${state.id}: 터미널이 포커스여도 Esc 로 닫히고 그 Esc 는 터미널로 가지 않는다${state.focus === null ? '(누출 판별 — 읽는 중 상태 한정)' : '(첫 포커스가 대화 안 — 누출 판별 아님)'}`, () => {
       const onClose = vi.fn()
       terminal.focus()
       render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: state.preview, onConfirm: () => {}, onClose }))
@@ -124,6 +129,11 @@ describe('대화가 뜨면 열린 hover 카드가 닫힌다 (R2B-02 · K2ⓔ)', 
   it('정보 수정 대화(제목 밖 더블클릭 경로)', () => {
     openCard()
     withDialog(createElement(WorktreeMetaDialog, { worktree: row({ path: '/r-wt/a' }), onSave: () => Promise.resolve(null), onClose: () => {} }))
+    expect(document.querySelector('[data-hover-card]')).toBeNull()
+  })
+  it('숨겨진 워크스페이스 확인 대화(Reveal 경로 — r3 L-01)', () => {
+    openCard()
+    withDialog(createElement(RevealConfirmDialog, { path: '/r-wt/a', onKeep: () => {}, onClear: () => {} }))
     expect(document.querySelector('[data-hover-card]')).toBeNull()
   })
 })
@@ -202,5 +212,34 @@ describe('정보 수정 대화 (R2B-01·04·05·06·07)', () => {
     typeName('새 이름')
     await act(async () => save())
     expect(onSave).toHaveBeenCalledWith({ displayName: '새 이름' })
+  })
+})
+
+describe('숨겨진 워크스페이스 확인 대화 (r3 L-01)', () => {
+  it('body 포커스에서 Esc 로 「필터 유지」(닫힘) · 조합 중 Esc 무시', () => {
+    const onKeep = vi.fn()
+    render(createElement(RevealConfirmDialog, { path: '/r-wt/a', onKeep, onClear: () => {} }))
+    escapeFrom(document.body, { isComposing: true })
+    expect(onKeep).not.toHaveBeenCalled()
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    escapeFrom(document.body)
+    expect(onKeep).toHaveBeenCalledTimes(1)
+    expect(terminalKeys).toEqual([])
+  })
+})
+
+describe('useWindowEscape 정리 (r3 L-02)', () => {
+  it('언마운트 뒤 Esc 는 onEscape 를 부르지 않는다', () => {
+    const onEscape = vi.fn()
+    const Probe = (): null => {
+      useWindowEscape({ onEscape })
+      return null
+    }
+    render(createElement(Probe))
+    escapeFrom(document.body)
+    expect(onEscape).toHaveBeenCalledTimes(1)
+    render(createElement('div'))
+    escapeFrom(document.body)
+    expect(onEscape).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,4 +1,4 @@
-// LIFE-478 fix2 변이 점검 (리뷰 r2 R2B-02 「변이 확인」 · R2B-09 M7·M11·M12) — 제품 파일 한 곳을 일부러 망가뜨리고 해당 시험 파일을 돌려
+// LIFE-478 fix2·fix3 변이 점검 (리뷰 r2 R2B-02 「변이 확인」 · R2B-09 M7·M11·M12 · r3 L-01·L-02) — 제품 파일 한 곳을 일부러 망가뜨리고 해당 시험 파일을 돌려
 // **시험이 실패하는지**(변이 사망) 본다. 변이는 하나씩, 시험 뒤 원래 바이트로 되돌리고 해시로 원복을 확인한다.
 // 사용: node fix2-mutations.mjs <결과 폴더>   (app/ 에서 · TMPDIR 짧게)   종료코드 0 = 모든 변이 사망 + 원복 확인
 import crypto from 'node:crypto'
@@ -29,6 +29,10 @@ const MUTATIONS = [
   { id: 'R2B-04-meta-no-catch', file: `${R}/components/WorktreeMetaDialog.tsx`, find: '    } catch (thrown) {\n      failure = thrown instanceof Error ? thrown.message : String(thrown)\n    } finally {', replace: '    } finally {', test: DIALOGS },
   { id: 'R2B-05-meta-closes-while-busy', file: `${R}/components/WorktreeMetaDialog.tsx`, find: '    if (!busy) onClose()', replace: '    onClose()', test: DIALOGS },
   { id: 'R2B-06-meta-compares-live-prop', file: `${R}/components/WorktreeMetaDialog.tsx`, find: 'if (comment.trim() !== initial.comment)', replace: "if (comment.trim() !== (worktree.comment ?? ''))", test: DIALOGS },
+  // fix3 (r3 L-01·L-02)
+  { id: 'L-01-reveal-no-announce', file: `${R}/components/RevealConfirmDialog.tsx`, find: '  useAnnounceDialog()\n', replace: '', test: DIALOGS },
+  { id: 'L-01-reveal-no-window-escape', file: `${R}/components/RevealConfirmDialog.tsx`, find: '  useWindowEscape({ onEscape: onKeep })\n', replace: '', test: DIALOGS },
+  { id: 'L-02-escape-listener-not-removed', file: `${R}/menu-bus.ts`, find: "    return () => window.removeEventListener('keydown', onKey, true)", replace: '    return () => {}', test: DIALOGS },
   { id: 'M7-dirty-boundary', file: `${R}/card-menu.ts`, find: 'if (input.dirtyCount > 0)', replace: 'if (input.dirtyCount > 1)', test: MENU },
   { id: 'M11-no-path-filter', file: `${R}/card-menu.ts`, find: "[input.nameOf(row), row.branch ?? '', row.path]", replace: "[input.nameOf(row), row.branch ?? '']", test: MENU },
   { id: 'M12-no-branch-filter', file: `${R}/card-menu.ts`, find: "[input.nameOf(row), row.branch ?? '', row.path]", replace: '[input.nameOf(row), row.path]', test: MENU },

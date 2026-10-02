@@ -269,9 +269,12 @@ async function claudeCompletion({ A, B, p4 }) {
   const claudePane = await until(async () => (await wsOf(B))?.tabs.flatMap((t) => t.panes).find((p) => !known.has(p.paneId))?.paneId ?? null, 'B new tab pane', 20_000)
   gatePanes = [...gatePanes, claudePane]
   await pause(1500)
-  const command = "claude --model haiku 'Reply with exactly: ok'"
+  // 신뢰된 폴더로 옮겨 띄운다(L471_CLAUDE_CWD — 실행 전 ~/.claude.json 에 정확한 신뢰 항목이 있는지 부르는 쪽이 읽기로 확인).
+  const trusted = process.env.L471_CLAUDE_CWD
+  if (trusted === undefined) throw new Error('L471_CLAUDE_CWD 가 없다 — 신뢰된 폴더를 지정한다')
+  const command = `cd '${trusted}' && claude --model haiku 'Reply with exactly: ok'`
   const ran = spawnSync(HERDR, ['--session', 'default', 'pane', 'run', claudePane, command], { encoding: 'utf8', timeout: 20_000 })
-  out.claude = { pane: claudePane, command, run: { status: ran.status, stderr: ran.stderr.slice(0, 200) }, cliCreate: 'corral terminal create → unsupported_backend (설치본 herdr, k10-attempt2.json)' }
+  out.claude = { pane: claudePane, command: command.replace(process.env.HOME, '~'), run: { status: ran.status, stderr: ran.stderr.slice(0, 200) }, cliCreate: 'corral terminal create → unsupported_backend (설치본 herdr, k10-attempt2.json)' }
   save()
   const seen = []
   const deadline = Date.now() + 180_000
@@ -281,6 +284,12 @@ async function claudeCompletion({ A, B, p4 }) {
     const pane = (await wsOf(B))?.tabs.flatMap((t) => t.panes).find((p) => p.paneId === claudePane) ?? null
     const status = pane === null ? 'gone' : `${pane.agent ?? '-'}:${pane.agentStatus}`
     if (seen.at(-1) !== status) seen.push(status)
+    // B 의 에이전트가 둘이 되면 묶음이 접힐 수 있다 — 행 굵기를 보려면 실제 클릭으로 편다(한 번).
+    const groupB = `[data-agent-group="${B}"][data-agent-group-expanded="false"]`
+    if (out.claude.expandedB === undefined && (await evaluate(`document.querySelector(${JSON.stringify(groupB)}) !== null`))) {
+      await mouse('click', 'e-expand-agents-B', groupB)
+      out.claude.expandedB = true
+    }
     if (status.endsWith(':blocked')) {
       const screen = spawnSync(HERDR, ['--session', 'default', 'pane', 'read', claudePane], { encoding: 'utf8', timeout: 20_000 })
       fs.writeFileSync(path.join(PRIVATE, `claude-blocked-${Date.now()}.txt`), screen.stdout, { mode: 0o600 })
@@ -301,20 +310,32 @@ async function claudeCompletion({ A, B, p4 }) {
   out.claude.closed = { status: closed.status }
 }
 
-/** ⓔ 만 — 관문 레포·카드·배치는 앞 회차 것을 읽어 쓴다. */
+/**
+ * ⓔ 만 (코디 답 msg_e47030ec7153 — 「이미 신뢰된 폴더에서 1회」). 새 ROOT 면 관문 레포를 만들고 카드를 실제 클릭으로 연다(B 워크스페이스 + A 선택).
+ * claude 는 B 워크스페이스의 새 탭 pane 에서 돌리되 cwd 는 ~/.claude.json 에 **이미 신뢰 항목이 있는** 폴더로 옮긴다(관문 경로에서 띄우면 새 항목이 생긴다).
+ */
 async function onlyE() {
   const reposDir = path.join(root, 'repos')
+  const fresh = !fs.existsSync(path.join(reposDir, 'gate'))
+  const { root: A, worktrees } = fresh
+    ? makeRepo({ reposDir, name: 'gate', linked: ['gate-b'] })
+    : { root: fs.realpathSync(path.join(reposDir, 'gate')), worktrees: { 'gate-b': fs.realpathSync(path.join(reposDir, 'gate-wt', 'gate-b')) } }
+  const B = worktrees['gate-b']
   gatePrefix = fs.realpathSync(reposDir)
-  const A = fs.realpathSync(path.join(reposDir, 'gate'))
-  const B = fs.realpathSync(path.join(reposDir, 'gate-wt', 'gate-b'))
   out.paths = { A: 'gate', B: 'gate-wt/gate-b' }
-  const a = await wsOf(A)
-  const b = await wsOf(B)
-  const [p1, p2] = a.tabs[0].panes.map((p) => p.paneId)
-  const p3 = a.tabs[1].panes[0].paneId
-  const p4 = b.tabs[0].panes[0].paneId
-  gatePanes = [p1, p2, p3, p4]
-  out.ids = { p1, p2, p3, p4 }
+  if (Object.keys((await read()).cards).length < 2) {
+    const added = await rpc(ctl, { cmd: 'add-repo', root: A }, 30_000)
+    if (!added.ok) throw new Error(`add-repo: ${JSON.stringify(added).slice(0, 200)}`)
+  }
+  await until(async () => Object.keys((await read()).cards).length === 2, 'gate cards', 60_000)
+  for (const [name, p] of [['B', B], ['A', A]]) {
+    if ((await wsOf(p))?.tabs?.length > 0) continue
+    await mouse('click', `open-${name}`, cardSel(p))
+    await until(async () => (await wsOf(p))?.tabs?.length > 0, `workspace ${name}`, 60_000)
+  }
+  const p4 = (await wsOf(B)).tabs[0].panes[0].paneId
+  gatePanes = [p4]
+  out.ids = { p4 }
   out.start = await read()
   await claudeCompletion({ A, B, p4 })
   out.final = await read()

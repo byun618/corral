@@ -128,6 +128,7 @@ export function ingest(model: UnreadModel, input: {
     const found = completionsOf({ obs, firstBatch, since })
     examined.set(obs.paneId, obs.enteredAt)
     const watching = input.watched !== null && input.watched.paneId === obs.paneId ? input.watched.since : null
+    // 같은 ms 경계(완료 시각 = 보기 시작한 시각)는 보지 않은 완료로 둔다 — 놓친 완료를 지우는 쪽보다 한 번 더 보이는 쪽이 안전하다(r2 F-T, 의도).
     const unseen = found.filter((completion) => watching === null || completion.at < watching)
     const last = unseen.at(-1)
     if (last === undefined) continue

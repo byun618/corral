@@ -14,20 +14,28 @@ export type CompactHover = {
   title: string | null
   /** git 상태 — 마크 문자열(제목 줄과 같은 `●3 ↑2`)과 풀어 쓴 말. */
   git: { mark: string; tone: GitTone; words: string } | null
+  /** Comment (LIFE-478 K3ⓔ) — 198 hover 카드 「Notes」 절. 있을 때만 칸이 생긴다. */
+  comment?: string
+  /** 상위 워크트리 이름 (LIFE-478 K6ⓔ) — 198 은 중첩으로 보이는 것을 corral 은 hover 로 보인다(게이트 ⓪ Q4). */
+  parent?: string
 }
 
 /**
  * Compact 제목 hover 카드 내용. **열 이유가 없으면 null** — 198 처럼 브랜치≠제목(corral 에선 대상 0)이거나 git 마크가 있을 때만 연다.
  * 열면 identity(브랜치 → 제목)와 git 상태를 함께 싣는다.
  */
-export function compactHoverContent(input: { branch: string | null; title: string; gitStatus: GitStatusSummary }): CompactHover | null {
+export function compactHoverContent(input: { branch: string | null; title: string; gitStatus: GitStatusSummary; comment?: string | null; parent?: string | null }): CompactHover | null {
   const mark = gitMarkLabel(input.gitStatus)
   const branchDiffers = input.branch !== null && input.branch !== input.title
-  if (!branchDiffers && mark === null) return null
+  const comment = input.comment ?? null
+  const parent = input.parent ?? null
+  if (!branchDiffers && mark === null && comment === null && parent === null) return null
   return {
     branch: input.branch,
     title: input.title !== input.branch ? input.title : null,
     git: mark === null ? null : { mark, tone: gitTone(input.gitStatus), words: gitStatusWords(input.gitStatus) },
+    ...(comment === null ? {} : { comment }),
+    ...(parent === null ? {} : { parent }),
   }
 }
 

@@ -17,7 +17,7 @@ export function AddRepoModal({
       <div className="modal modal-confirm" data-add-repo-modal onClick={(event) => event.stopPropagation()}>
         <div className="modal-head modal-head-plain">
           <h2 className="modal-title" data-modal-title>
-            레포 추가
+            프로젝트 추가
           </h2>
           <button className="modal-close" data-modal-close aria-label="닫기" onClick={onClose}>
             ✕

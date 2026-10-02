@@ -1,4 +1,5 @@
 import { useBindingLabel } from '../hooks/BindingLabels.js'
+import { useMenuBus } from '../menu-bus.js'
 // 탭 우클릭 메뉴 — 이름 변경 · 이름 지우기 · **pane 분할 ②** · **새 영역으로 옮기기 ①** · 닫기.
 //
 // LIFE-373 핸드오프 §1-6 "한 메뉴 두 섹션": 같은 `D` 키가 무엇을 쪼개는지를 메뉴에서 갈라
@@ -74,6 +75,8 @@ export function TabContextMenu({
     })
   }, [anchor.x, anchor.y])
 
+  // LIFE-478 K2ⓓ — 메뉴는 한 번에 하나(카드 우클릭·옵션·레포 ⋯ 와 같은 버스).
+  useMenuBus({ open: true, close: onDismiss })
   useEffect(() => {
     const onDocPointerDown = (event: MouseEvent): void => {
       if (ref.current !== null && event.target instanceof Node && !ref.current.contains(event.target)) onDismiss()

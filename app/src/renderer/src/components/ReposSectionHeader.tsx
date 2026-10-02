@@ -31,7 +31,7 @@ export function ReposSectionHeader({
       <div className="repos-header-spacer" />
       <div className="repos-header-actions">
         <SidebarOptionsMenu view={view} repos={repos} onChange={onChangeView} />
-        <button className="repos-header-glyph repos-header-add" data-add-repo onClick={onAddRepo} title="레포 추가" aria-label="레포 추가">
+        <button className="repos-header-glyph repos-header-add" data-add-repo onClick={onAddRepo} title="프로젝트 추가" aria-label="프로젝트 추가">
           <PlusIcon className="repos-header-icon" />
         </button>
       </div>

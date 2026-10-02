@@ -1,21 +1,70 @@
-// design-handoff.md §2 SidebarFooterToolbar — 좌 ⚙/?(설정·도움말, Step 5~7 화면 없음, §4),
-// 우 ↻(worktree 상태 재조회) · ◫(패널 토글, 범위 밖). ↻ 만 실동작을 건다 — 나머지는 자리만.
-export function SidebarFooterToolbar({ onRefresh }: { onRefresh: () => void }): React.JSX.Element {
+// 사이드바 하단 바 (LIFE-478 K8 · 198 `SidebarSettingsHelpMenu.tsx`·`ScrollToCurrentWorkspaceToolbarButton.tsx`) —
+// 왼쪽 ⚙ · ?(메뉴), 오른쪽 ↻ · Reveal active. 198 오른쪽의 Kanban(◫)은 Kanban 경계라 뺐다(C20 의도적).
+//   · ⚙ = 자리만(설정 페이지 → LIFE-450)
+//   · ? = 메뉴, 첫 항목 「단축키」 → 기존 단축키 설정 화면. 198 의 나머지 10항목(피드백·문서·변경 기록·GitHub·Discord·X·업데이트·재시작…)은
+//     Orca 외부 링크·앱 수명 기능이라 대응 없음(RESULT 대응표)
+//   · ↻ = corral 항목(worktree 상태 재조회, 198 없음 — 의도적 차이)
+//   · Reveal = 활성 카드를 드러낸다(필터 확인 → 접힘 펼침 → 최소 스크롤 → 번쩍). 198 처럼 늘 누를 수 있고, 활성이 없으면 아무 일 없음
+import { useRef, useState } from 'react'
+import { ContextMenu } from './ContextMenu.js'
+import { CrosshairIcon } from './SidebarIcons.js'
+
+export function SidebarFooterToolbar({
+  onRefresh,
+  onReveal,
+  onOpenShortcuts,
+}: {
+  onRefresh: () => void
+  onReveal: () => void
+  onOpenShortcuts: () => void
+}): React.JSX.Element {
+  const helpRef = useRef<HTMLButtonElement | null>(null)
+  const [help, setHelp] = useState<{ x: number; y: number } | null>(null)
   return (
     <div className="sidebar-footer" data-sidebar-footer>
-      <span className="sidebar-footer-glyph" title="설정 (화면 없음 — Step 5~7)">
+      <span className="sidebar-footer-glyph" title="설정 (화면 없음 — LIFE-450)">
         ⚙
       </span>
-      <span className="sidebar-footer-glyph" title="도움말 (화면 없음 — Step 5~7)">
+      <button
+        ref={helpRef}
+        className="sidebar-footer-glyph sidebar-footer-btn"
+        data-help-menu-toggle=""
+        title="도움말"
+        aria-label="도움말"
+        aria-haspopup="menu"
+        aria-expanded={help !== null}
+        onClick={() => {
+          if (help !== null) {
+            setHelp(null)
+            return
+          }
+          const rect = helpRef.current?.getBoundingClientRect()
+          if (rect !== undefined) setHelp({ x: rect.left, y: rect.top - 4 })
+        }}
+      >
         ?
-      </span>
+      </button>
       <div className="sidebar-footer-spacer" />
       <button className="sidebar-footer-glyph sidebar-footer-btn" data-refresh-tree title="worktree 상태 재조회" onClick={onRefresh}>
         ↻
       </button>
-      <span className="sidebar-footer-glyph" title="패널 토글 (범위 밖)">
-        ◫
-      </span>
+      <button className="sidebar-footer-glyph sidebar-footer-btn sidebar-footer-icon-btn" data-reveal-active="" title="활성 워크스페이스 보기" aria-label="활성 워크스페이스 보기" onClick={onReveal}>
+        <CrosshairIcon className="sidebar-footer-icon" />
+      </button>
+      {help === null ? null : (
+        <ContextMenu
+          x={help.x}
+          y={help.y}
+          above
+          toggleSelector="[data-help-menu-toggle]"
+          attrs={{ 'data-help-menu': '' }}
+          entries={[{ kind: 'item', action: 'shortcuts', label: '단축키' }]}
+          onAction={(action) => {
+            if (action === 'shortcuts') onOpenShortcuts()
+          }}
+          onClose={() => setHelp(null)}
+        />
+      )}
     </div>
   )
 }

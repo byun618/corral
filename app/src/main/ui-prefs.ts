@@ -54,6 +54,11 @@ export type UiPrefs = {
   manualWorktreeOrder: Record<string, string[]>
   /** Group by None 수동 순서 (LIFE-470) — 워크트리 path 목록. 모양만 지킨다(뜻은 렌더러 `manual-order.ts`). */
   manualFlatOrder: string[]
+  /**
+   * 고정한 워크트리 경로 (LIFE-478 K5 · 게이트 ⓪ Q1) — Pinned 구획에 모이는 순서는 현재 정렬을 따른다(198, 고정 시각 없음).
+   * 레지스트리가 아니라 여기 두는 이유: 접힘·수동 순서와 같은 사이드바 화면 상태다. 없는 경로는 화면이 무시한다.
+   */
+  pinnedWorktrees: string[]
 } & SidebarViewPrefs
 
 const VERSION = 1
@@ -68,6 +73,7 @@ const DEFAULT_PREFS: UiPrefs = {
   manualRepoOrder: [],
   manualWorktreeOrder: {},
   manualFlatOrder: [],
+  pinnedWorktrees: [],
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
@@ -134,6 +140,7 @@ export class UiPrefsStore {
         manualRepoOrder: readKeyList(parsed['manualRepoOrder']),
         manualWorktreeOrder: readKeyListMap(parsed['manualWorktreeOrder']),
         manualFlatOrder: readKeyList(parsed['manualFlatOrder']),
+        pinnedWorktrees: readKeyList(parsed['pinnedWorktrees']),
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
         ...sidebarViewToPrefs(readSidebarView(parsed)),
       }
@@ -155,6 +162,7 @@ export class UiPrefsStore {
       manualRepoOrder: [...this.prefs.manualRepoOrder],
       manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
       manualFlatOrder: [...this.prefs.manualFlatOrder],
+      pinnedWorktrees: [...this.prefs.pinnedWorktrees],
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
       sidebarCardProperties: [...this.prefs.sidebarCardProperties],
     }

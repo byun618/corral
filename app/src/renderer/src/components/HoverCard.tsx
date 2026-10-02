@@ -11,6 +11,7 @@
 // 재사용(478 카드 우클릭·⋯ 등): `content` 를 null 로 주면 트리거는 그냥 그려지고 카드는 없다 — 「보일 내용이 없으면 열리지 않는다」.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { onMenuOpen } from '../menu-bus.js'
 
 export type HoverCardTriggerProps = {
   ref: (element: HTMLElement | null) => void
@@ -24,7 +25,8 @@ export type HoverCardTriggerProps = {
 }
 
 /** 열려 있으면 안 열리는 위층 — 옵션 메뉴(198 Radix DropdownMenu 는 모달이라 바깥 hover 를 막는다). */
-const BLOCKING_LAYER_SELECTOR = '[data-sidebar-options-menu]'
+// LIFE-478 K2ⓔ — 카드 우클릭·? 메뉴(`data-context-menu`), 카드 대화·피커(`data-card-dialog`)도 같은 막는 층이다.
+const BLOCKING_LAYER_SELECTOR = '[data-sidebar-options-menu], [data-context-menu], [data-card-dialog]'
 const MARGIN = 8
 
 let nextId = 0
@@ -101,7 +103,10 @@ export function HoverCard({
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('blur', close)
     window.addEventListener('resize', close)
+    // LIFE-478 K2ⓔ — 열린 카드는 메뉴가 열리는 순간 닫힌다(위층이 생겼다).
+    const offMenu = onMenuOpen(null, close)
     return () => {
+      offMenu()
       window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)

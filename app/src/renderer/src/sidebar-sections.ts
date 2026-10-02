@@ -196,6 +196,11 @@ export type SidebarSection =
   | { kind: 'repo'; repo: RepoRow; items: SortItem[] }
   /** Group by None — 단일 「All」 헤더(198 `group-keys.ts:88-96`) 아래 전 워크트리, 레포 헤더 없음. */
   | { kind: 'all'; items: SortItem[] }
+  /**
+   * Pinned (LIFE-478 K5 · 198 `build-rows.ts:100-149`) — 맨 위, 고정한 카드만, 순서 = 현재 정렬. 고정한 카드는 원래 그룹에서 **빠진다**
+   * (198 기본 `showPinnedWorktreesInGroups: false` 단일 위치 — 게이트 ⓪ Q2). 필터는 그대로 적용된다(가려진 카드는 여기도 없다).
+   */
+  | { kind: 'pinned'; items: SortItem[] }
 
 /**
  * 프로젝트 순서 Recent (198 `section-order.ts:179-197`) — 레포의 순위 = 보이는 워크트리 Recent 시각 최댓값 내림차순.
@@ -220,22 +225,57 @@ function orderRepoSections(input: { ordered: { repo: RepoRow; items: SortItem[] 
  */
 /** 화면 구획 → 그룹별 카드 배치(LIFE-470 R2-01) — 비-manual → Manual 전환 드롭이 이 배치를 먼저 수동 순서로 확정한다(`materializeLayout`). */
 export function sectionLayout(sections: readonly SidebarSection[]): LayoutGroup[] {
-  return sections.map((section) => {
+  return sections.flatMap((section): LayoutGroup[] => {
     const paths = section.items.map((item) => item.worktree.path)
     switch (section.kind) {
       case 'repo':
-        return { kind: 'repo', root: section.repo.root, paths }
+        return [{ kind: 'repo' as const, root: section.repo.root, paths }]
       case 'all':
-        return { kind: 'all', paths }
+        return [{ kind: 'all' as const, paths }]
+      // 고정 카드는 끌기 대상이 아니다(K5ⓕ) — 그룹 배치에 없고, 원래 그룹 목록의 자리는 `refillSlots` 가 지킨다(가려진 카드와 같다).
+      case 'pinned':
+        return []
     }
   })
 }
 
-export function buildSidebarSections(input: { repos: readonly RepoRow[]; view: SidebarView; order: ManualOrder; now: number }): SidebarSection[] {
+export function buildSidebarSections(input: {
+  repos: readonly RepoRow[]
+  view: SidebarView
+  order: ManualOrder
+  now: number
+  /** 고정한 워크트리 경로(ui-prefs `pinnedWorktrees`). 없는 경로는 무시한다 — 삭제·레포 제거된 핀은 유령으로 안 남는다(K5ⓗ). */
+  pinned?: ReadonlySet<string>
+}): SidebarSection[] {
   const { view, order, now } = input
+  const pinned = input.pinned ?? NO_PINS
   const repos = visibleRepos({ view, repos: input.repos })
   const nameOf = new Map(repos.map((repo) => [repo.root, repo.name]))
-  const keep = (item: SortItem): boolean => passesWorktreeFilters({ view, worktree: item.worktree })
+  const passes = (item: SortItem): boolean => passesWorktreeFilters({ view, worktree: item.worktree })
+  const keep = (item: SortItem): boolean => passes(item) && !pinned.has(item.worktree.path)
+  // Pinned 순서 = 지금 정렬(198 `sortedIds`) — Manual 이면 평면 수동 순서(`orderAll`), 아니면 그 모드의 비교.
+  const pinnedItems = pinned.size === 0 ? [] : sortItems({
+    sortBy: view.sortBy,
+    now,
+    manualItems: orderAll({ repos, order })
+      .map(({ repoRoot, worktree }) => ({ repoRoot, repoName: nameOf.get(repoRoot) ?? '', worktree }))
+      .filter((item) => pinned.has(item.worktree.path) && passes(item)),
+  })
+  const pinnedSection: SidebarSection[] = pinnedItems.length === 0 ? [] : [{ kind: 'pinned', items: pinnedItems }]
+  return [...pinnedSection, ...groupedSections({ repos, view, order, now, nameOf, keep })]
+}
+
+const NO_PINS: ReadonlySet<string> = new Set()
+
+function groupedSections(input: {
+  repos: readonly RepoRow[]
+  view: SidebarView
+  order: ManualOrder
+  now: number
+  nameOf: ReadonlyMap<string, string>
+  keep: (item: SortItem) => boolean
+}): SidebarSection[] {
+  const { repos, view, order, now, nameOf, keep } = input
   switch (view.groupBy) {
     case 'none': {
       const manualItems = orderAll({ repos, order })
@@ -292,14 +332,19 @@ export function settleDecision(input: { shown: LayoutSignature; next: LayoutSign
  */
 export type LayoutSignature = { order: string; membership: string; options: string; manual: string; layout: { key: string; paths: string[] }[] }
 
-function sectionKey(section: SidebarSection): string {
+export function sectionKey(section: SidebarSection): string {
   switch (section.kind) {
     case 'repo':
       return section.repo.root
     case 'all':
       return '*all'
+    case 'pinned':
+      return PINNED_SECTION_KEY
   }
 }
+
+/** Pinned 구획 키 — 접힘 상태도 이 키로 `collapsedRepos` 에 싣는다(경로가 아니라 겹치지 않는다). */
+export const PINNED_SECTION_KEY = '*pinned'
 
 export function layoutSignature(input: { sections: readonly SidebarSection[]; view: SidebarView; order: ManualOrder }): LayoutSignature {
   const layout = input.sections.map((section) => ({ key: sectionKey(section), paths: section.items.map((item) => item.worktree.path) }))

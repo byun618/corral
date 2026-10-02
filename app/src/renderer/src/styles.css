@@ -1097,3 +1097,97 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .sidebar.is-reordering .worktree-block.worktree-card-hover:hover { background: transparent; }
 body.is-sidebar-reorder { cursor: grabbing; user-select: none; }
 body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
+
+/* --- 카드 우클릭 메뉴 · 대화 · 하단 바 (LIFE-478 · 448 S4-C) ----------------------------------------------- */
+
+/* 198 `DropdownMenuContent w-52`(208px) — 탭 메뉴와 같은 판. 강조는 포커스가 아니라 `is-active` 상태(#14545 — 배경 앱 우클릭에도 선다). */
+.ctx-menu {
+  position: fixed; z-index: 60; width: 208px; padding: 4px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-menu); color: var(--fg-menu);
+}
+.ctx-submenu { width: 176px; }
+.ctx-menu-item.is-active { background: var(--bg-menu-hover); color: var(--fg); }
+.ctx-menu-item.repo-row-menu-danger.is-active { background: var(--bg-danger-hover); color: var(--st-error); }
+.ctx-menu-item.is-disabled.is-active { background: none; }
+.ctx-menu .repo-row-menu-item:hover { background: none; }
+.ctx-menu .repo-row-menu-item.is-active:hover { background: var(--bg-menu-hover); }
+.ctx-menu-label { padding: 4px 8px; font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+.ctx-menu-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx-menu-shortcut { flex: 0 0 auto; font-size: 10.5px; color: var(--fg-faint); letter-spacing: .04em; }
+.ctx-menu-chevron { flex: 0 0 auto; color: var(--fg-muted); }
+
+/* 인라인 rename — 제목 자리(13px·20px 줄)를 그대로 쓴다. */
+.worktree-name-input {
+  flex: 1 1 auto; min-width: 0; height: 20px; padding: 0 4px; margin-left: -4px;
+  font-size: 13px; line-height: 20px; color: var(--fg); background: var(--bg-input);
+  border: 1px solid var(--accent); border-radius: 4px; outline: none;
+}
+
+/* 메모 배지 — 198 StickyNote 「Workspace notes」. */
+.worktree-note-badge { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--fg-muted); }
+.worktree-note-icon { width: 12px; height: 12px; }
+.hover-card-label { flex: 0 0 auto; font-size: 10.5px; color: var(--fg-dim); }
+.hover-card-notes { align-items: flex-start; }
+.hover-card-notes-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+
+/* 상위 워크트리 표시(K6ⓔ — 중첩 대신 메타 줄) · Option+hover 휴지통 */
+.worktree-parent-chip { flex: 0 1 auto; min-width: 0; font-size: 11px; line-height: 1; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.worktree-trash-btn { position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 2; background: var(--bg-sidebar); color: var(--st-error); }
+
+/* 삭제 중 — 198 `opacity-50 grayscale cursor-not-allowed` + 「Deleting…」 알약. */
+.worktree-block.is-deleting { opacity: .5; filter: grayscale(1); cursor: not-allowed; }
+.worktree-deleting-pill {
+  position: absolute; right: 8px; top: 6px; padding: 2px 8px; border-radius: 999px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); font-size: 10.5px; color: var(--fg-muted);
+}
+
+/* Reveal 번쩍 — 198 `main.css:1637-1691` 값 그대로(1.5px 테두리 68% · 1px 링 34% · 14px 빛 36%, 1.5s ease-out). */
+.worktree-block.card-reveal-flash { isolation: isolate; overflow: visible; }
+.worktree-block.card-reveal-flash::before {
+  content: ''; position: absolute; inset: 0; z-index: 30; pointer-events: none;
+  border: 1.5px solid color-mix(in srgb, var(--pane-locate) 68%, transparent);
+  border-radius: inherit;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pane-locate) 34%, transparent), 0 0 14px color-mix(in srgb, var(--pane-locate) 36%, transparent);
+  animation: card-reveal-glow 1.5s ease-out forwards;
+}
+@keyframes card-reveal-glow {
+  0% { opacity: 1; transform: scale(.992); }
+  24% { opacity: .72; transform: scale(1); }
+  60% { opacity: .28; transform: scale(1.006); }
+  100% { opacity: 0; transform: scale(1.006); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .worktree-block.card-reveal-flash::before { animation: none; opacity: 1; transform: none; }
+}
+
+/* Pinned 구획 머리 — 「전체」 머리와 같은 판, 눌러 접는다. */
+.pinned-group-head { cursor: pointer; }
+
+/* 상위 피커 — 198 Popover `w-80`, 목록 `max-h-72`. */
+.parent-picker {
+  position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-menu); color: var(--fg-menu); font-size: 12px;
+}
+.parent-picker-head { padding: 2px 4px; color: var(--fg-muted); }
+.parent-picker-input { width: 100%; box-sizing: border-box; }
+.parent-picker-list { max-height: 288px; overflow-y: auto; }
+.parent-picker-row { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 4px; cursor: pointer; }
+.parent-picker-row.is-active { background: var(--bg-menu-hover); color: var(--fg); }
+.parent-picker-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.parent-picker-branch { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.parent-picker-empty { padding: 8px; color: var(--fg-dim); }
+
+/* 삭제 대화 */
+.delete-facts { margin: 0; padding-left: 18px; font-size: 11.5px; line-height: 1.6; color: var(--fg-menu); }
+.delete-force-warning { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--st-error) 45%, transparent); border-radius: var(--radius-sm); color: var(--st-error); font-size: 11.5px; }
+.delete-force-warning ul { margin: 4px 0 0; padding-left: 18px; }
+.delete-force-title { font-weight: 600; }
+.delete-blocked { padding: 0; }
+.field-textarea { height: auto; padding: 6px 9px; resize: vertical; font-family: inherit; line-height: 1.5; }
+.reveal-confirm-icon { width: 14px; height: 14px; vertical-align: -2px; }
+
+/* 하단 바 Reveal 단추 — 198 Crosshair. */
+.sidebar-footer-icon-btn { display: inline-flex; align-items: center; }
+.sidebar-footer-icon { width: 15px; height: 15px; }

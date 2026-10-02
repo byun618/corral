@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { UiPrefs } from '../../../shared/types.js'
 
-type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups'
+/** LIFE-478: `pinnedWorktrees`(고정한 워크트리 경로)도 같은 모양 — 경로 집합 하나를 ui-prefs 에 통째로 쓴다. */
+type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups' | 'pinnedWorktrees'
 
 /**
  * `field` 별로 독립된 id 집합 하나. repo 접기(C3ⓐ)가 쓰고, 에이전트 알약 펼침(LIFE-467)은 같은 모양을
@@ -16,6 +17,10 @@ type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups
 export function usePersistentCollapse(field: CollapseField): {
   has: (id: string) => boolean
   toggle: (id: string) => void
+  /** 지금 집합 — 렌더마다 같은 객체(바뀔 때만 새 Set). */
+  values: ReadonlySet<string>
+  /** 집합에서 뺀다(없으면 그대로) — 삭제한 워크트리의 고정 정리(K5ⓗ). */
+  remove: (id: string) => void
 } {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
 
@@ -50,5 +55,18 @@ export function usePersistentCollapse(field: CollapseField): {
 
   const has = useCallback((id: string) => collapsed.has(id), [collapsed])
 
-  return { has, toggle }
+  const remove = useCallback(
+    (id: string) => {
+      setCollapsed((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        window.corral.setUiPrefs({ [field]: [...next] })
+        return next
+      })
+    },
+    [field],
+  )
+
+  return { has, toggle, values: collapsed, remove }
 }

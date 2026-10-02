@@ -1,4 +1,7 @@
-import { RuntimeError } from '../runtime/contracts.js'
+import { RuntimeError, type Invocation, type RpcResponse } from '../runtime/contracts.js'
+import { copyPath, deleteWorktree, openInEditor, previewWorktreeDelete, revealInFinder, setWorktreeMeta, type CardActionDeps } from './card-actions.js'
+import { parentPathOf } from './tree.js'
+import type { WorktreeMetadataRecord } from './registry.js'
 import { randomUUID } from 'node:crypto'
 import type { TerminalDesktop } from '../runtime/terminal/index.js'
 import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
@@ -18,6 +21,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import type {
   AddRepoResult,
@@ -81,6 +85,8 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** 런타임 디스패처 (LIFE-478) — GUI 카드 메뉴가 CLI 와 같은 `worktree set`/`worktree rm` 을 이 손으로 돈다. */
+let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
 let shortcutRecording = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
@@ -216,8 +222,17 @@ function homeDirReal(): string {
   }
 }
 
+/** 레지스트리 워크트리 메타 (LIFE-478) — 못 읽으면 빈 값(레지스트리 오류는 `registry.lastError` 가 따로 보인다). */
+function registryMetadata(): Record<string, WorktreeMetadataRecord> {
+  try {
+    return registry?.metadata() ?? {}
+  } catch {
+    return {}
+  }
+}
+
 function currentState(): AppState {
-  const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests))
+  const tree = joinTree(skeleton, attachDigests(link.store.rows(), digests), registryMetadata())
   // 등록 목록과 그 세대는 **같은 읽기**에서 낸다 — 렌더러가 둘을 한 순간의 값으로 믿는다(R3-01).
   const registryState = registry?.state() ?? { file: '', roots: [], lastError: '레지스트리 미초기화' }
   return {
@@ -1293,6 +1308,39 @@ app.whenReady().then(async () => {
       ? createWorktreeForRepo({ repoRoot: input.repoRoot, branch: input.branch, path: input.path })
       : { ...denied, workspaceId: null, rejection: null },
   )
+  // --- 카드 메뉴 (LIFE-478) — 쓰기·삭제는 런타임 디스패처(CLI 와 같은 명령), 경로는 등록된 것만 ---
+  const cardDeps: CardActionDeps = {
+    invoke: () => runtimeInvoke,
+    worktrees: () => currentState().repos.flatMap((repo) => repo.worktrees.map((row) => ({ repoRoot: repo.root, path: row.path, branch: row.branch, isLinked: row.isLinked }))),
+    repoRoots: () => registry?.list() ?? [],
+    parentPaths: () => new Map(Object.entries(registryMetadata()).map(([target, meta]) => [target, parentPathOf(meta.parentWorktreeId)])),
+    observe: () => workspaceDesktop.observe(),
+    showItemInFolder: (target) => shell.showItemInFolder(target),
+    writeClipboard: (text) => clipboard.writeText(text),
+    // 198 기본 편집기 = VS Code(`code`). Finder 로 띄운 앱엔 셸 PATH 가 없어(U5) macOS 는 번들 id 로 연다.
+    launchEditor: (target) =>
+      new Promise((resolve) => {
+        const [command, args] = process.platform === 'darwin' ? ['open', ['-b', 'com.microsoft.VSCode', '--', target]] : ['code', ['--', target]]
+        execFile(command, args, { timeout: 10000 }, (error, _stdout, stderr) => resolve(error === null ? null : (String(stderr).trim() || String(error))))
+      }),
+    cwd: os.homedir(),
+  }
+  const cardDenied = { ok: false as const, code: 'denied', error: '허용되지 않은 발신자' }
+  ipcMain.handle('corral:setWorktreeMeta', (event, input) => (fromOurWindow(event) ? setWorktreeMeta(cardDeps, input) : cardDenied))
+  ipcMain.handle('corral:previewWorktreeDelete', (event, input) => (fromOurWindow(event) ? previewWorktreeDelete(cardDeps, input) : cardDenied))
+  ipcMain.handle('corral:deleteWorktree', (event, input) => (fromOurWindow(event) ? deleteWorktree(cardDeps, input) : cardDenied))
+  ipcMain.handle('corral:revealInFinder', (event, input) => (fromOurWindow(event) ? revealInFinder(cardDeps, input) : cardDenied))
+  ipcMain.handle('corral:openInEditor', (event, input) => (fromOurWindow(event) ? openInEditor(cardDeps, input) : cardDenied))
+  ipcMain.handle('corral:copyPath', (event, input) => (fromOurWindow(event) ? copyPath(cardDeps, input) : cardDenied))
+  // Orca #14545 를 따라 하지 않기 — macOS 는 배경 앱 우클릭에 앱을 활성화하지 않아 메뉴가 키보드·포커스를 못 받는다.
+  // 우클릭 순간 창을 앞으로 가져온다(198 뒤 수정 PR #14546 과 같은 방향).
+  ipcMain.on('corral:activateWindow', (event) => {
+    if (!fromOurWindow(event) || window === null || window.isDestroyed()) return
+    if (window.isFocused()) return
+    app.focus({ steal: true })
+    window.focus()
+  })
+
   ipcMain.on('corral:reportRendered', (event, rendered: number) => {
     if (fromOurWindow(event)) log('ui.rendered', { revision: rendered })
   })
@@ -1418,6 +1466,7 @@ app.whenReady().then(async () => {
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
   })
   stopRuntime = runtime.close
+  runtimeInvoke = runtime.invoke
   createWindow()
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)

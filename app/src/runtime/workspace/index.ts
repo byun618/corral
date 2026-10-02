@@ -310,6 +310,9 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
   if (inv.command === 'worktree rm') {
     const target = await select(need('worktree')), repo = repos.find(row => row.id === target.repoId)!
     if (target.isMainWorktree) throw new RuntimeError('protected_worktree', 'Cannot remove the main checkout')
+    // LIFE-478 K7ⓔ: a locked worktree makes `git worktree remove [--force]` refuse *after* the desktop
+    // close below already ran. Refuse before any effect so a refusal never leaves a half-deleted state.
+    if (await isLockedWorktree(repo.path, target.path, ctx.signal)) throw new RuntimeError('locked_worktree', 'Worktree is locked by Git; run `git worktree unlock` first', { path: target.path }, undefined, 'not_started')
     const dirty = await git(target.path, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)
     if (dirty && !f.force) throw new RuntimeError('dirty_worktree', 'Worktree has uncommitted changes; use --force')
     let warning: string | undefined
@@ -332,4 +335,13 @@ async function executeWorktree(inv: Invocation, ctx: CommandContext, registry: R
     return { removed: true, ...(preservedBranch ? { preservedBranch } : {}), ...(warning ? { warning } : {}) }
   }
   reject(`Unknown workspace command: ${inv.command}`)
+}
+/** `git worktree list --porcelain` marks a locked record with a `locked [reason]` line. */
+export async function isLockedWorktree(repoRoot: string, target: string, signal?: AbortSignal): Promise<boolean> {
+  const blocks = (await git(repoRoot, ['worktree', 'list', '--porcelain', '-z'], signal)).split('\0\0')
+  return blocks.some(block => {
+    const lines = block.split('\0')
+    const root = lines.find(line => line.startsWith('worktree '))?.slice(9)
+    return root !== undefined && resolvePath(root, root) === target && lines.some(line => line === 'locked' || line.startsWith('locked '))
+  })
 }

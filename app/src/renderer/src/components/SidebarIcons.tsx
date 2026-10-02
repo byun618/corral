@@ -110,3 +110,49 @@ export function StarIcon({ className }: { className?: string }): React.JSX.Eleme
     </svg>
   )
 }
+
+/** lucide `StickyNote` — 워크스페이스 메모 배지 (LIFE-478, 198 `WorktreeCardMetaBadges.tsx:81-90`). */
+export function NoteIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z" />
+      <path d="M15 3v4a2 2 0 0 0 2 2h4" />
+    </svg>
+  )
+}
+
+/** lucide `Trash2` — Option+hover 삭제 단추 (LIFE-478, 198 `worktree-card-header.tsx:291-317`). */
+export function TrashIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  )
+}
+
+/** lucide `Pin` — Pinned 구획 머리 (LIFE-478, 198 `group-keys.ts:78-85`). */
+export function PinIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  )
+}
+
+/** lucide `Crosshair` — Reveal active (LIFE-478, 198 `ScrollToCurrentWorkspaceToolbarButton.tsx`). */
+export function CrosshairIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="22" x2="18" y1="12" y2="12" />
+      <line x1="6" x2="2" y1="12" y2="12" />
+      <line x1="12" x2="12" y1="6" y2="2" />
+      <line x1="12" x2="12" y1="22" y2="18" />
+    </svg>
+  )
+}

@@ -47,6 +47,7 @@ import { useManualOrder } from './hooks/useManualOrder.js'
 import { useSidebarView } from './hooks/useSidebarView.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
+import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
@@ -464,6 +465,17 @@ export function App(): React.JSX.Element {
     mruHistoryRef.current = touchMru({ history: mruHistoryRef.current, paneId: lifecycle.selectedPane })
   }, [lifecycle.selectedPane])
 
+  // LIFE-478 — 카드 메뉴의 App 층(고정·삭제·정보 수정 대화·⌘⌥R·⌘⇧⌫).
+  const cardActions = useCardActions({
+    stateRef,
+    state,
+    activeWorkspaceId: lifecycle.activeWorkspaceId,
+    actions: lifecycle.actions,
+    revealPane,
+    mruHistory: () => mruHistoryRef.current,
+    notify: setNotice,
+  })
+
   /**
    * 홀드 중 목록. `order` 는 **열 때 찍은 스냅숏**이다 — 홀드 사이에 상태 push 가 와도 고른
    * 자리가 발밑에서 안 밀린다. 그 사이 죽은 pane 은 그릴 때 빠지고, 확정해도 아무 일이 없다.
@@ -739,7 +751,7 @@ export function App(): React.JSX.Element {
   )
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
-  const modalBlocked = shortcutsOpen || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null
+  const modalBlocked = shortcutsOpen || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
   const openPalette = (): void => {
     if (modalBlocked || document.querySelector('.main-tab-rename.is-editing')) return
     paletteReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -775,6 +787,12 @@ export function App(): React.JSX.Element {
     },
     'sidebar.toggle': toggleSidebar,
     'palette.search': openPalette,
+    // 198 — 사이드바가 접혀 있으면 펼친 뒤 드러낸다(`app-command-handlers.ts:190-196` setSidebarOpen(true)).
+    'workspace.rename': () => {
+      if (sidebarCollapsedRef.current) toggleSidebar()
+      cardActions.renameActive()
+    },
+    'workspace.delete': () => cardActions.deleteHovered(),
   }
   const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
@@ -1104,7 +1122,8 @@ export function App(): React.JSX.Element {
   const connected = state.link.phase === 'live'
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
-    if (action.id === 'palette.open' || action.id === 'palette.search') continue
+    // ⌘⇧⌫ 는 hover 중인 카드가 대상이라 팔레트에서 부를 대상이 없다.
+    if (action.id === 'palette.open' || action.id === 'palette.search' || action.id === 'workspace.delete') continue
     for (let variant = 0; variant < action.variants.length; variant++) {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
@@ -1179,6 +1198,8 @@ export function App(): React.JSX.Element {
             setPendingRemove(repo)
           }}
           onRefresh={() => void window.corral.getState().then(setState)}
+          cards={{ ...cardActions.sidebarCards, deleteShortcut: ((binding) => (binding === undefined ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
+          onOpenShortcuts={() => { mruCancel(); setShortcutsOpen(true) }}
           groupGlyphOf={(worktreePath) => {
             // R17-2 공백 2 — 영속 스키마(R3-h)가 영역 수를 그대로 주므로 **넣는다**(비용 0).
             if (layout.groupCountOf(worktreePath) < 2) return null
@@ -1257,6 +1278,7 @@ export function App(): React.JSX.Element {
         setPaletteOpen(false)
         if (restore) requestAnimationFrame(() => { if (paletteReturn.current?.isConnected) paletteReturn.current.focus(); else setFocusToken(value => value + 1) })
       }} /> : null}
+      {cardActions.dialogs}
       {shortcutsOpen ? <ShortcutSettings overrides={keymap.overrides} onChange={keymap.setOverrides} onClose={() => setShortcutsOpen(false)} /> : null}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />

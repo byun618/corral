@@ -2,7 +2,7 @@ import { createElement, type ComponentProps } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_SESSION_DIGEST, type OrchestrationLineage, type PaneRow, type RetainedAgentRow, type WorktreeRow } from '../../../shared/types.js'
-import { WorktreeBlock } from './WorktreeBlock.js'
+import { NO_CARD_ACTIONS, WorktreeBlock, type CardActions } from './WorktreeBlock.js'
 import { emptyAgentState } from '../../../shared/agent-state.js'
 
 const captured = vi.hoisted(() => {
@@ -47,6 +47,10 @@ function render(panes: PaneRow[], options: {
   dirty?: boolean
   linked?: boolean
   repoLabel?: string | null
+  displayName?: string | null
+  comment?: string | null
+  parentPath?: string | null
+  card?: Partial<CardActions>
 } = {}): string {
   const worktree: WorktreeRow = {
     path: '/repo', branch: 'main', isLinked: options.linked ?? false, openWorkspaceId: options.closed === true ? null : 'w1',
@@ -56,6 +60,7 @@ function render(panes: PaneRow[], options: {
       tabs: [{ tabId: 't1', workspaceId: 'w1', label: 'renamed tab', number: 1, order: 0,
         focused: true, agentStatus: 'blocked', panes,
         digest: { ...EMPTY_SESSION_DIGEST, providerTitle: 'wrong tab digest' } }] },
+    displayName: options.displayName ?? null, comment: options.comment ?? null, parentPath: options.parentPath ?? null,
   }
   const noop = (): void => {}
   return renderToStaticMarkup(createElement(WorktreeBlock, {
@@ -66,6 +71,7 @@ function render(panes: PaneRow[], options: {
     onSelectBlock: noop, onSelectSession: options.onSelectSession ?? noop, onCloseSession: options.onCloseSession ?? noop, onCloseWorktree: noop,
     onCreateShell: noop, onCreateAgent: noop,
     layout: options.layout, showAgents: options.showAgents, agentLayout: options.agentLayout, repoLabel: options.repoLabel,
+    card: { ...NO_CARD_ACTIONS, ...options.card },
   }))
 }
 
@@ -258,5 +264,45 @@ describe('카드 표시 (LIFE-477 K2·K3·K4·K6)', () => {
   it('K6ⓖ 에이전트 레이아웃 Full list 여도 Compact 카드는 목록이 없다', () => {
     const html = render(two(), { layout: 'compact', showAgents: false, agentLayout: 'full' })
     expect(fullRows(html)).toBe(0)
+  })
+})
+
+describe('WorktreeBlock 카드 메뉴 표시 (LIFE-478)', () => {
+  it('K3ⓓ 제목 = 표시 이름, Detailed 메타 줄은 브랜치를 그대로 보인다(198 처럼 브랜치를 볼 수 있다)', () => {
+    const html = render([], { displayName: '내 작업' })
+    expect(html).toMatch(/data-worktree-title=""[^>]*>내 작업</)
+    expect(html).toContain('data-worktree-meta-branch=""')
+    expect(html).toMatch(/data-worktree-meta-branch="" title="main">main</)
+  })
+  it('K3ⓔ comment 가 있으면 노트 배지(hover 트리거), 없으면 없다', () => {
+    expect(render([], { comment: '메모' })).toContain('data-worktree-note-badge=""')
+    expect(render([], { comment: '메모' })).toContain('data-hover-card-trigger="/repo#note"')
+    expect(render([])).not.toContain('data-worktree-note-badge')
+  })
+  it('K3ⓔ·K6ⓔ Compact 제목 hover 는 comment·상위가 있으면 열 이유가 된다', () => {
+    expect(render([], { layout: 'compact' })).not.toContain('data-hover-card-trigger="/repo"')
+    expect(render([], { layout: 'compact', comment: '메모' })).toContain('data-hover-card-trigger="/repo"')
+    expect(render([], { layout: 'compact', card: { parentName: 'parent' } })).toContain('data-hover-card-trigger="/repo"')
+  })
+  it('K6ⓔ 상위 워크트리는 Detailed 메타 줄에 이름으로', () => {
+    expect(render([], { parentPath: '/repo/p', card: { parentName: '부모' } })).toMatch(/data-worktree-parent="\/repo\/p"[^>]*>↳ 부모</)
+  })
+  it('K3ⓐ rename 중이면 제목 자리에 입력(단축키 양보 표지 data-inline-rename)', () => {
+    const html = render([], { displayName: 'abc', card: { renaming: true } })
+    expect(html).toContain('data-inline-rename="/repo"')
+    expect(html).toContain('value="abc"')
+    expect(html).not.toContain('data-worktree-title=""')
+  })
+  it('K7ⓕ 삭제 중 → 흐림 + 「삭제 중…」, ⋯·+ 단추 없음', () => {
+    const html = render([], { linked: true, card: { deleting: true } })
+    expect(html).toContain('data-worktree-deleting=""')
+    expect(html).toContain('삭제 중…')
+    expect(html).not.toContain('data-worktree-actions=')
+  })
+  it('K5ⓕ 고정 구획 카드(reorderable=false)는 끌기 표지가 없다', () => {
+    expect(render([])).toContain('data-reorder-card="/repo"')
+    const pinned = render([], { card: { reorderable: false, pinned: true } })
+    expect(pinned).not.toContain('data-reorder-card=')
+    expect(pinned).toContain('data-worktree-pinned=""')
   })
 })

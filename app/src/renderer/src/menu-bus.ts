@@ -1,0 +1,32 @@
+// 메뉴는 한 번에 하나 (LIFE-478 K2ⓓ) — 198 `orca-close-all-context-menus` 대응.
+//
+// 메뉴가 열릴 때 자기 id 를 알리고, 열려 있는 다른 메뉴는 그 알림에 닫힌다. 카드 우클릭 메뉴·카드 ⋯·레포 ⋯·옵션 메뉴·탭 메뉴·
+// ? 메뉴가 같은 버스를 쓴다. hover 카드도 이 알림에 닫힌다(메뉴가 열리는 순간 위층이 생긴다).
+import { useEffect, useId, useRef } from 'react'
+
+const EVENT = 'corral:menu-open'
+
+export function announceMenuOpen(owner: string): void {
+  window.dispatchEvent(new CustomEvent<string>(EVENT, { detail: owner }))
+}
+
+/** 다른 메뉴가 열리면 `listener` — 해제 함수를 돌려준다. `owner` 가 null 이면 모든 알림을 받는다(hover 카드). */
+export function onMenuOpen(owner: string | null, listener: () => void): () => void {
+  const handler = (event: Event): void => {
+    if (event instanceof CustomEvent && event.detail !== owner) listener()
+  }
+  window.addEventListener(EVENT, handler)
+  return () => window.removeEventListener(EVENT, handler)
+}
+
+/** 메뉴 하나 — 열릴 때 알리고, 열려 있는 동안 다른 메뉴가 열리면 `close`. */
+export function useMenuBus(input: { open: boolean; close: () => void }): void {
+  const owner = useId()
+  const closeRef = useRef(input.close)
+  closeRef.current = input.close
+  useEffect(() => {
+    if (!input.open) return
+    announceMenuOpen(owner)
+    return onMenuOpen(owner, () => closeRef.current())
+  }, [input.open, owner])
+}

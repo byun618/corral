@@ -1,15 +1,19 @@
 // design-handoff.md §1 — 사이드바 4단 전개(repo 헤더 → worktree 2줄 블록 → 세션 행). 이 파일은
 // C6 이 나열한 개별 컴포넌트(SidebarBrandBar 등)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
 // 자유롭게 구조화했다.
-import { useRef, type RefObject } from 'react'
-import type { AgentKind, AppState, WorktreeRow } from '../../../shared/types.js'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import type { AgentKind, AppState, RepoRow as RepoRowData, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
 import { showsInlineAgents, type SidebarView } from '../../../shared/sidebar-view.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { useSettledSections } from '../hooks/useSettledSections.js'
 import { useSidebarReorder, type ReorderCommit } from '../hooks/useSidebarReorder.js'
 import type { LayoutGroup, ManualOrder } from '../manual-order.js'
-import { activeFilterCount, buildSidebarSections, sectionLayout, visibleCardCount, type SortItem } from '../sidebar-sections.js'
+import { activeFilterCount, buildSidebarSections, PINNED_SECTION_KEY, sectionLayout, visibleCardCount, type SidebarSection, type SortItem } from '../sidebar-sections.js'
+import { cardMenuEntries, parentCandidates, type CardMenuAction } from '../card-menu.js'
+import { worktreeDisplayName } from '../worktree-name.js'
+import { ContextMenu } from './ContextMenu.js'
+import { ParentPicker } from './ParentPicker.js'
 import { pickPane } from '../pane-utils.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
 import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
@@ -18,8 +22,37 @@ import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarBrandBar } from './SidebarBrandBar.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
-import { CircleXIcon, ListIcon } from './SidebarIcons.js'
+import { CircleXIcon, CrosshairIcon, ListIcon, PinIcon } from './SidebarIcons.js'
 import { WorktreeBlock } from './WorktreeBlock.js'
+
+/**
+ * 카드 메뉴 쪽 입력 (LIFE-478) — 고정·삭제 중·대화는 App 이 갖고(단축키·대화가 App 층), 메뉴·피커·rename·Reveal 실행은 Sidebar 가 한다
+ * (구획·스크롤·접힘을 아는 곳).
+ */
+export type SidebarCardProps = {
+  pinned: ReadonlySet<string>
+  togglePin: (path: string) => void
+  deleting: ReadonlySet<string>
+  /** Option 을 누르고 있다 — hover 카드에 휴지통(K7ⓗ). */
+  altHeld: boolean
+  /** 레지스트리 메타 쓰기(CLI `worktree set` 경로). 오류면 문자열. */
+  setMeta: (update: WorktreeMetaUpdate) => Promise<string | null>
+  openDetails: (worktree: WorktreeRow) => void
+  requestDelete: (worktree: WorktreeRow) => void
+  notify: (message: string) => void
+  /** hover 중인 카드 — ⌘⇧⌫ 대상(198 은 hover 카드를 지운다). */
+  onHoverCard: (path: string | null) => void
+  /** 밖(⌘⌥R 등)에서 오는 드러내기 요청 — `seq` 가 바뀔 때마다 한 번. */
+  revealRequest: { path: string; rename: boolean; seq: number } | null
+  deleteShortcut: string | null
+}
+
+/** Reveal 번쩍 길이 — 198 `use-reveal-highlight.ts:37-53` 1500ms. */
+const REVEAL_FLASH_MS = 1500
+/** 카드가 아직 안 그려졌을 때 다시 볼 프레임 수 — 198 `MAX_REVEAL_RETRIES`(8). */
+const REVEAL_RETRIES = 8
+/** sticky 헤더 아래 여백 — 198 `worktree-sidebar-reveal.ts:3-5`(28px 헤더 + 6px). 헤더 높이는 실측한다. */
+const REVEAL_GAP = 6
 
 export function Sidebar({
   onToggleSidebar,
@@ -46,7 +79,12 @@ export function Sidebar({
   onRemoveRepo,
   onRefresh,
   groupGlyphOf,
+  cards,
+  onOpenShortcuts,
 }: {
+  cards: SidebarCardProps
+  /** 하단 ? 메뉴 「단축키」 (K8ⓐ). */
+  onOpenShortcuts: () => void
   onToggleSidebar: () => void
   shortcutHint: string
   sidebarRef: RefObject<HTMLDivElement | null>
@@ -128,7 +166,7 @@ export function Sidebar({
   const dragSource = reorder.state?.source ?? null
   const livePaneIds = livePaneIdsOf(state.repos)
   const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
-  const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now }), view, order: manualOrder })
+  const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now, pinned: cards.pinned }), view, order: manualOrder })
   const filtersOn = activeFilterCount({ view, repos: state.repos }) > 0
   /** 레포 헤더 드래그 게이트 — Project 그룹 + Project order Manual 일 때만(198 `use-header-drag.ts:81-82`, K6ⓒ). 그 밖은 클릭(접기)만. */
   const repoDragEnabled = view.groupBy === 'repo' && view.projectOrderBy === 'manual'
@@ -136,12 +174,182 @@ export function Sidebar({
   /** 에이전트 목록을 카드에 그리나 (LIFE-477) — 에이전트 활동 켬 + Detailed. Compact 카드는 그리지 않는다(198 F4). */
   const showAgents = showsInlineAgents(view)
 
-  const renderCard = (input: { item: SortItem; onCardMouseDown: (event: React.MouseEvent) => void; dragging: boolean; repoLabel: string | null }): React.JSX.Element => {
+  // --- 카드 메뉴 · rename · 상위 피커 · Reveal (LIFE-478) ------------------------------------------------
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null)
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  const [picker, setPicker] = useState<{ path: string; anchor: { left: number; right: number; top: number } } | null>(null)
+  const [flashPath, setFlashPath] = useState<string | null>(null)
+  const [revealConfirm, setRevealConfirm] = useState<{ path: string; rename: boolean } | null>(null)
+  const pendingReveal = useRef<{ path: string; rename: boolean; tries: number } | null>(null)
+  /** 필터를 지운 뒤 다시 드러낼 대상 — 구획이 새로 서면 `reveal` 을 다시 부른다(접힘 펼치기는 그때 본다). */
+  const revealAfterFilters = useRef<{ path: string; rename: boolean } | null>(null)
+  const [revealTick, setRevealTick] = useState(0)
+  const flashTimer = useRef<number | null>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const closePicker = useCallback(() => setPicker(null), [])
+
+  const rowsByPath = new Map<string, { repo: RepoRowData; worktree: WorktreeRow }>()
+  for (const repo of state.repos) for (const worktree of repo.worktrees) rowsByPath.set(worktree.path, { repo, worktree })
+  const activePath = state.repos.flatMap((repo) => repo.worktrees).find((row) => row.openWorkspaceId !== null && row.openWorkspaceId === activeWorkspaceId)?.path ?? null
+
+  const sectionOf = (sectionList: readonly SidebarSection[], path: string): SidebarSection | null =>
+    sectionList.find((section) => section.items.some((item) => item.worktree.path === path)) ?? null
+
+  /**
+   * 카드 드러내기 (K9 · 198 `use-reveal-requests.ts` → `use-pending-reveal.ts`) — ① 필터에 가려졌으면 확인 대화(보이면 필터를 안 건드린다,
+   * Orca #17543) ② 접힌 구획 펼치기 ③ 잘렸을 때만 최소 스크롤 ④ 번쩍 1.5s ⑤ `rename` 이면 그 카드에서 인라인 rename(⌘⌥R).
+   */
+  const reveal = useCallback(
+    (input: { path: string; rename: boolean }): void => {
+      if (!rowsByPath.has(input.path)) return
+      const section = sectionOf(sections, input.path)
+      if (section === null) {
+        if (filtersOn) setRevealConfirm(input)
+        return
+      }
+      if (section.kind === 'pinned' && isRepoCollapsed(PINNED_SECTION_KEY)) toggleRepoCollapsed(PINNED_SECTION_KEY)
+      if (section.kind === 'repo' && isRepoCollapsed(section.repo.root)) toggleRepoCollapsed(section.repo.root)
+      pendingReveal.current = { ...input, tries: 0 }
+      setRevealTick((value) => value + 1)
+    },
+    // rowsByPath·sectionOf 는 렌더마다 새로 서지만 state.repos·sections 가 바뀔 때만 다시 만든다.
+    [sections, filtersOn, isRepoCollapsed, toggleRepoCollapsed, state.repos],
+  )
+
+  useEffect(() => {
+    const pending = pendingReveal.current
+    if (pending === null) return
+    const list = listRef.current
+    const card = list?.querySelector<HTMLElement>(`[data-worktree="${CSS.escape(pending.path)}"]`) ?? null
+    if (list === null || card === null) {
+      if (pending.tries++ < REVEAL_RETRIES) requestAnimationFrame(() => setRevealTick((value) => value + 1))
+      else pendingReveal.current = null
+      return
+    }
+    pendingReveal.current = null
+    scrollCardIntoView({ list, card })
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+    setFlashPath(pending.path)
+    flashTimer.current = window.setTimeout(() => setFlashPath(null), REVEAL_FLASH_MS)
+    if (pending.rename) setRenamingPath(pending.path)
+  }, [revealTick, sections])
+
+  useEffect(() => {
+    const retry = revealAfterFilters.current
+    if (retry === null || sectionOf(sections, retry.path) === null) return
+    revealAfterFilters.current = null
+    reveal(retry)
+  }, [sections])
+
+  // 밖에서 온 요청(⌘⌥R · 상위 열기) — seq 마다 한 번.
+  const lastRequest = useRef<number | null>(null)
+  useEffect(() => {
+    const request = cards.revealRequest
+    if (request === null || request.seq === lastRequest.current) return
+    lastRequest.current = request.seq
+    reveal({ path: request.path, rename: request.rename })
+  }, [cards.revealRequest, reveal])
+
+  useEffect(() => () => {
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+  }, [])
+
+  const activateRow = (input: { repoRoot: string; worktree: WorktreeRow }): void => {
+    const workspace = input.worktree.workspace
+    if (workspace === null) {
+      actions.openWorktree(input.repoRoot, input.worktree)
+      return
+    }
+    actions.activateWorkspace(workspace.workspaceId)
+    selectFirstSession(input.worktree)
+  }
+
+  const runMenuAction = (input: { path: string; action: CardMenuAction }): void => {
+    const found = rowsByPath.get(input.path)
+    if (found === undefined) return
+    const { worktree } = found
+    const shellFailed = (label: string) => (result: { ok: true } | { ok: false; error: string }) => {
+      if (!result.ok) cards.notify(`${label}: ${result.error}`)
+    }
+    switch (input.action) {
+      case 'update':
+        cards.openDetails(worktree)
+        return
+      case 'open-in':
+        return
+      case 'reveal-finder':
+        void window.corral.revealInFinder({ path: worktree.path, kind: 'worktree' }).then(shellFailed('Finder 에서 열지 못했습니다'))
+        return
+      case 'open-editor':
+        void window.corral.openInEditor({ path: worktree.path }).then(shellFailed('VS Code 를 열지 못했습니다'))
+        return
+      case 'copy-path':
+        // 198 처럼 알림 없음 — 실패만 알린다.
+        void window.corral.copyPath({ path: worktree.path }).then(shellFailed('경로를 복사하지 못했습니다'))
+        return
+      case 'toggle-pin':
+        cards.togglePin(worktree.path)
+        return
+      case 'set-parent': {
+        const surface = listRef.current?.querySelector<HTMLElement>(`[data-worktree="${CSS.escape(worktree.path)}"] [data-worktree-card-surface]`)
+        const rect = surface?.getBoundingClientRect()
+        if (rect === undefined) return
+        setPicker({ path: worktree.path, anchor: { left: rect.left, right: rect.right, top: rect.top } })
+        return
+      }
+      case 'open-parent': {
+        const parent = worktree.parentPath === null ? undefined : rowsByPath.get(worktree.parentPath)
+        if (parent === undefined) return
+        activateRow({ repoRoot: parent.repo.root, worktree: parent.worktree })
+        reveal({ path: parent.worktree.path, rename: false })
+        return
+      }
+      case 'remove-parent':
+        void cards.setMeta({ path: worktree.path, parentPath: null }).then((error) => {
+          if (error !== null) cards.notify(`상위에서 빼지 못했습니다: ${error}`)
+        })
+        return
+      case 'delete':
+        if (worktree.isLinked && !cards.deleting.has(worktree.path)) cards.requestDelete(worktree)
+        return
+    }
+  }
+
+  const menuRow = menu === null ? undefined : rowsByPath.get(menu.path)
+  const pickerRow = picker === null ? undefined : rowsByPath.get(picker.path)
+
+  const renderCard = (input: { item: SortItem; onCardMouseDown: (event: React.MouseEvent) => void; dragging: boolean; repoLabel: string | null; reorderable?: boolean }): React.JSX.Element => {
     const { worktree, repoRoot } = input.item
     const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
+    const parent = worktree.parentPath === null ? undefined : rowsByPath.get(worktree.parentPath)
     return (
       <WorktreeBlock
         key={worktree.path}
+        card={{
+          reorderable: input.reorderable !== false,
+          pinned: cards.pinned.has(worktree.path),
+          deleting: cards.deleting.has(worktree.path),
+          renaming: renamingPath === worktree.path,
+          flash: flashPath === worktree.path,
+          showTrash: cards.altHeld,
+          parentName: parent === undefined ? null : worktreeDisplayName(parent.worktree),
+          onContextMenu: (point) => {
+            // #14545 — 다른 앱이 앞이면 창부터 앞으로(키보드가 메뉴로 오게). 강조는 hover 상태라 포커스 없이도 선다.
+            window.corral.activateWindow()
+            setMenu({ path: worktree.path, ...point })
+          },
+          onBeginRename: () => setRenamingPath(worktree.path),
+          onRenameCommit: (name) => {
+            setRenamingPath(null)
+            void cards.setMeta({ path: worktree.path, displayName: name }).then((error) => {
+              if (error !== null) cards.notify(`이름을 바꾸지 못했습니다: ${error}`)
+            })
+          },
+          onRenameCancel: () => setRenamingPath(null),
+          onOpenDetails: () => cards.openDetails(worktree),
+          onDelete: () => cards.requestDelete(worktree),
+          onHover: (hovered) => cards.onHoverCard(hovered ? worktree.path : null),
+        }}
         worktree={worktree}
         repoLabel={input.repoLabel}
         layout={view.cardLayout}
@@ -213,6 +421,27 @@ export function Sidebar({
         ) : (
           sections.map((section) => {
             switch (section.kind) {
+              case 'pinned': {
+                // 198 Pinned 구획(`pinned-group-rows.ts`) — 맨 위, 접을 수 있다. 카드는 끌기 대상이 아니고(K5ⓕ) 레포 이름을 **글자로**
+                // 보인다(Orca #24304 — 198 은 아이콘+툴팁뿐이라 여러 레포의 `main` 이 구분되지 않는다).
+                const collapsed = isRepoCollapsed(PINNED_SECTION_KEY)
+                return (
+                  <div key={PINNED_SECTION_KEY} className="repo-row-group pinned-group" data-pinned-section="">
+                    <div className="all-group-head pinned-group-head" data-pinned-head="" role="button" aria-expanded={!collapsed} onClick={() => toggleRepoCollapsed(PINNED_SECTION_KEY)}>
+                      <PinIcon className="all-group-icon" />
+                      <span className="all-group-label">고정됨</span>
+                      <span className="all-group-count" data-pinned-count="">
+                        {section.items.length}
+                      </span>
+                    </div>
+                    {collapsed
+                      ? null
+                      : section.items.map((item) =>
+                          renderCard({ item, repoLabel: item.repoName, dragging: false, reorderable: false, onCardMouseDown: () => {} }),
+                        )}
+                  </div>
+                )
+              }
               case 'all':
                 return (
                   <div key="*all" className="repo-row-group all-group" data-reorder-all="">
@@ -248,6 +477,11 @@ export function Sidebar({
                     onToggleCollapse={() => toggleRepoCollapsed(repo.root)}
                     onCreateWorktree={() => actions.openCreateWorktree(repo.root)}
                     onRemove={() => onRemoveRepo(repo.root)}
+                    onRevealInFinder={() => {
+                      void window.corral.revealInFinder({ path: repo.root, kind: 'repo' }).then((result) => {
+                        if (!result.ok) cards.notify(`Finder 에서 열지 못했습니다: ${result.error}`)
+                      })
+                    }}
                   >
                     {section.items.map((item) =>
                       renderCard({
@@ -265,9 +499,95 @@ export function Sidebar({
         )}
         {reorder.state?.indicatorY != null ? <ReorderDropIndicator y={reorder.state.indicatorY} /> : null}
       </div>
-      <SidebarFooterToolbar onRefresh={onRefresh} />
+      <SidebarFooterToolbar onRefresh={onRefresh} onReveal={() => {
+        if (activePath !== null) reveal({ path: activePath, rename: false })
+      }} onOpenShortcuts={onOpenShortcuts} />
+      {menu !== null && menuRow !== undefined ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          attrs={{ 'data-card-menu': menu.path }}
+          entries={cardMenuEntries({
+            worktree: menuRow.worktree,
+            pinned: cards.pinned.has(menu.path),
+            deleting: cards.deleting.has(menu.path),
+            candidateCount: parentCandidates({ worktree: menuRow.worktree, repo: menuRow.repo }).length,
+            parentInTree: menuRow.worktree.parentPath !== null && rowsByPath.has(menuRow.worktree.parentPath),
+            deleteShortcut: cards.deleteShortcut,
+          })}
+          onAction={(action) => runMenuAction({ path: menu.path, action })}
+          onClose={closeMenu}
+        />
+      ) : null}
+      {picker !== null && pickerRow !== undefined ? (
+        <ParentPicker
+          child={pickerRow.worktree}
+          candidates={parentCandidates({ worktree: pickerRow.worktree, repo: pickerRow.repo })}
+          anchor={picker.anchor}
+          activePath={activePath}
+          onPick={(parent) => {
+            setPicker(null)
+            void cards.setMeta({ path: pickerRow.worktree.path, parentPath: parent.path }).then((error) => {
+              if (error !== null) cards.notify(`상위 워크트리를 지정하지 못했습니다: ${error}`)
+            })
+          }}
+          onClose={closePicker}
+        />
+      ) : null}
+      {revealConfirm === null ? null : (
+        // 198 「Reveal hidden workspace?」(`use-reveal-requests.ts:113-146`) — 확인에 처음 포커스, 「필터 유지」 면 아무 것도 안 바뀐다.
+        <div className="modal-scrim" data-modal-scrim onMouseDown={() => setRevealConfirm(null)}>
+          <div className="modal modal-confirm" data-card-dialog="" data-reveal-confirm={revealConfirm.path} role="dialog" aria-label="숨겨진 워크스페이스 보기" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+            if (event.key === 'Escape') setRevealConfirm(null)
+          }}>
+            <div className="modal-head modal-head-plain">
+              <h2 className="modal-title">
+                <CrosshairIcon className="reveal-confirm-icon" /> 숨겨진 워크스페이스를 보일까요?
+              </h2>
+            </div>
+            <div className="modal-body">
+              <p className="modal-desc">활성 워크스페이스가 사이드바에서 숨겨져 있습니다. 보이려면 사이드바 필터를 지웁니다.</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-ghost" data-reveal-keep-filters="" onClick={() => setRevealConfirm(null)}>
+                필터 유지
+              </button>
+              <button
+                className="btn-accent"
+                data-reveal-clear-filters=""
+                autoFocus
+                onClick={() => {
+                  revealAfterFilters.current = revealConfirm
+                  setRevealConfirm(null)
+                  onChangeView({ repoFilter: [], hideDefaultBranch: false, hideDetachedHead: false })
+                }}
+              >
+                필터 지우고 보기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
+}
+
+/**
+ * 잘렸을 때만 최소 거리 스크롤 (198 `worktree-sidebar-reveal.ts:21-36` — `nearest` 같은 최소 이동, 위 여백 = sticky 헤더 + 6px).
+ * reduced motion 이면 즉시(198 `:60-67`).
+ */
+function scrollCardIntoView(input: { list: HTMLElement; card: HTMLElement }): void {
+  const { list, card } = input
+  const listRect = list.getBoundingClientRect()
+  const rect = card.getBoundingClientRect()
+  const head = card.closest('.repo-row-group')?.querySelector<HTMLElement>('[data-repo-head]') ?? null
+  const inset = (head !== null && getComputedStyle(head).position === 'sticky' ? head.offsetHeight : 0) + REVEAL_GAP
+  let delta = 0
+  if (rect.top < listRect.top + inset) delta = rect.top - (listRect.top + inset)
+  else if (rect.bottom > listRect.bottom) delta = Math.min(rect.bottom - listRect.bottom, rect.top - (listRect.top + inset))
+  if (delta === 0) return
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  list.scrollTo({ top: list.scrollTop + delta, behavior: reduced ? 'auto' : 'smooth' })
 }
 
 /**

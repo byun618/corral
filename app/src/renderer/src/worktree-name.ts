@@ -10,9 +10,15 @@
 // `WorktreeBlock` 의 H-2 규칙(2줄은 1줄과 같아도 그린다)이 이미 그 중복을 허용한다.
 import type { WorktreeRow } from '../../shared/types.js'
 
-/** 1줄에 실제로 그려지는 문자열(브랜치 풀네임). 정렬 1차 키가 이것이어야 한다. */
-export function worktreeDisplayName(worktree: WorktreeRow): string {
-  return worktree.branch ?? '(브랜치 없음)'
+/**
+ * 1줄에 실제로 그려지는 문자열 — 레지스트리 표시 이름(LIFE-478, CLI `worktree set --display-name` 과 같은 칸) → 없으면 브랜치 풀네임.
+ * 정렬 1차 키가 이것이어야 한다(198 도 displayName 으로 정렬).
+ *
+ * **표시 이름이 브랜치와 같아도 그 값을 그대로 쓴다** — Orca #15908(표시 이름 = 브랜치를 「오버라이드 없음」 으로 보고 엉뚱한 값으로
+ * 떨어짐)을 따라 하지 않는다. 비교 없이 있으면 쓰고 없으면 브랜치다.
+ */
+export function worktreeDisplayName(worktree: Pick<WorktreeRow, 'displayName' | 'branch'>): string {
+  return worktree.displayName ?? worktree.branch ?? '(브랜치 없음)'
 }
 
 /**

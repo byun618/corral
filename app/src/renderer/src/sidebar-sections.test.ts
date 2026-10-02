@@ -22,6 +22,7 @@ import {
   worktreeRecentAt,
   type SidebarSection,
 } from './sidebar-sections.js'
+import { worktreeDisplayName } from './worktree-name.js'
 
 const NOW = 10_000_000
 const GIT = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
@@ -43,7 +44,7 @@ function pane(input: { id: string; agent?: string | null; status?: AgentStatus; 
   }
 }
 
-function wt(input: { path: string; branch: string | null; linked?: boolean; panes?: PaneRow[] }): WorktreeRow {
+function wt(input: { path: string; branch: string | null; linked?: boolean; panes?: PaneRow[]; displayName?: string }): WorktreeRow {
   const panes = input.panes ?? null
   return {
     path: input.path,
@@ -72,6 +73,9 @@ function wt(input: { path: string; branch: string | null; linked?: boolean; pane
             })),
           },
     gitStatus: { ...GIT, branch: input.branch },
+    displayName: input.displayName ?? null,
+    comment: null,
+    parentPath: null,
   }
 }
 
@@ -81,7 +85,7 @@ function repo(root: string, worktrees: WorktreeRow[], name?: string): RepoRow {
 
 const view = (patch: Partial<SidebarView> = {}): SidebarView => ({ ...DEFAULT_SIDEBAR_VIEW, ...patch })
 const flat = (sections: readonly SidebarSection[]): string[] => sections.flatMap((section) => section.items.map((item) => item.worktree.path))
-const headers = (sections: readonly SidebarSection[]): string[] => sections.map((section) => (section.kind === 'repo' ? section.repo.root : '*all'))
+const headers = (sections: readonly SidebarSection[]): string[] => sections.map((section) => (section.kind === 'repo' ? section.repo.root : section.kind === 'all' ? '*all' : '*pinned'))
 
 // 픽스처 — 레포 2개. /r/a 는 주 체크아웃(main) + 연결 3개(zeta·beta·detached), /r/b 는 주 + 1개.
 function fixture(): RepoRow[] {
@@ -602,5 +606,74 @@ describe('LIFE-477 K8 — 카드 표시 옵션은 구획·순서·정렬 지연�
     // 대조 — 배치 옵션(정렬)을 바꾸면 여전히 now.
     const sorted = layoutSignature({ sections, view: { ...v, sortBy: 'name' }, order: EMPTY_MANUAL_ORDER })
     expect(settleDecision({ shown, next: sorted, activityDriven: true })).toBe('now')
+  })
+})
+
+describe('LIFE-478 K5 Pinned 구획 (198 `build-rows.ts:100-149` · 단일 위치 — 게이트 ⓪ Q2)', () => {
+  const pins = (...paths: string[]): ReadonlySet<string> => new Set(paths)
+
+  it('ⓑ 맨 위 · 고정한 카드만 · 원래 그룹에서 빠진다 — Group 프로젝트', () => {
+    const sections = buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW, pinned: pins('/r/a/b', '/r/b/x') })
+    expect(headers(sections)).toEqual(['*pinned', '/r/b', '/r/a'])
+    // Manual 이면 Pinned 순서 = 평면 수동 순서(레포 b 먼저 → a 안 순서).
+    expect(sections[0]!.items.map((item) => item.worktree.path)).toEqual(['/r/b/x', '/r/a/b'])
+    expect(flat(sections.slice(1))).toEqual(['/r/b', '/r/a/z', '/r/a', '/r/a/d'])
+    // 한 워크트리는 한 번만 그려진다(단일 위치 — 중복 표시·secondary 없음).
+    expect(new Set(flat(sections)).size).toBe(flat(sections).length)
+  })
+
+  it('ⓑ Group 없음에서도 같다 — Pinned 다음 「전체」', () => {
+    const sections = buildSidebarSections({ repos: fixture(), view: view({ groupBy: 'none' }), order: MANUAL, now: NOW, pinned: pins('/r/a/z') })
+    expect(headers(sections)).toEqual(['*pinned', '*all'])
+    expect(flat(sections)).toEqual(['/r/a/z', '/r/b', '/r/b/x', '/r/a', '/r/a/b', '/r/a/d'])
+  })
+
+  it('ⓑ 순서 = 현재 정렬(198 `sortedIds`) — 이름 정렬이면 표시 이름 사전순', () => {
+    const sections = buildSidebarSections({ repos: fixture(), view: view({ sortBy: 'name' }), order: MANUAL, now: NOW, pinned: pins('/r/a/z', '/r/b/x', '/r/a/b') })
+    expect(sections[0]!.items.map((item) => item.worktree.branch)).toEqual(['beta', 'xray', 'zeta'])
+  })
+
+  it('ⓒ 필터는 Pinned 에도 걸린다 — 레포 필터 밖·스위치 필터에 걸린 고정 카드는 안 보인다', () => {
+    const repoFiltered = buildSidebarSections({ repos: fixture(), view: view({ repoFilter: ['/r/b'] }), order: MANUAL, now: NOW, pinned: pins('/r/a/z', '/r/b/x') })
+    expect(repoFiltered[0]!.items.map((item) => item.worktree.path)).toEqual(['/r/b/x'])
+    const detached = buildSidebarSections({ repos: fixture(), view: view({ hideDetachedHead: true }), order: MANUAL, now: NOW, pinned: pins('/r/a/d') })
+    expect(headers(detached)).toEqual(['/r/b', '/r/a'])
+  })
+
+  it('ⓓ 고정 0개 = 구획 없음 · ⓗ 없는 경로(삭제·레포 제거)의 고정은 무시 — 유령이 없다', () => {
+    expect(headers(buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW, pinned: pins() }))).toEqual(['/r/b', '/r/a'])
+    expect(headers(buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW, pinned: pins('/r/gone/x', '/r/c') }))).toEqual(['/r/b', '/r/a'])
+  })
+
+  it('ⓕ 고정 카드는 끌기 배치에 없다 — 원래 그룹 목록의 자리는 가려진 카드처럼 지킨다', () => {
+    const sections = buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW, pinned: pins('/r/a/b') })
+    const layout = sectionLayout(sections)
+    expect(layout).toEqual([
+      { kind: 'repo', root: '/r/b', paths: ['/r/b', '/r/b/x'] },
+      { kind: 'repo', root: '/r/a', paths: ['/r/a/z', '/r/a', '/r/a/d'] },
+    ])
+    // 이 배치로 Manual 확정을 해도 고정 카드 자리(/r/a 목록의 셋째)가 그대로다.
+    expect(materializeLayout({ order: MANUAL, repos: fixture(), layout }).worktrees['/r/a']).toEqual(['/r/a/z', '/r/a', '/r/a/b', '/r/a/d'])
+  })
+
+  it('지연 서명 — 고정이 바뀌면 구성이 바뀐 것(즉시 반영)', () => {
+    const before = layoutSignature({ sections: buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW }), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL })
+    const after = layoutSignature({ sections: buildSidebarSections({ repos: fixture(), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL, now: NOW, pinned: pins('/r/a/b') }), view: DEFAULT_SIDEBAR_VIEW, order: MANUAL })
+    expect(settleDecision({ shown: before, next: after, activityDriven: true })).toBe('now')
+  })
+})
+
+describe('LIFE-478 K3ⓓ·ⓕ 표시 이름', () => {
+  it('ⓓ 표시 이름 → 없으면 브랜치. 표시 이름이 브랜치와 같아도 그 값(Orca #15908 따라 하지 않기)', () => {
+    expect(worktreeDisplayName({ displayName: null, branch: 'feat/x' })).toBe('feat/x')
+    expect(worktreeDisplayName({ displayName: '내 작업', branch: 'feat/x' })).toBe('내 작업')
+    expect(worktreeDisplayName({ displayName: 'feat/x', branch: 'feat/x' })).toBe('feat/x')
+    expect(worktreeDisplayName({ displayName: null, branch: null })).toBe('(브랜치 없음)')
+    expect(worktreeDisplayName({ displayName: 'detached 이름', branch: null })).toBe('detached 이름')
+  })
+  it('ⓕ 이름 정렬은 표시 이름을 쓴다(198 같음)', () => {
+    const repos = [repo('/r/a', [wt({ path: '/r/a', branch: 'main', linked: false }), wt({ path: '/r/a/z', branch: 'zeta', displayName: 'alpha' }), wt({ path: '/r/a/b', branch: 'beta' })])]
+    const sections = buildSidebarSections({ repos, view: view({ sortBy: 'name' }), order: EMPTY_MANUAL_ORDER, now: NOW })
+    expect(flat(sections)).toEqual(['/r/a/z', '/r/a/b', '/r/a'])
   })
 })

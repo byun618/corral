@@ -18,8 +18,11 @@ export function RepoRow({
   onToggleCollapse,
   onCreateWorktree,
   onRemove,
+  onRevealInFinder,
   children,
 }: {
+  /** 레포 ⋯ 「Finder 에서 열기」 (LIFE-478 K4ⓓ). */
+  onRevealInFinder: () => void
   repo: RepoRowData
   /** 사이드바에서 끌어 옮기는 중 (LIFE-469) — 열린 메뉴를 닫는다(K3ⓖ). hover 액션은 CSS 가 숨긴다. */
   reordering: boolean
@@ -92,6 +95,11 @@ export function RepoRow({
               event.stopPropagation()
               setMenuOpen(false)
               onRemove()
+            }}
+            onRevealInFinder={(event) => {
+              event.stopPropagation()
+              setMenuOpen(false)
+              onRevealInFinder()
             }}
             onClose={() => setMenuOpen(false)}
           />

@@ -1,0 +1,187 @@
+// 카드 메뉴의 App 층 (LIFE-478) — 고정 집합 · 삭제 중 집합 · 정보 수정/삭제 대화 · ⌘⌥R/⌘⇧⌫ · Option 누름 · hover 카드.
+//
+// 쓰기·삭제는 main 의 IPC(`setWorktreeMeta`·`deleteWorktree`)를 부르고 main 은 CLI 와 같은 런타임 명령을 돈다 — 여기에는 검증·순서가 없다.
+// 결과는 다음 상태 내보내기(`desktop.changed()` → 트리 재조립)로 화면에 온다. 실패는 알림·대화 안 오류로 보인다(K1ⓓ).
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import type { AppState, RepoRow, WorktreeDeletePreview, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
+import { deleteResultNotice } from '../card-menu.js'
+import type { LifecycleActions } from '../lifecycle-types.js'
+import { pickPane } from '../pane-utils.js'
+import { worktreeDisplayName } from '../worktree-name.js'
+import type { SidebarCardProps } from '../components/Sidebar.js'
+import { DeleteWorktreeDialog } from '../components/DeleteWorktreeDialog.js'
+import { WorktreeMetaDialog } from '../components/WorktreeMetaDialog.js'
+import { usePersistentCollapse } from './usePersistentCollapse.js'
+
+type DeleteTarget = { path: string; name: string; preview: WorktreeDeletePreview | null }
+
+/** Option(Alt) 을 누르고 있나 — 198 휴지통은 그동안만 마운트된다(`workspace-delete-quick-action.ts`). 창 blur 에 풀린다. */
+function useAltHeld(): boolean {
+  const [held, setHeld] = useState(false)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => setHeld(event.altKey)
+    const release = (): void => setHeld(false)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('keyup', onKey, true)
+    window.addEventListener('blur', release)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKey, true)
+      window.removeEventListener('blur', release)
+    }
+  }, [])
+  return held
+}
+
+function findRow(state: AppState | null, path: string): { repo: RepoRow; worktree: WorktreeRow } | null {
+  for (const repo of state?.repos ?? []) for (const worktree of repo.worktrees) if (worktree.path === path) return { repo, worktree }
+  return null
+}
+
+export function useCardActions(input: {
+  stateRef: RefObject<AppState | null>
+  state: AppState | null
+  activeWorkspaceId: string | null
+  actions: LifecycleActions
+  revealPane: (paneId: string) => void
+  /** MRU pane 기록(최근 먼저) — 활성 워크트리를 지운 뒤 옮겨 갈 곳(198 「최근 방문한 같은 레포 형제」). */
+  mruHistory: () => readonly string[]
+  notify: (message: string) => void
+}) {
+  const pins = usePersistentCollapse('pinnedWorktrees')
+  const altHeld = useAltHeld()
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set())
+  const deletingRef = useRef(deleting)
+  deletingRef.current = deleting
+  const [metaPath, setMetaPath] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
+  const [revealRequest, setRevealRequest] = useState<{ path: string; rename: boolean; seq: number } | null>(null)
+  const hoveredRef = useRef<string | null>(null)
+  const latest = useRef(input)
+  latest.current = input
+
+  const setMeta = useCallback(async (update: WorktreeMetaUpdate): Promise<string | null> => {
+    const result = await window.corral.setWorktreeMeta(update)
+    return result.ok ? null : `${result.error} (${result.code})`
+  }, [])
+
+  const requestDelete = useCallback((worktree: WorktreeRow): void => {
+    if (!worktree.isLinked || deletingRef.current.has(worktree.path)) return
+    const target = { path: worktree.path, name: worktreeDisplayName(worktree) }
+    setDeleteTarget({ ...target, preview: null })
+    void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
+      setDeleteTarget((current) => (current?.path === target.path ? { ...target, preview } : current))
+    })
+  }, [])
+
+  /** 활성을 옮긴다 (K7ⓖ · 198 `active-worktree-focus-after-delete.ts:42-67`) — 같은 레포에서 가장 최근에 쓴 형제 → 주 체크아웃. */
+  const moveActiveAway = (deleted: { repoRoot: string; path: string }): void => {
+    const state = latest.current.stateRef.current
+    const repo = state?.repos.find((row) => row.root === deleted.repoRoot)
+    if (repo === undefined) return
+    const siblings = repo.worktrees.filter((row) => row.path !== deleted.path)
+    const paneOwner = new Map<string, WorktreeRow>()
+    for (const row of siblings) for (const tab of row.workspace?.tabs ?? []) for (const pane of tab.panes) paneOwner.set(pane.paneId, row)
+    const recent = latest.current.mruHistory().map((paneId) => paneOwner.get(paneId)).find((row) => row !== undefined && row.isLinked)
+    const target = recent ?? siblings.find((row) => !row.isLinked)
+    if (target === undefined) return
+    if (target.workspace === null) {
+      latest.current.actions.openWorktree(repo.root, target)
+      return
+    }
+    latest.current.actions.activateWorkspace(target.workspace.workspaceId)
+    const firstTab = target.workspace.tabs[0]
+    const pane = firstTab === undefined ? null : pickPane(firstTab)
+    if (pane !== null) latest.current.revealPane(pane.paneId)
+  }
+
+  const confirmDelete = (force: boolean): void => {
+    const target = deleteTarget
+    if (target === null) return
+    setDeleteTarget(null)
+    const found = findRow(latest.current.stateRef.current, target.path)
+    const wasActive = found !== null && found.worktree.openWorkspaceId !== null && found.worktree.openWorkspaceId === latest.current.activeWorkspaceId
+    setDeleting((prev) => new Set(prev).add(target.path))
+    void window.corral.deleteWorktree({ path: target.path, force }).then((result) => {
+      setDeleting((prev) => {
+        const next = new Set(prev)
+        next.delete(target.path)
+        return next
+      })
+      if (!result.ok) {
+        latest.current.notify(`워크트리 ${target.name} 를 삭제하지 못했습니다: ${result.error} (${result.code})`)
+        return
+      }
+      pins.remove(target.path)
+      latest.current.notify(deleteResultNotice({ name: target.name, preservedBranch: result.preservedBranch, warning: result.warning }))
+      if (wasActive && found !== null) moveActiveAway({ repoRoot: found.repo.root, path: target.path })
+    })
+  }
+
+  /** ⌘⌥R (198 `workspace.rename` — 활성 워크트리를 드러낸 뒤 그 카드에서 인라인 rename). 활성 없으면 아무 일 없음. */
+  const renameActive = (): void => {
+    const state = latest.current.stateRef.current
+    const active = state?.repos.flatMap((repo) => repo.worktrees).find((row) => row.openWorkspaceId !== null && row.openWorkspaceId === latest.current.activeWorkspaceId)
+    if (active === undefined) return
+    setRevealRequest((prev) => ({ path: active.path, rename: true, seq: (prev?.seq ?? 0) + 1 }))
+  }
+
+  /** ⌘⇧⌫ (198 `workspace.delete` — hover 중인 카드). 입력란 포커스·주 체크아웃·삭제 중이면 무시(대화 열림은 단축키 막힘이 거른다). */
+  const deleteHovered = (): void => {
+    const path = hoveredRef.current
+    if (path === null) return
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && (focused.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName))) return
+    const found = findRow(latest.current.stateRef.current, path)
+    if (found !== null) requestDelete(found.worktree)
+  }
+
+  const metaRow = metaPath === null ? null : findRow(input.state, metaPath)
+  const dialogs = (
+    <>
+      {metaRow === null ? null : (
+        <WorktreeMetaDialog
+          key={metaRow.worktree.path}
+          worktree={metaRow.worktree}
+          onSave={(patch) => setMeta({ path: metaRow.worktree.path, ...patch })}
+          onClose={() => setMetaPath(null)}
+        />
+      )}
+      {deleteTarget === null ? null : (
+        <DeleteWorktreeDialog
+          name={deleteTarget.name}
+          path={deleteTarget.path}
+          preview={deleteTarget.preview}
+          onConfirm={confirmDelete}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
+    </>
+  )
+
+  const sidebarCards: SidebarCardProps = {
+    pinned: pins.values,
+    togglePin: pins.toggle,
+    deleting,
+    altHeld,
+    setMeta,
+    openDetails: (worktree) => setMetaPath(worktree.path),
+    requestDelete,
+    notify: input.notify,
+    onHoverCard: (path) => {
+      hoveredRef.current = path
+    },
+    revealRequest,
+    // 단축키 표시는 키맵을 아는 App 이 덮는다.
+    deleteShortcut: null,
+  }
+
+  return {
+    sidebarCards,
+    dialogs,
+    /** 대화가 열려 있다 — 단축키를 막는다(App `modalBlocked`). */
+    blocked: metaRow !== null || deleteTarget !== null,
+    renameActive,
+    deleteHovered,
+  }
+}

@@ -437,6 +437,14 @@ export type WorktreeRow = {
   workspace: WorkspaceRow | null
   /** git 상태 배지 (LIFE-357 C4) — TTL 캐시로 계산한다 (main/git-status.ts). */
   gitStatus: GitStatusSummary
+  /**
+   * 레지스트리 메타 (LIFE-478 K1ⓐ) — `repos.json` 의 `worktrees[path]`. CLI `worktree set` 과 GUI 가 같은 칸을 쓴다.
+   * 없으면 null — 제목은 브랜치로 떨어진다(`worktree-name.ts`).
+   */
+  displayName: string | null
+  comment: string | null
+  /** 부모 워크트리 경로 — 레지스트리 `parentWorktreeId`(`<repoId>::<path>`)의 경로 부분. 없으면 null. */
+  parentPath: string | null
 }
 
 /** 레지스트리에 등록된 레포 하나. **목록의 루트는 이것이다** (기준 N4). */
@@ -523,6 +531,35 @@ export type RenameRowResult =
  * `rejection` 은 herdr 가 그대로 돌려준 거절(예 `workspace_group_close_required`,
  * `linked_worktree_source`) — 화면에 그대로 보인다. corral 이 승격하지 않는다 (기준 L9).
  */
+/**
+ * 카드 메뉴 동작 (LIFE-478) — 레지스트리 쓰기·삭제는 main 이 **CLI 와 같은 런타임 명령**(`worktree set`·`worktree rm`)을
+ * 같은 디스패처로 돌린 결과다. 실패는 런타임 오류 코드(`dirty_worktree`·`worktree_busy`·`backend_unavailable`·`locked_worktree`…)와
+ * 원문을 그대로 싣는다 — 화면이 오류로 보여 준다(조용히 삼키지 않는다, K1ⓓ).
+ */
+export type CardActionError = { ok: false; code: string; error: string }
+/** 준 칸만 바꾼다. `null` = 지움(표시 이름 → 브랜치로 되돌림 · 부모 해제). */
+export type WorktreeMetaUpdate = { path: string; displayName?: string | null; comment?: string | null; parentPath?: string | null }
+export type WorktreeMetaResult = { ok: true } | CardActionError
+/** 삭제 확인 대화가 열릴 때 읽는 사실 — 결정은 하지 않는다(결정은 `worktree rm`). */
+export type WorktreeDeletePreview =
+  | {
+      ok: true
+      path: string
+      branch: string | null
+      isMain: boolean
+      locked: boolean
+      /** `git status --porcelain --untracked-files=all` 줄 수 — 강제 삭제가 버리는 변경. */
+      dirtyCount: number
+      /** 살아 있는 터미널 수(`worktree rm` 의 바쁨 판정과 같은 관측). herdr 링크가 없으면 null + `backendError`. */
+      liveSessions: number | null
+      backendError: string | null
+      /** 이 워크트리를 부모로 둔 워크트리 경로 — 삭제하면 링크가 풀린다. */
+      childPaths: string[]
+    }
+  | CardActionError
+export type WorktreeDeleteResult = { ok: true; preservedBranch: string | null; warning: string | null } | CardActionError
+export type ShellActionResult = { ok: true } | CardActionError
+
 export type WorktreeActionResult = {
   ok: boolean
   workspaceId: string | null
@@ -623,6 +660,11 @@ export type UiPrefs = {
    * 레포 안 순서를 이어 붙인 순서로 읽는다(`manual-order.ts` `orderAll`).
    */
   manualFlatOrder: string[]
+  /**
+   * 고정한 워크트리 경로 (LIFE-478 K5 · 게이트 ⓪ Q1) — Pinned 구획에 모이는 순서는 현재 정렬을 따른다(198, 고정 시각 없음).
+   * 레지스트리가 아니라 여기 두는 이유: 접힘·수동 순서와 같은 사이드바 화면 상태다. 없는 경로는 화면이 무시한다.
+   */
+  pinnedWorktrees: string[]
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
@@ -854,6 +896,16 @@ export type CorralApi = {
   openWorktree: (input: { repoRoot: string; path: string; isLinked: boolean }) => Promise<WorktreeActionResult>
   /** 새 linked worktree 를 만든다 (branch·path 지정). OS 다이얼로그 없이 텍스트 입력으로. */
   createWorktree: (input: { repoRoot: string; branch: string; path: string }) => Promise<WorktreeActionResult>
+  // --- 카드 메뉴 (LIFE-478) — 경로는 main 이 등록된 레포·워크트리인지 다시 본다 ---
+  setWorktreeMeta: (input: WorktreeMetaUpdate) => Promise<WorktreeMetaResult>
+  previewWorktreeDelete: (input: { path: string }) => Promise<WorktreeDeletePreview>
+  deleteWorktree: (input: { path: string; force: boolean }) => Promise<WorktreeDeleteResult>
+  /** Finder 에서 보이고 선택(`shell.showItemInFolder`). `kind` = 워크트리 카드 / 레포 헤더. */
+  revealInFinder: (input: { path: string; kind: 'worktree' | 'repo' }) => Promise<ShellActionResult>
+  openInEditor: (input: { path: string }) => Promise<ShellActionResult>
+  copyPath: (input: { path: string }) => Promise<ShellActionResult>
+  /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
+  activateWindow: () => void
   reportRendered: (revision: number) => void
   /**
    * pane 하나를 골라 스트림을 연다. paneId null 이면 닫는다. 결과는 state.terminal 로 돌아온다.

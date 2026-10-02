@@ -13,6 +13,7 @@
 // 새 서브메뉴는 `SUBMENUS` 에 id 를 더하면 → 키·자리 잡기가 따라온다.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useMenuBus } from '../menu-bus.js'
 import type { RepoRow } from '../../../shared/types.js'
 import {
   cardLayoutPreset,
@@ -105,6 +106,8 @@ export function SidebarOptionsMenu({
     setSubmenu(null)
     if (input.focusButton) buttonRef.current?.focus()
   }, [])
+  // LIFE-478 K2ⓓ — 메뉴는 한 번에 하나(카드 우클릭·레포 ⋯·카드 ⋯·탭 메뉴와 같은 버스).
+  useMenuBus({ open, close: () => close({ focusButton: false }) })
 
   // 바깥 mousedown 으로 닫는다(버튼 자신은 onClick 토글이 맡는다).
   useEffect(() => {

@@ -28,7 +28,8 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
       const match = binding === null ? null : matchBinding(binding, latest.current.overrides)
       if (match === null) return
       // Coordinator clarification: every keyboard action yields to tab renaming, including MRU.
-      if (event.target instanceof Element && event.target.closest('.main-tab-rename')) return
+      // LIFE-478: 카드 인라인 rename 입력(`data-inline-rename`)에도 양보한다(K3ⓐ).
+      if (event.target instanceof Element && event.target.closest('.main-tab-rename, [data-inline-rename]')) return
       event.preventDefault()
       event.stopPropagation()
       dispatch(match)
@@ -36,7 +37,7 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
     document.addEventListener('keydown', onKey, true)
     const unsubscribe = window.corral.onShortcut((match) => {
       if (latest.current.blocked || latest.current.onInterceptDuringHold()) return
-      if (document.activeElement instanceof Element && document.activeElement.closest('.main-tab-rename')) return
+      if (document.activeElement instanceof Element && document.activeElement.closest('.main-tab-rename, [data-inline-rename]')) return
       dispatch(match)
     })
     return () => { document.removeEventListener('keydown', onKey, true); unsubscribe() }

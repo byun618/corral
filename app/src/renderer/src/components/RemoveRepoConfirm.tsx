@@ -21,7 +21,7 @@ export function RemoveRepoConfirm({
       <div className="modal modal-confirm" data-confirm-remove={repo.root} onClick={(event) => event.stopPropagation()}>
         <div className="modal-head modal-head-plain">
           <h2 className="modal-title" data-confirm-title>
-            목록에서 레포를 제거할까요?
+            목록에서 프로젝트를 제거할까요?
           </h2>
           <button className="modal-close" data-confirm-close aria-label="닫기" onClick={onCancel}>
             ✕

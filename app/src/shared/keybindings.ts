@@ -12,6 +12,9 @@ export const ACTIONS = [
   { id: 'sidebar.toggle', title: '사이드바 접기 / 펼치기', defaultBinding: ['Mod+B'], bindingVariants: [0], variants: ['전환'] },
   // LIFE-470 D28b — 198 `worktree.palette`(⌘J). 같은 391 팔레트를 연다(⌘K 는 그대로 — 게이트 ⓪ Q3).
   { id: 'palette.search', title: '검색 (팔레트)', defaultBinding: ['Mod+J'], bindingVariants: [0], variants: ['열기'] },
+  // LIFE-478 — 198 `workspace.rename`(Mod+Alt+R, 활성 워크트리 인라인 rename) · `workspace.delete`(Mod+Shift+Backspace, hover 카드 삭제).
+  { id: 'workspace.rename', title: '워크트리 이름 바꾸기', defaultBinding: ['Mod+Alt+R'], bindingVariants: [0], variants: ['활성 워크트리'] },
+  { id: 'workspace.delete', title: '워크트리 삭제', defaultBinding: ['Mod+Shift+Backspace'], bindingVariants: [0], variants: ['hover 중인 카드'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 export type Keybindings = Partial<Record<ActionId, string[]>>
@@ -39,7 +42,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete']
 
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()

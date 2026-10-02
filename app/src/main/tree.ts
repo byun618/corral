@@ -18,6 +18,7 @@
 
 import path from 'node:path'
 import type { AgentSessionRef, GitStatusSummary, RepoRow, SessionDigest, WorkspaceRow } from '../shared/types.js'
+import type { WorktreeMetadataRecord } from './registry.js'
 import { readOpenWorkspaces } from './adapter/index.js'
 import { getGitStatus } from './git-status.js'
 import { listGitWorktrees } from './git-worktrees.js'
@@ -107,8 +108,18 @@ export function attachDigests(
   }))
 }
 
-/** 싼 쪽 — 골격에 지금 저장소의 행을 붙인다. 내보낼 때마다 부른다. */
-export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly WorkspaceRow[]): Tree {
+/** 레지스트리 `parentWorktreeId` = `<repoId>::<canonicalPath>`(`runtime/workspace/model.ts`) — 화면은 경로만 쓴다. */
+export function parentPathOf(parentWorktreeId: string | null | undefined): string | null {
+  if (typeof parentWorktreeId !== 'string') return null
+  const cut = parentWorktreeId.indexOf('::')
+  return cut < 0 ? null : parentWorktreeId.slice(cut + 2) || null
+}
+
+/**
+ * 싼 쪽 — 골격에 지금 저장소의 행을 붙인다. 내보낼 때마다 부른다.
+ * `metadata` = 레지스트리 워크트리 메타(LIFE-478) — 내보낼 때마다 새로 읽은 값이라 CLI `worktree set` 도 다음 내보내기에 보인다.
+ */
+export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly WorkspaceRow[], metadata: Readonly<Record<string, WorktreeMetadataRecord>> = {}): Tree {
   const byWorkspaceId = new Map<string, WorkspaceRow>()
   for (const workspace of workspaces) byWorkspaceId.set(workspace.workspaceId, workspace)
 
@@ -154,6 +165,9 @@ export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly
         openWorkspaceId: wins ? id : null,
         workspace,
         gitStatus: worktree.gitStatus,
+        displayName: metadata[worktree.path]?.displayName || null,
+        comment: metadata[worktree.path]?.comment || null,
+        parentPath: parentPathOf(metadata[worktree.path]?.parentWorktreeId),
       }
     }),
   }))

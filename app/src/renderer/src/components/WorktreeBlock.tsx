@@ -18,7 +18,7 @@
 //   git 마크는 제목 줄에 안 그리고 제목 hover 카드로 옮긴다(Q-W1 사용자 결정 — `card-display.ts`).
 // · 에이전트 활동 끔(`cardProperties` 에 `inline-agents` 없음) → 목록(알약·행) 전체가 사라지고 상태 점은 남는다.
 // · Full list → 루트마다 3줄 행(`AgentFullRow`), 묶음 알약 없음, 자식은 기본 펼침.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentKind, IntegrationRow, OrchestrationLineage, RetainedAgentRow, WorktreeRow } from '../../../shared/types.js'
 import type { SidebarAgentActivityLayout, SidebarCardLayout } from '../../../shared/sidebar-view.js'
 import { compactHoverContent, type CompactHover } from '../card-display.js'
@@ -32,7 +32,8 @@ import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { EllipsisIcon, PlusIcon } from './AgentStateDot.js'
 import { HoverCard } from './HoverCard.js'
 import { SessionRow } from './SessionRow.js'
-import { StarIcon } from './SidebarIcons.js'
+import { NoteIcon, StarIcon, TrashIcon } from './SidebarIcons.js'
+import { useMenuBus } from '../menu-bus.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
 
 const AGENT_KINDS: Array<{ kind: AgentKind; label: string }> = [
@@ -67,7 +68,10 @@ export function WorktreeBlock({
   layout = 'detailed',
   showAgents = true,
   agentLayout = 'compact',
+  card = NO_CARD_ACTIONS,
 }: {
+  /** 카드 메뉴 쪽 상태·손잡이 (LIFE-478) — 우클릭·rename·삭제·고정·Reveal 번쩍. 기본값은 아무 것도 안 한다(옛 호출부·시험). */
+  card?: CardActions
   /** Card layout (LIFE-477) — 기본 Detailed. */
   layout?: SidebarCardLayout
   /** 에이전트 목록을 그리나 — `showsInlineAgents(view)`(에이전트 활동 켬 + Detailed). 상태 점과는 무관하다. */
@@ -119,6 +123,29 @@ export function WorktreeBlock({
 }): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  // K2ⓖ — 카드 ⋯ 도 메뉴 하나 규칙(다른 메뉴가 열리면 닫힘)과 바깥 클릭·Esc 닫기를 갖는다.
+  useMenuBus({ open: menuOpen, close: () => setMenuOpen(false) })
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (event: MouseEvent): void => {
+      // ⋯ 단추 자신은 토글이 맡는다(여기서 닫으면 같은 클릭이 다시 연다).
+      if (event.target instanceof Element && event.target.closest('[data-worktree-menu-toggle]') !== null) return
+      if (!(event.target instanceof Node) || menuRef.current?.contains(event.target) !== true) setMenuOpen(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onDown, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [menuOpen])
   /** 접은 계보 부모 — 기본은 펼침이다(Orca: "spawned child agents are actionable work", `WorktreeCardAgents.tsx:256`). */
   const [foldedParents, setFoldedParents] = useState<ReadonlySet<string>>(() => new Set())
   useEffect(() => {
@@ -149,7 +176,7 @@ export function WorktreeBlock({
   const branch = worktree.branch
   const status = worktreeStatus({ rows: roots, hasOpenTabs: (worktree.workspace?.tabs.length ?? 0) > 0 })
   const compact = layout === 'compact'
-  const hover = compact ? compactHoverContent({ branch, title, gitStatus: worktree.gitStatus }) : null
+  const hover = compact ? compactHoverContent({ branch, title, gitStatus: worktree.gitStatus, comment: worktree.comment, parent: card.parentName }) : null
   const full = agentLayout === 'full'
 
   const toggleFolded = (key: string): void =>
@@ -226,19 +253,42 @@ export function WorktreeBlock({
     <div
       className={`worktree-row ${dragging ? 'is-reorder-source' : ''}`}
       data-worktree={worktree.path}
-      data-reorder-card={worktree.path}
-      onMouseDown={onCardMouseDown}
+      data-reorder-card={card.reorderable ? worktree.path : undefined}
+      data-worktree-pinned={card.pinned ? '' : undefined}
+      onMouseDown={card.reorderable ? onCardMouseDown : undefined}
     >
       <div
-        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'} ${compact ? 'is-compact' : ''}`}
+        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'} ${compact ? 'is-compact' : ''} ${card.deleting ? 'is-deleting' : ''} ${card.flash ? 'card-reveal-flash' : ''}`}
+        data-worktree-deleting={card.deleting ? '' : undefined}
         data-worktree-card-surface=""
         data-card-layout={layout}
         data-worktree-card-active={selected ? 'primary' : undefined}
         data-chip-worktree={worktree.path}
         data-chip-value={worktree.openWorkspaceId !== null ? 'open' : 'closed'}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onClick={onSelectBlock}
+        onMouseEnter={() => {
+          setHovered(true)
+          card.onHover(true)
+        }}
+        onMouseLeave={() => {
+          setHovered(false)
+          card.onHover(false)
+        }}
+        onClick={() => {
+          // 삭제 중 카드는 클릭을 삼킨다(198 `use-worktree-card-activation-actions.ts:71-75`).
+          if (!card.deleting) onSelectBlock()
+        }}
+        // 우클릭 = 메뉴. 카드를 활성화하지 않고 끌기도 시작하지 않는다(K2ⓑ — 끌기는 왼쪽 단추만 무장한다).
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          card.onContextMenu({ x: event.clientX, y: event.clientY })
+        }}
+        // 제목 밖 더블클릭 = 상세 대화(198 `activation-actions.ts:119-135`). 에이전트 목록·단추 위는 제외.
+        onDoubleClick={(event) => {
+          if (card.deleting) return
+          if (event.target instanceof Element && event.target.closest('.agent-list, button, input, textarea, [data-worktree-title]') !== null) return
+          card.onOpenDetails()
+        }}
       >
         <div className="worktree-card-content" data-worktree-card-parent-content="">
           <WorktreeStatusSlot status={status} />
@@ -252,23 +302,46 @@ export function WorktreeBlock({
                     {repoLabel}
                   </span>
                 ) : null}
-                <HoverCard
-                  content={hover === null ? null : <CompactHoverBody hover={hover} />}
-                  suppressed={reordering}
-                  testId={worktree.path}
-                  render={(trigger) => (
-                    // hover 카드가 있으면 네이티브 툴팁을 겹치지 않는다(198 `titleWrapper` 주석 — 「don't stack the title's truncation tooltip」).
-                    <span
-                      {...trigger}
-                      className="worktree-name"
-                      data-worktree-branch={worktree.path}
-                      data-worktree-title=""
-                      title={hover === null ? `${title}\n${worktree.path}` : undefined}
-                    >
-                      {title}
-                    </span>
-                  )}
-                />
+                {card.renaming ? (
+                  <InlineRename title={title} path={worktree.path} onCommit={card.onRenameCommit} onCancel={card.onRenameCancel} />
+                ) : (
+                  <HoverCard
+                    content={hover === null ? null : <CompactHoverBody hover={hover} />}
+                    suppressed={reordering}
+                    testId={worktree.path}
+                    render={(trigger) => (
+                      // hover 카드가 있으면 네이티브 툴팁을 겹치지 않는다(198 `titleWrapper` 주석 — 「don't stack the title's truncation tooltip」).
+                      <span
+                        {...trigger}
+                        className="worktree-name"
+                        data-worktree-branch={worktree.path}
+                        data-worktree-title=""
+                        title={hover === null ? `${title}\n${worktree.path}` : undefined}
+                        // 제목 더블클릭 = 인라인 rename(198 `WorktreeTitleInlineRename.tsx:188-198`).
+                        onDoubleClick={(event) => {
+                          event.stopPropagation()
+                          if (!card.deleting) card.onBeginRename()
+                        }}
+                      >
+                        {title}
+                      </span>
+                    )}
+                  />
+                )}
+                {worktree.comment === null ? null : (
+                  // 198 노트 배지(`WorktreeCardMetaBadges.tsx:81-90` StickyNote 「Workspace notes」) + hover 로 내용(Notes 절).
+                  <HoverCard
+                    content={<NoteHoverBody comment={worktree.comment} />}
+                    suppressed={reordering}
+                    openDelay={250}
+                    testId={`${worktree.path}#note`}
+                    render={(trigger) => (
+                      <span {...trigger} className="worktree-note-badge" data-worktree-note-badge="" aria-label="워크스페이스 메모">
+                        <NoteIcon className="worktree-note-icon" />
+                      </span>
+                    )}
+                  />
+                )}
                 {groupGlyph === null ? null : (
                   <span className="worktree-groups-glyph" data-worktree-groups={worktree.path} title="영역 레이아웃이 보존돼 있다">
                     {groupGlyph}
@@ -284,7 +357,22 @@ export function WorktreeBlock({
                     <StarIcon className="worktree-primary-star-icon" />
                   </span>
                 ) : null}
-                {isOpen ? (
+                {card.showTrash && hovered && worktree.isLinked && !card.deleting ? (
+                  // Option 을 누르고 있는 동안만(198 `workspace-delete-quick-action.ts:21-31`) — 같은 확인 대화로 간다.
+                  <button
+                    className="repo-row-action-btn worktree-trash-btn"
+                    data-worktree-trash={worktree.path}
+                    title="워크트리 삭제"
+                    aria-label="워크트리 삭제"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      card.onDelete()
+                    }}
+                  >
+                    <TrashIcon className="repo-row-action-icon is-small" />
+                  </button>
+                ) : null}
+                {isOpen && !card.deleting ? (
                   <div className={`worktree-block-actions ${hovered || menuOpen ? 'is-active' : ''}`} data-worktree-actions={worktree.path}>
                     <button
                       className="repo-row-action-btn"
@@ -314,7 +402,7 @@ export function WorktreeBlock({
                   </div>
                 ) : null}
               </div>
-              {compact || (branch === null && markLabel === null && repoLabel === null) ? null : (
+              {compact || (branch === null && markLabel === null && repoLabel === null && card.parentName === null) ? null : (
                 <div className="worktree-block-line2" data-worktree-card-meta-row="">
                   {repoLabel === null ? null : (
                     <span className="worktree-repo-label" data-worktree-repo-label="" title={repoLabel}>
@@ -324,6 +412,12 @@ export function WorktreeBlock({
                   {branch === null ? null : (
                     <span className="worktree-sub" data-worktree-meta-branch="" title={branch}>
                       {branch}
+                    </span>
+                  )}
+                  {card.parentName === null ? null : (
+                    // 198 은 자식을 부모 아래 중첩해 보인다 — corral 은 중첩을 만들지 않고(게이트 ⓪ Q4) 메타 줄에 상위 이름을 적는다(K6ⓔ).
+                    <span className="worktree-parent-chip" data-worktree-parent={worktree.parentPath ?? ''} title={`상위 워크트리: ${card.parentName}`}>
+                      ↳ {card.parentName}
                     </span>
                   )}
                   {markLabel !== null ? <span className={`worktree-mark tone-${tone}`}>{markLabel}</span> : null}
@@ -362,8 +456,13 @@ export function WorktreeBlock({
             ) : null}
           </div>
         </div>
+        {card.deleting ? (
+          <div className="worktree-deleting-pill" data-worktree-deleting-pill="">
+            삭제 중…
+          </div>
+        ) : null}
         {menuOpen ? (
-          <div className="repo-row-menu worktree-menu" data-worktree-menu={worktree.path} onClick={(event) => event.stopPropagation()}>
+          <div ref={menuRef} className="repo-row-menu worktree-menu" data-worktree-menu={worktree.path} onClick={(event) => event.stopPropagation()}>
             <div
               className="repo-row-menu-item"
               data-worktree-create-shell={worktree.path}
@@ -425,6 +524,110 @@ function CompactHoverBody({ hover }: { hover: CompactHover }): React.JSX.Element
           <span className="hover-card-git-words">{hover.git.words}</span>
         </div>
       )}
+      {hover.parent === undefined ? null : (
+        <div className="hover-card-section" data-hover-parent="">
+          <span className="hover-card-label">상위</span>
+          <span>{hover.parent}</span>
+        </div>
+      )}
+      {hover.comment === undefined ? null : <NoteHoverBody comment={hover.comment} />}
     </div>
   )
+}
+
+/** 198 hover 카드 「Notes」 절 — 마크다운 렌더는 하지 않고 줄바꿈을 지킨 글자로 보인다. */
+function NoteHoverBody({ comment }: { comment: string }): React.JSX.Element {
+  return (
+    <div className="hover-card-section hover-card-notes" data-hover-notes="">
+      <span className="hover-card-label">메모</span>
+      <span className="hover-card-notes-text">{comment}</span>
+    </div>
+  )
+}
+
+/**
+ * 제목 인라인 rename (198 `WorktreeTitleInlineRename.tsx`) — 글자가 선택된 채 열린다. Enter 확정 · Esc 취소 · blur 확정 ·
+ * **빈 값·같은 값 = 취소**(브랜치로 되돌리지 않는다 — 그건 상세 대화의 빈 값) · IME 조합 중 Enter 무시.
+ * `data-inline-rename` — 단축키 처리기가 이 입력에 양보하고(useKeybindings), 끌기 무장도 input 이라 안 된다(NON_HANDLE_SELECTOR).
+ */
+function InlineRename({ title, path, onCommit, onCancel }: { title: string; path: string; onCommit: (name: string) => void; onCancel: () => void }): React.JSX.Element {
+  const [value, setValue] = useState(title)
+  const ref = useRef<HTMLInputElement | null>(null)
+  const done = useRef(false)
+  useEffect(() => {
+    ref.current?.focus()
+    ref.current?.select()
+  }, [])
+  const finish = (commit: boolean): void => {
+    if (done.current) return
+    done.current = true
+    const next = value.trim()
+    if (!commit || next === '' || next === title) onCancel()
+    else onCommit(next)
+  }
+  return (
+    <input
+      ref={ref}
+      className="worktree-name-input"
+      data-inline-rename={path}
+      value={value}
+      aria-label="워크트리 이름"
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onBlur={() => finish(true)}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          finish(true)
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          finish(false)
+        }
+      }}
+    />
+  )
+}
+
+/** 카드 메뉴 쪽 손잡이 (LIFE-478). Sidebar 가 채운다. */
+export type CardActions = {
+  /** 끌기 대상인가 — Pinned 구획 카드는 아니다(K5ⓕ). */
+  reorderable: boolean
+  pinned: boolean
+  deleting: boolean
+  renaming: boolean
+  /** Reveal 번쩍 중(K9ⓔ). */
+  flash: boolean
+  /** Option 을 누르고 있다 — hover 중 휴지통(K7ⓗ). */
+  showTrash: boolean
+  /** 상위 워크트리 표시 이름 — 없으면 null. */
+  parentName: string | null
+  onContextMenu: (point: { x: number; y: number }) => void
+  onBeginRename: () => void
+  onRenameCommit: (name: string) => void
+  onRenameCancel: () => void
+  onOpenDetails: () => void
+  onDelete: () => void
+  onHover: (hovered: boolean) => void
+}
+
+const noop = (): void => {}
+export const NO_CARD_ACTIONS: CardActions = {
+  reorderable: true,
+  pinned: false,
+  deleting: false,
+  renaming: false,
+  flash: false,
+  showTrash: false,
+  parentName: null,
+  onContextMenu: noop,
+  onBeginRename: noop,
+  onRenameCommit: noop,
+  onRenameCancel: noop,
+  onOpenDetails: noop,
+  onDelete: noop,
+  onHover: noop,
 }

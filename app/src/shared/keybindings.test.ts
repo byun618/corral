@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
-    expect(ACTIONS).toHaveLength(11)
+    // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
+    expect(ACTIONS).toHaveLength(13)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -81,5 +82,19 @@ describe('LIFE-470 K1 — ⌘J search chord', () => {
     const overrides = validateOverrides({ 'palette.open': ['Mod+J'] })
     expect(matchBinding('Mod+J', overrides)?.id).toBe('palette.open')
     expect(bindingsFor('palette.search', overrides)).toEqual([])
+  })
+  it('LIFE-478 ⌘⌥R(macOS Option 글리프 ®) → workspace.rename · ⌘⇧⌫ → workspace.delete, 설정 화면 재지정 가능', () => {
+    const optionR = { key: '®', code: 'KeyR', metaKey: true, ctrlKey: false, shiftKey: false, altKey: true }
+    expect(matchBinding(bindingFromEvent(optionR)!, {})).toEqual({ id: 'workspace.rename', variant: 0 })
+    const del = { key: 'Backspace', code: 'Backspace', metaKey: true, ctrlKey: false, shiftKey: true, altKey: false }
+    expect(matchBinding(bindingFromEvent(del)!, {})).toEqual({ id: 'workspace.delete', variant: 0 })
+    expect(validateOverrides({ 'workspace.rename': ['Mod+Alt+N'] })).toEqual({ 'workspace.rename': ['Mod+Alt+N'] })
+    expect(matchBinding('Mod+Alt+N', { 'workspace.rename': ['Mod+Alt+N'] })).toEqual({ id: 'workspace.rename', variant: 0 })
+  })
+  it('LIFE-478 새 기본값은 비켜 선다 — 사용자가 ⌘⌥R 을 다른 액션에 재정의해 두었으면 그 재정의가 이긴다', () => {
+    const overrides = validateOverrides({ 'palette.open': ['Mod+Alt+R'] }, true)
+    expect(overrides).toEqual({ 'palette.open': ['Mod+Alt+R'] })
+    expect(bindingsFor('workspace.rename', overrides)).toEqual([])
+    expect(matchBinding('Mod+Alt+R', overrides)).toEqual({ id: 'palette.open', variant: 0 })
   })
 })

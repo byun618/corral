@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { randomUUID } from 'node:crypto'
-import { RuntimeError, type RpcResponse } from './contracts.js'
+import { RuntimeError, type Invocation, type RpcRequest, type RpcResponse } from './contracts.js'
 import { CommandRegistry, foundationSpecs, validateFoundation } from './registry.js'
 import { atomicWrite, privateDirectory, readFile, recoverLock } from './storage.js'
 import { serveSocket, socketPath } from './transport.js'
@@ -94,7 +94,9 @@ export async function startRuntime(options: {
     registry.register(terminalModule(options.userData, options.terminalDesktop))
     registry.register(orchestrationModule(options.userData))
     const lanes = new Map<string, Promise<unknown>>()
-    stopSocket = await serveSocket(endpoint, async (req, cancelled): Promise<RpcResponse> => {
+    // One dispatcher for the socket and for in-process GUI calls (LIFE-478 K1ⓑ·K7ⓒ): same validation,
+    // same serial lanes, same command bodies — the GUI never reimplements `worktree set`/`worktree rm`.
+    const dispatch = async (req: RpcRequest, cancelled: AbortSignal): Promise<RpcResponse> => {
       const signal = AbortSignal.any([controller.signal, cancelled, AbortSignal.timeout(req.timeoutMs ?? 10000)])
       const meta = { runtimeId, instanceId }
       let effectsStarted = false
@@ -130,13 +132,17 @@ export async function startRuntime(options: {
         const stage = error instanceof RuntimeError && error.stage ? error.stage : terminal ? (effectsStarted ? 'backend' : 'preflight') : undefined
         return { id: req.id, ok: false, error: { code: waitTimeout ? 'wait_timeout' : signal.aborted ? 'request_cancelled' : error instanceof RuntimeError ? error.code : 'operation_failed', message: error instanceof Error ? error.message : String(error), resources, stage }, _meta: { ...meta, outcome: error instanceof RuntimeError && error.outcome ? error.outcome : effectsStarted ? 'unknown' : 'not_started' } }
       }
-    }, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
+    }
+    stopSocket = await serveSocket(endpoint, dispatch, (req, response) => { if (req.invocation.command === 'open' && response.ok && !options.ui) options.requestDesktop?.() })
     atomicWrite(lock, { pid: process.pid, instanceId, socket: endpoint, socketInode: fs.lstatSync(endpoint).ino })
     // LIFE-409 §4.5: reconcile the open attempts once as this runtime becomes ready, so a pane that
     // died while corral was not running is `unknown` on disk without waiting for a command. It runs
     // in the orchestration serial lane, so the first command queues behind it rather than racing it,
     // and it never rejects: a backend it cannot reach writes nothing.
     lanes.set('orchestration', orchestrationStartupSweep(options.userData, { instanceId, signal: controller.signal }))
-    return { runtimeId, status, close: cleanup }
+    /** In-process call for the desktop UI — the same dispatcher the socket uses, without a client. */
+    const invoke = (invocation: Invocation, timeoutMs = 60000): Promise<RpcResponse> =>
+      dispatch({ version: 1, id: randomUUID(), invocation, timeoutMs }, new AbortController().signal)
+    return { runtimeId, status, close: cleanup, invoke }
   } catch (error) { await cleanup(); throw error }
 }

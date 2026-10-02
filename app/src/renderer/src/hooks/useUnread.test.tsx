@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // LIFE-471 `useUnread` — K1 창 신호(visibilityState·hasFocus → `<html data-window-attention>`) · K8ⓑ 벨 저장 왕복
-// (렌더러 `setUiPrefs` 패치 → 저장소 → 재시작 → 렌더러 hydrate) · 터미널 입력 키 판정.
+// (렌더러 `setUiPrefs` 패치 → 저장소 → 재시작 → 렌더러 hydrate) · r1 L2 하이드레이션 경계 · 터미널 입력 키 판정.
 // 저장소는 main `UiPrefsStore` 의 부분 갱신과 같은 모양의 가짜다(렌더러 tsconfig 는 main 파일을 못 싣는다) — 그 칸을 main 이
 // 파일에서 읽고 쓰는 왕복은 `main/ui-prefs.test.ts` 「안 읽음 벨 영속」 이 본다. 둘이 같은 칸 이름(`unreadWorktrees`)을 쓰는 것은
 // 타입(`Partial<UiPrefs>`)이 강제한다.
@@ -111,6 +111,50 @@ describe('K8ⓑ 벨 저장 왕복 (렌더러 패치 → main 스토어 → 재�
     expect([...(probe.view?.worktrees ?? [])]).toEqual(['/r/kept'])
     act(() => probe.view?.toggle('/r/kept'))
     expect(writes).toEqual([{ unreadWorktrees: [] }])
+  })
+})
+
+describe('r1 L2 하이드레이션 경계', () => {
+  it('ⓐ ui-prefs 읽기가 실패하면 이번 실행 동안 벨을 저장하지 않는다 — 저장값을 덮지 않는다', async () => {
+    const writes: Array<Partial<UiPrefs>> = []
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Reflect.set(window, 'corral', {
+      getUiPrefs: (): Promise<Partial<UiPrefs>> => Promise.reject(new Error('ipc down')),
+      setUiPrefs: (patch: Partial<UiPrefs>): void => {
+        writes.push(patch)
+      },
+    })
+    await mount()
+    act(() => probe.view?.markUnread('/r/a'))
+    act(() => probe.view?.toggle('/r/a'))
+    expect(writes).toEqual([])
+  })
+  it('ⓑ 읽기 전에 누른 Mark Read 는 저장값과 합친 뒤에 다시 적용된다 — 읽음 처리한 벨이 되살아나지 않는다', async () => {
+    store.update({ unreadWorktrees: ['/r/a', '/r/b'] })
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    Reflect.set(window, 'corral', {
+      getUiPrefs: async (): Promise<Partial<UiPrefs>> => {
+        await gate
+        return store.get()
+      },
+      setUiPrefs: (patch: Partial<UiPrefs>): void => store.update(patch),
+    })
+    root = createRoot(host)
+    await act(async () => {
+      root.render(createElement(Probe))
+    })
+    act(() => probe.view?.markRead('/r/a'))
+    act(() => probe.view?.markUnread('/r/c'))
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect([...(probe.view?.worktrees ?? [])].sort()).toEqual(['/r/b', '/r/c'])
+    expect(disk.unreadWorktrees).toEqual(['/r/b', '/r/c'])
   })
 })
 

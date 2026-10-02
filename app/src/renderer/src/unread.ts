@@ -12,13 +12,15 @@
 //
 // # 완료 (01-criteria 용어)
 //
-// working/blocked → idle/done 전이. main 이 전이마다 이력(`agentState.history`)을 남기므로 화면이 상태 묶음을 건너뛰어도
-// 「지금 상태의 직전 상태」로 전이를 안다. 완료 하나의 표식 = 그 상태에 들어선 시각(`agentState.observedAt`).
-//   · main 이 처음 본 pane 이 이미 `done` (이력 없음) → 완료(herdr 가 안 본 완료라고 말한다)
+// working/blocked → idle/done 전이. main 이 전이마다 이력(`agentState.history`, 최대 20)을 남기므로, 화면은 마지막으로 살핀 시각
+// 이후의 이력을 훑어 묶음 하나에 합쳐 온 전이(working→idle→working 등)도 센다(r1 L3). 완료 하나의 표식 = 그 상태에 들어선 시각.
+//   · main 이 처음 본 pane 이 이미 `done` (이력 없음) → pane 안 읽음만(herdr 가 안 본 완료라고 말한다). **벨은 안 켠다**
+//     (r1 M2 · 01-criteria 변경 기록 — 재시작마다 herdr 에 남은 done 이 벨을 다시 켜던 것. 198 도 완료 이벤트에서만 벨을 켠다)
 //   · 처음 본 `idle` · 기동 직후 첫 idle(herdr 가 완료를 억제 → 직전이 working 이 아니다) → 완료 아님
 //   · `done → idle`(herdr 가 조용히 seen 처리 — 재동기에서야 보인다) → 직전이 done 이라 새 완료 아님
 //   · unknown → idle/done 은 세지 않는다 — herdr #4825 류(바뀌지 않은 에이전트를 다시 「새 활동」으로)를 안 읽음으로 세지 않게
-// 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 완료로 본다.
+// 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 pane 안 읽음(벨 없음).
+// 벨을 켜는 것은 실제 완료 전이와 Mark Unread 뿐이고, 재시작 뒤 벨은 저장값을 따른다.
 //
 // # 보고 있음 (watched)
 //
@@ -38,9 +40,12 @@ export type PaneObservation = {
   status: AgentStatus
   /** 지금 상태에 들어선 시각(main `agentState.observedAt`). 완료 하나의 표식이다. */
   enteredAt: number
-  /** 직전 상태(이력 맨 앞). 이력이 없으면 null — main 이 이 pane 을 처음 본 것이다. */
-  previousStatus: AgentStatus | null
+  /** 지나온 상태들, **최신순**(main `agentState.history` — 그 상태에 들어선 시각). 비었으면 main 이 이 pane 을 처음 본 것이다. */
+  history: readonly { status: AgentStatus; enteredAt: number }[]
 }
+
+/** 레포 하나의 이번 묶음 — 벨 정리가 스캔 실패(git·herdr 에러)를 「사라짐」으로 읽지 않게(r1 M1). */
+export type RepoScan = { root: string; error: boolean; worktreePaths: readonly string[] }
 
 export type PaneUnread = { worktreePath: string; at: number }
 
@@ -55,8 +60,8 @@ export type UnreadModel = {
   worktrees: ReadonlySet<string>
   /** 마지막으로 본 (null 아닌) 활성 worktree — 활성화(사용자 전환) 감지용. 닫힘 사이의 null 은 건너뛴다. */
   activeWorktree: string | null
-  /** 이번 세션에 화면에 있었던 worktree 경로 — 사라지면 그 벨을 지운다(삭제·레포 제거 유령 방지, K8ⓓ). */
-  present: ReadonlySet<string>
+  /** 이번 세션에 화면에 있었던 worktree 경로 → 그 레포 루트. 사라지면 그 벨을 지운다(삭제·레포 제거 유령 방지, K8ⓓ). */
+  present: ReadonlyMap<string, string>
 }
 
 export const EMPTY_UNREAD: UnreadModel = {
@@ -65,7 +70,7 @@ export const EMPTY_UNREAD: UnreadModel = {
   panes: new Map(),
   worktrees: new Set(),
   activeWorktree: null,
-  present: new Set(),
+  present: new Map(),
 }
 
 /** 지금 보고 있는 pane 과 그 시작 시각. 창이 숨었거나 앱이 포커스가 아니면 null. */
@@ -74,24 +79,39 @@ export type Watched = { paneId: string; since: number } | null
 const FINISHED: readonly AgentStatus[] = ['idle', 'done']
 const RUNNING: readonly AgentStatus[] = ['working', 'blocked']
 
-export function isCompletion(input: { obs: PaneObservation; firstBatch: boolean }): boolean {
-  const { obs } = input
-  if (!FINISHED.includes(obs.status)) return false
-  if (input.firstBatch) return obs.status === 'done'
-  if (obs.previousStatus === null) return obs.status === 'done'
-  return RUNNING.includes(obs.previousStatus)
+/** 새로 센 완료 하나 — 그 상태에 들어선 시각과, 벨을 켜는 실제 전이인가(처음 보는 done 은 아니다 — M2). */
+export type Completion = { at: number; bell: boolean }
+
+/**
+ * 이 관측에서 새로 센 완료들(오래된 것부터). `since` = 이 pane 을 마지막으로 살폈을 때의 상태 진입 시각 — 그보다 뒤에 들어선
+ * 상태만 새것이다. 같은 완료를 두 번 세지 않는다.
+ */
+export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined }): Completion[] {
+  const { obs, firstBatch, since } = input
+  // 처음 보는 done — 첫 묶음이거나 main 이 처음 본 pane. 굵기만, 벨 없음.
+  if (firstBatch || obs.history.length === 0) return obs.status === 'done' && obs.enteredAt !== since ? [{ at: obs.enteredAt, bell: false }] : []
+  const timeline = [...obs.history].reverse().concat([{ status: obs.status, enteredAt: obs.enteredAt }])
+  const found: Completion[] = []
+  for (let i = 1; i < timeline.length; i += 1) {
+    const step = timeline[i]
+    const before = timeline[i - 1]
+    if (step === undefined || before === undefined) continue
+    if (since !== undefined && step.enteredAt <= since) continue
+    if (RUNNING.includes(before.status) && FINISHED.includes(step.status)) found.push({ at: step.enteredAt, bell: true })
+  }
+  return found
 }
 
 /**
  * 상태 묶음 하나를 받아 장부를 갱신한다 — 완료 기록 → 사라진 것 정리 → 활성화 해제 → 보고 있는 pane 자동 확인 순.
  *
- * `livePaneIds` 밖이고 `retainedPaneIds` 에도 없는 pane 의 안 읽음은 버린다. `worktreePaths` 는 지금 화면의 worktree 경로 전부 —
- * 비어 있으면(첫 적재 전) 벨 정리를 건너뛴다.
+ * 묶음에 없고 `retainedPaneIds` 에도 없는 pane 의 안 읽음은 버린다. `repos` 는 지금 화면의 레포별 worktree 경로 —
+ * 경로가 하나도 없으면(첫 적재 전) 벨 정리를 건너뛴다.
  */
 export function ingest(model: UnreadModel, input: {
   panes: readonly PaneObservation[]
   retainedPaneIds: ReadonlySet<string>
-  worktreePaths: ReadonlySet<string>
+  repos: readonly RepoScan[]
   activeWorktree: string | null
   /** 창이 보이고 앱이 포커스인가 — 활성화가 사용자의 것인지 가른다. */
   attentive: boolean
@@ -102,24 +122,36 @@ export function ingest(model: UnreadModel, input: {
   const worktrees = new Set(model.worktrees)
   const firstBatch = !model.initialized
   for (const obs of input.panes) {
-    if (examined.get(obs.paneId) === obs.enteredAt) continue
-    const fresh = isCompletion({ obs, firstBatch })
+    const since = examined.get(obs.paneId)
+    if (since === obs.enteredAt) continue
+    const found = completionsOf({ obs, firstBatch, since })
     examined.set(obs.paneId, obs.enteredAt)
-    if (!fresh) continue
-    const watched = input.watched !== null && input.watched.paneId === obs.paneId && input.watched.since <= obs.enteredAt
-    if (watched) continue
-    panes.set(obs.paneId, { worktreePath: obs.worktreePath, at: obs.enteredAt })
-    worktrees.add(obs.worktreePath)
+    const watching = input.watched !== null && input.watched.paneId === obs.paneId ? input.watched.since : null
+    const unseen = found.filter((completion) => watching === null || completion.at < watching)
+    const last = unseen.at(-1)
+    if (last === undefined) continue
+    panes.set(obs.paneId, { worktreePath: obs.worktreePath, at: last.at })
+    if (unseen.some((completion) => completion.bell)) worktrees.add(obs.worktreePath)
   }
   const live = new Set(input.panes.map((obs) => obs.paneId))
   for (const paneId of panes.keys()) if (!live.has(paneId) && !input.retainedPaneIds.has(paneId)) panes.delete(paneId)
 
-  // 사라진 worktree 의 벨 — 이번 세션에 화면에 있었던 경로만 지운다(첫 적재가 늦어 빈 목록이 와도 저장된 벨을 잃지 않게).
-  const present = new Set(model.present)
-  for (const path of input.worktreePaths) present.add(path)
-  if (input.worktreePaths.size > 0) {
-    for (const path of [...worktrees]) if (present.has(path) && !input.worktreePaths.has(path)) worktrees.delete(path)
-    for (const path of [...present]) if (!input.worktreePaths.has(path)) present.delete(path)
+  // 사라진 worktree 의 벨 (K8ⓓ · r1 M1·L1).
+  //   · 스캔이 실패한 레포(error)는 worktree 가 빈 목록으로 온다 — 그 레포에서 알던 경로는 「사라짐」이 아니라 「모름」이다(벨·present 유지).
+  //   · 이번 세션에 본 적 없는 저장 벨(앱이 꺼진 사이 지운 worktree)은 **모든 레포가 에러 없이 적재된** 묶음에서만 지운다.
+  //   · 경로가 하나도 없는 묶음(첫 적재 전)에서는 아무것도 지우지 않는다.
+  const seen = new Set(input.repos.flatMap((repo) => repo.worktreePaths))
+  const errored = new Set(input.repos.filter((repo) => repo.error).map((repo) => repo.root))
+  const present = new Map(model.present)
+  for (const repo of input.repos) for (const path of repo.worktreePaths) present.set(path, repo.root)
+  if (seen.size > 0) {
+    const clean = errored.size === 0
+    for (const path of [...worktrees]) {
+      if (seen.has(path)) continue
+      const root = present.get(path)
+      if (clean || (root !== undefined && !errored.has(root))) worktrees.delete(path)
+    }
+    for (const [path, root] of [...present]) if (!seen.has(path) && !errored.has(root)) present.delete(path)
   }
 
   // worktree 활성화 (198 `set-active-worktree.ts:82,97`) — 보고 있는 중에 활성 worktree 가 **다른 것으로 바뀌면** 그 벨을 끈다.

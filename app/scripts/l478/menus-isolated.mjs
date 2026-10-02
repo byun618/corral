@@ -558,7 +558,8 @@ async function main() {
   await openCardMenu(wtA('a-one'))
   snap = await snapshot()
   const linkedItems = snap.cardMenu.items.map((i) => i.label)
-  const wantLinked = ['업데이트', '열기', '경로 복사', '고정', '상위 워크트리 변경…', '상위 워크트리 열기', '상위에서 빼기', '워크트리 삭제']
+  // LIFE-471 K6ⓐ: 고정 바로 다음에 「안 읽음으로 표시」(벨 꺼짐 카드) — 198 Mark Unread.
+  const wantLinked = ['업데이트', '열기', '경로 복사', '고정', '안 읽음으로 표시', '상위 워크트리 변경…', '상위 워크트리 열기', '상위에서 빼기', '워크트리 삭제']
   await shot('10-menu-linked')
   await closeAllMenus()
   await openCardMenu(alpha)
@@ -569,7 +570,7 @@ async function main() {
   await openCardMenu(wtCli)
   const cliItems = (await snapshot()).cardMenu.items.map((i) => i.label)
   await closeAllMenus()
-  check('K2a-items-linked', 'K2ⓐ 링크 워크트리(부모 없음) 메뉴 = 업데이트 | 열기 · 경로 복사 | 고정 | 상위 워크트리 지정… | 워크트리 삭제', same(linkedItems, ['업데이트', '열기', '경로 복사', '고정', '상위 워크트리 지정…', '워크트리 삭제']), { linkedItems })
+  check('K2a-items-linked', 'K2ⓐ 링크 워크트리(부모 없음) 메뉴 = 업데이트 | 열기 · 경로 복사 | 고정 · 안 읽음으로 표시(LIFE-471) | 상위 워크트리 지정… | 워크트리 삭제', same(linkedItems, ['업데이트', '열기', '경로 복사', '고정', '안 읽음으로 표시', '상위 워크트리 지정…', '워크트리 삭제']), { linkedItems })
   check('K2a-items-with-parent', 'K2ⓐ 부모 있는 워크트리 메뉴 = … 상위 워크트리 변경… · 상위 워크트리 열기 · 상위에서 빼기 | 워크트리 삭제', same(cliItems, wantLinked), { cliItems })
   const mainDelete = mainItems.find((i) => i.action === 'delete')
   check('K7a-main-disabled', 'K7ⓐ 주 체크아웃 = 「워크트리 삭제」 disabled + 이유 툴팁, 「프로젝트 제거」 없음(#17645)', mainDelete?.disabled === true && /레포 ⋯/.test(mainDelete?.title ?? '') && !mainItems.some((i) => /프로젝트/.test(i.label ?? '')), { mainItems })

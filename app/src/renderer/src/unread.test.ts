@@ -2,21 +2,29 @@
 // 「보고 있음」 = 창이 보이고 포커스 + 활성 영역 선택 pane. 판정 시각은 완료 순간(enteredAt)과 보기 시작한 시각(since)의 비교다.
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus } from '../../shared/types.js'
-import { acknowledgeInput, EMPTY_UNREAD, ingest, isCompletion, markRead, markUnread, type PaneObservation, type UnreadModel, type Watched } from './unread.js'
+import { acknowledgeInput, completionsOf, EMPTY_UNREAD, ingest, markRead, markUnread, type PaneObservation, type RepoScan, type UnreadModel, type Watched } from './unread.js'
 
 const A = '/r/a'
 const B = '/r/b'
+/** 직전 상태 하나만 있는 관측(그 상태에 들어선 시각 = enteredAt - 1). 이력이 더 긴 것은 `withHistory`. */
 const obs = (paneId: string, status: AgentStatus, enteredAt: number, previousStatus: AgentStatus | null, worktreePath = A): PaneObservation => ({
-  paneId, worktreePath, status, enteredAt, previousStatus,
+  paneId, worktreePath, status, enteredAt, history: previousStatus === null ? [] : [{ status: previousStatus, enteredAt: enteredAt - 1 }],
 })
-type Step = { panes: PaneObservation[]; watched?: Watched; attentive?: boolean; active?: string | null; retained?: string[]; paths?: string[] }
+/** 이력을 오래된 것부터 [상태, 진입 시각] 으로 — 마지막이 지금 상태. */
+const withHistory = (paneId: string, steps: Array<[AgentStatus, number]>, worktreePath = A): PaneObservation => {
+  const ordered = steps.map(([status, enteredAt]) => ({ status, enteredAt }))
+  const now = ordered[ordered.length - 1]
+  if (now === undefined) throw new Error('빈 이력')
+  return { paneId, worktreePath, status: now.status, enteredAt: now.enteredAt, history: ordered.slice(0, -1).reverse() }
+}
+type Step = { panes: PaneObservation[]; watched?: Watched; attentive?: boolean; active?: string | null; retained?: string[]; paths?: string[]; repos?: RepoScan[] }
 function run(steps: Step[], start: UnreadModel = EMPTY_UNREAD): UnreadModel {
   let model = start
   for (const step of steps) {
     model = ingest(model, {
       panes: step.panes,
       retainedPaneIds: new Set(step.retained ?? []),
-      worktreePaths: new Set(step.paths ?? [A, B]),
+      repos: step.repos ?? [{ root: '/r', error: false, worktreePaths: step.paths ?? [A, B] }],
       activeWorktree: step.active === undefined ? A : step.active,
       attentive: step.attentive ?? step.watched != null,
       watched: step.watched ?? null,
@@ -30,23 +38,33 @@ const bells = (model: UnreadModel): string[] => [...model.worktrees].sort()
 const START: Step = { panes: [obs('p1', 'working', 100, null), obs('p2', 'working', 100, null), obs('p3', 'working', 100, null, B)] }
 
 describe('완료 판정 (01-criteria 용어 · C10)', () => {
-  it('working/blocked → idle/done 만 완료다', () => {
-    expect(isCompletion({ obs: obs('p', 'idle', 5, 'working'), firstBatch: false })).toBe(true)
-    expect(isCompletion({ obs: obs('p', 'done', 5, 'blocked'), firstBatch: false })).toBe(true)
-    expect(isCompletion({ obs: obs('p', 'working', 5, 'idle'), firstBatch: false })).toBe(false)
+  const found = (o: PaneObservation, firstBatch = false, since?: number): string =>
+    completionsOf({ obs: o, firstBatch, since }).map((c) => `${c.at}${c.bell ? '+bell' : ''}`).join(',')
+  it('working/blocked → idle/done 만 완료다 (벨을 켜는 실제 전이)', () => {
+    expect(found(obs('p', 'idle', 5, 'working'))).toBe('5+bell')
+    expect(found(obs('p', 'done', 5, 'blocked'))).toBe('5+bell')
+    expect(found(obs('p', 'working', 5, 'idle'))).toBe('')
   })
-  it('ⓓ 처음 보는 idle = 아님 · 처음 보는 done = 완료 · 기동 직후 첫 idle(unknown→idle) = 아님', () => {
-    expect(isCompletion({ obs: obs('p', 'idle', 5, null), firstBatch: false })).toBe(false)
-    expect(isCompletion({ obs: obs('p', 'done', 5, null), firstBatch: false })).toBe(true)
-    expect(isCompletion({ obs: obs('p', 'idle', 5, 'unknown'), firstBatch: false })).toBe(false)
+  it('ⓓ 처음 보는 idle = 아님 · 처음 보는 done = pane 안 읽음만(벨 없음 — M2) · 기동 직후 첫 idle(unknown→idle) = 아님', () => {
+    expect(found(obs('p', 'idle', 5, null))).toBe('')
+    expect(found(obs('p', 'done', 5, null))).toBe('5')
+    expect(found(obs('p', 'idle', 5, 'unknown'))).toBe('')
   })
   it('done → idle(herdr 의 조용한 seen)은 새 완료가 아니다 · unknown → done 도 아니다(#4825 류)', () => {
-    expect(isCompletion({ obs: obs('p', 'idle', 5, 'done'), firstBatch: false })).toBe(false)
-    expect(isCompletion({ obs: obs('p', 'done', 5, 'unknown'), firstBatch: false })).toBe(false)
+    expect(found(obs('p', 'idle', 5, 'done'))).toBe('')
+    expect(found(obs('p', 'done', 5, 'unknown'))).toBe('')
   })
-  it('렌더러 첫 묶음은 지나간 전이를 세지 않는다 — done 만 완료', () => {
-    expect(isCompletion({ obs: obs('p', 'idle', 5, 'working'), firstBatch: true })).toBe(false)
-    expect(isCompletion({ obs: obs('p', 'done', 5, 'working'), firstBatch: true })).toBe(true)
+  it('렌더러 첫 묶음은 지나간 전이를 세지 않는다 — done 만 pane 안 읽음, 벨 없음(M2)', () => {
+    expect(found(obs('p', 'idle', 5, 'working'), true)).toBe('')
+    expect(found(obs('p', 'done', 5, 'working'), true)).toBe('5')
+  })
+  it('L3 묶음 하나에 합쳐진 연쇄도 센다 — 마지막으로 살핀 시각 뒤의 이력만, 같은 완료는 두 번 안 센다', () => {
+    // 재현 2: working → idle → working 이 한 묶음 — 지금은 working 이지만 사이의 완료가 있다.
+    expect(found(withHistory('p', [['working', 100], ['idle', 200], ['working', 300]]), false, 100)).toBe('200+bell')
+    // 재현 3: working → idle → done — 직전 칸(idle)만 보면 놓친다.
+    expect(found(withHistory('p', [['working', 100], ['idle', 200], ['done', 300]]), false, 100)).toBe('200+bell')
+    // 이미 살핀 완료(200)는 다시 세지 않는다.
+    expect(found(withHistory('p', [['working', 100], ['idle', 200], ['working', 300], ['idle', 400]]), false, 200)).toBe('400+bell')
   })
 })
 
@@ -86,9 +104,10 @@ describe('K2 완료 → pane 안 읽음 (보고 있음 × 창 상태 × 같은/�
     expect(unreadOf(model)).toEqual(['p3'])
     expect(bells(model)).toEqual([B])
   })
-  it('ⓓ 처음 보는 done pane = 안 읽음 (재기동 뒤 herdr done 에서 다시 선다 — K8ⓔ)', () => {
+  it('ⓓ 처음 보는 done pane = 안 읽음 (재기동 뒤 herdr done 에서 다시 선다 — K8ⓔ) · 벨은 새로 안 켠다(M2)', () => {
     const model = run([{ panes: [obs('p1', 'done', 100, null), obs('p2', 'idle', 100, null)] }])
     expect(unreadOf(model)).toEqual(['p1'])
+    expect(bells(model)).toEqual([])
   })
   it('같은 상태가 다시 와도(30초 재동기) 두 번 세지 않는다 — Mark Read 뒤 같은 완료가 되살아나지 않는다', () => {
     const done: Step = { panes: [obs('p1', 'idle', 200, 'working')] }
@@ -180,12 +199,61 @@ describe('정리 — 닫힌 pane · 사라진 worktree (K4ⓓ · K8ⓓ)', () => 
     model = run([{ panes: [obs('p2', 'working', 100, null)] }], model)
     expect(unreadOf(model)).toEqual([])
   })
-  it('이번 세션에 있던 worktree 가 사라지면(삭제·레포 제거) 그 벨을 지운다 — 처음부터 안 보인 경로·빈 목록은 건드리지 않는다', () => {
-    let model = markUnread(markUnread(EMPTY_UNREAD, B), '/never/seen')
+  it('이번 세션에 있던 worktree 가 사라지면(삭제·레포 제거) 그 벨을 지운다 — 빈 목록(첫 적재 전)은 건드리지 않는다', () => {
+    let model = markUnread(EMPTY_UNREAD, B)
     model = run([{ ...START, paths: [A, B] }], model)
     model = run([{ ...START, paths: [] }], model)
-    expect(bells(model)).toEqual(['/never/seen', B])
+    expect(bells(model)).toEqual([B])
     model = run([{ ...START, paths: [A] }], model)
-    expect(bells(model)).toEqual(['/never/seen'])
+    expect(bells(model)).toEqual([])
+  })
+})
+
+describe('r1 M1·L1 — 스캔 실패는 「사라짐」이 아니다 · 본 적 없는 저장 벨은 깨끗한 적재에서만 지운다', () => {
+  const W1 = '/r1/w1'
+  const W2 = '/r2/w2'
+  const repos = (input: { r1: 'ok' | 'error'; r2?: 'ok' | 'error'; extra?: string[] }): RepoScan[] => [
+    { root: '/r1', error: input.r1 === 'error', worktreePaths: input.r1 === 'ok' ? [W1, ...(input.extra ?? [])] : [] },
+    { root: '/r2', error: input.r2 === 'error', worktreePaths: input.r2 === 'error' ? [] : [W2] },
+  ]
+  const panes: PaneObservation[] = [obs('p1', 'working', 100, null, W2)]
+  it('재현 6 반대: 레포 하나의 git 스캔이 한 번 실패했다 돌아와도 그 벨은 남는다 (다른 레포가 있어 목록이 비지 않는 경우)', () => {
+    let model = markUnread(markUnread(EMPTY_UNREAD, W1), W2)
+    model = run([{ panes, repos: repos({ r1: 'ok' }) }], model)
+    model = run([{ panes, repos: repos({ r1: 'error' }) }], model)
+    expect(bells(model)).toEqual([W1, W2])
+    model = run([{ panes, repos: repos({ r1: 'ok' }) }], model)
+    expect(bells(model)).toEqual([W1, W2])
+  })
+  it('깨끗한 적재(모든 레포 에러 없음)에서 본 적 없는 저장 벨(앱이 꺼진 사이 지운 worktree)을 지운다 — 재현 1 반대', () => {
+    let model = markUnread(markUnread(EMPTY_UNREAD, W2), '/r1/gone')
+    model = run([{ panes, repos: repos({ r1: 'ok' }) }], model)
+    expect(bells(model)).toEqual([W2])
+  })
+  it('레포 에러가 남아 있는 동안은 본 적 없는 저장 벨 정리를 미룬다 → 에러가 걷힌 묶음에서 지운다', () => {
+    let model = markUnread(markUnread(EMPTY_UNREAD, W2), '/r1/gone')
+    model = run([{ panes, repos: repos({ r1: 'error' }) }], model)
+    expect(bells(model)).toEqual(['/r1/gone', W2])
+    model = run([{ panes, repos: repos({ r1: 'ok' }) }], model)
+    expect(bells(model)).toEqual([W2])
+  })
+  it('에러 없는 레포에서 사라진 경로는 다른 레포에 에러가 있어도 지운다 (삭제는 삭제)', () => {
+    let model = markUnread(markUnread(EMPTY_UNREAD, W1), '/r1/extra')
+    model = run([{ panes, repos: repos({ r1: 'ok', extra: ['/r1/extra'] }) }], model)
+    model = run([{ panes, repos: repos({ r1: 'ok', r2: 'error' }) }], model)
+    expect(bells(model)).toEqual([W1])
+  })
+})
+
+describe('r1 M2 — 재시작 뒤 벨은 저장값을 따른다', () => {
+  it('Mark Read 한 뒤에도 herdr 에 남은 done 이 재시작(첫 묶음)마다 벨을 다시 켜지 않는다 · 굵기(pane 안 읽음)는 선다', () => {
+    // 재현 5: 첫 묶음 done → 벨이 서던 것.
+    const restarted = run([{ panes: [obs('p3', 'done', 100, 'working', B)] }])
+    expect(unreadOf(restarted)).toEqual(['p3'])
+    expect(bells(restarted)).toEqual([])
+  })
+  it('세션 중 실제 완료 전이는 그대로 벨을 켠다', () => {
+    const model = run([START, { panes: [obs('p1', 'working', 100, null), obs('p2', 'working', 100, null), obs('p3', 'done', 200, 'working', B)] }])
+    expect(bells(model)).toEqual([B])
   })
 })

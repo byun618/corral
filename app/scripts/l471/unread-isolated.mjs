@@ -487,6 +487,7 @@ try {
 
   // ── 재시작 ×N — K8ⓐ 벨 유지 · K8ⓔ herdr done 에서 행 굵기 다시 · K9 시간축 ──
   const restartRows = []
+  let p7 = null
   for (let round = 1; round <= restarts; round += 1) {
     if (round === 1) {
       // 456 R3-F3: 활성 탭(t1) 을 닫아 t3 을 「활성 탭 + done」 으로.
@@ -494,8 +495,19 @@ try {
       await pause(800)
       result.k9Prep.herdrP6AfterClose = await herdr(p6)
       result.k9Prep.activeTabAfterClose = findKey(await backendRpc(iso, 'session.snapshot'), 'focused_tab_id') ?? null
+      // fix1 M2: A 의 새 비활성 탭 t4 pane p7 완료(herdr done, 벨 A 켜짐) → Mark Read(벨 끔 — herdr 는 done 그대로) → 재기동마다
+      // p7 은 처음 보는 done 이라 굵게 서지만 A 벨은 새로 켜지지 않아야 한다(01-criteria 변경 기록).
+      const t4 = findKey(await backendRpc(iso, 'tab.create', { workspace_id: a.workspaceId, focus: false }), 'tab_id')
+      await until(async () => (await wsOf(A)).tabs.some((t) => t.tabId === t4), 'A t4', 20_000)
+      p7 = (await wsOf(A)).tabs.find((t) => t.tabId === t4).panes[0].paneId
+      await report(p7, 'idle')
+      await complete(p7, 'M2-prep-p7-inactive-tab')
+      const bellBeforeRead = (await snap()).cards[A].bell
+      await menuAction(A, 'toggle-unread')
+      result.m2Prep = { herdrP7: await herdr(p7), bellBeforeRead, bellAfterRead: (await snap()).cards[A].bell, prefs: readPrefs()?.unreadWorktrees?.map((p) => path.basename(p)) ?? null }
+      result.ids = { ...result.ids, p7, t4 }
     }
-    const before = { prefs: readPrefs()?.unreadWorktrees?.map((p) => path.basename(p)) ?? null, herdr: { p5: await herdr(p5), p6: await herdr(p6) } }
+    const before = { prefs: readPrefs()?.unreadWorktrees?.map((p) => path.basename(p)) ?? null, herdr: { p5: await herdr(p5), p6: await herdr(p6), p7: await herdr(p7) } }
     // 둘째 회차는 미끼가 앞인 채 기동한다(창이 포커스가 아닌 시작 복원 — K3ⓑ·K9ⓑ 의 다른 갈래).
     if (round === 2) await decoyFront(`restart-${round}-before`)
     await quitCorral({ iso, app })
@@ -504,13 +516,16 @@ try {
     const series = []
     for (let i = 0; i < 24; i += 1) {
       const snapNow = await snap()
-      series.push({ t: Date.now() - launchAt, attention: snapNow.attention, herdr: { p5: await herdr(p5), p6: await herdr(p6) }, rows: { p5: snapNow.rows[p5] ?? null, p6: snapNow.rows[p6] ?? null }, bells: Object.fromEntries(Object.entries(snapNow.cards).map(([k, v]) => [path.basename(k), v.bell])), status: Object.fromEntries(Object.entries(snapNow.cards).map(([k, v]) => [path.basename(k), v.status])) })
+      series.push({ t: Date.now() - launchAt, attention: snapNow.attention, herdr: { p5: await herdr(p5), p6: await herdr(p6), p7: await herdr(p7) }, rows: { p5: snapNow.rows[p5] ?? null, p6: snapNow.rows[p6] ?? null, p7: snapNow.rows[p7] ?? null }, bells: Object.fromEntries(Object.entries(snapNow.cards).map(([k, v]) => [path.basename(k), v.bell])), status: Object.fromEntries(Object.entries(snapNow.cards).map(([k, v]) => [path.basename(k), v.status])) })
       await pause(250)
     }
     const last = series.at(-1)
     await shot(`restart-${round}`)
     restartRows.push({ round, before, series })
     check(`K8a-restart-${round}`, `K8ⓐ 재시작 ${round}: 벨 B 유지(ui-prefs·화면) · K8ⓔ 비활성 탭 herdr done(p5) 행이 다시 굵게`, last.bells['wt-b'] === 'unread' && (readPrefs()?.unreadWorktrees ?? []).includes(B) && last.rows.p5?.unseen === true, { before, last: { bells: last.bells, p5: last.rows.p5, herdrP5: last.herdr.p5 } })
+    // fix1 M2 — 시간축 전 구간에서 A 벨이 한 번도 안 켜지고, Mark Read 한 herdr done(p7)은 굵게 선다.
+    const aBellEver = series.some((row) => row.bells.iso === 'unread')
+    check(`M2-restart-${round}`, `M2 재시작 ${round}: Mark Read 한 비활성 탭 herdr done(p7) → 행은 굵게, A 벨은 새로 안 켜짐(저장값 = 꺼짐) · prefs 에 A 없음`, result.m2Prep?.herdrP7 === 'done' && result.m2Prep?.bellAfterRead === 'read' && last.herdr.p7 === 'done' && last.rows.p7?.unseen === true && !aBellEver && !(readPrefs()?.unreadWorktrees ?? []).includes(A), { prep: result.m2Prep, aBellEver, last: { p7: last.rows.p7, herdrP7: last.herdr.p7, bellA: last.bells.iso }, prefs: readPrefs()?.unreadWorktrees?.map((p) => path.basename(p)) ?? null })
     if (round === 2) await focusCorral(`restart-${round}-after`)
   }
   result.restarts = restartRows

@@ -28,7 +28,7 @@ export function observationsOf(state: AppState): PaneObservation[] {
             worktreePath: worktree.path,
             status: pane.agentStatus,
             enteredAt: pane.agentState.observedAt,
-            previousStatus: pane.agentState.history[0]?.status ?? null,
+            history: pane.agentState.history.map((step) => ({ status: step.status, enteredAt: step.observedAt })),
           })
   return rows
 }
@@ -85,14 +85,17 @@ export function useUnread(input: {
   const { state, activeWorktree } = input
   useEffect(() => {
     if (state === null) return
-    const worktreePaths = new Set(state.repos.flatMap((repo) => repo.worktrees.map((row) => row.path)))
+    const repos = state.repos.map((repo) => ({ root: repo.root, error: repo.error !== null, worktreePaths: repo.worktrees.map((row) => row.path) }))
     const retainedPaneIds = new Set(state.retainedAgents.map((row) => row.paneId))
-    setModel((prev) => ingest(prev, { panes: observationsOf(state), retainedPaneIds, worktreePaths, activeWorktree, attentive, watched }))
+    setModel((prev) => ingest(prev, { panes: observationsOf(state), retainedPaneIds, repos, activeWorktree, attentive, watched }))
   }, [state, activeWorktree, attentive, watched])
 
-  // 벨 영속 — 첫 읽기 전에는 쓰지 않는다(빈 집합으로 저장된 벨을 덮지 않게). 읽은 벨은 그사이 켜진 벨과 합친다.
+  // 벨 영속 — 첫 읽기 전에는 쓰지 않는다(빈 집합으로 저장된 벨을 덮지 않게). 읽은 벨은 그사이 완료가 켠 벨과 합친다.
+  // 읽기가 실패하면 이번 실행 동안 저장하지 않는다(r1 L2ⓐ — 저장값을 모르는 채 덮어쓰지 않게).
+  // 읽기 전에 누른 Mark Read/Unread 는 합친 **뒤에** 누른 순서대로 다시 적용한다(r1 L2ⓑ — 읽음 처리한 벨이 합집합으로 되살아나지 않게).
   const hydrated = useRef(false)
   const written = useRef<string | null>(null)
+  const pending = useRef<Array<{ kind: 'read' | 'unread'; path: string }>>([])
   useEffect(() => {
     let cancelled = false
     window.corral
@@ -102,11 +105,17 @@ export function useUnread(input: {
         const stored = Array.isArray(prefs.unreadWorktrees) ? prefs.unreadWorktrees : []
         written.current = JSON.stringify([...stored].sort())
         hydrated.current = true
+        const replay = pending.current
+        pending.current = []
         // 늘 새 집합 — 읽기 전에 켜진 벨이 있으면 아래 쓰기 이펙트가 합친 값을 쓴다.
-        setModel((prev) => ({ ...prev, worktrees: new Set([...prev.worktrees, ...stored]) }))
+        setModel((prev) => {
+          let merged: UnreadModel = { ...prev, worktrees: new Set([...prev.worktrees, ...stored]) }
+          for (const op of replay) merged = op.kind === 'read' ? markRead(merged, op.path) : markUnread(merged, op.path)
+          return merged
+        })
       })
-      .catch(() => {
-        hydrated.current = true
+      .catch((error: unknown) => {
+        console.warn('[unread] ui-prefs 읽기 실패 — 이번 실행 동안 벨을 저장하지 않는다', error)
       })
     return () => {
       cancelled = true
@@ -141,9 +150,15 @@ export function useUnread(input: {
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  const read = useCallback((path: string) => setModel((prev) => markRead(prev, path)), [])
-  const unread = useCallback((path: string) => setModel((prev) => markUnread(prev, path)), [])
-  const toggle = useCallback((path: string) => setModel((prev) => (prev.worktrees.has(path) ? markRead(prev, path) : markUnread(prev, path))), [])
+  const modelRef = useRef(model)
+  modelRef.current = model
+  const apply = useCallback((kind: 'read' | 'unread', path: string) => {
+    if (!hydrated.current) pending.current.push({ kind, path })
+    setModel((prev) => (kind === 'read' ? markRead(prev, path) : markUnread(prev, path)))
+  }, [])
+  const read = useCallback((path: string) => apply('read', path), [apply])
+  const unread = useCallback((path: string) => apply('unread', path), [apply])
+  const toggle = useCallback((path: string) => apply(modelRef.current.worktrees.has(path) ? 'read' : 'unread', path), [apply])
   const panes = useMemo(() => new Set(model.panes.keys()), [model.panes])
   return { panes, worktrees: model.worktrees, markRead: read, markUnread: unread, toggle }
 }

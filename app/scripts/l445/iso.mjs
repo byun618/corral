@@ -12,7 +12,7 @@
 // 결과: <out>/<mode>[-herdr].json — 종료코드 0 = 그 모드의 통과선 전부 충족(before 모드는 기록용으로 항상 0, 판정은 result 에).
 // 창 포커스 아님: 미끼 창(l471 decoy)을 앞에 두고 회차마다 `window-visibility read` 와 맨 앞 앱 pid 를 기록한다.
 
-/* global document, CSS, console */
+/* global document, CSS */
 import fs from 'node:fs'
 import path from 'node:path'
 import { buildIdentity } from '../l478/build-identity.mjs'

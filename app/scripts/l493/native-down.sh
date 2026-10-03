@@ -42,6 +42,17 @@ console.log(JSON.stringify({userData:diff(process.argv[1],process.argv[2]),herdr
 pass "변경 목록 → changed-by-run.json"
 
 echo "# ④ userData 전체 복원 (-c 체크섬 비교 — 1차 원복에서 크기·mtime 이 같은 GPU 캐시 index 3개를 rsync 가 건너뛰었다)"
+# LIFE-493 수정 r1 F4 (R1-07) — 덮어쓰기 직전에 사용자 userData 로 떠 있는 corral 을 다시 본다. 실행 중 사용자가 따로 띄웠으면
+# 백업 시점으로 덮어써 그 변경을 지우게 된다 → 덮어쓰지 않고 exit 4 로 멈춘다. 백업은 $ROOT/backup 에 그대로 남는다(원복 대기).
+OTHER=$(ps -Ao pid=,command= | grep -E 'corral.*(Electron|electron)' | grep -v grep | awk -v a="$A" '$1!=a' || true)
+OWNER=$("$NODE" -e "try{const o=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));try{process.kill(o.pid,0);console.log(o.pid)}catch{console.log('dead')}}catch{console.log('none')}" "$UD/runtime/owner.json")
+case "$OWNER" in none|dead|"$A") ;; *) OTHER="$OTHER owner.json pid $OWNER 살아 있음" ;; esac
+if [ -n "$(echo "$OTHER" | tr -d ' ')" ]; then
+  echo "✘ 사용자 userData 로 corral 이 떠 있다 — 덮어쓰지 않고 멈춘다:"; echo "$OTHER" | cut -c1-200
+  echo "원복 대기: 백업 $ROOT/backup/ud (manifest $ROOT/backup/ud-manifest.json) · herdr $ROOT/backup/herdr — 그 corral 을 사용자가 닫은 뒤 이 스크립트를 다시 돌린다"
+  echo "판정: 원복 대기 — ④ 전에 멈췄다"; exit 4
+fi
+pass "사용자 corral 0개 (app $A 제외) · owner $OWNER"
 rsync -a -c --delete --exclude corral.ndjson "$ROOT/backup/ud/" "$UD/" && pass "rsync 복원" || fail "rsync 복원 실패"
 "$NODE" -e "
 const fs=require('fs'); const m=JSON.parse(fs.readFileSync(process.argv[1])); const f=process.argv[2]; const want=m.files['corral.ndjson'].size

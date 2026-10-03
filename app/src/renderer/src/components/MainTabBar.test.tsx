@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 // LIFE-493 K1·K3 — 탭 모양의 DOM 계약(선두·활성 표시·닫기·중클릭·넘침 휠). 값(px·색)은 CSS 라 측정 도구·네이티브 캡처가 본다.
+// LIFE-494 K1 — 넘침 표면(chevron·dock·썸·끝에 붙기)의 DOM 계약. 계산 자체는 `tab-strip-metrics.test.ts`·`tab-strip-geometry.test.ts`.
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyAgentState } from '../../../shared/agent-state.js'
 import { EMPTY_SESSION_DIGEST, type AgentStatus, type PaneRow, type TabRow } from '../../../shared/types.js'
-import { GroupHeader, wheelToHorizontal } from './MainTabBar.js'
+import { GroupHeader } from './MainTabBar.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -20,7 +21,7 @@ const tab = (index: number, panes: PaneRow[]): TabRow => ({
 let host: HTMLDivElement
 let root: Root
 const spies = { close: vi.fn(), select: vi.fn() }
-function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: string[] }): void {
+function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: string[]; dragActive?: boolean }): void {
   const noop = (): void => {}
   act(() => {
     root.render(createElement(GroupHeader, {
@@ -28,6 +29,7 @@ function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: str
       activeGroup: true, unreadPanes: new Set(input.unread ?? []), paneCount: 1, grid: null, zoomed: false,
       onActivate: noop, onSelectTab: spies.select, onCreateShell: noop, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
       onSplitPane: noop, onMoveToGroup: noop, onZoom: noop, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
+      tabDragActive: input.dragActive ?? false,
     }))
   })
 }
@@ -132,61 +134,166 @@ describe('닫기 (K1 D13·D14)', () => {
   })
 })
 
-describe('넘침 최소선 (K3ⓐ)', () => {
-  it('탭은 스크롤 스트립 안에 있고 `+` 는 스트립 밖 바로 뒤다', () => {
+/** happy-dom 에는 레이아웃이 없다 — 스트립 크기만 꾸며 넘침 상태를 만든다(탭 개별 위치는 `tab-strip-geometry.test.ts`). */
+const stripBox = { clientWidth: 0, scrollWidth: 0 }
+const stripEl = (): HTMLElement => {
+  const node = host.querySelector<HTMLElement>('[data-main-tab-strip="g1"]')
+  if (node === null) throw new Error('no strip')
+  return node
+}
+function setStripBox(input: { clientWidth: number; scrollWidth: number; scrollLeft: number }): void {
+  stripBox.clientWidth = input.clientWidth
+  stripBox.scrollWidth = input.scrollWidth
+  const strip = stripEl()
+  strip.scrollLeft = input.scrollLeft
+  act(() => {
+    strip.dispatchEvent(new Event('scroll'))
+  })
+}
+
+describe('넘침 (LIFE-494 K1·K2ⓐ)', () => {
+  beforeEach(() => {
+    stripBox.clientWidth = 0
+    stripBox.scrollWidth = 0
+    const isStrip = (node: Element): boolean => node.hasAttribute('data-main-tab-strip')
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isStrip(this) ? stripBox.clientWidth : 0 })
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) { return isStrip(this) ? stripBox.scrollWidth : 0 })
+    HTMLElement.prototype.scrollBy = vi.fn()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const many = Array.from({ length: 8 }, (_, index) => tab(index, [pane(`p${index}`, null, 'unknown')]))
+
+  it('탭은 스크롤 스트립 안, 스트립은 썸과 한 상자, `+` 는 그 상자 바로 뒤다(넘치지 않을 때)', () => {
     mount({ tabs: [tab(0, [pane('a', 'claude', 'idle')])], activeTabId: 't0' })
-    const strip = host.querySelector('[data-main-tab-strip="g1"]')
-    expect(strip?.querySelector('[data-main-tab="t0"]')).not.toBeNull()
-    expect(strip?.nextElementSibling?.hasAttribute('data-main-tabbar-add')).toBe(true)
+    const strip = stripEl()
+    expect(strip.querySelector('[data-main-tab="t0"]')).not.toBeNull()
+    expect(strip.parentElement?.hasAttribute('data-main-tab-strip-wrap')).toBe(true)
+    expect(strip.parentElement?.nextElementSibling?.hasAttribute('data-main-tabbar-add')).toBe(true)
   })
 
-  it('활성 탭이 바뀌면 그 탭을 보이는 자리로 끌어온다', () => {
-    const tabs = Array.from({ length: 5 }, (_, index) => tab(index, [pane(`p${index}`, 'claude', 'idle')]))
-    mount({ tabs, activeTabId: 't0' })
-    const spy = vi.mocked(Element.prototype.scrollIntoView)
-    spy.mockClear()
-    mount({ tabs, activeTabId: 't4' })
-    expect(spy).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' })
-    expect(spy.mock.contexts[0]).toBe(tabEl('t4'))
+  it('넘치지 않으면 chevron·썸·페이드가 없다', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 2000, scrollWidth: 2000, scrollLeft: 0 })
+    expect(host.querySelector('[data-tab-strip-chevron]')).toBeNull()
+    expect(host.querySelector('[data-tab-strip-scroll-indicator]')).toBeNull()
+    expect(stripEl().className).not.toMatch(/is-fade/)
   })
 
-  it('활성 탭이 그대로여도 탭 목록이 바뀌면 다시 끌어온다 (새 탭 노드가 늦게 오는 경우·활성 탭 끌어 옮기기)', () => {
-    const tabs = Array.from({ length: 3 }, (_, index) => tab(index, [pane(`p${index}`, 'claude', 'idle')]))
-    mount({ tabs: tabs.slice(0, 2), activeTabId: 't2' })
-    const spy = vi.mocked(Element.prototype.scrollIntoView)
-    spy.mockClear()
-    mount({ tabs, activeTabId: 't2' })
-    expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
-    spy.mockClear()
-    mount({ tabs: [tabs[2], tabs[0], tabs[1]].filter((row) => row !== undefined), activeTabId: 't2' })
-    expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
+  it('맨 앞: chevron 둘(‹ 비활성), 뒤 페이드, 썸 있음 — 순서 ‹ · 스트립 · › · +', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 0 })
+    const start = host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="start"]')
+    const end = host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="end"]')
+    expect(start?.disabled).toBe(true)
+    expect(start?.getAttribute('aria-disabled')).toBe('true')
+    expect(end?.disabled).toBe(false)
+    expect(stripEl().classList.contains('is-fade-end')).toBe(true)
+    expect(stripEl().classList.contains('is-fade-start')).toBe(false)
+    expect(host.querySelector('[data-tab-strip-scroll-indicator] [data-tab-strip-scroll-thumb]')).not.toBeNull()
+    const wrap = stripEl().parentElement
+    expect(wrap?.previousElementSibling).toBe(start)
+    expect(wrap?.nextElementSibling).toBe(end)
+    expect(end?.nextElementSibling?.hasAttribute('data-main-tabbar-add')).toBe(true)
   })
 
-  it('스트립 폭이 바뀌면(ResizeObserver) 활성 탭을 다시 끌어온다', () => {
-    const callbacks: Array<() => void> = []
-    vi.stubGlobal('ResizeObserver', class {
-      constructor(callback: () => void) { callbacks.push(callback) }
-      observe(): void {}
-      disconnect(): void {}
-    })
+  it('가운데: 양쪽 활성·양쪽 페이드 / 끝: › 비활성·앞 페이드', () => {
+    mount({ tabs: many, activeTabId: null })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+    expect(host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="start"]')?.disabled).toBe(false)
+    expect(host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="end"]')?.disabled).toBe(false)
+    expect(stripEl().classList.contains('is-fade-start') && stripEl().classList.contains('is-fade-end')).toBe(true)
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 1040 })
+    expect(host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="end"]')?.disabled).toBe(true)
+    expect(stripEl().classList.contains('is-fade-start')).toBe(true)
+    expect(stripEl().classList.contains('is-fade-end')).toBe(false)
+  })
+
+  it('활성 탭이 앞으로 지나가면 앞에 붙고(data-active-tab-docked=start) 그쪽 페이드는 꺼진다', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+    expect(stripEl().dataset.activeTabDocked).toBe('start')
+    expect(stripEl().classList.contains('is-fade-start')).toBe(false)
+    expect(stripEl().classList.contains('is-fade-end')).toBe(true)
+  })
+
+  it('chevron 클릭 = 폭의 75% 스텝(최소 120)', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+    act(() => host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="end"]')?.click())
+    expect(HTMLElement.prototype.scrollBy).toHaveBeenLastCalledWith({ left: 300, behavior: 'smooth' })
+    act(() => host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="start"]')?.click())
+    expect(HTMLElement.prototype.scrollBy).toHaveBeenLastCalledWith({ left: -300, behavior: 'smooth' })
+  })
+
+  it('활성 탭만 dock 표식, 탭 드래그 중엔 없다(드롭 자리 계산과 겹치지 않게)', () => {
+    mount({ tabs: many, activeTabId: 't3' })
+    expect(host.querySelectorAll('[data-active-tab-dock]')).toHaveLength(1)
+    expect(tabEl('t3').hasAttribute('data-active-tab-dock')).toBe(true)
+    mount({ tabs: many, activeTabId: 't3', dragActive: true })
+    expect(host.querySelector('[data-active-tab-dock]')).toBeNull()
+  })
+
+  it('탭 드래그 중엔 끝이어도 chevron 이 비활성이 아니고(hover 를 받아야 한다), 썸은 비킨다', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 0 })
+    mount({ tabs: many, activeTabId: 't0', dragActive: true })
+    const start = host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="start"]')
+    expect(start?.disabled).toBe(false)
+    expect(start?.getAttribute('aria-disabled')).toBe('true')
+    expect(host.querySelector('[data-tab-strip-scroll-indicator]')?.classList.contains('is-disabled')).toBe(true)
+  })
+
+  it('드래그 중 chevron hover → 즉시 한 스텝 + 180ms 마다, 떠나거나 드래그가 끝나면 멈춘다', () => {
+    vi.useFakeTimers()
     try {
-      const tabs = Array.from({ length: 3 }, (_, index) => tab(index, [pane(`p${index}`, 'claude', 'idle')]))
-      mount({ tabs, activeTabId: 't2' })
-      const spy = vi.mocked(Element.prototype.scrollIntoView)
-      spy.mockClear()
-      act(() => callbacks.forEach((callback) => callback()))
-      expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
+      mount({ tabs: many, activeTabId: 't0' })
+      setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+      mount({ tabs: many, activeTabId: 't0', dragActive: true })
+      const scrollBy = vi.mocked(HTMLElement.prototype.scrollBy)
+      scrollBy.mockClear()
+      const end = host.querySelector<HTMLButtonElement>('[data-tab-strip-chevron="end"]')
+      act(() => {
+        end?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+        end?.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }))
+      })
+      expect(scrollBy).toHaveBeenCalledTimes(1)
+      expect(scrollBy).toHaveBeenLastCalledWith({ left: 300, behavior: 'auto' })
+      act(() => vi.advanceTimersByTime(360))
+      expect(scrollBy).toHaveBeenCalledTimes(3)
+      mount({ tabs: many, activeTabId: 't0', dragActive: false })
+      act(() => vi.advanceTimersByTime(720))
+      expect(scrollBy).toHaveBeenCalledTimes(3)
     } finally {
-      act(() => root.unmount())
-      root = createRoot(host)
-      vi.unstubAllGlobals()
+      vi.useRealTimers()
     }
   })
 
-  it('휠: 넘칠 때 세로가 크면 가로로 바꾼다, 아니면 손대지 않는다', () => {
-    expect(wheelToHorizontal({ deltaX: 0, deltaY: 40, overflows: true })).toBe(40)
-    expect(wheelToHorizontal({ deltaX: 0, deltaY: -40, overflows: true })).toBe(-40)
-    expect(wheelToHorizontal({ deltaX: 30, deltaY: 10, overflows: true })).toBeNull()
-    expect(wheelToHorizontal({ deltaX: 0, deltaY: 40, overflows: false })).toBeNull()
+  it('드래그 중이 아니면 chevron hover 는 스크롤하지 않는다', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+    const scrollBy = vi.mocked(HTMLElement.prototype.scrollBy)
+    scrollBy.mockClear()
+    act(() => {
+      host.querySelector('[data-tab-strip-chevron="end"]')?.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }))
+    })
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
+
+  it('끝에 붙어 있을 때 끝에 탭이 생기며 활성이 되면 다시 끝으로(stick-to-end)', () => {
+    mount({ tabs: many.slice(0, 7), activeTabId: 't6' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1260, scrollLeft: 860 })
+    stripBox.scrollWidth = 1440
+    mount({ tabs: many, activeTabId: 't7' })
+    expect(stripEl().scrollLeft).toBe(1040)
+  })
+
+  it('끝이 아닌 자리에서 둘러보던 중 탭 목록이 바뀌어도(활성 그대로) 끝으로 튀지 않는다', () => {
+    mount({ tabs: many.slice(0, 7), activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1260, scrollLeft: 300 })
+    mount({ tabs: many.slice(0, 6), activeTabId: 't0' })
+    expect(stripEl().scrollLeft).toBe(300)
   })
 })

@@ -17,9 +17,12 @@ import { useBindingLabel } from '../hooks/BindingLabels.js'
 // 같은 저울로 비교되지 않는다. 항상 DOM 에 있다(조건부 렌더링하면 좌표 클릭 계측이 hover 없이는 못 찾는다).
 //
 // **탭 모양·선두·닫기 = Orca 1.4.198** (LIFE-493 T1, 값 출처 `specs/LIFE-493-tabbar/raw/coordinator/c4-orca198-tabbar-inventory.md` §2~§4):
-// 고정 폭 180(≥1280 220)·최소 72 · 높이 = 탭바 줄 · 활성 = fg 6% + 하단 2px(fg 60%) · 비활성은 글자만 흐리다(hover 시 밝게) ·
+// 고정 폭 180(≥1280 220)·최소 72 · 높이 = 탭바 줄 · 활성 = fg 6% + 하단 2px(fg 100% — LIFE-494 #24010, T1 은 60%) · 비활성은 글자만 흐리다(hover 시 밝게) ·
 // 선두 = 벨 → 상태 점(+로고) → 로고 → 셸 아이콘(`tab-status.ts`) · 닫기 16px 는 활성 탭 상시, 비활성은 hover · 중클릭 닫기.
-// 좁아도 탭을 접지 않는다(compact 폐지) — 대신 스트립이 가로로 스크롤되고 활성 탭이 보이는 자리로 온다(넘침 최소선).
+// 좁아도 탭을 접지 않는다(compact 폐지) — 대신 스트립이 가로로 스크롤된다.
+//
+// **넘침 = Orca v1.4.219 + #24276** (LIFE-494 T2, `hooks/useTabStripOverflow.ts`): chevron(넘칠 때만) · 페이드 1.5rem · 끝에 붙기 + 스크롤 앵커 ·
+// 스크롤 썸 · 활성 탭 dock(시야 밖이면 지나간 가장자리에 붙는다).
 //
 // **인라인 리네임**(11-gate1-fix3.md I-7): 탭을 더블클릭하면 제목 자리에서 바로 고친다.
 // 이름은 herdr 가 들고 있다 — `tab.rename` 한 번 보내면 `tab_renamed` 로 돌아오고 재기동해도
@@ -41,6 +44,9 @@ import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
 import { SplitIcon } from './SplitIcon.js'
+import { TabStripScrollIndicator } from './TabStripScrollIndicator.js'
+import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStripOverflow.js'
+import { tabStripMaskClassName } from '../tab-strip-metrics.js'
 
 /**
  * 활성 터미널로 포커스를 돌려준다 (J-1).
@@ -108,6 +114,7 @@ function MainTab({
   home,
   selectedPane,
   active,
+  dock,
   unreadPanes,
   hasTabsToRight,
   onSelect,
@@ -132,6 +139,11 @@ function MainTab({
   /** 지금 화면에 뜬 pane (C14) — 그 pane 이 제목을 몬다. */
   selectedPane: string | null
   active: boolean
+  /**
+   * 활성 탭이 스트립 가장자리에 붙는가 (LIFE-494 D27, Orca #24010 `useTabStripSlotProps`) — sticky 라 스크롤 밖으로 나가면
+   * 지나간 쪽 가장자리에 붙는다. 드래그 중엔 끈다: 드롭 자리는 화면 사각형에서 오는데 붙은 탭은 이웃 탭과 겹친다.
+   */
+  dock: boolean
   /** 확인 안 된 완료가 있는 pane (LIFE-471 장부) — 탭 벨·워시·done 점의 출처. */
   unreadPanes: ReadonlySet<string>
   /** 오른쪽에 탭이 더 있나 — Orca 처럼 탭 사이 세로 줄을 마지막 탭에는 안 긋는다(`getTabStripBorderClasses`). */
@@ -236,6 +248,7 @@ function MainTab({
       className={`main-tab ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''}`}
       data-main-tab={tab.tabId}
       data-active={active ? 'true' : 'false'}
+      data-active-tab-dock={dock ? '' : undefined}
       title={tooltip}
       data-tab-editing={editing ? 'true' : 'false'}
       // LIFE-387 A1 — 편집 중엔 무장하지 않는다(캐럿 드래그와 겹친다). 문턱(6px)을 안 넘기면
@@ -277,36 +290,36 @@ function MainTab({
       {leading.kind === 'bell' ? <span className="main-tab-unread-wash" aria-hidden /> : null}
       <TabLeadingIcon leading={leading} />
       <span className="main-tab-title">
-      <span className="main-tab-label">{seed}</span>
-      {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
-          라벨 칸(`.main-tab-title`) 안에 겹치므로 선두 표시가 바뀌어도(벨·점·로고) 자리가 따라온다.
-          ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
-          으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
-          (I-6 에서 잡은 버블링 함정과 같은 모양이다). */}
-      <input
-        ref={inputRef}
-        className={`main-tab-rename ${editing ? 'is-editing' : ''}`}
-        data-tab-rename={tab.tabId}
-        value={editing ? draft : seed}
-        tabIndex={editing ? 0 : -1}
-        aria-hidden={!editing}
-        readOnly={!editing}
-        onChange={(event) => setDraft(event.target.value)}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => event.stopPropagation()}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          // ⚠ **편집 중이 아니면 아무것도 안 한다** (J-1 두 번째 방어선). 어떤 이유로든 포커스가
-          // 이 입력칸에 남았을 때 `stopPropagation` 이 무조건 걸리면 ⌘T 같은 문서 단축키가 죽는다.
-          // 포커스 반환(endEdit)과 **둘 다** 한다 — 하나가 새도 나머지가 막는다.
-          if (!editingRef.current) return
-          // 편집 중 키는 여기서 끝난다 — 문서에 달린 ⌘T·Esc 리스너로도, 터미널로도 안 간다.
-          event.stopPropagation()
-          if (event.key === 'Enter') commit()
-          else if (event.key === 'Escape') endEdit()
-        }}
-      />
+        <span className="main-tab-label">{seed}</span>
+        {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
+            라벨 칸(`.main-tab-title`) 안에 겹치므로 선두 표시가 바뀌어도(벨·점·로고) 자리가 따라온다.
+            ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
+            으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
+            (I-6 에서 잡은 버블링 함정과 같은 모양이다). */}
+        <input
+          ref={inputRef}
+          className={`main-tab-rename ${editing ? 'is-editing' : ''}`}
+          data-tab-rename={tab.tabId}
+          value={editing ? draft : seed}
+          tabIndex={editing ? 0 : -1}
+          aria-hidden={!editing}
+          readOnly={!editing}
+          onChange={(event) => setDraft(event.target.value)}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            // ⚠ **편집 중이 아니면 아무것도 안 한다** (J-1 두 번째 방어선). 어떤 이유로든 포커스가
+            // 이 입력칸에 남았을 때 `stopPropagation` 이 무조건 걸리면 ⌘T 같은 문서 단축키가 죽는다.
+            // 포커스 반환(endEdit)과 **둘 다** 한다 — 하나가 새도 나머지가 막는다.
+            if (!editingRef.current) return
+            // 편집 중 키는 여기서 끝난다 — 문서에 달린 ⌘T·Esc 리스너로도, 터미널로도 안 간다.
+            event.stopPropagation()
+            if (event.key === 'Enter') commit()
+            else if (event.key === 'Escape') endEdit()
+          }}
+        />
       </span>
       {/* 닫기 — 활성 탭은 상시, 비활성은 탭 hover 때(CSS). Orca 처럼 글자색으로 숨긴다(`text-transparent`). */}
       <button
@@ -345,63 +358,49 @@ function MainTab({
   )
 }
 
+/** chevron 아이콘 — Orca `ChevronLeft`·`ChevronRight`(lucide) 14px(`size-3.5`). */
+function ChevronIcon({ direction }: { direction: 'start' | 'end' }): React.JSX.Element {
+  return (
+    <svg className="tab-strip-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d={direction === 'start' ? 'm15 18-6-6 6-6' : 'm9 18 6-6-6-6'} />
+    </svg>
+  )
+}
+
 /**
- * 탭 스트립 넘침 최소선 (LIFE-493 D21·D24) — Orca `tab-strip-overflow-navigation.ts` 의 두 조각만 옮긴다:
- *   · 세로 휠이 가로 휠보다 크면 가로 스크롤로 바꾼다(`:77-90`). React `onWheel` 은 passive 라 `preventDefault` 가 안 먹어
- *     직접 단다.
- *   · 활성 탭이 바뀌면 보이는 자리로 끌어온다(`:171-187` `scrollIntoView({block:'nearest',inline:'nearest'})`). Orca 는 누르고
- *     있는 포인터 아래서 스트립이 움직이지 않게 그때는 미루는데, corral 은 탭 활성화가 **click**(떼고 난 뒤)이고 드래그 커밋도
- *     mouseup 이라 활성 탭이 바뀌는 순간 눌린 포인터가 없다 — 미루는 장치를 두지 않는다. 이 근거는 **활성 변경 effect 에만** 맞는다
- *     (아래 ResizeObserver 재스크롤은 활성 변경과 무관한 임의 시점에 발화한다 — 그쪽 근거는 그 주석에).
- * chevron·페이드·썸·끝에 붙기는 T2(LIFE-494) 몫이다.
+ * 넘칠 때만 있는 좌우 chevron (LIFE-494 D22, Orca `tab-bar-surface.tsx`). 한쪽 끝이면 그쪽은 비활성 — 단 탭 드래그 중엔 비활성으로
+ * 두지 않는다(비활성 버튼은 포인터 이벤트를 안 받아 hover 자동 스크롤이 못 걸린다). 클릭 = 폭 75% 스텝, 드래그 중 hover = 180ms 마다 스텝.
  */
-/** 휠 한 번을 스트립 가로 이동으로 바꿀지 — 넘칠 때, 세로가 가로보다 클 때만(가로 휠·트랙패드 가로 밀기는 브라우저 기본 그대로). */
-export function wheelToHorizontal(input: { deltaX: number; deltaY: number; overflows: boolean }): number | null {
-  if (!input.overflows) return null
-  if (Math.abs(input.deltaY) <= Math.abs(input.deltaX)) return null
-  return input.deltaY
-}
-
-function scrollActiveTabIntoView(input: { strip: HTMLElement; activeTabId: string | null }): void {
-  if (input.activeTabId === null) return
-  const tab = [...input.strip.querySelectorAll<HTMLElement>('[data-main-tab]')].find((node) => node.dataset.mainTab === input.activeTabId)
-  tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-}
-
-function useTabStripOverflow(input: { activeTabId: string | null; tabOrder: string }): React.RefObject<HTMLDivElement | null> {
-  const ref = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    const strip = ref.current
-    if (strip === null) return
-    const onWheel = (event: WheelEvent): void => {
-      const step = wheelToHorizontal({ deltaX: event.deltaX, deltaY: event.deltaY, overflows: strip.scrollWidth > strip.clientWidth })
-      if (step === null) return
-      event.preventDefault()
-      strip.scrollLeft += step
-    }
-    strip.addEventListener('wheel', onWheel, { passive: false })
-    return () => strip.removeEventListener('wheel', onWheel)
-  }, [])
-  const activeTabId = useRef(input.activeTabId)
-  activeTabId.current = input.activeTabId
-  useEffect(() => {
-    const strip = ref.current
-    if (strip === null) return
-    scrollActiveTabIntoView({ strip, activeTabId: activeTabId.current })
-    // 탭 목록이 바뀔 때도 다시 끌어온다 — 새 탭은 선택이 목록보다 먼저 올 수 있고(그때는 노드가 아직 없다),
-    // 활성 탭을 끌어 옮기면 활성 id 는 그대로다 (LIFE-493 K5 네이티브 원자료 k5/r2).
-  }, [input.activeTabId, input.tabOrder])
-  useEffect(() => {
-    const strip = ref.current
-    if (strip === null || typeof ResizeObserver === 'undefined') return
-    // 스트립 폭은 새 탭이 그려진 **뒤에** 줄어들 수 있다(헤더 꼬리가 다음 렌더에 자리를 잡는다) — 그때 끌어온
-    // 위치가 모자란다(k5/r3: 끝 탭이 39px 잘림). 폭이 바뀌면 다시 끌어온다 — 이 재발 방지가 남기는 이유다(되돌림 빌드가 그대로 재현:
-    // k5/r6/revert). 대가: 활성 탭이 시야 밖일 때(휠로 둘러보는 중) 스트립 폭이 바뀌면 활성 탭으로 스냅한다(조건부화는 T2).
-    const observer = new ResizeObserver(() => scrollActiveTabIntoView({ strip, activeTabId: activeTabId.current }))
-    observer.observe(strip)
-    return () => observer.disconnect()
-  }, [])
-  return ref
+function TabStripChevron({
+  groupId,
+  direction,
+  overflow,
+  dragActive,
+}: {
+  groupId: string
+  direction: 'start' | 'end'
+  overflow: TabStripOverflow
+  dragActive: boolean
+}): React.JSX.Element {
+  const canScroll = direction === 'start' ? overflow.metrics.canScrollStart : overflow.metrics.canScrollEnd
+  const label = direction === 'start' ? '탭 왼쪽으로 스크롤' : '탭 오른쪽으로 스크롤'
+  return (
+    <button
+      className="tab-strip-chevron"
+      data-tab-strip-chevron={direction}
+      data-group-chevron={groupId}
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-disabled={!canScroll}
+      disabled={!dragActive && !canScroll}
+      onClick={() => overflow.scrollByStep(direction)}
+      onPointerEnter={() => overflow.onDragScrollEnter(direction)}
+      onPointerLeave={overflow.onDragScrollLeave}
+    >
+      <ChevronIcon direction={direction} />
+    </button>
+  )
 }
 
 /**
@@ -460,6 +459,7 @@ export function GroupHeader({
   otherGroups,
   onMoveToOtherGroup,
   onTabDragStart,
+  tabDragActive,
 }: {
   groupId: string
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
@@ -498,11 +498,13 @@ export function GroupHeader({
   onMoveToOtherGroup: (input: { tabId: string; targetGroupId: string }) => void
   /** LIFE-387 A1 — 탭 mousedown 을 드래그 컨트롤러(App 소유 `useTabDrag`)로 그대로 넘긴다. */
   onTabDragStart: (event: React.MouseEvent, tabId: string) => void
+  /** 어느 영역에서든 탭 드래그 중인가 (LIFE-494) — dock 끔·썸 비킴·chevron hover 자동 스크롤. 다른 영역 탭을 끌어와도 이 스트립이 넘겨야 한다. */
+  tabDragActive: boolean
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
-  const strip = useTabStripOverflow({ activeTabId, tabOrder: tabs.map((tab) => tab.tabId).join('\n') })
+  const overflow = useTabStripOverflow({ activeTabId, layoutKey: tabs.map((tab) => tab.tabId).join('\n'), groupId, dragActive: tabDragActive })
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
@@ -527,34 +529,46 @@ export function GroupHeader({
         openHeaderMenu({ x: event.clientX, y: event.clientY })
       }}
     >
-      {/* 탭 스트립 — 넘치면 가로로 스크롤된다(스크롤바는 숨긴다, Orca `.terminal-tab-strip`). */}
-      <div className="main-tab-strip" data-main-tab-strip={groupId} ref={strip}>
-      {tabs.map((tab, index) => (
-        <MainTab
-          key={tab.tabId}
-          tab={tab}
-          // 기본 label 은 **이 워크스페이스 탭 수까지의 자리 번호**다 (G7) — 하나로 못 박으면
-          // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님) — 그래서
-          // 이 영역 로컬인 `tabs.length` 가 아니라 `workspaceTabCount` 를 쓴다.
-          tabCount={workspaceTabCount}
-          home={home}
-          selectedPane={selectedPane}
-          active={tab.tabId === activeTabId}
-          unreadPanes={unreadPanes}
-          hasTabsToRight={index < tabs.length - 1}
-          canMoveToGroup={tabs.length > 1}
-          onSelect={() => onSelectTab(tab)}
-          onClose={() => onCloseTab(tab)}
-          onRename={(label) => onRenameTab({ tab, label, tabCount: workspaceTabCount })}
-          onClearName={() => onClearTabName(tab)}
-          onSplitPane={onSplitPane}
-          onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
-          otherGroups={otherGroups}
-          onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
-          onDragStart={(event) => onTabDragStart(event, tab.tabId)}
-        />
-      ))}
+      {/* 탭 스트립 — 넘치면 가로로 스크롤된다(스크롤바는 숨긴다, Orca `.terminal-tab-strip`). 넘치면 양옆 chevron·페이드·아래 썸 (LIFE-494).
+          순서 = Orca `tab-bar-surface.tsx`: chevron ‹ · [스트립 + 썸] · chevron › · `+`. */}
+      {overflow.metrics.hasOverflow ? <TabStripChevron groupId={groupId} direction="start" overflow={overflow} dragActive={tabDragActive} /> : null}
+      <div className="main-tab-strip-wrap" data-main-tab-strip-wrap={groupId}>
+        <div
+          className={`main-tab-strip ${tabStripMaskClassName({ metrics: overflow.metrics, dockedSide: overflow.dockSide })}`}
+          data-main-tab-strip={groupId}
+          data-active-tab-docked={overflow.dockSide ?? undefined}
+          ref={overflow.stripRef}
+        >
+          {tabs.map((tab, index) => (
+            <MainTab
+              key={tab.tabId}
+              tab={tab}
+              // 기본 label 은 **이 워크스페이스 탭 수까지의 자리 번호**다 (G7) — 하나로 못 박으면
+              // 닫는 과도기에 어긋나 제목이 깜빡인다. 전체 목록 길이여야 한다(거른 목록 아님) — 그래서
+              // 이 영역 로컬인 `tabs.length` 가 아니라 `workspaceTabCount` 를 쓴다.
+              tabCount={workspaceTabCount}
+              home={home}
+              selectedPane={selectedPane}
+              active={tab.tabId === activeTabId}
+              dock={tab.tabId === activeTabId && !tabDragActive}
+              unreadPanes={unreadPanes}
+              hasTabsToRight={index < tabs.length - 1}
+              canMoveToGroup={tabs.length > 1}
+              onSelect={() => onSelectTab(tab)}
+              onClose={() => onCloseTab(tab)}
+              onRename={(label) => onRenameTab({ tab, label, tabCount: workspaceTabCount })}
+              onClearName={() => onClearTabName(tab)}
+              onSplitPane={onSplitPane}
+              onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
+              otherGroups={otherGroups}
+              onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
+              onDragStart={(event) => onTabDragStart(event, tab.tabId)}
+            />
+          ))}
+        </div>
+        <TabStripScrollIndicator metrics={overflow.metrics} stripRef={overflow.stripRef} disabled={tabDragActive} />
       </div>
+      {overflow.metrics.hasOverflow ? <TabStripChevron groupId={groupId} direction="end" overflow={overflow} dragActive={tabDragActive} /> : null}
       {/* `+` — Orca 는 스트립 바로 뒤 28px 버튼(`tab-bar-surface.tsx:223-233`). 드롭다운은 T4(LIFE-496) 몫이라 여기선 빈 탭 그대로다. */}
       <button className="main-tab-add" data-main-tabbar-add={groupId} type="button" title={`빈 탭 (${bindingLabel('terminal.new')})`} aria-label="빈 탭" onClick={onCreateShell}>
         <PlusIcon className="main-tab-add-icon" />

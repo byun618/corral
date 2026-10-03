@@ -721,15 +721,61 @@ button, input { font: inherit; letter-spacing: inherit; }
   flex: 0 0 auto; display: flex; align-items: stretch; height: var(--h-tabbar);
   background: var(--bg-window); border-color: var(--line); border-bottom-width: 1px; padding: 0 6px 0 0; overflow: hidden;
 }
-/* 스트립 — 넘치면 가로 스크롤(스크롤바는 숨김), 오른쪽 끝에 70% 경계(Orca `.terminal-tab-strip … border-r border-border/70`).
-   chevron·페이드·썸은 T2(LIFE-494). */
+/* 스트립 상자 — 스트립 + 아래 썸 트랙을 겹쳐 담는다(Orca `group/tab-strip relative flex min-h-0 min-w-0 max-w-full flex-[0_1_auto]`). */
+.main-tab-strip-wrap { position: relative; display: flex; flex: 0 1 auto; min-width: 0; min-height: 0; max-width: 100%; }
+/* 스트립 — 넘치면 가로 스크롤(스크롤바는 숨김), 오른쪽 끝에 70% 경계(Orca `.terminal-tab-strip flex h-full min-w-0 max-w-full flex-1 … border-r border-border/70`). */
 .main-tab-strip {
-  display: flex; align-items: stretch; flex: 0 1 auto; min-width: 0; height: 100%;
+  display: flex; align-items: stretch; flex: 1 1 0%; min-width: 0; max-width: 100%; height: 100%;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   /* `border-border/70` — Orca 계산값 rgba(255,255,255,0.051). `--line` 을 섞으면 0.047 로 반올림이 갈려 값으로 적는다. */
   border-color: rgb(255 255 255 / 0.05); border-right-width: 1px;
 }
 .main-tab-strip::-webkit-scrollbar { width: 0; height: 0; }
+/* 페이드 마스크 1.5rem (LIFE-494 D23, Orca `assets/main.css` `.terminal-tab-strip--fade-*`) — 칠하지 않고 가린다(활성 탭 색과 어긋나지 않게).
+   활성 탭이 붙은 쪽은 클래스가 안 붙는다(`tabStripMaskClassName`). */
+.main-tab-strip.is-fade-start.is-fade-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+}
+.main-tab-strip.is-fade-start:not(.is-fade-end) {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 100%);
+  mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 100%);
+}
+.main-tab-strip.is-fade-end:not(.is-fade-start) {
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 1.5rem), transparent);
+}
+/* 활성 탭 dock (D27, #24010 `sticky inset-x-0 z-10`) — 시야 밖으로 나가면 지나간 가장자리에 붙는다. */
+.main-tab[data-active-tab-dock] { position: sticky; left: 0; right: 0; z-index: 10; }
+/* 탭은 오른쪽 경계만 그어서, 끝에 붙은 탭은 덮은 탭과의 이음매가 없다 — 왼쪽 1px 를 그린다(#24010). */
+.main-tab-strip[data-active-tab-docked='end'] > .main-tab[data-active-tab-dock]::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; background: var(--line); z-index: 30;
+}
+/* chevron (D22, Orca `Button ghost icon-xs` + `mx-0.5 my-auto h-6 w-5 … disabled:opacity-35`) — 20×24, 아이콘 14px, 둥글기 8px. */
+.tab-strip-chevron {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 20px; height: 24px; margin: auto 2px; padding: 0; border-radius: 8px;
+  background: none; color: var(--fg-muted); cursor: pointer; transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.tab-strip-chevron:hover { color: var(--fg); background: color-mix(in srgb, var(--bg-accent) 50%, transparent); }
+.tab-strip-chevron:disabled { opacity: 0.35; pointer-events: none; }
+.tab-strip-chevron-icon { display: block; width: 14px; height: 14px; flex: 0 0 auto; pointer-events: none; }
+/* 스크롤 썸 (D26, #24276) — 트랙은 스트립 바닥에 겹친다. idle 3px 투명 트랙 · 펼침(hover·썸 드래그) 4px `muted-foreground/15`.
+   보임: 스트립 hover·트랙 hover·썸 드래그·스크롤 중. 탭 드래그 중엔 숨고 포인터도 안 받는다. */
+.tab-strip-scroll-track {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 12; user-select: none;
+  height: 3px; background: transparent; opacity: 0; pointer-events: none;
+  transition: height 150ms ease-out, background-color 150ms ease-out, opacity 150ms ease-out;
+}
+.main-tab-strip-wrap:hover > .tab-strip-scroll-track, .tab-strip-scroll-track.is-visible { opacity: 1; pointer-events: auto; }
+.tab-strip-scroll-track.is-expanded { height: 4px; background: color-mix(in srgb, var(--fg-muted) 15%, transparent); cursor: pointer; }
+.main-tab-strip-wrap:hover > .tab-strip-scroll-track.is-disabled, .tab-strip-scroll-track.is-disabled { opacity: 0; pointer-events: none; }
+.tab-strip-scroll-thumb {
+  position: absolute; bottom: 0; height: 100%; border-radius: 9999px; cursor: default;
+  background: color-mix(in srgb, var(--fg-muted) 60%, transparent); transition: background-color 150ms ease-out;
+}
+.tab-strip-scroll-thumb.is-hovered { background: color-mix(in srgb, var(--fg-muted) 80%, transparent); cursor: grab; }
+.tab-strip-scroll-thumb.is-dragging { background: color-mix(in srgb, var(--fg) 70%, transparent); cursor: grabbing; }
 /* 탭 — 고정 폭 180(창 1280 이상 220), 줄어도 72 까지(`w-[180px] min-w-[72px] min-[1280px]:w-[220px]`).
    `px-1.5 text-xs` · 위 경계 + 오른쪽 탭이 있으면 오른쪽 경계(`getTabStripBorderClasses`). 비활성은 글자만 흐리다. */
 .main-tab {
@@ -742,10 +788,11 @@ button, input { font: inherit; letter-spacing: inherit; }
 .main-tab.has-right { border-right-width: 1px; }
 .main-tab:hover { color: var(--fg); }
 .main-tab.is-active { background: color-mix(in srgb, var(--fg) 6%, var(--bg-window)); color: var(--fg); }
-/* 활성 하단 2px — 가로 inset 0(음수면 마지막 탭이 스트립 scrollWidth 를 1px 밀어 지터가 난다, Orca 주석). */
+/* 활성 하단 2px — 가로 inset 0(음수면 마지막 탭이 스트립 scrollWidth 를 1px 밀어 지터가 난다, Orca 주석).
+   색은 fg 100% (LIFE-494, #24010 「흐린 막대는 비슷한 탭 사이에서 안 보인다」 — T1 은 198 의 fg 60%). */
 .main-tab-indicator {
   position: absolute; left: 0; right: 0; bottom: 0; height: 2px; z-index: 2; pointer-events: none;
-  background: color-mix(in srgb, var(--fg) 60%, var(--bg-window));
+  background: var(--fg);
 }
 /* 안 읽음 워시 — `bg-amber-500/10`. */
 .main-tab-unread-wash { position: absolute; inset: 0; pointer-events: none; background: color-mix(in srgb, var(--unread-bell) 10%, transparent); }

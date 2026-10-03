@@ -94,6 +94,9 @@ async function drag(from, to) {
   await pause(800)
 }
 const center = (box) => ({ x: Math.round(box.x + box.w / 2), y: Math.round(box.y + box.h / 2) })
+/** 스트립 안에 **다 보이는** 탭만 — 스크롤 밖 탭을 누르면 그 자리의 다른 요소를 누른다(attempt1 결함). */
+// 기준은 「누를 점(가운데)이 스트립 안」 — 좁은 영역(스트립 49px)에서는 72px 탭이 다 보일 수 없다(attempt2).
+const visibleTabs = (group) => group.tabs.filter((tab) => group.stripBox && tab.box.x + tab.box.w / 2 > group.stripBox.x + 4 && tab.box.x + tab.box.w / 2 < group.stripBox.x + group.stripBox.w - 4)
 const groupOf = (seen, tabId) => seen.find((group) => group.tabs.some((tab) => tab.id === tabId))?.group ?? null
 
 async function main() {
@@ -120,16 +123,26 @@ async function main() {
     record(`hover-${run}`, on.close !== 'rgba(0, 0, 0, 0)' && off.close === 'rgba(0, 0, 0, 0)', { tab: tab.id, on, off })
   }
 
+  // ⓪ 정리 겸 병합 — 앞 회차가 영역을 3개 이상 남겼으면 가장 작은 영역의 탭을 가장 넘친 영역 본문 가운데로 끌어 합친다.
+  const pre = await layout()
+  if (pre.length >= 3) {
+    const smallest = [...pre].sort((a, b) => a.tabs.length - b.tabs.length)[0]
+    const biggest = [...pre].sort((a, b) => b.tabs.length - a.tabs.length)[0]
+    const tab = visibleTabs(smallest)[0] ?? smallest.tabs[0]
+    await drag(center(tab.box), center(biggest.body))
+    const merged = await dump('00b-merge-back')
+    record('merge-back-into-overflowed', merged.length === pre.length - 1 && groupOf(merged, tab.id) === biggest.group, { tab: tab.id, from: smallest.group, to: groupOf(merged, tab.id), groups: merged.map((group) => ({ group: group.group, tabs: group.tabs.length, strip: group.strip })) })
+  }
+
   // ① 분할 — 넘친 둘째 영역을 **스크롤해 둔 채로**(세로 휠 → 가로) 보이는 탭 하나를 첫 영역 본문 오른쪽 가장자리(25% 띠 안)로 끈다.
   const before = await layout()
-  const overflowed = before.find((group) => group.strip && group.strip.scrollWidth > group.strip.clientWidth)
+  // 가장 많이 넘친 영역(attempt1 은 288/261 로 살짝 넘친 첫 영역을 골랐다)
+  const overflowed = [...before].filter((group) => group.strip && group.strip.scrollWidth > group.strip.clientWidth).sort((a, b) => (b.strip.scrollWidth - b.strip.clientWidth) - (a.strip.scrollWidth - a.strip.clientWidth))[0]
   if (!overflowed) throw new Error('넘친 영역이 없다')
   const stripSel = `[data-main-tab-strip="${overflowed.group}"]`
   const scrolled = await evaluate(`(() => { const s = document.querySelector('${stripSel}'); s.scrollLeft = 0; for (let i = 0; i < 6; i += 1) s.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true })); return s.scrollLeft })()`)
   const afterWheel = (await layout()).find((group) => group.group === overflowed.group)
-  const stripBox = afterWheel.stripBox
-  const visible = afterWheel.tabs.filter((tab) => tab.box.x >= stripBox.x && tab.box.x + tab.box.w <= stripBox.x + stripBox.w && !tab.active)
-  const mover = visible[0]
+  const mover = visibleTabs(afterWheel).filter((tab) => !tab.active)[0]
   const targetA = before.find((group) => group.group !== overflowed.group)
   const splitTo = { x: Math.round(targetA.body.x + targetA.body.w - targetA.body.w * 0.1), y: center(targetA.body).y }
   const groupsBefore = before.length
@@ -142,7 +155,7 @@ async function main() {
 
   // ② 병합 — 첫 영역의 탭 하나를 ①에서 생긴 영역 본문 가운데로 끈다.
   const sourceA = afterSplit.find((group) => group.group === targetA.group)
-  const mergeTab = sourceA.tabs.find((tab) => !tab.active) ?? sourceA.tabs[0]
+  const mergeTab = visibleTabs(sourceA).find((tab) => !tab.active) ?? visibleTabs(sourceA)[0]
   const newArea = afterSplit.find((group) => group.group === moverGroup)
   await drag(center(mergeTab.box), center(newArea.body))
   const afterMerge = await dump('02-merge')
@@ -153,7 +166,7 @@ async function main() {
 
   // ③ 분할(자기 영역) — 첫 영역의 탭을 그 영역 본문 아래 가장자리로 끈다(탭 2개 이상이라 유효).
   const own = afterMerge.find((group) => group.group === targetA.group)
-  const ownTab = own.tabs.find((tab) => !tab.active) ?? own.tabs[0]
+  const ownTab = visibleTabs(own).find((tab) => !tab.active) ?? visibleTabs(own)[0]
   await drag(center(ownTab.box), { x: center(own.body).x, y: Math.round(own.body.y + own.body.h - own.body.h * 0.08) })
   const afterOwn = await dump('03-split-own-down')
   const ownGroup = groupOf(afterOwn, ownTab.id)

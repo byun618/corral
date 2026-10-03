@@ -327,55 +327,43 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
     applied.push({ tab: tabId, pane: rootPane.pane_id, ...spec })
   }
 
-  // ③ 탭 점(`.main-tab-dot`)은 **탭 단위 집계 상태**를 쓰고 그 집계는 herdr 가 준다. pane 단위
-  //    push 만으로는 탭 행이 새로 오지 않아 「보고 전 집계」가 화면에 남을 수 있다 — 전체 재동기화를
-  //    시키고 **우리 쪽 backend 연결**(제3 오라클)의 값에 화면이 수렴할 때까지 기다린다.
-  //    못 수렴하면 던지지 않고 관측값으로 남긴다 (판정은 호출자 몫).
+  // ③ 탭 선두(LIFE-493 — 벨·상태 점·로고)가 **요청한 상태대로** 탭마다 섰는지 기다린다. 선두는 pane 상태 + 안 읽음 장부로
+  //    렌더러가 고른다(`tab-status.ts`) — 탭 집계(`tab.agent_status`)가 아니다. pane push 가 늦게 올 수 있어 전체
+  //    재동기화를 시키고 수렴을 기다린다. 못 수렴하면 던지지 않고 관측값으로 남긴다 (판정은 호출자 몫).
+  //    LIFE-449 이전 판은 `.main-tab-dot` 의 accent/neutral 을 backend 탭 집계와 견줬다 — 그 점은 T1 에서 없어졌다.
   await rpc(handle.control, { cmd: 'resync', reason: 'l443-agents' }, 20_000)
-  const expected = await until(
-    async () => {
-      const { tabs: rows } = await listTabs()
-      return rows.length > 0 ? sorted(rows, 'tab_id') : null
-    },
-    'corral 탭 집계 상태(backend)',
-    20_000
-  )
+  const orderedNow = sorted((await listTabs()).tabs, 'tab_id')
+  const specByTab = new Map(applied.map((entry) => [entry.tab, entry]))
+  const wantedByTab = new Map(orderedNow.map((tab) => [tab.tab_id, corralLeadingFor(specByTab.get(tab.tab_id) ?? null)]))
+  const wanted = [...wantedByTab.entries()].map(([id, kinds]) => `${id}=${kinds.join('|')}`).join(', ')
   const readDom = () =>
     handle.cdp.evaluate(() => {
       const all = [...document.querySelectorAll('[data-main-tabbar] [data-main-tab]')]
+      const leadingOf = (tab) => {
+        if (tab.querySelector('[data-tab-unread-bell]')) return 'bell'
+        return tab.querySelector('[data-tab-activity]')?.getAttribute('data-tab-activity') ?? 'none'
+      }
       return {
-        // **탭 id 를 키로 함께 읽는다** (G4). 점 목록만 정렬해 견주면 「어느 탭의 점인지」를
-        // 확인하지 않는다 — 탭 3개가 accent 라는 사실은 맞고 그것이 다른 탭일 수 있다.
-        tabs: all.map((tab) => ({
-          id: tab.getAttribute('data-main-tab'),
-          dot: tab.querySelector('.main-tab-dot')?.classList.contains('tone-accent') ? 'accent' : 'neutral',
-          active: tab.classList.contains('is-active')
-        })),
-        dots: [...document.querySelectorAll('[data-main-tabbar] .main-tab-dot')].map((dot) =>
-          dot.classList.contains('tone-accent') ? 'accent' : 'neutral'
-        ),
+        // **탭 id 를 키로 함께 읽는다** (G4) — 「선두 3개가 working」이 맞고 그것이 다른 탭일 수 있다.
+        tabs: all.map((tab) => ({ id: tab.getAttribute('data-main-tab'), leading: leadingOf(tab), active: tab.classList.contains('is-active') })),
         domTabs: all.length,
         activeTabIndex: all.findIndex((tab) => tab.classList.contains('is-active')),
         panes: document.querySelectorAll('[data-pane]').length
       }
     })
-  // 기대값은 **탭 id → 점 색** 의 대응이다. `working` 이면 accent, 나머지는 neutral
-  // (`MainTabBar.tsx:214`). 이 대응이 어긋나면 상태 재현 실패다 — 화면이 낡은 집계를 그리고 있다.
-  const wantedByTab = new Map(expected.map((tab) => [tab.tab_id, tab.agent_status === 'working' ? 'accent' : 'neutral']))
-  const wanted = [...wantedByTab.entries()].map(([id, tone]) => `${id}=${tone}`).join(', ')
   let dom = await readDom()
-  const dotsMatch = (observed) => {
+  const leadingMatch = (observed) => {
     if (observed.tabs.length !== wantedByTab.size) return false
-    return observed.tabs.every((tab) => wantedByTab.get(tab.id) === tab.dot)
+    return observed.tabs.every((tab) => (wantedByTab.get(tab.id) ?? []).includes(tab.leading))
   }
   const dotsConverged = await until(
     async () => {
       dom = await readDom()
       // 활성 탭은 **첫 탭을 눌러서** 맞춘다 (Orca 와 같은 제품 클릭 경로). 갱신은 다음 폴링에서 본다.
       if (dom.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-main-tabbar] [data-main-tab]')
-      return dotsMatch(dom) && dom.activeTabIndex === 0 && dom.domTabs === tabCount
+      return leadingMatch(dom) && dom.activeTabIndex === 0 && dom.domTabs === tabCount
     },
-    `corral 탭 점이 backend 집계에 **탭마다** 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,
+    `corral 탭 선두가 요청 상태에 **탭마다** 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,
     20_000
   ).then(
     () => true,
@@ -394,13 +382,32 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
       .filter((status) => status !== 'unknown'),
     paneStatusesAll: sorted(final.panes, 'pane_id').map((pane) => pane.agent_status),
     focusedTabId: final.focusedTabId,
-    tabDots: dom.dots,
-    tabDotsByTab: dom.tabs,
-    tabDotsWanted: wanted,
+    tabLeading: dom.tabs.map((tab) => tab.leading),
+    tabLeadingByTab: dom.tabs,
+    tabLeadingWanted: wanted,
     domTabs: dom.domTabs,
     activeTabIndex: dom.activeTabIndex,
     domPanes: dom.panes,
     dotsConverged
+  }
+}
+
+/**
+ * corral 탭 선두의 **자기 기대** (LIFE-493 K2 대응표 `specs/LIFE-493-tabbar/raw/claude/k2-tab-status-map.md`).
+ * 허용하는 값의 목록이다 — `blocked` 는 herdr `agent.explain` 이 사유를 주면 질문 아이콘(waiting)일 수 있다(RPC 보고는
+ * 사유를 못 정한다). `done` 은 corral 에선 늘 벨이다 — 확인 안 된 완료가 곧 안 읽음이다(대응표 「대응 못 하는 칸」).
+ */
+function corralLeadingFor(spec) {
+  if (spec === null) return ['none']
+  switch (spec.state) {
+    case 'working':
+      return ['working']
+    case 'blocked':
+      return ['blocked', 'waiting']
+    case 'done':
+      return ['bell']
+    default:
+      return ['none']
   }
 }
 

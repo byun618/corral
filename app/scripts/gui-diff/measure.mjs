@@ -378,6 +378,22 @@ const STATE_TARGETS = {
       '**`--states` 의 맨 끝에 둔다**: 다음 상태가 이 탭을 닫으면 corral 은 done 에이전트를 보존 행(retained)으로 남겨 루트가 하나 늘어난다 ' +
       '(제품 동작 — 실측 R013 `wait` 불일치)'
   },
+  // ---- LIFE-493 K4ⓑ — 탭바 상태 ----
+  // 안 읽음 — 포커스 안 된 둘째 탭의 완료를 **확인 안 됨**으로. corral 은 working→idle 전이(보고 두 번)가 471 장부에 완료로 서고,
+  // Orca 는 같은 done 에 제품 store 액션 `markAgentCompletionPaneUnread` 로 완료 표식을 단다. 두 앱 다 탭 벨 + 워시.
+  // `done` 과 같은 이유로 **`--states` 의 맨 끝에** 둔다(닫히면 보존 행이 남는다) — `done` 과 한 회차에 같이 두지 않는다.
+  unread: {
+    tabCount: 2,
+    agents: [{ state: 'done', unread: true, prompt: 'L493 unread completion', agentType: 'claude' }],
+    leadingEmptyTabs: 1,
+    detail: '확인 안 된 완료 1개(포커스 안 된 둘째 탭) — 탭 벨 + 워시. **`--states` 맨 끝**, `done` 과 다른 회차'
+  },
+  // 넘침 — 탭 20개. 1440 창에서 탭 스트립 폭(≈1100)은 72px × 20 = 1440 을 못 담는다: 두 앱 다 최소 폭까지 줄고도 넘친다.
+  'tabs-many': {
+    tabCount: 20,
+    agents: [],
+    detail: '탭 20개, 에이전트 없음 — 최소 폭(72)까지 줄어도 넘친다. corral 은 가로 스크롤 스트립(T1 최소선), Orca 는 chevron·썸(T2 몫)'
+  },
   wait: {
     tabCount: 1,
     agents: [{ state: 'blocked', prompt: 'L467 waiting for approval', agentType: 'claude' }],
@@ -463,6 +479,9 @@ const UNINJECTABLE_STATES = [
   { state: '보존(retained) 행', why: '**만들 수는 있지만 독립 제어·초기화가 안 된다.** 보존은 corral main 이 herdr 에서 사라진 done pane 을 기록하는 것이라 RPC 보고 pane 으로도 선다(실측 R013 — `done` 뒤 탭을 닫자 보존 행이 생겨 다음 상태 `wait` 를 오염시켰다). 그러나 도구에 보존 목록을 비우는 경로가 없어 상태 사이에 끌려가고, Orca 에 대응 행도 없다. 모양은 단위 테스트, 실제 경로는 K1 #20·fix-r1 R1 네이티브 덤프가 원자료' },
   { state: '모델 칸', why: 'corral 모델은 세션 파일 digest.model 에서만 온다. Orca 는 hook 페이로드. K1 네이티브 덤프(claude-opus-5-5 · grok-4.7-build)가 원자료' },
   { state: '긴 이름 (corral 쪽)', why: 'corral 행 제목의 주입 가능한 원천은 터미널 제목(OSC 2)뿐인데 기존 규칙(`truncatePathLeft`)이 15자로 왼쪽을 자른다 — 긴 글은 세션 파일의 provider 제목·첫 프롬프트에서만 선다. 상태 `long-name` 은 Orca 쪽 긴 글만 재고, corral 한 줄 잘림은 단위 테스트(C8)와 네이티브 관문(K11 실제 프롬프트)이 맡는다' },
+  { state: '탭바 hover (비활성 탭 닫기·글자 밝아짐)', why: 'LIFE-493 — 측정 도구는 hover 를 사이드바 장면(`scene.hover`)으로만 만든다. 탭 hover 의 규칙은 CSS(`.main-tab:hover`)라 코드 대조 + 네이티브 캡처 + 게이트 ① 이 맡는다' },
+  { state: '탭 monitoring·interrupted 선두', why: 'LIFE-493 — corral 은 턴 결과·백그라운드 작업이 세션 파일 digest(turnOutcome·lifecycle)에서만 온다 — RPC 보고로 못 선다. 대응표 칸은 단위 테스트(tab-status.test.ts)가 잠근다' },
+  { state: '탭 넘침 중 마지막 탭 활성', why: 'LIFE-493 — 상태 공통 규칙이 첫 탭을 눌러 활성 순번을 0 으로 맞춘다(두 앱 대칭). 마지막 탭 활성 + 보이는 자리 끌어오기는 네이티브 캡처(K3ⓐ)가 맡는다' },
   { state: '질문/권한 아이콘(waiting)', why: 'blockedReason 은 herdr agent.explain 규칙 id·pendingQuestions 에서만 온다 — 상태 `wait` 은 blocked 점으로 잰다. K1 R010 네이티브 덤프가 원자료' }
 ]
 
@@ -587,13 +606,15 @@ async function applyState(state, { orca, corral, orcaRepoId, fixture, base }) {
       // **화면이 낡은 집계를 그리고 있으면 재현이 아니다** (G4). 이전 판은 수렴 대기가 타임아웃되면
       // `dotsConverged:false` 를 관측값으로만 남기고 아무도 읽지 않았다 — 탭 수·상태·활성 탭이 맞고
       // **점만 낡은** 회차가 C9 통과로 들어갔다. 대기 실패를 그대로 축 불일치로 올린다.
+      // LIFE-493 — 탭 선두(벨·상태 점·없음)가 **각 앱의 자기 기대**대로 탭마다 섰는가. 기대는 앱마다 다르다(Orca blocked =
+      // 질문 아이콘·done = 체크 / corral blocked = 빨간 점·done = 벨) — 그 차이는 제품 차이라 diff 가 잡고, 이 축은
+      // 「주입이 화면에 닿았는가」만 본다. 이전 판은 corral `.main-tab-dot` 이 backend 탭 집계에 수렴하는지만 봤다.
       axis: 'tabDots',
-      label: '탭 점이 backend 집계에 탭마다 수렴 (corral)',
+      label: '탭 선두가 요청 상태에 탭마다 수렴 (각 앱의 자기 기대)',
       requested: 'true',
-      orca: '해당 없음 — Orca 는 탭 집계 점이 없다',
-      corral: String(c.dotsConverged === true),
-      expectCorral: 'true',
-      corralOnly: true
+      orca: `${String(o.leadingConverged === true)} (${(o.tabLeading ?? []).join(',')} / 기대 ${o.tabLeadingWanted ?? ''})`,
+      corral: `${String(c.dotsConverged === true)} (${(c.tabLeading ?? []).join(',')})`,
+      ok: o.leadingConverged === true && c.dotsConverged === true
     }
   ]
   if (scene) {

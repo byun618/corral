@@ -288,6 +288,8 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents, agentOf
           spec.agentType,
           { updatedAt: now, stateStartedAt: now }
         )
+        // LIFE-493 `unread` — 확인 안 된 완료 표식(제품 store 액션, `terminal-tab-attention.ts:43-55`). 탭 벨의 출처다.
+        if (spec.unread === true) get().markAgentCompletionPaneUnread?.(paneKey)
       })
 
       // ④ 관측값. **주입한 키가 아니라 스토어 전체**를 센다 — F2 는 "넣은 것만 세어" 못 잡혔다.
@@ -362,15 +364,58 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents, agentOf
     return { ...seen, waitError: String(error.message ?? error) }
   })
 
+  // LIFE-493 — 탭 선두가 **요청한 상태대로** 탭마다 섰는가(벨·상태 점·없음). corral 쪽 `tabDots` 축과 같은 결.
+  const wantedLeading = observed.tabIds.map((_, index) => {
+    const spec = index >= agentOffset ? (agents[index - agentOffset] ?? null) : null
+    return orcaLeadingFor(spec)
+  })
+  const readLeading = () =>
+    handle.cdp.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="sortable-tab"]')].map((tab) => {
+        if (tab.querySelector('[data-testid="tab-activity-bell"]')) return 'bell'
+        return tab.querySelector('[data-testid="tab-agent-activity-indicator"]')?.getAttribute('data-agent-activity-status') ?? 'none'
+      })
+    )
+  let leading = await readLeading()
+  const leadingConverged = await until(
+    async () => {
+      leading = await readLeading()
+      return leading.length === wantedLeading.length && leading.every((kind, index) => wantedLeading[index].includes(kind))
+    },
+    `orca 탭 선두가 요청 상태에 탭마다 수렴 (기대 ${wantedLeading.map((kinds) => kinds.join('|')).join(', ')})`,
+    20_000
+  ).then(
+    () => true,
+    () => false
+  )
+
   return {
     ...observed,
     wantShape,
     rendered,
+    tabLeading: leading,
+    tabLeadingWanted: wantedLeading.map((kinds) => kinds.join('|')).join(', '),
+    leadingConverged,
     domTabs: rendered.tabs ?? observed.domTabs,
     // 클릭 뒤 **수렴한 값**을 쓴다. 주입 evaluate 안에서 읽은 값은 낡았다.
     activeTabIndex: rendered.activeTabIndex ?? observed.activeTabIndex
   }
 
+}
+
+/** Orca 탭 선두의 **자기 기대** — `TerminalTabLeadingIcon`: 벨(안 읽음, 라이브 아님) → 상태 점 → 없음. blocked 는 permission. */
+function orcaLeadingFor(spec) {
+  if (spec === null) return ['none']
+  switch (spec.state) {
+    case 'working':
+      return ['working']
+    case 'blocked':
+      return ['permission']
+    case 'done':
+      return spec.unread === true ? ['bell'] : ['done']
+    default:
+      return ['none']
+  }
 }
 
 /** 창 크기를 맞춘다 (대칭성) — 브라우저 수준 세션으로 붙어야 `Browser.*` 가 있다. */

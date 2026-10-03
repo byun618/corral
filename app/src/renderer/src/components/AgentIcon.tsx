@@ -119,3 +119,18 @@ export function AgentIcon({ kind, glyph, size = 13 }: { kind: AgentKind; glyph: 
       return <>{glyph}</>
   }
 }
+
+/**
+ * 셸 탭 아이콘 (LIFE-493 D12) — Orca 1.4.198 `GenericTerminalIcon`(`tab-bar/shell-icons.tsx:93-125`) 경로 그대로:
+ * 검은 타일 위 흰 `>_`. 탭바 선두에서만 쓴다 — 사이드바·팔레트의 셸 표시는 `AgentIcon` 의 `$` 그대로다(범위 밖).
+ * 색이 리터럴인 이유: Orca 가 테마와 무관하게 흑백 타일로 고정한다(브랜드 타일 묶음과 같은 결).
+ */
+export function ShellTileIcon({ size = 12 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <rect x="1.5" y="3" width="21" height="18" rx="2.5" fill="#000000" />
+      <path d="M6 7.5 L11.5 12 L6 16.5" stroke="#ffffff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d="M12.5 16.5 L18 16.5" stroke="#ffffff" strokeWidth="2.6" strokeLinecap="round" fill="none" />
+    </svg>
+  )
+}

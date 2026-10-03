@@ -21,8 +21,9 @@ export const WORKTREE_STATUS_LABEL: Record<WorktreeStatus, string> = {
   inactive: '닫힘',
 }
 
-/** 행 점 하나가 워크트리 집계의 어느 칸을 켜는가. `idle`·`unverifiable` 은 아무 칸도 켜지 않는다(Orca 도 idle 은 칸이 없다). */
-function flagOf(dot: AgentDot): WorktreeStatus | null {
+/** 행 점 하나가 워크트리 집계의 어느 칸을 켜는가. `idle`·`unverifiable` 은 아무 칸도 켜지 않는다(Orca 도 idle 은 칸이 없다).
+ *  탭 집계(`tab-status.ts`, LIFE-493)도 같은 칸을 쓴다 — Orca 도 탭과 카드가 같은 어휘다(`terminal-tab-activity-status.ts:10-13`). */
+export function flagOf(dot: AgentDot): WorktreeStatus | null {
   switch (dot) {
     case 'waiting':
     case 'blocked':

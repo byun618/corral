@@ -14,8 +14,12 @@ import { useBindingLabel } from '../hooks/BindingLabels.js'
 // 닫기(×)는 탭 자체에 둔다 — 수정 1회차(07-fix-orca1.md M-2) 코디네이터 결정: freeze 된 C5 본문이
 // "전환·생성(+)·닫기" 를 메인 탭바 위에서 요구하는데 1차 구현은 SessionRow(사이드바)의 닫기로
 // 갈음했다. 그건 고정 문구 재해석이라 관문 ③ 위반 — `-claude` 형제 브랜치는 탭바에 닫기가 있어
-// 같은 저울로 비교되지 않는다. hover 시에만 보이되 항상 DOM 에 있다(opacity 토글, SessionRow
-// 결함 수정과 같은 패턴 — 조건부 렌더링하면 좌표 클릭 계측이 hover 없이는 못 찾는다).
+// 같은 저울로 비교되지 않는다. 항상 DOM 에 있다(조건부 렌더링하면 좌표 클릭 계측이 hover 없이는 못 찾는다).
+//
+// **탭 모양·선두·닫기 = Orca 1.4.198** (LIFE-493 T1, 값 출처 `specs/LIFE-493-tabbar/raw/coordinator/c4-orca198-tabbar-inventory.md` §2~§4):
+// 고정 폭 180(≥1280 220)·최소 72 · 높이 = 탭바 줄 · 활성 = fg 6% + 하단 2px(fg 60%) · 비활성은 글자만 흐리다(hover 시 밝게) ·
+// 선두 = 벨 → 상태 점(+로고) → 로고 → 셸 아이콘(`tab-status.ts`) · 닫기 16px 는 활성 탭 상시, 비활성은 hover · 중클릭 닫기.
+// 좁아도 탭을 접지 않는다(compact 폐지) — 대신 스트립이 가로로 스크롤되고 활성 탭이 보이는 자리로 온다(넘침 최소선).
 //
 // **인라인 리네임**(11-gate1-fix3.md I-7): 탭을 더블클릭하면 제목 자리에서 바로 고친다.
 // 이름은 herdr 가 들고 있다 — `tab.rename` 한 번 보내면 `tab_renamed` 로 돌아오고 재기동해도
@@ -28,8 +32,11 @@ import { useBindingLabel } from '../hooks/BindingLabels.js'
 // **전체 탭**(셸 포함), 사이드바는 에이전트 세션만 (01-criteria.md 부록 "세션 용어 확정").
 import { useEffect, useRef, useState } from 'react'
 import type { TabRow } from '../../../shared/types.js'
-import { agentIcon } from '../session-glyphs.js'
-import { AgentIcon } from './AgentIcon.js'
+import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
+import { tabLeading, type TabAgentKind, type TabLeading } from '../tab-status.js'
+import { AgentIcon, ShellTileIcon } from './AgentIcon.js'
+import { AgentStateDot, PlusIcon } from './AgentStateDot.js'
+import { FILLED_BELL_PATH } from './WorktreeStatusSlot.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
@@ -49,12 +56,61 @@ function focusActiveTerminal(): void {
   if (textarea instanceof HTMLTextAreaElement) textarea.focus()
 }
 
+/** 선두의 에이전트 로고 — Orca `TerminalTabAgentIdentityIcon`: 12px, 비활성 탭은 70%(`opacity-70`). */
+function TabAgentLogo({ agent }: { agent: TabAgentKind }): React.JSX.Element {
+  return (
+    <span className={`main-tab-agent agent-${agent}`} data-agent-kind={agent} aria-hidden>
+      <AgentIcon kind={agent} glyph={AGENT_ICON[agent].glyph} size={12} />
+    </span>
+  )
+}
+
+/**
+ * 탭 선두 (Orca `TerminalTabLeadingIcon.tsx:46-104`) — 벨(+로고) → 상태 점 md(+로고) → 로고만 → 셸 아이콘.
+ * 표식 속성은 Orca 의 것과 짝이 되게 단다(측정 도구가 같은 의미끼리 짝짓는다): 벨 `data-tab-unread-bell` ↔ `tab-activity-bell`,
+ * 상태 묶음 `data-tab-activity` ↔ `tab-agent-activity-indicator`, 로고 `data-agent-kind` ↔ `data-agent-icon`, 셸 `data-shell-icon`.
+ */
+function TabLeadingIcon({ leading }: { leading: TabLeading }): React.JSX.Element {
+  switch (leading.kind) {
+    case 'bell':
+      return (
+        <span className="main-tab-leading" data-tab-unread-bell="" aria-label="확인 안 된 완료">
+          <svg className="main-tab-bell" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" fillRule="evenodd" clipRule="evenodd" d={FILLED_BELL_PATH} />
+          </svg>
+          {leading.agent === null ? null : <TabAgentLogo agent={leading.agent} />}
+        </span>
+      )
+    case 'dot':
+      return (
+        <span className="main-tab-leading" data-tab-activity={leading.dot}>
+          <AgentStateDot dot={leading.dot} />
+          {leading.agent === null ? null : <TabAgentLogo agent={leading.agent} />}
+        </span>
+      )
+    case 'agent':
+      return (
+        <span className="main-tab-leading">
+          <TabAgentLogo agent={leading.agent} />
+        </span>
+      )
+    case 'shell':
+      return (
+        <span className="main-tab-leading main-tab-shell" data-shell-icon="generic" aria-hidden>
+          <ShellTileIcon size={12} />
+        </span>
+      )
+  }
+}
+
 function MainTab({
   tab,
   tabCount,
   home,
   selectedPane,
   active,
+  unreadPanes,
+  hasTabsToRight,
   onSelect,
   onClose,
   onRename,
@@ -64,7 +120,6 @@ function MainTab({
   canMoveToGroup,
   otherGroups,
   onMoveToOtherGroup,
-  compact,
   onDragStart,
 }: {
   tab: TabRow
@@ -78,6 +133,10 @@ function MainTab({
   /** 지금 화면에 뜬 pane (C14) — 그 pane 이 제목을 몬다. */
   selectedPane: string | null
   active: boolean
+  /** 확인 안 된 완료가 있는 pane (LIFE-471 장부) — 탭 벨·워시·done 점의 출처. */
+  unreadPanes: ReadonlySet<string>
+  /** 오른쪽에 탭이 더 있나 — Orca 처럼 탭 사이 세로 줄을 마지막 탭에는 안 긋는다(`getTabStripBorderClasses`). */
+  hasTabsToRight: boolean
   onSelect: () => void
   onClose: () => void
   onRename: (label: string) => void
@@ -91,14 +150,11 @@ function MainTab({
   /** LIFE-387 A1 — 다른 영역 목록("다른 영역으로 옮기기" 메뉴 섹션). */
   otherGroups: { groupId: string; label: string }[]
   onMoveToOtherGroup: (targetGroupId: string) => void
-  /** 영역이 좁아 **아이콘만**으로 접힌 탭인가 (F1-7). 활성 탭은 절대 접히지 않는다. */
-  compact: boolean
   /** LIFE-387 A1 — 드래그 무장(mousedown). 6px 넘기 전엔 평소 클릭과 다르지 않다. */
   onDragStart: (event: React.MouseEvent) => void
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
-  const [hovered, setHovered] = useState(false)
   // 인라인 리네임 (I-7). **입력칸은 항상 DOM 에 있다** — 조건부 렌더링하면 좌표 클릭 계측이
   // 없는 요소를 못 누른다(MainTab 닫기 버튼·SessionRow 와 같은 결). 대신 평소엔 투명하고
   // `pointer-events: none` 이라 라벨 클릭을 가로채지 않는다.
@@ -168,31 +224,30 @@ function MainTab({
     input.select()
   }, [editing])
   // H-6 을 탭바에도 적용한다(구현자 판단) — 사이드바와 탭바가 같은 세션을 다른 기호로 보이면
-  // 두 목록을 짝지어 읽을 수 없다. 탭바는 **셸 탭도** 보여주므로 에이전트가 없는 탭은 `shell`
-  // 아이콘(`$`)으로 떨어뜨린다 — 여기서만 의미가 있는 구분이다(사이드바는 에이전트 세션만 그린다).
+  // 두 목록을 짝지어 읽을 수 없다. 그래서 선두의 상태 점은 사이드바 행과 **같은 함수**로 고른다(`tab-status.ts`).
+  // 탭바는 **셸 탭도** 보여주므로 에이전트가 없는 탭은 셸 아이콘으로 떨어뜨린다(Orca `ShellIcon`).
   const kind = agentIcon(tabAgent(tab) ?? 'shell')
-  /**
-   * 접힌 탭은 아이콘만 26px 인데, **이름을 고치는 동안은 편다** — 접힌 상태에서는 리네임
-   * 입력칸이 `display: none` 이라 `focus()` 가 안 먹는다. 메뉴 `이름 바꾸기` 가 접힌 탭의
-   * 유일한 입구라(더블클릭할 라벨이 없다) 여기서 안 펴면 그 입구가 막힌다.
-   */
-  const collapsed = compact && !editing
+  const leading = tabLeading({ tab, unreadPanes })
   // LIFE-387 B1 F-B1-5 — 툴팁이 드래그를 안내한다(§2 "탭 툴팁"). 상태 라벨은 사용자 카피라 한글로 —
   // AgentStatus 자체(herdr 타입)를 노출하지 않는다.
   const statusLabel: Record<typeof tab.agentStatus, string> = { idle: '대기', working: '작업 중', blocked: '막힘', done: '완료', unknown: '알 수 없음' }
   const tooltip = editing ? undefined : `${seed} · ${kind?.label ?? '셸'} · ${statusLabel[tab.agentStatus]} — 끌어서 옮기기`
   return (
     <div
-      className={`main-tab ${active ? 'is-active' : ''} ${collapsed ? 'is-compact' : ''}`}
+      className={`main-tab ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''}`}
       data-main-tab={tab.tabId}
-      data-tab-compact={collapsed ? 'true' : 'false'}
+      data-active={active ? 'true' : 'false'}
       title={tooltip}
       data-tab-editing={editing ? 'true' : 'false'}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       // LIFE-387 A1 — 편집 중엔 무장하지 않는다(캐럿 드래그와 겹친다). 문턱(6px)을 안 넘기면
       // 이 mousedown 은 그냥 뒤따르는 click 으로 남는다 — `preventDefault` 를 안 쓰는 이유.
       onMouseDown={(event) => {
+        // 중클릭 — 자동 스크롤을 막기만 하고 **여기서 닫지 않는다**(Orca `SortableTab.tsx:206-211`: 떼기 전에 요소를 지우면
+        // Linux X11 붙여넣기가 난다). 닫기는 `onAuxClick`.
+        if (event.button === 1) {
+          event.preventDefault()
+          return
+        }
         if (editingRef.current) return
         // 닫기(×) 위 mousedown 은 무장하지 않는다 — 안 그러면 누르고 6px 밀린 뒤 떼는
         // 손짓이 닫기 대신 드래그로 잡힌다(keepFocusOnHeaderBackground 와 같은 결).
@@ -200,6 +255,13 @@ function MainTab({
         onDragStart(event)
       }}
       onClick={onSelect}
+      // D14 중클릭 닫기 (Orca `SortableTab.tsx:213-225`). 편집 중엔 안 닫는다. 핀 제외 조건은 핀이 생길 때(T3) 붙는다.
+      onAuxClick={(event) => {
+        if (event.button !== 1 || editingRef.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        onClose()
+      }}
       onDoubleClick={(event) => {
         event.stopPropagation()
         beginEdit()
@@ -211,14 +273,14 @@ function MainTab({
         setMenu({ tabId: tab.tabId, x: event.clientX, y: event.clientY })
       }}
     >
-      <span className={`main-tab-dot tone-${tab.agentStatus === 'working' ? 'accent' : 'neutral'}`} />
-      {kind === null ? null : (
-        <span className={`main-tab-agent agent-${kind.kind}`} data-agent-kind={kind.kind} title={kind.label}>
-          <AgentIcon kind={kind.kind} glyph={kind.glyph} />
-        </span>
-      )}
+      {active ? <span className="main-tab-indicator" aria-hidden /> : null}
+      {/* 안 읽음 워시 — Orca 처럼 실제 DOM 자식이다(`::after` 는 드롭 표시와 겹친다). 벨이 보일 때만(라이브 상태면 둘 다 숨는다). */}
+      {leading.kind === 'bell' ? <span className="main-tab-unread-wash" aria-hidden /> : null}
+      <TabLeadingIcon leading={leading} />
+      <span className="main-tab-title">
       <span className="main-tab-label">{seed}</span>
       {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
+          라벨 칸(`.main-tab-title`) 안에 겹치므로 선두 표시가 바뀌어도(벨·점·로고) 자리가 따라온다.
           ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
           으로 올라가 pane 을 바꾸고, 그 바람에 입력칸이 blur 돼 편집이 스스로 끝난다
           (I-6 에서 잡은 버블링 함정과 같은 모양이다). */}
@@ -246,16 +308,24 @@ function MainTab({
           else if (event.key === 'Escape') endEdit()
         }}
       />
+      </span>
+      {/* 닫기 — 활성 탭은 상시, 비활성은 탭 hover 때(CSS). Orca 처럼 글자색으로 숨긴다(`text-transparent`). */}
       <button
-        className={`main-tab-close ${hovered ? 'is-active' : ''}`}
+        className="main-tab-close"
         data-main-tab-close={tab.tabId}
+        data-tab-close-button="true"
+        type="button"
         title="탭 닫기"
+        aria-label={`탭 닫기 ${seed}`}
         onClick={(event) => {
           event.stopPropagation()
           onClose()
         }}
       >
-        ×
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
       </button>
       {menu === null ? null : (
         <TabContextMenu
@@ -277,44 +347,43 @@ function MainTab({
 }
 
 /**
- * 좁은 영역에서 비활성 탭을 **아이콘만**으로 접을지 (F1-7 · 핸드오프 §1-8-a).
- *
- * 탭 폭 합 = `탭 수 × (--tab-min-w 120 + gap 4)`. 쓸 수 있는 폭 = `영역폭 − 12(패딩) − 32(+) − 꼬리`.
- * **꼬리는 상수가 아니라 실측**이다 (`.main-tabbar-tail`) — 격자 메타(`138×51`/`81×37` 로 폭이
- * 다르다)·줌 칩이 들고 나며, 액션도 pane 수에 따라 버튼이 둘/넷이다. 94px 상수로 세던 때는
- * 메타가 들어온 만큼(≈50px) 판정이 늦어 탭이 메타와 부딪힌 뒤에야 접혔다. 꼬리는 **항상 자리를
- * 점유**하므로(핸드오프) 접힘 판정에서도 빼고 센다. 활성 탭은 언제나 풀 폼이라 접힌 뒤에도
- * "지금 뭘 보고 있나"는 글로 남는다.
- *
- * 폭이 아직 0 이면(첫 렌더·측정 전) 접지 않는다 — 측정 전에 접으면 넓은 창에서도 한 프레임 접힌다.
- * 꼬리는 액션 버튼 둘이 늘 있어 0 이 될 수 없다 — 0 은 "아직 안 쟀다"는 뜻이다.
+ * 탭 스트립 넘침 최소선 (LIFE-493 D21·D24) — Orca `tab-strip-overflow-navigation.ts` 의 두 조각만 옮긴다:
+ *   · 세로 휠이 가로 휠보다 크면 가로 스크롤로 바꾼다(`:77-90`). React `onWheel` 은 passive 라 `preventDefault` 가 안 먹어
+ *     직접 단다.
+ *   · 활성 탭이 바뀌면 보이는 자리로 끌어온다(`:171-187` `scrollIntoView({block:'nearest',inline:'nearest'})`). Orca 는 누르고
+ *     있는 포인터 아래서 스트립이 움직이지 않게 그때는 미루는데, corral 은 탭 활성화가 **click**(떼고 난 뒤)이고 드래그 커밋도
+ *     mouseup 이라 활성 탭이 바뀌는 순간 눌린 포인터가 없다 — 미루는 장치를 두지 않는다.
+ * chevron·페이드·썸·끝에 붙기는 T2(LIFE-494) 몫이다.
  */
-export function shouldCompactTabs(input: { tabCount: number; headerWidth: number; tailWidth: number }): boolean {
-  if (input.headerWidth <= 0 || input.tailWidth <= 0) return false
-  return input.tabCount * (TAB_FULL_W + TAB_GAP) > input.headerWidth - HEADER_PAD - ADD_BTN_W - input.tailWidth
+/** 휠 한 번을 스트립 가로 이동으로 바꿀지 — 넘칠 때, 세로가 가로보다 클 때만(가로 휠·트랙패드 가로 밀기는 브라우저 기본 그대로). */
+export function wheelToHorizontal(input: { deltaX: number; deltaY: number; overflows: boolean }): number | null {
+  if (!input.overflows) return null
+  if (Math.abs(input.deltaY) <= Math.abs(input.deltaX)) return null
+  return input.deltaY
 }
 
-const TAB_FULL_W = 120
-const TAB_GAP = 4
-const HEADER_PAD = 12
-const ADD_BTN_W = 32
-
-/** 상자 폭 — 영역 경계를 끌면 바로 따라와야 해서 `ResizeObserver` 로 잰다. */
-function useBoxWidth(): { ref: React.RefObject<HTMLDivElement | null>; width: number } {
+function useTabStripOverflow(input: { activeTabId: string | null }): React.RefObject<HTMLDivElement | null> {
   const ref = useRef<HTMLDivElement | null>(null)
-  const [width, setWidth] = useState(0)
   useEffect(() => {
-    const node = ref.current
-    if (node === null) return
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[0]?.contentRect
-      if (box !== undefined) setWidth(box.width)
-    })
-    observer.observe(node)
-    setWidth(node.getBoundingClientRect().width)
-    return () => observer.disconnect()
+    const strip = ref.current
+    if (strip === null) return
+    const onWheel = (event: WheelEvent): void => {
+      const step = wheelToHorizontal({ deltaX: event.deltaX, deltaY: event.deltaY, overflows: strip.scrollWidth > strip.clientWidth })
+      if (step === null) return
+      event.preventDefault()
+      strip.scrollLeft += step
+    }
+    strip.addEventListener('wheel', onWheel, { passive: false })
+    return () => strip.removeEventListener('wheel', onWheel)
   }, [])
-  return { ref, width }
+  useEffect(() => {
+    const strip = ref.current
+    if (strip === null || input.activeTabId === null) return
+    const tabId = input.activeTabId
+    const tab = [...strip.querySelectorAll<HTMLElement>('[data-main-tab]')].find((node) => node.dataset.mainTab === tabId)
+    tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [input.activeTabId])
+  return ref
 }
 
 /**
@@ -355,6 +424,7 @@ export function GroupHeader({
   selectedPane,
   activeTabId,
   activeGroup,
+  unreadPanes,
   paneCount,
   grid,
   zoomed,
@@ -385,6 +455,8 @@ export function GroupHeader({
   activeTabId: string | null
   /** 이 영역이 포커스 영역인가 — 액션 노출과 탭 라벨 색이 갈린다. */
   activeGroup: boolean
+  /** 확인 안 된 완료가 있는 pane (LIFE-471 `useUnread`) — 탭 벨·워시. */
+  unreadPanes: ReadonlySet<string>
   /** 이 영역 활성 탭의 pane 수 — `⤢`·`✕`(pane) 는 2개 이상일 때만 뜬다. */
   paneCount: number
   /** 선택 pane 의 **내용** 셀 수. 장식 행 메타가 철회돼 이 자리가 유일한 격자 표시다 (§10-R21-1b). */
@@ -412,9 +484,7 @@ export function GroupHeader({
   const bindingLabel = useBindingLabel()
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
-  const header = useBoxWidth()
-  const tail = useBoxWidth()
-  const compact = shouldCompactTabs({ tabCount: tabs.length, headerWidth: header.width, tailWidth: tail.width })
+  const strip = useTabStripOverflow({ activeTabId })
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
@@ -425,11 +495,9 @@ export function GroupHeader({
   const activeTabLabel = tabs.find((tab) => tab.tabId === activeTabId)?.label ?? ''
   return (
     <div
-      className={`main-tabbar ${activeGroup ? 'is-active-group' : ''} ${compact ? 'is-compact' : ''}`}
+      className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
       data-main-tabbar
       data-group-header={groupId}
-      data-header-compact={compact ? 'true' : 'false'}
-      ref={header.ref}
       onMouseDown={(event) => {
         keepFocusOnHeaderBackground(event)
         onActivate()
@@ -441,7 +509,9 @@ export function GroupHeader({
         openHeaderMenu({ x: event.clientX, y: event.clientY })
       }}
     >
-      {tabs.map((tab) => (
+      {/* 탭 스트립 — 넘치면 가로로 스크롤된다(스크롤바는 숨긴다, Orca `.terminal-tab-strip`). */}
+      <div className="main-tab-strip" data-main-tab-strip={groupId} ref={strip}>
+      {tabs.map((tab, index) => (
         <MainTab
           key={tab.tabId}
           tab={tab}
@@ -452,7 +522,8 @@ export function GroupHeader({
           home={home}
           selectedPane={selectedPane}
           active={tab.tabId === activeTabId}
-          compact={compact && tab.tabId !== activeTabId}
+          unreadPanes={unreadPanes}
+          hasTabsToRight={index < tabs.length - 1}
           canMoveToGroup={tabs.length > 1}
           onSelect={() => onSelectTab(tab)}
           onClose={() => onCloseTab(tab)}
@@ -465,12 +536,14 @@ export function GroupHeader({
           onDragStart={(event) => onTabDragStart(event, tab.tabId)}
         />
       ))}
-      <button className="main-tab-add" data-main-tabbar-add={groupId} title={`빈 탭 (${bindingLabel('terminal.new')})`} onClick={onCreateShell}>
-        +
+      </div>
+      {/* `+` — Orca 는 스트립 바로 뒤 28px 버튼(`tab-bar-surface.tsx:223-233`). 드롭다운은 T4(LIFE-496) 몫이라 여기선 빈 탭 그대로다. */}
+      <button className="main-tab-add" data-main-tabbar-add={groupId} type="button" title={`빈 탭 (${bindingLabel('terminal.new')})`} aria-label="빈 탭" onClick={onCreateShell}>
+        <PlusIcon className="main-tab-add-icon" />
       </button>
       <div className="main-tabbar-spacer" />
-      {/* 탭이 아닌 것들은 한 상자에 담는다 — 접힘 판정이 이 상자의 **실측 폭**을 뺀다. */}
-      <div className="main-tabbar-tail" data-group-tail={groupId} ref={tail.ref}>
+      {/* 탭이 아닌 것들(격자 메타·줌 칩·액션)은 한 상자에 담는다 — 늘 자리를 점유하고, 탭 스트립이 그만큼 줄어든다. */}
+      <div className="main-tabbar-tail" data-group-tail={groupId}>
         {grid === null ? null : (
           <span className="group-grid-meta" data-group-grid={groupId}>
             {grid.cols}×{grid.rows}

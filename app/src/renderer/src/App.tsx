@@ -910,6 +910,7 @@ export function App(): React.JSX.Element {
           selectedPane={groupSelectedPaneId}
           activeTabId={group.activeTabId}
           activeGroup={isActiveGroup}
+          unreadPanes={unread.panes}
           paneCount={groupActiveTab?.panes.length ?? 0}
           grid={gridOfSelected}
           zoomed={groupState?.zoomedPaneId != null}

@@ -90,7 +90,7 @@
 
   /* 치수 (밀도 8/10) */
   --h-brandbar: 38px;
-  --h-tabbar: 33px;
+  --h-tabbar: 32px;      /* LIFE-493 — Orca `TabGroupPanel.tsx:249` `h-[32px]`(하단 경계 포함) */
   --h-statusbar: 25px;
   --h-repo-row: 28px;
   /* **1줄짜리 행**의 높이 — 접힘 요약 행(`.agent-group-summary`)이 계속 이 값을 쓴다.
@@ -145,10 +145,11 @@
   --unread-bell: oklch(76.9% 0.188 70.08);
   --lh-snug: 1.375;
   --pane-locate: oklch(70.7% 0.165 254.624);
-  /* LIFE-373 §3 (H): 풀 폼 고정 요소 81px + 라벨 ≥ 39px → 120. 접힘 26 = 아이콘 14 + 6×2. */
-  --tab-min-w: 120px;
-  --tab-max-w: 230px;
-  --tab-compact-w: 26px;
+  /* LIFE-493 탭 폭 — Orca `tab-width-rules.ts:3` 고정 180(창 1280 이상 220), 줄어도 72 까지. 접힘(compact 26)은 폐지 —
+     넘치면 스트립이 가로로 스크롤된다. */
+  --tab-w: 180px;
+  --tab-w-wide: 220px;
+  --tab-min-w: 72px;
   --h-action-btn: 22px;       /* RepoRow hover 액션 (2026-09-15: 20px→22px, 아이콘 확대) */
   --w-repo-menu: 168px;
   --w-modal-create: 400px;

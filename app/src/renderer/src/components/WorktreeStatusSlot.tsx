@@ -30,16 +30,14 @@ function Indicator({ status }: { status: WorktreeStatus }): React.JSX.Element {
   }
 }
 
-/** 198 `FilledBellIcon`(`WorktreeCardHelpers.tsx:38-49`) 경로 그대로. */
+/** 198 `FilledBellIcon`(`WorktreeCardHelpers.tsx:38-49`) 경로. 탭 선두 벨(LIFE-493)도 같은 경로를 쓴다. */
+export const FILLED_BELL_PATH =
+  'M5.25 9A6.75 6.75 0 0 1 12 2.25 6.75 6.75 0 0 1 18.75 9v3.75c0 .526.214 1.03.594 1.407l.53.532a.75.75 0 0 1-.53 1.28H4.656a.75.75 0 0 1-.53-1.28l.53-.532A1.989 1.989 0 0 0 5.25 12.75V9Zm6.75 12a3 3 0 0 0 2.996-2.825.75.75 0 0 0-.748-.8h-4.5a.75.75 0 0 0-.748.8A3 3 0 0 0 12 21Z'
+
 function FilledBellGlyph(): React.JSX.Element {
   return (
     <svg className="worktree-unread-bell" viewBox="0 0 24 24" aria-hidden="true" data-worktree-unread-bell="">
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d="M5.25 9A6.75 6.75 0 0 1 12 2.25 6.75 6.75 0 0 1 18.75 9v3.75c0 .526.214 1.03.594 1.407l.53.532a.75.75 0 0 1-.53 1.28H4.656a.75.75 0 0 1-.53-1.28l.53-.532A1.989 1.989 0 0 0 5.25 12.75V9Zm6.75 12a3 3 0 0 0 2.996-2.825.75.75 0 0 0-.748-.8h-4.5a.75.75 0 0 0-.748.8A3 3 0 0 0 12 21Z"
-      />
+      <path fill="currentColor" fillRule="evenodd" clipRule="evenodd" d={FILLED_BELL_PATH} />
     </svg>
   )
 }

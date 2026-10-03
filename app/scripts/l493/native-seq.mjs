@@ -3,6 +3,7 @@
 // → 0/100/300ms document.activeElement → ⌘A · 입력 · Enter → 라벨이 바뀌었나.
 //   --mode plain    : fixture 워크스페이스를 영역 1개·셸 탭 4개로 만들고 잰 뒤, 탭을 1개로 되돌린다(뒤이은 native-k5 가 r4·r5 모양을 만든다)
 //   --mode overflow : native-k5 가 남긴 상태에서 가장 넘친 영역을 잰다
+//   --mode built    : native-k5 없이 영역 2개 + 둘째 영역 탭 21개를 직접 만들고 잰다(세 빌드 공통 넘침 조건)
 // 원자료 경계: fixture 워크스페이스 탭만 다룬다 — 화면에 fixture 밖 탭이 보이면 멈춘다. 입력이 새도 fixture 셸 pane 이다.
 //
 // 사용: node native-seq.mjs <ROOT> <raw 폴더> <fixture 경로(realpath)> <plain|overflow> <회수>
@@ -72,6 +73,22 @@ async function main() {
     result.cardClicks = await openFixture()
     while ((await fixtureTabs()).length < 4) await addTab('[data-main-tabbar-add]')
     group = await evaluate(`document.querySelector('[data-group-header]')?.dataset.groupHeader`)
+  } else if (mode === 'built') {
+    // native-k5 없이 넘침을 직접 만든다 — base 는 `data-main-tab-strip` 이 없어 native-k5 가 돌지 않는다(r6 base 회차).
+    // 셸 탭 4개 → 첫 탭 우클릭 「오른쪽 영역」 → 그 영역에 `+` 20번. 세 빌드 모두 같은 걸음.
+    result.cardClicks = await openFixture()
+    while ((await fixtureTabs()).length < 4) await addTab('[data-main-tabbar-add]')
+    const first = (await fixtureTabs())[0]
+    const rect = (await call({ cmd: 'rect', selector: `[data-main-tab="${first}"]` })).rect
+    const x = Math.round(rect.left + 20)
+    const y = Math.round(rect.top + 10)
+    await call({ cmd: 'raw-mouse', type: 'mouseDown', x, y, button: 'right' })
+    await call({ cmd: 'raw-mouse', type: 'mouseUp', x, y, button: 'right' })
+    await pause(300)
+    await call({ cmd: 'click', selector: '[data-tab-menu-move-right]' })
+    await until(async () => (await evaluate(`document.querySelectorAll('[data-group-header]').length`)) === 2, '영역 2개')
+    group = await evaluate(`[...document.querySelectorAll('[data-group-header]')].find((header) => header.querySelector('[data-main-tab="${first}"]'))?.dataset.groupHeader`)
+    for (let index = 0; index < 20; index += 1) await addTab(`[data-main-tabbar-add="${group}"]`)
   } else {
     await assertOnlyFixture()
     group = await evaluate(`[...document.querySelectorAll('[data-main-tab-strip]')].map((s) => ({ g: s.dataset.mainTabStrip, over: s.scrollWidth - s.clientWidth })).sort((a, b) => b.over - a.over)[0]?.g`)

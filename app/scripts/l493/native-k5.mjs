@@ -289,7 +289,8 @@ async function main() {
   await pause(200)
   const xClick = await control({ cmd: 'click', selector: `[data-main-tab-close="${xTarget}"]` })
   const xClosed = await until(async () => !((await fixtureWorkspace())?.tabs ?? []).some((tab) => tab.tabId === xTarget), '× 닫기', 15_000).then(() => true, () => false)
-  record('smoke-x-close-hover', xClosed, { click: xClick.ok })
+  // 수정 r1 F1: 옛 이름 smoke-x-close-hover — 투명한 × 를 선택자로 직접 누르므로 hover 증거가 아니다(r2~r4 원자료는 옛 이름).
+  record('smoke-x-close', xClosed, { click: xClick.ok })
 
   // 드래그 재정렬 — 첫 영역의 claude 완료 탭을 그 영역 맨 끝 탭 오른쪽으로 끈다(실제 마우스: 누름 → 6px 넘게 이동 → 뗌).
   const groupA = (await readTabbar()).groups.find((group) => group.tabs.some((tab) => tab.id === claudeDone))

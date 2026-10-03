@@ -56,10 +56,13 @@ function focusActiveTerminal(): void {
   if (textarea instanceof HTMLTextAreaElement) textarea.focus()
 }
 
-/** 선두의 에이전트 로고 — Orca `TerminalTabAgentIdentityIcon`: 12px, 비활성 탭은 70%(`opacity-70`). */
-function TabAgentLogo({ agent }: { agent: TabAgentKind }): React.JSX.Element {
+/**
+ * 선두의 에이전트 로고 — Orca `TerminalTabAgentIdentityIcon`: 12px, 비활성 탭은 70%(`opacity-70`).
+ * 로고만 서는 탭(`solo`)은 Orca 처럼 묶음 없이 로고 자신이 `mr-1` 을 갖는다(`TerminalTabLeadingIcon.tsx:87-91`).
+ */
+function TabAgentLogo({ agent, solo = false }: { agent: TabAgentKind; solo?: boolean }): React.JSX.Element {
   return (
-    <span className={`main-tab-agent agent-${agent}`} data-agent-kind={agent} aria-hidden>
+    <span className={`main-tab-agent agent-${agent} ${solo ? 'is-solo' : ''}`} data-agent-kind={agent} aria-hidden>
       <AgentIcon kind={agent} glyph={AGENT_ICON[agent].glyph} size={12} />
     </span>
   )
@@ -89,14 +92,10 @@ function TabLeadingIcon({ leading }: { leading: TabLeading }): React.JSX.Element
         </span>
       )
     case 'agent':
-      return (
-        <span className="main-tab-leading">
-          <TabAgentLogo agent={leading.agent} />
-        </span>
-      )
+      return <TabAgentLogo agent={leading.agent} solo />
     case 'shell':
       return (
-        <span className="main-tab-leading main-tab-shell" data-shell-icon="generic" aria-hidden>
+        <span className="main-tab-shell" data-shell-icon="generic" aria-hidden>
           <ShellTileIcon size={12} />
         </span>
       )

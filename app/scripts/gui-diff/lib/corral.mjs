@@ -295,7 +295,7 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
     // 포커스 안 된 pane 에서 볼 때 스스로 매긴다(①의 실측과 같은 규칙). 그래서 두 번 보고한다. 이 pane 이
     // 포커스된 첫 탭이면 곧장 idle 로 내려가니, 상태 정의가 done 을 첫 탭에 두지 않는다 (LIFE-467 K8).
     const reports = spec.state === 'done' ? ['working', 'idle'] : [spec.state]
-    for (const state of reports) {
+    for (const [step, state] of reports.entries()) {
       await backendRpc(handle, 'pane.report_agent', {
         pane_id: rootPane.pane_id,
         source: 'l443-gui-diff',
@@ -303,6 +303,22 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
         state,
         message: spec.prompt
       })
+      // LIFE-493 — 두 보고 사이에 **corral main 이 working 을 본 뒤** idle 을 보낸다. 붙여 보내면 main 이 `unknown → done` 만
+      // 보고(working 을 못 봄) 471 장부가 그것을 완료로 세지 않는다(「unknown → idle/done 은 세지 않는다」, `unread.ts`) — 탭 벨·
+      // 행 굵기가 안 선다. 실측: after-t1-a `done` 축 불일치, debug-done-keep 회차의 main 이력 [unknown] → done(snapshot).
+      // 471 격리 실행(`l471/unread-isolated.mjs` `report`)도 같은 이유로 working 이 보인 뒤 idle 을 보낸다.
+      if (reports.length > 1 && step === 0) {
+        await until(
+          async () => {
+            const res = await rpc(handle.control, { cmd: 'state' }, 10_000).catch(() => null)
+            const panes = (res?.state?.repos ?? []).flatMap((repo) => repo.worktrees.flatMap((row) => (row.workspace?.tabs ?? []).flatMap((tab) => tab.panes)))
+            return panes.some((pane) => pane.paneId === rootPane.pane_id && pane.agentStatus === 'working') ? true : null
+          },
+          `corral main 이 ${rootPane.pane_id} working 을 봄`,
+          15_000,
+          150
+        )
+      }
     }
     // 긴 이름 (LIFE-467 K8 `long-name`) — corral 행 제목의 주입 가능한 유일한 원천은 **터미널 제목(OSC 2)** 이다
     // (provider 제목·첫 프롬프트는 세션 파일에서만 온다). 셸 precmd 가 제목을 덮지 않게 `sleep` 을 뒤에 붙인다.
@@ -360,7 +376,11 @@ export async function applyCorralState(handle, { tabCount, agents, agentOffset =
     async () => {
       dom = await readDom()
       // 활성 탭은 **첫 탭을 눌러서** 맞춘다 (Orca 와 같은 제품 클릭 경로). 갱신은 다음 폴링에서 본다.
-      if (dom.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-main-tabbar] [data-main-tab]')
+      if (dom.activeTabIndex !== 0) {
+        // 넘치는 스트립에서 첫 탭이 스크롤 밖이면 좌표 클릭이 빗나간다 — Orca 쪽과 같은 처리(LIFE-493 `tabs-many`).
+        await handle.cdp.evaluate(() => document.querySelector('[data-main-tabbar] [data-main-tab]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }))
+        await clickElement(handle.cdp, '[data-main-tabbar] [data-main-tab]')
+      }
       return leadingMatch(dom) && dom.activeTabIndex === 0 && dom.domTabs === tabCount
     },
     `corral 탭 선두가 요청 상태에 **탭마다** 수렴 (기대 ${wanted}) · 첫 탭 활성 · 탭 ${tabCount}개`,

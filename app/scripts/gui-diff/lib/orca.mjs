@@ -351,7 +351,11 @@ export async function applyOrcaState(handle, { repoId, tabCount, agents, agentOf
   const rendered = await until(
     async () => {
       const seen = await readRendered()
-      if (seen.activeTabIndex !== 0) await clickElement(handle.cdp, '[data-testid="sortable-tab"]')
+      if (seen.activeTabIndex !== 0) {
+        // LIFE-493 `tabs-many` — 넘치는 스트립에서 첫 탭이 스크롤 밖이면 좌표 클릭이 빗나간다(after-t1-a 활성 순번 19). 먼저 보이게 한다.
+        await handle.cdp.evaluate(() => document.querySelector('[data-testid="sortable-tab"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }))
+        await clickElement(handle.cdp, '[data-testid="sortable-tab"]')
+      }
       // 활성 탭도 기다린다 — 탭을 누른 직후 같은 turn 에 읽으면 React 갱신 전 값이 나온다.
       return seen.shape === wantShape && seen.tabs === tabCount && seen.activeTabIndex === 0 ? seen : null
     },

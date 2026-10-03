@@ -40,6 +40,72 @@ export const SCENE_SELECTORS = {
   }
 }
 
+/** 탭 스트립 — 측정 영역 정의(`areas/tabbar.json` `tab-strip`)와 같은 짝. corral 은 영역마다 하나라 첫 것(영역 1개). */
+export const TAB_STRIP_SELECTORS = { orca: '.terminal-tab-strip', corral: '[data-main-tab-strip]' }
+
+/** 페이지 안에서 도는 탭 스트립 관측 — 스크롤 위치·끝까지 남은 거리·활성 탭이 붙은 쪽(corral 만 표식이 있다, Orca 198 은 dock 없음). */
+function observeTabStripPage(selector) {
+  const strip = document.querySelector(selector)
+  if (!strip) return null
+  const max = strip.scrollWidth - strip.clientWidth
+  return { scrollLeft: Math.round(strip.scrollLeft), max: Math.round(max), docked: strip.getAttribute('data-active-tab-docked') }
+}
+
+async function observeTabStrip({ handle, app }) {
+  return handle.cdp.evaluate(observeTabStripPage, TAB_STRIP_SELECTORS[app])
+}
+
+/**
+ * LIFE-494 — 탭 스트립을 **실제 휠 입력**(CDP mouseWheel, 세로 delta)으로 끝(또는 맨 앞)까지 민다. 두 앱 다 세로 휠을 가로 스크롤로 바꾸는 제품 경로다
+ * (Orca `tab-strip-overflow-navigation.ts` wheel · corral `useTabStripOverflow` wheel). scrollLeft 를 직접 쓰지 않는 이유: 그건 제품의
+ * 휠 처리(끝 붙기·지표 갱신)를 건너뛴다. 끝에 닿으면(±2px) 멈추고, 포인터를 치운 뒤 스크롤 중 표시(800ms)가 꺼질 때까지 기다린다.
+ */
+async function wheelTabStripTo({ handle, app, edge }) {
+  const point = await handle.cdp.evaluate((selector) => {
+    const strip = document.querySelector(selector)
+    if (!strip) return null
+    const rect = strip.getBoundingClientRect()
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  }, TAB_STRIP_SELECTORS[app])
+  if (!point) return null
+  for (let i = 0; i < 40; i += 1) {
+    const seen = await observeTabStrip({ handle, app })
+    if (seen === null || (edge === 'end' ? seen.max - seen.scrollLeft <= 2 : seen.scrollLeft <= 0)) break
+    await handle.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: edge === 'end' ? 300 : -300 })
+    await pause(60)
+  }
+  await pointerAway(handle)
+  await pause(1200)
+  return observeTabStrip({ handle, app })
+}
+
+/**
+ * LIFE-494 — 캡처 전에 두 앱의 탭 스트립이 **멈출 때까지** 기다린다. 두 앱 다 스크롤 직후 800ms 동안 썸을 보인다(`isScrolling`) —
+ * 상태 주입(탭 생성·첫 탭 클릭)이 스트립을 움직인 직후 캡처하면 A 캡처에선 보이고 B 캡처에선 사라져 자기 diff 잡음이 난다
+ * (R001 after-t2-a tabs-many corral `opacity 1/0`). 1초 동안 scrollLeft 가 그대로인 것을 두 번 연속 보면 멈춘 것으로 친다.
+ */
+export async function settleTabStrips({ orca, corral }) {
+  for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
+    let last = await observeTabStrip({ handle, app })
+    for (let i = 0; i < 6; i += 1) {
+      await pause(1000)
+      const now = await observeTabStrip({ handle, app })
+      if (JSON.stringify(now) === JSON.stringify(last)) break
+      last = now
+    }
+  }
+}
+
+/** 장면을 걷을 때 탭 스트립을 맨 앞으로 — 측정 대상이 아니라 되돌리기다(직접 대입). */
+async function resetTabStrip({ handle, app }) {
+  await handle.cdp.evaluate((selector) => {
+    const strip = document.querySelector(selector)
+    if (!strip) return
+    strip.scrollLeft = 0
+    strip.dispatchEvent(new Event('scroll'))
+  }, TAB_STRIP_SELECTORS[app])
+}
+
 export const LONG_WORKTREE_BRANCH = 'feature/LIFE-468-a-deliberately-long-worktree-branch-name-that-must-truncate-in-one-line'
 
 const git = ({ args, cwd }) =>
@@ -267,6 +333,7 @@ export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
     await pointerAway(handle)
     await setViewport(handle.cdp, { width: base.width, height: base.height })
     await setScroll({ handle, app, top: 0 })
+    await resetTabStrip({ handle, app })
     await setCollapsed({ handle, app, want: false })
     if ((await observe({ handle, app })).width !== base.sidebarWidth[app]) await dragWidth({ handle, app, target: base.sidebarWidth[app] })
   }
@@ -278,7 +345,7 @@ export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
 /**
  * 장면을 건다. `scene` 키:
  *   hover: 'card'(둘째 카드 — 비선택) | 'row'(첫 에이전트 행) · collapsed · longWorktree ·
- *   viewportHeight + scroll(sticky) · width(px) · empty
+ *   viewportHeight + scroll(sticky) · width(px) · empty · tabStripEnd / tabStripStart(LIFE-494 — 탭 스트립을 휠로 끝·맨 앞까지)
  * 돌려주는 값: `{ requested, orca, corral, ok }` — 관측은 두 앱에서 같은 함수로 읽는다.
  */
 export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scene }) {
@@ -305,13 +372,15 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
       await setScroll({ handle, app, top: scene.scroll })
       await pause(300)
     }
+    if (scene.tabStripEnd) await wheelTabStripTo({ handle, app, edge: 'end' })
+    if (scene.tabStripStart) await wheelTabStripTo({ handle, app, edge: 'start' })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
       const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = await observe({ handle, app })
+    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }) }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -323,6 +392,10 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.scroll && !(seen.scrollTop > 0 && seen.headerOffset !== null && Math.abs(seen.headerOffset) <= 1)) return false
     if (scene.width && seen.width !== scene.width) return false
     if (scene.empty && !(seen.repos === 0 && seen.empty > 0)) return false
+    // 탭 스트립 끝: 실제로 넘쳐 스크롤됐고(> 0) 끝까지 2px 안.
+    if (scene.tabStripEnd && !(seen.tabStrip && seen.tabStrip.scrollLeft > 0 && seen.tabStrip.max - seen.tabStrip.scrollLeft <= 2)) return false
+    // 탭 스트립 맨 앞: 넘친 채로(max > 0) 0. 활성 첫 탭이 제자리라 dock 이 없다.
+    if (scene.tabStripStart && !(seen.tabStrip && seen.tabStrip.max > 0 && seen.tabStrip.scrollLeft === 0 && seen.tabStrip.docked === null)) return false
     return true
   }
   out.orcaOk = check(out.orca)
@@ -334,5 +407,6 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
 /** 장면 축의 사람이 읽는 값. */
 export function describeScene(seen) {
   if (!seen) return '(관측 없음)'
-  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}`
+  const strip = seen.tabStrip ? ` · 탭 스트립 ${seen.tabStrip.scrollLeft}/${seen.tabStrip.max} dock ${seen.tabStrip.docked ?? '없음'}` : ''
+  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}`
 }

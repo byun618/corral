@@ -25,7 +25,7 @@ import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBou
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
 import { evaluateControls, evaluateResolvedControls, POSITIVE_CONTROLS } from './lib/controls.mjs'
-import { applyScene, describeScene, reapplyPointer, resetFixtureScene, resetScene } from './lib/scene.mjs'
+import { applyScene, describeScene, reapplyPointer, resetFixtureScene, resetScene, settleTabStrips } from './lib/scene.mjs'
 import {
   selectOwnedByPath,
   planSignals,
@@ -389,10 +389,22 @@ const STATE_TARGETS = {
     detail: '확인 안 된 완료 1개(포커스 안 된 둘째 탭) — 탭 벨 + 워시. **`--states` 맨 끝**, `done` 과 다른 회차'
   },
   // 넘침 — 탭 20개. 1440 창에서 탭 스트립 폭(≈1100)은 72px × 20 = 1440 을 못 담는다: 두 앱 다 최소 폭까지 줄고도 넘친다.
+  // LIFE-494 — 휠로 맨 앞까지 민다(`scene.tabStripStart`). corral(219 기준)은 도구가 RPC 로 만든 탭을 **배경 열림**으로 받아 화면 밖이면
+  // 보이게 스크롤한다(#24010 reveal) — 측정 Orca 198 에는 그 동작이 없어 주입 직후 스크롤 위치가 갈린다(R001 after-t2-a: corral 썸 x 303 / Orca 24).
+  // 같은 스크롤(0)에서 모양을 견주려고 맞추고, 맞췄는지(0·넘침·dock 없음)를 장면 축으로 검증한다.
   'tabs-many': {
     tabCount: 20,
     agents: [],
-    detail: '탭 20개, 에이전트 없음 — 최소 폭(72)까지 줄어도 넘친다. corral 은 가로 스크롤 스트립(T1 최소선), Orca 는 chevron·썸(T2 몫)'
+    scene: { tabStripStart: true },
+    detail: '탭 20개, 에이전트 없음 — 최소 폭(72)까지 줄어도 넘친다. 두 앱 다 chevron·페이드·썸(corral 은 LIFE-494 T2). 스크롤 0 이라 활성 탭(첫 탭)은 제자리 — dock 없음'
+  },
+  // LIFE-494 K3ⓑ — 스크롤된 넘침 + 활성 탭 dock. 첫 탭이 활성인 채로 스트립을 **실제 휠**로 끝까지 민다(`scene.tabStripEnd`).
+  // corral(219 기준)은 활성 첫 탭이 앞 가장자리에 붙고(dock) 그쪽 페이드가 꺼진다. 측정 Orca 198 에는 dock 이 없다 — 그 차이는 「의도적 — 기준 버전(#24010)」.
+  'tabs-many-end': {
+    tabCount: 20,
+    agents: [],
+    scene: { tabStripEnd: true },
+    detail: '탭 20개, 첫 탭 활성, 스트립을 휠로 끝까지 — ‹ 활성·› 비활성·앞 페이드, corral 은 활성 탭이 앞에 붙는다(Orca 198 은 dock 없음)'
   },
   wait: {
     tabCount: 1,
@@ -560,6 +572,8 @@ async function applyState(state, { orca, corral, orcaRepoId, fixture, base }) {
   const expansionFirst = emptyScene ? null : await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length })
   const scene = await applyScene({ orca, corral, orcaRepoId, fixture, base, scene: target.scene })
   const expansion = expansionFirst ?? (await applyExpansion({ orca, corral, want: target.expand === true, roots: target.agents.length }))
+  // LIFE-494 — 탭 스트립이 움직이는 중(썸 노출 800ms)에 캡처하지 않는다.
+  await settleTabStrips({ orca, corral })
 
   const wantStatuses = target.agents.map((agent) => agent.state).slice().sort().join(',')
   const axes = [

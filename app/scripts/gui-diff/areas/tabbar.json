@@ -1,5 +1,5 @@
 {
-  "description": "상단 탭바 — 탭 모양·선두 아이콘·닫기·+ 버튼·overflow (LIFE-449 대상).\n\n**두 앱 다 분할 영역(group)마다 탭 줄이 하나다** (Orca `TabGroupPanel.tsx:246-249`, LIFE-493 F11 정정 — 이전 정의는 「Orca 는 편집 영역 전체가 탭 줄 하나」라고 잘못 적었다). 루트는 Orca 탭바 표면(`data-native-file-drop-target`, 탭 스트립 + chevron + `+`) ↔ corral 탭바 줄이라 계층이 하나 어긋난다 — 그래서 줄·스트립은 `global` 단위로 같은 의미끼리 따로 짝짓는다. 줄 폭 차이는 구조가 아니라 레이아웃(사이드바·오른쪽 패널 폭) 차이다.",
+  "description": "상단 탭바 — 탭 모양·선두 아이콘·닫기·+ 버튼·overflow (LIFE-449 대상 — 넘침 표면은 LIFE-494 T2).\n\n**두 앱 다 분할 영역(group)마다 탭 줄이 하나다** (Orca `TabGroupPanel.tsx:246-249`, LIFE-493 F11 정정 — 이전 정의는 「Orca 는 편집 영역 전체가 탭 줄 하나」라고 잘못 적었다). 루트는 Orca 탭바 표면(`data-native-file-drop-target`, 탭 스트립 + chevron + `+`) ↔ corral 탭바 줄이라 계층이 하나 어긋난다 — 그래서 줄·스트립은 `global` 단위로 같은 의미끼리 따로 짝짓는다. 줄 폭 차이는 구조가 아니라 레이아웃(사이드바·오른쪽 패널 폭) 차이다.",
   "root": {
     "orca": "[data-native-file-drop-target=\"editor\"]",
     "corral": "[data-main-tabbar]"
@@ -74,7 +74,7 @@
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "D3 활성 하단 2px (fg 60%) (LIFE-493 T1)",
+      "classifyWhy": "D3 활성 하단 2px (LIFE-493 T1). 색은 LIFE-494 에서 #24010 통째 채택으로 fg 100% — 측정 Orca 198 은 fg 60% 라 색 차이는 「의도적 — 기준 버전」",
       "axis": "tabCount",
       "conditional": true,
       "conditionalWhy": "활성 탭에만 있다",
@@ -214,17 +214,48 @@
     },
     {
       "id": "tab-overflow-indicator",
-      "note": "overflow 스크롤 표시 — Orca 전용",
+      "note": "넘침 스크롤 썸 트랙 — Orca `tab-strip-scroll-indicator` ↔ corral `[data-tab-strip-scroll-indicator]` (LIFE-494 D26). 평소 투명·hover/스크롤 때 보인다",
       "orca": "[data-testid=\"tab-strip-scroll-indicator\"]",
       "props": [
         "box",
         "paint"
       ],
-      "classify": "보류",
-      "classifyWhy": "Orca 전용 넘침 스크롤 썸 — T2(LIFE-494) 몫. T1 은 넘침 최소선(가로 스크롤·휠·활성 탭 끌어오기)만 둔다",
+      "classify": "해소 대상",
+      "classifyWhy": "D26 스크롤 썸 (LIFE-494 T2). 기준은 #24276(idle 3px·펼침 4px) — 측정 Orca 198 은 2px 라 높이 차이는 「의도적 — 기준 버전」",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 넘칠 때만",
+      "corral": "[data-tab-strip-scroll-indicator]"
+    },
+    {
+      "id": "tab-overflow-thumb",
+      "note": "넘침 스크롤 썸 — Orca `tab-strip-scroll-thumb` ↔ corral `[data-tab-strip-scroll-thumb]` (LIFE-494 D26). 폭·위치 = 스크롤 비율",
+      "orca": "[data-testid=\"tab-strip-scroll-thumb\"]",
+      "corral": "[data-tab-strip-scroll-thumb]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "D26 썸 폭(최소 18)·위치 (LIFE-494 T2). idle 색은 #24276 `muted-foreground/60` — 198 은 `/40` 이라 색 차이는 「의도적 — 기준 버전」",
       "axis": "tabCount",
       "conditional": true,
       "conditionalWhy": "탭이 넘칠 때만"
+    },
+    {
+      "id": "tab-scroll-chevron",
+      "note": "좌우 스크롤 chevron — Orca 루트 직계 `Button ghost icon-xs`(`data-size=icon-xs` — `data-slot` 은 Radix TooltipTrigger 가 `tooltip-trigger` 로 덮는다, R001 실측, 순번 0 = ‹ · 1 = ›) ↔ corral `[data-tab-strip-chevron]`(순번 0 = start · 1 = end). 짝 키는 data 속성 — aria-label(번역)은 안 쓴다",
+      "orca": ":scope > button[data-size=\"icon-xs\"]",
+      "corral": "[data-tab-strip-chevron]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "D22 chevron 20×24·아이콘 14·끝이면 그쪽 비활성 35% (LIFE-494 T2)",
+      "axis": "tabCount",
+      "conditional": true,
+      "conditionalWhy": "탭이 넘칠 때만 (두 앱 다)"
     },
     {
       "id": "group-actions",

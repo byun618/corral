@@ -282,6 +282,22 @@ describe('넘침 (LIFE-494 K1·K2ⓐ)', () => {
     expect(scrollBy).not.toHaveBeenCalled()
   })
 
+  it('탭 우클릭 메뉴는 스트립 밖(탭바 줄)에 그린다 — 스트립의 페이드 마스크가 메뉴를 자르지 않게, 메뉴 동작은 그대로', () => {
+    mount({ tabs: many, activeTabId: 't0' })
+    setStripBox({ clientWidth: 400, scrollWidth: 1440, scrollLeft: 500 })
+    act(() => {
+      tabEl('t2').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 50, clientY: 10 }))
+    })
+    const menu = host.querySelector<HTMLElement>('[data-tab-menu="t2"]')
+    expect(menu).not.toBeNull()
+    expect(menu?.closest('[data-main-tab-strip]')).toBeNull()
+    expect(menu?.parentElement?.hasAttribute('data-main-tabbar')).toBe(true)
+    act(() => host.querySelector<HTMLElement>('[data-tab-menu-close="t2"]')?.click())
+    expect(spies.close).toHaveBeenCalledTimes(1)
+    expect(spies.close.mock.calls[0]?.[0]?.tabId).toBe('t2')
+    expect(spies.select).not.toHaveBeenCalled()
+  })
+
   it('끝에 붙어 있을 때 끝에 탭이 생기며 활성이 되면 다시 끝으로(stick-to-end)', () => {
     mount({ tabs: many.slice(0, 7), activeTabId: 't6' })
     setStripBox({ clientWidth: 400, scrollWidth: 1260, scrollLeft: 860 })

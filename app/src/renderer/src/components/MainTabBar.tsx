@@ -34,6 +34,7 @@ import { useBindingLabel } from '../hooks/BindingLabels.js'
 // "세션 제목이 곧 탭 제목이다". 탭바가 받는 목록 자체는 사이드바와 다르다: 여기는 그 worktree 의
 // **전체 탭**(셸 포함), 사이드바는 에이전트 세션만 (01-criteria.md 부록 "세션 용어 확정").
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { TabRow } from '../../../shared/types.js'
 import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
 import { tabLeading, type TabAgentKind, type TabLeading } from '../tab-status.js'
@@ -127,6 +128,7 @@ function MainTab({
   otherGroups,
   onMoveToOtherGroup,
   onDragStart,
+  menuHost,
 }: {
   tab: TabRow
   /**
@@ -163,6 +165,12 @@ function MainTab({
   onMoveToOtherGroup: (targetGroupId: string) => void
   /** LIFE-387 A1 — 드래그 무장(mousedown). 6px 넘기 전엔 평소 클릭과 다르지 않다. */
   onDragStart: (event: React.MouseEvent) => void
+  /**
+   * 우클릭 메뉴를 그릴 DOM 자리 = 탭바 줄(`[data-main-tabbar]`, 헤더 메뉴와 같은 자리) — LIFE-494. 탭 안(스트립 안)에 그리면
+   * 스트립의 페이드 마스크가 스트립 밖으로 나간 메뉴(`position: fixed`)를 잘라 보이지도 눌리지도 않는다(격리 예행 k4-iso/2 실측).
+   * 포털이라 React 이벤트 버블링(탭의 onClick·onMouseDown 등)은 그대로다.
+   */
+  menuHost: HTMLElement | null
 }): React.JSX.Element {
   // LIFE-366 F2 — 우클릭 메뉴. 좌표를 들고 있는다(탭바에는 `⋯` 버튼을 놓을 폭이 없다).
   const [menu, setMenu] = useState<TabMenuAnchor | null>(null)
@@ -339,7 +347,7 @@ function MainTab({
           <path d="m6 6 12 12" />
         </svg>
       </button>
-      {menu === null ? null : (
+      {menu === null || menuHost === null ? null : createPortal(
         <TabContextMenu
           anchor={menu}
           hasUserName={userLabel({ tab, tabCount }) !== null}
@@ -352,7 +360,8 @@ function MainTab({
           onMoveToOtherGroup={onMoveToOtherGroup}
           onClose={onClose}
           onDismiss={() => setMenu(null)}
-        />
+        />,
+        menuHost,
       )}
     </div>
   )
@@ -508,6 +517,8 @@ export function GroupHeader({
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
+  // 탭 메뉴 포털 자리(`MainTab.menuHost`) — 렌더 중에 DOM 을 읽지 않으려고 콜백 ref 로 state 에 받는다.
+  const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null)
   const openHeaderMenu = (point: { x: number; y: number }): void => {
     if (activeTabId === null) return
     setHeaderMenu({ tabId: activeTabId, x: point.x, y: point.y })
@@ -516,6 +527,7 @@ export function GroupHeader({
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
+      ref={setMenuHost}
       data-main-tabbar
       data-group-header={groupId}
       onMouseDown={(event) => {
@@ -563,6 +575,7 @@ export function GroupHeader({
               otherGroups={otherGroups}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
               onDragStart={(event) => onTabDragStart(event, tab.tabId)}
+              menuHost={menuHost}
             />
           ))}
         </div>

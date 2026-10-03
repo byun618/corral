@@ -98,6 +98,19 @@ async function main() {
   const stripRead = `(() => { const s = document.querySelector('[data-main-tab-strip="${group}"]'); return s ? s.scrollLeft : null })()`
   result.setup = await evaluate(`({ w: innerWidth, h: innerHeight, focus: document.hasFocus(), areas: document.querySelectorAll('[data-group-header]').length, group: '${group}', tabs: document.querySelectorAll('[data-group-header="${group}"] [data-main-tab]').length, compact: document.querySelectorAll('.main-tab.is-compact').length, strip: (() => { const s = document.querySelector('[data-main-tab-strip="${group}"]'); return s ? { sw: s.scrollWidth, cw: s.clientWidth } : null })() })`)
   save()
+  // --trace: 페이지에 계측을 건다(읽기 전용 관측) — scrollIntoView 호출·focusin 대상과 그 순간의 호출 스택(focus() 는 focusin 을
+  // 동기로 쏘므로 스택에 부른 쪽이 남는다)·스트립 scroll 이벤트. 회차마다 거둬 원자료에 넣는다.
+  const trace = process.argv.includes('--trace')
+  if (trace) await evaluate(`(() => {
+    if (window.__l493) return
+    window.__l493 = []
+    const t0 = () => Math.round(performance.now())
+    const orig = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (...a) { window.__l493.push({ t: t0(), kind: 'scrollIntoView', el: this.dataset?.mainTab ?? this.className?.toString().slice(0, 30), stack: new Error().stack.split('\\n').slice(2, 6).join(' | ') }); return orig.apply(this, a) }
+    document.addEventListener('focusin', (e) => window.__l493.push({ t: t0(), kind: 'focusin', el: e.target.tagName + '.' + (e.target.className ?? '').toString().slice(0, 30), stack: new Error().stack.split('\\n').slice(2, 9).join(' | ') }), true)
+    const s = document.querySelector('[data-main-tab-strip="${group}"]')
+    if (s) s.addEventListener('scroll', () => window.__l493.push({ t: t0(), kind: 'scroll', left: s.scrollLeft }))
+  })()`)
   const groupTabs = async () => evaluate(`[...document.querySelectorAll('[data-group-header="${group}"] [data-main-tab]')].map((tab) => tab.dataset.mainTab)`)
 
   for (let run = 0; run < runs; run += 1) {
@@ -111,7 +124,9 @@ async function main() {
     const targetClick = await call({ cmd: 'click', selector: `[data-main-tab="${target}"]` })
     const scrollBefore = await evaluate(stripRead)
     await evaluate(`document.querySelector('[data-main-tab="${target}"]')?.scrollIntoView({inline:'nearest'})`)
+    if (trace) await evaluate(`window.__l493.push({ t: Math.round(performance.now()), kind: 'mark-before-dblclick' })`)
     const dbl = await call({ cmd: 'dblclick', selector: `[data-main-tab="${target}"] .main-tab-label` })
+    if (trace) await evaluate(`window.__l493.push({ t: Math.round(performance.now()), kind: 'mark-after-dblclick' })`)
     const startedAt = Date.now()
     const samples = []
     for (const at of [0, 100, 300]) {
@@ -124,8 +139,9 @@ async function main() {
     await call({ cmd: 'key', keyCode: 'Enter' })
     await pause(600)
     const after = await evaluate(`document.querySelector('[data-main-tab="${target}"] .main-tab-label')?.textContent ?? null`)
+    const events = trace ? await evaluate(`window.__l493.splice(0)`) : undefined
     const row = {
-      run, target,
+      run, target, events, dblAt: dbl.at ?? null,
       firstClick: { ok: firstClick.ok, hit: firstClick.hit ?? null, blockedBy: firstClick.blockedBy ?? null },
       targetClick: { ok: targetClick.ok, hit: targetClick.hit ?? null, blockedBy: targetClick.blockedBy ?? null },
       scrollBefore, dblclick: { ok: dbl.ok, hit: dbl.hit ?? null, blockedBy: dbl.blockedBy ?? null },

@@ -458,17 +458,23 @@ async function main() {
   await mouse('mouseMove', press)
   await mouse('mouseDown', press)
   await mouse('mouseMove', release)
-  const dockMid = groupById(await read(), g1)
+  // raw-mouse 는 렌더러 입력 큐에 넣고 돌아온다 — 문턱 이동이 처리돼 드래그가 선(=dock 이 풀린) 화면을 기다린다(k4/r3: 처리 전에 읽어 sticky 를 봤다).
+  const dockMid = await until(async () => { const now = groupById(await read(), g1); return now.dragging && !now.tabs.some((tab) => tab.dock) ? now : null }, '문턱 뒤 드래그 화면', 3_000, 50)
+    .catch(async () => groupById(await read(), g1))
   await mouse('mouseUp', release)
   await pause(800)
   const dockDrop = groupById(await dump('10d-dock-threshold-release'), g1)
   const dockOrderBefore = dockPre.tabs.map((tab) => tab.id)
   const dockOnIndex = tabbarIndex(dockPre.tabs.map((tab) => tab.x + tab.w / 2), release.x)
   const dockOffIndex = tabbarIndex(dockMid.tabs.map((tab) => tab.x + tab.w / 2), release.x)
+  // 교차 확인 — 누르기 전 화면에서 붙은 탭만 제자리(앞 탭 오른쪽 끝, 첫 탭이면 스트립 x − scrollLeft)로 옮겨 다시 셈한다.
+  const dockAt = dockPre.tabs.indexOf(dockTab)
+  const dockNaturalX = dockAt === 0 ? dockPre.strip.box.x - dockPre.strip.scrollLeft : dockPre.tabs[dockAt - 1].x + dockPre.tabs[dockAt - 1].w
+  const dockOffIndexPre = tabbarIndex(dockPre.tabs.map((tab) => (tab === dockTab ? dockNaturalX : tab.x) + tab.w / 2), release.x)
   const expectOff = predictOrder(dockOrderBefore, dockTab.id, dockOffIndex)
   const expectOn = predictOrder(dockOrderBefore, dockTab.id, dockOnIndex)
-  record('drag-dock-threshold-release', dockPre.strip.docked === 'start' && dockTab.dock && underDock === dockTab.id && dockMid.dragging && !dockMid.tabs.some((tab) => tab.dock) && expectOff.join() !== expectOn.join() && dockDrop.tabs.map((tab) => tab.id).join() === expectOff.join() && !dockDrop.dragging, {
-    docked: dockPre.strip.docked, tab: dockTab.id, underDock, press, release, dockOnIndex, dockOffIndex, indexAfter: dockDrop.tabs.findIndex((tab) => tab.id === dockTab.id),
+  record('drag-dock-threshold-release', dockPre.strip.docked === 'start' && dockTab.dock && underDock === dockTab.id && dockMid.dragging && !dockMid.tabs.some((tab) => tab.dock) && dockOffIndex === dockOffIndexPre && expectOff.join() !== expectOn.join() && dockDrop.tabs.map((tab) => tab.id).join() === expectOff.join() && !dockDrop.dragging, {
+    docked: dockPre.strip.docked, tab: dockTab.id, underDock, press, release, dockOnIndex, dockOffIndex, dockOffIndexPre, midDragging: dockMid.dragging, indexAfter: dockDrop.tabs.findIndex((tab) => tab.id === dockTab.id),
     dockMidPosition: dockMid.tabs.find((tab) => tab.id === dockTab.id)?.position, discriminates: expectOff.join() !== expectOn.join(),
   })
 
@@ -627,6 +633,8 @@ async function main() {
   await control({ cmd: 'key', keyCode: 'Escape' })
   await pause(300)
   // 판정: 활성 탭(가려지지 않은 자리) 더블클릭 이름 바꾸기 — 선택이 안 바뀌는 경로(493 대조군, base·T1 10/10).
+  // 바로 위 관측이 그 탭을 막 활성으로 만들었을 수 있다 — 터미널 마운트 포커스(LIFE-501 경합)가 지나가도록 기다린다(k4/r3: 0.3초 뒤 더블클릭이 경합에 졌다).
+  await pause(1500)
   const c5 = groupById(await read(), g1)
   const activeRename = activeOf(c5)
   await control({ cmd: 'dblclick', selector: `[data-main-tab="${activeRename.id}"] .main-tab-label` })

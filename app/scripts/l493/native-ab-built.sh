@@ -13,8 +13,11 @@ git -C "$APP" rev-parse --short HEAD > "$RAWD/app-commit.txt"; git -C "$APP" sta
 sh "$HERE/native-up.sh" "$ROOT" "$APP" "$RAWD" --allow-session-restore > "$RAWD/native-up.log" 2>&1; UP=$?
 echo "up $UP"
 if [ $UP -ne 0 ]; then tail -5 "$RAWD/native-up.log"; exit $UP; fi
+ps -Ao pid,ppid,command | grep -E "herdr --session default|Electron" | grep -F -e "herdr --session default" -e "$APP" | grep -v grep | cut -c1-160 > "$RAWD/pids-started.txt"
 "$NODE" "$HERE/native-seq.mjs" "$ROOT" "$RAWD" "$FX" built "$N" ${5:-} > "$RAWD/seq-built.log" 2>&1; echo "seq built $? $(tail -1 "$RAWD/seq-built.log" | cut -c1-120)"
 sh "$HERE/native-down.sh" "$ROOT" "$RAWD" > "$RAWD/native-down.log" 2>&1; echo "down $? $(tail -1 "$RAWD/native-down.log")"
 shasum -a 256 "$HOME/.config/herdr/session.json" > "$RAWD/session-json-sha-after.txt"
 [ "$(cut -d' ' -f1 "$RAWD/session-json-sha-before.txt")" = "$(cut -d' ' -f1 "$RAWD/session-json-sha-after.txt")" ] && echo "session.json ok" || echo "session.json MISMATCH"
+sh "$HERE/orphan-check.sh" "$FX" > "$RAWD/orphans-after.txt"
+echo "orphans $(wc -l < "$RAWD/orphans-after.txt" | tr -d ' ')"
 rm -rf "$FX"

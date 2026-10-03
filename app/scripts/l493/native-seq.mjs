@@ -6,7 +6,8 @@
 //   --mode built    : native-k5 없이 영역 2개 + 둘째 영역 탭 21개를 직접 만들고 잰다(세 빌드 공통 넘침 조건)
 // 원자료 경계: fixture 워크스페이스 탭만 다룬다 — 화면에 fixture 밖 탭이 보이면 멈춘다. 입력이 새도 fixture 셸 pane 이다.
 //
-// 사용: node native-seq.mjs <ROOT> <raw 폴더> <fixture 경로(realpath)> <plain|overflow> <회수>
+// 사용: node native-seq.mjs <ROOT> <raw 폴더> <fixture 경로(realpath)> <plain|overflow|built> <회수> [--trace]
+//   --trace: scrollIntoView 호출·focusin 대상과 호출 스택·스트립 scroll 을 회차마다 events 칸에 적는다(읽기 전용 계측)
 import fs from 'node:fs'
 import path from 'node:path'
 import { rpc } from '../gui-diff/lib/corral.mjs'

@@ -20,6 +20,6 @@ ps -Ao pid,ppid,command | grep -E "herdr --session default|Electron" | grep -F -
 sh "$HERE/native-down.sh" "$ROOT" "$RAWD" > "$RAWD/native-down.log" 2>&1; echo "down $? $(tail -1 "$RAWD/native-down.log")"
 shasum -a 256 "$HOME/.config/herdr/session.json" > "$RAWD/session-json-sha-after.txt"
 [ "$(cut -d' ' -f1 "$RAWD/session-json-sha-before.txt")" = "$(cut -d' ' -f1 "$RAWD/session-json-sha-after.txt")" ] && echo "session.json ok" || echo "session.json MISMATCH"
-for p in $(pgrep -x claude) $(pgrep -f "grok|codex"); do c=$(lsof -a -p $p -d cwd -Fn 2>/dev/null | grep ^n | cut -c2-); case "$c" in "$FX"*) echo "ORPHAN $p";; esac; done > "$RAWD/orphans-after.txt"
+sh "$HERE/orphan-check.sh" "$FX" > "$RAWD/orphans-after.txt"
 echo "orphans $(wc -l < "$RAWD/orphans-after.txt" | tr -d ' ')"
 rm -rf "$FX"

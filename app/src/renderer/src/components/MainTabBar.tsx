@@ -351,7 +351,8 @@ function MainTab({
  *     직접 단다.
  *   · 활성 탭이 바뀌면 보이는 자리로 끌어온다(`:171-187` `scrollIntoView({block:'nearest',inline:'nearest'})`). Orca 는 누르고
  *     있는 포인터 아래서 스트립이 움직이지 않게 그때는 미루는데, corral 은 탭 활성화가 **click**(떼고 난 뒤)이고 드래그 커밋도
- *     mouseup 이라 활성 탭이 바뀌는 순간 눌린 포인터가 없다 — 미루는 장치를 두지 않는다.
+ *     mouseup 이라 활성 탭이 바뀌는 순간 눌린 포인터가 없다 — 미루는 장치를 두지 않는다. 이 근거는 **활성 변경 effect 에만** 맞는다
+ *     (아래 ResizeObserver 재스크롤은 활성 변경과 무관한 임의 시점에 발화한다 — 그쪽 근거는 그 주석에).
  * chevron·페이드·썸·끝에 붙기는 T2(LIFE-494) 몫이다.
  */
 /** 휠 한 번을 스트립 가로 이동으로 바꿀지 — 넘칠 때, 세로가 가로보다 클 때만(가로 휠·트랙패드 가로 밀기는 브라우저 기본 그대로). */
@@ -394,7 +395,8 @@ function useTabStripOverflow(input: { activeTabId: string | null; tabOrder: stri
     const strip = ref.current
     if (strip === null || typeof ResizeObserver === 'undefined') return
     // 스트립 폭은 새 탭이 그려진 **뒤에** 줄어들 수 있다(헤더 꼬리가 다음 렌더에 자리를 잡는다) — 그때 끌어온
-    // 위치가 모자란다(k5/r3: 끝 탭이 39px 잘림). 폭이 바뀌면 다시 끌어온다.
+    // 위치가 모자란다(k5/r3: 끝 탭이 39px 잘림). 폭이 바뀌면 다시 끌어온다 — 이 재발 방지가 남기는 이유다(되돌림 빌드가 그대로 재현:
+    // k5/r6/revert). 대가: 활성 탭이 시야 밖일 때(휠로 둘러보는 중) 스트립 폭이 바뀌면 활성 탭으로 스냅한다(조건부화는 T2).
     const observer = new ResizeObserver(() => scrollActiveTabIntoView({ strip, activeTabId: activeTabId.current }))
     observer.observe(strip)
     return () => observer.disconnect()

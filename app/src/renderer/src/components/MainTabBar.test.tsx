@@ -150,6 +150,18 @@ describe('넘침 최소선 (K3ⓐ)', () => {
     expect(spy.mock.contexts[0]).toBe(tabEl('t4'))
   })
 
+  it('활성 탭이 그대로여도 탭 목록이 바뀌면 다시 끌어온다 (새 탭 노드가 늦게 오는 경우·활성 탭 끌어 옮기기)', () => {
+    const tabs = Array.from({ length: 3 }, (_, index) => tab(index, [pane(`p${index}`, 'claude', 'idle')]))
+    mount({ tabs: tabs.slice(0, 2), activeTabId: 't2' })
+    const spy = vi.mocked(Element.prototype.scrollIntoView)
+    spy.mockClear()
+    mount({ tabs, activeTabId: 't2' })
+    expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
+    spy.mockClear()
+    mount({ tabs: [tabs[2], tabs[0], tabs[1]].filter((row) => row !== undefined), activeTabId: 't2' })
+    expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
+  })
+
   it('휠: 넘칠 때 세로가 크면 가로로 바꾼다, 아니면 손대지 않는다', () => {
     expect(wheelToHorizontal({ deltaX: 0, deltaY: 40, overflows: true })).toBe(40)
     expect(wheelToHorizontal({ deltaX: 0, deltaY: -40, overflows: true })).toBe(-40)

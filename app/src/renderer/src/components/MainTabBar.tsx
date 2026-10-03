@@ -361,7 +361,7 @@ export function wheelToHorizontal(input: { deltaX: number; deltaY: number; overf
   return input.deltaY
 }
 
-function useTabStripOverflow(input: { activeTabId: string | null }): React.RefObject<HTMLDivElement | null> {
+function useTabStripOverflow(input: { activeTabId: string | null; tabOrder: string }): React.RefObject<HTMLDivElement | null> {
   const ref = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const strip = ref.current
@@ -381,7 +381,9 @@ function useTabStripOverflow(input: { activeTabId: string | null }): React.RefOb
     const tabId = input.activeTabId
     const tab = [...strip.querySelectorAll<HTMLElement>('[data-main-tab]')].find((node) => node.dataset.mainTab === tabId)
     tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [input.activeTabId])
+    // 탭 목록이 바뀔 때도 다시 끌어온다 — 새 탭은 선택이 목록보다 먼저 올 수 있고(그때는 노드가 아직 없다),
+    // 활성 탭을 끌어 옮기면 활성 id 는 그대로다 (LIFE-493 K5 네이티브 원자료 k5/r2).
+  }, [input.activeTabId, input.tabOrder])
   return ref
 }
 
@@ -483,7 +485,7 @@ export function GroupHeader({
   const bindingLabel = useBindingLabel()
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
-  const strip = useTabStripOverflow({ activeTabId })
+  const strip = useTabStripOverflow({ activeTabId, tabOrder: tabs.map((tab) => tab.tabId).join('\n') })
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)

@@ -24,7 +24,7 @@ const log = []
 const record = (step, ok, detail) => {
   const entry = { step, ok, at: new Date().toISOString(), ...detail }
   log.push(entry)
-  console.log(`[k5] ${ok ? '✔' : '✘'} ${step}`, JSON.stringify(detail).slice(0, 300))
+  console.log(`[k5] ${ok === null ? '…' : ok ? '✔' : '✘'} ${step}`, JSON.stringify(detail).slice(0, 300))
   fs.writeFileSync(path.join(rawd, 'k5-log.json'), `${JSON.stringify(log, null, 1)}\n`)
 }
 const control = async (request, timeout = 20_000) => rpc(ctl, request, timeout)
@@ -143,10 +143,24 @@ async function main() {
   const added = await control({ cmd: 'add-repo', root: fixture })
   await control({ cmd: 'rebuild-tree' })
   await until(async () => ((await control({ cmd: 'query', selector: `[data-worktree="${fixture}"]` })).found ?? []).length > 0, 'fixture 카드', 30_000)
-  const card = await control({ cmd: 'click', selector: `[data-worktree="${fixture}"]` })
+  // 카드 바깥 상자 가운데는 카드 표면이 아닐 수 있다(1회차: 워크스페이스는 열렸지만 선택이 안 넘어왔다) — 표면을 누른다.
+  const card = await control({ cmd: 'click', selector: `[data-worktree="${fixture}"] [data-worktree-card-surface]` })
   const ws = await until(async () => ((await fixtureWorkspace())?.tabs.length ?? 0) > 0 && (await fixtureWorkspace()), 'fixture 워크스페이스 열림', 30_000)
+  const fixtureIds = new Set(ws.tabs.map((tab) => tab.tabId))
+  // 처음 여는 카드는 첫 클릭에 워크스페이스만 생기고 화면이 안 넘어온 일이 두 번 있었다(attempt1·3) — 넘어올 때까지 다시 누르고 횟수를 남긴다.
+  const showsFixture = async () => {
+    const dom = (await control({ cmd: 'eval', code: `[...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab)` })).result
+    return dom.length > 0 && dom.every((id) => fixtureIds.has(id))
+  }
+  let cardClicks = 1
+  for (;;) {
+    if (await until(showsFixture, '탭바가 fixture 워크스페이스', 5_000).then(() => true, () => false)) break
+    if (cardClicks >= 4) throw new Error(`카드 ${cardClicks}번 눌러도 fixture 화면이 아니다`)
+    await control({ cmd: 'click', selector: `[data-worktree="${fixture}"] [data-worktree-card-surface]` })
+    cardClicks += 1
+  }
   await pause(1500)
-  record('open-fixture', true, { added: added.ok ?? null, cardClick: card.ok, workspace: ws.workspaceId, tabs: ws.tabs.length })
+  record('open-fixture', true, { added: added.ok ?? null, cardClick: card.ok, cardClicks, workspace: ws.workspaceId, tabs: ws.tabs.length })
   const shellTab = ws.tabs[0].tabId
   await dump('01-one-shell-tab')
   record('one-tab', true, { shots: await shot('01-one-shell-tab') })
@@ -165,9 +179,10 @@ async function main() {
   await dump('03-claude-done-unread')
   record('claude-done-unread-bell', bell !== null, { pane: await paneStatus(claudeDone), lead: await leadOf(claudeDone), shots: await shot('03-claude-done-unread') })
 
-  // ③ claude 권한 대기(blocked) — 허용 목록에 없는 Bash(touch) 를 시킨다. 답하지 않는다.
+  // ③ claude 대기(blocked·question) — 질문 도구를 쓰게 한다. 답하지 않는다.
+  // (r2: `touch` 는 사용자 권한 설정에서 허용돼 막히지 않고 끝났다 — k5/r2/k5-log.json claude-permission)
   const claudePerm = await newTab()
-  herdr('pane', 'run', await paneOf(claudePerm), 'claude "Use the Bash tool to run exactly: touch l493-perm-probe.txt"')
+  herdr('pane', 'run', await paneOf(claudePerm), 'claude "Use the AskUserQuestion tool to ask me whether I prefer apples or pears. Do nothing else."')
   const blocked = await until(async () => { const s = await paneStatus(claudePerm); return s?.status === 'blocked' ? s : null }, 'claude blocked', 120_000, 1000).catch(() => null)
   const permLead = await until(async () => { const tab = await leadOf(claudePerm); return tab && ['waiting', 'blocked'].includes(tab.lead) ? tab : null }, '탭 선두 질문/막힘', 15_000).catch(() => null)
   await dump('04-claude-permission')
@@ -197,9 +212,12 @@ async function main() {
   const hovered = await leadOf(inactive.id)
   const activeTab = (await readTabbar()).groups[0].tabs.find((tab) => tab.active)
   await control({ cmd: 'raw-mouse', type: 'mouseMove', x: 5, y: 5 })
-  record('close-visibility', activeTab.closeColor !== 'rgba(0, 0, 0, 0)' && inactive.closeColor === 'rgba(0, 0, 0, 0)' && hovered.closeColor !== 'rgba(0, 0, 0, 0)', {
-    activeClose: activeTab.closeColor, inactiveClose: inactive.closeColor, inactiveHoveredClose: hovered.closeColor,
+  record('close-visibility', activeTab.closeColor !== 'rgba(0, 0, 0, 0)' && inactive.closeColor === 'rgba(0, 0, 0, 0)', {
+    activeClose: activeTab.closeColor, inactiveClose: inactive.closeColor,
   })
+  // hover 노출은 주입 불가 — sendInputEvent mouseMove 는 :hover 를 세우지 않는다(r2 탐침: 그 점의 요소는 라벨인데 matches(':hover') false).
+  // 측정 도구도 hover 를 UNINJECTABLE 로 둔다. 판정 보류, 사용자 확인(K6)으로 넘긴다.
+  record('close-hover', null, { inactiveHoveredClose: hovered.closeColor, note: '주입 불가 — 보류' })
 
   // ⑥ 다중 영역 — 셸 탭 우클릭 → 「오른쪽 영역」 (실제 우클릭 → 메뉴 항목 클릭)
   const sr = await tabRect(shellTab)
@@ -287,6 +305,9 @@ async function main() {
   await pause(600)
   const orderAfter = (await readTabbar()).groups.find((group) => group.group === groupA.group)?.tabs.map((tab) => tab.id) ?? []
   record('smoke-drag-reorder', orderAfter.at(-1) === claudeDone && orderBefore.join() !== orderAfter.join(), { orderBefore, orderAfter })
+  // 끌어 옮긴 활성 탭이 보이는 자리에 있어야 한다 (r2 에서 스트립 밖으로 밀려났다 → 탭 목록이 바뀔 때도 끌어오기로 수정)
+  const draggedTab = await leadOf(claudeDone)
+  record('dragged-active-in-view', draggedTab?.active === true && draggedTab?.inView === true, { tab: draggedTab })
   await dump('08-after-smoke')
   record('after-smoke', true, { shots: await shot('08-after-smoke') })
 
@@ -296,14 +317,23 @@ async function main() {
   await control({ cmd: 'raw-mouse', type: 'mouseMove', x: Math.round((pr.x ?? pr.left) + 30), y: Math.round((pr.y ?? pr.top) + 10) })
   await pause(200)
   await control({ cmd: 'click', selector: `[data-main-tab-close="${claudePerm}"]` })
-  const modal = await until(async () => (await control({ cmd: 'eval', code: `(() => { const m = document.querySelector('[data-confirm-close], .confirm-close, [role="dialog"]'); return m ? (m.getAttribute('data-confirm-close') ?? m.className) : null })()` })).result, '닫기 확인 모달', 10_000).catch(() => null)
-  record('smoke-close-confirm-modal', modal !== null, { modal })
+  const modal = await until(async () => (await control({ cmd: 'eval', code: `(() => { const m = document.querySelector('[data-confirm-close-modal]'); return m ? (m.dataset.confirmCloseKind ?? 'unknown') : null })()` })).result, '닫기 확인 모달', 10_000).catch(() => null)
+  const modalShots = []
+  if (modal !== null) {
+    const res = await control({ cmd: 'shot', name: 'l493-09-close-confirm', selector: '[data-confirm-close-modal]' })
+    const target = path.join(shotsOut, '09-close-confirm-modal.png')
+    fs.copyFileSync(res.file, target)
+    modalShots.push(path.relative(rawd, target))
+    await control({ cmd: 'click', selector: '[data-close-confirm-cancel]' })
+  }
+  const stillThere = ((await fixtureWorkspace())?.tabs ?? []).some((tab) => tab.tabId === claudePerm)
+  record('smoke-close-confirm-modal', modal !== null && stillThere, { modal, cancelledTabStays: stillThere, shots: modalShots })
   fs.writeFileSync(path.join(rawd, 'k5-tabs.json'), `${JSON.stringify({ shellTab, claudeDone, claudePerm, grokTab, codexTab, extra }, null, 1)}\n`)
 }
 
 main().then(
   () => {
-    const failed = log.filter((entry) => !entry.ok).map((entry) => entry.step)
+    const failed = log.filter((entry) => entry.ok === false).map((entry) => entry.step)
     record('end', failed.length === 0, { failed })
     process.exit(failed.length === 0 ? 0 : 1)
   },

@@ -361,6 +361,12 @@ export function wheelToHorizontal(input: { deltaX: number; deltaY: number; overf
   return input.deltaY
 }
 
+function scrollActiveTabIntoView(input: { strip: HTMLElement; activeTabId: string | null }): void {
+  if (input.activeTabId === null) return
+  const tab = [...input.strip.querySelectorAll<HTMLElement>('[data-main-tab]')].find((node) => node.dataset.mainTab === input.activeTabId)
+  tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
 function useTabStripOverflow(input: { activeTabId: string | null; tabOrder: string }): React.RefObject<HTMLDivElement | null> {
   const ref = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -375,15 +381,24 @@ function useTabStripOverflow(input: { activeTabId: string | null; tabOrder: stri
     strip.addEventListener('wheel', onWheel, { passive: false })
     return () => strip.removeEventListener('wheel', onWheel)
   }, [])
+  const activeTabId = useRef(input.activeTabId)
+  activeTabId.current = input.activeTabId
   useEffect(() => {
     const strip = ref.current
-    if (strip === null || input.activeTabId === null) return
-    const tabId = input.activeTabId
-    const tab = [...strip.querySelectorAll<HTMLElement>('[data-main-tab]')].find((node) => node.dataset.mainTab === tabId)
-    tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    if (strip === null) return
+    scrollActiveTabIntoView({ strip, activeTabId: activeTabId.current })
     // 탭 목록이 바뀔 때도 다시 끌어온다 — 새 탭은 선택이 목록보다 먼저 올 수 있고(그때는 노드가 아직 없다),
     // 활성 탭을 끌어 옮기면 활성 id 는 그대로다 (LIFE-493 K5 네이티브 원자료 k5/r2).
   }, [input.activeTabId, input.tabOrder])
+  useEffect(() => {
+    const strip = ref.current
+    if (strip === null || typeof ResizeObserver === 'undefined') return
+    // 스트립 폭은 새 탭이 그려진 **뒤에** 줄어들 수 있다(헤더 꼬리가 다음 렌더에 자리를 잡는다) — 그때 끌어온
+    // 위치가 모자란다(k5/r3: 끝 탭이 39px 잘림). 폭이 바뀌면 다시 끌어온다.
+    const observer = new ResizeObserver(() => scrollActiveTabIntoView({ strip, activeTabId: activeTabId.current }))
+    observer.observe(strip)
+    return () => observer.disconnect()
+  }, [])
   return ref
 }
 

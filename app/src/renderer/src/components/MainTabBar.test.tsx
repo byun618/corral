@@ -162,6 +162,27 @@ describe('넘침 최소선 (K3ⓐ)', () => {
     expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
   })
 
+  it('스트립 폭이 바뀌면(ResizeObserver) 활성 탭을 다시 끌어온다', () => {
+    const callbacks: Array<() => void> = []
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { callbacks.push(callback) }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    try {
+      const tabs = Array.from({ length: 3 }, (_, index) => tab(index, [pane(`p${index}`, 'claude', 'idle')]))
+      mount({ tabs, activeTabId: 't2' })
+      const spy = vi.mocked(Element.prototype.scrollIntoView)
+      spy.mockClear()
+      act(() => callbacks.forEach((callback) => callback()))
+      expect(spy.mock.contexts.at(-1)).toBe(tabEl('t2'))
+    } finally {
+      act(() => root.unmount())
+      root = createRoot(host)
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('휠: 넘칠 때 세로가 크면 가로로 바꾼다, 아니면 손대지 않는다', () => {
     expect(wheelToHorizontal({ deltaX: 0, deltaY: 40, overflows: true })).toBe(40)
     expect(wheelToHorizontal({ deltaX: 0, deltaY: -40, overflows: true })).toBe(-40)

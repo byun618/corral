@@ -41,7 +41,7 @@ export type TabStripOverflow = {
   stripRef: React.RefObject<HTMLDivElement | null>
   metrics: TabStripScrollMetrics
   dockSide: TabStripDockSide | null
-  scrollByStep: (direction: Direction) => void
+  scrollByStep: (input: { direction: Direction; behavior?: ScrollBehavior }) => void
   /** chevron 의 pointerenter/leave — 탭 드래그 중일 때만 자동 스크롤한다. */
   onDragScrollEnter: (direction: Direction) => void
   onDragScrollLeave: () => void
@@ -103,11 +103,11 @@ export function useTabStripOverflow(input: {
     scrollAnchorRef.current = { activeTabId, anchor: captureTabStripScrollAnchor({ strip, activeTabId }) }
   }, [])
 
-  const scrollByStep = useCallback((direction: Direction, behavior: ScrollBehavior = 'smooth'): void => {
+  const scrollByStep = useCallback((input: { direction: Direction; behavior?: ScrollBehavior }): void => {
     const strip = stripRef.current
     if (strip === null) return
     const step = tabStripScrollStep(strip.clientWidth)
-    strip.scrollBy({ left: direction === 'start' ? -step : step, behavior })
+    strip.scrollBy({ left: input.direction === 'start' ? -step : step, behavior: input.behavior ?? 'smooth' })
   }, [])
 
   // 세로 휠 → 가로. React `onWheel` 은 passive 라 `preventDefault` 가 안 먹어 직접 단다.
@@ -282,7 +282,7 @@ export function useTabStripOverflow(input: {
           onDragScrollLeave()
           return
         }
-        scrollByStep(direction, 'auto')
+        scrollByStep({ direction, behavior: 'auto' })
       }
       tick()
       intervalRef.current = window.setInterval(tick, TAB_STRIP_DRAG_SCROLL_INTERVAL_MS)

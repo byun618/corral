@@ -312,4 +312,63 @@ describe('넘침 (LIFE-494 K1·K2ⓐ)', () => {
     mount({ tabs: many.slice(0, 6), activeTabId: 't0' })
     expect(stripEl().scrollLeft).toBe(300)
   })
+
+  // r1 R1-08 — 탭 개별 위치가 필요한 경로. 탭 100px 가 스트립 x 0 부터 늘어서고 dock 탭은 sticky 처럼 잘려 그려지는 가짜 레이아웃.
+  describe('탭 위치가 필요한 경로 (가짜 레이아웃)', () => {
+    const hover = { on: false }
+    beforeEach(() => {
+      hover.on = false
+      const isStrip = (node: Element): boolean => node.hasAttribute('data-main-tab-strip')
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (isStrip(this)) return DOMRect.fromRect({ x: 0, y: 0, width: stripBox.clientWidth, height: 32 })
+        const strip = this.parentElement
+        if (!this.hasAttribute('data-main-tab') || strip === null || !isStrip(strip)) return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 })
+        const index = [...strip.querySelectorAll(':scope > [data-main-tab]')].indexOf(this)
+        const natural = index * 100 - strip.scrollLeft
+        const left = this.hasAttribute('data-active-tab-dock') ? Math.min(Math.max(natural, 0), stripBox.clientWidth - 100) : natural
+        return DOMRect.fromRect({ x: left, y: 0, width: 100, height: 32 })
+      })
+      const matches = Element.prototype.matches
+      vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+        if (selector === ':hover' && this.hasAttribute('data-main-tab-strip')) return hover.on
+        return matches.call(this, selector)
+      })
+    })
+
+    it('배경에서 화면 밖에 열린 탭은 보이게 스크롤한다 — 활성 탭은 그대로, 붙을 자리는 남긴다', () => {
+      mount({ tabs: many.slice(0, 7), activeTabId: 't0' })
+      setStripBox({ clientWidth: 400, scrollWidth: 700, scrollLeft: 0 })
+      stripBox.scrollWidth = 800
+      mount({ tabs: many, activeTabId: 't0' })
+      // t7 제자리 700..800, 앞 가장자리에 붙을 t0 100px → 400 스크롤이면 t7 = 300..400
+      expect(stripEl().scrollLeft).toBe(400)
+      expect(tabEl('t0').hasAttribute('data-active-tab-dock')).toBe(true)
+    })
+
+    it('포인터가 스트립 위면 그 reveal 을 미뤘다가 나갈 때 한다 — 누르려던 탭이 밀려나지 않게', () => {
+      mount({ tabs: many.slice(0, 7), activeTabId: 't0' })
+      setStripBox({ clientWidth: 400, scrollWidth: 700, scrollLeft: 0 })
+      stripBox.scrollWidth = 800
+      hover.on = true
+      mount({ tabs: many, activeTabId: 't0' })
+      expect(stripEl().scrollLeft).toBe(0)
+      hover.on = false
+      act(() => {
+        stripEl().dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }))
+      })
+      expect(stripEl().scrollLeft).toBe(400)
+    })
+
+    it('활성 탭을 닫아 멀리 있는 탭이 활성이 돼도 그 커밋엔 스트립이 튀지 않는다(hold)', () => {
+      mount({ tabs: many, activeTabId: 't1' })
+      setStripBox({ clientWidth: 400, scrollWidth: 800, scrollLeft: 0 })
+      stripBox.scrollWidth = 700
+      mount({ tabs: many.filter((row) => row.tabId !== 't1'), activeTabId: 't7' })
+      expect(stripEl().scrollLeft).toBe(0)
+      // 대조: 닫기 없이 같은 탭으로 활성만 옮기면 보이게 스크롤한다(t7 = 자리 600..700 → 300).
+      mount({ tabs: many.filter((row) => row.tabId !== 't1'), activeTabId: 't6' })
+      mount({ tabs: many.filter((row) => row.tabId !== 't1'), activeTabId: 't7' })
+      expect(stripEl().scrollLeft).toBe(300)
+    })
+  })
 })

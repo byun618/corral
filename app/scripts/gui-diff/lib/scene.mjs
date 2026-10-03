@@ -87,12 +87,15 @@ async function wheelTabStripTo({ handle, app, edge }) {
 export async function settleTabStrips({ orca, corral }) {
   for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
     let last = await observeTabStrip({ handle, app })
-    for (let i = 0; i < 6; i += 1) {
+    let settled = false
+    for (let i = 0; i < 6 && !settled; i += 1) {
       await pause(1000)
       const now = await observeTabStrip({ handle, app })
-      if (JSON.stringify(now) === JSON.stringify(last)) break
+      settled = JSON.stringify(now) === JSON.stringify(last)
       last = now
     }
+    // 6초 안에 멈추지 않으면 캡처가 움직이는 스트립을 찍는다 — 조용히 넘어가지 않고 실패시킨다(LIFE-494 r1 R1-05).
+    if (!settled) throw new Error(`탭 스트립 정착 시간 초과(${app}): ${JSON.stringify(last)}`)
   }
 }
 

@@ -437,9 +437,80 @@ async function main() {
   const postDrop = await sample({ group: g1, ms: 500 })
   record('drag-end-stops-autoscroll', postDrop.every((entry) => entry.scrollLeft === postDrop[0].scrollLeft) && afterDrop.tabs.some((tab) => tab.dock), { postDrop })
 
+  // ⑩b (r1 R1-01) dock 된 활성 탭을 끌어 문턱(6px)을 넘는 첫 mousemove 직후 그대로 놓는다 — 드롭 인덱스가 dock 끈(제자리) 계산과 같아야 한다.
+  // 첫 탭 활성 → 휠로 끝까지 → 첫 탭이 앞 가장자리에 붙는다. 붙은 탭 가운데를 눌러 7px 왼쪽으로 한 번 움직이고 놓는다.
+  // 기대는 두 가지로 미리 계산해 서로 달라야 판별력이 있다: dock 켠 사각형(누르기 전 화면) / dock 끈 사각형(문턱 직후 화면 — 드래그 중엔 제자리).
+  const tabbarIndex = (centers, x) => { const at = centers.findIndex((c) => x < c); return at === -1 ? centers.length : at }
+  const predictOrder = (order, tabId, index) => { const without = order.filter((id) => id !== tabId); const at = Math.max(0, Math.min(index, without.length)); return [...without.slice(0, at), tabId, ...without.slice(at)] }
+  await wheel({ group: g1, deltaY: -120, times: 40 })
+  await pause(300)
+  const headTab = groupById(await read(), g1).tabs[0].id
+  await control({ cmd: 'click', selector: `[data-main-tab="${headTab}"]` })
+  await pause(400)
+  await wheel({ group: g1, deltaY: 120, times: 40 })
+  await mouse('mouseMove', await AWAY())
+  await pause(500)
+  const dockPre = groupById(await dump('10c-dock-before-drag'), g1)
+  const dockTab = activeOf(dockPre)
+  const press = { x: Math.round(dockTab.x + dockTab.w / 2), y: Math.round(dockPre.strip.box.y + dockPre.strip.box.h / 2) }
+  const underDock = await run((p) => document.elementFromPoint(p.x, p.y)?.closest('[data-main-tab]')?.dataset.mainTab ?? null, press)
+  const release = { x: press.x - 7, y: press.y }
+  await mouse('mouseMove', press)
+  await mouse('mouseDown', press)
+  await mouse('mouseMove', release)
+  const dockMid = groupById(await read(), g1)
+  await mouse('mouseUp', release)
+  await pause(800)
+  const dockDrop = groupById(await dump('10d-dock-threshold-release'), g1)
+  const dockOrderBefore = dockPre.tabs.map((tab) => tab.id)
+  const dockOnIndex = tabbarIndex(dockPre.tabs.map((tab) => tab.x + tab.w / 2), release.x)
+  const dockOffIndex = tabbarIndex(dockMid.tabs.map((tab) => tab.x + tab.w / 2), release.x)
+  const expectOff = predictOrder(dockOrderBefore, dockTab.id, dockOffIndex)
+  const expectOn = predictOrder(dockOrderBefore, dockTab.id, dockOnIndex)
+  record('drag-dock-threshold-release', dockPre.strip.docked === 'start' && dockTab.dock && underDock === dockTab.id && dockMid.dragging && !dockMid.tabs.some((tab) => tab.dock) && expectOff.join() !== expectOn.join() && dockDrop.tabs.map((tab) => tab.id).join() === expectOff.join() && !dockDrop.dragging, {
+    docked: dockPre.strip.docked, tab: dockTab.id, underDock, press, release, dockOnIndex, dockOffIndex, indexAfter: dockDrop.tabs.findIndex((tab) => tab.id === dockTab.id),
+    dockMidPosition: dockMid.tabs.find((tab) => tab.id === dockTab.id)?.position, discriminates: expectOff.join() !== expectOn.join(),
+  })
+
+  // ⑩c (r1 R1-02) 드래그 중 › 위에서 멈춘 채 자동 스크롤을 기다렸다가 그대로 놓는다 — 드롭 인덱스가 스크롤 **뒤** 위치여야 한다.
+  // 기대: 놓기 직전 화면(드래그 중 = dock 없음)의 탭 중점으로 계산 / 대조: › 에 닿은 직후 화면으로 계산(스크롤 전) — 둘이 달라야 판별력이 있다.
+  await wheel({ group: g1, deltaY: -120, times: 40 })
+  await mouse('mouseMove', await AWAY())
+  await pause(500)
+  const holdStart = groupById(await read(), g1)
+  const holder = freeTabs(holdStart)[1]
+  const hFrom = { x: Math.round(holder.x + holder.w / 2), y: Math.round(holdStart.strip.box.y + holdStart.strip.box.h / 2) }
+  const underHold = await run((p) => document.elementFromPoint(p.x, p.y)?.closest('[data-main-tab]')?.dataset.mainTab ?? null, hFrom)
+  const hTo = center(holdStart.chevrons.end.box)
+  await mouse('mouseMove', hFrom)
+  await mouse('mouseDown', hFrom)
+  await mouse('mouseMove', { x: hFrom.x + 10, y: hFrom.y + 2 })
+  for (let i = 1; i <= 8; i += 1) {
+    await mouse('mouseMove', { x: Math.round(hFrom.x + ((hTo.x - hFrom.x) * i) / 8), y: Math.round(hFrom.y + ((hTo.y - hFrom.y) * i) / 8) })
+    await pause(25)
+  }
+  const holdArrive = groupById(await read(), g1)
+  await pause(450)
+  const holdRelease = groupById(await dump('10e-chevron-hold-before-release'), g1)
+  await mouse('mouseUp', hTo)
+  await pause(800)
+  const holdDrop = groupById(await dump('10f-chevron-hold-release'), g1)
+  const holdOrderBefore = holdStart.tabs.map((tab) => tab.id)
+  const freshIndex = tabbarIndex(holdRelease.tabs.map((tab) => tab.x + tab.w / 2), hTo.x)
+  const staleIndex = tabbarIndex(holdArrive.tabs.map((tab) => tab.x + tab.w / 2), hTo.x)
+  const expectFresh = predictOrder(holdOrderBefore, holder.id, freshIndex)
+  const expectStale = predictOrder(holdOrderBefore, holder.id, staleIndex)
+  record('drag-chevron-hold-release', underHold === holder.id && holdRelease.dragging && holdRelease.strip.scrollLeft > holdArrive.strip.scrollLeft && expectFresh.join() !== expectStale.join() && holdDrop.tabs.map((tab) => tab.id).join() === expectFresh.join() && !holdDrop.dragging, {
+    tab: holder.id, underHold, chevron: hTo, scrollAtArrive: holdArrive.strip.scrollLeft, scrollAtRelease: holdRelease.strip.scrollLeft, staleIndex, freshIndex,
+    indexAfter: holdDrop.tabs.findIndex((tab) => tab.id === holder.id), discriminates: expectFresh.join() !== expectStale.join(),
+  })
+  await wheel({ group: g1, deltaY: -120, times: 40 })
+  await pause(300)
+
   // ⑪ 영역 2개 — 활성 탭 우클릭 → 「오른쪽 영역」. 둘째 영역에도 탭을 늘려 넘치게 한다.
-  const mainAct = activeOf(afterDrop)
-  await control({ cmd: 'click', selector: `[data-main-tab="${freeTabs(afterDrop)[0].id}"]` })
+  const preMenu = groupById(await read(), g1)
+  const mainAct = activeOf(preMenu)
+  await control({ cmd: 'click', selector: `[data-main-tab="${freeTabs(preMenu)[0].id}"]` })
   await pause(400)
   const toMove = activeOf(groupById(await read(), g1))
   const mr = groupById(await read(), g1).tabs.find((tab) => tab.id === toMove.id)

@@ -107,6 +107,7 @@ export function useTabDrag(input: {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
       document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('blur', onBlur)
       document.body.classList.remove('is-tab-drag')
       setDragState(null)
@@ -128,17 +129,27 @@ export function useTabDrag(input: {
         }, 0)
       }
     }
+    const resolveAt = (point: Point): void => {
+      const { target, visual } = resolveDropTarget({ point, fromGroupId: armInput.fromGroupId, ownTabCountOf: inputRef.current.ownTabCountOf })
+      const next: TabDragState = { tabId: armInput.tabId, fromGroupId: armInput.fromGroupId, point, target, visual }
+      stateRef.current = next
+      setDragState(next)
+    }
     const onMove = (moveEvent: MouseEvent): void => {
       const point = { x: moveEvent.clientX, y: moveEvent.clientY }
       if (!dragging) {
         if (!hasCrossedDragThreshold(start, point)) return
         dragging = true
+        // 동기로 붙여 바로 아래 첫 판정이 dock(sticky) 풀린 사각형을 읽게 한다(styles.css, r1 R1-01).
         document.body.classList.add('is-tab-drag')
       }
-      const { target, visual } = resolveDropTarget({ point, fromGroupId: armInput.fromGroupId, ownTabCountOf: inputRef.current.ownTabCountOf })
-      const next: TabDragState = { tabId: armInput.tabId, fromGroupId: armInput.fromGroupId, point, target, visual }
-      stateRef.current = next
-      setDragState(next)
+      resolveAt(point)
+    }
+    // 포인터가 멈춰 있어도 탭 스트립이 스크롤되면(chevron hover 자동 스크롤·휠) 탭 사각형이 움직인다 —
+    // 마지막 포인터로 다시 판정해야 놓을 때 스크롤 뒤 위치로 커밋된다(r1 R1-02). scroll 은 버블링하지 않아 capture 로 받는다.
+    const onScroll = (): void => {
+      const last = stateRef.current
+      if (dragging && last !== null) resolveAt(last.point)
     }
     const onUp = (): void => finish(true)
     const onKeyDown = (keyEvent: KeyboardEvent): void => {
@@ -149,6 +160,7 @@ export function useTabDrag(input: {
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
     document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('scroll', onScroll, true)
     window.addEventListener('blur', onBlur)
   }, [])
 

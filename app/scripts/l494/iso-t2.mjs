@@ -31,4 +31,7 @@ await new Promise((resolve) => setTimeout(resolve, 2000))
 const survivors = owned.filter((entry) => entry.pid).filter((entry) => { try { process.kill(entry.pid, 0); return true } catch { return false } }).map((entry) => entry.pid)
 fs.writeFileSync(path.join(out, 'iso-run.json'), `${JSON.stringify({ driverExit: child.status, owned, survivors }, null, 1)}\n`)
 console.log('[iso-t2]', JSON.stringify({ driverExit: child.status, survivors }))
-process.exit(child.status ?? 2)
+// 드라이버가 통과해도 끄지 못한 프로세스가 남으면 실패다(r1 R1-05) — 드라이버 실패 코드가 먼저.
+const exitCode = child.status !== 0 ? (child.status ?? 2) : survivors.length > 0 ? 3 : 0
+if (survivors.length > 0) console.error(`[iso-t2] 잔존 프로세스 ${survivors.join(',')} — exit ${exitCode}`)
+process.exit(exitCode)

@@ -403,7 +403,7 @@ function TabStripChevron({
       aria-label={label}
       aria-disabled={!canScroll}
       disabled={!dragActive && !canScroll}
-      onClick={() => overflow.scrollByStep(direction)}
+      onClick={() => overflow.scrollByStep({ direction })}
       onPointerEnter={() => overflow.onDragScrollEnter(direction)}
       onPointerLeave={overflow.onDragScrollLeave}
     >

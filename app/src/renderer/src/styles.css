@@ -711,22 +711,23 @@ button, input { font: inherit; letter-spacing: inherit; }
    색은 Orca 다크 대응 토큰: `--card` = `--bg-window`, `--foreground` = `--fg`, `--muted-foreground` = `--fg-muted`,
    `--border` = `--line`, `--muted` = `--bg-row-hover`, `--accent` = `--bg-accent`. */
 
-/* 탭바 안 모든 요소의 경계 기본값 — Orca 는 Tailwind preflight `*{border:0 solid}` + 테마 `*{border-color:var(--border)}` 라
-   폭 0 인 경계도 색·모양을 갖는다. 그려지지 않는 값이지만 계산 스타일이 갈리면 측정이 차이로 센다 — 같은 기본값을 둔다.
-   `:where()` 라 명시도 0 — 아래 어떤 규칙(메뉴·버튼 테두리 포함)도 이것을 이긴다. */
-:where(.main-tabbar, .main-tabbar *) { border: 0 solid var(--line); }
+/* 탭바 안 모든 요소의 경계 기본값 — Orca 는 Tailwind v4 preflight `*{border:0 solid}`(색 = currentColor)이고 `border-border`
+   를 단 요소(줄·탭·스트립)만 경계색을 갖는다. 폭 0 이라 그려지지 않는 값이지만 계산 스타일이 갈리면 측정이 차이로 센다 —
+   같은 기본값을 둔다(after-t1-a2·a3 실측). `:where()` 라 명시도 0 — 아래 어떤 규칙(메뉴·버튼 테두리 포함)도 이것을 이긴다. */
+:where(.main-tabbar, .main-tabbar *) { border: 0 solid; }
 
 /* 줄 — Orca `h-[32px] border-b border-border bg-card`, 안쪽 `pr-1.5`. */
 .main-tabbar {
   flex: 0 0 auto; display: flex; align-items: stretch; height: var(--h-tabbar);
-  background: var(--bg-window); border-bottom: 1px solid var(--line); padding: 0 6px 0 0; overflow: hidden;
+  background: var(--bg-window); border-color: var(--line); border-bottom-width: 1px; padding: 0 6px 0 0; overflow: hidden;
 }
 /* 스트립 — 넘치면 가로 스크롤(스크롤바는 숨김), 오른쪽 끝에 70% 경계(Orca `.terminal-tab-strip … border-r border-border/70`).
    chevron·페이드·썸은 T2(LIFE-494). */
 .main-tab-strip {
   display: flex; align-items: stretch; flex: 0 1 auto; min-width: 0; height: 100%;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
-  border-right: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  /* `border-border/70` — Orca 계산값 rgba(255,255,255,0.051). `--line` 을 섞으면 0.047 로 반올림이 갈려 값으로 적는다. */
+  border-color: rgb(255 255 255 / 0.05); border-right-width: 1px;
 }
 .main-tab-strip::-webkit-scrollbar { width: 0; height: 0; }
 /* 탭 — 고정 폭 180(창 1280 이상 220), 줄어도 72 까지(`w-[180px] min-w-[72px] min-[1280px]:w-[220px]`).
@@ -735,10 +736,10 @@ button, input { font: inherit; letter-spacing: inherit; }
   position: relative; display: flex; align-items: center; flex: 0 1 auto;
   width: var(--tab-w); min-width: var(--tab-min-w); height: 100%; padding: 0 6px;
   font-family: var(--font-ui); font-size: 12px; line-height: 16px; cursor: pointer; user-select: none;
-  background: var(--bg-window); color: var(--fg-muted); border-top: 1px solid var(--line);
+  background: var(--bg-window); color: var(--fg-muted); border-color: var(--line); border-top-width: 1px;
 }
 @media (min-width: 1280px) { .main-tab { width: var(--tab-w-wide); } }
-.main-tab.has-right { border-right: 1px solid var(--line); }
+.main-tab.has-right { border-right-width: 1px; }
 .main-tab:hover { color: var(--fg); }
 .main-tab.is-active { background: color-mix(in srgb, var(--fg) 6%, var(--bg-window)); color: var(--fg); }
 /* 활성 하단 2px — 가로 inset 0(음수면 마지막 탭이 스트립 scrollWidth 를 1px 밀어 지터가 난다, Orca 주석). */

@@ -23,16 +23,6 @@ const record = (step, ok, detail) => {
   console.log(`[drag] ${ok === null ? '…' : ok ? '✔' : '✘'} ${step}`, JSON.stringify(detail).slice(0, 300))
   fs.writeFileSync(path.join(rawd, 'drag-log.json'), `${JSON.stringify(log, null, 1)}\n`)
 }
-async function until(fn, label, timeout = 15_000, every = 200) {
-  const start = Date.now()
-  for (;;) {
-    const value = await fn()
-    if (value) return value
-    if (Date.now() - start > timeout) throw new Error(`시간 초과: ${label}`)
-    await pause(every)
-  }
-}
-
 async function fixtureTabIds() {
   const state = (await control({ cmd: 'state' })).state
   for (const repo of state.repos) for (const row of repo.worktrees) if (row.path === fixture) return (row.workspace?.tabs ?? []).map((tab) => tab.tabId)
@@ -80,8 +70,14 @@ async function shot(tag) {
   return files
 }
 
-/** 실제 포인터 드래그: 누름 → 문턱(6px) 넘는 이동 → 목표까지 12걸음 → 뗌. */
-async function drag(from, to) {
+/**
+ * 실제 포인터 드래그: 누름 → 문턱(6px) 넘는 이동 → 목표까지 12걸음 → 뗌.
+ * 누르기 직전에 그 점의 요소가 의도한 탭인지 `elementFromPoint` 로 확인한다 — 다르면 누르지 않고 멈춘다
+ * (수정 r2 G3: attempt1·2 는 스크롤 밖 탭 좌표를 눌러 다른 요소를 잡았다).
+ */
+async function drag({ tabId, from, to }) {
+  const under = await evaluate(`document.elementFromPoint(${from.x}, ${from.y})?.closest('[data-main-tab]')?.dataset.mainTab ?? null`)
+  if (under !== tabId) throw new Error(`누를 점(${from.x},${from.y})의 탭이 ${under} — 의도한 ${tabId} 가 아니다, 누르지 않는다`)
   await control({ cmd: 'raw-mouse', type: 'mouseMove', x: from.x, y: from.y })
   await control({ cmd: 'raw-mouse', type: 'mouseDown', x: from.x, y: from.y })
   await control({ cmd: 'raw-mouse', type: 'mouseMove', x: from.x + 10, y: from.y + 2 })
@@ -129,7 +125,7 @@ async function main() {
     const smallest = [...pre].sort((a, b) => a.tabs.length - b.tabs.length)[0]
     const biggest = [...pre].sort((a, b) => b.tabs.length - a.tabs.length)[0]
     const tab = visibleTabs(smallest)[0] ?? smallest.tabs[0]
-    await drag(center(tab.box), center(biggest.body))
+    await drag({ tabId: tab.id, from: center(tab.box), to: center(biggest.body) })
     const merged = await dump('00b-merge-back')
     record('merge-back-into-overflowed', merged.length === pre.length - 1 && groupOf(merged, tab.id) === biggest.group, { tab: tab.id, from: smallest.group, to: groupOf(merged, tab.id), groups: merged.map((group) => ({ group: group.group, tabs: group.tabs.length, strip: group.strip })) })
   }
@@ -146,7 +142,7 @@ async function main() {
   const targetA = before.find((group) => group.group !== overflowed.group)
   const splitTo = { x: Math.round(targetA.body.x + targetA.body.w - targetA.body.w * 0.1), y: center(targetA.body).y }
   const groupsBefore = before.length
-  await drag(center(mover.box), splitTo)
+  await drag({ tabId: mover.id, from: center(mover.box), to: splitTo })
   const afterSplit = await dump('01-split-from-scrolled-strip')
   const moverGroup = groupOf(afterSplit, mover.id)
   record('split-from-scrolled-strip', afterSplit.length === groupsBefore + 1 && moverGroup !== overflowed.group && moverGroup !== targetA.group && afterSplit.find((group) => group.group === moverGroup)?.tabs.length === 1, {
@@ -157,7 +153,7 @@ async function main() {
   const sourceA = afterSplit.find((group) => group.group === targetA.group)
   const mergeTab = visibleTabs(sourceA).find((tab) => !tab.active) ?? visibleTabs(sourceA)[0]
   const newArea = afterSplit.find((group) => group.group === moverGroup)
-  await drag(center(mergeTab.box), center(newArea.body))
+  await drag({ tabId: mergeTab.id, from: center(mergeTab.box), to: center(newArea.body) })
   const afterMerge = await dump('02-merge')
   const mergedInto = groupOf(afterMerge, mergeTab.id)
   record('merge-into-area', mergedInto === moverGroup && afterMerge.length === afterSplit.length && afterMerge.find((group) => group.group === moverGroup)?.tabs.length === 2, {
@@ -167,7 +163,7 @@ async function main() {
   // ③ 분할(자기 영역) — 첫 영역의 탭을 그 영역 본문 아래 가장자리로 끈다(탭 2개 이상이라 유효).
   const own = afterMerge.find((group) => group.group === targetA.group)
   const ownTab = visibleTabs(own).find((tab) => !tab.active) ?? visibleTabs(own)[0]
-  await drag(center(ownTab.box), { x: center(own.body).x, y: Math.round(own.body.y + own.body.h - own.body.h * 0.08) })
+  await drag({ tabId: ownTab.id, from: center(ownTab.box), to: { x: center(own.body).x, y: Math.round(own.body.y + own.body.h - own.body.h * 0.08) } })
   const afterOwn = await dump('03-split-own-down')
   const ownGroup = groupOf(afterOwn, ownTab.id)
   const ownBody = afterOwn.find((group) => group.group === ownGroup)?.body

@@ -72,6 +72,17 @@ describe('launchAgent 워치독 — 응답과 감지의 순서 (R1-04)', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('응답 전에 감지됐다가 응답 전에 사라져도 성공이다 — 감지→소멸→응답 (R2-01)', async () => {
+    render(stateWith(undefined))
+    act(() => hook.actions.launchAgent({ workspaceId: 'w', kind: 'claude', label: 'Claude' }))
+    render(stateWith('claude'))
+    render(stateWith(null))
+    await act(async () => resolveCreate({ ok: true, paneId: 'p', tabId: 't', error: null }))
+    expect(vi.getTimerCount()).toBe(0)
+    act(() => vi.advanceTimersByTime(LAUNCH_WATCHDOG_MS + 100))
+    expect(hook.lifecycleNotice).toBeNull()
+  })
+
   it('대조: 감지가 끝내 오지 않으면 10초 뒤 알린다', async () => {
     render(stateWith(undefined))
     act(() => hook.actions.launchAgent({ workspaceId: 'w', kind: 'claude', label: 'Claude' }))

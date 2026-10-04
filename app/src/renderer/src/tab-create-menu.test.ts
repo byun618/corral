@@ -120,6 +120,13 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
     // 중간 일치는 별칭에서 받지 않는다(field-exact·word-exact·field-prefix·word-prefix 만).
     expect(searchOpenTabs({ entries, query: 'rmin' })).toEqual([])
   })
+  it('한 글자 라틴 문자·숫자 질의는 같음·접두만 받는다 — 중간 한 글자는 안 맞는다 (R2-05, Orca match-field SHORT_TOKEN_QUALITIES)', () => {
+    const entries = [entry('t1', 'alpha-build'), entry('t2', 'beta'), entry('t3', 'notes v2')]
+    expect(searchOpenTabs({ entries, query: 'a' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries, query: 'b' }).map((result) => result.tabId)).toEqual(['t2', 't1'])
+    expect(searchOpenTabs({ entries, query: '2' })).toEqual([])
+    expect(searchOpenTabs({ entries, query: 'v' }).map((result) => result.tabId)).toEqual(['t3'])
+  })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
     const entries = [entry('t1', 'logs', { agent: 'claude' }), entry('t2', 'claude notes')]
     expect(searchOpenTabs({ entries, query: 'claude' }).map((result) => result.tabId)).toEqual(['t2', 't1'])

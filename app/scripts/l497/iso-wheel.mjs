@@ -1,12 +1,14 @@
 // LIFE-497 R1-06 — K5ⓑ 휠 회귀 **격리** 실측. r1 의 D2 는 `wheel` 이 제품 경로(stream.scroll)를 탔다는 것만 봤고
 // 화면이 안 바뀌어 회귀를 판정하지 못했다. 여기서는 l353 S4 처럼 **줄 번호 마커**를 찍은 스크롤백 위에서 휠을 굴리고
 // xterm 버퍼(term-read)의 마커 범위로 "과거가 보였다 / 최신으로 돌아왔다" 를 판정한다. before·after 빌드에 같은 순서로.
-// 사용: node iso-wheel.mjs --app <app> --work /tmp/l497iX --port 97NN --out <raw 폴더> --label before|after
+// 사용: node iso-wheel.mjs --app <app> --work /tmp/l497iX --port 97NN --out <raw 폴더> --label before|after [--pre sink|sink-after|dblclick]
+//   --pre: iso-probe 의 D2 가 그 맥락에서만 안 움직여(fix1 after-4) 원인을 가르는 사전 단계 —
+//     sink = 마커 출력 **전**에 바이트 싱크(bracketed=1)를 띄웠다 끈다 · sink-after = 마커 출력 **뒤**에 · dblclick = 마커 줄 OS 더블클릭(선택) 뒤 휠.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { launchCorral, rpc, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
-import { pause, requirements } from './lib.mjs'
+import { pause, requirements, run, sinkRows, windowAt } from './lib.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -19,7 +21,7 @@ if (!fs.existsSync(fixture)) {
   fs.mkdirSync(fixture)
   execFileSync('sh', ['-c', 'git init -q -b main && echo fx > README.md && git add . && git -c user.name=fx -c user.email=fx@local commit -qm init'], { cwd: fixture })
 }
-const result = { label: args.label, app: path.resolve(args.app), startedAt: new Date().toISOString(), steps: [] }
+const result = { label: args.label, pre: args.pre ?? null, app: path.resolve(args.app), startedAt: new Date().toISOString(), steps: [] }
 const save = () => fs.writeFileSync(path.join(out, 'iso-wheel.json'), `${JSON.stringify(result, null, 1)}\n`)
 const checks = requirements((row) => console.log('[wheel] require', row.name, row.pass))
 result.requirements = checks.results
@@ -59,8 +61,35 @@ try {
   await control({ cmd: 'click', selector: `[data-main-tab="${created.tabId}"]` })
   for (let i = 0; i < 50 && !(await evaluate((id) => document.querySelector(`[data-term-pane-box="${id}"]`) !== null, created.paneId)); i += 1) await pause(200)
   await pause(1500)
+  const NODE = `${process.env.HOME}/.nvm/versions/node/v24.14.1/bin/node`
+  const sinkFile = path.join(work, 'sink.ndjson')
+  const runSink = async () => {
+    const from = sinkRows(sinkFile).next
+    await evaluate((input) => window.corral.termInput(input), { paneId: created.paneId, data: `${NODE} ${path.join(path.dirname(new URL(import.meta.url).pathname), 'byte-sink.mjs')} ${sinkFile} 1\r` })
+    for (let i = 0; i < 75 && !sinkRows(sinkFile, from).rows.some((row) => row.event === 'start'); i += 1) await pause(200)
+    checks.require('pre-sink-started', sinkRows(sinkFile, from).rows.some((row) => row.event === 'start'))
+    await evaluate((input) => window.corral.termInput(input), { paneId: created.paneId, data: '\x1d' })
+    await pause(1000)
+  }
+  if (args.pre === 'sink') await runSink()
   await evaluate((input) => window.corral.termInput(input), { paneId: created.paneId, data: "seq 1 400 | awk '{printf \"wl-%03d\\n\", $1}'\r" })
   await pause(2500)
+  if (args.pre === 'sink-after') await runSink()
+  if (args.pre === 'dblclick') {
+    const appPid = handle.status?.runtime?.pid
+    await control({ cmd: 'window-visibility', action: 'show' })
+    run('activate', [appPid])
+    const box = await evaluate((id) => {
+      const el = document.querySelector(`[data-term-pane-box="${id}"] .xterm-screen`)
+      const r = el.getBoundingClientRect()
+      return { x: r.left, y: r.top, w: r.width, h: r.height, screenX: window.screenX, screenY: window.screenY, chrome: window.outerHeight - window.innerHeight }
+    }, created.paneId)
+    const point = { x: Math.round(box.screenX + box.x + 30), y: Math.round(box.screenY + box.chrome + box.y + box.h * 0.5) }
+    const hit = windowAt([[point.x, point.y]])[0]
+    if (checks.require('pre-dblclick-target', hit?.pid === appPid, { hit })) execFileSync('/opt/homebrew/bin/cliclick', [`dc:${point.x},${point.y}`])
+    await pause(600)
+    result.preDetail = { point, hit }
+  }
   const read = async () => (await control({ cmd: 'term-read' })).term
   const step = async (name, deltaY) => {
     const wheel = deltaY === null ? null : await control({ cmd: 'wheel', deltaY })

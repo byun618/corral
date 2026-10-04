@@ -236,7 +236,9 @@ try {
       save()
       return null
     }
-    const target = toScreen(g, rect, where === 'sidebar' ? 0.5 : 0.5, where === 'sidebar' ? 0.3 : 0.5)
+    // 탭 줄은 왼쪽 1/4 지점 — fix1 에서 설치된 Orca 의 TCC 대화상자(UserNotificationCenter, 830,211 260×235)가 가운데를 덮어
+    // 보호가 드래그를 거절했다(after-4·after-5 C2). 그 대화상자는 사용자 소유라 답하지 않는다.
+    const target = toScreen(g, rect, where === 'strip' ? 0.25 : 0.5, where === 'sidebar' ? 0.3 : 0.5)
     const source = { x: Math.round(g.screenX + g.outerW - 200), y: Math.round(g.screenY + g.outerH - 140) }
     const drag = await osDrag({ files: list, source, target, expectTargetPid: appPid })
     checks.require(`${name}-drag-sent`, drag.sent === true, { refused: drag.refused ?? null, error: drag.error ?? null })
@@ -265,6 +267,28 @@ try {
   const termRead = async () => (await control({ cmd: 'term-read' })).term
   const screenBox = async () => evaluate((id) => { const el = document.querySelector(`[data-term-pane-box="${id}"] .xterm-screen`); const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height } }, paneId)
   {
+    // R1-06 — 마커(wl-NNN) 스크롤백 위에서 굴려 화면(xterm 버퍼)의 마커 범위로 판정한다 (iso-wheel.mjs 와 같은 오라클).
+    // D1 **앞**에 둔다: 선택이 있으면 렌더러가 프레임을 보류한다(TerminalPane flush 의 hasSelection — LIFE-353 설계).
+    // r1 의 D2 무변화는 D1 더블클릭 선택이 남은 채 굴린 탓이었다(fix1 wheel/after-pre-dblclick·before-pre-dblclick).
+    const span = (lines) => {
+      const nums = lines.flatMap((line) => [...line.matchAll(/wl-(\d{3})/g)].map((m) => Number(m[1])))
+      return nums.length ? { min: Math.min(...nums), max: Math.max(...nums) } : { min: null, max: null }
+    }
+    const before = span((await termRead()).lines)
+    const wheel = await control({ cmd: 'wheel', deltaY: -1200 })
+    await pause(1200)
+    const up = span((await termRead()).lines)
+    await control({ cmd: 'wheel', deltaY: 4000 })
+    await pause(1200)
+    const down = span((await termRead()).lines)
+    const scrolledUp = up.min !== null && before.min !== null && up.min < before.min
+    const returned = down.max !== null && down.max === before.max
+    result.cases.push({ name: 'D2-wheel', kind: 'regression', wheel, before, up, down, scrolledUp, returned, pass: scrolledUp && returned, log: logRows() })
+    checks.require('D2-wheel', scrolledUp && returned, { before, up, down })
+    save()
+    console.log('[probe] D2-wheel', JSON.stringify({ before, up, down }))
+  }
+  {
     await focusPane()
     const t = await termRead()
     const row = t.lines.findLastIndex((line) => /^L497COPYMARK\s*$/.test(line))
@@ -286,26 +310,6 @@ try {
     checks.require('D1-copy-cmdc', copied === 'L497COPYMARK', { row, hit: hit?.pid ?? null, keypost: sent?.code ?? null, copied })
     save()
     console.log('[probe] D1-copy-cmdc', JSON.stringify({ row, copied }))
-  }
-  {
-    // R1-06 — 마커(wl-NNN) 스크롤백 위에서 굴려 화면(xterm 버퍼)의 마커 범위로 판정한다 (iso-wheel.mjs 와 같은 오라클).
-    const span = (lines) => {
-      const nums = lines.flatMap((line) => [...line.matchAll(/wl-(\d{3})/g)].map((m) => Number(m[1])))
-      return nums.length ? { min: Math.min(...nums), max: Math.max(...nums) } : { min: null, max: null }
-    }
-    const before = span((await termRead()).lines)
-    const wheel = await control({ cmd: 'wheel', deltaY: -1200 })
-    await pause(1200)
-    const up = span((await termRead()).lines)
-    await control({ cmd: 'wheel', deltaY: 4000 })
-    await pause(1200)
-    const down = span((await termRead()).lines)
-    const scrolledUp = up.min !== null && before.min !== null && up.min < before.min
-    const returned = down.max !== null && down.max === before.max
-    result.cases.push({ name: 'D2-wheel', kind: 'regression', wheel, before, up, down, scrolledUp, returned, pass: scrolledUp && returned, log: logRows() })
-    checks.require('D2-wheel', scrolledUp && returned, { before, up, down })
-    save()
-    console.log('[probe] D2-wheel', JSON.stringify({ before, up, down }))
   }
   {
     await focusPane()

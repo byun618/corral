@@ -327,25 +327,40 @@ async function main() {
     menuAt250: afterReclick.menu !== null, menuAt850: afterReclickLater.menu !== null, expanded: groupById(afterReclickLater, g1).plus.expanded, focus: afterReclickLater.focus,
   })
 
-  // ⑥f (fix4 R4-01) 열린 메뉴의 `+` 를 우클릭(실제 오른쪽 mouseDown·mouseUp) → 헤더 메뉴 → Escape → 키가 g1 터미널에 도착한다.
-  seen = await openMenu(g1)
-  const plusPoint = center(groupById(seen, g1).plus.box)
-  await mouse('mouseDown', plusPoint, 'right')
-  await mouse('mouseUp', plusPoint, 'right')
-  await pause(300)
-  const headerMenuShown = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
-  await key('Escape')
-  await pause(300)
-  const afterRightEscape = await read()
-  const headerMenuAfter = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
-  const rightTarget = activeOf(groupById(afterRightEscape, g1))?.id ?? null
-  const rightMarker = 'l496rc'
-  await type(rightMarker)
-  await pause(500)
-  const rightText = rightTarget === null ? null : await paneText(rightTarget)
-  for (let index = 0; index < rightMarker.length; index += 1) await key('Backspace')
-  record('plus-rightclick-escape-terminal', headerMenuShown && !headerMenuAfter && afterRightEscape.menu === null && afterRightEscape.focus.isTerminal && afterRightEscape.focus.group === g1 && (rightText?.includes(rightMarker) ?? false), {
-    headerMenuShown, headerMenuAfter, createMenuAfter: afterRightEscape.menu !== null, focus: afterRightEscape.focus, tab: rightTarget, arrived: rightText?.includes(rightMarker) ?? null,
+  // ⑥f (fix4 R4-01) `+` 우클릭(실제 오른쪽 mouseDown·mouseUp) → 헤더 메뉴 → Escape → 키 입력. 메뉴가 닫힌 `+`(대조 — 기준과 같은 경로)와
+  // 메뉴가 열린 `+` 를 같은 순서로 재고 둘을 나란히 남긴다. 판정 = 열린 쪽이 대조와 같은 곳(포커스·도착)으로 간다 + 헤더 메뉴가 열렸다 닫힌다.
+  const rightClickPlusThenEscape = async ({ menuOpen }) => {
+    await control({ cmd: 'click', selector: `[data-main-tab="${shells[0]}"]` })
+    await pause(500)
+    const before = menuOpen ? await openMenu(g1) : await read()
+    const plusPoint = center(groupById(before, g1).plus.box)
+    await mouse('mouseDown', plusPoint, 'right')
+    await mouse('mouseUp', plusPoint, 'right')
+    await pause(300)
+    const headerMenuShown = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
+    const focusInMenu = await run(() => ({ tag: document.activeElement?.tagName ?? null, label: document.activeElement?.getAttribute('aria-label') ?? null }))
+    await key('Escape')
+    await pause(300)
+    const after = await read()
+    const focusAfter = await run(() => ({ tag: document.activeElement?.tagName ?? null, label: document.activeElement?.getAttribute('aria-label') ?? null }))
+    const headerMenuAfter = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
+    const target = activeOf(groupById(after, g1))?.id ?? null
+    const marker = menuOpen ? 'l496ro' : 'l496rc'
+    await type(marker)
+    await pause(500)
+    const text = target === null ? null : await paneText(target)
+    for (let index = 0; index < marker.length; index += 1) await key('Backspace')
+    return {
+      menuOpenBefore: before.menu !== null, headerMenuShown, headerMenuAfter, createMenuAfter: after.menu !== null, focusInMenu, focus: after.focus, focusAfter, tab: target,
+      arrived: text?.includes(marker) ?? null,
+    }
+  }
+  const rightClosed = await rightClickPlusThenEscape({ menuOpen: false })
+  const rightOpen = await rightClickPlusThenEscape({ menuOpen: true })
+  const sameAsControl = rightOpen.focus.isTerminal === rightClosed.focus.isTerminal && rightOpen.focusAfter.tag === rightClosed.focusAfter.tag && rightOpen.focusAfter.label === rightClosed.focusAfter.label && rightOpen.arrived === rightClosed.arrived
+  record('plus-rightclick-escape-closed-control', null, rightClosed)
+  record('plus-rightclick-escape-terminal', rightOpen.menuOpenBefore && rightOpen.headerMenuShown && !rightOpen.headerMenuAfter && !rightOpen.createMenuAfter && rightOpen.focus.group === g1 && sameAsControl, {
+    ...rightOpen, sameAsControl, terminalArrived: rightOpen.arrived,
   })
 
   // ⑦ 바깥 클릭 = 닫힘 (g2 본문).

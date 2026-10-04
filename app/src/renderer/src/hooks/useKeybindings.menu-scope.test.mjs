@@ -49,7 +49,7 @@ async function mount(kind) {
   act(() => input.focus())
   return input
 }
-const press = (target, init) => act(() => {
+const press = ({ target, init }) => act(() => {
   target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
 })
 
@@ -72,7 +72,7 @@ afterEach(() => {
 describe('전역 단축키와 열린 메뉴 (R2-02)', () => {
   it('`+` 메뉴 입력 중 ⌘B — 사이드바만 토글, 메뉴와 입력 포커스는 그대로', async () => {
     const input = await mount('menu')
-    press(input, { key: 'b', code: 'KeyB', metaKey: true })
+    press({ target: input, init: { key: 'b', code: 'KeyB', metaKey: true } })
     expect(ran).toEqual(['sidebar.toggle'])
     expect(host.querySelector('[data-tab-create-menu]')).not.toBeNull()
     expect(document.activeElement).toBe(input)
@@ -81,7 +81,7 @@ describe('전역 단축키와 열린 메뉴 (R2-02)', () => {
 
   it('상위 워크트리 피커 입력 중 ⌘⇧Backspace(no-op) — 피커와 입력 포커스는 그대로', async () => {
     const input = await mount('picker')
-    press(input, { key: 'Backspace', code: 'Backspace', metaKey: true, shiftKey: true })
+    press({ target: input, init: { key: 'Backspace', code: 'Backspace', metaKey: true, shiftKey: true } })
     expect(ran).toEqual(['workspace.delete'])
     expect(host.querySelector('.parent-picker-input')).toBe(input)
     expect(document.activeElement).toBe(input)
@@ -90,7 +90,7 @@ describe('전역 단축키와 열린 메뉴 (R2-02)', () => {
 
   it('`+` 메뉴 입력 중 ⌘T — 새 탭 액션이 돌고, 포커스가 새 터미널로 가며 메뉴가 닫힌다 (R1-01 유지)', async () => {
     const input = await mount('menu')
-    press(input, { key: 't', code: 'KeyT', metaKey: true })
+    press({ target: input, init: { key: 't', code: 'KeyT', metaKey: true } })
     expect(ran).toEqual(['terminal.new'])
     expect(host.querySelector('[data-tab-create-menu]')).toBeNull()
     expect(document.activeElement).toBe(terminal)

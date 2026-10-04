@@ -16,8 +16,9 @@ import type { AgentKind } from '../../shared/types.js'
 
 // ── 토큰 매칭 (Orca query-token-match.ts) ─────────────────────────────────────────────
 
+/** 결합 문자는 NFC 로 합친 뒤 비교한다(Orca normalized-text.ts:26 — `e` + U+0301 은 `é` 한 글자). */
 export function normalizeMatchQuery(value: string): string {
-  return value.trim().replace(/\s+/gu, ' ').toLowerCase()
+  return value.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase()
 }
 
 export function tokenizeMatchValue(value: string): string[] {
@@ -164,7 +165,7 @@ const SINGLE_LATIN_OR_DIGIT = /^[\p{Script=Latin}\p{Nd}]$/u
  */
 function segmentWords(text: string): string[] {
   const words: string[] = []
-  for (const run of text.match(/[\p{L}\p{N}]+/gu) ?? []) {
+  for (const run of text.normalize('NFC').match(/[\p{L}\p{N}]+/gu) ?? []) {
     const chars = [...run]
     let start = 0
     for (let index = 1; index < chars.length; index += 1) {

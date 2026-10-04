@@ -614,8 +614,9 @@ export function GroupHeader({
         aria-expanded={createMenu !== null}
         // r3 R3-01 — 메뉴가 열린 동안의 누름은 헤더 활성화로 버블시키지 않는다. 버블하면 활성화 → 터미널 포커스 → 메뉴 focus-out 닫힘 →
         // 뒤 click 이 닫힌 메뉴를 보고 다시 연다. 닫힌 상태의 첫 누름은 그대로 버블해 그 영역을 활성으로 만든다(기존 동작).
+        // r4 R4-01 — 왼쪽 누름만 막는다. 오른쪽·가운데 누름은 헤더로 버블해 활성화(터미널 포커스 복귀)와 헤더 메뉴를 그대로 탄다.
         onMouseDown={(event) => {
-          if (createMenu !== null) event.stopPropagation()
+          if (createMenu !== null && event.button === 0) event.stopPropagation()
         }}
         onClick={(event) => {
           if (createMenu !== null) {

@@ -18,7 +18,10 @@ import { clip, keypost, osDrag, pause, run, solidPng } from './lib.mjs'
 const [root, rawd, fixture, onlyArg] = process.argv.slice(2)
 if (!root?.startsWith('/tmp/l497n')) throw new Error('ROOT 는 /tmp/l497n*')
 if (!fixture?.startsWith('/Users/byun/l497nfx')) throw new Error('fixture 는 /Users/byun/l497nfx*')
-const only = new Set((onlyArg ?? 'shell,claude,codex').split(','))
+// `claude@/private/tmp` 꼴이면 그 CLI 프로세스의 cwd 만 바꾼다(pane 은 fixture 탭 그대로) — r1 에서 claude 가 fixture 에 trust 화면을 띄웠다(코디 승인, native/r1/ask-trust-cwd.txt).
+const entries = (onlyArg ?? 'shell,claude,codex').split(',').map((entry) => entry.split('@'))
+const only = new Set(entries.map(([name]) => name))
+const cwdOf = Object.fromEntries(entries.map(([name, dir]) => [name, dir ?? fixture]))
 const ctl = path.join(root, 'ctl.sock')
 const appPid = Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8'))
 const HERDR = '/opt/homebrew/bin/herdr'
@@ -166,7 +169,7 @@ try {
     if (!only.has(cli)) continue
     const tab = await openTab()
     const argv = cli === 'claude' ? 'claude' : 'codex -c check_for_update_on_startup=false'
-    await type(tab.paneId, `cd ${fixture} && ${argv}\r`)
+    await type(tab.paneId, `cd ${cwdOf[cli]} && ${argv}\r`)
     // 기동 화면 — 막는 화면이면 답하지 않고 닫는다.
     let screen = ''
     let ready = false
@@ -182,7 +185,7 @@ try {
     fs.writeFileSync(path.join(rawd, `screen-${cli}-launch.txt`), screen)
     let processInfo = null
     try { processInfo = execFileSync(HERDR, ['pane', 'process-info', '--pane', tab.paneId], { encoding: 'utf8' }) } catch (error) { processInfo = String(error.message) }
-    record(`${cli}-launch`, { tab, argv, ready, blocking: BLOCKING.test(screen), processInfo, launchShot: await shotPane(`k6-${cli}-launch`, tab.paneId) })
+    record(`${cli}-launch`, { tab, argv, cwd: cwdOf[cli], ready, blocking: BLOCKING.test(screen), processInfo, launchShot: await shotPane(`k6-${cli}-launch`, tab.paneId) })
     if (BLOCKING.test(screen) || !ready) {
       await evaluate((input) => window.corral.closeRow(input), { tabId: tab.tabId, confirmed: true })
       exitCode = 5

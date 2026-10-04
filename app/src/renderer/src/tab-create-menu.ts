@@ -155,6 +155,9 @@ const TERMINAL_TYPE_ALIASES = ['terminal tab', 'terminal', '터미널'] as const
 const QUALITY = { fieldExact: 0, wordExact: 1, fieldPrefix: 2, wordPrefix: 3, boundary: 4, literal: 5 } as const
 type FieldRole = 'primary' | 'container' | 'alias' | 'evidence'
 
+/** Orca palette-query `LATIN_OR_DIGIT` — 한 글자 라틴 문자·숫자. */
+const SINGLE_LATIN_OR_DIGIT = /^[\p{Script=Latin}\p{Nd}]$/u
+
 function tokenQuality({ token, fieldText }: { token: string; fieldText: string }): { quality: number; placement: number } | null {
   const field = normalizeMatchQuery(fieldText)
   if (!field) return null
@@ -165,6 +168,8 @@ function tokenQuality({ token, fieldText }: { token: string; fieldText: string }
   if (field.startsWith(token)) return { quality: QUALITY.fieldPrefix, placement: 0 }
   const prefixIndex = words.findIndex((word) => word.startsWith(token))
   if (prefixIndex >= 0) return { quality: QUALITY.wordPrefix, placement: prefixIndex === 0 ? 0 : 1 }
+  // 한 글자 라틴 문자·숫자는 같음·접두만 받는다(Orca match-field.ts `SHORT_TOKEN_QUALITIES`, palette-query `isSingleLatinCharacter`, r2 R2-05).
+  if (SINGLE_LATIN_OR_DIGIT.test(token)) return null
   const at = field.indexOf(token)
   if (at < 0) return null
   const before = field.charAt(at - 1)

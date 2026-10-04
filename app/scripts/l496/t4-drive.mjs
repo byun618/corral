@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
+import { BoundaryError, focusProbe, guardedSender, orNull } from './drive-guard.mjs'
 
 const [root, rawd, fixture] = process.argv.slice(2)
 if (!root?.startsWith('/tmp/l496n') && !root?.startsWith('/tmp/l496i')) throw new Error('ROOT 는 /tmp/l496n* (예행 /tmp/l496i*)')
@@ -46,8 +47,17 @@ async function until(fn, label, timeout = 30_000, every = 200) {
 }
 const center = (box) => ({ x: Math.round(box.x + box.w / 2), y: Math.round(box.y + box.h / 2) })
 const mouse = (type, point, button) => control({ cmd: 'raw-mouse', type, x: point.x, y: point.y, ...(button ? { button } : {}) })
-const key = (keyCode, modifiers = []) => control({ cmd: 'key', keyCode, modifiers })
-const type = (text) => control({ cmd: 'type', text })
+/** fix2 R2-03 — 전역 입력은 보내기 직전에 확인한다: 화면이 fixture 탭만(`read` 가 아니면 BoundaryError) · 포커스가 영역·`+` 메뉴 안. */
+const sendGuarded = guardedSender({
+  check: async () => {
+    await read()
+    const focus = await run(focusProbe)
+    return focus.inArea ? { ok: true } : { ok: false, reason: `포커스가 fixture 영역 밖 ${focus.tag}.${focus.className}` }
+  },
+  send: (request) => control(request),
+})
+const key = (keyCode, modifiers = []) => sendGuarded({ cmd: 'key', keyCode, modifiers })
+const type = (text) => sendGuarded({ cmd: 'type', text })
 
 async function fixtureWorkspace() {
   const res = await control({ cmd: 'state' })
@@ -113,7 +123,7 @@ function readPage(mineList) {
 }
 async function read() {
   const seen = await run(readPage, await fixtureTabIds())
-  if (seen.groups.some((group) => group.foreign > 0)) throw new Error('탭바에 fixture 밖 탭이 있다 — 멈춘다')
+  if (seen.groups.some((group) => group.foreign > 0)) throw new BoundaryError('탭바에 fixture 밖 탭이 있다 — 멈춘다')
   return seen
 }
 async function dump(tag) {
@@ -142,11 +152,12 @@ async function openMenu(group) {
 const newTabAfter = async (before) => until(async () => (await fixtureTabIds()).find((id) => !before.has(id)) ?? null, '새 탭', 20_000)
 /** 새 탭이 지정 영역에서 활성이고, 터미널이 그 영역에서 포커스를 가졌나. */
 async function settledOn({ group, tabId, timeout = 10_000 }) {
-  return until(async () => {
+  // 시간 초과는 null(판정에서 실패로 센다). 경계 위반은 삼키지 않는다(fix2 R2-03).
+  return orNull(until(async () => {
     const seen = await read()
     const owner = groupById(seen, group)
     return activeOf(owner)?.id === tabId && seen.focus.isTerminal && seen.focus.group === group && seen.menu === null ? seen : null
-  }, `${tabId} 활성·터미널 포커스(${group})`, timeout, 150).catch(() => null)
+  }, `${tabId} 활성·터미널 포커스(${group})`, timeout, 150))
 }
 /** pane 화면 글자 — herdr `pane read`(읽기만). fixture 탭의 pane 만 읽는다. */
 async function paneText(tabId) {
@@ -253,7 +264,7 @@ async function main() {
   // ⑥ Escape = 닫힘 · 포커스가 g1 터미널로 · `+` 가 아니다.
   await openMenu(g1)
   await key('Escape')
-  seen = await until(async () => { const now = await read(); return now.menu === null && now.focus.isTerminal ? now : null }, 'Escape 닫힘·터미널 포커스', 5_000, 100).catch(async () => read())
+  seen = (await orNull(until(async () => { const now = await read(); return now.menu === null && now.focus.isTerminal ? now : null }, 'Escape 닫힘·터미널 포커스', 5_000, 100))) ?? (await read())
   record('escape-closes-focus-terminal', seen.menu === null && seen.focus.isTerminal && seen.focus.group === g1, { focus: seen.focus })
   // 닫은 뒤 입력은 터미널로 간다 (K2ⓒ).
   await type('echo l496-after-close')
@@ -263,11 +274,17 @@ async function main() {
   await key('u', ['control'])
 
   // ⑥b (fix1 R1-01) 메뉴가 열린 채 ⌘T — 새 탭은 즉시 생기고, 메뉴는 닫히고, 포커스·뒤따른 입력은 새 터미널로. 그 뒤 Escape 도 터미널로 간다.
+  // ⌘T 의 메뉴 닫힘은 focus-out(focusin) 으로 난다 — 실제 사용자는 시스템 포커스를 가진 창에만 키를 칠 수 있다. 제어 소켓 입력은 포커스 없는 창에도
+  // 들어가서(격리 실측: focusin 0건), 창이 포커스를 갖고 있는지 먼저 읽고 없으면 앞으로 가져온다(사용자 동작 조건과 맞춘다 — fix2 R2-02).
+  const windowBefore = await control({ cmd: 'window-visibility', action: 'read' })
+  const windowFocus = windowBefore.focused ? windowBefore : await control({ cmd: 'window-visibility', action: 'show' })
   await openMenu(g1)
   const beforeCmdT = new Set(await fixtureTabIds())
   await key('t', ['meta'])
   const viaCmdT = await newTabAfter(beforeCmdT)
   const cmdTSeen = await settledOn({ group: g1, tabId: viaCmdT })
+  // 정착을 못 봤으면 목적지를 모르는 채 치지 않는다(fix2 R2-03).
+  if (cmdTSeen === null) throw new Error(`⌘T 새 탭 ${viaCmdT} 정착 확인 실패 — 입력 전에 멈춘다`)
   await type('echo l496-cmdt')
   await pause(600)
   const cmdTText = await paneText(viaCmdT)
@@ -276,7 +293,7 @@ async function main() {
   await pause(300)
   const afterEsc = await read()
   record('cmd-t-while-menu-open', cmdTSeen !== null && cmdTText?.includes('l496-cmdt') === true && prevText?.includes('l496-cmdt') === false && afterEsc.menu === null && afterEsc.focus.isTerminal, {
-    tab: viaCmdT, focus: cmdTSeen?.focus ?? (await read()).focus, menuAfter: cmdTSeen?.menu ?? null, newTail: cmdTText?.split('\n').filter(Boolean).slice(-2) ?? null, afterEscape: { menu: afterEsc.menu, focus: afterEsc.focus },
+    windowFocusBefore: windowBefore.focused, windowFocusAtCmdT: windowFocus.focused, tab: viaCmdT, focus: cmdTSeen?.focus ?? (await read()).focus, menuAfter: cmdTSeen?.menu ?? null, newTail: cmdTText?.split('\n').filter(Boolean).slice(-2) ?? null, afterEscape: { menu: afterEsc.menu, focus: afterEsc.focus },
   })
   await key('u', ['control'])
 

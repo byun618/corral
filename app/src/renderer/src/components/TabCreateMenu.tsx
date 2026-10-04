@@ -12,7 +12,8 @@
 // 메뉴 라이브러리가 없어 직접 만든다(`ContextMenu.tsx` 와 같은 사정). Radix 에서 가져오는 동작:
 //   · 열리면 입력창 포커스(rAF) · Escape 닫기(IME 조합 중 제외) · 바깥 mousedown·창 blur·다른 메뉴 열림(`menu-bus`)에 닫힌다
 //   · 포커스가 메뉴 밖으로 나가면 닫힌다(Radix DismissableLayer `onFocusOutside`) — ⌘T 같은 전역 단축키는 document 캡처라
-//     메뉴의 stopPropagation 보다 먼저 돈다. 새 터미널이 포커스를 가져가는 그 순간 메뉴가 같이 닫힌다(리뷰 r1 R1-01)
+//     메뉴의 stopPropagation 보다 먼저 돈다. 새 터미널이 포커스를 가져가는 그 순간 메뉴가 같이 닫힌다(리뷰 r1 R1-01).
+//     포커스를 옮기지 않는 단축키(⌘B 등)에는 닫히지 않는다 — 닫힘은 이 메뉴의 focus-out 만 한다(전역 단축키 쪽은 손대지 않는다, r2 R2-02)
 //   · 첫 정적 항목의 ↑ 는 입력창으로 돌아간다(Orca `use-tab-entry-menu-return-focus.ts`, R1-02)
 //   · 닫을 때 포커스를 `+` 로 **되돌리지 않는다**(Orca `onCloseAutoFocus` preventDefault) — 새 탭이면 새 터미널(493 G1 마운트 포커스)이,
 //     Escape 면 이 영역의 터미널이 포커스를 받는다(여는 쪽 `onDismiss`).

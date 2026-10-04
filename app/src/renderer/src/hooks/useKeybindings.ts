@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { bindingFromEvent, matchBinding, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
-import { announceMenuOpen } from '../menu-bus.js'
-
-/** 전역 단축키를 실행하는 순간 열린 메뉴를 닫는다 — menu-bus 에 이 이름으로 알린다(LIFE-496 fix1 R1-01). */
-const SHORTCUT_MENU_OWNER = 'corral:shortcut'
 
 export type ShortcutHandlers = Record<ActionId, (variant: number) => void>
 export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onInterceptDuringHold: () => boolean) {
@@ -17,12 +13,7 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
     return () => { active = false }
   }, [])
   useEffect(() => {
-    // 단축키가 실행되면 열린 메뉴(`+` 드롭다운·우클릭 메뉴 등)를 먼저 닫는다. 단축키는 document 캡처라 메뉴의 키 처리보다 먼저 돌고,
-    // 그 결과 포커스가 옮겨 가도 창이 시스템 포커스를 잃은 동안에는 focusin 이 오지 않는다(fix1 격리 실측) — 포커스 이벤트에 기대지 않는다.
-    const dispatch = (match: ShortcutMatch): void => {
-      announceMenuOpen(SHORTCUT_MENU_OWNER)
-      latest.current.handlers[match.id](match.variant)
-    }
+    const dispatch = (match: ShortcutMatch): void => latest.current.handlers[match.id](match.variant)
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing) return
       if (latest.current.blocked) {

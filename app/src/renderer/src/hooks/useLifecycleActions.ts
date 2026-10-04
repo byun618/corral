@@ -72,14 +72,22 @@ export function useLifecycleActions(state: AppState | null): {
    * 없어도 `agent.start` 는 성공하고 pane.agent 는 끝내 오지 않는다. 그래서 그 pane 의 `agent` 도착을 기다린다.
    * 기다리는 동안 한 번이라도 오면 성공으로 끝낸다(곧 나가 버린 에이전트를 실패로 세지 않는다). 기한에 판정은 순수 함수가 한다.
    * main 은 state push 와 IPC 응답의 순서를 보장하지 않는다 — 응답보다 먼저 온 감지는 **등록할 때 최신 state 로** 본다(리뷰 r1 R1-04).
+   * 응답 전에 감지됐다가 응답 전에 사라진 경우(r2 R2-01)는 최신 state 에 없다. 그래서 **미해결 launch 가 있는 동안** 본 감지 pane 을
+   * 모아 두고(`agentSeenWhilePending`), 응답의 paneId 와 맞춰 본다. 미해결 launch 가 하나도 없으면 비운다.
    */
   const stateRef = useRef<AppState | null>(state)
   stateRef.current = state
   const launchWatches = useRef(new Map<string, { watch: LaunchWatch; timer: ReturnType<typeof setTimeout> }>())
+  const pendingLaunches = useRef(0)
+  const agentSeenWhilePending = useRef(new Set<string>())
   useEffect(() => {
     if (state === null) return
+    if (pendingLaunches.current > 0)
+      for (const repo of state.repos)
+        for (const worktree of repo.worktrees)
+          for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) if (pane.agent != null) agentSeenWhilePending.current.add(pane.paneId)
     for (const [paneId, entry] of launchWatches.current) {
-      if (findPane(state, paneId)?.agent == null) continue
+      if (findPane({ state, paneId })?.agent == null) continue
       clearTimeout(entry.timer)
       launchWatches.current.delete(paneId)
     }
@@ -93,13 +101,13 @@ export function useLifecycleActions(state: AppState | null): {
   }, [])
   const watchLaunch = useCallback((watch: LaunchWatch): void => {
     const latest = stateRef.current
-    if (latest !== null && findPane(latest, watch.paneId)?.agent != null) return
+    if (latest !== null && findPane({ state: latest, paneId: watch.paneId })?.agent != null) return
     const timer = setTimeout(() => {
       launchWatches.current.delete(watch.paneId)
       const current = stateRef.current
       const verdict = launchWatchdogVerdict({
         watch,
-        pane: current === null ? null : findPane(current, watch.paneId),
+        pane: current === null ? null : findPane({ state: current, paneId: watch.paneId }),
         activeWorkspaceId: lastWorkspaceRef.current,
       })
       if (verdict === 'missing') setLifecycleNotice({ kind: 'error', message: launchWatchdogMessage(watch.label) })
@@ -266,8 +274,16 @@ export function useLifecycleActions(state: AppState | null): {
   /** LIFE-496 D38 — `+` 메뉴 Quick-launch = `createRow` + 기동 워치독. */
   const launchAgent = useCallback(
     async ({ workspaceId, kind, label }: { workspaceId: string; kind: Exclude<AgentKind, 'shell'>; label: string }): Promise<void> => {
-      const paneId = await createRow(workspaceId, kind)
-      if (paneId !== null) watchLaunch({ paneId, workspaceId, label })
+      pendingLaunches.current += 1
+      let paneId: string | null = null
+      try {
+        paneId = await createRow(workspaceId, kind)
+      } finally {
+        pendingLaunches.current -= 1
+      }
+      const seenBeforeResponse = paneId !== null && agentSeenWhilePending.current.has(paneId)
+      if (pendingLaunches.current === 0) agentSeenWhilePending.current.clear()
+      if (paneId !== null && !seenBeforeResponse) watchLaunch({ paneId, workspaceId, label })
     },
     [createRow, watchLaunch],
   )
@@ -371,7 +387,7 @@ export function useLifecycleActions(state: AppState | null): {
   }
 }
 
-function findPane(state: AppState, paneId: string): { workspaceId: string; agent: string | null } | null {
+function findPane({ state, paneId }: { state: AppState; paneId: string }): { workspaceId: string; agent: string | null } | null {
   for (const repo of state.repos)
     for (const worktree of repo.worktrees)
       for (const tab of worktree.workspace?.tabs ?? []) {

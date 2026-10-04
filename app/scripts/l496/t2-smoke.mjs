@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
+import { BoundaryError, focusProbe, guardedSender } from './drive-guard.mjs'
 
 const [root, rawd, fixture] = process.argv.slice(2)
 if (!root?.startsWith('/tmp/l496n') && !root?.startsWith('/tmp/l496i')) throw new Error('ROOT 는 /tmp/l496n* (예행 /tmp/l496i*)')
@@ -110,8 +111,22 @@ function readPage(mineList) {
 }
 async function read() {
   const seen = await run(readPage, await fixtureTabIds())
-  if (seen.some((group) => group.foreign > 0)) throw new Error('탭바에 fixture 밖 탭이 있다 — 멈춘다')
+  if (seen.some((group) => group.foreign > 0)) throw new BoundaryError('탭바에 fixture 밖 탭이 있다 — 멈춘다')
   return seen
+}
+/** fix2 R2-03 — 전역 입력(key·type)은 보내기 직전에 확인한다: 화면이 fixture 탭만 · 포커스가 영역 안. */
+const sendGuarded = guardedSender({
+  check: async () => {
+    await read()
+    const focus = await run(focusProbe)
+    return focus.inArea ? { ok: true } : { ok: false, reason: `포커스가 fixture 영역 밖 ${focus.tag}.${focus.className}` }
+  },
+  send: (request) => control(request),
+})
+/** 기다림 실패를 false 로 — 경계 위반은 삼키지 않는다. */
+const falseUnlessBoundary = (error) => {
+  if (error instanceof BoundaryError) throw error
+  return false
 }
 async function dump(tag) {
   const seen = await read()
@@ -464,7 +479,10 @@ async function main() {
   await mouse('mouseMove', release)
   // raw-mouse 는 렌더러 입력 큐에 넣고 돌아온다 — 문턱 이동이 처리돼 드래그가 선(=dock 이 풀린) 화면을 기다린다(k4/r3: 처리 전에 읽어 sticky 를 봤다).
   const dockMid = await until(async () => { const now = groupById(await read(), g1); return now.dragging && !now.tabs.some((tab) => tab.dock) ? now : null }, '문턱 뒤 드래그 화면', 3_000, 50)
-    .catch(async () => groupById(await read(), g1))
+    .catch(async (error) => {
+      if (error instanceof BoundaryError) throw error
+      return groupById(await read(), g1)
+    })
   await mouse('mouseUp', release)
   await pause(800)
   const dockDrop = groupById(await dump('10d-dock-threshold-release'), g1)
@@ -591,14 +609,14 @@ async function main() {
   const midPoint = { x: Math.round(midTarget.x + midTarget.w / 2), y: center(c1.strip.box).y }
   await mouse('mouseDown', midPoint, 'middle')
   await mouse('mouseUp', midPoint, 'middle')
-  const midClosed = await until(async () => !(await fixtureTabIds()).includes(midTarget.id), '중클릭 닫기', 15_000).then(() => true, () => false)
+  const midClosed = await until(async () => !(await fixtureTabIds()).includes(midTarget.id), '중클릭 닫기', 15_000).then(() => true, falseUnlessBoundary)
   record('smoke-middle-click-close', midClosed, { tab: midTarget.id })
 
   // × 닫기 — 활성 탭의 × (활성은 상시 노출).
   const c2 = groupById(await read(), g1)
   const xTarget = activeOf(c2)
   const xClick = await control({ cmd: 'click', selector: `[data-main-tab-close="${xTarget.id}"]` })
-  const xClosed = await until(async () => !(await fixtureTabIds()).includes(xTarget.id), '× 닫기', 15_000).then(() => true, () => false)
+  const xClosed = await until(async () => !(await fixtureTabIds()).includes(xTarget.id), '× 닫기', 15_000).then(() => true, falseUnlessBoundary)
   await pause(500)
   const afterClose = groupById(await dump('12c-after-active-close'), g1)
   record('smoke-x-close-active', xClick.ok && xClosed, { tab: xTarget.id })
@@ -628,13 +646,13 @@ async function main() {
   const renameTarget = freeTabs(c4)[0]
   await control({ cmd: 'dblclick', selector: `[data-main-tab="${renameTarget.id}"] .main-tab-label` })
   await pause(300)
-  await control({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
-  await control({ cmd: 'type', text: 'l496-renamed' })
-  await control({ cmd: 'key', keyCode: 'Enter' })
-  const renamed = await until(async () => groupById(await read(), g1).tabs.find((tab) => tab.id === renameTarget.id)?.label === 'l496-renamed', '이름 바꾸기', 10_000).then(() => true, () => false)
+  await sendGuarded({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
+  await sendGuarded({ cmd: 'type', text: 'l496-renamed' })
+  await sendGuarded({ cmd: 'key', keyCode: 'Enter' })
+  const renamed = await until(async () => groupById(await read(), g1).tabs.find((tab) => tab.id === renameTarget.id)?.label === 'l496-renamed', '이름 바꾸기', 10_000).then(() => true, falseUnlessBoundary)
   // 비활성 탭 직접 더블클릭은 LIFE-493 미완 2 / LIFE-501(탭 누름 → 터미널 마운트 포커스가 입력칸을 뺏는 기존 결함, 범위 밖) — 판정 대상이 아니라 관측으로 남긴다.
   record('observe-rename-dblclick-inactive', null, { renamed, tab: renameTarget.id, label: groupById(await read(), g1).tabs.find((tab) => tab.id === renameTarget.id)?.label, note: 'LIFE-501 기존 결함 경로(비활성 탭 직접 더블클릭) — 판정 밖' })
-  await control({ cmd: 'key', keyCode: 'Escape' })
+  await sendGuarded({ cmd: 'key', keyCode: 'Escape' })
   await pause(300)
   // 판정: 활성 탭(가려지지 않은 자리) 더블클릭 이름 바꾸기 — 선택이 안 바뀌는 경로(493 대조군, base·T1 10/10).
   // 바로 위 관측이 그 탭을 막 활성으로 만들었을 수 있다 — 터미널 마운트 포커스(LIFE-501 경합)가 지나가도록 기다린다(k4/r3: 0.3초 뒤 더블클릭이 경합에 졌다).
@@ -643,10 +661,10 @@ async function main() {
   const activeRename = activeOf(c5)
   await control({ cmd: 'dblclick', selector: `[data-main-tab="${activeRename.id}"] .main-tab-label` })
   await pause(300)
-  await control({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
-  await control({ cmd: 'type', text: 'l496-renamed-active' })
-  await control({ cmd: 'key', keyCode: 'Enter' })
-  const renamedActive = await until(async () => groupById(await read(), g1).tabs.find((tab) => tab.id === activeRename.id)?.label === 'l496-renamed-active', '활성 탭 이름 바꾸기', 10_000).then(() => true, () => false)
+  await sendGuarded({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
+  await sendGuarded({ cmd: 'type', text: 'l496-renamed-active' })
+  await sendGuarded({ cmd: 'key', keyCode: 'Enter' })
+  const renamedActive = await until(async () => groupById(await read(), g1).tabs.find((tab) => tab.id === activeRename.id)?.label === 'l496-renamed-active', '활성 탭 이름 바꾸기', 10_000).then(() => true, falseUnlessBoundary)
   record('smoke-rename-dblclick-active', renamedActive, { tab: activeRename.id, label: groupById(await read(), g1).tabs.find((tab) => tab.id === activeRename.id)?.label })
 
   // 끝: 마지막 탭 활성 — `+` 한 번(새 탭 = 마지막·활성) → 다 보임·끝.

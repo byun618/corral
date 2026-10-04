@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { launchCorral, rpc, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
-import { clip, keypost, pause, run, sinkRows, solidPng } from './lib.mjs'
+import { clip, keypost, pause, requirements, run, sinkRows, solidPng } from './lib.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -28,6 +28,14 @@ const result = { startedAt: new Date().toISOString(), cases: [] }
 const save = () => fs.writeFileSync(path.join(out, 'iso-target.json'), `${JSON.stringify(result, null, 1)}\n`)
 const owned = []
 let exitCode = 0
+// R1-05 — 싱크 준비·OS 키 보호 통과·E1~E3 기대(받은 pane 에만 경로 1개)가 어긋나면 종료코드 1.
+const checks = requirements((row) => console.log('[target] require', row.name, row.pass))
+result.requirements = checks.results
+const PASTED = /^\x1b\[200~\/.*\/corral-paste\/corral-paste-\d+-[0-9a-f-]{36}\.png\x1b\[201~$/
+const onlyIn = (sinks, want) => {
+  const other = want === 'A' ? 'B' : 'A'
+  return sinks[want].length === 1 && PASTED.test(sinks[want][0]) && sinks[other].length === 0
+}
 try {
   const handle = await launchCorral({ appRoot: path.resolve(args.app), workDir: work, port: Number(args.port), logDir: path.join(work, 'logs'), onSpawn: (entry) => owned.push(entry) })
   const appPid = handle.status?.runtime?.pid
@@ -59,6 +67,7 @@ try {
     await evaluate((input) => window.corral.termInput(input), { paneId: pane, data: `${NODE} ${SINK} ${sinks[pane]} 1\r` })
   }
   for (let i = 0; i < 75 && ![A, B].every((pane) => sinkRows(sinks[pane]).rows.some((row) => row.event === 'start')); i += 1) await pause(200)
+  if (!checks.require('sinks-ready', [A, B].every((pane) => sinkRows(sinks[pane]).rows.some((row) => row.event === 'start')))) throw new Error('싱크가 안 떴다')
   const at = { [A]: sinkRows(sinks[A]).next, [B]: sinkRows(sinks[B]).next }
   const take = () => Object.fromEntries([A, B].map((pane) => {
     const { rows, next } = sinkRows(sinks[pane], at[pane])
@@ -77,13 +86,19 @@ try {
   const e1Key = keypost({ pid: appPid, keycode: 9, mods: ['cmd'] })
   const e1Switch = await control({ cmd: 'click', selector: `[data-term-pane-box="${B}"] .xterm-screen` })
   await pause(1500)
-  result.cases.push({ name: 'E1-paste-A-then-select-B', key: e1Key.parsed, switchAt: e1Switch.at ?? null, sinks: take() })
+  const e1 = take()
+  result.cases.push({ name: 'E1-paste-A-then-select-B', key: e1Key.parsed, switchAt: e1Switch.at ?? null, sinks: e1 })
+  checks.require('E1-keypost', e1Key.code === 0, { key: e1Key.out })
+  checks.require('E1-only-A', onlyIn(e1, 'A'), { sinks: e1 })
   save()
   // E3 (대조)
   await focus(B)
   const e3Key = keypost({ pid: appPid, keycode: 9, mods: ['cmd'] })
   await pause(1500)
-  result.cases.push({ name: 'E3-paste-B', key: e3Key.parsed, sinks: take() })
+  const e3 = take()
+  result.cases.push({ name: 'E3-paste-B', key: e3Key.parsed, sinks: e3 })
+  checks.require('E3-keypost', e3Key.code === 0, { key: e3Key.out })
+  checks.require('E3-only-B', onlyIn(e3, 'B'), { sinks: e3 })
   save()
   // E2
   await focus(A)
@@ -92,7 +107,9 @@ try {
   await pause(2000)
   const logPath = path.join(handle.paths.userData, 'corral.ndjson')
   const tail = fs.readFileSync(logPath, 'utf8').split('\n').filter((line) => /paste\.clipboard_image|input_blocked/.test(line)).slice(-3)
-  result.cases.push({ name: 'E2-paste-A-then-close-A', closed, sinks: take(), logTail: tail })
+  const e2 = take()
+  result.cases.push({ name: 'E2-paste-A-then-close-A', closed, sinks: e2, logTail: tail })
+  checks.require('E2-nothing-to-B', e2.B.length === 0, { sinks: e2 })
   save()
   for (const entry of result.cases) console.log('[target]', entry.name, JSON.stringify(entry.sinks).slice(0, 300))
 } catch (error) {
@@ -108,7 +125,7 @@ try {
   if (result.survivors.length > 0 && exitCode === 0) exitCode = 3
   clip('clear')
   result.clipboardAfter = clip('dump').out
-  result.exitCode = exitCode
+  result.exitCode = checks.exitCode(exitCode)
   save()
 }
-process.exit(exitCode)
+process.exit(result.exitCode)

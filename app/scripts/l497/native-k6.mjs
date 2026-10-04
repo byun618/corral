@@ -5,7 +5,10 @@
 //                        드롭      = drag-source(NSDraggingSession) + cliclick → 진짜 OS 드롭 → preload webUtils → 렌더러 → termInput
 // 준비 입력(제품 경로 아님, 관문 대상 아님): CLI 기동 명령·질문 문장·입력 지우기(Ctrl+U)·U3 수신 실측 페이로드 = 렌더러 termInput 직접 호출.
 // 관측: herdr `pane read --source visible`(PTY 화면 텍스트) · 선택자 캡처(shots) · 렌더러 진단 링(corral → herdr 로 보낸 붙여넣기·드롭 바이트).
-// 전송(Enter)은 CLI 당 1회 — ⓐ 뒤 "이 이미지에 뭐가 보여? 한 줄로". 나머지는 칩만 보고 지운다.
+// 전송(Enter)은 하지 않는다 — r1 이 CLI 당 1회를 이미 썼다(fix1 지시). 칩만 보고 지운다.
+// 판정은 **지금 입력줄(composer)** 만 본다(R1-04, input-line.mjs) — 대화 기록에 남은 칩은 세지 않는다.
+// 필수 조건(OS 입력 보호 통과·드래그 전송·입력줄 칩 수·링 바이트·지우기)이 하나라도 어긋나면 종료코드 1 (R1-05).
+// ⓖ 순서: 서로 다른 이미지 두 장을 연달아 ⌘V → 링의 두 경로가 그 순서의 이미지(PNG 크기로 식별)인지 (R1-03).
 // trust·업데이트·로그인 화면이 보이면 답하지 않고 탭을 닫고 exit 5 로 멈춘다(부르는 쪽이 코디에 묻는다).
 //
 // 사용: node native-k6.mjs <ROOT=/tmp/l497n*> <raw 폴더> <fixture 경로(realpath)> [claude,codex,shell]
@@ -13,7 +16,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
-import { clip, keypost, osDrag, pause, run, solidPng } from './lib.mjs'
+import { clip, keypost, osDrag, pause, requirements, run, solidPng } from './lib.mjs'
+import { composerChips } from './input-line.mjs'
 
 const [root, rawd, fixture, onlyArg] = process.argv.slice(2)
 if (!root?.startsWith('/tmp/l497n')) throw new Error('ROOT 는 /tmp/l497n*')
@@ -57,6 +61,19 @@ const colors = { plain: [220, 60, 40], paren: [240, 200, 20], shot: [150, 40, 20
 for (const [key, file] of Object.entries(F)) fs.writeFileSync(file, file.endsWith('.png') ? solidPng({ width: 48, height: 32, rgb: colors[key] }) : 'notes\n')
 const clipPng = path.join(root, 'clip.png')
 fs.writeFileSync(clipPng, solidPng({ width: 64, height: 40, rgb: [30, 90, 200] }))
+const clipPng2 = path.join(root, 'clip2.png')
+fs.writeFileSync(clipPng2, solidPng({ width: 72, height: 28, rgb: [230, 120, 20] }))
+const checks = requirements((row) => record(`require:${row.name}`, row))
+/** 링에 남은 붙여넣기 경로의 PNG 크기 — ⓖ 순서 판정용(두 이미지는 크기가 다르다). */
+const pngSize = (data) => {
+  const file = data.replace(/^\x1b\[200~/, '').replace(/\x1b\[201~$/, '')
+  try {
+    const head = fs.readFileSync(file).subarray(16, 24)
+    return { file, width: head.readUInt32BE(0), height: head.readUInt32BE(4) }
+  } catch (error) {
+    return { file, error: String(error.message) }
+  }
+}
 
 const workspaceOf = async () => {
   const state = (await control({ cmd: 'state' })).state
@@ -108,7 +125,7 @@ const dropOn = async (paneId, list) => {
 }
 const BLOCKING = /trust (this|the) (folder|directory|files)|Do you trust|Update available|update now|Sign in with|Log in|login required|Select login method|Welcome to Codex/i
 
-async function observe({ step, paneId, extra = {}, waitMs = 2500, expect = null }) {
+async function observe({ step, paneId, extra = {}, waitMs = 2500, expect = null, cli = null }) {
   await pause(waitMs)
   const screen = hread(paneId)
   const bytes = await freshRing()
@@ -116,17 +133,22 @@ async function observe({ step, paneId, extra = {}, waitMs = 2500, expect = null 
   const screenFile = path.join(rawd, `screen-${step}.txt`)
   fs.writeFileSync(screenFile, screen)
   const matched = expect === null ? null : expect.test(screen)
-  record(step, { ...extra, bytes, shot, screenFile: path.basename(screenFile), matched, tail: screen.trimEnd().split('\n').slice(-6) })
-  return { screen, matched }
+  const composer = cli === null ? null : composerChips(cli, screen)
+  record(step, { ...extra, bytes, shot, screenFile: path.basename(screenFile), matched, composer, tail: screen.trimEnd().split('\n').slice(-6) })
+  return { screen, matched, bytes, composer }
 }
-const clearInput = async (paneId, label) => {
+const clearInput = async (paneId, label, cli = null) => {
   // Ctrl+U(줄 앞 지우기) 세 번 — 칩·경로 텍스트를 지운다. 무엇을 보냈는지 기록한다.
   for (let i = 0; i < 3; i += 1) {
     await type(paneId, '\x15')
     await pause(250)
   }
   await pause(500)
-  record(`${label}-cleared`, { sent: '\\x15 ×3 (Ctrl+U)', tail: hread(paneId).trimEnd().split('\n').slice(-4) })
+  const screen = hread(paneId)
+  const composer = cli === null ? null : composerChips(cli, screen)
+  record(`${label}-cleared`, { sent: '\\x15 ×3 (Ctrl+U)', composer, tail: screen.trimEnd().split('\n').slice(-4) })
+  // 지워졌다 = 입력줄에 칩도 fixture·붙여넣기 경로도 없다(codex 는 빈 입력줄에 바뀌는 안내 문구를 띄운다).
+  if (cli !== null) checks.require(`${label}-cleared`, composer !== null && composer.chips.length === 0 && !/l497nfx|corral-paste/.test(composer.text), { composer })
 }
 
 let exitCode = 0
@@ -153,13 +175,17 @@ try {
     const drag1 = await dropOn(tab.paneId, [F.notes])
     await pause(1200)
     await type(tab.paneId, '\r')
+    checks.require('g1-drag-sent', drag1.sent === true, { refused: drag1.refused ?? null })
     const g1 = await observe({ step: 'g1-shell-notes-ls', paneId: tab.paneId, extra: { drag: drag1 }, expect: /rw.*my notes\.txt/ })
+    checks.require('g1-ls-one-arg', g1.matched === true)
     await type(tab.paneId, 'ls -l ')
     await pause(500)
     const drag2 = await dropOn(tab.paneId, [F.paren])
     await pause(1200)
     await type(tab.paneId, '\r')
-    await observe({ step: 'g2-shell-paren-image-ls', paneId: tab.paneId, extra: { drag: drag2 }, expect: /rw.*download \(1\)\.png/ })
+    checks.require('g2-drag-sent', drag2.sent === true, { refused: drag2.refused ?? null })
+    const g2 = await observe({ step: 'g2-shell-paren-image-ls', paneId: tab.paneId, extra: { drag: drag2 }, expect: /rw.*download \(1\)\.png/ })
+    checks.require('g2-ls-one-arg', g2.matched === true)
     record('shell-done', { pass: g1.matched })
     await evaluate((input) => window.corral.closeRow(input), { tabId: tab.tabId, confirmed: true })
     await pause(1500)
@@ -189,57 +215,64 @@ try {
     if (BLOCKING.test(screen) || !ready) {
       await evaluate((input) => window.corral.closeRow(input), { tabId: tab.tabId, confirmed: true })
       exitCode = 5
+      checks.require(`${cli}-ready`, false, { blocking: BLOCKING.test(screen) })
       record(`${cli}-stopped`, { reason: BLOCKING.test(screen) ? '막는 화면(trust·업데이트·로그인) — 답하지 않고 닫음' : '준비 화면을 못 봄 — 닫음' })
       continue
     }
     await freshRing()
-    const chip = cli === 'claude' ? /\[Image #\d+\]/ : /\[Image #\d+\]|\[image[^\]]*\]/i
-    // ⓐ ⌘V 이미지 → 칩 → 전송 1회
-    clip('png', clipPng)
-    await focus(tab.paneId)
-    const keyA = keypost({ pid: appPid, keycode: 9, mods: ['cmd'] })
-    const a = await observe({ step: `${cli}-a-cmdv-image`, paneId: tab.paneId, extra: { key: keyA.parsed ?? keyA }, expect: chip })
-    if (a.matched) {
-      await type(tab.paneId, '이 이미지에 뭐가 보여? 한 줄로')
-      await pause(600)
-      await type(tab.paneId, '\r')
-      let answered = ''
-      for (let i = 0; i < 90; i += 1) {
-        await pause(1000)
-        answered = hread(tab.paneId)
-        if (i > 8 && !/esc to interrupt|Working|thinking|Thinking/i.test(answered)) break
-      }
-      fs.writeFileSync(path.join(rawd, `screen-${cli}-a-answer.txt`), answered)
-      record(`${cli}-a-send-once`, { sent: '이 이미지에 뭐가 보여? 한 줄로 + Enter', shot: await shotPane(`k6-${cli}-a-answer`, tab.paneId), tail: answered.trimEnd().split('\n').slice(-14) })
-    } else {
-      await clearInput(tab.paneId, `${cli}-a`)
+    // 한 경우 = OS 입력 1회 → 입력줄 칩 수·링 바이트 확인 → 지우기. 기대가 어긋나면 필수 조건 실패.
+    const expectCase = ({ step, obs, chips, ring, text = null }) => {
+      checks.require(`${step}-composer`, obs.composer !== null && obs.composer.chips.length === chips && (text === null || text.test(obs.composer.text)), { composer: obs.composer, wantChips: chips })
+      checks.require(`${step}-ring`, obs.bytes.length === ring.length && obs.bytes.every((entry, index) => entry.source === ring[index]), { got: obs.bytes.map((entry) => entry.source), want: ring })
     }
-    // ⓑ 이미지 드롭(평범한 이름)
-    const b = await dropOn(tab.paneId, [F.plain])
-    await observe({ step: `${cli}-b-drop-plain`, paneId: tab.paneId, extra: { drag: b }, expect: chip })
-    await clearInput(tab.paneId, `${cli}-b`)
-    // ⓒ 공백·괄호 이름
-    const c1 = await dropOn(tab.paneId, [F.paren])
-    await observe({ step: `${cli}-c1-drop-paren`, paneId: tab.paneId, extra: { drag: c1 }, expect: chip })
-    await clearInput(tab.paneId, `${cli}-c1`)
-    const c2 = await dropOn(tab.paneId, [F.shot])
-    await observe({ step: `${cli}-c2-drop-screenshot-name`, paneId: tab.paneId, extra: { drag: c2 }, expect: chip })
-    await clearInput(tab.paneId, `${cli}-c2`)
-    // ⓓ 이미지 2개 동시
-    const d = await dropOn(tab.paneId, [F.one, F.two])
-    const dObs = await observe({ step: `${cli}-d-drop-two`, paneId: tab.paneId, extra: { drag: d }, expect: chip })
-    record(`${cli}-d-chip-count`, { count: (dObs.screen.match(new RegExp(chip.source, 'gi')) ?? []).length })
-    await clearInput(tab.paneId, `${cli}-d`)
-    // ⓔ 비이미지 → 이스케이프된 경로 텍스트
-    const e = await dropOn(tab.paneId, [F.notes])
-    await observe({ step: `${cli}-e-drop-notes`, paneId: tab.paneId, extra: { drag: e }, expect: /my notes\.txt/ })
-    await clearInput(tab.paneId, `${cli}-e`)
-    // ⓕ Ctrl+V (K2) — corral 은 가로채지 않는다: 렌더러 링에 붙여넣기 바이트가 없어야 하고, CLI 가 직접 클립보드를 읽는다.
+    const pasteKey = async (mods) => {
+      await focus(tab.paneId)
+      const key = keypost({ pid: appPid, keycode: 9, mods })
+      return { key, ok: key.code === 0 }
+    }
+    const dropCase = async ({ step, list, chips, text = null }) => {
+      const drag = await dropOn(tab.paneId, list)
+      checks.require(`${step}-drag-sent`, drag.sent === true, { refused: drag.refused ?? null, error: drag.error ?? null })
+      const obs = await observe({ step, paneId: tab.paneId, extra: { drag }, cli })
+      expectCase({ step, obs, chips, text, ring: dropRing(list) })
+      await clearInput(tab.paneId, step, cli)
+    }
+    // 드롭 하나는 경로마다 file-drop 한 덩어리(이미지 raw 경로·비이미지 이스케이프 + 사이 공백 규칙 — dropPathPayloads).
+    const dropRing = (list) => list.map(() => 'file-drop')
+    // ⓐ ⌘V 이미지 → 칩 1
     clip('png', clipPng)
-    await focus(tab.paneId)
-    const keyF = keypost({ pid: appPid, keycode: 9, mods: ['ctrl'] })
-    await observe({ step: `${cli}-f-ctrlv-image`, paneId: tab.paneId, extra: { key: keyF.parsed ?? keyF }, expect: chip, waitMs: 3500 })
-    await clearInput(tab.paneId, `${cli}-f`)
+    const a = await pasteKey(['cmd'])
+    checks.require(`${cli}-a-keypost`, a.ok, { key: a.key.out })
+    const aObs = await observe({ step: `${cli}-a-cmdv-image`, paneId: tab.paneId, extra: { key: a.key.parsed ?? a.key }, cli })
+    expectCase({ step: `${cli}-a`, obs: aObs, chips: 1, ring: ['paste-image'] })
+    await clearInput(tab.paneId, `${cli}-a`, cli)
+    // ⓑ 이미지 드롭(평범한 이름) · ⓒ 공백·괄호·U+202F 이름 · ⓓ 이미지 2개 동시 · ⓔ 비이미지 → 이스케이프된 경로 텍스트
+    await dropCase({ step: `${cli}-b-drop-plain`, list: [F.plain], chips: 1 })
+    await dropCase({ step: `${cli}-c1-drop-paren`, list: [F.paren], chips: 1 })
+    await dropCase({ step: `${cli}-c2-drop-screenshot-name`, list: [F.shot], chips: 1 })
+    await dropCase({ step: `${cli}-d-drop-two`, list: [F.one, F.two], chips: 2 })
+    await dropCase({ step: `${cli}-e-drop-notes`, list: [F.notes], chips: 0, text: /my notes\.txt/ })
+    // ⓕ Ctrl+V (K2) — corral 은 가로채지 않는다: 링에 생성 바이트가 없어야 하고, CLI 가 직접 클립보드를 읽어 칩을 만든다.
+    clip('png', clipPng)
+    const f = await pasteKey(['ctrl'])
+    checks.require(`${cli}-f-keypost`, f.ok, { key: f.key.out })
+    const fObs = await observe({ step: `${cli}-f-ctrlv-image`, paneId: tab.paneId, extra: { key: f.key.parsed ?? f.key }, waitMs: 3500, cli })
+    expectCase({ step: `${cli}-f`, obs: fObs, chips: 1, ring: [] })
+    await clearInput(tab.paneId, `${cli}-f`, cli)
+    // ⓖ 서로 다른 이미지 연속 ⌘V 2회 — 입력줄 칩 2, 링의 두 경로가 첫째(64×40)·둘째(72×28) 순서.
+    // 둘째 클립보드는 첫 저장이 끝난 뒤에 바꾼다(첫 ⌘V 가 바뀐 클립보드를 읽지 않게) — 순서 보장 자체는 단위 테스트가 역순 완료로 본다.
+    clip('png', clipPng)
+    const g1 = await pasteKey(['cmd'])
+    await pause(900)
+    clip('png', clipPng2)
+    const g2 = await pasteKey(['cmd'])
+    checks.require(`${cli}-g-keypost`, g1.ok && g2.ok, { keys: [g1.key.out, g2.key.out] })
+    const gObs = await observe({ step: `${cli}-g-cmdv-two-order`, paneId: tab.paneId, extra: { keys: [g1.key.parsed, g2.key.parsed] }, cli })
+    expectCase({ step: `${cli}-g`, obs: gObs, chips: 2, ring: ['paste-image', 'paste-image'] })
+    const sizes = gObs.bytes.map((entry) => pngSize(entry.text))
+    record(`${cli}-g-order`, { sizes })
+    checks.require(`${cli}-g-order`, sizes.length === 2 && sizes[0].width === 64 && sizes[0].height === 40 && sizes[1].width === 72 && sizes[1].height === 28, { sizes })
+    await clearInput(tab.paneId, `${cli}-g`, cli)
     // U3 — 수신 쪽 실측: 3형식 × (괄호·공백) 이름을 bracketed paste 로 직접 넣는다(제품 경로 아님).
     const forms = [
       ['raw', (p) => p],
@@ -249,19 +282,22 @@ try {
     for (const [name, file] of [['paren', F.paren], ['shot', F.shot]]) {
       for (const [form, fmt] of forms) {
         await type(tab.paneId, `\x1b[200~${fmt(file)}\x1b[201~`)
-        await observe({ step: `${cli}-u3-${name}-${form}`, paneId: tab.paneId, extra: { injected: fmt(file) }, expect: chip, waitMs: 2000 })
-        await clearInput(tab.paneId, `${cli}-u3-${name}-${form}`)
+        // U3 는 수신 쪽 참고 실측이라 필수 조건이 아니다 — 입력줄만 기록하고, 지우기는 다음 경우를 위해 확인한다.
+        await observe({ step: `${cli}-u3-${name}-${form}`, paneId: tab.paneId, extra: { injected: fmt(file) }, waitMs: 2000, cli })
+        await clearInput(tab.paneId, `${cli}-u3-${name}-${form}`, cli)
       }
     }
     await evaluate((input) => window.corral.closeRow(input), { tabId: tab.tabId, confirmed: true })
     await pause(2000)
     record(`${cli}-closed`, { tabsLeft: await fixtureTabs() })
+    checks.require(`${cli}-tab-closed`, !(await fixtureTabs()).includes(tab.tabId))
   }
 } catch (error) {
   record('error', { error: String(error?.stack ?? error) })
   exitCode = 2
 } finally {
   clip('clear')
-  record('end', { exitCode, clipboardAfter: clip('dump').out })
+  exitCode = checks.exitCode(exitCode)
+  record('end', { exitCode, failed: checks.failed().map((row) => row.name), clipboardAfter: clip('dump').out })
 }
 process.exit(exitCode)

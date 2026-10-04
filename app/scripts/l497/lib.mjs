@@ -87,3 +87,27 @@ export function sinkRows(file, from = 0) {
   const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
   return { rows: lines.slice(from).map((line) => JSON.parse(line)), next: lines.length }
 }
+
+/**
+ * 필수 조건 장부 (R1-05) — 관문이 기대한 조건이 false·시간초과·보호 거절이면 **종료코드로** 드러나게 한다.
+ * r1 은 관측 결과를 기록만 하고 종료코드는 0 이라, 실패가 실행 목록에 통과로 들어갈 수 있었다.
+ * `L497_FAKE_FAIL=<정규식>` 이면 이름이 맞는 조건을 강제로 실패시킨다 — 실패가 종료코드까지 닿는지 자기 검사용.
+ */
+export function requirements(onRecord = () => {}) {
+  const fake = process.env.L497_FAKE_FAIL ? new RegExp(process.env.L497_FAKE_FAIL) : null
+  const results = []
+  return {
+    results,
+    require(name, ok, detail = {}) {
+      const faked = fake !== null && fake.test(name)
+      const pass = ok === true && !faked
+      const row = { name, pass, ...(faked ? { faked: true } : {}), ...detail }
+      results.push(row)
+      onRecord(row)
+      return pass
+    },
+    failed: () => results.filter((row) => !row.pass),
+    /** 필수 조건이 하나라도 실패면 1. 다른 사유의 종료코드(예외 2·막는 화면 5)는 그대로 둔다. */
+    exitCode: (base = 0) => (base !== 0 ? base : results.some((row) => !row.pass) ? 1 : 0),
+  }
+}

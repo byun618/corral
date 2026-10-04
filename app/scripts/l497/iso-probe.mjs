@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { launchCorral, rpc, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
-import { clip, frontmost, keypost, osDrag, pause, run, sinkRows, solidPng, windowAt } from './lib.mjs'
+import { clip, frontmost, keypost, osDrag, pause, requirements, run, sinkRows, solidPng, windowAt } from './lib.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -51,6 +51,34 @@ const result = { label: args.label, app: path.resolve(args.app), startedAt: new 
 const save = () => fs.writeFileSync(path.join(out, 'iso-probe.json'), `${JSON.stringify(result, null, 1)}\n`)
 const owned = []
 let exitCode = 0
+// R1-05 — 필수 조건(OS 입력 보호 통과·드래그 전송·싱크 바이트 기대값·D 회귀)이 하나라도 어긋나면 종료코드 1.
+const checks = requirements((row) => { if (!row.pass) console.log('[probe] 필수 조건 실패', JSON.stringify(row).slice(0, 300)) })
+result.requirements = checks.results
+// 싱크가 받은 바이트의 기대값 — 두 빌드 공통, 그리고 빌드별(이 작업이 바꾸는 이미지 ⌘V·pane 드롭).
+const wrap = (text) => `\x1b[200~${text}\x1b[201~`
+const PASTE_PNG = '/corral-paste/corral-paste-\\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png'
+const EXPECT_COMMON = {
+  'A1-text-os': 'hello l497', 'A2-multiline-os': 'line1\rline2', 'A4-image-sie': '', 'A6-fileref-os': '', 'A7-image-ctrlv-os': '\x16',
+  'A8-empty-os': '', 'A9-text-sie': '', 'A10-finder-os': '', 'A11-fileicon-os': '', 'B1-text-os': 'hello l497', 'B2-multiline-os': 'line1\rline2',
+  'C1-sidebar-png': '', 'C2-strip-png': '', 'C8-pane-257': '',
+}
+const EXPECT_AFTER = {
+  'A3-image-os': new RegExp(`^\\x1b\\[200~/.*${PASTE_PNG}\\x1b\\[201~$`),
+  'A5-image-cdp': new RegExp(`^\\x1b\\[200~/.*${PASTE_PNG}\\x1b\\[201~$`),
+  // bracketed 꺼진 앱: herdr 가 틀을 벗긴다(00-analysis) — 경로만 남는다.
+  'B3-image-os': new RegExp(`^/.*${PASTE_PNG}$`),
+  'C3-pane-plain': wrap(F.plain),
+  'C4-pane-paren': wrap(F.paren.replace(/([ ()])/g, '\\$1')),
+  'C5-pane-shot202f': wrap(F.shot.replace(/ /g, '\\ ')),
+  'C6-pane-two': wrap(F.one) + wrap(F.two),
+  'C7-pane-notes': `'${F.notes}' `,
+}
+const EXPECT_BEFORE = { 'A3-image-os': '', 'A5-image-cdp': '', 'B3-image-os': '', 'C3-pane-plain': '', 'C4-pane-paren': '', 'C5-pane-shot202f': '', 'C6-pane-two': '', 'C7-pane-notes': '' }
+const expectSink = (name, got) => {
+  const want = EXPECT_COMMON[name] ?? (args.label === 'after' ? EXPECT_AFTER : EXPECT_BEFORE)[name]
+  if (want === undefined) return
+  checks.require(`${name}-sink`, want instanceof RegExp ? want.test(got) : got === want, { got, want: String(want) })
+}
 const sinkFile = path.join(work, 'sink.ndjson')
 let sinkAt = 0
 
@@ -139,6 +167,7 @@ try {
       href: await evaluate(() => location.href).catch((error) => `eval 실패: ${error}`),
     }
     result.cases.push(entry)
+    expectSink(name, entry.sink.map((row) => row.text).join(''))
     save()
     console.log('[probe]', name, JSON.stringify({ sink: entry.sink.map((row) => row.text).join('|').slice(0, 160), pastes: entry.pastes.length, href: String(entry.href).slice(-40) }))
     return entry
@@ -158,7 +187,9 @@ try {
     if (method === 'os') sent = keypost({ pid: appPid, keycode: 9, mods: ['cmd'] })
     else if (method === 'os-ctrl') sent = keypost({ pid: appPid, keycode: 9, mods: ['ctrl'] })
     else if (method === 'sie') sent = await control({ cmd: 'key', keyCode: 'V', modifiers: ['meta'] })
-    else if (method === 'cdp') {
+    if (method === 'os' || method === 'os-ctrl') checks.require(`${name}-keypost`, sent.code === 0, { sent })
+    if (method === 'sie') checks.require(`${name}-sie`, sent?.ok === true, { sent })
+    if (method === 'cdp') {
       await handle.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', modifiers: 4, windowsVirtualKeyCode: 86, commands: ['paste'] })
       await handle.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', modifiers: 4, windowsVirtualKeyCode: 86 })
       sent = { ok: true, via: 'cdp commands:paste' }
@@ -200,6 +231,7 @@ try {
     const g = await geometry()
     const rect = g[where]
     if (rect === null) {
+      checks.require(`${name}-target`, false, { reason: `${where} 상자 없음` })
       result.cases.push({ name, kind: 'drop', where, skipped: `${where} 상자 없음`, geometry: g })
       save()
       return null
@@ -207,13 +239,14 @@ try {
     const target = toScreen(g, rect, where === 'sidebar' ? 0.5 : 0.5, where === 'sidebar' ? 0.3 : 0.5)
     const source = { x: Math.round(g.screenX + g.outerW - 200), y: Math.round(g.screenY + g.outerH - 140) }
     const drag = await osDrag({ files: list, source, target, expectTargetPid: appPid })
+    checks.require(`${name}-drag-sent`, drag.sent === true, { refused: drag.refused ?? null, error: drag.error ?? null })
     const shot = await control({ cmd: 'shot', name: `${args.label}-${name}` }).catch((error) => ({ error: String(error) }))
     return observe(name, { kind: 'drop', where, geometry: g, drag, shot: shot.file ?? shot.error })
   }
   await dropCase({ name: 'C1-sidebar-png', list: [F.plain], where: 'sidebar' })
   await dropCase({ name: 'C2-strip-png', list: [F.plain], where: 'strip' })
   const href = await evaluate(() => location.href).catch(() => null)
-  if (!String(href).includes('index.html')) {
+  if (!checks.require('C-window-stays', String(href).includes('index.html'), { href })) {
     result.notes.push(`pane 밖 드롭 뒤 창이 ${href} 로 이탈 — pane 드롭 회차는 건너뛴다`)
   } else {
     await dropCase({ name: 'C3-pane-plain', list: [F.plain], where: 'pane' })
@@ -227,7 +260,7 @@ try {
 
   // ── D: 회귀(K5ⓑⓓ) — 터미널 ⌘C 복사(OS 더블클릭 선택 + OS ⌘C) · 휠(제어 소켓 wheel = 제품 휠 처리기) · ⌘W pane 닫기(OS) · preload 표면 ──
   result.surface = await evaluate(() => ({ preloadEnv: window.corral.preloadEnv, keys: Object.keys(window.corral).sort(), require: typeof window.require, process: typeof window.process }))
-  await evaluate((input) => window.corral.termInput(input), { paneId, data: 'seq 1 200; echo L497COPYMARK\r' })
+  await evaluate((input) => window.corral.termInput(input), { paneId, data: "seq 1 400 | awk '{printf \"wl-%03d\\n\", $1}'; echo L497COPYMARK\r" })
   await pause(2000)
   const termRead = async () => (await control({ cmd: 'term-read' })).term
   const screenBox = async () => evaluate((id) => { const el = document.querySelector(`[data-term-pane-box="${id}"] .xterm-screen`); const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height } }, paneId)
@@ -250,20 +283,29 @@ try {
       copied = clip('get-text').out
     }
     result.cases.push({ name: 'D1-copy-cmdc', kind: 'regression', row, point, hit, sent, copied, pass: copied === 'L497COPYMARK' })
+    checks.require('D1-copy-cmdc', copied === 'L497COPYMARK', { row, hit: hit?.pid ?? null, keypost: sent?.code ?? null, copied })
     save()
     console.log('[probe] D1-copy-cmdc', JSON.stringify({ row, copied }))
   }
   {
-    const before = (await termRead()).lines.join('\n')
-    const wheel = await control({ cmd: 'wheel', deltaY: -400 })
-    await pause(1000)
-    const up = (await termRead()).lines.join('\n')
+    // R1-06 — 마커(wl-NNN) 스크롤백 위에서 굴려 화면(xterm 버퍼)의 마커 범위로 판정한다 (iso-wheel.mjs 와 같은 오라클).
+    const span = (lines) => {
+      const nums = lines.flatMap((line) => [...line.matchAll(/wl-(\d{3})/g)].map((m) => Number(m[1])))
+      return nums.length ? { min: Math.min(...nums), max: Math.max(...nums) } : { min: null, max: null }
+    }
+    const before = span((await termRead()).lines)
+    const wheel = await control({ cmd: 'wheel', deltaY: -1200 })
+    await pause(1200)
+    const up = span((await termRead()).lines)
     await control({ cmd: 'wheel', deltaY: 4000 })
-    await pause(1000)
-    const down = (await termRead()).lines.join('\n')
-    result.cases.push({ name: 'D2-wheel', kind: 'regression', wheel, scrolledUp: up !== before, returned: down === before, pass: up !== before && down === before, upTail: up.split('\n').slice(-3) })
+    await pause(1200)
+    const down = span((await termRead()).lines)
+    const scrolledUp = up.min !== null && before.min !== null && up.min < before.min
+    const returned = down.max !== null && down.max === before.max
+    result.cases.push({ name: 'D2-wheel', kind: 'regression', wheel, before, up, down, scrolledUp, returned, pass: scrolledUp && returned, log: logRows() })
+    checks.require('D2-wheel', scrolledUp && returned, { before, up, down })
     save()
-    console.log('[probe] D2-wheel', JSON.stringify({ scrolledUp: up !== before, returned: down === before }))
+    console.log('[probe] D2-wheel', JSON.stringify({ before, up, down }))
   }
   {
     await focusPane()
@@ -273,6 +315,7 @@ try {
     const still = (ws2?.tabs ?? []).some((tab) => tab.panes.some((pane) => pane.paneId === paneId))
     const windowAlive = await evaluate(() => location.href).catch(() => null)
     result.cases.push({ name: 'D3-cmdw-close-pane', kind: 'regression', sent, paneStillThere: still, windowAlive, pass: !still && windowAlive !== null })
+    checks.require('D3-cmdw-close-pane', sent.code === 0 && !still && windowAlive !== null, { keypost: sent.code, still, windowAlive })
     save()
     console.log('[probe] D3-cmdw', JSON.stringify({ still, windowAlive: windowAlive !== null }))
   }
@@ -292,7 +335,7 @@ try {
   // 클립보드 원복 — 관문 전 사용자 클립보드는 항목 0(clipboard-before.json)이었다.
   clip('clear')
   result.clipboardAfter = clip('dump').out
-  result.exitCode = exitCode
+  result.exitCode = checks.exitCode(exitCode)
   save()
 }
-process.exit(exitCode)
+process.exit(result.exitCode)

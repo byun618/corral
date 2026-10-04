@@ -327,6 +327,27 @@ async function main() {
     menuAt250: afterReclick.menu !== null, menuAt850: afterReclickLater.menu !== null, expanded: groupById(afterReclickLater, g1).plus.expanded, focus: afterReclickLater.focus,
   })
 
+  // ⑥f (fix4 R4-01) 열린 메뉴의 `+` 를 우클릭(실제 오른쪽 mouseDown·mouseUp) → 헤더 메뉴 → Escape → 키가 g1 터미널에 도착한다.
+  seen = await openMenu(g1)
+  const plusPoint = center(groupById(seen, g1).plus.box)
+  await mouse('mouseDown', plusPoint, 'right')
+  await mouse('mouseUp', plusPoint, 'right')
+  await pause(300)
+  const headerMenuShown = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
+  await key('Escape')
+  await pause(300)
+  const afterRightEscape = await read()
+  const headerMenuAfter = ((await control({ cmd: 'query', selector: '[data-tab-menu]' })).found ?? []).length > 0
+  const rightTarget = activeOf(groupById(afterRightEscape, g1))?.id ?? null
+  const rightMarker = 'l496rc'
+  await type(rightMarker)
+  await pause(500)
+  const rightText = rightTarget === null ? null : await paneText(rightTarget)
+  for (let index = 0; index < rightMarker.length; index += 1) await key('Backspace')
+  record('plus-rightclick-escape-terminal', headerMenuShown && !headerMenuAfter && afterRightEscape.menu === null && afterRightEscape.focus.isTerminal && afterRightEscape.focus.group === g1 && (rightText?.includes(rightMarker) ?? false), {
+    headerMenuShown, headerMenuAfter, createMenuAfter: afterRightEscape.menu !== null, focus: afterRightEscape.focus, tab: rightTarget, arrived: rightText?.includes(rightMarker) ?? null,
+  })
+
   // ⑦ 바깥 클릭 = 닫힘 (g2 본문).
   await openMenu(g1)
   const g2Body = groupById(await read(), g2).body

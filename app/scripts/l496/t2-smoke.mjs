@@ -228,8 +228,19 @@ async function main() {
     const last = group.tabs.at(-1)
     const overflow = group.strip.max > 1
     if (overflow && firstOverflow === null) firstOverflow = index
-    record(`add-${index}`, last.id === id && last.active && last.inView && (!overflow || atEnd(group)) && (overflow ? group.chevrons.start !== null : group.chevrons.start === null), {
-      tab: id, overflow, scrollLeft: group.strip.scrollLeft, max: group.strip.max, lastInView: last.inView, chevrons: Boolean(group.chevrons.start), docked: group.strip.docked,
+    const addOk = last.id === id && last.active && last.inView && (!overflow || atEnd(group)) && (overflow ? group.chevrons.start !== null : group.chevrons.start === null)
+    // LIFE-496 fix4 R4-02 — 실패한 회차만 500·1000ms 에 다시 읽는다(판정은 250ms 값 그대로). 「스크롤이 늦게 끝남」과 「멈춤」을 가른다.
+    // 통과 회차의 타이밍은 바꾸지 않으려고 실패 때만 기다린다.
+    const series = [{ ms: 250, scrollLeft: group.strip.scrollLeft, max: group.strip.max }]
+    if (!addOk) {
+      for (const ms of [500, 1000]) {
+        await pause(ms - series.at(-1).ms)
+        const later = groupById(await read(), g1)
+        series.push({ ms, scrollLeft: later.strip.scrollLeft, max: later.strip.max, lastInView: later.tabs.at(-1)?.inView ?? null })
+      }
+    }
+    record(`add-${index}`, addOk, {
+      tab: id, overflow, scrollLeft: group.strip.scrollLeft, max: group.strip.max, lastInView: last.inView, chevrons: Boolean(group.chevrons.start), docked: group.strip.docked, series,
     })
     // 드래그 자동 스크롤이 스텝 여러 번을 보이도록 넘침 폭 ≥ 스텝 2.2배(최소 4탭 더)까지 만든다.
     if (firstOverflow !== null && index >= firstOverflow + 4 && group.strip.max >= 2.2 * Math.max(120, group.strip.clientWidth * 0.75)) break

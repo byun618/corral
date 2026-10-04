@@ -2,6 +2,7 @@
 // 격리 = /tmp/l496i* 아래 userData·herdr 세션 `l443-gui-diff`(herdr home 도 그 아래)·제어 소켓 — 사용자 자원과 겹치지 않는다.
 // --missing 1 이면 에이전트 실행 파일이 든 폴더를 PATH 에서 빼고(이 프로세스 → herdr 서버 → pane 셸에만) 워치독 양성을 잰다. 사용자 셸 설정은 그대로다.
 // --claude 1 이면 claude 를 입력 없이 Quick-launch 로 띄웠다가 닫는다.
+// --driver t2 이면 t4-drive 대신 T1·T2 회귀 스모크(t2-smoke.mjs)를 돌린다.
 // 사용: node iso-t4.mjs --app <app 폴더> --work /tmp/l496iX --port 96NN --out <raw 폴더> [--claude 1] [--missing 1]
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,7 +28,7 @@ if (!fs.existsSync(fixture)) {
   execFileSync('sh', ['-c', 'git init -q -b main && echo fx > README.md && git add . && git -c user.name=fx -c user.email=fx@local commit -qm init'], { cwd: fixture })
 }
 const handle = await launchCorral({ appRoot: path.resolve(args.app), workDir: work, port: Number(args.port), logDir: path.join(work, 'logs'), onSpawn: (entry) => owned.push(entry) })
-const child = spawnSync(process.execPath, [path.join(path.dirname(new URL(import.meta.url).pathname), 't4-drive.mjs'), work, out, fs.realpathSync(fixture)], {
+const child = spawnSync(process.execPath, [path.join(path.dirname(new URL(import.meta.url).pathname), args.driver === 't2' ? 't2-smoke.mjs' : 't4-drive.mjs'), work, out, fs.realpathSync(fixture)], {
   stdio: 'inherit',
   env: { ...process.env, L496_CTL: handle.control, L496_HERDR_SESSION: 'l443-gui-diff', L496_HERDR_HOME: path.join(work, 'corral-herdr'), L496_CLAUDE: args.claude ?? '0', L496_MISSING: args.missing ?? '0' },
 })

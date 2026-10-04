@@ -115,7 +115,9 @@ function parseArgs(argv) {
     fresh: true,
     dumpDom: false,
     controls: false,
-    label: null
+    label: null,
+    // LIFE-496 — 잴 corral 빌드(앱 폴더). 기본은 이 도구가 든 앱이다. before 를 같은 도구·같은 측정 Orca 로 재려고 다른 빌드를 받는다.
+    corralApp: null
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -126,6 +128,7 @@ function parseArgs(argv) {
     else if (arg === '--ledger') out.ledger = path.resolve(value())
     else if (arg === '--work') out.work = path.resolve(value())
     else if (arg === '--orca-repo') out.orcaRepo = path.resolve(value())
+    else if (arg === '--corral-app') out.corralApp = path.resolve(value())
     else if (arg === '--tolerance') out.tolerance = Number(value())
     else if (arg === '--width') out.width = Number(value())
     else if (arg === '--height') out.height = Number(value())
@@ -405,6 +408,20 @@ const STATE_TARGETS = {
     agents: [],
     scene: { tabStripEnd: true },
     detail: '탭 20개, 첫 탭 활성, 스트립을 휠로 끝까지 — ‹ 활성·› 비활성·앞 페이드, corral 은 활성 탭이 앞에 붙는다(Orca 198 은 dock 없음)'
+  },
+  // LIFE-496 K3ⓑ — 탭바 `+` 드롭다운이 열린 상태. 두 앱 다 실제 마우스로 `+` 를 누르고(장면 `newTabMenu`) 입력창 포커스까지 확인한다.
+  // `--areas tabmenu` 와 함께 잰다(tabbar 영역도 잴 수 있다 — `+` 가 열림 표시를 단다). 질의 상태는 "terminal" 을 친다 — 열린 탭(별칭) + New Terminal.
+  'tab-menu': {
+    tabCount: 3,
+    agents: [],
+    scene: { newTabMenu: {} },
+    detail: '탭 3개, `+` 메뉴 열림(빈 질의) — 입력창 · 구분선 · New Terminal ⌘T · 구분선 · 에이전트 Quick-launch (Orca 198 은 Browser·Markdown·감지 에이전트 전부·Agent settings… 가 더 있다)'
+  },
+  'tab-menu-query': {
+    tabCount: 3,
+    agents: [],
+    scene: { newTabMenu: { query: 'terminal' } },
+    detail: '탭 3개, `+` 메뉴 열림 + 질의 "terminal" — 결과 줄: 열린 탭(터미널 별칭) → New Terminal. 정적 메뉴는 숨는다'
   },
   wait: {
     tabCount: 1,
@@ -832,7 +849,7 @@ async function main() {
 
     log('corral 격리 인스턴스 기동…')
     corral = await launchCorral({
-      appRoot,
+      appRoot: args.corralApp ?? appRoot,
       workDir: args.work,
       port: 9445,
       logDir: outDir,

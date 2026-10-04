@@ -192,6 +192,44 @@ async function pointerAway(handle) {
   await mouse({ handle, type: 'mouseMoved', x: AWAY_POINT.x, y: AWAY_POINT.y })
 }
 
+/**
+ * LIFE-496 K3ⓑ — 탭바 `+` 드롭다운. 두 앱 다 **실제 마우스**로 `+` 를 눌러 연다(Orca Radix 트리거는 pointerdown 에 연다 — CDP mousePressed).
+ * 질의는 포커스된 입력창에 `Input.insertText`(두 앱 같은 경로 — 키 입력과 같은 input 이벤트).
+ * Orca 는 첫 영역의 탭바 표면 직계 `+`(tabbar.json `tab-add` 와 같은 선택자), corral 은 첫 영역의 `[data-main-tabbar-add]`.
+ */
+export const NEW_TAB_MENU_SELECTORS = {
+  orca: { trigger: '[data-native-file-drop-target="editor"] > button[aria-haspopup]', menu: '[data-slot="dropdown-menu-content"]', input: '[data-slot="dropdown-menu-content"] input[role="combobox"]', results: '[data-slot="dropdown-menu-content"] [role="option"]', items: '[data-slot="dropdown-menu-content"] [data-slot="dropdown-menu-item"]' },
+  corral: { trigger: '[data-main-tabbar-add]', menu: '[data-tab-create-menu]', input: '[data-tab-create-input]', results: '[data-tab-create-result]', items: '[data-tab-create-item]' },
+}
+
+function observeNewTabMenuPage(sel) {
+  const menu = document.querySelector(sel.menu)
+  const input = document.querySelector(sel.input)
+  return { open: menu !== null, inputFocused: input !== null && input === document.activeElement, value: input?.value ?? null, results: document.querySelectorAll(sel.results).length, items: document.querySelectorAll(sel.items).length }
+}
+
+async function observeNewTabMenu({ handle, app }) {
+  return handle.cdp.evaluate(observeNewTabMenuPage, NEW_TAB_MENU_SELECTORS[app])
+}
+
+async function openNewTabMenu({ handle, app, query }) {
+  const sel = NEW_TAB_MENU_SELECTORS[app]
+  if (!(await click({ handle, selector: sel.trigger }))) return
+  await until(async () => (await observeNewTabMenu({ handle, app })).inputFocused, `${app} + 메뉴 입력창 포커스`, 5_000).catch(() => null)
+  if (query) {
+    await handle.cdp.send('Input.insertText', { text: query })
+    await until(async () => (await observeNewTabMenu({ handle, app })).value === query, `${app} + 메뉴 질의`, 5_000).catch(() => null)
+    // 두 앱 다 결과를 deferred 로 그린다(Orca useDeferredValue) — 결과 줄이 멈출 때까지.
+    await pause(600)
+  }
+}
+
+async function closeNewTabMenu({ handle, app }) {
+  if (!(await observeNewTabMenu({ handle, app })).open) return
+  for (const type of ['keyDown', 'keyUp']) await handle.cdp.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await until(async () => !(await observeNewTabMenu({ handle, app })).open, `${app} + 메뉴 닫힘`, 5_000).catch(() => null)
+}
+
 async function click({ handle, selector }) {
   const point = await centerOf({ handle, selector })
   if (!point) return false
@@ -333,6 +371,7 @@ export function resetFixtureScene(fixture) {
  */
 export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
   for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
+    await closeNewTabMenu({ handle, app })
     await pointerAway(handle)
     await setViewport(handle.cdp, { width: base.width, height: base.height })
     await setScroll({ handle, app, top: 0 })
@@ -377,13 +416,14 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     }
     if (scene.tabStripEnd) await wheelTabStripTo({ handle, app, edge: 'end' })
     if (scene.tabStripStart) await wheelTabStripTo({ handle, app, edge: 'start' })
+    if (scene.newTabMenu) await openNewTabMenu({ handle, app, query: scene.newTabMenu.query ?? '' })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
       const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }) }
+    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -399,6 +439,13 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.tabStripEnd && !(seen.tabStrip && seen.tabStrip.scrollLeft > 0 && seen.tabStrip.max - seen.tabStrip.scrollLeft <= 2)) return false
     // 탭 스트립 맨 앞: 넘친 채로(max > 0) 0. 활성 첫 탭이 제자리라 dock 이 없다.
     if (scene.tabStripStart && !(seen.tabStrip && seen.tabStrip.max > 0 && seen.tabStrip.scrollLeft === 0 && seen.tabStrip.docked === null)) return false
+    // + 메뉴: 열렸고 입력창이 포커스를 가졌고 질의가 들어갔다. 질의가 있으면 결과 줄이 하나 이상, 없으면 정적 항목이 하나 이상.
+    if (scene.newTabMenu) {
+      const menu = seen.newTabMenu
+      const query = scene.newTabMenu.query ?? ''
+      if (!(menu && menu.open && menu.inputFocused && menu.value === query)) return false
+      if (query ? menu.results === 0 : menu.items === 0) return false
+    }
     return true
   }
   out.orcaOk = check(out.orca)
@@ -411,5 +458,6 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
 export function describeScene(seen) {
   if (!seen) return '(관측 없음)'
   const strip = seen.tabStrip ? ` · 탭 스트립 ${seen.tabStrip.scrollLeft}/${seen.tabStrip.max} dock ${seen.tabStrip.docked ?? '없음'}` : ''
-  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}`
+  const menu = seen.newTabMenu ? ` · + 메뉴 ${seen.newTabMenu.open ? '열림' : '닫힘'} 입력포커스 ${seen.newTabMenu.inputFocused} 질의 "${seen.newTabMenu.value ?? ''}" 결과 ${seen.newTabMenu.results} 항목 ${seen.newTabMenu.items}` : ''
+  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}`
 }

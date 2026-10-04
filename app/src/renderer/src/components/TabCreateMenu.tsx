@@ -31,8 +31,8 @@ import {
 } from '../tab-create-menu.js'
 import { AgentIcon, ShellTileIcon } from './AgentIcon.js'
 
-/** Orca `getTabEntryOmniboxPlaceholder` — 히스토리·파일·URL 을 뺀 corral 문구(K1ⓕ, 의도적 — 언어·범위). */
-export const OMNIBOX_PLACEHOLDER = '열린 탭·에이전트 검색…'
+/** Orca `getTabEntryOmniboxPlaceholder` 의 Orca 한국어 번역(`열린 탭, 방문 기록, 파일, URL, agent 검색…`)에서 corral 에 없는 갈래(방문 기록·파일·URL)를 뺀 문구(K1ⓕ, 의도적 — 범위). */
+export const OMNIBOX_PLACEHOLDER = '열린 탭, 에이전트 검색…'
 const MARGIN = 8
 const RESULT_LISTBOX_ID = 'tab-create-entry-results'
 const resultOptionDomId = (index: number): string => `tab-create-entry-result-${index}`
@@ -63,7 +63,7 @@ function EntryRow({ option, index, selected, onClick }: { option: ActiveOption; 
   const presentation = ((): { icon: React.JSX.Element; label: string; detail: string | null } => {
     switch (option.kind) {
       case 'tab':
-        return { icon: <OpenTabIcon option={option.option} />, label: '탭으로 이동', detail: option.option.title }
+        return { icon: <OpenTabIcon option={option.option} />, label: '탭으로 전환', detail: option.option.title }
       case 'menu':
         return { icon: <TerminalGlyph size={14} />, label: option.option.label, detail: null }
       case 'agent':

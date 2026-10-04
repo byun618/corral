@@ -841,13 +841,12 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 }
 .main-tab-add:hover { color: var(--fg); background: color-mix(in srgb, var(--bg-accent) 50%, transparent); }
 .main-tab-add-icon { display: block; width: 14px; height: 14px; }
-.main-tab-add.is-open { color: var(--fg); background: color-mix(in srgb, var(--bg-accent) 50%, transparent); }
 
 /* --- `+` 드롭다운 (LIFE-496 T4) — 값 = Orca v1.4.219 `tab-bar-surface.tsx:218-221` · `TabBarCreateEntry*.tsx` · `tab-bar-static-create-menu.tsx`.
    색은 기존 메뉴 토큰(`.ctx-menu` 와 같은 판), 기하는 Orca 값이다. */
 /* 판: `w-72 max-w-[calc(100vw-1rem)] rounded-[11px] border-border/80 p-1 shadow-[0_16px_36px_rgba(0,0,0,0.24)]`. */
 .tab-create-menu {
-  position: fixed; z-index: 70; width: 288px; max-width: calc(100vw - 1rem); padding: 4px;
+  position: fixed; z-index: 70; width: 288px; max-width: calc(100vw - 1rem); max-height: calc(100vh - 16px); overflow-x: hidden; overflow-y: auto; padding: 4px;
   background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--line-strong) 80%, transparent); border-radius: 11px;
   box-shadow: 0 16px 36px rgba(0, 0, 0, .24); color: var(--fg-menu); font-size: 12px;
 }
@@ -855,8 +854,8 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .tab-create-entry { padding-bottom: 4px; }
 .tab-create-entry-input-wrap { display: flex; align-items: center; margin: 0 -4px; padding: 0 12px; }
 .tab-create-entry-input {
-  width: 100%; height: 36px; padding: 0; border: 0; border-radius: 0; outline: none;
-  background: transparent; color: var(--fg); font: inherit; font-size: 12px; font-weight: 400;
+  width: 100%; height: 36px; padding: 4px 0; border: 0; border-radius: 0; outline: none;
+  background: transparent; color: var(--fg); font: inherit; font-size: 12px; line-height: 16px; font-weight: 400;
 }
 .tab-create-entry-input::placeholder { color: var(--fg-muted); font-weight: 400; }
 /* 결과: `mt-1 space-y-0.5 px-1` · 행 `h-6 rounded-[7px] px-1 gap-1.5 text-[11px] leading-5`, 선택·hover = 강조 배경. */
@@ -872,7 +871,7 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .tab-create-entry-detail { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab-create-entry-status { display: flex; align-items: center; min-height: 24px; padding: 0 4px; font-size: 11px; line-height: 20px; color: var(--fg-muted); }
 /* 구분선 `my-[3px] h-px bg-border/60`. */
-.tab-create-sep { height: 1px; margin: 3px 0; background: color-mix(in srgb, var(--line-strong) 60%, transparent); }
+.tab-create-sep { height: 1px; margin: 3px 0; background: color-mix(in srgb, var(--line) 60%, transparent); }
 /* 정적·Quick-launch 항목 `gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium` = 32px 줄. 단축키 `ml-auto text-[11px] muted/85`. */
 .tab-create-item {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 7px; outline: none;
@@ -880,7 +879,7 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 }
 .tab-create-item:hover, .tab-create-item:focus { background: var(--bg-menu-hover); color: var(--fg); }
 .tab-create-item-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.tab-create-shortcut { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 11px; font-weight: 400; color: color-mix(in srgb, var(--fg-muted) 85%, transparent); }
+.tab-create-shortcut { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 11px; letter-spacing: normal; color: color-mix(in srgb, var(--fg-muted) 85%, transparent); }
 .tab-create-glyph { display: inline-flex; flex-shrink: 0; color: var(--fg-muted); }
 .tab-create-agent { display: inline-flex; flex-shrink: 0; }
 .main-tabbar-spacer { flex: 1; }

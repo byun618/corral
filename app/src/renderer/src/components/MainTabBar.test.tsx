@@ -415,7 +415,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
   it('빈 질의 = 입력창 · 새 터미널(⌘T 라벨) · 에이전트 카탈로그 순서 claude → codex → grok', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
-    expect(input().placeholder).toBe('열린 탭·에이전트 검색…')
+    expect(input().placeholder).toBe('열린 탭, 에이전트 검색…')
     expect(staticItems()).toEqual(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok'])
     expect(host.querySelector('[data-tab-create-item="new-terminal"] .tab-create-shortcut')?.textContent).toMatch(/T/)
     expect(host.querySelectorAll('[data-tab-create-menu="g1"] [role="separator"]')).toHaveLength(2)
@@ -438,7 +438,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     open()
     type('zzz')
     expect(results()).toEqual([])
-    expect(host.querySelector('[data-tab-create-status]')?.textContent).toBe('열린 탭·에이전트 검색…')
+    expect(host.querySelector('[data-tab-create-status]')?.textContent).toBe('열린 탭, 에이전트 검색…')
   })
 
   it('↑/↓ 는 결과 안에서 감기고 Enter 가 실행한다 — 다른 영역 탭을 고르면 그 영역으로', () => {

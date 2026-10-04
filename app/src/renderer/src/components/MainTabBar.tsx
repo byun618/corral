@@ -598,7 +598,7 @@ export function GroupHeader({
       {/* `+` — Orca 는 스트립 바로 뒤 28px 버튼(`tab-bar-surface.tsx:207-217`). **클릭 = 드롭다운**(LIFE-496 게이트 ⓪ Q3 ⓐ, Orca `DropdownMenuTrigger`).
           빈 탭은 ⌘T 와 메뉴 첫 줄(빈 질의 Enter)이 맡는다. 열린 채 다시 누르면 닫힌다. */}
       <button
-        className={`main-tab-add ${createMenu !== null ? 'is-open' : ''}`}
+        className="main-tab-add"
         data-main-tabbar-add={groupId}
         type="button"
         title="새 탭"

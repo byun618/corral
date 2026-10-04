@@ -1415,11 +1415,20 @@ app.whenReady().then(async () => {
    */
   ipcMain.handle('corral:saveClipboardImage', async (event) => {
     if (!fromOurWindow(event)) return { status: 'failed', error: '허용되지 않은 창' }
+    // 타입 목록(내용 아님)을 같이 남긴다 — "왜 빈 결과인가" 가 로그에서 갈리게.
+    let types: string[][] | null = null
     const result = await saveClipboardImage({
-      readPng: electronClipboardPng({ read: () => clipboard.read(), toPng: (bytes) => nativeImage.createFromBuffer(bytes).toPNG() }),
+      readPng: electronClipboardPng({
+        read: async () => {
+          const items = await clipboard.read()
+          types = items.map((item) => [...item.types])
+          return items
+        },
+        toPng: (bytes) => nativeImage.createFromBuffer(bytes).toPNG(),
+      }),
       dir: pasteDir(),
     })
-    log('paste.clipboard_image', result)
+    log('paste.clipboard_image', { ...result, types })
     return result
   })
   ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {

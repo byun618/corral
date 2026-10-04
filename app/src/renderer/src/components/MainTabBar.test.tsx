@@ -389,15 +389,15 @@ describe('+ 드롭다운 (LIFE-496)', () => {
       input().dispatchEvent(new Event('input', { bubbles: true }))
     })
   }
-  const key = (target: Element, keyName: string): void => {
+  const key = ({ target, name }: { target: Element; name: string }): void => {
     act(() => {
-      target.dispatchEvent(new KeyboardEvent('keydown', { key: keyName, bubbles: true, cancelable: true }))
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
     })
   }
   const results = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-result]')].map((row) => row.dataset.tabCreateResult!)
   const selectedResult = (): string | undefined => host.querySelector<HTMLElement>('[data-tab-create-result][aria-selected="true"]')?.dataset.tabCreateResult
   const staticItems = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-item]')].map((row) => row.dataset.tabCreateItem!)
-  const entry = (tabId: string, title: string, extra: Partial<OpenTabSearchEntry> = {}): OpenTabSearchEntry => ({
+  const entry = ({ tabId, title, ...extra }: Partial<OpenTabSearchEntry> & { tabId: string; title: string }): OpenTabSearchEntry => ({
     tabId, groupId: 'g1', title, branch: 'main', agent: null, groupIndex: 0, tabIndex: 0, isCurrent: false, ...extra,
   })
 
@@ -423,7 +423,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
   })
 
   it('질의가 있으면 정적 메뉴를 숨기고 열린 탭 → 메뉴 매칭 → 에이전트 매칭 순으로 보인다', () => {
-    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry('t0', 'claude', { agent: 'claude' }), entry('t1', 'logs')] })
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry({ tabId: 't0', title: 'claude', agent: 'claude' }), entry({ tabId: 't1', title: 'logs' })] })
     open()
     type('terminal')
     expect(staticItems()).toEqual([])
@@ -442,17 +442,17 @@ describe('+ 드롭다운 (LIFE-496)', () => {
   })
 
   it('↑/↓ 는 결과 안에서 감기고 Enter 가 실행한다 — 다른 영역 탭을 고르면 그 영역으로', () => {
-    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry('t0', 'build a'), entry('t5', 'build b', { groupId: 'g2', groupIndex: 1 })] })
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry({ tabId: 't0', title: 'build a' }), entry({ tabId: 't5', title: 'build b', groupId: 'g2', groupIndex: 1 })] })
     open()
     type('build')
     expect(selectedResult()).toBe('tab:t0')
-    key(input(), 'ArrowDown')
+    key({ target: input(), name: 'ArrowDown' })
     expect(selectedResult()).toBe('tab:t5')
-    key(input(), 'ArrowDown')
+    key({ target: input(), name: 'ArrowDown' })
     expect(selectedResult()).toBe('tab:t0')
-    key(input(), 'ArrowUp')
+    key({ target: input(), name: 'ArrowUp' })
     expect(selectedResult()).toBe('tab:t5')
-    key(input(), 'Enter')
+    key({ target: input(), name: 'Enter' })
     expect(spies.activateTab).toHaveBeenCalledWith({ tabId: 't5', groupId: 'g2' })
     expect(menu()).toBeNull()
   })
@@ -460,7 +460,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
   it('빈 질의 Enter = 새 터미널 (Orca onOpenDefaultTerminal)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
-    key(input(), 'Enter')
+    key({ target: input(), name: 'Enter' })
     expect(spies.createShell).toHaveBeenCalledTimes(1)
     expect(menu()).toBeNull()
   })
@@ -469,16 +469,16 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
     act(() => input().focus())
-    key(input(), 'ArrowDown')
-    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('new-terminal')
+    key({ target: input(), name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('new-terminal')
     // R1-02 — Orca `use-tab-entry-menu-return-focus.ts`: 첫 menuitem 의 ArrowUp 은 검색창으로 돌아간다(왕복).
-    key(document.activeElement!, 'ArrowUp')
+    key({ target: document.activeElement!, name: 'ArrowUp' })
     expect(document.activeElement).toBe(input())
     expect(menu()).not.toBeNull()
-    key(input(), 'ArrowUp')
-    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
-    key(document.activeElement!, 'ArrowDown')
-    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
+    key({ target: input(), name: 'ArrowUp' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:grok')
+    key({ target: document.activeElement!, name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:grok')
   })
 
   it('메뉴가 열린 채 전역 단축키(⌘T)가 새 터미널로 포커스를 옮기면 메뉴가 닫힌다 — 포커스는 터미널에 남는다 (R1-01)', () => {
@@ -551,7 +551,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     })
     expect(menu()).not.toBeNull()
     expect(spies.activate).not.toHaveBeenCalled()
-    key(input(), 'Escape')
+    key({ target: input(), name: 'Escape' })
     expect(menu()).toBeNull()
   })
 
@@ -592,7 +592,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     try {
       mount({ tabs: [tab(0, [pane('p0', null, 'idle')]), tab(1, [pane('p1', null, 'idle')])], activeTabId: 't1' })
       expect(menu()).toBeNull()
-      key(terminal, 'Escape')
+      key({ target: terminal, name: 'Escape' })
       expect(menu()).toBeNull()
     } finally {
       Reflect.deleteProperty(document, 'activeElement')
@@ -622,7 +622,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
     act(() => input().focus())
-    key(input(), 'Escape')
+    key({ target: input(), name: 'Escape' })
     expect(menu()).toBeNull()
     expect(spies.activate).toHaveBeenCalledTimes(1)
     expect(document.activeElement).not.toBe(plus())
@@ -643,8 +643,8 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     const seen = vi.fn()
     window.addEventListener('keydown', seen)
     open()
-    key(input(), 'a')
-    key(input(), 'ArrowDown')
+    key({ target: input(), name: 'a' })
+    key({ target: input(), name: 'ArrowDown' })
     window.removeEventListener('keydown', seen)
     expect(seen).not.toHaveBeenCalled()
   })

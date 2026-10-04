@@ -158,6 +158,30 @@ type FieldRole = 'primary' | 'container' | 'alias' | 'evidence'
 /** Orca palette-query `LATIN_OR_DIGIT` — 한 글자 라틴 문자·숫자. */
 const SINGLE_LATIN_OR_DIGIT = /^[\p{Script=Latin}\p{Nd}]$/u
 
+/**
+ * Orca text-segments.ts `splitComponentIntoWords` — 글자·숫자 덩어리를 문자↔숫자 경계와 원문 camelCase 경계(대문자 앞이 대문자가 아님)에서 더 나눈다.
+ * 한 글자 질의의 같음·접두 판정에만 쓴다(엔진 전체를 옮기지 않는다).
+ */
+function segmentWords(text: string): string[] {
+  const words: string[] = []
+  for (const run of text.match(/[\p{L}\p{N}]+/gu) ?? []) {
+    const chars = [...run]
+    let start = 0
+    for (let index = 1; index < chars.length; index += 1) {
+      const previous = chars[index - 1]!
+      const current = chars[index]!
+      const classChanged = (/\p{L}/u.test(previous) && /\p{N}/u.test(current)) || (/\p{N}/u.test(previous) && /\p{L}/u.test(current))
+      const camel = /\p{Lu}/u.test(current) && !/\p{Lu}/u.test(previous)
+      if (classChanged || camel) {
+        words.push(chars.slice(start, index).join('').toLowerCase())
+        start = index
+      }
+    }
+    words.push(chars.slice(start).join('').toLowerCase())
+  }
+  return words
+}
+
 function tokenQuality({ token, fieldText }: { token: string; fieldText: string }): { quality: number; placement: number } | null {
   const field = normalizeMatchQuery(fieldText)
   if (!field) return null
@@ -169,7 +193,13 @@ function tokenQuality({ token, fieldText }: { token: string; fieldText: string }
   const prefixIndex = words.findIndex((word) => word.startsWith(token))
   if (prefixIndex >= 0) return { quality: QUALITY.wordPrefix, placement: prefixIndex === 0 ? 0 : 1 }
   // 한 글자 라틴 문자·숫자는 같음·접두만 받는다(Orca match-field.ts `SHORT_TOKEN_QUALITIES`, palette-query `isSingleLatinCharacter`, r2 R2-05).
-  if (SINGLE_LATIN_OR_DIGIT.test(token)) return null
+  // 단어는 Orca text-segments 처럼 원문 camelCase 경계와 문자↔숫자 경계에서도 갈린다(`fooBar` 의 b · `notes v2` 의 2 — r3 R3-04).
+  if (SINGLE_LATIN_OR_DIGIT.test(token)) {
+    const segments = segmentWords(fieldText)
+    const segmentIndex = segments.findIndex((word) => word.startsWith(token))
+    if (segmentIndex < 0) return null
+    return { quality: segments[segmentIndex] === token ? QUALITY.wordExact : QUALITY.wordPrefix, placement: segmentIndex === 0 ? 0 : 1 }
+  }
   const at = field.indexOf(token)
   if (at < 0) return null
   const before = field.charAt(at - 1)

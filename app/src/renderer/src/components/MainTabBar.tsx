@@ -523,7 +523,14 @@ export function GroupHeader({
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
   // LIFE-496 — `+` 드롭다운. 열린 동안 `+` 의 화면 자리를 들고 있다(메뉴가 그 아래 왼쪽 정렬로 선다).
-  const [createMenu, setCreateMenu] = useState<{ left: number; bottom: number } | null>(null)
+  // 열 때의 활성 탭·선택 pane 을 같이 든다 — 그것이 바뀌면(⌘T 로 새 탭이 섰다 등) 메뉴를 닫는다(아래 effect).
+  const [createMenu, setCreateMenu] = useState<{ left: number; bottom: number; activeTabId: string | null; selectedPane: string | null } | null>(null)
+  // r3 R3-02 — `+` 메뉴 전용 상태 기반 닫힘. 새 탭이 이 영역에서 활성이 되거나 선택 pane 이 바뀌면 포커스 이벤트 유무와 무관하게 닫는다
+  // (focusin 은 창이 시스템 포커스를 가진 동안에만 온다). 전역 단축키 쪽은 건드리지 않는다(R2-02).
+  useEffect(() => {
+    if (createMenu === null) return
+    if (createMenu.activeTabId !== activeTabId || createMenu.selectedPane !== selectedPane) setCreateMenu(null)
+  }, [createMenu, activeTabId, selectedPane])
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   const overflow = useTabStripOverflow({ activeTabId, layoutKey: tabs.map((tab) => tab.tabId).join('\n'), groupId, dragActive: tabDragActive })
@@ -605,13 +612,20 @@ export function GroupHeader({
         aria-label="새 탭"
         aria-haspopup="menu"
         aria-expanded={createMenu !== null}
+        // r3 R3-01 — 메뉴가 열린 동안의 누름은 헤더 활성화로 버블시키지 않는다. 버블하면 활성화 → 터미널 포커스 → 메뉴 focus-out 닫힘 →
+        // 뒤 click 이 닫힌 메뉴를 보고 다시 연다. 닫힌 상태의 첫 누름은 그대로 버블해 그 영역을 활성으로 만든다(기존 동작).
+        onMouseDown={(event) => {
+          if (createMenu !== null) event.stopPropagation()
+        }}
         onClick={(event) => {
           if (createMenu !== null) {
             setCreateMenu(null)
+            // 다시 눌러 닫으면 Escape 처럼 이 영역 터미널로 포커스를 돌려준다(누름이 헤더 활성화를 건너뛰었으므로).
+            onActivate()
             return
           }
           const rect = event.currentTarget.getBoundingClientRect()
-          setCreateMenu({ left: rect.left, bottom: rect.bottom })
+          setCreateMenu({ left: rect.left, bottom: rect.bottom, activeTabId, selectedPane })
         }}
       >
         <PlusIcon className="main-tab-add-icon" />

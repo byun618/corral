@@ -22,7 +22,7 @@ import {
   type OpenTabSearchEntry,
 } from './tab-create-menu.js'
 
-const entry = (tabId: string, title: string, extra: Partial<OpenTabSearchEntry> = {}): OpenTabSearchEntry => ({
+const entry = ({ tabId, title, ...extra }: Partial<OpenTabSearchEntry> & { tabId: string; title: string }): OpenTabSearchEntry => ({
   tabId, groupId: 'g1', title, branch: 'main', agent: null, groupIndex: 0, tabIndex: Number(tabId.replace(/\D/g, '')) || 0, isCurrent: false, ...extra,
 })
 
@@ -91,37 +91,37 @@ describe('에이전트 (Orca tab-agent-launch-options.test.ts · agent-catalog �
 
 describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
   it('최대 4건', () => {
-    const entries = Array.from({ length: 6 }, (_, index) => entry(`t${index}`, `build ${index}`))
+    const entries = Array.from({ length: 6 }, (_, index) => entry({ tabId: `t${index}`, title: `build ${index}` }))
     expect(searchOpenTabs({ entries, query: 'build' })).toHaveLength(OPEN_TAB_SEARCH_RESULT_LIMIT)
   })
   it('빈 질의는 결과 없음', () => {
-    expect(searchOpenTabs({ entries: [entry('t1', 'build')], query: ' ' })).toEqual([])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'build' })], query: ' ' })).toEqual([])
   })
   it('제목 전체 일치 > 단어 일치 > 접두 > 중간', () => {
-    const entries = [entry('t1', 'rebuilding'), entry('t2', 'build logs'), entry('t3', 'build'), entry('t4', 'builder')]
+    const entries = [entry({ tabId: 't1', title: 'rebuilding' }), entry({ tabId: 't2', title: 'build logs' }), entry({ tabId: 't3', title: 'build' }), entry({ tabId: 't4', title: 'builder' })]
     expect(searchOpenTabs({ entries, query: 'build' }).map((result) => result.tabId)).toEqual(['t3', 't2', 't4', 't1'])
   })
   it('현재 탭은 숨기지 않고 같은 순위면 앞선다', () => {
-    const entries = [entry('t1', 'server a'), entry('t2', 'server b', { isCurrent: true })]
+    const entries = [entry({ tabId: 't1', title: 'server a' }), entry({ tabId: 't2', title: 'server b', isCurrent: true })]
     expect(searchOpenTabs({ entries, query: 'server' }).map((result) => result.tabId)).toEqual(['t2', 't1'])
   })
   it('같은 순위면 영역 순서 → 탭 순서', () => {
-    const entries = [entry('t5', 'dev', { groupId: 'g2', groupIndex: 1, tabIndex: 0 }), entry('t9', 'dev', { groupIndex: 0, tabIndex: 3 })]
+    const entries = [entry({ tabId: 't5', title: 'dev', groupId: 'g2', groupIndex: 1, tabIndex: 0 }), entry({ tabId: 't9', title: 'dev', groupIndex: 0, tabIndex: 3 })]
     expect(searchOpenTabs({ entries, query: 'dev' }).map((result) => result.tabId)).toEqual(['t9', 't5'])
   })
   it('"terminal" 은 별칭으로 모든 터미널 탭에 맞는다 (Orca TERMINAL_TYPE_SEARCH_ALIASES)', () => {
-    const entries = [entry('t1', 'claude'), entry('t2', 'zsh')]
+    const entries = [entry({ tabId: 't1', title: 'claude' }), entry({ tabId: 't2', title: 'zsh' })]
     expect(searchOpenTabs({ entries, query: 'terminal' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
   })
   it('별칭은 접두로도 맞는다 — "term"·"termin" 으로 열린 터미널 탭을 찾는다 (R1-03, Orca EXACT_ALIAS_QUALITIES)', () => {
-    const entries = [entry('t1', 'alpha-build'), entry('t2', 'beta')]
+    const entries = [entry({ tabId: 't1', title: 'alpha-build' }), entry({ tabId: 't2', title: 'beta' })]
     expect(searchOpenTabs({ entries, query: 'term' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
     expect(searchOpenTabs({ entries, query: 'termin' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
     // 중간 일치는 별칭에서 받지 않는다(field-exact·word-exact·field-prefix·word-prefix 만).
     expect(searchOpenTabs({ entries, query: 'rmin' })).toEqual([])
   })
   it('한 글자 라틴 문자·숫자 질의는 같음·접두만 받는다 — 중간 한 글자는 안 맞는다 (R2-05, Orca match-field SHORT_TOKEN_QUALITIES)', () => {
-    const entries = [entry('t1', 'alpha-build'), entry('t2', 'beta'), entry('t3', 'notes v2')]
+    const entries = [entry({ tabId: 't1', title: 'alpha-build' }), entry({ tabId: 't2', title: 'beta' }), entry({ tabId: 't3', title: 'notes v2' })]
     expect(searchOpenTabs({ entries, query: 'a' }).map((result) => result.tabId)).toEqual(['t1'])
     expect(searchOpenTabs({ entries, query: 'b' }).map((result) => result.tabId)).toEqual(['t2', 't1'])
     // 문자↔숫자 경계에서 단어가 갈린다(Orca text-segments) — "v2" 의 "2" 는 단어 시작이다(R3-04).
@@ -129,20 +129,20 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
     expect(searchOpenTabs({ entries, query: 'v' }).map((result) => result.tabId)).toEqual(['t3'])
   })
   it('한 글자 질의의 단어 경계 — 원문 camelCase 경계와 문자↔숫자 경계를 지킨다 (R3-04, Orca text-segments.ts)', () => {
-    expect(searchOpenTabs({ entries: [entry('t1', 'fooBar'), entry('t2', 'foobar')], query: 'b' }).map((result) => result.tabId)).toEqual(['t1'])
-    expect(searchOpenTabs({ entries: [entry('t1', 'task2'), entry('t2', 'task-2'), entry('t3', '2task'), entry('t4', 'x22')], query: '2' }).map((result) => result.tabId).sort()).toEqual(['t1', 't2', 't3', 't4'])
-    expect(searchOpenTabs({ entries: [entry('t1', 'abc')], query: 'b' })).toEqual([])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'fooBar' }), entry({ tabId: 't2', title: 'foobar' })], query: 'b' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'task2' }), entry({ tabId: 't2', title: 'task-2' }), entry({ tabId: 't3', title: '2task' }), entry({ tabId: 't4', title: 'x22' })], query: '2' }).map((result) => result.tabId).sort()).toEqual(['t1', 't2', 't3', 't4'])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'abc' })], query: 'b' })).toEqual([])
   })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
-    const entries = [entry('t1', 'logs', { agent: 'claude' }), entry('t2', 'claude notes')]
+    const entries = [entry({ tabId: 't1', title: 'logs', agent: 'claude' }), entry({ tabId: 't2', title: 'claude notes' })]
     expect(searchOpenTabs({ entries, query: 'claude' }).map((result) => result.tabId)).toEqual(['t2', 't1'])
-    expect(searchOpenTabs({ entries: [entry('t1', 'logs', { branch: 'feature-x' })], query: 'feature' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'logs', branch: 'feature-x' })], query: 'feature' }).map((result) => result.tabId)).toEqual(['t1'])
   })
   it('모든 토큰이 어딘가에 맞아야 한다', () => {
-    expect(searchOpenTabs({ entries: [entry('t1', 'build logs')], query: 'build deploy' })).toEqual([])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'build logs' })], query: 'build deploy' })).toEqual([])
   })
   it('키보드로 고른 행은 상한 밖이어도 남긴다 (Orca capPaletteSection)', () => {
-    const entries = Array.from({ length: 6 }, (_, index) => entry(`t${index}`, `build ${index}`))
+    const entries = Array.from({ length: 6 }, (_, index) => entry({ tabId: `t${index}`, title: `build ${index}` }))
     const results = searchOpenTabs({ entries, query: 'build', retainedResultId: 'tab:t5' })
     expect(results).toHaveLength(OPEN_TAB_SEARCH_RESULT_LIMIT)
     expect(results.at(-1)?.tabId).toBe('t5')
@@ -152,19 +152,19 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
 describe('결과 조립·선택 (Orca TabBarCreateEntry)', () => {
   const agents = buildAgentLaunchOptions()
   it('열린 탭 → 메뉴 매칭 → 에이전트 매칭 순', () => {
-    const options = buildActiveOptions({ query: 'terminal', entries: [entry('t1', 'claude')], agents })
+    const options = buildActiveOptions({ query: 'terminal', entries: [entry({ tabId: 't1', title: 'claude' })], agents })
     expect(options.map(activeOptionId)).toEqual(['tab:t1', 'menu:new-terminal'])
-    const withAgent = buildActiveOptions({ query: 'claude', entries: [entry('t1', 'claude')], agents })
+    const withAgent = buildActiveOptions({ query: 'claude', entries: [entry({ tabId: 't1', title: 'claude' })], agents })
     expect(withAgent.map(activeOptionId)).toEqual(['tab:t1', 'agent:claude'])
   })
   it('빈 질의는 결과 없음 + 정적 메뉴가 보인다', () => {
-    expect(buildActiveOptions({ query: '', entries: [entry('t1', 'claude')], agents })).toEqual([])
+    expect(buildActiveOptions({ query: '', entries: [entry({ tabId: 't1', title: 'claude' })], agents })).toEqual([])
     expect(showStaticCreateMenu('')).toBe(true)
     expect(showStaticCreateMenu('  ')).toBe(true)
     expect(showStaticCreateMenu('x')).toBe(false)
   })
   it('선택 = 고정 행이 있으면 그것, 아니면 첫 행', () => {
-    const options = buildActiveOptions({ query: 'claude', entries: [entry('t1', 'claude')], agents })
+    const options = buildActiveOptions({ query: 'claude', entries: [entry({ tabId: 't1', title: 'claude' })], agents })
     expect(selectedIndex({ options, pinnedId: null })).toBe(0)
     expect(selectedIndex({ options, pinnedId: 'agent:claude' })).toBe(1)
     expect(selectedIndex({ options, pinnedId: 'tab:gone' })).toBe(0)

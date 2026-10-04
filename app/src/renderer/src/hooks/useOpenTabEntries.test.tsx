@@ -15,14 +15,14 @@ import { useOpenTabEntries } from './useOpenTabEntries.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const pane = (paneId: string, tabId: string): PaneRow => ({
+const pane = ({ paneId, tabId }: { paneId: string; tabId: string }): PaneRow => ({
   paneId, tabId, workspaceId: 'w1', title: '', agent: null, agentStatus: 'idle', agentState: emptyAgentState(0), cwd: null, focused: false, agentSession: null,
   digest: EMPTY_SESSION_DIGEST,
 })
-const tab = (tabId: string, order: number): TabRow => ({
-  tabId, workspaceId: 'w1', label: '', number: order + 1, order, agentStatus: 'idle', focused: false, panes: [pane(`p-${tabId}`, tabId)], digest: EMPTY_SESSION_DIGEST,
+const tab = ({ tabId, order }: { tabId: string; order: number }): TabRow => ({
+  tabId, workspaceId: 'w1', label: '', number: order + 1, order, agentStatus: 'idle', focused: false, panes: [pane({ paneId: `p-${tabId}`, tabId })], digest: EMPTY_SESSION_DIGEST,
 })
-const workspace: WorkspaceRow = { workspaceId: 'w1', label: 'w1', number: 1, agentStatus: 'idle', focused: true, tabs: [tab('t1', 0), tab('t2', 1)] }
+const workspace: WorkspaceRow = { workspaceId: 'w1', label: 'w1', number: 1, agentStatus: 'idle', focused: true, tabs: [tab({ tabId: 't1', order: 0 }), tab({ tabId: 't2', order: 1 })] }
 const groups: TabGroup[] = [{ groupId: 'g1', tabOrder: ['t1', 't2'], activeTabId: 't1' }]
 
 let host: HTMLDivElement

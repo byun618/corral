@@ -316,6 +316,17 @@ async function main() {
   await key('Escape')
   await pause(300)
 
+  // ⑥e (fix3 R3-01) 열린 메뉴의 `+` 를 다시 누름 — 실제 mouseDown·mouseUp(제어 소켓 click = sendInputEvent). 닫히고, 다시 열리지 않는다.
+  await openMenu(g1)
+  await control({ cmd: 'click', selector: `[data-main-tabbar-add="${g1}"]` })
+  await pause(250)
+  const afterReclick = await read()
+  await pause(600)
+  const afterReclickLater = await read()
+  record('plus-reclick-closes', afterReclick.menu === null && afterReclickLater.menu === null && groupById(afterReclickLater, g1).plus.expanded === 'false', {
+    menuAt250: afterReclick.menu !== null, menuAt850: afterReclickLater.menu !== null, expanded: groupById(afterReclickLater, g1).plus.expanded, focus: afterReclickLater.focus,
+  })
+
   // ⑦ 바깥 클릭 = 닫힘 (g2 본문).
   await openMenu(g1)
   const g2Body = groupById(await read(), g2).body

@@ -92,14 +92,21 @@ export function useLifecycleActions(state: AppState | null): {
       launchWatches.current.delete(paneId)
     }
   }, [state])
+  /** 훅이 살아 있나 — 내려간 뒤 도착한 launch 응답이 워치독을 걸지 않게 한다(r3 R3-03). 감지 이력 정리도 같은 수명에 묶는다. */
+  const mountedRef = useRef(false)
   useEffect(() => {
+    mountedRef.current = true
     const watches = launchWatches.current
+    const seen = agentSeenWhilePending.current
     return () => {
+      mountedRef.current = false
       for (const entry of watches.values()) clearTimeout(entry.timer)
       watches.clear()
+      seen.clear()
     }
   }, [])
   const watchLaunch = useCallback((watch: LaunchWatch): void => {
+    if (!mountedRef.current) return
     const latest = stateRef.current
     if (latest !== null && findPane({ state: latest, paneId: watch.paneId })?.agent != null) return
     const timer = setTimeout(() => {
@@ -281,6 +288,7 @@ export function useLifecycleActions(state: AppState | null): {
       } finally {
         pendingLaunches.current -= 1
       }
+      if (!mountedRef.current) return
       const seenBeforeResponse = paneId !== null && agentSeenWhilePending.current.has(paneId)
       if (pendingLaunches.current === 0) agentSeenWhilePending.current.clear()
       if (paneId !== null && !seenBeforeResponse) watchLaunch({ paneId, workspaceId, label })

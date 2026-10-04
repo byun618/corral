@@ -170,8 +170,10 @@ export function TabCreateMenu({
       if (outside(event.target)) dismiss('outside')
     }
     // R1-01 — 전역 단축키(⌘T)·Tab 등으로 포커스가 메뉴 밖으로 가면 메뉴가 남지 않는다. 포커스는 옮겨 간 곳에 둔다.
-    const onFocusIn = (event: FocusEvent): void => {
-      if (outside(event.target)) dismiss('focus-out')
+    // 이벤트 대상이 아니라 **지금 포커스(activeElement)** 로 판정한다 — 창이 시스템 포커스를 잃었다 되찾으면 Chromium 이 미뤄 둔
+    // focusin 을 늦게 쏜다. 그 늦은 이벤트의 대상(이미 지난 포커스)으로 닫으면 방금 연 메뉴가 닫힌다(fix1 격리 예행 r1).
+    const onFocusIn = (): void => {
+      if (outside(document.activeElement)) dismiss('focus-out')
     }
     const onBlur = (): void => dismiss('blur')
     document.addEventListener('mousedown', onDown, true)

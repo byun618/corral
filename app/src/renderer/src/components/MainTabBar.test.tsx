@@ -525,6 +525,23 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     }
   })
 
+  it('늦게 온 focusin(이미 지난 포커스가 대상) 은 닫지 않는다 — 판정은 지금 포커스로 한다 (fix1 격리 예행 r1)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    const stale = document.createElement('textarea')
+    document.body.append(stale)
+    try {
+      act(() => {
+        stale.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      })
+      expect(menu()).not.toBeNull()
+      expect(document.activeElement).toBe(input())
+    } finally {
+      stale.remove()
+    }
+  })
+
   it('IME 조합 중 Escape 는 메뉴를 닫지 않는다 — 조합 취소다 (R1-06, menu-bus useWindowEscape 와 같은 원칙)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()

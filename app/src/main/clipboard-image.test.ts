@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { electronClipboardPng, isPasteFileName, pasteFileName, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
+import { electronClipboardPng, isPasteFileName, pasteFileName, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles, untrustedPasteRoot } from './clipboard-image.js'
 
 const UUID = '0b6f6c2e-3a1d-4c55-9a8e-2f1d0c9b7a61'
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
@@ -104,10 +104,69 @@ describe('sweepPasteFiles (K4ⓒ — corral 이 만든 파일만)', () => {
 
     expect(result.removed).toEqual([oldOurs])
     expect(result.kept).toBe(1)
+    expect(result.skipped).toBeNull()
     for (const file of [freshOurs, userPng, lookalike, outsideOurs, sub, linkName]) expect(fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink()).toBe(true)
   })
 
   it('폴더가 없으면 아무것도 안 한다', async () => {
-    expect(await sweepPasteFiles({ dir: path.join(dir, 'nope'), now, maxAgeMs: 1 })).toEqual({ removed: [], kept: 0 })
+    expect(await sweepPasteFiles({ dir: path.join(dir, 'nope'), now, maxAgeMs: 1 })).toEqual({ removed: [], kept: 0, skipped: null })
+  })
+
+  // R1-02 반례 — 루트 `corral-paste` 가 남의 폴더를 가리키는 심링크면 그 안의 corral 꼴 파일도 지우지 않는다.
+  it('루트가 심링크면 건너뛰고 대상 폴더를 건드리지 않는다', async () => {
+    const foreign = path.join(dir, 'foreign')
+    fs.mkdirSync(foreign)
+    const victim = path.join(foreign, `corral-paste-1-${UUID}.png`)
+    fs.writeFileSync(victim, PNG)
+    old(victim)
+    const root = path.join(dir, 'corral-paste')
+    fs.symlinkSync(foreign, root)
+
+    const result = await sweepPasteFiles({ dir: root, now, maxAgeMs: PASTE_FILE_MAX_AGE_MS })
+
+    expect(result).toEqual({ removed: [], kept: 0, skipped: '루트가 심링크' })
+    expect(fs.existsSync(victim)).toBe(true)
+  })
+
+  it('루트 소유자가 현재 사용자가 아니면 건너뛴다', async () => {
+    const victim = path.join(dir, `corral-paste-1-${UUID}.png`)
+    fs.writeFileSync(victim, PNG)
+    old(victim)
+    const owner = fs.lstatSync(dir).uid
+    const result = await sweepPasteFiles({ dir, now, maxAgeMs: PASTE_FILE_MAX_AGE_MS, uid: owner + 1 })
+    expect(result.removed).toEqual([])
+    expect(result.skipped).toBe(`루트 소유자 불일치(${owner})`)
+    expect(fs.existsSync(victim)).toBe(true)
+  })
+})
+
+describe('untrustedPasteRoot · 저장 쪽 루트 검사 (R1-02)', () => {
+  it('진짜 폴더·현재 사용자 소유면 null', async () => {
+    expect(await untrustedPasteRoot({ dir })).toBeNull()
+  })
+
+  it('루트가 일반 파일이면 거부', async () => {
+    const file = path.join(dir, 'corral-paste')
+    fs.writeFileSync(file, 'x')
+    expect(await untrustedPasteRoot({ dir: file })).toBe('루트가 폴더가 아님')
+  })
+
+  it('루트가 심링크면 저장은 실패하고 대상 폴더에 아무것도 쓰지 않는다', async () => {
+    const foreign = path.join(dir, 'foreign')
+    fs.mkdirSync(foreign)
+    const root = path.join(dir, 'corral-paste')
+    fs.symlinkSync(foreign, root)
+    const result = await saveClipboardImage({ readPng: async () => PNG, dir: root, now: 5, uuid: UUID })
+    expect(result).toEqual({ status: 'failed', error: '루트가 심링크' })
+    expect(fs.readdirSync(foreign)).toEqual([])
+  })
+
+  it('루트 소유자가 다르면 저장은 실패한다', async () => {
+    const root = path.join(dir, 'corral-paste')
+    fs.mkdirSync(root)
+    const owner = fs.lstatSync(root).uid
+    const result = await saveClipboardImage({ readPng: async () => PNG, dir: root, uid: owner + 1 })
+    expect(result).toEqual({ status: 'failed', error: `루트 소유자 불일치(${owner})` })
+    expect(fs.readdirSync(root)).toEqual([])
   })
 })

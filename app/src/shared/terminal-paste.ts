@@ -104,3 +104,27 @@ export function clipboardImagePayload(
 ): string | null {
   return result.status === 'saved' ? wrapBracketedPaste(result.path) : null
 }
+
+/**
+ * pane 하나의 생성 입력(⌘V 이미지·드롭)을 **받은 순서대로** 내보낸다 (R1-03).
+ * ⌘V 이미지는 main 왕복(클립보드 읽기·PNG 쓰기)을 기다리고 드롭은 바로 준비된다 — 각자 끝나는 대로 보내면
+ * 두 번 연속 ⌘V 나 ⌘V 직후 드롭이 뒤바뀐다. 그래서 접수 때 자리를 잡고, 앞 자리가 끝나야 다음을 보낸다.
+ * 빈 결과·실패(reject)도 자리를 지킨다 — 아무것도 안 보내고 다음으로 넘어간다.
+ * 돌려주는 값은 그 자리가 다 나갔을 때 풀리는 promise (테스트·관측용, 호출자는 무시해도 된다).
+ */
+export function createOrderedSender<T>(send: (item: T) => void): (pending: Promise<readonly T[]> | readonly T[]) => Promise<void> {
+  let tail: Promise<void> = Promise.resolve()
+  return (pending) => {
+    const ready = Promise.resolve(pending).catch((): readonly T[] => [])
+    tail = tail.then(async () => {
+      for (const item of await ready) {
+        try {
+          send(item)
+        } catch {
+          // 한 항목의 전송 예외가 뒤 자리를 막지 않게 한다
+        }
+      }
+    })
+    return tail
+  }
+}

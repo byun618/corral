@@ -1529,6 +1529,7 @@ app.whenReady().then(async () => {
   // 붙여넣기 PNG 정리 (D44) — 기동 뒤 한 번, 그 뒤 1시간마다. 나이(7일)로만 지운다 — 사유는 sweepPasteFiles 주석.
   const sweep = (): void =>
     void sweepPasteFiles({ dir: pasteDir(), now: Date.now(), maxAgeMs: PASTE_FILE_MAX_AGE_MS }).then((result) => {
+      if (result.skipped !== null) log('paste.sweep_skipped', { reason: result.skipped })
       if (result.removed.length > 0) log('paste.sweep', { removed: result.removed.length, kept: result.kept })
     })
   setTimeout(sweep, 30_000)

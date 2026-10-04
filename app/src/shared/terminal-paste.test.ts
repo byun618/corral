@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canPasteImageDropPathRaw,
   clipboardImagePayload,
+  createOrderedSender,
   dropPathPayloads,
   FILE_DROP_MAX_PATHS,
   formatImageDropPasteText,
@@ -237,5 +238,73 @@ describe('⌘V 갈림 (220 terminal-clipboard-paste)', () => {
   it('빈 클립보드·실패면 아무것도 보내지 않는다 (reports image extraction failures without pasting)', () => {
     expect(clipboardImagePayload({ status: 'empty' })).toBeNull()
     expect(clipboardImagePayload({ status: 'failed', error: 'EACCES' })).toBeNull()
+  })
+})
+
+// R1-03 — 생성 입력은 완료 순서가 아니라 접수 순서로 나간다.
+describe('createOrderedSender', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void
+    let reject!: (error: unknown) => void
+    const promise = new Promise<T>((ok, fail) => {
+      resolve = ok
+      reject = fail
+    })
+    return { promise, resolve, reject }
+  }
+
+  it('두 번 연속 ⌘V 가 역순으로 끝나도 접수 순서대로 보낸다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    const first = deferred<readonly string[]>()
+    const second = deferred<readonly string[]>()
+    enqueue(first.promise)
+    const done = enqueue(second.promise)
+    second.resolve(['B'])
+    await Promise.resolve()
+    expect(sent).toEqual([])
+    first.resolve(['A'])
+    await done
+    expect(sent).toEqual(['A', 'B'])
+  })
+
+  it('⌘V 처리 중 들어온 드롭은 그 ⌘V 뒤에 나간다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    const paste = deferred<readonly string[]>()
+    enqueue(paste.promise)
+    const done = enqueue(['drop-1', 'drop-2'])
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(sent).toEqual([])
+    paste.resolve(['paste'])
+    await done
+    expect(sent).toEqual(['paste', 'drop-1', 'drop-2'])
+  })
+
+  it('빈 결과·실패도 자리를 지키고 뒤를 막지 않는다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    const empty = deferred<readonly string[]>()
+    const failed = deferred<readonly string[]>()
+    const last = deferred<readonly string[]>()
+    enqueue(empty.promise)
+    enqueue(failed.promise)
+    const done = enqueue(last.promise)
+    last.resolve(['C'])
+    failed.reject(new Error('clipboard busy'))
+    empty.resolve([])
+    await done
+    expect(sent).toEqual(['C'])
+  })
+
+  it('보내기 예외가 뒤 자리를 막지 않는다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => {
+      if (item === 'boom') throw new Error('x')
+      sent.push(item)
+    })
+    enqueue(['boom'])
+    await enqueue(['ok'])
+    expect(sent).toEqual(['ok'])
   })
 })

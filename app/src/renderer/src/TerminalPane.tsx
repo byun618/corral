@@ -22,7 +22,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
-import { clipboardImagePayload, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
+import { clipboardImagePayload, createOrderedSender, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
 
 const decoder = new TextDecoder()
 
@@ -271,26 +271,31 @@ export function TerminalPane({
     // 처리 중 다른 pane 을 고르거나 이 pane 이 닫혀도 다른 pane 에 쓰지 않는다 (K1ⓒ). Ctrl+V 는 여기 안 온다
     // (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
     // ⌘V 이미지·드롭이 만든 바이트도 진단 링에 남긴다 (onData 를 안 거치므로 따로) — 관문이 "pane 으로 간 바이트" 를 읽는 자리.
-    const sendGenerated = (data: string, source: 'paste-image' | 'file-drop', target: string): void => {
+    // ⌘V 이미지·드롭은 받은 순서대로 나간다 (R1-03) — 이미지 저장 왕복이 늦어도 뒤 입력이 앞지르지 않는다.
+    type GeneratedInput = { data: string; source: 'paste-image' | 'file-drop'; paneId: string }
+    const sendGenerated = (input: GeneratedInput): void => {
       if (diagnostics) {
-        inputs.push({ data, at: Date.now(), source })
+        inputs.push({ data: input.data, at: Date.now(), source: input.source })
         if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
       }
-      window.corral.termInput({ paneId: target, data })
+      window.corral.termInput({ paneId: input.paneId, data: input.data })
     }
+    const enqueueGenerated = createOrderedSender<GeneratedInput>(sendGenerated)
     const onPaste = (event: ClipboardEvent): void => {
       if (!shouldPasteClipboardImage(event.clipboardData?.getData('text/plain') ?? '')) return
       event.preventDefault()
       event.stopPropagation()
       const target = paneId
-      void window.corral.saveClipboardImage().then((result) => {
-        const data = clipboardImagePayload(result)
-        if (data === null) {
-          if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
-          return
-        }
-        sendGenerated(data, 'paste-image', target)
-      })
+      void enqueueGenerated(
+        window.corral.saveClipboardImage().then((result): GeneratedInput[] => {
+          const data = clipboardImagePayload(result)
+          if (data === null) {
+            if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
+            return []
+          }
+          return [{ data, source: 'paste-image', paneId: target }]
+        }),
+      )
     }
     container.addEventListener('paste', onPaste, { capture: true })
 
@@ -301,7 +306,7 @@ export function TerminalPane({
         console.warn('[drop] 파일 드롭 거부', drop.reason, drop.count)
         return
       }
-      for (const data of dropPathPayloads(drop.paths)) sendGenerated(data, 'file-drop', paneId)
+      void enqueueGenerated(dropPathPayloads(drop.paths).map((data): GeneratedInput => ({ data, source: 'file-drop', paneId })))
     })
 
     // --- wheel: 가로채서 서버 스크롤로 (캡처 + preventDefault) ----------------------

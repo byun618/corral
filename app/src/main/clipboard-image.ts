@@ -5,6 +5,7 @@
 // `image/*` 항목을 읽는다. 클립보드·파일 시스템은 주입받는다(단위 테스트가 실제 클립보드를 안 건드리게).
 
 import { randomUUID } from 'node:crypto'
+import type { Stats } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { ClipboardImageSaveResult } from '../shared/types.js'
@@ -47,6 +48,25 @@ export function electronClipboardPng(deps: {
 }
 
 /**
+ * 루트(`corral-paste`) 자체를 믿어도 되는가 (R1-02) — 심링크가 아닌 진짜 폴더이고 현재 사용자 소유여야 한다.
+ * 공유 temp 에 남이 심어 둔 심링크·폴더를 따라가 거기에 쓰거나 거기서 지우지 않게 저장·정리 **둘 다** 먼저 본다.
+ * 믿을 수 없으면 사유 문자열, 믿으면 null. `uid` 는 테스트 주입용 — 기본은 현재 프로세스.
+ */
+export async function untrustedPasteRoot(input: { dir: string; uid?: number }): Promise<string | null> {
+  let stat: Stats
+  try {
+    stat = await fs.lstat(input.dir)
+  } catch (error) {
+    return `루트 lstat 실패: ${error instanceof Error ? error.message : String(error)}`
+  }
+  if (stat.isSymbolicLink()) return '루트가 심링크'
+  if (!stat.isDirectory()) return '루트가 폴더가 아님'
+  const uid = input.uid ?? process.getuid?.()
+  if (uid !== undefined && stat.uid !== uid) return `루트 소유자 불일치(${stat.uid})`
+  return null
+}
+
+/**
  * 클립보드 이미지를 `dir` 에 PNG 로 쓰고 절대경로를 돌려준다. 실패는 **값으로** 돌려준다 —
  * 호출자가 로그에 남기고, 렌더러는 아무 바이트도 보내지 않는다 (K1ⓓ).
  */
@@ -55,11 +75,14 @@ export async function saveClipboardImage(input: {
   dir: string
   now?: number
   uuid?: string
+  uid?: number
 }): Promise<ClipboardImageSaveResult> {
   try {
     const png = await input.readPng()
     if (png === null) return { status: 'empty' }
     await fs.mkdir(input.dir, { recursive: true, mode: 0o700 })
+    const untrusted = await untrustedPasteRoot({ dir: input.dir, uid: input.uid })
+    if (untrusted !== null) return { status: 'failed', error: untrusted }
     const file = path.join(input.dir, pasteFileName({ now: input.now ?? Date.now(), uuid: input.uuid ?? randomUUID() }))
     await fs.writeFile(file, png, { mode: 0o600 })
     return { status: 'saved', path: file }
@@ -75,13 +98,23 @@ export async function saveClipboardImage(input: {
  * 이 경로를 가리킨다. Codex 는 첨부 파일을 **전송(직렬화) 때** 읽는다(0.159.2 `clipboard_paste.rs`
  * "The file will be read and base64-encoded during serialization") — 지우는 시점이 전송보다 앞서면 첨부가 깨진다.
  * 그래서 나이로만 지운다(Orca #24009 드롭 사본 TTL 7일과 같은 값). 하위 폴더·심링크는 따라가지 않는다.
+ * 루트 자체가 심링크·남의 폴더면 아예 건너뛰고 사유를 돌려준다(호출자가 로그) — R1-02.
  */
-export async function sweepPasteFiles(input: { dir: string; now: number; maxAgeMs: number }): Promise<{ removed: string[]; kept: number }> {
+export async function sweepPasteFiles(input: {
+  dir: string
+  now: number
+  maxAgeMs: number
+  uid?: number
+}): Promise<{ removed: string[]; kept: number; skipped: string | null }> {
+  const exists = await fs.lstat(input.dir).then(() => true, () => false)
+  if (!exists) return { removed: [], kept: 0, skipped: null }
+  const untrusted = await untrustedPasteRoot({ dir: input.dir, uid: input.uid })
+  if (untrusted !== null) return { removed: [], kept: 0, skipped: untrusted }
   let names: string[]
   try {
     names = await fs.readdir(input.dir)
-  } catch {
-    return { removed: [], kept: 0 }
+  } catch (error) {
+    return { removed: [], kept: 0, skipped: `readdir 실패: ${error instanceof Error ? error.message : String(error)}` }
   }
   const removed: string[] = []
   let kept = 0
@@ -96,7 +129,7 @@ export async function sweepPasteFiles(input: { dir: string; now: number; maxAgeM
     }
     await fs.rm(file).then(() => removed.push(file), () => undefined)
   }
-  return { removed, kept }
+  return { removed, kept, skipped: null }
 }
 
 export const PASTE_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000

@@ -48,6 +48,8 @@ import { SplitIcon } from './SplitIcon.js'
 import { TabStripScrollIndicator } from './TabStripScrollIndicator.js'
 import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStripOverflow.js'
 import { tabStripMaskClassName } from '../tab-strip-metrics.js'
+import type { LaunchAgent, OpenTabSearchEntry } from '../tab-create-menu.js'
+import { TabCreateMenu } from './TabCreateMenu.js'
 
 /**
  * 활성 터미널로 포커스를 돌려준다 (J-1).
@@ -469,6 +471,9 @@ export function GroupHeader({
   onMoveToOtherGroup,
   onTabDragStart,
   tabDragActive,
+  openTabEntries,
+  onLaunchAgent,
+  onActivateOpenTab,
 }: {
   groupId: string
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
@@ -509,8 +514,16 @@ export function GroupHeader({
   onTabDragStart: (event: React.MouseEvent, tabId: string) => void
   /** 어느 영역에서든 탭 드래그 중인가 (LIFE-494) — dock 끔·썸 비킴·chevron hover 자동 스크롤. 다른 영역 탭을 끌어와도 이 스트립이 넘겨야 한다. */
   tabDragActive: boolean
+  /** LIFE-496 — `+` 메뉴 omnibox 가 찾는 **현재 worktree 의 열린 탭**(모든 영역, Orca: 한 worktree). */
+  openTabEntries: readonly OpenTabSearchEntry[]
+  /** LIFE-496 D38 — Quick-launch. 이 영역에 그 에이전트 탭을 만든다(기존 `createRow` 경로 + 기동 워치독). */
+  onLaunchAgent: (agent: LaunchAgent) => void
+  /** LIFE-496 D36 — omnibox 에서 고른 탭을 그 탭이 속한 영역에서 활성으로 만들고 포커스를 준다. */
+  onActivateOpenTab: (target: { tabId: string; groupId: string }) => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
+  // LIFE-496 — `+` 드롭다운. 열린 동안 `+` 의 화면 자리를 들고 있다(메뉴가 그 아래 왼쪽 정렬로 선다).
+  const [createMenu, setCreateMenu] = useState<{ left: number; bottom: number } | null>(null)
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
   const overflow = useTabStripOverflow({ activeTabId, layoutKey: tabs.map((tab) => tab.tabId).join('\n'), groupId, dragActive: tabDragActive })
@@ -582,10 +595,43 @@ export function GroupHeader({
         <TabStripScrollIndicator metrics={overflow.metrics} stripRef={overflow.stripRef} disabled={tabDragActive} />
       </div>
       {overflow.metrics.hasOverflow ? <TabStripChevron groupId={groupId} direction="end" overflow={overflow} dragActive={tabDragActive} /> : null}
-      {/* `+` — Orca 는 스트립 바로 뒤 28px 버튼(`tab-bar-surface.tsx:223-233`). 드롭다운은 T4(LIFE-496) 몫이라 여기선 빈 탭 그대로다. */}
-      <button className="main-tab-add" data-main-tabbar-add={groupId} type="button" title={`빈 탭 (${bindingLabel('terminal.new')})`} aria-label="빈 탭" onClick={onCreateShell}>
+      {/* `+` — Orca 는 스트립 바로 뒤 28px 버튼(`tab-bar-surface.tsx:207-217`). **클릭 = 드롭다운**(LIFE-496 게이트 ⓪ Q3 ⓐ, Orca `DropdownMenuTrigger`).
+          빈 탭은 ⌘T 와 메뉴 첫 줄(빈 질의 Enter)이 맡는다. 열린 채 다시 누르면 닫힌다. */}
+      <button
+        className={`main-tab-add ${createMenu !== null ? 'is-open' : ''}`}
+        data-main-tabbar-add={groupId}
+        type="button"
+        title="새 탭"
+        aria-label="새 탭"
+        aria-haspopup="menu"
+        aria-expanded={createMenu !== null}
+        onClick={(event) => {
+          if (createMenu !== null) {
+            setCreateMenu(null)
+            return
+          }
+          const rect = event.currentTarget.getBoundingClientRect()
+          setCreateMenu({ left: rect.left, bottom: rect.bottom })
+        }}
+      >
         <PlusIcon className="main-tab-add-icon" />
       </button>
+      {createMenu === null ? null : (
+        <TabCreateMenu
+          groupId={groupId}
+          anchor={createMenu}
+          entries={openTabEntries}
+          newTerminalShortcut={bindingLabel('terminal.new')}
+          onNewTerminal={onCreateShell}
+          onLaunchAgent={onLaunchAgent}
+          onActivateTab={onActivateOpenTab}
+          onDismiss={(reason) => {
+            setCreateMenu(null)
+            // Escape 는 이 영역의 터미널로 포커스를 돌려준다(K2ⓒ). `+` 로 되돌리지 않는다(Orca `onCloseAutoFocus`). 바깥 클릭은 누른 곳이 포커스를 갖는다.
+            if (reason === 'escape') onActivate()
+          }}
+        />
+      )}
       <div className="main-tabbar-spacer" />
       {/* 탭이 아닌 것들(격자 메타·줌 칩·액션)은 한 상자에 담는다 — 늘 자리를 점유하고, 탭 스트립이 그만큼 줄어든다. */}
       <div className="main-tabbar-tail" data-group-tail={groupId}>

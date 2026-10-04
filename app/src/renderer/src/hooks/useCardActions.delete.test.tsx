@@ -30,7 +30,7 @@ let hook: ReturnType<typeof useCardActions> | null
 function Harness(props: { repos: RepoRow[]; activeWorkspaceId: string | null }): React.JSX.Element {
   const state = { repos: props.repos }
   const actions: LifecycleActions = {
-    createRow: () => {}, closeRow: () => {}, renameRow: () => {}, clearRowName: () => {}, closeWorktree: () => {},
+    createRow: () => {}, launchAgent: () => {}, closeRow: () => {}, renameRow: () => {}, clearRowName: () => {}, closeWorktree: () => {},
     openWorktree: () => {}, openCreateWorktree: () => {}, activateWorkspace,
   }
   hook = useCardActions({ stateRef: { current: state }, state, activeWorkspaceId: props.activeWorkspaceId, actions, revealPane: () => {}, mruHistory: () => [], notify: () => {} })

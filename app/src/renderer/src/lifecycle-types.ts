@@ -17,6 +17,11 @@ export type CloseTarget = { kind: 'tab'; tabId: string } | { kind: 'workspace'; 
  */
 export type LifecycleActions = {
   createRow: (workspaceId: string, kind: AgentKind) => void
+  /**
+   * LIFE-496 D38 — `+` 메뉴 Quick-launch. `createRow` 와 같은 경로에 **기동 워치독**을 더한다(에이전트가 기한 안에 감지되지 않으면 알림).
+   * 팔레트 「새 {kind} 에이전트」는 지금 동작 그대로 `createRow` 를 쓴다(K2ⓐ).
+   */
+  launchAgent: (input: { workspaceId: string; kind: Exclude<AgentKind, 'shell'>; label: string }) => void
   closeRow: (tabId: string) => void
   /**
    * LIFE-357 I-7 — 탭 이름을 사용자가 준 이름으로. 거절은 알림으로 그대로 올라온다.

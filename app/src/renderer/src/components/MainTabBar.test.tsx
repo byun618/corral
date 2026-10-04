@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyAgentState } from '../../../shared/agent-state.js'
 import { EMPTY_SESSION_DIGEST, type AgentStatus, type PaneRow, type TabRow } from '../../../shared/types.js'
 import { GroupHeader } from './MainTabBar.js'
+import type { OpenTabSearchEntry } from '../tab-create-menu.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -20,16 +21,17 @@ const tab = (index: number, panes: PaneRow[]): TabRow => ({
 
 let host: HTMLDivElement
 let root: Root
-const spies = { close: vi.fn(), select: vi.fn() }
-function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: string[]; dragActive?: boolean }): void {
+const spies = { close: vi.fn(), select: vi.fn(), createShell: vi.fn(), launch: vi.fn(), activateTab: vi.fn(), activate: vi.fn() }
+function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: string[]; dragActive?: boolean; entries?: OpenTabSearchEntry[] }): void {
   const noop = (): void => {}
   act(() => {
     root.render(createElement(GroupHeader, {
       groupId: 'g1', tabs: input.tabs, workspaceTabCount: input.tabs.length, home: '/home', selectedPane: null, activeTabId: input.activeTabId,
       activeGroup: true, unreadPanes: new Set(input.unread ?? []), paneCount: 1, grid: null, zoomed: false,
-      onActivate: noop, onSelectTab: spies.select, onCreateShell: noop, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
+      onActivate: spies.activate, onSelectTab: spies.select, onCreateShell: spies.createShell, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
       onSplitPane: noop, onMoveToGroup: noop, onZoom: noop, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
       tabDragActive: input.dragActive ?? false,
+      openTabEntries: input.entries ?? [], onLaunchAgent: spies.launch, onActivateOpenTab: spies.activateTab,
     }))
   })
 }
@@ -45,8 +47,7 @@ beforeEach(() => {
   root = createRoot(host)
   // happy-dom 에는 레이아웃이 없다 — 활성 탭 끌어오기는 호출만 확인한다.
   Element.prototype.scrollIntoView = vi.fn()
-  spies.close.mockReset()
-  spies.select.mockReset()
+  for (const spy of Object.values(spies)) spy.mockReset()
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -370,5 +371,172 @@ describe('넘침 (LIFE-494 K1·K2ⓐ)', () => {
       mount({ tabs: many.filter((row) => row.tabId !== 't1'), activeTabId: 't7' })
       expect(stripEl().scrollLeft).toBe(300)
     })
+  })
+})
+
+// LIFE-496 K1·K2ⓐ — `+` 드롭다운의 DOM 계약 (Orca v1.4.219 `tab-bar-surface.tsx:201-286` · `TabBarCreateEntry.tsx`). 값(px·색)은 측정 도구·네이티브 캡처가 본다.
+describe('+ 드롭다운 (LIFE-496)', () => {
+  const plus = (): HTMLButtonElement => host.querySelector<HTMLButtonElement>('[data-main-tabbar-add="g1"]')!
+  const menu = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-tab-create-menu="g1"]')
+  const input = (): HTMLInputElement => host.querySelector<HTMLInputElement>('[data-tab-create-input="g1"]')!
+  const open = (): void => {
+    act(() => plus().click())
+  }
+  const type = (value: string): void => {
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input(), value)
+      input().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+  const key = (target: Element, keyName: string): void => {
+    act(() => {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: keyName, bubbles: true, cancelable: true }))
+    })
+  }
+  const results = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-result]')].map((row) => row.dataset.tabCreateResult!)
+  const selectedResult = (): string | undefined => host.querySelector<HTMLElement>('[data-tab-create-result][aria-selected="true"]')?.dataset.tabCreateResult
+  const staticItems = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-item]')].map((row) => row.dataset.tabCreateItem!)
+  const entry = (tabId: string, title: string, extra: Partial<OpenTabSearchEntry> = {}): OpenTabSearchEntry => ({
+    tabId, groupId: 'g1', title, branch: 'main', agent: null, groupIndex: 0, tabIndex: 0, isCurrent: false, ...extra,
+  })
+
+  it('+ 클릭 = 메뉴가 열린다(빈 탭을 바로 만들지 않는다) · 다시 누르면 닫힌다 (Q3 ⓐ)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    expect(plus().getAttribute('aria-haspopup')).toBe('menu')
+    open()
+    expect(menu()).not.toBeNull()
+    expect(plus().getAttribute('aria-expanded')).toBe('true')
+    expect(spies.createShell).not.toHaveBeenCalled()
+    open()
+    expect(menu()).toBeNull()
+  })
+
+  it('빈 질의 = 입력창 · 새 터미널(⌘T 라벨) · 에이전트 카탈로그 순서 claude → codex → grok', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    expect(input().placeholder).toBe('열린 탭·에이전트 검색…')
+    expect(staticItems()).toEqual(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok'])
+    expect(host.querySelector('[data-tab-create-item="new-terminal"] .tab-create-shortcut')?.textContent).toMatch(/T/)
+    expect(host.querySelectorAll('[data-tab-create-menu="g1"] [role="separator"]')).toHaveLength(2)
+    expect(results()).toEqual([])
+  })
+
+  it('질의가 있으면 정적 메뉴를 숨기고 열린 탭 → 메뉴 매칭 → 에이전트 매칭 순으로 보인다', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry('t0', 'claude', { agent: 'claude' }), entry('t1', 'logs')] })
+    open()
+    type('terminal')
+    expect(staticItems()).toEqual([])
+    expect(results()).toEqual(['tab:t0', 'tab:t1', 'menu:new-terminal'])
+    type('claude')
+    expect(results()).toEqual(['tab:t0', 'agent:claude'])
+    expect(selectedResult()).toBe('tab:t0')
+  })
+
+  it('결과가 없으면 안내 상태 행', () => {
+    mount({ tabs: [], activeTabId: null })
+    open()
+    type('zzz')
+    expect(results()).toEqual([])
+    expect(host.querySelector('[data-tab-create-status]')?.textContent).toBe('열린 탭·에이전트 검색…')
+  })
+
+  it('↑/↓ 는 결과 안에서 감기고 Enter 가 실행한다 — 다른 영역 탭을 고르면 그 영역으로', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0', entries: [entry('t0', 'build a'), entry('t5', 'build b', { groupId: 'g2', groupIndex: 1 })] })
+    open()
+    type('build')
+    expect(selectedResult()).toBe('tab:t0')
+    key(input(), 'ArrowDown')
+    expect(selectedResult()).toBe('tab:t5')
+    key(input(), 'ArrowDown')
+    expect(selectedResult()).toBe('tab:t0')
+    key(input(), 'ArrowUp')
+    expect(selectedResult()).toBe('tab:t5')
+    key(input(), 'Enter')
+    expect(spies.activateTab).toHaveBeenCalledWith({ tabId: 't5', groupId: 'g2' })
+    expect(menu()).toBeNull()
+  })
+
+  it('빈 질의 Enter = 새 터미널 (Orca onOpenDefaultTerminal)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    key(input(), 'Enter')
+    expect(spies.createShell).toHaveBeenCalledTimes(1)
+    expect(menu()).toBeNull()
+  })
+
+  it('결과가 없을 때 ↓ 는 정적 메뉴 첫 항목, ↑ 는 마지막 항목으로 — 메뉴 안에서는 끝에서 멈춘다', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    key(input(), 'ArrowDown')
+    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('new-terminal')
+    key(document.activeElement!, 'ArrowUp')
+    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('new-terminal')
+    act(() => input().focus())
+    key(input(), 'ArrowUp')
+    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
+    key(document.activeElement!, 'ArrowDown')
+    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
+  })
+
+  it('Quick-launch 클릭 = 그 에이전트 · 새 터미널 클릭 = 빈 탭', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => host.querySelector<HTMLButtonElement>('[data-tab-create-item="agent:codex"]')!.click())
+    expect(spies.launch).toHaveBeenCalledWith('codex')
+    expect(menu()).toBeNull()
+    open()
+    act(() => host.querySelector<HTMLButtonElement>('[data-tab-create-item="new-terminal"]')!.click())
+    expect(spies.createShell).toHaveBeenCalledTimes(1)
+  })
+
+  it('Escape = 닫고 이 영역 터미널로 포커스(onActivate) · `+` 로 포커스를 돌려주지 않는다', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    key(input(), 'Escape')
+    expect(menu()).toBeNull()
+    expect(spies.activate).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).not.toBe(plus())
+  })
+
+  it('바깥 mousedown = 닫힘(포커스는 누른 곳 몫 — onActivate 없음)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    expect(menu()).toBeNull()
+    expect(spies.activate).not.toHaveBeenCalled()
+  })
+
+  it('메뉴 안 키는 위로 새지 않는다 (K2ⓒ — window 리스너가 못 본다)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    const seen = vi.fn()
+    window.addEventListener('keydown', seen)
+    open()
+    key(input(), 'a')
+    key(input(), 'ArrowDown')
+    window.removeEventListener('keydown', seen)
+    expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('메뉴 안 mousedown 은 헤더(영역 활성 → 터미널 포커스)로 새지 않는다', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    spies.activate.mockReset()
+    act(() => {
+      menu()!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    expect(spies.activate).not.toHaveBeenCalled()
+    expect(menu()).not.toBeNull()
+  })
+
+  it('탭 0개 영역의 + 도 메뉴를 연다 (K2ⓐ · Orca #18024 류 무반응 없음)', () => {
+    mount({ tabs: [], activeTabId: null })
+    open()
+    expect(menu()).not.toBeNull()
+    expect(staticItems()[0]).toBe('new-terminal')
   })
 })

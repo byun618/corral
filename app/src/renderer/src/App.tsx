@@ -52,7 +52,8 @@ import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { agentPanes, sessionTitle } from './session-title.js'
+import { agentPanes, sessionTitle, tabAgent } from './session-title.js'
+import type { OpenTabSearchEntry } from './tab-create-menu.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -79,6 +80,8 @@ function blurTerminal(): void {
  * 10초는 "홀드"로 볼 수 있는 상한을 넉넉히 넘긴 값이고, 넘겨 끝내는 쪽은 **취소**다.
  */
 /** 상태가 오기 전 — 매 렌더 새 배열을 만들면 순서 정규화 effect 가 매번 돈다. */
+/** Quick-launch 워치독 알림에 쓰는 이름 — Orca 카탈로그 라벨(`agent-catalog.tsx`). */
+const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as const
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
@@ -335,6 +338,33 @@ export function App(): React.JSX.Element {
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
+
+  /**
+   * LIFE-496 D36 — `+` 메뉴 omnibox 가 찾는 열린 탭. Orca 처럼 **현재 worktree 하나**의 탭을 **모든 영역**에서 모은다.
+   * 제목은 탭 스트립과 같은 `sessionTitle`, 위치는 영역 순서·탭 순서, 현재 탭 = 활성 영역의 활성 탭.
+   */
+  const openTabEntries = useMemo<OpenTabSearchEntry[]>(() => {
+    if (activeWorkspaceRow === null) return []
+    const tabCount = activeWorkspaceRow.tabs.length
+    const activeTabId = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
+    return layout.groups.flatMap((group, groupIndex) =>
+      group.tabOrder.flatMap((tabId, tabIndex) => {
+        const tab = activeWorkspaceRow.tabs.find((row) => row.tabId === tabId)
+        if (tab === undefined) return []
+        const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
+        return [{
+          tabId,
+          groupId: group.groupId,
+          title: sessionTitle({ tab, tabCount, ordinal, home: state?.home ?? null, selectedPaneId: lifecycle.selectedPane }),
+          branch: activeWorktreeRow?.branch ?? null,
+          agent: tabAgent(tab),
+          groupIndex,
+          tabIndex,
+          isCurrent: group.groupId === layout.activeGroupId && tabId === activeTabId,
+        }]
+      }),
+    )
+  }, [activeWorkspaceRow, activeWorktreeRow, layout.groups, layout.activeGroupId, state?.home, lifecycle.selectedPane])
 
   /**
    * 안 읽음 장부 (LIFE-471) — 「보고 있는」 pane 후보 = **활성 영역의 선택 pane**(198 활성 worktree·탭·leaf). 아래 `renderGroup` 의
@@ -925,6 +955,14 @@ export function App(): React.JSX.Element {
             if (pane !== null) selectPane(pane.paneId)
           }}
           onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
+          openTabEntries={openTabEntries}
+          onLaunchAgent={(kind) => lifecycle.actions.launchAgent({ workspaceId, kind, label: AGENT_LAUNCH_LABEL[kind] })}
+          onActivateOpenTab={({ tabId }) => {
+            // 그 탭이 속한 영역에서 활성으로 + pane 선택(포커스 토큰) — 사이드바 세션 클릭과 같은 길(revealPane)이다.
+            const target = tabById(tabId)
+            const pane = target === null ? null : pickPane(target)
+            if (pane !== null) revealPane(pane.paneId)
+          }}
           onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
           onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
           onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}

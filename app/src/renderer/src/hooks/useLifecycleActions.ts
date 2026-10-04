@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../shared/types.js'
 import type { CloseTarget, LifecycleActions, LifecycleNotice } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
+import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
 
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
@@ -62,6 +63,46 @@ export function useLifecycleActions(state: AppState | null): {
   const pendingSelectRef = useRef<string | null>(null)
   /** 방금 만든 탭 (G2′). `state` 가 아니라 **배치**가 여는 것이라 App 으로 넘긴다. */
   const [pendingRevealTab, setPendingRevealTab] = useState<string | null>(null)
+
+  /**
+   * **기동 워치독** (LIFE-496 K1ⓔ · 게이트 ⓪ Q2 ⓐ) — Orca `QuickLaunchButton.waitForTerminalPty` 의 corral 등가물.
+   *
+   * Orca 는 "PTY 가 생겼나"를 5초 본다. corral 은 herdr 가 PTY 를 쥐고 `tab.create` 가 root pane 을 돌려준 뒤에야 `agent.start` 를
+   * 부르므로 그 상태가 없다. 대신 조용히 묻히는 실패는 "**걸었는데 에이전트가 안 뜸**"이다 — U2 실측(`raw/claude/u2/`): 실행 파일이
+   * 없어도 `agent.start` 는 성공하고 pane.agent 는 끝내 오지 않는다. 그래서 그 pane 의 `agent` 도착을 기다린다.
+   * 기다리는 동안 한 번이라도 오면 성공으로 끝낸다(곧 나가 버린 에이전트를 실패로 세지 않는다). 기한에 판정은 순수 함수가 한다.
+   */
+  const stateRef = useRef<AppState | null>(state)
+  stateRef.current = state
+  const launchWatches = useRef(new Map<string, { watch: LaunchWatch; timer: ReturnType<typeof setTimeout> }>())
+  useEffect(() => {
+    if (state === null) return
+    for (const [paneId, entry] of launchWatches.current) {
+      if (findPane(state, paneId)?.agent == null) continue
+      clearTimeout(entry.timer)
+      launchWatches.current.delete(paneId)
+    }
+  }, [state])
+  useEffect(() => {
+    const watches = launchWatches.current
+    return () => {
+      for (const entry of watches.values()) clearTimeout(entry.timer)
+      watches.clear()
+    }
+  }, [])
+  const watchLaunch = useCallback((watch: LaunchWatch): void => {
+    const timer = setTimeout(() => {
+      launchWatches.current.delete(watch.paneId)
+      const current = stateRef.current
+      const verdict = launchWatchdogVerdict({
+        watch,
+        pane: current === null ? null : findPane(current, watch.paneId),
+        activeWorkspaceId: lastWorkspaceRef.current,
+      })
+      if (verdict === 'missing') setLifecycleNotice({ kind: 'error', message: launchWatchdogMessage(watch.label) })
+    }, LAUNCH_WATCHDOG_MS)
+    launchWatches.current.set(watch.paneId, { watch, timer })
+  }, [])
 
   const setActive = useCallback((workspaceId: string | null) => {
     lastWorkspaceRef.current = workspaceId
@@ -197,7 +238,7 @@ export function useLifecycleActions(state: AppState | null): {
   }, [])
 
   const createRow = useCallback(
-    async (workspaceId: string, kind: AgentKind): Promise<void> => {
+    async (workspaceId: string, kind: AgentKind, watchdogLabel: string | null = null): Promise<void> => {
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
       const result = await window.corral.createRow({ workspaceId, kind })
@@ -214,8 +255,9 @@ export function useLifecycleActions(state: AppState | null): {
       // 여기서는 무엇을 펴야 하는지만 남기고, 배치를 아는 App 이 탭이 도착한 뒤 편다.
       // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
       if (result.tabId !== null) setPendingRevealTab(result.tabId)
+      if (watchdogLabel !== null && kind !== 'shell' && result.paneId !== null) watchLaunch({ paneId: result.paneId, workspaceId, label: watchdogLabel })
     },
-    [setActive],
+    [setActive, watchLaunch],
   )
   const revealTabHandled = useCallback((): void => setPendingRevealTab(null), [])
 
@@ -277,6 +319,7 @@ export function useLifecycleActions(state: AppState | null): {
 
   const actions: LifecycleActions = {
     createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
+    launchAgent: ({ workspaceId, kind, label }) => void createRow(workspaceId, kind, label),
     closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
     renameRow: (input) => void renameRow(input),
     clearRowName: (tabId) => void clearRowName(tabId),
@@ -314,4 +357,14 @@ export function useLifecycleActions(state: AppState | null): {
     closeWorktreeModal,
     actions,
   }
+}
+
+function findPane(state: AppState, paneId: string): { workspaceId: string; agent: string | null } | null {
+  for (const repo of state.repos)
+    for (const worktree of repo.worktrees)
+      for (const tab of worktree.workspace?.tabs ?? []) {
+        const pane = tab.panes.find((entry) => entry.paneId === paneId)
+        if (pane !== undefined) return pane
+      }
+  return null
 }

@@ -10,7 +10,10 @@
 // "Agent settings…"·기본 에이전트 맨 앞·단축키 라벨은 LIFE-450 보류. 파일·URL·히스토리·브라우저·Simulator 는 corral 에 없다(의도적).
 //
 // 메뉴 라이브러리가 없어 직접 만든다(`ContextMenu.tsx` 와 같은 사정). Radix 에서 가져오는 동작:
-//   · 열리면 입력창 포커스(rAF) · Escape 닫기 · 바깥 mousedown·창 blur·다른 메뉴 열림(`menu-bus`)에 닫힌다
+//   · 열리면 입력창 포커스(rAF) · Escape 닫기(IME 조합 중 제외) · 바깥 mousedown·창 blur·다른 메뉴 열림(`menu-bus`)에 닫힌다
+//   · 포커스가 메뉴 밖으로 나가면 닫힌다(Radix DismissableLayer `onFocusOutside`) — ⌘T 같은 전역 단축키는 document 캡처라
+//     메뉴의 stopPropagation 보다 먼저 돈다. 새 터미널이 포커스를 가져가는 그 순간 메뉴가 같이 닫힌다(리뷰 r1 R1-01)
+//   · 첫 정적 항목의 ↑ 는 입력창으로 돌아간다(Orca `use-tab-entry-menu-return-focus.ts`, R1-02)
 //   · 닫을 때 포커스를 `+` 로 **되돌리지 않는다**(Orca `onCloseAutoFocus` preventDefault) — 새 탭이면 새 터미널(493 G1 마운트 포커스)이,
 //     Escape 면 이 영역의 터미널이 포커스를 받는다(여는 쪽 `onDismiss`).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -37,7 +40,7 @@ const MARGIN = 8
 const RESULT_LISTBOX_ID = 'tab-create-entry-results'
 const resultOptionDomId = (index: number): string => `tab-create-entry-result-${index}`
 
-export type TabCreateMenuDismiss = 'escape' | 'outside' | 'blur' | 'menu-bus' | 'action'
+export type TabCreateMenuDismiss = 'escape' | 'outside' | 'focus-out' | 'blur' | 'menu-bus' | 'action'
 
 /** 정적 메뉴 행 아이콘 — Orca `TerminalSquare` 자리. corral 은 같은 뜻의 기존 셸 타일을 쓴다(새 아이콘 0). */
 function TerminalGlyph({ size }: { size: number }): React.JSX.Element {
@@ -133,7 +136,7 @@ export function TabCreateMenu({
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const agents = useMemo(() => buildAgentLaunchOptions(), [])
   const options = useMemo(() => buildActiveOptions({ query, entries, agents, retainedResultId: pinnedId }), [query, entries, agents, pinnedId])
-  const selected = selectedIndex(options, pinnedId)
+  const selected = selectedIndex({ options, pinnedId })
   const showStatic = showStaticCreateMenu(query)
   const hasQuery = query.trim().length > 0
 
@@ -156,20 +159,28 @@ export function TabCreateMenu({
     return () => cancelAnimationFrame(frame)
   }, [])
 
-  // 바깥 mousedown · 창 blur · resize 에 닫힌다. `+` 위 mousedown 은 빼고 `+` 의 click 토글에 맡긴다(닫고 곧바로 다시 여는 것을 막는다).
+  // 바깥 mousedown · 바깥 포커스 · 창 blur · resize 에 닫힌다. `+` 위 mousedown·포커스는 빼고 `+` 의 click 토글에 맡긴다(닫고 곧바로 다시 여는 것을 막는다).
   useEffect(() => {
+    const outside = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Node)) return false
+      if (rootRef.current?.contains(target)) return false
+      return !(target instanceof Element && target.closest(`[data-main-tabbar-add="${CSS.escape(groupId)}"]`) !== null)
+    }
     const onDown = (event: MouseEvent): void => {
-      if (!(event.target instanceof Node)) return
-      if (rootRef.current?.contains(event.target)) return
-      if (event.target instanceof Element && event.target.closest(`[data-main-tabbar-add="${CSS.escape(groupId)}"]`) !== null) return
-      dismiss('outside')
+      if (outside(event.target)) dismiss('outside')
+    }
+    // R1-01 — 전역 단축키(⌘T)·Tab 등으로 포커스가 메뉴 밖으로 가면 메뉴가 남지 않는다. 포커스는 옮겨 간 곳에 둔다.
+    const onFocusIn = (event: FocusEvent): void => {
+      if (outside(event.target)) dismiss('focus-out')
     }
     const onBlur = (): void => dismiss('blur')
     document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('focusin', onFocusIn, true)
     window.addEventListener('blur', onBlur)
     window.addEventListener('resize', onBlur)
     return () => {
       document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('focusin', onFocusIn, true)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('resize', onBlur)
     }
@@ -232,6 +243,11 @@ export function TabCreateMenu({
       event.preventDefault()
       const items = staticItems()
       const at = items.indexOf(event.currentTarget)
+      // R1-02 — 첫 항목의 ↑ 는 검색창으로 돌아간다(Orca `useTabEntryMenuReturnFocus`). 그 밖에는 끝에서 멈춘다.
+      if (event.key === 'ArrowUp' && at === 0) {
+        inputRef.current?.focus()
+        return
+      }
       items[stepStaticItem({ count: items.length, current: at, delta: event.key === 'ArrowDown' ? 1 : -1 })]?.focus()
       return
     }
@@ -255,7 +271,8 @@ export function TabCreateMenu({
       onKeyDown={(event) => {
         // 메뉴가 열린 동안 키는 메뉴의 것이다 — 위로 새지 않게(Orca: Escape 만 Radix 로 보낸다).
         event.stopPropagation()
-        if (event.key === 'Escape') {
+        // R1-06 — IME 조합 중 Escape 는 조합 취소다. 메뉴를 닫지 않는다(menu-bus `useWindowEscape` 와 같은 원칙).
+        if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
           event.preventDefault()
           dismiss('escape')
         }

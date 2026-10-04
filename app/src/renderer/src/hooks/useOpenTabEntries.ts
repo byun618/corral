@@ -15,12 +15,16 @@ export function useOpenTabEntries(input: {
   activeGroupId: string | null
   home: string | null
   selectedPane: string | null
-  /** 폴백 번호 배정표를 다 실었나 (App `ordinalsReady`). */
+  /**
+   * 폴백 번호 배정표를 다 실었나 (App `ordinalsReady`). 싣기 전에는 만들지 않는다 — 그때 `ordinalFor` 가 집은 번호는
+   * `hydrate` 가 덮어 쓰고, `tabOrdinals` 는 모듈 상수라 memo 가 그 변화를 모른다(리뷰 r1 R1-05). 이 값이 재계산 신호다.
+   * 한 번 배정한 번호는 탭이 닫히거나 워크스페이스를 옮길 때까지 안 바뀐다(fallback-ordinal ②) — 그 둘은 `workspace` 가 바뀐다.
+   */
   ordinalsReady: boolean
 }): OpenTabSearchEntry[] {
-  const { workspace, worktree, groups, activeGroupId, home, selectedPane } = input
+  const { workspace, worktree, groups, activeGroupId, home, selectedPane, ordinalsReady } = input
   return useMemo<OpenTabSearchEntry[]>(() => {
-    if (workspace === null) return []
+    if (workspace === null || !ordinalsReady) return []
     const tabCount = workspace.tabs.length
     const activeTabId = groups.find((group) => group.groupId === activeGroupId)?.activeTabId ?? null
     return groups.flatMap((group, groupIndex) =>
@@ -40,5 +44,5 @@ export function useOpenTabEntries(input: {
         }]
       }),
     )
-  }, [workspace, worktree, groups, activeGroupId, home, selectedPane])
+  }, [workspace, worktree, groups, activeGroupId, home, selectedPane, ordinalsReady])
 }

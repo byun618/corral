@@ -71,6 +71,7 @@ export function useLifecycleActions(state: AppState | null): {
    * 부르므로 그 상태가 없다. 대신 조용히 묻히는 실패는 "**걸었는데 에이전트가 안 뜸**"이다 — U2 실측(`raw/claude/u2/`): 실행 파일이
    * 없어도 `agent.start` 는 성공하고 pane.agent 는 끝내 오지 않는다. 그래서 그 pane 의 `agent` 도착을 기다린다.
    * 기다리는 동안 한 번이라도 오면 성공으로 끝낸다(곧 나가 버린 에이전트를 실패로 세지 않는다). 기한에 판정은 순수 함수가 한다.
+   * main 은 state push 와 IPC 응답의 순서를 보장하지 않는다 — 응답보다 먼저 온 감지는 **등록할 때 최신 state 로** 본다(리뷰 r1 R1-04).
    */
   const stateRef = useRef<AppState | null>(state)
   stateRef.current = state
@@ -91,6 +92,8 @@ export function useLifecycleActions(state: AppState | null): {
     }
   }, [])
   const watchLaunch = useCallback((watch: LaunchWatch): void => {
+    const latest = stateRef.current
+    if (latest !== null && findPane(latest, watch.paneId)?.agent != null) return
     const timer = setTimeout(() => {
       launchWatches.current.delete(watch.paneId)
       const current = stateRef.current
@@ -237,14 +240,15 @@ export function useLifecycleActions(state: AppState | null): {
     else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
   }, [])
 
+  /** 만든 pane 의 id 를 돌려준다(실패·pane 없음이면 null) — `launchAgent` 가 워치독을 건다. */
   const createRow = useCallback(
-    async (workspaceId: string, kind: AgentKind, watchdogLabel: string | null = null): Promise<void> => {
+    async (workspaceId: string, kind: AgentKind): Promise<string | null> => {
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
       const result = await window.corral.createRow({ workspaceId, kind })
       if (!result.ok) {
         setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
-        return
+        return null
       }
       // G2 — **새 탭이 선택된다.** 이미 탭이 있는 worktree 에서는 자동 선택 이펙트가 안 돌아
       // (그 workspace 에 선택된 pane 이 이미 있다) 새 탭이 뒤에 조용히 생기기만 했다.
@@ -255,9 +259,17 @@ export function useLifecycleActions(state: AppState | null): {
       // 여기서는 무엇을 펴야 하는지만 남기고, 배치를 아는 App 이 탭이 도착한 뒤 편다.
       // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
       if (result.tabId !== null) setPendingRevealTab(result.tabId)
-      if (watchdogLabel !== null && kind !== 'shell' && result.paneId !== null) watchLaunch({ paneId: result.paneId, workspaceId, label: watchdogLabel })
+      return result.paneId
     },
-    [setActive, watchLaunch],
+    [setActive],
+  )
+  /** LIFE-496 D38 — `+` 메뉴 Quick-launch = `createRow` + 기동 워치독. */
+  const launchAgent = useCallback(
+    async ({ workspaceId, kind, label }: { workspaceId: string; kind: Exclude<AgentKind, 'shell'>; label: string }): Promise<void> => {
+      const paneId = await createRow(workspaceId, kind)
+      if (paneId !== null) watchLaunch({ paneId, workspaceId, label })
+    },
+    [createRow, watchLaunch],
   )
   const revealTabHandled = useCallback((): void => setPendingRevealTab(null), [])
 
@@ -319,7 +331,7 @@ export function useLifecycleActions(state: AppState | null): {
 
   const actions: LifecycleActions = {
     createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
-    launchAgent: ({ workspaceId, kind, label }) => void createRow(workspaceId, kind, label),
+    launchAgent: (input) => void launchAgent(input),
     closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
     renameRow: (input) => void renameRow(input),
     clearRowName: (tabId) => void clearRowName(tabId),

@@ -37,32 +37,32 @@ describe('query token match (Orca query-token-match.test.ts)', () => {
     expect(tokenizeMatchValue('새 터미널')).toEqual(['새', '터미널'])
   })
   it('같음 > 접두 > 중간', () => {
-    const exact = scoreQueryTokens('terminal', ['terminal'])
-    const prefix = scoreQueryTokens('term', ['terminal'])
-    const substring = scoreQueryTokens('rmin', ['terminal'])
+    const exact = scoreQueryTokens({ query: 'terminal', values: ['terminal'] })
+    const prefix = scoreQueryTokens({ query: 'term', values: ['terminal'] })
+    const substring = scoreQueryTokens({ query: 'rmin', values: ['terminal'] })
     expect(exact.score).toBeGreaterThan(prefix.score)
     expect(prefix.score).toBeGreaterThan(substring.score)
     expect(substring.allTokensMatched).toBe(true)
   })
   it('안 맞는 토큰을 알린다', () => {
-    expect(scoreQueryTokens('new browser', ['new terminal']).allTokensMatched).toBe(false)
+    expect(scoreQueryTokens({ query: 'new browser', values: ['new terminal'] }).allTokensMatched).toBe(false)
   })
   it('빈 입력은 0', () => {
-    expect(scoreQueryTokens('', ['terminal'])).toEqual({ allTokensMatched: false, score: 0 })
-    expect(scoreQueryTokens('terminal', [])).toEqual({ allTokensMatched: false, score: 0 })
+    expect(scoreQueryTokens({ query: '', values: ['terminal'] })).toEqual({ allTokensMatched: false, score: 0 })
+    expect(scoreQueryTokens({ query: 'terminal', values: [] })).toEqual({ allTokensMatched: false, score: 0 })
   })
 })
 
 describe('정적 메뉴 매칭 (Orca tab-create-menu-options.test.ts)', () => {
   it('terminal·shell·new terminal → 새 터미널', () => {
     for (const query of ['new terminal', 'terminal', 'shell', 'term', '터미널', '새 터미널'])
-      expect(findMatchingMenuOptions(query).map((option) => option.id), query).toEqual(['new-terminal'])
+      expect(findMatchingMenuOptions({ query }).map((option) => option.id), query).toEqual(['new-terminal'])
   })
   it('browser 는 없다 (corral 에 브라우저 탭이 없다 — 의도적)', () => {
-    expect(findMatchingMenuOptions('browser')).toEqual([])
+    expect(findMatchingMenuOptions({ query: 'browser' })).toEqual([])
   })
   it('빈 질의는 매칭 없음', () => {
-    expect(findMatchingMenuOptions('   ')).toEqual([])
+    expect(findMatchingMenuOptions({ query: '   ' })).toEqual([])
   })
 })
 
@@ -73,19 +73,19 @@ describe('에이전트 (Orca tab-agent-launch-options.test.ts · agent-catalog �
     expect(options.map((option) => option.label)).toEqual(['Claude', 'Codex', 'Grok'])
   })
   it('id·라벨·명령으로 맞춘다', () => {
-    expect(findMatchingAgentLaunchOptions('Claude', options).map((option) => option.agent)).toEqual(['claude'])
-    expect(findMatchingAgentLaunchOptions('openai codex', options)).toEqual([])
-    expect(findMatchingAgentLaunchOptions('grok', options).map((option) => option.agent)).toEqual(['grok'])
+    expect(findMatchingAgentLaunchOptions({ query: 'Claude', options }).map((option) => option.agent)).toEqual(['claude'])
+    expect(findMatchingAgentLaunchOptions({ query: 'openai codex', options })).toEqual([])
+    expect(findMatchingAgentLaunchOptions({ query: 'grok', options }).map((option) => option.agent)).toEqual(['grok'])
   })
   it('부분 접두로도 찾는다', () => {
-    expect(findMatchingAgentLaunchOptions('clau', options).map((option) => option.agent)).toEqual(['claude'])
+    expect(findMatchingAgentLaunchOptions({ query: 'clau', options }).map((option) => option.agent)).toEqual(['claude'])
   })
   it('중간 일치는 안 받는다', () => {
-    expect(findMatchingAgentLaunchOptions('lau', options)).toEqual([])
+    expect(findMatchingAgentLaunchOptions({ query: 'lau', options })).toEqual([])
   })
   it('한 글자 접두는 안 받는다 — 두 글자부터', () => {
-    expect(findMatchingAgentLaunchOptions('c', options)).toEqual([])
-    expect(findMatchingAgentLaunchOptions('co', options).map((option) => option.agent)).toEqual(['codex'])
+    expect(findMatchingAgentLaunchOptions({ query: 'c', options })).toEqual([])
+    expect(findMatchingAgentLaunchOptions({ query: 'co', options }).map((option) => option.agent)).toEqual(['codex'])
   })
 })
 
@@ -152,10 +152,10 @@ describe('결과 조립·선택 (Orca TabBarCreateEntry)', () => {
   })
   it('선택 = 고정 행이 있으면 그것, 아니면 첫 행', () => {
     const options = buildActiveOptions({ query: 'claude', entries: [entry('t1', 'claude')], agents })
-    expect(selectedIndex(options, null)).toBe(0)
-    expect(selectedIndex(options, 'agent:claude')).toBe(1)
-    expect(selectedIndex(options, 'tab:gone')).toBe(0)
-    expect(selectedIndex([], null)).toBeNull()
+    expect(selectedIndex({ options, pinnedId: null })).toBe(0)
+    expect(selectedIndex({ options, pinnedId: 'agent:claude' })).toBe(1)
+    expect(selectedIndex({ options, pinnedId: 'tab:gone' })).toBe(0)
+    expect(selectedIndex({ options: [], pinnedId: null })).toBeNull()
   })
   it('↑/↓ 는 감긴다', () => {
     expect(stepSelection({ count: 3, current: 2, delta: 1 })).toBe(0)

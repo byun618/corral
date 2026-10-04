@@ -27,7 +27,7 @@ export function tokenizeMatchValue(value: string): string[] {
 }
 
 /** 질의 토큰마다 가장 잘 맞는 후보 토큰 — 같음 3 · 접두 2 · 중간 1. */
-export function scoreQueryTokens(query: string, values: readonly string[]): { allTokensMatched: boolean; score: number } {
+export function scoreQueryTokens({ query, values }: { query: string; values: readonly string[] }): { allTokensMatched: boolean; score: number } {
   const candidateTokens = values.flatMap(tokenizeMatchValue)
   const queryTokens = tokenizeMatchValue(query)
   if (candidateTokens.length === 0 || queryTokens.length === 0) return { allTokensMatched: false, score: 0 }
@@ -55,20 +55,20 @@ export const TAB_CREATE_MENU_OPTIONS: readonly TabCreateMenuOption[] = [
   { id: 'new-terminal', label: '새 터미널', keywords: ['terminal', 'shell', 'new terminal', 'new shell', '터미널', '셸', '새 셸'] },
 ]
 
-function scoreMenuOption(normalizedQuery: string, option: TabCreateMenuOption): number {
+function scoreMenuOption({ normalizedQuery, option }: { normalizedQuery: string; option: TabCreateMenuOption }): number {
   const normalizedLabel = normalizeMatchQuery(option.label)
   if (normalizedQuery === normalizedLabel) return 100
-  const tokenMatch = scoreQueryTokens(normalizedQuery, [option.label, ...option.keywords])
+  const tokenMatch = scoreQueryTokens({ query: normalizedQuery, values: [option.label, ...option.keywords] })
   if (!tokenMatch.allTokensMatched) return 0
   if (normalizedLabel.includes(normalizedQuery) || normalizedQuery.includes(normalizedLabel)) return 80 + tokenMatch.score
   return tokenMatch.score
 }
 
-export function findMatchingMenuOptions(query: string, options: readonly TabCreateMenuOption[] = TAB_CREATE_MENU_OPTIONS): TabCreateMenuOption[] {
+export function findMatchingMenuOptions({ query, options = TAB_CREATE_MENU_OPTIONS }: { query: string; options?: readonly TabCreateMenuOption[] }): TabCreateMenuOption[] {
   const normalizedQuery = normalizeMatchQuery(query)
   if (!normalizedQuery) return []
   return options
-    .map((option, index) => ({ index, option, score: scoreMenuOption(normalizedQuery, option) }))
+    .map((option, index) => ({ index, option, score: scoreMenuOption({ normalizedQuery, option }) }))
     .filter((entry) => entry.score > 0)
     .sort((left, right) => (left.score !== right.score ? right.score - left.score : left.index - right.index))
     .map((entry) => entry.option)
@@ -97,7 +97,7 @@ export function buildAgentLaunchOptions(): AgentLaunchOption[] {
 }
 
 /** 정확한 별칭 1000. 그 밖에는 질의 토큰마다 같음 3 · 접두 2(2글자 이상만 — 한 글자 접두는 거의 모든 에이전트에 걸린다). 중간 일치는 안 받는다. */
-function scoreAgentLaunchOption(normalizedQuery: string, compactQuery: string, option: AgentLaunchOption): number {
+function scoreAgentLaunchOption({ normalizedQuery, compactQuery, option }: { normalizedQuery: string; compactQuery: string; option: AgentLaunchOption }): number {
   if (option.aliases.includes(normalizedQuery) || option.aliases.includes(compactQuery)) return 1000
   const candidateTokens = option.aliases.flatMap(tokenizeMatchValue)
   const queryTokens = tokenizeMatchValue(normalizedQuery)
@@ -115,12 +115,12 @@ function scoreAgentLaunchOption(normalizedQuery: string, compactQuery: string, o
   return score
 }
 
-export function findMatchingAgentLaunchOptions(query: string, options: readonly AgentLaunchOption[]): AgentLaunchOption[] {
+export function findMatchingAgentLaunchOptions({ query, options }: { query: string; options: readonly AgentLaunchOption[] }): AgentLaunchOption[] {
   const normalizedQuery = normalizeMatchQuery(query)
   if (!normalizedQuery) return []
   const compactQuery = compactAlias(query)
   return options
-    .map((option, index) => ({ index, option, score: scoreAgentLaunchOption(normalizedQuery, compactQuery, option) }))
+    .map((option, index) => ({ index, option, score: scoreAgentLaunchOption({ normalizedQuery, compactQuery, option }) }))
     .filter((entry) => entry.score > 0)
     .sort((left, right) => (left.score !== right.score ? right.score - left.score : left.index - right.index))
     .map((entry) => entry.option)
@@ -155,7 +155,7 @@ const TERMINAL_TYPE_ALIASES = ['terminal tab', 'terminal', '터미널'] as const
 const QUALITY = { fieldExact: 0, wordExact: 1, fieldPrefix: 2, wordPrefix: 3, boundary: 4, literal: 5 } as const
 type FieldRole = 'primary' | 'container' | 'alias' | 'evidence'
 
-function tokenQuality(token: string, fieldText: string): { quality: number; placement: number } | null {
+function tokenQuality({ token, fieldText }: { token: string; fieldText: string }): { quality: number; placement: number } | null {
   const field = normalizeMatchQuery(fieldText)
   if (!field) return null
   if (field === token) return { quality: QUALITY.fieldExact, placement: 0 }
@@ -174,7 +174,7 @@ function tokenQuality(token: string, fieldText: string): { quality: number; plac
 
 type TabRank = { destination: number; worstQuality: number; containerOnly: number; strength: number; placement: number }
 
-export function rankOpenTab(entry: OpenTabSearchEntry, query: string): TabRank | null {
+export function rankOpenTab({ entry, query }: { entry: OpenTabSearchEntry; query: string }): TabRank | null {
   const tokens = [...new Set(tokenizeMatchValue(query))]
   if (tokens.length === 0) return null
   const fields: { role: FieldRole; text: string }[] = [
@@ -192,10 +192,11 @@ export function rankOpenTab(entry: OpenTabSearchEntry, query: string): TabRank |
   for (const token of tokens) {
     let best: { quality: number; placement: number; role: FieldRole } | null = null
     for (const field of fields) {
-      const hit = tokenQuality(token, field.text)
+      const hit = tokenQuality({ token, fieldText: field.text })
       if (hit === null) continue
-      // 별칭은 exact-alias 프로필 — 단어가 통째로 같아야 한다(Orca indexed-field `exact-alias`).
-      if (field.role === 'alias' && hit.quality > QUALITY.wordExact) continue
+      // 별칭은 exact-alias 프로필 — 같음·단어 같음·접두·단어 접두까지 받고 중간 일치는 안 받는다
+      // (Orca indexed-field.ts `EXACT_ALIAS_QUALITIES` = field-exact·word-exact·field-prefix·word-prefix, 리뷰 r1 R1-03).
+      if (field.role === 'alias' && hit.quality > QUALITY.wordPrefix) continue
       const better = best === null || roleOrder(field.role) < roleOrder(best.role) || (roleOrder(field.role) === roleOrder(best.role) && hit.quality < best.quality)
       if (better) best = { ...hit, role: field.role }
     }
@@ -229,7 +230,7 @@ function positionScore(entry: OpenTabSearchEntry): number {
 export function searchOpenTabs(input: { entries: readonly OpenTabSearchEntry[]; query: string; retainedResultId?: string | null }): OpenTabSearchResult[] {
   if (!normalizeMatchQuery(input.query)) return []
   const ranked = input.entries.flatMap((entry) => {
-    const rank = rankOpenTab(entry, input.query)
+    const rank = rankOpenTab({ entry, query: input.query })
     return rank === null ? [] : [{ entry, rank }]
   })
   ranked.sort((a, b) => {
@@ -242,11 +243,11 @@ export function searchOpenTabs(input: { entries: readonly OpenTabSearchEntry[]; 
     return a.entry.tabId < b.entry.tabId ? -1 : a.entry.tabId > b.entry.tabId ? 1 : 0
   })
   const results = ranked.map(({ entry }) => ({ id: `tab:${entry.tabId}`, tabId: entry.tabId, groupId: entry.groupId, title: entry.title, agent: entry.agent }))
-  return capResults(results, input.retainedResultId ?? null)
+  return capResults({ results, retainedId: input.retainedResultId ?? null })
 }
 
 /** Orca `capPaletteSection` — 키보드로 고른 행은 상한 밖으로 밀려도 남긴다(마지막 자리를 내준다). */
-function capResults(results: OpenTabSearchResult[], retainedId: string | null): OpenTabSearchResult[] {
+function capResults({ results, retainedId }: { results: OpenTabSearchResult[]; retainedId: string | null }): OpenTabSearchResult[] {
   const visible = results.slice(0, OPEN_TAB_SEARCH_RESULT_LIMIT)
   if (retainedId === null || visible.some((result) => result.id === retainedId)) return visible
   const retained = results.find((result) => result.id === retainedId)
@@ -282,8 +283,8 @@ export function buildActiveOptions(input: {
   if (!normalizeMatchQuery(input.query)) return []
   return [
     ...searchOpenTabs({ entries: input.entries, query: input.query, retainedResultId: input.retainedResultId }).map((option) => ({ kind: 'tab' as const, option })),
-    ...findMatchingMenuOptions(input.query).map((option) => ({ kind: 'menu' as const, option })),
-    ...findMatchingAgentLaunchOptions(input.query, input.agents).map((option) => ({ kind: 'agent' as const, option })),
+    ...findMatchingMenuOptions({ query: input.query }).map((option) => ({ kind: 'menu' as const, option })),
+    ...findMatchingAgentLaunchOptions({ query: input.query, options: input.agents }).map((option) => ({ kind: 'agent' as const, option })),
   ]
 }
 
@@ -296,7 +297,7 @@ export function showStaticCreateMenu(query: string): boolean {
  * 선택된 행 — 화살표로 고정한 행이 아직 결과에 있으면 그것, 아니면 순위 첫 행(Orca: pinned 가 null 이면 순위를 따른다).
  * 결과가 없으면 null.
  */
-export function selectedIndex(options: readonly ActiveOption[], pinnedId: string | null): number | null {
+export function selectedIndex({ options, pinnedId }: { options: readonly ActiveOption[]; pinnedId: string | null }): number | null {
   if (options.length === 0) return null
   if (pinnedId !== null) {
     const at = options.findIndex((option) => activeOptionId(option) === pinnedId)

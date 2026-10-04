@@ -17,6 +17,8 @@ if (!root?.startsWith('/tmp/l496n') && !root?.startsWith('/tmp/l496i')) throw ne
 const ctl = process.env.L496_CTL ?? path.join(root, 'ctl.sock')
 const withClaude = process.env.L496_CLAUDE === '1'
 const missingMode = process.env.L496_MISSING === '1'
+/** 네이티브(사용자 userData + herdr default) 회차인가 — 격리 예행은 L496_CTL 을 준다. */
+const nativeMode = process.env.L496_CTL === undefined
 const herdrSession = process.env.L496_HERDR_SESSION ?? 'default'
 const herdrEnv = process.env.L496_HERDR_HOME
   ? { ...process.env, XDG_CONFIG_HOME: process.env.L496_HERDR_HOME, HERDR_CONFIG_PATH: path.join(process.env.L496_HERDR_HOME, 'config.toml') }
@@ -260,6 +262,43 @@ async function main() {
   record('input-after-close-reaches-terminal', afterClose?.includes('l496-after-close') === true, { tail: afterClose?.split('\n').filter(Boolean).slice(-3) ?? null })
   await key('u', ['control'])
 
+  // ⑥b (fix1 R1-01) 메뉴가 열린 채 ⌘T — 새 탭은 즉시 생기고, 메뉴는 닫히고, 포커스·뒤따른 입력은 새 터미널로. 그 뒤 Escape 도 터미널로 간다.
+  await openMenu(g1)
+  const beforeCmdT = new Set(await fixtureTabIds())
+  await key('t', ['meta'])
+  const viaCmdT = await newTabAfter(beforeCmdT)
+  const cmdTSeen = await settledOn({ group: g1, tabId: viaCmdT })
+  await type('echo l496-cmdt')
+  await pause(600)
+  const cmdTText = await paneText(viaCmdT)
+  const prevText = await paneText(viaQuery)
+  await key('Escape')
+  await pause(300)
+  const afterEsc = await read()
+  record('cmd-t-while-menu-open', cmdTSeen !== null && cmdTText?.includes('l496-cmdt') === true && prevText?.includes('l496-cmdt') === false && afterEsc.menu === null && afterEsc.focus.isTerminal, {
+    tab: viaCmdT, focus: cmdTSeen?.focus ?? (await read()).focus, menuAfter: cmdTSeen?.menu ?? null, newTail: cmdTText?.split('\n').filter(Boolean).slice(-2) ?? null, afterEscape: { menu: afterEsc.menu, focus: afterEsc.focus },
+  })
+  await key('u', ['control'])
+
+  // ⑥c (fix1 R1-03) "term" 접두 — 제목에 term 이 없는 열린 탭도 별칭 접두로 찾는다.
+  await openMenu(g1)
+  await type('term')
+  await pause(400)
+  seen = await dump('06c-query-term')
+  const termIds = seen.menu.results.map((row) => row.id)
+  record('query-term-prefix-open-tabs', termIds.filter((id) => id.startsWith('tab:')).length >= 1 && termIds.includes('menu:new-terminal'), { results: termIds, shots: [await shot('06c-query-term', '[data-tab-create-menu]')] })
+
+  // ⑥d (fix1 R1-06) 조합 중 Escape — **렌더러 합성 이벤트**(isComposing:true keydown)다. 실제 macOS IME 경로는 이 손잡이로 못 낸다(제어 소켓에 IME 입력 없음).
+  await run(() => {
+    const input = document.querySelector('[data-tab-create-input]')
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }))
+  })
+  await pause(200)
+  const composingSeen = await read()
+  record('composing-escape-keeps-menu-synthetic', composingSeen.menu !== null && composingSeen.menu.input.value === 'term', { menu: composingSeen.menu !== null, value: composingSeen.menu?.input.value ?? null, note: '합성 이벤트 — 실 IME 아님' })
+  await key('Escape')
+  await pause(300)
+
   // ⑦ 바깥 클릭 = 닫힘 (g2 본문).
   await openMenu(g1)
   const g2Body = groupById(await read(), g2).body
@@ -284,15 +323,16 @@ async function main() {
   const viaClick = await newTabAfter(before)
   record('static-new-terminal-click', (await settledOn({ group: g1, tabId: viaClick })) !== null, { tab: viaClick })
 
-  // ⑨ 키보드로 정적 메뉴 — ↓ 로 첫 항목, 끝에서 멈춤, Escape.
+  // ⑨ 키보드로 정적 메뉴 — ↓ 로 첫 항목, 첫 항목의 ↑ 는 입력창으로 돌아간다(Orca use-tab-entry-menu-return-focus, fix1 R1-02), Escape.
   await openMenu(g1)
   await key('Down')
   await pause(150)
   const firstFocus = (await read()).menu.items.find((item) => item.focused)?.id ?? null
+  const staticShot = await shot('09-static-focus', '[data-tab-create-menu]')
   await key('Up')
   await pause(150)
-  const stillFirst = (await read()).menu.items.find((item) => item.focused)?.id ?? null
-  record('arrow-into-static-menu', firstFocus === 'new-terminal' && stillFirst === 'new-terminal', { firstFocus, stillFirst, shots: [await shot('09-static-focus', '[data-tab-create-menu]')] })
+  const afterUp = await read()
+  record('arrow-up-returns-to-input', firstFocus === 'new-terminal' && afterUp.menu !== null && afterUp.menu.input.focused && !afterUp.menu.items.some((item) => item.focused), { firstFocus, inputFocused: afterUp.menu?.input.focused ?? null, shots: [staticShot] })
   await key('Escape')
   await pause(300)
 
@@ -351,6 +391,13 @@ async function main() {
 
   // ⑩ 탭 0개 영역의 `+` — 영역은 마지막 탭을 닫으면 접히고(group-tree `dropEmptyLeaves`) 하나 남은 영역만 빈 채로 남는다.
   //    fixture 탭을 전부 닫아 그 상태를 만든 뒤 `+` → 메뉴 → Enter(새 터미널)가 그 영역에 선다 (K2ⓐ · Orca #18024).
+  // fix1 C2 — 네이티브에서는 뺀다: fixture 탭을 다 닫으면 워크스페이스가 닫혀 화면이 사용자 복구 워크스페이스로 넘어간다(native r2).
+  if (nativeMode) {
+    record('empty-area-plus-menu', null, { skipped: 'native — 사용자 워크스페이스로 화면이 넘어가는 부작용(r2) 때문에 뺐다' })
+    seen = await dump('99-final')
+    fs.writeFileSync(path.join(rawd, 't4-tabs.json'), `${JSON.stringify({ workspace: ws.workspaceId, g1, g2, shells }, null, 1)}\n`)
+    return
+  }
   for (const id of await fixtureTabIds()) {
     await control({ cmd: 'click', selector: `[data-main-tab-close="${id}"]` })
     await until(async () => !(await fixtureTabIds()).includes(id), `${id} 닫힘`, 10_000)

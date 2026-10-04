@@ -50,10 +50,10 @@ import { useSidebarResize } from './hooks/useSidebarResize.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
+import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { agentPanes, sessionTitle, tabAgent } from './session-title.js'
-import type { OpenTabSearchEntry } from './tab-create-menu.js'
+import { agentPanes, sessionTitle } from './session-title.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -339,32 +339,16 @@ export function App(): React.JSX.Element {
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
 
-  /**
-   * LIFE-496 D36 — `+` 메뉴 omnibox 가 찾는 열린 탭. Orca 처럼 **현재 worktree 하나**의 탭을 **모든 영역**에서 모은다.
-   * 제목은 탭 스트립과 같은 `sessionTitle`, 위치는 영역 순서·탭 순서, 현재 탭 = 활성 영역의 활성 탭.
-   */
-  const openTabEntries = useMemo<OpenTabSearchEntry[]>(() => {
-    if (activeWorkspaceRow === null) return []
-    const tabCount = activeWorkspaceRow.tabs.length
-    const activeTabId = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
-    return layout.groups.flatMap((group, groupIndex) =>
-      group.tabOrder.flatMap((tabId, tabIndex) => {
-        const tab = activeWorkspaceRow.tabs.find((row) => row.tabId === tabId)
-        if (tab === undefined) return []
-        const ordinal = tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId })
-        return [{
-          tabId,
-          groupId: group.groupId,
-          title: sessionTitle({ tab, tabCount, ordinal, home: state?.home ?? null, selectedPaneId: lifecycle.selectedPane }),
-          branch: activeWorktreeRow?.branch ?? null,
-          agent: tabAgent(tab),
-          groupIndex,
-          tabIndex,
-          isCurrent: group.groupId === layout.activeGroupId && tabId === activeTabId,
-        }]
-      }),
-    )
-  }, [activeWorkspaceRow, activeWorktreeRow, layout.groups, layout.activeGroupId, state?.home, lifecycle.selectedPane])
+  /** LIFE-496 D36 — `+` 메뉴 omnibox 가 찾는 열린 탭(현재 worktree · 모든 영역). */
+  const openTabEntries = useOpenTabEntries({
+    workspace: activeWorkspaceRow,
+    worktree: activeWorktreeRow,
+    groups: layout.groups,
+    activeGroupId: layout.activeGroupId,
+    home: state?.home ?? null,
+    selectedPane: lifecycle.selectedPane,
+    ordinalsReady,
+  })
 
   /**
    * 안 읽음 장부 (LIFE-471) — 「보고 있는」 pane 후보 = **활성 영역의 선택 pane**(198 활성 worktree·탭·leaf). 아래 `renderGroup` 의

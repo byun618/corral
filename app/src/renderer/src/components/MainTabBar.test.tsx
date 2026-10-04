@@ -465,19 +465,77 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     expect(menu()).toBeNull()
   })
 
-  it('결과가 없을 때 ↓ 는 정적 메뉴 첫 항목, ↑ 는 마지막 항목으로 — 메뉴 안에서는 끝에서 멈춘다', () => {
+  it('결과가 없을 때 ↓ 는 정적 메뉴 첫 항목, ↑ 는 마지막 항목으로 — 첫 항목의 ↑ 는 입력창으로, 마지막에서는 멈춘다', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
     act(() => input().focus())
     key(input(), 'ArrowDown')
     expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('new-terminal')
+    // R1-02 — Orca `use-tab-entry-menu-return-focus.ts`: 첫 menuitem 의 ArrowUp 은 검색창으로 돌아간다(왕복).
     key(document.activeElement!, 'ArrowUp')
-    expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('new-terminal')
-    act(() => input().focus())
+    expect(document.activeElement).toBe(input())
+    expect(menu()).not.toBeNull()
     key(input(), 'ArrowUp')
     expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
     key(document.activeElement!, 'ArrowDown')
     expect((document.activeElement as HTMLElement | null)?.dataset.tabCreateItem).toBe('agent:grok')
+  })
+
+  it('메뉴가 열린 채 전역 단축키(⌘T)가 새 터미널로 포커스를 옮기면 메뉴가 닫힌다 — 포커스는 터미널에 남는다 (R1-01)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    // `useKeybindings` 와 같은 document **캡처** 단축키 — 메뉴의 버블 stopPropagation 보다 먼저 돈다.
+    const terminal = document.createElement('textarea')
+    document.body.append(terminal)
+    const shortcut = (event: KeyboardEvent): void => {
+      if (!event.metaKey || event.key !== 't') return
+      spies.createShell()
+      terminal.focus()
+    }
+    document.addEventListener('keydown', shortcut, true)
+    try {
+      act(() => {
+        input().dispatchEvent(new KeyboardEvent('keydown', { key: 't', metaKey: true, bubbles: true, cancelable: true }))
+      })
+      expect(spies.createShell).toHaveBeenCalledTimes(1)
+      expect(menu()).toBeNull()
+      expect(document.activeElement).toBe(terminal)
+      expect(spies.activate).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', shortcut, true)
+      terminal.remove()
+    }
+  })
+
+  it('포커스가 메뉴 밖으로 나가면(Tab 등) 메뉴가 남지 않는다 · 메뉴 안 이동은 닫지 않는다 (R1-01)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    act(() => host.querySelector<HTMLButtonElement>('[data-tab-create-item="agent:claude"]')!.focus())
+    expect(menu()).not.toBeNull()
+    const outside = document.createElement('button')
+    document.body.append(outside)
+    try {
+      act(() => outside.focus())
+      expect(menu()).toBeNull()
+      expect(document.activeElement).toBe(outside)
+    } finally {
+      outside.remove()
+    }
+  })
+
+  it('IME 조합 중 Escape 는 메뉴를 닫지 않는다 — 조합 취소다 (R1-06, menu-bus useWindowEscape 와 같은 원칙)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    act(() => {
+      input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }))
+    })
+    expect(menu()).not.toBeNull()
+    expect(spies.activate).not.toHaveBeenCalled()
+    key(input(), 'Escape')
+    expect(menu()).toBeNull()
   })
 
   it('Quick-launch 클릭 = 그 에이전트 · 새 터미널 클릭 = 빈 탭', () => {

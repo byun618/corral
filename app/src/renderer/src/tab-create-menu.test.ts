@@ -112,8 +112,13 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
   it('"terminal" 은 별칭으로 모든 터미널 탭에 맞는다 (Orca TERMINAL_TYPE_SEARCH_ALIASES)', () => {
     const entries = [entry('t1', 'claude'), entry('t2', 'zsh')]
     expect(searchOpenTabs({ entries, query: 'terminal' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
-    // 별칭은 통째로 같아야 한다 — 접두 "term" 은 별칭으로 안 맞는다.
-    expect(searchOpenTabs({ entries, query: 'term' })).toEqual([])
+  })
+  it('별칭은 접두로도 맞는다 — "term"·"termin" 으로 열린 터미널 탭을 찾는다 (R1-03, Orca EXACT_ALIAS_QUALITIES)', () => {
+    const entries = [entry('t1', 'alpha-build'), entry('t2', 'beta')]
+    expect(searchOpenTabs({ entries, query: 'term' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
+    expect(searchOpenTabs({ entries, query: 'termin' }).map((result) => result.tabId)).toEqual(['t1', 't2'])
+    // 중간 일치는 별칭에서 받지 않는다(field-exact·word-exact·field-prefix·word-prefix 만).
+    expect(searchOpenTabs({ entries, query: 'rmin' })).toEqual([])
   })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
     const entries = [entry('t1', 'logs', { agent: 'claude' }), entry('t2', 'claude notes')]

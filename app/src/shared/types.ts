@@ -869,6 +869,20 @@ export type OrchestrationLineage =
  */
 export type CorralShortcut = ShortcutMatch
 
+/** ⌘V 이미지 붙여넣기 — main 이 클립보드 이미지를 임시 PNG 로 쓴 결과 (LIFE-497 · D41). */
+export type ClipboardImageSaveResult =
+  | { status: 'saved'; path: string }
+  | { status: 'empty' }
+  | { status: 'failed'; error: string }
+
+/**
+ * OS 파일 드롭 — preload 가 `webUtils.getPathForFile` 로 경로를 얻어 **드롭 지점의 pane** 과 함께 넘긴다 (D43).
+ * 거부(상한 초과·경로 없음)도 같은 채널로 와서 렌더러가 남긴다 — 조용히 사라지지 않게.
+ */
+export type TerminalFileDrop =
+  | { status: 'dropped'; paneId: string; paths: string[] }
+  | { status: 'rejected'; paneId: string; reason: 'too-many-paths' | 'unresolved-paths'; count: number }
+
 export type CorralApi = {
   getState: () => Promise<AppState>
   /** 새로고침 버튼 (LIFE-445) — git 을 다시 읽어 골격을 세운 뒤의 상태. */
@@ -929,6 +943,10 @@ export type CorralApi = {
    * **어느 pane 인지 실어 보낸다**: 붙은 탭 밖 pane 이면 herdr 가 조용히 버리므로 main 이 막는다 (S1).
    */
   termInput: (input: { paneId: string; data: string }) => void
+  /** ⌘V 이미지 붙여넣기 (LIFE-497) — 클립보드 이미지를 임시 PNG 로 쓰고 경로를 받는다. 쓰기는 렌더러가 termInput 으로. */
+  saveClipboardImage: () => Promise<ClipboardImageSaveResult>
+  /** OS 파일 드롭 (LIFE-497) — preload 의 document 드롭 처리기가 부른다. */
+  onFileDrop: (listener: (drop: TerminalFileDrop) => void) => () => void
   /** 영역 상자가 정한 **탭 격자**를 1회 요청한다 (pane 단위가 아니다 — §10-R13). */
   termScroll: (input: { paneId: string } & TerminalScroll) => void
   /** 줌 — paneId null 이면 해제. 그리는 건 클라이언트, 격자만 역산해 요청한다 (F2-3). */

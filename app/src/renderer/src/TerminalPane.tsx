@@ -22,6 +22,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
+import { clipboardImagePayload, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
 
 const decoder = new TextDecoder()
 
@@ -261,6 +262,40 @@ export function TerminalPane({
       window.corral.termInput({ paneId, data })
     })
 
+    // --- ⌘V 이미지 붙여넣기 (LIFE-497 · D41) ------------------------------------------
+    // ⌘V 는 Electron 기본 Edit 메뉴의 paste role 이 쥐고, role 은 포커스된 xterm 에 DOM `paste` 를 일으킨다
+    // (메뉴는 재구성하지 않는다 — R23). xterm 은 그 이벤트의 **텍스트**만 읽는다. 그래서 캡처 단계에서 본다:
+    // 텍스트가 있으면 손대지 않는다 — xterm 의 평소 붙여넣기 그대로다(바이트 동일, K5). 텍스트가 없을 때만
+    // 가로채(xterm 이 빈 `ESC[200~ESC[201~` 를 보내지 않게) main 에 이미지를 PNG 로 쓰게 하고 그 경로를
+    // **강제 bracketed paste** 로 ⌘V 를 받은 이 pane 에 쓴다. 대상은 이벤트 시점의 paneId 로 고정한다 —
+    // 처리 중 다른 pane 을 고르거나 이 pane 이 닫혀도 다른 pane 에 쓰지 않는다 (K1ⓒ). Ctrl+V 는 여기 안 온다
+    // (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
+    const onPaste = (event: ClipboardEvent): void => {
+      if (!shouldPasteClipboardImage(event.clipboardData?.getData('text/plain') ?? '')) return
+      event.preventDefault()
+      event.stopPropagation()
+      const target = paneId
+      void window.corral.saveClipboardImage().then((result) => {
+        const data = clipboardImagePayload(result)
+        if (data === null) {
+          if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
+          return
+        }
+        window.corral.termInput({ paneId: target, data })
+      })
+    }
+    container.addEventListener('paste', onPaste, { capture: true })
+
+    // --- OS 파일 드롭 (LIFE-497 · D43) — preload 가 드롭 지점의 pane 과 경로를 준다 ---------
+    const offFileDrop = window.corral.onFileDrop((drop) => {
+      if (drop.paneId !== paneId) return
+      if (drop.status === 'rejected') {
+        console.warn('[drop] 파일 드롭 거부', drop.reason, drop.count)
+        return
+      }
+      for (const data of dropPathPayloads(drop.paths)) window.corral.termInput({ paneId, data })
+    })
+
     // --- wheel: 가로채서 서버 스크롤로 (캡처 + preventDefault) ----------------------
     // xterm 에 스크롤백이 없고(0), mouseReporting 이 켜져 있으면 xterm 자신도 wheel 을
     // SGR 리포트로 바꾼다 — 두 길이 같이 살면 두 번 스크롤된다. 캡처 단계에서 끊어
@@ -367,6 +402,8 @@ export function TerminalPane({
       if (installed !== undefined && window.corralTermProbe === installed) delete window.corralTermProbe
       if (installed !== undefined) paneProbes.delete(paneId)
       container.removeEventListener('wheel', onWheel, { capture: true })
+      container.removeEventListener('paste', onPaste, { capture: true })
+      offFileDrop()
       offFrame()
       selectionListener.dispose()
       dataListener.dispose()

@@ -1,0 +1,22 @@
+{
+  // preload 는 **두 세계에 걸친다** — `electron`(Node 타입)을 import 하면서 document 에 드롭 처리기를 단다(LIFE-497 D43).
+  // node 프로젝트에 DOM lib 를 넣으면 main 이 DOM 전역을 써도 타입 검사가 못 잡으므로, preload 만 여기서 둘 다 켠다.
+  "include": ["src/preload/**/*", "src/shared/**/*"],
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true
+  }
+}

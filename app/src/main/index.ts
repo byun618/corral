@@ -16,7 +16,7 @@ import { matchBinding } from '../shared/keybindings.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -69,6 +69,7 @@ import {
 } from './adapter/index.js'
 import { decideRoots } from './browse-repos.js'
 import { canonicalPath } from './canonical-path.js'
+import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
@@ -1120,6 +1121,11 @@ function windowSize(): { width: number; height: number } {
   return { width: Number(match[1]), height: Number(match[2]) }
 }
 
+/** 붙여넣기 PNG 폴더 — OS 임시 폴더 아래 corral 전용. macOS `$TMPDIR`(`/var/folders/…/T/`)는 공백이 없다 (K1ⓑ). */
+function pasteDir(): string {
+  return path.join(app.getPath('temp'), 'corral-paste')
+}
+
 function createWindow(): void {
   const size = windowSize()
   window = new BrowserWindow({
@@ -1402,6 +1408,20 @@ app.whenReady().then(async () => {
     if (typeof input?.paneId !== 'string' || typeof input.data !== 'string') return
     stream.input(input)
   })
+  /**
+   * ⌘V 이미지 붙여넣기 (LIFE-497 · D41) — 렌더러가 **클립보드에 텍스트가 없을 때만** 부른다.
+   * PNG 를 임시 폴더에 쓰고 경로만 돌려준다. PTY 로 쓰는 것은 렌더러가 ⌘V 를 받은 pane 에 termInput 으로 한다 —
+   * 입력이 들어가는 길을 하나(termInput)로 둔다. 실패·빈 클립보드는 여기 로그에 남는다 (K1ⓓ).
+   */
+  ipcMain.handle('corral:saveClipboardImage', async (event) => {
+    if (!fromOurWindow(event)) return { status: 'failed', error: '허용되지 않은 창' }
+    const result = await saveClipboardImage({
+      readPng: electronClipboardPng({ read: () => clipboard.read(), toPng: (bytes) => nativeImage.createFromBuffer(bytes).toPNG() }),
+      dir: pasteDir(),
+    })
+    log('paste.clipboard_image', result)
+    return result
+  })
   ipcMain.on('corral:termScroll', (event, scroll: { paneId: string } & TerminalScroll) => {
     // termInput 과 같은 결로 모양을 검증한다 (수정 1회차 L8) — 렌더러가 신뢰 경계지만
     // 핸들러가 payload 를 안 보는 모양으로 굳으면 나중에 그대로 구멍이 된다.
@@ -1497,6 +1517,13 @@ app.whenReady().then(async () => {
   digestTimer = setInterval(() => refreshDigests(), DIGEST_POLL_MS)
   setInterval(() => void refreshIntegrations(), SESSION_POLL_MS * 4)
   setInterval(() => void lineage.refresh(), LINEAGE_POLL_MS)
+  // 붙여넣기 PNG 정리 (D44) — 기동 뒤 한 번, 그 뒤 1시간마다. 나이(7일)로만 지운다 — 사유는 sweepPasteFiles 주석.
+  const sweep = (): void =>
+    void sweepPasteFiles({ dir: pasteDir(), now: Date.now(), maxAgeMs: PASTE_FILE_MAX_AGE_MS }).then((result) => {
+      if (result.removed.length > 0) log('paste.sweep', { removed: result.removed.length, kept: result.kept })
+    })
+  setTimeout(sweep, 30_000)
+  setInterval(sweep, 60 * 60 * 1000)
   scheduleTree()
   // `CORRAL_WORKTREE_POLL_MS` — 계측이 자동 경로를 끌 때(0) 쓴다.
   worktreePoller.start(parsePollMs(process.env.CORRAL_WORKTREE_POLL_MS))

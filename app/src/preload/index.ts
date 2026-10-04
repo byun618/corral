@@ -5,11 +5,13 @@
 //
 // 여기 오가는 타입은 전부 `shared/types.ts` 다. 어댑터는 이름조차 모른다 (기준 N2).
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { FILE_DROP_MAX_PATHS } from '../shared/terminal-paste.js'
 import type {
   AddRepoResult,
   AgentKind,
   AppState,
+  ClipboardImageSaveResult,
   BrowseReposResult,
   CloseRowResult,
   CorralApi,
@@ -21,6 +23,7 @@ import type {
   PaneSplitDirection,
   RemoveRepoResult,
   TerminalGroupRequest,
+  TerminalFileDrop,
   TerminalFrame,
   TerminalScroll,
   RenameRowResult,
@@ -60,6 +63,8 @@ const EXPOSED = [
   'onRevealPane',
   'syncTermGroups',
   'termInput',
+  'saveClipboardImage',
+  'onFileDrop',
   'termScroll',
   'termZoom',
   'repaintPane',
@@ -71,6 +76,59 @@ const EXPOSED = [
   'onShortcut',
   'preloadEnv',
 ]
+
+/**
+ * OS 파일 드롭 (LIFE-497 · D43). **preload 에서만** 경로를 얻을 수 있다 — `webUtils.getPathForFile` 은
+ * 렌더러(격리 월드)에 없고, sandbox preload 가 쓸 수 있는 모듈이다. 그래서 document 캡처 단계에서 받는다.
+ *
+ * - `dragover` 에 파일이 실려 있으면 `preventDefault` — 안 하면 `drop` 이 안 온다.
+ * - `drop` 은 **파일이면 어디서든** `preventDefault` 한다. Chromium 기본 동작은 파일을 창에 여는 것이라
+ *   pane 밖(사이드바·탭바)에 떨어뜨려도 창이 파일로 이탈하면 안 된다 (K3ⓒ). 탭 DnD 는 포인터 이벤트라 여기 안 걸린다.
+ * - 대상은 **드롭 지점의 pane** 상자(`data-term-pane-box`)다 — 포커스 pane 이 아니다. pane 밖이면 버린다.
+ */
+const fileDropListeners = new Set<(drop: TerminalFileDrop) => void>()
+const carriesFiles = (event: DragEvent): boolean => event.dataTransfer?.types.includes('Files') === true
+const dropPaneOf = (event: DragEvent): string | null => {
+  for (const entry of event.composedPath()) {
+    if (entry instanceof HTMLElement && entry.dataset.termPaneBox !== undefined) return entry.dataset.termPaneBox
+  }
+  return null
+}
+const emitFileDrop = (drop: TerminalFileDrop): void => {
+  for (const listener of [...fileDropListeners]) listener(drop)
+}
+document.addEventListener(
+  'dragover',
+  (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = dropPaneOf(event) === null ? 'none' : 'copy'
+  },
+  true,
+)
+document.addEventListener(
+  'drop',
+  (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const paneId = dropPaneOf(event)
+    const files = event.dataTransfer?.files
+    if (paneId === null || files === undefined || files.length === 0) return
+    if (files.length > FILE_DROP_MAX_PATHS) {
+      emitFileDrop({ status: 'rejected', paneId, reason: 'too-many-paths', count: files.length })
+      return
+    }
+    const paths = [...files].map((file) => webUtils.getPathForFile(file)).filter((one) => one.length > 0)
+    if (paths.length === 0) {
+      // 경로를 못 읽는 항목(약속 파일·가상 파일) — 조용히 버리지 않고 알린다 (Orca #15782).
+      emitFileDrop({ status: 'rejected', paneId, reason: 'unresolved-paths', count: files.length })
+      return
+    }
+    emitFileDrop({ status: 'dropped', paneId, paths })
+  },
+  true,
+)
 
 const api: CorralApi = {
   getKeybindings: () => ipcRenderer.invoke('corral:getKeybindings'),
@@ -116,6 +174,13 @@ const api: CorralApi = {
   // 입력·리사이즈·스크롤은 send — 왕복 없는 한 방향이 레이턴시(S2)의 모양이다.
   syncTermGroups: (groups: TerminalGroupRequest[]) => ipcRenderer.send('corral:syncTermGroups', groups),
   termInput: (input: { paneId: string; data: string }) => ipcRenderer.send('corral:termInput', input),
+  saveClipboardImage: (): Promise<ClipboardImageSaveResult> => ipcRenderer.invoke('corral:saveClipboardImage'),
+  onFileDrop: (listener: (drop: TerminalFileDrop) => void) => {
+    fileDropListeners.add(listener)
+    return () => {
+      fileDropListeners.delete(listener)
+    }
+  },
   termScroll: (input: { paneId: string } & TerminalScroll) => ipcRenderer.send('corral:termScroll', input),
   termZoom: (input: { groupId: string; paneId: string | null; cols: number; rows: number }) =>
     ipcRenderer.send('corral:termZoom', input),

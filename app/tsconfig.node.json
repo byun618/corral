@@ -1,5 +1,5 @@
 {
-  "include": ["electron.vite.config.ts", "eslint.config.mjs", "src/runtime/**/*", "src/main/**/*", "src/preload/**/*", "src/shared/**/*", "scripts/**/*"],
+  "include": ["electron.vite.config.ts", "eslint.config.mjs", "src/runtime/**/*", "src/main/**/*", "src/shared/**/*", "scripts/**/*"],
   // 벤더 테스트는 tsc 대상이 아니다 — bun:test 원본을 vitest 로 옮긴 것이라 corral 의
   // noUncheckedIndexedAccess 아래서 원본 그대로가 안 선다. 검증은 vitest 실행(S7ⓓ)이 한다.
   // 경과 시간 대조 프로브(수정 라운드 7)는 **렌더러의 순수 함수**를 일부러 import 한다 —

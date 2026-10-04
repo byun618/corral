@@ -248,7 +248,7 @@ export function TerminalPane({
     // S2 계측: onData 발화 시각을 렌더러 시계로 링에 남긴다 (진단 실행에서만) — S2 는 이제
     // 주입시각(main)을 기준으로 잰다(수정 1회차 C3). onData 시각은 그 드리프트를 원자료에
     // 드러내는 참고값으로 남긴다.
-    const inputs: Array<{ data: string; at: number }> = []
+    const inputs: Array<{ data: string; at: number; source?: 'paste-image' | 'file-drop' }> = []
     const dataListener = term.onData((data) => {
       // DECRQM 프로브 창이면 xterm 의 응답을 삼킨다 — pane 으로 흘리지 않는다 (L2).
       if (decrqmCapture !== null) {
@@ -270,6 +270,14 @@ export function TerminalPane({
     // **강제 bracketed paste** 로 ⌘V 를 받은 이 pane 에 쓴다. 대상은 이벤트 시점의 paneId 로 고정한다 —
     // 처리 중 다른 pane 을 고르거나 이 pane 이 닫혀도 다른 pane 에 쓰지 않는다 (K1ⓒ). Ctrl+V 는 여기 안 온다
     // (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
+    // ⌘V 이미지·드롭이 만든 바이트도 진단 링에 남긴다 (onData 를 안 거치므로 따로) — 관문이 "pane 으로 간 바이트" 를 읽는 자리.
+    const sendGenerated = (data: string, source: 'paste-image' | 'file-drop', target: string): void => {
+      if (diagnostics) {
+        inputs.push({ data, at: Date.now(), source })
+        if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
+      }
+      window.corral.termInput({ paneId: target, data })
+    }
     const onPaste = (event: ClipboardEvent): void => {
       if (!shouldPasteClipboardImage(event.clipboardData?.getData('text/plain') ?? '')) return
       event.preventDefault()
@@ -281,7 +289,7 @@ export function TerminalPane({
           if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
           return
         }
-        window.corral.termInput({ paneId: target, data })
+        sendGenerated(data, 'paste-image', target)
       })
     }
     container.addEventListener('paste', onPaste, { capture: true })
@@ -293,7 +301,7 @@ export function TerminalPane({
         console.warn('[drop] 파일 드롭 거부', drop.reason, drop.count)
         return
       }
-      for (const data of dropPathPayloads(drop.paths)) window.corral.termInput({ paneId, data })
+      for (const data of dropPathPayloads(drop.paths)) sendGenerated(data, 'file-drop', paneId)
     })
 
     // --- wheel: 가로채서 서버 스크롤로 (캡처 + preventDefault) ----------------------

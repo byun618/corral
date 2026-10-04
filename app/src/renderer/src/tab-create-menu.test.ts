@@ -140,12 +140,13 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
     expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('éclair') })], query: 'c' })).toEqual([])
     expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('ábar') })], query: 'b' })).toEqual([])
   })
-  it('전체 NFC 는 Orca 219 와의 의도적 차이다 — 분해형 한글 제목을 완성형으로 찾고, 조합 자모 하나로는 찾지 않는다 (R5-02, RESULT D-목록)', () => {
+  it('전체 NFC 는 Orca 219 와의 의도적 차이다 — 완성형·분해형을 서로 찾고, 조합 자모 하나로는 찾지 않는다 (R5-02 · R6-04, RESULT D9)', () => {
     const decomposedTitle = '\u1100\u1161\u1102\u1161\u1103\u1161' // 가나다 (macOS 경로 이름처럼 NFD)
-    const found = (query: string): string[] => searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposedTitle })], query }).map((result) => result.tabId)
-    expect(found('\uAC00')).toEqual(['t1']) // 완성형 가 — Orca 219 제외, corral 포함
-    expect(found('\u1100\u1161')).toEqual(['t1']) // 분해형 가 — Orca 219 제외, corral 포함
-    expect(found('\u1100')).toEqual([]) // 조합 자모 ᄀ — Orca 219 포함, corral 제외(대가)
+    const found = ({ title, query }: { title: string; query: string }): string[] => searchOpenTabs({ entries: [entry({ tabId: 't1', title })], query }).map((result) => result.tabId)
+    expect(found({ title: decomposedTitle, query: '\uAC00' })).toEqual(['t1']) // NFD 제목 + NFC 가 — Orca 219 제외(차이)
+    expect(found({ title: '\uAC00\uB098\uB2E4', query: '\u1100\u1161' })).toEqual(['t1']) // NFC 제목 + NFD 가 — Orca 219 제외(차이)
+    expect(found({ title: decomposedTitle, query: '\u1100\u1161' })).toEqual(['t1']) // NFD 제목 + NFD 가 — Orca 219 도 포함(차이 아님)
+    expect(found({ title: decomposedTitle, query: '\u1100' })).toEqual([]) // NFD 제목 + 조합 자모 ᄀ — Orca 219 포함, corral 제외(대가)
   })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
     const entries = [entry({ tabId: 't1', title: 'logs', agent: 'claude' }), entry({ tabId: 't2', title: 'claude notes' })]

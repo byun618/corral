@@ -6,10 +6,11 @@
 // 사용: node iso-t4.mjs --app <app 폴더> --work /tmp/l496iX --port 96NN --out <raw 폴더> [--claude 1] [--missing 1]
 //
 // fix5 R5-01 — 기동부터 driver·정리·iso-run.json 기록까지 한 수명(try/finally)이다. 기동 실패·driver spawn 예외에도 정리하고 기록한다.
-// 신호 대상 = 기동 때 받은 pid + **소유 경로로 확인되는** 프로세스(`launchCorral` 은 Electron pid 를 모르는 실패를 위해 경로를 먼저 등록한다 —
-// `corral open` 이 띄운 Electron 은 PPID 1 이라 backend 자손으로 못 잇는다, fix4 head-1) + 그 자손(PPID 사슬).
-// 경로 확인 = `lib/own.mjs` `selectOwnedByPath`(앱 명령줄 · 인자 토큰이 경계까지 그 경로 안). 공백 든 경로는 argv 경계를 복원할 수 없어
-// (own.mjs H1 · gui-diff R3-01) 신호 근거로 쓰지 않고 보고만 한다. 기동 전부터 그 경로를 쓰던 프로세스는 소유에서 뺀다.
+// fix6 R6-01 — 신호 대상 = 이번 실행이 spawn 해 받은 pid(herdr backend · 기동 응답의 corral desktop runtime pid)와 그 PPID 자손뿐이다
+// (`iso-cleanup.mjs` `planCleanup`). 소유 경로 후보(`selectOwnedByPath`)는 진단으로 iso-run.json 에 남기기만 한다 — own.mjs H1.
+// `corral open` 이 Electron 을 띄운 뒤 실패하면(fix4 head-1) 그 pid 를 받지 못해 신호하지 못한다. 그 프로세스는 경로 진단에 잔존으로
+// 남아 clean:false · exit 70 이 되고 교대 실행기가 멈춘다 — 자동 종료하지 않고 사람이 보고 처리한다. 명령줄 매칭으로 pid 를 얻지 않는다.
+// (fix5 는 경로 후보도 신호했다 — 코디 명세의 잘못, reviews.md r6.) 기동 전부터 격리 경로를 쓰던 프로세스가 있으면 기동하지 않는다.
 // 종료코드: driver 종료코드 그대로 · 70 = 정리 뒤 잔존(미정리 — 교대 실행기는 여기서 멈춘다) · 71 = 기동/driver spawn 실패(정리는 끝남)
 import fs from 'node:fs'
 import path from 'node:path'
@@ -50,11 +51,11 @@ const probeProcesses = () => {
   const processes = parseProcessList(listed.stdout).filter((entry) => entry.pid !== process.pid)
   return processes.length > 0 ? { ok: true, processes, error: null } : { ok: false, processes: [], error: 'ps 출력이 비었다' }
 }
-const descendantPids = (pid, seen = new Set()) => {
+const descendantPids = ({ pid, seen = new Set() }) => {
   const kids = spawnSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).map(Number).filter(Number.isFinite)
   return kids.filter((kid) => !seen.has(kid)).flatMap((kid) => {
     seen.add(kid)
-    return [kid, ...descendantPids(kid, seen)]
+    return [kid, ...descendantPids({ pid: kid, seen })]
   })
 }
 const commandOf = (pid) => spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim().slice(0, 200) || null
@@ -96,12 +97,12 @@ try {
 } catch (error) {
   failure ??= { stage: 'setup', message: String(error?.message ?? error) }
 } finally {
-  // ① 신호 대상: spawn pid + 소유 경로로 확인되는 프로세스(공백 없는 경로만) + 자손. 자손은 신호 전에 적는다.
+  // ① 신호 대상: spawn pid + 그 자손뿐. 자손은 신호 전에 적는다. 경로 후보는 진단(신호하지 않음).
   const probe = probeProcesses()
   const paths = ownedPaths()
   const spawned = owned.filter((entry) => Number.isFinite(entry.pid)).map((entry) => ({ pid: entry.pid, label: entry.label ?? 'spawn' }))
-  const { signals: planned, pathCandidates: byPath } = planCleanup({
-    spawned, descendantsOf: (pid) => descendantPids(pid), processes: probe.ok ? probe.processes : [], paths, preexisting, selfPid: process.pid,
+  const { signals: planned, pathCandidates } = planCleanup({
+    spawned, descendantsOf: (pid) => descendantPids({ pid }), processes: probe.ok ? probe.processes : [], paths, preexisting, selfPid: process.pid,
   })
   const signalled = planned.map((entry) => {
     const record = { ...entry, command: commandOf(entry.pid) }
@@ -115,12 +116,12 @@ try {
   })
   for (let attempt = 0; attempt < 12 && signalled.some((entry) => alive(entry.pid)); attempt += 1) await pause(1000)
   for (const entry of signalled) entry.alive = alive(entry.pid)
-  // ② 신호 목록 밖에서 소유 경로를 쓰는 생존자 — 보고만 한다(미정리).
+  // ② 신호 목록 밖에서 소유 경로를 쓰는 생존자 — 보고만 한다(미정리 → exit 70, 사람이 처리).
   const diagnosis = pathDiagnosis({ probe: probeProcesses(), targets: paths, exclude: preexisting, signalled: signalled.map((entry) => entry.pid), selfPid: process.pid, alive })
   const verdict = cleanVerdict({ signalled: signalled.map((entry) => ({ pid: entry.pid, alive: entry.alive })), diagnosis })
   const exitCode = !verdict.clean ? EXIT_UNCLEAN : failure !== null ? EXIT_LAUNCH_FAILED : driverExit !== 0 ? (driverExit ?? 2) : 0
   fs.writeFileSync(path.join(out, 'iso-run.json'), `${JSON.stringify({
-    exitCode, driverExit, failure, owned, preexisting, unsignalledPaths: paths.filter((item) => /\s/.test(item)), byPath, signalled,
+    exitCode, driverExit, failure, owned, preexisting, pathCandidates, signalled,
     survivors: verdict.survivorPids, clean: verdict.clean, uncleanWhy: verdict.why, pathSurvivors: diagnosis.survivors,
     missing: args.missing === '1', claude: args.claude === '1',
   }, null, 1)}\n`)

@@ -75,9 +75,9 @@ function readPage(mineList) {
     const r = el.getBoundingClientRect()
     return { x: Math.round(r.left * 10) / 10, y: Math.round(r.top * 10) / 10, w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10 }
   }
-  const style = (el, keys) => {
-    if (!el) return null
-    const cs = getComputedStyle(el)
+  const style = ({ element, keys }) => {
+    if (!element) return null
+    const cs = getComputedStyle(element)
     return Object.fromEntries(keys.map((name) => [name, cs.getPropertyValue(name)]))
   }
   const active = document.activeElement
@@ -103,14 +103,14 @@ function readPage(mineList) {
   const menu = menuEl && {
     group: menuEl.getAttribute('data-tab-create-menu'),
     box: box(menuEl),
-    style: style(menuEl, ['width', 'padding-top', 'border-radius', 'border-top-width', 'box-shadow', 'background-color', 'font-size']),
+    style: style({ element: menuEl, keys: ['width', 'padding-top', 'border-radius', 'border-top-width', 'box-shadow', 'background-color', 'font-size'] }),
     input: (() => {
       const el = menuEl.querySelector('[data-tab-create-input]')
-      return el ? { box: box(el), placeholder: el.placeholder, value: el.value, focused: el === active, style: style(el, ['height', 'font-size']) } : null
+      return el ? { box: box(el), placeholder: el.placeholder, value: el.value, focused: el === active, style: style({ element: el, keys: ['height', 'font-size'] }) } : null
     })(),
     results: [...menuEl.querySelectorAll('[data-tab-create-result]')].map((row) => ({ id: row.dataset.tabCreateResult, selected: row.getAttribute('aria-selected') === 'true', text: row.textContent, box: box(row) })),
     status: menuEl.querySelector('[data-tab-create-status]')?.textContent ?? null,
-    items: [...menuEl.querySelectorAll('[data-tab-create-item]')].map((row) => ({ id: row.dataset.tabCreateItem, text: row.textContent, box: box(row), focused: row === active, style: style(row, ['height', 'font-size', 'font-weight', 'border-radius', 'padding-left']) })),
+    items: [...menuEl.querySelectorAll('[data-tab-create-item]')].map((row) => ({ id: row.dataset.tabCreateItem, text: row.textContent, box: box(row), focused: row === active, style: style({ element: row, keys: ['height', 'font-size', 'font-weight', 'border-radius', 'padding-left'] }) })),
     separators: [...menuEl.querySelectorAll('[role="separator"]')].map((sep) => box(sep)),
   }
   const notices = [...document.querySelectorAll('[data-inline-notice], .inline-notice')].map((el) => el.textContent)
@@ -131,7 +131,7 @@ async function dump(tag) {
   fs.writeFileSync(path.join(rawd, `state-${tag}.json`), `${JSON.stringify(seen, null, 1)}\n`)
   return seen
 }
-async function shot(tag, selector) {
+async function shot({ tag, selector }) {
   const res = await control({ cmd: 'shot', name: `l496-${tag}`, selector })
   if (!res.ok) throw new Error(`shot 실패 ${JSON.stringify(res).slice(0, 200)}`)
   const target = path.join(shotsOut, `${tag}.png`)
@@ -223,7 +223,7 @@ async function main() {
   const items = seen.menu.items.map((item) => item.id)
   record('menu-empty', seen.menu.input.focused && JSON.stringify(items) === JSON.stringify(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok']) && seen.menu.results.length === 0 && groupById(seen, g1).plus.expanded === 'true', {
     items, input: seen.menu.input, box: seen.menu.box, style: seen.menu.style, itemStyle: seen.menu.items[0]?.style, separators: seen.menu.separators.length,
-    shots: [await shot('04-menu-empty', '[data-tab-create-menu]'), await shot('04-header-g1', `[data-group-header="${g1}"]`)],
+    shots: [await shot({ tag: '04-menu-empty', selector: '[data-tab-create-menu]' }), await shot({ tag: '04-header-g1', selector: `[data-group-header="${g1}"]` })],
   })
   // 메뉴가 열린 동안 키가 터미널로 새지 않는다 (K2ⓒ) — 질의 "beta" 를 친다.
   const termBefore = await paneText(shells[0])
@@ -231,7 +231,7 @@ async function main() {
   await pause(400)
   seen = await dump('05-query-beta')
   const termAfter = await paneText(shells[0])
-  record('query-open-tab', seen.menu.results[0]?.id === `tab:${shells[1]}` && seen.menu.items.length === 0, { results: seen.menu.results, shots: [await shot('05-query-beta', '[data-tab-create-menu]')] })
+  record('query-open-tab', seen.menu.results[0]?.id === `tab:${shells[1]}` && seen.menu.items.length === 0, { results: seen.menu.results, shots: [await shot({ tag: '05-query-beta', selector: '[data-tab-create-menu]' })] })
   record('keys-not-leaking-while-open', termAfter !== null && termBefore === termAfter && !termAfter.includes('beta'), { leaked: termAfter?.includes('beta') ?? null, tail: termAfter?.split('\n').filter(Boolean).slice(-3) ?? null })
   // Enter = 다른 영역(g2)의 그 탭으로 · 포커스가 g2 터미널.
   await key('Enter')
@@ -247,7 +247,7 @@ async function main() {
   seen = await dump('06-query-terminal')
   const ids = seen.menu.results.map((row) => row.id)
   const tabRows = ids.filter((id) => id.startsWith('tab:'))
-  record('query-terminal', tabRows.length <= 4 && ids.at(-1) === 'menu:new-terminal' && seen.menu.items.length === 0, { results: ids, shots: [await shot('06-query-terminal', '[data-tab-create-menu]')] })
+  record('query-terminal', tabRows.length <= 4 && ids.at(-1) === 'menu:new-terminal' && seen.menu.items.length === 0, { results: ids, shots: [await shot({ tag: '06-query-terminal', selector: '[data-tab-create-menu]' })] })
   for (let i = 0; i < ids.length; i += 1) {
     const now = await read()
     if (now.menu.results.find((row) => row.selected)?.id === 'menu:new-terminal') break
@@ -303,7 +303,7 @@ async function main() {
   await pause(400)
   seen = await dump('06c-query-term')
   const termIds = seen.menu.results.map((row) => row.id)
-  record('query-term-prefix-open-tabs', termIds.filter((id) => id.startsWith('tab:')).length >= 1 && termIds.includes('menu:new-terminal'), { results: termIds, shots: [await shot('06c-query-term', '[data-tab-create-menu]')] })
+  record('query-term-prefix-open-tabs', termIds.filter((id) => id.startsWith('tab:')).length >= 1 && termIds.includes('menu:new-terminal'), { results: termIds, shots: [await shot({ tag: '06c-query-term', selector: '[data-tab-create-menu]' })] })
 
   // ⑥d (fix1 R1-06) 조합 중 Escape — **렌더러 합성 이벤트**(isComposing:true keydown)다. 실제 macOS IME 경로는 이 손잡이로 못 낸다(제어 소켓에 IME 입력 없음).
   await run(() => {
@@ -392,7 +392,7 @@ async function main() {
   await key('Down')
   await pause(150)
   const firstFocus = (await read()).menu.items.find((item) => item.focused)?.id ?? null
-  const staticShot = await shot('09-static-focus', '[data-tab-create-menu]')
+  const staticShot = await shot({ tag: '09-static-focus', selector: '[data-tab-create-menu]' })
   await key('Up')
   await pause(150)
   const afterUp = await read()
@@ -405,7 +405,7 @@ async function main() {
     await control({ cmd: 'click', selector: `[data-main-tab="${shells[0]}"]` })
     await pause(600)
     await openMenu(g1)
-    const shotClaudeMenu = await shot('11-before-claude', '[data-tab-create-menu]')
+    const shotClaudeMenu = await shot({ tag: '11-before-claude', selector: '[data-tab-create-menu]' })
     before = new Set(await fixtureTabIds())
     const clickedAt = Date.now()
     await control({ cmd: 'click', selector: `[data-tab-create-menu="${g1}"] [data-tab-create-item="agent:claude"]` })
@@ -423,7 +423,7 @@ async function main() {
       await pause(250)
     }
     const falseAlarm = samples.some((sample) => sample.notices.some((text) => text.includes('실행 실패')))
-    const claudeShot = await shot('11-claude-launched', `[data-group-header="${g1}"]`)
+    const claudeShot = await shot({ tag: '11-claude-launched', selector: `[data-group-header="${g1}"]` })
     record('claude-quick-launch', settled !== null && agentAt !== null && !falseAlarm, {
       tab: claudeTab, tabCreatedMs: tabAt, settledMs: settledAt, agentArrivedMs: agentAt, falseAlarm, focus: settled?.focus ?? null, samples, shots: [shotClaudeMenu, claudeShot],
     })
@@ -450,7 +450,7 @@ async function main() {
       if (noticeAt === null && now.notices.some((text) => text.includes('Grok 실행 실패'))) noticeAt = Date.now() - clickedAt
       await pause(250)
     }
-    record('watchdog-missing-executable', noticeAt !== null && noticeAt >= 9_500, { tab: grokTab, noticeAt, samples, shots: [await shot('12-watchdog-notice', `[data-tab-group="${g1}"]`)] })
+    record('watchdog-missing-executable', noticeAt !== null && noticeAt >= 9_500, { tab: grokTab, noticeAt, samples, shots: [await shot({ tag: '12-watchdog-notice', selector: `[data-tab-group="${g1}"]` })] })
   }
 
   // ⑩ 탭 0개 영역의 `+` — 영역은 마지막 탭을 닫으면 접히고(group-tree `dropEmptyLeaves`) 하나 남은 영역만 빈 채로 남는다.
@@ -473,7 +473,7 @@ async function main() {
   if (only !== null && only.empty && only.plus !== null) {
     await openMenu(only.group)
     seen = await dump('10-empty-area-menu')
-    const emptyShot = await shot('10-empty-area-menu', '[data-tab-create-menu]')
+    const emptyShot = await shot({ tag: '10-empty-area-menu', selector: '[data-tab-create-menu]' })
     const before = new Set(await fixtureTabIds())
     await key('Enter')
     const inEmpty = await newTabAfter(before)

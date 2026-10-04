@@ -15,7 +15,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { launchCorral } from '../gui-diff/lib/corral.mjs'
-import { cleanVerdict, parseProcessList, pathDiagnosis, planSignals, selectOwnedByPath } from '../gui-diff/lib/own.mjs'
+import { cleanVerdict, parseProcessList, pathDiagnosis, selectOwnedByPath } from '../gui-diff/lib/own.mjs'
+import { planCleanup } from './iso-cleanup.mjs'
 
 const EXIT_UNCLEAN = 70
 const EXIT_LAUNCH_FAILED = 71
@@ -98,12 +99,9 @@ try {
   // ① 신호 대상: spawn pid + 소유 경로로 확인되는 프로세스(공백 없는 경로만) + 자손. 자손은 신호 전에 적는다.
   const probe = probeProcesses()
   const paths = ownedPaths()
-  const signallablePaths = paths.filter((item) => !/\s/.test(item))
-  const byPath = probe.ok ? selectOwnedByPath({ processes: probe.processes, targets: signallablePaths, exclude: preexisting, selfPid: process.pid }).owned : []
   const spawned = owned.filter((entry) => Number.isFinite(entry.pid)).map((entry) => ({ pid: entry.pid, label: entry.label ?? 'spawn' }))
-  const planned = planSignals({
-    owned: [...spawned, ...byPath.map((entry) => ({ pid: entry.pid, label: `소유 경로 확인 ${entry.path}` }))],
-    descendantsOf: (pid) => descendantPids(pid),
+  const { signals: planned, pathCandidates: byPath } = planCleanup({
+    spawned, descendantsOf: (pid) => descendantPids(pid), processes: probe.ok ? probe.processes : [], paths, preexisting, selfPid: process.pid,
   })
   const signalled = planned.map((entry) => {
     const record = { ...entry, command: commandOf(entry.pid) }

@@ -83,6 +83,15 @@ describe('launchAgent 워치독 — 응답과 감지의 순서 (R1-04)', () => {
     expect(hook.lifecycleNotice).toBeNull()
   })
 
+  it('응답을 기다리는 동안 훅이 내려가면 응답이 와도 타이머를 걸지 않는다 (R3-03)', async () => {
+    render(stateWith(undefined))
+    act(() => hook.actions.launchAgent({ workspaceId: 'w', kind: 'claude', label: 'Claude' }))
+    render(stateWith(null))
+    act(() => root.render(null))
+    await act(async () => resolveCreate({ ok: true, paneId: 'p', tabId: 't', error: null }))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('대조: 감지가 끝내 오지 않으면 10초 뒤 알린다', async () => {
     render(stateWith(undefined))
     act(() => hook.actions.launchAgent({ workspaceId: 'w', kind: 'claude', label: 'Claude' }))

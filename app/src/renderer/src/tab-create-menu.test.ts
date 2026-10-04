@@ -124,8 +124,14 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
     const entries = [entry('t1', 'alpha-build'), entry('t2', 'beta'), entry('t3', 'notes v2')]
     expect(searchOpenTabs({ entries, query: 'a' }).map((result) => result.tabId)).toEqual(['t1'])
     expect(searchOpenTabs({ entries, query: 'b' }).map((result) => result.tabId)).toEqual(['t2', 't1'])
-    expect(searchOpenTabs({ entries, query: '2' })).toEqual([])
+    // 문자↔숫자 경계에서 단어가 갈린다(Orca text-segments) — "v2" 의 "2" 는 단어 시작이다(R3-04).
+    expect(searchOpenTabs({ entries, query: '2' }).map((result) => result.tabId)).toEqual(['t3'])
     expect(searchOpenTabs({ entries, query: 'v' }).map((result) => result.tabId)).toEqual(['t3'])
+  })
+  it('한 글자 질의의 단어 경계 — 원문 camelCase 경계와 문자↔숫자 경계를 지킨다 (R3-04, Orca text-segments.ts)', () => {
+    expect(searchOpenTabs({ entries: [entry('t1', 'fooBar'), entry('t2', 'foobar')], query: 'b' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries: [entry('t1', 'task2'), entry('t2', 'task-2'), entry('t3', '2task'), entry('t4', 'x22')], query: '2' }).map((result) => result.tabId).sort()).toEqual(['t1', 't2', 't3', 't4'])
+    expect(searchOpenTabs({ entries: [entry('t1', 'abc')], query: 'b' })).toEqual([])
   })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
     const entries = [entry('t1', 'logs', { agent: 'claude' }), entry('t2', 'claude notes')]

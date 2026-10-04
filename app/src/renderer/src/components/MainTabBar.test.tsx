@@ -555,6 +555,58 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     expect(menu()).toBeNull()
   })
 
+  it('열린 메뉴의 + 를 다시 누르면 닫힌다 — 실제 mousedown·mouseup·click, 헤더 활성화가 터미널로 포커스를 옮겨도 (R3-01)', () => {
+    const terminal = document.createElement('textarea')
+    document.body.append(terminal)
+    // App 의 onActivate → activateGroup → selectPane → focusToken → TerminalPane 의 focus() 대역.
+    spies.activate.mockImplementation(() => terminal.focus())
+    const press = (): void => {
+      for (const type of ['mousedown', 'mouseup', 'click'])
+        act(() => {
+          plus().dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }))
+        })
+    }
+    try {
+      mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+      press()
+      // 첫 누름은 그 영역을 활성으로 만든다(기존 동작) — 그리고 메뉴가 열린다.
+      expect(spies.activate).toHaveBeenCalledTimes(1)
+      expect(menu()).not.toBeNull()
+      act(() => input().focus())
+      press()
+      expect(menu()).toBeNull()
+      expect(plus().getAttribute('aria-expanded')).toBe('false')
+    } finally {
+      terminal.remove()
+    }
+  })
+
+  it('새 탭이 이 영역에서 활성이 되면(⌘T) focus 이벤트가 없어도 메뉴가 닫힌다 — 뒤 Escape 도 메뉴를 되살리지 않는다 (R3-02)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    const terminal = document.createElement('textarea')
+    document.body.append(terminal)
+    // terminal.new 대역 — 새 탭이 활성이 되고 activeElement 만 새 터미널로 바뀐다. focus·focusin 이벤트는 내지 않는다.
+    Object.defineProperty(document, 'activeElement', { configurable: true, get: () => terminal })
+    try {
+      mount({ tabs: [tab(0, [pane('p0', null, 'idle')]), tab(1, [pane('p1', null, 'idle')])], activeTabId: 't1' })
+      expect(menu()).toBeNull()
+      key(terminal, 'Escape')
+      expect(menu()).toBeNull()
+    } finally {
+      Reflect.deleteProperty(document, 'activeElement')
+      terminal.remove()
+    }
+  })
+
+  it('대조: 활성 탭·선택 pane 이 그대로면 다시 그려도 메뉴는 남는다 (R3-02)', () => {
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    mount({ tabs: [tab(0, [pane('p0', 'claude', 'working')])], activeTabId: 't0' })
+    expect(menu()).not.toBeNull()
+  })
+
   it('Quick-launch 클릭 = 그 에이전트 · 새 터미널 클릭 = 빈 탭', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()

@@ -581,6 +581,40 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     }
   })
 
+  it('열린 메뉴의 + 를 우클릭 → 헤더 메뉴 → Escape 뒤 키가 터미널에 간다 — 왼쪽 누름만 헤더 활성화를 건너뛴다 (R4-01)', () => {
+    const terminal = document.createElement('textarea')
+    document.body.append(terminal)
+    const arrived: string[] = []
+    terminal.addEventListener('keydown', (event) => arrived.push(event.key))
+    spies.activate.mockImplementation(() => terminal.focus())
+    const mouse = ({ type, button }: { type: string; button: number }): void => {
+      act(() => {
+        plus().dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button }))
+      })
+    }
+    try {
+      mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+      for (const type of ['mousedown', 'mouseup', 'click']) mouse({ type, button: 0 })
+      expect(menu()).not.toBeNull()
+      act(() => input().focus())
+      spies.activate.mockClear()
+      for (const type of ['mousedown', 'mouseup', 'contextmenu']) mouse({ type, button: 2 })
+      expect(spies.activate).toHaveBeenCalledTimes(1)
+      expect(host.querySelector('[data-tab-menu]')).not.toBeNull()
+      act(() => {
+        document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      })
+      expect(host.querySelector('[data-tab-menu]')).toBeNull()
+      act(() => {
+        document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }))
+      })
+      expect(document.activeElement).toBe(terminal)
+      expect(arrived).toContain('a')
+    } finally {
+      terminal.remove()
+    }
+  })
+
   it('새 탭이 이 영역에서 활성이 되면(⌘T) focus 이벤트가 없어도 메뉴가 닫힌다 — 뒤 Escape 도 메뉴를 되살리지 않는다 (R3-02)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()

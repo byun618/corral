@@ -133,6 +133,13 @@ describe('열린 탭 검색 (Orca open-tab-search · omnibox 필드)', () => {
     expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'task2' }), entry({ tabId: 't2', title: 'task-2' }), entry({ tabId: 't3', title: '2task' }), entry({ tabId: 't4', title: 'x22' })], query: '2' }).map((result) => result.tabId).sort()).toEqual(['t1', 't2', 't3', 't4'])
     expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: 'abc' })], query: 'b' })).toEqual([])
   })
+  it('결합 문자 제목은 NFC 로 합쳐서 본다 — é 로 찾고, 결합 문자 뒤 글자를 단어 시작으로 보지 않는다 (R4-03, Orca normalized-text.ts)', () => {
+    const decomposed = (text: string): string => text.normalize('NFD')
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('éclair') })], query: 'é' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('fooÉclair') })], query: 'é' }).map((result) => result.tabId)).toEqual(['t1'])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('éclair') })], query: 'c' })).toEqual([])
+    expect(searchOpenTabs({ entries: [entry({ tabId: 't1', title: decomposed('ábar') })], query: 'b' })).toEqual([])
+  })
   it('브랜치(컨테이너)·에이전트로도 찾되 제목 일치가 앞선다', () => {
     const entries = [entry({ tabId: 't1', title: 'logs', agent: 'claude' }), entry({ tabId: 't2', title: 'claude notes' })]
     expect(searchOpenTabs({ entries, query: 'claude' }).map((result) => result.tabId)).toEqual(['t2', 't1'])

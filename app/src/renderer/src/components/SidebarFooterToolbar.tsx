@@ -1,7 +1,7 @@
 // 사이드바 하단 바 (LIFE-478 K8 · 198 `SidebarSettingsHelpMenu.tsx`·`ScrollToCurrentWorkspaceToolbarButton.tsx`) —
 // 왼쪽 ⚙ · ?(메뉴), 오른쪽 ↻ · Reveal active. 198 오른쪽의 Kanban(◫)은 Kanban 경계라 뺐다(C20 의도적).
-//   · ⚙ = 자리만(설정 페이지 → LIFE-450)
-//   · ? = 메뉴, 첫 항목 「단축키」 → 기존 단축키 설정 화면. 198 의 나머지 10항목(피드백·문서·변경 기록·GitHub·Discord·X·업데이트·재시작…)은
+//   · ⚙ = 설정 페이지(LIFE-511 — 198 `SidebarSettingsHelpMenu.tsx:207` openSettingsPage)
+//   · ? = 메뉴, 첫 항목 「단축키」 → 설정 › 단축키(LIFE-511 — 옛 단축키 모달 자리). 198 의 나머지 10항목(피드백·문서·변경 기록·GitHub·Discord·X·업데이트·재시작…)은
 //     Orca 외부 링크·앱 수명 기능이라 대응 없음(RESULT 대응표)
 //   · ↻ = corral 항목(worktree 상태 재조회, 198 없음 — 의도적 차이)
 //   · Reveal = 활성 카드를 드러낸다(필터 확인 → 접힘 펼침 → 최소 스크롤 → 번쩍). 198 처럼 늘 누를 수 있고, 활성이 없으면 아무 일 없음
@@ -13,18 +13,20 @@ export function SidebarFooterToolbar({
   onRefresh,
   onReveal,
   onOpenShortcuts,
+  onOpenSettings,
 }: {
   onRefresh: () => void
   onReveal: () => void
   onOpenShortcuts: () => void
+  onOpenSettings: () => void
 }): React.JSX.Element {
   const helpRef = useRef<HTMLButtonElement | null>(null)
   const [help, setHelp] = useState<{ x: number; y: number } | null>(null)
   return (
     <div className="sidebar-footer" data-sidebar-footer>
-      <span className="sidebar-footer-glyph" title="설정 (화면 없음 — LIFE-450)">
+      <button className="sidebar-footer-glyph sidebar-footer-btn" data-settings-open="" title="설정" aria-label="설정" onClick={onOpenSettings}>
         ⚙
-      </span>
+      </button>
       <button
         ref={helpRef}
         className="sidebar-footer-glyph sidebar-footer-btn"

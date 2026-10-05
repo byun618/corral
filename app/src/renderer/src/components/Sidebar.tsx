@@ -85,10 +85,13 @@ export function Sidebar({
   groupGlyphOf,
   cards,
   onOpenShortcuts,
+  onOpenSettings,
 }: {
   cards: SidebarCardProps
-  /** 하단 ? 메뉴 「단축키」 (K8ⓐ). */
+  /** 하단 ? 메뉴 「단축키」 (K8ⓐ) — LIFE-511 부터 설정 › 단축키. */
   onOpenShortcuts: () => void
+  /** 하단 ⚙ — 설정 페이지 (LIFE-511). */
+  onOpenSettings: () => void
   onToggleSidebar: () => void
   shortcutHint: string
   sidebarRef: RefObject<HTMLDivElement | null>
@@ -512,7 +515,7 @@ export function Sidebar({
       </div>
       <SidebarFooterToolbar onRefresh={onRefresh} onReveal={() => {
         if (activePath !== null) reveal({ path: activePath, rename: false })
-      }} onOpenShortcuts={onOpenShortcuts} />
+      }} onOpenShortcuts={onOpenShortcuts} onOpenSettings={onOpenSettings} />
       {menu !== null && menuRow !== undefined ? (
         <ContextMenu
           x={menu.x}

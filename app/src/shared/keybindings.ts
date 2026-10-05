@@ -34,6 +34,8 @@ export const ACTIONS = [
     bindingVariants: [0, 1, 2, 3, 4, 5, 6, 7, 8],
     variants: ['1번째', '2번째', '3번째', '4번째', '5번째', '6번째', '7번째', '8번째', '9번째'],
   },
+  // LIFE-511 — 198 `app.settings`(Mod+Comma). 설정 페이지를 연다. 나중에 생긴 기본값이라 양보한다(아래 YIELDING_DEFAULTS).
+  { id: 'settings.open', title: '설정 열기', defaultBinding: ['Mod+,'], bindingVariants: [0], variants: ['열기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */
@@ -68,7 +70,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를

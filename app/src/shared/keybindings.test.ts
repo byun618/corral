@@ -4,12 +4,27 @@ describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
     // LIFE-495: + tab.reopenClosed(⌘⇧T) · tab.rename(⌘R) · tab.cycle(⌘⇧[ ] · ⌘⌥[ ] · ⌃PgUp/Dn) · tab.selectByIndex(⌃1–9)
-    expect(ACTIONS).toHaveLength(17)
+    // LIFE-511: + settings.open(⌘,)
+    expect(ACTIONS).toHaveLength(18)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
     expect(bindingConflict({})).toBeNull()
     for (const action of ACTIONS) action.defaultBinding.forEach((binding, index) => expect(matchBinding(binding, {})).toEqual({ id: action.id, variant: action.bindingVariants[index] }))
+  })
+  it('LIFE-511 settings.open = ⌘, (Comma 물리 키) · 기존 재정의가 ⌘, 를 쓰면 비켜 선다', () => {
+    expect(matchBinding('Mod+,', {})).toEqual({ id: 'settings.open', variant: 0 })
+    expect(bindingFromEvent({ key: ',', code: 'Comma', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe('Mod+,')
+    // 한글 자판에서도 물리 위치로 읽는다.
+    expect(bindingFromEvent({ key: '<', code: 'Comma', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true })).toBe('Mod+Shift+,')
+    const claimed = validateOverrides({ 'palette.open': ['Mod+,'] })
+    expect(claimed).toEqual({ 'palette.open': ['Mod+,'] })
+    expect(bindingsFor('settings.open', claimed)).toEqual([null])
+    expect(matchBinding('Mod+,', claimed)).toEqual({ id: 'palette.open', variant: 0 })
+    // 「없음」 으로 둔 설정 열기 — 키는 아무 액션도 아니다.
+    expect(matchBinding('Mod+,', validateOverrides({ 'settings.open': [null] }))).toBeNull()
+    // 다른 조합으로 바꿀 수 있다.
+    expect(matchBinding('Mod+Shift+,', validateOverrides({ 'settings.open': ['Mod+Shift+,'] }))).toEqual({ id: 'settings.open', variant: 0 })
   })
   it('preserves Shift variants and leaves Ctrl+D/T/W to the terminal', () => {
     expect(matchBinding('Control+D', {})).toBeNull()

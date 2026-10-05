@@ -156,3 +156,30 @@ export function CrosshairIcon({ className }: { className?: string }): React.JSX.
     </svg>
   )
 }
+
+/** lucide `ArrowLeft` — 설정 「앱으로 돌아가기」(198 `SettingsSidebar.tsx:209`, LIFE-511). */
+export function ArrowLeftIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="m12 19-7-7 7-7" />
+      <path d="M19 12H5" />
+    </svg>
+  )
+}
+
+/** lucide `Keyboard` — 설정 내비 「단축키」(198 settings nav icon, LIFE-511). */
+export function KeyboardIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M10 8h.01" />
+      <path d="M12 12h.01" />
+      <path d="M14 8h.01" />
+      <path d="M16 12h.01" />
+      <path d="M18 8h.01" />
+      <path d="M6 8h.01" />
+      <path d="M7 16h10" />
+      <path d="M8 12h.01" />
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+    </svg>
+  )
+}

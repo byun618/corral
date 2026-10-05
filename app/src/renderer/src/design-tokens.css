@@ -194,4 +194,18 @@
   --split-icon-w: 14px;
   --split-icon-h: 11px;
   --split-icon-strip: 3px;          /* SplitIcon 상단 "탭바 띠" 두께 */
+
+  /* --- LIFE-511 설정 페이지 — Orca 198 `SettingsSidebar.tsx`·`settings-page-renderer.tsx`·`SettingsSection.tsx` 치수 ----------
+     색은 새로 만들지 않는다(위 토큰 + color-mix 알파). 값 출처는 510 `c5-settings/orca.json` frameStyles·클래스. */
+  --w-settings-nav: 280px;          /* 내비 `w-[280px]` */
+  --w-settings-content: 896px;      /* 콘텐츠 `max-w-4xl` */
+  --w-settings-description: 768px;  /* 섹션 설명 `max-w-3xl` */
+  --w-shortcut-rail: 256px;         /* 단축키 필터 레일 `16rem` */
+  --radius-settings-row: 10px;      /* 내비 행 `rounded-lg` (Orca --radius .625rem) */
+  --radius-settings-control: 8px;   /* 돌아가기·검색창 `rounded-md` */
+  --radius-settings-card: 14px;     /* 섹션 카드 `rounded-xl` (--radius + 4px) */
+  --fs-settings-h2: 24px;
+  --fs-settings-body: 14px;
+  --fs-settings-group: 11px;
+  --ls-settings-group: .18em;       /* 그룹 제목 `tracking-[0.18em]` */
 }

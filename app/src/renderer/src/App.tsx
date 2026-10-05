@@ -4,7 +4,8 @@ import type { ShortcutHandlers } from './hooks/useKeybindings.js'
 import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
 import { BindingLabels } from './hooks/BindingLabels.js'
 import { useKeybindings } from './hooks/useKeybindings.js'
-import { ShortcutSettings } from './components/ShortcutSettings.js'
+import { SettingsPage } from './components/SettingsPage.js'
+import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
 // 내려보내는 관심사 분리는 그대로 유지한다 — 이 파일이 하는 일은 데이터를 각 컴포넌트에 나눠
@@ -99,7 +100,12 @@ export function App(): React.JSX.Element {
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const paletteReturn = useRef<HTMLElement | null>(null)
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  /**
+   * 설정 페이지 (LIFE-511) — 열려 있으면 그 섹션. 워크스페이스는 언마운트도 `display:none` 도 하지 않고 **크기 그대로 덮는다**
+   * (`.app-body.is-covered` = visibility:hidden + inert). `display:none` 이면 영역 상자가 0 으로 재져 모든 영역이 cols 2·rows 1 로
+   * herdr 에 resize 요청된다(00-analysis A1, raw/claude/u1-before 실측) — 덮으면 ResizeObserver 가 발화하지 않는다.
+   */
+  const [settingsView, setSettingsView] = useState<SettingsSectionId | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarCollapsedRef = useRef(false)
   const toggleSidebar = (): void => {
@@ -942,12 +948,23 @@ export function App(): React.JSX.Element {
   )
 
   // A single action lookup serves renderer keys and the existing main Cmd+W channel.
-  const modalBlocked = shortcutsOpen || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
+  const modalBlocked = settingsView !== null || modalOpen || pendingRemove !== null || lifecycle.pendingClose !== null || lifecycle.worktreeModal !== null || cardActions.blocked
   const openPalette = (): void => {
     if (modalBlocked || document.querySelector('.main-tab-rename.is-editing')) return
     paletteReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     mruCancel()
     setPaletteOpen(true)
+  }
+  // 설정이 열린 동안은 `modalBlocked` 라 워크스페이스 단축키(⌘T·⌘W·⌘D …)가 숨은 워크스페이스에 작용하지 않는다(K2ⓕ — 막는다).
+  const openSettings = (section: SettingsSectionId = DEFAULT_SETTINGS_SECTION): void => {
+    mruCancel()
+    setSettingsView(section)
+  }
+  // 닫으면 직전 화면(워크스페이스)으로 돌아가고 활성 pane 이 포커스를 되찾는다 — `focusable` 이 true 로 바뀌는 것만으로는
+  // 다시 포커스되지 않는다(TerminalPane focusToken 주석). 덮개가 걷힌(inert 해제) 다음 프레임에 올린다.
+  const closeSettings = (): void => {
+    setSettingsView(null)
+    requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
@@ -991,6 +1008,7 @@ export function App(): React.JSX.Element {
     },
     'tab.cycle': (variant) => selectTabInActiveGroup((tabOrder, activeTabId) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
     'tab.selectByIndex': (variant) => selectTabInActiveGroup((tabOrder) => tabAtIndex({ tabOrder, index: variant })),
+    'settings.open': () => openSettings(),
   }
   const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
@@ -1355,7 +1373,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)
@@ -1368,7 +1386,10 @@ export function App(): React.JSX.Element {
     }
   }
   paletteEntries.push({ id: 'repo.add', title: '레포 등록', detail: '폴더 선택', keywords: 'add repository register', run: () => setModalOpen(true) })
-  paletteEntries.push({ id: 'shortcuts.settings', title: '단축키 설정', detail: '키 바인딩 변경', run: () => setShortcutsOpen(true) })
+  // 설정 섹션 — 내비와 같은 레지스트리(K1ⓒ). 옛 「단축키 설정」 항목은 「설정 › 단축키」 로 간다.
+  for (const section of SETTINGS_SECTIONS) {
+    paletteEntries.push({ id: `settings.section:${section.id}`, title: `설정 › ${section.title}`, detail: section.description, keywords: ['settings', '설정', ...section.searchEntries.flatMap((entry) => [entry.title, ...(entry.keywords ?? [])])].join(' '), run: () => openSettings(section.id) })
+  }
   for (const kind of ['claude', 'codex', 'grok'] as const) paletteEntries.push({ id: `agent.start.${kind}`, title: `새 ${kind} 에이전트`, detail: activeWorktree?.path ?? 'worktree 선택 필요', disabled: !connected ? '연결된 세션이 없습니다' : !activeWorkspace ? '열린 worktree를 선택하세요' : undefined, run: () => { if (activeWorkspace) lifecycle.actions.createRow(activeWorkspace.workspaceId, kind) } })
   for (const repo of state.repos) {
     const primary = repo.worktrees.find(worktree => !worktree.isLinked)
@@ -1387,7 +1408,8 @@ export function App(): React.JSX.Element {
   return (
     <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
-      <div className="app-body" inert={paletteOpen}>
+      <div className="app-stack">
+      <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || settingsView !== null}>
         {sidebarCollapsed ? null : <>
         <Sidebar
           onToggleSidebar={toggleSidebar}
@@ -1433,7 +1455,8 @@ export function App(): React.JSX.Element {
           }}
           onRefresh={() => void window.corral.refreshTree().then(setState)}
           cards={{ ...cardActions.sidebarCards, unread, deleteShortcut: ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
-          onOpenShortcuts={() => { mruCancel(); setShortcutsOpen(true) }}
+          onOpenShortcuts={() => openSettings('shortcuts')}
+          onOpenSettings={() => openSettings()}
           groupGlyphOf={(worktreePath) => {
             // R17-2 공백 2 — 영속 스키마(R3-h)가 영역 수를 그대로 주므로 **넣는다**(비용 0).
             if (layout.groupCountOf(worktreePath) < 2) return null
@@ -1453,7 +1476,7 @@ export function App(): React.JSX.Element {
           <div className="workspace-tools">
             {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={((binding) => (binding == null ? undefined : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])}>사이드바 펼치기</button> : null}
             <button data-palette-open disabled={modalBlocked} onClick={openPalette}>명령 {formatBinding(bindingsFor('palette.open', keymap.overrides)[0] ?? '')}</button>
-            <button data-shortcuts-open onClick={() => { mruCancel(); setShortcutsOpen(true) }}>단축키</button>
+            <button data-shortcuts-open onClick={() => openSettings('shortcuts')}>단축키</button>
           </div>
           {notice === null ? null : (
             <div className="inline-notice tone-info" data-add-notice>
@@ -1493,6 +1516,10 @@ export function App(): React.JSX.Element {
           )}
         </div>
       </div>
+      {settingsView === null ? null : (
+        <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} />
+      )}
+      </div>
 
       <StatusBar
         inert={paletteOpen}
@@ -1513,7 +1540,6 @@ export function App(): React.JSX.Element {
         if (restore) requestAnimationFrame(() => { if (paletteReturn.current?.isConnected) paletteReturn.current.focus(); else setFocusToken(value => value + 1) })
       }} /> : null}
       {cardActions.dialogs}
-      {shortcutsOpen ? <ShortcutSettings overrides={keymap.overrides} onChange={keymap.setOverrides} onClose={() => setShortcutsOpen(false)} /> : null}
       {modalOpen ? (
         <AddRepoModal browsing={browsing} note={modalNote} onBrowse={() => void browse()} onClose={() => setModalOpen(false)} />
       ) : null}

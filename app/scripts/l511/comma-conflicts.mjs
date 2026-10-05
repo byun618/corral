@@ -1,5 +1,5 @@
 // LIFE-511 K1ⓑ — ⌘,(Mod+,) 충돌 목록 원자료. 기존 기본값 중 Mod+, 를 쓰는 액션 · 사용자 실제 keybindings.json(있으면)의 재정의 중 Mod+, 를 쓰는 것.
-// 사용: node scripts/l511/comma-conflicts.mts <사용자 userData>
+// 사용: node scripts/l511/comma-conflicts.mjs <사용자 userData>
 import fs from 'node:fs'
 import path from 'node:path'
 import { ACTIONS, validateOverrides, matchBinding } from '../../src/shared/keybindings.ts'

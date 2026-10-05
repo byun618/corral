@@ -10,7 +10,7 @@
 //            그 밖의 섹션: 바로 닫는다. 기록 중 Esc 는 단축키 섹션이 먼저 먹는다(기록 취소).
 import { useEffect, useRef, useState } from 'react'
 import type { Keybindings } from '../../../shared/keybindings.js'
-import { settingsNavGroups, settingsSectionById, type SettingsSectionId } from '../settings-registry.js'
+import { settingsNavGroups, settingsSectionById, type SettingsSection as SettingsSectionDef, type SettingsSectionId } from '../settings-registry.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
 import { ArrowLeftIcon, KeyboardIcon, SearchIcon } from './SidebarIcons.js'
@@ -20,6 +20,18 @@ export const SETTINGS_ESCAPE_CONFIRM_MS = 2200
 
 const SECTION_ICONS: Record<SettingsSectionId, (props: { className?: string }) => React.JSX.Element> = {
   shortcuts: KeyboardIcon,
+}
+
+/** 내비 행 하나 — 아이콘 · 제목 · 배지 자리(있을 때만, 198 `SettingsSidebar.tsx:255`). */
+export function SettingsNavItem({ section, active, onSelect }: { section: SettingsSectionDef; active: boolean; onSelect: (id: SettingsSectionId) => void }): React.JSX.Element {
+  const Icon = SECTION_ICONS[section.id]
+  return (
+    <button type="button" className={`settings-nav-item${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} data-settings-nav-item={section.id} onClick={() => onSelect(section.id)}>
+      <Icon className="settings-icon" />
+      <span className="settings-nav-item-title">{section.title}</span>
+      {section.badge === undefined ? null : <span className="settings-nav-badge" data-settings-nav-badge>{section.badge}</span>}
+    </button>
+  )
 }
 
 export function SettingsPage({ section, onSelectSection, onClose, overrides, onChangeOverrides }: {
@@ -99,16 +111,9 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
           {groups.map((group) => (
             <div key={group.id} className="settings-nav-group" data-settings-group={group.id}>
               <p className="settings-nav-group-title" data-settings-group-title>{group.title}</p>
-              {group.sections.map((row) => {
-                const Icon = SECTION_ICONS[row.id]
-                const active = shown?.id === row.id
-                return (
-                  <button key={row.id} type="button" className={`settings-nav-item${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} data-settings-nav-item={row.id} onClick={() => onSelectSection(row.id)}>
-                    <Icon className="settings-icon" />
-                    <span className="settings-nav-item-title">{row.title}</span>
-                  </button>
-                )
-              })}
+              {group.sections.map((row) => (
+                <SettingsNavItem key={row.id} section={row} active={shown?.id === row.id} onSelect={onSelectSection} />
+              ))}
             </div>
           ))}
         </div>

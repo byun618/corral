@@ -3,7 +3,8 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { SETTINGS_ESCAPE_CONFIRM_MS, SettingsPage } from './SettingsPage.js'
+import { SETTINGS_ESCAPE_CONFIRM_MS, SettingsNavItem, SettingsPage } from './SettingsPage.js'
+import { SETTINGS_SECTIONS } from '../settings-registry.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -120,4 +121,21 @@ it('Esc — 검색창에 포커스가 있어도 같은 2단계 · 조합 중(IME
   key({ key: 'Escape' }, search)
   key({ key: 'Escape' }, search)
   expect(onClose).toHaveBeenCalledTimes(1)
+})
+
+it('내비 행 배지 자리(K3ⓐ) — badge 가 있으면 행 오른쪽에 그리고, 없으면 그리지 않는다', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  const onSelect = vi.fn()
+  act(() => root.render(createElement('div', null,
+    createElement(SettingsNavItem, { section: { ...SETTINGS_SECTIONS[0], badge: '베타' }, active: false, onSelect }),
+    createElement(SettingsNavItem, { section: SETTINGS_SECTIONS[0], active: true, onSelect }))))
+  const [withBadge, plain] = [...host.querySelectorAll<HTMLButtonElement>('[data-settings-nav-item]')]
+  expect(withBadge!.querySelector('[data-settings-nav-badge]')?.textContent).toBe('베타')
+  expect(withBadge!.getAttribute('aria-current')).toBeNull()
+  expect(plain!.querySelector('[data-settings-nav-badge]')).toBeNull()
+  expect(plain!.getAttribute('aria-current')).toBe('page')
+  act(() => withBadge!.click())
+  expect(onSelect).toHaveBeenCalledWith('shortcuts')
 })

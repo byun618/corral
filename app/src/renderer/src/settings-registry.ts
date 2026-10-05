@@ -21,6 +21,8 @@ export type SettingsSection = {
   group: SettingsGroupId
   title: string
   description: string
+  /** 내비 행 오른쪽 배지(198 「베타」·「Dev」 자리, K3ⓐ). T1 섹션은 없다. */
+  badge?: string
   /** 섹션 안 항목들 — 검색이 섹션 제목 다음 단계로 본다(정적 키워드, K5ⓐ). */
   searchEntries: readonly SettingsSearchEntry[]
 }

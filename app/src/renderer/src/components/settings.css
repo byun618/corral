@@ -68,6 +68,11 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring-sidebar) 25%, transparent);
 }
 .settings-nav-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 198 `ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground`. */
+.settings-nav-badge {
+  margin-left: auto; flex-shrink: 0; padding: 2px 6px; border-radius: 999px; background: var(--bg-chip);
+  font-size: 9px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-muted);
+}
 
 /* --- 콘텐츠 --- */
 .settings-content { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }

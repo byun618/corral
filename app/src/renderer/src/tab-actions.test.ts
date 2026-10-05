@@ -1,6 +1,6 @@
 // LIFE-495 K1ⓔ·K2ⓔ·K7ⓙ — 탭 메뉴 항목 상태·bulk 닫기 대상·탭 순환의 순수 계산.
 import { describe, expect, it } from 'vitest'
-import { closeScopeTargets, cycleTabTarget, tabAtIndex, tabMenuModel } from './tab-actions.js'
+import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, tabMenuModel } from './tab-actions.js'
 
 const order = ['a', 'b', 'c', 'd', 'e']
 const none = new Set<string>()
@@ -65,5 +65,25 @@ describe('tabAtIndex — ⌃1–9(K7ⓓ)', () => {
     expect(tabAtIndex({ tabOrder: order, index: 8 })).toBeNull()
     const ten = Array.from({ length: 10 }, (_, index) => `t${index}`)
     expect(tabAtIndex({ tabOrder: ten, index: 8 })).toBe('t8')
+  })
+})
+
+describe('fix1 R1-02 sidebarCloseRoute — 사이드바 세션 닫기의 소유 탭은 전체 state 에서 찾는다', () => {
+  const repos = [
+    {
+      worktrees: [
+        { path: '/w/a', workspace: { workspaceId: 'wA', tabs: [{ tabId: 'wA:t1', panes: [{ paneId: 'pA' }] }] } },
+        { path: '/w/b', workspace: { workspaceId: 'wB', tabs: [{ tabId: 'wB:t1', panes: [{ paneId: 'pB' }] }, { tabId: 'wB:t2', panes: [{ paneId: 'pB2' }, { paneId: 'pB3' }] }] } },
+        { path: '/w/c', workspace: null },
+      ],
+    },
+  ]
+  it('비활성 워크스페이스 B 의 핀 탭(pane 1개) → 탭 닫기 길, 소유 = B', () => {
+    expect(sidebarCloseRoute({ repos, paneId: 'pB', pinned: new Set(['wB:t1']) })).toEqual({ kind: 'tab', worktreePath: '/w/b', workspaceId: 'wB', tabId: 'wB:t1' })
+  })
+  it('핀 아닌 탭·pane 여럿인 핀 탭·모르는 pane → pane 닫기 길', () => {
+    expect(sidebarCloseRoute({ repos, paneId: 'pB', pinned: new Set() })).toEqual({ kind: 'pane' })
+    expect(sidebarCloseRoute({ repos, paneId: 'pB2', pinned: new Set(['wB:t2']) })).toEqual({ kind: 'pane' })
+    expect(sidebarCloseRoute({ repos, paneId: 'zz', pinned: new Set(['wB:t1']) })).toEqual({ kind: 'pane' })
   })
 })

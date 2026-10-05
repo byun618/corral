@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, migrateLegacyOverrides, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, menuKeyShortcut, migrateLegacyOverrides, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
@@ -66,7 +66,7 @@ describe('LIFE-470 K1 — ⌘J search chord', () => {
     expect(validateOverrides(legacy, true)).toEqual({ 'sidebar.toggle': ['Mod+J'] })
     expect(validateOverrides(legacy)).toEqual({ 'sidebar.toggle': ['Mod+J'] })
     expect(matchBinding('Mod+J', legacy)?.id).toBe('sidebar.toggle')
-    expect(bindingsFor('palette.search', legacy)).toEqual([])
+    expect(bindingsFor('palette.search', legacy)).toEqual([null])
     expect(bindingConflict(legacy)).toBeNull()
   })
   it('can be reassigned and reset to the default', () => {
@@ -85,7 +85,7 @@ describe('LIFE-470 K1 — ⌘J search chord', () => {
   it('a user who rebinds the palette to ⌘J keeps it; the search chord steps aside', () => {
     const overrides = validateOverrides({ 'palette.open': ['Mod+J'] })
     expect(matchBinding('Mod+J', overrides)?.id).toBe('palette.open')
-    expect(bindingsFor('palette.search', overrides)).toEqual([])
+    expect(bindingsFor('palette.search', overrides)).toEqual([null])
   })
   it('LIFE-478 ⌘⌥R(macOS Option 글리프 ®) → workspace.rename · ⌘⇧⌫ → workspace.delete, 설정 화면 재지정 가능', () => {
     const optionR = { key: '®', code: 'KeyR', metaKey: true, ctrlKey: false, shiftKey: false, altKey: true }
@@ -98,7 +98,7 @@ describe('LIFE-470 K1 — ⌘J search chord', () => {
   it('LIFE-478 새 기본값은 비켜 선다 — 사용자가 ⌘⌥R 을 다른 액션에 재정의해 두었으면 그 재정의가 이긴다', () => {
     const overrides = validateOverrides({ 'palette.open': ['Mod+Alt+R'] }, true)
     expect(overrides).toEqual({ 'palette.open': ['Mod+Alt+R'] })
-    expect(bindingsFor('workspace.rename', overrides)).toEqual([])
+    expect(bindingsFor('workspace.rename', overrides)).toEqual([null])
     expect(matchBinding('Mod+Alt+R', overrides)).toEqual({ id: 'palette.open', variant: 0 })
   })
 })
@@ -141,7 +141,7 @@ describe('LIFE-495 K7 — 탭 단축키', () => {
     const overrides = validateOverrides({ 'sidebar.toggle': ['Mod+Shift+T'] }, true)
     expect(overrides).toEqual({ 'sidebar.toggle': ['Mod+Shift+T'] })
     expect(matchBinding('Mod+Shift+T', overrides)?.id).toBe('sidebar.toggle')
-    expect(bindingsFor('tab.reopenClosed', overrides)).toEqual([])
+    expect(bindingsFor('tab.reopenClosed', overrides)).toEqual([null])
   })
 })
 
@@ -161,5 +161,39 @@ describe('LIFE-495 K7ⓘ — 옛 단축키 파일 이행(terminal.new 두 칸 �
   it('저장 경로(엄격)에서도 옛 모양이 오류가 아니다 · 새 모양(한 칸)은 그대로다', () => {
     expect(validateOverrides({ 'terminal.new': ['Mod+J', 'Mod+Shift+T'] })).toEqual({ 'terminal.new': ['Mod+J'] })
     expect(validateOverrides({ 'terminal.new': ['Mod+J'] })).toEqual({ 'terminal.new': ['Mod+J'] })
+  })
+})
+
+describe('fix1 R1-04 — 비켜 선 기본 조합은 빈 칸으로 남아 남은 조합의 variant 를 밀지 않는다', () => {
+  it('sidebar.toggle 이 ⌃1 을 쓰면 ⌃2 = 둘째 탭, ⌃9 = 아홉째 탭 그대로', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Control+1'] })
+    expect(matchBinding('Control+1', overrides)).toEqual({ id: 'sidebar.toggle', variant: 0 })
+    expect(matchBinding('Control+2', overrides)).toEqual({ id: 'tab.selectByIndex', variant: 1 })
+    expect(matchBinding('Control+9', overrides)).toEqual({ id: 'tab.selectByIndex', variant: 8 })
+    expect(bindingsFor('tab.selectByIndex', overrides)[0]).toBeNull()
+  })
+  it('sidebar.toggle 이 ⌘⇧] 를 쓰면 남은 ⌘⇧[ 는 여전히 「이전」', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Mod+Shift+]'] })
+    expect(matchBinding('Mod+Shift+[', overrides)).toEqual({ id: 'tab.cycle', variant: 1 })
+    expect(matchBinding('Mod+Alt+]', overrides)).toEqual({ id: 'tab.cycle', variant: 0 })
+  })
+})
+
+describe('fix1 R1-06 — main 이 가져오는 메뉴 키(⌘W·⌘R)의 반복 억제는 매칭된 액션 기준', () => {
+  const key = (input: { key: string; isAutoRepeat: boolean }) => ({ key: input.key, code: `Key${input.key.toUpperCase()}`, meta: true, alt: false, control: false, shift: false, isAutoRepeat: input.isAutoRepeat })
+  const dispatched = (overrides: ReturnType<typeof validateOverrides>, letter: string): number =>
+    [false, true, true].filter((repeat) => menuKeyShortcut({ ...key({ key: letter, isAutoRepeat: repeat }), overrides }).dispatch !== null).length
+  it('다시 열기를 ⌘W 로 재정의하면 누르고 있어도 한 번', () => {
+    const overrides = validateOverrides({ 'terminal.close': ['Mod+E'], 'tab.reopenClosed': ['Mod+W'] })
+    expect(dispatched(overrides, 'w')).toBe(1)
+    expect(menuKeyShortcut({ ...key({ key: 'w', isAutoRepeat: true }), overrides }).claimed).toBe('W')
+  })
+  it('기본 ⌘W(닫기)는 지금처럼 반복도 보낸다 · ⌘R(이름 바꾸기)은 한 번', () => {
+    expect(dispatched({}, 'w')).toBe(3)
+    expect(dispatched({}, 'r')).toBe(1)
+  })
+  it('⌘⇧R·⌥ 가 낀 키·다른 글자는 가져오지 않는다', () => {
+    expect(menuKeyShortcut({ ...key({ key: 'r', isAutoRepeat: false }), shift: true, overrides: {} }).claimed).toBeNull()
+    expect(menuKeyShortcut({ ...key({ key: 't', isAutoRepeat: false }), overrides: {} }).claimed).toBeNull()
   })
 })

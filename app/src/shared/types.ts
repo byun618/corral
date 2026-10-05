@@ -528,7 +528,8 @@ export type RunningPane = { tabId: string; paneId: string; foreground: string[] 
  */
 export type CloseTabsResult =
   | { outcome: 'closed'; closed: string[] }
-  | { outcome: 'needs-confirm'; running: RunningPane[] }
+  /** `closed` = 확인 뒤 닫다가 새 실행 중을 만나 멈췄을 때 그 전까지 닫은 탭(fix1 R1-05). 확인 전이면 빈 배열. */
+  | { outcome: 'needs-confirm'; closed: string[]; running: RunningPane[] }
   | { outcome: 'rejected'; closed: string[]; rejection: { code: string; message: string } }
   | { outcome: 'error'; closed: string[]; error: string }
 
@@ -930,7 +931,7 @@ export type CorralApi = {
    * 탭 여럿을 **게이트 한 번**으로 닫는다 (LIFE-495). 실행 중 판정을 다 모아 한 번에 돌려주고, `confirmed` 로 다시 부르면 전부 닫는다.
    * `alwaysConfirm` 이면 실행 중이 아니어도 `needs-confirm` 으로 멈춘다(핀 탭 닫기 확인 — 실행 중이면 같은 응답에 실린다).
    */
-  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean }) => Promise<CloseTabsResult>
+  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean; confirmedPaneIds?: string[] }) => Promise<CloseTabsResult>
   /**
    * 탭 이름을 사용자가 준 이름으로 바꾼다 (I-7). herdr `tab.rename` 한 번 — corral 은 이름을
    * 따로 저장하지 않는다(herdr 가 들고 있고 재기동해도 남는다).

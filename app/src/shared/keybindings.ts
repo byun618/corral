@@ -100,14 +100,17 @@ function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }
   return claimed
 }
 
-/** 표시·매칭에 쓰는 조합 — 비켜 선 기본 조합은 빠진다(그 자리는 빈 칸, 단축키 설정에서 「없음」). */
-export function bindingsFor(id: ActionId, overrides: Keybindings): readonly string[] {
+/**
+ * 표시·매칭에 쓰는 조합 — 칸 위치 = `defaultBinding`·`bindingVariants` 의 칸. 비켜 선 기본 조합은 **그 칸이 null**(단축키 설정에서 「없음」).
+ * 칸을 지우지 않는다 — 지우면 뒤 칸이 앞으로 당겨져 variant(방향·탭 번호)가 밀린다(LIFE-495 fix1 R1-04: ⌃1 을 다른 액션이 쓰면 ⌃2 가 첫 탭을 골랐다).
+ */
+export function bindingsFor(id: ActionId, overrides: Keybindings): readonly (string | null)[] {
   const own = overrides[id]
   if (own !== undefined) return own
   const defaults = ACTIONS.find((action) => action.id === id)!.defaultBinding
   if (!YIELDING_DEFAULTS.includes(id)) return defaults
   const claimed = claimedByOtherOverrides({ id, overrides })
-  return defaults.filter((binding) => !claimed.has(binding))
+  return defaults.map((binding) => (claimed.has(binding) ? null : binding))
 }
 
 /** Matching and collision checks use exactly the displayed/stored chords. */
@@ -119,10 +122,31 @@ export function matchBinding(binding: string, overrides: Keybindings): ShortcutM
   }
   return null
 }
+/** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ) — 렌더러 keydown·main 메뉴 키 두 길이 같은 목록을 본다(fix1 R1-06). */
+export const NON_REPEATING_ACTIONS: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename']
+
+/**
+ * main `before-input-event` 가 메뉴 가속키에서 가져오는 키 — `⌘W`(File ▸ Close Window)·`⌘R`(View ▸ Reload). 순수 판정.
+ * `claimed` 면 main 이 늘 삼킨다(재정의로 비었다고 창 닫기·새로고침으로 되돌아가면 안 된다). `dispatch` 는 렌더러로 보낼 매칭 —
+ * 반복(autoRepeat)은 **매칭된 액션**이 `NON_REPEATING_ACTIONS` 면 보내지 않는다(물리 키 기준이 아니다 — ⌘W 를 다시 열기로 재정의해도 한 번).
+ */
+export function menuKeyShortcut(input: { key: string; code: string; meta: boolean; alt: boolean; control: boolean; shift: boolean; isAutoRepeat: boolean; overrides: Keybindings }): {
+  claimed: 'W' | 'R' | null
+  dispatch: ShortcutMatch | null
+} {
+  if (!input.meta || input.alt || input.control || input.shift) return { claimed: null, dispatch: null }
+  const lower = input.key.toLowerCase()
+  const claimed = input.code === 'KeyW' || lower === 'w' ? 'W' : input.code === 'KeyR' || lower === 'r' ? 'R' : null
+  if (claimed === null) return { claimed: null, dispatch: null }
+  const match = matchBinding(`Mod+${claimed}`, input.overrides)
+  if (match === null || (input.isAutoRepeat && NON_REPEATING_ACTIONS.includes(match.id))) return { claimed, dispatch: null }
+  return { claimed, dispatch: match }
+}
 function findConflict(overrides: Keybindings) {
   const owners = new Map<string, (typeof ACTIONS)[number]>()
   for (const action of ACTIONS) {
     for (const binding of bindingsFor(action.id, overrides)) {
+      if (binding === null) continue
       const owner = owners.get(binding)
       if (owner) return { first: owner.id, second: action.id, message: `${formatBinding(binding)}: ${owner.title} · ${action.title} 충돌` }
       owners.set(binding, action)

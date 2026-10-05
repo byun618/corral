@@ -58,3 +58,30 @@ export function cycleTabTarget(input: { tabOrder: readonly string[]; activeTabId
 export function tabAtIndex(input: { tabOrder: readonly string[]; index: number }): string | null {
   return input.tabOrder[input.index] ?? null
 }
+
+/** 사이드바 닫기 판정에 필요한 만큼의 state 모양 — 테스트가 AppState 전체를 만들지 않게. */
+type ReposShape = readonly {
+  worktrees: readonly { path: string; workspace: { workspaceId: string; tabs: readonly { tabId: string; panes: readonly { paneId: string }[] }[] } | null }[]
+}[]
+
+/**
+ * 사이드바 세션 닫기의 길 (LIFE-495 K3ⓒ · fix1 R1-02). 그 pane 이 **핀 탭의 마지막 pane** 이면 탭 닫기 길(핀 확인·게이트·다시 열기 기록),
+ * 아니면 기존 pane 닫기. 소유 탭은 활성 워크스페이스가 아니라 **전체 state** 에서 찾는다 — 사이드바는 모든 워크스페이스의 세션을 닫을 수 있고,
+ * 닫기 단추는 클릭을 카드로 올리지 않아 그 워크스페이스가 활성이 되지도 않는다(`SessionRow` stopPropagation).
+ */
+export function sidebarCloseRoute(input: { repos: ReposShape; paneId: string; pinned: ReadonlySet<string> }):
+  | { kind: 'tab'; worktreePath: string; workspaceId: string; tabId: string }
+  | { kind: 'pane' } {
+  for (const repo of input.repos) {
+    for (const worktree of repo.worktrees) {
+      const workspace = worktree.workspace
+      if (workspace === null) continue
+      const tab = workspace.tabs.find((row) => row.panes.some((pane) => pane.paneId === input.paneId))
+      if (tab === undefined) continue
+      return tab.panes.length === 1 && input.pinned.has(tab.tabId)
+        ? { kind: 'tab', worktreePath: worktree.path, workspaceId: workspace.workspaceId, tabId: tab.tabId }
+        : { kind: 'pane' }
+    }
+  }
+  return { kind: 'pane' }
+}

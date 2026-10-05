@@ -24,7 +24,7 @@ export type PendingClose = { target: CloseTarget; foreground: string[]; running:
 export type LifecycleActions = {
   createRow: (workspaceId: string, kind: AgentKind) => void
   /** LIFE-495 K6 — 닫은 탭 다시 열기: 같은 시작 디렉터리·이름으로 **새 셸** 탭. `onTab` 은 만든 탭 id 로 펴기 전에 불린다(자리·색 복원). */
-  reopenTab: (input: { workspaceId: string; cwd: string | null; label: string | null; onTab: (tabId: string) => void }) => void
+  reopenTab: (input: { workspaceId: string; cwd: string | null; label: string | null; onTab: (tabId: string) => void; onFailed: () => void }) => void
   /**
    * LIFE-496 D38 — `+` 메뉴 Quick-launch. `createRow` 와 같은 경로에 **기동 워치독**을 더한다(에이전트가 기한 안에 감지되지 않으면 알림).
    * 팔레트 「새 {kind} 에이전트」는 지금 동작 그대로 `createRow` 를 쓴다(K2ⓐ).

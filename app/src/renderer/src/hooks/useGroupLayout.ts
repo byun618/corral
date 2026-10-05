@@ -34,6 +34,8 @@ export type GroupLayoutApi = {
   /** 다른 worktree 의 영역 수 — 사이드바 `◫`/`⊟` 가 쓴다 (R17-2 공백 2). */
   groupCountOf: (worktreePath: string) => number
   splitDirectionOf: (worktreePath: string) => 'row' | 'column' | null
+  /** 그 worktree 의 저장된 배치(활성이 아닌 worktree 포함 — LIFE-495 fix1 R1-02 다시 열기 스냅샷). 없으면 null. */
+  layoutOf: (worktreePath: string) => GroupLayout | null
   setActiveGroup: (groupId: string) => void
   setActiveTab: (input: { groupId: string; tabId: string }) => void
   /** 그 탭이 있는 영역을 활성으로 + 그 영역의 활성 탭으로 (R3-e reveal). 없으면 false. */
@@ -106,7 +108,7 @@ export function useGroupLayout(input: {
     if (input.worktreePath === null) return null
     const saved = byWorktree[input.worktreePath]
     const base = saved ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: input.liveTabIds, activeTabId: input.liveTabIds[0] ?? null })
-    return partitionPinnedLayout(reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), input.pinned)
+    return partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), pinned: input.pinned })
   }, [byWorktree, input.worktreePath, input.liveTabIds, input.pinned])
 
   /**
@@ -139,8 +141,8 @@ export function useGroupLayout(input: {
         const base =
           previous[worktreePath] ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: liveTabIds, activeTabId: liveTabIds[0] ?? null })
         // 화면이 보이는 순서(핀 접두부) 위에서 바꾼다 — 드롭 자리 index 가 그 순서로 계산됐다. 바꾼 뒤에도 한 번 더 지나 경계를 지킨다.
-        const current = partitionPinnedLayout(reconcileLayout({ layout: base, liveTabIds }), pinned)
-        const next = partitionPinnedLayout(change(current), pinned)
+        const current = partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds }), pinned })
+        const next = partitionPinnedLayout({ layout: change(current), pinned })
         return next === previous[worktreePath] ? previous : { ...previous, [worktreePath]: next }
       })
     },
@@ -165,6 +167,8 @@ export function useGroupLayout(input: {
     },
     [byWorktree],
   )
+
+  const layoutOf = useCallback((worktreePath: string) => byWorktree[worktreePath] ?? null, [byWorktree])
 
   const setActiveGroup = useCallback((groupId: string) => mutate((current) => ({ ...current, activeGroupId: groupId })), [mutate])
 
@@ -235,7 +239,7 @@ export function useGroupLayout(input: {
   )
 
   const placeTab = useCallback(
-    (target: { tabId: string; groupId: string; index: number }) => mutate((current) => placeTabIn(current, target)),
+    (target: { tabId: string; groupId: string; index: number }) => mutate((current) => placeTabIn({ layout: current, ...target })),
     [mutate],
   )
 
@@ -245,6 +249,7 @@ export function useGroupLayout(input: {
     activeGroupId: layout?.activeGroupId ?? null,
     groupCountOf,
     splitDirectionOf,
+    layoutOf,
     setActiveGroup,
     setActiveTab,
     revealTab,

@@ -824,6 +824,20 @@ describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
     expect(document.activeElement).toBe(tabEl('t2').querySelector('[data-tab-rename]'))
   })
 
+  it('fix1 R1-01 두 탭을 오가는 rename 요청 — 앞 탭의 요청 해제(0)는 그 탭 편집을 다시 열지 않는다', () => {
+    mount({ tabs: tabs3(), activeTabId: 't1' })
+    mount({ tabs: tabs3(), activeTabId: 't1', renameRequest: { tabId: 't1', token: 1 } })
+    expect(document.activeElement).toBe(tabEl('t1').querySelector('[data-tab-rename]'))
+    act(() => {
+      tabEl('t1').querySelector<HTMLElement>('[data-tab-rename]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    expect(tabEl('t1').dataset.tabEditing).toBe('false')
+    mount({ tabs: tabs3(), activeTabId: 't0', renameRequest: { tabId: 't0', token: 2 } })
+    expect(tabEl('t1').dataset.tabEditing).toBe('false')
+    expect(tabEl('t0').dataset.tabEditing).toBe('true')
+    expect(document.activeElement?.getAttribute('data-tab-rename')).toBe('t0')
+  })
+
   it('K1ⓓ 헤더 모드(⊞) — 같은 항목, 대상은 활성 탭', () => {
     mount({ tabs: tabs3(), activeTabId: 't1' })
     act(() => host.querySelector<HTMLElement>('[data-group-menu]')!.click())

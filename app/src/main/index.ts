@@ -8,7 +8,8 @@ import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
-import { matchBinding } from '../shared/keybindings.js'
+import { menuKeyShortcut } from '../shared/keybindings.js'
+import { closeTabsGated } from './close-tabs.js'
 // Electron main — 소켓을 소유하는 쪽.
 //
 // 렌더러가 소켓을 열 수 없는 것은 권장이 아니라 구조적 강제다: sandbox:true 인 렌더러/preload 의
@@ -640,50 +641,32 @@ async function probeRunningPanes(
 }
 
 /**
- * 탭 여럿을 닫는다 (LIFE-495 K2ⓒ·K3ⓒ) — 「다른/오른쪽/왼쪽 탭 닫기」와 단건 닫기가 같은 길이다.
- *
- * 220 의 bulk 닫기는 실행 중 확인 없이 죽인다(`skipRunningProcessConfirm`, 00-analysis F4). corral 은 모든 탭 닫기가 게이트를 지나므로
- * 새 경로도 지난다 — 대상 탭의 pane 을 **다 판정한 뒤 한 번** 묻는다(탭마다 N번이 아니다). 확인 전에는 하나도 닫지 않는다.
- * 닫기는 앞에서부터 하나씩 — herdr 거절·실패에서 멈추고 그때까지 닫은 탭을 돌려준다.
+ * 탭 여럿을 닫는다 (LIFE-495 K2ⓒ·K3ⓒ) — 「다른/오른쪽/왼쪽 탭 닫기」와 단건 닫기가 같은 길이다. 게이트 규칙은 `close-tabs.ts`
+ * (확인 전 한 번 묻기 · 탭마다 닫기 직전 재판정 · 확인 밖 실행 중이면 멈추고 다시 묻기 — fix1 R1-05). 여기는 herdr·store 를 잇는다.
  */
-async function closeTabsByIds(input: { tabIds: readonly string[]; confirmed?: boolean; alwaysConfirm?: boolean }): Promise<CloseTabsResult> {
+async function closeTabsByIds(input: { tabIds: readonly string[]; confirmed: boolean; alwaysConfirm: boolean; confirmedPaneIds: readonly string[] }): Promise<CloseTabsResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
-  const wanted = new Set(input.tabIds)
-  const panes: { tabId: string; paneId: string }[] = []
-  const present: string[] = []
-  for (const workspace of link.store.rows()) {
-    for (const tab of workspace.tabs) {
-      if (!wanted.has(tab.tabId)) continue
-      present.push(tab.tabId)
-      for (const pane of tab.panes) panes.push({ tabId: tab.tabId, paneId: pane.paneId })
+  const panesOf = (tabId: string): string[] | null => {
+    for (const workspace of link.store.rows()) {
+      const tab = workspace.tabs.find((row) => row.tabId === tabId)
+      if (tab !== undefined) return tab.panes.map((pane) => pane.paneId)
     }
+    return null
   }
-  const targets = input.tabIds.filter((tabId) => present.includes(tabId))
-  if (input.confirmed !== true) {
-    const running = await probeRunningPanes(socketPath, panes, { close: 'tabs', tabIds: targets })
-    if (running.length > 0 || input.alwaysConfirm === true) return { outcome: 'needs-confirm', running }
-  }
-  const closed: string[] = []
-  for (const tabId of targets) {
+  const result = await closeTabsGated({
+    tabIds: input.tabIds,
+    confirmed: input.confirmed,
+    alwaysConfirm: input.alwaysConfirm,
+    confirmedPaneIds: input.confirmedPaneIds,
+    panesOf,
+    probe: (panes) => probeRunningPanes(socketPath, panes, { close: 'tabs', tabIds: input.tabIds }),
     // S15ⓓ ② — 사용자가 **명시적으로** 닫는 탭이다. 그 닫힘은 완료 행으로 되살리지 않는다.
-    const outcome = await withRetentionSuppressed({
-      store: link.store,
-      ids: [tabId],
-      what: 'tab',
-      run: hooks => closeTab(socketPath, tabId, hooks),
-    })
-    if (outcome.outcome === 'closed') {
-      closed.push(tabId)
-      continue
-    }
-    scheduleEmit()
-    if (outcome.outcome === 'rejected') return { outcome: 'rejected', closed, rejection: outcome.rejection }
-    return { outcome: 'error', closed, error: outcome.error }
-  }
-  scheduleEmit()
-  log('lifecycle.close_tabs', { requested: input.tabIds.length, closed: closed.length })
-  return { outcome: 'closed', closed }
+    close: (tabId) => withRetentionSuppressed({ store: link.store, ids: [tabId], what: 'tab', run: hooks => closeTab(socketPath, tabId, hooks) }),
+  })
+  if (result.outcome !== 'needs-confirm' || result.closed.length > 0) scheduleEmit()
+  log('lifecycle.close_tabs', { requested: input.tabIds.length, outcome: result.outcome, closed: result.closed.length })
+  return result
 }
 
 /** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
@@ -1270,22 +1253,18 @@ function createWindow(): void {
     }
     if (shortcutRecording) return
     if (input.type !== 'keyDown') return
-    if (!input.meta || input.alt || input.control || input.shift) return
     // 메뉴가 쥔 키 중 corral 이 가져오는 것 — `⌘W`(File ▸ Close Window)와 **`⌘R`**(View ▸ Reload, LIFE-495 F9·U2).
     // `⌘R` 을 두면 탭 이름 바꾸기 대신 **창이 새로고침**된다(화면 상태가 날아간다). Orca 는 Reload 항목에서 가속키를 빼서 피했다
     // (`register-app-menu.ts:280-290`). corral 은 ⌘W 와 같은 수(R23 — 메뉴를 다시 만들지 않는다)로 가져온다. `⌘⇧R`(Force Reload)는
-    // 손대지 않는다 — shift 가 끼면 위에서 빠진다. keyUp 억제 주의(아래 주석)는 ⌘W 와 같다 — 홀드 키가 아니라 문제없다.
-    // 매칭 결과(사용자가 바꾼 키)와 무관하게 ⌘W·⌘R 은 늘 삼킨다 — 재정의로 비었다고 창 닫기·새로고침으로 되돌아가면 안 된다.
-    const claimed = input.code === 'KeyW' || input.key.toLowerCase() === 'w' ? 'W' : input.code === 'KeyR' || input.key.toLowerCase() === 'r' ? 'R' : null
+    // 손대지 않는다 — shift 가 끼면 빠진다. keyUp 억제 주의(아래 주석)는 ⌘W 와 같다 — 홀드 키가 아니라 문제없다.
+    // 판정은 `menuKeyShortcut`(shared, 순수) — 반복 억제는 매칭된 액션 기준(fix1 R1-06).
+    const { claimed, dispatch } = menuKeyShortcut({ ...input, overrides: keybindings.get() })
     if (claimed === null) return
     event.preventDefault()
     // 가로챘다는 사실은 **로그로만** 보인다 — 키를 삼켰으니 화면에는 아무 흔적이 없고,
     // "안 닫혔다"는 관측은 "안 눌렸다"와 구분되지 않는다.
-    log('shortcut.intercepted', { key: claimed.toLowerCase(), meta: true, repeat: input.isAutoRepeat })
-    // 누르고 있는 ⌘R 의 반복은 보내지 않는다 — 이름 편집은 한 번 열리면 된다(⌘W 반복은 지금 동작 그대로 보낸다).
-    if (claimed === 'R' && input.isAutoRepeat) return
-    const match = matchBinding(`Mod+${claimed}`, keybindings.get())
-    if (match && window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', match)
+    log('shortcut.intercepted', { key: claimed.toLowerCase(), meta: true, repeat: input.isAutoRepeat, dispatched: dispatch !== null })
+    if (dispatch && window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', dispatch)
   })
   /**
    * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
@@ -1388,9 +1367,14 @@ app.whenReady().then(async () => {
         })
       : { ...denied, paneId: null, tabId: null, retries: 0 },
   )
-  ipcMain.handle('corral:closeTabs', (event, input: { tabIds: unknown; confirmed?: boolean; alwaysConfirm?: boolean }) =>
+  ipcMain.handle('corral:closeTabs', (event, input: { tabIds: unknown; confirmed?: boolean; alwaysConfirm?: boolean; confirmedPaneIds?: unknown }) =>
     fromOurWindow(event) && Array.isArray(input?.tabIds) && input.tabIds.every((tabId) => typeof tabId === 'string')
-      ? closeTabsByIds({ tabIds: input.tabIds.filter((tabId): tabId is string => typeof tabId === 'string'), confirmed: input.confirmed === true, alwaysConfirm: input.alwaysConfirm === true })
+      ? closeTabsByIds({
+          tabIds: input.tabIds.filter((tabId): tabId is string => typeof tabId === 'string'),
+          confirmed: input.confirmed === true,
+          alwaysConfirm: input.alwaysConfirm === true,
+          confirmedPaneIds: Array.isArray(input.confirmedPaneIds) ? input.confirmedPaneIds.filter((paneId): paneId is string => typeof paneId === 'string') : [],
+        })
       : ({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' } satisfies CloseTabsResult),
   )
   ipcMain.handle('corral:closeRow', (event, input: { tabId: string; confirmed?: boolean }) =>

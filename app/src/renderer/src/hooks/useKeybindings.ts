@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { bindingFromEvent, matchBinding, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
+import { bindingFromEvent, matchBinding, NON_REPEATING_ACTIONS, type ActionId, type Keybindings, type ShortcutMatch } from '../../../shared/keybindings.js'
 
 export type ShortcutHandlers = Record<ActionId, (variant: number) => void>
-/** 누르고 있어도 한 번만 도는 액션 (LIFE-495 K6ⓔ — ⌘⇧T 를 누르고 있으면 닫은 탭이 줄줄이 열리면 안 된다). 반복 keydown 은 삼킨다. */
-const NON_REPEATING: readonly ActionId[] = ['tab.reopenClosed', 'tab.rename']
 export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onInterceptDuringHold: () => boolean) {
   const [overrides, setOverrides] = useState<Keybindings>({})
   const [ready, setReady] = useState(false)
@@ -34,7 +32,8 @@ export function useKeybindings(handlers: ShortcutHandlers, blocked: boolean, onI
       if (event.target instanceof Element && event.target.closest('.main-tab-rename, [data-inline-rename]')) return
       event.preventDefault()
       event.stopPropagation()
-      if (event.repeat && NON_REPEATING.includes(match.id)) return
+      // 누르고 있어도 한 번만 도는 액션(LIFE-495 K6ⓔ) — 반복 keydown 은 삼킨다. main 메뉴 키 길(`menuKeyShortcut`)과 같은 목록(fix1 R1-06).
+      if (event.repeat && NON_REPEATING_ACTIONS.includes(match.id)) return
       dispatch(match)
     }
     document.addEventListener('keydown', onKey, true)

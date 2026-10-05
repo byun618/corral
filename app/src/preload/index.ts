@@ -153,7 +153,7 @@ const api: CorralApi = {
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> =>
     ipcRenderer.invoke('corral:createRow', input),
-  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean }): Promise<CloseTabsResult> =>
+  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean; confirmedPaneIds?: string[] }): Promise<CloseTabsResult> =>
     ipcRenderer.invoke('corral:closeTabs', input),
   closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
     ipcRenderer.invoke('corral:closeRow', input),

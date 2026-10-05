@@ -269,11 +269,13 @@ function MainTab({
   }, [editing])
   // LIFE-495 — ⌘R·헤더 메뉴의 「제목 바꾸기」. 요청이 올 때마다(값이 바뀔 때) 더블클릭과 같은 `beginEdit` 으로 연다.
   // 처리한 요청 값을 기억한다 — 탭이 다른 영역으로 옮겨 다시 마운트돼도 지난 요청으로 편집이 저절로 열리지 않게.
+  // 0 = 요청 없음(다른 탭이 요청을 받으면 이 탭 값은 0 으로 돌아온다) — 열지 않는다(fix1 R1-01: 0 복귀를 새 요청으로 읽어
+  // 앞 탭 편집이 다시 열리고 뒤 탭의 편집 포커스를 빼앗았다). 토큰은 App 이 단조 증가로 준다.
   const beginEditRef = useRef(beginEdit)
   beginEditRef.current = beginEdit
   const handledRenameRef = useRef(renameRequest)
   useEffect(() => {
-    if (renameRequest === handledRenameRef.current) return
+    if (renameRequest === 0 || renameRequest === handledRenameRef.current) return
     handledRenameRef.current = renameRequest
     beginEditRef.current()
   }, [renameRequest])

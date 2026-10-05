@@ -22,13 +22,15 @@ export type ClosedTabSnapshot = {
 export type RecentlyClosed = Record<string, ClosedTabSnapshot[]>
 
 /** 앞이 최근. 상한을 넘은 오래된 것은 버린다. */
-export function pushClosed(history: RecentlyClosed, snapshot: ClosedTabSnapshot): RecentlyClosed {
+export function pushClosed(input: { history: RecentlyClosed; snapshot: ClosedTabSnapshot }): RecentlyClosed {
+  const { history, snapshot } = input
   const list = [snapshot, ...(history[snapshot.worktreePath] ?? [])].slice(0, RECENTLY_CLOSED_LIMIT)
   return { ...history, [snapshot.worktreePath]: list }
 }
 
 /** 가장 최근 것을 꺼낸다. 비어 있으면 아무것도 안 한다(K6ⓔ) — `snapshot: null`. */
-export function popClosed(history: RecentlyClosed, worktreePath: string): { history: RecentlyClosed; snapshot: ClosedTabSnapshot | null } {
+export function popClosed(input: { history: RecentlyClosed; worktreePath: string }): { history: RecentlyClosed; snapshot: ClosedTabSnapshot | null } {
+  const { history, worktreePath } = input
   const [snapshot, ...rest] = history[worktreePath] ?? []
   if (snapshot === undefined) return { history, snapshot: null }
   return { history: { ...history, [worktreePath]: rest }, snapshot }
@@ -41,4 +43,21 @@ export function popClosed(history: RecentlyClosed, worktreePath: string): { hist
 export function snapshotCwd(input: { panes: readonly { paneId: string; cwd: string | null }[]; shownPaneId: string | null }): string | null {
   const shown = input.panes.find((pane) => pane.paneId === input.shownPaneId)
   return shown?.cwd ?? input.panes.find((pane) => pane.cwd !== null)?.cwd ?? null
+}
+
+/** 다시 연 탭이 도착하면 놓을 자리·색 (K6). 탭 id 키 — 연속 ⌘⇧T 가 서로 덮어쓰지 않게(fix1 미확인 부기). */
+export type PendingPlacement = { tabId: string; workspaceId: string; groupId: string; index: number; color: string | null }
+
+export function addPlacement(input: { pending: ReadonlyMap<string, PendingPlacement>; placement: PendingPlacement }): Map<string, PendingPlacement> {
+  return new Map([...input.pending, [input.placement.tabId, input.placement]])
+}
+
+/** 도착한(살아 있는) 탭의 자리를 꺼낸다 — 나머지는 남긴다. 순서 = 요청 순서. */
+export function takeLivePlacements(input: { pending: ReadonlyMap<string, PendingPlacement>; liveTabIds: readonly string[] }): {
+  ready: PendingPlacement[]
+  pending: Map<string, PendingPlacement>
+} {
+  const live = new Set(input.liveTabIds)
+  const ready = [...input.pending.values()].filter((placement) => live.has(placement.tabId))
+  return { ready, pending: new Map([...input.pending].filter(([tabId]) => !live.has(tabId))) }
 }

@@ -180,18 +180,27 @@ export function useLifecycleActions(state: AppState | null): {
    * 닫는다 (L3·L4·L9). `confirmed:false` 로 부르면 main 이 종료 게이트를 재고, 산 프로세스가
    * 있으면 `needs-confirm` 으로 돌아온다 — 그때만 모달을 띄운다.
    */
-  const closeTarget = useCallback(async (target: CloseTarget, confirmed = false, onClosed?: (closed: string[]) => void): Promise<void> => {
+  const closeTarget = useCallback(async (input: {
+    target: CloseTarget
+    confirmed: boolean
+    onClosed?: (closed: string[]) => void
+    /** 확인 창이 보여 준 실행 중 pane — 확인 뒤 main 은 이 밖의 실행 중만 다시 묻는다(fix1 R1-05). */
+    confirmedPaneIds?: string[]
+  }): Promise<void> => {
+    const { target, confirmed, onClosed } = input
     setLifecycleNotice(null)
     if (target.kind === 'tabs') {
       if (target.tabIds.length === 0) return
-      const result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm })
+      const result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds ?? [] })
+      if (result.closed.length > 0) onClosed?.(result.closed)
       if (result.outcome === 'needs-confirm') {
+        // 확인 뒤 닫다가 새 실행 중을 만나 멈췄으면 닫힌 탭은 위에서 기록했고, 남은 탭만 다시 묻는다.
         pendingOnClosed.current = onClosed ?? null
-        setPendingClose({ target, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
+        const remaining = target.tabIds.filter((tabId) => !result.closed.includes(tabId))
+        setPendingClose({ target: { ...target, tabIds: remaining }, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
         return
       }
       setPendingClose(null)
-      if (result.closed.length > 0) onClosed?.(result.closed)
       if (result.outcome === 'rejected') setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
       else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
       return
@@ -270,12 +279,16 @@ export function useLifecycleActions(state: AppState | null): {
 
   /** 만든 pane 의 id 를 돌려준다(실패·pane 없음이면 null) — `launchAgent` 가 워치독을 건다. */
   const createRow = useCallback(
-    async (
-      workspaceId: string,
-      kind: AgentKind,
-      /** LIFE-495 K6 — 닫은 탭 다시 열기: 시작 디렉터리·이름을 싣고, 만든 탭 id 를 자리 복원에 넘긴다(펴기 전에). */
-      reopen?: { cwd: string | null; label: string | null; onTab: (tabId: string) => void },
-    ): Promise<string | null> => {
+    async (input: {
+      workspaceId: string
+      kind: AgentKind
+      /**
+       * LIFE-495 K6 — 닫은 탭 다시 열기: 시작 디렉터리·이름을 싣고, 만든 탭 id 를 자리 복원에 넘긴다(펴기 전에).
+       * 만들기가 실패하면 `onFailed` — 꺼낸 기록을 되돌린다(fix1 미확인 부기: 실패해도 기록이 사라졌다).
+       */
+      reopen?: { cwd: string | null; label: string | null; onTab: (tabId: string) => void; onFailed: () => void }
+    }): Promise<string | null> => {
+      const { workspaceId, kind, reopen } = input
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
       const result = await window.corral.createRow({
@@ -286,6 +299,7 @@ export function useLifecycleActions(state: AppState | null): {
       })
       if (!result.ok) {
         setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
+        reopen?.onFailed()
         return null
       }
       // G2 — **새 탭이 선택된다.** 이미 탭이 있는 worktree 에서는 자동 선택 이펙트가 안 돌아
@@ -296,7 +310,8 @@ export function useLifecycleActions(state: AppState | null): {
       // **G2′** — 새 탭을 화면에 띄우는 것은 pane 선택이 아니라 **영역의 활성 탭**이다(R3-a).
       // 여기서는 무엇을 펴야 하는지만 남기고, 배치를 아는 App 이 탭이 도착한 뒤 편다.
       // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
-      if (result.tabId !== null) reopen?.onTab(result.tabId)
+      if (result.tabId === null) reopen?.onFailed()
+      else reopen?.onTab(result.tabId)
       if (result.tabId !== null) setPendingRevealTab(result.tabId)
       return result.paneId
     },
@@ -308,7 +323,7 @@ export function useLifecycleActions(state: AppState | null): {
       pendingLaunches.current += 1
       let paneId: string | null = null
       try {
-        paneId = await createRow(workspaceId, kind)
+        paneId = await createRow({ workspaceId, kind })
       } finally {
         pendingLaunches.current -= 1
       }
@@ -327,7 +342,7 @@ export function useLifecycleActions(state: AppState | null): {
    */
   const createShell = useCallback((): void => {
     const workspaceId = lastWorkspaceRef.current
-    if (workspaceId !== null) void createRow(workspaceId, 'shell')
+    if (workspaceId !== null) void createRow({ workspaceId, kind: 'shell' })
   }, [createRow])
 
   /** pane 선택 — 터미널을 그 pane 으로. G2: 그 pane 의 workspace 를 ⌘T·탭바 대상으로 기록한다. */
@@ -378,17 +393,17 @@ export function useLifecycleActions(state: AppState | null): {
   )
 
   const actions: LifecycleActions = {
-    createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
-    reopenTab: (input) => void createRow(input.workspaceId, 'shell', input),
+    createRow: (workspaceId, kind) => void createRow({ workspaceId, kind }),
+    reopenTab: (input) => void createRow({ workspaceId: input.workspaceId, kind: 'shell', reopen: input }),
     launchAgent: (input) => void launchAgent(input),
     closeTabs: ({ tabIds, alwaysConfirm, onClosed }) => {
       // 확인 모달이 떠 있는 동안 새 닫기 요청은 받지 않는다 — 모달은 한 번에 하나다(앞 요청의 onClosed 를 덮지 않게).
       if (pendingClose !== null) return
-      void closeTarget({ kind: 'tabs', tabIds, alwaysConfirm }, false, onClosed)
+      void closeTarget({ target: { kind: 'tabs', tabIds, alwaysConfirm }, confirmed: false, onClosed })
     },
     renameRow: (input) => void renameRow(input),
     clearRowName: (tabId) => void clearRowName(tabId),
-    closeWorktree: (workspaceId) => void closeTarget({ kind: 'workspace', workspaceId }),
+    closeWorktree: (workspaceId) => void closeTarget({ target: { kind: 'workspace', workspaceId }, confirmed: false }),
     openWorktree: (repoRoot, worktree) => void openWorktree(repoRoot, worktree),
     openCreateWorktree: (repoRoot) => {
       setLifecycleNotice(null)
@@ -409,7 +424,7 @@ export function useLifecycleActions(state: AppState | null): {
     if (pendingClose === null) return
     const onClosed = pendingOnClosed.current ?? undefined
     pendingOnClosed.current = null
-    void closeTarget(pendingClose.target, true, onClosed)
+    void closeTarget({ target: pendingClose.target, confirmed: true, onClosed, confirmedPaneIds: pendingClose.running.map((pane) => pane.paneId) })
   }, [pendingClose, closeTarget])
 
   return {

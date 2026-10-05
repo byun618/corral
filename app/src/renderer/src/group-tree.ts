@@ -542,12 +542,13 @@ export function readStoredLayouts(value: unknown): StoredGroupLayout[] {
  * 핀은 탭에 붙어 다닌다(id 키) — 다른 영역으로 옮겨도 핀이고 그 영역의 핀 구간 끝에 선다(U6).
  * 바뀐 영역이 없으면 같은 객체를 돌려준다(리렌더·저장 비교가 안 흔들린다).
  */
-export function partitionPinnedLayout(layout: GroupLayout, pinned: ReadonlySet<string>): GroupLayout {
+export function partitionPinnedLayout(input: { layout: GroupLayout; pinned: ReadonlySet<string> }): GroupLayout {
+  const { layout, pinned } = input
   if (pinned.size === 0) return layout
   const apply = (node: GroupNode): GroupNode => {
     switch (node.kind) {
       case 'leaf': {
-        const order = partitionPinnedOrder(node.group.tabOrder, pinned)
+        const order = partitionPinnedOrder({ tabOrder: node.group.tabOrder, pinned })
         return order === node.group.tabOrder ? node : leaf({ ...node.group, tabOrder: order })
       }
       case 'split': {
@@ -561,7 +562,8 @@ export function partitionPinnedLayout(layout: GroupLayout, pinned: ReadonlySet<s
   return root === layout.root ? layout : { ...layout, root }
 }
 
-export function partitionPinnedOrder(tabOrder: string[], pinned: ReadonlySet<string>): string[] {
+export function partitionPinnedOrder(input: { tabOrder: string[]; pinned: ReadonlySet<string> }): string[] {
+  const { tabOrder, pinned } = input
   const head = tabOrder.filter((tabId) => pinned.has(tabId))
   if (head.length === 0) return tabOrder
   const next = [...head, ...tabOrder.filter((tabId) => !pinned.has(tabId))]
@@ -572,7 +574,8 @@ export function partitionPinnedOrder(tabOrder: string[], pinned: ReadonlySet<str
  * 탭을 그 영역의 그 자리로 옮긴다 (LIFE-495 K6 다시 열기의 자리 복원). 자리는 0~길이로 clamp, 영역이 없거나 탭이 배치에 없으면 그대로다.
  * 핀 구간 안쪽 자리는 부르는 쪽의 `partitionPinnedLayout` 이 경계로 민다.
  */
-export function placeTab(layout: GroupLayout, input: { tabId: string; groupId: string; index: number }): GroupLayout {
+export function placeTab(input: { layout: GroupLayout; tabId: string; groupId: string; index: number }): GroupLayout {
+  const { layout } = input
   const from = groupOfTab(layout.root, input.tabId)
   if (from === null || findGroup(layout.root, input.groupId) === null) return layout
   return moveTabWithinTabbar(layout, { tabId: input.tabId, fromGroupId: from.groupId, toGroupId: input.groupId, index: input.index })

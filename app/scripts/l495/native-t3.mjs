@@ -123,7 +123,7 @@ async function shot(name, selector) {
 }
 
 // --- 입력 ---------------------------------------------------------------------------
-const KEY = { ' ': 49, b: 11, f: 3, g: 5, h: 4, i: 34, j: 38, m: 46, c: 8, v: 9, q: 12, e: 14, o: 31, p: 35, y: 16, a: 0, s: 1, d: 2, k: 40, r: 15, t: 17, w: 13, u: 32, l: 37, x: 7, n: 45, '[': 33, ']': 30, esc: 53, enter: 36, tab: 48, pgup: 116, pgdn: 121, 1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25 }
+const KEY = { ' ': 49, 0: 29, b: 11, f: 3, g: 5, h: 4, i: 34, j: 38, m: 46, c: 8, v: 9, q: 12, e: 14, o: 31, p: 35, y: 16, a: 0, s: 1, d: 2, k: 40, r: 15, t: 17, w: 13, u: 32, l: 37, x: 7, n: 45, '[': 33, ']': 30, esc: 53, enter: 36, tab: 48, pgup: 116, pgdn: 121, 1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25 }
 /** CGEvent 한 번 — 먼저 corral 을 맨 앞으로. 보호(맨 앞 앱 ≠ corral)에 걸리면 보내지 않는다. */
 async function key(name, mods = []) {
   const front = run('activate', [appPid])
@@ -694,7 +694,99 @@ async function phaseQuit() {
   req.require('k7a-cmdQ-quits', sent.sent && gone === true, { appPid })
 }
 
-const table = { setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit }
+/**
+ * fix1 R1-01 네이티브 — t1 ⌘R·Esc → t0 ⌘R → 입력 → Enter: t0 만 바뀐다(앞 탭 편집이 다시 열려 포커스를 빼앗지 않는다).
+ */
+async function phaseR101() {
+  await ensureTabs(3)
+  await unpinAll()
+  await assertOnlyFixture()
+  const order = (await read()).groups[0].tabs.map((tab) => tab.id)
+  const labelOf = async (tabId) => (await fixtureWs())?.tabs.find((tab) => tab.tabId === tabId)?.label ?? null
+  const t1Before = await labelOf(order[1])
+  await control({ cmd: 'click', selector: `[data-main-tab="${order[1]}"]` })
+  await pause(500)
+  await key('r', ['cmd'])
+  const t1Edit = await soft(until(async () => (await read()).focus.rename === order[1], 't1 편집', 4_000))
+  await key('esc')
+  await pause(300)
+  await control({ cmd: 'click', selector: `[data-main-tab="${order[0]}"]` })
+  await pause(500)
+  await assertOnlyFixture()
+  await key('r', ['cmd'])
+  await pause(400)
+  const screen = await read()
+  const editing = screen.groups.flatMap((group) => group.tabs).filter((tab) => tab.editing).map((tab) => tab.id)
+  await key('a', ['cmd'])
+  await typeKeys('fixonea')
+  await key('enter')
+  const renamed = await soft(until(async () => (await labelOf(order[0])) === 'fixonea', 't0 이름', 6_000))
+  const t1After = await labelOf(order[1])
+  req.require('r101-rename-only-requested-tab', t1Edit === true && screen.focus.rename === order[0] && editing.join() === order[0] && renamed === true && t1After === t1Before, {
+    order, t1Edit, focusAfterSecondCmdR: screen.focus, editing, t1Before, t1After, t0After: await labelOf(order[0]),
+  })
+}
+
+/**
+ * fix1 R1-02 네이티브 — 워크스페이스 B 의 핀 탭(pane 1개) → A 활성 → 사이드바의 B 세션 닫기(×) → 핀 확인 창(취소 → 남음).
+ * B 의 셸 pane 은 사이드바 세션 행이 서도록 `herdr pane report-agent` 로 에이전트 귀속만 보고한다(provider 미기동 — 기존 관문 선례).
+ */
+async function phaseR102() {
+  const fixtureB = process.env.L495_FIXTURE_B ?? ''
+  if (!fixtureB.startsWith('/private/tmp/l495nfx')) throw new Error('L495_FIXTURE_B 는 /private/tmp/l495nfx*')
+  const wsOf = async (dir) => {
+    const state = (await control({ cmd: 'state' })).state
+    for (const repo of state.repos) for (const row of repo.worktrees) if (row.path === dir) return row.workspace
+    return null
+  }
+  const domTabIds = () => evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab))
+  const showing = async (dir) => {
+    const ws = await wsOf(dir)
+    const dom = await domTabIds()
+    return ws !== null && dom.length > 0 && dom.every((id) => ws.tabs.some((tab) => tab.tabId === id))
+  }
+  const openCard = async (dir) => {
+    await control({ cmd: 'add-repo', root: dir })
+    await control({ cmd: 'rebuild-tree' })
+    await until(async () => ((await control({ cmd: 'query', selector: `[data-worktree="${dir}"]` })).found ?? []).length > 0, `${dir} 카드`)
+    for (let attempt = 0; attempt < 6 && !(await showing(dir)); attempt += 1) {
+      await control({ cmd: 'click', selector: `[data-worktree="${dir}"] [data-worktree-card-surface]` })
+      await pause(1500)
+    }
+    if (!(await showing(dir))) throw new Error(`${dir} 화면이 안 섰다 — 멈춘다`)
+  }
+  await openCard(fixtureB)
+  const wsB = await wsOf(fixtureB)
+  const tabB = wsB.tabs[0]
+  const paneB = tabB.panes[0].paneId
+  if (tabB.panes.length !== 1) throw new Error('B 첫 탭 pane 이 1개가 아니다')
+  if (!(await read()).groups.flatMap((group) => group.tabs).find((tab) => tab.id === tabB.tabId)?.pinned) {
+    await rightClickTab(tabB.tabId)
+    await menuItem(`[data-tab-menu-pin="${tabB.tabId}"]`)
+  }
+  const pinned = (await read()).groups.flatMap((group) => group.tabs).find((tab) => tab.id === tabB.tabId)?.pinned === true
+  await openCard(fixture)
+  await assertOnlyFixture()
+  // A 가 보이는 동안 B pane 에 에이전트 귀속을 보고한다(포커스 안 된 pane).
+  const report = [
+    herdr('pane', 'report-agent', '--source', 'l495-fix1-r102', '--agent', 'claude', '--state', 'working', '--seq', '1', paneB),
+    herdr('pane', 'report-agent', '--source', 'l495-fix1-r102', '--agent', 'claude', '--state', 'idle', '--seq', '2', paneB),
+  ]
+  const row = await soft(until(async () => ((await control({ cmd: 'query', selector: `[data-close-pane="${paneB}"]` })).found ?? []).length > 0, 'B 세션 행', 15_000, 300))
+  const stillA = await showing(fixture)
+  const clicked = row === false || !stillA ? { ok: false } : await control({ cmd: 'click', selector: `[data-close-pane="${paneB}"]` })
+  const modal = await soft(until(async () => (await read()).modal, '핀 확인 창', 8_000))
+  const modalShot = modal === false ? null : await shot('r102-sidebar-pinned-close-modal', '[data-confirm-close-modal]')
+  if (modal !== false) await closeModal(false)
+  await pause(800)
+  const kept = ((await wsOf(fixtureB))?.tabs ?? []).some((tab) => tab.tabId === tabB.tabId)
+  herdr('pane', 'release-agent', '--source', 'l495-fix1-r102', '--agent', 'claude', paneB)
+  req.require('r102-sidebar-close-inactive-workspace-pinned-asks', pinned && row === true && stillA && clicked.ok === true && modal !== false && modal.kind === 'pinned' && kept, {
+    tabB: tabB.tabId, paneB, pinned, sessionRow: row === true, stillA, clicked: clicked.ok === true, modal, kept, report: report.map((out) => out.slice(0, 200)), shot: modalShot,
+  })
+}
+
+const table = { setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit, r101: phaseR101, r102: phaseR102 }
 const ORIGINAL_SOURCE = JSON.parse(run('inputsource', ['current']).out).id
 /** 준비 타이핑(sleep·cd·이름)은 ABC 에서 친다 — r2 에서 한글 입력기로 `ㄴㅣㄷ…` 가 들어가 sleep 이 안 돌았다(t3-k2.log). */
 function restoreSource() {

@@ -18,31 +18,42 @@ const trimEnd = (list) => {
 const stableOf = (list, label) => list.filter((line) => line.startsWith(`STABLE-${label}-`))
 
 /**
- * 출력 대역 pane(A) — 안정 블록이 전후 그대로이고, 안정 블록 뒤에는 `tick A N` 만 1씩 늘며 이어진다.
- * 다른 줄(입력 메아리 `got`, 훼손 `CORRUPTED`, 빈 줄 끼어듦)이 하나라도 있으면 실패.
+ * 출력 대역 pane(A) — **전 텍스트 전체가 후 텍스트의 접두부**이고(r2 R2-01: 안정 줄만 뽑아 보면 옛 tick 손실·안정 블록 사이 삽입·
+ * 프롬프트 손실을 놓쳤다), 새로 붙은 꼬리는 `tick A N` 만 — 전 텍스트의 마지막 tick 다음 번호부터 1씩 — 이어진다.
+ * 꼬리에 다른 줄(입력 메아리 `got`, 훼손 `CORRUPTED`, 빈 줄)이 하나라도 있거나 꼬리가 비면(출력 정지) 실패.
  */
 export function judgeOutputPane({ before, after, label, stableCount }) {
   const b = trimEnd(lines(before))
   const a = trimEnd(lines(after))
-  const stableBefore = stableOf(b, label)
-  const stableAfter = stableOf(a, label)
   const problems = []
+  const stableBefore = stableOf(b, label)
   if (stableBefore.length !== stableCount) problems.push(`전 안정 줄 ${stableBefore.length}/${stableCount}`)
-  if (JSON.stringify(stableBefore) !== JSON.stringify(stableAfter)) problems.push('안정 블록이 바뀌었다')
-  const lastStable = a.lastIndexOf(stableAfter[stableAfter.length - 1])
-  const tail = lastStable === -1 ? a : a.slice(lastStable + 1)
-  let previous = null
-  for (const line of tail) {
-    const match = new RegExp(`^tick ${label} (\\d+)$`).exec(line)
-    if (!match) { problems.push(`출력 대역에 다른 줄: ${JSON.stringify(line).slice(0, 80)}`); break }
-    const n = Number(match[1])
-    if (previous !== null && n !== previous + 1) { problems.push(`tick 이 끊겼다 ${previous}→${n}`); break }
-    previous = n
+  const tickPattern = new RegExp(`^tick ${label} (\\d+)$`)
+  const tickOf = (line) => { const match = tickPattern.exec(line); return match ? Number(match[1]) : null }
+  // 전 텍스트 자체도 모양이 맞아야 기준이 된다 — 마지막 안정 줄 뒤는 연속 tick 뿐.
+  const lastStable = b.lastIndexOf(stableBefore[stableBefore.length - 1])
+  const beforeTicks = lastStable === -1 ? [] : b.slice(lastStable + 1)
+  for (const [index, line] of beforeTicks.entries()) {
+    const n = tickOf(line)
+    if (n === null) { problems.push(`전 텍스트 출력 대역에 다른 줄: ${JSON.stringify(line).slice(0, 80)}`); break }
+    if (index > 0 && n !== tickOf(beforeTicks[index - 1]) + 1) { problems.push(`전 텍스트 tick 이 끊겼다 ${tickOf(beforeTicks[index - 1])}→${n}`); break }
   }
-  const ticksBefore = b.filter((line) => line.startsWith(`tick ${label} `)).length
-  const ticksAfter = tail.length
-  if (ticksAfter <= ticksBefore) problems.push(`출력이 늘지 않았다(전 ${ticksBefore} · 후 ${ticksAfter})`)
-  return { pass: problems.length === 0, problems, stable: stableAfter.length, ticksBefore, ticksAfter }
+  const prefixOk = b.length <= a.length && b.every((line, index) => a[index] === line)
+  if (!prefixOk) {
+    const at = b.findIndex((line, index) => a[index] !== line)
+    problems.push(`전 텍스트가 그대로가 아니다(줄 ${at}: ${JSON.stringify(b[at] ?? null).slice(0, 60)} → ${JSON.stringify(a[at] ?? null).slice(0, 60)})`)
+  }
+  const tail = prefixOk ? a.slice(b.length) : []
+  const lastBefore = beforeTicks.length > 0 ? tickOf(beforeTicks[beforeTicks.length - 1]) : 0
+  let expected = (lastBefore ?? 0) + 1
+  for (const line of tail) {
+    const n = tickOf(line)
+    if (n === null) { problems.push(`출력 대역에 다른 줄: ${JSON.stringify(line).slice(0, 80)}`); break }
+    if (n !== expected) { problems.push(`tick 이 끊겼다 ${expected - 1}→${n}`); break }
+    expected += 1
+  }
+  if (prefixOk && tail.length === 0) problems.push('출력이 늘지 않았다(꼬리 0줄)')
+  return { pass: problems.length === 0, problems, stable: stableBefore.length, ticksBefore: beforeTicks.length, added: tail.length }
 }
 
 /**

@@ -60,13 +60,26 @@ async function assertOnlyFixture() {
   const dom = await domTabs()
   if (dom.length === 0 || !dom.every((tab) => mine.has(tab.id))) throw new Error('화면에 fixture 밖 탭이 있다 — 멈춘다')
 }
+/**
+ * 입력 직전 검사(fix2 R2-04 — native-t3 와 같은 꼴을 이 하네스에도) — 화면 탭 전부 fixture 것, 포커스가 터미널이면 그 pane 과 선택 pane 이
+ * fixture pane. 아니면 보내지 않고 멈춘다(exit 2). 모든 제어 소켓 key/type 이 여기를 지난다.
+ */
+async function input(request) {
+  const ws = await fixtureWs()
+  const panes = new Set((ws?.tabs ?? []).flatMap((tab) => tab.panes.map((pane) => pane.paneId)))
+  const tabs = new Set((ws?.tabs ?? []).map((tab) => tab.tabId))
+  const seen = await evaluate(`({ tabs: [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab), focus: document.activeElement?.closest?.('[data-term-pane]')?.dataset.termPane ?? null, selected: document.querySelector('[data-term-pane-box].is-selected')?.dataset.termPaneBox ?? null })`)
+  const ok = seen.tabs.length > 0 && seen.tabs.every((id) => tabs.has(id)) && (seen.focus === null || panes.has(seen.focus)) && seen.selected !== null && panes.has(seen.selected)
+  if (!ok) throw new Error(`fixture 밖 입력 대상 — 보내지 않고 멈춘다 ${JSON.stringify({ request, ...seen })}`)
+  return control(request)
+}
 /** 탭 4개(넘침 없음) — 모자라면 ⌘T(제어 소켓 key), 남으면 마지막 탭을 ×. */
 async function ensureFour() {
   for (;;) {
     const tabs = await domTabs()
     if (tabs.length === 4) return tabs
     if (tabs.length < 4) {
-      await control({ cmd: 'key', keyCode: 't', modifiers: ['meta'] })
+      await input({ cmd: 'key', keyCode: 't', modifiers: ['meta'] })
       await until(async () => (await domTabs()).length === tabs.length + 1, '⌘T')
     } else {
       await control({ cmd: 'click', selector: `[data-main-tab-close="${tabs.at(-1).id}"]` })
@@ -97,9 +110,9 @@ async function main() {
       if (wait > 0) await pause(wait)
       samples.push({ ms, focus: await focusNow() })
     }
-    await control({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
-    await control({ cmd: 'type', text })
-    await control({ cmd: 'key', keyCode: 'Enter' })
+    await input({ cmd: 'key', keyCode: 'a', modifiers: ['meta'] })
+    await input({ cmd: 'type', text })
+    await input({ cmd: 'key', keyCode: 'Enter' })
     const renamed = await until(async () => (await domTabs()).find((tab) => tab.id === target.id)?.label === text, '이름', 4_000).then(() => true, () => false)
     const pane = ((await fixtureWs())?.tabs.find((tab) => tab.tabId === target.id)?.panes ?? [])[0]?.paneId ?? null
     const read = pane === null ? { ok: false, error: 'pane 없음', faked: false } : screenOf({ paneId: pane, n })
@@ -115,8 +128,8 @@ async function main() {
     console.log(`[seq ${label}] ${n}/${runs} ${pass ? '✔' : '✘'} renamed=${renamed} read=${read.ok ? 'ok' : 'FAIL'} leaked=${leaked} focus@300=${samples[2].focus.cls}`)
     // 실패 회차 정리 — 편집이 열려 있으면 Esc, 셸에 샌 글자는 Ctrl+U 로 지운다(fixture 셸).
     if (!pass) {
-      await control({ cmd: 'key', keyCode: 'Escape' })
-      await control({ cmd: 'key', keyCode: 'u', modifiers: ['control'] })
+      await input({ cmd: 'key', keyCode: 'Escape' })
+      await input({ cmd: 'key', keyCode: 'u', modifiers: ['control'] })
       await pause(300)
     }
   }

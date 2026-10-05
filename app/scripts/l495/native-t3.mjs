@@ -1,5 +1,6 @@
 // LIFE-495 G4 네이티브 관문 — native-up.sh 가 띄운 사용자 userData + 구현 빌드 + herdr 정식 `default` 세션에서 돈다.
-// fixture 워크스페이스(/private/tmp/l495nfx*) 안에서만 탭을 만들고 닫는다. 모든 키 입력은 fixture 셸 pane 에만 간다(assertOnlyFixture).
+// fixture 워크스페이스(/private/tmp/l495nfx*) 안에서만 탭을 만들고 닫는다. 모든 키 입력은 fixture 셸 pane 에만 간다 — fix2 R2-04: 타건마다 `assertInputTarget`
+// (화면 탭·포커스 pane·선택 pane 이 fixture 것인지)을 먼저 지나고, 아니면 보내지 않고 멈춘다. 자기점검 phase `guard-selfcheck`.
 //
 // 입력 경로:
 //   · 관문 키(⌘R·⌘⇧T·⌘W·⌘⇧[ ]·⌘⌥[ ]·⌃PgUp/Dn·⌃1–9·⌘T·⌘D·⌃Tab·⌘K·Esc·글자) = CGEvent(keypost — 맨 앞 앱이 이 corral 일 때만, 아니면 보내지 않고 실패로 적는다)
@@ -39,7 +40,7 @@ const note = (step, detail) => {
   console.log(`[t3] · ${step}`, JSON.stringify(detail).slice(0, 300))
 }
 function save() {
-  fs.writeFileSync(path.join(rawd, `t3-${tag}.json`), `${JSON.stringify({ phases, appPid, fixture, requirements: log, notes }, null, 1)}\n`)
+  fs.writeFileSync(path.join(rawd, `t3-${tag}.json`), `${JSON.stringify({ phases, appPid, fixture, requirements: log, notes, inputLog }, null, 1)}\n`)
 }
 
 const control = (request, timeout = 30_000) => rpc(ctl, request, timeout)
@@ -105,6 +106,40 @@ const read = () =>
     }
   })
 
+/** fixture 워크스페이스들 — A(argv) + L495_FIXTURE_B(있으면). 입력 보호(fix2 R2-04)는 이 둘의 탭·pane 만 허용한다. */
+const FIXTURES = [fixture, ...(process.env.L495_FIXTURE_B?.startsWith('/private/tmp/l495nfx') ? [process.env.L495_FIXTURE_B] : [])]
+async function fixtureIds() {
+  const state = (await control({ cmd: 'state' })).state
+  const rows = state.repos.flatMap((repo) => repo.worktrees).filter((row) => FIXTURES.includes(row.path) && row.workspace)
+  return {
+    tabs: new Set(rows.flatMap((row) => row.workspace.tabs.map((tab) => tab.tabId))),
+    panes: new Set(rows.flatMap((row) => row.workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.paneId)))),
+  }
+}
+/** 자기점검(fix2 R2-04) 동안만 켠다 — 포커스 pane 을 fixture 밖 가짜 id 로 읽는다. 그 동안 keypost 가 0 회여야 한다. */
+let fakeFocusPane = null
+const inputLog = { sent: 0, stopped: [] }
+class InputGuardStop extends Error {}
+/**
+ * 입력 직전 검사(fix2 R2-04) — 모든 CGEvent 타건·정리 키가 여기를 지난다(`key()`). 화면 탭이 전부 fixture 것이고, 포커스가 터미널이면 그 pane 이,
+ * 선택 pane 이 fixture pane 집합에 있을 때만 보낸다. 아니면 **보내지 않고** 멈춘다(입력 뒤 실패 기록이 아니다).
+ */
+async function assertInputTarget(what) {
+  const mine = await fixtureIds()
+  const seen = await evaluate(() => ({
+    tabs: [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab),
+    focus: document.activeElement?.closest?.('[data-term-pane]')?.dataset.termPane ?? null,
+    selected: document.querySelector('[data-term-pane-box].is-selected')?.dataset.termPaneBox ?? null,
+  }))
+  const focus = fakeFocusPane ?? seen.focus
+  const ok = seen.tabs.length > 0 && seen.tabs.every((id) => mine.tabs.has(id)) && (focus === null || mine.panes.has(focus)) && seen.selected !== null && mine.panes.has(seen.selected)
+  if (ok) return
+  const stop = { what, tabs: seen.tabs.length, focus, selected: seen.selected, fake: fakeFocusPane !== null }
+  inputLog.stopped.push(stop)
+  note('input-guard-stop', stop)
+  throw new InputGuardStop(`fixture 밖 입력 대상 — 보내지 않고 멈춘다 ${JSON.stringify(stop)}`)
+}
+
 async function assertOnlyFixture() {
   const mine = new Set(await fixtureTabIds())
   const dom = await evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab))
@@ -126,6 +161,8 @@ async function shot(name, selector) {
 const KEY = { ' ': 49, 0: 29, b: 11, f: 3, g: 5, h: 4, i: 34, j: 38, m: 46, c: 8, v: 9, q: 12, e: 14, o: 31, p: 35, y: 16, a: 0, s: 1, d: 2, k: 40, r: 15, t: 17, w: 13, u: 32, l: 37, x: 7, n: 45, '[': 33, ']': 30, esc: 53, enter: 36, tab: 48, pgup: 116, pgdn: 121, 1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25 }
 /** CGEvent 한 번 — 먼저 corral 을 맨 앞으로. 보호(맨 앞 앱 ≠ corral)에 걸리면 보내지 않는다. */
 async function key(name, mods = []) {
+  await assertInputTarget(`key ${mods.join('+')}${mods.length > 0 ? '+' : ''}${name}`)
+  inputLog.sent += 1
   const front = run('activate', [appPid])
   await pause(120)
   const sent = keypost({ pid: appPid, keycode: KEY[name], mods })
@@ -223,8 +260,20 @@ async function openFixture() {
 }
 /** 활성 터미널에 마커 글자를 CGEvent 로 쳐서 그 pane 화면에 나오는지(K8ⓔ) — 끝나면 Ctrl+U 로 지운다. */
 async function typedInto(expectPane, marker) {
+  // 기대 pane 자체가 fixture 것인지 먼저 — activePane 에서 얻은 기대값은 fixture 밖 pane 이어도 focusOk 가 된다(fix2 R2-04).
+  if (!(await fixtureIds()).panes.has(expectPane)) {
+    inputLog.stopped.push({ what: `typedInto ${marker}`, expectPane })
+    note('input-guard-stop', { what: `typedInto ${marker}`, expectPane })
+    throw new InputGuardStop(`기대 pane ${expectPane} 이 fixture 밖 — 보내지 않고 멈춘다`)
+  }
   const screen = await read()
-  const focusOk = screen.focus.termPane === expectPane && screen.focus.cls.includes('xterm-helper-textarea')
+  const focus = fakeFocusPane === null ? screen.focus : { ...screen.focus, termPane: fakeFocusPane }
+  const focusOk = focus.termPane === expectPane && focus.cls.includes('xterm-helper-textarea')
+  // 포커스가 기대와 다르면 치지 않는다 — 실패로 적고 입력 0(fix2 R2-04). fixture 밖 포커스면 key() 의 검사가 먼저 멈춘다.
+  if (!focusOk) {
+    await assertInputTarget(`typedInto ${marker} (포커스 불일치 — 입력 안 함)`)
+    return { focus, focusOk, sent: false, shown: false, skipped: 'focus-mismatch' }
+  }
   const sent = await typeKeys(marker)
   const shown = await soft(until(async () => screenOf(expectPane).includes(marker), `마커 ${marker}`, 5_000))
   await key('u', ['ctrl'])
@@ -731,30 +780,36 @@ async function phaseR101() {
  * fix1 R1-02 네이티브 — 워크스페이스 B 의 핀 탭(pane 1개) → A 활성 → 사이드바의 B 세션 닫기(×) → 핀 확인 창(취소 → 남음).
  * B 의 셸 pane 은 사이드바 세션 행이 서도록 `herdr pane report-agent` 로 에이전트 귀속만 보고한다(provider 미기동 — 기존 관문 선례).
  */
-async function phaseR102() {
+// --- 두 fixture 워크스페이스(r102·r202) ------------------------------------------------
+const wsOf = async (dir) => {
+  const state = (await control({ cmd: 'state' })).state
+  for (const repo of state.repos) for (const row of repo.worktrees) if (row.path === dir) return row.workspace
+  return null
+}
+const domTabIds = () => evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab))
+const showing = async (dir) => {
+  const ws = await wsOf(dir)
+  const dom = await domTabIds()
+  return ws !== null && dom.length > 0 && dom.every((id) => ws.tabs.some((tab) => tab.tabId === id))
+}
+const openCard = async (dir) => {
+  await control({ cmd: 'add-repo', root: dir })
+  await control({ cmd: 'rebuild-tree' })
+  await until(async () => ((await control({ cmd: 'query', selector: `[data-worktree="${dir}"]` })).found ?? []).length > 0, `${dir} 카드`)
+  for (let attempt = 0; attempt < 6 && !(await showing(dir)); attempt += 1) {
+    await control({ cmd: 'click', selector: `[data-worktree="${dir}"] [data-worktree-card-surface]` })
+    await pause(1500)
+  }
+  if (!(await showing(dir))) throw new Error(`${dir} 화면이 안 섰다 — 멈춘다`)
+}
+const fixtureBOf = () => {
   const fixtureB = process.env.L495_FIXTURE_B ?? ''
   if (!fixtureB.startsWith('/private/tmp/l495nfx')) throw new Error('L495_FIXTURE_B 는 /private/tmp/l495nfx*')
-  const wsOf = async (dir) => {
-    const state = (await control({ cmd: 'state' })).state
-    for (const repo of state.repos) for (const row of repo.worktrees) if (row.path === dir) return row.workspace
-    return null
-  }
-  const domTabIds = () => evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((tab) => tab.dataset.mainTab))
-  const showing = async (dir) => {
-    const ws = await wsOf(dir)
-    const dom = await domTabIds()
-    return ws !== null && dom.length > 0 && dom.every((id) => ws.tabs.some((tab) => tab.tabId === id))
-  }
-  const openCard = async (dir) => {
-    await control({ cmd: 'add-repo', root: dir })
-    await control({ cmd: 'rebuild-tree' })
-    await until(async () => ((await control({ cmd: 'query', selector: `[data-worktree="${dir}"]` })).found ?? []).length > 0, `${dir} 카드`)
-    for (let attempt = 0; attempt < 6 && !(await showing(dir)); attempt += 1) {
-      await control({ cmd: 'click', selector: `[data-worktree="${dir}"] [data-worktree-card-surface]` })
-      await pause(1500)
-    }
-    if (!(await showing(dir))) throw new Error(`${dir} 화면이 안 섰다 — 멈춘다`)
-  }
+  return fixtureB
+}
+
+async function phaseR102() {
+  const fixtureB = fixtureBOf()
   await openCard(fixtureB)
   const wsB = await wsOf(fixtureB)
   const tabB = wsB.tabs[0]
@@ -786,7 +841,97 @@ async function phaseR102() {
   })
 }
 
-const table = { setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit, r101: phaseR101, r102: phaseR102 }
+/**
+ * fix2 R2-04 자기점검 — 포커스를 fixture 밖 가짜 pane 으로 읽게 두고 ① fixture pane 기대로 typedInto ② 그 가짜 pane 을 기대값(activePane 유래)으로
+ * typedInto ③ 정리 키(⌃U) 한 번을 부른다. 셋 다 입력 전에 멈추고 keypost 가 0 회여야 통과.
+ */
+async function phaseGuardSelfcheck() {
+  await assertOnlyFixture()
+  const tabId = (await read()).groups[0].tabs[0].id
+  const fixturePane = (await paneOf(tabId))[0]?.paneId
+  const cases = []
+  fakeFocusPane = 'l495-fake-foreign-pane'
+  try {
+    for (const [name, call] of [
+      ['fixture-expect-foreign-focus', () => typedInto(fixturePane, 'lxz')],
+      ['activePane-derived-foreign-expect', async () => typedInto(fakeFocusPane, 'lxy')],
+      ['cleanup-key', () => key('u', ['ctrl'])],
+    ]) {
+      const before = inputLog.sent
+      const outcome = await call().then((value) => ({ threw: false, value }), (error) => ({ threw: error instanceof InputGuardStop, message: String(error?.message ?? error).slice(0, 200) }))
+      cases.push({ name, ...outcome, keypostDelta: inputLog.sent - before })
+    }
+  } finally {
+    fakeFocusPane = null
+  }
+  req.require('r204-guard-selfcheck-no-input', cases.every((row) => row.threw && row.keypostDelta === 0), { fixturePane, cases })
+}
+
+/**
+ * fix2 R2-02 네이티브 — B 의 마지막 탭 b2 를 고정(화면 [b2,b0,b1], 저장 순서는 [b0,b1,b2]) → A 화면 → 사이드바 B 세션 × → 핀 확인 「닫기」
+ * → B 로 가서 ⌘⇧T → 다시 연 탭이 **맨 앞**(닫기 전 화면 자리 0)에 선다. 세션 행은 `herdr pane report-agent`(provider 미기동).
+ */
+async function phaseR202() {
+  const fixtureB = fixtureBOf()
+  await openCard(fixtureB)
+  const liveB = async () => ((await wsOf(fixtureB))?.tabs ?? []).map((tab) => tab.tabId)
+  // B 를 핀 없는 셸 탭 3개로 — ⌘T 로 늘리고, 남으면 × 로 줄인다(셸, 실행 중 없음).
+  for (const tab of (await read()).groups.flatMap((group) => group.tabs).filter((row) => row.pinned)) {
+    await rightClickTab(tab.id)
+    await menuItem(`[data-tab-menu-pin="${tab.id}"]`)
+  }
+  while ((await liveB()).length < 3) {
+    const before = new Set(await liveB())
+    await key('t', ['cmd'])
+    await until(async () => (await liveB()).some((id) => !before.has(id)), 'B ⌘T')
+  }
+  while ((await liveB()).length > 3) {
+    const victim = (await read()).groups.flatMap((group) => group.tabs).reverse().find((tab) => tab.hasClose)
+    await control({ cmd: 'click', selector: `[data-main-tab-close="${victim.id}"]` })
+    await pause(400)
+    if ((await read()).modal !== null) await closeModal(true)
+    await until(async () => !(await liveB()).includes(victim.id), `B 탭 닫기 ${victim.id}`)
+  }
+  await pause(600)
+  const orderBefore = (await read()).groups[0].tabs.map((tab) => tab.id)
+  const target = orderBefore[2]
+  const paneT = ((await wsOf(fixtureB))?.tabs.find((tab) => tab.tabId === target)?.panes ?? []).map((pane) => pane.paneId)
+  if (paneT.length !== 1) throw new Error('대상 탭 pane 이 1개가 아니다')
+  await rightClickTab(target)
+  await menuItem(`[data-tab-menu-pin="${target}"]`)
+  await pause(500)
+  const visiblePinned = (await read()).groups[0].tabs.map((tab) => tab.id)
+  // A 화면 — B 대상 pane 에 에이전트 귀속을 보고해 사이드바 세션 행을 세운다.
+  await openCard(fixture)
+  await assertOnlyFixture()
+  const report = [
+    herdr('pane', 'report-agent', '--source', 'l495-fix2-r202', '--agent', 'claude', '--state', 'working', '--seq', '1', paneT[0]),
+    herdr('pane', 'report-agent', '--source', 'l495-fix2-r202', '--agent', 'claude', '--state', 'idle', '--seq', '2', paneT[0]),
+  ]
+  const row = await soft(until(async () => ((await control({ cmd: 'query', selector: `[data-close-pane="${paneT[0]}"]` })).found ?? []).length > 0, 'B 세션 행', 15_000, 300))
+  const stillA = await showing(fixture)
+  const clicked = row === false || !stillA ? { ok: false } : await control({ cmd: 'click', selector: `[data-close-pane="${paneT[0]}"]` })
+  const modal = await soft(until(async () => (await read()).modal, '핀 확인 창', 8_000))
+  if (modal !== false) await closeModal(true)
+  const closed = await soft(until(async () => !(await liveB()).includes(target), 'B 핀 탭 닫힘', 10_000))
+  herdr('pane', 'release-agent', '--source', 'l495-fix2-r202', '--agent', 'claude', paneT[0])
+  // B 로 가서 ⌘⇧T.
+  await openCard(fixtureB)
+  await pause(600)
+  const idsBefore = new Set(await liveB())
+  const sent = await key('t', ['cmd', 'shift'])
+  const reopened = await soft(until(async () => (await liveB()).find((id) => !idsBefore.has(id)) ?? null, '⌘⇧T 새 탭', 10_000))
+  await pause(1500)
+  const after = (await read()).groups[0].tabs
+  const shotPath = await shot('r202-reopened-front', '[data-group-header]')
+  const index = reopened === false ? -1 : after.findIndex((tab) => tab.id === reopened)
+  req.require('r202-inactive-pinned-sidebar-close-reopens-at-visible-index', visiblePinned[0] === target && row === true && stillA && clicked.ok === true && modal !== false && modal.kind === 'pinned' && closed === true && sent.sent && reopened !== false && index === 0, {
+    orderBefore, target, visiblePinned, sessionRow: row === true, stillA, clicked: clicked.ok === true, modal, closed: closed === true, sent: sent.sent, reopened,
+    after: after.map((tab) => ({ id: tab.id, pinned: tab.pinned, label: tab.label })), index, report: report.map((out) => out.slice(0, 200)), shot: shotPath,
+  })
+}
+
+const table = { 'guard-selfcheck': phaseGuardSelfcheck, setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit, r101: phaseR101, r102: phaseR102, r202: phaseR202 }
 const ORIGINAL_SOURCE = JSON.parse(run('inputsource', ['current']).out).id
 /** 준비 타이핑(sleep·cd·이름)은 ABC 에서 친다 — r2 에서 한글 입력기로 `ㄴㅣㄷ…` 가 들어가 sleep 이 안 돌았다(t3-k2.log). */
 function restoreSource() {

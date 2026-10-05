@@ -1,7 +1,8 @@
 /** One action per user-visible operation. Each stored chord names a dispatch variant through bindingVariants. */
 export const ACTIONS = [
   { id: 'palette.open', title: '커맨드 팔레트', defaultBinding: ['Mod+K'], bindingVariants: [0], variants: ['열기'] },
-  { id: 'terminal.new', title: '새 탭', defaultBinding: ['Mod+T', 'Mod+Shift+T'], bindingVariants: [0, 0], variants: ['열기'] },
+  // LIFE-495 — ⌘⇧T 는 「닫은 탭 다시 열기」로 넘어갔다(P1). 옛 파일의 두 칸 재정의는 `LEGACY_DEFAULTS` 가 한 칸으로 옮긴다.
+  { id: 'terminal.new', title: '새 탭', defaultBinding: ['Mod+T'], bindingVariants: [0], variants: ['열기'] },
   { id: 'mru.open', title: '최근 pane 전환', defaultBinding: ['Control+Tab', 'Control+Shift+Tab'], bindingVariants: [0, 1], variants: ['다음', '이전'] },
   { id: 'terminal.split', title: 'pane 분할', defaultBinding: ['Mod+D', 'Mod+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
   { id: 'group.split', title: '영역 분할', defaultBinding: ['Mod+Alt+D', 'Mod+Alt+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
@@ -15,6 +16,24 @@ export const ACTIONS = [
   // LIFE-478 — 198 `workspace.rename`(Mod+Alt+R, 활성 워크트리 인라인 rename) · `workspace.delete`(Mod+Shift+Backspace, hover 카드 삭제).
   { id: 'workspace.rename', title: '워크트리 이름 바꾸기', defaultBinding: ['Mod+Alt+R'], bindingVariants: [0], variants: ['활성 워크트리'] },
   { id: 'workspace.delete', title: '워크트리 삭제', defaultBinding: ['Mod+Shift+Backspace'], bindingVariants: [0], variants: ['hover 중인 카드'] },
+  // LIFE-495 — 탭 단축키(220 `definitions-core-2.ts`). ⌘R 은 기본 메뉴 Reload 가 쥐고 있어 main 이 가로챈다(`main/index.ts`).
+  { id: 'tab.reopenClosed', title: '닫은 탭 다시 열기', defaultBinding: ['Mod+Shift+T'], bindingVariants: [0], variants: ['다시 열기'] },
+  { id: 'tab.rename', title: '탭 제목 바꾸기', defaultBinding: ['Mod+R'], bindingVariants: [0], variants: ['활성 탭'] },
+  // 220 은 ⌘⌥[ ](같은 종류)·⌘⇧[ ](전체)·⌃PgUp/Dn(터미널만)을 따로 두지만 corral 탭은 전부 터미널이라 셋이 같은 순환이다 — 한 액션의 별칭이다.
+  {
+    id: 'tab.cycle',
+    title: '이전 / 다음 탭',
+    defaultBinding: ['Mod+Shift+]', 'Mod+Shift+[', 'Mod+Alt+]', 'Mod+Alt+[', 'Control+PageDown', 'Control+PageUp'],
+    bindingVariants: [0, 1, 0, 1, 0, 1],
+    variants: ['다음', '이전'],
+  },
+  {
+    id: 'tab.selectByIndex',
+    title: 'N번째 탭',
+    defaultBinding: ['Control+1', 'Control+2', 'Control+3', 'Control+4', 'Control+5', 'Control+6', 'Control+7', 'Control+8', 'Control+9'],
+    bindingVariants: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    variants: ['1번째', '2번째', '3번째', '4번째', '5번째', '6번째', '7번째', '8번째', '9번째'],
+  },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 export type Keybindings = Partial<Record<ActionId, string[]>>
@@ -30,11 +49,17 @@ export function normalizeBinding(value: string): string | null {
   return [...modifiers.filter((part) => parts.includes(part)), key.length === 1 ? key.toUpperCase() : key].join('+')
 }
 
+const PUNCTUATION_CODES: Record<string, string> = {
+  BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`', Equal: '=', Minus: '-',
+}
+
 /** Physical letter codes also work with macOS Option glyphs and Korean input layouts. */
 export function bindingFromEvent(event: KeyInput): string | null {
   if (event.isComposing || ['Meta', 'Control', 'Alt', 'Shift', 'Dead', 'Process', 'Unidentified'].includes(event.key)) return null
   let key = event.key === ' ' ? 'Space' : event.key
   if (event.code && /^(Key[A-Z]|Digit[0-9])$/.test(event.code)) key = event.code.replace(/^(Key|Digit)/, '')
+  // LIFE-495 U1 — 문장부호 키도 물리 위치로 읽는다. ⇧[ 는 key 가 `{`, macOS ⌥[ 는 `“` 로 와서 글자로는 바인딩이 안 된다.
+  else if (event.code !== undefined && PUNCTUATION_CODES[event.code] !== undefined) key = PUNCTUATION_CODES[event.code]!
   return normalizeBinding([...event.metaKey ? ['Mod'] : [], ...event.ctrlKey ? ['Control'] : [], ...event.altKey ? ['Alt'] : [], ...event.shiftKey ? ['Shift'] : [], key].join('+'))
 }
 /**
@@ -42,7 +67,32 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex']
+
+/**
+ * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를
+ * 읽을 때 새 칸 수로 옮긴다 — 규칙: 옛 기본값과 **다르게 고친 칸**(사용자의 뜻)을 앞에서부터 새 칸에 싣고, 모자라면 새 기본값으로 채운다.
+ * 옛 기본값 그대로인 칸(`terminal.new` 의 ⌘⇧T 별칭 등)은 버린다 — 그 조합은 이제 다른 액션의 기본값이다. 새 칸에 못 실은 고친 칸은
+ * `dropped` 로 돌려준다(main 이 로그로 남긴다 — 조용히 사라지지 않게).
+ */
+const LEGACY_DEFAULTS: readonly { id: ActionId; defaultBinding: readonly string[] }[] = [{ id: 'terminal.new', defaultBinding: ['Mod+T', 'Mod+Shift+T'] }]
+
+export function migrateLegacyOverrides(value: object): { value: Record<string, unknown>; dropped: { id: ActionId; binding: string }[] } {
+  const next: Record<string, unknown> = Object.fromEntries(Object.entries(value))
+  const dropped: { id: ActionId; binding: string }[] = []
+  for (const legacy of LEGACY_DEFAULTS) {
+    const raw: unknown = next[legacy.id]
+    const action = ACTIONS.find((row) => row.id === legacy.id)!
+    if (!Array.isArray(raw) || raw.length !== legacy.defaultBinding.length || raw.length === action.defaultBinding.length) continue
+    const normalized = raw.map((binding) => (typeof binding === 'string' ? normalizeBinding(binding) : null))
+    if (normalized.some((binding) => binding === null)) continue
+    const edited = normalized.filter((binding, index): binding is string => binding !== null && binding !== legacy.defaultBinding[index])
+    const kept = action.defaultBinding.map((fallback, index) => edited[index] ?? fallback)
+    for (const binding of edited.slice(action.defaultBinding.length)) dropped.push({ id: legacy.id, binding })
+    next[legacy.id] = kept
+  }
+  return { value: next, dropped }
+}
 
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()
@@ -83,8 +133,9 @@ function findConflict(overrides: Keybindings) {
 export function bindingConflict(overrides: Keybindings): string | null {
   return findConflict(overrides)?.message ?? null
 }
-export function validateOverrides(value: unknown, discardInvalid = false): Keybindings {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('단축키 파일은 객체여야 합니다')
+export function validateOverrides(input: unknown, discardInvalid = false): Keybindings {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('단축키 파일은 객체여야 합니다')
+  const value = migrateLegacyOverrides(input).value
   const result: Keybindings = {}
   for (const [id, bindings] of Object.entries(value)) {
     const action = ACTIONS.find((row) => row.id === id)

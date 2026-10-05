@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, migrateLegacyOverrides, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
-    expect(ACTIONS).toHaveLength(13)
+    // LIFE-495: + tab.reopenClosed(⌘⇧T) · tab.rename(⌘R) · tab.cycle(⌘⇧[ ] · ⌘⌥[ ] · ⌃PgUp/Dn) · tab.selectByIndex(⌃1–9)
+    expect(ACTIONS).toHaveLength(17)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -13,7 +14,9 @@ describe('shortcut catalog and compatibility', () => {
   it('preserves Shift variants and leaves Ctrl+D/T/W to the terminal', () => {
     expect(matchBinding('Control+D', {})).toBeNull()
     expect(matchBinding('Control+T', {})).toBeNull()
-    expect(matchBinding('Mod+Shift+T', {})).toEqual({ id: 'terminal.new', variant: 0 })
+    // LIFE-495 P1 — ⌘⇧T 는 「닫은 탭 다시 열기」다(⌘T 는 새 탭 그대로).
+    expect(matchBinding('Mod+Shift+T', {})).toEqual({ id: 'tab.reopenClosed', variant: 0 })
+    expect(matchBinding('Mod+T', {})).toEqual({ id: 'terminal.new', variant: 0 })
     expect(matchBinding('Mod+Alt+Shift+ArrowLeft', {})).toEqual({ id: 'terminal.focus', variant: 0 })
     expect(matchBinding('Control+W', {})).toBeNull()
     expect(matchBinding('Alt+W', {})).toBeNull() // existing handler requires Mod
@@ -35,12 +38,13 @@ describe('shortcut catalog and compatibility', () => {
     expect(() => validateOverrides({ 'sidebar.toggle': [key] })).toThrow()
   })
   it('uses identical explicit aliases for matching and conflicts regardless of customization', () => {
-    const explicit = { 'terminal.new': ['Mod+J', 'Mod+Shift+T'] }
-    expect(matchBinding('Mod+Shift+T', explicit)).toEqual({ id: 'terminal.new', variant: 0 })
-    expect(() => validateOverrides({ ...explicit, 'sidebar.toggle': ['Mod+Shift+T'] })).toThrow(/충돌/)
-    const moved = validateOverrides({ 'terminal.new': ['Mod+J', 'Mod+Shift+J'], 'sidebar.toggle': ['Mod+Shift+T'] })
-    expect(matchBinding('Mod+Shift+T', moved)?.id).toBe('sidebar.toggle')
-    expect(matchBinding('Mod+Shift+J', moved)).toEqual({ id: 'terminal.new', variant: 0 })
+    // LIFE-495 — terminal.new 는 한 칸이 됐다. 별칭 규칙은 두 칸 액션(terminal.split)으로 본다.
+    const explicit = { 'terminal.split': ['Mod+J', 'Mod+Shift+D'] }
+    expect(matchBinding('Mod+Shift+D', explicit)).toEqual({ id: 'terminal.split', variant: 1 })
+    expect(() => validateOverrides({ ...explicit, 'sidebar.toggle': ['Mod+Shift+D'] })).toThrow(/충돌/)
+    const moved = validateOverrides({ 'terminal.split': ['Mod+J', 'Mod+Shift+J'], 'sidebar.toggle': ['Mod+Shift+D'] })
+    expect(matchBinding('Mod+Shift+D', moved)?.id).toBe('sidebar.toggle')
+    expect(matchBinding('Mod+Shift+J', moved)).toEqual({ id: 'terminal.split', variant: 1 })
     expect(matchBinding('Mod+Alt+Shift+ArrowDown', {})).toEqual({ id: 'terminal.focus', variant: 3 })
   })
   it('stores only normalized overrides and removes the old binding', () => {
@@ -96,5 +100,66 @@ describe('LIFE-470 K1 — ⌘J search chord', () => {
     expect(overrides).toEqual({ 'palette.open': ['Mod+Alt+R'] })
     expect(bindingsFor('workspace.rename', overrides)).toEqual([])
     expect(matchBinding('Mod+Alt+R', overrides)).toEqual({ id: 'palette.open', variant: 0 })
+  })
+})
+
+describe('LIFE-495 K7 — 탭 단축키', () => {
+  const key = (input: { key: string; code: string; meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean }) => ({
+    key: input.key, code: input.code, metaKey: input.meta ?? false, ctrlKey: input.ctrl ?? false, altKey: input.alt ?? false, shiftKey: input.shift ?? false,
+  })
+  it('⌘⇧[ ] — key 가 `{` `}` 로 와도 물리 위치(BracketLeft/Right)로 읽는다', () => {
+    expect(bindingFromEvent(key({ key: '}', code: 'BracketRight', meta: true, shift: true }))).toBe('Mod+Shift+]')
+    expect(matchBinding('Mod+Shift+]', {})).toEqual({ id: 'tab.cycle', variant: 0 })
+    expect(matchBinding(bindingFromEvent(key({ key: '{', code: 'BracketLeft', meta: true, shift: true }))!, {})).toEqual({ id: 'tab.cycle', variant: 1 })
+  })
+  it('⌘⌥[ ] — macOS Option 글리프(“ ‘)로 와도 같다', () => {
+    expect(matchBinding(bindingFromEvent(key({ key: '‘', code: 'BracketRight', meta: true, alt: true }))!, {})).toEqual({ id: 'tab.cycle', variant: 0 })
+    expect(matchBinding(bindingFromEvent(key({ key: '“', code: 'BracketLeft', meta: true, alt: true }))!, {})).toEqual({ id: 'tab.cycle', variant: 1 })
+  })
+  it('한글 입력기 — key 가 무엇이든 code 로 읽는다(⌘R·⌘⇧T·⌘⇧[)', () => {
+    expect(matchBinding(bindingFromEvent(key({ key: 'ㄱ', code: 'KeyR', meta: true }))!, {})).toEqual({ id: 'tab.rename', variant: 0 })
+    expect(matchBinding(bindingFromEvent(key({ key: 'ㅅ', code: 'KeyT', meta: true, shift: true }))!, {})).toEqual({ id: 'tab.reopenClosed', variant: 0 })
+    expect(matchBinding(bindingFromEvent(key({ key: '{', code: 'BracketLeft', meta: true, shift: true }))!, {})).toEqual({ id: 'tab.cycle', variant: 1 })
+  })
+  it('⌃PgUp/Dn = 이전/다음, ⌃1–9 = N번째(⌃9 = 9번째)', () => {
+    expect(matchBinding('Control+PageDown', {})).toEqual({ id: 'tab.cycle', variant: 0 })
+    expect(matchBinding('Control+PageUp', {})).toEqual({ id: 'tab.cycle', variant: 1 })
+    expect(matchBinding(bindingFromEvent(key({ key: '1', code: 'Digit1', ctrl: true }))!, {})).toEqual({ id: 'tab.selectByIndex', variant: 0 })
+    expect(matchBinding('Control+9', {})).toEqual({ id: 'tab.selectByIndex', variant: 8 })
+    // Ctrl+Tab 은 MRU pane 스위처 그대로(P2).
+    expect(matchBinding('Control+Tab', {})).toEqual({ id: 'mru.open', variant: 0 })
+  })
+  it('새 기본값끼리·기존 기본값과 충돌이 없다', () => {
+    expect(bindingConflict({})).toBeNull()
+  })
+  it('새 액션은 재정의·충돌 검사가 된다(단축키 설정 화면과 같은 길)', () => {
+    expect(validateOverrides({ 'tab.rename': ['Mod+Shift+E'] })).toEqual({ 'tab.rename': ['Mod+Shift+E'] })
+    expect(() => validateOverrides({ 'tab.rename': ['Mod+K'] })).toThrow(/충돌/)
+    expect(() => validateOverrides({ 'tab.cycle': ['Mod+Shift+]'] })).toThrow() // 칸 수(6)가 다르다
+  })
+  it('새 기본값은 비켜 선다 — 기존 재정의가 ⌘⇧T 를 쓰고 있으면 그 재정의가 이긴다', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Mod+Shift+T'] }, true)
+    expect(overrides).toEqual({ 'sidebar.toggle': ['Mod+Shift+T'] })
+    expect(matchBinding('Mod+Shift+T', overrides)?.id).toBe('sidebar.toggle')
+    expect(bindingsFor('tab.reopenClosed', overrides)).toEqual([])
+  })
+})
+
+describe('LIFE-495 K7ⓘ — 옛 단축키 파일 이행(terminal.new 두 칸 → 한 칸)', () => {
+  it('옛 기본값 그대로인 두 번째 칸(⌘⇧T)은 버리고 고친 첫 칸을 싣는다', () => {
+    expect(validateOverrides({ 'terminal.new': ['Mod+J', 'Mod+Shift+T'] }, true)).toEqual({ 'terminal.new': ['Mod+J'] })
+    expect(migrateLegacyOverrides({ 'terminal.new': ['Mod+J', 'Mod+Shift+T'] }).dropped).toEqual([])
+  })
+  it('두 번째 칸만 고쳤으면 그 칸이 새 칸이 된다 — 사용자가 고친 조합이 산다', () => {
+    expect(validateOverrides({ 'terminal.new': ['Mod+T', 'Mod+Shift+J'] }, true)).toEqual({ 'terminal.new': ['Mod+Shift+J'] })
+  })
+  it('두 칸을 다 고쳤으면 앞 칸을 싣고, 못 실은 칸은 dropped 로 알린다(조용히 버리지 않는다)', () => {
+    const legacy = { 'terminal.new': ['Mod+J', 'Mod+Shift+J'], 'sidebar.toggle': ['Mod+Alt+B'] }
+    expect(validateOverrides(legacy, true)).toEqual({ 'terminal.new': ['Mod+J'], 'sidebar.toggle': ['Mod+Alt+B'] })
+    expect(migrateLegacyOverrides(legacy).dropped).toEqual([{ id: 'terminal.new', binding: 'Mod+Shift+J' }])
+  })
+  it('저장 경로(엄격)에서도 옛 모양이 오류가 아니다 · 새 모양(한 칸)은 그대로다', () => {
+    expect(validateOverrides({ 'terminal.new': ['Mod+J', 'Mod+Shift+T'] })).toEqual({ 'terminal.new': ['Mod+J'] })
+    expect(validateOverrides({ 'terminal.new': ['Mod+J'] })).toEqual({ 'terminal.new': ['Mod+J'] })
   })
 })

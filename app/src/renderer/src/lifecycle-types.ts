@@ -5,10 +5,16 @@
 // (02-kickoff-orca.md "재사용 가능하면 재사용 권장" — Orca 이식이 아니라 corral 자체 코드이므로
 // MIT 고지 대상 아님).
 
-import type { AgentKind, WorktreeRow } from '../../shared/types.js'
+import type { AgentKind, RunningPane, WorktreeRow } from '../../shared/types.js'
 
-/** 닫기 대상 — 행(탭) 또는 worktree(workspace). 확인 모달과 IPC 갈래를 이걸로 가른다. */
-export type CloseTarget = { kind: 'tab'; tabId: string } | { kind: 'workspace'; workspaceId: string }
+/**
+ * 닫기 대상 — 탭 여럿(단건도 한 개짜리 목록) 또는 worktree(workspace). 확인 모달과 IPC 갈래를 이걸로 가른다.
+ * `alwaysConfirm` = 핀 탭을 닫는다 — 실행 중이 아니어도 확인을 거친다(LIFE-495 K3ⓒ).
+ */
+export type CloseTarget = { kind: 'tabs'; tabIds: string[]; alwaysConfirm: boolean } | { kind: 'workspace'; workspaceId: string }
+
+/** 확인 모달이 떠 있는 닫기 — `running` 은 탭 닫기에서 실행 중으로 판정된 pane(에이전트 문구를 가른다), worktree 닫기는 빈 배열. */
+export type PendingClose = { target: CloseTarget; foreground: string[]; running: RunningPane[] }
 
 /**
  * 화면에 올리는 라이프사이클 동작 묶음 — Repo→Worktree→Workspace→Tab 으로 내려간다.
@@ -17,12 +23,18 @@ export type CloseTarget = { kind: 'tab'; tabId: string } | { kind: 'workspace'; 
  */
 export type LifecycleActions = {
   createRow: (workspaceId: string, kind: AgentKind) => void
+  /** LIFE-495 K6 — 닫은 탭 다시 열기: 같은 시작 디렉터리·이름으로 **새 셸** 탭. `onTab` 은 만든 탭 id 로 펴기 전에 불린다(자리·색 복원). */
+  reopenTab: (input: { workspaceId: string; cwd: string | null; label: string | null; onTab: (tabId: string) => void }) => void
   /**
    * LIFE-496 D38 — `+` 메뉴 Quick-launch. `createRow` 와 같은 경로에 **기동 워치독**을 더한다(에이전트가 기한 안에 감지되지 않으면 알림).
    * 팔레트 「새 {kind} 에이전트」는 지금 동작 그대로 `createRow` 를 쓴다(K2ⓐ).
    */
   launchAgent: (input: { workspaceId: string; kind: Exclude<AgentKind, 'shell'>; label: string }) => void
-  closeRow: (tabId: string) => void
+  /**
+   * 탭을 닫는다 (LIFE-495) — ×·중클릭·메뉴·⌘W·「다른/오른쪽/왼쪽 탭 닫기」가 모두 이 길이다. 실행 중 확인은 대상 전부를 모아 **모달 한 번**.
+   * `onClosed` 는 실제로 닫힌 탭으로 불린다(닫은 탭 다시 열기 기록 — 확인을 취소하면 안 불린다).
+   */
+  closeTabs: (input: { tabIds: string[]; alwaysConfirm: boolean; onClosed: (closed: string[]) => void }) => void
   /**
    * LIFE-357 I-7 — 탭 이름을 사용자가 준 이름으로. 거절은 알림으로 그대로 올라온다.
    * `tabNumber` 는 J-4 의 "기본 표찰과 같은 이름" 가드가 쓴다 — 그 값은 보내기 전에 막는다.

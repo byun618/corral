@@ -43,7 +43,9 @@ import { AgentStateDot, PlusIcon } from './AgentStateDot.js'
 import { FILLED_BELL_PATH } from './WorktreeStatusSlot.js'
 import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
-import { TabContextMenu, type TabMenuAnchor } from './TabContextMenu.js'
+import { TabContextMenu, type MoveDirection, type TabMenuAnchor } from './TabContextMenu.js'
+import { TabMenuIcon } from './TabMenuIcon.js'
+import { tabMenuModel, type CloseScope } from '../tab-actions.js'
 import { SplitIcon } from './SplitIcon.js'
 import { TabStripScrollIndicator } from './TabStripScrollIndicator.js'
 import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStripOverflow.js'
@@ -120,15 +122,22 @@ function MainTab({
   dock,
   unreadPanes,
   hasTabsToRight,
+  groupTabOrder,
+  pinnedTabs,
+  color,
+  renameRequest,
   onSelect,
   onClose,
   onRename,
+  onRequestRename,
   onClearName,
   onSplitPane,
   onMoveToGroup,
-  canMoveToGroup,
   otherGroups,
   onMoveToOtherGroup,
+  onTogglePin,
+  onCloseScope,
+  onSetColor,
   onDragStart,
   menuHost,
 }: {
@@ -152,19 +161,33 @@ function MainTab({
   unreadPanes: ReadonlySet<string>
   /** 오른쪽에 탭이 더 있나 — Orca 처럼 탭 사이 세로 줄을 마지막 탭에는 안 긋는다(`getTabStripBorderClasses`). */
   hasTabsToRight: boolean
+  /** LIFE-495 — 이 영역의 시각 순서·핀 탭(메뉴 항목 상태 `tabMenuModel` 의 입력). */
+  groupTabOrder: readonly string[]
+  pinnedTabs: ReadonlySet<string>
+  /** LIFE-495 K4 — 탭 색(없으면 null). 제목 뒤 8px 점. */
+  color: string | null
+  /** LIFE-495 — 이름 편집 요청(⌘R·헤더 메뉴 「제목 바꾸기」). 값이 바뀔 때마다 편집을 연다 — 0 은 요청 없음. */
+  renameRequest: number
   onSelect: () => void
   onClose: () => void
   onRename: (label: string) => void
+  /** 메뉴 「제목 바꾸기」 — 편집은 `renameRequest` 로 연다(⌘R 과 같은 길). 탭 선택은 바꾸지 않는다(더블클릭과 같다). */
+  onRequestRename: () => void
   /** LIFE-366 F1 — 사용자가 준 이름 지우기. 메뉴에서만 닿는다. */
   onClearName: () => void
-  /** LIFE-373 ② — 이 탭 안에서 pane 분할 (herdr). */
+  /** LIFE-373 ② — 이 탭 안에서 pane 분할 (herdr). LIFE-495 F7 — **이 탭**을 쪼갠다(비활성이면 먼저 활성으로). */
   onSplitPane: (direction: 'right' | 'down') => void
-  /** LIFE-373 ① — 이 탭을 빼내 새 영역으로 (화면). */
-  onMoveToGroup: (direction: 'row' | 'column') => void
-  canMoveToGroup: boolean
+  /** LIFE-373 ① — 이 탭을 빼내 새 영역으로 (화면). LIFE-495 K1ⓒ — 4방향. */
+  onMoveToGroup: (direction: MoveDirection) => void
   /** LIFE-387 A1 — 다른 영역 목록("다른 영역으로 옮기기" 메뉴 섹션). */
   otherGroups: { groupId: string; label: string }[]
   onMoveToOtherGroup: (targetGroupId: string) => void
+  /** LIFE-495 K3 — 핀/핀 해제. */
+  onTogglePin: () => void
+  /** LIFE-495 K2 — 다른/오른쪽/왼쪽 탭 닫기. */
+  onCloseScope: (scope: CloseScope) => void
+  /** LIFE-495 K4 — 탭 색(null = 없음). */
+  onSetColor: (color: string | null) => void
   /** LIFE-387 A1 — 드래그 무장(mousedown). 6px 넘기 전엔 평소 클릭과 다르지 않다. */
   onDragStart: (event: React.MouseEvent) => void
   /**
@@ -244,6 +267,17 @@ function MainTab({
     input.focus()
     input.select()
   }, [editing])
+  // LIFE-495 — ⌘R·헤더 메뉴의 「제목 바꾸기」. 요청이 올 때마다(값이 바뀔 때) 더블클릭과 같은 `beginEdit` 으로 연다.
+  // 처리한 요청 값을 기억한다 — 탭이 다른 영역으로 옮겨 다시 마운트돼도 지난 요청으로 편집이 저절로 열리지 않게.
+  const beginEditRef = useRef(beginEdit)
+  beginEditRef.current = beginEdit
+  const handledRenameRef = useRef(renameRequest)
+  useEffect(() => {
+    if (renameRequest === handledRenameRef.current) return
+    handledRenameRef.current = renameRequest
+    beginEditRef.current()
+  }, [renameRequest])
+  const pinned = pinnedTabs.has(tab.tabId)
   // H-6 을 탭바에도 적용한다(구현자 판단) — 사이드바와 탭바가 같은 세션을 다른 기호로 보이면
   // 두 목록을 짝지어 읽을 수 없다. 그래서 선두의 상태 점은 사이드바 행과 **같은 함수**로 고른다(`tab-status.ts`).
   // 탭바는 **셸 탭도** 보여주므로 에이전트가 없는 탭은 셸 아이콘으로 떨어뜨린다(Orca `ShellIcon`).
@@ -261,6 +295,8 @@ function MainTab({
       data-active-tab-dock={dock ? '' : undefined}
       title={tooltip}
       data-tab-editing={editing ? 'true' : 'false'}
+      data-tab-pinned={pinned ? 'true' : 'false'}
+      data-tab-color={color ?? undefined}
       // LIFE-387 A1 — 편집 중엔 무장하지 않는다(캐럿 드래그와 겹친다). 문턱(6px)을 안 넘기면
       // 이 mousedown 은 그냥 뒤따르는 click 으로 남는다 — `preventDefault` 를 안 쓰는 이유.
       onMouseDown={(event) => {
@@ -277,9 +313,9 @@ function MainTab({
         onDragStart(event)
       }}
       onClick={onSelect}
-      // D14 중클릭 닫기 (Orca `SortableTab.tsx:213-225`). 편집 중엔 안 닫는다. 핀 제외 조건은 핀이 생길 때(T3) 붙는다.
+      // D14 중클릭 닫기 (Orca `SortableTab.tsx:213-225`). 편집 중엔 안 닫는다. 핀 탭은 무시한다(LIFE-495 K3ⓑ, 220 `:215-227`).
       onAuxClick={(event) => {
-        if (event.button !== 1 || editingRef.current) return
+        if (event.button !== 1 || editingRef.current || pinned) return
         event.preventDefault()
         event.stopPropagation()
         onClose()
@@ -299,8 +335,12 @@ function MainTab({
       {/* 안 읽음 워시 — Orca 처럼 실제 DOM 자식이다(`::after` 는 드롭 표시와 겹친다). 벨이 보일 때만(라이브 상태면 둘 다 숨는다). */}
       {leading.kind === 'bell' ? <span className="main-tab-unread-wash" aria-hidden /> : null}
       <TabLeadingIcon leading={leading} />
+      {/* LIFE-495 K3ⓐ — 핀 탭은 제목 앞 핀(220 `Pin` size-3 · mr-1 · muted). 편집 중엔 숨긴다. */}
+      {pinned && !editing ? <TabMenuIcon kind="pin" size={12} className="main-tab-pin" /> : null}
       <span className="main-tab-title">
         <span className="main-tab-label">{seed}</span>
+        {/* LIFE-495 K4ⓑ — 제목 뒤 8px 색 점(220 `size-2 rounded-full mr-1.5`). 편집 중엔 숨긴다. */}
+        {color === null || editing ? null : <span className="main-tab-color-dot" data-tab-color-dot={color} style={{ backgroundColor: color }} />}
         {/* 라벨 위에 겹쳐 놓는다 — 탭 폭·높이를 안 건드리려고 absolute 다 (C9(b) 핀 높이 보호).
             라벨 칸(`.main-tab-title`) 안에 겹치므로 선두 표시가 바뀌어도(벨·점·로고) 자리가 따라온다.
             ⚠ 클릭·마우스다운도 막는다: 안 막으면 커서를 옮기려는 클릭이 `.main-tab` 의 onClick
@@ -331,8 +371,9 @@ function MainTab({
           }}
         />
       </span>
-      {/* 닫기 — 활성 탭은 상시, 비활성은 탭 hover 때(CSS). Orca 처럼 글자색으로 숨긴다(`text-transparent`). */}
-      <button
+      {/* 닫기 — 활성 탭은 상시, 비활성은 탭 hover 때(CSS). Orca 처럼 글자색으로 숨긴다(`text-transparent`).
+          LIFE-495 K3ⓑ — 핀 탭에는 없다(220 `SortableTab.tsx:325` `!isEditing && !isPinned`). */}
+      {pinned ? null : <button
         className="main-tab-close"
         data-main-tab-close={tab.tabId}
         data-tab-close-button="true"
@@ -348,19 +389,23 @@ function MainTab({
           <path d="M18 6 6 18" />
           <path d="m6 6 12 12" />
         </svg>
-      </button>
+      </button>}
       {menu === null || menuHost === null ? null : createPortal(
         <TabContextMenu
           anchor={menu}
+          model={tabMenuModel({ tabOrder: groupTabOrder, tabId: tab.tabId, pinned: pinnedTabs })}
           hasUserName={userLabel({ tab, tabCount }) !== null}
-          canMoveToGroup={canMoveToGroup}
+          color={color}
           otherGroups={otherGroups}
-          onRename={beginEdit}
+          onRename={onRequestRename}
           onClearName={onClearName}
           onSplitPane={onSplitPane}
           onMoveToGroup={onMoveToGroup}
           onMoveToOtherGroup={onMoveToOtherGroup}
+          onTogglePin={onTogglePin}
           onClose={onClose}
+          onCloseScope={onCloseScope}
+          onSetColor={onSetColor}
           onDismiss={() => setMenu(null)}
         />,
         menuHost,
@@ -463,7 +508,15 @@ export function GroupHeader({
   onRenameTab,
   onClearTabName,
   onSplitPane,
+  onSplitTab,
   onMoveToGroup,
+  pinnedTabs,
+  tabColorOf,
+  renameRequest,
+  onRequestRename,
+  onTogglePin,
+  onCloseScope,
+  onSetTabColor,
   onZoom,
   onClosePane,
   onCloseGroup,
@@ -501,8 +554,21 @@ export function GroupHeader({
   onCloseTab: (tab: TabRow) => void
   onRenameTab: (input: { tab: TabRow; label: string; tabCount: number }) => void
   onClearTabName: (tab: TabRow) => void
+  /** 헤더 액션 ▥▤ — 이 영역 **선택 pane** 을 쪼갠다(기존). */
   onSplitPane: (direction: 'right' | 'down') => void
-  onMoveToGroup: (input: { tabId: string; direction: 'row' | 'column' }) => void
+  /** LIFE-495 F7 — 메뉴의 pane 분할은 **우클릭한 탭**을 쪼갠다(비활성이면 먼저 활성으로). 헤더 모드는 활성 탭. */
+  onSplitTab: (input: { tab: TabRow; direction: 'right' | 'down' }) => void
+  onMoveToGroup: (input: { tabId: string; direction: MoveDirection }) => void
+  /** LIFE-495 K3 — 핀 탭(전 영역 공통 집합). */
+  pinnedTabs: ReadonlySet<string>
+  /** LIFE-495 K4 — 탭 색. */
+  tabColorOf: (tabId: string) => string | null
+  /** LIFE-495 — 이름 편집 요청(⌘R·메뉴). 그 탭만 편집을 연다. */
+  renameRequest: { tabId: string; token: number } | null
+  onRequestRename: (tabId: string) => void
+  onTogglePin: (tab: TabRow) => void
+  onCloseScope: (input: { tab: TabRow; scope: CloseScope }) => void
+  onSetTabColor: (input: { tab: TabRow; color: string | null }) => void
   onZoom: () => void
   onClosePane: () => void
   /** 영역 닫기 (F1-5) — 영역이 하나뿐이면 `null` 로 줘서 버튼을 안 그린다. */
@@ -543,7 +609,9 @@ export function GroupHeader({
     if (activeTabId === null) return
     setHeaderMenu({ tabId: activeTabId, x: point.x, y: point.y })
   }
-  const activeTabLabel = tabs.find((tab) => tab.tabId === activeTabId)?.label ?? ''
+  const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? null
+  const activeTabLabel = activeTab?.label ?? ''
+  const tabOrder = tabs.map((tab) => tab.tabId)
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
@@ -585,15 +653,22 @@ export function GroupHeader({
               dock={tab.tabId === activeTabId && !tabDragActive}
               unreadPanes={unreadPanes}
               hasTabsToRight={index < tabs.length - 1}
-              canMoveToGroup={tabs.length > 1}
+              groupTabOrder={tabOrder}
+              pinnedTabs={pinnedTabs}
+              color={tabColorOf(tab.tabId)}
+              renameRequest={renameRequest !== null && renameRequest.tabId === tab.tabId ? renameRequest.token : 0}
               onSelect={() => onSelectTab(tab)}
               onClose={() => onCloseTab(tab)}
               onRename={(label) => onRenameTab({ tab, label, tabCount: workspaceTabCount })}
+              onRequestRename={() => onRequestRename(tab.tabId)}
               onClearName={() => onClearTabName(tab)}
-              onSplitPane={onSplitPane}
+              onSplitPane={(direction) => onSplitTab({ tab, direction })}
               onMoveToGroup={(direction) => onMoveToGroup({ tabId: tab.tabId, direction })}
               otherGroups={otherGroups}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: tab.tabId, targetGroupId })}
+              onTogglePin={() => onTogglePin(tab)}
+              onCloseScope={(scope) => onCloseScope({ tab, scope })}
+              onSetColor={(color) => onSetTabColor({ tab, color })}
               onDragStart={(event) => onTabDragStart(event, tab.tabId)}
               menuHost={menuHost}
             />
@@ -702,28 +777,23 @@ export function GroupHeader({
           ) : null}
         </div>
       </div>
-      {headerMenu === null ? null : (
+      {headerMenu === null || activeTab === null ? null : (
         <TabContextMenu
           anchor={headerMenu}
-          hasUserName={false}
-          canMoveToGroup={tabs.length > 1}
+          model={tabMenuModel({ tabOrder, tabId: activeTab.tabId, pinned: pinnedTabs })}
+          hasUserName={userLabel({ tab: activeTab, tabCount: workspaceTabCount }) !== null}
+          color={tabColorOf(activeTab.tabId)}
           otherGroups={otherGroups}
           headerMode={{ activeTabLabel }}
-          onRename={() => {}}
-          onClearName={() => {}}
-          onSplitPane={onSplitPane}
-          onMoveToGroup={(direction) => {
-            if (activeTabId === null) return
-            onMoveToGroup({ tabId: activeTabId, direction })
-          }}
-          onMoveToOtherGroup={(targetGroupId) => {
-            if (activeTabId === null) return
-            onMoveToOtherGroup({ tabId: activeTabId, targetGroupId })
-          }}
-          onClose={() => {
-            const activeTab = tabs.find((tab) => tab.tabId === activeTabId)
-            if (activeTab !== undefined) onCloseTab(activeTab)
-          }}
+          onRename={() => onRequestRename(activeTab.tabId)}
+          onClearName={() => onClearTabName(activeTab)}
+          onSplitPane={(direction) => onSplitTab({ tab: activeTab, direction })}
+          onMoveToGroup={(direction) => onMoveToGroup({ tabId: activeTab.tabId, direction })}
+          onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: activeTab.tabId, targetGroupId })}
+          onTogglePin={() => onTogglePin(activeTab)}
+          onClose={() => onCloseTab(activeTab)}
+          onCloseScope={(scope) => onCloseScope({ tab: activeTab, scope })}
+          onSetColor={(color) => onSetTabColor({ tab: activeTab, color })}
           onDismiss={() => setHeaderMenu(null)}
         />
       )}

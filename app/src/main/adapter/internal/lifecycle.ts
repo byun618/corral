@@ -54,9 +54,15 @@ export type CreateRowOutcome = {
  */
 export async function createRow(
   socketPath: string,
-  input: { workspaceId: string; kind: AgentKind },
+  input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string },
 ): Promise<CreateRowOutcome> {
-  const created = await request(socketPath, 'tab.create', { workspace_id: input.workspaceId }, { reason: 'create-row' })
+  // LIFE-495 K6 — 닫은 탭 다시 열기는 같은 시작 디렉터리·사용자 이름으로 새 셸을 연다(herdr `tab.create` 의 `cwd`·`label`).
+  const params = {
+    workspace_id: input.workspaceId,
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    ...(input.label === undefined ? {} : { label: input.label }),
+  }
+  const created = await request(socketPath, 'tab.create', params, { reason: 'create-row' })
   if (created.error) {
     return { ok: false, paneId: null, tabId: null, retries: 0, error: `${created.error.code}: ${created.error.message}` }
   }

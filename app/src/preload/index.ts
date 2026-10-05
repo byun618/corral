@@ -28,6 +28,7 @@ import type {
   TerminalScroll,
   RenameRowResult,
   CorralShortcut,
+  CloseTabsResult,
   UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
@@ -47,6 +48,7 @@ const EXPOSED = [
   'setUiPrefs',
   'createRow',
   'closeRow',
+  'closeTabs',
   'renameRow',
   'closeWorktree',
   'openWorktree',
@@ -149,8 +151,10 @@ const api: CorralApi = {
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
   getUiPrefs: (): Promise<UiPrefs> => ipcRenderer.invoke('corral:getUiPrefs'),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
-  createRow: (input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> =>
+  createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> =>
     ipcRenderer.invoke('corral:createRow', input),
+  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean }): Promise<CloseTabsResult> =>
+    ipcRenderer.invoke('corral:closeTabs', input),
   closeRow: (input: { tabId: string; confirmed?: boolean }): Promise<CloseRowResult> =>
     ipcRenderer.invoke('corral:closeRow', input),
   renameRow: (input: { tabId: string; label: string }): Promise<RenameRowResult> =>

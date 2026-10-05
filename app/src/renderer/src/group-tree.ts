@@ -527,3 +527,53 @@ export function readStoredLayouts(value: unknown): StoredGroupLayout[] {
   }
   return rows
 }
+
+// --- 핀 접두부 (LIFE-495 K3ⓓ) ------------------------------------------------------
+
+/**
+ * 모든 영역에서 핀 탭을 `tabOrder` 의 **맨 앞 연속 구간**으로 모은다 — 안정 분할(핀끼리·나머지끼리 상대 순서 유지).
+ *
+ * 220 은 이 분할을 pin/unpin·새 탭 때만 하고 드래그·다시 열기에서는 안 해서 핀 탭이 핀 아닌 탭 뒤로 갈 수 있다(#12928 류,
+ * 00-analysis F2). corral 은 **배치를 읽고 바꾸는 모든 길**(`useGroupLayout` 의 파생·`mutate`)에서 이 함수를 지나게 해 한 자리에서
+ * 지킨다. 그러면 규칙이 저절로 나온다:
+ *   · pin   — 그 탭은 핀 구간 **끝**으로(이미 핀 구간 뒤에 있던 탭이라 안정 분할이 거기 놓는다)
+ *   · unpin — 남은 핀 탭 바로 뒤 = 첫 핀 아닌 자리로
+ *   · 드래그·다시 열기·병합 — 경계를 넘은 탭은 **경계에 붙는다**
+ * 핀은 탭에 붙어 다닌다(id 키) — 다른 영역으로 옮겨도 핀이고 그 영역의 핀 구간 끝에 선다(U6).
+ * 바뀐 영역이 없으면 같은 객체를 돌려준다(리렌더·저장 비교가 안 흔들린다).
+ */
+export function partitionPinnedLayout(layout: GroupLayout, pinned: ReadonlySet<string>): GroupLayout {
+  if (pinned.size === 0) return layout
+  const apply = (node: GroupNode): GroupNode => {
+    switch (node.kind) {
+      case 'leaf': {
+        const order = partitionPinnedOrder(node.group.tabOrder, pinned)
+        return order === node.group.tabOrder ? node : leaf({ ...node.group, tabOrder: order })
+      }
+      case 'split': {
+        const first = apply(node.first)
+        const second = apply(node.second)
+        return first === node.first && second === node.second ? node : { ...node, first, second }
+      }
+    }
+  }
+  const root = apply(layout.root)
+  return root === layout.root ? layout : { ...layout, root }
+}
+
+export function partitionPinnedOrder(tabOrder: string[], pinned: ReadonlySet<string>): string[] {
+  const head = tabOrder.filter((tabId) => pinned.has(tabId))
+  if (head.length === 0) return tabOrder
+  const next = [...head, ...tabOrder.filter((tabId) => !pinned.has(tabId))]
+  return next.every((tabId, index) => tabId === tabOrder[index]) ? tabOrder : next
+}
+
+/**
+ * 탭을 그 영역의 그 자리로 옮긴다 (LIFE-495 K6 다시 열기의 자리 복원). 자리는 0~길이로 clamp, 영역이 없거나 탭이 배치에 없으면 그대로다.
+ * 핀 구간 안쪽 자리는 부르는 쪽의 `partitionPinnedLayout` 이 경계로 민다.
+ */
+export function placeTab(layout: GroupLayout, input: { tabId: string; groupId: string; index: number }): GroupLayout {
+  const from = groupOfTab(layout.root, input.tabId)
+  if (from === null || findGroup(layout.root, input.groupId) === null) return layout
+  return moveTabWithinTabbar(layout, { tabId: input.tabId, fromGroupId: from.groupId, toGroupId: input.groupId, index: input.index })
+}

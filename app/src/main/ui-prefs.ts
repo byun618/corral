@@ -61,6 +61,11 @@ export type UiPrefs = {
   pinnedWorktrees: string[]
   /** 안 읽음 벨이 켜진 워크트리 경로 (LIFE-471) — `shared/types.ts` 의 같은 칸 주석. 없는 경로는 화면이 무시한다. */
   unreadWorktrees: string[]
+  /**
+   * 탭 핀·색 (LIFE-495 K3·K4) — `{tabId, workspaceId, pinned, color}` 목록. 모양은 렌더러 `tab-marks.ts` 가 안다(`groupLayouts` 처럼
+   * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
+   */
+  tabMarks: unknown[]
 } & SidebarViewPrefs
 
 const VERSION = 1
@@ -77,6 +82,7 @@ const DEFAULT_PREFS: UiPrefs = {
   manualFlatOrder: [],
   pinnedWorktrees: [],
   unreadWorktrees: [],
+  tabMarks: [],
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
@@ -145,6 +151,7 @@ export class UiPrefsStore {
         manualFlatOrder: readKeyList(parsed['manualFlatOrder']),
         pinnedWorktrees: readKeyList(parsed['pinnedWorktrees']),
         unreadWorktrees: readKeyList(parsed['unreadWorktrees']),
+        tabMarks: Array.isArray(parsed['tabMarks']) ? parsed['tabMarks'] : [],
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
         ...sidebarViewToPrefs(readSidebarView(parsed)),
       }
@@ -168,6 +175,7 @@ export class UiPrefsStore {
       manualFlatOrder: [...this.prefs.manualFlatOrder],
       pinnedWorktrees: [...this.prefs.pinnedWorktrees],
       unreadWorktrees: [...this.prefs.unreadWorktrees],
+      tabMarks: [...this.prefs.tabMarks],
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],
       sidebarCardProperties: [...this.prefs.sidebarCardProperties],
     }

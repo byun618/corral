@@ -1,43 +1,53 @@
 // 종료 확인 모달 (L4) — 옛 App.tsx 534-576줄 그대로, 자리·스타일만 바뀜.
 // 판별자는 herdr `pane.process_info` 의 포그라운드 프로세스 그룹 (main 이 종료 직전에 판정).
-import type { CloseTarget } from '../lifecycle-types.js'
+// LIFE-495 — 문구는 `close-copy.ts`(K5 에이전트/명령/핀), 탭 여럿을 닫을 때는 탭마다 한 줄(라벨 + 실행 중 프로세스)로 모아 한 번에 묻는다.
+import type { CloseCopy } from '../close-copy.js'
+
+export type ConfirmCloseRow = { key: string; label: string | null; foreground: string[] }
 
 export function ConfirmClose({
-  target,
-  foreground,
+  copy,
+  rows,
   onConfirm,
   onCancel,
 }: {
-  target: CloseTarget
-  foreground: string[]
+  copy: CloseCopy
+  /** 탭 닫기: 실행 중이거나 고정된 탭마다 한 줄. worktree 닫기: 라벨 없는 한 줄에 프로세스 목록. */
+  rows: ConfirmCloseRow[]
   onConfirm: () => void
   onCancel: () => void
 }): React.JSX.Element {
-  const what = target.kind === 'tab' ? '이 탭을' : '이 worktree 를'
   return (
     <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
       <div
         className="modal modal-confirm"
         data-confirm-close-modal
-        data-confirm-close-kind={target.kind}
+        data-confirm-close-kind={copy.kind}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-head modal-head-plain">
           <h2 className="modal-title" data-confirm-close-title>
-            {what} 닫을까
+            {copy.title}
           </h2>
           <button className="modal-close" data-confirm-close-x aria-label="닫기" onClick={onCancel}>
             ✕
           </button>
         </div>
         <div className="modal-body">
-          <p className="modal-desc">포그라운드에 도는 프로세스가 있다. 닫으면 같이 종료된다.</p>
+          {copy.body.map((line, index) => (
+            <p key={index} className="modal-desc" data-confirm-close-body={index}>
+              {line}
+            </p>
+          ))}
           <ul className="modal-list" data-confirm-close-fg>
-            {foreground.map((item, index) => (
-              <li key={index} className="modal-code-block">
-                {item}
-              </li>
-            ))}
+            {rows.flatMap((row) => [
+              ...(row.label === null ? [] : [<li key={`${row.key}:label`} className="modal-close-tab" data-confirm-close-tab={row.key}>{row.label}</li>]),
+              ...row.foreground.map((item, index) => (
+                <li key={`${row.key}:${index}`} className="modal-code-block">
+                  {item}
+                </li>
+              )),
+            ])}
           </ul>
         </div>
         <div className="modal-footer">
@@ -45,7 +55,7 @@ export function ConfirmClose({
             취소
           </button>
           <button className="btn-danger" data-close-confirm-ok onClick={onConfirm}>
-            닫기
+            {copy.confirm}
           </button>
         </div>
       </div>

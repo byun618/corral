@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../shared/types.js'
-import type { CloseTarget, LifecycleActions, LifecycleNotice } from '../lifecycle-types.js'
+import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
 
@@ -31,7 +31,7 @@ export function useLifecycleActions(state: AppState | null): {
   activeWorkspaceId: string | null
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
-  pendingClose: { target: CloseTarget; foreground: string[] } | null
+  pendingClose: PendingClose | null
   confirmPendingClose: () => void
   cancelPendingClose: () => void
   worktreeModal: { repoRoot: string } | null
@@ -41,7 +41,9 @@ export function useLifecycleActions(state: AppState | null): {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | null>(null)
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
-  const [pendingClose, setPendingClose] = useState<{ target: CloseTarget; foreground: string[] } | null>(null)
+  const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
+  /** 확인 대기 중인 탭 닫기의 `onClosed` — 모달이 확인되면 그 결과로 부른다(state 에 함수를 싣지 않으려고 ref). */
+  const pendingOnClosed = useRef<((closed: string[]) => void) | null>(null)
   const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
 
   /**
@@ -178,18 +180,29 @@ export function useLifecycleActions(state: AppState | null): {
    * 닫는다 (L3·L4·L9). `confirmed:false` 로 부르면 main 이 종료 게이트를 재고, 산 프로세스가
    * 있으면 `needs-confirm` 으로 돌아온다 — 그때만 모달을 띄운다.
    */
-  const closeTarget = useCallback(async (target: CloseTarget, confirmed = false): Promise<void> => {
+  const closeTarget = useCallback(async (target: CloseTarget, confirmed = false, onClosed?: (closed: string[]) => void): Promise<void> => {
     setLifecycleNotice(null)
-    const result =
-      target.kind === 'tab'
-        ? await window.corral.closeRow({ tabId: target.tabId, confirmed })
-        : await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
+    if (target.kind === 'tabs') {
+      if (target.tabIds.length === 0) return
+      const result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm })
+      if (result.outcome === 'needs-confirm') {
+        pendingOnClosed.current = onClosed ?? null
+        setPendingClose({ target, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
+        return
+      }
+      setPendingClose(null)
+      if (result.closed.length > 0) onClosed?.(result.closed)
+      if (result.outcome === 'rejected') setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+      else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
+      return
+    }
+    const result = await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
     switch (result.outcome) {
       case 'closed':
         setPendingClose(null)
         return
       case 'needs-confirm':
-        setPendingClose({ target, foreground: result.foreground })
+        setPendingClose({ target, foreground: result.foreground, running: [] })
         return
       case 'rejected':
         setPendingClose(null)
@@ -257,10 +270,20 @@ export function useLifecycleActions(state: AppState | null): {
 
   /** 만든 pane 의 id 를 돌려준다(실패·pane 없음이면 null) — `launchAgent` 가 워치독을 건다. */
   const createRow = useCallback(
-    async (workspaceId: string, kind: AgentKind): Promise<string | null> => {
+    async (
+      workspaceId: string,
+      kind: AgentKind,
+      /** LIFE-495 K6 — 닫은 탭 다시 열기: 시작 디렉터리·이름을 싣고, 만든 탭 id 를 자리 복원에 넘긴다(펴기 전에). */
+      reopen?: { cwd: string | null; label: string | null; onTab: (tabId: string) => void },
+    ): Promise<string | null> => {
       setActive(workspaceId) // G2: 상호작용한 workspace 를 ⌘T 대상 + 메인 탭바 대상으로 기록
       setLifecycleNotice(null)
-      const result = await window.corral.createRow({ workspaceId, kind })
+      const result = await window.corral.createRow({
+        workspaceId,
+        kind,
+        ...(reopen?.cwd == null ? {} : { cwd: reopen.cwd }),
+        ...(reopen?.label == null ? {} : { label: reopen.label }),
+      })
       if (!result.ok) {
         setLifecycleNotice({ kind: 'error', message: result.error ?? '탭 생성 실패' })
         return null
@@ -273,6 +296,7 @@ export function useLifecycleActions(state: AppState | null): {
       // **G2′** — 새 탭을 화면에 띄우는 것은 pane 선택이 아니라 **영역의 활성 탭**이다(R3-a).
       // 여기서는 무엇을 펴야 하는지만 남기고, 배치를 아는 App 이 탭이 도착한 뒤 편다.
       // 이게 없으면 탭은 만들어지고 **뒤에 조용히 숨어 있다** — 게이트 ① 에서 사용자가 잡은 것.
+      if (result.tabId !== null) reopen?.onTab(result.tabId)
       if (result.tabId !== null) setPendingRevealTab(result.tabId)
       return result.paneId
     },
@@ -355,8 +379,13 @@ export function useLifecycleActions(state: AppState | null): {
 
   const actions: LifecycleActions = {
     createRow: (workspaceId, kind) => void createRow(workspaceId, kind),
+    reopenTab: (input) => void createRow(input.workspaceId, 'shell', input),
     launchAgent: (input) => void launchAgent(input),
-    closeRow: (tabId) => void closeTarget({ kind: 'tab', tabId }),
+    closeTabs: ({ tabIds, alwaysConfirm, onClosed }) => {
+      // 확인 모달이 떠 있는 동안 새 닫기 요청은 받지 않는다 — 모달은 한 번에 하나다(앞 요청의 onClosed 를 덮지 않게).
+      if (pendingClose !== null) return
+      void closeTarget({ kind: 'tabs', tabIds, alwaysConfirm }, false, onClosed)
+    },
     renameRow: (input) => void renameRow(input),
     clearRowName: (tabId) => void clearRowName(tabId),
     closeWorktree: (workspaceId) => void closeTarget({ kind: 'workspace', workspaceId }),
@@ -370,10 +399,17 @@ export function useLifecycleActions(state: AppState | null): {
 
   // 안정적인 함수 identity — ESC 닫기 useEffect 가 매 렌더 리스너를 갈아끼우지 않게.
   const dismissNotice = useCallback(() => setLifecycleNotice(null), [])
-  const cancelPendingClose = useCallback(() => setPendingClose(null), [])
+  const cancelPendingClose = useCallback(() => {
+    // 취소 = 하나도 안 닫았다 — 다시 열기 기록도 없다.
+    pendingOnClosed.current = null
+    setPendingClose(null)
+  }, [])
   const closeWorktreeModal = useCallback(() => setWorktreeModal(null), [])
   const confirmPendingClose = useCallback(() => {
-    if (pendingClose !== null) void closeTarget(pendingClose.target, true)
+    if (pendingClose === null) return
+    const onClosed = pendingOnClosed.current ?? undefined
+    pendingOnClosed.current = null
+    void closeTarget(pendingClose.target, true, onClosed)
   }, [pendingClose, closeTarget])
 
   return {

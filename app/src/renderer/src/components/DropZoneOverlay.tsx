@@ -59,12 +59,14 @@ function DropZoneFill({ state }: { state: TabDragState }): React.JSX.Element | n
 }
 
 /** 드래그 중인 탭 자신 — 커서를 따라간다("얼굴"). */
-export function DropZoneOverlay({ state, tabLabel }: { state: TabDragState; tabLabel: string }): React.JSX.Element {
+export function DropZoneOverlay({ state, tabLabel, tabColor = null }: { state: TabDragState; tabLabel: string; tabColor?: string | null }): React.JSX.Element {
   return (
     <div className="drop-zone-overlay" data-drop-zone-overlay aria-hidden="true">
       <DropZoneFill state={state} />
       <div className="tab-drag-ghost" data-tab-drag-ghost style={{ left: state.point.x + 12, top: state.point.y + 12 }}>
         {tabLabel}
+        {/* LIFE-495 K4ⓑ — 탭 색 점은 드래그 고스트에도 따라온다(220 `tab-bar-item-surface.tsx:96`). */}
+        {tabColor === null ? null : <span className="main-tab-color-dot" data-tab-drag-ghost-color={tabColor} style={{ backgroundColor: tabColor }} />}
       </div>
     </div>
   )

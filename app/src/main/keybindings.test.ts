@@ -61,3 +61,13 @@ describe('keybinding file', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(before); expect(store.get()).toEqual({ 'sidebar.toggle': ['Mod+J'] })
   })
 })
+
+describe('LIFE-495 K7ⓘ — 옛 모양 파일 픽스처(terminal.new 두 칸)', () => {
+  it('파일을 읽으면 고친 조합이 새 칸으로 옮겨 실리고, 다른 재정의는 그대로다', () => {
+    const { dir, file } = fixture()
+    fs.writeFileSync(file, JSON.stringify({ 'terminal.new': ['Mod+J', 'Mod+Shift+T'], 'sidebar.toggle': ['Mod+Alt+B'] }))
+    const store = new KeybindingStore(dir)
+    store.load()
+    expect(store.get()).toEqual({ 'terminal.new': ['Mod+J'], 'sidebar.toggle': ['Mod+Alt+B'] })
+  })
+})

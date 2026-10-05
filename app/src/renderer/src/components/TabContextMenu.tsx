@@ -1,6 +1,11 @@
 import { useBindingLabel } from '../hooks/BindingLabels.js'
 import { useMenuBus } from '../menu-bus.js'
-// 탭 우클릭 메뉴 — 이름 변경 · 이름 지우기 · **pane 분할 ②** · **새 영역으로 옮기기 ①** · 닫기.
+// 탭 우클릭 메뉴 — LIFE-495 부터 **항목 순서 = Orca 220** (`SortableTabContextMenu.tsx`, K1ⓐ):
+//   영역으로 옮기기(우·좌·하·상) → pane 분할(오른쪽·아래) → ─ → 핀/핀 해제 → ─ → 닫기 · 다른 탭 닫기 · 오른쪽 탭 닫기 · 왼쪽 탭 닫기
+//   → ─ → 제목 바꾸기(⌘R) · 이름 지우기 → 탭 색.
+// corral 이 더 가진 두 항목의 자리: 「다른 영역으로 옮기기」는 같은 결(탭을 영역으로 보낸다)인 「영역으로 옮기기」 바로 아래, 「이름 지우기」는
+// 같은 결(제목)인 「제목 바꾸기」 바로 옆. 220 은 서브메뉴(▸)지만 이 메뉴는 LIFE-373 부터 머리줄로 묶은 평평한 목록이라 그 모양을 지킨다.
+// 비활성 조건·대상 계산은 `tab-actions.ts` 의 순수 함수(`tabMenuModel`)다 — 여기서는 그리기만 한다.
 //
 // LIFE-373 핸드오프 §1-6 "한 메뉴 두 섹션": 같은 `D` 키가 무엇을 쪼개는지를 메뉴에서 갈라
 // 보여준다 — `이 탭 안에서 pane 분할`(herdr 소유)과 `이 탭을 새 영역으로 옮기기`(화면 소유).
@@ -16,14 +21,48 @@ import { useMenuBus } from '../menu-bus.js'
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ONE_TAB_IN_GROUP } from '../group-tree.js'
-import { SplitIcon } from './SplitIcon.js'
+import type { CloseScope, TabMenuModel } from '../tab-actions.js'
+import { TAB_COLORS } from '../tab-marks.js'
+import { TabMenuIcon, type TabMenuIconKind } from './TabMenuIcon.js'
 
 export type TabMenuAnchor = { tabId: string; x: number; y: number }
 
+/** 새 영역으로 옮기기 4방향 (K1ⓒ) — `group-tree.splitGroup` 의 방향·가장자리로 옮긴다(왼쪽·위 = 앞 가장자리). */
+export type MoveDirection = 'right' | 'left' | 'down' | 'up'
+export function moveDirectionToSplit(direction: MoveDirection): { direction: 'row' | 'column'; edge: 'before' | 'after' } {
+  switch (direction) {
+    case 'right':
+      return { direction: 'row', edge: 'after' }
+    case 'left':
+      return { direction: 'row', edge: 'before' }
+    case 'down':
+      return { direction: 'column', edge: 'after' }
+    case 'up':
+      return { direction: 'column', edge: 'before' }
+  }
+}
+
+const MOVE_ITEMS: { direction: MoveDirection; label: string; icon: TabMenuIconKind }[] = [
+  { direction: 'right', label: '오른쪽 영역', icon: 'arrow-right' },
+  { direction: 'left', label: '왼쪽 영역', icon: 'arrow-left' },
+  { direction: 'down', label: '아래 영역', icon: 'arrow-down' },
+  { direction: 'up', label: '위 영역', icon: 'arrow-up' },
+]
+
+const CLOSE_SCOPE_ITEMS: { scope: CloseScope; label: string; icon: TabMenuIconKind; enabled: (model: TabMenuModel) => boolean }[] = [
+  { scope: 'others', label: '다른 탭 닫기', icon: 'list-x', enabled: (model) => model.canCloseOthers },
+  { scope: 'right', label: '오른쪽 탭 닫기', icon: 'panel-right-close', enabled: (model) => model.canCloseRight },
+  { scope: 'left', label: '왼쪽 탭 닫기', icon: 'panel-left-close', enabled: (model) => model.canCloseLeft },
+]
+
+/** 닫을 대상이 없을 때의 사유 — 비활성 항목의 툴팁. */
+const NOTHING_TO_CLOSE = '닫을 탭이 없다 (고정된 탭은 닫지 않는다)'
+
 export function TabContextMenu({
   anchor,
+  model,
   hasUserName,
-  canMoveToGroup,
+  color,
   otherGroups,
   headerMode,
   onRename,
@@ -31,27 +70,34 @@ export function TabContextMenu({
   onSplitPane,
   onMoveToGroup,
   onMoveToOtherGroup,
+  onTogglePin,
   onClose,
+  onCloseScope,
+  onSetColor,
   onDismiss,
 }: {
   anchor: TabMenuAnchor
+  /** 항목 상태 — 핀·닫기 대상·옮기기 가능 여부(`tabMenuModel`). */
+  model: TabMenuModel
   /** 사용자가 준 이름이 있나 — 없으면 「이름 지우기」는 할 일이 없어 **비활성**으로 보인다. */
   hasUserName: boolean
-  /** 원 영역에 탭이 2개 이상인가 (F1-1) — 하나뿐이면 옮기기가 빈 영역을 만든다. */
-  canMoveToGroup: boolean
+  /** 지금 탭 색(없으면 null) — swatch 선택 표시. */
+  color: string | null
   /** LIFE-387 A1 — 다른 영역 목록("다른 영역으로 옮기기" 섹션, 영역 ≥ 2 일 때만 뜬다). */
   otherGroups: { groupId: string; label: string }[]
   /**
-   * LIFE-387 B1 — 헤더(`⊞`)·탭바 빈 곳 우클릭에서 열리면 이름 변경/지우기를 뺀 "헤더 모드"다
-   * (§2 GroupHeader 우클릭 — 활성 탭 대상, 빈 영역이면 열지 않는다).
+   * LIFE-387 B1 — 헤더(`⊞`)·탭바 빈 곳 우클릭에서 열린 "헤더 모드". 대상은 그 영역의 **활성 탭**이다 — 항목은 탭 메뉴와 같다(K1ⓓ).
    */
   headerMode?: { activeTabLabel: string }
   onRename: () => void
   onClearName: () => void
   onSplitPane: (direction: 'right' | 'down') => void
-  onMoveToGroup: (direction: 'row' | 'column') => void
+  onMoveToGroup: (direction: MoveDirection) => void
   onMoveToOtherGroup: (targetGroupId: string) => void
+  onTogglePin: () => void
   onClose: () => void
+  onCloseScope: (scope: CloseScope) => void
+  onSetColor: (color: string | null) => void
   onDismiss: () => void
 }): React.JSX.Element {
   const bindingLabel = useBindingLabel()
@@ -92,6 +138,39 @@ export function TabContextMenu({
     }
   }, [onDismiss])
 
+  /** 항목 하나 — 비활성이면 누름을 무시하고 사유를 툴팁으로. 누르면 메뉴를 먼저 닫고 동작한다(이름 편집이 메뉴 닫힘 뒤에 포커스를 잡게). */
+  const item = (input: {
+    attr: Record<string, string>
+    icon: TabMenuIconKind
+    label: string
+    run: () => void
+    enabled?: boolean
+    disabledTitle?: string
+    shortcut?: string
+    danger?: boolean
+  }): React.JSX.Element => {
+    const enabled = input.enabled ?? true
+    return (
+      <div
+        className={`repo-row-menu-item ${input.danger === true ? 'repo-row-menu-danger' : ''} ${enabled ? '' : 'is-disabled'}`}
+        {...input.attr}
+        data-disabled={enabled ? 'false' : 'true'}
+        title={enabled ? undefined : input.disabledTitle}
+        onClick={() => {
+          if (!enabled) return
+          onDismiss()
+          input.run()
+        }}
+      >
+        <span className="repo-row-menu-glyph">
+          <TabMenuIcon kind={input.icon} />
+        </span>
+        <span>{input.label}</span>
+        {input.shortcut === undefined || input.shortcut === '' ? null : <span className="tab-menu-key">{input.shortcut}</span>}
+      </div>
+    )
+  }
+
   return (
     <div
       className="tab-context-menu"
@@ -103,36 +182,7 @@ export function TabContextMenu({
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      {headerMode === undefined ? (
-        <>
-          <div
-            className="repo-row-menu-item"
-            data-tab-menu-rename={anchor.tabId}
-            onClick={() => {
-              onDismiss()
-              onRename()
-            }}
-          >
-            <span className="repo-row-menu-glyph">✎</span>
-            <span>이름 변경</span>
-          </div>
-          <div
-            className={`repo-row-menu-item ${hasUserName ? '' : 'is-disabled'}`}
-            data-tab-menu-clear={anchor.tabId}
-            data-disabled={hasUserName ? 'false' : 'true'}
-            title={hasUserName ? undefined : '사용자가 준 이름이 없다'}
-            onClick={() => {
-              if (!hasUserName) return
-              onDismiss()
-              onClearName()
-            }}
-          >
-            <span className="repo-row-menu-glyph">⌫</span>
-            <span>이름 지우기</span>
-          </div>
-          <div className="repo-row-menu-sep" />
-        </>
-      ) : (
+      {headerMode === undefined ? null : (
         <>
           <div className="tab-menu-section tab-menu-header-mode" data-tab-menu-header-mode={anchor.tabId}>
             탭 · {headerMode.activeTabLabel}
@@ -140,66 +190,20 @@ export function TabContextMenu({
           <div className="repo-row-menu-sep" />
         </>
       )}
-      <div className="tab-menu-section">이 탭 안에서 pane 분할</div>
-      <div
-        className="repo-row-menu-item"
-        data-tab-menu-split-right={anchor.tabId}
-        onClick={() => {
-          onDismiss()
-          onSplitPane('right')
-        }}
-      >
-        <span className="repo-row-menu-glyph"><SplitIcon kind="pane-right" /></span>
-        <span>오른쪽으로</span>
-        <span className="tab-menu-key">{bindingLabel('terminal.split')}</span>
-      </div>
-      <div
-        className="repo-row-menu-item"
-        data-tab-menu-split-down={anchor.tabId}
-        onClick={() => {
-          onDismiss()
-          onSplitPane('down')
-        }}
-      >
-        <span className="repo-row-menu-glyph"><SplitIcon kind="pane-down" /></span>
-        <span>아래로</span>
-        <span className="tab-menu-key">{bindingLabel('terminal.split', 1)}</span>
-      </div>
-      <div className="repo-row-menu-sep" />
       <div className="tab-menu-section">이 탭을 새 영역으로 옮기기</div>
-      <div
-        className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
-        data-tab-menu-move-right={anchor.tabId}
-        data-disabled={canMoveToGroup ? 'false' : 'true'}
-        title={canMoveToGroup ? undefined : ONE_TAB_IN_GROUP}
-        onClick={() => {
-          if (!canMoveToGroup) return
-          onDismiss()
-          onMoveToGroup('row')
-        }}
-      >
-        <span className="repo-row-menu-glyph"><SplitIcon kind="group-right" /></span>
-        <span>오른쪽 영역</span>
-        <span className="tab-menu-key">{bindingLabel('group.split')}</span>
-      </div>
-      <div
-        className={`repo-row-menu-item ${canMoveToGroup ? '' : 'is-disabled'}`}
-        data-tab-menu-move-down={anchor.tabId}
-        data-disabled={canMoveToGroup ? 'false' : 'true'}
-        title={canMoveToGroup ? undefined : ONE_TAB_IN_GROUP}
-        onClick={() => {
-          if (!canMoveToGroup) return
-          onDismiss()
-          onMoveToGroup('column')
-        }}
-      >
-        <span className="repo-row-menu-glyph"><SplitIcon kind="group-down" /></span>
-        <span>아래 영역</span>
-        <span className="tab-menu-key">{bindingLabel('group.split', 1)}</span>
-      </div>
+      {MOVE_ITEMS.map((move) =>
+        item({
+          attr: { [`data-tab-menu-move-${move.direction}`]: anchor.tabId },
+          icon: move.icon,
+          label: move.label,
+          enabled: model.canMoveToNewGroup,
+          disabledTitle: ONE_TAB_IN_GROUP,
+          run: () => onMoveToGroup(move.direction),
+          shortcut: move.direction === 'right' ? bindingLabel('group.split') : move.direction === 'down' ? bindingLabel('group.split', 1) : undefined,
+        }),
+      )}
       {otherGroups.length === 0 ? null : (
         <>
-          <div className="repo-row-menu-sep" />
           <div className="tab-menu-section">이 탭을 다른 영역으로 옮기기</div>
           {otherGroups.map((group, index) => (
             <div
@@ -218,16 +222,67 @@ export function TabContextMenu({
         </>
       )}
       <div className="repo-row-menu-sep" />
-      <div
-        className="repo-row-menu-item repo-row-menu-danger"
-        data-tab-menu-close={anchor.tabId}
-        onClick={() => {
-          onDismiss()
-          onClose()
-        }}
-      >
-        <span className="repo-row-menu-glyph">×</span>
-        <span>탭 닫기</span>
+      <div className="tab-menu-section">이 탭 안에서 pane 분할</div>
+      {item({ attr: { 'data-tab-menu-split-right': anchor.tabId }, icon: 'split-right', label: '오른쪽으로', run: () => onSplitPane('right'), shortcut: bindingLabel('terminal.split') })}
+      {item({ attr: { 'data-tab-menu-split-down': anchor.tabId }, icon: 'split-down', label: '아래로', run: () => onSplitPane('down'), shortcut: bindingLabel('terminal.split', 1) })}
+      <div className="repo-row-menu-sep" />
+      {item({
+        attr: { 'data-tab-menu-pin': anchor.tabId, 'data-pinned': model.pinned ? 'true' : 'false' },
+        icon: model.pinned ? 'pin-off' : 'pin',
+        label: model.pinned ? '탭 고정 해제' : '탭 고정',
+        run: onTogglePin,
+      })}
+      <div className="repo-row-menu-sep" />
+      {item({
+        attr: { 'data-tab-menu-close': anchor.tabId },
+        icon: 'x',
+        label: '닫기',
+        enabled: model.canClose,
+        disabledTitle: '고정된 탭이다 — 고정을 풀거나 ⌘W 로 닫는다',
+        run: onClose,
+        shortcut: bindingLabel('terminal.close'),
+        danger: true,
+      })}
+      {CLOSE_SCOPE_ITEMS.map((scope) =>
+        item({
+          attr: { [`data-tab-menu-close-${scope.scope}`]: anchor.tabId },
+          icon: scope.icon,
+          label: scope.label,
+          enabled: scope.enabled(model),
+          disabledTitle: NOTHING_TO_CLOSE,
+          run: () => onCloseScope(scope.scope),
+        }),
+      )}
+      <div className="repo-row-menu-sep" />
+      {item({ attr: { 'data-tab-menu-rename': anchor.tabId }, icon: 'pencil', label: '제목 바꾸기', run: onRename, shortcut: bindingLabel('tab.rename') })}
+      {item({
+        attr: { 'data-tab-menu-clear': anchor.tabId },
+        icon: 'eraser',
+        label: '이름 지우기',
+        enabled: hasUserName,
+        disabledTitle: '사용자가 준 이름이 없다',
+        run: onClearName,
+      })}
+      <div className="tab-menu-color" data-tab-menu-colors={anchor.tabId}>
+        <div className="tab-menu-color-title">탭 색</div>
+        <div className="tab-menu-color-row">
+          {TAB_COLORS.map((entry) => (
+            <button
+              key={entry.label}
+              type="button"
+              className={`tab-menu-swatch ${entry.value === null ? 'is-none' : ''} ${entry.value === color ? 'is-selected' : ''}`}
+              data-tab-menu-color={entry.value ?? 'none'}
+              data-selected={entry.value === color ? 'true' : 'false'}
+              title={entry.label}
+              aria-label={`탭 색 ${entry.label}`}
+              style={entry.value === null ? undefined : { backgroundColor: entry.value }}
+              onClick={() => {
+                onDismiss()
+                onSetColor(entry.value)
+              }}
+            />
+          ))}
+        </div>
       </div>
     </div>
   )

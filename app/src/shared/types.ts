@@ -517,6 +517,21 @@ export type CloseRowResult =
   | { outcome: 'rejected'; rejection: { code: string; message: string } }
   | { outcome: 'error'; error: string }
 
+/** 닫기 게이트가 「실행 중」으로 판정한 pane 하나 (LIFE-495) — 탭 여럿을 한 모달에 모으고, 에이전트 문구를 가르는 데 쓴다. */
+export type RunningPane = { tabId: string; paneId: string; foreground: string[] }
+
+/**
+ * 탭 여럿 닫기 결과 (LIFE-495 K2ⓒ·K3ⓒ). 단건 닫기도 이 길이다(탭 하나짜리 목록).
+ *   · closed        — 다 닫았다(`closed` = 실제로 닫은 탭. 그 사이 사라진 탭은 빠진다)
+ *   · needs-confirm — 실행 중인 pane 이 있거나(`running`) 확인을 요구했다(`alwaysConfirm` — 핀 탭). **하나도 안 닫았다**
+ *   · rejected / error — 앞에서부터 닫다가 멈췄다. `closed` 는 멈추기 전까지 닫은 탭
+ */
+export type CloseTabsResult =
+  | { outcome: 'closed'; closed: string[] }
+  | { outcome: 'needs-confirm'; running: RunningPane[] }
+  | { outcome: 'rejected'; closed: string[]; rejection: { code: string; message: string } }
+  | { outcome: 'error'; closed: string[]; error: string }
+
 /**
  * 탭 이름 변경 결과 (LIFE-357 I-7). 종료 게이트가 없으니 `needs-confirm` 이 없다 —
  * 이름은 잃을 게 없는 조작이다. herdr 거절은 **그대로** 올라온다(승격 금지, `closeRow` 와 같은 기준).
@@ -670,6 +685,11 @@ export type UiPrefs = {
    * pane 단위 안 읽음은 여기 두지 않는다 — paneId 는 herdr 재기동 때 다시 매겨진다(00-analysis F13).
    */
   unreadWorktrees: string[]
+  /**
+   * 탭 핀·색 (LIFE-495 K3·K4) — `{tabId, workspaceId, pinned, color}` 목록. 모양은 렌더러 `tab-marks.ts` 가 안다(`groupLayouts` 처럼
+   * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
+   */
+  tabMarks: unknown[]
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
@@ -903,9 +923,14 @@ export type CorralApi = {
   setUiPrefs: (patch: Partial<UiPrefs>) => void
   // --- 라이프사이클 (R3) ---
   /** 열린 workspace 에 새 행을 만든다 (tab.create → agent.start 재시도). */
-  createRow: (input: { workspaceId: string; kind: AgentKind }) => Promise<CreateRowResult>
+  createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }) => Promise<CreateRowResult>
   /** 행(탭)을 닫는다. 판별자는 herdr process_info. `confirmed` 면 확인 걸음을 건너뛴다. */
   closeRow: (input: { tabId: string; confirmed?: boolean }) => Promise<CloseRowResult>
+  /**
+   * 탭 여럿을 **게이트 한 번**으로 닫는다 (LIFE-495). 실행 중 판정을 다 모아 한 번에 돌려주고, `confirmed` 로 다시 부르면 전부 닫는다.
+   * `alwaysConfirm` 이면 실행 중이 아니어도 `needs-confirm` 으로 멈춘다(핀 탭 닫기 확인 — 실행 중이면 같은 응답에 실린다).
+   */
+  closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean }) => Promise<CloseTabsResult>
   /**
    * 탭 이름을 사용자가 준 이름으로 바꾼다 (I-7). herdr `tab.rename` 한 번 — corral 은 이름을
    * 따로 저장하지 않는다(herdr 가 들고 있고 재기동해도 남는다).

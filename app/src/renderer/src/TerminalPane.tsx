@@ -52,6 +52,23 @@ export function keepTerminalFocus(event: React.MouseEvent): void {
 }
 
 /**
+ * **편집 중인 이름 입력칸이 포커스를 쥐고 있나** (LIFE-501).
+ *
+ * 탭을 누른 직후 더블클릭하면 이름 입력칸이 먼저 포커스를 잡고, 그 뒤에 도착한 마운트 effect·포커스 토큰의
+ * `term.focus()` 가 그것을 빼앗아 편집을 끝냈다 — 이어 친 글자·Enter 가 셸로 샜다. 터미널 포커스를 주는 두 자리는
+ * 이 함수가 참이면 양보한다(Orca 220 `pane-helpers.ts` 의 rename 가드와 같은 결).
+ *
+ * 범위는 **편집 중인** 이름 입력칸뿐이다(탭 `.main-tab-rename.is-editing` · 카드 `[data-inline-rename]` — 단축키 처리기가
+ * 양보하는 그 입력칸들). 일반 입력칸(사이드바 검색 등)으로 넓히지 않는다: 그 위에서 탭을 누르면 지금처럼 터미널이 포커스를
+ * 가져가야 한다 — 그 클릭이 사용자의 뜻이다.
+ */
+export const INLINE_EDIT_SELECTOR = '.main-tab-rename.is-editing, [data-inline-rename]'
+function inlineEditHoldsFocus(): boolean {
+  const active = document.activeElement
+  return active instanceof Element && active.closest(INLINE_EDIT_SELECTOR) !== null
+}
+
+/**
  * S2·S1·S3 프로브가 읽는 쓰기 완료 기록. 최근 것만 남긴다.
  *
  * `bytes`·`cols`·`rows` 는 **프레임의 무게**다 (§10-R27-a). P3·P4·P5 통과선이 1차 스파이크의
@@ -408,7 +425,7 @@ export function TerminalPane({
     // **마운트한 순간의 화면을 받아 온다.** 프레임은 내용이 바뀔 때만 오므로, 탭을 바꿔 새로
     // 붙은 xterm 은 이미 지나간 프레임을 못 듣고 빈 채로 남는다 (S6 실측: 전환 10/10 빈 화면).
     void window.corral.repaintPane({ paneId })
-    if (focusableRef.current) term.focus()
+    if (focusableRef.current && !inlineEditHoldsFocus()) term.focus()
 
     return () => {
       disposed = true
@@ -447,7 +464,7 @@ export function TerminalPane({
   // `0` 은 신호가 아니다 — 비활성 영역이 받는 값이라, 여기서 포커스를 주면 **비활성 영역이
   // 활성 영역 뒤에 포커스를 훔친다**(effect 순서는 활성 순서가 아니라 트리 순서다).
   useEffect(() => {
-    if (focusToken === 0 || !focusableRef.current) return
+    if (focusToken === 0 || !focusableRef.current || inlineEditHoldsFocus()) return
     termRef.current?.focus()
   }, [focusToken])
 

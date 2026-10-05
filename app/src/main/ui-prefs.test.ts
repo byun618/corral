@@ -16,7 +16,8 @@ import { UiPrefsStore, type UiPrefs } from './ui-prefs.js'
 /** LIFE-470 이 더한 칸의 기본값 — 470 이전 파일을 읽으면 이 값으로 선다. */
 // LIFE-478: 고정 칸(`pinnedWorktrees`)이 새로 생겨 옛 파일을 읽으면 빈 목록으로 선다 — 옛 칸 기본값과 같은 자리에 둔다.
 // LIFE-471: 안 읽음 벨 칸(`unreadWorktrees`)도 옛 파일에서는 빈 목록으로 선다.
-const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], unreadWorktrees: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW) }
+// LIFE-495: 탭 핀·색 칸(`tabMarks`)도 옛 파일에서는 빈 목록으로 선다.
+const L470_DEFAULTS = { manualFlatOrder: [], pinnedWorktrees: [], unreadWorktrees: [], tabMarks: [], ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW) }
 
 let dir = ''
 let file = ''
@@ -305,7 +306,7 @@ describe('카드 표시 영속 (LIFE-477 K7)', () => {
     fs.writeFileSync(file, JSON.stringify(L470))
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ ...L470_BODY, pinnedWorktrees: [], unreadWorktrees: [], sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'compact' })
+    expect(store.get()).toEqual({ ...L470_BODY, pinnedWorktrees: [], unreadWorktrees: [], tabMarks: [], sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'compact' })
   })
 
   it('K7ⓐ 세 칸을 쓰고 → 새 스토어로 읽으면 같은 값(재시작)', () => {
@@ -325,7 +326,7 @@ describe('카드 표시 영속 (LIFE-477 K7)', () => {
     store.load()
     store.update({ sidebarAgentActivityLayout: 'full' })
     const written: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
-    expect(written).toEqual({ ...L470, pinnedWorktrees: [], unreadWorktrees: [], sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'full' })
+    expect(written).toEqual({ ...L470, pinnedWorktrees: [], unreadWorktrees: [], tabMarks: [], sidebarCardLayout: 'detailed', sidebarCardProperties: ['inline-agents'], sidebarAgentActivityLayout: 'full' })
   })
 
   it('K7ⓓ 손상된 새 칸(타입 틀림·모르는 값·모르는 속성 id)은 기본값/정규화, 다른 칸은 살아남는다', () => {
@@ -391,7 +392,7 @@ describe('고정 영속 (LIFE-478 K5ⓖ · 게이트 ⓪ Q1 — ui-prefs)', () =
     fs.writeFileSync(file, JSON.stringify(L477))
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ ...L477_BODY, pinnedWorktrees: [], unreadWorktrees: [] })
+    expect(store.get()).toEqual({ ...L477_BODY, pinnedWorktrees: [], unreadWorktrees: [], tabMarks: [] })
   })
 
   it('ⓖ 고정 목록을 쓰고 새 스토어로 읽으면 같은 값(재시작), 파일의 다른 칸은 값 그대로', () => {
@@ -403,7 +404,7 @@ describe('고정 영속 (LIFE-478 K5ⓖ · 게이트 ⓪ Q1 — ui-prefs)', () =
     second.load()
     expect(second.get().pinnedWorktrees).toEqual(['/r/a/wt', '/r/a'])
     const written: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
-    expect(written).toEqual({ ...L477, pinnedWorktrees: ['/r/a/wt', '/r/a'], unreadWorktrees: [] })
+    expect(written).toEqual({ ...L477, pinnedWorktrees: ['/r/a/wt', '/r/a'], unreadWorktrees: [], tabMarks: [] })
   })
 
   it('ⓖ 손상된 고정 칸 — 문자열 아닌 값·빈 문자열·중복은 버리고 다른 칸은 산다', () => {
@@ -441,7 +442,7 @@ describe('안 읽음 벨 영속 (LIFE-471 K8 · 게이트 ⓪ Q1 — ui-prefs �
     fs.writeFileSync(file, JSON.stringify(L478))
     const store = new UiPrefsStore(dir)
     store.load()
-    expect(store.get()).toEqual({ ...L478_BODY, unreadWorktrees: [] })
+    expect(store.get()).toEqual({ ...L478_BODY, unreadWorktrees: [], tabMarks: [] })
   })
   it('ⓐ 벨 목록을 쓰고 새 스토어로 읽으면 같은 값(재시작), 파일의 다른 칸은 값 그대로', () => {
     fs.writeFileSync(file, JSON.stringify(L478))
@@ -451,7 +452,7 @@ describe('안 읽음 벨 영속 (LIFE-471 K8 · 게이트 ⓪ Q1 — ui-prefs �
     const second = new UiPrefsStore(dir)
     second.load()
     expect(second.get().unreadWorktrees).toEqual(['/r/a', '/r/a/wt'])
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ ...L478, unreadWorktrees: ['/r/a', '/r/a/wt'] })
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ ...L478, unreadWorktrees: ['/r/a', '/r/a/wt'], tabMarks: [] })
   })
   it('손상된 벨 칸 — 문자열 아닌 값·빈 문자열·중복은 버리고 다른 칸은 산다', () => {
     fs.writeFileSync(file, JSON.stringify({ ...L478, unreadWorktrees: ['/r/a', 7, '', '/r/a', null] }))

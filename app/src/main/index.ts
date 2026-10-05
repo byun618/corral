@@ -30,6 +30,8 @@ import type {
   BrowseReposResult,
   CardActionError,
   CloseRowResult,
+  CloseTabsResult,
+  RunningPane,
   CreateRowResult,
   IntegrationRow,
   RemoveRepoResult,
@@ -584,7 +586,7 @@ async function resolveParentWorkspace(repoRoot: string): Promise<ParentResult> {
 }
 
 /** 열린 workspace 에 새 행을 만든다 (L1·L2). store 가 push 로 곧 반영한다. */
-async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind }): Promise<CreateRowResult> {
+async function createRowInWorkspace(input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> {
   const socketPath = currentSocketPath()
   if (socketPath === null) return { ok: false, paneId: null, tabId: null, retries: 0, error: '세션이 없다' }
   const outcome = await createRow(socketPath, input)
@@ -605,8 +607,19 @@ async function checkCloseGate(
   paneIds: readonly string[],
   subject: Record<string, unknown>,
 ): Promise<{ clear: true } | { clear: false; foreground: string[] }> {
-  const running: string[] = []
-  for (const paneId of paneIds) {
+  const running = await probeRunningPanes(socketPath, paneIds.map((paneId) => ({ tabId: '', paneId })), subject)
+  const foreground = running.flatMap((pane) => pane.foreground)
+  return foreground.length > 0 ? { clear: false, foreground } : { clear: true }
+}
+
+/** 게이트의 pane 단위 판정 — 실행 중(셸 아닌 포그라운드 또는 probe 실패)인 pane 만 돌려준다. 탭 여럿 닫기(LIFE-495)가 pane·탭별로 쓴다. */
+async function probeRunningPanes(
+  socketPath: string,
+  panes: readonly { tabId: string; paneId: string }[],
+  subject: Record<string, unknown>,
+): Promise<RunningPane[]> {
+  const running: RunningPane[] = []
+  for (const { tabId, paneId } of panes) {
     const probe = await probeForeground(socketPath, paneId)
     const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
     log('lifecycle.close_gate', {
@@ -619,10 +632,58 @@ async function checkCloseGate(
       probeError: probe.error,
     })
     if (clear) continue
-    if (probe.ok) for (const item of probe.foreground) running.push(item.cmdline ?? item.name)
-    else running.push(`(프로세스 확인 실패: ${probe.error})`)
+    const foreground = probe.ok ? probe.foreground.map((item) => item.cmdline ?? item.name) : [`(프로세스 확인 실패: ${probe.error})`]
+    // 셸 아닌 포그라운드인데 목록이 비어 오면(probe 가 그룹만 안다) 무엇인지 몰라도 실행 중이다 — 빈 칸으로 두지 않는다.
+    running.push({ tabId, paneId, foreground: foreground.length > 0 ? foreground : ['(알 수 없는 프로세스)'] })
   }
-  return running.length > 0 ? { clear: false, foreground: running } : { clear: true }
+  return running
+}
+
+/**
+ * 탭 여럿을 닫는다 (LIFE-495 K2ⓒ·K3ⓒ) — 「다른/오른쪽/왼쪽 탭 닫기」와 단건 닫기가 같은 길이다.
+ *
+ * 220 의 bulk 닫기는 실행 중 확인 없이 죽인다(`skipRunningProcessConfirm`, 00-analysis F4). corral 은 모든 탭 닫기가 게이트를 지나므로
+ * 새 경로도 지난다 — 대상 탭의 pane 을 **다 판정한 뒤 한 번** 묻는다(탭마다 N번이 아니다). 확인 전에는 하나도 닫지 않는다.
+ * 닫기는 앞에서부터 하나씩 — herdr 거절·실패에서 멈추고 그때까지 닫은 탭을 돌려준다.
+ */
+async function closeTabsByIds(input: { tabIds: readonly string[]; confirmed?: boolean; alwaysConfirm?: boolean }): Promise<CloseTabsResult> {
+  const socketPath = currentSocketPath()
+  if (socketPath === null) return { outcome: 'error', closed: [], error: '세션이 없다' }
+  const wanted = new Set(input.tabIds)
+  const panes: { tabId: string; paneId: string }[] = []
+  const present: string[] = []
+  for (const workspace of link.store.rows()) {
+    for (const tab of workspace.tabs) {
+      if (!wanted.has(tab.tabId)) continue
+      present.push(tab.tabId)
+      for (const pane of tab.panes) panes.push({ tabId: tab.tabId, paneId: pane.paneId })
+    }
+  }
+  const targets = input.tabIds.filter((tabId) => present.includes(tabId))
+  if (input.confirmed !== true) {
+    const running = await probeRunningPanes(socketPath, panes, { close: 'tabs', tabIds: targets })
+    if (running.length > 0 || input.alwaysConfirm === true) return { outcome: 'needs-confirm', running }
+  }
+  const closed: string[] = []
+  for (const tabId of targets) {
+    // S15ⓓ ② — 사용자가 **명시적으로** 닫는 탭이다. 그 닫힘은 완료 행으로 되살리지 않는다.
+    const outcome = await withRetentionSuppressed({
+      store: link.store,
+      ids: [tabId],
+      what: 'tab',
+      run: hooks => closeTab(socketPath, tabId, hooks),
+    })
+    if (outcome.outcome === 'closed') {
+      closed.push(tabId)
+      continue
+    }
+    scheduleEmit()
+    if (outcome.outcome === 'rejected') return { outcome: 'rejected', closed, rejection: outcome.rejection }
+    return { outcome: 'error', closed, error: outcome.error }
+  }
+  scheduleEmit()
+  log('lifecycle.close_tabs', { requested: input.tabIds.length, closed: closed.length })
+  return { outcome: 'closed', closed }
 }
 
 /** 행(탭)을 닫는다 (L3·L4·L9a). `confirmed:true` 면 게이트를 건너뛴다. */
@@ -1208,13 +1269,22 @@ function createWindow(): void {
       log('input.raw', { type: input.type, key: input.key, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift })
     }
     if (shortcutRecording) return
-    if (input.type !== 'keyDown' || input.key.toLowerCase() !== 'w') return
+    if (input.type !== 'keyDown') return
     if (!input.meta || input.alt || input.control || input.shift) return
+    // 메뉴가 쥔 키 중 corral 이 가져오는 것 — `⌘W`(File ▸ Close Window)와 **`⌘R`**(View ▸ Reload, LIFE-495 F9·U2).
+    // `⌘R` 을 두면 탭 이름 바꾸기 대신 **창이 새로고침**된다(화면 상태가 날아간다). Orca 는 Reload 항목에서 가속키를 빼서 피했다
+    // (`register-app-menu.ts:280-290`). corral 은 ⌘W 와 같은 수(R23 — 메뉴를 다시 만들지 않는다)로 가져온다. `⌘⇧R`(Force Reload)는
+    // 손대지 않는다 — shift 가 끼면 위에서 빠진다. keyUp 억제 주의(아래 주석)는 ⌘W 와 같다 — 홀드 키가 아니라 문제없다.
+    // 매칭 결과(사용자가 바꾼 키)와 무관하게 ⌘W·⌘R 은 늘 삼킨다 — 재정의로 비었다고 창 닫기·새로고침으로 되돌아가면 안 된다.
+    const claimed = input.code === 'KeyW' || input.key.toLowerCase() === 'w' ? 'W' : input.code === 'KeyR' || input.key.toLowerCase() === 'r' ? 'R' : null
+    if (claimed === null) return
     event.preventDefault()
     // 가로챘다는 사실은 **로그로만** 보인다 — 키를 삼켰으니 화면에는 아무 흔적이 없고,
     // "안 닫혔다"는 관측은 "안 눌렸다"와 구분되지 않는다.
-    log('shortcut.intercepted', { key: 'w', meta: true })
-    const match = matchBinding('Mod+W', keybindings.get())
+    log('shortcut.intercepted', { key: claimed.toLowerCase(), meta: true, repeat: input.isAutoRepeat })
+    // 누르고 있는 ⌘R 의 반복은 보내지 않는다 — 이름 편집은 한 번 열리면 된다(⌘W 반복은 지금 동작 그대로 보낸다).
+    if (claimed === 'R' && input.isAutoRepeat) return
+    const match = matchBinding(`Mod+${claimed}`, keybindings.get())
     if (match && window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', match)
   })
   /**
@@ -1307,10 +1377,21 @@ app.whenReady().then(async () => {
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }
-  ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind }) =>
+  ipcMain.handle('corral:createRow', (event, input: { workspaceId: string; kind: AgentKind; cwd?: unknown; label?: unknown }) =>
     fromOurWindow(event) && typeof input?.workspaceId === 'string'
-      ? createRowInWorkspace({ workspaceId: input.workspaceId, kind: input.kind })
+      ? createRowInWorkspace({
+          workspaceId: input.workspaceId,
+          kind: input.kind,
+          // LIFE-495 K6 다시 열기 — 셸 탭에만 싣는다(에이전트 탭은 기존 경로 그대로).
+          ...(input.kind === 'shell' && typeof input.cwd === 'string' && input.cwd.length > 0 ? { cwd: input.cwd } : {}),
+          ...(input.kind === 'shell' && typeof input.label === 'string' && input.label.length > 0 ? { label: input.label } : {}),
+        })
       : { ...denied, paneId: null, tabId: null, retries: 0 },
+  )
+  ipcMain.handle('corral:closeTabs', (event, input: { tabIds: unknown; confirmed?: boolean; alwaysConfirm?: boolean }) =>
+    fromOurWindow(event) && Array.isArray(input?.tabIds) && input.tabIds.every((tabId) => typeof tabId === 'string')
+      ? closeTabsByIds({ tabIds: input.tabIds.filter((tabId): tabId is string => typeof tabId === 'string'), confirmed: input.confirmed === true, alwaysConfirm: input.alwaysConfirm === true })
+      : ({ outcome: 'error', closed: [], error: '허용되지 않은 발신자' } satisfies CloseTabsResult),
   )
   ipcMain.handle('corral:closeRow', (event, input: { tabId: string; confirmed?: boolean }) =>
     fromOurWindow(event) && typeof input?.tabId === 'string'

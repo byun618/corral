@@ -21,15 +21,29 @@ const tab = (index: number, panes: PaneRow[]): TabRow => ({
 
 let host: HTMLDivElement
 let root: Root
-const spies = { close: vi.fn(), select: vi.fn(), createShell: vi.fn(), launch: vi.fn(), activateTab: vi.fn(), activate: vi.fn() }
-function mount(input: { tabs: TabRow[]; activeTabId: string | null; unread?: string[]; dragActive?: boolean; entries?: OpenTabSearchEntry[] }): void {
+const spies = {
+  close: vi.fn(), select: vi.fn(), createShell: vi.fn(), launch: vi.fn(), activateTab: vi.fn(), activate: vi.fn(),
+  requestRename: vi.fn(), togglePin: vi.fn(), closeScope: vi.fn(), setColor: vi.fn(),
+}
+function mount(input: {
+  tabs: TabRow[]
+  activeTabId: string | null
+  unread?: string[]
+  dragActive?: boolean
+  entries?: OpenTabSearchEntry[]
+  pinned?: string[]
+  colors?: Record<string, string>
+  renameRequest?: { tabId: string; token: number } | null
+}): void {
   const noop = (): void => {}
   act(() => {
     root.render(createElement(GroupHeader, {
       groupId: 'g1', tabs: input.tabs, workspaceTabCount: input.tabs.length, home: '/home', selectedPane: null, activeTabId: input.activeTabId,
       activeGroup: true, unreadPanes: new Set(input.unread ?? []), paneCount: 1, grid: null, zoomed: false,
       onActivate: spies.activate, onSelectTab: spies.select, onCreateShell: spies.createShell, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
-      onSplitPane: noop, onMoveToGroup: noop, onZoom: noop, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
+      onSplitPane: noop, onSplitTab: noop, onMoveToGroup: noop, onZoom: noop,
+      pinnedTabs: new Set(input.pinned ?? []), tabColorOf: (tabId: string) => input.colors?.[tabId] ?? null, renameRequest: input.renameRequest ?? null,
+      onRequestRename: spies.requestRename, onTogglePin: spies.togglePin, onCloseScope: spies.closeScope, onSetTabColor: spies.setColor, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
       tabDragActive: input.dragActive ?? false,
       openTabEntries: input.entries ?? [], onLaunchAgent: spies.launch, onActivateOpenTab: spies.activateTab,
     }))
@@ -699,5 +713,107 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     open()
     expect(menu()).not.toBeNull()
     expect(staticItems()[0]).toBe('new-terminal')
+  })
+})
+
+describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
+  const tabs3 = (): TabRow[] => [tab(0, [pane('a', null, 'idle')]), tab(1, [pane('b', null, 'idle')]), tab(2, [pane('c', null, 'idle')])]
+  const openMenu = (tabId: string): HTMLElement => {
+    act(() => {
+      tabEl(tabId).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 10 }))
+    })
+    const menu = host.querySelector<HTMLElement>(`[data-tab-menu="${tabId}"]`)
+    if (menu === null) throw new Error('menu not open')
+    return menu
+  }
+  /** 메뉴 항목의 순서 — 각 항목의 첫 `data-tab-menu-*` 속성 이름(탭 id 값을 가진 것). */
+  const itemOrder = (menu: HTMLElement): string[] =>
+    [...menu.querySelectorAll<HTMLElement>('.repo-row-menu-item')].map((item) => [...item.attributes].map((attribute) => attribute.name).find((name) => name.startsWith('data-tab-menu-')) ?? '?')
+
+  it('K1ⓐ 항목 순서 = 220: 영역으로 옮기기(우·좌·하·상) → pane 분할 → 핀 → 닫기·다른·오른쪽·왼쪽 → 제목 바꾸기·이름 지우기 → 탭 색', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0' })
+    const menu = openMenu('t1')
+    expect(itemOrder(menu)).toEqual([
+      'data-tab-menu-move-right', 'data-tab-menu-move-left', 'data-tab-menu-move-down', 'data-tab-menu-move-up',
+      'data-tab-menu-split-right', 'data-tab-menu-split-down',
+      'data-tab-menu-pin',
+      'data-tab-menu-close', 'data-tab-menu-close-others', 'data-tab-menu-close-right', 'data-tab-menu-close-left',
+      'data-tab-menu-rename', 'data-tab-menu-clear',
+    ])
+    expect(menu.querySelectorAll('[data-tab-menu-color]')).toHaveLength(10)
+    expect(menu.querySelector('[data-tab-menu-colors]')?.compareDocumentPosition(menu.querySelector('[data-tab-menu-clear]')!)).toBe(Node.DOCUMENT_POSITION_PRECEDING)
+  })
+
+  it('K2ⓑ 닫을 대상이 없으면 비활성 — 오른쪽에 핀 탭만 있으면 「오른쪽 탭 닫기」 비활성, 누르면 아무 일 없다', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0', pinned: ['t0', 't2'] })
+    const menu = openMenu('t1')
+    const right = menu.querySelector<HTMLElement>('[data-tab-menu-close-right]')!
+    expect(right.dataset.disabled).toBe('true')
+    act(() => right.click())
+    expect(spies.closeScope).not.toHaveBeenCalled()
+    expect(menu.querySelector<HTMLElement>('[data-tab-menu-close-others]')?.dataset.disabled).toBe('true')
+  })
+
+  it('K2 bulk 항목은 기준 탭·범위를 넘긴다', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0' })
+    const left = openMenu('t1').querySelector<HTMLElement>('[data-tab-menu-close-left]')!
+    act(() => left.click())
+    expect(spies.closeScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'left', tab: expect.objectContaining({ tabId: 't1' }) }))
+  })
+
+  it('K3ⓐⓑ 핀 탭 — 제목 앞 핀 아이콘, × 없음, 중클릭 무시, 메뉴 「닫기」 비활성·「탭 고정 해제」', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0', pinned: ['t0'] })
+    const pinnedTab = tabEl('t0')
+    expect(pinnedTab.dataset.tabPinned).toBe('true')
+    expect(pinnedTab.querySelector('.main-tab-pin')).not.toBeNull()
+    expect(pinnedTab.querySelector('[data-main-tab-close]')).toBeNull()
+    expect(tabEl('t1').querySelector('[data-main-tab-close]')).not.toBeNull()
+    act(() => {
+      pinnedTab.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+    })
+    expect(spies.close).not.toHaveBeenCalled()
+    const menu = openMenu('t0')
+    expect(menu.querySelector<HTMLElement>('[data-tab-menu-close]')?.dataset.disabled).toBe('true')
+    const pin = menu.querySelector<HTMLElement>('[data-tab-menu-pin]')!
+    expect(pin.textContent).toContain('탭 고정 해제')
+    act(() => pin.click())
+    expect(spies.togglePin).toHaveBeenCalledWith(expect.objectContaining({ tabId: 't0' }))
+  })
+
+  it('K4ⓑ 색 점 — 제목 뒤, 이름 편집 중엔 숨긴다 · swatch 선택 표시와 None 해제', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0', colors: { t1: '#22c55e' } })
+    const dot = tabEl('t1').querySelector<HTMLElement>('[data-tab-color-dot]')
+    expect(dot?.dataset.tabColorDot).toBe('#22c55e')
+    expect(tabEl('t1').querySelector('.main-tab-label')?.nextElementSibling).toBe(dot)
+    const menu = openMenu('t1')
+    expect(menu.querySelector<HTMLElement>('[data-tab-menu-color="#22c55e"]')?.dataset.selected).toBe('true')
+    act(() => menu.querySelector<HTMLElement>('[data-tab-menu-color="none"]')!.click())
+    expect(spies.setColor).toHaveBeenCalledWith(expect.objectContaining({ color: null }))
+    // 편집 중이면 점이 숨는다(이름 편집 요청 = ⌘R 과 같은 길).
+    mount({ tabs: tabs3(), activeTabId: 't0', colors: { t1: '#22c55e' }, renameRequest: { tabId: 't1', token: 1 } })
+    expect(tabEl('t1').dataset.tabEditing).toBe('true')
+    expect(tabEl('t1').querySelector('[data-tab-color-dot]')).toBeNull()
+  })
+
+  it('「제목 바꾸기」는 편집 요청을 올린다 — 실제 편집은 renameRequest 로 연다(⌘R 과 같은 길)', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0' })
+    const rename = openMenu('t2').querySelector<HTMLElement>('[data-tab-menu-rename]')!
+    act(() => rename.click())
+    expect(spies.requestRename).toHaveBeenCalledWith('t2')
+    expect(tabEl('t2').dataset.tabEditing).toBe('false')
+    mount({ tabs: tabs3(), activeTabId: 't0', renameRequest: { tabId: 't2', token: 1 } })
+    expect(tabEl('t2').dataset.tabEditing).toBe('true')
+    expect(document.activeElement).toBe(tabEl('t2').querySelector('[data-tab-rename]'))
+  })
+
+  it('K1ⓓ 헤더 모드(⊞) — 같은 항목, 대상은 활성 탭', () => {
+    mount({ tabs: tabs3(), activeTabId: 't1' })
+    act(() => host.querySelector<HTMLElement>('[data-group-menu]')!.click())
+    const menu = host.querySelector<HTMLElement>('[data-tab-menu="t1"]')!
+    expect(menu.querySelector('[data-tab-menu-header-mode]')).not.toBeNull()
+    expect(itemOrder(menu)).toContain('data-tab-menu-close-others')
+    expect(itemOrder(menu)).toContain('data-tab-menu-rename')
+    act(() => menu.querySelector<HTMLElement>('[data-tab-menu-close-right]')!.click())
+    expect(spies.closeScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'right', tab: expect.objectContaining({ tabId: 't1' }) }))
   })
 })

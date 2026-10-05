@@ -53,7 +53,13 @@ import { pickPane } from './pane-utils.js'
 import { useOpenTabEntries } from './hooks/useOpenTabEntries.js'
 import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
-import { agentPanes, sessionTitle } from './session-title.js'
+import { agentPanes, sessionTitle, userLabel } from './session-title.js'
+import { closeScopeTargets, cycleTabTarget, tabAtIndex, type CloseScope } from './tab-actions.js'
+import { keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
+import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed } from './recently-closed.js'
+import { closeCopy } from './close-copy.js'
+import { moveDirectionToSplit } from './components/TabContextMenu.js'
+import { groupOfTab } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -147,6 +153,13 @@ export function App(): React.JSX.Element {
   const [ordinalsReady, setOrdinalsReady] = useState(false)
   /** 저장된 영역 배치 (F1-6) — 배정표와 **같은 읽기**에서 온다. 화면은 다 실은 뒤에 뜬다. */
   const [storedLayouts, setStoredLayouts] = useState<unknown[]>([])
+  /**
+   * 탭 핀·색 (LIFE-495 K3·K4) — ui-prefs `tabMarks`. 배정표와 같은 읽기에서 싣는다.
+   * 저장 비교값의 초기값이 `'[]'` 인 이유는 `useGroupLayout` 의 `saved` 와 같다 — 싣기 전 빈 상태가 파일을 지우지 않게.
+   */
+  const [tabMarks, setTabMarks] = useState<TabMark[]>([])
+  const savedTabMarks = useRef('[]')
+  const pinnedTabs = useMemo(() => pinnedTabIds(tabMarks), [tabMarks])
   /** 마지막으로 저장한 배정표 — 안 바뀌었으면 파일을 다시 안 쓴다. */
   const savedOrdinals = useRef('')
   useEffect(() => {
@@ -159,6 +172,9 @@ export function App(): React.JSX.Element {
         manualOrder.hydrate(prefs)
         sidebarView.hydrate(prefs)
         setStoredLayouts(prefs.groupLayouts)
+        const marks = readTabMarks(prefs.tabMarks)
+        savedTabMarks.current = JSON.stringify(marks)
+        setTabMarks(marks)
         sidebarCollapsedRef.current = prefs.sidebarCollapsed
         setSidebarCollapsed(prefs.sidebarCollapsed)
       })
@@ -238,6 +254,11 @@ export function App(): React.JSX.Element {
       }
     }
     tabOrdinals.keepOnly({ tabIds: live, groupIds: shown })
+    // LIFE-495 K4ⓒ — 닫힌 탭의 핀·색도 같은 규칙으로 지운다(보이는 워크스페이스 안의 죽은 탭만).
+    setTabMarks((marks) => {
+      const next = keepLiveTabMarks(marks, { liveTabIds: live, shownWorkspaceIds: shown })
+      return next.length === marks.length ? marks : next
+    })
     // 배정이 **실제로 바뀐 때만** 저장한다 (C13) — 이 effect 는 상태 갱신마다 돌고,
     // ui-prefs 는 디바운스 없이 즉시 파일을 쓴다.
     const entries = tabOrdinals.entries()
@@ -246,6 +267,15 @@ export function App(): React.JSX.Element {
     savedOrdinals.current = serialized
     window.corral.setUiPrefs({ tabOrdinals: entries })
   }, [state, ordinalsReady])
+
+  // 핀·색 저장 — 바뀐 때만 쓴다(ui-prefs 는 디바운스 없이 즉시 파일을 쓴다). 싣기 전에는 쓰지 않는다.
+  useEffect(() => {
+    if (!ordinalsReady) return
+    const serialized = JSON.stringify(tabMarks)
+    if (serialized === savedTabMarks.current) return
+    savedTabMarks.current = serialized
+    window.corral.setUiPrefs({ tabMarks })
+  }, [tabMarks, ordinalsReady])
 
   /**
    * pane 을 **다시 고른** 횟수 — 값이 바뀌면 활성 터미널이 포커스를 되찾는다 (TerminalPane).
@@ -274,6 +304,13 @@ export function App(): React.JSX.Element {
    * 그 실패를 여기 적어 두고 배치가 바뀐 뒤 한 번 더 편다 — MRU 의 `⇄` 행이 이 길로 간다.
    */
   const pendingRevealRef = useRef<string | null>(null)
+  /** LIFE-495 K6 — 다시 연 탭이 도착하면 놓을 자리·싣을 색(아래 「방금 만든 탭을 편다」 effect 가 소비한다). */
+  const pendingPlacementRef = useRef<{ tabId: string; groupId: string; index: number; color: string | null } | null>(null)
+  /** LIFE-495 K6 — 닫은 탭 기록(worktree 경로별 최근 10개, 비영속). 렌더 대상이 아니라 ref 다. */
+  const recentlyClosedRef = useRef<RecentlyClosed>({})
+  /** LIFE-495 — 탭 이름 편집 요청(⌘R·메뉴 「제목 바꾸기」). 토큰이 오를 때마다 그 탭이 편집을 연다. */
+  const [renameRequest, setRenameRequest] = useState<{ tabId: string; token: number } | null>(null)
+  const requestRename = useCallback((tabId: string) => setRenameRequest((previous) => ({ tabId, token: (previous?.token ?? 0) + 1 })), [])
   const revealPane = useCallback(
     (paneId: string) => {
       const owner = stateRef.current?.repos
@@ -335,6 +372,7 @@ export function App(): React.JSX.Element {
     liveTabIds,
     ready: ordinalsReady,
     stored: storedLayouts,
+    pinned: pinnedTabs,
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
@@ -426,8 +464,23 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const tabId = lifecycle.pendingRevealTab
     if (tabId === null) return
+    // LIFE-495 K6 — 다시 연 탭은 펴는 대신 **닫을 때의 영역·자리**로 놓는다(`placeTab` 이 그 영역·탭을 활성으로 한다).
+    // 색도 여기서 싣는다 — 탭이 도착하기 전에 실으면 죽은 탭 정리(`keepLiveTabMarks`)가 지운다.
+    const placement = pendingPlacementRef.current
+    if (placement !== null && placement.tabId === tabId) {
+      const workspaceId = activeWorkspaceRow?.workspaceId ?? null
+      if (!liveTabIds.includes(tabId) || workspaceId === null) return
+      pendingPlacementRef.current = null
+      const color = placement.color
+      if (color !== null) setTabMarks((marks) => setTabColor(marks, { tabId, workspaceId, color }))
+      if (layout.groups.some((group) => group.groupId === placement.groupId)) {
+        layout.placeTab({ tabId, groupId: placement.groupId, index: placement.index })
+        lifecycle.revealTabHandled()
+        return
+      }
+    }
     if (layout.revealTab(tabId)) lifecycle.revealTabHandled()
-  }, [lifecycle.pendingRevealTab, lifecycle.revealTabHandled, layout.revealTab, liveTabIds])
+  }, [lifecycle.pendingRevealTab, lifecycle.revealTabHandled, layout.revealTab, layout.placeTab, layout.groups, liveTabIds, activeWorkspaceRow])
 
   /**
    * 영역 선언 (§10-R13) — 영역 하나가 연결 하나다. `active` 인 영역이 **마지막에** 붙는다(S2-b).
@@ -458,6 +511,8 @@ export function App(): React.JSX.Element {
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
   const layoutMirror = {
     activeGroupId: layout.activeGroupId,
+    /** LIFE-495 — 탭 단축키(⌘⇧[ ]·⌃1–9)가 도는 활성 영역의 시각 순서. */
+    activeTabOrder: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.tabOrder ?? [],
     activeTabId: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null,
     /** 활성 영역의 탭 수 — `⌘⌥D` 가 **거절 이유를 말하려면** 이게 필요하다 (G3′ · §10-R35-2). */
     activeTabCount: layout.groups.find((group) => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0,
@@ -684,6 +739,94 @@ export function App(): React.JSX.Element {
     const tab = tabById(layoutRef.current.activeTabId)
     closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [] }
   }
+  // --- LIFE-495 탭 닫기·다시 열기·탭 단축키 ----------------------------------------
+
+  /** 탭 하나를 그 영역에서 활성으로 + 그 탭의 pane 으로 포커스(탭 클릭과 같은 길). */
+  const activateTab = (input: { groupId: string; tab: TabRow }): void => {
+    layout.setActiveTab({ groupId: input.groupId, tabId: input.tab.tabId })
+    const pane = pickPane(input.tab)
+    if (pane !== null) selectPane(pane.paneId)
+  }
+
+  /** 닫기 직전의 그 탭 — 다시 열기 기록(K6). 활성 worktree 밖이거나 배치에 없으면 null(기록하지 않는다). */
+  const snapshotOf = (tabId: string): ClosedTabSnapshot | null => {
+    const tab = tabById(tabId)
+    const worktreePath = activeWorktreeRow?.path ?? null
+    const root = layout.layout?.root ?? null
+    if (tab === null || worktreePath === null || root === null) return null
+    const group = groupOfTab(root, tabId)
+    if (group === null) return null
+    const shownPaneId = tab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(tab)?.paneId ?? null
+    return {
+      worktreePath,
+      cwd: snapshotCwd({ panes: tab.panes, shownPaneId }),
+      label: userLabel({ tab, tabCount: activeWorkspaceRow?.tabs.length ?? null }),
+      color: markOf(tabMarks, { tabId, workspaceId: tab.workspaceId })?.color ?? null,
+      groupId: group.groupId,
+      index: group.tabOrder.indexOf(tabId),
+    }
+  }
+
+  /**
+   * 사용자가 탭을 닫는다 (×·중클릭·메뉴·⌘W·bulk) — 실행 중 확인은 대상 전부를 모아 한 번, 핀 탭이 있으면 확인을 거친다(K3ⓒ).
+   * 실제로 닫힌 탭만 다시 열기 기록에 넣는다(탭마다 1건). `anchor` = 「다른/오른쪽/왼쪽 탭 닫기」의 기준 탭 — 활성 탭이 닫혔으면 그 탭이 활성이 된다(K2ⓓ).
+   */
+  const closeTabsByUser = (input: { tabIds: string[]; anchor?: { groupId: string; tab: TabRow } }): void => {
+    if (input.tabIds.length === 0) return
+    const snapshots = input.tabIds.flatMap((tabId) => {
+      const snapshot = snapshotOf(tabId)
+      return snapshot === null ? [] : [{ tabId, snapshot }]
+    })
+    const anchor = input.anchor
+    const activeBefore = anchor === undefined ? null : (layout.groups.find((group) => group.groupId === anchor.groupId)?.activeTabId ?? null)
+    lifecycle.actions.closeTabs({
+      tabIds: input.tabIds,
+      alwaysConfirm: input.tabIds.some((tabId) => pinnedTabs.has(tabId)),
+      onClosed: (closed) => {
+        for (const entry of snapshots) if (closed.includes(entry.tabId)) recentlyClosedRef.current = pushClosed(recentlyClosedRef.current, entry.snapshot)
+        if (anchor !== undefined && activeBefore !== null && closed.includes(activeBefore)) activateTab(anchor)
+      },
+    })
+  }
+
+  const closeScope = (input: { groupId: string; tab: TabRow; scope: CloseScope }): void => {
+    const group = layout.groups.find((row) => row.groupId === input.groupId)
+    if (group === undefined) return
+    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tab.tabId, scope: input.scope, pinned: pinnedTabs })
+    closeTabsByUser({ tabIds: targets, anchor: { groupId: input.groupId, tab: input.tab } })
+  }
+
+  /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 비어 있으면 아무것도 안 한다. */
+  const reopenClosedTab = (): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    const workspaceId = activeWorkspaceRow?.workspaceId ?? null
+    if (worktreePath === null || workspaceId === null) return
+    const popped = popClosed(recentlyClosedRef.current, worktreePath)
+    if (popped.snapshot === null) return
+    recentlyClosedRef.current = popped.history
+    const snapshot = popped.snapshot
+    lifecycle.actions.reopenTab({
+      workspaceId,
+      cwd: snapshot.cwd,
+      label: snapshot.label,
+      onTab: (tabId) => {
+        pendingPlacementRef.current = { tabId, groupId: snapshot.groupId, index: snapshot.index, color: snapshot.color }
+      },
+    })
+  }
+
+  const togglePin = (tab: TabRow): void =>
+    setTabMarks((marks) => setTabPinned(marks, { tabId: tab.tabId, workspaceId: tab.workspaceId, pinned: !pinnedTabIds(marks).has(tab.tabId) }))
+
+  /** 활성 영역 안 탭 이동(⌘⇧[ ]·⌘⌥[ ]·⌃PgUp/Dn·⌃1–9) — 활성 영역의 시각 순서로 고르고 탭 클릭과 같은 길로 간다. */
+  const selectTabInActiveGroup = (pick: (tabOrder: readonly string[], activeTabId: string | null) => string | null): void => {
+    const { activeGroupId, activeTabId, activeTabOrder } = layoutRef.current
+    if (activeGroupId === null) return
+    const tab = tabById(pick(activeTabOrder, activeTabId))
+    if (tab === null || tab.tabId === activeTabId) return
+    activateTab({ groupId: activeGroupId, tab })
+  }
+
   /**
    * 영역을 활성으로 옮긴다 — **포커스 pane 도 같이 옮긴다**.
    *
@@ -808,7 +951,7 @@ export function App(): React.JSX.Element {
     'terminal.close': () => {
       const target = closeTargetRef.current
       if (target.tabId === null) return
-      if (target.paneIds.length <= 1) { lifecycle.actions.closeRow(target.tabId); return }
+      if (target.paneIds.length <= 1) { closeTabsByUser({ tabIds: [target.tabId] }); return }
       void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
     },
     'sidebar.toggle': toggleSidebar,
@@ -819,6 +962,13 @@ export function App(): React.JSX.Element {
       cardActions.renameActive()
     },
     'workspace.delete': () => cardActions.deleteHovered(),
+    'tab.reopenClosed': () => reopenClosedTab(),
+    'tab.rename': () => {
+      const tabId = layoutRef.current.activeTabId
+      if (tabId !== null) requestRename(tabId)
+    },
+    'tab.cycle': (variant) => selectTabInActiveGroup((tabOrder, activeTabId) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
+    'tab.selectByIndex': (variant) => selectTabInActiveGroup((tabOrder) => tabAtIndex({ tabOrder, index: variant })),
   }
   const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
@@ -947,11 +1097,30 @@ export function App(): React.JSX.Element {
             const pane = target === null ? null : pickPane(target)
             if (pane !== null) revealPane(pane.paneId)
           }}
-          onCloseTab={(tab) => lifecycle.actions.closeRow(tab.tabId)}
+          onCloseTab={(tab) => closeTabsByUser({ tabIds: [tab.tabId] })}
           onRenameTab={({ tab, label, tabCount }) => lifecycle.actions.renameRow({ tabId: tab.tabId, label, tabNumber: tab.number, tabCount })}
           onClearTabName={(tab) => lifecycle.actions.clearRowName(tab.tabId)}
           onSplitPane={(direction) => void splitPaneAt({ paneId: groupSelectedPaneId, direction })}
-          onMoveToGroup={({ tabId, direction }) => layout.splitGroup({ groupId: group.groupId, tabId, direction })}
+          onSplitTab={({ tab, direction }) => {
+            // F7 — 우클릭한 탭을 쪼갠다. 비활성 탭이면 먼저 활성으로(220 `TerminalTabSplitMenuSection.tsx:37-77`).
+            if (tab.tabId === groupActiveTab?.tabId) {
+              void splitPaneAt({ paneId: groupSelectedPaneId, direction })
+              return
+            }
+            activateTab({ groupId: group.groupId, tab })
+            void splitPaneAt({ paneId: pickPane(tab)?.paneId ?? null, direction })
+          }}
+          onMoveToGroup={({ tabId, direction }) => layout.splitGroup({ groupId: group.groupId, tabId, ...moveDirectionToSplit(direction) })}
+          pinnedTabs={pinnedTabs}
+          tabColorOf={(tabId) => {
+            const tab = tabById(tabId)
+            return tab === null ? null : (markOf(tabMarks, { tabId, workspaceId: tab.workspaceId })?.color ?? null)
+          }}
+          renameRequest={renameRequest}
+          onRequestRename={requestRename}
+          onTogglePin={togglePin}
+          onCloseScope={({ tab, scope }) => closeScope({ groupId: group.groupId, tab, scope })}
+          onSetTabColor={({ tab, color }) => setTabMarks((marks) => setTabColor(marks, { tabId: tab.tabId, workspaceId: tab.workspaceId, color }))}
           onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onClosePane={() => void closePaneAt(groupSelectedPaneId)}
           onCloseGroup={canCloseGroup}
@@ -1207,7 +1376,12 @@ export function App(): React.JSX.Element {
           activeWorkspaceId={lifecycle.activeWorkspaceId}
           selectedPane={lifecycle.selectedPane}
           selectPane={revealPane}
-          closePane={(paneId) => void closePaneAt(paneId)}
+          closePane={(paneId) => {
+            // LIFE-495 K3ⓒ — 고정된 탭의 마지막 pane 을 사이드바에서 닫으면 탭이 닫히므로 탭 닫기 길(고정 확인·게이트·다시 열기 기록)로 보낸다.
+            const owner = activeWorkspace?.tabs.find((tab) => tab.panes.some((pane) => pane.paneId === paneId)) ?? null
+            if (owner !== null && owner.panes.length === 1 && pinnedTabs.has(owner.tabId)) closeTabsByUser({ tabIds: [owner.tabId] })
+            else void closePaneAt(paneId)
+          }}
           actions={lifecycle.actions}
           manualOrder={manualOrder.order}
           onReorder={({ commit, layout }) => {
@@ -1329,14 +1503,41 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {lifecycle.pendingClose === null ? null : (
-        <ConfirmClose
-          target={lifecycle.pendingClose.target}
-          foreground={lifecycle.pendingClose.foreground}
-          onConfirm={lifecycle.confirmPendingClose}
-          onCancel={lifecycle.cancelPendingClose}
-        />
-      )}
+      {lifecycle.pendingClose === null ? null : (() => {
+        const pending = lifecycle.pendingClose
+        if (pending.target.kind === 'workspace') {
+          return (
+            <ConfirmClose
+              copy={closeCopy({ kind: 'worktree' })}
+              rows={[{ key: pending.target.workspaceId, label: null, foreground: pending.foreground }]}
+              onConfirm={lifecycle.confirmPendingClose}
+              onCancel={lifecycle.cancelPendingClose}
+            />
+          )
+        }
+        const tabIds = pending.target.tabIds
+        const agentPaneIds = new Set(
+          state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).filter((pane) => pane.agent !== null).map((pane) => pane.paneId),
+        )
+        const rows = tabIds
+          .filter((tabId) => pinnedTabs.has(tabId) || pending.running.some((pane) => pane.tabId === tabId))
+          .map((tabId) => {
+            const tab = tabById(tabId) ?? state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).find((row) => row.tabId === tabId) ?? null
+            const label =
+              tab === null
+                ? tabId
+                : sessionTitle({ tab, tabCount: activeWorkspace?.tabs.length ?? null, ordinal: tabOrdinals.ordinalFor({ tabId, groupId: tab.workspaceId }), home: state.home, selectedPaneId: null })
+            return { key: tabId, label, foreground: pending.running.filter((pane) => pane.tabId === tabId).flatMap((pane) => pane.foreground) }
+          })
+        return (
+          <ConfirmClose
+            copy={closeCopy({ kind: 'tabs', tabCount: tabIds.length, running: pending.running, agentPaneIds, pinnedCount: tabIds.filter((tabId) => pinnedTabs.has(tabId)).length })}
+            rows={rows}
+            onConfirm={lifecycle.confirmPendingClose}
+            onCancel={lifecycle.cancelPendingClose}
+          />
+        )
+      })()}
 
       {lifecycle.worktreeModal === null ? null : (
         <CreateWorktreeModal
@@ -1350,7 +1551,11 @@ export function App(): React.JSX.Element {
       )}
 
       {tabDrag.dragState === null ? null : (
-        <DropZoneOverlay state={tabDrag.dragState} tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''} />
+        <DropZoneOverlay
+          state={tabDrag.dragState}
+          tabLabel={tabById(tabDrag.dragState.tabId)?.label ?? ''}
+          tabColor={((tab) => (tab === null ? null : (markOf(tabMarks, { tabId: tab.tabId, workspaceId: tab.workspaceId })?.color ?? null)))(tabById(tabDrag.dragState.tabId))}
+        />
       )}
     </div>
     </BindingLabels.Provider>

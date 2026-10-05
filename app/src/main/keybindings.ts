@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { validateOverrides, type Keybindings } from '../shared/keybindings.js'
+import { migrateLegacyOverrides, validateOverrides, type Keybindings } from '../shared/keybindings.js'
 import { log } from './log.js'
 
 export class KeybindingStore {
@@ -9,7 +9,13 @@ export class KeybindingStore {
   constructor(userData: string) { this.file = path.join(userData, 'keybindings.json') }
   load(): void {
     try {
-      this.overrides = validateOverrides(JSON.parse(fs.readFileSync(this.file, 'utf8')), true)
+      const parsed: unknown = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+      // LIFE-495 K7ⓘ — 기본 조합 수가 바뀐 액션의 옛 재정의를 옮기다 못 실은 조합은 로그로 남긴다(조용히 버리지 않는다).
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const { dropped } = migrateLegacyOverrides(parsed)
+        if (dropped.length > 0) log('keybindings.migration_dropped', { file: this.file, dropped })
+      }
+      this.overrides = validateOverrides(parsed, true)
       log('keybindings.loaded', { file: this.file })
     } catch (error) {
       this.overrides = {}

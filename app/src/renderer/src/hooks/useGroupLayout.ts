@@ -13,6 +13,8 @@ import {
   listGroups,
   mergeTabIntoGroup as mergeTabIntoGroupIn,
   moveTabWithinTabbar as moveTabWithinTabbarIn,
+  partitionPinnedLayout,
+  placeTab as placeTabIn,
   reconcileLayout,
   readStoredLayouts,
   setRatio as setRatioIn,
@@ -51,6 +53,8 @@ export type GroupLayoutApi = {
     direction: 'row' | 'column'
     edge: 'before' | 'after'
   }) => void
+  /** LIFE-495 K6 — 다시 연 탭을 닫을 때의 영역·자리로. */
+  placeTab: (input: { tabId: string; groupId: string; index: number }) => void
 }
 
 const ROOT_GROUP = 'g1'
@@ -72,6 +76,8 @@ export function useGroupLayout(input: {
   /** ui-prefs 를 다 실었나 — 싣기 전에 쓰면 저장값을 빈 것으로 지운다 (C13 과 같은 사고). */
   ready: boolean
   stored: unknown[]
+  /** 핀 탭 (LIFE-495 K3ⓓ) — 화면에 내는 배치와 바꾸는 배치 모두 핀 접두부를 지난다(`partitionPinnedLayout`). */
+  pinned: ReadonlySet<string>
 }): GroupLayoutApi {
   const [byWorktree, setByWorktree] = useState<Record<string, GroupLayout>>({})
   const hydrated = useRef(false)
@@ -100,8 +106,8 @@ export function useGroupLayout(input: {
     if (input.worktreePath === null) return null
     const saved = byWorktree[input.worktreePath]
     const base = saved ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: input.liveTabIds, activeTabId: input.liveTabIds[0] ?? null })
-    return reconcileLayout({ layout: base, liveTabIds: input.liveTabIds })
-  }, [byWorktree, input.worktreePath, input.liveTabIds])
+    return partitionPinnedLayout(reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), input.pinned)
+  }, [byWorktree, input.worktreePath, input.liveTabIds, input.pinned])
 
   /**
    * 사용자가 바꾼 배치를 저장한다. 추린 결과가 아니라 **들고 있는 것**을 쓴다(위 주석).
@@ -128,15 +134,17 @@ export function useGroupLayout(input: {
       const worktreePath = input.worktreePath
       if (worktreePath === null) return
       const liveTabIds = input.liveTabIds
+      const pinned = input.pinned
       setByWorktree((previous) => {
         const base =
           previous[worktreePath] ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: liveTabIds, activeTabId: liveTabIds[0] ?? null })
-        const current = reconcileLayout({ layout: base, liveTabIds })
-        const next = change(current)
+        // 화면이 보이는 순서(핀 접두부) 위에서 바꾼다 — 드롭 자리 index 가 그 순서로 계산됐다. 바꾼 뒤에도 한 번 더 지나 경계를 지킨다.
+        const current = partitionPinnedLayout(reconcileLayout({ layout: base, liveTabIds }), pinned)
+        const next = partitionPinnedLayout(change(current), pinned)
         return next === previous[worktreePath] ? previous : { ...previous, [worktreePath]: next }
       })
     },
-    [input.worktreePath, input.liveTabIds],
+    [input.worktreePath, input.liveTabIds, input.pinned],
   )
 
   const groups = useMemo(() => (layout === null ? [] : listGroups(layout.root)), [layout])
@@ -226,6 +234,11 @@ export function useGroupLayout(input: {
     [mutate],
   )
 
+  const placeTab = useCallback(
+    (target: { tabId: string; groupId: string; index: number }) => mutate((current) => placeTabIn(current, target)),
+    [mutate],
+  )
+
   return {
     layout,
     groups,
@@ -241,5 +254,6 @@ export function useGroupLayout(input: {
     moveTabWithinTabbar,
     mergeTabIntoGroup,
     splitGroupWithForeignTab,
+    placeTab,
   }
 }

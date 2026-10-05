@@ -59,9 +59,15 @@ export class SettingsStore {
       fs.writeFileSync(tmp, payload)
       fs.renameSync(tmp, this.file)
     } catch (error) {
-      fs.rmSync(tmp, { force: true })
+      // 임시 파일 정리는 best effort — 정리까지 실패해도(예: 부모 폴더 권한 EACCES) 던지지 않고 `failed` 를 돌려준다.
+      // 던지면 IPC rejection 으로 새어 렌더러가 저장값으로 되돌릴 기회를 잃는다(r2 R2-01).
+      try {
+        fs.rmSync(tmp, { force: true })
+      } catch (cleanupError) {
+        log('settings.tmp_cleanup_failed', { file: tmp, error: String(cleanupError) })
+      }
       log('settings.save_failed', { file: this.file, error: String(error) })
-      return { status: 'failed', settings: this.get() }
+      return { status: 'failed', settings: this.get(), error: String(error) }
     }
     this.settings = next
     return { status: 'saved', settings: this.get() }

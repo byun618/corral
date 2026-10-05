@@ -6,7 +6,7 @@
 // 관측점:
 //   ① main `counters` gridRequests(herdr 로 실제로 나간 resize) · corral.ndjson `stream.sync`(렌더러 격자 선언)
 //   ② pane 마다 xterm cols·rows(`corralPaneWrites`) · 외관 옵션·live 셀(`corralPaneAppearance`) · 오프스크린 측정 셀(`corralTermProbe.cell`)
-//   ③ 기대 격자 = parseInt(영역 상자 content px) ÷ live 셀 (gridForBox 산식) — 선언 cols·rows 와 대조
+//   ③ 기대 격자 = parseInt(영역 상자 content px) ÷ **measured 셀** (제품 gridForBox 와 같은 산식 — fix2 R2-02, `grid-oracle.mjs`) — once·burst·typing·재기동 선언과 herdr 분배를 대조
 //   ④ 계산 스타일(pane 배경·xterm 배경·글자색·투명도·전환·디바이더) · 커서 span 클래스 · pane 스크린샷(U4)
 // --label before : before 빌드 — U3 before 관측(설정 화면·설정 저장소가 없다: 셀은 고정 상수 경로, 3초 동안 격자 요청 0·live==measured)
 // --label after  : 구현 빌드 — 전 단계. 끝에 같은 userData·herdr 세션으로 정상 종료(SIGTERM)·재기동해 K2ⓔ·K7 을 본다.
@@ -20,6 +20,7 @@ import { beginRun, finishRun } from '../gui-diff/lib/runs.mjs'
 import { compareRoi, decodePng } from '../gui-diff/lib/png.mjs'
 import { pause, requirements } from '../l497/lib.mjs'
 import { finalExit, ledgerResult } from './final-exit.mjs'
+import { declarationMatches, distributionMatches, expectedGridOf, gapOf } from './grid-oracle.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -193,11 +194,8 @@ try {
     result.timelines = [...(result.timelines ?? []), row]
     return row
   }
-  const expectedGrid = (entry) => {
-    const live = entry.appearance.find((row) => row.live)?.live
-    if (!live || !entry.box) return null
-    return { cols: Math.max(2, Math.floor(Number.parseInt(entry.box.width, 10) / live.width)), rows: Math.max(1, Math.floor(Number.parseInt(entry.box.height, 10) / live.height)) }
-  }
+  // fix2 R2-02 — 제품과 같은 measured 셀로 나눈다(예전에는 live 셀이라 typing 장면에서 1열 어긋났다).
+  const expectedGrid = (entry) => expectedGridOf(entry)
   const declared = (rows) => rows.map((row) => row.groups)
   // K2ⓓ 「live == measured」 — 코디 답 Q1(raw/claude/q1-answer.txt): 높이 정확 일치 + 폭 |Δ| < 0.05px(xterm DOM 렌더 반올림 범위).
   // pane 별 원값과 Δ 를 남긴다. before 빌드는 corralPaneAppearance 가 없어 probe 의 live 한 pane 으로 본다.
@@ -263,8 +261,8 @@ try {
     const decl1 = sync1.at(-1)?.groups ?? ''
     checks.require('k2d-once-declared-eq-gridForBox', result.k2dOnce.expected !== null && decl1.endsWith(`${result.k2dOnce.expected.cols}x${result.k2dOnce.expected.rows}`), { decl1, expected: result.k2dOnce.expected })
     // herdr 분배: 분할 오른쪽 — 두 pane cols 의 합과 선언 cols 의 차(경계 몫)가 base 와 같고, rows 는 선언 rows 와 같다.
-    const gap = (entry, expected) => expected.cols - entry.panes.reduce((sum, p) => sum + p.cols, 0)
-    result.k2dOnce.gap = { base: baseExpected && gap(base, baseExpected), now: result.k2dOnce.expected && gap(s1, result.k2dOnce.expected) }
+    const baseGap = gapOf({ panes: base.panes, expected: baseExpected })
+    result.k2dOnce.gap = { base: baseGap, now: gapOf({ panes: s1.panes, expected: result.k2dOnce.expected }) }
     checks.require('k2d-once-herdr-distribution', result.k2dOnce.expected !== null && baseExpected !== null && result.k2dOnce.gap.now === result.k2dOnce.gap.base && s1.panes.every((p) => p.rows === result.k2dOnce.expected.rows), { panes: s1.panes, expected: result.k2dOnce.expected, gap: result.k2dOnce.gap })
     checks.require('k2d-once-converged-2s', t1.lastChangeMs <= 2000, { lastChangeMs: t1.lastChangeMs })
 
@@ -281,6 +279,9 @@ try {
     checks.require('k2d-burst-requests-le-5', result.k2dBurst.requests <= 5, result.k2dBurst)
     checks.require('k2d-burst-converged-2s', t2.lastChangeMs <= 2000, { lastChangeMs: t2.lastChangeMs })
     checks.require('k2d-burst-live-eq-measured', cellsAgree(s3), { live: s3.appearance.map((r) => r.live), probe: s3.probeCell })
+    // fix2 R2-02 — 연타 끝 선언·분배도 기대 격자와 대조한다.
+    checks.require('k2d-burst-declared-eq-gridForBox', declarationMatches({ declaration: result.k2dBurst.syncDeclarations.at(-1), expected: result.k2dBurst.expected }), { last: result.k2dBurst.syncDeclarations.at(-1), expected: result.k2dBurst.expected })
+    checks.require('k2d-burst-herdr-distribution', distributionMatches({ panes: s3.panes, expected: result.k2dBurst.expected, baseGap }), { panes: s3.panes, expected: result.k2dBurst.expected, baseGap })
     // 진동 없음: 마지막 1초 샘플이 모두 같다.
     const tail = t2.samples.filter((s) => s.t >= t2.samples.at(-1).t - 1000)
     checks.require('k2d-burst-no-oscillation', new Set(tail.map((s) => `${s.grid}|${s.panes}`)).size === 1, { tail })
@@ -306,6 +307,8 @@ try {
     result.k2dTyping.typingMs = enterAt - typeAt
     checks.require('k2d-typing-converged-2s', t3.lastChangeMs <= 2000, { lastChangeMs: t3.lastChangeMs })
     checks.require('k2d-typing-live-eq-measured', cellsAgree(s5), { live: s5.appearance.map((r) => r.live), probe: s5.probeCell })
+    checks.require('k2d-typing-declared-eq-gridForBox', declarationMatches({ declaration: result.k2dTyping.syncDeclarations.at(-1), expected: result.k2dTyping.expected }), { last: result.k2dTyping.syncDeclarations.at(-1), expected: result.k2dTyping.expected })
+    checks.require('k2d-typing-herdr-distribution', distributionMatches({ panes: s5.panes, expected: result.k2dTyping.expected, baseGap }), { panes: s5.panes, expected: result.k2dTyping.expected, baseGap })
 
     // ── K2ⓕ 셀을 안 바꾸는 설정 = 격자 요청 0 ────────────────────────────────
     const noGrid = async (name, act) => {

@@ -114,6 +114,29 @@ describe('SettingsStore — 쓰기 실패(r1 R1-03)', () => {
   })
 })
 
+describe('SettingsStore — 정리까지 실패(r2 R2-01)', () => {
+  it('부모 폴더 권한이 없어 쓰기·임시 파일 정리가 둘 다 실패해도 던지지 않고 failed — 권한을 돌리면 같은 값 재시도가 저장된다', () => {
+    const locked = path.join(dir, 'locked')
+    fs.mkdirSync(locked)
+    process.env.CORRAL_SETTINGS = path.join(locked, 'settings.json')
+    const store = new SettingsStore(dir)
+    store.load()
+    fs.chmodSync(locked, 0o000)
+    try {
+      const failed = store.update({ terminalFontSize: 18 })
+      expect(failed.status).toBe('failed')
+      expect(failed.settings.terminalFontSize).toBe(14)
+      expect(store.get().terminalFontSize).toBe(14)
+    } finally {
+      fs.chmodSync(locked, 0o700)
+    }
+    const retried = store.update({ terminalFontSize: 18 })
+    expect(retried.status).toBe('saved')
+    expect(JSON.parse(fs.readFileSync(path.join(locked, 'settings.json'), 'utf8')).terminalFontSize).toBe(18)
+    expect(fs.readdirSync(locked).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+})
+
 describe('SettingsStore — 손상 격리 (칸마다 따로 기본값)', () => {
   it('손상된 칸만 기본값이고 나머지는 산다', () => {
     fs.writeFileSync(file, JSON.stringify({ version: 1, terminalFontSize: 'x', terminalThemeDark: 'Dracula', terminalCursorStyle: 42, terminalCursorBlink: false, terminalDividerColorDark: '#zzz', terminalDividerThicknessPx: 5 }))

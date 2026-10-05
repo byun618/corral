@@ -7,9 +7,11 @@ import { getSettings, resetSettingsStoreForTest, updateSettings } from './settin
 let push: ((next: Settings) => void) | null = null
 const getSettingsSync = vi.fn(() => ({ ...DEFAULT_SETTINGS, terminalFontSize: 16 }))
 let failWrites = false
+let rejectWrites = false
 const setSettings = vi.fn(async (patch: Partial<Settings>): Promise<SettingsWriteResult> => {
   // 실패면 main 은 메모리를 확정하지 않고 저장값을 돌려주며 푸시하지 않는다(r1 R1-03).
-  if (failWrites) return { status: 'failed', settings: { ...DEFAULT_SETTINGS, terminalFontSize: 16 } }
+  if (rejectWrites) throw new Error('EACCES: permission denied, lstat settings.json.tmp')
+  if (failWrites) return { status: 'failed', settings: { ...DEFAULT_SETTINGS, terminalFontSize: 16 }, error: 'EISDIR' }
   const next = { ...DEFAULT_SETTINGS, terminalFontSize: 16, ...patch }
   push?.(next)
   return { status: 'saved', settings: next }
@@ -23,6 +25,7 @@ beforeEach(() => {
   resetSettingsStoreForTest()
   push = null
   failWrites = false
+  rejectWrites = false
   getSettingsSync.mockClear()
   setSettings.mockClear()
   onSettings.mockClear()
@@ -61,6 +64,21 @@ describe('settings-store — 쓰기 실패(r1 R1-03)', () => {
     expect(await updateSettings({ terminalFontSize: 20 })).toBe(false)
     expect(getSettings().terminalFontSize).toBe(16)
     failWrites = false
+    expect(await updateSettings({ terminalFontSize: 20 })).toBe(true)
+    expect(getSettings().terminalFontSize).toBe(20)
+  })
+})
+
+describe('settings-store — invoke 거절(r2 R2-01)', () => {
+  it('setSettings 가 reject 해도 던지지 않고 false · 값은 그대로 · 같은 값 재시도가 저장된다', async () => {
+    getSettings()
+    rejectWrites = true
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await updateSettings({ terminalFontSize: 20 })).toBe(false)
+    expect(getSettings().terminalFontSize).toBe(16)
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+    rejectWrites = false
     expect(await updateSettings({ terminalFontSize: 20 })).toBe(true)
     expect(getSettings().terminalFontSize).toBe(20)
   })

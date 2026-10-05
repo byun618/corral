@@ -36,7 +36,7 @@ vi.mock('../term-metrics.js', async (importOriginal) => ({
 }))
 
 const { DEFAULT_SETTINGS, TERMINAL_THEME_NAMES, resolveTerminalTheme } = await import('../../../shared/terminal-settings.js')
-const { getSettings, resetSettingsStoreForTest, updateSettings } = await import('../settings-store.js')
+const { getSettings, resetSettingsStoreForTest, updateSettings, useSettings } = await import('../settings-store.js')
 const { applyTerminalAppearance, terminalAppearanceOptions } = await import('../terminal-appearance.js')
 const { previewAppearanceOptions, TerminalSettingsPreview } = await import('./TerminalSettingsPreview.js')
 const { TerminalAppearanceSection, filterThemeNames } = await import('./TerminalAppearanceSection.js')
@@ -217,6 +217,38 @@ describe('입력 칸 — 저장 실패면 저장값으로 돌아간다(r1 R1-03)
     act(() => { swatch.value = '#00ff00'; swatch.dispatchEvent(new Event('change', { bubbles: true })) })
     await act(async () => { await Promise.resolve() })
     expect(swatch.value).toBe('#3f3f46')
+  })
+})
+
+describe('입력 칸 — invoke 거절도 저장값으로 돌아간다(r2 R2-01)', () => {
+  afterEach(() => { Reflect.deleteProperty(window, 'corral') })
+  it('setSettings 가 reject 하면 숫자 칸이 저장값으로 돌아가고, 같은 값 재시도가 저장된다', async () => {
+    let reject = true
+    const setSettings = vi.fn(async (patch: Partial<Settings>) => {
+      if (reject) throw new Error('EACCES')
+      return { status: 'saved', settings: { ...getSettings(), ...patch } }
+    })
+    Object.defineProperty(window, 'corral', { configurable: true, value: { setSettings } })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    function Wired(): React.JSX.Element {
+      const settings = useSettings()
+      return createElement(SettingsNumberField, { value: settings.terminalFontSize, min: 10, max: 24, step: 1, integer: true, field: 'font-size', label: '글꼴 크기', onCommit: (next: number) => updateSettings({ terminalFontSize: next }) })
+    }
+    const view = render(createElement(Wired))
+    const input = view.querySelector<HTMLInputElement>('[data-settings-number="font-size"]')!
+    setValue(input, '18')
+    key(input, 'Enter')
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(input.value).toBe('14')
+    expect(getSettings().terminalFontSize).toBe(14)
+    reject = false
+    setValue(input, '18')
+    key(input, 'Enter')
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(getSettings().terminalFontSize).toBe(18)
+    expect(input.value).toBe('18')
+    expect(setSettings).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
   })
 })
 

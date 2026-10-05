@@ -82,7 +82,7 @@ import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSk
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
-import { DEFAULT_SETTINGS } from '../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { WorktreePoller, parsePollMs } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
 import { observePanes } from '../runtime/orchestration/index.js'
@@ -1365,16 +1365,22 @@ app.whenReady().then(async () => {
   ipcMain.on('corral:getSettingsSync', (event) => {
     event.returnValue = fromOurWindow(event) ? (settings?.get() ?? { ...DEFAULT_SETTINGS }) : { ...DEFAULT_SETTINGS }
   })
-  ipcMain.handle('corral:setSettings', (event, patch: unknown) => {
+  // 반환형을 명시해 switch 가 빠짐없이 돌려주는지 컴파일러가 본다(상태가 늘면 「끝 return 없음」 오류 — r2 R2-03).
+  ipcMain.handle('corral:setSettings', (event, patch: unknown): SettingsWriteResult | null => {
     if (!fromOurWindow(event) || settings === null) return null
     const result = settings.update(patch)
-    // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증·저장을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
-    // 저장 실패(`failed`)는 푸시하지 않는다 — 돌려준 저장값으로 렌더러가 되돌린다(r1 R1-03).
-    if (result.status === 'saved') {
-      log('settings.changed', { keys: Object.keys(typeof patch === 'object' && patch !== null ? patch : {}) })
-      window?.webContents.send('corral:settings', result.settings)
+    switch (result.status) {
+      case 'saved':
+        // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증·저장을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
+        log('settings.changed', { keys: Object.keys(typeof patch === 'object' && patch !== null ? patch : {}) })
+        window?.webContents.send('corral:settings', result.settings)
+        return result
+      case 'unchanged':
+        return result
+      case 'failed':
+        // 푸시하지 않는다 — 돌려준 저장값으로 렌더러가 되돌린다(r1 R1-03). 실패 로그는 저장소가 남겼다.
+        return result
     }
-    return result
   })
 
   // --- 라이프사이클 (R3) ---

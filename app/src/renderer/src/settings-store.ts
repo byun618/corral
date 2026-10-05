@@ -4,7 +4,7 @@
 // 저장값 셀로 나가야 한다 — 비동기로 받으면 기본값 셀로 한 번 요청한 뒤 저장값 셀로 또 요청하는 2단 resize 가 생긴다(K2ⓔ).
 // 이후 값은 main 의 변경 푸시(`onSettings`)만 진실로 쓴다 — 쓰기(`updateSettings`)는 main 이 검증한 값을 돌려받아 반영한다.
 import { useSyncExternalStore } from 'react'
-import { DEFAULT_SETTINGS, readSettings, type Settings } from '../../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, readSettings, type Settings, type SettingsWriteResult } from '../../shared/terminal-settings.js'
 
 type Listener = () => void
 
@@ -48,7 +48,7 @@ export function useSettings(): Settings {
  * 부분 갱신. 확정 순간에만 부른다(숫자 입력 Enter/blur · ± 한 번 · 테마 한 번 클릭) — 그래서 저장소는 디바운스가 필요 없다.
  * 화면 반영은 main 이 돌려준(=푸시한) 검증된 값으로 한다. preload 가 없으면(테스트) 로컬 값만 고친다.
  * 돌려주는 값: 저장됐는가(바뀐 칸이 없던 것도 저장된 것으로 본다). **저장 실패면 main 이 돌려준 저장값으로 되돌리고 false** —
- * 입력 칸은 이 값을 보고 초안을 저장값으로 돌린다(r1 R1-03).
+ * 입력 칸은 이 값을 보고 초안을 저장값으로 돌린다(r1 R1-03). invoke 자체가 거절돼도(main 예외) false — 값은 그대로 둔다(r2 R2-01).
  */
 export async function updateSettings(patch: Partial<Settings>): Promise<boolean> {
   const corral = api()
@@ -56,10 +56,22 @@ export async function updateSettings(patch: Partial<Settings>): Promise<boolean>
     set({ ...getSettings(), ...patch })
     return true
   }
-  const result = await corral.setSettings(patch)
+  let result: SettingsWriteResult | null
+  try {
+    result = await corral.setSettings(patch)
+  } catch (error) {
+    console.warn('[settings] setSettings rejected', error)
+    return false
+  }
   if (result === null || typeof result !== 'object') return false
   set(readSettings(result.settings))
-  return result.status !== 'failed'
+  switch (result.status) {
+    case 'saved':
+    case 'unchanged':
+      return true
+    case 'failed':
+      return false
+  }
 }
 
 /** 테스트 전용 — 모듈 상태를 비운다. */

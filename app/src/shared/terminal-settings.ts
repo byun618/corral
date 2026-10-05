@@ -40,7 +40,13 @@ export const DEFAULT_TERMINAL_THEME = 'Ghostty Default Style Dark'
  * 부분 갱신 결과(main → 렌더러). `failed` 면 디스크에 쓰지 못한 것이다 — main 메모리도 바꾸지 않았고 `settings` 는 **저장된 값**이다.
  * 렌더러는 그 값으로 되돌린다(r1 R1-03: 예전에는 실패를 성공으로 돌려주고 같은 값 재시도를 「안 바뀜」 으로 버렸다).
  */
-export type SettingsWriteResult = { status: 'saved' | 'unchanged' | 'failed'; settings: Settings }
+export type SettingsWriteResult =
+  /** 디스크에 썼고 main 메모리를 확정했다 — main 이 푸시한다. */
+  | { status: 'saved'; settings: Settings }
+  /** 바뀐 칸이 없어 쓰지 않았다. */
+  | { status: 'unchanged'; settings: Settings }
+  /** 못 썼다 — `settings` 는 저장된 값, `error` 는 쓰기 예외(r2 R2-03: 상태별 union). */
+  | { status: 'failed'; settings: Settings; error: string }
 
 export const DEFAULT_SETTINGS: Settings = {
   terminalFontSize: 14,

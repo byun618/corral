@@ -3,6 +3,9 @@
 // 셀 재측정 트리거(K2ⓗ). xterm 은 happy-dom 에서 그리지 못한다 — 옵션 객체를 가진 가짜로 바꾼다.
 import { act, createElement, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Settings } from '../../../shared/terminal-settings.js'
 
@@ -249,6 +252,64 @@ describe('입력 칸 — invoke 거절도 저장값으로 돌아간다(r2 R2-01)
     expect(input.value).toBe('18')
     expect(setSettings).toHaveBeenCalledTimes(2)
     warn.mockRestore()
+  })
+})
+
+describe('글꼴군 — 공유 검증을 못 넘으면 저장값으로 돌아간다(r3 R3-01)', () => {
+  // 실제 main 저장소(SettingsStore, 임시 파일)를 IPC 핸들러처럼 잇는다 — saved 일 때만 푸시를 센다.
+  let dir = ''
+  let file = ''
+  let pushes = 0
+  beforeEach(async () => {
+    const { SettingsStore } = await import('../../../main/settings.js')
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l512-font-'))
+    file = path.join(dir, 'settings.json')
+    process.env.CORRAL_SETTINGS = file
+    const store = new SettingsStore(dir)
+    store.load()
+    pushes = 0
+    const setSettings = vi.fn(async (patch: Partial<Settings>) => {
+      const result = store.update(patch)
+      if (result.status === 'saved') pushes += 1
+      return result
+    })
+    Object.defineProperty(window, 'corral', { configurable: true, value: { setSettings, store } })
+  })
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'corral')
+    delete process.env.CORRAL_SETTINGS
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  const settle = async (): Promise<void> => { await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }) }
+  const fontInput = (view: HTMLElement): HTMLInputElement => view.querySelector<HTMLInputElement>('[data-settings-font-family]')!
+
+  it('201자를 Enter·blur 로 확정하면 입력 칸이 저장값(Menlo)으로 돌아가고 저장소·파일·푸시가 그대로다 · 200자는 저장된다', async () => {
+    const view = render(createElement(TerminalAppearanceSection, { query: '' }))
+    setValue(fontInput(view), 'Menlo')
+    key(fontInput(view), 'Enter')
+    await settle()
+    expect(getSettings().terminalFontFamily).toBe('Menlo')
+    expect(pushes).toBe(1)
+    const diskBefore = fs.readFileSync(file, 'utf8')
+
+    setValue(fontInput(view), 'X'.repeat(201))
+    key(fontInput(view), 'Enter')
+    await settle()
+    expect(fontInput(view).value).toBe('Menlo')
+    setValue(fontInput(view), 'X'.repeat(201))
+    blur(fontInput(view))
+    await settle()
+    expect(fontInput(view).value).toBe('Menlo')
+    expect(getSettings().terminalFontFamily).toBe('Menlo')
+    expect(fs.readFileSync(file, 'utf8')).toBe(diskBefore)
+    expect(pushes).toBe(1)
+
+    setValue(fontInput(view), 'Y'.repeat(200))
+    key(fontInput(view), 'Enter')
+    await settle()
+    expect(fontInput(view).value).toBe('Y'.repeat(200))
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalFontFamily).toBe('Y'.repeat(200))
+    expect(pushes).toBe(2)
   })
 })
 

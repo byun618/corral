@@ -13,6 +13,7 @@ import {
   SETTINGS_RANGES,
   TERMINAL_FONT_SUGGESTIONS,
   TERMINAL_THEME_NAMES,
+  readSettingField,
   type Settings,
   type TerminalCursorStyle,
 } from '../../../shared/terminal-settings.js'
@@ -63,8 +64,11 @@ function FontFamilyControl({ value }: { value: string }): React.JSX.Element {
     setDraft(value)
   }
   const confirm = (): void => {
-    const next = draft.trim()
-    if (next === '') { setDraft(value); return }
+    // 저장소와 같은 검증(readSettingField — 빈 값·200자 초과 거부)을 먼저 본다. 못 넘으면 저장값으로 돌린다 — 저장소는 그 칸을 버리고
+    // `unchanged` 를 돌려주므로 저장 결과만 보고는 초안이 남는다(r3 R3-01).
+    const next = readSettingField({ key: 'terminalFontFamily', value: draft.trim() })
+    if (next === null) { setDraft(value); return }
+    setDraft(next)
     if (next !== value) void commit({ terminalFontFamily: next }).then((saved) => { if (!saved) setDraft(value) })
   }
   return (

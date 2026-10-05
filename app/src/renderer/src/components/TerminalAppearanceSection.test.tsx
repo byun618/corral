@@ -3,11 +3,8 @@
 // 셀 재측정 트리거(K2ⓗ). xterm 은 happy-dom 에서 그리지 못한다 — 옵션 객체를 가진 가짜로 바꾼다.
 import { act, createElement, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Settings } from '../../../shared/terminal-settings.js'
+import type { Settings, SettingsWriteResult } from '../../../shared/terminal-settings.js'
 
 const terminals: Array<{ options: Record<string, unknown>; writes: string[]; resets: number }> = []
 vi.mock('@xterm/xterm', () => {
@@ -38,7 +35,7 @@ vi.mock('../term-metrics.js', async (importOriginal) => ({
   },
 }))
 
-const { DEFAULT_SETTINGS, TERMINAL_THEME_NAMES, resolveTerminalTheme } = await import('../../../shared/terminal-settings.js')
+const { DEFAULT_SETTINGS, TERMINAL_THEME_NAMES, resolveTerminalTheme, sanitizeSettingsPatch } = await import('../../../shared/terminal-settings.js')
 const { getSettings, resetSettingsStoreForTest, updateSettings, useSettings } = await import('../settings-store.js')
 const { applyTerminalAppearance, terminalAppearanceOptions } = await import('../terminal-appearance.js')
 const { previewAppearanceOptions, TerminalSettingsPreview } = await import('./TerminalSettingsPreview.js')
@@ -256,41 +253,37 @@ describe('입력 칸 — invoke 거절도 저장값으로 돌아간다(r2 R2-01)
 })
 
 describe('글꼴군 — 공유 검증을 못 넘으면 저장값으로 돌아간다(r3 R3-01)', () => {
-  // 실제 main 저장소(SettingsStore, 임시 파일)를 IPC 핸들러처럼 잇는다 — saved 일 때만 푸시를 센다.
-  let dir = ''
-  let file = ''
+  // main 저장소를 흉내 낸다 — 저장소와 같은 공유 검증(sanitizeSettingsPatch)을 통과한 칸만 바꾸고, 바뀐 것이 있을 때만 「파일 쓰기」·푸시를 센다.
+  // 실제 SettingsStore 의 거부·파일 불변은 `main/settings.test.ts` 「글꼴군 200자 초과」 가 본다(web tsconfig 는 main 모듈을 들일 수 없다).
+  let saved: Settings = { ...DEFAULT_SETTINGS }
+  let writes = 0
   let pushes = 0
-  beforeEach(async () => {
-    const { SettingsStore } = await import('../../../main/settings.js')
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l512-font-'))
-    file = path.join(dir, 'settings.json')
-    process.env.CORRAL_SETTINGS = file
-    const store = new SettingsStore(dir)
-    store.load()
+  beforeEach(() => {
+    saved = { ...DEFAULT_SETTINGS }
+    writes = 0
     pushes = 0
-    const setSettings = vi.fn(async (patch: Partial<Settings>) => {
-      const result = store.update(patch)
-      if (result.status === 'saved') pushes += 1
-      return result
+    const setSettings = vi.fn(async (patch: Partial<Settings>): Promise<SettingsWriteResult> => {
+      const { accepted } = sanitizeSettingsPatch(patch)
+      const next = { ...saved, ...accepted }
+      if (JSON.stringify(next) === JSON.stringify(saved)) return { status: 'unchanged', settings: { ...saved } }
+      saved = next
+      writes += 1
+      pushes += 1
+      return { status: 'saved', settings: { ...saved } }
     })
-    Object.defineProperty(window, 'corral', { configurable: true, value: { setSettings, store } })
+    Object.defineProperty(window, 'corral', { configurable: true, value: { setSettings } })
   })
-  afterEach(() => {
-    Reflect.deleteProperty(window, 'corral')
-    delete process.env.CORRAL_SETTINGS
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
+  afterEach(() => { Reflect.deleteProperty(window, 'corral') })
   const settle = async (): Promise<void> => { await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }) }
   const fontInput = (view: HTMLElement): HTMLInputElement => view.querySelector<HTMLInputElement>('[data-settings-font-family]')!
 
-  it('201자를 Enter·blur 로 확정하면 입력 칸이 저장값(Menlo)으로 돌아가고 저장소·파일·푸시가 그대로다 · 200자는 저장된다', async () => {
+  it('201자를 Enter·blur 로 확정하면 입력 칸이 저장값(Menlo)으로 돌아가고 저장소·쓰기·푸시가 그대로다 · 200자는 저장된다', async () => {
     const view = render(createElement(TerminalAppearanceSection, { query: '' }))
     setValue(fontInput(view), 'Menlo')
     key(fontInput(view), 'Enter')
     await settle()
     expect(getSettings().terminalFontFamily).toBe('Menlo')
     expect(pushes).toBe(1)
-    const diskBefore = fs.readFileSync(file, 'utf8')
 
     setValue(fontInput(view), 'X'.repeat(201))
     key(fontInput(view), 'Enter')
@@ -301,14 +294,16 @@ describe('글꼴군 — 공유 검증을 못 넘으면 저장값으로 돌아간
     await settle()
     expect(fontInput(view).value).toBe('Menlo')
     expect(getSettings().terminalFontFamily).toBe('Menlo')
-    expect(fs.readFileSync(file, 'utf8')).toBe(diskBefore)
+    expect(saved.terminalFontFamily).toBe('Menlo')
+    expect(writes).toBe(1)
     expect(pushes).toBe(1)
 
     setValue(fontInput(view), 'Y'.repeat(200))
     key(fontInput(view), 'Enter')
     await settle()
     expect(fontInput(view).value).toBe('Y'.repeat(200))
-    expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalFontFamily).toBe('Y'.repeat(200))
+    expect(saved.terminalFontFamily).toBe('Y'.repeat(200))
+    expect(getSettings().terminalFontFamily).toBe('Y'.repeat(200))
     expect(pushes).toBe(2)
   })
 })

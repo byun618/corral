@@ -114,6 +114,20 @@ describe('SettingsStore — 쓰기 실패(r1 R1-03)', () => {
   })
 })
 
+describe('SettingsStore — 글꼴군 200자 초과(r3 R3-01)', () => {
+  it('201자는 그 칸만 거부 — unchanged · 메모리·파일 바이트 그대로 · 200자는 저장된다', () => {
+    const store = fresh()
+    expect(store.update({ terminalFontFamily: 'Menlo' }).status).toBe('saved')
+    const before = fs.readFileSync(file, 'utf8')
+    const rejected = store.update({ terminalFontFamily: 'X'.repeat(201) })
+    expect(rejected.status).toBe('unchanged')
+    expect(store.get().terminalFontFamily).toBe('Menlo')
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+    expect(store.update({ terminalFontFamily: 'Y'.repeat(200) }).status).toBe('saved')
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalFontFamily).toBe('Y'.repeat(200))
+  })
+})
+
 describe('SettingsStore — 정리까지 실패(r2 R2-01)', () => {
   it('부모 폴더 권한이 없어 쓰기·임시 파일 정리가 둘 다 실패해도 던지지 않고 failed — 권한을 돌리면 같은 값 재시도가 저장된다', () => {
     const locked = path.join(dir, 'locked')

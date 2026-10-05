@@ -119,7 +119,10 @@ function parseArgs(argv) {
     controls: false,
     label: null,
     // LIFE-496 — 잴 corral 빌드(앱 폴더). 기본은 이 도구가 든 앱이다. before 를 같은 도구·같은 측정 Orca 로 재려고 다른 빌드를 받는다.
-    corralApp: null
+    corralApp: null,
+    // LIFE-513 — 두 측정 창을 같은 화면 위치로 옮긴다(`x,y`). 사람 OS 커서가 측정 창 위에 쉬면 캡처 뒤 hover 재계산이 자기 diff 잡음을
+    // 만든다(scene.mjs reapplyPointer 주석). 입력 장치는 건드리지 않고 창을 커서 밖으로 비킨다. 기본은 옮기지 않는다(예전과 같다).
+    windowOrigin: null
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -135,6 +138,7 @@ function parseArgs(argv) {
     else if (arg === '--width') out.width = Number(value())
     else if (arg === '--height') out.height = Number(value())
     else if (arg === '--label') out.label = value()
+    else if (arg === '--window-origin') { const [x, y] = value().split(',').map(Number); out.windowOrigin = { x, y } }
     else if (arg === '--keep') out.keep = true
     else if (arg === '--no-fresh') out.fresh = false
     else if (arg === '--dump-dom') out.dumpDom = true
@@ -911,6 +915,19 @@ async function main() {
     corral.workspaceId = null
     await seedCorralRepo(corral, fixture.root)
     const corralBounds = await setCorralBounds(corral, { width: args.width, height: args.height })
+    if (args.windowOrigin !== null) {
+      // 두 창에 같은 위치를 준다(짝 비교 조건 동일). Electron 은 Browser.setWindowBounds 가 없어 렌더러의 window.moveTo 를 쓴다.
+      const target = args.windowOrigin
+      const moveTo = (handle) => handle.cdp.evaluate((point) => { window.moveTo(point.x, point.y); return { screenX: window.screenX, screenY: window.screenY } }, target)
+      await moveTo(orca)
+      await moveTo(corral)
+      await pause(400)
+      const where = (handle) => handle.cdp.evaluate(() => ({ screenX: window.screenX, screenY: window.screenY, outerWidth: window.outerWidth, outerHeight: window.outerHeight }))
+      const placed = { target, orca: await where(orca), corral: await where(corral) }
+      writeJson(path.join(outDir, 'window-origin.json'), placed)
+      const near = (got) => Math.abs(got.screenX - target.x) <= 1 && Math.abs(got.screenY - target.y) <= 30
+      if (!near(placed.orca) || !near(placed.corral)) throw new Error(`창 위치를 옮기지 못했다: ${JSON.stringify(placed)}`)
+    }
     await pause(1200)
 
     const areas = args.areas.map(loadArea)

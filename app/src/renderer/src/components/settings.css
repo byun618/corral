@@ -280,8 +280,8 @@
 .settings-subsection-header:has(.settings-ghostty-import) { align-items: center; }  /* Orca 타이포 머리 className items-center */
 /* Orca `Button variant=outline size=sm` (h-8 · px-3 · text-sm font-medium · 테두리·shadow-xs) — 색·모서리는 ± 버튼(settings-icon-button)과 같은 토큰 */
 .settings-ghostty-import {
-  display: inline-flex; align-items: center; height: 32px; padding: 0 12px; white-space: nowrap; cursor: pointer;
-  font: inherit; font-size: var(--fs-settings-body); font-weight: 500; color: var(--fg);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; white-space: nowrap; cursor: pointer;
+  font: inherit; font-size: var(--fs-settings-body); font-weight: 500; line-height: 20px; color: var(--fg);
   background: var(--bg-input-fill); border: 1px solid var(--line-strong); border-radius: var(--radius-settings-control); box-shadow: var(--shadow-xs);
 }
 .settings-ghostty-import:hover { background: var(--bg-accent); }

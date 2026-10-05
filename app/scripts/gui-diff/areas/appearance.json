@@ -6,7 +6,7 @@
   },
   "notes": {
     "orca-root": "AppearancePane.tsx:237 터미널 AppearanceSection → TerminalAppearanceSection.tsx(타이포 절 · 테마 카탈로그 절(모드 탭·고르기·디바이더) · 고급 · 미리보기 카드)",
-    "scope": "Orca 의 다크/라이트 모드 탭·Ghostty/Warp/YAML 가져오기 버튼은 corral 에 짝이 없다(00-analysis §9 — S19 의도적·S22·T3). 짝 없는 요소는 단위로 두지 않고 그 몫의 높이 차이를 부모 단위의 분류 사유로 적는다"
+    "scope": "Orca 의 다크/라이트 모드 탭·Warp/YAML 가져오기 버튼은 corral 에 짝이 없다(00-analysis §9 — S19 의도적·S22). Ghostty 가져오기 버튼은 LIFE-513 이 달아 짝 단위(typo-ghostty-import)가 됐다. 짝 없는 요소는 단위로 두지 않고 그 몫의 높이 차이를 부모 단위의 분류 사유로 적는다"
   },
   "units": [
     {
@@ -65,7 +65,7 @@
       "global": true,
       "globalWhy": "카드는 루트(본문 region)의 부모다",
       "classify": "의도적",
-      "classifyWhy": "y +1: Orca 는 본문 위 선(border-t)이 region 밖 격자 래퍼에, corral 은 region 자신에 있어 region 을 맞추면 카드가 1px 내려온다. h −106 = 짝 없는 요소 합(Ghostty 가져오기 12 · Warp/YAML 가져오기 12 · 모드 탭 58 · 그 아래 여백 24 — 00-analysis §9). marginBottom 10 은 Orca 카드 사이 space-y-2.5 — corral 은 카드가 하나다"
+      "classifyWhy": "y +1: Orca 는 본문 위 선(border-t)이 region 밖 격자 래퍼에, corral 은 region 자신에 있어 region 을 맞추면 카드가 1px 내려온다. h −94 = 짝 없는 요소 합(Warp/YAML 가져오기 12 · 모드 탭 58 · 그 아래 여백 24 — 00-analysis §9. Ghostty 가져오기 몫 12 는 LIFE-513 이 버튼을 달아 해소). marginBottom 10 은 Orca 카드 사이 space-y-2.5 — corral 은 카드가 하나다"
     },
     {
       "id": "terminal-card-toggle",
@@ -122,7 +122,7 @@
       "global": true,
       "globalWhy": "루트 자신",
       "classify": "의도적",
-      "classifyWhy": "h −105 는 terminal-card 의 h −106 에서 위 선 1px 을 뺀 값(같은 사유). 위 선이 region 안(corral)/밖(Orca)에 있는 구조 차이 — 같은 자리에 같은 선. display·flex·gap 은 space-y 대신 flex gap(상자 차이 없음)"
+      "classifyWhy": "h −93 는 terminal-card 의 h −94 에서 위 선 1px 을 뺀 값(같은 사유). 위 선이 region 안(corral)/밖(Orca)에 있는 구조 차이 — 같은 자리에 같은 선. display·flex·gap 은 space-y 대신 flex gap(상자 차이 없음)"
     },
     {
       "id": "typo-block",
@@ -134,7 +134,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "h −12 는 typo-header(Ghostty 가져오기 버튼 32px, T3 LIFE-513 이 단다). margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+      "classifyWhy": "y +1 은 terminal-card 사유. h −12(Ghostty 가져오기 버튼 몫)는 LIFE-513 이 버튼을 달아 해소. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
     },
     {
       "id": "typo-header",
@@ -146,7 +146,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "h 32→20·alignItems: Orca 머리는 「Ghostty에서 가져오기」 버튼(32px)과 가운데 정렬된다 — 버튼 자리는 T3(LIFE-513). marginBottom 12 는 corral gap 12"
+      "classifyWhy": "y +1 은 terminal-card 사유. h 32→20·alignItems 는 LIFE-513 「Ghostty에서 가져오기」 버튼(32px)·가운데 정렬로 해소. marginBottom 12 는 corral gap 12"
     },
     {
       "id": "typo-ghostty-import",
@@ -158,8 +158,8 @@
         "paint",
         "text"
       ],
-      "classify": "보류",
-      "classifyWhy": "(측정 뒤 채운다)"
+      "classify": "의도적",
+      "classifyWhy": "x +22·w −22: Orca 버튼은 Ghostty 아이콘(16px)+gap 6 이 앞에 있다 — corral 은 아이콘을 넣지 않았다(Ghostty 로고 출처·라이선스 확인을 피함, LIFE-513 RESULT). y +1 은 terminal-card 사유. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). 높이 32·글자·테두리·배경은 같다"
     },
     {
       "id": "typo-title",
@@ -172,7 +172,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −5 는 32px 머리 안 가운데 정렬 몫(typo-header 사유). lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y +1 은 terminal-card 사유(32px 머리 안 가운데 정렬 몫 −5·−1 은 LIFE-513 버튼으로 해소). lineHeight 는 r2 에서 해소"
     },
     {
       "id": "typo-rows",
@@ -184,7 +184,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
     },
     {
       "id": "font-size-row",
@@ -196,7 +196,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유)"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소)"
     },
     {
       "id": "font-size-label",
@@ -209,7 +209,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). label 의 display flex(Orca Label 컴포넌트)·block 은 글자 하나라 상자가 같다"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). label 의 display flex(Orca Label 컴포넌트)·block 은 글자 하나라 상자가 같다"
     },
     {
       "id": "font-size-minus",
@@ -221,7 +221,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). gap 은 아이콘 하나뿐인 버튼이라 효과 없음"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). gap 은 아이콘 하나뿐인 버튼이라 효과 없음"
     },
     {
       "id": "font-size-input",
@@ -234,7 +234,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). lineHeight 는 r2 에서 해소"
     },
     {
       "id": "font-family-row",
@@ -246,7 +246,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −12·h +1: 행 사이 선이 Orca 는 앞 행 래퍼의 아래 선(divide-y), corral 은 뒤 행의 위 선이다 — 같은 픽셀 줄, 묶음 높이(107)는 같다. 나머지 y 는 y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유)"
+      "classifyWhy": "h +1: 행 사이 선이 Orca 는 앞 행 래퍼의 아래 선(divide-y), corral 은 뒤 행의 위 선이다 — 같은 픽셀 줄, 묶음 높이(107)는 같다. y 차이(타이포 머리 몫 −12 + 카드 +1)는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소"
     },
     {
       "id": "font-family-input",
@@ -259,7 +259,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). paddingRight: Orca 는 자동완성 콤보박스(지우기·제안 버튼 48px 자리), corral 은 자유 입력 + 제안 5개 datalist(00-analysis §9 워커 재량 — 시스템 글꼴 열거 없음)"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). paddingRight: Orca 는 자동완성 콤보박스(지우기·제안 버튼 48px 자리), corral 은 자유 입력 + 제안 5개 datalist(00-analysis §9 워커 재량 — 시스템 글꼴 열거 없음)"
     },
     {
       "id": "typo-advanced",
@@ -272,7 +272,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). 높이 28·lineHeight 는 r2 에서 해소, 행 묶음과의 간격 12(margin 겹침)는 r2 에서 해소"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). 높이 28·lineHeight 는 r2 에서 해소, 행 묶음과의 간격 12(margin 겹침)는 r2 에서 해소"
     },
     {
       "id": "theme-block",
@@ -284,7 +284,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). h −94 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 모드 탭 −58 + 그 아래 여백 −24(S19). 위 여백 0·gap 20 은 r2 에서 해소. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+      "classifyWhy": "y +1 은 terminal-card 사유(타이포 머리 높이 몫 −12 는 LIFE-513 「Ghostty에서 가져오기」 버튼으로 해소). h −94 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 모드 탭 −58 + 그 아래 여백 −24(S19). 위 여백 0·gap 20 은 r2 에서 해소. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
     },
     {
       "id": "theme-title",
@@ -297,7 +297,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −17 = 타이포 몫 −11 + 테마 머리(Warp·YAML 버튼 32px) 안 가운데 정렬 −6. lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y −5 = 카드 +1 + 테마 머리(Warp·YAML 버튼 32px) 안 가운데 정렬 −6(타이포 몫 −12 는 LIFE-513 버튼으로 해소). lineHeight 는 r2 에서 해소"
     },
     {
       "id": "theme-picker",
@@ -309,7 +309,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
     },
     {
       "id": "theme-label",
@@ -322,7 +322,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. label display(flex/block)·marginBottom 4 는 corral 묶음 gap 4 — 상자 같음"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). label display(flex/block)·marginBottom 4 는 corral 묶음 gap 4 — 상자 같음"
     },
     {
       "id": "theme-description",
@@ -335,7 +335,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소)"
     },
     {
       "id": "theme-search",
@@ -348,7 +348,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). display·marginBottom 은 flex gap 몫"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). display·marginBottom 은 flex gap 몫"
     },
     {
       "id": "theme-list",
@@ -360,7 +360,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소)"
     },
     {
       "id": "theme-status",
@@ -373,7 +373,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. lineHeight 16 은 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. lineHeight 16 은 r2 에서 해소"
     },
     {
       "id": "theme-scroll",
@@ -385,7 +385,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. overflow·padding: Orca 는 Radix ScrollArea(겹치는 스크롤바, padding 은 viewport 안쪽 div), corral 은 기본 overflow 스크롤(패딩을 스크롤 상자에) — 상자 크기 같음"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). overflow·padding: Orca 는 Radix ScrollArea(겹치는 스크롤바, padding 은 viewport 안쪽 div), corral 은 기본 overflow 스크롤(패딩을 스크롤 상자에) — 상자 크기 같음"
     },
     {
       "id": "theme-group",
@@ -397,7 +397,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 corral 기본 스크롤바가 자리를 차지하는 몫(Radix 겹침 스크롤바 미도입 — 의존성 추가 없이 기본 스크롤). radius 8 은 Orca 가 「가져온 테마」 그룹 강조용으로 단 것(배경 없음 — 보이지 않음, 가져오기는 S22·T3). h 는 r2 에서 해소(행 36)"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). w −11 은 corral 기본 스크롤바가 자리를 차지하는 몫(Radix 겹침 스크롤바 미도입 — 의존성 추가 없이 기본 스크롤). radius 8 은 Orca 가 「가져온 테마」 그룹 강조용으로 단 것(배경 없음 — 보이지 않음, 가져오기는 S22·T3). h 는 r2 에서 해소(행 36)"
     },
     {
       "id": "theme-group-title",
@@ -410,7 +410,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 24.5 는 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 24.5 는 r2 에서 해소"
     },
     {
       "id": "theme-option",
@@ -423,7 +423,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 36 은 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 36 은 r2 에서 해소"
     },
     {
       "id": "theme-option-selected",
@@ -436,7 +436,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 렌더 폰트: 도구는 단위 바로 아래 글자만 모은다 — Orca 이름 글자는 span 2단 안쪽이라 「현재」 2글자만 잡혔다. 그 2글자는 두 앱 모두 Apple SD Gothic Neo, 테마 제목(theme-title)의 Geist 1·Apple SD 5 도 같다"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 렌더 폰트: 도구는 단위 바로 아래 글자만 모은다 — Orca 이름 글자는 span 2단 안쪽이라 「현재」 2글자만 잡혔다. 그 2글자는 두 앱 모두 Apple SD Gothic Neo, 테마 제목(theme-title)의 Geist 1·Apple SD 5 도 같다"
     },
     {
       "id": "divider-row",
@@ -448,7 +448,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. h +1·아래 선: Orca 는 카탈로그 묶음의 아래 선(border-b), corral 은 행 자신의 아래 선 — 같은 자리 같은 선(r2 에서 추가). marginTop 8 + gap 16 = Orca space-y-6(24)"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). h +1·아래 선: Orca 는 카탈로그 묶음의 아래 선(border-b), corral 은 행 자신의 아래 선 — 같은 자리 같은 선(r2 에서 추가). marginTop 8 + gap 16 = Orca space-y-6(24)"
     },
     {
       "id": "divider-swatch",
@@ -460,7 +460,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 글자색(fg)은 r4 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). 글자색(fg)은 r4 에서 해소"
     },
     {
       "id": "divider-hex",
@@ -473,7 +473,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). fontSize 14·lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). fontSize 14·lineHeight 는 r2 에서 해소"
     },
     {
       "id": "advanced-toggle",
@@ -486,7 +486,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 위치(아래 선 바로 뒤 pt-2)·lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). 위치(아래 선 바로 뒤 pt-2)·lineHeight 는 r2 에서 해소"
     },
     {
       "id": "preview-card",
@@ -498,7 +498,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow: shadow-sm 을 r2 에서 넣었다 — 남은 차이는 Tailwind 투명 층 4개뿐"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). boxShadow: shadow-sm 을 r2 에서 넣었다 — 남은 차이는 Tailwind 투명 층 4개뿐"
     },
     {
       "id": "preview-header",
@@ -510,7 +510,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. Orca CardHeader 는 grid, corral 은 flex — 높이 69 는 r2 에서 해소. 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). Orca CardHeader 는 grid, corral 은 flex — 높이 69 는 r2 에서 해소. 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다"
     },
     {
       "id": "preview-title",
@@ -523,7 +523,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. marginBottom 4 는 gap 4. lineHeight 는 r2 에서 해소"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). marginBottom 4 는 gap 4. lineHeight 는 r2 에서 해소"
     },
     {
       "id": "preview-switch",
@@ -535,7 +535,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 크기 36×20·색·패딩은 r2 에서 해소(Orca ui/switch). radius 는 둘 다 알약(9999px / 3.35e7px)"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). 크기 36×20·색·패딩은 r2 에서 해소(Orca ui/switch). radius 는 둘 다 알약(9999px / 3.35e7px)"
     },
     {
       "id": "preview-frame",
@@ -547,7 +547,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. Orca 는 세로 flex 안에 가로 flex 한 겹을 더 두고 corral 은 가로 flex 하나 — 상자 같음"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소). Orca 는 세로 flex 안에 가로 flex 한 겹을 더 두고 corral 은 가로 flex 하나 — 상자 같음"
     },
     {
       "id": "preview-term",
@@ -559,7 +559,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소)"
     },
     {
       "id": "preview-xterm",
@@ -571,7 +571,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소)"
     },
     {
       "id": "preview-stub",
@@ -583,7 +583,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+      "classifyWhy": "y −93 는 위쪽 빠진 요소의 누적이다 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1(타이포 머리 −12 는 LIFE-513 Ghostty 가져오기 버튼으로 해소)"
     }
   ]
 }

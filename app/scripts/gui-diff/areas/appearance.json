@@ -149,6 +149,19 @@
       "classifyWhy": "h 32→20·alignItems: Orca 머리는 「Ghostty에서 가져오기」 버튼(32px)과 가운데 정렬된다 — 버튼 자리는 T3(LIFE-513). marginBottom 12 는 corral gap 12"
     },
     {
+      "id": "typo-ghostty-import",
+      "note": "「Ghostty에서 가져오기」 버튼 (LIFE-513 K8ⓐ — 타이포 머리 action 자리)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div:first-child > div:last-child > button",
+      "corral": "[data-settings-ghostty-import]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "보류",
+      "classifyWhy": "(측정 뒤 채운다)"
+    },
+    {
       "id": "typo-title",
       "note": "「Terminal 타이포그래피」",
       "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div:first-child h3",

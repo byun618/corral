@@ -187,9 +187,20 @@ export async function reapplyPointer(handle) {
   await handle.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 })
 }
 
-/** 포인터를 사이드바 밖으로 — hover 칠이 다음 캡처에 남지 않게. */
+/**
+ * 「밖」 후보 — 첫 칸이 예전 고정점(AWAY_POINT)이라 그 점이 조용한 장면은 예전과 똑같다. 그 점 밑에 hover 를 받는 요소가 있으면
+ * 다음 후보로 간다(LIFE-513 실측: 외관 타이포 머리에 버튼이 들어와 아래가 12px 내려가자 (1200,700) 이 첫 테마 행(button) 위에 놓였다 —
+ * CDP hover 로 찍힌 A 캡처와 실제 OS 커서로 hover 를 다시 계산한 B 캡처가 갈려 자기 diff 잡음 1건, 관문 미달 R004·R005).
+ */
+const AWAY_POINTS = [AWAY_POINT, { x: 1435, y: 895 }, { x: 1435, y: 5 }, { x: 720, y: 895 }]
+
+/** 포인터를 사이드바 밖으로 — hover 칠이 다음 캡처에 남지 않게. 누를 수 있는 요소 위는 피한다. */
 async function pointerAway(handle) {
-  await mouse({ handle, type: 'mouseMoved', x: AWAY_POINT.x, y: AWAY_POINT.y })
+  const point = await handle.cdp.evaluate((points) => {
+    const interactive = 'button, a, input, select, textarea, [role="button"], [role="option"], [role="menuitem"], [role="tab"], [role="switch"], [role="radio"]'
+    return points.find((p) => { const hit = document.elementFromPoint(p.x, p.y); return hit === null || hit.closest(interactive) === null }) ?? points[0]
+  }, AWAY_POINTS)
+  await mouse({ handle, type: 'mouseMoved', x: point?.x ?? AWAY_POINT.x, y: point?.y ?? AWAY_POINT.y })
 }
 
 /**

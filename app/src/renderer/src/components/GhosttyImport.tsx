@@ -145,7 +145,7 @@ export function GhosttyImportButton(): React.JSX.Element {
 
   return (
     <>
-      <button type="button" className="btn-ghost settings-ghostty-import" data-settings-ghostty-import onClick={() => void open()}>
+      <button type="button" className="settings-ghostty-import" data-settings-ghostty-import onClick={() => void open()}>
         Ghostty에서 가져오기
       </button>
       {/* 문서 루트에 그린다 — 설정 화면(쌓임 맥락 z-index 30) 안의 카드에 갇히지 않게. */}

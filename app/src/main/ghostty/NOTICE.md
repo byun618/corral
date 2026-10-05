@@ -18,7 +18,18 @@
 | `src/renderer/src/components/TerminalAppearanceSection.tsx` 의 `themeSelectionPatch` | `TerminalThemeSections.tsx` (v1.4.210 #22069) |
 
 Ghostty 동작 규칙(로드 순서·줄 문법·빈 파일·font-family)은 Ghostty v1.3.1 소스(https://github.com/ghostty-org/ghostty, MIT)를 읽고
-그 의미를 따랐다 — Ghostty 코드를 옮기지는 않았다. Ghostty 아이콘(`resources/ghostty.svg`)은 옮기지 않았다.
+그 의미를 따랐다. Ghostty 아이콘(`resources/ghostty.svg`)은 옮기지 않았다.
+
+`src/main/ghostty/ghostty-grammar.ts`(fix3)는 아래 파서를 TypeScript 로 옮긴 것이다(수용/거절 판단 부분):
+
+| corral 함수 | 원본 |
+| --- | --- |
+| `ghosttyColor`·`ghosttyTerminalColor`·`ghosttyPaletteEntry`·`ghosttyTheme` | Ghostty v1.3.1 `src/config/Config.zig` `Color.parseCLI`·`fromHex`·`TerminalColor.parseCLI`·`Palette.parseCLI`·`Theme.parseCLI` |
+| `ghosttyTheme`(쌍 문법) | Ghostty v1.3.1 `src/cli/args.zig` `parseAutoStruct` · `src/cli/CommaSplitter.zig` |
+| `ghosttyMetricModifier` | Ghostty v1.3.1 `src/font/Metrics.zig` `Modifier.parse` |
+| `ghosttyBool` | Ghostty v1.3.1 `src/cli/args.zig` `parseBool` |
+| `zigParseInt` | Zig 0.15.2 `lib/std/fmt.zig` `parseInt`·`parseIntWithSign`·`charToDigit` |
+| `zigParseFloat` | Zig 0.15.2 `lib/std/fmt/parse_float.zig`·`parse_float/parse.zig`(`parsePartialNumberBase`·`parseInfOrNan`·`validUnderscores`)·`FloatStream.zig` |
 
 `src/main/ghostty/x11-color-names.ts`(fix2)는 Ghostty v1.3.1 `src/terminal/res/rgb.txt`(X.Org `xorg/app/rgb`, sha256 `f8e3a7be…b6f0`)에서
 색 **이름 열만** 소문자로 옮긴 목록이다 — 「Ghostty 가 받는 색 이름인가」 판단에만 쓴다. 그 라이선스 전문은 아래 「X.Org rgb 라이선스」.
@@ -96,4 +107,56 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+```
+
+## Ghostty 라이선스 (전문 — https://github.com/ghostty-org/ghostty v1.3.1 `LICENSE`)
+
+```
+MIT License
+
+Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Zig 라이선스 (전문 — https://github.com/ziglang/zig 0.15.2 `LICENSE`)
+
+```
+The MIT License (Expat)
+
+Copyright (c) Zig contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ```

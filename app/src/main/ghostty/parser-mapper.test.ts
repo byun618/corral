@@ -56,7 +56,7 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
     expect(reasonsOf({ content: 'font-size = 30', key: 'font-size' })[0]).toContain('범위 10~24 정수 밖')
     expect(reasonsOf({ content: 'font-size = 9', key: 'font-size' })[0]).toContain('밖')
     expect(reasonsOf({ content: 'font-size = big', key: 'font-size' })).toEqual(['숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨'])
-    expect(reasonsOf({ content: 'font-size = 1e1', key: 'font-size' })).toEqual(['숫자가 아님'])
+    expect(reasonsOf({ content: 'font-size = 1e1', key: 'font-size' })).toEqual(['10진 소수 표기만 옮김 (Ghostty 는 받는 지수·16진·inf·nan·밑줄 표기는 지원하지 않음)'])
   })
 
   it('값 뒤 # 는 검증에 걸려 지원되지 않는 키가 된다(D2)', () => {
@@ -92,12 +92,13 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
     const kept = map('palette = 1=#111111\npalette = 1=#xyzxyz\npalette = 2=#222222\npalette = 2=nonsense\npalette = 3=#333333\npalette = 300=#444444\n')
     expect(kept.patch).toEqual({ terminalColorOverrides: { red: '#111111', green: '#222222', yellow: '#333333' } })
     expect(kept.unsupported.map((entry) => entry.reason)).toEqual([
-      '"1=#xyzxyz" — hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨',
-      '"2=nonsense" — hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨',
-      '"300=#444444" — 인덱스 16 이상은 지원하지 않음 (16색만) · Ghostty 도 받지 않아 이 줄은 무시됨',
+      '"1=#xyzxyz" — N=COLOR 형식이 아님 (N 은 Ghostty 정수 0~255, COLOR 는 hex·X11 이름) · Ghostty 도 받지 않아 이 줄은 무시됨',
+      '"2=nonsense" — N=COLOR 형식이 아님 (N 은 Ghostty 정수 0~255, COLOR 는 hex·X11 이름) · Ghostty 도 받지 않아 이 줄은 무시됨',
+      '"300=#444444" — N=COLOR 형식이 아님 (N 은 Ghostty 정수 0~255, COLOR 는 hex·X11 이름) · Ghostty 도 받지 않아 이 줄은 무시됨',
     ])
     const shadowed = map('palette = 1=#111111\npalette = 1=red\npalette = 3=#333333\npalette = 0x3=#abcdef\npalette = 4=#444444\npalette = 20=#000000\n')
-    expect(shadowed.patch).toEqual({ terminalColorOverrides: { blue: '#444444' } })
+    // 1=red 는 Ghostty 가 받아 앞 1 을 덮는다(corral 은 X11 이름 미지원 → 1 없음) · 0x3 은 Zig parseInt(u8, 기수 0) 로 인덱스 3(fix3 R3-02)
+    expect(shadowed.patch).toEqual({ terminalColorOverrides: { yellow: '#abcdef', blue: '#444444' } })
   })
 
   it('adjust-cell-height — % 만, 1~3 배, 반올림 없음', () => {
@@ -133,11 +134,13 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
     expect(reasonsOf({ content: 'cursor-style-blink = yes', key: 'cursor-style-blink' })).toEqual(['true·false 만 받음 · Ghostty 도 받지 않아 이 줄은 무시됨'])
   })
 
-  it('unfocused-split-opacity — 0~1, 소수 셋째 자리까지', () => {
+  it('unfocused-split-opacity — Ghostty finalize 의 0.15~1 고정값을 옮긴다(fix3, Config.zig 4638), 소수 셋째 자리까지', () => {
     expect(map('unfocused-split-opacity = 0.7').patch).toEqual({ terminalInactivePaneOpacity: 0.7 })
     expect(map('unfocused-split-opacity = 1').patch).toEqual({ terminalInactivePaneOpacity: 1 })
-    expect(reasonsOf({ content: 'unfocused-split-opacity = 1.5', key: 'unfocused-split-opacity' })[0]).toContain('밖')
-    expect(reasonsOf({ content: 'unfocused-split-opacity = 0.12345', key: 'unfocused-split-opacity' })[0]).toContain('셋째 자리')
+    expect(map('unfocused-split-opacity = 1.5').patch).toEqual({ terminalInactivePaneOpacity: 1 })
+    expect(map('unfocused-split-opacity = 0.05').patch).toEqual({ terminalInactivePaneOpacity: 0.15 })
+    expect(map('unfocused-split-opacity = -3').patch).toEqual({ terminalInactivePaneOpacity: 0.15 })
+    expect(reasonsOf({ content: 'unfocused-split-opacity = 0.71234', key: 'unfocused-split-opacity' })[0]).toContain('셋째 자리')
   })
 
   it('split-divider-color — hex(# 없음·3자리 포함) → 다크 디바이더, 소문자. X11 이름은 거부', () => {
@@ -158,13 +161,12 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
 
   it('palette — 0~15 만, 16 이상·잘못된 항목은 항목별 사유, 같은 인덱스는 뒤가 이긴다', () => {
     const result = map('palette = 0=#000000\npalette = 15=FFFFFF\npalette = 1=#f00\npalette = 16=#123456\npalette = 2=green\npalette = 0x3=#333333\npalette = nonsense\npalette = 0=#010101\n')
-    expect(result.patch).toEqual({ terminalColorOverrides: { black: '#010101', brightWhite: '#ffffff', red: '#f00' } })
+    expect(result.patch).toEqual({ terminalColorOverrides: { black: '#010101', brightWhite: '#ffffff', red: '#f00', yellow: '#333333' } })
     const reasons = result.unsupported.filter((entry) => entry.key === 'palette').map((entry) => entry.reason)
-    expect(reasons).toHaveLength(4)
+    expect(reasons).toHaveLength(3)
     expect(reasons[0]).toContain('"16=#123456" — 인덱스 16 이상')
     expect(reasons[1]).toContain('"2=green" — hex')
-    expect(reasons[2]).toContain('"0x3=#333333" — N=COLOR')
-    expect(reasons[3]).toContain('"nonsense"')
+    expect(reasons[2]).toContain('"nonsense" — N=COLOR')
   })
 
   it('palette 빈 값은 리셋 — 앞 항목을 지우고 사유로 올리지 않는다, 다른 색 키는 그대로(R1-01)', () => {
@@ -207,3 +209,47 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
     expect(map('font-size =')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }] })
   })
 })
+
+describe('리뷰 r3 repro.mts 사례 — 기대값 = Ghostty 의미(fix3)', () => {
+  it.each<[string, string, ReturnType<typeof mapGhosttyToCorral>]>([
+    ['color-quoted-hex-space (R3-01)', 'background=#111111\nbackground=" #abcdef "', { patch: { terminalColorOverrides: { background: '#abcdef' } }, unsupported: [] }],
+    ['color-quoted-x11-space (R3-01)', 'background=#111111\nbackground=" red "', { patch: {}, unsupported: [{ key: 'background', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음' }] }],
+    ['terminal-color-quoted-x11-space (R3-01)', 'cursor-color=#111111\ncursor-color=" red "', { patch: {}, unsupported: [{ key: 'cursor-color', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음' }] }],
+    ['divider-quoted-hex-space (R3-01)', 'split-divider-color=#111111\nsplit-divider-color=" #abcdef "', { patch: { terminalDividerColorDark: '#abcdef' }, unsupported: [] }],
+    ['metric-int-underscore (R3-02)', 'adjust-cell-height=20%\nadjust-cell-height=1_0', { patch: {}, unsupported: [{ key: 'adjust-cell-height', reason: '백분율(%) 값만 받음 — 픽셀 값은 지원하지 않음' }] }],
+    ['metric-int-overflow (R3-02)', 'adjust-cell-height=20%\nadjust-cell-height=2147483648', { patch: { terminalLineHeight: 1.2 }, unsupported: [{ key: 'adjust-cell-height', reason: '백분율(%) 값만 받음 — 픽셀 값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨' }] }],
+    ['palette-negative-zero (R3-02)', 'palette=0=#111111\npalette=-0=#abcdef', { patch: { terminalColorOverrides: { black: '#abcdef' } }, unsupported: [] }],
+    ['palette-multi-underscore (R3-02)', 'palette=1=#111111\npalette=0__1=#abcdef', { patch: { terminalColorOverrides: { red: '#abcdef' } }, unsupported: [] }],
+    ['palette-quoted-space (R3-03)', 'palette=1=#111111\npalette=" "', { patch: { terminalColorOverrides: { red: '#111111' } }, unsupported: [{ key: 'palette', reason: '" " — N=COLOR 형식이 아님 (N 은 Ghostty 정수 0~255, COLOR 는 hex·X11 이름) · Ghostty 도 받지 않아 이 줄은 무시됨' }] }],
+    ['font-quoted-space (R3-03)', 'font-family=Menlo\nfont-family=" "\nfont-family=Monaco', { patch: { terminalFontFamily: 'Menlo' }, unsupported: [{ key: 'font-family', reason: '폴백 글꼴은 가져오지 않음:  , Monaco (주 글꼴 Menlo 만)' }] }],
+    ['reset-then-reject', 'font-size=18\nfont-size=\nfont-size=nope', { patch: {}, unsupported: [{ key: 'font-size', reason: '숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨' }, { key: 'font-size', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }] }],
+    ['reject-then-reset', 'font-size=18\nfont-size=nope\nfont-size=', { patch: {}, unsupported: [{ key: 'font-size', reason: '숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨' }, { key: 'font-size', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }] }],
+    ['palette-reset-then-reject', 'palette=1=#111111\npalette=\npalette=1=wrong', { patch: {}, unsupported: [{ key: 'palette', reason: '"1=wrong" — N=COLOR 형식이 아님 (N 은 Ghostty 정수 0~255, COLOR 는 hex·X11 이름) · Ghostty 도 받지 않아 이 줄은 무시됨' }] }],
+  ])('%s', (_name, content, want) => {
+    expect(map(content)).toEqual(want)
+  })
+
+  it('색 앞뒤 탭도 trim(" \\t") — 탭 둘러싼 hex 를 가져온다', () => {
+    expect(map('background=#111111\nbackground="\t#ABCDEF\t"').patch).toEqual({ terminalColorOverrides: { background: '#abcdef' } })
+    expect(map('palette=2=#111111\npalette="2=\tred\t"').patch).toEqual({})
+  })
+
+  it('adjust-cell-height 0.0%~200.0% 2001 개는 천분율 그대로(edge-fixtures), 14.25%·33.3333% 는 거부', () => {
+    for (let i = 0; i <= 2000; i += 1) expect(map(`adjust-cell-height=${(i / 10).toFixed(1)}%`).patch.terminalLineHeight).toBe((1000 + i) / 1000)
+    for (const value of ['14.25%', '33.3333%']) expect(map(`adjust-cell-height=${value}`).patch.terminalLineHeight).toBeUndefined()
+  })
+
+  it('Ghostty 는 받지만 corral 이 옮기지 않는 숫자 표기 — 앞 값으로 되돌리지 않고 사유', () => {
+    for (const value of ['1e1', '0x10', 'inf', 'nan', '1_4']) {
+      expect(map(`font-size=18\nfont-size=${value}`)).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '10진 소수 표기만 옮김 (Ghostty 는 받는 지수·16진·inf·nan·밑줄 표기는 지원하지 않음)' }] })
+    }
+    expect(map('adjust-cell-height=20%\nadjust-cell-height=1e1%').patch).toEqual({})
+    expect(map('adjust-cell-height=20%\nadjust-cell-height=1__0%').patch).toEqual({ terminalLineHeight: 1.2 })
+  })
+
+  it('불확정 = 가져오지 않음 — 주 글꼴 이름 양끝 공백은 Ghostty 해석을 확정할 수 없어 font-family 를 통째로 안 가져온다', () => {
+    expect(map('font-family=" Menlo"\nfont-family=Monaco')).toEqual({ patch: {}, unsupported: [{ key: 'font-family', reason: '" Menlo" — 양끝 공백이 있는 글꼴 이름 · Ghostty 해석을 확정할 수 없어 가져오지 않음' }] })
+    expect(map('font-family=" "')).toEqual({ patch: {}, unsupported: [{ key: 'font-family', reason: '" " — 양끝 공백이 있는 글꼴 이름 · Ghostty 해석을 확정할 수 없어 가져오지 않음' }] })
+  })
+})
+

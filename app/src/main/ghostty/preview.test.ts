@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_SETTINGS, copySettings, type Settings } from '../../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, copySettings, sanitizeSettingsPatch, type Settings } from '../../shared/terminal-settings.js'
 import type { GhosttyImportPreview } from '../../shared/ghostty-import.js'
 import { ghosttyConfigCandidates, type GhosttyPathEnv } from './discovery.js'
 import { MAX_CONFIG_BYTES, diffAgainstCurrent, previewGhosttyImport } from './index.js'
@@ -287,3 +287,74 @@ describe('diff — 현재 설정과 다른 칸만(K4ⓑⓓ)', () => {
     expect(fs.readdirSync(xdgDir())).toEqual(['config'])
   })
 })
+
+describe('리뷰 r3 repro.mts·edge-fixtures.mts 테마·파일 사례 — 기대값 = Ghostty 의미(fix3)', () => {
+  const good = { terminalColorOverrides: { background: '#abcdef', red: '#123456' } }
+  const themeReject = (value: string): { key: string; reason: string } => ({ key: 'theme', reason: `"${value}" — Ghostty 테마 문법이 아님 (이름 하나 또는 light:이름,dark:이름) · Ghostty 도 받지 않아 이 줄은 무시됨` })
+  beforeEach(() => { put({ file: path.join(xdgDir(), 'themes', 'Good'), content: 'background=#abcdef\npalette=1=#123456\n' }) })
+
+  it.each<[string, string, Partial<Settings>, Array<{ key: string; reason: string }>]>([
+    ['theme-valid-control', 'theme=Good', good, []],
+    ['theme-invalid-incomplete-pair (R3-04)', 'theme=Good\ntheme=light:missing', good, [themeReject('light:missing')]],
+    ['theme-invalid-struct (R3-04)', 'theme=Good\ntheme=garbage:value', good, [themeReject('garbage:value')]],
+    ['theme-invalid-equal (R3-04)', 'theme=Good\ntheme=foo=bar', good, [themeReject('foo=bar')]],
+    ['theme-reset-reject (R3-04)', 'theme=Good\ntheme=\ntheme=light:missing', {}, [themeReject('light:missing'), { key: 'theme', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }]],
+    ['theme-valid-pair', 'theme=Good\ntheme=light:Good,dark:Good', {}, [{ key: 'theme', reason: 'light:/dark: 쌍은 지원하지 않음 (corral 은 다크 테마 하나)' }]],
+    ['theme-colors-quoted-space (R3-01)', 'theme=Good\nbackground=" red "', { terminalColorOverrides: { red: '#123456' } }, [{ key: 'background', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음' }]],
+  ])('%s', async (_name, content, diff, unsupported) => {
+    put({ file: path.join(xdgDir(), 'config'), content })
+    const result = await found()
+    expect(result.diff).toEqual(diff)
+    expect(result.unsupported).toEqual(unsupported)
+  })
+
+  it('불확정 = 가져오지 않음 — 따옴표가 든 light/dark 쌍이면 앞 테마도 안 가져오고 사유', async () => {
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=Good\ntheme=light:"Good",dark:"Good"\nfont-size=16\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 16 })
+    expect(result.unsupported).toEqual([{ key: 'theme', reason: '"light:"Good",dark:"Good"" — 따옴표·이스케이프가 든 light/dark 쌍 · Ghostty 해석을 확정할 수 없어 가져오지 않음' }])
+  })
+
+  it('edge: 두 파일 — 테마 위 font-size 18 · background, 뒤 파일 font-size=nope(거절)·background=" red "(X11 수용)', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#123456\npalette=1=#654321' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\nfont-size=18\nbackground=#111111' })
+    put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size=nope\nbackground=" red "' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18, terminalColorOverrides: { red: '#654321' } })
+    expect(result.unsupported).toEqual([{ key: 'font-size', reason: '숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨' }, { key: 'background', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음' }])
+  })
+
+  it('edge: 테마 파일 안 반복 — 뒤 줄 " #abcdef " 는 trim 해서 받는다', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#123456\nbackground=" #abcdef "' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T' })
+    expect((await found()).diff).toEqual({ terminalColorOverrides: { background: '#abcdef' } })
+  })
+
+  it('edge: 테마 쌍·리셋·단독 light: — 쌍·리셋은 앞 테마 없음, 단독 light: 는 거절이라 앞 테마 유지', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#123456\npalette=1=#654321' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\ntheme=light:T,dark:T' })
+    expect((await found()).diff).toEqual({})
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\ntheme=' })
+    expect((await found()).diff).toEqual({})
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\ntheme=light:T' })
+    expect((await found()).diff).toEqual({ terminalColorOverrides: { background: '#123456', red: '#654321' } })
+  })
+
+  it('edge: 일반 파일 심볼릭 링크는 읽고 __proto__·constructor 는 그냥 모르는 키, 디렉터리 링크는 없음', async () => {
+    const target = put({ file: path.join(home, 'link-target'), content: 'font-size=18\n__proto__=bad\nconstructor=bad' })
+    fs.mkdirSync(xdgDir(), { recursive: true })
+    fs.symlinkSync(target, path.join(xdgDir(), 'config'))
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18 })
+    expect(result.unsupported.map((entry) => entry.key)).toEqual(['__proto__', 'constructor'])
+    fs.unlinkSync(path.join(xdgDir(), 'config'))
+    fs.symlinkSync(xdgDir(), path.join(xdgDir(), 'config'))
+    expect(await preview()).toEqual({ status: 'not-found' })
+  })
+
+  it('edge: override 패치의 __proto__·constructor 는 버리고, 빈 override 는 비움으로 받는다', () => {
+    expect(sanitizeSettingsPatch(JSON.parse('{"terminalColorOverrides":{"__proto__":"#fff","constructor":"#aaa"}}')).accepted).toEqual({})
+    expect(sanitizeSettingsPatch({ terminalColorOverrides: {} }).accepted).toEqual({ terminalColorOverrides: {} })
+  })
+})
+

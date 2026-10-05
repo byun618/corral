@@ -202,6 +202,19 @@ it('열린 메뉴가 있는 채 팔레트로 들어와도 메뉴가 닫히고 Es
   expect(app.open()).toBe(false)
 })
 
+it('열린 메뉴가 있는 채 ⌘K → 키보드 Enter 로 설정에 들어온다 — 메뉴가 Enter 를 먹지 않는다(fix1 R052)', async () => {
+  const app = await mount()
+  await app.click('[data-help-menu-toggle]')
+  expect(app.q('[data-help-menu]')).not.toBeNull()
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  expect(app.q('[data-help-menu]')).toBeNull()
+  const input = app.q('input[aria-label="명령 검색"]')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  await act(async () => { setter.call(input, '단축키'); input.dispatchEvent(new window.Event('input', { bubbles: true })) })
+  await app.key({ key: 'Enter' }, input)
+  expect(app.open()).toBe(true)
+})
+
 it('검색 뒤 필터 카운트가 보이는 행과 맞는다(r1 R1-03 App 재현)', async () => {
   const app = await mount({ 'terminal.zoom': [null, null] })
   await app.click('[data-settings-open]')

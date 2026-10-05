@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useAnnounceDialog } from '../menu-bus.js'
 import { searchPalette, type PaletteEntry } from '../palette-search.js'
 import './command-palette.css'
 
@@ -7,6 +8,9 @@ export function CommandPalette({ entries, onClose }: { entries: PaletteEntry[]; 
   const [selected, setSelected] = useState<string | null>(() => searchPalette(entries, '')[0]?.id ?? null)
   const input = useRef<HTMLInputElement>(null)
   const executed = useRef(false)
+  // 팔레트도 위층이다 — 열린 메뉴는 window 캡처로 Enter·방향키를 먼저 먹는다. 메뉴가 열린 채 ⌘K 로 오면 Enter 가 항목을
+  // 실행하지 못했다(fix1 격리 R052 실측: 팔레트 → 설정 진입 실패). 대화·설정과 같은 메뉴 버스 계약으로 닫는다.
+  useAnnounceDialog()
   const rows = searchPalette(entries, query)
   const index = rows.findIndex(entry => entry.id === selected)
   useEffect(() => { input.current?.focus() }, [])

@@ -608,19 +608,20 @@ async function checkCloseGate(
   paneIds: readonly string[],
   subject: Record<string, unknown>,
 ): Promise<{ clear: true } | { clear: false; foreground: string[] }> {
-  const running = await probeRunningPanes(socketPath, paneIds.map((paneId) => ({ tabId: '', paneId })), subject)
+  const running = await probeRunningPanes({ socketPath, panes: paneIds.map((paneId) => ({ tabId: '', paneId })), subject })
   const foreground = running.flatMap((pane) => pane.foreground)
   return foreground.length > 0 ? { clear: false, foreground } : { clear: true }
 }
 
 /** 게이트의 pane 단위 판정 — 실행 중(셸 아닌 포그라운드 또는 probe 실패)인 pane 만 돌려준다. 탭 여럿 닫기(LIFE-495)가 pane·탭별로 쓴다. */
-async function probeRunningPanes(
-  socketPath: string,
-  panes: readonly { tabId: string; paneId: string }[],
-  subject: Record<string, unknown>,
-): Promise<RunningPane[]> {
+async function probeRunningPanes(input: {
+  socketPath: string
+  panes: readonly { tabId: string; paneId: string }[]
+  subject: Record<string, unknown>
+}): Promise<RunningPane[]> {
+  const { socketPath, subject } = input
   const running: RunningPane[] = []
-  for (const { tabId, paneId } of panes) {
+  for (const { tabId, paneId } of input.panes) {
     const probe = await probeForeground(socketPath, paneId)
     const clear = probe.ok && probe.shellPid !== null && probe.foregroundGroupId === probe.shellPid
     log('lifecycle.close_gate', {
@@ -660,7 +661,7 @@ async function closeTabsByIds(input: { tabIds: readonly string[]; confirmed: boo
     alwaysConfirm: input.alwaysConfirm,
     confirmedPaneIds: input.confirmedPaneIds,
     panesOf,
-    probe: (panes) => probeRunningPanes(socketPath, panes, { close: 'tabs', tabIds: input.tabIds }),
+    probe: (panes) => probeRunningPanes({ socketPath, panes, subject: { close: 'tabs', tabIds: input.tabIds } }),
     // S15ⓓ ② — 사용자가 **명시적으로** 닫는 탭이다. 그 닫힘은 완료 행으로 되살리지 않는다.
     close: (tabId) => withRetentionSuppressed({ store: link.store, ids: [tabId], what: 'tab', run: hooks => closeTab(socketPath, tabId, hooks) }),
   })

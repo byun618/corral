@@ -87,7 +87,8 @@ export function ShortcutSettings({ overrides, onChange, onClose }: { overrides: 
               catch (failure) { recordingRef.current = null; setRecording(null); setError(String(failure)) }
             }}>{capturing ? '키 입력… (Esc 취소)' : pending !== null ? formatBinding(pending.binding) : binding !== null ? formatBinding(binding) : '없음'}</button>
             {pending ? <button disabled={busy} data-save-binding onClick={() => {
-              const bindings = action.defaultBinding.map((fallback, index) => bindingsFor(action.id, overrides)[index] ?? fallback); bindings[variant] = pending.binding
+              // 비켜 선 빈 칸(null)은 빈 칸 그대로 저장한다 — 기본값으로 채우면 그 조합을 쓰는 재정의와 충돌해 저장이 거절된다(fix2 R2-01).
+              const bindings = [...bindingsFor(action.id, overrides)]; bindings[variant] = pending.binding
               void save({ ...overrides, [action.id]: bindings })
             }}>저장</button> : null}
           </div>

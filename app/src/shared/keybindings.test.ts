@@ -197,3 +197,27 @@ describe('fix1 R1-06 — main 이 가져오는 메뉴 키(⌘W·⌘R)의 반복 
     expect(menuKeyShortcut({ ...key({ key: 't', isAutoRepeat: false }), overrides: {} }).claimed).toBeNull()
   })
 })
+
+describe('fix2 R2-01 — 재정의의 빈 칸(null) = 그 칸 조합 없음', () => {
+  const index = (slots: (string | null)[]) => ({ 'tab.selectByIndex': slots })
+  const rest = ['Control+3', 'Control+4', 'Control+5', 'Control+6', 'Control+7', 'Control+8', 'Control+9']
+  it('검증이 null 칸을 보존한다 — 다른 칸은 정규화, 칸 위치 그대로', () => {
+    const overrides = validateOverrides({ 'sidebar.toggle': ['Control+1'], ...index([null, 'Control+g', ...rest]) })
+    expect(overrides['tab.selectByIndex']).toEqual([null, 'Control+G', ...rest])
+    expect(matchBinding('Control+1', overrides)).toEqual({ id: 'sidebar.toggle', variant: 0 })
+    expect(matchBinding('Control+G', overrides)).toEqual({ id: 'tab.selectByIndex', variant: 1 })
+    expect(bindingConflict(overrides)).toBeNull()
+  })
+  it('null 칸은 충돌 검사·다른 액션의 비켜 서기에서 조합으로 세지 않는다', () => {
+    expect(() => validateOverrides({ ...index([null, null, ...rest]) })).not.toThrow()
+    expect(bindingsFor('sidebar.toggle', validateOverrides(index([null, 'Control+2', ...rest])))).toEqual(['Mod+B'])
+  })
+  it('칸 수가 다르거나 칸이 문자열·null 이 아니면 지금처럼 거절한다', () => {
+    expect(() => validateOverrides(index([null, 'Control+2']))).toThrow()
+    expect(() => validateOverrides({ 'tab.selectByIndex': [0, 'Control+2', ...rest] })).toThrow()
+  })
+  it('옛 모양 이행은 null 칸이 있는 재정의를 건드리지 않는다', () => {
+    expect(migrateLegacyOverrides({ 'terminal.new': [null, 'Mod+Shift+J'] }).value).toEqual({ 'terminal.new': [null, 'Mod+Shift+J'] })
+    expect(migrateLegacyOverrides({ 'terminal.new': [null, 'Mod+Shift+J'] }).dropped).toEqual([])
+  })
+})

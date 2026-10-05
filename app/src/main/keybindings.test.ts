@@ -71,3 +71,17 @@ describe('LIFE-495 K7ⓘ — 옛 모양 파일 픽스처(terminal.new 두 칸)',
     expect(store.get()).toEqual({ 'terminal.new': ['Mod+J'], 'sidebar.toggle': ['Mod+Alt+B'] })
   })
 })
+
+describe('LIFE-495 fix2 R2-01 — 빈 칸(null) 이 있는 재정의의 저장·재읽기', () => {
+  it('비켜 선 칸을 null 로 저장하면 파일에 null 이 남고, 새 store 가 같은 뜻으로 읽는다', () => {
+    const { dir, file } = fixture()
+    const store = new KeybindingStore(dir)
+    store.load()
+    const value = { 'sidebar.toggle': ['Control+1'], 'tab.selectByIndex': [null, 'Control+G', 'Control+3', 'Control+4', 'Control+5', 'Control+6', 'Control+7', 'Control+8', 'Control+9'] }
+    expect(store.save(value)).toEqual(value)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(value)
+    const next = new KeybindingStore(dir)
+    next.load()
+    expect(next.get()).toEqual(value)
+  })
+})

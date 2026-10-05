@@ -34,8 +34,11 @@ export type GroupLayoutApi = {
   /** 다른 worktree 의 영역 수 — 사이드바 `◫`/`⊟` 가 쓴다 (R17-2 공백 2). */
   groupCountOf: (worktreePath: string) => number
   splitDirectionOf: (worktreePath: string) => 'row' | 'column' | null
-  /** 그 worktree 의 저장된 배치(활성이 아닌 worktree 포함 — LIFE-495 fix1 R1-02 다시 열기 스냅샷). 없으면 null. */
-  layoutOf: (worktreePath: string) => GroupLayout | null
+  /**
+   * 그 worktree 가 화면에 보일 배치(활성이 아닌 worktree 포함 — LIFE-495 fix1 R1-02 다시 열기 스냅샷). 저장값을 그대로 주지 않고
+   * 활성 배치와 같은 파생(살아 있는 탭 reconcile + 핀 partition)을 거친다 — 저장값은 핀을 바꾸기 전 순서일 수 있다(fix2 R2-02).
+   */
+  layoutOf: (input: { worktreePath: string; liveTabIds: string[]; pinned: ReadonlySet<string> }) => GroupLayout
   setActiveGroup: (groupId: string) => void
   setActiveTab: (input: { groupId: string; tabId: string }) => void
   /** 그 탭이 있는 영역을 활성으로 + 그 영역의 활성 탭으로 (R3-e reveal). 없으면 false. */
@@ -68,6 +71,12 @@ function nextGroupId(existing: string[]): string {
     if (!existing.includes(candidate)) return candidate
   }
   return `g${Date.now()}`
+}
+
+/** 화면에 내는 배치 — 저장값(없으면 살아 있는 탭 한 영역)을 살아 있는 탭에 맞춰 추리고 핀 접두부로 나눈다. 활성·비활성 worktree 가 같은 파생을 쓴다. */
+function shownLayout(input: { saved: GroupLayout | undefined; liveTabIds: string[]; pinned: ReadonlySet<string> }): GroupLayout {
+  const base = input.saved ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: input.liveTabIds, activeTabId: input.liveTabIds[0] ?? null })
+  return partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), pinned: input.pinned })
 }
 
 export function useGroupLayout(input: {
@@ -106,9 +115,7 @@ export function useGroupLayout(input: {
    */
   const layout = useMemo<GroupLayout | null>(() => {
     if (input.worktreePath === null) return null
-    const saved = byWorktree[input.worktreePath]
-    const base = saved ?? singleLayout({ groupId: ROOT_GROUP, tabOrder: input.liveTabIds, activeTabId: input.liveTabIds[0] ?? null })
-    return partitionPinnedLayout({ layout: reconcileLayout({ layout: base, liveTabIds: input.liveTabIds }), pinned: input.pinned })
+    return shownLayout({ saved: byWorktree[input.worktreePath], liveTabIds: input.liveTabIds, pinned: input.pinned })
   }, [byWorktree, input.worktreePath, input.liveTabIds, input.pinned])
 
   /**
@@ -168,7 +175,11 @@ export function useGroupLayout(input: {
     [byWorktree],
   )
 
-  const layoutOf = useCallback((worktreePath: string) => byWorktree[worktreePath] ?? null, [byWorktree])
+  const layoutOf = useCallback(
+    (target: { worktreePath: string; liveTabIds: string[]; pinned: ReadonlySet<string> }) =>
+      shownLayout({ saved: byWorktree[target.worktreePath], liveTabIds: target.liveTabIds, pinned: target.pinned }),
+    [byWorktree],
+  )
 
   const setActiveGroup = useCallback((groupId: string) => mutate((current) => ({ ...current, activeGroupId: groupId })), [mutate])
 

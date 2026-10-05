@@ -763,9 +763,13 @@ export function App(): React.JSX.Element {
       })[0]
     if (owner === undefined) return null
     const { tab, workspace, worktreePath } = owner
-    const root = (worktreePath === activeWorktreeRow?.path ? layout.layout : layout.layoutOf(worktreePath))?.root ?? null
-    if (root === null) return null
-    const group = groupOfTab(root, tabId)
+    // 화면에 보이던 순서로 — 비활성 worktree 도 활성 배치와 같은 파생(reconcile + 핀 partition)을 거친 배치를 읽는다(fix2 R2-02).
+    const shown =
+      worktreePath === activeWorktreeRow?.path
+        ? layout.layout
+        : layout.layoutOf({ worktreePath, liveTabIds: workspace.tabs.map((row) => row.tabId), pinned: pinnedTabs })
+    if (shown === null) return null
+    const group = groupOfTab(shown.root, tabId)
     if (group === null) return null
     const shownPaneId = tab.panes.find((pane) => pane.paneId === lifecycle.selectedPane)?.paneId ?? pickPane(tab)?.paneId ?? null
     return {

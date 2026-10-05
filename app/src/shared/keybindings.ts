@@ -36,7 +36,8 @@ export const ACTIONS = [
   },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
-export type Keybindings = Partial<Record<ActionId, string[]>>
+/** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */
+export type Keybindings = Partial<Record<ActionId, (string | null)[]>>
 export type ShortcutMatch = { id: ActionId; variant: number }
 export type KeyInput = { key: string; code?: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean }
 const modifiers = ['Mod', 'Control', 'Alt', 'Shift']
@@ -94,9 +95,22 @@ export function migrateLegacyOverrides(value: object): { value: Record<string, u
   return { value: next, dropped }
 }
 
+/** 재정의 칸 정규화 — null 칸 = 그 칸 조합 없음(fix2 R2-01, 저장·파일 읽기가 같은 뜻으로 보존), 그 밖은 정규화할 수 있는 문자열. 하나라도 아니면 null. */
+function normalizeSlots(value: unknown): (string | null)[] | null {
+  if (!Array.isArray(value)) return null
+  const slots: (string | null)[] = []
+  for (const binding of value) {
+    if (binding === null) { slots.push(null); continue }
+    const normalized = typeof binding === 'string' ? normalizeBinding(binding) : null
+    if (normalized === null) return null
+    slots.push(normalized)
+  }
+  return slots
+}
+
 function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }): Set<string> {
   const claimed = new Set<string>()
-  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && Array.isArray(bindings)) for (const binding of bindings) claimed.add(binding)
+  for (const [owner, bindings] of Object.entries(input.overrides)) if (owner !== input.id && Array.isArray(bindings)) for (const binding of bindings) if (binding !== null) claimed.add(binding)
   return claimed
 }
 
@@ -167,11 +181,11 @@ export function validateOverrides(input: unknown, discardInvalid = false): Keybi
       if (discardInvalid) continue
       throw new Error(`알 수 없는 액션: ${id}`)
     }
-    if (!Array.isArray(bindings) || bindings.length !== action.defaultBinding.length || bindings.some((binding) => typeof binding !== 'string' || !normalizeBinding(binding))) {
+    const normalized = normalizeSlots(bindings)
+    if (normalized === null || normalized.length !== action.defaultBinding.length) {
       if (discardInvalid) continue
       throw new Error(`${action.title}: 올바르지 않은 바인딩`)
     }
-    const normalized = bindings.map((binding: string) => normalizeBinding(binding)!)
     if (JSON.stringify(normalized) !== JSON.stringify(action.defaultBinding)) result[action.id] = normalized
   }
   // 비켜 서는 기본값(YIELDING_DEFAULTS)을 **명시로** 다시 적은 재정의는 남긴다 — 다른 재정의가 그 조합을 쓰면 기본값과 같아도

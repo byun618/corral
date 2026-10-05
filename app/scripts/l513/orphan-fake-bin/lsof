@@ -1,0 +1,4 @@
+#!/bin/sh
+# LIFE-513 fix2 R2-02 가짜 lsof — L513_FAKE=cwd 이면 pid 777 의 cwd 를 fixture 아래로 답한다.
+[ "${L513_FAKE:-none}" = cwd ] && printf 'p777\nfcwd\nn%s/sub\n' "$L513_FAKE_FX"
+exit 0

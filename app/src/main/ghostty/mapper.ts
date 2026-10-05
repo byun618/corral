@@ -17,6 +17,7 @@ import {
   type TerminalColorOverrides,
 } from '../../shared/terminal-settings.js'
 import type { GhosttyConfig } from './parser.js'
+import { X11_COLOR_NAMES } from './x11-color-names.js'
 
 const PALETTE_KEYS: readonly TerminalColorOverrideKey[] = [
   'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
@@ -40,9 +41,71 @@ const KNOWN_UNSUPPORTED: ReadonlyMap<string, string> = new Map([
   ['config-file', '포함 파일은 따라가지 않음'],
 ])
 
+/**
+ * Ghostty v1.3.1 이 **받는** 값인가(fix2 R2-01). Ghostty 는 한 줄을 파싱하다 실패하면 진단만 남기고 그 필드를 그대로 둔다
+ * (`cli/args.zig` 136 `parseIntoField(...) catch` → 다음 줄 · 348 `try parseCLI` 가 성공해야 대입). 그래서 거절된 줄은 앞의 유효 값·테마 값을
+ * 지우지 않는다. 반대로 Ghostty 가 받는 값은 corral 이 못 옮겨도 앞 값을 덮는다 — 그때는 앞 값을 가져오지 않고 미지원 사유만 남긴다.
+ * 빈 값은 모든 키에서 「기본값으로 리셋」 이라 받는 값이다(args.zig 326-339).
+ * 키 타입별 문법(Config.zig v1.3.1):
+ *   · font-size `f32`·unfocused-split-opacity `f64` → `std.fmt.parseFloat`(10진·지수·16진 `0x…p…`·inf·nan, 자릿수 사이 `_`)
+ *   · adjust-cell-height `MetricModifier`(font/Metrics.zig 460) → `<float>%` 또는 10진 정수(픽셀)
+ *   · cursor-style `terminal.CursorStyle`(terminal/cursor.zig) → bar·block·underline·block_hollow (대소문자 그대로)
+ *   · cursor-style-blink `?bool` → `parseBool`(args.zig 654): 1·t·T·true·0·f·F·false
+ *   · background·foreground·split-divider-color `Color`(Config.zig 5395) → X11 이름(대소문자 무시) 또는 hex 3·6자리(`#` 생략 가능)
+ *   · cursor-color·cursor-text·selection-* `TerminalColor`(5515) → `cell-foreground`·`cell-background` 또는 Color
+ *   · palette `Palette.parseCLI`(5811) → `N=COLOR`, N 은 `parseInt(u8, 기수 0)`(0x·0o·0b 접두, 0~255)
+ * 그 밖의 키(모르는 키·corral 미지원 키)는 문법을 따지지 않고 마지막 값을 쓴다 — 어느 값이든 사유가 같다.
+ */
+const ZIG_DEC_FLOAT = /^[+-]?(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?$/
+const ZIG_HEX_FLOAT = /^[+-]?0[xX](?:[0-9a-fA-F](?:_?[0-9a-fA-F])*(?:\.(?:[0-9a-fA-F](?:_?[0-9a-fA-F])*)?)?|\.[0-9a-fA-F](?:_?[0-9a-fA-F])*)(?:[pP][+-]?\d(?:_?\d)*)?$/
+const ZIG_SPECIAL_FLOAT = /^[+-]?(?:inf|infinity|nan)$/i
+const ZIG_U8_BASE0 = /^\+?(?:0x[0-9a-f](?:_?[0-9a-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|\d(?:_?\d)*)$/i
+const GHOSTTY_BOOLS: ReadonlySet<string> = new Set(['1', 't', 'T', 'true', '0', 'f', 'F', 'false'])
+const GHOSTTY_CURSOR_STYLES: ReadonlySet<string> = new Set(['bar', 'block', 'underline', 'block_hollow'])
+const TERMINAL_COLOR_KEYS: ReadonlySet<string> = new Set(['cursor-color', 'cursor-text', 'selection-background', 'selection-foreground'])
+
+function ghosttyFloat(value: string): boolean {
+  return ZIG_DEC_FLOAT.test(value) || ZIG_HEX_FLOAT.test(value) || ZIG_SPECIAL_FLOAT.test(value)
+}
+
+function ghosttyColor(value: string): boolean {
+  return HEX_COLOR.test(value) || X11_COLOR_NAMES.has(value.toLowerCase())
+}
+
+/** Zig `parseInt(u8, s, 0)` — 받으면 값, 아니면 null. */
+function ghosttyU8(text: string): number | null {
+  if (!ZIG_U8_BASE0.test(text)) return null
+  const digits = text.replace(/^\+/, '').replaceAll('_', '').toLowerCase()
+  const value = digits.startsWith('0o') ? Number.parseInt(digits.slice(2), 8) : Number(digits)
+  return value <= 255 ? value : null
+}
+
+/** 문법을 아는 키면 Ghostty 가 받는지, 모르면 null(문법을 따지지 않는다). */
+function ghosttyAccepts({ key, value }: { key: string; value: string }): boolean | null {
+  if (value.length === 0) return true
+  if (COLOR_KEYS.has(key)) return ghosttyColor(value) || (TERMINAL_COLOR_KEYS.has(key) && (value === 'cell-foreground' || value === 'cell-background'))
+  switch (key) {
+    case 'font-size':
+    case 'unfocused-split-opacity':
+      return ghosttyFloat(value)
+    case 'adjust-cell-height':
+      return value.endsWith('%') ? ghosttyFloat(value.slice(0, -1)) : /^[+-]?\d+$/.test(value)
+    case 'cursor-style':
+      return GHOSTTY_CURSOR_STYLES.has(value)
+    case 'cursor-style-blink':
+      return GHOSTTY_BOOLS.has(value)
+    case 'split-divider-color':
+      return ghosttyColor(value)
+    default:
+      return null
+  }
+}
+
 const HEX_COLOR = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i
 const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/
 const COLOR_REASON = 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음'
+/** Ghostty 도 거절하는 값에 붙인다 — 그 줄은 무시되고 앞 값(앞 줄·앞 파일·테마)이 남는다. */
+const GHOSTTY_REJECTED = ' · Ghostty 도 받지 않아 이 줄은 무시됨'
 
 type Checked<T> = { ok: true; value: T } | { ok: false; reason: string }
 
@@ -114,20 +177,20 @@ function mapPalette({ values, overrides, unsupported }: { values: string[]; over
     const eq = entry.indexOf('=')
     const indexText = eq === -1 ? '' : entry.slice(0, eq).trim()
     const colorText = eq === -1 ? '' : entry.slice(eq + 1).trim()
-    if (!/^\d+$/.test(indexText)) {
-      unsupported.push({ key: 'palette', reason: `"${entry}" — N=COLOR 형식이 아님 (인덱스는 10진수)` })
-      continue
+    // Ghostty 가 받는 항목만 그 인덱스를 덮는다(fix2 R2-01). 거절된 항목은 앞 항목·테마 값을 남긴다.
+    const ghosttyIndex = eq === -1 ? null : ghosttyU8(indexText)
+    const accepted = ghosttyIndex !== null && ghosttyColor(colorText)
+    // Ghostty 는 받았지만 corral 이 못 옮기는 항목은 그 인덱스의 앞 값도 가져오지 않는다 — Ghostty 에서는 이 항목이 이겼다.
+    const overridden = accepted ? PALETTE_KEYS[ghosttyIndex] : undefined
+    const reject = (reason: string): void => {
+      unsupported.push({ key: 'palette', reason: `"${entry}" — ${reason}${accepted ? '' : GHOSTTY_REJECTED}` })
+      if (overridden !== undefined) delete overrides[overridden]
     }
+    if (!/^\d+$/.test(indexText)) { reject('N=COLOR 형식이 아님 (인덱스는 10진수)'); continue }
     const target = PALETTE_KEYS[Number(indexText)]
-    if (target === undefined) {
-      unsupported.push({ key: 'palette', reason: `"${entry}" — 인덱스 16 이상은 지원하지 않음 (16색만)` })
-      continue
-    }
+    if (target === undefined) { reject('인덱스 16 이상은 지원하지 않음 (16색만)'); continue }
     const color = readColor(colorText)
-    if (!color.ok) {
-      unsupported.push({ key: 'palette', reason: `"${entry}" — ${color.reason}` })
-      continue
-    }
+    if (!color.ok) { reject(color.reason); continue }
     overrides[target] = color.value
   }
 }
@@ -201,7 +264,17 @@ export function mapGhosttyToCorral(config: GhosttyConfig): { patch: Partial<Sett
   for (const [key, values] of config) {
     if (key === 'font-family') { mapFontFamily({ values, patch, unsupported }); continue }
     if (key === 'palette') { mapPalette({ values, overrides, unsupported }); continue }
-    const value = values.at(-1) ?? ''
+    // Ghostty 가 받는 마지막 할당을 고른다(fix2 R2-01). 거절된 할당은 사유만 남기고 앞 값을 지우지 않는다.
+    let chosen: string | null = null
+    for (const candidate of values) {
+      const accepted = ghosttyAccepts({ key, value: candidate })
+      if (accepted === false) {
+        const reason = mapScalar({ key, value: candidate, patch: {}, overrides: {} }) ?? '형식이 아님'
+        unsupported.push({ key, reason: `${reason}${GHOSTTY_REJECTED}` })
+      } else chosen = candidate
+    }
+    if (chosen === null) continue
+    const value = chosen
     if (value.length === 0 && !KNOWN_UNSUPPORTED.has(key)) {
       unsupported.push({ key, reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' })
       continue

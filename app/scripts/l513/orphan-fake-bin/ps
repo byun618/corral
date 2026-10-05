@@ -1,0 +1,8 @@
+#!/bin/sh
+# LIFE-513 fix2 R2-02 판별력 회차용 가짜 ps(리뷰 r2 재현 fake-bin 과 같은 모양). L513_FAKE 에 따라 줄을 낸다 — 진짜 프로세스는 보지 않는다.
+#   none·cwd: 걸리지 않을 줄만 · electron: 이 빌드 Electron PPID1 고아 한 줄 추가
+echo "  101     1 /usr/sbin/somedaemon --flag"
+echo "  102   555 /tmp/l513fake-unrelated/child-with-parent"
+case "${L513_FAKE:-none}" in
+  electron) echo "54321     1 ${L513_FAKE_APP}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron ${L513_FAKE_APP}" ;;
+esac

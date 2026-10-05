@@ -34,10 +34,10 @@ describe('parseGhosttyConfig — Ghostty LineIterator 규칙(K2ⓐ)', () => {
     expect(parseGhosttyConfig('__proto__ = x').get('__proto__')).toEqual(['x'])
   })
 
-  it('파일 병합 — 뒤 파일이 덮고, palette·font-family 는 이어 붙는다', () => {
+  it('파일 병합 — 모든 키의 할당을 순서대로 이어 붙인다(어느 값이 남는지는 매퍼가 Ghostty 문법으로 고른다, fix2 R2-01)', () => {
     const target = parseGhosttyConfig('font-size = 12\npalette = 0=#000000\nfont-family = A\n')
     mergeGhosttyConfig({ target, next: parseGhosttyConfig('font-size = 16\npalette = 0=#111111\nfont-family = B\n') })
-    expect(target.get('font-size')).toEqual(['16'])
+    expect(target.get('font-size')).toEqual(['12', '16'])
     expect(target.get('palette')).toEqual(['0=#000000', '0=#111111'])
     expect(target.get('font-family')).toEqual(['A', 'B'])
   })
@@ -55,16 +55,49 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
     expect(reasonsOf({ content: 'font-size = 13.5', key: 'font-size' })[0]).toContain('정수만')
     expect(reasonsOf({ content: 'font-size = 30', key: 'font-size' })[0]).toContain('범위 10~24 정수 밖')
     expect(reasonsOf({ content: 'font-size = 9', key: 'font-size' })[0]).toContain('밖')
-    expect(reasonsOf({ content: 'font-size = big', key: 'font-size' })).toEqual(['숫자가 아님'])
+    expect(reasonsOf({ content: 'font-size = big', key: 'font-size' })).toEqual(['숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨'])
     expect(reasonsOf({ content: 'font-size = 1e1', key: 'font-size' })).toEqual(['숫자가 아님'])
   })
 
   it('값 뒤 # 는 검증에 걸려 지원되지 않는 키가 된다(D2)', () => {
-    expect(map('font-size = 14 # big')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '숫자가 아님' }] })
+    expect(map('font-size = 14 # big')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨' }] })
   })
 
   it('반복 키는 마지막 값(font-family·palette 제외)', () => {
     expect(map('font-size = 12\nfont-size = 16').patch).toEqual({ terminalFontSize: 16 })
+  })
+
+  it('Ghostty 가 거절하는 마지막 할당은 앞의 유효 값을 지우지 않는다 — 한 파일(fix2 R2-01)', () => {
+    const result = map('font-size = 18\nfont-size = not-a-number\nbackground = #101010\nbackground = #xyzxyz\ncursor-style = bar\ncursor-style = beam\n')
+    expect(result.patch).toEqual({ terminalFontSize: 18, terminalCursorStyle: 'bar', terminalColorOverrides: { background: '#101010' } })
+    expect(result.unsupported).toEqual([
+      { key: 'font-size', reason: '숫자가 아님 · Ghostty 도 받지 않아 이 줄은 무시됨' },
+      { key: 'background', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨' },
+      { key: 'cursor-style', reason: 'block·bar·underline 만 받음 · Ghostty 도 받지 않아 이 줄은 무시됨' },
+    ])
+  })
+
+  it('음성 대조 — Ghostty 는 받지만 corral 이 못 옮기는 마지막 값은 앞 값으로 되돌리지 않는다(font-size 18 → 13.5 · red · cell-foreground · block_hollow, fix2 R2-01)', () => {
+    expect(map('font-size = 18\nfont-size = 13.5\n')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '정수만 받음 (반올림하지 않음, 범위 10~24 정수)' }] })
+    expect(map('background = #101010\nbackground = red\n').patch).toEqual({})
+    expect(map('selection-foreground = #101010\nselection-foreground = cell-foreground\n').patch).toEqual({})
+    expect(map('cursor-style = bar\ncursor-style = block_hollow\n').patch).toEqual({})
+    expect(map('font-size = 18\nfont-size = 1e1\n').patch).toEqual({})
+    expect(map('cursor-style-blink = false\ncursor-style-blink = t\n').patch).toEqual({})
+    // 빈 값 리셋은 그대로 — 앞 값을 지우고 기본값(가져오지 않음)
+    expect(map('font-size = 18\nfont-size =\n')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }] })
+  })
+
+  it('palette 도 같은 규칙 — Ghostty 거절 항목은 앞 값 유지, Ghostty 는 받지만 corral 이 못 옮기는 항목은 그 인덱스 앞 값을 가져오지 않음(fix2 R2-01)', () => {
+    const kept = map('palette = 1=#111111\npalette = 1=#xyzxyz\npalette = 2=#222222\npalette = 2=nonsense\npalette = 3=#333333\npalette = 300=#444444\n')
+    expect(kept.patch).toEqual({ terminalColorOverrides: { red: '#111111', green: '#222222', yellow: '#333333' } })
+    expect(kept.unsupported.map((entry) => entry.reason)).toEqual([
+      '"1=#xyzxyz" — hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨',
+      '"2=nonsense" — hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨',
+      '"300=#444444" — 인덱스 16 이상은 지원하지 않음 (16색만) · Ghostty 도 받지 않아 이 줄은 무시됨',
+    ])
+    const shadowed = map('palette = 1=#111111\npalette = 1=red\npalette = 3=#333333\npalette = 0x3=#abcdef\npalette = 4=#444444\npalette = 20=#000000\n')
+    expect(shadowed.patch).toEqual({ terminalColorOverrides: { blue: '#444444' } })
   })
 
   it('adjust-cell-height — % 만, 1~3 배, 반올림 없음', () => {
@@ -97,7 +130,7 @@ describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', ()
   it('cursor-style-blink — true/false 만', () => {
     expect(map('cursor-style-blink = false').patch).toEqual({ terminalCursorBlink: false })
     expect(map('cursor-style-blink = true').patch).toEqual({ terminalCursorBlink: true })
-    expect(reasonsOf({ content: 'cursor-style-blink = yes', key: 'cursor-style-blink' })).toEqual(['true·false 만 받음'])
+    expect(reasonsOf({ content: 'cursor-style-blink = yes', key: 'cursor-style-blink' })).toEqual(['true·false 만 받음 · Ghostty 도 받지 않아 이 줄은 무시됨'])
   })
 
   it('unfocused-split-opacity — 0~1, 소수 셋째 자리까지', () => {

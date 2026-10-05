@@ -216,6 +216,37 @@ describe('테마 해석(K3)', () => {
     expect(result.unsupported).toEqual([])
   })
 
+  it('Ghostty 거절 할당은 앞 파일 값을 지우지 않는다 — 두 파일(fix2 R2-01)', async () => {
+    put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 18\nbackground = #101010\n' })
+    put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size = not-a-number\nbackground = #xyzxyz\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18, terminalColorOverrides: { background: '#101010' } })
+    expect(result.unsupported.map((entry) => entry.key)).toEqual(['font-size', 'background'])
+  })
+
+  it('Ghostty 거절 명시 값은 테마 색을 지우지 않는다 — 테마 위(fix2 R2-01)', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background = #123123\nforeground = #aabbcc\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = T\nbackground = #xyzxyz\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalColorOverrides: { background: '#123123', foreground: '#aabbcc' } })
+    expect(result.unsupported.map((entry) => entry.key)).toEqual(['background'])
+  })
+
+  it('테마 파일 안 반복 — 거절된 뒤 줄은 앞 줄을 지우지 않는다(fix2 R2-01)', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background = #123123\nbackground = #xyzxyz\npalette = 1=#111111\npalette = 1=#xyzxyz\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = T\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalColorOverrides: { background: '#123123', red: '#111111' } })
+  })
+
+  it('음성 대조 — 두 파일에서 18 → 13.5 는 18 로 되돌리지 않는다(fix2 R2-01)', async () => {
+    put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 18\n' })
+    put({ file: path.join(appDir(), 'config'), content: 'font-size = 13.5\n' })
+    const result = await found()
+    expect(result.diff).toEqual({})
+    expect(result.unsupported).toEqual([{ key: 'font-size', reason: '정수만 받음 (반올림하지 않음, 범위 10~24 정수)' }])
+  })
+
   it('light:/dark: 쌍 → 지원되지 않는 키(사유), 나머지는 그대로 가져온다', async () => {
     put({ file: path.join(xdgDir(), 'config'), content: 'theme = light:Day,dark:Night\nfont-size = 16\n' })
     const result = await found()

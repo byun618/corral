@@ -48,7 +48,10 @@ function isThemePair(name: string): boolean {
   return name.split(',').map((part) => part.trim()).some((part) => part.startsWith('light:') || part.startsWith('dark:'))
 }
 
-/** `theme` 을 꺼내 테마 색을 기본값으로 깐다 — 구성의 명시 키가 이기고, palette 는 테마 것 뒤에 구성 것을 붙인다(인덱스별로 구성이 이긴다). */
+/**
+ * `theme` 을 꺼내 테마 색을 기본값으로 깐다 — 키마다 테마 할당을 구성 할당 **앞에** 붙인다. Ghostty 처럼 테마가 먼저 대입되고 구성이 다시 대입되므로
+ * 구성의 받아들여진 명시 값이 이기고, 구성 값이 Ghostty 에서 거절되면 테마 값이 남는다(fix2 R2-01). palette 는 인덱스별로 같은 규칙.
+ */
 async function applyTheme({ config, env }: { config: GhosttyConfig; env: GhosttyPathEnv }): Promise<GhosttyUnsupportedKey[]> {
   const raw = config.get('theme')
   if (raw === undefined) return []
@@ -58,11 +61,7 @@ async function applyTheme({ config, env }: { config: GhosttyConfig; env: Ghostty
   if (isThemePair(name)) return [{ key: 'theme', reason: 'light:/dark: 쌍은 지원하지 않음 (corral 은 다크 테마 하나)' }]
   const resolved = await resolveGhosttyTheme({ name, env })
   if (resolved.status === 'failed') return [{ key: 'theme', reason: resolved.reason }]
-  for (const [key, values] of resolved.colors) {
-    const own = config.get(key)
-    if (key === 'palette') config.set(key, [...values, ...(own ?? [])])
-    else if (own === undefined) config.set(key, values)
-  }
+  for (const [key, values] of resolved.colors) config.set(key, [...values, ...(config.get(key) ?? [])])
   return []
 }
 

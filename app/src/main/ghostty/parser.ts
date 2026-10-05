@@ -27,13 +27,10 @@ export function parseGhosttyConfig(content: string): GhosttyConfig {
 }
 
 /**
- * 여러 파일을 로드 순서대로 합친다 — 뒤 파일이 앞 파일을 덮는다. 단 **반복 키**(palette·font-family)는 Ghostty 처럼 이어 붙는다:
- * Ghostty 는 파일마다 같은 Config 에 값을 더하므로 반복 키는 목록에 누적되고(palette 는 인덱스별로 뒤가 이긴다), 나머지는 마지막 값이 남는다.
+ * 여러 파일을 로드 순서대로 합친다 — **모든 키의 할당을 순서대로 이어 붙인다.** Ghostty 는 파일마다 같은 Config 에 한 줄씩 대입하므로
+ * 반복 키(palette·font-family)는 목록에 누적되고, 나머지 키는 **Ghostty 가 받은 마지막 할당**이 남는다 — 거절된 줄은 앞 값을 지우지 않는다
+ * (fix2 R2-01, `cli/args.zig` 136·348). 어느 할당이 남는지는 키 문법을 아는 매퍼가 고른다(`mapper.ts` `ghosttyAccepts`).
  */
-const REPEATABLE_KEYS: ReadonlySet<string> = new Set(['palette', 'font-family'])
 export function mergeGhosttyConfig({ target, next }: { target: GhosttyConfig; next: GhosttyConfig }): void {
-  for (const [key, values] of next) {
-    const existing = target.get(key)
-    target.set(key, REPEATABLE_KEYS.has(key) && existing !== undefined ? [...existing, ...values] : [...values])
-  }
+  for (const [key, values] of next) target.set(key, [...(target.get(key) ?? []), ...values])
 }

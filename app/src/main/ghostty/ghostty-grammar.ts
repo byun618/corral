@@ -158,7 +158,7 @@ export function ghosttyBool(text: string): boolean | null {
   return null
 }
 
-/** `terminal.CursorStyle`(terminal/cursor.zig) 를 `std.meta.stringToEnum`(args.zig 431) — 이름이 정확히 같아야 한다. */
+/** `terminal.CursorStyle`(terminal/cursor.zig) 를 `std.meta.stringToEnum`(args.zig 443) — 이름이 정확히 같아야 한다. */
 export function ghosttyCursorStyle(text: string): 'bar' | 'block' | 'underline' | 'block_hollow' | null {
   switch (text) {
     case 'bar':

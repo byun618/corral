@@ -292,7 +292,7 @@ async function capture(app, handle, area, { outDir, tag }) {
 }
 
 /** 영역 루트 아래 DOM 윤곽 — 영역 정의 파일을 쓸 때 선택자를 눈으로 고르는 용도. */
-async function dumpDom(handle, rootSelector, depth = 6) {
+async function dumpDom(handle, rootSelector, depth = Number(process.env.L443_DUMP_DEPTH ?? 6)) {
   return handle.cdp.evaluate(
     ({ rootSelector, depth }) => {
       const root = document.querySelector(rootSelector)
@@ -432,6 +432,14 @@ const STATE_TARGETS = {
     agents: [],
     scene: { settingsOpen: true },
     detail: '탭 1개, 설정 페이지 › 단축키 — 내비(돌아가기·검색·그룹 제목·활성 행) · 콘텐츠(max-w 896·섹션 헤더·카드). Orca 는 그룹 8개+Projects, corral 은 「인터페이스 › 단축키」 하나(S6)'
+  },
+  // LIFE-512 K5ⓓ — 설정 › 외관(두 앱 다 ⚙ 실제 마우스 → 내비 「외관」 실제 마우스). `--areas appearance` 와 함께 잰다.
+  // 두 앱 다 「터미널」 카드가 펼친 채 시작한다 — 접기 클릭은 하지 않는다. Orca 외관은 인터페이스·터미널·창 카드 셋, corral 은 터미널 하나(S6 범위).
+  'settings-appearance': {
+    tabCount: 1,
+    agents: [],
+    scene: { settingsOpen: 'appearance' },
+    detail: '탭 1개, 설정 페이지 › 외관 — 「터미널」 카드 펼침(타이포·테마 목록·디바이더·고급·미리보기). Orca 는 인터페이스·터미널·창 카드 셋, corral 은 터미널 하나'
   },
   wait: {
     tabCount: 1,

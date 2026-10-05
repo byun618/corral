@@ -1,0 +1,576 @@
+{
+  "description": "설정 › 외관 › 「터미널」 카드 (LIFE-512 K5ⓓ). 상태 `settings-appearance` 와 함께만 잰다.\n\n짝짓기 원칙은 settings.json 과 같다(data 속성 > 구조 경로, 글자·aria-label 은 조인 키로 쓰지 않는다). Orca 는 카드 본문 region id(`appearance-section-terminal`) 아래 구조 경로로, corral 은 `data-settings-*` 로 잡는다.",
+  "root": {
+    "orca": "#appearance-section-terminal",
+    "corral": "#settings-card-terminal"
+  },
+  "notes": {
+    "orca-root": "AppearancePane.tsx:237 터미널 AppearanceSection → TerminalAppearanceSection.tsx(타이포 절 · 테마 카탈로그 절(모드 탭·고르기·디바이더) · 고급 · 미리보기 카드)",
+    "scope": "Orca 의 다크/라이트 모드 탭·Ghostty/Warp/YAML 가져오기 버튼은 corral 에 짝이 없다(00-analysis §9 — S19 의도적·S22·T3). 짝 없는 요소는 단위로 두지 않고 그 몫의 높이 차이를 부모 단위의 분류 사유로 적는다"
+  },
+  "units": [
+    {
+      "id": "appearance-section-header",
+      "note": "「외관」 섹션 머리",
+      "orca": ".settings-view-shell section[data-settings-section=\"appearance\"] > div:first-child",
+      "corral": "section[data-settings-section=\"appearance\"] > [data-settings-section-header]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "섹션 머리는 카드 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y 는 스크롤 정렬 몫이다 — 도구가 영역 루트(카드 본문 region)를 같은 자리에 세우는데, Orca 외관에는 터미널 카드 위에 「인터페이스」 카드가 있고 corral(S6 범위)은 터미널 카드 하나다. marginBottom 24 는 corral 섹션의 gap 24 와 같은 간격"
+    },
+    {
+      "id": "appearance-section-title",
+      "note": "「외관」 제목",
+      "orca": ".settings-view-shell section[data-settings-section=\"appearance\"] h2",
+      "corral": "section[data-settings-section=\"appearance\"] > [data-settings-section-header] h2",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "global": true,
+      "globalWhy": "섹션 머리는 카드 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y 는 스크롤 정렬 몫이다 — 도구가 영역 루트(카드 본문 region)를 같은 자리에 세우는데, Orca 외관에는 터미널 카드 위에 「인터페이스」 카드가 있고 corral(S6 범위)은 터미널 카드 하나다. 폭은 제목 묶음이 설명 글 폭을 따른다 — 설명 문구가 다르다(Orca 외관은 인터페이스·터미널·창, corral 은 터미널만 — 섹션 범위)"
+    },
+    {
+      "id": "appearance-section-description",
+      "note": "「외관」 설명",
+      "orca": ".settings-view-shell section[data-settings-section=\"appearance\"] > div:first-child p",
+      "corral": "section[data-settings-section=\"appearance\"] > [data-settings-section-header] p",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "global": true,
+      "globalWhy": "섹션 머리는 카드 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y 는 스크롤 정렬 몫이다 — 도구가 영역 루트(카드 본문 region)를 같은 자리에 세우는데, Orca 외관에는 터미널 카드 위에 「인터페이스」 카드가 있고 corral(S6 범위)은 터미널 카드 하나다. 폭은 설명 문구 차이(섹션 범위) — 문구 자체는 T2 레지스트리 description"
+    },
+    {
+      "id": "terminal-card",
+      "note": "외관 「터미널」 카드 테두리 상자",
+      "orca": "div.rounded-xl:has(> button[aria-controls=\"appearance-section-terminal\"])",
+      "corral": "[data-settings-collapsible=\"terminal\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "카드는 루트(본문 region)의 부모다",
+      "classify": "의도적",
+      "classifyWhy": "y +1: Orca 는 본문 위 선(border-t)이 region 밖 격자 래퍼에, corral 은 region 자신에 있어 region 을 맞추면 카드가 1px 내려온다. h −106 = 짝 없는 요소 합(Ghostty 가져오기 12 · Warp/YAML 가져오기 12 · 모드 탭 58 · 그 아래 여백 24 — 00-analysis §9). marginBottom 10 은 Orca 카드 사이 space-y-2.5 — corral 은 카드가 하나다"
+    },
+    {
+      "id": "terminal-card-toggle",
+      "note": "카드 머리(접기 버튼)",
+      "orca": "button[aria-controls=\"appearance-section-terminal\"]",
+      "corral": "[data-settings-collapsible=\"terminal\"] > button",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "카드 머리는 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y +1 은 terminal-card 와 같은 사유"
+    },
+    {
+      "id": "terminal-card-title",
+      "note": "카드 제목 「터미널」",
+      "orca": "button[aria-controls=\"appearance-section-terminal\"] span.font-semibold",
+      "corral": "[data-settings-collapsible=\"terminal\"] .settings-collapsible-title",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "global": true,
+      "globalWhy": "카드 머리는 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y +1 은 terminal-card 와 같은 사유. lineHeight 20px 은 r2 에서 해소(r1 normal)"
+    },
+    {
+      "id": "terminal-card-icon",
+      "note": "카드 아이콘 칸",
+      "orca": "button[aria-controls=\"appearance-section-terminal\"] > span:first-child",
+      "corral": "[data-settings-collapsible=\"terminal\"] .settings-collapsible-icon",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "카드 머리는 루트 밖",
+      "classify": "의도적",
+      "classifyWhy": "y +1 은 terminal-card 와 같은 사유"
+    },
+    {
+      "id": "terminal-region",
+      "note": "카드 본문(region)",
+      "orca": "#appearance-section-terminal",
+      "corral": "#settings-card-terminal",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "루트 자신",
+      "classify": "의도적",
+      "classifyWhy": "h −105 는 terminal-card 의 h −106 에서 위 선 1px 을 뺀 값(같은 사유). 위 선이 region 안(corral)/밖(Orca)에 있는 구조 차이 — 같은 자리에 같은 선. display·flex·gap 은 space-y 대신 flex gap(상자 차이 없음)"
+    },
+    {
+      "id": "typo-block",
+      "note": "타이포그래피 절",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1)",
+      "corral": "[data-settings-block=\"typography\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "h −12 는 typo-header(Ghostty 가져오기 버튼 32px, T3 LIFE-513 이 단다). margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+    },
+    {
+      "id": "typo-header",
+      "note": "타이포그래피 절 머리",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div:first-child",
+      "corral": "[data-settings-block=\"typography\"] > [data-settings-subsection-header]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "h 32→20·alignItems: Orca 머리는 「Ghostty에서 가져오기」 버튼(32px)과 가운데 정렬된다 — 버튼 자리는 T3(LIFE-513). marginBottom 12 는 corral gap 12"
+    },
+    {
+      "id": "typo-title",
+      "note": "「Terminal 타이포그래피」",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div:first-child h3",
+      "corral": "[data-settings-block=\"typography\"] > [data-settings-subsection-header] h3",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −5 는 32px 머리 안 가운데 정렬 몫(typo-header 사유). lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "typo-rows",
+      "note": "타이포 행 묶음(들여쓰기·위아래 선)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y",
+      "corral": "[data-settings-block=\"typography\"] > .settings-rows",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+    },
+    {
+      "id": "font-size-row",
+      "note": "글꼴 크기 행",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y > div:nth-child(1) > div",
+      "corral": "[data-settings-block=\"typography\"] > .settings-rows > .settings-row:nth-child(1)",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유)"
+    },
+    {
+      "id": "font-size-label",
+      "note": "글꼴 크기 라벨",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y > div:nth-child(1) label",
+      "corral": "[data-settings-block=\"typography\"] > .settings-rows > .settings-row:nth-child(1) .settings-row-label",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). label 의 display flex(Orca Label 컴포넌트)·block 은 글자 하나라 상자가 같다"
+    },
+    {
+      "id": "font-size-minus",
+      "note": "글꼴 크기 − 버튼",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y > div:nth-child(1) button:first-child",
+      "corral": "[data-settings-font-size-step=\"-1\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). gap 은 아이콘 하나뿐인 버튼이라 효과 없음"
+    },
+    {
+      "id": "font-size-input",
+      "note": "글꼴 크기 입력",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y > div:nth-child(1) input",
+      "corral": "[data-settings-number=\"글꼴 크기\"]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "font-family-row",
+      "note": "글꼴군 행",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div.ml-4.divide-y > div:nth-child(2) > div",
+      "corral": "[data-settings-block=\"typography\"] > .settings-rows > .settings-row:nth-child(2)",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −12·h +1: 행 사이 선이 Orca 는 앞 행 래퍼의 아래 선(divide-y), corral 은 뒤 행의 위 선이다 — 같은 픽셀 줄, 묶음 높이(107)는 같다. 나머지 y 는 y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유)"
+    },
+    {
+      "id": "font-family-input",
+      "note": "글꼴군 입력",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) input[role=\"combobox\"]",
+      "corral": "[data-settings-font-family]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). paddingRight: Orca 는 자동완성 콤보박스(지우기·제안 버튼 48px 자리), corral 은 자유 입력 + 제안 5개 datalist(00-analysis §9 워커 재량 — 시스템 글꼴 열거 없음)"
+    },
+    {
+      "id": "typo-advanced",
+      "note": "타이포 「고급」 펼침 버튼",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(1) > div:nth-child(3) button",
+      "corral": "[data-settings-disclosure=\"typography\"] > button",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). 높이 28·lineHeight 는 r2 에서 해소, 행 묶음과의 간격 12(margin 겹침)는 r2 에서 해소"
+    },
+    {
+      "id": "theme-block",
+      "note": "테마 절",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2)",
+      "corral": "[data-settings-block=\"theme\"]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −11 은 타이포 절 머리 높이 몫이다(typo-header — 「Ghostty에서 가져오기」 버튼은 T3 LIFE-513, +1 은 terminal-card 사유). h −94 = 테마 머리 −12(Warp·YAML 가져오기, S22) + 모드 탭 −58 + 그 아래 여백 −24(S19). 위 여백 0·gap 20 은 r2 에서 해소. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+    },
+    {
+      "id": "theme-title",
+      "note": "「터미널 테마」",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) > div:first-child h3",
+      "corral": "[data-settings-block=\"theme\"] > [data-settings-subsection-header] h3",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −17 = 타이포 몫 −11 + 테마 머리(Warp·YAML 버튼 32px) 안 가운데 정렬 −6. lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "theme-picker",
+      "note": "테마 고르기 묶음(라벨·검색·목록)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg)",
+      "corral": "[data-settings-theme-picker]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. margin(Orca space-y-*)과 flex gap(corral)은 같은 간격을 다른 방식으로 만든 것이다 — 상자 차이 없음"
+    },
+    {
+      "id": "theme-label",
+      "note": "테마 라벨",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) > div.space-y-1 > label",
+      "corral": "[data-settings-theme-picker] .settings-row-label",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. label display(flex/block)·marginBottom 4 는 corral 묶음 gap 4 — 상자 같음"
+    },
+    {
+      "id": "theme-description",
+      "note": "테마 설명",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) > div.space-y-1 > p",
+      "corral": "[data-settings-theme-picker] .settings-row-description",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+    },
+    {
+      "id": "theme-search",
+      "note": "테마 검색 입력",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) > input",
+      "corral": "[data-settings-theme-search]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). display·marginBottom 은 flex gap 몫"
+    },
+    {
+      "id": "theme-list",
+      "note": "테마 목록 상자",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) > div.rounded-lg",
+      "corral": "[data-settings-theme-picker] .settings-theme-list",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+    },
+    {
+      "id": "theme-status",
+      "note": "목록 머리(선택됨·표시 중)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) > div.rounded-lg > div:first-child",
+      "corral": "[data-settings-theme-picker] .settings-theme-status",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다. lineHeight 16 은 r2 에서 해소"
+    },
+    {
+      "id": "theme-scroll",
+      "note": "목록 스크롤 영역",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) [data-slot=\"scroll-area\"]",
+      "corral": "[data-settings-theme-picker] .settings-theme-scroll",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. overflow·padding: Orca 는 Radix ScrollArea(겹치는 스크롤바, padding 은 viewport 안쪽 div), corral 은 기본 overflow 스크롤(패딩을 스크롤 상자에) — 상자 크기 같음"
+    },
+    {
+      "id": "theme-group",
+      "note": "기본 제공 그룹",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) [data-slot=\"scroll-area-viewport\"] div.space-y-1.rounded-md",
+      "corral": ".settings-theme-group",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 corral 기본 스크롤바가 자리를 차지하는 몫(Radix 겹침 스크롤바 미도입 — 의존성 추가 없이 기본 스크롤). radius 8 은 Orca 가 「가져온 테마」 그룹 강조용으로 단 것(배경 없음 — 보이지 않음, 가져오기는 S22·T3). h 는 r2 에서 해소(행 36)"
+    },
+    {
+      "id": "theme-group-title",
+      "note": "「기본 제공」 그룹 제목",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) [data-slot=\"scroll-area-viewport\"] div.space-y-1.rounded-md > p",
+      "corral": ".settings-theme-group-title",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 24.5 는 r2 에서 해소"
+    },
+    {
+      "id": "theme-option",
+      "note": "테마 행(첫 행, 비선택)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) [data-slot=\"scroll-area-viewport\"] div.space-y-1.rounded-md > button:nth-of-type(1)",
+      "corral": ".settings-theme-group > button:nth-of-type(1)",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 높이 36 은 r2 에서 해소"
+    },
+    {
+      "id": "theme-option-selected",
+      "note": "테마 행(선택됨)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-3:has(> div.rounded-lg) [data-slot=\"scroll-area-viewport\"] div.space-y-1.rounded-md > button.bg-accent",
+      "corral": ".settings-theme-option.is-selected",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. w −11 은 theme-group 사유. marginBottom 4 는 gap 4. 렌더 폰트: 도구는 단위 바로 아래 글자만 모은다 — Orca 이름 글자는 span 2단 안쪽이라 「현재」 2글자만 잡혔다. 그 2글자는 두 앱 모두 Apple SD Gothic Neo, 테마 제목(theme-title)의 Geist 1·Apple SD 5 도 같다"
+    },
+    {
+      "id": "divider-row",
+      "note": "다크 디바이더 색상 행",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-6 > div:nth-child(2) > div",
+      "corral": "[data-settings-theme-picker] ~ .settings-row",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. h +1·아래 선: Orca 는 카탈로그 묶음의 아래 선(border-b), corral 은 행 자신의 아래 선 — 같은 자리 같은 선(r2 에서 추가). marginTop 8 + gap 16 = Orca space-y-6(24)"
+    },
+    {
+      "id": "divider-swatch",
+      "note": "디바이더 견본",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-6 > div:nth-child(2) input.w-10",
+      "corral": "[data-settings-color-swatch]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 글자색(fg)은 r4 에서 해소"
+    },
+    {
+      "id": "divider-hex",
+      "note": "디바이더 hex 입력",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) div.space-y-6 > div:nth-child(2) input[data-slot=\"input\"]",
+      "corral": "[data-settings-color]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층(shadow-xs)은 같다(T1 shortcuts-search-input 과 같은 사유). fontSize 14·lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "advanced-toggle",
+      "note": "「고급」(커서·패널) 펼침 버튼",
+      "orca": "#appearance-section-terminal > div div.-mt-4 button",
+      "corral": "[data-settings-disclosure=\"advanced\"] > button",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 위치(아래 선 바로 뒤 pt-2)·lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "preview-card",
+      "note": "미리보기 카드",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"]",
+      "corral": "[data-settings-preview]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. boxShadow: shadow-sm 을 r2 에서 넣었다 — 남은 차이는 Tailwind 투명 층 4개뿐"
+    },
+    {
+      "id": "preview-header",
+      "note": "미리보기 머리",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] [data-slot=\"card-header\"]",
+      "corral": "[data-settings-preview] .terminal-preview-header",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. Orca CardHeader 는 grid, corral 은 flex — 높이 69 는 r2 에서 해소. 옆·위 테두리 색은 두께 0 인 변의 색이라 그려지지 않는다"
+    },
+    {
+      "id": "preview-title",
+      "note": "미리보기 제목",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] [data-slot=\"card-title\"]",
+      "corral": "[data-settings-preview] .terminal-preview-title",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. marginBottom 4 는 gap 4. lineHeight 는 r2 에서 해소"
+    },
+    {
+      "id": "preview-switch",
+      "note": "창 구분선 스위치",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] button[role=\"switch\"]",
+      "corral": "[data-settings-preview] [data-settings-switch]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. 크기 36×20·색·패딩은 r2 에서 해소(Orca ui/switch). radius 는 둘 다 알약(9999px / 3.35e7px)"
+    },
+    {
+      "id": "preview-frame",
+      "note": "미리보기 틀(300px)",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] [data-slot=\"card-content\"] > div",
+      "corral": "[data-settings-preview] .terminal-preview-frame",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1. Orca 는 세로 flex 안에 가로 flex 한 겹을 더 두고 corral 은 가로 flex 하나 — 상자 같음"
+    },
+    {
+      "id": "preview-term",
+      "note": "미리보기 xterm 칸",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] [data-slot=\"card-content\"] > div > div > div:first-child",
+      "corral": "[data-settings-preview-term]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+    },
+    {
+      "id": "preview-xterm",
+      "note": "미리보기 xterm 화면",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] .xterm-screen",
+      "corral": "[data-settings-preview-term] .xterm-screen",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+    },
+    {
+      "id": "preview-stub",
+      "note": "미리보기 옆 pane 조각",
+      "orca": "#appearance-section-terminal > div > section:nth-of-type(2) [data-slot=\"card\"] [data-slot=\"card-content\"] > div > div > div:last-child",
+      "corral": "[data-settings-preview] .terminal-preview-stub",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −105 는 위쪽 빠진 요소의 누적이다 = 타이포 머리 −12(Ghostty 가져오기, T3) + 테마 머리 −12(Warp·YAML 가져오기, S22) + 다크/라이트 모드 탭 −58 과 그 아래 여백 −24(S19 라이트 분리 의도적) + 카드 +1"
+    }
+  ]
+}

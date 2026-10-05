@@ -239,15 +239,22 @@ async function closeNewTabMenu({ handle, app }) {
  * 닫기는 Esc. corral 단축키 섹션은 Esc 2단계라 한 번에 안 닫히면 2.2초 안에 한 번 더 누른다(Orca 198 도 단축키 섹션에서 같다).
  */
 export const SETTINGS_SELECTORS = {
-  orca: { open: 'button[aria-label="Settings"], button[aria-label="설정"]', page: '.settings-view-shell', section: '[data-settings-section]', nav: '.settings-view-shell aside button', activeNav: '.settings-view-shell aside button[aria-current="page"]' },
-  corral: { open: '[data-settings-open]', page: '[data-settings-page]', section: '[data-settings-section]', nav: '[data-settings-nav-item]', activeNav: '[data-settings-nav-item][aria-current="page"]' },
+  orca: { open: 'button[aria-label="Settings"], button[aria-label="설정"]', page: '.settings-view-shell', section: '[data-settings-section]', nav: '.settings-view-shell aside button', activeNav: '.settings-view-shell aside button[aria-current="page"]', terminalCard: 'button[aria-controls="appearance-section-terminal"]' },
+  corral: { open: '[data-settings-open]', page: '[data-settings-page]', section: '[data-settings-section]', nav: '[data-settings-nav-item]', activeNav: '[data-settings-nav-item][aria-current="page"]', terminalCard: '[data-settings-collapsible="terminal"] > button' },
 }
-const SHORTCUTS_NAV_TEXT = ['단축키', 'Shortcuts', 'Keyboard Shortcuts']
+// LIFE-512 K5ⓓ — 섹션별 내비 글자. `settingsOpen: true` 는 단축키(511), `settingsOpen: 'appearance'` 는 외관 섹션이다.
+const SETTINGS_NAV_TEXT = { shortcuts: ['단축키', 'Shortcuts', 'Keyboard Shortcuts'], appearance: ['외관', 'Appearance'] }
+/** 장면의 `settingsOpen` 값 → 세울 섹션 id. 511 장면은 `true` 를 쓴다. */
+export function settingsSectionOf(settingsOpen) {
+  return settingsOpen === true ? 'shortcuts' : settingsOpen
+}
 
 function observeSettingsPage(sel) {
   const section = document.querySelector(sel.section)
   const active = document.querySelector(sel.activeNav)
+  const terminalCard = document.querySelector(sel.terminalCard)
   return {
+    terminalCardOpen: terminalCard === null ? null : terminalCard.getAttribute('aria-expanded') === 'true',
     open: document.querySelector(sel.page) !== null,
     section: section?.getAttribute('data-settings-section') ?? null,
     activeNav: active?.textContent?.trim() ?? null,
@@ -259,21 +266,21 @@ async function observeSettings({ handle, app }) {
   return handle.cdp.evaluate(observeSettingsPage, SETTINGS_SELECTORS[app])
 }
 
-async function openSettings({ handle, app }) {
+async function openSettings({ handle, app, section = 'shortcuts' }) {
   const sel = SETTINGS_SELECTORS[app]
   if (!(await click({ handle, selector: sel.open }))) return
   await until(async () => (await observeSettings({ handle, app })).open, `${app} 설정 열림`, 10_000).catch(() => null)
-  // 내비의 「단축키」 행 — 글자로 찾아 표식을 달고 그 표식을 실제 마우스로 누른다.
+  // 내비의 섹션 행(「단축키」·「외관」) — 글자로 찾아 표식을 달고 그 표식을 실제 마우스로 누른다.
   const marked = await handle.cdp.evaluate(({ nav, texts }) => {
     const button = [...document.querySelectorAll(nav)].find((el) => texts.includes((el.textContent ?? '').trim()))
     if (!button) return false
     button.setAttribute('data-l511-shortcuts-nav', '')
     return true
-  }, { nav: sel.nav, texts: SHORTCUTS_NAV_TEXT })
+  }, { nav: sel.nav, texts: SETTINGS_NAV_TEXT[section] })
   if (!marked) return
   await click({ handle, selector: '[data-l511-shortcuts-nav]' })
   await handle.cdp.evaluate(() => { document.querySelector('[data-l511-shortcuts-nav]')?.removeAttribute('data-l511-shortcuts-nav'); return true })
-  await until(async () => (await observeSettings({ handle, app })).section === 'shortcuts', `${app} 설정 › 단축키`, 10_000).catch(() => null)
+  await until(async () => (await observeSettings({ handle, app })).section === section, `${app} 설정 › ${section}`, 10_000).catch(() => null)
   await pause(400)
 }
 
@@ -476,7 +483,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.tabStripEnd) await wheelTabStripTo({ handle, app, edge: 'end' })
     if (scene.tabStripStart) await wheelTabStripTo({ handle, app, edge: 'start' })
     if (scene.newTabMenu) await openNewTabMenu({ handle, app, query: scene.newTabMenu.query ?? '' })
-    if (scene.settingsOpen) await openSettings({ handle, app })
+    if (scene.settingsOpen) await openSettings({ handle, app, section: settingsSectionOf(scene.settingsOpen) })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
       const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
@@ -509,7 +516,9 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     // 설정: 열렸고 단축키 섹션이 서 있고 내비의 활성 행이 있고 포커스가 내비 버튼에 있다(두 앱 같은 자리).
     if (scene.settingsOpen) {
       const settings = seen.settings
-      if (!(settings && settings.open && settings.section === 'shortcuts' && settings.activeNav !== null && settings.focusInNav)) return false
+      if (!(settings && settings.open && settings.section === settingsSectionOf(scene.settingsOpen) && settings.activeNav !== null && settings.focusInNav)) return false
+      // 외관(512): 「터미널」 카드가 펼쳐져 있다 — 두 앱 다 펼친 채 시작한다(Orca AppearancePane.tsx:90, corral SettingsCollapsibleCard).
+      if (scene.settingsOpen === 'appearance' && settings.terminalCardOpen !== true) return false
     } else if (!seen.settings || seen.settings.open) {
       // 설정이 없어야 할 장면 — 관측을 못 했거나 열려 있으면 실패(r1 R1-05). 「안 봤다」 를 「닫혔다」 로 읽지 않는다.
       return false
@@ -527,6 +536,6 @@ export function describeScene(seen) {
   if (!seen) return '(관측 없음)'
   const strip = seen.tabStrip ? ` · 탭 스트립 ${seen.tabStrip.scrollLeft}/${seen.tabStrip.max} dock ${seen.tabStrip.docked ?? '없음'}` : ''
   const menu = seen.newTabMenu ? ` · + 메뉴 ${seen.newTabMenu.open ? '열림' : '닫힘'} 입력포커스 ${seen.newTabMenu.inputFocused} 질의 "${seen.newTabMenu.value ?? ''}" 결과 ${seen.newTabMenu.results} 항목 ${seen.newTabMenu.items}` : ''
-  const settings = seen.settings ? ` · 설정 ${seen.settings.open ? '열림' : '닫힘'} 섹션 ${seen.settings.section} 활성 「${seen.settings.activeNav}」 포커스 내비 ${seen.settings.focusInNav}` : ''
+  const settings = seen.settings ? ` · 설정 ${seen.settings.open ? '열림' : '닫힘'} 섹션 ${seen.settings.section} 활성 「${seen.settings.activeNav}」 포커스 내비 ${seen.settings.focusInNav}${seen.settings.terminalCardOpen === null ? '' : ` 터미널 카드 ${seen.settings.terminalCardOpen ? '펼침' : '접힘'}`}` : ''
   return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}${settings}`
 }

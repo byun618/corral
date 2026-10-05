@@ -358,3 +358,91 @@ describe('리뷰 r3 repro.mts·edge-fixtures.mts 테마·파일 사례 — 기�
   })
 })
 
+
+describe('리뷰 r4 repro.mts·controls.mts 구성·테마 파일 사례 — 기대값 = Ghostty 의미(fix4 R4-01~03)', () => {
+  const longComment = (bytes: number): string => `#${'x'.repeat(bytes - 1)}`
+  const stopped = ({ file, line }: { file: string; line: number }): { key: string; reason: string } => ({ key: file, reason: `${file} ${line}번째 줄이 4094바이트를 넘어 Ghostty 처럼 그 뒤를 읽지 않음` })
+
+  it.each<[string, string, Partial<Settings>]>([
+    ['unicode-nbsp-color', 'background = #111111\nbackground = #222222\n', { terminalColorOverrides: { background: '#111111' } }],
+    ['embedded-cr-font', 'font-size = 18\nfont-size =\r20\n', { terminalFontSize: 18 }],
+    ['unicode-nbsp-reset', 'font-size = 18\nfont-size = \n', { terminalFontSize: 18 }],
+    ['comment-limit-control', `font-size = 18\n${longComment(4094)}\nfont-size = 20\n`, { terminalFontSize: 20 }],
+    ['leading-dot-percent', 'adjust-cell-height = .5%\n', { terminalLineHeight: 1.005 }],
+    ['trailing-dot-percent', 'adjust-cell-height = 14.%\n', { terminalLineHeight: 1.14 }],
+    ['percent-spelling-control', 'adjust-cell-height = 0.5%\n', { terminalLineHeight: 1.005 }],
+    ['quoted-cr-nan', 'font-size = 18\nfont-size = "nan\r"\n', { terminalFontSize: 18 }],
+  ])('구성 파일 %s', async (_name, content, diff) => {
+    put({ file: path.join(xdgDir(), 'config'), content })
+    expect((await found()).diff).toEqual(diff)
+  })
+
+  it('구성 파일 overlong-comment — 4095바이트 줄에서 그 파일은 멈추고(앞 할당 유지) 사유를 보인다', async () => {
+    const file = put({ file: path.join(xdgDir(), 'config'), content: `font-size = 18\n${longComment(4095)}\nfont-size = 20\n` })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18 })
+    expect(result.unsupported).toEqual([stopped({ file, line: 2 })])
+  })
+
+  it('긴 줄에서 멈춘 파일 뒤의 다른 후보 파일은 계속 읽는다(파일마다 LineIterator 를 새로 만든다)', async () => {
+    const first = put({ file: path.join(xdgDir(), 'config'), content: `font-size = 18\n${longComment(5000)}\nfont-size = 20\nbackground = #111111\n` })
+    put({ file: path.join(appDir(), 'config'), content: 'background = #222222\n' })
+    const result = await found()
+    expect(result.configPaths).toEqual([first, path.join(appDir(), 'config')])
+    expect(result.diff).toEqual({ terminalFontSize: 18, terminalColorOverrides: { background: '#222222' } })
+    expect(result.unsupported).toEqual([stopped({ file: first, line: 2 })])
+  })
+
+  it('멀티바이트 문자가 경계에 걸친 줄 — 4095바이트(글자 수 4093)면 멈춘다', async () => {
+    const file = put({ file: path.join(xdgDir(), 'config'), content: `font-size = 18\n#${'x'.repeat(4091)}가\nfont-size = 20\n` })
+    expect(await found()).toMatchObject({ diff: { terminalFontSize: 18 }, unsupported: [stopped({ file, line: 2 })] })
+    put({ file, content: `font-size = 18\n#${'x'.repeat(4090)}가\nfont-size = 20\n` })
+    expect(await found()).toMatchObject({ diff: { terminalFontSize: 20 }, unsupported: [] })
+  })
+
+  it('테마 파일 R4-01 — NBSP 가 붙은 뒤 값은 Ghostty 가 거절해 앞 값이 남는다', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#111111\nbackground= #222222\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalColorOverrides: { background: '#111111' } })
+    expect(result.unsupported).toEqual([{ key: 'background', reason: 'hex 색만 받음 (#RRGGBB·RRGGBB·#RGB) — 색 이름·특수값은 지원하지 않음 · Ghostty 도 받지 않아 이 줄은 무시됨' }])
+  })
+
+  it('테마 파일 R4-02 — 4095바이트 줄에서 테마 파일만 멈추고(앞 색 유지) 사유, 구성 파일은 끝까지 읽는다', async () => {
+    const theme = put({ file: path.join(xdgDir(), 'themes', 'T'), content: `background=#111111\n${longComment(4095)}\nbackground=#222222\n` })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\nfont-size=18\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18, terminalColorOverrides: { background: '#111111' } })
+    expect(result.unsupported).toEqual([{ key: 'theme', reason: `${theme} 2번째 줄이 4094바이트를 넘어 Ghostty 처럼 그 뒤를 읽지 않음` }])
+    put({ file: theme, content: `background=#111111\n${longComment(4094)}\nbackground=#222222\n` })
+    expect(await found()).toMatchObject({ diff: { terminalFontSize: 18, terminalColorOverrides: { background: '#222222' } }, unsupported: [] })
+  })
+
+  it('구성 파일 긴 줄과 테마 파일은 따로 — 구성이 멈춰도 그 전에 나온 theme 은 끝까지 읽는다', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#111111\npalette=1=#123456\n' })
+    const file = put({ file: path.join(xdgDir(), 'config'), content: `theme=T\n${longComment(4095)}\nbackground=#222222\n` })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalColorOverrides: { background: '#111111', red: '#123456' } })
+    expect(result.unsupported).toEqual([stopped({ file, line: 2 })])
+  })
+
+  it('BOM — 구성 파일은 건너뛰고(Config.loadReader 3886-3896) 테마 파일은 첫 줄 키에 남아 그 줄을 안 가져온다(loadTheme 4413-4418)', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: '﻿background=#111111\npalette=1=#123456\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: '﻿theme=T\nfont-size=18\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18, terminalColorOverrides: { red: '#123456' } })
+    expect(result.unsupported).toEqual([])
+  })
+
+  it('controls — R3-04 마지막 수용 테마 · 불확정 테마 쌍은 가져오지 않음', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'T'), content: 'background=#123456\n' })
+    for (const suffix of ['light:Missing', 'garbage:value', 'foo=bar']) {
+      put({ file: path.join(xdgDir(), 'config'), content: `theme=T\ntheme=${suffix}\n` })
+      expect((await found()).diff.terminalColorOverrides?.background).toBe('#123456')
+    }
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme=T\ntheme=light:"T",dark:T\ntheme=T\nfont-size=18\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18 })
+    expect(result.unsupported[0]?.reason).toMatch(/확정할 수 없어/)
+  })
+})

@@ -213,7 +213,8 @@ function mapScalar({ key, value, patch, overrides }: { key: string; value: strin
       // 백분율만 줄 높이 배수로 옮길 수 있다 — 픽셀 값은 셀 높이를 알아야 해서 옮기지 않는다(Orca 주석과 같다).
       const modifier = ghosttyMetricModifier(value)
       if (modifier === null || modifier.kind === 'absolute') return '백분율(%) 값만 받음 — 픽셀 값은 지원하지 않음'
-      const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(modifier.number)
+      // 10진 표기 — `.5`·`14.` 처럼 한쪽이 빈 소수도 Zig parseFloat 가 받는 같은 수다(fix4 R4-03). 숫자는 `ghosttyMetricModifier` 가 이미 하나 이상 확인했다.
+      const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(modifier.number)
       if (match === null) return NUMBER_NOTATION_REASON
       const lineHeight = readExactNumber({ key: 'terminalLineHeight', value: percentToLineHeight({ sign: match[1]!, whole: match[2]!, fraction: match[3] ?? '' }) })
       if (!lineHeight.ok) return `라인 높이 ${lineHeight.reason}`

@@ -28,6 +28,7 @@ Ghostty 동작 규칙(로드 순서·줄 문법·빈 파일·font-family)은 Gho
 | `ghosttyTheme`(쌍 문법) | Ghostty v1.3.1 `src/cli/args.zig` `parseAutoStruct` · `src/cli/CommaSplitter.zig` |
 | `ghosttyMetricModifier` | Ghostty v1.3.1 `src/font/Metrics.zig` `Modifier.parse` |
 | `ghosttyBool` | Ghostty v1.3.1 `src/cli/args.zig` `parseBool` |
+| `parseGhosttyFile`·`skipUtf8Bom`(`parser.ts`) | Ghostty v1.3.1 `src/cli/args.zig` `LineIterator` · `src/config/Config.zig` `loadReader`(BOM) · Zig 0.15.2 `lib/std/Io/Reader.zig` `streamDelimiterLimit`·`Writer.zig` `fixedDrain`(줄 길이 경계) |
 | `zigParseInt` | Zig 0.15.2 `lib/std/fmt.zig` `parseInt`·`parseIntWithSign`·`charToDigit` |
 | `zigParseFloat` | Zig 0.15.2 `lib/std/fmt/parse_float.zig`·`parse_float/parse.zig`(`parsePartialNumberBase`·`parseInfOrNan`·`validUnderscores`)·`FloatStream.zig` |
 

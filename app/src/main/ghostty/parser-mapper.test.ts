@@ -2,7 +2,7 @@
 // corral 에 칸이 없는 키(D7). 일부 사례는 Orca 198 `parser.test.ts`·`mapper.test.ts` 의 입력을 옮겨 corral 기대값으로 바꿨다.
 import { describe, expect, it } from 'vitest'
 import { mapGhosttyToCorral } from './mapper.js'
-import { mergeGhosttyConfig, parseGhosttyConfig } from './parser.js'
+import { MAX_LINE_BYTES, mergeGhosttyConfig, parseGhosttyConfig, parseGhosttyFile, skipUtf8Bom } from './parser.js'
 
 const map = (content: string): ReturnType<typeof mapGhosttyToCorral> => mapGhosttyToCorral(parseGhosttyConfig(content))
 const reasonsOf = ({ content, key }: { content: string; key: string }): string[] => map(content).unsupported.filter((entry) => entry.key === key).map((entry) => entry.reason)
@@ -253,3 +253,90 @@ describe('리뷰 r3 repro.mts 사례 — 기대값 = Ghostty 의미(fix3)', () =
   })
 })
 
+
+describe('리뷰 r4 repro.mts·controls.mts 사례 — 기대값 = Ghostty 의미(fix4 R4-01~03)', () => {
+  // repro.mts 9 사례 그대로(controls.mts 의 R4-01·02·03 줄은 결함 동작을 단언했다 — 여기서는 Ghostty 기대값으로 바꿨다).
+  it.each<[string, string, ReturnType<typeof mapGhosttyToCorral>['patch']]>([
+    ['unicode-nbsp-color', 'background = #111111\nbackground =\u00a0#222222\n', { terminalColorOverrides: { background: '#111111' } }],
+    ['embedded-cr-font', 'font-size = 18\nfont-size =\r20\n', { terminalFontSize: 18 }],
+    ['unicode-nbsp-reset', 'font-size = 18\nfont-size =\u00a0\n', { terminalFontSize: 18 }],
+    ['overlong-comment', `font-size = 18\n#${'x'.repeat(4094)}\nfont-size = 20\n`, { terminalFontSize: 18 }],
+    ['comment-limit-control', `font-size = 18\n#${'x'.repeat(4093)}\nfont-size = 20\n`, { terminalFontSize: 20 }],
+    ['leading-dot-percent', 'adjust-cell-height = .5%\n', { terminalLineHeight: 1.005 }],
+    ['trailing-dot-percent', 'adjust-cell-height = 14.%\n', { terminalLineHeight: 1.14 }],
+    ['percent-spelling-control', 'adjust-cell-height = 0.5%\n', { terminalLineHeight: 1.005 }],
+    ['quoted-cr-nan', 'font-size = 18\nfont-size = "nan\r"\n', { terminalFontSize: 18 }],
+  ])('%s', (_name, content, patch) => {
+    expect(map(content).patch).toEqual(patch)
+  })
+
+  it('controls — r1~r3 매핑 10 사례 · D19 고정 5 경계', () => {
+    const oldCases: Array<[string, ReturnType<typeof mapGhosttyToCorral>['patch']]> = [
+      ['palette=1=#fff\npalette=\npalette=2=#abc', { terminalColorOverrides: { green: '#abc' } }],
+      ['font-size=18\nfont-size=nope', { terminalFontSize: 18 }],
+      ['background=#111111\nbackground=" #abcdef "', { terminalColorOverrides: { background: '#abcdef' } }],
+      ['background=#111111\nbackground=" red "', {}],
+      ['adjust-cell-height=20%\nadjust-cell-height=1_0', {}],
+      ['adjust-cell-height=20%\nadjust-cell-height=2147483648', { terminalLineHeight: 1.2 }],
+      ['palette=0=#111111\npalette=-0=#abcdef', { terminalColorOverrides: { black: '#abcdef' } }],
+      ['palette=1=#111111\npalette=0__1=#abcdef', { terminalColorOverrides: { red: '#abcdef' } }],
+      ['font-family=Menlo\nfont-family=" "\nfont-family=Monaco', { terminalFontFamily: 'Menlo' }],
+      ['palette=1=#111111\npalette=" "', { terminalColorOverrides: { red: '#111111' } }],
+    ]
+    for (const [content, patch] of oldCases) expect(map(content).patch).toEqual(patch)
+    for (const [value, want] of [['-3', 0.15], ['0.05', 0.15], ['0.15', 0.15], ['0.7', 0.7], ['1.5', 1]] satisfies Array<[string, number]>) {
+      expect(map(`unfocused-split-opacity=${value}`).patch.terminalInactivePaneOpacity).toBe(want)
+    }
+    expect(map('font-family=" Menlo "\nfont-family=Monaco').patch.terminalFontFamily).toBeUndefined()
+  })
+
+  it('R4-01 줄 바깥은 space·tab·CR, 키·값은 space·tab 만 — NBSP·세로 탭·폼 피드·안쪽 CR 은 남는다', () => {
+    expect([...parseGhosttyConfig(' \t\rfont-size\t=\t14 \r\r\n')]).toEqual([['font-size', ['14']]])
+    expect(parseGhosttyConfig('background =\u00a0#222222').get('background')).toEqual(['\u00a0#222222'])
+    expect(parseGhosttyConfig('font-size =\r20').get('font-size')).toEqual(['\r20'])
+    expect(parseGhosttyConfig('font-size = 20\v').get('font-size')).toEqual(['20\v'])
+    expect(parseGhosttyConfig('\u00a0font-size = 20').get('\u00a0font-size')).toEqual(['20'])
+    expect(parseGhosttyConfig('\u00a0# not a comment = x').get('\u00a0# not a comment')).toEqual(['x'])
+    expect(parseGhosttyConfig('font-family = " Menlo "').get('font-family')).toEqual([' Menlo '])
+    expect(parseGhosttyConfig('font-size = "nan\r"\r\n').get('font-size')).toEqual(['nan\r'])
+  })
+
+  it('R4-02 4094바이트 통과 · 4095바이트에서 그 파일 읽기 중단(주석·공백·CR 도 바이트로 센다)', () => {
+    expect(MAX_LINE_BYTES).toBe(4094)
+    const file = (content: string): ReturnType<typeof parseGhosttyFile> => parseGhosttyFile(Buffer.from(content, 'utf8'))
+    const valueLine = (bytes: number): string => `font-size = 2${' '.repeat(bytes - 'font-size = 2'.length)}`
+    expect(file(`${valueLine(4094)}\nbackground=#111111`)).toEqual({ config: new Map([['font-size', ['2']], ['background', ['#111111']]]), stoppedAtLine: null })
+    expect(file(`font-size=18\n${valueLine(4095)}\nbackground=#111111`)).toEqual({ config: new Map([['font-size', ['18']]]), stoppedAtLine: 2 })
+    expect(file(`font-size=18\n#${'x'.repeat(4093)}\r\nfont-size=20`)).toEqual({ config: new Map([['font-size', ['18']]]), stoppedAtLine: 2 })
+    expect(file(`font-size=18\n\n${' '.repeat(4095)}\nfont-size=20`).stoppedAtLine).toBe(3)
+    expect(file(`font-size=18\n#${'x'.repeat(4094)}`).stoppedAtLine).toBe(2)
+  })
+
+  it('R4-02 멀티바이트 문자가 경계에 걸친 줄 — 글자 수가 아니라 UTF-8 바이트로 센다', () => {
+    const file = (content: string): ReturnType<typeof parseGhosttyFile> => parseGhosttyFile(Buffer.from(content, 'utf8'))
+    // '가' = 3바이트. 4091 + 3 = 4094(통과), 4092 + 3 = 4095(중단 — 글자 수로는 4093 이라 문자열 길이로 세면 통과로 잘못 본다).
+    expect(file(`#${'x'.repeat(4090)}가\nfont-size=20`)).toEqual({ config: new Map([['font-size', ['20']]]), stoppedAtLine: null })
+    expect(file(`#${'x'.repeat(4091)}가\nfont-size=20`)).toEqual({ config: new Map(), stoppedAtLine: 1 })
+    expect(`#${'x'.repeat(4091)}가`.length).toBe(4093)
+    expect(file(`font-family = ${'가'.repeat(1360)}\nfont-size=20`).stoppedAtLine).toBe(null)
+    expect(file(`font-family = ${'가'.repeat(1361)}\nfont-size=20`).stoppedAtLine).toBe(1)
+  })
+
+  it('BOM — 구성 파일만 건너뛴다(Config.loadReader), 줄 파서 자체는 BOM 을 키의 일부로 둔다(테마 파일 = loadTheme)', () => {
+    const bom = Buffer.from('\ufefffont-size=18\n', 'utf8')
+    expect([...parseGhosttyFile(skipUtf8Bom(bom)).config]).toEqual([['font-size', ['18']]])
+    expect([...parseGhosttyFile(bom).config]).toEqual([['\ufefffont-size', ['18']]])
+    expect(skipUtf8Bom(Buffer.from('font-size=18'))).toEqual(Buffer.from('font-size=18'))
+    expect(skipUtf8Bom(Buffer.from([0xef, 0xbb]))).toEqual(Buffer.from([0xef, 0xbb]))
+  })
+
+  it('R4-03 백분율 .5%·14.%·-.5%·+14.% 는 같은 십진수(-.5% 는 -0.5% 와 같이 1~3 배 범위 밖 사유), 천분율 초과 정밀도는 거부 유지', () => {
+    expect(map('adjust-cell-height=.5%').patch.terminalLineHeight).toBe(1.005)
+    expect(map('adjust-cell-height=14.%').patch.terminalLineHeight).toBe(1.14)
+    expect(map('adjust-cell-height=-.5%')).toEqual(map('adjust-cell-height=-0.5%'))
+    expect(map('adjust-cell-height=+14.%').patch.terminalLineHeight).toBe(1.14)
+    expect(map('adjust-cell-height=.0%').patch.terminalLineHeight).toBe(1)
+    for (const value of ['.25%', '14.25%', '33.3333%']) expect(map(`adjust-cell-height=${value}`).patch.terminalLineHeight).toBeUndefined()
+    for (const value of ['1e1%', '0x1p3%', 'inf%', 'nan%']) expect(reasonsOf({ content: `adjust-cell-height=${value}`, key: 'adjust-cell-height' })).toEqual(['10진 소수 표기만 옮김 (Ghostty 는 받는 지수·16진·inf·nan·밑줄 표기는 지원하지 않음)'])
+  })
+})

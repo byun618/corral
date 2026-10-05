@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ghosttyConfigDir, type GhosttyPathEnv } from './discovery.js'
-import { parseGhosttyConfig, type GhosttyConfig } from './parser.js'
+import { parseGhosttyFile, stoppedReason, type GhosttyConfig } from './parser.js'
 
 /** 테마 파일은 수십 줄이다 — 이보다 크면 테마가 아니다(Orca 256KB). */
 export const MAX_THEME_BYTES = 262_144
@@ -22,7 +22,8 @@ const THEME_COLOR_KEYS: ReadonlySet<string> = new Set([
   'split-divider-color',
 ])
 
-export type ThemeResolution = { status: 'found'; colors: GhosttyConfig } | { status: 'failed'; reason: string }
+/** `stopped` = 4094바이트를 넘는 줄에서 읽기를 멈췄으면 그 사유(앞 줄 색은 `colors` 에 남는다, fix4 R4-02), 끝까지 읽었으면 null. */
+export type ThemeResolution = { status: 'found'; colors: GhosttyConfig; stopped: string | null } | { status: 'failed'; reason: string }
 
 /** 사용자 테마 폴더 → Ghostty 리소스 폴더(`GHOSTTY_RESOURCES_DIR/themes`, 없으면 설치본 앱 안). 사용자 테마가 내장 테마를 가린다. */
 export function ghosttyThemeSearchDirs(env: GhosttyPathEnv): string[] {
@@ -32,27 +33,29 @@ export function ghosttyThemeSearchDirs(env: GhosttyPathEnv): string[] {
   return [path.join(ghosttyConfigDir(env), 'themes'), resources]
 }
 
-type ThemeRead = { status: 'found'; colors: GhosttyConfig } | { status: 'missing' } | { status: 'invalid'; reason: string }
+type ThemeRead = { status: 'found'; colors: GhosttyConfig; stopped: string | null } | { status: 'missing' } | { status: 'invalid'; reason: string }
 
 function errorCode(error: unknown): unknown {
   return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined
 }
 
 async function readThemeColors(themePath: string): Promise<ThemeRead> {
-  let content: string
+  let content: Buffer
   try {
     const info = await fs.stat(themePath)
     if (!info.isFile()) return { status: 'invalid', reason: `테마 경로가 파일이 아님: ${themePath}` }
     if (info.size > MAX_THEME_BYTES) return { status: 'invalid', reason: `테마 파일이 너무 큼: ${info.size}바이트, 한도 ${MAX_THEME_BYTES}` }
-    content = await fs.readFile(themePath, 'utf8')
+    content = await fs.readFile(themePath)
   } catch (error) {
     const code = errorCode(error)
     if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'missing' }
     return { status: 'invalid', reason: `테마 파일을 읽을 수 없음: ${error instanceof Error ? error.message : String(error)}` }
   }
+  // BOM 은 건너뛰지 않는다 — Ghostty `loadTheme`(Config.zig 4413-4418)은 `loadReader` 의 BOM 처리를 거치지 않는다(`parser.ts` `skipUtf8Bom`).
+  const parsed = parseGhosttyFile(content)
   const colors: GhosttyConfig = new Map()
-  for (const [key, values] of parseGhosttyConfig(content)) if (THEME_COLOR_KEYS.has(key)) colors.set(key, values)
-  return { status: 'found', colors }
+  for (const [key, values] of parsed.config) if (THEME_COLOR_KEYS.has(key)) colors.set(key, values)
+  return { status: 'found', colors, stopped: parsed.stoppedAtLine === null ? null : stoppedReason({ path: themePath, line: parsed.stoppedAtLine }) }
 }
 
 export async function resolveGhosttyTheme({ name, env }: { name: string; env: GhosttyPathEnv }): Promise<ThemeResolution> {

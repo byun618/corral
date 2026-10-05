@@ -9,7 +9,7 @@ import type { GhosttyImportPreview, GhosttyUnsupportedKey } from '../../shared/g
 import { settingValuesEqual, type Settings, type TerminalColorOverrides } from '../../shared/terminal-settings.js'
 import { ghosttyConfigCandidates, type GhosttyPathEnv } from './discovery.js'
 import { mapGhosttyToCorral } from './mapper.js'
-import { mergeGhosttyConfig, parseGhosttyConfig, type GhosttyConfig } from './parser.js'
+import { mergeGhosttyConfig, parseGhosttyFile, skipUtf8Bom, stoppedReason, type GhosttyConfig } from './parser.js'
 import { ghosttyTheme } from './ghostty-grammar.js'
 import { resolveGhosttyTheme } from './theme-resolution.js'
 
@@ -20,10 +20,14 @@ function errorCode(error: unknown): unknown {
   return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined
 }
 
-/** 후보를 순서대로 읽는다. 없음·디렉터리·빈 파일은 조용히 건너뛰고, 읽기 실패·크기 초과는 그 파일만 건너뛰며 첫 오류를 남긴다(K1ⓑ). */
-async function readConfigFiles(env: GhosttyPathEnv): Promise<{ config: GhosttyConfig; readPaths: string[]; firstError: string | null }> {
+/**
+ * 후보를 순서대로 읽는다. 없음·디렉터리·빈 파일은 조용히 건너뛰고, 읽기 실패·크기 초과는 그 파일만 건너뛰며 첫 오류를 남긴다(K1ⓑ).
+ * 4094바이트를 넘는 줄에서 멈춘 파일은 앞 줄까지만 합치고 사유를 남긴다 — 다음 후보 파일은 따로 읽는다(Ghostty 도 파일마다 LineIterator 를 새로 만든다, fix4 R4-02).
+ */
+async function readConfigFiles(env: GhosttyPathEnv): Promise<{ config: GhosttyConfig; readPaths: string[]; firstError: string | null; stopped: GhosttyUnsupportedKey[] }> {
   const config: GhosttyConfig = new Map()
   const readPaths: string[] = []
+  const stopped: GhosttyUnsupportedKey[] = []
   let firstError: string | null = null
   for (const candidate of ghosttyConfigCandidates(env)) {
     try {
@@ -33,15 +37,17 @@ async function readConfigFiles(env: GhosttyPathEnv): Promise<{ config: GhosttyCo
         firstError ??= `구성 파일이 너무 커서 가져올 수 없습니다 (${candidate}: ${info.size}바이트, 한도 ${MAX_CONFIG_BYTES}).`
         continue
       }
-      mergeGhosttyConfig({ target: config, next: parseGhosttyConfig(await fs.readFile(candidate, 'utf8')) })
+      const parsed = parseGhosttyFile(skipUtf8Bom(await fs.readFile(candidate)))
+      mergeGhosttyConfig({ target: config, next: parsed.config })
       readPaths.push(candidate)
+      if (parsed.stoppedAtLine !== null) stopped.push({ key: candidate, reason: stoppedReason({ path: candidate, line: parsed.stoppedAtLine }) })
     } catch (error) {
       const code = errorCode(error)
       if (code === 'ENOENT' || code === 'ENOTDIR') continue
       firstError ??= `구성을 읽을 수 없습니다 (${candidate}): ${error instanceof Error ? error.message : String(error)}`
     }
   }
-  return { config, readPaths, firstError }
+  return { config, readPaths, firstError, stopped }
 }
 
 /**
@@ -81,6 +87,7 @@ async function applyTheme({ config, env }: { config: GhosttyConfig; env: Ghostty
   const name = chosen.name
   const resolved = await resolveGhosttyTheme({ name, env })
   if (resolved.status === 'failed') return [...reasons, { key: 'theme', reason: resolved.reason }]
+  if (resolved.stopped !== null) reasons.push({ key: 'theme', reason: resolved.stopped })
   for (const [key, values] of resolved.colors) config.set(key, [...values, ...(config.get(key) ?? [])])
   return reasons
 }
@@ -101,9 +108,9 @@ export function diffAgainstCurrent({ patch, current }: { patch: Partial<Settings
 }
 
 export async function previewGhosttyImport({ env, current }: { env: GhosttyPathEnv; current: Settings }): Promise<GhosttyImportPreview> {
-  const { config, readPaths, firstError } = await readConfigFiles(env)
+  const { config, readPaths, firstError, stopped } = await readConfigFiles(env)
   if (readPaths.length === 0) return firstError === null ? { status: 'not-found' } : { status: 'error', error: firstError }
   const themeUnsupported = await applyTheme({ config, env })
   const { patch, unsupported } = mapGhosttyToCorral(config)
-  return { status: 'found', configPaths: readPaths, diff: diffAgainstCurrent({ patch, current }), unsupported: [...unsupported, ...themeUnsupported] }
+  return { status: 'found', configPaths: readPaths, diff: diffAgainstCurrent({ patch, current }), unsupported: [...stopped, ...unsupported, ...themeUnsupported] }
 }

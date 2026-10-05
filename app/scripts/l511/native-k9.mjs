@@ -7,6 +7,10 @@
 //    → UI 「기본값」 → 남은 바이트를 원본(없었으면 없음)으로 복원 → 지문(존재·sha256) 원본과 일치
 // ⓑ Esc 2단계로 닫기 → ⌘, 로 다시 열기 → Esc 2단계로 닫기
 // ⓒ 내내: main counters 격자 요청 수 불변 · pane cols/rows 불변 · xterm 인스턴스 동일 · corral.ndjson 에 stream.sync 새 행 0
+// ⓓ fix1 R1-07(읽기 전용 보강): 사용자 pane 마다 herdr `pane.read`(recent·스크롤백 포함) 전후 텍스트가 **글자 그대로** 같다 —
+//    입력이 새면 셸이 메아리를 찍으므로 텍스트 불변이 이 장면의 입력 경계 관측이다(싱크는 사용자 pane 에 못 넣는다 — 판별력
+//    자기점검은 격리 iso-fix1 이 맡는다). 렌더러 xterm 버퍼(term-read 프로브 pane) = herdr visible.
+// R1-08: 관측 pane·xterm·포커스 대상이 없으면 nonzero — 「관측 대상 0」 이 통과로 새지 않는다.
 //
 // 사용: node native-k9.mjs <ROOT=/tmp/l511n*> <raw 폴더>
 import crypto from 'node:crypto'
@@ -22,6 +26,7 @@ const UD = path.join(process.env.HOME, 'Library/Application Support/corral')
 const KB = path.join(UD, 'keybindings.json')
 const NDJSON = path.join(UD, 'corral.ndjson')
 const ctl = path.join(root, 'ctl.sock')
+const HERDR_SOCK = path.join(process.env.HOME, '.config/herdr/herdr.sock')
 const control = (request, timeout = 20_000) => rpc(ctl, request, timeout)
 const evaluate = async (fn, arg = null) => (await control({ cmd: 'eval', code: `(${fn.toString()})(${JSON.stringify(arg)})` }, 60_000)).result
 const key = (keyCode, modifiers = []) => control({ cmd: 'key', keyCode, modifiers })
@@ -77,6 +82,31 @@ const click = async (selector) => {
   const response = await control({ cmd: 'click', selector })
   checks.require(`click ${selector}`, response.ok === true, { response })
 }
+/** herdr 정식 서버에 읽기만 — pane.read 는 화면을 바꾸지 않는다. */
+const herdrRead = async (paneId, source) => {
+  const response = await rpc(HERDR_SOCK, { id: `l511-${Date.now()}`, method: 'pane.read', params: { pane_id: paneId, format: 'text', strip_ansi: true, source, ...(source === 'recent' ? { lines: 5000 } : {}) } })
+  if (response.error) throw new Error(`pane.read ${paneId}: ${JSON.stringify(response.error)}`)
+  const text = response.result?.text ?? response.result?.read?.text ?? response.result?.content ?? null
+  if (typeof text !== 'string') throw new Error(`pane.read ${paneId}: 모양 모름 ${JSON.stringify(response.result).slice(0, 200)}`)
+  return text
+}
+const readPanes = async (name, panes) => {
+  const texts = {}
+  for (const pane of panes) {
+    texts[pane.paneId] = await herdrRead(pane.paneId, 'recent')
+    fs.writeFileSync(path.join(rawd, `read-${name}-${pane.paneId.replace(/[^A-Za-z0-9]/g, '_')}.txt`), texts[pane.paneId])
+  }
+  return texts
+}
+const trimLines = (text) => { const list = text.replace(/\r/g, '').split('\n').map((line) => line.replace(/\s+$/, '')); while (list.length && list[list.length - 1] === '') list.pop(); return list }
+const probeAgrees = async (name) => {
+  const term = (await control({ cmd: 'term-read' })).term
+  if (!term) return checks.require(`${name}-xterm-probe`, false, { term })
+  const herdr = trimLines(await herdrRead(term.paneId, 'visible'))
+  const xterm = trimLines(term.lines.join('\n'))
+  result.probe = { ...(result.probe ?? {}), [name]: { paneId: term.paneId, xterm, herdr } }
+  return checks.require(`${name}-xterm-equals-herdr`, xterm.length > 0 && JSON.stringify(xterm) === JSON.stringify(herdr), { paneId: term.paneId, xterm: xterm.slice(-3), herdr: herdr.slice(-3) })
+}
 const isOpen = () => evaluate(() => document.querySelector('[data-settings-page]') !== null)
 
 let exitCode = 0
@@ -91,7 +121,11 @@ try {
     return true
   })
   const base = await snapshot('base')
-  result.baseNote = base.panes.length === 0 ? '보이는 pane 0개 — 격자 관측 대상 없음(빈 워크스페이스)' : null
+  // R1-08 — 관측 대상이 없으면 여기서 실패로 끝낸다(이후 「불변」 판정이 빈 집합으로 통과하지 않게).
+  const observable = checks.require('R1-08-observed-pane-xterm-focus', base.panes.length > 0 && base.xterms.length > 0 && base.focusPane !== null, { panes: base.panes, xterms: base.xterms, focus: base.focusPane })
+  if (!observable) throw new Error('관측 pane·xterm·포커스 대상 없음(R1-08)')
+  const textBase = await readPanes('base', base.panes)
+  await probeAgrees('base')
 
   // ⓐ ⚙ → 단축키 → 기록 → 저장
   await click('[data-settings-open]')
@@ -156,6 +190,15 @@ try {
   checks.require('cols-rows-unchanged', result.steps.every((step) => JSON.stringify(step.panes) === JSON.stringify(base.panes)), { base: base.panes })
   checks.require('xterm-same-instance', end.xterms.length === base.xterms.length && end.xterms.every((row) => row.tag === `tag-${row.pane}`), { end: end.xterms })
   checks.require('no-new-tab', end.tabs === base.tabs, { base: base.tabs, end: end.tabs })
+  // ⓓ
+  const textEnd = await readPanes('end', base.panes)
+  for (const pane of base.panes) {
+    const before = trimLines(textBase[pane.paneId])
+    const after = trimLines(textEnd[pane.paneId])
+    const at = before.findIndex((line, index) => after[index] !== line)
+    checks.require(`text-unchanged-${pane.paneId}`, before.length > 0 && JSON.stringify(before) === JSON.stringify(after), { lines: [before.length, after.length], firstDiff: at === -1 ? null : { at, before: before[at] ?? null, after: after[at] ?? null } })
+  }
+  await probeAgrees('end')
   exitCode = checks.exitCode()
 } catch (error) {
   result.error = String(error?.stack ?? error)

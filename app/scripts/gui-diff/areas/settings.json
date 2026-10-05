@@ -292,7 +292,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "y −75: Orca 는 목록 위에 「Terminal 의 단축키 바로가기를 누가 먼저 가로챌지」 정책 블록(ShortcutTerminalPolicyControl)이 있고 corral 에는 그 기능이 없다. 높이 차이는 그 75 와 창 크롬 35"
+      "classifyWhy": "상자 산식(fix1 R057, 1440×900 실측 — r1 부기 1 정정). 둘 다 layout 은 shortcuts-pane 안 「위 오프셋 + layout + 아래 몫」 이다. Orca: pane y172 h619 = 위 124.66(머리·간격에 더해 정책 블록 ShortcutTerminalPolicyControl 이 있다 — corral 위 50 보다 74.66 크다. 블록 내부 분해는 미측정) + layout 494.34 + 아래 0. corral: pane y172 h654 = 위 50(머리 38 + gap 12) + layout 576 + 아래 28(gap 12 + 상태 줄 .shortcuts-status min-height 16). 따라서 y −74.66 = 위 오프셋 차(정책 블록 몫 — corral 에 그 기능 없음), h +81.66 = pane 높이 차 +35 + 위 오프셋 차 +74.66 − 아래 상태 줄 28. pane 높이 +35 는 창 몫(Orca 셸 840 = 900−36 크롬−24 상태바, corral 875 = 900−25 상태바)이다 — 창 크롬은 S4(LIFE-470), 상태바는 상태바 영역 몫. 1440 폭 장면 한정 — 1280 미만 쌓기(R1-02)는 이 분류가 정당화하지 않고 iso-fix1 R1-02 가 따로 본다"
     },
     {
       "id": "shortcuts-rail",
@@ -304,7 +304,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "shortcuts-layout 과 같은 사유(y·높이만)"
+      "classifyWhy": "레일은 layout 격자 칸이라 layout 과 같은 상자다(y·높이 동일) — 산식은 shortcuts-layout 의 classifyWhy(y −74.66 = 위 오프셋 차(정책 블록 몫), h +81.66 = +35 창 몫 + 74.66 − 28 상태 줄)"
     },
     {
       "id": "shortcuts-search-input",

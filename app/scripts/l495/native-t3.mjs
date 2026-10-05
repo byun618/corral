@@ -931,7 +931,31 @@ async function phaseR202() {
   })
 }
 
-const table = { 'guard-selfcheck': phaseGuardSelfcheck, setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit, r101: phaseR101, r102: phaseR102, r202: phaseR202 }
+/**
+ * fix3 R3-01 네이티브 — 사용자 userData `keybindings.json` 이 `{"sidebar.toggle":[null]}` 인 채 기동된 앱: 화면이 서고(오류 경계 없음),
+ * 단축키가 비어 접기 버튼은 「접기」, 누르면 접히고 「사이드바 펼치기」(title 없음)가 서고, 누르면 다시 펼쳐진다. 마우스 클릭(제어 소켓)만 쓴다.
+ */
+async function phaseR301() {
+  await assertOnlyFixture()
+  const loaded = await evaluate(() => window.corral.getKeybindings())
+  const look = () => evaluate(() => ({
+    app: document.querySelector('.app') !== null,
+    toggle: document.querySelector('[data-sidebar-toggle]')?.textContent ?? null,
+    show: ((button) => (button === null ? null : { text: button.textContent, title: button.title }))(document.querySelector('[data-sidebar-show]')),
+  }))
+  const first = await look()
+  await control({ cmd: 'click', selector: '[data-sidebar-toggle]' })
+  const collapsed = await soft(until(async () => ((await look()).show !== null ? look() : null), '사이드바 접힘', 5_000))
+  const shotCollapsed = await shot('r301-sidebar-collapsed')
+  await control({ cmd: 'click', selector: '[data-sidebar-show]' })
+  const expanded = await soft(until(async () => ((await look()).toggle !== null ? look() : null), '사이드바 펼침', 5_000))
+  const shotExpanded = await shot('r301-sidebar-expanded')
+  req.require('r301-null-sidebar-binding-app-renders-and-toggles',
+    JSON.stringify(loaded) === JSON.stringify({ 'sidebar.toggle': [null] }) && first.app && first.toggle === '접기' && collapsed !== false && collapsed.show?.text === '사이드바 펼치기' && collapsed.show?.title === '' && expanded !== false && expanded.toggle === '접기',
+    { loaded, first, collapsed, expanded, shots: [shotCollapsed, shotExpanded] })
+}
+
+const table = { 'guard-selfcheck': phaseGuardSelfcheck, setup: phaseSetup, u1k7: phaseU1K7, k2: phaseK2, k3k4: phaseK3K4, 'persist-check': phasePersistCheck, k6: phaseK6, k8e: phaseK8e, k9: phaseK9, menukeys: phaseMenuKeys, quit: phaseQuit, r101: phaseR101, r102: phaseR102, r202: phaseR202, r301: phaseR301 }
 const ORIGINAL_SOURCE = JSON.parse(run('inputsource', ['current']).out).id
 /** 준비 타이핑(sleep·cd·이름)은 ABC 에서 친다 — r2 에서 한글 입력기로 `ㄴㅣㄷ…` 가 들어가 sleep 이 안 돌았다(t3-k2.log). */
 function restoreSource() {

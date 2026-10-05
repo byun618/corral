@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+/* global window, document, KeyboardEvent, requestAnimationFrame */
 // LIFE-511 K1ⓐⓑⓒⓓⓔ·K2ⓐⓑⓕ·K6ⓐ — 실제 App 마운트에서 설정 진입로(⚙ · ⌘, · 팔레트 · ? 메뉴 · workspace-tools)와 덮기·차단.
 // IPC 는 빈 state 합성(App.null-binding.test.mjs 와 같은 걸음), 키바인딩은 실제 `KeybindingStore` 를 거친다. TerminalPane 은 mock.
 import { act, Component, createElement } from 'react'

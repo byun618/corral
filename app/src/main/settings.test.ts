@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_THEME } from '../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, DEFAULT_TERMINAL_THEME, TERMINAL_COLOR_OVERRIDE_KEYS, type TerminalColorOverrideKey } from '../shared/terminal-settings.js'
 import { SettingsStore } from './settings.js'
 import { UiPrefsStore } from './ui-prefs.js'
 
@@ -201,6 +201,17 @@ describe('U8 — settings.json 과 ui-prefs.json 은 칸이 겹치지 않는다'
 })
 
 describe('terminalColorOverrides (LIFE-513 K7)', () => {
+  it('override 칸 22개 — 타입의 칸과 목록이 같다(R1-06, as const 대신 명시 타입)', () => {
+    // Record 는 칸이 빠지거나 남으면 typecheck 가 실패한다 — 목록과 타입이 어긋나지 않게 묶는 자리.
+    const every: Record<TerminalColorOverrideKey, true> = {
+      foreground: true, background: true, cursor: true, cursorAccent: true, selectionBackground: true, selectionForeground: true,
+      black: true, red: true, green: true, yellow: true, blue: true, magenta: true, cyan: true, white: true,
+      brightBlack: true, brightRed: true, brightGreen: true, brightYellow: true, brightBlue: true, brightMagenta: true, brightCyan: true, brightWhite: true,
+    }
+    expect([...TERMINAL_COLOR_OVERRIDE_KEYS].sort()).toEqual(Object.keys(every).sort())
+    expect(new Set(TERMINAL_COLOR_OVERRIDE_KEYS).size).toBe(22)
+  })
+
   it('기본값은 빈 override 이고, 파일이 없을 때 빈 override 를 보내도 파일을 만들지 않는다', () => {
     const store = fresh()
     expect(store.get().terminalColorOverrides).toEqual({})

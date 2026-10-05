@@ -25,6 +25,7 @@ const { terminalAppearanceOptions, terminalCssVars } = await import('../terminal
 const { previewAppearanceOptions } = await import('./TerminalSettingsPreview.js')
 const { TerminalAppearanceSection, themeSelectionPatch } = await import('./TerminalAppearanceSection.js')
 const { GhosttyImportButton } = await import('./GhosttyImport.js')
+const { SettingsPage } = await import('./SettingsPage.js')
 const { ghosttyDiffRows, ghosttyImportPatch } = await import('../ghostty-import.js')
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -226,5 +227,126 @@ describe('해석 공유 — 라이브 pane·미리보기·CSS 변수가 테마 +
   it('비우면 고른 테마 값 그대로', () => {
     const settings: Settings = { ...copySettings(DEFAULT_SETTINGS), terminalThemeDark: 'Dracula' }
     expect(terminalAppearanceOptions(settings).theme).toEqual(resolveTerminalTheme({ themeName: 'Dracula' }))
+  })
+})
+
+describe('모달 세대 — 닫았다 다시 연 모달에는 그 세대 응답만 (fix1 R1-03)', () => {
+  const resultA: GhosttyImportPreview = { status: 'found', configPaths: ['/tmp/A'], diff: { terminalFontFamily: 'OldA' }, unsupported: [] }
+  const resultB: GhosttyImportPreview = { status: 'found', configPaths: ['/tmp/B'], diff: { terminalFontFamily: 'NewB' }, unsupported: [] }
+  const pending: Array<(value: GhosttyImportPreview) => void> = []
+  const deferPreviews = (): void => {
+    pending.length = 0
+    Reflect.set(window.corral, 'previewGhosttyImport', vi.fn(() => new Promise<GhosttyImportPreview>((done) => { pending.push(done) })))
+  }
+  const closeAndReopen = async (): Promise<void> => {
+    await click(modal()!.querySelector('[data-ghostty-import-cancel]'))
+    await openModal()
+  }
+
+  it('이전 응답 A 가 먼저 와도 버리고, 새 응답 B 를 보인다', async () => {
+    deferPreviews()
+    render(createElement(GhosttyImportButton))
+    await openModal()
+    await closeAndReopen()
+    await act(async () => { pending[0]!(resultA) })
+    expect(modal()?.dataset['ghosttyImportModal']).toBe('loading')
+    await act(async () => { pending[1]!(resultB) })
+    expect(modal()?.querySelector('[data-ghostty-import-paths]')?.textContent).toBe('구성: /tmp/B')
+  })
+
+  it('새 응답 B 가 먼저 오고 이전 응답 A 가 늦게 와도 B 가 남는다', async () => {
+    deferPreviews()
+    render(createElement(GhosttyImportButton))
+    await openModal()
+    await closeAndReopen()
+    await act(async () => { pending[1]!(resultB) })
+    await act(async () => { pending[0]!(resultA) })
+    expect(modal()?.querySelector('[data-ghostty-import-paths]')?.textContent).toBe('구성: /tmp/B')
+    expect(modal()?.textContent).not.toContain('OldA')
+  })
+
+  it('적용 응답도 그 세대만 — 적용 중 닫고 다시 열면 새 모달은 「완료」 가 되지 않는다', async () => {
+    previewResult = resultB
+    let finish: (value: SettingsWriteResult) => void = () => {}
+    Reflect.set(window.corral, 'setSettings', vi.fn((patch: Partial<Settings>) => { writes.push(patch); return new Promise<SettingsWriteResult>((done) => { finish = done }) }))
+    render(createElement(GhosttyImportButton))
+    await openModal()
+    await click(modal()!.querySelector('[data-ghostty-import-apply]'))
+    await closeAndReopen()
+    expect(modal()?.dataset['ghosttyImportModal']).toBe('found')
+    await act(async () => { finish({ status: 'saved', settings: { ...getSettings(), terminalFontFamily: 'NewB' } }) })
+    expect(modal()?.dataset['ghosttyImportModal']).toBe('found')
+    expect(modal()?.querySelector('[data-ghostty-import-done]')).toBeNull()
+    expect(writes).toHaveLength(1)
+  })
+})
+
+describe('모달 키보드·포커스 격리 — 설정 화면과 함께 (fix1 R1-04)', () => {
+  const found: GhosttyImportPreview = { status: 'found', configPaths: ['/h/.config/ghostty/config'], diff: { terminalFontFamily: 'Menlo' }, unsupported: [] }
+  const renderPage = (): void => {
+    render(createElement(SettingsPage, { section: 'appearance', onSelectSection: () => {}, onClose: () => {}, overrides: {}, onChangeOverrides: () => {} }))
+  }
+  const insideModal = (): boolean => modal()?.contains(document.activeElement) ?? false
+  const key = async (init: KeyboardEventInit): Promise<KeyboardEvent> => {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+    const target = document.activeElement ?? document.body
+    await act(async () => { target.dispatchEvent(event) })
+    return event
+  }
+
+  it('⌘F 는 설정 검색으로 포커스를 빼 가지 않는다 — 모달이 남고 포커스도 모달 안', async () => {
+    previewResult = found
+    renderPage()
+    await openModal()
+    expect(insideModal()).toBe(true)
+    await key({ key: 'f', code: 'KeyF', metaKey: true })
+    expect(modal()).not.toBeNull()
+    expect(insideModal()).toBe(true)
+    expect(document.activeElement?.hasAttribute('data-settings-search')).toBe(false)
+  })
+
+  it('Tab·Shift+Tab 은 모달 안을 돈다', async () => {
+    previewResult = found
+    renderPage()
+    await openModal()
+    const cancel = modal()!.querySelector<HTMLElement>('[data-ghostty-import-cancel]')
+    const apply = modal()!.querySelector<HTMLElement>('[data-ghostty-import-apply]')
+    expect(document.activeElement).toBe(apply)
+    await key({ key: 'Tab' })
+    expect(document.activeElement).toBe(cancel)
+    await key({ key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(apply)
+    await key({ key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(cancel)
+  })
+
+  it.each<[string, () => void]>([
+    ['로딩', () => { Reflect.set(window.corral, 'previewGhosttyImport', vi.fn(() => new Promise<GhosttyImportPreview>(() => {}))) }],
+    ['설정 없음', () => { previewResult = { status: 'not-found' } }],
+    ['오류', () => { previewResult = { status: 'error', error: 'EACCES' } }],
+    ['새 설정 없음', () => { previewResult = { status: 'found', configPaths: ['/c'], diff: {}, unsupported: [] } }],
+  ])('%s 상태에서도 초기 포커스가 모달 안', async (_name, arrange) => {
+    arrange()
+    renderPage()
+    await openModal()
+    expect(insideModal()).toBe(true)
+  })
+
+  it('닫으면(취소·Esc·완료) 포커스가 「Ghostty에서 가져오기」 버튼으로 돌아온다', async () => {
+    previewResult = found
+    renderPage()
+    const trigger = document.body.querySelector('[data-settings-ghostty-import]')
+    await openModal()
+    await click(modal()!.querySelector('[data-ghostty-import-cancel]'))
+    expect(document.activeElement).toBe(trigger)
+    await openModal()
+    await key({ key: 'Escape' })
+    expect(modal()).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    await openModal()
+    await click(modal()!.querySelector('[data-ghostty-import-apply]'))
+    expect(insideModal()).toBe(true)
+    await click(modal()!.querySelector('[data-ghostty-import-close]'))
+    expect(document.activeElement).toBe(trigger)
   })
 })

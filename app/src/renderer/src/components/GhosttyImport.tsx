@@ -4,7 +4,10 @@
 // 피했다) · 지원되지 않는 키에 사유 · override 는 색 견본 · 적용 실패는 저장소가 `failed` 를 돌려준 경우(Orca 는 예외만 봤다).
 //
 // 가져오기는 **1회 복사**다(K5ⓓ) — 적용 뒤 Ghostty 파일을 다시 보지 않는다. 적용은 기존 쓰기 경로 한 번(`updateSettings`).
-import { useState } from 'react'
+//
+// 수명(fix1 R1-03·04): 열 때마다 세대를 올리고 **그 세대의 응답만** 반영한다(미리보기·적용 둘 다 — 닫았다 다시 연 모달에 이전 응답이 끼지 않게).
+// 열린 동안 키보드·포커스는 모달 안에 가둔다 — 설정 화면 ⌘F 등 단축키가 돌지 않고, Tab 은 모달 안을 돌고, 닫으면 버튼으로 돌아간다.
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { GhosttyImportPreview } from '../../../shared/ghostty-import.js'
 import { ghosttyDiffRows, ghosttyImportPatch, type GhosttyDiffRow } from '../ghostty-import.js'
@@ -51,15 +54,51 @@ function DiffList({ rows }: { rows: GhosttyDiffRow[] }): React.JSX.Element {
   )
 }
 
-function GhosttyImportModal({ state, onClose, onApply }: { state: Exclude<ImportState, { phase: 'closed' }>; onClose: () => void; onApply: () => void }): React.JSX.Element {
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/**
+ * 모달 키보드·포커스 격리(R1-04). window 캡처는 document 의 캡처보다 먼저 돈다 — 앱·설정 화면 단축키는 모두 document 에 걸려 있어
+ * 여기서 전파를 끊으면 닿지 않는다. 기본 동작(버튼 위 Enter·Space, 메뉴 가속기)은 막지 않는다. Esc 는 `useWindowEscape` 가 같은 window 에서 받는다.
+ * Tab 은 모달 안 포커스 가능한 요소를 돈다. 포커스가 모달 밖이면(로딩 중 등) 상태가 바뀔 때마다 안으로 데려온다. 닫히면 `returnFocus` 로 돌려준다.
+ */
+function useModalFocus({ dialog, phaseKey, returnFocus }: { dialog: React.RefObject<HTMLDivElement | null>; phaseKey: string; returnFocus: React.RefObject<HTMLButtonElement | null> }): void {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const node = dialog.current
+      if (node === null) return
+      event.stopPropagation()
+      if (event.key !== 'Tab') return
+      event.preventDefault()
+      const items = [...node.querySelectorAll<HTMLElement>(FOCUSABLE)]
+      if (items.length === 0) { node.focus(); return }
+      const at = items.indexOf(document.activeElement instanceof HTMLElement ? document.activeElement : node)
+      const next = event.shiftKey ? (at <= 0 ? items.length - 1 : at - 1) : (at === -1 || at === items.length - 1 ? 0 : at + 1)
+      items[next]!.focus()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [dialog])
+  useEffect(() => {
+    const node = dialog.current
+    if (node === null || node.contains(document.activeElement)) return
+    const first = node.querySelector<HTMLElement>(FOCUSABLE) ?? node
+    first.focus()
+  }, [dialog, phaseKey])
+  useEffect(() => () => returnFocus.current?.focus(), [returnFocus])
+}
+
+function GhosttyImportModal({ state, onClose, onApply, returnFocus }: { state: Exclude<ImportState, { phase: 'closed' }>; onClose: () => void; onApply: () => void; returnFocus: React.RefObject<HTMLButtonElement | null> }): React.JSX.Element {
   useAnnounceDialog()
   useWindowEscape({ onEscape: onClose })
+  const dialog = useRef<HTMLDivElement>(null)
+  const phaseKey = state.phase === 'ready' ? `ready:${state.preview.status}:${state.applying}` : state.phase
+  useModalFocus({ dialog, phaseKey, returnFocus })
   const found = state.phase === 'ready' && state.preview.status === 'found' ? state.preview : null
   const rows = found === null ? [] : ghosttyDiffRows(found.diff)
   const hasChanges = rows.length > 0
   return (
     <div className="modal-scrim" data-modal-scrim onMouseDown={onClose}>
-      <div className="modal modal-ghostty-import" role="dialog" aria-label="Ghostty에서 가져오기" data-ghostty-import-modal={state.phase === 'ready' ? state.preview.status : state.phase} onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialog} tabIndex={-1} className="modal modal-ghostty-import" role="dialog" aria-modal="true" aria-label="Ghostty에서 가져오기" data-ghostty-import-modal={state.phase === 'ready' ? state.preview.status : state.phase} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head modal-head-plain">
           <div>
             <h2 className="modal-title">Ghostty에서 가져오기</h2>
@@ -123,19 +162,30 @@ function GhosttyImportModal({ state, onClose, onApply }: { state: Exclude<Import
 /** 「터미널 타이포그래피」 소제목 action 자리의 버튼 + 모달(Orca 198 `TerminalAppearanceSection.tsx:184-199` 자리). */
 export function GhosttyImportButton(): React.JSX.Element {
   const [state, setState] = useState<ImportState>({ phase: 'closed' })
+  const trigger = useRef<HTMLButtonElement>(null)
+  // 모달 세대 — 열기·닫기마다 오른다. 응답은 자기가 시작된 세대일 때만 반영한다(R1-03).
+  const generation = useRef(0)
 
   const open = async (): Promise<void> => {
+    const mine = ++generation.current
     setState({ phase: 'loading' })
     const preview = await loadPreview()
-    // 로딩 중에 닫았으면 다시 열지 않는다.
-    setState((prev) => (prev.phase === 'loading' ? { phase: 'ready', preview, applying: false, applyError: null } : prev))
+    if (generation.current !== mine) return
+    setState({ phase: 'ready', preview, applying: false, applyError: null })
+  }
+
+  const close = (): void => {
+    generation.current += 1
+    setState({ phase: 'closed' })
   }
 
   const apply = async (): Promise<void> => {
     if (state.phase !== 'ready' || state.preview.status !== 'found' || state.applying) return
+    const mine = generation.current
     const preview = state.preview
     setState({ phase: 'ready', preview, applying: true, applyError: null })
     const saved = await updateSettings(ghosttyImportPatch({ diff: preview.diff, current: getSettings() }))
+    if (generation.current !== mine) return
     setState((prev) => {
       if (prev.phase === 'closed') return prev
       // 저장 실패면 「완료」 로 보이지 않는다(K5ⓒ) — 모달에 오류를 남긴다.
@@ -145,11 +195,11 @@ export function GhosttyImportButton(): React.JSX.Element {
 
   return (
     <>
-      <button type="button" className="settings-ghostty-import" data-settings-ghostty-import onClick={() => void open()}>
+      <button ref={trigger} type="button" className="settings-ghostty-import" data-settings-ghostty-import onClick={() => void open()}>
         Ghostty에서 가져오기
       </button>
       {/* 문서 루트에 그린다 — 설정 화면(쌓임 맥락 z-index 30) 안의 카드에 갇히지 않게. */}
-      {state.phase === 'closed' ? null : createPortal(<GhosttyImportModal state={state} onClose={() => setState({ phase: 'closed' })} onApply={() => void apply()} />, document.body)}
+      {state.phase === 'closed' ? null : createPortal(<GhosttyImportModal state={state} onClose={close} onApply={() => void apply()} returnFocus={trigger} />, document.body)}
     </>
   )
 }

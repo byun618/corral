@@ -16,7 +16,7 @@ const xdgDir = (): string => path.join(home, '.config', 'ghostty')
 const appDir = (): string => path.join(home, 'Library', 'Application Support', 'com.mitchellh.ghostty')
 const resDir = (): string => path.join(home, 'ghostty-resources')
 
-function put(file: string, content: string): string {
+function put({ file, content }: { file: string; content: string }): string {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, content)
   return file
@@ -61,7 +61,7 @@ describe('미리보기 — 파일 감지(K1ⓑⓒⓔ)', () => {
   })
 
   it('한쪽만 — 읽은 경로 하나', async () => {
-    const file = put(path.join(xdgDir(), 'config'), 'font-family = Menlo\nfont-size = 14\n')
+    const file = put({ file: path.join(xdgDir(), 'config'), content: 'font-family = Menlo\nfont-size = 14\n' })
     const result = await found()
     expect(result.configPaths).toEqual([file])
     // 크기 14 는 기본값과 같아 diff 에서 빠진다(00-analysis A4).
@@ -69,10 +69,10 @@ describe('미리보기 — 파일 감지(K1ⓑⓒⓔ)', () => {
   })
 
   it('넷 다 — 로드 순서대로 모두 읽고 뒤가 이긴다(같은 폴더 config.ghostty 가 config 를 이긴다, D1)', async () => {
-    const a = put(path.join(xdgDir(), 'config'), 'font-size = 11\ncursor-style = bar\npalette = 0=#000001\n')
-    const b = put(path.join(xdgDir(), 'config.ghostty'), 'font-size = 12\n')
-    const c = put(path.join(appDir(), 'config'), 'font-size = 13\nfont-family = AppFont\npalette = 1=#000002\n')
-    const d = put(path.join(appDir(), 'config.ghostty'), 'font-family = Last\n')
+    const a = put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 11\ncursor-style = bar\npalette = 0=#000001\n' })
+    const b = put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size = 12\n' })
+    const c = put({ file: path.join(appDir(), 'config'), content: 'font-size = 13\nfont-family = AppFont\npalette = 1=#000002\n' })
+    const d = put({ file: path.join(appDir(), 'config.ghostty'), content: 'font-family = Last\n' })
     const result = await found()
     expect(result.configPaths).toEqual([a, b, c, d])
     expect(result.diff).toEqual({
@@ -86,49 +86,49 @@ describe('미리보기 — 파일 감지(K1ⓑⓒⓔ)', () => {
   })
 
   it('XDG 두 파일만 — config.ghostty 가 이긴다', async () => {
-    put(path.join(xdgDir(), 'config'), 'font-size = 20\n')
-    put(path.join(xdgDir(), 'config.ghostty'), 'font-size = 18\n')
+    put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 20\n' })
+    put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size = 18\n' })
     expect((await found()).diff).toEqual({ terminalFontSize: 18 })
   })
 
   it('빈 파일(0바이트)은 읽지 않는다 — 경로 목록에 없다(D3, 이 사용자의 AppSupport config.ghostty)', async () => {
-    const file = put(path.join(xdgDir(), 'config'), 'font-family = Menlo\nfont-size = 14\n')
-    put(path.join(appDir(), 'config.ghostty'), '')
+    const file = put({ file: path.join(xdgDir(), 'config'), content: 'font-family = Menlo\nfont-size = 14\n' })
+    put({ file: path.join(appDir(), 'config.ghostty'), content: '' })
     expect((await found()).configPaths).toEqual([file])
   })
 
   it('빈 파일뿐이면 not-found', async () => {
-    put(path.join(appDir(), 'config.ghostty'), '')
+    put({ file: path.join(appDir(), 'config.ghostty'), content: '' })
     expect(await preview()).toEqual({ status: 'not-found' })
   })
 
   it('디렉터리는 건너뛴다', async () => {
     fs.mkdirSync(path.join(xdgDir(), 'config'), { recursive: true })
-    const file = put(path.join(xdgDir(), 'config.ghostty'), 'font-size = 16\n')
+    const file = put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size = 16\n' })
     expect((await found()).configPaths).toEqual([file])
     fs.rmSync(file)
     expect(await preview()).toEqual({ status: 'not-found' })
   })
 
   it('1MB 초과는 그 파일만 건너뛴다 — 다른 파일이 없으면 error(첫 오류 문구)', async () => {
-    const big = put(path.join(xdgDir(), 'config'), `font-size = 16\n${'#'.repeat(MAX_CONFIG_BYTES)}\n`)
+    const big = put({ file: path.join(xdgDir(), 'config'), content: `font-size = 16\n${'#'.repeat(MAX_CONFIG_BYTES)}\n` })
     const result = await preview()
     expect(result.status).toBe('error')
     if (result.status === 'error') expect(result.error).toContain(big)
-    const other = put(path.join(appDir(), 'config'), 'font-size = 18\n')
+    const other = put({ file: path.join(appDir(), 'config'), content: 'font-size = 18\n' })
     const ok = await found()
     expect(ok.configPaths).toEqual([other])
     expect(ok.diff).toEqual({ terminalFontSize: 18 })
   })
 
   it('읽기 실패(권한 없음)는 그 파일만 건너뛴다', async () => {
-    const locked = put(path.join(xdgDir(), 'config'), 'font-size = 16\n')
+    const locked = put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 16\n' })
     fs.chmodSync(locked, 0o000)
     try {
       const result = await preview()
       expect(result.status).toBe('error')
       if (result.status === 'error') expect(result.error).toContain('구성을 읽을 수 없습니다')
-      const other = put(path.join(xdgDir(), 'config.ghostty'), 'font-size = 18\n')
+      const other = put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'font-size = 18\n' })
       expect((await found()).configPaths).toEqual([other])
     } finally {
       fs.chmodSync(locked, 0o600)
@@ -136,9 +136,9 @@ describe('미리보기 — 파일 감지(K1ⓑⓒⓔ)', () => {
   })
 
   it('XDG_CONFIG_HOME 이 가리키는 곳을 읽는다(~/.config 는 보지 않는다)', async () => {
-    put(path.join(xdgDir(), 'config'), 'font-size = 11\n')
+    put({ file: path.join(xdgDir(), 'config'), content: 'font-size = 11\n' })
     const xdg = path.join(home, 'xdg')
-    const file = put(path.join(xdg, 'ghostty', 'config'), 'font-size = 22\n')
+    const file = put({ file: path.join(xdg, 'ghostty', 'config'), content: 'font-size = 22\n' })
     env = { ...env, xdgConfigHome: xdg }
     const result = await found()
     expect(result.configPaths).toEqual([file])
@@ -146,8 +146,8 @@ describe('미리보기 — 파일 감지(K1ⓑⓒⓔ)', () => {
   })
 
   it('config-file 포함은 따라가지 않는다(K1ⓓ)', async () => {
-    put(path.join(xdgDir(), 'included'), 'font-size = 20\n')
-    put(path.join(xdgDir(), 'config'), `config-file = ${path.join(xdgDir(), 'included')}\n`)
+    put({ file: path.join(xdgDir(), 'included'), content: 'font-size = 20\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: `config-file = ${path.join(xdgDir(), 'included')}\n` })
     const result = await found()
     expect(result.diff).toEqual({})
     expect(result.unsupported).toEqual([{ key: 'config-file', reason: '포함 파일은 따라가지 않음' }])
@@ -161,20 +161,20 @@ describe('테마 해석(K3)', () => {
   })
 
   it('사용자 폴더가 리소스 폴더를 가린다', async () => {
-    put(path.join(xdgDir(), 'themes', 'Mine'), 'background = #111111\n')
-    put(path.join(resDir(), 'themes', 'Mine'), 'background = #222222\n')
+    put({ file: path.join(xdgDir(), 'themes', 'Mine'), content: 'background = #111111\n' })
+    put({ file: path.join(resDir(), 'themes', 'Mine'), content: 'background = #222222\n' })
     const result = await resolveGhosttyTheme({ name: 'Mine', env })
     expect(result.status === 'found' ? result.colors.get('background') : result).toEqual(['#111111'])
   })
 
   it('리소스 폴더에서 찾는다', async () => {
-    put(path.join(resDir(), 'themes', 'Bundled'), 'foreground = #eeeeee\n')
+    put({ file: path.join(resDir(), 'themes', 'Bundled'), content: 'foreground = #eeeeee\n' })
     const result = await resolveGhosttyTheme({ name: 'Bundled', env })
     expect(result.status === 'found' ? result.colors.get('foreground') : result).toEqual(['#eeeeee'])
   })
 
   it('절대경로 허용', async () => {
-    const file = put(path.join(home, 'anywhere', 'abs-theme'), 'background = #333333\n')
+    const file = put({ file: path.join(home, 'anywhere', 'abs-theme'), content: 'background = #333333\n' })
     const result = await resolveGhosttyTheme({ name: file, env })
     expect(result.status === 'found' ? result.colors.get('background') : result).toEqual(['#333333'])
   })
@@ -184,21 +184,21 @@ describe('테마 해석(K3)', () => {
     for (const name of ['../evil', 'a/b', 'a\\b', '.', '..']) {
       expect(await resolveGhosttyTheme({ name, env })).toMatchObject({ status: 'failed', reason: expect.stringContaining('쓸 수 없음') })
     }
-    put(path.join(xdgDir(), 'themes', 'Huge'), `background = #000000\n${'#'.repeat(MAX_THEME_BYTES)}`)
-    put(path.join(resDir(), 'themes', 'Huge'), 'background = #ffffff\n')
+    put({ file: path.join(xdgDir(), 'themes', 'Huge'), content: `background = #000000\n${'#'.repeat(MAX_THEME_BYTES)}` })
+    put({ file: path.join(resDir(), 'themes', 'Huge'), content: 'background = #ffffff\n' })
     // 사용자 폴더의 것이 크기 초과면 리소스 폴더로 넘어가지 않는다(가려진 테마를 몰래 쓰지 않는다).
     expect(await resolveGhosttyTheme({ name: 'Huge', env })).toMatchObject({ status: 'failed', reason: expect.stringContaining('너무 큼') })
   })
 
   it('테마에서는 색 키만 받는다 — 글꼴·창 키 밀반입 금지', async () => {
-    put(path.join(resDir(), 'themes', 'Sneaky'), 'background = #101010\nfont-size = 20\nfont-family = Evil\ntheme = Other\nconfig-file = /etc/passwd\npalette = 3=#303030\n')
+    put({ file: path.join(resDir(), 'themes', 'Sneaky'), content: 'background = #101010\nfont-size = 20\nfont-family = Evil\ntheme = Other\nconfig-file = /etc/passwd\npalette = 3=#303030\n' })
     const result = await resolveGhosttyTheme({ name: 'Sneaky', env })
     expect(result.status === 'found' ? [...result.colors.keys()] : result).toEqual(['background', 'palette'])
   })
 
   it('미리보기 — 테마 색은 기본값, 구성의 명시 키가 이기고, palette 는 테마 뒤에 구성 것(인덱스별로 구성이 이긴다)', async () => {
-    put(path.join(resDir(), 'themes', 'Night'), 'background = #000010\nforeground = #e0e0e0\npalette = 0=#000000\npalette = 1=#aa0000\nsplit-divider-color = #445566\nfont-size = 20\n')
-    put(path.join(xdgDir(), 'config'), 'theme = Night\nbackground = #101010\npalette = 1=#ff0000\n')
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #000010\nforeground = #e0e0e0\npalette = 0=#000000\npalette = 1=#aa0000\nsplit-divider-color = #445566\nfont-size = 20\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = Night\nbackground = #101010\npalette = 1=#ff0000\n' })
     const result = await found()
     expect(result.diff).toEqual({
       terminalDividerColorDark: '#445566',
@@ -207,15 +207,24 @@ describe('테마 해석(K3)', () => {
     expect(result.unsupported).toEqual([])
   })
 
+  it('palette 리셋은 파일을 넘어 테마 palette 까지 지운다, 테마의 다른 색은 남는다(R1-01)', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'Test'), content: 'palette = 1=#112233\npalette = 3=#334455\nbackground = #123123\n' })
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = Test\npalette = 2=#223344\n' })
+    put({ file: path.join(xdgDir(), 'config.ghostty'), content: 'palette = ""\npalette = 4=#445566\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalColorOverrides: { background: '#123123', blue: '#445566' } })
+    expect(result.unsupported).toEqual([])
+  })
+
   it('light:/dark: 쌍 → 지원되지 않는 키(사유), 나머지는 그대로 가져온다', async () => {
-    put(path.join(xdgDir(), 'config'), 'theme = light:Day,dark:Night\nfont-size = 16\n')
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = light:Day,dark:Night\nfont-size = 16\n' })
     const result = await found()
     expect(result.diff).toEqual({ terminalFontSize: 16 })
     expect(result.unsupported).toEqual([{ key: 'theme', reason: 'light:/dark: 쌍은 지원하지 않음 (corral 은 다크 테마 하나)' }])
   })
 
   it('해석 실패(Ghostty 미설치 — 리소스 폴더 없음) → 사유, 나머지는 그대로', async () => {
-    put(path.join(xdgDir(), 'config'), 'theme = Catppuccin Mocha\nfont-family = Menlo\nbackground = #1e1e2e\n')
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = Catppuccin Mocha\nfont-family = Menlo\nbackground = #1e1e2e\n' })
     const result = await found()
     expect(result.diff).toEqual({ terminalFontFamily: 'Menlo', terminalColorOverrides: { background: '#1e1e2e' } })
     expect(result.unsupported).toEqual([{ key: 'theme', reason: '테마 파일을 찾을 수 없음: Catppuccin Mocha (Ghostty 미설치이거나 없는 이름)' }])
@@ -224,7 +233,7 @@ describe('테마 해석(K3)', () => {
 
 describe('diff — 현재 설정과 다른 칸만(K4ⓑⓓ)', () => {
   it('같은 값은 빠지고, 전부 같으면 빈 diff', async () => {
-    put(path.join(xdgDir(), 'config'), 'font-family = Menlo\nfont-size = 14\nbackground = #101010\n')
+    put({ file: path.join(xdgDir(), 'config'), content: 'font-family = Menlo\nfont-size = 14\nbackground = #101010\n' })
     const current = { ...copySettings(DEFAULT_SETTINGS), terminalFontFamily: 'Menlo', terminalColorOverrides: { background: '#101010' } }
     const result = await found(current)
     expect(result.diff).toEqual({})
@@ -237,7 +246,7 @@ describe('diff — 현재 설정과 다른 칸만(K4ⓑⓓ)', () => {
   })
 
   it('미리보기는 아무것도 쓰지 않는다 — 구성 파일·현재 설정 객체 불변', async () => {
-    const file = put(path.join(xdgDir(), 'config'), 'font-family = Menlo\nbackground = #101010\n')
+    const file = put({ file: path.join(xdgDir(), 'config'), content: 'font-family = Menlo\nbackground = #101010\n' })
     const before = fs.readFileSync(file)
     const current = copySettings(DEFAULT_SETTINGS)
     const snapshot = JSON.stringify(current)

@@ -64,6 +64,17 @@ function readExactNumber({ key, value }: { key: NumericSettingKey; value: number
   return { ok: true, value: read }
 }
 
+/**
+ * 백분율 → 줄 높이 배수를 **천분율 정수**로 셈한다(R1-02). `1 + 14 / 100` 은 1.1400000000000001 이라 「셋째 자리까지만」 에 걸린다 —
+ * 입력 정밀도(백분율 소수 첫째 자리 = 배수 셋째 자리)를 넘는 값은 그대로 나누어 내보내 저장소 반올림 검사에 걸리게 한다(33.3333% → 거부).
+ */
+function percentToLineHeight({ sign, whole, fraction }: { sign: string; whole: string; fraction: string }): number {
+  const digits = fraction.replace(/0+$/, '')
+  if (digits.length > 1) return 1 + Number(`${sign}${whole}.${fraction}`) / 100
+  const permille = Number(whole) * 10 + Number(digits || '0')
+  return (1000 + (sign === '-' ? -permille : permille)) / 1000
+}
+
 function parseDecimal(value: string): Checked<number> {
   return DECIMAL.test(value) ? { ok: true, value: Number(value) } : { ok: false, reason: '숫자가 아님' }
 }
@@ -89,9 +100,17 @@ function mapFontFamily({ values, patch, unsupported }: { values: string[]; patch
   if (list.length > 1) unsupported.push({ key: 'font-family', reason: `폴백 글꼴은 가져오지 않음: ${list.slice(1).join(', ')} (주 글꼴 ${read} 만)` })
 }
 
-/** palette — `N=COLOR` 항목마다. 같은 인덱스는 뒤가 이긴다. 잘못된 항목은 항목별로 사유. */
+/**
+ * palette — `N=COLOR` 항목마다. 같은 인덱스는 뒤가 이긴다. 잘못된 항목은 항목별로 사유.
+ * 빈 값은 Ghostty 문법상 리셋이다(`cli/args.zig` — 빈 문자열이면 필드를 기본값으로) — 그때까지 쌓인 palette(앞 파일·테마 것 포함, 테마가 목록 앞에 온다)를
+ * 지우고 사유 없이 넘어간다. 다른 색 키(background 등)는 palette 가 아니라 건드리지 않는다(R1-01).
+ */
 function mapPalette({ values, overrides, unsupported }: { values: string[]; overrides: TerminalColorOverrides; unsupported: GhosttyUnsupportedKey[] }): void {
   for (const entry of values) {
+    if (entry.trim().length === 0) {
+      for (const key of PALETTE_KEYS) delete overrides[key]
+      continue
+    }
     const eq = entry.indexOf('=')
     const indexText = eq === -1 ? '' : entry.slice(0, eq).trim()
     const colorText = eq === -1 ? '' : entry.slice(eq + 1).trim()
@@ -136,9 +155,9 @@ function mapScalar({ key, value, patch, overrides }: { key: string; value: strin
     }
     case 'adjust-cell-height': {
       // 백분율만 줄 높이 배수로 옮길 수 있다 — 픽셀 값은 셀 높이를 알아야 해서 옮기지 않는다(Orca 주석과 같다).
-      const match = /^([+-]?\d+(\.\d+)?)%$/.exec(value)
+      const match = /^([+-]?)(\d+)(?:\.(\d+))?%$/.exec(value)
       if (match === null) return '백분율(%) 값만 받음 — 픽셀 값은 지원하지 않음'
-      const lineHeight = readExactNumber({ key: 'terminalLineHeight', value: 1 + Number(match[1]) / 100 })
+      const lineHeight = readExactNumber({ key: 'terminalLineHeight', value: percentToLineHeight({ sign: match[1]!, whole: match[2]!, fraction: match[3] ?? '' }) })
       if (!lineHeight.ok) return `라인 높이 ${lineHeight.reason}`
       patch.terminalLineHeight = lineHeight.value
       return null

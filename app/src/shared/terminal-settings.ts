@@ -232,12 +232,18 @@ export type TerminalColorKey = Exclude<keyof ITheme, 'extendedAnsi'>
  * override 로 받는 색 칸 — Orca `TerminalColorOverrides` 의 22칸(전경·배경·커서 2·선택 2·16색). Ghostty 키가 닿을 수 있는 칸이 이것뿐이다.
  * Orca 의 `bold` 는 xterm `ITheme` 에 없어 뺐다(Ghostty `bold-color` 는 지원되지 않는 키).
  */
-export const TERMINAL_COLOR_OVERRIDE_KEYS = [
+export type TerminalColorOverrideKey = Extract<
+  TerminalColorKey,
+  | 'foreground' | 'background' | 'cursor' | 'cursorAccent' | 'selectionBackground' | 'selectionForeground'
+  | 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white'
+  | 'brightBlack' | 'brightRed' | 'brightGreen' | 'brightYellow' | 'brightBlue' | 'brightMagenta' | 'brightCyan' | 'brightWhite'
+>
+/** 위 타입의 22칸 전부(순서 = Orca). 빠진 칸이 없는지는 `settings.test.ts` 「override 칸 22개」 가 본다. */
+export const TERMINAL_COLOR_OVERRIDE_KEYS: readonly TerminalColorOverrideKey[] = [
   'foreground', 'background', 'cursor', 'cursorAccent', 'selectionBackground', 'selectionForeground',
   'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
   'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
-] as const satisfies readonly TerminalColorKey[]
-export type TerminalColorOverrideKey = (typeof TERMINAL_COLOR_OVERRIDE_KEYS)[number]
+]
 export type TerminalColorOverrides = Partial<Record<TerminalColorOverrideKey, string>>
 
 /**

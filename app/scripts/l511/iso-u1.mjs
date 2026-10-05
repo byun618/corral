@@ -124,6 +124,7 @@ try {
     const counters = (await control({ cmd: 'counters' })).counters
     const dom = await evaluate(() => ({
       panes: (window.corralPaneWrites?.() ?? []).map((pane) => ({ paneId: pane.paneId, cols: pane.cols, rows: pane.rows })),
+      seq: Object.fromEntries((window.corralPaneWrites?.() ?? []).map((pane) => [pane.paneId, pane.lastSeq])),
       xterms: [...document.querySelectorAll('[data-term-pane-box]')].map((box) => ({ pane: box.getAttribute('data-term-pane-box'), tag: box.querySelector('.xterm')?.__l511 ?? null })),
       focusPane: document.activeElement?.closest?.('[data-term-pane-box]')?.getAttribute('data-term-pane-box') ?? null,
       activeTag: document.activeElement ? `${document.activeElement.tagName}.${document.activeElement.className}`.slice(0, 80) : null,
@@ -212,7 +213,8 @@ try {
     await pause(200)
     const searchFocused = await evaluate(() => document.activeElement?.hasAttribute('data-settings-search') ?? false)
     checks.require('cmdF-focuses-search', searchFocused === true)
-    await type('단축 abc')
+    // 섹션에 맞는 질의 — 맞지 않는 질의는 섹션을 걸러 「결과 없음」 이 된다(r4 실패 원인).
+    await type('단축키')
     await pause(200)
     // 워크스페이스를 바꾸는 단축키는 설정이 열린 동안 막힌다(K2ⓕ) — ⌘T(새 탭)·⌘D(분할)·⌘W(닫기).
     await key('T', ['meta'])
@@ -286,6 +288,9 @@ try {
     const syncRows = syncRowsSince(base.logLength)
     result.syncRows = syncRows
     result.backendResizeLines = { base: baseResizeLog, end: resizeLog() }
+    // A(셸 루프)가 측정 내내 출력하고 있었다 — 설정 열림 구간에도 프레임 번호가 올라간다(K2ⓒ 「출력 중인 pane」).
+    const openSteps = result.steps.filter((step) => step.settingsOpen)
+    checks.require('A-output-while-open', openSteps.length > 0 && openSteps.every((step) => (step.seq?.[paneA] ?? 0) > (base.seq?.[paneA] ?? 0)) && (end.seq?.[paneA] ?? 0) > Math.max(...openSteps.map((step) => step.seq?.[paneA] ?? 0)), { base: base.seq, open: openSteps.map((step) => step.seq), end: end.seq })
     checks.require('grid-requests-zero', end.gridRequests === base.gridRequests, { base: base.gridRequests, end: end.gridRequests })
     checks.require('stream-sync-zero', syncRows.length === 0, { rows: syncRows.length })
     checks.require('cols-rows-unchanged', JSON.stringify(end.panes) === JSON.stringify(base.panes), { base: base.panes, end: end.panes })

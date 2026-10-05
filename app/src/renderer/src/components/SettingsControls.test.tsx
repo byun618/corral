@@ -25,7 +25,7 @@ const key = (target: Element, name: string): void => {
 }
 
 it('SettingsSection — h2 + 설명 + 카드, section 은 제목으로 이름이 붙는다', () => {
-  const view = render(createElement(SettingsSection, { id: 'shortcuts', title: '단축키', description: '설명' }, createElement('span', null, '본문')))
+  const view = render(createElement(SettingsSection, { id: 'shortcuts', title: '단축키', description: '설명', children: createElement('span', null, '본문') }))
   const section = view.querySelector('section[data-settings-section="shortcuts"]')!
   expect(section.getAttribute('aria-labelledby')).toBe('settings-section-shortcuts')
   expect(view.querySelector('#settings-section-shortcuts')?.tagName).toBe('H2')

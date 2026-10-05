@@ -312,6 +312,67 @@ try {
   const appliedC = await observe('c-applied')
   checks.require('k10c-font-16', appliedC.appearance.every((a) => a.fontSize === 16) && writesSince(preC.logLength).length === 1, { sizes: appliedC.appearance.map((a) => a.fontSize) })
 
+  // ── fix2 보강(관문 아님): 신뢰 키 입력(CDP Input.dispatchKeyEvent)으로 모달 키보드 격리 관측 ────────────
+  // ⌘F 무반응 · Tab/Shift+Tab 순환 · 취소 버튼 포커스 Enter 1회(닫힘·쓰기 0) · 적용 버튼 포커스 Space 1회(쓰기 1). 실패해도 회차를 막지 않고 result.keyboard 에 남긴다.
+  result.keyboard = { observations: [], pass: {} }
+  try {
+    const KEYS = {
+      cmdF: { key: 'f', code: 'KeyF', windowsVirtualKeyCode: 70, modifiers: 4 },
+      tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+      shiftTab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 },
+      enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+      space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
+    }
+    const press = async (name) => {
+      const { text, ...base } = KEYS[name]
+      await handle.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, ...(text === undefined ? {} : { text, unmodifiedText: text }) })
+      await handle.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+      await pause(250)
+    }
+    const focusState = () => evaluate(() => {
+      const modal = document.querySelector('[data-ghostty-import-modal]')
+      const active = document.activeElement
+      const tag = active === null ? null : [...active.attributes].map((attr) => attr.name).find((name) => name.startsWith('data-')) ?? active.tagName
+      return { modal: modal?.getAttribute('data-ghostty-import-modal') ?? null, inside: modal?.contains(active) ?? false, active: tag }
+    })
+    const note = async (label) => { const s = await focusState(); result.keyboard.observations.push({ label, ...s }); return s }
+    fs.writeFileSync(configFile, 'font-size = 18\n')
+    await openImport('e-keys')
+    const opened = await note('open')
+    await press('cmdF')
+    const afterF = await note('cmd-f')
+    result.keyboard.pass.cmdF = opened.inside && afterF.modal === 'found' && afterF.inside && afterF.active !== 'data-settings-search'
+    await press('tab')
+    const t1 = await note('tab')
+    await press('tab')
+    const t2 = await note('tab')
+    await press('shiftTab')
+    const t3 = await note('shift-tab')
+    result.keyboard.pass.tabCycle = [t1, t2, t3].every((s) => s.inside) && t1.active !== t2.active && t3.active === t1.active
+    // 취소 버튼으로 포커스를 옮겨 Enter
+    for (let i = 0; i < 3 && (await focusState()).active !== 'data-ghostty-import-cancel'; i += 1) await press('tab')
+    const preEnter = await note('before-enter')
+    const logBeforeEnter = logRows().length
+    await press('enter')
+    const afterEnter = await note('enter')
+    result.keyboard.pass.enterCancel = preEnter.active === 'data-ghostty-import-cancel' && afterEnter.modal === null && afterEnter.active === 'data-settings-ghostty-import' && writesSince(logBeforeEnter).length === 0
+    await openImport('e-keys-2')
+    for (let i = 0; i < 3 && (await focusState()).active !== 'data-ghostty-import-apply'; i += 1) await press('tab')
+    const preSpace = await note('before-space')
+    const logBeforeSpace = logRows().length
+    await press('space')
+    await until('applied by space', async () => (await modalState())?.state === 'applied', 5_000).catch(() => null)
+    const afterSpace = await note('space')
+    result.keyboard.pass.spaceApply = preSpace.active === 'data-ghostty-import-apply' && afterSpace.modal === 'applied' && writesSince(logBeforeSpace).length === 1
+    result.keyboard.writesAfterSpace = writesSince(logBeforeSpace)
+    if (afterSpace.modal !== null) await click(afterSpace.modal === 'applied' ? '[data-ghostty-import-close]' : '[data-ghostty-import-cancel]')
+    await until('modal closed e', async () => (await modalState()) === null, 5_000)
+  } catch (error) {
+    result.keyboard.error = String(error?.stack ?? error)
+  }
+  console.log('[k10] keyboard', JSON.stringify(result.keyboard.pass), result.keyboard.error ?? '')
+  save()
+
   // ── K10ⓓ 설정 파일 없음 → 「이 시스템에는 Ghostty 구성이 없습니다」 ─────────────
   fs.rmSync(configFile)
   const mD = await openImport('d-not-found')

@@ -23,20 +23,39 @@ describe('그룹 매핑', () => {
 
 describe('필터 — All / Modified / Unassigned / Conflicts', () => {
   it('재정의 없으면 Modified 0 · Unassigned 0 · Conflicts 0', () => {
-    expect(shortcutFilterCounts(shortcutRows({}))).toEqual({ all: ACTIONS.length, modified: 0, unassigned: 0, conflicts: 0 })
+    expect(shortcutFilterCounts({ rows: shortcutRows({}), query: '' })).toEqual({ all: ACTIONS.length, modified: 0, unassigned: 0, conflicts: 0 })
   })
   it('재정의·끈 액션·비켜 선 기본값이 카운트에 든다', () => {
     // ⌘J 를 팔레트에 주면 「검색 (팔레트)」 기본값이 비켜 서지만(칸 null) 재정의는 아니다 — 모든 칸이 null 이라 Unassigned.
     const overrides = validateOverrides({ 'palette.open': ['Mod+J'], 'terminal.zoom': [null, null] })
     const rows = shortcutRows(overrides)
-    expect(shortcutFilterCounts(rows)).toEqual({ all: ACTIONS.length, modified: 2, unassigned: 2, conflicts: 0 })
+    expect(shortcutFilterCounts({ rows, query: '' })).toEqual({ all: ACTIONS.length, modified: 2, unassigned: 2, conflicts: 0 })
     expect(visibleShortcutGroups({ rows, filter: 'unassigned', query: '' }).flatMap((group) => group.rows.map((row) => row.action.id))).toEqual(['palette.search', 'terminal.zoom'])
     expect(visibleShortcutGroups({ rows, filter: 'modified', query: '' }).flatMap((group) => group.rows.map((row) => row.action.id))).toEqual(['palette.open', 'terminal.zoom'])
   })
   it('Conflicts — 지금 조합이 두 칸에 걸리면 센다(검증 안 된 재정의를 직접 넣은 경우)', () => {
     const rows = shortcutRows({ 'sidebar.toggle': ['Mod+K'] })
-    expect(shortcutFilterCounts(rows).conflicts).toBe(2)
+    expect(shortcutFilterCounts({ rows, query: '' }).conflicts).toBe(2)
     expect(rows.find((row) => row.action.id === 'sidebar.toggle')!.conflicts).toEqual(['⌘K'])
+  })
+})
+
+describe('필터 카운트 = 검색 적용 뒤·상태 필터 전 집합 (r1 R1-03, Orca shortcut-row-visibility.ts:77)', () => {
+  it('끈 액션이 있어도 검색이 그 행을 거르면 Modified·Unassigned 에 세지 않는다', () => {
+    const rows = shortcutRows(validateOverrides({ 'terminal.zoom': [null, null] }))
+    expect(shortcutFilterCounts({ rows, query: '' })).toEqual({ all: ACTIONS.length, modified: 1, unassigned: 1, conflicts: 0 })
+    expect(shortcutFilterCounts({ rows, query: '설정' })).toEqual({ all: 1, modified: 0, unassigned: 0, conflicts: 0 })
+    expect(shortcutFilterCounts({ rows, query: '줌' })).toEqual({ all: 1, modified: 1, unassigned: 1, conflicts: 0 })
+  })
+  it('카운트 = 그 필터를 눌렀을 때 보일 행 수', () => {
+    const rows = shortcutRows(validateOverrides({ 'terminal.zoom': [null, null], 'palette.open': ['Mod+J'] }))
+    for (const query of ['', '팔레트', 'pane', '없는 것']) {
+      const counts = shortcutFilterCounts({ rows, query })
+      for (const filter of ['all', 'modified', 'unassigned', 'conflicts'] as const) {
+        const shown = visibleShortcutGroups({ rows, filter, query }).reduce((sum, group) => sum + group.rows.length, 0)
+        expect([query, filter, counts[filter]]).toEqual([query, filter, shown])
+      }
+    }
   })
 })
 

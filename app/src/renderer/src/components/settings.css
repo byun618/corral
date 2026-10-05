@@ -129,7 +129,12 @@
 
 /* --- 단축키 섹션 (ShortcutsSection.tsx) --- */
 .shortcuts-pane { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
-.shortcuts-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--w-shortcut-rail) minmax(0, 1fr); gap: 24px; }
+.shortcuts-layout { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 24px; }
+/* Orca 198 `ShortcutsPane.tsx:351` — xl(1280px) 미만은 레일을 위로 쌓고(행 auto | 1fr), 이상은 레일 16rem | 목록 2열(r1 R1-02).
+   늘 2열이면 680px 창에서 목록 폭이 0 이 된다. */
+@media (min-width: 1280px) {
+  .shortcuts-layout { grid-template-rows: none; grid-template-columns: var(--w-shortcut-rail) minmax(0, 1fr); }
+}
 .shortcuts-rail { display: flex; flex-direction: column; gap: 20px; min-height: 0; }
 .shortcuts-rail-search { display: flex; flex-direction: column; gap: 8px; }
 .shortcuts-rail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

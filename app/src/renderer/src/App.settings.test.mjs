@@ -169,3 +169,47 @@ it('Esc 2단계로 닫힌다 · 단축키 편집이 설정 페이지에서 저�
   await app.key({ key: 'Escape' })
   expect(app.open()).toBe(false)
 })
+
+it('열린 메뉴가 있는 채 ⌘, 로 들어오면 메뉴가 닫히고 Esc 2단계 그대로(r1 R1-01)', async () => {
+  const app = await mount()
+  await app.click('[data-help-menu-toggle]')
+  expect(app.q('[data-help-menu]')).not.toBeNull()
+  await app.key({ key: ',', code: 'Comma', metaKey: true })
+  expect(app.open()).toBe(true)
+  expect(app.q('[data-help-menu]')).toBeNull()
+  await app.key({ key: 'Escape' })
+  expect([app.open(), app.q('[data-settings-escape-confirm]') !== null]).toEqual([true, true])
+  await app.key({ key: 'Escape' })
+  expect(app.open()).toBe(false)
+})
+
+it('열린 메뉴가 있는 채 팔레트로 들어와도 메뉴가 닫히고 Esc 2단계 그대로(r1 R1-01)', async () => {
+  const app = await mount()
+  await app.click('[data-help-menu-toggle]')
+  expect(app.q('[data-help-menu]')).not.toBeNull()
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  const entry = app.q('[data-palette-entry="settings.section:shortcuts"]')
+  expect(entry).not.toBeNull()
+  await act(async () => { entry.click() })
+  expect(app.open()).toBe(true)
+  expect(app.q('[data-help-menu]')).toBeNull()
+  // 설정 검색창의 방향키·Enter 도 숨은 메뉴가 먹지 않는다 — 검색창이 포커스를 지킨다.
+  const search = app.q('[data-settings-search]')
+  await app.key({ key: 'ArrowDown' }, search)
+  expect(document.activeElement).toBe(search)
+  await app.key({ key: 'Escape' }, search)
+  await app.key({ key: 'Escape' }, search)
+  expect(app.open()).toBe(false)
+})
+
+it('검색 뒤 필터 카운트가 보이는 행과 맞는다(r1 R1-03 App 재현)', async () => {
+  const app = await mount({ 'terminal.zoom': [null, null] })
+  await app.click('[data-settings-open]')
+  const input = app.q('[data-shortcuts-search]')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  await act(async () => { setter.call(input, '설정'); input.dispatchEvent(new window.Event('input', { bubbles: true })) })
+  const counts = Object.fromEntries(['all', 'modified', 'unassigned', 'conflicts'].map((id) => [id, app.q(`[data-shortcuts-filter-count="${id}"]`).textContent]))
+  const rows = [...app.host.querySelectorAll('[data-shortcut-action]')].map((el) => el.getAttribute('data-shortcut-action'))
+  expect(rows).toEqual(['settings.open'])
+  expect(counts).toEqual({ all: '1', modified: '0', unassigned: '0', conflicts: '0' })
+})

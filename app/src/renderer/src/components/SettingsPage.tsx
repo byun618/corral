@@ -10,6 +10,7 @@
 //            그 밖의 섹션: 바로 닫는다. 기록 중 Esc 는 단축키 섹션이 먼저 먹는다(기록 취소).
 import { useEffect, useRef, useState } from 'react'
 import type { Keybindings } from '../../../shared/keybindings.js'
+import { useAnnounceDialog } from '../menu-bus.js'
 import { settingsNavGroups, settingsSectionById, type SettingsSection as SettingsSectionDef, type SettingsSectionId } from '../settings-registry.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
@@ -48,6 +49,9 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
   const latest = useRef({ section, onClose })
   latest.current = { section, onClose }
 
+  // 들어올 때 열린 메뉴(`?`·카드·탭 메뉴)·hover 카드를 닫는다 — 덮인 채 남으면 window/document 캡처 키 처리기가 설정의 Esc·방향키를
+  // 먼저 먹는다(inert 는 이미 붙은 전역 처리기를 떼지 않는다, r1 R1-01). 대화와 같은 메뉴 버스 계약(`useAnnounceDialog`).
+  useAnnounceDialog()
   const groups = settingsNavGroups({ query })
   const visible = groups.flatMap((group) => group.sections)
   // 검색으로 지금 섹션이 빠지면 맞는 첫 섹션을 보인다(198 `getFallbackVisibleSection`).

@@ -52,8 +52,9 @@ export function shortcutRows(overrides: Keybindings): ShortcutRow[] {
   }))
 }
 
-export function matchesShortcutFilter(row: ShortcutRow, filter: ShortcutFilter): boolean {
-  switch (filter) {
+export function matchesShortcutFilter(input: { row: ShortcutRow; filter: ShortcutFilter }): boolean {
+  const { row } = input
+  switch (input.filter) {
     case 'all':
       return true
     case 'modified':
@@ -65,18 +66,20 @@ export function matchesShortcutFilter(row: ShortcutRow, filter: ShortcutFilter):
   }
 }
 
-export function shortcutFilterCounts(rows: readonly ShortcutRow[]): Record<ShortcutFilter, number> {
-  return {
-    all: rows.length,
-    modified: rows.filter((row) => matchesShortcutFilter(row, 'modified')).length,
-    unassigned: rows.filter((row) => matchesShortcutFilter(row, 'unassigned')).length,
-    conflicts: rows.filter((row) => matchesShortcutFilter(row, 'conflicts')).length,
-  }
+/**
+ * 네 카운트 — **섹션 안 검색을 적용한 뒤, 상태 필터를 적용하기 전** 집합에서 센다(Orca 198 `shortcut-row-visibility.ts:77`
+ * `baseVisibleRows`). 그래서 각 숫자가 그 필터를 눌렀을 때 보일 행 수다(r1 R1-03).
+ */
+export function shortcutFilterCounts(input: { rows: readonly ShortcutRow[]; query: string }): Record<ShortcutFilter, number> {
+  const base = input.rows.filter((row) => matchesShortcutQuery({ row, query: input.query }))
+  const count = (filter: ShortcutFilter): number => base.filter((row) => matchesShortcutFilter({ row, filter })).length
+  return { all: count('all'), modified: count('modified'), unassigned: count('unassigned'), conflicts: count('conflicts') }
 }
 
 /** 단축키 섹션 안 검색 — 액션 이름·id·그룹·칸 이름·지금 조합(⌘K 처럼 기호로도). */
-export function matchesShortcutQuery(row: ShortcutRow, query: string): boolean {
-  const needle = query.trim().toLowerCase()
+export function matchesShortcutQuery(input: { row: ShortcutRow; query: string }): boolean {
+  const { row } = input
+  const needle = input.query.trim().toLowerCase()
   if (needle === '') return true
   const haystack = [row.action.title, row.action.id, row.groupTitle, ...row.slots.map((slot) => slot.label), ...row.slots.flatMap((slot) => (slot.binding === null ? [] : [formatBinding(slot.binding)]))]
   return haystack.some((value) => value.toLowerCase().includes(needle))
@@ -86,7 +89,7 @@ export type ShortcutRowGroup = { title: string; rows: ShortcutRow[] }
 
 export function visibleShortcutGroups(input: { rows: readonly ShortcutRow[]; filter: ShortcutFilter; query: string }): ShortcutRowGroup[] {
   return SHORTCUT_GROUPS.flatMap((group) => {
-    const rows = input.rows.filter((row) => row.groupTitle === group.title && matchesShortcutFilter(row, input.filter) && matchesShortcutQuery(row, input.query))
+    const rows = input.rows.filter((row) => row.groupTitle === group.title && matchesShortcutFilter({ row, filter: input.filter }) && matchesShortcutQuery({ row, query: input.query }))
     return rows.length === 0 ? [] : [{ title: group.title, rows }]
   })
 }

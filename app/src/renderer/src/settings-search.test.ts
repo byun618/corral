@@ -18,13 +18,13 @@ describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키�
     ['SHORTCUT', 300],
     ['  단축키  ', 900],
   ])('%s → %i', (query, score) => {
-    expect(scoreSettingsSearch(query, entries)).toBe(score)
+    expect(scoreSettingsSearch({ query, entries })).toBe(score)
   })
   it('빈 질의는 1(모두 보인다), 맞지 않으면 0', () => {
-    expect(scoreSettingsSearch('', entries)).toBe(1)
-    expect(scoreSettingsSearch('   ', entries)).toBe(1)
-    expect(scoreSettingsSearch('터미널', entries)).toBe(0)
-    expect(matchesSettingsSearch('zzz', entries)).toBe(false)
+    expect(scoreSettingsSearch({ query: '', entries })).toBe(1)
+    expect(scoreSettingsSearch({ query: '   ', entries })).toBe(1)
+    expect(scoreSettingsSearch({ query: '터미널', entries })).toBe(0)
+    expect(matchesSettingsSearch({ query: 'zzz', entries })).toBe(false)
   })
   it('순위 — 점수 내림차순, 같으면 원래 순서. 0 점은 빠진다', () => {
     const items = [{ name: 'a', entries: [{ title: '외관' }] }, { name: 'b', entries: [{ title: '단축키' }] }, { name: 'c', entries: [{ title: '알림', keywords: ['단축키'] }] }]

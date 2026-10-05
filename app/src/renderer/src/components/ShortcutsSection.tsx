@@ -48,7 +48,8 @@ export function ShortcutsSection({ overrides, onChange }: { overrides: Keybindin
     }
   }, [])
 
-  const save = async (next: Keybindings, done: string): Promise<void> => {
+  const save = async (input: { next: Keybindings; done: string }): Promise<void> => {
+    const { next, done } = input
     setBusy(true)
     try {
       const result = await window.corral.saveKeybindings(next)
@@ -64,7 +65,7 @@ export function ShortcutsSection({ overrides, onChange }: { overrides: Keybindin
   }
 
   const rows = shortcutRows(overrides)
-  const counts = shortcutFilterCounts(rows)
+  const counts = shortcutFilterCounts({ rows, query })
   const groups = visibleShortcutGroups({ rows, filter, query })
   const visibleCount = groups.reduce((sum, group) => sum + group.rows.length, 0)
   const pending: CandidateStatus | null = candidate === null ? null : candidateStatus({ overrides, ...candidate })
@@ -108,11 +109,11 @@ export function ShortcutsSection({ overrides, onChange }: { overrides: Keybindin
                       {row.modified ? <span className="shortcut-badge" data-shortcut-modified>Modified</span> : null}
                       {row.unassigned ? <span className="shortcut-badge is-muted" data-shortcut-unassigned>없음</span> : null}
                       <span className="shortcut-block-actions">
-                        <button type="button" className="shortcut-text-button" data-disable={id} disabled={busy || recording !== null || row.unassigned} onClick={() => void save({ ...overrides, [id]: row.slots.map(() => null) }, `「${row.action.title}」 단축키를 껐습니다.`)}>끄기</button>
+                        <button type="button" className="shortcut-text-button" data-disable={id} disabled={busy || recording !== null || row.unassigned} onClick={() => void save({ next: { ...overrides, [id]: row.slots.map(() => null) }, done: `「${row.action.title}」 단축키를 껐습니다.` })}>끄기</button>
                         <button type="button" className="shortcut-text-button" data-reset={id} disabled={busy || recording !== null || !row.modified} onClick={() => {
                           const next = { ...overrides }
                           delete next[id]
-                          void save(next, `「${row.action.title}」 을 기본값으로 되돌렸습니다.`)
+                          void save({ next, done: `「${row.action.title}」 을 기본값으로 되돌렸습니다.` })
                         }}>기본값</button>
                       </span>
                     </div>
@@ -152,7 +153,7 @@ export function ShortcutsSection({ overrides, onChange }: { overrides: Keybindin
                           {rowPending.kind === 'conflict' ? `${rowPending.message} — 이대로는 저장되지 않습니다.` : rowPending.kind === 'displaces' ? `${formatBinding(candidate.binding)} 를 쓰면 「${rowPending.title}」 기본값은 「없음」 이 됩니다.` : rowPending.kind === 'same' ? '지금 조합과 같습니다.' : `${formatBinding(candidate.binding)} 로 바꿉니다.`}
                         </span>
                         <button type="button" className="shortcut-text-button is-primary" data-save-binding disabled={busy || (rowPending.kind !== 'ok' && rowPending.kind !== 'displaces')} onClick={() => {
-                          if (rowPending.kind === 'ok' || rowPending.kind === 'displaces') void save(rowPending.next, `「${row.action.title}」 = ${formatBinding(candidate.binding)} 저장했습니다.`)
+                          if (rowPending.kind === 'ok' || rowPending.kind === 'displaces') void save({ next: rowPending.next, done: `「${row.action.title}」 = ${formatBinding(candidate.binding)} 저장했습니다.` })
                         }}>저장</button>
                         <button type="button" className="shortcut-text-button" data-cancel-binding onClick={() => setCandidate(null)}>취소</button>
                       </div>

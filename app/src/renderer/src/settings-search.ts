@@ -16,36 +16,36 @@ export function normalizeSettingsQuery(query: string): string {
   return query.trim().toLowerCase()
 }
 
-function scoreText(query: string, value: string | undefined, tier: Tier): number {
-  if (!value) return NO_MATCH
-  const normalized = value.toLowerCase()
-  if (normalized === query) return tier.exact
-  if (normalized.startsWith(query)) return tier.prefix
-  if (normalized.includes(query)) return tier.substring
+function scoreText(input: { query: string; value: string | undefined; tier: Tier }): number {
+  if (!input.value) return NO_MATCH
+  const normalized = input.value.toLowerCase()
+  if (normalized === input.query) return input.tier.exact
+  if (normalized.startsWith(input.query)) return input.tier.prefix
+  if (normalized.includes(input.query)) return input.tier.substring
   return NO_MATCH
 }
 
 /** 질의가 비면 1(모두 보인다), 맞는 것이 없으면 0. 첫 항목이 섹션 자체다(`sectionSearchEntries`). */
-export function scoreSettingsSearch(query: string, entries: readonly SettingsSearchEntry[]): number {
-  const normalized = normalizeSettingsQuery(query)
+export function scoreSettingsSearch(input: { query: string; entries: readonly SettingsSearchEntry[] }): number {
+  const normalized = normalizeSettingsQuery(input.query)
   if (normalized === '') return EMPTY_QUERY
-  return entries.reduce((score, entry, index) => Math.max(
+  return input.entries.reduce((score, entry, index) => Math.max(
     score,
-    scoreText(normalized, entry.title, index === 0 ? SECTION_TITLE : ENTRY_TITLE),
-    scoreText(normalized, entry.description, DESCRIPTION),
-    ...(entry.keywords ?? []).map((keyword) => scoreText(normalized, keyword, KEYWORD)),
+    scoreText({ query: normalized, value: entry.title, tier: index === 0 ? SECTION_TITLE : ENTRY_TITLE }),
+    scoreText({ query: normalized, value: entry.description, tier: DESCRIPTION }),
+    ...(entry.keywords ?? []).map((keyword) => scoreText({ query: normalized, value: keyword, tier: KEYWORD })),
   ), NO_MATCH)
 }
 
-export function matchesSettingsSearch(query: string, entries: readonly SettingsSearchEntry[]): boolean {
-  return scoreSettingsSearch(query, entries) > NO_MATCH
+export function matchesSettingsSearch(input: { query: string; entries: readonly SettingsSearchEntry[] }): boolean {
+  return scoreSettingsSearch(input) > NO_MATCH
 }
 
 /** 맞는 것만 점수 내림차순(같으면 원래 순서). 질의가 비면 원래 순서 그대로 전부. */
 export function rankSettingsSearch<T>(input: { query: string; items: readonly T[]; entriesOf: (item: T) => readonly SettingsSearchEntry[] }): T[] {
   if (normalizeSettingsQuery(input.query) === '') return [...input.items]
   return input.items
-    .map((item, index) => ({ item, index, score: scoreSettingsSearch(input.query, input.entriesOf(item)) }))
+    .map((item, index) => ({ item, index, score: scoreSettingsSearch({ query: input.query, entries: input.entriesOf(item) }) }))
     .filter((row) => row.score > NO_MATCH)
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((row) => row.item)

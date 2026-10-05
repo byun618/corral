@@ -230,6 +230,62 @@ async function closeNewTabMenu({ handle, app }) {
   await until(async () => !(await observeNewTabMenu({ handle, app })).open, `${app} + 메뉴 닫힘`, 5_000).catch(() => null)
 }
 
+/**
+ * LIFE-511 K7ⓐ — 설정 페이지. 두 앱 다 **실제 마우스**로 ⚙ 를 누르고(Orca 사이드바 하단 Settings 버튼 — 로케일에 따라 aria-label 이
+ * Settings/설정, 510 c5-1 실패 원인), 열림을 관측한 뒤 내비의 「단축키」 행을 실제 마우스로 눌러 **같은 섹션**에 세운다(corral T1 섹션은
+ * 단축키 하나 — Orca 기본 섹션 「일반」 과 견주면 섹션 헤더 글이 갈려 거짓 차이가 된다). 내비 클릭은 포커스도 두 앱에서 같은 자리(내비 버튼)에
+ * 둔다 — corral 은 열 때 검색창이 포커스를 갖고 Orca 도 일반 진입은 검색창 autofocus 다.
+ * Orca 내비 행에는 안정 data 속성이 없어 「단축키」 행은 **글자**로 찾는다(짝 키가 아니라 장면을 만드는 손잡이일 뿐 — 짝짓기는 aria-current).
+ * 닫기는 Esc. corral 단축키 섹션은 Esc 2단계라 한 번에 안 닫히면 2.2초 안에 한 번 더 누른다(Orca 198 도 단축키 섹션에서 같다).
+ */
+export const SETTINGS_SELECTORS = {
+  orca: { open: 'button[aria-label="Settings"], button[aria-label="설정"]', page: '.settings-view-shell', section: '[data-settings-section]', nav: '.settings-view-shell aside button', activeNav: '.settings-view-shell aside button[aria-current="page"]' },
+  corral: { open: '[data-settings-open]', page: '[data-settings-page]', section: '[data-settings-section]', nav: '[data-settings-nav-item]', activeNav: '[data-settings-nav-item][aria-current="page"]' },
+}
+const SHORTCUTS_NAV_TEXT = ['단축키', 'Shortcuts', 'Keyboard Shortcuts']
+
+function observeSettingsPage(sel) {
+  const section = document.querySelector(sel.section)
+  const active = document.querySelector(sel.activeNav)
+  return {
+    open: document.querySelector(sel.page) !== null,
+    section: section?.getAttribute('data-settings-section') ?? null,
+    activeNav: active?.textContent?.trim() ?? null,
+    focusInNav: document.activeElement !== null && document.activeElement.matches(sel.nav),
+  }
+}
+
+async function observeSettings({ handle, app }) {
+  return handle.cdp.evaluate(observeSettingsPage, SETTINGS_SELECTORS[app])
+}
+
+async function openSettings({ handle, app }) {
+  const sel = SETTINGS_SELECTORS[app]
+  if (!(await click({ handle, selector: sel.open }))) return
+  await until(async () => (await observeSettings({ handle, app })).open, `${app} 설정 열림`, 10_000).catch(() => null)
+  // 내비의 「단축키」 행 — 글자로 찾아 표식을 달고 그 표식을 실제 마우스로 누른다.
+  const marked = await handle.cdp.evaluate(({ nav, texts }) => {
+    const button = [...document.querySelectorAll(nav)].find((el) => texts.includes((el.textContent ?? '').trim()))
+    if (!button) return false
+    button.setAttribute('data-l511-shortcuts-nav', '')
+    return true
+  }, { nav: sel.nav, texts: SHORTCUTS_NAV_TEXT })
+  if (!marked) return
+  await click({ handle, selector: '[data-l511-shortcuts-nav]' })
+  await handle.cdp.evaluate(() => { document.querySelector('[data-l511-shortcuts-nav]')?.removeAttribute('data-l511-shortcuts-nav'); return true })
+  await until(async () => (await observeSettings({ handle, app })).section === 'shortcuts', `${app} 설정 › 단축키`, 10_000).catch(() => null)
+  await pause(400)
+}
+
+async function closeSettings({ handle, app }) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!(await observeSettings({ handle, app })).open) return
+    for (const type of ['keyDown', 'keyUp']) await handle.cdp.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await pause(300)
+  }
+  await until(async () => !(await observeSettings({ handle, app })).open, `${app} 설정 닫힘`, 5_000).catch(() => null)
+}
+
 async function click({ handle, selector }) {
   const point = await centerOf({ handle, selector })
   if (!point) return false
@@ -371,6 +427,8 @@ export function resetFixtureScene(fixture) {
  */
 export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
   for (const [app, handle] of [['orca', orca], ['corral', corral]]) {
+    // 설정이 열려 있으면 사이드바·탭바가 가려져 아래 되돌리기가 헛돈다 — 먼저 닫는다(LIFE-511).
+    await closeSettings({ handle, app })
     await closeNewTabMenu({ handle, app })
     await pointerAway(handle)
     await setViewport(handle.cdp, { width: base.width, height: base.height })
@@ -417,13 +475,14 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.tabStripEnd) await wheelTabStripTo({ handle, app, edge: 'end' })
     if (scene.tabStripStart) await wheelTabStripTo({ handle, app, edge: 'start' })
     if (scene.newTabMenu) await openNewTabMenu({ handle, app, query: scene.newTabMenu.query ?? '' })
+    if (scene.settingsOpen) await openSettings({ handle, app })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
       const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null }
+    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: scene.settingsOpen ? await observeSettings({ handle, app }) : null }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -446,6 +505,11 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
       if (!(menu && menu.open && menu.inputFocused && menu.value === query)) return false
       if (query ? menu.results === 0 : menu.items === 0) return false
     }
+    // 설정: 열렸고 단축키 섹션이 서 있고 내비의 활성 행이 있고 포커스가 내비 버튼에 있다(두 앱 같은 자리).
+    if (scene.settingsOpen) {
+      const settings = seen.settings
+      if (!(settings && settings.open && settings.section === 'shortcuts' && settings.activeNav !== null && settings.focusInNav)) return false
+    }
     return true
   }
   out.orcaOk = check(out.orca)
@@ -459,5 +523,6 @@ export function describeScene(seen) {
   if (!seen) return '(관측 없음)'
   const strip = seen.tabStrip ? ` · 탭 스트립 ${seen.tabStrip.scrollLeft}/${seen.tabStrip.max} dock ${seen.tabStrip.docked ?? '없음'}` : ''
   const menu = seen.newTabMenu ? ` · + 메뉴 ${seen.newTabMenu.open ? '열림' : '닫힘'} 입력포커스 ${seen.newTabMenu.inputFocused} 질의 "${seen.newTabMenu.value ?? ''}" 결과 ${seen.newTabMenu.results} 항목 ${seen.newTabMenu.items}` : ''
-  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}`
+  const settings = seen.settings ? ` · 설정 ${seen.settings.open ? '열림' : '닫힘'} 섹션 ${seen.settings.section} 활성 「${seen.settings.activeNav}」 포커스 내비 ${seen.settings.focusInNav}` : ''
+  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}${settings}`
 }

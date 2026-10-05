@@ -74,6 +74,10 @@
   --scrim: rgba(6, 7, 8, .62);
   --shadow-modal: 0 24px 64px rgba(0, 0, 0, .6);
   --shadow-menu: 0 8px 24px rgba(0, 0, 0, .5);
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, .05);   /* LIFE-511 — Orca shadow-xs (설정 카드·검색 입력, R007 실측) */
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, .1), 0 1px 2px -1px rgba(0, 0, 0, .1); /* LIFE-511 — Orca shadow-sm (키캡, R008 실측) */
+  --radius-keycap: 4px;                             /* LIFE-511 — Orca KeyCap rounded (R008 실측) */
+  --bg-input-fill: rgb(255 255 255 / 0.043);       /* LIFE-511 — Orca 입력 채움 dark:bg-input/30 (R007 실측) */
 
   /* 타입 */
   /* Orca `--app-font-family` 그대로 — Geist 는 위 @font-face 로 앱에 번들한다(네트워크 없이 로드). */

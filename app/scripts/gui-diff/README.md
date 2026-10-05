@@ -39,6 +39,15 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
 | corral 빌드 산출물 | 이 레포에서 `npm run build` (`app/out/`) | corral 은 dev 가 아니라 **빌드 산출물**로 띄운다 (아래 「비대칭」) |
 | macOS | — | 설치본 대조(C3)가 `screencapture`·CoreGraphics 창 목록에 기댄다 |
 
+**측정 전 가드 (LIFE-511)** — 회차 폴더에 원자료를 남기고, 걸리면 앱을 띄우기 전에 멈춘다(`lib/guards.mjs`, 단위 테스트 `diff.test.mjs`).
+
+| 가드 | 원자료 | 걸리면 |
+| --- | --- | --- |
+| 504 — 같은 `--work` 경로(`/tmp`·`/private/tmp` 두 꼴)나 같은 herdr 세션(`l443-gui-diff`)을 쓰는 프로세스 | `guard-504.json` | 종료코드 1. 자기 자신·부모 셸만 뺀다 — 동시에 도는 다른 `measure.mjs` 는 빼지 않는다 |
+| F19 — Orca 체크아웃이 빈 껍데기(`git status` 실패)·태그 ≠ v1.4.198·electron-vite 없음 | `orca-checkout.json` | 종료코드 2 + 원인·재취득 명령. **자동 재취득은 안 한다**(수 분 걸리는 네트워크 작업) |
+| F19 — fixture 레포가 빈 껍데기(HEAD 못 풂·worktree ≠ 2·`-wt/.git` 없음) | `fixture.json` | 껍데기를 `.shell-<시각>` 으로 비켜 두고 새로 만든다(지우지 않는다) |
+| F18 — Orca dev 는 `HOME` 이 아니라 OS 사용자 홈의 `~/.orca/keybindings.json` 을 읽는다 | `f18-keybindings.json` | 측정 전·**정리 뒤** 지문(존재·sha256·크기·mtime)이 다르면 그 회차는 관문 실패(종료코드 1, `summary.json` gate). 도구는 그 파일을 쓰지 않는다 — Orca dev 에서 단축키를 고치지 말 것 |
+
 ## 인자
 
 | 인자 | 기본 | 뜻 |
@@ -149,7 +158,8 @@ lib/controls.mjs      양성 대조 정의와 판정 (방향·종류까지 본�
 lib/compare.mjs       C10 회차 유효성·집합 비교 (순수)
 lib/runs.mjs          명시 실행 목록(runs.md) 행 쓰기 — 시작 때 쓰고 끝에 고쳐 쓴다
 lib/report.mjs        json + md 쓰기 (C7 7칸 표)
-lib/fixture.mjs       버리는 fixture git 레포
+lib/fixture.mjs       버리는 fixture git 레포 (빈 껍데기면 비켜 두고 재생성 — F19)
+lib/guards.mjs        F18 keybindings 지문 · F19 fixture/체크아웃 판정 · 504 동시 실행 가드 (판정은 순수 함수)
 lib/orca.mjs          Orca 개발 인스턴스 기동·시딩·상태 주입
 lib/corral.mjs        corral 격리 인스턴스 기동·시딩·상태 주입
 installed-compare.mjs C3 설치본 읽기 전용 대조
@@ -213,6 +223,10 @@ installed-compare.mjs C3 설치본 읽기 전용 대조
   사용자 기본 userData 와 herdr 기본 세션은 건드리지 않는다.
 - fixture 는 `<work>/gui-diff-fixture` 의 버리는 git 레포다. corral 레포 자체를 두 앱에 등록하지 않는다.
 - 설치본 Orca 는 이 하네스의 제어 런타임이다 — **재시작·입력 금지**, 읽기 전용으로만 본다.
+- **예외 하나 (F18)**: Orca dev 는 버리는 `HOME` 과 관계없이 실제 `~/.orca/keybindings.json` 을 읽는다
+  (`app.getPath('home')` 은 OS 사용자 DB 의 홈). 그래서 측정 전·후 지문을 남기고 다르면 관문 실패로 친다(위 「측정 전 가드」).
+- 설정 영역(`--areas settings --states settings-open`)은 두 앱 다 ⚙ 를 **실제 마우스**로 눌러 열고 내비의 「단축키」 행도
+  실제 마우스로 누른다(`lib/scene.mjs` openSettings). 다음 상태로 넘어갈 때 `resetScene` 이 Esc 로 닫는다.
 
 ## 정리 (C12) — **소유한 것만** 닫는다
 

@@ -5,6 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { fixtureVerdict, probeFixture } from './guards.mjs'
 
 const git = (args, cwd) => {
   const result = spawnSync('git', args, {
@@ -27,8 +28,18 @@ const git = (args, cwd) => {
 export function ensureFixtureRepo(baseDir, { name = 'gui-diff-fixture' } = {}) {
   const root = path.join(baseDir, name)
   const worktree = path.join(baseDir, `${name}-wt`)
-  if (fs.existsSync(path.join(root, '.git'))) {
-    return { root: fs.realpathSync(root), worktree: fs.existsSync(worktree) ? fs.realpathSync(worktree) : null, created: false }
+  // LIFE-511 F19 — `.git` 이 있다고 쓸 수 있는 레포가 아니다. 빈 껍데기면 지우지 않고 비켜 두고(원인 조사용) 새로 만든다.
+  const verdict = fixtureVerdict(probeFixture({ root, worktree }))
+  if (verdict.state === 'ok') {
+    return { root: fs.realpathSync(root), worktree: fs.realpathSync(worktree), created: false, verdict }
+  }
+  // 본체가 없어도 `-wt` 폴더가 남아 있으면 `git worktree add` 가 실패한다 — 그것도 비켜 둔다.
+  let movedAside = null
+  if (fs.existsSync(root) || fs.existsSync(worktree)) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    movedAside = { root: fs.existsSync(root) ? `${root}.shell-${stamp}` : null, worktree: fs.existsSync(worktree) ? `${worktree}.shell-${stamp}` : null }
+    if (movedAside.root) fs.renameSync(root, movedAside.root)
+    if (movedAside.worktree) fs.renameSync(worktree, movedAside.worktree)
   }
   fs.mkdirSync(root, { recursive: true })
   git(['init', '-b', 'main', '.'], root)
@@ -40,5 +51,5 @@ export function ensureFixtureRepo(baseDir, { name = 'gui-diff-fixture' } = {}) {
   git(['-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture: initial'], root)
   // linked worktree 하나 — 두 앱 모두 "레포 아래 체크아웃 여러 개" 를 그리는 자리가 여기다.
   git(['worktree', 'add', '-b', 'fixture-feature', worktree], root)
-  return { root: fs.realpathSync(root), worktree: fs.realpathSync(worktree), created: true }
+  return { root: fs.realpathSync(root), worktree: fs.realpathSync(worktree), created: true, verdict, movedAside }
 }

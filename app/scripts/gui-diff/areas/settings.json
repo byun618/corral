@@ -1,0 +1,336 @@
+{
+  "description": "설정 페이지 틀 — 좌 내비(돌아가기·검색·그룹 제목·행) · 우 콘텐츠(가운데 정렬 열·섹션 헤더·카드) (LIFE-511 K7ⓐ). 상태 `settings-open` 과 함께만 잰다.\n\n짝짓기 원칙은 sidebar.json 과 같다(data 속성 > 구조 경로, 글자·aria-label 은 조인 키로 쓰지 않는다). Orca 는 내비·콘텐츠에 data 속성이 거의 없어 `.settings-view-shell` 아래 구조 경로로 잡는다.",
+  "root": {
+    "orca": ".settings-view-shell",
+    "corral": "[data-settings-page]"
+  },
+  "notes": {
+    "orca-root": "settings-page-renderer.tsx:76 — 내비(aside) + 콘텐츠 열. Orca 는 창 크롬(36px)이 위에 있고 corral 은 y=0 부터다",
+    "groups": "Orca 는 일반 그룹 8개(섹션 있는 것만) + Projects, corral(T1)은 「인터페이스 › 단축키」 하나다(S6 — 섹션이 생기는 대로 늘어난다). 그래서 그룹 제목은 「인터페이스」 그룹끼리 짝짓는다"
+  },
+  "units": [
+    {
+      "id": "settings-shell",
+      "note": "설정 페이지 전체(배경)",
+      "orca": ".settings-view-shell",
+      "corral": "[data-settings-page]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "global": true,
+      "globalWhy": "루트 자신 — 루트 아래에서 찾으면 0개다(R007 실측)",
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫. position absolute 는 U1 덮개 방식(워크스페이스를 레이아웃에 남겨 herdr 격자 요청 0 — 00-analysis A1, RESULT K2)"
+    },
+    {
+      "id": "settings-nav",
+      "note": "좌 내비 패널(폭 280·배경·우 테두리)",
+      "orca": ".settings-view-shell > aside",
+      "corral": "[data-settings-nav]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫"
+    },
+    {
+      "id": "settings-nav-top",
+      "note": "돌아가기 줄(아래 테두리·패딩)",
+      "orca": ".settings-view-shell > aside > div:first-child",
+      "corral": "[data-settings-nav] > .settings-nav-top",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 테두리 색(네 변) → R008 border-color 네 변 지정으로 0건"
+    },
+    {
+      "id": "settings-back",
+      "note": "「앱으로 돌아가기」 버튼",
+      "orca": ".settings-view-shell > aside > div:first-child > button",
+      "corral": "[data-settings-back]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 패딩 0·색·굵기·줄높이 — `.settings-page button` 리셋 특이도가 `.settings-back` 을 이겼다(실제 결함). R008 `:where()` 로 0. whiteSpace·폭 없는 변 색은 R009·R010 에서 0"
+    },
+    {
+      "id": "settings-search-box",
+      "note": "검색 줄(아래 테두리·패딩)",
+      "orca": ".settings-view-shell > aside > div:nth-child(2)",
+      "corral": "[data-settings-search-box]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 테두리 색 → R008 0"
+    },
+    {
+      "id": "settings-search-input",
+      "note": "검색 입력",
+      "orca": ".settings-view-shell > aside input",
+      "corral": "[data-settings-search]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. 채움·줄높이·display 는 R008~R009 에서 해소(블록 컨테이너로 바꿔 inline-block 유지)"
+    },
+    {
+      "id": "settings-nav-scroll",
+      "note": "내비 그룹 스크롤러",
+      "orca": ".settings-view-shell > aside > div.overflow-y-auto",
+      "corral": "[data-settings-nav-scroll]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫. display(flex→block)·gap 은 R009 에서 해소"
+    },
+    {
+      "id": "settings-nav-active",
+      "note": "활성 내비 행(단축키)",
+      "orca": ".settings-view-shell > aside button[aria-current=\"page\"]",
+      "corral": "[data-settings-nav-item][aria-current=\"page\"]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. R007 의 h 17·패딩 0 은 리셋 특이도 결함이었고 R008 에서 해소"
+    },
+    {
+      "id": "settings-back-icon",
+      "note": "돌아가기 화살표 아이콘",
+      "orca": ".settings-view-shell > aside > div:first-child > button svg",
+      "corral": "[data-settings-back] svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R008 의 폭 없는 변 색(currentColor) → R009 `border: 0 solid` 로 0"
+    },
+    {
+      "id": "settings-search-icon",
+      "note": "검색 돋보기 아이콘",
+      "orca": ".settings-view-shell > aside > div:nth-child(2) svg.lucide-search",
+      "corral": "[data-settings-search-box] .settings-search-icon",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R009 0"
+    },
+    {
+      "id": "settings-search-hint-key",
+      "note": "검색 ⌘F 힌트 키캡",
+      "orca": ".settings-view-shell > aside > div:nth-child(2) span.min-w-6",
+      "corral": "[data-settings-search-box] .settings-search-hint kbd",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다(shadow-sm 두 층은 같다). 크기·채움·테두리·반경·글꼴은 R009 에서 해소(Orca KeyCap 값)"
+    },
+    {
+      "id": "settings-nav-group",
+      "note": "내비 그룹(개수)",
+      "orca": ".settings-view-shell > aside > div.overflow-y-auto > div > div",
+      "corral": "[data-settings-group]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 — 그룹 수 9 ↔ 1, 마지막 그룹이라 margin-bottom 0"
+    },
+    {
+      "id": "settings-nav-group-title",
+      "note": "「인터페이스」 그룹 제목 — Orca 4번째 그룹 ↔ corral interface 그룹",
+      "orca": ".settings-view-shell > aside > div.overflow-y-auto > div > div:nth-child(4) > p",
+      "corral": "[data-settings-group=\"interface\"] > [data-settings-group-title]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 (y·폭만, 글자·색·자간은 같다)"
+    },
+    {
+      "id": "settings-nav-active-icon",
+      "note": "활성 내비 행 아이콘",
+      "orca": ".settings-view-shell > aside button[aria-current=\"page\"] svg",
+      "corral": "[data-settings-nav-item][aria-current=\"page\"] svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 (y 만)"
+    },
+    {
+      "id": "settings-content-scroll",
+      "note": "콘텐츠 스크롤러",
+      "orca": ".settings-view-shell > div.flex-col > div",
+      "corral": "[data-settings-content]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫. display 는 R010 에서 해소"
+    },
+    {
+      "id": "settings-content-inner",
+      "note": "콘텐츠 가운데 정렬 열(max-w 896·패딩)",
+      "orca": ".settings-view-shell > div.flex-col > div > div",
+      "corral": "[data-settings-content-inner]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫"
+    },
+    {
+      "id": "settings-section",
+      "note": "섹션(단축키)",
+      "orca": ".settings-view-shell section[data-settings-section]",
+      "corral": "[data-settings-section]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫"
+    },
+    {
+      "id": "settings-section-header",
+      "note": "섹션 헤더(아래 테두리·pb)",
+      "orca": ".settings-view-shell section[data-settings-section] > div:first-child",
+      "corral": "[data-settings-section-header]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 flex 방향·정렬·gap → R008 Orca 구조(제목 묶음 div + flex-wrap justify-between)로 0"
+    },
+    {
+      "id": "settings-section-title",
+      "note": "섹션 제목 h2",
+      "orca": ".settings-view-shell section[data-settings-section] h2",
+      "corral": "[data-settings-section-header] h2",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 폭 832·display·margin → R008 0"
+    },
+    {
+      "id": "settings-section-description",
+      "note": "섹션 설명 p",
+      "orca": ".settings-view-shell section[data-settings-section] > div:first-child p",
+      "corral": "[data-settings-section-header] p",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "해소",
+      "classifyWhy": "R007 폭 768 → R008 0"
+    },
+    {
+      "id": "settings-card",
+      "note": "섹션 본문 카드",
+      "orca": ".settings-view-shell section[data-settings-section] > div:last-child",
+      "corral": "[data-settings-card]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. display 는 R010 에서 해소"
+    },
+    {
+      "id": "shortcuts-pane",
+      "note": "단축키 본문 열(카드 안)",
+      "orca": ".settings-view-shell section[data-settings-section] > div:last-child > div",
+      "corral": "[data-shortcuts-section]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "높이 +35 는 창 위·아래 몫이다 — Orca 는 창 크롬 36px 아래에서 시작하고(840 = 900−36−24), corral 은 y=0 부터 상태바 25px 위까지 덮는다(875 = 900−25). 창 크롬은 S4(LIFE-470) 몫, 상태바 높이는 상태바 영역 몫. gap 24 ↔ 12: Orca 는 열(gap-6) 안에 섹션 하나(space-y-3)를 한 겹 더 두고 그 안이 12px 이다 — 눈에 보이는 간격은 둘 다 12px"
+    },
+    {
+      "id": "shortcuts-layout",
+      "note": "필터 레일 | 목록 격자(16rem + 1fr)",
+      "orca": ".settings-view-shell section[data-settings-section] div.grid.min-h-0.flex-1",
+      "corral": ".shortcuts-layout",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y −75: Orca 는 목록 위에 「Terminal 의 단축키 바로가기를 누가 먼저 가로챌지」 정책 블록(ShortcutTerminalPolicyControl)이 있고 corral 에는 그 기능이 없다. 높이 차이는 그 75 와 창 크롬 35"
+    },
+    {
+      "id": "shortcuts-rail",
+      "note": "필터 레일",
+      "orca": ".settings-view-shell section[data-settings-section] div.grid.min-h-0.flex-1 > aside",
+      "corral": ".shortcuts-rail",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "shortcuts-layout 과 같은 사유(y·높이만)"
+    },
+    {
+      "id": "shortcuts-search-input",
+      "note": "단축키 검색 입력",
+      "orca": "#shortcut-filter-search",
+      "corral": "[data-shortcuts-search]",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "y 는 shortcuts-layout 과 같은 사유. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. display 는 R009 에서 해소"
+    },
+    {
+      "id": "shortcuts-group-title",
+      "note": "단축키 그룹 제목 h3",
+      "orca": ".settings-view-shell section[data-settings-section] h3.border-b",
+      "corral": ".shortcuts-group h3",
+      "props": [
+        "box",
+        "paint",
+        "text"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "그룹 수 10 ↔ 4 는 단축키 목록(corral 18 액션 4 그룹)이 다르다. 렌더 글꼴은 문구 언어 차이(Orca 「Global」 영어, corral 「전역」 한국어 → Apple SD Gothic Neo 폴백). 폭·줄높이·간격·테두리는 R009~R010 에서 해소"
+    }
+  ]
+}

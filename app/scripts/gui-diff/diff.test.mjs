@@ -12,6 +12,9 @@ import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png
 import { evaluateControls, evaluateResolvedControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
 import { renderReport } from './lib/report.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
+import { fileFingerprint, keybindingsLeakVerdict, fixtureVerdict, orcaCheckoutVerdict, guard504Verdict } from './lib/guards.mjs'
+import os from 'node:os'
+import path from 'node:path'
 
 const unit = (id, extra = {}) => ({ id, note: `${id} 설명`, ...extra })
 const el = (over = {}) => ({
@@ -912,4 +915,63 @@ test('C6ⓑ(옛) 전체 경로 — 양쪽 관측 · 관련 속성(색) 차이면
 test('C6ⓑ(옛) 전체 경로 — 한쪽만 0개면 판정 불가', () => {
   const { row } = fullPath({ left: ICON_STYLE, right: null })
   assert.equal(row.status, 'unknown')
+})
+
+// ---- LIFE-511 F18 · F19 · 504 가드 --------------------------------------------
+test('F18 — 같은 파일 전후 지문은 통과, 바이트가 바뀌면 실패(양성 대조), 못 쟀으면 통과 아님', () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l511-f18-'))
+  const file = path.join(folder, 'keybindings.json')
+  fs.writeFileSync(file, '{"a":1}')
+  const before = fileFingerprint(file)
+  assert.deepEqual(keybindingsLeakVerdict({ before, after: fileFingerprint(file) }), { pass: true, why: null })
+  fs.writeFileSync(file, '{"a":2}')
+  const changed = keybindingsLeakVerdict({ before, after: fileFingerprint(file) })
+  assert.equal(changed.pass, false)
+  assert.match(changed.why, /sha256/)
+  fs.rmSync(file)
+  const gone = keybindingsLeakVerdict({ before, after: fileFingerprint(file) })
+  assert.equal(gone.pass, false)
+  assert.match(gone.why, /exists true→false/)
+  // 없던 파일이 없는 채로 남으면 통과 — 「없음」 도 값이다.
+  assert.equal(keybindingsLeakVerdict({ before: fileFingerprint(file), after: fileFingerprint(file) }).pass, true)
+  assert.equal(keybindingsLeakVerdict({ before: null, after: fileFingerprint(file) }).pass, false)
+  fs.rmSync(folder, { recursive: true, force: true })
+})
+
+test('F19 — fixture: 정상 ok · .git 없음 absent · 빈 껍데기(HEAD 못 풂·worktree 1개) shell', () => {
+  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, worktrees: 2, wtGitFile: true, readme: true }).state, 'ok')
+  assert.equal(fixtureVerdict({ gitDir: false }).state, 'absent')
+  const shell = fixtureVerdict({ gitDir: true, headOk: false, worktrees: 0, wtGitFile: false, readme: false })
+  assert.equal(shell.state, 'shell')
+  assert.match(shell.why, /HEAD/)
+  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, worktrees: 1, wtGitFile: true, readme: true }).state, 'shell')
+})
+
+test('F19 — Orca 체크아웃: 다 있으면 ok, 빈 껍데기·다른 태그·의존성 없음이면 원인과 함께 실패', () => {
+  const good = { repo: '/r', exists: true, statusOk: true, tag: 'v1.4.198', electronVite: true, runner: true, constants: true }
+  assert.deepEqual(orcaCheckoutVerdict(good), { ok: true, why: null })
+  assert.match(orcaCheckoutVerdict({ repo: '/r', exists: false }).why, /없다/)
+  const shell = orcaCheckoutVerdict({ ...good, statusOk: false, statusError: 'fatal: not a git repository', tag: null })
+  assert.equal(shell.ok, false)
+  assert.match(shell.why, /빈 껍데기/)
+  assert.match(shell.why, /태그 없음/)
+  assert.match(orcaCheckoutVerdict({ ...good, tag: 'v1.4.199' }).why, /v1\.4\.199 ≠ v1\.4\.198/)
+  assert.match(orcaCheckoutVerdict({ ...good, electronVite: false }).why, /pnpm install/)
+})
+
+test('504 가드 — 같은 작업 폴더(두 경로 꼴)·같은 herdr 세션이면 걸리고, 자기 자신·부모는 빼고, 다른 측정 프로세스는 빼지 않는다', () => {
+  const works = ['/tmp/l511m', '/private/tmp/l511m']
+  const lines = [
+    '100 1 node measure.mjs --work /tmp/l511m',
+    '101 100 /bin/zsh',
+    '200 1 /Applications/Electron --user-data-dir=/private/tmp/l511m/corral-userdata',
+    '300 1 herdr --session l443-gui-diff server',
+    '400 1 node measure.mjs --work /tmp/l511m',
+    '500 1 /usr/bin/vim notes.txt'
+  ]
+  const verdict = guard504Verdict({ lines, works, self: [100, 101] })
+  assert.equal(verdict.pass, false)
+  assert.deepEqual(verdict.hits.map((line) => Number(line.split(' ')[0])), [200, 300, 400])
+  // 음성 대조 — 관계없는 프로세스만 있으면 통과.
+  assert.deepEqual(guard504Verdict({ lines: ['500 1 /usr/bin/vim notes.txt'], works, self: [] }), { pass: true, hits: [] })
 })

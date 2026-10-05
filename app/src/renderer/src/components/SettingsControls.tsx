@@ -12,8 +12,10 @@ export function SettingsSection({ id, title, description, fill = false, children
   return (
     <section className={`settings-section${fill ? ' is-fill' : ''}`} data-settings-section={id} aria-labelledby={`settings-section-${id}`}>
       <header className="settings-section-header" data-settings-section-header>
-        <h2 id={`settings-section-${id}`}>{title}</h2>
-        <p>{description}</p>
+        <div className="settings-section-heading">
+          <h2 id={`settings-section-${id}`}>{title}</h2>
+          <p>{description}</p>
+        </div>
       </header>
       <div className="settings-card" data-settings-card>
         {children}

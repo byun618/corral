@@ -21,6 +21,8 @@ import { collectSnapshot, settlePage, PROP_SETS, EXCLUDED_PROPS } from './lib/pr
 import { diffSnapshots, selfDiff, compareMeta, fontCaptureFailures } from './lib/diff.mjs'
 import { renderReport, writeJson } from './lib/report.mjs'
 import { ensureFixtureRepo } from './lib/fixture.mjs'
+import { fileFingerprint, keybindingsLeakVerdict, orcaCheckoutVerdict, probe504, probeOrcaCheckout } from './lib/guards.mjs'
+import os from 'node:os'
 import { launchOrca, seedOrcaRepo, applyOrcaState, setWindowBounds as setOrcaBounds } from './lib/orca.mjs'
 import { launchCorral, seedCorralRepo, applyCorralState, setWindowBounds as setCorralBounds, backendRpc, rpc } from './lib/corral.mjs'
 import { ensureLedger, beginRun, finishRun } from './lib/runs.mjs'
@@ -423,6 +425,14 @@ const STATE_TARGETS = {
     scene: { newTabMenu: { query: 'terminal' } },
     detail: '탭 3개, `+` 메뉴 열림 + 질의 "terminal" — 결과 줄: 열린 탭(터미널 별칭) → New Terminal. 정적 메뉴는 숨는다'
   },
+  // LIFE-511 K7ⓐ — 설정 페이지가 열린 상태(두 앱 다 ⚙ 실제 마우스 → 내비 「단축키」 실제 마우스). `--areas settings` 와 함께 잰다 —
+  // 다른 영역(사이드바·탭바)은 설정이 가려서 루트를 못 찾는다. 다음 상태의 `resetScene` 이 Esc 로 닫는다.
+  'settings-open': {
+    tabCount: 1,
+    agents: [],
+    scene: { settingsOpen: true },
+    detail: '탭 1개, 설정 페이지 › 단축키 — 내비(돌아가기·검색·그룹 제목·활성 행) · 콘텐츠(max-w 896·섹션 헤더·카드). Orca 는 그룹 8개+Projects, corral 은 「인터페이스 › 단축키」 하나(S6)'
+  },
   wait: {
     tabCount: 1,
     agents: [{ state: 'blocked', prompt: 'L467 waiting for approval', agentType: 'claude' }],
@@ -747,8 +757,11 @@ async function main() {
   }
   const criterion = criterionOf()
   const runId = beginRun(args.ledger, { criterion, command, raw: rawRel })
-  const record = (result, extra = {}) =>
-    finishRun(args.ledger, runId, {
+  // F18 은 `finally` 에서 이미 적힌 결과를 덮어 고친다 — 그때 앞 결과를 잃지 않게 남겨 둔다.
+  let lastResult = null
+  const record = (result, extra = {}) => {
+    lastResult = result
+    return finishRun(args.ledger, runId, {
       criterion: extra.criterion ?? criterion,
       command,
       expectedExit: 0,
@@ -756,6 +769,7 @@ async function main() {
       raw: rawRel,
       result
     })
+  }
 
   let orca = null
   let corral = null
@@ -768,8 +782,26 @@ async function main() {
   }
   const log = (message) => process.stderr.write(`[l443] ${message}\n`)
 
+  // LIFE-511 F18 — Orca 는 macOS 에서 HOME 이 아니라 OS 사용자 DB 의 홈(`app.getPath('home')`)으로 `~/.orca/keybindings.json` 을 읽는다
+  // (configure-process.ts:203-206). 도구는 그 파일을 쓰지 않지만 Orca dev 가 쓸 수 있다 — 측정 전·후(정리 뒤) 지문을 남기고 다르면 관문 실패.
+  const keybindingsFile = path.join(os.userInfo().homedir, '.orca', 'keybindings.json')
+  const f18 = { file: keybindingsFile, before: fileFingerprint(keybindingsFile), after: null, verdict: null }
   try {
     fs.mkdirSync(args.work, { recursive: true })
+    // LIFE-511 504 가드 — 같은 작업 폴더·같은 herdr 세션 이름(l443-gui-diff)을 쓰는 프로세스가 있으면 **아무것도 지우기 전에** 멈춘다
+    // (LIFE-504 R7: `corral open` 이 기존 데스크톱을 재사용해 남의 pid 를 돌려줬다). 결과는 회차마다 원자료로 남긴다.
+    const guard = probe504({ work: args.work })
+    writeJson(path.join(outDir, 'guard-504.json'), { at: new Date().toISOString(), work: args.work, works: guard.works, ok: guard.ok, error: guard.error, pass: guard.pass, hits: guard.hits })
+    if (guard.ok !== true) throw new Error(`[l443] 504 가드: 프로세스 목록을 못 읽었다 — 측정하지 않는다: ${guard.error}`)
+    if (!guard.pass) throw new Error(`[l443] 504 가드: 같은 작업 폴더·herdr 세션을 쓰는 프로세스가 있다 — 측정하지 않는다:\n${guard.hits.join('\n')}`)
+    // LIFE-511 F19 — Orca 체크아웃이 빈 껍데기면 원인과 함께 멈춘다(자동 재취득 안 함 — lib/guards.mjs).
+    const checkout = orcaCheckoutVerdict(probeOrcaCheckout(args.orcaRepo))
+    writeJson(path.join(outDir, 'orca-checkout.json'), checkout)
+    if (!checkout.ok) {
+      const error = new Error(checkout.why)
+      error.exitCode = 2
+      throw error
+    }
     // 회차마다 격리 프로필을 **버리고 새로 만든다.** 남겨 두면 지난 회차의 탭·워크스페이스가
     // 살아남아 같은 명령이 다른 상태를 잰다 — C10(재현성)이 그 자리에서 깨진다
     // (실측: 두 번째 회차의 탭바 차이가 16→17 로 달라졌고, 원인은 남은 탭 1개였다).
@@ -826,6 +858,8 @@ async function main() {
       }
     }
     const fixture = ensureFixtureRepo(args.work)
+    writeJson(path.join(outDir, 'fixture.json'), { root: fixture.root, worktree: fixture.worktree, created: fixture.created, verdict: fixture.verdict, movedAside: fixture.movedAside ?? null })
+    if (fixture.movedAside) log(`F19: fixture 빈 껍데기(${fixture.verdict.why}) → 비켜 두고 새로 만들었다: ${JSON.stringify(fixture.movedAside)}`)
     // 앞 회차가 남긴 긴 이름 워크트리(LIFE-468 장면)를 걷는다 — 두 앱이 뜨기 전에 fixture 를 기본 모양으로.
     resetFixtureScene(fixture)
     log(`fixture: ${fixture.root} (+worktree ${fixture.worktree})`)
@@ -1123,9 +1157,10 @@ async function main() {
     return 0
   } catch (error) {
     fs.writeFileSync(path.join(outDir, 'error.txt'), `${String(error?.stack ?? error)}\n`)
-    record(`실패 — ${String(error?.message ?? error).slice(0, 180)}`, { exit: 1 })
+    const exit = error?.exitCode ?? 1
+    record(`실패 — ${String(error?.message ?? error).slice(0, 180)}`, { exit })
     process.stderr.write(`[l443] 실패: ${String(error?.stack ?? error)}\n`)
-    return 1
+    return exit
   } finally {
     if (!args.keep) {
       const closed = await shutdown({ orca, corral, owned, outDir })
@@ -1143,6 +1178,22 @@ async function main() {
       await orca?.cdp.close().catch(() => {})
       await corral?.cdp.close().catch(() => {})
       log('--keep: 두 인스턴스를 남겨 둔다 (CDP 소켓만 닫았다)')
+    }
+    // LIFE-511 F18 — 정리 **뒤** 지문. 다르면 이 회차는 관문 실패다(원장·종료코드·summary.json). --keep 은 앱이 살아 있어 「뒤」 가 아니다.
+    f18.after = fileFingerprint(keybindingsFile)
+    f18.verdict = args.keep ? { pass: false, why: 'F18 해당 없음 — --keep 으로 앱을 남겨 「정리 뒤」 지문이 아니다' } : keybindingsLeakVerdict({ before: f18.before, after: f18.after })
+    writeJson(path.join(outDir, 'f18-keybindings.json'), f18)
+    const summaryPath = path.join(outDir, 'summary.json')
+    if (fs.existsSync(summaryPath)) {
+      const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'))
+      summary.f18 = f18
+      if (!f18.verdict.pass && !args.keep) summary.gate = { ...summary.gate, pass: false, why: [summary.gate?.why, f18.verdict.why].filter(Boolean).join(' / ') }
+      writeJson(summaryPath, summary)
+    }
+    if (!f18.verdict.pass && !args.keep) {
+      log(f18.verdict.why)
+      record(`실패 — ${f18.verdict.why}${lastResult ? ` (앞 결과: ${lastResult.slice(0, 120)})` : ''}`, { exit: 1 })
+      process.exitCode = 1
     }
   }
 }

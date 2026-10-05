@@ -127,14 +127,20 @@ export function TabContextMenu({
     const onDocPointerDown = (event: MouseEvent): void => {
       if (ref.current !== null && event.target instanceof Node && !ref.current.contains(event.target)) onDismiss()
     }
+    // Esc 는 캡처 단계에서 받는다 — 터미널(xterm)에 포커스가 있으면 xterm 이 Esc 를 처리하고 전파를 끊어 버블 단계 리스너가
+    // 못 듣는다(LIFE-495 G4 r2 실측: 메뉴가 남아 뒤이은 닫기 확인 모달을 가렸다). 메뉴가 열려 있는 동안의 Esc 는 메뉴만 닫는다
+    // — 셸에 ESC 바이트를 보내지 않는다(220 은 메뉴가 포커스를 가져가 같은 결과).
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onDismiss()
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      onDismiss()
     }
     document.addEventListener('mousedown', onDocPointerDown)
-    document.addEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey, true)
     return () => {
       document.removeEventListener('mousedown', onDocPointerDown)
-      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('keydown', onKey, true)
     }
   }, [onDismiss])
 

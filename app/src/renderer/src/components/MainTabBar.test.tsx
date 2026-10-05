@@ -754,6 +754,24 @@ describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
     expect(menu.querySelector<HTMLElement>('[data-tab-menu-close-others]')?.dataset.disabled).toBe('true')
   })
 
+  it('터미널(xterm)에 포커스가 있어도 Esc 가 메뉴를 닫고, 그 Esc 는 터미널로 가지 않는다 (G4 r2 — xterm 이 전파를 끊는다)', () => {
+    mount({ tabs: tabs3(), activeTabId: 't0' })
+    openMenu('t1')
+    const term = document.createElement('textarea')
+    document.body.append(term)
+    const reached = vi.fn()
+    term.addEventListener('keydown', (event) => {
+      reached()
+      event.stopPropagation()
+    })
+    act(() => {
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    expect(host.querySelector('[data-tab-menu]')).toBeNull()
+    expect(reached).not.toHaveBeenCalled()
+    term.remove()
+  })
+
   it('K2 bulk 항목은 기준 탭·범위를 넘긴다', () => {
     mount({ tabs: tabs3(), activeTabId: 't0' })
     const left = openMenu('t1').querySelector<HTMLElement>('[data-tab-menu-close-left]')!

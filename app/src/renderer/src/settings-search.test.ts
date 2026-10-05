@@ -1,7 +1,7 @@
 // LIFE-511 K5ⓓ — 설정 검색 점수(198 settings-search.ts 단계 점수) · 내비 그룹(섹션 있는 그룹만, K3ⓑ).
 import { describe, expect, it } from 'vitest'
 import { matchesSettingsSearch, rankSettingsSearch, scoreSettingsSearch } from './settings-search.js'
-import { SETTINGS_GROUPS, SETTINGS_SECTIONS, sectionSearchEntries, settingsNavGroups, type SettingsSection } from './settings-registry.js'
+import { SETTINGS_GROUPS, SETTINGS_SECTIONS, sectionSearchEntries, settingsNavGroups, settingsSectionById, type SettingsSection } from './settings-registry.js'
 
 describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키워드, 단계마다 일치 > 접두 > 포함', () => {
   const entries = [{ title: '단축키', description: '일반 작업에 대한 키보드 단축키입니다.' }, { title: '키보드 단축키', description: '단축키를 바꿉니다', keywords: ['shortcut', 'keybinding'] }]
@@ -34,10 +34,10 @@ describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키�
 })
 
 describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
-  it('T1 레지스트리: 그룹은 「인터페이스」 하나, 섹션은 「단축키」 하나', () => {
+  it('T2 레지스트리(LIFE-512): 그룹은 「인터페이스」 하나, 섹션은 「외관」·「단축키」 — 198 순서대로 외관이 위', () => {
     const groups = settingsNavGroups({ query: '' })
     expect(groups.map((group) => group.title)).toEqual(['인터페이스'])
-    expect(groups[0]!.sections.map((section) => section.id)).toEqual(['shortcuts'])
+    expect(groups[0]!.sections.map((section) => section.id)).toEqual(['appearance', 'shortcuts'])
     // 레지스트리의 그룹은 198 순서 8개 그대로 — 빈 그룹은 그리지 않을 뿐이다.
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote', 'security', 'advanced', 'experimental'])
   })
@@ -57,6 +57,16 @@ describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
     expect(settingsNavGroups({ query: '단축키', sections }).map((group) => group.id)).toEqual(['interface', 'setup'])
   })
   it('검색 항목의 첫 칸은 섹션 자체다(섹션 제목 점수)', () => {
-    expect(sectionSearchEntries(SETTINGS_SECTIONS[0])[0]).toEqual({ title: '단축키', description: '일반 작업에 대한 키보드 단축키입니다.' })
+    expect(sectionSearchEntries(settingsSectionById('shortcuts'))[0]).toEqual({ title: '단축키', description: '일반 작업에 대한 키보드 단축키입니다.' })
+    expect(sectionSearchEntries(settingsSectionById('appearance'))[0]).toEqual({ title: '외관', description: '터미널 글꼴·테마·커서·pane 모양.' })
+  })
+})
+
+describe('외관 섹션 검색 키워드 (LIFE-512 K5ⓒ)', () => {
+  it.each(['외관', 'terminal', 'font', 'theme', 'cursor', 'opacity', 'divider', 'line height', '글꼴', '테마', '커서', '투명도', '구분선', '줄높이', 'Appearance'])('질의 %s 는 외관 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('appearance')
+  })
+  it('단축키 질의는 외관을 끌어오지 않는다', () => {
+    expect(settingsNavGroups({ query: '단축키' }).flatMap((group) => group.sections.map((section) => section.id))).toEqual(['shortcuts'])
   })
 })

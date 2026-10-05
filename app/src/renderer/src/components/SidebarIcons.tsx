@@ -183,3 +183,44 @@ export function KeyboardIcon({ className }: { className?: string }): React.JSX.E
     </svg>
   )
 }
+
+/** lucide `Palette` — 설정 내비 「외관」(198 `settings-navigation-interface-sections.ts`, LIFE-512). */
+export function PaletteIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" />
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** lucide `SquareTerminal` — 외관 › 터미널 카드(198 `AppearancePane.tsx` `TerminalSquare`). */
+export function TerminalSquareIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="m7 11 2-2-2-2" />
+      <path d="M11 13h4" />
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+    </svg>
+  )
+}
+
+/** lucide `Minus`·`Plus` — 글꼴 크기 ± (198 `TerminalFontSizeSetting.tsx`). */
+export function MinusIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M5 12h14" />
+    </svg>
+  )
+}
+export function PlusIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </svg>
+  )
+}

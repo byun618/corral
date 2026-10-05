@@ -35,5 +35,7 @@ declare global {
       lastSeq: number
       writes: Array<{ paneId: string; seq: number; at: number; ms: number }>
     }>
+    /** LIFE-512 K3ⓕ — 살아 있는 모든 pane 의 xterm 외관 옵션과 외관 쓰기 기록 (계측 실행에서만). */
+    corralPaneAppearance?: () => Array<{ paneId: string; options: Record<string, unknown>; writes: Array<{ at: number; keys: string[] }> }>
   }
 }

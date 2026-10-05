@@ -4,7 +4,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SETTINGS_ESCAPE_CONFIRM_MS, SettingsNavItem, SettingsPage } from './SettingsPage.js'
-import { SETTINGS_SECTIONS } from '../settings-registry.js'
+import { settingsSectionById } from '../settings-registry.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -129,8 +129,8 @@ it('내비 행 배지 자리(K3ⓐ) — badge 가 있으면 행 오른쪽에 그
   root = createRoot(host)
   const onSelect = vi.fn()
   act(() => root.render(createElement('div', null,
-    createElement(SettingsNavItem, { section: { ...SETTINGS_SECTIONS[0], badge: '베타' }, active: false, onSelect }),
-    createElement(SettingsNavItem, { section: SETTINGS_SECTIONS[0], active: true, onSelect }))))
+    createElement(SettingsNavItem, { section: { ...settingsSectionById('shortcuts'), badge: '베타' }, active: false, onSelect }),
+    createElement(SettingsNavItem, { section: settingsSectionById('shortcuts'), active: true, onSelect }))))
   const [withBadge, plain] = [...host.querySelectorAll<HTMLButtonElement>('[data-settings-nav-item]')]
   expect(withBadge!.querySelector('[data-settings-nav-badge]')?.textContent).toBe('베타')
   expect(withBadge!.getAttribute('aria-current')).toBeNull()

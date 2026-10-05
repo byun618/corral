@@ -127,6 +127,88 @@
 .settings-segment.is-active { background: var(--bg-accent); color: var(--fg); font-weight: 500; }
 .settings-segment[aria-disabled=true] { color: color-mix(in srgb, var(--fg-muted) 50%, transparent); cursor: not-allowed; }
 
+/* --- 입력·숫자·색 (LIFE-512 K5ⓑ — Orca `ui/input`·`NumberField`·`ColorField`·`TerminalFontSizeSetting`) --- */
+.settings-input {
+  height: 36px; padding: 4px 12px; font: inherit; font-size: var(--fs-settings-body); color: var(--fg);
+  background: var(--bg-input-fill); border: 1px solid var(--line-strong); border-radius: var(--radius-settings-control); outline: none; box-shadow: var(--shadow-xs);
+}
+.settings-input::placeholder { color: var(--fg-muted); }
+.settings-input:focus { border-color: var(--ring-sidebar); }
+.settings-input[aria-invalid=true] { border-color: var(--st-error-hi); }
+/* 198 `number-input-clean` — 기본 스핀 버튼을 숨긴다(± 와 겹친다). */
+.settings-number-input { font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.settings-number-input::-webkit-outer-spin-button, .settings-number-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.settings-number-input.is-md { width: 96px; }
+.settings-number-input.is-sm { width: 56px; text-align: center; }
+.settings-number, .settings-stepper, .settings-color { display: inline-flex; align-items: center; gap: 8px; }
+.settings-suffix { flex-shrink: 0; font-size: 12px; color: var(--fg-muted); }
+.settings-default-hint { margin-left: 4px; color: color-mix(in srgb, var(--fg-muted) 70%, transparent); }
+.settings-icon-button {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg);
+  background: var(--bg-input-fill); border: 1px solid var(--line-strong); border-radius: var(--radius-settings-control); box-shadow: var(--shadow-xs);
+}
+.settings-icon-button:hover:not(:disabled) { background: var(--bg-accent); }
+.settings-icon-button:disabled { opacity: .5; }
+.settings-icon-xs { width: 12px; height: 12px; }
+.settings-font-input { width: 256px; }
+.settings-color-swatch { width: 40px; height: 32px; padding: 4px; background: transparent; border: 1px solid var(--line-strong); border-radius: var(--radius-settings-control); cursor: pointer; }
+.settings-color-input { width: 128px; font-size: 12px; }
+
+/* --- 접기·접이 카드 (Orca `AppearanceAdvancedDisclosure`·`AppearanceSection`) --- */
+.settings-disclosure { margin-top: 12px; padding-top: 8px; }
+.settings-disclosure-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 0; font-size: var(--fs-settings-body); font-weight: 600; color: var(--fg); }
+.settings-disclosure-chevron { width: 14px; height: 14px; color: var(--fg-muted); transition: transform 150ms; }
+.settings-disclosure-chevron.is-open { transform: rotate(90deg); }
+.settings-disclosure-body { padding-top: 4px; }
+.settings-collapsible { overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: var(--radius-settings-card); background: var(--bg-window); transition: border-color 150ms; }
+.settings-collapsible.is-open { border-color: color-mix(in srgb, var(--ring-sidebar) 40%, transparent); }
+.settings-collapsible-toggle { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 16px; text-align: left; }
+.settings-collapsible-toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--bg-accent) 15%, transparent); }
+.settings-collapsible-icon { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border-radius: var(--radius-settings-control); background: var(--bg-chip); color: var(--fg); }
+.settings-collapsible-text { min-width: 0; flex: 1; }
+.settings-collapsible-title { display: block; font-size: var(--fs-settings-body); font-weight: 600; }
+.settings-collapsible-summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-muted); }
+.settings-collapsible-chevron { width: 18px; height: 18px; flex-shrink: 0; color: var(--fg-muted); transition: transform 150ms; }
+.settings-collapsible-chevron.is-open { transform: rotate(90deg); color: var(--fg); }
+.settings-collapsible-body { padding: 4px 16px 16px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); display: flex; flex-direction: column; gap: 20px; }
+
+/* --- 외관 › 터미널 블록 (Orca `space-y-5` · `ml-4 divide-y border-y`) --- */
+.settings-appearance-block { display: flex; flex-direction: column; gap: 12px; padding-top: 8px; }
+.settings-appearance-group { display: flex; flex-direction: column; gap: 12px; }
+.settings-appearance-group + .settings-appearance-group { margin-top: 8px; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.settings-indent { margin-left: 16px; }
+.settings-rows { border-block: 1px solid color-mix(in srgb, var(--line) 40%, transparent); }
+.settings-rows > .settings-row + .settings-row { border-top: 1px solid color-mix(in srgb, var(--line) 40%, transparent); }
+.settings-theme-stack { display: flex; flex-direction: column; gap: 16px; }
+
+/* --- 테마 목록 (Orca `TerminalThemePicker`) --- */
+.settings-theme-picker { display: flex; flex-direction: column; gap: 12px; }
+.settings-theme-heading { display: flex; flex-direction: column; gap: 4px; }
+.settings-theme-search { width: 100%; }
+.settings-theme-list { border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: var(--radius-settings-row); }
+.settings-theme-status { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 12px; color: var(--fg-muted); border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.settings-theme-scroll { height: 256px; overflow-y: auto; padding: 8px; scrollbar-width: thin; }
+.settings-theme-group { display: flex; flex-direction: column; gap: 4px; }
+.settings-theme-group-title { margin: 0; padding: 8px 12px 0; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-muted); }
+.settings-theme-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 8px 12px; text-align: left; font-size: var(--fs-settings-body); border-radius: var(--radius-settings-control); transition: background-color 150ms; }
+.settings-theme-option:hover { background: var(--bg-accent); }
+.settings-theme-option.is-selected { background: var(--bg-accent); font-weight: 500; }
+.settings-theme-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-theme-current { margin-left: 12px; flex-shrink: 0; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; }
+.settings-theme-empty { padding: 24px 12px; font-size: var(--fs-settings-body); color: var(--fg-muted); }
+
+/* --- 미리보기 (Orca `TerminalSettingsPreview` Card) — 터미널 배경·디바이더·투명도는 설정 값이라 인라인 스타일이다(K5ⓔ) --- */
+.terminal-preview { display: flex; flex-direction: column; gap: 16px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: var(--radius-settings-card); background: var(--bg-window); }
+.terminal-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; padding: 12px 16px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.terminal-preview-text { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.terminal-preview-title { font-size: var(--fs-settings-body); font-weight: 600; }
+.terminal-preview-description { font-size: var(--fs-settings-body); color: var(--fg-muted); }
+.terminal-preview-toggle { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: var(--radius-settings-control); font-size: 12px; font-weight: 500; color: var(--fg-muted); }
+.terminal-preview-body { padding: 0 16px 16px; }
+.terminal-preview-frame { display: flex; height: 300px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: var(--radius-settings-control); }
+.terminal-preview-term { min-width: 0; flex: 1; overflow: hidden; padding: 8px; }
+.terminal-preview-divider, .terminal-preview-stub { flex-shrink: 0; }
+
 /* --- 단축키 섹션 (ShortcutsSection.tsx) --- */
 .shortcuts-pane { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
 .shortcuts-layout { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 24px; }

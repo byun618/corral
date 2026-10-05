@@ -81,6 +81,8 @@ import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
+import { SettingsStore } from './settings.js'
+import { DEFAULT_SETTINGS } from '../shared/terminal-settings.js'
 import { WorktreePoller, parsePollMs } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
 import { observePanes } from '../runtime/orchestration/index.js'
@@ -106,6 +108,8 @@ let selectedSession: string | null = null
 let sessionNote: string | null = null
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
+/** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
+let settings: SettingsStore | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
@@ -1297,6 +1301,8 @@ app.whenReady().then(async () => {
   registry.load()
   uiPrefs = new UiPrefsStore(app.getPath('userData'))
   uiPrefs.load()
+  settings = new SettingsStore(app.getPath('userData'))
+  settings.load()
   log('app.ready', {
     logFile: file,
     electron: process.versions.electron,
@@ -1353,6 +1359,21 @@ app.whenReady().then(async () => {
   )
   ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
     if (fromOurWindow(event)) uiPrefs?.update(patch)
+  })
+  // 사용자 설정 (LIFE-512 K1ⓑ). 첫 값은 **동기**로 준다 — 렌더러가 첫 셀 측정·첫 격자 요청부터 저장값을 써야
+  // 시작 시 「기본값 셀로 한 번 → 저장값 셀로 또 한 번」 의 2단 resize 가 생기지 않는다(K2ⓔ). 렌더러는 이것을 부팅 때 한 번만 부른다.
+  ipcMain.on('corral:getSettingsSync', (event) => {
+    event.returnValue = fromOurWindow(event) ? (settings?.get() ?? { ...DEFAULT_SETTINGS }) : { ...DEFAULT_SETTINGS }
+  })
+  ipcMain.handle('corral:setSettings', (event, patch: unknown) => {
+    if (!fromOurWindow(event) || settings === null) return null
+    const { settings: next, changed } = settings.update(patch)
+    // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
+    if (changed) {
+      log('settings.changed', { keys: Object.keys(typeof patch === 'object' && patch !== null ? patch : {}) })
+      window?.webContents.send('corral:settings', next)
+    }
+    return next
   })
 
   // --- 라이프사이클 (R3) ---

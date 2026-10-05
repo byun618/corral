@@ -12,6 +12,7 @@ vi.mock('@xterm/xterm', () => {
   class Terminal {
     cols = 80
     rows = 24
+    options: Record<string, unknown> = {}
     unicode = { activeVersion: '' }
     buffer = { active: { cursorX: 0, cursorY: 0, getLine: () => undefined } }
     private textarea: HTMLTextAreaElement | null = null

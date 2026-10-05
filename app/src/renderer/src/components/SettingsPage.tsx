@@ -14,12 +14,14 @@ import { useAnnounceDialog } from '../menu-bus.js'
 import { settingsNavGroups, settingsSectionById, type SettingsSection as SettingsSectionDef, type SettingsSectionId } from '../settings-registry.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
-import { ArrowLeftIcon, KeyboardIcon, SearchIcon } from './SidebarIcons.js'
+import { TerminalAppearanceSection } from './TerminalAppearanceSection.js'
+import { ArrowLeftIcon, KeyboardIcon, PaletteIcon, SearchIcon } from './SidebarIcons.js'
 import './settings.css'
 
 export const SETTINGS_ESCAPE_CONFIRM_MS = 2200
 
 const SECTION_ICONS: Record<SettingsSectionId, (props: { className?: string }) => React.JSX.Element> = {
+  appearance: PaletteIcon,
   shortcuts: KeyboardIcon,
 }
 
@@ -129,6 +131,7 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
           ) : (
             <SettingsSection id={shown.id} title={settingsSectionById(shown.id).title} description={shown.description} fill={shown.id === 'shortcuts'}>
               {shown.id === 'shortcuts' ? <ShortcutsSection overrides={overrides} onChange={onChangeOverrides} /> : null}
+              {shown.id === 'appearance' ? <TerminalAppearanceSection query={query} /> : null}
             </SettingsSection>
           )}
         </div>

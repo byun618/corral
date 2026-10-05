@@ -1,3 +1,4 @@
+import type { Settings } from './terminal-settings.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
@@ -922,6 +923,11 @@ export type CorralApi = {
   setShortcutRecording: (active: boolean) => Promise<void>
   getUiPrefs: () => Promise<UiPrefs>
   setUiPrefs: (patch: Partial<UiPrefs>) => void
+  /** 사용자 설정(LIFE-512) — 부팅 때 한 번 동기로 읽는다. 이후 변경은 `onSettings` 푸시로 받는다. */
+  getSettingsSync: () => Settings
+  /** 부분 갱신 — main 이 칸별로 검증해 적용하고, 바뀌었으면 `onSettings` 로 민다. 검증 뒤 전체 값을 돌려준다. */
+  setSettings: (patch: Partial<Settings>) => Promise<Settings | null>
+  onSettings: (listener: (settings: Settings) => void) => () => void
   // --- 라이프사이클 (R3) ---
   /** 열린 workspace 에 새 행을 만든다 (tab.create → agent.start 재시도). */
   createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }) => Promise<CreateRowResult>

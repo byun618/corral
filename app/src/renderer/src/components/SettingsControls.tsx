@@ -4,9 +4,13 @@
 //   SettingsSubsectionHeader  h3 + 옅은 설명 + 오른쪽 액션 자리
 //   SettingsSwitch         role=switch 토글 (Space/Enter)
 //   SettingsSegmented      role=radiogroup 세그먼트 (←→ 로 옮기며 고른다)
-// T1 소비처: Section·SubsectionHeader(단축키 섹션). Row·Switch·Segmented 는 T2(일반·외관) 첫 소비처를 위해 지금 둔다(K4ⓐ) —
-// Color·Number 필드는 소비처가 없어 T2 로 미뤘다(K4ⓑ, RESULT).
-import { useId, useRef } from 'react'
+//   SettingsNumberField    숫자 입력 — 입력 중엔 초안, Enter/blur 에 확정·범위 고정, 잘못된 값·Esc 는 직전 값으로(Orca `NumberField`)
+//   SettingsColorField     견본(type=color) + hex 입력 — 잘못된 hex 는 확정하지 않는다(Orca `ColorField` + 거부)
+//   SettingsDisclosure     「고급」 접기(Orca `AppearanceAdvancedDisclosure`) — 검색 중엔 펼친 채로 둔다
+//   SettingsCollapsibleCard 섹션 안 접이 카드(Orca `AppearanceSection` — 아이콘·제목·접힘 요약·화살표)
+// T1 소비처: Section·SubsectionHeader(단축키 섹션). Number·Color·Disclosure·CollapsibleCard 는 T2 외관 › 터미널(LIFE-512 K5ⓑ)이 첫 소비처다.
+import { useEffect, useId, useRef, useState } from 'react'
+import { ChevronRightIcon as ChevronRight } from './SidebarIcons.js'
 
 export function SettingsSection({ id, title, description, fill = false, children }: { id: string; title: string; description: string; fill?: boolean; children: React.ReactNode }): React.JSX.Element {
   return (
@@ -106,6 +110,159 @@ export function SettingsSegmented<T extends string>({ value, options, onChange, 
           </button>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * 숫자 칸 (LIFE-512 K5ⓑ) — 입력하는 동안은 초안만 바뀌고 **Enter·blur 에서만 확정**한다. 확정 값은 범위에 고정하고 단위에 맞춘다.
+ * 확정 순간만 갱신하는 이유: 「1」「6」 을 칠 때 1 이 확정되면 글꼴 1px → 16px 처럼 셀이 두 번 바뀌고 herdr 격자 요청이 두 번 나간다
+ * (herdr 는 resize 를 디바운스 없이 PTY 에 바로 적용한다 — 00-analysis §11 W3). 빈 값·숫자 아님·Esc 는 직전 값으로 돌린다.
+ */
+export function SettingsNumberField({ value, min, max, step, integer = false, onCommit, label, suffix, width = 'md' }: {
+  value: number
+  min: number
+  max: number
+  step: number
+  integer?: boolean
+  onCommit: (next: number) => void
+  label: string
+  suffix?: string
+  width?: 'sm' | 'md'
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(String(value))
+  const [shown, setShown] = useState(value)
+  if (shown !== value) {
+    setShown(value)
+    setDraft(String(value))
+  }
+  const commit = (): void => {
+    const trimmed = draft.trim()
+    const parsed = trimmed === '' ? Number.NaN : Number(trimmed)
+    if (!Number.isFinite(parsed) || (integer && !Number.isInteger(parsed))) {
+      setDraft(String(value))
+      return
+    }
+    const clamped = Math.min(max, Math.max(min, parsed))
+    const snapped = integer ? Math.round(clamped) : Math.round(clamped * 1000) / 1000
+    setDraft(String(snapped))
+    if (snapped !== value) onCommit(snapped)
+  }
+  return (
+    <span className="settings-number">
+      <input
+        type="number"
+        className={`settings-input settings-number-input is-${width}`}
+        data-settings-number={label}
+        aria-label={label}
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') { event.preventDefault(); commit() }
+          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setDraft(String(value)) }
+        }}
+      />
+      {suffix === undefined ? null : <span className="settings-suffix">{suffix}</span>}
+    </span>
+  )
+}
+
+const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i
+
+/** `#abc` → `#aabbcc` — `<input type=color>` 는 6자리만 받는다. */
+function expandHex(value: string): string {
+  return value.length === 4 ? `#${[...value.slice(1)].map((c) => c + c).join('')}` : value
+}
+
+/**
+ * 색 칸 (LIFE-512 K5ⓑ) — 견본(`type=color`)과 hex 입력. hex 는 Enter·blur 에 확정하고 **잘못된 값은 확정하지 않고** 직전 값으로 돌린다
+ * (입력 중 잘못된 값이면 `aria-invalid`). 견본은 OS 색 패널이 닫힐 때(네이티브 `change`) 한 번만 확정한다 — 패널을 끄는 동안의
+ * 연속 `input` 마다 저장하지 않는다.
+ */
+export function SettingsColorField({ value, onCommit, label }: { value: string; onCommit: (next: string) => void; label: string }): React.JSX.Element {
+  const [draft, setDraft] = useState(value)
+  const [shown, setShown] = useState(value)
+  if (shown !== value) {
+    setShown(value)
+    setDraft(value)
+  }
+  const swatch = useRef<HTMLInputElement>(null)
+  const latest = useRef({ value, onCommit })
+  latest.current = { value, onCommit }
+  useEffect(() => {
+    const input = swatch.current
+    if (input === null) return
+    const onChange = (): void => {
+      const next = input.value.toLowerCase()
+      if (HEX.test(next) && next !== latest.current.value.toLowerCase()) latest.current.onCommit(next)
+    }
+    input.addEventListener('change', onChange)
+    return () => input.removeEventListener('change', onChange)
+  }, [])
+  const valid = HEX.test(draft.trim())
+  const commit = (): void => {
+    const next = draft.trim().toLowerCase()
+    if (!HEX.test(next)) { setDraft(value); return }
+    setDraft(next)
+    if (next !== value.toLowerCase()) onCommit(next)
+  }
+  return (
+    <span className="settings-color">
+      <input ref={swatch} type="color" className="settings-color-swatch" data-settings-color-swatch={label} aria-label={`${label} 견본`} defaultValue={expandHex(value)} key={value} />
+      <input
+        type="text"
+        className="settings-input settings-color-input"
+        data-settings-color={label}
+        aria-label={label}
+        aria-invalid={valid ? undefined : true}
+        spellCheck={false}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') { event.preventDefault(); commit() }
+          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setDraft(value) }
+        }}
+      />
+    </span>
+  )
+}
+
+/** 「고급」 접기 — 닫힌 채 시작한다. `forceOpen`(검색 중)이면 펼친 채 두고 접기를 막는다(Orca 와 같다). */
+export function SettingsDisclosure({ label = '고급', forceOpen = false, id, children }: { label?: string; forceOpen?: boolean; id: string; children: React.ReactNode }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const expanded = open || forceOpen
+  return (
+    <div className="settings-disclosure" data-settings-disclosure={id}>
+      <button type="button" className="settings-disclosure-toggle" aria-expanded={expanded} disabled={forceOpen} onClick={() => setOpen((prev) => !prev)}>
+        <ChevronRight className={`settings-disclosure-chevron${expanded ? ' is-open' : ''}`} />
+        {label}
+      </button>
+      {expanded ? <div className="settings-disclosure-body">{children}</div> : null}
+    </div>
+  )
+}
+
+/** 섹션 안 접이 카드 — 펼친 채 시작한다. 접히면 요약 한 줄을 보인다. 검색 중엔 접기를 막는다. */
+export function SettingsCollapsibleCard({ id, icon, title, summary, forceOpen = false, children }: { id: string; icon: React.ReactNode; title: string; summary: string; forceOpen?: boolean; children: React.ReactNode }): React.JSX.Element {
+  const [open, setOpen] = useState(true)
+  const expanded = open || forceOpen
+  const contentId = `settings-card-${id}`
+  return (
+    <div className={`settings-collapsible${expanded ? ' is-open' : ''}`} data-settings-collapsible={id}>
+      <button type="button" className="settings-collapsible-toggle" aria-expanded={expanded} aria-controls={contentId} disabled={forceOpen} onClick={() => setOpen((prev) => !prev)}>
+        <span className="settings-collapsible-icon">{icon}</span>
+        <span className="settings-collapsible-text">
+          <span className="settings-collapsible-title">{title}</span>
+          {expanded ? null : <span className="settings-collapsible-summary">{summary}</span>}
+        </span>
+        <ChevronRight className={`settings-collapsible-chevron${expanded ? ' is-open' : ''}`} />
+      </button>
+      {expanded ? <div id={contentId} role="region" className="settings-collapsible-body">{children}</div> : null}
     </div>
   )
 }

@@ -10,19 +10,20 @@
 //   · `scrollback: 0` 이면 FitAddon 의 오버뷰 룰러 폭 보정이 **0** 이다 (corral 이 그 설정이다)
 //   · 보는 상자는 xterm 부모(여기서는 영역 상자)의 **content box**, 빼는 것은 `.xterm` 자신의 패딩
 //
-// 갱신 트리거 (R13-c): 폰트 로딩 완료 · DPR 변경 · 창 확대/축소. 갱신되면 전 연결이 격자를
-// 한 번씩 다시 요청한다 — 여기서 틀리면 전 pane 이 한꺼번에 어긋난다.
+// 갱신 트리거 (R13-c): 폰트 로딩 완료 · DPR 변경 · 창 확대/축소 · **글꼴 설정 변경**(LIFE-512 K2). 갱신되면 전 연결이
+// 격자를 한 번씩 다시 요청한다 — 여기서 틀리면 전 pane 이 한꺼번에 어긋난다.
+//
+// 글꼴 값은 이 파일에 없다(LIFE-512 K2ⓑ) — 렌더 xterm 과 측정이 같은 `terminalFontOptions(설정)` 을 받는다. 예전에는 여기 상수와
+// `TerminalPane` 리터럴이 따로 있어(서로 import 없음) 하나만 고치면 측정 셀과 렌더 셀이 어긋났다.
 
 import { Terminal } from '@xterm/xterm'
+import type { TerminalFontOptions } from '../../shared/terminal-settings.js'
 
 export type CellSize = { width: number; height: number }
 export type Grid = { cols: number; rows: number }
 
 /** 목업 상수 (`corral-pane-split.dc.html` CW·CH). 측정 전 첫 프레임에만 쓰인다. */
 export const FALLBACK_CELL: CellSize = { width: 7.2, height: 20.4 }
-
-export const TERM_FONT_SIZE = 13
-export const TERM_FONT_FAMILY = 'SF Mono, Menlo, Monaco, monospace'
 
 /**
  * xterm 이 **실제 렌더에 쓰는** 셀 크기. 공개 API 에 없어 비공개 코어를 읽는다 —
@@ -53,7 +54,7 @@ export function readCellSize(term: Terminal): CellSize | null {
  * pane 이 하나도 없을 때(부팅 직후)도 영역이 격자를 요청해야 하므로 **pane 과 무관한** 측정이
  * 필요하다. 만든 즉시 버린다 — 살아 있는 인스턴스를 남기면 그게 또 하나의 진실이 된다.
  */
-export function measureCellSize(): CellSize | null {
+export function measureCellSize(font: TerminalFontOptions): CellSize | null {
   if (typeof document === 'undefined') return null
   const host = document.createElement('div')
   host.setAttribute('data-term-measure', '')
@@ -61,8 +62,7 @@ export function measureCellSize(): CellSize | null {
   document.body.appendChild(host)
   const term = new Terminal({
     scrollback: 0,
-    fontSize: TERM_FONT_SIZE,
-    fontFamily: TERM_FONT_FAMILY,
+    ...font,
     allowProposedApi: true,
   })
   try {

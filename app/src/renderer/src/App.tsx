@@ -14,7 +14,7 @@ import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } f
 //
 // 계측이 누를 수 있게 손잡이마다 `data-*` 를 단다 — 선택자가 화면 계약이다 (C7 매핑표 참고).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AgentStatus, AppState, PaneDirection, PaneSplitDirection, RepoRow as RepoRowData, TabRow, WorkspaceRow } from '../../shared/types.js'
 import { AddRepoModal } from './components/AddRepoModal.js'
 import { ConfirmClose } from './components/ConfirmClose.js'
@@ -62,6 +62,8 @@ import { closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
+import { useSettings } from './settings-store.js'
+import { terminalCssVars } from './terminal-appearance.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
   if (workspaceId === null) return null
@@ -515,6 +517,12 @@ export function App(): React.JSX.Element {
   }, [layout.groups, layout.activeGroupId, tabById])
 
   const cell = useCellMetrics()
+  // 터미널 외관 CSS 변수(pane 배경·비활성 투명도·디바이더, LIFE-512) — 칠하기 전에 문서 루트에 둔다(첫 화면부터 저장값).
+  const settings = useSettings()
+  useLayoutEffect(() => {
+    const root = document.documentElement.style
+    for (const [name, value] of Object.entries(terminalCssVars(settings))) root.setProperty(name, value)
+  }, [settings])
 
   const termSync = useTermGroupSync({ groups: termGroups, cell })
 

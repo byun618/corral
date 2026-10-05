@@ -953,9 +953,11 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .group-divider { position: relative; flex: 0 0 auto; z-index: 3; }
 .group-divider.dir-row { width: var(--resizer-hit-w); margin: 0 calc(var(--resizer-hit-w) / -2); cursor: col-resize; }
 .group-divider.dir-column { height: var(--resizer-hit-w); margin: calc(var(--resizer-hit-w) / -2) 0; cursor: row-resize; }
-.group-divider-line { position: absolute; background: var(--line-strong); }
-.group-divider.dir-row .group-divider-line { top: 0; bottom: 0; left: 50%; width: var(--resizer-line-w); transform: translateX(-50%); }
-.group-divider.dir-column .group-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
+/* 선의 색·두께는 사용자 설정(외관 › 터미널 › 디바이더, LIFE-512 K4ⓓ — App 이 --term-divider-* 를 문서 루트에 쓴다). 히트존은 12px 그대로.
+   선은 히트존 안에 절대 배치라 두께가 영역 상자를 바꾸지 않는다 — 두께 변경은 격자 요청을 만들지 않는다. */
+.group-divider-line { position: absolute; background: var(--term-divider-color); }
+.group-divider.dir-row .group-divider-line { top: 0; bottom: 0; left: 50%; width: var(--term-divider-w); transform: translateX(-50%); }
+.group-divider.dir-column .group-divider-line { left: 0; right: 0; top: 50%; height: var(--term-divider-w); transform: translateY(-50%); }
 .group-divider:hover .group-divider-line, .group-divider.is-dragging .group-divider-line { background: var(--accent); }
 
 /* 힌트줄 pane 스트립 (§10-R21-1b) — pane 식별의 유일한 자리. 레이아웃 순 `{글리프} {n} {종류}`. */
@@ -974,9 +976,10 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 /* LIFE-387 Q0 보강(pane 경계를 --line-strong → --line 로 한 단 옅게)은 사용자 재확인에서 되돌린다
    ("pane 들 간의 border도 약해") — 톤 분리보다 구분 가독성이 우선이라 영역 경계와 같은
    --line-strong 로 되돌아온다. */
-.pane-divider-line { position: absolute; background: var(--line-strong); }
-.pane-divider.dir-row .pane-divider-line { top: 0; bottom: 0; left: 50%; width: var(--resizer-line-w); transform: translateX(-50%); }
-.pane-divider.dir-column .pane-divider-line { left: 0; right: 0; top: 50%; height: var(--resizer-line-w); transform: translateY(-50%); }
+/* LIFE-512: 색·두께는 영역 경계와 같은 사용자 설정(--term-divider-*). */
+.pane-divider-line { position: absolute; background: var(--term-divider-color); }
+.pane-divider.dir-row .pane-divider-line { top: 0; bottom: 0; left: 50%; width: var(--term-divider-w); transform: translateX(-50%); }
+.pane-divider.dir-column .pane-divider-line { left: 0; right: 0; top: 50%; height: var(--term-divider-w); transform: translateY(-50%); }
 .pane-divider:hover .pane-divider-line, .pane-divider.is-dragging .pane-divider-line { background: var(--accent); }
 
 .pane-divider-ghost { position: absolute; background: var(--accent); opacity: 0.4; z-index: 4; pointer-events: none; }
@@ -1078,15 +1081,18 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 /* ② pane 층 — 상자는 herdr 사각형이 정한다 (PaneLayout 주석). 이 층이 content box 의 원점이다. */
 /* 장식 칸은 상자 밖으로 삐져나간다 — 눌러 담지 않고 **잘라 낸다** (PaneLayout 주석). */
 .term-pane-stack { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-/* 핸드오프 §2 Pane: 배경은 `--bg-surface`. 잘려 나가는 장식 조각이 뒤로 비치지 않게 한다. */
-.term-pane { position: absolute; overflow: hidden; background: var(--bg-surface); }
+/* pane 배경 = 터미널 테마 배경(LIFE-512 U5 — Orca `paneBackground`). 앱 표면 토큰 --bg-surface 는 그대로 두고 pane 상자만 테마를 칠한다 —
+   패딩·셀 나머지 픽셀에 앱 표면색 띠가 생기지 않게. 잘려 나가는 장식 조각이 뒤로 비치지 않게 하는 역할은 그대로다. */
+.term-pane { position: absolute; overflow: hidden; background: var(--term-bg); }
 /* 활성 pane 표시 — 색 테두리로 **강조하지 않는다** (Orca 실측 재확인, `TabGroupPanel.tsx:226-239`).
    Orca 는 pane 사이 경계를 포커스 여부와 무관하게 항상 중립색(`border-border`)으로 두고, 대신
    **비포커스 pane 을 `opacity: .95` 로 살짝 죽인다** — 그 반대(포커스 쪽에 색을 칠하는 것)는
    corral 이 `--accent`(민트그린) 1px inset 으로 하고 있었는데, 사용자가 "굳이 초록색으로
    하이라이팅 할 필요없어"로 지적한 지점이다. 단일 pane 은 대조할 상대가 없어 그대로 둔다. */
-.term-group[data-pane-count="1"] > .term-pane-stack > .term-pane { opacity: 1; }
-.term-pane:not(.is-selected) { opacity: 0.95; }
+/* LIFE-512 K4ⓒ: 비활성 투명도는 사용자 설정(기본 0.9), 활성 1, 전환 140ms — Orca 198 `setPaneStyleOptions` 값. */
+.term-pane { opacity: var(--term-active-opacity); transition: opacity var(--term-opacity-transition) ease; }
+.term-group[data-pane-count="1"] > .term-pane-stack > .term-pane { opacity: var(--term-active-opacity); }
+.term-pane:not(.is-selected) { opacity: var(--term-inactive-opacity); }
 .term-pane-inner { position: absolute; display: flex; overflow: hidden; }
 /* 사이드바 행 클릭 뒤 림 플래시 (LIFE-467 D11) — Orca `terminal.css:163-206` 이식: 1.5px 테두리 + 2px 고리 + 18px 번짐,
    1.5s 동안 1 → .42(24%) → 0(46%). 붙이고 떼는 것은 `pane-rim-flash.ts`. reduced-motion 이면 움직이지 않고 떼일 때 사라진다. */

@@ -5,7 +5,10 @@
 //     외부 확인됨 (LIFE-345 P1 결론 유지, grok 서치 §2)
 //   · **scrollback 0** — endpoint 프레임은 항상 뷰포트 전체 리페인트이고 스크롤은 서버측이다
 //     (00-analysis §2-2). xterm 은 순수 뷰포트다. 가짜 히스토리를 만들지 않는다
-//   · 커서는 스트림이 그린다 (절대 CUP + DECSCUSR + show/hide) — xterm 커서 표시 그대로 사용
+//   · 커서는 스트림이 그린다 (절대 CUP + DECSCUSR + show/hide) — xterm 커서 표시 그대로 사용.
+//     herdr 는 앱이 커서 모양을 요청하지 않으면 매 프레임 `\e[0 q`(기본)를 보내고, xterm 은 0 이면 옵션 값(설정)을 쓴다.
+//     앱이 `\e[5 q` 등을 요청하면 그 값이 이후 프레임에도 실려 앱이 이긴다(LIFE-512 U10 실측 `raw/claude/u9/`)
+//   · 외관(글꼴·테마·커서·대비)은 사용자 설정이다 — `terminal-appearance.ts` 로 만들고 바뀐 것만 쓴다(LIFE-512)
 //
 // 프레임 제시(coalesce)는 Studio 웹의 TerminalEndpointPresentation 을 **참고해 얇게 재작성**
 // (벤더 아님 — 코디네이터 지시). 프레임은 자기완결 리페인트라 쓰기 중 새 프레임이 오면
@@ -16,12 +19,14 @@
 // 서버가 준 pane `innerRect` 가 프레임의 cols·rows 로 내려온다 — xterm 은 그 값으로 resize 된다.
 // 왕복이 사라져 요청이 연결당 1회로 수렴하고(S3), 픽셀→cols 역산이 한 군데로 줄었다.
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
+import { useSettings } from './settings-store.js'
+import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { clipboardImagePayload, createOrderedSender, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
 
 const decoder = new TextDecoder()
@@ -106,12 +111,16 @@ function readCursorHidden(term: Terminal): boolean | null {
   return typeof hidden === 'boolean' ? hidden : null
 }
 
-/** design-tokens.css 의 변수 하나를 런타임에 읽는다 (xterm 처럼 CSS 를 못 쓰는 소비자용). */
-function readToken(name: string, fallback: string): string {
-  if (typeof document === 'undefined') return fallback
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-  return value.length > 0 ? value : fallback
+/**
+ * **모든 pane 의 외관 상태** (계측 실행에서만) — LIFE-512 K3ⓕ·K4ⓑ. pane 마다 지금 xterm 옵션과 외관 쓰기 기록(무슨 옵션을 썼나)을
+ * 남긴다. 같은 테마를 다시 골랐을 때 `theme` 쓰기가 없었다는 것을 이 기록이 보인다.
+ */
+type PaneAppearanceSummary = {
+  paneId: string
+  options: { fontSize: unknown; fontFamily: unknown; fontWeight: unknown; lineHeight: unknown; cursorStyle: unknown; cursorBlink: unknown; minimumContrastRatio: unknown; theme: unknown }
+  writes: Array<{ at: number; keys: string[] }>
 }
+const paneAppearance = new Map<string, () => PaneAppearanceSummary>()
 
 export function TerminalPane({
   paneId,
@@ -154,6 +163,11 @@ export function TerminalPane({
   focusableRef.current = focusable
   const announceRef = useRef(announceFocus)
   announceRef.current = announceFocus
+  const settings = useSettings()
+  const appearance = useMemo(() => terminalAppearanceOptions(settings), [settings])
+  const appearanceRef = useRef<TerminalAppearanceOptions>(appearance)
+  appearanceRef.current = appearance
+  const appearanceWrites = useRef<Array<{ at: number; keys: string[] }>>([])
 
   useEffect(() => {
     const container = containerRef.current
@@ -161,13 +175,9 @@ export function TerminalPane({
 
     const term = new Terminal({
       scrollback: 0,
-      cursorBlink: false,
-      fontSize: 13,
-      fontFamily: 'SF Mono, Menlo, Monaco, monospace',
-      // --bg-surface(design-tokens.css) — xterm 은 CSS 변수를 못 읽으므로(캔버스/DOM 렌더러
-      // 자체 설정) **런타임에 읽어 넘긴다**. 리터럴로 복사해 두면 토큰이 바뀔 때 따라오지 않는다
-      // — 게이트 ① 수정 라운드에서 배경 서열이 원안으로 되돌아가며 실제로 어긋났던 자리다.
-      theme: { background: readToken('--bg-surface', '#141718') },
+      // 글꼴·테마·커서·대비 — 사용자 설정(LIFE-512). 셀 측정(`useCellMetrics`)과 같은 `terminalFontOptions` 를 거친다(원천 하나, K2ⓑ).
+      // 배경은 이제 앱 표면 토큰이 아니라 테마 배경이다 — pane 상자도 같은 값을 칠한다(`--term-bg`, U5).
+      ...appearanceRef.current,
       // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
       allowProposedApi: true,
     })
@@ -392,7 +402,7 @@ export function TerminalPane({
          * R13-a — 이 xterm 이 실제로 쓰는 셀 px 과 **오프스크린 측정치**를 나란히 준다.
          * 둘이 다르면 영역이 요청하는 격자가 통째로 어긋난다 (전 pane 동시 오차).
          */
-        cell: () => ({ live: readCellSize(term), measured: measureCellSize() }),
+        cell: () => ({ live: readCellSize(term), measured: measureCellSize(appearanceRef.current) }),
         read: () => {
           const buffer = term.buffer.active
           const lines: string[] = []
@@ -418,6 +428,21 @@ export function TerminalPane({
       // P2·P4 — pane 마다 자기 요약을 등록한다 (위 `paneProbes` 주석).
       paneProbes.set(paneId, () => ({ paneId, cols: term.cols, rows: term.rows, lastSeq, writes: [...writes] }))
       window.corralPaneWrites = () => [...paneProbes.values()].map((read) => read())
+      paneAppearance.set(paneId, () => ({
+        paneId,
+        options: {
+          fontSize: term.options.fontSize,
+          fontFamily: term.options.fontFamily,
+          fontWeight: term.options.fontWeight,
+          lineHeight: term.options.lineHeight,
+          cursorStyle: term.options.cursorStyle,
+          cursorBlink: term.options.cursorBlink,
+          minimumContrastRatio: term.options.minimumContrastRatio,
+          theme: { ...term.options.theme },
+        },
+        writes: [...appearanceWrites.current],
+      }))
+      window.corralPaneAppearance = () => [...paneAppearance.values()].map((read) => read())
     }
 
     // 크기는 영역이 요청하고 서버가 정한다 — 여기서는 포커스만 알린다 (S2: 마운트=사용자 선택).
@@ -431,6 +456,7 @@ export function TerminalPane({
       disposed = true
       if (installed !== undefined && window.corralTermProbe === installed) delete window.corralTermProbe
       if (installed !== undefined) paneProbes.delete(paneId)
+      if (installed !== undefined) paneAppearance.delete(paneId)
       container.removeEventListener('wheel', onWheel, { capture: true })
       container.removeEventListener('paste', onPaste, { capture: true })
       offFileDrop()
@@ -441,6 +467,17 @@ export function TerminalPane({
       term.dispose()
     }
   }, [paneId, diagnostics])
+
+  // 설정이 바뀌면 열린 pane 에 즉시 반영한다(K2ⓒ·K3ⓕ) — 바뀐 옵션만 쓴다. 새로 마운트되는 pane 은 생성자에서 현재 값을 받는다.
+  useEffect(() => {
+    const term = termRef.current
+    if (term === null) return
+    const keys = applyTerminalAppearance(term, appearance)
+    if (diagnostics) {
+      appearanceWrites.current.push({ at: Date.now(), keys })
+      if (appearanceWrites.current.length > 100) appearanceWrites.current.shift()
+    }
+  }, [appearance, diagnostics])
 
   /**
    * **이미 떠 있는 pane 이 선택으로 바뀐 순간**에도 herdr 에 알린다 (형제 pane 클릭).

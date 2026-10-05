@@ -26,7 +26,18 @@ const ledger = args.ledger ? path.resolve(args.ledger) : null
 const rawRel = ledger ? path.relative(path.resolve(ledger, '../../../../..'), out) : out
 const runId = ledger ? beginRun(ledger, { criterion, command, expectedExit: 0, raw: rawRel }) : null
 
-const guard = (() => { try { return execFileSync('pgrep', ['-fl', `${work}|l443-gui-diff`], { encoding: 'utf8' }).trim() } catch { return '' } })()
+/** 이 드라이버를 띄운 조상 프로세스(셸 래퍼 등)는 명령줄에 작업 경로를 담고 있다 — 504 가드가 자기 자신을 잡지 않게 뺀다(r1 실측: zsh -c 래퍼가 걸렸다). */
+const ancestors = (() => {
+  const set = new Set([process.pid])
+  let pid = process.ppid
+  for (let i = 0; i < 20 && pid > 1; i += 1) {
+    set.add(pid)
+    try { pid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim()) } catch { break }
+  }
+  return set
+})()
+const pgrep = (pattern) => { try { return execFileSync('pgrep', ['-fl', pattern], { encoding: 'utf8' }).trim().split('\n').filter((line) => line !== '' && !ancestors.has(Number(line.split(' ')[0]))).join('\n') } catch { return '' } }
+const guard = pgrep(`${work}|l443-gui-diff`)
 fs.writeFileSync(path.join(out, 'guard-before.txt'), `pgrep -fl "${work}|l443-gui-diff" → ${guard === '' ? '(없음)' : `\n${guard}`}\n`)
 if (guard !== '') {
   console.log('[u9] 504 가드: 같은 경로·세션을 쓰는 프로세스가 있다 — 멈춘다\n' + guard)
@@ -201,11 +212,11 @@ try {
   await pause(2000)
   result.alive = pids.filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
   for (const pid of result.alive) { try { process.kill(pid, 'SIGKILL') } catch { /* 이미 끝남 */ } }
-  const leftover = (() => { try { return execFileSync('pgrep', ['-fl', work], { encoding: 'utf8' }).trim() } catch { return '' } })()
+  const leftover = pgrep(work)
   result.leftover = leftover
   for (const line of leftover.split('\n').filter(Boolean)) { try { process.kill(Number(line.split(' ')[0]), 'SIGTERM') } catch { /* 이미 끝남 */ } }
   await pause(1000)
-  const left = (() => { try { return execFileSync('pgrep', ['-fl', `${work}|l443-gui-diff`], { encoding: 'utf8' }).trim() } catch { return '' } })()
+  const left = pgrep(`${work}|l443-gui-diff`)
   fs.writeFileSync(path.join(out, 'guard-after.txt'), `pgrep -fl "${work}|l443-gui-diff" → ${left === '' ? '(없음)' : `\n${left}`}\nowned=${JSON.stringify(owned)}\n`)
   if (left !== '') { exitCode = exitCode || 4; console.log('[u9] 남은 프로세스\n' + left) }
   if (ledger) finishRun(ledger, runId, { criterion, command, expectedExit: 0, actualExit: exitCode, raw: rawRel, result: exitCode === 0 ? '통과(실측 완료 — 해석은 RESULT)' : '실패' })

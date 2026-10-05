@@ -1052,7 +1052,7 @@ async function withFastClock(fn) {
   const originalTimeout = globalThis.setTimeout
   let time = 0
   Date.now = () => (time += 6000)
-  globalThis.setTimeout = (callback) => { queueMicrotask(callback); return 0 }
+  globalThis.setTimeout = (callback) => { Promise.resolve().then(callback); return 0 }
   try { return await fn() } finally { Date.now = originalNow; globalThis.setTimeout = originalTimeout }
 }
 const fakeHandle = ({ settingsOpen }) => {

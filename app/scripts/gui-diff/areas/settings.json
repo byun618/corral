@@ -108,7 +108,7 @@
         "text"
       ],
       "classify": "의도적",
-      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. R007 의 h 17·패딩 0 은 리셋 특이도 결함이었고 R008 에서 해소"
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다. boxShadow 는 Tailwind 가 앞에 깐 투명 층(rgba(0,0,0,0) 0 0 0 0) 4개만 다르고 보이는 층은 같다. R007 의 h 17·패딩 0 은 리셋 특이도 결함이었고 R008 에서 해소 (LIFE-512: 「외관」 행이 단축키 위에 생겨 그룹이 행 둘이 됐다 — 활성 행은 둘째 행, k8c-settings)"
     },
     {
       "id": "settings-back-icon",
@@ -157,7 +157,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 — 그룹 수 9 ↔ 1, 마지막 그룹이라 margin-bottom 0"
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 — 그룹 수 9 ↔ 1(행 수는 512 부터 2), 마지막 그룹이라 margin-bottom 0 (LIFE-512: 「외관」 행이 단축키 위에 생겨 그룹이 행 둘이 됐다 — 활성 행은 둘째 행, k8c-settings)"
     },
     {
       "id": "settings-nav-group-title",
@@ -182,7 +182,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 (y 만)"
+      "classifyWhy": "S6 — corral(T1)은 「인터페이스 › 단축키」 그룹·행 하나라 그 행이 목록 맨 위·마지막이다(Orca 는 4번째 그룹의 4번째 행, 목록이 넘쳐 thin 스크롤바 11px 만큼 좁다). 섹션이 생기는 대로 같아진다 (y 만) (LIFE-512: 「외관」 행이 단축키 위에 생겨 그룹이 행 둘이 됐다 — 활성 행은 둘째 행, k8c-settings)"
     },
     {
       "id": "settings-content-scroll",
@@ -292,7 +292,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "상자 산식(fix1 R057, 1440×900 실측 — r1 부기 1 정정). 둘 다 layout 은 shortcuts-pane 안 「위 오프셋 + layout + 아래 몫」 이다. Orca: pane y172 h619 = 위 124.66(머리·간격에 더해 정책 블록 ShortcutTerminalPolicyControl 이 있다 — corral 위 50 보다 74.66 크다. 블록 내부 분해는 미측정) + layout 494.34 + 아래 0. corral: pane y172 h654 = 위 50(머리 38 + gap 12) + layout 576 + 아래 28(gap 12 + 상태 줄 .shortcuts-status min-height 16). 따라서 y −74.66 = 위 오프셋 차(정책 블록 몫 — corral 에 그 기능 없음), h +81.66 = pane 높이 차 +35 + 위 오프셋 차 +74.66 − 아래 상태 줄 28. pane 높이 +35 는 창 몫(Orca 셸 840 = 900−36 크롬−24 상태바, corral 875 = 900−25 상태바)이다 — 창 크롬은 S4(LIFE-470), 상태바는 상태바 영역 몫. 1440 폭 장면 한정 — 1280 미만 쌓기(R1-02)는 이 분류가 정당화하지 않고 iso-fix1 R1-02 가 따로 본다"
+      "classifyWhy": "상자 산식(fix1 R057, 1440×900 실측 — r1 부기 1 정정). 둘 다 layout 은 shortcuts-pane 안 「위 오프셋 + layout + 아래 몫」 이다. Orca: pane y172 h619 = 위 124.66(머리·간격에 더해 정책 블록 ShortcutTerminalPolicyControl 이 있다 — corral 위 52 보다 72.66 크다. 블록 내부 분해는 미측정) + layout 494.34 + 아래 0. corral: pane y172 h654 = 위 52(머리 40 + gap 12) + layout 574 + 아래 28(gap 12 + 상태 줄 .shortcuts-status min-height 16). 따라서 y −72.66 = 위 오프셋 차(정책 블록 몫 — corral 에 그 기능 없음), h +79.66 = pane 높이 차 +35 + 위 오프셋 차 +72.66 − 아래 상태 줄 28. pane 높이 +35 는 창 몫(Orca 셸 840 = 900−36 크롬−24 상태바, corral 875 = 900−25 상태바)이다 — 창 크롬은 S4(LIFE-470), 상태바는 상태바 영역 몫. 1440 폭 장면 한정 — 1280 미만 쌓기(R1-02)는 이 분류가 정당화하지 않고 iso-fix1 R1-02 가 따로 본다 — LIFE-512 갱신: 머리 h3 줄높이를 Orca text-sm 20px 로 맞춰(외관 측정 r2) 머리 38→40, 위 오프셋 차 74.66→72.66 (k8c-settings ↔ k8c-settings-before)"
     },
     {
       "id": "shortcuts-rail",
@@ -304,7 +304,7 @@
         "paint"
       ],
       "classify": "의도적",
-      "classifyWhy": "레일은 layout 격자 칸이라 layout 과 같은 상자다(y·높이 동일) — 산식은 shortcuts-layout 의 classifyWhy(y −74.66 = 위 오프셋 차(정책 블록 몫), h +81.66 = +35 창 몫 + 74.66 − 28 상태 줄)"
+      "classifyWhy": "레일은 layout 격자 칸이라 layout 과 같은 상자다(y·높이 동일) — 산식은 shortcuts-layout 의 classifyWhy(y −72.66 = 위 오프셋 차(정책 블록 몫), h +79.66 = +35 창 몫 + 72.66 − 28 상태 줄)"
     },
     {
       "id": "shortcuts-search-input",

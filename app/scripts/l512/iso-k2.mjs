@@ -429,6 +429,8 @@ try {
     shots.menlo700 = await setTypography('menlo-700', [openTypo, setNumber('글꼴 두께', 700)])
     shots.monaco500 = await setTypography('monaco-500', [setFamily('Monaco'), openTypo, setNumber('글꼴 두께', 500)])
     shots.sfmono500 = await setTypography('sfmono-500', [setFamily('SF Mono'), openTypo, setNumber('글꼴 두께', 500)])
+    // K7 은 글꼴군도 기본값(SF Mono)과 달라야 한다(r4 는 기본값 그대로 재기동했다 — r5 보강). 실제 입력으로 Menlo 로 두고 재기동한다.
+    shots.k7family = await setTypography('k7-family-menlo', [setFamily('Menlo')])
     // 글꼴 이용 가능 여부 — 캔버스 폭이 폴백(monospace·serif) 둘 다와 같으면 그 이름은 렌더러에 없다(r3 실측: SF Mono 500 = Menlo 500 픽셀 동일).
     result.fontAvailability = await evaluate(() => {
       const ctx = document.createElement('canvas').getContext('2d')
@@ -451,7 +453,7 @@ try {
     console.log('[k2] U4', JSON.stringify({ m400v500: result.u4.menlo400vs500.differing, ctlFamily: result.u4.control_menlo500vsMonaco500.differing, ctlBold: result.u4.control_menlo400vs700.differing, sfVsMenlo: result.u4.sfmono500vsMenlo500.differing, fonts: result.fontAvailability }))
 
     // ── K7·K2ⓔ 영속·재기동: 기본값과 다른 값으로 정상 종료(SIGTERM) → 같은 userData·herdr 로 재기동 ──
-    // 지금 값: 글꼴 16 · SF Mono · 굵기 500 · Dracula · bar·깜박임 끔 · 투명도 0.5 · 디바이더 #ff0000 8px.
+    // 지금 값: 글꼴 16 · Menlo · 굵기 500 · Dracula · bar·깜박임 끔 · 투명도 0.5 · 디바이더 #ff0000 8px (기본값: 14 · SF Mono · 500 · Ghostty · block·깜박임 · 0.9 · #3f3f46 3px).
     const settingsFile = path.join(handle.paths.userData, 'settings.json')
     const uiPrefsFile = path.join(handle.paths.userData, 'ui-prefs.json')
     result.k7 = { settingsBefore: JSON.parse(fs.readFileSync(settingsFile, 'utf8')), uiPrefsKeysBefore: fs.existsSync(uiPrefsFile) ? Object.keys(JSON.parse(fs.readFileSync(uiPrefsFile, 'utf8'))) : null }
@@ -490,7 +492,7 @@ try {
     // K7: 모든 값이 pane 에 그대로.
     const st = back.paneStyles
     result.k7.after = { appearance: back.appearance.map((r) => ({ paneId: r.paneId, options: r.options })), paneStyles: st, paneDivider: back.paneDivider, groupDivider: back.groupDivider, rootVars: back.rootVars }
-    checks.require('k7-pane-values', back.appearance.length >= 2 && back.appearance.every((r) => r.options.fontSize === 16 && r.options.theme?.background === '#282a36' && r.options.cursorStyle === 'bar' && r.options.cursorBlink === false && r.options.fontWeight === 500 && /"SF Mono"/.test(String(r.options.fontFamily))), result.k7.after.appearance)
+    checks.require('k7-pane-values', back.appearance.length >= 2 && back.appearance.every((r) => r.options.fontSize === 16 && r.options.theme?.background === '#282a36' && r.options.cursorStyle === 'bar' && r.options.cursorBlink === false && r.options.fontWeight === 500 && String(r.options.fontFamily).startsWith('"Menlo"')), result.k7.after.appearance)
     checks.require('k7-css-values', back.rootVars['--term-inactive-opacity'] === '0.5' && back.rootVars['--term-divider-color'] === '#ff0000' && back.rootVars['--term-divider-w'] === '8px' && back.rootVars['--term-bg'] === '#282a36', back.rootVars)
     // 설정 화면에도 그대로(실제 클릭으로 연다).
     await click('[data-settings-open]')
@@ -511,7 +513,7 @@ try {
       dividerColor: document.querySelector('[data-settings-color="다크 디바이더 색상"]')?.value,
       dividerWidth: document.querySelector('[data-settings-number="구분선 두께"]')?.value,
     }))
-    checks.require('k7-screen-values', JSON.stringify(result.k7.screen) === JSON.stringify({ fontSize: '16', fontFamily: 'SF Mono', weight: '500', selectedTheme: '선택됨: Dracula', cursor: 'bar', blink: 'false', opacity: '0.5', dividerColor: '#ff0000', dividerWidth: '8' }), result.k7.screen)
+    checks.require('k7-screen-values', JSON.stringify(result.k7.screen) === JSON.stringify({ fontSize: '16', fontFamily: 'Menlo', weight: '500', selectedTheme: '선택됨: Dracula', cursor: 'bar', blink: 'false', opacity: '0.5', dividerColor: '#ff0000', dividerWidth: '8' }), result.k7.screen)
     result.k7.settingsAfter = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
     result.k7.uiPrefsKeysAfter = fs.existsSync(uiPrefsFile) ? Object.keys(JSON.parse(fs.readFileSync(uiPrefsFile, 'utf8'))) : null
     const settingKeys = Object.keys(result.k7.settingsAfter).filter((k) => k !== 'version')

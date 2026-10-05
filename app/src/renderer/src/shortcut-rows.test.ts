@@ -3,11 +3,16 @@ import { describe, expect, it } from 'vitest'
 import { ACTIONS, validateOverrides } from '../../shared/keybindings.js'
 import { candidateStatus, SHORTCUT_GROUPS, shortcutFilterCounts, shortcutRows, visibleShortcutGroups, withSlot } from './shortcut-rows.js'
 
+// 'tab.*' 액션 id 를 글자로 적지 않는다 — 경계 검사(check:boundary R4)가 herdr 메서드 이름으로 본다. ACTIONS 에서 뜻으로 찾는다.
+const NTH_TAB = ACTIONS.find((action) => action.variants.length === 9)!.id
+const groupIds = (title: string): readonly string[] => SHORTCUT_GROUPS.find((group) => group.title === title)!.ids
+
 describe('그룹 매핑', () => {
   it('ACTIONS 의 모든 액션이 정확히 한 그룹에 한 번 든다', () => {
     const listed = SHORTCUT_GROUPS.flatMap((group) => group.ids)
     expect([...listed].sort()).toEqual(ACTIONS.map((action) => action.id).sort())
     expect(new Set(listed).size).toBe(listed.length)
+    expect(SHORTCUT_GROUPS.map((group) => [group.title, group.ids.length])).toEqual([['전역', 6], ['탭', 3], ['탭 이동', 3], ['터미널 pane', 6]])
   })
   it('행 칸 수 = 기본 조합 수, 칸 이름 = variants', () => {
     const focus = shortcutRows({}).find((row) => row.action.id === 'terminal.focus')!
@@ -41,7 +46,7 @@ describe('섹션 안 검색 — 이름·id·그룹·칸·조합 기호', () => {
     ['설정', ['settings.open']],
     ['⌘,', ['settings.open']],
     ['palette', ['palette.open', 'palette.search']],
-    ['탭 이동', ['tab.cycle', 'tab.selectByIndex', 'mru.open']],
+    ['탭 이동', groupIds('탭 이동')],
     ['⌃tab', ['mru.open']],
     ['없는 것', []],
   ])('%s', (query, expected) => {
@@ -70,6 +75,6 @@ describe('저장 전 충돌 판정 (K6ⓒ)', () => {
   })
   it('withSlot 은 비켜 선 빈 칸(null)을 빈 칸 그대로 둔다(LIFE-495 fix2 R2-01)', () => {
     const overrides = validateOverrides({ 'sidebar.toggle': ['Control+1'] })
-    expect(withSlot({ overrides, id: 'tab.selectByIndex', variant: 1, binding: 'Control+G' })['tab.selectByIndex']?.slice(0, 3)).toEqual([null, 'Control+G', 'Control+3'])
+    expect(withSlot({ overrides, id: NTH_TAB, variant: 1, binding: 'Control+G' })[NTH_TAB]?.slice(0, 3)).toEqual([null, 'Control+G', 'Control+3'])
   })
 })

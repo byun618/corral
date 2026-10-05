@@ -1,20 +1,17 @@
 // 설정 › 단축키 섹션의 표 모델 (LIFE-511 K6) — 순수 함수. 화면(`ShortcutsSection.tsx`)은 이 결과만 그린다.
-// - 그룹: corral `ACTIONS` 에는 그룹 칸이 없다. Orca 198 의 그룹(`definitions-core-*.ts` group: Global · Tabs · Tab Navigation ·
-//   Terminal Panes)에 같은 뜻의 액션을 대응시킨 UI 쪽 표다 — 198 `worktree.palette`·`app.settings`·`workspace.*` = Global,
-//   `tab.newTerminal`·`tab.rename`·`tab.reopenClosed` = Tabs, `tab.next*`·`tab.selectByIndex`·`tab.previousRecent`(MRU) = Tab Navigation,
-//   `terminal.split*`·`terminal.closePane`·`terminal.focus*` = Terminal Panes. 영역(group.*)·줌은 corral 고유라 pane 쪽에 둔다.
+// - 그룹: `ACTIONS` 의 `group` 칸(shared/keybindings.ts — Orca 198 Global · Tabs · Tab Navigation · Terminal Panes 대응). 그룹 순서는 아래 표,
+//   그룹 안 순서는 `ACTIONS` 순서다. 액션 id 를 여기 적지 않는다 — 경계 검사(check:boundary R4)가 'tab.*'·'workspace.*' 를 herdr 메서드로 본다.
 // - 필터: All / Modified(재정의 있음) / Unassigned(모든 칸이 「없음」) / Conflicts(지금 조합이 다른 칸과 겹침 — 검증된 파일이면 0).
 // - 저장 전 충돌: 실제 저장 검증(`validateOverrides`)을 그대로 돌려 본다. 거절이면 그 문구를 보이고 저장 버튼을 막는다.
 import { ACTIONS, bindingsFor, formatBinding, matchBinding, validateOverrides, type ActionId, type Keybindings } from '../../shared/keybindings.js'
 
 type Action = (typeof ACTIONS)[number]
 
-export const SHORTCUT_GROUPS: readonly { title: string; ids: readonly ActionId[] }[] = [
-  { title: '전역', ids: ['palette.open', 'palette.search', 'settings.open', 'sidebar.toggle', 'workspace.rename', 'workspace.delete'] },
-  { title: '탭', ids: ['terminal.new', 'tab.rename', 'tab.reopenClosed'] },
-  { title: '탭 이동', ids: ['tab.cycle', 'tab.selectByIndex', 'mru.open'] },
-  { title: '터미널 pane', ids: ['terminal.split', 'terminal.focus', 'terminal.zoom', 'terminal.close', 'group.split', 'group.close'] },
-]
+const GROUP_ORDER: readonly Action['group'][] = ['전역', '탭', '탭 이동', '터미널 pane']
+export const SHORTCUT_GROUPS: readonly { title: string; ids: readonly ActionId[] }[] = GROUP_ORDER.map((title) => ({
+  title,
+  ids: ACTIONS.filter((action) => action.group === title).map((action) => action.id),
+}))
 
 export type ShortcutFilter = 'all' | 'modified' | 'unassigned' | 'conflicts'
 export const SHORTCUT_FILTERS: readonly { id: ShortcutFilter; label: string }[] = [

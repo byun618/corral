@@ -1,27 +1,31 @@
-/** One action per user-visible operation. Each stored chord names a dispatch variant through bindingVariants. */
+/**
+ * One action per user-visible operation. Each stored chord names a dispatch variant through bindingVariants.
+ * `group` — 설정 › 단축키 섹션의 묶음(LIFE-511). Orca 198 그룹(Global · Tabs · Tab Navigation · Terminal Panes)에 같은 뜻의 액션을 대응시켰다.
+ */
 export const ACTIONS = [
-  { id: 'palette.open', title: '커맨드 팔레트', defaultBinding: ['Mod+K'], bindingVariants: [0], variants: ['열기'] },
+  { id: 'palette.open', group: '전역', title: '커맨드 팔레트', defaultBinding: ['Mod+K'], bindingVariants: [0], variants: ['열기'] },
   // LIFE-495 — ⌘⇧T 는 「닫은 탭 다시 열기」로 넘어갔다(P1). 옛 파일의 두 칸 재정의는 `LEGACY_DEFAULTS` 가 한 칸으로 옮긴다.
-  { id: 'terminal.new', title: '새 탭', defaultBinding: ['Mod+T'], bindingVariants: [0], variants: ['열기'] },
-  { id: 'mru.open', title: '최근 pane 전환', defaultBinding: ['Control+Tab', 'Control+Shift+Tab'], bindingVariants: [0, 1], variants: ['다음', '이전'] },
-  { id: 'terminal.split', title: 'pane 분할', defaultBinding: ['Mod+D', 'Mod+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
-  { id: 'group.split', title: '영역 분할', defaultBinding: ['Mod+Alt+D', 'Mod+Alt+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
-  { id: 'terminal.focus', title: '인접 pane 포커스', defaultBinding: ['Mod+Alt+ArrowLeft', 'Mod+Alt+ArrowRight', 'Mod+Alt+ArrowUp', 'Mod+Alt+ArrowDown', 'Mod+Alt+Shift+ArrowLeft', 'Mod+Alt+Shift+ArrowRight', 'Mod+Alt+Shift+ArrowUp', 'Mod+Alt+Shift+ArrowDown'], bindingVariants: [0, 1, 2, 3, 0, 1, 2, 3], variants: ['왼쪽', '오른쪽', '위', '아래'] },
-  { id: 'group.close', title: '활성 영역 닫기', defaultBinding: ['Mod+Alt+W', 'Mod+Alt+Shift+W'], bindingVariants: [0, 0], variants: ['닫기'] },
-  { id: 'terminal.zoom', title: 'pane 줌 전환', defaultBinding: ['Mod+Shift+Z', 'Mod+Alt+Shift+Z'], bindingVariants: [0, 0], variants: ['전환'] },
-  { id: 'terminal.close', title: 'pane / 탭 닫기', defaultBinding: ['Mod+W'], bindingVariants: [0], variants: ['닫기'] },
-  { id: 'sidebar.toggle', title: '사이드바 접기 / 펼치기', defaultBinding: ['Mod+B'], bindingVariants: [0], variants: ['전환'] },
+  { id: 'terminal.new', group: '탭', title: '새 탭', defaultBinding: ['Mod+T'], bindingVariants: [0], variants: ['열기'] },
+  { id: 'mru.open', group: '탭 이동', title: '최근 pane 전환', defaultBinding: ['Control+Tab', 'Control+Shift+Tab'], bindingVariants: [0, 1], variants: ['다음', '이전'] },
+  { id: 'terminal.split', group: '터미널 pane', title: 'pane 분할', defaultBinding: ['Mod+D', 'Mod+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
+  { id: 'group.split', group: '터미널 pane', title: '영역 분할', defaultBinding: ['Mod+Alt+D', 'Mod+Alt+Shift+D'], bindingVariants: [0, 1], variants: ['오른쪽', '아래'] },
+  { id: 'terminal.focus', group: '터미널 pane', title: '인접 pane 포커스', defaultBinding: ['Mod+Alt+ArrowLeft', 'Mod+Alt+ArrowRight', 'Mod+Alt+ArrowUp', 'Mod+Alt+ArrowDown', 'Mod+Alt+Shift+ArrowLeft', 'Mod+Alt+Shift+ArrowRight', 'Mod+Alt+Shift+ArrowUp', 'Mod+Alt+Shift+ArrowDown'], bindingVariants: [0, 1, 2, 3, 0, 1, 2, 3], variants: ['왼쪽', '오른쪽', '위', '아래'] },
+  { id: 'group.close', group: '터미널 pane', title: '활성 영역 닫기', defaultBinding: ['Mod+Alt+W', 'Mod+Alt+Shift+W'], bindingVariants: [0, 0], variants: ['닫기'] },
+  { id: 'terminal.zoom', group: '터미널 pane', title: 'pane 줌 전환', defaultBinding: ['Mod+Shift+Z', 'Mod+Alt+Shift+Z'], bindingVariants: [0, 0], variants: ['전환'] },
+  { id: 'terminal.close', group: '터미널 pane', title: 'pane / 탭 닫기', defaultBinding: ['Mod+W'], bindingVariants: [0], variants: ['닫기'] },
+  { id: 'sidebar.toggle', group: '전역', title: '사이드바 접기 / 펼치기', defaultBinding: ['Mod+B'], bindingVariants: [0], variants: ['전환'] },
   // LIFE-470 D28b — 198 `worktree.palette`(⌘J). 같은 391 팔레트를 연다(⌘K 는 그대로 — 게이트 ⓪ Q3).
-  { id: 'palette.search', title: '검색 (팔레트)', defaultBinding: ['Mod+J'], bindingVariants: [0], variants: ['열기'] },
+  { id: 'palette.search', group: '전역', title: '검색 (팔레트)', defaultBinding: ['Mod+J'], bindingVariants: [0], variants: ['열기'] },
   // LIFE-478 — 198 `workspace.rename`(Mod+Alt+R, 활성 워크트리 인라인 rename) · `workspace.delete`(Mod+Shift+Backspace, hover 카드 삭제).
-  { id: 'workspace.rename', title: '워크트리 이름 바꾸기', defaultBinding: ['Mod+Alt+R'], bindingVariants: [0], variants: ['활성 워크트리'] },
-  { id: 'workspace.delete', title: '워크트리 삭제', defaultBinding: ['Mod+Shift+Backspace'], bindingVariants: [0], variants: ['hover 중인 카드'] },
+  { id: 'workspace.rename', group: '전역', title: '워크트리 이름 바꾸기', defaultBinding: ['Mod+Alt+R'], bindingVariants: [0], variants: ['활성 워크트리'] },
+  { id: 'workspace.delete', group: '전역', title: '워크트리 삭제', defaultBinding: ['Mod+Shift+Backspace'], bindingVariants: [0], variants: ['hover 중인 카드'] },
   // LIFE-495 — 탭 단축키(220 `definitions-core-2.ts`). ⌘R 은 기본 메뉴 Reload 가 쥐고 있어 main 이 가로챈다(`main/index.ts`).
-  { id: 'tab.reopenClosed', title: '닫은 탭 다시 열기', defaultBinding: ['Mod+Shift+T'], bindingVariants: [0], variants: ['다시 열기'] },
-  { id: 'tab.rename', title: '탭 제목 바꾸기', defaultBinding: ['Mod+R'], bindingVariants: [0], variants: ['활성 탭'] },
+  { id: 'tab.reopenClosed', group: '탭', title: '닫은 탭 다시 열기', defaultBinding: ['Mod+Shift+T'], bindingVariants: [0], variants: ['다시 열기'] },
+  { id: 'tab.rename', group: '탭', title: '탭 제목 바꾸기', defaultBinding: ['Mod+R'], bindingVariants: [0], variants: ['활성 탭'] },
   // 220 은 ⌘⌥[ ](같은 종류)·⌘⇧[ ](전체)·⌃PgUp/Dn(터미널만)을 따로 두지만 corral 탭은 전부 터미널이라 셋이 같은 순환이다 — 한 액션의 별칭이다.
   {
     id: 'tab.cycle',
+    group: '탭 이동',
     title: '이전 / 다음 탭',
     defaultBinding: ['Mod+Shift+]', 'Mod+Shift+[', 'Mod+Alt+]', 'Mod+Alt+[', 'Control+PageDown', 'Control+PageUp'],
     bindingVariants: [0, 1, 0, 1, 0, 1],
@@ -29,13 +33,14 @@ export const ACTIONS = [
   },
   {
     id: 'tab.selectByIndex',
+    group: '탭 이동',
     title: 'N번째 탭',
     defaultBinding: ['Control+1', 'Control+2', 'Control+3', 'Control+4', 'Control+5', 'Control+6', 'Control+7', 'Control+8', 'Control+9'],
     bindingVariants: [0, 1, 2, 3, 4, 5, 6, 7, 8],
     variants: ['1번째', '2번째', '3번째', '4번째', '5번째', '6번째', '7번째', '8번째', '9번째'],
   },
   // LIFE-511 — 198 `app.settings`(Mod+Comma). 설정 페이지를 연다. 나중에 생긴 기본값이라 양보한다(아래 YIELDING_DEFAULTS).
-  { id: 'settings.open', title: '설정 열기', defaultBinding: ['Mod+,'], bindingVariants: [0], variants: ['열기'] },
+  { id: 'settings.open', group: '전역', title: '설정 열기', defaultBinding: ['Mod+,'], bindingVariants: [0], variants: ['열기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */

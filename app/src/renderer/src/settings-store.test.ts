@@ -1,15 +1,18 @@
 // @vitest-environment happy-dom
 // 렌더러 설정 저장소 (LIFE-512 K1ⓑ · 코디 답 Q3 조건 2) — 동기 읽기(`getSettingsSync`)는 부팅 때 **한 번**뿐이고, 이후 값은 푸시로만 바뀐다.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_SETTINGS, type Settings } from '../../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, type Settings, type SettingsWriteResult } from '../../shared/terminal-settings.js'
 import { getSettings, resetSettingsStoreForTest, updateSettings } from './settings-store.js'
 
 let push: ((next: Settings) => void) | null = null
 const getSettingsSync = vi.fn(() => ({ ...DEFAULT_SETTINGS, terminalFontSize: 16 }))
-const setSettings = vi.fn(async (patch: Partial<Settings>) => {
+let failWrites = false
+const setSettings = vi.fn(async (patch: Partial<Settings>): Promise<SettingsWriteResult> => {
+  // 실패면 main 은 메모리를 확정하지 않고 저장값을 돌려주며 푸시하지 않는다(r1 R1-03).
+  if (failWrites) return { status: 'failed', settings: { ...DEFAULT_SETTINGS, terminalFontSize: 16 } }
   const next = { ...DEFAULT_SETTINGS, terminalFontSize: 16, ...patch }
   push?.(next)
-  return next
+  return { status: 'saved', settings: next }
 })
 const onSettings = vi.fn((listener: (next: Settings) => void) => {
   push = listener
@@ -19,6 +22,7 @@ const onSettings = vi.fn((listener: (next: Settings) => void) => {
 beforeEach(() => {
   resetSettingsStoreForTest()
   push = null
+  failWrites = false
   getSettingsSync.mockClear()
   setSettings.mockClear()
   onSettings.mockClear()
@@ -47,5 +51,17 @@ describe('settings-store — 동기 읽기는 부팅 1회', () => {
     expect(getSettings().terminalFontSize).toBe(18)
     expect(setSettings).toHaveBeenCalledTimes(1)
     expect(getSettingsSync).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('settings-store — 쓰기 실패(r1 R1-03)', () => {
+  it('실패면 false 를 돌려주고 값은 저장값 그대로다', async () => {
+    getSettings()
+    failWrites = true
+    expect(await updateSettings({ terminalFontSize: 20 })).toBe(false)
+    expect(getSettings().terminalFontSize).toBe(16)
+    failWrites = false
+    expect(await updateSettings({ terminalFontSize: 20 })).toBe(true)
+    expect(getSettings().terminalFontSize).toBe(20)
   })
 })

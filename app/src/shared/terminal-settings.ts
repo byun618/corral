@@ -36,6 +36,12 @@ export type Settings = {
 
 export const DEFAULT_TERMINAL_THEME = 'Ghostty Default Style Dark'
 
+/**
+ * 부분 갱신 결과(main → 렌더러). `failed` 면 디스크에 쓰지 못한 것이다 — main 메모리도 바꾸지 않았고 `settings` 는 **저장된 값**이다.
+ * 렌더러는 그 값으로 되돌린다(r1 R1-03: 예전에는 실패를 성공으로 돌려주고 같은 값 재시도를 「안 바뀜」 으로 버렸다).
+ */
+export type SettingsWriteResult = { status: 'saved' | 'unchanged' | 'failed'; settings: Settings }
+
 export const DEFAULT_SETTINGS: Settings = {
   terminalFontSize: 14,
   terminalFontFamily: 'SF Mono',
@@ -50,23 +56,31 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalDividerThicknessPx: 3,
 }
 
+export type NumericSettingKey =
+  | 'terminalFontSize'
+  | 'terminalFontWeight'
+  | 'terminalFontWeightBold'
+  | 'terminalLineHeight'
+  | 'terminalInactivePaneOpacity'
+  | 'terminalDividerThicknessPx'
+export type SettingRange = { min: number; max: number; step: number; integer: boolean }
+
 /** 숫자 칸의 범위·단위 — 설정 화면(NumberField·± 버튼)과 저장소 검증이 같은 표를 본다. */
-export const SETTINGS_RANGES = {
+export const SETTINGS_RANGES: Record<NumericSettingKey, SettingRange> = {
   terminalFontSize: { min: 10, max: 24, step: 1, integer: true },
   terminalFontWeight: { min: 100, max: 900, step: 100, integer: true },
   terminalFontWeightBold: { min: 100, max: 900, step: 100, integer: true },
   terminalLineHeight: { min: 1, max: 3, step: 0.1, integer: false },
   terminalInactivePaneOpacity: { min: 0, max: 1, step: 0.05, integer: false },
   terminalDividerThicknessPx: { min: 1, max: 32, step: 1, integer: true },
-} as const
-export type NumericSettingKey = keyof typeof SETTINGS_RANGES
+}
 
 /** 활성 pane 투명도·전환 시간 — Orca 도 화면에 노출하지 않는 값이다(`terminalActivePaneOpacity` 1 · 140ms). 상수로 둔다. */
 export const ACTIVE_PANE_OPACITY = 1
 export const PANE_OPACITY_TRANSITION_MS = 140
 
 /** 글꼴군 제안 — Orca 198 `main/system-fonts.ts:140` 의 macOS 후보 목록 그대로(B7). 시스템 글꼴 열거는 하지 않는다(00-analysis §9). */
-export const TERMINAL_FONT_SUGGESTIONS = ['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code'] as const
+export const TERMINAL_FONT_SUGGESTIONS: readonly string[] = ['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code']
 
 export const TERMINAL_THEME_NAMES: readonly string[] = Object.keys(TERMINAL_THEME_CATALOG).sort()
 
@@ -77,22 +91,35 @@ export function isHexColor(value: unknown): value is string {
   return typeof value === 'string' && HEX_COLOR.test(value)
 }
 
-/** 숫자 하나를 범위·단위에 맞춘다. 숫자가 아니면 null — 부른 쪽이 기본값이나 직전 값으로 떨어진다. */
-export function clampSetting(key: NumericSettingKey, value: unknown): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null
-  const range = SETTINGS_RANGES[key]
-  const clamped = Math.min(range.max, Math.max(range.min, value))
-  if (range.integer) return Math.round(clamped)
-  // 0.1·0.05 단위의 부동소수 꼬리(1.2000000000000002)를 남기지 않는다 — 파일·화면이 같은 글자를 보게.
-  return Math.round(clamped * 1000) / 1000
+/** 단위 반올림 — 0.1·0.05 단위의 부동소수 꼬리(1.2000000000000002)를 남기지 않는다(파일·화면이 같은 글자를 보게). */
+function roundToUnit({ range, value }: { range: SettingRange; value: number }): number {
+  return range.integer ? Math.round(value) : Math.round(value * 1000) / 1000
 }
 
 /**
- * 칸 하나를 읽는다 — 손상·범위 밖·알 수 없는 값이면 **그 칸만** null(부른 쪽이 기본값/직전 값). 나머지 칸은 영향이 없다(K1ⓐ).
- * 범위 밖 숫자는 버리지 않고 범위에 고정한다(손으로 고친 30 → 24). 숫자가 아닌 값·없는 테마·모르는 커서는 버린다.
+ * **화면 입력**(± 버튼·숫자 입력 확정)용 — 범위 밖이면 끝값에 고정한다(K2ⓐ·K5ⓑ). 숫자가 아니면 null.
+ * 파일·IPC 로 들어온 값에는 쓰지 않는다 — 그쪽은 `readNumericSetting`(범위 밖 = 그 칸 기본값, K1ⓐ).
  */
-export function readSettingField<K extends keyof Settings>(key: K, value: unknown): Settings[K] | null
-export function readSettingField(key: keyof Settings, value: unknown): Settings[keyof Settings] | null {
+export function clampSetting({ key, value }: { key: NumericSettingKey; value: unknown }): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const range = SETTINGS_RANGES[key]
+  return roundToUnit({ range, value: Math.min(range.max, Math.max(range.min, value)) })
+}
+
+/** **파일·IPC** 로 들어온 숫자 — 범위 밖이거나 숫자가 아니면 null(그 칸만 기본값/직전 값, K1ⓐ · r1 R1-02). */
+export function readNumericSetting({ key, value }: { key: NumericSettingKey; value: unknown }): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const range = SETTINGS_RANGES[key]
+  if (value < range.min || value > range.max) return null
+  return roundToUnit({ range, value })
+}
+
+/**
+ * 칸 하나를 읽는다(파일·IPC) — 손상·범위 밖·알 수 없는 값이면 **그 칸만** null(부른 쪽이 기본값/직전 값). 나머지 칸은 영향이 없다(K1ⓐ).
+ * 범위 밖 숫자도 버린다(손으로 고친 30 → 그 칸 기본값). 범위 고정은 화면 입력(`clampSetting`)만 한다.
+ */
+export function readSettingField<K extends keyof Settings>(input: { key: K; value: unknown }): Settings[K] | null
+export function readSettingField({ key, value }: { key: keyof Settings; value: unknown }): Settings[keyof Settings] | null {
   switch (key) {
     case 'terminalFontSize':
     case 'terminalFontWeight':
@@ -100,7 +127,7 @@ export function readSettingField(key: keyof Settings, value: unknown): Settings[
     case 'terminalLineHeight':
     case 'terminalInactivePaneOpacity':
     case 'terminalDividerThicknessPx':
-      return clampSetting(key, value)
+      return readNumericSetting({ key, value })
     case 'terminalFontFamily':
       return typeof value === 'string' && value.trim().length > 0 && value.length <= 200 ? value.trim() : null
     case 'terminalThemeDark':
@@ -133,7 +160,7 @@ export function readSettings(parsed: unknown): Settings {
   const out: Settings = { ...DEFAULT_SETTINGS }
   if (!isRecord(parsed)) return out
   for (const key of SETTING_KEYS) {
-    const value = readSettingField(key, parsed[key])
+    const value = readSettingField({ key, value: parsed[key] })
     if (value !== null) Object.assign(out, { [key]: value })
   }
   return out
@@ -150,7 +177,7 @@ export function sanitizeSettingsPatch(patch: unknown): { accepted: Partial<Setti
   for (const [key, value] of Object.entries(patch)) {
     const known = SETTING_KEYS.find((name) => name === key)
     if (known === undefined) { rejected.push(key); continue }
-    const read = readSettingField(known, value)
+    const read = readSettingField({ key: known, value })
     if (read === null) { rejected.push(key); continue }
     Object.assign(accepted, { [known]: read })
   }
@@ -171,7 +198,7 @@ export function resolveTerminalTheme(input: { themeName: string; overrides?: Par
 }
 
 /** 두 테마가 같은 값인가 — 같으면 `options.theme` 를 다시 쓰지 않는다(Orca B14: 쓰면 팔레트가 새로 만들어져 OSC 4/10/11/12 가 날아간다). */
-export function terminalThemesEqual(a: ITheme | undefined, b: ITheme | undefined): boolean {
+export function terminalThemesEqual({ a, b }: { a: ITheme | undefined; b: ITheme | undefined }): boolean {
   if (a === b) return true
   if (a === undefined || b === undefined) return false
   const keys = new Set([...Object.keys(a), ...Object.keys(b)])
@@ -180,7 +207,7 @@ export function terminalThemesEqual(a: ITheme | undefined, b: ITheme | undefined
 }
 
 /** 글꼴군 → xterm `fontFamily`. 고른 글꼴 뒤에 macOS 폴백을 붙인다(Orca `buildFontFamily` 의 macOS 부분, 중복은 건너뛴다). */
-const FONT_FALLBACKS = ['SF Mono', 'Menlo', 'Monaco'] as const
+const FONT_FALLBACKS: readonly string[] = ['SF Mono', 'Menlo', 'Monaco']
 export function buildFontFamily(family: string): string {
   const trimmed = family.trim()
   const parts = trimmed.length > 0 ? [`"${trimmed}"`] : []
@@ -242,7 +269,7 @@ function relativeLuminance(rgb: { r: number; g: number; b: number }): number {
   return 0.2126 * toLinear(rgb.r) + 0.7152 * toLinear(rgb.g) + 0.0722 * toLinear(rgb.b)
 }
 
-function contrastRatio(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+function contrastRatio({ a, b }: { a: { r: number; g: number; b: number }; b: { r: number; g: number; b: number } }): number {
   const la = relativeLuminance(a)
   const lb = relativeLuminance(b)
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
@@ -252,7 +279,7 @@ function contrastRatio(a: { r: number; g: number; b: number }, b: { r: number; g
 export function isTerminalBackgroundLight(background: string | undefined): boolean {
   const rgb = parseHex(background)
   if (rgb === null) return false
-  return contrastRatio({ r: 0, g: 0, b: 0 }, rgb) >= contrastRatio({ r: 255, g: 255, b: 255 }, rgb)
+  return contrastRatio({ a: { r: 0, g: 0, b: 0 }, b: rgb }) >= contrastRatio({ a: { r: 255, g: 255, b: 255 }, b: rgb })
 }
 
 export function resolveMinimumContrastRatio(background: string | undefined): number {

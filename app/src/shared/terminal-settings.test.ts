@@ -8,6 +8,7 @@ import {
   buildFontFamily,
   cellMetricKey,
   clampSetting,
+  readNumericSetting,
   readSettings,
   resolveMinimumContrastRatio,
   resolveTerminalTheme,
@@ -15,6 +16,7 @@ import {
   terminalCursorOptions,
   terminalFontOptions,
   terminalThemesEqual,
+  type Settings,
 } from './terminal-settings.js'
 
 describe('내장 테마 카탈로그', () => {
@@ -50,22 +52,35 @@ describe('resolveTerminalTheme — 순수 함수 (T3 override 자리)', () => {
   })
 
   it('terminalThemesEqual — 값 비교', () => {
-    expect(terminalThemesEqual(resolveTerminalTheme({ themeName: 'Nord' }), resolveTerminalTheme({ themeName: 'Nord' }))).toBe(true)
-    expect(terminalThemesEqual(resolveTerminalTheme({ themeName: 'Nord' }), resolveTerminalTheme({ themeName: 'Dracula' }))).toBe(false)
-    expect(terminalThemesEqual(undefined, resolveTerminalTheme({ themeName: 'Nord' }))).toBe(false)
+    expect(terminalThemesEqual({ a: resolveTerminalTheme({ themeName: 'Nord' }), b: resolveTerminalTheme({ themeName: 'Nord' }) })).toBe(true)
+    expect(terminalThemesEqual({ a: resolveTerminalTheme({ themeName: 'Nord' }), b: resolveTerminalTheme({ themeName: 'Dracula' }) })).toBe(false)
+    expect(terminalThemesEqual({ a: undefined, b: resolveTerminalTheme({ themeName: 'Nord' }) })).toBe(false)
   })
 })
 
 describe('범위·잘못된 입력 (K2ⓗ)', () => {
   it('clampSetting — 범위 고정·단위·숫자 아님', () => {
-    expect(clampSetting('terminalFontSize', 9)).toBe(10)
-    expect(clampSetting('terminalFontSize', 25)).toBe(24)
-    expect(clampSetting('terminalFontSize', 15.6)).toBe(16)
-    expect(clampSetting('terminalLineHeight', 1.2000000000000002)).toBe(1.2)
-    expect(clampSetting('terminalInactivePaneOpacity', 2)).toBe(1)
-    expect(clampSetting('terminalDividerThicknessPx', 0)).toBe(1)
-    expect(clampSetting('terminalFontSize', Number.NaN)).toBeNull()
-    expect(clampSetting('terminalFontSize', '14')).toBeNull()
+    expect(clampSetting({ key: 'terminalFontSize', value: 9 })).toBe(10)
+    expect(clampSetting({ key: 'terminalFontSize', value: 25 })).toBe(24)
+    expect(clampSetting({ key: 'terminalFontSize', value: 15.6 })).toBe(16)
+    expect(clampSetting({ key: 'terminalLineHeight', value: 1.2000000000000002 })).toBe(1.2)
+    expect(clampSetting({ key: 'terminalInactivePaneOpacity', value: 2 })).toBe(1)
+    expect(clampSetting({ key: 'terminalDividerThicknessPx', value: 0 })).toBe(1)
+    expect(clampSetting({ key: 'terminalFontSize', value: Number.NaN })).toBeNull()
+    expect(clampSetting({ key: 'terminalFontSize', value: '14' })).toBeNull()
+  })
+
+  it('readNumericSetting(파일·IPC) — 범위 밖·숫자 아님은 null, 범위 안은 단위 반올림 (r1 R1-02)', () => {
+    expect(readNumericSetting({ key: 'terminalFontSize', value: 99 })).toBeNull()
+    expect(readNumericSetting({ key: 'terminalInactivePaneOpacity', value: -1 })).toBeNull()
+    expect(readNumericSetting({ key: 'terminalDividerThicknessPx', value: 0 })).toBeNull()
+    expect(readNumericSetting({ key: 'terminalFontSize', value: '14' })).toBeNull()
+    expect(readNumericSetting({ key: 'terminalLineHeight', value: 1.2000000000000002 })).toBe(1.2)
+    expect(readNumericSetting({ key: 'terminalFontSize', value: 24 })).toBe(24)
+  })
+
+  it('readSettings — 범위 밖 숫자는 그 칸만 기본값(극단값 고정 아님), 나머지는 생존 (K1ⓐ · r1 R1-02 재현 입력)', () => {
+    expect(readSettings({ terminalFontSize: 99, terminalInactivePaneOpacity: -1, terminalDividerThicknessPx: 99, terminalThemeDark: 'Dracula' })).toEqual({ ...DEFAULT_SETTINGS, terminalThemeDark: 'Dracula' })
   })
 
   it('readSettings — 객체 아님은 전부 기본값, 글꼴군 공백·hex 아님은 그 칸만', () => {
@@ -77,6 +92,7 @@ describe('범위·잘못된 입력 (K2ⓗ)', () => {
   it('sanitizeSettingsPatch — 모르는 칸·잘못된 값은 버린 칸으로', () => {
     expect(sanitizeSettingsPatch({ terminalFontSize: 16, foo: 1, terminalCursorStyle: 'beam' })).toEqual({ accepted: { terminalFontSize: 16 }, rejected: ['foo', 'terminalCursorStyle'] })
     expect(sanitizeSettingsPatch('x').accepted).toEqual({})
+    expect(sanitizeSettingsPatch({ terminalFontSize: 30, terminalLineHeight: 1.5 })).toEqual({ accepted: { terminalLineHeight: 1.5 }, rejected: ['terminalFontSize'] })
   })
 })
 
@@ -95,7 +111,8 @@ describe('글꼴·셀 열쇠 (K2ⓑⓕ)', () => {
     for (const patch of [{ terminalFontSize: 16 }, { terminalFontFamily: 'Menlo' }, { terminalLineHeight: 1.2 }]) {
       expect(cellMetricKey({ ...DEFAULT_SETTINGS, ...patch })).not.toBe(base)
     }
-    for (const patch of [{ terminalFontWeight: 400 }, { terminalFontWeightBold: 800 }, { terminalThemeDark: 'Dracula' }, { terminalCursorStyle: 'bar' as const }, { terminalCursorBlink: false }, { terminalInactivePaneOpacity: 0.5 }, { terminalDividerColorDark: '#ff0000' }, { terminalDividerThicknessPx: 8 }]) {
+    const nonMetric: Partial<Settings>[] = [{ terminalFontWeight: 400 }, { terminalFontWeightBold: 800 }, { terminalThemeDark: 'Dracula' }, { terminalCursorStyle: 'bar' }, { terminalCursorBlink: false }, { terminalInactivePaneOpacity: 0.5 }, { terminalDividerColorDark: '#ff0000' }, { terminalDividerThicknessPx: 8 }]
+    for (const patch of nonMetric) {
       expect(cellMetricKey({ ...DEFAULT_SETTINGS, ...patch })).toBe(base)
     }
   })

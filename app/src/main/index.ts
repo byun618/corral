@@ -1367,13 +1367,14 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('corral:setSettings', (event, patch: unknown) => {
     if (!fromOurWindow(event) || settings === null) return null
-    const { settings: next, changed } = settings.update(patch)
-    // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
-    if (changed) {
+    const result = settings.update(patch)
+    // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증·저장을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
+    // 저장 실패(`failed`)는 푸시하지 않는다 — 돌려준 저장값으로 렌더러가 되돌린다(r1 R1-03).
+    if (result.status === 'saved') {
       log('settings.changed', { keys: Object.keys(typeof patch === 'object' && patch !== null ? patch : {}) })
-      window?.webContents.send('corral:settings', next)
+      window?.webContents.send('corral:settings', result.settings)
     }
-    return next
+    return result
   })
 
   // --- 라이프사이클 (R3) ---

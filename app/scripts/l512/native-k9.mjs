@@ -85,7 +85,7 @@ const readScreen = async () => {
   await click('[data-settings-nav-item="appearance"]')
   await until('appearance', () => evaluate(() => document.querySelector('[data-settings-section="appearance"]') !== null), 5_000)
   return evaluate(() => ({
-    fontSize: document.querySelector('[data-settings-number="글꼴 크기"]')?.value ?? null,
+    fontSize: document.querySelector('[data-settings-number="font-size"]')?.value ?? null,
     selectedTheme: document.querySelector('[data-settings-theme-selected]')?.textContent ?? null,
     selectedOption: document.querySelector('.settings-theme-option.is-selected')?.getAttribute('data-settings-theme-option') ?? null,
   }))

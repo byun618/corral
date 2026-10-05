@@ -75,7 +75,7 @@ export function TerminalSettingsPreview({ settings }: { settings: Settings }): R
   useEffect(() => {
     const term = terminal.current
     if (term === null) return
-    const written = applyTerminalAppearance(term, options)
+    const written = applyTerminalAppearance({ term, next: options })
     // 테마가 바뀌면 샘플을 다시 쓴다 — reset 인 이유는 버퍼가 줄 가운데서 끝나 clear()+write 면 꼬리가 겹치기 때문(198 주석).
     if (written.includes('theme')) {
       term.reset()

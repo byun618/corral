@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { safeParse } from '../shared/json.js'
-import { DEFAULT_SETTINGS, SETTINGS_VERSION, readSettings, sanitizeSettingsPatch, type Settings } from '../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, SETTINGS_VERSION, readSettings, sanitizeSettingsPatch, type Settings, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { log } from './log.js'
 
 export class SettingsStore {
@@ -43,16 +43,16 @@ export class SettingsStore {
 
   /**
    * 부분 갱신 — 검증을 통과한 칸만 덮고 즉시 원자적으로 쓴다. 바뀐 칸이 없으면 쓰지 않는다(파일도 만들지 않는다).
-   * 돌려주는 값: 갱신 뒤 전체 설정 + 바뀌었는지(main 이 푸시 여부를 정한다).
+   * **쓰기가 성공한 뒤에만 메모리 값을 확정한다**(r1 R1-03) — 실패하면 메모리는 그대로라 같은 값을 다시 보내면 다시 쓴다.
+   * 돌려주는 값: `saved`(썼다) · `unchanged`(바뀐 칸 없음) · `failed`(못 썼다 — `settings` 는 저장된 값). main 은 `saved` 만 푸시한다.
    */
-  update(patch: unknown): { settings: Settings; changed: boolean } {
+  update(patch: unknown): SettingsWriteResult {
     const { accepted, rejected } = sanitizeSettingsPatch(patch)
     if (rejected.length > 0) log('settings.patch_rejected', { keys: rejected })
     const next: Settings = { ...this.settings, ...accepted }
     const changed = Object.keys(next).some((key) => Reflect.get(next, key) !== Reflect.get(this.settings, key))
-    if (!changed) return { settings: this.get(), changed: false }
-    this.settings = next
-    const payload = JSON.stringify({ version: SETTINGS_VERSION, ...this.settings }, null, 2) + '\n'
+    if (!changed) return { status: 'unchanged', settings: this.get() }
+    const payload = JSON.stringify({ version: SETTINGS_VERSION, ...next }, null, 2) + '\n'
     const tmp = `${this.file}.${process.pid}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
@@ -61,7 +61,9 @@ export class SettingsStore {
     } catch (error) {
       fs.rmSync(tmp, { force: true })
       log('settings.save_failed', { file: this.file, error: String(error) })
+      return { status: 'failed', settings: this.get() }
     }
-    return { settings: this.get(), changed: true }
+    this.settings = next
+    return { status: 'saved', settings: this.get() }
   }
 }

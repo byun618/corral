@@ -32,7 +32,7 @@ import type {
   UiPrefs,
   WorktreeActionResult,
 } from '../shared/types.js'
-import type { Settings } from '../shared/terminal-settings.js'
+import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
 
 const EXPOSED = [
   'getState',
@@ -157,7 +157,7 @@ const api: CorralApi = {
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),
-  setSettings: (patch: Partial<Settings>): Promise<Settings | null> => ipcRenderer.invoke('corral:setSettings', patch),
+  setSettings: (patch: Partial<Settings>): Promise<SettingsWriteResult | null> => ipcRenderer.invoke('corral:setSettings', patch),
   onSettings: (listener: (settings: Settings) => void) => {
     const handler = (_event: unknown, settings: Settings): void => listener(settings)
     ipcRenderer.on('corral:settings', handler)

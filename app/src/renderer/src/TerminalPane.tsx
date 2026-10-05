@@ -475,7 +475,7 @@ export function TerminalPane({
   useEffect(() => {
     const term = termRef.current
     if (term === null) return
-    const keys = applyTerminalAppearance(term, appearance)
+    const keys = applyTerminalAppearance({ term, next: appearance })
     if (diagnostics) {
       appearanceWrites.current.push({ at: Date.now(), keys })
       if (appearanceWrites.current.length > 100) appearanceWrites.current.shift()

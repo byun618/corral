@@ -47,15 +47,19 @@ export function useSettings(): Settings {
 /**
  * 부분 갱신. 확정 순간에만 부른다(숫자 입력 Enter/blur · ± 한 번 · 테마 한 번 클릭) — 그래서 저장소는 디바운스가 필요 없다.
  * 화면 반영은 main 이 돌려준(=푸시한) 검증된 값으로 한다. preload 가 없으면(테스트) 로컬 값만 고친다.
+ * 돌려주는 값: 저장됐는가(바뀐 칸이 없던 것도 저장된 것으로 본다). **저장 실패면 main 이 돌려준 저장값으로 되돌리고 false** —
+ * 입력 칸은 이 값을 보고 초안을 저장값으로 돌린다(r1 R1-03).
  */
-export async function updateSettings(patch: Partial<Settings>): Promise<void> {
+export async function updateSettings(patch: Partial<Settings>): Promise<boolean> {
   const corral = api()
   if (corral === null || typeof corral.setSettings !== 'function') {
     set({ ...getSettings(), ...patch })
-    return
+    return true
   }
-  const next = await corral.setSettings(patch)
-  if (next !== null && typeof next === 'object') set(readSettings(next))
+  const result = await corral.setSettings(patch)
+  if (result === null || typeof result !== 'object') return false
+  set(readSettings(result.settings))
+  return result.status !== 'failed'
 }
 
 /** 테스트 전용 — 모듈 상태를 비운다. */

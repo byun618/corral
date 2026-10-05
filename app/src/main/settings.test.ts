@@ -42,7 +42,7 @@ describe('SettingsStore — 기본값·파일 생성 시점', () => {
   it('바뀌는 것이 없는 갱신은 쓰지 않는다 — 기본값과 같은 값을 보내도 파일이 생기지 않는다', () => {
     const store = fresh()
     const result = store.update({ terminalFontSize: 14, terminalThemeDark: DEFAULT_TERMINAL_THEME })
-    expect(result.changed).toBe(false)
+    expect(result.status).toBe('unchanged')
     expect(fs.existsSync(file)).toBe(false)
   })
 
@@ -73,7 +73,7 @@ describe('SettingsStore — 영속·부분 갱신', () => {
   it('연속 갱신(± 연타·숫자 입력)에도 파일이 깨지지 않고 마지막 값이 남는다 — 즉시 쓰기라 종료 비우기가 필요 없다', () => {
     const store = fresh()
     for (const size of [15, 16, 17, 18, 19, 1, 16]) store.update({ terminalFontSize: size })
-    // 1 은 범위 밖 → 10 으로 고정된 뒤 16 이 마지막이다.
+    // 1 은 범위 밖 → 거부(r1 R1-02, 파일·IPC 경로는 고정하지 않는다)되고 16 이 마지막이다.
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalFontSize).toBe(16)
     expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
     expect(fresh().get().terminalFontSize).toBe(16)
@@ -82,7 +82,7 @@ describe('SettingsStore — 영속·부분 갱신', () => {
   it('잘못된 갱신 칸은 버리고 나머지는 적용한다', () => {
     const store = fresh()
     const result = store.update({ terminalFontSize: 'big', terminalThemeDark: 'Nope', terminalCursorStyle: 'beam', terminalDividerColorDark: 'red', unknownKey: 1, terminalLineHeight: 1.5 })
-    expect(result.changed).toBe(true)
+    expect(result.status).toBe('saved')
     expect(store.get()).toEqual({ ...DEFAULT_SETTINGS, terminalLineHeight: 1.5 })
   })
 
@@ -95,15 +95,39 @@ describe('SettingsStore — 영속·부분 갱신', () => {
   })
 })
 
+describe('SettingsStore — 쓰기 실패(r1 R1-03)', () => {
+  it('쓰기가 실패하면 메모리를 확정하지 않고 저장값을 돌려준다 — 같은 값 재시도가 파일을 쓴다', () => {
+    const store = fresh()
+    // 대상 경로를 디렉터리로 막아 rename 이 EISDIR/EPERM 으로 실패하게 한다.
+    fs.mkdirSync(file)
+    const failed = store.update({ terminalFontSize: 16 })
+    expect(failed.status).toBe('failed')
+    expect(failed.settings.terminalFontSize).toBe(14)
+    expect(store.get().terminalFontSize).toBe(14)
+    expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    fs.rmSync(file, { recursive: true })
+    const retried = store.update({ terminalFontSize: 16 })
+    expect(retried.status).toBe('saved')
+    expect(retried.settings.terminalFontSize).toBe(16)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalFontSize).toBe(16)
+    expect(fresh().get().terminalFontSize).toBe(16)
+  })
+})
+
 describe('SettingsStore — 손상 격리 (칸마다 따로 기본값)', () => {
   it('손상된 칸만 기본값이고 나머지는 산다', () => {
     fs.writeFileSync(file, JSON.stringify({ version: 1, terminalFontSize: 'x', terminalThemeDark: 'Dracula', terminalCursorStyle: 42, terminalCursorBlink: false, terminalDividerColorDark: '#zzz', terminalDividerThicknessPx: 5 }))
     expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalThemeDark: 'Dracula', terminalCursorBlink: false, terminalDividerThicknessPx: 5 })
   })
 
-  it('범위 밖 숫자는 범위에 고정한다', () => {
+  it('범위 밖 숫자는 그 칸만 기본값이다 — 범위 고정은 UI 입력에서만(r1 R1-02)', () => {
     fs.writeFileSync(file, JSON.stringify({ terminalFontSize: 30, terminalFontWeight: 50, terminalLineHeight: 9, terminalInactivePaneOpacity: -1, terminalDividerThicknessPx: 100, terminalFontWeightBold: 760 }))
-    expect(fresh().get()).toMatchObject({ terminalFontSize: 24, terminalFontWeight: 100, terminalLineHeight: 3, terminalInactivePaneOpacity: 0, terminalDividerThicknessPx: 32, terminalFontWeightBold: 760 })
+    expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalFontWeightBold: 760 })
+  })
+
+  it('codex r1 R1-02 재현 입력 — 범위 밖 칸은 기본값, 유효한 칸은 산다', () => {
+    fs.writeFileSync(file, JSON.stringify({ terminalFontSize: 99, terminalLineHeight: 0, terminalDividerThicknessPx: -1, terminalThemeDark: 'Dracula' }))
+    expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalThemeDark: 'Dracula' })
   })
 
   it('없는 테마 이름은 기본 테마로', () => {

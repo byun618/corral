@@ -1,4 +1,4 @@
-/* global window, document, getComputedStyle -- eval 로 렌더러 안에서 도는 클로저가 쓴다 */
+/* global window, document, getComputedStyle, Event -- eval 로 렌더러 안에서 도는 클로저가 쓴다 */
 // LIFE-512 **격리** 실측 — K2ⓓⓔⓕⓖ · K3ⓕⓖ · K4ⓑⓒⓓ · K7 (U3·U4·U5). 격리 = launchCorral(/tmp/l512i* 아래 userData·herdr 세션·제어 소켓).
 //
 // 장면: fixture 워크트리 1 · 탭 1 · pane 2(A = `while :; do date; sleep 0.2; done` 출력 pane, B = 색 한 줄을 찍고 멈춘 셸 — 버퍼 비교용).
@@ -19,6 +19,7 @@ import { launchCorral, rpc, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
 import { beginRun, finishRun } from '../gui-diff/lib/runs.mjs'
 import { compareRoi, decodePng } from '../gui-diff/lib/png.mjs'
 import { pause, requirements } from '../l497/lib.mjs'
+import { finalExit, ledgerResult } from './final-exit.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -286,7 +287,7 @@ try {
 
     // ── K2ⓓ 숫자 입력 「1」「6」 + Enter ───────────────────────────────────────
     const s4 = await observe('k2d-before-typing')
-    await click('[data-settings-number="글꼴 크기"]')
+    await click('[data-settings-number="font-size"]')
     await clearField()
     const typeAt = Date.now()
     await type('1')
@@ -321,7 +322,7 @@ try {
     await click('[data-settings-disclosure="typography"] .settings-disclosure-toggle')
     await pause(300)
     await noGrid('weight', async () => {
-      await click('[data-settings-number="글꼴 두께"]')
+      await click('[data-settings-number="font-weight"]')
       await clearField()
       await type('400')
       await key('Return')
@@ -360,17 +361,40 @@ try {
       await click('[data-settings-block="cursor"] [data-settings-switch]')
     })
     await noGrid('opacity', async () => {
-      await click('[data-settings-number="비활성 창 불투명도"]')
+      await click('[data-settings-number="inactive-pane-opacity"]')
       await clearField()
       await type('0.5')
       await key('Return')
     })
+    // fix1 R1-01 — 견본으로 디바이더 색을 두 번 연속 바꾼다. **우회**: 견본 클릭은 OS 색 패널(네이티브 창)을 띄워 드라이버가 고를 수 없다 —
+    // 견본 input 에 값을 넣고 실제 `input`·`change` 이벤트를 쏜다(제품 리스너는 그대로 탄다). 클릭 경로가 아니므로 관문이 아니라 회귀 관측이다.
+    const swatchSettingsFile = path.join(handle.paths.userData, 'settings.json')
+    const savedDivider = () => (fs.existsSync(swatchSettingsFile) ? JSON.parse(fs.readFileSync(swatchSettingsFile, 'utf8')).terminalDividerColorDark ?? null : null)
+    const pickSwatch = (value) => evaluate((v) => {
+      const input = document.querySelector('[data-settings-color-swatch="divider-color"]')
+      if (!input) return null
+      input.value = v
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return input.value
+    }, value)
+    result.swatch = { bypass: 'swatch input value + dispatchEvent(input, change) — OS 색 패널 우회', picks: [] }
+    await noGrid('divider-swatch', async () => {
+      for (const value of ['#00ff00', '#0000ff']) {
+        const set = await pickSwatch(value)
+        await until(`swatch ${value} saved`, () => savedDivider() === value, 5_000).catch(() => null)
+        const hex = await evaluate(() => document.querySelector('[data-settings-color="divider-color"]')?.value ?? null)
+        const cssVar = await evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--term-divider-color').trim())
+        result.swatch.picks.push({ value, set, saved: savedDivider(), hex, cssVar })
+      }
+    })
+    checks.require('r1-01-swatch-two-picks-saved', result.swatch.picks.length === 2 && result.swatch.picks.every((p) => p.saved === p.value && p.hex === p.value), result.swatch.picks)
     await noGrid('divider', async () => {
-      await click('[data-settings-color="다크 디바이더 색상"]')
+      await click('[data-settings-color="divider-color"]')
       await clearField()
       await type('#ff0000')
       await key('Return')
-      await click('[data-settings-number="구분선 두께"]')
+      await click('[data-settings-number="divider-thickness"]')
       await clearField()
       await type('8')
       await key('Return')
@@ -420,15 +444,15 @@ try {
       const opts = (await observe(`u4-${patchLabel}`)).appearance.find((r) => r.paneId === paneB)?.options
       return { file: copy, sha256: crypto.createHash('sha256').update(fs.readFileSync(copy)).digest('hex'), fontFamily: opts?.fontFamily, fontWeight: opts?.fontWeight }
     }
-    const setNumber = (label, value) => async () => { await click(`[data-settings-number="${label}"]`); await clearField(); await type(String(value)); await key('Return'); await pause(300) }
+    const setNumber = (field, value) => async () => { await click(`[data-settings-number="${field}"]`); await clearField(); await type(String(value)); await key('Return'); await pause(300) }
     const openTypo = async () => { await click('[data-settings-disclosure="typography"] .settings-disclosure-toggle'); await pause(200) }
     const setFamily = (value) => async () => { await click('[data-settings-font-family]'); await clearField(); await type(value); await key('Return'); await pause(400) }
     const shots = {}
-    shots.menlo400 = await setTypography('menlo-400', [setFamily('Menlo'), openTypo, setNumber('글꼴 두께', 400)])
-    shots.menlo500 = await setTypography('menlo-500', [openTypo, setNumber('글꼴 두께', 500)])
-    shots.menlo700 = await setTypography('menlo-700', [openTypo, setNumber('글꼴 두께', 700)])
-    shots.monaco500 = await setTypography('monaco-500', [setFamily('Monaco'), openTypo, setNumber('글꼴 두께', 500)])
-    shots.sfmono500 = await setTypography('sfmono-500', [setFamily('SF Mono'), openTypo, setNumber('글꼴 두께', 500)])
+    shots.menlo400 = await setTypography('menlo-400', [setFamily('Menlo'), openTypo, setNumber('font-weight', 400)])
+    shots.menlo500 = await setTypography('menlo-500', [openTypo, setNumber('font-weight', 500)])
+    shots.menlo700 = await setTypography('menlo-700', [openTypo, setNumber('font-weight', 700)])
+    shots.monaco500 = await setTypography('monaco-500', [setFamily('Monaco'), openTypo, setNumber('font-weight', 500)])
+    shots.sfmono500 = await setTypography('sfmono-500', [setFamily('SF Mono'), openTypo, setNumber('font-weight', 500)])
     // K7 은 글꼴군도 기본값(SF Mono)과 달라야 한다(r4 는 기본값 그대로 재기동했다 — r5 보강). 실제 입력으로 Menlo 로 두고 재기동한다.
     shots.k7family = await setTypography('k7-family-menlo', [setFamily('Menlo')])
     // 글꼴 이용 가능 여부 — 캔버스 폭이 폴백(monospace·serif) 둘 다와 같으면 그 이름은 렌더러에 없다(r3 실측: SF Mono 500 = Menlo 500 픽셀 동일).
@@ -503,15 +527,15 @@ try {
     await click('[data-settings-disclosure="advanced"] .settings-disclosure-toggle')
     await pause(300)
     result.k7.screen = await evaluate(() => ({
-      fontSize: document.querySelector('[data-settings-number="글꼴 크기"]')?.value,
+      fontSize: document.querySelector('[data-settings-number="font-size"]')?.value,
       fontFamily: document.querySelector('[data-settings-font-family]')?.value,
-      weight: document.querySelector('[data-settings-number="글꼴 두께"]')?.value,
+      weight: document.querySelector('[data-settings-number="font-weight"]')?.value,
       selectedTheme: document.querySelector('[data-settings-theme-selected]')?.textContent,
       cursor: document.querySelector('[data-settings-block="cursor"] [aria-checked="true"][data-segment-value]')?.getAttribute('data-segment-value'),
       blink: document.querySelector('[data-settings-block="cursor"] [data-settings-switch]')?.getAttribute('aria-checked'),
-      opacity: document.querySelector('[data-settings-number="비활성 창 불투명도"]')?.value,
-      dividerColor: document.querySelector('[data-settings-color="다크 디바이더 색상"]')?.value,
-      dividerWidth: document.querySelector('[data-settings-number="구분선 두께"]')?.value,
+      opacity: document.querySelector('[data-settings-number="inactive-pane-opacity"]')?.value,
+      dividerColor: document.querySelector('[data-settings-color="divider-color"]')?.value,
+      dividerWidth: document.querySelector('[data-settings-number="divider-thickness"]')?.value,
     }))
     checks.require('k7-screen-values', JSON.stringify(result.k7.screen) === JSON.stringify({ fontSize: '16', fontFamily: 'Menlo', weight: '500', selectedTheme: '선택됨: Dracula', cursor: 'bar', blink: 'false', opacity: '0.5', dividerColor: '#ff0000', dividerWidth: '8' }), result.k7.screen)
     result.k7.settingsAfter = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
@@ -538,11 +562,16 @@ try {
   await pause(1000)
   const left = pgrep(`${work}|l443-gui-diff`)
   fs.writeFileSync(path.join(out, 'guard-after.txt'), `pgrep -fl "${work}|l443-gui-diff" → ${left === '' ? '(없음)' : `\n${left}`}\nowned=${JSON.stringify(owned)}\n`)
+  // fix1 R1-05 — 끝에 남은 프로세스는 검사가 다 통과해도 실패다(iso-u9 와 같은 규칙).
+  const final = finalExit({ exitCode, left })
+  exitCode = final.exitCode
+  result.leftAtEnd = left
+  if (final.leftover) console.log('[k2] 남은 프로세스\n' + left)
   result.finishedAt = new Date().toISOString()
   result.exitCode = exitCode
   save()
   const failed = checks.failed().map((row) => row.name)
-  if (ledger) finishRun(ledger, runId, { criterion, command, expectedExit: 0, actualExit: exitCode, raw: rawRel, result: exitCode === 0 ? '통과' : `실패 — ${result.error ? result.error.split('\n')[0] : failed.join(', ')}` })
+  if (ledger) finishRun(ledger, runId, { criterion, command, expectedExit: 0, actualExit: exitCode, raw: rawRel, result: ledgerResult({ exitCode, leftover: final.leftover, error: result.error, failed }) })
   console.log('[k2] exit', exitCode, failed)
   process.exit(exitCode)
 }

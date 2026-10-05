@@ -30,7 +30,8 @@ import {
 import { MinusIcon, PlusIcon, TerminalSquareIcon } from './SidebarIcons.js'
 import { TerminalSettingsPreview } from './TerminalSettingsPreview.js'
 
-const commit = (patch: Partial<Settings>): void => { void updateSettings(patch) }
+/** 확정 → 저장. 저장됐는지를 돌려준다 — 입력 칸이 실패 때 초안을 저장값으로 돌린다(r1 R1-03). */
+const commit = (patch: Partial<Settings>): Promise<boolean> => updateSettings(patch)
 
 function DefaultHint({ value }: { value: string | number }): React.JSX.Element {
   return <span className="settings-default-hint">· 기본: {value}</span>
@@ -41,11 +42,11 @@ function FontSizeControl({ value }: { value: number }): React.JSX.Element {
   const range = SETTINGS_RANGES.terminalFontSize
   return (
     <div className="settings-stepper" data-settings-font-size>
-      <button type="button" className="settings-icon-button" data-settings-font-size-step="-1" aria-label="글꼴 크기 줄이기" disabled={value <= range.min} onClick={() => commit({ terminalFontSize: Math.max(range.min, value - 1) })}>
+      <button type="button" className="settings-icon-button" data-settings-font-size-step="-1" aria-label="글꼴 크기 줄이기" disabled={value <= range.min} onClick={() => void commit({ terminalFontSize: Math.max(range.min, value - 1) })}>
         <MinusIcon className="settings-icon-xs" />
       </button>
-      <SettingsNumberField value={value} min={range.min} max={range.max} step={range.step} integer label="글꼴 크기" width="sm" onCommit={(next) => commit({ terminalFontSize: next })} />
-      <button type="button" className="settings-icon-button" data-settings-font-size-step="1" aria-label="글꼴 크기 키우기" disabled={value >= range.max} onClick={() => commit({ terminalFontSize: Math.min(range.max, value + 1) })}>
+      <SettingsNumberField value={value} min={range.min} max={range.max} step={range.step} integer field="font-size" label="글꼴 크기" width="sm" onCommit={(next) => commit({ terminalFontSize: next })} />
+      <button type="button" className="settings-icon-button" data-settings-font-size-step="1" aria-label="글꼴 크기 키우기" disabled={value >= range.max} onClick={() => void commit({ terminalFontSize: Math.min(range.max, value + 1) })}>
         <PlusIcon className="settings-icon-xs" />
       </button>
       <span className="settings-suffix">px</span>
@@ -64,7 +65,7 @@ function FontFamilyControl({ value }: { value: string }): React.JSX.Element {
   const confirm = (): void => {
     const next = draft.trim()
     if (next === '') { setDraft(value); return }
-    if (next !== value) commit({ terminalFontFamily: next })
+    if (next !== value) void commit({ terminalFontFamily: next }).then((saved) => { if (!saved) setDraft(value) })
   }
   return (
     <>
@@ -90,14 +91,14 @@ function FontFamilyControl({ value }: { value: string }): React.JSX.Element {
 }
 
 /** 테마 목록 — 검색(이름 부분 일치, 대소문자 무시) · 「선택됨」 · 「표시 중 N/M」 · 기본 제공 그룹(198 `TerminalThemePicker`). */
-export function filterThemeNames(query: string, names: readonly string[] = TERMINAL_THEME_NAMES): string[] {
+export function filterThemeNames({ query, names = TERMINAL_THEME_NAMES }: { query: string; names?: readonly string[] }): string[] {
   const normalized = query.trim().toLowerCase()
   return normalized === '' ? [...names] : names.filter((name) => name.toLowerCase().includes(normalized))
 }
 
 function ThemePicker({ selected }: { selected: string }): React.JSX.Element {
   const [query, setQuery] = useState('')
-  const matching = filterThemeNames(query)
+  const matching = filterThemeNames({ query })
   const trimmed = query.trim()
   return (
     <div className="settings-theme-picker" data-settings-theme-picker>
@@ -118,7 +119,7 @@ function ThemePicker({ selected }: { selected: string }): React.JSX.Element {
             <div className="settings-theme-group">
               <p className="settings-theme-group-title">기본 제공</p>
               {matching.map((name) => (
-                <button key={name} type="button" className={`settings-theme-option${name === selected ? ' is-selected' : ''}`} aria-pressed={name === selected} data-settings-theme-option={name} onClick={() => { if (name !== selected) commit({ terminalThemeDark: name }) }}>
+                <button key={name} type="button" className={`settings-theme-option${name === selected ? ' is-selected' : ''}`} aria-pressed={name === selected} data-settings-theme-option={name} onClick={() => { if (name !== selected) void commit({ terminalThemeDark: name }) }}>
                   <span className="settings-theme-name">{name}</span>
                   {name === selected ? <span className="settings-theme-current">현재</span> : null}
                 </button>
@@ -131,11 +132,11 @@ function ThemePicker({ selected }: { selected: string }): React.JSX.Element {
   )
 }
 
-const CURSOR_OPTIONS = [
+const CURSOR_OPTIONS: readonly { value: TerminalCursorStyle; label: string }[] = [
   { value: 'bar', label: '막대' },
   { value: 'block', label: '블록' },
   { value: 'underline', label: '밑줄' },
-] as const satisfies readonly { value: TerminalCursorStyle; label: string }[]
+]
 
 export function TerminalAppearanceSection({ query }: { query: string }): React.JSX.Element {
   const settings = useSettings()
@@ -155,17 +156,17 @@ export function TerminalAppearanceSection({ query }: { query: string }): React.J
               <SettingsRow
                 label="글꼴 두께"
                 description={<>terminal 텍스트 글꼴 두께를 제어합니다. <DefaultHint value={DEFAULT_SETTINGS.terminalFontWeight} /></>}
-                control={<SettingsNumberField value={settings.terminalFontWeight} {...ranges.terminalFontWeight} label="글꼴 두께" suffix="100-900" onCommit={(next) => commit({ terminalFontWeight: next })} />}
+                control={<SettingsNumberField value={settings.terminalFontWeight} {...ranges.terminalFontWeight} field="font-weight" label="글꼴 두께" suffix="100-900" onCommit={(next) => commit({ terminalFontWeight: next })} />}
               />
               <SettingsRow
                 label="Bold Font Weight"
                 description={<>Font Weight 와 따로 조정합니다. 굵게가 그대로면 Font Weight 를 낮추거나 다른 글꼴을 고르세요. <DefaultHint value={DEFAULT_SETTINGS.terminalFontWeightBold} /></>}
-                control={<SettingsNumberField value={settings.terminalFontWeightBold} {...ranges.terminalFontWeightBold} label="Bold Font Weight" suffix="100-900" onCommit={(next) => commit({ terminalFontWeightBold: next })} />}
+                control={<SettingsNumberField value={settings.terminalFontWeightBold} {...ranges.terminalFontWeightBold} field="font-weight-bold" label="Bold Font Weight" suffix="100-900" onCommit={(next) => commit({ terminalFontWeightBold: next })} />}
               />
               <SettingsRow
                 label="라인 높이"
                 description={<>terminal 라인 높이 승수를 제어합니다. <DefaultHint value={DEFAULT_SETTINGS.terminalLineHeight} /></>}
-                control={<SettingsNumberField value={settings.terminalLineHeight} {...ranges.terminalLineHeight} label="라인 높이" suffix="1-3" onCommit={(next) => commit({ terminalLineHeight: next })} />}
+                control={<SettingsNumberField value={settings.terminalLineHeight} {...ranges.terminalLineHeight} field="line-height" label="라인 높이" suffix="1-3" onCommit={(next) => commit({ terminalLineHeight: next })} />}
               />
             </div>
           </SettingsDisclosure>
@@ -179,15 +180,15 @@ export function TerminalAppearanceSection({ query }: { query: string }): React.J
           <SettingsRow
             label="다크 디바이더 색상"
             description="어두운 모드에서 창 사이의 분할 구분선을 제어합니다."
-            control={<SettingsColorField value={settings.terminalDividerColorDark} label="다크 디바이더 색상" onCommit={(next) => commit({ terminalDividerColorDark: next })} />}
+            control={<SettingsColorField value={settings.terminalDividerColorDark} field="divider-color" label="다크 디바이더 색상" onCommit={(next) => commit({ terminalDividerColorDark: next })} />}
           />
           <SettingsDisclosure id="advanced" forceOpen={searching}>
             <div className="settings-indent">
               <section className="settings-appearance-group" data-settings-block="cursor">
                 <SettingsSubsectionHeader title="Terminal 커서" />
                 <div className="settings-indent settings-rows">
-                  <SettingsRow label="Cursor 모양" control={<SettingsSegmented value={settings.terminalCursorStyle} options={CURSOR_OPTIONS} label="Cursor 모양" onChange={(next) => commit({ terminalCursorStyle: next })} />} />
-                  <SettingsRow label="깜박이는 Cursor" description="선택한 커서 모양의 깜박이는 변형을 사용합니다." control={<SettingsSwitch checked={settings.terminalCursorBlink} label="깜박이는 Cursor" onChange={(next) => commit({ terminalCursorBlink: next })} />} />
+                  <SettingsRow label="Cursor 모양" control={<SettingsSegmented value={settings.terminalCursorStyle} options={CURSOR_OPTIONS} label="Cursor 모양" onChange={(next) => void commit({ terminalCursorStyle: next })} />} />
+                  <SettingsRow label="깜박이는 Cursor" description="선택한 커서 모양의 깜박이는 변형을 사용합니다." control={<SettingsSwitch checked={settings.terminalCursorBlink} label="깜박이는 Cursor" onChange={(next) => void commit({ terminalCursorBlink: next })} />} />
                 </div>
               </section>
               <section className="settings-appearance-group" data-settings-block="pane">
@@ -196,12 +197,12 @@ export function TerminalAppearanceSection({ query }: { query: string }): React.J
                   <SettingsRow
                     label="비활성 창 불투명도"
                     description={<>포커스되지 않은 창을 흐리게 표시합니다. <DefaultHint value={DEFAULT_SETTINGS.terminalInactivePaneOpacity} /></>}
-                    control={<SettingsNumberField value={settings.terminalInactivePaneOpacity} {...ranges.terminalInactivePaneOpacity} label="비활성 창 불투명도" suffix="0-1" onCommit={(next) => commit({ terminalInactivePaneOpacity: next })} />}
+                    control={<SettingsNumberField value={settings.terminalInactivePaneOpacity} {...ranges.terminalInactivePaneOpacity} field="inactive-pane-opacity" label="비활성 창 불투명도" suffix="0-1" onCommit={(next) => commit({ terminalInactivePaneOpacity: next })} />}
                   />
                   <SettingsRow
                     label="구분선 두께"
                     description={<><DefaultHint value={DEFAULT_SETTINGS.terminalDividerThicknessPx} /></>}
-                    control={<SettingsNumberField value={settings.terminalDividerThicknessPx} {...ranges.terminalDividerThicknessPx} label="구분선 두께" suffix="px" onCommit={(next) => commit({ terminalDividerThicknessPx: next })} />}
+                    control={<SettingsNumberField value={settings.terminalDividerThicknessPx} {...ranges.terminalDividerThicknessPx} field="divider-thickness" label="구분선 두께" suffix="px" onCommit={(next) => commit({ terminalDividerThicknessPx: next })} />}
                   />
                 </div>
               </section>

@@ -119,13 +119,16 @@ export function SettingsSegmented<T extends string>({ value, options, onChange, 
  * 확정 순간만 갱신하는 이유: 「1」「6」 을 칠 때 1 이 확정되면 글꼴 1px → 16px 처럼 셀이 두 번 바뀌고 herdr 격자 요청이 두 번 나간다
  * (herdr 는 resize 를 디바운스 없이 PTY 에 바로 적용한다 — 00-analysis §11 W3). 빈 값·숫자 아님·Esc 는 직전 값으로 돌린다.
  */
-export function SettingsNumberField({ value, min, max, step, integer = false, onCommit, label, suffix, width = 'md' }: {
+export function SettingsNumberField({ value, min, max, step, integer = false, onCommit, field, label, suffix, width = 'md' }: {
   value: number
   min: number
   max: number
   step: number
   integer?: boolean
-  onCommit: (next: number) => void
+  /** 확정. 저장 결과(Promise<boolean>)를 돌려주면 실패 때 초안을 저장값으로 돌린다(r1 R1-03). */
+  onCommit: (next: number) => void | Promise<boolean>
+  /** 고정 식별자(`data-settings-number`) — 측정·드라이버의 손잡이. 표시 문구(`label`)와 따로 둔다(r1 R1-06). */
+  field: string
   label: string
   suffix?: string
   width?: 'sm' | 'md'
@@ -146,14 +149,16 @@ export function SettingsNumberField({ value, min, max, step, integer = false, on
     const clamped = Math.min(max, Math.max(min, parsed))
     const snapped = integer ? Math.round(clamped) : Math.round(clamped * 1000) / 1000
     setDraft(String(snapped))
-    if (snapped !== value) onCommit(snapped)
+    if (snapped === value) return
+    const pending = onCommit(snapped)
+    if (pending !== undefined) void pending.then((saved) => { if (!saved) setDraft(String(value)) })
   }
   return (
     <span className="settings-number">
       <input
         type="number"
         className={`settings-input settings-number-input is-${width}`}
-        data-settings-number={label}
+        data-settings-number={field}
         aria-label={label}
         min={min}
         max={max}
@@ -182,8 +187,10 @@ function expandHex(value: string): string {
  * 색 칸 (LIFE-512 K5ⓑ) — 견본(`type=color`)과 hex 입력. hex 는 Enter·blur 에 확정하고 **잘못된 값은 확정하지 않고** 직전 값으로 돌린다
  * (입력 중 잘못된 값이면 `aria-invalid`). 견본은 OS 색 패널이 닫힐 때(네이티브 `change`) 한 번만 확정한다 — 패널을 끄는 동안의
  * 연속 `input` 마다 저장하지 않는다.
+ * 견본 노드는 **하나를 계속 쓴다** — 값이 바뀌면 노드를 갈지 않고 `value` 만 맞춘다. 노드를 갈면(예전 `key={value}`) 리스너가 첫 노드에만
+ * 붙어 두 번째 선택부터 저장되지 않았다(r1 R1-01).
  */
-export function SettingsColorField({ value, onCommit, label }: { value: string; onCommit: (next: string) => void; label: string }): React.JSX.Element {
+export function SettingsColorField({ value, onCommit, field, label }: { value: string; onCommit: (next: string) => void | Promise<boolean>; field: string; label: string }): React.JSX.Element {
   const [draft, setDraft] = useState(value)
   const [shown, setShown] = useState(value)
   if (shown !== value) {
@@ -198,25 +205,34 @@ export function SettingsColorField({ value, onCommit, label }: { value: string; 
     if (input === null) return
     const onChange = (): void => {
       const next = input.value.toLowerCase()
-      if (HEX.test(next) && next !== latest.current.value.toLowerCase()) latest.current.onCommit(next)
+      if (!HEX.test(next) || next === latest.current.value.toLowerCase()) return
+      const pending = latest.current.onCommit(next)
+      // 저장 실패면 견본을 저장값으로 돌린다(r1 R1-03) — 저장소가 값을 되돌려도 prop 이 그대로라 동기화 effect 가 안 돈다.
+      if (pending !== undefined) void pending.then((saved) => { if (!saved) input.value = expandHex(latest.current.value) })
     }
     input.addEventListener('change', onChange)
     return () => input.removeEventListener('change', onChange)
   }, [])
+  useEffect(() => {
+    const input = swatch.current
+    if (input !== null && input.value.toLowerCase() !== expandHex(value).toLowerCase()) input.value = expandHex(value)
+  }, [value])
   const valid = HEX.test(draft.trim())
   const commit = (): void => {
     const next = draft.trim().toLowerCase()
     if (!HEX.test(next)) { setDraft(value); return }
     setDraft(next)
-    if (next !== value.toLowerCase()) onCommit(next)
+    if (next === value.toLowerCase()) return
+    const pending = onCommit(next)
+    if (pending !== undefined) void pending.then((saved) => { if (!saved) setDraft(value) })
   }
   return (
     <span className="settings-color">
-      <input ref={swatch} type="color" className="settings-color-swatch" data-settings-color-swatch={label} aria-label={`${label} 견본`} defaultValue={expandHex(value)} key={value} />
+      <input ref={swatch} type="color" className="settings-color-swatch" data-settings-color-swatch={field} aria-label={`${label} 견본`} defaultValue={expandHex(value)} />
       <input
         type="text"
         className="settings-input settings-color-input"
-        data-settings-color={label}
+        data-settings-color={field}
         aria-label={label}
         aria-invalid={valid ? undefined : true}
         spellCheck={false}

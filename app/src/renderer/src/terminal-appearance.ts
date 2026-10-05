@@ -41,20 +41,21 @@ export function terminalAppearanceOptions(settings: Settings): TerminalAppearanc
   }
 }
 
-const SCALAR_KEYS = ['fontSize', 'fontFamily', 'fontWeight', 'fontWeightBold', 'lineHeight', 'cursorStyle', 'cursorInactiveStyle', 'cursorBlink', 'minimumContrastRatio'] as const
+type ScalarKey = Exclude<keyof TerminalAppearanceOptions, 'theme'>
+const SCALAR_KEYS: readonly ScalarKey[] = ['fontSize', 'fontFamily', 'fontWeight', 'fontWeightBold', 'lineHeight', 'cursorStyle', 'cursorInactiveStyle', 'cursorBlink', 'minimumContrastRatio']
 
 /**
  * 살아 있는 xterm 에 옵션을 **바뀐 것만** 쓴다. 쓴 옵션 이름을 돌려준다(진단·테스트가 「테마를 다시 쓰지 않았다」 를 본다).
  * 이 함수는 버퍼를 건드리지 않는다 — 테마를 바꿔도 내용을 다시 불러오거나 두 번 그리지 않는다(Orca #11517 회피, K3ⓕ).
  */
-export function applyTerminalAppearance(term: Terminal, next: TerminalAppearanceOptions): string[] {
+export function applyTerminalAppearance({ term, next }: { term: Terminal; next: TerminalAppearanceOptions }): string[] {
   const written: string[] = []
   for (const key of SCALAR_KEYS) {
     if (term.options[key] === next[key]) continue
     Object.assign(term.options, { [key]: next[key] })
     written.push(key)
   }
-  if (!terminalThemesEqual(term.options.theme, next.theme)) {
+  if (!terminalThemesEqual({ a: term.options.theme, b: next.theme })) {
     term.options.theme = next.theme
     written.push('theme')
   }

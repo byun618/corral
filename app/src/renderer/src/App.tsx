@@ -1391,7 +1391,8 @@ export function App(): React.JSX.Element {
         {sidebarCollapsed ? null : <>
         <Sidebar
           onToggleSidebar={toggleSidebar}
-          shortcutHint={formatBinding(bindingsFor('sidebar.toggle', keymap.overrides)[0]!)}
+          // 단축키를 비운 칸(null — fix2 R2-01)이면 단축키 대신 「접기」를 보인다 — 버튼이 빈 글자로 사라지지 않게(fix3 R3-01).
+          shortcutHint={((binding) => (binding == null ? '접기' : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])}
           sidebarRef={sidebarRef}
           width={width}
           state={state}
@@ -1450,7 +1451,7 @@ export function App(): React.JSX.Element {
         </>}
         <div className="main-area" data-main-area>
           <div className="workspace-tools">
-            {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={formatBinding(bindingsFor('sidebar.toggle', keymap.overrides)[0]!)}>사이드바 펼치기</button> : null}
+            {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={((binding) => (binding == null ? undefined : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])}>사이드바 펼치기</button> : null}
             <button data-palette-open disabled={modalBlocked} onClick={openPalette}>명령 {formatBinding(bindingsFor('palette.open', keymap.overrides)[0] ?? '')}</button>
             <button data-shortcuts-open onClick={() => { mruCancel(); setShortcutsOpen(true) }}>단축키</button>
           </div>

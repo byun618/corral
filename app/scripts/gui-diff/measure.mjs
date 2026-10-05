@@ -10,7 +10,7 @@
 // 영역 정의(두 앱 요소 짝짓기)는 코드가 아니라 `areas/<영역>.json` 이다 (C1) — 영역을 늘리는 일은
 // 파일 하나 더 두는 일이지 이 파일을 고치는 일이 아니다.
 
-/* global document -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
+/* global document, window -- CDP evaluate 로 페이지 안에서 도는 클로저가 쓴다 */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

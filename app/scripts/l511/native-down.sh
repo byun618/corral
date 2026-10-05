@@ -1,5 +1,6 @@
 #!/bin/sh
-# LIFE-511 K9 — l497 복사(ROOT 꼴 /tmp/l511n*·잔존 검색어 l511 만 바꿈). 도우미는 ../l470 · ../l477 그대로.
+# LIFE-511 K9 — l497 복사 · r1 R1-06: ⑥ codex config 를 되쓰지 않고 변경 감지 시 실패
+# (원 주석) LIFE-511 K9 — l497 복사(ROOT 꼴 /tmp/l511n*·잔존 검색어 l511 만 바꿈). 도우미는 ../l470 · ../l477 그대로.
 # LIFE-497 K6 — l496 복사(ROOT 꼴 /tmp/l497n*·잔존 검색어 l497). 추가: ~/.codex/config.toml 바이트 백업(up)·복원(down, provider 대조 전) — codex 는 자기 config 를 고친다(킥오프 격리 2).
 # LIFE-496 K4 — l494 복사(ROOT 꼴 /tmp/l496n*·잔존 검색어 l496 만 바꿈).
 # LIFE-494 K4 — LIFE-493 l493/native-down.sh 복사(잔존 검색어 l493→l494 만 바꿈). 그 위 원 주석: LIFE-471 native-down.sh 를 옮겼다(도우미 ../l470). ⑧ 익명화는 뺐다 — 이 회차 raw 는 fixture 탭바 영역만 담는다(선택자 캡처·fixture 탭만 덤프, native-k5.mjs). 원 주석:
@@ -81,11 +82,12 @@ const fs=require('fs'); const a=JSON.parse(fs.readFileSync(process.argv[1])).fil
 const keys=[...new Set([...Object.keys(a),...Object.keys(b)])]; const bad=keys.filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k]))
 console.log(JSON.stringify({files:keys.length,mismatch:bad})); process.exit(bad.length?1:0)" "$ROOT/backup/herdr-manifest.json" "$RAWD/herdr-manifest-after-restore.json" && pass "herdr 최상위 해시 전=후" || fail "herdr 최상위 불일치"
 
-echo "# ⑥ codex config 바이트 복원(LIFE-497 — codex 가 고친 것만) → provider 설정 대조 (나머지는 복원하지 않는다)"
+echo "# ⑥ codex config·provider 설정 대조 — **쓰지 않는다**(LIFE-511 r1 R1-06: 이 작업은 codex 를 띄우지 않는다, 킥오프 격리 3 읽기 전용)"
+# l497 은 codex 를 시험 대상으로 띄워서 그 회차가 고친 config 를 되돌렸다. 여기서는 바뀌었으면 원인이 이 회차 밖(사용자·다른 세션)이라
+# 되쓰면 남의 변경을 지운다 — 차이만 원자료로 남기고 실패로 보고한다. 백업은 비교용 사본일 뿐이다.
 if [ -f "$ROOT/backup/codex-config.toml" ]; then
-  if cmp -s "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml"; then pass "codex config 그대로(복원 불필요)"
-  else diff "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml" > "$RAWD/codex-config-diff.txt"; cp -p "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml" && pass "codex config 바이트 복원(차이 → codex-config-diff.txt)" || fail "codex config 복원 실패"; fi
-  [ "$(shasum -a 256 "$HOME/.codex/config.toml" | cut -d' ' -f1)" = "$(cat "$RAWD/codex-config-pre.sha256")" ] && pass "codex config 해시 = 백업" || fail "codex config 해시 불일치"
+  if cmp -s "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml"; then pass "codex config 그대로(쓰지 않음)"
+  else diff "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml" > "$RAWD/codex-config-diff.txt"; fail "codex config 가 회차 중 바뀌었다 — 되쓰지 않는다, 보고(차이 → codex-config-diff.txt)"; fi
 fi
 sh "$HERE/provider-hash.sh" > "$RAWD/provider-post.txt"
 cmp -s "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt" && pass "provider $(wc -l < "$RAWD/provider-post.txt" | tr -d ' ')파일 해시 전=후" || { fail "provider 해시가 바뀌었다 — 되쓰지 않는다, 보고"; diff "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt"; }

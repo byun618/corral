@@ -119,6 +119,8 @@ type PaneAppearanceSummary = {
   paneId: string
   options: { fontSize: unknown; fontFamily: unknown; fontWeight: unknown; lineHeight: unknown; cursorStyle: unknown; cursorBlink: unknown; minimumContrastRatio: unknown; theme: unknown }
   writes: Array<{ at: number; keys: string[] }>
+  /** 이 xterm 이 실제로 쓰는 셀 px — 모든 pane 에서 `live == measured` 를 본다(K2ⓓ). */
+  live: { width: number; height: number } | null
 }
 const paneAppearance = new Map<string, () => PaneAppearanceSummary>()
 
@@ -441,6 +443,7 @@ export function TerminalPane({
           theme: { ...term.options.theme },
         },
         writes: [...appearanceWrites.current],
+        live: readCellSize(term),
       }))
       window.corralPaneAppearance = () => [...paneAppearance.values()].map((read) => read())
     }

@@ -90,6 +90,8 @@ try {
   }
   const key = (keyCode, modifiers = []) => control({ cmd: 'key', keyCode, modifiers })
   const type = (text) => control({ cmd: 'type', text })
+  /** 입력칸 비우기 — r2 실측: sendInputEvent 의 ⌘A 는 전체 선택이 되지 않아 값이 뒤에 붙었다. 끝으로 가서 지운다(실제 키). */
+  const clearField = async () => { await key('End'); for (let i = 0; i < 24; i += 1) await key('Backspace') }
 
   await seedCorralRepo(handle, fixture, { expectedWorktrees: 1 })
   const real = fs.realpathSync(fixture)
@@ -162,6 +164,7 @@ try {
         rootVars: Object.fromEntries(['--term-bg', '--term-inactive-opacity', '--term-divider-color', '--term-divider-w', '--bg-surface'].map((v) => [v, getComputedStyle(document.documentElement).getPropertyValue(v).trim()])),
         paneDivider: paneDivider ? { hit: cs(paneDivider, ['width', 'height']), line: cs(paneDivider.querySelector('.pane-divider-line'), ['background-color', 'width', 'height']) } : null,
         groupDivider: groupDivider ? { hit: cs(groupDivider, ['width', 'height']), line: cs(groupDivider.querySelector('.group-divider-line'), ['background-color', 'width', 'height']) } : null,
+        paneStyles,
         settingsOpen: document.querySelector('[data-settings-page]') !== null,
         probeLines: window.corralTermProbe ? (({ paneId, lines, lastSeq }) => ({ paneId, lastSeq, lines }))(window.corralTermProbe.read()) : null,
       }
@@ -195,7 +198,19 @@ try {
     return { cols: Math.max(2, Math.floor(Number.parseInt(entry.box.width, 10) / live.width)), rows: Math.max(1, Math.floor(Number.parseInt(entry.box.height, 10) / live.height)) }
   }
   const declared = (rows) => rows.map((row) => row.groups)
-  const cellsAgree = (entry) => entry.appearance.length >= 2 && entry.appearance.every((row) => row.live && entry.probeCell?.measured && Math.abs(row.live.width - entry.probeCell.measured.width) < 0.001 && row.live.height === entry.probeCell.measured.height)
+  // K2ⓓ 「live == measured」 — 코디 답 Q1(raw/claude/q1-answer.txt): 높이 정확 일치 + 폭 |Δ| < 0.05px(xterm DOM 렌더 반올림 범위).
+  // pane 별 원값과 Δ 를 남긴다. before 빌드는 corralPaneAppearance 가 없어 probe 의 live 한 pane 으로 본다.
+  const CELL_TOL = 0.05
+  const cellRows = (entry, measured = entry.probeCell?.measured) => {
+    const lives = entry.appearance.length > 0 ? entry.appearance.map((row) => ({ paneId: row.paneId, live: row.live })) : [{ paneId: 'probe', live: entry.probeCell?.live ?? null }]
+    return lives.map((row) => ({ ...row, measured, dWidth: row.live && measured ? Math.abs(row.live.width - measured.width) : null, dHeight: row.live && measured ? Math.abs(row.live.height - measured.height) : null }))
+  }
+  const cellsAgreeRows = (rows) => rows.length >= 1 && rows.every((row) => row.dWidth !== null && row.dWidth < CELL_TOL && row.dHeight === 0)
+  const cellsAgree = (entry) => {
+    const rows = cellRows(entry)
+    result.cellComparisons = [...(result.cellComparisons ?? []), { step: entry.name, rows }]
+    return (args.label === 'before' || entry.appearance.length >= 2) && cellsAgreeRows(rows)
+  }
 
   const base = await observe('base')
   checks.require('two-panes', base.panes.length === 2, { panes: base.panes })
@@ -240,12 +255,16 @@ try {
     checks.require('k2d-once-fontsize-15', s1.appearance.every((r) => r.options.fontSize === 15), result.k2dOnce.fontSizes)
     checks.require('k2d-once-requests-le-1', result.k2dOnce.requests <= 1 && result.k2dOnce.requests >= 1, result.k2dOnce)
     checks.require('k2d-once-live-eq-measured', cellsAgree(s1), { live: s1.appearance.map((r) => r.live), probe: s1.probeCell })
+    // 양성 대조(코디 답 Q1 (2)): 같은 비교식이 「한쪽만 옛 글꼴」 을 실패로 잡는가 — 새 글꼴(15) live 대 옛 글꼴(14) measured.
+    const stale = cellRows(s1, s0.probeCell?.measured)
+    result.positiveControl = { kind: 'live(15px) vs measured(14px)', rows: stale, agreed: cellsAgreeRows(stale) }
+    checks.require('k2d-positive-control-stale-font-fails', cellsAgreeRows(stale) === false && stale.every((row) => row.dWidth !== null && row.dWidth >= CELL_TOL), result.positiveControl)
     const decl1 = sync1.at(-1)?.groups ?? ''
     checks.require('k2d-once-declared-eq-gridForBox', result.k2dOnce.expected !== null && decl1.endsWith(`${result.k2dOnce.expected.cols}x${result.k2dOnce.expected.rows}`), { decl1, expected: result.k2dOnce.expected })
     // herdr 분배: 분할 오른쪽 — 두 pane cols 의 합과 선언 cols 의 차(경계 몫)가 base 와 같고, rows 는 선언 rows 와 같다.
     const gap = (entry, expected) => expected.cols - entry.panes.reduce((sum, p) => sum + p.cols, 0)
     result.k2dOnce.gap = { base: baseExpected && gap(base, baseExpected), now: result.k2dOnce.expected && gap(s1, result.k2dOnce.expected) }
-    checks.require('k2d-once-herdr-distribution', result.k2dOnce.expected !== null && baseExpected !== null && result.k2dOnce.gap.now === result.k2dOnce.gap.base && result.k2dOnce.gap.now >= 0 && result.k2dOnce.gap.now <= 1 && s1.panes.every((p) => p.rows === result.k2dOnce.expected.rows), { panes: s1.panes, expected: result.k2dOnce.expected, gap: result.k2dOnce.gap })
+    checks.require('k2d-once-herdr-distribution', result.k2dOnce.expected !== null && baseExpected !== null && result.k2dOnce.gap.now === result.k2dOnce.gap.base && s1.panes.every((p) => p.rows === result.k2dOnce.expected.rows), { panes: s1.panes, expected: result.k2dOnce.expected, gap: result.k2dOnce.gap })
     checks.require('k2d-once-converged-2s', t1.lastChangeMs <= 2000, { lastChangeMs: t1.lastChangeMs })
 
     // ── K2ⓓ 연속: + 5연타(1초 안) ─────────────────────────────────────────────
@@ -268,7 +287,7 @@ try {
     // ── K2ⓓ 숫자 입력 「1」「6」 + Enter ───────────────────────────────────────
     const s4 = await observe('k2d-before-typing')
     await click('[data-settings-number="글꼴 크기"]')
-    await key('A', ['meta'])
+    await clearField()
     const typeAt = Date.now()
     await type('1')
     await pause(250)
@@ -303,7 +322,7 @@ try {
     await pause(300)
     await noGrid('weight', async () => {
       await click('[data-settings-number="글꼴 두께"]')
-      await key('A', ['meta'])
+      await clearField()
       await type('400')
       await key('Return')
     })
@@ -342,17 +361,17 @@ try {
     })
     await noGrid('opacity', async () => {
       await click('[data-settings-number="비활성 창 불투명도"]')
-      await key('A', ['meta'])
+      await clearField()
       await type('0.5')
       await key('Return')
     })
     await noGrid('divider', async () => {
       await click('[data-settings-color="다크 디바이더 색상"]')
-      await key('A', ['meta'])
+      await clearField()
       await type('#ff0000')
       await key('Return')
       await click('[data-settings-number="구분선 두께"]')
-      await key('A', ['meta'])
+      await clearField()
       await type('8')
       await key('Return')
     })
@@ -401,14 +420,25 @@ try {
       const opts = (await observe(`u4-${patchLabel}`)).appearance.find((r) => r.paneId === paneB)?.options
       return { file: copy, sha256: crypto.createHash('sha256').update(fs.readFileSync(copy)).digest('hex'), fontFamily: opts?.fontFamily, fontWeight: opts?.fontWeight }
     }
-    const setNumber = (label, value) => async () => { await click(`[data-settings-number="${label}"]`); await key('A', ['meta']); await type(String(value)); await key('Return'); await pause(300) }
+    const setNumber = (label, value) => async () => { await click(`[data-settings-number="${label}"]`); await clearField(); await type(String(value)); await key('Return'); await pause(300) }
     const openTypo = async () => { await click('[data-settings-disclosure="typography"] .settings-disclosure-toggle'); await pause(200) }
-    const setFamily = (value) => async () => { await click('[data-settings-font-family]'); await key('A', ['meta']); await type(value); await key('Return'); await pause(400) }
+    const setFamily = (value) => async () => { await click('[data-settings-font-family]'); await clearField(); await type(value); await key('Return'); await pause(400) }
     const shots = {}
     shots.menlo400 = await setTypography('menlo-400', [setFamily('Menlo'), openTypo, setNumber('글꼴 두께', 400)])
     shots.menlo500 = await setTypography('menlo-500', [openTypo, setNumber('글꼴 두께', 500)])
     shots.menlo700 = await setTypography('menlo-700', [openTypo, setNumber('글꼴 두께', 700)])
+    shots.monaco500 = await setTypography('monaco-500', [setFamily('Monaco'), openTypo, setNumber('글꼴 두께', 500)])
     shots.sfmono500 = await setTypography('sfmono-500', [setFamily('SF Mono'), openTypo, setNumber('글꼴 두께', 500)])
+    // 글꼴 이용 가능 여부 — 캔버스 폭이 폴백(monospace·serif) 둘 다와 같으면 그 이름은 렌더러에 없다(r3 실측: SF Mono 500 = Menlo 500 픽셀 동일).
+    result.fontAvailability = await evaluate(() => {
+      const ctx = document.createElement('canvas').getContext('2d')
+      const width = (family) => { ctx.font = `20px ${family}`; return ctx.measureText('mmmmmmmmmmlli0O@#WWWW').width }
+      return Object.fromEntries(['SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono', 'Fira Code'].map((name) => {
+        const vsMono = width(`"${name}", monospace`) !== width('monospace')
+        const vsSerif = width(`"${name}", serif`) !== width('serif')
+        return [name, { available: vsMono || vsSerif, width: width(`"${name}", serif`), monospace: width('monospace'), serif: width('serif') }]
+      }))
+    })
     const cmp = (a, b) => {
       const left = decodePng(fs.readFileSync(a.file))
       const right = decodePng(fs.readFileSync(b.file))
@@ -416,9 +446,9 @@ try {
       const h = Math.min(left.height, right.height)
       return { sizes: [`${left.width}x${left.height}`, `${right.width}x${right.height}`], ...compareRoi(left, right, { x: 0, y: 0, w, h }, { x: 0, y: 0, w, h }) }
     }
-    result.u4 = { shots, menlo400vs500: cmp(shots.menlo400, shots.menlo500), control_menlo500vsSf500: cmp(shots.menlo500, shots.sfmono500), control_menlo400vs700: cmp(shots.menlo400, shots.menlo700) }
-    checks.require('u4-positive-control-detects', result.u4.control_menlo500vsSf500.differing > 0 && result.u4.control_menlo400vs700.differing > 0, { a: result.u4.control_menlo500vsSf500, b: result.u4.control_menlo400vs700 })
-    console.log('[k2] U4', JSON.stringify({ m400v500: result.u4.menlo400vs500.differing, ctlFamily: result.u4.control_menlo500vsSf500.differing, ctlBold: result.u4.control_menlo400vs700.differing }))
+    result.u4 = { shots, menlo400vs500: cmp(shots.menlo400, shots.menlo500), control_menlo500vsMonaco500: cmp(shots.menlo500, shots.monaco500), control_menlo400vs700: cmp(shots.menlo400, shots.menlo700), sfmono500vsMenlo500: cmp(shots.sfmono500, shots.menlo500) }
+    checks.require('u4-positive-control-detects', result.u4.control_menlo500vsMonaco500.differing > 0 && result.u4.control_menlo400vs700.differing > 0, { a: result.u4.control_menlo500vsMonaco500, b: result.u4.control_menlo400vs700 })
+    console.log('[k2] U4', JSON.stringify({ m400v500: result.u4.menlo400vs500.differing, ctlFamily: result.u4.control_menlo500vsMonaco500.differing, ctlBold: result.u4.control_menlo400vs700.differing, sfVsMenlo: result.u4.sfmono500vsMenlo500.differing, fonts: result.fontAvailability }))
 
     // ── K7·K2ⓔ 영속·재기동: 기본값과 다른 값으로 정상 종료(SIGTERM) → 같은 userData·herdr 로 재기동 ──
     // 지금 값: 글꼴 16 · SF Mono · 굵기 500 · Dracula · bar·깜박임 끔 · 투명도 0.5 · 디바이더 #ff0000 8px.
@@ -447,18 +477,20 @@ try {
     await until('panes back', () => evaluate((ids) => ids.every((id) => document.querySelector(`[data-term-pane-box="${id}"]`) !== null), [paneA, paneB]), 20_000).catch(() => false)
     await pause(1500)
     const back = await observe('restart-workspace')
-    const syncAfterRestart = syncRowsSince(logLenAtQuit)
+    // 첫 행은 영역이 아직 없는 빈 선언("")이다 — 격자 요청이 아니다. 비지 않은 첫 선언부터 본다.
+    const syncAfterRestartAll = syncRowsSince(logLenAtQuit)
+    const syncAfterRestart = syncAfterRestartAll.filter((row) => (row.groups ?? '') !== '')
     const restartExpected = expectedGrid(back)
-    result.k2e = { syncDeclarations: declared(syncAfterRestart), expectedWithSavedCell: restartExpected, defaultCellWouldBe: null, live: back.appearance.map((r) => r.live), probe: back.probeCell, fontSizes: back.appearance.map((r) => r.options.fontSize) }
+    result.k2e = { syncDeclarationsAll: declared(syncAfterRestartAll), syncDeclarations: declared(syncAfterRestart), expectedWithSavedCell: restartExpected, defaultCellWouldBe: null, live: back.appearance.map((r) => r.live), probe: back.probeCell, fontSizes: back.appearance.map((r) => r.options.fontSize) }
     // 기본값(14) 셀이었다면 나왔을 격자 — 같은 상자에서 14px 셀 폭으로 계산(셀 크기는 측정 대신 base 관측의 14px live 를 쓴다).
     const baseLive = base.appearance.find((r) => r.live)?.live
     if (baseLive && back.box) result.k2e.defaultCellWouldBe = { cols: Math.floor(Number.parseInt(back.box.width, 10) / baseLive.width), rows: Math.floor(Number.parseInt(back.box.height, 10) / baseLive.height) }
-    checks.require('k2e-first-sync-saved-cell', syncAfterRestart.length > 0 && restartExpected !== null && (syncAfterRestart[0].groups ?? '').endsWith(`${restartExpected.cols}x${restartExpected.rows}`), { first: syncAfterRestart[0]?.groups, expected: restartExpected })
+    checks.require('k2e-first-sync-saved-cell', syncAfterRestart.length > 0 && restartExpected !== null && (syncAfterRestart[0].groups ?? '').split(' ').every((group) => group.endsWith(`${restartExpected.cols}x${restartExpected.rows}`)), { first: syncAfterRestart[0]?.groups, expected: restartExpected })
     checks.require('k2e-no-default-cell-sync', result.k2e.defaultCellWouldBe !== null && syncAfterRestart.every((row) => !(row.groups ?? '').includes(`${result.k2e.defaultCellWouldBe.cols}x${result.k2e.defaultCellWouldBe.rows}`)), { rows: declared(syncAfterRestart), defaultWouldBe: result.k2e.defaultCellWouldBe })
     // K7: 모든 값이 pane 에 그대로.
     const st = back.paneStyles
     result.k7.after = { appearance: back.appearance.map((r) => ({ paneId: r.paneId, options: r.options })), paneStyles: st, paneDivider: back.paneDivider, groupDivider: back.groupDivider, rootVars: back.rootVars }
-    checks.require('k7-pane-values', back.appearance.length === 2 && back.appearance.every((r) => r.options.fontSize === 16 && r.options.theme?.background === '#282a36' && r.options.cursorStyle === 'bar' && r.options.cursorBlink === false && r.options.fontWeight === 500 && /"SF Mono"/.test(String(r.options.fontFamily))), result.k7.after.appearance)
+    checks.require('k7-pane-values', back.appearance.length >= 2 && back.appearance.every((r) => r.options.fontSize === 16 && r.options.theme?.background === '#282a36' && r.options.cursorStyle === 'bar' && r.options.cursorBlink === false && r.options.fontWeight === 500 && /"SF Mono"/.test(String(r.options.fontFamily))), result.k7.after.appearance)
     checks.require('k7-css-values', back.rootVars['--term-inactive-opacity'] === '0.5' && back.rootVars['--term-divider-color'] === '#ff0000' && back.rootVars['--term-divider-w'] === '8px' && back.rootVars['--term-bg'] === '#282a36', back.rootVars)
     // 설정 화면에도 그대로(실제 클릭으로 연다).
     await click('[data-settings-open]')

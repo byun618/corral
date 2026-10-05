@@ -82,6 +82,7 @@ import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSk
 import { clearTranscriptCache, digestsEqual, readSessionDigests } from './transcript.js'
 import { UiPrefsStore } from './ui-prefs.js'
 import { SettingsStore } from './settings.js'
+import { previewGhosttyImport } from './ghostty/index.js'
 import { DEFAULT_SETTINGS, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { WorktreePoller, parsePollMs } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
@@ -1381,6 +1382,16 @@ app.whenReady().then(async () => {
         // 푸시하지 않는다 — 돌려준 저장값으로 렌더러가 되돌린다(r1 R1-03). 실패 로그는 저장소가 남겼다.
         return result
     }
+  })
+
+  // Ghostty 설정 가져오기 미리보기 (LIFE-513 K4ⓐ) — **인자를 받지 않는다**: 렌더러가 읽을 경로를 고를 수 없다(Orca 198 `settings:previewGhosttyImport`).
+  // 아무것도 쓰지 않는다. 적용은 렌더러가 위 `corral:setSettings` 로 한 번 쓴다(K5ⓐ).
+  ipcMain.handle('corral:previewGhosttyImport', (event) => {
+    if (!fromOurWindow(event)) return null
+    return previewGhosttyImport({
+      env: { home: os.homedir(), xdgConfigHome: process.env.XDG_CONFIG_HOME, ghosttyResourcesDir: process.env.GHOSTTY_RESOURCES_DIR },
+      current: settings?.get() ?? { ...DEFAULT_SETTINGS },
+    })
   })
 
   // --- 라이프사이클 (R3) ---

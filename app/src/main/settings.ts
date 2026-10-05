@@ -10,12 +10,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { safeParse } from '../shared/json.js'
-import { DEFAULT_SETTINGS, SETTINGS_VERSION, readSettings, sanitizeSettingsPatch, type Settings, type SettingsWriteResult } from '../shared/terminal-settings.js'
+import { DEFAULT_SETTINGS, SETTINGS_VERSION, copySettings, readSettings, sanitizeSettingsPatch, settingValuesEqual, type Settings, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { log } from './log.js'
 
 export class SettingsStore {
   readonly file: string
-  private settings: Settings = { ...DEFAULT_SETTINGS }
+  private settings: Settings = copySettings(DEFAULT_SETTINGS)
 
   constructor(userDataDir: string) {
     const fromEnv = process.env.CORRAL_SETTINGS
@@ -25,20 +25,20 @@ export class SettingsStore {
   load(): void {
     try {
       if (!fs.existsSync(this.file)) {
-        this.settings = { ...DEFAULT_SETTINGS }
+        this.settings = copySettings(DEFAULT_SETTINGS)
         return
       }
       this.settings = readSettings(safeParse(fs.readFileSync(this.file, 'utf8')))
       log('settings.load', { file: this.file })
     } catch (error) {
-      this.settings = { ...DEFAULT_SETTINGS }
+      this.settings = copySettings(DEFAULT_SETTINGS)
       log('settings.load_failed', { file: this.file, error: String(error) })
     }
   }
 
-  /** 복사본 — 받은 쪽이 고쳐도 저장소가 바뀌지 않는다(칸이 전부 원시값이라 얕은 복사로 충분하다). */
+  /** 복사본 — 받은 쪽이 고쳐도 저장소가 바뀌지 않는다(override 객체도 새로 만든다, LIFE-513). */
   get(): Settings {
-    return { ...this.settings }
+    return copySettings(this.settings)
   }
 
   /**
@@ -50,7 +50,8 @@ export class SettingsStore {
     const { accepted, rejected } = sanitizeSettingsPatch(patch)
     if (rejected.length > 0) log('settings.patch_rejected', { keys: rejected })
     const next: Settings = { ...this.settings, ...accepted }
-    const changed = Object.keys(next).some((key) => Reflect.get(next, key) !== Reflect.get(this.settings, key))
+    // override 는 객체라 내용으로 비교한다 — 같은 색을 다시 보내면 쓰지 않는다(LIFE-513 K7).
+    const changed = Object.keys(next).some((key) => !settingValuesEqual({ a: Reflect.get(next, key), b: Reflect.get(this.settings, key) }))
     if (!changed) return { status: 'unchanged', settings: this.get() }
     const payload = JSON.stringify({ version: SETTINGS_VERSION, ...next }, null, 2) + '\n'
     const tmp = `${this.file}.${process.pid}.tmp`

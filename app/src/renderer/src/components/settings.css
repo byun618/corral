@@ -275,3 +275,19 @@
   padding: 8px 14px; white-space: nowrap; font-size: var(--fs-ui); color: var(--fg);
   background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-modal); box-shadow: var(--shadow-menu);
 }
+
+/* --- 외관 › 터미널 「Ghostty에서 가져오기」 (LIFE-513 K8) — 버튼은 소제목 action 자리, 모달은 공통 `modal-*` 위에 목록만 더한다 --- */
+.settings-ghostty-import { white-space: nowrap; }
+.modal-ghostty-import { width: var(--w-modal-create); max-height: calc(100vh - 80px); display: flex; flex-direction: column; }
+.modal-ghostty-import .modal-body { overflow-y: auto; }
+.ghostty-import-heading { margin: 0 0 4px; font-size: 11.5px; font-weight: 600; color: var(--fg); }
+.ghostty-import-done { color: var(--accent); }
+.ghostty-import-error { margin: 0; font-size: 11.5px; color: var(--st-error); overflow-wrap: anywhere; }
+.ghostty-import-paths { overflow-wrap: anywhere; }
+.ghostty-import-diff, .ghostty-import-unsupported { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+.ghostty-import-diff li { display: flex; justify-content: space-between; gap: 8px; }
+.ghostty-import-label, .ghostty-import-reason { color: var(--fg-muted); }
+.ghostty-import-value, .ghostty-import-key { font-family: var(--font-mono); color: var(--fg-menu); overflow-wrap: anywhere; }
+.ghostty-import-colors { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-family: var(--font-mono); color: var(--fg-menu); }
+.ghostty-import-color { display: inline-flex; align-items: center; gap: 6px; }
+.ghostty-import-swatch { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--line-strong); }

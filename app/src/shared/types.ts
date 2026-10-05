@@ -1,4 +1,5 @@
 import type { Settings, SettingsWriteResult } from './terminal-settings.js'
+import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
@@ -928,6 +929,8 @@ export type CorralApi = {
   /** 부분 갱신 — main 이 칸별로 검증해 적용하고, 바뀌었으면 `onSettings` 로 민다. 검증 뒤 전체 값을 돌려준다. */
   setSettings: (patch: Partial<Settings>) => Promise<SettingsWriteResult | null>
   onSettings: (listener: (settings: Settings) => void) => () => void
+  /** Ghostty 설정 가져오기 미리보기(LIFE-513) — 인자 없음, 아무것도 쓰지 않는다. 다른 창이 부르면 null. */
+  previewGhosttyImport: () => Promise<GhosttyImportPreview | null>
   // --- 라이프사이클 (R3) ---
   /** 열린 workspace 에 새 행을 만든다 (tab.create → agent.start 재시도). */
   createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }) => Promise<CreateRowResult>

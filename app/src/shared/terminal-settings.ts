@@ -7,10 +7,9 @@
 // **ui-prefs.json 과 칸이 겹치지 않는다**(U8) — 이 파일은 사용자가 고른 값, ui-prefs 는 화면 상태(폭·접힘·순서·핀). 겹치지 않음은
 // `main/settings.test.ts` 가 두 기본값의 키 교집합 0 으로 지킨다.
 //
-// **T3 override 자리**(K1ⓔ): T3 는 `terminalColorOverrides?: Partial<Record<TerminalColorKey, string>>` 칸을 여기에 더하고,
-// `resolveTerminalTheme` 의 `overrides` 인자로 넘긴다(테마 → override 순으로 덮는다, Orca `composeActiveTerminalTheme` ②).
-// 「테마를 고르면 override 를 지운다」(510 F12·Orca #22069)는 테마 선택 쓰기에서 같은 갱신에 `terminalColorOverrides: undefined` 를 싣는다.
-// T2 는 override 값을 만들지 않는다 — 칸도 아직 없다(만들 값이 없는 칸은 손상 검증 대상만 늘린다).
+// **색 override**(LIFE-513 K7): `terminalColorOverrides` 는 Ghostty 가져오기가 만든 색 칸이다. `resolveTerminalTheme` 의 `overrides` 로 넘겨
+// 테마 위에 덮는다(Orca `composeActiveTerminalTheme` ②). 패치의 이 칸은 **통째로 바꾼다** — 빈 객체 `{}` 가 비움이다(Orca 의 `undefined`
+// 대신 — JSON 파일·IPC 에서 사라지지 않는 표현). 「테마를 고르면 override 를 지운다」(510 F12·Orca #22069)는 테마 선택 쓰기에 `{}` 를 싣는다.
 import type { ITheme } from '@xterm/xterm'
 import { TERMINAL_THEME_CATALOG } from './terminal-themes/index.js'
 import { isRecord } from './json.js'
@@ -32,6 +31,8 @@ export type Settings = {
   terminalInactivePaneOpacity: number
   terminalDividerColorDark: string
   terminalDividerThicknessPx: number
+  /** 테마 위에 덮는 색(Ghostty 가져오기, LIFE-513). 빈 객체 = 없음. 키는 `TERMINAL_COLOR_OVERRIDE_KEYS`, 값은 소문자 hex. */
+  terminalColorOverrides: TerminalColorOverrides
 }
 
 export const DEFAULT_TERMINAL_THEME = 'Ghostty Default Style Dark'
@@ -60,6 +61,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalInactivePaneOpacity: 0.9,
   terminalDividerColorDark: '#3f3f46',
   terminalDividerThicknessPx: 3,
+  terminalColorOverrides: {},
 }
 
 export type NumericSettingKey =
@@ -144,7 +146,38 @@ export function readSettingField({ key, value }: { key: keyof Settings; value: u
       return typeof value === 'boolean' ? value : null
     case 'terminalDividerColorDark':
       return isHexColor(value) ? value.toLowerCase() : null
+    case 'terminalColorOverrides':
+      return readColorOverrides(value)
   }
+}
+
+/**
+ * 색 override 칸 — **잘못된 키·값은 그 키만 버린다**(K7ⓐ). 객체가 아니면 칸 전체를 버린다(null).
+ * 항목이 있었는데 하나도 살아남지 못하면 null — IPC 패치가 쓰레기 키만 보냈을 때 기존 override 를 지우지 않게 한다(비움은 `{}` 로만).
+ */
+function readColorOverrides(value: unknown): TerminalColorOverrides | null {
+  if (!isRecord(value)) return null
+  const out: TerminalColorOverrides = {}
+  for (const key of TERMINAL_COLOR_OVERRIDE_KEYS) {
+    const color = value[key]
+    if (isHexColor(color)) out[key] = color.toLowerCase()
+  }
+  if (Object.keys(value).length > 0 && Object.keys(out).length === 0) return null
+  return out
+}
+
+/** 칸 값이 같은가 — override 는 내용 비교(키 순서 무관). 나머지 칸은 원시값이라 `===`. */
+export function settingValuesEqual({ a, b }: { a: unknown; b: unknown }): boolean {
+  if (a === b) return true
+  if (!isRecord(a) || !isRecord(b)) return false
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  for (const key of keys) if (a[key] !== b[key]) return false
+  return true
+}
+
+/** 설정 복사본 — override 객체도 새로 만든다(받은 쪽이 고쳐도 원본이 바뀌지 않게). */
+export function copySettings(settings: Settings): Settings {
+  return { ...settings, terminalColorOverrides: { ...settings.terminalColorOverrides } }
 }
 
 const SETTING_KEYS: readonly (keyof Settings)[] = [
@@ -159,11 +192,12 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'terminalInactivePaneOpacity',
   'terminalDividerColorDark',
   'terminalDividerThicknessPx',
+  'terminalColorOverrides',
 ]
 
 /** 파일에서 읽은 객체 → 설정. 칸마다 따로 기본값으로 떨어진다. 객체가 아니면 전부 기본값. */
 export function readSettings(parsed: unknown): Settings {
-  const out: Settings = { ...DEFAULT_SETTINGS }
+  const out: Settings = copySettings(DEFAULT_SETTINGS)
   if (!isRecord(parsed)) return out
   for (const key of SETTING_KEYS) {
     const value = readSettingField({ key, value: parsed[key] })
@@ -195,10 +229,22 @@ export function sanitizeSettingsPatch(patch: unknown): { accepted: Partial<Setti
 export type TerminalColorKey = Exclude<keyof ITheme, 'extendedAnsi'>
 
 /**
+ * override 로 받는 색 칸 — Orca `TerminalColorOverrides` 의 22칸(전경·배경·커서 2·선택 2·16색). Ghostty 키가 닿을 수 있는 칸이 이것뿐이다.
+ * Orca 의 `bold` 는 xterm `ITheme` 에 없어 뺐다(Ghostty `bold-color` 는 지원되지 않는 키).
+ */
+export const TERMINAL_COLOR_OVERRIDE_KEYS = [
+  'foreground', 'background', 'cursor', 'cursorAccent', 'selectionBackground', 'selectionForeground',
+  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+  'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
+] as const satisfies readonly TerminalColorKey[]
+export type TerminalColorOverrideKey = (typeof TERMINAL_COLOR_OVERRIDE_KEYS)[number]
+export type TerminalColorOverrides = Partial<Record<TerminalColorOverrideKey, string>>
+
+/**
  * 테마 이름(+ override) → xterm 테마. **순수 함수**(K1ⓔ) — 같은 입력이면 같은 객체 모양. 없는 이름은 기본 테마.
  * 돌려주는 객체는 카탈로그와 분리된 복사본이다 — xterm 이 받은 객체를 고쳐도 카탈로그가 오염되지 않는다.
  */
-export function resolveTerminalTheme(input: { themeName: string; overrides?: Partial<Record<TerminalColorKey, string>> }): ITheme {
+export function resolveTerminalTheme(input: { themeName: string; overrides?: TerminalColorOverrides }): ITheme {
   const base = TERMINAL_THEME_CATALOG[input.themeName] ?? TERMINAL_THEME_CATALOG[DEFAULT_TERMINAL_THEME]!
   return { ...base, ...(input.overrides ?? {}) }
 }

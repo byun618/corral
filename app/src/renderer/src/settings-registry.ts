@@ -40,6 +40,7 @@ export const SETTINGS_SECTIONS = [
       { title: '글꼴 크기', description: '새 창 및 라이브 업데이트의 기본 terminal 글꼴 크기입니다.', keywords: ['terminal', 'typography', 'font', 'font size', 'size', '글꼴', '크기', '폰트'] },
       { title: '글꼴군', description: '새 창 및 라이브 업데이트를 위한 기본 terminal 글꼴 모음입니다.', keywords: ['terminal', 'typography', 'font', 'font family', 'family', 'sf mono', 'menlo', 'jetbrains mono', 'fira code', '글꼴', '폰트'] },
       { title: '글꼴 두께', description: 'terminal 텍스트 글꼴 두께를 제어합니다.', keywords: ['terminal', 'typography', 'font weight', 'weight', 'bold', '굵기', '두께', '글꼴'] },
+      { title: 'Ghostty에서 가져오기', description: '지원되는 Ghostty terminal 설정을 한 번만 가져옵니다.', keywords: ['ghostty', 'Ghostty', 'import', '가져오기', 'config', '구성', 'terminal', 'settings'] },
       { title: '라인 높이', description: 'terminal 라인 높이 승수를 제어합니다.', keywords: ['terminal', 'typography', 'line height', '줄높이', '줄 높이', '라인'] },
       { title: '터미널 테마', description: '터미널 테마와 구분선 색상을 선택합니다.', keywords: ['terminal', 'theme', 'themes', 'dark', 'color', 'colors', 'preview', '테마', '색', '색상', '미리보기'] },
       { title: '다크 디바이더 색상', description: '어두운 모드에서 창 사이의 분할 구분선을 제어합니다.', keywords: ['terminal', 'divider', 'color', 'pane', '디바이더', '구분선', '색상'] },

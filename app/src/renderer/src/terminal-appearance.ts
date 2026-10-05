@@ -32,7 +32,7 @@ export type TerminalAppearanceOptions = {
 
 /** 설정 → xterm 옵션. 생성자에 그대로 펼쳐 넣을 수 있는 모양이다. */
 export function terminalAppearanceOptions(settings: Settings): TerminalAppearanceOptions {
-  const theme = resolveTerminalTheme({ themeName: settings.terminalThemeDark })
+  const theme = resolveTerminalTheme({ themeName: settings.terminalThemeDark, overrides: settings.terminalColorOverrides })
   return {
     ...terminalFontOptions(settings),
     ...terminalCursorOptions(settings),
@@ -67,7 +67,7 @@ export function applyTerminalAppearance({ term, next }: { term: Terminal; next: 
  * design-tokens.css 가 아니라 여기서 문서 루트에 쓴다(K5ⓔ — 테마 데이터·터미널 배경은 설정 값이다).
  */
 export function terminalCssVars(settings: Settings): Record<string, string> {
-  const theme = resolveTerminalTheme({ themeName: settings.terminalThemeDark })
+  const theme = resolveTerminalTheme({ themeName: settings.terminalThemeDark, overrides: settings.terminalColorOverrides })
   return {
     '--term-bg': theme.background ?? '#000000',
     '--term-inactive-opacity': String(settings.terminalInactivePaneOpacity),

@@ -70,3 +70,9 @@ describe('외관 섹션 검색 키워드 (LIFE-512 K5ⓒ)', () => {
     expect(settingsNavGroups({ query: '단축키' }).flatMap((group) => group.sections.map((section) => section.id))).toEqual(['shortcuts'])
   })
 })
+
+describe('Ghostty 가져오기 검색 키워드 (LIFE-513 K8ⓒ)', () => {
+  it.each(['ghostty', 'Ghostty', 'import', '가져오기'])('질의 %s 는 외관 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toEqual(['appearance'])
+  })
+})

@@ -33,6 +33,7 @@ import type {
   WorktreeActionResult,
 } from '../shared/types.js'
 import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
+import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 
 const EXPOSED = [
   'getState',
@@ -50,6 +51,7 @@ const EXPOSED = [
   'getSettingsSync',
   'setSettings',
   'onSettings',
+  'previewGhosttyImport',
   'createRow',
   'closeRow',
   'closeTabs',
@@ -165,6 +167,8 @@ const api: CorralApi = {
       ipcRenderer.removeListener('corral:settings', handler)
     }
   },
+  // Ghostty 가져오기 미리보기 (LIFE-513) — 인자 없음(읽을 경로는 main 이 정한다). 아무것도 쓰지 않는다.
+  previewGhosttyImport: (): Promise<GhosttyImportPreview | null> => ipcRenderer.invoke('corral:previewGhosttyImport'),
   createRow: (input: { workspaceId: string; kind: AgentKind; cwd?: string; label?: string }): Promise<CreateRowResult> =>
     ipcRenderer.invoke('corral:createRow', input),
   closeTabs: (input: { tabIds: string[]; confirmed?: boolean; alwaysConfirm?: boolean; confirmedPaneIds?: string[] }): Promise<CloseTabsResult> =>

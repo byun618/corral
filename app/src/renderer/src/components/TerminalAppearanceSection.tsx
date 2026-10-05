@@ -2,8 +2,8 @@
 // `TerminalFontSizeSetting.tsx` · `TerminalAdvancedTypographyControls.tsx` · `TerminalThemeSections.tsx`(다크) · `TerminalThemePicker.tsx` ·
 // `TerminalCursorAppearanceSection.tsx` · `TerminalPaneAppearanceSection.tsx` 의 배치를 옮겼다. 문구는 198 ko 로케일 그대로.
 //
-// 198 과 다른 점(사유는 RESULT 표): 테마 모드(다크/라이트) 세그먼트·「다크 모드와 일치」 없음(S19 라이트 분리 의도적) · Ghostty·Warp·YAML
-// 가져오기 버튼 없음(Ghostty 는 T3, Warp·YAML 은 S22 의도적) · 리거처·커서 불투명도 없음(00-analysis §9 의도적) · 글꼴군은 자유 입력 +
+// 198 과 다른 점(사유는 RESULT 표): 테마 모드(다크/라이트) 세그먼트·「다크 모드와 일치」 없음(S19 라이트 분리 의도적) · Warp·YAML
+// 가져오기 버튼 없음(S22 의도적 — Ghostty 가져오기는 LIFE-513 이 「Terminal 타이포그래피」 action 자리에 달았다) · 리거처·커서 불투명도 없음(00-analysis §9 의도적) · 글꼴군은 자유 입력 +
 // 198 제안 5개(시스템 글꼴 열거 없음) · 인터페이스·창 및 사이드바 카드 없음(그 설정이 corral 에 없다 — S30 의도적).
 //
 // 모든 값은 **확정 순간에만** 저장소로 간다(숫자 Enter/blur · ± 한 번 · 테마 한 번 클릭) — `settings-store.updateSettings`.
@@ -28,6 +28,7 @@ import {
   SettingsSubsectionHeader,
   SettingsSwitch,
 } from './SettingsControls.js'
+import { GhosttyImportButton } from './GhosttyImport.js'
 import { MinusIcon, PlusIcon, TerminalSquareIcon } from './SidebarIcons.js'
 import { TerminalSettingsPreview } from './TerminalSettingsPreview.js'
 
@@ -100,7 +101,18 @@ export function filterThemeNames({ query, names = TERMINAL_THEME_NAMES }: { quer
   return normalized === '' ? [...names] : names.filter((name) => name.toLowerCase().includes(normalized))
 }
 
-function ThemePicker({ selected }: { selected: string }): React.JSX.Element {
+/**
+ * 테마 클릭 → 쓸 패치(F12 — Orca #22069). 색 override 가 있으면 **어느 테마든**(지금 선택된 테마 포함) 같은 쓰기에 override 비움(`{}`)을 싣는다 —
+ * 그러지 않으면 가져온 색이 고른 테마를 가린다(198 결함 #16896). override 가 없고 같은 테마면 쓰지 않는다(null, T2 동작).
+ */
+export function themeSelectionPatch({ name, settings }: { name: string; settings: Settings }): Partial<Settings> | null {
+  const hasOverrides = Object.keys(settings.terminalColorOverrides).length > 0
+  if (!hasOverrides && name === settings.terminalThemeDark) return null
+  return hasOverrides ? { terminalThemeDark: name, terminalColorOverrides: {} } : { terminalThemeDark: name }
+}
+
+function ThemePicker({ settings }: { settings: Settings }): React.JSX.Element {
+  const selected = settings.terminalThemeDark
   const [query, setQuery] = useState('')
   const matching = filterThemeNames({ query })
   const trimmed = query.trim()
@@ -123,7 +135,7 @@ function ThemePicker({ selected }: { selected: string }): React.JSX.Element {
             <div className="settings-theme-group">
               <p className="settings-theme-group-title">기본 제공</p>
               {matching.map((name) => (
-                <button key={name} type="button" className={`settings-theme-option${name === selected ? ' is-selected' : ''}`} aria-pressed={name === selected} data-settings-theme-option={name} onClick={() => { if (name !== selected) void commit({ terminalThemeDark: name }) }}>
+                <button key={name} type="button" className={`settings-theme-option${name === selected ? ' is-selected' : ''}`} aria-pressed={name === selected} data-settings-theme-option={name} onClick={() => { const patch = themeSelectionPatch({ name, settings }); if (patch !== null) void commit(patch) }}>
                   <span className="settings-theme-name">{name}</span>
                   {name === selected ? <span className="settings-theme-current">현재</span> : null}
                 </button>
@@ -149,7 +161,7 @@ export function TerminalAppearanceSection({ query }: { query: string }): React.J
   return (
     <SettingsCollapsibleCard id="terminal" icon={<TerminalSquareIcon className="settings-icon" />} title="터미널" summary={`${settings.terminalFontFamily} · ${settings.terminalFontSize}px`} forceOpen={searching}>
       <section className="settings-appearance-block" data-settings-block="typography">
-        <SettingsSubsectionHeader title="Terminal 타이포그래피" />
+        <SettingsSubsectionHeader title="Terminal 타이포그래피" action={<GhosttyImportButton />} />
         <div className="settings-indent settings-rows">
           <SettingsRow label="글꼴 크기" control={<FontSizeControl value={settings.terminalFontSize} />} />
           <SettingsRow label="글꼴군" control={<FontFamilyControl value={settings.terminalFontFamily} />} />
@@ -180,7 +192,7 @@ export function TerminalAppearanceSection({ query }: { query: string }): React.J
       <section className="settings-appearance-block" data-settings-block="theme">
         <SettingsSubsectionHeader title="터미널 테마" />
         <div className="settings-indent settings-theme-stack">
-          <ThemePicker selected={settings.terminalThemeDark} />
+          <ThemePicker settings={settings} />
           <SettingsRow
             label="다크 디바이더 색상"
             description="어두운 모드에서 창 사이의 분할 구분선을 제어합니다."

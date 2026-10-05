@@ -1,0 +1,159 @@
+// Ghostty 줄 파서·매퍼 (LIFE-513 K2) — Ghostty v1.3.1 `LineIterator` 규칙(D2)·corral 칸 검증(D6)·font-family 첫 값(D4)·font-weight 없음(D5)·
+// corral 에 칸이 없는 키(D7). 일부 사례는 Orca 198 `parser.test.ts`·`mapper.test.ts` 의 입력을 옮겨 corral 기대값으로 바꿨다.
+import { describe, expect, it } from 'vitest'
+import { mapGhosttyToCorral } from './mapper.js'
+import { mergeGhosttyConfig, parseGhosttyConfig } from './parser.js'
+
+const map = (content: string): ReturnType<typeof mapGhosttyToCorral> => mapGhosttyToCorral(parseGhosttyConfig(content))
+const reasonsOf = (content: string, key: string): string[] => map(content).unsupported.filter((entry) => entry.key === key).map((entry) => entry.reason)
+
+describe('parseGhosttyConfig — Ghostty LineIterator 규칙(K2ⓐ)', () => {
+  it('key = value · 양끝 공백 · CR · 빈 줄 · # 로 시작하는 줄', () => {
+    const parsed = parseGhosttyConfig('  font-size = 14  \r\n\n# comment\n   # indented comment\nfont-family=Menlo\n')
+    expect([...parsed]).toEqual([['font-size', ['14']], ['font-family', ['Menlo']]])
+  })
+
+  it('값 뒤 # 는 주석이 아니라 값의 일부다(D2 — Orca 는 잘랐다)', () => {
+    expect(parseGhosttyConfig('font-size = 14 # big').get('font-size')).toEqual(['14 # big'])
+    expect(parseGhosttyConfig('background = #1a1b26').get('background')).toEqual(['#1a1b26'])
+  })
+
+  it('큰따옴표만 벗긴다 — 작은따옴표는 값에 남는다(D2)', () => {
+    expect(parseGhosttyConfig('font-family = "JetBrains Mono"').get('font-family')).toEqual(['JetBrains Mono'])
+    expect(parseGhosttyConfig("font-family = 'JetBrains Mono'").get('font-family')).toEqual(["'JetBrains Mono'"])
+    expect(parseGhosttyConfig('font-family = ""').get('font-family')).toEqual([''])
+    expect(parseGhosttyConfig('font-family = "').get('font-family')).toEqual(['"'])
+  })
+
+  it('= 없는 줄·빈 키는 무시하고 같은 키 반복은 순서대로 남긴다', () => {
+    const parsed = parseGhosttyConfig('just-a-word\n= value\npalette = 0=#000000\npalette = 1=#ff0000\n')
+    expect([...parsed]).toEqual([['palette', ['0=#000000', '1=#ff0000']]])
+  })
+
+  it('__proto__ 같은 키도 그냥 키다(Map)', () => {
+    expect(parseGhosttyConfig('__proto__ = x').get('__proto__')).toEqual(['x'])
+  })
+
+  it('파일 병합 — 뒤 파일이 덮고, palette·font-family 는 이어 붙는다', () => {
+    const target = parseGhosttyConfig('font-size = 12\npalette = 0=#000000\nfont-family = A\n')
+    mergeGhosttyConfig({ target, next: parseGhosttyConfig('font-size = 16\npalette = 0=#111111\nfont-family = B\n') })
+    expect(target.get('font-size')).toEqual(['16'])
+    expect(target.get('palette')).toEqual(['0=#000000', '0=#111111'])
+    expect(target.get('font-family')).toEqual(['A', 'B'])
+  })
+})
+
+describe('mapGhosttyToCorral — 키별 정상·경계·거부(K2ⓑⓒⓕ)', () => {
+  it('이 사용자의 실제 구성(Menlo 14)', () => {
+    expect(map('font-family = Menlo\nfont-size = 14\n')).toEqual({ patch: { terminalFontFamily: 'Menlo', terminalFontSize: 14 }, unsupported: [] })
+  })
+
+  it('font-size — 정수 10~24 만, 소수·범위 밖은 쓰지 않고 사유(D6)', () => {
+    expect(map('font-size = 10').patch).toEqual({ terminalFontSize: 10 })
+    expect(map('font-size = 24').patch).toEqual({ terminalFontSize: 24 })
+    expect(map('font-size = 13.5').patch).toEqual({})
+    expect(reasonsOf('font-size = 13.5', 'font-size')[0]).toContain('정수만')
+    expect(reasonsOf('font-size = 30', 'font-size')[0]).toContain('범위 10~24 정수 밖')
+    expect(reasonsOf('font-size = 9', 'font-size')[0]).toContain('밖')
+    expect(reasonsOf('font-size = big', 'font-size')).toEqual(['숫자가 아님'])
+    expect(reasonsOf('font-size = 1e1', 'font-size')).toEqual(['숫자가 아님'])
+  })
+
+  it('값 뒤 # 는 검증에 걸려 지원되지 않는 키가 된다(D2)', () => {
+    expect(map('font-size = 14 # big')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '숫자가 아님' }] })
+  })
+
+  it('반복 키는 마지막 값(font-family·palette 제외)', () => {
+    expect(map('font-size = 12\nfont-size = 16').patch).toEqual({ terminalFontSize: 16 })
+  })
+
+  it('adjust-cell-height — % 만, 1~3 배, 반올림 없음', () => {
+    expect(map('adjust-cell-height = 20%').patch).toEqual({ terminalLineHeight: 1.2 })
+    expect(map('adjust-cell-height = +200%').patch).toEqual({ terminalLineHeight: 3 })
+    expect(map('adjust-cell-height = 12.5%').patch).toEqual({ terminalLineHeight: 1.125 })
+    expect(reasonsOf('adjust-cell-height = 2', 'adjust-cell-height')[0]).toContain('백분율')
+    expect(reasonsOf('adjust-cell-height = 250%', 'adjust-cell-height')[0]).toContain('밖')
+    expect(reasonsOf('adjust-cell-height = -10%', 'adjust-cell-height')[0]).toContain('밖')
+    expect(reasonsOf('adjust-cell-height = 33.3333%', 'adjust-cell-height')[0]).toContain('셋째 자리')
+  })
+
+  it('cursor-style — block·bar·underline, block_hollow 는 거부', () => {
+    expect(map('cursor-style = bar').patch).toEqual({ terminalCursorStyle: 'bar' })
+    expect(map('cursor-style = underline').patch).toEqual({ terminalCursorStyle: 'underline' })
+    expect(map('cursor-style = block_hollow').patch).toEqual({})
+    expect(reasonsOf('cursor-style = block_hollow', 'cursor-style')).toEqual(['block·bar·underline 만 받음'])
+  })
+
+  it('cursor-style-blink — true/false 만', () => {
+    expect(map('cursor-style-blink = false').patch).toEqual({ terminalCursorBlink: false })
+    expect(map('cursor-style-blink = true').patch).toEqual({ terminalCursorBlink: true })
+    expect(reasonsOf('cursor-style-blink = yes', 'cursor-style-blink')).toEqual(['true·false 만 받음'])
+  })
+
+  it('unfocused-split-opacity — 0~1, 소수 셋째 자리까지', () => {
+    expect(map('unfocused-split-opacity = 0.7').patch).toEqual({ terminalInactivePaneOpacity: 0.7 })
+    expect(map('unfocused-split-opacity = 1').patch).toEqual({ terminalInactivePaneOpacity: 1 })
+    expect(reasonsOf('unfocused-split-opacity = 1.5', 'unfocused-split-opacity')[0]).toContain('밖')
+    expect(reasonsOf('unfocused-split-opacity = 0.12345', 'unfocused-split-opacity')[0]).toContain('셋째 자리')
+  })
+
+  it('split-divider-color — hex(# 없음·3자리 포함) → 다크 디바이더, 소문자. X11 이름은 거부', () => {
+    expect(map('split-divider-color = #AABBCC').patch).toEqual({ terminalDividerColorDark: '#aabbcc' })
+    expect(map('split-divider-color = 112233').patch).toEqual({ terminalDividerColorDark: '#112233' })
+    expect(map('split-divider-color = #abc').patch).toEqual({ terminalDividerColorDark: '#abc' })
+    expect(reasonsOf('split-divider-color = red', 'split-divider-color')[0]).toContain('hex')
+  })
+
+  it('색 키 → override(소문자, # 붙임). 특수값(cell-foreground)·X11 이름은 거부', () => {
+    const result = map('background = 1A1B26\nforeground = #c0caf5\ncursor-color = #fff\ncursor-text = #000000\nselection-background = #33467c\nselection-foreground = #c0caf5\n')
+    expect(result.patch).toEqual({ terminalColorOverrides: { background: '#1a1b26', foreground: '#c0caf5', cursor: '#fff', cursorAccent: '#000000', selectionBackground: '#33467c', selectionForeground: '#c0caf5' } })
+    expect(result.unsupported).toEqual([])
+    expect(reasonsOf('selection-foreground = cell-foreground', 'selection-foreground')[0]).toContain('hex')
+    expect(reasonsOf('background = rebeccapurple', 'background')[0]).toContain('hex')
+    expect(reasonsOf('background = #12345', 'background')[0]).toContain('hex')
+  })
+
+  it('palette — 0~15 만, 16 이상·잘못된 항목은 항목별 사유, 같은 인덱스는 뒤가 이긴다', () => {
+    const result = map('palette = 0=#000000\npalette = 15=FFFFFF\npalette = 1=#f00\npalette = 16=#123456\npalette = 2=green\npalette = 0x3=#333333\npalette = nonsense\npalette = 0=#010101\n')
+    expect(result.patch).toEqual({ terminalColorOverrides: { black: '#010101', brightWhite: '#ffffff', red: '#f00' } })
+    const reasons = result.unsupported.filter((entry) => entry.key === 'palette').map((entry) => entry.reason)
+    expect(reasons).toHaveLength(4)
+    expect(reasons[0]).toContain('"16=#123456" — 인덱스 16 이상')
+    expect(reasons[1]).toContain('"2=green" — hex')
+    expect(reasons[2]).toContain('"0x3=#333333" — N=COLOR')
+    expect(reasons[3]).toContain('"nonsense"')
+  })
+
+  it('font-family — 첫 값이 주 글꼴, 버린 폴백은 알린다(D4)', () => {
+    const result = map('font-family = JetBrains Mono\nfont-family = Symbols Nerd Font\nfont-family = Apple Color Emoji\n')
+    expect(result.patch).toEqual({ terminalFontFamily: 'JetBrains Mono' })
+    expect(result.unsupported).toEqual([{ key: 'font-family', reason: '폴백 글꼴은 가져오지 않음: Symbols Nerd Font, Apple Color Emoji (주 글꼴 JetBrains Mono 만)' }])
+  })
+
+  it('font-family — 빈 값은 목록 리셋(그 뒤 첫 값이 주 글꼴), 리셋만 있으면 사유', () => {
+    expect(map('font-family = A\nfont-family = ""\nfont-family = B\n')).toEqual({ patch: { terminalFontFamily: 'B' }, unsupported: [] })
+    expect(map('font-family = A\nfont-family =\n')).toEqual({ patch: {}, unsupported: [{ key: 'font-family', reason: '빈 값 — 글꼴 목록 리셋만 있어 가져올 글꼴이 없음' }] })
+    expect(reasonsOf(`font-family = ${'X'.repeat(201)}`, 'font-family')).toEqual(['글꼴 이름이 200자를 넘음'])
+  })
+
+  it('font-weight 는 Ghostty 에 없는 키 — 매핑하지 않는다(D5)', () => {
+    expect(map('font-weight = 600')).toEqual({ patch: {}, unsupported: [{ key: 'font-weight', reason: 'corral 에 대응하는 설정이 없음' }] })
+  })
+
+  it('corral 에 칸이 없는 Orca 매핑 키 8개·모르는 키는 지원되지 않는 키(D7)', () => {
+    const keys = ['background-opacity', 'macos-option-as-alt', 'window-padding-x', 'window-padding-y', 'mouse-hide-while-typing', 'cursor-opacity', 'focus-follows-mouse', 'middle-click-action', 'background-blur-radius', 'keybind']
+    const result = map(keys.map((key) => `${key} = 1`).join('\n'))
+    expect(result.patch).toEqual({})
+    expect(result.unsupported).toEqual(keys.map((key) => ({ key, reason: 'corral 에 대응하는 설정이 없음' })))
+  })
+
+  it('bold-color·selection-word-chars·config-file 은 사유가 따로 있다', () => {
+    expect(reasonsOf('bold-color = #ffffff', 'bold-color')[0]).toContain('굵은 글자')
+    expect(reasonsOf('selection-word-chars = abc', 'selection-word-chars')[0]).toContain('반대')
+    expect(reasonsOf('config-file = other.conf', 'config-file')[0]).toContain('포함 파일')
+  })
+
+  it('빈 값은 기본값 리셋 — 가져오지 않는다', () => {
+    expect(map('font-size =')).toEqual({ patch: {}, unsupported: [{ key: 'font-size', reason: '빈 값 — 기본값으로 되돌리는 설정은 가져오지 않음' }] })
+  })
+})

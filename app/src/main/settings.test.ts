@@ -199,3 +199,63 @@ describe('U8 — settings.json 과 ui-prefs.json 은 칸이 겹치지 않는다'
     }
   })
 })
+
+describe('terminalColorOverrides (LIFE-513 K7)', () => {
+  it('기본값은 빈 override 이고, 파일이 없을 때 빈 override 를 보내도 파일을 만들지 않는다', () => {
+    const store = fresh()
+    expect(store.get().terminalColorOverrides).toEqual({})
+    expect(store.update({ terminalColorOverrides: {} }).status).toBe('unchanged')
+    expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it('저장·재기동 유지 · 값은 소문자 · 같은 내용(키 순서 달라도)이면 쓰지 않는다', () => {
+    const store = fresh()
+    expect(store.update({ terminalColorOverrides: { background: '#1A1B26', red: '#F00' } }).status).toBe('saved')
+    expect(fresh().get().terminalColorOverrides).toEqual({ background: '#1a1b26', red: '#f00' })
+    expect(store.update({ terminalColorOverrides: { red: '#f00', background: '#1a1b26' } }).status).toBe('unchanged')
+  })
+
+  it('패치는 통째로 바꾼다 — {} 가 비움이고, 비운 상태가 재기동 뒤 유지된다', () => {
+    const store = fresh()
+    store.update({ terminalColorOverrides: { background: '#101010' } })
+    expect(store.update({ terminalColorOverrides: {} }).status).toBe('saved')
+    expect(store.get().terminalColorOverrides).toEqual({})
+    expect(fresh().get().terminalColorOverrides).toEqual({})
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).terminalColorOverrides).toEqual({})
+  })
+
+  it('테마 + 비움을 한 번의 쓰기로(F12 쓰기 모양)', () => {
+    const store = fresh()
+    store.update({ terminalColorOverrides: { background: '#101010' } })
+    const result = store.update({ terminalThemeDark: 'Dracula', terminalColorOverrides: {} })
+    expect(result.status).toBe('saved')
+    expect(fresh().get()).toMatchObject({ terminalThemeDark: 'Dracula', terminalColorOverrides: {} })
+  })
+
+  it('손상 격리(파일) — 잘못된 키·값은 그 키만 버리고, 다른 칸과 다른 색은 산다', () => {
+    fs.writeFileSync(file, JSON.stringify({ terminalFontSize: 16, terminalColorOverrides: { background: '#101010', bold: '#ffffff', red: 'red', extendedAnsi: ['#000000'], green: '#00ff00', __proto__: { x: 1 } } }))
+    expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalFontSize: 16, terminalColorOverrides: { background: '#101010', green: '#00ff00' } })
+  })
+
+  it('손상 격리(파일) — 칸이 객체가 아니면 그 칸만 기본값(빈 override)', () => {
+    fs.writeFileSync(file, JSON.stringify({ terminalThemeDark: 'Dracula', terminalColorOverrides: ['#000000'] }))
+    expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalThemeDark: 'Dracula' })
+  })
+
+  it('손상 격리(IPC 패치) — 잘못된 색만 버리고, 전부 잘못이면 기존 override 를 지우지 않는다', () => {
+    const store = fresh()
+    store.update({ terminalColorOverrides: { background: '#101010' } })
+    expect(store.update({ terminalColorOverrides: { nope: '#123456', red: 'crimson' } }).status).toBe('unchanged')
+    expect(store.get().terminalColorOverrides).toEqual({ background: '#101010' })
+    store.update({ terminalColorOverrides: { foreground: '#eeeeee', red: 'crimson' } })
+    expect(store.get().terminalColorOverrides).toEqual({ foreground: '#eeeeee' })
+    expect(store.update({ terminalColorOverrides: 'x' }).status).toBe('unchanged')
+  })
+
+  it('get() 의 override 는 복사본이다', () => {
+    const store = fresh()
+    store.update({ terminalColorOverrides: { background: '#101010' } })
+    store.get().terminalColorOverrides.background = '#ffffff'
+    expect(store.get().terminalColorOverrides).toEqual({ background: '#101010' })
+  })
+})

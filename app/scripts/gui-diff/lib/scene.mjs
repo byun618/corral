@@ -284,6 +284,30 @@ async function openSettings({ handle, app, section = 'shortcuts' }) {
   await pause(400)
 }
 
+/**
+ * LIFE-512 U5 — 터미널 테마를 **제품 경로로** 바꾼다: 설정 › 외관을 실제 마우스로 열고 → 테마 목록의 행을 실제 마우스로 누르고 → Esc 로 닫는다.
+ * Orca 테마 행에는 data 속성이 없어 글자로 찾아 표식을 단다(장면 손잡이일 뿐 짝 키가 아니다). 행이 목록 스크롤 밖이면 누르지 않고 실패로 남긴다.
+ */
+/** 테마 배경을 칠하는 표면 — Orca 는 pane-manager 루트 `[data-terminal-layout-leaf-ids]`(`pane-divider.ts:92` applyRootBackground), corral 은 pane 상자(`--term-bg`). 장면 확인용. */
+const TERMINAL_BG_SELECTORS = { orca: '[data-terminal-layout-leaf-ids]', corral: '.term-pane' }
+const THEME_OPTION_SELECTORS = { orca: '#appearance-section-terminal [data-slot="scroll-area-viewport"] button', corral: '[data-settings-theme-option]' }
+async function selectTerminalTheme({ handle, app, name }) {
+  await openSettings({ handle, app, section: 'appearance' })
+  const marked = await handle.cdp.evaluate(({ selector, name }) => {
+    const button = [...document.querySelectorAll(selector)].find((el) => (el.getAttribute('data-settings-theme-option') ?? el.querySelector('span span')?.textContent ?? '').trim() === name)
+    if (!button) return false
+    button.setAttribute('data-l512-theme-option', '')
+    return true
+  }, { selector: THEME_OPTION_SELECTORS[app], name })
+  if (marked) {
+    await click({ handle, selector: '[data-l512-theme-option]' })
+    await handle.cdp.evaluate(() => { document.querySelector('[data-l512-theme-option]')?.removeAttribute('data-l512-theme-option'); return true })
+    await pause(400)
+  }
+  await closeSettings({ handle, app })
+  await pause(400)
+}
+
 async function closeSettings({ handle, app }) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (!(await observeSettings({ handle, app })).open) return
@@ -483,6 +507,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.tabStripEnd) await wheelTabStripTo({ handle, app, edge: 'end' })
     if (scene.tabStripStart) await wheelTabStripTo({ handle, app, edge: 'start' })
     if (scene.newTabMenu) await openNewTabMenu({ handle, app, query: scene.newTabMenu.query ?? '' })
+    if (scene.terminalTheme) await selectTerminalTheme({ handle, app, name: scene.terminalTheme })
     if (scene.settingsOpen) await openSettings({ handle, app, section: settingsSectionOf(scene.settingsOpen) })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
@@ -490,7 +515,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: await observeSettings({ handle, app }) }
+    out[app] = { ...(await observe({ handle, app })), terminalBg: await handle.cdp.evaluate((selector) => { const el = document.querySelector(selector); return el ? getComputedStyle(el).backgroundColor : null }, TERMINAL_BG_SELECTORS[app]), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: await observeSettings({ handle, app }) }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -501,6 +526,8 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     // sticky: 실제로 스크롤됐고(범위 안), 헤더가 스크롤러 윗변 ±1px 에 붙어 있다.
     if (scene.scroll && !(seen.scrollTop > 0 && seen.headerOffset !== null && Math.abs(seen.headerOffset) <= 1)) return false
     if (scene.width && seen.width !== scene.width) return false
+    // 테마(512 U5): 테마 배경을 칠하는 표면의 계산 색이 기대 색이다 — 클릭이 빗나가 기본 테마로 잰 회차를 막는다.
+    if (scene.terminalThemeBg && seen.terminalBg !== scene.terminalThemeBg) return false
     if (scene.empty && !(seen.repos === 0 && seen.empty > 0)) return false
     // 탭 스트립 끝: 실제로 넘쳐 스크롤됐고(> 0) 끝까지 2px 안.
     if (scene.tabStripEnd && !(seen.tabStrip && seen.tabStrip.scrollLeft > 0 && seen.tabStrip.max - seen.tabStrip.scrollLeft <= 2)) return false
@@ -536,6 +563,7 @@ export function describeScene(seen) {
   if (!seen) return '(관측 없음)'
   const strip = seen.tabStrip ? ` · 탭 스트립 ${seen.tabStrip.scrollLeft}/${seen.tabStrip.max} dock ${seen.tabStrip.docked ?? '없음'}` : ''
   const menu = seen.newTabMenu ? ` · + 메뉴 ${seen.newTabMenu.open ? '열림' : '닫힘'} 입력포커스 ${seen.newTabMenu.inputFocused} 질의 "${seen.newTabMenu.value ?? ''}" 결과 ${seen.newTabMenu.results} 항목 ${seen.newTabMenu.items}` : ''
+  const themeBg = seen.terminalBg ? ` · 터미널 배경 ${seen.terminalBg}` : ''
   const settings = seen.settings ? ` · 설정 ${seen.settings.open ? '열림' : '닫힘'} 섹션 ${seen.settings.section} 활성 「${seen.settings.activeNav}」 포커스 내비 ${seen.settings.focusInNav}${seen.settings.terminalCardOpen === null ? '' : ` 터미널 카드 ${seen.settings.terminalCardOpen ? '펼침' : '접힘'}`}` : ''
-  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}${settings}`
+  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}${settings}${themeBg}`
 }

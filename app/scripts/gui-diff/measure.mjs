@@ -441,6 +441,14 @@ const STATE_TARGETS = {
     scene: { settingsOpen: 'appearance' },
     detail: '탭 1개, 설정 페이지 › 외관 — 「터미널」 카드 펼침(타이포·테마 목록·디바이더·고급·미리보기). Orca 는 인터페이스·터미널·창 카드 셋, corral 은 터미널 하나'
   },
+  // LIFE-512 U5 — 터미널 테마를 제품 경로로 Dracula 로 바꾼 상태(두 앱 다 설정 › 외관 실제 마우스 → 테마 행 실제 마우스 → Esc).
+  // 테마는 resetScene 이 되돌리지 않는다 — **`--states` 의 맨 끝에** 둔다. `--areas terminal` 과 함께 잰다.
+  'terminal-dracula': {
+    tabCount: 1,
+    agents: [],
+    scene: { terminalTheme: 'Dracula', terminalThemeBg: 'rgb(40, 42, 54)' },
+    detail: '탭 1개, 터미널 테마 Dracula(배경 #282a36). **`--states` 맨 끝** — 테마는 장면 초기화가 되돌리지 않는다'
+  },
   wait: {
     tabCount: 1,
     agents: [{ state: 'blocked', prompt: 'L467 waiting for approval', agentType: 'claude' }],

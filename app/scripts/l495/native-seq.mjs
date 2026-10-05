@@ -3,10 +3,12 @@
 //   → 0/100/300ms document.activeElement → ⌘A · 글자 · Enter → 라벨이 바뀌었나 + 그 글자가 셸 화면에 새지 않았나.
 // 대상 탭을 누르면 그 탭의 터미널이 마운트되며 포커스를 요청한다 — base(5147320b)는 이 마운트 포커스가 입력칸을 뺏는다(LIFE-501).
 // 입력은 제어 소켓 key/type(webContents.sendInputEvent — 포커스된 요소가 받는다). 새어도 fixture 셸 pane 이다(assertOnlyFixture).
-// 사용: node native-seq.mjs <ROOT=/tmp/l495n*> <raw 폴더> <fixture 경로(realpath)> <꼬리표> <회수>
+// fix1 R1-09 — 화면 read 실패 = 그 회차 실패(누출 미확인). 회차마다 read 성공 여부·원문 sha256·길이를 기록한다.
+// 사용: node native-seq.mjs <ROOT=/tmp/l495n*> <raw 폴더> <fixture 경로(realpath)> <꼬리표> <회수>   (자기점검: L495_FAKE_READ_FAIL=<회차>)
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
 const [root, rawd, fixture, label, runsArg] = process.argv.slice(2)
@@ -20,11 +22,21 @@ const evaluate = async (code) => (await control({ cmd: 'eval', code })).result
 const result = { label, app: fs.readFileSync(path.join(root, 'app.dir'), 'utf8'), startedAt: new Date().toISOString(), runs: [] }
 const outFile = path.join(rawd, `seq-${label}.json`)
 const save = () => fs.writeFileSync(outFile, `${JSON.stringify(result, null, 1)}\n`)
-const screenOf = (paneId) => {
+/**
+ * 화면 읽기 (fix1 R1-09) — 실패를 「누출 없음」으로 바꾸지 않는다: `{ ok:false }` 면 그 회차는 실패다(누출 판정 불가).
+ * 성공이면 원문 해시·길이를 원자료에 남긴다. `L495_FAKE_READ_FAIL=<회차>` 면 그 회차는 **없는 pane id** 로 실제 herdr read 를 불러
+ * 읽기 실패 길을 지난다(자기점검 — 그 회차가 실패로 기록되는지 본다).
+ */
+const fakeReadFail = Number(process.env.L495_FAKE_READ_FAIL ?? 0)
+const screenOf = ({ paneId, n }) => {
+  const target = fakeReadFail === n ? `${paneId}-l495-fake-missing` : paneId
   try {
-    return execFileSync('/opt/homebrew/bin/herdr', ['pane', 'read', paneId, '--source', 'visible', '--format', 'text'], { encoding: 'utf8' })
+    const text = execFileSync('/opt/homebrew/bin/herdr', ['pane', 'read', target, '--source', 'visible', '--format', 'text'], { encoding: 'utf8' })
+    // herdr 는 오류도 JSON 으로 내고 exit 0 일 수 있다 — `{"error":…}` 꼴이면 실패로 센다.
+    if (/^\s*\{"error"/.test(text)) return { ok: false, error: text.trim().slice(0, 300), faked: target !== paneId }
+    return { ok: true, text, sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text), faked: target !== paneId }
   } catch (error) {
-    return `herdr pane read 실패: ${error.message}`
+    return { ok: false, error: String(error?.message ?? error).slice(0, 300), faked: target !== paneId }
   }
 }
 async function until(fn, what, timeout = 15_000, every = 150) {
@@ -90,11 +102,17 @@ async function main() {
     await control({ cmd: 'key', keyCode: 'Enter' })
     const renamed = await until(async () => (await domTabs()).find((tab) => tab.id === target.id)?.label === text, '이름', 4_000).then(() => true, () => false)
     const pane = ((await fixtureWs())?.tabs.find((tab) => tab.tabId === target.id)?.panes ?? [])[0]?.paneId ?? null
-    const leaked = pane === null ? null : screenOf(pane).includes(text)
-    const pass = clicked.ok === true && dbl.ok === true && renamed && leaked === false
-    result.runs.push({ n, target: target.id, text, pass, renamed, leaked, pane, clickOk: clicked.ok === true, dblOk: dbl.ok === true, samples, finalLabel: (await domTabs()).find((tab) => tab.id === target.id)?.label ?? null })
+    const read = pane === null ? { ok: false, error: 'pane 없음', faked: false } : screenOf({ paneId: pane, n })
+    // 읽기에 실패하면 누출 여부를 모른다 — null(미확인)로 두고 회차는 실패다(R1-09).
+    const leaked = read.ok ? read.text.includes(text) : null
+    const pass = clicked.ok === true && dbl.ok === true && renamed && read.ok && leaked === false
+    result.runs.push({
+      n, target: target.id, text, pass, renamed, leaked, pane, clickOk: clicked.ok === true, dblOk: dbl.ok === true, samples,
+      read: read.ok ? { ok: true, sha256: read.sha256, bytes: read.bytes, faked: read.faked } : { ok: false, error: read.error, faked: read.faked },
+      finalLabel: (await domTabs()).find((tab) => tab.id === target.id)?.label ?? null,
+    })
     save()
-    console.log(`[seq ${label}] ${n}/${runs} ${pass ? '✔' : '✘'} renamed=${renamed} leaked=${leaked} focus@300=${samples[2].focus.cls}`)
+    console.log(`[seq ${label}] ${n}/${runs} ${pass ? '✔' : '✘'} renamed=${renamed} read=${read.ok ? 'ok' : 'FAIL'} leaked=${leaked} focus@300=${samples[2].focus.cls}`)
     // 실패 회차 정리 — 편집이 열려 있으면 Esc, 셸에 샌 글자는 Ctrl+U 로 지운다(fixture 셸).
     if (!pass) {
       await control({ cmd: 'key', keyCode: 'Escape' })
@@ -103,7 +121,7 @@ async function main() {
     }
   }
   const failed = result.runs.filter((row) => !row.pass).length
-  result.summary = { runs: result.runs.length, passed: result.runs.length - failed, failed }
+  result.summary = { runs: result.runs.length, passed: result.runs.length - failed, failed, readOk: result.runs.filter((row) => row.read.ok).length, fakeReadFail: fakeReadFail || null }
   save()
   return failed
 }

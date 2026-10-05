@@ -283,7 +283,8 @@ async function closeSettings({ handle, app }) {
     for (const type of ['keyDown', 'keyUp']) await handle.cdp.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
     await pause(300)
   }
-  await until(async () => !(await observeSettings({ handle, app })).open, `${app} 설정 닫힘`, 5_000).catch(() => null)
+  // 닫기 실패는 **실패로 올린다**(r1 R1-05) — 삼키면 설정이 덮인 화면에서 다음 상태를 「기본」 으로 잰다. `until` 이 시간초과면 throw 한다.
+  await until(async () => !(await observeSettings({ handle, app })).open, `${app} 설정 닫힘`, 5_000)
 }
 
 async function click({ handle, selector }) {
@@ -482,7 +483,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: scene.settingsOpen ? await observeSettings({ handle, app }) : null }
+    out[app] = { ...(await observe({ handle, app })), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: await observeSettings({ handle, app }) }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -509,6 +510,9 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.settingsOpen) {
       const settings = seen.settings
       if (!(settings && settings.open && settings.section === 'shortcuts' && settings.activeNav !== null && settings.focusInNav)) return false
+    } else if (!seen.settings || seen.settings.open) {
+      // 설정이 없어야 할 장면 — 관측을 못 했거나 열려 있으면 실패(r1 R1-05). 「안 봤다」 를 「닫혔다」 로 읽지 않는다.
+      return false
     }
     return true
   }

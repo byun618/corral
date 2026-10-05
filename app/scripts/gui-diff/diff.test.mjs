@@ -12,7 +12,8 @@ import { decodePng, encodePng, compareRoi, evaluateRoiControls } from './lib/png
 import { evaluateControls, evaluateResolvedControls, POSITIVE_CONTROLS, RESOLVED_CONTROLS } from './lib/controls.mjs'
 import { renderReport } from './lib/report.mjs'
 import { compareRuns, validateRun, expectedKeys } from './lib/compare.mjs'
-import { fileFingerprint, keybindingsLeakVerdict, fixtureVerdict, orcaCheckoutVerdict, guard504Verdict } from './lib/guards.mjs'
+import { fileFingerprint, keybindingsLeakVerdict, fixtureVerdict, orcaCheckoutVerdict, guard504Verdict, probeFixture, probeOrcaCheckout } from './lib/guards.mjs'
+import { ensureFixtureRepo } from './lib/fixture.mjs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -939,16 +940,16 @@ test('F18 — 같은 파일 전후 지문은 통과, 바이트가 바뀌면 실�
 })
 
 test('F19 — fixture: 정상 ok · .git 없음 absent · 빈 껍데기(HEAD 못 풂·worktree 1개) shell', () => {
-  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, worktrees: 2, wtGitFile: true, readme: true }).state, 'ok')
+  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, commitOk: true, worktrees: 2, wtGitFile: true, wtCommitOk: true, readme: true }).state, 'ok')
   assert.equal(fixtureVerdict({ gitDir: false }).state, 'absent')
   const shell = fixtureVerdict({ gitDir: true, headOk: false, worktrees: 0, wtGitFile: false, readme: false })
   assert.equal(shell.state, 'shell')
   assert.match(shell.why, /HEAD/)
-  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, worktrees: 1, wtGitFile: true, readme: true }).state, 'shell')
+  assert.equal(fixtureVerdict({ gitDir: true, headOk: true, commitOk: true, worktrees: 1, wtGitFile: true, wtCommitOk: true, readme: true }).state, 'shell')
 })
 
 test('F19 — Orca 체크아웃: 다 있으면 ok, 빈 껍데기·다른 태그·의존성 없음이면 원인과 함께 실패', () => {
-  const good = { repo: '/r', exists: true, statusOk: true, tag: 'v1.4.198', electronVite: true, runner: true, constants: true }
+  const good = { repo: '/r', exists: true, statusOk: true, commitOk: true, tag: 'v1.4.198', electronVite: true, runner: true, constants: true }
   assert.deepEqual(orcaCheckoutVerdict(good), { ok: true, why: null })
   assert.match(orcaCheckoutVerdict({ repo: '/r', exists: false }).why, /없다/)
   const shell = orcaCheckoutVerdict({ ...good, statusOk: false, statusError: 'fatal: not a git repository', tag: null })
@@ -974,4 +975,131 @@ test('504 가드 — 같은 작업 폴더(두 경로 꼴)·같은 herdr 세션�
   assert.deepEqual(verdict.hits.map((line) => Number(line.split(' ')[0])), [200, 300, 400])
   // 음성 대조 — 관계없는 프로세스만 있으면 통과.
   assert.deepEqual(guard504Verdict({ lines: ['500 1 /usr/bin/vim notes.txt'], works, self: [] }), { pass: true, hits: [] })
+})
+
+// r1 R1-04 — **probe 단계부터** 양성 대조. 판정 함수에 손으로 만든 probe 를 넣는 테스트로는 probe 가 객체 없는 ref 를 놓치는 것을 못 본다.
+const tmpBase = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `l511-f19-${tag}-`))
+const probeOf = (base) => probeFixture({ root: path.join(base, 'gui-diff-fixture'), worktree: path.join(base, 'gui-diff-fixture-wt') })
+
+test('F19 probe — 정상 fixture(ensureFixtureRepo 가 만든 것)는 ok · 다시 부르면 재사용', () => {
+  const base = tmpBase('ok')
+  const made = ensureFixtureRepo(base)
+  assert.equal(made.created, true)
+  const probe = probeOf(base)
+  assert.deepEqual({ commitOk: probe.commitOk, wtCommitOk: probe.wtCommitOk, worktrees: probe.worktrees }, { commitOk: true, wtCommitOk: true, worktrees: 2 })
+  assert.equal(fixtureVerdict(probe).state, 'ok')
+  assert.equal(ensureFixtureRepo(base).created, false)
+  fs.rmSync(base, { recursive: true, force: true })
+})
+
+test('F19 probe 양성 대조 ① — refs·worktree 메타·README 는 있는데 객체가 없다(리뷰 재현과 같은 껍데기) → shell, ensureFixtureRepo 가 비켜 두고 재생성', () => {
+  const base = tmpBase('noobj')
+  const root = path.join(base, 'gui-diff-fixture')
+  const wt = `${root}-wt`
+  const git = path.join(root, '.git')
+  const fake = 'a'.repeat(40)
+  for (const dir of [path.join(git, 'objects'), path.join(git, 'refs/heads'), path.join(git, 'worktrees/wt'), wt]) fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(git, 'HEAD'), 'ref: refs/heads/main\n')
+  fs.writeFileSync(path.join(git, 'refs/heads/main'), `${fake}\n`)
+  fs.writeFileSync(path.join(root, 'README.md'), 'fixture\n')
+  fs.writeFileSync(path.join(git, 'worktrees/wt/HEAD'), `${fake}\n`)
+  fs.writeFileSync(path.join(git, 'worktrees/wt/gitdir'), `${path.join(wt, '.git')}\n`)
+  fs.writeFileSync(path.join(git, 'worktrees/wt/commondir'), '../..\n')
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(git, 'worktrees/wt')}\n`)
+  const probe = probeOf(base)
+  // 옛 probe 가 보던 칸은 전부 「정상」 이다 — 그래서 옛 판정은 ok 였다.
+  assert.deepEqual({ headOk: probe.headOk, worktrees: probe.worktrees, wtGitFile: probe.wtGitFile, readme: probe.readme }, { headOk: true, worktrees: 2, wtGitFile: true, readme: true })
+  assert.equal(probe.commitOk, false)
+  const verdict = fixtureVerdict(probe)
+  assert.equal(verdict.state, 'shell')
+  assert.match(verdict.why, /commit 객체/)
+  const made = ensureFixtureRepo(base)
+  assert.equal(made.created, true)
+  assert.ok(made.movedAside?.root && fs.existsSync(made.movedAside.root))
+  assert.equal(fixtureVerdict(probeOf(base)).state, 'ok')
+  fs.rmSync(base, { recursive: true, force: true })
+})
+
+test('F19 probe 양성 대조 ② — 본체는 정상인데 -wt/.git 이 없는 gitdir 을 가리킨다 → shell', () => {
+  const base = tmpBase('badwt')
+  ensureFixtureRepo(base)
+  const wtGit = path.join(base, 'gui-diff-fixture-wt', '.git')
+  fs.writeFileSync(wtGit, `gitdir: ${path.join(base, 'nowhere/.git/worktrees/x')}\n`)
+  const probe = probeOf(base)
+  assert.deepEqual({ commitOk: probe.commitOk, wtGitFile: probe.wtGitFile, wtCommitOk: probe.wtCommitOk }, { commitOk: true, wtGitFile: true, wtCommitOk: false })
+  assert.match(fixtureVerdict(probe).why, /-wt 체크아웃/)
+  fs.rmSync(base, { recursive: true, force: true })
+})
+
+test('F19 probe 양성 대조 ③ — 정상 레포에서 objects 만 비운 것(/tmp 정리 꼴) → shell · Orca 체크아웃 probe 도 commit 객체 없음을 잡는다', () => {
+  const base = tmpBase('wiped')
+  ensureFixtureRepo(base)
+  const objects = path.join(base, 'gui-diff-fixture', '.git', 'objects')
+  for (const name of fs.readdirSync(objects)) if (/^[0-9a-f]{2}$/.test(name)) fs.rmSync(path.join(objects, name), { recursive: true, force: true })
+  const probe = probeOf(base)
+  assert.equal(probe.commitOk, false)
+  assert.equal(fixtureVerdict(probe).state, 'shell')
+  const orca = probeOrcaCheckout(path.join(base, 'gui-diff-fixture'))
+  assert.equal(orca.commitOk, false)
+  assert.match(orcaCheckoutVerdict(orca).why, /commit 객체/)
+  fs.rmSync(base, { recursive: true, force: true })
+})
+
+// r1 R1-05 — 설정 닫기 실패의 전파. 소켓 없는 가짜 CDP handle(리뷰 재현과 같은 꼴): 설정이 끝까지 열려 있다.
+// 시간은 이 테스트 안에서만 빠르게 돌린다(Date.now·setTimeout 대체, finally 로 되돌림).
+async function withFastClock(fn) {
+  const originalNow = Date.now
+  const originalTimeout = globalThis.setTimeout
+  let time = 0
+  Date.now = () => (time += 6000)
+  globalThis.setTimeout = (callback) => { queueMicrotask(callback); return 0 }
+  try { return await fn() } finally { Date.now = originalNow; globalThis.setTimeout = originalTimeout }
+}
+const fakeHandle = ({ settingsOpen }) => {
+  const log = { escapes: 0 }
+  return {
+    log,
+    cdp: {
+      send: async (method, args) => { if (args?.key === 'Escape' && args.type === 'keyDown') log.escapes += 1; return {} },
+      evaluate: async (fn) => {
+        switch (fn.name) {
+          case 'observeSettingsPage': return settingsOpen() ? { open: true, section: 'shortcuts', activeNav: '단축키', focusInNav: true } : { open: false, section: null, activeNav: null, focusInNav: false }
+          case 'observeNewTabMenuPage': return { open: false }
+          case 'observePage': return { width: 280, repos: 0, cards: 0 }
+          default: return null
+        }
+      },
+    },
+  }
+}
+const sceneInput = ({ orca, corral }) => ({ orca, corral, orcaRepoId: 'synthetic', fixture: { root: '/tmp/l511-scene-fixture' }, base: { width: 1440, height: 900, sidebarWidth: { orca: 280, corral: 280 } } })
+
+test('R1-05 — Esc 3회 뒤에도 설정이 열려 있으면 resetScene 이 실패한다(옛 판은 resolve)', async () => {
+  const { resetScene } = await import('./lib/scene.mjs')
+  const orca = fakeHandle({ settingsOpen: () => true })
+  const corral = fakeHandle({ settingsOpen: () => false })
+  await withFastClock(async () => {
+    await assert.rejects(() => resetScene(sceneInput({ orca, corral })), /설정 닫힘/)
+  })
+  assert.equal(orca.log.escapes, 3)
+})
+
+test('R1-05 — 설정이 없어야 할 장면(scene {})에서 설정이 열려 있으면 applyScene 이 ok:false, 닫혀 있으면 ok:true(음성 대조)', async () => {
+  const { applyScene } = await import('./lib/scene.mjs')
+  await withFastClock(async () => {
+    const open = await applyScene({ ...sceneInput({ orca: fakeHandle({ settingsOpen: () => true }), corral: fakeHandle({ settingsOpen: () => false }) }), scene: {} })
+    assert.deepEqual([open.orcaOk, open.corralOk, open.ok], [false, true, false])
+    const closed = await applyScene({ ...sceneInput({ orca: fakeHandle({ settingsOpen: () => false }), corral: fakeHandle({ settingsOpen: () => false }) }), scene: {} })
+    assert.equal(closed.ok, true)
+  })
+})
+
+test('R1-05 — 닫기가 Esc 로 실제 닫히면 resetScene 이 통과한다(음성 대조)', async () => {
+  const { resetScene } = await import('./lib/scene.mjs')
+  let open = true
+  const orca = fakeHandle({ settingsOpen: () => open })
+  const send = orca.cdp.send
+  orca.cdp.send = async (method, args) => { if (args?.key === 'Escape') open = false; return send(method, args) }
+  await withFastClock(() => resetScene(sceneInput({ orca, corral: fakeHandle({ settingsOpen: () => false }) })))
+  assert.equal(orca.log.escapes, 1)
 })

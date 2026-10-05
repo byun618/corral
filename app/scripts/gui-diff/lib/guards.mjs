@@ -33,8 +33,12 @@ export function fixtureVerdict(probe) {
   if (!probe.gitDir) return { state: 'absent', why: '.git 없음 — 새로 만든다' }
   const missing = [
     probe.headOk ? null : 'HEAD 를 못 푼다(git rev-parse --verify HEAD 실패)',
+    // r1 R1-04 — ref 가 풀려도 객체가 없을 수 있다(/tmp 정리가 objects 만 비운 껍데기). commit 객체를 직접 읽는다.
+    probe.commitOk ? null : 'HEAD 의 commit 객체가 없다(git cat-file -e HEAD^{commit} 실패)',
     probe.worktrees === 2 ? null : `worktree ${probe.worktrees}개(2개여야 한다)`,
     probe.wtGitFile ? null : '-wt/.git 파일 없음',
+    // 두 번째 체크아웃도 실제로 쓸 수 있어야 한다 — `-wt/.git` 이 가리키는 gitdir 이 살아 있고 그 HEAD 의 commit 객체가 있다.
+    probe.wtCommitOk ? null : '-wt 체크아웃이 쓸 수 없다(-wt 에서 git cat-file -e HEAD^{commit} 실패)',
     probe.readme ? null : 'README.md 없음',
   ].filter(Boolean)
   return missing.length === 0 ? { state: 'ok', why: null } : { state: 'shell', why: `빈 껍데기 — ${missing.join(' · ')}` }
@@ -43,13 +47,17 @@ export function fixtureVerdict(probe) {
 export function probeFixture({ root, worktree }) {
   const gitDir = fs.existsSync(path.join(root, '.git'))
   if (!gitDir) return { gitDir }
-  const head = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' })
-  const list = spawnSync('git', ['-C', root, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })
+  const git = (cwd, args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' })
+  const head = git(root, ['rev-parse', '--verify', 'HEAD'])
+  const list = git(root, ['worktree', 'list', '--porcelain'])
+  const wtGitFile = fs.existsSync(path.join(worktree, '.git')) && fs.statSync(path.join(worktree, '.git')).isFile()
   return {
     gitDir,
     headOk: head.status === 0,
+    commitOk: git(root, ['cat-file', '-e', 'HEAD^{commit}']).status === 0,
     worktrees: list.status === 0 ? list.stdout.split('\n').filter((line) => line.startsWith('worktree ')).length : 0,
-    wtGitFile: fs.existsSync(path.join(worktree, '.git')) && fs.statSync(path.join(worktree, '.git')).isFile(),
+    wtGitFile,
+    wtCommitOk: wtGitFile && git(worktree, ['cat-file', '-e', 'HEAD^{commit}']).status === 0,
     readme: fs.existsSync(path.join(root, 'README.md')),
   }
 }
@@ -62,6 +70,7 @@ export function orcaCheckoutVerdict(probe, { wantTag = 'v1.4.198' } = {}) {
   if (!probe.exists) return { ok: false, why: `Orca 체크아웃이 없다(${probe.repo})` }
   const missing = [
     probe.statusOk ? null : `git status 실패 — 빈 껍데기거나 git 저장소가 아니다(${probe.statusError ?? '?'})`,
+    probe.commitOk ? null : 'HEAD 의 commit 객체가 없다(git cat-file -e HEAD^{commit} 실패)',
     probe.tag === wantTag ? null : `태그 ${probe.tag ?? '없음'} ≠ ${wantTag}`,
     probe.electronVite ? null : 'node_modules/.bin/electron-vite 없음(pnpm install 필요)',
     probe.runner ? null : 'config/scripts/run-electron-vite-dev.mjs 없음',
@@ -79,6 +88,7 @@ export function probeOrcaCheckout(repo) {
     exists: true,
     statusOk: status.status === 0,
     statusError: status.status === 0 ? null : (status.stderr || '').trim().slice(0, 160),
+    commitOk: spawnSync('git', ['-C', repo, 'cat-file', '-e', 'HEAD^{commit}'], { encoding: 'utf8' }).status === 0,
     tag: tag.status === 0 ? tag.stdout.trim() : null,
     electronVite: fs.existsSync(path.join(repo, 'node_modules/.bin/electron-vite')),
     runner: fs.existsSync(path.join(repo, 'config/scripts/run-electron-vite-dev.mjs')),

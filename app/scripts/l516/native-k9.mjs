@@ -360,6 +360,9 @@ try {
     return radios
   }
   const appearance = await openSettings('appearance')
+  // fix1 — run-1 의 「자세히」 캡처 실패(UnknownVizError): 카드가 창 아래라 rect 가 창 밖이었다(iso-k8 R038 과 같은 원인). 끌어올려 찍는다(판정 아님).
+  await evaluate({ fn: () => document.querySelector('[data-settings-collapsible="window-sidebar"]')?.scrollIntoView({ block: 'center' }) })
+  await pause(800)
   const e = { before: appearance.segments, shotDetailed: await shot({ name: 'e-window-sidebar-detailed', selector: '[data-settings-collapsible="window-sidebar"]' }) }
   await click('[data-settings-collapsible="window-sidebar"] [data-segment-value="compact"]')
   await pause(600)

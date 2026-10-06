@@ -1,6 +1,6 @@
 #!/bin/zsh
 # LIFE-527 fix1 F8 — 탭바 root 원점 분리(areas/tabbar.json origin)·분할 방향 검사 뒤 K7 a·b 묶음 전후 재측정.
-cd /Users/byun/repos/byun618/corral/.claude/worktrees/LIFE-527-titlebar-claude
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"  # worktree 루트 — 스크립트 위치 기준(fix2 H5)
 R=specs/LIFE-527-titlebar/raw/claude
 N=$HOME/.nvm/versions/node/v24.14.1/bin/node
 M=app/scripts/gui-diff/measure.mjs

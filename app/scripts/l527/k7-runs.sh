@@ -1,5 +1,5 @@
 #!/bin/zsh
-cd /Users/byun/repos/byun618/corral/.claude/worktrees/LIFE-527-titlebar-claude
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"  # worktree 루트 — 스크립트 위치 기준(fix2 H5)
 R=specs/LIFE-527-titlebar/raw/claude
 N=$HOME/.nvm/versions/node/v24.14.1/bin/node
 M=app/scripts/gui-diff/measure.mjs

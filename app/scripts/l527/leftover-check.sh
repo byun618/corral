@@ -8,6 +8,7 @@ echo "# ① orphan-check"; sh "$(dirname "$0")/orphan-check.sh" "$FX" || found=1
 echo "# ② 복구 세션 pid 생존"
 while read -r pid ppid cmd; do [ -n "$pid" ] || continue; if kill -0 "$pid" 2>/dev/null; then echo "ALIVE $pid $(ps -o command= -p "$pid" | cut -c1-120)"; found=1; else echo "gone $pid ($(echo "$cmd" | cut -c1-60))"; fi; done < "$RAWD/restored-agents.txt"
 echo "# ③ herdr default 서버"; ps -Ao pid=,ppid=,command= | grep -F "herdr --session default server" | grep -v grep && found=1 || echo "없음"
-echo "# ④ 이 빌드 Electron"; ps -Ao pid=,ppid=,command= | grep -F "LIFE-527-titlebar-claude/app/node_modules/electron" | grep -v grep && found=1 || echo "없음"
+TOP=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)  # fix2 H5 — worktree 경로를 스크립트 위치에서
+echo "# ④ 이 빌드 Electron"; ps -Ao pid=,ppid=,command= | grep -F "$TOP/app/node_modules/electron" | grep -v grep && found=1 || echo "없음"
 echo "# (참고) pgrep -fl 'claude --resume|grok --resume' — 사용자 다른 세션일 수 있다"; pgrep -fl 'claude --resume|grok --resume' || echo "없음"
 exit $found

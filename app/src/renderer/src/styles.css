@@ -133,7 +133,7 @@ button, input { font: inherit; letter-spacing: inherit; }
   font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--fg-faint);
 }
 
-/* --- SidebarBrandBar (§2) ------------------------------------------------------------------- */
+/* --- 사이드바 머리(SidebarHead) — 스타일은 아래 「LIFE-527」 창 크롬 블록 ---------------------------- */
 
 
 /* --- Search 줄 (LIFE-470 D28a) ------------------------------------------------------------------ */

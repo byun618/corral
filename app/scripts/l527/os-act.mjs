@@ -1,10 +1,11 @@
 // LIFE-527 K5·K1 — cliclick 동작을 안전 확인 뒤에만 보낸다(사용자 실제 마우스·키보드를 움직인다).
-//   1) 설치본 Orca pid 면 거절 2) 대상 pid 앞으로(activate) 3) CoreGraphics 창 목록에서 대상 창 번호·소유 pid 확인
+//   1) 창 목록(화면 밖 포함)만 읽어 대상 창의 소유 앱을 번들 경로로 판정(os-owner.mjs — 설치본 Orca·허용 밖 앱이면 activate 도 하기 전에 거절, fix2 H3)
+//   2) 대상 pid 앞으로(activate) 3) CoreGraphics 창 목록에서 대상 창 번호·소유 pid 확인
 //   4) 명령을 **명시적으로 파싱**한다(fix1 F2). 지원 형식 밖이면 cliclick 을 한 번도 부르지 않고 거절
 //   5) 모든 포인터 점(창 기준 `@x,y` · 화면 `x,y` · 상대 `+dx,-dy` · 현재 `.`)을 화면 좌표로 계산해
 //      대상 창 bounds 안 + 그 점의 맨 위 일반 창(layer 0)이 대상 창인지 **실행 전에 전부** 확인(창이 안 움직인다고 가정)
 //   6) 명령을 하나씩 보내고, 포인터 명령마다 창 목록을 다시 읽어 같은 확인을 한 번 더 한다(창을 끄는 drag 는 실제 bounds 로)
-//   확인이 하나라도 어긋나면 exit 3. 버튼을 누른 채 거절되면 마지막으로 확인된 점에서 놓는다(`du:`).
+//   확인이 하나라도 어긋나면 exit 3. 거절 전에 눌린 수식 키(`kd:`)·버튼을 모두 놓는다 — 버튼은 마지막으로 확인된 점에서(`du:`).
 // 실행: node os-act.mjs --pid <pid> --window <번호> --log <jsonl> --label <이름> [--window-drag] [--expect-frame x,y] -- <cliclick 명령…>
 //   --window-drag   버튼을 누른 채 움직이는 점이 실행 전 bounds 밖으로 나가도 된다 — 창이 커서를 따라온다는 뜻이다.
 //                   그 점은 「창이 그만큼 따라온」 예측 bounds 안이어야 하고, 보낸 뒤 창 목록을 다시 읽어 **실제로 따라왔는지**
@@ -13,8 +14,8 @@
 //   예: `m:@100,10` `dd:@300,10 w:60 m:+20,+15 du:+0,+0` `dc:@400,18` `kd:cmd t:= ku:cmd` `c:900,300`
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { ownerVerdict } from './os-owner.mjs'
 
-const FORBIDDEN_PIDS = new Set([25085]) // 설치본 Orca — 입력 금지
 const POINTER = new Set(['m', 'c', 'dc', 'tc', 'rc', 'dd', 'du', 'dm'])
 const KEY = new Set(['kd', 'ku', 'kp', 't'])
 const argv = process.argv.slice(2)
@@ -32,15 +33,20 @@ const cgwin = (...args) => execFileSync('/tmp/l527-cgwin', args, { encoding: 'ut
 const sleep = (ms) => execFileSync('/bin/sleep', [String(ms / 1000)])
 
 const record = { at: new Date().toISOString(), label, pid, windowNumber, commands, windowDrag, expectFrame, cliclickCalls: 0, steps: [] }
-const state = { held: false, cursor: null }
+const state = { held: false, cursor: null, keys: new Set() }
 const log = () => { if (logPath) fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`) }
 const fail = (reason) => {
   record.refused = reason
-  // 누른 채 거절되면 마지막으로 확인된 점(창 안)에서 놓는다 — 버튼을 쥔 채 두지 않는다.
+  // 거절 전에 눌린 것을 모두 놓는다 — 버튼은 마지막으로 확인된 점(창 안)에서, 수식 키는 `ku:`.
   if (state.held && state.cursor !== null) {
     execFileSync('/opt/homebrew/bin/cliclick', [`du:${screenArg(state.cursor)}`])
     record.cliclickCalls += 1
     record.releasedAt = state.cursor
+  }
+  if (state.keys.size > 0) {
+    execFileSync('/opt/homebrew/bin/cliclick', [`ku:${[...state.keys].join(',')}`])
+    record.cliclickCalls += 1
+    record.releasedKeys = [...state.keys]
   }
   log()
   console.error(`[os-act] 거절: ${reason}`)
@@ -96,18 +102,29 @@ function check(point, windows) {
   if (normal[0]?.number !== windowNumber) return `맨 앞 일반 창이 대상이 아니다 — ${normal[0]?.owner} #${normal[0]?.number}`
   const top = normal.find((w) => inside(point, w.bounds))
   if (top?.number !== windowNumber) return `점 ${point.x},${point.y} 의 맨 위 창이 대상이 아니다 — ${top?.owner}`
+  // 그 점의 소유 창의 앱도 번들 경로로 다시 본다(fix2 H3).
+  const owner = ownerVerdict(top)
+  if (owner !== null) return `점 ${point.x},${point.y} — ${owner}`
   return null
 }
 
-if (FORBIDDEN_PIDS.has(pid)) fail('설치본 Orca pid')
 const steps = commands.map(parse)
+// 활성화(앞으로 가져오기)도 입력이다 — 화면 밖 창까지 읽어 소유자를 먼저 판정한다.
+{
+  const all = JSON.parse(cgwin('list-all'))
+  const candidate = all.find((w) => w.number === windowNumber)
+  if (!candidate) fail('대상 창 번호가 목록에 없다')
+  if (candidate.pid !== pid) fail(`창 소유 pid 불일치 ${candidate.pid}`)
+  const owner = ownerVerdict(candidate)
+  if (owner !== null) fail(`소유자 가드: ${owner}`)
+  record.ownerBundle = candidate.bundle
+}
 cgwin('activate', String(pid))
 sleep(400)
 let windows = JSON.parse(cgwin('list'))
 const target = windows.find((w) => w.number === windowNumber)
 if (!target) fail('대상 창 번호가 목록에 없다')
 if (target.pid !== pid) fail(`창 소유 pid 불일치 ${target.pid}`)
-if (FORBIDDEN_PIDS.has(target.pid)) fail('설치본 Orca 창')
 record.bounds = target.bounds
 const normal0 = windows.filter((w) => w.layer === 0)
 const pointing = steps.some((step) => step.kind === 'pointer')
@@ -142,6 +159,9 @@ for (const step of steps) {
   if (step.kind === 'key') {
     execFileSync('/opt/homebrew/bin/cliclick', [step.command])
     record.cliclickCalls += 1
+    const [name, arg] = [step.command.slice(0, 2), step.command.slice(3)]
+    if (name === 'kd') for (const key of arg.split(',')) state.keys.add(key)
+    if (name === 'ku') for (const key of arg.split(',')) state.keys.delete(key)
     record.steps.push({ command: step.command })
     sleep(60)
     continue

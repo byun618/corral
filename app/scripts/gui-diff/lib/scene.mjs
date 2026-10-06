@@ -455,11 +455,33 @@ async function corralChord({ handle, code, key, shift }) {
   for (const type of ['rawKeyDown', 'keyUp']) await handle.cdp.send('Input.dispatchKeyEvent', { type, key, code, modifiers, windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0) })
 }
 
+/**
+ * LIFE-527 fix1 F8 — 두 영역의 탭 줄 위치로 분할 방향을 읽는다. 같은 y·다른 x = 'right'(좌우), 같은 x·다른 y = 'down'(상하).
+ * 줄이 2개가 아니거나 어느 쪽도 아니면 null — 「영역 2개」만으로 방향까지 맞았다고 읽지 않는다.
+ */
+export function splitDirectionOf(strips) {
+  if (!Array.isArray(strips) || strips.length !== 2) return null
+  const [a, b] = strips
+  const dx = Math.abs(a.x - b.x)
+  const dy = Math.abs(a.y - b.y)
+  if (dy <= 1 && dx > 1) return 'right'
+  if (dx <= 1 && dy > 1) return 'down'
+  return null
+}
+
+/** 장면이 요구한 영역 수·방향이 관측과 맞나. 분할 없는 장면은 영역 1개. */
+export function splitMatches({ split, chrome }) {
+  if (!split) return chrome.groups === 1
+  return chrome.groups === 2 && splitDirectionOf(chrome.strips) === split
+}
+
 async function setSplit({ handle, app, direction }) {
   const before = await observeChrome({ handle, app })
   const want = direction === null ? 1 : 2
   if (before.groups === null) return false
-  if (before.groups === want) return true
+  if (splitMatches({ split: direction, chrome: before })) return true
+  // 이미 2개인데 방향이 다르면 고치지 않고 실패로 둔다 — 장면 검사가 떨어진다.
+  if (before.groups === want) return false
   if (app === 'orca') {
     await handle.cdp.evaluate((direction) => {
       const s = window.__store.getState()
@@ -487,7 +509,7 @@ async function setSplit({ handle, app, direction }) {
     await corralChord({ handle, code: 'KeyD', key: 'd', shift: direction === 'down' })
   }
   try {
-    await until(async () => (await observeChrome({ handle, app })).groups === want, `${app} 영역 ${want}개`, 10_000)
+    await until(async () => splitMatches({ split: direction, chrome: await observeChrome({ handle, app }) }), `${app} 영역 ${want}개 ${direction ?? ''}`, 10_000)
     await pause(400)
     return true
   } catch {
@@ -653,7 +675,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     // LIFE-527 — 사이드바 숨김·영역 수. 숨김이 아닌 장면은 사이드바가 서 있어야 한다(앞 장면이 숨긴 채 끌려오지 않게).
     if (!seen.chrome) return false
     if (seen.chrome.sidebarShown !== !scene.sidebarHidden) return false
-    if (seen.chrome.groups !== (scene.split ? 2 : 1)) return false
+    if (!splitMatches({ split: scene.split, chrome: seen.chrome })) return false
     if (scene.longWorktree && !(seen.cards === 3 && seen.longTitle)) return false
     // sticky: 실제로 스크롤됐고(범위 안), 헤더가 스크롤러 윗변 ±1px 에 붙어 있다.
     if (scene.scroll && !(seen.scrollTop > 0 && seen.headerOffset !== null && Math.abs(seen.headerOffset) <= 1)) return false

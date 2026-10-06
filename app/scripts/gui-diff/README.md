@@ -73,6 +73,7 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
 ```jsonc
 {
   "root": { "orca": "<선택자>", "corral": "<선택자>" },
+  "origin": { "corral": "<root 안 선택자>" }, // 선택 — box 좌표 원점만 바꾼다(범위는 root 그대로). 없으면 root 가 원점 (LIFE-527 fix1)
   "units": [
     {
       "id": "repo-header-icon",

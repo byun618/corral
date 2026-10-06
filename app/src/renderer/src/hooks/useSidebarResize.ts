@@ -175,6 +175,8 @@ export function useSidebarResize(sidebarRef: React.RefObject<HTMLDivElement | nu
         overlay.style.zIndex = '2147483647'
         overlay.style.cursor = 'col-resize'
         overlay.style.background = 'transparent'
+        // LIFE-527 fix1 F9 — 위쪽 36px drag 띠 위에 깔리므로 no-drag. 아니면 머리 높이에서 끄는 동안 창이 끌린다(원본에는 없다).
+        overlay.style.setProperty('-webkit-app-region', 'no-drag')
         document.body.appendChild(overlay)
         overlayRef.current = overlay
       }

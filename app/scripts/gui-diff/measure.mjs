@@ -192,6 +192,7 @@ async function capture(app, handle, area, { outDir, tag }) {
   const byId = new Map(area.units.map((unit) => [unit.id, unit]))
   const spec = {
     root: area.root[app],
+    origin: area.origin?.[app] ?? null,
     units: area.units.map((unit) => ({
       id: unit.id,
       selector: unit[app],

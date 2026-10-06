@@ -1,13 +1,16 @@
 import fs from 'node:fs'
 const dir = 'measure'
-const runs = fs.readdirSync(dir).filter(n => /k7-(before|after)-[abc]-r[23]$/.test(n))
+// 인자 없음 = 구현 회차(a r3 · b·c r2). `f1` = fix1 재측정(a·b 만 — c 는 탭바가 없어 다시 재지 않았다).
+const suffix = process.argv[2] ?? null
+const runs = fs.readdirSync(dir).filter(n => /k7-(before|after)-[abc]-(r[23]|f1)$/.test(n))
 const pick = (side, set) => {
+  if (suffix !== null) return runs.find(n => n.endsWith(`k7-${side}-${set}-${suffix}`))
   const want = set === 'a' ? (side === 'before' ? 'k7-before-a-r3' : 'k7-after-a-r3') : `k7-${side}-${set}-r2`
   return runs.find(n => n.endsWith(want))
 }
 const fmt = v => typeof v === 'number' ? Math.round(v * 100) / 100 : v
 const rows = []
-for (const set of ['a', 'b', 'c']) {
+for (const set of suffix === null ? ['a', 'b', 'c'] : ['a', 'b']) {
   const b = pick('before', set), a = pick('after', set)
   for (const f of fs.readdirSync(`${dir}/${a}`).filter(n => n.endsWith('-diff.json'))) {
     const scene = f.replace('-diff.json', '')

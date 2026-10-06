@@ -17,7 +17,7 @@ import { closeTabsGated } from './close-tabs.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -86,7 +86,8 @@ import { previewGhosttyImport } from './ghostty/index.js'
 import { DEFAULT_SETTINGS, type SettingsWriteResult } from '../shared/terminal-settings.js'
 import { WorktreePoller, parsePollMs } from './worktree-watch.js'
 import { LineageFeed } from './orchestration-lineage.js'
-import { trafficLightPosition, type WindowChrome } from '../shared/window-chrome.js'
+import { trafficLightPosition } from '../shared/window-chrome.js'
+import { bindStartupZoomSync, pushWindowChrome as pushChrome, syncWindowZoom, windowChromeOf } from './window-zoom.js'
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 
@@ -1179,38 +1180,28 @@ function pasteDir(): string {
   return path.join(app.getPath('temp'), 'corral-paste')
 }
 
-/** LIFE-527 — 렌더러가 사이드바 머리를 그리는 데 필요한 창 상태. */
-function windowChromeOf(target: BrowserWindow): WindowChrome {
-  return { mac: process.platform === 'darwin', fullScreen: target.isFullScreen(), zoomFactor: target.webContents.getZoomFactor() }
+/** LIFE-527 — 창 크롬 동기화 입력(`window-zoom.ts`). darwin 만 hiddenInset 신호등이 있다. */
+function chromeTarget(target: BrowserWindow) {
+  return { target, mac: process.platform === 'darwin' }
 }
 
 function pushWindowChrome(): void {
-  if (window === null || window.isDestroyed()) return
-  window.webContents.send('corral:windowChrome', windowChromeOf(window))
-}
-
-/**
- * LIFE-527 D2 — 줌(View ▸ 확대/축소, Electron 기본 메뉴)이 바뀌면 신호등을 머리 띠의 세로 중심으로 다시 옮긴다
- * (Orca `syncTrafficLightPosition`). 줌 변화는 main 에 이벤트로 오지 않는다 — 렌더러가 resize 로 알아채 이 채널을 부르고,
- * 줌 값은 **main 이 자기 webContents 에서 읽는다**(렌더러가 보낸 숫자를 믿지 않는다).
- */
-function syncWindowZoom(): void {
-  if (window === null || window.isDestroyed()) return
-  if (process.platform === 'darwin') window.setWindowButtonPosition(trafficLightPosition(window.webContents.getZoomFactor()))
-  pushWindowChrome()
+  if (window !== null) pushChrome(chromeTarget(window))
 }
 
 function createWindow(): void {
   const size = windowSize()
+  // LIFE-527 D1 — macOS 는 Orca 198 `createMainWindow.ts:112-128` 그대로: 기본 타이틀바를 걷고(hiddenInset) 신호등을
+  // 사이드바 머리 36px 띠의 세로 중심에 둔다. 다른 플랫폼은 지금 그대로(기본 타이틀바).
+  const macChrome: BrowserWindowConstructorOptions =
+    process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: trafficLightPosition(1) } : {}
   window = new BrowserWindow({
     width: size.width,
     height: size.height,
     show: false,
     backgroundColor: '#12141a',
     title: 'corral',
-    // LIFE-527 D1 — macOS 는 Orca 198 `createMainWindow.ts:112-128` 그대로: 기본 타이틀바를 걷고(hiddenInset) 신호등을
-    // 사이드바 머리 36px 띠의 세로 중심에 둔다. 다른 플랫폼은 지금 그대로(기본 타이틀바).
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: trafficLightPosition(1) } : {}),
+    ...macChrome,
     webPreferences: {
       preload: path.join(here, '../preload/index.cjs'),
       // 셋 다 명시한다. 현행 기본값이지만 보안 자세는 기본값에 기대지 않는다 (분석 §5 U2).
@@ -1225,6 +1216,7 @@ function createWindow(): void {
   // LIFE-527 D3 — 전체화면이면 신호등이 창 위에 없다. 렌더러가 신호등 여백을 걷도록 상태를 민다.
   window.on('enter-full-screen', pushWindowChrome)
   window.on('leave-full-screen', pushWindowChrome)
+  bindStartupZoomSync(chromeTarget(window))
   // 렌더러 콘솔을 main 로그로 끌어온다 — 계측 실행에서만(진단 켜짐). 렌더러 예외가
   // 조용히 사라지지 않게 한다 (R2 하네스 디버깅에서 필요했다).
   if (!app.isPackaged || process.env.CORRAL_CONTROL_SOCKET !== undefined) {
@@ -1354,9 +1346,9 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle('corral:getState', (event) => (fromOurWindow(event) ? currentState() : null))
-  ipcMain.handle('corral:getWindowChrome', (event) => (fromOurWindow(event) && window !== null ? windowChromeOf(window) : null))
+  ipcMain.handle('corral:getWindowChrome', (event) => (fromOurWindow(event) && window !== null ? windowChromeOf(chromeTarget(window)) : null))
   ipcMain.on('corral:syncWindowZoom', (event) => {
-    if (fromOurWindow(event)) syncWindowZoom()
+    if (fromOurWindow(event) && window !== null) syncWindowZoom(chromeTarget(window))
   })
   // 새로고침 버튼 (LIFE-445 S4) — 캐시가 아니라 git 을 **다시 읽은** 골격을 돌려준다. 이 회차가 더 새 회차에 밀려(tree.stale)
   // 버려져도 currentState 는 그 시점 가장 새 골격이고, 더 새 회차는 끝날 때 따로 민다.

@@ -4,6 +4,10 @@
     "orca": "[data-native-file-drop-target=\"editor\"]",
     "corral": "[data-main-tabbar]"
   },
+  "origin": {
+    "corral": ":scope > :not([data-collapsed-head-spacer])"
+  },
+  "originWhy": "LIFE-527 fix1 F8 — Orca root(tab-bar-surface, chevron·스트립·+)는 접힘 spacer **뒤**에서 시작하고 corral root(탭바 줄)는 spacer 를 품는다. 범위는 줄 그대로 두고(local 단위 tab-add·chevron·group-actions 가 줄 안에 있다) 좌표 원점만 Orca root 와 같은 계층 = 줄의 첫 비-spacer 자식(chevron 또는 스트립 래퍼)으로 맞춘다.",
   "units": [
     {
       "id": "tabbar-shell",

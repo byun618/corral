@@ -1066,7 +1066,7 @@ async function withFastClock(fn) {
   globalThis.setTimeout = (callback) => { Promise.resolve().then(callback); return 0 }
   try { return await fn() } finally { Date.now = originalNow; globalThis.setTimeout = originalTimeout }
 }
-const fakeHandle = ({ settingsOpen }) => {
+const fakeHandle = ({ settingsOpen, strips = [{ x: 281, y: 4 }] }) => {
   const log = { escapes: 0 }
   return {
     log,
@@ -1078,8 +1078,8 @@ const fakeHandle = ({ settingsOpen }) => {
           case 'observeNewTabMenuPage': return { open: false }
           case 'observePage': return { width: 280, repos: 0, cards: 0 }
           // LIFE-527 — 창 크롬 장면 축(사이드바 펼침 · 영역 1개)
-          case 'observeChromePage': return { sidebarRoot: true, strips: [{ x: 281, y: 4 }] }
-          case 'observeOrcaChromeStore': return { sidebarOpen: true, groups: 1 }
+          case 'observeChromePage': return { sidebarRoot: true, strips }
+          case 'observeOrcaChromeStore': return { sidebarOpen: true, groups: strips.length }
           default: return null
         }
       },
@@ -1116,4 +1116,28 @@ test('R1-05 — 닫기가 Esc 로 실제 닫히면 resetScene 이 통과한다(�
   orca.cdp.send = async (method, args) => { if (args?.key === 'Escape') open = false; return send(method, args) }
   await withFastClock(() => resetScene(sceneInput({ orca, corral: fakeHandle({ settingsOpen: () => false }) })))
   assert.equal(orca.log.escapes, 1)
+})
+
+// LIFE-527 fix1 F8 — 분할 장면은 영역 수만이 아니라 방향(좌우 ↔ 상하)까지 맞아야 한다.
+test('F8 splitDirectionOf — 같은 y·다른 x = right, 같은 x·다른 y = down, 그 밖 null', async () => {
+  const { splitDirectionOf } = await import('./lib/scene.mjs')
+  assert.equal(splitDirectionOf([{ x: 1, y: 0 }, { x: 721, y: 0 }]), 'right')
+  assert.equal(splitDirectionOf([{ x: 1, y: 0 }, { x: 1, y: 443 }]), 'down')
+  assert.equal(splitDirectionOf([{ x: 1, y: 0 }]), null)
+  assert.equal(splitDirectionOf([{ x: 1, y: 0 }, { x: 721, y: 443 }]), null)
+  assert.equal(splitDirectionOf(null), null)
+})
+
+test('F8 음성 대조 — split right 장면에 상하로 나뉜 2영역이 있으면 applyScene 이 ok:false, 좌우면 ok:true', async () => {
+  const { applyScene } = await import('./lib/scene.mjs')
+  const down = [{ x: 281, y: 0 }, { x: 281, y: 443 }]
+  const right = [{ x: 281, y: 0 }, { x: 861, y: 0 }]
+  await withFastClock(async () => {
+    const wrong = await applyScene({ ...sceneInput({ orca: fakeHandle({ settingsOpen: () => false, strips: right }), corral: fakeHandle({ settingsOpen: () => false, strips: down }) }), scene: { split: 'right' } })
+    assert.deepEqual([wrong.orcaOk, wrong.corralOk, wrong.ok], [true, false, false])
+    const good = await applyScene({ ...sceneInput({ orca: fakeHandle({ settingsOpen: () => false, strips: right }), corral: fakeHandle({ settingsOpen: () => false, strips: right }) }), scene: { split: 'right' } })
+    assert.equal(good.ok, true)
+    const wrongDown = await applyScene({ ...sceneInput({ orca: fakeHandle({ settingsOpen: () => false, strips: down }), corral: fakeHandle({ settingsOpen: () => false, strips: right }) }), scene: { split: 'down' } })
+    assert.deepEqual([wrongDown.orcaOk, wrongDown.corralOk], [true, false])
+  })
 })

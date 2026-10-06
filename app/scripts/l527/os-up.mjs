@@ -4,6 +4,8 @@
 // 상태(포트·소유 pid)는 <work>/os-state.json. 끄기는 이 프로세스에 SIGTERM — 띄운 것만 끈다.
 //
 // 실행: node app/scripts/l527/os-up.mjs --work /tmp/l527os --out <원자료 폴더> [--corral-app <다른 빌드의 app 폴더>] [--no-orca]
+//   [--keep-profile] — 격리 corral userData·herdr 를 지우지 않고 다시 띄운다(fix1 F1 — 격리 프로필에 남은 줌으로 재시작).
+//   [--keybindings-file <파일>] — 음성 대조 전용(기본 ~/.orca/keybindings.json). 끌 때 F18 이 false 거나 못 쟀으면 exit 1(fix1 F3).
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +18,7 @@ import { fileFingerprint, keybindingsLeakVerdict, probe504 } from '../gui-diff/l
 const here = path.dirname(fileURLToPath(import.meta.url))
 const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : fallback }
 const withOrca = !process.argv.includes('--no-orca')
+const keepProfile = process.argv.includes('--keep-profile')
 const appRoot = path.resolve(arg('--corral-app', null) ?? path.resolve(here, '../..'))
 const outDir = path.resolve(arg('--out', ''))
 const work = arg('--work', '/tmp/l527os')
@@ -26,7 +29,7 @@ const log = (...parts) => console.log('[l527 os-up]', ...parts)
 const guard = probe504({ work })
 fs.writeFileSync(path.join(outDir, 'guard-504.json'), `${JSON.stringify(guard, null, 2)}\n`)
 if (!guard.pass) { log("504 가드 걸림 — 띄우지 않는다", JSON.stringify(guard.hits)); process.exit(1) }
-const keybindingsFile = path.join(process.env.HOME, '.orca/keybindings.json')
+const keybindingsFile = arg('--keybindings-file', null) ?? path.join(process.env.HOME, '.orca/keybindings.json')
 const f18Before = fileFingerprint(keybindingsFile)
 
 const owned = []
@@ -38,15 +41,22 @@ async function shutdown(code) {
     try { process.kill(entry.group ? -entry.pid : entry.pid, 'SIGTERM') } catch { /* 이미 없다 */ }
   }
   await pause(2000)
-  const f18 = keybindingsLeakVerdict({ before: f18Before, after: fileFingerprint(keybindingsFile) })
-  fs.writeFileSync(path.join(outDir, 'os-shutdown.json'), `${JSON.stringify({ at: new Date().toISOString(), owned, f18 }, null, 2)}\n`)
+  let f18
+  try {
+    f18 = keybindingsLeakVerdict({ before: f18Before, after: fileFingerprint(keybindingsFile) })
+  } catch (error) {
+    f18 = { pass: false, why: `F18 수집 실패 ${String(error)}` }
+  }
+  const exitCode = code !== 0 ? code : f18.pass === true ? 0 : 1
+  fs.writeFileSync(path.join(outDir, 'os-shutdown.json'), `${JSON.stringify({ at: new Date().toISOString(), owned, f18, exitCode }, null, 2)}\n`)
   fs.rmSync(stateFile, { force: true })
-  log('끝', code)
-  process.exit(code)
+  if (f18.pass !== true) log('F18 실패:', f18.why)
+  log('끝', exitCode)
+  process.exit(exitCode)
 }
 
 try {
-  for (const name of ['orca-dev-userdata', 'corral-userdata', 'corral-herdr']) fs.rmSync(path.join(work, name), { recursive: true, force: true })
+  if (!keepProfile) for (const name of ['orca-dev-userdata', 'corral-userdata', 'corral-herdr']) fs.rmSync(path.join(work, name), { recursive: true, force: true })
   const fixture = ensureFixtureRepo(work)
   if (withOrca) {
     const orca = await launchOrca({ repoRoot: '/tmp/l443/orca-198', workDir: work, port: 9444, logPath: path.join(outDir, 'orca-dev.log'), onSpawn: own })

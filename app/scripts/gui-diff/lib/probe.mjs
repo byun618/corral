@@ -153,8 +153,16 @@ export function collectSnapshot(spec) {
   }
   if (!rootEl) return { meta, error: `root selector not found: ${spec.root}`, elements: {} }
 
-  const rootRect = rootEl.getBoundingClientRect()
-  meta.rootBox = { w: round(rootRect.width), h: round(rootRect.height) }
+  // **좌표 원점은 root 와 따로 줄 수 있다**(LIFE-527 fix1 F8). root 는 local 단위의 범위이고, origin 은 box x·y 의 기준이다 —
+  // 두 앱의 root 계층이 어긋날 때(Orca 탭바 표면은 접힘 spacer 뒤에서 시작, corral 탭바 줄은 spacer 를 품는다) 범위는 그대로 두고
+  // 원점만 같은 계층의 요소로 맞춘다. origin 은 root 안에서 찾는다. 선언했는데 못 찾으면 멈춘다 — root 원점으로 조용히 물러서지 않는다.
+  const originEl = typeof spec.origin === 'string' ? rootEl.querySelector(spec.origin) : rootEl
+  meta.origin = typeof spec.origin === 'string' ? spec.origin : null
+  if (!originEl) return { meta, error: `origin selector not found in root: ${spec.origin}`, elements: {} }
+  const originRect = originEl.getBoundingClientRect()
+  const scopeRect = rootEl.getBoundingClientRect()
+  meta.rootBox = { w: round(scopeRect.width), h: round(scopeRect.height) }
+  if (originEl !== rootEl) meta.originOffset = { x: round(originRect.left - scopeRect.left), y: round(originRect.top - scopeRect.top) }
 
   const elements = {}
   // 부모당 자식 상한도 이 값이다 — `diff.mjs` `MAX_CHILDREN` 과 같아야 한다(페이지 안에서 도는 함수라 가져올 수 없다).
@@ -181,8 +189,8 @@ export function collectSnapshot(spec) {
     }
     return {
       box: {
-        x: round(rect.left - rootRect.left),
-        y: round(rect.top - rootRect.top),
+        x: round(rect.left - originRect.left),
+        y: round(rect.top - originRect.top),
         w: round(rect.width),
         h: round(rect.height)
       },

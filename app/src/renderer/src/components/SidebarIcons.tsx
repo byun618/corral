@@ -261,6 +261,29 @@ export function SettingsGearIcon({ className }: { className?: string }): React.J
   )
 }
 
+/** lucide `CircleHelp`(0.577.0 = `circle-question-mark` 경로) — 하단 바 도움말(198 `SidebarSettingsHelpMenu.tsx:239`). LIFE-526 이 더했다(위 고지 그대로). */
+export function CircleHelpIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </svg>
+  )
+}
+
+/** lucide `RefreshCw` — 하단 바 ↻ worktree 재조회(corral 고유, 아이콘은 198 「업데이트 확인」 `SidebarSettingsHelpMenu.tsx:339`). LIFE-526 이 더했다(위 고지 그대로). */
+export function RefreshCwIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+      <path d="M8 16H3v5" />
+    </svg>
+  )
+}
+
 /** lucide `PanelLeft` — 설정 › 외관 「창 및 사이드바」 카드(198 `AppearancePane.tsx:264`). LIFE-516 가 더했다(위 고지 그대로). */
 export function PanelLeftIcon({ className }: { className?: string }): React.JSX.Element {
   return (

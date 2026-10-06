@@ -486,6 +486,25 @@ const STATE_TARGETS = {
     scene: { hover: 'row' },
     detail: '포커스 안 된 둘째 탭의 에이전트 행 위에 실제 마우스 — 행 hover 칠(K6ⓒ). 포커스 pane 행은 선택 칠이라 hover 가 안 보여서 빈 첫 탭 뒤에 둔다'
   },
+  // ---- LIFE-526 K1ⓒ — 하단 바 버튼 hover. 두 앱 다 버튼 가운데에 **실제 마우스**(CDP mouseMoved) — 같은 방식으로 computed 칠을 잰다 ----
+  'footer-hover-settings': {
+    tabCount: 1,
+    agents: [],
+    scene: { hover: 'footer-settings' },
+    detail: '하단 바 ⚙ 위에 실제 마우스 — ghost icon-xs hover 칠(LIFE-526 K1ⓒ)'
+  },
+  'footer-hover-help': {
+    tabCount: 1,
+    agents: [],
+    scene: { hover: 'footer-help' },
+    detail: '하단 바 ? 위에 실제 마우스 — ghost icon-xs hover 칠(LIFE-526 K1ⓒ)'
+  },
+  'footer-hover-reveal': {
+    tabCount: 1,
+    agents: [],
+    scene: { hover: 'footer-reveal' },
+    detail: '하단 바 ⌖ 위에 실제 마우스 — ghost icon-xs hover 칠(LIFE-526 K1ⓒ)'
+  },
   'repo-collapsed': {
     tabCount: 1,
     agents: [],
@@ -919,6 +938,11 @@ async function main() {
       // 두 창에 같은 위치를 준다(짝 비교 조건 동일). Electron 은 Browser.setWindowBounds 가 없어 렌더러의 window.moveTo 를 쓴다.
       const target = args.windowOrigin
       const moveTo = (handle) => handle.cdp.evaluate((point) => { window.moveTo(point.x, point.y); return { screenX: window.screenX, screenY: window.screenY } }, target)
+      // LIFE-526 — Orca dev 는 화면 가득(최대화)으로 뜬다. 그대로면 moveTo 가 먹지 않고, 화면 어디에 사람 커서가 있든 그 창 위라
+      // 캡처 뒤 hover 재계산이 hover 장면을 지운다(after-526-try3 자기 diff 잡음 orca 2건). 먼저 corral 창과 같은 바깥 크기로 줄인다.
+      const corralOuter = await corral.cdp.evaluate(() => ({ w: window.outerWidth, h: window.outerHeight }))
+      await orca.cdp.evaluate((size) => window.resizeTo(size.w, size.h), corralOuter)
+      await pause(400)
       await moveTo(orca)
       await moveTo(corral)
       await pause(400)

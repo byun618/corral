@@ -702,14 +702,21 @@ button, input { font: inherit; letter-spacing: inherit; }
 
 /* --- SidebarFooterToolbar (§2) ------------------------------------------------------------------ */
 
+/* LIFE-526 — 198 `SidebarToolbar.tsx` 안쪽 줄 `flex items-center justify-between border-t px-2 py-1.5`(높이 = 1 + 6 + 24 + 6), 양쪽 묶음 `gap-1`. */
 .sidebar-footer {
-  flex: 0 0 auto; border-top: 1px solid var(--line-weak);
-  display: flex; align-items: center; gap: 12px; height: var(--h-footer-toolbar); padding: 0 12px;
+  flex: 0 0 auto; box-sizing: border-box; height: var(--h-footer-toolbar); border: 0 solid var(--line-weak); border-top-width: 1px;
+  display: flex; align-items: center; justify-content: space-between; padding: 6px 8px;
 }
-.sidebar-footer-glyph { background: none; border: 0 solid; padding: 0; margin: 0; font-size: 16px; color: var(--fg-muted); cursor: default; }
-.sidebar-footer-btn { cursor: pointer; }
-.sidebar-footer-btn:hover, .sidebar-footer-glyph:hover { color: var(--fg); }
-.sidebar-footer-spacer { flex: 1; }
+.sidebar-footer-group { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* 198 `Button variant="ghost" size="icon-xs" className="text-muted-foreground"` — 24px 정사각, 아이콘 size-3.5. 값은 측정(raw/claude). */
+.sidebar-footer-btn {
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 8px;
+  width: 24px; height: 24px; padding: 0; margin: 0; border: 0 solid; border-radius: 8px;
+  background: none; color: var(--fg-muted); cursor: pointer;
+}
+.sidebar-footer-btn:hover { color: var(--fg); background: color-mix(in srgb, var(--bg-accent) 50%, transparent); }
+.sidebar-footer-btn:focus-visible { outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.sidebar-footer-icon { display: block; flex-shrink: 0; width: 14px; height: 14px; pointer-events: none; }
 
 /* --- MainTabBar — 영역마다 탭 줄 하나. 탭 1개여도 존재한다(C5′) ------------------------------------------
    LIFE-493 T1: 탭 모양·선두·닫기 = Orca 1.4.198 (`SortableTab.tsx` · `drop-indicator.ts` · `tab-width-rules.ts` ·
@@ -1330,10 +1337,6 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 .delete-blocked { padding: 0; }
 .field-textarea { height: auto; padding: 6px 9px; resize: vertical; font-family: inherit; line-height: 1.5; }
 .reveal-confirm-icon { width: 14px; height: 14px; vertical-align: -2px; }
-
-/* 하단 바 Reveal 단추 — 198 Crosshair. */
-.sidebar-footer-icon-btn { display: inline-flex; align-items: center; }
-.sidebar-footer-icon { width: 15px; height: 15px; }
 
 /* LIFE-478 K5ⓕ — 목록 스크롤 앵커링 끔(198 `VirtualizedWorktreeViewport.tsx:32-35` 와 같은 값). 고정 구획이 맨 위에 있으면 붙은 레포
    헤더에 다른 레포를 놓는 순간 Chromium 앵커링이 옮겨진 묶음을 따라가 목록을 맨 위로 튕겼다(469 끌기 회귀 K1a-sticky-head-upper,

@@ -106,7 +106,7 @@
      높이는 LIFE-357 C9(b) 의 `--h-session-row`(21px) 로 돌아온다 — B1 이 그 통과선을 대체한
      사유가 없어졌다 (사유는 `components/SessionRow.tsx` 주석). */
   --h-group-row: 22px;
-  --h-footer-toolbar: 30px;
+  --h-footer-toolbar: 37px;   /* LIFE-526 — 198 하단 바 줄(border-t 1 + py-1.5 6 + icon-xs 24 + 6) */
   /* 들여쓰기 3단 (11-gate1-fix3.md I-4) — **레포 < worktree < 세션** 으로 단조 증가한다.
      전에는 레포 이름 33px > worktree 이름 29px 로 위계가 거꾸로였다. 두 토큰은 worktree 블록의
      **안쪽 내용**에만 걸린다 — 바깥 margin 을 밀면 선택 카드 경계가 같이 밀려 H-3 이 흔들린다.

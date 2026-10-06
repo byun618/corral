@@ -461,15 +461,120 @@
     },
     {
       "id": "sidebar-footer",
-      "note": "하단 도구 줄",
-      "orca": ".mt-auto.shrink-0",
+      "note": "하단 도구 줄 — Orca `SidebarToolbar` 안쪽 줄 `div.flex.justify-between.border-t.px-2.py-1.5` ↔ corral `[data-sidebar-footer]`",
+      "orca": ".mt-auto.shrink-0 > div",
       "corral": "[data-sidebar-footer]",
       "props": [
         "box",
         "paint"
       ],
       "classify": "해소 대상",
-      "classifyWhy": "하단 도구 줄은 448 범위"
+      "classifyWhy": "LIFE-526 D4. LIFE-526 이 Orca 선택자를 바깥 래퍼 `.mt-auto.shrink-0`(display block·padding 0·테두리 없음)에서 안쪽 줄로 고쳤다 — 옛 선택자는 다른 층을 비교했다(00-analysis F9). id 의 뜻(하단 도구 줄)은 그대로라 새 id 를 만들지 않았다"
+    },
+    {
+      "id": "sidebar-footer-group-left",
+      "note": "하단 바 왼쪽 묶음 (⚙·?) — Orca `div.flex.min-w-0.items-center.gap-1`",
+      "orca": ".mt-auto.shrink-0 > div > div:first-child",
+      "corral": "[data-sidebar-footer] > .sidebar-footer-group:first-child",
+      "props": [
+        "box"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 D4 — 묶음 안 간격 gap-1"
+    },
+    {
+      "id": "sidebar-footer-group-right",
+      "note": "하단 바 오른쪽 묶음 — Orca `div.flex.items-center.gap-1`(Reveal·Kanban) ↔ corral (Reveal·↻)",
+      "orca": ".mt-auto.shrink-0 > div > div:last-child",
+      "corral": "[data-sidebar-footer] > .sidebar-footer-group:last-child",
+      "props": [
+        "box"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 D4 — 묶음 안 간격 gap-1. 둘째 칸은 Orca Kanban(C20) ↔ corral ↻(D3) — 칸 크기는 같다"
+    },
+    {
+      "id": "sidebar-footer-settings",
+      "note": "하단 바 ⚙ 설정 버튼 — 구조 경로(왼쪽 묶음 첫 버튼) ↔ `[data-settings-open]`",
+      "orca": ".mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(1)",
+      "corral": "[data-settings-open]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5`"
+    },
+    {
+      "id": "sidebar-footer-settings-icon",
+      "note": "⚙ 아이콘 — lucide `Settings` svg",
+      "orca": ".mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(1) > svg",
+      "corral": "[data-settings-open] > svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5`"
+    },
+    {
+      "id": "sidebar-footer-help",
+      "note": "하단 바 ? 도움말 버튼 — 구조 경로(왼쪽 묶음 둘째 버튼) ↔ `[data-help-menu-toggle]`",
+      "orca": ".mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(2)",
+      "corral": "[data-help-menu-toggle]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5`"
+    },
+    {
+      "id": "sidebar-footer-help-icon",
+      "note": "? 아이콘 — lucide `CircleHelp` svg",
+      "orca": ".mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(2) > svg",
+      "corral": "[data-help-menu-toggle] > svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5`"
+    },
+    {
+      "id": "sidebar-footer-reveal",
+      "note": "하단 바 ⌖ Reveal 버튼 — 구조 경로(오른쪽 묶음 첫 버튼) ↔ `[data-reveal-active]`",
+      "orca": ".mt-auto.shrink-0 > div > div:last-child > button:first-child",
+      "corral": "[data-reveal-active]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5` (D2). 두 앱 다 오른쪽 묶음 첫 칸"
+    },
+    {
+      "id": "sidebar-footer-reveal-icon",
+      "note": "⌖ 아이콘 — lucide `Crosshair` svg",
+      "orca": ".mt-auto.shrink-0 > div > div:last-child > button:first-child > svg",
+      "corral": "[data-reveal-active] > svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-526 K1·K2 — 198 `Button variant=\"ghost\" size=\"icon-xs\"` + lucide `size-3.5` (D2)"
+    },
+    {
+      "id": "sidebar-footer-refresh",
+      "note": "하단 바 ↻ worktree 재조회 버튼 — corral 고유(Orca 짝 없음)",
+      "corral": "[data-refresh-tree]",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "의도적 — corral 고유(LIFE-526 D3). 모양은 같은 줄 버튼과 같은 박스(lucide `RefreshCw`)"
     },
     {
       "id": "sidebar-empty",

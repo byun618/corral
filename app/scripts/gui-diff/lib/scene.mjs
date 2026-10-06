@@ -26,7 +26,13 @@ export const SCENE_SELECTORS = {
     repoHeader: '[data-repo-header-id]',
     repo: '[data-repo-header-id]',
     resizer: '[data-sidebar-resize-handle]',
-    empty: '[data-worktree-sidebar-container] div.items-center.text-center'
+    empty: '[data-worktree-sidebar-container] div.items-center.text-center',
+    // LIFE-526 — 하단 바 버튼(areas/sidebar.json 의 sidebar-footer-* 단위와 같은 짝, 구조 경로)
+    footer: {
+      settings: '.mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(1)',
+      help: '.mt-auto.shrink-0 > div > div:first-child > div > button:nth-child(2)',
+      reveal: '.mt-auto.shrink-0 > div > div:last-child > button:first-child'
+    }
   },
   corral: {
     root: '[data-sidebar]',
@@ -36,9 +42,13 @@ export const SCENE_SELECTORS = {
     repoHeader: '[data-repo-toggle]',
     repo: '[data-repo]',
     resizer: '[data-sidebar-resizer]',
-    empty: '[data-empty]'
+    empty: '[data-empty]',
+    footer: { settings: '[data-settings-open]', help: '[data-help-menu-toggle]', reveal: '[data-reveal-active]' }
   }
 }
+
+/** LIFE-526 — `scene.hover` 의 하단 바 값 → `footer` 선택자 키. */
+const FOOTER_HOVER = { 'footer-settings': 'settings', 'footer-help': 'help', 'footer-reveal': 'reveal' }
 
 /** 탭 스트립 — 측정 영역 정의(`areas/tabbar.json` `tab-strip`)와 같은 짝. corral 은 영역마다 하나라 첫 것(영역 1개). */
 export const TAB_STRIP_SELECTORS = { orca: '.terminal-tab-strip', corral: '[data-main-tab-strip]' }
@@ -147,6 +157,7 @@ function observePage(sel) {
     headerOffset: scrollerRect && headerRect ? Math.round((headerRect.top - scrollerRect.top) * 100) / 100 : null,
     hoveredCard: hovered ? (hovered.closest(sel.card) ? [...document.querySelectorAll(sel.card)].indexOf(hovered.closest(sel.card)) : -1) : null,
     hoveredRow: hovered ? (hovered.closest(sel.agentRow) ? 0 : -1) : null,
+    hoveredFooter: hovered ? (Object.entries(sel.footer).find(([, selector]) => hovered.closest(selector))?.[0] ?? null) : null,
     longTitle: [...document.querySelectorAll(sel.card)].some((el) => (el.textContent ?? '').includes('deliberately-long-worktree'))
   }
 }
@@ -487,7 +498,7 @@ export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
 
 /**
  * 장면을 건다. `scene` 키:
- *   hover: 'card'(둘째 카드 — 비선택) | 'row'(첫 에이전트 행) · collapsed · longWorktree ·
+ *   hover: 'card'(둘째 카드 — 비선택) | 'row'(첫 에이전트 행) | 'footer-settings'·'footer-help'·'footer-reveal'(LIFE-526 하단 바 버튼) · collapsed · longWorktree ·
  *   viewportHeight + scroll(sticky) · width(px) · empty · tabStripEnd / tabStripStart(LIFE-494 — 탭 스트립을 휠로 끝·맨 앞까지)
  * 돌려주는 값: `{ requested, orca, corral, ok }` — 관측은 두 앱에서 같은 함수로 읽는다.
  */
@@ -522,7 +533,12 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.settingsOpen) await openSettings({ handle, app, section: settingsSectionOf(scene.settingsOpen) })
     if (scene.hover) {
       const sel = SCENE_SELECTORS[app]
-      const point = scene.hover === 'card' ? await centerOf({ handle, selector: sel.card, index: 1 }) : await centerOf({ handle, selector: sel.agentRow, index: 0 })
+      const footerKey = FOOTER_HOVER[scene.hover]
+      const point = footerKey
+        ? await centerOf({ handle, selector: sel.footer[footerKey], index: 0 })
+        : scene.hover === 'card'
+          ? await centerOf({ handle, selector: sel.card, index: 1 })
+          : await centerOf({ handle, selector: sel.agentRow, index: 0 })
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
@@ -532,6 +548,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (!seen) return false
     if (scene.hover === 'card' && seen.hoveredCard !== 1) return false
     if (scene.hover === 'row' && seen.hoveredRow !== 0) return false
+    if (FOOTER_HOVER[scene.hover] && seen.hoveredFooter !== FOOTER_HOVER[scene.hover]) return false
     if (scene.collapsed && !isCollapsed(seen)) return false
     if (scene.longWorktree && !(seen.cards === 3 && seen.longTitle)) return false
     // sticky: 실제로 스크롤됐고(범위 안), 헤더가 스크롤러 윗변 ±1px 에 붙어 있다.
@@ -576,5 +593,5 @@ export function describeScene(seen) {
   const menu = seen.newTabMenu ? ` · + 메뉴 ${seen.newTabMenu.open ? '열림' : '닫힘'} 입력포커스 ${seen.newTabMenu.inputFocused} 질의 "${seen.newTabMenu.value ?? ''}" 결과 ${seen.newTabMenu.results} 항목 ${seen.newTabMenu.items}` : ''
   const themeBg = seen.terminalBg ? ` · 터미널 배경 ${seen.terminalBg}` : ''
   const settings = seen.settings ? ` · 설정 ${seen.settings.open ? '열림' : '닫힘'} 섹션 ${seen.settings.section} 활성 「${seen.settings.activeNav}」 포커스 내비 ${seen.settings.focusInNav}${seen.settings.terminalCardOpen === null ? '' : ` 터미널 카드 ${seen.settings.terminalCardOpen ? '펼침' : '접힘'}`}` : ''
-  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} · 빈목록 ${seen.empty}${strip}${menu}${settings}${themeBg}`
+  return `폭 ${seen.width} · 레포 ${seen.repos} · 카드 ${seen.cards} · 긴이름 ${seen.longTitle} · 스크롤 ${seen.scrollTop}/${seen.scrollRange} · 헤더 오프셋 ${seen.headerOffset} · hover 카드#${seen.hoveredCard} 행#${seen.hoveredRow} 하단 ${seen.hoveredFooter} · 빈목록 ${seen.empty}${strip}${menu}${settings}${themeBg}`
 }

@@ -4,9 +4,9 @@ import json, sys, os
 from collections import Counter
 before, after, state = sys.argv[1], sys.argv[2], sys.argv[3]
 units_dir = sys.argv[4] if len(sys.argv) > 4 else None
-load = lambda d, n: json.load(open(os.path.join(d, n), encoding='utf8'))
+load = lambda path: json.load(open(path, encoding='utf8'))
 def rows(d):
-    diff = load(d, f'sidebar-{state}-diff.json')
+    diff = load(os.path.join(d, f'sidebar-{state}-diff.json'))
     out = Counter()
     det = {}
     for f in diff['findings']:
@@ -25,8 +25,8 @@ def fmt(fs):
     return '<br>'.join(parts)
 bs, bc, bd = rows(before)
 as_, ac, ad = rows(after)
-self_b = [load(before, f'sidebar-{state}-{a}-selfdiff.json') for a in ('orca', 'corral')]
-self_a = [load(after, f'sidebar-{state}-{a}-selfdiff.json') for a in ('orca', 'corral')]
+self_b = [load(os.path.join(before, f'sidebar-{state}-{a}-selfdiff.json')) for a in ('orca', 'corral')]
+self_a = [load(os.path.join(after, f'sidebar-{state}-{a}-selfdiff.json')) for a in ('orca', 'corral')]
 cnt = lambda s: f"{len(s['atTolerance']['findings']) if 'findings' in s['atTolerance'] else s['atTolerance'].get('summary',{}).get('total','?')}"
 print(f'# K2 before↔after — sidebar/{state}\n')
 print(f'- before: `{os.path.relpath(before)}` · after: `{os.path.relpath(after)}`')
@@ -50,7 +50,7 @@ for i in foot:
     print(f'| {i} | {fmt(bd.get(i, [])) or "차이 없음"} | {fmt(ad.get(i, [])) or "차이 없음"} |')
 if units_dir:
     print(f'\n## 하단 바 단위 — 같은 새 단위 정의로 잰 before 빌드 (`{os.path.relpath(units_dir)}`, 관문 미달: before 에는 묶음·svg 가 없어 선택자 0개 — 값 참고용)\n')
-    ud = load(units_dir, f'sidebar-{state}-diff.json')
+    ud = load(os.path.join(units_dir, f'sidebar-{state}-diff.json'))
     print('| 단위 | before 빌드 내용 |\n| --- | --- |')
     for f in ud['findings']:
         if f['id'].startswith('sidebar-footer'):

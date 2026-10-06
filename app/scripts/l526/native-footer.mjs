@@ -11,6 +11,7 @@
 // ② 네 버튼 hover(⚙·?·⌖·↻) — 포인터 이동 → computed color·background → 캡처 → 캡처 뒤 다시 computed(hover 가 캡처에 남았나)
 // ③ ? 실제 클릭 → 메뉴 열림(버튼 위) 캡처 → 다시 클릭 → 닫힘
 // ④ ⚙ 실제 클릭 → 설정 페이지 열림 → 「앱으로 돌아가기」 실제 클릭 → 닫힘
+// ⑤ 필수 캡처 7장이 전부 파일로 남았나(K4a-shots — fix1 R1-01)
 // 사용(저장소 루트): node app/scripts/l526/native-footer.mjs <ROOT=/tmp/l526n*> <raw 폴더>
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,7 +28,7 @@ const evaluate = async ({ fn, arg = null }) => (await rpc(ctl, { cmd: 'eval', co
 
 const result = { startedAt: new Date().toISOString(), appPid: Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8')), input: 'control socket sendInputEvent (click·raw-mouse mouseMove)', steps: {}, checks: [] }
 const save = () => fs.writeFileSync(path.join(rawd, 'native-footer.json'), `${JSON.stringify(result, null, 1)}\n`)
-const check = (id, label, pass, detail) => {
+const check = ({ id, label, pass, detail }) => {
   result.checks.push({ id, label, pass, detail })
   console.log(`[l526n] ${pass ? '통과' : '실패'} ${id} — ${label}`)
 }
@@ -92,15 +93,23 @@ function dumpPage(units) {
   return out
 }
 const dump = () => evaluate({ fn: dumpPage, arg: UNITS })
-const shot = async (name, selector) => {
-  const reply = await control({ cmd: 'shot', name, selector })
-  if (reply.ok && reply.file && fs.existsSync(reply.file)) {
+// LIFE-526 fix1 R1-01 — 캡처는 K4ⓐ 필수 원자료다. 응답이 ok 가 아니거나 파일이 없으면 result.shots 에 실패로 남기고,
+// 끝에 필수 check `K4a-shots` 가 그것을 실패로 세어 종료코드를 nonzero 로 만든다(전에는 { error } 만 적고 7/7·exit 0 이 났다).
+result.shots = []
+const shot = async ({ name, selector }) => {
+  const reply = await control({ cmd: 'shot', name, selector }).catch((error) => ({ ok: false, error: String(error?.message ?? error) }))
+  if (reply.ok === true && typeof reply.file === 'string' && fs.existsSync(reply.file)) {
     const dest = path.join(rawd, path.basename(reply.file))
     fs.copyFileSync(reply.file, dest)
+    const copied = fs.existsSync(dest) && fs.statSync(dest).size > 0
+    result.shots.push({ name, selector, ok: copied, file: path.basename(dest), error: copied ? null : '복사본이 없거나 비었다' })
     return path.basename(dest)
   }
+  result.shots.push({ name, selector, ok: false, file: null, error: reply })
   return { error: reply }
 }
+/** 이 회차가 반드시 남겨야 하는 캡처 — 기본 1 · hover 4 · 도움말 열림 2. */
+const REQUIRED_SHOTS = ['l526n-footer-default', 'l526n-footer-hover-settings', 'l526n-footer-hover-help', 'l526n-footer-hover-reveal', 'l526n-footer-hover-refresh', 'l526n-help-menu', 'l526n-help-open-footer']
 const center = async (selector) => {
   const reply = await control({ cmd: 'rect', selector })
   if (!reply.ok) throw new Error(`rect 없음: ${selector}`)
@@ -140,19 +149,19 @@ try {
 
   // ①
   const base = await dump()
-  result.steps.default = { dump: base, shot: await shot('l526n-footer-default', '[data-sidebar-footer]') }
+  result.steps.default = { dump: base, shot: await shot({ name: 'l526n-footer-default', selector: '[data-sidebar-footer]' }) }
   const u = base.units
   const btns = ['settings', 'help', 'reveal', 'refresh']
-  check('K1b-box', '네 버튼 24×24 · 아이콘 14×14 · 아이콘 가운데(버튼 안 5px) · 둥글기 8px · 글자색 rgb(161,161,161)',
-    btns.every((k) => u[k] && u[k].box.w === 24 && u[k].box.h === 24 && u[k].style.borderTopLeftRadius === '8px' && u[k].style.color === 'rgb(161, 161, 161)'
+  check({ id: 'K1b-box', label: '네 버튼 24×24 · 아이콘 14×14 · 아이콘 가운데(버튼 안 5px) · 둥글기 8px · 글자색 rgb(161,161,161)',
+    pass: btns.every((k) => u[k] && u[k].box.w === 24 && u[k].box.h === 24 && u[k].style.borderTopLeftRadius === '8px' && u[k].style.color === 'rgb(161, 161, 161)'
       && u[`${k}Icon`] && u[`${k}Icon`].box.w === 14 && u[`${k}Icon`].box.h === 14 && u[`${k}Icon`].box.x - u[k].box.x === 5 && u[`${k}Icon`].box.y - u[k].box.y === 5),
-    Object.fromEntries(btns.map((k) => [k, { box: u[k]?.box, icon: u[`${k}Icon`]?.box, radius: u[k]?.style.borderTopLeftRadius, color: u[k]?.style.color }])))
-  check('K2a-row', '하단 바 줄 높이 37 · padding 6/8 · 위 테두리 1px · 묶음 gap 4px · 좌우 끝(왼 버튼 x=사이드바+8, 오른 버튼 끝=사이드바 오른끝−8)',
-    u.row.box.h === 37 && u.row.style.paddingTop === '6px' && u.row.style.paddingLeft === '8px' && u.row.style.borderTopWidth === '1px'
+    detail: Object.fromEntries(btns.map((k) => [k, { box: u[k]?.box, icon: u[`${k}Icon`]?.box, radius: u[k]?.style.borderTopLeftRadius, color: u[k]?.style.color }])) })
+  check({ id: 'K2a-row', label: '하단 바 줄 높이 37 · padding 6/8 · 위 테두리 1px · 묶음 gap 4px · 좌우 끝(왼 버튼 x=사이드바+8, 오른 버튼 끝=사이드바 오른끝−8)',
+    pass: u.row.box.h === 37 && u.row.style.paddingTop === '6px' && u.row.style.paddingLeft === '8px' && u.row.style.borderTopWidth === '1px'
       && u.groupLeft.style.gap === '4px' && u.groupRight.style.gap === '4px'
       && u.settings.box.x - base.sidebar.x === 8 && base.sidebar.x + base.sidebar.w - (u.refresh.box.x + u.refresh.box.w) === 8,
-    { row: u.row.box, padding: [u.row.style.paddingTop, u.row.style.paddingLeft], border: u.row.style.borderTopWidth, gaps: [u.groupLeft.style.gap, u.groupRight.style.gap], sidebar: base.sidebar })
-  check('K1-glyph', '유니코드 글자 버튼 0개(버튼 글자 내용 빈 칸) · aria-label 4개', btns.every((k) => u[k].text === '' && u[k].attrs['aria-label']), Object.fromEntries(btns.map((k) => [k, { text: u[k].text, attrs: u[k].attrs }])))
+    detail: { row: u.row.box, padding: [u.row.style.paddingTop, u.row.style.paddingLeft], border: u.row.style.borderTopWidth, gaps: [u.groupLeft.style.gap, u.groupRight.style.gap], sidebar: base.sidebar } })
+  check({ id: 'K1-glyph', label: '유니코드 글자 버튼 0개(버튼 글자 내용 빈 칸) · aria-label 4개', pass: btns.every((k) => u[k].text === '' && u[k].attrs['aria-label']), detail: Object.fromEntries(btns.map((k) => [k, { text: u[k].text, attrs: u[k].attrs }])) })
 
   // ②
   result.steps.hover = {}
@@ -160,14 +169,14 @@ try {
     await move(await center(UNITS[key]))
     await pause(350)
     const before = await dump()
-    const file = await shot(`l526n-footer-hover-${key}`, '[data-sidebar-footer]')
+    const file = await shot({ name: `l526n-footer-hover-${key}`, selector: '[data-sidebar-footer]' })
     const after = await dump()
     result.steps.hover[key] = { before: before.units[key], afterShot: after.units[key], shot: file }
   }
   // 기대값 = Orca 198 ghost icon-xs hover 측정값(measure after-526 footer-hover-*: color rgba(250, 250, 250, 1) · bg rgba(64, 64, 64, 0.502)).
-  check('K1c-hover', '네 버튼 hover: 글자색 rgba(250,250,250,1) · 배경 rgba(64,64,64,0.502)(Orca 198 측정값) — 캡처 앞·뒤 모두',
-    btns.every((k) => ['before', 'afterShot'].every((when) => { const s = result.steps.hover[k][when]; return s.hovered && s.rgba.color === 'rgba(250, 250, 250, 1)' && s.rgba.backgroundColor === 'rgba(64, 64, 64, 0.502)' })),
-    Object.fromEntries(btns.map((k) => [k, ['before', 'afterShot'].map((w) => ({ hovered: result.steps.hover[k][w].hovered, color: result.steps.hover[k][w].rgba.color, bg: result.steps.hover[k][w].rgba.backgroundColor, raw: result.steps.hover[k][w].style.backgroundColor }))])))
+  check({ id: 'K1c-hover', label: '네 버튼 hover: 글자색 rgba(250,250,250,1) · 배경 rgba(64,64,64,0.502)(Orca 198 측정값) — 캡처 앞·뒤 모두',
+    pass: btns.every((k) => ['before', 'afterShot'].every((when) => { const s = result.steps.hover[k][when]; return s.hovered && s.rgba.color === 'rgba(250, 250, 250, 1)' && s.rgba.backgroundColor === 'rgba(64, 64, 64, 0.502)' })),
+    detail: Object.fromEntries(btns.map((k) => [k, ['before', 'afterShot'].map((w) => ({ hovered: result.steps.hover[k][w].hovered, color: result.steps.hover[k][w].rgba.color, bg: result.steps.hover[k][w].rgba.backgroundColor, raw: result.steps.hover[k][w].style.backgroundColor }))])) })
   await move({ x: 2, y: 2 })
   await pause(300)
 
@@ -176,26 +185,28 @@ try {
   await until({ label: '도움말 메뉴', probe: async () => (await snap()).helpMenu !== null })
   await pause(300)
   const opened = await snap()
-  result.steps.help = { click: c1, opened, shotMenu: await shot('l526n-help-menu', '[data-help-menu]'), shotFooter: await shot('l526n-help-open-footer', '[data-sidebar-footer]') }
-  check('K4a-help-open', '? 실제 클릭 → 메뉴가 버튼 위로 열림(메뉴 아랫변 ≤ 버튼 윗변) · aria-expanded=true',
-    c1.ok === true && opened.helpMenu !== null && opened.helpMenu.y + opened.helpMenu.h <= opened.helpButton.y + 0.5 && opened.helpExpanded === 'true', { click: c1.ok, menu: opened.helpMenu, button: opened.helpButton })
+  result.steps.help = { click: c1, opened, shotMenu: await shot({ name: 'l526n-help-menu', selector: '[data-help-menu]' }), shotFooter: await shot({ name: 'l526n-help-open-footer', selector: '[data-sidebar-footer]' }) }
+  check({ id: 'K4a-help-open', label: '? 실제 클릭 → 메뉴가 버튼 위로 열림(메뉴 아랫변 ≤ 버튼 윗변) · aria-expanded=true',
+    pass: c1.ok === true && opened.helpMenu !== null && opened.helpMenu.y + opened.helpMenu.h <= opened.helpButton.y + 0.5 && opened.helpExpanded === 'true', detail: { click: c1.ok, menu: opened.helpMenu, button: opened.helpButton } })
   const c2 = await control({ cmd: 'click', selector: '[data-help-menu-toggle]' })
   await pause(400)
   const closed = await snap()
   result.steps.help.closeClick = c2
   result.steps.help.closed = closed
-  check('K4a-help-close', '? 다시 실제 클릭 → 닫힘', c2.ok === true && closed.helpMenu === null && closed.helpExpanded === 'false', { click: c2.ok, menu: closed.helpMenu })
+  check({ id: 'K4a-help-close', label: '? 다시 실제 클릭 → 닫힘', pass: c2.ok === true && closed.helpMenu === null && closed.helpExpanded === 'false', detail: { click: c2.ok, menu: closed.helpMenu } })
 
   // ④
   const c3 = await control({ cmd: 'click', selector: '[data-settings-open]' })
   await until({ label: '설정 열림', probe: async () => (await snap()).settingsOpen })
   result.steps.settings = { click: c3, open: (await snap()).settingsOpen }
-  check('K4a-settings', '⚙ 실제 클릭 → 설정 페이지 열림', c3.ok === true && result.steps.settings.open, result.steps.settings)
+  check({ id: 'K4a-settings', label: '⚙ 실제 클릭 → 설정 페이지 열림', pass: c3.ok === true && result.steps.settings.open, detail: result.steps.settings })
   const c4 = await control({ cmd: 'click', selector: '[data-settings-back]' })
   await until({ label: '설정 닫힘', probe: async () => !(await snap()).settingsOpen })
   result.steps.settings.backClick = c4
   result.steps.settings.closedAfterBack = !(await snap()).settingsOpen
   await move({ x: 2, y: 2 })
+  const shotFailures = REQUIRED_SHOTS.filter((name) => !result.shots.some((row) => row.name === name && row.ok))
+  check({ id: 'K4a-shots', label: `필수 캡처 ${REQUIRED_SHOTS.length}장(기본·hover 4·도움말 메뉴·열린 줄) 전부 파일로 남음`, pass: shotFailures.length === 0, detail: { missing: shotFailures, shots: result.shots } })
   exitCode = result.checks.every((row) => row.pass) ? 0 : 1
 } catch (error) {
   result.error = String(error?.stack ?? error)

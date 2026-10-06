@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { launchCorral, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
 import { ensureFixtureRepo } from '../gui-diff/lib/fixture.mjs'
 import { pause } from '../gui-diff/lib/cdp.mjs'
+import { childExit } from './child-exit.mjs'
 
 const rawd = path.resolve(process.argv[2])
 const work = '/tmp/l526i-dry'
@@ -22,9 +23,11 @@ try {
   fs.writeFileSync(path.join(root, 'app.pid'), String(handle.status?.runtime?.pid ?? 0))
   await handle.cdp.close().catch(() => {})
   const run = spawnSync(process.execPath, [path.resolve('app/scripts/l526/native-footer.mjs'), root, rawd], { encoding: 'utf8', timeout: 180_000 })
-  fs.writeFileSync(path.join(rawd, 'stdout.log'), `${run.stdout}\n${run.stderr}\nexit=${run.status}\n`)
-  console.log(run.stdout, run.stderr, 'exit', run.status)
-  code = run.status
+  // fix1 R1-02 — 타임아웃·시그널·spawn 오류(status null)는 nonzero(2). 오류·시그널도 원자료에 남긴다.
+  const judged = childExit({ run })
+  fs.writeFileSync(path.join(rawd, 'stdout.log'), `${run.stdout ?? ''}\n${run.stderr ?? ''}\nexit=${run.status} signal=${run.signal ?? 'null'} error=${run.error ? String(run.error.code ?? run.error) : 'null'}\n${judged.note}\n`)
+  console.log(run.stdout, run.stderr, judged.note)
+  code = judged.code
 } finally {
   for (const { pid } of owned.filter((entry) => entry.pid)) { try { process.kill(pid, 'SIGTERM') } catch { /* 끝남 */ } }
   await pause(2500)

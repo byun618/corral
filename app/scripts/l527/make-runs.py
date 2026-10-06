@@ -71,7 +71,7 @@ J = {
  'T12c':('K5ⓒ 머리 더블클릭',P,'확대'), 'T12d':('K5ⓒ 원복',P,'1180×800 (370,76)'), 'T13':('준비 ⌘,',P,'설정 열림'),
  'T13b':('K5ⓐ 설정 띠 끌기',P,'Δ(+100,+60)'), 'T13c':('원복',P,''), 'T13d':('K6ⓐ 띠 아래 클릭',P,'settings-content'), 'T13e':('K6ⓐ 설정 띠 신호등 칸 아래',P,'Δ(+100,+60)'), 'T13f':('원복',P,''),
  'T13g':('정리 Esc',F,'`kp:` 미도달 + 설정은 Esc 2단계'), 'T13h':('정리 돌아가기',P,''),
- 'K1':('K1ⓑ 캡처 준비',P,''), 'K1ⓓ':('K1ⓓ',P,'판정은 위 K1ⓓ 행'), 'U5':('K1ⓒ',P,'캡처 행은 위 K1ⓒ 참조'), 'U5r2':('K1ⓒ',P,'캡처 행은 위 K1ⓒ 참조'),
+ 'K1':('K1ⓑ 캡처 준비',P,''), 'K3ⓑ':('K3ⓑ',P,''), 'K1ⓓ':('K1ⓓ',P,'판정은 위 K1ⓓ 행'), 'U5':('K1ⓒ',P,'캡처 행은 위 K1ⓒ 참조'), 'U5r2':('K1ⓒ',P,'캡처 행은 위 K1ⓒ 참조'),
  'C5':('준비',P,''), 'C5b':('K2ⓒ 접힘 머리 y=3 끌기',P,'Δ(+100,0) = Orca O7b'), 'C5c':('원복',P,''), 'C5d':('준비',P,''),
  'T14':('K5ⓓ 준비(y=6 메뉴)',P,'첫 항목 y32–58'), 'T14b':('K5ⓓ 띠 안 항목 클릭',P,'「오른쪽 영역」 실행(영역 1→2) · 창 이동 0'),
  'T15':('K5ⓓ 팔레트',P,'첫 항목 y163 — 띠와 안 겹침'), 'T15b':('정리 Esc',F,'`kp:` 미도달 → 제어 소켓 Escape 로 닫음(판정 외)'),
@@ -86,13 +86,16 @@ J = {
  'N9':('K9ⓒ/K5ⓒ 더블클릭',P,'확대'), 'N9b':('K9ⓒ/K5ⓒ 원복',P,'1180×800 (370,76)'), 'N10':('준비 ⌘,',P,''), 'N10b':('K9ⓒ/K5ⓐ 설정 띠',P,'Δ(+100,+60)'), 'N10c':('원복',P,''), 'N10d':('정리',P,''),
  'N11':('K9ⓓ 레포 추가',P,''), 'N11b':('K9ⓓ 토스트',P,'「1개는 이미 있었다」 (740,712) 416×48 — 오른쪽 24·아래 40'),
 }
-for f in ['os/k5-corral.jsonl', 'os/k5-orca.jsonl', 'native/r2/k5-native.jsonl']:
+for f in ['os/k5-corral.jsonl', 'os/k5-orca.jsonl', 'native/r2/k5-native.jsonl', 'os/k3-corral.jsonl']:
     for i, line in enumerate(open(f)):
         r = json.loads(line)
         key = r['label'].split(' ')[0]
         crit, v, note = J[key]
         if r['exit'] != 0 and v == P: v = F
         row(crit, f'`k5-steps.sh` 「{r["label"]}」', 0, r['exit'], f'`{f}` {i+1}행', v + (f' — {note}' if note else ''))
+row('K3ⓒ 팔레트 닫힘 뒤 포커스(Search 줄로 연 경우)', '`ctl-key.mjs Escape` 뒤 `document.activeElement`', 0, 0, '`os/k3c-focus-after-palette-search.json`', '통과 — 포커스 = 있는 Search 버튼(isConnected true), 사라진 버튼 아님')
+row('K3ⓒ 팔레트 닫힘 뒤 포커스(⌘K)', '같음', 0, 0, '`os/k3c-focus-after-palette-cmdk.json`', '통과 — BODY(연 직전과 같음), 사라진 버튼 아님')
+row('K3ⓑ ? 메뉴 「단축키」', '`k5-steps.sh` 클릭 뒤 설정 섹션 조회 + 캡처', 0, 0, '`os/k3b-help-shortcuts.json` · `os/cap/k3b-help-shortcuts.png`', '통과 — 설정 열림 · 섹션 「단축키」')
 # K6
 row('K6ⓑⓒ before', '`os-up.mjs --corral-app /tmp/l527-base/app --no-orca` + `k6-probe.mjs --label before`', 0, 0, '`os/k6/k6-before.json` · `os/k6/before-*.png` · `os/up-2-base/` · `os/cap/corral-base-before.png`', '통과(기록) — rows 39 · xterm 102 ↔ herdr 103')
 row('K6ⓑⓒ after', '`os-up.mjs` + `k6-probe.mjs --label after`', 0, 0, '`os/k6/k6-after.json` · `os/k6/after-*.png` · `os/up-3-after/`', '통과 — rows 39→43 · herdr 43=xterm 43 · 드롭존 top 70→36(탭 줄 아래 끝) · MRU·팔레트·대화상자 위치 일관. 호버 카드 전후 모두 안 뜸 → 공백')

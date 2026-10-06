@@ -58,6 +58,7 @@ import {
   createRow,
   createWorktree,
   listSessions,
+  isExecutableFile,
   readLogTail,
   readRestoreTargets,
   resolveHerdrBinary,
@@ -83,7 +84,7 @@ import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepP
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
-import { BackendStarter, decideBackend, DEFAULT_SESSION, type BackendInput } from './backend-start.js'
+import { BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
@@ -183,18 +184,9 @@ function herdrPath(): string | null {
   return herdr?.kind === 'found' ? herdr.binary.path : null
 }
 
-/** 지정된 세션 — 프로필 바인딩(`restoreBackend` 가 env 로 옮긴다)·`CORRAL_SESSION`·측정 하네스의 `CORRAL_BACKEND_SOCKET`. */
-function boundSession(): string | null {
-  const session = process.env.CORRAL_SESSION
-  if (session !== undefined && session.length > 0) return session
-  const socket = process.env.CORRAL_BACKEND_SOCKET
-  if (socket !== undefined && socket.length > 0) return socket
-  return null
-}
-
 function backendInput(): BackendInput {
   return {
-    bound: boundSession(),
+    bound: boundSessionName(process.env),
     binary: herdr === null ? { kind: 'resolving' } : herdr.kind === 'found' ? { kind: 'found' } : { kind: 'missing', searched: herdr.searched },
     sessions,
     selected: selectedSession,
@@ -205,11 +197,31 @@ function backendInput(): BackendInput {
   }
 }
 
-async function ensureHerdrResolved(): Promise<void> {
-  if (herdr?.kind === 'found') return
-  if (herdr !== null && Date.now() - herdrResolvedAt < HERDR_RERESOLVE_MS) return
-  herdr = await resolveHerdrBinary()
-  herdrResolvedAt = Date.now()
+let resolving: Promise<void> | null = null
+
+/**
+ * 해소는 한 번에 하나만 돈다(r1 R1-04) — 로그인 셸 조회(최대 10초)가 느려도 다음 poll 이 셸을 또 띄우지 않는다.
+ * 해소한 경로가 사라졌거나 실행할 수 없게 됐으면(herdr 를 옮기거나 지움) 다시 해소한다 — 낡은 경로를 붙들지 않는다.
+ */
+function ensureHerdrResolved(): Promise<void> {
+  if (herdr?.kind === 'found') {
+    if (isExecutableFile(herdr.binary.path)) return Promise.resolve()
+    log('herdr.resolve.stale', { path: herdr.binary.path })
+    herdr = null
+  } else if (herdr !== null && Date.now() - herdrResolvedAt < HERDR_RERESOLVE_MS) {
+    return Promise.resolve()
+  }
+  if (resolving === null) {
+    resolving = resolveHerdrBinary()
+      .then((result) => {
+        herdr = result
+        herdrResolvedAt = Date.now()
+      })
+      .finally(() => {
+        resolving = null
+      })
+  }
+  return resolving
 }
 
 /** 「서버 시작」·「다시 시도」 — 지금 상태가 확인·실패일 때만 띄운다. 지정 세션·돌고 있는 세션이면 아무것도 안 한다(K3①⑩). */
@@ -1190,7 +1202,30 @@ async function refreshIntegrations(): Promise<void> {
   if (JSON.stringify(integrations) !== before) scheduleEmit()
 }
 
-async function pollSessions(): Promise<void> {
+let pollInFlight: Promise<void> | null = null
+let pollQueued: Promise<void> | null = null
+
+/**
+ * 세션 조회는 겹쳐 돌지 않는다(r1 R1-04). 도는 중에 또 부르면 끝난 뒤 **한 번 더** 돈다 — 서버를 띄운 직후의
+ * 호출이 띄우기 전에 시작한 조회 결과를 받지 않게 하려는 것이다. 대기 중인 재조회는 하나로 합친다.
+ */
+function pollSessions(): Promise<void> {
+  if (pollInFlight === null) {
+    pollInFlight = runPoll().finally(() => {
+      pollInFlight = null
+    })
+    return pollInFlight
+  }
+  if (pollQueued === null) {
+    pollQueued = pollInFlight.then(() => {
+      pollQueued = null
+      return pollSessions()
+    })
+  }
+  return pollQueued
+}
+
+async function runPoll(): Promise<void> {
   await ensureHerdrResolved()
   const scan = await listSessions(herdrPath())
   sessions = scan.sessions
@@ -1208,7 +1243,8 @@ async function pollSessions(): Promise<void> {
 
 /** 연결 상태를 다시 정하고, 자동 기동 조건이면 띄운다 (LIFE-485 D1). 결정 자체는 `decideBackend` 순수 함수다. */
 function evaluateBackend(): void {
-  const needsCount = boundSession() === null && (selectedSession === DEFAULT_SESSION || !sessions.some((session) => session.running))
+  // 계수는 결정이 그 값을 쓸 때만 — default 가 멈춰 확인·자동 기동 후보일 때(r1 R1-05). 붙어 live 인 평시에는 읽지 않는다.
+  const needsCount = needsRestoreCount({ bound: boundSessionName(process.env), sessions, selected: selectedSession })
   restore = needsCount ? readRestoreTargets(sessions.find((session) => session.isDefault)?.sessionDir ?? null) : null
   const decision = decideBackend(backendInput())
   const summary = JSON.stringify({ status: decision.status.kind, restore })

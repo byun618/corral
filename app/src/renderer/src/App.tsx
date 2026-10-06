@@ -21,7 +21,7 @@ import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { DropZoneOverlay } from './components/DropZoneOverlay.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
-import { BackendCard } from './components/BackendCard.js'
+import { BackendBanner, BackendCard, backendBlocksTerminal } from './components/BackendCard.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { GroupHeader } from './components/MainTabBar.js'
 import { MruSwitcher, type MruRow } from './components/MruSwitcher.js'
@@ -1535,7 +1535,7 @@ export function App(): React.JSX.Element {
 
           <TerminalChrome panes={stripPanes}>
             {/* LIFE-485 D3 — 링크가 live 가 아닐 때의 원인·행동. 결정은 main(`decideBackend`)이 하고 여기는 그린다. */}
-            {state.backend.kind !== 'ok' ? (
+            {backendBlocksTerminal(state.backend) ? (
               <BackendCard status={state.backend} onStart={() => void window.corral.startBackend()} />
             ) : activeWorkspace === null || layout.layout === null ? (
               <div className="term-empty" data-term-empty />
@@ -1548,6 +1548,8 @@ export function App(): React.JSX.Element {
               />
             )}
           </TerminalChrome>
+          {/* LIFE-485 r1 R1-01 — 재연결 중은 격자를 걷지 않고 배너만 겹친다. */}
+          <BackendBanner status={state.backend} />
 
           {/* ③ MRU — scrim 이 없어 아래 터미널이 계속 보인다 (핸드오프 O). 행 클릭도 확정이다. */}
           {mru === null ? null : (

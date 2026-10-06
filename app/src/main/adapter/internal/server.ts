@@ -134,7 +134,9 @@ export function countRestoreTargets(text: string | null): RestoreSummary {
     return { known: false, reason: 'session.json 을 JSON 으로 읽지 못했다' }
   }
   if (!isRecord(session)) return { known: false, reason: 'session 이 객체가 아니다' }
-  const workspaces = session['workspaces'] ?? []
+  // 비어 있지 않은 파일인데 workspaces 가 없으면 0 이 아니라 모름이다 — 키 이름이 바뀐 버전일 수 있다(r1 R1-02). 파일 없음만 0.
+  if (!('workspaces' in session)) return { known: false, reason: 'workspaces 가 없다' }
+  const workspaces = session['workspaces']
   if (!Array.isArray(workspaces)) return { known: false, reason: 'workspaces 가 배열이 아니다' }
   const paneMaps: Record<string, unknown>[] = []
   for (const [index, workspace] of workspaces.entries()) {
@@ -158,11 +160,13 @@ export function countRestoreTargets(text: string | null): RestoreSummary {
   let total = 0
   for (const panes of paneMaps)
     for (const pane of Object.values(panes)) {
-      if (!isRecord(pane)) continue
+      // 객체가 아닌 pane·객체도 null 도 아닌 agent_session 은 건너뛰지 않는다 — 셀 수 없는 것을 0 으로 세면 자동 기동이 재개를 일으킨다(r1 R1-02·G-2).
+      if (!isRecord(pane)) return { known: false, reason: 'pane 이 객체가 아니다' }
       const agentSession = pane['agent_session']
       if (agentSession === undefined || agentSession === null) continue
+      if (!isRecord(agentSession)) return { known: false, reason: 'agent_session 이 객체가 아니다' }
       total += 1
-      const kind = isRecord(agentSession) && typeof agentSession['agent'] === 'string' ? agentSession['agent'] : 'unknown'
+      const kind = typeof agentSession['agent'] === 'string' ? agentSession['agent'] : 'unknown'
       counts.set(kind, (counts.get(kind) ?? 0) + 1)
     }
   const agents = [...counts.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => a.kind.localeCompare(b.kind))
@@ -184,12 +188,24 @@ export function readRestoreTargets(sessionDir: string | null): RestoreSummary {
   return countRestoreTargets(text)
 }
 
-/** 서버에 넘기지 않는 환경변수 — 서버가 띄우는 모든 pane 셸이 물려받는다 (D4). */
+/**
+ * 서버에 넘기지 않는 환경변수 — 서버가 띄우는 모든 pane 셸이 물려받는다 (D4).
+ * `HERDR_*` 는 **pane·클라이언트 범위 변수만** 지운다(r1 R1-08) — corral 이 herdr pane 안에서 떴으면 그 pane 의 세션·소켓·id 가
+ * 실려 있다. 설정·로그 변수(`HERDR_CONFIG_PATH`·`HERDR_LOG` 등)는 사용자가 직접 띄운 서버와 같은 설정을 읽도록 남긴다.
+ * 목록 출처: herdr 0.9.0 바이너리 문자열(`strings /opt/homebrew/bin/herdr | grep HERDR_`) 중 pane·플러그인·훅 실행 문맥으로 주입되는 것.
+ */
+const HERDR_PANE_SCOPED = new Set([
+  'HERDR_ENV', 'HERDR_SESSION', 'HERDR_SOCKET_PATH', 'HERDR_CLIENT_SOCKET_PATH', 'HERDR_BIN_PATH',
+  'HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID', 'HERDR_ACTION', 'HERDR_REATTACH_COMMAND', 'HERDR_STARTUP_CWD',
+  'HERDR_HOOK_INPUT_FILE', 'HERDR_INTEGRATION_ID', 'HERDR_INTEGRATION_VERSION',
+])
+
 export function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue
-    if (/^(CORRAL_|ELECTRON_|HERDR_|VITE_)/.test(key)) continue
+    if (/^(CORRAL_|ELECTRON_|VITE_)/.test(key)) continue
+    if (HERDR_PANE_SCOPED.has(key) || /^HERDR_(ACTIVE|PLUGIN)_/.test(key)) continue
     if (key === 'NODE_OPTIONS' || key === 'NODE_ENV' || key === 'NODE_CHANNEL_FD') continue
     out[key] = value
   }
@@ -208,6 +224,7 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
   let fd: number
   try {
     fs.mkdirSync(path.dirname(input.logPath), { recursive: true })
+    rotateLog(input.logPath)
     fd = fs.openSync(input.logPath, 'a')
     fs.writeSync(fd, `\n--- corral ${new Date().toISOString()} spawn ${input.binary} server\n`)
   } catch (error) {
@@ -232,6 +249,19 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
   } finally {
     fs.closeSync(fd)
   }
+}
+
+/** 서버 로그 상한 — 넘으면 기동 직전에 `.1` 로 한 번 밀어 둔다(r1 R1-10, 무한 증가 방지). 서버가 도는 동안은 자르지 않는다. */
+export const SERVER_LOG_MAX_BYTES = 1024 * 1024
+
+export function rotateLog(logPath: string, maxBytes = SERVER_LOG_MAX_BYTES): boolean {
+  try {
+    if (fs.statSync(logPath).size <= maxBytes) return false
+  } catch {
+    return false
+  }
+  fs.renameSync(logPath, `${logPath}.1`)
+  return true
 }
 
 /** 로그 끝부분 — 「시작 실패」 원문. */

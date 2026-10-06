@@ -10,6 +10,7 @@ export { SessionLink } from './internal/link.js'
 export { listSessions, SESSION_POLL_MS, type SessionHandle } from './internal/sessions.js'
 export {
   countRestoreTargets,
+  isExecutableFile,
   readLogTail,
   readRestoreTargets,
   resolveHerdrBinary,

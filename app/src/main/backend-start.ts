@@ -34,6 +34,23 @@ export type BackendInput = {
 
 export type BackendDecision = { status: BackendStatus; autostart: boolean }
 
+/**
+ * 지정된 세션 이름 — 프로필 바인딩(`restoreBackend` 가 `CORRAL_SESSION`·`CORRAL_BACKEND_SOCKET` 둘 다로 옮긴다)·`CORRAL_SESSION`.
+ * 바인딩 정의는 `listSessions` 의 지름길과 같다(r1 R1-06): 세션 이름이 기준이다. 소켓만 주는 조합은 런타임이
+ * `invalid_backend` 로 시작을 거절해 여기까지 오지 않는다 — 소켓 경로를 세션 이름으로 쓰지 않는다.
+ */
+export function boundSessionName(env: { CORRAL_SESSION?: string | undefined }): string | null {
+  const session = env.CORRAL_SESSION
+  return session !== undefined && session.length > 0 ? session : null
+}
+
+/** 재개 대상을 셀 필요가 있나 — default 가 멈춰 있고, 확인·자동 기동 후보일 때만(r1 R1-05). */
+export function needsRestoreCount(input: { bound: string | null; sessions: readonly Candidate[]; selected: string | null }): boolean {
+  if (input.bound !== null) return false
+  if (input.sessions.some((session) => session.isDefault && session.running)) return false
+  return input.selected === DEFAULT_SESSION || !input.sessions.some((session) => session.running)
+}
+
 export function decideBackend(input: BackendInput): BackendDecision {
   const none = (status: BackendStatus): BackendDecision => ({ status, autostart: false })
   const { link } = input
@@ -42,7 +59,7 @@ export function decideBackend(input: BackendInput): BackendDecision {
   if (input.bound !== null) {
     const named = input.sessions.find((session) => session.name === input.bound)
     if (link.phase === 'live') return none({ kind: 'ok' })
-    if (named === undefined || !named.running) return none({ kind: 'bound-stopped', session: input.bound })
+    if (named === undefined || !named.running) return none({ kind: 'bound-stopped', session: input.bound, reason: 'bound' })
     if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
@@ -58,7 +75,7 @@ export function decideBackend(input: BackendInput): BackendDecision {
     }
     if (link.phase === 'live') return none({ kind: 'ok' })
     // default 가 아닌 세션(기존 규칙으로 붙었던 이름 세션)은 띄우지 않는다 — 안내만.
-    if (input.selected !== DEFAULT_SESSION) return none({ kind: 'bound-stopped', session: input.selected })
+    if (input.selected !== DEFAULT_SESSION) return none({ kind: 'bound-stopped', session: input.selected, reason: 'attached' })
     if (input.starter.phase === 'failed') return none(failed(input.starter))
     if (input.binary.kind === 'missing') return none({ kind: 'missing', searched: input.binary.searched })
     return none({ kind: 'confirm', reason: 'exited', session: DEFAULT_SESSION, restore: input.restore ?? unknownRestore })
@@ -164,6 +181,13 @@ export class BackendStarter {
     const deadline = this.deps.now() + this.deps.readyTimeoutMs
     while (this.deps.now() < deadline) {
       if (exited !== null) {
+        // 바로 끝났어도 그새 다른 손(사용자·다른 corral)이 띄운 서버가 돌고 있으면 실패가 아니다 — 두 번째 `server` 는
+        // 살아 있는 소켓 락에 exit 1 로 진다(r1 R1-10). 실패 카드를 잠깐 띄우지 않는다.
+        if (await this.deps.isRunning().catch(() => false)) {
+          this.deps.log('backend.start.lost_race', { trigger, pid: spawned.pid, exited })
+          this.set({ phase: 'idle' })
+          return
+        }
         const tail = this.deps.logTail(spawned.logPath)
         const error = `서버가 바로 종료됐다 (${exited})${tail.length > 0 ? `\n${tail}` : ''}`
         this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, exited })

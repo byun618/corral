@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, serverEnv, spawnServer } from './server.js'
+import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer } from './server.js'
 
 let dir = ''
 beforeEach(() => {
@@ -83,6 +83,14 @@ describe('countRestoreTargets (K2ⓐⓑⓓ)', () => {
     { name: '구형 panes 가 배열', input: { version: 1, workspaces: [{ id: 'w1', layout: { Pane: 1 }, panes: [] }] }, total: 'unknown' },
     { name: '현재 형식 tab 에 panes 없음', input: { version: 1, workspaces: [{ id: 'w1', identity_cwd: '/synthetic', tabs: [{ layout: { Pane: 1 } }] }] }, total: 'unknown' },
     { name: 'workspaces 가 객체', input: { version: 1, workspaces: { w1: {} } }, total: 'unknown' },
+    // r1 R1-02·G-2 — 비어 있지 않은 파일의 0 누출 경로
+    { name: '[r1] 최상위 workspaces 없음(키 이름이 바뀐 버전)', input: { version: 9, spaces: [{ identity_cwd: '/synthetic', tabs: [{ panes: { 1: agent('claude') } }] }] }, total: 'unknown' },
+    { name: '[r1] 빈 객체', input: {}, total: 'unknown' },
+    { name: '[r1] 현재 형식 안 pane 이 객체 아님', input: current({ 1: 'pane', 2: agent('claude') }), total: 'unknown' },
+    { name: '[r1] 구형 안 pane 이 null', input: legacy({ 1: null }), total: 'unknown' },
+    { name: '[r1] agent_session 이 문자열', input: current({ 1: { cwd: '/synthetic', agent_session: 'claude' } }), total: 'unknown' },
+    { name: '[r1] agent_session 이 배열', input: current({ 1: { cwd: '/synthetic', agent_session: [] } }), total: 'unknown' },
+    { name: '[r1] agent_session null 은 셸', input: current({ 1: { cwd: '/synthetic', agent_session: null } }), total: 0 },
   ]
   for (const item of cases) {
     it(item.name, () => {
@@ -124,10 +132,33 @@ describe('countRestoreTargets (K2ⓐⓑⓓ)', () => {
   })
 })
 
-describe('serverEnv (D4)', () => {
-  it('corral·Electron·herdr·node 옵션 변수를 넘기지 않는다', () => {
-    const env = serverEnv({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', CORRAL_USER_DATA: '/u', CORRAL_SESSION: 's', ELECTRON_RUN_AS_NODE: '1', HERDR_CONFIG_PATH: '/c', NODE_OPTIONS: '--x', VITE_DEV: '1', LANG: 'ko' })
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko' })
+describe('serverEnv (D4·r1 R1-08)', () => {
+  it('corral·Electron·node 옵션·herdr pane 범위 변수를 넘기지 않고, herdr 설정·로그 변수는 남긴다', () => {
+    const env = serverEnv({
+      PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko',
+      CORRAL_USER_DATA: '/u', CORRAL_SESSION: 's', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x', VITE_DEV: '1',
+      HERDR_ENV: '1', HERDR_SESSION: 'other', HERDR_SOCKET_PATH: '/s', HERDR_CLIENT_SOCKET_PATH: '/cs', HERDR_BIN_PATH: '/b',
+      HERDR_WORKSPACE_ID: 'w', HERDR_TAB_ID: 't', HERDR_PANE_ID: 'p', HERDR_ACTIVE_PANE_ID: 'ap', HERDR_PLUGIN_ROOT: '/pr',
+      HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug',
+    })
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug' })
+  })
+})
+
+describe('rotateLog (r1 R1-10)', () => {
+  it('상한 이하면 그대로, 넘으면 .1 로 민다', () => {
+    const log = path.join(dir, 'herdr-server.log')
+    fs.writeFileSync(log, 'x'.repeat(10))
+    expect(rotateLog(log, 100)).toBe(false)
+    expect(fs.existsSync(log)).toBe(true)
+    fs.writeFileSync(log, 'y'.repeat(200))
+    fs.writeFileSync(`${log}.1`, 'old')
+    expect(rotateLog(log, 100)).toBe(true)
+    expect(fs.existsSync(log)).toBe(false)
+    expect(fs.readFileSync(`${log}.1`, 'utf8')).toBe('y'.repeat(200))
+  })
+  it('파일이 없으면 아무것도 안 한다', () => {
+    expect(rotateLog(path.join(dir, 'none.log'), 1)).toBe(false)
   })
 })
 

@@ -129,8 +129,8 @@ export type RestoreSummary =
  * - `starting` — corral 이 띄우고 준비를 기다리는 중
  * - `failed` — 띄우지 못했다(원문·로그 경로). 「다시 시도」
  * - `missing` — herdr 실행 파일을 찾지 못했다
- * - `bound-stopped` — 지정된 세션(프로필 바인딩·CORRAL_SESSION)이 멈춰 있다. corral 은 띄우지 않는다
- * - `reconnecting` — 서버는 돌고 링크만 다시 붙는 중
+ * - `bound-stopped` — 지정된 세션(프로필 바인딩·CORRAL_SESSION)이나 붙어 있던 이름 세션이 멈춰 있다. corral 은 띄우지 않는다
+ * - `reconnecting` — 서버는 돌고 링크만 다시 붙는 중. 카드가 아니라 배너다 — 터미널 화면을 걷지 않는다(r1 R1-01)
  */
 export type BackendStatus =
   | { kind: 'ok' }
@@ -138,7 +138,8 @@ export type BackendStatus =
   | { kind: 'starting'; session: string }
   | { kind: 'failed'; session: string; error: string; logPath: string | null }
   | { kind: 'missing'; searched: string[] }
-  | { kind: 'bound-stopped'; session: string }
+  /** `reason` — `bound`: 프로필 바인딩·CORRAL_SESSION 으로 지정된 세션 · `attached`: 기존 규칙으로 붙어 있던 이름 세션(r1 R1-07) */
+  | { kind: 'bound-stopped'; session: string; reason: 'bound' | 'attached' }
   | { kind: 'reconnecting'; session: string; attempt: number }
 
 /** 세션 링크가 지금 어느 걸음에 있나. */

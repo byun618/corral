@@ -58,17 +58,32 @@ export function BackendCard({ status, onStart }: { status: BackendStatus; onStar
       )
     case 'bound-stopped':
       return (
-        <Card kind={status.kind} title={`herdr 세션 ${status.session} 이(가) 멈춰 있습니다`}>
+        <Card
+          kind={status.kind}
+          title={status.reason === 'bound' ? `지정된 herdr 세션 ${status.session} 이(가) 멈춰 있습니다` : `붙어 있던 herdr 세션 ${status.session} 이(가) 멈췄습니다`}
+        >
           <span className="backend-card-line">이 세션은 corral 이 시작하지 않습니다. 터미널에서 직접 시작하면 자동으로 연결합니다</span>
         </Card>
       )
     case 'reconnecting':
-      return (
-        <Card kind={status.kind} title={`herdr 세션 ${status.session} 에 다시 연결하는 중입니다`}>
-          <span className="backend-card-line">시도 {status.attempt}</span>
-        </Card>
-      )
+      // 서버는 돌고 링크만 끊긴 상태 — 카드로 터미널 화면을 걷지 않는다(r1 R1-01). App 이 배너(`BackendBanner`)로 그린다.
+      return null
   }
+}
+
+/** 재연결 중 배너 — 터미널 영역 위에 겹쳐 뜬다. pane 격자는 그대로 마운트돼 있다(r1 R1-01). */
+export function BackendBanner({ status }: { status: BackendStatus }): React.JSX.Element | null {
+  if (status.kind !== 'reconnecting') return null
+  return (
+    <div className="backend-banner" data-backend-banner={status.kind} role="status">
+      herdr 세션 {status.session} 에 다시 연결하는 중입니다 · 시도 {status.attempt}
+    </div>
+  )
+}
+
+/** 카드가 터미널 자리를 차지하는 상태인가 — `ok`·`reconnecting` 은 아니다. */
+export function backendBlocksTerminal(status: BackendStatus): boolean {
+  return status.kind !== 'ok' && status.kind !== 'reconnecting'
 }
 
 function Card({ kind, title, children }: { kind: BackendStatus['kind']; title: string; children: React.ReactNode }): React.JSX.Element {

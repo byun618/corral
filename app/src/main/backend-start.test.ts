@@ -1,7 +1,7 @@
 // LIFE-485 K3 — 기동 결정 표 ①~⑩ 전부 + 띄우는 손의 동시 트리거·시한·즉시 종료 (K4ⓕⓖⓗ 의 로직 쪽).
 import { describe, expect, it } from 'vitest'
 import type { RestoreSummary } from '../shared/types.js'
-import { BackendStarter, decideBackend, type BackendInput, type StarterDeps } from './backend-start.js'
+import { BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
 
 const zero: RestoreSummary = { known: true, total: 0, agents: [] }
 const three: RestoreSummary = { known: true, total: 3, agents: [{ kind: 'claude', count: 1 }, { kind: 'grok', count: 2 }] }
@@ -27,7 +27,7 @@ function input(patch: Partial<BackendInput>): BackendInput {
 describe('decideBackend (K3)', () => {
   it('① 바인딩 세션이 멈춤 → 띄우지 않음 + 지정 세션 꺼짐', () => {
     const decision = decideBackend(input({ bound: 'life417-native', sessions: [stoppedDefault, { name: 'life417-native', isDefault: false, running: false }] }))
-    expect(decision).toEqual({ status: { kind: 'bound-stopped', session: 'life417-native' }, autostart: false })
+    expect(decision).toEqual({ status: { kind: 'bound-stopped', session: 'life417-native', reason: 'bound' }, autostart: false })
   })
   it('① 바인딩 세션이 목록에 없음 → 띄우지 않음', () => {
     expect(decideBackend(input({ bound: 'x' })).autostart).toBe(false)
@@ -71,7 +71,7 @@ describe('decideBackend (K3)', () => {
   })
   it('⑧ 연결 도중 멈춘 세션이 default 가 아니면 안내만', () => {
     const decision = decideBackend(input({ selected: 'other', sessions: [stoppedDefault, { name: 'other', isDefault: false, running: false }], link: { phase: 'reconnecting', attempt: 1 } }))
-    expect(decision).toEqual({ status: { kind: 'bound-stopped', session: 'other' }, autostart: false })
+    expect(decision).toEqual({ status: { kind: 'bound-stopped', session: 'other', reason: 'attached' }, autostart: false })
   })
   it('⑨ 자동 기동은 앱 수명에서 1회 — 이미 했으면 확인', () => {
     expect(decideBackend(input({ autoStartUsed: true }))).toEqual({ status: { kind: 'confirm', reason: 'stopped', session: 'default', restore: zero }, autostart: false })
@@ -116,7 +116,42 @@ function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): Starte
   return { ...base, ...patch }
 }
 
+describe('boundSessionName·needsRestoreCount (r1 R1-06·R1-05)', () => {
+  it('바인딩은 세션 이름 기준 — 소켓만으로는 이름을 만들지 않는다', () => {
+    expect(boundSessionName({ CORRAL_SESSION: 'l485' })).toBe('l485')
+    expect(boundSessionName({ CORRAL_SESSION: '' })).toBe(null)
+    expect(boundSessionName({})).toBe(null)
+  })
+  it('default 에 붙어 live 인 평시에는 세지 않는다', () => {
+    expect(needsRestoreCount({ bound: null, sessions: [runningDefault], selected: 'default' })).toBe(false)
+  })
+  it('default 멈춤 + 붙어 있던 것이 default → 센다(도중 종료 카드)', () => {
+    expect(needsRestoreCount({ bound: null, sessions: [stoppedDefault], selected: 'default' })).toBe(true)
+  })
+  it('default 멈춤 + 돌고 있는 다른 세션에 붙음 → 세지 않는다', () => {
+    expect(needsRestoreCount({ bound: null, sessions: [stoppedDefault, { name: 'o', isDefault: false, running: true }], selected: 'o' })).toBe(false)
+  })
+  it('아무것도 안 돌고 아직 안 붙음 → 센다', () => {
+    expect(needsRestoreCount({ bound: null, sessions: [stoppedDefault], selected: null })).toBe(true)
+    expect(needsRestoreCount({ bound: null, sessions: [], selected: null })).toBe(true)
+  })
+  it('바인딩이면 세지 않는다', () => {
+    expect(needsRestoreCount({ bound: 's', sessions: [stoppedDefault], selected: null })).toBe(false)
+  })
+})
+
 describe('BackendStarter (K4ⓕⓖⓗ 로직)', () => {
+  it('즉시 종료했지만 그새 서버가 돌고 있으면(경합에 짐) 실패가 아니다 (r1 R1-10)', async () => {
+    let checks = 0
+    const starter = new BackendStarter(deps({
+      // 띄우기 직전 조회는 멈춤, 종료 뒤 재조회는 돎
+      running: () => { checks += 1; return checks > 1 },
+      spawn: (onExit) => { onExit('code 1 signal null'); return { ok: true, pid: 1, logPath: '/l' } },
+      logTail: () => 'error: herdr server is already running',
+    }))
+    await starter.start('auto')
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+  })
   it('동시 트리거(자동 + 버튼 + 연타) → spawn 1회', async () => {
     let up = false
     let spawned = 0

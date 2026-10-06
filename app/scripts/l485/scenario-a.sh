@@ -3,7 +3,8 @@
 ROOT=$1; . "$(dirname "$0")/lib.sh"
 rm -rf "$ROOT"; sh "$H/iso-root.sh" "$ROOT" /tmp/l485i/zero.json
 echo "## 기동 전 격리 서버 수: $(servers | wc -l | tr -d ' ')"
-sh "$H/iso-app.sh" "$ROOT" "$APP"
+# fix1 (r1 R1-08) — herdr pane 범위 변수는 서버로 안 가고 설정·로그 변수(HERDR_LOG)는 간다. 앱 env 에 일부러 싣는다
+sh "$H/iso-app.sh" "$ROOT" "$APP" HERDR_SESSION=l485-should-not-leak HERDR_PANE_ID=p-leak HERDR_SOCKET_PATH=/tmp/l485-leak.sock HERDR_LOG=info
 wait_phase live 150 && echo "link live" || echo "link 가 live 가 아니다"
 check "K4ⓐ link phase" "$(st "d['link']['phase']")" live
 check "K4ⓐ backend 카드" "$(st "d['backend']['kind']")" ok
@@ -29,6 +30,9 @@ echo "앱 CORRAL_/ELECTRON_ 변수 ${APPV}개: $(ps eww -o command= -p "$APID" |
 echo "서버 CORRAL_/ELECTRON_ 변수 ${SRVV}개 · XDG: $(ps eww -o command= -p "$SP" | tr ' ' '\n' | grep '^XDG_CONFIG_HOME=')"
 [ "$APPV" -gt 0 ] && echo "PASS 양성 대조(앱에서 잡힘)" || { echo "FAIL 양성 대조"; FAIL=1; }
 check "K4ⓔ 서버 CORRAL_/ELECTRON_ 변수" "$SRVV" 0
+echo "서버 HERDR_ 변수: $(ps eww -o command= -p "$SP" | tr ' ' '\n' | grep '^HERDR_' | tr '\n' ' ') · 앱 HERDR_ 변수(양성 대조): $(ps eww -o command= -p "$APID" | tr ' ' '\n' | grep -c '^HERDR_')개"
+check "R1-08 서버 pane 범위 HERDR_ 변수" "$(ps eww -o command= -p "$SP" | tr ' ' '\n' | grep -cE '^HERDR_(SESSION|PANE_ID|SOCKET_PATH)=')" 0
+check "R1-08 서버 HERDR_LOG 유지" "$(ps eww -o command= -p "$SP" | tr ' ' '\n' | grep -c '^HERDR_LOG=info$')" 1
 echo "## 앱 종료 (K4ⓒ)"; app_stop; sleep 1
 check "K4ⓒ 서버 pid 생존" "$(kill -0 "$SP" 2>/dev/null && echo alive || echo gone)" alive
 check "K4ⓒ default running" "$(running_default)" True

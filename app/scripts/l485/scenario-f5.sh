@@ -6,7 +6,7 @@
 #  사용: [L485_APP=<app 디렉터리>] sh scenario-f5.sh <ROOT>
 ROOT=$1; . "$(dirname "$0")/lib.sh"
 echo "## app $APP ($(git -C "$APP" rev-parse --short HEAD 2>/dev/null || cat "$APP/../.l485-rev" 2>/dev/null))"
-rm -rf "$ROOT"; sh "$H/iso-root.sh" "$ROOT" /tmp/l485i/zero.json
+rm -rf "$ROOT"; sh "$H/iso-root.sh" "$ROOT" /tmp/l485i/zero.json || { echo "격리 루트 준비 실패 — 멈춘다(fix3 R3-06)"; exit 3; }
 FK="$ROOT/fake"; mkdir -p "$FK"; cp "$H/fake-herdr.sh" "$FK/herdr"; chmod 755 "$FK/herdr"; echo hang > "$FK/fake-mode"
 sh "$H/iso-app.sh" "$ROOT" "$APP" CORRAL_HERDR_BIN="$FK/herdr"
 T0=$(date +%s); wait_card failed 200 && echo "1차 실패 카드 (경과 $(( $(date +%s) - T0 ))초)"

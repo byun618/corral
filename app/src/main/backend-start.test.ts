@@ -1,7 +1,7 @@
 // LIFE-485 K3 — 기동 결정 표 ①~⑩ 전부 + 띄우는 손의 동시 트리거·시한·즉시 종료 (K4ⓕⓖⓗ 의 로직 쪽).
 import { describe, expect, it } from 'vitest'
 import type { RestoreSummary } from '../shared/types.js'
-import { BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
+import { type RunningProbe, BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
 
 const zero: RestoreSummary = { known: true, total: 0, agents: [] }
 const three: RestoreSummary = { known: true, total: 3, agents: [{ kind: 'claude', count: 1 }, { kind: 'grok', count: 2 }] }
@@ -102,7 +102,7 @@ describe('decideBackend (K3)', () => {
 function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): StarterDeps {
   let clock = 0
   const base: StarterDeps = {
-    isRunning: async () => patch.running?.() ?? false,
+    isRunning: async () => ((patch.running?.() ?? false) ? { kind: 'running' } : { kind: 'stopped' }),
     spawn: () => ({ ok: true, pid: 4242, logPath: '/log' }),
     logTail: () => 'tail',
     stopChild: async () => true,
@@ -275,5 +275,75 @@ describe('낡은 실패 정리 · 시한 초과 자식 (r2 R2-01, grok M1 재현
     await starter.start('auto')
     const phase = starter.phase()
     expect(phase.phase === 'failed' && phase.error).toContain('끝내지 못했다')
+  })
+})
+
+describe('바인딩 + 조회 전·조회 실패 (r3 R3-01, grok M1)', () => {
+  const bound = { bound: 'l485r3bound', sessions: [] }
+  it('조회 전에는 지정 세션이 멈췄다고 그리지 않는다', () => {
+    expect(decideBackend(input({ ...bound, scan: 'pending' }))).toEqual({ status: { kind: 'ok' }, autostart: false })
+  })
+  it('조회 실패도 같다 · 재연결 중이면 배너', () => {
+    expect(decideBackend(input({ ...bound, scan: 'error' }))).toEqual({ status: { kind: 'ok' }, autostart: false })
+    expect(decideBackend(input({ ...bound, scan: 'pending', link: { phase: 'reconnecting', attempt: 2 } }))).toEqual({
+      status: { kind: 'reconnecting', session: 'l485r3bound', attempt: 2 },
+      autostart: false,
+    })
+  })
+  it('조회 뒤 멈춤이면 그때 지정 세션 카드', () => {
+    expect(decideBackend(input({ ...bound, scan: 'ok' })).status).toEqual({ kind: 'bound-stopped', session: 'l485r3bound', reason: 'bound' })
+  })
+})
+
+describe('조회 오류는 안 돎이 아니다 (r3 R3-02)', () => {
+  const probes = (list: Array<RunningProbe | Error>): (() => Promise<RunningProbe>) => {
+    let i = 0
+    return async () => {
+      const next = list[Math.min(i, list.length - 1)]
+      i += 1
+      if (next === undefined) return { kind: 'stopped' }
+      if (next instanceof Error) throw next
+      return next
+    }
+  }
+  it('띄우기 직전 조회가 모름이면 띄우지 않고 실패 원문에 오류를 적는다', async () => {
+    const starter = new BackendStarter(deps({ isRunning: probes([{ kind: 'unknown', error: 'session list 시한 초과' }]) }))
+    await starter.start('button')
+    expect(starter.spawns()).toBe(0)
+    const phase = starter.phase()
+    expect(phase.phase === 'failed' && phase.error).toContain('session list 시한 초과')
+  })
+  it('조회가 throw 해도 모름으로 읽는다', async () => {
+    const starter = new BackendStarter(deps({ isRunning: probes([new Error('boom')]) }))
+    await starter.start('button')
+    expect(starter.spawns()).toBe(0)
+    expect(starter.phase().phase).toBe('failed')
+  })
+  it('시한 끝 마지막 재조회가 돎이면 ready — 그룹을 끝내지 않는다', async () => {
+    const stopped: number[] = []
+    // 직전 조회 stopped, 루프 10회 stopped, 마지막 재조회 running
+    const list: RunningProbe[] = [{ kind: 'stopped' }, ...Array.from({ length: 10 }, (): RunningProbe => ({ kind: 'stopped' })), { kind: 'running' }]
+    const starter = new BackendStarter(deps({ isRunning: probes(list), stopChild: async (pid) => { stopped.push(pid); return true } }))
+    await starter.start('auto')
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+    expect(stopped).toEqual([])
+  })
+  it('시한 끝 마지막 재조회가 모름이면 죽이지 않고 pid 와 오류를 남긴다', async () => {
+    const stopped: number[] = []
+    const list: RunningProbe[] = [{ kind: 'stopped' }, ...Array.from({ length: 10 }, (): RunningProbe => ({ kind: 'stopped' })), { kind: 'unknown', error: 'ECONNRESET' }]
+    const starter = new BackendStarter(deps({ isRunning: probes(list), stopChild: async (pid) => { stopped.push(pid); return true } }))
+    await starter.start('auto')
+    expect(stopped).toEqual([])
+    const phase = starter.phase()
+    expect(phase.phase === 'failed' && phase.error).toContain('pid 4242')
+    expect(phase.phase === 'failed' && phase.error).toContain('ECONNRESET')
+  })
+  it('루프 중 조회 오류는 준비 아님으로 기다리고, 끝에 안 돎이 확인되면 그때만 끝낸다', async () => {
+    const stopped: number[] = []
+    const list: Array<RunningProbe> = [{ kind: 'stopped' }, { kind: 'unknown', error: 'x' }, { kind: 'stopped' }]
+    const starter = new BackendStarter(deps({ isRunning: probes(list), stopChild: async (pid) => { stopped.push(pid); return true } }))
+    await starter.start('auto')
+    expect(stopped).toEqual([4242])
+    expect(starter.phase().phase).toBe('failed')
   })
 })

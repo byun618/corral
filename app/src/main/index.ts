@@ -163,7 +163,8 @@ const link = new SessionLink({
 const backendStarter = new BackendStarter({
   isRunning: async () => {
     const scan = await listSessions(herdrPath())
-    return scan.sessions.some((session) => session.isDefault && session.running)
+    if (scan.error !== null) return { kind: 'unknown', error: scan.error }
+    return scan.sessions.some((session) => session.isDefault && session.running) ? { kind: 'running' } : { kind: 'stopped' }
   },
   spawn: (onExit) => {
     const binary = herdrPath()

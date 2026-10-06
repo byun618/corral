@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer, stopProcessGroup } from './server.js'
 
 let dir = ''
@@ -202,10 +202,35 @@ describe('spawnServer fd·stopProcessGroup (r2 R2-08·R2-01)', () => {
     const result = spawnServer({ binary: '/bin/true', logPath: path.join(blocker, 'server.log'), onExit: () => undefined })
     expect(result.ok).toBe(false)
   })
-  it('열었는데 쓰지 못하면 fd 를 닫고 ok:false (/dev/full 이 없는 macOS 는 읽기 전용 fd 를 흉내 낼 수 없어 열린 fd 수로 본다)', () => {
-    const before = fs.readdirSync('/dev/fd').length
-    for (let i = 0; i < 5; i++) spawnServer({ binary: path.join(dir, 'no-such'), logPath: path.join(dir, 'ok.log'), onExit: () => undefined })
-    expect(fs.readdirSync('/dev/fd').length).toBeLessThanOrEqual(before + 1)
+  it('열었는데 쓰지 못하면 그 fd 를 닫고 ok:false — writeSync 실패 분기를 실제로 밟는다 (r3 R3-03)', () => {
+    const opened: number[] = []
+    const closed: number[] = []
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      openSpy.mockRestore()
+      const fd = fs.openSync(...args)
+      opened.push(fd)
+      return fd
+    })
+    const writeSpy = vi.spyOn(fs, 'writeSync').mockImplementation(() => {
+      throw new Error('ENOSPC 주입')
+    })
+    const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((fd: number) => {
+      closed.push(fd)
+      closeSpy.mockRestore()
+      fs.closeSync(fd)
+    })
+    try {
+      const result = spawnServer({ binary: '/bin/true', logPath: path.join(dir, 'w.log'), onExit: () => undefined })
+      expect(result.ok).toBe(false)
+      expect(!result.ok && result.error).toContain('로그 파일에 쓰지 못했다')
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+      expect(opened.length).toBe(1)
+      expect(closed).toEqual(opened)
+    } finally {
+      writeSpy.mockRestore()
+      openSpy.mockRestore()
+      closeSpy.mockRestore()
+    }
   })
   it('시한 초과 자식의 프로세스 그룹을 끝낸다 — 손자까지', async () => {
     const fake = file('group-herdr', '#!/bin/sh\nsleep 30 &\necho $! > "$(dirname "$0")/grandchild.pid"\nexec sleep 30\n', 0o755)

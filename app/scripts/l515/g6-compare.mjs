@@ -15,7 +15,8 @@ export const FIXED_PATHS = [
   '~/.orca/keybindings.json', '~/.claude/settings.json', '~/.codex/config.toml', '~/.grok/config.toml', '~/.grok/trusted_folders.toml',
   `${UD}/settings.json`, `${UD}/keybindings.json`,
 ]
-const HASH_LINE = /^([0-9a-f]{64}) {2}(\d+)B {2}(~\/.+)$/
+// 링크 줄은 경로 뒤에 ` -> <대상>` 이 붙는다(fix2 R2-02). 줄 전체를 견주므로 대상 경로가 바뀌어도, 대상 내용이 바뀌어도 「수정」 이다.
+const HASH_LINE = /^([0-9a-f]{64}) {2}(\d+)B {2}(~\/.+?)(?: -> (.+))?$/
 const ABSENT_LINE = /^absent {2}(~\/.+)$/
 
 /** q1 — 엄격 범위 안인가. `~/.grok/` 아래는 설정 두 개와 hooks 만. */
@@ -33,7 +34,7 @@ export function parseSnapshot({ text, label }) {
   for (const line of lines) {
     const hit = HASH_LINE.exec(line) ?? ABSENT_LINE.exec(line)
     if (hit === null) return { ok: false, reason: `${label}: 형식이 깨진 줄 「${line}」` }
-    const file = hit.length === 4 ? hit[3] : hit[1]
+    const file = hit.length === 5 ? hit[3] : hit[1]
     if (!inStrictScope(file)) { excluded.push(file); continue }
     if (entries.has(file)) return { ok: false, reason: `${label}: 같은 경로가 두 번 「${file}」` }
     entries.set(file, line)

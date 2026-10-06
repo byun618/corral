@@ -18,6 +18,9 @@
 // 실행: `node:test` 의 `run({ files })` — `node --test` 와 같은 파일별 자식 프로세스 격리라 판정이 같다(`process.exit(0)` 으로
 // 일찍 끝나도 이미 보고된 실패는 실패, `only` 는 `--test-only` 없이 무시). `node --test <경로>` 는 경로를 글롭으로 읽어
 // `[1]`·`*` 가 든 경로를 조용히 놓치지만(r1 R1-claude-01) `files` 는 경로 그대로 쓴다. 종료코드는 최종 요약의 성공 여부.
+// 파일은 한 번에 하나씩 돈다(`run()` 의 `concurrency` 기본값 — `--test-concurrency` 없는 직렬, `node --test` CLI 는 병렬).
+// 의도한 것이다: 파일 간 공유 상태(소켓·고정 임시 경로)가 다투지 않고 로그가 파일 순서를 따른다. 대가는 시간이 파일 수에 선형인 것.
+// 끝나지 않는 테스트(풀리지 않는 Promise·남은 핸들)는 실패가 아니라 멈춘다 — `node --test` 와 같다. 전체 시간 상한은 두지 않는다.
 // 테스트가 0개인 node:test 파일은 `node --test` 처럼 통과로 센다 — 실행된 파일 목록은 로그 머리에 찍힌다.
 // 탐색 한계: import 를 정규식으로 본다. 주석·문자열 속 `from 'node:test'` 는 오탐이다 — 이름이 vitest 패턴이면 ② 로 실패하고,
 // 아니면 그 파일을 실행한다(테스트가 없으면 통과 — 목록에 나오니 그 파일의 주석·문자열을 고친다).
@@ -76,7 +79,7 @@ stream.on('test:summary', (data) => { if (data.file === undefined) summary = dat
 stream.on('end', () => {
   // 최종 요약이 없으면 실행이 끝까지 가지 못한 것이다 — 통과로 세지 않는다.
   const ok = summary?.success === true
-  console.log(`run-nodetest: ${files.length}개 실행 · ${ok ? '통과' : '실패'}${summary ? ` (tests ${summary.counts.tests} · fail ${summary.counts.failed})` : ' (최종 요약 없음)'}`)
+  console.log(`run-nodetest: ${files.length}개 실행 · ${ok ? '통과' : '실패'}${summary ? ` (tests ${summary.counts.tests} · fail ${summary.counts.failed} · cancelled ${summary.counts.cancelled})` : ' (최종 요약 없음)'}`)
   process.exitCode = ok ? 0 : 1
 })
 stream.compose(spec).pipe(process.stdout)

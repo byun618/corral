@@ -43,8 +43,8 @@ echo "# ③ 회차가 바꾼 파일"
 "$NODE" "$HERE/native-manifest.mjs" "$UD" > "$RAWD/ud-manifest-after-run.json"
 "$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$RAWD/herdr-manifest-after-run.json"
 "$NODE" -e "
-const fs=require('fs'); const diff=(a,b)=>{const x=JSON.parse(fs.readFileSync(a)).files,y=JSON.parse(fs.readFileSync(b)).files;const keys=[...new Set([...Object.keys(x),...Object.keys(y)])].sort();return keys.filter(k=>JSON.stringify(x[k])!==JSON.stringify(y[k])).map(k=>({file:k,before:x[k]?.size??null,after:y[k]?.size??null}))}
-console.log(JSON.stringify({userData:diff(process.argv[1],process.argv[2]),herdr:diff(process.argv[3],process.argv[4])},null,1))
+const fs=require('fs'); const diff=({before,after})=>{const x=JSON.parse(fs.readFileSync(before)).files,y=JSON.parse(fs.readFileSync(after)).files;const keys=[...new Set([...Object.keys(x),...Object.keys(y)])].sort();return keys.filter(k=>JSON.stringify(x[k])!==JSON.stringify(y[k])).map(k=>({file:k,before:x[k]?.size??null,after:y[k]?.size??null}))}
+console.log(JSON.stringify({userData:diff({before:process.argv[1],after:process.argv[2]}),herdr:diff({before:process.argv[3],after:process.argv[4]})},null,1))
 " "$ROOT/backup/ud-manifest.json" "$RAWD/ud-manifest-after-run.json" "$ROOT/backup/herdr-manifest.json" "$RAWD/herdr-manifest-after-run.json" > "$RAWD/changed-by-run.json"
 pass "변경 목록 → changed-by-run.json"
 

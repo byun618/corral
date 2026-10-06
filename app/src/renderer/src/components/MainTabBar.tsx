@@ -493,6 +493,7 @@ function keepFocusOnHeaderBackground(event: React.MouseEvent): void {
 
 export function GroupHeader({
   groupId,
+  headSpacer = false,
   tabs,
   workspaceTabCount,
   home,
@@ -532,6 +533,8 @@ export function GroupHeader({
   onActivateOpenTab,
 }: {
   groupId: string
+  /** LIFE-527 D5 — 사이드바가 접혀 머리가 이 탭 줄 위에 떠 있다(왼쪽 위 영역만). 머리 폭만큼 no-drag 여백을 앞에 둔다. */
+  headSpacer?: boolean
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
   tabs: TabRow[]
   /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
@@ -636,6 +639,9 @@ export function GroupHeader({
     >
       {/* 탭 스트립 — 넘치면 가로로 스크롤된다(스크롤바는 숨긴다, Orca `.terminal-tab-strip`). 넘치면 양옆 chevron·페이드·아래 썸 (LIFE-494).
           순서 = Orca `tab-bar-surface.tsx`: chevron ‹ · [스트립 + 썸] · chevron › · `+`. */}
+      {/* LIFE-527 D5 — Orca `TabGroupPanel.tsx:255-265`. Electron 의 drag 히트테스트는 z-index 형제가 아니라 DOM 자손의 no-drag 만 보므로
+          떠 있는 머리의 토글이 눌리려면 그 밑 탭 줄에 같은 폭의 no-drag 자리가 있어야 한다. 폭은 떠 있는 머리를 잰 값(--collapsed-sidebar-header-width). */}
+      {headSpacer ? <div className="main-tabbar-head-spacer" data-collapsed-head-spacer="" /> : null}
       {overflow.metrics.hasOverflow ? <TabStripChevron groupId={groupId} direction="start" overflow={overflow} dragActive={tabDragActive} /> : null}
       <div className="main-tab-strip-wrap" data-main-tab-strip-wrap={groupId}>
         <div

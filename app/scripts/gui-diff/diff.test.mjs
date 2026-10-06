@@ -369,15 +369,26 @@ test('C6ⓑ(옛) — 보고서 칸도 같은 상태를 적는다: 음성 4건은
   assert.doesNotMatch(line(controlResults([], { state: 'default' })), /해소 유지/)
 })
 
-test('C6ⓑ(새) — corral 있음 / Orca 없음(브랜드 줄)이면 통과, 방향이 반대면 실패', () => {
+test('C6ⓑ(옛 brandbar) — LIFE-527 해소: 두 앱 다 머리를 보고 높이·칠·경계 차이가 없으면 해소 유지, 높이가 다르면 관련 차이', () => {
+  const resolved = RESOLVED_CONTROLS.filter((control) => control.id === 'C6ⓑ(옛 brandbar)')
+  const seen = { 'sidebar-head': { left: 1, right: 1 } }
+  const clear = evaluateResolvedControls({ results: controlResults([], { state: 'default', observed: seen }), controls: resolved })
+  assert.equal(clear[0].status, 'clear')
+  const back = evaluateResolvedControls({ results: controlResults([{ id: 'sidebar-head', kind: 'box', detail: [{ prop: 'h', left: 36, right: 38, delta: 2 }] }], { state: 'default', observed: seen }), controls: resolved })
+  assert.equal(back[0].status, 'present')
+  const missing = evaluateResolvedControls({ results: controlResults([{ id: 'sidebar-head', kind: 'missing', detail: { absentSide: 'right' } }], { state: 'default', observed: seen }), controls: resolved })
+  assert.equal(missing[0].status, 'unknown')
+})
+
+test('C6ⓑ(새) — corral 있음 / Orca 없음(하단 ↻ — LIFE-527 이 브랜드 줄에서 옮겼다)이면 통과, 방향이 반대면 실패', () => {
   const ok = evaluateControls({
-    results: controlResultsA([{ id: 'brandbar', kind: 'missing', detail: { left: '없음(선언)', right: '있음 (1)', absentSide: 'left' } }]),
+    results: controlResultsA([{ id: 'sidebar-footer-refresh', kind: 'missing', detail: { left: '없음(선언)', right: '있음 (1)', absentSide: 'left' } }]),
     prerequisites: PREREQ,
     controls: controlB
   })
   assert.equal(ok[0].pass, true)
   const flipped = evaluateControls({
-    results: controlResultsA([{ id: 'brandbar', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선택자 0개)', absentSide: 'right' } }]),
+    results: controlResultsA([{ id: 'sidebar-footer-refresh', kind: 'missing', detail: { left: '있음 (1)', right: '없음(선택자 0개)', absentSide: 'right' } }]),
     prerequisites: PREREQ,
     controls: controlB
   })
@@ -1066,6 +1077,9 @@ const fakeHandle = ({ settingsOpen }) => {
           case 'observeSettingsPage': return settingsOpen() ? { open: true, section: 'shortcuts', activeNav: '단축키', focusInNav: true } : { open: false, section: null, activeNav: null, focusInNav: false }
           case 'observeNewTabMenuPage': return { open: false }
           case 'observePage': return { width: 280, repos: 0, cards: 0 }
+          // LIFE-527 — 창 크롬 장면 축(사이드바 펼침 · 영역 1개)
+          case 'observeChromePage': return { sidebarRoot: true, strips: [{ x: 281, y: 4 }] }
+          case 'observeOrcaChromeStore': return { sidebarOpen: true, groups: 1 }
           default: return null
         }
       },

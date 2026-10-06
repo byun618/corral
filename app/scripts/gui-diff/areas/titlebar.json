@@ -1,0 +1,177 @@
+{
+  "description": "창 크롬 위쪽 띠 (LIFE-527) — 사이드바 머리(신호등 여백·앱 이름·사이드바 토글) · 영역 탭 줄의 창 기준 자리 · 4px 드래그 띠 · 접힘 때 떠 있는 머리와 탭 줄 no-drag 여백 · 설정 뷰 위 띠.\n\n루트는 두 앱 다 `body` — 박스가 **창 콘텐츠 기준 절대 좌표**다(다른 영역은 영역 루트 기준 상대 좌표라 탭 줄이 창 위에 붙었는지 못 본다).\n`region` 속성 세트는 `-webkit-app-region`(drag/no-drag) 선언값이다 — **판정 근거가 아니라 기록**이다. drag 동작의 판정은 OS 수준 입력으로만 한다(01-criteria G2).\n페이지 캡처는 네이티브 신호등을 못 담는다 — 신호등 위치는 OS 창 캡처로 따로 본다(K1ⓑ·K9ⓑ).",
+  "root": {
+    "orca": "body",
+    "corral": "body"
+  },
+  "units": [
+    {
+      "id": "head",
+      "note": "사이드바 머리 36px — Orca `.titlebar-left`(펼침: 사이드바 칸 위 / 숨김: `titlebar-left-floating` 로 떠 있음) ↔ corral `[data-sidebar-head]`",
+      "orca": ".titlebar-left",
+      "corral": "[data-sidebar-head]",
+      "props": [
+        "box",
+        "paint",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D4·D5",
+      "conditional": true,
+      "conditionalWhy": "워크스페이스 뷰에서만 — Orca 설정 뷰는 머리 대신 전폭 `.titlebar` 를 그린다(settings-topbar 단위)"
+    },
+    {
+      "id": "head-traffic-pad",
+      "note": "신호등 여백 — Orca `.titlebar-traffic-light-pad`(80px / 줌) ↔ corral `[data-traffic-light-pad]`",
+      "orca": ".titlebar-traffic-light-pad",
+      "corral": "[data-traffic-light-pad]",
+      "props": [
+        "box"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D2·D4",
+      "conditional": true,
+      "conditionalWhy": "전체화면이면 두 앱 다 없다(D3)"
+    },
+    {
+      "id": "head-app-name",
+      "note": "앱 이름 — Orca `.titlebar-app-name` ↔ corral `[data-app-name]`",
+      "orca": ".titlebar-app-name",
+      "corral": "[data-app-name]",
+      "props": [
+        "box",
+        "paint",
+        "text",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D4 — 문구 Orca↔corral 은 의도적(앱 이름)",
+      "conditional": true,
+      "conditionalWhy": "사이드바가 펼쳐져 있을 때만(Orca `layout.showSidebar` · 숨김 땐 떠 있는 머리에 이름이 없다)"
+    },
+    {
+      "id": "head-toggle",
+      "note": "사이드바 토글 버튼 — Orca `.titlebar-left` 안 `.sidebar-toggle`(Back/Forward 의 `-compact`·오른쪽 사이드바 토글 `PanelRight` 제외) ↔ corral `[data-sidebar-toggle]`",
+      "orca": ".titlebar-left .sidebar-toggle:not(.sidebar-toggle-compact)",
+      "corral": "[data-sidebar-toggle]",
+      "props": [
+        "box",
+        "paint",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D4·D5",
+      "conditional": true,
+      "conditionalWhy": "설정 뷰에서는 두 앱 다 없다(Orca `layout.showSidebar` 거짓 · corral 워크스페이스가 inert). 527 이전 corral 은 접힘 때 이 자리가 없었다(`[data-sidebar-show]`)"
+    },
+    {
+      "id": "head-toggle-icon",
+      "note": "토글 아이콘 — lucide `PanelLeft` 16",
+      "orca": ".titlebar-left .sidebar-toggle:not(.sidebar-toggle-compact) > svg",
+      "corral": "[data-sidebar-toggle] > svg",
+      "props": [
+        "box",
+        "paint"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D4",
+      "conditional": true,
+      "conditionalWhy": "head-toggle 과 같다. 527 이전 corral 토글은 글자 버튼(svg 없음)"
+    },
+    {
+      "id": "head-history",
+      "note": "Back/Forward — Orca 전용(워크트리 내역)",
+      "orca": ".titlebar-left .sidebar-toggle-compact",
+      "props": [
+        "box"
+      ],
+      "classify": "의도적",
+      "classifyWhy": "LIFE-527 범위 밖 — corral 에 워크트리 내역 기능이 없다(00-analysis §4 범위 밖)",
+      "conditional": true,
+      "conditionalWhy": "Orca 워크스페이스 뷰에서만"
+    },
+    {
+      "id": "top-drag-strip",
+      "note": "가운데 칸 위 4px 드래그 띠 — Orca `TabGroupSplitLayout.tsx:316` `h-[4px] bg-card` ↔ corral `[data-top-drag-strip]`",
+      "orca": "div.shrink-0.bg-card[data-terminal-focus-release-surface=\"true\"]:not([data-tab-group-strip-id])",
+      "corral": "[data-top-drag-strip]",
+      "props": [
+        "box",
+        "paint",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D6 — 4px 띠 + 32px 탭 행 = 36px 기준선",
+      "conditional": true,
+      "conditionalWhy": "워크스페이스 뷰에서만"
+    },
+    {
+      "id": "tab-row",
+      "note": "영역 탭 줄 — 창 기준 자리(x·y·폭·높이). 영역이 여럿이면 DOM 순번(왼→오·위→아래)으로 짝",
+      "orca": "[data-tab-group-strip-id]",
+      "corral": "[data-main-tabbar]",
+      "props": [
+        "box",
+        "paint",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D6. 폭 차이는 Orca 오른쪽 사이드바(범위 밖)가 열려 있어서다 — 의도적으로 읽는다",
+      "conditional": true,
+      "conditionalWhy": "워크스페이스 뷰에서만"
+    },
+    {
+      "id": "collapsed-head-spacer",
+      "note": "사이드바 숨김 때 첫 탭 줄 앞 no-drag 여백 — Orca `TabGroupPanel.tsx:255` `width: var(--collapsed-sidebar-header-width)` ↔ corral `[data-collapsed-head-spacer]`",
+      "orca": "[data-tab-group-strip-id] > div > div.shrink-0:first-child[style*=\"collapsed-sidebar-header-width\"]",
+      "corral": "[data-collapsed-head-spacer]",
+      "props": [
+        "box",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D5",
+      "conditional": true,
+      "conditionalWhy": "사이드바 숨김 때 왼쪽 위 탭 줄에만"
+    },
+    {
+      "id": "settings-topbar",
+      "note": "설정 뷰 위 36px 띠 — Orca 전폭 `.titlebar` ↔ corral `[data-settings-topbar]`",
+      "orca": ".titlebar",
+      "corral": "[data-settings-topbar]",
+      "props": [
+        "box",
+        "paint",
+        "region"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D12",
+      "conditional": true,
+      "conditionalWhy": "설정 뷰에서만"
+    },
+    {
+      "id": "workspace-tools",
+      "note": "탭 줄 위 「명령 ⌘K · 단축키」 줄 — corral 전용(527 이전). Orca 에 없다",
+      "corral": ".workspace-tools",
+      "props": [
+        "box"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D6·D7·D8 — 줄을 없앤다",
+      "conditional": true,
+      "conditionalWhy": "527 이후 corral 에 없다 — 두 앱 다 없으면 차이 아님"
+    },
+    {
+      "id": "app-notice",
+      "note": "탭 줄 위 앱 수준 인라인 알림 — corral 전용(527 이전). Orca 는 토스트",
+      "corral": "[data-add-notice]",
+      "props": [
+        "box"
+      ],
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D9",
+      "conditional": true,
+      "conditionalWhy": "알림이 있을 때만"
+    }
+  ]
+}

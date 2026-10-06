@@ -34,6 +34,7 @@ import type {
 } from '../shared/types.js'
 import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
+import type { WindowChrome } from '../shared/window-chrome.js'
 
 const EXPOSED = [
   'getState',
@@ -82,6 +83,9 @@ const EXPOSED = [
   'focusPaneDirection',
   'onTermFrame',
   'onShortcut',
+  'getWindowChrome',
+  'onWindowChrome',
+  'syncWindowZoom',
   'preloadEnv',
 ]
 
@@ -239,6 +243,16 @@ const api: CorralApi = {
       ipcRenderer.removeListener('corral:shortcut', handler)
     }
   },
+  // LIFE-527 — 창 크롬(전체화면·줌). 줌 값은 main 이 자기 webContents 에서 읽는다 — 렌더러는 「바뀌었을지 모른다」만 알린다.
+  getWindowChrome: (): Promise<WindowChrome | null> => ipcRenderer.invoke('corral:getWindowChrome'),
+  onWindowChrome: (listener: (chrome: WindowChrome) => void) => {
+    const handler = (_event: unknown, chrome: WindowChrome): void => listener(chrome)
+    ipcRenderer.on('corral:windowChrome', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:windowChrome', handler)
+    }
+  },
+  syncWindowZoom: () => ipcRenderer.send('corral:syncWindowZoom'),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

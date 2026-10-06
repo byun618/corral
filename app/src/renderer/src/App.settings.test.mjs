@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /* global window, document, KeyboardEvent, requestAnimationFrame */
-// LIFE-511 K1ⓐⓑⓒⓓⓔ·K2ⓐⓑⓕ·K6ⓐ — 실제 App 마운트에서 설정 진입로(⚙ · ⌘, · 팔레트 · ? 메뉴 · workspace-tools)와 덮기·차단.
+// LIFE-511 K1ⓐⓑⓒⓓⓔ·K2ⓐⓑⓕ·K6ⓐ — 실제 App 마운트에서 설정 진입로(⚙ · ⌘, · 팔레트 · ? 메뉴 — LIFE-527 이 workspace-tools 줄을 없앴다)와 덮기·차단.
 // IPC 는 빈 state 합성(App.null-binding.test.mjs 와 같은 걸음), 키바인딩은 실제 `KeybindingStore` 를 거친다. TerminalPane 은 mock.
 import { act, Component, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -128,10 +128,14 @@ it('? 메뉴 「단축키」 — 설정 › 단축키로 간다', async () => {
   expect(app.q('[data-settings-nav-item="shortcuts"]').getAttribute('aria-current')).toBe('page')
 })
 
-it('workspace-tools 「단축키」 — 설정 › 단축키로 간다', async () => {
+it('LIFE-527 D7·D8 — workspace-tools 줄(명령·단축키·사이드바 펼치기)이 없다 · 단축키는 ? 메뉴, 팔레트는 Search 줄이 연다', async () => {
   const app = await mount()
-  await app.click('[data-shortcuts-open]')
-  expect(app.open()).toBe(true)
+  expect(app.q('.workspace-tools')).toBeNull()
+  expect(app.q('[data-shortcuts-open]')).toBeNull()
+  expect(app.q('[data-palette-open]')).toBeNull()
+  expect(app.q('[data-sidebar-show]')).toBeNull()
+  await app.click('[data-sidebar-search]')
+  expect(app.q('[data-command-palette]')).not.toBeNull()
 })
 
 it('설정이 열린 동안 워크스페이스 단축키는 막힌다(K2ⓕ) — ⌘B 사이드바·⌘K 팔레트가 돌지 않는다 · 닫으면 다시 돈다', async () => {
@@ -162,8 +166,8 @@ it('Esc 2단계로 닫힌다 · 단축키 편집이 설정 페이지에서 저�
   await app.key({ key: 'g', code: 'KeyG', ctrlKey: true })
   await app.click('[data-save-binding]')
   expect(JSON.parse(fs.readFileSync(path.join(app.folder, 'keybindings.json'), 'utf8'))).toEqual({ 'sidebar.toggle': ['Control+G'] })
-  // 사이드바 접기 버튼의 단축키 안내도 바로 바뀐다.
-  expect(app.q('[data-sidebar-toggle]').textContent).toBe('⌃G')
+  // 사이드바 접기 버튼의 단축키 안내(툴팁)도 바로 바뀐다(LIFE-527 — 글자 버튼 → PanelLeft 아이콘 + title).
+  expect(app.q('[data-sidebar-toggle]').title).toBe('사이드바 접기 (⌃G)')
   await app.key({ key: 'Escape' })
   expect(app.open()).toBe(true)
   await app.key({ key: 'Escape' })

@@ -400,6 +400,101 @@ async function setScroll({ handle, app, top }) {
   )
 }
 
+// ---- LIFE-527 — 창 크롬 장면: 사이드바 숨김 · 영역 분할 -------------------------------------------------
+// 두 앱 다 **제품 경로**로 만든다. 사이드바 숨김 = 토글 버튼 실제 마우스(Orca `.sidebar-toggle` — 펼침 땐 `.titlebar-left` 안,
+// 숨김 땐 떠 있는 머리 안 · corral `[data-sidebar-toggle]`, 527 이전 판은 숨김 때 `[data-sidebar-show]`).
+// 영역 분할 = Orca 스토어 `createEmptySplitGroup` + `moveUnifiedTabToGroup`(분할 메뉴가 부르는 동작) · corral `group.split` 단축키
+// (⌘⌥D 오른쪽 / ⌘⌥⇧D 아래 — 활성 탭을 새 영역으로). 둘 다 활성 탭을 새 영역으로 옮긴다.
+export const CHROME_SELECTORS = {
+  orca: { toggle: '.sidebar-toggle', show: '.sidebar-toggle', strip: '[data-tab-group-strip-id]' },
+  corral: { toggle: '[data-sidebar-toggle]', show: '[data-sidebar-show]', strip: '[data-main-tabbar]' }
+}
+
+function observeChromePage(sel) {
+  const strips = [...document.querySelectorAll(sel.strip)].map((el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top) } })
+  return { sidebarRoot: document.querySelector(sel.root) !== null, strips }
+}
+
+/** Orca 는 스토어가 진실이다 — 숨김 사이드바는 DOM 에서 빠지지 않고 폭 0 이 될 수 있다. */
+function observeOrcaChromeStore() {
+  const s = window.__store.getState()
+  const wt = s.activeWorktreeId
+  return { sidebarOpen: s.sidebarOpen === true, groups: (s.groupsByWorktree[wt] ?? []).length }
+}
+
+/** 못 읽으면 `null` 축으로 돌려준다 — 「못 봤다」를 「숨김 아님·영역 1개」로 읽지 않는다(장면 검사가 실패로 떨어진다). */
+async function observeChrome({ handle, app }) {
+  const page = await handle.cdp.evaluate(observeChromePage, { ...CHROME_SELECTORS[app], root: SCENE_SELECTORS[app].root })
+  if (!page) return { sidebarRoot: null, strips: [], sidebarShown: null, groups: null }
+  if (app === 'orca') {
+    const store = await handle.cdp.evaluate(observeOrcaChromeStore)
+    return { ...page, sidebarShown: store ? store.sidebarOpen : null, groups: store ? store.groups : null }
+  }
+  return { ...page, sidebarShown: page.sidebarRoot, groups: page.strips.length }
+}
+
+async function setSidebarHidden({ handle, app, want }) {
+  const seen = await observeChrome({ handle, app })
+  if (seen.sidebarShown === null) return false
+  if (seen.sidebarShown === !want) return true
+  const sel = CHROME_SELECTORS[app]
+  const clicked = (await click({ handle, selector: sel.toggle })) || (await click({ handle, selector: sel.show }))
+  if (!clicked) return false
+  try {
+    await until(async () => (await observeChrome({ handle, app })).sidebarShown === !want, `${app} 사이드바 숨김=${want}`, 10_000)
+    await pause(300)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function corralChord({ handle, code, key, shift }) {
+  // modifiers: Alt 1 · Meta 4 · Shift 8 (CDP). corral 은 물리 키 코드로 맞춘다(`shared/keybindings.ts` KeyInput).
+  const modifiers = 1 | 4 | (shift ? 8 : 0)
+  for (const type of ['rawKeyDown', 'keyUp']) await handle.cdp.send('Input.dispatchKeyEvent', { type, key, code, modifiers, windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0) })
+}
+
+async function setSplit({ handle, app, direction }) {
+  const before = await observeChrome({ handle, app })
+  const want = direction === null ? 1 : 2
+  if (before.groups === null) return false
+  if (before.groups === want) return true
+  if (app === 'orca') {
+    await handle.cdp.evaluate((direction) => {
+      const s = window.__store.getState()
+      const wt = s.activeWorktreeId
+      const groups = s.groupsByWorktree[wt] ?? []
+      if (direction === null) {
+        const [first, ...rest] = groups
+        for (const group of rest) {
+          for (const tabId of [...group.tabOrder]) window.__store.getState().moveUnifiedTabToGroup(tabId, first.id, { activate: false })
+          window.__store.getState().closeEmptyGroup(wt, group.id)
+        }
+        window.__store.getState().focusGroup(wt, first.id)
+        return true
+      }
+      const source = s.activeGroupIdByWorktree[wt] ?? groups[0]?.id
+      const group = groups.find((g) => g.id === source)
+      const tabId = group?.activeTabId ?? group?.tabOrder[0]
+      const created = s.createEmptySplitGroup(wt, source, direction)
+      if (created && tabId) window.__store.getState().moveUnifiedTabToGroup(tabId, created, { activate: true })
+      return true
+    }, direction)
+  } else if (direction === null) {
+    await corralChord({ handle, code: 'KeyW', key: 'w', shift: false })
+  } else {
+    await corralChord({ handle, code: 'KeyD', key: 'd', shift: direction === 'down' })
+  }
+  try {
+    await until(async () => (await observeChrome({ handle, app })).groups === want, `${app} 영역 ${want}개`, 10_000)
+    await pause(400)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** 레포 묶음이 접혔나 — 헤더는 있는데 카드가 0. */
 const isCollapsed = (seen) => seen.repos > 0 && seen.cards === 0
 
@@ -484,6 +579,9 @@ export async function resetScene({ orca, corral, orcaRepoId, fixture, base }) {
     // 설정이 열려 있으면 사이드바·탭바가 가려져 아래 되돌리기가 헛돈다 — 먼저 닫는다(LIFE-511).
     await closeSettings({ handle, app })
     await closeNewTabMenu({ handle, app })
+    // LIFE-527 — 숨긴 사이드바·분할 영역을 먼저 되돌린다(아래 폭·접힘 되돌리기가 사이드바 루트를 전제한다).
+    await setSidebarHidden({ handle, app, want: false })
+    await setSplit({ handle, app, direction: null })
     await pointerAway(handle)
     await setViewport(handle.cdp, { width: base.width, height: base.height })
     await setScroll({ handle, app, top: 0 })
@@ -521,6 +619,8 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.width) await dragWidth({ handle, app, target: scene.width })
     if (scene.viewportHeight) await setViewport(handle.cdp, { width: base.width, height: scene.viewportHeight })
     if (scene.collapsed) await setCollapsed({ handle, app, want: true })
+    if (scene.split) await setSplit({ handle, app, direction: scene.split })
+    if (scene.sidebarHidden) await setSidebarHidden({ handle, app, want: true })
     if (scene.scroll) {
       await pause(300)
       await setScroll({ handle, app, top: scene.scroll })
@@ -542,7 +642,7 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
       if (point) await mouse({ handle, type: 'mouseMoved', x: point.x, y: point.y })
       await pause(250)
     }
-    out[app] = { ...(await observe({ handle, app })), terminalBg: await handle.cdp.evaluate((selector) => { const el = document.querySelector(selector); return el ? getComputedStyle(el).backgroundColor : null }, TERMINAL_BG_SELECTORS[app]), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: await observeSettings({ handle, app }) }
+    out[app] = { ...(await observe({ handle, app })), chrome: await observeChrome({ handle, app }), terminalBg: await handle.cdp.evaluate((selector) => { const el = document.querySelector(selector); return el ? getComputedStyle(el).backgroundColor : null }, TERMINAL_BG_SELECTORS[app]), tabStrip: await observeTabStrip({ handle, app }), newTabMenu: scene.newTabMenu ? await observeNewTabMenu({ handle, app }) : null, settings: await observeSettings({ handle, app }) }
   }
   const check = (seen) => {
     if (!seen) return false
@@ -550,6 +650,10 @@ export async function applyScene({ orca, corral, orcaRepoId, fixture, base, scen
     if (scene.hover === 'row' && seen.hoveredRow !== 0) return false
     if (FOOTER_HOVER[scene.hover] && seen.hoveredFooter !== FOOTER_HOVER[scene.hover]) return false
     if (scene.collapsed && !isCollapsed(seen)) return false
+    // LIFE-527 — 사이드바 숨김·영역 수. 숨김이 아닌 장면은 사이드바가 서 있어야 한다(앞 장면이 숨긴 채 끌려오지 않게).
+    if (!seen.chrome) return false
+    if (seen.chrome.sidebarShown !== !scene.sidebarHidden) return false
+    if (seen.chrome.groups !== (scene.split ? 2 : 1)) return false
     if (scene.longWorktree && !(seen.cards === 3 && seen.longTitle)) return false
     // sticky: 실제로 스크롤됐고(범위 안), 헤더가 스크롤러 윗변 ±1px 에 붙어 있다.
     if (scene.scroll && !(seen.scrollTop > 0 && seen.headerOffset !== null && Math.abs(seen.headerOffset) <= 1)) return false

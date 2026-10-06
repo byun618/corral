@@ -92,7 +92,7 @@
   /* 터미널 글꼴 크기·줄높이는 토큰이 아니라 사용자 설정이다(LIFE-512 K2ⓑ — 소비처 없던 --fs-term·--lh-term 을 지웠다). */
 
   /* 치수 (밀도 8/10) */
-  --h-brandbar: 38px;
+  --h-titlebar: 36px;   /* LIFE-527 — 창 위 띠(사이드바 머리 · 설정 위 띠). Orca `.titlebar-left`·`.titlebar` 36px */
   --h-tabbar: 32px;      /* LIFE-493 — Orca `TabGroupPanel.tsx:249` `h-[32px]`(하단 경계 포함) */
   --h-statusbar: 25px;
   --h-repo-row: 28px;

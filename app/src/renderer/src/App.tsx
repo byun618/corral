@@ -34,6 +34,11 @@ import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
 import { RemoveRepoConfirm } from './components/RemoveRepoConfirm.js'
 import { Sidebar } from './components/Sidebar.js'
+import { SidebarHead } from './components/SidebarHead.js'
+import { Toaster } from './components/Toaster.js'
+import { useWindowChrome } from './hooks/useWindowChrome.js'
+import { showsTrafficLightPad } from '../../shared/window-chrome.js'
+import { toast } from 'sonner'
 import { StatusBar } from './components/StatusBar.js'
 import { kindLabel, TerminalChrome, type PaneStripItem } from './components/TerminalChrome.js'
 import { elapsedLabel } from './session-activity.js'
@@ -98,7 +103,10 @@ const MRU_HOLD_TIMEOUT_MS = 10_000
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  // LIFE-527 D9 — 앱 수준 알림은 Orca 처럼 토스트(오른쪽 아래, 자동 사라짐). 옛 「해제까지 상주」 인라인 줄(탭 줄 위)은 없앴다.
+  const notify = (message: string): void => {
+    toast(message)
+  }
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNote, setModalNote] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -122,6 +130,20 @@ export function App(): React.JSX.Element {
   const [removeError, setRemoveError] = useState<string | null>(null)
 
   const lifecycle = useLifecycleActions(state)
+  const windowChrome = useWindowChrome()
+  // LIFE-527 D5 — 떠 있는 머리(접힘)의 컨트롤 줄 폭 → 왼쪽 위 탭 줄 no-drag 여백 폭(Orca `--collapsed-sidebar-header-width`, `App.tsx:82`).
+  // 줌·전체화면으로 폭이 바뀌면 따라간다(ResizeObserver). 터미널 외관 변수와 같이 루트에 건다.
+  const floatingHeadRef = useRef<ResizeObserver | null>(null)
+  const measureFloatingHead = useCallback((element: HTMLDivElement | null) => {
+    floatingHeadRef.current?.disconnect()
+    floatingHeadRef.current = null
+    if (element === null) return
+    const apply = (): void => document.documentElement.style.setProperty('--collapsed-sidebar-header-width', `${element.getBoundingClientRect().width}px`)
+    const observer = new ResizeObserver(apply)
+    observer.observe(element)
+    floatingHeadRef.current = observer
+    apply()
+  }, [])
   const sidebarRef = useRef<HTMLDivElement | null>(null)
   const { width, onHandleMouseDown } = useSidebarResize(sidebarRef)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
@@ -573,7 +595,7 @@ export function App(): React.JSX.Element {
     actions: lifecycle.actions,
     revealPane,
     mruHistory: () => mruHistoryRef.current,
-    notify: setNotice,
+    notify,
   })
 
   /**
@@ -1056,7 +1078,7 @@ export function App(): React.JSX.Element {
       if (result.canceled) return
       if (result.added.length > 0 || result.alreadyRegistered.length > 0) {
         setModalOpen(false)
-        setNotice(result.message)
+        if (result.message !== null) notify(result.message)
         return
       }
       setModalNote(result.message)
@@ -1130,6 +1152,7 @@ export function App(): React.JSX.Element {
       <div className={`tab-group ${isActiveGroup ? 'is-active-group' : ''}`} data-tab-group={group.groupId} key={group.groupId}>
         <GroupHeader
           groupId={group.groupId}
+          headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
           tabs={groupTabs}
           workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
@@ -1422,22 +1445,30 @@ export function App(): React.JSX.Element {
       paletteEntries.push({ id: `worktree.open:${worktree.path}`, title: `${worktree.workspace ? 'worktree 전환' : 'worktree 열기'} · ${worktree.branch ?? worktree.path.split('/').at(-1)}`, detail: worktree.path, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openWorktree(repo.root, worktree) })
       for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) paletteEntries.push({ id: `pane.switch:${pane.paneId}`, title: sessionTitle({ tab, tabCount: worktree.workspace!.tabs.length, ordinal: tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId }), home: state.home, selectedPaneId: pane.paneId }), detail: `${worktree.path} · ${tab.tabId} · ${pane.paneId} · ${pane.agent ?? 'shell'}`, keywords: 'terminal tab pane switch', disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => {
         const alive = stateRef.current?.repos.some(r => r.worktrees.some(w => w.workspace?.tabs.some(t => t.panes.some(p => p.paneId === pane.paneId))))
-        if (!alive) { setNotice('대상 pane이 사라졌습니다'); return }
+        if (!alive) { notify('대상 pane이 사라졌습니다'); return }
         revealPane(pane.paneId)
       } })
     }
   }
+
+  // 사이드바 토글의 단축키 표시 — 비운 칸(null, fix2 R2-01)이면 툴팁에 단축키를 싣지 않는다.
+  const sidebarToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])
 
   return (
     <BindingLabels.Provider value={keymap.overrides}>
     <div className="app">
       <div className="app-stack">
       <div className={`app-body${settingsView === null ? '' : ' is-covered'}`} inert={paletteOpen || settingsView !== null}>
-        {sidebarCollapsed ? null : <>
+        {/* LIFE-527 D4·D5 — 사이드바 칸 = 머리(36px, 신호등·앱 이름·토글) + 사이드바. 접히면 머리만 왼쪽 위에 떠서 첫 탭 줄과 겹친다
+            (Orca `AppWorkspaceShell.tsx` — 폭 0 칸 안의 absolute 머리). 머리는 DOM 에서 main-area 보다 앞이다 — drag 히트테스트 순서가 Orca 와 같다. */}
+        {sidebarCollapsed ? (
+          <div className="sidebar-column is-collapsed">
+            <SidebarHead floating trafficLightPad={showsTrafficLightPad(windowChrome)} toggleLabel="사이드바 펼치기" toggleShortcut={sidebarToggleShortcut} onToggle={toggleSidebar} controlsRef={measureFloatingHead} />
+          </div>
+        ) : <>
+        <div className="sidebar-column">
+        <SidebarHead floating={false} trafficLightPad={showsTrafficLightPad(windowChrome)} toggleLabel="사이드바 접기" toggleShortcut={sidebarToggleShortcut} onToggle={toggleSidebar} />
         <Sidebar
-          onToggleSidebar={toggleSidebar}
-          // 단축키를 비운 칸(null — fix2 R2-01)이면 단축키 대신 「접기」를 보인다 — 버튼이 빈 글자로 사라지지 않게(fix3 R3-01).
-          shortcutHint={((binding) => (binding == null ? '접기' : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])}
           sidebarRef={sidebarRef}
           width={width}
           state={state}
@@ -1486,6 +1517,7 @@ export function App(): React.JSX.Element {
             return layout.splitDirectionOf(worktreePath) === 'column' ? '⊟' : '◫'
           }}
         />
+        </div>
         {/* LIFE-468 D19 — 리사이저는 레이아웃 폭 0 의 닻 위에 겹쳐 뜬다(Orca `absolute -right-1.5 w-3`). 패널과 본문의 구분선은
             본문 왼쪽 테두리가 진다(Orca `border-l border-border`). */}
         <div className="sidebar-resizer-anchor">
@@ -1496,21 +1528,9 @@ export function App(): React.JSX.Element {
 
         </>}
         <div className="main-area" data-main-area>
-          <div className="workspace-tools">
-            {sidebarCollapsed ? <button data-sidebar-show onClick={toggleSidebar} title={((binding) => (binding == null ? undefined : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])}>사이드바 펼치기</button> : null}
-            <button data-palette-open disabled={modalBlocked} onClick={openPalette}>명령 {formatBinding(bindingsFor('palette.open', keymap.overrides)[0] ?? '')}</button>
-            <button data-shortcuts-open onClick={() => openSettings('shortcuts')}>단축키</button>
-          </div>
-          {notice === null ? null : (
-            <div className="inline-notice tone-info" data-add-notice>
-              <span className="inline-notice-dot" />
-              <span className="inline-notice-text">{notice}</span>
-              <div className="inline-notice-spacer" />
-              <button className="inline-notice-dismiss" onClick={() => setNotice(null)}>
-                해제
-              </button>
-            </div>
-          )}
+          {/* LIFE-527 D6 — 4px 드래그 띠 + 32px 영역 탭 줄 = 36px 기준선(Orca `TabGroupSplitLayout.tsx:316`). workspace-tools 줄(명령·단축키·
+              사이드바 펼치기)과 앱 수준 알림 줄은 없앴다 — 팔레트는 사이드바 Search 줄·⌘K, 단축키는 하단 ? 메뉴, 펼치기는 떠 있는 머리(D7·D8·D5). */}
+          <div className="top-drag-strip" data-top-drag-strip="" />
 
           <TerminalChrome panes={stripPanes}>
             {activeWorkspace === null || layout.layout === null ? (
@@ -1540,7 +1560,13 @@ export function App(): React.JSX.Element {
         </div>
       </div>
       {settingsView === null ? null : (
+        // LIFE-527 D12 — Orca 설정 뷰는 전폭 36px 타이틀바(신호등 여백 + drag)를 유지한다. 설정 페이지는 그 아래에 선다.
+        <div className="settings-overlay" data-settings-overlay="">
+        <div className="settings-topbar" data-settings-topbar="">
+          {showsTrafficLightPad(windowChrome) ? <div className="sidebar-head-traffic-pad" data-traffic-light-pad="" /> : null}
+        </div>
         <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} sidebarView={sidebarView.view} onChangeSidebarView={sidebarView.change} />
+        </div>
       )}
       </div>
 
@@ -1620,7 +1646,7 @@ export function App(): React.JSX.Element {
               const patch = copy.dontAskAgain.patch
               lifecycle.confirmPendingClose({
                 before: async () => {
-                  if (!(await updateSettings(patch))) setNotice(CLOSE_SKIP_FAILED_NOTICE)
+                  if (!(await updateSettings(patch))) notify(CLOSE_SKIP_FAILED_NOTICE)
                 },
               })
             }}
@@ -1635,10 +1661,12 @@ export function App(): React.JSX.Element {
           onClose={lifecycle.closeWorktreeModal}
           onDone={(message) => {
             lifecycle.closeWorktreeModal()
-            setNotice(message)
+            notify(message)
           }}
         />
       )}
+
+      <Toaster />
 
       {tabDrag.dragState === null ? null : (
         <DropZoneOverlay

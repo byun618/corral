@@ -7,7 +7,8 @@
 /* Orca scrollbar-sleek — thin 이면 ::-webkit-scrollbar(9px, styles.css) 대신 플랫폼 thin 폭이 된다(R009: 목록 폭 479 ↔ 481). */
 .settings-nav-scroll, .settings-content, .shortcuts-list { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg-muted) 34%, transparent) transparent; }
 .settings-page {
-  position: absolute; inset: 0; z-index: 30;
+  /* LIFE-527 — 설정 위 36px 띠(.settings-overlay > .settings-topbar) 아래 남은 높이를 채운다. 덮기는 겉 상자(.settings-overlay)가 한다. */
+  position: relative; flex: 1 1 auto;
   display: flex; min-height: 0; overflow: hidden;
   background: var(--bg-surface); color: var(--fg);
 }

@@ -27,11 +27,13 @@ export const POSITIVE_CONTROLS = [
     // LIFE-468 K4ⓕ — 옛 ⓑ(레포 헤더 아이콘: Orca 폴더 vs corral 이니셜 사각형)는 S2 가 **해소**했다(K4ⓐ lucide Folder).
     // 해소되면 뒤집히는 것이 정상이라 옛 정의는 `RESOLVED_CONTROLS` 로 옮겨 **뒤집힘을 회차마다 원자료로 남기고**,
     // 대조는 S2 가 건드리지 않는 알려진 부재로 옮긴다: corral 전용 브랜드 줄(Orca 는 창 크롬 — S4 LIFE-470 몫).
+    // LIFE-527 — 브랜드 줄은 527 이 Orca `.titlebar-left` 모양 머리로 **해소**했다(sidebar.json `sidebar-head` 짝). 같은 방향(corral 있음 /
+    // Orca 없음)의 알려진 부재로 옮긴다: 하단 바 ↻ 재조회 버튼(LIFE-526 D3 — corral 고유, Orca 짝 없음 · 527 이 건드리지 않는다).
     id: 'C6ⓑ',
     area: 'sidebar',
     state: 'default',
-    unit: 'brandbar',
-    claim: 'corral 은 상단 브랜드 줄이 있고 Orca 는 없다(창 크롬이 그 자리를 쓴다)',
+    unit: 'sidebar-footer-refresh',
+    claim: 'corral 은 하단 바 ↻ 재조회 버튼이 있고 Orca 는 없다(LIFE-526 D3)',
     expect: { kind: 'missing', absentSide: 'left' },
     requires: []
   }
@@ -60,6 +62,22 @@ export const RESOLVED_CONTROLS = [
     },
     requires: [],
     resolvedBy: 'LIFE-468'
+  },
+  {
+    // LIFE-527 — 옛 C6ⓑ(새)(corral 전용 브랜드 줄 / Orca 없음). 527 이 Orca `.titlebar-left` 모양 머리(36px·사이드바 칠·inset 경계)로 바꿔
+    // 짝을 지었다. 옛 차이를 정의한 것은 **존재/부재**였고 해소의 모양은 높이·칠·경계라 그 속성만 본다.
+    id: 'C6ⓑ(옛 brandbar)',
+    area: 'sidebar',
+    state: 'default',
+    unit: 'sidebar-head',
+    claim: 'corral 전용 브랜드 줄(38px, 「c」 마크) vs Orca 창 크롬 — LIFE-527 D4 가 해소',
+    expect: {
+      bothPresent: true,
+      kinds: ['box', 'style'],
+      props: ['h', 'backgroundColor', 'boxShadow']
+    },
+    requires: [],
+    resolvedBy: 'LIFE-527'
   }
 ]
 

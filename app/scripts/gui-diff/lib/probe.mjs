@@ -51,6 +51,9 @@ export const PROP_SETS = {
     'opacity',
     'boxShadow'
   ],
+  // LIFE-527 — 창 드래그 영역 선언값(`-webkit-app-region`). **기록용** — drag 동작의 판정은 OS 수준 입력으로만 한다(527 G2).
+  // `areas/titlebar.json` 만 이 세트를 청한다 — 다른 영역의 차이 수를 바꾸지 않는다.
+  region: ['webkitAppRegion'],
   // 글자 — 선언값. 실제 렌더 폰트는 CDP `CSS.getPlatformFontsForNode` 로 따로 받는다(C7 분류 규칙)
   text: [
     'fontFamily',

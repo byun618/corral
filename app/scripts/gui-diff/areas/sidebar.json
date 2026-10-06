@@ -23,15 +23,17 @@
       "classifyWhy": "패널 폭·배경·테두리는 S2(LIFE-468 D19) 범위"
     },
     {
-      "id": "brandbar",
-      "note": "상단 브랜드 줄 — corral 전용 (Orca 는 창 크롬이 그 자리를 쓴다)",
-      "corral": "[data-brandbar]",
+      "id": "sidebar-head",
+      "note": "사이드바 머리 36px — Orca `.titlebar-left`(사이드바 칸 위) ↔ corral `[data-sidebar-head]`. 두 앱 다 영역 루트(사이드바 패널) **밖** 위에 있어 루트 기준 y 가 −36 이다. 옛 `brandbar`(corral 전용 38px 브랜드 줄, Orca 없음)를 LIFE-527 D4 가 이 짝으로 바꿨다 — 옛 양성 대조 C6ⓑ 자리",
+      "global": true,
+      "orca": ".titlebar-left",
+      "corral": "[data-sidebar-head]",
       "props": [
         "box",
         "paint"
       ],
-      "classify": "보류",
-      "classifyWhy": "corral 전용 브랜드 줄 — Orca 는 창 크롬이 그 자리를 쓴다. 상단 줄은 S4(LIFE-470) 몫. 양성 대조 C6ⓑ(새)"
+      "classify": "해소 대상",
+      "classifyWhy": "LIFE-527 D4 — 머리 높이·칠·inset 경계. 창 크롬 상세(신호등 여백·이름·토글·drag)는 areas/titlebar.json"
     },
     {
       "id": "search-row",

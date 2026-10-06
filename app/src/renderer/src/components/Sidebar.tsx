@@ -1,5 +1,5 @@
 // design-handoff.md §1 — 사이드바 4단 전개(repo 헤더 → worktree 2줄 블록 → 세션 행). 이 파일은
-// C6 이 나열한 개별 컴포넌트(SidebarBrandBar 등)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
+// C6 이 나열한 개별 컴포넌트(SidebarSearch 등 — 머리는 LIFE-527 부터 App 의 SidebarHead)를 엮는 조립부다 — 자체는 판정표에 없는 이름이라
 // 자유롭게 구조화했다.
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AgentKind, AppState, RepoRow as RepoRowData, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
@@ -21,7 +21,6 @@ import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
 import { RepoRow } from './RepoRow.js'
 import { RevealConfirmDialog } from './RevealConfirmDialog.js'
 import { ReposSectionHeader } from './ReposSectionHeader.js'
-import { SidebarBrandBar } from './SidebarBrandBar.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
 import { CircleXIcon, ListIcon, PinIcon } from './SidebarIcons.js'
@@ -59,8 +58,6 @@ const REVEAL_RETRIES = 8
 const REVEAL_GAP = 6
 
 export function Sidebar({
-  onToggleSidebar,
-  shortcutHint,
   sidebarRef,
   width,
   state,
@@ -92,8 +89,6 @@ export function Sidebar({
   onOpenShortcuts: () => void
   /** 하단 ⚙ — 설정 페이지 (LIFE-511). */
   onOpenSettings: () => void
-  onToggleSidebar: () => void
-  shortcutHint: string
   sidebarRef: RefObject<HTMLDivElement | null>
   width: number
   state: AppState
@@ -410,7 +405,6 @@ export function Sidebar({
 
   return (
     <div className={`sidebar ${reorder.state !== null ? 'is-reordering' : ''}`} data-sidebar ref={sidebarRef} style={{ width }}>
-      <SidebarBrandBar onToggle={onToggleSidebar} shortcutHint={shortcutHint} />
       <SidebarSearch shortcut={searchShortcut} onOpen={onOpenSearch} />
       <ReposSectionHeader view={view} repos={state.repos} onChangeView={onChangeView} onAddRepo={onAddRepo} />
       <div className="repo-list" data-repo-list ref={listRef}>

@@ -113,7 +113,11 @@ async function mount({ settings: initial = {}, pinned = false, running = false, 
       await act(async () => { resolve() })
       await act(async () => {})
     },
-    notice: () => q('[data-add-notice]')?.textContent ?? null,
+    // LIFE-527 D9 — 앱 수준 알림은 토스트(sonner). sonner 는 toast() 를 다음 틱에 그린다 — 한 틱 기다린 뒤 문서에서 찾는다.
+    notice: async () => {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+      return document.querySelector('[data-sonner-toast] [data-title]')?.textContent ?? null
+    },
     closeKey: async () => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'w', code: 'KeyW', metaKey: true })) }); await act(async () => {}) },
     key: async (init) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
     modal: () => q('[data-confirm-close-modal]'),
@@ -340,7 +344,7 @@ it('R1-01 저장 응답이 오면 닫는다(실제 closeTabsGated) · 체크 없
   await held.releaseSave()
   expect(held.closed).toEqual(['t1'])
   expect(held.closeCalls.at(-1)).toMatchObject({ tabIds: ['t1'], confirmed: true, confirmedPaneIds: ['p1'] })
-  expect(held.notice()).toBeNull()
+  expect(await held.notice()).toBeNull()
   for (const cleanup of cleanups.splice(0)) cleanup()
   resetSettingsStoreForTest(null)
   const plain = await mount({ running: true })
@@ -359,5 +363,5 @@ it('R1-02 체크 + 확인의 저장이 실패하면 알리고 닫기는 진행�
   await app.click('[data-dont-ask-again-input]')
   await app.click('[data-close-confirm-ok]')
   expect(app.closed).toEqual(['t1'])
-  expect(app.notice()).toContain('설정을 저장하지 못해 다음에도 묻습니다')
+  expect(await app.notice()).toContain('설정을 저장하지 못해 다음에도 묻습니다')
 })

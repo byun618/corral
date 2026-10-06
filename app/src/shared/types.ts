@@ -2,6 +2,7 @@ import type { Settings, SettingsWriteResult } from './terminal-settings.js'
 import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
+import type { WindowChrome } from './window-chrome.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1000,5 +1001,10 @@ export type CorralApi = {
   onTermFrame: (listener: (frame: TerminalFrame) => void) => () => void
   /** 메뉴에서 뺏어 온 단축키가 레지스트리 액션과 방향 번호가 온다 — 키는 main 이 삼키고 여기로 넘긴다. */
   onShortcut: (listener: (shortcut: CorralShortcut) => void) => () => void
+  /** LIFE-527 — 창 크롬 상태(macOS 여부·전체화면·줌). 다른 창의 요청이면 null. */
+  getWindowChrome: () => Promise<WindowChrome | null>
+  onWindowChrome: (listener: (chrome: WindowChrome) => void) => () => void
+  /** 줌이 바뀌었을지 모를 때(창 resize) — main 이 줌을 다시 읽어 신호등을 옮기고 상태를 민다. */
+  syncWindowZoom: () => void
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

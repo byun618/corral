@@ -45,12 +45,14 @@ async function mount(input) {
   const root = createRoot(host)
   try {
     await act(async () => { root.render(createElement(Boundary, null, createElement(App))) })
-    const show = host.querySelector('[data-sidebar-show]')
+    // LIFE-527 — 접기·펼치기는 사이드바 머리의 PanelLeft 토글 하나다(펼침 = 사이드바 칸 위, 접힘 = 떠 있는 머리). 단축키는 title 에 싣는다.
+    const hide = host.querySelector('[data-sidebar-toggle="hide"]')
+    const show = host.querySelector('[data-sidebar-toggle="show"]')
     return {
       error: host.querySelector('[data-render-error]')?.textContent ?? null,
       app: host.querySelector('.app') !== null,
-      toggle: host.querySelector('[data-sidebar-toggle]')?.textContent ?? null,
-      show: show === null ? null : { text: show.textContent ?? '', title: show.title },
+      toggle: hide === null ? null : hide.title,
+      show: show === null ? null : { label: show.getAttribute('aria-label') ?? '', title: show.title },
     }
   } finally {
     act(() => root.unmount())
@@ -61,21 +63,21 @@ async function mount(input) {
 it('fix3 R3-01 대조 — 빈 재정의 파일은 지금처럼 뜬다(⌘B)', async () => {
   const shown = await mount({ overrides: {}, collapsed: false })
   expect(shown.error).toBeNull()
-  expect(shown.toggle).toBe('⌘B')
+  expect(shown.toggle).toBe('사이드바 접기 (⌘B)')
 })
 
 it('fix3 R3-01 사이드바 단축키를 비운 파일 — 펼친 상태로 뜨고 접기 버튼이 남는다', async () => {
   const shown = await mount({ overrides: { 'sidebar.toggle': [null] }, collapsed: false })
   expect(shown.error).toBeNull()
   expect(shown.app).toBe(true)
-  expect(shown.toggle).not.toBeNull()
-  expect(shown.toggle).not.toBe('')
+  // 비운 칸이면 빈 괄호 없이 이름만(fix3 R3-01 — 「접기」 대체 규칙과 같은 취지: 버튼·툴팁이 빈 글자로 사라지지 않는다).
+  expect(shown.toggle).toBe('사이드바 접기')
 })
 
-it('fix3 R3-01 사이드바 단축키를 비운 파일 — 접힌 상태로 뜨고 펼치기 버튼이 남는다(단축키 안내 없음)', async () => {
+it('fix3 R3-01 사이드바 단축키를 비운 파일 — 접힌 상태로 뜨고 펼치기 버튼(떠 있는 머리)이 남는다(단축키 안내 없음)', async () => {
   const shown = await mount({ overrides: { 'sidebar.toggle': [null] }, collapsed: true })
   expect(shown.error).toBeNull()
   expect(shown.app).toBe(true)
-  expect(shown.show?.text).toBe('사이드바 펼치기')
-  expect(shown.show?.title).toBe('')
+  expect(shown.show?.label).toBe('사이드바 펼치기')
+  expect(shown.show?.title).toBe('사이드바 펼치기')
 })

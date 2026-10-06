@@ -437,6 +437,38 @@ const STATE_TARGETS = {
     scene: { settingsOpen: true },
     detail: '탭 1개, 설정 페이지 › 단축키 — 내비(돌아가기·검색·그룹 제목·활성 행) · 콘텐츠(max-w 896·섹션 헤더·카드). Orca 는 그룹 8개+Projects, corral 은 「인터페이스 › 단축키」 하나(S6)'
   },
+  // ---- LIFE-527 K2·K3 — 창 크롬 장면. `--areas titlebar` 와 함께 잰다(루트 body — 창 기준 절대 좌표) ----
+  // 사이드바 숨김 = 두 앱 다 토글 실제 마우스. 분할 = Orca 스토어 분할 동작 · corral `group.split` 단축키(활성 탭을 새 영역으로).
+  'sidebar-hidden': {
+    tabCount: 1,
+    agents: [],
+    scene: { sidebarHidden: true },
+    detail: '탭 1개, 사이드바 숨김 — 머리(신호등 여백 + 토글)가 왼쪽 위에 떠서 첫 탭 줄에 겹치고 그 탭 줄 앞에 같은 폭 no-drag 여백(D5)'
+  },
+  'split-right': {
+    tabCount: 2,
+    agents: [],
+    scene: { split: 'right' },
+    detail: '탭 2개, 좌우 2영역(활성 탭을 오른쪽 새 영역으로) — 두 탭 줄 다 창 위(D6)'
+  },
+  'split-down': {
+    tabCount: 2,
+    agents: [],
+    scene: { split: 'down' },
+    detail: '탭 2개, 상하 2영역(활성 탭을 아래 새 영역으로) — 위 영역 탭 줄만 창 위(D6)'
+  },
+  'split-right-hidden': {
+    tabCount: 2,
+    agents: [],
+    scene: { split: 'right', sidebarHidden: true },
+    detail: '좌우 2영역 + 사이드바 숨김 — 겹침·no-drag 여백은 왼쪽 위 영역 탭 줄에만(K2ⓓ)'
+  },
+  'split-down-hidden': {
+    tabCount: 2,
+    agents: [],
+    scene: { split: 'down', sidebarHidden: true },
+    detail: '상하 2영역 + 사이드바 숨김 — 겹침·no-drag 여백은 왼쪽 위(= 위) 영역 탭 줄에만(K2ⓓ)'
+  },
   // LIFE-512 K5ⓓ — 설정 › 외관(두 앱 다 ⚙ 실제 마우스 → 내비 「외관」 실제 마우스). `--areas appearance` 와 함께 잰다.
   // 두 앱 다 「터미널」 카드가 펼친 채 시작한다 — 접기 클릭은 하지 않는다. Orca 외관은 인터페이스·터미널·창 카드 셋, corral 은 터미널 하나(S6 범위).
   'settings-appearance': {

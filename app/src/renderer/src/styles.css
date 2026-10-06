@@ -135,14 +135,6 @@ button, input { font: inherit; letter-spacing: inherit; }
 
 /* --- SidebarBrandBar (§2) ------------------------------------------------------------------- */
 
-.brandbar { display: flex; align-items: center; gap: 8px; height: var(--h-brandbar); padding: 0 10px 0 12px; flex: 0 0 auto; }
-.brandbar-mark {
-  width: 17px; height: 17px; border-radius: 4px; background: var(--accent);
-  display: flex; align-items: center; justify-content: center;
-  color: var(--fg-on-accent); font-family: var(--font-mono); font-size: 10px; font-weight: 700;
-}
-.brandbar-name { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
-.brandbar-hint { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); letter-spacing: .04em; }
 
 /* --- Search 줄 (LIFE-470 D28a) ------------------------------------------------------------------ */
 
@@ -1201,8 +1193,6 @@ body.is-tab-drag { cursor: grabbing; user-select: none; }
 .repo-row-menu-item.is-disabled { color: var(--fg-faint); cursor: default; }
 .repo-row-menu-item.is-disabled:hover { background: none; }
 
-.workspace-tools { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 10px; flex-shrink: 0; }
-.workspace-tools button { color: inherit; background: var(--bg-chip); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 5px 9px; cursor: pointer; }
 /* LIFE-511 — 옛 단축키 모달(.shortcut-settings·.shortcut-backdrop …) CSS 는 설정 › 단축키(components/settings.css)로 옮기며 지웠다.
    옛 규칙이 쓰던 없는 토큰(--bg-panel·--border·--text-primary·--text-secondary)도 함께 사라졌다(K3ⓔ). */
 
@@ -1375,3 +1365,68 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 /* LIFE-516 — 「다시 묻지 않음」 체크박스(닫기 확인·워크트리 삭제). Orca 198 Label `text-xs font-normal text-muted-foreground`, Checkbox 옆 gap-2. */
 .modal-dont-ask { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 11.5px; color: var(--fg-muted); cursor: pointer; user-select: none; }
 .modal-dont-ask input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+
+/* --- LIFE-527 창 크롬 (hiddenInset) — Orca 198 `assets/main.css` `.titlebar-left`·`.titlebar`·`.sidebar-toggle`·`.titlebar-app-name` --------------
+   창 맨 윗줄 = 사이드바 머리 36px(왼쪽) + 4px 드래그 띠 · 32px 영역 탭 줄(가운데). 빈 자리는 창 드래그(-webkit-app-region: drag),
+   누르는 것은 no-drag. Orca 의 「터미널 입력 포커스 동안 no-drag」(`:root[data-regular-terminal-input-focused]`)는 따라 하지 않는다(D13). */
+.sidebar-column { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
+.sidebar-column > .sidebar { flex: 1 1 auto; min-height: 0; }
+/* 접힘: 폭 0 칸 안에 머리만 떠 있다(Orca `relative w-0 overflow-visible` + `absolute top-0 left-0 z-10 w-max`). */
+.sidebar-column.is-collapsed { position: relative; width: 0; overflow: visible; }
+.sidebar-head {
+  height: var(--h-titlebar); min-height: var(--h-titlebar); flex-shrink: 0; width: 100%;
+  display: flex; flex-direction: row; align-items: center; overflow: hidden;
+  background: var(--bg-sidebar);
+  /* Orca: border-bottom 대신 inset 그림자 — 내용 상자가 36px 그대로라 세로 중심이 신호등 중심(y=18)과 맞는다. */
+  box-shadow: inset 0 -1px 0 var(--line);
+  -webkit-app-region: drag; user-select: none;
+}
+.sidebar-head.is-floating {
+  position: absolute; top: 0; left: 0; z-index: 10; width: max-content;
+  background: var(--bg-window); border-right: 1px solid var(--line);
+}
+.sidebar-head-controls { display: flex; align-items: center; height: 100%; flex-shrink: 0; }
+.sidebar-head.is-floating .sidebar-head-controls { width: max-content; }
+.sidebar-head-traffic-pad { width: calc(80px / var(--ui-zoom-factor, 1)); flex-shrink: 0; }
+/* 전체화면·macOS 아님 — Orca `pl-2`. */
+.sidebar-head-edge-pad { width: 8px; flex-shrink: 0; }
+.sidebar-head-app-name {
+  -webkit-app-region: no-drag;
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: min(280px, 32vw);
+  margin-left: 2px; margin-right: 4px; padding: 0 6px; border-radius: 4px;
+  color: var(--fg-muted); font-size: 12px; font-weight: 600; line-height: 24px; white-space: nowrap; overflow: hidden;
+}
+/* 사이드바 칸 안(펼침)은 사이드바 글자색 — Orca `.titlebar-left:not(.titlebar-left-floating) .titlebar-app-name`. */
+.sidebar-head:not(.is-floating) .sidebar-head-app-name { color: var(--fg); }
+.sidebar-head-toggle {
+  -webkit-app-region: no-drag;
+  display: flex; align-items: center; justify-content: center; padding: 4px 8px; border: none; border-radius: 4px;
+  background: none; color: var(--fg-muted); cursor: pointer; transition: background 150ms;
+}
+.sidebar-head-toggle:hover { background: var(--bg-accent); color: var(--fg); }
+.sidebar-head-toggle-icon { display: block; width: 16px; height: 16px; flex-shrink: 0; }
+/* 가운데 칸 위 4px 드래그 띠(Orca `h-[4px] shrink-0 bg-card`). */
+.top-drag-strip { height: 4px; flex-shrink: 0; background: var(--bg-window); -webkit-app-region: drag; }
+/* 영역 탭 줄 — 빈 자리는 창 드래그. 탭·버튼·chevron·썸·꼬리 액션은 no-drag(Orca `tab-bar-surface.tsx` 의 탭·chevron·`+` no-drag ·
+   `TabGroupPanel.tsx` 액션 묶음 no-drag). 탭이 no-drag 여야 탭 끌기(자체 포인터 드래그)가 시작된다(D11). */
+.main-tabbar { -webkit-app-region: drag; }
+.main-tab, .main-tab-add, .tab-strip-chevron, .tab-strip-scroll-track, .main-tabbar-tail { -webkit-app-region: no-drag; }
+/* 접힘 때 떠 있는 머리 밑 no-drag 여백(왼쪽 위 영역 탭 줄만). */
+.main-tabbar-head-spacer { flex-shrink: 0; width: var(--collapsed-sidebar-header-width); -webkit-app-region: no-drag; }
+/* 설정 뷰 — 전폭 36px 띠(Orca 설정 `.titlebar`: bg-card · border-b · drag) 아래에 설정 페이지. */
+.settings-overlay { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; min-height: 0; }
+.settings-topbar {
+  height: var(--h-titlebar); min-height: var(--h-titlebar); flex-shrink: 0; display: flex; align-items: center;
+  background: var(--bg-window); border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none;
+}
+/* 위쪽 36px 띠와 겹칠 수 있는 떠 있는 것들은 그 자리에서 눌려야 한다 — drag 영역 위의 요소는 z-index 와 무관하게 창 드래그가 먹는다
+   (Orca `main.css:786-797` Radix 포털 no-drag 와 같은 취지, D11). */
+.options-menu, .hover-card, .tab-create-menu, .tab-context-menu, .ctx-menu, .parent-picker, .modal-scrim, .palette-backdrop,
+.drop-zone-overlay, .tab-drag-ghost, .mru-switcher, .settings-page, [data-sonner-toaster] { -webkit-app-region: no-drag; }
+/* 토스트 — Orca `components/ui/sonner.tsx` style 변수. sonner 는 `--width` 를 ol 에 인라인으로 걸어서 폭만 !important 로 덮는다. */
+.toaster[data-sonner-toaster][data-sonner-theme] {
+  --normal-bg: var(--bg-raised); --normal-text: var(--fg); --normal-border: var(--line); --border-radius: var(--radius-settings-row);
+  --width: min(26rem, calc(100vw - 2rem)) !important;
+}
+/* 토스트 글자 — Orca `toastOptions.className: 'font-sans text-sm'`(14px/20px). */
+.corral-toast { font-family: var(--font-ui); font-size: 14px; line-height: 20px; }

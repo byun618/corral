@@ -6,34 +6,48 @@
 // 한 파일만: `npx vitest run <파일>` · `node --test <파일>`. `npm test -- <필터>` 는 vitest 에 닿지 않는다(`&&` 앞 명령이라).
 //
 // 파일 목록을 손으로 적지 않는다 — `app/` 아래에서 `node:test` 를 import 하는 파일을 **내용으로** 찾아 전부 돌린다.
-// 그래서 이름을 무엇으로 짓든 새 node:test 파일이 조용히 빠지지 않는다. 대신 아래 둘은 실패로 끝낸다:
+// 그래서 이름을 무엇으로 짓든 새 node:test 파일이 조용히 빠지지 않는다. 대신 아래 셋은 실패로 끝낸다:
 //   ① 찾은 파일이 0개 — `node --test <glob>` 은 0건이면 exit 0 으로 통과시킨다(LIFE-517 00-analysis §3 G4)
 //   ② node:test 파일이 vitest 이름(`*.test.*`·`*.spec.*`)을 쓴다 — vitest 가 수집해 `No test suite found` 로 실패한다
+//   ③ 이 러너 안에서 이 러너가 다시 돈다(복사본·하드링크가 테스트 파일로 잡힌 경우) — 환경변수로 재진입을 막는다
 //
-// 탐색 범위: 점 폴더·점 파일도 본다. 빼는 것은 남의 코드·산출물·VCS 뿐이다 — `node_modules`(의존성),
-// `out`·`dist`(빌드 산출물, eslint ignores 와 같다), `.git`(VCS 내부). 확장자는 vitest include 와 같은 `[cm]?[jt]sx?`.
-// 이 러너 자신도 뺀다 — 아래 주석에 탐색 대상 문구가 있어, 빼지 않으면 자기를 다시 띄워 무한 재귀한다.
-// 실행: 파일마다 `node <파일>` 로 따로 띄운다(node:test 는 그 파일의 테스트를 돌리고 실패면 exit 1).
-// `node --test <경로>` 는 경로를 글롭으로 읽어 `[1]`·`*` 가 든 경로를 조용히 놓친다(LIFE-517 r1 R1-claude-01) — 그래서 쓰지 않는다.
-// 탐색 한계: import 를 정규식으로 본다. 주석·문자열 속 `from 'node:test'` 는 오탐 — 그 파일을 실행하거나 이름 위반으로
-// **시끄럽게** 실패하니 메시지가 가리키는 파일의 주석·문자열을 고친다. `from /* c */ 'node:test'` 처럼 사이에 주석을 끼우면 못 찾는다.
+// 탐색 범위: 점 폴더·점 파일도 본다. 빼는 것은 남의 코드·산출물·VCS 뿐이다 — 어느 깊이든 `node_modules`(의존성)·`.git`(VCS),
+// `app/` 바로 아래의 `out`·`dist`(빌드 산출물 — eslint ignores `out/**`·`dist/**` 와 같은 루트 기준). 확장자는 vitest include 와
+// 같은 `[cm]?[jt]sx?`. 심볼릭 링크는 따라가지 않는다 — 링크 대상이 `app/` 안이면 실제 경로로 잡힌다.
+// 이 러너 자신도 뺀다 — 아래 주석에 탐색 대상 문구가 있어, 빼지 않으면 자기를 테스트 파일로 돌린다.
+// 실행: `node:test` 의 `run({ files })` — `node --test` 와 같은 파일별 자식 프로세스 격리라 판정이 같다(`process.exit(0)` 으로
+// 일찍 끝나도 이미 보고된 실패는 실패, `only` 는 `--test-only` 없이 무시). `node --test <경로>` 는 경로를 글롭으로 읽어
+// `[1]`·`*` 가 든 경로를 조용히 놓치지만(r1 R1-claude-01) `files` 는 경로 그대로 쓴다. 종료코드는 최종 요약의 성공 여부.
+// 테스트가 0개인 node:test 파일은 `node --test` 처럼 통과로 센다 — 실행된 파일 목록은 로그 머리에 찍힌다.
+// 탐색 한계: import 를 정규식으로 본다. 주석·문자열 속 `from 'node:test'` 는 오탐이다 — 이름이 vitest 패턴이면 ② 로 실패하고,
+// 아니면 그 파일을 실행한다(테스트가 없으면 통과 — 목록에 나오니 그 파일의 주석·문자열을 고친다).
+// `from /* c */ 'node:test'` 처럼 사이에 주석을 끼우면 못 찾는다.
 
-import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { run } from 'node:test'
+import { spec } from 'node:test/reporters'
 import { fileURLToPath } from 'node:url'
+
+const REENTRY = 'CORRAL_RUN_NODETEST'
+if (process.env[REENTRY]) {
+  console.error(`run-nodetest: 재진입 — 이 러너가 다른 run-nodetest 안에서 돌았다(복사본·하드링크가 테스트 파일로 잡혔다): ${process.argv[1]}`)
+  process.exit(1)
+}
+process.env[REENTRY] = '1'
 
 const SELF = fileURLToPath(import.meta.url)
 const APP_DIR = path.dirname(path.dirname(SELF))
-const SKIP_DIRS = new Set(['node_modules', 'out', 'dist', '.git'])
+const SKIP_ANY_DEPTH = new Set(['node_modules', '.git'])
+const SKIP_AT_ROOT = new Set(['out', 'dist'].map((name) => path.join(APP_DIR, name)))
 const SOURCE = /\.[cm]?[jt]sx?$/
 const VITEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const IMPORTS_NODE_TEST = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"]node:test['"]/
 
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    if (SKIP_DIRS.has(entry.name)) return []
     const full = path.join(dir, entry.name)
+    if (SKIP_ANY_DEPTH.has(entry.name) || SKIP_AT_ROOT.has(full)) return []
     if (entry.isDirectory()) return walk(full)
     return entry.isFile() && SOURCE.test(entry.name) ? [full] : []
   })
@@ -55,10 +69,14 @@ if (misnamed.length > 0) {
 }
 
 console.log(`run-nodetest: node:test 파일 ${files.length}개\n  ${files.join('\n  ')}`)
-const failed = files.filter((file) => {
-  console.log(`\nrun-nodetest: ▶ ${file}`)
-  const run = spawnSync(process.execPath, ['--test-reporter=spec', file], { cwd: APP_DIR, stdio: 'inherit' })
-  return run.status !== 0
+process.chdir(APP_DIR)
+let summary = null
+const stream = run({ files: files.map((file) => path.join(APP_DIR, file)) })
+stream.on('test:summary', (data) => { if (data.file === undefined) summary = data })
+stream.on('end', () => {
+  // 최종 요약이 없으면 실행이 끝까지 가지 못한 것이다 — 통과로 세지 않는다.
+  const ok = summary?.success === true
+  console.log(`run-nodetest: ${files.length}개 실행 · ${ok ? '통과' : '실패'}${summary ? ` (tests ${summary.counts.tests} · fail ${summary.counts.failed})` : ' (최종 요약 없음)'}`)
+  process.exitCode = ok ? 0 : 1
 })
-console.log(`\nrun-nodetest: ${files.length}개 실행 · 실패 ${failed.length}개${failed.length > 0 ? `\n  ${failed.join('\n  ')}` : ''}`)
-process.exit(failed.length > 0 ? 1 : 0)
+stream.compose(spec).pipe(process.stdout)

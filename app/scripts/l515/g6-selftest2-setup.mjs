@@ -1,5 +1,6 @@
-// LIFE-515 fix2 — 실제 수집기(g6-hash.sh)·비교기(g6-compare.mjs) 자체 검사 fixture. **임시 HOME**(L515_G6_HOME)만 쓴다 — 사용자 경로를 읽지 않는다.
-// 경우마다 <root>/<경우>/home 을 기본 상태로 만들고 → 실제 수집기로 before.txt 를 찍고 → 변형을 적용한다.
+// LIFE-515 fix2·fix3 — 실제 수집기(g6-hash.sh)·비교기(g6-compare.mjs) 자체 검사 fixture. **임시 HOME**(L515_G6_HOME)만 쓴다 — 사용자 경로를 읽지 않는다.
+// 경우마다 <root>/<경우>/home 을 기본 상태로 만들고 → (prepare 가 있으면 적용) → 실제 수집기로 before.txt 를 찍고 → 변형을 적용한다.
+// fix3 R3-01 경우(상위 경로 탐색 불가·ENOTDIR·부재 양성 대조)는 끝에 붙였다. 권한을 바꾼 fixture 는 검사 뒤 `--cleanup` 으로 복원·삭제한다.
 // 판정 회차는 경우마다 run.mjs 한 행: L515_G6_HOME=<root>/<경우>/home node app/scripts/l515/g6-compare.mjs <root>/<경우>/before.txt <root>/<경우>/after.txt
 // 사용: node app/scripts/l515/g6-selftest2-setup.mjs /tmp/l515g6h
 import fs from 'node:fs'
@@ -50,16 +51,37 @@ const cases = [
   { name: 'broken-link', expect: 1, note: '링크 hook 대상 삭제(끊긴 링크) → 수집기 exit 3 (R2-02)', mutate: ({ home }) => fs.rmSync(at({ home, rel: 'dotfiles/hook-target.sh' })) },
   { name: 'link-to-dir', expect: 1, note: '폴더를 가리키는 링크 hook → 수집기 exit 3', mutate: ({ home }) => fs.symlinkSync(at({ home, rel: 'dotfiles' }), at({ home, rel: '.claude/hooks/dir-link' })) },
   { name: 'fifo', expect: 1, note: 'hooks 안 fifo(지원하지 않는 종류) → 수집기 exit 3', mutate: ({ home }) => execFileSync('mkfifo', [at({ home, rel: '.claude/hooks/pipe' })]) },
+  // ── fix3 R3-01 ──
+  { name: 'fixed-absent-parent-unsearchable', expect: 1, note: '시작: ~/.codex 없음(absent) → 지금: .codex/config.toml 생김 + .codex chmod 000 → 수집기 exit 3 (EACCES 를 없음으로 읽지 않음)',
+    prepare: ({ home }) => fs.rmSync(at({ home, rel: '.codex' }), { recursive: true }),
+    mutate: ({ home }) => { fs.mkdirSync(at({ home, rel: '.codex' })); fs.writeFileSync(at({ home, rel: '.codex/config.toml' }), 'model = "y"\n'); fs.chmodSync(at({ home, rel: '.codex' }), 0o000) } },
+  { name: 'hooks-absent-parent-unsearchable', expect: 1, note: '시작: ~/.claude/hooks 없음(absent) → 지금: hooks 생김 + ~/.claude chmod 000 → 수집기 exit 3 (같은 상위의 ~/.claude/settings.json 검사가 먼저 걸린다)',
+    prepare: ({ home }) => fs.rmSync(at({ home, rel: '.claude/hooks' }), { recursive: true }),
+    mutate: ({ home }) => { fs.mkdirSync(at({ home, rel: '.claude/hooks' })); fs.writeFileSync(at({ home, rel: '.claude/hooks/new.sh' }), 'echo new\n'); fs.chmodSync(at({ home, rel: '.claude' }), 0o000) } },
+  { name: 'existing-parent-unsearchable', expect: 1, note: '있는 파일(~/.orca/keybindings.json)의 상위 ~/.orca chmod 000 → 수집기 exit 3',
+    mutate: ({ home }) => fs.chmodSync(at({ home, rel: '.orca' }), 0o000) },
+  { name: 'parent-enotdir', expect: 1, note: '시작: ~/.codex 없음 → 지금: ~/.codex 가 일반 파일(ENOTDIR) → 수집기 exit 3',
+    prepare: ({ home }) => fs.rmSync(at({ home, rel: '.codex' }), { recursive: true }),
+    mutate: ({ home }) => fs.writeFileSync(at({ home, rel: '.codex' }), 'not a dir\n') },
+  { name: 'absent-target-positive', expect: 0, note: '양성 대조: 상위 ~/.codex 는 탐색 가능, config.toml 만 없음 → absent 줄 · 수집 0 · 비교 0',
+    prepare: ({ home }) => fs.rmSync(at({ home, rel: '.codex/config.toml' })), mutate: () => {} },
+  { name: 'absent-ancestor-positive', expect: 0, note: '양성 대조: ~/.codex 폴더째 없음(ENOENT 가 더 위에서) → absent 줄 · 수집 0 · 비교 0',
+    prepare: ({ home }) => fs.rmSync(at({ home, rel: '.codex' }), { recursive: true }), mutate: () => {} },
 ]
 
-// 앞 회차가 남긴 chmod 000 폴더도 지울 수 있게 권한을 되돌린 뒤 지운다.
+// 앞 회차가 남긴 chmod 000 폴더도 지울 수 있게 권한을 되돌린 뒤 지운다. `--cleanup` 이면 그것만 하고 끝낸다.
 if (fs.existsSync(root)) spawnSync('chmod', ['-R', 'u+rwx', root])
 fs.rmSync(root, { recursive: true, force: true })
+if (process.argv[3] === '--cleanup') {
+  console.log(`정리: ${root} 권한 복원·삭제 — 남음 ${fs.existsSync(root)}`)
+  process.exit(fs.existsSync(root) ? 1 : 0)
+}
 const summary = []
 for (const item of cases) {
   const dir = path.join(root, item.name)
   const home = path.join(dir, 'home')
   baseHome({ home })
+  item.prepare?.({ home })
   const before = spawnSync('sh', [collector], { encoding: 'utf8', env: { ...process.env, L515_G6_HOME: home } })
   if (before.status !== 0) throw new Error(`${item.name}: 기본 HOME 수집 실패 ${before.status} ${before.stderr}`)
   fs.writeFileSync(path.join(dir, 'before.txt'), before.stdout)

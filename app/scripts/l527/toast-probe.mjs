@@ -1,4 +1,5 @@
 // LIFE-527 K4 — 토스트를 두 앱에서 띄워 잰다(격리). Orca = 198 개발 인스턴스(/tmp/l443/orca-198, 버리는 HOME), corral = 격리 인스턴스.
+/* global document, getComputedStyle, innerWidth, innerHeight */
 //
 // 띄우는 길:
 //   (경로 ③ 닫기 건너뛰기 저장 실패도 corral 에서 일으킨다 — 아래 본문 주석)

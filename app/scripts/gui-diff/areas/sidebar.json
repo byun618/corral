@@ -24,10 +24,10 @@
     },
     {
       "id": "sidebar-head",
-      "note": "사이드바 머리 36px — Orca `.titlebar-left`(사이드바 칸 위) ↔ corral `[data-sidebar-head]`. 두 앱 다 영역 루트(사이드바 패널) **밖** 위에 있어 루트 기준 y 가 −36 이다. 옛 `brandbar`(corral 전용 38px 브랜드 줄, Orca 없음)를 LIFE-527 D4 가 이 짝으로 바꿨다 — 옛 양성 대조 C6ⓑ 자리",
+      "note": "사이드바 머리 36px — Orca `.titlebar-left`(사이드바 칸 위) ↔ corral `[data-sidebar-head]`. 두 앱 다 영역 루트(사이드바 패널) **밖** 위에 있어 루트 기준 y 가 −36 이다. 옛 `brandbar`(corral 전용 38px 브랜드 줄, Orca 없음)를 LIFE-527 D4 가 이 짝으로 바꿨다 — 옛 양성 대조 C6ⓑ 자리. corral 선택자의 `[data-brandbar]` 는 LIFE-527 이전 빌드(K7 전 측정)에서 같은 자리를 잡는 대체 — 새 빌드엔 없다",
       "global": true,
       "orca": ".titlebar-left",
-      "corral": "[data-sidebar-head]",
+      "corral": "[data-sidebar-head], [data-brandbar]",
       "props": [
         "box",
         "paint"

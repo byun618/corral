@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global window, document, KeyboardEvent */
+/* global window, document, KeyboardEvent, setTimeout */
 // LIFE-516 K3·K4·K2·K6 — 실제 App 마운트에서
 //   · ⌘W(실제 keydown → 레지스트리 → `closeTabsByUser`) → 확인 창(실제 `ConfirmClose`) → 체크박스·확인/취소 클릭 → 설정 쓰기·닫기
 //   · 설정 › 일반 토글 클릭 → 설정 쓰기 1회 · 다음 ⌘W 의 확인 여부

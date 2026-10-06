@@ -132,13 +132,13 @@ try {
   save()
 
   // ── 준비: fixture 레포(깨끗한 linked worktree 2개) 등록(add-repo) → 카드 실제 클릭으로 연다 ─────────────────
-  const git = (cwd, ...rest) => execFileSync('git', ['-c', 'user.name=fx', '-c', 'user.email=fx@local', ...rest], { cwd, encoding: 'utf8' })
+  const git = ({ cwd, args }) => execFileSync('git', ['-c', 'user.name=fx', '-c', 'user.email=fx@local', ...args], { cwd, encoding: 'utf8' })
   fs.mkdirSync(fixture, { recursive: true })
-  git(fixture, 'init', '-q', '-b', 'main')
+  git({ cwd: fixture, args: ['init', '-q', '-b', 'main'] })
   fs.writeFileSync(path.join(fixture, 'README.md'), 'fx\n')
-  git(fixture, 'add', '.')
-  git(fixture, 'commit', '-qm', 'init')
-  for (const name of ['clean-a', 'clean-b']) git(fixture, 'worktree', 'add', '-q', '-b', `l516n-${name}`, path.join(wtRoot, name))
+  git({ cwd: fixture, args: ['add', '.'] })
+  git({ cwd: fixture, args: ['commit', '-qm', 'init'] })
+  for (const name of ['clean-a', 'clean-b']) git({ cwd: fixture, args: ['worktree', 'add', '-q', '-b', `l516n-${name}`, path.join(wtRoot, name)] })
   const real = fs.realpathSync(fixture)
   const realWt = (name) => fs.realpathSync(path.join(wtRoot, name))
   result.fixture = { real, worktrees: ['clean-a', 'clean-b'].map(realWt) }

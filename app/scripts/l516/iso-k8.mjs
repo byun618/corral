@@ -50,16 +50,16 @@ if (guard !== '') {
 }
 fs.rmSync(work, { recursive: true, force: true })
 fs.mkdirSync(work, { recursive: true })
-const git = (cwd, ...rest) => execFileSync('git', ['-c', 'user.name=fx', '-c', 'user.email=fx@local', ...rest], { cwd, encoding: 'utf8' })
+const git = ({ cwd, args }) => execFileSync('git', ['-c', 'user.name=fx', '-c', 'user.email=fx@local', ...args], { cwd, encoding: 'utf8' })
 const fixture = path.join(work, 'fx')
 fs.mkdirSync(fixture)
-git(fixture, 'init', '-q', '-b', 'main')
+git({ cwd: fixture, args: ['init', '-q', '-b', 'main'] })
 fs.writeFileSync(path.join(fixture, 'README.md'), 'fx\n')
-git(fixture, 'add', '.')
-git(fixture, 'commit', '-qm', 'init')
+git({ cwd: fixture, args: ['add', '.'] })
+git({ cwd: fixture, args: ['commit', '-qm', 'init'] })
 const wtRoot = path.join(work, 'fx-wt')
 const WT = ['clean-a', 'clean-b', 'clean-c', 'dirty']
-for (const name of WT) git(fixture, 'worktree', 'add', '-q', '-b', `l516-${name}`, path.join(wtRoot, name))
+for (const name of WT) git({ cwd: fixture, args: ['worktree', 'add', '-q', '-b', `l516-${name}`, path.join(wtRoot, name)] })
 fs.writeFileSync(path.join(wtRoot, 'dirty', 'uncommitted.txt'), 'dirty\n')
 
 const result = { app: path.resolve(args.app), work, startedAt: new Date().toISOString(), steps: {}, checks: null, notes: [], deletes: [] }
@@ -121,10 +121,12 @@ try {
     // run-2 의 「자세히」 캡처는 두 번 다 실패했다 — 쉬는 시간을 늘려 세 번까지 찍는다.
     let result = await shotOnce({ name, selector })
     for (const wait of [800, 1600]) {
-      if (!result.startsWith('실패')) return result
+      if (!result.startsWith('실패')) break
       await pause(wait)
       result = await shotOnce({ name, selector })
     }
+    // fix1 R1-03 — 캡처는 K7ⓑ 필수 원자료다. 재시도 뒤에도 없으면 필수 조건 실패로 종료코드에 남긴다(문자열만 돌려주고 통과하지 않게).
+    checks.require(`shot ${name}`, !result.startsWith('실패'), { result })
     return result
   }
   const shotOnce = async ({ name, selector }) => {

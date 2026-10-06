@@ -14,13 +14,21 @@
 #   ⑤ ~/.config/herdr 최상위: session.json 바이트 복원 · 로그는 원래 길이로 자름 · 새로 생긴 최상위 파일 제거 → 전=후 대조
 #   ⑥ provider 설정 대조(복원하지 않는다) ⑦ herdr default stopped · 잔존 프로세스 ⑧ 원자료 익명화·판정(native-down-tail.sh)
 # 사용: sh native-down.sh <ROOT> <raw 폴더>
+# LIFE-516 fix1 R1-05 — 원복·해시 실패(복원 명령 실패·manifest 불일치·읽기 오류·대조 실패)는 **그 자리에서 exit 1 로 멈춘다**(q1 조건 2
+# 「하나라도 어긋나면 즉시 멈춘다」). 이후 복원·삭제·자르기 단계를 진행하지 않고, 백업($ROOT/backup)·원자료를 그대로 남긴다.
+# l515 원본(fail 이 FAILED=1 만 세우고 계속)은 다른 작업 산출물이라 고치지 않았다.
+# 자체 검사용: L516_DOWN_UD·L516_DOWN_HCFG 로 userData·herdr 경로를 바꿀 수 있다 — /tmp/l516 아래만 받는다(native-down-selftest.sh).
 set -u
 ROOT=$1; RAWD=$2
 HERE=$(cd "$(dirname "$0")/../l470" && pwd)
 NODE="$HOME/.nvm/versions/node/v24.14.1/bin/node"
-UD="$HOME/Library/Application Support/corral"
-HCFG="$HOME/.config/herdr"
-FAILED=0; fail() { echo "✘ $1"; FAILED=1; }; pass() { echo "✔ $1"; }
+UD=${L516_DOWN_UD:-"$HOME/Library/Application Support/corral"}
+HCFG=${L516_DOWN_HCFG:-"$HOME/.config/herdr"}
+for P in "${L516_DOWN_UD:-}" "${L516_DOWN_HCFG:-}"; do
+  case "$P" in ''|/tmp/l516*|/private/tmp/l516*) ;; *) echo "✘ 자체 검사 경로는 /tmp/l516 아래만: $P"; exit 2 ;; esac
+done
+fail() { echo "✘ $1"; echo "판정: 원복 중단 — 그 자리에서 멈췄다(이후 단계 미실행). 백업 $ROOT/backup·원자료 $RAWD 그대로"; exit 1; }
+pass() { echo "✔ $1"; }
 abort() { echo "✘ $1"; echo "판정: 원복 중단 — 복원 전에 멈췄다"; exit 3; }
 alive() { kill -0 "$1" 2>/dev/null; }
 stop() { kill "$1" 2>/dev/null; i=0; while alive "$1"; do i=$((i+1)); [ $i -gt 150 ] && return 1; sleep 0.2; done; return 0; }
@@ -40,12 +48,12 @@ done
 pass "Electron 잔존 없음"
 
 echo "# ③ 회차가 바꾼 파일"
-"$NODE" "$HERE/native-manifest.mjs" "$UD" > "$RAWD/ud-manifest-after-run.json"
-"$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$RAWD/herdr-manifest-after-run.json"
+"$NODE" "$HERE/native-manifest.mjs" "$UD" > "$RAWD/ud-manifest-after-run.json" || fail "userData manifest 읽기 실패(회차 뒤)"
+"$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$RAWD/herdr-manifest-after-run.json" || fail "herdr manifest 읽기 실패(회차 뒤)"
 "$NODE" -e "
 const fs=require('fs'); const diff=({before,after})=>{const x=JSON.parse(fs.readFileSync(before)).files,y=JSON.parse(fs.readFileSync(after)).files;const keys=[...new Set([...Object.keys(x),...Object.keys(y)])].sort();return keys.filter(k=>JSON.stringify(x[k])!==JSON.stringify(y[k])).map(k=>({file:k,before:x[k]?.size??null,after:y[k]?.size??null}))}
 console.log(JSON.stringify({userData:diff({before:process.argv[1],after:process.argv[2]}),herdr:diff({before:process.argv[3],after:process.argv[4]})},null,1))
-" "$ROOT/backup/ud-manifest.json" "$RAWD/ud-manifest-after-run.json" "$ROOT/backup/herdr-manifest.json" "$RAWD/herdr-manifest-after-run.json" > "$RAWD/changed-by-run.json"
+" "$ROOT/backup/ud-manifest.json" "$RAWD/ud-manifest-after-run.json" "$ROOT/backup/herdr-manifest.json" "$RAWD/herdr-manifest-after-run.json" > "$RAWD/changed-by-run.json" || fail "변경 목록 만들기 실패"
 pass "변경 목록 → changed-by-run.json"
 
 echo "# ④ userData 전체 복원 (-c 체크섬 비교 — 1차 원복에서 크기·mtime 이 같은 GPU 캐시 index 3개를 rsync 가 건너뛰었다)"
@@ -65,21 +73,21 @@ rsync -a -c --delete --exclude corral.ndjson "$ROOT/backup/ud/" "$UD/" && pass "
 const fs=require('fs'); const m=JSON.parse(fs.readFileSync(process.argv[1])); const f=process.argv[2]; const want=m.files['corral.ndjson'].size
 const have=fs.statSync(f).size; if(have<want){console.log('ndjson 이 원래보다 짧다',have,want);process.exit(1)}
 fs.truncateSync(f,want); console.log('ndjson',have,'→',want)" "$ROOT/backup/ud-manifest.json" "$UD/corral.ndjson" || fail "ndjson 자르기 실패"
-"$NODE" "$HERE/native-manifest.mjs" "$UD" > "$RAWD/ud-manifest-after-restore.json"
+"$NODE" "$HERE/native-manifest.mjs" "$UD" > "$RAWD/ud-manifest-after-restore.json" || fail "userData manifest 읽기 실패(원복 뒤)"
 "$NODE" -e "
 const fs=require('fs'); const a=JSON.parse(fs.readFileSync(process.argv[1])).files, b=JSON.parse(fs.readFileSync(process.argv[2])).files
 const keys=[...new Set([...Object.keys(a),...Object.keys(b)])]; const bad=keys.filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k]))
 console.log(JSON.stringify({files:keys.length,mismatch:bad})); process.exit(bad.length?1:0)" "$ROOT/backup/ud-manifest.json" "$RAWD/ud-manifest-after-restore.json" && pass "userData 전 파일 해시 전=후" || fail "userData 복원 후 불일치"
 
 echo "# ⑤ ~/.config/herdr 최상위"
-cp -p "$ROOT/backup/herdr/session.json" "$HCFG/session.json"
+cp -p "$ROOT/backup/herdr/session.json" "$HCFG/session.json" || fail "herdr session.json 복원 실패"
 "$NODE" -e "
 const fs=require('fs'),path=require('path'); const m=JSON.parse(fs.readFileSync(process.argv[1])).files; const dir=process.argv[2]
 for (const name of fs.readdirSync(dir)) { const full=path.join(dir,name); const st=fs.lstatSync(full); if(!st.isFile()) continue
   if(!m[name]){ fs.rmSync(full); console.log('새 파일 제거',name); continue }
   if(st.size>m[name].size && name.endsWith('.log')){ fs.truncateSync(full,m[name].size); console.log('로그 자름',name,st.size,'→',m[name].size) } }
-" "$ROOT/backup/herdr-manifest.json" "$HCFG"
-"$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$RAWD/herdr-manifest-after-restore.json"
+" "$ROOT/backup/herdr-manifest.json" "$HCFG" || fail "herdr 최상위 정리 실패"
+"$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$RAWD/herdr-manifest-after-restore.json" || fail "herdr manifest 읽기 실패(원복 뒤)"
 "$NODE" -e "
 const fs=require('fs'); const a=JSON.parse(fs.readFileSync(process.argv[1])).files, b=JSON.parse(fs.readFileSync(process.argv[2])).files
 const keys=[...new Set([...Object.keys(a),...Object.keys(b)])]; const bad=keys.filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k]))
@@ -92,8 +100,8 @@ if [ -f "$ROOT/backup/codex-config.toml" ]; then
   if cmp -s "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml"; then pass "codex config 그대로(쓰지 않음)"
   else diff "$ROOT/backup/codex-config.toml" "$HOME/.codex/config.toml" > "$RAWD/codex-config-diff.txt"; fail "codex config 가 회차 중 바뀌었다 — 되쓰지 않는다, 보고(차이 → codex-config-diff.txt)"; fi
 fi
-sh "$HERE/provider-hash.sh" > "$RAWD/provider-post.txt"
-cmp -s "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt" && pass "provider $(wc -l < "$RAWD/provider-post.txt" | tr -d ' ')파일 해시 전=후" || { fail "provider 해시가 바뀌었다 — 되쓰지 않는다, 보고"; diff "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt"; }
+sh "$HERE/provider-hash.sh" > "$RAWD/provider-post.txt" || fail "provider 해시 읽기 실패"
+cmp -s "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt" && pass "provider $(wc -l < "$RAWD/provider-post.txt" | tr -d ' ')파일 해시 전=후" || { diff "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt"; fail "provider 해시가 바뀌었다 — 되쓰지 않는다, 보고"; }
 
 echo "# ⑥-b G6(q1 범위) — 읽기만이었다(corral settings.json 은 ④ 바이트 복원), 해시 전=후"
 # fix1 R1-01 — 경로 합집합 대조·수집기 실패·빈/손상 snapshot 실패(g6-compare.mjs)
@@ -109,4 +117,4 @@ echo "# ⑦ herdr default · 잔존"
 HSTAT=$(/opt/homebrew/bin/herdr session list 2>&1 | awk '$1=="default"{print $2}')
 [ "$HSTAT" = stopped ] && pass "herdr default stopped" || fail "herdr default $HSTAT"
 ps -Ao pid=,ppid=,etime=,command= | grep -E 'l516|Electron.app/Contents/MacOS/Electron|herdr --session default' | grep -v grep | cut -c1-200
-[ "$FAILED" = 0 ] && { echo "판정: 원복 통과"; exit 0; } || { echo "판정: 원복 미달"; exit 1; }
+echo "판정: 원복 통과"; exit 0

@@ -57,6 +57,26 @@ export type ControlHandlers = {
  * **조상은 히트가 아니다**: 최상위가 목표를 *담고 있는* 상자여도 그 좌표에서 실제로 눌리는 것은
  * 그 상자다. 그래서 `el.contains(top)` 만 인정한다 (목표 또는 그 안의 글리프).
  */
+/**
+ * `menu-dump` 의 항목 하나 — role 항목은 `accelerator` 가 비어 있고 키가 role 기본값에서 온다(Electron `menu-item.ts`
+ * `getDefaultRoleAccelerator`, 공개 타입에 없어 함수인지 확인하고 부른다). 하위 메뉴(Edit › Speech 등)까지 내려간다 —
+ * LIFE-515 K3ⓔ 「실행 중 앱 메뉴의 실제 accelerator 목록」.
+ */
+type MenuDumpItem = { label: string; role: string | null; accelerator: string | null; roleAccelerator: string | null; enabled: boolean; items?: MenuDumpItem[] }
+function dumpMenuItem(item: Electron.MenuItem): MenuDumpItem {
+  const getDefault: unknown = Reflect.get(item, 'getDefaultRoleAccelerator')
+  const roleAccelerator: unknown = typeof getDefault === 'function' ? Reflect.apply(getDefault, item, []) : null
+  const children = item.submenu?.items ?? []
+  return {
+    label: item.label,
+    role: item.role ?? null,
+    accelerator: item.accelerator ?? null,
+    roleAccelerator: typeof roleAccelerator === 'string' ? roleAccelerator : null,
+    enabled: item.enabled,
+    ...(children.length > 0 ? { items: children.map(dumpMenuItem) } : {}),
+  }
+}
+
 function clickProbe(selector: string): string {
   return `(() => {
     const el = document.querySelector(${JSON.stringify(selector)})
@@ -364,12 +384,7 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
               ? null
               : menu.items.map((item) => ({
                   label: item.label,
-                  items: (item.submenu?.items ?? []).map((sub) => ({
-                    label: sub.label,
-                    role: sub.role ?? null,
-                    accelerator: sub.accelerator ?? null,
-                    enabled: sub.enabled,
-                  })),
+                  items: (item.submenu?.items ?? []).map(dumpMenuItem),
                 })),
         })
         return

@@ -1,7 +1,7 @@
-// C4 — diff 로직 단위 테스트. `node --test app/scripts/gui-diff/diff.test.mjs`
+// C4 — diff 로직 단위 테스트. `npm test`(app/)가 함께 돌린다. 단독: `node --test app/scripts/gui-diff/diff.nodetest.mjs`
 //
-// 왜 vitest 가 아닌가: 이 파일은 I/O 도 소켓도 안 쓴다. node 내장 러너면 설정이 0 이고
-// app 의 vitest include 규칙과 다투지 않는다.
+// 왜 vitest 가 아닌가: 이 파일은 I/O 도 소켓도 안 쓴다. node 내장 러너면 설정이 0 이다.
+// 이름이 `*.nodetest.mjs` 인 까닭: vitest 기본 include(`*.test.*`) 밖이어야 vitest 가 수집하지 않는다 (LIFE-517, scripts/run-nodetest.mjs).
 
 import test from 'node:test'
 import assert from 'node:assert/strict'

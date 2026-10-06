@@ -39,7 +39,7 @@ node app/scripts/gui-diff/compare-runs.mjs <회차폴더A> <회차폴더B> [<회
 | corral 빌드 산출물 | 이 레포에서 `npm run build` (`app/out/`) | corral 은 dev 가 아니라 **빌드 산출물**로 띄운다 (아래 「비대칭」) |
 | macOS | — | 설치본 대조(C3)가 `screencapture`·CoreGraphics 창 목록에 기댄다 |
 
-**측정 전 가드 (LIFE-511)** — 회차 폴더에 원자료를 남기고, 걸리면 앱을 띄우기 전에 멈춘다(`lib/guards.mjs`, 단위 테스트 `diff.test.mjs`).
+**측정 전 가드 (LIFE-511)** — 회차 폴더에 원자료를 남기고, 걸리면 앱을 띄우기 전에 멈춘다(`lib/guards.mjs`, 단위 테스트 `diff.nodetest.mjs`).
 
 | 가드 | 원자료 | 걸리면 |
 | --- | --- | --- |
@@ -148,7 +148,8 @@ A·B × 두 앱 전부를 본다). 글리프가 없는 노드(빈 목록)는 정
 ```
 measure.mjs           단일 명령 — 기동·시딩·상태·캡처·diff·보고·정리
 compare-runs.mjs      C10 재현성 — 회차 폴더들의 차이 집합 대조
-diff.test.mjs         diff 로직 단위 테스트 (node --test, I/O 없음)
+diff.nodetest.mjs     diff 로직 단위 테스트 (node:test, I/O 없음) — app/ 에서 `npm test` 가 함께 돌린다.
+                      단독: node --test app/scripts/gui-diff/diff.nodetest.mjs. 이름 규약은 scripts/run-nodetest.mjs 머리 주석
 areas/*.json          영역 정의 (데이터)
 lib/cdp.mjs           raw CDP 클라이언트 (Playwright 안 씀 — 아래 「선택과 사유」)
 lib/probe.mjs         페이지 안에서 도는 수집기 + 안정화

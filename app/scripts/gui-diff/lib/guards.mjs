@@ -1,5 +1,5 @@
 // LIFE-511 측정 도구 보강 — F18(Orca dev 가 실제 ~/.orca/keybindings.json 을 읽는다) · F19(/tmp 정리로 빈 껍데기가 된 fixture·체크아웃) ·
-// 504 가드(같은 격리 경로·herdr 세션을 쓰는 프로세스). 판정은 순수 함수(단위 테스트 `diff.test.mjs`), 파일·git·ps 를 읽는 것은 아래 probe* 다.
+// 504 가드(같은 격리 경로·herdr 세션을 쓰는 프로세스). 판정은 순수 함수(단위 테스트 `diff.nodetest.mjs`), 파일·git·ps 를 읽는 것은 아래 probe* 다.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'

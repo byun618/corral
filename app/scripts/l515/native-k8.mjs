@@ -1,4 +1,4 @@
-/* global window, document, getComputedStyle -- eval 로 렌더러 안에서 도는 클로저가 쓴다 */
+/* global document -- eval 로 렌더러 안에서 도는 클로저가 쓴다 */
 // LIFE-515 K8 **네이티브 관문** — native-up.sh 가 띄운 사용자 userData + 구현 빌드 + herdr 정식 `default` 세션(LIFE-456 S9 B안).
 // l513 native-k9 · l493 native-k5 의 틀(제어 소켓·ndjson 기준 길이·requirements·fixture 워크스페이스만 캡처)을 따른다.
 //

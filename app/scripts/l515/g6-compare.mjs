@@ -15,9 +15,8 @@ export const FIXED_PATHS = [
   '~/.orca/keybindings.json', '~/.claude/settings.json', '~/.codex/config.toml', '~/.grok/config.toml', '~/.grok/trusted_folders.toml',
   `${UD}/settings.json`, `${UD}/keybindings.json`,
 ]
-const HOOK_DIRS = ['~/.claude/hooks/', '~/.grok/hooks/']
-const HASH_LINE = /^([0-9a-f]{64})  (\d+)B  (~\/.+)$/
-const ABSENT_LINE = /^absent  (~\/.+)$/
+const HASH_LINE = /^([0-9a-f]{64}) {2}(\d+)B {2}(~\/.+)$/
+const ABSENT_LINE = /^absent {2}(~\/.+)$/
 
 /** q1 — 엄격 범위 안인가. `~/.grok/` 아래는 설정 두 개와 hooks 만. */
 export function inStrictScope(file) {

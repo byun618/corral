@@ -245,7 +245,6 @@ try {
     await click(`[data-tab-menu-pin="${tabId}"]`)
     await pause(400)
   }
-  const fixtureGroupSelector = async (tabId) => `[data-tab-group="${(await fixtureGroup()).find((group) => group.tabs.includes(tabId))?.id ?? ''}"]`
 
   // ── ⓐ 설정 시작 › 일반 — 세 토글 「켜짐」 ─────────────────────────────────────
   const general = await openSettings('general')

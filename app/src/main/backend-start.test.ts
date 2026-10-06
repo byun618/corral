@@ -106,6 +106,7 @@ function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): Starte
     spawn: () => ({ ok: true, pid: 4242, logPath: '/log' }),
     logTail: () => 'tail',
     stopChild: async () => true,
+    refresh: async () => undefined,
     sleep: async (ms) => {
       clock += ms
     },
@@ -345,5 +346,74 @@ describe('조회 오류는 안 돎이 아니다 (r3 R3-02)', () => {
     await starter.start('auto')
     expect(stopped).toEqual([4242])
     expect(starter.phase().phase).toBe('failed')
+  })
+})
+
+describe('조회 오류 중 실패 카드 · 남긴 자식 · ready 순서 (r4 R4-01·R4-02·R4-05)', () => {
+  const starterFailed = { phase: 'failed' as const, error: '서버가 15초 안에 준비되지 않았다\n…프로세스(pid 7000)를 끝내지 않았다', logPath: '/l' }
+  it('조회 오류여도 실패 카드(원문·다시 시도)를 낸다', () => {
+    expect(decideBackend(input({ scan: 'error', sessions: [], starter: starterFailed })).status).toEqual({ kind: 'failed', session: 'default', error: starterFailed.error, logPath: '/l' })
+  })
+  it('조회 전이어도 같다', () => {
+    expect(decideBackend(input({ scan: 'pending', sessions: [], starter: starterFailed })).status.kind).toBe('failed')
+  })
+  it('default running 이 관측되면(조회 ok) 기존 규칙대로 실패가 걷힌다', () => {
+    expect(decideBackend(input({ scan: 'ok', sessions: [runningDefault], starter: starterFailed })).status.kind).toBe('ok')
+  })
+  it('grok 재현 순서 — 모름으로 남긴 pid 를 다음 기동이 안 돎 확인 뒤 먼저 끝낸다 · 새 spawn 1', async () => {
+    let pid = 6999
+    const stopped: number[] = []
+    const spawned: number[] = []
+    let phase: 'first' | 'second' = 'first'
+    let calls = 0
+    const starter = new BackendStarter(deps({
+      // 1차: 직전 stopped → 루프 stopped… → 마지막 unknown. 2차: 직전 stopped → 바로 running(ready)
+      isRunning: async () => {
+        calls += 1
+        if (phase === 'first') return calls === 1 ? { kind: 'stopped' } : calls <= 11 ? { kind: 'stopped' } : { kind: 'unknown', error: '조회 실패' }
+        return calls === 1 ? { kind: 'stopped' } : { kind: 'running' }
+      },
+      spawn: () => { pid += 1; spawned.push(pid); return { ok: true, pid, logPath: '/l' } },
+      stopChild: async (p) => { stopped.push(p); return true },
+    }))
+    await starter.start('auto')
+    expect(stopped).toEqual([])
+    expect(starter.phase().phase).toBe('failed')
+    phase = 'second'
+    calls = 0
+    await starter.start('button')
+    expect(spawned).toEqual([7000, 7001])
+    expect(stopped).toEqual([7000])
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+  })
+  it('다음 기동 직전 조회가 돎이면 남긴 pid 를 끝내지 않는다(그게 뜬 서버일 수 있다)', async () => {
+    let calls = 0
+    let first = true
+    const stopped: number[] = []
+    const starter = new BackendStarter(deps({
+      isRunning: async () => {
+        calls += 1
+        if (first) return calls <= 11 ? { kind: 'stopped' } : { kind: 'unknown', error: 'x' }
+        return { kind: 'running' }
+      },
+      stopChild: async (p) => { stopped.push(p); return true },
+    }))
+    await starter.start('auto')
+    first = false
+    await starter.start('button')
+    expect(stopped).toEqual([])
+    expect(starter.spawns()).toBe(1)
+  })
+  it('ready 는 세션 목록을 먼저 갱신하고 idle 로 간다', async () => {
+    const order: string[] = []
+    let up = false
+    const starter = new BackendStarter(deps({
+      running: () => up,
+      spawn: () => { up = true; return { ok: true, pid: 1, logPath: '/l' } },
+      refresh: async () => { order.push(`refresh:${starter.phase().phase}`) },
+      onChange: () => order.push(`change:${starter.phase().phase}`),
+    }))
+    await starter.start('auto')
+    expect(order).toEqual(['change:starting', 'refresh:starting', 'change:idle'])
   })
 })

@@ -81,6 +81,9 @@ export function decideBackend(input: BackendInput): BackendDecision {
 
   // 조회 전·조회 실패 — 멈췄는지 모른다. 실행 파일을 못 찾은 경우(폴백이 곧 정상 경로)만 빼고 카드를 내지 않는다(r2 R2-02).
   if (input.scan === 'pending' || (input.scan === 'error' && input.binary.kind !== 'missing')) {
+    // 띄우다 실패했으면 조회 오류 중이어도 실패 카드를 낸다(r4 R4-01) — 시한 끝 조회가 모름이라 남긴 pid 의 유일한 안내이고,
+    // 「다시 시도」 가 오류가 이어지는 동안의 탈출구다. default running 관측으로 걷는 규칙(R2-01)은 그대로다.
+    if (input.starter.phase === 'failed') return none(failed(input.starter))
     if (link.phase === 'reconnecting' && input.selected !== null) return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
@@ -130,6 +133,8 @@ export type StarterDeps = {
   logTail: (logPath: string) => string
   /** 시한 초과한 자식의 프로세스 그룹을 끝낸다 — 소켓을 못 연 채 남은 서버가 다음 시도와 겹치지 않게(r2 R2-01). 끝났으면 true. */
   stopChild: (pid: number) => Promise<boolean>
+  /** 서버가 떴다고 보고 idle 로 돌리기 직전에 세션 목록을 갱신한다 — 옛 목록(멈춤)으로 확인 카드가 한 번 그려지지 않게(r4 R4-05). */
+  refresh: () => Promise<void>
   sleep: (ms: number) => Promise<void>
   now: () => number
   readyTimeoutMs: number
@@ -147,6 +152,8 @@ export class BackendStarter {
   private current: StarterPhase = { phase: 'idle' }
   private inflight: Promise<void> | null = null
   private autoUsed = false
+  /** 시한 끝 조회가 모름이라 끝내지 않고 남긴 자식(r3 F9). 다음 기동이 안 돎을 확인하면 먼저 끝낸다(r4 R4-02). */
+  private leftover: number | null = null
   private spawnCount = 0
 
   constructor(private readonly deps: StarterDeps) {}
@@ -196,8 +203,10 @@ export class BackendStarter {
     this.deps.log('backend.start', { trigger })
     const before = await this.probe()
     if (before.kind === 'running') {
+      // 돌고 있는 서버가 남긴 그 자식일 수 있다 — 끝내지 않고 잊는다.
+      this.leftover = null
       this.deps.log('backend.start.already_running', { trigger })
-      this.set({ phase: 'idle' })
+      await this.ready()
       return
     }
     // 돌고 있는지 모르면 띄우지 않는다 — 돌고 있는 서버 옆에 두 번째를 띄우거나, 재개를 사용자 모르게 일으킬 수 있다(r3 R3-02).
@@ -205,6 +214,13 @@ export class BackendStarter {
       this.deps.log('backend.start.failed', { trigger, probe: 'unknown', error: before.error })
       this.set({ phase: 'failed', error: `서버가 돌고 있는지 조회하지 못해 띄우지 않았다\n${before.error}`, logPath: null })
       return
+    }
+    // 안 돎이 확인됐다 — 지난 시도가 남긴 자식이 있으면 먼저 끝낸다. 남겨 두면 소켓을 못 연 채 하나씩 쌓인다(r4 R4-02).
+    if (this.leftover !== null) {
+      const pid = this.leftover
+      this.leftover = null
+      const stopped = await this.deps.stopChild(pid).catch(() => false)
+      this.deps.log('backend.start.leftover_stopped', { trigger, pid, stopped })
     }
     let exited: string | null = null
     const spawned = this.deps.spawn((detail) => {
@@ -223,7 +239,7 @@ export class BackendStarter {
         // 살아 있는 소켓 락에 exit 1 로 진다(r1 R1-10). 실패 카드를 잠깐 띄우지 않는다.
         if ((await this.probe()).kind === 'running') {
           this.deps.log('backend.start.lost_race', { trigger, pid: spawned.pid, exited })
-          this.set({ phase: 'idle' })
+          await this.ready()
           return
         }
         const tail = this.deps.logTail(spawned.logPath)
@@ -234,7 +250,7 @@ export class BackendStarter {
       }
       if ((await this.probe()).kind === 'running') {
         this.deps.log('backend.start.ready', { trigger, pid: spawned.pid })
-        this.set({ phase: 'idle' })
+        await this.ready()
         return
       }
       await this.deps.sleep(this.deps.pollMs)
@@ -243,12 +259,13 @@ export class BackendStarter {
     const last = await this.probe()
     if (last.kind === 'running') {
       this.deps.log('backend.start.ready', { trigger, pid: spawned.pid, atDeadline: true })
-      this.set({ phase: 'idle' })
+      await this.ready()
       return
     }
     const timedOut = `서버가 ${Math.round(this.deps.readyTimeoutMs / 1000)}초 안에 준비되지 않았다`
     // 모르면 죽이지 않는다 — 돌고 있는 서버일 수 있다. pid 와 조회 오류를 남긴다.
     if (last.kind === 'unknown') {
+      this.leftover = spawned.pid
       this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs, probe: 'unknown', error: last.error })
       this.set({ phase: 'failed', error: `${timedOut}\n서버가 돌고 있는지 조회하지 못해 프로세스(pid ${spawned.pid})를 끝내지 않았다\n${last.error}`, logPath: spawned.logPath })
       return
@@ -259,6 +276,11 @@ export class BackendStarter {
     this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs, childStopped: stopped })
     const tail = stopped ? '' : `\n시한을 넘긴 서버 프로세스(pid ${spawned.pid})를 끝내지 못했다`
     this.set({ phase: 'failed', error: `${timedOut}${tail}`, logPath: spawned.logPath })
+  }
+
+  private async ready(): Promise<void> {
+    await this.deps.refresh().catch(() => undefined)
+    this.set({ phase: 'idle' })
   }
 
   private probe(): Promise<RunningProbe> {

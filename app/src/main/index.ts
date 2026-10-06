@@ -177,6 +177,7 @@ const backendStarter = new BackendStarter({
   },
   logTail: (file) => readLogTail(file),
   stopChild: (pid) => stopProcessGroup(pid),
+  refresh: () => pollSessions(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => Date.now(),
   readyTimeoutMs: SERVER_READY_TIMEOUT_MS,

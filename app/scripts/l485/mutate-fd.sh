@@ -4,15 +4,19 @@
 APP=$(cd "$(dirname "$0")/../.." && pwd); F="$APP/src/main/adapter/internal/server.ts"
 export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH" TMPDIR=/tmp/l485t
 H0=$(shasum -a 256 "$F" | cut -d' ' -f1); cp "$F" /tmp/l485t/server.ts.orig
+# fix4 (r4 R4-06) — 중단(SIGINT·SIGTERM·오류)돼도 원본을 되돌린다
+restore() { cp /tmp/l485t/server.ts.orig "$F"; }
+trap 'restore; echo "## 중단 — 원복 $(shasum -a 256 "$F" | cut -d" " -f1)"; exit 4' INT TERM HUP
 /usr/bin/python3 - "$F" <<'PY'
 import sys; p=sys.argv[1]; s=open(p).read()
 a="    // 열었는데 쓰지 못했다 — fd 를 닫고 돌아간다(r2 R2-08).\n    fs.closeSync(fd)\n"
-assert s.count(a)==1; open(p,'w').write(s.replace(a,"    // 열었는데 쓰지 못했다 — fd 를 닫고 돌아간다(r2 R2-08).\n"))
+assert s.count(a)==1, '변이 대상 줄 없음'; open(p,'w').write(s.replace(a,"    // 열었는데 쓰지 못했다 — fd 를 닫고 돌아간다(r2 R2-08).\n"))
 PY
+[ $? -eq 0 ] || { restore; echo "변이 실패 — 멈춘다"; exit 5; }
 echo "## 변이: closeSync 줄 삭제 · diff"; diff /tmp/l485t/server.ts.orig "$F"
 (cd "$APP" && npx vitest run src/main/adapter/internal/server.test.ts -t 'writeSync 실패 분기' 2>&1 | grep -E '✓|×|FAIL|Tests |expected' | head -10); RC=$?
 (cd "$APP" && npx vitest run src/main/adapter/internal/server.test.ts -t 'writeSync 실패 분기' >/dev/null 2>&1); RC=$?
-cp /tmp/l485t/server.ts.orig "$F"
+restore; trap - INT TERM HUP
 H1=$(shasum -a 256 "$F" | cut -d' ' -f1); echo "## 원복 해시 $H0 → $H1"
 [ "$H0" = "$H1" ] || { echo "원복 실패"; exit 3; }
 echo "## 변이 상태 vitest exit $RC"; exit $RC

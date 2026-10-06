@@ -1,6 +1,12 @@
 # LIFE-485 격리 회차 공통 — source 해서 쓴다.
 N="$HOME/.nvm/versions/node/v24.14.1/bin/node"; H=$(cd "$(dirname "$0")" && pwd); APP=${L485_APP:-$(cd "$H/../.." && pwd)}
 FAIL=0
+# fix4 (r4 R4-04) — 잰 빌드의 소스를 머리에 남긴다: 커밋 전 작업 트리면 HEAD 만으로는 무엇을 쟀는지 모른다 → diff 해시를 같이 찍는다
+if git -C "$APP" rev-parse --short HEAD >/dev/null 2>&1; then
+  echo "## lib: app=$APP HEAD=$(git -C "$APP" rev-parse --short HEAD) worktree-diff=$(git -C "$APP" diff HEAD -- . | shasum -a 256 | cut -c1-16) untracked=$(git -C "$APP" ls-files --others --exclude-standard -- . | wc -l | tr -d ' ')"
+else
+  echo "## lib: app=$APP rev=$(cat "$APP/../.l485-rev" 2>/dev/null || echo 모름) (git 아님 — 태그 archive 빌드)"
+fi
 [ -f /tmp/l485i/zero.json ] || { mkdir -p /tmp/l485i; "$N" "$H/synth-restore.mjs" /tmp/l485i/zero.json zero; }  # 재개 0 격리 원본
 check() { if [ "$2" = "$3" ]; then echo "PASS $1 (= $3)"; else echo "FAIL $1 (실측 $2 / 기대 $3)"; FAIL=1; fi; }
 ctl() { "$N" "$H/ctl.mjs" "$ROOT/ctl.sock" "$1"; }

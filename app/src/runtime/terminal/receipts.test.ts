@@ -68,7 +68,9 @@ describe('terminal receipt admission survives result loss', () => {
     expect(effect).toHaveBeenCalledTimes(1)
   })
 
-  it('counts missing receipts toward capacity and releases space only after expiry', async () => {
+  // ~20,000 file operations (9,999 seeded here, then the expiry sweep unlinks them) — a 5s budget fails
+  // when the whole suite runs in parallel under disk load (LIFE-517 K4: 5/5 under a concurrent npm ci).
+  it('counts missing receipts toward capacity and releases space only after expiry', { timeout: 30_000 }, async () => {
     const inv = request(), effect = vi.fn(async () => ({ bytes: 4 }))
     await receipts.run(inv, effect); fs.unlinkSync(file(inv))
     const directory = path.dirname(file(inv))

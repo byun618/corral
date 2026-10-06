@@ -1,4 +1,4 @@
-// LIFE-526 fix3 R3-01 대조 ② — native-footer-dry.mjs 의 **호출부**(runDry)를 가짜 의존성으로 돌린다. 앱·herdr·폴더 삭제·OS 입력 없음.
+// LIFE-526 fix3 R3-01 · fix4 R4-01 대조 ② — native-footer-dry.mjs 의 **호출부**(runDry)를 가짜 의존성으로 돌린다. 앱·herdr·폴더 삭제·OS 입력 없음.
 // 가짜 collect 가 대조 ①의 프로세스 사슬을 그대로 공급하고(자기 pid = 실제 process.pid 로 바꿔 끼움), 가짜 rmSync·mkdirSync·ensureFixtureRepo·launchCorral 은
 // 호출을 기록만 한다(launchCorral 은 기록 뒤 「가짜 — 기동하지 않음」 오류). 기대: 가드 실패 경우 → 반환 3 · 기록된 호출 0회. 통과 경우 → rm·mkdir·fixture·launch 순서로 호출(양성).
 // 원출력은 회차 꼬리표 파일: <raw>/dry-guard-memory-<tag>.json · 각 경우 guard-before.json 은 <raw>/dry-memory-<tag>/<경우>/
@@ -16,11 +16,13 @@ fs.mkdirSync(out, { recursive: true })
 const me = process.pid
 const sh = `${me} 400 node native-footer-dry.mjs /review/output`
 const CASES = [
-  { name: '1-조상-셸-명령문만', lines: [sh, "400 300 /bin/zsh -c node native-footer-dry.mjs /x && ls /tmp/l526i-dry", '300 1 /usr/sbin/sshd'], expectGuard: true },
+  { name: '1-조상-셸-명령문에-경로', lines: [sh, "400 300 /bin/zsh -c node native-footer-dry.mjs /x && ls /tmp/l526i-dry", '300 1 /usr/sbin/sshd'], expectGuard: false },
   { name: '2-조상-herdr-세션서버', lines: [sh, '400 300 /bin/zsh', '300 1 /opt/homebrew/bin/herdr --session l443-gui-diff server'], expectGuard: false },
   { name: '3-조상-격리경로-Electron', lines: [sh, '400 300 /bin/zsh', '300 1 /path/Electron.app/Contents/MacOS/Electron --user-data-dir=/private/tmp/l526i-dry/corral-userdata'], expectGuard: false },
   { name: '4-비조상-점유', lines: [sh, '400 300 /bin/zsh', '300 1 /usr/sbin/sshd', '301 1 /opt/homebrew/bin/herdr --session l443-gui-diff server'], expectGuard: false },
   { name: '5-비점유', lines: [sh, '400 300 /bin/zsh', '300 1 /usr/sbin/sshd'], expectGuard: true },
+  { name: '6-조상-셸이름-비셸-경로', lines: [sh, '400 300 /tmp/x/bash owner.mjs /tmp/l526i-dry', '300 1 -zsh'], expectGuard: false },
+  { name: '7-조상-로그인셸-경로없음', lines: [sh, '400 300 -zsh', '300 1 /usr/sbin/sshd'], expectGuard: true },
 ]
 const rows = []
 for (const { name, lines, expectGuard } of CASES) {

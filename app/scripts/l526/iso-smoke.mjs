@@ -3,7 +3,8 @@
 // 격리 = launchCorral: --work(/tmp/l526i*) 아래 userData·herdr 세션(l443-gui-diff)·제어 소켓. 사용자 userData·herdr default 무접촉, provider 0.
 //   ⚙ → 설정 페이지 · ? → 메뉴가 버튼 위로 열림 · ? 다시 → 닫힘 · ? → 「단축키」 → 설정 › 단축키 · ↻ → 재조회(main 로그 tree.built 증가) · ⌖ → 활성 카드 번쩍
 // 준비 걸음(판정 아님): fixture 레포 등록(seedCorralRepo — add-repo 제어 소켓) · 첫 카드 실제 클릭(활성 워크스페이스). 설정 닫기는 「앱으로 돌아가기」 실제 클릭.
-// 사용(저장소 루트): node app/scripts/l526/iso-smoke.mjs --app app --work /tmp/l526i --port 9526 --out <raw>
+// 사용(저장소 루트): node app/scripts/l526/iso-smoke.mjs --app app --port 9526 --out <raw>
+// fix4 — --work 기본값은 고정 /tmp/l526i 다. 운영 규칙: 띄우는 셸 명령줄에 격리 경로를 쓰지 않는다(쓰면 그 셸이 가드 hit 가 되어 멈춘다).
 import fs from 'node:fs'
 import path from 'node:path'
 import { launchCorral, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
@@ -12,7 +13,7 @@ import { pause } from '../gui-diff/lib/cdp.mjs'
 import { probePreWipe } from './pre-wipe-guard.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
-const work = args.work
+const work = args.work ?? '/tmp/l526i'
 if (!work?.startsWith('/tmp/l526i')) throw new Error('--work 는 /tmp/l526i*')
 const out = path.resolve(args.out)
 fs.mkdirSync(out, { recursive: true })

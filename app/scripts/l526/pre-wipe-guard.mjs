@@ -3,13 +3,12 @@
 // 가짜 프로세스·포트 목록으로 음성 대조를 돌릴 수 있다(pre-wipe-guard-control.mjs).
 // 경로는 /tmp 와 /private/tmp 두 꼴을 다 본다(폴더가 아직 없으면 realpath 를 못 쓰니 문자열로 짝을 만든다).
 //
-// fix3 R3-01 — 조상 예외를 **셸 명령 문자열 오인**으로만 좁혔다. fix2 는 조상 사슬 전체를 건너뛰어, 조상인 실제 자원 소유자
-// (`herdr --session l443-gui-diff server`, 격리 경로를 쓰는 Electron)까지 놓쳤다. 이제 조상이어도 실행 파일이 셸(zsh·bash·sh·dash·fish)일 때만
-// 뺀다 — 셸의 `-c` 명령 글자에 경로·세션 문자열이 들어 있을 뿐 그 자원을 쓰는 인스턴스가 아니기 때문이다. 그 밖의 조상은 일반 판정을 받는다.
-// 조상 사슬은 ps 목록의 pid·ppid 칸에서 순수하게 계산한다(가짜 목록으로 대조 가능).
+// fix4 R4-01 — **조상 예외를 없앴다(실패 쪽으로 닫기).** R2-01(가드 없음) → fix2 가 조상 전체를 뺐다 → R3-01(조상 herdr·Electron 을 놓침) →
+// fix3 가 셸 실행 파일 조상만 뺐다 → R4-01(셸 이름으로 띄운 다른 실행 파일을 셸로 오인) — 세 지적이 모두 「조상 예외」 에서 나왔다.
+// 이제 조상이든 아니든, 셸이든 아니든 지울 경로(두 꼴)·세션 문자열이 명령줄에 나오면 hit → pass=false. 자기 자신(selfPid)만 뺀다.
+// 거짓 hit 는 「멈춤」 쪽이라 받아들인다. **운영 규칙**: 드라이런·iso-smoke 를 띄우는 셸 명령줄에 격리 경로·세션 문자열을 쓰지 않는다
+// (경로는 스크립트 안에 고정돼 있다) — 쓰면 그 셸이 hit 가 되어 가드가 멈춘다. ancestorsOf 는 진단용으로만 남긴다(hits 의 ancestor 표시, 판정에 안 씀).
 import { spawnSync } from 'node:child_process'
-
-const SHELLS = new Set(['zsh', 'bash', 'sh', 'dash', 'fish'])
 
 /** /tmp/x ↔ /private/tmp/x 두 꼴. */
 export function pathForms(dir) {
@@ -36,12 +35,6 @@ const parseLine = (line) => {
   return match ? { pid: Number(match[1]), ppid: Number(match[2]), command: match[3] } : null
 }
 
-/** 명령의 실행 파일이 셸인가 — 첫 토큰의 basename(로그인 셸의 앞 `-` 제거). */
-export function isShellCommand(command) {
-  const exe = command.trim().split(/\s+/)[0] ?? ''
-  return SHELLS.has(exe.split('/').pop().replace(/^-/, ''))
-}
-
 /** ps 줄 목록에서 selfPid 의 조상 pid 집합(부모부터 1 직전까지). */
 export function ancestorsOf({ rows, selfPid }) {
   const ppidOf = new Map(rows.map((row) => [row.pid, row.ppid]))
@@ -57,12 +50,11 @@ export function ancestorsOf({ rows, selfPid }) {
 /**
  * 판정(순수). ps: { ok, lines, error } — lines 는 `pid ppid command` · ports: [{ port, ok, listeners, error }] · dirs: 지울 폴더 ·
  * session: herdr 세션 이름(없으면 null) · selfPid: 이 프로세스(뺀다).
- * 조상은 셸 실행 파일일 때만 뺀다(fix3). 돌려주는 값: { pass, reasons, hits, skipped } — pass=false 면 지우지 않는다.
+ * 조상 예외 없음(fix4) — 자기 자신만 뺀다. 돌려주는 값: { pass, reasons, hits } — pass=false 면 지우지 않는다. hits[].ancestor 는 진단 표시일 뿐이다.
  */
 export function judgePreWipe({ ps, ports, dirs, session, selfPid }) {
   const reasons = []
   const hits = []
-  const skipped = []
   if (ps.ok !== true) reasons.push(`프로세스 목록을 못 읽었다: ${ps.error}`)
   const rows = (ps.ok === true ? ps.lines : []).map(parseLine).filter(Boolean)
   const ancestors = ancestorsOf({ rows, selfPid })
@@ -73,10 +65,6 @@ export function judgePreWipe({ ps, ports, dirs, session, selfPid }) {
     const bySession = session !== null && row.command.includes(`--session ${session}`)
     if (!dir && !bySession) continue
     const why = dir ? `경로 ${dir}` : `herdr 세션 ${session}`
-    if (ancestors.has(row.pid) && isShellCommand(row.command)) {
-      skipped.push({ pid: row.pid, why: `조상 셸의 명령 글자(${why})`, line: row.command.slice(0, 120) })
-      continue
-    }
     hits.push({ pid: row.pid, ancestor: ancestors.has(row.pid), why, line: row.command.slice(0, 200) })
   }
   if (hits.length > 0) reasons.push(`같은 경로·세션을 쓰는 프로세스 ${hits.length}개`)
@@ -84,7 +72,7 @@ export function judgePreWipe({ ps, ports, dirs, session, selfPid }) {
     if (port.ok !== true) reasons.push(`포트 ${port.port} 확인 실패: ${port.error}`)
     else if (port.listeners.length > 0) reasons.push(`포트 ${port.port} 사용 중: ${port.listeners.join(' | ')}`)
   }
-  return { pass: reasons.length === 0, reasons, hits, skipped }
+  return { pass: reasons.length === 0, reasons, hits }
 }
 
 /** 실제 수집 — ps 전체 목록(pid·ppid·명령) · lsof LISTEN(exit 1 + 빈 출력 = 비어 있음, 그 밖의 실패 = 확인 실패). */

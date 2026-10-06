@@ -260,3 +260,13 @@ export function SettingsGearIcon({ className }: { className?: string }): React.J
     </svg>
   )
 }
+
+/** lucide `PanelLeft` — 설정 › 외관 「창 및 사이드바」 카드(198 `AppearancePane.tsx:264`). LIFE-516 가 더했다(위 고지 그대로). */
+export function PanelLeftIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M9 3v18" />
+    </svg>
+  )
+}

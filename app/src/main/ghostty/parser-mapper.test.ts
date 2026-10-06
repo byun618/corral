@@ -348,3 +348,11 @@ describe('기본 에이전트 칸 (LIFE-515 K1ⓓ)', () => {
     expect(result.patch.terminalFontSize).toBe(16)
   })
 })
+
+describe('확인 대화상자 칸 (LIFE-516 K1ⓓ)', () => {
+  it('Ghostty 가져오기는 확인 칸 셋을 건드리지 않는다 — 지원 키 전부 + 같은 이름의 키를 넣어도 패치에 없다', () => {
+    const result = map('font-size = 16\nfont-family = Menlo\ncursor-style = bar\ncursor-style-blink = false\ntheme = Dracula\nbackground = #101010\npalette = 1=#ff0000\nadjust-cell-height = 10%\nunfocused-split-opacity = 0.8\nsplit-divider-color = #222222\nconfirm-close-surface = false\nconfirmClosePinnedTab = false\nskipCloseTerminalWithRunningProcessConfirm = true\nskipDeleteWorktreeConfirm = true\n')
+    for (const key of ['confirmClosePinnedTab', 'skipCloseTerminalWithRunningProcessConfirm', 'skipDeleteWorktreeConfirm']) expect(Object.keys(result.patch)).not.toContain(key)
+    expect(result.patch.terminalFontSize).toBe(16)
+  })
+})

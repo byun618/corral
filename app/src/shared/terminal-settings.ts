@@ -36,6 +36,14 @@ export type Settings = {
   terminalColorOverrides: TerminalColorOverrides
   /** 기본 에이전트(LIFE-515 S32) — ⌘⌥T 새 에이전트 탭과 `+` 메뉴 Quick-launch 순서가 쓴다. 해석은 `tab-create-menu.ts` `resolveNewAgentTab`. */
   defaultAgent: DefaultAgent
+  /**
+   * 확인 대화상자 셋(LIFE-516 S36·S37) — 칸 이름·극성은 Orca 198 그대로(`confirmClosePinnedTab` 기본 true · 나머지 둘은 `skip…` 기본 false).
+   * 기본값 = 셋 다 「묻는다」 = 칸이 생기기 전 동작. 설정 화면은 셋 다 「켜짐 = 묻는다」 로 보인다(skip 둘은 값 반전).
+   * 핀 확인은 렌더러(`App.tsx` `alwaysConfirm`)가, **실행 중 확인은 main 닫기 게이트**(`close-tabs.ts`)가, 삭제 확인은 `useCardActions.tsx` 가 읽는다.
+   */
+  confirmClosePinnedTab: boolean
+  skipCloseTerminalWithRunningProcessConfirm: boolean
+  skipDeleteWorktreeConfirm: boolean
 }
 
 /**
@@ -74,6 +82,9 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalDividerThicknessPx: 3,
   terminalColorOverrides: {},
   defaultAgent: 'auto',
+  confirmClosePinnedTab: true,
+  skipCloseTerminalWithRunningProcessConfirm: false,
+  skipDeleteWorktreeConfirm: false,
 }
 
 export type NumericSettingKey =
@@ -155,6 +166,9 @@ export function readSettingField({ key, value }: { key: keyof Settings; value: u
     case 'terminalCursorStyle':
       return CURSOR_STYLES.find((style) => style === value) ?? null
     case 'terminalCursorBlink':
+    case 'confirmClosePinnedTab':
+    case 'skipCloseTerminalWithRunningProcessConfirm':
+    case 'skipDeleteWorktreeConfirm':
       return typeof value === 'boolean' ? value : null
     case 'terminalDividerColorDark':
       return isHexColor(value) ? value.toLowerCase() : null
@@ -208,6 +222,9 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'terminalDividerThicknessPx',
   'terminalColorOverrides',
   'defaultAgent',
+  'confirmClosePinnedTab',
+  'skipCloseTerminalWithRunningProcessConfirm',
+  'skipDeleteWorktreeConfirm',
 ]
 
 /** 파일에서 읽은 객체 → 설정. 칸마다 따로 기본값으로 떨어진다. 객체가 아니면 전부 기본값. */

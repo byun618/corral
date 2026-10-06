@@ -9,6 +9,11 @@
 // **남는 위험**: 마지막 판정과 `tab.close` 사이의 짧은 창은 원자적이지 않다 — 단건 게이트(`closeRowByTab`)와 같은 크기다. herdr 가
 // 판정과 닫기를 묶어 주지 않는 한 여기서 없앨 수 없다(RESULT 에 적는다). 「확인한 실행 중」은 pane 단위다 — 같은 pane 에서 다른 명령으로
 // 바뀐 것은 새로 묻지 않는다.
+//
+// **실행 중 확인 끄기**(LIFE-516 K4ⓑ — 설정 `skipCloseTerminalWithRunningProcessConfirm`): `confirmRunning:false` 면 ①의 실행 중 사유와
+// ②의 재판정을 둘 다 건너뛴다 — 확인 뒤 재판정이 다시 needs-confirm 을 돌려주면 「다시 묻지 않음」 이 성립하지 않는다(00-analysis A6).
+// 핀 사유(`alwaysConfirm`)는 그대로 남는다(D2 — 두 설정은 독립). 이때 돌려주는 `running` 은 비어 창이 핀 문구만 보인다.
+// 값은 main 이 닫기마다 저장소에서 읽는다(index.ts) — 저장소가 없거나 못 읽으면 기본값(묻는다)이다.
 
 import type { CloseTabsResult, RunningPane } from '../shared/types.js'
 
@@ -21,6 +26,8 @@ export async function closeTabsGated(input: {
   tabIds: readonly string[]
   confirmed: boolean
   alwaysConfirm: boolean
+  /** 실행 중 pane 이 있으면 묻는가(설정 — 기본 true). false 면 판정·재판정 없이 닫는다(핀 사유는 남는다). */
+  confirmRunning: boolean
   /** 사용자가 확인 창에서 본 실행 중 pane — 확인 뒤에는 이 밖의 실행 중만 다시 묻는다. */
   confirmedPaneIds: readonly string[]
   /** 그 탭의 지금 pane 들. 탭이 없으면 null(건너뛴다). */
@@ -32,14 +39,14 @@ export async function closeTabsGated(input: {
     tabIds.flatMap((tabId) => (input.panesOf(tabId) ?? []).map((paneId) => ({ tabId, paneId })))
   const targets = input.tabIds.filter((tabId) => input.panesOf(tabId) !== null)
   if (!input.confirmed) {
-    const running = await input.probe(panesOfTabs(targets))
+    const running = input.confirmRunning ? await input.probe(panesOfTabs(targets)) : []
     if (running.length > 0 || input.alwaysConfirm) return { outcome: 'needs-confirm', closed: [], running }
   }
   const confirmed = new Set(input.confirmedPaneIds)
   const closed: string[] = []
   for (const [index, tabId] of targets.entries()) {
     if (input.panesOf(tabId) === null) continue
-    const now = await input.probe(panesOfTabs([tabId]))
+    const now = input.confirmRunning ? await input.probe(panesOfTabs([tabId])) : []
     if (now.some((pane) => !confirmed.has(pane.paneId))) {
       const remaining = targets.slice(index).filter((id) => input.panesOf(id) !== null)
       return { outcome: 'needs-confirm', closed, running: await input.probe(panesOfTabs(remaining)) }

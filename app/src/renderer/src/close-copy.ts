@@ -4,13 +4,24 @@
 //   · 에이전트가 도는 pane 이 하나라도 있으면 「에이전트를 멈출까」(220 은 split 에 섞이면 에이전트 우선 — 같다)
 //   · 그 밖의 실행 중이면 「실행 중인 명령을 멈출까」
 //   · 실행 중은 없는데 핀 탭이면 「고정된 탭을 닫을까」(핀이면서 실행 중이면 실행 중 문구 + 고정 안내 한 줄 — 창은 한 번)
-// 「다시 묻지 않음」은 없다(P4·D28 — 설정 페이지가 없다).
+// 「다시 묻지 않음」(LIFE-516 S36·S37 — 450 보류 해소): 탭 창에만 체크박스가 있고(`dontAskAgain`), **라벨이 이름 붙인 설정 하나만** 끈다(D2).
+//   · 실행 중 창(agent·command) → 「실행 중인 터미널에 대해 다시 묻지 않기」 = `skipCloseTerminalWithRunningProcessConfirm: true`
+//     (핀 안내 줄이 같이 있어도 핀 확인은 건드리지 않는다)
+//   · 핀 창(pinned) → 「고정된 탭에 대해 다시 묻지 않기」 = `confirmClosePinnedTab: false`
+//   · worktree 닫기 창 → 없음(D3 — 설정과 무관하게 늘 묻는다). 되돌리는 자리는 설정 › 일반.
 //
 // **에이전트 판정** (K5ⓒ): 게이트가 실행 중으로 판정한 pane 중 corral 의 pane 에이전트 귀속(`PaneRow.agent` — herdr 가 그 pane 에서
 // 감지한 에이전트 이름)이 있는 것. 220 의 `agentStatusByPaneKey[...].agentType !== 'unknown'` 에 대응한다. 실행 중 판정 자체는 바꾸지
 // 않는다(셸 아닌 포그라운드 = 실행 중, main `probeRunningPanes`).
 
+import type { Settings } from '../../shared/terminal-settings.js'
 import type { RunningPane } from '../../shared/types.js'
+
+/** 「다시 묻지 않음」 체크박스 — 라벨과 체크 + 확인 때 저장할 패치가 한 짝이다(라벨이 이름 붙인 설정만 바뀐다). */
+export type DontAskAgain = { label: string; patch: Partial<Settings> }
+
+const DONT_ASK_RUNNING: DontAskAgain = { label: '실행 중인 터미널에 대해 다시 묻지 않기', patch: { skipCloseTerminalWithRunningProcessConfirm: true } }
+const DONT_ASK_PINNED: DontAskAgain = { label: '고정된 탭에 대해 다시 묻지 않기', patch: { confirmClosePinnedTab: false } }
 
 export type CloseCopy = {
   kind: 'agent' | 'command' | 'pinned' | 'worktree'
@@ -18,6 +29,8 @@ export type CloseCopy = {
   /** 본문 문단들(위에서부터). */
   body: string[]
   confirm: string
+  /** 체크박스. null = 없음(worktree 닫기). */
+  dontAskAgain: DontAskAgain | null
 }
 
 export function closeCopy(input:
@@ -25,7 +38,7 @@ export function closeCopy(input:
   | { kind: 'tabs'; tabCount: number; running: readonly RunningPane[]; agentPaneIds: ReadonlySet<string>; pinnedCount: number }): CloseCopy {
   if (input.kind === 'worktree') {
     // worktree 닫기 모달 문구는 범위 밖 — 그대로 둔다(K5ⓐ).
-    return { kind: 'worktree', title: '이 worktree 를 닫을까', body: ['포그라운드에 도는 프로세스가 있다. 닫으면 같이 종료된다.'], confirm: '닫기' }
+    return { kind: 'worktree', title: '이 worktree 를 닫을까', body: ['포그라운드에 도는 프로세스가 있다. 닫으면 같이 종료된다.'], confirm: '닫기', dontAskAgain: null }
   }
   const many = input.tabCount > 1
   const pinnedNote = input.pinnedCount === 0 ? [] : [many ? '고정된 탭이 섞여 있다.' : '이 탭은 고정돼 있다.']
@@ -36,6 +49,7 @@ export function closeCopy(input:
       title: '에이전트를 멈출까',
       body: [many ? '탭을 닫으면 에이전트의 현재 작업이 멈춘다.' : '이 탭을 닫으면 에이전트의 현재 작업이 멈춘다.', '닫은 터미널은 자동으로 재개되지 않는다.', ...pinnedNote],
       confirm: '에이전트 멈추기',
+      dontAskAgain: DONT_ASK_RUNNING,
     }
   }
   if (input.running.length > 0) {
@@ -44,7 +58,8 @@ export function closeCopy(input:
       title: '실행 중인 명령을 멈출까',
       body: [many ? '탭을 닫으면 안에서 실행 중인 명령이 멈춘다.' : '이 탭을 닫으면 안에서 실행 중인 명령이 멈춘다.', ...pinnedNote],
       confirm: '멈추고 닫기',
+      dontAskAgain: DONT_ASK_RUNNING,
     }
   }
-  return { kind: 'pinned', title: '고정된 탭을 닫을까', body: ['이 탭은 고정돼 있다. 정말 닫을까?'], confirm: '닫기' }
+  return { kind: 'pinned', title: '고정된 탭을 닫을까', body: ['이 탭은 고정돼 있다. 정말 닫을까?'], confirm: '닫기', dontAskAgain: DONT_ASK_PINNED }
 }

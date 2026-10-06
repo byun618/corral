@@ -1,6 +1,7 @@
 // 설정 섹션 레지스트리 (LIFE-511 K1ⓒ·K3ⓑ·K5) — 내비·팔레트·검색이 **이 목록 하나**를 본다.
 // 그룹 이름·순서는 Orca 198 `settings-navigation-foundations.ts` `SETTINGS_NAV_GROUPS` 그대로(한국어 표기는 Orca ko 로케일 캡처
-// 510 `c5-settings/orca-01`·`orca-nav-22`). 섹션이 하나도 없는 그룹은 그리지 않는다 — T5(LIFE-515) 뒤에는 「AI 기능 › 에이전트」 · 「인터페이스 › 외관·단축키」.
+// 510 `c5-settings/orca-01`·`orca-nav-22`). 섹션이 하나도 없는 그룹은 그리지 않는다 — T6(LIFE-516) 뒤에는 「AI 기능 › 에이전트」 · 「설정 시작 › 일반」 ·
+// 「인터페이스 › 외관·단축키」.
 // 섹션을 더하는 일감(T2~)은 `SETTINGS_SECTIONS` 에 한 줄을 더하고 `SettingsPage` 의 본문 분기에 컴포넌트를 단다.
 import { rankSettingsSearch, type SettingsSearchEntry } from './settings-search.js'
 
@@ -43,13 +44,28 @@ export const SETTINGS_SECTIONS = [
       },
     ],
   },
+  // 일반 — 198 「설정 시작」 의 섹션(`settings-navigation-capability-sections.ts:177-186`, 아이콘 SlidersHorizontal). corral 은 확인 대화상자 행 셋만(LIFE-516 D6).
+  // 설명은 Orca 「워크스페이스 기본값, 앱 설정 및 유지 관리.」 대신 corral 에 있는 것만 말한다. 검색 항목 = 198 탐색·워크스페이스 행 + #21569 행.
+  {
+    id: 'general',
+    group: 'setup',
+    title: '일반',
+    description: '탭·터미널을 닫거나 워크트리를 삭제하기 전에 묻는 확인 대화상자.',
+    searchEntries: [
+      { title: '탐색', description: '탭을 닫을 때의 확인.', keywords: ['navigation', '탐색'] },
+      { title: '고정된 탭을 닫기 전에 확인', description: '고정된 탭을 닫기 전에 확인 대화상자를 표시합니다.', keywords: ['pinned', 'pin', 'tab', 'confirm', 'close', '고정', '핀', '탭', '닫기', '확인', '다시 묻지'] },
+      { title: '실행 중인 터미널을 닫기 전에 확인', description: '터미널을 닫을 때 실행 중인 에이전트나 명령을 중지하기 전에 묻습니다.', keywords: ['terminal', 'agent', 'command', 'running', 'confirm', 'close', '실행 중', '터미널', '에이전트', '명령', '닫기', '확인', '다시 묻지'] },
+      { title: '워크스페이스', description: '워크트리를 삭제할 때의 확인.', keywords: ['workspace', 'worktree', '워크스페이스', '워크트리'] },
+      { title: '워크트리를 삭제하기 전에 확인', description: '사이드바에서 워크트리를 삭제하기 전에 확인 대화상자를 표시합니다.', keywords: ['delete', 'worktree', 'workspace', 'confirm', 'dialog', 'skip', 'prompt', '삭제', '워크트리', '워크스페이스', '확인', '다시 묻지'] },
+    ],
+  },
   // 외관 — 198 순서대로 「인터페이스」 의 첫 섹션(단축키보다 위, 198 `settings-navigation-interface-sections.ts`). corral 은 그 안의
-  // 「터미널」 카드만 있다(LIFE-512) — 인터페이스(앱 테마·줌·IDE 글꼴)·창 및 사이드바 카드는 없다(S30·S19 의도적, 450 다른 조각).
+  // 「터미널」 카드(LIFE-512)와 「창 및 사이드바」 카드(LIFE-516 S27 — 카드 레이아웃 한 행, D8)가 있다. 인터페이스(앱 테마·줌·IDE 글꼴) 카드는 없다(S30·S19 의도적).
   {
     id: 'appearance',
     group: 'interface',
     title: '외관',
-    description: '터미널 글꼴·테마·커서·pane 모양.',
+    description: '터미널 글꼴·테마·커서·pane 모양과 사이드바 카드 레이아웃.',
     searchEntries: [
       { title: '터미널', description: '터미널 외관 — 글꼴, 테마, 커서, pane.', keywords: ['terminal', 'appearance', '외관', '터미널', '모양'] },
       { title: '글꼴 크기', description: '새 창 및 라이브 업데이트의 기본 terminal 글꼴 크기입니다.', keywords: ['terminal', 'typography', 'font', 'font size', 'size', '글꼴', '크기', '폰트'] },
@@ -62,6 +78,8 @@ export const SETTINGS_SECTIONS = [
       { title: 'Cursor 모양', description: 'terminal 패널의 기본 커서 모양입니다.', keywords: ['terminal', 'cursor', 'bar', 'block', 'underline', 'blink', '커서', '깜박임', '막대', '블록', '밑줄'] },
       { title: '비활성 창 불투명도', description: '현재 활성화되지 않은 창에 불투명도가 적용됩니다.', keywords: ['pane', 'opacity', 'dimming', 'inactive', '투명도', '불투명도', '비활성'] },
       { title: '구분선 두께', description: '창 구분선의 두께입니다.', keywords: ['pane', 'divider', 'thickness', '구분선', '디바이더', '두께'] },
+      { title: '창 및 사이드바', description: '사이드바 모양.', keywords: ['window', 'sidebar', 'appearance', '창', '사이드바'] },
+      { title: '카드 레이아웃', description: '사이드바의 워크트리 카드를 자세히 또는 간단히 표시합니다.', keywords: ['card', 'card layout', 'layout', 'compact', 'detailed', 'sidebar', 'workspace card', 'worktree card', '카드', '레이아웃', '간단히', '자세히', '사이드바', '워크트리 카드'] },
     ],
   },
   {

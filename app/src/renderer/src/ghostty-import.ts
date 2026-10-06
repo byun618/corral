@@ -17,6 +17,9 @@ export const GHOSTTY_DIFF_LABELS: Record<keyof Settings, string> = {
   terminalDividerThicknessPx: '구분선 두께',
   terminalColorOverrides: '터미널 색 재정의',
   defaultAgent: '기본 Agent',
+  confirmClosePinnedTab: '고정된 탭을 닫기 전에 확인',
+  skipCloseTerminalWithRunningProcessConfirm: '실행 중인 터미널을 닫기 전에 확인',
+  skipDeleteWorktreeConfirm: '워크트리를 삭제하기 전에 확인',
 }
 
 export type GhosttyDiffRow =

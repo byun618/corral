@@ -4,9 +4,11 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RepoRow, WorktreeDeleteResult, WorktreeRow } from '../../../shared/types.js'
+import type { RepoRow, WorktreeDeletePreview, WorktreeDeleteResult, WorktreeRow } from '../../../shared/types.js'
+import { DEFAULT_SETTINGS } from '../../../shared/terminal-settings.js'
+import { getSettings, resetSettingsStoreForTest } from '../settings-store.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
-import { useCardActions } from './useCardActions.js'
+import { SKIP_DELETE_SAVED_NOTE, useCardActions } from './useCardActions.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -99,5 +101,92 @@ describe('삭제 뒤 활성 이동 (C-03)', () => {
     await startDeletingA()
     await act(async () => finishDelete({ ok: false, code: 'x', error: 'y' }))
     expect(activateWorkspace).not.toHaveBeenCalled()
+  })
+})
+
+// --- LIFE-516 K5 — 「다시 묻지 않음」 · 확인 생략 분기 -----------------------------------------------------------
+describe('워크트리 삭제 확인 생략 (LIFE-516 K5ⓑⓒⓓ)', () => {
+  const notices: string[] = []
+  const deletes: Array<{ path: string; force: boolean }> = []
+  let previewOf: (path: string) => WorktreeDeletePreview
+  function SkipHarness(props: { repos: RepoRow[] }): React.JSX.Element {
+    const state = { repos: props.repos }
+    const actions: LifecycleActions = {
+      createRow: () => {}, reopenTab: () => {}, launchAgent: () => {}, closeTabs: () => {}, renameRow: () => {}, clearRowName: () => {}, closeWorktree: () => {},
+      openWorktree: () => {}, openCreateWorktree: () => {}, activateWorkspace: () => {},
+    }
+    hook = useCardActions({ stateRef: { current: state }, state, activeWorkspaceId: null, actions, revealPane: () => {}, mruHistory: () => [], notify: (message) => notices.push(message) })
+    return createElement('div', null, hook.dialogs)
+  }
+  const clean = (path: string): Extract<WorktreeDeletePreview, { ok: true }> => ({ ok: true, path, branch: 'a', isMain: false, locked: false, dirtyCount: 0, liveSessions: 0, backendError: null, childPaths: [] })
+  beforeEach(() => {
+    notices.length = 0
+    deletes.length = 0
+    previewOf = clean
+    Reflect.set(window, 'corral', {
+      getUiPrefs: () => Promise.resolve({ pinnedWorktrees: [] }),
+      setUiPrefs: () => {},
+      previewWorktreeDelete: ({ path }: { path: string }) => Promise.resolve(previewOf(path)),
+      deleteWorktree: (input: { path: string; force: boolean }) => {
+        deletes.push(input)
+        return Promise.resolve(done)
+      },
+    })
+  })
+  afterEach(() => resetSettingsStoreForTest(null))
+  const request = async (path: string): Promise<void> => {
+    const target = repo({ aOpen: false }).worktrees.find((row) => row.path === path)
+    if (target === undefined || hook === null) throw new Error('준비 실패')
+    const current = hook
+    act(() => current.sidebarCards.requestDelete(target))
+    await act(async () => {})
+  }
+
+  it('설정 켜짐(기본): 깨끗해도 창 · 체크 + 「삭제」 → 설정 저장 + non-force 삭제 + 되돌리는 자리 안내 1회', async () => {
+    resetSettingsStoreForTest({ ...DEFAULT_SETTINGS })
+    act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
+    await request('/r-wt/a')
+    expect(document.querySelector('[data-delete-worktree-dialog]')).not.toBeNull()
+    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    expect(getSettings().skipDeleteWorktreeConfirm).toBe(true)
+    expect(deletes).toEqual([{ path: '/r-wt/a', force: false }])
+    expect(notices).toEqual([`워크트리 a 를 삭제했습니다${SKIP_DELETE_SAVED_NOTE}`])
+  })
+  it('체크 + 취소 → 저장 안 함 · 체크 없이 「삭제」 → 저장 안 함', async () => {
+    resetSettingsStoreForTest({ ...DEFAULT_SETTINGS })
+    act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
+    await request('/r-wt/a')
+    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
+    act(() => document.querySelector<HTMLButtonElement>('[data-delete-cancel]')!.click())
+    expect(getSettings().skipDeleteWorktreeConfirm).toBe(false)
+    await request('/r-wt/a')
+    expect(document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.checked).toBe(false)
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    expect(getSettings().skipDeleteWorktreeConfirm).toBe(false)
+    expect(notices).toEqual(['워크트리 a 를 삭제했습니다'])
+  })
+  it('설정 꺼짐 + 「삭제」 판정 → 창 없이 non-force 삭제', async () => {
+    resetSettingsStoreForTest({ ...DEFAULT_SETTINGS, skipDeleteWorktreeConfirm: true })
+    act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
+    await request('/r-wt/a')
+    expect(document.querySelector('[data-delete-worktree-dialog]')).toBeNull()
+    expect(deletes).toEqual([{ path: '/r-wt/a', force: false }])
+    expect(notices).toEqual(['워크트리 a 를 삭제했습니다'])
+  })
+  it.each([
+    ['강제(dirty)', (path: string): WorktreeDeletePreview => ({ ...clean(path), dirtyCount: 3 }), 'force'],
+    ['강제(live 세션)', (path: string): WorktreeDeletePreview => ({ ...clean(path), liveSessions: 1 }), 'force'],
+    ['막힘(잠김)', (path: string): WorktreeDeletePreview => ({ ...clean(path), locked: true }), 'blocked'],
+    ['막힘(herdr 미연결)', (path: string): WorktreeDeletePreview => ({ ...clean(path), liveSessions: null }), 'blocked'],
+    ['미리보기 실패', (): WorktreeDeletePreview => ({ ok: false, code: 'x', error: 'y' }), 'error'],
+  ])('설정 꺼짐이어도 %s 이면 지금 대화상자를 띄운다 — 지우지 않는다 · 체크박스 없음', async (_, preview, decision) => {
+    resetSettingsStoreForTest({ ...DEFAULT_SETTINGS, skipDeleteWorktreeConfirm: true })
+    previewOf = preview
+    act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
+    await request('/r-wt/a')
+    expect(document.querySelector('[data-delete-worktree-dialog]')?.getAttribute('data-delete-decision')).toBe(decision)
+    expect(document.querySelector('[data-dont-ask-again]')).toBeNull()
+    expect(deletes).toEqual([])
   })
 })

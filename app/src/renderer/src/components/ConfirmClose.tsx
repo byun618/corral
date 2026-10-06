@@ -1,7 +1,11 @@
 // 종료 확인 모달 (L4) — 옛 App.tsx 534-576줄 그대로, 자리·스타일만 바뀜.
 // 판별자는 herdr `pane.process_info` 의 포그라운드 프로세스 그룹 (main 이 종료 직전에 판정).
 // LIFE-495 — 문구는 `close-copy.ts`(K5 에이전트/명령/핀), 탭 여럿을 닫을 때는 탭마다 한 줄(라벨 + 실행 중 프로세스)로 모아 한 번에 묻는다.
+// LIFE-516 — `copy.dontAskAgain` 이 있으면 본문 아래 「다시 묻지 않음」 체크박스. 확인 때 `onConfirm({ dontAskAgain })` 로 체크 여부를 넘긴다
+// (저장은 부른 쪽). 체크 상태는 창이 새로 열릴 때마다 꺼짐 — 부른 쪽이 창마다 `key` 를 바꾼다.
+import { useState } from 'react'
 import type { CloseCopy } from '../close-copy.js'
+import { DontAskAgain } from './DontAskAgain.js'
 
 export type ConfirmCloseRow = { key: string; label: string | null; foreground: string[] }
 
@@ -14,9 +18,10 @@ export function ConfirmClose({
   copy: CloseCopy
   /** 탭 닫기: 실행 중이거나 고정된 탭마다 한 줄. worktree 닫기: 라벨 없는 한 줄에 프로세스 목록. */
   rows: ConfirmCloseRow[]
-  onConfirm: () => void
+  onConfirm: (input: { dontAskAgain: boolean }) => void
   onCancel: () => void
 }): React.JSX.Element {
+  const [dontAskAgain, setDontAskAgain] = useState(false)
   return (
     <div className="modal-scrim" data-modal-scrim onClick={onCancel}>
       <div
@@ -49,12 +54,13 @@ export function ConfirmClose({
               )),
             ])}
           </ul>
+          {copy.dontAskAgain === null ? null : <DontAskAgain label={copy.dontAskAgain.label} checked={dontAskAgain} onChange={setDontAskAgain} />}
         </div>
         <div className="modal-footer">
           <button className="btn-ghost" data-close-confirm-cancel onClick={onCancel}>
             취소
           </button>
-          <button className="btn-danger" data-close-confirm-ok onClick={onConfirm}>
+          <button className="btn-danger" data-close-confirm-ok onClick={() => onConfirm({ dontAskAgain: copy.dontAskAgain !== null && dontAskAgain })}>
             {copy.confirm}
           </button>
         </div>

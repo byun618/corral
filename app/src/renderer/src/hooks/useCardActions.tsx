@@ -4,7 +4,8 @@
 // 결과는 다음 상태 내보내기(`desktop.changed()` → 트리 재조립)로 화면에 온다. 실패는 알림·대화 안 오류로 보인다(K1ⓓ).
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AppState, RepoRow, WorktreeDeletePreview, WorktreeMetaUpdate, WorktreeRow } from '../../../shared/types.js'
-import { deleteResultNotice, isEditableFocus, userMovedActive } from '../card-menu.js'
+import { deleteDecision, deleteResultNotice, isEditableFocus, userMovedActive } from '../card-menu.js'
+import { getSettings, updateSettings } from '../settings-store.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
 import { pickPane } from '../pane-utils.js'
 import { worktreeDisplayName } from '../worktree-name.js'
@@ -17,6 +18,11 @@ import { usePersistentCollapse } from './usePersistentCollapse.js'
 type ReposState = Pick<AppState, 'repos'>
 
 type DeleteTarget = { path: string; name: string; preview: WorktreeDeletePreview | null }
+
+/** 「다시 묻지 않음」 저장 직후 한 번(D5 — Orca 198 토스트 「다음번에는 이 확인을 건너뛰겠습니다. 설정에서 이를 변경할 수 있습니다.」). */
+type RunDeleteInput = { target: { path: string; name: string }; force: boolean; savedSkip: boolean }
+
+export const SKIP_DELETE_SAVED_NOTE = ' · 다음부터 깨끗한 워크트리는 묻지 않고 삭제합니다 — 설정 › 일반에서 되돌릴 수 있습니다'
 
 /** Option(Alt) 을 누르고 있나 — 198 휴지통은 그동안만 마운트된다(`workspace-delete-quick-action.ts`). 창 blur 에 풀린다. */
 function useAltHeld(): boolean {
@@ -81,9 +87,28 @@ export function useCardActions(input: {
     return result.ok ? null : `${result.error} (${result.code})`
   }, [])
 
+  /** 확인 없이 지우려고 미리보기를 읽는 중인 경로 — 그동안 같은 카드의 두 번째 요청을 거른다(LIFE-516 K5ⓒ). */
+  const skipPreviewing = useRef(new Set<string>())
+  /** `requestDelete` 는 안정 identity(useCallback) 라 매 렌더의 `runDelete` 를 여기서 읽는다. */
+  const runDeleteRef = useRef<((input: RunDeleteInput) => void) | null>(null)
+
   const requestDelete = useCallback((worktree: WorktreeRow): void => {
-    if (!worktree.isLinked || deletingRef.current.has(worktree.path)) return
+    if (!worktree.isLinked || deletingRef.current.has(worktree.path) || skipPreviewing.current.has(worktree.path)) return
     const target = { path: worktree.path, name: worktreeDisplayName(worktree) }
+    // LIFE-516 K5ⓒ·D4 — 「워크트리를 삭제하기 전에 확인」 이 꺼져 있으면 미리보기를 먼저 읽고, **「삭제」 판정(깨끗·한가)일 때만** 창 없이
+    // non-force 로 지운다. 강제·막힘·읽기 실패면 지금 창을 띄운다 — dirty·live 세션은 설정과 무관하게 확인을 지난다.
+    if (getSettings().skipDeleteWorktreeConfirm) {
+      skipPreviewing.current.add(target.path)
+      void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
+        skipPreviewing.current.delete(target.path)
+        if (preview.ok && deleteDecision(preview).kind === 'delete') {
+          runDeleteRef.current?.({ target, force: false, savedSkip: false })
+          return
+        }
+        setDeleteTarget({ ...target, preview })
+      })
+      return
+    }
     setDeleteTarget({ ...target, preview: null })
     void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
       setDeleteTarget((current) => (current?.path === target.path ? { ...target, preview } : current))
@@ -111,10 +136,19 @@ export function useCardActions(input: {
     if (pane !== null) latest.current.revealPane(pane.paneId)
   }
 
-  const confirmDelete = (force: boolean): void => {
+  const confirmDelete = (input: { force: boolean; dontAskAgain: boolean }): void => {
     const target = deleteTarget
     if (target === null) return
     setDeleteTarget(null)
+    // LIFE-516 K5ⓑ — 체크 + 「삭제」 만 저장한다(체크박스는 「삭제」 판정에만 있다). 삭제는 지금과 같은 non-force.
+    if (input.dontAskAgain) void updateSettings({ skipDeleteWorktreeConfirm: true })
+    runDelete({ target, force: input.force, savedSkip: input.dontAskAgain })
+  }
+
+  /** 삭제 실행 — 확인 창의 「삭제」/「강제 삭제」 와 확인 생략 경로(LIFE-516)가 같이 쓴다. `savedSkip` = 방금 「다시 묻지 않음」 을 저장했다(결과 알림에 되돌리는 자리를 한 번 붙인다, D5). */
+  const runDelete = (input: RunDeleteInput): void => {
+    const { target, force } = input
+    const skipNote = input.savedSkip ? SKIP_DELETE_SAVED_NOTE : ''
     const found = findRow(latest.current.stateRef.current, target.path)
     const workspaceId = found?.worktree.openWorkspaceId ?? null
     if (workspaceId !== null && workspaceId === latest.current.activeWorkspaceId) activeDeletes.current.set(target.path, { workspaceId, userMoved: false })
@@ -128,15 +162,17 @@ export function useCardActions(input: {
       const activeDelete = activeDeletes.current.get(target.path)
       activeDeletes.current.delete(target.path)
       if (!result.ok) {
-        latest.current.notify(`워크트리 ${target.name} 를 삭제하지 못했습니다: ${result.error} (${result.code})`)
+        latest.current.notify(`워크트리 ${target.name} 를 삭제하지 못했습니다: ${result.error} (${result.code})${skipNote}`)
         return
       }
       pins.remove(target.path)
-      latest.current.notify(deleteResultNotice({ name: target.name, preservedBranch: result.preservedBranch, warning: result.warning }))
+      latest.current.notify(`${deleteResultNotice({ name: target.name, preservedBranch: result.preservedBranch, warning: result.warning })}${skipNote}`)
       // 삭제가 끝난 지금 다시 판정 — 그사이 사용자가 다른 카드를 골랐으면 그대로 둔다.
       if (activeDelete !== undefined && !activeDelete.userMoved && found !== null) moveActiveAway({ repoRoot: found.repo.root, path: target.path })
     })
   }
+
+  runDeleteRef.current = runDelete
 
   /** ⌘⌥R (198 `workspace.rename` — 활성 워크트리를 드러낸 뒤 그 카드에서 인라인 rename). 활성 없으면 아무 일 없음. */
   const renameActive = (): void => {
@@ -168,6 +204,7 @@ export function useCardActions(input: {
       )}
       {deleteTarget === null ? null : (
         <DeleteWorktreeDialog
+          key={deleteTarget.path}
           name={deleteTarget.name}
           path={deleteTarget.path}
           preview={deleteTarget.preview}

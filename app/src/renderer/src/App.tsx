@@ -62,7 +62,7 @@ import { closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
-import { useSettings } from './settings-store.js'
+import { updateSettings, useSettings } from './settings-store.js'
 import { resolveNewAgentTab } from './tab-create-menu.js'
 import { terminalCssVars } from './terminal-appearance.js'
 
@@ -811,7 +811,8 @@ export function App(): React.JSX.Element {
     const activeBefore = anchor === undefined ? null : (layout.groups.find((group) => group.groupId === anchor.groupId)?.activeTabId ?? null)
     lifecycle.actions.closeTabs({
       tabIds: input.tabIds,
-      alwaysConfirm: input.tabIds.some((tabId) => pinnedTabs.has(tabId)),
+      // LIFE-516 K3ⓑ — 설정 › 일반 「고정된 탭을 닫기 전에 확인」 이 꺼지면 핀이라는 이유로는 묻지 않는다(실행 중 확인은 main 이 따로 본다).
+      alwaysConfirm: settings.confirmClosePinnedTab && input.tabIds.some((tabId) => pinnedTabs.has(tabId)),
       onClosed: (closed) => {
         for (const entry of snapshots) if (closed.includes(entry.tabId)) recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: entry.snapshot })
         if (anchor !== undefined && activeBefore !== null && closed.includes(activeBefore)) activateTab(anchor)
@@ -1539,7 +1540,7 @@ export function App(): React.JSX.Element {
         </div>
       </div>
       {settingsView === null ? null : (
-        <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} />
+        <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} sidebarView={sidebarView.view} onChangeSidebarView={sidebarView.change} />
       )}
       </div>
 
@@ -1582,17 +1583,19 @@ export function App(): React.JSX.Element {
             <ConfirmClose
               copy={closeCopy({ kind: 'worktree' })}
               rows={[{ key: pending.target.workspaceId, label: null, foreground: pending.foreground }]}
-              onConfirm={lifecycle.confirmPendingClose}
+              onConfirm={() => lifecycle.confirmPendingClose()}
               onCancel={lifecycle.cancelPendingClose}
             />
           )
         }
         const tabIds = pending.target.tabIds
+        // 핀이 확인 사유인 것은 요청 때 핀 확인이 켜져 있었을 때뿐이다(`alwaysConfirm`) — 꺼져 있으면 핀 줄·핀 안내를 싣지 않는다(LIFE-516 K3ⓑ).
+        const pinnedAsks = (tabId: string): boolean => pending.target.kind === 'tabs' && pending.target.alwaysConfirm && pinnedTabs.has(tabId)
         const agentPaneIds = new Set(
           state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes).filter((pane) => pane.agent !== null).map((pane) => pane.paneId),
         )
         const rows = tabIds
-          .filter((tabId) => pinnedTabs.has(tabId) || pending.running.some((pane) => pane.tabId === tabId))
+          .filter((tabId) => pinnedAsks(tabId) || pending.running.some((pane) => pane.tabId === tabId))
           .map((tabId) => {
             const tab = tabById(tabId) ?? state.repos.flatMap((repo) => repo.worktrees).flatMap((worktree) => worktree.workspace?.tabs ?? []).find((row) => row.tabId === tabId) ?? null
             const label =
@@ -1601,11 +1604,20 @@ export function App(): React.JSX.Element {
                 : sessionTitle({ tab, tabCount: activeWorkspace?.tabs.length ?? null, ordinal: tabOrdinals.ordinalFor({ tabId, groupId: tab.workspaceId }), home: state.home, selectedPaneId: null })
             return { key: tabId, label, foreground: pending.running.filter((pane) => pane.tabId === tabId).flatMap((pane) => pane.foreground) }
           })
+        const copy = closeCopy({ kind: 'tabs', tabCount: tabIds.length, running: pending.running, agentPaneIds, pinnedCount: tabIds.filter(pinnedAsks).length })
         return (
           <ConfirmClose
-            copy={closeCopy({ kind: 'tabs', tabCount: tabIds.length, running: pending.running, agentPaneIds, pinnedCount: tabIds.filter((tabId) => pinnedTabs.has(tabId)).length })}
+            key={`${tabIds.join(',')}|${pending.running.map((pane) => pane.paneId).join(',')}`}
+            copy={copy}
             rows={rows}
-            onConfirm={lifecycle.confirmPendingClose}
+            onConfirm={({ dontAskAgain }) => {
+              // LIFE-516 K3ⓒ·K4ⓐ — 체크 + 확인만 저장(라벨이 이름 붙인 설정 하나), 그다음 닫는다. 취소는 저장하지 않는다.
+              if (!dontAskAgain || copy.dontAskAgain === null) {
+                lifecycle.confirmPendingClose()
+                return
+              }
+              void updateSettings(copy.dontAskAgain.patch).finally(lifecycle.confirmPendingClose)
+            }}
             onCancel={lifecycle.cancelPendingClose}
           />
         )

@@ -10,19 +10,24 @@
 //            그 밖의 섹션: 바로 닫는다. 기록 중 Esc 는 단축키 섹션이 먼저 먹는다(기록 취소).
 import { useEffect, useRef, useState } from 'react'
 import type { Keybindings } from '../../../shared/keybindings.js'
+import type { SidebarView } from '../../../shared/sidebar-view.js'
 import { useAnnounceDialog } from '../menu-bus.js'
 import { settingsNavGroups, settingsSectionById, type SettingsSection as SettingsSectionDef, type SettingsSectionId } from '../settings-registry.js'
 import { AgentsSection } from './AgentsSection.js'
+import { GeneralSection } from './GeneralSection.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
 import { TerminalAppearanceSection } from './TerminalAppearanceSection.js'
-import { ArrowLeftIcon, BotIcon, KeyboardIcon, PaletteIcon, SearchIcon } from './SidebarIcons.js'
+import { WindowSidebarCard } from './WindowSidebarCard.js'
+import { ArrowLeftIcon, BotIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon } from './SidebarIcons.js'
 import './settings.css'
 
 export const SETTINGS_ESCAPE_CONFIRM_MS = 2200
 
 const SECTION_ICONS: Record<SettingsSectionId, (props: { className?: string }) => React.JSX.Element> = {
   agents: BotIcon,
+  // 198 General 아이콘 = lucide SlidersHorizontal(`settings-navigation-capability-sections.ts:184`).
+  general: SlidersIcon,
   appearance: PaletteIcon,
   shortcuts: KeyboardIcon,
 }
@@ -39,12 +44,15 @@ export function SettingsNavItem({ section, active, onSelect }: { section: Settin
   )
 }
 
-export function SettingsPage({ section, onSelectSection, onClose, overrides, onChangeOverrides }: {
+export function SettingsPage({ section, onSelectSection, onClose, overrides, onChangeOverrides, sidebarView, onChangeSidebarView }: {
   section: SettingsSectionId
   onSelectSection: (section: SettingsSectionId) => void
   onClose: () => void
   overrides: Keybindings
   onChangeOverrides: (value: Keybindings) => void
+  /** App 의 `useSidebarView()` 그대로(LIFE-516 K6ⓑ) — 사이드바 옵션 메뉴와 같은 상태 하나. */
+  sidebarView: SidebarView
+  onChangeSidebarView: (patch: Partial<SidebarView>) => void
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [escapeArmed, setEscapeArmed] = useState(false)
@@ -134,6 +142,8 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
             <SettingsSection id={shown.id} title={settingsSectionById(shown.id).title} description={shown.description} fill={shown.id === 'shortcuts'}>
               {shown.id === 'shortcuts' ? <ShortcutsSection overrides={overrides} onChange={onChangeOverrides} /> : null}
               {shown.id === 'appearance' ? <TerminalAppearanceSection query={query} /> : null}
+              {shown.id === 'appearance' ? <WindowSidebarCard view={sidebarView} onChange={onChangeSidebarView} query={query} /> : null}
+              {shown.id === 'general' ? <GeneralSection /> : null}
               {shown.id === 'agents' ? <AgentsSection /> : null}
             </SettingsSection>
           )}

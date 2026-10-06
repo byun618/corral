@@ -313,3 +313,54 @@ describe('defaultAgent (LIFE-515 K1)', () => {
     expect(fresh().get()).toMatchObject({ defaultAgent: 'grok', terminalFontSize: 15 })
   })
 })
+
+describe('확인 대화상자 칸 셋 (LIFE-516 K1)', () => {
+  const KEYS = ['confirmClosePinnedTab', 'skipCloseTerminalWithRunningProcessConfirm', 'skipDeleteWorktreeConfirm'] as const
+
+  it('기본값 = 셋 다 「묻는다」(지금 동작) — 칸 없는 기존 파일도 같고, 기본값을 보내도 파일을 만들지 않는다', () => {
+    const store = fresh()
+    expect(store.get()).toMatchObject({ confirmClosePinnedTab: true, skipCloseTerminalWithRunningProcessConfirm: false, skipDeleteWorktreeConfirm: false })
+    expect(store.update({ confirmClosePinnedTab: true, skipCloseTerminalWithRunningProcessConfirm: false, skipDeleteWorktreeConfirm: false }).status).toBe('unchanged')
+    expect(fs.existsSync(file)).toBe(false)
+    fs.writeFileSync(file, JSON.stringify({ version: 1, terminalFontSize: 16 }))
+    expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalFontSize: 16 })
+  })
+
+  it('왕복 — 칸마다 저장·재기동 뒤 같은 값, 다른 두 칸은 그대로', () => {
+    for (const key of KEYS) {
+      const store = fresh()
+      const flipped = !DEFAULT_SETTINGS[key]
+      expect(store.update({ [key]: flipped }).status).toBe('saved')
+      expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, [key]: flipped })
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))[key]).toBe(flipped)
+      expect(store.update({ [key]: DEFAULT_SETTINGS[key] }).status).toBe('saved')
+      expect(fresh().get()).toEqual(DEFAULT_SETTINGS)
+    }
+  })
+
+  it('같은 값 쓰기는 unchanged — 파일을 다시 쓰지 않는다', () => {
+    const store = fresh()
+    store.update({ skipDeleteWorktreeConfirm: true })
+    fs.utimesSync(file, new Date(0), new Date(0))
+    expect(store.update({ skipDeleteWorktreeConfirm: true }).status).toBe('unchanged')
+    expect(fs.statSync(file).mtimeMs).toBe(0)
+  })
+
+  it('손상 격리(파일) — boolean 아님은 그 칸만 기본값, 다른 칸은 산다', () => {
+    for (const key of KEYS) {
+      for (const bad of ['true', 0, 1, null, [], {}]) {
+        fs.writeFileSync(file, JSON.stringify({ terminalFontSize: 16, skipDeleteWorktreeConfirm: key === 'skipDeleteWorktreeConfirm' ? false : true, [key]: bad }))
+        const expected = { ...DEFAULT_SETTINGS, terminalFontSize: 16, skipDeleteWorktreeConfirm: key === 'skipDeleteWorktreeConfirm' ? false : true }
+        expect(fresh().get()).toEqual(expected)
+      }
+    }
+  })
+
+  it('손상 격리(IPC 패치) — 잘못된 값은 버리고 직전 값 유지, 함께 온 다른 칸은 적용', () => {
+    const store = fresh()
+    store.update({ confirmClosePinnedTab: false })
+    expect(store.update({ confirmClosePinnedTab: 'true' }).status).toBe('unchanged')
+    expect(store.update({ skipCloseTerminalWithRunningProcessConfirm: 1, terminalFontSize: 15 }).status).toBe('saved')
+    expect(fresh().get()).toMatchObject({ confirmClosePinnedTab: false, skipCloseTerminalWithRunningProcessConfirm: false, terminalFontSize: 15 })
+  })
+})

@@ -2,10 +2,14 @@
 //
 // 198 은 확인 단추가 늘 강제 삭제다(`forceOnConfirm` 기본 true). corral 은 **이름을 정직하게** 붙인다 — 깨끗하고 한가하면 「삭제」,
 // 아니면 「강제 삭제」 와 함께 강제로 넘기는 것을 하나씩 적는다(Orca #16526). 잠김·herdr 링크 없음은 단추가 없다.
-// 「Don't ask again」 은 만들지 않는다 — 되돌릴 설정 화면이 없으면 덫이다(C16 → LIFE-450).
-import { useEffect, useRef } from 'react'
+// 「다시 묻지 않음」(LIFE-516 S37b — C16 의 450 보류 해소, 되돌리는 자리 = 설정 › 일반 「워크트리를 삭제하기 전에 확인」):
+// 체크박스는 **미리보기 판정이 「삭제」(깨끗·한가)일 때만** 보인다(D4) — 강제·막힘·읽기 실패·읽는 중에는 없다. 그래서 생략 경로도
+// 「삭제」 판정의 non-force 삭제뿐이고, dirty·live 세션이 있는 워크트리는 설정과 무관하게 이 창을 지난다(`useCardActions.tsx`).
+// 체크 + 「삭제」 → `onConfirm({ force:false, dontAskAgain:true })`(저장은 부른 쪽). 취소·Esc 는 저장하지 않는다. 창이 다시 열리면 꺼짐.
+import { useEffect, useRef, useState } from 'react'
 import type { WorktreeDeletePreview } from '../../../shared/types.js'
 import { deleteDecision } from '../card-menu.js'
+import { DontAskAgain } from './DontAskAgain.js'
 import { useAnnounceDialog, useWindowEscape } from '../menu-bus.js'
 
 export function DeleteWorktreeDialog({
@@ -19,11 +23,12 @@ export function DeleteWorktreeDialog({
   path: string
   /** null = 아직 읽는 중. */
   preview: WorktreeDeletePreview | null
-  onConfirm: (force: boolean) => void
+  onConfirm: (input: { force: boolean; dontAskAgain: boolean }) => void
   onClose: () => void
 }): React.JSX.Element {
   const confirmRef = useRef<HTMLButtonElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const [dontAskAgain, setDontAskAgain] = useState(false)
   const decision = preview === null || !preview.ok ? null : deleteDecision(preview)
   const focusKind = preview === null ? 'loading' : (decision?.kind ?? 'error')
   useAnnounceDialog()
@@ -104,13 +109,14 @@ export function DeleteWorktreeDialog({
               </ul>
             </div>
           ) : null}
+          {decision?.kind === 'delete' ? <DontAskAgain label="깨끗한 워크트리는 다시 묻지 않기" checked={dontAskAgain} onChange={setDontAskAgain} /> : null}
         </div>
         <div className="modal-footer">
           <button ref={cancelRef} className="btn-ghost" data-delete-cancel="" onClick={onClose}>
             {decision?.kind === 'blocked' ? '닫기' : '취소'}
           </button>
           {decision !== null && decision.kind !== 'blocked' ? (
-            <button ref={confirmRef} className="btn-danger" data-delete-confirm={decision.kind} onClick={() => onConfirm(decision.kind === 'force')}>
+            <button ref={confirmRef} className="btn-danger" data-delete-confirm={decision.kind} onClick={() => onConfirm({ force: decision.kind === 'force', dontAskAgain: decision.kind === 'delete' && dontAskAgain })}>
               {decision.kind === 'force' ? '강제 삭제' : '삭제'}
             </button>
           ) : null}

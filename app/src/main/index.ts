@@ -664,6 +664,8 @@ async function closeTabsByIds(input: { tabIds: readonly string[]; confirmed: boo
     tabIds: input.tabIds,
     confirmed: input.confirmed,
     alwaysConfirm: input.alwaysConfirm,
+    // LIFE-516 K4ⓑ — 닫기마다 저장소에서 읽는다(설정 화면·대화상자 체크박스가 바꾼 값이 다음 닫기부터). 저장소가 없으면 묻는다.
+    confirmRunning: settings === null || !settings.get().skipCloseTerminalWithRunningProcessConfirm,
     confirmedPaneIds: input.confirmedPaneIds,
     panesOf,
     probe: (panes) => probeRunningPanes({ socketPath, panes, subject: { close: 'tabs', tabIds: input.tabIds } }),

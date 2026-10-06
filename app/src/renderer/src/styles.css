@@ -1368,3 +1368,7 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 }
 /* 확인 모달의 탭 줄(여럿 닫기) — 탭 제목, 그 아래 실행 중 프로세스. */
 .modal-list li.modal-close-tab { list-style: none; margin: 6px 0 2px -18px; font-family: var(--font-ui); font-size: 11.5px; color: var(--fg); }
+
+/* LIFE-516 — 「다시 묻지 않음」 체크박스(닫기 확인·워크트리 삭제). Orca 198 Label `text-xs font-normal text-muted-foreground`, Checkbox 옆 gap-2. */
+.modal-dont-ask { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 11.5px; color: var(--fg-muted); cursor: pointer; user-select: none; }
+.modal-dont-ask input { margin: 0; accent-color: var(--accent); cursor: pointer; }

@@ -78,6 +78,29 @@ describe('삭제 대화 — Esc·첫 포커스 (R2B-01·08)', () => {
       expect(terminalKeys).toEqual([])
     })
   }
+  // LIFE-516 K5ⓐ·D4 — 「다시 묻지 않음」 은 「삭제」 판정에만. 체크박스가 생겨도 첫 포커스는 위 표 그대로(확인 단추).
+  for (const state of states) {
+    it(`${state.id}: 「깨끗한 워크트리는 다시 묻지 않기」 체크박스 ${state.id === '삭제' ? '있음' : '없음'}`, () => {
+      render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: state.preview, onConfirm: () => {}, onClose: () => {} }))
+      const box = document.querySelector('[data-dont-ask-again]')
+      if (state.id === '삭제') expect(box?.textContent).toBe('깨끗한 워크트리는 다시 묻지 않기')
+      else expect(box).toBeNull()
+    })
+  }
+  it('「삭제」 판정: 체크 + 「삭제」 → onConfirm({ force:false, dontAskAgain:true }) · 체크 없이 → dontAskAgain:false', () => {
+    const onConfirm = vi.fn()
+    render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({}), onConfirm, onClose: () => {} }))
+    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
+    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    expect(onConfirm.mock.calls).toEqual([[{ force: false, dontAskAgain: false }], [{ force: false, dontAskAgain: true }]])
+  })
+  it('「강제」 판정의 「강제 삭제」 는 dontAskAgain 을 싣지 않는다', () => {
+    const onConfirm = vi.fn()
+    render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({ dirtyCount: 1 }), onConfirm, onClose: () => {} }))
+    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="force"]')!.click())
+    expect(onConfirm.mock.calls).toEqual([[{ force: true, dontAskAgain: false }]])
+  })
   it('막힘이면 취소 단추 글자가 「닫기」', () => {
     render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({ locked: true }), onConfirm: () => {}, onClose: () => {} }))
     expect(document.querySelector('[data-delete-cancel]')?.textContent).toBe('닫기')

@@ -34,10 +34,10 @@ describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키�
 })
 
 describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
-  it('T5 레지스트리(LIFE-515): 그룹은 「AI 기능」·「인터페이스」, 섹션은 「에이전트」 · 「외관」·「단축키」 — 198 그룹 순서대로 AI 기능이 위', () => {
+  it('T6 레지스트리(LIFE-516): 그룹은 「AI 기능」·「설정 시작」·「인터페이스」, 섹션은 「에이전트」 · 「일반」 · 「외관」·「단축키」 — 198 그룹 순서대로', () => {
     const groups = settingsNavGroups({ query: '' })
-    expect(groups.map((group) => group.title)).toEqual(['AI 기능', '인터페이스'])
-    expect(groups.map((group) => group.sections.map((section) => section.id))).toEqual([['agents'], ['appearance', 'shortcuts']])
+    expect(groups.map((group) => group.title)).toEqual(['AI 기능', '설정 시작', '인터페이스'])
+    expect(groups.map((group) => group.sections.map((section) => section.id))).toEqual([['agents'], ['general'], ['appearance', 'shortcuts']])
     // 레지스트리의 그룹은 198 순서 8개 그대로 — 빈 그룹은 그리지 않을 뿐이다.
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote', 'security', 'advanced', 'experimental'])
   })
@@ -62,7 +62,8 @@ describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
   })
   it('검색 항목의 첫 칸은 섹션 자체다(섹션 제목 점수)', () => {
     expect(sectionSearchEntries(settingsSectionById('shortcuts'))[0]).toEqual({ title: '단축키', description: '일반 작업에 대한 키보드 단축키입니다.' })
-    expect(sectionSearchEntries(settingsSectionById('appearance'))[0]).toEqual({ title: '외관', description: '터미널 글꼴·테마·커서·pane 모양.' })
+    expect(sectionSearchEntries(settingsSectionById('appearance'))[0]).toEqual({ title: '외관', description: '터미널 글꼴·테마·커서·pane 모양과 사이드바 카드 레이아웃.' })
+    expect(sectionSearchEntries(settingsSectionById('general'))[0]).toEqual({ title: '일반', description: '탭·터미널을 닫거나 워크트리를 삭제하기 전에 묻는 확인 대화상자.' })
   })
 })
 
@@ -78,5 +79,17 @@ describe('외관 섹션 검색 키워드 (LIFE-512 K5ⓒ)', () => {
 describe('Ghostty 가져오기 검색 키워드 (LIFE-513 K8ⓒ)', () => {
   it.each(['ghostty', 'Ghostty', 'import', '가져오기'])('질의 %s 는 외관 섹션을 남긴다', (query) => {
     expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toEqual(['appearance'])
+  })
+})
+
+describe('일반 섹션 검색 키워드 (LIFE-516 K2ⓔ)', () => {
+  it.each(['일반', '고정', '핀', 'pinned', '탭', '닫기', '확인', '실행 중', '터미널을 닫기', '삭제', '워크스페이스', '워크트리', '다시 묻지', 'confirm', 'running', 'delete'])('질의 %s 는 일반 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('general')
+  })
+})
+
+describe('외관 › 창 및 사이드바 검색 키워드 (LIFE-516 K6ⓔ)', () => {
+  it.each(['카드 레이아웃', '사이드바', '간단히', '자세히', 'compact', 'detailed', 'card layout', '창 및 사이드바'])('질의 %s 는 외관 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('appearance')
   })
 })

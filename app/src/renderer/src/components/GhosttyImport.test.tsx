@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GhosttyImportPreview } from '../../../shared/ghostty-import.js'
 import type { Settings, SettingsWriteResult } from '../../../shared/terminal-settings.js'
+import { DEFAULT_SIDEBAR_VIEW } from '../../../shared/sidebar-view.js'
 
 vi.mock('@xterm/xterm', () => {
   class Terminal {
@@ -284,7 +285,7 @@ describe('모달 세대 — 닫았다 다시 연 모달에는 그 세대 응답�
 describe('모달 키보드·포커스 격리 — 설정 화면과 함께 (fix1 R1-04)', () => {
   const found: GhosttyImportPreview = { status: 'found', configPaths: ['/h/.config/ghostty/config'], diff: { terminalFontFamily: 'Menlo' }, unsupported: [] }
   const renderPage = (): void => {
-    render(createElement(SettingsPage, { section: 'appearance', onSelectSection: () => {}, onClose: () => {}, overrides: {}, onChangeOverrides: () => {} }))
+    render(createElement(SettingsPage, { section: 'appearance', onSelectSection: () => {}, onClose: () => {}, overrides: {}, onChangeOverrides: () => {}, sidebarView: DEFAULT_SIDEBAR_VIEW, onChangeSidebarView: () => {} }))
   }
   const insideModal = (): boolean => modal()?.contains(document.activeElement) ?? false
   const key = async (init: KeyboardEventInit): Promise<KeyboardEvent> => {

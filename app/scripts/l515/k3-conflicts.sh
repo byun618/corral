@@ -19,8 +19,8 @@ echo "## ③ 실행 중 Electron 앱 메뉴 accelerator ($MENU)"
 "$NODE" -e "
 const d = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))
 const rows = []
-const walk = (items, trail) => { for (const i of items || []) { const acc = i.accelerator || i.roleAccelerator; if (acc) rows.push(trail.concat(i.label).join(' › ') + ' | role ' + i.role + ' | ' + acc); walk(i.items, trail.concat(i.label)) } }
-for (const top of d.menu) walk(top.items, [top.label])
+const walk = ({ items, trail }) => { for (const i of items || []) { const acc = i.accelerator || i.roleAccelerator; if (acc) rows.push(trail.concat(i.label).join(' › ') + ' | role ' + i.role + ' | ' + acc); walk({ items: i.items, trail: trail.concat(i.label) }) } }
+for (const top of d.menu) walk({ items: top.items, trail: [top.label] })
 for (const r of rows) console.log('- ' + r)
 const norm = (v) => (v || '').toLowerCase().replace(/cmdorctrl|commandorcontrol|cmd/g, 'command').replace(/option/g, 'alt').replace(/\s/g, '')
 const chord = (key) => rows.filter((r) => { const n = norm(r.split(' | ').pop()); return n.split('+').sort().join('+') === ['alt', 'command', key].sort().join('+') })

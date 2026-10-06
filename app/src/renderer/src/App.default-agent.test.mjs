@@ -71,7 +71,7 @@ async function mount({ defaultAgent, overrides = {} }) {
   const q = (selector) => host.querySelector(selector)
   return {
     q, created, settingsWrites,
-    key: async (init, target = document.body) => { await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
+    key: async (init) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
   }
 }
 const CMD_OPT_T = { key: '†', code: 'KeyT', metaKey: true, altKey: true }

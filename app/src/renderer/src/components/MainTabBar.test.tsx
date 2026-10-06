@@ -14,7 +14,7 @@ import { GroupHeader } from './MainTabBar.js'
 import type { OpenTabSearchEntry } from '../tab-create-menu.js'
 
 /** 조회 결과가 있음을 확인하고 좁힌다 — 비 null 단언 대신(LIFE-515 fix1 R1-03). 없으면 그 자리에서 실패한다. */
-function found<T>(value: T | null | undefined, what: string): T {
+function found<T>({ value, what }: { value: T | null | undefined; what: string }): T {
   if (value === null || value === undefined) throw new Error(`${what} 없음`)
   return value
 }
@@ -505,7 +505,7 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent-settings')
     key({ target: document.activeElement!, name: 'ArrowDown' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent-settings')
-    key({ target: found(document.activeElement, '포커스 요소'), name: 'ArrowUp' })
+    key({ target: found({ value: document.activeElement, what: '포커스 요소' }), name: 'ArrowUp' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:grok')
   })
 
@@ -866,17 +866,17 @@ describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
 
 // LIFE-515 K4·K5 — 기본 에이전트 순서·⌘⌥T 칩·「Agent 설정…」 (Orca 198 `QuickLaunchButton.tsx:46-59·205-250`).
 describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
-  const plus = (): HTMLButtonElement => found(host.querySelector<HTMLButtonElement>('[data-main-tabbar-add="g1"]'), '+ 버튼')
-  const input = (): HTMLInputElement => found(host.querySelector<HTMLInputElement>('[data-tab-create-input="g1"]'), '메뉴 입력창')
+  const plus = (): HTMLButtonElement => found({ value: host.querySelector<HTMLButtonElement>('[data-main-tabbar-add="g1"]'), what: '+ 버튼' })
+  const input = (): HTMLInputElement => found({ value: host.querySelector<HTMLInputElement>('[data-tab-create-input="g1"]'), what: '메뉴 입력창' })
   const open = (): void => {
     act(() => plus().click())
   }
   const close = (): void => {
     if (host.querySelector('[data-tab-create-menu="g1"]') !== null) act(() => plus().click())
   }
-  const staticItems = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-item]')].map((row) => found(row.dataset.tabCreateItem, '항목 id'))
+  const staticItems = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-item]')].map((row) => found({ value: row.dataset.tabCreateItem, what: '항목 id' }))
   const chips = (): { item: string; text: string }[] =>
-    [...host.querySelectorAll<HTMLElement>('[data-tab-create-default-agent-shortcut]')].map((chip) => ({ item: found(found(chip.closest<HTMLElement>('[data-tab-create-item]'), '칩의 항목').dataset.tabCreateItem, '항목 id'), text: chip.textContent ?? '' }))
+    [...host.querySelectorAll<HTMLElement>('[data-tab-create-default-agent-shortcut]')].map((chip) => ({ item: found({ value: found({ value: chip.closest<HTMLElement>('[data-tab-create-item]'), what: '칩의 항목' }).dataset.tabCreateItem, what: '항목 id' }), text: chip.textContent ?? '' }))
   const withDefault = (defaultAgent: DefaultAgent): void => resetSettingsStoreForTest({ ...DEFAULT_SETTINGS, defaultAgent })
   const key = ({ target, name }: { target: Element; name: string }): void => {
     act(() => {
@@ -933,7 +933,7 @@ describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
     mount({ tabs: [], activeTabId: null })
     open()
     act(() => {
-      const setter = found(found(Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'), 'value 서술자').set, 'value setter')
+      const setter = found({ value: found({ value: Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'), what: 'value 서술자' }).set, what: 'value setter' })
       setter.call(input(), 'co')
       input().dispatchEvent(new Event('input', { bubbles: true }))
     })
@@ -949,9 +949,9 @@ describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
     act(() => input().focus())
     key({ target: input(), name: 'ArrowDown' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('new-terminal')
-    key({ target: found(document.activeElement, '포커스 요소'), name: 'ArrowDown' })
+    key({ target: found({ value: document.activeElement, what: '포커스 요소' }), name: 'ArrowDown' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:codex')
-    key({ target: found(document.activeElement, '포커스 요소'), name: 'ArrowDown' })
+    key({ target: found({ value: document.activeElement, what: '포커스 요소' }), name: 'ArrowDown' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:claude')
     // 버튼의 Enter 는 브라우저가 click 으로 바꾼다 — happy-dom 은 바꾸지 않으므로 click 으로 대신한다.
     act(() => {
@@ -964,7 +964,7 @@ describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
     withDefault('auto')
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
-    const item = found(host.querySelector<HTMLButtonElement>('[data-tab-create-item="agent-settings"]'), '「Agent 설정…」 행')
+    const item = found({ value: host.querySelector<HTMLButtonElement>('[data-tab-create-item="agent-settings"]'), what: '「Agent 설정…」 행' })
     expect(item.textContent).toBe('Agent 설정…')
     expect(item.getAttribute('role')).toBe('menuitem')
     expect(item.classList.contains('is-muted')).toBe(true)

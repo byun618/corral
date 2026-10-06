@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+/* global window, document */
 // LIFE-516 fix2 R2-01 — 닫기 확인 창·콜백은 그 창을 띄운 요청의 것이다(실제 훅, 지연 IPC·지연 저장).
 // 모달이 뜨기 전 두 요청(A·B)의 probe 가 겹치면: A 창 → A 확인(저장 대기) → B 의 늦은 needs-confirm 은 창을 바꾸지 않고 버린다(D10, 알림),
 // A 의 닫힘은 A 콜백으로만 가고, 한 요청의 완료가 다른 요청의 창을 지우지 않는다. 확인 불필요 탭의 연속 닫기는 막지 않는다.

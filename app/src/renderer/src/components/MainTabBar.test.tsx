@@ -5,7 +5,11 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyAgentState } from '../../../shared/agent-state.js'
+import type { Keybindings } from '../../../shared/keybindings.js'
+import { DEFAULT_SETTINGS, type DefaultAgent } from '../../../shared/terminal-settings.js'
 import { EMPTY_SESSION_DIGEST, type AgentStatus, type PaneRow, type TabRow } from '../../../shared/types.js'
+import { BindingLabels } from '../hooks/BindingLabels.js'
+import { resetSettingsStoreForTest, updateSettings } from '../settings-store.js'
 import { GroupHeader } from './MainTabBar.js'
 import type { OpenTabSearchEntry } from '../tab-create-menu.js'
 
@@ -23,7 +27,7 @@ let host: HTMLDivElement
 let root: Root
 const spies = {
   close: vi.fn(), select: vi.fn(), createShell: vi.fn(), launch: vi.fn(), activateTab: vi.fn(), activate: vi.fn(),
-  requestRename: vi.fn(), togglePin: vi.fn(), closeScope: vi.fn(), setColor: vi.fn(),
+  requestRename: vi.fn(), togglePin: vi.fn(), closeScope: vi.fn(), setColor: vi.fn(), openAgentSettings: vi.fn(),
 }
 function mount(input: {
   tabs: TabRow[]
@@ -34,10 +38,11 @@ function mount(input: {
   pinned?: string[]
   colors?: Record<string, string>
   renameRequest?: { tabId: string; token: number } | null
+  overrides?: Keybindings
 }): void {
   const noop = (): void => {}
   act(() => {
-    root.render(createElement(GroupHeader, {
+    root.render(createElement(BindingLabels.Provider, { value: input.overrides ?? {} }, createElement(GroupHeader, {
       groupId: 'g1', tabs: input.tabs, workspaceTabCount: input.tabs.length, home: '/home', selectedPane: null, activeTabId: input.activeTabId,
       activeGroup: true, unreadPanes: new Set(input.unread ?? []), paneCount: 1, grid: null, zoomed: false,
       onActivate: spies.activate, onSelectTab: spies.select, onCreateShell: spies.createShell, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
@@ -45,8 +50,8 @@ function mount(input: {
       pinnedTabs: new Set(input.pinned ?? []), tabColorOf: (tabId: string) => input.colors?.[tabId] ?? null, renameRequest: input.renameRequest ?? null,
       onRequestRename: spies.requestRename, onTogglePin: spies.togglePin, onCloseScope: spies.closeScope, onSetTabColor: spies.setColor, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
       tabDragActive: input.dragActive ?? false,
-      openTabEntries: input.entries ?? [], onLaunchAgent: spies.launch, onActivateOpenTab: spies.activateTab,
-    }))
+      openTabEntries: input.entries ?? [], onLaunchAgent: spies.launch, onOpenAgentSettings: spies.openAgentSettings, onActivateOpenTab: spies.activateTab,
+    })))
   })
 }
 const tabEl = (tabId: string): HTMLElement => {
@@ -426,11 +431,11 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     expect(menu()).toBeNull()
   })
 
-  it('빈 질의 = 입력창 · 새 터미널(⌘T 라벨) · 에이전트 카탈로그 순서 claude → codex → grok', () => {
+  it('빈 질의 = 입력창 · 새 터미널(⌘T 라벨) · 에이전트 카탈로그 순서 claude → codex → grok · Agent 설정…(LIFE-515)', () => {
     mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
     open()
     expect(input().placeholder).toBe('열린 탭, 에이전트 검색…')
-    expect(staticItems()).toEqual(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok'])
+    expect(staticItems()).toEqual(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok', 'agent-settings'])
     expect(host.querySelector('[data-tab-create-item="new-terminal"] .tab-create-shortcut')?.textContent).toMatch(/T/)
     expect(host.querySelectorAll('[data-tab-create-menu="g1"] [role="separator"]')).toHaveLength(2)
     expect(results()).toEqual([])
@@ -490,8 +495,11 @@ describe('+ 드롭다운 (LIFE-496)', () => {
     expect(document.activeElement).toBe(input())
     expect(menu()).not.toBeNull()
     key({ target: input(), name: 'ArrowUp' })
-    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:grok')
+    // LIFE-515 K5ⓒ — 마지막 정적 항목은 「Agent 설정…」 이다(순환에 포함).
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent-settings')
     key({ target: document.activeElement!, name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent-settings')
+    key({ target: document.activeElement!, name: 'ArrowUp' })
     expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:grok')
   })
 
@@ -847,5 +855,117 @@ describe('LIFE-495 탭 메뉴·핀·색 (K1·K2·K3·K4)', () => {
     expect(itemOrder(menu)).toContain('data-tab-menu-rename')
     act(() => menu.querySelector<HTMLElement>('[data-tab-menu-close-right]')!.click())
     expect(spies.closeScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'right', tab: expect.objectContaining({ tabId: 't1' }) }))
+  })
+})
+
+// LIFE-515 K4·K5 — 기본 에이전트 순서·⌘⌥T 칩·「Agent 설정…」 (Orca 198 `QuickLaunchButton.tsx:46-59·205-250`).
+describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
+  const plus = (): HTMLButtonElement => host.querySelector<HTMLButtonElement>('[data-main-tabbar-add="g1"]')!
+  const input = (): HTMLInputElement => host.querySelector<HTMLInputElement>('[data-tab-create-input="g1"]')!
+  const open = (): void => {
+    act(() => plus().click())
+  }
+  const close = (): void => {
+    if (host.querySelector('[data-tab-create-menu="g1"]') !== null) act(() => plus().click())
+  }
+  const staticItems = (): string[] => [...host.querySelectorAll<HTMLElement>('[data-tab-create-item]')].map((row) => row.dataset.tabCreateItem!)
+  const chips = (): { item: string; text: string }[] =>
+    [...host.querySelectorAll<HTMLElement>('[data-tab-create-default-agent-shortcut]')].map((chip) => ({ item: chip.closest<HTMLElement>('[data-tab-create-item]')!.dataset.tabCreateItem!, text: chip.textContent ?? '' }))
+  const withDefault = (defaultAgent: DefaultAgent): void => resetSettingsStoreForTest({ ...DEFAULT_SETTINGS, defaultAgent })
+  const key = ({ target, name }: { target: Element; name: string }): void => {
+    act(() => {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
+    })
+  }
+  afterEach(() => resetSettingsStoreForTest(null))
+
+  it.each([
+    ['auto', ['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok', 'agent-settings'], []],
+    ['blank', ['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok', 'agent-settings'], []],
+    ['claude', ['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok', 'agent-settings'], [{ item: 'agent:claude', text: '⌘⌥T' }]],
+    ['codex', ['new-terminal', 'agent:codex', 'agent:claude', 'agent:grok', 'agent-settings'], [{ item: 'agent:codex', text: '⌘⌥T' }]],
+    ['grok', ['new-terminal', 'agent:grok', 'agent:claude', 'agent:codex', 'agent-settings'], [{ item: 'agent:grok', text: '⌘⌥T' }]],
+  ] as const)('기본값 %s — 명시 에이전트만 맨 앞 + ⌘⌥T 칩, 자동·agent 없음은 카탈로그 순서·칩 없음 (K4ⓐⓑ)', (value, order, chip) => {
+    withDefault(value)
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    expect(staticItems()).toEqual(order)
+    expect(chips()).toEqual(chip)
+  })
+
+  it('칩 문자열은 레지스트리 라벨 — 재정의를 따르고, 「없음」 이면 칩이 없다 (K4ⓑ)', () => {
+    withDefault('codex')
+    mount({ tabs: [], activeTabId: null, overrides: { 'terminal.newAgent': ['Mod+Alt+Shift+T'] } })
+    open()
+    expect(chips()).toEqual([{ item: 'agent:codex', text: '⌘⌥⇧T' }])
+    close()
+    mount({ tabs: [], activeTabId: null, overrides: { 'terminal.newAgent': [null] } })
+    open()
+    expect(chips()).toEqual([])
+    // 다른 액션이 ⌘⌥T 를 가져가 비켜 선 경우도 칩이 없다(YIELDING_DEFAULTS).
+    close()
+    mount({ tabs: [], activeTabId: null, overrides: { 'sidebar.toggle': ['Mod+Alt+T'] } })
+    open()
+    expect(chips()).toEqual([])
+  })
+
+  it('설정을 바꾸면 다음에 열 때 반영된다 · 열린 동안 바뀌어도 따라간다 (K4ⓒ)', async () => {
+    withDefault('auto')
+    mount({ tabs: [], activeTabId: null })
+    open()
+    expect(staticItems().slice(1, 4)).toEqual(['agent:claude', 'agent:codex', 'agent:grok'])
+    await act(async () => { await updateSettings({ defaultAgent: 'grok' }) })
+    expect(staticItems().slice(1, 4)).toEqual(['agent:grok', 'agent:claude', 'agent:codex'])
+    close()
+    open()
+    expect(staticItems().slice(1, 4)).toEqual(['agent:grok', 'agent:claude', 'agent:codex'])
+    expect(chips()).toEqual([{ item: 'agent:grok', text: '⌘⌥T' }])
+  })
+
+  it('검색 결과의 에이전트 순서는 바꾸지 않는다 — 점수·카탈로그 순서 (K4ⓓ)', () => {
+    withDefault('grok')
+    mount({ tabs: [], activeTabId: null })
+    open()
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input(), 'co')
+      input().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect([...host.querySelectorAll<HTMLElement>('[data-tab-create-result]')].map((row) => row.dataset.tabCreateResult)).toEqual(['agent:codex'])
+    // 질의가 있으면 「Agent 설정…」 도 정적 메뉴와 함께 숨는다(K5ⓐ).
+    expect(staticItems()).toEqual([])
+  })
+
+  it('키보드 ↓ 이동이 새 순서를 따르고 Enter(=클릭)가 그 에이전트를 실행한다 (K4ⓔ)', () => {
+    withDefault('codex')
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    act(() => input().focus())
+    key({ target: input(), name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('new-terminal')
+    key({ target: document.activeElement!, name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:codex')
+    key({ target: document.activeElement!, name: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('data-tab-create-item')).toBe('agent:claude')
+    // 버튼의 Enter 는 브라우저가 click 으로 바꾼다 — happy-dom 은 바꾸지 않으므로 click 으로 대신한다.
+    act(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.click()
+    })
+    expect(spies.launch).toHaveBeenCalledWith('claude')
+  })
+
+  it('「Agent 설정…」 — 끝 행 · 설정 아이콘 · muted · 클릭 = 메뉴 닫힘 + onOpenAgentSettings (K5ⓐⓑ)', () => {
+    withDefault('auto')
+    mount({ tabs: [tab(0, [pane('p0', null, 'idle')])], activeTabId: 't0' })
+    open()
+    const item = host.querySelector<HTMLButtonElement>('[data-tab-create-item="agent-settings"]')!
+    expect(item.textContent).toBe('Agent 설정…')
+    expect(item.getAttribute('role')).toBe('menuitem')
+    expect(item.classList.contains('is-muted')).toBe(true)
+    expect(item.querySelector('svg.tab-create-item-icon')).not.toBeNull()
+    act(() => item.click())
+    expect(host.querySelector('[data-tab-create-menu="g1"]')).toBeNull()
+    expect(spies.openAgentSettings).toHaveBeenCalledTimes(1)
+    expect(spies.launch).not.toHaveBeenCalled()
   })
 })

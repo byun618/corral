@@ -12,6 +12,7 @@
 //     목적지(제목 전체 일치 → 제목만으로 → 섞임 → 별칭·에이전트만) → 가장 약한 토큰 품질 → 컨테이너만 맞은 토큰 수 → 강도 → 자리(접두 → 단어 경계 → 그 밖)
 //     → 위치(현재 탭 → 영역 순서·탭 순서) → id. 오타·compact 복구와 활동 시각 버킷은 없다(corral 탭에 활동 시각이 없다).
 
+import type { DefaultAgent } from '../../shared/terminal-settings.js'
 import type { AgentKind } from '../../shared/types.js'
 
 // ── 토큰 매칭 (Orca query-token-match.ts) ─────────────────────────────────────────────
@@ -80,7 +81,10 @@ export function findMatchingMenuOptions({ query, options = TAB_CREATE_MENU_OPTIO
 export type LaunchAgent = Exclude<AgentKind, 'shell'>
 export type AgentLaunchOption = { agent: LaunchAgent; label: string; aliases: readonly string[] }
 
-/** 카탈로그 순서 claude → codex → grok (Orca `agent-catalog.tsx:36,57,63`). 감지·기본 에이전트는 LIFE-450 — 고정 3종(게이트 ⓪ Q1 ⓐ). */
+/**
+ * 카탈로그 순서 claude → codex → grok (Orca `agent-catalog.tsx:36,57,63`). 고정 3종 — 감지는 없다(LIFE-515 D1·D3, 감지는 후속 LIFE-520).
+ * 기본 에이전트(LIFE-515)는 이 순서를 바꾸지 않고 빈 질의 Quick-launch 에서만 맨 앞으로 옮긴다(`orderAgentLaunchOptions`).
+ */
 const AGENT_CATALOG: readonly { agent: LaunchAgent; label: string; cmd: string }[] = [
   { agent: 'claude', label: 'Claude', cmd: 'claude' },
   { agent: 'codex', label: 'Codex', cmd: 'codex' },
@@ -95,6 +99,52 @@ export function buildAgentLaunchOptions(): AgentLaunchOption[] {
     label,
     aliases: [...new Set([agent, label.toLowerCase(), compactAlias(agent), compactAlias(label), cmd, compactAlias(cmd)])],
   }))
+}
+
+// ── 기본 에이전트 (LIFE-515 — Orca 198 `QuickLaunchButton.orderAgents`·`agent-tab-shortcuts.resolveDefaultAgentForNewTab`·`pickTuiAgent`) ──
+
+/** ⌘⌥T 가 여는 탭 — 에이전트 탭(`launchAgent`, 워치독 포함) 또는 빈 터미널 탭(`createShell`, ⌘T 와 같은 결과). */
+export type NewAgentTabTarget = { kind: 'agent'; agent: LaunchAgent } | { kind: 'shell' }
+
+/**
+ * 기본 에이전트 → ⌘⌥T 대상. 순수 함수(K3ⓑ).
+ *   · 명시 에이전트 → 그 에이전트
+ *   · 자동 → **카탈로그 첫 번째**(D1 — 감지가 없어 Orca `pickTuiAgent` 의 「감지·활성 중 첫 번째」 가 카탈로그 첫 번째가 된다)
+ *   · agent 없음 → **빈 터미널**(D2 — Orca 는 이 값을 무시하고 자동으로 떨어진다. corral 에는 「새 workspace 를 agent 없이」 소비처가 없어
+ *     Orca 의미면 이 값이 순서에만 걸리는 죽은 선택지가 된다 — 00-analysis §4)
+ */
+export function resolveNewAgentTab(defaultAgent: DefaultAgent): NewAgentTabTarget {
+  switch (defaultAgent) {
+    case 'auto':
+      return { kind: 'agent', agent: AGENT_CATALOG[0]!.agent }
+    case 'blank':
+      return { kind: 'shell' }
+    case 'claude':
+    case 'codex':
+    case 'grok':
+      return { kind: 'agent', agent: defaultAgent }
+  }
+}
+
+/** 명시 기본 에이전트 — 자동·agent 없음이면 null. Quick-launch 순서·칩이 이것만 본다(Orca `orderAgents`·`showsDefaultAgentShortcut`). */
+export function explicitDefaultAgent(defaultAgent: DefaultAgent): LaunchAgent | null {
+  switch (defaultAgent) {
+    case 'auto':
+    case 'blank':
+      return null
+    case 'claude':
+    case 'codex':
+    case 'grok':
+      return defaultAgent
+  }
+}
+
+/** 빈 질의 Quick-launch 순서 — 명시 기본 에이전트가 맨 앞, 나머지는 카탈로그 순서(Orca `orderAgents`, K4ⓐ). 검색 결과 순서에는 쓰지 않는다(K4ⓓ). */
+export function orderAgentLaunchOptions({ options, defaultAgent }: { options: readonly AgentLaunchOption[]; defaultAgent: DefaultAgent }): AgentLaunchOption[] {
+  const preferred = explicitDefaultAgent(defaultAgent)
+  const first = options.find((option) => option.agent === preferred)
+  if (first === undefined) return [...options]
+  return [first, ...options.filter((option) => option !== first)]
 }
 
 /** 정확한 별칭 1000. 그 밖에는 질의 토큰마다 같음 3 · 접두 2(2글자 이상만 — 한 글자 접두는 거의 모든 에이전트에 걸린다). 중간 일치는 안 받는다. */

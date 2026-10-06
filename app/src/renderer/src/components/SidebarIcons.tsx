@@ -1,5 +1,7 @@
 // 사이드바 헤더·옵션 메뉴 아이콘 (LIFE-470) — lucide 경로를 그대로 옮겼다(198 이 쓰는 아이콘, `AgentStateDot.tsx` 와 같은 방식 —
 // 아이콘 라이브러리를 들이지 않는다).
+// 출처·라이선스: lucide(https://lucide.dev, lucide-react v0.577.0 — Orca 198 이 쓰는 판) · ISC License · Copyright (c) Lucide Contributors.
+// LIFE-515 가 `Bot`·`Terminal`·`Settings` 를 더하며 이 고지를 적었다(01-criteria K2ⓖ).
 const STROKE: React.SVGProps<SVGSVGElement> = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
 
 /** lucide `SlidersHorizontal` — Workspace options 버튼(198 `SidebarWorkspaceOptionsMenu.tsx:68`, strokeWidth 2.25). */
@@ -221,6 +223,40 @@ export function PlusIcon({ className }: { className?: string }): React.JSX.Eleme
     <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
       <path d="M5 12h14" />
       <path d="M12 5v14" />
+    </svg>
+  )
+}
+
+/** lucide `Bot` — 설정 내비 「에이전트」(198 `settings-navigation-capability-sections.ts:42`, LIFE-515). */
+export function BotIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M12 8V4H8" />
+      <rect width="16" height="12" x="4" y="8" rx="2" />
+      <path d="M2 14h2" />
+      <path d="M20 14h2" />
+      <path d="M15 13v2" />
+      <path d="M9 13v2" />
+    </svg>
+  )
+}
+
+/** lucide `Terminal` — 기본 Agent 「agent 없음(빈 terminal)」 pill(198 `AgentDefaultSetting.tsx`, LIFE-515). */
+export function TerminalIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M12 19h8" />
+      <path d="m4 17 6-6-6-6" />
+    </svg>
+  )
+}
+
+/** lucide `Settings` — 탭바 `+` 메뉴 「Agent 설정…」(198 `QuickLaunchButton.tsx:250`, LIFE-515). */
+export function SettingsGearIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   )
 }

@@ -34,10 +34,12 @@ const type = (input: HTMLInputElement, value: string): void => {
   act(() => { setValue.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
 }
 
-it('내비 — 돌아가기 · 검색 · 「인터페이스」 그룹 하나 · 「단축키」 활성(aria-current) · 섹션 하나만 마운트', () => {
+it('내비 — 돌아가기 · 검색 · 「AI 기능」·「인터페이스」 그룹 · 「단축키」 활성(aria-current) · 섹션 하나만 마운트', () => {
   const { view } = mount()
   expect(view.querySelector('[data-settings-back]')?.textContent).toBe('앱으로 돌아가기')
-  expect([...view.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent)).toEqual(['인터페이스'])
+  expect([...view.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent)).toEqual(['AI 기능', '인터페이스'])
+  // LIFE-515 K2ⓐ — 「AI 기능 › 에이전트」 행(Bot 아이콘)이 맨 위 그룹에 있다.
+  expect([...view.querySelectorAll('[data-settings-nav-item]')].map((el) => el.getAttribute('data-settings-nav-item'))).toEqual(['agents', 'appearance', 'shortcuts'])
   const item = view.querySelector('[data-settings-nav-item="shortcuts"]')!
   expect(item.getAttribute('aria-current')).toBe('page')
   expect(view.querySelectorAll('[data-settings-section]')).toHaveLength(1)

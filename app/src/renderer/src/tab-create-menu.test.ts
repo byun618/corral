@@ -1,12 +1,16 @@
 // LIFE-496 K1ⓖ — `+` 드롭다운 순수 계산. Orca v1.4.219 테스트(query-token-match · tab-create-menu-options · tab-agent-launch-options ·
 // open-tab-search · QuickLaunchButton)와 같은 상황은 같은 기대값을 쓴다. corral 고유분(한국어 토큰·워치독 판정)은 따로 적는다.
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_AGENT_VALUES } from '../../shared/terminal-settings.js'
 import {
   LAUNCH_WATCHDOG_MS,
   OPEN_TAB_SEARCH_RESULT_LIMIT,
   activeOptionId,
   buildActiveOptions,
   buildAgentLaunchOptions,
+  explicitDefaultAgent,
+  orderAgentLaunchOptions,
+  resolveNewAgentTab,
   findMatchingAgentLaunchOptions,
   findMatchingMenuOptions,
   launchWatchdogMessage,
@@ -220,5 +224,35 @@ describe('기동 워치독 판정 (Orca QuickLaunchButton 조건의 corral 등�
     expect(LAUNCH_WATCHDOG_MS).toBe(10_000)
     expect(launchWatchdogMessage('Claude')).toContain('Claude 실행 실패')
     expect(launchWatchdogMessage('Claude')).toContain('10초')
+  })
+})
+
+// LIFE-515 K3ⓑ·K4ⓐ — 기본 에이전트 해석(⌘⌥T)과 Quick-launch 순서. Orca 198 `resolveDefaultAgentForNewTab`·`pickTuiAgent`·`orderAgents`,
+// 차이 D1(자동 = 카탈로그 첫 번째, 감지 없음)·D2(agent 없음 = 빈 터미널).
+describe('기본 에이전트 (LIFE-515)', () => {
+  const options = buildAgentLaunchOptions()
+  it('resolveNewAgentTab — 다섯 값', () => {
+    expect(resolveNewAgentTab('auto')).toEqual({ kind: 'agent', agent: 'claude' })
+    expect(resolveNewAgentTab('blank')).toEqual({ kind: 'shell' })
+    expect(resolveNewAgentTab('claude')).toEqual({ kind: 'agent', agent: 'claude' })
+    expect(resolveNewAgentTab('codex')).toEqual({ kind: 'agent', agent: 'codex' })
+    expect(resolveNewAgentTab('grok')).toEqual({ kind: 'agent', agent: 'grok' })
+  })
+  it('자동 = 카탈로그 첫 번째 — 카탈로그 순서와 묶여 있다', () => {
+    const target = resolveNewAgentTab('auto')
+    expect(target.kind === 'agent' ? target.agent : null).toBe(options[0]!.agent)
+  })
+  it('explicitDefaultAgent — 자동·agent 없음은 null', () => {
+    expect(DEFAULT_AGENT_VALUES.map((value) => explicitDefaultAgent(value))).toEqual([null, null, 'claude', 'codex', 'grok'])
+  })
+  it('orderAgentLaunchOptions — 명시 기본값만 맨 앞, 나머지는 카탈로그 순서(Orca orderAgents)', () => {
+    const order = (defaultAgent: Parameters<typeof orderAgentLaunchOptions>[0]['defaultAgent']): string[] => orderAgentLaunchOptions({ options, defaultAgent }).map((option) => option.agent)
+    expect(order('auto')).toEqual(['claude', 'codex', 'grok'])
+    expect(order('blank')).toEqual(['claude', 'codex', 'grok'])
+    expect(order('claude')).toEqual(['claude', 'codex', 'grok'])
+    expect(order('codex')).toEqual(['codex', 'claude', 'grok'])
+    expect(order('grok')).toEqual(['grok', 'claude', 'codex'])
+    // 입력 목록을 바꾸지 않는다(검색 결과용 카탈로그 순서가 남는다 — K4ⓓ).
+    expect(options.map((option) => option.agent)).toEqual(['claude', 'codex', 'grok'])
   })
 })

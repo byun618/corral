@@ -1,6 +1,6 @@
 // 설정 섹션 레지스트리 (LIFE-511 K1ⓒ·K3ⓑ·K5) — 내비·팔레트·검색이 **이 목록 하나**를 본다.
 // 그룹 이름·순서는 Orca 198 `settings-navigation-foundations.ts` `SETTINGS_NAV_GROUPS` 그대로(한국어 표기는 Orca ko 로케일 캡처
-// 510 `c5-settings/orca-01`·`orca-nav-22`). 섹션이 하나도 없는 그룹은 그리지 않는다 — T2(LIFE-512) 뒤에는 「인터페이스 › 외관·단축키」.
+// 510 `c5-settings/orca-01`·`orca-nav-22`). 섹션이 하나도 없는 그룹은 그리지 않는다 — T5(LIFE-515) 뒤에는 「AI 기능 › 에이전트」 · 「인터페이스 › 외관·단축키」.
 // 섹션을 더하는 일감(T2~)은 `SETTINGS_SECTIONS` 에 한 줄을 더하고 `SettingsPage` 의 본문 분기에 컴포넌트를 단다.
 import { rankSettingsSearch, type SettingsSearchEntry } from './settings-search.js'
 
@@ -28,6 +28,21 @@ export type SettingsSection = {
 }
 
 export const SETTINGS_SECTIONS = [
+  // 에이전트 — 198 「AI 기능」 의 첫 섹션(`settings-navigation-capability-sections.ts:36`, 아이콘 Bot). corral 은 「기본 Agent」 하나만(LIFE-515 D4).
+  // 설명은 Orca 「AI agents를 관리하고, 기본값을 설정하고, 명령을 사용자 정의하세요.」 에서 corral 에 없는 관리·명령을 뺐다(D5).
+  {
+    id: 'agents',
+    group: 'capabilities',
+    title: '에이전트',
+    description: 'AI agents의 기본값을 설정하세요.',
+    searchEntries: [
+      {
+        title: '기본 Agent',
+        description: '새 에이전트 탭(⌘⌥T)과 탭바 + 메뉴의 맨 앞 에이전트에 쓰입니다.',
+        keywords: ['agent', 'agents', 'default', 'default agent', 'new agent tab', 'claude', 'codex', 'grok', 'auto', 'blank', '⌘⌥T', 'cmd+alt+t', '에이전트', '기본', '기본값', '자동', 'agent 없음', '빈 terminal', '새 에이전트 탭'],
+      },
+    ],
+  },
   // 외관 — 198 순서대로 「인터페이스」 의 첫 섹션(단축키보다 위, 198 `settings-navigation-interface-sections.ts`). corral 은 그 안의
   // 「터미널」 카드만 있다(LIFE-512) — 인터페이스(앱 테마·줌·IDE 글꼴)·창 및 사이드바 카드는 없다(S30·S19 의도적, 450 다른 조각).
   {

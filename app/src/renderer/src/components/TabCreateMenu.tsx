@@ -6,8 +6,8 @@
 //
 // 구성 (Orca 와 같은 순서):
 //   [omnibox 입력] [질의 결과 행: 열린 탭 → 메뉴 매칭 → 에이전트 매칭]
-//   ── (빈 질의일 때만) ── 새 터미널 ⌘T ── Claude · Codex · Grok
-// "Agent settings…"·기본 에이전트 맨 앞·단축키 라벨은 LIFE-450 보류. 파일·URL·히스토리·브라우저·Simulator 는 corral 에 없다(의도적).
+//   ── (빈 질의일 때만) ── 새 터미널 ⌘T ── Claude · Codex · Grok(명시 기본 에이전트가 맨 앞 + ⌘⌥T 칩) · Agent 설정…
+// 기본 에이전트 순서·칩·「Agent 설정…」 은 LIFE-515(Orca 198 `QuickLaunchButton.tsx:46-59·205-250`). 파일·URL·히스토리·브라우저·Simulator 는 corral 에 없다(의도적).
 //
 // 메뉴 라이브러리가 없어 직접 만든다(`ContextMenu.tsx` 와 같은 사정). Radix 에서 가져오는 동작:
 //   · 열리면 입력창 포커스(rAF) · Escape 닫기(IME 조합 중 제외) · 바깥 mousedown·창 blur·다른 메뉴 열림(`menu-bus`)에 닫힌다
@@ -20,10 +20,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMenuBus } from '../menu-bus.js'
 import { AGENT_ICON, agentIcon } from '../session-glyphs.js'
+import { useSettings } from '../settings-store.js'
 import {
   activeOptionId,
   buildActiveOptions,
   buildAgentLaunchOptions,
+  explicitDefaultAgent,
+  orderAgentLaunchOptions,
   selectedIndex,
   showStaticCreateMenu,
   stepSelection,
@@ -34,6 +37,7 @@ import {
   type OpenTabSearchResult,
 } from '../tab-create-menu.js'
 import { AgentIcon, ShellTileIcon } from './AgentIcon.js'
+import { SettingsGearIcon } from './SidebarIcons.js'
 
 /** Orca `getTabEntryOmniboxPlaceholder` 의 Orca 한국어 번역(`열린 탭, 방문 기록, 파일, URL, agent 검색…`)에서 corral 에 없는 갈래(방문 기록·파일·URL)를 뺀 문구(K1ⓕ, 의도적 — 범위). */
 export const OMNIBOX_PLACEHOLDER = '열린 탭, 에이전트 검색…'
@@ -113,8 +117,10 @@ export function TabCreateMenu({
   anchor,
   entries,
   newTerminalShortcut,
+  newAgentShortcut,
   onNewTerminal,
   onLaunchAgent,
+  onOpenAgentSettings,
   onActivateTab,
   onDismiss,
 }: {
@@ -124,8 +130,12 @@ export function TabCreateMenu({
   /** 현재 worktree 의 열린 탭(모든 영역). */
   entries: readonly OpenTabSearchEntry[]
   newTerminalShortcut: string
+  /** ⌘⌥T 라벨(재정의 반영) — 명시 기본 에이전트 행의 칩. 빈 문자열(조합 없음)이면 칩 없음(K4ⓑ). */
+  newAgentShortcut: string
   onNewTerminal: () => void
   onLaunchAgent: (agent: LaunchAgent) => void
+  /** 「Agent 설정…」 — 설정 › AI 기능 › 에이전트로(K5). */
+  onOpenAgentSettings: () => void
   onActivateTab: (target: { tabId: string; groupId: string }) => void
   onDismiss: (reason: TabCreateMenuDismiss) => void
 }): React.JSX.Element {
@@ -135,7 +145,12 @@ export function TabCreateMenu({
   const [query, setQuery] = useState('')
   /** null = 순위를 따른다. 화살표로만 고정한다(Orca `pinnedOptionId`). */
   const [pinnedId, setPinnedId] = useState<string | null>(null)
+  /** 검색 결과용 — 카탈로그 순서 그대로(K4ⓓ, Orca 도 검색 정렬은 점수 기준). */
   const agents = useMemo(() => buildAgentLaunchOptions(), [])
+  // 빈 질의 Quick-launch — 명시 기본 에이전트가 맨 앞(K4ⓐ). 메뉴는 열 때마다 새로 마운트되고, 열린 동안 바뀌어도 의존성으로 따라간다(K4ⓒ).
+  const { defaultAgent } = useSettings()
+  const quickLaunch = useMemo(() => orderAgentLaunchOptions({ options: agents, defaultAgent }), [agents, defaultAgent])
+  const chipAgent = explicitDefaultAgent(defaultAgent)
   const options = useMemo(() => buildActiveOptions({ query, entries, agents, retainedResultId: pinnedId }), [query, entries, agents, pinnedId])
   const selected = selectedIndex({ options, pinnedId })
   const showStatic = showStaticCreateMenu(query)
@@ -344,7 +359,7 @@ export function TabCreateMenu({
             <span className="tab-create-shortcut">{newTerminalShortcut}</span>
           </button>
           <div className="tab-create-sep" role="separator" />
-          {agents.map((option) => (
+          {quickLaunch.map((option) => (
             <button
               key={option.agent}
               type="button"
@@ -362,8 +377,28 @@ export function TabCreateMenu({
                 <AgentIcon kind={option.agent} glyph={AGENT_ICON[option.agent].glyph} size={14} />
               </span>
               <span className="tab-create-item-text">{option.label}</span>
+              {/* Orca `showsDefaultAgentShortcut` — 명시 기본 에이전트 행에만, 바인딩이 없으면 칩 없음(K4ⓑ). */}
+              {option.agent === chipAgent && newAgentShortcut !== '' ? (
+                <span className="tab-create-shortcut" data-tab-create-default-agent-shortcut>
+                  {newAgentShortcut}
+                </span>
+              ) : null}
             </button>
           ))}
+          <button
+            type="button"
+            role="menuitem"
+            className="tab-create-item is-muted"
+            data-tab-create-item="agent-settings"
+            onClick={() => {
+              dismiss('action')
+              onOpenAgentSettings()
+            }}
+            onKeyDown={onItemKey}
+          >
+            <SettingsGearIcon className="tab-create-item-icon" />
+            <span className="tab-create-item-text">Agent 설정…</span>
+          </button>
         </>
       ) : null}
     </div>

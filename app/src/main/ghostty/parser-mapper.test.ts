@@ -340,3 +340,11 @@ describe('리뷰 r4 repro.mts·controls.mts 사례 — 기대값 = Ghostty 의�
     for (const value of ['1e1%', '0x1p3%', 'inf%', 'nan%']) expect(reasonsOf({ content: `adjust-cell-height=${value}`, key: 'adjust-cell-height' })).toEqual(['10진 소수 표기만 옮김 (Ghostty 는 받는 지수·16진·inf·nan·밑줄 표기는 지원하지 않음)'])
   })
 })
+
+describe('기본 에이전트 칸 (LIFE-515 K1ⓓ)', () => {
+  it('Ghostty 가져오기는 defaultAgent 칸을 건드리지 않는다 — 지원 키 전부 + 비슷한 이름의 키를 넣어도 패치에 없다', () => {
+    const result = map('font-size = 16\nfont-family = Menlo\ncursor-style = bar\ncursor-style-blink = false\ntheme = Dracula\nbackground = #101010\npalette = 1=#ff0000\nadjust-cell-height = 10%\nunfocused-split-opacity = 0.8\nsplit-divider-color = #222222\ndefault-agent = codex\ndefaultAgent = codex\n')
+    expect(Object.keys(result.patch)).not.toContain('defaultAgent')
+    expect(result.patch.terminalFontSize).toBe(16)
+  })
+})

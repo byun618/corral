@@ -528,6 +528,7 @@ export function GroupHeader({
   tabDragActive,
   openTabEntries,
   onLaunchAgent,
+  onOpenAgentSettings,
   onActivateOpenTab,
 }: {
   groupId: string
@@ -586,6 +587,8 @@ export function GroupHeader({
   openTabEntries: readonly OpenTabSearchEntry[]
   /** LIFE-496 D38 — Quick-launch. 이 영역에 그 에이전트 탭을 만든다(기존 `createRow` 경로 + 기동 워치독). */
   onLaunchAgent: (agent: LaunchAgent) => void
+  /** LIFE-515 K5 — `+` 메뉴 「Agent 설정…」 → 설정 › AI 기능 › 에이전트. */
+  onOpenAgentSettings: () => void
   /** LIFE-496 D36 — omnibox 에서 고른 탭을 그 탭이 속한 영역에서 활성으로 만들고 포커스를 준다. */
   onActivateOpenTab: (target: { tabId: string; groupId: string }) => void
 }): React.JSX.Element {
@@ -714,8 +717,10 @@ export function GroupHeader({
           anchor={createMenu}
           entries={openTabEntries}
           newTerminalShortcut={bindingLabel('terminal.new')}
+          newAgentShortcut={bindingLabel('terminal.newAgent')}
           onNewTerminal={onCreateShell}
           onLaunchAgent={onLaunchAgent}
+          onOpenAgentSettings={onOpenAgentSettings}
           onActivateTab={onActivateOpenTab}
           onDismiss={(reason) => {
             setCreateMenu(null)

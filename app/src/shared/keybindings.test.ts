@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, menuKeyShortcut, migrateLegacyOverrides, normalizeBinding, validateOverrides } from './keybindings.js'
+import { ACTIONS, bindingConflict, bindingFromEvent, bindingsFor, matchBinding, menuKeyShortcut, migrateLegacyOverrides, NON_REPEATING_ACTIONS, normalizeBinding, validateOverrides } from './keybindings.js'
 describe('shortcut catalog and compatibility', () => {
   it('keeps the nine actions, the palette and the LIFE-470 search chord without collisions', () => {
     // LIFE-478: + workspace.rename(⌘⌥R) · workspace.delete(⌘⇧⌫)
     // LIFE-495: + tab.reopenClosed(⌘⇧T) · tab.rename(⌘R) · tab.cycle(⌘⇧[ ] · ⌘⌥[ ] · ⌃PgUp/Dn) · tab.selectByIndex(⌃1–9)
     // LIFE-511: + settings.open(⌘,)
-    expect(ACTIONS).toHaveLength(18)
+    // LIFE-515: + terminal.newAgent(⌘⌥T)
+    expect(ACTIONS).toHaveLength(19)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -234,5 +235,34 @@ describe('fix2 R2-01 — 재정의의 빈 칸(null) = 그 칸 조합 없음', ()
   it('옛 모양 이행은 null 칸이 있는 재정의를 건드리지 않는다', () => {
     expect(migrateLegacyOverrides({ 'terminal.new': [null, 'Mod+Shift+J'] }).value).toEqual({ 'terminal.new': [null, 'Mod+Shift+J'] })
     expect(migrateLegacyOverrides({ 'terminal.new': [null, 'Mod+Shift+J'] }).dropped).toEqual([])
+  })
+})
+
+describe('LIFE-515 K3 — terminal.newAgent(⌘⌥T)', () => {
+  it('기본 Mod+Alt+T · 물리 키(KeyT)로 읽는다 — macOS Option 글리프(†)·한글 자판(ㅅ)이어도 같다 · 기존 기본값과 충돌 없음', () => {
+    expect(matchBinding('Mod+Alt+T', {})).toEqual({ id: 'terminal.newAgent', variant: 0 })
+    expect(bindingFromEvent({ key: '†', code: 'KeyT', metaKey: true, ctrlKey: false, altKey: true, shiftKey: false })).toBe('Mod+Alt+T')
+    expect(bindingFromEvent({ key: 'ㅅ', code: 'KeyT', metaKey: true, ctrlKey: false, altKey: true, shiftKey: false })).toBe('Mod+Alt+T')
+    expect(bindingConflict({})).toBeNull()
+    // ⌘T·⌘⇧T 는 그대로다.
+    expect(matchBinding('Mod+T', {})).toEqual({ id: 'terminal.new', variant: 0 })
+    expect(matchBinding('Mod+Shift+T', {})).toEqual({ id: 'tab.reopenClosed', variant: 0 })
+  })
+  it('나중에 생긴 기본값이라 비켜 선다 — 기존 재정의가 ⌘⌥T 를 쓰면 그 재정의가 이기고 새 액션은 「없음」', () => {
+    const claimed = validateOverrides({ 'sidebar.toggle': ['Mod+Alt+T'] })
+    expect(claimed).toEqual({ 'sidebar.toggle': ['Mod+Alt+T'] })
+    expect(bindingsFor('terminal.newAgent', claimed)).toEqual([null])
+    expect(matchBinding('Mod+Alt+T', claimed)).toEqual({ id: 'sidebar.toggle', variant: 0 })
+  })
+  it('재정의·끄기·초기화 — 단축키 설정과 같은 길(validateOverrides)', () => {
+    expect(matchBinding('Mod+Alt+Shift+T', validateOverrides({ 'terminal.newAgent': ['Mod+Alt+Shift+T'] }))).toEqual({ id: 'terminal.newAgent', variant: 0 })
+    expect(matchBinding('Mod+Alt+T', validateOverrides({ 'terminal.newAgent': [null] }))).toBeNull()
+    // 기본값과 같은 재정의는 저장하지 않는다(초기화).
+    expect(validateOverrides({ 'terminal.newAgent': ['Mod+Alt+T'] })).toEqual({})
+    // 다른 액션의 기본값을 쓰면 충돌로 거절한다.
+    expect(() => validateOverrides({ 'terminal.newAgent': ['Mod+T'] })).toThrow(/충돌/)
+  })
+  it('누르고 있어도 한 번만 — NON_REPEATING_ACTIONS 에 든다(Orca `event.repeat` 무시)', () => {
+    expect(NON_REPEATING_ACTIONS).toContain('terminal.newAgent')
   })
 })

@@ -28,6 +28,8 @@ export function useLifecycleActions(state: AppState | null): {
   pendingRevealTab: string | null
   revealTabHandled: () => void
   createShell: () => void
+  /** ⌘⌥T 의 에이전트 갈래(LIFE-515) — ⌘T 와 같은 대상 workspace 에 `launchAgent`(워치독 포함). 대상이 없으면 no-op. */
+  createAgentTab: (input: { kind: Exclude<AgentKind, 'shell'>; label: string }) => void
   activeWorkspaceId: string | null
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
@@ -344,6 +346,13 @@ export function useLifecycleActions(state: AppState | null): {
     const workspaceId = lastWorkspaceRef.current
     if (workspaceId !== null) void createRow({ workspaceId, kind: 'shell' })
   }, [createRow])
+  const createAgentTab = useCallback(
+    ({ kind, label }: { kind: Exclude<AgentKind, 'shell'>; label: string }): void => {
+      const workspaceId = lastWorkspaceRef.current
+      if (workspaceId !== null) void launchAgent({ workspaceId, kind, label })
+    },
+    [launchAgent],
+  )
 
   /** pane 선택 — 터미널을 그 pane 으로. G2: 그 pane 의 workspace 를 ⌘T·탭바 대상으로 기록한다. */
   const selectPane = useCallback(
@@ -429,6 +438,7 @@ export function useLifecycleActions(state: AppState | null): {
 
   return {
     createShell,
+    createAgentTab,
     selectedPane,
     selectPane,
     selectPaneWhenReady,

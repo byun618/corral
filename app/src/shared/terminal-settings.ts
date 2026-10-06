@@ -13,6 +13,7 @@
 import type { ITheme } from '@xterm/xterm'
 import { TERMINAL_THEME_CATALOG } from './terminal-themes/index.js'
 import { isRecord } from './json.js'
+import type { AgentKind } from './types.js'
 
 export const SETTINGS_VERSION = 1
 
@@ -33,7 +34,17 @@ export type Settings = {
   terminalDividerThicknessPx: number
   /** 테마 위에 덮는 색(Ghostty 가져오기, LIFE-513). 빈 객체 = 없음. 키는 `TERMINAL_COLOR_OVERRIDE_KEYS`, 값은 소문자 hex. */
   terminalColorOverrides: TerminalColorOverrides
+  /** 기본 에이전트(LIFE-515 S32) — ⌘⌥T 새 에이전트 탭과 `+` 메뉴 Quick-launch 순서가 쓴다. 해석은 `tab-create-menu.ts` `resolveNewAgentTab`. */
+  defaultAgent: DefaultAgent
 }
+
+/**
+ * 기본 에이전트 값 다섯(LIFE-515 K1ⓐ). Orca 198 `defaultAgent: TuiAgent | 'blank' | null` 에 대응한다 — Orca 의 `null`(자동)은 문자열 `'auto'` 로 둔다
+ * (`readSettingField` 가 null 을 「잘못된 값」 으로 쓰고, JSON 파일에서 칸 없음과 구별되는 표현이 필요하다).
+ * `'auto'` = 카탈로그 첫 번째(감지 없음 — 00-analysis D1) · `'blank'` = agent 없음(⌘⌥T 가 빈 터미널, D2).
+ */
+export type DefaultAgent = 'auto' | 'blank' | Exclude<AgentKind, 'shell'>
+export const DEFAULT_AGENT_VALUES: readonly DefaultAgent[] = ['auto', 'blank', 'claude', 'codex', 'grok']
 
 export const DEFAULT_TERMINAL_THEME = 'Ghostty Default Style Dark'
 
@@ -62,6 +73,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalDividerColorDark: '#3f3f46',
   terminalDividerThicknessPx: 3,
   terminalColorOverrides: {},
+  defaultAgent: 'auto',
 }
 
 export type NumericSettingKey =
@@ -148,6 +160,8 @@ export function readSettingField({ key, value }: { key: keyof Settings; value: u
       return isHexColor(value) ? value.toLowerCase() : null
     case 'terminalColorOverrides':
       return readColorOverrides(value)
+    case 'defaultAgent':
+      return DEFAULT_AGENT_VALUES.find((agent) => agent === value) ?? null
   }
 }
 
@@ -193,6 +207,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'terminalDividerColorDark',
   'terminalDividerThicknessPx',
   'terminalColorOverrides',
+  'defaultAgent',
 ]
 
 /** 파일에서 읽은 객체 → 설정. 칸마다 따로 기본값으로 떨어진다. 객체가 아니면 전부 기본값. */

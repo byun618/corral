@@ -298,3 +298,19 @@
 .ghostty-import-colors { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-family: var(--font-mono); color: var(--fg-menu); }
 .ghostty-import-color { display: inline-flex; align-items: center; gap: 6px; }
 .ghostty-import-swatch { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--line-strong); }
+
+/* --- 설정 › AI 기능 › 에이전트 — 기본 Agent pill (LIFE-515 K2ⓑ) ---
+ * Orca 198 `AgentDefaultSetting.tsx` 클래스를 corral 토큰으로: section `space-y-4` · 줄 `flex flex-wrap gap-2` ·
+ * pill `inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm` ·
+ * 활성 `border-muted-foreground/40 bg-accent font-medium text-accent-foreground` ·
+ * 비활성 `border-border bg-background/50 text-muted-foreground hover:border-muted-foreground/35 hover:text-foreground` · 아이콘 `size-3.5`. */
+.settings-agent-default { display: flex; flex-direction: column; gap: 16px; }
+.settings-agent-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-agent-pill {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-settings-control);
+  background: color-mix(in srgb, var(--bg-surface) 50%, transparent); font-size: var(--fs-settings-body); line-height: 20px; color: var(--fg-muted);
+  transition: color 150ms, border-color 150ms, background-color 150ms;
+}
+.settings-agent-pill:hover { border-color: color-mix(in srgb, var(--fg-muted) 35%, transparent); color: var(--fg); }
+.settings-agent-pill.is-active { border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent); background: var(--bg-accent); font-weight: 500; color: var(--fg); }
+.settings-agent-pill-icon { width: 14px; height: 14px; flex-shrink: 0; }

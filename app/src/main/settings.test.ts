@@ -270,3 +270,46 @@ describe('terminalColorOverrides (LIFE-513 K7)', () => {
     expect(store.get().terminalColorOverrides).toEqual({ background: '#101010' })
   })
 })
+
+describe('defaultAgent (LIFE-515 K1)', () => {
+  it('기본값은 자동이고, 파일이 없을 때 자동을 보내도 파일을 만들지 않는다', () => {
+    const store = fresh()
+    expect(store.get().defaultAgent).toBe('auto')
+    expect(store.update({ defaultAgent: 'auto' }).status).toBe('unchanged')
+    expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it('다섯 값 왕복 — 저장·재기동 뒤 같은 값', () => {
+    const store = fresh()
+    for (const value of ['blank', 'claude', 'codex', 'grok', 'auto'] as const) {
+      expect(store.update({ defaultAgent: value }).status).toBe('saved')
+      expect(fresh().get().defaultAgent).toBe(value)
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).defaultAgent).toBe(value)
+    }
+  })
+
+  it('같은 값 쓰기는 unchanged — 파일을 다시 쓰지 않는다', () => {
+    const store = fresh()
+    store.update({ defaultAgent: 'codex' })
+    const before = fs.statSync(file).mtimeMs
+    fs.utimesSync(file, new Date(0), new Date(0))
+    expect(store.update({ defaultAgent: 'codex' }).status).toBe('unchanged')
+    expect(fs.statSync(file).mtimeMs).toBe(0)
+    expect(before).toBeGreaterThan(0)
+  })
+
+  it('손상 격리(파일) — 모르는 문자열·타입은 그 칸만 자동, 다른 칸은 산다', () => {
+    for (const bad of ['opencode', 'Claude', 'shell', null, 3, ['codex'], { agent: 'codex' }]) {
+      fs.writeFileSync(file, JSON.stringify({ terminalFontSize: 16, defaultAgent: bad }))
+      expect(fresh().get()).toEqual({ ...DEFAULT_SETTINGS, terminalFontSize: 16 })
+    }
+  })
+
+  it('손상 격리(IPC 패치) — 잘못된 값은 버리고 직전 값 유지, 함께 온 다른 칸은 적용', () => {
+    const store = fresh()
+    store.update({ defaultAgent: 'grok' })
+    expect(store.update({ defaultAgent: 'shell' }).status).toBe('unchanged')
+    expect(store.update({ defaultAgent: null, terminalFontSize: 15 }).status).toBe('saved')
+    expect(fresh().get()).toMatchObject({ defaultAgent: 'grok', terminalFontSize: 15 })
+  })
+})

@@ -16,6 +16,7 @@ export const GHOSTTY_DIFF_LABELS: Record<keyof Settings, string> = {
   terminalDividerColorDark: '다크 디바이더 색상',
   terminalDividerThicknessPx: '구분선 두께',
   terminalColorOverrides: '터미널 색 재정의',
+  defaultAgent: '기본 Agent',
 }
 
 export type GhosttyDiffRow =

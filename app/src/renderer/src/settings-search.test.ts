@@ -34,10 +34,11 @@ describe('scoreSettingsSearch — 섹션 제목 > 항목 제목 > 설명 > 키�
 })
 
 describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
-  it('T2 레지스트리(LIFE-512): 그룹은 「인터페이스」 하나, 섹션은 「외관」·「단축키」 — 198 순서대로 외관이 위', () => {
+  it('T5 레지스트리(LIFE-515): 그룹은 「AI 기능」·「인터페이스」, 섹션은 「에이전트」 · 「외관」·「단축키」 — 198 그룹 순서대로 AI 기능이 위', () => {
     const groups = settingsNavGroups({ query: '' })
-    expect(groups.map((group) => group.title)).toEqual(['인터페이스'])
-    expect(groups[0]!.sections.map((section) => section.id)).toEqual(['appearance', 'shortcuts'])
+    expect(groups.map((group) => group.title)).toEqual(['AI 기능', '인터페이스'])
+    expect(groups[0]!.sections.map((section) => section.id)).toEqual(['agents'])
+    expect(groups[1]!.sections.map((section) => section.id)).toEqual(['appearance', 'shortcuts'])
     // 레지스트리의 그룹은 198 순서 8개 그대로 — 빈 그룹은 그리지 않을 뿐이다.
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote', 'security', 'advanced', 'experimental'])
   })
@@ -53,8 +54,12 @@ describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
       // 가상 섹션 — 레지스트리에 섹션을 더했을 때의 모양만 본다(제품 레지스트리는 건드리지 않는다).
       { id: 'shortcuts', group: 'setup', title: '일반', description: '앱 설정', searchEntries: [{ title: '탭 순서', keywords: ['단축키 힌트'] }] },
     ]
-    expect(settingsNavGroups({ query: '', sections }).map((group) => group.id)).toEqual(['setup', 'interface'])
+    expect(settingsNavGroups({ query: '', sections }).map((group) => group.id)).toEqual(['capabilities', 'setup', 'interface'])
     expect(settingsNavGroups({ query: '단축키', sections }).map((group) => group.id)).toEqual(['interface', 'setup'])
+  })
+  // LIFE-515 K2ⓔ — 기본 Agent 검색 키워드(한·영·에이전트 이름·단축키 기호)로 에이전트 섹션이 걸린다.
+  it.each(['에이전트', 'agent', 'Agents', '기본 agent', 'default', '기본값', 'claude', 'Codex', 'grok', '자동', '빈 terminal', '⌘⌥T', '새 에이전트 탭'])('질의 %s 는 에이전트 섹션을 남긴다', (query) => {
+    expect(settingsNavGroups({ query }).flatMap((group) => group.sections.map((section) => section.id))).toContain('agents')
   })
   it('검색 항목의 첫 칸은 섹션 자체다(섹션 제목 점수)', () => {
     expect(sectionSearchEntries(settingsSectionById('shortcuts'))[0]).toEqual({ title: '단축키', description: '일반 작업에 대한 키보드 단축키입니다.' })

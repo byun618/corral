@@ -63,6 +63,7 @@ import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
 import { useSettings } from './settings-store.js'
+import { resolveNewAgentTab } from './tab-create-menu.js'
 import { terminalCssVars } from './terminal-appearance.js'
 
 function findWorkspace(state: AppState, workspaceId: string | null): WorkspaceRow | null {
@@ -1017,6 +1018,18 @@ export function App(): React.JSX.Element {
     'tab.cycle': (variant) => selectTabInActiveGroup((tabOrder, activeTabId) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
     'tab.selectByIndex': (variant) => selectTabInActiveGroup((tabOrder) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
+    // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
+    'terminal.newAgent': () => {
+      const target = resolveNewAgentTab(settings.defaultAgent)
+      switch (target.kind) {
+        case 'agent':
+          lifecycle.createAgentTab({ kind: target.agent, label: AGENT_LAUNCH_LABEL[target.agent] })
+          return
+        case 'shell':
+          lifecycle.createShell()
+          return
+      }
+    },
   }
   const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
@@ -1139,6 +1152,7 @@ export function App(): React.JSX.Element {
           onCreateShell={() => lifecycle.actions.createRow(workspaceId, 'shell')}
           openTabEntries={openTabEntries}
           onLaunchAgent={(kind) => lifecycle.actions.launchAgent({ workspaceId, kind, label: AGENT_LAUNCH_LABEL[kind] })}
+          onOpenAgentSettings={() => openSettings('agents')}
           onActivateOpenTab={({ tabId }) => {
             // 그 탭이 속한 영역에서 활성으로 + pane 선택(포커스 토큰) — 사이드바 세션 클릭과 같은 길(revealPane)이다.
             const target = tabById(tabId)

@@ -3,7 +3,7 @@
 // 측정 도구와 달리 뷰포트 에뮬레이션을 걸지 않는다 — OS 좌표 = 실제 창 좌표여야 한다.
 // 상태(포트·소유 pid)는 <work>/os-state.json. 끄기는 이 프로세스에 SIGTERM — 띄운 것만 끈다.
 //
-// 실행: node app/scripts/l527/os-up.mjs --work /tmp/l527os --out <원자료 폴더>
+// 실행: node app/scripts/l527/os-up.mjs --work /tmp/l527os --out <원자료 폴더> [--corral-app <다른 빌드의 app 폴더>] [--no-orca]
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,8 +14,9 @@ import { pause } from '../gui-diff/lib/cdp.mjs'
 import { fileFingerprint, keybindingsLeakVerdict, probe504 } from '../gui-diff/lib/guards.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const appRoot = path.resolve(here, '../..')
 const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : fallback }
+const withOrca = !process.argv.includes('--no-orca')
+const appRoot = path.resolve(arg('--corral-app', null) ?? path.resolve(here, '../..'))
 const outDir = path.resolve(arg('--out', ''))
 const work = arg('--work', '/tmp/l527os')
 fs.mkdirSync(outDir, { recursive: true })
@@ -47,11 +48,13 @@ async function shutdown(code) {
 try {
   for (const name of ['orca-dev-userdata', 'corral-userdata', 'corral-herdr']) fs.rmSync(path.join(work, name), { recursive: true, force: true })
   const fixture = ensureFixtureRepo(work)
-  const orca = await launchOrca({ repoRoot: '/tmp/l443/orca-198', workDir: work, port: 9444, logPath: path.join(outDir, 'orca-dev.log'), onSpawn: own })
-  await seedOrcaRepo(orca, fixture.root)
+  if (withOrca) {
+    const orca = await launchOrca({ repoRoot: '/tmp/l443/orca-198', workDir: work, port: 9444, logPath: path.join(outDir, 'orca-dev.log'), onSpawn: own })
+    await seedOrcaRepo(orca, fixture.root)
+  }
   const corral = await launchCorral({ appRoot, workDir: work, port: 9445, logDir: outDir, onSpawn: own })
   await seedCorralRepo(corral, fixture.root)
-  fs.writeFileSync(stateFile, `${JSON.stringify({ at: new Date().toISOString(), upPid: process.pid, orcaPort: 9444, corralPort: 9445, corralControl: corral.control, owned }, null, 2)}\n`)
+  fs.writeFileSync(stateFile, `${JSON.stringify({ at: new Date().toISOString(), upPid: process.pid, appRoot, orcaPort: withOrca ? 9444 : null, corralPort: 9445, corralControl: corral.control, owned }, null, 2)}\n`)
   log('준비', stateFile)
 } catch (error) {
   log('실패:', String(error?.stack ?? error))

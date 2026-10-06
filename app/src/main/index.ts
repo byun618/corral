@@ -64,6 +64,7 @@ import {
   resolveHerdrBinary,
   spawnServer,
   stopProcessGroup,
+  inspectServerProcess,
   SERVER_READY_POLL_MS,
   SERVER_READY_TIMEOUT_MS,
   type HerdrResolution,
@@ -85,7 +86,7 @@ import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepP
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
-import { BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput } from './backend-start.js'
+import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
@@ -178,6 +179,7 @@ const backendStarter = new BackendStarter({
   logTail: (file) => readLogTail(file),
   stopChild: (pid) => stopProcessGroup(pid),
   refresh: () => pollSessions(),
+  ownsChild: (pid) => inspectServerProcess(pid, herdrPath()),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => Date.now(),
   readyTimeoutMs: SERVER_READY_TIMEOUT_MS,
@@ -1240,6 +1242,8 @@ async function runPoll(): Promise<void> {
   scanState = scan.error === null ? 'ok' : 'error'
   // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.
   if (scanState === 'ok' && sessions.some((session) => session.isDefault && session.running)) backendStarter.observeRunning()
+  // 조회 오류 중이어도 default 에 live 로 붙어 있으면 서버가 돈다 — 낡은 실패를 걷는다(r5 R5-02).
+  else if (selectedSession === DEFAULT_SESSION && link.linkState().phase === 'live') backendStarter.observeRunning()
   if (selectedSession === null) {
     // 고르는 규칙은 순수 함수에 있다 (수정 1회차 M6) — 멈춘 세션을 실제로 만들지 않고 재생으로 잰다.
     const choice = pickSessionName({ sessions, wanted: process.env.CORRAL_SESSION })

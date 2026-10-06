@@ -83,6 +83,8 @@ export function decideBackend(input: BackendInput): BackendDecision {
   if (input.scan === 'pending' || (input.scan === 'error' && input.binary.kind !== 'missing')) {
     // 띄우다 실패했으면 조회 오류 중이어도 실패 카드를 낸다(r4 R4-01) — 시한 끝 조회가 모름이라 남긴 pid 의 유일한 안내이고,
     // 「다시 시도」 가 오류가 이어지는 동안의 탈출구다. default running 관측으로 걷는 규칙(R2-01)은 그대로다.
+    // 다만 링크가 live 면 서버가 실제로 돈다 — 낡은 실패 카드로 터미널을 가리지 않는다(r5 R5-02). 실패는 main 이 걷는다.
+    if (link.phase === 'live') return none({ kind: 'ok' })
     if (input.starter.phase === 'failed') return none(failed(input.starter))
     if (link.phase === 'reconnecting' && input.selected !== null) return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
     return none({ kind: 'ok' })
@@ -135,6 +137,11 @@ export type StarterDeps = {
   stopChild: (pid: number) => Promise<boolean>
   /** 서버가 떴다고 보고 idle 로 돌리기 직전에 세션 목록을 갱신한다 — 옛 목록(멈춤)으로 확인 카드가 한 번 그려지지 않게(r4 R4-05). */
   refresh: () => Promise<void>
+  /**
+   * 남긴 자식을 끝내기 직전의 신원 확인(r5 R5-01) — 그 pid 가 그룹 리더이고 명령이 우리가 띄운 `<해소한 herdr> server` 인가.
+   * 번호가 다른 프로세스에 재사용됐으면 그 그룹을 끝내면 안 된다.
+   */
+  ownsChild: (pid: number) => Promise<{ ours: boolean; detail: string }>
   sleep: (ms: number) => Promise<void>
   now: () => number
   readyTimeoutMs: number
@@ -219,18 +226,30 @@ export class BackendStarter {
     if (this.leftover !== null) {
       const pid = this.leftover
       this.leftover = null
-      const stopped = await this.deps.stopChild(pid).catch(() => false)
-      this.deps.log('backend.start.leftover_stopped', { trigger, pid, stopped })
+      const identity = await this.deps.ownsChild(pid).catch((error: unknown) => ({ ours: false, detail: String(error) }))
+      if (identity.ours) {
+        const stopped = await this.deps.stopChild(pid).catch(() => false)
+        this.deps.log('backend.start.leftover_stopped', { trigger, pid, stopped })
+      } else {
+        this.deps.log('backend.start.leftover_skipped', { trigger, pid, detail: identity.detail })
+      }
     }
     let exited: string | null = null
+    let childPid: number | null = null
     const spawned = this.deps.spawn((detail) => {
       exited = detail
+      // 끝난 자식은 남긴 자식이 아니다 — 번호가 재사용되기 전에 잊는다(r5 R5-01). run 이 끝난 뒤에 와도 된다.
+      if (childPid !== null && this.leftover === childPid) {
+        this.leftover = null
+        this.deps.log('backend.start.leftover_exited', { pid: childPid, exited: detail })
+      }
     })
     if (!spawned.ok) {
       this.deps.log('backend.start.failed', { trigger, error: spawned.error })
       this.set({ phase: 'failed', error: spawned.error, logPath: spawned.logPath })
       return
     }
+    childPid = spawned.pid
     this.spawnCount += 1
     const deadline = this.deps.now() + this.deps.readyTimeoutMs
     while (this.deps.now() < deadline) {
@@ -265,7 +284,8 @@ export class BackendStarter {
     const timedOut = `서버가 ${Math.round(this.deps.readyTimeoutMs / 1000)}초 안에 준비되지 않았다`
     // 모르면 죽이지 않는다 — 돌고 있는 서버일 수 있다. pid 와 조회 오류를 남긴다.
     if (last.kind === 'unknown') {
-      this.leftover = spawned.pid
+      // 마지막 조회 도중 이미 끝났으면 남길 것이 없다(r5 R5-01).
+      if (exited === null) this.leftover = spawned.pid
       this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs, probe: 'unknown', error: last.error })
       this.set({ phase: 'failed', error: `${timedOut}\n서버가 돌고 있는지 조회하지 못해 프로세스(pid ${spawned.pid})를 끝내지 않았다\n${last.error}`, logPath: spawned.logPath })
       return

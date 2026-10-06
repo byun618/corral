@@ -1,12 +1,12 @@
 // LIFE-485 K1ⓐ·K2ⓐⓑⓓ·K4ⓖ — 바이너리 해소·재개 대상 계수·서버 환경·분리 기동의 실패 경로.
 // 계수 입력은 `scripts/l477/session-restore-check.mjs --self-check` 의 합성 입력을 **전부** 그대로 옮겼다 —
 // 같은 입력에 같은 판정(개수·모름)이 나와야 한다. 모름은 0 이 아니다.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer, stopProcessGroup } from './server.js'
+import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer, stopProcessGroup, inspectServerProcess } from './server.js'
 
 let dir = ''
 beforeEach(() => {
@@ -251,5 +251,47 @@ describe('spawnServer fd·stopProcessGroup (r2 R2-08·R2-01)', () => {
   })
   it('이미 없는 pid 는 true', async () => {
     expect(await stopProcessGroup(999999, 10)).toBe(true)
+  })
+})
+
+describe('inspectServerProcess — 남긴 자식의 신원 (r5 R5-01)', () => {
+  const hangServer = (): string => {
+    // `<경로> server` 로 보이고 그룹 리더인 가짜 — 짝 없는 FIFO 를 여는 cat 이 막혀 기다린다
+    return file('hang-herdr', '#!/bin/bash\ncd "$(dirname "$0")" && { [ -p server ] || mkfifo server; } && exec -a "$0" cat server\n', 0o755)
+  }
+  it('그룹 리더 + `<binary> server` 면 ours', async () => {
+    const bin = hangServer()
+    const result = spawnServer({ binary: bin, logPath: path.join(dir, 'i.log'), onExit: () => undefined })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    let seen = { ours: false, detail: '' }
+    for (let i = 0; i < 40 && !seen.ours; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      seen = await inspectServerProcess(result.pid, bin)
+    }
+    expect(seen).toEqual({ ours: true, detail: `${bin} server` })
+    // 다른 경로로 해소했으면 우리 것이 아니다
+    expect((await inspectServerProcess(result.pid, '/opt/homebrew/bin/herdr')).ours).toBe(false)
+    await stopProcessGroup(result.pid, 1000)
+  })
+  it('그룹 리더라도 명령이 다르면 ours 아님(번호 재사용 흉내) — 명령 불일치 분기', async () => {
+    const child = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' })
+    child.unref()
+    const pid = child.pid ?? -1
+    try {
+      const result = await inspectServerProcess(pid, '/bin/sleep')
+      expect(result.ours).toBe(false)
+      expect(result.detail).toBe('명령 불일치: /bin/sleep 30')
+    } finally {
+      process.kill(pid, 'SIGKILL')
+    }
+  })
+  it('그룹 리더가 아니면 ours 아님 — 이 테스트 프로세스 자신', async () => {
+    const result = await inspectServerProcess(process.pid, process.execPath)
+    expect(result.ours).toBe(false)
+  })
+  it('없는 pid · 경로 모름', async () => {
+    expect(await inspectServerProcess(999999, '/x')).toEqual({ ours: false, detail: 'pid 999999 없음' })
+    expect((await inspectServerProcess(process.pid, null)).ours).toBe(false)
   })
 })

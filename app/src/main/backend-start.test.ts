@@ -107,6 +107,7 @@ function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): Starte
     logTail: () => 'tail',
     stopChild: async () => true,
     refresh: async () => undefined,
+    ownsChild: async () => ({ ours: true, detail: 'ours' }),
     sleep: async (ms) => {
       clock += ms
     },
@@ -415,5 +416,96 @@ describe('조회 오류 중 실패 카드 · 남긴 자식 · ready 순서 (r4 R
     }))
     await starter.start('auto')
     expect(order).toEqual(['change:starting', 'refresh:starting', 'change:idle'])
+  })
+})
+
+describe('남긴 자식의 생명주기·신원 · 링크 live 우선 (r5 R5-01·R5-02, grok M1·L1 재현)', () => {
+  // 1차: 직전 stopped → 루프 10회 stopped → 마지막(12번째) unknown. 2차: 직전 stopped → ready.
+  function twoRuns(hooks: { onFinalProbe?: () => void } = {}) {
+    let calls = 0
+    let second = false
+    let exit: ((detail: string) => void) | null = null
+    let pid = 4241
+    const stopped: number[] = []
+    const logs: string[] = []
+    const starter = new BackendStarter(deps({
+      isRunning: async () => {
+        calls += 1
+        if (second) return calls === 1 ? { kind: 'stopped' } : { kind: 'running' }
+        if (calls === 12) {
+          hooks.onFinalProbe?.()
+          return { kind: 'unknown', error: '조회 실패' }
+        }
+        return { kind: 'stopped' }
+      },
+      spawn: (onExit) => {
+        exit = onExit
+        pid += 1
+        return { ok: true, pid, logPath: '/l' }
+      },
+      stopChild: async (p) => { stopped.push(p); return true },
+      log: (event) => logs.push(event),
+    }))
+    return {
+      starter,
+      stopped,
+      logs,
+      exit: (detail: string) => exit?.(detail),
+      second: () => { second = true; calls = 0 },
+    }
+  }
+  it('late-exit — 남긴 자식이 끝나면 잊는다 · 다음 기동이 그 번호를 끝내지 않는다', async () => {
+    const run = twoRuns()
+    await run.starter.start('auto')
+    expect(run.starter.phase().phase).toBe('failed')
+    run.exit('code 0 signal null')
+    expect(run.logs).toContain('backend.start.leftover_exited')
+    run.second()
+    await run.starter.start('button')
+    expect(run.stopped).toEqual([])
+    expect(run.logs).not.toContain('backend.start.leftover_stopped')
+  })
+  it('exit-during-final-probe — 마지막 조회 도중 끝났으면 남기지 않는다', async () => {
+    let fire: () => void = () => undefined
+    const run = twoRuns({ onFinalProbe: () => fire() })
+    fire = () => run.exit('code 1 signal null')
+    await run.starter.start('auto')
+    run.second()
+    await run.starter.start('button')
+    expect(run.stopped).toEqual([])
+  })
+  it('신원이 다르면(번호 재사용) 끝내지 않고 skip 로그', async () => {
+    let calls = 0
+    let second = false
+    const stopped: number[] = []
+    const logs: Array<{ event: string; data: Record<string, unknown> }> = []
+    const starter = new BackendStarter(deps({
+      isRunning: async () => {
+        calls += 1
+        if (second) return calls === 1 ? { kind: 'stopped' } : { kind: 'running' }
+        return calls === 12 ? { kind: 'unknown', error: 'x' } : { kind: 'stopped' }
+      },
+      ownsChild: async () => ({ ours: false, detail: '명령 불일치: /usr/bin/other' }),
+      stopChild: async (p) => { stopped.push(p); return true },
+      log: (event, data) => logs.push({ event, data }),
+    }))
+    await starter.start('auto')
+    second = true
+    calls = 0
+    await starter.start('button')
+    expect(stopped).toEqual([])
+    expect(logs.find((entry) => entry.event === 'backend.start.leftover_skipped')?.data).toMatchObject({ pid: 4242, detail: '명령 불일치: /usr/bin/other' })
+  })
+  it('신원이 맞고 살아 있으면 기존대로 끝낸다(F13 유지)', async () => {
+    const run = twoRuns()
+    await run.starter.start('auto')
+    run.second()
+    await run.starter.start('button')
+    expect(run.stopped).toEqual([4242])
+  })
+  it('조회 오류여도 링크가 live 면 실패 카드보다 ok', () => {
+    const starterFailed = { phase: 'failed' as const, error: 'e', logPath: null }
+    expect(decideBackend(input({ scan: 'error', sessions: [runningDefault], selected: 'default', link: { phase: 'live', attempt: 0 }, starter: starterFailed })).status).toEqual({ kind: 'ok' })
+    expect(decideBackend(input({ scan: 'error', sessions: [runningDefault], selected: 'default', link: { phase: 'reconnecting', attempt: 1 }, starter: starterFailed })).status.kind).toBe('failed')
   })
 })

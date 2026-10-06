@@ -259,6 +259,27 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
   }
 }
 
+/**
+ * 그 pid 가 우리가 띄운 herdr 서버인가(r5 R5-01) — 그룹 리더(pgid===pid)이고 명령이 정확히 `<binary> server`.
+ * 남긴 자식을 다음 기동에서 끝내기 직전에 본다. 번호가 재사용된 남의 프로세스(그룹)를 끝내지 않기 위해서다(native-down.sh 와 같은 원칙).
+ */
+export async function inspectServerProcess(pid: number, binary: string | null): Promise<{ ours: boolean; detail: string }> {
+  if (binary === null) return { ours: false, detail: 'herdr 경로를 모른다' }
+  let stdout: string
+  try {
+    stdout = (await run('/bin/ps', ['-o', 'pgid=,args=', '-p', String(pid)], { timeout: 2000 })).stdout
+  } catch {
+    return { ours: false, detail: `pid ${pid} 없음` }
+  }
+  const match = /^\s*(\d+)\s+(.*?)\s*$/.exec(stdout.split('\n')[0] ?? '')
+  if (match === null) return { ours: false, detail: `ps 출력을 읽지 못했다: ${stdout.slice(0, 120)}` }
+  const pgid = Number(match[1])
+  const args = match[2] ?? ''
+  if (pgid !== pid) return { ours: false, detail: `그룹 리더 아님 (pgid ${pgid})` }
+  if (args !== `${binary} server`) return { ours: false, detail: `명령 불일치: ${args.slice(0, 160)}` }
+  return { ours: true, detail: args }
+}
+
 /** 서버 로그 상한 — 넘으면 기동 직전에 `.1` 로 한 번 밀어 둔다(r1 R1-10, 무한 증가 방지). 서버가 도는 동안은 자르지 않는다. */
 export const SERVER_LOG_MAX_BYTES = 1024 * 1024
 

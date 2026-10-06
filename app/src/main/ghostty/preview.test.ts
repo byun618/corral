@@ -446,3 +446,65 @@ describe('리뷰 r4 repro.mts·controls.mts 구성·테마 파일 사례 — 기
     expect(result.unsupported[0]?.reason).toMatch(/확정할 수 없어/)
   })
 })
+
+describe('리뷰 r5 repro-enotdir.mts — 테마 위치 열기 오류 분류, 기대값 = Ghostty theme.zig 198-217(fix5 R5-01)', () => {
+  const readFailed = (code: string): { key: string; reason: string } => ({ key: 'theme', reason: expect.stringMatching(new RegExp(`^테마 파일을 읽을 수 없음: ${code}`)) })
+
+  it('사용자 themes 자리가 일반 파일(ENOTDIR) + 리소스에 같은 이름 → 사유·색 없음, font-size 는 가져옴', async () => {
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = Night\nfont-size = 18\n' })
+    put({ file: path.join(xdgDir(), 'themes'), content: 'this is a file, not a directory' })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    const result = await found()
+    expect(result.diff).toEqual({ terminalFontSize: 18 })
+    expect(result.unsupported).toEqual([readFailed('ENOTDIR')])
+  })
+
+  it('음성 대조 — 사용자 themes 폴더가 실제로 없으면(ENOENT) 리소스 테마로 넘어간다', async () => {
+    put({ file: path.join(xdgDir(), 'config'), content: 'theme = Night\nfont-size = 18\n' })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    expect(await found()).toMatchObject({ diff: { terminalFontSize: 18, terminalColorOverrides: { background: '#123456' } }, unsupported: [] })
+    fs.mkdirSync(path.join(xdgDir(), 'themes'))
+    expect(await found()).toMatchObject({ diff: { terminalFontSize: 18, terminalColorOverrides: { background: '#123456' } }, unsupported: [] })
+  })
+
+  it('정규 파일 심볼릭 링크는 읽는다 · 끊긴 링크는 ENOENT 라 다음 위치로', async () => {
+    const target = put({ file: path.join(home, 'elsewhere', 'Night'), content: 'background = #abcdef\n' })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    fs.mkdirSync(path.join(xdgDir(), 'themes'), { recursive: true })
+    fs.symlinkSync(target, path.join(xdgDir(), 'themes', 'Night'))
+    expect(await resolveGhosttyTheme({ name: 'Night', env })).toEqual({ status: 'found', colors: new Map([['background', ['#abcdef']]]), stopped: null })
+    fs.unlinkSync(target)
+    expect(await resolveGhosttyTheme({ name: 'Night', env })).toEqual({ status: 'found', colors: new Map([['background', ['#123456']]]), stopped: null })
+  })
+
+  it('테마 대상이 디렉터리 → 사유, 리소스로 넘어가지 않는다(theme.zig 「it is a directory」)', async () => {
+    fs.mkdirSync(path.join(xdgDir(), 'themes', 'Night'), { recursive: true })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    expect(await resolveGhosttyTheme({ name: 'Night', env })).toEqual({ status: 'failed', reason: `테마 경로가 파일이 아님: ${path.join(xdgDir(), 'themes', 'Night')}` })
+  })
+
+  it('권한 오류(EACCES) → 사유, 리소스로 넘어가지 않는다', async () => {
+    const file = put({ file: path.join(xdgDir(), 'themes', 'Night'), content: 'background = #abcdef\n' })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    fs.chmodSync(file, 0o000)
+    try {
+      expect(await resolveGhosttyTheme({ name: 'Night', env })).toEqual({ status: 'failed', reason: expect.stringMatching(/^테마 파일을 읽을 수 없음: EACCES/) })
+    } finally {
+      fs.chmodSync(file, 0o644)
+    }
+  })
+
+  it('상한 초과 → 사유, 리소스로 넘어가지 않는다', async () => {
+    put({ file: path.join(xdgDir(), 'themes', 'Night'), content: `background = #abcdef\n${'#'.repeat(MAX_THEME_BYTES)}` })
+    put({ file: path.join(resDir(), 'themes', 'Night'), content: 'background = #123456\n' })
+    expect(await resolveGhosttyTheme({ name: 'Night', env })).toMatchObject({ status: 'failed', reason: expect.stringContaining('너무 큼') })
+  })
+
+  it('같은 함수의 리소스 위치·절대경로도 Ghostty 와 같다 — 리소스 themes 가 일반 파일이면 ENOTDIR 사유, 절대경로 ENOTDIR 도 실패', async () => {
+    put({ file: path.join(resDir(), 'themes'), content: 'file' })
+    expect(await resolveGhosttyTheme({ name: 'Night', env })).toEqual({ status: 'failed', reason: expect.stringMatching(/^테마 파일을 읽을 수 없음: ENOTDIR/) })
+    const notDir = put({ file: path.join(home, 'plain'), content: 'file' })
+    expect(await resolveGhosttyTheme({ name: path.join(notDir, 'Night'), env })).toEqual({ status: 'failed', reason: expect.stringMatching(/^테마 파일을 읽을 수 없음: ENOTDIR/) })
+    expect(await resolveGhosttyTheme({ name: path.join(home, 'absent', 'Night'), env })).toEqual({ status: 'failed', reason: `테마 파일을 찾을 수 없음: ${path.join(home, 'absent', 'Night')}` })
+  })
+})

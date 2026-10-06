@@ -48,7 +48,9 @@ async function readThemeColors(themePath: string): Promise<ThemeRead> {
     content = await fs.readFile(themePath)
   } catch (error) {
     const code = errorCode(error)
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'missing' }
+    // 「없음」(다음 위치로)은 ENOENT 만 — Ghostty v1.3.1 `config/theme.zig` 198-217 은 `error.FileNotFound` 일 때만 다음 위치를 보고,
+    // 그 밖의 오류(ENOTDIR — 사용자 `themes` 자리가 일반 파일 · 권한 · 고리 링크 등)는 진단 후 테마 로드를 멈춘다(fix5 R5-01, Orca 는 ENOTDIR 도 없음으로 봤다).
+    if (code === 'ENOENT') return { status: 'missing' }
     return { status: 'invalid', reason: `테마 파일을 읽을 수 없음: ${error instanceof Error ? error.message : String(error)}` }
   }
   // BOM 은 건너뛰지 않는다 — Ghostty `loadTheme`(Config.zig 4413-4418)은 `loadReader` 의 BOM 처리를 거치지 않는다(`parser.ts` `skipUtf8Bom`).

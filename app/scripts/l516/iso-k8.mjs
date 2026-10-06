@@ -118,10 +118,14 @@ try {
   const key = ({ keyCode, modifiers = [] }) => control({ cmd: 'key', keyCode, modifiers })
   const shot = async ({ name, selector }) => {
     // run-2 에서 섹션 전환 직후 캡처가 `UnknownVizError` 로 한 번 실패했다 — 잠깐 쉬고 한 번 더 찍는다(판정 아님, 캡처).
-    const first = await shotOnce({ name, selector })
-    if (!first.startsWith('실패')) return first
-    await pause(800)
-    return shotOnce({ name, selector })
+    // run-2 의 「자세히」 캡처는 두 번 다 실패했다 — 쉬는 시간을 늘려 세 번까지 찍는다.
+    let result = await shotOnce({ name, selector })
+    for (const wait of [800, 1600]) {
+      if (!result.startsWith('실패')) return result
+      await pause(wait)
+      result = await shotOnce({ name, selector })
+    }
+    return result
   }
   const shotOnce = async ({ name, selector }) => {
     try {
@@ -502,6 +506,9 @@ try {
   }
   const closeMenus = async () => { for (let i = 0; i < 3; i += 1) { await key({ keyCode: 'Escape' }); await pause(150) } }
   const appearance = await openSettings('appearance')
+  // run-2·3 의 「자세히」 캡처 실패(UnknownVizError) — 카드가 화면 아래에 있어 rect 가 창 밖이었다. 끌어올려 찍는다(판정 아님).
+  await evaluate({ fn: () => document.querySelector('[data-settings-collapsible="window-sidebar"]')?.scrollIntoView({ block: 'center' }) })
+  await pause(800)
   const e0 = { settings: appearance.windowCard, dom: null, shot: await shot({ name: 'k7-window-sidebar-detailed', selector: '[data-settings-collapsible="window-sidebar"]' }) }
   await click('[data-settings-collapsible="window-sidebar"] [data-segment-value="compact"]')
   await pause(500)

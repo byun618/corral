@@ -9,7 +9,7 @@ import type { AgentKind, RunningPane, WorktreeRow } from '../../shared/types.js'
 
 /**
  * 닫기 대상 — 탭 여럿(단건도 한 개짜리 목록) 또는 worktree(workspace). 확인 모달과 IPC 갈래를 이걸로 가른다.
- * `alwaysConfirm` = 핀 탭을 닫는다 — 실행 중이 아니어도 확인을 거친다(LIFE-495 K3ⓒ).
+ * `alwaysConfirm` = 핀 탭을 닫는다 — 실행 중이 아니어도 확인을 거친다(LIFE-495 K3ⓒ). 설정 「고정된 탭을 닫기 전에 확인」 이 꺼져 있으면 false(LIFE-516).
  */
 export type CloseTarget = { kind: 'tabs'; tabIds: string[]; alwaysConfirm: boolean } | { kind: 'workspace'; workspaceId: string }
 

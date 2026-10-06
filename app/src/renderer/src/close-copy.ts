@@ -1,4 +1,4 @@
-// 닫기 확인 모달의 문구 (LIFE-495 K5 · D15 · K3ⓒ) — 순수 함수. 모달 자체(`ConfirmClose.tsx`)와 게이트(main)는 그대로다.
+// 닫기 확인 모달의 문구 (LIFE-495 K5 · D15 · K3ⓒ) — 순수 함수. 모달 자체는 `ConfirmClose.tsx`, 실행 중 판정은 main 게이트(LIFE-516 이 체크박스와 생략 조건을 더했다 — 아래).
 //
 // 문구의 뜻 = Orca 220 `CloseTerminalDialog.tsx`·`PinnedTabCloseDialog.tsx`, 말은 corral UI 언어(한국어).
 //   · 에이전트가 도는 pane 이 하나라도 있으면 「에이전트를 멈출까」(220 은 split 에 섞이면 에이전트 우선 — 같다)

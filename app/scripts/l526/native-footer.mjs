@@ -14,6 +14,7 @@
 // 사용(저장소 루트): node app/scripts/l526/native-footer.mjs <ROOT=/tmp/l526n*> <raw 폴더>
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
 const [root, rawd] = process.argv.slice(2)
@@ -113,8 +114,24 @@ const snap = () => evaluate({ fn: () => ({
   helpExpanded: document.querySelector('[data-help-menu-toggle]')?.getAttribute('aria-expanded') ?? null,
 }) })
 
+/** herdr backend 자손 중 provider 프로세스 — 복구된 사용자 세션 목록(입력·포커스 조작 없음, l516 native-k8 과 같은 방식). leftover-check.sh 가 읽는다. */
+const restoredAgents = () => {
+  const backendPid = Number(fs.readFileSync(path.join(root, 'backend.pid'), 'utf8'))
+  const rows = execFileSync('ps', ['-Ao', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n').map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean).map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), command: m[3] }))
+  const out = []
+  const walk = (parent) => { for (const row of rows.filter((r) => r.ppid === parent)) { out.push(row); walk(row.pid) } }
+  walk(backendPid)
+  return out.filter((row) => /claude|grok|codex/.test(row.command)).map((row) => ({ pid: row.pid, ppid: row.ppid, command: row.command.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>').slice(0, 200) }))
+}
+
 let exitCode = 0
 try {
+  if (fs.existsSync(path.join(root, 'backend.pid'))) {
+    await pause(3000)
+    result.restoredAgents = restoredAgents()
+    fs.writeFileSync(path.join(rawd, 'restored-agents.txt'), `${result.restoredAgents.map((row) => `${row.pid} ${row.ppid} ${row.command}`).join('\n')}\n`)
+    console.log(`[l526n] 복구된 provider 프로세스 ${result.restoredAgents.length}개(입력 없음)`)
+  }
   await until({ label: '하단 바', probe: async () => (await control({ cmd: 'rect', selector: '[data-sidebar-footer]' })).ok, timeout: 30_000 })
   await pause(1500)
   // 포인터를 하단 바 밖(사이드바 위쪽 빈 곳이 아닌 창 왼쪽 위 모서리)으로 — 시작 상태에 hover 가 없게.

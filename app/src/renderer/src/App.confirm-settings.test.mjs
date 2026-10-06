@@ -38,7 +38,8 @@ afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); resetSett
 const pane = { paneId: 'p1', tabId: 't1', workspaceId: 'w1', title: '', agent: null, agentStatus: 'idle', agentState: emptyAgentState(0), cwd: null, focused: true, agentSession: null, digest: EMPTY_SESSION_DIGEST }
 const tabRow = { tabId: 't1', workspaceId: 'w1', label: '', number: 1, order: 0, agentStatus: 'idle', focused: true, panes: [pane], digest: EMPTY_SESSION_DIGEST }
 
-async function mount({ settings: initial = {}, pinned = false, running = false, cardLayout = 'detailed' } = {}) {
+/** `save`: 'now'(바로 저장) · 'held'(테스트가 `releaseSave()` 로 응답을 놓을 때까지 대기) · 'failed'(저장소 쓰기 실패 응답). */
+async function mount({ settings: initial = {}, pinned = false, running = false, cardLayout = 'detailed', save = 'now' } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'l516-app-'))
   const store = new KeybindingStore(folder)
   store.load()
@@ -61,13 +62,20 @@ async function mount({ settings: initial = {}, pinned = false, running = false, 
   const closeCalls = []
   const closed = []
   const uiPrefsWrites = []
+  const heldSaves = []
   let settings = { ...DEFAULT_SETTINGS, ...initial }
   const api = {
     getState: async () => state,
     getUiPrefs: async () => prefs,
     getKeybindings: async () => store.get(),
     getSettingsSync: () => settings,
-    setSettings: async (patch) => { settingsWrites.push(patch); settings = { ...settings, ...patch }; return { status: 'saved', settings } },
+    setSettings: async (patch) => {
+      settingsWrites.push(patch)
+      if (save === 'failed') return { status: 'failed', settings }
+      if (save === 'held') await new Promise((resolve) => { heldSaves.push(resolve) })
+      settings = { ...settings, ...patch }
+      return { status: 'saved', settings }
+    },
     // main `closeTabsByIds` 와 같은 걸음 — 설정을 닫기마다 읽는다.
     closeTabs: async (input) => {
       closeCalls.push({ ...input })
@@ -99,6 +107,13 @@ async function mount({ settings: initial = {}, pinned = false, running = false, 
   }
   return {
     q, click, settingsWrites, closeCalls, closed, uiPrefsWrites,
+    releaseSave: async () => {
+      const resolve = heldSaves.shift()
+      if (resolve === undefined) throw new Error('대기 중인 저장 없음')
+      await act(async () => { resolve() })
+      await act(async () => {})
+    },
+    notice: () => q('[data-add-notice]')?.textContent ?? null,
     closeKey: async () => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'w', code: 'KeyW', metaKey: true })) }); await act(async () => {}) },
     key: async (init) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })) }) },
     modal: () => q('[data-confirm-close-modal]'),
@@ -285,4 +300,64 @@ it('K6ⓒ 메뉴에서 「자세히」 → 설정 세그먼트가 같은 값(다
   await app.click('[data-settings-collapsible="window-sidebar"] [data-segment-value="compact"]')
   await app.click('[data-settings-collapsible="window-sidebar"] [data-segment-value="detailed"]')
   expect(app.uiPrefsWrites.at(-1)).toEqual(fromMenu)
+})
+
+// --- fix1 R1-01·R1-02 체크 + 확인 뒤 저장 대기·실패 -------------------------------------------------------------
+
+it('R1-01 저장을 기다리는 동안 취소 → 저장 응답이 와도 닫지 않는다', async () => {
+  const app = await mount({ running: true, save: 'held' })
+  await app.closeKey()
+  await app.click('[data-dont-ask-again-input]')
+  await app.click('[data-close-confirm-ok]')
+  expect(app.settingsWrites).toEqual([{ skipCloseTerminalWithRunningProcessConfirm: true }])
+  expect(app.closeCalls.filter((call) => call.confirmed)).toEqual([])
+  await app.click('[data-close-confirm-cancel]')
+  expect(app.modal()).toBeNull()
+  await app.releaseSave()
+  expect(app.closed).toEqual([])
+  expect(app.closeCalls.filter((call) => call.confirmed)).toEqual([])
+})
+
+it('R1-01 저장을 기다리는 동안 확인 두 번 → 확인된 닫기 IPC 는 한 번', async () => {
+  const app = await mount({ running: true, save: 'held' })
+  await app.closeKey()
+  await app.click('[data-dont-ask-again-input]')
+  await app.click('[data-close-confirm-ok]')
+  await app.click('[data-close-confirm-ok]')
+  expect(app.settingsWrites).toEqual([{ skipCloseTerminalWithRunningProcessConfirm: true }])
+  await app.releaseSave()
+  expect(app.closeCalls.filter((call) => call.confirmed)).toHaveLength(1)
+  expect(app.closed).toEqual(['t1'])
+  expect(app.modal()).toBeNull()
+})
+
+it('R1-01 저장 응답이 오면 닫는다(실제 closeTabsGated) · 체크 없이 확인 두 번도 닫기 IPC 한 번', async () => {
+  const held = await mount({ running: true, save: 'held' })
+  await held.closeKey()
+  await held.click('[data-dont-ask-again-input]')
+  await held.click('[data-close-confirm-ok]')
+  expect(held.closed).toEqual([])
+  await held.releaseSave()
+  expect(held.closed).toEqual(['t1'])
+  expect(held.closeCalls.at(-1)).toMatchObject({ tabIds: ['t1'], confirmed: true, confirmedPaneIds: ['p1'] })
+  expect(held.notice()).toBeNull()
+  for (const cleanup of cleanups.splice(0)) cleanup()
+  resetSettingsStoreForTest(null)
+  const plain = await mount({ running: true })
+  await plain.closeKey()
+  const ok = plain.q('[data-close-confirm-ok]')
+  if (ok === null) throw new Error('확인 버튼 없음')
+  await act(async () => { ok.click(); ok.click() })
+  await act(async () => {})
+  expect(plain.closeCalls.filter((call) => call.confirmed)).toHaveLength(1)
+  expect(plain.closed).toEqual(['t1'])
+})
+
+it('R1-02 체크 + 확인의 저장이 실패하면 알리고 닫기는 진행한다', async () => {
+  const app = await mount({ running: true, save: 'failed' })
+  await app.closeKey()
+  await app.click('[data-dont-ask-again-input]')
+  await app.click('[data-close-confirm-ok]')
+  expect(app.closed).toEqual(['t1'])
+  expect(app.notice()).toContain('설정을 저장하지 못해 다음에도 묻습니다')
 })

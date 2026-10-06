@@ -33,6 +33,17 @@ let root: Root
 let terminal: HTMLTextAreaElement
 let terminalKeys: string[]
 
+/** 없으면 설명을 붙여 throw 하는 조회 — 비 null 단언 대신 준비 조건을 드러낸다(LIFE-516 fix1 R1-06). */
+const buttonOf = (selector: string): HTMLButtonElement => {
+  const found = document.querySelector(selector)
+  if (!(found instanceof HTMLButtonElement)) throw new Error(`버튼 없음: ${selector}`)
+  return found
+}
+const checkboxOf = (selector: string): HTMLInputElement => {
+  const found = document.querySelector(selector)
+  if (!(found instanceof HTMLInputElement)) throw new Error(`체크박스 없음: ${selector}`)
+  return found
+}
 const render = (element: React.ReactElement): void => act(() => root.render(element))
 const escapeFrom = (target: EventTarget, init: { isComposing?: boolean } = {}): void =>
   act(() => void target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: init.isComposing ?? false })))
@@ -90,15 +101,15 @@ describe('삭제 대화 — Esc·첫 포커스 (R2B-01·08)', () => {
   it('「삭제」 판정: 체크 + 「삭제」 → onConfirm({ force:false, dontAskAgain:true }) · 체크 없이 → dontAskAgain:false', () => {
     const onConfirm = vi.fn()
     render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({}), onConfirm, onClose: () => {} }))
-    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
-    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    act(() => buttonOf('[data-delete-confirm="delete"]').click())
+    act(() => checkboxOf('[data-dont-ask-again-input]').click())
+    act(() => buttonOf('[data-delete-confirm="delete"]').click())
     expect(onConfirm.mock.calls).toEqual([[{ force: false, dontAskAgain: false }], [{ force: false, dontAskAgain: true }]])
   })
   it('「강제」 판정의 「강제 삭제」 는 dontAskAgain 을 싣지 않는다', () => {
     const onConfirm = vi.fn()
     render(createElement(DeleteWorktreeDialog, { name: 'a', path: '/r-wt/a', preview: preview({ dirtyCount: 1 }), onConfirm, onClose: () => {} }))
-    act(() => document.querySelector<HTMLButtonElement>('[data-delete-confirm="force"]')!.click())
+    act(() => buttonOf('[data-delete-confirm="force"]').click())
     expect(onConfirm.mock.calls).toEqual([[{ force: true, dontAskAgain: false }]])
   })
   it('막힘이면 취소 단추 글자가 「닫기」', () => {

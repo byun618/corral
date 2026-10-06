@@ -20,9 +20,11 @@ type ReposState = Pick<AppState, 'repos'>
 type DeleteTarget = { path: string; name: string; preview: WorktreeDeletePreview | null }
 
 /** 「다시 묻지 않음」 저장 직후 한 번(D5 — Orca 198 토스트 「다음번에는 이 확인을 건너뛰겠습니다. 설정에서 이를 변경할 수 있습니다.」). */
-type RunDeleteInput = { target: { path: string; name: string }; force: boolean; savedSkip: boolean }
+type RunDeleteInput = { target: { path: string; name: string }; force: boolean; saved: Promise<boolean> | null }
 
 export const SKIP_DELETE_SAVED_NOTE = ' · 다음부터 깨끗한 워크트리는 묻지 않고 삭제합니다 — 설정 › 일반에서 되돌릴 수 있습니다'
+/** 「다시 묻지 않음」 저장 실패(fix1 R1-02) — 삭제는 사용자가 확인했으므로 그대로 진행하고, 다음에도 묻는다는 사실만 알린다. */
+export const SKIP_DELETE_FAILED_NOTE = ' · 설정을 저장하지 못해 다음에도 묻습니다'
 
 /** Option(Alt) 을 누르고 있나 — 198 휴지통은 그동안만 마운트된다(`workspace-delete-quick-action.ts`). 창 blur 에 풀린다. */
 function useAltHeld(): boolean {
@@ -102,7 +104,7 @@ export function useCardActions(input: {
       void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
         skipPreviewing.current.delete(target.path)
         if (preview.ok && deleteDecision(preview).kind === 'delete') {
-          runDeleteRef.current?.({ target, force: false, savedSkip: false })
+          runDeleteRef.current?.({ target, force: false, saved: null })
           return
         }
         setDeleteTarget({ ...target, preview })
@@ -141,19 +143,19 @@ export function useCardActions(input: {
     if (target === null) return
     setDeleteTarget(null)
     // LIFE-516 K5ⓑ — 체크 + 「삭제」 만 저장한다(체크박스는 「삭제」 판정에만 있다). 삭제는 지금과 같은 non-force.
-    if (input.dontAskAgain) void updateSettings({ skipDeleteWorktreeConfirm: true })
-    runDelete({ target, force: input.force, savedSkip: input.dontAskAgain })
+    // 삭제 진행과 저장 성공은 따로다(fix1 R1-02) — 알림은 저장 결과를 보고 고른다.
+    runDelete({ target, force: input.force, saved: input.dontAskAgain ? updateSettings({ skipDeleteWorktreeConfirm: true }) : null })
   }
 
-  /** 삭제 실행 — 확인 창의 「삭제」/「강제 삭제」 와 확인 생략 경로(LIFE-516)가 같이 쓴다. `savedSkip` = 방금 「다시 묻지 않음」 을 저장했다(결과 알림에 되돌리는 자리를 한 번 붙인다, D5). */
+  /** 삭제 실행 — 확인 창의 「삭제」/「강제 삭제」 와 확인 생략 경로(LIFE-516)가 같이 쓴다. `saved` = 방금 시작한 「다시 묻지 않음」 저장(없으면 null) — 성공이면 결과 알림에 되돌리는 자리를 한 번 붙이고(D5), 실패면 실패를 붙인다(fix1 R1-02). */
   const runDelete = (input: RunDeleteInput): void => {
     const { target, force } = input
-    const skipNote = input.savedSkip ? SKIP_DELETE_SAVED_NOTE : ''
     const found = findRow(latest.current.stateRef.current, target.path)
     const workspaceId = found?.worktree.openWorkspaceId ?? null
     if (workspaceId !== null && workspaceId === latest.current.activeWorkspaceId) activeDeletes.current.set(target.path, { workspaceId, userMoved: false })
     setDeleting((prev) => new Set(prev).add(target.path))
-    void window.corral.deleteWorktree({ path: target.path, force }).then((result) => {
+    void Promise.all([window.corral.deleteWorktree({ path: target.path, force }), input.saved]).then(([result, saved]) => {
+      const skipNote = saved === null ? '' : saved ? SKIP_DELETE_SAVED_NOTE : SKIP_DELETE_FAILED_NOTE
       setDeleting((prev) => {
         const next = new Set(prev)
         next.delete(target.path)

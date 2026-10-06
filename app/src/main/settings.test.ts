@@ -315,7 +315,7 @@ describe('defaultAgent (LIFE-515 K1)', () => {
 })
 
 describe('확인 대화상자 칸 셋 (LIFE-516 K1)', () => {
-  const KEYS = ['confirmClosePinnedTab', 'skipCloseTerminalWithRunningProcessConfirm', 'skipDeleteWorktreeConfirm'] as const
+  const KEYS: ReadonlyArray<'confirmClosePinnedTab' | 'skipCloseTerminalWithRunningProcessConfirm' | 'skipDeleteWorktreeConfirm'> = ['confirmClosePinnedTab', 'skipCloseTerminalWithRunningProcessConfirm', 'skipDeleteWorktreeConfirm']
 
   it('기본값 = 셋 다 「묻는다」(지금 동작) — 칸 없는 기존 파일도 같고, 기본값을 보내도 파일을 만들지 않는다', () => {
     const store = fresh()

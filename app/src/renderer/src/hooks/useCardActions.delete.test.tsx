@@ -8,7 +8,7 @@ import type { RepoRow, WorktreeDeletePreview, WorktreeDeleteResult, WorktreeRow 
 import { DEFAULT_SETTINGS } from '../../../shared/terminal-settings.js'
 import { getSettings, resetSettingsStoreForTest } from '../settings-store.js'
 import type { LifecycleActions } from '../lifecycle-types.js'
-import { SKIP_DELETE_SAVED_NOTE, useCardActions } from './useCardActions.js'
+import { SKIP_DELETE_FAILED_NOTE, SKIP_DELETE_SAVED_NOTE, useCardActions } from './useCardActions.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -23,6 +23,17 @@ const repo = (input: { aOpen: boolean }): RepoRow => ({
   worktrees: [row({ path: '/r', linked: false, workspaceId: 'w-main' }), row({ path: '/r-wt/a', linked: true, workspaceId: input.aOpen ? 'w-a' : null }), row({ path: '/r-wt/b', linked: true, workspaceId: 'w-b' })],
 })
 
+/** 없으면 설명을 붙여 throw 하는 조회 — 비 null 단언 대신 준비 조건을 드러낸다(LIFE-516 fix1 R1-06). */
+const buttonOf = (selector: string): HTMLButtonElement => {
+  const found = document.querySelector(selector)
+  if (!(found instanceof HTMLButtonElement)) throw new Error(`버튼 없음: ${selector}`)
+  return found
+}
+const checkboxOf = (selector: string): HTMLInputElement => {
+  const found = document.querySelector(selector)
+  if (!(found instanceof HTMLInputElement)) throw new Error(`체크박스 없음: ${selector}`)
+  return found
+}
 let host: HTMLDivElement
 let root: Root
 let activateWorkspace: ReturnType<typeof vi.fn<(id: string) => void>>
@@ -147,22 +158,39 @@ describe('워크트리 삭제 확인 생략 (LIFE-516 K5ⓑⓒⓓ)', () => {
     act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
     await request('/r-wt/a')
     expect(document.querySelector('[data-delete-worktree-dialog]')).not.toBeNull()
-    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
-    await act(async () => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    act(() => checkboxOf('[data-dont-ask-again-input]').click())
+    await act(async () => buttonOf('[data-delete-confirm="delete"]').click())
     expect(getSettings().skipDeleteWorktreeConfirm).toBe(true)
     expect(deletes).toEqual([{ path: '/r-wt/a', force: false }])
     expect(notices).toEqual([`워크트리 a 를 삭제했습니다${SKIP_DELETE_SAVED_NOTE}`])
+  })
+  it('fix1 R1-02 체크 + 「삭제」 의 저장이 실패하면 삭제는 진행하고 되돌림 안내 대신 실패를 알린다', async () => {
+    resetSettingsStoreForTest({ ...DEFAULT_SETTINGS })
+    const writes: unknown[] = []
+    Reflect.set(window.corral, 'setSettings', (patch: unknown) => {
+      writes.push(patch)
+      return Promise.resolve({ status: 'failed', settings: { ...DEFAULT_SETTINGS } })
+    })
+    act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
+    await request('/r-wt/a')
+    act(() => checkboxOf('[data-dont-ask-again-input]').click())
+    await act(async () => buttonOf('[data-delete-confirm="delete"]').click())
+    await act(async () => {})
+    expect(writes).toEqual([{ skipDeleteWorktreeConfirm: true }])
+    expect(getSettings().skipDeleteWorktreeConfirm).toBe(false)
+    expect(deletes).toEqual([{ path: '/r-wt/a', force: false }])
+    expect(notices).toEqual([`워크트리 a 를 삭제했습니다${SKIP_DELETE_FAILED_NOTE}`])
   })
   it('체크 + 취소 → 저장 안 함 · 체크 없이 「삭제」 → 저장 안 함', async () => {
     resetSettingsStoreForTest({ ...DEFAULT_SETTINGS })
     act(() => root.render(createElement(SkipHarness, { repos: [repo({ aOpen: false })] })))
     await request('/r-wt/a')
-    act(() => document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('[data-delete-cancel]')!.click())
+    act(() => checkboxOf('[data-dont-ask-again-input]').click())
+    act(() => buttonOf('[data-delete-cancel]').click())
     expect(getSettings().skipDeleteWorktreeConfirm).toBe(false)
     await request('/r-wt/a')
-    expect(document.querySelector<HTMLInputElement>('[data-dont-ask-again-input]')!.checked).toBe(false)
-    await act(async () => document.querySelector<HTMLButtonElement>('[data-delete-confirm="delete"]')!.click())
+    expect(checkboxOf('[data-dont-ask-again-input]').checked).toBe(false)
+    await act(async () => buttonOf('[data-delete-confirm="delete"]').click())
     expect(getSettings().skipDeleteWorktreeConfirm).toBe(false)
     expect(notices).toEqual(['워크트리 a 를 삭제했습니다'])
   })

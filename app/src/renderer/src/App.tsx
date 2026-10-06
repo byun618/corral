@@ -58,7 +58,7 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { closeCopy } from './close-copy.js'
+import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
 import { keepTerminalFocus, TerminalPane } from './TerminalPane.js'
@@ -1616,7 +1616,13 @@ export function App(): React.JSX.Element {
                 lifecycle.confirmPendingClose()
                 return
               }
-              void updateSettings(copy.dontAskAgain.patch).finally(lifecycle.confirmPendingClose)
+              // 저장이 끝난 뒤 닫는다 — 그사이 취소·두 번째 확인은 닫기를 만들지 않는다(fix1 R1-01). 저장 실패면 알리고 닫기는 진행한다(R1-02).
+              const patch = copy.dontAskAgain.patch
+              lifecycle.confirmPendingClose({
+                before: async () => {
+                  if (!(await updateSettings(patch))) setNotice(CLOSE_SKIP_FAILED_NOTICE)
+                },
+              })
             }}
             onCancel={lifecycle.cancelPendingClose}
           />

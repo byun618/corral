@@ -22,6 +22,8 @@ export type DontAskAgain = { label: string; patch: Partial<Settings> }
 
 const DONT_ASK_RUNNING: DontAskAgain = { label: '실행 중인 터미널에 대해 다시 묻지 않기', patch: { skipCloseTerminalWithRunningProcessConfirm: true } }
 const DONT_ASK_PINNED: DontAskAgain = { label: '고정된 탭에 대해 다시 묻지 않기', patch: { confirmClosePinnedTab: false } }
+/** 체크 + 확인의 저장이 실패했을 때 알림(fix1 R1-02) — 닫기는 사용자가 확인했으므로 진행한다. */
+export const CLOSE_SKIP_FAILED_NOTICE = '설정을 저장하지 못해 다음에도 묻습니다'
 
 export type CloseCopy = {
   kind: 'agent' | 'command' | 'pinned' | 'worktree'

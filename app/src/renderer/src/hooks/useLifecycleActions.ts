@@ -34,7 +34,8 @@ export function useLifecycleActions(state: AppState | null): {
   lifecycleNotice: LifecycleNotice | null
   dismissNotice: () => void
   pendingClose: PendingClose | null
-  confirmPendingClose: () => void
+  /** `before` 가 있으면 그것(설정 저장)이 끝난 뒤 닫는다. 한 요청은 한 번만 소비된다 — 두 번째 확인·저장 중 취소된 요청은 닫지 않는다(LIFE-516 fix1 R1-01). */
+  confirmPendingClose: (input?: { before: () => Promise<void> }) => void
   cancelPendingClose: () => void
   worktreeModal: { repoRoot: string } | null
   closeWorktreeModal: () => void
@@ -46,6 +47,8 @@ export function useLifecycleActions(state: AppState | null): {
   const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
   /** 확인 대기 중인 탭 닫기의 `onClosed` — 모달이 확인되면 그 결과로 부른다(state 에 함수를 싣지 않으려고 ref). */
   const pendingOnClosed = useRef<((closed: string[]) => void) | null>(null)
+  /** 확인으로 소비 중인 닫기 요청(LIFE-516 fix1 R1-01) — 같은 요청의 두 번째 확인을 막고, 취소가 비워 저장 뒤 늦은 닫기를 막는다. */
+  const consumingClose = useRef<PendingClose | null>(null)
   const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
 
   /**
@@ -426,14 +429,25 @@ export function useLifecycleActions(state: AppState | null): {
   const cancelPendingClose = useCallback(() => {
     // 취소 = 하나도 안 닫았다 — 다시 열기 기록도 없다.
     pendingOnClosed.current = null
+    consumingClose.current = null
     setPendingClose(null)
   }, [])
   const closeWorktreeModal = useCallback(() => setWorktreeModal(null), [])
-  const confirmPendingClose = useCallback(() => {
-    if (pendingClose === null) return
-    const onClosed = pendingOnClosed.current ?? undefined
-    pendingOnClosed.current = null
-    void closeTarget({ target: pendingClose.target, confirmed: true, onClosed, confirmedPaneIds: pendingClose.running.map((pane) => pane.paneId) })
+  const confirmPendingClose = useCallback((input?: { before: () => Promise<void> }) => {
+    if (pendingClose === null || consumingClose.current === pendingClose) return
+    const request = pendingClose
+    consumingClose.current = request
+    const close = (): void => {
+      // 저장을 기다리는 동안 취소됐다 — 닫지 않는다.
+      if (consumingClose.current !== request) return
+      const onClosed = pendingOnClosed.current ?? undefined
+      pendingOnClosed.current = null
+      void closeTarget({ target: request.target, confirmed: true, onClosed, confirmedPaneIds: request.running.map((pane) => pane.paneId) }).finally(() => {
+        if (consumingClose.current === request) consumingClose.current = null
+      })
+    }
+    if (input === undefined) close()
+    else void input.before().then(close, close)
   }, [pendingClose, closeTarget])
 
   return {

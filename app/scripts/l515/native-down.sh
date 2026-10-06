@@ -96,8 +96,10 @@ sh "$HERE/provider-hash.sh" > "$RAWD/provider-post.txt"
 cmp -s "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt" && pass "provider $(wc -l < "$RAWD/provider-post.txt" | tr -d ' ')파일 해시 전=후" || { fail "provider 해시가 바뀌었다 — 되쓰지 않는다, 보고"; diff "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt"; }
 
 echo "# ⑥-b G6(q1 범위) — 읽기만이었다(corral settings.json 은 ④ 바이트 복원), 해시 전=후"
-sh "$(dirname "$0")/g6-hash.sh" > "$RAWD/g6-post.txt"
-cmp -s "$RAWD/g6-pre.txt" "$RAWD/g6-post.txt" && pass "G6 $(wc -l < "$RAWD/g6-post.txt" | tr -d ' ')파일 해시 전=후" || { fail "G6 해시가 바뀌었다 — 되쓰지 않는다, 보고"; diff "$RAWD/g6-pre.txt" "$RAWD/g6-post.txt"; }
+# fix1 R1-01 — 경로 합집합 대조·수집기 실패·빈/손상 snapshot 실패(g6-compare.mjs)
+"$NODE" "$(dirname "$0")/g6-compare.mjs" "$RAWD/g6-pre.txt" "$RAWD/g6-post.txt" > "$RAWD/g6-compare.txt"; G6RC=$?
+cat "$RAWD/g6-compare.txt"
+[ "$G6RC" -eq 0 ] && pass "G6 엄격 범위 전=후(g6-compare.mjs)" || fail "G6 대조 실패(exit $G6RC) — 되쓰지 않는다, 보고"
 
 echo "# ⑥-c grok 런타임 목록 — 대조 아님(q1). 바뀐 줄은 K8ⓑ grok 기동의 자체 기록으로 RESULT 에"
 sh "$(dirname "$0")/grok-runtime.sh" > "$RAWD/grok-runtime-post.txt"

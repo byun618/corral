@@ -57,7 +57,9 @@ cp -p "$HCFG/session.json" "$ROOT/backup/herdr/session.json"
 "$NODE" "$HERE/native-manifest.mjs" "$HCFG" --top > "$ROOT/backup/herdr-manifest.json"
 cp "$ROOT/backup/herdr-manifest.json" "$RAWD/herdr-manifest-before.json"
 sh "$HERE/provider-hash.sh" > "$RAWD/provider-pre.txt"
-sh "$(dirname "$0")/g6-hash.sh" > "$RAWD/g6-pre.txt" && echo "G6 $(wc -l < "$RAWD/g6-pre.txt" | tr -d ' ')파일 해시"
+sh "$(dirname "$0")/g6-hash.sh" > "$RAWD/g6-pre.txt" || { echo "✘ G6 수집기 실패 — 멈춘다"; exit 1; }
+[ -s "$RAWD/g6-pre.txt" ] || { echo "✘ G6 시작 snapshot 이 비었다 — 멈춘다"; exit 1; }
+echo "G6 $(wc -l < "$RAWD/g6-pre.txt" | tr -d ' ')줄 해시"
 sh "$(dirname "$0")/grok-runtime.sh" > "$RAWD/grok-runtime-pre.txt" && echo "grok 런타임 $(wc -l < "$RAWD/grok-runtime-pre.txt" | tr -d ' ')줄(목록)"
 sh "$HERE/clean.sh" -- 'echo "XDG_CONFIG_HOME=[$XDG_CONFIG_HOME] GHOSTTY_RESOURCES_DIR=[$GHOSTTY_RESOURCES_DIR]"' > "$RAWD/env-native.txt"; cat "$RAWD/env-native.txt"
 cp -p "$HOME/.codex/config.toml" "$ROOT/backup/codex-config.toml" && shasum -a 256 "$HOME/.codex/config.toml" | cut -d' ' -f1 > "$RAWD/codex-config-pre.sha256"

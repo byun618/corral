@@ -20,6 +20,7 @@ function input(patch: Partial<BackendInput>): BackendInput {
     restore: zero,
     starter: { phase: 'idle' },
     autoStartUsed: false,
+    scan: 'ok',
     ...patch,
   }
 }
@@ -104,6 +105,7 @@ function deps(patch: Partial<StarterDeps> & { running?: () => boolean }): Starte
     isRunning: async () => patch.running?.() ?? false,
     spawn: () => ({ ok: true, pid: 4242, logPath: '/log' }),
     logTail: () => 'tail',
+    stopChild: async () => true,
     sleep: async (ms) => {
       clock += ms
     },
@@ -211,5 +213,67 @@ describe('BackendStarter (K4ⓕⓖⓗ 로직)', () => {
     await starter.start('button')
     expect(starter.phase()).toEqual({ phase: 'idle' })
     expect(calls).toBe(2)
+  })
+})
+
+describe('조회 전·조회 실패 (r2 R2-02)', () => {
+  it('첫 조회 전에는 확인 카드도 자동 기동도 없다', () => {
+    expect(decideBackend(input({ scan: 'pending', sessions: [] }))).toEqual({ status: { kind: 'ok' }, autostart: false })
+    expect(decideBackend(input({ scan: 'pending', restore: three }))).toEqual({ status: { kind: 'ok' }, autostart: false })
+  })
+  it('조회가 실패해 폴백했으면 멈춤으로 읽지 않는다', () => {
+    expect(decideBackend(input({ scan: 'error', sessions: [] }))).toEqual({ status: { kind: 'ok' }, autostart: false })
+    expect(decideBackend(input({ scan: 'error', sessions: [], selected: 'default', link: { phase: 'reconnecting', attempt: 3 } }))).toEqual({ status: { kind: 'reconnecting', session: 'default', attempt: 3 }, autostart: false })
+  })
+  it('실행 파일을 못 찾아 폴백한 것은 그대로 없음 상태', () => {
+    expect(decideBackend(input({ scan: 'error', sessions: [], binary: { kind: 'missing', searched: ['a'] } })).status.kind).toBe('missing')
+  })
+})
+
+describe('낡은 실패 정리 · 시한 초과 자식 (r2 R2-01, grok M1 재현)', () => {
+  it('실패 → 늦게 뜬 서버 관측 → 그 서버가 멈춤 → 실패 카드가 아니라 확인(exited)·재개 요약', async () => {
+    const starter = new BackendStarter(deps({}))
+    await starter.start('auto')
+    expect(starter.phase().phase).toBe('failed')
+    // ① 실패 상태로 확인 후보를 보면 지금은 실패 카드(옛 동작이 남는 자리)
+    expect(decideBackend(input({ starter: starter.phase(), autoStartUsed: true, restore: three })).status.kind).toBe('failed')
+    // ② 늦게 뜬 서버에 붙었다 — 관측하면 실패를 걷는다
+    expect(decideBackend(input({ starter: starter.phase(), sessions: [runningDefault], selected: 'default', link: { phase: 'live', attempt: 0 } })).status.kind).toBe('ok')
+    starter.observeRunning()
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+    // ③ 그 서버가 멈춤 → 확인(exited) + 재개 3
+    expect(decideBackend(input({ starter: starter.phase(), sessions: [stoppedDefault], selected: 'default', link: { phase: 'reconnecting', attempt: 1 }, restore: three, autoStartUsed: true }))).toEqual({
+      status: { kind: 'confirm', reason: 'exited', session: 'default', restore: three },
+      autostart: false,
+    })
+    // ④ 아직 안 붙은 상태에서 멈춰도 확인(stopped)·재개 요약 유지
+    expect(decideBackend(input({ starter: starter.phase(), restore: three, autoStartUsed: true }))).toEqual({ status: { kind: 'confirm', reason: 'stopped', session: 'default', restore: three }, autostart: false })
+  })
+  it('observeRunning 은 실패가 아니면 아무것도 바꾸지 않는다', () => {
+    const starter = new BackendStarter(deps({}))
+    starter.observeRunning()
+    expect(starter.phase()).toEqual({ phase: 'idle' })
+  })
+  it('시한 초과 → 자식 그룹을 끝낸다 · 다시 시도해도 살아 남은 자식이 쌓이지 않는다', async () => {
+    const live = new Set<number>()
+    let next = 100
+    const stopped: number[] = []
+    const starter = new BackendStarter(deps({
+      spawn: () => { next += 1; live.add(next); return { ok: true, pid: next, logPath: '/l' } },
+      stopChild: async (pid) => { stopped.push(pid); live.delete(pid); return true },
+    }))
+    await starter.start('auto')
+    await starter.start('button')
+    await starter.start('button')
+    expect(starter.spawns()).toBe(3)
+    expect(stopped).toEqual([101, 102, 103])
+    expect(live.size).toBe(0)
+    expect(starter.phase().phase).toBe('failed')
+  })
+  it('자식을 끝내지 못하면 실패 원문에 적는다', async () => {
+    const starter = new BackendStarter(deps({ stopChild: async () => false }))
+    await starter.start('auto')
+    const phase = starter.phase()
+    expect(phase.phase === 'failed' && phase.error).toContain('끝내지 못했다')
   })
 })

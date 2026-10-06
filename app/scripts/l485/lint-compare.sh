@@ -1,9 +1,12 @@
 #!/bin/sh
 # LIFE-485 K7ⓒ — eslint 신규 위반 0 판정: 기준선(41e27696 의 app 을 /tmp/l485-base 에 풀어 같은 node_modules 로)과 구현의 (파일, 규칙, 메시지) 집합 차.
-# 신규가 있으면 exit 1, 없으면 0. 사용: sh lint-compare.sh <worktree 루트>
+# 신규가 있으면 exit 1, 없으면 0. eslint 가 json 을 못 썼으면(설정·파싱 실패 등) exit 2 —
+# eslint 자체의 exit 1 은 위반이 있다는 뜻이라 정상 경로로 둔다 (r2 R2-05: 지난 json 을 읽어 통과하던 구멍). 사용: sh lint-compare.sh <worktree 루트>
 W=$1; export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 rm -rf /tmp/l485-base && mkdir -p /tmp/l485-base && git -C "$W" archive 41e27696 app | tar -x -C /tmp/l485-base && ln -s "$W/app/node_modules" /tmp/l485-base/app/node_modules
+rm -f /tmp/l485t/lint-base.json /tmp/l485t/lint-impl.json
 (cd /tmp/l485-base/app && npx eslint . -f json -o /tmp/l485t/lint-base.json); (cd "$W/app" && npx eslint . -f json -o /tmp/l485t/lint-impl.json)
+for j in /tmp/l485t/lint-base.json /tmp/l485t/lint-impl.json; do [ -s "$j" ] || { echo "eslint 가 $j 를 쓰지 않았다"; exit 2; }; done
 /usr/bin/python3 - "$W" <<'PY'
 import json,sys
 def load(p,root):

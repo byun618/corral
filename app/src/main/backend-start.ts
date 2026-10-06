@@ -30,6 +30,11 @@ export type BackendInput = {
   starter: StarterPhase
   /** 이 앱 수명에서 자동 기동을 이미 했나 (K3⑨ — 최대 1회). */
   autoStartUsed: boolean
+  /**
+   * 세션 조회 상태 (r2 R2-02). `pending` = 아직 한 번도 조회하지 않았다 · `error` = 조회가 실패해 폴백 결과다.
+   * 둘 다 「멈춤」 의 증거가 아니다 — 빈 결과를 멈춤으로 읽어 확인 카드·자동 기동을 내지 않는다.
+   */
+  scan: 'pending' | 'ok' | 'error'
 }
 
 export type BackendDecision = { status: BackendStatus; autostart: boolean }
@@ -65,6 +70,12 @@ export function decideBackend(input: BackendInput): BackendDecision {
   }
 
   if (input.starter.phase === 'starting') return none({ kind: 'starting', session: DEFAULT_SESSION })
+
+  // 조회 전·조회 실패 — 멈췄는지 모른다. 실행 파일을 못 찾은 경우(폴백이 곧 정상 경로)만 빼고 카드를 내지 않는다(r2 R2-02).
+  if (input.scan === 'pending' || (input.scan === 'error' && input.binary.kind !== 'missing')) {
+    if (link.phase === 'reconnecting' && input.selected !== null) return none({ kind: 'reconnecting', session: input.selected, attempt: link.attempt })
+    return none({ kind: 'ok' })
+  }
 
   // ⑧ 연결 도중 멈춤 — 자동으로 다시 띄우지 않는다. 의도한 종료를 되돌리지 않고 크래시 반복을 키우지 않는다.
   if (input.selected !== null) {
@@ -109,6 +120,8 @@ export type StarterDeps = {
   /** 서버를 분리해 띄운다. 즉시 종료하면 `onExit` 가 불린다. */
   spawn: (onExit: (detail: string) => void) => { ok: true; pid: number; logPath: string } | { ok: false; error: string; logPath: string | null }
   logTail: (logPath: string) => string
+  /** 시한 초과한 자식의 프로세스 그룹을 끝낸다 — 소켓을 못 연 채 남은 서버가 다음 시도와 겹치지 않게(r2 R2-01). 끝났으면 true. */
+  stopChild: (pid: number) => Promise<boolean>
   sleep: (ms: number) => Promise<void>
   now: () => number
   readyTimeoutMs: number
@@ -136,6 +149,16 @@ export class BackendStarter {
 
   autoStartUsed(): boolean {
     return this.autoUsed
+  }
+
+  /**
+   * default 가 돌고 있음을 관측했다 — 남아 있는 `failed` 를 걷는다(r2 R2-01). 시한 초과 뒤 늦게 뜬 서버(또는 사용자가 띄운 서버)에
+   * 붙었다가 그 서버가 멈추면, 옛 실패 카드가 아니라 확인(exited)과 재개 요약이 나와야 한다 — 실패 카드의 「다시 시도」 는 재개 경고 없이 띄운다.
+   */
+  observeRunning(): void {
+    if (this.current.phase !== 'failed') return
+    this.deps.log('backend.start.failure_cleared', {})
+    this.set({ phase: 'idle' })
   }
 
   /** 이 앱 수명에서 spawn 을 몇 번 했나 — 계측·테스트용. */
@@ -201,7 +224,11 @@ export class BackendStarter {
       }
       await this.deps.sleep(this.deps.pollMs)
     }
-    this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs })
-    this.set({ phase: 'failed', error: `서버가 ${Math.round(this.deps.readyTimeoutMs / 1000)}초 안에 준비되지 않았다`, logPath: spawned.logPath })
+    // 시한 초과 — 그 자식을 남기지 않는다(r2 R2-01). 살려 두면 소켓을 못 연 채 남아 「다시 시도」 마다 하나씩 쌓이거나,
+    // 늦게 떠서 사용자 모르게 재개를 일으킨다. 끝내지 못했으면 원문에 적는다.
+    const stopped = await this.deps.stopChild(spawned.pid).catch(() => false)
+    this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs, childStopped: stopped })
+    const tail = stopped ? '' : `\n시한을 넘긴 서버 프로세스(pid ${spawned.pid})를 끝내지 못했다`
+    this.set({ phase: 'failed', error: `서버가 ${Math.round(this.deps.readyTimeoutMs / 1000)}초 안에 준비되지 않았다${tail}`, logPath: spawned.logPath })
   }
 }

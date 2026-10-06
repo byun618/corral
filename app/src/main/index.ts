@@ -63,6 +63,7 @@ import {
   readRestoreTargets,
   resolveHerdrBinary,
   spawnServer,
+  stopProcessGroup,
   SERVER_READY_POLL_MS,
   SERVER_READY_TIMEOUT_MS,
   type HerdrResolution,
@@ -126,6 +127,8 @@ const HERDR_RERESOLVE_MS = 60_000
 /** default 의 재개 대상 — 돌고 있는 세션이 없을 때만 센다 (D2). */
 let restore: BackendInput['restore'] = null
 let lastBackendLog = ''
+/** 세션 조회 상태 (r2 R2-02) — 첫 조회 전 `pending`, CLI 조회가 실패해 폴백했으면 `error`. */
+let scanState: BackendInput['scan'] = 'pending'
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
@@ -172,6 +175,7 @@ const backendStarter = new BackendStarter({
     })
   },
   logTail: (file) => readLogTail(file),
+  stopChild: (pid) => stopProcessGroup(pid),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => Date.now(),
   readyTimeoutMs: SERVER_READY_TIMEOUT_MS,
@@ -194,6 +198,7 @@ function backendInput(): BackendInput {
     restore,
     starter: backendStarter.phase(),
     autoStartUsed: backendStarter.autoStartUsed(),
+    scan: scanState,
   }
 }
 
@@ -1230,6 +1235,9 @@ async function runPoll(): Promise<void> {
   const scan = await listSessions(herdrPath())
   sessions = scan.sessions
   sessionsError = scan.error
+  scanState = scan.error === null ? 'ok' : 'error'
+  // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.
+  if (scanState === 'ok' && sessions.some((session) => session.isDefault && session.running)) backendStarter.observeRunning()
   if (selectedSession === null) {
     // 고르는 규칙은 순수 함수에 있다 (수정 1회차 M6) — 멈춘 세션을 실제로 만들지 않고 재생으로 잰다.
     const choice = pickSessionName({ sessions, wanted: process.env.CORRAL_SESSION })
@@ -1252,7 +1260,12 @@ function evaluateBackend(): void {
     lastBackendLog = summary
     log('backend.status', { status: decision.status, restore })
   }
-  if (decision.autostart) void backendStarter.start('auto').then(() => pollSessions())
+  if (decision.autostart) {
+    void backendStarter
+      .start('auto')
+      .then(() => pollSessions())
+      .catch((error: unknown) => log('backend.start.unhandled', { error: String(error) })) // r2 R2-03
+  }
 }
 
 /**

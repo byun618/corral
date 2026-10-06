@@ -7,7 +7,7 @@ if [ "${1:-}" = server ] && [ "$#" -eq 1 ]; then
   case "$MODE" in
     slow) sleep 4; exec "$REAL" server ;;
     exit) echo "fake herdr: 일부러 바로 종료한다 (exit 1)" >&2; exit 1 ;;
-    hang) echo "fake herdr: 소켓을 열지 않고 멈춰 있다" >&2; exec sleep 40 ;;
+    hang) echo "fake herdr: 소켓을 열지 않고 멈춰 있다" >&2; exec sleep 120 ;;
   esac
 fi
 exec "$REAL" "$@"

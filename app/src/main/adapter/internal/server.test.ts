@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer } from './server.js'
+import { countRestoreTargets, isExecutableFile, parseShellLookup, readRestoreTargets, resolveHerdr, rotateLog, serverEnv, spawnServer, stopProcessGroup } from './server.js'
 
 let dir = ''
 beforeEach(() => {
@@ -140,8 +140,10 @@ describe('serverEnv (D4·r1 R1-08)', () => {
       HERDR_ENV: '1', HERDR_SESSION: 'other', HERDR_SOCKET_PATH: '/s', HERDR_CLIENT_SOCKET_PATH: '/cs', HERDR_BIN_PATH: '/b',
       HERDR_WORKSPACE_ID: 'w', HERDR_TAB_ID: 't', HERDR_PANE_ID: 'p', HERDR_ACTIVE_PANE_ID: 'ap', HERDR_PLUGIN_ROOT: '/pr',
       HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug',
+      npm_config_prefix: '/p', npm_lifecycle_event: 'dev', npm_lifecycle_script: 'electron-vite dev', npm_package_name: 'corral',
     })
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug' })
+    // r2 R2-06 — npm_config_*·npm_lifecycle_* 는 빠진다(npm_package_* 는 범위 밖이라 남는다)
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug', npm_package_name: 'corral' })
   })
 })
 
@@ -190,5 +192,39 @@ describe('spawnServer 실패 경로 (K4ⓖ)', () => {
     } finally {
       process.kill(result.pid, 'SIGKILL')
     }
+  })
+})
+
+describe('spawnServer fd·stopProcessGroup (r2 R2-08·R2-01)', () => {
+  it('로그를 열 수 없으면 ok:false (폴더 자리에 파일)', () => {
+    const blocker = path.join(dir, 'blocked')
+    fs.writeFileSync(blocker, '')
+    const result = spawnServer({ binary: '/bin/true', logPath: path.join(blocker, 'server.log'), onExit: () => undefined })
+    expect(result.ok).toBe(false)
+  })
+  it('열었는데 쓰지 못하면 fd 를 닫고 ok:false (/dev/full 이 없는 macOS 는 읽기 전용 fd 를 흉내 낼 수 없어 열린 fd 수로 본다)', () => {
+    const before = fs.readdirSync('/dev/fd').length
+    for (let i = 0; i < 5; i++) spawnServer({ binary: path.join(dir, 'no-such'), logPath: path.join(dir, 'ok.log'), onExit: () => undefined })
+    expect(fs.readdirSync('/dev/fd').length).toBeLessThanOrEqual(before + 1)
+  })
+  it('시한 초과 자식의 프로세스 그룹을 끝낸다 — 손자까지', async () => {
+    const fake = file('group-herdr', '#!/bin/sh\nsleep 30 &\necho $! > "$(dirname "$0")/grandchild.pid"\nexec sleep 30\n', 0o755)
+    const result = spawnServer({ binary: fake, logPath: path.join(dir, 'g.log'), onExit: () => undefined })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    let grand = ''
+    for (let i = 0; i < 40 && grand === ''; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      grand = fs.existsSync(path.join(dir, 'grandchild.pid')) ? fs.readFileSync(path.join(dir, 'grandchild.pid'), 'utf8').trim() : ''
+    }
+    expect(grand).not.toBe('')
+    expect(await stopProcessGroup(result.pid, 1000)).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+    expect(alive(result.pid)).toBe(false)
+    expect(alive(Number(grand))).toBe(false)
+  })
+  it('이미 없는 pid 는 true', async () => {
+    expect(await stopProcessGroup(999999, 10)).toBe(true)
   })
 })

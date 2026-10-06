@@ -15,6 +15,7 @@ export {
   readRestoreTargets,
   resolveHerdrBinary,
   spawnServer,
+  stopProcessGroup,
   SERVER_READY_POLL_MS,
   SERVER_READY_TIMEOUT_MS,
   type HerdrResolution,

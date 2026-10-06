@@ -207,6 +207,8 @@ export function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (/^(CORRAL_|ELECTRON_|VITE_)/.test(key)) continue
     if (HERDR_PANE_SCOPED.has(key) || /^HERDR_(ACTIVE|PLUGIN)_/.test(key)) continue
     if (key === 'NODE_OPTIONS' || key === 'NODE_ENV' || key === 'NODE_CHANNEL_FD') continue
+    // npm 스크립트로 띄운 개발 실행이 싣는 변수 — pane 셸에 새면 그 셸의 npm 이 엉뚱한 설정을 읽는다(r2 R2-06).
+    if (/^npm_(config|lifecycle)_/.test(key)) continue
     out[key] = value
   }
   return out
@@ -226,9 +228,15 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
     fs.mkdirSync(path.dirname(input.logPath), { recursive: true })
     rotateLog(input.logPath)
     fd = fs.openSync(input.logPath, 'a')
-    fs.writeSync(fd, `\n--- corral ${new Date().toISOString()} spawn ${input.binary} server\n`)
   } catch (error) {
     return { ok: false, error: `로그 파일을 열지 못했다: ${String(error)}`, logPath: input.logPath }
+  }
+  try {
+    fs.writeSync(fd, `\n--- corral ${new Date().toISOString()} spawn ${input.binary} server\n`)
+  } catch (error) {
+    // 열었는데 쓰지 못했다 — fd 를 닫고 돌아간다(r2 R2-08).
+    fs.closeSync(fd)
+    return { ok: false, error: `로그 파일에 쓰지 못했다: ${String(error)}`, logPath: input.logPath }
   }
   try {
     const child = spawn(input.binary, ['server'], {
@@ -254,6 +262,10 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
 /** 서버 로그 상한 — 넘으면 기동 직전에 `.1` 로 한 번 밀어 둔다(r1 R1-10, 무한 증가 방지). 서버가 도는 동안은 자르지 않는다. */
 export const SERVER_LOG_MAX_BYTES = 1024 * 1024
 
+/**
+ * 남는 경합(r2 R2-04, 주석만): 기동 직전 재조회와 spawn 사이에 다른 손이 서버를 띄우면, 그 서버가 이미 쓰고 있는 로그를 여기서 `.1` 로
+ * 밀 수 있다(우리 자식은 락에 지고 끝난다). 피해는 그 서버 로그가 `.1` 에 이어 쓰이는 위치 혼선뿐이라 프로세스 간 락을 두지 않는다.
+ */
 export function rotateLog(logPath: string, maxBytes = SERVER_LOG_MAX_BYTES): boolean {
   try {
     if (fs.statSync(logPath).size <= maxBytes) return false
@@ -272,4 +284,35 @@ export function readLogTail(logPath: string, bytes = 1200): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * 시한을 넘긴 서버의 프로세스 그룹을 끝낸다(r2 R2-01). `detached` 로 띄워 pid = 그룹 id 다. SIGTERM → `graceMs` 기다림 → SIGKILL.
+ * 끝났으면 true. 이미 없으면 true.
+ */
+export async function stopProcessGroup(pid: number, graceMs = 2000): Promise<boolean> {
+  const alive = (): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const signal = (name: NodeJS.Signals): void => {
+    try {
+      process.kill(-pid, name)
+    } catch {
+      // 그룹이 이미 없다
+    }
+  }
+  if (!alive()) return true
+  signal('SIGTERM')
+  const deadline = Date.now() + graceMs
+  while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+  if (alive()) signal('SIGKILL')
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const gone = !alive()
+  log('herdr.server.stop_group', { pid, gone })
+  return gone
 }

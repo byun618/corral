@@ -3,6 +3,7 @@
 //   ⓒ 상태바 `xterm C×R` ↔ herdr `session.snapshot` 의 pane width·height
 //   ⓑ 팔레트(⌘K)·MRU(⌃Tab 홀드)·탭 드롭존(탭 끌어 터미널 위)·호버 카드(worktree 카드 hover)·대화상자(레포 추가) — 박스 + 탭 줄 박스 + 스크린샷
 // 실행: node k6-probe.mjs --work /tmp/l527os --out <원자료 폴더> --label before|after
+/* global fetch, document, innerWidth, innerHeight */
 import fs from 'node:fs'
 import path from 'node:path'
 import { connect, pause, until } from '../gui-diff/lib/cdp.mjs'

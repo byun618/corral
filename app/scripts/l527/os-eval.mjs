@@ -1,6 +1,7 @@
 // LIFE-527 — 떠 있는 격리 인스턴스 페이지에 식 하나를 평가해 JSON 으로 찍는다(관측 전용 — 입력은 cliclick 이 한다).
 // 실행: node app/scripts/l527/os-eval.mjs <port> '<식>'
 //   식은 페이지 안에서 `(() => <식>)()` 로 돈다. 프라미스면 기다린다.
+/* global fetch */
 import { connect } from '../gui-diff/lib/cdp.mjs'
 
 const [port, expression] = process.argv.slice(2)

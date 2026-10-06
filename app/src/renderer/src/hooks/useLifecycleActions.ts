@@ -13,6 +13,8 @@ import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../sh
 import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
+/** 다른 요청의 확인 창이 떠 있는 동안 늦게 온 needs-confirm 을 버릴 때 알림(LIFE-516 fix2 R2-01ⓒ·D10) — 그 탭은 닫히지 않고 남는다. */
+export const CLOSE_DEFERRED_NOTICE = '다른 닫기 확인이 진행 중이라 탭을 닫지 않았습니다 — 그 창을 마친 뒤 다시 닫으세요'
 
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
@@ -45,8 +47,12 @@ export function useLifecycleActions(state: AppState | null): {
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | null>(null)
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
   const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
-  /** 확인 대기 중인 탭 닫기의 `onClosed` — 모달이 확인되면 그 결과로 부른다(state 에 함수를 싣지 않으려고 ref). */
-  const pendingOnClosed = useRef<((closed: string[]) => void) | null>(null)
+  /**
+   * 확인 창의 주인 — 창을 띄운 닫기 요청(요청마다 새 `token`)과 그 요청의 `onClosed`(state 에 함수를 싣지 않으려고 ref).
+   * LIFE-516 fix2 R2-01: 창·콜백을 요청 정체에 묶는다. 주인이 있는 동안 다른 요청의 needs-confirm 은 창을 바꾸지 않고 버리며(D10),
+   * 다른 요청의 완료는 이 창을 지우지 않는다.
+   */
+  const closeOwner = useRef<{ token: object; onClosed: ((closed: string[]) => void) | undefined } | null>(null)
   /** 확인으로 소비 중인 닫기 요청(LIFE-516 fix1 R1-01) — 같은 요청의 두 번째 확인을 막고, 취소가 비워 저장 뒤 늦은 닫기를 막는다. */
   const consumingClose = useRef<PendingClose | null>(null)
   const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
@@ -189,23 +195,39 @@ export function useLifecycleActions(state: AppState | null): {
     target: CloseTarget
     confirmed: boolean
     onClosed?: (closed: string[]) => void
+    /** 이 닫기 요청의 정체(fix2 R2-01) — 처음 요청 때 새로 만들고, 확인 뒤 닫기는 창 주인의 것을 그대로 쓴다. */
+    token: object
     /** 확인 창이 보여 준 실행 중 pane — 확인 뒤 main 은 이 밖의 실행 중만 다시 묻는다(fix1 R1-05). */
     confirmedPaneIds?: string[]
   }): Promise<void> => {
-    const { target, confirmed, onClosed } = input
+    const { target, confirmed, onClosed, token } = input
     setLifecycleNotice(null)
+    // 창을 이 요청이 가졌거나 아무도 안 가졌을 때만 창을 세운다. 다른 요청의 창이 떠 있으면 버린다 — 탭은 닫히지 않고 남는다(D10).
+    const showConfirm = (pending: PendingClose): void => {
+      if (closeOwner.current !== null && closeOwner.current.token !== token) {
+        setLifecycleNotice({ kind: 'info', message: CLOSE_DEFERRED_NOTICE })
+        return
+      }
+      closeOwner.current = { token, onClosed }
+      setPendingClose(pending)
+    }
+    // 완료는 자기 창만 지운다 — 확인이 필요 없어 바로 끝난 다른 요청이 떠 있는 창을 지우지 않게.
+    const release = (): void => {
+      if (closeOwner.current?.token !== token) return
+      closeOwner.current = null
+      setPendingClose(null)
+    }
     if (target.kind === 'tabs') {
       if (target.tabIds.length === 0) return
       const result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds ?? [] })
       if (result.closed.length > 0) onClosed?.(result.closed)
       if (result.outcome === 'needs-confirm') {
         // 확인 뒤 닫다가 새 실행 중을 만나 멈췄으면 닫힌 탭은 위에서 기록했고, 남은 탭만 다시 묻는다.
-        pendingOnClosed.current = onClosed ?? null
         const remaining = target.tabIds.filter((tabId) => !result.closed.includes(tabId))
-        setPendingClose({ target: { ...target, tabIds: remaining }, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
+        showConfirm({ target: { ...target, tabIds: remaining }, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
         return
       }
-      setPendingClose(null)
+      release()
       if (result.outcome === 'rejected') setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
       else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
       return
@@ -213,17 +235,17 @@ export function useLifecycleActions(state: AppState | null): {
     const result = await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
     switch (result.outcome) {
       case 'closed':
-        setPendingClose(null)
+        release()
         return
       case 'needs-confirm':
-        setPendingClose({ target, foreground: result.foreground, running: [] })
+        showConfirm({ target, foreground: result.foreground, running: [] })
         return
       case 'rejected':
-        setPendingClose(null)
+        release()
         setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
         return
       case 'error':
-        setPendingClose(null)
+        release()
         setLifecycleNotice({ kind: 'error', message: result.error })
         return
     }
@@ -411,11 +433,11 @@ export function useLifecycleActions(state: AppState | null): {
     closeTabs: ({ tabIds, alwaysConfirm, onClosed }) => {
       // 확인 모달이 떠 있는 동안 새 닫기 요청은 받지 않는다 — 모달은 한 번에 하나다(앞 요청의 onClosed 를 덮지 않게).
       if (pendingClose !== null) return
-      void closeTarget({ target: { kind: 'tabs', tabIds, alwaysConfirm }, confirmed: false, onClosed })
+      void closeTarget({ target: { kind: 'tabs', tabIds, alwaysConfirm }, confirmed: false, onClosed, token: {} })
     },
     renameRow: (input) => void renameRow(input),
     clearRowName: (tabId) => void clearRowName(tabId),
-    closeWorktree: (workspaceId) => void closeTarget({ target: { kind: 'workspace', workspaceId }, confirmed: false }),
+    closeWorktree: (workspaceId) => void closeTarget({ target: { kind: 'workspace', workspaceId }, confirmed: false, token: {} }),
     openWorktree: (repoRoot, worktree) => void openWorktree(repoRoot, worktree),
     openCreateWorktree: (repoRoot) => {
       setLifecycleNotice(null)
@@ -428,21 +450,22 @@ export function useLifecycleActions(state: AppState | null): {
   const dismissNotice = useCallback(() => setLifecycleNotice(null), [])
   const cancelPendingClose = useCallback(() => {
     // 취소 = 하나도 안 닫았다 — 다시 열기 기록도 없다.
-    pendingOnClosed.current = null
+    closeOwner.current = null
     consumingClose.current = null
     setPendingClose(null)
   }, [])
   const closeWorktreeModal = useCallback(() => setWorktreeModal(null), [])
   const confirmPendingClose = useCallback((input?: { before: () => Promise<void> }) => {
     if (pendingClose === null || consumingClose.current === pendingClose) return
+    const owner = closeOwner.current
+    if (owner === null) return
     const request = pendingClose
     consumingClose.current = request
+    // 콜백은 확인한 지금 잡는다(fix2 R2-01ⓐ) — 저장 뒤에 ref 를 다시 읽지 않는다.
     const close = (): void => {
       // 저장을 기다리는 동안 취소됐다 — 닫지 않는다.
       if (consumingClose.current !== request) return
-      const onClosed = pendingOnClosed.current ?? undefined
-      pendingOnClosed.current = null
-      void closeTarget({ target: request.target, confirmed: true, onClosed, confirmedPaneIds: request.running.map((pane) => pane.paneId) }).finally(() => {
+      void closeTarget({ target: request.target, confirmed: true, onClosed: owner.onClosed, token: owner.token, confirmedPaneIds: request.running.map((pane) => pane.paneId) }).finally(() => {
         if (consumingClose.current === request) consumingClose.current = null
       })
     }

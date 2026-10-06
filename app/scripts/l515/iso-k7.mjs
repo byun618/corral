@@ -76,15 +76,16 @@ try {
   handle = await launchCorral({ appRoot: path.resolve(args.app), workDir: work, port: Number(args.port), logDir: path.join(work, 'logs'), onSpawn: (entry) => owned.push(entry) })
   result.env = { PATH_head: handle.env.PATH.split(':').slice(0, 2), SHELL: handle.env.SHELL }
   const settingsFile = path.join(handle.paths.userData, 'settings.json')
-  const control = (request, timeout = 20_000) => rpc(handle.control, request, timeout)
-  const evaluate = async (fn, arg = null) => (await control({ cmd: 'eval', code: `(${fn.toString()})(${JSON.stringify(arg)})` }, 60_000)).result
+  // 자체 도우미는 인자 하나(객체) — fix1 R1-03. rpc(소켓 공용 lib)는 그대로.
+  const control = (request) => rpc(handle.control, request, 20_000)
+  const evaluate = async ({ fn, arg = null }) => (await rpc(handle.control, { cmd: 'eval', code: `(${fn.toString()})(${JSON.stringify(arg)})` }, 60_000)).result
   const logPath = path.join(handle.paths.userData, 'corral.ndjson')
   const logRows = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return null } }).filter(Boolean) : [])
-  const rowsSince = (n, tag) => logRows().slice(n).filter((row) => row.tag === tag)
-  const until = async (label, fn, timeout = 10_000) => {
+  const rowsSince = ({ from, tag }) => logRows().slice(from).filter((row) => row.tag === tag)
+  const until = async ({ label, probe, timeout = 10_000 }) => {
     const t0 = Date.now()
     for (;;) {
-      const value = await fn()
+      const value = await probe()
       if (value) return value
       if (Date.now() - t0 > timeout) throw new Error(`시간초과: ${label}`)
       await pause(150)
@@ -95,8 +96,8 @@ try {
     checks.require(`click ${selector}`, response.ok === true, { response })
     return response
   }
-  const key = (keyCode, modifiers = []) => control({ cmd: 'key', keyCode, modifiers })
-  const shot = async (name, selector) => {
+  const key = ({ keyCode, modifiers = [] }) => control({ cmd: 'key', keyCode, modifiers })
+  const shot = async ({ name, selector }) => {
     try {
       const response = await control({ cmd: 'shot', name: `l515-${name}`, selector })
       if (response.ok && response.file && fs.existsSync(response.file)) {
@@ -110,18 +111,18 @@ try {
 
   await seedCorralRepo(handle, fixture, { expectedWorktrees: 1 })
   const real = fs.realpathSync(fixture)
-  await evaluate((root) => window.corral.openWorktree({ repoRoot: root, path: root, isLinked: false }), real)
+  await evaluate({ fn: (root) => window.corral.openWorktree({ repoRoot: root, path: root, isLinked: false }), arg: real })
   const workspaceOf = async () => {
     const state = (await control({ cmd: 'state' })).state
     for (const repo of state.repos) for (const row of repo.worktrees) if (row.path === real) return row.workspace ?? null
     return null
   }
-  const ws = await until('fixture workspace', workspaceOf, 30_000)
-  const seedTab = await evaluate((input) => window.corral.createRow(input), { workspaceId: ws.workspaceId, kind: 'shell' })
+  const ws = await until({ label: 'fixture workspace', probe: workspaceOf, timeout: 30_000 })
+  const seedTab = await evaluate({ fn: (input) => window.corral.createRow(input), arg: { workspaceId: ws.workspaceId, kind: 'shell' } })
   await click(`[data-worktree="${real}"] [data-worktree-card-surface]`)
   await pause(800)
   await click(`[data-main-tab="${seedTab.tabId}"]`)
-  await until('seed pane box', () => evaluate((id) => document.querySelector(`[data-term-pane-box="${id}"]`) !== null, seedTab.paneId))
+  await until({ label: 'seed pane box', probe: () => evaluate({ fn: (id) => document.querySelector(`[data-term-pane-box="${id}"]`) !== null, arg: seedTab.paneId }) })
   await pause(800)
   result.seed = { workspaceId: ws.workspaceId, tab: seedTab }
   const initialTabs = ((await workspaceOf())?.tabs ?? []).map((tab) => tab.tabId)
@@ -131,8 +132,8 @@ try {
   const menu = await control({ cmd: 'menu-dump' })
   fs.writeFileSync(path.join(out, 'menu-dump.json'), `${JSON.stringify(menu, null, 1)}\n`)
   const flat = []
-  const walk = (items, trail) => { for (const item of items ?? []) { flat.push({ path: [...trail, item.label].join(' › '), role: item.role, accelerator: item.accelerator, roleAccelerator: item.roleAccelerator }); walk(item.items, [...trail, item.label]) } }
-  for (const top of menu.menu ?? []) walk(top.items, [top.label])
+  const walk = ({ items, trail }) => { for (const item of items ?? []) { flat.push({ path: [...trail, item.label].join(' › '), role: item.role, accelerator: item.accelerator, roleAccelerator: item.roleAccelerator }); walk({ items: item.items, trail: [...trail, item.label] }) } }
+  for (const top of menu.menu ?? []) walk({ items: top.items, trail: [top.label] })
   const norm = (value) => (value ?? '').toLowerCase().replaceAll('cmdorctrl', 'command').replaceAll('cmd', 'command').replaceAll('option', 'alt').replaceAll(' ', '')
   const optT = flat.filter((row) => [row.accelerator, row.roleAccelerator].some((value) => { const n = norm(value); return n.includes('command') && n.includes('alt') && /\+t$/.test(n) && !n.includes('shift') && !n.includes('control') }))
   result.menu = { items: flat.length, withAccelerator: flat.filter((row) => row.accelerator || row.roleAccelerator).length, cmdOptT: optT }
@@ -141,7 +142,7 @@ try {
   save()
 
   // ── 단계 도우미 ──────────────────────────────────────────────────────────
-  const settingsState = () => evaluate(() => ({
+  const settingsState = () => evaluate({ fn: () => ({
     open: document.querySelector('[data-settings-page]') !== null,
     section: document.querySelector('[data-settings-section]')?.getAttribute('data-settings-section') ?? null,
     groups: [...document.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent),
@@ -151,28 +152,28 @@ try {
     sectionDescription: document.querySelector('[data-settings-section-header] p')?.textContent ?? null,
     subsection: document.querySelector('[data-settings-subsection-header] h3')?.textContent ?? null,
     subsectionDescription: document.querySelector('[data-settings-subsection-header] p')?.textContent ?? null,
-  }))
-  const chooseDefault = async (value, name) => {
+  }) })
+  const chooseDefault = async ({ value, name }) => {
     await click('[data-settings-open]')
-    await until('settings open', async () => (await settingsState()).open)
+    await until({ label: 'settings open', probe: async () => (await settingsState()).open })
     await click('[data-settings-nav-item="agents"]')
-    await until('agents section', async () => (await settingsState()).section === 'agents')
+    await until({ label: 'agents section', probe: async () => (await settingsState()).section === 'agents' })
     const before = await settingsState()
     const logBefore = logRows().length
     await click(`[data-default-agent="${value}"]`)
-    await until(`pill ${value}`, async () => (await settingsState()).pills.find((pill) => pill.value === value)?.pressed === 'true', 5_000)
+    await until({ label: `pill ${value}`, probe: async () => (await settingsState()).pills.find((pill) => pill.value === value)?.pressed === 'true', timeout: 5_000 })
     await pause(300)
     const after = await settingsState()
-    const writes = rowsSince(logBefore, 'settings.changed')
+    const writes = rowsSince({ from: logBefore, tag: 'settings.changed' })
     // 이미 선택된 pill 을 다시 누른다 — 쓰기 0(K2ⓒ).
     const logAgain = logRows().length
     await click(`[data-default-agent="${value}"]`)
     await pause(500)
-    const writesAgain = rowsSince(logAgain, 'settings.changed')
+    const writesAgain = rowsSince({ from: logAgain, tag: 'settings.changed' })
     const fileValue = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')).defaultAgent ?? '(칸 없음)' : '(파일 없음)'
-    const screenshot = await shot(`settings-${name}`)
+    const screenshot = await shot({ name: `settings-${name}` })
     await click('[data-settings-back]')
-    await until('settings closed', async () => !(await settingsState()).open)
+    await until({ label: 'settings closed', probe: async () => !(await settingsState()).open })
     await pause(500)
     const step = { before, after, writes, writesAgain, fileValue, settingsSha: sha(settingsFile), screenshot }
     result.steps[`settings-${name}`] = step
@@ -180,85 +181,85 @@ try {
     return step
   }
   const tabsOf = async () => (await workspaceOf())?.tabs ?? []
-  const domTabs = () => evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((el) => ({ tabId: el.getAttribute('data-main-tab'), active: el.hasAttribute('data-active') || el.getAttribute('aria-selected') === 'true', group: el.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null })))
+  const domTabs = () => evaluate({ fn: () => [...document.querySelectorAll('[data-main-tab]')].map((el) => ({ tabId: el.getAttribute('data-main-tab'), active: el.hasAttribute('data-active') || el.getAttribute('aria-selected') === 'true', group: el.closest('[data-tab-group]')?.getAttribute('data-tab-group') ?? null })) })
   const pressNewAgent = async (name) => {
     const tabsBefore = (await tabsOf()).map((tab) => tab.tabId)
     const logBefore = logRows().length
-    const response = await key('t', ['meta', 'alt'])
-    const newTab = await until(`${name} new tab`, async () => (await tabsOf()).find((tab) => !tabsBefore.includes(tab.tabId)) ?? null, 15_000)
+    const response = await key({ keyCode: 't', modifiers: ['meta', 'alt'] })
+    const newTab = await until({ label: `${name} new tab`, probe: async () => (await tabsOf()).find((tab) => !tabsBefore.includes(tab.tabId)) ?? null, timeout: 15_000 })
     const paneId = newTab.panes[0]?.paneId ?? null
     await pause(2500)
-    const started = rowsSince(logBefore, 'lifecycle.agent_started')
-    const created = rowsSince(logBefore, 'lifecycle.tab_created')
+    const started = rowsSince({ from: logBefore, tag: 'lifecycle.agent_started' })
+    const created = rowsSince({ from: logBefore, tag: 'lifecycle.tab_created' })
     let processInfo = null
     let screen = null
     try { processInfo = await backendRpc(handle, 'pane.process_info', { pane_id: paneId }) } catch (error) { processInfo = { error: String(error) } }
     try { screen = (await backendRpc(handle, 'pane.read', { pane_id: paneId, source: 'visible', format: 'text', strip_ansi: true })).read?.text ?? null } catch (error) { screen = `오류: ${error}` }
     const dom = await domTabs()
-    const focus = await evaluate(() => ({ active: document.activeElement?.className ?? null, inTerm: document.activeElement?.closest?.('[data-term-pane-box]')?.getAttribute('data-term-pane-box') ?? null }))
+    const focus = await evaluate({ fn: () => ({ active: document.activeElement?.className ?? null, inTerm: document.activeElement?.closest?.('[data-term-pane-box]')?.getAttribute('data-term-pane-box') ?? null }) })
     const fakeLine = (screen ?? '').split('\n').find((line) => line.includes('L515-FAKE-AGENT')) ?? null
     const argv = JSON.stringify(processInfo?.process_info?.foreground_processes ?? processInfo)
-    const step = { key: response, tabsBefore, newTab: { tabId: newTab.tabId, paneId, agent: newTab.panes[0]?.agent ?? null }, created, started, fakeLine, foregroundArgv: argv, dom, focus, screenshot: await shot(`newagent-${name}`) }
+    const step = { key: response, tabsBefore, newTab: { tabId: newTab.tabId, paneId, agent: newTab.panes[0]?.agent ?? null }, created, started, fakeLine, foregroundArgv: argv, dom, focus, screenshot: await shot({ name: `newagent-${name}` }) }
     result.steps[`newagent-${name}`] = step
     save()
     return step
   }
   const closeTab = async (tabId) => {
-    let closed = await evaluate((id) => window.corral.closeTabs({ tabIds: [id], confirmed: true }), tabId)
+    let closed = await evaluate({ fn: (id) => window.corral.closeTabs({ tabIds: [id], confirmed: true }), arg: tabId })
     // 가짜 에이전트가 전경에 있으면 확인이 필요하다 — 그 pane 들을 확인한 것으로 다시 보낸다(정리 걸음, 판정 아님).
-    if (closed?.outcome === 'needs-confirm') closed = { first: closed, second: await evaluate((input) => window.corral.closeTabs(input), { tabIds: [tabId], confirmed: true, confirmedPaneIds: closed.running.map((row) => row.paneId) }) }
-    await until(`tab ${tabId} closed`, async () => !(await tabsOf()).some((tab) => tab.tabId === tabId), 15_000).catch(() => null)
+    if (closed?.outcome === 'needs-confirm') closed = { first: closed, second: await evaluate({ fn: (input) => window.corral.closeTabs(input), arg: { tabIds: [tabId], confirmed: true, confirmedPaneIds: closed.running.map((row) => row.paneId) } }) }
+    await until({ label: `tab ${tabId} closed`, probe: async () => !(await tabsOf()).some((tab) => tab.tabId === tabId), timeout: 15_000 }).catch(() => null)
     return closed
   }
-  const menuState = () => evaluate(() => {
+  const menuState = () => evaluate({ fn: () => {
     const root = document.querySelector('[data-tab-create-menu]')
     if (!root) return null
     return {
       items: [...root.querySelectorAll('[data-tab-create-item]')].map((el) => ({ id: el.getAttribute('data-tab-create-item'), text: el.textContent, chip: el.querySelector('[data-tab-create-default-agent-shortcut]')?.textContent ?? null, color: getComputedStyle(el).color, cls: el.className })),
     }
-  })
+  } })
   const openPlusMenu = async () => {
-    const groupId = await evaluate(() => document.querySelector('[data-main-tabbar-add]')?.getAttribute('data-main-tabbar-add') ?? null)
+    const groupId = await evaluate({ fn: () => document.querySelector('[data-main-tabbar-add]')?.getAttribute('data-main-tabbar-add') ?? null })
     await click(`[data-main-tabbar-add="${groupId}"]`)
-    return until('+ menu', menuState, 5_000)
+    return until({ label: '+ menu', probe: menuState, timeout: 5_000 })
   }
   const escapeMenu = async () => {
-    await key('Escape')
-    await until('+ menu closed', async () => (await menuState()) === null, 5_000)
+    await key({ keyCode: 'Escape' })
+    await until({ label: '+ menu closed', probe: async () => (await menuState()) === null, timeout: 5_000 })
   }
 
   // ── 시작 상태(자동) — 섹션·메뉴 캡처 (K6ⓑ 상태 1) ───────────────────────────
   const plusAuto = await openPlusMenu()
-  result.steps['menu-auto'] = { ...plusAuto, screenshot: await shot('menu-auto', '[data-tab-create-menu]') }
+  result.steps['menu-auto'] = { ...plusAuto, screenshot: await shot({ name: 'menu-auto', selector: '[data-tab-create-menu]' }) }
   checks.require('k4-auto-order', JSON.stringify(plusAuto.items.map((item) => item.id)) === JSON.stringify(['new-terminal', 'agent:claude', 'agent:codex', 'agent:grok', 'agent-settings']) && plusAuto.items.every((item) => item.chip === null), plusAuto)
   await escapeMenu()
 
   // ── K7ⓐ Codex → ⌘⌥T → codex 종류 탭 → + 메뉴 Codex 맨 앞·칩 ─────────────────
-  const sCodex = await chooseDefault('codex', 'codex')
+  const sCodex = await chooseDefault({ value: 'codex', name: 'codex' })
   checks.require('k7a-settings-codex', sCodex.fileValue === 'codex' && sCodex.writes.length === 1 && sCodex.writesAgain.length === 0, { fileValue: sCodex.fileValue, writes: sCodex.writes.length, writesAgain: sCodex.writesAgain.length })
   checks.require('k2-section', sCodex.before.groups[0] === 'AI 기능' && sCodex.before.heading === '에이전트' && sCodex.before.subsection === '기본 Agent' && JSON.stringify(sCodex.before.pills.map((pill) => pill.value)) === JSON.stringify(['auto', 'blank', 'claude', 'codex', 'grok']), sCodex.before)
   const nCodex = await pressNewAgent('codex')
   checks.require('k7a-codex-kind', nCodex.started.length === 1 && nCodex.started[0].kind === 'codex' && (nCodex.fakeLine ?? '').includes('L515-FAKE-AGENT codex'), { started: nCodex.started, fakeLine: nCodex.fakeLine, argv: nCodex.foregroundArgv })
   checks.require('k3c-new-tab-active', nCodex.dom.some((tab) => tab.tabId === nCodex.newTab.tabId && tab.active), { dom: nCodex.dom, newTab: nCodex.newTab })
   const plusCodex = await openPlusMenu()
-  result.steps['menu-codex'] = { ...plusCodex, screenshot: await shot('menu-codex', '[data-tab-create-menu]') }
+  result.steps['menu-codex'] = { ...plusCodex, screenshot: await shot({ name: 'menu-codex', selector: '[data-tab-create-menu]' }) }
   checks.require('k7a-menu-codex-first-chip', plusCodex.items[1]?.id === 'agent:codex' && plusCodex.items[1]?.chip === '⌘⌥T' && plusCodex.items.filter((item) => item.chip !== null).length === 1, plusCodex)
   await escapeMenu()
   result.steps['close-codex'] = await closeTab(nCodex.newTab.tabId)
 
   // ── K7ⓑ agent 없음 → ⌘⌥T → 셸 탭 ───────────────────────────────────────
-  const sBlank = await chooseDefault('blank', 'blank')
+  const sBlank = await chooseDefault({ value: 'blank', name: 'blank' })
   checks.require('k7b-settings-blank', sBlank.fileValue === 'blank' && sBlank.writes.length === 1 && sBlank.writesAgain.length === 0, { fileValue: sBlank.fileValue })
   const nBlank = await pressNewAgent('blank')
   checks.require('k7b-shell-tab', nBlank.started.length === 0 && nBlank.created.length === 1 && nBlank.fakeLine === null, { started: nBlank.started, created: nBlank.created, fakeLine: nBlank.fakeLine })
   const plusBlank = await openPlusMenu()
-  result.steps['menu-blank'] = { ...plusBlank, screenshot: await shot('menu-blank', '[data-tab-create-menu]') }
+  result.steps['menu-blank'] = { ...plusBlank, screenshot: await shot({ name: 'menu-blank', selector: '[data-tab-create-menu]' }) }
   checks.require('k4-blank-order-nochip', plusBlank.items[1]?.id === 'agent:claude' && plusBlank.items.every((item) => item.chip === null), plusBlank)
   await escapeMenu()
   result.steps['close-blank'] = await closeTab(nBlank.newTab.tabId)
 
   // ── K7ⓒ 자동 → ⌘⌥T → claude 종류 탭 ─────────────────────────────────────
-  const sAuto = await chooseDefault('auto', 'auto')
+  const sAuto = await chooseDefault({ value: 'auto', name: 'auto' })
   checks.require('k7c-settings-auto', sAuto.fileValue === 'auto' && sAuto.writes.length === 1, { fileValue: sAuto.fileValue })
   const nAuto = await pressNewAgent('auto')
   checks.require('k7c-claude-kind', nAuto.started.length === 1 && nAuto.started[0].kind === 'claude' && (nAuto.fakeLine ?? '').includes('L515-FAKE-AGENT claude'), { started: nAuto.started, fakeLine: nAuto.fakeLine })
@@ -267,27 +268,27 @@ try {
   // ── K7ⓓ 「Agent 설정…」 → 에이전트 섹션 (설정이 닫힌 상태 · 다른 섹션을 보다 닫은 상태) ───
   await openPlusMenu()
   await click('[data-tab-create-item="agent-settings"]')
-  const deep1 = await until('deeplink 1', async () => { const s = await settingsState(); return s.open ? s : null }, 5_000)
+  const deep1 = await until({ label: 'deeplink 1', probe: async () => { const s = await settingsState(); return s.open ? s : null }, timeout: 5_000 })
   const menuAfter1 = await menuState()
-  result.steps['deeplink-closed'] = { settings: deep1, menuAfter: menuAfter1, screenshot: await shot('deeplink-agents') }
+  result.steps['deeplink-closed'] = { settings: deep1, menuAfter: menuAfter1, screenshot: await shot({ name: 'deeplink-agents' }) }
   checks.require('k7d-deeplink-from-closed', deep1.section === 'agents' && deep1.nav.find((row) => row.id === 'agents')?.current === 'page' && menuAfter1 === null, deep1)
   await click('[data-settings-nav-item="shortcuts"]')
-  await until('shortcuts', async () => (await settingsState()).section === 'shortcuts')
+  await until({ label: 'shortcuts', probe: async () => (await settingsState()).section === 'shortcuts' })
   await click('[data-settings-back]')
-  await until('settings closed 2', async () => !(await settingsState()).open)
+  await until({ label: 'settings closed 2', probe: async () => !(await settingsState()).open })
   // 키보드 걸음은 창이 앞에 있어야 한다 — 뒤 창에서는 rAF 가 멈춰 메뉴가 입력창에 포커스를 못 준다(사람이 키를 치는 창은 늘 앞이다).
   result.steps['window-show'] = await control({ cmd: 'window-visibility', action: 'show' })
   await pause(500)
   await openPlusMenu()
   // 키보드 — ↓ 로 정적 항목을 돌아 「Agent 설정…」 에서 Enter(K5ⓒ).
-  const focusProbe = () => evaluate(() => ({ input: document.activeElement?.getAttribute('data-tab-create-input') ?? null, tag: document.activeElement?.tagName ?? null, cls: String(document.activeElement?.className ?? ''), menu: document.querySelector('[data-tab-create-menu]') !== null, hasFocus: document.hasFocus() }))
-  const input = await until('menu input focus', async () => (await focusProbe()).input, 5_000).catch(async (error) => { result.steps['deeplink-focus-debug'] = await focusProbe(); save(); throw error })
+  const focusProbe = () => evaluate({ fn: () => ({ input: document.activeElement?.getAttribute('data-tab-create-input') ?? null, tag: document.activeElement?.tagName ?? null, cls: String(document.activeElement?.className ?? ''), menu: document.querySelector('[data-tab-create-menu]') !== null, hasFocus: document.hasFocus() }) })
+  const input = await until({ label: 'menu input focus', probe: async () => (await focusProbe()).input, timeout: 5_000 }).catch(async (error) => { result.steps['deeplink-focus-debug'] = await focusProbe(); save(); throw error })
   const trail = []
   for (let i = 0; i < 5; i += 1) {
-    trail.push(await key('Down'))
-    trail.push(await evaluate(() => document.activeElement?.getAttribute('data-tab-create-item') ?? document.activeElement?.tagName ?? null))
+    trail.push(await key({ keyCode: 'Down' }))
+    trail.push(await evaluate({ fn: () => document.activeElement?.getAttribute('data-tab-create-item') ?? document.activeElement?.tagName ?? null }))
   }
-  const focused = await evaluate(() => document.activeElement?.getAttribute('data-tab-create-item') ?? null)
+  const focused = await evaluate({ fn: () => document.activeElement?.getAttribute('data-tab-create-item') ?? null })
   result.steps['deeplink-after-other-section'] = { inputFocused: input, trail, focusedBeforeEnter: focused }
   save()
   // 실제 Enter 한 번 = keyDown → char('\r') → keyUp. Blink 는 버튼을 keypress(char)에서 누른다 — keyDown·keyUp 만으로는 안 눌린다.
@@ -296,16 +297,16 @@ try {
     await control({ cmd: 'type', text: '\r' }),
     await control({ cmd: 'key', keyCode: 'Return', type: 'keyUp' }),
   ]
-  const deep2 = await until('deeplink 2', async () => { const s = await settingsState(); return s.open ? s : null }, 5_000)
+  const deep2 = await until({ label: 'deeplink 2', probe: async () => { const s = await settingsState(); return s.open ? s : null }, timeout: 5_000 })
   result.steps['deeplink-after-other-section'].settings = deep2
   checks.require('k7d-deeplink-keyboard-after-other', focused === 'agent-settings' && deep2.section === 'agents', { focused, section: deep2.section })
   await click('[data-settings-back]')
-  await until('settings closed 3', async () => !(await settingsState()).open)
+  await until({ label: 'settings closed 3', probe: async () => !(await settingsState()).open })
 
   // 상태별 캡처(K6ⓑ) — 명시 1개(Grok)의 설정 섹션·메뉴.
-  const sGrok = await chooseDefault('grok', 'grok')
+  const sGrok = await chooseDefault({ value: 'grok', name: 'grok' })
   const plusGrok = await openPlusMenu()
-  result.steps['menu-grok'] = { ...plusGrok, screenshot: await shot('menu-grok', '[data-tab-create-menu]') }
+  result.steps['menu-grok'] = { ...plusGrok, screenshot: await shot({ name: 'menu-grok', selector: '[data-tab-create-menu]' }) }
   checks.require('k4-grok-first-chip', plusGrok.items[1]?.id === 'agent:grok' && plusGrok.items[1]?.chip === '⌘⌥T', plusGrok)
   await escapeMenu()
   result.steps['settings-grok-file'] = sGrok.fileValue

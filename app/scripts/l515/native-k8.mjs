@@ -34,9 +34,10 @@ const SETTINGS = path.join(UD, 'settings.json')
 const NDJSON = path.join(UD, 'corral.ndjson')
 const HERDR_SOCK = path.join(HOME, '.config/herdr/herdr.sock')
 const ctl = path.join(root, 'ctl.sock')
-const control = (request, timeout = 20_000) => rpc(ctl, request, timeout)
-const evaluate = async (fn, arg = null) => (await control({ cmd: 'eval', code: `(${fn.toString()})(${JSON.stringify(arg)})` }, 60_000)).result
-const herdr = async (method, params) => {
+// 자체 도우미는 인자 하나(객체) — fix1 R1-03. rpc(소켓 공용 lib)는 그대로.
+const control = (request) => rpc(ctl, request, 20_000)
+const evaluate = async ({ fn, arg = null }) => (await rpc(ctl, { cmd: 'eval', code: `(${fn.toString()})(${JSON.stringify(arg)})` }, 60_000)).result
+const herdr = async ({ method, params }) => {
   const response = await rpc(HERDR_SOCK, { id: `l515-${Date.now()}`, method, params })
   if (response.error) throw new Error(`${method}: ${JSON.stringify(response.error)}`)
   return response.result
@@ -51,7 +52,7 @@ result.requirements = checks.results
 const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null)
 // corral.ndjson 은 수백 MB 다 — 기준 시점의 길이부터만 읽는다.
 const ndjsonSize = () => fs.statSync(NDJSON).size
-const rowsFrom = (offset, tag) => {
+const rowsFrom = ({ offset, tag }) => {
   const size = ndjsonSize()
   if (size <= offset) return []
   const fd = fs.openSync(NDJSON, 'r')
@@ -60,10 +61,10 @@ const rowsFrom = (offset, tag) => {
   fs.closeSync(fd)
   return buffer.toString('utf8').split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return null } }).filter((row) => row && row.tag === tag)
 }
-const until = async (label, fn, timeout = 10_000) => {
+const until = async ({ label, probe, timeout = 10_000 }) => {
   const t0 = Date.now()
   for (;;) {
-    const value = await fn().catch(() => false)
+    const value = await probe().catch(() => false)
     if (value) return value
     if (Date.now() - t0 > timeout) throw new Error(`시간초과: ${label}`)
     await pause(150)
@@ -74,8 +75,8 @@ const click = async (selector) => {
   checks.require(`click ${selector}`, response.ok === true, { response })
   return response
 }
-const key = (keyCode, modifiers = []) => control({ cmd: 'key', keyCode, modifiers })
-const shot = async (name, selector) => {
+const key = ({ keyCode, modifiers = [] }) => control({ cmd: 'key', keyCode, modifiers })
+const shot = async ({ name, selector }) => {
   try {
     const response = await control({ cmd: 'shot', name: `l515n-${name}`, selector })
     if (response.ok && response.file && fs.existsSync(response.file)) {
@@ -113,18 +114,18 @@ try {
   result.fixture = real
   await control({ cmd: 'window-visibility', action: 'show' })
   const added = await control({ cmd: 'add-repo', root: real })
-  await until('fixture 카드', async () => ((await control({ cmd: 'query', selector: `[data-worktree="${real}"]` })).found ?? []).length > 0, 30_000)
+  await until({ label: 'fixture 카드', probe: async () => ((await control({ cmd: 'query', selector: `[data-worktree="${real}"]` })).found ?? []).length > 0, timeout: 30_000 })
   const fixtureWorkspace = async () => {
     const res = await control({ cmd: 'state' })
     for (const repo of res.state.repos) for (const row of repo.worktrees) if (row.path === real) return row.workspace ?? null
     return null
   }
   await click(`[data-worktree="${real}"] [data-worktree-card-surface]`)
-  const ws = await until('fixture 워크스페이스 열림', async () => ((await fixtureWorkspace())?.tabs.length ?? 0) > 0 && (await fixtureWorkspace()), 30_000)
-  const fixtureGroup = async () => evaluate((ids) => {
+  const ws = await until({ label: 'fixture 워크스페이스 열림', probe: async () => ((await fixtureWorkspace())?.tabs.length ?? 0) > 0 && (await fixtureWorkspace()), timeout: 30_000 })
+  const fixtureGroup = async () => evaluate({ fn: (ids) => {
     const groups = [...document.querySelectorAll('[data-tab-group]')]
     return groups.map((group) => ({ id: group.getAttribute('data-tab-group'), tabs: [...group.querySelectorAll('[data-main-tab]')].map((el) => el.getAttribute('data-main-tab')), foreign: [...group.querySelectorAll('[data-main-tab]')].filter((el) => !ids.includes(el.getAttribute('data-main-tab'))).length }))
-  }, ((await fixtureWorkspace())?.tabs ?? []).map((tab) => tab.tabId))
+  }, arg: ((await fixtureWorkspace())?.tabs ?? []).map((tab) => tab.tabId) })
   let cardClicks = 1
   for (;;) {
     const groups = await fixtureGroup()
@@ -140,88 +141,88 @@ try {
   save()
 
   // ── 도우미 ─────────────────────────────────────────────────────────────
-  const settingsState = () => evaluate(() => ({
+  const settingsState = () => evaluate({ fn: () => ({
     open: document.querySelector('[data-settings-page]') !== null,
     section: document.querySelector('[data-settings-section]')?.getAttribute('data-settings-section') ?? null,
     groups: [...document.querySelectorAll('[data-settings-group-title]')].map((el) => el.textContent),
     nav: [...document.querySelectorAll('[data-settings-nav-item]')].map((el) => ({ id: el.getAttribute('data-settings-nav-item'), current: el.getAttribute('aria-current') })),
     pills: [...document.querySelectorAll('[data-default-agent]')].map((el) => ({ value: el.getAttribute('data-default-agent'), text: el.textContent, pressed: el.getAttribute('aria-pressed') })),
-  }))
+  }) })
   const fileAgent = () => readJson(SETTINGS)?.defaultAgent ?? '(칸 없음)'
-  const chooseDefault = async (value, name) => {
+  const chooseDefault = async ({ value, name }) => {
     await click('[data-settings-open]')
-    await until('settings open', async () => (await settingsState()).open)
+    await until({ label: 'settings open', probe: async () => (await settingsState()).open })
     await click('[data-settings-nav-item="agents"]')
-    await until('agents section', async () => (await settingsState()).section === 'agents')
+    await until({ label: 'agents section', probe: async () => (await settingsState()).section === 'agents' })
     const before = await settingsState()
     const offset = ndjsonSize()
     await click(`[data-default-agent="${value}"]`)
-    await until(`pill ${value}`, async () => (await settingsState()).pills.find((pill) => pill.value === value)?.pressed === 'true', 5_000)
+    await until({ label: `pill ${value}`, probe: async () => (await settingsState()).pills.find((pill) => pill.value === value)?.pressed === 'true', timeout: 5_000 })
     await pause(400)
-    const writes = rowsFrom(offset, 'settings.changed')
+    const writes = rowsFrom({ offset, tag: 'settings.changed' })
     const offsetAgain = ndjsonSize()
     await click(`[data-default-agent="${value}"]`)
     await pause(600)
-    const writesAgain = rowsFrom(offsetAgain, 'settings.changed')
+    const writesAgain = rowsFrom({ offset: offsetAgain, tag: 'settings.changed' })
     const after = await settingsState()
-    const step = { before, after, writes, writesAgain, fileValue: fileAgent(), screenshot: await shot(`settings-${name}`, '[data-settings-page]') }
+    const step = { before, after, writes, writesAgain, fileValue: fileAgent(), screenshot: await shot({ name: `settings-${name}`, selector: '[data-settings-page]' }) }
     await click('[data-settings-back]')
-    await until('settings closed', async () => !(await settingsState()).open)
+    await until({ label: 'settings closed', probe: async () => !(await settingsState()).open })
     await pause(600)
     result.steps[`settings-${name}`] = step
     save()
     return step
   }
   const tabsNow = async () => (await fixtureWorkspace())?.tabs ?? []
-  const domTabs = () => evaluate(() => [...document.querySelectorAll('[data-main-tab]')].map((el) => ({ tabId: el.getAttribute('data-main-tab'), active: el.hasAttribute('data-active') })))
+  const domTabs = () => evaluate({ fn: () => [...document.querySelectorAll('[data-main-tab]')].map((el) => ({ tabId: el.getAttribute('data-main-tab'), active: el.hasAttribute('data-active') })) })
   const pressNewAgent = async (name) => {
     const before = (await tabsNow()).map((tab) => tab.tabId)
     const offset = ndjsonSize()
-    const response = await key('t', ['meta', 'alt'])
-    const tab = await until(`${name} 새 탭`, async () => (await tabsNow()).find((row) => !before.includes(row.tabId)) ?? null, 20_000)
+    const response = await key({ keyCode: 't', modifiers: ['meta', 'alt'] })
+    const tab = await until({ label: `${name} 새 탭`, probe: async () => (await tabsNow()).find((row) => !before.includes(row.tabId)) ?? null, timeout: 20_000 })
     const paneId = tab.panes[0]?.paneId ?? null
     return { response, before, tab, paneId, offset }
   }
-  const menuState = () => evaluate(() => {
+  const menuState = () => evaluate({ fn: () => {
     const rootEl = document.querySelector('[data-tab-create-menu]')
     if (!rootEl) return null
     return { items: [...rootEl.querySelectorAll('[data-tab-create-item]')].map((el) => ({ id: el.getAttribute('data-tab-create-item'), text: el.textContent, chip: el.querySelector('[data-tab-create-default-agent-shortcut]')?.textContent ?? null })) }
-  })
-  const closeActiveTab = async (tabId, label) => {
+  } })
+  const closeActiveTab = async ({ tabId, label }) => {
     const steps = []
-    steps.push({ key: await key('w', ['meta']) })
-    const confirm = await until(`${label} 닫기 확인`, async () => ((await control({ cmd: 'query', selector: '[data-close-confirm-ok]' })).found ?? []).length > 0 || !(await tabsNow()).some((row) => row.tabId === tabId), 8_000).catch(() => false)
+    steps.push({ key: await key({ keyCode: 'w', modifiers: ['meta'] }) })
+    const confirm = await until({ label: `${label} 닫기 확인`, probe: async () => ((await control({ cmd: 'query', selector: '[data-close-confirm-ok]' })).found ?? []).length > 0 || !(await tabsNow()).some((row) => row.tabId === tabId), timeout: 8_000 }).catch(() => false)
     if (confirm && ((await control({ cmd: 'query', selector: '[data-close-confirm-ok]' })).found ?? []).length > 0) steps.push({ confirm: await click('[data-close-confirm-ok]') })
-    const closed = await until(`${label} 닫힘`, async () => !(await tabsNow()).some((row) => row.tabId === tabId), 15_000).then(() => true, () => false)
+    const closed = await until({ label: `${label} 닫힘`, probe: async () => !(await tabsNow()).some((row) => row.tabId === tabId), timeout: 15_000 }).then(() => true, () => false)
     return { steps, closed }
   }
 
   // ── ⓐ 「Grok」 pill ─────────────────────────────────────────────────────
-  const sGrok = await chooseDefault('grok', 'grok')
+  const sGrok = await chooseDefault({ value: 'grok', name: 'grok' })
   checks.require('k8a-settings-grok', sGrok.fileValue === 'grok' && sGrok.writes.length === 1 && sGrok.writesAgain.length === 0 && sGrok.before.groups[0] === 'AI 기능', { fileValue: sGrok.fileValue, writes: sGrok.writes.length, writesAgain: sGrok.writesAgain.length, groups: sGrok.before.groups })
 
   // ── ⓑ ⌘⌥T → grok 탭 ────────────────────────────────────────────────────
   const nGrok = await pressNewAgent('grok')
-  const agentSeen = await until('grok 감지(pane.agent)', async () => { const row = (await tabsNow()).find((t) => t.tabId === nGrok.tab.tabId); return row?.panes[0]?.agent === 'grok' ? row.panes[0] : null }, 45_000).catch(() => null)
+  const agentSeen = await until({ label: 'grok 감지(pane.agent)', probe: async () => { const row = (await tabsNow()).find((t) => t.tabId === nGrok.tab.tabId); return row?.panes[0]?.agent === 'grok' ? row.panes[0] : null }, timeout: 45_000 }).catch(() => null)
   await pause(1500)
-  const started = rowsFrom(nGrok.offset, 'lifecycle.agent_started')
+  const started = rowsFrom({ offset: nGrok.offset, tag: 'lifecycle.agent_started' })
   let processInfo = null
   let screen = null
-  try { processInfo = await herdr('pane.process_info', { pane_id: nGrok.paneId }) } catch (error) { processInfo = { error: String(error) } }
-  try { screen = (await herdr('pane.read', { pane_id: nGrok.paneId, source: 'visible', format: 'text', strip_ansi: true })).read?.text ?? null } catch (error) { screen = `오류: ${error}` }
+  try { processInfo = await herdr({ method: 'pane.process_info', params: { pane_id: nGrok.paneId } }) } catch (error) { processInfo = { error: String(error) } }
+  try { screen = (await herdr({ method: 'pane.read', params: { pane_id: nGrok.paneId, source: 'visible', format: 'text', strip_ansi: true } })).read?.text ?? null } catch (error) { screen = `오류: ${error}` }
   const foreground = (processInfo?.process_info?.foreground_processes ?? []).map((row) => ({ pid: row.pid, name: row.name, cmdline: maskEmail(row.cmdline) }))
   const screenMasked = maskEmail(screen)
   fs.writeFileSync(path.join(rawd, 'grok-screen.txt'), `${screenMasked}\n`)
   const dom = await domTabs()
   const groupsAfter = await fixtureGroup()
-  const grokStep = { key: nGrok.response, tab: { tabId: nGrok.tab.tabId, paneId: nGrok.paneId }, agentSeen: agentSeen?.agent ?? null, started, foreground, trustPrompt: /trust/i.test(screen ?? ''), dom, groupsAfter, screenshot: await shot('grok-area', `[data-tab-group="${groupsAfter.find((group) => group.tabs.includes(nGrok.tab.tabId))?.id ?? ''}"]`) }
+  const grokStep = { key: nGrok.response, tab: { tabId: nGrok.tab.tabId, paneId: nGrok.paneId }, agentSeen: agentSeen?.agent ?? null, started, foreground, trustPrompt: /trust/i.test(screen ?? ''), dom, groupsAfter, screenshot: await shot({ name: 'grok-area', selector: `[data-tab-group="${groupsAfter.find((group) => group.tabs.includes(nGrok.tab.tabId))?.id ?? ''}"]` }) }
   result.steps['newagent-grok'] = grokStep
   save()
   checks.require('k8b-grok-tab-in-area', groupsAfter.some((group) => group.tabs.includes(nGrok.tab.tabId) && group.foreign === 0) && dom.some((row) => row.tabId === nGrok.tab.tabId && row.active), { groupsAfter, dom })
   checks.require('k8b-grok-kind', started.length === 1 && started[0].kind === 'grok', { started })
   checks.require('k8b-grok-process', foreground.some((row) => /grok/.test(`${row.name} ${row.cmdline}`)), { foreground })
   // 닫기 — 프롬프트를 보내지 않았다. ⌘W 실제 키 → 확인 창이면 확인 클릭.
-  const grokClose = await closeActiveTab(nGrok.tab.tabId, 'grok')
+  const grokClose = await closeActiveTab({ tabId: nGrok.tab.tabId, label: 'grok' })
   await pause(1500)
   const grokPids = foreground.filter((row) => /grok/.test(`${row.name} ${row.cmdline}`)).map((row) => row.pid)
   const grokAlive = grokPids.filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
@@ -234,30 +235,30 @@ try {
   // ── ⓒ + 메뉴 · Agent 설정… ───────────────────────────────────────────────
   const groupId = (await fixtureGroup())[0]?.id
   await click(`[data-main-tabbar-add="${groupId}"]`)
-  const menu = await until('+ 메뉴', menuState, 5_000)
-  const menuShot = await shot('menu-grok', '[data-tab-create-menu]')
+  const menu = await until({ label: '+ 메뉴', probe: menuState, timeout: 5_000 })
+  const menuShot = await shot({ name: 'menu-grok', selector: '[data-tab-create-menu]' })
   await click('[data-tab-create-item="agent-settings"]')
-  const deep = await until('딥링크', async () => { const s = await settingsState(); return s.open ? s : null }, 5_000)
+  const deep = await until({ label: '딥링크', probe: async () => { const s = await settingsState(); return s.open ? s : null }, timeout: 5_000 })
   const menuAfter = await menuState()
-  result.steps['menu-deeplink'] = { menu, menuShot, settings: deep, menuAfter, screenshot: await shot('deeplink-agents', '[data-settings-page]') }
+  result.steps['menu-deeplink'] = { menu, menuShot, settings: deep, menuAfter, screenshot: await shot({ name: 'deeplink-agents', selector: '[data-settings-page]' }) }
   checks.require('k8c-menu-grok-first-chip', menu.items[1]?.id === 'agent:grok' && menu.items[1]?.chip === '⌘⌥T' && menu.items.at(-1)?.id === 'agent-settings', menu)
   checks.require('k8c-deeplink-agents', deep.section === 'agents' && menuAfter === null, { section: deep.section })
   await click('[data-settings-back]')
-  await until('settings closed', async () => !(await settingsState()).open)
+  await until({ label: 'settings closed', probe: async () => !(await settingsState()).open })
   await pause(600)
   save()
 
   // ── ⓓ agent 없음 → ⌘⌥T → 셸 탭 ───────────────────────────────────────────
-  const sBlank = await chooseDefault('blank', 'blank')
+  const sBlank = await chooseDefault({ value: 'blank', name: 'blank' })
   checks.require('k8d-settings-blank', sBlank.fileValue === 'blank' && sBlank.writes.length === 1, { fileValue: sBlank.fileValue })
   const nBlank = await pressNewAgent('blank')
   await pause(2500)
-  const blankStarted = rowsFrom(nBlank.offset, 'lifecycle.agent_started')
-  const blankCreated = rowsFrom(nBlank.offset, 'lifecycle.tab_created')
+  const blankStarted = rowsFrom({ offset: nBlank.offset, tag: 'lifecycle.agent_started' })
+  const blankCreated = rowsFrom({ offset: nBlank.offset, tag: 'lifecycle.tab_created' })
   let blankInfo = null
-  try { blankInfo = await herdr('pane.process_info', { pane_id: nBlank.paneId }) } catch (error) { blankInfo = { error: String(error) } }
+  try { blankInfo = await herdr({ method: 'pane.process_info', params: { pane_id: nBlank.paneId } }) } catch (error) { blankInfo = { error: String(error) } }
   const blankFg = (blankInfo?.process_info?.foreground_processes ?? []).map((row) => ({ name: row.name, cmdline: maskEmail(row.cmdline) }))
-  const blankClose = await closeActiveTab(nBlank.tab.tabId, 'blank')
+  const blankClose = await closeActiveTab({ tabId: nBlank.tab.tabId, label: 'blank' })
   result.steps['newagent-blank'] = { key: nBlank.response, tab: nBlank.tab.tabId, started: blankStarted, created: blankCreated, foreground: blankFg, close: blankClose }
   checks.require('k8d-shell-tab', blankStarted.length === 0 && blankCreated.length === 1 && !blankFg.some((row) => /claude|codex|grok/.test(`${row.name} ${row.cmdline}`)), { blankStarted, blankCreated, blankFg })
   checks.require('k8d-shell-closed', blankClose.closed, blankClose)
@@ -268,14 +269,14 @@ try {
   const restart = spawnSync('sh', [path.join(here, '../l470/native-app.sh'), root, appDir, rawd, 'restart'], { encoding: 'utf8', timeout: 180_000 })
   result.steps.restart = { status: restart.status, stdout: restart.stdout.slice(-800), stderr: restart.stderr.slice(-800), newPid: Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8')) }
   checks.require('k8e-restart-ok', restart.status === 0 && result.steps.restart.newPid !== result.appPid, result.steps.restart)
-  await until('재기동 뒤 제어 소켓', async () => (await control({ cmd: 'state' })).ok !== false, 60_000)
+  await until({ label: '재기동 뒤 제어 소켓', probe: async () => (await control({ cmd: 'state' })).ok !== false, timeout: 60_000 })
   await control({ cmd: 'window-visibility', action: 'show' })
   await pause(1500)
   await click('[data-settings-open]')
-  await until('settings open (restart)', async () => (await settingsState()).open, 15_000)
+  await until({ label: 'settings open (restart)', probe: async () => (await settingsState()).open, timeout: 15_000 })
   await click('[data-settings-nav-item="agents"]')
-  const afterRestart = await until('agents (restart)', async () => { const s = await settingsState(); return s.section === 'agents' ? s : null }, 10_000)
-  result.steps['after-restart'] = { fileBeforeRestart, fileAfterRestart: fileAgent(), settings: afterRestart, screenshot: await shot('settings-after-restart', '[data-settings-page]') }
+  const afterRestart = await until({ label: 'agents (restart)', probe: async () => { const s = await settingsState(); return s.section === 'agents' ? s : null }, timeout: 10_000 })
+  result.steps['after-restart'] = { fileBeforeRestart, fileAfterRestart: fileAgent(), settings: afterRestart, screenshot: await shot({ name: 'settings-after-restart', selector: '[data-settings-page]' }) }
   checks.require('k8e-persist', fileBeforeRestart === 'blank' && fileAgent() === 'blank' && afterRestart.pills.find((pill) => pill.value === 'blank')?.pressed === 'true', result.steps['after-restart'])
   await click('[data-settings-back]')
   // 끝 상태 — fixture 탭은 시작 때 그대로(⌘⌥T 로 생긴 탭은 닫았다).

@@ -37,8 +37,7 @@ describe('settingsNavGroups — 섹션이 있는 그룹만(K3ⓑ)', () => {
   it('T5 레지스트리(LIFE-515): 그룹은 「AI 기능」·「인터페이스」, 섹션은 「에이전트」 · 「외관」·「단축키」 — 198 그룹 순서대로 AI 기능이 위', () => {
     const groups = settingsNavGroups({ query: '' })
     expect(groups.map((group) => group.title)).toEqual(['AI 기능', '인터페이스'])
-    expect(groups[0]!.sections.map((section) => section.id)).toEqual(['agents'])
-    expect(groups[1]!.sections.map((section) => section.id)).toEqual(['appearance', 'shortcuts'])
+    expect(groups.map((group) => group.sections.map((section) => section.id))).toEqual([['agents'], ['appearance', 'shortcuts']])
     // 레지스트리의 그룹은 198 순서 8개 그대로 — 빈 그룹은 그리지 않을 뿐이다.
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(['capabilities', 'setup', 'workflows', 'interface', 'remote', 'security', 'advanced', 'experimental'])
   })

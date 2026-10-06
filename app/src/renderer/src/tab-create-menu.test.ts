@@ -240,7 +240,8 @@ describe('기본 에이전트 (LIFE-515)', () => {
   })
   it('자동 = 카탈로그 첫 번째 — 카탈로그 순서와 묶여 있다', () => {
     const target = resolveNewAgentTab('auto')
-    expect(target.kind === 'agent' ? target.agent : null).toBe(options[0]!.agent)
+    expect(options[0]?.agent).toBe('claude')
+    expect(target).toEqual({ kind: 'agent', agent: 'claude' })
   })
   it('explicitDefaultAgent — 자동·agent 없음은 null', () => {
     expect(DEFAULT_AGENT_VALUES.map((value) => explicitDefaultAgent(value))).toEqual([null, null, 'claude', 'codex', 'grok'])

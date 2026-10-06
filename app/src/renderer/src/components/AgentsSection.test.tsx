@@ -51,7 +51,12 @@ const mount = (overrides: Keybindings = {}): void => {
   act(() => root.render(createElement(BindingLabels.Provider, { value: overrides }, createElement(AgentsSection))))
 }
 const pills = (): HTMLButtonElement[] => [...host.querySelectorAll<HTMLButtonElement>('[data-default-agent]')]
-const pill = (value: DefaultAgent): HTMLButtonElement => host.querySelector<HTMLButtonElement>(`[data-default-agent="${value}"]`)!
+const pill = (value: DefaultAgent): HTMLButtonElement => {
+  // 비 null 단언 대신 존재 확인으로 좁힌다(fix1 R1-03).
+  const found = host.querySelector<HTMLButtonElement>(`[data-default-agent="${value}"]`)
+  if (found === null) throw new Error(`pill ${value} 없음`)
+  return found
+}
 
 it('「기본 Agent」 소제목 + pill 다섯 — 자동 · agent 없음(빈 terminal) · Claude · Codex · Grok(카탈로그 순서) (K2ⓑ)', () => {
   mount()

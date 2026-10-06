@@ -85,7 +85,9 @@ export type AgentLaunchOption = { agent: LaunchAgent; label: string; aliases: re
  * 카탈로그 순서 claude → codex → grok (Orca `agent-catalog.tsx:36,57,63`). 고정 3종 — 감지는 없다(LIFE-515 D1·D3, 감지는 후속 LIFE-520).
  * 기본 에이전트(LIFE-515)는 이 순서를 바꾸지 않고 빈 질의 Quick-launch 에서만 맨 앞으로 옮긴다(`orderAgentLaunchOptions`).
  */
-const AGENT_CATALOG: readonly { agent: LaunchAgent; label: string; cmd: string }[] = [
+type AgentCatalogEntry = { agent: LaunchAgent; label: string; cmd: string }
+// 비어 있지 않은 튜플 — 자동(D1)이 첫 항목을 단언 없이 꺼낸다(fix1 R1-03).
+const AGENT_CATALOG: readonly [AgentCatalogEntry, ...AgentCatalogEntry[]] = [
   { agent: 'claude', label: 'Claude', cmd: 'claude' },
   { agent: 'codex', label: 'Codex', cmd: 'codex' },
   { agent: 'grok', label: 'Grok', cmd: 'grok' },
@@ -116,7 +118,7 @@ export type NewAgentTabTarget = { kind: 'agent'; agent: LaunchAgent } | { kind: 
 export function resolveNewAgentTab(defaultAgent: DefaultAgent): NewAgentTabTarget {
   switch (defaultAgent) {
     case 'auto':
-      return { kind: 'agent', agent: AGENT_CATALOG[0]!.agent }
+      return { kind: 'agent', agent: AGENT_CATALOG[0].agent }
     case 'blank':
       return { kind: 'shell' }
     case 'claude':

@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 const [baseFile, baseRoot, headFile, headRoot] = process.argv.slice(2)
-const count = (file, root) => {
+const count = ({ file, root }) => {
   const map = new Map()
   let errors = 0
   for (const entry of JSON.parse(fs.readFileSync(file, 'utf8'))) {
@@ -16,8 +16,8 @@ const count = (file, root) => {
   }
   return { map, errors }
 }
-const base = count(baseFile, baseRoot)
-const head = count(headFile, headRoot)
+const base = count({ file: baseFile, root: baseRoot })
+const head = count({ file: headFile, root: headRoot })
 const added = []
 for (const [key, n] of head.map) { const before = base.map.get(key) ?? 0; if (n > before) added.push(`${key} (+${n - before})`) }
 console.log(`기준 오류 ${base.errors} · HEAD 오류 ${head.errors} · HEAD 에만 있는 오류 ${added.length}`)

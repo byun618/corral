@@ -271,7 +271,7 @@ describe('inspectServerProcess — 남긴 자식의 신원 (r5 R5-01)', () => {
     }
     expect(seen).toEqual({ ours: true, detail: `${bin} server` })
     // 다른 경로로 해소했으면 우리 것이 아니다
-    expect((await inspectServerProcess(result.pid, '/opt/homebrew/bin/herdr')).ours).toBe(false)
+    expect(await inspectServerProcess(result.pid, '/opt/homebrew/bin/herdr')).toEqual({ ours: false, detail: `명령 불일치: ${bin} server` })
     await stopProcessGroup(result.pid, 1000)
   })
   it('그룹 리더라도 명령이 다르면 ours 아님(번호 재사용 흉내) — 명령 불일치 분기', async () => {
@@ -286,12 +286,20 @@ describe('inspectServerProcess — 남긴 자식의 신원 (r5 R5-01)', () => {
       process.kill(pid, 'SIGKILL')
     }
   })
-  it('그룹 리더가 아니면 ours 아님 — 이 테스트 프로세스 자신', async () => {
-    const result = await inspectServerProcess(process.pid, process.execPath)
-    expect(result.ours).toBe(false)
+  it('그룹 리더가 아니면 ours 아님 — detached 아닌 자식(pgid = 부모 그룹 ≠ 자기 pid)', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
+    const pid = child.pid ?? -1
+    try {
+      // 명령까지 같게 줘도 그룹 리더 검사에서 먼저 떨어진다
+      const result = await inspectServerProcess(pid, '/bin/sleep')
+      expect(result.ours).toBe(false)
+      expect(result.detail).toMatch(/^그룹 리더 아님 \(pgid \d+\)$/)
+    } finally {
+      child.kill('SIGKILL')
+    }
   })
   it('없는 pid · 경로 모름', async () => {
     expect(await inspectServerProcess(999999, '/x')).toEqual({ ours: false, detail: 'pid 999999 없음' })
-    expect((await inspectServerProcess(process.pid, null)).ours).toBe(false)
+    expect(await inspectServerProcess(process.pid, null)).toEqual({ ours: false, detail: 'herdr 경로를 모른다' })
   })
 })

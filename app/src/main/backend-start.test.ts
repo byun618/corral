@@ -509,3 +509,29 @@ describe('남긴 자식의 생명주기·신원 · 링크 live 우선 (r5 R5-01�
     expect(decideBackend(input({ scan: 'error', sessions: [runningDefault], selected: 'default', link: { phase: 'reconnecting', attempt: 1 }, starter: starterFailed })).status.kind).toBe('failed')
   })
 })
+
+describe('시한 끝 안 돎 분기의 exited 가드 (r6 R6-01)', () => {
+  it('마지막 조회 도중 자식이 끝났으면 stopChild 를 부르지 않는다', async () => {
+    let calls = 0
+    let exit: ((detail: string) => void) | null = null
+    const stopped: number[] = []
+    const starter = new BackendStarter(deps({
+      // 직전 1 + 루프 10 = stopped, 마지막(12번째) 조회 도중 exit → stopped
+      isRunning: async () => {
+        calls += 1
+        if (calls === 12) exit?.('code 1 signal null')
+        return { kind: 'stopped' }
+      },
+      spawn: (onExit) => {
+        exit = onExit
+        return { ok: true, pid: 4242, logPath: '/l' }
+      },
+      stopChild: async (pid) => { stopped.push(pid); return true },
+    }))
+    await starter.start('auto')
+    expect(stopped).toEqual([])
+    const phase = starter.phase()
+    expect(phase.phase).toBe('failed')
+    expect(phase.phase === 'failed' && phase.error).not.toContain('끝내지 못했다')
+  })
+})

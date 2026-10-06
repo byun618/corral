@@ -292,7 +292,8 @@ export class BackendStarter {
     }
     // 안 돎이 확인됐다 — 그 자식을 남기지 않는다(r2 R2-01). 살려 두면 소켓을 못 연 채 남아 「다시 시도」 마다 하나씩 쌓이거나,
     // 늦게 떠서 사용자 모르게 재개를 일으킨다. 끝내지 못했으면 원문에 적는다.
-    const stopped = await this.deps.stopChild(spawned.pid).catch(() => false)
+    // 이미 끝난 자식이면 신호를 보내지 않는다 — 모름 분기와 같은 가드(r6 R6-01).
+    const stopped = exited === null ? await this.deps.stopChild(spawned.pid).catch(() => false) : true
     this.deps.log('backend.start.failed', { trigger, pid: spawned.pid, timeoutMs: this.deps.readyTimeoutMs, childStopped: stopped })
     const tail = stopped ? '' : `\n시한을 넘긴 서버 프로세스(pid ${spawned.pid})를 끝내지 못했다`
     this.set({ phase: 'failed', error: `${timedOut}${tail}`, logPath: spawned.logPath })

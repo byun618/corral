@@ -76,6 +76,8 @@
   --shadow-menu: 0 8px 24px rgba(0, 0, 0, .5);
   --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, .05);   /* LIFE-511 — Orca shadow-xs (설정 카드·검색 입력, R007 실측) */
   --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, .1), 0 1px 2px -1px rgba(0, 0, 0, .1); /* LIFE-511 — Orca shadow-sm (키캡, R008 실측) */
+  --shadow-floating: 0 10px 24px rgb(0 0 0 / 0.18);   /* LIFE-527 — Orca --shadow-floating (토스트, k4 실측) */
+  --line-toast-close: rgb(255 255 255 / 0.14);        /* LIFE-527 — Orca 다크 토스트 닫기 버튼 테두리(main.css:463, k4 실측) */
   --radius-keycap: 4px;                             /* LIFE-511 — Orca KeyCap rounded (R008 실측) */
   --bg-input-fill: rgb(255 255 255 / 0.043);       /* LIFE-511 — Orca 입력 채움 dark:bg-input/30 (R007 실측) */
 

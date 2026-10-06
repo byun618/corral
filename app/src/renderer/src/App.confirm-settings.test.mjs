@@ -64,8 +64,11 @@ async function mount({ settings: initial = {}, pinned = false, running = false, 
   const uiPrefsWrites = []
   const heldSaves = []
   let settings = { ...DEFAULT_SETTINGS, ...initial }
+  let stateListener = null
   const api = {
     getState: async () => state,
+    // LIFE-527 — 상태 push 를 테스트가 직접 보낸다(경로 ② 「대상 pane이 사라졌습니다」).
+    onState: (listener) => { stateListener = listener; return () => { stateListener = null } },
     getUiPrefs: async () => prefs,
     getKeybindings: async () => store.get(),
     getSettingsSync: () => settings,
@@ -107,6 +110,8 @@ async function mount({ settings: initial = {}, pinned = false, running = false, 
   }
   return {
     q, click, settingsWrites, closeCalls, closed, uiPrefsWrites,
+    state,
+    push: (next) => stateListener?.(next),
     releaseSave: async () => {
       const resolve = heldSaves.shift()
       if (resolve === undefined) throw new Error('대기 중인 저장 없음')
@@ -364,4 +369,20 @@ it('R1-02 체크 + 확인의 저장이 실패하면 알리고 닫기는 진행�
   await app.click('[data-close-confirm-ok]')
   expect(app.closed).toEqual(['t1'])
   expect(await app.notice()).toContain('설정을 저장하지 못해 다음에도 묻습니다')
+})
+
+// --- LIFE-527 K4ⓐ 경로 ② — 앱 수준 알림(토스트) ----------------------------------------------------------------
+it('LIFE-527 K4ⓐ ② — 팔레트에서 고른 pane 이 그 사이 사라졌으면 「대상 pane이 사라졌습니다」 토스트', async () => {
+  const app = await mount()
+  // 팔레트의 pane 항목은 연결된 세션에서만 누를 수 있다 — 연결된 상태를 먼저 민다.
+  const live = { ...app.state, revision: 2, link: { phase: 'live' } }
+  await act(async () => { app.push(live) })
+  await app.key({ key: 'k', code: 'KeyK', metaKey: true })
+  const entry = app.q('[data-palette-entry="pane.switch:p1"]')
+  expect(entry).not.toBeNull()
+  // pane 이 빠진 상태 push 가 핸들러용 거울(stateRef)에 먼저 닿고 화면이 다시 그려지기 전에 누른다 — 한 act 안의 두 일.
+  // UI 로는 이 틈을 만들 수 없다(push 와 렌더가 같은 콜백) — 이 경로는 방어 코드라 격리 실행이 아니라 여기서 일으킨다.
+  const gone = { ...live, revision: 3, repos: live.repos.map((repo) => ({ ...repo, worktrees: repo.worktrees.map((worktree) => ({ ...worktree, workspace: { ...worktree.workspace, tabs: [] } })) })) }
+  await act(async () => { app.push(gone); entry.click() })
+  expect(await app.notice()).toBe('대상 pane이 사라졌습니다')
 })

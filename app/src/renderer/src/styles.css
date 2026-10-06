@@ -923,7 +923,8 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 
 /* --- TerminalChrome (§2 — xterm 렌더 영역 자체는 미변경, 감싸는 크롬만) --------------------------- */
 
-.terminal-chrome { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-top: 1px solid var(--line-weak); }
+/* LIFE-527 — 위 1px 경계를 걷었다: workspace-tools 줄과 탭 줄을 가르던 선이다. 이제 탭 줄 위는 4px 드래그 띠이고 Orca 도 그 사이에 선이 없다(탭 줄 y=4). */
+.terminal-chrome { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
 .terminal-chrome-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-chrome-hint {
   flex: 0 0 auto; display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 var(--pad-strip-x);
@@ -1369,6 +1370,8 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 /* --- LIFE-527 창 크롬 (hiddenInset) — Orca 198 `assets/main.css` `.titlebar-left`·`.titlebar`·`.sidebar-toggle`·`.titlebar-app-name` --------------
    창 맨 윗줄 = 사이드바 머리 36px(왼쪽) + 4px 드래그 띠 · 32px 영역 탭 줄(가운데). 빈 자리는 창 드래그(-webkit-app-region: drag),
    누르는 것은 no-drag. Orca 의 「터미널 입력 포커스 동안 no-drag」(`:root[data-regular-terminal-input-focused]`)는 따라 하지 않는다(D13). */
+/* Orca(Tailwind preflight `*{border:0 solid}`)처럼 경계 기본 모양을 「두께 0 · solid · currentColor」로 둔다 — 두께를 주는 규칙만 그린다. */
+:where(.sidebar-head, .sidebar-head *, .top-drag-strip, .settings-topbar) { border: 0 solid; }
 .sidebar-column { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
 .sidebar-column > .sidebar { flex: 1 1 auto; min-height: 0; }
 /* 접힘: 폭 0 칸 안에 머리만 떠 있다(Orca `relative w-0 overflow-visible` + `absolute top-0 left-0 z-10 w-max`). */
@@ -1383,7 +1386,8 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 }
 .sidebar-head.is-floating {
   position: absolute; top: 0; left: 0; z-index: 10; width: max-content;
-  background: var(--bg-window); border-right: 1px solid var(--line);
+  /* Orca `border-r border-border` — 색은 네 변 모두 border 색, 두께는 오른쪽만. */
+  background: var(--bg-window); border-color: var(--line); border-right-width: 1px;
 }
 .sidebar-head-controls { display: flex; align-items: center; height: 100%; flex-shrink: 0; }
 .sidebar-head.is-floating .sidebar-head-controls { width: max-content; }
@@ -1428,5 +1432,14 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
   --normal-bg: var(--bg-raised); --normal-text: var(--fg); --normal-border: var(--line); --border-radius: var(--radius-settings-row);
   --width: min(26rem, calc(100vw - 2rem)) !important;
 }
-/* 토스트 글자 — Orca `toastOptions.className: 'font-sans text-sm'`(14px/20px). */
-.corral-toast { font-family: var(--font-ui); font-size: 14px; line-height: 20px; }
+/* 토스트 — Orca `main.css:398-473` 의 sonner 덮어쓰기 그대로(z-index · 여백 · 그림자 · 제목 줄높이 · 닫기 버튼 칠). */
+[data-sonner-toaster] { font-family: var(--font-ui); z-index: 40 !important; }
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] { align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 14px 16px; box-shadow: var(--shadow-floating); }
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-content] { min-width: 0; flex: 1 1 calc(100% - 30px); gap: 6px; }
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-title] { line-height: 1.35; }
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button] { color: var(--fg); background: var(--bg-raised); border-color: var(--line-toast-close); }
+/* sonner 다크 테마 규칙이 테두리 색을 더 높은 명시도로 건다 — Orca 도 다크 전용 규칙을 따로 둔다(main.css:458-464). */
+[data-sonner-toaster][data-sonner-theme='dark'] [data-sonner-toast][data-styled='true'] [data-close-button] { color: var(--fg); background: var(--bg-raised); border-color: var(--line-toast-close); }
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button]:hover { color: var(--fg); background: var(--bg-accent); }
+/* 토스트 글자 — Orca `toastOptions.className: 'font-sans text-sm'`. 크기는 sonner 의 13px 가 이기고 줄높이만 text-sm 의 calc(1.25/0.875) 가 남는다(k4 실측 18.57px). */
+.corral-toast { font-family: var(--font-ui); line-height: calc(1.25 / 0.875); }

@@ -13,8 +13,9 @@ import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../sh
 import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
-/** 다른 요청의 확인 창이 떠 있는 동안 늦게 온 needs-confirm 을 버릴 때 알림(LIFE-516 fix2 R2-01ⓒ·D10) — 그 탭은 닫히지 않고 남는다. */
-export const CLOSE_DEFERRED_NOTICE = '다른 닫기 확인이 진행 중이라 탭을 닫지 않았습니다 — 그 창을 마친 뒤 다시 닫으세요'
+/** 다른 요청의 확인 창이 떠 있는 동안 늦게 온 needs-confirm 을 버릴 때 알림(LIFE-516 fix2 R2-01ⓒ·D10) — 그 대상은 닫히지 않고 남는다.
+ *  탭·워크트리 닫기 공통 문구(fix3 R3-01ⓑ). */
+export const CLOSE_DEFERRED_NOTICE = '다른 닫기 확인이 진행 중이라 닫지 않았습니다 — 그 창을 마친 뒤 다시 닫으세요'
 
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
@@ -53,6 +54,8 @@ export function useLifecycleActions(state: AppState | null): {
    * 다른 요청의 완료는 이 창을 지우지 않는다.
    */
   const closeOwner = useRef<{ token: object; onClosed: ((closed: string[]) => void) | undefined } | null>(null)
+  /** 창 주인이 있는 동안 버린 닫기 요청이 있었다(fix3 R3-01) — 주인 요청이 끝날 때 안내를 다시 띄운다(주인 확인 닫기가 알림을 비우므로). */
+  const deferredClose = useRef(false)
   /** 확인으로 소비 중인 닫기 요청(LIFE-516 fix1 R1-01) — 같은 요청의 두 번째 확인을 막고, 취소가 비워 저장 뒤 늦은 닫기를 막는다. */
   const consumingClose = useRef<PendingClose | null>(null)
   const [worktreeModal, setWorktreeModal] = useState<{ repoRoot: string } | null>(null)
@@ -205,6 +208,7 @@ export function useLifecycleActions(state: AppState | null): {
     // 창을 이 요청이 가졌거나 아무도 안 가졌을 때만 창을 세운다. 다른 요청의 창이 떠 있으면 버린다 — 탭은 닫히지 않고 남는다(D10).
     const showConfirm = (pending: PendingClose): void => {
       if (closeOwner.current !== null && closeOwner.current.token !== token) {
+        deferredClose.current = true
         setLifecycleNotice({ kind: 'info', message: CLOSE_DEFERRED_NOTICE })
         return
       }
@@ -212,10 +216,30 @@ export function useLifecycleActions(state: AppState | null): {
       setPendingClose(pending)
     }
     // 완료는 자기 창만 지운다 — 확인이 필요 없어 바로 끝난 다른 요청이 떠 있는 창을 지우지 않게.
-    const release = (): void => {
-      if (closeOwner.current?.token !== token) return
+    // 돌려주는 값: 이 창이 떠 있는 동안 버린 요청이 있었으면 그 안내(fix3 R3-01) — 부른 쪽이 자기 결과 알림과 함께 띄운다.
+    const release = (): string | null => {
+      if (closeOwner.current?.token !== token) return null
       closeOwner.current = null
       setPendingClose(null)
+      const note = deferredClose.current ? CLOSE_DEFERRED_NOTICE : null
+      deferredClose.current = false
+      return note
+    }
+    // 주인 요청의 rejected/error 가 먼저 보이고 버린 요청 안내는 뒤에 붙는다(D10). 닫힘이면 안내만 다시 띄운다.
+    const withDeferred = (message: string, note: string | null): string => (note === null ? message : `${message} · ${note}`)
+    const settle = (outcome: { kind: 'closed' } | { kind: 'rejected'; code: string; message: string } | { kind: 'error'; message: string }): void => {
+      const note = release()
+      switch (outcome.kind) {
+        case 'closed':
+          if (note !== null) setLifecycleNotice({ kind: 'info', message: note })
+          return
+        case 'rejected':
+          setLifecycleNotice({ kind: 'rejected', code: outcome.code, message: withDeferred(outcome.message, note) })
+          return
+        case 'error':
+          setLifecycleNotice({ kind: 'error', message: withDeferred(outcome.message, note) })
+          return
+      }
     }
     if (target.kind === 'tabs') {
       if (target.tabIds.length === 0) return
@@ -227,26 +251,24 @@ export function useLifecycleActions(state: AppState | null): {
         showConfirm({ target: { ...target, tabIds: remaining }, foreground: result.running.flatMap((pane) => pane.foreground), running: result.running })
         return
       }
-      release()
-      if (result.outcome === 'rejected') setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
-      else if (result.outcome === 'error') setLifecycleNotice({ kind: 'error', message: result.error })
+      if (result.outcome === 'rejected') settle({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+      else if (result.outcome === 'error') settle({ kind: 'error', message: result.error })
+      else settle({ kind: 'closed' })
       return
     }
     const result = await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
     switch (result.outcome) {
       case 'closed':
-        release()
+        settle({ kind: 'closed' })
         return
       case 'needs-confirm':
         showConfirm({ target, foreground: result.foreground, running: [] })
         return
       case 'rejected':
-        release()
-        setLifecycleNotice({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
+        settle({ kind: 'rejected', code: result.rejection.code, message: result.rejection.message })
         return
       case 'error':
-        release()
-        setLifecycleNotice({ kind: 'error', message: result.error })
+        settle({ kind: 'error', message: result.error })
         return
     }
   }, [])
@@ -452,6 +474,7 @@ export function useLifecycleActions(state: AppState | null): {
     // 취소 = 하나도 안 닫았다 — 다시 열기 기록도 없다.
     closeOwner.current = null
     consumingClose.current = null
+    deferredClose.current = false
     setPendingClose(null)
   }, [])
   const closeWorktreeModal = useCallback(() => setWorktreeModal(null), [])

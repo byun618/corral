@@ -54,6 +54,11 @@ beforeEach(() => {
       calls.push({ input, resolve: pending.resolve })
       return pending.promise
     },
+    closeWorktree: (input) => {
+      const pending = defer()
+      calls.push({ input: { ...input, tabIds: [`ws:${input.workspaceId}`] }, resolve: pending.resolve })
+      return pending.promise
+    },
   })
   act(() => root.render(createElement(Harness)))
 })
@@ -77,6 +82,8 @@ describe('닫기 확인 창의 주인 (fix2 R2-01)', () => {
     await settle(() => closedReply(2))
     expect(callbacks).toEqual([{ owner: 'A', closed: ['A'] }])
     expect(hook.pendingClose).toBeNull()
+    // fix3 R3-01ⓐ — A 의 확인 닫기가 알림을 비워도, A 가 끝나면 버린 B 의 안내가 다시 남는다.
+    expect(hook.lifecycleNotice).toEqual({ kind: 'info', message: CLOSE_DEFERRED_NOTICE })
     // B 는 닫히지 않았다 — 다시 닫으면 자기 창이 뜬다(확인 없이 닫는 경로 없음).
     await settle(() => ask('B'))
     await settle(() => needsConfirm(3))
@@ -137,6 +144,31 @@ describe('닫기 확인 창의 주인 (fix2 R2-01)', () => {
     await settle(() => hook.confirmPendingClose())
     await settle(() => closedReply(2))
     expect(callbacks).toEqual([{ owner: 'A', closed: ['A'] }])
+    expect(hook.pendingClose).toBeNull()
+  })
+
+  it('fix3 R3-01ⓑ 워크트리 닫기가 버려져도 문구는 대상 공통 · A 닫힘 뒤 안내가 남는다 · 워크트리는 닫히지 않는다', async () => {
+    expect(CLOSE_DEFERRED_NOTICE).not.toContain('탭')
+    await settle(() => ask('A'))
+    await settle(() => needsConfirm(0))
+    await settle(() => hook.actions.closeWorktree('w9'))
+    await settle(() => call(1).resolve({ outcome: 'needs-confirm', foreground: ['sleep 600'] }))
+    expect(shownTab()).toBe('A')
+    expect(hook.lifecycleNotice).toEqual({ kind: 'info', message: CLOSE_DEFERRED_NOTICE })
+    await settle(() => hook.confirmPendingClose())
+    expect(hook.lifecycleNotice).toBeNull()
+    await settle(() => closedReply(2))
+    expect(hook.lifecycleNotice).toEqual({ kind: 'info', message: CLOSE_DEFERRED_NOTICE })
+    expect(calls.filter((row) => row.input.workspaceId === 'w9' && row.input.confirmed)).toEqual([])
+  })
+
+  it('fix3 R3-01ⓐ 주인 요청이 rejected 로 끝나면 그 알림이 먼저, 버린 요청 안내가 뒤에 붙는다(D10)', async () => {
+    await settle(() => { ask('A'); ask('B') })
+    await settle(() => needsConfirm(0))
+    await settle(() => needsConfirm(1))
+    await settle(() => hook.confirmPendingClose())
+    await settle(() => call(2).resolve({ outcome: 'rejected', closed: [], rejection: { code: 'denied', message: 'no' } }))
+    expect(hook.lifecycleNotice).toEqual({ kind: 'rejected', code: 'denied', message: `no · ${CLOSE_DEFERRED_NOTICE}` })
     expect(hook.pendingClose).toBeNull()
   })
 })

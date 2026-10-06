@@ -44,6 +44,7 @@ const EXPOSED = [
   'removeRepo',
   'browseForRepos',
   'refreshSessions',
+  'startBackend',
   'getUiPrefs',
   'getKeybindings',
   'saveKeybindings',
@@ -159,6 +160,7 @@ const api: CorralApi = {
   removeRepo: (root: string): Promise<RemoveRepoResult> => ipcRenderer.invoke('corral:removeRepo', root),
   browseForRepos: (): Promise<BrowseReposResult> => ipcRenderer.invoke('corral:browseForRepos'),
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
+  startBackend: () => ipcRenderer.invoke('corral:startBackend'),
   getUiPrefs: (): Promise<UiPrefs> => ipcRenderer.invoke('corral:getUiPrefs'),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.

@@ -21,6 +21,7 @@ import { ConfirmClose } from './components/ConfirmClose.js'
 import { CreateWorktreeModal } from './components/CreateWorktreeModal.js'
 import { DropZoneOverlay } from './components/DropZoneOverlay.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
+import { BackendCard } from './components/BackendCard.js'
 import { InlineNotice } from './components/InlineNotice.js'
 import { GroupHeader } from './components/MainTabBar.js'
 import { MruSwitcher, type MruRow } from './components/MruSwitcher.js'
@@ -1533,7 +1534,10 @@ export function App(): React.JSX.Element {
           <div className="top-drag-strip" data-top-drag-strip="" />
 
           <TerminalChrome panes={stripPanes}>
-            {activeWorkspace === null || layout.layout === null ? (
+            {/* LIFE-485 D3 — 링크가 live 가 아닐 때의 원인·행동. 결정은 main(`decideBackend`)이 하고 여기는 그린다. */}
+            {state.backend.kind !== 'ok' ? (
+              <BackendCard status={state.backend} onStart={() => void window.corral.startBackend()} />
+            ) : activeWorkspace === null || layout.layout === null ? (
               <div className="term-empty" data-term-empty />
             ) : (
               <PaneGrid

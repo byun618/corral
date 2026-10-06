@@ -8,6 +8,16 @@
 
 export { SessionLink } from './internal/link.js'
 export { listSessions, SESSION_POLL_MS, type SessionHandle } from './internal/sessions.js'
+export {
+  countRestoreTargets,
+  readLogTail,
+  readRestoreTargets,
+  resolveHerdrBinary,
+  spawnServer,
+  SERVER_READY_POLL_MS,
+  SERVER_READY_TIMEOUT_MS,
+  type HerdrResolution,
+} from './internal/server.js'
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { readIntegrations, type IntegrationScan } from './internal/integrations.js'
 export { DEFAULT_RESYNC_MS } from './internal/link.js'

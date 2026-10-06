@@ -112,6 +112,35 @@ export type SessionInfo = {
   running: boolean
 }
 
+/** 해소한 herdr 실행 파일 (LIFE-485 D5). 출처는 로그인 셸 조회·알려진 설치 위치·측정용 `CORRAL_HERDR_BIN`. */
+export type BackendBinary = { path: string; source: 'login-shell' | 'known-location' | 'env'; version: string | null }
+
+/**
+ * 서버를 띄우면 다시 붙을 에이전트 세션 수 (LIFE-485 D2). 개수와 종류뿐이다 — 경로·세션 id·대화 없음.
+ * **모름(`known:false`)은 0 이 아니다** — 기동 결정이 확인 쪽으로 간다.
+ */
+export type RestoreSummary =
+  | { known: true; total: number; agents: { kind: string; count: number }[] }
+  | { known: false; reason: string }
+
+/**
+ * 백엔드 연결 상태 카드 (LIFE-485 D3). `ok` 면 카드가 없다.
+ * - `confirm` — 서버가 꺼져 있고 사용자가 「서버 시작」 을 눌러야 띄운다. `exited` 는 연결 도중 멈춘 경우
+ * - `starting` — corral 이 띄우고 준비를 기다리는 중
+ * - `failed` — 띄우지 못했다(원문·로그 경로). 「다시 시도」
+ * - `missing` — herdr 실행 파일을 찾지 못했다
+ * - `bound-stopped` — 지정된 세션(프로필 바인딩·CORRAL_SESSION)이 멈춰 있다. corral 은 띄우지 않는다
+ * - `reconnecting` — 서버는 돌고 링크만 다시 붙는 중
+ */
+export type BackendStatus =
+  | { kind: 'ok' }
+  | { kind: 'confirm'; reason: 'stopped' | 'exited'; session: string; restore: RestoreSummary }
+  | { kind: 'starting'; session: string }
+  | { kind: 'failed'; session: string; error: string; logPath: string | null }
+  | { kind: 'missing'; searched: string[] }
+  | { kind: 'bound-stopped'; session: string }
+  | { kind: 'reconnecting'; session: string; attempt: number }
+
 /** 세션 링크가 지금 어느 걸음에 있나. */
 export type LinkPhase =
   | 'idle'
@@ -815,6 +844,8 @@ export type AppState = {
   /** 세션을 왜 그것으로 골랐나 / 왜 못 골랐나 (수정 1회차 M6). 평시에는 null. */
   sessionNote: string | null
   link: LinkState
+  /** 백엔드 연결 상태 카드 (LIFE-485). */
+  backend: BackendStatus
   registry: RegistryState
   /**
    * 레지스트리 세대 — main 이 관측한 등록 목록이 **직전 관측과 다를 때** 1 오른다(LIFE-469 R2-01·R3-01·R4-01,
@@ -919,6 +950,8 @@ export type CorralApi = {
   removeRepo: (root: string) => Promise<RemoveRepoResult>
   browseForRepos: () => Promise<BrowseReposResult>
   refreshSessions: () => Promise<void>
+  /** 「서버 시작」·「다시 시도」 (LIFE-485). 결정은 main 이 다시 한다 — 이미 돌면 아무것도 안 띄운다. */
+  startBackend: () => Promise<void>
   // --- 화면 UI 상태 영속 (C2·C3) ---
   getKeybindings: () => Promise<Keybindings>
   saveKeybindings: (overrides: Keybindings) => Promise<{ ok: true; overrides: Keybindings } | { ok: false; error: string }>

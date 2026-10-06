@@ -35,17 +35,26 @@ export function herdrHome(): string {
  * 렌더러가 보는 `SessionInfo` 에는 소켓이 없다. 소켓을 들고 다니는 건 이 타입이고,
  * 이건 어댑터 공개 입구를 지나 **main 까지만** 간다. preload·renderer 는 이 이름을 모른다.
  */
-export type SessionHandle = SessionInfo & { socketPath: string }
+export type SessionHandle = SessionInfo & {
+  socketPath: string
+  /** 세션 디렉터리 — 재개 대상 계수가 읽을 session.json 의 자리 (LIFE-485 D2). CLI 가 준 값만 믿는다. */
+  sessionDir: string | null
+}
 
 export type SessionScan = { sessions: SessionHandle[]; source: 'cli' | 'filesystem'; error: string | null }
 
-export async function listSessions(): Promise<SessionScan> {
-  if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) return {sessions:[{name:process.env.CORRAL_SESSION,isDefault:false,running:fs.existsSync(process.env.CORRAL_BACKEND_SOCKET),socketPath:process.env.CORRAL_BACKEND_SOCKET}],source:'filesystem',error:null}
+/**
+ * `binary` 는 해소한 절대경로다 (LIFE-485 D5) — bare name `herdr` 는 Finder·Dock 기동 앱의 최소 PATH 에서
+ * ENOENT 로 떨어진다. 해소 전·해소 실패면 null 이고 그때는 파일시스템 폴백이다.
+ */
+export async function listSessions(binary: string | null): Promise<SessionScan> {
+  if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) return {sessions:[{name:process.env.CORRAL_SESSION,isDefault:false,running:fs.existsSync(process.env.CORRAL_BACKEND_SOCKET),socketPath:process.env.CORRAL_BACKEND_SOCKET,sessionDir:null}],source:'filesystem',error:null}
+  if (binary === null) return scanFilesystem('herdr 실행 파일을 해소하지 못했다')
   try {
-    const { stdout } = await run('herdr', ['session', 'list', '--json'], { timeout: 5000 })
+    const { stdout } = await run(binary, ['session', 'list', '--json'], { timeout: 5000 })
     const sessions = parseSessionList(stdout)
     if (sessions !== null) {
-      log('sessions.poll', { source: 'cli', count: sessions.length, names: sessions.map((item) => item.name) })
+      log('sessions.poll', { source: 'cli', binary, count: sessions.length, names: sessions.map((item) => item.name) })
       return { sessions, source: 'cli', error: null }
     }
     return scanFilesystem('herdr session list --json 의 모양이 예상과 다르다')
@@ -70,6 +79,7 @@ function parseSessionList(stdout: string): SessionHandle[] | null {
       isDefault: item['default'] === true,
       running: item['running'] === true,
       socketPath,
+      sessionDir: readString(item, 'session_dir'),
     })
   }
   return sessions
@@ -81,7 +91,7 @@ function scanFilesystem(reason: string): SessionScan {
   const sessions: SessionHandle[] = []
   const defaultSocket = path.join(home, 'herdr.sock')
   if (fs.existsSync(defaultSocket)) {
-    sessions.push({ name: 'default', isDefault: true, running: true, socketPath: defaultSocket })
+    sessions.push({ name: 'default', isDefault: true, running: true, socketPath: defaultSocket, sessionDir: null })
   }
   const namedDir = path.join(home, 'sessions')
   if (fs.existsSync(namedDir)) {
@@ -89,7 +99,7 @@ function scanFilesystem(reason: string): SessionScan {
       if (!entry.isDirectory()) continue
       const socketPath = path.join(namedDir, entry.name, 'herdr.sock')
       if (!fs.existsSync(socketPath)) continue
-      sessions.push({ name: entry.name, isDefault: false, running: true, socketPath })
+      sessions.push({ name: entry.name, isDefault: false, running: true, socketPath, sessionDir: null })
     }
   }
   log('sessions.poll', { source: 'filesystem', count: sessions.length, reason })

@@ -58,6 +58,13 @@ import {
   createRow,
   createWorktree,
   listSessions,
+  readLogTail,
+  readRestoreTargets,
+  resolveHerdrBinary,
+  spawnServer,
+  SERVER_READY_POLL_MS,
+  SERVER_READY_TIMEOUT_MS,
+  type HerdrResolution,
   openWorkspace,
   openWorktree,
   probeForeground,
@@ -76,6 +83,7 @@ import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepP
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
+import { BackendStarter, decideBackend, DEFAULT_SESSION, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
@@ -109,6 +117,14 @@ let sessions: SessionHandle[] = []
 let sessionsError: string | null = null
 let selectedSession: string | null = null
 let sessionNote: string | null = null
+/** herdr 실행 파일 해소 결과 (LIFE-485 D5). null = 아직 해소 중. */
+let herdr: HerdrResolution | null = null
+let herdrResolvedAt = 0
+/** 실패한 해소를 다시 시도하는 간격 — 그 사이에 사용자가 herdr 를 설치했을 수 있다. */
+const HERDR_RERESOLVE_MS = 60_000
+/** default 의 재개 대상 — 돌고 있는 세션이 없을 때만 센다 (D2). */
+let restore: BackendInput['restore'] = null
+let lastBackendLog = ''
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
@@ -135,6 +151,77 @@ const link = new SessionLink({
   // 재동기 때 worktree→workspace 바인딩도 새로 대조한다 (버그 ①). 행 대조(reconcile)는 이걸 못 본다.
   onResync: (reason) => refreshBindings(reason),
 })
+
+/**
+ * herdr 서버를 띄우는 손 (LIFE-485). 자동 기동·버튼·다시 시도가 이 하나로 모인다 — 진행 중이면 합친다.
+ * 띄운 서버는 앱 종료 때 끄지 않는다(D4).
+ */
+const backendStarter = new BackendStarter({
+  isRunning: async () => {
+    const scan = await listSessions(herdrPath())
+    return scan.sessions.some((session) => session.isDefault && session.running)
+  },
+  spawn: (onExit) => {
+    const binary = herdrPath()
+    if (binary === null) return { ok: false, error: 'herdr 실행 파일을 해소하지 못했다', logPath: null }
+    return spawnServer({
+      binary,
+      logPath: path.join(app.getPath('userData'), 'herdr-server.log'),
+      onExit: (code, signal) => onExit(`code ${String(code)} signal ${String(signal)}`),
+    })
+  },
+  logTail: (file) => readLogTail(file),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+  readyTimeoutMs: SERVER_READY_TIMEOUT_MS,
+  pollMs: SERVER_READY_POLL_MS,
+  onChange: () => scheduleEmit(),
+  log,
+})
+
+function herdrPath(): string | null {
+  return herdr?.kind === 'found' ? herdr.binary.path : null
+}
+
+/** 지정된 세션 — 프로필 바인딩(`restoreBackend` 가 env 로 옮긴다)·`CORRAL_SESSION`·측정 하네스의 `CORRAL_BACKEND_SOCKET`. */
+function boundSession(): string | null {
+  const session = process.env.CORRAL_SESSION
+  if (session !== undefined && session.length > 0) return session
+  const socket = process.env.CORRAL_BACKEND_SOCKET
+  if (socket !== undefined && socket.length > 0) return socket
+  return null
+}
+
+function backendInput(): BackendInput {
+  return {
+    bound: boundSession(),
+    binary: herdr === null ? { kind: 'resolving' } : herdr.kind === 'found' ? { kind: 'found' } : { kind: 'missing', searched: herdr.searched },
+    sessions,
+    selected: selectedSession,
+    link: { phase: link.linkState().phase, attempt: link.linkState().attempt },
+    restore,
+    starter: backendStarter.phase(),
+    autoStartUsed: backendStarter.autoStartUsed(),
+  }
+}
+
+async function ensureHerdrResolved(): Promise<void> {
+  if (herdr?.kind === 'found') return
+  if (herdr !== null && Date.now() - herdrResolvedAt < HERDR_RERESOLVE_MS) return
+  herdr = await resolveHerdrBinary()
+  herdrResolvedAt = Date.now()
+}
+
+/** 「서버 시작」·「다시 시도」 — 지금 상태가 확인·실패일 때만 띄운다. 지정 세션·돌고 있는 세션이면 아무것도 안 한다(K3①⑩). */
+async function startBackendFromUi(): Promise<void> {
+  const status = decideBackend(backendInput()).status
+  if (status.kind !== 'confirm' && status.kind !== 'failed' && status.kind !== 'starting') {
+    log('backend.start.ignored', { status: status.kind })
+    return
+  }
+  await backendStarter.start('button')
+  await pollSessions()
+}
 
 /**
  * 터미널 스트림 (R2) — herdr-client.sock 의 endpoint 연결. control 링크와 **별개 소켓·별개
@@ -256,6 +343,7 @@ function currentState(): AppState {
     selectedSession,
     sessionNote,
     link: link.linkState(),
+    backend: decideBackend(backendInput()).status,
     registry: registryState,
     registryGeneration: registryGeneration.observe(registryState.roots),
     repos: tree.repos,
@@ -1103,7 +1191,8 @@ async function refreshIntegrations(): Promise<void> {
 }
 
 async function pollSessions(): Promise<void> {
-  const scan = await listSessions()
+  await ensureHerdrResolved()
+  const scan = await listSessions(herdrPath())
   sessions = scan.sessions
   sessionsError = scan.error
   if (selectedSession === null) {
@@ -1113,7 +1202,21 @@ async function pollSessions(): Promise<void> {
     if (choice.note !== null) log('session.select.note', { note: choice.note })
     if (choice.name !== null) pickSession(choice.name)
   }
+  evaluateBackend()
   scheduleEmit()
+}
+
+/** 연결 상태를 다시 정하고, 자동 기동 조건이면 띄운다 (LIFE-485 D1). 결정 자체는 `decideBackend` 순수 함수다. */
+function evaluateBackend(): void {
+  const needsCount = boundSession() === null && (selectedSession === DEFAULT_SESSION || !sessions.some((session) => session.running))
+  restore = needsCount ? readRestoreTargets(sessions.find((session) => session.isDefault)?.sessionDir ?? null) : null
+  const decision = decideBackend(backendInput())
+  const summary = JSON.stringify({ status: decision.status.kind, restore })
+  if (summary !== lastBackendLog) {
+    lastBackendLog = summary
+    log('backend.status', { status: decision.status, restore })
+  }
+  if (decision.autostart) void backendStarter.start('auto').then(() => pollSessions())
 }
 
 /**
@@ -1369,6 +1472,7 @@ app.whenReady().then(async () => {
       : { ok: false, canceled: true, selected: null, mode: null, added: [], alreadyRegistered: [], failed: [], message: null },
   )
   ipcMain.handle('corral:refreshSessions', (event) => (fromOurWindow(event) ? pollSessions() : undefined))
+  ipcMain.handle('corral:startBackend', (event) => (fromOurWindow(event) ? startBackendFromUi() : undefined))
   ipcMain.handle('corral:getKeybindings', (event) => fromOurWindow(event) ? keybindings.get() : {})
   ipcMain.handle('corral:saveKeybindings', (event, overrides: unknown) => {
     if (!fromOurWindow(event)) return { ok: false, error: '다른 창의 요청' }

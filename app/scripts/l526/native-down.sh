@@ -25,9 +25,14 @@ HERE=$(cd "$(dirname "$0")/../l470" && pwd)
 NODE="$HOME/.nvm/versions/node/v24.14.1/bin/node"
 UD=${L526_DOWN_UD:-"$HOME/Library/Application Support/corral"}
 HCFG=${L526_DOWN_HCFG:-"$HOME/.config/herdr"}
+# fix5 — 삭제·복원 대상(L526_DOWN_UD·L526_DOWN_HCFG — rsync --delete·새 파일 rmSync)과 원본 ROOT 를 접두 문자열만으로 받지 않는다(R5-01 같은 꼴).
+# 정규형이고 실제 폴더이며 심링크를 푼 실경로도 허용 범위 안이어야 한다. 아니면 아무것도 죽이거나 복원하기 전에 exit 2.
+. "$(dirname "$0")/path-check.sh"
 for P in "${L526_DOWN_UD:-}" "${L526_DOWN_HCFG:-}"; do
-  case "$P" in ''|/tmp/l526*|/private/tmp/l526*) ;; *) echo "✘ 자체 검사 경로는 /tmp/l526 아래만: $P"; exit 2 ;; esac
+  [ -z "$P" ] && continue
+  l526_real_dir "$P" /tmp/l526 || { echo "✘ 자체 검사 경로는 /tmp/l526 아래 정규형 실제 폴더만: $P"; exit 2; }
 done
+l526_real_dir "$ROOT" /tmp/l526n || { echo "✘ ROOT 는 /tmp/l526n 아래 정규형 실제 폴더만: $ROOT"; exit 2; }
 fail() { echo "✘ $1"; echo "판정: 원복 중단 — 그 자리에서 멈췄다(이후 단계 미실행). 백업 $ROOT/backup·원자료 $RAWD 그대로"; exit 1; }
 pass() { echo "✔ $1"; }
 abort() { echo "✘ $1"; echo "판정: 원복 중단 — 복원 전에 멈췄다"; exit 3; }

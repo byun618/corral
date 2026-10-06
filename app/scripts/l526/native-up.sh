@@ -24,8 +24,11 @@ UD="$HOME/Library/Application Support/corral"
 HERDR=/opt/homebrew/bin/herdr
 HCFG="$HOME/.config/herdr"
 SOCK="$HCFG/herdr.sock"
-case "$ROOT" in /tmp/l526n*) ;; *) echo "ROOT 는 /tmp/l526n*"; exit 2 ;; esac
-[ -e "$ROOT" ] && { echo "$ROOT 이미 있음"; exit 2; }
+# fix5 — ROOT 는 /tmp/l526n* 이고 정규형(`..`·`.`·`//` 없음)이어야 한다(R5-01 같은 꼴 — 접두만 보면 `/tmp/l526n/../x` 가 통과해
+# 바깥에 쓰고 native-app.sh 가 그 아래 ctl.sock 을 지울 수 있다). 이미 있거나 심링크(끊긴 것 포함)면 멈춘다.
+. "$(dirname "$0")/path-check.sh"
+l526_plain_path "$ROOT" /tmp/l526n || { echo "ROOT 는 정규형 /tmp/l526n*: $ROOT"; exit 2; }
+{ [ -e "$ROOT" ] || [ -L "$ROOT" ]; } && { echo "$ROOT 이미 있음(또는 심링크)"; exit 2; }
 mkdir -p "$ROOT/backup" "$RAWD"
 echo "# ⓪ 전제"
 # LIFE-477 r1 R2 — 서버를 띄우면 session.json 의 에이전트 세션이 다시 붙는다(477 K10: claude 1·grok 2). 띄우기 **전에** 세고 1개 이상이면 멈춘다(exit 7).

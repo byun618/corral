@@ -1,10 +1,12 @@
 /* global document -- cdp.evaluate 로 렌더러 안에서 도는 클로저가 쓴다 */
 // LIFE-526 K3ⓐ **격리** 동작 스모크 — 하단 바 네 버튼을 실제 포인터(CDP Input.dispatchMouseEvent)로 누른다.
-// 격리 = launchCorral: --work(/tmp/l526i*) 아래 userData·herdr 세션(l443-gui-diff)·제어 소켓. 사용자 userData·herdr default 무접촉, provider 0.
+// 격리 = launchCorral: 고정 작업 경로 /tmp/l526i 아래 userData·herdr 세션(l443-gui-diff)·제어 소켓. 사용자 userData·herdr default 무접촉, provider 0.
 //   ⚙ → 설정 페이지 · ? → 메뉴가 버튼 위로 열림 · ? 다시 → 닫힘 · ? → 「단축키」 → 설정 › 단축키 · ↻ → 재조회(main 로그 tree.built 증가) · ⌖ → 활성 카드 번쩍
 // 준비 걸음(판정 아님): fixture 레포 등록(seedCorralRepo — add-repo 제어 소켓) · 첫 카드 실제 클릭(활성 워크스페이스). 설정 닫기는 「앱으로 돌아가기」 실제 클릭.
 // 사용(저장소 루트): node app/scripts/l526/iso-smoke.mjs --app app --port 9526 --out <raw>
-// fix4 — --work 기본값은 고정 /tmp/l526i 다. 운영 규칙: 띄우는 셸 명령줄에 격리 경로를 쓰지 않는다(쓰면 그 셸이 가드 hit 가 되어 멈춘다).
+// fix5 R5-01 — 작업 경로는 스크립트 안 고정 상수 WORK(/tmp/l526i) 하나다(dry·fakectl 과 같은 꼴). --work 재정의는 없앴다 —
+// 옛 꼴은 접두 문자열만 봐서 `/tmp/l526i/../l526i-dry` 가 통과했고 가드는 못 잡는데 rmSync 는 해석 경로를 지웠다. 받는 인자는 --app·--port·--out 셋뿐이고,
+// 그 밖의 인자(--work·--work=… 포함)가 오면 아무것도 쓰거나 지우기 전에 exit 2. 운영 규칙(fix4): 띄우는 셸 명령줄에 격리 경로를 쓰지 않는다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { launchCorral, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
@@ -13,8 +15,13 @@ import { pause } from '../gui-diff/lib/cdp.mjs'
 import { probePreWipe } from './pre-wipe-guard.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
-const work = args.work ?? '/tmp/l526i'
-if (!work?.startsWith('/tmp/l526i')) throw new Error('--work 는 /tmp/l526i*')
+const WORK = '/tmp/l526i'
+const unknown = Object.keys(args).filter((key) => !['app', 'port', 'out'].includes(key))
+if (unknown.length > 0 || !args.app || !args.port || !args.out) {
+  console.error(`[l526] 인자 거절 — 받는 것은 --app·--port·--out 뿐(작업 경로는 고정 ${WORK}, 재정의 없음): ${unknown.map((key) => `--${key}`).join(' ') || '필수 인자 빠짐'}`)
+  process.exit(2)
+}
+const work = WORK
 const out = path.resolve(args.out)
 fs.mkdirSync(out, { recursive: true })
 

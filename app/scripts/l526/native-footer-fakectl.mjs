@@ -11,6 +11,7 @@ import net from 'node:net'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { childExit } from './child-exit.mjs'
+import { probePreWipe } from './pre-wipe-guard.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const mode = args.mode
@@ -21,9 +22,16 @@ const repo = path.resolve(here, '../../..')
 const run1 = path.join(repo, 'specs/LIFE-526-footer-icons/raw/claude/native/run1')
 const source = JSON.parse(fs.readFileSync(path.join(run1, 'native-footer.json'), 'utf8'))
 const root = `/tmp/l526n-fake-${mode}`
+fs.mkdirSync(out, { recursive: true })
+// fix2 — 지우기 전에 같은 가짜 ROOT 를 쓰는 프로세스(같은 모드로 겹쳐 돈 회차)를 본다. herdr·포트는 쓰지 않는다.
+const guard = probePreWipe({ dirs: [root], ports: [], session: null })
+fs.writeFileSync(path.join(out, 'guard-before.json'), `${JSON.stringify(guard, null, 1)}\n`)
+if (!guard.pass) {
+  console.log(`[fakectl] 가드: 지우지 않고 멈춘다 — ${guard.reasons.join(' / ')}`)
+  process.exit(3)
+}
 fs.rmSync(root, { recursive: true, force: true })
 fs.mkdirSync(path.join(root, 'shots'), { recursive: true })
-fs.mkdirSync(out, { recursive: true })
 fs.writeFileSync(path.join(root, 'app.pid'), '0')
 
 const base = source.steps.default.dump

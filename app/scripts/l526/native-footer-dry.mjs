@@ -8,16 +8,27 @@ import { launchCorral, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
 import { ensureFixtureRepo } from '../gui-diff/lib/fixture.mjs'
 import { pause } from '../gui-diff/lib/cdp.mjs'
 import { childExit } from './child-exit.mjs'
+import { probePreWipe } from './pre-wipe-guard.mjs'
 
 const rawd = path.resolve(process.argv[2])
 const work = '/tmp/l526i-dry'
 const root = '/tmp/l526n-dry'
+const PORT = 9527
+fs.mkdirSync(rawd, { recursive: true })
+// fix2 R2-01 — 지우기 **전에** 두 폴더(/tmp·/private/tmp 꼴)·herdr 세션(l443-gui-diff, launchCorral 고정)·CDP 포트를 쓰는 프로세스를 본다.
+// 점유 또는 확인 실패면 삭제·fixture·기동 없이 exit 3. 가드 결과는 원자료(guard-before.json)로 남긴다.
+const guard = probePreWipe({ dirs: [work, root], ports: [PORT], session: 'l443-gui-diff' })
+fs.writeFileSync(path.join(rawd, 'guard-before.json'), `${JSON.stringify(guard, null, 1)}\n`)
+if (!guard.pass) {
+  console.log(`[l526 dry] 가드: 지우지 않고 멈춘다 — ${guard.reasons.join(' / ')}`)
+  process.exit(3)
+}
 for (const dir of [work, root]) { fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true }) }
 const owned = []
 let code = 2
 try {
   const fixture = ensureFixtureRepo(work)
-  const handle = await launchCorral({ appRoot: path.resolve('app'), workDir: work, port: 9527, logDir: path.join(work, 'logs'), onSpawn: (entry) => owned.push(entry) })
+  const handle = await launchCorral({ appRoot: path.resolve('app'), workDir: work, port: PORT, logDir: path.join(work, 'logs'), onSpawn: (entry) => owned.push(entry) })
   await seedCorralRepo(handle, fixture.root)
   fs.symlinkSync(handle.control, path.join(root, 'ctl.sock'))
   fs.writeFileSync(path.join(root, 'app.pid'), String(handle.status?.runtime?.pid ?? 0))

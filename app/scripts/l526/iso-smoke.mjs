@@ -6,10 +6,10 @@
 // 사용(저장소 루트): node app/scripts/l526/iso-smoke.mjs --app app --work /tmp/l526i --port 9526 --out <raw>
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { launchCorral, seedCorralRepo } from '../gui-diff/lib/corral.mjs'
 import { ensureFixtureRepo } from '../gui-diff/lib/fixture.mjs'
 import { pause } from '../gui-diff/lib/cdp.mjs'
+import { probePreWipe } from './pre-wipe-guard.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (index % 2 === 0 ? [...pairs, [value.replace(/^--/, ''), all[index + 1]]] : pairs), []))
 const work = args.work
@@ -17,15 +17,12 @@ if (!work?.startsWith('/tmp/l526i')) throw new Error('--work 는 /tmp/l526i*')
 const out = path.resolve(args.out)
 fs.mkdirSync(out, { recursive: true })
 
-// 504 가드 — 같은 격리 경로·herdr 세션을 쓰는 프로세스가 있으면 띄우지 않는다.
-const ancestors = new Set([process.pid, process.ppid])
-let guard = ''
-try {
-  guard = execFileSync('pgrep', ['-fl', `${work}|l443-gui-diff`], { encoding: 'utf8' }).trim().split('\n').filter((line) => line !== '' && !ancestors.has(Number(line.split(' ')[0]))).join('\n')
-} catch { guard = '' }
-fs.writeFileSync(path.join(out, 'guard-before.txt'), `pgrep -fl "${work}|l443-gui-diff" → ${guard === '' ? '(없음)' : `\n${guard}`}\n`)
-if (guard !== '') {
-  console.log('[l526] 504 가드: 같은 경로·세션을 쓰는 프로세스가 있다 — 멈춘다\n' + guard)
+// 504 가드 — 같은 격리 경로(/tmp·/private/tmp 꼴)·herdr 세션·CDP 포트를 쓰는 프로세스가 있거나 확인을 못 하면 지우지 않고 멈춘다.
+// fix2 — 옛 꼴은 pgrep 실패(종료코드 1 외의 오류 포함)를 「없음」으로 읽었고 /private/tmp 꼴·포트를 안 봤다(pre-wipe-guard.mjs 로 바꿈).
+const guard = probePreWipe({ dirs: [work], ports: [Number(args.port)], session: 'l443-gui-diff' })
+fs.writeFileSync(path.join(out, 'guard-before.json'), `${JSON.stringify(guard, null, 1)}\n`)
+if (!guard.pass) {
+  console.log(`[l526] 504 가드: 지우지 않고 멈춘다 — ${guard.reasons.join(' / ')}`)
   process.exit(3)
 }
 fs.rmSync(work, { recursive: true, force: true })

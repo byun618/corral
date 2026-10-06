@@ -26,6 +26,9 @@ export const SESSION_POLL_MS = 3000
 export function herdrHome(): string {
   const fromEnv = process.env.HERDR_CONFIG_DIR
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv
+  // herdr 0.9.0 의 config_dir() 은 XDG_CONFIG_HOME/herdr 를 따른다 (LIFE-485 S1) — 폴백도 같은 곳을 본다.
+  const xdg = process.env.XDG_CONFIG_HOME
+  if (xdg !== undefined && xdg.length > 0) return path.join(xdg, 'herdr')
   return path.join(os.homedir(), '.config', 'herdr')
 }
 

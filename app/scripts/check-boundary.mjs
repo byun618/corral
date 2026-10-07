@@ -249,6 +249,7 @@ for (const file of files) {
   // ④ 와이어 지문 — 어댑터 밖에는 없어야 한다
   const wire = []
   const codeTokens = new Set()
+  const exempt = new Set()
   if (!isAdapter) {
     const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
     for (const { kind, pattern } of WIRE_FINGERPRINTS) {
@@ -257,12 +258,17 @@ for (const file of files) {
         const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
         const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog }) : null
         if (reason === null) wire.push({ kind, token: match[0] })
-        else exemptions.push({ file: rel(file), zone, token: match[0], 사유: reason })
+        else exempt.add(`${reason}\t${match[0]}`)
       }
     }
   }
   if (wire.length > 0) {
     violations.push({ rule: 'R4-wire-leak', zone, file: rel(file), tokens: [...new Set(wire.map((item) => item.token))] })
+  }
+
+  for (const entry of exempt) {
+    const [사유, token] = entry.split('\t')
+    exemptions.push({ file: rel(file), zone, token, 사유 })
   }
 
   // 주석에서만 나온 언급 — 위반은 아니지만 숨기지 않는다.
@@ -276,10 +282,16 @@ for (const file of files) {
   scanned.push({ file: rel(file), zone, imports: specifiers.length, wireHits: wire.length })
 }
 
-/** IPC 표면 — 경계를 건너는 payload 타입이 어디서 오나 (N2ⓐ). */
-const preloadSource = stripComments(fs.readFileSync(path.join(SRC, 'preload/index.ts'), 'utf8'))
+/**
+ * IPC 표면 — 경계를 건너는 payload 타입이 어디서 오나 (N2ⓐ).
+ * LIFE-518 — 묻는 것은 「preload 가 main·renderer·어댑터가 아니라 shared 에서만 가져오나」 다. 전에는 지정자 문자열에
+ * `shared/types` 가 들었는지 봐서, preload 가 `shared/terminal-settings` 처럼 shared 의 다른 모듈을 쓰자 미달이 됐다.
+ * 이제 지정자를 실제 경로로 풀어 `src/shared/` 안인지 본다 — `src/shared-x/` 같은 형제는 `inside` 가 막는다.
+ */
+const PRELOAD = path.join(SRC, 'preload/index.ts')
+const preloadSource = stripComments(fs.readFileSync(PRELOAD, 'utf8'))
 const ipcTypeImports = importSpecifiers(preloadSource).filter((item) => item.startsWith('.'))
-const ipcTypesFromShared = ipcTypeImports.every((item) => item.includes('shared/types'))
+const ipcTypesFromShared = ipcTypeImports.every((item) => inside(resolveSpecifier(PRELOAD, item), path.join(SRC, 'shared')))
 
 const out = {
   at: new Date().toISOString(),
@@ -300,7 +312,7 @@ const out = {
   },
   'IPC 표면': {
     preload가_import하는_상대모듈: ipcTypeImports,
-    'shared/types 만인가': ipcTypesFromShared,
+    'src/shared 만인가': ipcTypesFromShared,
   },
   검사한파일: scanned,
   주석언급: {

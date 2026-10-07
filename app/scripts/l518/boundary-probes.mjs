@@ -74,6 +74,13 @@ export const PROBES = [
   { id: 'd-r2', group: 'ⓓ', expect: 'R2-adapter', file: `${R}d-r2.ts`, source: "import { SessionLink } from '../../main/adapter/index.js'\nexport const probe = SessionLink\n" },
   { id: 'd-r3', group: 'ⓓ', expect: 'R3-shared-pure', file: `${S}d-r3.ts`, source: "import { log } from '../main/log.js'\nexport const probe = log\n" },
 
+  // IPC 표면 (01-criteria 기준 정정 Q1) — preload/index.ts 에 import 한 줄을 **덧붙인다**(mode append, 끝나면 원문 복원).
+  // R1~R3 는 preload → main 비어댑터·renderer import 를 안 본다 — 이 조건이 유일한 가드다.
+  { id: 'i-preload-main', group: 'IPC', expect: 'IPC', mode: 'append', file: 'src/preload/index.ts', source: "\nimport { log as boundaryProbeLog } from '../main/log.js'\nexport const boundaryProbe = boundaryProbeLog\n" },
+  { id: 'i-preload-renderer', group: 'IPC', expect: 'IPC', mode: 'append', file: 'src/preload/index.ts', source: "\nimport App from '../renderer/src/App.js'\nexport const boundaryProbe = App\n" },
+  { id: 'i-preload-shared-sibling', group: 'IPC', expect: 'IPC', mode: 'append', file: 'src/preload/index.ts', source: "\nimport type { X as BoundaryProbeX } from '../shared-x/types.js'\nexport type BoundaryProbe = BoundaryProbeX\n" },
+  { id: 'i-preload-fake-shared-types', group: 'IPC', expect: 'IPC', mode: 'append', file: 'src/preload/index.ts', source: "\nimport type { X as BoundaryProbeX } from '../main/shared/types.js'\nexport type BoundaryProbe = BoundaryProbeX\n" },
+
   // ⓔ 음성 대조 — 원래 7파일의 꼴. 기준은 잡고 고친 쪽은 위반 0 이어야 한다
   { id: 'e-action-table', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${S}e-action-table.ts`, source: "export const TABLE = [\n  { id: 'tab.rename', title: 'a' },\n  { id: 'workspace.delete', title: 'b' },\n  { id: 'tab.selectByIndex', title: 'c' },\n] as const\n" },
   { id: 'e-binding-label', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-binding-label.tsx`, source: "declare function bindingLabel(id: string): string\nexport const Item = (): string => `이름 바꾸기 ${bindingLabel('tab.rename')}`\n" },
@@ -119,11 +126,15 @@ export function runProbes(checkerSource, probes = PROBES) {
     const clean = runChecker(root)
     const cells = probes.map((probe) => {
       const target = path.join(root, probe.file)
-      fs.writeFileSync(target, probe.source)
+      const original = probe.mode === 'append' ? fs.readFileSync(target, 'utf8') : null
+      fs.writeFileSync(target, (original ?? '') + probe.source)
       try {
         const { exit, report } = runChecker(root)
         const mine = (report?.위반 ?? []).filter((item) => item.file === probe.file)
-        const rules = [...new Set(mine.map((item) => item.rule))]
+        // IPC 칸 키는 기준판 `shared/types 만인가` → 지금판 `src/shared 만인가` (Q1 정정).
+        const surface = report?.['IPC 표면'] ?? {}
+        const ipcOk = surface['src/shared 만인가'] ?? surface['shared/types 만인가']
+        const rules = [...new Set(mine.map((item) => item.rule)), ...(ipcOk === false ? ['IPC'] : [])]
         return {
           id: probe.id,
           exit,
@@ -132,10 +143,15 @@ export function runProbes(checkerSource, probes = PROBES) {
           caught: probe.expect === null ? mine.length > 0 : rules.includes(probe.expect),
         }
       } finally {
-        fs.rmSync(target, { force: true })
+        if (original === null) fs.rmSync(target, { force: true })
+        else fs.writeFileSync(target, original)
       }
     })
-    return { clean: { exit: clean.exit, 위반: clean.report?.위반.length ?? null, 파일수: clean.report?.범위.파일수 ?? null }, cells }
+    const surface = clean.report?.['IPC 표면'] ?? {}
+    return {
+      clean: { exit: clean.exit, 위반: clean.report?.위반.length ?? null, 파일수: clean.report?.범위.파일수 ?? null, ipc: surface['src/shared 만인가'] ?? surface['shared/types 만인가'] ?? null },
+      cells,
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

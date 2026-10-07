@@ -1,13 +1,13 @@
 // LIFE-507 K4(530) — OS 수준 입력(cliclick, os-act.mjs — 유휴 가드·창 소유자 가드)으로 탭 줄 포털 메뉴의 버튼이 아닌 자리를 누르고 끌어도
 // 탭 순서·영역 배치가 그대로인가. 메뉴 열기·끌기·회귀 클릭은 전부 OS 입력이다. 준비(워크스페이스·탭 만들기·worktree 활성)와 관측은 제어 소켓.
 // 자리 찾기: 메뉴 상자 안을 4px 격자로 훑어 `elementFromPoint` 가 그 자리(섹션 제목·구분선·메뉴 바탕)인 첫 점.
-// 사용: node k4.mjs <app 폴더> <n> <사례,…> [os-act jsonl 경로]   사례: probe · tab-section · tab-sep · tab-pad · header-section · create-blank · btn-pin · outside · plain-drag
+// 사용: node k4.mjs <app 폴더> <n> <사례,…> [os-act jsonl 경로]  |  node k4.mjs --native <ROOT> <사례,…> [jsonl]   사례: probe · tab-section · tab-sep · tab-pad · header-section · create-blank · btn-pin · outside · plain-drag
 // 출력: 사례마다 `CASE {...}` — changed = 탭 순서·영역 배치가 바뀌었나. exit 0 = 모든 사례가 입력까지 갔다, 2 = 입력을 못 보낸(거절·창 없음 등) 사례가 있다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { isoUp, isoDown, herdrJson, state, ev, click, until, pause, electronMain } from './iso.mjs'
+import { isoUp, isoDown, nativeHandle, herdr, herdrJson, state, ev, click, until, pause, electronMain } from './iso.mjs'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -15,12 +15,14 @@ const [app, n, list] = process.argv.slice(2)
 if (!app || !n || !list) throw new Error('사용: node k4.mjs <app> <n> <사례,…>')
 const cases = list.split(',')
 const log = (...parts) => console.log(...parts)
-const h = await isoUp({ app, n, log })
+// `--native <ROOT>` — 네이티브 회차(K6ⓒ): native-up.sh 가 띄운 corral 창에 같은 OS 입력. 끄기는 native-down.sh.
+const native = app === '--native'
+const h = native ? nativeHandle({ root: n, log }) : await isoUp({ app, n, log })
 const P = h.fixture.root
 const actLog = process.argv[5] ?? path.join(h.work, 'os-act.jsonl')
 let code = 0
 // 창 주인 = Electron 본체(`open` 이 돌려준 pid 는 런타임일 수 있다 — R004 에서 창을 못 찾았다).
-const windowPid = electronMain(h)
+const windowPid = native ? h.corralPid : electronMain(h)
 log('window pid', windowPid, 'runtime pid', h.corralPid)
 let failedCases = 0
 
@@ -155,10 +157,19 @@ try {
         act('바깥 클릭 회귀 메뉴 열기(우클릭 t1)', [`rc:@${t1.x},${t1.y}`])
         await pause(500)
         const opened = await menuOpen(`[data-tab-menu="${ws}:t1"]`)
-        const spacer = await center('.main-tabbar-spacer')
-        const press = act('메뉴 밖(탭바 빈 곳) 클릭', [`c:@${spacer.x},${spacer.y}`])
+        // 메뉴 밖 점 — 메뉴 상자 아래(터미널 쪽)에서 `elementFromPoint` 가 메뉴 안이 아니고 단추·입력이 아닌 첫 점(R012 는 탭바 빈 곳 중앙이 메뉴 안이었다).
+        const spacer = await ev(h, `(() => {
+          const menu = document.querySelector('[data-tab-menu="${ws}:t1"]'); const r = menu.getBoundingClientRect()
+          for (let y = Math.round(r.bottom) + 30; y < window.innerHeight - 20; y += 20) for (let x = 40; x < window.innerWidth - 40; x += 40) {
+            const el = document.elementFromPoint(x, y)
+            if (el && !menu.contains(el) && el.closest('button, input, [data-worktree], [data-main-tab]') === null) return { x, y, el: el.tagName + '.' + [...el.classList].join('.') }
+          }
+          return null
+        })()`)
+        log('OUTSIDE POINT', JSON.stringify(spacer))
+        const press = act('메뉴 밖(메뉴 아래 빈 곳) 클릭', [`c:@${spacer.x},${spacer.y}`])
         await pause(500)
-        result = { label: 'outside', ok: press.exit === 0, opened, closed: !(await menuOpen(`[data-tab-menu="${ws}:t1"]`)) }
+        result = { label: 'outside', ok: press.exit === 0, opened, point: spacer, closed: !(await menuOpen(`[data-tab-menu="${ws}:t1"]`)) }
         break
       }
       case 'plain-drag': {
@@ -185,6 +196,8 @@ try {
   code = 1
 } finally {
   if (fs.existsSync(actLog)) log('ACTLOG', fs.readFileSync(actLog, 'utf8').trim().split('\n').length, '줄', actLog)
+  // 네이티브는 만든 워크스페이스를 닫고 끝낸다(다음 걸음이 같은 fixture 에 새로 연다 — 한 worktree 에 워크스페이스 둘이 되지 않게).
+  if (native) { if (ws !== null) log('native close', JSON.stringify(herdr(h, ['workspace', 'close', ws]))); process.exit(code) }
   const left = await isoDown(h)
   if (h.corralPid !== null) { try { process.kill(h.corralPid, 0); log('corral still alive', h.corralPid); code = code || 4 } catch { /* 꺼졌다 */ } }
   if (left.length > 0) code = code || 4

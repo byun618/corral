@@ -1,14 +1,16 @@
 // LIFE-507 K2(508) 격리 시나리오 — 분할 pane 을 ⌘W 로 닫은 직후 MRU 맨 앞이 화면의 포커스 pane 인가, 그 직후 ⌃Tab 이 화면을 MRU 둘째로 옮기는가.
 // 495 `mru-diag.mjs` 와 같은 걸음(탭 클릭 → ⌘T → ⌘D → ⌘W → ⌃Tab 홀드 → 놓기). 다른 탭이 MRU 에 있는 조건 = P 의 탭 t1·t2 를 먼저 클릭.
 // 키는 제어 소켓 `key`(sendInputEvent — main 의 before-input-event 를 지난다). 화면 = `[data-term-pane-box].is-selected`.
-// 판정 출력: `VERDICT {...}`. exit 0 = 끝까지 돌았다. 사용: node k2.mjs <app 폴더> <n>
-import { isoUp, isoDown, herdrJson, state, ev, click, until, pause } from './iso.mjs'
+// 판정 출력: `VERDICT {...}`. exit 0 = 끝까지 돌았다. 사용: node k2.mjs <app 폴더> <n>  |  node k2.mjs --native <ROOT>
+import { isoUp, isoDown, nativeHandle, herdr, herdrJson, state, ev, click, until, pause } from './iso.mjs'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
 const [app, n] = process.argv.slice(2)
-if (!app || !n) throw new Error('사용: node k2.mjs <app> <n>')
+if (!app || !n) throw new Error('사용: node k2.mjs <app> <n>  |  node k2.mjs --native <ROOT=/tmp/l507n*>')
 const log = (...parts) => console.log(...parts)
-const h = await isoUp({ app, n, log })
+// `--native <ROOT>` — 네이티브 회차(K6ⓑ): native-up.sh 가 띄운 corral·herdr default 에서 같은 걸음. 끄기는 native-down.sh.
+const native = app === '--native'
+const h = native ? nativeHandle({ root: n, log }) : await isoUp({ app, n, log })
 const P = h.fixture.root
 let code = 0
 const screen = () => ev(h, `({ pane: document.querySelector('[data-term-pane-box].is-selected')?.dataset.termPaneBox ?? null, tab: document.querySelector('[data-main-tab][data-active="true"]')?.dataset.mainTab ?? null, panes: [...document.querySelectorAll('[data-term-pane-box]')].map((e) => e.dataset.termPaneBox) })`)
@@ -22,8 +24,9 @@ const step = async (label, run, wait = 900) => {
   return row
 }
 
+let ws = null
 try {
-  const ws = herdrJson(h, ['workspace', 'create', '--cwd', P, '--no-focus']).result.workspace.workspace_id
+  ws = herdrJson(h, ['workspace', 'create', '--cwd', P, '--no-focus']).result.workspace.workspace_id
   herdrJson(h, ['tab', 'create', '--workspace', ws, '--cwd', P, '--no-focus'])
   await until(async () => (await wsP())?.tabs.length === 2, 'P 2 tabs', 15_000)
   await click(h, `[data-worktree="${P}"] [data-worktree-card-surface]`)
@@ -66,6 +69,8 @@ try {
   log('ERROR', String(error?.stack ?? error))
   code = 1
 } finally {
+  // 네이티브는 만든 워크스페이스를 닫고 끝낸다(다음 걸음이 같은 fixture 에 새로 연다 — 한 worktree 에 워크스페이스 둘이 되지 않게).
+  if (native) { if (ws !== null) log('native close', JSON.stringify(herdr(h, ['workspace', 'close', ws]))); process.exit(code) }
   const left = await isoDown(h)
   if (h.corralPid !== null) { try { process.kill(h.corralPid, 0); log('corral still alive', h.corralPid); code = code || 4 } catch { /* 꺼졌다 */ } }
   if (left.length > 0) code = code || 4

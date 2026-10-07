@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/* global window, document, process */
+/* global window, document, process, setTimeout */
 // LIFE-524 — 닫기 IPC 자체가 reject 하면(transport 오류 — 구조화된 결과가 아니다) unhandled rejection 이 없고, 알림이 뜨고,
 // 확인 뒤 닫기였으면 확인창이 풀려 같은 탭 닫기를 다시 시도할 수 있다(재시도가 IPC 까지 간다). 516 codex-r2 「세부 확인 및 한계」 의 합성 reject 재현.
 import { act, createElement } from 'react'

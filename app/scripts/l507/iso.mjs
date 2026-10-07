@@ -95,6 +95,28 @@ export function electronMain(handle) {
   return line === undefined ? null : Number(line.trim().split(/\s+/)[0])
 }
 
+/** corral 만 끈다(herdr 는 그대로) — 같은 userData 로 `startCorral` 이 다시 띄운다(K1ⓒ: corral 이 꺼진 동안의 변화). */
+export async function stopCorral(handle) {
+  const pid = handle.corralPid
+  if (pid === null) return
+  try { process.kill(pid, 'SIGTERM') } catch { /* 이미 없다 */ }
+  await until(() => { try { process.kill(pid, 0); return false } catch { return true } }, `corral pid ${pid} 종료`, 30_000)
+  handle.corralPid = null
+  await until(() => !fs.existsSync(handle.ctl), 'ctl socket 사라짐', 15_000).catch(() => fs.rmSync(handle.ctl, { force: true }))
+}
+
+export async function startCorral(handle) {
+  const opened = spawnSync(process.execPath, [path.join(handle.app, 'cli/corral.mjs'), 'open', '--json'], { env: handle.env, encoding: 'utf8', timeout: 120_000 })
+  if (opened.status === 0) handle.corralPid = JSON.parse(opened.stdout).result?.runtime?.pid ?? null
+  else {
+    handle.log('corral open 실패 — 떠 있는 Electron 을 찾는다', `${opened.status} ${opened.stdout.trim()}`.slice(0, 400))
+    handle.corralPid = await until(() => electronMain(handle), 'Electron(user-data-dir) 프로세스', 30_000)
+  }
+  await until(() => fs.existsSync(handle.ctl), 'ctl socket', 60_000)
+  await waitLive(handle)
+  await until(async () => (await state(handle)).repos.some((repo) => repo.worktrees.length >= 2), 'fixture 2 worktrees', 30_000)
+}
+
 export async function startHerdr(handle) {
   const logFd = fs.openSync(path.join(handle.work, `herdr-${handle.herdrPids.length + 1}.log`), 'a')
   const server = spawn('herdr', ['--session', SESSION, 'server'], { env: handle.env, stdio: ['ignore', logFd, logFd], detached: false })
@@ -113,7 +135,7 @@ export async function restartHerdr(handle) {
   await until(() => { try { process.kill(before, 0); return false } catch { return true } }, `herdr pid ${before} 종료`, 30_000)
   await pause(500)
   await startHerdr(handle)
-  await waitLive(handle)
+  if (handle.corralPid !== null) await waitLive(handle)
 }
 
 export async function waitLive(handle, timeoutMs = 60_000) {
@@ -121,7 +143,7 @@ export async function waitLive(handle, timeoutMs = 60_000) {
 }
 
 export function herdr(handle, args) {
-  const result = spawnSync('herdr', ['--session', SESSION, ...args], { env: handle.env, encoding: 'utf8', timeout: 30_000 })
+  const result = spawnSync('herdr', ['--session', handle.session ?? SESSION, ...args], { env: handle.env, encoding: 'utf8', timeout: 30_000 })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
@@ -148,7 +170,7 @@ export async function click(handle, selector) {
 }
 
 export function uiPrefs(handle) {
-  const file = path.join(handle.work, 'userdata', 'ui-prefs.json')
+  const file = path.join(handle.userData ?? path.join(handle.work, 'userdata'), 'ui-prefs.json')
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
 }
 
@@ -170,4 +192,20 @@ export async function isoDown(handle) {
   }
   handle.log('left', JSON.stringify(left))
   return left
+}
+
+/**
+ * 네이티브 회차(K6)의 손잡이 — native-up.sh 가 띄운 corral(`<ROOT>/ctl.sock`·`app.pid`, 사용자 userData) + herdr `default`.
+ * 드라이버(k2·k4)는 이 손잡이로 같은 걸음을 돈다. 끄기·원복은 native-down.sh 몫이라 여기엔 없다.
+ * fixture 는 native.mjs setup 이 `<ROOT>/native-state.json` 에 적는다. herdr CLI 는 사용자 기본 설정(XDG·HERDR_CONFIG_PATH 없이)으로 부른다.
+ */
+export function nativeHandle({ root, log = console.log }) {
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'native-state.json'), 'utf8'))
+  const env = { ...process.env }
+  for (const key of ['XDG_CONFIG_HOME', 'HERDR_CONFIG_PATH', 'CORRAL_CLI_SOCKET', 'CORRAL_RUNTIME_SOCKET', 'CORRAL_BACKEND_SOCKET', 'CORRAL_SESSION', 'CORRAL_USER_DATA', 'CORRAL_REGISTRY', 'CORRAL_CONTROL_SOCKET']) delete env[key]
+  return {
+    native: true, app: fs.readFileSync(path.join(root, 'app.dir'), 'utf8'), n: 'native', work: root, xdg: null, env, session: 'default',
+    fixture: saved.fixture, ctl: path.join(root, 'ctl.sock'), herdrPids: [], corralPid: Number(fs.readFileSync(path.join(root, 'app.pid'), 'utf8').trim()),
+    userData: path.join(process.env.HOME, 'Library/Application Support/corral'), log,
+  }
 }

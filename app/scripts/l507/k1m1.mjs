@@ -3,16 +3,27 @@
 //   ② corral 끔 → l507 서버 정지 → 같은 XDG 에 다른 이름 세션 l507fb 기동(워크스페이스 1개 — 탭 id 는 w1:t1)
 //   ③ CORRAL_SESSION·CORRAL_BACKEND_SOCKET 없이 corral 켬 → pickSessionName 폴백으로 l507fb 에 붙는다(제 세션 = default)
 //   ④ ui-prefs 를 ① 과 비교 — before(130c5f63)는 지워짐 / after 는 보존이어야 한다
-// 출력 `VERDICT {...}`. exit 0 = 끝까지 돌았다(기준 판정은 VERDICT). 사용: node k1m1.mjs <app> <n>
+// 출력 `VERDICT {...}`. 사용: node k1m1.mjs <app> <n> <kept|lost> — 셋째 인자가 이 회차의 기대(after = kept 보존, 130c5f63 before = lost 지워짐).
+// 종료코드(fix2 R2-L2): 0 = VERDICT.ok(기대와 일치) · 2 = 기대와 다름 · 3 = 사전 조건 실패(핀·색·배치·번호가 ① 에서 실제로 안 들어감 — 공허 통과 방지) ·
+// 1 = 시나리오 오류 · 4 = 잔존. 회차 머리에 빌드 출처(BUILD — `<app>/.build-commit` 또는 git HEAD·dirty)를 남긴다.
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { isoUp, isoDown, herdrJson, herdr, state, ev, click, uiPrefs, until, pause, stopCorral, startCorral } from './iso.mjs'
 
 const FALLBACK = 'l507fb'
-const [app, n] = process.argv.slice(2)
-if (!app || !n) throw new Error('사용: node k1m1.mjs <app> <n>')
+const [app, n, expect] = process.argv.slice(2)
+if (!app || !n || !['kept', 'lost'].includes(expect)) throw new Error('사용: node k1m1.mjs <app> <n> <kept|lost>')
 const log = (...parts) => console.log(...parts)
+const buildOf = (dir) => {
+  const stamp = path.join(dir, '.build-commit')
+  if (fs.existsSync(stamp)) return { commit: fs.readFileSync(stamp, 'utf8').trim(), source: '.build-commit' }
+  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+  const dirty = spawnSync('git', ['-C', dir, 'status', '--porcelain', '--', 'src'], { encoding: 'utf8' }).stdout.trim().length > 0
+  return { commit: head, source: 'git HEAD', srcDirty: dirty }
+}
+const mainJs = path.join(app, 'out', 'main', 'index.js')
+log('BUILD', JSON.stringify({ app, ...buildOf(app), outMainMtime: fs.existsSync(mainJs) ? fs.statSync(mainJs).mtime.toISOString() : null, expect }))
 const h = await isoUp({ app, n, log })
 const Q = h.fixture.worktree
 let code = 0
@@ -49,6 +60,14 @@ try {
   await pause(1500)
   const before = prefsView()
   log('PREFS own(l507)', JSON.stringify(before))
+  // 사전 조건 — 비교할 칸이 실제로 들어갔나. 비어 있으면 「보존」 이 공허하게 참이 된다.
+  const pre = {
+    mark: before.tabMarks.includes(`${wsQ}:t1:pin:#ef4444`),
+    layout: before.groupLayouts.some((row) => row.endsWith('/fx-wt')),
+    ordinals: before.tabOrdinals.some((row) => row.startsWith(`${wsQ}:`)),
+  }
+  log('PRECONDITION', JSON.stringify(pre))
+  if (!pre.mark || !pre.layout || !pre.ordinals) { code = 3; throw new Error(`사전 조건 실패 ${JSON.stringify(pre)}`) }
   await stopCorral(h)
   const stopped = herdr(h, ['server', 'stop'])
   log('l507 server stop', stopped.status, stopped.stdout.trim(), stopped.stderr.trim())
@@ -88,10 +107,15 @@ try {
     lost: { tabMarks: before.tabMarks.filter((item) => !after.tabMarks.includes(item)), groupLayouts: before.groupLayouts.filter((item) => !after.groupLayouts.includes(item)), tabOrdinals: before.tabOrdinals.filter((item) => !after.tabOrdinals.includes(item)) },
     herdrTabIdsNull: attached.herdrTabIds === null,
   }
+  const allKept = verdict.preserved.tabMarks && verdict.preserved.groupLayouts && verdict.preserved.tabOrdinals
+  const allLost = verdict.lost.tabMarks.length > 0 && verdict.lost.groupLayouts.length > 0 && verdict.lost.tabOrdinals.length > 0
+  verdict.expect = expect
+  verdict.ok = verdict.fallback && (expect === 'kept' ? allKept && verdict.herdrTabIdsNull : allLost && !verdict.herdrTabIdsNull)
   log('VERDICT', JSON.stringify(verdict))
+  if (!verdict.ok) code = 2
 } catch (error) {
   log('ERROR', String(error?.stack ?? error))
-  code = 1
+  code = code || 1
 } finally {
   // isoDown 의 `server stop` 은 l507 세션 몫 — 폴백 세션도 멈춘다.
   log('fallback server stop', JSON.stringify(herdr({ ...h, session: FALLBACK }, ['server', 'stop'])))

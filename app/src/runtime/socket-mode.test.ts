@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
-import { serveSocket } from './transport.js'
+import { localCall, request, serveSocket } from './transport.js'
+import type { RpcRequest } from './contracts.js'
 
 // LIFE-519: bind happens synchronously inside listen(), so lstat right after it returns sees the mode the
 // socket was created with — the mode a polling client could meet before the runtime finishes starting.
@@ -14,7 +15,7 @@ function fixture() {
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   return { dir, endpoint: path.join(dir, 'rpc.sock') }
 }
-const handle = async () => ({ id: 'x', ok: true, result: null, _meta: { runtimeId: 'x', outcome: 'completed' as const } })
+const handle = async (req: RpcRequest) => ({ id: req.id, ok: true, result: null, _meta: { runtimeId: 'x', outcome: 'completed' as const } })
 function looseUmask() {
   const prior = process.umask(0o022)
   cleanups.push(() => { process.umask(prior) })
@@ -50,5 +51,24 @@ describe('control socket permissions (LIFE-519)', () => {
     await expect(serveSocket(endpoint, handle)).rejects.toMatchObject({ code: 'EADDRINUSE' })
     expect(fs.lstatSync(endpoint).ino).toBe(inode)
     expect(process.umask(0o022)).toBe(0o022)
+  })
+  it('still makes the client refuse a loose socket, a symlinked socket, a loose parent and a symlinked parent', async () => {
+    const { dir, endpoint } = fixture()
+    fs.chmodSync(dir, 0o700)
+    const stop = await serveSocket(endpoint, handle); cleanups.push(stop)
+    const status = (target: string) => localCall(target, request({ command: 'status', flags: {}, args: [], cwd: '/tmp' }))
+    expect((await status(endpoint)).ok).toBe(true)
+    fs.chmodSync(endpoint, 0o666)
+    await expect(status(endpoint)).rejects.toMatchObject({ code: 'unsafe_permissions' })
+    fs.chmodSync(endpoint, 0o600)
+    const link = path.join(dir, 'link.sock'); fs.symlinkSync(endpoint, link)
+    await expect(status(link)).rejects.toMatchObject({ code: 'unsafe_permissions' })
+    fs.chmodSync(dir, 0o755)
+    await expect(status(endpoint)).rejects.toMatchObject({ code: 'unsafe_permissions' })
+    fs.chmodSync(dir, 0o700)
+    const parentLink = fs.mkdtempSync(path.join(os.tmpdir(), 'l519p-')); cleanups.push(() => fs.rmSync(parentLink, { recursive: true, force: true }))
+    fs.chmodSync(parentLink, 0o700); fs.symlinkSync(dir, path.join(parentLink, 'via'))
+    await expect(status(path.join(parentLink, 'via', 'rpc.sock'))).rejects.toMatchObject({ code: 'unsafe_permissions' })
+    expect((await status(endpoint)).ok).toBe(true)
   })
 })

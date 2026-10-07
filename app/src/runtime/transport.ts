@@ -99,7 +99,13 @@ export async function serveSocket(endpoint: string, handle: (req: RpcRequest, si
             } responseQueued=true;socket.end(JSON.stringify(response) + '\n', () => {if (acceptedRequest) afterResponse?.(acceptedRequest,response)}); })();
         });
     });
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(endpoint, () => { server.off('error', reject); resolve(); }); });
+    // LIFE-519: bind creates the socket file synchronously inside listen() with mode 0777 & ~umask, and a polling
+    // client rejects any group/other bit. Bind under a private umask and restore it before listen() returns, so the
+    // endpoint is never visible loose; the umask is process-wide, so the changed span stays this one synchronous call.
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); const umask = process.umask(0o077); try {
+        server.listen(endpoint, () => { server.off('error', reject); resolve(); });
+    }
+    finally { process.umask(umask); } });
     fs.chmodSync(endpoint, 0o600);
     const inode = fs.statSync(endpoint).ino;
     return async () => { for (const client of clients)

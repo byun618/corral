@@ -34,7 +34,7 @@ result.herdrPid = herdrPid
 result.herdrLeft = await stopPids([herdrPid])
 await pause(300)
 result.leftovers = processesUsing(work)
-let parsed = null; try { parsed = JSON.parse(open.stdout) } catch {}
+let parsed = null; try { parsed = JSON.parse(open.stdout) } catch { /* JSON 아님 — 판정에서 실패 */ }
 const OBSERVED = 'Desktop handoff/launch may have taken effect: Socket and parent must be private and owned by this user'
 const met = expect === 'fail'
   ? open.status !== 0 && parsed?.error?.code === 'outcome_unknown' && parsed?.error?.message === OBSERVED && (Number(delayArg) === 0 || result.delayLog.length === 1)

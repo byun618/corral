@@ -25,10 +25,10 @@ export async function startObserver(endpoint, out) {
 }
 export function alive(pid) { try { process.kill(pid, 0); return true } catch { return false } }
 export async function stopPids(pids, timeout = 15000) {
-  for (const pid of pids) { try { process.kill(pid, 'SIGTERM') } catch {} }
+  for (const pid of pids) { try { process.kill(pid, 'SIGTERM') } catch { /* 이미 없음 */ } }
   const until = Date.now() + timeout
   while (Date.now() < until && pids.some(alive)) await pause(50)
-  for (const pid of pids.filter(alive)) { try { process.kill(pid, 'SIGKILL') } catch {} }
+  for (const pid of pids.filter(alive)) { try { process.kill(pid, 'SIGKILL') } catch { /* 이미 없음 */ } }
   await pause(100)
   return pids.filter(alive)
 }

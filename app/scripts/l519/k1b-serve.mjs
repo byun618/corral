@@ -1,5 +1,6 @@
 // LIFE-519 K1ⓑ / K2ⓐⓑ — 소켓 주인 = CLI `serve`(제품 startRuntime → serveSocket), 시험용 지연(delay.cjs)을 NODE_OPTIONS 로 싣는다.
 // 기동마다: 관측기(별도 프로세스, 촘촘한 lstat) + 이 프로세스의 폴링 클라이언트(제품 localCall 'status', 5ms 간격) → 오류 코드 집계.
+// L519_APP 를 주면 그 app 디렉터리의 cli/corral.mjs(예: 기준 commit 을 내보내 빌드한 사본)로 serve 한다.
 // 사용: node --import tsx k1b-serve.mjs <work=/tmp/l519w*> <기동 수> <지연 ms> <fail|pass> <out.json>
 //   fail(기준 코드 양성 대조): 모든 기동에서 unsafe_permissions ≥1 그리고 관측기 loose ≥1 이면 exit 0
 //   pass(고친 코드): 모든 기동에서 unsafe_permissions 0·관측기 loose 0·ok 응답 ≥1 이면 exit 0
@@ -11,14 +12,14 @@ const { localCall, request } = await import('../../src/runtime/transport.ts')
 const [work, countArg, delayArg, expect, out] = process.argv.slice(2)
 guard(work)
 fs.rmSync(work, { recursive: true, force: true }); fs.mkdirSync(work, { recursive: true, mode: 0o700 })
-const result = { ...header(), work, delayMs: Number(delayArg), expect, starts: [] }
+const result = { ...header(), serveApp: process.env.L519_APP ?? APP, work, delayMs: Number(delayArg), expect, starts: [] }
 for (let n = 1; n <= Number(countArg); n++) {
   const ud = path.join(work, `ud${n}`), endpoint = path.join(ud, 'runtime/rpc.sock')
   const observer = await startObserver(endpoint, path.join(work, `obs${n}.json`))
   const env = { ...process.env, CORRAL_USER_DATA: ud, L519_DELAY_PATH: endpoint, L519_DELAY_MS: delayArg, NODE_OPTIONS: `--require ${path.join(HERE, 'delay.cjs')}` }
   for (const key of ['CORRAL_RUNTIME_SOCKET', 'CORRAL_BACKEND_SOCKET', 'CORRAL_SESSION']) delete env[key]
   let stderr = ''
-  const serve = spawn(process.execPath, [path.join(APP, 'cli/corral.mjs'), 'serve', '--json'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const serve = spawn(process.execPath, [path.join(process.env.L519_APP ?? APP, 'cli/corral.mjs'), 'serve', '--json'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   serve.stderr.on('data', d => { stderr += d })
   const codes = {}, messages = new Set()
   let okAt = null, polls = 0

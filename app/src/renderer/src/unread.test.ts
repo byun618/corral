@@ -465,15 +465,15 @@ describe('LIFE-502 기동 반짝임 (D1·D2 · K3ⓐ)', () => {
 describe('LIFE-502 r1 — promptedOf · 같은 pane 재기동 · 보고 있음', () => {
   const base = { agent: 'codex', sessionKey: 'old', promptSeen: true, judgeable: true }
   it('promptedOf — 판단 불가(judgeable false)는 null · 참조 없음은 codex 만 false · 물러난 참조와 같으면 참조 없음', () => {
-    expect(promptedOf({ ...base, judgeable: false }, undefined)).toBe(null)
-    expect(promptedOf({ ...base, sessionKey: null }, undefined)).toBe(false)
-    expect(promptedOf({ ...base, agent: 'claude', sessionKey: null }, undefined)).toBe(null)
-    expect(promptedOf({ ...base, agent: 'grok', sessionKey: null }, undefined)).toBe(null)
-    expect(promptedOf(base, undefined)).toBe(true)
-    expect(promptedOf({ ...base, promptSeen: false }, undefined)).toBe(false)
-    expect(promptedOf(base, 'old')).toBe(false)
-    expect(promptedOf({ ...base, agent: 'claude' }, 'old')).toBe(null)
-    expect(promptedOf(base, 'other')).toBe(true)
+    expect(promptedOf({ obs: { ...base, judgeable: false }, retired: undefined })).toBe(null)
+    expect(promptedOf({ obs: { ...base, sessionKey: null }, retired: undefined })).toBe(false)
+    expect(promptedOf({ obs: { ...base, agent: 'claude', sessionKey: null }, retired: undefined })).toBe(null)
+    expect(promptedOf({ obs: { ...base, agent: 'grok', sessionKey: null }, retired: undefined })).toBe(null)
+    expect(promptedOf({ obs: base, retired: undefined })).toBe(true)
+    expect(promptedOf({ obs: { ...base, promptSeen: false }, retired: undefined })).toBe(false)
+    expect(promptedOf({ obs: base, retired: 'old' })).toBe(false)
+    expect(promptedOf({ obs: { ...base, agent: 'claude' }, retired: 'old' })).toBe(null)
+    expect(promptedOf({ obs: base, retired: 'other' })).toBe(true)
   })
   /** r2/f1 codex-relaunch 원자료 모양: 1턴 뒤 종료(agent null, 참조 old 남음) → 같은 pane 재기동(참조 old 그대로) → 반짝임. */
   const pane = (steps: Array<[AgentStatus, number]>, fields: Partial<PaneObservation>): PaneObservation => ({ ...withHistory('p', steps), ...base, ...fields })

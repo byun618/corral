@@ -14,7 +14,8 @@
 //
 // 사용: node app/scripts/l502/k-iso.mjs --app <app 폴더> --work /tmp/l502iX --port 95NN --out <raw 폴더> --plan codex-flash,codex-flash,...
 // 회차 종류: codex-flash · claude-launch · grok-launch · claude-prompt · claude-argprompt · report-idle-first · report-direct · watched-report
-//           · claude-relaunch · codex-relaunch(같은 pane 에서 프롬프트 1턴 → 종료 → 재기동, r1 R1-01 — codex 는 프롬프트 1회를 쓴다)
+//           · claude-relaunch · codex-relaunch · claude-codex-relaunch(같은 pane 에서 프롬프트 1턴 → 종료 → 재기동, r1 R1-01 — codex 는 프롬프트 1회를 쓴다)
+//           · claude-slowmcp-prompt(K2ⓕ — claude 느린 MCP 기동 반짝임 뒤 프롬프트 1턴)
 //           · codex-prompt(K2ⓓ+ⓕ — 느린 MCP 로 반짝임을 낸 같은 pane 에 프롬프트 1회. 반짝임 뒤 observeMs 동안 표시 없음도 같이 본다. 토큰 사용)
 /* global document -- CDP evaluate 클로저 */
 import fs from 'node:fs'
@@ -43,6 +44,7 @@ const log = (...parts) => console.log(`[l502 +${((Date.now() - t0) / 1000).toFix
 
 const SLOW_CODEX = `codex -c check_for_update_on_startup=false -c 'mcp_servers.l502slow.command="sleep"' -c 'mcp_servers.l502slow.args=["8"]' -c mcp_servers.l502slow.startup_timeout_sec=6`
 const CLAUDE = 'claude --model claude-haiku-4-5-20251001'
+const SLOW_CLAUDE = `${CLAUDE} --mcp-config '{"mcpServers":{"l502slow":{"command":"sleep","args":["8"]}}}'`
 const PROMPT = 'Reply with exactly the word OK and nothing else. Do not use any tools.'
 // 기동 인자 프롬프트는 응답이 길어야 한다 — 1초 턴은 herdr 가 에이전트를 감지하기 전에 끝나 working 이 안 선다(impl-r1 argprompt 2회 무효).
 const ARG_PROMPT = 'Write the integers from 1 to 400 separated by single spaces. Output nothing else. Do not use any tools.'
@@ -137,8 +139,10 @@ async function clearIndicators(label) {
 }
 const report = (paneId, st) => backendRpc(iso, 'pane.report_agent', { pane_id: paneId, source: 'l502-iso', agent: 'claude', state: st })
 const sendText = (paneId, text) => backendRpc(iso, 'pane.send_text', { pane_id: paneId, text })
-async function sendPrompt(paneId) {
-  await sendText(paneId, PROMPT)
+// codex 프롬프트는 짧은 한 줄(r1 코디 답 — 사용량 90%).
+const CODEX_PROMPT = 'Reply exactly: PONG'
+async function sendPrompt({ paneId, text = PROMPT }) {
+  await sendText(paneId, text)
   await pause(600)
   await sendText(paneId, '\r')
 }
@@ -197,7 +201,7 @@ async function runOne(kind, index) {
         await waitStatus(['idle', 'done'], 'claude ready', 45_000)
         await pause(1500)
         note('prompt-send', { prompt: PROMPT })
-        await sendPrompt(paneId)
+        await sendPrompt({ paneId })
         await waitTurn('prompt', 120_000)
         break
       }
@@ -208,31 +212,38 @@ async function runOne(kind, index) {
         await waitTurn('argprompt', 120_000)
         break
       }
+      case 'claude-slowmcp-prompt':
       case 'codex-prompt': {
-        note('launch', { command: SLOW_CODEX })
-        herdrCli('pane', 'run', paneId, cd + SLOW_CODEX)
+        // claude-slowmcp-prompt: K2ⓕ 를 claude 쿼터로 — claude 에 느린 MCP(`--mcp-config` 인라인, 설정 파일 무변경)를 붙여 기동 반짝임을 노리고, 그 pane 에 프롬프트 1턴.
+        const command = kind === 'codex-prompt' ? SLOW_CODEX : SLOW_CLAUDE
+        note('launch', { command })
+        herdrCli('pane', 'run', paneId, cd + command)
         await waitStatus(['working', 'blocked'], 'codex flash running', 30_000).then(() => note('running-seen')).catch(() => note('running-not-seen-within-30s'))
         await waitStatus(['idle', 'done'], 'codex ready', 45_000)
         note('flash-idle')
         note('preprompt-observe-start', { ms: observeMs })
         await pause(observeMs)
         note('preprompt-observe-end')
-        note('prompt-send', { prompt: PROMPT })
-        await sendPrompt(paneId)
+        const promptText = kind === 'codex-prompt' ? CODEX_PROMPT : PROMPT
+        note('prompt-send', { prompt: promptText })
+        await sendPrompt({ paneId, text: promptText })
         await waitTurn('prompt', 180_000)
         break
       }
       case 'claude-relaunch':
-      case 'codex-relaunch': {
+      case 'codex-relaunch':
+      case 'claude-codex-relaunch': {
         // F1(r1 R1-01) — 같은 pane 에서 프롬프트 1턴 → 종료 → 다시 기동. 2회차 기동의 세션 참조·지문·세 표시를 본다.
-        const launch = kind === 'codex-relaunch' ? SLOW_CODEX : CLAUDE
-        note('launch-1', { command: launch })
-        herdrCli('pane', 'run', paneId, cd + launch)
+        // claude-codex-relaunch: 1턴은 claude(쿼터 쌈), 재기동은 codex 느린 MCP — 낡은 참조(발화 있음)가 남은 채 codex 반짝임이 나는 같은 모양을 codex 토큰 없이 만든다.
+        const first = kind === 'codex-relaunch' ? SLOW_CODEX : CLAUDE
+        const launch = kind === 'claude-relaunch' ? CLAUDE : SLOW_CODEX
+        note('launch-1', { command: first })
+        herdrCli('pane', 'run', paneId, cd + first)
         if (kind === 'codex-relaunch') await waitStatus(['working', 'blocked'], 'flash-1 running', 30_000).then(() => note('flash-1:running-seen')).catch(() => note('flash-1:running-not-seen'))
         await waitStatus(['idle', 'done'], 'ready-1', 45_000)
         await pause(1500)
         note('prompt-send', { prompt: PROMPT })
-        await sendPrompt(paneId)
+        await sendPrompt({ paneId })
         await waitTurn('turn-1', 180_000)
         await pause(3000)
         note('exit-1')

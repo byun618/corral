@@ -113,7 +113,8 @@ const RUNNING: readonly AgentStatus[] = ['working', 'blocked']
  * 참조가 영영 안 온다. claude·grok 은 기동 때 참조를 밝힌다(SessionStart 훅). **codex 만 예외**다: 그 훅이 첫 프롬프트에서야 와서
  * (00-analysis §6 코디 탐침 · raw/claude/k1 상태 덤프) 참조가 없다는 것 자체가 「아직 사람 턴 없음」이다. 물러난 참조(`retired`)와 같으면 참조 없음으로 본다.
  */
-export function promptedOf(obs: Pick<PaneObservation, 'agent' | 'sessionKey' | 'promptSeen' | 'judgeable'>, retired: string | undefined): boolean | null {
+export function promptedOf(input: { obs: Pick<PaneObservation, 'agent' | 'sessionKey' | 'promptSeen' | 'judgeable'>; retired: string | undefined }): boolean | null {
+  const { obs, retired } = input
   if (!obs.judgeable) return null
   if (obs.sessionKey === null || obs.sessionKey === retired) return obs.agent === 'codex' ? false : null
   return obs.promptSeen
@@ -131,7 +132,7 @@ export type Completion = { at: number; bell: boolean; launch: boolean }
  */
 export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined; retired?: string }): Completion[] {
   const { obs, firstBatch, since } = input
-  const prompted = promptedOf(obs, input.retired)
+  const prompted = promptedOf({ obs, retired: input.retired })
   // 처음 보는 done — 첫 묶음, 이 세션에 처음 보는 pane(r2 F-E: 첫 묶음 뒤에 나타난 pane 의 옛 이력은 세지 않는다),
   // main 이 처음 본 pane. 굵기만, 벨 없음. (같은 상태를 다시 본 관측은 `ingest` 가 `since === enteredAt` 로 먼저 거른다 — r3 L-2)
   if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' ? [{ at: obs.enteredAt, bell: false, launch: false }] : []
@@ -177,7 +178,7 @@ export function ingest(model: UnreadModel, input: {
     // 물러난 참조 — 에이전트가 없는데 참조가 남아 있으면 기억한다. 참조가 바뀌었으면(새 세션이 밝혔다) 잊는다.
     if (obs.agent === null && obs.sessionKey !== null) retired.set(obs.paneId, obs.sessionKey)
     else if (obs.sessionKey !== retired.get(obs.paneId)) retired.delete(obs.paneId)
-    const prompted = promptedOf(obs, retired.get(obs.paneId))
+    const prompted = promptedOf({ obs, retired: retired.get(obs.paneId) })
     // 보류한 기동 반짝임 — 같은 상태에 머문 채 사람 발화가 보이면(지문이 늦게 온 기동 인자 프롬프트) 원래 시각으로 센다.
     // 상태가 바뀌었으면 그 반짝임은 사람 턴 없이 지나간 것이다 — 버린다.
     const pending = held.get(obs.paneId)

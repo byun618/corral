@@ -7,6 +7,7 @@ import { tabOrdinals } from '../fallback-ordinal.js'
 import type { TabGroup } from '../group-tree.js'
 import { sessionTitle, tabAgent } from '../session-title.js'
 import type { OpenTabSearchEntry } from '../tab-create-menu.js'
+import { worktreeSearchContainer } from '../worktree-name.js'
 
 export function useOpenTabEntries(input: {
   workspace: WorkspaceRow | null
@@ -36,7 +37,7 @@ export function useOpenTabEntries(input: {
           tabId,
           groupId: group.groupId,
           title: sessionTitle({ tab, tabCount, ordinal, home, selectedPaneId: selectedPane }),
-          branch: worktree?.branch ?? null,
+          branch: worktree === null ? null : worktreeSearchContainer(worktree),
           agent: tabAgent(tab),
           groupIndex,
           tabIndex,

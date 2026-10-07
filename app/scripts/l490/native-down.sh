@@ -19,14 +19,19 @@
 #   ④ userData 전체 바이트 복원(ndjson 은 원래 길이로 잘라 해시 대조) → manifest 전=후 전량 대조
 #   ⑤ ~/.config/herdr 최상위: session.json 바이트 복원 · 로그는 원래 길이로 자름 · 새로 생긴 최상위 파일 제거 → 전=후 대조
 #   ⑥ provider 설정 대조(복원하지 않는다) ⑦ herdr default stopped · 잔존 프로세스 ⑧ 원자료 익명화·판정(native-down-tail.sh)
-# 사용: sh native-down.sh <ROOT> <raw 폴더> [up raw 폴더 — 전 snapshot(provider·g6·grok) 위치, 생략 시 raw 폴더]
+# 사용: sh native-down.sh <ROOT> <raw 폴더> <up raw 폴더 — 전 snapshot(provider·g6·grok) 위치, 필수>
 # LIFE-490 K8-D01 — up·down raw 폴더를 따로 주면 ⑥ 이 전 snapshot 을 못 찾아 실패했다 → 셋째 인자.
+# fix2 L-5 — 셋째 인자는 필수다. 없거나 전 snapshot 이 없으면 **아무것도 죽이거나 복원하기 전에** exit 2(생략 시 raw 폴더로 읽던 함정 제거).
 # LIFE-516 fix1 R1-05 — 원복·해시 실패(복원 명령 실패·manifest 불일치·읽기 오류·대조 실패)는 **그 자리에서 exit 1 로 멈춘다**(q1 조건 2
 # 「하나라도 어긋나면 즉시 멈춘다」). 이후 복원·삭제·자르기 단계를 진행하지 않고, 백업($ROOT/backup)·원자료를 그대로 남긴다.
 # l515 원본(fail 이 FAILED=1 만 세우고 계속)은 다른 작업 산출물이라 고치지 않았다.
 # 자체 검사용: L526_DOWN_UD·L526_DOWN_HCFG 로 userData·herdr 경로를 바꿀 수 있다 — /tmp/l526 아래만 받는다(native-down-selftest.sh).
 set -u
-ROOT=$1; RAWD=$2; PRED=${3:-$2}
+ROOT=${1:-}; RAWD=${2:-}; PRED=${3:-}
+[ -n "$ROOT" ] && [ -n "$RAWD" ] && [ -n "$PRED" ] || { echo "✘ 사용: sh native-down.sh <ROOT> <raw 폴더> <up raw 폴더> — 셋째 인자(전 snapshot 위치) 필수, 아무것도 바꾸지 않고 멈춘다"; exit 2; }
+for F in provider-pre.txt g6-pre.txt grok-runtime-pre.txt; do
+  [ -s "$PRED/$F" ] || { echo "✘ 전 snapshot 없음: $PRED/$F — 아무것도 바꾸지 않고 멈춘다"; exit 2; }
+done
 HERE=$(cd "$(dirname "$0")/../l470" && pwd)
 NODE="$HOME/.nvm/versions/node/v24.14.1/bin/node"
 UD=${L490_DOWN_UD:-"$HOME/Library/Application Support/corral"}

@@ -225,6 +225,19 @@ async function main() {
     return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null
   })
   if (statusRect !== null) result.steps.shots.push(await shot(cdp, 'k6-statusbar-da', statusRect))
+
+  // fix2 L-3 — 탭 검색(+ 메뉴): 활성 da 의 열린 탭이 container 텍스트(detached 면 제목 + identity 라벨)로 찾히나. 질의 `detached` · 짧은 HEAD.
+  result.steps.tabSearch = {}
+  for (const query of ['detached', expected[wt('da')].head.slice(0, 7)]) {
+    await clickSel(cdp, '[data-main-tabbar-add]')
+    await until(() => cdp.evaluate(() => document.querySelector('[data-tab-create-input]') !== null), 'tab create input', 5_000, 50).catch(() => null)
+    await cdp.evaluate(() => document.querySelector('[data-tab-create-input]')?.focus())
+    await cdp.send('Input.insertText', { text: query })
+    await pause(400)
+    result.steps.tabSearch[query] = await cdp.evaluate(() => [...document.querySelectorAll('[data-tab-create-result]')].map((el) => ({ id: el.getAttribute('data-tab-create-result'), text: el.textContent })))
+    await escape(cdp)
+    await pause(300)
+  }
   result.expectedRepoName = repo?.name ?? null
 }
 

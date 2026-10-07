@@ -10,6 +10,7 @@ import {
   AGENT_STATUS_STALE_AFTER_MS,
   applyShownLayout,
   buildSidebarSections,
+  compareItems,
   effectiveRepoFilter,
   filterBadgeLabel,
   isActivityDriven,
@@ -22,7 +23,7 @@ import {
   worktreeRecentAt,
   type SidebarSection,
 } from './sidebar-sections.js'
-import { worktreeDisplayName } from './worktree-name.js'
+import { sortWorktrees, worktreeDisplayName } from './worktree-name.js'
 
 const NOW = 10_000_000
 const GIT = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
@@ -684,5 +685,19 @@ describe('LIFE-478 K3ⓓ·ⓕ 표시 이름', () => {
     const repos = [repo('/r/a', [wt({ path: '/r/a', branch: 'main', linked: false }), wt({ path: '/r/a/z', branch: 'zeta', displayName: 'alpha' }), wt({ path: '/r/a/b', branch: 'beta' })])]
     const sections = buildSidebarSections({ repos, view: view({ sortBy: 'name' }), order: EMPTY_MANUAL_ORDER, now: NOW })
     expect(flat(sections)).toEqual(['/r/a/z', '/r/a/b', '/r/a'])
+  })
+})
+
+describe('이름 동률 — 고정 순서 (LIFE-490 fix2 L-4)', () => {
+  const da = wt({ path: '/r/wt/da', branch: null, head: 'a'.repeat(40) })
+  const db = wt({ path: '/r/wt/db', branch: null, head: 'b'.repeat(40) })
+  it('기본 순서(sortWorktrees)는 같은 이름(같은 레포 detached — 제목이 모두 레포 이름)을 경로순으로 — herdr 가 주는 입력 순서와 무관', () => {
+    expect(worktreeDisplayName(da)).toBe(worktreeDisplayName(db))
+    expect(sortWorktrees([db, da]).map((row) => row.path)).toEqual(['/r/wt/da', '/r/wt/db'])
+    expect(sortWorktrees([da, db]).map((row) => row.path)).toEqual(['/r/wt/da', '/r/wt/db'])
+  })
+  it('사이드바 정렬 모드의 동률은 0 — 안정 정렬로 수동 순서(이미 고정된 입력)를 지킨다(위 K4 「main 동률」 과 같은 원칙)', () => {
+    const item = (worktree: WorktreeRow) => ({ repoRoot: '/r', repoName: 'repo', worktree })
+    expect(compareItems({ sortBy: 'name', now: NOW, a: item(db), b: item(da) })).toBe(0)
   })
 })

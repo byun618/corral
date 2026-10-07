@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { WorktreeRow } from '../../../shared/types.js'
 import { filterCandidates } from '../card-menu.js'
 import { useMenuBus, useWindowEscape } from '../menu-bus.js'
-import { worktreeDisplayName } from '../worktree-name.js'
+import { distinctWorktreeName, worktreeDisplayName } from '../worktree-name.js'
 
 const WIDTH = 320
 const MARGIN = 8
@@ -35,7 +35,7 @@ export function ParentPicker({
   useMenuBus({ open: true, close: onClose })
   // Esc 는 포커스와 무관하게(r2 R2B-01) — 안쪽 빈 곳을 눌러 포커스가 body 로 가도 닫힌다.
   useWindowEscape({ onEscape: onClose })
-  const rows = filterCandidates({ candidates, query, nameOf: worktreeDisplayName })
+  const rows = filterCandidates({ candidates, query, nameOf: distinctWorktreeName })
   const left = anchor.right + MARGIN + WIDTH <= window.innerWidth ? anchor.right + MARGIN : Math.max(MARGIN, anchor.left - MARGIN - WIDTH)
 
   useLayoutEffect(() => {
@@ -125,7 +125,7 @@ export function ParentPicker({
               onMouseMove={() => setActive(index)}
               onClick={() => onPick(row)}
             >
-              <span className="parent-picker-name">{worktreeDisplayName(row)}</span>
+              <span className="parent-picker-name">{distinctWorktreeName(row)}</span>
               {row.path === activePath ? <span className="worktree-chip">현재</span> : null}
               {!row.isLinked ? <span className="worktree-chip">기본</span> : null}
               {row.branch !== null && row.branch !== worktreeDisplayName(row) ? <span className="parent-picker-branch">{row.branch}</span> : null}

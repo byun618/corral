@@ -1,6 +1,7 @@
 // LIFE-478 K2ⓐ·K6ⓐ·K7ⓐⓑ — 카드 우클릭 메뉴 모델·상위 후보·삭제 대화 단추. 화면 조작은 격리·네이티브 실행이 본다.
 import { describe, expect, it } from 'vitest'
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
+import { distinctWorktreeName } from './worktree-name.js'
 import { cardMenuEntries, deleteDecision, deleteResultNotice, filterCandidates, NO_PARENT_CANDIDATES, parentCandidates, PRIMARY_DELETE_DISABLED } from './card-menu.js'
 import type { MenuEntry } from './components/ContextMenu.js'
 import type { CardMenuAction } from './card-menu.js'
@@ -86,6 +87,11 @@ describe('K6ⓐ 상위 후보 (198 `worktree-parent-candidates.ts` · `worktree-
     expect(filterCandidates({ candidates: rows, query: 'PAY', nameOf }).map((row) => row.path)).toEqual(['/r/a/alpha'])
     expect(filterCandidates({ candidates: rows, query: 'beta', nameOf }).map((row) => row.path)).toEqual(['/r/a/beta'])
     expect(filterCandidates({ candidates: rows, query: '  ', nameOf })).toHaveLength(2)
+  })
+  it('후보 이름 — 같은 레포 detached 둘이 짧은 HEAD 로 구별되고 그것으로 찾힌다(LIFE-490 fix2 L-3)', () => {
+    const rows = [wt('/r/a/da', { branch: null, head: '6377dcf314fb7205a504d426690cd090549535f3' }), wt('/r/a/db', { branch: null, head: '513a44d97659478dcbe5782f7c72813c2ccbffbe' })]
+    expect(rows.map(distinctWorktreeName)).toEqual(['r @ 6377dcf', 'r @ 513a44d'])
+    expect(filterCandidates({ candidates: rows, query: '513a', nameOf: distinctWorktreeName }).map((row) => row.path)).toEqual(['/r/a/db'])
   })
   it('검색 — 이름으로는 안 맞고 경로·브랜치로만 맞는 입력(r2 R2B-09 M11·M12)', () => {
     // 이름(nameOf)을 표시 이름만 돌려주게 해서, 경로·브랜치 칸이 없으면 못 찾는 입력을 만든다.

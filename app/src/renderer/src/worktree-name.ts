@@ -29,13 +29,28 @@ export function worktreeDisplayName(worktree: Pick<WorktreeRow, 'displayName' | 
 }
 
 /**
- * 팔레트 항목의 워크트리 이름 — 브랜치 → 없으면 카드 제목. detached 는 카드처럼 배지가 없으니 **제목 뒤에 짧은 HEAD** 를 붙여
- * 같은 레포의 detached 끼리 구별한다(fix1 F3, r1 L3 — 제목이 모두 레포 이름이라 `det-repo` ×n 이었다).
+ * 배지 없는 목록(팔레트·부모 피커 후보)의 워크트리 이름 — 카드 제목, detached 면 **제목 뒤에 짧은 HEAD** 를 붙여
+ * 같은 레포의 detached 끼리 구별한다(fix1 F3 · fix2 L-3 — 제목이 모두 레포 이름이라 `det-repo` ×n 이었다).
  */
-export function paletteWorktreeName(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'head' | 'repoName' | 'path'>): string {
+export function distinctWorktreeName(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'head' | 'repoName' | 'path'>): string {
   const identity = worktreeIdentity(worktree)
   if (identity?.kind === 'detached') return `${worktreeDisplayName(worktree)} @ ${identity.shortHead}`
-  return worktree.branch ?? worktreeDisplayName(worktree)
+  return worktreeDisplayName(worktree)
+}
+
+/** 팔레트 항목의 워크트리 이름 — 브랜치 → 없으면 `distinctWorktreeName`(r1 L3). */
+export function paletteWorktreeName(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'head' | 'repoName' | 'path'>): string {
+  return worktree.branch ?? distinctWorktreeName(worktree)
+}
+
+/**
+ * 탭 검색의 container 텍스트(fix2 L-3) — 브랜치, detached 면 카드 제목 + identity 라벨(`Detached HEAD @ <7>`).
+ * 기준 빌드는 `(detached)` 로 「detached」 검색에 걸렸다 — 센티널을 지운 뒤에도 같은 검색이 걸리게 한다. 둘 다 없으면 null.
+ */
+export function worktreeSearchContainer(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'head' | 'repoName' | 'path'>): string | null {
+  const identity = worktreeIdentity(worktree)
+  if (identity?.kind === 'detached') return `${worktreeDisplayName(worktree)} ${identity.sidebarLabel}`
+  return worktree.branch
 }
 
 /**
@@ -66,6 +81,7 @@ function mainCheckoutRank(worktree: WorktreeRow): number {
 export function sortWorktrees(worktrees: WorktreeRow[]): WorktreeRow[] {
   return [...worktrees].sort((a, b) => {
     const byMain = mainCheckoutRank(a) - mainCheckoutRank(b)
-    return byMain !== 0 ? byMain : worktreeDisplayName(a).localeCompare(worktreeDisplayName(b))
+    // 이름이 같으면(같은 레포의 detached — 제목이 모두 레포 이름) 경로로 — 입력 순서와 무관한 고정 순서(fix2 L-4).
+    return byMain !== 0 ? byMain : worktreeDisplayName(a).localeCompare(worktreeDisplayName(b)) || a.path.localeCompare(b.path)
   })
 }

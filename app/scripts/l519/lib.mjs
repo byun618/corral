@@ -21,6 +21,8 @@ export async function startObserver(endpoint, out) {
   const stop = out + '.stop'; fs.rmSync(stop, { force: true })
   const child = spawn(process.execPath, [path.join(HERE, 'observe.mjs'), endpoint, out, stop], { stdio: 'ignore' })
   for (let i = 0; i < 200 && !fs.existsSync(out + '.ready'); i++) await pause(5)
+  // 관측기가 못 뜬 채 진행하면 결과가 「loose 0」 으로 읽힌다 — 준비 표식이 없으면 멈춘다(R1-claude-07).
+  if (!fs.existsSync(out + '.ready')) { child.kill('SIGKILL'); throw new Error(`관측기 준비 시간 초과(1s): ${out}`) }
   return { pid: child.pid, finish: async () => { fs.writeFileSync(stop, ''); await new Promise(r => child.exitCode !== null ? r() : child.once('exit', r)); fs.rmSync(stop, { force: true }); return JSON.parse(fs.readFileSync(out, 'utf8')) } }
 }
 export function alive(pid) { try { process.kill(pid, 0); return true } catch { return false } }

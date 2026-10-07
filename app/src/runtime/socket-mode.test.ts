@@ -36,7 +36,8 @@ describe('control socket permissions (LIFE-519)', () => {
     const { endpoint } = fixture()
     const seen = modesAfterBind(endpoint)
     const stop = await serveSocket(endpoint, handle); cleanups.push(stop)
-    expect(seen.length).toBeGreaterThan(0)
+    // Without a socket right after listen() the mode check below would pass vacuously (bind moved out of listen()).
+    expect(seen.filter(mode => mode !== 'ENOENT'), 'listen() must have bound the endpoint').not.toEqual([])
     expect(seen.filter(mode => mode !== 'ENOENT' && (parseInt(mode, 8) & 0o077))).toEqual([])
     expect((fs.lstatSync(endpoint).mode & 0o777).toString(8)).toBe('600')
     expect(process.umask(0o022)).toBe(0o022)

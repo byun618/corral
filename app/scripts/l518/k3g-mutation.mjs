@@ -44,7 +44,7 @@ const MUTANTS = [
   { 이름: 'enum 멤버의 enum 이름 규칙 제거', source: replaceOnce({ from: ' || (ts.isEnumMember(parent) && namedMethod(parent.parent))', to: '' }) },
   { 이름: '파라미터·구조 분해·enum 멤버 값 규칙 제거', source: replaceOnce({ from: 'ts.isParameter(parent) || ts.isBindingElement(parent) || ts.isEnumMember(parent)', to: 'false' }) },
   { 이름: 'JSX 속성·타입 멤버 규칙 제거', source: replaceOnce({ from: '(ts.isPropertySignature(parent) && parent.type === child) || ts.isJsxAttribute(parent)', to: 'false' }) },
-  { 이름: '호출 대상(callee) 이름 규칙 제거', source: replaceOnce({ from: 'if (ts.isCallExpression(parent) && parent.arguments.includes(child) && mentions(parent.expression)) return true', to: '' }) },
+  { 이름: '호출 대상(callee) 이름 규칙 제거', source: replaceOnce({ from: '      if (mentions(parent.expression)) return true\n', to: '' }) },
   // fix3 (R3-claude-01·02)
   { 이름: '더 긴 글 안 토큰을 위반으로 (fix2 판 되돌림)', source: replaceOnce({ from: "    if (text?.inside) return 'action-id'\n", to: '' }) },
   { 이름: '이항식 연산자 제한 제거 (&&·||·??·+ 도 묶음)', source: replaceOnce({ from: 'const BINDING_OPERATORS = (kind) =>\n', to: 'const BINDING_OPERATORS = (kind) => true || \n' }) },

@@ -13,7 +13,7 @@
 // 무해한 문장이고, before 에서는 큰 붙여넣기(줄마다 Enter → 여러 번 전송)를 하지 않는다.
 // trust·업데이트·로그인 화면이 보이면 답하지 않고 탭을 닫고 exit 5 로 멈춘다(부르는 쪽이 코디에 묻는다).
 //
-// 사용: node native-k3.mjs <ROOT=/tmp/l505n*> <raw 폴더> <fixture 경로(realpath)> <before|after> [zsh,claude,codex]
+// 사용: node native-k3.mjs <ROOT=/tmp/l505n*> <raw 폴더> <fixture 경로(realpath)> <before|after> [zsh,zsh-sel,claude,codex]
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -93,7 +93,8 @@ const shotPane = async (name, paneId) => {
 }
 
 /** OS ⌘V 한 번 — 유휴 가드 → 클립보드 저장 → 텍스트 쓰기 → activate → 맨 앞 확인 → ⌘V → 이전 앱 복귀 → 클립보드 복원. */
-async function osPaste({ name, text, paneId }) {
+// `click:false` = pane 클릭 대신 textarea DOM focus — 클릭(mousedown)이 선택을 지워 F1 판정을 무효로 만들지 않게(fix1).
+async function osPaste({ name, text, paneId, click = true }) {
   const idle = await waitIdle({ log: (row) => record(`${name}-idle-wait`, row) })
   if (!idle.ok) return { ok: false, skipped: '유휴 20초를 10분 안에 못 봤다 — 보류', idle }
   const savedDump = clip('dump').out
@@ -113,7 +114,8 @@ async function osPaste({ name, text, paneId }) {
   let front = null
   try {
     clip('textfile', clipFile)
-    await control({ cmd: 'click', selector: `[data-term-pane-box="${paneId}"] .xterm-screen` }).catch(() => null)
+    if (click) await control({ cmd: 'click', selector: `[data-term-pane-box="${paneId}"] .xterm-screen` }).catch(() => null)
+    else await evaluate((id) => { document.querySelector(`[data-term-pane-box="${id}"] textarea.xterm-helper-textarea`)?.focus(); return true }, paneId)
     run('activate', [appPid])
     await pause(400)
     front = frontmost()
@@ -201,6 +203,54 @@ try {
     await type(tab.paneId, '\x03')
     await pause(500)
     checks.require('zsh-tab-closed', await closeTab(tab))
+  }
+
+  // ── fix1 F1 — zsh 에서 선택한 채 ⌘V → 선택이 풀리고 붙인 글자가 화면(xterm 버퍼)에 그려진다 ──
+  // 선택 = 렌더러 합성 더블클릭(OS 입력 아님). ⌘V 만 OS 입력(유휴 가드 안). 판정은 corral 의 xterm 버퍼(term-read)와 herdr 화면 둘 다.
+  if (only.has('zsh-sel')) {
+    const tab = await openTab()
+    await type(tab.paneId, 'clear; echo L505SELMARK\r')
+    await pause(1500)
+    await freshRing()
+    const termRead = async () => (await control({ cmd: 'term-read' })).term
+    const selected = () => evaluate((id) => {
+      const area = document.querySelector(`[data-term-pane-box="${id}"] textarea.xterm-helper-textarea`)
+      const data = new DataTransfer()
+      area.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }))
+      return data.getData('text/plain')
+    }, tab.paneId)
+    const t = await termRead()
+    const row = t.lines.findLastIndex((line) => /^L505SELMARK\s*$/.test(line))
+    await evaluate((input) => {
+      const screen = document.querySelector(`[data-term-pane-box="${input.paneId}"] .xterm-screen`)
+      const r = screen.getBoundingClientRect()
+      const x = r.left + (r.width / input.cols) * 4
+      const y = r.top + (r.height / input.rows) * (input.row + 0.5)
+      for (const detail of [1, 2]) {
+        screen.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+        screen.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+      }
+      return true
+    }, { paneId: tab.paneId, cols: t.cols, rows: t.rows, row })
+    const before = await selected()
+    record('zsh-sel-selected', { row, before })
+    const sent = await osPaste({ name: 'zsh-sel', text: 'echo l505-sel', paneId: tab.paneId, click: false })
+    record('zsh-sel-sent', sent)
+    if (sent.ok) {
+      const obs = await observe({ step: 'zsh-sel', paneId: tab.paneId })
+      const xterm = (await termRead()).lines.map((line) => line.trimEnd())
+      const after = await selected()
+      const drawn = xterm.some((line) => line.includes('echo l505-sel'))
+      const pty = obs.screen.includes('echo l505-sel')
+      fs.writeFileSync(path.join(rawd, 'xterm-zsh-sel.txt'), `${xterm.join('\n')}\n`)
+      record('zsh-sel-judge', { before, after, drawn, pty })
+      checks.require('zsh-sel-was-selected', before === 'L505SELMARK', { before })
+      checks.require('zsh-sel-selection-cleared', after === '', { after })
+      checks.require('zsh-sel-drawn', drawn && pty, { drawn, pty })
+    } else checks.require('zsh-sel-sent', false, sent)
+    await type(tab.paneId, '\x03')
+    await pause(500)
+    checks.require('zsh-sel-tab-closed', await closeTab(tab))
   }
 
   for (const cli of ['claude', 'codex']) {

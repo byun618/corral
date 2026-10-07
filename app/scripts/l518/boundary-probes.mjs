@@ -62,6 +62,23 @@ export const PROBES = [
   { id: 'a1-template-json', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-template-json.ts`, source: "export const probe = JSON.parse(`{\"method\":\"${'tab.rename'}\"}`)\n" },
   { id: 'a1-arrow-block', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a1-arrow-block.ts`, source: "export const probe = { method: (() => {\n  return 'tab.rename'\n})() }\n" },
   { id: 'a1-arrow-expr', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-arrow-expr.ts`, source: "export const probe = { method: (() => 'tab.rename')() }\n" },
+  // fix2 (R2-claude-02) — method 이름에 **직접** 묶인 부모 종류(리뷰어 cells1 m1·m4·m5·m7·m18·m19·m20·m29 계열)
+  { id: 'a2-enum', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a2-enum.ts`, source: "export enum HerdrMethod {\n  Rename = 'tab.rename',\n  Cycle = 'tab.cycle',\n}\n" },
+  { id: 'a2-callee', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-callee.ts`, source: "declare function callMethod(m: string): void\ncallMethod('tab.rename')\n" },
+  { id: 'a2-callee-for', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a2-callee-for.ts`, source: "declare function methodFor(x: string): string\nexport const probe = { m: methodFor('tab.rename') }\n" },
+  { id: 'a2-param-default', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-param-default.ts`, source: "export const probe = (method: string = 'tab.rename'): string => method\n" },
+  { id: 'a2-jsx-attr', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-jsx-attr.tsx`, source: "declare const Req: (p: { method: string }) => null\nexport const probe = <Req method={'tab.rename'} />\n" },
+  { id: 'a2-jsx-attr-str', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-jsx-attr-str.tsx`, source: "declare const Req: (p: { method: string }) => null\nexport const probe = <Req method=\"tab.rename\" />\n" },
+  { id: 'a2-getter', group: 'ⓐ', expect: 'R4-wire-leak', file: `${P}a2-getter.ts`, source: "export class Probe {\n  get method(): string {\n    return 'tab.rename'\n  }\n}\n" },
+  { id: 'a2-fn-decl-return', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a2-fn-return.ts`, source: "export function method(): string {\n  return 'tab.rename'\n}\n" },
+  { id: 'a2-obj-method', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-obj-method.ts`, source: "export const probe = { method() { return 'tab.rename' } }\n" },
+  { id: 'a2-type-alias-union', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a2-type-alias.ts`, source: "export type HerdrMethod = 'corral.x' | 'tab.rename'\n" },
+  // 글자 규칙만 잡는 자리(타입 표기) — 글자 창(80자) 축소 변이를 죽인다. fix2 부터 문자열 안 JSON 은 fail-closed 가 잡아 a1-json-wide 로는 못 가른다
+  { id: 'a2-type-annot-wide', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-type-annot-wide.ts`, source: `export declare let method:${' '.repeat(40)}'tab.rename'\n` },
+  // R2-claude-03 M-l — function 식(화살표 아님)에서도 다시 올라간다
+  { id: 'a2-fn-expr-iife', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-fn-expr-iife.ts`, source: "export const probe = { method: (function () { return 'tab.rename' })() }\n" },
+  // R2-claude-01 M-f — 주석 제거가 JSX 텍스트의 `//` 를 먹어 파싱이 깨진 파일: 판정할 수 없으면 면제하지 않는다(fail-closed)
+  { id: 'a2-jsx-text-slash', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-jsx-text-slash.tsx`, source: "export const el = <p>see http://x.y</p>\ndeclare function id(x: string): string\nexport const probe = { method: id('tab.rename') }\n" },
   // R1-claude-04 — envelope 글자 창(80자) 축소 변이를 죽인다: 문자열 안 JSON 은 AST 로 못 보고 글자로만 본다
   { id: 'a1-json-wide', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-json-wide.ts`, source: jsonFrame(`'{"id":1,"method":${' '.repeat(40)}"tab.rename"}'`) },
 
@@ -114,7 +131,15 @@ export const PROBES = [
   { id: 'e-log-tag', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ②', file: `${M}e-log-tag.ts`, source: "import { log } from './log.js'\nlog('worktree.changed', { roots: 1 })\nexport const probe = (count: number): void => log('worktree.poll_roots', { count })\n" },
 
   // fix1 — 함수 식 너머로 올라가는 판정이 테스트 이름 같은 **문장 꼴 문자열**을 method 로 읽지 않는다
-  { id: 'e-test-name-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-test-name.ts`, source: "declare function it(name: string, fn: () => void): void\ndeclare const expect: (v: unknown) => { toBe(x: unknown): void }\nit('method 를 보여 준다', () => {\n  expect('x').toBe('tab.rename')\n})\n" },
+  { id: 'e-test-name-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-test-name.ts`, source: "declare function it(name: string, fn: () => void): void\ndeclare const expect: (v: unknown) => { toBe(x: unknown): void }\nit('method 를 보여 준다', () => expect('x').toBe('tab.rename'))\n" },
+  // 파싱 오류 파일 — 리터럴은 찾지만 AST 가 method 와의 묶음을 잃는다. parseDiagnostics 검사(fail-closed)가 지킨다
+  { id: 'a2-parse-error', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-parse-error.ts`, source: "declare function pick(x: string): string\nexport const probe = { method: }\npick('tab.rename') }\n" },
+  // fix2 — 콜백 **문장** 안의 액션 id 는 그 콜백을 받는 호출의 다른 인자가 method 를 말해도 envelope 가 아니다(반환 자리만 올라간다).
+  // R2-claude-03 M-c(문장 경계를 파일만으로) 를 죽인다. 리뷰어 cells2 f4·f12
+  { id: 'e-callback-deps', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-callback-deps.ts`, source: "declare function useEffect(f: () => void, deps: unknown[]): void\ndeclare function bindingLabel(id: string): string\ndeclare const method: string\nuseEffect(() => {\n  bindingLabel('tab.rename')\n}, [method])\n" },
+  { id: 'e-register-callback', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-register-callback.ts`, source: "declare const spec: { method: string }\ndeclare function register(m: string, f: () => void): void\ndeclare function bindingLabel(id: string): string\nregister(spec.method, () => {\n  bindingLabel('tab.rename')\n})\n" },
+  // fix2 — R2-claude-03 M-m(호출 인자 판정에 자기 인자 포함) 을 죽인다: 액션 id 와 method 가 **같은 인자 안 형제**면 묶이지 않는다
+  { id: 'e-sibling-method-arg', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-sibling-method-arg.ts`, source: "declare function track(event: { id: string; method: string }): void\ntrack({ id: 'tab.rename', method: 'keyboard' })\n" },
   // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
   { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 

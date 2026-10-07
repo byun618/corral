@@ -29,8 +29,22 @@ const MUTANTS = [
   { 이름: 'switch case 규칙 제거', source: replaceOnce({ from: 'if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)', to: '' }) },
   { 이름: '호출 인자 규칙 제거 (includes)', source: replaceOnce({ from: 'if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg !== child && mentions(arg))) return true', to: '' }) },
   { 이름: '이항식 규칙 제거 (yoda)', source: replaceOnce({ from: 'if (ts.isBinaryExpression(parent) && mentions(parent.left === child ? parent.right : parent.left)) return true', to: '' }) },
-  { 이름: '함수 식 너머로 올라가지 않음', source: replaceOnce({ from: 'if (!owner || !(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false', to: 'return false' }) },
+  { 이름: '함수 식 너머로 올라가지 않음', source: replaceOnce({ from: 'if (!(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false', to: 'return false' }) },
   { 이름: 'method 언급을 글자 전체 검색으로 (문장 꼴 문자열도 이름으로)', source: replaceOnce({ from: '  const mentions = mentionsMethod\n', to: '  const mentions = (node) => /method/i.test(node.getText())\n' }) },
+  // fix2 (R2-claude-03) — 리뷰어 변이 M-c·M-f·M-i·M-l·M-m 과 fix2 새 규칙
+  { 이름: 'M-c 문장 경계를 파일만으로', source: replaceOnce({ from: 'const isStatementBoundary = (node) =>\n', to: 'const isStatementBoundary = (node) => ts.isSourceFile(node)\nconst unusedBoundary = (node) =>\n' }) },
+  { 이름: 'M-f 리터럴 못 찾음(null)을 면제로 (fail-open 되돌림)', source: replaceOnce({ from: 'if (literal !== null && !boundToMethod({ literal })) return', to: 'if (literal === null || !boundToMethod({ literal })) return' }) },
+  { 이름: '파싱 오류 파일도 믿음 (parseDiagnostics 무시)', source: replaceOnce({ from: 'const trusted = Array.isArray(diagnostics) && diagnostics.length === 0', to: 'const trusted = true || diagnostics' }) },
+  { 이름: 'M-i tsx 를 TS 로 파싱', source: replaceOnce({ from: "file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS", to: 'ts.ScriptKind.TS' }) },
+  { 이름: 'M-l 함수 식 오름을 화살표에만', source: replaceOnce({ from: 'if (!(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false', to: 'if (!ts.isArrowFunction(owner)) return false' }) },
+  { 이름: 'M-m 호출 인자 판정에 자기 인자 포함', source: replaceOnce({ from: 'parent.arguments.some((arg) => arg !== child && mentions(arg))', to: 'parent.arguments.some((arg) => mentions(arg))' }) },
+  { 이름: '반환 자리를 문장 전체로 (콜백 문장에서도 오름)', source: replaceOnce({ from: '(ts.isReturnStatement(parent) && parent.expression === child)', to: '((ts.isReturnStatement(parent) && parent.expression === child) || ts.isExpressionStatement(parent))' }) },
+  { 이름: '이름 있는 함수·getter 반환 규칙 제거', source: replaceOnce({ from: 'if (namedMethod(owner)) return true', to: '' }) },
+  { 이름: '타입 별칭 이름 규칙 제거', source: replaceOnce({ from: 'if (ts.isTypeAliasDeclaration(parent) && namedMethod(parent)) return true', to: '' }) },
+  { 이름: 'enum 멤버의 enum 이름 규칙 제거', source: replaceOnce({ from: ' || (ts.isEnumMember(parent) && namedMethod(parent.parent))', to: '' }) },
+  { 이름: '파라미터·구조 분해·enum 멤버 값 규칙 제거', source: replaceOnce({ from: 'ts.isParameter(parent) || ts.isBindingElement(parent) || ts.isEnumMember(parent)', to: 'false' }) },
+  { 이름: 'JSX 속성·타입 멤버 규칙 제거', source: replaceOnce({ from: '(ts.isPropertySignature(parent) && parent.type === child) || ts.isJsxAttribute(parent)', to: 'false' }) },
+  { 이름: '호출 대상(callee) 이름 규칙 제거', source: replaceOnce({ from: 'if (ts.isCallExpression(parent) && parent.arguments.includes(child) && mentions(parent.expression)) return true', to: '' }) },
 ]
 
 let allFailed = true

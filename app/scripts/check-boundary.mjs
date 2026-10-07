@@ -104,34 +104,49 @@ function literalAt({ sourceFile, pos }) {
   return found
 }
 
+/** 이름 있는 선언(함수·메서드·getter·enum·타입 별칭)의 이름이 method 를 말하는가. */
+const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.name)
+
 /**
- * LIFE-518 fix1 (R1-claude-01) — 리터럴이 **같은 식 안에서 `method` 자리와 묶인 값**인가.
+ * LIFE-518 fix1 (R1-claude-01) · fix2 (R2-claude-02) — 리터럴이 **같은 식 안에서 `method` 자리와 묶인 값**인가.
  * 리터럴에서 부모로 올라가며(문장 경계에서 멈춤) 다음 중 하나면 envelope 이다:
- *   이름에 method 가 든 속성·변수의 값(`method: x ?? 'A'` · `method: pick('A')` · `method: c ? 'A' : 'B'` · `RENAME_METHOD = 'A'`)
+ *   이름에 method 가 든 속성·변수·파라미터·구조 분해·enum 멤버·JSX 속성·타입 멤버의 값
+ *     (`method: x ?? 'A'` · `RENAME_METHOD = 'A'` · `(method = 'A') =>` · `<Req method={'A'} />` · `enum HerdrMethod { R = 'A' }`)
  *   이항식의 다른 쪽이 method 를 말한다(`'A' === frame.method` · `msg.method = 'A'`)
- *   호출의 다른 인자가 method 를 말한다(`['A', 'B'].includes(msg.method)`)
- *   `switch (frame.method)` 의 `case 'A':`
+ *   호출의 다른 인자 또는 호출 대상이 method 를 말한다(`['A'].includes(msg.method)` · `callMethod('A')`)
+ *   `switch (frame.method)` 의 `case 'A':` · 이름에 method 가 든 타입 별칭(`type HerdrMethod = 'A' | 'B'`)
+ *   **반환 값**: 이름에 method 가 든 함수·메서드·getter 가 돌려준다(`get method() { return 'A' }`). 이름 없는 함수 **식**이
+ *     돌려주면 그 함수 식에서 다시 올라간다(`method: (() => { return 'A' })()`). 반환이 아닌 문장(콜백 안 `track('A')`)에서는 멈춘다
  */
 function boundToMethod({ literal }) {
   const mentions = mentionsMethod
   let child = literal
   for (let parent = literal.parent; parent; child = parent, parent = parent.parent) {
     if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)
-    if (isStatementBoundary(parent)) {
-      // 함수 **식**(화살표·function 식) 안이면 그 함수 식에서 다시 올라간다 — `method: (() => { return 'A' })()` 도 같은 식이다.
-      // 함수 선언·메서드·클래스·파일 최상위 문장에서는 멈춘다.
+    // 반환 자리 — `return 'A'` 또는 식 몸체 화살표 `() => 'A'`
+    const returned = (ts.isReturnStatement(parent) && parent.expression === child) || (ts.isArrowFunction(parent) && parent.body === child && !ts.isBlock(child))
+    if (returned) {
       let owner = parent
-      while (owner && !ts.isSourceFile(owner) && !ts.isFunctionLike(owner) && !ts.isClassLike(owner)) owner = owner.parent
-      if (!owner || !(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false
+      while (owner && !ts.isSourceFile(owner) && !ts.isFunctionLike(owner)) owner = owner.parent
+      if (!owner || ts.isSourceFile(owner)) return false
+      if (namedMethod(owner)) return true
+      if (!(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false
       child = owner
       parent = owner
       continue
     }
-    if ((ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent)) && parent.initializer === child) {
+    if (ts.isTypeAliasDeclaration(parent) && namedMethod(parent)) return true
+    if (isStatementBoundary(parent)) return false
+    const valued =
+      ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||
+      ts.isParameter(parent) || ts.isBindingElement(parent) || ts.isEnumMember(parent)
+    if (valued && parent.initializer === child && (mentions(parent.name) || (ts.isEnumMember(parent) && namedMethod(parent.parent)))) return true
+    if ((ts.isPropertySignature(parent) && parent.type === child) || ts.isJsxAttribute(parent)) {
       if (mentions(parent.name)) return true
     }
     if (ts.isBinaryExpression(parent) && mentions(parent.left === child ? parent.right : parent.left)) return true
     if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg !== child && mentions(arg))) return true
+    if (ts.isCallExpression(parent) && parent.arguments.includes(child) && mentions(parent.expression)) return true
   }
   return false
 }
@@ -142,12 +157,19 @@ function boundToMethod({ literal }) {
  *      envelope 자리 = 바로 앞이 `method:` 류(문자열 안 JSON 포함 — 글자로 본다) **또는** 같은 식 안에서 method 와 묶인 값(AST)
  *   ② main 의 `log()`(`main/log.ts` 를 import 한 파일) 첫 인자 태그이고, 실제 herdr 메서드 이름이 아니다
  * 뺀 토큰은 결과의 `면제` 칸에 싣는다 — 숨기지 않는다.
+ *
+ * fix2 (R2-claude-01) — **판정할 수 없으면 면제하지 않는다.** 주석을 벗긴 원문이 파싱 오류를 내거나(`stripComments` 가
+ * JSX 텍스트의 `//` 를 주석으로 먹는 경우 등) 토큰 자리에서 리터럴을 못 찾으면 ①을 주지 않는다 — 못 풀었다는 이유로 통과시키지 않는다.
  */
 function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
   const before = source.slice(Math.max(0, index - 80), index)
   if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
-    const literal = literalAt({ sourceFile: sourceFile(), pos: index })
-    if (literal === null || !boundToMethod({ literal })) return 'action-id'
+    const parsed = sourceFile()
+    const diagnostics = parsed.parseDiagnostics
+    // `parseDiagnostics` 는 typescript 내부 필드다 — 없어지면(배열이 아니면) 믿을 수 없는 쪽으로 본다.
+    const trusted = Array.isArray(diagnostics) && diagnostics.length === 0
+    const literal = trusted ? literalAt({ sourceFile: parsed, pos: index }) : null
+    if (literal !== null && !boundToMethod({ literal })) return 'action-id'
   }
   if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
   return null

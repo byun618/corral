@@ -42,7 +42,7 @@ export const ACTIONS = [
   // LIFE-511 — 198 `app.settings`(Mod+Comma). 설정 페이지를 연다. 나중에 생긴 기본값이라 양보한다(아래 YIELDING_DEFAULTS).
   { id: 'settings.open', group: '전역', title: '설정 열기', defaultBinding: ['Mod+,'], bindingVariants: [0], variants: ['열기'] },
   // LIFE-515 — 198 `tab.newAgent`(darwin Mod+Alt+T). 설정 › AI 기능 › 에이전트의 기본 Agent 로 새 탭을 연다(agent 없음이면 빈 터미널 — D2).
-  // id 는 `terminal.` 접두로 둔다 — `tab.*` 는 경계 검사 R4 의 herdr 메서드 지문에 걸린다(`terminal.new` 와 같은 줄기). 나중에 생긴 기본값이라 양보한다.
+  // id 는 `terminal.` 접두로 둔다(`terminal.new` 와 같은 줄기) — 지을 때는 `tab.*` 가 경계 검사 R4 오탐에 걸렸다(LIFE-518 이 해소: 액션 id 는 요청 envelope 자리에서만 걸린다). 나중에 생긴 기본값이라 양보한다.
   { id: 'terminal.newAgent', group: '탭', title: '새 에이전트 탭', defaultBinding: ['Mod+Alt+T'], bindingVariants: [0], variants: ['기본 Agent'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']

@@ -12,6 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 
 const APP_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const SRC = path.join(APP_DIR, 'src')
@@ -44,6 +45,175 @@ const EVENT_NAMES = wireEventNames()
 if (EVENT_NAMES.length < 10) {
   console.error(`지문 파생 실패: 이벤트 이름 ${EVENT_NAMES.length}개만 읽혔다`)
   process.exit(2)
+}
+
+/**
+ * LIFE-518 — 메서드 지문(`tab.\w+` 류)은 **이름만으로는** 단축키 액션 id 와 herdr 메서드를 못 가른다.
+ * `tab.rename` 은 둘 다다(액션 id 이면서 `ALLOWED_METHODS` 의 실제 메서드). 그래서 가르는 축은 이름이 아니라
+ * **쓰인 자리**다: 액션 id 어휘의 토큰은 요청 envelope 위치(`method:` 값 · `"method":"…"` · `msg.method = …`)에
+ * 있을 때만 위반이다. 어휘는 손으로 적지 않고 진실의 원천에서 읽는다(L-6 와 같은 이유) — 액션 id 는
+ * `shared/keybindings.ts` 의 `ACTIONS`, 실제 herdr 메서드는 어댑터 `request.ts` 의 `ALLOWED_METHODS`.
+ */
+function derivedList({ file, block, item }) {
+  // 주석은 어휘가 아니다 (LIFE-518 fix1 R1-claude-05) — 주석 속 `id: '…'` 한 줄이 면제 어휘를 늘리지 않게 벗기고 읽는다.
+  const match = block.exec(stripComments(fs.readFileSync(path.join(SRC, file), 'utf8')))
+  return new Set([...(match?.[1] ?? '').matchAll(item)].map((found) => found[1]))
+}
+const ACTION_IDS = derivedList({ file: 'shared/keybindings.ts', block: /export const ACTIONS = \[([\s\S]*?)\n\] as const/, item: /\bid: '([^']+)'/g })
+const HERDR_METHODS = derivedList({ file: 'main/adapter/internal/request.ts', block: /const ALLOWED_METHODS[^=]*=\s*\[([\s\S]*?)\n\]/, item: /'([a-z_.]+)'/g })
+// 이벤트 지문과 같다 — 파생이 조용히 비면 면제가 사라지거나(오탐 복귀) 로그 면제가 넓어진다. 멈춘다.
+if (ACTION_IDS.size < 10 || HERDR_METHODS.size < 10) {
+  console.error(`지문 파생 실패: 액션 id ${ACTION_IDS.size}개 · herdr 메서드 ${HERDR_METHODS.size}개만 읽혔다`)
+  process.exit(2)
+}
+const MAIN_LOG = path.join(SRC, 'main/log.ts')
+
+/**
+ * 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`
+ * · 템플릿 안 JSON 의 보간 `{"method":"${'…'}"}` (fix1).
+ */
+const ENVELOPE_BEFORE = /method\\?['"`]?\]?\s*(?::|={1,3}|!==?)\s*\\?(?:['"]?\$\{\s*)?$/i
+/** 토큰 바로 앞이 `log(` 의 첫 인자 자리인가 — `console.log(`·`x.log(` 는 아니다. */
+const LOG_FIRST_ARG_BEFORE = /(?<![\w.$])log\(\s*$/
+
+const METHOD_IDENTIFIER = /method/i
+const METHOD_WORD = /^[\w$]*method[\w$]*$/i
+/**
+ * 노드가 method 를 **이름으로** 말하는가 — 식별자(`msg.method`·`RENAME_METHOD`) 또는 이름 꼴 문자열(`msg['method']`·`"method":`).
+ * 문장 꼴 문자열(테스트 이름 `'method 를 보여 준다'`)은 이름이 아니다.
+ */
+function mentionsMethod(node) {
+  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return METHOD_IDENTIFIER.test(node.text)
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return METHOD_WORD.test(node.text)
+  return ts.forEachChild(node, mentionsMethod) === true
+}
+/** 문장·함수·블록 경계 — envelope 판정이 이 너머로 올라가지 않는다. */
+const isStatementBoundary = (node) =>
+  ts.isSourceFile(node) || ts.isBlock(node) || ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isCaseClause(node) ||
+  (node.kind >= ts.SyntaxKind.FirstStatement && node.kind <= ts.SyntaxKind.LastStatement)
+
+/** 글자 노드 — 문자열·템플릿 조각·JSX 텍스트. 토큰이 이 안에 있으면 코드가 아니라 글이다. */
+const isTextNode = (node) =>
+  ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) ||
+  ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ts.isJsxText(node)
+
+/**
+ * `pos` 의 토큰이 어떤 글자 노드에 있는가 (fix3 R3-claude-01).
+ *   { literal } — `pos` 에서 **시작하는** 문자열 리터럴 그 자체(`'tab.rename'`) — AST 로 묶음을 본다
+ *   { inside }  — 더 긴 글자 노드 안(오류 메시지·JSON 문자열·테스트 제목·템플릿 문장·JSX 텍스트)
+ *   null        — 어느 글자 노드에도 없다(AST 와 글자 위치가 어긋남) — 판정할 수 없다
+ */
+function textAt({ sourceFile, pos }) {
+  let found = null
+  const visit = (node) => {
+    if (pos < node.pos || pos >= node.end) return
+    if (isTextNode(node) && node.getStart(sourceFile) <= pos) {
+      const whole = (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.getStart(sourceFile) === pos
+      found = whole ? { literal: node } : { inside: node }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return found
+}
+
+const BINDING_OPERATORS = (kind) =>
+  kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+  kind === ts.SyntaxKind.EqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken ||
+  (kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment)
+
+/** 이름 있는 선언(함수·메서드·getter·enum·타입 별칭)의 이름이 method 를 말하는가. */
+const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.name)
+
+/**
+ * LIFE-518 fix1 (R1-claude-01) · fix2 (R2-claude-02) — 리터럴이 **같은 식 안에서 `method` 자리와 묶인 값**인가.
+ * 리터럴에서 부모로 올라가며(문장 경계에서 멈춤) 다음 중 하나면 envelope 이다:
+ *   이름에 method 가 든 속성·변수·파라미터·구조 분해·enum 멤버·JSX 속성·타입 멤버의 값
+ *     (`method: x ?? 'A'` · `RENAME_METHOD = 'A'` · `(method = 'A') =>` · `<Req method={'A'} />` · `enum HerdrMethod { R = 'A' }`)
+ *   이항식의 다른 쪽이 method 를 말한다(`'A' === frame.method` · `msg.method = 'A'`)
+ *   호출: 리터럴이 호출 대상 쪽이고 인자가 method 를 말한다(`['A'].includes(msg.method)`) · 리터럴이 인자이고 호출 대상이
+ *     method 를 말한다(`callMethod('A')`) · 리터럴이 **직접 인자**(함수 식·배열 리터럴을 거치지 않음)이고 **형제 인자**가
+ *     method 를 말한다(`assert.equal(frame.method, 'A')` · `Object.is(frame.method, 'A')`). 형제가 배열 리터럴(의존성 배열
+ *     `[method]`)이면 묶지 않는다(fix4 R4-claude-01). 함수·객체 형제 안 method 는 보지 않는다(오탐 방지 — 콜백·옵션 객체
+ *     `on('A', (ctx) => ctx.method)` · `addMenuItem('A', { method: 'keyboard' })`). 그 꼴의 누출은 ⓔ① 사각(fix5 R5-claude-01)
+ *   `switch (frame.method)` 의 `case 'A':` · 이름에 method 가 든 타입 별칭(`type HerdrMethod = 'A' | 'B'`)
+ *   **반환 값**: 이름에 method 가 든 함수·메서드·getter 가 돌려준다(`get method() { return 'A' }`). 이름 없는 함수 **식**이
+ *     돌려주면 그 함수 식에서 다시 올라간다(`method: (() => { return 'A' })()`). 반환이 아닌 문장(콜백 안 `track('A')`)에서는 멈춘다
+ */
+function boundToMethod({ literal }) {
+  const mentions = mentionsMethod
+  let child = literal
+  // 형제 인자 규칙의 「직접 인자」 판정 — 리터럴에서 여기까지 함수 식이나 배열 리터럴을 거쳤는가
+  let indirect = false
+  for (let parent = literal.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isArrayLiteralExpression(parent)) indirect = true
+    if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)
+    // 반환 자리 — `return 'A'` 또는 식 몸체 화살표 `() => 'A'`
+    const returned = (ts.isReturnStatement(parent) && parent.expression === child) || (ts.isArrowFunction(parent) && parent.body === child && !ts.isBlock(child))
+    if (returned) {
+      let owner = parent
+      while (owner && !ts.isSourceFile(owner) && !ts.isFunctionLike(owner)) owner = owner.parent
+      if (!owner || ts.isSourceFile(owner)) return false
+      if (namedMethod(owner)) return true
+      if (!(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false
+      indirect = true
+      child = owner
+      parent = owner
+      continue
+    }
+    if (ts.isTypeAliasDeclaration(parent) && namedMethod(parent)) return true
+    if (isStatementBoundary(parent)) return false
+    const valued =
+      ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||
+      ts.isParameter(parent) || ts.isBindingElement(parent) || ts.isEnumMember(parent)
+    if (valued && parent.initializer === child && (mentions(parent.name) || (ts.isEnumMember(parent) && namedMethod(parent.parent)))) return true
+    if ((ts.isPropertySignature(parent) && parent.type === child) || ts.isJsxAttribute(parent)) {
+      if (mentions(parent.name)) return true
+    }
+    // 이항식은 **비교·대입**만 묶는다(fix3 R3-claude-02) — `&&`·`||`·`??`·`+` 는 묶지 않고 계속 올라간다(`method: x ?? 'A'` 는 위 속성에서 잡힌다)
+    if (ts.isBinaryExpression(parent) && BINDING_OPERATORS(parent.operatorToken.kind) && mentions(parent.left === child ? parent.right : parent.left)) return true
+    // 호출 — 리터럴이 호출 대상 쪽이면 인자가 method 를 말할 때 묶는다(`['A'].includes(msg.method)`)
+    if (ts.isCallExpression(parent) && parent.expression === child && parent.arguments.some(mentions)) return true
+    if (ts.isCallExpression(parent) && parent.arguments.includes(child)) {
+      // 리터럴이 인자 쪽이면: 호출 대상이 method 를 말하거나(`callMethod('A')`), 직접 인자이고 배열 아닌 형제 인자가 method 를 말한다
+      // (`assert.equal(frame.method, 'A')` — fix4 R4-claude-01). 콜백 안 리터럴·의존성 배열은 묶지 않는다(fix3 R3-claude-02 유지).
+      // 함수·객체 리터럴 형제는 안을 보지 않는다 — 콜백·옵션 객체 안 method 는 오탐이다(fix5 R5-claude-01, 그 꼴의 누출은 ⓔ① 사각)
+      if (mentions(parent.expression)) return true
+      const siblings = parent.arguments.filter((arg) => arg !== child && !ts.isArrayLiteralExpression(arg) &&
+        !ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg))
+      if (!indirect && siblings.some(mentions)) return true
+    }
+  }
+  return false
+}
+
+/**
+ * 메서드 지문에 걸린 토큰을 위반에서 빼는 두 경우(01-criteria K3ⓔ 의 오탐 꼴 정의 그대로). 그 밖은 null(위반).
+ *   ① 액션 id 어휘의 토큰이 envelope 자리 밖에 있다 — 액션 표·`bindingLabel('tab.rename')`·액션 id 키 객체·테스트 기대값.
+ *      envelope 자리 = 바로 앞이 `method:` 류(문자열 안 JSON 포함 — 글자로 본다) **또는** 같은 식 안에서 method 와 묶인 값(AST)
+ *   ② main 의 `log()`(`main/log.ts` 를 import 한 파일) 첫 인자 태그이고, 실제 herdr 메서드 이름이 아니다
+ * 뺀 토큰은 결과의 `면제` 칸에 싣는다 — 숨기지 않는다.
+ *
+ * fix2 (R2-claude-01) — **판정할 수 없으면 면제하지 않는다.** 주석을 벗긴 원문이 파싱 오류를 내거나(`stripComments` 가
+ * JSX 텍스트의 `//` 를 주석으로 먹는 경우 등) 토큰 자리에서 글자 노드를 못 찾으면 ①을 주지 않는다 — 못 풀었다는 이유로 통과시키지 않는다.
+ * fix3 (R3-claude-01) — 토큰이 **더 긴 글자 노드 안**(오류 메시지·JSON 픽스처·테스트 제목·템플릿 문장)이면 글이다.
+ * envelope 글자 규칙(`"method":"…"`)에 안 걸렸으면 ①을 준다.
+ */
+function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
+  const before = source.slice(Math.max(0, index - 80), index)
+  if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
+    const parsed = sourceFile()
+    const diagnostics = parsed.parseDiagnostics
+    // `parseDiagnostics` 는 typescript 내부 필드다 — 없어지면(배열이 아니면) 믿을 수 없는 쪽으로 본다.
+    const trusted = Array.isArray(diagnostics) && diagnostics.length === 0
+    // 믿을 수 없거나(파싱 진단) 글자 노드를 못 찾으면 면제하지 않는다(R2-claude-01 fail-closed).
+    // 더 긴 글자 안의 토큰은 글이다 — envelope 글자 규칙(위)에 안 걸렸으면 면제한다(R3-claude-01).
+    const text = trusted ? textAt({ sourceFile: parsed, pos: index }) : null
+    if (text?.inside) return 'action-id'
+    if (text?.literal && !boundToMethod({ literal: text.literal })) return 'action-id'
+  }
+  if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
+  return null
 }
 
 const rel = (file) => path.relative(APP_DIR, file)
@@ -159,7 +329,8 @@ const WIRE_FINGERPRINTS = [
   {
     kind: 'method',
     pattern:
-      /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)['"`]/g,
+    // 닫는 따옴표 앞 역슬래시도 본다 (LIFE-518) — 이스케이프한 JSON 문자열 `"{\\"method\\":\\"tab.rename\\"}"` 안의 토큰.
+      /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)\\?['"`]/g,
   },
   { kind: 'field', pattern: /\b(?:workspace_id|pane_id|tab_id|agent_status|open_workspace_id|is_linked_worktree|repo_root|repo_name|foreground_cwd|terminal_title|display_agent|pane_count|tab_count|socket_path|process_info|foreground_process_group_id|shell_pid)\b/g },
   // 목록에서 파생된다 (L-6) — 손으로 적지 않는다.
@@ -172,6 +343,7 @@ const violations = []
 const scanned = []
 
 const commentMentions = []
+const exemptions = []
 
 for (const file of files) {
   const raw = fs.readFileSync(file, 'utf8')
@@ -208,31 +380,53 @@ for (const file of files) {
 
   // ④ 와이어 지문 — 어댑터 밖에는 없어야 한다
   const wire = []
+  const codeTokens = new Set()
+  const exempt = new Set()
   if (!isAdapter) {
+    const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
+    // 주석을 벗긴 원문을 파싱한다 — 토큰 위치(index)가 그 원문 기준이다. 액션 id 토큰이 있는 파일만 실제로 파싱한다.
+    let parsed = null
+    const sourceFile = () => (parsed ??= ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS))
     for (const { kind, pattern } of WIRE_FINGERPRINTS) {
-      for (const match of source.matchAll(pattern)) wire.push({ kind, token: match[0] })
+      for (const match of source.matchAll(pattern)) {
+        codeTokens.add(match[0])
+        const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
+        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile }) : null
+        if (reason === null) wire.push({ kind, token: match[0] })
+        else exempt.add(`${reason}\t${match[0]}`)
+      }
     }
   }
   if (wire.length > 0) {
     violations.push({ rule: 'R4-wire-leak', zone, file: rel(file), tokens: [...new Set(wire.map((item) => item.token))] })
   }
 
+  for (const entry of exempt) {
+    const [사유, token] = entry.split('\t')
+    exemptions.push({ file: rel(file), zone, token, 사유 })
+  }
+
   // 주석에서만 나온 언급 — 위반은 아니지만 숨기지 않는다.
   if (!isAdapter) {
     const inRaw = new Set()
     for (const { pattern } of WIRE_FINGERPRINTS) for (const match of raw.matchAll(pattern)) inRaw.add(match[0])
-    const inCode = new Set(wire.map((item) => item.token))
-    const onlyComment = [...inRaw].filter((token) => !inCode.has(token))
+    const onlyComment = [...inRaw].filter((token) => !codeTokens.has(token))
     if (onlyComment.length > 0) commentMentions.push({ file: rel(file), zone, tokens: onlyComment })
   }
 
   scanned.push({ file: rel(file), zone, imports: specifiers.length, wireHits: wire.length })
 }
 
-/** IPC 표면 — 경계를 건너는 payload 타입이 어디서 오나 (N2ⓐ). */
-const preloadSource = stripComments(fs.readFileSync(path.join(SRC, 'preload/index.ts'), 'utf8'))
+/**
+ * IPC 표면 — 경계를 건너는 payload 타입이 어디서 오나 (N2ⓐ).
+ * LIFE-518 — 묻는 것은 「preload 가 main·renderer·어댑터가 아니라 shared 에서만 가져오나」 다. 전에는 지정자 문자열에
+ * `shared/types` 가 들었는지 봐서, preload 가 `shared/terminal-settings` 처럼 shared 의 다른 모듈을 쓰자 미달이 됐다.
+ * 이제 지정자를 실제 경로로 풀어 `src/shared/` 안인지 본다 — `src/shared-x/` 같은 형제는 `inside` 가 막는다.
+ */
+const PRELOAD = path.join(SRC, 'preload/index.ts')
+const preloadSource = stripComments(fs.readFileSync(PRELOAD, 'utf8'))
 const ipcTypeImports = importSpecifiers(preloadSource).filter((item) => item.startsWith('.'))
-const ipcTypesFromShared = ipcTypeImports.every((item) => item.includes('shared/types'))
+const ipcTypesFromShared = ipcTypeImports.every((item) => inside(resolveSpecifier(PRELOAD, item), path.join(SRC, 'shared')))
 
 const out = {
   at: new Date().toISOString(),
@@ -253,12 +447,18 @@ const out = {
   },
   'IPC 표면': {
     preload가_import하는_상대모듈: ipcTypeImports,
-    'shared/types 만인가': ipcTypesFromShared,
+    'src/shared 만인가': ipcTypesFromShared,
   },
   검사한파일: scanned,
   주석언급: {
     설명: '주석에만 나온 herdr 와이어 이름. 실행되지 않으므로 위반이 아니다 — 값의 출처를 적어 둔 자리다.',
     항목: commentMentions,
+  },
+  면제: {
+    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다.',
+    '액션 id (shared/keybindings.ts ACTIONS 에서 파생)': ACTION_IDS.size,
+    'herdr 메서드 (adapter request.ts ALLOWED_METHODS 에서 파생)': HERDR_METHODS.size,
+    항목: exemptions,
   },
   위반: violations,
   판정: violations.length === 0 && ipcTypesFromShared ? '통과' : '미달',

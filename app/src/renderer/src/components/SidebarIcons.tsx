@@ -84,7 +84,7 @@ export function GitBranchIcon({ className }: { className?: string }): React.JSX.
   )
 }
 
-/** lucide `GitCommitHorizontal` — Hide detached HEAD 행. */
+/** lucide `GitCommitHorizontal` — Hide detached HEAD 행 · detached HEAD 카드 배지(LIFE-491, 198 `DetachedHeadBadge.tsx`). */
 export function GitCommitIcon({ className }: { className?: string }): React.JSX.Element {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>

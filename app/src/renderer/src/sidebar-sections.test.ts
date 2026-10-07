@@ -44,12 +44,12 @@ function pane(input: { id: string; agent?: string | null; status?: AgentStatus; 
   }
 }
 
-function wt(input: { path: string; branch: string | null; linked?: boolean; panes?: PaneRow[]; displayName?: string }): WorktreeRow {
+function wt(input: { path: string; branch: string | null; head?: string | null; linked?: boolean; panes?: PaneRow[]; displayName?: string }): WorktreeRow {
   const panes = input.panes ?? null
   return {
     path: input.path,
     branch: input.branch,
-    isLinked: input.linked ?? true,
+    isLinked: input.linked ?? true, head: input.head ?? null, repoName: 'repo',
     openWorkspaceId: panes === null ? null : `w-${input.path}`,
     workspace:
       panes === null
@@ -94,7 +94,7 @@ function fixture(): RepoRow[] {
       wt({ path: '/r/a', branch: 'main', linked: false }),
       wt({ path: '/r/a/z', branch: 'zeta' }),
       wt({ path: '/r/a/b', branch: 'beta' }),
-      wt({ path: '/r/a/d', branch: '(detached)' }),
+      wt({ path: '/r/a/d', branch: null, head: 'd0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3' }),
     ]),
     repo('/r/b', [wt({ path: '/r/b', branch: 'main', linked: false }), wt({ path: '/r/b/x', branch: 'xray' })]),
   ]
@@ -124,10 +124,10 @@ describe('K9ⓑ·K5ⓕ 기본값 = 이전 빌드 화면 그대로', () => {
 describe('K5ⓐ Sort by 5모드 — 198 `smart-sort.ts:104-161` 대응', () => {
   it('name = 표시 이름(브랜치 풀네임) 사전순 — 주 체크아웃도 이름으로 섞인다', () => {
     const sections = buildSidebarSections({ repos: fixture(), view: view({ sortBy: 'name' }), order: MANUAL, now: NOW })
-    // '(detached)' < 'beta' < 'main' < 'zeta' (localeCompare)
+    // 'beta' < 'main' < 'repo'(detached 카드 제목 = 레포 이름 — LIFE-491) < 'zeta' (localeCompare)
     expect(sections.map((section) => section.items.map((item) => item.worktree.path))).toEqual([
       ['/r/b', '/r/b/x'],
-      ['/r/a/d', '/r/a/b', '/r/a', '/r/a/z'],
+      ['/r/a/b', '/r/a', '/r/a/d', '/r/a/z'],
     ])
   })
 
@@ -220,8 +220,8 @@ describe('K4 Group by None/Project', () => {
 
   it('None 에서도 정렬 모드가 걸린다(레포가 섞인다)', () => {
     const sections = buildSidebarSections({ repos: fixture(), view: view({ groupBy: 'none', sortBy: 'name' }), order: MANUAL, now: NOW })
-    // 'main' 동률(두 주 체크아웃)은 안정 정렬로 수동 순서(b → a)를 지킨다.
-    expect(flat(sections)).toEqual(['/r/a/d', '/r/a/b', '/r/b', '/r/a', '/r/b/x', '/r/a/z'])
+    // 'main' 동률(두 주 체크아웃)은 안정 정렬로 수동 순서(b → a)를 지킨다. detached(/r/a/d) 제목 = 레포 이름 'repo'(LIFE-491).
+    expect(flat(sections)).toEqual(['/r/a/b', '/r/b', '/r/a', '/r/a/d', '/r/b/x', '/r/a/z'])
   })
 })
 
@@ -260,11 +260,15 @@ describe('K3 Show › Projects · K8 Filters · 배지', () => {
   })
 
   it('주 체크아웃이 detached 면 Hide default branch 가 아니라 Hide detached HEAD 가 숨긴다(198 `isDefaultBranchWorkspace`)', () => {
-    for (const branch of ['(detached)', null]) {
-      const repos = [repo('/r/a', [wt({ path: '/r/a', branch, linked: false }), wt({ path: '/r/a/k', branch: 'k' })])]
-      expect(flat(buildSidebarSections({ repos, view: view({ hideDefaultBranch: true }), order: EMPTY_MANUAL_ORDER, now: NOW }))).toEqual(['/r/a', '/r/a/k'])
-      expect(flat(buildSidebarSections({ repos, view: view({ hideDetachedHead: true }), order: EMPTY_MANUAL_ORDER, now: NOW }))).toEqual(['/r/a/k'])
-    }
+    const repos = [repo('/r/a', [wt({ path: '/r/a', branch: null, head: 'abcdef0123456789', linked: false }), wt({ path: '/r/a/k', branch: 'k' })])]
+    expect(flat(buildSidebarSections({ repos, view: view({ hideDefaultBranch: true }), order: EMPTY_MANUAL_ORDER, now: NOW }))).toEqual(['/r/a', '/r/a/k'])
+    expect(flat(buildSidebarSections({ repos, view: view({ hideDetachedHead: true }), order: EMPTY_MANUAL_ORDER, now: NOW }))).toEqual(['/r/a/k'])
+  })
+
+  it('LIFE-491 — 브랜치도 HEAD 도 없는 행은 detached 가 아니다(198 `isDetachedHeadWorkspace`): Hide detached HEAD 가 숨기지 않는다', () => {
+    const repos = [repo('/r/a', [wt({ path: '/r/a', branch: 'main', linked: false }), wt({ path: '/r/a/bare', branch: null, head: null }), wt({ path: '/r/a/d', branch: null, head: '0123456789abcdef' })])]
+    expect(flat(buildSidebarSections({ repos, view: view({ hideDetachedHead: true }), order: EMPTY_MANUAL_ORDER, now: NOW }))).toEqual(['/r/a', '/r/a/bare'])
+    expect(activeFilterCount({ view: view({ hideDetachedHead: true }), repos })).toBe(1)
   })
 
   it('스위치 필터로 카드가 0 인 레포는 헤더째 빠지고, 다 비면 빈 상태 판정(보이는 카드 0)', () => {
@@ -302,12 +306,12 @@ describe('K7 끌면 Manual · 수동 데이터 보존', () => {
     const repos = fixture()
     const nameView = view({ sortBy: 'name' })
     const shown = buildSidebarSections({ repos, view: nameView, order: MANUAL, now: NOW })[1]!.items.map((item) => item.worktree.path)
-    expect(shown).toEqual(['/r/a/d', '/r/a/b', '/r/a', '/r/a/z'])
+    expect(shown).toEqual(['/r/a/b', '/r/a', '/r/a/d', '/r/a/z'])
     // zeta 를 맨 앞으로(slot 0)
     const next = applyWorktreeMove({ order: MANUAL, repoRoot: '/r/a', worktrees: repos[0]!.worktrees, visiblePaths: shown, path: '/r/a/z', slot: 0 })
     expect(next).not.toBeNull()
     const manual = buildSidebarSections({ repos, view: view({ sortBy: 'manual' }), order: next!, now: NOW })
-    expect(manual[1]?.items.map((item) => item.worktree.path)).toEqual(['/r/a/z', '/r/a/d', '/r/a/b', '/r/a'])
+    expect(manual[1]?.items.map((item) => item.worktree.path)).toEqual(['/r/a/z', '/r/a/b', '/r/a', '/r/a/d'])
   })
 
   it('ⓑ 제자리 드롭은 null — 호출부가 모드를 안 바꾼다', () => {
@@ -665,11 +669,16 @@ describe('LIFE-478 K5 Pinned 구획 (198 `build-rows.ts:100-149` · 단일 위�
 
 describe('LIFE-478 K3ⓓ·ⓕ 표시 이름', () => {
   it('ⓓ 표시 이름 → 없으면 브랜치. 표시 이름이 브랜치와 같아도 그 값(Orca #15908 따라 하지 않기)', () => {
-    expect(worktreeDisplayName({ displayName: null, branch: 'feat/x' })).toBe('feat/x')
-    expect(worktreeDisplayName({ displayName: '내 작업', branch: 'feat/x' })).toBe('내 작업')
-    expect(worktreeDisplayName({ displayName: 'feat/x', branch: 'feat/x' })).toBe('feat/x')
-    expect(worktreeDisplayName({ displayName: null, branch: null })).toBe('(브랜치 없음)')
-    expect(worktreeDisplayName({ displayName: 'detached 이름', branch: null })).toBe('detached 이름')
+    const at = { repoName: 'corral', path: '/w/det-a' }
+    expect(worktreeDisplayName({ ...at, displayName: null, branch: 'feat/x' })).toBe('feat/x')
+    expect(worktreeDisplayName({ ...at, displayName: '내 작업', branch: 'feat/x' })).toBe('내 작업')
+    expect(worktreeDisplayName({ ...at, displayName: 'feat/x', branch: 'feat/x' })).toBe('feat/x')
+    expect(worktreeDisplayName({ ...at, displayName: 'detached 이름', branch: null })).toBe('detached 이름')
+  })
+  it('LIFE-491 — 브랜치가 없으면(detached) 레포 이름 → 폴더 이름(198 `worktree-metadata-merge.ts:21`)', () => {
+    expect(worktreeDisplayName({ displayName: null, branch: null, repoName: 'corral', path: '/w/det-a' })).toBe('corral')
+    expect(worktreeDisplayName({ displayName: null, branch: '', repoName: 'corral', path: '/w/det-a' })).toBe('corral')
+    expect(worktreeDisplayName({ displayName: null, branch: null, repoName: '  ', path: '/w/det-a/' })).toBe('det-a')
   })
   it('ⓕ 이름 정렬은 표시 이름을 쓴다(198 같음)', () => {
     const repos = [repo('/r/a', [wt({ path: '/r/a', branch: 'main', linked: false }), wt({ path: '/r/a/z', branch: 'zeta', displayName: 'alpha' }), wt({ path: '/r/a/b', branch: 'beta' })])]

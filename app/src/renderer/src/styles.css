@@ -472,6 +472,15 @@ button, input { font: inherit; letter-spacing: inherit; }
 .worktree-mark.tone-ahead { color: var(--st-ahead); }
 .worktree-mark.tone-behind { color: var(--st-behind); }
 .worktree-mark.tone-clean { color: var(--fg-dim); }
+/* detached HEAD 배지 (LIFE-491) — 198 `DetachedHeadBadge`: outline 배지 `h-[16px](메타 줄) gap-1 rounded px-1.5 text-[10px] font-medium`,
+   테두리·바탕·글자 = git 「modified」 색 30%·8%·100%(corral 은 같은 뜻의 `--st-dirty`). 아이콘 `size-2.5`. */
+.worktree-detached-badge {
+  display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; height: 16px; gap: 4px; padding: 0 6px; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--st-dirty) 30%, transparent); background: color-mix(in srgb, var(--st-dirty) 8%, transparent);
+  color: var(--st-dirty); font-size: 10px; font-weight: 500; line-height: 1; white-space: nowrap; overflow: hidden;
+}
+.worktree-detached-icon { flex: 0 0 auto; width: 10px; height: 10px; }
+.worktree-detached-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* --- 에이전트 목록 · 알약 · 행 (LIFE-467 S1 — Orca 1.4.198 compact, c4 §5) ---------------------- */
 

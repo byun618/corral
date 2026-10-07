@@ -26,13 +26,14 @@ import { gitMarkLabel, gitTone } from '../git-marks.js'
 import { collapsedSummary } from '../session-summary.js'
 import { buildAgentRows, SUMMARY_MIN_ROOTS, type AgentRowNode } from '../sidebar-agents.js'
 import { worktreeDisplayName } from '../worktree-name.js'
+import { worktreeIdentity } from '../worktree-identity.js'
 import { worktreeStatus } from '../worktree-status.js'
 import { AgentFullRow } from './AgentFullRow.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
 import { EllipsisIcon, PlusIcon } from './AgentStateDot.js'
 import { HoverCard } from './HoverCard.js'
 import { SessionRow } from './SessionRow.js'
-import { NoteIcon, StarIcon, TrashIcon } from './SidebarIcons.js'
+import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon } from './SidebarIcons.js'
 import { useMenuBus } from '../menu-bus.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
 
@@ -176,8 +177,10 @@ export function WorktreeBlock({
   // 표시 이름은 **정렬 키와 같은 함수**에서 온다 — 둘이 갈라져서 보이는 이름 기준 역순이
   // 나온 적이 있다(worktree-name.ts 주석).
   const title = worktreeDisplayName(worktree)
-  // 메타 줄 = 브랜치. 브랜치가 없는(detached) worktree 만 비운다 — 절대경로는 행에 안 넣는다(§2.5, 툴팁에만).
+  // 메타 줄 = 브랜치. 브랜치가 없는(detached) worktree 는 그 자리에 198 배지 `Detached HEAD @ <7>`(LIFE-491) — 절대경로는 행에 안 넣는다(§2.5, 툴팁에만).
   const branch = worktree.branch
+  const identity = worktreeIdentity(worktree)
+  const detached = identity?.kind === 'detached' ? identity : null
   const status = worktreeStatus({ rows: roots, hasOpenTabs: (worktree.workspace?.tabs.length ?? 0) > 0 })
   const compact = layout === 'compact'
   const hover = compact ? compactHoverContent({ branch, title, gitStatus: worktree.gitStatus, comment: worktree.comment, parent: card.parentName }) : null
@@ -409,7 +412,7 @@ export function WorktreeBlock({
                   </div>
                 ) : null}
               </div>
-              {compact || (branch === null && markLabel === null && repoLabel === null && card.parentName === null) ? null : (
+              {compact || (branch === null && detached === null && markLabel === null && repoLabel === null && card.parentName === null) ? null : (
                 <div className="worktree-block-line2" data-worktree-card-meta-row="">
                   {repoLabel === null ? null : (
                     <span className="worktree-repo-label" data-worktree-repo-label="" title={repoLabel}>
@@ -419,6 +422,14 @@ export function WorktreeBlock({
                   {branch === null ? null : (
                     <span className="worktree-sub" data-worktree-meta-branch="" title={branch}>
                       {branch}
+                    </span>
+                  )}
+                  {detached === null ? null : (
+                    // 198 `DetachedHeadBadge`(label="sidebar") — Detailed 메타 줄에만. Compact 는 198 처럼 그리지 않는다(`worktree-card-presentation.tsx:81`).
+                    // 툴팁은 corral 메타 줄의 다른 칸과 같이 네이티브 `title` 이다(198 은 Radix Tooltip — 문구는 같다).
+                    <span className="worktree-detached-badge" data-worktree-detached-head={detached.shortHead} title={detached.tooltip} aria-label={detached.tooltip}>
+                      <GitCommitIcon className="worktree-detached-icon" />
+                      <span className="worktree-detached-label">{detached.sidebarLabel}</span>
                     </span>
                   )}
                   {card.parentName === null ? null : (

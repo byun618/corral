@@ -16,9 +16,15 @@ import type { WorktreeRow } from '../../shared/types.js'
  *
  * **표시 이름이 브랜치와 같아도 그 값을 그대로 쓴다** — Orca #15908(표시 이름 = 브랜치를 「오버라이드 없음」 으로 보고 엉뚱한 값으로
  * 떨어짐)을 따라 하지 않는다. 비교 없이 있으면 쓰고 없으면 브랜치다.
+ *
+ * 브랜치가 없으면(detached HEAD — LIFE-491) **레포 이름 → 폴더 이름**이다. 198 이 같다: 자동 표시 이름 =
+ * `branchShort || repo.displayName || basename(path)`(`main/ipc/worktree-metadata-merge.ts:21`). 어느 커밋인지는 메타 줄 배지가 말한다.
  */
-export function worktreeDisplayName(worktree: Pick<WorktreeRow, 'displayName' | 'branch'>): string {
-  return worktree.displayName ?? worktree.branch ?? '(브랜치 없음)'
+export function worktreeDisplayName(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'repoName' | 'path'>): string {
+  const named = worktree.displayName ?? worktree.branch
+  if (named != null && named !== '') return named
+  if (worktree.repoName && worktree.repoName.trim() !== '') return worktree.repoName
+  return worktree.path.split('/').filter((part) => part !== '').at(-1) ?? worktree.path
 }
 
 /**

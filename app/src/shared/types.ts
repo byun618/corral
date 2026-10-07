@@ -461,7 +461,12 @@ export type GitStatusSummary = {
 /** 한 worktree(체크아웃 한 벌). 구조는 git, 열림상태는 herdr 에서 온다 (기준 N4ⓒ). */
 export type WorktreeRow = {
   path: string
+  /** 브랜치 이름 — 브랜치가 없으면(detached HEAD) null. 표시 문자열은 싣지 않는다(LIFE-491 — `worktree-identity.ts` 가 판정). */
   branch: string | null
+  /** HEAD 의 전체 sha (`git worktree list --porcelain` 의 `HEAD` 줄). bare 레코드만 null. detached 배지가 앞 7자를 쓴다. */
+  head: string | null
+  /** 이 워크트리가 속한 레포의 이름(`RepoRow.name`) — detached 카드 제목 폴백(198: 브랜치 없음 → 레포 표시 이름 → 폴더 이름). */
+  repoName: string
   /** 링크된 worktree 인가 (아니면 레포의 주 체크아웃). */
   isLinked: boolean
   /** herdr `worktree.list` 가 준 열린 workspace. 닫혀 있으면 null. */

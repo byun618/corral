@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+/* global document, window -- happy-dom 환경 */
 // LIFE-490 K2 — 열기·생성 응답이 state 보다 먼저 와도 활성이 남는가, 그리고 보류의 가장자리(실패·미도착·사용자 선택·도착 뒤 닫힘·재기동).
 // 실제 React 로 훅을 돌리고, IPC 는 손으로 푸는 약속, state push 는 Harness 다시 그리기로 흉내 낸다.
 // 순서는 격리 계측(`specs/LIFE-490-sidebar-card/raw/claude/k1/`)에서 본 그대로다: 응답 → 새 workspace 없는 push → 늦게 도착.

@@ -89,7 +89,7 @@ export function DeleteWorktreeDialog({
               {preview.childPaths.length > 0 ? (
                 <li data-delete-children={preview.childPaths.length}>하위 워크트리 {preview.childPaths.length}개 — 지우면 상위 링크가 풀립니다(하위는 지우지 않습니다)</li>
               ) : null}
-              {preview.branch !== null && preview.branch !== '(detached)' ? (
+              {preview.branch !== null ? (
                 <li data-delete-branch="">브랜치 {preview.branch} — corral 이 만든 브랜치만 함께 지웁니다(병합 안 됐으면 남깁니다)</li>
               ) : null}
             </ul>

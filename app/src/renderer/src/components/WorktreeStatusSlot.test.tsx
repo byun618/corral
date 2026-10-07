@@ -17,7 +17,7 @@ const pane = (paneId: string, agentStatus: PaneRow['agentStatus']): PaneRow => (
 })
 function worktree(panes: PaneRow[]): WorktreeRow {
   return {
-    path: '/repo/wt', branch: 'feat', isLinked: true, openWorkspaceId: 'w1',
+    path: '/repo/wt', branch: 'feat', isLinked: true, head: null, repoName: 'repo', openWorkspaceId: 'w1',
     gitStatus: { branch: 'feat', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
     workspace: { workspaceId: 'w1', label: 'repo', number: 1, focused: true, agentStatus: 'idle', tabs: [{ tabId: 't1', workspaceId: 'w1', label: '', number: 1, order: 0, focused: true, agentStatus: 'idle', panes, digest: EMPTY_SESSION_DIGEST }] },
     displayName: null, comment: null, parentPath: null,

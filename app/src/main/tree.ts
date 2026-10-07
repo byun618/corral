@@ -32,6 +32,7 @@ export type RepoSkeleton = {
   worktrees: Array<{
     path: string
     branch: string | null
+    head: string | null
     isLinked: boolean
     openWorkspaceId: string | null
     /** git-status.ts 의 TTL 캐시를 지난 값 — buildSkeleton 이 매번 다시 부르지만 캐시가 막는다. */
@@ -58,6 +59,7 @@ export async function buildSkeleton(input: {
       git.worktrees.map(async (worktree) => ({
         path: worktree.path,
         branch: worktree.branch,
+        head: worktree.head,
         isLinked: worktree.isLinked,
         openWorkspaceId: open.byPath.get(worktree.path) ?? null,
         gitStatus: await getGitStatus(worktree.path),
@@ -159,6 +161,8 @@ export function joinTree(skeleton: readonly RepoSkeleton[], workspaces: readonly
       return {
         path: worktree.path,
         branch: worktree.branch,
+        head: worktree.head,
+        repoName: repo.name,
         isLinked: worktree.isLinked,
         // 진 worktree 는 openWorkspaceId 도 null 로 걷는다 — App.tsx 는 '열림 N'을 openWorkspaceId
         // 로(388·432줄), 워크스페이스 행을 workspace 로(450줄) 센다. 둘 다 걷어야 거짓말이 안 남는다.

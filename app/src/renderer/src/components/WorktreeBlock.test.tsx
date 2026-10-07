@@ -53,9 +53,13 @@ function render(panes: PaneRow[], options: {
   card?: Partial<CardActions>
   /** LIFE-471 확인 안 된 완료가 있는 pane */
   unread?: string[]
+  /** LIFE-491 git identity — detached 는 `branch: null` + `head` */
+  branch?: string | null
+  head?: string | null
+  repoName?: string
 } = {}): string {
   const worktree: WorktreeRow = {
-    path: '/repo', branch: 'main', isLinked: options.linked ?? false, openWorkspaceId: options.closed === true ? null : 'w1',
+    path: '/repo', branch: options.branch === undefined ? 'main' : options.branch, isLinked: options.linked ?? false, head: options.head ?? null, repoName: options.repoName ?? 'repo', openWorkspaceId: options.closed === true ? null : 'w1',
     gitStatus: { branch: 'main', upstream: null, ahead: null, behind: null, staged: 0,
       unstaged: options.dirty === true ? 2 : 0, untracked: 0, conflicted: 0, dirty: options.dirty === true, error: null },
     workspace: options.closed === true ? null : { workspaceId: 'w1', label: 'repo', number: 1, focused: true, agentStatus: 'idle',
@@ -310,5 +314,38 @@ describe('WorktreeBlock 카드 메뉴 표시 (LIFE-478)', () => {
     const pinned = render([], { card: { reorderable: false, pinned: true } })
     expect(pinned).not.toContain('data-reorder-card=')
     expect(pinned).toContain('data-worktree-pinned=""')
+  })
+})
+
+describe('LIFE-491 detached HEAD 카드 — 198 `DetachedHeadBadge`·제목 폴백', () => {
+  const SHA = '02d98271f3c4a5b6c7d8e9f00112233445566778'
+  it('Detailed: 제목 = 레포 이름, 메타 줄 = `Detached HEAD @ <앞 7자>` 배지 + 198 문구 툴팁, 브랜치 칸·`(detached)` 없음', () => {
+    const html = render([], { linked: true, branch: null, head: SHA, repoName: 'corral' })
+    expect(html).toMatch(/data-worktree-title=""[^>]*>corral<\/span>/)
+    expect(html).toContain('data-worktree-detached-head="02d9827"')
+    expect(html).toContain('title="Detached HEAD at 02d9827. You are viewing a commit, not a branch."')
+    expect(html).toContain('>Detached HEAD @ 02d9827</span>')
+    expect(html).not.toContain('data-worktree-meta-branch')
+    expect(html).not.toContain('(detached)')
+  })
+  it('표시 이름을 준 detached 는 그 이름이 제목이고 배지는 그대로', () => {
+    const html = render([], { linked: true, branch: null, head: SHA, repoName: 'corral', displayName: '실험 커밋' })
+    expect(html).toMatch(/data-worktree-title=""[^>]*>실험 커밋<\/span>/)
+    expect(html).toContain('data-worktree-detached-head="02d9827"')
+  })
+  it('Compact: 198 처럼 메타 줄 배지를 그리지 않는다', () => {
+    const html = render([], { linked: true, branch: null, head: SHA, repoName: 'corral', layout: 'compact' })
+    expect(html).not.toContain('data-worktree-detached-head')
+    expect(html).not.toContain('(detached)')
+  })
+  it('브랜치 카드는 그대로 — 메타 줄 = 브랜치, 배지 없음', () => {
+    const html = render([], { linked: true, branch: 'feat/x', head: SHA })
+    expect(html).toContain('data-worktree-meta-branch="" title="feat/x">feat/x</span>')
+    expect(html).not.toContain('data-worktree-detached-head')
+  })
+  it('브랜치도 HEAD 도 없으면 배지 없음(198 identity null)', () => {
+    const html = render([], { linked: true, branch: null, head: null, repoName: 'corral' })
+    expect(html).not.toContain('data-worktree-detached-head')
+    expect(html).toMatch(/data-worktree-title=""[^>]*>corral<\/span>/)
   })
 })

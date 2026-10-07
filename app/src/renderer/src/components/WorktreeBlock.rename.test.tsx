@@ -11,7 +11,7 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
 const READY_EMPTY: OrchestrationLineage = { state: 'ready', entries: [] }
 const worktree: WorktreeRow = {
-  path: '/repo/wt', branch: 'feat', isLinked: true, openWorkspaceId: null,
+  path: '/repo/wt', branch: 'feat', isLinked: true, head: null, repoName: 'repo', openWorkspaceId: null,
   gitStatus: { branch: 'feat', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
   workspace: null, displayName: null, comment: null, parentPath: null,
 }

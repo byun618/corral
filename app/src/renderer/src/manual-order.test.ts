@@ -20,7 +20,7 @@ import { sortWorktrees } from './worktree-name.js'
 const GIT = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
 
 function wt(path: string, branch: string | null, isLinked = true): WorktreeRow {
-  return { path, branch, isLinked, openWorkspaceId: null, workspace: null, gitStatus: { ...GIT, branch }, displayName: null, comment: null, parentPath: null }
+  return { path, branch, head: null, repoName: 'repo', isLinked, openWorkspaceId: null, workspace: null, gitStatus: { ...GIT, branch }, displayName: null, comment: null, parentPath: null }
 }
 
 function repo(root: string, linked: Array<[string, string | null]>, options: { error?: string; name?: string } = {}): RepoRow {

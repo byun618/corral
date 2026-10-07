@@ -7,7 +7,7 @@ import type { CardMenuAction } from './card-menu.js'
 
 const GIT = { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
 const wt = (path: string, patch: Partial<WorktreeRow> = {}): WorktreeRow => ({
-  path, branch: path.split('/').at(-1) ?? null, isLinked: true, openWorkspaceId: null, workspace: null, gitStatus: GIT, displayName: null, comment: null, parentPath: null, ...patch,
+  path, branch: path.split('/').at(-1) ?? null, isLinked: true, head: null, repoName: 'r', openWorkspaceId: null, workspace: null, gitStatus: GIT, displayName: null, comment: null, parentPath: null, ...patch,
 })
 const shape = (entries: MenuEntry<CardMenuAction>[]): string[] =>
   entries.map((entry) => (entry.kind === 'item' ? `${entry.action}:${entry.label}${entry.disabled ? '(off)' : ''}${entry.submenu ? `[${entry.submenu.map((sub) => (sub.kind === 'item' ? sub.label : '')).join('|')}]` : ''}` : entry.kind === 'sep' ? '—' : `#${entry.label}`))

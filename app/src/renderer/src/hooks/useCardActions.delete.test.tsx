@@ -13,7 +13,7 @@ import { SKIP_DELETE_FAILED_NOTE, SKIP_DELETE_SAVED_NOTE, useCardActions } from 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
 const row = (input: { path: string; linked: boolean; workspaceId: string | null }): WorktreeRow => ({
-  path: input.path, branch: input.path.split('/').at(-1) ?? null, isLinked: input.linked, openWorkspaceId: input.workspaceId,
+  path: input.path, branch: input.path.split('/').at(-1) ?? null, isLinked: input.linked, head: null, repoName: 'repo', openWorkspaceId: input.workspaceId,
   gitStatus: { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
   workspace: input.workspaceId === null ? null : { workspaceId: input.workspaceId, label: input.path, number: 1, agentStatus: 'idle', focused: false, tabs: [] },
   displayName: null, comment: null, parentPath: null,

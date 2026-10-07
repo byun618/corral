@@ -12,6 +12,7 @@ import type { SidebarSortBy, SidebarView } from '../../shared/sidebar-view.js'
 import { agentDot } from './agent-dot.js'
 import { orderAll, orderRepos, orderWorktrees, type LayoutGroup, type ManualOrder } from './manual-order.js'
 import { worktreeDisplayName } from './worktree-name.js'
+import { worktreeIdentity } from './worktree-identity.js'
 
 // --- 필터 ------------------------------------------------------------------------------------------
 
@@ -33,13 +34,11 @@ export function filterBadgeLabel(count: number): string {
 }
 
 /**
- * detached HEAD — main 의 git 목록 판독이 `'(detached)'` 로 싣는다(`main/git-worktrees.ts:42`). 브랜치 줄이 아예 없는 레코드
- * (`null` — 판독 전·특수 상태)도 브랜치가 없다는 점에서 같이 본다(198 `getWorktreeGitIdentityDisplay` kind `detached`).
+ * detached HEAD — 198 `visible-worktree-kinds.ts:47` 처럼 identity 판정(`worktree-identity.ts`)이 `detached` 인 행만이다.
+ * 브랜치도 HEAD 도 없는 행(bare 등)은 detached 로 세지 않는다(LIFE-491 — 전에는 `branch === null` 도 detached 로 셌다).
  */
-export const DETACHED_BRANCH = '(detached)'
-
 export function isDetachedWorktree(worktree: WorktreeRow): boolean {
-  return worktree.branch === null || worktree.branch === DETACHED_BRANCH
+  return worktreeIdentity(worktree)?.kind === 'detached'
 }
 
 /** 198 `isDefaultBranchWorkspace` — 주 체크아웃이고 브랜치가 있다. 주 체크아웃이 detached 면 Hide detached HEAD 쪽이 숨긴다. */

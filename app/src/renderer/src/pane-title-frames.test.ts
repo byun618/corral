@@ -131,7 +131,7 @@ function reposWith(panes: PaneRow[]): RepoRow[] {
         {
           path: '/tmp/r',
           branch: 'main',
-          isLinked: false,
+          isLinked: false, head: null, repoName: 'repo',
           openWorkspaceId: 'wA',
           workspace: { workspaceId: 'wA', label: 'main', number: 1, agentStatus: 'working', focused: true, tabs: [tab] },
           gitStatus: {

@@ -18,7 +18,7 @@ import { useWindowEscape } from '../menu-bus.js'
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
 const row = (input: { path: string; displayName?: string | null; comment?: string | null }): WorktreeRow => ({
-  path: input.path, branch: input.path.split('/').at(-1) ?? null, isLinked: true, openWorkspaceId: null,
+  path: input.path, branch: input.path.split('/').at(-1) ?? null, isLinked: true, head: null, repoName: 'repo', openWorkspaceId: null,
   gitStatus: { branch: null, upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null },
   workspace: null, displayName: input.displayName ?? null, comment: input.comment ?? null, parentPath: null,
 })

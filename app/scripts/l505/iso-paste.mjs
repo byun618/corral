@@ -468,6 +468,47 @@ try {
       await pause(500)
     }
   }
+  // fix2 R2-3 — 이미지 ⌘V 도 진입 즉시 선택을 푼다(왕복을 기다리지 않는다). 시스템 클립보드 PNG 라 유휴 가드 안.
+  if (only.has('X') && args.label === 'after') {
+    await type('clear; echo L505SELMARK\r')
+    await pause(1500)
+    const t = await termRead()
+    const row = t.lines.findLastIndex((line) => /^L505SELMARK\s*$/.test(line))
+    const done = await withSystemClipboard('X3', async () => {
+      clip('png', clipPng)
+      return evaluate((input) => {
+        const box = document.querySelector(`[data-term-pane-box="${input.paneId}"]`)
+        const screen = box.querySelector('.xterm-screen')
+        const area = box.querySelector('textarea.xterm-helper-textarea')
+        const r = screen.getBoundingClientRect()
+        const x = r.left + (r.width / input.cols) * 4
+        const y = r.top + (r.height / input.rows) * (input.row + 0.5)
+        for (const detail of [1, 2]) {
+          screen.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+          screen.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+        }
+        const copy = () => {
+          const data = new DataTransfer()
+          area.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }))
+          return data.getData('text/plain')
+        }
+        const before = copy()
+        area.dispatchEvent(new ClipboardEvent('paste', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true }))
+        // 같은 태스크 안 — 이미지 왕복(main IPC)이 끝나기 전에 본다.
+        return { before, afterSync: copy() }
+      }, { paneId, cols: t.cols, rows: t.rows, row })
+    })
+    await pause(1500)
+    await type('\x15')
+    if (done === null) result.cases.push({ name: 'X3-image-selection', skipped: '유휴 가드 — 보류' })
+    else {
+      result.cases.push({ name: 'X3-image-selection', kind: 'selection', row, ...done, ring: await freshRing() })
+      checks.require('X3-was-selected', done.before === 'L505SELMARK', done)
+      checks.require('X3-cleared-before-roundtrip', done.afterSync === '', done)
+      console.log('[iso] X3-image-selection', JSON.stringify(done))
+    }
+    save()
+  }
   // ── I: 큰 이미지 ⌘V 왕복 시간 (fix1 F2 타임아웃 근거) — 잡음 PNG(압축 안 되는) 를 시스템 클립보드에 (가드 안) ──
   if (only.has('I')) {
     await startSink(1)
@@ -504,6 +545,8 @@ try {
       })
       const ring = await freshRing()
       result.cases.push({ name: `I-${w}x${h}`, kind: 'image-timing', pngBytes: bytes, ...done, ring, log: logRows() })
+      // fix2 R2-1 — 5초 타임아웃(CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS)의 근거를 판정으로: 도착 + 상한의 1/4(1250ms) 안.
+      if (done !== null) checks.require(`I-${w}x${h}-within-quarter-timeout`, done.arrived && done.ms < 5000 / 4, { ms: done.ms, arrived: done.arrived })
       save()
       console.log('[iso] I', w, h, JSON.stringify({ bytes, ms: done?.ms, arrived: done?.arrived }))
     }

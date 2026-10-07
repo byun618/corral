@@ -330,6 +330,8 @@ export function TerminalPane({
       const text = event.clipboardData?.getData('text/plain') ?? ''
       event.preventDefault()
       event.stopPropagation()
+      // 진입 즉시 선택을 푼다(텍스트·이미지 공통) — 이미지 왕복(최대 5초) 동안 선택이 남아 프레임이 보류되지 않게 (fix2 R2-3).
+      term.clearSelection()
       const target = paneId
       if (!shouldPasteClipboardImage(text)) {
         void enqueueGenerated(clipboardTextPayloads(text).map((data): GeneratedInput => ({ data, source: 'paste-text', paneId: target })))

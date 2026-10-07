@@ -9,15 +9,58 @@
 //
 // G8: 이 훅은 herdr 를 부르지 않는다 — 확인은 corral 의 장부일 뿐 `pane.focus`·`tab.focus` 를 늘리거나 줄이지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, UiPrefs } from '../../../shared/types.js'
+import type { AppState, PaneRow, UiPrefs } from '../../../shared/types.js'
 import { acknowledgeInput, EMPTY_UNREAD, ingest, markRead, markUnread, type PaneObservation, type UnreadModel, type Watched } from '../unread.js'
 
 function readAttention(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus()
 }
 
+/** main 이 transcript 를 읽는 provider (`shared/types.ts` `TranscriptAgent`). */
+const TRANSCRIPT_AGENTS: readonly string[] = ['claude', 'codex', 'grok']
+
+/**
+ * 발화로 기동 반짝임을 가를 수 있는 pane 인가 (LIFE-502) — transcript provider 이고, codex 면 통합이 깔려 있다.
+ * codex 통합이 `not-installed` 면 세션 참조가 영영 안 와서 「참조 없음 = 아직 프롬프트 없음」 이 거짓이 된다 — 판단 불가로 두고 옛 동작(센다)을 따른다(r1 R1-02).
+ */
+export function judgeableOf(input: { agent: string | null; integrations: AppState['integrations'] }): boolean {
+  if (input.agent === null || !TRANSCRIPT_AGENTS.includes(input.agent)) return false
+  if (input.agent !== 'codex') return true
+  return !input.integrations.some((row) => row.agent === 'codex' && row.state === 'not-installed')
+}
+
+/** 세션 참조의 열쇠 — 같은 참조인지 비교하는 데만 쓴다. */
+function sessionKeyOf(pane: Pick<PaneRow, 'agentSession'>): string | null {
+  if (pane.agentSession === null) return null
+  return pane.agentSession.kind === 'id' ? pane.agentSession.id : pane.agentSession.path
+}
+
+/**
+ * transcript 지문에 사람 발화가 있나 — 있으면 `true`. 없을 때 지문을 **못 읽은** 것(참조의 파일을 못 찾음·못 읽음·모양이 낯섦)이면
+ * 「발화 없음」 이 아니라 모름이다 → `null`(판단 불가 = 옛 동작, r2 R2-01). 발화가 보이면 활동 상태와 무관하게 `true` 다.
+ */
+function promptSeenOf(digest: PaneRow['digest']): boolean | null {
+  if (digest.firstPrompt !== null || digest.lastPrompt !== null) return true
+  switch (digest.activity.state) {
+    case 'unresolved':
+    case 'unreadable':
+    case 'unknown-format':
+      return null
+    case 'none':
+    case 'text':
+      return false
+  }
+}
+
+/** `observationsOf` 가 읽는 칸만 — 테스트가 상태 전체를 만들지 않아도 되게. */
+type ObservedPane = Pick<PaneRow, 'paneId' | 'agentStatus' | 'agentState' | 'agent' | 'agentSession' | 'digest'>
+type ObservedState = {
+  repos: readonly { worktrees: readonly { path: string; workspace: { tabs: readonly { panes: readonly ObservedPane[] }[] } | null }[] }[]
+  integrations: AppState['integrations']
+}
+
 /** 상태 묶음 → 관측 목록. 모든 열린 pane(셸 pane 도 — 보고로 에이전트가 붙으면 완료가 선다). */
-export function observationsOf(state: AppState): PaneObservation[] {
+export function observationsOf(state: ObservedState): PaneObservation[] {
   const rows: PaneObservation[] = []
   for (const repo of state.repos)
     for (const worktree of repo.worktrees)
@@ -29,6 +72,10 @@ export function observationsOf(state: AppState): PaneObservation[] {
             status: pane.agentStatus,
             enteredAt: pane.agentState.observedAt,
             history: pane.agentState.history.map((step) => ({ status: step.status, enteredAt: step.observedAt })),
+            agent: pane.agent,
+            sessionKey: sessionKeyOf(pane),
+            promptSeen: promptSeenOf(pane.digest),
+            judgeable: judgeableOf({ agent: pane.agent, integrations: state.integrations }),
           })
   return rows
 }

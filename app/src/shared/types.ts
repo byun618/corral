@@ -897,6 +897,8 @@ export type AppState = {
   orchestrationLineage: OrchestrationLineage
   /**
    * herdr 세션의 **모든** 산 탭 id (LIFE-507) — 링크가 live 일 때만, 아니면 null(「지금은 모른다」 — 빈 배열과 구분한다). 등록 레포 밖 워크스페이스의 탭도 든다.
+   * 폴백(`pickSessionName` — default 정지 → 다른 실행 세션)으로 「제 세션」(`CORRAL_SESSION` 지정 시 그것, 아니면 default)이 아닌 세션에 붙었어도 null 이다 —
+   * 남의 세션 탭 목록으로 제 세션의 칸을 지우지 않는다(fix1 R1-M1).
    * 화면 영속 자료(핀·색 `tabMarks` · 폴백 번호 `tabOrdinals` · 영역 배치 `groupLayouts`)에서 **herdr 에 이제 없는 탭**의 칸을 지우는 근거다 —
    * herdr 0.9.0 은 닫힌 워크스페이스의 id 를 재기동 뒤 새 워크스페이스에 다시 쓰므로(00-analysis F2) 남겨 둔 옛 칸이 새 탭에 붙는다.
    */

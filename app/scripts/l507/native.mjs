@@ -1,11 +1,12 @@
 // LIFE-507 K6 — 네이티브 회차 걸음(native-up.sh 가 띄운 구현 빌드 corral + 사용자 userData + herdr `default`). 제어 소켓으로 관측·준비한다.
 // 만드는 것: 버리는 fixture 저장소 /tmp/l507nfx/fx(+ fx-wt) 등록(userData 는 native-down.sh 가 바이트 복원) · 그 경로의 워크스페이스·탭(끝에 닫는다).
 // 사용자 실제 저장소·worktree 는 건드리지 않는다. 복구로 다시 뜬 사용자 pane 에는 입력하지 않는다.
-// 사용: node native.mjs <ROOT=/tmp/l507n*> <raw 폴더> setup|k1|k3
+// 사용: node native.mjs <ROOT=/tmp/l507n*> <raw 폴더> setup|k1|k3|m1
 //   setup — fixture 만들기·등록, <ROOT>/native-state.json
 //   k1    — K1ⓐⓑⓔ: Q(w?) 탭에 핀·색·배치 → herdr 로 Q 닫기(corral 실행 중) → herdr default 재기동 1회(native-herdr-restart.sh) →
 //           빈 번호 메우기(/tmp cwd 워크스페이스 — 등록 밖이라 화면에 안 뜬다) 뒤 Q 에 새 워크스페이스(닫은 id 재사용) → 붙나 · P 의 핀·색이 남나
 //   k3    — K3 정상 닫기 경로: 탭 × 클릭 → herdr 에서 사라지고 오류 알림 없음
+//   m1    — fix1 R1-M1 정상(default) 경로: 제 세션(default)에 붙어 herdrTabIds 가 나오고(null 아님), 핀·색이 방출을 여러 번 지나도 남는다
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -16,7 +17,7 @@ import { ensureFixtureRepo } from '../gui-diff/lib/fixture.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const [root, rawd, step] = process.argv.slice(2)
-if (!root?.startsWith('/tmp/l507n') || !rawd || !['setup', 'k1', 'k3'].includes(step)) throw new Error('사용: node native.mjs <ROOT=/tmp/l507n*> <raw> setup|k1|k3')
+if (!root?.startsWith('/tmp/l507n') || !rawd || !['setup', 'k1', 'k3', 'm1'].includes(step)) throw new Error('사용: node native.mjs <ROOT=/tmp/l507n*> <raw> setup|k1|k3|m1')
 const log = (...parts) => console.log(...parts)
 const FX_BASE = '/tmp/l507nfx'
 
@@ -144,6 +145,36 @@ try {
     verdict.attached = verdict.attachedMarks.length > 0 || verdict.attachedLayout.groups > 1 || verdict.attachedOrdinals
     log('VERDICT', JSON.stringify(verdict))
     if (!verdict.reusedId || verdict.attached || !verdict.survived) code = 2
+  }
+  if (step === 'm1') {
+    const ws = createWs(P)
+    herdrJson(h, ['tab', 'create', '--workspace', ws, '--cwd', P, '--no-focus'])
+    await until(async () => (await wsOf(P))?.tabs.length === 2, 'P 2 tabs', 15_000)
+    await activate(P)
+    await menuClick(`${ws}:t1`, '[data-tab-menu-pin]')
+    await menuClick(`${ws}:t1`, '[data-tab-menu-color="#22c55e"]')
+    const s0 = await snap('marked', [ws])
+    // 방출을 몇 번 더 지나게 한다 — 탭 하나 더 만들고 닫는다(herdrTabIds 가 바뀌는 방출).
+    const extra = herdrJson(h, ['tab', 'create', '--workspace', ws, '--cwd', P, '--no-focus']).result.tab.tab_id
+    await until(async () => (await wsOf(P))?.tabs.length === 3, 'P 3 tabs', 15_000)
+    herdr(h, ['tab', 'close', extra])
+    await until(async () => (await wsOf(P))?.tabs.length === 2, 'P 2 tabs again', 15_000)
+    await pause(3000)
+    const st = await state(h)
+    const s1 = await snap('after emits', [ws])
+    const mark = (row) => row.dom.find((tab) => tab.id === `${ws}:t1`)
+    const verdict = {
+      selectedSession: st.selectedSession ?? null,
+      sessionNote: st.sessionNote ?? null,
+      // 사용자 탭 id 는 싣지 않는다 — 개수와 fixture 탭 포함 여부만.
+      herdrTabIds: st.herdrTabIds === null ? null : { count: st.herdrTabIds.length, hasFixture: st.herdrTabIds.includes(`${ws}:t1`) },
+      before: mark(s0),
+      after: mark(s1),
+      prefsAfter: s1.tabMarks,
+    }
+    verdict.kept = verdict.after?.pinned === 'true' && verdict.after?.color === '#22c55e' && s1.tabMarks.some((row) => row.tabId === `${ws}:t1` && row.pinned && row.color === '#22c55e')
+    log('VERDICT', JSON.stringify(verdict))
+    if (verdict.selectedSession !== 'default' || verdict.herdrTabIds === null || !verdict.kept) code = 2
   }
   if (step === 'k3') {
     const ws = createWs(P)

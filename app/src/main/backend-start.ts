@@ -51,6 +51,14 @@ export function boundSessionName(env: { CORRAL_SESSION?: string | undefined }): 
   return session !== undefined && session.length > 0 ? session : null
 }
 
+/**
+ * 붙은 세션이 corral 의 「제 세션」(지정 시 `CORRAL_SESSION`, 아니면 default)인가 (LIFE-507 fix1 R1-M1).
+ * `pickSessionName` 폴백(default 정지 → 다른 실행 세션)으로 붙었으면 false — 그 세션의 탭 목록으로 화면 영속 자료를 걷지 않는다.
+ */
+export function isOwnSession(input: { selected: string | null; env: { CORRAL_SESSION?: string | undefined } }): boolean {
+  return input.selected !== null && input.selected === (boundSessionName(input.env) ?? DEFAULT_SESSION)
+}
+
 /** 재개 대상을 셀 필요가 있나 — default 가 멈춰 있고, 확인·자동 기동 후보일 때만(r1 R1-05). */
 export function needsRestoreCount(input: { bound: string | null; sessions: readonly Candidate[]; selected: string | null }): boolean {
   if (input.bound !== null) return false

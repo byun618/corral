@@ -1,7 +1,7 @@
 // LIFE-485 K3 — 기동 결정 표 ①~⑩ 전부 + 띄우는 손의 동시 트리거·시한·즉시 종료 (K4ⓕⓖⓗ 의 로직 쪽).
 import { describe, expect, it } from 'vitest'
 import type { RestoreSummary } from '../shared/types.js'
-import { type RunningProbe, BackendStarter, boundSessionName, decideBackend, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
+import { type RunningProbe, BackendStarter, boundSessionName, decideBackend, isOwnSession, needsRestoreCount, type BackendInput, type StarterDeps } from './backend-start.js'
 
 const zero: RestoreSummary = { known: true, total: 0, agents: [] }
 const three: RestoreSummary = { known: true, total: 3, agents: [{ kind: 'claude', count: 1 }, { kind: 'grok', count: 2 }] }
@@ -533,5 +533,18 @@ describe('시한 끝 안 돎 분기의 exited 가드 (r6 R6-01)', () => {
     const phase = starter.phase()
     expect(phase.phase).toBe('failed')
     expect(phase.phase === 'failed' && phase.error).not.toContain('끝내지 못했다')
+  })
+})
+
+describe('isOwnSession (LIFE-507 fix1 R1-M1)', () => {
+  it('CORRAL_SESSION 미지정 — default 에 붙었을 때만 제 세션', () => {
+    expect(isOwnSession({ selected: 'default', env: {} })).toBe(true)
+    expect(isOwnSession({ selected: 'life417-native', env: {} })).toBe(false)
+    expect(isOwnSession({ selected: null, env: {} })).toBe(false)
+  })
+  it('CORRAL_SESSION 지정 — 그 이름일 때만(default 라도 남의 세션)', () => {
+    expect(isOwnSession({ selected: 'l485', env: { CORRAL_SESSION: 'l485' } })).toBe(true)
+    expect(isOwnSession({ selected: 'default', env: { CORRAL_SESSION: 'l485' } })).toBe(false)
+    expect(isOwnSession({ selected: 'default', env: { CORRAL_SESSION: '' } })).toBe(true)
   })
 })

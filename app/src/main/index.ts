@@ -86,7 +86,7 @@ import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepP
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
 import { pickSessionName } from './pick-session.js'
-import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, needsRestoreCount, type BackendInput } from './backend-start.js'
+import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
 import { attachDigests, buildSkeleton, collectSessionRefs, joinTree, type RepoSkeleton } from './tree.js'
@@ -384,7 +384,8 @@ function currentState(): AppState {
     home: homeDirReal(),
     orchestrationLineage: lineage.current(),
     // LIFE-507 — live 일 때의 store 는 스냅샷 + 이후 이벤트라 herdr 세션 전체다. 재접속 중엔 비어 있을 수 있어 null(모른다)로 낸다.
-    herdrTabIds: link.linkState().phase === 'live' ? link.store.rows().flatMap((workspace) => workspace.tabs.map((tab) => tab.tabId)) : null,
+    // 폴백으로 남의 세션에 붙었을 때도 null — 그 목록으로 제 세션의 핀·색·번호·배치를 지우지 않는다(fix1 R1-M1).
+    herdrTabIds: link.linkState().phase === 'live' && isOwnSession({ selected: selectedSession, env: process.env }) ? link.store.rows().flatMap((workspace) => workspace.tabs.map((tab) => tab.tabId)) : null,
   }
 }
 

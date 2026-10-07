@@ -96,12 +96,14 @@ try {
     let result
     switch (name) {
       case 'probe': {
-        // 무해한 이동 1회 — 입력이 앱에 닿는가(mousemove 를 문서 캡처로 센다).
+        // 무해한 이동 1회 — 기록만, **판정 아님**(fix1 R1-L3). 버튼 없는 OS 이동은 이 mousemove 카운터에 잡히지 않았다(R005·R012·R032 모두 moves 0 —
+        // 같은 회차의 끌기는 앱에 닿아 순서를 바꿨다). 판별력 없는 칸이라 통과로 세지 않는다. 입력 도달 대조는 plain-drag(changed:true) 가 맡는다.
         await ev(h, `(() => { window.__moves = 0; window.addEventListener('mousemove', () => { window.__moves += 1 }, true); return 1 })()`)
         const p = await center('.main-tabbar-spacer')
         const moved = act('probe 무해한 이동', [`m:@${p.x},${p.y}`, 'w:100', 'm:+4,+0'])
         await pause(300)
-        result = { label: 'probe', ok: moved.exit === 0, moves: await ev(h, 'window.__moves'), exit: moved.exit }
+        if (moved.exit !== 0) failedCases += 1
+        result = { label: 'probe', judged: false, actExit: moved.exit, moves: await ev(h, 'window.__moves') }
         break
       }
       case 'tab-section': result = await tabMenuCase('탭 메뉴 섹션 제목', 'section'); break
@@ -187,7 +189,7 @@ try {
       }
       default: result = { label: name, ok: false, why: '모르는 사례' }
     }
-    if (result.ok !== true) failedCases += 1
+    if (result.judged !== false && result.ok !== true) failedCases += 1
     log('CASE', JSON.stringify(result))
   }
   if (failedCases > 0) code = 2

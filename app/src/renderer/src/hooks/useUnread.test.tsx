@@ -7,8 +7,8 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { type AgentSessionRef, EMPTY_SESSION_DIGEST, type UiPrefs } from '../../../shared/types.js'
-import { isTerminalInputKey, promptedOf, useUnread, type UnreadView } from './useUnread.js'
+import type { UiPrefs } from '../../../shared/types.js'
+import { isTerminalInputKey, judgeableOf, useUnread, type UnreadView } from './useUnread.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -218,20 +218,16 @@ describe('터미널 입력 키 (198 terminal-keydown-fit)', () => {
   })
 })
 
-describe('promptedOf (LIFE-502) — transcript 에 사람 발화가 있나', () => {
-  const ref = (agent: string): AgentSessionRef => ({ kind: 'id', agent, source: 'herdr', id: 's1' })
-  it('transcript provider 는 firstPrompt·lastPrompt 로 · 그 밖(셸·미지원 provider)은 판단 불가(null)', () => {
-    expect(promptedOf({ agent: null, agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
-    expect(promptedOf({ agent: 'opencode', agentSession: ref('opencode'), digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: 'x' } })).toBe(null)
-    for (const agent of ['claude', 'codex', 'grok']) {
-      expect(promptedOf({ agent, agentSession: ref(agent), digest: EMPTY_SESSION_DIGEST })).toBe(false)
-      expect(promptedOf({ agent, agentSession: ref(agent), digest: { ...EMPTY_SESSION_DIGEST, firstPrompt: '안녕' } })).toBe(true)
-      expect(promptedOf({ agent, agentSession: ref(agent), digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: '안녕' } })).toBe(true)
-    }
+describe('judgeableOf (LIFE-502) — 발화로 기동 반짝임을 가를 수 있는 pane 인가', () => {
+  it('transcript provider 만 · 셸·미지원 provider 는 아니다', () => {
+    expect(judgeableOf({ agent: null, integrations: [] })).toBe(false)
+    expect(judgeableOf({ agent: 'opencode', integrations: [] })).toBe(false)
+    for (const agent of ['claude', 'codex', 'grok']) expect(judgeableOf({ agent, integrations: [] })).toBe(true)
   })
-  it('세션 참조가 없으면 판단 불가(provider 없는 보고) — codex 만 「아직 프롬프트 없음」(훅이 첫 프롬프트에서 온다)', () => {
-    expect(promptedOf({ agent: 'claude', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
-    expect(promptedOf({ agent: 'grok', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
-    expect(promptedOf({ agent: 'codex', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(false)
+  it('r1 R1-02 codex 통합 not-installed 면 판단 불가(옛 동작) · current·outdated·아직 모름(빈 배열)은 판단한다', () => {
+    expect(judgeableOf({ agent: 'codex', integrations: [{ agent: 'codex', state: 'not-installed' }] })).toBe(false)
+    expect(judgeableOf({ agent: 'codex', integrations: [{ agent: 'codex', state: 'current' }] })).toBe(true)
+    expect(judgeableOf({ agent: 'codex', integrations: [{ agent: 'codex', state: 'outdated' }] })).toBe(true)
+    expect(judgeableOf({ agent: 'claude', integrations: [{ agent: 'claude', state: 'not-installed' }] })).toBe(true)
   })
 })

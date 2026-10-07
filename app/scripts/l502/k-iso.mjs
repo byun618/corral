@@ -14,6 +14,7 @@
 //
 // 사용: node app/scripts/l502/k-iso.mjs --app <app 폴더> --work /tmp/l502iX --port 95NN --out <raw 폴더> --plan codex-flash,codex-flash,...
 // 회차 종류: codex-flash · claude-launch · grok-launch · claude-prompt · claude-argprompt · report-idle-first · report-direct · watched-report
+//           · claude-relaunch · codex-relaunch(같은 pane 에서 프롬프트 1턴 → 종료 → 재기동, r1 R1-01 — codex 는 프롬프트 1회를 쓴다)
 //           · codex-prompt(K2ⓓ+ⓕ — 느린 MCP 로 반짝임을 낸 같은 pane 에 프롬프트 1회. 반짝임 뒤 observeMs 동안 표시 없음도 같이 본다. 토큰 사용)
 /* global document -- CDP evaluate 클로저 */
 import fs from 'node:fs'
@@ -90,6 +91,8 @@ async function sample({ paneId, tabId, worktreePath }) {
     status: pane?.agentStatus ?? null,
     agent: pane?.agent ?? null,
     session: pane?.agentSession === null || pane === null ? null : pane.agentSession.kind,
+    // 세션 id 는 앞 8자만 — 재기동 뒤 참조가 바뀌었나(낡은 참조, r1 R1-01)를 가르는 데 쓴다.
+    sessionId: pane === null || pane.agentSession === null ? null : (pane.agentSession.kind === 'id' ? pane.agentSession.id : pane.agentSession.path).slice(0, 8),
     firstPrompt: pane?.digest?.firstPrompt != null,
     lastPrompt: pane?.digest?.lastPrompt != null,
     observedAt: pane?.agentState?.observedAt ?? null,
@@ -168,7 +171,7 @@ async function runOne(kind, index) {
   /** working/blocked 를 본 뒤 idle/done — 못 보면 시간 초과까지 idle 을 기다린다(반짝임 없는 회차). */
   const waitTurn = async (label, timeout) => {
     const sawRunning = await waitStatus(['working', 'blocked'], `${label} running`, timeout).then(() => true).catch(() => false)
-    note(`${label}:running-seen`, { sawRunning })
+    note(sawRunning ? `${label}:running-seen` : `${label}:running-not-seen`, { sawRunning })
     await waitStatus(['idle', 'done'], `${label} finished`, timeout)
     note(`${label}:finished`)
   }
@@ -183,7 +186,7 @@ async function runOne(kind, index) {
         note('launch', { command })
         herdrCli('pane', 'run', paneId, cd + command)
         // 반짝임이 나면 working → idle, 안 나면 unknown → idle. 둘 다 idle 진입까지 기다린다.
-        await waitStatus(['working', 'blocked'], 'launch running', 30_000).then(() => note('running-seen')).catch(() => note('no-running-within-30s'))
+        await waitStatus(['working', 'blocked'], 'launch running', 30_000).then(() => note('running-seen')).catch(() => note('running-not-seen-within-30s'))
         await waitStatus(['idle', 'done'], 'launch idle', 45_000)
         note('idle')
         break
@@ -208,7 +211,7 @@ async function runOne(kind, index) {
       case 'codex-prompt': {
         note('launch', { command: SLOW_CODEX })
         herdrCli('pane', 'run', paneId, cd + SLOW_CODEX)
-        await waitStatus(['working', 'blocked'], 'codex flash running', 30_000).then(() => note('running-seen')).catch(() => note('no-running-within-30s'))
+        await waitStatus(['working', 'blocked'], 'codex flash running', 30_000).then(() => note('running-seen')).catch(() => note('running-not-seen-within-30s'))
         await waitStatus(['idle', 'done'], 'codex ready', 45_000)
         note('flash-idle')
         note('preprompt-observe-start', { ms: observeMs })
@@ -217,6 +220,39 @@ async function runOne(kind, index) {
         note('prompt-send', { prompt: PROMPT })
         await sendPrompt(paneId)
         await waitTurn('prompt', 180_000)
+        break
+      }
+      case 'claude-relaunch':
+      case 'codex-relaunch': {
+        // F1(r1 R1-01) — 같은 pane 에서 프롬프트 1턴 → 종료 → 다시 기동. 2회차 기동의 세션 참조·지문·세 표시를 본다.
+        const launch = kind === 'codex-relaunch' ? SLOW_CODEX : CLAUDE
+        note('launch-1', { command: launch })
+        herdrCli('pane', 'run', paneId, cd + launch)
+        if (kind === 'codex-relaunch') await waitStatus(['working', 'blocked'], 'flash-1 running', 30_000).then(() => note('flash-1:running-seen')).catch(() => note('flash-1:running-not-seen'))
+        await waitStatus(['idle', 'done'], 'ready-1', 45_000)
+        await pause(1500)
+        note('prompt-send', { prompt: PROMPT })
+        await sendPrompt(paneId)
+        await waitTurn('turn-1', 180_000)
+        await pause(3000)
+        note('exit-1')
+        await sendText(paneId, '\u0003')
+        await pause(500)
+        await sendText(paneId, '\u0003')
+        await until(async () => {
+          const s = await sample(ids)
+          return s.agent === null || s.status === 'unknown' ? true : null
+        }, 'agent gone', 30_000).then(() => note('agent-gone')).catch(() => note('agent-not-gone-within-30s'))
+        await pause(3000)
+        run.afterExit = await sample(ids)
+        run.cleared1 = await clearIndicators('after turn-1')
+        await pause(1500)
+        run.relaunchEpoch = Date.now()
+        note('relaunch', { command: launch, epoch: run.relaunchEpoch })
+        herdrCli('pane', 'run', paneId, cd + launch)
+        await waitStatus(['working', 'blocked'], 'flash-2 running', 30_000).then(() => note('flash-2:running-seen')).catch(() => note('flash-2:running-not-seen'))
+        await waitStatus(['idle', 'done'], 'ready-2', 45_000)
+        note('idle')
         break
       }
       case 'report-idle-first': {
@@ -288,10 +324,24 @@ async function runOne(kind, index) {
     const anyShown = run.samples.filter((s) => s.error === undefined && shown(s))
     const last = [...run.samples].reverse().find((s) => s.error === undefined && s.history !== null) ?? null
     const { flash, timeline } = analyse(last)
+    // 재기동 회차는 재기동 뒤 구간만 본다 — 첫 기동의 반짝임을 2회차 반짝임으로 세지 않게(G2).
+    // 재기동 직전 상태 하나(보통 unknown)를 앞에 남겨야 「unknown 바로 뒤 구간」을 볼 수 있다.
+    const relaunchSegment = (() => {
+      if (run.relaunchEpoch === undefined || last === null) return null
+      const ordered = [...last.history].reverse()
+      const firstAfter = ordered.findIndex((entry) => Number(entry.split('@')[1]) >= run.relaunchEpoch)
+      const kept = firstAfter === -1 ? ordered.slice(-1) : ordered.slice(Math.max(0, firstAfter - 1))
+      return analyse({ history: [...kept].reverse(), status: last.status, observedAt: last.observedAt })
+    })()
     const pre = run.events.find((event) => event.label === 'preprompt-observe-start')?.t
     const preEnd = run.events.find((event) => event.label === 'preprompt-observe-end')?.t
     run.verdict = {
+      // F5(r1 R1-05) — 하네스 오류가 난 회차는 무효다. 아래 값이 통과처럼 읽히지 않게 맨 앞에 둔다.
+      invalid: run.error === undefined ? null : 'harness error — see run.error',
       flash,
+      relaunchFlash: relaunchSegment === null ? null : relaunchSegment.flash,
+      relaunchTimeline: relaunchSegment === null ? null : relaunchSegment.timeline,
+      sessionAfterExit: run.afterExit === undefined ? null : run.afterExit.sessionId,
       shownBeforePrompt: pre === undefined ? null : inRange(pre, preEnd ?? Infinity).some(shown),
       timeline,
       shownInWindow: window.some(shown),
@@ -340,6 +390,8 @@ try {
   result.build = {
     head: spawnSync('git', ['-C', appRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim() || null,
     rendererBundleMtime: fs.statSync(path.join(appRoot, 'out/renderer/index.html')).mtime.toISOString(),
+    // F6(r1 R1-07) — 실행한 렌더러 번들의 파일명·sha256(식별값). rendererHasLaunchRule 은 식별 근거가 아니다(기준에서도 true).
+    rendererBundles: fs.readdirSync(path.join(appRoot, 'out/renderer/assets')).filter((file) => file.endsWith('.js')).map((file) => ({ file, sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(appRoot, 'out/renderer/assets', file))).digest('hex') })),
     rendererHasLaunchRule: fs.readdirSync(path.join(appRoot, 'out/renderer/assets')).some((file) => file.endsWith('.js') && fs.readFileSync(path.join(appRoot, 'out/renderer/assets', file), 'utf8').includes('.held')),
   }
   const { root } = makeRepo({ reposDir: path.join(work, 'repos'), name: 'iso', linked: [] })

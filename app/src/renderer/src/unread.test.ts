@@ -2,20 +2,23 @@
 // 「보고 있음」 = 창이 보이고 포커스 + 활성 영역 선택 pane. 판정 시각은 완료 순간(enteredAt)과 보기 시작한 시각(since)의 비교다.
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus } from '../../shared/types.js'
-import { acknowledgeInput, type Completion, completionsOf, EMPTY_UNREAD, ingest, markRead, markUnread, type PaneObservation, type RepoScan, type UnreadModel, type Watched } from './unread.js'
+import { acknowledgeInput, type Completion, completionsOf, EMPTY_UNREAD, ingest, markRead, markUnread, type PaneObservation, promptedOf, type RepoScan, type UnreadModel, type Watched } from './unread.js'
 
 const A = '/r/a'
 const B = '/r/b'
 /** 직전 상태 하나만 있는 관측(그 상태에 들어선 시각 = enteredAt - 1). 이력이 더 긴 것은 `withHistory`. */
+/** LIFE-502 발화 판정 칸 — `null` 판단 불가(옛 동작) · `true`/`false` = claude 세션 참조 `s1` 의 지문에 발화가 있다/없다. */
+const promptFields = (prompted: boolean | null): Pick<PaneObservation, 'agent' | 'sessionKey' | 'promptSeen' | 'judgeable'> =>
+  prompted === null ? { agent: null, sessionKey: null, promptSeen: false, judgeable: false } : { agent: 'claude', sessionKey: 's1', promptSeen: prompted, judgeable: true }
 const obs = (paneId: string, status: AgentStatus, enteredAt: number, previousStatus: AgentStatus | null, worktreePath = A): PaneObservation => ({
-  paneId, worktreePath, status, enteredAt, history: previousStatus === null ? [] : [{ status: previousStatus, enteredAt: enteredAt - 1 }], prompted: null,
+  paneId, worktreePath, status, enteredAt, history: previousStatus === null ? [] : [{ status: previousStatus, enteredAt: enteredAt - 1 }], ...promptFields(null),
 })
 /** 이력을 오래된 것부터 [상태, 진입 시각] 으로 — 마지막이 지금 상태. */
 const withHistory = (paneId: string, steps: Array<[AgentStatus, number]>, worktreePath = A, prompted: boolean | null = null): PaneObservation => {
   const ordered = steps.map(([status, enteredAt]) => ({ status, enteredAt }))
   const now = ordered[ordered.length - 1]
   if (now === undefined) throw new Error('빈 이력')
-  return { paneId, worktreePath, status: now.status, enteredAt: now.enteredAt, history: ordered.slice(0, -1).reverse(), prompted }
+  return { paneId, worktreePath, status: now.status, enteredAt: now.enteredAt, history: ordered.slice(0, -1).reverse(), ...promptFields(prompted) }
 }
 type Step = { panes: PaneObservation[]; watched?: Watched; attentive?: boolean; active?: string | null; retained?: string[]; paths?: string[]; repos?: RepoScan[] }
 function run(steps: Step[], start: UnreadModel = EMPTY_UNREAD): UnreadModel {
@@ -455,5 +458,77 @@ describe('LIFE-502 기동 반짝임 (D1·D2 · K3ⓐ)', () => {
   it('구간의 시작이 이력 창 밖이면(앞이 없다) 반짝임으로 보지 않는다 — 센다', () => {
     const model = run([{ panes: [other, withHistory('p', [['working', 200], ['idle', 300]], A, false)] }], boot())
     expect(unreadOf(model)).toEqual(['p'])
+  })
+})
+
+// LIFE-502 수정 라운드 1 — 발화 판정(promptedOf)·낡은 참조(R1-01)·보고 있음과 보류(R1-04).
+describe('LIFE-502 r1 — promptedOf · 같은 pane 재기동 · 보고 있음', () => {
+  const base = { agent: 'codex', sessionKey: 'old', promptSeen: true, judgeable: true }
+  it('promptedOf — 판단 불가(judgeable false)는 null · 참조 없음은 codex 만 false · 물러난 참조와 같으면 참조 없음', () => {
+    expect(promptedOf({ ...base, judgeable: false }, undefined)).toBe(null)
+    expect(promptedOf({ ...base, sessionKey: null }, undefined)).toBe(false)
+    expect(promptedOf({ ...base, agent: 'claude', sessionKey: null }, undefined)).toBe(null)
+    expect(promptedOf({ ...base, agent: 'grok', sessionKey: null }, undefined)).toBe(null)
+    expect(promptedOf(base, undefined)).toBe(true)
+    expect(promptedOf({ ...base, promptSeen: false }, undefined)).toBe(false)
+    expect(promptedOf(base, 'old')).toBe(false)
+    expect(promptedOf({ ...base, agent: 'claude' }, 'old')).toBe(null)
+    expect(promptedOf(base, 'other')).toBe(true)
+  })
+  /** r2/f1 codex-relaunch 원자료 모양: 1턴 뒤 종료(agent null, 참조 old 남음) → 같은 pane 재기동(참조 old 그대로) → 반짝임. */
+  const pane = (steps: Array<[AgentStatus, number]>, fields: Partial<PaneObservation>): PaneObservation => ({ ...withHistory('p', steps), ...base, ...fields })
+  const other = obs('z', 'idle', 1, null, B)
+  const turn: Array<[AgentStatus, number]> = [['unknown', 100], ['working', 200], ['idle', 300], ['working', 400], ['done', 500]]
+  const relaunch = (): UnreadModel => {
+    let model = run([{ panes: [other] }, { panes: [other, pane([['unknown', 100]], { sessionKey: null, promptSeen: false })] }])
+    model = run([{ panes: [other, pane(turn, {})] }], model)
+    expect(unreadOf(model)).toEqual(['p'])
+    model = markRead(model, A)
+    // 종료 — 에이전트 없음, 참조는 남는다.
+    model = run([{ panes: [other, pane([...turn, ['unknown', 600]], { agent: null })] }], model)
+    expect(model.retired.get('p')).toBe('old')
+    return model
+  }
+  it('R1-01 codex 재기동 — 낡은 참조(옛 발화 있음)가 남아도 반짝임은 세지 않는다', () => {
+    let model = relaunch()
+    model = run([{ panes: [other, pane([...turn, ['unknown', 600], ['working', 700]], {})] }], model)
+    model = run([{ panes: [other, pane([...turn, ['unknown', 600], ['working', 700], ['idle', 800]], {})] }], model)
+    expect(unreadOf(model)).toEqual([])
+    expect(bells(model)).toEqual([])
+    expect(model.held.get('p')).toEqual({ worktreePath: A, at: 800 })
+  })
+  it('R1-01 재기동 뒤 새 참조(프롬프트)가 오면 물러난 참조를 잊고 그 턴은 센다', () => {
+    let model = relaunch()
+    const h: Array<[AgentStatus, number]> = [...turn, ['unknown', 600], ['working', 700], ['idle', 800]]
+    model = run([{ panes: [other, pane(h, {})] }], model)
+    model = run([{ panes: [other, pane([...h, ['working', 900]], { sessionKey: 'new' })] }], model)
+    expect(model.retired.has('p')).toBe(false)
+    expect(unreadOf(model)).toEqual([])
+    model = run([{ panes: [other, pane([...h, ['working', 900], ['idle', 1000]], { sessionKey: 'new' })] }], model)
+    expect(model.panes.get('p')).toEqual({ worktreePath: A, at: 1000 })
+    expect(bells(model)).toEqual([A])
+  })
+  it('R1-01 claude 재기동 — 낡은 참조는 판단 불가(센다), 새 참조가 오면 발화 없음으로 반짝임을 거른다', () => {
+    let model = relaunch()
+    const h: Array<[AgentStatus, number]> = [...turn, ['unknown', 600], ['working', 700], ['idle', 800]]
+    const fresh = run([{ panes: [other, pane(h, { agent: 'claude', sessionKey: 'new', promptSeen: false })] }], model)
+    expect(unreadOf(fresh)).toEqual([])
+    model = run([{ panes: [other, pane(h, { agent: 'claude' })] }], model)
+    expect(unreadOf(model)).toEqual(['p'])
+  })
+  it('R1-01 사라진 pane 의 물러난 참조는 버린다', () => {
+    const model = run([{ panes: [other] }], relaunch())
+    expect(model.retired.size).toBe(0)
+  })
+  it('R1-04 보류 → 그 pane 을 봄 → 떠남 → 같은 상태에서 늦은 발화 → 안 선다', () => {
+    const idle = (promptSeen: boolean): PaneObservation => pane([['unknown', 100], ['working', 200], ['idle', 300]], { agent: 'claude', sessionKey: 's1', promptSeen })
+    let model = run([{ panes: [other] }, { panes: [other, pane([['unknown', 100]], { agent: 'claude', sessionKey: 's1', promptSeen: false })] }])
+    model = run([{ panes: [other, idle(false)] }], model)
+    expect(model.held.has('p')).toBe(true)
+    model = run([{ panes: [other, idle(false)], watched: { paneId: 'p', since: 400 } }], model)
+    expect(model.held.has('p')).toBe(false)
+    model = run([{ panes: [other, idle(true)] }], model)
+    expect(unreadOf(model)).toEqual([])
+    expect(bells(model)).toEqual([])
   })
 })

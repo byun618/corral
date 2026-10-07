@@ -20,16 +20,19 @@ function readAttention(): boolean {
 const TRANSCRIPT_AGENTS: readonly string[] = ['claude', 'codex', 'grok']
 
 /**
- * 그 pane 의 transcript 에 사람 발화가 있나 (LIFE-502) — transcript 를 읽지 않는 pane 은 판단 불가(null).
- *
- * 세션 참조(`agentSession`)가 없으면 판단 불가다 — provider 없는 보고(`pane.report_agent`, 471 하네스·셸에 붙은 에이전트)는
- * transcript provider 이름을 대도 참조가 영영 안 온다. claude·grok 은 기동 때 참조를 밝힌다(SessionStart 훅). **codex 만 예외**다:
- * 그 훅이 첫 프롬프트에서야 와서(00-analysis §6 코디 탐침 · raw/claude/k1 상태 덤프) 참조가 없다는 것 자체가 「아직 사람 턴 없음」이다.
+ * 발화로 기동 반짝임을 가를 수 있는 pane 인가 (LIFE-502) — transcript provider 이고, codex 면 통합이 깔려 있다.
+ * codex 통합이 `not-installed` 면 세션 참조가 영영 안 와서 「참조 없음 = 아직 프롬프트 없음」 이 거짓이 된다 — 판단 불가로 두고 옛 동작(센다)을 따른다(r1 R1-02).
  */
-export function promptedOf(pane: Pick<PaneRow, 'agent' | 'agentSession' | 'digest'>): boolean | null {
-  if (pane.agent === null || !TRANSCRIPT_AGENTS.includes(pane.agent)) return null
-  if (pane.agentSession === null) return pane.agent === 'codex' ? false : null
-  return pane.digest.firstPrompt !== null || pane.digest.lastPrompt !== null
+export function judgeableOf(input: { agent: string | null; integrations: AppState['integrations'] }): boolean {
+  if (input.agent === null || !TRANSCRIPT_AGENTS.includes(input.agent)) return false
+  if (input.agent !== 'codex') return true
+  return !input.integrations.some((row) => row.agent === 'codex' && row.state === 'not-installed')
+}
+
+/** 세션 참조의 열쇠 — 같은 참조인지 비교하는 데만 쓴다. */
+function sessionKeyOf(pane: PaneRow): string | null {
+  if (pane.agentSession === null) return null
+  return pane.agentSession.kind === 'id' ? pane.agentSession.id : pane.agentSession.path
 }
 
 /** 상태 묶음 → 관측 목록. 모든 열린 pane(셸 pane 도 — 보고로 에이전트가 붙으면 완료가 선다). */
@@ -45,7 +48,10 @@ export function observationsOf(state: AppState): PaneObservation[] {
             status: pane.agentStatus,
             enteredAt: pane.agentState.observedAt,
             history: pane.agentState.history.map((step) => ({ status: step.status, enteredAt: step.observedAt })),
-            prompted: promptedOf(pane),
+            agent: pane.agent,
+            sessionKey: sessionKeyOf(pane),
+            promptSeen: pane.digest.firstPrompt !== null || pane.digest.lastPrompt !== null,
+            judgeable: judgeableOf({ agent: pane.agent, integrations: state.integrations }),
           })
   return rows
 }

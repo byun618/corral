@@ -25,9 +25,13 @@
 //     이런 일이 없다. corral 은 hook 대신 「사람 턴이 있었나」를 transcript 지문(`digest.firstPrompt`·`lastPrompt`)으로 본다.
 //     기동 인자 프롬프트(`claude "…"`)는 transcript 에 발화가 있으니 센다. 지문은 main 이 1.5초 주기로 읽어 상태보다 늦을 수 있다 —
 //     그래서 버리지 않고 **보류**(`held`)했다가, 그 pane 이 같은 상태에 머무는 동안 발화가 보이면 그때 원래 시각으로 센다.
-//     상태가 바뀌면 보류를 버린다. 판단할 수 없는 pane(`prompted === null` — 미지원 provider·세션 참조 없는 provider 없는 보고)은
-//     이 규칙 밖이다(지금처럼 센다). 판정은 `hooks/useUnread.ts` `promptedOf`.
+//     상태가 바뀌거나, 그 pane 에 입력하거나, 그 pane 을 보면 보류를 버린다. 판단할 수 없는 pane(`promptedOf` 가 null — 미지원 provider·
+//     세션 참조 없는 provider 없는 보고·codex 통합 미설치)은 이 규칙 밖이다(지금처럼 센다). 판정은 이 파일의 `promptedOf`.
+//     **낡은 참조** (r1 R1-01): herdr 는 에이전트가 끝나도 pane 의 세션 참조를 지우지 않는다. 같은 pane 에서 codex 를 다시 띄우면 옛 세션
+//     참조(옛 발화가 있는)가 남아 반짝임이 「사람 턴 있음」 으로 보였다(r2/f1 codex-relaunch). 그래서 에이전트가 없는 동안(agent null) 남아 있던
+//     참조를 그 pane 의 「물러난 참조」(`retired`)로 기억하고, 다시 뜬 에이전트가 같은 참조를 들고 있으면 참조 없음으로 본다.
 //     한계: 「codex」 라고 보고한 provider 없는 pane 이 `unknown` 에서 곧장 working → idle 이면 반짝임과 구별되지 않아 세지 않는다.
+//     한계: launch 판정은 이력이 있는 경로만 한다 — 처음 보는 pane 이 이미 `done` 이면(위 첫 줄 규칙) 발화가 없어도 pane 안 읽음이 선다(벨 없음, r1 R1-03).
 // 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 pane 안 읽음(벨 없음).
 // 벨을 켜는 것은 실제 완료 전이와 Mark Unread 뿐이고, 재시작 뒤 벨은 저장값을 따른다.
 //
@@ -51,11 +55,14 @@ export type PaneObservation = {
   enteredAt: number
   /** 지나온 상태들, **최신순**(main `agentState.history` — 그 상태에 들어선 시각). 비었으면 main 이 이 pane 을 처음 본 것이다. */
   history: readonly { status: AgentStatus; enteredAt: number }[]
-  /**
-   * 그 pane 의 transcript 에 사람 발화가 있나(LIFE-502) — `true` 있다 · `false` transcript provider 인데 아직 없다 ·
-   * `null` 판단할 수 없다(transcript 를 읽지 않는 provider·셸). 기동 반짝임을 가르는 근거다.
-   */
-  prompted: boolean | null
+  /** 그 pane 에 붙은 에이전트(main `PaneRow.agent`). null = 에이전트 없음(셸·종료 뒤). */
+  agent: string | null
+  /** 세션 참조의 열쇠(id 또는 경로). null = 참조 없음. 에이전트가 끝나도 herdr 가 지우지 않는다 — `retired` 가 가른다. */
+  sessionKey: string | null
+  /** 그 참조의 transcript 지문에 사람 발화가 있나(`digest.firstPrompt`·`lastPrompt`). */
+  promptSeen: boolean
+  /** 발화로 판단할 수 있는 pane 인가 — transcript provider(claude·codex·grok)이고 codex 면 통합이 깔려 있다(r1 R1-02). */
+  judgeable: boolean
 }
 
 /** 레포 하나의 이번 묶음 — 벨 정리가 스캔 실패(git·herdr 에러)를 「사라짐」으로 읽지 않게(r1 M1). */
@@ -72,6 +79,8 @@ export type UnreadModel = {
   panes: ReadonlyMap<string, PaneUnread>
   /** 보류한 기동 반짝임 — pane → 그 완료(`at` = 그 idle/done 에 들어선 시각). 같은 상태에서 사람 발화가 보이면 센다(LIFE-502). */
   held: ReadonlyMap<string, PaneUnread>
+  /** 물러난 세션 참조 — pane → 에이전트가 없는 동안 남아 있던 참조 열쇠. 다시 뜬 에이전트가 같은 참조면 낡은 것이다(r1 R1-01). */
+  retired: ReadonlyMap<string, string>
   /** 벨 켜진 worktree 경로 (영속). */
   worktrees: ReadonlySet<string>
   /** 마지막으로 본 (null 아닌) 활성 worktree — 활성화(사용자 전환) 감지용. 닫힘 사이의 null 은 건너뛴다. */
@@ -85,6 +94,7 @@ export const EMPTY_UNREAD: UnreadModel = {
   examined: new Map(),
   panes: new Map(),
   held: new Map(),
+  retired: new Map(),
   worktrees: new Set(),
   activeWorktree: null,
   present: new Map(),
@@ -97,6 +107,19 @@ const FINISHED: readonly AgentStatus[] = ['idle', 'done']
 const RUNNING: readonly AgentStatus[] = ['working', 'blocked']
 
 /**
+ * 그 pane 의 transcript 에 사람 발화가 있나 (LIFE-502) — `true` 있다 · `false` 아직 없다 · `null` 판단할 수 없다(규칙 밖 — 지금처럼 센다).
+ *
+ * 세션 참조가 없으면 판단 불가다 — provider 없는 보고(`pane.report_agent`, 471 하네스·셸에 붙은 에이전트)는 transcript provider 이름을 대도
+ * 참조가 영영 안 온다. claude·grok 은 기동 때 참조를 밝힌다(SessionStart 훅). **codex 만 예외**다: 그 훅이 첫 프롬프트에서야 와서
+ * (00-analysis §6 코디 탐침 · raw/claude/k1 상태 덤프) 참조가 없다는 것 자체가 「아직 사람 턴 없음」이다. 물러난 참조(`retired`)와 같으면 참조 없음으로 본다.
+ */
+export function promptedOf(obs: Pick<PaneObservation, 'agent' | 'sessionKey' | 'promptSeen' | 'judgeable'>, retired: string | undefined): boolean | null {
+  if (!obs.judgeable) return null
+  if (obs.sessionKey === null || obs.sessionKey === retired) return obs.agent === 'codex' ? false : null
+  return obs.promptSeen
+}
+
+/**
  * 새로 센 완료 하나 — 그 상태에 들어선 시각과, 벨을 켜는 실제 전이인가(처음 보는 done 은 아니다 — M2),
  * 기동 반짝임인가(`unknown` 에서 곧장 시작된 구간 + 사람 발화 없음 — LIFE-502. 세지 않는다).
  */
@@ -106,8 +129,9 @@ export type Completion = { at: number; bell: boolean; launch: boolean }
  * 이 관측에서 새로 센 완료들(오래된 것부터). `since` = 이 pane 을 마지막으로 살폈을 때의 상태 진입 시각 — 그보다 뒤에 들어선
  * 상태만 새것이다. 같은 완료를 두 번 세지 않는다.
  */
-export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined }): Completion[] {
+export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean; since: number | undefined; retired?: string }): Completion[] {
   const { obs, firstBatch, since } = input
+  const prompted = promptedOf(obs, input.retired)
   // 처음 보는 done — 첫 묶음, 이 세션에 처음 보는 pane(r2 F-E: 첫 묶음 뒤에 나타난 pane 의 옛 이력은 세지 않는다),
   // main 이 처음 본 pane. 굵기만, 벨 없음. (같은 상태를 다시 본 관측은 `ingest` 가 `since === enteredAt` 로 먼저 거른다 — r3 L-2)
   if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' ? [{ at: obs.enteredAt, bell: false, launch: false }] : []
@@ -121,7 +145,7 @@ export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean
     if (step === undefined || before === undefined) continue
     if (RUNNING.includes(step.status) && !RUNNING.includes(before.status)) fromUnknown = before.status === 'unknown'
     if (since !== undefined && step.enteredAt <= since) continue
-    if (RUNNING.includes(before.status) && FINISHED.includes(step.status)) found.push({ at: step.enteredAt, bell: true, launch: fromUnknown && obs.prompted === false })
+    if (RUNNING.includes(before.status) && FINISHED.includes(step.status)) found.push({ at: step.enteredAt, bell: true, launch: fromUnknown && prompted === false })
   }
   return found
 }
@@ -144,23 +168,28 @@ export function ingest(model: UnreadModel, input: {
   const examined = new Map(model.examined)
   const panes = new Map(model.panes)
   const held = new Map(model.held)
+  const retired = new Map(model.retired)
   const worktrees = new Set(model.worktrees)
   const firstBatch = !model.initialized
   for (const obs of input.panes) {
     const since = examined.get(obs.paneId)
     const watching = input.watched !== null && input.watched.paneId === obs.paneId ? input.watched.since : null
+    // 물러난 참조 — 에이전트가 없는데 참조가 남아 있으면 기억한다. 참조가 바뀌었으면(새 세션이 밝혔다) 잊는다.
+    if (obs.agent === null && obs.sessionKey !== null) retired.set(obs.paneId, obs.sessionKey)
+    else if (obs.sessionKey !== retired.get(obs.paneId)) retired.delete(obs.paneId)
+    const prompted = promptedOf(obs, retired.get(obs.paneId))
     // 보류한 기동 반짝임 — 같은 상태에 머문 채 사람 발화가 보이면(지문이 늦게 온 기동 인자 프롬프트) 원래 시각으로 센다.
     // 상태가 바뀌었으면 그 반짝임은 사람 턴 없이 지나간 것이다 — 버린다.
     const pending = held.get(obs.paneId)
-    if (pending !== undefined && (obs.enteredAt !== pending.at || obs.prompted !== false)) {
+    if (pending !== undefined && (obs.enteredAt !== pending.at || prompted !== false)) {
       held.delete(obs.paneId)
-      if (obs.enteredAt === pending.at && obs.prompted === true && (watching === null || pending.at < watching)) {
+      if (obs.enteredAt === pending.at && prompted === true && (watching === null || pending.at < watching)) {
         panes.set(obs.paneId, pending)
         worktrees.add(pending.worktreePath)
       }
     }
     if (since === obs.enteredAt) continue
-    const all = completionsOf({ obs, firstBatch, since })
+    const all = completionsOf({ obs, firstBatch, since, retired: retired.get(obs.paneId) })
     examined.set(obs.paneId, obs.enteredAt)
     const lastLaunch = all.filter((completion) => completion.launch).at(-1)
     if (lastLaunch !== undefined && lastLaunch.at === obs.enteredAt) held.set(obs.paneId, { worktreePath: obs.worktreePath, at: lastLaunch.at })
@@ -187,6 +216,7 @@ export function ingest(model: UnreadModel, input: {
   // 사라진 pane 의 안 읽음 — 에러 레포의 worktree 에 있던 pane 은 벨과 같은 규칙으로 남긴다(r2 F-A).
   const live = new Set(input.panes.map((obs) => obs.paneId))
   for (const paneId of [...held.keys()]) if (!live.has(paneId)) held.delete(paneId)
+  for (const paneId of [...retired.keys()]) if (!live.has(paneId)) retired.delete(paneId)
   for (const [paneId, entry] of panes) {
     if (live.has(paneId) || input.retainedPaneIds.has(paneId)) continue
     const root = present.get(entry.worktreePath)
@@ -214,6 +244,7 @@ export function ingest(model: UnreadModel, input: {
     examined,
     panes,
     held,
+    retired,
     worktrees,
     activeWorktree: input.activeWorktree ?? model.activeWorktree,
     present,
@@ -227,6 +258,12 @@ export function ingest(model: UnreadModel, input: {
  */
 export function acknowledgeWatched(model: UnreadModel, watched: Watched): UnreadModel {
   if (watched === null) return model
+  // 본 pane 의 보류한 기동 반짝임도 확인한 것이다 — 떠난 뒤 발화가 늦게 보여 반짝임을 완료로 올리지 않게(r1 R1-04).
+  if (model.held.has(watched.paneId)) {
+    const held = new Map(model.held)
+    held.delete(watched.paneId)
+    model = { ...model, held }
+  }
   const entry = model.panes.get(watched.paneId)
   if (entry === undefined) return model
   const panes = new Map(model.panes)

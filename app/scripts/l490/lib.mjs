@@ -128,7 +128,16 @@ export async function launchIsolated({ appRoot, work, out, port, session }) {
 /** `corral open` 으로 데스크톱을 띄우고 CDP 로 붙는다(재기동 회귀 K4ⓓ 가 다시 부른다). */
 export async function openDesktop(handle, { appRoot, port }) {
   const opened = spawnSync(process.execPath, [path.join(appRoot, 'cli/corral.mjs'), 'open', '--json'], { env: handle.env, encoding: 'utf8', timeout: 120_000 })
-  if (opened.status !== 0) throw new Error(`open → ${opened.status}\n${opened.stdout}\n${opened.stderr}`)
+  if (opened.status !== 0) {
+    // fix2 — `open` 이 outcome_unknown(데스크톱은 떴는데 pid 를 못 받음)으로 끝나면 그 Electron 이 spawned 에 없어 고아로 남았다(K6-I04).
+    // 이 회차 포트로 뜬 이 앱의 Electron 주 프로세스를 프로세스 표에서 찾아 spawned 에 넣는다 — stop() 이 끈다.
+    const ps = spawnSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' }).stdout
+    for (const line of ps.split('\n')) {
+      const match = line.trim().match(/^(\d+) (.*)$/)
+      if (match !== null && match[2].includes(`--remote-debugging-port=${port} `) && match[2].includes(appRoot) && !match[2].includes('--type=')) handle.spawned.push({ pid: Number(match[1]), label: 'corral desktop (open 실패 뒤 프로세스 표에서)' })
+    }
+    throw new Error(`open → ${opened.status}\n${opened.stdout}\n${opened.stderr}`)
+  }
   handle.desktopPid = JSON.parse(opened.stdout).result?.runtime?.pid ?? null
   handle.spawned.push({ pid: handle.desktopPid, label: 'corral desktop' })
   await until(() => fs.existsSync(handle.control), 'control socket', 60_000)

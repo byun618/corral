@@ -131,7 +131,10 @@ const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.nam
  *   이름에 method 가 든 속성·변수·파라미터·구조 분해·enum 멤버·JSX 속성·타입 멤버의 값
  *     (`method: x ?? 'A'` · `RENAME_METHOD = 'A'` · `(method = 'A') =>` · `<Req method={'A'} />` · `enum HerdrMethod { R = 'A' }`)
  *   이항식의 다른 쪽이 method 를 말한다(`'A' === frame.method` · `msg.method = 'A'`)
- *   호출의 다른 인자 또는 호출 대상이 method 를 말한다(`['A'].includes(msg.method)` · `callMethod('A')`)
+ *   호출: 리터럴이 호출 대상 쪽이고 인자가 method 를 말한다(`['A'].includes(msg.method)`) · 리터럴이 인자이고 호출 대상이
+ *     method 를 말한다(`callMethod('A')`) · 리터럴이 **직접 인자**(함수 식·배열 리터럴을 거치지 않음)이고 **형제 인자**가
+ *     method 를 말한다(`assert.equal(frame.method, 'A')` · `Object.is(frame.method, 'A')`). 형제가 배열 리터럴(의존성 배열
+ *     `[method]`)이면 묶지 않는다(fix4 R4-claude-01)
  *   `switch (frame.method)` 의 `case 'A':` · 이름에 method 가 든 타입 별칭(`type HerdrMethod = 'A' | 'B'`)
  *   **반환 값**: 이름에 method 가 든 함수·메서드·getter 가 돌려준다(`get method() { return 'A' }`). 이름 없는 함수 **식**이
  *     돌려주면 그 함수 식에서 다시 올라간다(`method: (() => { return 'A' })()`). 반환이 아닌 문장(콜백 안 `track('A')`)에서는 멈춘다
@@ -139,7 +142,10 @@ const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.nam
 function boundToMethod({ literal }) {
   const mentions = mentionsMethod
   let child = literal
+  // 형제 인자 규칙의 「직접 인자」 판정 — 리터럴에서 여기까지 함수 식이나 배열 리터럴을 거쳤는가
+  let indirect = false
   for (let parent = literal.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isArrayLiteralExpression(parent)) indirect = true
     if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)
     // 반환 자리 — `return 'A'` 또는 식 몸체 화살표 `() => 'A'`
     const returned = (ts.isReturnStatement(parent) && parent.expression === child) || (ts.isArrowFunction(parent) && parent.body === child && !ts.isBlock(child))
@@ -149,6 +155,7 @@ function boundToMethod({ literal }) {
       if (!owner || ts.isSourceFile(owner)) return false
       if (namedMethod(owner)) return true
       if (!(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false
+      indirect = true
       child = owner
       parent = owner
       continue
@@ -164,10 +171,15 @@ function boundToMethod({ literal }) {
     }
     // 이항식은 **비교·대입**만 묶는다(fix3 R3-claude-02) — `&&`·`||`·`??`·`+` 는 묶지 않고 계속 올라간다(`method: x ?? 'A'` 는 위 속성에서 잡힌다)
     if (ts.isBinaryExpression(parent) && BINDING_OPERATORS(parent.operatorToken.kind) && mentions(parent.left === child ? parent.right : parent.left)) return true
-    // 호출의 인자가 method 를 말하면, 리터럴이 **호출 대상 쪽**에 있을 때만 묶는다(`['A'].includes(msg.method)`).
-    // 리터럴이 인자 쪽이면 다른 인자는 무관하다 — 의존성 배열 `useCallback(() => run('A'), [method])` (fix3 R3-claude-02)
+    // 호출 — 리터럴이 호출 대상 쪽이면 인자가 method 를 말할 때 묶는다(`['A'].includes(msg.method)`)
     if (ts.isCallExpression(parent) && parent.expression === child && parent.arguments.some(mentions)) return true
-    if (ts.isCallExpression(parent) && parent.arguments.includes(child) && mentions(parent.expression)) return true
+    if (ts.isCallExpression(parent) && parent.arguments.includes(child)) {
+      // 리터럴이 인자 쪽이면: 호출 대상이 method 를 말하거나(`callMethod('A')`), 직접 인자이고 배열 아닌 형제 인자가 method 를 말한다
+      // (`assert.equal(frame.method, 'A')` — fix4 R4-claude-01). 콜백 안 리터럴·의존성 배열은 묶지 않는다(fix3 R3-claude-02 유지)
+      if (mentions(parent.expression)) return true
+      const siblings = parent.arguments.filter((arg) => arg !== child && !ts.isArrayLiteralExpression(arg))
+      if (!indirect && siblings.some(mentions)) return true
+    }
   }
   return false
 }

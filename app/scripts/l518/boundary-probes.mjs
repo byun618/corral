@@ -81,6 +81,19 @@ export const PROBES = [
   { id: 'a2-jsx-text-slash', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-jsx-text-slash.tsx`, source: "export const el = <p>see http://x.y</p>\ndeclare function id(x: string): string\nexport const probe = { method: id('tab.rename') }\n" },
   // fix3 (R3-claude-01) — 더 긴 문자열 **안**이라도 envelope 글자 규칙에 걸리면 잡는다(키 순서가 바뀐 JSON 포함)
   { id: 'a3-json-params-first', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a3-json-params.ts`, source: jsonFrame(`'{"params":{},"method":"tab.rename"}'`) },
+  // fix4 (R4-claude-01) — 리터럴이 직접 인자이고 형제 인자가 method 를 말하는 비교 꼴(리뷰어 leak2 A01~A04 · 코디 c92)
+  { id: 'a4-assert-equal', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a4-assert-equal.ts`, source: "declare const assert: { equal(a: unknown, b: unknown): void }\ndeclare const frame: { method: string }\nassert.equal(frame.method, 'tab.rename')\n" },
+  { id: 'a4-same-reversed', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a4-same-reversed.ts`, source: "declare function same(a: unknown, b: unknown): boolean\ndeclare const frame: { method: string }\nexport const ok = same('tab.rename', frame.method)\n" },
+  { id: 'a4-object-is', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a4-object-is.ts`, source: "declare const frame: { method: string }\nexport const ok = Object.is(frame.method, 'tab.rename')\n" },
+  // fix4 (R4-claude-06) — 칸이 안 지키던 분기(리뷰어 원문) + `!=` 전용 칸
+  { id: 'a4-neq-strict', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a4-neq-strict.ts`, source: "export const probe = (f: { method: string }): boolean => 'tab.rename' !== f.method\n" },
+  { id: 'a4-eq-loose', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a4-eq-loose.ts`, source: "export const probe = (f: { method: string }): boolean => 'tab.rename' == f.method\n" },
+  { id: 'a4-neq-loose', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a4-neq-loose.ts`, source: "export const probe = (f: { method: string }): boolean => 'tab.rename' != f.method\n" },
+  { id: 'a4-or-assign', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a4-or-assign.ts`, source: "export const probe = (f: { method?: string }): void => {\n  f.method ||= 'tab.rename'\n}\n" },
+  { id: 'a4-assign-ternary', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a4-assign-ternary.ts`, source: "declare const c: boolean\nlet method = ''\nmethod = c ? 'tab.rename' : 'x'\nexport const probe = method\n" },
+  { id: 'a4-var-methods-array', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a4-var-methods.ts`, source: "export const methods = ['tab.rename', 'tab.cycle']\n" },
+  { id: 'a4-var-methods-object', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a4-var-methods-obj.ts`, source: "export const METHODS = { rename: 'tab.rename' }\n" },
+  { id: 'a4-class-prop-methods', group: 'ⓐ', expect: 'R4-wire-leak', file: `${P}a4-class-prop.ts`, source: "export class Probe {\n  methods = ['tab.rename']\n}\n" },
   // R1-claude-04 — envelope 글자 창(80자) 축소 변이를 죽인다: 문자열 안 JSON 은 AST 로 못 보고 글자로만 본다
   { id: 'a1-json-wide', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-json-wide.ts`, source: jsonFrame(`'{"id":1,"method":${' '.repeat(40)}"tab.rename"}'`) },
 
@@ -159,6 +172,9 @@ export const PROBES = [
   { id: 'e3-method-fn-statement', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-method-fn-stmt.ts`, source: "declare function track(id: string): void\nexport const method = (): void => {\n  track('tab.rename')\n}\n" },
   // 문장 꼴 문자열 키는 method 이름이 아니다 — 「method 언급을 글자 전체 검색으로」 변이용
   { id: 'e3-sentence-key', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-sentence-key.ts`, source: "export const labels = { '단축키 method 설명': 'tab.rename' }\n" },
+  // fix4 — 형제 인자 규칙의 제외 둘: 리터럴이 배열 리터럴 안(형제가 method 를 말해도) · 형제가 배열 리터럴(의존성 배열, 콜백 거치지 않는 직접 인자)
+  { id: 'e4-literal-in-array-arg', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e4-literal-in-array.ts`, source: "declare function render(ids: string[], method: string): string\ndeclare const frame: { method: string }\nexport const probe = render(['tab.rename'], frame.method)\n" },
+  { id: 'e4-deps-array-direct', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e4-deps-direct.ts`, source: "declare function useLabel(id: string, deps: unknown[]): string\ndeclare const method: string\nexport const probe = useLabel('tab.rename', [method])\n" },
   // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
   { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 

@@ -48,6 +48,16 @@ const MUTANTS = [
   // fix3 (R3-claude-01·02)
   { 이름: '더 긴 글 안 토큰을 위반으로 (fix2 판 되돌림)', source: replaceOnce({ from: "    if (text?.inside) return 'action-id'\n", to: '' }) },
   { 이름: '이항식 연산자 제한 제거 (&&·||·??·+ 도 묶음)', source: replaceOnce({ from: 'const BINDING_OPERATORS = (kind) =>\n', to: 'const BINDING_OPERATORS = (kind) => true || \n' }) },
+  // fix4 (R4-claude-01·06)
+  { 이름: '형제 인자 규칙 제거 (fix3 판)', source: replaceOnce({ from: '      if (!indirect && siblings.some(mentions)) return true\n', to: '' }) },
+  { 이름: '형제 인자 규칙의 직접 인자 조건 제거 (콜백·배열 안 리터럴도 묶음)', source: replaceOnce({ from: 'if (!indirect && siblings.some(mentions))', to: 'if (siblings.some(mentions))' }) },
+  { 이름: '형제 인자 규칙의 배열 형제 제외 제거 (의존성 배열도 묶음)', source: replaceOnce({ from: 'arg !== child && !ts.isArrayLiteralExpression(arg)', to: 'arg !== child' }) },
+  { 이름: '이항 !== 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||', to: 'false ||' }) },
+  { 이름: '이항 == 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.EqualsEqualsToken ||', to: 'false ||' }) },
+  { 이름: '이항 != 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.ExclamationEqualsToken ||', to: 'false ||' }) },
+  { 이름: '대입 연산자 범위 제거', source: replaceOnce({ from: '(kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment)', to: 'false' }) },
+  { 이름: 'valued 에서 VariableDeclaration 제거', source: replaceOnce({ from: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||', to: 'ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent) ||' }) },
+  { 이름: 'valued 에서 PropertyDeclaration 제거', source: replaceOnce({ from: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||', to: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) ||' }) },
 ]
 
 let allFailed = true

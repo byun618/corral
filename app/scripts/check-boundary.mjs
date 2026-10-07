@@ -112,7 +112,7 @@ function literalAt({ sourceFile, pos }) {
  *   호출의 다른 인자가 method 를 말한다(`['A', 'B'].includes(msg.method)`)
  *   `switch (frame.method)` 의 `case 'A':`
  */
-function boundToMethod({ sourceFile, literal }) {
+function boundToMethod({ literal }) {
   const mentions = mentionsMethod
   let child = literal
   for (let parent = literal.parent; parent; child = parent, parent = parent.parent) {
@@ -147,7 +147,7 @@ function methodExemption({ source, index, name, zone, importsMainLog, sourceFile
   const before = source.slice(Math.max(0, index - 80), index)
   if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
     const literal = literalAt({ sourceFile: sourceFile(), pos: index })
-    if (literal === null || !boundToMethod({ sourceFile: sourceFile(), literal })) return 'action-id'
+    if (literal === null || !boundToMethod({ literal })) return 'action-id'
   }
   if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
   return null

@@ -25,12 +25,12 @@ const MUTANTS = [
   { 이름: 'LOG_FIRST_ARG_BEFORE lookbehind 제거', source: replaceOnce({ from: 'const LOG_FIRST_ARG_BEFORE = /(?<![\\w.$])log\\(\\s*$/', to: 'const LOG_FIRST_ARG_BEFORE = /log\\(\\s*$/' }) },
   // fix1 — 새로 넣은 판정의 변이
   { 이름: '어휘 파생이 주석을 안 벗김 (R1-claude-05 되돌림)', source: replaceOnce({ from: "block.exec(stripComments(fs.readFileSync(path.join(SRC, file), 'utf8')))", to: "block.exec(fs.readFileSync(path.join(SRC, file), 'utf8'))" }) },
-  { 이름: 'AST envelope 판정 끔 (R1-claude-01 되돌림)', source: replaceOnce({ from: 'function boundToMethod({ sourceFile, literal }) {', to: 'function boundToMethod({ sourceFile, literal }) {\n  return false' }) },
+  { 이름: 'AST envelope 판정 끔 (R1-claude-01 되돌림)', source: replaceOnce({ from: 'function boundToMethod({ literal }) {', to: 'function boundToMethod({ literal }) {\n  return false' }) },
   { 이름: 'switch case 규칙 제거', source: replaceOnce({ from: 'if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)', to: '' }) },
   { 이름: '호출 인자 규칙 제거 (includes)', source: replaceOnce({ from: 'if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg !== child && mentions(arg))) return true', to: '' }) },
   { 이름: '이항식 규칙 제거 (yoda)', source: replaceOnce({ from: 'if (ts.isBinaryExpression(parent) && mentions(parent.left === child ? parent.right : parent.left)) return true', to: '' }) },
   { 이름: '함수 식 너머로 올라가지 않음', source: replaceOnce({ from: 'if (!owner || !(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false', to: 'return false' }) },
-  { 이름: 'method 언급을 글자 전체 검색으로 (문장 꼴 문자열도 이름으로)', source: replaceOnce({ from: '  const mentions = mentionsMethod\n', to: '  const mentions = (node) => /method/i.test(node.getText(sourceFile))\n' }) },
+  { 이름: 'method 언급을 글자 전체 검색으로 (문장 꼴 문자열도 이름으로)', source: replaceOnce({ from: '  const mentions = mentionsMethod\n', to: '  const mentions = (node) => /method/i.test(node.getText())\n' }) },
 ]
 
 let allFailed = true

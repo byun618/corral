@@ -7,7 +7,7 @@
 // 사용: node <이 파일> --app <앱 루트> --out <raw 폴더> [--work /tmp/l490d] [--port 9493]
 // 결과: <out>/result.json · <out>/*.png. 종료코드 0 = 완주(판정은 값으로).
 
-/* global document, window, KeyboardEvent */
+/* global document */
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'

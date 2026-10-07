@@ -22,7 +22,6 @@ const RAWD = path.resolve(String(args.raw))
 if (!/^\/tmp\/l490n[^/]*$/.test(ROOT)) throw new Error(`--root 는 /tmp/l490n*: ${ROOT}`)
 fs.mkdirSync(RAWD, { recursive: true })
 const HERE = path.dirname(new URL(import.meta.url).pathname)
-const HERDR = '/opt/homebrew/bin/herdr'
 const sock = path.join(ROOT, 'ctl.sock')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const out = { checks: [], steps: {} }

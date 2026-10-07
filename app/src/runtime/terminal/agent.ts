@@ -598,21 +598,5 @@ export function sessionRecordPaths(kind: AgentKind, options: RecordLocationInput
 
 // --- §8.2 provider session markers --------------------------------------------------------------
 
-/**
- * A corral CLI launched from inside an agent inherits that agent's session markers, and a child
- * provider then treats itself as a nested session and stops writing a record (§8.2, findings E11).
- * The removal is an allowlist, not a pattern: CODEX_HOME, GROK_HOME and CLAUDE_CONFIG_DIR must
- * survive or the child writes somewhere corral is not looking.
- */
-export const SESSION_MARKER_NAMES: readonly string[] = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT']
-export const SESSION_MARKER_PREFIXES: readonly string[] = ['CLAUDE_CODE_', 'ORCA_AGENT_HOOK_']
-export function strippedSessionMarkers(environment: Record<string, string | undefined>): string[] {
-    return Object.keys(environment)
-        .filter(name => SESSION_MARKER_NAMES.some(marker => marker === name) || SESSION_MARKER_PREFIXES.some(prefix => name.startsWith(prefix)))
-        .sort()
-}
-export function withoutSessionMarkers(environment: Record<string, string | undefined>): Record<string, string | undefined> {
-    const copy = { ...environment }
-    for (const name of strippedSessionMarkers(environment)) delete copy[name]
-    return copy
-}
+// 목록 원본은 shared 로 옮겼다(LIFE-555) — main 의 herdr 서버 env 도 같은 목록을 쓴다.
+export { SESSION_MARKER_NAMES, SESSION_MARKER_PREFIXES, strippedSessionMarkers, withoutSessionMarkers } from '../../shared/session-markers.js'

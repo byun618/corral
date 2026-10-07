@@ -5,6 +5,9 @@
 
 import type { BackendStatus, RestoreSummary } from '../../../shared/types.js'
 
+/** herdr 미설치 카드의 설치 안내 (LIFE-555) — herdr 는 앱에 넣지 않는다, 사용자 herdr 에 붙는다. */
+export const HERDR_INSTALL_COMMAND = 'brew install herdr'
+
 export function restoreLine(restore: RestoreSummary): string {
   if (!restore.known) return `다시 붙을 에이전트 세션 수를 확인할 수 없습니다 (${restore.reason})`
   if (restore.total === 0) return '다시 붙을 에이전트 세션이 없습니다'
@@ -54,6 +57,9 @@ export function BackendCard({ status, onStart }: { status: BackendStatus; onStar
               <li key={place}>{place}</li>
             ))}
           </ul>
+          <span className="backend-card-hint" data-backend-install>
+            설치: <code>{HERDR_INSTALL_COMMAND}</code>
+          </span>
         </Card>
       )
     case 'bound-stopped':

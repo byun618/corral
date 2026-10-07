@@ -1,0 +1,18 @@
+#!/bin/sh
+# corral CLI shim (LIFE-555) — 설치본 `corral.app/Contents/Resources/bin/corral`.
+# 앱 자신의 Electron 을 Node 모드(ELECTRON_RUN_AS_NODE=1, `runAsNode` fuse)로 띄워 번들 안 CLI 를 돌린다 — 셸 node 와 무관하다.
+# `~/.local/bin/corral` 같은 심링크로 불려도 링크를 끝까지 따라가 번들 위치를 찾는다(Orca `Contents/Resources/bin/orca` 와 같은 모양).
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+CONTENTS="$(cd "$(dirname "$SELF")/../.." && pwd -P)"
+ELECTRON="$CONTENTS/MacOS/corral"
+CLI="$CONTENTS/Resources/app.asar.unpacked/cli/corral.mjs"
+# 셸의 Node 옵션이 내장 Node 에 섞이지 않게 한다.
+unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE
+ELECTRON_RUN_AS_NODE=1 exec "$ELECTRON" "$CLI" "$@"

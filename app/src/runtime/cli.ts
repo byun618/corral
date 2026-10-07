@@ -12,6 +12,8 @@ import { orchestrationModule } from './orchestration/index.js'
 import { randomUUID } from 'node:crypto'
 import { startRuntime } from './server.js'
 import { isRecord } from '../shared/json.js'
+import { desktopEnv, desktopLaunch } from './desktop-launch.js'
+import { CORRAL_VERSION } from './version.js'
 const registry = new CommandRegistry()
 registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async () => { throw new Error('Client metadata') } })
 registry.register(workspaceModule(defaultUserData()))
@@ -58,13 +60,11 @@ async function open(userData: string, inv: Invocation, signal: AbortSignal): Pro
     }
     signal.throwIfAborted()
     if (Date.now() >= deadline) throw new RuntimeError('outcome_unknown', 'Handoff deadline exceeded')
-    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-    const electron = process.env.CORRAL_ELECTRON ?? path.join(root, 'node_modules/electron', process.platform === 'darwin' ? 'dist/Electron.app/Contents/MacOS/Electron' : 'dist/electron')
-    if (!fs.existsSync(path.join(root, 'out/main/index.js'))) throw new RuntimeError('build_required', 'Run npm run build first')
+    const launch = desktopLaunch({ cliFile: fileURLToPath(import.meta.url), electronOverride: process.env.CORRAL_ELECTRON, platform: process.platform })
+    if (launch.kind === 'dev' && !fs.existsSync(launch.mainEntry)) throw new RuntimeError('build_required', 'Run npm run build first')
     privateDirectory(path.join(userData, 'runtime'))
     const logfile = fs.openSync(path.join(userData, 'runtime/desktop.log'), 'a', 0o600)
-    const env: NodeJS.ProcessEnv = { ...process.env, CORRAL_USER_DATA: userData }; delete env.ELECTRON_RUN_AS_NODE
-    const child = spawn(electron, [root, `--user-data-dir=${userData}`], { env, detached: true, stdio: ['ignore', logfile, logfile] })
+    const child = spawn(launch.executable, [...launch.args, `--user-data-dir=${userData}`], { env: desktopEnv({ env: process.env, userData }), detached: true, stdio: ['ignore', logfile, logfile] })
     effectsStarted ||= child.pid !== undefined
     fs.closeSync(logfile)
     let failure: Error | undefined
@@ -92,6 +92,8 @@ export async function runCli(argv: string[]): Promise<void> {
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel)
   let recovery: { requestId: string; terminal: string | boolean | null; command: string; action: string } | undefined
   try {
+    // 번들 버전과 같은 출처(`app/package.json` version — 빌드가 주입)를 찍는다(LIFE-555 G1). 레지스트리 밖의 전역 플래그다.
+    if (argv[0] === '--version') { console.log(json ? JSON.stringify({ ok: true, version: CORRAL_VERSION }) : CORRAL_VERSION); return }
     const inv = registry.parse(argv, process.cwd())
     if (inv.flags.help) {
       const commands = inv.command ? [registry.spec(inv.command)!] : registry.schema().commands

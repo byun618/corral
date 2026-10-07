@@ -9,6 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { isRecord } from '../../../shared/json.js'
+import { isSessionMarker } from '../../../shared/session-markers.js'
 import type { BackendBinary, RestoreSummary } from '../../../shared/types.js'
 import { log } from '../../log.js'
 
@@ -207,6 +208,8 @@ export function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (/^(CORRAL_|ELECTRON_|VITE_)/.test(key)) continue
     if (HERDR_PANE_SCOPED.has(key) || /^HERDR_(ACTIVE|PLUGIN)_/.test(key)) continue
     if (key === 'NODE_OPTIONS' || key === 'NODE_ENV' || key === 'NODE_CHANNEL_FD') continue
+    // 에이전트 세션 안에서 뜬 corral 이 그 세션 마커를 pane 셸까지 물리지 않게(LIFE-555 A5) — 허용 목록 변수(CODEX_HOME 등)는 남는다.
+    if (isSessionMarker(key)) continue
     // npm 스크립트로 띄운 개발 실행이 싣는 변수 — pane 셸에 새면 그 셸의 npm 이 엉뚱한 설정을 읽는다(r2 R2-06).
     if (/^npm_(config|lifecycle)_/.test(key)) continue
     out[key] = value

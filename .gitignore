@@ -20,3 +20,6 @@ specs/*/raw/**/_runs/
 
 # LIFE-366 격리 HOME (02-kickoff.md 정체 표) — 통합 설치·에이전트 기동 실측이 여기 떨어진다.
 .tmp/
+
+# LIFE-555 패키징 산출물 (dmg·zip·.app)
+app/dist/

@@ -6,7 +6,7 @@
 //
 // **이 파일은 herdr 를 모른다** — 어댑터 타입도 프로토콜 모듈도 import 하지 않는다 (기준 N2).
 
-import { Menu } from 'electron'
+import { Menu, Notification } from 'electron'
 import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -584,6 +584,26 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         if (target === null) throw new Error('창이 없다')
         target.webContents.session.flushStorageData()
         reply({ ok: true, at: Date.now() })
+        return
+      }
+      /**
+       * LIFE-555 A8(U5) — main `Notification.show()` 1회 실측. 설치본에서 알림이 뜨는지(D1 재결정 근거)를 재는 손잡이다.
+       * 제어 채널에만 있으므로 평시(측정 소켓 없음) 설치본에는 사용자 표면이 없다. 결과는 `show`·`failed`(오류값) 또는
+       * 시한 안에 아무 이벤트도 없었음(`timeout`) — 표시 여부의 최종 판정은 같은 시각 OS 로그·스크린샷과 함께 읽는다.
+       */
+      case 'notify': {
+        const supported = Notification.isSupported()
+        const notification = new Notification({ title: readString(parsed, 'title') ?? 'corral', body: readString(parsed, 'body') ?? 'LIFE-555 알림 실측' })
+        const timeoutMs = readNumber(parsed, 'timeoutMs') ?? 5000
+        const shownAt = Date.now()
+        const outcome = await new Promise<{ event: 'show' | 'failed' | 'timeout'; error: string | null }>((resolve) => {
+          const timer = setTimeout(() => resolve({ event: 'timeout', error: null }), timeoutMs)
+          notification.once('show', () => { clearTimeout(timer); resolve({ event: 'show', error: null }) })
+          notification.once('failed', (_event, error) => { clearTimeout(timer); resolve({ event: 'failed', error }) })
+          notification.show()
+        })
+        log('control.notify', { supported, ...outcome, shownAt })
+        reply({ ok: true, supported, ...outcome, shownAt, at: Date.now() })
         return
       }
       default:

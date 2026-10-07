@@ -1,6 +1,7 @@
 // LIFE-518 K3ⓖ 양성 대조 — check-boundary.nodetest.mjs 의 판정식이 **약해진 검사기를 실제로 떨어뜨리는지** 본다.
 // 검사기 원문을 메모리에서 바꿔 runProbes 에 넣는다(작업 트리 무변경). 각 변이마다 nodetest 와 같은 판정식으로 틀린 칸을 센다.
-// 사용: node scripts/l518/k3g-mutation.mjs — 모든 변이가 1칸 이상 틀려야 exit 0.
+// 사용: node scripts/l518/k3g-mutation.mjs [--only <변이 이름,…>] — (고른) 모든 변이가 1칸 이상 틀려야 exit 0.
+// --only: 칸·변이만 더한 수정(fix6)에서 새 변이만 돌린다. 칸을 더해도 이미 떨어진 변이는 살아나지 않는다.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -63,10 +64,22 @@ const MUTANTS = [
   { 이름: '대입 연산자 범위 제거', source: replaceOnce({ from: '(kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment)', to: 'false' }) },
   { 이름: 'valued 에서 VariableDeclaration 제거', source: replaceOnce({ from: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||', to: 'ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent) ||' }) },
   { 이름: 'valued 에서 PropertyDeclaration 제거', source: replaceOnce({ from: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent) ||', to: 'ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) ||' }) },
+  // fix6 (R6-claude-01) — 글자 노드 판별의 갈래(리뷰어 손변이 생존 재현)
+  { 이름: '글자 노드 판별에서 JSX 텍스트 제거', source: replaceOnce({ from: 'ts.isTemplateTail(node) || ts.isJsxText(node)', to: 'ts.isTemplateTail(node)' }) },
+  { 이름: '글자 노드 판별에서 템플릿 head·middle·tail 제거', source: replaceOnce({ from: 'ts.isTemplateHead(node) ||\n  ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ', to: '' }) },
 ]
+const onlyAt = process.argv.indexOf('--only')
+const only = onlyAt === -1 ? null : (process.argv[onlyAt + 1] ?? '').split(',').map((name) => name.trim()).filter(Boolean)
+const unknown = (only ?? []).filter((name) => !MUTANTS.some((mutant) => mutant.이름 === name))
+if (only && (only.length === 0 || unknown.length > 0)) {
+  console.error(`--only 이름 없음: ${unknown.join(', ') || '(빈 목록)'}`)
+  process.exit(2)
+}
+const selected = only ? MUTANTS.filter((mutant) => only.includes(mutant.이름)) : MUTANTS
+console.log(`변이 ${selected.length}/${MUTANTS.length}종${only ? ` (--only)` : ''}`)
 
 let allFailed = true
-for (const mutant of MUTANTS) {
+for (const mutant of selected) {
   const { clean, cells } = runProbes({ checkerSource: mutant.source })
   const wrong = PROBES.flatMap((probe, index) => (cellOk({ probe, cell: cells[index] }) ? [] : [probe.id]))
   const cleanWrong = !(clean.exit === 0 && clean.위반 === 0 && clean.ipc === true)

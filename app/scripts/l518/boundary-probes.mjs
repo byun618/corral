@@ -186,6 +186,11 @@ export const PROBES = [
   // fix5 — 누출이지만 ⓔ① 사각으로 허용한 뒤집힘(리뷰어 r5-leak Q15·Q16: 함수·객체 형제 안 method — 기준은 잡음, fix3 도 놓침)
   { id: 'e5-Q15-arrow-callback-arg', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e5-q15.ts`, source: "declare function req(m: string, cb: () => void): void\ndeclare const frame: { method: string }\nreq('tab.rename', () => { console.info(frame.method) })\n" },
   { id: 'e5-Q16-method-after-literal-obj', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e5-q16.ts`, source: "declare function req(m: string, o: { id: number }): void\ndeclare const method: string\nreq('tab.rename', { id: 1, kind: method })\n" },
+  // fix6 (R6-claude-01) — 더 긴 글 노드 안 따옴표 액션 id(JSX 텍스트 · 치환 템플릿 head/middle/tail)는 글이다. 리뷰어 r6b Y01~Y04 — 이 작업이 없앤 오탐 꼴의 회귀 핀
+  { id: 'e6-Y01-jsx-text-quoted', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e6-y01.tsx`, source: "export const A = () => <p>press 'tab.rename' to rename</p>\n" },
+  { id: 'e6-Y02-template-head-quoted', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e6-y02.ts`, source: "declare const n: number\nexport const s = `use 'tab.rename' ${n} done`\n" },
+  { id: 'e6-Y03-template-middle-quoted', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e6-y03.ts`, source: "declare const n: number\nexport const s = `${n} use 'tab.rename' ${n}`\n" },
+  { id: 'e6-Y04-template-tail-quoted', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e6-y04.ts`, source: "declare const n: number\nexport const s = `${n} use 'tab.rename'`\n" },
   // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
   { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 

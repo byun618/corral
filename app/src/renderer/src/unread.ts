@@ -30,6 +30,9 @@
 //     **낡은 참조** (r1 R1-01): herdr 는 에이전트가 끝나도 pane 의 세션 참조를 지우지 않는다. 같은 pane 에서 codex 를 다시 띄우면 옛 세션
 //     참조(옛 발화가 있는)가 남아 반짝임이 「사람 턴 있음」 으로 보였다(r2/f1 codex-relaunch). 그래서 에이전트가 없는 동안(agent null) 남아 있던
 //     참조를 그 pane 의 「물러난 참조」(`retired`)로 기억하고, 다시 뜬 에이전트가 같은 참조를 들고 있으면 참조 없음으로 본다.
+//     지문을 못 읽은 참조(파일 못 찾음·못 읽음·낯선 모양)는 「발화 없음」 이 아니라 모름이다 — 판단 불가(r2 R2-01).
+//     한계: 같은 참조를 이어받는 재기동(`codex resume` 등)은 참조가 안 바뀌어 물러난 참조로 남는다 — 그 반짝임은 거르지만,
+//     그렇게 띄우며 준 기동 인자 프롬프트의 첫 턴도 세지 않는다(r2 R2-02).
 //     한계: 「codex」 라고 보고한 provider 없는 pane 이 `unknown` 에서 곧장 working → idle 이면 반짝임과 구별되지 않아 세지 않는다.
 //     한계: launch 판정은 이력이 있는 경로만 한다 — 처음 보는 pane 이 이미 `done` 이면(위 첫 줄 규칙) 발화가 없어도 pane 안 읽음이 선다(벨 없음, r1 R1-03).
 // 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 pane 안 읽음(벨 없음).
@@ -59,8 +62,8 @@ export type PaneObservation = {
   agent: string | null
   /** 세션 참조의 열쇠(id 또는 경로). null = 참조 없음. 에이전트가 끝나도 herdr 가 지우지 않는다 — `retired` 가 가른다. */
   sessionKey: string | null
-  /** 그 참조의 transcript 지문에 사람 발화가 있나(`digest.firstPrompt`·`lastPrompt`). */
-  promptSeen: boolean
+  /** 그 참조의 transcript 지문에 사람 발화가 있나(`digest.firstPrompt`·`lastPrompt`). null = 지문을 못 읽어 모른다(r2 R2-01 — 판단 불가). */
+  promptSeen: boolean | null
   /** 발화로 판단할 수 있는 pane 인가 — transcript provider(claude·codex·grok)이고 codex 면 통합이 깔려 있다(r1 R1-02). */
   judgeable: boolean
 }

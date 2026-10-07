@@ -7,8 +7,8 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UiPrefs } from '../../../shared/types.js'
-import { isTerminalInputKey, judgeableOf, useUnread, type UnreadView } from './useUnread.js'
+import { type AgentStatus, EMPTY_SESSION_DIGEST, type PaneRow, type SessionActivity, type UiPrefs } from '../../../shared/types.js'
+import { isTerminalInputKey, judgeableOf, observationsOf, useUnread, type UnreadView } from './useUnread.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -229,5 +229,55 @@ describe('judgeableOf (LIFE-502) — 발화로 기동 반짝임을 가를 수 �
     expect(judgeableOf({ agent: 'codex', integrations: [{ agent: 'codex', state: 'current' }] })).toBe(true)
     expect(judgeableOf({ agent: 'codex', integrations: [{ agent: 'codex', state: 'outdated' }] })).toBe(true)
     expect(judgeableOf({ agent: 'claude', integrations: [{ agent: 'claude', state: 'not-installed' }] })).toBe(true)
+  })
+})
+
+describe('observationsOf (LIFE-502 r2 R2-05) — 상태 묶음 하나에서 발화 판정 칸', () => {
+  type Pane = Pick<PaneRow, 'paneId' | 'agentStatus' | 'agentState' | 'agent' | 'agentSession' | 'digest'>
+  const pane = (input: { paneId: string; agent: string | null; session: PaneRow['agentSession']; prompts?: { first?: string; last?: string }; activity?: SessionActivity; status?: AgentStatus }): Pane => ({
+    paneId: input.paneId,
+    agentStatus: input.status ?? 'idle',
+    agentState: { blockedReason: null, observedAt: 300, observedVia: 'event', enteredDoneAt: null, history: [{ status: 'working', observedAt: 200, observedVia: 'event' }] },
+    agent: input.agent,
+    agentSession: input.session,
+    digest: { ...EMPTY_SESSION_DIGEST, activity: input.activity ?? { state: 'text', text: 'x', at: null }, firstPrompt: input.prompts?.first ?? null, lastPrompt: input.prompts?.last ?? null },
+  })
+  const panes: Pane[] = [
+    pane({ paneId: 'id-first', agent: 'claude', session: { kind: 'id', agent: 'claude', source: 'herdr', id: 'sess-1' }, prompts: { first: '안녕' } }),
+    pane({ paneId: 'path-last', agent: 'grok', session: { kind: 'path', agent: 'grok', source: 'herdr', path: '/p/chat.jsonl' }, prompts: { last: '다시' } }),
+    pane({ paneId: 'no-prompt', agent: 'claude', session: { kind: 'id', agent: 'claude', source: 'herdr', id: 'sess-2' } }),
+    pane({ paneId: 'unresolved', agent: 'claude', session: { kind: 'id', agent: 'claude', source: 'herdr', id: 'sess-3' }, activity: { state: 'unresolved' } }),
+    pane({ paneId: 'unreadable', agent: 'claude', session: { kind: 'id', agent: 'claude', source: 'herdr', id: 'sess-4' }, activity: { state: 'unreadable', reason: 'EACCES' } }),
+    pane({ paneId: 'unknown-format', agent: 'grok', session: { kind: 'id', agent: 'grok', source: 'herdr', id: 'sess-5' }, activity: { state: 'unknown-format' } }),
+    pane({ paneId: 'unresolved-but-prompt', agent: 'claude', session: { kind: 'id', agent: 'claude', source: 'herdr', id: 'sess-6' }, activity: { state: 'unknown-format' }, prompts: { first: '첫 말' } }),
+    pane({ paneId: 'codex', agent: 'codex', session: null, activity: { state: 'none' } }),
+    pane({ paneId: 'shell', agent: null, session: null, activity: { state: 'none' } }),
+  ]
+  const state = (integrations: Parameters<typeof observationsOf>[0]['integrations']): Parameters<typeof observationsOf>[0] => ({
+    repos: [{ worktrees: [{ path: '/w', workspace: { tabs: [{ panes }] } }, { path: '/closed', workspace: null }] }],
+    integrations,
+  })
+  const pick = (rows: ReturnType<typeof observationsOf>): Record<string, unknown> =>
+    Object.fromEntries(rows.map((row) => [row.paneId, { agent: row.agent, sessionKey: row.sessionKey, promptSeen: row.promptSeen, judgeable: row.judgeable }]))
+  it('id·path 참조 열쇠 · firstPrompt/lastPrompt OR · 못 읽은 지문은 null(발화가 보이면 true) · 셸은 판단 불가', () => {
+    const rows = observationsOf(state([]))
+    expect(rows.map((row) => row.worktreePath)).toEqual(Array(panes.length).fill('/w'))
+    expect(rows[0]).toMatchObject({ status: 'idle', enteredAt: 300, history: [{ status: 'working', enteredAt: 200 }] })
+    expect(pick(rows)).toEqual({
+      'id-first': { agent: 'claude', sessionKey: 'sess-1', promptSeen: true, judgeable: true },
+      'path-last': { agent: 'grok', sessionKey: '/p/chat.jsonl', promptSeen: true, judgeable: true },
+      'no-prompt': { agent: 'claude', sessionKey: 'sess-2', promptSeen: false, judgeable: true },
+      unresolved: { agent: 'claude', sessionKey: 'sess-3', promptSeen: null, judgeable: true },
+      unreadable: { agent: 'claude', sessionKey: 'sess-4', promptSeen: null, judgeable: true },
+      'unknown-format': { agent: 'grok', sessionKey: 'sess-5', promptSeen: null, judgeable: true },
+      'unresolved-but-prompt': { agent: 'claude', sessionKey: 'sess-6', promptSeen: true, judgeable: true },
+      codex: { agent: 'codex', sessionKey: null, promptSeen: false, judgeable: true },
+      shell: { agent: null, sessionKey: null, promptSeen: false, judgeable: false },
+    })
+  })
+  it('codex 통합 not-installed 면 codex pane 만 판단 불가', () => {
+    const rows = pick(observationsOf(state([{ agent: 'codex', state: 'not-installed' }])))
+    expect(rows['codex']).toMatchObject({ judgeable: false })
+    expect(rows['id-first']).toMatchObject({ judgeable: true })
   })
 })

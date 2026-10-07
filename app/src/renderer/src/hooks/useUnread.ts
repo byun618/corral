@@ -30,13 +30,37 @@ export function judgeableOf(input: { agent: string | null; integrations: AppStat
 }
 
 /** 세션 참조의 열쇠 — 같은 참조인지 비교하는 데만 쓴다. */
-function sessionKeyOf(pane: PaneRow): string | null {
+function sessionKeyOf(pane: Pick<PaneRow, 'agentSession'>): string | null {
   if (pane.agentSession === null) return null
   return pane.agentSession.kind === 'id' ? pane.agentSession.id : pane.agentSession.path
 }
 
+/**
+ * transcript 지문에 사람 발화가 있나 — 있으면 `true`. 없을 때 지문을 **못 읽은** 것(참조의 파일을 못 찾음·못 읽음·모양이 낯섦)이면
+ * 「발화 없음」 이 아니라 모름이다 → `null`(판단 불가 = 옛 동작, r2 R2-01). 발화가 보이면 활동 상태와 무관하게 `true` 다.
+ */
+function promptSeenOf(digest: PaneRow['digest']): boolean | null {
+  if (digest.firstPrompt !== null || digest.lastPrompt !== null) return true
+  switch (digest.activity.state) {
+    case 'unresolved':
+    case 'unreadable':
+    case 'unknown-format':
+      return null
+    case 'none':
+    case 'text':
+      return false
+  }
+}
+
+/** `observationsOf` 가 읽는 칸만 — 테스트가 상태 전체를 만들지 않아도 되게. */
+type ObservedPane = Pick<PaneRow, 'paneId' | 'agentStatus' | 'agentState' | 'agent' | 'agentSession' | 'digest'>
+type ObservedState = {
+  repos: readonly { worktrees: readonly { path: string; workspace: { tabs: readonly { panes: readonly ObservedPane[] }[] } | null }[] }[]
+  integrations: AppState['integrations']
+}
+
 /** 상태 묶음 → 관측 목록. 모든 열린 pane(셸 pane 도 — 보고로 에이전트가 붙으면 완료가 선다). */
-export function observationsOf(state: AppState): PaneObservation[] {
+export function observationsOf(state: ObservedState): PaneObservation[] {
   const rows: PaneObservation[] = []
   for (const repo of state.repos)
     for (const worktree of repo.worktrees)
@@ -50,7 +74,7 @@ export function observationsOf(state: AppState): PaneObservation[] {
             history: pane.agentState.history.map((step) => ({ status: step.status, enteredAt: step.observedAt })),
             agent: pane.agent,
             sessionKey: sessionKeyOf(pane),
-            promptSeen: pane.digest.firstPrompt !== null || pane.digest.lastPrompt !== null,
+            promptSeen: promptSeenOf(pane.digest),
             judgeable: judgeableOf({ agent: pane.agent, integrations: state.integrations }),
           })
   return rows

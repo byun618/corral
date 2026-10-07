@@ -474,6 +474,9 @@ describe('LIFE-502 r1 — promptedOf · 같은 pane 재기동 · 보고 있음',
     expect(promptedOf({ obs: base, retired: 'old' })).toBe(false)
     expect(promptedOf({ obs: { ...base, agent: 'claude' }, retired: 'old' })).toBe(null)
     expect(promptedOf({ obs: base, retired: 'other' })).toBe(true)
+    // r2 R2-01 — 지문을 못 읽었으면(promptSeen null) 판단 불가. 물러난 참조인 codex 는 여전히 false.
+    expect(promptedOf({ obs: { ...base, promptSeen: null }, retired: undefined })).toBe(null)
+    expect(promptedOf({ obs: { ...base, promptSeen: null }, retired: 'old' })).toBe(false)
   })
   /** r2/f1 codex-relaunch 원자료 모양: 1턴 뒤 종료(agent null, 참조 old 남음) → 같은 pane 재기동(참조 old 그대로) → 반짝임. */
   const pane = (steps: Array<[AgentStatus, number]>, fields: Partial<PaneObservation>): PaneObservation => ({ ...withHistory('p', steps), ...base, ...fields })
@@ -530,5 +533,16 @@ describe('LIFE-502 r1 — promptedOf · 같은 pane 재기동 · 보고 있음',
     model = run([{ panes: [other, idle(true)] }], model)
     expect(unreadOf(model)).toEqual([])
     expect(bells(model)).toEqual([])
+  })
+})
+
+describe('LIFE-502 r2 — 지문을 못 읽은 기동 인자 첫 턴 (R2-01)', () => {
+  it('참조는 있는데 지문을 못 읽으면(promptSeen null) unknown 에서 시작한 첫 턴을 센다(옛 동작)', () => {
+    const other = obs('z', 'idle', 1, null, B)
+    const p = (steps: Array<[AgentStatus, number]>): PaneObservation => ({ ...withHistory('p', steps), agent: 'claude', sessionKey: 'c', promptSeen: null, judgeable: true })
+    let model = run([{ panes: [other] }, { panes: [other, p([['unknown', 100]])] }])
+    model = run([{ panes: [other, p([['unknown', 100], ['working', 200], ['idle', 300]])] }], model)
+    expect(unreadOf(model)).toEqual(['p'])
+    expect(model.held.size).toBe(0)
   })
 })

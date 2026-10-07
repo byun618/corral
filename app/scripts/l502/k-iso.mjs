@@ -14,6 +14,7 @@
 //
 // 사용: node app/scripts/l502/k-iso.mjs --app <app 폴더> --work /tmp/l502iX --port 95NN --out <raw 폴더> --plan codex-flash,codex-flash,...
 // 회차 종류: codex-flash · claude-launch · grok-launch · claude-prompt · claude-argprompt · report-idle-first · report-direct · watched-report
+//           · claude-codex-relaunch-fast(r2 R2-03 — Ctrl-C 뒤 --relaunch-gap ms(기본 1000)만에 codex 재기동)
 //           · claude-relaunch · codex-relaunch · claude-codex-relaunch(같은 pane 에서 프롬프트 1턴 → 종료 → 재기동, r1 R1-01 — codex 는 프롬프트 1회를 쓴다)
 //           · claude-slowmcp-prompt(K2ⓕ — claude 느린 MCP 기동 반짝임 뒤 프롬프트 1턴)
 //           · codex-prompt(K2ⓓ+ⓕ — 느린 MCP 로 반짝임을 낸 같은 pane 에 프롬프트 1회. 반짝임 뒤 observeMs 동안 표시 없음도 같이 본다. 토큰 사용)
@@ -36,6 +37,8 @@ const out = path.resolve(String(args.out))
 const port = Number(args.port ?? 9502)
 const plan = String(args.plan ?? 'codex-flash').split(',').filter(Boolean)
 const observeMs = Number(args.observe ?? 10_000)
+// claude-codex-relaunch-fast 의 Ctrl-C 뒤 재기동까지 기다리는 시간(r2 R2-03 — 사람 수준). 기본 1초.
+const relaunchGapMs = Number(args['relaunch-gap'] ?? 1000)
 fs.rmSync(work, { recursive: true, force: true })
 fs.mkdirSync(work, { recursive: true })
 fs.mkdirSync(out, { recursive: true })
@@ -95,6 +98,7 @@ async function sample({ paneId, tabId, worktreePath }) {
     session: pane?.agentSession === null || pane === null ? null : pane.agentSession.kind,
     // 세션 id 는 앞 8자만 — 재기동 뒤 참조가 바뀌었나(낡은 참조, r1 R1-01)를 가르는 데 쓴다.
     sessionId: pane === null || pane.agentSession === null ? null : (pane.agentSession.kind === 'id' ? pane.agentSession.id : pane.agentSession.path).slice(0, 8),
+    activity: pane?.digest?.activity?.state ?? null,
     firstPrompt: pane?.digest?.firstPrompt != null,
     lastPrompt: pane?.digest?.lastPrompt != null,
     observedAt: pane?.agentState?.observedAt ?? null,
@@ -230,6 +234,33 @@ async function runOne(kind, index) {
         await waitTurn('prompt', 180_000)
         break
       }
+      case 'claude-codex-relaunch-fast': {
+        // R2-03 — 빠른 재기동: 1턴 뒤 표시를 **먼저** 지우고, Ctrl-C 두 번 → relaunchGapMs 만 쉬고 곧바로 codex 느린 MCP 를 띄운다.
+        // 렌더러가 「에이전트 없음」 묶음을 받을 틈이 사람 수준으로 짧다 — 물러난 참조가 기억되는지(재기동 반짝임이 안 서는지)를 본다.
+        note('launch-1', { command: CLAUDE })
+        herdrCli('pane', 'run', paneId, cd + CLAUDE)
+        await waitStatus(['idle', 'done'], 'ready-1', 45_000)
+        await pause(1500)
+        note('prompt-send', { prompt: PROMPT })
+        await sendPrompt({ paneId })
+        await waitTurn('turn-1', 180_000)
+        await pause(2000)
+        run.cleared1 = await clearIndicators('after turn-1')
+        await pause(1000)
+        note('exit-1')
+        await sendText(paneId, '\u0003')
+        await pause(300)
+        await sendText(paneId, '\u0003')
+        await pause(relaunchGapMs)
+        run.atRelaunch = await sample(ids)
+        run.relaunchEpoch = Date.now()
+        note('relaunch', { command: SLOW_CODEX, epoch: run.relaunchEpoch, gapMs: relaunchGapMs })
+        herdrCli('pane', 'run', paneId, cd + SLOW_CODEX)
+        await waitStatus(['working', 'blocked'], 'flash-2 running', 30_000).then(() => note('flash-2:running-seen')).catch(() => note('flash-2:running-not-seen'))
+        await waitStatus(['idle', 'done'], 'ready-2', 45_000)
+        note('idle')
+        break
+      }
       case 'claude-relaunch':
       case 'codex-relaunch':
       case 'claude-codex-relaunch': {
@@ -353,6 +384,14 @@ async function runOne(kind, index) {
       relaunchFlash: relaunchSegment === null ? null : relaunchSegment.flash,
       relaunchTimeline: relaunchSegment === null ? null : relaunchSegment.timeline,
       sessionAfterExit: run.afterExit === undefined ? null : run.afterExit.sessionId,
+      // R2-03 — 종료(exit-1)와 재기동 사이 main 상태 표본에 「에이전트 없음」 이 있었나(250ms 표본 — 렌더러가 받는 같은 상태). 첫 표본 시각·개수.
+      agentNullBetween: (() => {
+        const exit = run.events.find((event) => event.label === 'exit-1')?.t
+        const relaunch = run.events.find((event) => event.label === 'relaunch')?.t
+        if (exit === undefined || relaunch === undefined) return null
+        const nulls = run.samples.filter((s) => s.error === undefined && s.t >= exit && s.t <= relaunch + 3000 && s.agent === null)
+        return { count: nulls.length, firstAt: nulls[0]?.t ?? null, exitAt: exit, relaunchAt: relaunch }
+      })(),
       shownBeforePrompt: pre === undefined ? null : inRange(pre, preEnd ?? Infinity).some(shown),
       timeline,
       shownInWindow: window.some(shown),

@@ -1,4 +1,6 @@
 #!/bin/sh
+# LIFE-505 K3 — l497 복사. 바꾼 것: ROOT 꼴 /tmp/l505n* · profile.json 기대 해시 = 지금 원본(LIFE-531 이후 backend 바인딩 없음, runtimeId 만)
+#   · ③ profile backend 재작성을 뺐다 — 바인딩이 없으면 평소 corral 도 herdr default 를 쓴다(킥오프 격리 5), native-app.sh 가 CORRAL_BACKEND_SOCKET·CORRAL_SESSION=default 를 직접 준다.
 # LIFE-497 K6 — l496 복사(ROOT 꼴 /tmp/l497n*·잔존 검색어 l497). 추가: ~/.codex/config.toml 바이트 백업(up)·복원(down, provider 대조 전) — codex 는 자기 config 를 고친다(킥오프 격리 2).
 # LIFE-496 K4 — l494 복사(ROOT 꼴 /tmp/l496n*·잔존 검색어 l496 만 바꿈).
 # LIFE-494 K4 — LIFE-493 l493/native-up.sh 복사(ROOT 꼴만 /tmp/l496n* 로). 그 위 원 주석: LIFE-477 native-up.sh 를 그대로 옮겼다(도우미 ../l470 · 복구 검사 ../l477).
@@ -9,7 +11,7 @@
 #   · fixture 는 여기서 등록하지 않는다 — K8ⓒ 첫 기동 캡처를 원래 상태(레포 1개)로 먼저 찍는다(q1).
 #   · provider 설정은 해시만 적는다(대조만, 되쓰기 금지 — 킥오프 격리 2).
 # 하나라도 어긋나면 아무것도 바꾸기 전에 멈춘다(exit 3 = corral 가동 중, 5 = profile 원본 아님, 6 = herdr default 가동 중, 7 = 복구될 에이전트 세션 있음·session.json 구조 모름).
-# 사용: sh native-up.sh <ROOT=/tmp/l497n*> <app 디렉터리> <raw 폴더> [--allow-session-restore]
+# 사용: sh native-up.sh <ROOT=/tmp/l505n*> <app 디렉터리> <raw 폴더> [--allow-session-restore]
 set -eu
 ROOT=$1; APP=$2; RAWD=$3
 HERE=$(cd "$(dirname "$0")/../l470" && pwd)
@@ -18,7 +20,7 @@ UD="$HOME/Library/Application Support/corral"
 HERDR=/opt/homebrew/bin/herdr
 HCFG="$HOME/.config/herdr"
 SOCK="$HCFG/herdr.sock"
-case "$ROOT" in /tmp/l497n*) ;; *) echo "ROOT 는 /tmp/l497n*"; exit 2 ;; esac
+case "$ROOT" in /tmp/l505n*) ;; *) echo "ROOT 는 /tmp/l505n*"; exit 2 ;; esac
 [ -e "$ROOT" ] && { echo "$ROOT 이미 있음"; exit 2; }
 mkdir -p "$ROOT/backup" "$RAWD"
 echo "# ⓪ 전제"
@@ -35,7 +37,7 @@ case "$OWNER" in none|dead:*) ;; *) echo "✘ 살아 있는 소유자 $OWNER —
 ELEC=$(ps -Ao pid=,command= | grep -E 'corral.*(Electron|electron)' | grep -v grep || true)
 [ -n "$ELEC" ] && { echo "✘ corral Electron 이 떠 있다 — 끄지 않고 멈춘다:"; echo "$ELEC" | cut -c1-200; exit 3; }
 echo "corral Electron: 0개" | tee -a "$RAWD/precheck.txt"
-WANT_PROFILE=2f4c55d683275347f2df19dd01152db750db25c980917c9b936f87d74fe3ffa4
+WANT_PROFILE=cbdd8889499885d045e77f33a709f7ee6bdf9fbf1587f2fe921aedb199be07c1
 HAVE_PROFILE=$(shasum -a 256 "$UD/runtime/profile.json" | cut -d' ' -f1)
 echo "profile.json 기대 $WANT_PROFILE / 현재 $HAVE_PROFILE" | tee -a "$RAWD/precheck.txt"
 [ "$HAVE_PROFILE" = "$WANT_PROFILE" ] || { echo "✘ 원본과 다르다 — 멈춘다"; exit 5; }
@@ -61,8 +63,6 @@ sh "$HERE/clean.sh" -- "nohup $HERDR --session default server > $ROOT/backend.lo
 i=0; until [ -S "$SOCK" ] && "$HERDR" session list 2>/dev/null | awk '$1=="default"{print $2}' | grep -q running; do i=$((i+1)); [ $i -gt 150 ] && { echo "backend 안 뜸"; exit 1; }; sleep 0.2; done
 ps -o pid=,ppid=,lstart=,command= -p "$(cat "$ROOT/backend.pid")" | tee "$RAWD/herdr-default.txt"
 
-echo "# ③ profile.json backend 임시 재작성 → default (runtimeId 유지) — 원복은 userData 전체 복원이 한다"
-"$NODE" -e "const f=process.argv[1];const p=JSON.parse(require('fs').readFileSync(f,'utf8'));p.backend={socket:process.argv[2],session:'default'};require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')" "$UD/runtime/profile.json" "$SOCK"
-echo "교체 후 profile.json $(shasum -a 256 "$UD/runtime/profile.json" | cut -d' ' -f1)" | tee -a "$RAWD/precheck.txt"
+echo "# ③ (LIFE-505) profile.json 재작성 없음 — $(shasum -a 256 "$UD/runtime/profile.json" | cut -d' ' -f1)" | tee -a "$RAWD/precheck.txt"
 mkdir -p "$ROOT/shots"
 sh "$HERE/native-app.sh" "$ROOT" "$APP" "$RAWD" first

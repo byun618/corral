@@ -27,7 +27,7 @@ import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
-import { clipboardImagePayload, createOrderedSender, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
+import { clipboardImagePayload, clipboardTextPayloads, createOrderedSender, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
 
 const decoder = new TextDecoder()
 
@@ -277,7 +277,7 @@ export function TerminalPane({
     // S2 계측: onData 발화 시각을 렌더러 시계로 링에 남긴다 (진단 실행에서만) — S2 는 이제
     // 주입시각(main)을 기준으로 잰다(수정 1회차 C3). onData 시각은 그 드리프트를 원자료에
     // 드러내는 참고값으로 남긴다.
-    const inputs: Array<{ data: string; at: number; source?: 'paste-image' | 'file-drop' }> = []
+    const inputs: Array<{ data: string; at: number; source?: 'paste-text' | 'paste-image' | 'file-drop' }> = []
     const dataListener = term.onData((data) => {
       // DECRQM 프로브 창이면 xterm 의 응답을 삼킨다 — pane 으로 흘리지 않는다 (L2).
       if (decrqmCapture !== null) {
@@ -291,17 +291,20 @@ export function TerminalPane({
       window.corral.termInput({ paneId, data })
     })
 
-    // --- ⌘V 이미지 붙여넣기 (LIFE-497 · D41) ------------------------------------------
+    // --- ⌘V 붙여넣기 (LIFE-497 · D41 이미지 · LIFE-505 텍스트) ---------------------------
     // ⌘V 는 Electron 기본 Edit 메뉴의 paste role 이 쥐고, role 은 포커스된 xterm 에 DOM `paste` 를 일으킨다
-    // (메뉴는 재구성하지 않는다 — R23). xterm 은 그 이벤트의 **텍스트**만 읽는다. 그래서 캡처 단계에서 본다:
-    // 텍스트가 있으면 손대지 않는다 — xterm 의 평소 붙여넣기 그대로다(바이트 동일, K5). 텍스트가 없을 때만
-    // 가로채(xterm 이 빈 `ESC[200~ESC[201~` 를 보내지 않게) main 에 이미지를 PNG 로 쓰게 하고 그 경로를
-    // **강제 bracketed paste** 로 ⌘V 를 받은 이 pane 에 쓴다. 대상은 이벤트 시점의 paneId 로 고정한다 —
-    // 처리 중 다른 pane 을 고르거나 이 pane 이 닫혀도 다른 pane 에 쓰지 않는다 (K1ⓒ). Ctrl+V 는 여기 안 온다
-    // (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
-    // ⌘V 이미지·드롭이 만든 바이트도 진단 링에 남긴다 (onData 를 안 거치므로 따로) — 관문이 "pane 으로 간 바이트" 를 읽는 자리.
-    // ⌘V 이미지·드롭은 받은 순서대로 나간다 (R1-03) — 이미지 저장 왕복이 늦어도 뒤 입력이 앞지르지 않는다.
-    type GeneratedInput = { data: string; source: 'paste-image' | 'file-drop'; paneId: string }
+    // (메뉴는 재구성하지 않는다 — R23). 캡처 단계에서 **텍스트·이미지 모두** 가로챈다 — xterm 의 평소 붙여넣기는 안 쓴다.
+    // 텍스트(LIFE-505): xterm 은 안쪽 앱의 bracketed paste(2004) 비트를 모른다 — herdr 가 그린 프레임만 받아 비트가 늘
+    // false 라 틀 없이 보낸다. 그러면 main 의 분류기가 틀 없는 CR 을 Enter 키로 보내 여러 줄 붙여넣기의 첫 줄이 전송·실행된다.
+    // 그래서 **강제** bracketed paste 로 싸서 보낸다 — 분류기가 그 구간을 herdr Paste 로 바꾸고, herdr 가 pane 의 실제 2004
+    // 모드에 맞춰 틀을 붙이거나 벗긴다(모드 판단은 herdr 몫 — Orca 의 Ctrl+C stale 비트 추측은 옮기지 않는다).
+    // herdr 의 Paste 상한(1MB)을 넘는 텍스트는 조각마다 틀 하나로 쪼개 보낸다(clipboardTextPayloads).
+    // 이미지: 텍스트가 없을 때만 main 에 이미지를 PNG 로 쓰게 하고 그 경로를 강제 bracketed paste 로 보낸다.
+    // 대상은 이벤트 시점의 paneId 로 고정한다 — 처리 중 다른 pane 을 고르거나 이 pane 이 닫혀도 다른 pane 에 쓰지 않는다 (K1ⓒ).
+    // Ctrl+V 는 여기 안 온다 (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
+    // 붙여넣기·드롭이 만든 바이트도 진단 링에 남긴다 (onData 를 안 거치므로 따로) — 관문이 "pane 으로 간 바이트" 를 읽는 자리.
+    // 붙여넣기·드롭은 받은 순서대로 나간다 (R1-03) — 이미지 저장 왕복이 늦어도 뒤 텍스트·드롭이 앞지르지 않는다.
+    type GeneratedInput = { data: string; source: 'paste-text' | 'paste-image' | 'file-drop'; paneId: string }
     const sendGenerated = (input: GeneratedInput): void => {
       if (diagnostics) {
         inputs.push({ data: input.data, at: Date.now(), source: input.source })
@@ -311,10 +314,14 @@ export function TerminalPane({
     }
     const enqueueGenerated = createOrderedSender<GeneratedInput>(sendGenerated)
     const onPaste = (event: ClipboardEvent): void => {
-      if (!shouldPasteClipboardImage(event.clipboardData?.getData('text/plain') ?? '')) return
+      const text = event.clipboardData?.getData('text/plain') ?? ''
       event.preventDefault()
       event.stopPropagation()
       const target = paneId
+      if (!shouldPasteClipboardImage(text)) {
+        void enqueueGenerated(clipboardTextPayloads(text).map((data): GeneratedInput => ({ data, source: 'paste-text', paneId: target })))
+        return
+      }
       void enqueueGenerated(
         window.corral.saveClipboardImage().then((result): GeneratedInput[] => {
           const data = clipboardImagePayload(result)

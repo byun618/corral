@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 import {
   canPasteImageDropPathRaw,
   clipboardImagePayload,
+  clipboardTextPayloads,
+  HERDR_PASTE_MAX_BYTES,
   createOrderedSender,
   dropPathPayloads,
   FILE_DROP_MAX_PATHS,
@@ -235,6 +237,59 @@ describe('⌘V 갈림 (220 terminal-clipboard-paste)', () => {
     )
   })
 
+  // LIFE-505 — 텍스트도 늘 강제 틀. 기대값은 xterm 6.0.0 의 붙여넣기(prepareTextForTerminal: \r?\n→\r)에 틀을 씌운 꼴.
+  it('텍스트 ⌘V 는 한 줄도 강제 bracketed paste 다', () => {
+    expect(clipboardTextPayloads('hello l505')).toEqual(['\x1b[200~hello l505\x1b[201~'])
+  })
+
+  it('여러 줄 텍스트 — 줄바꿈 \\r\\n·\\n 은 CR 로, 틀 안에 남는다', () => {
+    expect(clipboardTextPayloads('line1\nline2')).toEqual(['\x1b[200~line1\rline2\x1b[201~'])
+    expect(clipboardTextPayloads('a\r\nb\nc\r')).toEqual(['\x1b[200~a\rb\rc\r\x1b[201~'])
+  })
+
+  it('안쪽 ESC(끼어든 ESC[201~ 포함)는 U+241B 로 — 틀이 끝에서 한 번만 닫힌다', () => {
+    const payloads = clipboardTextPayloads('x\x1b[201~tail\x1b[200~')
+    expect(payloads).toHaveLength(1)
+    const payload = payloads.join('')
+    expect(payload).toBe('\x1b[200~x\u241b[201~tail\u241b[200~\x1b[201~')
+    expect(payload.split('\x1b[201~')).toHaveLength(2)
+    expect(payload.endsWith('\x1b[201~')).toBe(true)
+  })
+
+  const unwrap = (payloads: string[]): string => payloads.map((one) => one.slice('\x1b[200~'.length, -'\x1b[201~'.length)).join('')
+  const utf8 = (text: string): number => new TextEncoder().encode(text).length
+
+  it('herdr 상한 이하면 한 틀 — 상한은 실측값 1MB', () => {
+    expect(HERDR_PASTE_MAX_BYTES).toBe(1048576)
+    expect(clipboardTextPayloads('x'.repeat(HERDR_PASTE_MAX_BYTES))).toHaveLength(1)
+  })
+
+  it('상한을 넘으면 조각마다 틀 하나 — 조각은 상한 이하, 이으면 원문 그대로', () => {
+    const text = 'abcdefghij\n'.repeat(400_000)
+    const payloads = clipboardTextPayloads(text)
+    expect(payloads.length).toBe(Math.ceil(utf8(text) / HERDR_PASTE_MAX_BYTES))
+    for (const one of payloads) {
+      expect(one.startsWith('\x1b[200~') && one.endsWith('\x1b[201~')).toBe(true)
+      expect(utf8(one) - 12).toBeLessThanOrEqual(HERDR_PASTE_MAX_BYTES)
+    }
+    expect(unwrap(payloads)).toBe(text.replace(/\n/g, '\r'))
+  })
+
+  it('조각 경계는 코드 포인트를 가르지 않는다 (한글 3바이트·이모지 서로게이트 4바이트)', () => {
+    const payloads = clipboardTextPayloads('가😀나'.repeat(5), 7)
+    expect(payloads.every((one) => utf8(one) - 12 <= 7)).toBe(true)
+    expect(unwrap(payloads)).toBe('가😀나'.repeat(5))
+    expect(payloads.some((one) => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(one))).toBe(false)
+  })
+
+  it('줄바꿈 정규화는 쪼개기 전에 — \\r\\n 이 경계에 걸려도 CR 하나', () => {
+    expect(unwrap(clipboardTextPayloads('ab\r\ncd', 3))).toBe('ab\rcd')
+  })
+
+  it('상한보다 큰 글자 하나도 빈 조각 없이 보낸다', () => {
+    expect(clipboardTextPayloads('😀', 2)).toEqual(['\x1b[200~😀\x1b[201~'])
+  })
+
   it('빈 클립보드·실패면 아무것도 보내지 않는다 (reports image extraction failures without pasting)', () => {
     expect(clipboardImagePayload({ status: 'empty' })).toBeNull()
     expect(clipboardImagePayload({ status: 'failed', error: 'EACCES' })).toBeNull()
@@ -266,6 +321,20 @@ describe('createOrderedSender', () => {
     first.resolve(['A'])
     await done
     expect(sent).toEqual(['A', 'B'])
+  })
+
+  // LIFE-505 K1ⓓ — 텍스트 ⌘V 도 같은 큐다. 대기 중인 이미지 ⌘V 를 앞지르지 않는다.
+  it('이미지 ⌘V 처리 중 들어온 텍스트 ⌘V 는 그 이미지 뒤에 나간다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    const image = deferred<readonly string[]>()
+    enqueue(image.promise)
+    const done = enqueue(clipboardTextPayloads('after-image'))
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(sent).toEqual([])
+    image.resolve(['image'])
+    await done
+    expect(sent).toEqual(['image', '\x1b[200~after-image\x1b[201~'])
   })
 
   it('⌘V 처리 중 들어온 드롭은 그 ⌘V 뒤에 나간다', async () => {

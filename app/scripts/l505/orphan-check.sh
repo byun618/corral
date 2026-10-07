@@ -1,4 +1,5 @@
 #!/bin/sh
+# LIFE-505 K3 — l497 복사(검색어 l497→l505 만 바꿈).
 # LIFE-497 K6 — l496 복사(ROOT 꼴 /tmp/l497n*·잔존 검색어 l497). 추가: ~/.codex/config.toml 바이트 백업(up)·복원(down, provider 대조 전) — codex 는 자기 config 를 고친다(킥오프 격리 2).
 # LIFE-496 K4 — l494 복사(ROOT 꼴 /tmp/l496n*·잔존 검색어 l496 만 바꿈).
 # LIFE-493 수정 r3 H2 — 네이티브 회차 뒤 고아 점검 (native-ab-cycle.sh · native-ab-built.sh 공용).
@@ -15,7 +16,7 @@ APP=${2:-$(cd "$(dirname "$0")/../.." && pwd)}
 ps -Ao pid=,ppid=,command= | awk '$2==1' | grep -v -e grep -e orphan-check.sh | while read -r pid ppid cmd; do
   case "$cmd" in
     "$APP"/node_modules/electron/*) why="ppid1 electron" ;;
-    *l497*|*"$FX"*|*"herdr --session default server"*) why=ppid1 ;;
+    *l505*|*"$FX"*|*"herdr --session default server"*) why=ppid1 ;;
     *) continue ;;
   esac
   echo "ORPHAN $pid $why $(echo "$cmd" | cut -c1-120)"

@@ -111,3 +111,23 @@ export function requirements(onRecord = () => {}) {
     exitCode: (base = 0) => (base !== 0 ? base : results.some((row) => !row.pass) ? 1 : 0),
   }
 }
+
+// ── LIFE-505 사용자 유휴 가드 (코디 답 2026-10-07 — OS 입력·시스템 클립보드 쓰기는 이 가드 안에서만) ──
+/** HIDIdleTime(초) — 사용자가 마지막으로 키보드·마우스를 만진 뒤 지난 시간. */
+export function idleSeconds() {
+  const text = execFileSync('ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { encoding: 'utf8' })
+  const match = text.match(/"HIDIdleTime" = (\d+)/)
+  return match ? Number(match[1]) / 1e9 : 0
+}
+/** 유휴 minSec 이상이 될 때까지 기다린다(최대 maxMs). 못 기다리면 { ok:false } — 부르는 쪽이 그 회차를 보류한다. */
+export async function waitIdle({ minSec = 20, maxMs = 600_000, log = () => {} } = {}) {
+  const t0 = Date.now()
+  let idle = idleSeconds()
+  while (idle < minSec) {
+    if (Date.now() - t0 > maxMs) return { ok: false, idle, waitedMs: Date.now() - t0 }
+    log({ waitingIdle: idle })
+    await pause(Math.max(1000, (minSec - idle) * 1000))
+    idle = idleSeconds()
+  }
+  return { ok: true, idle, waitedMs: Date.now() - t0 }
+}

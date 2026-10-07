@@ -18,7 +18,7 @@ type CorralTermProbe = {
     lastSeq: number
     lines: string[]
     writes: Array<{ paneId: string; seq: number; at: number }>
-    inputs: Array<{ data: string; at: number; source?: 'paste-image' | 'file-drop' }>
+    inputs: Array<{ data: string; at: number; source?: 'paste-text' | 'paste-image' | 'file-drop' }>
     at: number
   }
 }

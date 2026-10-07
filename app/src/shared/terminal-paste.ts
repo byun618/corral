@@ -91,11 +91,52 @@ export function dropPathPayloads(paths: readonly string[]): string[] {
 }
 
 /**
- * ⌘V 의 갈림 — 클립보드에 **텍스트가 있으면 텍스트**(xterm 의 평소 붙여넣기), 없을 때만 이미지를 찾는다.
+ * ⌘V 의 갈림 — 클립보드에 **텍스트가 있으면 텍스트**, 없을 때만 이미지를 찾는다.
  * Orca `pasteTerminalClipboard` 의 순서 그대로다.
  */
 export function shouldPasteClipboardImage(clipboardText: string): boolean {
   return clipboardText.length === 0
+}
+
+/**
+ * herdr 0.9.0 이 Paste 한 번에 받는 본문 상한(UTF-8 바이트). 넘으면 거절하고 아무것도 쓰지 않는다 — 연결은 남는다.
+ * 실측: `oversized targeted pane paste, rejecting … size=4194304 max=1048576`, 1048576 바이트는 통과
+ * (specs/LIFE-505-bracketed-paste/raw/claude/iso/after-L1·after-L0).
+ */
+export const HERDR_PASTE_MAX_BYTES = 1024 * 1024
+
+const utf8Length = (codePoint: number): number => (codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4)
+
+/**
+ * ⌘V 텍스트 → pane 에 **차례로** 쓸 페이로드 (LIFE-505). **한 줄이어도 늘** 강제 bracketed paste 다.
+ *
+ * corral 의 xterm 은 안쪽 앱의 2004 비트를 모른다(늘 false) — xterm 에 맡기면 틀 없이 가서 main 분류기가 CR 을
+ * Enter 키로 보낸다(여러 줄의 첫 줄이 전송·실행된다). 틀로 보내면 분류기가 herdr Paste 로 바꾸고 herdr 가 pane 의
+ * 실제 모드에 맞춰 틀을 유지하거나 벗긴다 — 2004 를 끈 앱은 지금과 같은 바이트를 받는다.
+ * Orca 는 여러 줄만 강제한다(xterm 이 비트를 가진 구조라서) — corral 은 한 줄도 강제해야 2004 앱이 붙여넣기로 받는다.
+ *
+ * herdr 상한(`maxBytes`)을 넘으면 코드 포인트 경계에서 쪼개 틀 여러 개로 보낸다 — 거절돼 통째로 사라지는 대신
+ * 본문이 온전히 도착한다(앱은 붙여넣기 여러 번으로 받는다). 줄바꿈 정규화·ESC 무력화는 쪼개기 **전에** 해서
+ * `\r\n` 이 조각 경계에 걸려도 결과가 같다.
+ */
+export function clipboardTextPayloads(text: string, maxBytes: number = HERDR_PASTE_MAX_BYTES): string[] {
+  const normalized = text.replace(/\r?\n/g, '\r').split(ESCAPE).join('\u241b')
+  const chunks: string[] = []
+  let start = 0
+  let bytes = 0
+  let index = 0
+  for (const char of normalized) {
+    const size = utf8Length(char.codePointAt(0) ?? 0)
+    if (bytes + size > maxBytes && index > start) {
+      chunks.push(normalized.slice(start, index))
+      start = index
+      bytes = 0
+    }
+    bytes += size
+    index += char.length
+  }
+  chunks.push(normalized.slice(start))
+  return chunks.map(wrapBracketedPaste)
 }
 
 /** main 이 쓴 PNG 경로 → pane 에 쓸 바이트. 저장이 안 됐으면(빈 클립보드·실패) 아무것도 보내지 않는다 (K1ⓓ). */

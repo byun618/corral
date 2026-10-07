@@ -1,4 +1,5 @@
 #!/bin/sh
+# LIFE-505 K3 — l497 복사(잔존 검색어 l497→l505 만 바꿈).
 # LIFE-497 K6 — l496 복사(ROOT 꼴 /tmp/l497n*·잔존 검색어 l497). 추가: ~/.codex/config.toml 바이트 백업(up)·복원(down, provider 대조 전) — codex 는 자기 config 를 고친다(킥오프 격리 2).
 # LIFE-496 K4 — l494 복사(ROOT 꼴 /tmp/l496n*·잔존 검색어 l496 만 바꿈).
 # LIFE-494 K4 — LIFE-493 l493/native-down.sh 복사(잔존 검색어 l493→l494 만 바꿈). 그 위 원 주석: LIFE-471 native-down.sh 를 옮겼다(도우미 ../l470). ⑧ 익명화는 뺐다 — 이 회차 raw 는 fixture 탭바 영역만 담는다(선택자 캡처·fixture 탭만 덤프, native-k5.mjs). 원 주석:
@@ -92,5 +93,5 @@ cmp -s "$RAWD/provider-pre.txt" "$RAWD/provider-post.txt" && pass "provider $(wc
 echo "# ⑦ herdr default · 잔존"
 HSTAT=$(/opt/homebrew/bin/herdr session list 2>&1 | awk '$1=="default"{print $2}')
 [ "$HSTAT" = stopped ] && pass "herdr default stopped" || fail "herdr default $HSTAT"
-ps -Ao pid=,ppid=,etime=,command= | grep -E 'l497|Electron.app/Contents/MacOS/Electron|herdr --session default' | grep -v grep | cut -c1-200
+ps -Ao pid=,ppid=,etime=,command= | grep -E 'l505|Electron.app/Contents/MacOS/Electron|herdr --session default' | grep -v grep | cut -c1-200
 [ "$FAILED" = 0 ] && { echo "판정: 원복 통과"; exit 0; } || { echo "판정: 원복 미달"; exit 1; }

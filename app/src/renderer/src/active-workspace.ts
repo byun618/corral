@@ -1,7 +1,7 @@
 // 활성 workspace 동기화 규칙 (LIFE-490) — `useLifecycleActions` 의 동기화 effect 가 이 함수 하나로 판정한다.
 //
 // 결함: 링크 워크트리를 열면 IPC 응답(새 workspace id)이 **그 workspace 가 state 에 들어오기 전에** 온다
-// (격리 계측 `specs/LIFE-490-sidebar-card/raw/claude/k1/` — 응답 뒤 약 0.2~0.3초에 도착). 그 사이 다른 state push 가
+// (격리 계측 `specs/LIFE-490-sidebar-card/raw/claude/k1/` — 응답 뒤 0.5초 안쪽에 도착). 그 사이 다른 state push 가
 // 오면 옛 규칙은 「활성 id 가 열린 목록에 없다」 를 「닫혔다」 로 읽어 focused(= 함께 열린 main)로 승격했고,
 // 새 workspace 가 나중에 들어와도 활성은 이미 main 이었다.
 //
@@ -9,7 +9,7 @@
 // 목록에 들어오면 보류는 풀리고, 기한이 지나도 안 들어오면 옛 규칙(focused → 첫 workspace)으로 돌아간다(죽은 id 에 머물지 않는다).
 
 /**
- * 보류 기한. 실측 도착 지연은 0.2~0.7초였다(K1ⓐ). main 의 트리 재구성은 레포마다 `git worktree list`(상한 5초) +
+ * 보류 기한. 실측 도착 지연(응답 → state 도착)은 0.5초 안쪽이었다(K1ⓐ `raw/claude/k1/<회차>/race-order.md`). main 의 트리 재구성은 레포마다 `git worktree list`(상한 5초) +
  * herdr 왕복을 직렬로 도므로 그 상한의 두 배를 둔다 — 늦은 도착을 놓치는 쪽보다 실패를 10초 늦게 정리하는 쪽이 싸다.
  */
 export const PENDING_ACTIVE_MS = 10_000

@@ -8,14 +8,14 @@ const A = '/r/a'
 const B = '/r/b'
 /** 직전 상태 하나만 있는 관측(그 상태에 들어선 시각 = enteredAt - 1). 이력이 더 긴 것은 `withHistory`. */
 const obs = (paneId: string, status: AgentStatus, enteredAt: number, previousStatus: AgentStatus | null, worktreePath = A): PaneObservation => ({
-  paneId, worktreePath, status, enteredAt, history: previousStatus === null ? [] : [{ status: previousStatus, enteredAt: enteredAt - 1 }],
+  paneId, worktreePath, status, enteredAt, history: previousStatus === null ? [] : [{ status: previousStatus, enteredAt: enteredAt - 1 }], prompted: null,
 })
 /** 이력을 오래된 것부터 [상태, 진입 시각] 으로 — 마지막이 지금 상태. */
-const withHistory = (paneId: string, steps: Array<[AgentStatus, number]>, worktreePath = A): PaneObservation => {
+const withHistory = (paneId: string, steps: Array<[AgentStatus, number]>, worktreePath = A, prompted: boolean | null = null): PaneObservation => {
   const ordered = steps.map(([status, enteredAt]) => ({ status, enteredAt }))
   const now = ordered[ordered.length - 1]
   if (now === undefined) throw new Error('빈 이력')
-  return { paneId, worktreePath, status: now.status, enteredAt: now.enteredAt, history: ordered.slice(0, -1).reverse() }
+  return { paneId, worktreePath, status: now.status, enteredAt: now.enteredAt, history: ordered.slice(0, -1).reverse(), prompted }
 }
 type Step = { panes: PaneObservation[]; watched?: Watched; attentive?: boolean; active?: string | null; retained?: string[]; paths?: string[]; repos?: RepoScan[] }
 function run(steps: Step[], start: UnreadModel = EMPTY_UNREAD): UnreadModel {
@@ -62,7 +62,7 @@ describe('완료 판정 (01-criteria 용어 · C10)', () => {
   it('r2 F-E 이 세션에 처음 보는 pane(since 없음)은 첫 묶음과 같다 — 옛 전이는 세지 않고 done 만 pane 안 읽음', () => {
     const fresh = (o: PaneObservation): Completion[] => completionsOf({ obs: o, firstBatch: false, since: undefined })
     expect(fresh(withHistory('p', [['working', 100], ['idle', 10], ['idle', 200]]))).toEqual([])
-    expect(fresh(withHistory('p', [['working', 100], ['done', 200]]))).toEqual([{ at: 200, bell: false }])
+    expect(fresh(withHistory('p', [['working', 100], ['done', 200]]))).toEqual([{ at: 200, bell: false, launch: false }])
   })
   it('L3 묶음 하나에 합쳐진 연쇄도 센다 — 마지막으로 살핀 시각 뒤의 이력만, 같은 완료는 두 번 안 센다', () => {
     // 재현 2: working → idle → working 이 한 묶음 — 지금은 working 이지만 사이의 완료가 있다.
@@ -351,5 +351,109 @@ describe('r3 — 경계·중복 관측·레포 제거', () => {
     model = run([{ panes: [obs('p1', 'working', 100, null, W)], repos: [{ root: '/r1', error: false, worktreePaths: [W] }] }], model)
     model = run([{ panes: [], repos: [] }], model)
     expect(model.present.size).toBe(0)
+  })
+})
+
+// LIFE-502 기동 반짝임 — `unknown` 에서 곧장 시작된 working/blocked 구간이 사람 발화 없이(prompted false) 끝난 것은 완료가 아니다.
+// 이력 모양은 격리 herdr 실측(00-analysis A2 · raw/coordinator/launch-codex-slowmcp.json: unknown → working 4.5s → idle 8.1s).
+describe('LIFE-502 기동 반짝임 (D1·D2 · K3ⓐ)', () => {
+  /** 다른 pane 하나로 첫 묶음을 지나 둔 뒤, p 를 unknown 으로 처음 본다 — 이후 전이는 「이미 살핀 pane」의 것이다. */
+  const boot = (paneId = 'p', worktreePath = A): UnreadModel =>
+    run([{ panes: [obs('z', 'idle', 1, null, B)] }, { panes: [obs('z', 'idle', 1, null, B), withHistory(paneId, [['unknown', 100]], worktreePath)] }])
+  const other = obs('z', 'idle', 1, null, B)
+  it('codex·claude·grok 모양 — unknown → working → idle, 발화 없음: 세 표시 모두 없다(따로 온 묶음 · 한 묶음에 합쳐 온 것)', () => {
+    for (const agent of ['codex', 'claude', 'grok']) {
+      let model = boot(agent)
+      model = run([{ panes: [other, withHistory(agent, [['unknown', 100], ['working', 4600]], A, false)] }], model)
+      model = run([{ panes: [other, withHistory(agent, [['unknown', 100], ['working', 4600], ['idle', 8200]], A, false)] }], model)
+      expect(unreadOf(model)).toEqual([])
+      expect(bells(model)).toEqual([])
+      const merged = run([{ panes: [other, withHistory(agent, [['unknown', 100], ['working', 4600], ['idle', 8200]], A, false)] }], boot(agent))
+      expect(unreadOf(merged)).toEqual([])
+      expect(bells(merged)).toEqual([])
+    }
+  })
+  it('구간 안에 blocked 가 끼어도(unknown → working → blocked → working → done) 반짝임이다', () => {
+    const model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['blocked', 300], ['working', 400], ['done', 500]], A, false)] }], boot())
+    expect(unreadOf(model)).toEqual([])
+    expect(bells(model)).toEqual([])
+  })
+  it('completionsOf 가 반짝임을 launch 로 표시한다 — 발화가 있으면(true)·판단 불가(null)면 아니다', () => {
+    const steps: Array<[AgentStatus, number]> = [['unknown', 100], ['working', 200], ['idle', 300]]
+    const of = (prompted: boolean | null): Completion[] => completionsOf({ obs: withHistory('p', steps, A, prompted), firstBatch: false, since: 100 })
+    expect(of(false)).toEqual([{ at: 300, bell: true, launch: true }])
+    expect(of(true)).toEqual([{ at: 300, bell: true, launch: false }])
+    expect(of(null)).toEqual([{ at: 300, bell: true, launch: false }])
+  })
+  it('K2ⓐ 띄운 뒤(unknown → idle) 프롬프트를 넣은 완료는 센다 — 구간이 idle 에서 시작했다(지문이 아직 늦어도)', () => {
+    const model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['idle', 200], ['working', 300], ['idle', 400]], A, false)] }], boot())
+    expect(unreadOf(model)).toEqual(['p'])
+    expect(bells(model)).toEqual([A])
+  })
+  it('K2ⓑ 기동 인자 프롬프트(unknown → working → idle, 발화 있음)는 센다', () => {
+    const model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, true)] }], boot())
+    expect(unreadOf(model)).toEqual(['p'])
+    expect(bells(model)).toEqual([A])
+  })
+  it('K2ⓑ 지문이 늦게 온 기동 인자 프롬프트 — 같은 idle 에 머문 채 발화가 보이면 원래 시각으로 센다(보류 → 셈)', () => {
+    let model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, false)] }], boot())
+    expect(unreadOf(model)).toEqual([])
+    expect(model.held.get('p')).toEqual({ worktreePath: A, at: 300 })
+    model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, true)] }], model)
+    expect(unreadOf(model)).toEqual(['p'])
+    expect(model.panes.get('p')).toEqual({ worktreePath: A, at: 300 })
+    expect(bells(model)).toEqual([A])
+    expect(model.held.size).toBe(0)
+  })
+  it('보류 중 보고 있던 pane(완료 전부터 보던)은 발화가 와도 세지 않는다 · 보류 뒤에 보기 시작했으면 확인으로 지운다', () => {
+    const idle = (prompted: boolean): PaneObservation => withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, prompted)
+    let model = run([{ panes: [other, idle(false)] }], boot())
+    let seen = run([{ panes: [other, idle(true)], watched: { paneId: 'p', since: 150 } }], model)
+    expect(unreadOf(seen)).toEqual([])
+    expect(bells(seen)).toEqual([])
+    seen = run([{ panes: [other, idle(true)], watched: { paneId: 'p', since: 400 } }], model)
+    expect(unreadOf(seen)).toEqual([])
+    expect(bells(seen)).toEqual([])
+    model = run([{ panes: [other, idle(true)] }], model)
+    expect(unreadOf(model)).toEqual(['p'])
+  })
+  it('K2ⓒ provider 없는 보고(prompted null) — unknown 에서 곧장 working → idle 도, 471 하네스 모양(idle 먼저)도 센다', () => {
+    let model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, null)] }], boot())
+    expect(unreadOf(model)).toEqual(['p'])
+    expect(bells(model)).toEqual([A])
+    model = run([{ panes: [other, withHistory('q', [['unknown', 100], ['idle', 150], ['working', 200], ['idle', 300]], B, null)] }], boot('q', B))
+    expect(unreadOf(model)).toEqual(['q'])
+    expect(bells(model)).toEqual([B])
+  })
+  it('K2ⓕ 반짝임을 거른 뒤의 진짜 완료는 센다 · 상태가 바뀌면 보류한 반짝임은 늦게 온 발화로 되살아나지 않는다', () => {
+    const h1: Array<[AgentStatus, number]> = [['unknown', 100], ['working', 200], ['idle', 300]]
+    let model = run([{ panes: [other, withHistory('p', h1, A, false)] }], boot())
+    // 사람이 프롬프트를 넣어 working — 지문은 그 뒤에 발화를 싣는다. 반짝임(300)은 버린다.
+    model = run([{ panes: [other, withHistory('p', [...h1, ['working', 400]], A, true)] }], model)
+    expect(unreadOf(model)).toEqual([])
+    expect(bells(model)).toEqual([])
+    expect(model.held.size).toBe(0)
+    model = run([{ panes: [other, withHistory('p', [...h1, ['working', 400], ['idle', 500]], A, true)] }], model)
+    expect(model.panes.get('p')).toEqual({ worktreePath: A, at: 500 })
+    expect(bells(model)).toEqual([A])
+  })
+  it('K2ⓕ 반짝임과 다음 진짜 완료가 한 묶음에 합쳐 와도 진짜 완료만 센다', () => {
+    const model = run([{ panes: [other, withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300], ['working', 400], ['idle', 500]], A, false)] }], boot())
+    expect(model.panes.get('p')).toEqual({ worktreePath: A, at: 500 })
+    expect(bells(model)).toEqual([A])
+    expect(model.held.size).toBe(0)
+  })
+  it('터미널 입력은 보류한 반짝임을 확인한다 · 사라진 pane 의 보류는 버린다', () => {
+    const idle = (prompted: boolean): PaneObservation => withHistory('p', [['unknown', 100], ['working', 200], ['idle', 300]], A, prompted)
+    const model = run([{ panes: [other, idle(false)] }], boot())
+    const typed = run([{ panes: [other, idle(true)] }], acknowledgeInput(model, { paneId: 'p', worktreePath: A }))
+    expect(unreadOf(typed)).toEqual([])
+    expect(bells(typed)).toEqual([])
+    const gone = run([{ panes: [other] }], model)
+    expect(gone.held.size).toBe(0)
+  })
+  it('구간의 시작이 이력 창 밖이면(앞이 없다) 반짝임으로 보지 않는다 — 센다', () => {
+    const model = run([{ panes: [other, withHistory('p', [['working', 200], ['idle', 300]], A, false)] }], boot())
+    expect(unreadOf(model)).toEqual(['p'])
   })
 })

@@ -7,8 +7,8 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UiPrefs } from '../../../shared/types.js'
-import { isTerminalInputKey, useUnread, type UnreadView } from './useUnread.js'
+import { EMPTY_SESSION_DIGEST, type UiPrefs } from '../../../shared/types.js'
+import { isTerminalInputKey, promptedOf, useUnread, type UnreadView } from './useUnread.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -215,5 +215,17 @@ describe('터미널 입력 키 (198 terminal-keydown-fit)', () => {
     expect(isTerminalInputKey({ key: 'Shift', repeat: false, metaKey: false })).toBe(false)
     expect(isTerminalInputKey({ key: 'a', repeat: true, metaKey: false })).toBe(false)
     expect(isTerminalInputKey({ key: 'c', repeat: false, metaKey: true })).toBe(false)
+  })
+})
+
+describe('promptedOf (LIFE-502) — transcript 에 사람 발화가 있나', () => {
+  it('transcript provider 는 firstPrompt·lastPrompt 로 · 그 밖(셸·미지원 provider)은 판단 불가(null)', () => {
+    expect(promptedOf({ agent: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
+    expect(promptedOf({ agent: 'opencode', digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: 'x' } })).toBe(null)
+    for (const agent of ['claude', 'codex', 'grok']) {
+      expect(promptedOf({ agent, digest: EMPTY_SESSION_DIGEST })).toBe(false)
+      expect(promptedOf({ agent, digest: { ...EMPTY_SESSION_DIGEST, firstPrompt: '안녕' } })).toBe(true)
+      expect(promptedOf({ agent, digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: '안녕' } })).toBe(true)
+    }
   })
 })

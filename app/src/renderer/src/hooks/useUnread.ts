@@ -9,11 +9,20 @@
 //
 // G8: 이 훅은 herdr 를 부르지 않는다 — 확인은 corral 의 장부일 뿐 `pane.focus`·`tab.focus` 를 늘리거나 줄이지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, UiPrefs } from '../../../shared/types.js'
+import type { AppState, PaneRow, UiPrefs } from '../../../shared/types.js'
 import { acknowledgeInput, EMPTY_UNREAD, ingest, markRead, markUnread, type PaneObservation, type UnreadModel, type Watched } from '../unread.js'
 
 function readAttention(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus()
+}
+
+/** main 이 transcript 를 읽는 provider (`shared/types.ts` `TranscriptAgent`). */
+const TRANSCRIPT_AGENTS: readonly string[] = ['claude', 'codex', 'grok']
+
+/** 그 pane 의 transcript 에 사람 발화가 있나 (LIFE-502) — transcript 를 읽지 않는 pane 은 판단 불가(null). */
+export function promptedOf(pane: Pick<PaneRow, 'agent' | 'digest'>): boolean | null {
+  if (pane.agent === null || !TRANSCRIPT_AGENTS.includes(pane.agent)) return null
+  return pane.digest.firstPrompt !== null || pane.digest.lastPrompt !== null
 }
 
 /** 상태 묶음 → 관측 목록. 모든 열린 pane(셸 pane 도 — 보고로 에이전트가 붙으면 완료가 선다). */
@@ -29,6 +38,7 @@ export function observationsOf(state: AppState): PaneObservation[] {
             status: pane.agentStatus,
             enteredAt: pane.agentState.observedAt,
             history: pane.agentState.history.map((step) => ({ status: step.status, enteredAt: step.observedAt })),
+            prompted: promptedOf(pane),
           })
   return rows
 }

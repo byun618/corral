@@ -19,6 +19,14 @@
 //   · 처음 본 `idle` · 기동 직후 첫 idle(herdr 가 완료를 억제 → 직전이 working 이 아니다) → 완료 아님
 //   · `done → idle`(herdr 가 조용히 seen 처리 — 재동기에서야 보인다) → 직전이 done 이라 새 완료 아님
 //   · unknown → idle/done 은 세지 않는다 — herdr #4825 류(바뀌지 않은 에이전트를 다시 「새 활동」으로)를 안 읽음으로 세지 않게
+//   · **기동 반짝임은 완료가 아니다 (LIFE-502)** — `unknown` 에서 곧장 들어선 working/blocked 구간이 idle/done 으로 끝났는데 그 pane 의
+//     transcript 에 사람 발화가 아직 없다(`prompted === false`). codex 가 기동 중 MCP 부팅 스피너를 띄우면 herdr 는 정확히
+//     `unknown → working → idle` 을 보고한다 — 프롬프트 0 인데 위 규칙이면 완료다. 198 은 provider hook(턴 종료)에서만 완료를 세서
+//     이런 일이 없다. corral 은 hook 대신 「사람 턴이 있었나」를 transcript 지문(`digest.firstPrompt`·`lastPrompt`)으로 본다.
+//     기동 인자 프롬프트(`claude "…"`)는 transcript 에 발화가 있으니 센다. 지문은 main 이 1.5초 주기로 읽어 상태보다 늦을 수 있다 —
+//     그래서 버리지 않고 **보류**(`held`)했다가, 그 pane 이 같은 상태에 머무는 동안 발화가 보이면 그때 원래 시각으로 센다.
+//     상태가 바뀌면 보류를 버린다. transcript 를 읽지 않는 pane(`prompted === null` — 미지원 provider 등)은 이 규칙 밖이다(지금처럼 센다).
+//     한계: transcript provider 이름으로 보고된 provider 없는 pane 이 `unknown` 에서 곧장 working → idle 이면 반짝임과 구별되지 않아 세지 않는다.
 // 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 pane 안 읽음(벨 없음).
 // 벨을 켜는 것은 실제 완료 전이와 Mark Unread 뿐이고, 재시작 뒤 벨은 저장값을 따른다.
 //
@@ -42,6 +50,11 @@ export type PaneObservation = {
   enteredAt: number
   /** 지나온 상태들, **최신순**(main `agentState.history` — 그 상태에 들어선 시각). 비었으면 main 이 이 pane 을 처음 본 것이다. */
   history: readonly { status: AgentStatus; enteredAt: number }[]
+  /**
+   * 그 pane 의 transcript 에 사람 발화가 있나(LIFE-502) — `true` 있다 · `false` transcript provider 인데 아직 없다 ·
+   * `null` 판단할 수 없다(transcript 를 읽지 않는 provider·셸). 기동 반짝임을 가르는 근거다.
+   */
+  prompted: boolean | null
 }
 
 /** 레포 하나의 이번 묶음 — 벨 정리가 스캔 실패(git·herdr 에러)를 「사라짐」으로 읽지 않게(r1 M1). */
@@ -56,6 +69,8 @@ export type UnreadModel = {
   examined: ReadonlyMap<string, number>
   /** 확인 안 된 완료 — pane → 그 완료. 닫힌 탭(보존 행)의 것도 여기 남는다. */
   panes: ReadonlyMap<string, PaneUnread>
+  /** 보류한 기동 반짝임 — pane → 그 완료(`at` = 그 idle/done 에 들어선 시각). 같은 상태에서 사람 발화가 보이면 센다(LIFE-502). */
+  held: ReadonlyMap<string, PaneUnread>
   /** 벨 켜진 worktree 경로 (영속). */
   worktrees: ReadonlySet<string>
   /** 마지막으로 본 (null 아닌) 활성 worktree — 활성화(사용자 전환) 감지용. 닫힘 사이의 null 은 건너뛴다. */
@@ -68,6 +83,7 @@ export const EMPTY_UNREAD: UnreadModel = {
   initialized: false,
   examined: new Map(),
   panes: new Map(),
+  held: new Map(),
   worktrees: new Set(),
   activeWorktree: null,
   present: new Map(),
@@ -79,8 +95,11 @@ export type Watched = { paneId: string; since: number } | null
 const FINISHED: readonly AgentStatus[] = ['idle', 'done']
 const RUNNING: readonly AgentStatus[] = ['working', 'blocked']
 
-/** 새로 센 완료 하나 — 그 상태에 들어선 시각과, 벨을 켜는 실제 전이인가(처음 보는 done 은 아니다 — M2). */
-export type Completion = { at: number; bell: boolean }
+/**
+ * 새로 센 완료 하나 — 그 상태에 들어선 시각과, 벨을 켜는 실제 전이인가(처음 보는 done 은 아니다 — M2),
+ * 기동 반짝임인가(`unknown` 에서 곧장 시작된 구간 + 사람 발화 없음 — LIFE-502. 세지 않는다).
+ */
+export type Completion = { at: number; bell: boolean; launch: boolean }
 
 /**
  * 이 관측에서 새로 센 완료들(오래된 것부터). `since` = 이 pane 을 마지막으로 살폈을 때의 상태 진입 시각 — 그보다 뒤에 들어선
@@ -90,15 +109,18 @@ export function completionsOf(input: { obs: PaneObservation; firstBatch: boolean
   const { obs, firstBatch, since } = input
   // 처음 보는 done — 첫 묶음, 이 세션에 처음 보는 pane(r2 F-E: 첫 묶음 뒤에 나타난 pane 의 옛 이력은 세지 않는다),
   // main 이 처음 본 pane. 굵기만, 벨 없음. (같은 상태를 다시 본 관측은 `ingest` 가 `since === enteredAt` 로 먼저 거른다 — r3 L-2)
-  if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' ? [{ at: obs.enteredAt, bell: false }] : []
+  if (firstBatch || since === undefined || obs.history.length === 0) return obs.status === 'done' ? [{ at: obs.enteredAt, bell: false, launch: false }] : []
   const timeline = [...obs.history].reverse().concat([{ status: obs.status, enteredAt: obs.enteredAt }])
   const found: Completion[] = []
+  // 지금 working/blocked 구간이 `unknown` 에서 곧장 시작됐나 — 구간의 첫 단계 바로 앞이 unknown 이다(이력 창 밖이면 모른다 → 아님).
+  let fromUnknown = false
   for (let i = 1; i < timeline.length; i += 1) {
     const step = timeline[i]
     const before = timeline[i - 1]
     if (step === undefined || before === undefined) continue
+    if (RUNNING.includes(step.status) && !RUNNING.includes(before.status)) fromUnknown = before.status === 'unknown'
     if (since !== undefined && step.enteredAt <= since) continue
-    if (RUNNING.includes(before.status) && FINISHED.includes(step.status)) found.push({ at: step.enteredAt, bell: true })
+    if (RUNNING.includes(before.status) && FINISHED.includes(step.status)) found.push({ at: step.enteredAt, bell: true, launch: fromUnknown && obs.prompted === false })
   }
   return found
 }
@@ -120,14 +142,28 @@ export function ingest(model: UnreadModel, input: {
 }): UnreadModel {
   const examined = new Map(model.examined)
   const panes = new Map(model.panes)
+  const held = new Map(model.held)
   const worktrees = new Set(model.worktrees)
   const firstBatch = !model.initialized
   for (const obs of input.panes) {
     const since = examined.get(obs.paneId)
-    if (since === obs.enteredAt) continue
-    const found = completionsOf({ obs, firstBatch, since })
-    examined.set(obs.paneId, obs.enteredAt)
     const watching = input.watched !== null && input.watched.paneId === obs.paneId ? input.watched.since : null
+    // 보류한 기동 반짝임 — 같은 상태에 머문 채 사람 발화가 보이면(지문이 늦게 온 기동 인자 프롬프트) 원래 시각으로 센다.
+    // 상태가 바뀌었으면 그 반짝임은 사람 턴 없이 지나간 것이다 — 버린다.
+    const pending = held.get(obs.paneId)
+    if (pending !== undefined && (obs.enteredAt !== pending.at || obs.prompted !== false)) {
+      held.delete(obs.paneId)
+      if (obs.enteredAt === pending.at && obs.prompted === true && (watching === null || pending.at < watching)) {
+        panes.set(obs.paneId, pending)
+        worktrees.add(pending.worktreePath)
+      }
+    }
+    if (since === obs.enteredAt) continue
+    const all = completionsOf({ obs, firstBatch, since })
+    examined.set(obs.paneId, obs.enteredAt)
+    const lastLaunch = all.filter((completion) => completion.launch).at(-1)
+    if (lastLaunch !== undefined && lastLaunch.at === obs.enteredAt) held.set(obs.paneId, { worktreePath: obs.worktreePath, at: lastLaunch.at })
+    const found = all.filter((completion) => !completion.launch)
     // 보기 시작한 시각과 같은 ms 의 완료는 **본 것**으로 친다(`<` — 보기 시작한 순간의 완료는 본 것, r3 L-1).
     const unseen = found.filter((completion) => watching === null || completion.at < watching)
     const last = unseen.at(-1)
@@ -149,6 +185,7 @@ export function ingest(model: UnreadModel, input: {
 
   // 사라진 pane 의 안 읽음 — 에러 레포의 worktree 에 있던 pane 은 벨과 같은 규칙으로 남긴다(r2 F-A).
   const live = new Set(input.panes.map((obs) => obs.paneId))
+  for (const paneId of [...held.keys()]) if (!live.has(paneId)) held.delete(paneId)
   for (const [paneId, entry] of panes) {
     if (live.has(paneId) || input.retainedPaneIds.has(paneId)) continue
     const root = present.get(entry.worktreePath)
@@ -175,6 +212,7 @@ export function ingest(model: UnreadModel, input: {
     initialized: model.initialized || input.panes.length > 0,
     examined,
     panes,
+    held,
     worktrees,
     activeWorktree: input.activeWorktree ?? model.activeWorktree,
     present,
@@ -215,10 +253,13 @@ export function markUnread(model: UnreadModel, worktreePath: string): UnreadMode
 
 /** 터미널에 실제 입력이 들어갔다 (198 `terminal-keydown-fit.ts`) — 그 pane 을 확인하고 그 worktree 벨을 끈다. */
 export function acknowledgeInput(model: UnreadModel, input: { paneId: string; worktreePath: string }): UnreadModel {
-  if (!model.panes.has(input.paneId) && !model.worktrees.has(input.worktreePath)) return model
+  if (!model.panes.has(input.paneId) && !model.held.has(input.paneId) && !model.worktrees.has(input.worktreePath)) return model
   const panes = new Map(model.panes)
   panes.delete(input.paneId)
+  // 보류한 기동 반짝임도 확인한 것이다 — 사용자가 그 pane 에 친 발화가 늦게 보여 반짝임을 완료로 올리지 않게(LIFE-502).
+  const held = new Map(model.held)
+  held.delete(input.paneId)
   const worktrees = new Set(model.worktrees)
   worktrees.delete(input.worktreePath)
-  return { ...model, panes, worktrees }
+  return { ...model, panes, held, worktrees }
 }

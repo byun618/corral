@@ -219,6 +219,13 @@ async function runOne({ kind, fx, workspaceId, homeTab }) {
 }
 
 async function main() {
+  // F6(r1 R1-07) — 실행한 빌드의 식별값: git HEAD·app/src 마지막 commit·렌더러 번들 파일명과 sha256.
+  const assets = path.join(APP, 'out/renderer/assets')
+  out.build = {
+    head: git(APP, 'rev-parse', 'HEAD'),
+    productCommit: git(APP, 'log', '-1', '--format=%H', '--', 'src'),
+    rendererBundles: fs.readdirSync(assets).filter((file) => file.endsWith('.js')).map((file) => ({ file, sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(assets, file))).digest('hex'), mtime: fs.statSync(path.join(assets, file)).mtime.toISOString() })),
+  }
   const fxBase = path.join(ROOT, 'fx')
   const fxDir = path.join(fxBase, 'l502fx')
   fs.mkdirSync(fxDir, { recursive: true })

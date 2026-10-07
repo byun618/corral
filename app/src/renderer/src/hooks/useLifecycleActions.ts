@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentKind, AppState, WorkspaceRow, WorktreeActionResult, WorktreeRow } from '../../../shared/types.js'
-import { PENDING_ACTIVE_MS, syncActiveWorkspace, type PendingActive } from '../active-workspace.js'
+import { pendingActiveMs, syncActiveWorkspace, type PendingActive } from '../active-workspace.js'
 import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
@@ -146,7 +146,7 @@ export function useLifecycleActions(state: AppState | null): {
    * 「닫힘」 으로 읽고 main 으로 승격하던 경합을 막는다. 판정은 `syncActiveWorkspace`(`active-workspace.ts`) 한 곳.
    */
   const pendingActiveRef = useRef<PendingActive | null>(null)
-  /** 보류 기한이 지나면 동기화를 다시 돌린다 — state push 가 더 안 와도 죽은 id 에 머물지 않게. */
+  /** 보류 기한 — 타이머가 보류를 지우고 동기화를 다시 돌린다(만료 판정은 이 타이머 하나 — fix1 F2). push 가 더 안 와도 죽은 id 에 머물지 않게. */
   const [pendingExpiry, setPendingExpiry] = useState(0)
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
@@ -162,10 +162,13 @@ export function useLifecycleActions(state: AppState | null): {
     setActiveWorkspaceIdState(workspaceId)
   }, [])
 
-  /** 사용자 동작의 활성 — 새 의도다. 앞 요청의 보류는 버린다. */
+  /**
+   * 사용자 동작의 활성 — 새 의도다. 앞 요청의 보류는 버린다. 단 보류 중인 바로 그 workspace 로의 동작(열자마자 ⌘T·
+   * 그 행 다시 클릭)은 같은 의도라 보류를 지킨다 — 지우면 도착 전 push 에 main 으로 승격했다(fix1 F1, r1 G-1).
+   */
   const setActive = useCallback((workspaceId: string | null) => {
     intentSeq.current += 1
-    pendingActiveRef.current = null
+    if (pendingActiveRef.current?.workspaceId !== workspaceId) pendingActiveRef.current = null
     assignActive(workspaceId)
   }, [assignActive])
 
@@ -175,15 +178,18 @@ export function useLifecycleActions(state: AppState | null): {
    */
   const adoptOpened = useCallback((input: { workspaceId: string; seq: number }) => {
     if (input.seq !== intentSeq.current) return
-    const known = stateRef.current?.repos.some((repo) => repo.worktrees.some((worktree) => worktree.workspace?.workspaceId === input.workspaceId)) ?? false
-    pendingActiveRef.current = known ? null : { workspaceId: input.workspaceId, deadline: Date.now() + PENDING_ACTIVE_MS }
+    const repos = stateRef.current?.repos ?? []
+    const known = repos.some((repo) => repo.worktrees.some((worktree) => worktree.workspace?.workspaceId === input.workspaceId))
+    const pending: PendingActive | null = known ? null : { workspaceId: input.workspaceId }
+    pendingActiveRef.current = pending
     assignActive(input.workspaceId)
-    if (known) return
+    if (pending === null) return
     if (pendingTimer.current !== null) clearTimeout(pendingTimer.current)
     pendingTimer.current = setTimeout(() => {
       pendingTimer.current = null
+      if (pendingActiveRef.current === pending) pendingActiveRef.current = null
       setPendingExpiry((count) => count + 1)
-    }, PENDING_ACTIVE_MS)
+    }, pendingActiveMs({ repoCount: repos.length }))
   }, [assignActive])
   useEffect(() => () => {
     if (pendingTimer.current !== null) clearTimeout(pendingTimer.current)
@@ -202,7 +208,7 @@ export function useLifecycleActions(state: AppState | null): {
       .map((worktree) => worktree.workspace)
       .filter((workspace): workspace is WorkspaceRow => workspace !== null)
     const current = lastWorkspaceRef.current
-    const sync = syncActiveWorkspace({ current, pending: pendingActiveRef.current, open: openWorkspaces, now: Date.now() })
+    const sync = syncActiveWorkspace({ current, pending: pendingActiveRef.current, open: openWorkspaces })
     pendingActiveRef.current = sync.pending
     if (sync.next !== current) assignActive(sync.next)
   }, [state, pendingExpiry, assignActive])

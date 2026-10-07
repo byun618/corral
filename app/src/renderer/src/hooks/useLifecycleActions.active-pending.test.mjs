@@ -24,6 +24,7 @@ let root
 let hook = null
 let opens
 let creates
+let rows
 function Harness({ state }) {
   hook = useLifecycleActions(state)
   return null
@@ -35,10 +36,11 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   opens = []
   creates = []
+  rows = []
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
-  Reflect.set(window, 'corral', { openWorktree: deferred(opens), createWorktree: deferred(creates) })
+  Reflect.set(window, 'corral', { openWorktree: deferred(opens), createWorktree: deferred(creates), createRow: deferred(rows) })
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -87,13 +89,13 @@ describe('보류의 가장자리 (K2)', () => {
     push(stateOf({ b: 'w2' }))
     expect(hook.activeWorkspaceId).toBe('w2')
   })
-  it('ⓑ 응답은 왔는데 끝내 state 에 안 들어옴 → 기한(10초) 뒤 focused 로, push 가 더 없어도', async () => {
+  it('ⓑ 응답은 왔는데 끝내 state 에 안 들어옴 → 기한(레포 1 = 36초) 뒤 focused 로, push 가 더 없어도', async () => {
     const state = stateOf({})
     push(state)
     act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
     await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
     push(stateOf({}))
-    act(() => vi.advanceTimersByTime(9_999))
+    act(() => vi.advanceTimersByTime(35_999))
     expect(hook.activeWorkspaceId).toBe('w9')
     act(() => vi.advanceTimersByTime(1))
     expect(hook.activeWorkspaceId).toBe('w1')
@@ -158,6 +160,55 @@ describe('보류의 가장자리 (K2)', () => {
     act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
     await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
     expect(hook.activeWorkspaceId).toBe('w9')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('보류 중 같은 workspace 로의 사용자 동작 (fix1 F1 · r1 G-1)', () => {
+  it('응답 뒤·도착 전 ⌘T(같은 id) → push 가 와도 활성 유지, 도착 뒤 그 workspace', async () => {
+    const state = stateOf({})
+    push(state)
+    act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
+    await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
+    act(() => hook.createShell()) // 대상 = 지금 활성 w9 — createRow 가 setActive(w9) 를 부른다
+    expect(rows.length).toBe(1)
+    push(stateOf({})) // 새 workspace 없는 push — r1 은 여기서 보류가 지워져 w1 로 승격했다
+    expect(hook.activeWorkspaceId).toBe('w9')
+    push(stateOf({ a: 'w9' }))
+    expect(hook.activeWorkspaceId).toBe('w9')
+  })
+  it('같은 id 로 활성화(행 클릭) 뒤에도 기한은 그대로 — 끝내 안 오면 focused 로', async () => {
+    const state = stateOf({})
+    push(state)
+    act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
+    await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
+    act(() => hook.actions.activateWorkspace('w9'))
+    push(stateOf({}))
+    expect(hook.activeWorkspaceId).toBe('w9')
+    act(() => vi.runOnlyPendingTimers())
+    expect(hook.activeWorkspaceId).toBe('w1')
+  })
+  it('다른 id 로 활성화하면 보류는 버린다 — 지금 규칙 그대로', async () => {
+    const state = stateOf({ b: 'w2' })
+    push(state)
+    act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
+    await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
+    act(() => hook.actions.activateWorkspace('w2'))
+    push(stateOf({ a: 'w9', b: 'w2' }))
+    expect(hook.activeWorkspaceId).toBe('w2')
+  })
+})
+
+describe('보류 만료는 타이머가 정한다 (fix1 F2 · r1 L4)', () => {
+  it('타이머가 벽시계 기한보다 먼저 울려도(시계가 뒤로 감) 만료한다 — 죽은 id 에 머물지 않는다', async () => {
+    const state = stateOf({})
+    push(state)
+    act(() => hook.actions.openWorktree('/r', wt(state, 'a')))
+    await act(async () => opens[0]({ ok: true, workspaceId: 'w9', rejection: null, error: null }))
+    push(stateOf({}))
+    vi.setSystemTime(Date.now() - 60_000) // 벽시계만 뒤로 — 타이머 발화 시점의 Date.now() 는 기한 전이다
+    act(() => vi.runOnlyPendingTimers())
+    expect(hook.activeWorkspaceId).toBe('w1')
     expect(vi.getTimerCount()).toBe(0)
   })
 })

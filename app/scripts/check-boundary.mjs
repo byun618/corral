@@ -134,7 +134,8 @@ const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.nam
  *   호출: 리터럴이 호출 대상 쪽이고 인자가 method 를 말한다(`['A'].includes(msg.method)`) · 리터럴이 인자이고 호출 대상이
  *     method 를 말한다(`callMethod('A')`) · 리터럴이 **직접 인자**(함수 식·배열 리터럴을 거치지 않음)이고 **형제 인자**가
  *     method 를 말한다(`assert.equal(frame.method, 'A')` · `Object.is(frame.method, 'A')`). 형제가 배열 리터럴(의존성 배열
- *     `[method]`)이면 묶지 않는다(fix4 R4-claude-01)
+ *     `[method]`)이면 묶지 않는다(fix4 R4-claude-01). 함수·객체 형제 안 method 는 보지 않는다(오탐 방지 — 콜백·옵션 객체
+ *     `on('A', (ctx) => ctx.method)` · `addMenuItem('A', { method: 'keyboard' })`). 그 꼴의 누출은 ⓔ① 사각(fix5 R5-claude-01)
  *   `switch (frame.method)` 의 `case 'A':` · 이름에 method 가 든 타입 별칭(`type HerdrMethod = 'A' | 'B'`)
  *   **반환 값**: 이름에 method 가 든 함수·메서드·getter 가 돌려준다(`get method() { return 'A' }`). 이름 없는 함수 **식**이
  *     돌려주면 그 함수 식에서 다시 올라간다(`method: (() => { return 'A' })()`). 반환이 아닌 문장(콜백 안 `track('A')`)에서는 멈춘다
@@ -175,9 +176,11 @@ function boundToMethod({ literal }) {
     if (ts.isCallExpression(parent) && parent.expression === child && parent.arguments.some(mentions)) return true
     if (ts.isCallExpression(parent) && parent.arguments.includes(child)) {
       // 리터럴이 인자 쪽이면: 호출 대상이 method 를 말하거나(`callMethod('A')`), 직접 인자이고 배열 아닌 형제 인자가 method 를 말한다
-      // (`assert.equal(frame.method, 'A')` — fix4 R4-claude-01). 콜백 안 리터럴·의존성 배열은 묶지 않는다(fix3 R3-claude-02 유지)
+      // (`assert.equal(frame.method, 'A')` — fix4 R4-claude-01). 콜백 안 리터럴·의존성 배열은 묶지 않는다(fix3 R3-claude-02 유지).
+      // 함수·객체 리터럴 형제는 안을 보지 않는다 — 콜백·옵션 객체 안 method 는 오탐이다(fix5 R5-claude-01, 그 꼴의 누출은 ⓔ① 사각)
       if (mentions(parent.expression)) return true
-      const siblings = parent.arguments.filter((arg) => arg !== child && !ts.isArrayLiteralExpression(arg))
+      const siblings = parent.arguments.filter((arg) => arg !== child && !ts.isArrayLiteralExpression(arg) &&
+        !ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg))
       if (!indirect && siblings.some(mentions)) return true
     }
   }

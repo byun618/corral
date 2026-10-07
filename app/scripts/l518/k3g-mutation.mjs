@@ -52,6 +52,11 @@ const MUTANTS = [
   { 이름: '형제 인자 규칙 제거 (fix3 판)', source: replaceOnce({ from: '      if (!indirect && siblings.some(mentions)) return true\n', to: '' }) },
   { 이름: '형제 인자 규칙의 직접 인자 조건 제거 (콜백·배열 안 리터럴도 묶음)', source: replaceOnce({ from: 'if (!indirect && siblings.some(mentions))', to: 'if (siblings.some(mentions))' }) },
   { 이름: '형제 인자 규칙의 배열 형제 제외 제거 (의존성 배열도 묶음)', source: replaceOnce({ from: 'arg !== child && !ts.isArrayLiteralExpression(arg)', to: 'arg !== child' }) },
+  // fix5 (R5-claude-01·02)
+  { 이름: '형제 인자 규칙의 함수·객체 형제 제외 제거 (fix4 판)', source: replaceOnce({ from: ' &&\n        !ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg))', to: ')' }) },
+  { 이름: '형제 인자 규칙의 화살표 함수 형제 제외만 제거', source: replaceOnce({ from: '!ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg)', to: '!ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg)' }) },
+  { 이름: '형제 인자 규칙의 객체 리터럴 형제 제외만 제거', source: replaceOnce({ from: '!ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg)', to: '!ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg)' }) },
+  { 이름: '형제 인자 규칙의 함수 식 형제 제외만 제거', source: replaceOnce({ from: '!ts.isArrowFunction(arg) && !ts.isFunctionExpression(arg) && !ts.isObjectLiteralExpression(arg)', to: '!ts.isArrowFunction(arg) && !ts.isObjectLiteralExpression(arg)' }) },
   { 이름: '이항 !== 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||', to: 'false ||' }) },
   { 이름: '이항 == 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.EqualsEqualsToken ||', to: 'false ||' }) },
   { 이름: '이항 != 제거', source: replaceOnce({ from: 'kind === ts.SyntaxKind.ExclamationEqualsToken ||', to: 'false ||' }) },

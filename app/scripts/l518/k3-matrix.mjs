@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { APP_DIR, PROBES, runProbes } from './boundary-probes.mjs'
+import { APP_DIR, PROBES, cellOk, runProbes } from './boundary-probes.mjs'
 
 const [outFile, base = 'e92e66da5887b5e09fcf18232309881263f0adee'] = process.argv.slice(2)
 if (!outFile) {
@@ -18,15 +18,15 @@ const git = (...args) => execFileSync('git', args, { cwd: APP_DIR, encoding: 'ut
 const statusBefore = git('status', '--porcelain')
 const baseChecker = git('show', `${base}:app/scripts/check-boundary.mjs`)
 const headChecker = fs.readFileSync(path.join(APP_DIR, 'scripts/check-boundary.mjs'), 'utf8')
-const before = runProbes(baseChecker)
-const after = runProbes(headChecker)
+const before = runProbes({ checkerSource: baseChecker })
+const after = runProbes({ checkerSource: headChecker })
 const statusAfter = git('status', '--porcelain')
 
 const rows = PROBES.map((probe, index) => {
   const b = before.cells[index]
   const a = after.cells[index]
-  // 기대: 양성 대조는 지금 검사기가 잡는다. 음성(expect null)은 지금 검사기가 안 잡는다.
-  const headOk = probe.expect === null ? !a.caught : a.caught
+  // 기대: 양성 대조는 지금 검사기가 잡는다. 음성(expect null)은 지금 검사기가 안 잡는다. 주석언급 기대가 있으면 그것까지.
+  const headOk = cellOk({ probe, cell: a })
   const flipped = b.caught && !a.caught
   const flipAllowed = !flipped || probe.flip !== undefined
   return { probe, b, a, headOk, flipped, flipAllowed }
@@ -55,7 +55,7 @@ const lines = [
     '```ts',
     probe.source.trimEnd(),
     '```',
-    `- 기준 토큰: ${JSON.stringify(b.tokens)} · 지금 토큰: ${JSON.stringify(a.tokens)}`,
+    `- 기준 토큰: ${JSON.stringify(b.tokens)} · 지금 토큰: ${JSON.stringify(a.tokens)} · 주석언급 기준 ${JSON.stringify(b.commentTokens)} / 지금 ${JSON.stringify(a.commentTokens)}${probe.patch ? ` · 덧댐 \`${probe.patch.file}\`: ${JSON.stringify(probe.patch.replace)}` : ''}`,
     '',
   ]),
   '## G6 — 실행 전후 git status --porcelain',

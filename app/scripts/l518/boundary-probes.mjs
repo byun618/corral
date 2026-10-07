@@ -47,6 +47,24 @@ export const PROBES = [
   { id: 'a-action-not-herdr', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a-action-not-herdr.ts`, source: send("'tab.cycle'") },
   { id: 'a-workspace-rename', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a-workspace-rename.ts`, source: send("'workspace.rename'") },
 
+  // ⓐ fix1 (R1-claude-01) — envelope 값이 리터럴 바로가 아니라 같은 식 안에서 method 와 묶인 꼴. 기준은 토큰만 봐서 잡던 꼴이다
+  { id: 'a1-nullish', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-nullish.ts`, source: "declare const x: string | undefined\nexport const probe = { method: x ?? 'tab.rename' }\n" },
+  { id: 'a1-paren', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-paren.ts`, source: "export const probe = { method: ('tab.rename') }\n" },
+  { id: 'a1-template', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-template.ts`, source: "export const probe = { method: `${'tab.rename'}` }\n" },
+  { id: 'a1-helper', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a1-helper.ts`, source: "declare function pick(m: string): string\nexport const probe = { method: pick('workspace.rename') }\n" },
+  { id: 'a1-ternary', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a1-ternary.ts`, source: "declare const c: boolean\nexport const probe = { method: c ? 'tab.cycle' : 'tab.rename' }\n" },
+  { id: 'a1-ternary-multiline', group: 'ⓐ', expect: 'R4-wire-leak', file: `${P}a1-ternary-ml.ts`, source: "declare const c: boolean\nexport const probe = {\n  id: 1,\n  method: c\n    ? 'tab.cycle'\n    : 'workspace.rename',\n}\n" },
+  { id: 'a1-concat', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-concat.ts`, source: "export const probe = { method: '' + 'tab.rename' }\n" },
+  { id: 'a1-yoda', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-yoda.ts`, source: "export const probe = (frame: { method: string }): boolean => 'tab.rename' === frame.method\n" },
+  { id: 'a1-includes', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-includes.ts`, source: "export const probe = (msg: { method: string }): boolean => ['tab.rename', 'tab.cycle'].includes(msg.method)\n" },
+  { id: 'a1-switch-case', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a1-switch.ts`, source: "export const probe = (frame: { method: string }): number => {\n  switch (frame.method) {\n    case 'tab.rename':\n      return 1\n    default:\n      return 0\n  }\n}\n" },
+  // fix1 조사(bypass-scan)에서 찾아 고친 두 꼴 — 템플릿 안 JSON 보간 · 식 몸체 화살표
+  { id: 'a1-template-json', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-template-json.ts`, source: "export const probe = JSON.parse(`{\"method\":\"${'tab.rename'}\"}`)\n" },
+  { id: 'a1-arrow-block', group: 'ⓐ', expect: 'R4-wire-leak', file: `${M}a1-arrow-block.ts`, source: "export const probe = { method: (() => {\n  return 'tab.rename'\n})() }\n" },
+  { id: 'a1-arrow-expr', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-arrow-expr.ts`, source: "export const probe = { method: (() => 'tab.rename')() }\n" },
+  // R1-claude-04 — envelope 글자 창(80자) 축소 변이를 죽인다: 문자열 안 JSON 은 AST 로 못 보고 글자로만 본다
+  { id: 'a1-json-wide', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-json-wide.ts`, source: jsonFrame(`'{"id":1,"method":${' '.repeat(40)}"tab.rename"}'`) },
+
   // ⓑ 액션 id 가 아닌 메서드 꼴 문자열 — 아무 위치에나
   { id: 'b-pane-split-const', group: 'ⓑ', expect: 'R4-wire-leak', file: `${R}b-pane-split.ts`, source: "export const probe = 'pane.split'\n" },
   { id: 'b-workspace-list-arg', group: 'ⓑ', expect: 'R4-wire-leak', file: `${S}b-workspace-list.ts`, source: "declare function request(sock: unknown, method: string): void\nexport const probe = (sock: unknown): void => request(sock, 'workspace.list')\n" },
@@ -57,12 +75,19 @@ export const PROBES = [
   { id: 'b-local-log', group: 'ⓑ', expect: 'R4-wire-leak', file: `${M}b-local-log.ts`, source: "const log = (tag: string): string => tag\nexport const probe = log('worktree.changed')\n" },
   { id: 'b-log-second-arg', group: 'ⓑ', expect: 'R4-wire-leak', file: `${M}b-log-second.ts`, source: "import { log } from './log.js'\nlog('probe.tag', { method: 'tab.create' })\n" },
   { id: 'b-renderer-log', group: 'ⓑ', expect: 'R4-wire-leak', file: `${R}b-renderer-log.ts`, source: "declare function log(tag: string): void\nlog('worktree.changed')\n" },
+  // R1-claude-04 — 로그 면제의 zone 조건·lookbehind 를 각각 죽인다
+  { id: 'b-renderer-main-log', group: 'ⓑ', expect: 'R4-wire-leak', file: `${R}b-renderer-main-log.ts`, source: "import { log } from '../../main/log.js'\nlog('worktree.changed', {})\n" },
+  { id: 'b-console-log', group: 'ⓑ', expect: 'R4-wire-leak', file: `${M}b-console-log.ts`, source: "import { log } from './log.js'\nlog('probe.tag', {})\nconsole.log('worktree.changed')\n" },
+  // R1-claude-05 — ACTIONS 안 **주석** 의 `id:` 는 어휘가 아니다. 주석에 `pane.split` 을 심고, 다른 파일의 envelope 밖 `pane.split` 이 그대로 잡히는지
+  { id: 'b-vocab-comment', group: 'ⓑ', expect: 'R4-wire-leak', file: `${R}b-vocab-comment.ts`, source: "export const probe = { kind: 'pane.split' }\n", patch: { file: 'src/shared/keybindings.ts', find: 'export const ACTIONS = [\n', replace: "export const ACTIONS = [\n  // { id: 'pane.split', group: '전역', title: 'x', defaultBinding: [], bindingVariants: [], variants: [] },\n" } },
 
   // ⓒ 따옴표 3종 · 템플릿 `${…}`
   { id: 'c-double', group: 'ⓒ', expect: 'R4-wire-leak', file: `${R}c-double.ts`, source: 'export const probe = "pane.list"\n' },
   { id: 'c-backtick', group: 'ⓒ', expect: 'R4-wire-leak', file: `${R}c-backtick.ts`, source: 'export const probe = `pane.list`\n' },
   { id: 'c-template-inner', group: 'ⓒ', expect: 'R4-wire-leak', file: `${R}c-template.ts`, source: "const f = (m: string): string => m\nexport const probe = `x ${f('workspace.list')} y`\n" },
   { id: 'c-template-envelope', group: 'ⓒ', expect: 'R4-wire-leak', file: `${R}c-template-env.ts`, source: "export const probe = `${JSON.stringify({ method: `tab.rename` })}\\n`\n" },
+  // R1-claude-03 — 닫는 따옴표 앞 `\\` 허용이 이스케이프 따옴표 속 이름을 새로 잡는다(엄격 방향 — 기준은 못 잡음)
+  { id: 'c-escaped-quote', group: 'ⓒ', expect: 'R4-wire-leak', file: `${R}c-escaped-quote.ts`, source: "export const probe = 'say \\'pane.list\\' now'\n" },
   { id: 'c-backtick-envelope', group: 'ⓒ', expect: 'R4-wire-leak', file: `${P}c-backtick-env.ts`, source: 'export const probe = { method: `tab.rename` }\n' },
 
   // ⓓ 필드·이벤트·envelope 지문, R1·R2·R3 (l351/m1-boundary.mjs 와 같은 깊이)
@@ -82,25 +107,38 @@ export const PROBES = [
   { id: 'i-preload-fake-shared-types', group: 'IPC', expect: 'IPC', mode: 'append', file: 'src/preload/index.ts', source: "\nimport type { X as BoundaryProbeX } from '../main/shared/types.js'\nexport type BoundaryProbe = BoundaryProbeX\n" },
 
   // ⓔ 음성 대조 — 원래 7파일의 꼴. 기준은 잡고 고친 쪽은 위반 0 이어야 한다
-  { id: 'e-action-table', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${S}e-action-table.ts`, source: "export const TABLE = [\n  { id: 'tab.rename', title: 'a' },\n  { id: 'workspace.delete', title: 'b' },\n  { id: 'tab.selectByIndex', title: 'c' },\n] as const\n" },
-  { id: 'e-binding-label', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-binding-label.tsx`, source: "declare function bindingLabel(id: string): string\nexport const Item = (): string => `이름 바꾸기 ${bindingLabel('tab.rename')}`\n" },
-  { id: 'e-keyed-object', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-keyed-object.ts`, source: "export const handlers: Record<string, () => void> = {\n  'workspace.rename': () => {},\n  'tab.reopenClosed': () => {},\n  'tab.cycle': () => {},\n}\n" },
-  { id: 'e-test-expect', group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-test-expect.ts`, source: "declare const expect: (v: unknown) => { toBe(x: unknown): void }\nexport const probe = (v: string): void => expect(v).toBe(\"tab.selectByIndex\")\n" },
-  { id: 'e-log-tag', group: 'ⓔ', expect: null, flip: 'ⓔ②', file: `${M}e-log-tag.ts`, source: "import { log } from './log.js'\nlog('worktree.changed', { roots: 1 })\nexport const probe = (count: number): void => log('worktree.poll_roots', { count })\n" },
+  { id: 'e-action-table', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${S}e-action-table.ts`, source: "export const TABLE = [\n  { id: 'tab.rename', title: 'a' },\n  { id: 'workspace.delete', title: 'b' },\n  { id: 'tab.selectByIndex', title: 'c' },\n] as const\n" },
+  { id: 'e-binding-label', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-binding-label.tsx`, source: "declare function bindingLabel(id: string): string\nexport const Item = (): string => `이름 바꾸기 ${bindingLabel('tab.rename')}`\n" },
+  { id: 'e-keyed-object', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-keyed-object.ts`, source: "export const handlers: Record<string, () => void> = {\n  'workspace.rename': () => {},\n  'tab.reopenClosed': () => {},\n  'tab.cycle': () => {},\n}\n" },
+  { id: 'e-test-expect', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-test-expect.ts`, source: "declare const expect: (v: unknown) => { toBe(x: unknown): void }\nexport const probe = (v: string): void => expect(v).toBe(\"tab.selectByIndex\")\n" },
+  { id: 'e-log-tag', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ②', file: `${M}e-log-tag.ts`, source: "import { log } from './log.js'\nlog('worktree.changed', { roots: 1 })\nexport const probe = (count: number): void => log('worktree.poll_roots', { count })\n" },
+
+  // fix1 — 함수 식 너머로 올라가는 판정이 테스트 이름 같은 **문장 꼴 문자열**을 method 로 읽지 않는다
+  { id: 'e-test-name-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-test-name.ts`, source: "declare function it(name: string, fn: () => void): void\ndeclare const expect: (v: unknown) => { toBe(x: unknown): void }\nit('method 를 보여 준다', () => {\n  expect('x').toBe('tab.rename')\n})\n" },
+  // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
+  { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 
   // ⓕ 행렬에 넣으라고 지정한 envelope 밖 호출 인자 — ⓔ① 에 드는 알려진 사각
-  { id: 'f-request-outside', group: 'ⓕ', expect: null, flip: 'ⓔ①', file: `${R}f-request-outside.ts`, source: "declare function request(sock: unknown, method: string): void\nexport const probe = (sock: unknown): void => request(sock, 'tab.rename')\n" },
+  { id: 'f-request-outside', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ①', file: `${R}f-request-outside.ts`, source: "declare function request(sock: unknown, method: string): void\nexport const probe = (sock: unknown): void => request(sock, 'tab.rename')\n" },
   // ⓔ② 에 드는 사각 — main 로그 태그가 herdr 메서드 목록에 없는 메서드 꼴
-  { id: 'f-log-unknown-method', group: 'ⓕ', expect: null, flip: 'ⓔ②', file: `${M}f-log-unknown.ts`, source: "import { log } from './log.js'\nlog('pane.focus_direction', {})\n" },
+  { id: 'f-log-unknown-method', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ②', file: `${M}f-log-unknown.ts`, source: "import { log } from './log.js'\nlog('pane.focus_direction', {})\n" },
 ]
 
-/** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) 를 만든다. */
+/** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */
 function makeSandbox(checkerSource) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l518-probe-'))
   fs.mkdirSync(path.join(root, 'scripts'))
   fs.writeFileSync(path.join(root, 'scripts/check-boundary.mjs'), checkerSource)
   fs.cpSync(path.join(APP_DIR, 'src'), path.join(root, 'src'), { recursive: true })
+  fs.symlinkSync(path.join(APP_DIR, 'node_modules'), path.join(root, 'node_modules'), 'dir')
   return root
+}
+
+/** 칸이 기대대로인가 — nodetest·행렬·변이가 같은 판정식을 쓴다. */
+export function cellOk({ probe, cell }) {
+  const rules = probe.expect === null ? !cell.caught && cell.exit === 0 : cell.caught && cell.exit === 1
+  const comments = probe.expectComment === undefined || JSON.stringify([...cell.commentTokens].sort()) === JSON.stringify([...probe.expectComment].sort())
+  return rules && comments
 }
 
 function runChecker(root) {
@@ -120,15 +158,21 @@ function runChecker(root) {
  * 검사기 하나로 대조 묶음 전체를 돌린다. 반환: { clean, cells: [{ id, exit, rules, tokens, caught }] }.
  * caught = 그 대조 파일이 기대 규칙으로 실렸다(음성 대조는 그 파일의 위반이 하나라도 있으면 true).
  */
-export function runProbes(checkerSource, probes = PROBES) {
+export function runProbes({ checkerSource, probes = PROBES }) {
   const root = makeSandbox(checkerSource)
   try {
     const clean = runChecker(root)
     const cells = probes.map((probe) => {
       const target = path.join(root, probe.file)
       const original = probe.mode === 'append' ? fs.readFileSync(target, 'utf8') : null
-      fs.writeFileSync(target, (original ?? '') + probe.source)
+      const patchTarget = probe.patch ? path.join(root, probe.patch.file) : null
+      const patchOriginal = patchTarget ? fs.readFileSync(patchTarget, 'utf8') : null
       try {
+        if (patchTarget) {
+          if (!patchOriginal.includes(probe.patch.find)) throw new Error(`${probe.id}: 덧댈 자리 없음 — ${probe.patch.find}`)
+          fs.writeFileSync(patchTarget, patchOriginal.replace(probe.patch.find, probe.patch.replace))
+        }
+        fs.writeFileSync(target, (original ?? '') + probe.source)
         const { exit, report } = runChecker(root)
         const mine = (report?.위반 ?? []).filter((item) => item.file === probe.file)
         // IPC 칸 키는 기준판 `shared/types 만인가` → 지금판 `src/shared 만인가` (Q1 정정).
@@ -140,11 +184,13 @@ export function runProbes(checkerSource, probes = PROBES) {
           exit,
           rules,
           tokens: mine.flatMap((item) => item.tokens ?? [item.specifier]),
+          commentTokens: (report?.주석언급?.항목 ?? []).filter((item) => item.file === probe.file).flatMap((item) => item.tokens),
           caught: probe.expect === null ? mine.length > 0 : rules.includes(probe.expect),
         }
       } finally {
         if (original === null) fs.rmSync(target, { force: true })
         else fs.writeFileSync(target, original)
+        if (patchTarget) fs.writeFileSync(patchTarget, patchOriginal)
       }
     })
     const surface = clean.report?.['IPC 표면'] ?? {}

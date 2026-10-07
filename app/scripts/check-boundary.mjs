@@ -12,6 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 
 const APP_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const SRC = path.join(APP_DIR, 'src')
@@ -54,7 +55,8 @@ if (EVENT_NAMES.length < 10) {
  * `shared/keybindings.ts` 의 `ACTIONS`, 실제 herdr 메서드는 어댑터 `request.ts` 의 `ALLOWED_METHODS`.
  */
 function derivedList({ file, block, item }) {
-  const match = block.exec(fs.readFileSync(path.join(SRC, file), 'utf8'))
+  // 주석은 어휘가 아니다 (LIFE-518 fix1 R1-claude-05) — 주석 속 `id: '…'` 한 줄이 면제 어휘를 늘리지 않게 벗기고 읽는다.
+  const match = block.exec(stripComments(fs.readFileSync(path.join(SRC, file), 'utf8')))
   return new Set([...(match?.[1] ?? '').matchAll(item)].map((found) => found[1]))
 }
 const ACTION_IDS = derivedList({ file: 'shared/keybindings.ts', block: /export const ACTIONS = \[([\s\S]*?)\n\] as const/, item: /\bid: '([^']+)'/g })
@@ -66,20 +68,87 @@ if (ACTION_IDS.size < 10 || HERDR_METHODS.size < 10) {
 }
 const MAIN_LOG = path.join(SRC, 'main/log.ts')
 
-/** 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`. */
-const ENVELOPE_BEFORE = /method\\?['"`]?\]?\s*(?::|={1,3}|!==?)\s*\\?$/i
+/**
+ * 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`
+ * · 템플릿 안 JSON 의 보간 `{"method":"${'…'}"}` (fix1).
+ */
+const ENVELOPE_BEFORE = /method\\?['"`]?\]?\s*(?::|={1,3}|!==?)\s*\\?(?:['"]?\$\{\s*)?$/i
 /** 토큰 바로 앞이 `log(` 의 첫 인자 자리인가 — `console.log(`·`x.log(` 는 아니다. */
 const LOG_FIRST_ARG_BEFORE = /(?<![\w.$])log\(\s*$/
 
+const METHOD_IDENTIFIER = /method/i
+const METHOD_WORD = /^[\w$]*method[\w$]*$/i
+/**
+ * 노드가 method 를 **이름으로** 말하는가 — 식별자(`msg.method`·`RENAME_METHOD`) 또는 이름 꼴 문자열(`msg['method']`·`"method":`).
+ * 문장 꼴 문자열(테스트 이름 `'method 를 보여 준다'`)은 이름이 아니다.
+ */
+function mentionsMethod(node) {
+  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return METHOD_IDENTIFIER.test(node.text)
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return METHOD_WORD.test(node.text)
+  return ts.forEachChild(node, mentionsMethod) === true
+}
+/** 문장·함수·블록 경계 — envelope 판정이 이 너머로 올라가지 않는다. */
+const isStatementBoundary = (node) =>
+  ts.isSourceFile(node) || ts.isBlock(node) || ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isCaseClause(node) ||
+  (node.kind >= ts.SyntaxKind.FirstStatement && node.kind <= ts.SyntaxKind.LastStatement)
+
+/** `pos` 에서 **시작하는** 문자열 리터럴 노드. 토큰이 더 큰 문자열 안(JSON 문자열)에 있으면 null. */
+function literalAt({ sourceFile, pos }) {
+  let found = null
+  const visit = (node) => {
+    if (found || pos < node.pos || pos >= node.end) return
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.getStart(sourceFile) === pos) found = node
+    else ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return found
+}
+
+/**
+ * LIFE-518 fix1 (R1-claude-01) — 리터럴이 **같은 식 안에서 `method` 자리와 묶인 값**인가.
+ * 리터럴에서 부모로 올라가며(문장 경계에서 멈춤) 다음 중 하나면 envelope 이다:
+ *   이름에 method 가 든 속성·변수의 값(`method: x ?? 'A'` · `method: pick('A')` · `method: c ? 'A' : 'B'` · `RENAME_METHOD = 'A'`)
+ *   이항식의 다른 쪽이 method 를 말한다(`'A' === frame.method` · `msg.method = 'A'`)
+ *   호출의 다른 인자가 method 를 말한다(`['A', 'B'].includes(msg.method)`)
+ *   `switch (frame.method)` 의 `case 'A':`
+ */
+function boundToMethod({ sourceFile, literal }) {
+  const mentions = mentionsMethod
+  let child = literal
+  for (let parent = literal.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isCaseClause(parent) && parent.expression === child) return mentions(parent.parent.parent.expression)
+    if (isStatementBoundary(parent)) {
+      // 함수 **식**(화살표·function 식) 안이면 그 함수 식에서 다시 올라간다 — `method: (() => { return 'A' })()` 도 같은 식이다.
+      // 함수 선언·메서드·클래스·파일 최상위 문장에서는 멈춘다.
+      let owner = parent
+      while (owner && !ts.isSourceFile(owner) && !ts.isFunctionLike(owner) && !ts.isClassLike(owner)) owner = owner.parent
+      if (!owner || !(ts.isArrowFunction(owner) || ts.isFunctionExpression(owner))) return false
+      child = owner
+      parent = owner
+      continue
+    }
+    if ((ts.isPropertyAssignment(parent) || ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent)) && parent.initializer === child) {
+      if (mentions(parent.name)) return true
+    }
+    if (ts.isBinaryExpression(parent) && mentions(parent.left === child ? parent.right : parent.left)) return true
+    if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg !== child && mentions(arg))) return true
+  }
+  return false
+}
+
 /**
  * 메서드 지문에 걸린 토큰을 위반에서 빼는 두 경우(01-criteria K3ⓔ 의 오탐 꼴 정의 그대로). 그 밖은 null(위반).
- *   ① 액션 id 어휘의 토큰이 envelope 자리 밖에 있다 — 액션 표·`bindingLabel('tab.rename')`·액션 id 키 객체·테스트 기대값
+ *   ① 액션 id 어휘의 토큰이 envelope 자리 밖에 있다 — 액션 표·`bindingLabel('tab.rename')`·액션 id 키 객체·테스트 기대값.
+ *      envelope 자리 = 바로 앞이 `method:` 류(문자열 안 JSON 포함 — 글자로 본다) **또는** 같은 식 안에서 method 와 묶인 값(AST)
  *   ② main 의 `log()`(`main/log.ts` 를 import 한 파일) 첫 인자 태그이고, 실제 herdr 메서드 이름이 아니다
  * 뺀 토큰은 결과의 `면제` 칸에 싣는다 — 숨기지 않는다.
  */
-function methodExemption({ source, index, name, zone, importsMainLog }) {
+function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
   const before = source.slice(Math.max(0, index - 80), index)
-  if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) return 'action-id'
+  if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
+    const literal = literalAt({ sourceFile: sourceFile(), pos: index })
+    if (literal === null || !boundToMethod({ sourceFile: sourceFile(), literal })) return 'action-id'
+  }
   if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
   return null
 }
@@ -252,11 +321,14 @@ for (const file of files) {
   const exempt = new Set()
   if (!isAdapter) {
     const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
+    // 주석을 벗긴 원문을 파싱한다 — 토큰 위치(index)가 그 원문 기준이다. 액션 id 토큰이 있는 파일만 실제로 파싱한다.
+    let parsed = null
+    const sourceFile = () => (parsed ??= ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS))
     for (const { kind, pattern } of WIRE_FINGERPRINTS) {
       for (const match of source.matchAll(pattern)) {
         codeTokens.add(match[0])
         const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
-        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog }) : null
+        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile }) : null
         if (reason === null) wire.push({ kind, token: match[0] })
         else exempt.add(`${reason}\t${match[0]}`)
       }

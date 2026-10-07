@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
 import { localCall, request, serveSocket } from './transport.js'
-import type { RpcRequest } from './contracts.js'
+import type { RpcRequest, RpcResponse } from './contracts.js'
 
 // LIFE-519: bind happens synchronously inside listen(), so lstat right after it returns sees the mode the
 // socket was created with — the mode a polling client could meet before the runtime finishes starting.
@@ -15,7 +15,7 @@ function fixture() {
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   return { dir, endpoint: path.join(dir, 'rpc.sock') }
 }
-const handle = async (req: RpcRequest) => ({ id: req.id, ok: true, result: null, _meta: { runtimeId: 'x', outcome: 'completed' as const } })
+const handle = async (req: RpcRequest): Promise<RpcResponse> => ({ id: req.id, ok: true, result: null, _meta: { runtimeId: 'x', outcome: 'completed' } })
 function looseUmask() {
   const prior = process.umask(0o022)
   cleanups.push(() => { process.umask(prior) })

@@ -43,7 +43,7 @@ import { toast } from 'sonner'
 import { StatusBar } from './components/StatusBar.js'
 import { kindLabel, TerminalChrome, type PaneStripItem } from './components/TerminalChrome.js'
 import { elapsedLabel } from './session-activity.js'
-import { worktreeDisplayName } from './worktree-name.js'
+import { paletteWorktreeName, worktreeDisplayName } from './worktree-name.js'
 import './design-tokens.css'
 import { useCellMetrics } from './hooks/useCellMetrics.js'
 import { useGroupLayout } from './hooks/useGroupLayout.js'
@@ -1443,7 +1443,7 @@ export function App(): React.JSX.Element {
     paletteEntries.push({ id: `repo.select:${repo.root}`, title: `레포 선택 · ${repo.root.split('/').at(-1)}`, detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => { if (primary) lifecycle.actions.openWorktree(repo.root, primary) } })
     paletteEntries.push({ id: `worktree.create:${repo.root}`, title: '새 worktree 만들기', detail: repo.root, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openCreateWorktree(repo.root) })
     for (const worktree of repo.worktrees) {
-      paletteEntries.push({ id: `worktree.open:${worktree.path}`, title: `${worktree.workspace ? 'worktree 전환' : 'worktree 열기'} · ${worktree.branch ?? worktreeDisplayName(worktree)}`, detail: worktree.path, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openWorktree(repo.root, worktree) })
+      paletteEntries.push({ id: `worktree.open:${worktree.path}`, title: `${worktree.workspace ? 'worktree 전환' : 'worktree 열기'} · ${paletteWorktreeName(worktree)}`, detail: worktree.path, disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => lifecycle.actions.openWorktree(repo.root, worktree) })
       for (const tab of worktree.workspace?.tabs ?? []) for (const pane of tab.panes) paletteEntries.push({ id: `pane.switch:${pane.paneId}`, title: sessionTitle({ tab, tabCount: worktree.workspace!.tabs.length, ordinal: tabOrdinals.ordinalFor({ tabId: tab.tabId, groupId: tab.workspaceId }), home: state.home, selectedPaneId: pane.paneId }), detail: `${worktree.path} · ${tab.tabId} · ${pane.paneId} · ${pane.agent ?? 'shell'}`, keywords: 'terminal tab pane switch', disabled: !connected ? '연결된 세션이 없습니다' : undefined, run: () => {
         const alive = stateRef.current?.repos.some(r => r.worktrees.some(w => w.workspace?.tabs.some(t => t.panes.some(p => p.paneId === pane.paneId))))
         if (!alive) { notify('대상 pane이 사라졌습니다'); return }
@@ -1578,7 +1578,7 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         inert={paletteOpen}
-        activeWorktreeLabel={activeWorktree?.branch ?? activeWorktree?.path ?? null}
+        activeWorktreeLabel={activeWorktree === undefined ? null : (activeWorktree.branch ?? worktreeDisplayName(activeWorktree))}
         dirtyTotal={dirtyTotal}
         aheadTotal={aheadTotal}
         behindTotal={behindTotal}

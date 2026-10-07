@@ -9,6 +9,7 @@
 // 게 오히려 정보 손실이라는 판단). 2줄은 그대로 풀네임이라 지금은 1·2줄이 같은 문자열이지만,
 // `WorktreeBlock` 의 H-2 규칙(2줄은 1줄과 같아도 그린다)이 이미 그 중복을 허용한다.
 import type { WorktreeRow } from '../../shared/types.js'
+import { worktreeIdentity } from './worktree-identity.js'
 
 /**
  * 1줄에 실제로 그려지는 문자열 — 레지스트리 표시 이름(LIFE-478, CLI `worktree set --display-name` 과 같은 칸) → 없으면 브랜치 풀네임.
@@ -25,6 +26,16 @@ export function worktreeDisplayName(worktree: Pick<WorktreeRow, 'displayName' | 
   if (named != null && named !== '') return named
   if (worktree.repoName && worktree.repoName.trim() !== '') return worktree.repoName
   return worktree.path.split('/').filter((part) => part !== '').at(-1) ?? worktree.path
+}
+
+/**
+ * 팔레트 항목의 워크트리 이름 — 브랜치 → 없으면 카드 제목. detached 는 카드처럼 배지가 없으니 **제목 뒤에 짧은 HEAD** 를 붙여
+ * 같은 레포의 detached 끼리 구별한다(fix1 F3, r1 L3 — 제목이 모두 레포 이름이라 `det-repo` ×n 이었다).
+ */
+export function paletteWorktreeName(worktree: Pick<WorktreeRow, 'displayName' | 'branch' | 'head' | 'repoName' | 'path'>): string {
+  const identity = worktreeIdentity(worktree)
+  if (identity?.kind === 'detached') return `${worktreeDisplayName(worktree)} @ ${identity.shortHead}`
+  return worktree.branch ?? worktreeDisplayName(worktree)
 }
 
 /**

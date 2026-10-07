@@ -187,7 +187,7 @@ async function main() {
   await until(() => cdp.evaluate(() => document.querySelector('[data-worktree-meta-dialog]') !== null), 'meta dialog', 5_000, 50).catch(() => null)
   result.steps.metaDialog = await cdp.evaluate(() => {
     const el = document.querySelector('[data-worktree-meta-dialog]')
-    return el === null ? null : { placeholder: el.querySelector('[data-meta-display-name]')?.getAttribute('placeholder') ?? null, hasDetachedText: el.innerHTML.includes('(detached)'), text: el.textContent }
+    return el === null ? null : { placeholder: el.querySelector('[data-meta-display-name]')?.getAttribute('placeholder') ?? null, hint: el.querySelector('.field-hint')?.textContent ?? null, hasDetachedText: el.innerHTML.includes('(detached)'), text: el.textContent }
   })
   await escape(cdp)
 
@@ -208,6 +208,23 @@ async function main() {
   result.steps.shots.push(await shot(cdp, 'k6-compact-sidebar', sidebarRect))
   await optionsDo(cdp, ['[data-submenu-trigger="card-layout"]', '[data-options-radio="card-layout-detailed"]'])
   result.steps.detailedAgain = (await dumpCards(cdp)).map((card) => ({ path: card.path, layout: card.layout }))
+  // fix1 F3 (r1 L2·G-5) — 상태바: detached 워크트리(da)를 카드 클릭으로 열어 활성 → 상태바 라벨(절대경로·`(detached)` 가 아니어야).
+  await clickAt(cdp, await centerOf(cdp, `[data-worktree="${wt('da')}"] [data-worktree-title]`))
+  const statusText = await until(async () => {
+    const text = await cdp.evaluate(() => document.querySelector('[data-statusbar] .statusbar-repo')?.textContent ?? null)
+    return text !== null && text !== 'corral' ? text : null
+  }, 'statusbar label', 20_000, 200).catch(() => null)
+  result.steps.statusbar = {
+    text: statusText,
+    activeMark: await cdp.evaluate(() => document.querySelector('[data-worktree-card-active="primary"]')?.closest('[data-worktree]')?.getAttribute('data-worktree') ?? null),
+    hasDetachedText: statusText?.includes('(detached)') ?? null,
+    hasAbsolutePath: statusText?.includes(fixtures) ?? null,
+  }
+  const statusRect = await cdp.evaluate(() => {
+    const r = document.querySelector('[data-statusbar]')?.getBoundingClientRect()
+    return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : null
+  })
+  if (statusRect !== null) result.steps.shots.push(await shot(cdp, 'k6-statusbar-da', statusRect))
   result.expectedRepoName = repo?.name ?? null
 }
 

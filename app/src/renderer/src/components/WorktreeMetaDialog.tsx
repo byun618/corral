@@ -98,7 +98,7 @@ export function WorktreeMetaDialog({
                 }
               }}
             />
-            <span className="field-hint">사이드바에 보이는 이름만 바뀝니다 — 디스크의 폴더는 그대로입니다. 비우면 브랜치 이름을 씁니다.</span>
+            <span className="field-hint">사이드바에 보이는 이름만 바뀝니다 — 디스크의 폴더는 그대로입니다. 비우면 {worktree.branch === null ? '레포 이름' : '브랜치 이름'}을 씁니다.</span>
           </label>
           <label className="field">
             <span className="field-label">코멘트</span>

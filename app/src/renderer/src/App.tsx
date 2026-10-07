@@ -62,7 +62,7 @@ import { useUnread } from './hooks/useUnread.js'
 import { PaneLayout, type PaneSeat } from './components/PaneLayout.js'
 import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
-import { keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
+import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
@@ -286,9 +286,13 @@ export function App(): React.JSX.Element {
       }
     }
     tabOrdinals.keepOnly({ tabIds: live, groupIds: shown })
-    // LIFE-495 K4ⓒ — 닫힌 탭의 핀·색도 같은 규칙으로 지운다(보이는 워크스페이스 안의 죽은 탭만).
+    // LIFE-507 — herdr 세션 전체에 없는 탭(닫힌 워크스페이스 포함)의 번호도 푼다. 링크가 live 가 아니면(null) 모르는 것이라 손대지 않는다.
+    const herdrTabIds = state.herdrTabIds
+    if (herdrTabIds !== null) tabOrdinals.keepHerdrTabs(herdrTabIds)
+    // LIFE-495 K4ⓒ — 닫힌 탭의 핀·색도 같은 규칙으로 지운다(보이는 워크스페이스 안의 죽은 탭만). LIFE-507 — herdr 전체에 없는 탭도.
     setTabMarks((marks) => {
-      const next = keepLiveTabMarks({ marks, liveTabIds: live, shownWorkspaceIds: shown })
+      const shownPruned = keepLiveTabMarks({ marks, liveTabIds: live, shownWorkspaceIds: shown })
+      const next = herdrTabIds === null ? shownPruned : keepHerdrTabMarks({ marks: shownPruned, herdrTabIds })
       return next.length === marks.length ? marks : next
     })
     // 배정이 **실제로 바뀐 때만** 저장한다 (C13) — 이 effect 는 상태 갱신마다 돌고,
@@ -405,6 +409,7 @@ export function App(): React.JSX.Element {
     ready: ordinalsReady,
     stored: storedLayouts,
     pinned: pinnedTabs,
+    herdrTabIds: state?.herdrTabIds ?? null,
   })
 
   const tabById = useCallback((tabId: string | null) => activeWorkspaceRow?.tabs.find((tab) => tab.tabId === tabId) ?? null, [activeWorkspaceRow])
@@ -880,10 +885,10 @@ export function App(): React.JSX.Element {
     setTabMarks((marks) => setTabPinned({ marks, tabId: tab.tabId, workspaceId: tab.workspaceId, pinned: !pinnedTabIds(marks).has(tab.tabId) }))
 
   /** 활성 영역 안 탭 이동(⌘⇧[ ]·⌘⌥[ ]·⌃PgUp/Dn·⌃1–9) — 활성 영역의 시각 순서로 고르고 탭 클릭과 같은 길로 간다. */
-  const selectTabInActiveGroup = (pick: (tabOrder: readonly string[], activeTabId: string | null) => string | null): void => {
+  const selectTabInActiveGroup = (pick: (input: { tabOrder: readonly string[]; activeTabId: string | null }) => string | null): void => {
     const { activeGroupId, activeTabId, activeTabOrder } = layoutRef.current
     if (activeGroupId === null) return
-    const tab = tabById(pick(activeTabOrder, activeTabId))
+    const tab = tabById(pick({ tabOrder: activeTabOrder, activeTabId }))
     if (tab === null || tab.tabId === activeTabId) return
     activateTab({ groupId: activeGroupId, tab })
   }
@@ -1039,8 +1044,8 @@ export function App(): React.JSX.Element {
       const tabId = layoutRef.current.activeTabId
       if (tabId !== null) requestRename(tabId)
     },
-    'tab.cycle': (variant) => selectTabInActiveGroup((tabOrder, activeTabId) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
-    'tab.selectByIndex': (variant) => selectTabInActiveGroup((tabOrder) => tabAtIndex({ tabOrder, index: variant })),
+    'tab.cycle': (variant) => selectTabInActiveGroup(({ tabOrder, activeTabId }) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
+    'tab.selectByIndex': (variant) => selectTabInActiveGroup(({ tabOrder }) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {

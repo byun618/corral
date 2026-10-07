@@ -68,9 +68,10 @@ const PUNCTUATION_CODES: Record<string, string> = {
 export function bindingFromEvent(event: KeyInput): string | null {
   if (event.isComposing || ['Meta', 'Control', 'Alt', 'Shift', 'Dead', 'Process', 'Unidentified'].includes(event.key)) return null
   let key = event.key === ' ' ? 'Space' : event.key
-  if (event.code && /^(Key[A-Z]|Digit[0-9])$/.test(event.code)) key = event.code.replace(/^(Key|Digit)/, '')
   // LIFE-495 U1 — 문장부호 키도 물리 위치로 읽는다. ⇧[ 는 key 가 `{`, macOS ⌥[ 는 `“` 로 와서 글자로는 바인딩이 안 된다.
-  else if (event.code !== undefined && PUNCTUATION_CODES[event.code] !== undefined) key = PUNCTUATION_CODES[event.code]!
+  const punctuation = event.code === undefined ? undefined : PUNCTUATION_CODES[event.code]
+  if (event.code && /^(Key[A-Z]|Digit[0-9])$/.test(event.code)) key = event.code.replace(/^(Key|Digit)/, '')
+  else if (punctuation !== undefined) key = punctuation
   return normalizeBinding([...event.metaKey ? ['Mod'] : [], ...event.ctrlKey ? ['Control'] : [], ...event.altKey ? ['Alt'] : [], ...event.shiftKey ? ['Shift'] : [], key].join('+'))
 }
 /**
@@ -93,8 +94,8 @@ export function migrateLegacyOverrides(value: object): { value: Record<string, u
   const dropped: { id: ActionId; binding: string }[] = []
   for (const legacy of LEGACY_DEFAULTS) {
     const raw: unknown = next[legacy.id]
-    const action = ACTIONS.find((row) => row.id === legacy.id)!
-    if (!Array.isArray(raw) || raw.length !== legacy.defaultBinding.length || raw.length === action.defaultBinding.length) continue
+    const action = ACTIONS.find((row) => row.id === legacy.id)
+    if (action === undefined || !Array.isArray(raw) || raw.length !== legacy.defaultBinding.length || raw.length === action.defaultBinding.length) continue
     const normalized = raw.map((binding) => (typeof binding === 'string' ? normalizeBinding(binding) : null))
     if (normalized.some((binding) => binding === null)) continue
     const edited = normalized.filter((binding, index): binding is string => binding !== null && binding !== legacy.defaultBinding[index])
@@ -131,7 +132,10 @@ function claimedByOtherOverrides(input: { id: ActionId; overrides: Keybindings }
 export function bindingsFor(id: ActionId, overrides: Keybindings): readonly (string | null)[] {
   const own = overrides[id]
   if (own !== undefined) return own
-  const defaults = ACTIONS.find((action) => action.id === id)!.defaultBinding
+  const action = ACTIONS.find((row) => row.id === id)
+  // 목록에 없는 id 는 조합이 없다(ActionId 는 목록에서 온 이름이라 실제로는 오지 않는다 — LIFE-506 비단언 정리).
+  if (action === undefined) return []
+  const defaults = action.defaultBinding
   if (!YIELDING_DEFAULTS.includes(id)) return defaults
   const claimed = claimedByOtherOverrides({ id, overrides })
   return defaults.map((binding) => (claimed.has(binding) ? null : binding))
@@ -202,8 +206,8 @@ export function validateOverrides(input: unknown, discardInvalid = false): Keybi
   // 그냥 버리면 저장이 조용히 무시된다. 남겨 두면 아래 충돌 검사가 잡는다(저장 = 오류 문구, 읽기 = 나중 액션을 버림).
   for (const id of YIELDING_DEFAULTS) {
     const raw: unknown = Reflect.get(value, id)
-    const action = ACTIONS.find((row) => row.id === id)!
-    if (result[id] !== undefined || !Array.isArray(raw) || raw.length !== action.defaultBinding.length) continue
+    const action = ACTIONS.find((row) => row.id === id)
+    if (action === undefined || result[id] !== undefined || !Array.isArray(raw) || raw.length !== action.defaultBinding.length) continue
     const normalized = raw.map((binding) => (typeof binding === 'string' ? normalizeBinding(binding) : null))
     if (normalized.some((binding) => binding === null)) continue
     const claimed = claimedByOtherOverrides({ id, overrides: result })

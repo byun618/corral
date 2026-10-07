@@ -24,7 +24,7 @@ afterEach(() => {
 })
 
 function Harness(props: { worktreePath: string; liveTabIds: string[]; pinned: string[] }): null {
-  api = useGroupLayout({ worktreePath: props.worktreePath, liveTabIds: props.liveTabIds, ready: true, stored: [], pinned: new Set(props.pinned) })
+  api = useGroupLayout({ worktreePath: props.worktreePath, liveTabIds: props.liveTabIds, ready: true, stored: [], pinned: new Set(props.pinned), herdrTabIds: null })
   return null
 }
 const show = (props: { worktreePath: string; liveTabIds: string[]; pinned: string[] }): void => act(() => root.render(createElement(Harness, props)))

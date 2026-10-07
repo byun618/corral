@@ -35,7 +35,7 @@ async function mount(overrides = {}) {
     revision: 1, sessions: [], sessionsError: null, selectedSession: null, sessionNote: null, link: { phase: 'stopped' }, backend: { kind: 'ok' },
     registry: { file: path.join(folder, 'registry'), roots: [], lastError: null }, registryGeneration: 0, repos: [],
     terminal: { paneId: null, phase: 'idle', cols: null, rows: null, lastError: null, mouseReporting: false }, terminalGroups: [], integrations: [],
-    retainedAgents: [], diagnostics: false, home: folder, orchestrationLineage: { state: 'ready', entries: [] },
+    retainedAgents: [], diagnostics: false, home: folder, orchestrationLineage: { state: 'ready', entries: [] }, herdrTabIds: null,
   }
   const calls = { setUiPrefs: [], saved: [] }
   const api = {

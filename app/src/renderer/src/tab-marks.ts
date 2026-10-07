@@ -2,8 +2,11 @@
 //
 // **왜 ui-prefs 인가** (00-analysis F13): 탭 이름은 herdr label 이지만 거기 다른 값을 싣는 것은 G5 재발이다(`userLabel` 이 이름으로
 // 읽는다). 순서·배치(`groupLayouts`)·폴백 번호(`tabOrdinals`)와 같은 자리다. 키도 `tabOrdinals` 와 같이 `{tabId, workspaceId}` 다.
-// **한계**: herdr tab id 는 herdr 서버가 재기동하면 다시 매겨진다 — 그때는 배치와 같이 핀·색도 잃는다(옛 칸이 새 탭과 우연히 같은
-// id 면 그 탭에 붙을 수 있다 — 배치·폴백 번호와 같은 한계, RESULT 에 적는다). corral 만 재기동하면 그대로다.
+// **herdr 재기동** (LIFE-507 정정): herdr 0.9.0 은 재기동에도 살아남은 탭의 id 를 **그대로** 둔다(`w<ws>:t<number>` — session.json 이 번호를
+// 저장한다, 00-analysis F1) — 핀·색은 남는다. 대신 **닫은 워크스페이스의 id 를 재기동 뒤 새 워크스페이스에 다시 쓴다**(F2) — 닫힌 워크스페이스의
+// 칸이 남아 있으면 새 탭에 잘못 붙는다. 그래서 herdr 세션 전체의 산 탭 목록(`AppState.herdrTabIds`)에 없는 칸은 지운다(`keepHerdrTabMarks`).
+// 공식 계약은 없다(c09) — id 가 바뀌는 판이 오면 잘못 붙는 대신 잃는다. 남는 구멍: corral 이 꺼진 동안 닫힘 + herdr 재기동 + id 재사용이
+// 모두 일어나면 corral 이 가진 정보로는 가릴 수 없다(RESULT K1ⓒ). corral 만 재기동하면 그대로다.
 //
 // 여기 있는 함수는 전부 순수하다 — 배열을 새로 만들어 돌려준다.
 
@@ -78,6 +81,17 @@ export function keepLiveTabMarks(input: { marks: readonly TabMark[]; liveTabIds:
   const shown = new Set(input.shownWorkspaceIds)
   const next = marks.filter((mark) => !shown.has(mark.workspaceId) || live.has(mark.tabId))
   return next.length === marks.length ? [...marks] : next
+}
+
+/**
+ * herdr 에 이제 없는 탭의 칸을 지운다 (LIFE-507) — `herdrTabIds` 는 herdr 세션 **전체**의 산 탭이다(`AppState.herdrTabIds`, 링크 live 일 때만 온다).
+ * `keepLiveTabMarks` 와 달리 보이는 워크스페이스로 좁히지 않는다: 닫힌 워크스페이스는 다시 보이지 않으므로 그 칸은 그 규칙으로는 영영 안 지워지고,
+ * herdr 재기동 뒤 같은 id 를 받은 새 워크스페이스의 새 탭에 붙는다(00-analysis F2). 근거가 herdr 의 전체 목록이라 「덜 온 상태」 에 지우지 않는다.
+ */
+export function keepHerdrTabMarks(input: { marks: readonly TabMark[]; herdrTabIds: readonly string[] }): TabMark[] {
+  const live = new Set(input.herdrTabIds)
+  const next = input.marks.filter((mark) => live.has(mark.tabId))
+  return next.length === input.marks.length ? [...input.marks] : next
 }
 
 export function markOf(input: { marks: readonly TabMark[]; tabId: string; workspaceId: string }): TabMark | null {

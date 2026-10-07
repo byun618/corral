@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   closeGroup,
+  dropDeadTabs,
   groupOfTab,
   listGroups,
   mergeTabIntoGroup,
@@ -275,5 +276,20 @@ describe('영속 읽기', () => {
       },
     ])
     expect(rows[0]?.layout.root).toMatchObject({ ratio: 0.85 })
+  })
+})
+
+describe('dropDeadTabs — herdr 에 없는 탭을 저장 배치에서 걷는다 (LIFE-507 K1ⓔ)', () => {
+  const split = (): GroupLayout => splitGroup({ layout: base(), groupId: 'g1', tabId: 't2', direction: 'row', newGroupId: 'g2' })
+  it('모든 탭이 herdr 에 없으면 null — 그 worktree 배치를 버린다(재기동 뒤 같은 id 의 새 탭이 옛 영역에 앉지 않게)', () => {
+    expect(dropDeadTabs({ layout: split(), herdrTabIds: new Set(['w9:t1']) })).toBeNull()
+  })
+  it('다 살아 있으면 같은 객체(저장을 다시 안 쓴다)', () => {
+    const layout = split()
+    expect(dropDeadTabs({ layout, herdrTabIds: new Set(['t1', 't2', 't3', 'x']) })).toBe(layout)
+  })
+  it('일부만 죽었으면 그 탭만 걷고 빈 영역은 접는다 — 배치에 없던 산 탭을 끌어들이지 않는다', () => {
+    const next = dropDeadTabs({ layout: split(), herdrTabIds: new Set(['t1', 't3', 'other-worktree-tab']) })
+    expect(next === null ? null : listGroups(next.root).map((group) => group.tabOrder)).toEqual([['t1', 't3']])
   })
 })

@@ -895,6 +895,12 @@ export type AppState = {
    * 서브에이전트 계보(LIFE-462)와 섞지 않으려고 이름에 orchestration 을 박는다.
    */
   orchestrationLineage: OrchestrationLineage
+  /**
+   * herdr 세션의 **모든** 산 탭 id (LIFE-507) — 링크가 live 일 때만, 아니면 null(「지금은 모른다」 — 빈 배열과 구분한다). 등록 레포 밖 워크스페이스의 탭도 든다.
+   * 화면 영속 자료(핀·색 `tabMarks` · 폴백 번호 `tabOrdinals` · 영역 배치 `groupLayouts`)에서 **herdr 에 이제 없는 탭**의 칸을 지우는 근거다 —
+   * herdr 0.9.0 은 닫힌 워크스페이스의 id 를 재기동 뒤 새 워크스페이스에 다시 쓰므로(00-analysis F2) 남겨 둔 옛 칸이 새 탭에 붙는다.
+   */
+  herdrTabIds: string[] | null
 }
 
 /**

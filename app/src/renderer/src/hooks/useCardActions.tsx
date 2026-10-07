@@ -44,6 +44,18 @@ function useAltHeld(): boolean {
   return held
 }
 
+/**
+ * 삭제 미리보기 — IPC 자체가 reject 하면(LIFE-524 — transport 오류) main 의 읽기 실패와 같은 `{ ok: false }` 로 바꾼다.
+ * 창은 「읽는 중」 에 멈추지 않고 읽기 실패로 서고(닫고 다시 고를 수 있다), unhandled rejection 도 없다.
+ */
+function readDeletePreview(path: string): Promise<WorktreeDeletePreview> {
+  return window.corral.previewWorktreeDelete({ path }).catch((error: unknown) => ({
+    ok: false,
+    code: 'ipc_failed',
+    error: error instanceof Error ? error.message : String(error),
+  }))
+}
+
 function findRow(state: ReposState | null, path: string): { repo: RepoRow; worktree: WorktreeRow } | null {
   for (const repo of state?.repos ?? []) for (const worktree of repo.worktrees) if (worktree.path === path) return { repo, worktree }
   return null
@@ -101,7 +113,7 @@ export function useCardActions(input: {
     // non-force 로 지운다. 강제·막힘·읽기 실패면 지금 창을 띄운다 — dirty·live 세션은 설정과 무관하게 확인을 지난다.
     if (getSettings().skipDeleteWorktreeConfirm) {
       skipPreviewing.current.add(target.path)
-      void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
+      void readDeletePreview(worktree.path).then((preview) => {
         skipPreviewing.current.delete(target.path)
         if (preview.ok && deleteDecision(preview).kind === 'delete') {
           runDeleteRef.current?.({ target, force: false, saved: null })
@@ -112,7 +124,7 @@ export function useCardActions(input: {
       return
     }
     setDeleteTarget({ ...target, preview: null })
-    void window.corral.previewWorktreeDelete({ path: worktree.path }).then((preview) => {
+    void readDeletePreview(worktree.path).then((preview) => {
       setDeleteTarget((current) => (current?.path === target.path ? { ...target, preview } : current))
     })
   }, [])

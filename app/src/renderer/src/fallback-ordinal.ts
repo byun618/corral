@@ -49,6 +49,12 @@ export type OrdinalBook = {
    * 날아간다** — C13 이 화면에서 깨졌던 자리다(raw/claude/r8-ordinal-wipe.md).
    */
   keepOnly: (input: { tabIds: readonly string[]; groupIds: readonly string[] }) => void
+  /**
+   * herdr 에 이제 없는 탭의 번호를 푼다 (LIFE-507) — `tabIds` 는 herdr 세션 **전체**의 산 탭(`AppState.herdrTabIds`, 링크 live 일 때만).
+   * `keepOnly` 의 「보이는 워크스페이스만」 은 덜 온 상태를 막는 가드인데, 닫힌 워크스페이스의 칸은 그 가드 때문에 영영 남아 herdr 재기동 뒤
+   * 같은 id 를 받은 새 탭이 옛 번호를 집는다. herdr 의 전체 목록은 덜 온 상태가 아니라서 여기서는 좁히지 않는다.
+   */
+  keepHerdrTabs: (tabIds: readonly string[]) => void
   /** 저장된 배정표를 싣는다 (C13). **부팅 때 한 번**, 아무 탭도 그리기 전에 부른다. */
   hydrate: (rows: readonly { tabId: string; groupId: string; ordinal: number }[]) => void
   /** 지금 배정표 (검사·계측용). */
@@ -93,6 +99,10 @@ export function createOrdinalBook(): OrdinalBook {
         if (!shown.has(entry.groupId)) continue
         if (!live.has(tabId)) book.delete(tabId)
       }
+    },
+    keepHerdrTabs: (tabIds) => {
+      const live = new Set(tabIds)
+      for (const tabId of [...book.keys()]) if (!live.has(tabId)) book.delete(tabId)
     },
     entries: () =>
       [...book.entries()].map(([tabId, entry]) => ({ tabId, groupId: entry.groupId, ordinal: entry.ordinal })),

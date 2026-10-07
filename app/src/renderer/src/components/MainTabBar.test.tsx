@@ -33,7 +33,7 @@ let host: HTMLDivElement
 let root: Root
 const spies = {
   close: vi.fn(), select: vi.fn(), createShell: vi.fn(), launch: vi.fn(), activateTab: vi.fn(), activate: vi.fn(),
-  requestRename: vi.fn(), togglePin: vi.fn(), closeScope: vi.fn(), setColor: vi.fn(), openAgentSettings: vi.fn(),
+  requestRename: vi.fn(), togglePin: vi.fn(), closeScope: vi.fn(), setColor: vi.fn(), openAgentSettings: vi.fn(), dragStart: vi.fn(),
 }
 function mount(input: {
   tabs: TabRow[]
@@ -54,7 +54,7 @@ function mount(input: {
       onActivate: spies.activate, onSelectTab: spies.select, onCreateShell: spies.createShell, onCloseTab: spies.close, onRenameTab: noop, onClearTabName: noop,
       onSplitPane: noop, onSplitTab: noop, onMoveToGroup: noop, onZoom: noop,
       pinnedTabs: new Set(input.pinned ?? []), tabColorOf: (tabId: string) => input.colors?.[tabId] ?? null, renameRequest: input.renameRequest ?? null,
-      onRequestRename: spies.requestRename, onTogglePin: spies.togglePin, onCloseScope: spies.closeScope, onSetTabColor: spies.setColor, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: noop,
+      onRequestRename: spies.requestRename, onTogglePin: spies.togglePin, onCloseScope: spies.closeScope, onSetTabColor: spies.setColor, onClosePane: noop, onCloseGroup: null, otherGroups: [], onMoveToOtherGroup: noop, onTabDragStart: spies.dragStart,
       tabDragActive: input.dragActive ?? false,
       openTabEntries: input.entries ?? [], onLaunchAgent: spies.launch, onOpenAgentSettings: spies.openAgentSettings, onActivateOpenTab: spies.activateTab,
     })))
@@ -973,5 +973,41 @@ describe('+ 메뉴 기본 에이전트 (LIFE-515)', () => {
     expect(host.querySelector('[data-tab-create-menu="g1"]')).toBeNull()
     expect(spies.openAgentSettings).toHaveBeenCalledTimes(1)
     expect(spies.launch).not.toHaveBeenCalled()
+  })
+})
+
+describe('포털 메뉴 mousedown (LIFE-530)', () => {
+  const mousedown = (node: Element): void => {
+    act(() => {
+      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }))
+    })
+  }
+  it('탭 우클릭 메뉴의 빈 자리(섹션 제목·구분선·바탕)·항목 mousedown 은 탭 드래그를 무장하지 않는다 — 탭 자체 mousedown 은 무장한다', () => {
+    mount({ tabs: [tab(0, [pane('p1', null, 'idle')]), tab(1, [pane('p2', null, 'idle')])], activeTabId: 't0' })
+    act(() => {
+      tabEl('t0').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 10 }))
+    })
+    const menu = found({ value: document.querySelector('[data-tab-menu="t0"]'), what: '탭 메뉴' })
+    const section = found({ value: menu.querySelector('.tab-menu-section'), what: '섹션 제목' })
+    const separator = found({ value: menu.querySelector('.repo-row-menu-sep'), what: '구분선' })
+    const item = found({ value: menu.querySelector('[data-tab-menu-pin]'), what: '핀 항목' })
+    for (const node of [section, separator, menu, item]) mousedown(node)
+    expect(spies.dragStart).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-tab-menu="t0"]')).not.toBeNull()
+    mousedown(tabEl('t1'))
+    expect(spies.dragStart).toHaveBeenCalledTimes(1)
+  })
+  it('빈 자리 mousedown 은 기본 동작을 막고(터미널 포커스 유지) 탭바 활성(onActivate)으로도 새지 않는다', () => {
+    mount({ tabs: [tab(0, [pane('p1', null, 'idle')])], activeTabId: 't0' })
+    act(() => {
+      tabEl('t0').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 10 }))
+    })
+    const section = found({ value: document.querySelector('[data-tab-menu="t0"] .tab-menu-section'), what: '섹션 제목' })
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })
+    act(() => {
+      section.dispatchEvent(event)
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.activate).not.toHaveBeenCalled()
   })
 })

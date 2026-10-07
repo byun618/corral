@@ -9,14 +9,19 @@
 // MIT 고지 대상 아님).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentKind, AppState, WorkspaceRow, WorktreeActionResult, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, AppState, CloseRowResult, CloseTabsResult, WorkspaceRow, WorktreeActionResult, WorktreeRow } from '../../../shared/types.js'
 import { pendingActiveMs, syncActiveWorkspace, type PendingActive } from '../active-workspace.js'
 import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
+import { pickPane } from '../pane-utils.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
 /** 다른 요청의 확인 창이 떠 있는 동안 늦게 온 needs-confirm 을 버릴 때 알림(LIFE-516 fix2 R2-01ⓒ·D10) — 그 대상은 닫히지 않고 남는다.
  *  탭·워크트리 닫기 공통 문구(fix3 R3-01ⓑ). */
 export const CLOSE_DEFERRED_NOTICE = '다른 닫기 확인이 진행 중이라 닫지 않았습니다 — 그 창을 마친 뒤 다시 닫으세요'
+/** 닫기 IPC 자체가 reject 했을 때(LIFE-524 — 구조화된 결과가 아니다) 알림 문구. 탭은 닫히지 않았을 수 있다 — 다시 닫으면 다시 묻는다. */
+export function closeRequestFailedMessage(error: unknown): string {
+  return `닫기 요청이 실패했습니다 — 다시 시도하세요 (${error instanceof Error ? error.message : String(error)})`
+}
 
 export function useLifecycleActions(state: AppState | null): {
   selectedPane: string | null
@@ -48,6 +53,8 @@ export function useLifecycleActions(state: AppState | null): {
   actions: LifecycleActions
 } {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
+  /** 선택 pane 이 속한 탭 — 그 pane 이 닫힌 뒤 승격 자리를 고르는 데 쓴다(LIFE-508, 아래 첫 pane 자동 선택 effect). */
+  const selectedTabRef = useRef<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | null>(null)
   const [lifecycleNotice, setLifecycleNotice] = useState<LifecycleNotice | null>(null)
   const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
@@ -235,10 +242,18 @@ export function useLifecycleActions(state: AppState | null): {
       setSelectedPane(pending)
       return
     }
-    if (panes.length === 0 || panes.some((pane) => pane.paneId === selectedPane)) return
+    const owner = workspace.tabs.find((tab) => tab.panes.some((pane) => pane.paneId === selectedPane))
+    if (owner !== undefined) {
+      selectedTabRef.current = owner.tabId
+      return
+    }
     const [firstPane] = panes
     if (firstPane === undefined) return
-    const promoted = panes.find((pane) => pane.focused) ?? firstPane
+    // LIFE-508 — 선택 pane 이 닫혔는데(분할 pane ⌘W) 그 탭이 남아 있으면 **그 탭의 pane** 으로 승격한다. 화면은 영역의 활성 탭(= 그 탭)에서
+    // `pickPane` 으로 고른 pane 을 보이므로(App `groupSelectedPaneId`) 같은 규칙이어야 MRU 맨 앞이 화면의 pane 이 된다. 워크스페이스 전체의
+    // herdr 포커스로 가면 다른 탭의 pane 이 선택돼 MRU 맨 앞과 화면이 갈리고 ⌃Tab 이 화면을 안 움직였다.
+    const sameTab = workspace.tabs.find((tab) => tab.tabId === selectedTabRef.current)
+    const promoted = (sameTab === undefined ? null : pickPane(sameTab)) ?? panes.find((pane) => pane.focused) ?? firstPane
     setSelectedPane(promoted.paneId)
   }, [state, activeWorkspaceId, selectedPane])
 
@@ -293,9 +308,17 @@ export function useLifecycleActions(state: AppState | null): {
           return
       }
     }
+    // LIFE-524 — IPC 자체 reject 는 `error` 결과와 같은 길로 정리한다: 이 요청의 확인창을 풀고(정책 「닫기」 — 창을 남기면 확인 단추가
+    // 같은 실패를 되풀이할 뿐이다) 알림을 띄운다. 창이 풀리므로 같은 탭 닫기를 다시 부르면 처음부터 다시 묻는다(재시도).
     if (target.kind === 'tabs') {
       if (target.tabIds.length === 0) return
-      const result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds ?? [] })
+      let result: CloseTabsResult
+      try {
+        result = await window.corral.closeTabs({ tabIds: target.tabIds, confirmed, alwaysConfirm: target.alwaysConfirm, confirmedPaneIds: input.confirmedPaneIds ?? [] })
+      } catch (error) {
+        settle({ kind: 'error', message: closeRequestFailedMessage(error) })
+        return
+      }
       if (result.closed.length > 0) onClosed?.(result.closed)
       if (result.outcome === 'needs-confirm') {
         // 확인 뒤 닫다가 새 실행 중을 만나 멈췄으면 닫힌 탭은 위에서 기록했고, 남은 탭만 다시 묻는다.
@@ -308,7 +331,13 @@ export function useLifecycleActions(state: AppState | null): {
       else settle({ kind: 'closed' })
       return
     }
-    const result = await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
+    let result: CloseRowResult
+    try {
+      result = await window.corral.closeWorktree({ workspaceId: target.workspaceId, confirmed })
+    } catch (error) {
+      settle({ kind: 'error', message: closeRequestFailedMessage(error) })
+      return
+    }
     switch (result.outcome) {
       case 'closed':
         settle({ kind: 'closed' })

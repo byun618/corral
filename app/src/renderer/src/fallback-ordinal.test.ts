@@ -133,3 +133,27 @@ describe('폴백 번호 = 비어 있는 가장 작은 번호 (C10)', () => {
     expect(next.entries()).toEqual(book.entries())
   })
 })
+
+describe('keepHerdrTabs — herdr 세션 전체에 없는 탭의 번호를 푼다 (LIFE-507 K1ⓔ)', () => {
+  it('닫힌 워크스페이스(w2)의 번호는 보이지 않아도 풀린다 — 재기동 뒤 id 를 다시 받은 새 탭이 옛 번호를 안 집는다', () => {
+    const book = createOrdinalBook()
+    book.hydrate([
+      { tabId: 'w1:t1', groupId: 'w1', ordinal: 1 },
+      { tabId: 'w2:t3', groupId: 'w2', ordinal: 3 },
+      { tabId: 'w2:t4', groupId: 'w2', ordinal: 1 },
+    ])
+    // keepOnly 는 보이는 워크스페이스만 푼다 — w2 가 안 보이면 남는다(옛 규칙 그대로).
+    book.keepOnly({ tabIds: ['w1:t1'], groupIds: ['w1'] })
+    expect(book.entries().map((row) => row.tabId)).toEqual(['w1:t1', 'w2:t3', 'w2:t4'])
+    book.keepHerdrTabs(['w1:t1'])
+    expect(book.entries()).toEqual([{ tabId: 'w1:t1', groupId: 'w1', ordinal: 1 }])
+    // 재기동 뒤 새 w2 의 탭은 비어 있는 가장 작은 번호부터 받는다.
+    expect(['w2:t1', 'w2:t2', 'w2:t3', 'w2:t4'].map((tabId) => book.ordinalFor({ tabId, groupId: 'w2' }))).toEqual([1, 2, 3, 4])
+  })
+  it('herdr 에 있는 탭(안 보이는 워크스페이스 포함)의 번호는 그대로다', () => {
+    const book = createOrdinalBook()
+    book.hydrate([{ tabId: 'w1:t1', groupId: 'w1', ordinal: 1 }, { tabId: 'w9:t2', groupId: 'w9', ordinal: 2 }])
+    book.keepHerdrTabs(['w1:t1', 'w9:t2'])
+    expect(book.entries()).toHaveLength(2)
+  })
+})

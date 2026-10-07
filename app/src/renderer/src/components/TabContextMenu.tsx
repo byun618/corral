@@ -186,6 +186,14 @@ export function TabContextMenu({
       data-menu-anchor-x={anchor.x}
       data-menu-anchor-y={anchor.y}
       onClick={(event) => event.stopPropagation()}
+      // LIFE-530 — 포털이어도 React 합성 이벤트는 React 트리(메뉴를 연 탭)로 버블한다. mousedown 을 여기서 끊지 않으면 메뉴의 빈 자리
+      // (섹션 제목·구분선·여백)를 누르고 끈 손짓이 탭의 드래그 무장(`onDragStart`)으로 가 탭 순서가 바뀐다. 탭 만들기 메뉴·ContextMenu 와 같은 결.
+      // 바깥 닫기는 문서 mousedown 의 「메뉴 밖인가」 판정이라 메뉴 안 누름을 끊어도 그대로다. 끊으면 탭바의 `keepFocusOnHeaderBackground` 도
+      // 안 닿으므로 같은 일(입력 요소가 아니면 기본 동작 막기 — 터미널 포커스 유지)을 여기서 한다.
+      onMouseDown={(event) => {
+        event.stopPropagation()
+        if (event.target instanceof Element && event.target.closest('button, input, textarea, select, a[href], [contenteditable="true"], [tabindex]') === null) event.preventDefault()
+      }}
       onContextMenu={(event) => event.preventDefault()}
     >
       {headerMode === undefined ? null : (

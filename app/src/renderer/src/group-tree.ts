@@ -467,6 +467,22 @@ export function reconcileLayout(input: { layout: GroupLayout; liveTabIds: string
   return { root, activeGroupId }
 }
 
+/**
+ * herdr 에 이제 없는 탭을 **저장 배치**에서 걷는다 (LIFE-507). 남은 탭이 하나도 없으면 null — 그 worktree 의 배치를 버린다(다음에 열면 한 영역).
+ *
+ * `reconcileLayout` 의 「뼈대는 두고 첫 영역으로」 는 tabId 가 통째로 바뀌는 재기동을 위한 화면용 파생이다. 그런데 herdr 0.9.0 은 닫힌
+ * 워크스페이스의 id 를 재기동 뒤 다시 쓴다(00-analysis F2) — 옛 배치를 남겨 두면 같은 worktree 를 다시 연 새 탭(`w2:t1` …)이 옛 영역 자리에
+ * 그대로 앉는다. 근거 `herdrTabIds` 는 herdr 세션 전체의 산 탭(링크 live 일 때만)이라 덜 온 상태에 지우지 않는다.
+ * 산 탭만으로 `reconcileLayout` 을 돌린다 — 넘기는 목록이 배치 안 탭의 부분집합이라 고아(새로 끌어들일 탭)가 없고, 빈 영역만 접힌다.
+ */
+export function dropDeadTabs(input: { layout: GroupLayout; herdrTabIds: ReadonlySet<string> }): GroupLayout | null {
+  const held = listGroups(input.layout.root).flatMap((group) => group.tabOrder)
+  const kept = held.filter((tabId) => input.herdrTabIds.has(tabId))
+  if (kept.length === 0) return null
+  if (kept.length === held.length) return input.layout
+  return reconcileLayout({ layout: input.layout, liveTabIds: kept })
+}
+
 // --- 영속 (R3-h — worktree 단위) ------------------------------------------------
 
 /** 저장 모양. 트리를 그대로 싣는다 — 읽을 때 모양을 확인한다(손으로 고친 파일 대비). */

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   closeGroup as closeGroupIn,
+  dropDeadTabs,
   listGroups,
   mergeTabIntoGroup as mergeTabIntoGroupIn,
   moveTabWithinTabbar as moveTabWithinTabbarIn,
@@ -89,6 +90,8 @@ export function useGroupLayout(input: {
   stored: unknown[]
   /** 핀 탭 (LIFE-495 K3ⓓ) — 화면에 내는 배치와 바꾸는 배치 모두 핀 접두부를 지난다(`partitionPinnedLayout`). */
   pinned: ReadonlySet<string>
+  /** herdr 세션 전체의 산 탭 (LIFE-507 `AppState.herdrTabIds`) — null 이면 모른다(링크 live 아님). 여기 없는 탭은 저장 배치에서 걷는다. */
+  herdrTabIds: readonly string[] | null
 }): GroupLayoutApi {
   const [byWorktree, setByWorktree] = useState<Record<string, GroupLayout>>({})
   const hydrated = useRef(false)
@@ -105,6 +108,26 @@ export function useGroupLayout(input: {
       return next
     })
   }, [input.ready, input.stored])
+
+  /**
+   * herdr 에 이제 없는 탭을 저장 배치에서 걷는다 (LIFE-507 — `dropDeadTabs`). 닫힌 워크스페이스의 탭 id 는 herdr 재기동 뒤 같은 worktree 의 새
+   * 워크스페이스에 다시 쓰여 옛 배치에 새 탭이 앉는다(아래 「추리기는 화면용」 원칙의 예외 — 근거가 herdr 의 전체 목록이라 덜 온 상태가 아니다).
+   * 싣기 전에는 하지 않는다. 같은 렌더의 싣기 effect 가 먼저 예약한 갱신 위에서 돈다(선언 순서).
+   */
+  useEffect(() => {
+    if (!input.ready || !hydrated.current || input.herdrTabIds === null) return
+    const live = new Set(input.herdrTabIds)
+    setByWorktree((previous) => {
+      let changed = false
+      const next: Record<string, GroupLayout> = {}
+      for (const [worktreePath, value] of Object.entries(previous)) {
+        const kept = dropDeadTabs({ layout: value, herdrTabIds: live })
+        if (kept !== value) changed = true
+        if (kept !== null) next[worktreePath] = kept
+      }
+      return changed ? next : previous
+    })
+  }, [input.ready, input.herdrTabIds])
 
   /**
    * 화면에 쓰는 배치 — 저장된 것을 **살아 있는 탭에 맞춰 추린 결과**다 (F1-6).

@@ -1,6 +1,6 @@
 // LIFE-495 K3ⓔ·K4ⓒ·K9ⓒ — 탭 핀·색 영속 칸의 읽기·쓰기·정리.
 import { describe, expect, it } from 'vitest'
-import { keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, TAB_COLORS, type TabMark } from './tab-marks.js'
+import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, TAB_COLORS, type TabMark } from './tab-marks.js'
 
 const at = { tabId: 'w1:t1', workspaceId: 'w1' }
 
@@ -56,5 +56,27 @@ describe('keepLiveTabMarks — 닫힌 탭의 값이 쌓이지 않는다(K4ⓒ �
   })
   it('보이지 않는 워크스페이스의 칸은 둔다 — 상태가 덜 온 순간 통째로 날아가지 않게', () => {
     expect(keepLiveTabMarks({ marks, liveTabIds: [], shownWorkspaceIds: [] })).toEqual(marks)
+  })
+})
+
+describe('keepHerdrTabMarks — herdr 세션 전체에 없는 탭의 칸 (LIFE-507 K1)', () => {
+  const marks: TabMark[] = [
+    { tabId: 'w1:t1', workspaceId: 'w1', pinned: true, color: '#22c55e' },
+    { tabId: 'w2:t3', workspaceId: 'w2', pinned: true, color: '#ef4444' },
+    { tabId: 'w2:t4', workspaceId: 'w2', pinned: false, color: '#3b82f6' },
+  ]
+  it('닫힌 워크스페이스(w2)의 칸은 보이든 안 보이든 지운다 — 재기동 뒤 id 를 다시 받은 새 탭 w2:t3 에 붙지 않게', () => {
+    expect(keepHerdrTabMarks({ marks, herdrTabIds: ['w1:t1', 'w1:t2'] })).toEqual([marks[0]])
+  })
+  it('herdr 에 있는 탭(등록 레포 밖 워크스페이스 포함)의 칸은 둔다 — 화면에 안 보여도', () => {
+    expect(keepHerdrTabMarks({ marks, herdrTabIds: ['w1:t1', 'w2:t3', 'w2:t4', 'w9:t1'] })).toEqual(marks)
+  })
+  it('herdr 탭이 하나도 없으면(세션이 비었다 — live 의 빈 목록) 전부 지운다', () => {
+    expect(keepHerdrTabMarks({ marks, herdrTabIds: [] })).toEqual([])
+  })
+  it('새 배열을 돌려준다(입력 불변)', () => {
+    const next = keepHerdrTabMarks({ marks, herdrTabIds: ['w1:t1', 'w2:t3', 'w2:t4'] })
+    expect(next).not.toBe(marks)
+    expect(marks).toHaveLength(3)
   })
 })

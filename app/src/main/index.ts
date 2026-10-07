@@ -383,6 +383,8 @@ function currentState(): AppState {
     // 실행에서 격리 HOME 이 실린다 — 판독층이 트랜스크립트를 찾는 뿌리와 같은 값이다.
     home: homeDirReal(),
     orchestrationLineage: lineage.current(),
+    // LIFE-507 — live 일 때의 store 는 스냅샷 + 이후 이벤트라 herdr 세션 전체다. 재접속 중엔 비어 있을 수 있어 null(모른다)로 낸다.
+    herdrTabIds: link.linkState().phase === 'live' ? link.store.rows().flatMap((workspace) => workspace.tabs.map((tab) => tab.tabId)) : null,
   }
 }
 

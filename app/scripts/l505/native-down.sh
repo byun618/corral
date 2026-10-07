@@ -1,5 +1,7 @@
 #!/bin/sh
 # LIFE-505 K3 — l497 복사(잔존 검색어 l497→l505 만 바꿈).
+# fix1 F6: <raw 폴더> 는 native-up.sh 에 준 것과 **같아야** 한다(pre 파일이 거기 있다). 없으면 아무것도 끄거나 복원하기 전에
+#   exit 64(입력 오류)로 멈춘다 — 원복 미달(1)·중단(3)과 다른 모양으로 보이게(r1: native/ 를 넘겨 거짓 「원복 미달」).
 # LIFE-497 K6 — l496 복사(ROOT 꼴 /tmp/l497n*·잔존 검색어 l497). 추가: ~/.codex/config.toml 바이트 백업(up)·복원(down, provider 대조 전) — codex 는 자기 config 를 고친다(킥오프 격리 2).
 # LIFE-496 K4 — l494 복사(ROOT 꼴 /tmp/l496n*·잔존 검색어 l496 만 바꿈).
 # LIFE-494 K4 — LIFE-493 l493/native-down.sh 복사(잔존 검색어 l493→l494 만 바꿈). 그 위 원 주석: LIFE-471 native-down.sh 를 옮겼다(도우미 ../l470). ⑧ 익명화는 뺐다 — 이 회차 raw 는 fixture 탭바 영역만 담는다(선택자 캡처·fixture 탭만 덤프, native-k5.mjs). 원 주석:
@@ -20,6 +22,15 @@ FAILED=0; fail() { echo "✘ $1"; FAILED=1; }; pass() { echo "✔ $1"; }
 abort() { echo "✘ $1"; echo "판정: 원복 중단 — 복원 전에 멈췄다"; exit 3; }
 alive() { kill -0 "$1" 2>/dev/null; }
 stop() { kill "$1" 2>/dev/null; i=0; while alive "$1"; do i=$((i+1)); [ $i -gt 150 ] && return 1; sleep 0.2; done; return 0; }
+
+echo "# ① 입력 확인 — native-up 의 pre 파일이 이 raw 폴더에 있나"
+MISSING=""
+for f in codex-config-pre.sha256 provider-pre.txt; do [ -f "$RAWD/$f" ] || MISSING="$MISSING $f"; done
+if [ -n "$MISSING" ]; then
+  echo "✘ 입력 오류: $RAWD 에 native-up.sh 의 pre 파일이 없다:$MISSING — native-up 에 준 raw 폴더를 넘겨라"
+  echo "판정: 입력 오류 — 아무것도 끄거나 복원하지 않았다"; exit 64
+fi
+pass "pre 파일 있음 ($RAWD)"
 
 echo "# ② 소유 확인 → 종료"
 A=$(cat "$ROOT/app.pid" 2>/dev/null) || abort "app.pid 없음"

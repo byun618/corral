@@ -147,6 +147,33 @@ export function clipboardImagePayload(
 }
 
 /**
+ * 렌더러가 이미지 ⌘V 의 main 왕복(클립보드 읽기·PNG 쓰기)을 기다리는 상한 (LIFE-505 fix1 F2).
+ * 텍스트 ⌘V·드롭도 같은 순서 큐에 서므로, 왕복이 끝나지 않으면 그 pane 의 뒤 붙여넣기가 영영 막힌다.
+ * 값의 근거는 specs/LIFE-505-bracketed-paste/raw/claude/RESULT.md 「fix1」 F2 (큰 이미지 왕복 실측 대비 여유).
+ */
+export const CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS = 5000
+
+/**
+ * `pending` 이 `ms` 안에 끝나지 않으면 `onTimeout()` 값으로 푼다 — 순서 큐의 한 자리가 영원히 막히지 않게 (fix1 F2).
+ * 늦게 끝난 원래 결과는 버린다(시간이 지나 나간 이미지 경로가 뒤 입력 사이에 끼지 않게).
+ */
+export function settleWithin<T>(input: { pending: Promise<T>; ms: number; onTimeout: () => T }): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(input.onTimeout()), input.ms)
+    input.pending.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
  * pane 하나의 생성 입력(⌘V 이미지·드롭)을 **받은 순서대로** 내보낸다 (R1-03).
  * ⌘V 이미지는 main 왕복(클립보드 읽기·PNG 쓰기)을 기다리고 드롭은 바로 준비된다 — 각자 끝나는 대로 보내면
  * 두 번 연속 ⌘V 나 ⌘V 직후 드롭이 뒤바뀐다. 그래서 접수 때 자리를 잡고, 앞 자리가 끝나야 다음을 보낸다.

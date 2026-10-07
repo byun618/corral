@@ -27,7 +27,15 @@ import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
-import { clipboardImagePayload, clipboardTextPayloads, createOrderedSender, dropPathPayloads, shouldPasteClipboardImage } from '../../shared/terminal-paste.js'
+import {
+  CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
+  clipboardImagePayload,
+  clipboardTextPayloads,
+  createOrderedSender,
+  dropPathPayloads,
+  settleWithin,
+  shouldPasteClipboardImage,
+} from '../../shared/terminal-paste.js'
 
 const decoder = new TextDecoder()
 
@@ -304,12 +312,17 @@ export function TerminalPane({
     // Ctrl+V 는 여기 안 온다 (키 입력이라 onData 로 `\x16` 이 간다 — CLI 가 클립보드를 직접 읽는다, D42).
     // 붙여넣기·드롭이 만든 바이트도 진단 링에 남긴다 (onData 를 안 거치므로 따로) — 관문이 "pane 으로 간 바이트" 를 읽는 자리.
     // 붙여넣기·드롭은 받은 순서대로 나간다 (R1-03) — 이미지 저장 왕복이 늦어도 뒤 텍스트·드롭이 앞지르지 않는다.
+    // 왕복은 CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS 까지만 기다린다 — 넘으면 그 이미지는 버리고 큐를 푼다 (fix1 F2).
+    // 키 입력(onData)은 이 큐를 타지 않는다 — 이미지 왕복 중 친 키는 대기 중인 붙여넣기보다 먼저 갈 수 있다(fix1 F2ⓑ, 수용).
+    // 내보내기 직전에 선택을 푼다 — xterm 기본 붙여넣기의 user-input 해제와 같은 효과다. 선택이 남으면 flush 가
+    // 프레임을 보류해 붙여넣은 글자의 에코가 안 그려진다 (fix1 F1).
     type GeneratedInput = { data: string; source: 'paste-text' | 'paste-image' | 'file-drop'; paneId: string }
     const sendGenerated = (input: GeneratedInput): void => {
       if (diagnostics) {
         inputs.push({ data: input.data, at: Date.now(), source: input.source })
         if (inputs.length > WRITE_RING_MAX) inputs.splice(0, inputs.length - WRITE_RING_MAX)
       }
+      term.clearSelection()
       window.corral.termInput({ paneId: input.paneId, data: input.data })
     }
     const enqueueGenerated = createOrderedSender<GeneratedInput>(sendGenerated)
@@ -323,13 +336,20 @@ export function TerminalPane({
         return
       }
       void enqueueGenerated(
-        window.corral.saveClipboardImage().then((result): GeneratedInput[] => {
-          const data = clipboardImagePayload(result)
-          if (data === null) {
-            if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
+        settleWithin({
+          pending: window.corral.saveClipboardImage().then((result): GeneratedInput[] => {
+            const data = clipboardImagePayload(result)
+            if (data === null) {
+              if (result.status === 'failed') console.warn('[paste] 클립보드 이미지 붙여넣기 실패', result.error)
+              return []
+            }
+            return [{ data, source: 'paste-image', paneId: target }]
+          }),
+          ms: CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
+          onTimeout: (): GeneratedInput[] => {
+            console.warn('[paste] 클립보드 이미지 저장이 시간 안에 안 끝났다 — 버린다', CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS)
             return []
-          }
-          return [{ data, source: 'paste-image', paneId: target }]
+          },
         }),
       )
     }

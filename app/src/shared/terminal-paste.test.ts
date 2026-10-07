@@ -1,9 +1,10 @@
 // LIFE-497 — 붙여넣기·드롭 순수 계산. Orca v1.4.220 테스트에서 corral 에 해당하는 POSIX 케이스를 옮겼다
 // (`terminal-drop-image-path.test.ts`·`terminal-drop-path-writer.test.ts`·`pane-helpers.test.ts`·
 // `terminal-bracketed-paste.test.ts`·`terminal-clipboard-paste.test.ts`). Windows·SSH 케이스는 D45 의도적으로 뺐다.
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   canPasteImageDropPathRaw,
+  CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
   clipboardImagePayload,
   clipboardTextPayloads,
   HERDR_PASTE_MAX_BYTES,
@@ -13,6 +14,7 @@ import {
   formatImageDropPasteText,
   isImageDropPath,
   shellEscapePath,
+  settleWithin,
   shouldPasteClipboardImage,
   wrapBracketedPaste,
 } from './terminal-paste.js'
@@ -375,5 +377,55 @@ describe('createOrderedSender', () => {
     enqueue(['boom'])
     await enqueue(['ok'])
     expect(sent).toEqual(['ok'])
+  })
+})
+
+// LIFE-505 fix1 F2 — 끝나지 않는 이미지 왕복이 뒤 텍스트 붙여넣기를 영영 막지 않는다.
+describe('settleWithin', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('영원히 안 끝나는 이미지 왕복 뒤의 텍스트가 타임아웃 뒤 나간다 — 이미지는 버린다', async () => {
+    vi.useFakeTimers()
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    let timedOut = 0
+    const never = new Promise<readonly string[]>(() => {})
+    enqueue(settleWithin({ pending: never, ms: CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS, onTimeout: () => { timedOut += 1; return [] } }))
+    const done = enqueue(['text'])
+    await vi.advanceTimersByTimeAsync(CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS - 1)
+    expect(sent).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    await done
+    expect(sent).toEqual(['text'])
+    expect(timedOut).toBe(1)
+  })
+
+  it('시간 안에 끝나면 그 값 — 타임아웃은 부르지 않는다', async () => {
+    vi.useFakeTimers()
+    let timedOut = 0
+    const result = settleWithin({ pending: Promise.resolve(['image']), ms: 1000, onTimeout: () => { timedOut += 1; return [] } })
+    await expect(result).resolves.toEqual(['image'])
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(timedOut).toBe(0)
+  })
+
+  it('늦게 끝난 원래 결과는 버린다', async () => {
+    vi.useFakeTimers()
+    let finish!: (value: readonly string[]) => void
+    const late = new Promise<readonly string[]>((resolve) => { finish = resolve })
+    const result = settleWithin<readonly string[]>({ pending: late, ms: 100, onTimeout: () => [] })
+    await vi.advanceTimersByTimeAsync(100)
+    finish(['late-image'])
+    await expect(result).resolves.toEqual([])
+  })
+
+  it('거부는 그대로 넘긴다 — 순서 큐가 빈 자리로 삼킨다', async () => {
+    const sent: string[] = []
+    const enqueue = createOrderedSender<string>((item) => sent.push(item))
+    enqueue(settleWithin<readonly string[]>({ pending: Promise.reject(new Error('busy')), ms: 1000, onTimeout: () => [] }))
+    await enqueue(['after'])
+    expect(sent).toEqual(['after'])
   })
 })

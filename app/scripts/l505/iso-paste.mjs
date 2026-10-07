@@ -13,7 +13,7 @@
 // 관측점: ① pane 안 바이트 싱크(byte-sink.mjs — PTY 가 실제로 받은 바이트) ② 격리 herdr 서버 로그(oversized·closing)
 //         ③ xterm 버퍼(term-read — 셸 화면) ④ 렌더러 진단 링(window.corralTermProbe inputs — 렌더러가 보낸 바이트·출처).
 // 사용: node iso-paste.mjs --app <앱 폴더> --work /tmp/l505iX --port 98NN --out <raw 폴더> --label before|after
-//        [--only A,B,S,O,R,L] [--lmode 1,0] [--sizes 1024,…]
+//        [--only A,B,S,O,X,I,R,L] [--lmode 1,0] [--sizes 1024,…,mb1572864]
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -59,7 +59,18 @@ const bigText = (size) => {
   return lines.join('').slice(0, size - 1) + '\n'
 }
 
-const result = { label: args.label, harness: 'v2 합성 paste (포커스 안 뺏음)', app: path.resolve(args.app), work, startedAt: new Date().toISOString(), cases: [], notes: [], guard: [] }
+// fix1 F3 — 한글·이모지 섞인 본문, UTF-8 으로 정확히 size 바이트 이상(마지막 줄 끝 \n). 1MB 경계가 다바이트 글자 사이에 떨어진다.
+const bigTextMb = (size) => {
+  const lines = []
+  let total = 0
+  for (let i = 0; total < size; i += 1) {
+    const line = `l505-${String(i).padStart(7, '0')} 한글붙여넣기😀테스트 ${'가나다'.repeat(3)}\n`
+    lines.push(line)
+    total += Buffer.byteLength(line)
+  }
+  return lines.join('')
+}
+const result = { label: args.label, harness: 'v2 합성 paste (포커스 안 뺏음) + fix1(L·S 판정 승격·다바이트·선택 X·큰 이미지 I)', app: path.resolve(args.app), work, startedAt: new Date().toISOString(), cases: [], notes: [], guard: [] }
 const save = () => fs.writeFileSync(path.join(out, 'iso-paste.json'), `${JSON.stringify(result, null, 1)}\n`)
 const owned = []
 let exitCode = 0
@@ -358,6 +369,11 @@ try {
       await type('exec /bin/sh\r')
       await pause(1200)
       result.cases.push({ name: `S-${how}-summary`, kind: 'stale', pid1, dead1, sink0Got: sinkCase.got, sink0Hex: hex(sinkCase.got), framed: sinkCase.got.includes(`${ESC}[200~`) })
+      // fix1 F3 — 관측이 성립했는가(앱이 정말 죽었다·싱크가 받았다)와 after 의 zsh 미실행을 종료코드에 건다.
+      // stale 누출 자체(sink0 framed·/bin/sh 의 00~)는 K2ⓑ 에서 「의도적 + 사유」로 닫은 관측값이라 기록만 한다.
+      checks.require(`S-${how}-app-dead`, dead1 && dead2 && dead3, { dead1, dead2, dead3 })
+      checks.require(`S-${how}-sink0-received`, sinkCase.got.includes('echo l505-stale'), { got: sinkCase.got })
+      if (args.label === 'after') checks.require(`S-${how}-zsh-not-executed`, executed === false, { screen: zScreen.slice(-6) })
       save()
       console.log('[iso] S', how, JSON.stringify({ dead1, sink0: sinkCase.got, binsh: shScreen.slice(-4), zsh: zScreen.slice(-4), executed }))
     }
@@ -397,6 +413,102 @@ try {
     console.log('[iso] O', JSON.stringify(rounds.map((row) => row.order ?? row.skipped)))
     await stopSink()
   }
+  // ── X: 선택 중 붙여넣기 (fix1 F1) — 선택이 남으면 flush 가 프레임을 보류해 에코가 안 그려진다 ──
+  // 셸 프롬프트에서: (대조) 선택 없이 합성 paste → 에코 보임 / (시험) 합성 더블클릭으로 선택 → 합성 paste → 선택 해제·에코 보임.
+  // 판별: 선택 여부는 합성 copy 이벤트가 xterm 에서 받아 낸 글자(비면 선택 없음). 에코는 xterm 버퍼(term-read).
+  if (only.has('X')) {
+    const selectedText = () => evaluate((id) => {
+      const area = document.querySelector(`[data-term-pane-box="${id}"] textarea.xterm-helper-textarea`)
+      const data = new DataTransfer()
+      area.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }))
+      return data.getData('text/plain')
+    }, paneId)
+    const selectMarker = async () => {
+      const t = await termRead()
+      const row = t.lines.findLastIndex((line) => /^L505SELMARK\s*$/.test(line))
+      await evaluate((input) => {
+        const screen = document.querySelector(`[data-term-pane-box="${input.paneId}"] .xterm-screen`)
+        const r = screen.getBoundingClientRect()
+        const x = r.left + (r.width / input.cols) * 4
+        const y = r.top + (r.height / input.rows) * (input.row + 0.5)
+        for (const detail of [1, 2]) {
+          screen.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+          screen.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail }))
+        }
+        return true
+      }, { paneId, cols: t.cols, rows: t.rows, row })
+      return row
+    }
+    const echoed = async (needle) => {
+      for (let i = 0; i < 15; i += 1) {
+        await pause(200)
+        if ((await termRead()).lines.some((line) => line.includes(needle))) return true
+      }
+      return false
+    }
+    for (const [name, select] of [['X1-no-selection', false], ['X2-selection', true]]) {
+      await type('clear; echo L505SELMARK\r')
+      await pause(1500)
+      const row = select ? await selectMarker() : null
+      const before = await selectedText()
+      const needle = `echo l505-${name}`
+      const sent = await synthPaste(needle)
+      const shown = await echoed(needle)
+      const after = await selectedText()
+      const screen = (await termRead()).lines.filter((line) => line.trim() !== '').map((line) => line.trimEnd()).slice(-6)
+      result.cases.push({ name, kind: 'selection', row, selectedBefore: before, selectedAfter: after, sent, echoShown: shown, screen, ring: await freshRing() })
+      if (select) checks.require(`${name}-was-selected`, before === 'L505SELMARK', { before })
+      if (args.label === 'after' || !select) checks.require(`${name}-echo-shown`, shown, { screen })
+      if (args.label === 'after' && select) checks.require(`${name}-selection-cleared`, after === '', { after })
+      save()
+      console.log('[iso]', name, JSON.stringify({ before, after, shown }))
+      // 셸 입력줄 비우기(실행하지 않는다) — 선택이 남아 있으면 클릭으로 풀어 다음 회차가 깨끗하게.
+      await type('\x15')
+      await control({ cmd: 'click', selector: `[data-term-pane-box="${paneId}"] .xterm-screen` }).catch(() => null)
+      await pause(500)
+    }
+  }
+  // ── I: 큰 이미지 ⌘V 왕복 시간 (fix1 F2 타임아웃 근거) — 잡음 PNG(압축 안 되는) 를 시스템 클립보드에 (가드 안) ──
+  if (only.has('I')) {
+    await startSink(1)
+    const zlib = await import('node:zlib')
+    const noisePng = (width, height) => {
+      const chunk = (kind, data) => {
+        const body = Buffer.concat([Buffer.from(kind, 'ascii'), data])
+        const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+        const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(body))
+        return Buffer.concat([len, body, crc])
+      }
+      const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2
+      const raw = Buffer.alloc((width * 3 + 1) * height)
+      crypto.randomFillSync(raw)
+      for (let y = 0; y < height; y += 1) raw[y * (width * 3 + 1)] = 0
+      return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw, { level: 1 })), chunk('IEND', Buffer.alloc(0))])
+    }
+    for (const [w, h] of [[1920, 1080], [6016, 3384]]) {
+      const file = path.join(work, `noise-${w}x${h}.png`)
+      fs.writeFileSync(file, noisePng(w, h))
+      const bytes = fs.statSync(file).size
+      const done = await withSystemClipboard(`I-${w}x${h}`, async () => {
+        clip('png', file)
+        const t0 = Date.now()
+        const sent = await synthPaste(null)
+        let data = []
+        for (let i = 0; i < 100 && data.length === 0; i += 1) {
+          await pause(100)
+          data = sinkRows(sinkFile, sinkAt).rows.filter((row) => row.event === 'data')
+        }
+        const ms = Date.now() - t0
+        await drainSink()
+        return { sent, ms, arrived: data.length > 0 }
+      })
+      const ring = await freshRing()
+      result.cases.push({ name: `I-${w}x${h}`, kind: 'image-timing', pngBytes: bytes, ...done, ring, log: logRows() })
+      save()
+      console.log('[iso] I', w, h, JSON.stringify({ bytes, ms: done?.ms, arrived: done?.arrived }))
+    }
+    await stopSink()
+  }
   // ── R: ⌘C 복사 회귀 (K4ⓒ) — 합성 더블클릭으로 단어 선택 → 합성 copy 이벤트 → xterm 이 DataTransfer 에 쓴 글자 ──
   if (only.has('R')) {
     await type('clear; echo L505COPYMARK\r')
@@ -426,26 +538,68 @@ try {
   }
   // ── L: 큰 붙여넣기 (U2) — 크기별. 도착 바이트·sha·연결 상태(뒤따르는 작은 붙여넣기가 가는지) ──
   // 스트림이 닫히면 같은 실행의 뒤 경우가 다 막힌다(before-1 실측) — L 은 맨 끝, 모드·크기는 인자로 나눠 돈다.
+  // fix1 F3: oracle 은 **UTF-8 바이트** 기준 — 2004 켬이면 받은 바이트를 틀마다 갈라 ① 틀 본문이 각각 1MB 이하 ② 본문을 이으면
+  // 원문(cr)과 바이트가 같다 ③ 틀 밖 바이트 없음. 2004 끔이면 받은 바이트 = 원문(cr). after 는 일치·연결 유지를 checks.require 로 건다.
+  // `mb<N>` 크기 = 한글·이모지 섞인 본문(bigTextMb).
   if (only.has('L')) {
     let dead = false
-    const sizes = (args.sizes ?? '1024,65536,262144,1048576').split(',').map(Number)
+    const MAX = 1048576
+    const START = Buffer.from(`${ESC}[200~`)
+    const END = Buffer.from(`${ESC}[201~`)
+    const frames = (buf) => {
+      const bodies = []
+      let at = 0
+      while (at < buf.length) {
+        if (buf.indexOf(START, at) !== at) return { ok: false, reason: `틀 밖 바이트 @${at}`, bodies }
+        const end = buf.indexOf(END, at + START.length)
+        if (end < 0) return { ok: false, reason: '닫는 틀 없음', bodies }
+        bodies.push(buf.subarray(at + START.length, end))
+        at = end + END.length
+      }
+      return { ok: true, bodies }
+    }
+    const sizes = (args.sizes ?? '1024,65536,262144,1048576').split(',')
     for (const bracketed of (args.lmode ?? '1,0').split(',').map(Number)) {
       await startSink(bracketed)
       backendRows()
-      for (const size of sizes) {
-        const text = bigText(size)
-        // after 2004 켬 = herdr 상한(1MB, ASCII 본문이라 1MB 글자)마다 틀 하나(clipboardTextPayloads) · 2004 끔 = herdr 가 틀마다 벗긴다.
-        const want = args.label === 'after' && bracketed === 1 ? cr(text).match(/[\s\S]{1,1048576}/g).map(wrap).join('') : cr(text)
-        const { entry } = await textCase({ name: `L${bracketed}-${size}`, text, want: null, small: false })
-        entry.want = { bytes: Buffer.byteLength(want), sha256: sha(want) }
-        entry.match = entry.sink.bytes === entry.want.bytes && entry.sink.sha256 === entry.want.sha256
-        const probe = await textCase({ name: `L${bracketed}-${size}-next`, text: 'probe', want: undefined })
+      for (const token of sizes) {
+        const multibyte = token.startsWith('mb')
+        const size = Number(multibyte ? token.slice(2) : token)
+        const text = multibyte ? bigTextMb(size) : bigText(size)
+        const name = `L${bracketed}-${token}`
+        const want = Buffer.from(cr(text), 'utf8')
+        const t0 = Date.now()
+        const sent = await synthPaste(text)
+        const data = await drainSink({ quietMs: 3000, maxMs: 60_000 })
+        const got = Buffer.concat(data.map((row) => Buffer.from(row.hex, 'hex')))
+        let verdict
+        if (args.label === 'after' && bracketed === 1) {
+          const parsed = frames(got)
+          const joined = Buffer.concat(parsed.bodies)
+          verdict = { framed: parsed.ok, reason: parsed.reason ?? null, frames: parsed.bodies.length, maxBody: Math.max(0, ...parsed.bodies.map((body) => body.length)), bodiesEqual: joined.equals(want) }
+          verdict.match = parsed.ok && verdict.bodiesEqual && verdict.maxBody <= MAX
+        } else {
+          verdict = { match: got.equals(want) }
+        }
+        const entry = {
+          name, kind: 'text-large', multibyte, method: 'synthetic ClipboardEvent paste → xterm textarea', sent, ms: Date.now() - t0,
+          sentText: { bytes: Buffer.byteLength(text), chars: text.length, sha256: sha(text) },
+          want: { bytes: want.length, sha256: crypto.createHash('sha256').update(want).digest('hex') },
+          sink: { chunks: data.length, bytes: got.length, sha256: crypto.createHash('sha256').update(got).digest('hex') },
+          ...verdict, ring: await freshRing(), log: logRows(), backend: backendRows(),
+        }
+        const probe = await textCase({ name: `${name}-next`, text: 'probe', want: undefined })
         entry.nextGot = probe.got
         entry.nextOk = probe.got.includes('probe')
+        result.cases.push(entry)
+        if (args.label === 'after') {
+          checks.require(`${name}-match`, entry.match === true, { verdict, gotBytes: got.length, wantBytes: want.length })
+          checks.require(`${name}-next`, entry.nextOk, { nextGot: entry.nextGot })
+        }
         save()
-        console.log('[iso] L', bracketed, size, JSON.stringify({ match: entry.match, gotBytes: entry.sink.bytes, wantBytes: entry.want.bytes, nextOk: entry.nextOk, backend: entry.backend }))
+        console.log('[iso] L', bracketed, token, JSON.stringify({ ...verdict, gotBytes: got.length, wantBytes: want.length, nextOk: entry.nextOk, backend: entry.backend }))
         if (!entry.nextOk) {
-          result.notes.push(`L${bracketed}-${size}: 뒤 작은 붙여넣기가 안 왔다 — 이 실행의 L 은 여기서 멈춘다(log·backend 참조)`)
+          result.notes.push(`${name}: 뒤 작은 붙여넣기가 안 왔다 — 이 실행의 L 은 여기서 멈춘다(log·backend 참조)`)
           dead = true
           break
         }

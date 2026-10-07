@@ -154,6 +154,11 @@ export const PROBES = [
   { id: 'e3-deps-block-return', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-deps-block.ts`, source: "declare function useCallback<T>(f: T, deps: unknown[]): T\ndeclare function run(id: string): void\ndeclare const method: string\nexport const cb = useCallback(() => {\n  return run('tab.rename')\n}, [method])\n" },
   { id: 'e3-plus-nullish-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-plus-nullish.ts`, source: "declare function bindingLabel(id: string): string\ndeclare const opts: { method?: string }\nexport const label = bindingLabel('tab.rename') + (opts.method ?? '')\n" },
   { id: 'e3-if-or-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e3-if-or.ts`, source: "declare function isBound(id: string): boolean\ndeclare const e: { method: string }\nexport const probe = (): number => {\n  if (isBound('tab.rename') || e.method) {\n    return 1\n  }\n  return 0\n}\n" },
+  // fix3 — 좁힌 호출 규칙 뒤에도 「문장 경계」·「반환 자리만」·「이름 꼴 문자열만」 을 지키는 칸(그 전엔 의존성 배열 칸이 지켰다)
+  // 반환이 아닌 문장의 액션 id 는 그 함수가 method 라는 이름에 담겨도 묶지 않는다 — M-c·「반환 자리를 문장 전체로」 변이용
+  { id: 'e3-method-fn-statement', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-method-fn-stmt.ts`, source: "declare function track(id: string): void\nexport const method = (): void => {\n  track('tab.rename')\n}\n" },
+  // 문장 꼴 문자열 키는 method 이름이 아니다 — 「method 언급을 글자 전체 검색으로」 변이용
+  { id: 'e3-sentence-key', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-sentence-key.ts`, source: "export const labels = { '단축키 method 설명': 'tab.rename' }\n" },
   // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
   { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 

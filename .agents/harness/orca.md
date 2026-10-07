@@ -467,3 +467,17 @@ orca orchestration run-use --id <run_id> [--takeover-legacy] --json
 - **`orca terminal send` 에서 `--terminal` 값이 비면 호출한 쪽 터미널로 간다** — 셸 변수 전개 실수(zsh 는 인용 없는 변수 전개를 단어로 쪼개지 않는다)로
   handle 이 빈 문자열이 되자 `accepted: true` 로 성공하며 본문이 **보낸 세션 자신의 입력창**에 들어갔다. 대상 코디네이터에는 아무것도 가지 않았다.
   응답의 `handle` 이 의도한 handle 과 같은지 대조하고, 스크립트는 빈 handle 이면 보내기 전에 중단한다. `accepted: true` 는 대상 확인이 아니다.
+
+## 실측 부록 — LIFE-485 (2026-10-07, 설치본 1.4.198)
+
+LIFE-485 코디 세션(Run `run_296174c855c9`)이 겪은 것. 일감 LIFE-533, 원자료는 `specs/LIFE-485-herdr-autostart/raw/coordinator/`.
+
+- **`orca terminal close` 에서 `--terminal` 값이 비면 호출한 터미널을 닫는다** — 위 `send` 항목과 같은 성질이 `close` 에도 있다.
+  zsh 루프 `set -- $p` 가 단어를 나누지 않아 handle 이 빈 채로 불렸고, **코디 자신의 터미널이 닫혀 세션이 죽었다**(05:03, `c26-close--r1.json` 의 `handle` = 코디).
+  본체가 `claude --resume <sid>` 로 새 터미널에 다시 붙였다. 규칙: handle 은 리터럴로 쓰고, `[ -n "$H" ] && [ "$H" != "$ORCA_TERMINAL_HANDLE" ]` 가드 뒤에만 닫는다.
+- **`orchestration worker-release` 는 `--run` 을 받지 않는다** — `invalid_argument: Unknown flag --run`. 유효 플래그는 `--dispatch`·`--environment`·`--json`·`--pairing-code`·`--retry-request`.
+  `terminal create` 로 만든 터미널은 release 뒤 `reason: external_terminal`·`state: retained` 로 남는다 — 별도 `terminal close` 가 필요하다(`c51-*-badflag.json`·`c53`·`c31`·`c32`).
+- **거절된 워커 메시지도 코디 큐에 `type: worker_done` 으로 온다** — 리뷰어가 `--dispatch-capability`·`--task-id`·`--dispatch-id` 를 빠뜨리면
+  거절 사유가 붙은 「Rejected worker_done」 이 배달되고 payload 에 `_orcaLifecycleRejection` 이 있다. 『완료 감지』 판정은 **거절 표식 없음 + taskId·dispatchId 일치**로만 한다(`c100-claude-r5-done.json`).
+- **`check --wait --types worker_done,escalation,question` 이 heartbeat 로 깬다** — 현재 delivery 를 replay 해서 types 필터와 무관하게 heartbeat 를 돌려준다.
+  ack 한 뒤 다시 대기한다(485 에서 수십 회). 깬 것을 완료로 읽지 않는다.

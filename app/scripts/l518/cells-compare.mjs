@@ -1,6 +1,7 @@
-// LIFE-518 fix2 — 리뷰어 칸 묶음(JSON: [{ id, source, file?, expect? }])을 기준·fix1·지금 검사기로 돌려 비교한다.
+// LIFE-518 fix2·fix3 — 칸 묶음(JSON: [{ id, source, file?, expect? }])을 기준·직전 수정(fix2)·지금 검사기로 돌려 비교한다.
 // expect 기본값 'R4-wire-leak'(잡혀야 함), null 이면 오탐 꼴(안 잡혀야 함). file 기본값 renderer `.ts`.
 // 사용: node scripts/l518/cells-compare.mjs <cells.json 경로 또는 git 경로 rev:path> — src 복사본에서만 돈다(G6).
+// 지금 검사기가 기대와 다른 칸이 하나라도 있으면 exit 1 (fix3 R3-claude-03 — 관찰 표가 판정처럼 세이지 않게).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -17,13 +18,13 @@ const probes = JSON.parse(raw).map((cell) => ({
 }))
 const CHECKERS = [
   { 이름: '기준 e92e66da', source: git('show', 'e92e66da:app/scripts/check-boundary.mjs') },
-  { 이름: 'fix1 be344a4b', source: git('show', 'be344a4b:app/scripts/check-boundary.mjs') },
+  { 이름: 'fix2 b1409bd8', source: git('show', 'b1409bd8:app/scripts/check-boundary.mjs') },
   { 이름: '지금', source: fs.readFileSync(path.join(APP_DIR, 'scripts/check-boundary.mjs'), 'utf8') },
 ]
 const results = CHECKERS.map((checker) => runProbes({ checkerSource: checker.source, probes }))
 const mark = (cell) => (cell.caught ? '잡음' : '안 잡음')
 console.log(`# 칸 묶음 비교 — ${cellsArg}\n\n- HEAD ${git('rev-parse', 'HEAD').trim()} · node ${process.version} · 깨끗한 src 지금 exit ${results[2].clean.exit} 위반 ${results[2].clean.위반}\n`)
-console.log(`| 칸 | 기대 | ${CHECKERS.map((checker) => checker.이름).join(' | ')} | 지금 기대대로 | fix1→지금 |`)
+console.log(`| 칸 | 기대 | ${CHECKERS.map((checker) => checker.이름).join(' | ')} | 지금 기대대로 | fix2→지금 |`)
 console.log(`| --- | --- | ${CHECKERS.map(() => '---').join(' | ')} | --- | --- |`)
 let mismatch = 0
 probes.forEach((probe, index) => {
@@ -34,3 +35,4 @@ probes.forEach((probe, index) => {
   console.log(`| ${probe.id} | ${probe.expect ?? '위반 0'} | ${mark(b)} | ${mark(f)} | ${mark(h)} | ${ok ? '예' : '**아니오**'} | ${change} |`)
 })
 console.log(`\n지금 기대 불일치 ${mismatch}칸`)
+process.exit(mismatch === 0 ? 0 : 1)

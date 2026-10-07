@@ -92,17 +92,35 @@ const isStatementBoundary = (node) =>
   ts.isSourceFile(node) || ts.isBlock(node) || ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isCaseClause(node) ||
   (node.kind >= ts.SyntaxKind.FirstStatement && node.kind <= ts.SyntaxKind.LastStatement)
 
-/** `pos` 에서 **시작하는** 문자열 리터럴 노드. 토큰이 더 큰 문자열 안(JSON 문자열)에 있으면 null. */
-function literalAt({ sourceFile, pos }) {
+/** 글자 노드 — 문자열·템플릿 조각·JSX 텍스트. 토큰이 이 안에 있으면 코드가 아니라 글이다. */
+const isTextNode = (node) =>
+  ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) ||
+  ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ts.isJsxText(node)
+
+/**
+ * `pos` 의 토큰이 어떤 글자 노드에 있는가 (fix3 R3-claude-01).
+ *   { literal } — `pos` 에서 **시작하는** 문자열 리터럴 그 자체(`'tab.rename'`) — AST 로 묶음을 본다
+ *   { inside }  — 더 긴 글자 노드 안(오류 메시지·JSON 문자열·테스트 제목·템플릿 문장·JSX 텍스트)
+ *   null        — 어느 글자 노드에도 없다(AST 와 글자 위치가 어긋남) — 판정할 수 없다
+ */
+function textAt({ sourceFile, pos }) {
   let found = null
   const visit = (node) => {
-    if (found || pos < node.pos || pos >= node.end) return
-    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.getStart(sourceFile) === pos) found = node
-    else ts.forEachChild(node, visit)
+    if (pos < node.pos || pos >= node.end) return
+    if (isTextNode(node) && node.getStart(sourceFile) <= pos) {
+      const whole = (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.getStart(sourceFile) === pos
+      found = whole ? { literal: node } : { inside: node }
+    }
+    ts.forEachChild(node, visit)
   }
   visit(sourceFile)
   return found
 }
+
+const BINDING_OPERATORS = (kind) =>
+  kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+  kind === ts.SyntaxKind.EqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken ||
+  (kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment)
 
 /** 이름 있는 선언(함수·메서드·getter·enum·타입 별칭)의 이름이 method 를 말하는가. */
 const namedMethod = (node) => node.name !== undefined && mentionsMethod(node.name)
@@ -144,8 +162,11 @@ function boundToMethod({ literal }) {
     if ((ts.isPropertySignature(parent) && parent.type === child) || ts.isJsxAttribute(parent)) {
       if (mentions(parent.name)) return true
     }
-    if (ts.isBinaryExpression(parent) && mentions(parent.left === child ? parent.right : parent.left)) return true
-    if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg !== child && mentions(arg))) return true
+    // 이항식은 **비교·대입**만 묶는다(fix3 R3-claude-02) — `&&`·`||`·`??`·`+` 는 묶지 않고 계속 올라간다(`method: x ?? 'A'` 는 위 속성에서 잡힌다)
+    if (ts.isBinaryExpression(parent) && BINDING_OPERATORS(parent.operatorToken.kind) && mentions(parent.left === child ? parent.right : parent.left)) return true
+    // 호출의 인자가 method 를 말하면, 리터럴이 **호출 대상 쪽**에 있을 때만 묶는다(`['A'].includes(msg.method)`).
+    // 리터럴이 인자 쪽이면 다른 인자는 무관하다 — 의존성 배열 `useCallback(() => run('A'), [method])` (fix3 R3-claude-02)
+    if (ts.isCallExpression(parent) && parent.expression === child && parent.arguments.some(mentions)) return true
     if (ts.isCallExpression(parent) && parent.arguments.includes(child) && mentions(parent.expression)) return true
   }
   return false
@@ -159,7 +180,9 @@ function boundToMethod({ literal }) {
  * 뺀 토큰은 결과의 `면제` 칸에 싣는다 — 숨기지 않는다.
  *
  * fix2 (R2-claude-01) — **판정할 수 없으면 면제하지 않는다.** 주석을 벗긴 원문이 파싱 오류를 내거나(`stripComments` 가
- * JSX 텍스트의 `//` 를 주석으로 먹는 경우 등) 토큰 자리에서 리터럴을 못 찾으면 ①을 주지 않는다 — 못 풀었다는 이유로 통과시키지 않는다.
+ * JSX 텍스트의 `//` 를 주석으로 먹는 경우 등) 토큰 자리에서 글자 노드를 못 찾으면 ①을 주지 않는다 — 못 풀었다는 이유로 통과시키지 않는다.
+ * fix3 (R3-claude-01) — 토큰이 **더 긴 글자 노드 안**(오류 메시지·JSON 픽스처·테스트 제목·템플릿 문장)이면 글이다.
+ * envelope 글자 규칙(`"method":"…"`)에 안 걸렸으면 ①을 준다.
  */
 function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
   const before = source.slice(Math.max(0, index - 80), index)
@@ -168,8 +191,11 @@ function methodExemption({ source, index, name, zone, importsMainLog, sourceFile
     const diagnostics = parsed.parseDiagnostics
     // `parseDiagnostics` 는 typescript 내부 필드다 — 없어지면(배열이 아니면) 믿을 수 없는 쪽으로 본다.
     const trusted = Array.isArray(diagnostics) && diagnostics.length === 0
-    const literal = trusted ? literalAt({ sourceFile: parsed, pos: index }) : null
-    if (literal !== null && !boundToMethod({ literal })) return 'action-id'
+    // 믿을 수 없거나(파싱 진단) 글자 노드를 못 찾으면 면제하지 않는다(R2-claude-01 fail-closed).
+    // 더 긴 글자 안의 토큰은 글이다 — envelope 글자 규칙(위)에 안 걸렸으면 면제한다(R3-claude-01).
+    const text = trusted ? textAt({ sourceFile: parsed, pos: index }) : null
+    if (text?.inside) return 'action-id'
+    if (text?.literal && !boundToMethod({ literal: text.literal })) return 'action-id'
   }
   if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
   return null

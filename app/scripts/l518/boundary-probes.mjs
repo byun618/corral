@@ -79,6 +79,8 @@ export const PROBES = [
   { id: 'a2-fn-expr-iife', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-fn-expr-iife.ts`, source: "export const probe = { method: (function () { return 'tab.rename' })() }\n" },
   // R2-claude-01 M-f — 주석 제거가 JSX 텍스트의 `//` 를 먹어 파싱이 깨진 파일: 판정할 수 없으면 면제하지 않는다(fail-closed)
   { id: 'a2-jsx-text-slash', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a2-jsx-text-slash.tsx`, source: "export const el = <p>see http://x.y</p>\ndeclare function id(x: string): string\nexport const probe = { method: id('tab.rename') }\n" },
+  // fix3 (R3-claude-01) — 더 긴 문자열 **안**이라도 envelope 글자 규칙에 걸리면 잡는다(키 순서가 바뀐 JSON 포함)
+  { id: 'a3-json-params-first', group: 'ⓐ', expect: 'R4-wire-leak', file: `${S}a3-json-params.ts`, source: jsonFrame(`'{"params":{},"method":"tab.rename"}'`) },
   // R1-claude-04 — envelope 글자 창(80자) 축소 변이를 죽인다: 문자열 안 JSON 은 AST 로 못 보고 글자로만 본다
   { id: 'a1-json-wide', group: 'ⓐ', expect: 'R4-wire-leak', file: `${R}a1-json-wide.ts`, source: jsonFrame(`'{"id":1,"method":${' '.repeat(40)}"tab.rename"}'`) },
 
@@ -140,6 +142,18 @@ export const PROBES = [
   { id: 'e-register-callback', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e-register-callback.ts`, source: "declare const spec: { method: string }\ndeclare function register(m: string, f: () => void): void\ndeclare function bindingLabel(id: string): string\nregister(spec.method, () => {\n  bindingLabel('tab.rename')\n})\n" },
   // fix2 — R2-claude-03 M-m(호출 인자 판정에 자기 인자 포함) 을 죽인다: 액션 id 와 method 가 **같은 인자 안 형제**면 묶이지 않는다
   { id: 'e-sibling-method-arg', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e-sibling-method-arg.ts`, source: "declare function track(event: { id: string; method: string }): void\ntrack({ id: 'tab.rename', method: 'keyboard' })\n" },
+  // fix3 (R3-claude-01) — 더 긴 글 안의 액션 id 는 글이다(리뷰어 r3-fp x3·x4·x5·x8). fix2 fail-closed 가 위반으로 만들던 꼴
+  { id: 'e3-error-message', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-error-message.ts`, source: "export const err = (): Error => new Error('unknown action \"tab.rename\"')\n" },
+  { id: 'e3-json-key-fixture', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${S}e3-json-key-fixture.ts`, source: "export const fixture = '{\"tab.rename\":[\"Mod+R\"]}'\n" },
+  { id: 'e3-test-title', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e3-test-title.ts`, source: "declare function it(n: string, f: () => void): void\nit('binds \"tab.rename\" to Mod+R', () => {})\n" },
+  { id: 'e3-template-text', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-template-text.ts`, source: "export const msg = (): string => `단축키 \"tab.rename\" 충돌`\n" },
+  // fix3 (R3-claude-02) — 비교·대입이 아닌 이항식(`&&`·`||`·`??`·`+`)과 무관한 호출 인자(의존성 배열)는 method 와 묶지 않는다(x2·x6·x9·x12)
+  { id: 'e3-and-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-and-method.ts`, source: "declare function isBound(id: string): boolean\ndeclare const req: { method: string }\nexport const ok = isBound('tab.rename') && req.method === 'GET'\n" },
+  { id: 'e3-deps-expr-body', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-deps-expr.ts`, source: "declare function useCallback<T>(f: T, deps: unknown[]): T\ndeclare function run(id: string): void\ndeclare const method: string\nexport const cb = useCallback(() => run('tab.rename'), [method])\n" },
+  // 식 본문 ↔ 블록 본문 판정 일치 — `() => X` 와 `() => { return X }` 는 같은 판정(e-callback-deps 는 return 없는 블록)
+  { id: 'e3-deps-block-return', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-deps-block.ts`, source: "declare function useCallback<T>(f: T, deps: unknown[]): T\ndeclare function run(id: string): void\ndeclare const method: string\nexport const cb = useCallback(() => {\n  return run('tab.rename')\n}, [method])\n" },
+  { id: 'e3-plus-nullish-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${R}e3-plus-nullish.ts`, source: "declare function bindingLabel(id: string): string\ndeclare const opts: { method?: string }\nexport const label = bindingLabel('tab.rename') + (opts.method ?? '')\n" },
+  { id: 'e3-if-or-method', expectComment: [], group: 'ⓔ', expect: null, flip: 'ⓔ①', file: `${M}e3-if-or.ts`, source: "declare function isBound(id: string): boolean\ndeclare const e: { method: string }\nexport const probe = (): number => {\n  if (isBound('tab.rename') || e.method) {\n    return 1\n  }\n  return 0\n}\n" },
   // R1-claude-04 — 주석언급 칸: 주석에만 있는 토큰은 주석언급에 실리고(위반 아님), 면제된 코드 토큰(위 ⓔ 칸 expectComment [])은 실리지 않는다
   { id: 'e-comment-only', expectComment: ["'pane.split'"], group: 'ⓔ', expect: null, file: `${R}e-comment-only.ts`, source: "// 'pane.split' 은 주석에만 있다\nexport const probe = 1\n" },
 

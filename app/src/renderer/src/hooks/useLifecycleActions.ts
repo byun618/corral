@@ -9,7 +9,8 @@
 // MIT 고지 대상 아님).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentKind, AppState, WorkspaceRow, WorktreeRow } from '../../../shared/types.js'
+import type { AgentKind, AppState, WorkspaceRow, WorktreeActionResult, WorktreeRow } from '../../../shared/types.js'
+import { PENDING_ACTIVE_MS, syncActiveWorkspace, type PendingActive } from '../active-workspace.js'
 import type { CloseTarget, LifecycleActions, LifecycleNotice, PendingClose } from '../lifecycle-types.js'
 import { isDefaultPositionLabel } from '../session-title.js'
 import { LAUNCH_WATCHDOG_MS, launchWatchdogMessage, launchWatchdogVerdict, type LaunchWatch } from '../tab-create-menu.js'
@@ -42,6 +43,8 @@ export function useLifecycleActions(state: AppState | null): {
   cancelPendingClose: () => void
   worktreeModal: { repoRoot: string } | null
   closeWorktreeModal: () => void
+  /** 생성 모달의 제출(LIFE-490 D3) — 성공하면 새 워크트리를 활성으로 세운다(열기와 같은 보류 장치). */
+  createWorktree: (input: { repoRoot: string; branch: string; path: string }) => Promise<WorktreeActionResult>
   actions: LifecycleActions
 } {
   const [selectedPane, setSelectedPane] = useState<string | null>(null)
@@ -138,15 +141,59 @@ export function useLifecycleActions(state: AppState | null): {
     launchWatches.current.set(watch.paneId, { watch, timer })
   }, [])
 
-  const setActive = useCallback((workspaceId: string | null) => {
+  /**
+   * 방금 열거나 만든 workspace 의 **보류** (LIFE-490) — 응답이 state 보다 먼저 와서 동기화 effect 가 그 id 를
+   * 「닫힘」 으로 읽고 main 으로 승격하던 경합을 막는다. 판정은 `syncActiveWorkspace`(`active-workspace.ts`) 한 곳.
+   */
+  const pendingActiveRef = useRef<PendingActive | null>(null)
+  /** 보류 기한이 지나면 동기화를 다시 돌린다 — state push 가 더 안 와도 죽은 id 에 머물지 않게. */
+  const [pendingExpiry, setPendingExpiry] = useState(0)
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * 사용자 활성 의도의 순번 — 활성을 바꾸는 사용자 동작(행·세션 클릭, 탭 만들기, 열기·생성 요청)마다 오른다.
+   * 열기·생성 응답은 요청 때 잡은 순번이 그대로일 때만 활성을 가져간다 — 기다리는 사이 사용자가 다른 것을 누르면
+   * 그 선택이 이긴다(늦게 도착한 앞 요청이 활성을 빼앗지 않는다).
+   */
+  const intentSeq = useRef(0)
+
+  /** 활성만 바꾼다(의도 순번·보류는 그대로) — 동기화 effect 의 승격과 응답 채택이 쓴다. */
+  const assignActive = useCallback((workspaceId: string | null) => {
     lastWorkspaceRef.current = workspaceId
     setActiveWorkspaceIdState(workspaceId)
+  }, [])
+
+  /** 사용자 동작의 활성 — 새 의도다. 앞 요청의 보류는 버린다. */
+  const setActive = useCallback((workspaceId: string | null) => {
+    intentSeq.current += 1
+    pendingActiveRef.current = null
+    assignActive(workspaceId)
+  }, [assignActive])
+
+  /**
+   * 열기·생성 응답의 workspace 를 활성으로 받는다. `seq` 는 요청할 때 올린 의도 순번 — 그 뒤 다른 의도가 있었으면 버린다.
+   * 이미 state 에 있으면 그대로, 아직 없으면 보류를 걸고 기한에 동기화를 다시 돌린다.
+   */
+  const adoptOpened = useCallback((input: { workspaceId: string; seq: number }) => {
+    if (input.seq !== intentSeq.current) return
+    const known = stateRef.current?.repos.some((repo) => repo.worktrees.some((worktree) => worktree.workspace?.workspaceId === input.workspaceId)) ?? false
+    pendingActiveRef.current = known ? null : { workspaceId: input.workspaceId, deadline: Date.now() + PENDING_ACTIVE_MS }
+    assignActive(input.workspaceId)
+    if (known) return
+    if (pendingTimer.current !== null) clearTimeout(pendingTimer.current)
+    pendingTimer.current = setTimeout(() => {
+      pendingTimer.current = null
+      setPendingExpiry((count) => count + 1)
+    }, PENDING_ACTIVE_MS)
+  }, [assignActive])
+  useEffect(() => () => {
+    if (pendingTimer.current !== null) clearTimeout(pendingTimer.current)
   }, [])
 
   /**
    * `activeWorkspaceId` 동기화 — 사용자 상호작용(worktree 열기·pane 선택·행 생성) 밖에서도
    * herdr 에 이미 workspace 가 열려있는 채로 앱이 뜨면(재기동·재접속) 열린 workspace 중
    * focused 우선으로 승격한다. 대상이 닫힌 뒤 죽은 id 로 남는 것도 같이 정리한다.
+   * 방금 연 workspace 가 아직 도착 전이면(보류) 지우지 않는다 — LIFE-490.
    */
   useEffect(() => {
     if (state === null) return
@@ -155,11 +202,10 @@ export function useLifecycleActions(state: AppState | null): {
       .map((worktree) => worktree.workspace)
       .filter((workspace): workspace is WorkspaceRow => workspace !== null)
     const current = lastWorkspaceRef.current
-    if (current !== null && openWorkspaces.some((workspace) => workspace.workspaceId === current)) return
-    const promoted = openWorkspaces.find((workspace) => workspace.focused) ?? openWorkspaces[0] ?? null
-    const nextId = promoted?.workspaceId ?? null
-    if (nextId !== current) setActive(nextId)
-  }, [state, setActive])
+    const sync = syncActiveWorkspace({ current, pending: pendingActiveRef.current, open: openWorkspaces, now: Date.now() })
+    pendingActiveRef.current = sync.pending
+    if (sync.next !== current) assignActive(sync.next)
+  }, [state, pendingExpiry, assignActive])
 
   /**
    * worktree 를 연 직후 첫 pane 자동 선택. 핸드오프 §4는 "첫 세션 자동 활성"을 요구한다 —
@@ -430,6 +476,9 @@ export function useLifecycleActions(state: AppState | null): {
       // in-flight 재클릭 무시 (M5) — 진행 중이면 두 번째는 아무것도 안 한다 (고아 workspace 방지).
       if (openingWorktrees.current.has(worktree.path)) return
       openingWorktrees.current.add(worktree.path)
+      // 여는 것도 사용자 의도다 — 앞서 기다리던 열기는 이 열기에 진다(LIFE-490 K2ⓒ).
+      intentSeq.current += 1
+      const seq = intentSeq.current
       setLifecycleNotice(null)
       try {
         const result = await window.corral.openWorktree({ repoRoot, path: worktree.path, isLinked: worktree.isLinked })
@@ -440,12 +489,29 @@ export function useLifecycleActions(state: AppState | null): {
         else if (result.ok && result.parentOpened)
           setLifecycleNotice({ kind: 'info', message: 'main workspace 를 함께 열었습니다 (herdr 제약)' })
         // 연 workspace 를 메인 탭바 대상으로 세운다 — 열자마자 탭을 만들 수 있어야 한다.
-        if (result.ok && result.workspaceId !== null) setActive(result.workspaceId)
+        // 응답은 그 workspace 가 state 에 들어오기 전에 올 수 있다 — 보류로 받는다(LIFE-490).
+        if (result.ok && result.workspaceId !== null) adoptOpened({ workspaceId: result.workspaceId, seq })
       } finally {
         openingWorktrees.current.delete(worktree.path)
       }
     },
-    [setActive],
+    [adoptOpened],
+  )
+
+  /**
+   * 새 워크트리 생성 (LIFE-490 D3). 전에는 모달이 IPC 를 직접 부르고 활성을 건드리지 않아 새 워크트리가 뒤에 생기기만 했다
+   * (198 은 생성 뒤 새 워크트리를 활성한다 — `worktree-jump-palette-create-worktree.ts:221`). 응답은 열기와 같은 경합에 걸리므로
+   * 같은 보류로 받는다. 실패·거절이면 활성은 그대로다 — 알림은 모달이 띄운다.
+   */
+  const createWorktree = useCallback(
+    async (input: { repoRoot: string; branch: string; path: string }): Promise<WorktreeActionResult> => {
+      intentSeq.current += 1
+      const seq = intentSeq.current
+      const result = await window.corral.createWorktree(input)
+      if (result.ok && result.workspaceId !== null) adoptOpened({ workspaceId: result.workspaceId, seq })
+      return result
+    },
+    [adoptOpened],
   )
 
   const actions: LifecycleActions = {
@@ -512,6 +578,7 @@ export function useLifecycleActions(state: AppState | null): {
     cancelPendingClose,
     worktreeModal,
     closeWorktreeModal,
+    createWorktree,
     actions,
   }
 }

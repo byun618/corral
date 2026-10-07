@@ -1,13 +1,17 @@
 // design-handoff.md §2 CreateWorktreeModal — 브랜치·경로 2필드, 경로는 브랜치에서 자동 생성.
 // 로직은 옛 App.tsx 587-678줄 그대로(텍스트 입력 — OS 다이얼로그 아님, L7) — 자리와 스타일만 바뀜.
 import { useState } from 'react'
+import type { WorktreeActionResult } from '../../../shared/types.js'
 
 export function CreateWorktreeModal({
   repoRoot,
+  create,
   onClose,
   onDone,
 }: {
   repoRoot: string
+  /** 생성 IPC — 성공하면 새 워크트리를 활성으로 세우는 라이프사이클 경로(LIFE-490 D3, `useLifecycleActions.createWorktree`). */
+  create: (input: { repoRoot: string; branch: string; path: string }) => Promise<WorktreeActionResult>
   onClose: () => void
   onDone: (message: string) => void
 }): React.JSX.Element {
@@ -33,7 +37,7 @@ export function CreateWorktreeModal({
     setBusy(true)
     setNote(null)
     try {
-      const result = await window.corral.createWorktree({ repoRoot, branch: branch.trim(), path: effectivePath })
+      const result = await create({ repoRoot, branch: branch.trim(), path: effectivePath })
       if (result.ok) {
         onDone(`worktree 만듦: ${branch.trim()}`)
         return

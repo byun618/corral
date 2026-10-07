@@ -1664,6 +1664,7 @@ export function App(): React.JSX.Element {
       {lifecycle.worktreeModal === null ? null : (
         <CreateWorktreeModal
           repoRoot={lifecycle.worktreeModal.repoRoot}
+          create={lifecycle.createWorktree}
           onClose={lifecycle.closeWorktreeModal}
           onDone={(message) => {
             lifecycle.closeWorktreeModal()

@@ -46,6 +46,44 @@ if (EVENT_NAMES.length < 10) {
   process.exit(2)
 }
 
+/**
+ * LIFE-518 — 메서드 지문(`tab.\w+` 류)은 **이름만으로는** 단축키 액션 id 와 herdr 메서드를 못 가른다.
+ * `tab.rename` 은 둘 다다(액션 id 이면서 `ALLOWED_METHODS` 의 실제 메서드). 그래서 가르는 축은 이름이 아니라
+ * **쓰인 자리**다: 액션 id 어휘의 토큰은 요청 envelope 위치(`method:` 값 · `"method":"…"` · `msg.method = …`)에
+ * 있을 때만 위반이다. 어휘는 손으로 적지 않고 진실의 원천에서 읽는다(L-6 와 같은 이유) — 액션 id 는
+ * `shared/keybindings.ts` 의 `ACTIONS`, 실제 herdr 메서드는 어댑터 `request.ts` 의 `ALLOWED_METHODS`.
+ */
+function derivedList({ file, block, item }) {
+  const match = block.exec(fs.readFileSync(path.join(SRC, file), 'utf8'))
+  return new Set([...(match?.[1] ?? '').matchAll(item)].map((found) => found[1]))
+}
+const ACTION_IDS = derivedList({ file: 'shared/keybindings.ts', block: /export const ACTIONS = \[([\s\S]*?)\n\] as const/, item: /\bid: '([^']+)'/g })
+const HERDR_METHODS = derivedList({ file: 'main/adapter/internal/request.ts', block: /const ALLOWED_METHODS[^=]*=\s*\[([\s\S]*?)\n\]/, item: /'([a-z_.]+)'/g })
+// 이벤트 지문과 같다 — 파생이 조용히 비면 면제가 사라지거나(오탐 복귀) 로그 면제가 넓어진다. 멈춘다.
+if (ACTION_IDS.size < 10 || HERDR_METHODS.size < 10) {
+  console.error(`지문 파생 실패: 액션 id ${ACTION_IDS.size}개 · herdr 메서드 ${HERDR_METHODS.size}개만 읽혔다`)
+  process.exit(2)
+}
+const MAIN_LOG = path.join(SRC, 'main/log.ts')
+
+/** 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`. */
+const ENVELOPE_BEFORE = /method\\?['"`]?\]?\s*(?::|={1,3}|!==?)\s*\\?$/i
+/** 토큰 바로 앞이 `log(` 의 첫 인자 자리인가 — `console.log(`·`x.log(` 는 아니다. */
+const LOG_FIRST_ARG_BEFORE = /(?<![\w.$])log\(\s*$/
+
+/**
+ * 메서드 지문에 걸린 토큰을 위반에서 빼는 두 경우(01-criteria K3ⓔ 의 오탐 꼴 정의 그대로). 그 밖은 null(위반).
+ *   ① 액션 id 어휘의 토큰이 envelope 자리 밖에 있다 — 액션 표·`bindingLabel('tab.rename')`·액션 id 키 객체·테스트 기대값
+ *   ② main 의 `log()`(`main/log.ts` 를 import 한 파일) 첫 인자 태그이고, 실제 herdr 메서드 이름이 아니다
+ * 뺀 토큰은 결과의 `면제` 칸에 싣는다 — 숨기지 않는다.
+ */
+function methodExemption({ source, index, name, zone, importsMainLog }) {
+  const before = source.slice(Math.max(0, index - 80), index)
+  if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) return 'action-id'
+  if (zone === 'main' && importsMainLog && !HERDR_METHODS.has(name) && LOG_FIRST_ARG_BEFORE.test(before)) return 'log-tag'
+  return null
+}
+
 const rel = (file) => path.relative(APP_DIR, file)
 
 function walk(dir) {
@@ -159,7 +197,8 @@ const WIRE_FINGERPRINTS = [
   {
     kind: 'method',
     pattern:
-      /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)['"`]/g,
+    // 닫는 따옴표 앞 역슬래시도 본다 (LIFE-518) — 이스케이프한 JSON 문자열 `"{\\"method\\":\\"tab.rename\\"}"` 안의 토큰.
+      /['"`](?:ping|session\.snapshot|workspace\.\w+|worktree\.\w+|tab\.\w+|pane\.\w+|agent\.\w+|events\.\w+|layout\.\w+)\\?['"`]/g,
   },
   { kind: 'field', pattern: /\b(?:workspace_id|pane_id|tab_id|agent_status|open_workspace_id|is_linked_worktree|repo_root|repo_name|foreground_cwd|terminal_title|display_agent|pane_count|tab_count|socket_path|process_info|foreground_process_group_id|shell_pid)\b/g },
   // 목록에서 파생된다 (L-6) — 손으로 적지 않는다.
@@ -172,6 +211,7 @@ const violations = []
 const scanned = []
 
 const commentMentions = []
+const exemptions = []
 
 for (const file of files) {
   const raw = fs.readFileSync(file, 'utf8')
@@ -208,9 +248,17 @@ for (const file of files) {
 
   // ④ 와이어 지문 — 어댑터 밖에는 없어야 한다
   const wire = []
+  const codeTokens = new Set()
   if (!isAdapter) {
+    const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
     for (const { kind, pattern } of WIRE_FINGERPRINTS) {
-      for (const match of source.matchAll(pattern)) wire.push({ kind, token: match[0] })
+      for (const match of source.matchAll(pattern)) {
+        codeTokens.add(match[0])
+        const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
+        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog }) : null
+        if (reason === null) wire.push({ kind, token: match[0] })
+        else exemptions.push({ file: rel(file), zone, token: match[0], 사유: reason })
+      }
     }
   }
   if (wire.length > 0) {
@@ -221,8 +269,7 @@ for (const file of files) {
   if (!isAdapter) {
     const inRaw = new Set()
     for (const { pattern } of WIRE_FINGERPRINTS) for (const match of raw.matchAll(pattern)) inRaw.add(match[0])
-    const inCode = new Set(wire.map((item) => item.token))
-    const onlyComment = [...inRaw].filter((token) => !inCode.has(token))
+    const onlyComment = [...inRaw].filter((token) => !codeTokens.has(token))
     if (onlyComment.length > 0) commentMentions.push({ file: rel(file), zone, tokens: onlyComment })
   }
 
@@ -259,6 +306,12 @@ const out = {
   주석언급: {
     설명: '주석에만 나온 herdr 와이어 이름. 실행되지 않으므로 위반이 아니다 — 값의 출처를 적어 둔 자리다.',
     항목: commentMentions,
+  },
+  면제: {
+    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다.',
+    '액션 id (shared/keybindings.ts ACTIONS 에서 파생)': ACTION_IDS.size,
+    'herdr 메서드 (adapter request.ts ALLOWED_METHODS 에서 파생)': HERDR_METHODS.size,
+    항목: exemptions,
   },
   위반: violations,
   판정: violations.length === 0 && ipcTypesFromShared ? '통과' : '미달',

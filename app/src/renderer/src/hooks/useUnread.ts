@@ -19,9 +19,16 @@ function readAttention(): boolean {
 /** main 이 transcript 를 읽는 provider (`shared/types.ts` `TranscriptAgent`). */
 const TRANSCRIPT_AGENTS: readonly string[] = ['claude', 'codex', 'grok']
 
-/** 그 pane 의 transcript 에 사람 발화가 있나 (LIFE-502) — transcript 를 읽지 않는 pane 은 판단 불가(null). */
-export function promptedOf(pane: Pick<PaneRow, 'agent' | 'digest'>): boolean | null {
+/**
+ * 그 pane 의 transcript 에 사람 발화가 있나 (LIFE-502) — transcript 를 읽지 않는 pane 은 판단 불가(null).
+ *
+ * 세션 참조(`agentSession`)가 없으면 판단 불가다 — provider 없는 보고(`pane.report_agent`, 471 하네스·셸에 붙은 에이전트)는
+ * transcript provider 이름을 대도 참조가 영영 안 온다. claude·grok 은 기동 때 참조를 밝힌다(SessionStart 훅). **codex 만 예외**다:
+ * 그 훅이 첫 프롬프트에서야 와서(00-analysis §6 코디 탐침 · raw/claude/k1 상태 덤프) 참조가 없다는 것 자체가 「아직 사람 턴 없음」이다.
+ */
+export function promptedOf(pane: Pick<PaneRow, 'agent' | 'agentSession' | 'digest'>): boolean | null {
   if (pane.agent === null || !TRANSCRIPT_AGENTS.includes(pane.agent)) return null
+  if (pane.agentSession === null) return pane.agent === 'codex' ? false : null
   return pane.digest.firstPrompt !== null || pane.digest.lastPrompt !== null
 }
 

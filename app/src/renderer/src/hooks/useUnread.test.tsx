@@ -7,7 +7,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EMPTY_SESSION_DIGEST, type UiPrefs } from '../../../shared/types.js'
+import { type AgentSessionRef, EMPTY_SESSION_DIGEST, type UiPrefs } from '../../../shared/types.js'
 import { isTerminalInputKey, promptedOf, useUnread, type UnreadView } from './useUnread.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
@@ -219,13 +219,19 @@ describe('터미널 입력 키 (198 terminal-keydown-fit)', () => {
 })
 
 describe('promptedOf (LIFE-502) — transcript 에 사람 발화가 있나', () => {
+  const ref = (agent: string): AgentSessionRef => ({ kind: 'id', agent, source: 'herdr', id: 's1' })
   it('transcript provider 는 firstPrompt·lastPrompt 로 · 그 밖(셸·미지원 provider)은 판단 불가(null)', () => {
-    expect(promptedOf({ agent: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
-    expect(promptedOf({ agent: 'opencode', digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: 'x' } })).toBe(null)
+    expect(promptedOf({ agent: null, agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
+    expect(promptedOf({ agent: 'opencode', agentSession: ref('opencode'), digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: 'x' } })).toBe(null)
     for (const agent of ['claude', 'codex', 'grok']) {
-      expect(promptedOf({ agent, digest: EMPTY_SESSION_DIGEST })).toBe(false)
-      expect(promptedOf({ agent, digest: { ...EMPTY_SESSION_DIGEST, firstPrompt: '안녕' } })).toBe(true)
-      expect(promptedOf({ agent, digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: '안녕' } })).toBe(true)
+      expect(promptedOf({ agent, agentSession: ref(agent), digest: EMPTY_SESSION_DIGEST })).toBe(false)
+      expect(promptedOf({ agent, agentSession: ref(agent), digest: { ...EMPTY_SESSION_DIGEST, firstPrompt: '안녕' } })).toBe(true)
+      expect(promptedOf({ agent, agentSession: ref(agent), digest: { ...EMPTY_SESSION_DIGEST, lastPrompt: '안녕' } })).toBe(true)
     }
+  })
+  it('세션 참조가 없으면 판단 불가(provider 없는 보고) — codex 만 「아직 프롬프트 없음」(훅이 첫 프롬프트에서 온다)', () => {
+    expect(promptedOf({ agent: 'claude', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
+    expect(promptedOf({ agent: 'grok', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(null)
+    expect(promptedOf({ agent: 'codex', agentSession: null, digest: EMPTY_SESSION_DIGEST })).toBe(false)
   })
 })

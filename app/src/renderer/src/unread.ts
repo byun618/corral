@@ -25,8 +25,9 @@
 //     이런 일이 없다. corral 은 hook 대신 「사람 턴이 있었나」를 transcript 지문(`digest.firstPrompt`·`lastPrompt`)으로 본다.
 //     기동 인자 프롬프트(`claude "…"`)는 transcript 에 발화가 있으니 센다. 지문은 main 이 1.5초 주기로 읽어 상태보다 늦을 수 있다 —
 //     그래서 버리지 않고 **보류**(`held`)했다가, 그 pane 이 같은 상태에 머무는 동안 발화가 보이면 그때 원래 시각으로 센다.
-//     상태가 바뀌면 보류를 버린다. transcript 를 읽지 않는 pane(`prompted === null` — 미지원 provider 등)은 이 규칙 밖이다(지금처럼 센다).
-//     한계: transcript provider 이름으로 보고된 provider 없는 pane 이 `unknown` 에서 곧장 working → idle 이면 반짝임과 구별되지 않아 세지 않는다.
+//     상태가 바뀌면 보류를 버린다. 판단할 수 없는 pane(`prompted === null` — 미지원 provider·세션 참조 없는 provider 없는 보고)은
+//     이 규칙 밖이다(지금처럼 센다). 판정은 `hooks/useUnread.ts` `promptedOf`.
+//     한계: 「codex」 라고 보고한 provider 없는 pane 이 `unknown` 에서 곧장 working → idle 이면 반짝임과 구별되지 않아 세지 않는다.
 // 화면을 새로 띄운 첫 묶음(렌더러 재적재)에서는 이미 지나간 전이를 다시 세지 않는다 — `done` 인 것만 pane 안 읽음(벨 없음).
 // 벨을 켜는 것은 실제 완료 전이와 Mark Unread 뿐이고, 재시작 뒤 벨은 저장값을 따른다.
 //

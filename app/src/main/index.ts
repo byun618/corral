@@ -94,7 +94,7 @@ import { canonicalPath } from './canonical-path.js'
 import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
-import { isExternalOpenAllowed } from './external-url.js'
+import { externalOpenLogUrl, isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
@@ -1506,13 +1506,14 @@ function createWindow(): void {
     if (dispatch && window !== null && !window.isDestroyed()) window.webContents.send('corral:shortcut', dispatch)
   })
   /**
-   * 새 창은 전부 거절한다. 외부로 넘기는 것은 **https 만** — 보안 체크리스트 17 (수정 1회차 L12).
+   * 새 창은 전부 거절한다. 외부로 넘기는 것은 **http·https 만**(`isExternalOpenAllowed`, LIFE-565 D2 — 원래 https 만) — 보안 체크리스트 17 (수정 1회차 L12).
    * R1 화면에 외부 링크는 없지만, `openExternal` 에 걸러지지 않은 URL 을 넘기는 모양이
    * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.
+   * 허용 로그는 쿼리·조각을 뺀 `origin + pathname` 만 남긴다 — 로그인 URL 의 토큰·state 를 로그 파일에 쓰지 않는다.
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalOpenAllowed(url)) {
-      log('window.open.external', { url: url.slice(0, 200) })
+      log('window.open.external', { url: externalOpenLogUrl(url) })
       void shell.openExternal(url)
     } else log('window.open.denied', { url: url.slice(0, 200) })
     return { action: 'deny' }

@@ -3,3 +3,13 @@
 export function isExternalOpenAllowed(url: string): boolean {
   return /^https?:\/\//.test(url)
 }
+
+/** 허용 로그에 남길 모양 — 쿼리·조각(토큰·OAuth state 가 들 수 있다)을 뺀 `origin + pathname`, 200자 상한. */
+export function externalOpenLogUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return (parsed.origin + parsed.pathname).slice(0, 200)
+  } catch {
+    return '(unparsable)'
+  }
+}

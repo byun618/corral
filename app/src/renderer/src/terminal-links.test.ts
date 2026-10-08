@@ -26,6 +26,10 @@ describe('trimUrlTail — 끝 구두점 (C1ⓓ)', () => {
     ['https://en.wikipedia.org/wiki/Foo_(bar)).', 'https://en.wikipedia.org/wiki/Foo_(bar)'],
     ['https://x.y/[a]]', 'https://x.y/[a]'],
     ['https://x.y/?q=1', 'https://x.y/?q=1'],
+    // R1-05 — 마크다운 굵게의 닫는 `**` 는 뗀다. `_` 는 경로 끝에 합법이라 남긴다(RESULT fix r1).
+    ['https://x.y/a**', 'https://x.y/a'],
+    ['https://x.y/a**.', 'https://x.y/a'],
+    ['https://x.y/a_', 'https://x.y/a_'],
   ])('%s → %s', (raw, expected) => {
     expect(trimUrlTail(raw)).toBe(expected)
   })
@@ -46,6 +50,11 @@ describe('findLinksOnRow — 한 행', () => {
       'https://x.y/q',
       'http://localhost:5173/',
     ])
+  })
+
+  it('R1-05 — 마크다운 굵게 안 URL, `\'` 에서는 끊는다(셸 따옴표 우선)', () => {
+    expect(texts({ readRow: grid({ cols: 60, rows: ['**https://x.y/a**'] }), y: 0 })).toEqual(['https://x.y/a'])
+    expect(texts({ readRow: grid({ cols: 60, rows: ["'https://x.y/it's'"] }), y: 0 })).toEqual(['https://x.y/it'])
   })
 
   it('스킴을 거르지 않는다 — 허용 판단은 main 술어 한 곳 (C3ⓒ)', () => {
@@ -92,10 +101,22 @@ describe('findLinksOnRow — 줄 넘김 결합 (C4)', () => {
     expect(texts({ readRow, y: 1 })).toEqual([])
   })
 
-  it('ⓑ 다음 행 첫 칸이 공백이면 잇지 않는다', () => {
-    const readRow = grid({ cols: 20, rows: [rows[0] ?? '', ' ' + url.slice(20)] })
+  it('ⓐ 이어지는 행의 들여쓰기(≤ 8칸)는 건너뛰고 잇는다 — 범위는 들여쓰기 뒤 칸부터', () => {
+    const readRow = grid({ cols: 20, rows: [rows[0] ?? '', '  ' + url.slice(20)] })
+    const expected = [{ text: url, range: { start: { x: 1, y: 1 }, end: { x: url.length - 20 + 2, y: 2 } } }]
+    expect(findLinksOnRow({ readRow, y: 0 })).toEqual(expected)
+    expect(findLinksOnRow({ readRow, y: 1 })).toEqual(expected)
+  })
+
+  it('ⓑ 들여쓰기가 8칸을 넘으면 잇지 않는다', () => {
+    const readRow = grid({ cols: 20, rows: [rows[0] ?? '', ' '.repeat(9) + url.slice(20)] })
     expect(texts({ readRow, y: 0 })).toEqual([url.slice(0, 20)])
     expect(texts({ readRow, y: 1 })).toEqual([])
+  })
+
+  it('ⓑ 다음 행이 빈 행이면 잇지 않는다', () => {
+    const readRow = grid({ cols: 20, rows: [rows[0] ?? '', ''] })
+    expect(texts({ readRow, y: 0 })).toEqual([url.slice(0, 20)])
   })
 
   it('ⓑ 첫 행 마지막 칸이 URL 문자가 아니면(넓은 글자 등) 잇지 않는다', () => {
@@ -106,6 +127,72 @@ describe('findLinksOnRow — 줄 넘김 결합 (C4)', () => {
     }
     expect(texts({ readRow, y: 0 })).toEqual(['https://ex.co/'])
     expect(texts({ readRow, y: 1 })).toEqual([])
+  })
+})
+
+/** 넓은 글자(한글)는 2칸 + 폭 0 뒤 칸. 실제 샘플의 `⏺` 는 1칸이었다(f1-wrap-sample-06-shape.txt). */
+function wideGrid(input: { cols: number; rows: string[] }): ReadRow {
+  const cells: LinkCell[][] = input.rows.map((row) => {
+    const line: LinkCell[] = []
+    for (const chars of row) {
+      if (/[\uac00-\ud7a3]/.test(chars)) line.push({ chars, width: 2 }, { chars: '', width: 0 })
+      else line.push({ chars, width: 1 })
+    }
+    while (line.length < input.cols) line.push({ chars: '', width: 1 })
+    return line
+  })
+  return (y) => cells[y]
+}
+
+describe('실제 Claude Code 2.1.280 샘플 모양 (fix r1 R1-01 — raw/claude/f1-wrap-sample-04·06)', () => {
+  // 샘플 pane 폭 260. 아래 행은 샘플 화면의 행 13~15·17~19 와 글자 단위로 같다(f1-wrap-sample-06-shape.txt 의 대조).
+  const cols = 260
+  const u1 = 'https://example.com/l565-wrap/' + ['a'.repeat(150), 'b'.repeat(150), 'c'.repeat(150), 'd'.repeat(100)].join('/')
+  const u2 = 'https://example.com/l565-list/' + ['e'.repeat(150), 'f'.repeat(150), 'g'.repeat(150), 'h'.repeat(100)].join('/')
+
+  it('단독 URL — 첫 행 `⏺ ` 뒤 마지막 칸까지, 이어지는 행 2칸 들여쓰기 · 세 행 어디서나 전체 URL', () => {
+    const readRow = wideGrid({ cols, rows: ['⏺ ' + u1.slice(0, 258), '  ' + u1.slice(258, 516), '  ' + u1.slice(516), ''] })
+    for (const y of [0, 1, 2]) expect(texts({ readRow, y })).toEqual([u1])
+    expect(findLinksOnRow({ readRow, y: 2 })[0]?.range).toEqual({ start: { x: 3, y: 1 }, end: { x: 2 + u1.length - 516, y: 3 } })
+  })
+
+  it('목록 항목 — `  - 링크: ` 뒤, 이어지는 행 4칸 들여쓰기 · 세 행 어디서나 전체 URL', () => {
+    const readRow = wideGrid({ cols, rows: ['  - 링크: ' + u2.slice(0, 250), '    ' + u2.slice(250, 506), '    ' + u2.slice(506), ''] })
+    for (const y of [0, 1, 2]) expect(texts({ readRow, y })).toEqual([u2])
+  })
+
+  it('음성 대조 — 사용자 입력 에코처럼 259칸에서 접혀 마지막 칸이 비면 잇지 않는다', () => {
+    const readRow = wideGrid({ cols, rows: ['  ' + u1.slice(0, 257), '  ' + u1.slice(257)] })
+    expect(texts({ readRow, y: 0 })).toEqual([u1.slice(0, 257)])
+  })
+})
+
+describe('결합 경계 (R1-04 리뷰 재현)', () => {
+  it('재현 1 (한계 고정) — URL 이 행 끝에서 정확히 끝나고 다음 행이 글자로 시작하면 잘못 잇는다', () => {
+    const readRow = grid({ cols: 16, rows: ['https://a.com/xx', 'Then do this'] })
+    expect(texts({ readRow, y: 0 })).toEqual(['https://a.com/xxThen'])
+  })
+
+  it('재현 2 — 다음 행이 다른 URL 로 시작하면 잇지 않는다 (두 링크)', () => {
+    const readRow = grid({ cols: 16, rows: ['https://a.com/xx', 'https://b.com/yy'] })
+    expect(texts({ readRow, y: 0 })).toEqual(['https://a.com/xx'])
+    expect(texts({ readRow, y: 1 })).toEqual(['https://b.com/yy'])
+  })
+
+  it('재현 3 — 꽉 찬 글 행 아래의 URL 이 앞 행 끝 글자에 붙지 않는다', () => {
+    const readRow = grid({ cols: 20, rows: ['aaaa bbbb cccc dddee', 'https://x.y/a'] })
+    expect(texts({ readRow, y: 0 })).toEqual([])
+    expect(findLinksOnRow({ readRow, y: 1 })).toEqual([{ text: 'https://x.y/a', range: { start: { x: 1, y: 2 }, end: { x: 13, y: 2 } } }])
+  })
+
+  it('재현 3 변형 — 전폭 `-` 구분선 바로 아래 col 0 URL 도 링크가 된다', () => {
+    const readRow = grid({ cols: 20, rows: ['-'.repeat(20), 'https://x.y/a'] })
+    expect(texts({ readRow, y: 1 })).toEqual(['https://x.y/a'])
+  })
+
+  it('들여쓴 다음 행이 URL 로 시작해도 잇지 않는다', () => {
+    const readRow = grid({ cols: 16, rows: ['https://a.com/xx', '  https://b.com/'] })
+    expect(texts({ readRow, y: 1 })).toEqual(['https://b.com/'])
   })
 })
 

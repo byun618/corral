@@ -5,7 +5,9 @@
 //
 // 평문 URL 은 `@xterm/addon-web-links` 대신 자체 provider 로 찾는다. herdr 프레임은 행마다 절대 좌표로 쓰고 autowrap 을
 // 끄기 때문에(frame-to-ansi) xterm 버퍼의 `isWrapped` 가 서지 않는다 — 애드온은 긴 URL 을 첫 행 끝에서 자른다(00-analysis F2).
-// 그래서 **행 끝 칸까지 URL 문자로 찬 행과 첫 칸이 URL 문자인 다음 행**을 한 줄로 이어 본다(D3).
+// 그래서 **행 끝 칸까지 URL 문자로 찬 행과 (들여쓰기 뒤) URL 문자로 시작하는 다음 행**을 한 줄로 이어 본다(D3).
+// 실제 Claude Code(Ink)는 이어지는 행을 본문 여백만큼 들여쓴다 — 단독 URL 2칸·목록 항목 4칸(fix r1 샘플
+// `raw/claude/f1-wrap-sample-*`). 들여쓰기 공백은 URL 에 넣지 않는다.
 import type { IBufferRange, ILink, ILinkHandler, Terminal } from '@xterm/xterm'
 
 /** 버퍼 한 칸. `width` 0 은 넓은 글자의 뒤 칸이다. */
@@ -17,27 +19,52 @@ export type ReadRow = (y: number) => LinkCell[] | undefined
 /** 한 번에 잇는 최대 행 수 — 화면 하나를 통째로 훑지 않게 막는 상한. */
 const MAX_JOINED_ROWS = 16
 
+/** 이어지는 행에 허용하는 들여쓰기 칸 수 상한 — 실측 2·4칸, 중첩 목록 여유를 둔다. */
+const MAX_CONTINUATION_INDENT = 8
+
 const URL_CHAR = /[\w\-.~:/?#[\]@!$&()*+,;=%]/
 // 스킴은 거르지 않는다(위 주석) — `scheme://` 꼴이면 링크로 본다. 앞 글자가 스킴 문자면 스킴 중간이라 잡지 않는다.
 const URL_PATTERN = /(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[\w\-.~:/?#[\]@!$&()*+,;=%]+/g
+const SCHEME_START = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//
 
 function isUrlCell(cell: LinkCell | undefined): boolean {
   return cell !== undefined && cell.width === 1 && cell.chars.length === 1 && URL_CHAR.test(cell.chars)
 }
 
-/** 행 a 의 마지막 칸과 행 b 의 첫 칸이 둘 다 URL 문자면 줄 넘김으로 본다. */
-function continues(a: LinkCell[] | undefined, b: LinkCell[] | undefined): boolean {
-  if (a === undefined || b === undefined || a.length === 0) return false
-  return isUrlCell(a[a.length - 1]) && isUrlCell(b[0])
+function isBlankCell(cell: LinkCell | undefined): boolean {
+  return cell !== undefined && cell.width === 1 && (cell.chars === '' || cell.chars === ' ')
 }
 
-/** URL 끝에 붙은 문장 구두점과 짝 없는 닫는 괄호를 뗀다 (C1ⓓ). */
+/** 이어지는 행의 들여쓰기 칸 수. 상한 안에서 URL 문자가 안 나오면 null. */
+function continuationIndent(cells: LinkCell[]): number | null {
+  let x = 0
+  while (x <= MAX_CONTINUATION_INDENT && isBlankCell(cells[x])) x++
+  return x <= MAX_CONTINUATION_INDENT && isUrlCell(cells[x]) ? x : null
+}
+
+/**
+ * 행 a 의 마지막 칸이 URL 문자이고 행 b 가 (들여쓰기 ≤ 상한 뒤) URL 문자로 시작하면 줄 넘김으로 본다.
+ * 단 b 가 `scheme://` 로 시작하면 새 URL 이다 — 잇지 않는다(R1-04: 앞 행 끝 글자와 붙어 정상 URL 이 사라지는 것 방지).
+ */
+function continues(a: LinkCell[] | undefined, b: LinkCell[] | undefined): boolean {
+  if (a === undefined || b === undefined || a.length === 0) return false
+  if (!isUrlCell(a[a.length - 1])) return false
+  const indent = continuationIndent(b)
+  if (indent === null) return false
+  const head = b
+    .slice(indent, indent + 32)
+    .map((cell) => cell.chars)
+    .join('')
+  return !SCHEME_START.test(head)
+}
+
+/** URL 끝에 붙은 문장 구두점·마크다운 굵게(`*`)·짝 없는 닫는 괄호를 뗀다 (C1ⓓ·R1-05). */
 export function trimUrlTail(url: string): string {
   let end = url.length
   for (;;) {
     const last = url[end - 1]
     if (last === undefined) break
-    if ('.,;:!?'.includes(last)) {
+    if ('.,;:!?*'.includes(last)) {
       end--
       continue
     }
@@ -67,8 +94,10 @@ export function findLinksOnRow(input: { readRow: ReadRow; y: number }): Array<{ 
   const positions: Array<{ x: number; y: number }> = []
   for (let row = top; row <= bottom; row++) {
     const cells = readRow(row) ?? []
+    // 이어지는 행의 들여쓰기는 URL 의 일부가 아니다 — 건너뛴다.
+    const skip = row === top ? 0 : (continuationIndent(cells) ?? 0)
     cells.forEach((cell, x) => {
-      if (cell.width === 0) return
+      if (cell.width === 0 || x < skip) return
       const chars = cell.chars === '' ? ' ' : cell.chars
       text += chars
       for (let i = 0; i < chars.length; i++) positions.push({ x, y: row })

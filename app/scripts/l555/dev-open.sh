@@ -41,7 +41,8 @@ if [ -n "$PID" ]; then
 else
   check app_pid_known 0
 fi
-echo "## corral status (레포 CLI)"; node cli/corral.mjs status --json | cut -c1-300; check status_exit0 "$([ $? = 0 ] && echo 1)"
+# 종료코드는 명령에서 직접 받는다 — 파이프 끝 `$?` 는 `cut` 의 것이다(r2 L-r2-1)
+echo "## corral status (레포 CLI)"; node cli/corral.mjs status --json > "$ROOT/status.json"; RC=$?; cut -c1-300 "$ROOT/status.json"; check status_exit0 "$([ $RC = 0 ] && echo 1)"
 echo "## 두 번째 open (handoff — 같은 runtimeId·새 인스턴스 없음 기대)"; node cli/corral.mjs open --json > "$ROOT/open2.json"; RC=$?; cut -c1-300 "$ROOT/open2.json"
 RID2=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.result?.runtime?.runtimeId??"")' "$ROOT/open2.json" 2>/dev/null)
 check open2_exit0 "$([ $RC = 0 ] && echo 1)"

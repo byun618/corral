@@ -149,6 +149,7 @@ terminal switch                     # 『세션 기동』 — 포커스 전환
 
 ```mentioned-commands
 orchestration task-list        # 「Run 명시 규칙」 목록에만 나온다 — 이 매핑은 호출하지 않는다
+open                           # H7 설명(foundation 명령 예시)에만 나온다 — 앱 기동은 사용자 몫, 이 매핑은 호출하지 않는다
 orchestration task-update      # 같은 위
 orchestration dispatch         # 같은 위 (문맥 전용 Dispatch — 이 매핑의 순환에 쓰지 않는다)
 orchestration worker-list      # 같은 위

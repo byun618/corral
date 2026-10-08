@@ -29,6 +29,37 @@ node app/scripts/l394/leak-check.mjs selftest          # 그 검사기 자신의
 node app/scripts/l409/attribution.mjs selftest         # F13 실패 경로의 양성 대조 (V2·V14)
 ```
 
+## 개발 실행용 레포 guard (LIFE-561)
+
+바인딩 없는 개발 실행(`npm run dev` 류, `CORRAL_SESSION`·`CORRAL_BACKEND_SOCKET`·`CORRAL_HERDR_BIN`·프로필 바인딩 없음)이 쓰는 debug guard 를 레포 명령 하나로 빌드한다.
+brew 등 따로 설치한 herdr 가 없어도 레포 GUI 가 뜬다.
+
+```sh
+npm --prefix app run herdr:guard    # 레포 루트(어느 worktree 든)에서. app/ 안이면 npm run herdr:guard
+```
+
+- **고정 자리**: `<git-common-dir>/corral-herdr-dev/` — 본체 `.git` 안이라 `git status` 에 나타나지 않고, 본체와 모든 worktree 가 같은 자리를 본다.
+  - `toolchain/` — rustup·cargo·zig·상류 archive. 칸끼리 한 번만 받는다(첫 빌드 실측 약 1.6GB).
+  - `<패치 digest 16자>/` — build root 한 칸(실측 약 1.4GB). 칸 이름은 `build-terminal-backend.sh` 의 `patch_digest`(네 patch 를 순서대로 이은 sha256) 앞 16자다.
+    바이너리는 `<칸>/herdr-0.9.0/target/debug/herdr`, 영수증은 그 옆 `herdr.json`.
+- **재실행**: 그 칸의 영수증이 지금 체크아웃과 맞으면 빌드하지 않고 `up to date` 로 끝난다.
+- **패치가 바뀌면** 같은 명령이 새 칸에 새로 빌드한다(툴체인은 다시 받지 않는다) — `use a fresh CORRAL_BACKEND_BUILD_ROOT` 로 멈추지 않는다.
+  패치가 다른 브랜치는 자기 칸을 따로 갖는다. 옛 칸은 지우지 않는다 — 필요 없으면 손으로 지운다(도는 서버가 그 바이너리를 쓰고 있지 않은지 먼저 본다).
+- 칸의 바이너리를 **다시** 빌드해야 하는데(영수증 불일치) 그 바이너리로 도는 `herdr server` 가 있으면 빌드하지 않고 멈춘다 — 실행 중 실행 파일을 바꾸면
+  서버가 pane 에 알려 준 `HERDR_BIN_PATH` 가 깨질 수 있다(상류 #4474). 그 서버를 멈춘 뒤 다시 실행한다.
+- **앱의 해소 순서**(`src/main/adapter/internal/server.ts` `locateHerdr`, 개발 실행·바인딩 없음): `CORRAL_HERDR_BIN` → **레포 guard** → 로그인 셸 `command -v herdr` → 알려진 위치.
+  설치본은 동봉만(LIFE-556 그대로), 바인딩 있는 개발 실행은 종전대로 레포 guard 를 보지 않는다. `herdr.resolve` 로그의 `source` 가 `repo-guard` 다.
+  - **없음**(고정 자리 자체가 없다 — 이 레포에서 빌드한 적이 없다): 종전 후보로 내려간다. 그것도 없으면 미설치 카드가 위 빌드 명령을 안내한다.
+  - **낡음**(자리는 있는데 이 체크아웃과 맞지 않는다 — 이 패치의 칸이 없음, 영수증의 profile·패치 sha256·상류 commit·archive 불일치, 바이너리 sha256 불일치):
+    그 바이너리를 쓰지 않고 **종전 후보로도 내려가지 않는다**. 카드가 어긋난 이유 한 줄과 재빌드 명령을 보인다. 재빌드하면 1분 안에 다시 찾는다.
+    대조 규칙은 `src/main/adapter/internal/dev-guard.ts` `checkGuardReceipt` 와 `scripts/build-dev-guard.mjs` 가 같다.
+- **폴더·세션**: debug guard 의 앱 폴더는 `herdr-dev`(`~/.config/herdr-dev`) — 세션 폴백 폴더도 그것을 따른다. 레포 guard 로 풀린 개발 실행은
+  `herdr-dev` 의 **`default` 하나에만** 붙는다(설치본과 같은 규칙). 다른 이름 세션(다른 작업의 서버)이 돌고 있어도 붙지 않고, `default` 가 없거나 멈췄으면
+  종전 기동 규칙(확인 카드·자동 기동)대로 `default` 를 띄운다. 이름 세션에는 `CORRAL_SESSION` 명시 바인딩으로만 붙는다.
+- **`CORRAL_BACKEND_BUILD_ROOT` 직접 호출과의 관계**: `herdr:guard` 는 `build-terminal-backend.sh` 를 `CORRAL_BACKEND_BUILD_ROOT=<칸>`·
+  `CORRAL_BACKEND_TOOLCHAIN_ROOT=<자리>/toolchain`·`CORRAL_BACKEND_PROFILE=debug` 로 부르는 래퍼다. 직접 호출(위·아래 절의 debug·release)은 그대로 돈다 —
+  `CORRAL_BACKEND_TOOLCHAIN_ROOT` 를 주지 않으면 종전처럼 툴체인도 build root 안에 둔다. 측정·하네스는 종전대로 명시 바인딩이나 자기 build root 를 쓴다.
+
 ## 설치본 동봉 release 빌드 (LIFE-556)
 
 ```sh

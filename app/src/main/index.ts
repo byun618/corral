@@ -67,8 +67,11 @@ import {
   resolveHerdrBinary,
   spawnServer,
   bundledHerdrPath,
-  BUNDLED_HERDR_APP_DIR,
-  STOCK_HERDR_APP_DIR,
+  herdrAppDirFor,
+  onRepoGuard,
+  devGuardBase,
+  findDevGuard,
+  type DevGuardLookup,
   stopProcessGroup,
   inspectServerProcess,
   SERVER_READY_POLL_MS,
@@ -130,10 +133,19 @@ let sessionNote: string | null = null
 let herdr: HerdrResolution | null = null
 /**
  * 설치본이면 동봉 herdr 자리 (LIFE-556) — 그 바이너리만 쓰고, 세션 폴백도 동봉 폴더(`corral-herdr`)만 본다.
- * 개발 실행(`app.isPackaged` 거짓)은 null — 종전대로 로그인 셸·알려진 위치의 herdr 에 붙는다.
+ * 개발 실행(`app.isPackaged` 거짓)은 null — 바인딩이 없으면 레포 guard(LIFE-561), 없으면 종전대로 로그인 셸·알려진 위치의 herdr 에 붙는다.
  */
 const bundledHerdr = app.isPackaged ? bundledHerdrPath(process.resourcesPath) : null
-const herdrAppDir = bundledHerdr !== null ? BUNDLED_HERDR_APP_DIR : STOCK_HERDR_APP_DIR
+
+/** 레포 guard 로 가는 실행인가 (LIFE-561) — 개발 실행이고 바인딩(`CORRAL_SESSION`·`CORRAL_BACKEND_SOCKET`, 프로필 바인딩 포함)이 없다. */
+function usesDevGuard(): boolean {
+  return bundledHerdr === null && boundSessionName(process.env) === null && (process.env.CORRAL_BACKEND_SOCKET ?? '').length === 0
+}
+
+/** 세션 폴백 폴더 (LIFE-561 F1) — 해소한 바이너리를 따라간다. */
+function herdrAppDir(): string {
+  return herdrAppDirFor({ bundled: bundledHerdr !== null, resolution: herdr })
+}
 let herdrResolvedAt = 0
 /** 실패한 해소를 다시 시도하는 간격 — 그 사이에 사용자가 herdr 를 설치했을 수 있다. */
 const HERDR_RERESOLVE_MS = 60_000
@@ -175,7 +187,7 @@ const link = new SessionLink({
  */
 const backendStarter = new BackendStarter({
   isRunning: async () => {
-    const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir })
+    const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir() })
     if (scan.error !== null) return { kind: 'unknown', error: scan.error }
     return scan.sessions.some((session) => session.isDefault && session.running) ? { kind: 'running' } : { kind: 'stopped' }
   },
@@ -208,7 +220,7 @@ function herdrPath(): string | null {
 function backendInput(): BackendInput {
   return {
     bound: boundSessionName(process.env),
-    binary: herdr === null ? { kind: 'resolving' } : herdr.kind === 'found' ? { kind: 'found' } : { kind: 'missing', searched: herdr.searched, bundled: herdr.bundled },
+    binary: backendBinary(),
     sessions,
     selected: selectedSession,
     link: { phase: link.linkState().phase, attempt: link.linkState().attempt },
@@ -216,6 +228,18 @@ function backendInput(): BackendInput {
     starter: backendStarter.phase(),
     autoStartUsed: backendStarter.autoStartUsed(),
     scan: scanState,
+  }
+}
+
+function backendBinary(): BackendInput['binary'] {
+  if (herdr === null) return { kind: 'resolving' }
+  switch (herdr.kind) {
+    case 'found':
+      return { kind: 'found' }
+    case 'missing':
+      return { kind: 'missing', searched: herdr.searched, bundled: herdr.bundled }
+    case 'stale':
+      return { kind: 'stale', path: herdr.path, reason: herdr.reason }
   }
 }
 
@@ -234,7 +258,16 @@ function ensureHerdrResolved(): Promise<void> {
     return Promise.resolve()
   }
   if (resolving === null) {
-    resolving = resolveHerdrBinary(bundledHerdr)
+    // 개발 실행의 레포 자리 — `app.getAppPath()` 는 개발 실행에서 체크아웃의 `app/` 다.
+    const appDir = app.getAppPath()
+    const devGuard = usesDevGuard()
+      ? async (): Promise<DevGuardLookup> => {
+          const base = await devGuardBase(path.dirname(appDir))
+          if (base === null) return { kind: 'absent', place: '(git 공용 폴더를 찾지 못했다)' }
+          return findDevGuard({ base, backendDir: path.join(appDir, 'backend'), isExecutable: isExecutableFile })
+        }
+      : null
+    resolving = resolveHerdrBinary({ bundled: bundledHerdr, devGuard })
       .then((result) => {
         herdr = result
         herdrResolvedAt = Date.now()
@@ -1252,9 +1285,11 @@ function pollSessions(): Promise<void> {
 
 async function runPoll(): Promise<void> {
   await ensureHerdrResolved()
-  const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir })
+  // 레포 guard 낡음(LIFE-561 G3) — 세션을 조회하지 않는다. 낡은 바이너리 쪽 폴더의 서버에 붙지 않고 카드로 멈춘다.
+  const scan = herdr?.kind === 'stale' ? { sessions: [], error: null } : await listSessions({ binary: herdrPath(), appDir: herdrAppDir() })
   // 설치본은 default 하나만 본다(LIFE-556 fix2 M2) — 다른 세션은 고르기·기동 결정·동봉 바인딩 어디에도 오르지 않는다.
-  sessions = pinnedSessions({ sessions: scan.sessions, bundled: bundledHerdr !== null, bound: boundSessionName(process.env) })
+  // 레포 guard 로 풀린 개발 실행도 같다(LIFE-561 G2) — herdr-dev 의 다른 이름 세션에 붙지 않는다.
+  sessions = pinnedSessions({ sessions: scan.sessions, pinDefault: bundledHerdr !== null || onRepoGuard(herdr), bound: boundSessionName(process.env) })
   sessionsError = scan.error
   scanState = scan.error === null ? 'ok' : 'error'
   // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.

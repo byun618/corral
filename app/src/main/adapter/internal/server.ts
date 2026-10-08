@@ -12,6 +12,7 @@ import { isRecord } from '../../../shared/json.js'
 import { isSessionMarker } from '../../../shared/session-markers.js'
 import type { BackendBinary, RestoreSummary } from '../../../shared/types.js'
 import { log } from '../../log.js'
+import { DEV_GUARD_APP_DIR, type DevGuardLookup } from './dev-guard.js'
 
 const run = promisify(execFile)
 
@@ -45,8 +46,14 @@ export function bundledHerdrPath(resourcesPath: string): string {
 export const STOCK_HERDR_APP_DIR = 'herdr'
 export const BUNDLED_HERDR_APP_DIR = 'corral-herdr'
 
-/** `bundled` — 설치본이라 동봉 바이너리만 찾았다. 미설치 카드가 재설치 안내를 고르는 근거다. */
-export type HerdrResolution = { kind: 'found'; binary: BackendBinary } | { kind: 'missing'; searched: string[]; bundled: boolean }
+/**
+ * `bundled` — 설치본이라 동봉 바이너리만 찾았다. 미설치 카드가 재설치 안내를 고르는 근거다.
+ * `stale` — 개발 실행의 레포 guard 가 지금 체크아웃과 맞지 않는다(LIFE-561 G3). 그 바이너리도, 종전 후보도 쓰지 않는다.
+ */
+export type HerdrResolution =
+  | { kind: 'found'; binary: BackendBinary }
+  | { kind: 'missing'; searched: string[]; bundled: boolean }
+  | { kind: 'stale'; path: string; reason: string }
 
 /**
  * 바이너리 해소 (D5). **순수에 가깝게** — 셸 조회·실행 가능 판정을 주입받아 단위 테스트가 실제 셸 없이 돈다.
@@ -72,11 +79,15 @@ export async function resolveHerdr(input: {
 
 /**
  * 어디서 찾을지 (LIFE-556). 측정용 `CORRAL_HERDR_BIN` 이 먼저고, 설치본(`bundled` 자리가 있음)이면 **동봉 바이너리만** 본다 —
- * 없거나 실행할 수 없어도 로그인 셸·알려진 위치로 내려가지 않는다(그건 별도 설치 herdr 에 붙는 길이다). 개발 실행은 종전대로 `external`.
+ * 없거나 실행할 수 없어도 로그인 셸·알려진 위치로 내려가지 않는다(그건 별도 설치 herdr 에 붙는 길이다).
+ * 개발 실행은 바인딩이 없을 때만 레포 guard(LIFE-561)를 먼저 본다(`devGuard` — 바인딩이 있거나 설치본이면 null): 영수증이 맞으면 그것,
+ * 낡았으면 멈춤(`stale`), 자리가 없으면 종전대로 `external`(로그인 셸 → 알려진 위치).
  */
 export async function locateHerdr(input: {
   override: string | undefined
   bundled: string | null
+  /** 없거나 null 이면 레포 guard 를 보지 않는다 — 설치본·바인딩 있는 개발 실행. */
+  devGuard?: (() => Promise<DevGuardLookup>) | null
   isExecutable: (file: string) => boolean
   external: () => Promise<HerdrResolution>
 }): Promise<HerdrResolution> {
@@ -91,7 +102,24 @@ export async function locateHerdr(input: {
       ? { kind: 'found', binary: { path: input.bundled, source: 'bundled', version: null } }
       : { kind: 'missing', searched: [input.bundled], bundled: true }
   }
-  return input.external()
+  if (input.devGuard === undefined || input.devGuard === null) return input.external()
+  const guard = await input.devGuard()
+  if (guard.kind === 'ok') return { kind: 'found', binary: { path: guard.path, source: 'repo-guard', version: null } }
+  if (guard.kind === 'stale') return { kind: 'stale', path: guard.path, reason: guard.reason }
+  const external = await input.external()
+  return external.kind === 'missing' ? { ...external, searched: [`레포 guard ${guard.place}`, ...external.searched] } : external
+}
+
+/** 레포 guard 로 풀렸나 (LIFE-561) — 낡음(`stale`)도 guard 쪽이다. 세션 폴더(F1)·default 고정(G2)의 근거. */
+export function onRepoGuard(resolution: HerdrResolution | null): boolean {
+  if (resolution === null) return false
+  return resolution.kind === 'stale' || (resolution.kind === 'found' && resolution.binary.source === 'repo-guard')
+}
+
+/** 세션 폴백 폴더 — 바이너리와 같아야 한다: 동봉 `corral-herdr` · 레포 guard(debug) `herdr-dev` · 그 밖 `herdr`. */
+export function herdrAppDirFor(input: { bundled: boolean; resolution: HerdrResolution | null }): string {
+  if (input.bundled) return BUNDLED_HERDR_APP_DIR
+  return onRepoGuard(input.resolution) ? DEV_GUARD_APP_DIR : STOCK_HERDR_APP_DIR
 }
 
 export function isExecutableFile(file: string): boolean {
@@ -126,18 +154,23 @@ export function parseShellLookup(stdout: string): string | null {
 }
 
 /**
- * 실제 해소 — 동봉(설치본) 또는 로그인 셸 + 알려진 위치, 그리고 버전. 결과(경로·버전·출처)를 로그에 한 줄 남긴다 (K1ⓒ).
- * `bundled` — 설치본의 동봉 바이너리 자리, 개발 실행은 null.
+ * 실제 해소 — 동봉(설치본) 또는 레포 guard·로그인 셸 + 알려진 위치, 그리고 버전. 결과(경로·버전·출처)를 로그에 한 줄 남긴다 (K1ⓒ).
+ * `bundled` — 설치본의 동봉 바이너리 자리, 개발 실행은 null. `devGuard` — 바인딩 없는 개발 실행만(LIFE-561), 그 밖은 null.
  */
-export async function resolveHerdrBinary(bundled: string | null): Promise<HerdrResolution> {
+export async function resolveHerdrBinary(input: { bundled: string | null; devGuard: (() => Promise<DevGuardLookup>) | null }): Promise<HerdrResolution> {
   const resolution = await locateHerdr({
     override: process.env.CORRAL_HERDR_BIN,
-    bundled,
+    bundled: input.bundled,
+    devGuard: input.devGuard,
     isExecutable: isExecutableFile,
     external: () => resolveHerdr({ loginShellLookup, candidates: knownHerdrLocations(os.homedir()), isExecutable: isExecutableFile }),
   })
   if (resolution.kind === 'missing') {
     log('herdr.resolve', { found: false, searched: resolution.searched, bundled: resolution.bundled })
+    return resolution
+  }
+  if (resolution.kind === 'stale') {
+    log('herdr.resolve', { found: false, stale: true, path: resolution.path, reason: resolution.reason, source: 'repo-guard' })
     return resolution
   }
   let version: string | null = null

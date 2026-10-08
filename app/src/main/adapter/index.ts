@@ -18,12 +18,15 @@ export {
   bundledHerdrPath,
   BUNDLED_HERDR_APP_DIR,
   STOCK_HERDR_APP_DIR,
+  herdrAppDirFor,
+  onRepoGuard,
   stopProcessGroup,
   inspectServerProcess,
   SERVER_READY_POLL_MS,
   SERVER_READY_TIMEOUT_MS,
   type HerdrResolution,
 } from './internal/server.js'
+export { devGuardBase, findDevGuard, type DevGuardLookup } from './internal/dev-guard.js'
 export { readOpenWorkspaces, type OpenWorkspaceMap } from './internal/worktrees.js'
 export { readIntegrations, type IntegrationScan } from './internal/integrations.js'
 export { DEFAULT_RESYNC_MS } from './internal/link.js'

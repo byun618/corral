@@ -20,7 +20,7 @@ export type StarterPhase =
 export type BackendInput = {
   /** 지정된 세션 — 프로필 바인딩·`CORRAL_SESSION`(·측정 하네스의 `CORRAL_BACKEND_SOCKET`). 있으면 어떤 경우에도 띄우지 않는다. */
   bound: string | null
-  binary: { kind: 'resolving' } | { kind: 'found' } | { kind: 'missing'; searched: string[]; bundled: boolean }
+  binary: { kind: 'resolving' } | { kind: 'found' } | { kind: 'missing'; searched: string[]; bundled: boolean } | { kind: 'stale'; path: string; reason: string }
   sessions: readonly Candidate[]
   /** 지금 붙어 있는(붙었던) 세션. 연결 도중 멈춤을 가른다. */
   selected: string | null
@@ -84,6 +84,9 @@ export function decideBackend(input: BackendInput): BackendDecision {
     if (link.phase === 'reconnecting') return none({ kind: 'reconnecting', session: input.bound, attempt: link.attempt })
     return none({ kind: 'ok' })
   }
+
+  // 레포 guard 낡음(LIFE-561 G3) — 어떤 세션 상태보다 먼저 멈춘다. main 은 이때 세션을 조회하지 않아 붙을 곳도 없다.
+  if (input.binary.kind === 'stale') return none({ kind: 'stale', path: input.binary.path, reason: input.binary.reason })
 
   if (input.starter.phase === 'starting') return none({ kind: 'starting', session: DEFAULT_SESSION })
 

@@ -57,13 +57,14 @@ export function pickSessionName(input: {
 }
 
 /**
- * 설치본(동봉 herdr)은 동봉 서버의 default 세션 하나에 고정한다 (LIFE-556 fix2 M2).
+ * 설치본(동봉 herdr)은 동봉 서버의 default 세션 하나에 고정한다 (LIFE-556 fix2 M2). 레포 guard 로 풀린 바인딩 없는 개발 실행도
+ * 같다 (LIFE-561 G2) — `herdr-dev` 에는 다른 작업의 이름 세션(`life417-native` 등)이 돌고 있을 수 있다. 그 세션에는 명시 바인딩으로만 붙는다.
  * 동봉 바인딩은 CLI 의 terminal·orchestration 도 GUI 가 붙은 세션을 쓰게 하므로, GUI 가 다른 세션으로
  * 옮겨 갈 수 있으면 진행 중인 dispatch 의 sender 검사·관측·계보가 다른 세션을 보게 된다. 그래서 세션 목록에서
  * default 만 남긴다 — 고르기(`pickSessionName`)·기동 결정(`decideBackend`)·동봉 공급자가 모두 이 목록만 본다.
  * 명시 바인딩(`CORRAL_SESSION`)이 있으면 그 세션 규칙을 그대로 따른다(이 함수는 손대지 않는다).
  */
-export function pinnedSessions<T extends Candidate>(input: { sessions: readonly T[]; bundled: boolean; bound: string | null }): T[] {
-  if (!input.bundled || input.bound !== null) return [...input.sessions]
+export function pinnedSessions<T extends Candidate>(input: { sessions: readonly T[]; pinDefault: boolean; bound: string | null }): T[] {
+  if (!input.pinDefault || input.bound !== null) return [...input.sessions]
   return input.sessions.filter((session) => session.isDefault)
 }

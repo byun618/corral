@@ -548,3 +548,20 @@ describe('isOwnSession (LIFE-507 fix1 R1-M1)', () => {
     expect(isOwnSession({ selected: 'default', env: { CORRAL_SESSION: '' } })).toBe(true)
   })
 })
+
+describe('decideBackend — 레포 guard 낡음 (LIFE-561 G3, C3ⓑ)', () => {
+  const stale: BackendInput['binary'] = { kind: 'stale', path: '/g/herdr', reason: '바이너리 sha256 이 영수증과 다르다' }
+  it('낡음이면 자동 기동하지 않고 stale 카드 — 재개 0 이어도', () => {
+    expect(decideBackend(input({ binary: stale, sessions: [] }))).toEqual({ status: { kind: 'stale', path: '/g/herdr', reason: '바이너리 sha256 이 영수증과 다르다' }, autostart: false })
+  })
+  it('조회 전(pending)·기동 중이어도 낡음 카드가 먼저다', () => {
+    expect(decideBackend(input({ binary: stale, scan: 'pending' })).status.kind).toBe('stale')
+    expect(decideBackend(input({ binary: stale, starter: { phase: 'starting' } })).status.kind).toBe('stale')
+  })
+  it('지정 세션(바인딩)은 낡음 판정과 무관 — 종전 규칙', () => {
+    expect(decideBackend(input({ bound: 'work', binary: stale, sessions: [{ name: 'work', isDefault: false, running: true }] })).status.kind).toBe('ok')
+  })
+  it('양성 대조: 같은 상태에서 found 면 자동 기동', () => {
+    expect(decideBackend(input({ sessions: [] })).autostart).toBe(true)
+  })
+})

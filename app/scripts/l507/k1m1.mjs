@@ -95,6 +95,8 @@ try {
   // LIFE-561 fix1 M1 — 바인딩 없는 개발 실행은 이제 레포 guard(herdr-dev 폴더·default 고정)로 풀린다. 이 시나리오는 하네스가 띄운 herdr(PATH 의 herdr,
   // `<xdg>/herdr`) 의 폴백 세션을 기대하므로 그 바이너리로 고정한다.
   h.env.CORRAL_HERDR_BIN = spawnSync('/bin/sh', ['-c', 'command -v herdr'], { env: h.env, encoding: 'utf8' }).stdout.trim()
+  // 비면 앱이 「지정 없음」 으로 읽어 레포 guard 로 조용히 간다(fix2 N3) — 시나리오 전제가 깨졌으니 멈춘다.
+  if (h.env.CORRAL_HERDR_BIN.length === 0) throw new Error('하네스 PATH 에서 herdr 를 찾지 못했다 — CORRAL_HERDR_BIN 핀이 비면 레포 guard 로 풀린다')
   await startCorral(h)
   await pause(3000)
   const st = await state(h)

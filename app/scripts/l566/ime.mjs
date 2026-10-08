@@ -1,7 +1,8 @@
 // LIFE-566 G4·G5 — 개발 실행 렌더러의 **실제 xterm textarea** 에 조합 이벤트를 합성하고, 조합 표시층 DOM 경계·스크린샷을 남긴다.
 // OS 입력·입력 소스는 건드리지 않는다(02-kickoff 격리 4). 각 걸음은 control `eval`/`shot` 한 번이다.
 // 사용: node ime.mjs <ctl.sock> <out 폴더> <걸음...>
-//   start | update:<글자> | end | cancel | input:<글자> | key:<KeyCode> | measure:<이름> | shot:<이름> | wait:<ms> | focus
+//   start | update:<글자> | end | cancel | key:<KeyCode> | ctrl:<KeyCode> | type:<글자열> | click:<선택자> | mark:<값> | checkmark
+//   | measure:<이름> | shot:<이름> | term:<이름> | wait:<ms> | focus
 // 합성 순서는 Chromium·macOS 한글 IME 의 순서를 따른다: keydown(229) → compositionstart → (textarea 값에 preedit 반영) compositionupdate → input(insertCompositionText) → … → compositionend.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -74,6 +75,17 @@ for (const step of steps) {
     continue
   }
   if (name === 'key') { console.log(step, JSON.stringify(await rpc(sock, { cmd: 'key', keyCode: arg }))); continue }
+  if (name === 'ctrl') { console.log(step, JSON.stringify(await rpc(sock, { cmd: 'key', keyCode: arg, modifiers: ['control'] }))); continue }
+  if (name === 'type') { console.log(step, JSON.stringify(await rpc(sock, { cmd: 'type', text: arg }))); continue }
+  // 같은 xterm 인스턴스인지(재마운트 없음) 보는 표지 — mark 로 붙이고 checkmark 로 읽는다.
+  if (name === 'mark' || name === 'checkmark') {
+    const code = name === 'mark'
+      ? `(() => { const x = document.querySelector('.term-pane.is-selected .xterm') ?? document.querySelector('.xterm'); x.dataset.l566Mark = ${JSON.stringify(arg)}; return x.dataset.l566Mark })()`
+      : `(() => { const x = document.querySelector('.term-pane.is-selected .xterm') ?? document.querySelector('.xterm'); return x.dataset.l566Mark ?? null })()`
+    console.log(step, JSON.stringify(await evalJs(code)))
+    continue
+  }
+  if (name === 'click') { const res = await rpc(sock, { cmd: 'click', selector: arg }); console.log(step, JSON.stringify({ hit: res.hit, found: res.found })); if (!res.hit) throw new Error(`클릭 실패 ${arg}`); continue }
   if (name === 'term') {
     const t = (await rpc(sock, { cmd: 'term-read' })).term
     const lines = t.lines.map((line, y) => ({ y, line: line.trimEnd() })).filter((x) => x.line.length > 0)

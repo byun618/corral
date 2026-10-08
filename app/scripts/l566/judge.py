@@ -1,5 +1,6 @@
 # LIFE-566 — 조합 중 측정(JSON)·스크린샷과 확정 뒤 측정을 맞대어 C2ⓐⓑⓒ·C3 수치와 합불을 낸다.
-# 사용: python3 judge.py <raw 폴더> <조합 중 이름> <확정 뒤 이름 | -> [<스크린샷 이름>...]
+# 사용: python3 judge.py [--cursor #rrggbb] <raw 폴더> <조합 중 이름> <확정 뒤 이름 | -> [<스크린샷 이름>...]
+#   --cursor: 테마 커서 색. 없으면 측정의 caret(::after) 배경색을 쓴다(수정본). 기준선은 caret 이 없어 반드시 준다.
 #   확정 뒤 이름이 `-` 면 C2ⓑ 를 건너뛴다(기준선 양성 대조처럼 확정 뒤 측정이 없는 경우).
 # 종료코드: 판정한 항목 중 하나라도 실패면 1.
 #
@@ -7,11 +8,18 @@
 #          둘 다 내고, C2ⓐⓑ 는 DOM 값으로 판정한다(없으면 픽셀 값). 둘이 0.5 device px 넘게 다르면 `caret_dom_vs_px_mismatch` 로 드러낸다.
 # r1 F2 — C2ⓒ 자동 합불: 창 = 커서 칸 왼쪽 경계 ±2 CSS px 의 device 열 중 **조합 상자 왼쪽 밖**(열 < round(상자 left × dpr)).
 #          그 열들의 셀 높이 픽셀 중 배경과 대비 1.5 이상(커서색·글자색 — 배경이 아닌 것)이 하나라도 있으면 실패.
-#          배경은 같은 줄 화면 오른쪽 끝 근처(빈 칸)에서 뽑는다.
+#          배경은 같은 줄 화면 오른쪽 끝 근처(빈 칸)에서 뽑는다. → `C2c_strict_pass` (r1 명세 그대로)
+# 최종 관문 보강 — 엄격 규칙은 앞 글자 글리프가 칸 끝까지 그려지면(밝은 테마 `y` 의 사선) 그것도 잡는다(위양성, final/fix c3-light).
+#          기준 C2ⓒ 문구 "커서색 세로선" 에 맞춘 `C2c_bar_pass`: 창 열 중 셀 높이의 50% 이상이 커서색(채널 차 ≤ 48)이고 배경 대비 ≥1.5 인 열이 있으면 실패.
+#          `C2c_pass` = 세로선 규칙. 둘 다 출력하고 종료코드는 세로선 규칙으로 낸다. 기준선 양성 대조는 두 규칙 모두 실패해야 한다.
 import json, math, sys
 from PIL import Image
 
-raw, comp, after, *shots = sys.argv[1:]
+args = sys.argv[1:]
+cursor_hex = None
+if args[0] == '--cursor':
+  cursor_hex = args[1]; args = args[2:]
+raw, comp, after, *shots = args
 m = json.load(open(f'{raw}/{comp}.json'))
 a = json.load(open(f'{raw}/{after}.json')) if after != '-' else None
 dpr = m['dpr']
@@ -38,6 +46,7 @@ def contrast(x, y):
 caret = m.get('caret')
 caret_dom = caret['left'] if caret else None
 caret_rgb = parse_rgb(caret['backgroundColor']) if caret else None
+cursor_rgb = tuple(int(cursor_hex[i:i + 2], 16) for i in (1, 3, 5)) if cursor_hex else caret_rgb
 fails = []
 out = {
   'dpr': dpr, 'hasFocus': m['hasFocus'], 'xtermFocusClass': m.get('xtermFocusClass'), 'xtermClasses': m.get('xtermClasses'),
@@ -83,8 +92,19 @@ for name in shots:
     res['C2c_window_cols'] = cols
     res['C2c_hits'] = hits[:12]
     res['C2c_hit_count'] = len(hits)
-    res['C2c_pass'] = len(hits) == 0
-    if hits: fails.append(f'C2c:{name}')
+    res['C2c_strict_pass'] = len(hits) == 0
+    # 세로선 규칙 — 열마다 커서색 픽셀 비율
+    ys = list(range(int(view['top'] * dpr) + 1, int(view['bottom'] * dpr) - 1))
+    bars = []
+    if cursor_rgb is not None:
+      for x in cols:
+        n = sum(1 for y in ys if max(abs(im.getpixel((x, y))[i] - cursor_rgb[i]) for i in range(3)) <= 48 and contrast(im.getpixel((x, y)), bg) >= 1.5)
+        if n >= 0.5 * len(ys): bars.append({'x': x, 'cursor_px': n, 'of': len(ys)})
+    res['cursor_color_used'] = '%02x%02x%02x' % cursor_rgb if cursor_rgb else None
+    res['C2c_bar_cols'] = bars
+    res['C2c_pass'] = (len(bars) == 0) if cursor_rgb is not None else None
+    if res['C2c_pass'] is False: fails.append(f'C2c:{name}')
+    if res['C2c_pass'] is None: fails.append(f'C2c-no-cursor-color:{name}')
   # 상자 테두리 안 픽셀(C3ⓐ 픽셀 대조) — 상자 오른쪽 끝 바로 안 1열(글리프가 없는 자리)
   res['box_inner_px'] = '%02x%02x%02x' % im.getpixel((int((view['right'] - 1.5) * dpr), int((view['top'] + 2) * dpr)))
   out[f'pixels:{name}'] = res

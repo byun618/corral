@@ -32,7 +32,18 @@ VERSION="${TAG#"$PREFIX"}"
 PKG="$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' app/package.json | head -1)"
 [ "$VERSION" = "$PKG" ] || die "태그 $TAG 의 버전 $VERSION 과 app/package.json 버전 $PKG 이 다르다"
 [ "$(uname -sm)" = "Darwin arm64" ] || die "arm64 macOS 에서만 빌드한다 (지금 $(uname -sm))"
-note "가드 통과: $TAG @ $(git rev-parse --short HEAD), 깨끗한 트리, 버전 $VERSION"
+# 태그가 원격(origin)에도 같은 커밋으로 있어야 출고본이다 — 로컬에만 있는 태그(push 실패 잔재·손 태그)로 만든 dmg 는 설치본 버전 = 원격 태그가 깨진다
+# 주석 태그는 "<태그^{}>" 줄이 가리키는 커밋, 가벼운 태그는 그 줄 자체
+REMOTE_PEELED="$(git ls-remote --tags origin | awk -v t="refs/tags/$TAG" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}')"
+[ "$REMOTE_PEELED" = "$(git rev-parse HEAD)" ] || die "원격 태그 $TAG 가 없거나 HEAD 와 다른 커밋이다(원격 '${REMOTE_PEELED:-없음}') — 원격에 push 된 태그에서만 빌드한다"
+# node — engines 하한(>=22.12)·로컬 관문 기준(v24, Electron 44 내장 node 도 24 계열). 셸 기본 v20 이면 빌드가 엉뚱하게 깨진다
+NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다"
+case "$NODE_V" in
+  24.*) ;;
+  22.*) echo "⚠ node $NODE_V — 로컬 관문 기준은 v24 다(engines 안이라 경고만)" >&2 ;;
+  *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖. v24 를 PATH 앞에 두고 다시" ;;
+esac
+note "가드 통과: $TAG @ $(git rev-parse --short HEAD)(원격 태그 일치), 깨끗한 트리, 버전 $VERSION, node $NODE_V"
 [ "$CHECK_ONLY" = 0 ] || { echo "✔ --check-only — 빌드하지 않음"; exit 0; }
 
 # 빌드 — app/INSTALL.md 「빌드」와 같은 경로

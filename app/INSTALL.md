@@ -12,16 +12,32 @@ arm64 macOS 전용. 서명은 ad-hoc 이고 자동 업데이트·brew cask·릴�
 
 ```sh
 gh pr list                                  # 출고 대기열
+scripts/release.sh --prs "12 15" --dry-run  # 사전 점검만 — 대상 PR·순서·head·다음 버전·태그 출력, 머지·push 0건
 scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|major 또는 --version X.Y.Z (기본 patch)
 ```
 
 `release.sh` 가 하는 일 — **검사 없이 순서 머지다.** PR CI 는 아직 없다(후속 일감 LIFE-575, 맥미니 self-hosted 러너) — 검증 근거는 각 PR 의 판정문(리뷰·관문)이다.
-⓪ 머지 전에 고른 PR 전부를 보고 닫힘·draft·포크·base 불일치가 하나라도 있으면 아무것도 머지하지 않는다(exit 2) ① PR 마다 GitHub 머지 가능 판정을 보고,
+⓪ 머지 전에 고른 PR 전부를 보고(중복 번호는 한 번만) 닫힘·draft·포크·base 불일치가 하나라도 있으면 아무것도 머지하지 않는다(exit 2).
+이때 각 PR 의 head SHA 를 고정하고, dmg 를 만들 거면 node 를 본다(v24 기준, v22 는 경고, 그 밖은 거절) ① PR 마다 GitHub 머지 가능 판정을 보고,
 앞 PR 머지로 충돌이 생겼으면 그 자리에서 멈춘다 — 그 PR 과 뒤 PR 은 머지하지 않는다(exit 3). 그 작업 브랜치에 main 을 **merge**(rebase 아님)해 풀고 push 한 뒤
-남은 PR 로 다시 ② `gh pr merge --merge --match-head-commit <본 SHA>` — 본 뒤 head 가 바뀌면 GitHub 가 거절한다(exit 6) ③ 머지 커밋 부모 2개 확인,
+남은 PR 로 다시(아래 「충돌이 나면」) ② `gh pr merge --merge --match-head-commit <⓪ 에서 고정한 SHA>` — 그 뒤 head 가 바뀌면 GitHub 가 거절한다(exit 6) ③ 머지 커밋 부모 2개 확인,
 원격 작업 브랜치 삭제. 다 머지하면 ④ 버전 올림 커밋 `release: vX.Y.Z` + 주석 태그를 main 에 push ⑤ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서
 `scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략).
-이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다.
+이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. 버전 커밋·태그 push 가 실패하면(exit 7 — main 이 그새 움직임 등) 로컬 태그를 지우고 멈추므로
+같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만든다.
+
+**충돌이 나면 (exit 3)** — 앞 PR 이 머지돼 뒤 PR 이 main 과 충돌한다. 작업 worktree 는 PR 을 열 때 정리됐으므로(D4) 본체 세션이 다시 만들어 푼다.
+```sh
+git fetch origin
+git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -B LIFE-NNN-<슬러그> origin/LIFE-NNN-<슬러그>   # 원격 작업 브랜치로 다시 만든다
+cd .claude/worktrees/LIFE-NNN-<슬러그> && git merge origin/main                                    # rebase 금지 — 리뷰 근거 커밋 보존
+# 충돌을 풀고 커밋 → 확인이 필요하면 app/ 에서 npm run typecheck·npm test
+git push origin LIFE-NNN-<슬러그>                                                                    # PR head 갱신(fast-forward)
+cd - && scripts/release.sh --prs "<멈춘 PR> <뒤 PR …>"                                               # 이미 머지된 PR 은 넣어도 건너뛴다
+scripts/task-finish.sh LIFE-NNN-<슬러그>                                                             # 다시 만든 worktree 정리
+```
+이미 일부 머지된 상태에서 재실행해도 안전하다 — 머지된 PR 은 건너뛰고, 버전 커밋·태그는 아직 만들지 않았다(멈춘 PR 에서 끝났으므로). 해소가 기능을 바꿀 만큼 크면
+그 PR 을 이번 출고에서 빼고(`--prs` 에서 제외) 나머지만 출고한 뒤 그 작업의 코디에게 돌려보낸다. LA 는 `검증 중` 그대로다.
 
 끝나면 본체 세션이: dmg 를 아래 「설치」대로 설치 → `corral --version` 이 새 버전인지 확인 → 머지된 PR 의 일감마다 LA `완료` 전이 →
 남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
@@ -30,7 +46,9 @@ scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|
   웹 UI 머지·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
 - 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
   태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).
-- 리허설: `--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v` 로 main·`v*` 태그를 건드리지 않고 돌린다.
+- 리허설: `--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v` 로 main·`v*` 태그를 건드리지 않고 돌린다. **둘은 짝으로만 받는다** — 한쪽만 주면
+  push 전에 거절한다(실 출고는 둘 다 기본값 `main`·`v`).
+- `release-dmg.sh` 는 태그가 원격(origin)에도 같은 커밋으로 있을 때만 빌드한다.
 - PR CI 는 아직 없다 — 후속 일감 LIFE-575. 574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다).
 - 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `specs/LIFE-574-pr-release/transition.md`.
 

@@ -49,6 +49,8 @@ fi
 # 1. 작업 브랜치가 어디에 보존됐는지 확인 — 그 기준(KEEP)으로 변형 브랜치를 검사한다
 if [ -n "$INTO" ]; then
   # 묶음 자식: feature 에 로컬 merge → push (임시 worktree, rebase 금지)
+  # feature 브랜치만 받는다 — main 등을 주면 PR 없이 main 에 직접 merge·push 하게 된다(main 반영은 release.sh 의 PR 머지로만)
+  case "$INTO" in feature/LIFE-*) ;; *) die "--into 는 feature/LIFE-NNN-<슬러그> 만 받는다 (받은 값: $INTO)" ;; esac
   git rev-parse --verify -q "refs/remotes/origin/$INTO" >/dev/null || die "원격 feature 브랜치 없음: origin/$INTO"
   KEEP="origin/$INTO"
   if has_local "$TASK" && ! git merge-base --is-ancestor "$TASK" "origin/$INTO"; then
@@ -62,8 +64,14 @@ if [ -n "$INTO" ]; then
     git worktree remove --force "$TMPWT"
     git fetch -q origin "$INTO"
     note "$INTO ← $TASK 머지·push"
-  else
+  elif has_local "$TASK"; then
     note "$TASK 는 이미 $INTO 에 들어 있음"
+  elif git rev-parse --verify -q "refs/remotes/origin/$TASK" >/dev/null; then
+    git merge-base --is-ancestor "origin/$TASK" "origin/$INTO" \
+      || die "로컬 $TASK 가 없고 origin/$TASK 는 $INTO 에 들어 있지 않다 — 원격 브랜치를 받아(git branch $TASK origin/$TASK) 다시"
+    note "로컬 $TASK 없음 — origin/$TASK 는 이미 $INTO 에 들어 있음"
+  else
+    note "로컬·원격 $TASK 모두 없음 — $INTO 에 넣을 것이 없다(이미 정리됨)"
   fi
 else
   PR="$(gh pr list --head "$TASK" --state all --json number,state,baseRefName --jq 'sort_by(.number) | last | if . == null then "" else "\(.number) \(.state) \(.baseRefName)" end')"

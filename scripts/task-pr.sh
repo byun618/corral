@@ -96,4 +96,7 @@ else
 fi
 
 echo "✔ $HEAD_BRANCH → $BASE : $(gh pr view "$NUM" --json url --jq .url)"
-echo "□ 다음: 작업 정리는 scripts/task-finish.sh $SPEC_ID (작업 worktree 밖에서). 머지·태그·dmg 는 출고 때 scripts/release.sh"
+case "$HEAD_BRANCH" in
+  feature/*) echo "□ 다음: 묶음 PR — 남은 자식 worktree 가 있으면 각 자식을 task-finish.sh <자식> --into $HEAD_BRANCH 로 먼저 넣었는지 확인. 머지·태그·dmg 는 출고 때 scripts/release.sh" ;;
+  *) echo "□ 다음: 작업 정리는 scripts/task-finish.sh $HEAD_BRANCH (작업 worktree 밖에서). 머지·태그·dmg 는 출고 때 scripts/release.sh" ;;
+esac

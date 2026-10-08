@@ -271,6 +271,8 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   순서 머지·버전 태그·dmg 를 하고, 설치 뒤 머지된 PR 의 일감마다
   `issue_transition(seq: NNN, toStatusLabel: "완료", resolution: "completed")` 를 호출해 실제 응답을 확인한다.
   부모 checkpoint는 다른 미완 자식이 없는지 확인한 뒤 별도로 완료 여부를 판단한다. 절차는 `app/INSTALL.md` 「출고」.
+  출고 중 PR 이 충돌로 멈추면(앞 PR 머지 뒤) 본체 세션이 원격 작업 브랜치로 worktree 를 다시 만들어 main 을 merge·push 하고
+  남은 PR 로 다시 돌린다 — 「출고」의 「충돌이 나면」. 해소가 기능을 바꾸면 그 PR 을 출고에서 빼고 그 작업 코디에게 돌려보낸다.
 - 작업 worktree의 코디네이터는 PR 생성·머지·정리를 직접 실행하지 않는다. worktree 삭제 후에도
   인계 문서는 PR(원격 작업 브랜치)에, 출고 뒤에는 main의 specs에 남는다. 후속 책임은 본체 마무리 세션에 있다.
 - 워커 pane·worktree 의 수명은 다르다 — **worktree 는 출고 승인(PR 생성)까지 유지**하고, pane 정리는

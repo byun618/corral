@@ -35,7 +35,8 @@ COMMON="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir
 REPO="$(dirname "$COMMON")"
 cd "$REPO"   # gh 가 이 레포를 보게
 SPEC_ID="${HEAD_BRANCH#feature/}"
-LIFE="$(echo "$SPEC_ID" | grep -oE '^LIFE-[0-9]+' || true)"
+# LIFE 번호 — 이름 어디에 있든 첫 것(리허설 throwaway/LIFE-574-… 도 받는다). 파이프 없이 한 프로세스
+LIFE="$(awk 'match($0, /LIFE-[0-9]+/) { print substr($0, RSTART, RLENGTH) }' <<<"$SPEC_ID")"
 [ -n "$LIFE" ] || die "브랜치 이름에서 LIFE 번호를 못 찾음: $HEAD_BRANCH"
 [ -n "$VERDICT" ] || VERDICT="specs/$SPEC_ID/verdict.md"
 

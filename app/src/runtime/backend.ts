@@ -24,12 +24,3 @@ export function backendBinding(env: NodeJS.ProcessEnv = process.env): BackendBin
   const found = bundled?.() ?? null
   return found === null ? null : { ...found, source: 'bundled' }
 }
-
-/**
- * Dispatch 가 기록할 pane 세션 이름. herdr 는 default 세션 pane 에 `HERDR_SESSION` 을 싣지 않으므로(0.9.0 `session.rs`
- * `normalize_name`) `default` 를 적으면 그 pane 의 보고가 전부 `sender_mismatch` 가 된다 — 기록하지 않는다(소켓이 증인이다).
- */
-export function paneSessionName(binding: BackendBinding | null): string | null {
-  if (binding === null || binding.session === 'default') return null
-  return binding.session
-}

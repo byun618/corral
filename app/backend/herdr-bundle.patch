@@ -31,6 +31,26 @@
      }
  }
  
+--- a/src/config/model.rs
++++ b/src/config/model.rs
+@@ -1149,8 +1149,16 @@
+ 
+ impl Default for WorktreesConfig {
+     fn default() -> Self {
++        // corral bundle (LIFE-556): the worktree default lives outside `app_dir_name()`, so release
++        // builds move it too — a separately installed herdr keeps `~/.herdr/worktrees` to itself.
++        // Debug builds keep the upstream default.
++        let directory = if cfg!(debug_assertions) {
++            "~/.herdr/worktrees"
++        } else {
++            "~/.corral-herdr/worktrees"
++        };
+         Self {
+-            directory: "~/.herdr/worktrees".into(),
++            directory: directory.into(),
+         }
+     }
+ }
 --- a/src/update.rs
 +++ b/src/update.rs
 @@ -2111,6 +2111,11 @@

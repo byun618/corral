@@ -21,7 +21,26 @@ import {
 } from './model.js'
 
 /** What the CLI client observed about itself, carried on the invocation (see `contracts.ts`). */
-export interface CallerClaim { paneId: string | null; session: string | null }
+/**
+ * `socketIsBackend` — the caller's `HERDR_SOCKET_PATH` resolves to the socket this runtime drives (LIFE-556 H1).
+ * herdr names no session in a default-session pane (`HERDR_SESSION` is unset there), so for an attempt recorded
+ * under `default` the socket is the only witness that the caller sits in that session. Absent means not shown.
+ */
+export interface CallerClaim { paneId: string | null; session: string | null; socketIsBackend?: boolean }
+
+/** herdr's own name for the session a pane without `HERDR_SESSION` lives in. */
+const DEFAULT_SESSION = 'default'
+
+/**
+ * Does the caller sit in the session the attempt was recorded under? Names are compared as they are, except
+ * one case herdr itself spells differently on the two sides: an attempt recorded in `default` and a caller that
+ * names no session but whose socket is this runtime's backend. A nameless caller on any other socket is not
+ * taken to be in `default` — "no name" still means nothing on its own (LIFE-459 L2ⓑ).
+ */
+export function callerInSession(input: { recorded: string; caller: CallerClaim }): boolean {
+  if (input.caller.session === input.recorded) return true
+  return input.recorded === DEFAULT_SESSION && input.caller.session === null && input.caller.socketIsBackend === true
+}
 
 export type SenderRejectionCode = 'dispatch_not_found' | 'sender_mismatch' | 'stale_dispatch' | 'capability_revoked'
 export type SenderVerdict =
@@ -89,7 +108,7 @@ export function verifySender(state: OrchestrationState, claim: SenderClaim, sett
     ok: false, code: 'sender_mismatch', message: 'This call did not come from a terminal pane',
     resources: { dispatchId: dispatch.id, expectedPaneId: dispatch.target.paneId, observedPaneId: null, recovery: 'Worker reports are accepted only from the pane the Dispatch was bound to' },
   }
-  if (claim.caller.paneId !== dispatch.target.paneId || (worker.paneSession !== null && claim.caller.session !== worker.paneSession)) return {
+  if (claim.caller.paneId !== dispatch.target.paneId || (worker.paneSession !== null && !callerInSession({ recorded: worker.paneSession, caller: claim.caller }))) return {
     ok: false, code: 'sender_mismatch', message: `This pane is not the one dispatch ${dispatch.id} was bound to`,
     resources: { dispatchId: dispatch.id, expectedPaneId: dispatch.target.paneId, observedPaneId: claim.caller.paneId,
       expectedSession: worker.paneSession, observedSession: claim.caller.session,

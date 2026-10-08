@@ -6,14 +6,19 @@
 // ⓓ shim CLI 가 env·profile 없이 status(ownership bundled)·terminal create/read/close·orchestration run-create/task-create/check 를 exit 0
 // ⓔ CLI 로 만든 터미널의 탭이 GUI 상태에 나타나고 닫으면 사라진다 ⓕ 프로필에 backend 가 저장되지 않는다.
 // 격리: HOME·userData·control 소켓 모두 /tmp/l556-app-* 아래. PATH 는 /usr/bin:/bin(brew 없음). 끝에 앱·동봉 서버를 끄고 고아를 본다.
-// 인자: <corral.app> <원자료 디렉터리>
+// ⓖ (fix1 M1) B8 왕복 — `b8-roundtrip.mjs`. ⓗ (fix1 L2) pane 의 XDG_CONFIG_HOME 이 앱 env 와 같다(둘 다 없음).
+// 판정은 종료코드다. 판정기 양성 대조: `L556_NEGATIVE=b8-cli` 는 기대 CLI 경로를, `L556_NEGATIVE=xdg` 는 기대 XDG 를 일부러 틀리게 줘서 exit 1 이 나와야 한다.
+// 인자: <corral.app> <원자료 디렉터리> <fixture claude 바이너리(fixture/claude.c 를 cc 로 빌드한 것)>
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import assert from 'node:assert/strict'
+import { b8RoundTrip } from './b8-roundtrip.mjs'
 
-const [bundle, rawDir] = process.argv.slice(2)
+const [bundle, rawDir, fixtureBin] = process.argv.slice(2)
+assert(fixtureBin && fs.existsSync(fixtureBin), 'fixture claude 바이너리가 필요하다')
+const negative = process.env.L556_NEGATIVE ?? null
 assert(bundle && fs.existsSync(path.join(bundle, 'Contents/MacOS/corral')), 'corral.app 경로가 필요하다')
 assert(rawDir, '원자료 디렉터리가 필요하다')
 const appPath = fs.realpathSync(bundle)
@@ -23,7 +28,15 @@ for (const dir of [home, repo, userData]) fs.mkdirSync(dir, { recursive: true, m
 fs.mkdirSync(rawDir, { recursive: true })
 const userHome = process.env.HOME ?? '\0'
 const scrub = (text) => String(text).replaceAll(root, '<root>').replaceAll(root.replace(/^\/private/, ''), '<root>').replaceAll(appPath, '<app>').replaceAll(userHome, '~')
-const env = { HOME: home, PATH: '/usr/bin:/bin', SHELL: '/bin/sh', LANG: 'en_US.UTF-8', TMPDIR: root, CORRAL_USER_DATA: userData, CORRAL_CONTROL_SOCKET: path.join(root, 'c.sock') }
+const fakebin = path.join(root, 'fakebin')
+fs.mkdirSync(fakebin, { mode: 0o700 })
+fs.copyFileSync(fixtureBin, path.join(fakebin, 'claude'))
+fs.chmodSync(path.join(fakebin, 'claude'), 0o755)
+const fixtureOut = path.join(root, 'fixture-body.txt')
+const env = {
+  HOME: home, PATH: `${fakebin}:/usr/bin:/bin`, SHELL: '/bin/sh', LANG: 'en_US.UTF-8', TMPDIR: root, CORRAL_USER_DATA: userData, CORRAL_CONTROL_SOCKET: path.join(root, 'c.sock'),
+  L556_FIXTURE_OUT: fixtureOut, L556_FIXTURE_REPORT: path.join(path.dirname(new URL(import.meta.url).pathname), 'fixture/report.py'),
+}
 const shim = path.join(appPath, 'Contents/Resources/bin/corral')
 const bundled = path.join(appPath, 'Contents/Resources/backend/herdr')
 const record = { app: '<app>', root: '<root>', checks: {}, steps: [], processes: [] }
@@ -40,8 +53,8 @@ async function until(fn, label, ms = 30000) {
   while (Date.now() < end) { try { const v = await fn(); if (v) return v } catch (e) { last = e } await pause(200) }
   throw Error(`${label} timeout (${last ?? 'no value'})`)
 }
-function cli(args) {
-  const result = spawnSync(shim, [...args, '--json'], { env, cwd: repo, encoding: 'utf8', timeout: 30000 })
+function cli(args, options = {}) {
+  const result = spawnSync(shim, [...args, '--json'], { env, cwd: repo, encoding: 'utf8', timeout: options.timeout ?? 30000 })
   let body = null
   try { body = JSON.parse(result.stdout) } catch { /* 원문을 남긴다 */ }
   record.steps.push({ args, exit: result.status, body: body === null ? scrub(result.stdout + result.stderr) : JSON.parse(scrub(JSON.stringify(body))) })
@@ -97,12 +110,18 @@ try {
   cli(['terminal', 'send', '--terminal', handle, '--text', 'echo l556-app-ok; command -v herdr; echo "xdg=${XDG_CONFIG_HOME:-unset}"', '--enter'])
   const read = await until(() => { const r = cli(['terminal', 'read', '--terminal', handle]); return JSON.stringify(r).includes('l556-app-ok') ? r : null }, 'read echo')
   record.checks.d_paneText = scrub(read.result.text ?? '').slice(-400)
+  // ⓗ pane 셸의 XDG_CONFIG_HOME 이 앱 기동 env 와 같다 — 이 회차의 앱 env 에는 없다.
+  const expectedXdg = negative === 'xdg' ? 'xdg=/wrong' : 'xdg=unset'
+  record.checks.h_paneXdg = { expected: expectedXdg, observed: /^xdg=[^\s]+?(?=\r?$)/m.exec(read.result.text ?? '')?.[0] ?? null }
+  assert.equal(record.checks.h_paneXdg.observed, expectedXdg, 'pane XDG_CONFIG_HOME differs from the app env')
   // ⓔ GUI 에 탭이 생긴다.
   const tabsAfter = await until(async () => { const ids = (await state()).herdrTabIds; return ids !== null && ids.length > (tabsBefore?.length ?? 0) ? ids : null }, 'GUI tab appears')
   record.checks.e_tabs = { before: tabsBefore, afterCreate: tabsAfter }
   cli(['orchestration', 'run-create', '--objective', 'LIFE-556 isolated app'])
   cli(['orchestration', 'task-create', '--spec', 'bundled binding'])
   cli(['orchestration', 'check'])
+  // ⓖ B8 왕복.
+  await b8RoundTrip({ cli, state, repo, fixtureOut, expectCli: negative === 'b8-cli' ? '/wrong/corral' : shim, until, scrub, record: record.checks })
   cli(['terminal', 'close', '--terminal', handle])
   const closedTab = made.result.terminal.tabId
   const tabsClosed = await until(async () => { const ids = (await state()).herdrTabIds; return ids !== null && !ids.includes(closedTab) ? ids : null }, 'GUI tab gone')
@@ -135,6 +154,7 @@ try {
   const ps = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' }).stdout.split('\n')
   record.leftover = ps.filter((line) => line.includes(root) || line.includes(root.replace(/^\/private/, '')) || line.includes(`${appPath}/`)).map(scrub)
   record.failed = failed
+  for (const name of ['fixture-body.txt', 'fixture-body.txt.report']) if (fs.existsSync(path.join(root, name))) fs.writeFileSync(path.join(rawDir, name), scrub(fs.readFileSync(path.join(root, name), 'utf8')).slice(-30000))
   for (const name of ['app.log']) if (fs.existsSync(path.join(root, name))) fs.writeFileSync(path.join(rawDir, name), scrub(fs.readFileSync(path.join(root, name), 'utf8')).slice(-20000))
   if (fs.existsSync(path.join(userData, 'corral.ndjson'))) fs.writeFileSync(path.join(rawDir, 'corral.ndjson'), fs.readFileSync(path.join(userData, 'corral.ndjson'), 'utf8').split('\n').filter((line) => /herdr\.|backend\.|install_cli|session\.select|runtime\./.test(line)).map(scrub).join('\n') + '\n')
   fs.writeFileSync(path.join(rawDir, 'isolated-app.json'), JSON.stringify(record, null, 2) + '\n')

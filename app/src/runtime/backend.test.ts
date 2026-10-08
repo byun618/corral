@@ -1,6 +1,6 @@
 // LIFE-556 B6 단위 — 런타임 backend 바인딩의 우선순위. 명시 바인딩이 언제나 먼저고, 동봉 서버는 그것이 없을 때만.
 import { afterEach, describe, expect, it } from 'vitest'
-import { backendBinding, paneSessionName, useBundledBackend } from './backend.js'
+import { backendBinding, useBundledBackend } from './backend.js'
 
 afterEach(() => useBundledBackend(null))
 
@@ -24,17 +24,5 @@ describe('backendBinding', () => {
   })
   it('개발 실행(동봉 없음)·바인딩 없음 → 없음 (종전 backend_unavailable)', () => {
     expect(backendBinding({})).toBeNull()
-  })
-})
-
-describe('paneSessionName', () => {
-  it('default 세션은 기록하지 않는다 — herdr 가 default pane 에 HERDR_SESSION 을 싣지 않는다', () => {
-    expect(paneSessionName({ socket: '/s', session: 'default', source: 'bundled' })).toBeNull()
-    expect(paneSessionName({ socket: '/s', session: 'default', source: 'explicit' })).toBeNull()
-  })
-  it('이름 세션은 그대로', () => {
-    expect(paneSessionName({ socket: '/s', session: 'life417-native', source: 'explicit' })).toBe('life417-native')
-    expect(paneSessionName(null)).toBeNull()
-    expect(paneSessionName({ socket: '/s', session: null, source: 'explicit' })).toBeNull()
   })
 })

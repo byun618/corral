@@ -37,7 +37,15 @@ const js = {
     const cs = (el, props) => { if (!el) return null; const s = getComputedStyle(el); return Object.fromEntries(props.map((p) => [p, s.getPropertyValue(p)])) };
     const q = (sel) => host.querySelector(sel);
     const all = (sel) => Array.from(host.querySelectorAll(sel)).map((el) => ({ cls: el.className, rect: r(el), text: el.textContent }));
-    const view = q('.composition-view'); const caret = q('[data-l566-caret]');
+    const view = q('.composition-view');
+    // caret 은 조합 상자의 ::after 다(LIFE-566 r0). 계산값을 그대로 읽고, 상자 테두리 상자 기준 left 를 더해 화면 x 를 낸다(r1 F1 — 가정 금지).
+    const after = view ? getComputedStyle(view, '::after') : null;
+    const caret = after && after.getPropertyValue('content') !== 'none' && after.getPropertyValue('display') !== 'none' ? (() => {
+      const box = view.getBoundingClientRect(); const left = parseFloat(after.getPropertyValue('left')); const width = parseFloat(after.getPropertyValue('width'));
+      const borderLeft = parseFloat(getComputedStyle(view).getPropertyValue('border-left-width')) || 0;
+      return { content: after.getPropertyValue('content'), left: box.left + borderLeft + left, width, cssLeft: after.getPropertyValue('left'), cssWidth: after.getPropertyValue('width'),
+        backgroundColor: after.getPropertyValue('background-color'), top: box.top + (parseFloat(after.getPropertyValue('top')) || 0), height: parseFloat(after.getPropertyValue('height')) };
+    })() : null;
     const screen = q('.xterm-screen'); const rows = q('.xterm-rows');
     const range = view && view.firstChild ? (() => { const rg = document.createRange(); rg.selectNodeContents(view); const b = rg.getBoundingClientRect(); return { left: b.left, right: b.right, width: b.width } })() : null;
     return {
@@ -46,8 +54,11 @@ const js = {
       host: r(host), screen: r(screen), rowsEl: r(rows),
       compositionView: { rect: r(view), textRange: range, active: view?.classList.contains('active') ?? null, text: view?.textContent ?? null,
         style: cs(view, ['background-color', 'color', 'left', 'top', 'width', 'height', 'font-family', 'font-size', 'text-decoration-line', 'display', 'z-index', 'padding-right', 'box-shadow', 'border-right-width']) },
-      caret: caret ? { rect: r(caret), style: cs(caret, ['background-color', 'width', 'height', 'display', 'left']) } : null,
+      caret,
       cursor: all('.xterm-cursor'),
+      // 커서 칸 색(양성 대조·C2ⓒ 판정용) — 조합 중엔 수정본 CSS 가 지우므로 계산값을 그대로 남긴다.
+      cursorStyle: (() => { const el = q('.xterm-rows .xterm-cursor'); return el ? cs(el, ['background-color', 'color', 'outline-color', 'outline-style', 'box-shadow', 'animation-name']) : null })(),
+      xtermClasses: q('.xterm')?.className ?? null,
       helpers: { rect: r(q('.xterm-helpers')), style: cs(q('.xterm-helpers'), ['left', 'top', 'position']) },
       textarea: { rect: r(ta), style: cs(ta, ['left', 'top', 'width', 'height', 'opacity', 'caret-color', 'z-index', 'color']), value: ta.value },
     }`,

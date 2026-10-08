@@ -28,6 +28,26 @@ describe('compositionCells', () => {
     expect(compositionCells('a')).toBe(1)
     expect(compositionCells('')).toBe(0)
   })
+
+  // r1 F5 — 폭 표의 범위마다 시작·끝은 2칸, 그 바로 바깥(±1)은 1칸. 3400 은 앞 범위(3041–33FF) 끝 +1 이자 다음 범위 시작이라 2칸.
+  const ranges: Array<[number, number]> = [
+    [0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xa960, 0xa97f],
+    [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x20000, 0x3fffd],
+  ]
+  const inside = (code: number): boolean => ranges.some(([lo, hi]) => code >= lo && code <= hi)
+  it.each(ranges.map(([lo, hi]) => [lo.toString(16), hi.toString(16), lo, hi]))('범위 %s–%s: 시작·끝 2칸, 바깥 ±1 은 표 밖이면 1칸', (_lo, _hi, lo, hi) => {
+    expect(compositionCells(String.fromCodePoint(lo))).toBe(2)
+    expect(compositionCells(String.fromCodePoint(hi))).toBe(2)
+    for (const out of [lo - 1, hi + 1]) {
+      expect(compositionCells(String.fromCodePoint(out))).toBe(inside(out) ? 2 : 1)
+    }
+  })
+  it('경계 바로 바깥 대표값은 1칸 (표 밖 확인)', () => {
+    for (const code of [0x10ff, 0x1160, 0x303f, 0x3040, 0x4dc0, 0x4dff, 0xa95f, 0xa980, 0xabff, 0xd7a4, 0xf8ff, 0xfb00, 0xfe2f, 0xfe50, 0xfeff, 0xff61, 0xffdf, 0xffe7, 0x1ffff, 0x3fffe]) {
+      expect(compositionCells(String.fromCodePoint(code))).toBe(1)
+    }
+    expect(compositionCells(String.fromCodePoint(0x3400))).toBe(2)
+  })
 })
 
 describe('compositionLayout', () => {

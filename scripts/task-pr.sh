@@ -58,12 +58,12 @@ git -C "$REPO" push -u origin "$HEAD_BRANCH"
 SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 VERDICT_TEXT="$(git -C "$REPO" show "$HEAD_BRANCH:$VERDICT")"
 if [ -z "$TITLE" ]; then
-  TITLE="$(printf '%s\n' "$VERDICT_TEXT" | sed -n 's/^# *//p' | head -1)"
+  TITLE="$(awk '/^# /{ sub(/^# */, ""); print; exit }' <<<"$VERDICT_TEXT")"   # 파이프 없이 — 일찍 끝나도 SIGPIPE 없음
   [ -n "$TITLE" ] || TITLE="$SPEC_ID"
 fi
 case "$TITLE" in *"$LIFE"*) ;; *) TITLE="$LIFE: $TITLE" ;; esac
 # 판정표 = "| 항목 |" 으로 시작하는 머리줄부터 이어지는 표 줄들 (첫 표 하나)
-TABLE="$(printf '%s\n' "$VERDICT_TEXT" | awk '/^\| *항목 *\|/{on=1} on&&/^\|/{print; next} on{exit}')"
+TABLE="$(awk '/^\| *항목 *\|/{on=1} on&&/^\|/{print; next} on{exit}' <<<"$VERDICT_TEXT")"
 [ -n "$TABLE" ] || TABLE="(판정표를 찾지 못함 — 판정문 원문을 본다)"
 BODY_FILE="$(mktemp)"; trap 'rm -f "$BODY_FILE"' EXIT
 {

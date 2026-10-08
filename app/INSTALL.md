@@ -39,8 +39,8 @@ scripts/task-finish.sh LIFE-NNN-<슬러그>                                     
 이미 일부 머지된 상태에서 재실행해도 안전하다 — 머지된 PR 은 건너뛰고, 버전 커밋·태그는 아직 만들지 않았다(멈춘 PR 에서 끝났으므로). 해소가 기능을 바꿀 만큼 크면
 그 PR 을 이번 출고에서 빼고(`--prs` 에서 제외) 나머지만 출고한 뒤 그 작업의 코디에게 돌려보낸다. LA 는 `검증 중` 그대로다.
 
-끝나면 본체 세션이: dmg 를 아래 「설치」대로 설치 → `corral --version` 이 새 버전인지 확인 → 머지된 PR 의 일감마다 LA `완료` 전이 →
-남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
+끝나면 본체 세션이: 머지된 PR 의 일감마다 LA `완료` 전이(출고 머지 뒤 — D2, 설치를 기다리지 않는다) → dmg 를 아래 「설치」대로 설치 →
+`corral --version` 이 새 버전인지 확인 → 남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
 
 - **머지는 `release.sh` 로만 한다.** 브랜치 보호(required check)는 Free 플랜 private 레포에서 쓸 수 없어(403) 서버가 막지 않는다 —
   웹 UI 머지·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).

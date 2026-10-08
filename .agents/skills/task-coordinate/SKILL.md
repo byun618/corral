@@ -264,11 +264,12 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
        작업 브랜치는 원격(PR head)에 남는다. 태그 `LIFE-NNN-*-final` 은 유지한다.
      - 묶음 자식: PR 을 열지 않고 `scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
        로컬 merge·push 한 뒤 정리한다. 묶음이 끝나면 `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나
-       (판정문 `specs/LIFE-MMM-<슬러그>/verdict.md` — 자식 판정 링크·묶음 확인 결과).
+       (판정문 `specs/LIFE-MMM-<슬러그>/verdict.md` — 자식 판정 링크·묶음 확인 결과. **마지막 자식의 코디가** 묶음 확인을 끝내고
+       feature 브랜치에 커밋한다. 없으면 `task-pr.sh` 가 멈추므로 `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다).
   4. 본체 마무리 세션이 PR 번호(또는 feature 반영)를 사용자에게 보고한다. LA 는 `검증 중` 그대로다.
 - 스크립트가 실패하면 멈추고 원문을 보고한다. 이미 연 PR 은 `task-pr.sh` 재실행이 재사용한다.
 - **출고**는 별도다 — 사용자가 열린 PR 중 고르면("PR 이거이거 머지하고 빌드하자") 본체 세션이 `scripts/release.sh` 로
-  순서 머지·버전 태그·dmg 를 하고, 설치 뒤 머지된 PR 의 일감마다
+  순서 머지·버전 태그·dmg 를 하고, **출고 머지 뒤**(설치를 기다리지 않는다 — D2) 머지된 PR 의 일감마다
   `issue_transition(seq: NNN, toStatusLabel: "완료", resolution: "completed")` 를 호출해 실제 응답을 확인한다.
   부모 checkpoint는 다른 미완 자식이 없는지 확인한 뒤 별도로 완료 여부를 판단한다. 절차는 `app/INSTALL.md` 「출고」.
   출고 중 PR 이 충돌로 멈추면(앞 PR 머지 뒤) 본체 세션이 원격 작업 브랜치로 worktree 를 다시 만들어 main 을 merge·push 하고

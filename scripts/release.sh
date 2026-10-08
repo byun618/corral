@@ -73,13 +73,15 @@ fi
 
 # 0. 사전 확인 — 모든 PR 이 열려 있고(이미 머지된 것은 건너뜀) base 가 맞고 draft·포크가 아니다. 하나라도 어긋나면 머지 0건.
 #    head SHA 를 여기서 고정한다(PINS: "번호=SHA" 목록) — 사용자가 고른 시점의 PR 을 머지한다
-TODO=""; PINS=""
+TODO=""; PINS=""; SKIPPED=""
 for n in $PRS; do
   info="$(gh pr view "$n" --json state,baseRefName,headRefName,isDraft,isCrossRepository,headRefOid --jq '"\(.state) \(.baseRefName) \(.headRefName) \(.isDraft) \(.isCrossRepository) \(.headRefOid)"')" \
     || die "PR #$n 조회 실패 — 아무것도 머지하지 않음" 2
   set -- $info
   case "$1" in
-    MERGED) note "PR #$n 은 이미 머지됨 — 건너뜀"; continue ;;
+    MERGED) if [ "$2" = "$BASE" ]; then note "PR #$n 은 이미 $2 에 머지됨 — 건너뜀"; SKIPPED="$SKIPPED #$n($3)"
+            else note "PR #$n 은 이미 머지됨(base $2 — 요청 base $BASE 와 다르다, 번호 확인) — 건너뜀"; fi
+            continue ;;
     OPEN) ;;
     *) die "PR #$n 상태가 $1 — 열린 PR 만 출고한다 — 아무것도 머지하지 않음" 2 ;;
   esac
@@ -93,7 +95,10 @@ pin_of() { local kv; for kv in $PINS; do [ "${kv%%=*}" = "$1" ] && { echo "${kv#
 # 다음 버전 — base 끝의 app/package.json 에서. 출력: "<지금> <다음>"
 next_version() {
   local cur ma mi pa
-  cur="$(printf '%s\n' "$1" | sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' | head -1)"
+  cur="$(awk 'match($0, /^  "version": "[0-9.]+",$/) { v = $0; sub(/^  "version": "/, "", v); sub(/",$/, "", v); print v; exit }' <<J
+$1
+J
+)"
   [ -n "$cur" ] || return 1
   if [ -n "$VERSION" ]; then echo "$cur $VERSION"; return; fi
   IFS=. read -r ma mi pa <<V
@@ -106,15 +111,28 @@ V
   esac
 }
 
+# 다음 버전·태그를 머지 전에 본다 — --version 이 지금 이하이거나 태그가 이미 있으면 머지 0건으로 거절(exit 2)
+ver_gt() { # $1 > $2 (X.Y.Z)
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<V
+$1
+V
+  IFS=. read -r b1 b2 b3 <<V
+$2
+V
+  [ "$a1" -gt "$b1" ] || { [ "$a1" -eq "$b1" ] && { [ "$a2" -gt "$b2" ] || { [ "$a2" -eq "$b2" ] && [ "$a3" -gt "$b3" ]; }; }; }
+}
+NV="$(next_version "$(git show "origin/$BASE:app/package.json")")" || die "app/package.json 버전을 못 읽음" 2
+ver_gt "${NV#* }" "${NV% *}" || die "다음 버전 ${NV#* } 이 지금 버전 ${NV% *} 보다 크지 않다(--version 확인) — 아무것도 머지하지 않음" 2
+[ -z "$(git ls-remote --tags origin "refs/tags/$PREFIX${NV#* }")" ] || die "원격에 태그 $PREFIX${NV#* } 가 이미 있다 — 아무것도 머지하지 않음(--version 으로 다른 버전을 주거나 태그를 확인)" 2
+
 if [ "$DRY_RUN" = 1 ]; then
-  NV="$(next_version "$(git show "origin/$BASE:app/package.json")")" || die "app/package.json 버전을 못 읽음"
   set -- "${NV% *}" "${NV#* }"
   echo "── dry-run (머지·커밋·push 없음) ──"
   echo "base $BASE @ $(git rev-parse --short "origin/$BASE"), 태그 접두 $PREFIX"
   for n in $TODO; do echo "  머지 예정 #$n @ $(pin_of "$n" | cut -c1-7)"; done
   [ -n "$TODO" ] || echo "  머지 예정 없음"
   echo "버전 $1 → $2, 태그 $PREFIX$2 (지금 base 기준 — 머지할 PR 이 버전을 바꾸면 달라진다)"
-  git ls-remote --exit-code --tags origin "refs/tags/$PREFIX$2" >/dev/null 2>&1 && echo "⚠ 원격에 태그 $PREFIX$2 가 이미 있다 — 실제 실행은 거절된다"
   [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
   exit 0
 fi
@@ -150,7 +168,8 @@ for n in $TODO; do
 
   # 2. 머지 — 본 SHA 로 고정(안전장치). head 가 바뀌었으면 GitHub 가 거절한다
   gh pr merge "$n" --merge --match-head-commit "$sha" || die "PR #$n 머지 거절 — head 가 바뀌었거나 머지 불가. PR 상태를 보고 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
-  mc="$(gh pr view "$n" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')"
+  mc="$(gh pr view "$n" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')" \
+    || die "PR #$n 머지 결과 조회 실패 — 머지는 됐을 수 있다. 같은 명령을 다시 돌리면 머지된 PR 은 건너뛴다${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
   [ -n "$mc" ] || die "PR #$n 이 MERGED 가 아니다" 6
   git fetch -q origin "$BASE"
   parents="$(git rev-list --parents -n 1 "$mc" | wc -w | tr -d ' ')"
@@ -164,7 +183,7 @@ done
 git fetch -q origin "$BASE"
 # 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
 if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
-  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음"
+  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐다면 dmg 만 만든다: git worktree add --detach .claude/worktrees/_dmg <태그> && .claude/worktrees/_dmg/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/<태그>"
 fi
 git -C "$TMPWT" checkout -q --detach "origin/$BASE"
 NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
@@ -178,8 +197,9 @@ fi
 (cd "$TMPWT/app" && npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null)
 [ "$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' "$TMPWT/app/package.json" | head -1)" = "$VERSION" ] || die "버전 올림 실패"
 git -C "$TMPWT" add app/package.json app/package-lock.json
-git -C "$TMPWT" commit -q -m "release: $TAG" -m "PR:$MERGED_LIST" -m "scripts/release.sh — base $BASE, $CUR → $VERSION"
-git -C "$TMPWT" tag -a "$TAG" -m "release $TAG" -m "PR:$MERGED_LIST"
+PR_NOTE="PR:${MERGED_LIST:- (이번 실행 0건)}${SKIPPED:+ / 앞선 실행에서 머지:$SKIPPED}"
+git -C "$TMPWT" commit -q -m "release: $TAG" -m "$PR_NOTE" -m "scripts/release.sh — base $BASE, $CUR → $VERSION"
+git -C "$TMPWT" tag -a "$TAG" -m "release $TAG" -m "$PR_NOTE"
 if ! git -C "$TMPWT" push -q --atomic origin "HEAD:refs/heads/$BASE" "refs/tags/$TAG"; then
   git tag -d "$TAG" >/dev/null 2>&1 || true
   die "버전 커밋·태그 push 실패 — $BASE 가 그새 움직였을 수 있다. 머지는${MERGED_LIST:-(이번 실행 0건)} 끝났다. 로컬 태그는 지웠다 — 같은 명령을 다시 돌리면 버전 커밋·태그만 다시 만든다" 7
@@ -188,7 +208,11 @@ note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
 if [ "$(git branch --show-current)" = "$BASE" ] && [ -z "$(git status --porcelain)" ]; then
-  git fetch -q origin "$BASE" && git merge -q --ff-only "origin/$BASE" && note "본체 $BASE fast-forward → $TAG"
+  if git fetch -q origin "$BASE" && git merge -q --ff-only "origin/$BASE"; then
+    note "본체 $BASE fast-forward → $TAG"
+  else
+    note "⚠ 본체 $BASE fast-forward 실패 — 로컬 $BASE 가 origin 과 갈라졌다. 출고(원격)는 끝났다. 본체를 손으로 맞춘다(git status·git log origin/$BASE..$BASE)"
+  fi
 else
   note "본체 checkout 은 $BASE 가 아니거나 미커밋이 있어 fast-forward 하지 않음"
 fi
@@ -201,5 +225,5 @@ else
     || die "dmg 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). dmg 만 다시: git worktree add --detach .claude/worktrees/_dmg-$TAG $TAG && .claude/worktrees/_dmg-$TAG/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/$TAG (끝나면 git worktree remove .claude/worktrees/_dmg-$TAG)" 8
 fi
 
-echo "✔ 출고 $TAG —$MERGED_LIST"
-echo "□ 다음: ① dmg 설치(app/INSTALL.md 「설치」) ② 머지된 PR 의 LIFE 일감마다 LA '완료' 전이 ③ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"
+echo "✔ 출고 $TAG —$MERGED_LIST${SKIPPED:+ (앞선 실행:$SKIPPED)}"
+echo "□ 다음: ① 머지된 PR 의 LIFE 일감마다 LA '완료' 전이(출고 머지 뒤 — D2) ② dmg 설치(app/INSTALL.md 「설치」) ③ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"

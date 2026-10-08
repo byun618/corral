@@ -1509,13 +1509,13 @@ function createWindow(): void {
    * 새 창은 전부 거절한다. 외부로 넘기는 것은 **http·https 만**(`isExternalOpenAllowed`, LIFE-565 D2 — 원래 https 만) — 보안 체크리스트 17 (수정 1회차 L12).
    * R1 화면에 외부 링크는 없지만, `openExternal` 에 걸러지지 않은 URL 을 넘기는 모양이
    * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.
-   * 허용 로그는 쿼리·조각을 뺀 `origin + pathname` 만 남긴다 — 로그인 URL 의 토큰·state 를 로그 파일에 쓰지 않는다.
+   * 허용·거절 로그 모두 쿼리·조각·userinfo 를 뺀 모양만 남긴다(`externalOpenLogUrl`) — 토큰·비밀번호를 로그 파일에 쓰지 않는다.
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalOpenAllowed(url)) {
       log('window.open.external', { url: externalOpenLogUrl(url) })
       void shell.openExternal(url)
-    } else log('window.open.denied', { url: url.slice(0, 200) })
+    } else log('window.open.denied', { url: externalOpenLogUrl(url) })
     return { action: 'deny' }
   })
 

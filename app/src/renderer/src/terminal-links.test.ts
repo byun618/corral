@@ -121,11 +121,11 @@ describe('findLinksOnRow — 줄 넘김 결합 (C4)', () => {
 
   it('ⓑ 첫 행 마지막 칸이 URL 문자가 아니면(넓은 글자 등) 잇지 않는다', () => {
     const readRow: ReadRow = (y) => {
-      if (y === 0) return [...'https://ex.co/'].map((chars) => ({ chars, width: 1 })).concat([{ chars: '가', width: 2 }, { chars: '', width: 0 }])
+      if (y === 0) return [...'https://ex.co/a'].map((chars) => ({ chars, width: 1 })).concat([{ chars: '가', width: 2 }, { chars: '', width: 0 }])
       if (y === 1) return [...'tail'].map((chars) => ({ chars, width: 1 }))
       return undefined
     }
-    expect(texts({ readRow, y: 0 })).toEqual(['https://ex.co/'])
+    expect(texts({ readRow, y: 0 })).toEqual(['https://ex.co/a'])
     expect(texts({ readRow, y: 1 })).toEqual([])
   })
 })
@@ -193,6 +193,56 @@ describe('결합 경계 (R1-04 리뷰 재현)', () => {
   it('들여쓴 다음 행이 URL 로 시작해도 잇지 않는다', () => {
     const readRow = grid({ cols: 16, rows: ['https://a.com/xx', '  https://b.com/'] })
     expect(texts({ readRow, y: 1 })).toEqual(['https://b.com/'])
+  })
+})
+
+/** 첫 행 길이를 폭으로 — URL 이 마지막 칸에서 정확히 끝나는 꼴. */
+const exact = (rows: string[]): ReadRow => grid({ cols: rows[0]?.length ?? 0, rows })
+
+describe('fix r2 — 리뷰 r2 재현', () => {
+  it('R2-01 다음 행이 목록 마커(`-`·`+`·`1.`·`2)`)로 시작하면 잇지 않는다', () => {
+    expect(texts({ readRow: exact(['  - see https://example.com/abc', '  - next item here']), y: 0 })).toEqual(['https://example.com/abc'])
+    expect(texts({ readRow: exact(['  1. see https://example.com/ab', '  2. next item here']), y: 0 })).toEqual(['https://example.com/ab'])
+    expect(texts({ readRow: exact(['  + see https://example.com/ab', '  + next']), y: 0 })).toEqual(['https://example.com/ab'])
+    expect(texts({ readRow: exact(['  1) see https://example.com/ab', '  2) next']), y: 0 })).toEqual(['https://example.com/ab'])
+  })
+
+  it('R2-01 대조 — 마커 꼴이 아닌 hard-break 조각(`-abc`·`12.html`)은 잇는다', () => {
+    expect(texts({ readRow: exact(['  https://example.com/a', '  -abc/x']), y: 0 })).toEqual(['https://example.com/a-abc/x'])
+    expect(texts({ readRow: exact(['  https://example.com/p', '  12.html']), y: 0 })).toEqual(['https://example.com/p12.html'])
+  })
+
+  it('R2-01 한계 고정 — 들여쓴 일반 글은 신호가 없어 잇는다', () => {
+    expect(texts({ readRow: exact(['go to https://example.com/abcd', '  and then more text']), y: 0 })).toEqual(['https://example.com/abcdand'])
+  })
+
+  it('R2-03 결합 상한(16행)에 걸려 체인이 안 끝나면 잘린 링크를 내지 않는다', () => {
+    const url = 'https://e.co/' + 'x'.repeat(177) // 190자, 폭 10 → 19행
+    const rows = Array.from({ length: 19 }, (_, i) => url.slice(i * 10, i * 10 + 10))
+    const readRow = grid({ cols: 10, rows })
+    for (const y of [0, 5, 10, 18]) expect(texts({ readRow, y })).toEqual([])
+  })
+
+  it('R2-03 대조 — 상한 안(16행 이하)이면 전체 URL', () => {
+    const url = 'https://e.co/' + 'x'.repeat(137) // 150자 → 15행
+    const rows = Array.from({ length: 15 }, (_, i) => url.slice(i * 10, i * 10 + 10))
+    expect(texts({ readRow: grid({ cols: 10, rows }), y: 14 })).toEqual([url])
+  })
+
+  it('R2-03 체인 밖에서 시작해 체인 안에서 끝난 URL 은 그대로 낸다(가운데 끊김만 문제)', () => {
+    const readRow = grid({ cols: 40, rows: ['see https://example.com/x and more text'] })
+    expect(texts({ readRow, y: 0 })).toEqual(['https://example.com/x'])
+  })
+
+  it('R2-04 경로 중간에서 비 ASCII 글자로 끊기면 링크를 내지 않는다', () => {
+    expect(texts({ readRow: wideGrid({ cols: 60, rows: ['https://ko.wikipedia.org/wiki/한글 end'] }), y: 0 })).toEqual([])
+    expect(texts({ readRow: wideGrid({ cols: 60, rows: ['https://x.y/search?q=검색 end'] }), y: 0 })).toEqual([])
+  })
+
+  it('R2-04 대조 — 조사가 붙은 URL·공백 뒤 한글은 링크로 둔다', () => {
+    expect(texts({ readRow: wideGrid({ cols: 60, rows: ['https://example.com에서 확인'] }), y: 0 })).toEqual(['https://example.com'])
+    expect(texts({ readRow: wideGrid({ cols: 60, rows: ['https://example.com/docs를 보세요'] }), y: 0 })).toEqual(['https://example.com/docs'])
+    expect(texts({ readRow: wideGrid({ cols: 60, rows: ['https://example.com/wiki/ 한글'] }), y: 0 })).toEqual(['https://example.com/wiki/'])
   })
 })
 

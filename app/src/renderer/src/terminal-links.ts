@@ -26,6 +26,10 @@ const URL_CHAR = /[\w\-.~:/?#[\]@!$&()*+,;=%]/
 // 스킴은 거르지 않는다(위 주석) — `scheme://` 꼴이면 링크로 본다. 앞 글자가 스킴 문자면 스킴 중간이라 잡지 않는다.
 const URL_PATTERN = /(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[\w\-.~:/?#[\]@!$&()*+,;=%]+/g
 const SCHEME_START = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//
+// 목록 마커 한 토큰 + 공백 — hard-break 로 이어지는 URL 조각은 이 꼴일 수 없다(R2-01).
+const LIST_MARKER_START = /^(?:[-+*]|\d+[.)]) /
+// 비 ASCII 글자 앞에서 끊긴 URL 이 경로 중간이었다고 볼 마지막 글자(R2-04) — `wiki/한글`·`?q=검색` 류.
+const MID_PATH_TAIL = /[/=\-_?&#%~]$/
 
 function isUrlCell(cell: LinkCell | undefined): boolean {
   return cell !== undefined && cell.width === 1 && cell.chars.length === 1 && URL_CHAR.test(cell.chars)
@@ -53,9 +57,9 @@ function continues(a: LinkCell[] | undefined, b: LinkCell[] | undefined): boolea
   if (indent === null) return false
   const head = b
     .slice(indent, indent + 32)
-    .map((cell) => cell.chars)
+    .map((cell) => (cell.chars === '' ? ' ' : cell.chars))
     .join('')
-  return !SCHEME_START.test(head)
+  return !SCHEME_START.test(head) && !LIST_MARKER_START.test(head)
 }
 
 /** URL 끝에 붙은 문장 구두점·마크다운 굵게(`*`)·짝 없는 닫는 괄호를 뗀다 (C1ⓓ·R1-05). */
@@ -89,6 +93,9 @@ export function findLinksOnRow(input: { readRow: ReadRow; y: number }): Array<{ 
   while (y - top < MAX_JOINED_ROWS && top > 0 && continues(readRow(top - 1), readRow(top))) top--
   let bottom = y
   while (bottom - top < MAX_JOINED_ROWS && continues(readRow(bottom), readRow(bottom + 1))) bottom++
+  // 상한에 걸려 체인이 안 끝났으면 그 끝에 닿은 URL 은 잘린 것이다 — 내지 않는다(R2-03).
+  const topOpen = top > 0 && continues(readRow(top - 1), readRow(top))
+  const bottomOpen = continues(readRow(bottom), readRow(bottom + 1))
 
   let text = ''
   const positions: Array<{ x: number; y: number }> = []
@@ -108,6 +115,12 @@ export function findLinksOnRow(input: { readRow: ReadRow; y: number }): Array<{ 
   for (const match of text.matchAll(URL_PATTERN)) {
     const url = trimUrlTail(match[0])
     if (!/:\/\/./.test(url)) continue
+    const rawEnd = match.index + match[0].length
+    if ((topOpen && match.index === 0) || (bottomOpen && rawEnd === text.length)) continue
+    // 경로 중간에서 비 ASCII 글자를 만나 끊겼으면 접두사 URL 이다 — 내지 않는다(R2-04).
+    // `https://example.com에서` 처럼 조사가 붙은 꼴은 끝 글자가 경로 중간 표지가 아니라 링크로 둔다.
+    const next = text[rawEnd]
+    if (next !== undefined && next.charCodeAt(0) > 0x7f && !/\s/.test(next) && MID_PATH_TAIL.test(match[0])) continue
     const start = positions[match.index]
     const end = positions[match.index + url.length - 1]
     if (start === undefined || end === undefined) continue

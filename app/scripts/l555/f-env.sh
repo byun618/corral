@@ -21,4 +21,20 @@ if [ "$LABEL" = pre ]; then
   control corral_not_running "$COUNT" 1
   [ "$COUNT" = 0 ] || { echo "사용자 corral 이 떠 있다 — 끄지 않고 멈춘다"; exit 3; }
 fi
+if [ "$LABEL" = post ]; then
+  check a12.corral_procs_zero "$COUNT" 0
+  check a12.config_hashes_same "$(cut -d' ' -f1 "$OUT/env-post-hashes.txt" | tr '\n' ' ')" "$(cut -d' ' -f1 "$OUT/env-pre-hashes.txt" | tr '\n' ' ')"
+  control a12.config_hashes_same "$(cut -d' ' -f1 "$OUT/env-post-hashes.txt" | tr '\n' ' ')" "$(cut -d' ' -f1 "$OUT/env-pre-hashes.txt" | rev | tr '\n' ' ')"
+  check a12.herdr_tabs_same "$(cat "$OUT/env-post-tabs.txt")" "$(cat "$OUT/env-pre-tabs.txt")"
+  check a12.untouched_same "$(cat "$OUT/env-post-untouched.txt")" "$(cat "$OUT/env-pre-untouched.txt")"
+  # 이 일감이 띄운 것: /tmp/l555f* 를 문 프로세스·설치본 헬퍼·격리 herdr — 고아(PPID 1) 포함 전부
+  # 검사 자신과 그 조상(이 검사를 부른 셸 — 명령줄에 l555f 가 들어 있을 수 있다)은 뺀다(f16 에서 자기 매칭)
+  ANC=" $$ "; P=$$; while [ "$P" -gt 1 ]; do P=$(ps -o ppid= -p "$P" | tr -d ' '); [ -n "$P" ] || break; ANC="$ANC$P "; done
+  MINE=$(ps -Ao pid=,ppid=,command= | grep -E 'l555f|/Applications/corral\.app/' | grep -v grep | while read -r pid rest; do case "$ANC" in (*" $pid "*) ;; (*) echo "$pid $rest" ;; esac; done); echo "my_procs: ${MINE:-none}"
+  check a12.my_procs_zero "${MINE:-none}" none
+  LEFT=$(ls -d /tmp/l555f* 2>/dev/null | tr '\n' ' '); echo "my_tmp: ${LEFT:-none}"
+  check a12.my_tmp_zero "${LEFT:-none}" none
+  SOCKS=$(find /tmp -maxdepth 3 -name 'ctl.sock' -path '*l555f*' 2>/dev/null); check a12.control_sockets_zero "${SOCKS:-none}" none
+  echo "## 관문 뒤 남기는 것(01-criteria 표)"; ls -ld "$INST" "$SHIM_LINK" | sed "s#$HOME#~#"
+fi
 echo "fails=$FAILS"; exit $FAILS

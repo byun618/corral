@@ -20,7 +20,8 @@ done
 echo "(ui-prefs.json 은 화면 선택 상태라 A6 조작으로 바뀔 수 있다 — 판정 밖, 복원으로 되돌린다)"
 echo "## 앱 끄기"; stop_pid "$PID"; sleep 1; check app_off "$(inst_mains | grep -c .)" 0
 echo "## 복원 (rsync -a --delete 백업 → userData)"
-rsync -a --delete "$BK/data/" "$UD/"; RC=$?; check restore_exit0 "$RC" 0
+# --checksum: Chromium GPU 캐시 index 는 크기·mtime 을 그대로 둔 채 내용만 덮어쓴다 — rsync 기본 비교(크기+mtime)는 그 파일을 건너뛴다(f11 실측)
+rsync -a --delete --checksum "$BK/data/" "$UD/"; RC=$?; check restore_exit0 "$RC" 0
 (cd "$UD" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256) > "$OUT/a7-restored-sha256.txt"
 PRE=$(shasum -a 256 < "$BK/pre-sha256.txt" | cut -d' ' -f1); POST=$(shasum -a 256 < "$OUT/a7-restored-sha256.txt" | cut -d' ' -f1)
 echo "pre_list=$PRE restored_list=$POST files=$(grep -c . "$OUT/a7-restored-sha256.txt")"

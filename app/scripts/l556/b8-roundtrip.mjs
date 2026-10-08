@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-export async function b8RoundTrip({ cli, cliRaw, state, repo, fixtureOut, foreignSocket, expectCli, until, scrub, record }) {
+export async function b8RoundTrip({ cli, cliRaw, state, repo, fixtureOut, foreignSocket, expectCli, expectStatusAfter = 'dispatched', until, scrub, record }) {
   const out = {}
   record.b8 = out
   cli(['orchestration', 'run-create', '--objective', 'LIFE-556 B8 round trip'])
@@ -37,6 +37,8 @@ export async function b8RoundTrip({ cli, cliRaw, state, repo, fixtureOut, foreig
   out.foreign = { paneId, exit: foreign.exit, code: foreign.body?.error?.code ?? null, dispatchStatusAfter: afterForeign.result?.dispatch?.status ?? afterForeign.result?.status ?? null, reportedBefore: reportedEarly() }
   assert.notEqual(foreign.exit, 0, 'a report from another herdr server was accepted')
   assert.equal(out.foreign.code, 'sender_mismatch', 'foreign-socket report was not sender_mismatch')
+  // 최종 L2 — 거절이 시도를 건드리지 않았다(기록만이 아니라 단언).
+  assert.equal(out.foreign.dispatchStatusAfter, expectStatusAfter, 'attempt did not stay dispatched after the foreign report')
   // fix2 M2 — 진행 중에도 GUI 는 default 그대로다(다른 세션이 돌고 있다).
   out.selectedDuring = (await state()).selectedSession
   assert.equal(out.selectedDuring, 'default', 'GUI left default while the worker was running')

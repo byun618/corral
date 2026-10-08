@@ -8,7 +8,7 @@
 // 격리: HOME·userData·control 소켓 모두 /tmp/l556-app-* 아래. PATH 는 /usr/bin:/bin(brew 없음). 끝에 앱·동봉 서버를 끄고 고아를 본다.
 // ⓖ (fix1 M1) B8 왕복 — `b8-roundtrip.mjs`. ⓗ (fix1 L2) pane 의 XDG_CONFIG_HOME 이 앱 env 와 같다(둘 다 없음).
 // 판정은 종료코드다. 판정기 양성 대조: `L556_NEGATIVE=b8-cli` 는 기대 CLI 경로를, `L556_NEGATIVE=xdg` 는 기대 XDG 를, `L556_NEGATIVE=pin` 은 기대 세션을,
-// `L556_NEGATIVE=sender` 는 B8 음성의 「다른 서버 소켓」 을 이 backend 소켓으로 바꿔 줘서 exit 1 이 나와야 한다.
+// `L556_NEGATIVE=sender` 는 B8 음성의 「다른 서버 소켓」 을 이 backend 소켓으로, `L556_NEGATIVE=status` 는 음성 뒤 기대 상태를 바꿔 줘서 exit 1 이 나와야 한다.
 // 인자: <corral.app> <원자료 디렉터리> <fixture claude 바이너리(fixture/claude.c 를 cc 로 빌드한 것)>
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -144,7 +144,7 @@ try {
   cli(['orchestration', 'task-create', '--spec', 'bundled binding'])
   cli(['orchestration', 'check'])
   // ⓖ B8 왕복.
-  await b8RoundTrip({ cli, cliRaw, state, repo, fixtureOut, foreignSocket: negative === 'sender' ? path.join(home, '.config/corral-herdr/herdr.sock') : otherSocket, expectCli: negative === 'b8-cli' ? '/wrong/corral' : shim, until, scrub, record: record.checks })
+  await b8RoundTrip({ cli, cliRaw, state, repo, fixtureOut, foreignSocket: negative === 'sender' ? path.join(home, '.config/corral-herdr/herdr.sock') : otherSocket, expectStatusAfter: negative === 'status' ? 'completed' : 'dispatched', expectCli: negative === 'b8-cli' ? '/wrong/corral' : shim, until, scrub, record: record.checks })
   cli(['terminal', 'close', '--terminal', handle])
   const closedTab = made.result.terminal.tabId
   const tabsClosed = await until(async () => { const ids = (await state()).herdrTabIds; return ids !== null && !ids.includes(closedTab) ? ids : null }, 'GUI tab gone')

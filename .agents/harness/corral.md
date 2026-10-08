@@ -553,7 +553,7 @@ the pane on its own merits." 즉 **`worker-release` 를 두 번 부르면 두 �
   (`release.state: unknown` + `worker-show` 복구).
 - **하지 말 우회**: 회수가 실제 프로세스를 닫았다고 **가정하지 않는다.** 능력 수명 ≠ 프로세스 수명 —
   정산·중단·포기·회수는 모두 `capabilityRevokedAt` 을 기록하고, pane 이 살아 있어도 그 시도의 보고는 거절된다.
-  사용자 확인용 worktree 는 출고 승인까지 유지한다 — **터미널 유지와 worktree 유지의 수명은 다르다.**
+  사용자 확인용 worktree 는 출고 승인(= PR 생성, LIFE-574)까지 유지하고 PR 을 연 뒤 정리한다 — **터미널 유지와 worktree 유지의 수명은 다르다.**
 
 ## 『세션 기록 오라클』
 

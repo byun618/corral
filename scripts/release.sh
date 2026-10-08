@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# release.sh --prs "<번호> <번호> …" [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--dry-run]
+#            [--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v]   ← 리허설. 둘은 짝으로만 받는다
+# 출고 (LIFE-574) — 사용자가 고른 PR 을 그 순서대로 머지하고, 버전 올림 커밋 + 태그 <접두>X.Y.Z 를 push 한 뒤
+# 그 태그 위 깨끗한 트리에서 dmg 를 빌드한다. 출고 머지는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).
+#
+# **검사 없이 순서 머지다** (범위 변경 r1, 2026-10-08). PR CI 는 아직 없다 — 후속 일감 LIFE-575(맥미니 self-hosted 러너).
+# 브랜치 보호(required check)도 Free 플랜 private 레포에서 쓸 수 없다(403). 검증은 작업 플로우의 리뷰·관문이 한다.
+#
+# 0) 머지 전에 고른 PR 전부를 본다 — 닫힘·draft·포크·base 불일치가 하나라도 있으면 아무것도 머지하지 않는다(exit 2).
+#    이때 각 PR 의 head SHA 를 고정한다. 이미 머지된 PR 은 건너뛴다 — 중간에 멈추면 같은 명령을 다시 돌리면 된다.
+#    --dry-run 은 여기까지 보고 대상 PR·순서·head·다음 버전·태그를 출력하고 끝난다(머지·커밋·push 0건)
+# PR 마다:
+#   1) GitHub 의 머지 가능 판정(mergeable)을 본다 — 앞 PR 머지로 충돌이 생겼으면(CONFLICTING) 거기서 멈추고
+#      그 PR 과 뒤 PR 은 머지하지 않는다(exit 3). 판정이 끝내 안 나오면 멈춘다(exit 5)
+#   2) gh pr merge --merge --match-head-commit <0) 에서 고정한 SHA> — 그 뒤 head 가 바뀌었으면 GitHub 가 거절한다(exit 6). 검사가 아니라 안전장치다
+#   3) 머지 커밋 부모 2개 확인(squash·rebase 아님), 원격 head 브랜치 삭제
+# 남은 PR 에 base 를 합쳐 push 하지 않는다 — CI 가 없어 다시 돌릴 것이 없고, 남의 작업 브랜치를 건드리지 않는다.
+# 충돌 해소 절차는 app/INSTALL.md 「출고」 — 원격 작업 브랜치로 worktree 를 다시 만들어 base 를 merge(rebase 금지)·push 한 뒤 다시 돌린다.
+# 버전 커밋·태그 push 가 실패하면(exit 7) 로컬 태그를 지우고 멈춘다 — 같은 명령 재실행이 태그만 다시 만든다.
+# dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다.
+set -euo pipefail
+
+die() { local code="${2:-1}"; echo "✖ $1" >&2; exit "$code"; }
+note() { echo "· $1"; }
+
+PRS=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; DRY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prs) PRS="${2:?--prs 값 없음}"; shift 2 ;;
+    --base) BASE="${2:?--base 값 없음}"; shift 2 ;;
+    --tag-prefix) PREFIX="${2:?--tag-prefix 값 없음}"; shift 2 ;;
+    --bump) BUMP="${2:?--bump 값 없음}"; shift 2 ;;
+    --version) VERSION="${2:?--version 값 없음}"; shift 2 ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    *) die "모르는 인자: $1" ;;
+  esac
+done
+[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--dry-run]"
+# 번호 검사 + 중복 제거(처음 나온 순서 유지)
+UNIQ=""
+for n in $(echo "$PRS" | tr ',' ' '); do
+  case "$n" in *[!0-9]*) die "PR 번호가 아님: $n" ;; esac
+  case " $UNIQ " in *" $n "*) echo "· PR #$n 중복 — 한 번만 처리" ;; *) UNIQ="$UNIQ $n" ;; esac
+done
+PRS="$UNIQ"
+# 실 출고(main + v) 와 리허설(throwaway/* + rehearsal-*) 만 허용 — 한쪽만 바꾸면 실 레포의 main 이나 v 태그를 칠 수 있다
+case "$BASE|$PREFIX" in
+  "main|v") ;;
+  throwaway/*"|"rehearsal-*) ;;
+  *) die "--base '$BASE' 와 --tag-prefix '$PREFIX' 짝이 맞지 않는다 — 실 출고는 둘 다 기본값(main·v), 리허설은 --base throwaway/<이름> --tag-prefix rehearsal-<이름>-v" ;;
+esac
+case "$BUMP" in patch|minor|major) ;; *) die "--bump 는 patch|minor|major" ;; esac
+[ -z "$VERSION" ] || echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || die "--version 은 X.Y.Z"
+
+# 레포 = 본체 checkout. 작업 worktree 의 사본이나 `git show … > 파일` 로 꺼낸 사본으로 돌려도 본체를 가리키게
+# 스크립트 위치(없으면 cwd)의 git 공통 디렉터리에서 역산한다
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMMON="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || git rev-parse --path-format=absolute --git-common-dir)" \
+  || { echo "✖ git 레포 안에서 실행한다" >&2; exit 1; }
+REPO="$(dirname "$COMMON")"
+cd "$REPO"
+git fetch -q --tags origin
+git rev-parse --verify -q "refs/remotes/origin/$BASE" >/dev/null || die "원격 base 없음: origin/$BASE"
+
+# dmg 빌드 node — 머지(되돌릴 수 없음) 전에 본다. 기준은 release-dmg.sh 와 같다
+if [ "$SKIP_BUILD" = 0 ]; then
+  NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다 — dmg 빌드에 필요(--skip-build 면 생략)"
+  case "$NODE_V" in 24.*) ;; 22.*) note "node $NODE_V — 로컬 관문 기준은 v24 다(경고만)" ;;
+    *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖이라 dmg 빌드를 거절한다. v24 를 PATH 앞에 두거나 --skip-build" ;; esac
+fi
+
+# 0. 사전 확인 — 모든 PR 이 열려 있고(이미 머지된 것은 건너뜀) base 가 맞고 draft·포크가 아니다. 하나라도 어긋나면 머지 0건.
+#    head SHA 를 여기서 고정한다(PINS: "번호=SHA" 목록) — 사용자가 고른 시점의 PR 을 머지한다
+TODO=""; PINS=""; SKIPPED=""
+for n in $PRS; do
+  info="$(gh pr view "$n" --json state,baseRefName,headRefName,isDraft,isCrossRepository,headRefOid --jq '"\(.state) \(.baseRefName) \(.headRefName) \(.isDraft) \(.isCrossRepository) \(.headRefOid)"')" \
+    || die "PR #$n 조회 실패 — 아무것도 머지하지 않음" 2
+  set -- $info
+  case "$1" in
+    MERGED) if [ "$2" = "$BASE" ]; then note "PR #$n 은 이미 $2 에 머지됨 — 건너뜀"; SKIPPED="$SKIPPED #$n($3)"
+            else note "PR #$n 은 이미 머지됨(base $2 — 요청 base $BASE 와 다르다, 번호 확인) — 건너뜀"; fi
+            continue ;;
+    OPEN) ;;
+    *) die "PR #$n 상태가 $1 — 열린 PR 만 출고한다 — 아무것도 머지하지 않음" 2 ;;
+  esac
+  [ "$2" = "$BASE" ] || die "PR #$n 의 base 가 $2 — 요청 base $BASE 와 다르다 — 아무것도 머지하지 않음" 2
+  [ "$4" = "false" ] || die "PR #$n 은 draft — ready 로 바꾼 뒤 다시 — 아무것도 머지하지 않음" 2
+  [ "$5" = "false" ] || die "PR #$n 은 포크 PR — 출고 대상 아님 — 아무것도 머지하지 않음" 2
+  TODO="$TODO $n"; PINS="$PINS $n=$6"
+done
+pin_of() { local kv; for kv in $PINS; do [ "${kv%%=*}" = "$1" ] && { echo "${kv#*=}"; return; }; done; }
+
+# 다음 버전 — base 끝의 app/package.json 에서. 출력: "<지금> <다음>"
+next_version() {
+  local cur ma mi pa
+  cur="$(awk 'match($0, /^  "version": "[0-9.]+",$/) { v = $0; sub(/^  "version": "/, "", v); sub(/",$/, "", v); print v; exit }' <<J
+$1
+J
+)"
+  [ -n "$cur" ] || return 1
+  if [ -n "$VERSION" ]; then echo "$cur $VERSION"; return; fi
+  IFS=. read -r ma mi pa <<V
+$cur
+V
+  case "$BUMP" in
+    major) echo "$cur $((ma + 1)).0.0" ;;
+    minor) echo "$cur $ma.$((mi + 1)).0" ;;
+    patch) echo "$cur $ma.$mi.$((pa + 1))" ;;
+  esac
+}
+
+# 다음 버전·태그를 머지 전에 본다 — --version 이 지금 이하이거나 태그가 이미 있으면 머지 0건으로 거절(exit 2)
+ver_gt() { # $1 > $2 (X.Y.Z)
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<V
+$1
+V
+  IFS=. read -r b1 b2 b3 <<V
+$2
+V
+  [ "$a1" -gt "$b1" ] || { [ "$a1" -eq "$b1" ] && { [ "$a2" -gt "$b2" ] || { [ "$a2" -eq "$b2" ] && [ "$a3" -gt "$b3" ]; }; }; }
+}
+NV="$(next_version "$(git show "origin/$BASE:app/package.json")")" || die "app/package.json 버전을 못 읽음" 2
+ver_gt "${NV#* }" "${NV% *}" || die "다음 버전 ${NV#* } 이 지금 버전 ${NV% *} 보다 크지 않다(--version 확인) — 아무것도 머지하지 않음" 2
+[ -z "$(git ls-remote --tags origin "refs/tags/$PREFIX${NV#* }")" ] || die "원격에 태그 $PREFIX${NV#* } 가 이미 있다 — 아무것도 머지하지 않음(--version 으로 다른 버전을 주거나 태그를 확인)" 2
+
+if [ "$DRY_RUN" = 1 ]; then
+  set -- "${NV% *}" "${NV#* }"
+  echo "── dry-run (머지·커밋·push 없음) ──"
+  echo "base $BASE @ $(git rev-parse --short "origin/$BASE"), 태그 접두 $PREFIX"
+  for n in $TODO; do echo "  머지 예정 #$n @ $(pin_of "$n" | cut -c1-7)"; done
+  [ -n "$TODO" ] || echo "  머지 예정 없음"
+  echo "버전 $1 → $2, 태그 $PREFIX$2 (지금 base 기준 — 머지할 PR 이 버전을 바꾸면 달라진다)"
+  [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
+  exit 0
+fi
+
+# 임시 worktree — 본체 checkout 을 건드리지 않고 버전 커밋·빌드를 한다
+TMPWT="$REPO/.claude/worktrees/_release-$(date +%Y%m%d-%H%M%S)"
+cleanup() { [ -d "$TMPWT" ] && git -C "$REPO" worktree remove --force "$TMPWT" >/dev/null 2>&1; git -C "$REPO" worktree prune; }
+trap cleanup EXIT
+git worktree add -q --detach "$TMPWT" "origin/$BASE"
+
+# GitHub 머지 가능 판정 — UNKNOWN 이면 계산될 때까지 잠시 기다린다(앞 PR 머지 직후 흔하다)
+mergeable_state() {
+  local n="$1" st=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    st="$(gh pr view "$n" --json mergeable --jq .mergeable)"
+    [ "$st" != "UNKNOWN" ] && break
+    sleep 3
+  done
+  echo "$st"
+}
+
+MERGED_LIST=""
+for n in $TODO; do
+  head="$(gh pr view "$n" --json headRefName --jq .headRefName)"
+  sha="$(pin_of "$n")"
+
+  # 1. 머지 가능 판정 — 앞 PR 머지로 충돌이 생겼으면 여기서 멈춘다
+  case "$(mergeable_state "$n")" in
+    MERGEABLE) ;;
+    CONFLICTING) die "PR #$n ($head) 가 $BASE 와 충돌 — 머지 안 함(이 PR 과 뒤 PR 모두). 그 작업 브랜치에 $BASE 를 merge 해 풀고 push 한 뒤 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 3 ;;
+    *) die "PR #$n 머지 가능 판정이 나오지 않음 — 머지 안 함. 잠시 뒤 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 5 ;;
+  esac
+
+  # 2. 머지 — 본 SHA 로 고정(안전장치). head 가 바뀌었으면 GitHub 가 거절한다
+  gh pr merge "$n" --merge --match-head-commit "$sha" || die "PR #$n 머지 거절 — head 가 바뀌었거나 머지 불가. PR 상태를 보고 남은 PR 로 다시${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
+  mc="$(gh pr view "$n" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')" \
+    || die "PR #$n 머지 결과 조회 실패 — 머지는 됐을 수 있다. 같은 명령을 다시 돌리면 머지된 PR 은 건너뛴다${MERGED_LIST:+ (이미 머지:$MERGED_LIST)}" 6
+  [ -n "$mc" ] || die "PR #$n 이 MERGED 가 아니다" 6
+  git fetch -q origin "$BASE"
+  parents="$(git rev-list --parents -n 1 "$mc" | wc -w | tr -d ' ')"
+  [ "$parents" = "3" ] || die "PR #$n 머지 커밋 ${mc:0:7} 부모가 2개가 아니다 — squash·rebase 머지 설정 확인" 6
+  note "PR #$n 머지 → ${mc:0:7} (merge commit)"
+  git push -q origin --delete "$head" 2>/dev/null && note "원격 브랜치 삭제: $head" || note "원격 브랜치 $head 삭제 건너뜀(이미 없음)"
+  MERGED_LIST="$MERGED_LIST #$n($head)"
+done
+
+# 3. 버전 올림 커밋 + 태그 — 태그 = <접두>X.Y.Z = app/package.json 버전
+git fetch -q origin "$BASE"
+# 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
+if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
+  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐다면 dmg 만 만든다: git worktree add --detach .claude/worktrees/_dmg <태그> && .claude/worktrees/_dmg/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/<태그>"
+fi
+git -C "$TMPWT" checkout -q --detach "origin/$BASE"
+NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
+CUR="${NV% *}"; VERSION="${NV#* }"
+TAG="$PREFIX$VERSION"
+[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] || die "원격에 태그 $TAG 가 이미 있다"
+# 원격에 없는 로컬 태그 = 앞선 실행의 push 실패가 남긴 고아(push 안 된 버전 커밋을 가리킨다) — 지우고 다시 만든다
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  git tag -d "$TAG" >/dev/null && note "원격에 없는 로컬 태그 $TAG 삭제(앞선 push 실패 잔재)"
+fi
+(cd "$TMPWT/app" && npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null)
+[ "$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' "$TMPWT/app/package.json" | head -1)" = "$VERSION" ] || die "버전 올림 실패"
+git -C "$TMPWT" add app/package.json app/package-lock.json
+PR_NOTE="PR:${MERGED_LIST:- (이번 실행 0건)}${SKIPPED:+ / 앞선 실행에서 머지:$SKIPPED}"
+git -C "$TMPWT" commit -q -m "release: $TAG" -m "$PR_NOTE" -m "scripts/release.sh — base $BASE, $CUR → $VERSION"
+git -C "$TMPWT" tag -a "$TAG" -m "release $TAG" -m "$PR_NOTE"
+if ! git -C "$TMPWT" push -q --atomic origin "HEAD:refs/heads/$BASE" "refs/tags/$TAG"; then
+  git tag -d "$TAG" >/dev/null 2>&1 || true
+  die "버전 커밋·태그 push 실패 — $BASE 가 그새 움직였을 수 있다. 머지는${MERGED_LIST:-(이번 실행 0건)} 끝났다. 로컬 태그는 지웠다 — 같은 명령을 다시 돌리면 버전 커밋·태그만 다시 만든다" 7
+fi
+note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --short HEAD))"
+
+# 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
+if [ "$(git branch --show-current)" = "$BASE" ] && [ -z "$(git status --porcelain)" ]; then
+  if git fetch -q origin "$BASE" && git merge -q --ff-only "origin/$BASE"; then
+    note "본체 $BASE fast-forward → $TAG"
+  else
+    note "⚠ 본체 $BASE fast-forward 실패 — 로컬 $BASE 가 origin 과 갈라졌다. 출고(원격)는 끝났다. 본체를 손으로 맞춘다(git status·git log origin/$BASE..$BASE)"
+  fi
+else
+  note "본체 checkout 은 $BASE 가 아니거나 미커밋이 있어 fast-forward 하지 않음"
+fi
+
+# 5. dmg — 그 태그 위 깨끗한 트리(임시 worktree)에서만. 산출물은 본체 app/dist/release/<태그>/ 로 복사(git 무시)
+if [ "$SKIP_BUILD" = 1 ]; then
+  note "--skip-build — dmg 는 나중에: 태그 $TAG 를 체크아웃한 깨끗한 트리에서 scripts/release-dmg.sh --tag-prefix $PREFIX"
+else
+  "$TMPWT/scripts/release-dmg.sh" --tag-prefix "$PREFIX" --out "$REPO/app/dist/release/$TAG" \
+    || die "dmg 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). dmg 만 다시: git worktree add --detach .claude/worktrees/_dmg-$TAG $TAG && .claude/worktrees/_dmg-$TAG/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/$TAG (끝나면 git worktree remove .claude/worktrees/_dmg-$TAG)" 8
+fi
+
+echo "✔ 출고 $TAG —$MERGED_LIST${SKIPPED:+ (앞선 실행:$SKIPPED)}"
+echo "□ 다음: ① 머지된 PR 의 LIFE 일감마다 LA '완료' 전이(출고 머지 뒤 — D2) ② dmg 설치(app/INSTALL.md 「설치」) ③ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"

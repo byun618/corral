@@ -26,7 +26,7 @@ scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|
 이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. 버전 커밋·태그 push 가 실패하면(exit 7 — main 이 그새 움직임 등) 로컬 태그를 지우고 멈추므로
 같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만든다.
 
-**충돌이 나면 (exit 3)** — 앞 PR 이 머지돼 뒤 PR 이 main 과 충돌한다. 작업 worktree 는 PR 을 열 때 정리됐으므로(D4) 본체 세션이 다시 만들어 푼다.
+**충돌이 나면 (exit 3)** — 앞 PR 이 머지돼 뒤 PR 이 main 과 충돌한다. 작업 worktree 는 PR 을 연 뒤 정리됐으므로(D4) 본체 세션이 다시 만들어 푼다.
 ```sh
 git fetch origin
 git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -B LIFE-NNN-<슬러그> origin/LIFE-NNN-<슬러그>   # 원격 작업 브랜치로 다시 만든다

@@ -10,7 +10,8 @@ while [ -L "$SELF" ]; do
     *) SELF="$(dirname "$SELF")/$LINK" ;;
   esac
 done
-CONTENTS="$(cd "$(dirname "$SELF")/../.." && pwd -P)"
+# `cd -P` — `bin` 위 디렉터리가 링크여도 `..` 를 물리 경로로 푼다(fix1 L1).
+CONTENTS="$(cd -P "$(dirname "$SELF")/../.." && pwd -P)"
 ELECTRON="$CONTENTS/MacOS/corral"
 CLI="$CONTENTS/Resources/app.asar.unpacked/cli/corral.mjs"
 # 셸의 Node 옵션이 내장 Node 에 섞이지 않게 한다.

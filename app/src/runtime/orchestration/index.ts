@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
@@ -22,6 +23,7 @@ import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '..
 import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
 import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
+import { cliInvocation } from '../desktop-launch.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
 import { isRecord, readNumber, readRecord, readString } from '../../shared/json.js'
 import { OrchestrationStore } from './store.js'
@@ -586,8 +588,13 @@ export function orchestrationModule(userData: string): CommandModule {
        * the socket explicitly or a worker would talk to whatever profile its PATH happens to find.
        */
       const corralCommand = (): string => {
-        const entry = process.argv[1]
-        const base = process.env.CORRAL_CLI ?? (entry !== undefined && entry.endsWith('corral.mjs') ? `${shellQuote(process.execPath)} ${shellQuote(entry)}` : 'corral')
+        const invocation = cliInvocation({ override: process.env.CORRAL_CLI, moduleFile: fileURLToPath(import.meta.url), entry: process.argv[1], execPath: process.execPath })
+        let base: string
+        switch (invocation.kind) {
+          case 'override': base = invocation.command; break
+          case 'argv': base = invocation.argv.map(shellQuote).join(' '); break
+          case 'path': base = 'corral'; break
+        }
         return `${base} --socket ${shellQuote(socketPath(userData))}`
       }
       const workerOrigin = (dispatch: DispatchRecord): MessageOrigin => ({ kind: 'worker', dispatchId: dispatch.id, paneId: dispatch.target.paneId })

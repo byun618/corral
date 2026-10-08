@@ -93,7 +93,8 @@ export async function runCli(argv: string[]): Promise<void> {
   let recovery: { requestId: string; terminal: string | boolean | null; command: string; action: string } | undefined
   try {
     // 번들 버전과 같은 출처(`app/package.json` version — 빌드가 주입)를 찍는다(LIFE-555 G1). 레지스트리 밖의 전역 플래그다.
-    if (argv[0] === '--version') { console.log(json ? JSON.stringify({ ok: true, version: CORRAL_VERSION }) : CORRAL_VERSION); return }
+    // `--json` 과는 순서 무관(fix1 L2). 그 밖의 인자와 섞이면 아래 레지스트리가 모르는 옵션으로 거절한다.
+    if (argv.includes('--version') && argv.every(arg => arg === '--version' || arg === '--json') && new Set(argv).size === argv.length) { console.log(json ? JSON.stringify({ ok: true, version: CORRAL_VERSION }) : CORRAL_VERSION); return }
     const inv = registry.parse(argv, process.cwd())
     if (inv.flags.help) {
       const commands = inv.command ? [registry.spec(inv.command)!] : registry.schema().commands

@@ -1,3 +1,4 @@
+// ⚠ 2026-10-08 폐기 — 사용자 제작 정식 아이콘으로 교체됨(`build/icon.png` = corral-icon-1024.png, 원본 SVG `build/brand/`). 다시 돌리면 정식 아이콘을 덮어쓴다.
 // 임시 앱 아이콘 생성기 (LIFE-555 — 정식 아이콘은 범위 밖). 1024×1024 PNG 를 `build/icon.png` 로 쓴다.
 // electron-builder 가 이 PNG 에서 `.icns` 를 만든다. 모양: 둥근 사각형 바탕 + 울타리(corral) 가로대 2줄·말뚝 4개.
 // 실행: node scripts/l555/make-icon.mjs  (외부 의존성 없음 — zlib 로 직접 인코딩)

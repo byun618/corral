@@ -53,7 +53,8 @@ i=0; until [ -S "$ROOT/ctl.sock" ]; do i=$((i+1)); [ $i -gt 100 ] && break; slee
 sleep 2
 echo "## 카드 스크린샷 (A9)"; node scripts/l485/ctl.mjs "$ROOT/ctl.sock" '{"cmd":"shot","name":"a9-missing-card"}'
 Q=$(node scripts/l485/ctl.mjs "$ROOT/ctl.sock" '{"cmd":"query","selector":"[data-backend-install]"}'); echo "$Q"
-check install_hint "$(echo "$Q" | grep -q 'brew install herdr' && echo 1)"
+# LIFE-556 이후 개발 미설치 카드는 brew 를 권하지 않고, LIFE-561 부터 레포 guard 빌드 명령을 안내한다 — 그 문자열을 본다.
+check install_hint "$(echo "$Q" | grep -q 'npm --prefix app run herdr:guard' && ! echo "$Q" | grep -q 'brew install' && echo 1)"
 cp "$ROOT"/shots/*.png "$OUT/" 2>/dev/null
 echo "## 종료"
 for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud"); do ps -o ppid= -p "$p" | grep -qx ' *1' && kill "$p"; done

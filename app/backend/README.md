@@ -45,14 +45,18 @@ npm --prefix app run herdr:guard    # 레포 루트(어느 worktree 든)에서. 
 - **재실행**: 그 칸의 영수증이 지금 체크아웃과 맞으면 빌드하지 않고 `up to date` 로 끝난다.
 - **패치가 바뀌면** 같은 명령이 새 칸에 새로 빌드한다(툴체인은 다시 받지 않는다) — `use a fresh CORRAL_BACKEND_BUILD_ROOT` 로 멈추지 않는다.
   패치가 다른 브랜치는 자기 칸을 따로 갖는다. 옛 칸은 지우지 않는다 — 필요 없으면 손으로 지운다(도는 서버가 그 바이너리를 쓰고 있지 않은지 먼저 본다).
-- 칸의 바이너리를 **다시** 빌드해야 하는데(영수증 불일치) 그 바이너리로 도는 `herdr server` 가 있으면 빌드하지 않고 멈춘다 — 실행 중 실행 파일을 바꾸면
+- 칸의 바이너리를 **다시** 빌드해야 하는데(영수증 불일치) 그 바이너리로 도는 `herdr server`·`herdr --session <이름> server` 가 있으면 빌드하지 않고 멈춘다 — 실행 중 실행 파일을 바꾸면
   서버가 pane 에 알려 준 `HERDR_BIN_PATH` 가 깨질 수 있다(상류 #4474). 그 서버를 멈춘 뒤 다시 실행한다.
+- **중단된 칸**: 압축 풀기·패치 적용 중 끊긴 칸(트리는 있는데 패치 표식 `.corral-patches` 가 없거나 다름)은 다음 실행이 그 트리를 지우고 다시 푼다 — 같은 명령을 다시 돌리면 된다.
+- **동시 실행**: 같은 칸을 두 곳(다른 worktree 등)에서 동시에 빌드하지 않게 `<자리>/<칸>.lock`(빌드하는 pid)으로 막는다. 먼저 잡은 쪽이 끝난 뒤 다시 실행한다. 죽은 pid 의 잠금은 다음 실행이 걷는다.
 - **앱의 해소 순서**(`src/main/adapter/internal/server.ts` `locateHerdr`, 개발 실행·바인딩 없음): `CORRAL_HERDR_BIN` → **레포 guard** → 로그인 셸 `command -v herdr` → 알려진 위치.
   설치본은 동봉만(LIFE-556 그대로), 바인딩 있는 개발 실행은 종전대로 레포 guard 를 보지 않는다. `herdr.resolve` 로그의 `source` 가 `repo-guard` 다.
   - **없음**(고정 자리 자체가 없다 — 이 레포에서 빌드한 적이 없다): 종전 후보로 내려간다. 그것도 없으면 미설치 카드가 위 빌드 명령을 안내한다.
   - **낡음**(자리는 있는데 이 체크아웃과 맞지 않는다 — 이 패치의 칸이 없음, 영수증의 profile·패치 sha256·상류 commit·archive 불일치, 바이너리 sha256 불일치):
     그 바이너리를 쓰지 않고 **종전 후보로도 내려가지 않는다**. 카드가 어긋난 이유 한 줄과 재빌드 명령을 보인다. 재빌드하면 1분 안에 다시 찾는다.
     대조 규칙은 `src/main/adapter/internal/dev-guard.ts` `checkGuardReceipt` 와 `scripts/build-dev-guard.mjs` 가 같다.
+- **앱 경로 가정**: 앱은 `app.getAppPath()` 를 체크아웃의 `app/` 로 보고 그 `backend/`·git 공용 폴더를 읽는다. 개발 실행은 `app/` 디렉터리(`electron .`·`npm run dev`)로 띄운다 —
+  파일 경로 인자로 띄우면 `source.json` 을 못 읽어 낡음 카드(읽으려던 경로가 이유에 실린다)로 멈춘다.
 - **폴더·세션**: debug guard 의 앱 폴더는 `herdr-dev`(`~/.config/herdr-dev`) — 세션 폴백 폴더도 그것을 따른다. 레포 guard 로 풀린 개발 실행은
   `herdr-dev` 의 **`default` 하나에만** 붙는다(설치본과 같은 규칙). 다른 이름 세션(다른 작업의 서버)이 돌고 있어도 붙지 않고, `default` 가 없거나 멈췄으면
   종전 기동 규칙(확인 카드·자동 기동)대로 `default` 를 띄운다. 이름 세션에는 `CORRAL_SESSION` 명시 바인딩으로만 붙는다.

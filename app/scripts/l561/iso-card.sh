@@ -49,6 +49,12 @@ echo "## backend.status"; grep '"backend.status"' "$ROOT/corral.ndjson" | sed "s
 "$NODE" scripts/l485/ctl.mjs "$ROOT/c.sock" "{\"cmd\":\"shot\",\"name\":\"c3-$MODE-card\"}" | sed "s#/private$ROOT#<root>#g; s#$ROOT#<root>#g"
 CARD=$("$NODE" scripts/l485/ctl.mjs "$ROOT/c.sock" '{"cmd":"query","selector":"[data-backend-card]"}'); echo "card=$CARD" | sed "s#/private$ROOT#<root>#g; s#$ROOT#<root>#g; s#$HOME#~#g"
 HINT=$("$NODE" scripts/l485/ctl.mjs "$ROOT/c.sock" '{"cmd":"query","selector":".backend-card-hint"}'); echo "hint=$HINT"
+# 양성 대조(fix1 L3) — 같은 pgrep 패턴이 격리 루트의 `…/herdr server` argv 를 실제로 잡는지 먼저 본다.
+mkdir -p "$ROOT/fake"; printf '#!/bin/sh\nsleep 30\n' > "$ROOT/fake/herdr"; chmod +x "$ROOT/fake/herdr"
+"$ROOT/fake/herdr" server & FAKE=$!; sleep 0.5
+PROBE=$(pgrep -fl -- "herdr.* server" | grep -- "$ROOT"); echo "probe=$(echo "$PROBE" | sed "s#/private$ROOT#<root>#g; s#$ROOT#<root>#g")"
+check probe_sees_fake_server "$(echo "$PROBE" | grep -q "^$FAKE " && echo 1)"
+kill "$FAKE" 2>/dev/null; wait "$FAKE" 2>/dev/null
 SERVERS=$(pgrep -fl -- "herdr.* server" | grep -- "$ROOT" ); echo "iso_servers=${SERVERS:-none}"
 check no_server_spawned "$([ -z "$SERVERS" ] && echo 1)"
 check hint_has_build_command "$(echo "$HINT" | grep -q 'npm --prefix app run herdr:guard' && echo 1)"
@@ -58,6 +64,8 @@ if [ "$MODE" = none ]; then
   check card_missing "$(echo "$CARD" | grep -q 'herdr 를 찾지 못했습니다' && echo 1)"
 else
   check resolve_stale "$(echo "$RES" | grep -q '"stale":true' && echo "$RES" | grep -q '바이너리 sha256' && echo 1)"
+  # 양성 대조(fix1 L3) — 해소 줄이 실제로 있어야 「brew 로 내려간 줄 없음」 이 근거가 된다.
+  check resolve_logged "$([ "$(grep -c '"herdr.resolve"' "$ROOT/corral.ndjson" 2>/dev/null)" -ge 1 ] && echo 1)"
   check no_fallback_to_brew "$(grep '"herdr.resolve"' "$ROOT/corral.ndjson" | grep -q 'login-shell\|known-location' || echo 1)"
   check card_stale "$(echo "$CARD" | grep -q '체크아웃과 맞지 않습니다' && echo 1)"
 fi

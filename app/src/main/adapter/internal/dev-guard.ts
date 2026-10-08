@@ -91,7 +91,8 @@ export function findDevGuard(input: { base: string; backendDir: string; isExecut
   try {
     read = readSource(input.backendDir)
   } catch (error) {
-    return { kind: 'stale', path: input.base, reason: `app/backend/source.json·패치를 읽지 못했다 (${String(error)})` }
+    // 앱 경로(`app.getAppPath()`)가 체크아웃의 `app/` 이라는 가정이 깨진 경우다(fix1 L5) — 무엇을 읽으려 했는지 경로를 싣는다.
+    return { kind: 'stale', path: input.base, reason: `${input.backendDir} 에서 source.json·패치를 읽지 못했다 — 개발 실행은 체크아웃의 app/ 디렉터리를 앱 경로로 띄운다 (${String(error)})` }
   }
   const key = guardCellKey(read.patchBytes)
   const cell = path.join(input.base, key)

@@ -92,6 +92,9 @@ try {
   log('profile backend 제거', JSON.stringify(profile.backend ?? null))
   delete h.env.CORRAL_SESSION
   delete h.env.CORRAL_BACKEND_SOCKET
+  // LIFE-561 fix1 M1 — 바인딩 없는 개발 실행은 이제 레포 guard(herdr-dev 폴더·default 고정)로 풀린다. 이 시나리오는 하네스가 띄운 herdr(PATH 의 herdr,
+  // `<xdg>/herdr`) 의 폴백 세션을 기대하므로 그 바이너리로 고정한다.
+  h.env.CORRAL_HERDR_BIN = spawnSync('/bin/sh', ['-c', 'command -v herdr'], { env: h.env, encoding: 'utf8' }).stdout.trim()
   await startCorral(h)
   await pause(3000)
   const st = await state(h)

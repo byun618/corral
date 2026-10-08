@@ -159,6 +159,17 @@ describe('findDevGuard — 고정 자리의 없음·낡음·일치 (C3ⓐⓑ)', 
     const result = findDevGuard({ base, backendDir, isExecutable: executable })
     expect(result.kind === 'stale' && result.reason).toMatch(/바이너리 sha256/)
   })
+  it('빌드 래퍼의 칸 잠금 파일(<칸>.lock)은 다른 칸으로 세지 않는다 → absent (fix1 L4)', () => {
+    const { backendDir, base } = fixture()
+    fs.mkdirSync(base, { recursive: true })
+    fs.writeFileSync(path.join(base, 'deadbeefdeadbeef.lock'), '123')
+    expect(findDevGuard({ base, backendDir, isExecutable: executable }).kind).toBe('absent')
+  })
+  it('앱 경로가 체크아웃의 app/ 이 아니면 stale 이유에 읽으려던 경로와 가정이 실린다 (fix1 L5)', () => {
+    const { base } = fixture()
+    const result = findDevGuard({ base, backendDir: '/nowhere/out/main/backend', isExecutable: executable })
+    expect(result.kind === 'stale' && result.reason).toMatch(/^\/nowhere\/out\/main\/backend 에서 .* app\/ 디렉터리를 앱 경로로/)
+  })
   it('release 영수증 → stale', () => {
     const { backendDir, base, build } = fixture()
     build((binarySHA256) => ({ ...goodReceipt(binarySHA256), profile: 'release' }))

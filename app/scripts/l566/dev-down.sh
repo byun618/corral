@@ -10,7 +10,7 @@ ps -o command= -p "$A" 2>/dev/null | grep -qF -- "--user-data-dir=$ROOT/ud" && s
 for p in $(pgrep -f -- "--user-data-dir=$ROOT/ud"); do stop "$p"; done
 ps -o command= -p "$B" 2>/dev/null | grep -qF -- "--session l566 server" && stop "$B"
 sleep 0.5
-echo "잔존:"; ps -Ao pid=,ppid=,etime=,command= | grep -E -- "$ROOT|--session l566 " | grep -v grep || echo "없음"
+echo "잔존:"; ps -Ao pid=,ppid=,etime=,command= | grep -E -- "$ROOT|--session l566 " | grep -v -e grep -e dev-down || echo "없음"
 "$GUARD" session list 2>&1 | grep -E '^l566' || echo "herdr l566 세션 목록 없음"
 # 이 작업이 만든 herdr 세션 폴더만 지운다(다른 세션 폴더는 무접촉) — 세션이 멈췄을 때만
 if ! "$GUARD" session list 2>/dev/null | awk '$1=="l566"{print $2}' | grep -q running; then rm -rf "$HOME/.config/herdr-dev/sessions/l566" && echo "herdr-dev/sessions/l566 제거"; fi

@@ -70,6 +70,8 @@ for (const step of steps) {
     console.log(`term ${arg} cursor=${t.cursorX},${t.cursorY}`)
     continue
   }
+  // 가려진(백그라운드) 창은 rAF 가 멈춰 xterm DOM 이 늦게 갱신된다 — 재기 전에 capturePage 로 프레임을 한 번 밀어 준다(r0 실측: 확정 뒤 측정이 이전 커서 칸을 읽었다).
+  if (name === 'measure') await rpc(sock, { cmd: 'shot', name: 'l566-frame-pump' }, 20_000)
   const code = name === 'update' ? js.update(arg) : js[name]
   if (code === undefined) throw new Error(`모르는 걸음 ${step}`)
   const result = await evalJs(`(() => { ${code} })()`)

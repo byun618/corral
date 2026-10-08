@@ -27,6 +27,7 @@ import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
+import { attachImeComposition } from './ime-composition.js'
 import {
   CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
   clipboardImagePayload,
@@ -204,6 +205,8 @@ export function TerminalPane({
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
     termRef.current = term
+    // 한글 IME 조합 표시층(LIFE-566) — 조합 상자를 그려진 커서 칸에 맞추고 뒤에 caret 을 그린다.
+    const detachIme = attachImeComposition({ term })
 
     // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------
     let pending: TerminalFrame | null = null
@@ -495,6 +498,7 @@ export function TerminalPane({
       offFrame()
       selectionListener.dispose()
       dataListener.dispose()
+      detachIme()
       termRef.current = null
       term.dispose()
     }

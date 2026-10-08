@@ -4,6 +4,36 @@ arm64 macOS 전용. 서명은 ad-hoc 이고 자동 업데이트·brew cask·릴�
 받은 Mac 에서 첫 실행이 막히면 **시스템 설정 ▸ 개인정보 보호 및 보안** 에서 「그래도 열기」를 한 번 누른다.
 **herdr 를 따로 설치할 필요가 없다** — 앱 안에 corral 전용 herdr(release 패치 빌드)가 들어 있다(LIFE-556).
 
+## 출고 (LIFE-574)
+
+**main = 출고된 상태 = 설치본.** 설치본 버전 = 태그 `vX.Y.Z` = `app/package.json` 버전이다(`corral --version` 으로 태그를 특정한다).
+출고 대기열은 열린 PR 이고(게이트 ② 출고 승인 = PR 생성, `scripts/task-pr.sh`), 출고는 사용자가 끊는다 — "PR 이거이거 머지하고 빌드하자".
+본체 세션이 본체 checkout 에서 실행한다.
+
+```sh
+gh pr list                                  # 출고 대기열
+scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|major 또는 --version X.Y.Z (기본 patch)
+```
+
+`release.sh` 가 하는 일 — PR 마다 ① head 에 main 이 없으면 임시 worktree(`.claude/worktrees/_release-*`)에서 main 을 **merge**(rebase 아님)해
+push 하고 CI 재실행을 기다린다. 충돌이면 그 자리에서 멈춘다(exit 3) — 그 작업 브랜치에서 풀어 push 한 뒤 남은 PR 로 다시 ② 그 head SHA 의
+PR CI(`.github/workflows/pr-ci.yml`) 결과가 **success 일 때만** `gh pr merge --merge --match-head-commit <SHA>` — failure 는 거절(exit 4),
+진행 중·결과 없음은 `--ci-timeout`(기본 1800초)까지 기다린 뒤 거절(exit 5), 확인 뒤 head 가 바뀌면 GitHub 가 거절한다 ③ 머지 커밋 부모 2개 확인,
+원격 작업 브랜치 삭제. 다 머지하면 ④ 버전 올림 커밋 `release: vX.Y.Z` + 주석 태그를 main 에 push ⑤ 그 태그 위 깨끗한 임시 worktree 에서
+`scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략).
+이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. CI 빨간불은 원인을 보고 고친다 — 자동 재시도는 없다(LIFE-544 같은 간헐 실패도 기록 후 사람이 다시 돌린다).
+
+끝나면 본체 세션이: dmg 를 아래 「설치」대로 설치 → `corral --version` 이 새 버전인지 확인 → 머지된 PR 의 일감마다 LA `완료` 전이 →
+남은 로컬 정리가 있으면 `scripts/task-finish.sh <LIFE-NNN-슬러그>`.
+
+- **머지는 `release.sh` 로만 한다.** 브랜치 보호(required check)는 Free 플랜 private 레포에서 쓸 수 없어(403) 서버가 막지 않는다 —
+  웹 UI 머지·main 직접 push 를 하지 않는 것은 규약이다. squash·rebase 머지는 레포 설정에서 꺼 두었다(merge commit 만).
+- 태그 밖에서 dmg 를 만들어야 하면(개발 빌드) 「빌드」를 손으로 돌린다 — 그 dmg 는 출고본이 아니다. 출고 dmg 는 `release-dmg.sh` 가 HEAD = 태그·깨끗한 트리·
+  태그 버전 = package.json 버전을 확인할 때만 만든다(`--check-only` 로 가드만 본다).
+- 리허설: `--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v` 로 main·`v*` 태그를 건드리지 않고 돌린다.
+- PR CI 는 ubuntu 에서 `npm ci` → `npm run typecheck` → `npm test` 만 돈다(node 24.14.1 고정, TMPDIR=/tmp). dmg·Electron 합성·네이티브 관문은 CI 에 없다.
+- 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `specs/LIFE-574-pr-release/transition.md`.
+
 ## 빌드
 
 ```sh

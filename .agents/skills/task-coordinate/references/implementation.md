@@ -78,7 +78,8 @@ git -C "$REPO_ROOT" worktree add "$REPO_ROOT/.claude/worktrees/${TASK_BRANCH}-cl
   불확실하면 보존하고 차단 사유를 보고한다. **회수 결과가 불확실한 상태를 두 번째 강제 종료로 우회하지
   않는다** — 매핑이 지정한 조회 명령이 복구다.
 - 재사용된 옛 시도의 회수로 현재 워커가 정리됐다고 가정하지 않는다. 최종 시도와 실제 소유권을 확인한다.
-- 사용자 확인용 worktree는 출고 승인까지 유지한다. **pane 유지와 worktree 유지의 수명은 다르다.**
+- 사용자 확인용 worktree는 출고 승인까지 유지한다 — 출고 승인 = PR 생성이고, PR 을 연 뒤 본체가 `scripts/task-finish.sh` 로
+  작업·구현 worktree 를 정리한다(작업 브랜치는 원격 PR head 로 남는다, LIFE-574 D4). **pane 유지와 worktree 유지의 수명은 다르다.**
 - **부하 장치·측정 프로세스는 띄운 쪽이 PID 를 기록하고 반드시 끈다** — 워커·리뷰어 모두. 출고 인계 전 잔존 확인은
   이번 작업의 인스턴스만이 아니라 **부모가 launchd(PPID 1)로 바뀐 고아 프로세스**까지 본다(`ps -Ao pid,ppid,etime,command`).
   (2026-10-01: LIFE-430 리뷰어가 건 `yes > /dev/null` ×36 이 2일 11시간 남아 443~467 측정 내내 돌았다 — 인계 문서는 "잔존 없음")

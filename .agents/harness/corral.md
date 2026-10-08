@@ -11,9 +11,9 @@ corral CLI 로 어떻게 수행하고, **무엇까지 증명되는지**를 적�
   설치본(`/Applications/corral.app`)이 있으면 `~/.local/bin/corral` → `Contents/Resources/bin/corral` shim 이
   앱 내장 Node(`ELECTRON_RUN_AS_NODE`)로 CLI 를 돌린다 — `--version`·`open`·`status` 등 foundation 명령은 셸 node 버전·유무와
   무관하다(설치 `app/INSTALL.md`). **terminal·orchestration 명령의 백엔드(guard 패치 herdr)는 T2 몫이다** — 설치본만으로
-  그 명령들이 백엔드를 갖추는 것은 아니다. 설치본이 없는 기계에서는 종전대로 npm-link 된 본체 `app/cli` 에 풀린다:
-  이 머신에서는 `$HOME/.nvm/versions/node/v22.22.2/bin` 에만 있고, **그 bin 이 PATH 에서 `~/.local/bin` 보다 앞이면
-  설치본 shim 을 가린다.** PATH 앞에 원하는 경로를 두거나 `node <worktree>/app/cli/corral.mjs` 절대경로로 부른다.
+  그 명령들이 백엔드를 갖추는 것은 아니다. 설치본이 없는 기계에서는 npm-link 된 본체 `app/cli` 에 풀리고, 그 node bin 이
+  PATH 에서 `~/.local/bin` 보다 앞이면 설치본 shim 을 가린다. **이 머신의 v22 npm-link 는 2026-10-08 제거했다**(사용자 승인, 446) —
+  레포 코드를 돌릴 때는 `node <worktree>/app/cli/corral.mjs` 절대경로로 부른다.
   `command -v corral` 이 비거나 엉뚱한 쪽이면 도구 부재가 아니라 PATH 문제로 먼저 의심한다. **이 대체 호출형도 표기 허용 목록에 있다**(A3) — 그렇게 적은 명령줄도
   접두사 표기와 똑같이 플래그·선언 대조를 받는다. 전역옵션(`--socket`·`--instance` …)을 명령 앞에 두는
   표기도 허용 목록에 있고 같은 검사를 받는다.

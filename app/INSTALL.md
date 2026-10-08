@@ -1,6 +1,7 @@
 # corral 설치본 (로컬 빌드, LIFE-555 · LIFE-556)
 
-arm64 macOS 전용. 서명은 ad-hoc(T4 전 재결정)이고 자동 업데이트·brew cask 는 아직 없다.
+arm64 macOS 전용. 서명은 ad-hoc 이고 자동 업데이트·brew cask·릴리스 채널은 없다(LIFE-446 T3·T4 취소, 2026-10-08) — 다른 Mac 에는 dmg 를 건네 설치한다.
+받은 Mac 에서 첫 실행이 막히면 **시스템 설정 ▸ 개인정보 보호 및 보안** 에서 「그래도 열기」를 한 번 누른다.
 **herdr 를 따로 설치할 필요가 없다** — 앱 안에 corral 전용 herdr(release 패치 빌드)가 들어 있다(LIFE-556).
 
 ## 빌드
@@ -53,7 +54,7 @@ PATH 에서 `~/.local/bin` 보다 앞이면, 그 node 를 쓰는 셸에서는 `c
 - **전환 안내 (brew herdr 를 쓰던 경우)**: 설치본은 따로 설치한 herdr 의 `default` 세션에 더 붙지 않는다 — 거기 열려 있던 터미널은
   넘어오지 않으니 한 번 다시 연다. brew herdr 는 corral 에 더 필요 없으므로 지워도 된다(`brew uninstall herdr`). 그 서버가 돌고 있으면 먼저 `herdr server stop`.
 - **Apache-2.0 고지**: 동봉 herdr 의 라이선스 사본과 상류·수정 사실 고지는 `/Applications/corral.app/Contents/Resources/backend/` 의
-  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다. 의존 crate 고지는 공개 배포(LIFE-446 T3)에서 다룬다.
+  `LICENSE-herdr`·`NOTICE-herdr.md` 에 있다. 의존 crate 고지는 공개 배포를 다시 열 때 다룬다(LIFE-446 T3 취소).
 
 ## 지우기
 

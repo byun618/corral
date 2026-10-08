@@ -5,8 +5,13 @@
 
 import type { BackendStatus, RestoreSummary } from '../../../shared/types.js'
 
-/** herdr 미설치 카드의 설치 안내 (LIFE-555) — herdr 는 앱에 넣지 않는다, 사용자 herdr 에 붙는다. */
-export const HERDR_INSTALL_COMMAND = 'brew install herdr'
+/**
+ * 미설치 카드의 안내 (LIFE-556). 설치본은 herdr 를 앱에 넣어 쓴다 — 못 찾으면 번들이 상한 것이라 재설치가 답이다.
+ * 개발 실행은 별도 herdr(로그인 셸·알려진 위치) 또는 `CORRAL_HERDR_BIN` 에 붙는다. 어느 쪽도 패키지 관리자 설치를 권하지 않는다 —
+ * 설치본 사용자에게 별도 herdr 는 필요 없다.
+ */
+export const BUNDLED_MISSING_HINT = 'corral 을 다시 설치하세요 — dmg 의 corral 을 응용 프로그램 폴더에 다시 복사합니다'
+export const DEV_MISSING_HINT = '개발 실행: herdr 를 PATH 에 두거나 CORRAL_HERDR_BIN 으로 지정하세요 (app/backend/README.md)'
 
 export function restoreLine(restore: RestoreSummary): string {
   if (!restore.known) return `다시 붙을 에이전트 세션 수를 확인할 수 없습니다 (${restore.reason})`
@@ -50,15 +55,15 @@ export function BackendCard({ status, onStart }: { status: BackendStatus; onStar
       )
     case 'missing':
       return (
-        <Card kind={status.kind} title="herdr 를 찾지 못했습니다">
+        <Card kind={status.kind} title={status.bundled ? '앱에 들어 있는 herdr 를 찾지 못했습니다' : 'herdr 를 찾지 못했습니다'}>
           <span className="backend-card-line">찾아 본 위치</span>
           <ul className="backend-card-list">
             {status.searched.map((place) => (
               <li key={place}>{place}</li>
             ))}
           </ul>
-          <span className="backend-card-hint" data-backend-install>
-            설치: <code>{HERDR_INSTALL_COMMAND}</code>
+          <span className="backend-card-hint" data-backend-install={status.bundled ? 'bundled' : 'dev'}>
+            {status.bundled ? BUNDLED_MISSING_HINT : DEV_MISSING_HINT}
           </span>
         </Card>
       )

@@ -1,6 +1,9 @@
 #!/bin/sh
 # macOS arm64 proof build. Never installs to PATH or changes an installed herdr.
+# CORRAL_BACKEND_PROFILE=release builds the binary corral.app bundles (LIFE-556); the default stays debug.
 set -eu
+profile="${CORRAL_BACKEND_PROFILE:-debug}"
+case "$profile" in debug|release) ;; *) echo "CORRAL_BACKEND_PROFILE must be debug or release" >&2; exit 1 ;; esac
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 work="${CORRAL_BACKEND_BUILD_ROOT:?Set an isolated build directory}"
 mkdir -p "$work"
@@ -14,11 +17,12 @@ if [ ! -f "$work/herdr.tar.gz" ]; then curl -fSL https://codeload.github.com/her
 if [ ! -f "$work/zig.tar.xz" ]; then curl -fSL https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz -o "$work/zig.tar.xz"; fi
 (cd "$work" && printf '%s\n' '1e83bff4b05834ed8281e16f1680e8f3e58375a94b2e3f2b3d021e28e293ef9a  herdr.tar.gz' '3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b  zig.tar.xz' | shasum -a 256 -c -)
 # Patch order is fixed: stream, then guard (both touch pane/terminal runtime), then detect
-# (manifests only). The digest covers all three so a changed patch set forces a fresh build root.
-patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" "$repo_root/app/backend/herdr-detect.patch" | shasum -a 256 | cut -d " " -f 1)
+# (manifests only), then bundle (release-only folder name and update lock — debug behaviour is unchanged).
+# The digest covers all four so a changed patch set forces a fresh build root.
+patch_digest=$(cat "$repo_root/app/backend/herdr-stream.patch" "$repo_root/app/backend/herdr-guard.patch" "$repo_root/app/backend/herdr-detect.patch" "$repo_root/app/backend/herdr-bundle.patch" | shasum -a 256 | cut -d " " -f 1)
 if [ ! -d "$work/herdr-0.9.0" ]; then
  tar -xzf "$work/herdr.tar.gz" -C "$work"
- (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch" && patch -p1 < "$repo_root/app/backend/herdr-detect.patch")
+ (cd "$work/herdr-0.9.0" && patch -p1 < "$repo_root/app/backend/herdr-stream.patch" && patch -p1 < "$repo_root/app/backend/herdr-guard.patch" && patch -p1 < "$repo_root/app/backend/herdr-detect.patch" && patch -p1 < "$repo_root/app/backend/herdr-bundle.patch")
  printf "%s\n" "$patch_digest" > "$work/herdr-0.9.0/.corral-patches"
 fi
 [ "$(cat "$work/herdr-0.9.0/.corral-patches")" = "$patch_digest" ] || { echo "Patch set changed; use a fresh CORRAL_BACKEND_BUILD_ROOT" >&2; exit 1; }
@@ -40,19 +44,26 @@ XCRUN
 chmod +x "$work/build-bin/xcrun"
 export PATH="$work/build-bin:$CARGO_HOME/bin:$PATH"
 export ZIG="$work/zig-aarch64-macos-0.15.2/zig"
-cargo build --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml"
+started=$(date +%s)
+if [ "$profile" = release ]; then
+ # 번들에 들어가는 바이너리에 build root 경로(/tmp·CARGO_HOME)가 panic 위치 문자열로 박히지 않게 접두어를 바꾼다(B3).
+ RUSTFLAGS="--remap-path-prefix=$work=/corral-herdr-build" cargo build --locked --release --manifest-path "$work/herdr-0.9.0/Cargo.toml"
+else
+ cargo build --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml"
+fi
+build_seconds=$(( $(date +%s) - started ))
 if [ "${CORRAL_BACKEND_TEST:-0}" = 1 ]; then
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr corral_terminal_ -- --nocapture --test-threads=1
  cargo test --locked --manifest-path "$work/herdr-0.9.0/Cargo.toml" --bin herdr trust_directory_requires_live_chooser -- --nocapture --test-threads=1
 fi
-printf 'Managed proof binary: %s\n' "$work/herdr-0.9.0/target/debug/herdr"
-node --input-type=module - "$repo_root" "$work" <<'JS'
+printf 'Managed proof binary: %s\n' "$work/herdr-0.9.0/target/$profile/herdr"
+node --input-type=module - "$repo_root" "$work" "$profile" "$build_seconds" <<'JS'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-const [root, work] = process.argv.slice(2)
-const binary = path.join(work, 'herdr-0.9.0/target/debug/herdr')
+const [root, work, profile, buildSeconds] = process.argv.slice(2)
+const binary = path.join(work, `herdr-0.9.0/target/${profile}/herdr`)
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const source = JSON.parse(fs.readFileSync(path.join(root, 'app/backend/source.json')))
-fs.writeFileSync(binary + '.json', JSON.stringify({ ...source, binary, binarySHA256: hash(binary), patches: source.patches.map(name => ({ name, sha256: hash(path.join(root, 'app/backend', name)) })) }, null, 2) + '\n')
+fs.writeFileSync(binary + '.json', JSON.stringify({ ...source, profile, buildSeconds: Number(buildSeconds), binaryBytes: fs.statSync(binary).size, binary, binarySHA256: hash(binary), patches: source.patches.map(name => ({ name, sha256: hash(path.join(root, 'app/backend', name)) })) }, null, 2) + '\n')
 JS

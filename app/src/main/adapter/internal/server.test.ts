@@ -43,7 +43,7 @@ describe('resolveHerdr (K1ⓐ)', () => {
   })
   it('전부 없으면 없음 + 찾아 본 위치', async () => {
     const result = await resolveHerdr({ loginShellLookup: async () => null, candidates: ['/a/herdr', '/b/herdr'], isExecutable: () => false })
-    expect(result).toEqual({ kind: 'missing', searched: ['로그인 셸 command -v herdr', '/a/herdr', '/b/herdr'] })
+    expect(result).toEqual({ kind: 'missing', searched: ['로그인 셸 command -v herdr', '/a/herdr', '/b/herdr'], bundled: false })
   })
   it('실행 권한 없는 파일은 건너뛴다 — 실제 파일로', async () => {
     const plain = file('plain-herdr', '#!/bin/sh\n', 0o644)

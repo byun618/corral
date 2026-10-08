@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { backendBinding } from '../backend.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
@@ -41,7 +42,7 @@ import {
 import {
   activePaneDispatch, composeBody, emptyWorker, isRetainReason, paneOwner, preambleDigest, releaseDecision, replaceDispatchRecord,
   resumeDecision, senderError, stopDecision, submissionVerdict, verifySender, withWorker,
-  type SenderClaim, type SubmissionVerdict,
+  type CallerClaim, type SenderClaim, type SubmissionVerdict,
 } from './worker.js'
 
 export const orchestrationSpecs: CommandSpec[] = specs
@@ -264,7 +265,7 @@ export const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget 
 
 export async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
   if (ctx === null) return { observed: false, reason: 'observation_failed', detail: 'Not enough of the caller timeout left to observe the panes' }
-  const socket = process.env.CORRAL_BACKEND_SOCKET
+  const socket = backendBinding()?.socket
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
   try {
     const backend = new TerminalBackend(socket)
@@ -622,13 +623,15 @@ export function orchestrationModule(userData: string): CommandModule {
        * assumed from a missing name: pane ids repeat across sessions.
        */
       const callerPlacement = (): 'socket' | 'session_name' | null => {
-        const backendSocket = process.env.CORRAL_BACKEND_SOCKET, backendSession = process.env.CORRAL_SESSION
+        const binding = backendBinding(), backendSocket = binding?.socket, backendSession = binding?.session ?? undefined
         const callerSocket = caller.socket ?? null
         if (callerSocket !== null && backendSocket) {
           try { return fs.realpathSync(callerSocket) === fs.realpathSync(backendSocket) ? 'socket' : null } catch { return null }
         }
         return caller.session && backendSession && caller.session === backendSession ? 'session_name' : null
       }
+      /** LIFE-556 H1 — what `verifySender` sees of the caller: its claim, plus whether its socket is this backend's. */
+      const senderClaim = (): CallerClaim => ({ paneId: caller.paneId, session: caller.session, socketIsBackend: callerPlacement() === 'socket' })
       /**
        * LIFE-459. The parent of the attempt `worker-start` is about to make: the pane this call came
        * from, with its generation read from the backend when the caller could be placed in it. The
@@ -753,7 +756,7 @@ export function orchestrationModule(userData: string): CommandModule {
           // `worker_done` defers the settled question to `transition`, the only place that can tell
           // "you named a superseded attempt" (stale_dispatch) from "you already reported"
           // (illegal_transition). Every other worker message is refused once the attempt has ended.
-          const verdict = verifySender(state, { taskId, dispatchId, caller, observation }, type === 'worker_done' ? 'defer' : 'reject')
+          const verdict = verifySender(state, { taskId, dispatchId, caller: senderClaim(), observation }, type === 'worker_done' ? 'defer' : 'reject')
           if (!verdict.ok) throw senderError(verdict)
           return { kind: 'worker', runId: verdict.dispatch.runId, taskId, dispatchId, dispatch: verdict.dispatch, sessionVerified: verdict.sessionVerified }
         }
@@ -1104,7 +1107,7 @@ export function orchestrationModule(userData: string): CommandModule {
                   // Reusing a pane no settled attempt owns — one a person started with
                   // `terminal create --agent` — is borrowing, and a borrowed pane is never closed.
                   ownership: launching || owner !== null ? 'owned' : 'borrowed',
-                  paneSession: process.env.CORRAL_SESSION ?? null,
+                  paneSession: backendBinding()?.session ?? null,
                   originDispatchId: owner === null ? null : owner.worker?.originDispatchId ?? owner.id,
                   spawner,
                 })
@@ -1488,7 +1491,7 @@ export function orchestrationModule(userData: string): CommandModule {
           // that follows polls the mailbox, not the backend, so a backend that stops answering
           // cannot turn a ten-minute wait into an `outcome_unknown` (§4.6).
           const asking = findDispatch(state, dispatchId)
-          const claim: SenderClaim = { taskId, dispatchId, caller, observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
+          const claim: SenderClaim = { taskId, dispatchId, caller: senderClaim(), observation: asking === undefined ? UNOBSERVABLE : await observeNow(asking.target) }
           // A resume names a question that already exists, so the attempt may already have been
           // settled — `defer` lets a worker collect an answer it asked for before it reported.
           const verdict = verifySender(state, claim, resume === undefined ? 'reject' : 'defer')

@@ -6,7 +6,7 @@
 // (macOS 에서 fs.watch 로 유닉스 소켓 파일 생성을 감지할 수 없다는 1차 근거도 있다 —
 //  nodejs/node#38014. 파일 watch 는 시도하지 않는다.)
 //
-// 경로 규칙이 두 갈래다:
+// 경로 규칙이 두 갈래다 (`herdr` 는 앱 폴더 이름 — 동봉 herdr 는 `corral-herdr`, LIFE-556):
 //   default        → ~/.config/herdr/herdr.sock
 //   named <이름>   → ~/.config/herdr/sessions/<이름>/herdr.sock
 
@@ -18,18 +18,23 @@ import { promisify } from 'node:util'
 import { isRecord, readString, safeParse } from '../../../shared/json.js'
 import type { SessionInfo } from '../../../shared/types.js'
 import { log } from '../../log.js'
+import { STOCK_HERDR_APP_DIR } from './server.js'
 
 const run = promisify(execFile)
 
 export const SESSION_POLL_MS = 3000
 
-export function herdrHome(): string {
+/**
+ * `appDir` — herdr 앱 폴더 이름(`herdr` 또는 동봉 `corral-herdr`, LIFE-556). `HERDR_CONFIG_DIR` 덮어쓰기는 별도 설치 herdr 에만 —
+ * 그 값이 동봉 폴더를 별도 설치 쪽으로 돌리지 않게 한다.
+ */
+export function herdrHome(appDir: string = STOCK_HERDR_APP_DIR): string {
   const fromEnv = process.env.HERDR_CONFIG_DIR
-  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv
-  // herdr 0.9.0 의 config_dir() 은 XDG_CONFIG_HOME/herdr 를 따른다 (LIFE-485 S1) — 폴백도 같은 곳을 본다.
+  if (appDir === STOCK_HERDR_APP_DIR && fromEnv !== undefined && fromEnv.length > 0) return fromEnv
+  // herdr 0.9.0 의 config_dir() 은 XDG_CONFIG_HOME/<앱 폴더> 를 따른다 (LIFE-485 S1) — 폴백도 같은 곳을 본다.
   const xdg = process.env.XDG_CONFIG_HOME
-  if (xdg !== undefined && xdg.length > 0) return path.join(xdg, 'herdr')
-  return path.join(os.homedir(), '.config', 'herdr')
+  if (xdg !== undefined && xdg.length > 0) return path.join(xdg, appDir)
+  return path.join(os.homedir(), '.config', appDir)
 }
 
 /**
@@ -49,10 +54,12 @@ export type SessionScan = { sessions: SessionHandle[]; source: 'cli' | 'filesyst
 /**
  * `binary` 는 해소한 절대경로다 (LIFE-485 D5) — bare name `herdr` 는 Finder·Dock 기동 앱의 최소 PATH 에서
  * ENOENT 로 떨어진다. 해소 전·해소 실패면 null 이고 그때는 파일시스템 폴백이다.
+ * `appDir` — 폴백이 볼 herdr 앱 폴더 이름 (LIFE-556). 설치본은 동봉 폴더만 본다.
  */
-export async function listSessions(binary: string | null): Promise<SessionScan> {
+export async function listSessions(input: { binary: string | null; appDir: string }): Promise<SessionScan> {
+  const { binary, appDir } = input
   if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) return {sessions:[{name:process.env.CORRAL_SESSION,isDefault:false,running:fs.existsSync(process.env.CORRAL_BACKEND_SOCKET),socketPath:process.env.CORRAL_BACKEND_SOCKET,sessionDir:null}],source:'filesystem',error:null}
-  if (binary === null) return scanFilesystem('herdr 실행 파일을 해소하지 못했다')
+  if (binary === null) return scanFilesystem({ reason: 'herdr 실행 파일을 해소하지 못했다', appDir })
   try {
     const { stdout } = await run(binary, ['session', 'list', '--json'], { timeout: 5000 })
     const sessions = parseSessionList(stdout)
@@ -60,9 +67,9 @@ export async function listSessions(binary: string | null): Promise<SessionScan> 
       log('sessions.poll', { source: 'cli', binary, count: sessions.length, names: sessions.map((item) => item.name) })
       return { sessions, source: 'cli', error: null }
     }
-    return scanFilesystem('herdr session list --json 의 모양이 예상과 다르다')
+    return scanFilesystem({ reason: 'herdr session list --json 의 모양이 예상과 다르다', appDir })
   } catch (error) {
-    return scanFilesystem(String(error))
+    return scanFilesystem({ reason: String(error), appDir })
   }
 }
 
@@ -89,8 +96,9 @@ function parseSessionList(stdout: string): SessionHandle[] | null {
 }
 
 /** CLI 가 없거나 실패할 때의 폴백. 경로 규칙 두 갈래를 그대로 구현한다. */
-function scanFilesystem(reason: string): SessionScan {
-  const home = herdrHome()
+function scanFilesystem(input: { reason: string; appDir: string }): SessionScan {
+  const { reason } = input
+  const home = herdrHome(input.appDir)
   const sessions: SessionHandle[] = []
   const defaultSocket = path.join(home, 'herdr.sock')
   if (fs.existsSync(defaultSocket)) {

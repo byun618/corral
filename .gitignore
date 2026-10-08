@@ -23,3 +23,5 @@ specs/*/raw/**/_runs/
 
 # LIFE-555 패키징 산출물 (dmg·zip·.app)
 app/dist/
+# LIFE-556 동봉 herdr 자리 — scripts/bundle-herdr.mjs 가 release build root 에서 복사한다
+app/build/backend/

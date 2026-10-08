@@ -61,10 +61,10 @@ describe('decideBackend (K3)', () => {
     expect(decision.status.kind).toBe('confirm')
   })
   it('⑦ herdr 해소 실패 → 없음 상태', () => {
-    expect(decideBackend(input({ binary: { kind: 'missing', searched: ['a', 'b'] } }))).toEqual({ status: { kind: 'missing', searched: ['a', 'b'] }, autostart: false })
+    expect(decideBackend(input({ binary: { kind: 'missing', searched: ['a', 'b'], bundled: false } }))).toEqual({ status: { kind: 'missing', searched: ['a', 'b'], bundled: false }, autostart: false })
   })
   it('⑦ 해소 실패여도 돌고 있는 세션(파일시스템 폴백)이 있으면 붙는다', () => {
-    expect(decideBackend(input({ binary: { kind: 'missing', searched: [] }, sessions: [runningDefault] })).status.kind).toBe('ok')
+    expect(decideBackend(input({ binary: { kind: 'missing', searched: [], bundled: false }, sessions: [runningDefault] })).status.kind).toBe('ok')
   })
   it('⑧ 연결 도중 멈춤 → 자동 재기동 없음(확인)', () => {
     const decision = decideBackend(input({ selected: 'default', link: { phase: 'reconnecting', attempt: 4 }, restore: zero }))
@@ -228,7 +228,7 @@ describe('조회 전·조회 실패 (r2 R2-02)', () => {
     expect(decideBackend(input({ scan: 'error', sessions: [], selected: 'default', link: { phase: 'reconnecting', attempt: 3 } }))).toEqual({ status: { kind: 'reconnecting', session: 'default', attempt: 3 }, autostart: false })
   })
   it('실행 파일을 못 찾아 폴백한 것은 그대로 없음 상태', () => {
-    expect(decideBackend(input({ scan: 'error', sessions: [], binary: { kind: 'missing', searched: ['a'] } })).status.kind).toBe('missing')
+    expect(decideBackend(input({ scan: 'error', sessions: [], binary: { kind: 'missing', searched: ['a'], bundled: false } })).status.kind).toBe('missing')
   })
 })
 

@@ -18,7 +18,7 @@
     "test": "vitest run && node scripts/run-nodetest.mjs",
     "check:boundary": "node scripts/check-boundary.mjs",
     "build:runtime": "node scripts/build-runtime.mjs",
-    "package:mac": "npm run build && electron-builder --mac --arm64"
+    "package:mac": "npm run build && node scripts/bundle-herdr.mjs && electron-builder --mac --arm64"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

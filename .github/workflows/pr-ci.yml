@@ -1,0 +1,98 @@
+name: ✅ PR CI
+
+# 출고 대기열(열린 PR)의 머지 전 검사 — LIFE-574.
+# 브랜치 보호(required check)는 Free 플랜 private 레포에서 쓸 수 없다(403). 머지 차단은
+# scripts/release.sh 가 머지 직전 이 workflow 의 head SHA 결과를 확인해서 한다(D1(a)).
+# base 를 제한하지 않는다 — main 대상 PR, feature 브랜치 대상 PR, 출고 리허설용 throwaway base 대상 PR 모두 돈다.
+# 자동 재시도 없음(D3) — 빨간불은 원인을 보고 사람이 다시 돌린다.
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  TZ: Asia/Seoul
+  # 로컬 관문과 같은 짧은 TMPDIR — unix 소켓 경로 한도(Linux 108 바이트) 안쪽
+  TMPDIR: /tmp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 1. 검사
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    outputs:
+      install: ${{ steps.install.outcome }}
+      typecheck: ${{ steps.typecheck.outcome }}
+      test: ${{ steps.test.outcome }}
+      node: ${{ steps.node.outputs.version }}
+    steps:
+      - name: 1-1. 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 1-2. Node 설정
+        uses: actions/setup-node@v4
+        with:
+          # 로컬 관문 기준 node(v24.14.1)와 같은 버전으로 고정. Electron 44 내장 node 도 24 계열(24.20.0)이다.
+          # app/.nvmrc(22.22.2)는 engines 하한용으로 두고 CI 에는 쓰지 않는다 — 근거 specs/LIFE-574-pr-release/raw/claude/RESULT.md
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 1-3. 버전 기록
+        id: node
+        run: echo "version=$(node --version)" >> "$GITHUB_OUTPUT"
+
+      - name: 1-4. 의존성 설치 (npm ci)
+        id: install
+        run: npm ci
+
+      - name: 1-5. 타입 검사 (npm run typecheck)
+        id: typecheck
+        run: npm run typecheck
+
+      - name: 1-6. 테스트 (npm test — vitest + node:test)
+        id: test
+        run: npm test
+
+  summary:
+    name: 2. 요약
+    needs: check
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 2-1. 결과 표
+        env:
+          RESULT: ${{ needs.check.result }}
+          NODE_VERSION: ${{ needs.check.outputs.node }}
+          INSTALL: ${{ needs.check.outputs.install }}
+          TYPECHECK: ${{ needs.check.outputs.typecheck }}
+          TEST: ${{ needs.check.outputs.test }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          BASE_REF: ${{ github.base_ref || '-' }}
+        run: |
+          ICON=$([[ "$RESULT" == "success" ]] && echo "✅" || echo "❌")
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## ${ICON} PR CI Summary
+
+          | 항목 | 값 |
+          |---|---|
+          | Head | \`${HEAD_REF}\` @ \`${HEAD_SHA::7}\` |
+          | Base | \`${BASE_REF}\` |
+          | Node | \`${NODE_VERSION:--}\` |
+          | 1-4. npm ci | ${INSTALL:-skipped} |
+          | 1-5. typecheck | ${TYPECHECK:-skipped} |
+          | 1-6. test | ${TEST:-skipped} |
+          | 결과 | ${RESULT} |
+
+          머지는 \`scripts/release.sh\` 로만 한다 — 이 head SHA 의 결과가 success 일 때만 머지한다.
+          EOF

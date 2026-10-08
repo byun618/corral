@@ -25,6 +25,9 @@ vi.mock('@xterm/xterm', () => {
     focus(): void {
       this.textarea?.focus()
     }
+    registerLinkProvider(): { dispose: () => void } {
+      return { dispose: () => {} }
+    }
     onSelectionChange(): { dispose: () => void } {
       return { dispose: () => {} }
     }

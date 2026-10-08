@@ -94,6 +94,7 @@ import { canonicalPath } from './canonical-path.js'
 import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
+import { isExternalOpenAllowed } from './external-url.js'
 import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
@@ -1510,8 +1511,10 @@ function createWindow(): void {
    * 골격에 남아 있으면 나중에 그대로 구멍이 된다. `file:`·`javascript:` 는 여기서 끝난다.
    */
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//.test(url)) void shell.openExternal(url)
-    else log('window.open.denied', { url: url.slice(0, 200) })
+    if (isExternalOpenAllowed(url)) {
+      log('window.open.external', { url: url.slice(0, 200) })
+      void shell.openExternal(url)
+    } else log('window.open.denied', { url: url.slice(0, 200) })
     return { action: 'deny' }
   })
 

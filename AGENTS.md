@@ -91,8 +91,8 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 
 - 작업 브랜치 LIFE-NNN-<슬러그> 는 main(독립 작업) 또는 feature 브랜치(묶음 자식)에서 분기, 작업 하나의 수명만 갖는다 —
   PR 을 열면 로컬은 정리하고 원격만 남긴다. 출고 머지(또는 feature 로 merge) 후 원격도 삭제 (단명 원칙 유지)
-- **main 반영은 PR 머지로만** — 출고 때 scripts/release.sh 가 그 head SHA 의 CI success 를 확인하고 merge commit 으로 머지한다
-  (squash·rebase 머지는 레포 설정으로 꺼 둠). main 직접 push·웹 UI 머지 금지 — 버전 올림 커밋·태그만 release.sh 가 올린다.
+- **main 반영은 PR 머지로만** — 출고 때 scripts/release.sh 가 고른 순서대로 merge commit 으로 머지한다(검사 없이 순서 머지,
+  충돌이면 멈춤. squash·rebase 머지는 레포 설정으로 꺼 둠). PR CI 는 아직 없다 — 후속 LIFE-575. main 직접 push·웹 UI 머지 금지 — 버전 올림 커밋·태그만 release.sh 가 올린다.
   Free 플랜 private 레포라 브랜치 보호가 없다(403) — 서버 강제 없이 규약과 스크립트 가드로 막는다
 - **묶음 브랜치 feature/LIFE-NNN-<슬러그>** (NNN = 체크포인트): 서로 의존하는 작업 묶음만. 자식 작업 브랜치는 feature 에서
   따고 feature 로 로컬 merge, 묶음이 끝나면 feature → main PR 하나. main 이 움직이면 main 을 feature 로 merge(rebase 금지 —

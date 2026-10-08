@@ -71,7 +71,7 @@ BODY_FILE="$(mktemp)"; trap 'rm -f "$BODY_FILE"' EXIT
   echo
   echo "- 판정문: [\`$VERDICT\`](https://github.com/$SLUG/blob/$HEAD_BRANCH/$VERDICT) — 진실의 원천은 specs 이고 이 본문은 요약이다"
   echo "- head \`$HEAD_BRANCH\` @ \`$(git -C "$REPO" rev-parse --short "$HEAD_BRANCH")\` → base \`$BASE\`"
-  echo "- 머지는 출고 때 \`scripts/release.sh\` 로만 한다(merge commit, CI success 확인 뒤). 웹 UI 머지·squash 금지"
+  echo "- 머지는 출고 때 \`scripts/release.sh\` 로만 한다(merge commit, 지정 순서). PR CI 는 아직 없다(LIFE-575) — 검증 근거는 판정문. 웹 UI 머지·squash 금지"
   echo
   echo "### 판정표"
   echo

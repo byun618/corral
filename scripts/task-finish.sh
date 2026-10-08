@@ -105,7 +105,7 @@ done
 git worktree prune
 
 # 4. 로컬 브랜치 정리 (변형은 확인됐으니 삭제, $TASK 는 보존 위치 확인 뒤 삭제. 태그 LIFE-NNN-*-final 은 유지)
-#    원격 throwaway 사본(-claude 등 CI 검증용 push)도 지운다
+#    원격 throwaway 사본(-claude 등 검증용으로 push 한 것)도 지운다
 for v in "${VARIANTS[@]:-}"; do
   [ -z "$v" ] && continue
   has_local "$v" && git branch -D "$v" >/dev/null && note "브랜치 삭제: $v"

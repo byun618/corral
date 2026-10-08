@@ -36,6 +36,12 @@ check zig_reextracted "$(echo "$OUT" | grep -q 'zig 폴더가 덜 풀려' && [ -
 check rustup_reinstalled "$(echo "$OUT" | grep -q 'rustup 설치가 깨져' && [ -x "$TOOLS/cargo/bin/rustc" ] && echo 1)"
 check n1_built "$([ $RC = 0 ] && echo "$OUT" | grep -q 'herdr:guard: built' && echo 1)"
 check no_part_left "$([ ! -e "$TOOLS/herdr.tar.gz.part" ] && echo 1)"
+# 최종 관문 보강 ④: N1 만 본다(N1_ONLY=1). N2 부분은 fix2 칸 잠금(<key>.lock) 기준이라 fix3 의 build.lock 과 맞지 않는다 — ⑤ lock-test 가 대체.
+if [ "${N1_ONLY:-}" = 1 ]; then
+  echo "real_cell_sha_after=$(shasum -a 256 "$REAL/$KEY/herdr-0.9.0/target/debug/herdr" | cut -c1-64)"
+  LEFT=$(pgrep -fl -- "$ROOT/"); echo "leftover=${LEFT:-none}"; check no_leftover "$([ -z "$LEFT" ] && echo 1)"
+  rm -rf "$ROOT"; echo "fails=$FAILS"; [ "$FAILS" = 0 ]; exit
+fi
 echo "## N2 준비: 영수증만 지워 재빌드를 부른다 + 느린 shasum shim"
 rm -f "$BIN.json"
 printf '#!/bin/sh\nsleep 20\nexec /usr/bin/shasum "$@"\n' > "$ROOT/shim/shasum"; chmod +x "$ROOT/shim/shasum"

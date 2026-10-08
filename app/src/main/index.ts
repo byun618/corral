@@ -6,6 +6,9 @@ import { randomUUID } from 'node:crypto'
 import type { TerminalDesktop } from '../runtime/terminal/index.js'
 import type { WorkspaceDesktop } from '../runtime/workspace/model.js'
 import { startRuntime, restoreBackend } from '../runtime/server.js'
+import { backendBinding } from '../runtime/backend.js'
+import { cliTarget } from './install-cli.js'
+import { addInstallCliMenu } from './install-cli-menu.js'
 import { KeybindingStore } from './keybindings.js'
 import { withRetentionSuppressed } from './close-retention.js'
 import { menuKeyShortcut } from '../shared/keybindings.js'
@@ -63,6 +66,9 @@ import {
   readRestoreTargets,
   resolveHerdrBinary,
   spawnServer,
+  bundledHerdrPath,
+  BUNDLED_HERDR_APP_DIR,
+  STOCK_HERDR_APP_DIR,
   stopProcessGroup,
   inspectServerProcess,
   SERVER_READY_POLL_MS,
@@ -122,6 +128,12 @@ let selectedSession: string | null = null
 let sessionNote: string | null = null
 /** herdr 실행 파일 해소 결과 (LIFE-485 D5). null = 아직 해소 중. */
 let herdr: HerdrResolution | null = null
+/**
+ * 설치본이면 동봉 herdr 자리 (LIFE-556) — 그 바이너리만 쓰고, 세션 폴백도 동봉 폴더(`corral-herdr`)만 본다.
+ * 개발 실행(`app.isPackaged` 거짓)은 null — 종전대로 로그인 셸·알려진 위치의 herdr 에 붙는다.
+ */
+const bundledHerdr = app.isPackaged ? bundledHerdrPath(process.resourcesPath) : null
+const herdrAppDir = bundledHerdr !== null ? BUNDLED_HERDR_APP_DIR : STOCK_HERDR_APP_DIR
 let herdrResolvedAt = 0
 /** 실패한 해소를 다시 시도하는 간격 — 그 사이에 사용자가 herdr 를 설치했을 수 있다. */
 const HERDR_RERESOLVE_MS = 60_000
@@ -163,7 +175,7 @@ const link = new SessionLink({
  */
 const backendStarter = new BackendStarter({
   isRunning: async () => {
-    const scan = await listSessions(herdrPath())
+    const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir })
     if (scan.error !== null) return { kind: 'unknown', error: scan.error }
     return scan.sessions.some((session) => session.isDefault && session.running) ? { kind: 'running' } : { kind: 'stopped' }
   },
@@ -174,6 +186,7 @@ const backendStarter = new BackendStarter({
       binary,
       logPath: path.join(app.getPath('userData'), 'herdr-server.log'),
       onExit: (code, signal) => onExit(`code ${String(code)} signal ${String(signal)}`),
+      bundled: herdr?.kind === 'found' && herdr.binary.source === 'bundled',
     })
   },
   logTail: (file) => readLogTail(file),
@@ -195,7 +208,7 @@ function herdrPath(): string | null {
 function backendInput(): BackendInput {
   return {
     bound: boundSessionName(process.env),
-    binary: herdr === null ? { kind: 'resolving' } : herdr.kind === 'found' ? { kind: 'found' } : { kind: 'missing', searched: herdr.searched },
+    binary: herdr === null ? { kind: 'resolving' } : herdr.kind === 'found' ? { kind: 'found' } : { kind: 'missing', searched: herdr.searched, bundled: herdr.bundled },
     sessions,
     selected: selectedSession,
     link: { phase: link.linkState().phase, attempt: link.linkState().attempt },
@@ -221,7 +234,7 @@ function ensureHerdrResolved(): Promise<void> {
     return Promise.resolve()
   }
   if (resolving === null) {
-    resolving = resolveHerdrBinary()
+    resolving = resolveHerdrBinary(bundledHerdr)
       .then((result) => {
         herdr = result
         herdrResolvedAt = Date.now()
@@ -1004,7 +1017,7 @@ const terminalDesktop: TerminalDesktop = {
   },
   async reveal(target, context) {
     const client = window
-    if (!client || client.isDestroyed() || currentSocketPath() !== process.env.CORRAL_BACKEND_SOCKET) throw new RuntimeError('ui_unavailable', 'GUI no longer addresses this backend')
+    if (!client || client.isDestroyed() || currentSocketPath() !== backendBinding()?.socket) throw new RuntimeError('ui_unavailable', 'GUI no longer addresses this backend')
     await terminalDesktop.changed()
     context.signal.throwIfAborted()
     if (client.isDestroyed() || Date.now() >= context.deadlineAt) throw new RuntimeError('ui_unavailable', 'GUI closed before selection')
@@ -1175,8 +1188,8 @@ const realSocket = (socket: string): string => {
 const lineage = new LineageFeed({
   source: {
     runtimeBackend: () => {
-      const socket = process.env.CORRAL_BACKEND_SOCKET, session = process.env.CORRAL_SESSION
-      return socket && session ? { socket, session } : null
+      const binding = backendBinding()
+      return binding === null || binding.session === null ? null : { socket: binding.socket, session: binding.session }
     },
     guiSocket: () => currentSocketPath(),
     livePaneIds: () => new Set(link.store.paneIds()),
@@ -1239,7 +1252,7 @@ function pollSessions(): Promise<void> {
 
 async function runPoll(): Promise<void> {
   await ensureHerdrResolved()
-  const scan = await listSessions(herdrPath())
+  const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir })
   sessions = scan.sessions
   sessionsError = scan.error
   scanState = scan.error === null ? 'ok' : 'error'
@@ -1809,10 +1822,17 @@ app.whenReady().then(async () => {
     focus: () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus() },
     workspaceDesktop, terminalDesktop,
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
+    // 설치본 — CLI 의 terminal·orchestration 이 GUI 가 지금 붙은 동봉 서버를 쓴다(LIFE-556). 명시 바인딩이 있으면 런타임이 무시한다.
+    bundledBackend: bundledHerdr === null ? undefined : () => {
+      const socket = currentSocketPath()
+      return socket === null || selectedSession === null ? null : { socket, session: selectedSession }
+    },
   })
   stopRuntime = runtime.close
   runtimeInvoke = runtime.invoke
   createWindow()
+  // 「Install CLI」 (LIFE-556 B14) — 설치본만. 개발 실행에는 번들 shim 이 없다.
+  if (app.isPackaged) addInstallCliMenu({ shim: path.join(process.resourcesPath, 'bin', 'corral'), target: cliTarget(os.homedir()), window: () => window })
   void pollSessions()
   setInterval(() => void pollSessions(), SESSION_POLL_MS)
   // LIFE-366 — 세션 지문·통합 상태. 지문은 짧은 주기(캐시가 막는다), 통합은 세션 폴링에 얹는다.

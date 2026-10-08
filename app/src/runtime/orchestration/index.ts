@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { backendBinding, paneSessionName } from '../backend.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
@@ -264,7 +265,7 @@ export const budgeted = (ctx: ObservationBudget, ms: number): ObservationBudget 
 
 export async function observePanes(ctx: ObservationBudget | null): Promise<PaneSnapshot> {
   if (ctx === null) return { observed: false, reason: 'observation_failed', detail: 'Not enough of the caller timeout left to observe the panes' }
-  const socket = process.env.CORRAL_BACKEND_SOCKET
+  const socket = backendBinding()?.socket
   if (!socket) return { observed: false, reason: 'backend_unavailable', detail: 'Profile has no configured terminal backend' }
   try {
     const backend = new TerminalBackend(socket)
@@ -622,7 +623,7 @@ export function orchestrationModule(userData: string): CommandModule {
        * assumed from a missing name: pane ids repeat across sessions.
        */
       const callerPlacement = (): 'socket' | 'session_name' | null => {
-        const backendSocket = process.env.CORRAL_BACKEND_SOCKET, backendSession = process.env.CORRAL_SESSION
+        const binding = backendBinding(), backendSocket = binding?.socket, backendSession = binding?.session ?? undefined
         const callerSocket = caller.socket ?? null
         if (callerSocket !== null && backendSocket) {
           try { return fs.realpathSync(callerSocket) === fs.realpathSync(backendSocket) ? 'socket' : null } catch { return null }
@@ -1104,7 +1105,7 @@ export function orchestrationModule(userData: string): CommandModule {
                   // Reusing a pane no settled attempt owns — one a person started with
                   // `terminal create --agent` — is borrowing, and a borrowed pane is never closed.
                   ownership: launching || owner !== null ? 'owned' : 'borrowed',
-                  paneSession: process.env.CORRAL_SESSION ?? null,
+                  paneSession: paneSessionName(backendBinding()),
                   originDispatchId: owner === null ? null : owner.worker?.originDispatchId ?? owner.id,
                   spawner,
                 })

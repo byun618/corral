@@ -2,7 +2,7 @@
 
 LIFE-393 CLI는 명시적으로 연결한 corral terminal backend를 쓴다. 설치 herdr 0.9.0에는 이 가드/출력 계약이 없으므로 `unsupported_backend`로 거절하며, 설치본을 교체하거나 가드 없는 제어로 fallback하지 않는다. 기존 GUI 경로는 그대로 설치 backend에도 연결할 수 있다.
 
-`source.json`의 upstream v0.9.0 commit/archive와 **세 patch**가 빌드 입력이다. stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 LIFE-393 구현이고 LIFE-394가 agent 갈래를 얹었다. detect patch는 LIFE-394가 추가했다. 적용 순서는 stream → guard → detect로 고정이며 `patch_digest`가 세 파일을 모두 덮으므로 patch가 바뀌면 새 build root가 필요하다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
+`source.json`의 upstream v0.9.0 commit/archive와 **네 patch**가 빌드 입력이다(네 번째 bundle patch 는 LIFE-556 — 아래 「설치본 동봉 release 빌드」). stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 LIFE-393 구현이고 LIFE-394가 agent 갈래를 얹었다. detect patch는 LIFE-394가 추가했다. 적용 순서는 stream → guard → detect → bundle로 고정이며 `patch_digest`가 네 파일을 모두 덮으므로 patch가 바뀌면 새 build root가 필요하다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
 
 ```sh
 # Node >=22.12.0. 설치 도구나 PATH의 herdr를 덮어쓰지 않는다.
@@ -28,6 +28,28 @@ node app/scripts/l394/leak-check.mjs <raw 디렉터리>   # LIFE-426 누출 검�
 node app/scripts/l394/leak-check.mjs selftest          # 그 검사기 자신의 대조 (V6·V7·V15·V23)
 node app/scripts/l409/attribution.mjs selftest         # F13 실패 경로의 양성 대조 (V2·V14)
 ```
+
+## 설치본 동봉 release 빌드 (LIFE-556)
+
+```sh
+export CORRAL_BACKEND_BUILD_ROOT="$(mktemp -d /tmp/corral-herdr-release-XXXXXX)"
+CORRAL_BACKEND_PROFILE=release sh app/scripts/build-terminal-backend.sh   # → target/release/herdr + herdr.json
+npm --prefix app run package:mac                                          # scripts/bundle-herdr.mjs 가 검증해 Contents/Resources/backend/ 에 넣는다
+```
+
+- **같은 스크립트·같은 패치**다. `CORRAL_BACKEND_PROFILE` 기본값은 `debug` 라 종전 명령은 그대로 debug 를 만든다. release 는 `cargo build --release` 에
+  `--remap-path-prefix=<build root>=/corral-herdr-build` 를 붙여 build root 경로(`/tmp`·`CARGO_HOME`)가 바이너리에 박히지 않게 한다.
+  영수증에 `profile`·`buildSeconds`·`binaryBytes` 가 더 실린다(실측: release 44~82초·약 20MB, debug 약 68MB).
+- **`herdr-bundle.patch`** (stream → guard → detect → bundle 순서). 셋 다 release 에서만 바뀌고 debug 동작은 그대로다:
+  - 앱 폴더 이름 `app_dir_name()` — release `corral-herdr` (stock `herdr`), debug `herdr-dev` 유지. 설정 `~/.config/corral-herdr`(`XDG_CONFIG_HOME`
+    아래) · 상태 `~/.local/state/corral-herdr` · 세션·소켓(`herdr.sock`·`herdr-client.sock`)이 전부 이 이름을 따른다. 그래서 따로 설치한 herdr
+    (`~/.config/herdr`)와 소켓·세션·config 를 나누지 않는다. `XDG_*` 를 서버 env 로 주는 방식은 pane 셸이 물려받으므로 쓰지 않는다.
+  - 백그라운드 업데이트·매니페스트 확인 끔(`auto_updates_enabled` → false — debug 는 원래 꺼져 있다).
+  - `herdr update` 거절 — `self-update is disabled for the herdr bundled with corral; update corral instead`(exit 1, 바이너리 무변경).
+- corral 쪽 짝: `src/main/adapter/internal/server.ts` 의 `BUNDLED_HERDR_APP_DIR`(패치 값과 같이 바뀌어야 한다)·`bundledHerdrPath()`,
+  설치본 서버 env 는 `bundledServerEnv()`(`HERDR_*` 전부 뺌, `XDG_*` 손대지 않음).
+- 번들 안 `backend/herdr.json` 의 `buildBinarySHA256` 은 cargo 산출물 값이다 — electron-builder 가 번들을 ad-hoc 재서명하므로 번들 안 바이너리
+  sha256 은 다르다.
 
 빌드 root 안에 도구 체인·의존성·소스·binary와 `<binary>.json` 영수증이 생긴다. archive SHA-256을 검사하고, patch 집합이 달라진 캐시의 재사용은 거절한다. `verify-backend-source.mjs`는 깨끗한 archive에 patch를 적용한 결과와 빌드 소스의 해당 파일들을 byte 비교한다. `CORRAL_BACKEND_TEST=1`이면 실제 PTY를 같은 terminal ID에 재기동한 뒤 이전 세대의 send/interrupt/close를 거절하는 Rust 테스트도 실행한다. 이 테스트에도 `HERDR_CONFIG_PATH`·`XDG_CONFIG_HOME`을 별도 build root로 지정한다.
 

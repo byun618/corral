@@ -12,6 +12,7 @@ import { terminalModule, type TerminalDesktop } from './terminal/index.js'
 import { orchestrationModule, orchestrationStartupSweep } from './orchestration/index.js'
 import { isRecord } from '../shared/json.js'
 import { memorySnapshot } from './memory.js'
+import { backendBinding, useBundledBackend } from './backend.js'
 
 interface Profile { runtimeId: string; backend?: { socket: string; session: string } }
 export function restoreBackend(userData: string): void {
@@ -31,6 +32,11 @@ export async function startRuntime(options: {
   ui?: () => boolean
   focus?: () => void
   appProcessRoles?: () => Map<number, string>
+  /**
+   * 설치본 GUI 가 지금 붙어 있는 동봉 서버 (LIFE-556) — 명시 바인딩이 없을 때만 쓰고 프로필에 저장하지 않는다(`backend.ts`).
+   * 개발 실행·headless 런타임은 넘기지 않는다.
+   */
+  bundledBackend?: () => { socket: string; session: string } | null
 }) {
   const directory = path.join(options.userData, 'runtime')
   privateDirectory(directory)
@@ -70,8 +76,16 @@ export async function startRuntime(options: {
     if (!!process.env.CORRAL_BACKEND_SOCKET !== !!process.env.CORRAL_SESSION) throw new RuntimeError('invalid_backend', 'Set both CORRAL_BACKEND_SOCKET and CORRAL_SESSION')
     if (process.env.CORRAL_BACKEND_SOCKET && process.env.CORRAL_SESSION) profile.backend = { socket: process.env.CORRAL_BACKEND_SOCKET, session: process.env.CORRAL_SESSION }
     atomicWrite(profileFile, profile)
+    useBundledBackend(profile.backend ? null : options.bundledBackend ?? null)
     const { runtimeId } = profile
-    const status = () => ({ target: { kind: 'local', socket: endpoint }, runtime: { state: 'ready', reachable: true, runtimeId, instanceId, pid: process.pid, mode: options.ui ? 'desktop' : 'headless', capabilities: registry.schema().commands.map(s => s.command) }, ui: { available: options.ui?.() ?? false }, backend: profile.backend ? { ...profile.backend, ownership: 'external', lifecycle: 'independent' } : { state: 'not_configured' } })
+    const status = () => ({ target: { kind: 'local', socket: endpoint }, runtime: { state: 'ready', reachable: true, runtimeId, instanceId, pid: process.pid, mode: options.ui ? 'desktop' : 'headless', capabilities: registry.schema().commands.map(s => s.command) }, ui: { available: options.ui?.() ?? false }, backend: backendStatus() })
+    const backendStatus = () => {
+      if (profile.backend) return { ...profile.backend, ownership: 'external', lifecycle: 'independent' }
+      if (!options.bundledBackend) return { state: 'not_configured' }
+      // 동봉 서버 — 앱이 띄우고 앱 종료 뒤에도 남는다(`spawnServer`). GUI 가 아직 붙지 않았으면 그렇게 말한다.
+      const binding = backendBinding()
+      return binding ? { socket: binding.socket, session: binding.session, ownership: 'bundled', lifecycle: 'independent' } : { state: 'not_connected', ownership: 'bundled' }
+    }
     const registry = new CommandRegistry()
     registry.register({ specs: foundationSpecs, validate: validateFoundation, execute: async (inv, ctx) => {
       if (inv.command === 'status') return status()

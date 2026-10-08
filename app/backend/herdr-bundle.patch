@@ -1,0 +1,47 @@
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -163,8 +163,10 @@
+ pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
+ pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
+ 
+-fn auto_updates_enabled(background_updates: bool) -> bool {
+-    background_updates && !cfg!(debug_assertions)
++// corral bundle (LIFE-556): the binary and its agent manifests ship inside corral.app,
++// so release builds never check for or fetch updates in the background either.
++fn auto_updates_enabled(_background_updates: bool) -> bool {
++    false
+ }
+ 
+ fn background_update_check_enabled(background_updates: bool, check_enabled: bool) -> bool {
+--- a/src/config/io.rs
++++ b/src/config/io.rs
+@@ -19,11 +19,14 @@
+     "worktrees",
+ ];
+ 
++// corral bundle (LIFE-556): release builds ship inside corral.app. They must not share
++// config, state, session or socket folders with a separately installed herdr, so the
++// release name differs from stock `herdr`. Debug builds keep `herdr-dev`.
+ pub fn app_dir_name() -> &'static str {
+     if cfg!(debug_assertions) {
+         "herdr-dev"
+     } else {
+-        "herdr"
++        "corral-herdr"
+     }
+ }
+ 
+--- a/src/update.rs
++++ b/src/update.rs
+@@ -2111,6 +2111,11 @@
+ 
+ /// Manual self-update command (`herdr update`).
+ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
++    // corral bundle (LIFE-556): replacing the binary inside corral.app would break its
++    // signature and build receipt. corral updates it by shipping a new app.
++    if !cfg!(debug_assertions) {
++        return Err("self-update is disabled for the herdr bundled with corral; update corral instead".into());
++    }
+     let channel = UpdateChannel::configured();
+ 
+     if is_homebrew_managed_install() {

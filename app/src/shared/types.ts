@@ -113,7 +113,7 @@ export type SessionInfo = {
 }
 
 /** 해소한 herdr 실행 파일 (LIFE-485 D5). 출처는 로그인 셸 조회·알려진 설치 위치·측정용 `CORRAL_HERDR_BIN`. */
-export type BackendBinary = { path: string; source: 'login-shell' | 'known-location' | 'env'; version: string | null }
+export type BackendBinary = { path: string; source: 'login-shell' | 'known-location' | 'env' | 'bundled'; version: string | null }
 
 /**
  * 서버를 띄우면 다시 붙을 에이전트 세션 수 (LIFE-485 D2). 개수와 종류뿐이다 — 경로·세션 id·대화 없음.
@@ -128,7 +128,7 @@ export type RestoreSummary =
  * - `confirm` — 서버가 꺼져 있고 사용자가 「서버 시작」 을 눌러야 띄운다. `exited` 는 연결 도중 멈춘 경우
  * - `starting` — corral 이 띄우고 준비를 기다리는 중
  * - `failed` — 띄우지 못했다(원문·로그 경로). 「다시 시도」
- * - `missing` — herdr 실행 파일을 찾지 못했다
+ * - `missing` — herdr 실행 파일을 찾지 못했다. `bundled` 면 설치본의 동봉 바이너리가 없거나 실행할 수 없다(재설치 안내 — LIFE-556)
  * - `bound-stopped` — 지정된 세션(프로필 바인딩·CORRAL_SESSION)이나 붙어 있던 이름 세션이 멈춰 있다. corral 은 띄우지 않는다
  * - `reconnecting` — 서버는 돌고 링크만 다시 붙는 중. 카드가 아니라 배너다 — 터미널 화면을 걷지 않는다(r1 R1-01)
  */
@@ -137,7 +137,7 @@ export type BackendStatus =
   | { kind: 'confirm'; reason: 'stopped' | 'exited'; session: string; restore: RestoreSummary }
   | { kind: 'starting'; session: string }
   | { kind: 'failed'; session: string; error: string; logPath: string | null }
-  | { kind: 'missing'; searched: string[] }
+  | { kind: 'missing'; searched: string[]; bundled: boolean }
   /** `reason` — `bound`: 프로필 바인딩·CORRAL_SESSION 으로 지정된 세션 · `attached`: 기존 규칙으로 붙어 있던 이름 세션(r1 R1-07) */
   | { kind: 'bound-stopped'; session: string; reason: 'bound' | 'attached' }
   | { kind: 'reconnecting'; session: string; attempt: number }

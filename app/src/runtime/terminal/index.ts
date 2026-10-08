@@ -11,6 +11,7 @@ import { isRecord } from '../../shared/json.js'
 import { WorktreeMetadata, worktreeSelect } from '../workspace/model.js'
 import { Tokens } from './tokens.js'
 import { Receipts, REQUEST_ID } from './receipts.js'
+import { backendBinding } from '../backend.js'
 import { blockedReason, pickBlockedRule } from '../../shared/agent-state.js'
 import {
   AGENT_START_TIMEOUT_MS, AgentStore, READY_SAMPLES, READY_SAMPLE_INTERVAL_MS, SCREEN_EXCERPT_BYTES,
@@ -173,7 +174,7 @@ export function terminalModule(userData: string, desktop?: TerminalDesktop): Com
       const flag = (name: string) => stringFlag(f, name), required = (name: string) => stringFlag(f, name, true)!
       if (f['expect-process'] !== undefined) throw new RuntimeError('unsupported', 'Backend cannot atomically condition on foreground/exec ownership; no effect started', { conditionalProcess: false }, 'preflight', 'not_started')
       if ((inv.command === 'terminal switch' || f.focus) && !desktop?.available()) throw new RuntimeError('ui_unavailable', 'This runtime has no available GUI', undefined, 'preflight', 'not_started')
-      const socket = process.env.CORRAL_BACKEND_SOCKET
+      const socket = backendBinding()?.socket
       if (!socket) throw new RuntimeError('backend_unavailable', 'Profile has no configured terminal backend')
       const backend = new TerminalBackend(socket)
       const epoch = await backend.epoch(ctx)

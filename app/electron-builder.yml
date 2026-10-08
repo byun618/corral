@@ -19,6 +19,16 @@ asarUnpack:
 extraResources:
   - from: build/bin/corral
     to: bin/corral
+  # LIFE-556 — 동봉 herdr(release 패치)와 Apache-2.0 고지. `bin/` 과 다른 폴더라 shim 폴더를 PATH 에 올려도 herdr 는 풀리지 않는다.
+  # `npm run package:mac` 이 `scripts/bundle-herdr.mjs` 로 검증해 놓는다(없으면 패키징 전에 멈춘다).
+  - from: build/backend/herdr
+    to: backend/herdr
+  - from: build/backend/LICENSE-herdr
+    to: backend/LICENSE-herdr
+  - from: build/backend/NOTICE-herdr.md
+    to: backend/NOTICE-herdr.md
+  - from: build/backend/herdr.json
+    to: backend/herdr.json
 # 렌더러·main 번들 외 네이티브 모듈 없음
 npmRebuild: false
 mac:

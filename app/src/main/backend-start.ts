@@ -20,7 +20,7 @@ export type StarterPhase =
 export type BackendInput = {
   /** 지정된 세션 — 프로필 바인딩·`CORRAL_SESSION`(·측정 하네스의 `CORRAL_BACKEND_SOCKET`). 있으면 어떤 경우에도 띄우지 않는다. */
   bound: string | null
-  binary: { kind: 'resolving' } | { kind: 'found' } | { kind: 'missing'; searched: string[] }
+  binary: { kind: 'resolving' } | { kind: 'found' } | { kind: 'missing'; searched: string[]; bundled: boolean }
   sessions: readonly Candidate[]
   /** 지금 붙어 있는(붙었던) 세션. 연결 도중 멈춤을 가른다. */
   selected: string | null
@@ -109,7 +109,7 @@ export function decideBackend(input: BackendInput): BackendDecision {
     // default 가 아닌 세션(기존 규칙으로 붙었던 이름 세션)은 띄우지 않는다 — 안내만.
     if (input.selected !== DEFAULT_SESSION) return none({ kind: 'bound-stopped', session: input.selected, reason: 'attached' })
     if (input.starter.phase === 'failed') return none(failed(input.starter))
-    if (input.binary.kind === 'missing') return none({ kind: 'missing', searched: input.binary.searched })
+    if (input.binary.kind === 'missing') return none({ kind: 'missing', searched: input.binary.searched, bundled: input.binary.bundled })
     return none({ kind: 'confirm', reason: 'exited', session: DEFAULT_SESSION, restore: input.restore ?? unknownRestore })
   }
 
@@ -118,7 +118,7 @@ export function decideBackend(input: BackendInput): BackendDecision {
 
   if (input.binary.kind === 'resolving') return none({ kind: 'ok' })
   // ⑦ 바이너리 해소 실패.
-  if (input.binary.kind === 'missing') return none({ kind: 'missing', searched: input.binary.searched })
+  if (input.binary.kind === 'missing') return none({ kind: 'missing', searched: input.binary.searched, bundled: input.binary.bundled })
   if (input.starter.phase === 'failed') return none(failed(input.starter))
 
   const restore = input.restore ?? unknownRestore

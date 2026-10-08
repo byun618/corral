@@ -30,7 +30,23 @@ export function knownHerdrLocations(home: string): string[] {
   return ['/opt/homebrew/bin/herdr', '/usr/local/bin/herdr', path.join(home, '.local/bin/herdr'), path.join(home, '.cargo/bin/herdr')]
 }
 
-export type HerdrResolution = { kind: 'found'; binary: BackendBinary } | { kind: 'missing'; searched: string[] }
+/**
+ * 설치본 안 동봉 herdr 자리 (LIFE-556) — `Contents/Resources/backend/herdr`. CLI shim 이 있는 `bin/` 과 다른 폴더라,
+ * 사용자가 `bin/` 을 PATH 에 올려도 `herdr` 는 풀리지 않는다.
+ */
+export function bundledHerdrPath(resourcesPath: string): string {
+  return path.join(resourcesPath, 'backend', 'herdr')
+}
+
+/**
+ * herdr 설정·상태 폴더 이름. 동봉 herdr(release + `app/backend/herdr-bundle.patch`)의 `app_dir_name()` 은 `corral-herdr` 다 —
+ * 별도로 설치된 herdr(`herdr`)와 소켓·세션·config 를 나누지 않게 한다. 두 값은 패치와 같이 바뀌어야 한다.
+ */
+export const STOCK_HERDR_APP_DIR = 'herdr'
+export const BUNDLED_HERDR_APP_DIR = 'corral-herdr'
+
+/** `bundled` — 설치본이라 동봉 바이너리만 찾았다. 미설치 카드가 재설치 안내를 고르는 근거다. */
+export type HerdrResolution = { kind: 'found'; binary: BackendBinary } | { kind: 'missing'; searched: string[]; bundled: boolean }
 
 /**
  * 바이너리 해소 (D5). **순수에 가깝게** — 셸 조회·실행 가능 판정을 주입받아 단위 테스트가 실제 셸 없이 돈다.
@@ -51,7 +67,31 @@ export async function resolveHerdr(input: {
     searched.push(candidate)
     if (input.isExecutable(candidate)) return { kind: 'found', binary: { path: candidate, source: 'known-location', version: null } }
   }
-  return { kind: 'missing', searched }
+  return { kind: 'missing', searched, bundled: false }
+}
+
+/**
+ * 어디서 찾을지 (LIFE-556). 측정용 `CORRAL_HERDR_BIN` 이 먼저고, 설치본(`bundled` 자리가 있음)이면 **동봉 바이너리만** 본다 —
+ * 없거나 실행할 수 없어도 로그인 셸·알려진 위치로 내려가지 않는다(그건 별도 설치 herdr 에 붙는 길이다). 개발 실행은 종전대로 `external`.
+ */
+export async function locateHerdr(input: {
+  override: string | undefined
+  bundled: string | null
+  isExecutable: (file: string) => boolean
+  external: () => Promise<HerdrResolution>
+}): Promise<HerdrResolution> {
+  // `CORRAL_HERDR_BIN` — 측정이 가짜 바이너리(즉시 종료 등)를 물릴 때만 쓴다. 실행 불가면 없음으로 간다.
+  if (input.override !== undefined && input.override.length > 0) {
+    return input.isExecutable(input.override)
+      ? { kind: 'found', binary: { path: input.override, source: 'env', version: null } }
+      : { kind: 'missing', searched: [`CORRAL_HERDR_BIN=${input.override}`], bundled: input.bundled !== null }
+  }
+  if (input.bundled !== null) {
+    return input.isExecutable(input.bundled)
+      ? { kind: 'found', binary: { path: input.bundled, source: 'bundled', version: null } }
+      : { kind: 'missing', searched: [input.bundled], bundled: true }
+  }
+  return input.external()
 }
 
 export function isExecutableFile(file: string): boolean {
@@ -85,23 +125,19 @@ export function parseShellLookup(stdout: string): string | null {
   return value.length > 0 ? value : null
 }
 
-function locate(): Promise<HerdrResolution> {
-  // `CORRAL_HERDR_BIN` — 측정이 가짜 바이너리(즉시 종료 등)를 물릴 때만 쓴다. 실행 불가면 없음으로 간다.
-  const override = process.env.CORRAL_HERDR_BIN
-  if (override !== undefined && override.length > 0) {
-    const result: HerdrResolution = isExecutableFile(override)
-      ? { kind: 'found', binary: { path: override, source: 'env', version: null } }
-      : { kind: 'missing', searched: [`CORRAL_HERDR_BIN=${override}`] }
-    return Promise.resolve(result)
-  }
-  return resolveHerdr({ loginShellLookup, candidates: knownHerdrLocations(os.homedir()), isExecutable: isExecutableFile })
-}
-
-/** 실제 해소 — 로그인 셸 + 알려진 위치 + 버전. 결과(경로·버전·출처)를 로그에 한 줄 남긴다 (K1ⓒ). */
-export async function resolveHerdrBinary(): Promise<HerdrResolution> {
-  const resolution = await locate()
+/**
+ * 실제 해소 — 동봉(설치본) 또는 로그인 셸 + 알려진 위치, 그리고 버전. 결과(경로·버전·출처)를 로그에 한 줄 남긴다 (K1ⓒ).
+ * `bundled` — 설치본의 동봉 바이너리 자리, 개발 실행은 null.
+ */
+export async function resolveHerdrBinary(bundled: string | null): Promise<HerdrResolution> {
+  const resolution = await locateHerdr({
+    override: process.env.CORRAL_HERDR_BIN,
+    bundled,
+    isExecutable: isExecutableFile,
+    external: () => resolveHerdr({ loginShellLookup, candidates: knownHerdrLocations(os.homedir()), isExecutable: isExecutableFile }),
+  })
   if (resolution.kind === 'missing') {
-    log('herdr.resolve', { found: false, searched: resolution.searched })
+    log('herdr.resolve', { found: false, searched: resolution.searched, bundled: resolution.bundled })
     return resolution
   }
   let version: string | null = null
@@ -217,6 +253,15 @@ export function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return out
 }
 
+/**
+ * 동봉 서버 env (LIFE-556) — `serverEnv` 에서 `HERDR_*` 를 **전부** 더 뺀다. 남겨 두던 설정 변수(`HERDR_CONFIG_PATH` 등)는
+ * 사용자가 별도 설치 herdr 용으로 둔 값이라, 동봉 서버가 그 config 를 읽으면 폴더를 나눈 뜻이 없다.
+ * `XDG_*` 는 손대지 않는다 — pane 셸이 물려받으므로 앱 기동 env 그대로여야 한다(B2).
+ */
+export function bundledServerEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(serverEnv(env)).filter(([key]) => !key.startsWith('HERDR_')))
+}
+
 export type ServerSpawn = { ok: true; pid: number; logPath: string } | { ok: false; error: string; logPath: string }
 
 /**
@@ -225,7 +270,13 @@ export type ServerSpawn = { ok: true; pid: number; logPath: string } | { ok: fal
  * herdr 자신의 자동 기동(무인자 `herdr`)이 같은 바이너리 + `server` 를 setsid + null stdio 로 띄우는 것과 같은 모양이다.
  * 앱 종료 때 끄지 않는다 — PTY 영속이 herdr 의 역할이다.
  */
-export function spawnServer(input: { binary: string; logPath: string; onExit: (code: number | null, signal: string | null) => void }): ServerSpawn {
+export function spawnServer(input: {
+  binary: string
+  logPath: string
+  onExit: (code: number | null, signal: string | null) => void
+  /** 동봉 herdr 인가 (LIFE-556) — env 를 `bundledServerEnv` 로 거른다. */
+  bundled?: boolean
+}): ServerSpawn {
   let fd: number
   try {
     fs.mkdirSync(path.dirname(input.logPath), { recursive: true })
@@ -245,7 +296,7 @@ export function spawnServer(input: { binary: string; logPath: string; onExit: (c
     const child = spawn(input.binary, ['server'], {
       detached: true,
       stdio: ['ignore', fd, fd],
-      env: serverEnv(process.env),
+      env: input.bundled === true ? bundledServerEnv(process.env) : serverEnv(process.env),
       cwd: os.homedir(),
     })
     // 실행 파일이 없으면 pid 없이 'error' 가 뒤늦게 온다 — 듣지 않으면 uncaught 다. 판정은 아래 pid 로 한다.

@@ -37,14 +37,19 @@ description: >-
    **제어 런타임을 띄울 때의 환경 조건(상속되면 배달 판정이 무력화되는 env 마커 등)은 매핑의
    『전제 점검』에 적혀 있다** — 런타임을 새로 띄우는 경우 그 조건을 먼저 읽는다.
    슬러그는 타이틀에서 케밥케이스 1~3단어로 파생하며, 기존 LIFE-N의 슬러그는 재사용한다.
-2. **작업 worktree 생성** (신규만, 본체는 main 유지):
+2. **분기 기준 선택 → 작업 worktree 생성** (신규만, 본체는 main 유지):
+   - **독립 작업**(기본): `main` 에서 딴다. 게이트 ② 에서 main 대상 PR 이 된다.
+   - **묶음 자식**: 서로 의존하는 작업 묶음(체크포인트)이면 `feature/LIFE-MMM-<슬러그>`(MMM = 체크포인트)에서 딴다.
+     feature 가 아직 없으면 사용자에게 묶음으로 열지 한 번 묻고, 열면 `main` 에서 만들어 origin 에 push 한다
+     (`git branch feature/LIFE-MMM-<슬러그> main && git push -u origin feature/LIFE-MMM-<슬러그>`). 만료일을 정해 00-start 에 적는다.
+     게이트 ② 에서 PR 대신 feature 로 로컬 merge 된다(AGENTS.md 「브랜치 규약」). 미지정·애매하면 독립 작업이다.
    ```bash
-   git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -b LIFE-NNN-<슬러그> main
+   git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -b LIFE-NNN-<슬러그> <main 또는 origin/feature/LIFE-MMM-<슬러그>>
    ```
    재개는 기존 worktree와 코디네이터 터미널을 확인한다. 활성 코디네이터가 있으면 그 세션으로
    이어가며 새로 만들지 않는다. 세션이 없을 때만 기록된 도구로 재기동한다.
 3. **기동 전에 선택 기록**: 작업 worktree에서 `specs/LIFE-NNN-<슬러그>/00-start.md`를 작성·커밋한다.
-   최소 항목: LIFE-N, 슬러그, 작업 브랜치·절대 worktree 경로, 코디네이터 도구, 선택 근거
+   최소 항목: LIFE-N, 슬러그, 작업 브랜치·**분기 기준(main / feature 브랜치와 그 만료일)**·절대 worktree 경로, 코디네이터 도구, 선택 근거
    (사용자 지정/신규 기본값/재개), 모델·effort(미지정 기본값은 [defaults.md](defaults.md):
    claude → `claude-opus-5-5` high, codex → `gpt-6-astra` high, 2026-09-29), **선택한 하네스 매핑**,
    기동 상태. 모든 역할의 요청 모델·effort·advisor·단독/경쟁 방식은 defaults.md에서 복사한다.
@@ -89,4 +94,4 @@ description: >-
 - 포커스 전환 때문에 문제가 나면 포커스 없이 만든 뒤 별도로 전환한다.
 - 화면 읽기·목록·본문 길이의 **수치 상한은 매핑에서 확인한다** — 줄 수와 바이트를 혼동하면 원자료가 잘린다.
 - 시작 세션은 킥오프 전달 후 구현을 지휘하지 않는다. 이후 과정은 선택된 코디네이터가 맡고,
-  출고 승인 후 본체 마무리 담당에게 `handoff-main.md`로 돌아온다(task-coordinate §8).
+  출고 승인(= PR 생성) 뒤 코디네이터가 PR 을 열고, 정리는 본체 마무리 담당에게 `handoff-main.md`로 돌아온다(task-coordinate §8).

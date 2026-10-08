@@ -20,7 +20,6 @@ import {
   type DispatchRecord, type OrchestrationState, type PaneObservation, type RetainReason, type WorkerBlock, type WorkerSpawner,
 } from './model.js'
 
-/** What the CLI client observed about itself, carried on the invocation (see `contracts.ts`). */
 /**
  * `socketIsBackend` — the caller's `HERDR_SOCKET_PATH` resolves to the socket this runtime drives (LIFE-556 H1).
  * herdr names no session in a default-session pane (`HERDR_SESSION` is unset there), so for an attempt recorded

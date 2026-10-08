@@ -8,6 +8,7 @@
 #             worktree 가 ~/.corral-herdr/worktrees 아래 · ~/.herdr 없음
 #   stock   — 양성 대조(stock release, 예: brew herdr): 폴더 herdr · 업데이트 확인 ≥1행 · worktree 가 ~/.herdr/worktrees 아래.
 #             `herdr update` 는 부르지 않는다. 같은 질의·같은 대기 시간(WAIT)으로 bundled 와 견준다.
+#             fix2 L3 — 원본(예: 사용자 brew 바이너리)을 직접 돌리지 않는다: root 아래 사본으로 돌리고 원본 sha256 전후를 단언한다.
 set -u
 mode="$1"; bin="$2"; root="$3"
 case "$mode" in bundled) appdir=corral-herdr; wtroot=.corral-herdr/worktrees ;; stock) appdir=herdr; wtroot=.herdr/worktrees ;; *) echo "mode must be bundled or stock" >&2; exit 2 ;; esac
@@ -17,6 +18,11 @@ fails=0
 check() { if [ "$1" = ok ]; then echo "PASS $2"; else echo "FAIL $2"; fails=$((fails+1)); fi; }
 rm -rf "$root"; mkdir -p "$root/home"
 home="$root/home"
+if [ "$mode" = stock ]; then
+  orig="$bin"; orig_before=$(shasum -a 256 "$orig" | cut -d' ' -f1)
+  cp "$orig" "$root/herdr-stock-copy" && bin="$root/herdr-stock-copy"
+  echo "== stock 사본으로 실행 (원본 sha256 before $orig_before)"
+fi
 run() { env -i HOME="$home" PATH=/usr/bin:/bin TERM=dumb "$bin" "$@"; }
 echo "== mode $mode · $("$bin" --version)"
 echo "== session list (격리 HOME, XDG 없음)"
@@ -63,6 +69,11 @@ run server stop > /dev/null 2>&1 || true
 i=0; while [ $i -lt 40 ] && kill -0 $pid 2>/dev/null; do sleep 0.25; i=$((i+1)); done
 if kill -0 $pid 2>/dev/null; then echo "server still alive — SIGKILL"; kill -9 $pid; check no "server stopped"; else check ok "server stopped"; fi
 # 이 스크립트 자신(인자에 root 가 실린다)은 빼고 센다 — 1회차(R2-02·03)가 자기 자신 2개를 잔존으로 셌다.
+if [ "$mode" = stock ]; then
+  orig_after=$(shasum -a 256 "$orig" | cut -d' ' -f1)
+  echo "original sha before $orig_before"; echo "original sha after  $orig_after"
+  [ "$orig_before" = "$orig_after" ] && check ok "original binary unchanged" || check no "original binary unchanged"
+fi
 left=$(ps -axo pid=,args= | grep -F "$root" | grep -v -e grep -e isolated-backend.sh | wc -l | tr -d ' ')
 [ "$left" -eq 0 ] && check ok "no leftover process" || check no "no leftover process ($left)"
 rm -rf "$root"

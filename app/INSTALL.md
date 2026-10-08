@@ -45,7 +45,9 @@ PATH 에서 `~/.local/bin` 보다 앞이면, 그 node 를 쓰는 셸에서는 `c
 - **herdr 는 앱에 들어 있다** (`Contents/Resources/backend/herdr`, LIFE-556). 앱이 그 바이너리로 herdr 서버를 스스로 띄우고 GUI 와 CLI 의
   `terminal`·`orchestration` 이 같은 서버(그 `default` 세션)를 쓴다 — `CORRAL_BACKEND_SOCKET`·`CORRAL_SESSION`·`profile.json` 을 손댈 필요가 없다.
   명시 바인딩(env·`profile.json` 의 `backend`)이 있으면 종전대로 그것이 먼저다.
+  설치본은 그 `default` 세션 하나에 고정된다 — 동봉 herdr 에 다른 이름 세션이 돌고 있어도 GUI·CLI 는 그쪽으로 옮겨 가지 않는다.
   - 설정·상태·세션·소켓 폴더는 `~/.config/corral-herdr`·`~/.local/state/corral-herdr` 다 — 따로 설치한 herdr(`~/.config/herdr`)와 나뉜다.
+  - herdr 가 만드는 git worktree 의 기본 위치는 `~/.corral-herdr/worktrees` 다 — 따로 설치한 herdr 의 `~/.herdr/worktrees` 와 나뉜다.
   - 동봉 herdr 는 PATH 에 `herdr` 로 올라가지 않고(shim 폴더 `bin/` 과 다른 `backend/` 에 있다), 스스로 업데이트하지 않는다(앱을 새로 설치해 올린다).
   - 앱을 닫아도 herdr 서버는 남는다(터미널 영속). 앱이 꺼진 상태에서 CLI `terminal`·`orchestration` 은 런타임이 없어 동작하지 않는다.
 - **전환 안내 (brew herdr 를 쓰던 경우)**: 설치본은 따로 설치한 herdr 의 `default` 세션에 더 붙지 않는다 — 거기 열려 있던 터미널은
@@ -62,4 +64,4 @@ PATH 에서 `~/.local/bin` 보다 앞이면, 그 node 를 쓰는 셸에서는 `c
 rm -rf /Applications/corral.app
 ```
 
-userData(`~/Library/Application Support/corral`)와 동봉 herdr 폴더(`~/.config/corral-herdr`·`~/.local/state/corral-herdr`)는 남는다.
+userData(`~/Library/Application Support/corral`)와 동봉 herdr 폴더(`~/.config/corral-herdr`·`~/.local/state/corral-herdr`), herdr 로 만든 worktree(`~/.corral-herdr/worktrees` — 사용자 작업 트리)는 남는다.

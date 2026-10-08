@@ -91,7 +91,7 @@ import { canonicalPath } from './canonical-path.js'
 import { electronClipboardPng, PASTE_FILE_MAX_AGE_MS, saveClipboardImage, sweepPasteFiles } from './clipboard-image.js'
 import { startControlServer } from './control.js'
 import { closeLog, log, logFile, openLog } from './log.js'
-import { pickSessionName } from './pick-session.js'
+import { pickSessionName, pinnedSessions } from './pick-session.js'
 import { BackendStarter, boundSessionName, decideBackend, DEFAULT_SESSION, isOwnSession, needsRestoreCount, type BackendInput } from './backend-start.js'
 import { RepoRegistry } from './registry.js'
 import { RegistryGeneration, removeObserved } from './registry-generation.js'
@@ -1253,7 +1253,8 @@ function pollSessions(): Promise<void> {
 async function runPoll(): Promise<void> {
   await ensureHerdrResolved()
   const scan = await listSessions({ binary: herdrPath(), appDir: herdrAppDir })
-  sessions = scan.sessions
+  // 설치본은 default 하나만 본다(LIFE-556 fix2 M2) — 다른 세션은 고르기·기동 결정·동봉 바인딩 어디에도 오르지 않는다.
+  sessions = pinnedSessions({ sessions: scan.sessions, bundled: bundledHerdr !== null, bound: boundSessionName(process.env) })
   sessionsError = scan.error
   scanState = scan.error === null ? 'ok' : 'error'
   // default 가 돌고 있으면 남은 실패를 걷는다(r2 R2-01) — 그 뒤 멈추면 확인(exited)과 재개 요약이 나와야 한다.
@@ -1824,8 +1825,9 @@ app.whenReady().then(async () => {
     appProcessRoles: () => new Map(app.getAppMetrics().map(metric => [metric.pid, metric.type === 'Tab' ? 'renderer' : 'other'])),
     // 설치본 — CLI 의 terminal·orchestration 이 GUI 가 지금 붙은 동봉 서버를 쓴다(LIFE-556). 명시 바인딩이 있으면 런타임이 무시한다.
     bundledBackend: bundledHerdr === null ? undefined : () => {
+      // default 고정(fix2 M2) — 세션 목록이 이미 default 뿐이지만, 공급자도 다른 이름을 내보내지 않는다.
       const socket = currentSocketPath()
-      return socket === null || selectedSession === null ? null : { socket, session: selectedSession }
+      return socket === null || selectedSession !== DEFAULT_SESSION ? null : { socket, session: DEFAULT_SESSION }
     },
   })
   stopRuntime = runtime.close

@@ -40,12 +40,14 @@ npm --prefix app run package:mac                                          # scri
 - **같은 스크립트·같은 패치**다. `CORRAL_BACKEND_PROFILE` 기본값은 `debug` 라 종전 명령은 그대로 debug 를 만든다. release 는 `cargo build --release` 에
   `--remap-path-prefix=<build root>=/corral-herdr-build` 를 붙여 build root 경로(`/tmp`·`CARGO_HOME`)가 바이너리에 박히지 않게 한다.
   영수증에 `profile`·`buildSeconds`·`binaryBytes` 가 더 실린다(실측: release 44~82초·약 20MB, debug 약 68MB).
-- **`herdr-bundle.patch`** (stream → guard → detect → bundle 순서). 셋 다 release 에서만 바뀌고 debug 동작은 그대로다:
+- **`herdr-bundle.patch`** (stream → guard → detect → bundle 순서). 넷 다 release 에서만 바뀌고 debug 동작은 그대로다:
   - 앱 폴더 이름 `app_dir_name()` — release `corral-herdr` (stock `herdr`), debug `herdr-dev` 유지. 설정 `~/.config/corral-herdr`(`XDG_CONFIG_HOME`
     아래) · 상태 `~/.local/state/corral-herdr` · 세션·소켓(`herdr.sock`·`herdr-client.sock`)이 전부 이 이름을 따른다. 그래서 따로 설치한 herdr
     (`~/.config/herdr`)와 소켓·세션·config 를 나누지 않는다. `XDG_*` 를 서버 env 로 주는 방식은 pane 셸이 물려받으므로 쓰지 않는다.
   - 백그라운드 업데이트·매니페스트 확인 끔(`auto_updates_enabled` → false — debug 는 원래 꺼져 있다).
   - `herdr update` 거절 — `self-update is disabled for the herdr bundled with corral; update corral instead`(exit 1, 바이너리 무변경).
+  - worktree 기본 위치(`src/config/model.rs` WorktreesConfig) — release `~/.corral-herdr/worktrees`, debug 는 상류 `~/.herdr/worktrees` 그대로.
+    `app_dir_name()` 을 따르지 않는 상류 기본값이라 따로 바꿨다(LIFE-556 fix1 M2). 사용자 config 의 `worktrees.directory` 가 있으면 그것이 먼저다.
 - corral 쪽 짝: `src/main/adapter/internal/server.ts` 의 `BUNDLED_HERDR_APP_DIR`(패치 값과 같이 바뀌어야 한다)·`bundledHerdrPath()`,
   설치본 서버 env 는 `bundledServerEnv()`(`HERDR_*` 전부 뺌, `XDG_*` 손대지 않음).
 - 번들 안 `backend/herdr.json` 의 `buildBinarySHA256` 은 cargo 산출물 값이다 — electron-builder 가 번들을 ad-hoc 재서명하므로 번들 안 바이너리

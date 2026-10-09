@@ -2,7 +2,7 @@
 name: task-coordinate
 description: >-
   작업 코디네이터 절차. 작업 worktree의 Claude 또는 Codex 코디네이터가 킥오프 직후 읽는다.
-  분석·판정 기준·킥오프 승인·단독 구현·3자 코드 리뷰·판정·세 승인 게이트·본체 마무리 인계를 다룬다.
+  분석·판정 기준·킥오프 승인·단독 구현·3자 코드 리뷰·판정·세 승인 게이트·PR 생성·정리·출고 인계를 다룬다.
   워커 기동·완료 감지·질의응답은 능력 이름으로 쓰고, 명령은 선택한 하네스 매핑에서 읽는다.
 ---
 
@@ -251,27 +251,26 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
 - 확인이 끝나 사용자가 **출고 승인**을 주면 — **출고 승인은 PR 생성이다. main 머지가 아니다** (2026-10-08, LIFE-574):
   1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다 — **PR 생성 전에** 커밋해야 PR 에 실린다.
      LIFE-N, 본체 경로, 작업 브랜치·PR base(`main`, 묶음 자식이면 feature 브랜치), 검증한 구현 커밋, 채택·출고 승인 근거,
-     마무리 명령, LA의 현재 상태(`검증 중`)와 다음 전이(출고 머지 뒤 `완료`)를 기록한다. **LA는 완료로 바꾸지 않는다.**
+     출고 때 본체 세션이 볼 사항(정리는 코디가 3단계에서 끝낸다), LA의 현재 상태(`검증 중`)와 다음 전이(출고 머지 뒤 `완료`)를 기록한다. **LA는 완료로 바꾸지 않는다.**
   2. **코디네이터가 작업 worktree 에서 PR 을 연다** (2026-10-09, LIFE-574 게이트 ① 수정 1). `task-pr.sh` 는 레포를 git 공통
      디렉터리에서 찾으므로 작업 worktree 의 사본으로 돌려도 본체 레포를 가리킨다.
      - 독립 작업: `scripts/task-pr.sh LIFE-NNN-<슬러그>` — 미커밋 거절 → push → main 대상 PR 생성(있으면 재사용, 멱등).
        본문은 `verdict.md` 링크·판정표 요약이다. `gh pr list --head LIFE-NNN-<슬러그>` 로 1건을 확인한다.
-     - 묶음 자식: PR 을 열지 않는다 — feature 반영은 4단계의 본체 마무리 세션 몫이다.
-  3. 사용자에게 **PR 번호(묶음 자식은 "PR 없음 — feature 반영 대기"), 작업 worktree 절대경로와 인계 파일의 절대경로**,
-     본체에서 읽을 명령 `git show LIFE-NNN-<슬러그>:specs/LIFE-NNN-<슬러그>/handoff-main.md`를 전달하고
-     "PR 생성 완료, 정리는 본체 대기"라고 보고한다. LA 는 `검증 중` 그대로다.
-     **본체 마무리 세션**은 시작 세션이 남아 있으면 그 세션, 없으면 사용자가 본체에서 여는
-     Claude 또는 Codex 세션이다. 사용자가 전달받은 경로·명령으로 인계 문서를 읽고 이어받는다.
-  4. 본체 마무리 세션은 인계 문서를 읽어 승인 기록과 PR 을 확인하고 본체에서 정리한다 — `task-finish.sh` 는 작업 worktree
-     안에서 실행을 거절하고 그 worktree 를 지우므로 코디 세션을 닫은 뒤 본체에서 돌린다.
-     - 독립 작업: `scripts/task-finish.sh LIFE-NNN-<슬러그>` — PR 이 있고 로컬 작업 브랜치가 원격 사본과 같음을 확인한 뒤
-       작업·구현 worktree, 로컬 브랜치, 구현 브랜치 원격 사본, 격리 herdr 세션을 정리한다.
+     - 묶음 자식: PR 을 열지 않는다 — feature 반영은 3단계 정리가 한다.
+  3. **코디네이터가 정리까지 한다** (2026-10-09, LIFE-574 출고 뒤 변경 — 출고 승인은 사용자 확인이 끝났다는 뜻이라
+     본체 세션에 넘길 판단이 없다). 정리는 작업 worktree 를 지우므로 **코디 세션의 마지막 실행**이다 — 이후 도구 호출을 하지 않는다.
+     `task-finish.sh` 는 작업 worktree 안 실행을 거절하므로 본체 경로에서 본체의 스크립트로 돌린다.
+     - 독립 작업: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그>` — PR 이 있고 로컬 작업 브랜치가 원격 사본과
+       같음을 확인한 뒤 작업·구현 worktree, 로컬 브랜치, 구현 브랜치 원격 사본, 격리 herdr 세션을 정리한다.
        작업 브랜치는 원격(PR head)에 남는다. 태그 `LIFE-NNN-*-final` 은 유지한다.
-     - 묶음 자식: `scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
-       로컬 merge·push 한 뒤 정리한다. 묶음이 끝나면 본체 마무리 세션이 `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로
-       feature → main PR 하나를 연다 (판정문 `specs/LIFE-MMM-<슬러그>/verdict.md` — 자식 판정 링크·묶음 확인 결과.
-       **마지막 자식의 코디가** 묶음 확인을 끝내고 feature 브랜치에 커밋한다. 없으면 `task-pr.sh` 가 멈추므로
-       `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다). PR 번호(또는 feature 반영)를 사용자에게 보고한다.
+     - 묶음 자식: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
+       로컬 merge·push 한 뒤 정리한다. 묶음이 끝나면 **마지막 자식의 코디가** 묶음 확인을 끝내 판정문
+       `specs/LIFE-MMM-<슬러그>/verdict.md`(자식 판정 링크·묶음 확인 결과)를 feature 브랜치에 커밋하고, 정리 전에
+       `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다(판정문이 없으면 `task-pr.sh` 가 멈추므로
+       `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다).
+  4. 사용자에게 스크립트 출력 원문과 함께 **PR 번호(묶음 자식은 feature 반영 결과)**, 인계 문서를 읽을 명령
+     `git show origin/LIFE-NNN-<슬러그>:specs/LIFE-NNN-<슬러그>/handoff-main.md` 를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
+     LA 는 `검증 중` 그대로다. 정리가 실패하면 원문을 보고하고 멈춘다 — 남은 정리는 사용자가 본체에서 같은 명령으로 이어 간다(멱등).
 - 스크립트가 실패하면 멈추고 원문을 보고한다. 이미 연 PR 은 `task-pr.sh` 재실행이 재사용한다.
 - **출고**는 별도다 — 사용자가 열린 PR 중 고르면("PR 이거이거 머지하고 빌드하자") 본체 세션이 `scripts/release.sh` 로
   순서 머지·버전 태그·dmg 를 하고, **출고 머지 뒤**(설치를 기다리지 않는다 — D2) 머지된 PR 의 일감마다
@@ -279,8 +278,8 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   부모 checkpoint는 다른 미완 자식이 없는지 확인한 뒤 별도로 완료 여부를 판단한다. 절차는 `app/INSTALL.md` 「출고」.
   출고 중 PR 이 충돌로 멈추면(앞 PR 머지 뒤) 본체 세션이 원격 작업 브랜치로 worktree 를 다시 만들어 main 을 merge·push 하고
   남은 PR 로 다시 돌린다 — 「출고」의 「충돌이 나면」. 해소가 기능을 바꾸면 그 PR 을 출고에서 빼고 그 작업 코디에게 돌려보낸다.
-- 작업 worktree의 코디네이터가 직접 실행하는 것은 PR 생성(`task-pr.sh`)까지다 — 머지·정리·출고는 하지 않는다.
-  worktree 삭제 후에도 인계 문서는 PR(원격 작업 브랜치)에, 출고 뒤에는 main의 specs에 남는다. 후속 책임은 본체 마무리 세션에 있다.
-- 워커 pane·worktree 의 수명은 다르다 — **worktree 는 출고 승인 뒤 PR 생성까지 유지**하고, pane 정리는
+- 작업 worktree의 코디네이터가 직접 실행하는 것은 PR 생성(`task-pr.sh`)과 정리(`task-finish.sh`)까지다 — main 머지·출고는 하지 않는다.
+  worktree 삭제 후에도 인계 문서는 PR(원격 작업 브랜치)에, 출고 뒤에는 main의 specs에 남는다. 출고는 본체 세션 몫이다.
+- 워커 pane·worktree 의 수명은 다르다 — **worktree 는 출고 승인 뒤 PR 생성·정리까지 유지**하고, pane 정리는
   『회수·정리』를 따른다. 빌린 pane 은 남으므로 따로 닫는다. 출고 때 PR 에 main 을 합치는 일은 `release.sh` 가
   임시 worktree 로 하므로 작업 worktree 가 없어도 된다(LIFE-574 D4).

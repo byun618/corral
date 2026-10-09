@@ -26,6 +26,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
+import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
 import {
@@ -191,6 +192,8 @@ export function TerminalPane({
       ...appearanceRef.current,
       // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
       allowProposedApi: true,
+      // OSC 8 링크 ⌘+클릭 — 평문 URL 과 같은 열기 경로(LIFE-565, terminal-links.ts).
+      linkHandler: terminalLinkHandler,
     })
     /**
      * 이모지·CJK 폭을 herdr 격자와 맞춘다 (S1·S7ⓔ — 폭 재판 방지).
@@ -204,6 +207,7 @@ export function TerminalPane({
     term.loadAddon(graphemes)
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
+    const links = registerTerminalLinks(term)
     termRef.current = term
     // 한글 IME 조합 표시층(LIFE-566) — 조합 상자를 그려진 커서 칸에 맞추고 뒤에 caret 을 그린다.
     const detachIme = attachImeComposition({ term })
@@ -499,6 +503,7 @@ export function TerminalPane({
       selectionListener.dispose()
       dataListener.dispose()
       detachIme()
+      links.dispose()
       termRef.current = null
       term.dispose()
     }

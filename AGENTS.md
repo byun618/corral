@@ -68,13 +68,13 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
      (머지 전이라 채택안 변경·추가 수정 요구 가능)
    - 사용자 직접 확인: 작업 worktree 에서 통합 결과를 실제로 굴려본다. 문제 발견 시 수정 라운드
    - **② 출고 승인 = PR 생성** (머지 아님): 승인 → 인계 문서 커밋 → 코디네이터가 작업 worktree 에서 작업 브랜치를 push 하고
-     main 대상 PR 을 연다(scripts/task-pr.sh) → 본체 세션이 작업 worktree 정리(scripts/task-finish.sh). 열린 PR = 출고 대기열.
-     묶음 자식은 PR 대신 본체 세션이 feature 브랜치로 로컬 merge 한다(task-finish.sh --into)
+     main 대상 PR 을 연다(scripts/task-pr.sh) → 같은 코디네이터가 마지막 실행으로 작업 worktree 정리(본체 경로에서 scripts/task-finish.sh,
+     2026-10-09). 열린 PR = 출고 대기열. 묶음 자식은 PR 대신 코디네이터가 feature 브랜치로 로컬 merge 한다(task-finish.sh --into)
    - **출고** (사용자가 끊는다): "PR 이거이거 머지하고 빌드하자" → 본체 세션이 scripts/release.sh 로 고른 PR 을
      순서대로 머지 → 버전 올림·태그 vX.Y.Z → 그 태그에서 dmg → 설치. LA 완료는 출고 머지 뒤. **main = 출고된 상태 = 설치본**.
      PR 이 3~4건을 넘거나 같은 파일을 건드리면 출고를 당기는 신호. 절차는 app/INSTALL.md 「출고」
 
-## 상태 전이·보고 (진행: 코디네이터 / 출고: 본체 마무리 세션)
+## 상태 전이·보고 (진행: 코디네이터 / 출고: 본체 세션)
 
 - 플로우 단계마다 LA 상태를 전이한다 (life-assistant issue_transition, forward-only):
   0 작업 시작 → "진행 중" / 1 분석 → "분석 중" / 3 구현 시작 → "개발 중" /
@@ -84,7 +84,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
   ② 출고 승인(PR 생성 전). 게이트 사이 구간은 자율 진행하되 게이트에서 멈추고 보고한다.
   worktree 는 출고 승인 전까지 유지 — 사용자가 직접 실행·확인할 수 있는 상태. PR 을 연 뒤 정리한다(브랜치는 원격에 남는다)
 - 작업이 끝나거나 막히면 반드시 사용자에게 보고 — 조용한 완료 금지
-- 출고 승인 후에는 코디네이터가 PR 을 열고 본체 마무리 세션이 정리하며, LA 는 "검증 중" 에 둔다. 출고(release.sh) 머지 뒤
+- 출고 승인 후에는 코디네이터가 PR 을 열고 정리까지 하며, LA 는 "검증 중" 에 둔다. 출고(release.sh) 머지 뒤
   본체 세션이 머지된 PR 의 일감마다 LA 를 완료한다. 인계 문서는 PR 생성 전에 커밋한다 — 상세는 task-coordinate §8.
 
 ## 브랜치 규약

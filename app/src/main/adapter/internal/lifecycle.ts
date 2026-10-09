@@ -12,6 +12,7 @@
 import { readNumber, readRecord, readString } from '../../../shared/json.js'
 import type { AgentKind } from '../../../shared/types.js'
 import { log } from '../../log.js'
+import { paneEnv } from './pane-env.js'
 import { request } from './request.js'
 
 /**
@@ -61,6 +62,7 @@ export async function createRow(
     workspace_id: input.workspaceId,
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     ...(input.label === undefined ? {} : { label: input.label }),
+    env: paneEnv(),
   }
   const created = await request(socketPath, 'tab.create', params, { reason: 'create-row' })
   if (created.error) {
@@ -237,7 +239,7 @@ function toWorktreeOutcome(response: { result?: unknown; error?: { code?: string
 
 /** 주 체크아웃을 연다 (L8 빈 상태 복구의 문). worktree.open 은 주 체크아웃을 거절한다. */
 export async function openWorkspace(socketPath: string, cwd: string): Promise<WorktreeOutcome> {
-  const response = await request(socketPath, 'workspace.create', { cwd, focus: false }, { reason: 'open-workspace' })
+  const response = await request(socketPath, 'workspace.create', { cwd, focus: false, env: paneEnv() }, { reason: 'open-workspace' })
   return toWorktreeOutcome(response, 'workspace_opened')
 }
 

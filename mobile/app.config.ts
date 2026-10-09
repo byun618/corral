@@ -26,6 +26,19 @@ const config: ExpoConfig = {
   plugins: [
     'expo-router',
     'expo-secure-store',
+    // 글꼴 번들(LIFE-580 J7) — 빌드 때 APK 에 넣는다(런타임 내려받기·외부 요청 없음). Android 글꼴 이름 = 파일 이름. 라이선스는 assets/fonts/*-OFL.txt.
+    [
+      'expo-font',
+      {
+        fonts: [
+          './assets/fonts/Geist_400Regular.ttf',
+          './assets/fonts/Geist_500Medium.ttf',
+          './assets/fonts/Geist_600SemiBold.ttf',
+          './assets/fonts/JetBrainsMono_400Regular.ttf',
+          './assets/fonts/JetBrainsMono_500Medium.ttf',
+        ],
+      },
+    ],
     ['expo-camera', { cameraPermission: '맥의 corral 페어링 QR 을 찍는 데만 카메라를 씁니다.', recordAudioAndroid: false }],
     ...(IS_DEV ? ['expo-dev-client'] : []),
   ],

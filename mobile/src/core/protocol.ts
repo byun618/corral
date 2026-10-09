@@ -1,6 +1,8 @@
 // 앱이 쓰는 모바일 프로토콜 — 정본은 `app/src/main/mobile/SURFACE.md`(서버). 여기는 그 표의 앱 쪽 사본이다.
 // RN·Expo 를 모른다(단위 시험이 node 에서 돈다).
 
+import { parseListMessage, type ListMessage } from './list'
+
 export const PROTOCOL_VERSION = 1
 
 /** 서버 close 코드(SURFACE §4). */
@@ -44,6 +46,8 @@ export type ServerMessage =
   | { type: 'hello'; server: ServerInfo; deviceId: string; deviceName: string }
   | { type: 'paired'; server: ServerInfo; token: string; deviceId: string; deviceName: string }
   | { type: 'pong' }
+  /** 대화방 목록(LIFE-580) — 모양이 틀리면 `other`. */
+  | { type: 'list'; message: ListMessage }
   | { type: 'error'; code: string; supported: number[] }
   | { type: 'other' }
 
@@ -84,6 +88,10 @@ export function parseServerMessage(text: string): ServerMessage {
     }
     case 'pong':
       return { type: 'pong' }
+    case 'list': {
+      const message = parseListMessage(parsed)
+      return message === null ? { type: 'other' } : { type: 'list', message }
+    }
     case 'error': {
       const supported = Array.isArray(parsed.supported) ? parsed.supported.filter((v): v is number => typeof v === 'number') : []
       return { type: 'error', code: typeof parsed.code === 'string' ? parsed.code : 'unknown', supported }

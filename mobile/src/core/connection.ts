@@ -18,6 +18,7 @@
 // 삭제가 끝나기 전에는 「해제됨」 을 보이지 않는다 — `unpairing` → 성공이면 `unpaired`, 실패면 `unpair_failed`(R1-A4).
 import type { ConnectionLog, LogValue } from './log'
 import { hostOf, type PairingTarget } from './payload'
+import type { ListMessage } from './list'
 import { CLOSE, PROTOCOL_VERSION, parseServerMessage, serverPairFailure, type PairFailure, type ServerInfo } from './protocol'
 
 // --- 주입 ---------------------------------------------------------------------------------------------
@@ -127,6 +128,14 @@ export type PairingInfo = { url: string; host: string; macName: string; serverVe
 
 export type Snapshot = { conn: ConnState; pair: PairState; info: PairingInfo | null; appVersion: string }
 
+/**
+ * 연결 위의 기능(목록 등, LIFE-580)이 받는 신호. `attempt` = 시도 번호 — 늦게 도착한 이전 소켓의 메시지를 가려내는 데 쓴다.
+ * - `live`: 서버와 인증된 연결이 (다시) 확인됐다 — `connect` = 새 연결의 hello 성공, `resume` = 포그라운드 복귀 프로브 성공.
+ *   두 경우 다 구독을 다시 보내 전체를 받는다(J8 — 연결이 살아 있어도 복귀 때 전체).
+ * - `list`: 지금 시도의 소켓으로 온 목록. 이전 시도의 소켓은 여기까지 오지 않는다(시도마다 핸들러가 「내가 지금인가」 를 먼저 본다).
+ */
+export type SessionEvent = { kind: 'live'; attempt: number; reason: 'connect' | 'resume' } | { kind: 'list'; attempt: number; message: ListMessage }
+
 // --- 시도 ---------------------------------------------------------------------------------------------
 
 type Attempt = {
@@ -158,6 +167,7 @@ export class ConnectionManager {
   private readonly timing: Timing
   private snapshot: Snapshot
   private readonly listeners = new Set<() => void>()
+  private readonly sessionListeners = new Set<(event: SessionEvent) => void>()
   private record: PairingRecord | null = null
   private current: Attempt | null = null
   private attemptSeq = 0
@@ -303,6 +313,23 @@ export class ConnectionManager {
     if (conn.kind !== 'unpair_failed') return
     this.log('unpair_retry', { reason: conn.reason })
     await this.dropPairing(conn.reason)
+  }
+
+  /** 연결 위 기능의 신호 구독(LIFE-580). 돌려준 함수로 끊는다. */
+  onSession(listener: (event: SessionEvent) => void): () => void {
+    this.sessionListeners.add(listener)
+    return () => this.sessionListeners.delete(listener)
+  }
+
+  /** 지금 인증된 연결이 확인된 상태면 그 시도 번호 — 늦게 붙은 기능이 첫 `live` 신호를 놓쳤을 때 쓴다. */
+  liveAttempt(): number | null {
+    const attempt = this.current
+    if (this.snapshot.conn.kind !== 'connected' || attempt === null || attempt.phase !== 'live' || attempt.ended) return null
+    return attempt.seq
+  }
+
+  private emitSession(event: SessionEvent): void {
+    for (const listener of [...this.sessionListeners]) listener(event)
   }
 
   /** M3~ 가 쓸 송신 — 연결됨에서만, 늘 지금 시도의 소켓으로. */
@@ -476,6 +503,7 @@ export class ConnectionManager {
         }
         this.log('hello_ok', { attempt: attempt.seq, serverVersion: message.server.version })
         this.markConnected(attempt, now)
+        this.emitSession({ kind: 'live', attempt: attempt.seq, reason: 'connect' })
         return
       }
       case 'paired': {
@@ -492,11 +520,16 @@ export class ConnectionManager {
         if (conn.kind === 'checking') {
           this.log('probe_ok', { attempt: attempt.seq, after: 'resume' })
           this.markConnected(attempt, now)
+          this.emitSession({ kind: 'live', attempt: attempt.seq, reason: 'resume' })
         } else if (conn.kind === 'connected') {
           this.set({ conn: { ...conn, lastAliveAt: now } })
         }
         return
       }
+      case 'list':
+        if (attempt.phase !== 'live') return
+        this.emitSession({ kind: 'list', attempt: attempt.seq, message: message.message })
+        return
       case 'error':
         attempt.lastError = message.code
         attempt.supported = message.supported
@@ -716,6 +749,7 @@ export class ConnectionManager {
       const now = this.deps.clock.now()
       if (now - receivedAt <= this.timing.probeDeadlineMs) {
         this.markConnected(attempt, receivedAt)
+        this.emitSession({ kind: 'live', attempt: attempt.seq, reason: 'connect' })
         return
       }
       // 저장이 오래 걸렸다 — paired 수신은 낡았다. 연결됨 대신 확인 중으로 두고 새 프로브 응답을 받은 뒤에만 연결됨(R2-A4).

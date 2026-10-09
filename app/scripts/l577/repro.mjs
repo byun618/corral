@@ -207,21 +207,36 @@ async function commandMatrix(url) {
   else record('positive', false, { note: '--token-file 로 양성 대조를 함께 돌린다' }, { skipped: true })
 }
 
-/** 인증된 연결 하나를 열어 둔다 — autoPong:false 면 서버 WS ping 에 답하지 않는다(망이 죽은 폰 흉내, LIFE-578 E3). */
+/** open + 첫 hello 응답까지의 전체 마감 — 서버가 업그레이드 뒤 침묵하면 실패로 끝낸다(LIFE-578 R4-A1). */
+const HELD_HELLO_TIMEOUT_MS = 10_000
+
+/**
+ * 인증된 연결 하나를 열어 둔다 — autoPong:false 면 서버 WS ping 에 답하지 않는다(망이 죽은 폰 흉내, LIFE-578 E3).
+ * open + 첫 응답이 `HELD_HELLO_TIMEOUT_MS` 안에 없으면 소켓을 끊고 `hello=null`·`error='hello_timeout'` 으로 돌려준다.
+ */
 function heldConnection(url, token, { autoPong }) {
   return new Promise((resolve) => {
     const ws = new WebSocket(url, { handshakeTimeout: 5000, autoPong })
     const held = { ws, messages: [], hello: null, closeCode: null, closedAt: null, error: null, closed: null }
+    const settle = () => {
+      clearTimeout(timer)
+      resolve(held)
+    }
+    const timer = setTimeout(() => {
+      held.error = 'hello_timeout'
+      try { ws.terminate() } catch { /* 이미 닫힘 */ }
+      settle()
+    }, HELD_HELLO_TIMEOUT_MS)
     held.closed = new Promise((done) => ws.on('close', (code) => { held.closeCode = code; held.closedAt = Date.now(); done(code) }))
-    ws.on('error', (err) => { held.error = String(err.message ?? err) })
-    ws.on('unexpected-response', (_req, res) => { held.error = `HTTP ${res.statusCode}`; resolve(held) })
+    ws.on('error', (err) => { if (held.error === null) held.error = String(err.message ?? err) })
+    ws.on('unexpected-response', (_req, res) => { held.error = `HTTP ${res.statusCode}`; settle() })
     ws.on('message', (data) => {
       let parsed
       try { parsed = JSON.parse(data.toString()) } catch { parsed = { raw: data.toString().slice(0, 200) } }
-      if (held.hello === null) { held.hello = parsed; resolve(held) } else held.messages.push(parsed)
+      if (held.hello === null) { held.hello = parsed; settle() } else held.messages.push(parsed)
     })
     ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL, token, client: { name: 'repro', version: '1' } })))
-    held.closed.then(() => resolve(held))
+    held.closed.then(settle)
   })
 }
 
@@ -236,8 +251,15 @@ async function commandLifetime(url) {
   // ① 이전 연결(서버 ping 에 답 없음) → 같은 토큰으로 새 연결
   const old = await heldConnection(url, token, { autoPong: false })
   record('lifetime:old-hello', old.hello?.type === 'hello', { type: 'hello' }, { hello: old.hello, error: old.error })
+  // 인증이 안 되면(마감·거절) 뒤 단계는 볼 것이 없다 — 실패 행만 남기고 끝낸다(R4-A1).
+  if (old.hello?.type !== 'hello') return old.ws.terminate()
   const fresh = await heldConnection(url, token, { autoPong: true })
   record('lifetime:new-hello', fresh.hello?.type === 'hello', { type: 'hello' }, { hello: fresh.hello, error: fresh.error })
+  if (fresh.hello?.type !== 'hello') {
+    old.ws.terminate()
+    fresh.ws.terminate()
+    return
+  }
   await Promise.race([old.closed, wait(3000)])
   record('lifetime:old-replaced', old.messages[0]?.code === 'replaced' && old.closeCode === 4006, { error: 'replaced', close: 4006 }, { first: old.messages[0], closeCode: old.closeCode })
   fresh.ws.send(JSON.stringify({ type: 'ping', id: 'l1' }))
@@ -249,6 +271,11 @@ async function commandLifetime(url) {
   if (typeof args['idle-max-ms'] === 'string') {
     const maxMs = Number(args['idle-max-ms'])
     const silent = await heldConnection(url, token, { autoPong: false })
+    if (silent.hello?.type !== 'hello') {
+      record('lifetime:idle-drop', false, { closedWithinMs: maxMs }, { hello: silent.hello, error: silent.error })
+      silent.ws.terminate()
+      return
+    }
     const startedAt = Date.now()
     await Promise.race([silent.closed, wait(maxMs + 5000)])
     const elapsedMs = silent.closedAt === null ? null : silent.closedAt - startedAt

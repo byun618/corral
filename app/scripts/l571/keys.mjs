@@ -4,7 +4,7 @@
 // rpc 실패(ok 아님·빈 결과)는 그 자리에서 2. 걸음마다의 판정은 <out>/<check 이름>.checks.json 에 남는다.
 // 사용: node keys.mjs <ctl.sock> <out 폴더> <걸음...>
 //   type:<글자열> | key:<KeyCode>[+shift][+alt][+control][+meta] | wait:<ms> | term:<이름> | shot:<이름>
-//   mark                         지금 입력 링의 마지막 시각을 기억
+//   mark                         지금 입력 링의 마지막 시각을 기억(<out>/.mark-at 에도) | loadmark  그 파일에서 이어 받기
 //   ring:<이름>                  mark 뒤 입력 링 항목을 <이름>.ring.json 으로
 //   expect-ring:<이름>=<JSON 배열> mark 뒤 입력 링의 data 목록이 정확히 같아야 한다(빈 목록이면 기대도 [] 여야 한다) — ring 파일도 남긴다
 //   screen:<이름>=<정규식>       지금 버퍼 줄 중 하나가 맞아야 한다   | noscreen:<이름>=<정규식> 맞는 줄이 없어야 한다
@@ -49,7 +49,21 @@ for (const step of steps) {
     console.log(step, JSON.stringify(await call({ cmd: 'key', keyCode, modifiers })))
     continue
   }
-  if (name === 'mark') { const t = await read(); markAt = t.inputs.at(-1)?.at ?? 0; console.log(`mark at=${markAt}`); continue }
+  if (name === 'mark') {
+    const t = await read()
+    markAt = t.inputs.at(-1)?.at ?? 0
+    // 다른 드라이버(ime.mjs) 걸음을 사이에 끼울 때 다음 호출이 loadmark 로 이어 받는다.
+    fs.writeFileSync(path.join(out, '.mark-at'), String(markAt))
+    console.log(`mark at=${markAt}`)
+    continue
+  }
+  if (name === 'loadmark') {
+    const file = path.join(out, '.mark-at')
+    if (!fs.existsSync(file)) abort('loadmark: 저장된 mark 없음')
+    markAt = Number(fs.readFileSync(file, 'utf8'))
+    console.log(`loadmark at=${markAt}`)
+    continue
+  }
   if (name === 'ring' || name === 'expect-ring') {
     const [label, expectedJson] = name === 'ring' ? [arg, null] : split(arg)
     const t = await read()

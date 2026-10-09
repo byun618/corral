@@ -106,7 +106,7 @@ export async function startRuntime(options: {
     } })
     registry.register(workspaceModule(options.userData, options.workspaceDesktop))
     registry.register(terminalModule(options.userData, options.terminalDesktop))
-    registry.register(orchestrationModule(options.userData))
+    registry.register(orchestrationModule(options.userData, { terminalDesktop: options.terminalDesktop }))
     const lanes = new Map<string, Promise<unknown>>()
     // One dispatcher for the socket and for in-process GUI calls (LIFE-478 K1ⓑ·K7ⓒ): same validation,
     // same serial lanes, same command bodies — the GUI never reimplements `worktree set`/`worktree rm`.

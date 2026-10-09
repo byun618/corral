@@ -21,11 +21,12 @@ import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
 import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
-import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
+import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage, type TerminalDesktop } from '../terminal/index.js'
 import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
 import { cliInvocation } from '../desktop-launch.js'
 import { TerminalBackend } from '../../main/adapter/index.js'
+import { log } from '../../main/log.js'
 import { isRecord, readNumber, readRecord, readString } from '../../shared/json.js'
 import { OrchestrationStore } from './store.js'
 import {
@@ -468,7 +469,37 @@ function receiptStanding(userData: string, id: string): boolean {
   } catch { return true }
 }
 
-export function orchestrationModule(userData: string): CommandModule {
+/**
+ * LIFE-569 F1·F2. The bridge the orchestration's terminal module gets: the retention ledger and
+ * everything else pass straight through, so a recovery close is marked before it is sent and
+ * settled right after a failure by the very functions CLI `terminal close` uses. Only `changed()`
+ * is not waited for. It resyncs the backend and rebuilds the GUI tree — seconds at the tail on a
+ * real profile — and here it would run inside the orchestration document lane and the caller's
+ * request budget, holding every send/ask/check of the Run behind it, and a throw after a close
+ * that succeeded would record that close as `unknown`. The rebuild still starts at the same moment,
+ * and the GUI also learns of the closed pane from the backend's own `pane_closed` event, so the
+ * row still leaves the live list without a restart; a failed rebuild is logged and changes nothing
+ * about the close or the start.
+ */
+export function detachedChanges(desktop: TerminalDesktop): TerminalDesktop {
+  return {
+    ...desktop,
+    changed: async () => {
+      void Promise.resolve().then(() => desktop.changed())
+        .catch((error: unknown) => { log('orchestration.desktop_changed_failed', { error: error instanceof Error ? error.message : String(error) }) })
+    },
+  }
+}
+
+/**
+ * LIFE-569. `terminalDesktop` is the GUI bridge the server hands the CLI `terminal` module. The
+ * recovery close (`closePane` — worker-release / worker-stop) is an explicit close just like CLI
+ * `terminal close`, so it goes through the same module with the same bridge: the pane is marked in
+ * the retention ledger, the mark is settled by the same classifier on a failed close, and the GUI
+ * is told the tree changed (without waiting for it — `detachedChanges`). Without it a finished worker's pane came back as a 「닫힌 탭」 row.
+ * A headless runtime (`corral serve`, `cli.ts`) passes nothing — it keeps no ledger to mark.
+ */
+export function orchestrationModule(userData: string, options: { terminalDesktop?: TerminalDesktop } = {}): CommandModule {
   const startedAt = Date.now()
   // Built on first use, never in the factory: `cli.ts` constructs every module for every
   // invocation, `--help` included, and none of those may touch the profile directory.
@@ -484,7 +515,7 @@ export function orchestrationModule(userData: string): CommandModule {
    * constructor touches the profile, which is what `cli.ts` building every module for `--help`
    * requires.
    */
-  const terminalReads: CommandModule = terminalModule(userData)
+  const terminalReads: CommandModule = terminalModule(userData, options.terminalDesktop === undefined ? undefined : detachedChanges(options.terminalDesktop))
   /**
    * N3 = C13. Every rejection this module can foresee is now raised *before* the receipt is
    * written, so a refused mutation leaves the id spendable. That must not cost idempotent replay:

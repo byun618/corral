@@ -8,9 +8,21 @@ import type { LifecycleActions } from '../lifecycle-types.js'
 import type { UnreadView } from '../hooks/useUnread.js'
 import { useNowTick } from '../hooks/useNowTick.js'
 import { useSettledSections } from '../hooks/useSettledSections.js'
-import { useSidebarReorder, type ReorderCommit } from '../hooks/useSidebarReorder.js'
+import { useSidebarReorder, type NestCommit, type ReorderCommit } from '../hooks/useSidebarReorder.js'
 import type { LayoutGroup, ManualOrder } from '../manual-order.js'
-import { activeFilterCount, buildSidebarSections, PINNED_SECTION_KEY, sectionLayout, visibleCardCount, type SidebarSection, type SortItem } from '../sidebar-sections.js'
+import {
+  activeFilterCount,
+  buildSidebarSections,
+  nestSectionItems,
+  PINNED_SECTION_KEY,
+  sectionKey,
+  sectionLayout,
+  visibleCardCount,
+  type LineageRow,
+  type LineageUnit,
+  type SidebarSection,
+  type SortItem,
+} from '../sidebar-sections.js'
 import { cardMenuEntries, parentCandidates, type CardMenuAction } from '../card-menu.js'
 import { worktreeDisplayName } from '../worktree-name.js'
 import { ContextMenu } from './ContextMenu.js'
@@ -24,7 +36,7 @@ import { ReposSectionHeader } from './ReposSectionHeader.js'
 import { SidebarFooterToolbar } from './SidebarFooterToolbar.js'
 import { SidebarSearch } from './SidebarSearch.js'
 import { CircleXIcon, ListIcon, PinIcon } from './SidebarIcons.js'
-import { WorktreeBlock } from './WorktreeBlock.js'
+import { WorktreeBlock, type CardNest } from './WorktreeBlock.js'
 
 /**
  * 카드 메뉴 쪽 입력 (LIFE-478) — 고정·삭제 중·대화는 App 이 갖고(단축키·대화가 App 층), 메뉴·피커·rename·Reveal 실행은 Sidebar 가 한다
@@ -49,6 +61,9 @@ export type SidebarCardProps = {
   revealRequest: { path: string; rename: boolean; seq: number } | null
   deleteShortcut: string | null
 }
+
+/** 「N 하위」 접기 (LIFE-576 D6) — 접은 부모 경로 집합(ui-prefs `collapsedLineage`). */
+export type LineageCollapse = { values: ReadonlySet<string>; toggle: (path: string) => void; remove: (path: string) => void }
 
 /** Reveal 번쩍 길이 — 198 `use-reveal-highlight.ts:37-53` 1500ms. */
 const REVEAL_FLASH_MS = 1500
@@ -81,10 +96,12 @@ export function Sidebar({
   onRefresh,
   groupGlyphOf,
   cards,
+  lineageCollapse,
   onOpenShortcuts,
   onOpenSettings,
 }: {
   cards: SidebarCardProps
+  lineageCollapse: LineageCollapse
   /** 하단 ? 메뉴 「단축키」 (K8ⓐ) — LIFE-511 부터 설정 › 단축키. */
   onOpenShortcuts: () => void
   /** 하단 ⚙ — 설정 페이지 (LIFE-511). */
@@ -164,11 +181,30 @@ export function Sidebar({
   }
   const listRef = useRef<HTMLDivElement | null>(null)
   // 놓는 때 부른다 — 그 렌더의 `sections`(아래에서 계산, 잡아 둔 배치 포함)가 화면 그대로다.
-  const reorder = useSidebarReorder({ listRef, onCommit: (commit) => onReorder({ commit, layout: sectionLayout(sections) }) })
+  const reorder = useSidebarReorder({
+    listRef,
+    onCommit: (commit) => {
+      // 중첩된 하위 카드를 순서 줄에 놓으면 그 카드만 부모를 푼다(D4 — Orca 「un-nest escape hatch」). 끈 카드의 후손 링크는 그대로.
+      if (commit.source.kind !== 'repo' && nestedPaths.has(commit.source.path)) removeParent(commit.source.path)
+      onReorder({ commit, layout: sectionLayout(sections) })
+    },
+    // 아래에서 정의하는 술어 — 끄는 동안 부를 때는 이 렌더가 끝난 뒤다.
+    canNest: (nest) => nestAllowed(nest),
+    onNest: (nest: NestCommit) => {
+      void cards.setMeta({ path: nest.path, parentPath: nest.parentPath }).then((error) => {
+        if (error !== null) cards.notify(`상위 워크트리를 지정하지 못했습니다: ${error}`)
+      })
+    },
+  })
   const dragSource = reorder.state?.source ?? null
   const livePaneIds = livePaneIdsOf(state.repos)
   const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
   const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now, pinned: cards.pinned }), view, order: manualOrder })
+  // 계보 덩어리 (LIFE-576) — 구획은 평면 그대로 두고 그리기 직전에만 묶는다(`nestSectionItems`).
+  const unitsOf = new Map<string, LineageUnit[]>(sections.map((section) => [sectionKey(section), nestSectionItems({ items: section.items, collapsed: lineageCollapse.values })]))
+  /** 지금 부모 카드 안에 중첩돼 그려진 카드 — 순서 줄에 놓으면 부모가 풀린다(D4). */
+  const nestedPaths = new Set<string>()
+  for (const units of unitsOf.values()) for (const unit of units) for (const row of unit.descendants) nestedPaths.add(row.item.worktree.path)
   const filtersOn = activeFilterCount({ view, repos: state.repos }) > 0
   /** 레포 헤더 드래그 게이트 — Project 그룹 + Project order Manual 일 때만(198 `use-header-drag.ts:81-82`, K6ⓒ). 그 밖은 클릭(접기)만. */
   const repoDragEnabled = view.groupBy === 'repo' && view.projectOrderBy === 'manual'
@@ -194,6 +230,31 @@ export function Sidebar({
   for (const repo of state.repos) for (const worktree of repo.worktrees) rowsByPath.set(worktree.path, { repo, worktree })
   const activePath = state.repos.flatMap((repo) => repo.worktrees).find((row) => row.openWorkspaceId !== null && row.openWorkspaceId === activeWorkspaceId)?.path ?? null
 
+  /** 끌어서 상위 지정 후보 — 메뉴 피커와 **같은 술어**(`parentCandidates`, K3ⓒ). 자기·후손·다른 레포·현재 부모는 여기서 빠진다. */
+  const nestAllowed = (nest: NestCommit): boolean => {
+    const found = rowsByPath.get(nest.path)
+    return found !== undefined && parentCandidates({ worktree: found.worktree, repo: found.repo }).some((row) => row.path === nest.parentPath)
+  }
+  const removeParent = (path: string): void => {
+    void cards.setMeta({ path, parentPath: null }).then((error) => {
+      if (error !== null) cards.notify(`상위에서 빼지 못했습니다: ${error}`)
+    })
+  }
+  /**
+   * 접힌 조상 펼치기 (K2ⓓ · Orca #25950) — 활성·드러낼 카드가 접힌 「N 하위」 안에 숨지 않게. 사슬이 순환이면 한 바퀴에서 멈춘다.
+   * 사용자가 활성 카드의 부모를 직접 접는 것은 막지 않는다 — 그 조작 뒤에는 다음 활성화·드러내기 때 다시 펼친다.
+   */
+  const expandAncestors = (path: string): void => {
+    const seen = new Set<string>([path])
+    for (let parent = rowsByPath.get(path)?.worktree.parentPath ?? null; parent !== null && !seen.has(parent); parent = rowsByPath.get(parent)?.worktree.parentPath ?? null) {
+      seen.add(parent)
+      if (lineageCollapse.values.has(parent)) lineageCollapse.remove(parent)
+    }
+  }
+  useEffect(() => {
+    if (activePath !== null) expandAncestors(activePath)
+  }, [activePath])
+
   const sectionOf = (sectionList: readonly SidebarSection[], path: string): SidebarSection | null =>
     sectionList.find((section) => section.items.some((item) => item.worktree.path === path)) ?? null
 
@@ -211,11 +272,12 @@ export function Sidebar({
       }
       if (section.kind === 'pinned' && isRepoCollapsed(PINNED_SECTION_KEY)) toggleRepoCollapsed(PINNED_SECTION_KEY)
       if (section.kind === 'repo' && isRepoCollapsed(section.repo.root)) toggleRepoCollapsed(section.repo.root)
+      expandAncestors(input.path)
       pendingReveal.current = { ...input, tries: 0 }
       setRevealTick((value) => value + 1)
     },
     // rowsByPath·sectionOf 는 렌더마다 새로 서지만 state.repos·sections 가 바뀔 때만 다시 만든다.
-    [sections, filtersOn, isRepoCollapsed, toggleRepoCollapsed, state.repos],
+    [sections, filtersOn, isRepoCollapsed, toggleRepoCollapsed, state.repos, lineageCollapse.values, lineageCollapse.remove],
   )
 
   useEffect(() => {
@@ -324,10 +386,18 @@ export function Sidebar({
   const menuRow = menu === null ? undefined : rowsByPath.get(menu.path)
   const pickerRow = picker === null ? undefined : rowsByPath.get(picker.path)
 
-  const renderCard = (input: { item: SortItem; onCardMouseDown: (event: React.MouseEvent) => void; dragging: boolean; repoLabel: string | null; reorderable?: boolean }): React.JSX.Element => {
+  const renderCard = (input: {
+    item: SortItem
+    onCardMouseDown: (event: React.MouseEvent) => void
+    dragging: boolean
+    repoLabel: string | null
+    reorderable?: boolean
+    nest?: CardNest
+  }): React.JSX.Element => {
     const { worktree, repoRoot } = input.item
     const selected = worktree.openWorkspaceId !== null && worktree.openWorkspaceId === activeWorkspaceId
-    const parent = worktree.parentPath === null ? undefined : rowsByPath.get(worktree.parentPath)
+    // 부모 카드 안에 중첩돼 보이면 `↳ 부모` 칩은 겹말이라 뺀다 — 칩은 부모가 같은 구획에 안 보일 때만(D1).
+    const parent = worktree.parentPath === null || nestedPaths.has(worktree.path) ? undefined : rowsByPath.get(worktree.parentPath)
     return (
       <WorktreeBlock
         key={worktree.path}
@@ -358,6 +428,7 @@ export function Sidebar({
           onDelete: () => cards.requestDelete(worktree),
           onHover: (hovered) => cards.onHoverCard(hovered ? worktree.path : null),
         }}
+        nest={input.nest}
         worktree={worktree}
         repoLabel={input.repoLabel}
         layout={view.cardLayout}
@@ -403,6 +474,40 @@ export function Sidebar({
     )
   }
 
+  /**
+   * 덩어리 하나 — 루트 카드 행 안에 펼친 후손을 평면으로(각자 깊이만큼 들여) 그린다(Orca `lineage-group`). 끌기 손잡이는 카드마다
+   * 같은 구획 손잡이를 쓴다 — 후손을 끌면 그 카드(와 그 아래)만 움직이고, 순서 줄에 놓으면 부모가 풀린다(D4).
+   */
+  const renderUnit = (input: {
+    unit: LineageUnit
+    repoLabel: (item: SortItem) => string | null
+    reorderable: boolean
+    isDragging: (path: string) => boolean
+    onCardMouseDown: (input: { event: React.MouseEvent; path: string }) => void
+  }): React.JSX.Element => {
+    const lineageTarget = reorder.state?.lineageTarget ?? null
+    const cardOf = (row: LineageRow, children: React.ReactNode | null): React.JSX.Element => {
+      const path = row.item.worktree.path
+      return renderCard({
+        item: row.item,
+        repoLabel: input.repoLabel(row.item),
+        reorderable: input.reorderable,
+        dragging: input.isDragging(path),
+        onCardMouseDown: (event) => input.onCardMouseDown({ event, path }),
+        nest: {
+          depth: row.depth,
+          childCount: row.childCount,
+          collapsed: row.collapsed,
+          onToggle: () => lineageCollapse.toggle(path),
+          dropTarget: lineageTarget === path,
+          children,
+        },
+      })
+    }
+    const { unit } = input
+    return cardOf(unit.root, unit.descendants.length === 0 ? null : unit.descendants.map((row) => cardOf(row, null)))
+  }
+
   return (
     <div className={`sidebar ${reorder.state !== null ? 'is-reordering' : ''}`} data-sidebar ref={sidebarRef} style={{ width }}>
       <SidebarSearch shortcut={searchShortcut} onOpen={onOpenSearch} />
@@ -444,8 +549,8 @@ export function Sidebar({
                     </div>
                     {collapsed
                       ? null
-                      : section.items.map((item) =>
-                          renderCard({ item, repoLabel: item.repoName, dragging: false, reorderable: false, onCardMouseDown: () => {} }),
+                      : (unitsOf.get(PINNED_SECTION_KEY) ?? []).map((unit) =>
+                          renderUnit({ unit, repoLabel: (item) => item.repoName, reorderable: false, isDragging: () => false, onCardMouseDown: () => {} }),
                         )}
                   </div>
                 )
@@ -460,12 +565,13 @@ export function Sidebar({
                         {section.items.length}
                       </span>
                     </div>
-                    {section.items.map((item) =>
-                      renderCard({
-                        item,
-                        repoLabel: item.repoName,
-                        dragging: dragSource?.kind === 'all-card' && dragSource.path === item.worktree.path,
-                        onCardMouseDown: (event) => reorder.onAllCardMouseDown({ event, path: item.worktree.path }),
+                    {(unitsOf.get(sectionKey(section)) ?? []).map((unit) =>
+                      renderUnit({
+                        unit,
+                        repoLabel: (item) => item.repoName,
+                        reorderable: true,
+                        isDragging: (path) => dragSource?.kind === 'all-card' && dragSource.path === path,
+                        onCardMouseDown: ({ event, path }) => reorder.onAllCardMouseDown({ event, path }),
                       }),
                     )}
                   </div>
@@ -491,12 +597,13 @@ export function Sidebar({
                       })
                     }}
                   >
-                    {section.items.map((item) =>
-                      renderCard({
-                        item,
-                        repoLabel: null,
-                        dragging: dragSource?.kind === 'card' && dragSource.path === item.worktree.path,
-                        onCardMouseDown: (event) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path: item.worktree.path }),
+                    {(unitsOf.get(sectionKey(section)) ?? []).map((unit) =>
+                      renderUnit({
+                        unit,
+                        repoLabel: () => null,
+                        reorderable: true,
+                        isDragging: (path) => dragSource?.kind === 'card' && dragSource.path === path,
+                        onCardMouseDown: ({ event, path }) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path }),
                       }),
                     )}
                   </RepoRow>

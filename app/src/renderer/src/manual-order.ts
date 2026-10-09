@@ -175,14 +175,25 @@ export function forgetRepo(input: { order: ManualOrder; root: string }): ManualO
  * `keys.length` = 맨 뒤). 제자리면 `null`(파일을 쓰지 않는다).
  */
 export function moveKey(input: { keys: readonly string[]; key: string; slot: number }): string[] | null {
-  const from = input.keys.indexOf(input.key)
-  if (from < 0) return null
+  return moveBlock({ keys: input.keys, block: [input.key], slot: input.slot })
+}
+
+/**
+ * 여러 키를 한 덩어리로 옮긴다 (LIFE-576 D5 — 부모를 끌면 펼친 후손이 함께, Orca `reorderDraggedIds` = 끄는 카드 + 보이는 후손).
+ * `block` 은 `keys` 안에서 붙어 있는 순서 그대로(화면 순서). `slot` 이 덩어리 자기 범위 안(앞 경계~뒤 경계)이면 제자리 → `null`.
+ */
+export function moveBlock(input: { keys: readonly string[]; block: readonly string[]; slot: number }): string[] | null {
+  const members = new Set(input.block)
+  const indexes = input.keys.flatMap((key, index) => (members.has(key) ? [index] : []))
+  const from = indexes[0]
+  const last = indexes[indexes.length - 1]
+  if (from === undefined || last === undefined) return null
   const slot = Math.max(0, Math.min(input.keys.length, Math.trunc(input.slot)))
-  const to = slot > from ? slot - 1 : slot
-  if (to === from) return null
-  const next = input.keys.filter((key) => key !== input.key)
-  next.splice(to, 0, input.key)
-  return next
+  if (slot >= from && slot <= last + 1) return null
+  const moving = indexes.map((index) => input.keys[index] ?? '')
+  const rest = input.keys.filter((key) => !members.has(key))
+  const to = slot - indexes.filter((index) => index < slot).length
+  return [...rest.slice(0, to), ...moving, ...rest.slice(to)]
 }
 
 /**
@@ -206,8 +217,10 @@ export function applyWorktreeMove(input: {
   visiblePaths: readonly string[]
   path: string
   slot: number
+  /** 함께 옮길 덩어리(끄는 카드 + 펼친 후손, LIFE-576 D5). 없으면 `path` 하나. */
+  block?: readonly string[]
 }): ManualOrder | null {
-  const moved = moveKey({ keys: input.visiblePaths, key: input.path, slot: input.slot })
+  const moved = moveBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot })
   if (moved === null) return null
   const effective = effectiveRepoList({ worktrees: input.worktrees, stored: input.order.worktrees[input.repoRoot] })
   // 화면에는 있는데 목록 행에 없는 키(방어) — 앞에 두어 채우기에서 빠지지 않게 한다.
@@ -274,8 +287,10 @@ export function applyAllMove(input: {
   visiblePaths: readonly string[]
   path: string
   slot: number
+  /** 함께 옮길 덩어리(LIFE-576 D5) — `applyWorktreeMove` 와 같다. 중첩은 같은 레포끼리라 덩어리도 한 레포다. */
+  block?: readonly string[]
 }): ManualOrder | null {
-  const moved = moveKey({ keys: input.visiblePaths, key: input.path, slot: input.slot })
+  const moved = moveBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot })
   if (moved === null) return null
   const effective = orderAll({ repos: input.repos, order: input.order }).map((item) => item.worktree.path)
   const storedSet = new Set(input.order.all)

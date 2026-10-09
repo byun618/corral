@@ -297,6 +297,104 @@ function groupedSections(input: {
   }
 }
 
+// --- 계보 중첩 (LIFE-576) -------------------------------------------------------------------------------
+//
+// Orca main `row-builders.ts` `appendWorktreeRows`(nestLineage) + `renderable-rows.ts` `buildRenderableRows` 대응 — 구획 하나의
+// 카드(정렬 끝난 평면 목록)를 부모 아래 후손이 붙은 덩어리(unit)로 묶는다. 구획 빌드·지연(`useSettledSections`)은 평면 그대로 두고
+// 그리기 직전에만 묶는다 — 순서·서명·필터 규칙은 하나도 안 바뀐다.
+//   · 부모가 **같은 구획에 보이고 같은 레포**일 때만 중첩(D1, Orca `getSidebarLineageParent` 가 보이는 행에서만 부모를 찾는다).
+//     안 보이면 평소 자리 + 메타 줄 `↳ 부모` 칩.
+//   · 순환 구성원은 부모를 무시하고 루트로 그린다(Orca `cyclicLineageIds` — 「malformed cyclic lineage should not hide every participant」).
+//   · 깊이 상한 없음(O7). 자식 순서 = 구획 안 순서. 「N 하위」 N = **직계 자식 수**(Orca `lineageChildCount = children.length`).
+//   · 접힌 부모(`collapsed` = 부모 경로)의 후손은 덩어리에서 빠진다(Orca `lineageCollapsed` → 자식 행을 내보내지 않음).
+
+export type LineageRow = { item: SortItem; depth: number; childCount: number; collapsed: boolean }
+/** 덩어리 하나 — 루트 카드 + 펼친 후손(문서 순서, 깊이 ≥ 1). 끌기·그리기 단위(Orca `lineage-group` 행·drag unit). */
+export type LineageUnit = { root: LineageRow; descendants: LineageRow[] }
+
+/** 구획 안에서 그 카드의 부모 — 같은 구획에 보이고 같은 레포일 때만. */
+function visibleParent(input: { item: SortItem; byPath: ReadonlyMap<string, SortItem> }): SortItem | undefined {
+  const parentPath = input.item.worktree.parentPath
+  if (parentPath === null || parentPath === input.item.worktree.path) return undefined
+  const parent = input.byPath.get(parentPath)
+  return parent !== undefined && parent.repoRoot === input.item.repoRoot ? parent : undefined
+}
+
+/** 보이는 부모 연결 중 순환에 든 카드 경로(Orca `getCyclicWorktreeLineageChildIds` — 순환 구성원만, 순환에 매달린 카드는 아니다). */
+export function lineageCycleMembers(items: readonly SortItem[]): Set<string> {
+  const byPath = new Map(items.map((item) => [item.worktree.path, item]))
+  const cyclic = new Set<string>()
+  const settled = new Set<string>()
+  for (const start of items) {
+    const trail: string[] = []
+    let cursor: SortItem | undefined = start
+    while (cursor !== undefined && !settled.has(cursor.worktree.path)) {
+      const at = trail.indexOf(cursor.worktree.path)
+      if (at >= 0) {
+        for (const path of trail.slice(at)) cyclic.add(path)
+        break
+      }
+      trail.push(cursor.worktree.path)
+      cursor = visibleParent({ item: cursor, byPath })
+    }
+    for (const path of trail) settled.add(path)
+  }
+  return cyclic
+}
+
+export function nestSectionItems(input: { items: readonly SortItem[]; collapsed: ReadonlySet<string> }): LineageUnit[] {
+  const { items, collapsed } = input
+  const byPath = new Map(items.map((item) => [item.worktree.path, item]))
+  const cyclic = lineageCycleMembers(items)
+  const children = new Map<string, SortItem[]>()
+  const nested = new Set<string>()
+  for (const item of items) {
+    const parent = cyclic.has(item.worktree.path) ? undefined : visibleParent({ item, byPath })
+    if (parent === undefined) continue
+    nested.add(item.worktree.path)
+    children.set(parent.worktree.path, [...(children.get(parent.worktree.path) ?? []), item])
+  }
+  const emitted = new Set<string>()
+  const rowOf = (item: SortItem, depth: number): LineageRow => {
+    const childCount = children.get(item.worktree.path)?.length ?? 0
+    return { item, depth, childCount, collapsed: childCount > 0 && collapsed.has(item.worktree.path) }
+  }
+  const units: LineageUnit[] = []
+  for (const rootItem of items) {
+    if (nested.has(rootItem.worktree.path) || emitted.has(rootItem.worktree.path)) continue
+    emitted.add(rootItem.worktree.path)
+    const root = rowOf(rootItem, 0)
+    const descendants: LineageRow[] = []
+    // 깊이 우선 — 스택이라 재귀 깊이 제한이 없다(Orca `emitPending`).
+    const pending: { item: SortItem; depth: number }[] = root.collapsed ? [] : [...(children.get(rootItem.worktree.path) ?? [])].reverse().map((item) => ({ item, depth: 1 }))
+    while (pending.length > 0) {
+      const next = pending.pop()
+      if (next === undefined || emitted.has(next.item.worktree.path)) continue
+      emitted.add(next.item.worktree.path)
+      const row = rowOf(next.item, next.depth)
+      descendants.push(row)
+      if (row.collapsed) continue
+      for (const child of [...(children.get(next.item.worktree.path) ?? [])].reverse()) pending.push({ item: child, depth: next.depth + 1 })
+    }
+    units.push({ root, descendants })
+  }
+  return units
+}
+
+/** Orca `SIDEBAR_TREE_INDENT`(`indentation.ts`) — 계보 한 단계 들여쓰기. */
+export const LINEAGE_INDENT_PX = 18
+/**
+ * 좁은 사이드바에서 깊은 단계 카드가 지켜야 할 최소 폭(px). Orca 는 깊이를 자르지 않는다(O7) — corral 도 깊이는 안 자르고,
+ * 들여쓰기만 「부모 덩어리 폭 − 이 값」 에서 멈춰 카드가 사라지거나 옆으로 넘치지 않게 한다.
+ */
+export const LINEAGE_CARD_MIN_WIDTH_PX = 120
+
+/** 후손 카드 행의 왼쪽 들여쓰기(CSS 값) — 깊이 × 18px, 단 부모 덩어리 폭에서 최소 폭을 뺀 값을 넘지 않는다. */
+export function lineageIndent(depth: number): string {
+  const steps = Math.max(0, Math.floor(Number.isFinite(depth) ? depth : 0))
+  return `max(0px, min(${steps * LINEAGE_INDENT_PX}px, calc(100% - ${LINEAGE_CARD_MIN_WIDTH_PX}px)))`
+}
+
 /** 보이는 카드 수 — 빈 상태(필터로 비었나) 판정용. */
 export function visibleCardCount(sections: readonly SidebarSection[]): number {
   return sections.reduce((sum, section) => sum + section.items.length, 0)

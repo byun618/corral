@@ -146,6 +146,17 @@ export function PinIcon({ className }: { className?: string }): React.JSX.Elemen
   )
 }
 
+/** lucide `Workflow` — 「N 하위」 칩 (LIFE-576, Orca main `worktree-card-secondary-rows.tsx`). */
+export function WorkflowIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <rect width="8" height="8" x="3" y="3" rx="2" />
+      <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+      <rect width="8" height="8" x="13" y="13" rx="2" />
+    </svg>
+  )
+}
+
 /** lucide `Crosshair` — Reveal active (LIFE-478, 198 `ScrollToCurrentWorkspaceToolbarButton.tsx`). */
 export function CrosshairIcon({ className }: { className?: string }): React.JSX.Element {
   return (

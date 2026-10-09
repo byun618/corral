@@ -8,7 +8,8 @@ import { useCallback, useEffect, useState } from 'react'
 import type { UiPrefs } from '../../../shared/types.js'
 
 /** LIFE-478: `pinnedWorktrees`(고정한 워크트리 경로)도 같은 모양 — 경로 집합 하나를 ui-prefs 에 통째로 쓴다. */
-type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups' | 'pinnedWorktrees'
+/** LIFE-576: `collapsedLineage`(「N 하위」 를 접은 부모 경로)도 같은 모양. */
+type CollapseField = 'collapsedRepos' | 'collapsedGroups' | 'expandedAgentGroups' | 'pinnedWorktrees' | 'collapsedLineage'
 
 /**
  * `field` 별로 독립된 id 집합 하나. repo 접기(C3ⓐ)가 쓰고, 에이전트 알약 펼침(LIFE-467)은 같은 모양을

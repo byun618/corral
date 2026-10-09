@@ -150,6 +150,8 @@ export function App(): React.JSX.Element {
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
+  // LIFE-576 D6: 「N 하위」 는 기본 **펼침** — 접은 부모 경로만 영속한다(Orca `collapsedGroups` 의 `lineage:` 키).
+  const lineageCollapse = usePersistentCollapse('collapsedLineage')
   // LIFE-469 — 레포·워크트리 수동 순서. 읽기는 아래 첫 getUiPrefs 에 얹는다(부트 화면이 내려가기 전에 순서가 선다).
   const manualOrder = useManualOrder({ repos: state?.repos ?? NO_REPOS, registry: { roots: state?.registry.roots ?? NO_ROOTS, generation: state?.registryGeneration ?? 0 } })
   // LIFE-470 — Workspace options(그룹·정렬·필터). 읽기는 manualOrder 와 같은 첫 getUiPrefs 에 얹는다.
@@ -1514,6 +1516,7 @@ export function App(): React.JSX.Element {
             setPendingRemove(repo)
           }}
           onRefresh={() => void window.corral.refreshTree().then(setState)}
+          lineageCollapse={lineageCollapse}
           cards={{ ...cardActions.sidebarCards, unread, deleteShortcut: ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('workspace.delete', keymap.overrides)[0]) }}
           onOpenShortcuts={() => openSettings('shortcuts')}
           onOpenSettings={() => openSettings()}

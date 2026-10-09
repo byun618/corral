@@ -356,6 +356,9 @@ function createDragPreview(input: {
       for (const name of ['data-repo', 'data-repo-head', 'data-reorder-card', 'data-worktree']) node.removeAttribute(name)
     }
     for (const node of [clone, ...clone.querySelectorAll('.is-reorder-source')]) node.classList.remove('is-reorder-source')
+    // 행 하나 분기는 틀 = 끄는 행 자기 사각형(들여쓰기가 이미 빠진 폭·왼쪽)이라 복제 행의 바깥 들여쓰기를 지운다 — 남기면 사본 안에서
+    // 한 번 더 들어가 좁아진다(리뷰 r3 R3-A). 복제 안 후손의 들여쓰기·여러 행 분기(틀 = 후손 묶음)는 그대로.
+    if (frame === null) clone.style.marginLeft = '0px'
     for (const node of clone.querySelectorAll(TRANSIENT_UI_SELECTOR)) node.remove()
     // 메뉴가 열린 헤더의 z 올림 표식도 뗀다 — 메뉴가 없는 사본에는 의미가 없다.
     for (const node of clone.querySelectorAll('.is-menu-open')) node.classList.remove('is-menu-open')

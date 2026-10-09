@@ -269,6 +269,8 @@ describe('R1-B 하위 카드를 끌면 그 카드의 보이는 후손(손자)도
     expect(previews[0].children.map((node) => node.getAttribute('data-fake-card'))).toEqual(['/c1', '/g1'])
     // 사본 높이 = c1 윗변 ~ g1 아랫변(166..250).
     expect(previews[0].style.height).toBe('84px')
+    // 여러 행 분기는 틀 = 후손 묶음이라 복제 행 들여쓰기를 그대로 둔다(R3-A 정규화 대상 아님).
+    expect(previews[0].children.map((node) => node.style.marginLeft ?? '')).toEqual(['', ''])
     expect(render().state?.block).toEqual(['/c1', '/g1'])
     release(2)
     expect(commits[0]?.block).toEqual(['/c1', '/g1'])
@@ -278,6 +280,8 @@ describe('R1-B 하위 카드를 끌면 그 카드의 보이는 후손(손자)도
     let api = mountWithGrandchild()
     drag(api, { path: '/c2', fromY: 274, ys: [270, 2] })
     expect(dom.previews()[0].children.map((node) => node.getAttribute('data-fake-card'))).toEqual(['/c2'])
+    // R3-A 행 하나 분기 — 틀 = c2 자기 사각형이라 복제 행의 바깥 들여쓰기를 지운다(실제 CSS 폭은 `scripts/l576/preview-geometry`).
+    expect(dom.previews()[0].children[0].style.marginLeft).toBe('0px')
     expect(render().state?.block).toEqual(['/c2'])
     release(2)
     api = mountWithGrandchild()

@@ -27,11 +27,13 @@
 
 ### Origin (R1-N2)
 
-- 업그레이드에 `Origin` 헤더가 **없으면** 허용한다 — 네이티브 클라이언트(RN)·`repro.mjs` 는 보통 보내지 않는다.
+- 업그레이드에 `Origin` 헤더가 **없으면** 허용한다 — `repro.mjs`(Node `ws`)는 보내지 않는다.
 - `Origin` 이 **있으면** 지금 노출 주소의 origin `https://<mac>.<tailnet>.ts.net:8577` 과 글자 그대로 같을 때만 허용한다. 노출 전(주소 없음)에는 Origin 있는 요청을 전부 거절한다.
   포트 없는 `https://<mac>.ts.net`·다른 호스트·`http://` 는 거절. 브라우저 페이지의 JS 가 loopback 포트로 붙는 길을 막는 것이 목적이다.
-- RN 호환: **미확인.** RN `WebSocket` 은 기본으로 Origin 을 보내지 않는 것으로 알려져 있으나(Android `WebSocketModule` 은 URL 로 origin 을
-  만든다는 보고가 있다 — 그 경우 `https://<mac>.ts.net:8577` 이 되어 허용된다), iOS·Android 실기 확인은 M2 몫이다. 어긋나면 이 절을 고친다.
+- RN 호환(R2-N1 — 소스 확인 수준, **실기 미확인**): RN Android upstream `WebSocketModule` 은 앱이 Origin 을 주지 않으면 URL 에서
+  `getDefaultOrigin(url)` 로 만든다 — `wss://<mac>.ts.net:8577/ws` → `https://<mac>.ts.net:8577`. 정규 QR 주소로 붙으면 이 규칙과 맞아 허용된다.
+  같은 앱이 loopback 직접 주소(`ws://127.0.0.1:<p>/ws`)로 붙으면 Origin 이 `http://127.0.0.1:<p>` 가 되어 **거절된다**(폰에서는 쓰지 않는 길).
+  iOS 기본 동작은 확인하지 않았다. iOS·Android 실기 확인은 M2 몫이고, 어긋나면 이 절을 고친다(리뷰 r2 원자료 `codex-r2-raw/WebSocketModule.kt`).
 
 인증 전에는 어떤 데이터도 돌려주지 않는다 — 앱 버전도 인증 뒤 `hello`/`paired` 응답에만 있다.
 헤더 상한: 요청 헤더 64개, 헤더·요청 타임아웃 10초.
@@ -128,14 +130,25 @@ QR 은 아래 JSON 문자열을 담는다. 같은 내용을 설정 › Mobile �
 - `tailscale` argv 는 상수와 숫자(포트)만으로 조립한다. `serve reset`·`funnel` 을 부르는 경로가 없고, 제거는 소유권 기록과 serve 설정의
   `<host>:8577` 의 `/` 프록시가 일치할 때만 `serve --yes --https=8577 --set-path=/ off` — `/` 하나만 지우고 같은 host:port 의 남의 다른 경로는 남긴다(R1-A4).
   포트 점유(배경 TCP·Web 키, **Foreground 세션** 포함 — R1-N1)와 `/` 소유는 따로 본다: 남이 그 포트를 쓰면 올리지 않는다(`foreign`).
+  **소유 기록이 없는 최초 등록(R2-A3)은 `<host>:8577` 에 어떤 항목도(남의 다른 경로·TCP 칸·Foreground) 없을 때만** — 하나라도 있으면 `foreign` 으로
+  거절·안내한다(A6ⓒ). 같은 host:port 의 남의 경로와 같이 사는 것은 **이미 우리 `/` 였던 자리**(기록 일치)를 유지·제거·대상 교체할 때뿐이다(R1-A4).
 - **쓰기 직전 재조회·쓰기 뒤 대조(R1-A3).** add·off 바로 앞에서 `serve status --json` 을 다시 읽어 그때도 올릴 수 있을(지울 수 있을) 때만 쓰고,
   쓴 뒤 다시 읽어 「`/` 만 바뀌었나」 를 대조한다. 다른 곳이 바뀌었으면 `failed` + 경고(「serve 설정이 corral 쓰기와 동시에 바뀌었다」).
+  기대 delta 에는 CLI 가 스스로 하는 정리 하나를 넣는다(R2-A2): **이 `<host>:8577` 키의 `AllowFunnel:false`** 삭제 — add 의 `SetFunnel(false)`,
+  off 의 `RemoveWebHandler(cleanupFunnel)`(1.102.2 `ipn/serve.go:514`·`:536`). 다른 키·`true` 값의 변화는 계속 동시 변경으로 잡는다.
   **잔존 위험: 외부 클라이언트가 같은 루트를 ms 창 안에 바꾸는 경합은 CLI 방식의 잔존 위험이다.** 재조회와 쓰기 사이(수 ms~수십 ms)는
   원자적이지 않다 — tailscale CLI 에 조건부 쓰기(ETag)가 없어서다. LocalAPI(ETag 조건부 `SetServeConfig`)로 옮기면 닫히지만 이번 범위가 아니다.
-  쓰기 뒤 대조가 그 경합을 **알아채고 경고**하는 것까지가 이번 보장이다.
+  **같은 루트의 중간 변경은 미탐지될 수 있다 — 쓰기 뒤 상태에 차이가 남을 때만 경고한다**(R2-A6). 예: 재조회와 쓰기 사이에 남이 `/` 를 바꾸고
+  우리 쓰기가 그것을 덮으면 쓰기 뒤 상태는 기대와 같아 보여 경고가 없다.
 - **Tailscale 이름이 바뀌면(R1-A11)** 기록의 host 와 지금 `Self.DNSName` 이 다르다. 옛 이름의 `/` 를 CLI 로는 지울 수 없다 — `off` 는 **지금** 이름으로
   키를 만든다(tailscale 1.102.2 `serve_v2.go:451`). 새 이름으로 `off` 를 부르면 남의 항목을 지울 수 있어 부르지 않고, 노출됨으로 쓰지 않은 채 `failed`
-  (「옛 이름의 serve 항목을 corral 이 내릴 수 없다 — 직접 지우면 새 이름으로 다시 올린다」)로 알린다. 옛 항목이 사라지면 다음 재확인이 새 이름으로 올린다.
+  로 알린다. 옛 항목이 사라지면 다음 재확인이 기록을 버리고 새 이름으로 올린다. 스위치 끄기·재기동·재확인만으로는 풀리지 않는다.
+  **복구 절차**(화면 경고에도 같은 문구 — **소스 근거 추론, 미실행**: 실제 tailscale 로 이름을 바꿔 실행해 보지 않았다):
+  1. Tailscale 관리 콘솔(Machines › 이 맥 › Edit machine name)에서 이름을 **기록의 옛 이름**으로 잠시 되돌린다 — `Self.DNSName` 이 기록 host 와 같아진다.
+  2. 설정 › Mobile 을 **끈다**. 기록과 이름이 맞으므로 corral 이 자기 `/` 만 `off` 로 지우고 기록을 버린다 — 상태가 「꺼짐」 이 되는지 확인한다
+     (`tailscale serve status --json` 에 옛 `<옛 이름>:8577` 키가 없는지도 볼 수 있다).
+  3. 새 이름으로 다시 바꾸고 Mobile 을 켠다 — 새 이름으로 등록되고 QR 주소가 바뀐다(기기 토큰은 그대로 유효하다 — 폰이 새 주소를 얻는 방법은 M2 몫).
+  전체 `tailscale serve reset` 은 **권하지 않는다** — 남의 serve 항목까지 지운다(00-analysis W2).
 - **노출이 막히면 로컬 서버도 닫는다(R1-A2).** Funnel·HTTPS 꺼짐·serve 제거 실패 등 `exposed` 가 아니면 새 인증을 `unavailable` 로 거절하고 열린 연결도 닫는다.
   「Funnel 이 켜져 corral 항목을 내렸다」 경고와 `removed:true` 로그는 제거를 다시 읽어 확인했을 때만 남긴다 — 못 내렸으면 `failed`, 재확인이 다시 내린다.
 - **계측 소켓(`CORRAL_CONTROL_SOCKET`)의 `mobile-pairing`(R1-A6)** 은 소켓 폴더가 이 사용자 소유·심링크 아님·0700 이고 소켓 파일이 0600 일 때만

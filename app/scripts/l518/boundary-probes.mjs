@@ -200,7 +200,8 @@ export const PROBES = [
   { id: 'f-log-unknown-method', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ②', file: `${M}f-log-unknown.ts`, source: "import { log } from './log.js'\nlog('pane.focus_direction', {})\n" },
 
   // ⓜ LIFE-577 — 모바일 프로토콜 어휘 면제(`src/main/mobile/` 안 · 어댑터 import 없음 · `CLIENT_TYPES` 어휘)만 통과, 그 밖의 `ping` 은 계속 잡는다
-  { id: 'm-mobile-ping', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-ping.ts', source: "export const T = 'ping'\n" },
+  // fix2 R2-A1 — 맨 상수 `'ping'` 은 type 자리로 확인할 수 없다(별칭 반례와 같은 꼴) → 위반으로 바뀐다(r1 까지 면제였다).
+  { id: 'm-mobile-ping', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-ping.ts', source: "export const T = 'ping'\n" },
   { id: 'm-mobile-ping-imports-adapter', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-adapter.ts', source: "import '../adapter/index.js'\nexport const T = 'ping'\n" },
   { id: 'm-ping-outside-mobile', group: 'ⓜ', expect: 'R4-wire-leak', file: `${M}m-ping.ts`, source: "export const T = 'ping'\n" },
   { id: 'm-mobile-herdr-method', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-herdr.ts', source: send("'workspace.rename'") },
@@ -210,6 +211,14 @@ export const PROBES = [
   { id: 'm-mobile-method-compare', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-compare.ts', source: "export const probe = (frame: { method: string }): boolean => frame.method === 'ping'\n" },
   { id: 'm-mobile-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type.ts', source: "export const message = {type: 'ping'}\n" },
   { id: 'm-mobile-type-compare-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-compare.ts', source: "export const isPing = (message: { type: string }): boolean => message.type === 'ping'\n" },
+  // ⓜ LIFE-577 fix2 (R2-A1) — 면제는 **확인 가능한 type 자리만**(긍정 허용). 리뷰어 반례 4칸(함수 인자·별칭·계산 키·Map)은 위반
+  { id: 'm-mobile-direct-call', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-direct-call.ts', source: "import net from 'node:net'\nfunction request(c: net.Socket, m: string) { c.write(JSON.stringify({id: 'r2', method: m}) + '\\n') }\nexport function go(sock: string) { request(net.connect(sock), 'ping') }\n" },
+  { id: 'm-mobile-alias', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-alias.ts', source: "import net from 'node:net'\nexport function go(sock: string) { const operation = 'ping'; net.connect(sock).write(JSON.stringify({id: 'r2', method: operation}) + '\\n') }\n" },
+  { id: 'm-mobile-computed', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-computed.ts', source: "export const f = {['meth' + 'od']: 'ping'}\n" },
+  { id: 'm-mobile-map', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-map.ts', source: "export const f = new Map([['method', 'ping']])\n" },
+  { id: 'm-mobile-type-switch-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-switch.ts', source: "export function kind(message: { type: string }): number { switch (message.type) { case 'ping': return 1; default: return 0 } }\n" },
+  { id: 'm-mobile-client-types-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-client-types.ts', source: "export const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const\n" },
+  { id: 'm-mobile-type-literal-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-literal.ts', source: "export type Ping = { type: 'ping'; id?: string }\n" },
 ]
 
 /** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */

@@ -222,7 +222,11 @@ export class ServeExposure {
     // 이름이 바뀌었다(R1-A11) — 옛 `/` 를 CLI 로 지울 수 없고, 새 이름으로 off 하면 남의 것을 지울 수 있다. 쓰지 않는다.
     if (ours && record.host !== status.dnsName) {
       this.deps.log('mobile.serve_renamed', { httpsPort: port })
-      this.set({ kind: 'failed', message: `Tailscale 이름이 바뀌어 옛 이름(${record.host})의 serve 항목을 corral 이 내릴 수 없다 — tailscale serve 설정에서 직접 지우면 새 이름으로 다시 올린다` })
+      // 복구 안내(R1-A11 대체안) — 소스 근거 추론, 실제 tailscale 로는 실행하지 않았다(SURFACE.md §7).
+      this.set({
+        kind: 'failed',
+        message: `Tailscale 이름이 바뀌어 옛 이름(${record.host})의 serve 항목을 corral 이 내릴 수 없다. 복구: ① Tailscale 관리 콘솔에서 이 맥 이름을 잠시 옛 이름으로 되돌린다 ② Mobile 을 끄고 꺼짐을 확인한다(옛 항목 제거) ③ 새 이름으로 바꾸고 Mobile 을 다시 켠다. serve reset 은 남의 항목까지 지우므로 쓰지 않는다`,
+      })
       return
     }
     if (record !== null && !ours) this.deleteRecord('not_ours_or_gone')
@@ -257,12 +261,18 @@ export class ServeExposure {
     if (ours && record.target === target) {
       return this.set(this.exposedState(host))
     }
-    // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 내리고 다시 올린다.
-    if (ours && (await this.remove(record)) === 'failed') return
-    await this.add({ host, target, serverPort: desired.serverPort })
+    // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 내리고 다시 올린다(그 자리는 우리 것이었다 — owned).
+    let owned = false
+    if (ours) {
+      const outcome = await this.remove(record)
+      if (outcome === 'failed') return
+      owned = outcome === 'removed'
+    }
+    await this.add({ host, target, serverPort: desired.serverPort, owned })
   }
 
-  private async add(input: { host: string; target: string; serverPort: number }): Promise<void> {
+  /** `owned` — 방금 내린 우리 `/` 자리에 다시 올린다. 거짓이면 기록 없는 최초 등록이라 포트가 완전히 비어야 한다(R2-A3). */
+  private async add(input: { host: string; target: string; serverPort: number; owned: boolean }): Promise<void> {
     const port = this.deps.httpsPort
     // 쓰기 직전 재조회(R1-A3) — 그 사이 남이 포트·`/` 를 잡았으면 덮지 않는다.
     const before = await this.readServe()
@@ -270,7 +280,7 @@ export class ServeExposure {
       this.set({ kind: 'failed', message: 'serve 설정을 다시 읽지 못했다 — 아무것도 바꾸지 않았다' })
       return
     }
-    if (!rootAddable({ config: before, host: input.host, port })) {
+    if (!rootAddable({ config: before, host: input.host, port, owned: input.owned })) {
       this.deps.log('mobile.serve_foreign', { httpsPort: port })
       this.set({ kind: 'foreign', message: `HTTPS 포트 ${port} 를 다른 항목이 쓰고 있다 — 덮어쓰지 않는다` })
       return

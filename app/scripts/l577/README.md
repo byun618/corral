@@ -11,7 +11,8 @@
 
 ```sh
 cd app
-# ① 페어링 → hello → ping. 토큰을 0600 파일로 남긴다(원자료에는 <redacted> 로만 찍힌다).
+# ① 페어링 → hello → ping. 토큰을 **새** 0600 파일로 남긴다(원자료에는 <redacted> 로만 찍힌다).
+#    --token-out 경로가 이미 있으면(파일·심링크) pair 전에 exit 2 — 코드를 쓰지 않는다. 새 파일은 O_EXCL 로 만들고 umask 와 무관하게 0600.
 node scripts/l577/repro.mjs pair  --url ws://127.0.0.1:<서버포트>/ws --code <QR 코드> --name repro --token-out /tmp/l577x/token
 # ② 저장한 토큰으로 hello → ping
 node scripts/l577/repro.mjs hello --url wss://<mac>.ts.net:8577/ws --token-file /tmp/l577x/token

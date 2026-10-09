@@ -111,6 +111,40 @@ describe('repro 스크립트 (A9)', () => {
     }
   }, 60_000)
 
+  // R2-A4 — `--token-out` 은 새 파일만 0600 으로 원자 생성. 이미 있는 파일(0644)·심링크는 pair 전에 거절(exit 2) — 코드를 소모하지 않는다.
+  it.each([
+    ['이미 있는 0644 파일', (file: string) => { fs.writeFileSync(file, 'old\n'); fs.chmodSync(file, 0o644) }],
+    ['심링크', (file: string) => { const target = `${file}-target`; fs.writeFileSync(target, ''); fs.symlinkSync(target, file) }],
+    ['대상 없는 심링크', (file: string) => fs.symlinkSync(`${file}-missing`, file)],
+  ])('--token-out 이 %s 이면 exit 2 · 코드 그대로 · 파일에 토큰 없음 (R2-A4)', async (_name, prepare) => {
+    const { url, store, dir } = await setup()
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'token')
+    prepare(tokenFile)
+    const out = await repro(['pair', '--url', url, '--code', code, '--token-out', tokenFile])
+    expect(out.code).toBe(2)
+    expect(store.list()).toHaveLength(0)
+    expect(store.pairingExpiresAt()).not.toBeNull()
+    for (const file of [tokenFile, `${tokenFile}-target`]) {
+      if (fs.existsSync(file)) expect(fs.readFileSync(file, 'utf8')).not.toMatch(/^[A-Za-z0-9_-]{40,}$/m)
+    }
+  })
+
+  it('--token-out 새 파일은 umask 000 에서도 0600 (R2-A4)', async () => {
+    const { url, store, dir } = await setup()
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'fresh-token')
+    const previous = process.umask(0)
+    let out: Outcome
+    try {
+      out = await repro(['pair', '--url', url, '--code', code, '--token-out', tokenFile])
+    } finally {
+      process.umask(previous)
+    }
+    expect(out.code).toBe(0)
+    expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600)
+  })
+
   it('양성 대조가 실패하면 exit 1 — 틀린 토큰 파일', async () => {
     const { url, dir } = await setup()
     const bad = path.join(dir, 'bad')

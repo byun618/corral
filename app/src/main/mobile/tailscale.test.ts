@@ -84,14 +84,20 @@ describe('포트 점유 · `/` 소유 판정 (R1-A4·N1)', () => {
     expect(rootTarget({ config: { Web: { [`m:${port}`]: { Handlers: { '/': { Proxy: 'x' } } } } }, host: 'm', port })).toBeNull()
   })
 
-  it('rootAddable — 빈 포트·같은 host 의 다른 경로만 있으면 가능, Foreground·TCP 포워드·다른 host·`/` 있음은 불가', () => {
-    expect(rootAddable({ config: {}, host: 'm', port })).toBe(true)
-    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'm', port })).toBe(true)
-    expect(rootAddable({ config: { TCP: { '443': { HTTPS: true } }, Web: { 'm:443': { Handlers: { '/': { Proxy: 'z' } } } } }, host: 'm', port })).toBe(true)
-    expect(rootAddable({ config: site({ '/': { Proxy: 'x' } }), host: 'm', port })).toBe(false)
-    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'other', port })).toBe(false)
-    expect(rootAddable({ config: { TCP: { [port]: { TCPForward: '127.0.0.1:22' } } }, host: 'm', port })).toBe(false)
-    expect(rootAddable({ config: { Foreground: { s1: { TCP: { [port]: { HTTPS: true } } } } }, host: 'm', port })).toBe(false)
+  it('rootAddable — owned: 빈 포트·같은 host 의 다른 경로만 있으면 가능 / 최초 등록: 완전히 빈 포트만 (R2-A3)', () => {
+    expect(rootAddable({ config: {}, host: 'm', port, owned: true })).toBe(true)
+    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'm', port, owned: true })).toBe(true)
+    expect(rootAddable({ config: { TCP: { '443': { HTTPS: true } }, Web: { 'm:443': { Handlers: { '/': { Proxy: 'z' } } } } }, host: 'm', port, owned: true })).toBe(true)
+    expect(rootAddable({ config: site({ '/': { Proxy: 'x' } }), host: 'm', port, owned: true })).toBe(false)
+    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'other', port, owned: true })).toBe(false)
+    expect(rootAddable({ config: { TCP: { [port]: { TCPForward: '127.0.0.1:22' } } }, host: 'm', port, owned: true })).toBe(false)
+    expect(rootAddable({ config: { Foreground: { s1: { TCP: { [port]: { HTTPS: true } } } } }, host: 'm', port, owned: true })).toBe(false)
+    // R2-A3 — 기록 없는 최초 등록(owned 거짓)은 그 포트가 완전히 비어야 한다
+    expect(rootAddable({ config: {}, host: 'm', port, owned: false })).toBe(true)
+    expect(rootAddable({ config: { TCP: { '443': { HTTPS: true } }, Web: { 'm:443': { Handlers: { '/': { Proxy: 'z' } } } } }, host: 'm', port, owned: false })).toBe(true)
+    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'm', port, owned: false })).toBe(false)
+    expect(rootAddable({ config: { TCP: { [port]: { HTTPS: true } } }, host: 'm', port, owned: false })).toBe(false)
+    expect(rootAddable({ config: { Foreground: { s1: { TCP: { [port]: { HTTPS: true } } } } }, host: 'm', port, owned: false })).toBe(false)
   })
 
   it('withoutRoot · sameJson — `/` 와 그것만 쓰던 TCP 칸을 빼고 키 순서 무관하게 비교', () => {
@@ -101,6 +107,10 @@ describe('포트 점유 · `/` 소유 판정 (R1-A4·N1)', () => {
     expect(withoutRoot({ config: site({ '/': { Proxy: 'x' } }), host: 'm', port })).toEqual({})
     expect(sameJson({ a: 1, b: [1, { c: 2 }] }, { b: [1, { c: 2 }], a: 1 })).toBe(true)
     expect(sameJson({ a: 1 }, { a: 2 })).toBe(false)
+    // R2-A2 — 이 host:port 의 AllowFunnel:false 만 정상 delta, 다른 키·true 는 남는다
+    expect(withoutRoot({ config: { ...site({ '/': { Proxy: 'x' } }), AllowFunnel: { [`m:${port}`]: false } }, host: 'm', port })).toEqual({})
+    expect(withoutRoot({ config: { AllowFunnel: { [`m:${port}`]: true } }, host: 'm', port })).toEqual({ AllowFunnel: { [`m:${port}`]: true } })
+    expect(withoutRoot({ config: { AllowFunnel: { 'm:443': false } }, host: 'm', port })).toEqual({ AllowFunnel: { 'm:443': false } })
   })
 })
 

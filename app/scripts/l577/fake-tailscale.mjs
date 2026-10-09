@@ -105,6 +105,9 @@ function run(name) {
       const site = serve.Web[key] ?? { Handlers: {} }
       site.Handlers = { ...(site.Handlers ?? {}), '/': { Proxy: target } }
       serve.Web[key] = site
+      // 실제 CLI 처럼 — `--bg` 추가는 `applyFunnel(false)` → `SetFunnel(false)` 로 그 host:port 의 AllowFunnel 키를 값과 무관하게 지운다
+      // (1.102.2 serve_v2.go:1350 · ipn/serve.go:514).
+      dropFunnelKey(serve, key)
       state.serve = serve
       writeState(state)
       return 0
@@ -120,6 +123,8 @@ function run(name) {
       if (Object.keys(handlers).length === 0) {
         delete serve.Web[key]
         delete serve.TCP?.[String(port)]
+        // `RemoveWebHandler(..., cleanupFunnel=true)` — 마지막 경로가 사라지면 그 host:port 의 AllowFunnel 키도 지운다(ipn/serve.go:536).
+        dropFunnelKey(serve, key)
         if (serve.Web && Object.keys(serve.Web).length === 0) delete serve.Web
         if (serve.TCP && Object.keys(serve.TCP).length === 0) delete serve.TCP
       }
@@ -132,6 +137,13 @@ function run(name) {
       return fail(`${name} 는 corral 이 부르면 안 된다 (fake)`, 2)
     default:
       return fail(`모르는 명령: ${argv.join(' ')}`)
+  }
+}
+
+function dropFunnelKey(serve, key) {
+  if (serve.AllowFunnel && key in serve.AllowFunnel) {
+    delete serve.AllowFunnel[key]
+    if (Object.keys(serve.AllowFunnel).length === 0) delete serve.AllowFunnel
   }
 }
 

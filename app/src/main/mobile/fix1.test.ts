@@ -309,3 +309,61 @@ describe('서버 단위 — R1-A7 · R1-A10', () => {
     expect(out.split('\r\n\r\n')[1] ?? '').toBe('')
   })
 })
+
+// ---- LIFE-577 리뷰 r2 회귀(R2-A2 · R2-A3) — 같은 하네스를 쓴다 ----
+
+describe('R2-A2 — 자기 host:port 의 AllowFunnel:false 정리는 정상 delta', () => {
+  const OWN = `${DNS}:${PORT}`
+  it('false 키가 있는 설정에서 켜기 → exposed·경고 없음(CLI 가 SetFunnel(false) 로 그 키를 지운다)', async () => {
+    const h = harness()
+    h.set({ serve: { AllowFunnel: { [OWN]: false } } })
+    await h.s.start(true)
+    expect(h.s.status().exposure.kind).toBe('exposed')
+    expect(h.s.status().warning).toBeNull()
+    expect(h.get().serve.AllowFunnel).toBeUndefined()
+  })
+
+  it('노출 중 자기 키 false 가 생긴 뒤 끄기 → off·경고 없음·설정 {} (RemoveWebHandler 가 마지막 경로와 함께 지운다)', async () => {
+    const h = harness()
+    await h.s.start(true)
+    h.set({ serve: { ...h.get().serve, AllowFunnel: { [OWN]: false } } })
+    await h.s.recheckNow()
+    expect(h.s.status().exposure.kind).toBe('exposed')
+    await h.s.setEnabled(false)
+    expect(h.s.status().exposure.kind).toBe('off')
+    expect(h.s.status().warning).toBeNull()
+    expect(h.get().serve).toEqual({})
+  })
+
+  it('다른 포트의 Funnel 값 변화는 여전히 동시 변경 — failed + 경고', async () => {
+    const h = harness({
+      hook: (args, self) => {
+        if (args[0] === 'serve' && args[1] === '--bg') self.set({ serve: { ...self.get().serve, AllowFunnel: { [`${DNS}:9443`]: false } } })
+      },
+    })
+    await h.s.start(true)
+    expect(h.s.status().exposure.kind).toBe('failed')
+    expect(h.s.status().warning ?? '').toContain('동시에')
+  })
+})
+
+describe('R2-A3 — 기록 없는 최초 등록은 포트가 완전히 비어 있을 때만', () => {
+  it('기록 없음 + 같은 host:8577 에 남의 `/other` → foreign, serve 쓰기 0, 설정 그대로', async () => {
+    const other = { TCP: { [PORT]: { HTTPS: true } }, Web: { [KEY]: { Handlers: { '/other': { Proxy: 'http://127.0.0.1:9000' } } } } }
+    const h = harness()
+    h.set({ serve: other })
+    await h.s.start(true)
+    expect(h.s.status().exposure.kind).toBe('foreign')
+    expect(h.serveCalls()).toEqual([])
+    expect(h.get().serve).toEqual(other)
+    expect(h.s.ownerRecord()).toBeNull()
+  })
+
+  it('기록 없음 + 그 포트에 TCP 칸만 남아 있어도 foreign', async () => {
+    const h = harness()
+    h.set({ serve: { TCP: { [PORT]: { HTTPS: true } } } })
+    await h.s.start(true)
+    expect(h.s.status().exposure.kind).toBe('foreign')
+    expect(h.serveCalls()).toEqual([])
+  })
+})

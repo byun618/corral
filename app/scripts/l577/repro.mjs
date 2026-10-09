@@ -116,13 +116,41 @@ async function helloPing(url, token, label) {
 async function commandPair(url) {
   const code = secretArg('code')
   if (code === null) usage('pair 에는 --code 가 필요하다')
+  // --token-out 은 **새 파일만**(R2-A4) — 이미 있는 파일·심링크(대상 없는 것 포함)는 pair 전에 거절해 코드를 소모하지 않는다.
+  const tokenOut = typeof args['token-out'] === 'string' ? args['token-out'] : null
+  if (tokenOut !== null && pathTaken(tokenOut)) usage(`--token-out ${tokenOut} 가 이미 있다(파일·심링크) — 새 경로를 준다`)
   const got = await session(url, { send: [{ type: 'pair', protocol: PROTOCOL, code, name: typeof args.name === 'string' ? args.name : 'repro' }], closeAfter: 1 })
   const paired = got.messages[0]
   const ok = paired?.type === 'paired' && typeof paired?.token === 'string' && paired?.protocol === PROTOCOL && typeof paired?.server?.macName === 'string'
   record('pair', ok, { type: 'paired', token: 'string', protocol: PROTOCOL, server: { macName: 'string' } }, { paired, error: got.error })
   if (!ok) return
-  if (typeof args['token-out'] === 'string') fs.writeFileSync(args['token-out'], paired.token + '\n', { mode: 0o600 })
+  if (tokenOut !== null && !writeNewSecret({ file: tokenOut, text: paired.token + '\n' })) return
   await helloPing(url, paired.token, 'after-pair')
+}
+
+function pathTaken(file) {
+  try {
+    fs.lstatSync(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** O_CREAT|O_EXCL(`wx`)로 새 파일만 만들고(심링크를 따라가지 않는다) umask 와 무관하게 0600 으로 고정한 뒤 쓴다. */
+function writeNewSecret(input) {
+  let fd
+  try {
+    fd = fs.openSync(input.file, 'wx', 0o600)
+    fs.fchmodSync(fd, 0o600)
+    fs.writeSync(fd, input.text)
+    return true
+  } catch (error) {
+    record('token-out', false, { file: 'new 0600' }, { error: String(error?.code ?? error) })
+    return false
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
 }
 
 async function commandHello(url) {

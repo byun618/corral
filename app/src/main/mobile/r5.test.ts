@@ -161,3 +161,28 @@ describe('A5ⓓ 맥 이름', () => {
     expect(fallbackMacName('x'.repeat(100))).toHaveLength(64)
   })
 })
+
+describe('R2-A5 — 끝난 코드 기억 상한 8 경계', () => {
+  function retireExpired(count: number): { pairing: PairingStore; codes: string[] } {
+    let now = 3_000_000
+    const pairing = store(() => now)
+    const codes: string[] = []
+    for (let i = 0; i < count; i += 1) {
+      codes.push(pairing.createCode().code)
+      now += TTL_MS
+    }
+    pairing.pairingExpiresAt()
+    return { pairing, codes }
+  }
+
+  it('만료 코드 8개 — 8개 모두 code_expired', () => {
+    const { pairing, codes } = retireExpired(8)
+    for (const code of codes) expect(pairing.pair({ code, name: 'x' })).toEqual({ ok: false, reason: EXPIRED })
+  })
+
+  it('만료 코드 9개 — 가장 오래된 1개는 code_invalid, 나머지 8개는 code_expired', () => {
+    const { pairing, codes } = retireExpired(9)
+    expect(pairing.pair({ code: codes[0], name: 'x' })).toEqual({ ok: false, reason: INVALID })
+    for (const code of codes.slice(1)) expect(pairing.pair({ code, name: 'x' })).toEqual({ ok: false, reason: EXPIRED })
+  })
+})

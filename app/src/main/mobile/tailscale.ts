@@ -212,23 +212,26 @@ export function foregroundUsesPort(input: { config: Record<string, unknown>; por
 }
 
 /**
- * host 에 `/` 를 새로 올려도 남의 것을 덮지 않나 — Foreground 가 그 포트를 안 쓰고, 배경 TCP 가 없거나 HTTPS 이고,
- * 그 포트의 Web 키가 없거나 host 하나뿐이며, host 의 `/` 가 비었다(같은 host 의 남의 다른 경로와는 같이 산다).
+ * host 에 `/` 를 올려도 남의 것을 덮거나 공유하지 않나 — Foreground 가 그 포트를 안 쓰고, 배경 TCP 가 없거나 HTTPS 이고,
+ * 그 포트의 Web 키가 없거나 host 하나뿐이며, host 의 `/` 가 비었다.
+ * `owned` 거짓(소유 기록 없는 **최초 등록**, R2-A3)이면 더 엄격하다 — 그 포트에 TCP·Web 칸이 **하나도** 없어야 한다(A6ⓒ 「같은 포트에 남의 항목 → 거절」).
+ * `owned` 참은 이미 우리 `/` 였던 자리를 대상만 바꿔 다시 올릴 때다 — 같은 host 의 남의 다른 경로와는 같이 산다(R1-A4).
  */
-export function rootAddable(input: { config: Record<string, unknown>; host: string; port: number }): boolean {
+export function rootAddable(input: { config: Record<string, unknown>; host: string; port: number; owned: boolean }): boolean {
   if (foregroundUsesPort(input)) return false
   const tcp = readRecord(input.config, 'TCP')
   const entry = tcp === null ? undefined : tcp[String(input.port)]
-  if (entry !== undefined && !(isRecord(entry) && entry.HTTPS === true && entry.TCPForward === undefined)) return false
   const web = readRecord(input.config, 'Web') ?? {}
   const keys = Object.keys(web).filter((key) => key.endsWith(`:${input.port}`))
+  if (!input.owned) return entry === undefined && keys.length === 0
+  if (entry !== undefined && !(isRecord(entry) && entry.HTTPS === true && entry.TCPForward === undefined)) return false
   if (keys.some((key) => key !== `${input.host}:${input.port}`)) return false
   const site = readRecord(web, `${input.host}:${input.port}`)
   const handlers = site === null ? null : readRecord(site, 'Handlers')
   return handlers === null || handlers['/'] === undefined
 }
 
-/** 우리 `/` 를 뺀 설정 — 쓰기 전후를 대조할 때(R1-A3) 「우리 루트만 바뀌었나」 를 본다. 비게 된 Web·TCP 칸은 지운다. */
+/** 우리 `/` 를 뺀 설정 — 쓰기 전후를 대조할 때(R1-A3) 「우리 루트만 바뀌었나」 를 본다. 비게 된 Web·TCP 칸과 이 host:port 의 `AllowFunnel:false` 는 지운다. */
 export function withoutRoot(input: { config: Record<string, unknown>; host: string; port: number }): unknown {
   const copy: unknown = JSON.parse(JSON.stringify(input.config))
   if (!isRecord(copy)) return copy
@@ -244,6 +247,13 @@ export function withoutRoot(input: { config: Record<string, unknown>; host: stri
   const tcp = readRecord(copy, 'TCP')
   const entry = tcp === null ? null : readRecord(tcp, String(input.port))
   if (tcp !== null && !stillServed && entry !== null && entry.HTTPS === true && Object.keys(entry).length === 1) delete tcp[String(input.port)]
+  // CLI 의 add(`SetFunnel(false)`)·off(`RemoveWebHandler` 마지막 경로)는 **이 host:port 의 AllowFunnel 키**를 지운다(R2-A2).
+  // 그 키가 `false` 일 때만 정상 delta 로 본다 — 다른 키·`true` 값 변화는 비교에 그대로 남아 동시 변경으로 잡힌다.
+  const funnel = readRecord(copy, 'AllowFunnel')
+  if (funnel !== null && funnel[key] === false) {
+    delete funnel[key]
+    if (Object.keys(funnel).length === 0) delete copy.AllowFunnel
+  }
   if (web !== null && Object.keys(web).length === 0) delete copy.Web
   if (tcp !== null && Object.keys(tcp).length === 0) delete copy.TCP
   return copy

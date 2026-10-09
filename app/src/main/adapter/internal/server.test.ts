@@ -143,14 +143,14 @@ describe('serverEnv (D4·r1 R1-08)', () => {
       npm_config_prefix: '/p', npm_lifecycle_event: 'dev', npm_lifecycle_script: 'electron-vite dev', npm_package_name: 'corral',
     })
     // r2 R2-06 — npm_config_*·npm_lifecycle_* 는 빠진다(npm_package_* 는 범위 밖이라 남는다)
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug', npm_package_name: 'corral' })
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug', npm_package_name: 'corral', FORCE_HYPERLINK: '1' })
   })
   it('세션 마커는 넘기지 않고 허용 목록(CODEX_HOME·GROK_HOME·CLAUDE_CONFIG_DIR)은 남긴다 (LIFE-555 A5)', () => {
     const env = serverEnv({
       PATH: '/usr/bin', CLAUDECODE: '1', CLAUDE_PID: '9', CLAUDE_EFFORT: 'high', CLAUDE_CODE_ENTRYPOINT: 'cli', ORCA_AGENT_HOOK_PORT: '7',
       CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude',
     })
-    expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude' })
+    expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude', FORCE_HYPERLINK: '1' })
   })
 })
 

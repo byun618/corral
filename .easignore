@@ -10,3 +10,15 @@
 /mobile/build-*.apk
 /mobile/*.apk
 /mobile/*.aab
+/mobile/web-build
+/mobile/.kotlin
+/mobile/**/*.jks
+/mobile/**/*.keystore
+/mobile/**/*.p8
+/mobile/**/*.p12
+/mobile/**/*.key
+/mobile/**/*.pem
+/mobile/.env*.local
+/mobile/.metro-health-check*
+/mobile/**/.DS_Store
+/mobile/*.tsbuildinfo

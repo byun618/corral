@@ -8,8 +8,8 @@
 # - 로그인 셸·실제 HOME(l470/clean.sh) — 워커 세션 env(CLAUDE_CODE_* 등)는 넘기지 않는다. 설치본 corral·그 userData 무접촉.
 set -u
 ROOT=$1; FAKE=$2; shift 2
-case "$ROOT" in /tmp/l577g-*) ;; *) echo "ROOT 는 /tmp/l577g-*"; exit 2 ;; esac
-case "$FAKE" in /tmp/l577g-f*) ;; *) echo "FAKE 는 /tmp/l577g-f*"; exit 2 ;; esac
+case "$ROOT" in /tmp/l577g-*|/tmp/l578g-*) ;; *) echo "ROOT 는 /tmp/l577g-* 또는 /tmp/l578g-*(LIFE-578 격리 회차)"; exit 2 ;; esac
+case "$FAKE" in /tmp/l577g-f*|/tmp/l578g-f*) ;; *) echo "FAKE 는 /tmp/l577g-f* 또는 /tmp/l578g-f*"; exit 2 ;; esac
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 KEY=$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')
 GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"

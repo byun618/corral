@@ -147,11 +147,12 @@ export class ListStore {
     }
     const now = this.now()
     this.clearDeadline()
-    // J5 네이티브 원자료 — 폰 수신 시각(이 기록의 시각) · 서버 시각 · 그때의 시계 차(서버 − 폰, 왕복 중간점 기준, R1 C1).
+    // J5 네이티브 원자료 — 폰 수신 시각(`recvAt` = 이 기록의 봉투 시각) · 서버가 목록을 만든 시각(`serverAt`) · 그때의 시계 차(서버 − 폰,
+    // 왕복 중간점 기준, R1 C1). 서버 시각을 봉투 `at` 에 싣지 않는다 — 덮인 줄은 재시작 복원에서 버려졌다(R2-A3).
     const clock = this.connection.clockSample()
     this.log?.add('list_recv', {
       seq: message.seq,
-      at: message.at,
+      serverAt: message.at,
       changedAt: message.changedAt,
       recvAt: now,
       offsetMs: clock?.offsetMs ?? null,

@@ -43,7 +43,9 @@ export class ConnectionLog {
 
   add(event: string, detail: Record<string, LogValue> = {}): void {
     const clean: Record<string, LogValue> = {}
-    for (const [key, value] of Object.entries(detail)) clean[key] = typeof value === 'string' ? this.redact(value) : value
+    // `at`·`event` 는 기록 줄의 봉투 칸이다 — detail 이 같은 이름을 쓰면 덮지 않게 `atDetail`·`eventDetail` 로 옮긴다(R2-A3:
+    // 덮인 줄은 재시작 복원 때 파서가 버려 파일에서도 사라졌다).
+    for (const [key, value] of Object.entries(detail)) clean[key === 'at' || key === 'event' ? `${key}Detail` : key] = typeof value === 'string' ? this.redact(value) : value
     const entry: LogEntry = { at: this.now(), event, detail: clean }
     // 새 배열 — 구독자(useSyncExternalStore)가 바뀜을 참조로 안다.
     this.entries = [...this.entries, entry].slice(-LOG_CAPACITY)
@@ -76,8 +78,11 @@ export class ConnectionLog {
   }
 }
 
+/** 기록 한 줄 — 봉투(`at` ISO 시각 · `event`)가 늘 이긴다. 이 줄은 `parseLine` 으로 그대로 되읽힌다(저장 → 재시작 복원 → 재복사). */
 export function formatLine(entry: LogEntry): string {
-  return JSON.stringify({ at: new Date(entry.at).toISOString(), event: entry.event, ...entry.detail })
+  const line: Record<string, LogValue> = { at: new Date(entry.at).toISOString(), event: entry.event }
+  for (const [key, value] of Object.entries(entry.detail)) if (key !== 'at' && key !== 'event') line[key] = value
+  return JSON.stringify(line)
 }
 
 /** 기록 파일 한 줄을 다시 읽는다 — 모양이 틀린 줄은 버린다. */

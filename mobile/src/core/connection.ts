@@ -143,8 +143,11 @@ export type SessionEvent =
    */
   | { kind: 'list_failed'; attempt: number; reason: 'invalid' | 'rejected'; seq: number | null }
 
-/** 서버와 폰 시계 차(R1 C1) — ping/pong 왕복의 중간점 기준. `offsetMs` = 서버 시각 − 폰 시각. 최근 표본 중 왕복이 가장 짧은 것. */
-export type ClockSample = { offsetMs: number; rttMs: number; at: number }
+/**
+ * 서버와 폰 시계 차(R1 C1) — ping/pong 왕복의 중간점 기준. `offsetMs` = 서버 시각 − 폰 시각. 최근 표본 중 왕복이 가장 짧은 것.
+ * 표본마다 원시 시각을 같이 든다(R2-A5) — `pingId` · `sentAt`(ping 보낸 폰 시각) · `recvAt`(pong 받은 폰 시각 = `at`) · `serverAt`(pong 의 서버 시각).
+ */
+export type ClockSample = { offsetMs: number; rttMs: number; at: number; pingId: number; sentAt: number; recvAt: number; serverAt: number }
 
 const CLOCK_SAMPLES = 8
 
@@ -873,11 +876,22 @@ export class ConnectionManager {
     if (sentAt === undefined) return
     attempt.pingSentAt.delete(id)
     const before = this.clockSample()
-    const sample: ClockSample = { offsetMs: Math.round(serverAt - (sentAt + now) / 2), rttMs: now - sentAt, at: now }
+    const sample: ClockSample = { offsetMs: Math.round(serverAt - (sentAt + now) / 2), rttMs: now - sentAt, at: now, pingId: id, sentAt, recvAt: now, serverAt }
     this.clockSamples = [...this.clockSamples, sample].slice(-CLOCK_SAMPLES)
     const best = this.clockSample()
-    if (best !== null && (before === null || best.offsetMs !== before.offsetMs || best.rttMs !== before.rttMs)) {
-      this.log('clock', { attempt: attempt.seq, offsetMs: best.offsetMs, rttMs: best.rttMs, serverAt, sentAt, recvAt: now })
+    // 줄의 원시 시각은 **선택된 표본**의 것이다(R2-A5) — 방금 받은 pong 은 `latestPingId`·`latestRecvAt` 으로 따로 남긴다.
+    if (best !== null && (before === null || best.pingId !== before.pingId)) {
+      this.log('clock', {
+        attempt: attempt.seq,
+        offsetMs: best.offsetMs,
+        rttMs: best.rttMs,
+        pingId: best.pingId,
+        serverAt: best.serverAt,
+        sentAt: best.sentAt,
+        recvAt: best.recvAt,
+        latestPingId: id,
+        latestRecvAt: now,
+      })
     }
   }
 

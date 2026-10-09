@@ -11,6 +11,7 @@ import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks'
 import { isRecord, readNumber, readString, safeParse } from '../shared/json.js'
 import type { AddRepoResult } from '../shared/types.js'
 import { log } from './log.js'
@@ -155,6 +156,20 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
   return server
 }
 
+let loopHistogram: IntervalHistogram | null = null
+
+function readLoopDelay(): { started: boolean; count: number; p50: number; p99: number; max: number; mean: number } {
+  if (loopHistogram === null) {
+    loopHistogram = monitorEventLoopDelay({ resolution: 10 })
+    loopHistogram.enable()
+    return { started: true, count: 0, p50: 0, p99: 0, max: 0, mean: 0 }
+  }
+  const ms = (ns: number): number => Math.round((ns / 1e6) * 100) / 100
+  const out = { started: false, count: loopHistogram.count, p50: ms(loopHistogram.percentile(50)), p99: ms(loopHistogram.percentile(99)), max: ms(loopHistogram.max), mean: ms(loopHistogram.mean) }
+  loopHistogram.reset()
+  return out
+}
+
 async function handle(line: string, socket: net.Socket, handlers: ControlHandlers, socketPath: string): Promise<void> {
   const parsed = safeParse(line)
   if (!isRecord(parsed)) {
@@ -205,6 +220,13 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
        */
       case 'cpu':
         reply({ ok: true, at: Date.now(), cpu: process.cpuUsage(), uptimeMs: Math.round(process.uptime() * 1000) })
+        return
+      /**
+       * **main 이벤트 루프 지연** (LIFE-580 J6 — K9 A/B). 첫 요청에서 히스토그램(해상도 10 ms)을 켜고, 요청마다 지난 요청 이후의
+       * 분포(ms)를 돌려준 뒤 비운다 — 구간 앞에서 한 번(비우기), 뒤에서 한 번(읽기). 계측 소켓이 있는 실행에만 있다.
+       */
+      case 'loop-delay':
+        reply({ ok: true, at: Date.now(), loopDelay: readLoopDelay() })
         return
       /**
        * **herdr 쪽 대조값은 이 채널이 주지 않는다.**

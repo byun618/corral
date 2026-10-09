@@ -7,7 +7,8 @@
 
 ```sh
 SER=<폰 시리얼>                       # adb devices 로 확인 — 에뮬레이터(emulator-5554)와 섞이지 않게 늘 -s 로
-APK=<RESULT 의 판정 APK 경로>          # sha256 을 설치 전에 대조
+APK=~/Library/Caches/l578fg/corral-preview-local.apk   # sha256 32ce028941321a569c85b9e62310eb50dff567009a3ae0b96e468c9f8af093d3 — 설치 전에 대조
+DMG=~/Library/Caches/l578fg/corral-0.1.2-arm64.dmg     # sha256 f9fb3b25968084c913776f4d52bf55bc421b56857bdc08b9308a0bb892314d33
 UD="$HOME/Library/Application Support/corral"
 LOG="$UD/corral.ndjson"               # 서버 쪽 원자료 — mobile.* 줄
 RAW=specs/LIFE-578-mobile-app/raw/coordinator/native   # 회차 원자료(커밋 전 G5 가림)
@@ -27,7 +28,7 @@ T=/tmp/l578n                          # 백업·회수 임시(0700, 커밋 안 �
 1. 설치본 종료 확인(⌘Q) → `mkdir -m 700 $T` → userData 해시 목록 `find "$UD" -type f -not -name '*.sock' -exec shasum -a 256 {} + | sort > $T/ud-before.sha` · `cp -Rp "$UD" $T/ud-backup`
 2. 원래 `.app` 백업: `ditto /Applications/corral.app $T/corral.app.orig` · `shasum -a 256 /Applications/corral.app/Contents/MacOS/corral > $T/app-before.sha`
 3. tailscale serve 원본(읽기만): `tailscale serve status --json > $T/serve-before.json` (`{}` 이어야 정상 — 아니면 그 값이 원복 기준)
-4. dmg 설치: dmg 열기 → `corral.app` 을 `/Applications` 로 덮어쓰기 → 실행 → 설정 › Mobile 켜기 → 상태 「노출됨」(캡처)
+4. dmg 설치: `shasum -a 256 $DMG` 대조 → dmg 열기 → `corral.app` 을 `/Applications` 로 덮어쓰기 → 실행 → 설정 › Mobile 켜기 → 상태 「노출됨」(캡처)
 
 **멈춤**: 백업·해시 중 하나라도 실패하면 dmg 를 설치하지 않는다.
 

@@ -2,7 +2,8 @@
 //
 // `FORCE_HYPERLINK=1`: Claude Code 등 `supports-hyperlinks` 계열은 TERM_PROGRAM 허용 목록 밖 터미널(corral pane 은 TERM=xterm-256color 뿐)에서
 // OSC 8 을 내지 않는다(00-analysis F1, C1ⓒ 실측 0). Orca 도 pane env 에 같은 값을 넣는다. 다른 키는 넣지 않는다(02-kickoff 범위 변경 A).
-// herdr 는 이 값을 서버 env 위에 키 단위로 덮어 쓴다(`pane.rs` apply_pane_launch_env) — 서버 env·재시작은 건드리지 않는다.
+// herdr 는 이 값을 서버 env 위에 키 단위로 덮어 쓴다(`pane.rs` apply_pane_launch_env) — 그 층은 pane 단위 env 다.
+// 서버 기동 env 에도 같은 값을 싣는 건 `server.ts` serverEnv(C6ⓗ)다 — 서버 재시작은 하지 않는다(리뷰 C6R2-02).
 // 덮는 것은 corral 이 넘기는 **초기 env** 한 층뿐이다 — pane 안 셸이 rc 에서 `export FORCE_HYPERLINK=…` 하면 그 값이 이긴다(리뷰 C6R-03).
 export const PANE_ENV: Readonly<Record<string, string>> = { FORCE_HYPERLINK: '1' }
 

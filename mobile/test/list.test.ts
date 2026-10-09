@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { CollapseMemory, defaultCollapsed, readCollapseData, type CollapseData } from '../src/core/collapse'
 import { ConnectionManager } from '../src/core/connection'
 import { parseListMessage, type Channel, type ChannelList, type Dot } from '../src/core/list'
-import { FLASH_MS, ListStore } from '../src/core/list-store'
-import { buildListView, statusLabel } from '../src/core/list-view'
+import { FLASH_MS, ListStore, SUBSCRIBE_DEADLINE_MS } from '../src/core/list-store'
+import { buildListView, failureText, headerMeta, statusLabel } from '../src/core/list-view'
 import { ConnectionLog } from '../src/core/log'
 import { parseServerMessage } from '../src/core/protocol'
 import { readUnreadData, UnreadLedger, type UnreadData } from '../src/core/unread'
@@ -22,6 +22,7 @@ function channel(id: string, patch: Partial<Channel> = {}): Channel {
     depth: 0,
     origin: null,
     spawnedBy: null,
+    parent: null,
     preview: { kind: 'none' },
     waiting: null,
     model: null,
@@ -59,7 +60,8 @@ describe('메시지 읽기', () => {
     const broken = wire(1, list([{ id: 't', channels: [channel('a')] }]))
     const body = JSON.parse(JSON.stringify(broken))
     body.list.repos[0].tasks[0].channels[0].dot = 'sparkly'
-    expect(parseServerMessage(JSON.stringify(body)).type).toBe('other')
+    // R1-A4: 버리지 않고 목록 실패로 올린다(이전엔 'other' 로 사라졌다).
+    expect(parseServerMessage(JSON.stringify(body))).toEqual({ type: 'list_invalid', seq: 1 })
     expect(parseListMessage({ epoch: 'e', seq: 'x', at: 1, list: { available: true, repos: [], waiting: [] } })).toBeNull()
   })
 
@@ -88,7 +90,7 @@ function harness(initial: UnreadData | null = null) {
   const unreadStore = new MemoryStore<UnreadData>()
   unreadStore.data = initial
   const ledger = new UnreadLedger({ store: unreadStore, now: () => clock.now() })
-  const store = new ListStore({ connection: manager, ledger, now: () => clock.now(), log })
+  const store = new ListStore({ connection: manager, ledger, now: () => clock.now(), timer: clock, log })
   const last = (): FakeSocket => {
     const socket = sockets[sockets.length - 1]
     if (socket === undefined) throw new Error('소켓 없음')
@@ -138,7 +140,7 @@ describe('구독 · 재구독 (J8)', () => {
     const t = harness()
     await t.manager.start()
     const socket = t.accept()
-    const late = new ListStore({ connection: t.manager, ledger: t.ledger, now: () => t.clock.now() })
+    const late = new ListStore({ connection: t.manager, ledger: t.ledger, now: () => t.clock.now(), timer: t.clock })
     expect(socket.sent.filter((message) => message.type === 'list.subscribe')).toHaveLength(2)
     socket.serverSend(wire(1, list([{ id: 't', channels: [channel('a')] }])))
     expect(seqOf(late)).toBe(1)
@@ -200,9 +202,10 @@ describe('L4ⓑ 늦은·역행 갱신은 목록을 바꾸지 않는다', () => {
     const sent: Record<string, unknown>[] = []
     const clock = new FakeClock()
     const store = new ListStore({
-      connection: { onSession: (listener) => { listeners.push(listener); return () => {} }, liveAttempt: () => null, send: (message) => { sent.push(message); return true } },
+      connection: { onSession: (listener) => { listeners.push(listener); return () => {} }, liveAttempt: () => null, send: (message) => { sent.push(message); return true }, clockSample: () => null },
       ledger: new UnreadLedger({ store: new MemoryStore<UnreadData>(), now: () => clock.now() }),
       now: () => clock.now(),
+      timer: clock,
     })
     const emit = (event: Parameters<(typeof listeners)[number]>[0]) => { for (const listener of listeners) listener(event) }
     const message = (seq: number) => {
@@ -417,5 +420,127 @@ describe('화면 줄 (L5ⓑⓖⓘ · L8)', () => {
     expect(recv).toContain('"seq":1')
     expect(recv).toContain('"changedAt":4001')
     expect(lines.join('\n')).not.toContain('비밀 제목')
+  })
+})
+
+describe('R1-A4 목록 실패 — 거절을 버리지 않는다', () => {
+  const broken = (seq: number): Record<string, unknown> => {
+    const body = JSON.parse(JSON.stringify(wire(seq, list([{ id: 't', channels: [channel('a')] }]))))
+    body.list.repos[0].tasks[0].channels[0].dot = 'sparkly'
+    return body
+  }
+
+  it('첫 응답을 읽지 못하면 waiting 이 아니라 실패(invalid · 호환 불가) — 다음 정상 목록이 지운다', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverSend(broken(1))
+    expect(t.store.getSnapshot().phase.kind).toBe('waiting')
+    expect(t.store.getSnapshot().failure).toMatchObject({ reason: 'invalid', incompatible: true })
+    expect(t.manager.getSnapshot().conn.kind).toBe('connected')
+    expect(t.log.text()).toContain('list_invalid')
+    socket.serverSend(wire(2, list([{ id: 't', channels: [channel('a')] }])))
+    expect(t.store.getSnapshot().failure).toBeNull()
+    expect(seqOf(t.store)).toBe(2)
+  })
+
+  it('정상 목록(빈 목록 포함) 뒤 읽지 못한 목록 — 이전 목록은 남기되 실패를 든다(오래된 값)', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverSend(wire(1, list([])))
+    socket.serverSend(broken(2))
+    const snapshot = t.store.getSnapshot()
+    expect(seqOf(t.store)).toBe(1)
+    expect(snapshot.failure?.reason).toBe('invalid')
+  })
+
+  it('서버가 구독을 모르면(unknown_type — 옛 서버) rejected · 호환 불가', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverSend({ type: 'error', code: 'unknown_type' })
+    expect(t.store.getSnapshot().failure).toMatchObject({ reason: 'rejected', incompatible: true })
+    expect(t.manager.getSnapshot().conn.kind).toBe('connected')
+  })
+
+  it('구독 뒤 마감 안에 목록이 없으면 timeout(호환 문제 아님) — 새로고침의 목록이 지운다 · 제때 오면 실패 없음', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    t.clock.advance(SUBSCRIBE_DEADLINE_MS - 1)
+    expect(t.store.getSnapshot().failure).toBeNull()
+    t.clock.advance(1)
+    expect(t.store.getSnapshot().failure).toMatchObject({ reason: 'timeout', incompatible: false })
+    expect(t.store.refresh()).toBe(true)
+    socket.serverSend(wire(1, list([{ id: 't', channels: [channel('a')] }])))
+    expect(t.store.getSnapshot().failure).toBeNull()
+    t.clock.advance(SUBSCRIBE_DEADLINE_MS)
+    expect(t.store.getSnapshot().failure).toBeNull()
+  })
+
+  it('연결이 끊겨 시도가 바뀐 뒤의 마감은 목록 실패로 세지 않는다(연결 띠 몫)', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverClose(1006)
+    t.clock.advance(SUBSCRIBE_DEADLINE_MS)
+    expect(t.store.getSnapshot().failure).toBeNull()
+  })
+
+  it('안내 글 — 실패 이유마다 다르고 「받는 중」·「세션 0」 이 아니다', () => {
+    for (const reason of ['invalid', 'rejected', 'timeout'] as const) {
+      const text = failureText({ reason, at: 0, incompatible: reason !== 'timeout' })
+      expect(`${text.title} ${text.body}`).not.toMatch(/받는 중|세션이 없습니다/)
+    }
+    expect(failureText({ reason: 'invalid', at: 0, incompatible: true }).body).toContain('업데이트')
+    expect(failureText({ reason: 'rejected', at: 0, incompatible: true }).body).toContain('업데이트')
+  })
+})
+
+describe('R1 C1 시계차 원자료 — pong.at → 오프셋, list_recv 와 같은 기록', () => {
+  it('내가 보낸 ping 의 pong 에서 왕복 중간점 기준 오프셋을 잡고 list_recv 에 싣는다', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    t.clock.advance(8_000) // 정기 ping
+    const ping = socket.lastSent()
+    expect(ping?.type).toBe('ping')
+    const sentAt = t.clock.now()
+    t.clock.advance(40)
+    // 서버 시계가 폰보다 250 ms 앞선다 — 중간점(sentAt+20) 기준 서버 시각 = sentAt+20+250.
+    socket.serverSend({ type: 'pong', id: ping?.id, at: sentAt + 20 + 250 })
+    expect(t.manager.clockSample()).toMatchObject({ offsetMs: 250, rttMs: 40 })
+    socket.serverSend(wire(1, list([{ id: 't', channels: [channel('a')] }])))
+    const recv = t.log.text().split('\n').find((line) => line.includes('list_recv'))
+    expect(recv).toContain('"offsetMs":250')
+    expect(recv).toContain('"rttMs":40')
+    expect(t.log.text()).toContain('clock')
+  })
+
+  it('모르는 id · 서버 시각 없는 pong 은 표본이 아니다 — 표본 전 list_recv 의 오프셋은 null', async () => {
+    const t = harness()
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverSend({ type: 'pong', id: 999, at: 1 })
+    socket.serverSend({ type: 'pong', id: 'x' })
+    expect(t.manager.clockSample()).toBeNull()
+    socket.serverSend(wire(1, list([{ id: 't', channels: [channel('a')] }])))
+    expect(t.log.text().split('\n').find((line) => line.includes('list_recv'))).toContain('"offsetMs":null')
+  })
+})
+
+describe('R1 C2 대화 머리 「띄운 세션」 — 부모가 있으면 항상', () => {
+  it('같은 그룹 부모(목록 행엔 없음)도 머리에는 나온다 · 부모 모름 · 부모 없음', () => {
+    expect(headerMeta(channel('a', { model: 'opus', spawnedBy: null, parent: { title: '코디' } }))).toBe('opus · 띄운 세션: 코디')
+    expect(headerMeta(channel('a', { parent: { title: null }, origin: 'impl' }))).toBe('↳ impl · 띄운 세션: 알 수 없음')
+    expect(headerMeta(channel('a'))).toBeNull()
+  })
+
+  it('`parent` 칸이 없는 목록(옛 서버)은 거절하지 않고 null 로 읽는다', () => {
+    const body = JSON.parse(JSON.stringify(wire(1, list([{ id: 't', channels: [channel('a', { parent: { title: 'p' } })] }]))))
+    delete body.list.repos[0].tasks[0].channels[0].parent
+    const parsed = parseListMessage(body)
+    expect(parsed?.list.available === true ? parsed.list.repos[0]?.tasks[0]?.channels[0]?.parent : 'x').toBeNull()
   })
 })

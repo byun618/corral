@@ -95,7 +95,7 @@ function app(vault: MemoryVault, unreadStore = new MemoryStore<UnreadData>()) {
   const log = new ConnectionLog(() => Date.now())
   const m = new ConnectionManager({ openSocket: nodeSocket, vault, clock: realClock, log, appVersion: '0.1.0', deviceName: 'it-phone', timing: FAST })
   const ledger = new UnreadLedger({ store: unreadStore, now: () => Date.now() })
-  const list = new ListStore({ connection: m, ledger, now: () => Date.now(), log })
+  const list = new ListStore({ connection: m, ledger, now: () => Date.now(), timer: realClock, log })
   cleanups.push(() => m.setForeground(false))
   return { m, list, ledger, log, unreadStore }
 }

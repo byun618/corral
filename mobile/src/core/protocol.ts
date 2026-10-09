@@ -45,9 +45,12 @@ export type ServerInfo = { version: string; macName: string }
 export type ServerMessage =
   | { type: 'hello'; server: ServerInfo; deviceId: string; deviceName: string }
   | { type: 'paired'; server: ServerInfo; token: string; deviceId: string; deviceName: string }
-  | { type: 'pong' }
-  /** 대화방 목록(LIFE-580) — 모양이 틀리면 `other`. */
+  /** `at` = 서버가 pong 을 보낸 시각(시계차 보정 원자료, R1 C1). 없거나 모양이 틀리면 null. */
+  | { type: 'pong'; id: string | number | null; at: number | null }
+  /** 대화방 목록(LIFE-580). */
   | { type: 'list'; message: ListMessage }
+  /** `list` 타입인데 모양을 읽지 못했다(R1-A4) — 버리지 않고 목록 실패로 올린다. 아는 번호만 같이. */
+  | { type: 'list_invalid'; seq: number | null }
   | { type: 'error'; code: string; supported: number[] }
   | { type: 'other' }
 
@@ -87,10 +90,15 @@ export function parseServerMessage(text: string): ServerMessage {
       return { type: 'paired', server, token: parsed.token, deviceId: device.id, deviceName: device.name }
     }
     case 'pong':
-      return { type: 'pong' }
+      return {
+        type: 'pong',
+        id: typeof parsed.id === 'string' || typeof parsed.id === 'number' ? parsed.id : null,
+        at: typeof parsed.at === 'number' && Number.isFinite(parsed.at) ? parsed.at : null,
+      }
     case 'list': {
       const message = parseListMessage(parsed)
-      return message === null ? { type: 'other' } : { type: 'list', message }
+      if (message !== null) return { type: 'list', message }
+      return { type: 'list_invalid', seq: typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) ? parsed.seq : null }
     }
     case 'error': {
       const supported = Array.isArray(parsed.supported) ? parsed.supported.filter((v): v is number => typeof v === 'number') : []

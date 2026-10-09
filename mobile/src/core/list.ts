@@ -28,7 +28,10 @@ export type Channel = {
   dotUnseen: Dot
   depth: 0 | 1
   origin: string | null
+  /** 목록 행 셋째 줄용 — 부모가 다른 작업 그룹에 있거나 모를 때만. */
   spawnedBy: { title: string | null } | null
+  /** 대화 머리용 — 계보에 부모가 있으면 항상(579 Q3, R1 C2). 칸이 없으면(옛 서버) null. */
+  parent: { title: string | null } | null
   preview: Preview
   waiting: WaitKind | null
   model: string | null
@@ -94,6 +97,7 @@ function readChannel(value: unknown): Channel | null {
   const preview = readPreview(value.preview)
   if (id === null || key === null || status === null || title === null || dot === null || dotUnseen === null || depth === null || preview === null) return null
   const spawned = value.spawnedBy
+  const parent = value.parent
   return {
     id,
     key,
@@ -105,6 +109,7 @@ function readChannel(value: unknown): Channel | null {
     depth,
     origin: str(value.origin),
     spawnedBy: isRecord(spawned) ? { title: str(spawned.title) } : null,
+    parent: isRecord(parent) ? { title: str(parent.title) } : null,
     preview,
     waiting: pick(value.waiting, ['question', 'approval', 'login', 'other'] as const),
     model: str(value.model),

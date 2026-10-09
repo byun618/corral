@@ -134,7 +134,19 @@ export type Snapshot = { conn: ConnState; pair: PairState; info: PairingInfo | n
  *   두 경우 다 구독을 다시 보내 전체를 받는다(J8 — 연결이 살아 있어도 복귀 때 전체).
  * - `list`: 지금 시도의 소켓으로 온 목록. 이전 시도의 소켓은 여기까지 오지 않는다(시도마다 핸들러가 「내가 지금인가」 를 먼저 본다).
  */
-export type SessionEvent = { kind: 'live'; attempt: number; reason: 'connect' | 'resume' } | { kind: 'list'; attempt: number; message: ListMessage }
+export type SessionEvent =
+  | { kind: 'live'; attempt: number; reason: 'connect' | 'resume' }
+  | { kind: 'list'; attempt: number; message: ListMessage }
+  /**
+   * 목록을 받지 못했다(R1-A4) — `invalid` = `list` 를 읽지 못함(앱이 모르는 모양 — 서버가 더 새것일 수 있다),
+   * `rejected` = 서버가 구독을 모른다(`unknown_type` — 서버가 더 옛것). 연결은 그대로다.
+   */
+  | { kind: 'list_failed'; attempt: number; reason: 'invalid' | 'rejected'; seq: number | null }
+
+/** 서버와 폰 시계 차(R1 C1) — ping/pong 왕복의 중간점 기준. `offsetMs` = 서버 시각 − 폰 시각. 최근 표본 중 왕복이 가장 짧은 것. */
+export type ClockSample = { offsetMs: number; rttMs: number; at: number }
+
+const CLOCK_SAMPLES = 8
 
 // --- 시도 ---------------------------------------------------------------------------------------------
 
@@ -157,6 +169,8 @@ type Attempt = {
   deadlineAt: number | null
   /** 이 페어링 시도의 세대(연결 시도는 0). */
   gen: number
+  /** 보낸 ping 의 id → 보낸 시각(시계차 표본용, 최근 것만). */
+  pingSentAt: Map<number, number>
   pairTarget: PairingTarget | null
 }
 
@@ -172,6 +186,7 @@ export class ConnectionManager {
   private current: Attempt | null = null
   private attemptSeq = 0
   private pingSeq = 0
+  private clockSamples: ClockSample[] = []
   private failures = 0
   private retryTimer: TimerHandle | null = null
   private offlineTimer: TimerHandle | null = null
@@ -328,6 +343,12 @@ export class ConnectionManager {
     return attempt.seq
   }
 
+  /** 지금 시계 차 추정 — 아직 표본이 없으면 null. 목록 수신 기록(`list_recv`)이 같이 남긴다(J5 네이티브 보정 원자료). */
+  clockSample(): ClockSample | null {
+    if (this.clockSamples.length === 0) return null
+    return [...this.clockSamples].sort((a, b) => a.rttMs - b.rttMs || b.at - a.at)[0] ?? null
+  }
+
   private emitSession(event: SessionEvent): void {
     for (const listener of [...this.sessionListeners]) listener(event)
   }
@@ -417,6 +438,7 @@ export class ConnectionManager {
       deadlineAt: null,
       gen: 0,
       pairTarget,
+      pingSentAt: new Map(),
     }
     this.current = attempt
     socket.onopen = () => this.onOpen(attempt)
@@ -516,6 +538,7 @@ export class ConnectionManager {
         return
       }
       case 'pong': {
+        this.takeClockSample({ attempt, id: message.id, serverAt: message.at, now })
         const conn = this.snapshot.conn
         if (conn.kind === 'checking') {
           this.log('probe_ok', { attempt: attempt.seq, after: 'resume' })
@@ -530,10 +553,17 @@ export class ConnectionManager {
         if (attempt.phase !== 'live') return
         this.emitSession({ kind: 'list', attempt: attempt.seq, message: message.message })
         return
+      case 'list_invalid':
+        if (attempt.phase !== 'live') return
+        this.log('list_invalid', { attempt: attempt.seq, seq: message.seq })
+        this.emitSession({ kind: 'list_failed', attempt: attempt.seq, reason: 'invalid', seq: message.seq })
+        return
       case 'error':
         attempt.lastError = message.code
         attempt.supported = message.supported
         this.log('server_error', { attempt: attempt.seq, code: message.code })
+        // 인증 뒤 보내는 것은 ping 과 list.subscribe 뿐 — `unknown_type` 은 서버가 목록 구독을 모른다는 뜻(옛 서버).
+        if (attempt.phase === 'live' && message.code === 'unknown_type') this.emitSession({ kind: 'list_failed', attempt: attempt.seq, reason: 'rejected', seq: null })
         return
       case 'other':
         return
@@ -675,6 +705,8 @@ export class ConnectionManager {
     if (attempt === null || attempt.ended || attempt.phase !== 'live') return
     this.pingSeq += 1
     if (why !== 'interval') this.log('probe', { attempt: attempt.seq, why, id: this.pingSeq })
+    attempt.pingSentAt.set(this.pingSeq, this.deps.clock.now())
+    for (const id of [...attempt.pingSentAt.keys()]) if (attempt.pingSentAt.size > CLOCK_SAMPLES) attempt.pingSentAt.delete(id)
     if (!this.write(attempt, { type: 'ping', id: this.pingSeq })) {
       this.fail(attempt, why === 'interval' ? 'ping_timeout' : 'probe_timeout')
       return
@@ -828,6 +860,25 @@ export class ConnectionManager {
     const handle = attempt[key]
     if (handle !== null) this.deps.clock.clearTimeout(handle)
     attempt[key] = null
+  }
+
+  /**
+   * pong 하나로 시계차 표본을 만든다(R1 C1) — 내가 보낸 ping 의 id 이고 서버 시각이 있을 때만. offset = 서버 at − (보낸 시각 + 받은 시각)/2.
+   * 최근 8개를 들고, 왕복이 가장 짧은 표본이 바뀔 때만 `clock` 한 줄을 남긴다(8초 ping 마다 기록이 차지 않게).
+   */
+  private takeClockSample(input: { attempt: Attempt; id: string | number | null; serverAt: number | null; now: number }): void {
+    const { attempt, id, serverAt, now } = input
+    if (typeof id !== 'number' || serverAt === null) return
+    const sentAt = attempt.pingSentAt.get(id)
+    if (sentAt === undefined) return
+    attempt.pingSentAt.delete(id)
+    const before = this.clockSample()
+    const sample: ClockSample = { offsetMs: Math.round(serverAt - (sentAt + now) / 2), rttMs: now - sentAt, at: now }
+    this.clockSamples = [...this.clockSamples, sample].slice(-CLOCK_SAMPLES)
+    const best = this.clockSample()
+    if (best !== null && (before === null || best.offsetMs !== before.offsetMs || best.rttMs !== before.rttMs)) {
+      this.log('clock', { attempt: attempt.seq, offsetMs: best.offsetMs, rttMs: best.rttMs, serverAt, sentAt, recvAt: now })
+    }
   }
 
   private log(event: string, detail: Record<string, LogValue>): void {

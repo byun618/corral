@@ -6,6 +6,7 @@
 //   · 작업 접힘(기본 규칙 + 기억) · 접힌 머리의 점 묶음(4개 넘으면 +N) · 안 읽음 점
 //   · 둘째 줄 접두어·글(디자인 §2 ChannelRow) · 셋째 줄(출신·`레포 › 작업`·띄운 세션)
 import type { Channel, ChannelList, Dot, WaitKind } from './list'
+import type { ListFailure } from './list-store'
 
 export const WAITING_SHOWN = 3
 export const COLLAPSED_DOTS = 4
@@ -99,6 +100,24 @@ function previewText(input: { channel: Channel; dot: Dot }): { text: string; mon
     case 'none':
       return { text: statusLabel({ dot, waiting: channel.waiting, closed: false }), mono: false }
   }
+}
+
+/** 목록 실패 안내(R1-A4) — 받은 목록이 없을 때는 이것만, 있을 때는 「오래된 값」 띠의 둘째 줄. */
+export function failureText(failure: ListFailure): { title: string; body: string } {
+  switch (failure.reason) {
+    case 'invalid':
+      return { title: '목록 형식이 맞지 않습니다', body: '맥의 corral 이 보낸 대화방 목록을 이 앱이 읽지 못했습니다. 오래된 쪽(앱 또는 맥 corral)을 업데이트해 주세요.' }
+    case 'rejected':
+      return { title: '맥이 목록을 보내지 않습니다', body: '맥의 corral 이 대화방 목록을 모르는 버전입니다. 맥의 corral 을 업데이트해 주세요.' }
+    case 'timeout':
+      return { title: '목록 응답이 없습니다', body: '맥에 연결됐지만 목록이 오지 않았습니다. 당겨서 다시 받아 주세요.' }
+  }
+}
+
+/** 대화 머리 셋째 줄(J3 · 579 Q3) — 모델 · `↳ 출신` · 「띄운 세션」(부모가 있으면 항상, R1 C2). */
+export function headerMeta(channel: Channel): string | null {
+  const parts = [channel.model, channel.origin === null ? null : `↳ ${channel.origin}`, channel.parent === null ? null : `띄운 세션: ${channel.parent.title ?? '알 수 없음'}`]
+  return joinMeta(parts)
 }
 
 export function clockLabel(at: number | null): string {

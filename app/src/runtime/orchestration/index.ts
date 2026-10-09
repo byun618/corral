@@ -21,7 +21,7 @@ import specs from './specs.json'
 import { RuntimeError, reject, stringFlag, type CallerIdentity, type CommandModule, type CommandSpec, type Invocation } from '../contracts.js'
 import { validateFoundation } from '../registry.js'
 import { type Receipt, Receipts, REQUEST_ID, RECEIPT_TTL, readReceipt } from '../terminal/receipts.js'
-import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage } from '../terminal/index.js'
+import { MAX_INPUT, derivedRequestId, stageFailure, terminalModule, type Stage, type TerminalDesktop } from '../terminal/index.js'
 import { PROMPT_LEAD } from '../terminal/agent.js'
 import { socketPath } from '../transport.js'
 import { cliInvocation } from '../desktop-launch.js'
@@ -468,7 +468,15 @@ function receiptStanding(userData: string, id: string): boolean {
   } catch { return true }
 }
 
-export function orchestrationModule(userData: string): CommandModule {
+/**
+ * LIFE-569. `terminalDesktop` is the GUI bridge the server hands the CLI `terminal` module. The
+ * recovery close (`closePane` — worker-release / worker-stop) is an explicit close just like CLI
+ * `terminal close`, so it goes through the same module with the same bridge: the pane is marked in
+ * the retention ledger, the mark is settled by the same classifier on a failed close, and the GUI
+ * is told the tree changed. Without it a finished worker's pane came back as a 「닫힌 탭」 row.
+ * A headless runtime (`corral serve`, `cli.ts`) passes nothing — it keeps no ledger to mark.
+ */
+export function orchestrationModule(userData: string, options: { terminalDesktop?: TerminalDesktop } = {}): CommandModule {
   const startedAt = Date.now()
   // Built on first use, never in the factory: `cli.ts` constructs every module for every
   // invocation, `--help` included, and none of those may touch the profile directory.
@@ -484,7 +492,7 @@ export function orchestrationModule(userData: string): CommandModule {
    * constructor touches the profile, which is what `cli.ts` building every module for `--help`
    * requires.
    */
-  const terminalReads: CommandModule = terminalModule(userData)
+  const terminalReads: CommandModule = terminalModule(userData, options.terminalDesktop)
   /**
    * N3 = C13. Every rejection this module can foresee is now raised *before* the receipt is
    * written, so a refused mutation leaves the id spendable. That must not cost idempotent replay:

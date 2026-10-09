@@ -162,7 +162,7 @@ export async function runK9({ config, deps, log = () => {} }) {
     await deps.sleep(500)
   }
 
-  /** 상태 변화 구동 — 다른 pane 에 working/idle 을 번갈아(간격 600~900 ms). 보고 실패는 기록하고 **멈춘다** — 표본 루프가 보고 실행을 끝낸다. */
+  /** 상태 변화 구동 — 다른 pane 에 working/idle 을 번갈아(간격 400~600 ms — 보고 RPC 시간을 더해도 ≥ 1회/초에 여유. 스모크 s04 에서 600~900 ms 는 1.03/s 까지 내려갔다). 보고 실패는 기록하고 **멈춘다** — 표본 루프가 보고 실행을 끝낸다. */
   const driver = (paneId) => {
     const reports = []
     let stop = false
@@ -181,7 +181,7 @@ export async function runK9({ config, deps, log = () => {} }) {
           return
         }
         i += 1
-        await deps.sleep(600 + Math.floor(Math.random() * 300))
+        await deps.sleep(400 + Math.floor(Math.random() * 200))
       }
     })()
     return { reports, failed: () => failed, stop: async () => { stop = true; await done } }
@@ -200,9 +200,10 @@ export async function runK9({ config, deps, log = () => {} }) {
         const term = await termRead()
         if (countChar(term, ch) <= baseCount) return null
         const after = term.writes.filter((write) => write.at >= injectAt).sort((a, b) => a.at - b.at || a.seq - b.seq)
-        return after[0] ?? null
+        // s2 F-1 와 같이 주입 이후 write 수를 남긴다 — 1 이면 잡은 write 가 에코다(판정에는 안 쓰는 확인값).
+        return after[0] === undefined ? null : { write: after[0], writesAfterInject: after.length }
       }, { timeoutMs: 2_000, everyMs: 8, label: `에코 ${ch}` }).catch(() => null)
-      samples.push(seen === null ? { i, ch, miss: true } : { i, ch, injectAt, writeAt: seen.value.at, latencyMs: seen.value.at - injectAt })
+      samples.push(seen === null ? { i, ch, miss: true } : { i, ch, injectAt, writeAt: seen.value.write.at, seq: seen.value.write.seq, writesAfterInject: seen.value.writesAfterInject, latencyMs: seen.value.write.at - injectAt })
       await deps.sleep(220 + Math.floor(Math.random() * 80))
     }
     if (drive !== null && drive.failed() !== null) throw new Error(`상태 보고 실패 — ${drive.failed()}`)

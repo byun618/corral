@@ -156,8 +156,8 @@ export async function revokeAll(root) {
 }
 
 /** 격리 레포를 하나 만들고 등록 → 그 레포에 탭(pane) 하나. 반환 = pane id. */
-export async function freshPane(root) {
-  const repo = path.join(root, 'repo')
+export async function freshPane(root, { name = 'repo' } = {}) {
+  const repo = path.join(root, name)
   if (!fs.existsSync(path.join(repo, '.git'))) {
     fs.mkdirSync(repo, { recursive: true })
     const { execFileSync } = await import('node:child_process')

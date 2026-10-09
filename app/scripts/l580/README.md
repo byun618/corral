@@ -5,13 +5,14 @@ tailscale 은 가짜 CLI(`FAKE=/tmp/l580g-f*`), herdr 은 g-up 이 띄운 이름
 
 | 파일 | 하는 일 | 기준 |
 | --- | --- | --- |
-| `three-sec.mjs` | 에이전트 상태 보고(`pane.report_agent`)를 바꿔 가며 폰 자리 클라이언트가 받는 시각 — ⓐ `changedAt`→수신 ⓑ 보고 직전→수신, 전이 ≥ 20회 전부 ≤ 3초 | J5 · L3 격리 |
+| `three-sec.mjs` | 에이전트 상태 보고(`pane.report_agent`)를 바꿔 가며 폰 자리 클라이언트가 받는 시각 — ⓐ `changedAt`→수신 ⓑ 보고 직전→수신, 전이 ≥ 20회 전부 ≤ 3초. 짝 = 대상 pane 점이 기대 상태로 바뀐 첫 목록(`transition-match.mjs`) | J5 · L3 격리 · R3-A2 |
 | `k9-ab.mjs` | A(모바일 꺼짐)/B(켜짐+구독 1) 교대 3회 — 키 입력→화면 p50·p95(회당 36타) + main 루프 지연 p99 | J6 · L10ⓒ |
 | `k9-ab.nodetest.mjs` | k9-ab 자체 시험 — 구동 실패·`--rounds 0`·push 0·스모크 소표본·루프 표본 0 이 통과하지 못하는지 + 정상 양성 대조(`npm test` 의 node:test 쪽) | R1-A1 |
 | `push-cost.mjs` · `push-cost.nodetest.mjs` | main 로그 `mobile.list_built`·`mobile.list_push` 를 seq 로 묶어 buildMs+sendMs 합의 p95(표본 0 이면 실패) | L10ⓓ · R1 C3 |
 | `native-j5.md` | 네이티브 J5 — 원인 시각 직접 기록 · 폰 연결 기록(`list_recv`·`clock`)으로 ⓐ·ⓑ 계산법 · L12ⓒ 체크리스트 | L3 네이티브 · R1 C1 · R2-A4 |
-| `native-cause.mjs` | 전용 셸 pane 안에서 자기 pane 에 `herdr pane report-agent` 를 치고 호출 직전 맥 시각(`causeAt`)·pane·exit 를 NDJSON 으로(`--isolated` = 격리 소켓만) | R2-A4 |
-| `native-j5.mjs` · `native-j5.nodetest.mjs` | 폰 기록 사본 + 원인 기록 [+ main 발췌] → 전이별 ⓐ·ⓑ, 원인 없는 전이 보류(5회에서 제외), `agent.push.applied` 는 참고값 | R2-A4 |
+| `native-cause.mjs` · `native-cause.nodetest.mjs` | 전용 셸 pane 안에서 자기 pane 에 `herdr pane report-agent` 를 치고 호출 직전 맥 시각(`causeAt`)·대상 채널(`target`)·기대 상태(`expect`)·exit 를 NDJSON 으로(`--isolated` = 격리 소켓만). `--release` 는 정상 끝·예외·SIGINT·SIGTERM 에서 같은 pane·source·agent 만 한 번 거둔다(중단은 실패 줄) | R2-A4 · R3-A2·A4 |
+| `transition-match.mjs` | 원인(대상·기대 상태·시각) → 대상 채널이 기대 상태로 바뀐 첫 목록. 같은 상태 반복·대상 없음·점 기록 없음은 보류 | R3-A2 |
+| `native-j5.mjs` · `native-j5.nodetest.mjs` | 폰 기록 사본 + 원인 기록 [+ main 발췌] → 전이별 ⓐ·ⓑ, 짝 = 대상 채널이 기대 상태로 바뀐 첫 목록(`list_recv` `changes`), 원인·대상 확인 없는 전이 보류(5회에서 제외), 중단 줄 있으면 미달, `agent.push.applied` 는 참고값 | R2-A4 · R3-A2·A4 |
 | `native-dryrun.mjs` | 위 절차의 격리 dry-run(격리 herdr 셸 pane · Node 폰 자리 · 계산기까지) | R2-A4 |
 | `lib.mjs` | 루트 검사·격리 herdr RPC·모바일 켜고 끄기(**켠 뒤 설정 화면을 닫는다** — R1-A2)·폰 자리 클라이언트(페어링→hello→구독, ping/pong 시계차, 연결 닫힘 알림)·격리 레포 pane | — |
 

@@ -115,6 +115,17 @@ export function failureText(failure: ListFailure): { title: string; body: string
 }
 
 /** 대화 머리 셋째 줄(J3 · 579 Q3) — 모델 · `↳ 출신` · 「띄운 세션」(부모가 있으면 항상, R1 C2). */
+/**
+ * 대화 자리 머리의 표시 상태 하나(R3-A3) — 아바타 배지·별도 점·상태 글이 **이 값 하나**를 같이 쓴다. 연결이 끊겼거나 목록이 실패해
+ * 받아 둔 값이 최신이 아니면(`unknown`) 받아 둔 점을 어디에도 보이지 않고 확인 불가로 그린다.
+ */
+export function headerStatus(input: { channel: Channel; unknown: boolean }): { dot: Dot; label: string; tone: Tone } {
+  if (input.unknown) return { dot: 'unverifiable', label: '확인 불가', tone: 'muted' }
+  const closed = input.channel.status === 'closed'
+  const dot = input.channel.dot
+  return { dot, label: statusLabel({ dot, waiting: input.channel.waiting, closed }), tone: statusTone({ dot, closed }) }
+}
+
 export function headerMeta(channel: Channel): string | null {
   const parts = [channel.model, channel.origin === null ? null : `↳ ${channel.origin}`, channel.parent === null ? null : `띄운 세션: ${channel.parent.title ?? '알 수 없음'}`]
   return joinMeta(parts)

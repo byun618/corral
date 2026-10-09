@@ -421,6 +421,21 @@ describe('화면 줄 (L5ⓑⓖⓘ · L8)', () => {
     expect(recv).toContain('"changedAt":4001')
     expect(lines.join('\n')).not.toContain('비밀 제목')
   })
+
+  it('R3-A2 list_recv `changes` — 직전 목록 대비 점이 바뀐 채널만(첫 목록은 전부, 사라짐은 `=-`)', async () => {
+    const t = harness()
+    const recv: string[] = []
+    t.log.addSink((entry) => {
+      if (entry.event === 'list_recv') recv.push(String(entry.detail.changes))
+    })
+    await t.manager.start()
+    const socket = t.accept()
+    socket.serverSend(wire(1, list([{ id: 't', channels: [channel('a', { dot: 'idle' }), channel('b', { dot: 'idle' })] }])))
+    socket.serverSend(wire(2, list([{ id: 't', channels: [channel('a', { dot: 'idle' }), channel('b', { dot: 'working' })] }])))
+    socket.serverSend(wire(3, list([{ id: 't', channels: [channel('a', { dot: 'idle' }), channel('b', { dot: 'working' })] }])))
+    socket.serverSend(wire(4, list([{ id: 't', channels: [channel('b', { dot: 'blocked' })] }])))
+    expect(recv).toEqual(['a=idle,b=idle', 'b=working', '', 'b=blocked,a=-'])
+  })
 })
 
 describe('R1-A4 목록 실패 — 거절을 버리지 않는다', () => {

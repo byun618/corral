@@ -8,7 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useEffect } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { locateChannel } from '../../src/core/list'
-import { failureText, headerMeta, statusLabel, statusTone } from '../../src/core/list-view'
+import { failureText, headerMeta, headerStatus } from '../../src/core/list-view'
 import { listOf } from '../../src/core/list-store'
 import { connection, useConnection } from '../../src/runtime/connection'
 import { listStore, useList } from '../../src/runtime/list'
@@ -43,9 +43,8 @@ export default function ChannelPlaceholder() {
   const offline = conn.kind !== 'connected' && conn.kind !== 'checking'
   const unknown = offline || stale
   const closed = channel?.status === 'closed'
-  const dot = channel === null ? 'unverifiable' : channel.dot
-  const label = channel === null ? '' : unknown ? '확인 불가' : statusLabel({ dot, waiting: channel.waiting, closed })
-  const tone = unknown ? color.fgMuted : toneColor(statusTone({ dot, closed }))
+  // 표시 점 하나 — 아바타 배지·별도 점·상태 글이 같이 쓴다(R3-A3).
+  const status = channel === null ? null : headerStatus({ channel, unknown })
   const third = channel === null ? null : headerMeta(channel)
   return (
     <Screen>
@@ -55,7 +54,7 @@ export default function ChannelPlaceholder() {
         </Pressable>
         {channel !== null ? (
           <View style={{ paddingTop: 5 }}>
-            <Avatar kind={channel.kind} dot={dot} closed={closed} size={34} />
+            <Avatar kind={channel.kind} dot={status?.dot ?? 'unverifiable'} closed={closed} size={34} />
           </View>
         ) : null}
         <View style={{ flex: 1, gap: 2, paddingTop: 4, paddingLeft: 4 }}>
@@ -64,8 +63,8 @@ export default function ChannelPlaceholder() {
           </Text>
           {found !== null ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <StatusGlyph dot={unknown ? 'unverifiable' : dot} closed={closed} />
-              <Text style={{ fontSize: 13, fontFamily: font.medium, color: tone }}>{label}</Text>
+              <StatusGlyph dot={status?.dot ?? 'unverifiable'} closed={closed} />
+              <Text style={{ fontSize: 13, fontFamily: font.medium, color: status === null ? color.fgMuted : toneColor(status.tone) }}>{status?.label ?? ''}</Text>
               <Text numberOfLines={1} style={{ flex: 1, fontSize: 11.5, fontFamily: font.mono, color: color.fgDim }}>{`${found.repo.name} › ${found.task.name}`}</Text>
             </View>
           ) : null}

@@ -3,6 +3,7 @@
 // `native-cause.mjs --isolated` 를 띄운다(HERDR_BIN_PATH = 격리 guard 바이너리, HERDR_SOCKET_PATH = 격리 세션 소켓, HERDR_PANE_ID = 그 pane).
 // 폰 자리는 Node 클라이언트이고, 받은 목록을 **폰 연결 기록과 같은 모양**(`list_recv` 줄)으로 써서 계산기에 넣는다.
 // dry-run 은 절차가 도는지 보는 것이다 — 판정 회차가 아니다(전이 6회 · 간격 3초).
+// R3-A2: 둘째 레포 pane 을 1초마다 바꿔 다른 채널 변화를 섞는다 — 잡음 목록이 0개면 실패(대조가 실제로 일어났어야 한다).
 //
 // 사용(app/ 에서): node scripts/l580/native-dryrun.mjs --root /tmp/l580g-d1 --fake /tmp/l580g-fd1 --herdr-bin <격리 guard herdr> --out <폴더>
 import { spawn } from 'node:child_process'
@@ -10,7 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { checkRoots, freshPane, herdrSession, phone, revokeAll, setMobile, sleep } from './lib.mjs'
+import { checkRoots, freshPane, herdrSession, phone, reportAgent, revokeAll, setMobile, sleep } from './lib.mjs'
 import { computeNativeJ5 } from './native-j5.mjs'
 
 const { values: args } = parseArgs({ options: { root: { type: 'string' }, fake: { type: 'string' }, out: { type: 'string' }, 'herdr-bin': { type: 'string' } } })
@@ -25,22 +26,40 @@ const ROOT = args.root
 const OUT = path.resolve(args.out)
 fs.mkdirSync(OUT, { recursive: true })
 const socket = path.join(os.homedir(), '.config/herdr-dev/sessions', herdrSession(ROOT), 'herdr.sock')
+const allChannels = (list) => (list?.available ? list.repos.flatMap((repo) => repo.tasks.flatMap((task) => task.channels)) : [])
 
 async function main() {
   await setMobile(ROOT, args.fake, true)
   const { paneId } = await freshPane(ROOT)
+  // R3-A2 — 다른 채널 잡음: 둘째 레포의 pane 을 측정 내내 1초마다 working/idle 로 바꾼다. 계산기가 대상 채널로만 짝을 고르는지 보는 것이다.
+  const { paneId: noiseId } = await freshPane(ROOT, { name: 'repo-noise' })
+  await reportAgent(ROOT, { paneId: noiseId, state: 'idle' })
   const phoneLines = []
   let client = null
+  // 폰 `ListStore` 와 같은 `changes`(직전 목록 대비 점이 바뀐 채널, 첫 목록은 전부, 사라짐 `=-` — mobile `dotChanges`, R3-A2).
+  let before = new Map()
   client = await phone(ROOT, {
     onList: ({ message, recvAt }) => {
       const clock = client?.clockOffset() ?? null
-      phoneLines.push(JSON.stringify({ at: new Date(recvAt).toISOString(), event: 'list_recv', seq: message.seq, serverAt: message.at, changedAt: message.changedAt, recvAt, offsetMs: clock?.offsetMs ?? null, rttMs: clock?.rttMs ?? null }))
+      const after = new Map(allChannels(message.list).map((channel) => [channel.id, channel.dot]))
+      const changes = []
+      for (const [id, dot] of after) if (before.get(id) !== dot) changes.push(`${id}=${dot}`)
+      for (const id of before.keys()) if (!after.has(id)) changes.push(`${id}=-`)
+      before = after
+      phoneLines.push(JSON.stringify({ at: new Date(recvAt).toISOString(), event: 'list_recv', seq: message.seq, serverAt: message.at, changedAt: message.changedAt, recvAt, offsetMs: clock?.offsetMs ?? null, rttMs: clock?.rttMs ?? null, changes: changes.join(',') }))
     },
   })
   for (let i = 0; i < 5; i += 1) await client.ping()
   let pinging = true
   const pinger = (async () => {
     while (pinging) await client.ping().then(() => sleep(850))
+  })()
+  let noisy = true
+  const noise = (async () => {
+    for (let k = 0; noisy; k += 1) {
+      await sleep(1_000)
+      if (noisy) await reportAgent(ROOT, { paneId: noiseId, state: k % 2 === 0 ? 'working' : 'idle' })
+    }
   })()
   const causeFile = path.join(OUT, 'cause.ndjson')
   fs.rmSync(causeFile, { force: true })
@@ -55,17 +74,22 @@ async function main() {
     child.on('exit', (code) => resolve(code))
   })
   await sleep(3_000)
+  noisy = false
+  await noise
   pinging = false
   await pinger
   fs.writeFileSync(path.join(OUT, 'phone.txt'), phoneLines.join('\n') + '\n')
   const result = computeNativeJ5({ phoneText: phoneLines.join('\n'), causeText: fs.readFileSync(causeFile, 'utf8') })
   fs.writeFileSync(path.join(OUT, 'native-j5.json'), JSON.stringify(result, null, 2) + '\n')
   for (const row of result.rows) console.log(`${row.i} ${row.state} ${row.status}${row.aMs != null ? ` ⓐ ${row.aMs}ms ⓑ ${row.bMs}ms` : ''}${row.why ? ` — ${row.why}` : ''}`)
+  // 잡음이 실제로 섞였나(양성 대조) — 잡음 채널만 바뀐 목록 수.
+  const noiseOnly = phoneLines.map((line) => JSON.parse(line).changes).filter((changes) => changes !== '' && changes.split(',').every((part) => part.startsWith(`${noiseId}=`))).length
+  console.log(`잡음 채널 ${noiseId} 만 바뀐 목록 ${noiseOnly}개 · 대상 ${paneId}`)
   console.log(`dry-run native-cause exit ${exit} · 셀 수 있는 전이 ${result.counted} · 보류 ${result.held} · ⓐ 최대 ${result.maxAMs} · ⓑ 최대 ${result.maxBMs} → ${result.verdict}`)
   await client.close()
   await revokeAll(ROOT)
   await setMobile(ROOT, args.fake, false)
-  process.exit(exit === 0 && result.verdict === '통과' ? 0 : 1)
+  process.exit(exit === 0 && result.verdict === '통과' && noiseOnly > 0 ? 0 : 1)
 }
 
 main().catch((error) => {

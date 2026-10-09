@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// 목록·대화 자리 화면 시험 (LIFE-580 수정 r1 — R1-A4 · R1-A6 · C2). RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
+// 목록·대화 자리 화면 시험 (LIFE-580 수정 r1 — R1-A4 · R1-A6 · C2 · r3 R3-A3). RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
 // 리뷰어 재현(`raw/review/codex-r1-raw/review-ui.test.tsx`)의 모양을 이어받았다 — 같은 상태를 Home·자리 화면에 동시에 넣는다.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -41,7 +41,11 @@ vi.mock('react-native', () => ({
   Platform: { select: (value: { android: string }) => value.android },
 }))
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div> }))
-vi.mock('../src/ui/StatusGlyph', () => ({ Avatar: () => null, StatusGlyph: () => null }))
+// 아바타·상태 점은 받은 점을 속성으로만 드러낸다(글자 없음 — textContent 단언에 영향 없음). R3-A3 은 두 곳에 간 점을 본다.
+vi.mock('../src/ui/StatusGlyph', () => ({
+  Avatar: ({ dot }: { dot: string }) => <i data-avatar-dot={dot} />,
+  StatusGlyph: ({ dot }: { dot: string }) => <i data-status-dot={dot} />,
+}))
 
 const cached: ChannelValue = {
   id: 'p',
@@ -206,5 +210,54 @@ describe('R2-A2 대화 자리 화면도 목록 실패를 안다 — Home 과 같
     expect(channel).toContain('한가')
     expect(channel).not.toContain('확인 불가')
     expect(ctx.markRead).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('R3-A3 대화 자리 머리 — 아바타 배지·별도 점·상태 글이 표시 점 하나를 같이 쓴다', () => {
+  const dots = () => ({
+    avatar: host.querySelector('[data-avatar-dot]')?.getAttribute('data-avatar-dot') ?? null,
+    status: host.querySelector('[data-status-dot]')?.getAttribute('data-status-dot') ?? null,
+  })
+  const asked: ChannelValue = { ...cached, dot: 'waiting', dotUnseen: 'waiting', waiting: 'question' }
+  const busy: ChannelValue = { ...cached, dot: 'working', dotUnseen: 'working' }
+  const listOf = (channel: ChannelValue): ChannelList => ({ ...withChannel, repos: [{ ...withChannel.repos[0], tasks: [{ ...withChannel.repos[0].tasks[0], channels: [channel] }] }] })
+  const offline: ConnState = { kind: 'reconnecting', since: 1, lastConnectedAt: 1, attempt: 1, reason: 'network', offline: true }
+
+  for (const [name, channel] of [['질문 대기', asked], ['작업 중', busy]] as const) {
+    for (const reason of ['invalid', 'rejected', 'timeout'] as const) {
+      it(`캐시 ${name} + 목록 ${reason} — 아바타·점 모두 unverifiable · 「확인 불가」 · 이전 상태 글 없음`, async () => {
+        ctx.conn = connected
+        ctx.list = ready(listOf(channel), { reason, at: 2, incompatible: reason !== 'timeout' })
+        const text = await render(<Channel />)
+        expect(dots()).toEqual({ avatar: 'unverifiable', status: 'unverifiable' })
+        expect(text).toContain('확인 불가')
+        expect(text).not.toContain(name)
+      })
+    }
+    it(`캐시 ${name} + 연결 끊김 — 같은 규칙`, async () => {
+      ctx.conn = offline
+      ctx.list = ready(listOf(channel))
+      await render(<Channel />)
+      expect(dots()).toEqual({ avatar: 'unverifiable', status: 'unverifiable' })
+    })
+    it(`양성 대조 — ${name} 정상 목록이면 아바타·점 모두 실제 점 · 상태 글 「${name}」`, async () => {
+      ctx.conn = connected
+      ctx.list = ready(listOf(channel))
+      const text = await render(<Channel />)
+      expect(dots()).toEqual({ avatar: channel.dot, status: channel.dot })
+      expect(text).toContain(name)
+      expect(text).not.toContain('확인 불가')
+    })
+  }
+
+  it('실패 → 복구 — 같은 화면에서 실패가 지워지면 아바타·점·글이 함께 실제 상태로 돌아온다', async () => {
+    ctx.conn = connected
+    ctx.list = ready(listOf(asked), { reason: 'timeout', at: 2, incompatible: false })
+    await render(<Channel />)
+    expect(dots()).toEqual({ avatar: 'unverifiable', status: 'unverifiable' })
+    ctx.list = ready(listOf(asked))
+    const text = await render(<Channel />)
+    expect(dots()).toEqual({ avatar: 'waiting', status: 'waiting' })
+    expect(text).toContain('질문 대기')
   })
 })

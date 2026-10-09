@@ -1,4 +1,4 @@
-# J5 네이티브 — 원인 시각을 직접 기록해 3초를 계산하기 (LIFE-580 L3 네이티브 · L12ⓒ · R1 C1 · R2-A3·A4·A5)
+# J5 네이티브 — 원인 시각을 직접 기록해 3초를 계산하기 (LIFE-580 L3 네이티브 · L12ⓒ · R1 C1 · R2-A3·A4·A5 · R3-A2·A4)
 
 격리 회차는 `three-sec.mjs` 를 쓴다. 거기서는 Node 클라이언트가 폰 자리를 맡고, 원인 시각은 보고 RPC 직전 시각이다.
 네이티브(실제 폰)에서는 다음 세 가지로 계산한다:
@@ -25,7 +25,7 @@ J5 ⓑ 는 「변화를 일으킨 시각 → 폰 수신」 이다. main 로그 `
 
 | event | 칸 | 뜻 |
 | --- | --- | --- |
-| `list_recv` | `seq` · `serverAt`(서버가 목록을 만든 시각) · `changedAt`(main 이 그 변화를 담은 상태를 낸 시각, 맥 시계) · `recvAt`(폰 수신, 폰 시계 = 봉투 `at`) · `offsetMs` · `rttMs` | 받은 목록 하나 |
+| `list_recv` | `seq` · `serverAt`(서버가 목록을 만든 시각) · `changedAt`(main 이 그 변화를 담은 상태를 낸 시각, 맥 시계) · `recvAt`(폰 수신, 폰 시계 = 봉투 `at`) · `offsetMs` · `rttMs` · `changes`(직전 목록 대비 점이 바뀐 채널 `id=dot,…`, 첫 목록은 전부, 사라짐 `id=-` — R3-A2) | 받은 목록 하나 |
 | `clock` | `offsetMs` · `rttMs` · `pingId` · `sentAt` · `recvAt` · `serverAt` · `latestPingId` · `latestRecvAt` | 선택된 시계차 표본 |
 
 `clock` 줄을 남기는 때와 그 칸들:
@@ -39,23 +39,32 @@ J5 ⓑ 는 「변화를 일으킨 시각 → 폰 수신」 이다. main 로그 `
 
 ## 계산 (`native-j5.mjs`)
 
-- **짝 맞추기**: 원인마다, 그 원인 시각 이후 처음으로 만든 목록을 찾는다(`changedAt ≥ causeAt`, 둘 다 맥 시계). 그 목록은 **다음 원인 전에** 만든 것이어야 한다.
+- **짝 맞추기(R3-A2)**: 원인 줄의 **대상 채널(`target` = 그 pane id)·기대 상태(`expect`)** 로, 폰 `list_recv` 를 받은 순서대로 `changes` 를 접어
+  **대상 채널의 점이 기대 상태로 바뀐 첫 목록**을 고른다(`transition-match.mjs` — 격리 `three-sec.mjs` 와 같은 규칙).
+  그 목록은 원인 뒤·다음 원인 전에 만든 것(`serverAt`, 둘 다 맥 시계)이어야 한다. **다른 채널만 바뀐 목록은 짝이 아니다.**
+  - 보류(5회에서 제외): 원인 줄에 대상·기대 상태 없음 · 원인 전 목록 없음 · 원인 직전에 이미 기대 상태(같은 상태 반복) · 대상 채널이 목록에 없음 ·
+    `changes` 없는 기록(옛 앱).
+  - 미수신(세는 회차 → 미달): 대상은 보이는데 다음 원인 전까지 기대 상태 목록이 없다.
+  - 점 대응: working → `working` · idle → `idle`/`done` · blocked → `blocked`/`waiting`. `unknown` 은 J5 전이가 아니라 `native-cause` 가 받지 않는다.
 - **ⓐ** = `recvAt − (changedAt − offsetMs)`
 - **ⓑ** = `recvAt − (causeAt − offsetMs)`
-- **통과**: 원인·수신·보정이 다 있는 전이 ≥ 5 이고, 그 **전부** ⓐ·ⓑ ≤ 3000 ms.
+- **통과**: 원인·대상 확인·수신·보정이 다 있는 전이 ≥ 5 이고, 그 **전부** ⓐ·ⓑ ≤ 3000 ms. 원인 기록에 중단·예외 줄(R3-A4)이 있으면 미달.
+- **ⓐ 의 보수 쪽**: 대상 변화가 그 앞의 다른 변화와 한 목록으로 묶이면 `changedAt` 이 원인보다 앞설 수 있다 — 그때 ⓐ 는 ⓑ 보다 길게 나온다(짧게 나오지 않는다).
 - **`--main` 을 주면** 두 가지가 더 나온다. 판정에는 쓰지 않는다:
   - `causeToAppliedMs`(원인 → `agent.push.applied`) 참고값
   - 순서 검사: 같은 seq `mobile.list_push` 의 `at` 이 `changedAt` ~ `recvAt + offsetMs` 사이인지
-- **한계**: 그 사이 같은 런타임의 다른 pane 상태가 바뀌면 `changedAt ≥ causeAt` 인 첫 목록이 다른 변화일 수 있다. 전이 동안 다른 에이전트를 한가하게 두고, 폰 화면에서 그 채널 점이 바뀌는 것을 함께 본다.
+- **다른 pane 변화**: 같은 런타임의 다른 에이전트가 그 사이 바뀌어도 짝은 대상 채널로만 고른다(r2 까지의 「다른 에이전트를 한가하게」 운영 가정은 필요 없다). 대상 채널이 기대 상태로 바뀐 목록을 폰이 받지 않았으면 미수신이다.
 
 ## 체크리스트 (L12ⓒ — 코디가 실행)
 
 1. **전용 셸 pane.** 설치본 corral 에서 아무 작업 공간에 셸 탭을 하나 연다. 이 pane 이 대상 세션이다(목록 채널 id = 그 pane id). 그 pane 의 셸에서 레포 `app/` 로 간다. 거기 `HERDR_BIN_PATH`·`HERDR_SOCKET_PATH`·`HERDR_PANE_ID` 가 있어야 한다(`env | grep HERDR_`).
-2. **폰 준비.** 폰이 붙은 뒤 8초 이상 기다린다. 폰 「연결 기록」 에 `clock` 줄이 하나 생긴 것을 본다. 다른 에이전트 pane 은 한가하게 둔다.
+2. **폰 준비.** 폰이 붙은 뒤 8초 이상 기다린다. 폰 「연결 기록」 에 `clock` 줄이 하나 생긴 것을 본다. 폰 앱이 `list_recv` 에 `changes` 를 남기는 판(R3-A2 이후)인지 확인한다 — 없으면 전부 보류다.
 3. **원인 기록.** `node scripts/l580/native-cause.mjs --out /tmp/l580n-<날짜>/cause.ndjson --sequence working,idle,blocked,working,idle,working --gap-ms 8000 --release`
    - 6회를 친다. 하나가 보류되어도 5회가 남게 하려는 것이다.
    - 각 줄에 `causeAt`·`pane`·`exit` 가 남는다.
-   - `--release` 는 끝에 에이전트 표시를 거둔다.
+   - `--release` 는 끝에 에이전트 표시를 거둔다. 도중에 멈춰야 하면 Ctrl-C(SIGINT)·SIGTERM — 같은 pane·source·agent 만 한 번 거두고,
+     `interrupted`·`release` 줄을 남기고 exit 1 이다(그 회차는 실패). SIGKILL 은 정리하지 못한다 — 그때는 같은 pane 에서 `"$HERDR_BIN_PATH" pane release-agent "$HERDR_PANE_ID" --source l580-native-j5 --agent claude`.
+   - 각 줄의 `target`(= 이 pane id)이 폰 목록 채널 id 와 같은지 본다(`w…:p…` 모양).
 4. **폰 화면 확인.** 폰 목록에서 그 채널이 「작업 중 → 한가 → 대기 …」 로 바뀌는지 본다. B5 「방금」 캡처 1회.
 5. **회수.**
    - 폰 「복사」 → `/tmp/l580n-<날짜>/phone.txt`.

@@ -159,6 +159,9 @@ export class ListStore {
       rttMs: clock?.rttMs ?? null,
       available: message.list.available,
       channels: allChannels(message.list).length,
+      // R3-A2 — 이 목록에서 점이 바뀐 채널(직전에 받은 목록 대비, 첫 목록은 전부). 네이티브 J5 계산기가 「대상 채널이 기대 상태로 바뀐 첫 목록」을
+      // 고르는 근거다. 채널 id(pane id)와 점만 — 제목·경로 없음.
+      changes: dotChanges({ before: phase.kind === 'ready' ? phase.message.list : null, after: message.list }),
     })
     const flashUntil: Record<string, number> = {}
     for (const [id, until] of Object.entries(this.snapshot.flashUntil)) if (until > now) flashUntil[id] = until
@@ -177,6 +180,21 @@ export class ListStore {
     this.snapshot = { ...this.snapshot, ...patch }
     for (const listener of [...this.listeners]) listener()
   }
+}
+
+/**
+ * 두 목록 사이 점이 바뀐 채널 — `id=dot` 을 `,` 로 잇는다(사라진 채널은 `id=-`). `before` 가 null 이면 `after` 의 전부.
+ * 채널 id 는 pane id(`w1:p3`)·`retained:<pane id>` 라 `,`·`=` 가 없다.
+ */
+export function dotChanges(input: { before: ChannelList | null; after: ChannelList }): string {
+  const before = new Map((input.before === null ? [] : allChannels(input.before)).map((channel) => [channel.id, channel.dot]))
+  const out: string[] = []
+  for (const channel of allChannels(input.after)) {
+    if (before.get(channel.id) !== channel.dot) out.push(`${channel.id}=${channel.dot}`)
+    before.delete(channel.id)
+  }
+  for (const id of before.keys()) out.push(`${id}=-`)
+  return out.join(',')
 }
 
 export function listOf(snapshot: ListSnapshot): ChannelList | null {

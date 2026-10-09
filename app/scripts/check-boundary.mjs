@@ -67,6 +67,17 @@ if (ACTION_IDS.size < 10 || HERDR_METHODS.size < 10) {
   process.exit(2)
 }
 const MAIN_LOG = path.join(SRC, 'main/log.ts')
+/**
+ * LIFE-577 — 모바일 프로토콜(폰 ↔ corral WS)은 herdr 와 **다른 어휘**인데 메시지 이름 `ping` 이 herdr 메서드 지문과 겹친다
+ * (A5 가 M1 메시지를 `hello`·`pair`·`ping` 으로 고정). 그래서 ③ 을 둔다: `src/main/mobile/` 안이고, 그 파일이 어댑터를 import 하지 않고,
+ * 토큰이 모바일 프로토콜 어휘(`main/mobile/protocol.ts` 의 `CLIENT_TYPES` 에서 파생)일 때만. 어휘는 손으로 적지 않는다(L-6 와 같은 이유).
+ */
+const MOBILE_DIR = path.join(SRC, 'main/mobile')
+const MOBILE_TYPES = derivedList({ file: 'main/mobile/protocol.ts', block: /export const CLIENT_TYPES = \[([^\]]*)\]/, item: /'([a-z_]+)'/g })
+if (!MOBILE_TYPES.has('ping') || MOBILE_TYPES.size < 3) {
+  console.error(`지문 파생 실패: 모바일 프로토콜 어휘 ${[...MOBILE_TYPES].join(',') || '(없음)'}`)
+  process.exit(2)
+}
 
 /**
  * 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`
@@ -199,8 +210,9 @@ function boundToMethod({ literal }) {
  * fix3 (R3-claude-01) — 토큰이 **더 긴 글자 노드 안**(오류 메시지·JSON 픽스처·테스트 제목·템플릿 문장)이면 글이다.
  * envelope 글자 규칙(`"method":"…"`)에 안 걸렸으면 ①을 준다.
  */
-function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
+function methodExemption({ source, index, name, zone, importsMainLog, sourceFile, file, importsAdapter }) {
   const before = source.slice(Math.max(0, index - 80), index)
+  if (zone === 'main' && inside(file, MOBILE_DIR) && !importsAdapter && MOBILE_TYPES.has(name)) return 'mobile-protocol'
   if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
     const parsed = sourceFile()
     const diagnostics = parsed.parseDiagnostics
@@ -384,6 +396,7 @@ for (const file of files) {
   const exempt = new Set()
   if (!isAdapter) {
     const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
+    const importsAdapter = resolved.some(({ target }) => target !== null && inside(target, ADAPTER))
     // 주석을 벗긴 원문을 파싱한다 — 토큰 위치(index)가 그 원문 기준이다. 액션 id 토큰이 있는 파일만 실제로 파싱한다.
     let parsed = null
     const sourceFile = () => (parsed ??= ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS))
@@ -391,7 +404,7 @@ for (const file of files) {
       for (const match of source.matchAll(pattern)) {
         codeTokens.add(match[0])
         const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
-        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile }) : null
+        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile, file, importsAdapter }) : null
         if (reason === null) wire.push({ kind, token: match[0] })
         else exempt.add(`${reason}\t${match[0]}`)
       }
@@ -455,7 +468,8 @@ const out = {
     항목: commentMentions,
   },
   면제: {
-    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다.',
+    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다. mobile-protocol = src/main/mobile/ 안(어댑터 import 없음)의 모바일 프로토콜 메시지 이름(LIFE-577).',
+    '모바일 프로토콜 어휘 (main/mobile/protocol.ts CLIENT_TYPES 에서 파생)': [...MOBILE_TYPES],
     '액션 id (shared/keybindings.ts ACTIONS 에서 파생)': ACTION_IDS.size,
     'herdr 메서드 (adapter request.ts ALLOWED_METHODS 에서 파생)': HERDR_METHODS.size,
     항목: exemptions,

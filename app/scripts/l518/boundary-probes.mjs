@@ -198,6 +198,12 @@ export const PROBES = [
   { id: 'f-request-outside', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ①', file: `${R}f-request-outside.ts`, source: "declare function request(sock: unknown, method: string): void\nexport const probe = (sock: unknown): void => request(sock, 'tab.rename')\n" },
   // ⓔ② 에 드는 사각 — main 로그 태그가 herdr 메서드 목록에 없는 메서드 꼴
   { id: 'f-log-unknown-method', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ②', file: `${M}f-log-unknown.ts`, source: "import { log } from './log.js'\nlog('pane.focus_direction', {})\n" },
+
+  // ⓜ LIFE-577 — 모바일 프로토콜 어휘 면제(`src/main/mobile/` 안 · 어댑터 import 없음 · `CLIENT_TYPES` 어휘)만 통과, 그 밖의 `ping` 은 계속 잡는다
+  { id: 'm-mobile-ping', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-ping.ts', source: "export const T = 'ping'\n" },
+  { id: 'm-mobile-ping-imports-adapter', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-adapter.ts', source: "import '../adapter/index.js'\nexport const T = 'ping'\n" },
+  { id: 'm-ping-outside-mobile', group: 'ⓜ', expect: 'R4-wire-leak', file: `${M}m-ping.ts`, source: "export const T = 'ping'\n" },
+  { id: 'm-mobile-herdr-method', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-herdr.ts', source: send("'workspace.rename'") },
 ]
 
 /** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */

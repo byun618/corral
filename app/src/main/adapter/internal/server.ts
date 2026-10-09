@@ -285,7 +285,7 @@ export function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     out[key] = value
   }
   // LIFE-565 C6ⓗ — pane 단위 env(`tab.create`·`workspace.create`·`pane.split`)를 못 싣는 herdr 경로(`worktree.open`·`worktree.create` 의 첫 pane)도
-  // OSC 8 을 받게 서버 env 에도 같은 값을 둔다. 사용자 env 에 같은 키가 있어도 덮어쓴다 — pane 단위 env 가 이미 서버 env 를 늘 덮어쓰므로,
+  // OSC 8 을 받게 서버 env 에도 같은 값을 둔다. corral 이 넘기는 초기 env 에서는 사용자 값을 덮는다(pane 안 셸 rc 의 export 는 이긴다) — pane 단위 env 가 이미 서버 env 를 늘 덮어쓰므로,
   // 여기서만 존중하면 같은 서버 안에서 첫 pane 과 나머지 pane 의 값이 갈린다. 서버를 새로 띄울 때부터 적용된다(떠 있는 서버는 그대로).
   return { ...out, ...PANE_ENV }
 }

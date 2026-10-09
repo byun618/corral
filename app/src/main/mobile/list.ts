@@ -113,31 +113,33 @@ export function phoneOrder(prefs: UiPrefs | null): ManualOrder {
   return { repos: readKeyList(prefs.manualRepoOrder), worktrees: readWorktreeOrder(prefs.manualWorktreeOrder), all: readKeyList(prefs.manualFlatOrder) }
 }
 
+/**
+ * 루트 **앞**에 올 수 있는 것(R2-A1) — 글 처음 · 공백 · 대입·구분 기호(`=` `:` `,` `;`) · 따옴표 · 여는 괄호 · 셸 연결(`|` `&` `>` `<`) · URI `file://`.
+ * 루트 **뒤**에 올 수 있는 것 — 글 끝 · `/`(그 아래 경로) · 공백 · 구분 기호 · 따옴표 · 닫는 괄호 · 셸 연결 · 문장 끝 `.`.
+ * 그 밖의 글자가 붙으면 다른 이름이다(`/Users/me` 는 `/Users/meow` · `/Users/me2` · `/Users/me.bak` 를 건드리지 않는다).
+ * 루트 **글자만** 바꾸고 그 뒤 경로는 소비하지 않는다 — 그래서 `cp /Users/me/a,/Users/me/b` 의 둘째 경로도 따로 잡힌다.
+ */
+const ROOT_BEFORE = String.raw`(?<=^|[\s=:,;'"\x60(\[{<>|&]|file://)`
+const ROOT_AFTER = String.raw`(?=$|[\s/=:,;'"\x60)\]}>|&]|\.(?:$|\s))`
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** 경로 글자 — 경계 판정용(앞뒤가 이 글자면 더 긴 경로의 일부다). */
-const PATH_CHAR = '[\\w.~@%+=,:-]'
-
 /**
- * 폰 표시 글에서 홈 아래 절대경로를 감춘다(R1-A3 ②). 그 pane 의 작업 worktree 안이면 worktree 상대(`src/a.ts`, worktree 자신은 `.`),
+ * 폰 표시 글에서 홈 아래 절대경로를 감춘다(R1-A3 ② · R2-A1). 그 pane 의 작업 worktree 안이면 worktree 상대(`src/a.ts`, worktree 자신은 `.`),
  * 그 밖의 홈 아래면 `~/…`. 홈 밖 경로(`/tmp`·`/opt` 등)는 그대로 둔다 — 계약은 홈 아래 경로다.
- * 경계를 본다 — `/Users/me/repo` 는 `/Users/me/repo-other` 를 건드리지 않는다.
  */
 export function maskPaths(input: { text: string; worktree: string | null; home: string }): string {
   let out = input.text
-  const replaceRoot = (root: string, inside: (rest: string) => string): void => {
-    const trimmed = root.replace(/\/+$/, '')
-    if (trimmed === '') return
-    const pattern = new RegExp(`(?<!${PATH_CHAR}|/)${escapeRegExp(trimmed)}(/[^\\s'"\`]*)?(?!${PATH_CHAR})`, 'g')
-    out = out.replace(pattern, (_match, rest: string | undefined) => inside(rest === undefined ? '' : rest.slice(1)))
-  }
   const home = input.home.replace(/\/+$/, '')
-  const worktree = input.worktree
+  const worktree = input.worktree === null ? '' : input.worktree.replace(/\/+$/, '')
   // worktree 가 홈 자체면 상대경로로 바꾸지 않는다(홈 전체가 `.` 이 되면 `~` 보다 덜 알려 준다).
-  if (worktree !== null && worktree.replace(/\/+$/, '') !== home) replaceRoot(worktree, (rest) => (rest === '' ? '.' : rest))
-  if (home !== '') replaceRoot(home, (rest) => (rest === '' ? '~' : `~/${rest}`))
+  if (worktree !== '' && worktree !== home) {
+    out = out.replace(new RegExp(`${ROOT_BEFORE}${escapeRegExp(worktree)}/(?=[^\\s])`, 'g'), '')
+    out = out.replace(new RegExp(`${ROOT_BEFORE}${escapeRegExp(worktree)}${ROOT_AFTER}`, 'g'), '.')
+  }
+  if (home !== '') out = out.replace(new RegExp(`${ROOT_BEFORE}${escapeRegExp(home)}${ROOT_AFTER}`, 'g'), '~')
   return out
 }
 

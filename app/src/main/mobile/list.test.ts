@@ -296,3 +296,59 @@ describe('R1-A5 미리보기 순서 — 두 재료가 함께 있을 때(코디 �
     expect(previewOf({ pane, dot: 'working', place })).toEqual({ kind: 'prompt', text: '지시' })
   })
 })
+
+describe('R2-A1 경로 가림 경계 — 루트 앞 구분자 · 루트 뒤 경계 · 이어진 경로', () => {
+  const place = { worktree: '/Users/me/repos/app', home: '/Users/me' }
+  const cases: [string, string][] = [
+    // 리뷰어 재현 사례
+    ['PATH=/Users/me/.local/bin', 'PATH=~/.local/bin'],
+    ['Read:/Users/me/private/a.ts', 'Read:~/private/a.ts'],
+    ['cp /Users/me/a,/Users/me/b', 'cp ~/a,~/b'],
+    ['/Users/me: error', '~: error'],
+    ['file:///Users/me/private/a.ts', 'file://~/private/a.ts'],
+    // 대입 · 콜론 목록 · 세미콜론 · 셸 연결 · 괄호 · 따옴표
+    ['PATH=/Users/me/bin:/Users/me/.cargo/bin:/usr/bin', 'PATH=~/bin:~/.cargo/bin:/usr/bin'],
+    ['--out=/Users/me/x;ls /Users/me', '--out=~/x;ls ~'],
+    ['cat /Users/me/a|grep x>/Users/me/b', 'cat ~/a|grep x>~/b'],
+    ['(see /Users/me/notes)', '(see ~/notes)'],
+    ["'/Users/me/a b.txt'", "'~/a b.txt'"],
+    ['"/Users/me/a b.txt"', '"~/a b.txt"'],
+    ['`/Users/me/x`', '`~/x`'],
+    ['홈은 /Users/me.', '홈은 ~.'],
+    // worktree 상대 — 이어진 둘 다
+    ['diff /Users/me/repos/app/a.ts,/Users/me/repos/app/b.ts', 'diff a.ts,b.ts'],
+    ['cd /Users/me/repos/app && ls', 'cd . && ls'],
+    ['Read:/Users/me/repos/app/src/x.ts', 'Read:src/x.ts'],
+    // 비슷한 다른 이름 · 다른 홈 · 홈 밖 — 그대로
+    ['/Users/meow/x /Users/me2/y /Users/me.bak/z', '/Users/meow/x /Users/me2/y /Users/me.bak/z'],
+    ['/Users/me/repos/app-other/x', '~/repos/app-other/x'],
+    ['/tmp/x /opt/me', '/tmp/x /opt/me'],
+    ['x/Users/me/a', 'x/Users/me/a'],
+  ]
+  for (const [input, expected] of cases) {
+    it(`${input} → ${expected}`, () => {
+      expect(maskPaths({ text: input, ...place })).toBe(expected)
+    })
+  }
+
+  it('실제 buildMobileList 페이로드 — 대입·콜론·이어진 경로가 전송 미리보기에 홈 절대경로를 남기지 않는다', () => {
+    const list = buildMobileList({
+      state: listFixture({
+        p20: { digest: { providerTitle: '알림 모듈 리팩터', tool: { name: 'Bash', input: 'PATH=/fx/home/.local/bin npm test' } } },
+        p6: { digest: { firstPrompt: '재연결 정책 조사', lastPrompt: 'Read:/fx/home/private/a.ts', lastActivityAt: FIXTURE_NOW } },
+        p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Bash', input: 'cp /fx/home/a,/fx/home/b /fx/corral/.wt/life-579-impl/x' } } },
+      }),
+      prefs: null,
+      now: FIXTURE_NOW,
+    })
+    expect(byTitle(list, '알림 모듈 리팩터').preview).toEqual({ kind: 'approval', text: 'Bash · PATH=~/.local/bin npm test' })
+    expect(byTitle(list, '재연결 정책 조사').preview).toEqual({ kind: 'prompt', text: 'Read:~/private/a.ts' })
+    expect(byTitle(list, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Bash · cp ~/a,~/b x' })
+    expect(JSON.stringify(list)).not.toContain('/fx/home')
+  })
+
+  it('음성 대조 — 같은 페이로드를 홈 없이(home "") 만들면 절대경로가 남는다(시험이 그 글을 실제로 본다)', () => {
+    const pane = fixturePane('x', 'claude', { agentStatus: 'working', digest: { tool: { name: 'Bash', input: 'PATH=/fx/home/.local/bin npm test' } } })
+    expect(previewOf({ pane, dot: 'working', place: { worktree: null, home: '' } })).toEqual({ kind: 'tool', text: 'Bash · PATH=/fx/home/.local/bin npm test' })
+  })
+})

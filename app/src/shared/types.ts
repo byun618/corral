@@ -3,6 +3,7 @@ import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
+import type { MobilePairingResult, MobileStatus } from './mobile.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1060,5 +1061,13 @@ export type CorralApi = {
   onWindowChrome: (listener: (chrome: WindowChrome) => void) => () => void
   /** 줌이 바뀌었을지 모를 때(창 resize) — main 이 줌을 다시 읽어 신호등을 옮기고 상태를 민다. */
   syncWindowZoom: () => void
+  // --- 설정 › Mobile (LIFE-577) — 켜기·끄기는 `setSettings({ mobileEnabled })`. 상태 push 에는 토큰·코드가 없다 ---
+  getMobileStatus: () => Promise<MobileStatus | null>
+  onMobileStatus: (listener: (status: MobileStatus) => void) => () => void
+  /** 새 1회용 코드 + QR. 이전 코드는 무효가 된다. 코드는 이 응답에만 실린다. */
+  createMobilePairing: () => Promise<MobilePairingResult>
+  revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
+  /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
+  recheckMobile: () => Promise<MobileStatus | null>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

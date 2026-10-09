@@ -1,0 +1,119 @@
+// repro 스크립트(`scripts/l577/repro.mjs`)를 실제 서버에 돌린다 (LIFE-577 A9) — 스크립트가 거절 행렬을 맞게 판정하고,
+// 출력에 토큰·코드 원문이 없고, 종료 코드로 성패를 내는지.
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import { afterEach, describe, expect, it } from 'vitest'
+import { PairingStore, PAIRING_TTL_MS } from './pairing.js'
+import { MobileServer } from './server.js'
+
+const run = promisify(execFile)
+const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
+const REPRO = path.join(APP, 'scripts/l577/repro.mjs')
+
+const cleanups: (() => Promise<void> | void)[] = []
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+})
+
+type Outcome = { code: number; rows: Record<string, unknown>[]; stdout: string }
+
+async function repro(args: string[]): Promise<Outcome> {
+  try {
+    const { stdout } = await run(process.execPath, [REPRO, ...args], { cwd: APP, timeout: 60_000 })
+    return { code: 0, rows: parse(stdout), stdout }
+  } catch (error) {
+    const failure = error instanceof Error && 'stdout' in error && 'code' in error ? error : null
+    const stdout = failure !== null && typeof failure.stdout === 'string' ? failure.stdout : ''
+    return { code: failure !== null && typeof failure.code === 'number' ? failure.code : -1, rows: parse(stdout), stdout }
+  }
+}
+
+function parse(stdout: string): Record<string, unknown>[] {
+  return stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => JSON.parse(line))
+}
+
+async function setup(): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l577x-'))
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+  let now = Date.now()
+  const store = new PairingStore({ dir: path.join(dir, 'mobile'), now: () => now })
+  store.load()
+  const server = new MobileServer({ pairing: store, appVersion: '0.1.2-test', log: () => {}, onChange: () => {}, authTimeoutMs: 300 })
+  const port = await server.start()
+  cleanups.push(() => server.stop())
+  return { url: `ws://127.0.0.1:${port}/ws`, store, server, dir, advance: (ms) => { now += ms } }
+}
+
+describe('repro 스크립트 (A9)', () => {
+  it('pair → hello → ping 통과(exit 0), 토큰 파일 0600, 출력에 코드·토큰 원문 없음', async () => {
+    const { url, store, dir } = await setup()
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'token')
+    const out = await repro(['pair', '--url', url, '--code', code, '--name', 'repro', '--token-out', tokenFile])
+    expect(out.code).toBe(0)
+    expect(out.rows.map((row) => row.step)).toEqual(['pair', 'after-pair:hello', 'after-pair:ping', undefined])
+    const token = fs.readFileSync(tokenFile, 'utf8').trim()
+    expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600)
+    expect(out.stdout).not.toContain(code)
+    expect(out.stdout).not.toContain(token)
+    expect(out.stdout).toContain('<redacted>')
+    const hello = await repro(['hello', '--url', url, '--token-file', tokenFile])
+    expect(hello.code).toBe(0)
+    expect(hello.stdout).not.toContain(token)
+  })
+
+  it('거절 행렬 전부 + 양성 대조 — 모든 줄 통과(exit 0)', async () => {
+    const { url, store, dir, advance } = await setup()
+    // 양성 대조용 기기
+    const good = store.createCode()
+    const tokenFile = path.join(dir, 'good')
+    expect((await repro(['pair', '--url', url, '--code', good.code, '--token-out', tokenFile])).code).toBe(0)
+    // 해지할 기기
+    const doomed = store.createCode()
+    const doomedFile = path.join(dir, 'doomed')
+    expect((await repro(['pair', '--url', url, '--code', doomed.code, '--token-out', doomedFile])).code).toBe(0)
+    const doomedId = store.list().find((device) => device.id !== store.authenticate(fs.readFileSync(tokenFile, 'utf8').trim())?.id)?.id
+    if (doomedId === undefined) throw new Error('기기 없음')
+    store.revoke(doomedId)
+    // 만료 코드. 틀린 pair 시도는 **그때 유효한 코드**의 실패 횟수로 센다 — 그래서 사용·만료 코드 줄과 「5회 틀린 뒤 정답」 은 실행을 나눈다.
+    const expired = store.createCode()
+    advance(PAIRING_TTL_MS + 1)
+    const first = await repro([
+      'matrix', '--url', url, '--token-file', tokenFile, '--revoked-token-file', doomedFile,
+      '--used-code', good.code, '--expired-code', expired.code, '--auth-timeout',
+    ])
+    const fresh = store.createCode()
+    const second = await repro(['matrix', '--url', url, '--token-file', tokenFile, '--fresh-code', fresh.code])
+    for (const out of [first, second]) {
+      expect(out.rows.filter((row) => row.pass === false)).toEqual([])
+      expect(out.code).toBe(0)
+    }
+    const steps = [...first.rows, ...second.rows].map((row) => row.step).filter((step) => typeof step === 'string')
+    expect(steps).toEqual(expect.arrayContaining([
+      'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:bad-json',
+      'ws:protocol-mismatch', 'ws:too-large', 'ws:revoked-token', 'ws:used-code', 'ws:expired-code',
+      'ws:wrong-code-5', 'ws:right-code-after-5-wrong', 'ws:auth-timeout', 'positive:hello', 'positive:ping',
+    ]))
+    const stdout = first.stdout + second.stdout
+    for (const secret of [good.code, expired.code, fresh.code, fs.readFileSync(tokenFile, 'utf8').trim(), fs.readFileSync(doomedFile, 'utf8').trim()]) {
+      expect(stdout).not.toContain(secret)
+    }
+  }, 60_000)
+
+  it('양성 대조가 실패하면 exit 1 — 틀린 토큰 파일', async () => {
+    const { url, dir } = await setup()
+    const bad = path.join(dir, 'bad')
+    fs.writeFileSync(bad, 'not-a-token\n')
+    const out = await repro(['hello', '--url', url, '--token-file', bad])
+    expect(out.code).toBe(1)
+  })
+
+  it('사용법 오류는 exit 2', async () => {
+    const out = await repro(['nope'])
+    expect(out.code).toBe(2)
+  })
+})

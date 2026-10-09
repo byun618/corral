@@ -111,12 +111,18 @@ import { trafficLightPosition } from '../shared/window-chrome.js'
 import { bindStartupZoomSync, pushWindowChrome as pushChrome, syncWindowZoom, windowChromeOf } from './window-zoom.js'
 import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
+import { MobileService } from './mobile/service.js'
+import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 /** 측정 실행인가 — control 소켓이 붙었을 때만 참. A4 프레임 로그 같은 계측 잡음을 여기 가둔다. */
 if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USER_DATA)
 let stopRuntime: (() => Promise<void>) | null = null
+/** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
+let mobile: MobileService | null = null
+/** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
+const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 /** 런타임 디스패처 (LIFE-478) — GUI 카드 메뉴가 CLI 와 같은 `worktree set`/`worktree rm` 을 이 손으로 돈다. */
 let runtimeInvoke: ((invocation: Invocation) => Promise<RpcResponse>) | null = null
 let keybindings: KeybindingStore
@@ -1540,6 +1546,22 @@ app.whenReady().then(async () => {
   uiPrefs.load()
   settings = new SettingsStore(app.getPath('userData'))
   settings.load()
+  mobile = new MobileService({
+    userData: app.getPath('userData'),
+    appVersion: app.getVersion(),
+    log,
+    onStatus: (status) => {
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:mobile', status)
+    },
+    // `CORRAL_TAILSCALE_BIN` — 격리 실행이 가짜 CLI 를 꽂을 때만(있으면 그것만 본다). 평시는 알려진 위치 → 로그인 셸.
+    locate: () => locateTailscale({
+      override: process.env.CORRAL_TAILSCALE_BIN,
+      candidates: KNOWN_TAILSCALE_LOCATIONS,
+      isExecutable: isExecutableFile,
+      loginShellLookup: loginShellTailscale,
+    }),
+    run: runTailscale,
+  })
   log('app.ready', {
     logFile: file,
     electron: process.versions.electron,
@@ -1616,6 +1638,8 @@ app.whenReady().then(async () => {
         // 변경 푸시 — 렌더러는 이 값만 진실로 쓴다(검증·저장을 통과한 값). 단일 창이라 브로드캐스트는 그 창 하나다(510 S11).
         log('settings.changed', { keys: Object.keys(typeof patch === 'object' && patch !== null ? patch : {}) })
         window?.webContents.send('corral:settings', result.settings)
+        // 모바일 스위치가 바뀐 경우만 넘긴다 — 다른 칸 저장마다 tailscale 을 다시 읽지 않게.
+        if (mobile !== null && mobile.status().enabled !== result.settings.mobileEnabled) void mobile.setEnabled(result.settings.mobileEnabled)
         return result
       case 'unchanged':
         return result
@@ -1633,6 +1657,22 @@ app.whenReady().then(async () => {
       env: { home: os.homedir(), xdgConfigHome: process.env.XDG_CONFIG_HOME, ghosttyResourcesDir: process.env.GHOSTTY_RESOURCES_DIR },
       current: settings?.get() ?? { ...DEFAULT_SETTINGS },
     })
+  })
+
+  // 설정 › Mobile (LIFE-577) — 상태에는 토큰·코드가 없다. 코드는 createMobilePairing 응답에만 실린다(로그에도 안 남긴다).
+  ipcMain.handle('corral:getMobileStatus', (event) => (fromOurWindow(event) && mobile !== null ? mobile.status() : null))
+  ipcMain.handle('corral:createMobilePairing', (event) =>
+    fromOurWindow(event) && mobile !== null ? mobile.createPairing() : { ok: false, error: '허용되지 않은 발신자' },
+  )
+  ipcMain.handle('corral:revokeMobileDevice', (event, input: unknown) => {
+    if (!fromOurWindow(event) || mobile === null) return { ok: false }
+    const id = typeof input === 'object' && input !== null && 'id' in input && typeof input.id === 'string' ? input.id : ''
+    return { ok: mobile.revoke(id) }
+  })
+  ipcMain.handle('corral:recheckMobile', async (event) => {
+    if (!fromOurWindow(event) || mobile === null) return null
+    await mobile.recheckNow()
+    return mobile.status()
   })
 
   // --- 라이프사이클 (R3) ---
@@ -1869,9 +1909,13 @@ app.whenReady().then(async () => {
       return socket === null || selectedSession !== DEFAULT_SESSION ? null : { socket, session: DEFAULT_SESSION }
     },
   })
-  stopRuntime = runtime.close
+  // 종료 체인 하나 — 런타임 정리와 모바일 정리(serve 항목 제거, 마감 있음)를 같이 기다린다. 한쪽이 실패해도 다른 쪽을 끝까지 기다린다.
+  const mobileService = mobile
+  stopRuntime = () => Promise.allSettled([mobileService.shutdown(MOBILE_SHUTDOWN_DEADLINE_MS), runtime.close()]).then(() => undefined)
   runtimeInvoke = runtime.invoke
   createWindow()
+  // 저장된 스위치 값으로 — 꺼져 있으면 아무것도 열지 않는다(A1). 켜 둔 상태면 서버를 열고 serve 항목을 다시 올린다(A8ⓐ).
+  void mobileService.start(settings.get().mobileEnabled)
   // 「Install CLI」 (LIFE-556 B14) — 설치본만. 개발 실행에는 번들 shim 이 없다.
   if (app.isPackaged) addInstallCliMenu({ shim: path.join(process.resourcesPath, 'bin', 'corral'), target: cliTarget(os.homedir()), window: () => window })
   void pollSessions()
@@ -1912,6 +1956,11 @@ app.whenReady().then(async () => {
     readClipboard: () => clipboard.readText(),
     // S6 — 연결이 매 서피스마다 세고 있던 자기정합 위반 수를 밖으로 낸다 (읽기 전용).
     counters: () => stream.counters(),
+    mobile: {
+      status: () => mobileService.status(),
+      createPairing: () => mobileService.createPairing(),
+      revoke: (id) => mobileService.revoke(id),
+    },
   })
 
   app.on('activate', () => {

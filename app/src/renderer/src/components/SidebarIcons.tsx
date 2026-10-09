@@ -252,6 +252,16 @@ export function BotIcon({ className }: { className?: string }): React.JSX.Elemen
   )
 }
 
+/** lucide `Smartphone` — 설정 내비 「Mobile」(LIFE-577). */
+export function SmartphoneIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+      <path d="M12 18h.01" />
+    </svg>
+  )
+}
+
 /** lucide `Terminal` — 기본 Agent 「agent 없음(빈 terminal)」 pill(198 `AgentDefaultSetting.tsx`, LIFE-515). */
 export function TerminalIcon({ className }: { className?: string }): React.JSX.Element {
   return (

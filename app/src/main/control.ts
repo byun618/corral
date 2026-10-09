@@ -45,6 +45,15 @@ export type ControlHandlers = {
    * "매 프레임 위반 0" 은 밖에서 폴링해서는 만들 수 없는 수라 이 문을 낸다 (읽기 전용).
    */
   counters: () => unknown
+  /**
+   * LIFE-577 최종 관문의 자동 경로 — repro 스크립트가 화면을 읽지 않고 페어링 코드를 받는다. 이 소켓은 계측 실행에만 열리고(0600)
+   * 응답은 로그에 남지 않는다(`control.cmd` 는 요청 줄만 적는다). 평시 실행에는 이 길이 없다.
+   */
+  mobile: {
+    status: () => unknown
+    createPairing: () => unknown
+    revoke: (id: string) => unknown
+  }
 }
 
 /**
@@ -163,6 +172,15 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       }
       case 'state':
         reply({ ok: true, at: Date.now(), state: handlers.state() })
+        return
+      case 'mobile-status':
+        reply({ ok: true, at: Date.now(), mobile: handlers.mobile.status() })
+        return
+      case 'mobile-pairing':
+        reply({ ok: true, at: Date.now(), pairing: handlers.mobile.createPairing() })
+        return
+      case 'mobile-revoke':
+        reply({ ok: true, at: Date.now(), revoked: handlers.mobile.revoke(readString(parsed, 'id') ?? '') })
         return
       /** S6 — 연결별 누적 카운터. 재는 대상의 **자기 신고**라 판정은 제3 오라클과 함께 읽는다. */
       case 'counters':

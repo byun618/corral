@@ -315,3 +315,19 @@
 .settings-agent-pill:hover { border-color: color-mix(in srgb, var(--fg-muted) 35%, transparent); color: var(--fg); }
 .settings-agent-pill.is-active { border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent); background: var(--bg-accent); font-weight: 500; color: var(--fg); }
 .settings-agent-pill-icon { width: 14px; height: 14px; flex-shrink: 0; }
+
+/* --- 원격 호스트 › Mobile (LIFE-577) --- */
+.mobile-check-mark { display: inline-block; width: 14px; text-align: center; font-weight: 600; }
+.mobile-check-mark.is-ok { color: var(--accent); }
+.mobile-check-mark.is-fail { color: var(--st-error); }
+.mobile-check-mark.is-unknown { color: var(--fg-muted); }
+.mobile-address, .mobile-code, .mobile-payload { font-family: var(--font-mono); font-size: 12px; color: var(--fg); user-select: text; overflow-wrap: anywhere; }
+.mobile-code { font-size: 16px; letter-spacing: 2px; }
+.mobile-warning { margin: 8px 0; font-size: 12px; color: var(--st-error); }
+.mobile-pairing { display: flex; gap: 16px; align-items: flex-start; padding: 12px 0; }
+.mobile-qr { width: 200px; height: 200px; flex-shrink: 0; border-radius: var(--radius-sm); }
+.mobile-pairing-text { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; min-width: 0; }
+.mobile-pairing-text dt { color: var(--fg-muted); }
+.mobile-pairing-text dd { margin: 0; min-width: 0; user-select: text; }
+.mobile-connected { color: var(--accent); font-size: 10px; }
+.mobile-empty { padding: 8px 0; }

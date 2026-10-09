@@ -14,6 +14,15 @@ const { state } = await control({ cmd: 'state' })
 const panes = []
 for (const repo of state.repos ?? []) for (const wt of repo.worktrees ?? []) for (const tab of wt.workspace?.tabs ?? []) for (const pane of tab.panes ?? [])
   panes.push({ worktree: wt.path, workspaceId: wt.workspace.workspaceId, tabId: tab.tabId, title: tab.title ?? tab.label ?? null, paneId: pane.paneId, agent: pane.agent ?? null, agentStatus: pane.agentStatus ?? pane.agentState?.status ?? null, agentState: pane.agentState ?? null })
+// 최종 관문: 에이전트가 2개 이상이면 사이드바가 행을 요약 알약([data-agent-group], aria-expanded=false)으로 접는다 —
+// 접힌 상태에서는 [data-agent-row] 가 0개라 렌더 확인(F4)이 거짓이 된다(C1 15-obs 의 빈 목록도 이것). 읽기 전에 접힌 묶음을 펼친다.
+const expand = await control({ cmd: 'eval', code: `(() => {
+  const folded = [...document.querySelectorAll('[data-agent-group][aria-expanded="false"]')]
+  const titles = [...document.querySelectorAll('[data-agent-group]')].map((el) => el.getAttribute('title'))
+  for (const el of folded) el.click()
+  return { expanded: folded.length, groupTitles: titles }
+})()` })
+await new Promise((resolve) => setTimeout(resolve, 400))
 const dom = await control({ cmd: 'eval', code: `(() => {
   const rows = (src) => [...document.querySelectorAll('[data-agent-row-source="' + src + '"]')].map((el) => ({ key: el.getAttribute('data-agent-row'), text: el.textContent.trim().slice(0, 160) }))
   return { agentRows: document.querySelectorAll('[data-agent-row]').length, retained: rows('retained'), live: rows('live'), closedTabText: [...document.querySelectorAll('.session-row-second')].filter((el) => el.textContent.includes('닫힌 탭')).length }
@@ -22,11 +31,13 @@ const result = {
   label, at: new Date().toISOString(), watch,
   store: { retainedAgents: state.retainedAgents ?? null, retainedCount: (state.retainedAgents ?? []).length, livePanes: panes },
   dom: dom.ok ? dom.result : { error: dom },
+  groupExpand: expand.ok ? expand.result : { error: expand },
 }
 const rendered = dom.ok && dom.result.agentRows > 0
 result.summary = {
   storeRetained: result.store.retainedCount,
   domRendered: rendered,
+  groupTitles: expand.ok ? expand.result.groupTitles : null,
   domRetained: rendered ? dom.result.retained.length : null,
   domClosedTabText: rendered ? dom.result.closedTabText : null,
   watched: watch.map((paneId) => ({ paneId, live: panes.find((p) => p.paneId === paneId) ?? null,

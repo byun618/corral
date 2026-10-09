@@ -1,6 +1,7 @@
 // A3 붙는 중 → A4 성공 / A6–A9 실패(+ 코드 무효·저장 실패·기기 가득·노출 막힘). 상태는 연결 관리자의 pair 상태 하나에서 나온다.
 import { useRouter } from 'expo-router'
 import { ActivityIndicator, Text, View } from 'react-native'
+import { statusLine } from '../../src/core/band'
 import type { PairState } from '../../src/core/connection'
 import { connection, useConnection } from '../../src/runtime/connection'
 import { Button } from '../../src/ui/Button'
@@ -91,7 +92,7 @@ function errorView(failed: Failed, appVersion: string, go: { rescan: () => void;
 
 export default function PairProgress() {
   const router = useRouter()
-  const { pair, appVersion } = useConnection()
+  const { conn, pair, appVersion } = useConnection()
   const go = {
     rescan: () => {
       connection.resetPair()
@@ -130,7 +131,15 @@ export default function PairProgress() {
               <View className="h-16 w-16 items-center justify-center rounded-full border-2 border-accent">
                 <Text className="text-[28px] text-accent">✓</Text>
               </View>
-              <Text className="text-center text-screen font-semibold text-fg">{pair.macName} 와 연결했습니다</Text>
+              {/* 등록 성공과 지금 연결 상태를 나눠 보인다 — 「연결했습니다」 는 연결됨 위에서만(R3-A2). */}
+              <Text className="text-center text-screen font-semibold text-fg">
+                {conn.kind === 'connected' ? `${pair.macName} 와 연결했습니다` : `${pair.macName} 에 이 폰을 등록했습니다`}
+              </Text>
+              {conn.kind === 'connected' ? null : (
+                <Text className={`text-center text-preview ${statusLine(conn, pair.macName).tone === 'error' ? 'text-error' : 'text-fg-muted'}`}>
+                  {statusLine(conn, pair.macName).text}
+                </Text>
+              )}
               <Text className="text-[13px] text-fg-muted" style={{ fontFamily: mono }}>
                 corral {pair.serverVersion} · 앱 {appVersion}
               </Text>

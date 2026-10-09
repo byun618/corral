@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// 화면 시험 (리뷰 r1 R1-A5·A6·A7·A4 · r2 R2-A1·A3·권한) — RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
+// 화면 시험 (리뷰 r1 R1-A5·A6·A7·A4 · r2 R2-A1·A3·권한 · r3 R3-A2) — RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
 // 카메라 권한 훅은 expo-modules-core 의 실제 `createPermissionHook`(복귀 갱신을 스스로 하지 않는 그 훅)을 쓴다.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -299,5 +299,25 @@ describe('r2 권한 — 최초 확인만 묻고 복귀 갱신은 묻지 않는�
     await act(async () => root.render(<PairScan />))
     await settle()
     expect(ctx.requestCalls).toBe(1)
+  })
+})
+
+describe('R3-A2 — A4 는 등록 성공과 지금 연결 상태를 나눠 보인다', () => {
+  it('연결됨 → 「와 연결했습니다」 · 확인 중 → 「등록했습니다」 + 「연결 확인 중」 · 끊김 → 「등록했습니다」 + 「끊김」, 「대화방 보기」 는 그대로', async () => {
+    const paired = { kind: 'paired' as const, macName: 'test-mac', serverVersion: '1' }
+    ctx.snapshot = { conn: { kind: 'connected', since: 1, lastAliveAt: 1 }, pair: paired, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    expect(container.textContent).toContain('test-mac 와 연결했습니다')
+    expect(container.textContent).not.toContain('등록했습니다')
+    ctx.snapshot = { conn: { kind: 'checking', since: 1, lastConnectedAt: 0 }, pair: paired, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    expect(container.textContent).toContain('test-mac 에 이 폰을 등록했습니다')
+    expect(container.textContent).toContain('연결 확인 중')
+    expect(container.textContent).not.toContain('와 연결했습니다')
+    ctx.snapshot = { conn: { kind: 'reconnecting', since: 1, lastConnectedAt: 0, attempt: 2, reason: 'probe_timeout', offline: true }, pair: paired, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    expect(container.textContent).toContain('등록했습니다')
+    expect(container.textContent).toContain('끊김')
+    expect(buttons().map((b) => b.textContent)).toEqual(['대화방 보기'])
   })
 })

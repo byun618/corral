@@ -518,13 +518,9 @@ export class ConnectionManager {
     if (this.current !== attempt || attempt.ended) return
     const error = attempt.lastError
     this.log('closed', { attempt: attempt.seq, code, error, phase: attempt.phase })
-    if (attempt.purpose === 'pair' && attempt.phase === 'saving') {
-      // 토큰은 이미 받았다 — 실패가 아니다. 저장이 끝나면 hello 로 다시 붙는다(R2-A1).
-      this.endAttempt(attempt)
-      return
-    }
-    if (attempt.purpose === 'pair') return this.pairFailed(attempt, code)
-    // E4 — 서버가 명시적으로 거절한 경우만 토큰을 지운다.
+    if (attempt.purpose === 'pair' && attempt.phase !== 'saving') return this.pairFailed(attempt, code)
+    // E4 — 서버가 명시적으로 거절한 경우만 토큰을 지운다. 토큰 저장 중(pair·saving)에 받은 거절도 같다 —
+    // dropPairing 이 세대를 올려 늦은 저장을 무효로 하고, 삭제는 이미 떠난 저장 뒤에 줄을 선다(R3-A1).
     if (error === 'revoked' || code === CLOSE.revoked) {
       this.endAttempt(attempt)
       void this.dropPairing('revoked')
@@ -533,6 +529,11 @@ export class ConnectionManager {
     if (error === 'unauthorized' || (code === CLOSE.unauthorized && error !== 'not_authenticated')) {
       this.endAttempt(attempt)
       void this.dropPairing('unauthorized')
+      return
+    }
+    if (attempt.purpose === 'pair') {
+      // 저장 중 그 밖의 종료(망 오류·1001·1006·4006·4008·4009…) — 토큰은 이미 받았다, 실패가 아니다. 저장이 끝나면 hello 로 다시 붙는다(R2-A1).
+      this.endAttempt(attempt)
       return
     }
     if (error === 'protocol_mismatch' || code === CLOSE.protocolMismatch) {

@@ -6,7 +6,9 @@
 // **`/` 프록시가 기록과 같을 때만**. 포트만 보고 지우지 않는다(00-analysis W2·W5). 포트 점유와 `/` 소유는 따로 본다(fix1 R1-A4) —
 // 같은 host:port 에 남의 다른 경로가 있어도 `/` 는 우리 것이고, 끄기(`--set-path=/ off`)는 `/` 만 지운다.
 // - 추가 **전에** 기록을 쓴다 — 추가 직후 죽어도 다음 기동이 그 항목을 자기 것으로 알아본다. 추가가 안 됐으면 기록만 지운다.
-// - `/` 가 기록과 다르면 남의 것 → 덮어쓰지 않고 기록을 버린다. 그 포트를 남이 쓰면(Foreground 포함, R1-N1) `foreign`.
+// - `/` 가 기록과 다르면(Proxy 아님·대상 다름·없음) 남의 것이거나 사라진 것 → 기록을 버린다.
+// - **올리기는 전용 포트가 완전히 비었을 때만**(수정 r4) — 남의 것이 하나라도 있으면 자기 `/` 는 지울 수 있어도 다시 올리지 않고 `foreign`.
+//   대상 교체(크래시 뒤 새 서버 포트)도 같다 — 남의 것이 모두 치워진 뒤 재확인이 빈 포트 등록으로 올린다.
 // - **쓰기(add·off) 직전에 다시 읽고, 쓰기 뒤에 다시 읽어 기대 상태와 대조한다(R1-A3)** — `/` 말고 다른 곳이 바뀌었으면
 //   `failed` + 경고. CLI 방식이라 「읽기 → 쓰기」 사이 ms 창의 외부 변경 경합은 남는다(SURFACE.md 위협 모델).
 // - Tailscale 이름이 바뀌면(R1-A11) 옛 이름의 `/` 를 CLI 로 지울 수 없다 — `off` 는 **지금** 이름으로 키를 만든다
@@ -44,12 +46,8 @@ type Checklist = MobileChecklist
 type BlockReason = MobileBlockReason
 type Exposure = MobileExposure
 
-/**
- * `vacant` — 자기 `/` 를 대상 교체하려고 **내린 뒤 아직 다시 올리지 못한** 자리(fix3 R3-A1). 그 host:port 의 `/` 가 비어 있는 동안은
- * 같은 host 의 남의 다른 경로와 공존하는 재등록(owned)을 허용한다. add 실패·재확인·앱 재기동 너머로 남고, 사용자가 끄면 놓는다.
- * 기록 없는 최초 등록(R2-A3)과는 다르다 — 이 표시는 corral 이 그 자리에서 자기 `/` 를 내렸을 때만 생긴다.
- */
-export type OwnerRecord = { host: string; httpsPort: number; target: string; vacant: boolean }
+/** 지금 설정에 있는 자기 `/`(host·target 이 일치하는 Proxy)를 가리킬 때만 의미가 있다 — 자기 `/` 가 사라지면 버린다(수정 r4). */
+export type OwnerRecord = { host: string; httpsPort: number; target: string }
 
 type Desired = { on: false } | { on: true; serverPort: number }
 
@@ -234,16 +232,11 @@ export class ServeExposure {
       })
       return
     }
-    // 교체 중 비워 둔 자기 자리(R3-A1) — 기록이 vacant 이고 같은 이름의 `/` 가 아직 비어 있다.
-    const slot = record !== null && !ours && record.vacant && record.httpsPort === port && record.host === status.dnsName &&
-      rootTarget({ config, host: record.host, port }) === null
-    if (record !== null && !ours && !slot) this.deleteRecord('not_ours_or_gone')
+    if (record !== null && !ours) this.deleteRecord('not_ours_or_gone')
 
     // 꺼짐(또는 막힘) 쪽 — 우리 항목만 내린다.
     if (!desired.on) {
       if (ours && (await this.remove({ record })) === 'failed') return
-      // 비워 둔 자리 — 앱 종료면 재기동이 이어서 올리도록 남기고, 사용자가 끄면 놓는다(쓸 serve 항목은 없다).
-      if (slot && !this.closed) this.deleteRecord('slot_released')
       this.set({ kind: 'off' })
       return
     }
@@ -269,23 +262,16 @@ export class ServeExposure {
     const host = status.dnsName
     const target = serveTarget(desired.serverPort)
     if (ours && record.target === target) {
-      // 재등록 직후 죽어 vacant 표시가 남았으면 지운다.
-      if (record.vacant) this.writeRecord({ ...record, vacant: false })
       return this.set(this.exposedState(host))
     }
-    // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 내리고 다시 올린다(그 자리는 우리 것이었다 — owned).
-    // 내릴 때 기록을 지우지 않고 vacant 로 남긴다 — 다시 올리기가 실패해도 재확인·재기동이 같은 자리를 이어 받는다(R3-A1).
-    let owned = slot
-    if (ours) {
-      const outcome = await this.remove({ record, keepSlot: true })
-      if (outcome === 'failed') return
-      owned = outcome === 'removed'
-    }
-    await this.add({ host, target, serverPort: desired.serverPort, owned })
+    // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 자기 `/` 를 내리고, 포트가 비었을 때만 다시 올린다(수정 r4 —
+    // 남의 것이 남아 있으면 add 가 foreign 으로 끝난다. 남의 것이 모두 치워진 뒤 재확인이 빈 포트 등록으로 올린다).
+    if (ours && (await this.remove({ record })) === 'failed') return
+    await this.add({ host, target, serverPort: desired.serverPort })
   }
 
-  /** `owned` — 방금 내린 우리 `/` 자리에 다시 올린다. 거짓이면 기록 없는 최초 등록이라 포트가 완전히 비어야 한다(R2-A3). */
-  private async add(input: { host: string; target: string; serverPort: number; owned: boolean }): Promise<void> {
+  /** 등록은 언제나 **빈 포트에만**(R2-A3 · 수정 r4) — `<host>:8577` 에 TCP·Web 칸·Foreground 가 하나라도 있으면 foreign. */
+  private async add(input: { host: string; target: string; serverPort: number }): Promise<void> {
     const port = this.deps.httpsPort
     // 쓰기 직전 재조회(R1-A3) — 그 사이 남이 포트·`/` 를 잡았으면 덮지 않는다.
     const before = await this.readServe()
@@ -293,14 +279,14 @@ export class ServeExposure {
       this.set({ kind: 'failed', message: 'serve 설정을 다시 읽지 못했다 — 아무것도 바꾸지 않았다' })
       return
     }
-    if (!rootAddable({ config: before, host: input.host, port, owned: input.owned })) {
+    if (!rootAddable({ config: before, port })) {
       this.deps.log('mobile.serve_foreign', { httpsPort: port })
-      this.set({ kind: 'foreign', message: `HTTPS 포트 ${port} 를 다른 항목이 쓰고 있다 — 덮어쓰지 않는다` })
+      this.set({ kind: 'foreign', message: `HTTPS 포트 ${port} 에 다른 항목이 있다 — corral 은 덮어쓰거나 같이 올리지 않는다. 그 항목을 치우면 다시 확인에서 올린다` })
       return
     }
     // 그 사이 꺼짐·종료가 들어왔으면 올리지 않는다(R1-A1).
     if (!this.desired.on || this.closed) return
-    this.writeRecord({ host: input.host, httpsPort: port, target: input.target, vacant: input.owned })
+    this.writeRecord({ host: input.host, httpsPort: port, target: input.target })
     const run = await this.call(serveAddArgs({ httpsPort: port, serverPort: input.serverPort }), TAILSCALE_WRITE_TIMEOUT_MS)
     // 결과를 믿지 않고 다시 읽어 확인한다 — 「추가했다」 는 serve 설정에 우리 `/` 가 보이고 나머지가 그대로일 때만.
     const after = await this.readServe()
@@ -312,16 +298,13 @@ export class ServeExposure {
         this.set({ kind: 'failed', message: `serve 항목은 올렸지만 ${CONCURRENT_WARNING}` })
         return
       }
-      if (input.owned) this.writeRecord({ host: input.host, httpsPort: port, target: input.target, vacant: false })
       this.deps.log('mobile.serve_added', { httpsPort: port, target: input.target })
       this.warning = null
       this.set(this.exposedState(input.host))
       return
     }
-    // 비워 둔 자기 자리(owned)면 기록을 vacant 로 남겨 재시도가 같은 자리를 잇는다(R3-A1). 최초 등록이면 지운다.
-    if (now === null) {
-      if (!input.owned) this.deleteRecord('add_failed')
-    } else if (now !== undefined) {
+    if (now === null) this.deleteRecord('add_failed')
+    else if (now !== undefined) {
       // `/` 가 남의 대상이다 — 우리 쓰기와 겹쳐 남이 잡았다. 기록을 버리고 덮지 않는다.
       this.deleteRecord('foreign')
       this.warning = CONCURRENT_WARNING
@@ -334,7 +317,7 @@ export class ServeExposure {
    * 우리 `/` 제거 — 쓰기 직전에 다시 읽어 아직 우리 것일 때만 off 하고(R1-A3), 다시 읽어 `/` 가 사라졌으면 기록을 지운다.
    * `/` 밖이 같이 바뀌었으면 `failed` + 경고. 실패면 기록을 남겨 다음 재확인이 마무리한다.
    */
-  private async remove(input: { record: OwnerRecord; keepSlot?: boolean }): Promise<RemoveOutcome> {
+  private async remove(input: { record: OwnerRecord }): Promise<RemoveOutcome> {
     const record = input.record
     const port = this.deps.httpsPort
     const before = await this.readServe()
@@ -350,10 +333,8 @@ export class ServeExposure {
     const after = await this.readServe()
     const now = after === null ? undefined : rootTarget({ config: after, host: record.host, port })
     if (after !== null && now !== record.target && now !== undefined) {
+      this.deleteRecord(now === null ? 'removed' : 'foreign')
       const unchanged = now === null && sameJson(withoutRoot({ config: before, host: record.host, port }), withoutRoot({ config: after, host: record.host, port }))
-      // 대상 교체 중이면 자리를 vacant 로 남긴다(R3-A1). 동시 변경이 섞였거나 남이 `/` 를 잡았으면 놓는다.
-      if (unchanged && input.keepSlot === true) this.writeRecord({ ...record, vacant: true })
-      else this.deleteRecord(now === null ? 'removed' : 'foreign')
       if (unchanged) {
         this.deps.log('mobile.serve_removed', { httpsPort: port })
         return 'removed'
@@ -363,8 +344,10 @@ export class ServeExposure {
       this.set({ kind: 'failed', message: `serve 항목을 내리는 중 ${CONCURRENT_WARNING}` })
       return 'failed'
     }
-    this.deps.log('mobile.serve_remove_failed', { detail: run.ok ? 'still_visible' : run.detail })
-    this.set({ kind: 'failed', message: `serve 항목을 내리지 못했다(${run.ok ? '설정에 남음' : run.detail}) — 다음 재확인에서 다시 내린다` })
+    // 사후 조회 실패는 「남음」 으로 단정하지 않는다(R4-A1) — 기록은 남기되, 다음 조회에서 자기 `/` 가 없으면 버린다(host·target·Proxy 일치만 소유).
+    const detail = !run.ok ? run.detail : after === null ? '내린 뒤 설정을 다시 읽지 못함' : '설정에 남음'
+    this.deps.log('mobile.serve_remove_failed', { detail })
+    this.set({ kind: 'failed', message: `serve 항목을 내리지 못했다(${detail}) — 다음 재확인에서 다시 확인한다` })
     return 'failed'
   }
 
@@ -411,7 +394,7 @@ export class ServeExposure {
     const httpsPort = readNumber(parsed, 'httpsPort')
     const target = readString(parsed, 'target')
     if (host === null || httpsPort === null || target === null) return null
-    return { host, httpsPort, target, vacant: parsed.vacant === true }
+    return { host, httpsPort, target }
   }
 
   private writeRecord(record: OwnerRecord): void {

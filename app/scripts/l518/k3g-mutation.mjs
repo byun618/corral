@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { APP_DIR, PROBES, cellOk, runProbes } from './boundary-probes.mjs'
+import { APP_DIR, PROBES, cellState, runProbes } from './boundary-probes.mjs'
 
 const head = fs.readFileSync(path.join(APP_DIR, 'scripts/check-boundary.mjs'), 'utf8')
 const replaceOnce = ({ source = head, from, to }) => {
@@ -81,7 +81,7 @@ console.log(`변이 ${selected.length}/${MUTANTS.length}종${only ? ` (--only)` 
 let allFailed = true
 for (const mutant of selected) {
   const { clean, cells } = runProbes({ checkerSource: mutant.source })
-  const wrong = PROBES.flatMap((probe, index) => (cellOk({ probe, cell: cells[index] }) ? [] : [probe.id]))
+  const wrong = PROBES.flatMap((probe, index) => (cellState({ probe, cell: cells[index] }) !== 'fail' ? [] : [probe.id]))
   const cleanWrong = !(clean.exit === 0 && clean.위반 === 0 && clean.ipc === true)
   const failed = cleanWrong || wrong.length > 0
   allFailed &&= failed

@@ -26,8 +26,9 @@ const jsonFrame = (frame) => `export const frame = ${frame}\n`
 /**
  * group: K3 소항목. expect: 기대 규칙(null = 위반 0 이어야 하는 음성 대조).
  * flip: 기준 검사기에서 잡히고 고친 검사기에서 안 잡히는 것이 **허용된** 칸 — 01-criteria K3ⓔ 정의 ①·② 뿐.
- * knownMiss: **알려진 미검출**(LIFE-577 fix3 R3-N1) — `expect` 는 옳은 기대(위반)를 그대로 두고, 지금 검사기가 그것을 **못 잡는다는
- *   실제 결과**를 칸으로 고정한다. 통과로 위장하지 않는다: 칸은 「안 잡힘」 일 때만 맞고, 검사기가 잡게 되면 칸이 깨져 이 표시를 걷어 내게 한다.
+ * knownMiss: **알려진 미검출**(LIFE-577 fix3 R3-N1 · fix4 R4-A3) — `expect` 는 옳은 기대(위반)를 그대로 두고, 칸의 상태는 통과도 실패도 아닌
+ *   `known-miss` 다(`cellState`). `cellOk` 는 이 칸을 참으로 돌려주지 않는다 — 통과 수에 섞이지 않는다. 검사기가 정상 완료(exit 0·1 + 보고서)하고
+ *   안 잡았을 때만 `known-miss`, 실행 오류(보고서 없음·다른 exit)거나 잡게 되면 `fail`(표시를 걷어 낼 때).
  *   모바일 면제는 리터럴의 **구문 위치**만 본다 — 문장 간 값 흐름(`msg.type` 을 다른 문장에서 `method` 로 쓰기 등)은 추적하지 않는다.
  */
 export const PROBES = [
@@ -238,12 +239,18 @@ function makeSandbox(checkerSource) {
 }
 
 /** 칸이 기대대로인가 — nodetest·행렬·변이가 같은 판정식을 쓴다. */
-export function cellOk({ probe, cell }) {
-  // 알려진 미검출(R3-N1) — 기대(위반)는 그대로, 실제 「안 잡힘」 을 고정한다. 잡히게 되면 칸이 깨진다(표시를 걷어 낼 때).
-  if (probe.knownMiss !== undefined) return !cell.caught
+/** 칸 상태 — `pass` · `fail` · `known-miss`(알려진 미검출, R4-A3). 검사기 실행 오류는 언제나 `fail`. */
+export function cellState({ probe, cell }) {
+  if (cell.completed === false) return 'fail'
+  if (probe.knownMiss !== undefined) return cell.caught ? 'fail' : 'known-miss'
   const rules = probe.expect === null ? !cell.caught && cell.exit === 0 : cell.caught && cell.exit === 1
   const comments = probe.expectComment === undefined || JSON.stringify([...cell.commentTokens].sort()) === JSON.stringify([...probe.expectComment].sort())
-  return rules && comments
+  return rules && comments ? 'pass' : 'fail'
+}
+
+/** 기대대로 통과했나 — 알려진 미검출은 통과가 아니다(R4-A3). */
+export function cellOk({ probe, cell }) {
+  return cellState({ probe, cell }) === 'pass'
 }
 
 function runChecker(root) {
@@ -290,6 +297,8 @@ export function runProbes({ checkerSource, probes = PROBES }) {
           rules,
           tokens: mine.flatMap((item) => item.tokens ?? [item.specifier]),
           commentTokens: (report?.주석언급?.항목 ?? []).filter((item) => item.file === probe.file).flatMap((item) => item.tokens),
+          // 검사기가 정상 완료했나 — 보고서가 있고 exit 0·1. 실행 오류를 「안 잡음」 으로 읽지 않게(R4-A3).
+          completed: report !== null && (exit === 0 || exit === 1),
           caught: probe.expect === null ? mine.length > 0 : rules.includes(probe.expect),
         }
       } finally {

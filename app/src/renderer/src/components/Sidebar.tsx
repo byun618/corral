@@ -14,7 +14,8 @@ import {
   activeFilterCount,
   buildSidebarSections,
   collapsedAncestors,
-  hasValidLineage,
+  lineageAncestors,
+  lineageGraph,
   nestSectionItems,
   PINNED_SECTION_KEY,
   sectionKey,
@@ -110,7 +111,8 @@ export function Sidebar({
   onOpenSettings: () => void
   sidebarRef: RefObject<HTMLDivElement | null>
   width: number
-  state: AppState
+  /** 사이드바가 읽는 칸만(LIFE-576 — 배선 시험이 앱 상태 전체 없이 띄운다). */
+  state: Pick<AppState, 'repos' | 'integrations' | 'home' | 'retainedAgents' | 'orchestrationLineage'>
   activeWorkspaceId: string | null
   selectedPane: string | null
   selectPane: (paneId: string) => void
@@ -188,11 +190,15 @@ export function Sidebar({
     onCommit: (commit) => {
       // 순서 줄에 놓은 카드는 lineage 가 유효하면 부모를 푼다 — 부모가 화면에 보이든 아니든(D4 · 수정 r1 M2, Orca main
       // `getReorderedWorktreeIdsToUnnest` 「un-nest escape hatch」). 끈 카드의 후손 링크는 그대로, 부모 없는 카드는 lineage 를 안 쓴다.
-      if (commit.source.kind !== 'repo' && hasValidLineage({ repos: state.repos, path: commit.source.path })) removeParent(commit.source.path)
-      onReorder({ commit, layout: sectionLayout(sections) })
+      // 부모를 푸는 드롭은 평면 목록이 같아도 표시 줄 자리에 착지한다(`unnest` — 수정 r3 R2-A, Orca 와 다르게: Orca 는 no-op 이라 저장
+      // 순서가 드러나 카드가 부모 위로 튄다). 비수동 정렬이면 이 드롭도 「바뀐 드롭」 이라 Manual 로 간다.
+      const path = commit.source.kind === 'repo' ? null : commit.source.path
+      const unnest = path !== null && lineage.parentOf.has(path)
+      if (unnest) removeParent(path)
+      onReorder({ commit: unnest ? { ...commit, unnest: true } : commit, layout: sectionLayout(sections) })
     },
-    // 아래에서 정의하는 술어 — 끄는 동안 부를 때는 이 렌더가 끝난 뒤다.
-    canNest: (nest) => nestAllowed(nest),
+    // 아래에서 정의하는 후보 — 드래그 시작 때 한 번 부른다(R2-E). 그때는 이 렌더가 끝난 뒤다.
+    nestCandidates: (path) => nestCandidatesOf(path),
     onNest: (nest: NestCommit) => {
       void cards.setMeta({ path: nest.path, parentPath: nest.parentPath }).then((error) => {
         if (error !== null) cards.notify(`상위 워크트리를 지정하지 못했습니다: ${error}`)
@@ -200,12 +206,16 @@ export function Sidebar({
     },
   })
   const dragSource = reorder.state?.source ?? null
+  /** 끄는 덩어리(끄는 카드 + 보이는 후손) — 원래 자리를 다 투명하게(R2-C). 하위 카드의 손자는 그 카드 행 밖에 평평하게 그려진다. */
+  const dragBlock = new Set(reorder.state?.block ?? [])
   const livePaneIds = livePaneIdsOf(state.repos)
   const retainedOf = retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })
   const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now, pinned: cards.pinned }), view, order: manualOrder })
   // 계보 덩어리 (LIFE-576) — 구획은 평면 그대로 두고 그리기 직전에만 묶는다(`nestSectionItems`).
-  const unitsOf = new Map<string, LineageUnit[]>(sections.map((section) => [sectionKey(section), nestSectionItems({ items: section.items, collapsed: lineageCollapse.values })]))
-  /** 지금 부모 카드 안에 중첩돼 그려진 카드 — `↳ 부모` 칩을 생략한다(부모 해제 판정은 `hasValidLineage`). */
+  // 유효 간선·순환은 표시 구획이 아니라 전체 그래프에서 한 번(수정 r3 R2-D) — 중첩·순서 줄 부모 해제·조상 펼침이 공유한다.
+  const lineage = lineageGraph(state.repos)
+  const unitsOf = new Map<string, LineageUnit[]>(sections.map((section) => [sectionKey(section), nestSectionItems({ items: section.items, collapsed: lineageCollapse.values, graph: lineage })]))
+  /** 지금 부모 카드 안에 중첩돼 그려진 카드 — `↳ 부모` 칩을 생략한다(부모 해제 판정은 전체 그래프 `lineage.parentOf`). */
   const nestedPaths = new Set<string>()
   for (const units of unitsOf.values()) for (const unit of units) for (const row of unit.descendants) nestedPaths.add(row.item.worktree.path)
   const filtersOn = activeFilterCount({ view, repos: state.repos }) > 0
@@ -234,9 +244,9 @@ export function Sidebar({
   const activePath = state.repos.flatMap((repo) => repo.worktrees).find((row) => row.openWorkspaceId !== null && row.openWorkspaceId === activeWorkspaceId)?.path ?? null
 
   /** 끌어서 상위 지정 후보 — 메뉴 피커와 **같은 술어**(`parentCandidates`, K3ⓒ). 자기·후손·다른 레포·현재 부모는 여기서 빠진다. */
-  const nestAllowed = (nest: NestCommit): boolean => {
-    const found = rowsByPath.get(nest.path)
-    return found !== undefined && parentCandidates({ worktree: found.worktree, repo: found.repo }).some((row) => row.path === nest.parentPath)
+  const nestCandidatesOf = (path: string): ReadonlySet<string> => {
+    const found = rowsByPath.get(path)
+    return new Set(found === undefined ? [] : parentCandidates({ worktree: found.worktree, repo: found.repo }).map((row) => row.path))
   }
   const removeParent = (path: string): void => {
     void cards.setMeta({ path, parentPath: null }).then((error) => {
@@ -248,13 +258,15 @@ export function Sidebar({
    * 사용자가 활성 카드의 부모를 직접 접는 것은 막지 않는다 — 그 조작 뒤에는 다음 활성화·드러내기 때 다시 펼친다.
    */
   const expandAncestors = (path: string): void => {
-    for (const parent of collapsedAncestors({ repos: state.repos, path, collapsed: lineageCollapse.values })) lineageCollapse.remove(parent)
+    for (const parent of collapsedAncestors({ graph: lineage, path, collapsed: lineageCollapse.values })) lineageCollapse.remove(parent)
   }
   // 접힘 집합 적재(`loaded`) 뒤에도 한 번 더 — 활성 경로가 적재보다 먼저 서면 첫 실행이 빈 집합을 보고 지나간다(수정 r2 R1-C).
+  // 활성 카드의 **조상 경로**가 바뀌어도(끌어서 상위 지정·메뉴·CLI 로 부모 변경) 한 번 더 — 접힌 새 조상 아래로 숨지 않게(수정 r3 R2-B).
   // 집합 값 자체는 의존성에 넣지 않는다 — 넣으면 사용자가 활성 카드의 조상을 접는 즉시 다시 펼친다(위 주석의 허용 동작).
+  const activeAncestry = activePath === null ? '' : lineageAncestors({ graph: lineage, path: activePath }).join('\n')
   useEffect(() => {
     if (activePath !== null && lineageCollapse.loaded) expandAncestors(activePath)
-  }, [activePath, lineageCollapse.loaded])
+  }, [activePath, activeAncestry, lineageCollapse.loaded])
 
   const sectionOf = (sectionList: readonly SidebarSection[], path: string): SidebarSection | null =>
     sectionList.find((section) => section.items.some((item) => item.worktree.path === path)) ?? null
@@ -571,7 +583,7 @@ export function Sidebar({
                         unit,
                         repoLabel: (item) => item.repoName,
                         reorderable: true,
-                        isDragging: (path) => dragSource?.kind === 'all-card' && dragSource.path === path,
+                        isDragging: (path) => dragSource?.kind === 'all-card' && dragBlock.has(path),
                         onCardMouseDown: ({ event, path }) => reorder.onAllCardMouseDown({ event, path }),
                       }),
                     )}
@@ -603,7 +615,7 @@ export function Sidebar({
                         unit,
                         repoLabel: () => null,
                         reorderable: true,
-                        isDragging: (path) => dragSource?.kind === 'card' && dragSource.path === path,
+                        isDragging: (path) => dragSource?.kind === 'card' && dragSource.repoRoot === repo.root && dragBlock.has(path),
                         onCardMouseDown: ({ event, path }) => reorder.onCardMouseDown({ event, repoRoot: repo.root, path }),
                       }),
                     )}

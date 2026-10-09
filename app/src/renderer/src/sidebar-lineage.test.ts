@@ -9,9 +9,10 @@ import { buildInsertionPreview, isLineageDropZoneHit, resolveLineageTarget, unit
 import {
   buildSidebarSections,
   collapsedAncestors,
+  lineageAncestors,
   hasValidLineage,
   LINEAGE_CARD_MIN_WIDTH_PX,
-  lineageCycleMembers,
+  lineageGraph,
   lineageIndent,
   nestSectionItems,
   sectionKey,
@@ -51,30 +52,38 @@ function shape(units: readonly LineageUnit[]): string[][] {
   return units.map((unit) => [unit.root, ...unit.descendants].map((row) => `${row.item.worktree.path}@${row.depth}(${row.childCount}${row.collapsed ? ',접힘' : ''})`))
 }
 
+/** 카드 목록 → 레포별로 모은 전체 그래프(`lineageGraph`). 순환 시험은 `lineageGraph(repos)` 를 직접 쓴다. */
+function graphOf(list: readonly SortItem[]): ReturnType<typeof lineageGraph> {
+  const byRepo = new Map<string, WorktreeRow[]>()
+  for (const entry of list) byRepo.set(entry.repoRoot, [...(byRepo.get(entry.repoRoot) ?? []), entry.worktree])
+  return lineageGraph([...byRepo].map(([root, rows]) => repo(root, rows)))
+}
+const nest = (input: { items: readonly SortItem[]; collapsed: ReadonlySet<string> }): LineageUnit[] => nestSectionItems({ ...input, graph: graphOf(input.items) })
+
 const NONE: ReadonlySet<string> = new Set()
 const view = (patch: Partial<SidebarView> = {}): SidebarView => ({ ...DEFAULT_SIDEBAR_VIEW, ...patch })
 const sectionUnits = (sections: readonly SidebarSection[], key: string): string[][] =>
-  shape(nestSectionItems({ items: sections.find((section) => sectionKey(section) === key)?.items ?? [], collapsed: NONE }))
+  shape(nestSectionItems({ items: sections.find((section) => sectionKey(section) === key)?.items ?? [], collapsed: NONE, graph: graphOf(sections.flatMap((section) => section.items)) }))
 
 describe('K1ⓐⓑ 같은 구획·같은 레포 부모 아래 중첩 — Orca `appendWorktreeRows`', () => {
   it('코디 → 구현·리뷰 2단: 부모 덩어리 안에 직계 자식, 「N 하위」 N = 직계 자식 수', () => {
     const rows = [wt({ path: '/r', linked: false }), wt({ path: '/r/coord' }), wt({ path: '/r/impl', parent: '/r/coord' }), wt({ path: '/r/review', parent: '/r/coord' })]
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r@0(0)'], ['/r/coord@0(2)', '/r/impl@1(0)', '/r/review@1(0)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r@0(0)'], ['/r/coord@0(2)', '/r/impl@1(0)', '/r/review@1(0)']])
   })
 
   it('자식이 부모보다 앞 순서여도 부모 자리로 간다 · 자식끼리는 구획 순서 그대로', () => {
     const rows = [wt({ path: '/r/b', parent: '/r/p' }), wt({ path: '/r/x' }), wt({ path: '/r/a', parent: '/r/p' }), wt({ path: '/r/p' })]
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/x@0(0)'], ['/r/p@0(2)', '/r/b@1(0)', '/r/a@1(0)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/x@0(0)'], ['/r/p@0(2)', '/r/b@1(0)', '/r/a@1(0)']])
   })
 
   it('다단계 — 깊이 우선, 단계마다 깊이 +1 (N 은 직계만 센다)', () => {
     const rows = [wt({ path: '/r/p' }), wt({ path: '/r/c1', parent: '/r/p' }), wt({ path: '/r/g1', parent: '/r/c1' }), wt({ path: '/r/c2', parent: '/r/p' })]
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/p@0(2)', '/r/c1@1(1)', '/r/g1@2(0)', '/r/c2@1(0)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/p@0(2)', '/r/c1@1(1)', '/r/g1@2(0)', '/r/c2@1(0)']])
   })
 
   it('깊이 상한 없음(O7) — 200단 사슬도 재귀 없이 모두 그린다', () => {
     const rows = Array.from({ length: 200 }, (_, index) => wt({ path: `/r/n${index}`, parent: index === 0 ? undefined : `/r/n${index - 1}` }))
-    const units = nestSectionItems({ items: items('/r', rows), collapsed: NONE })
+    const units = nest({ items: items('/r', rows), collapsed: NONE })
     expect(units).toHaveLength(1)
     expect(units[0]?.descendants).toHaveLength(199)
     expect(units[0]?.descendants.at(-1)?.depth).toBe(199)
@@ -147,30 +156,30 @@ describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1 · 수정 r2 R1-A 같은 레�
   })
 
   it('없는 부모 경로(삭제된 부모) = 평소 자리', () => {
-    expect(shape(nestSectionItems({ items: items('/r', [wt({ path: '/r/a', parent: '/r/gone' })]), collapsed: NONE }))).toEqual([['/r/a@0(0)']])
+    expect(shape(nest({ items: items('/r', [wt({ path: '/r/a', parent: '/r/gone' })]), collapsed: NONE }))).toEqual([['/r/a@0(0)']])
   })
 })
 
 describe('K1ⓓ 순환 — 렌더가 멈추거나 카드가 사라지지 않는다(Orca 「malformed cyclic lineage should not hide every participant」)', () => {
   it('R1-A 레포를 넘는 링크는 순환 간선이 아니다 — A(r)→B(s)→A 는 순환 아님, 둘 다 루트', () => {
     const mixed = [item('/r', wt({ path: '/r/a', parent: '/s/b' })), item('/s', wt({ path: '/s/b', parent: '/r/a' }))]
-    expect([...lineageCycleMembers(mixed)]).toEqual([])
-    expect(shape(nestSectionItems({ items: mixed, collapsed: NONE }))).toEqual([['/r/a@0(0)'], ['/s/b@0(0)']])
+    expect([...graphOf(mixed).cyclic]).toEqual([])
+    expect(shape(nest({ items: mixed, collapsed: NONE }))).toEqual([['/r/a@0(0)'], ['/s/b@0(0)']])
   })
 
   it('A↔B 순환 + C→A: 순환 구성원은 루트, 매달린 C 는 A 아래', () => {
     const rows = [wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' }), wt({ path: '/r/c', parent: '/r/a' })]
-    expect([...lineageCycleMembers(items('/r', rows))].sort()).toEqual(['/r/a', '/r/b'])
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/a@0(1)', '/r/c@1(0)'], ['/r/b@0(0)']])
+    expect([...graphOf(items('/r', rows)).cyclic].sort()).toEqual(['/r/a', '/r/b'])
+    expect(shape(nest({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/a@0(1)', '/r/c@1(0)'], ['/r/b@0(0)']])
   })
 
   it('자기 자신이 부모(서버 밖에서 생긴 값) — 루트로', () => {
-    expect(shape(nestSectionItems({ items: items('/r', [wt({ path: '/r/a', parent: '/r/a' })]), collapsed: NONE }))).toEqual([['/r/a@0(0)']])
+    expect(shape(nest({ items: items('/r', [wt({ path: '/r/a', parent: '/r/a' })]), collapsed: NONE }))).toEqual([['/r/a@0(0)']])
   })
 
   it('3각 순환 — 모든 카드가 한 번씩 그려진다', () => {
     const rows = [wt({ path: '/r/a', parent: '/r/c' }), wt({ path: '/r/b', parent: '/r/a' }), wt({ path: '/r/c', parent: '/r/b' })]
-    const units = nestSectionItems({ items: items('/r', rows), collapsed: NONE })
+    const units = nest({ items: items('/r', rows), collapsed: NONE })
     expect(units.flatMap((unit) => [unit.root, ...unit.descendants].map((row) => row.item.worktree.path)).sort()).toEqual(['/r/a', '/r/b', '/r/c'])
   })
 })
@@ -179,19 +188,19 @@ describe('K2ⓒⓔ 접기 — 기본 펼침, 접은 부모의 후손은 빠지�
   const rows = [wt({ path: '/r/p' }), wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/g', parent: '/r/c' })]
 
   it('빈 집합 = 전부 펼침', () => {
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/p@0(1)', '/r/c@1(1)', '/r/g@2(0)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: NONE }))).toEqual([['/r/p@0(1)', '/r/c@1(1)', '/r/g@2(0)']])
   })
 
   it('루트를 접으면 후손 전체가 빠진다 — 자식이 루트로 새어 나오지 않는다', () => {
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: new Set(['/r/p']) }))).toEqual([['/r/p@0(1,접힘)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: new Set(['/r/p']) }))).toEqual([['/r/p@0(1,접힘)']])
   })
 
   it('중간을 접으면 그 아래만 빠진다', () => {
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: new Set(['/r/c']) }))).toEqual([['/r/p@0(1)', '/r/c@1(1,접힘)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: new Set(['/r/c']) }))).toEqual([['/r/p@0(1)', '/r/c@1(1,접힘)']])
   })
 
   it('자식이 없는 경로·없는 경로가 접힘 목록에 남아도 무해', () => {
-    expect(shape(nestSectionItems({ items: items('/r', rows), collapsed: new Set(['/r/g', '/nowhere']) }))).toEqual([['/r/p@0(1)', '/r/c@1(1)', '/r/g@2(0)']])
+    expect(shape(nest({ items: items('/r', rows), collapsed: new Set(['/r/g', '/nowhere']) }))).toEqual([['/r/p@0(1)', '/r/c@1(1)', '/r/g@2(0)']])
   })
 })
 
@@ -295,13 +304,70 @@ describe('K2ⓓ 활성 카드를 가리는 접힌 조상 (수정 r2 R1-C — Sid
     repo('/r', [wt({ path: '/r/p' }), wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/g', parent: '/r/c' }), wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' })]),
     repo('/s', [wt({ path: '/s/x', parent: '/r/g' })]),
   ]
+  const graph = lineageGraph(repos)
   it('접힌 조상만 아래에서 위 순서로 — 펼친 조상은 빠진다', () => {
-    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set(['/r/p', '/r/c']) })).toEqual(['/r/c', '/r/p'])
-    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set(['/r/p']) })).toEqual(['/r/p'])
-    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set() })).toEqual([])
+    expect(collapsedAncestors({ graph, path: '/r/g', collapsed: new Set(['/r/p', '/r/c']) })).toEqual(['/r/c', '/r/p'])
+    expect(collapsedAncestors({ graph, path: '/r/g', collapsed: new Set(['/r/p']) })).toEqual(['/r/p'])
+    expect(collapsedAncestors({ graph, path: '/r/g', collapsed: new Set() })).toEqual([])
+    expect(lineageAncestors({ graph, path: '/r/g' })).toEqual(['/r/c', '/r/p'])
   })
-  it('순환은 한 바퀴에서 멈추고, 다른 레포 링크(유효 간선 아님)는 따라가지 않는다', () => {
-    expect(collapsedAncestors({ repos, path: '/r/a', collapsed: new Set(['/r/a', '/r/b']) })).toEqual(['/r/b'])
-    expect(collapsedAncestors({ repos, path: '/s/x', collapsed: new Set(['/r/g', '/r/p']) })).toEqual([])
+  it('순환 구성원은 부모 간선이 없어(루트로 그린다) 가리는 조상도 없다, 다른 레포 링크(유효 간선 아님)는 따라가지 않는다', () => {
+    expect(collapsedAncestors({ graph, path: '/r/a', collapsed: new Set(['/r/a', '/r/b']) })).toEqual([])
+    expect(collapsedAncestors({ graph, path: '/s/x', collapsed: new Set(['/r/g', '/r/p']) })).toEqual([])
+  })
+})
+
+describe('R2-D 유효 간선·순환 = 전체 같은 레포 그래프 (Orca main `worktree-lineage-projection.ts` — `cyclic=[a,b]`, `children={a:[c]}`)', () => {
+  const cycleRepos = [repo('/r', [wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' }), wt({ path: '/r/c', parent: '/r/a' })])]
+
+  it('Orca projection 과 같은 결과 — 순환 구성원의 부모 간선은 없고, 구성원을 부모로 가리키는 바깥 카드 간선은 유효', () => {
+    const graph = lineageGraph(cycleRepos)
+    expect([...graph.cyclic].sort()).toEqual(['/r/a', '/r/b'])
+    expect(Object.fromEntries(graph.childrenOf)).toEqual({ '/r/a': ['/r/c'] })
+    expect(hasValidLineage({ repos: cycleRepos, path: '/r/b' })).toBe(false)
+    expect(hasValidLineage({ repos: cycleRepos, path: '/r/c' })).toBe(true)
+  })
+
+  it('고정 수집은 순환 간선을 따르지 않는다 — a 를 고정하면 Pinned = a + c, b 는 제 구획에 루트로', () => {
+    const sections = buildSidebarSections({ repos: cycleRepos, view: view(), order: { repos: ['/r'], worktrees: { '/r': ['/r/a', '/r/b', '/r/c'] }, all: [] }, now: 0, pinned: new Set(['/r/a']) })
+    expect(sections.find((section) => section.kind === 'pinned')?.items.map((entry) => entry.worktree.path)).toEqual(['/r/a', '/r/c'])
+    expect(sections.find((section) => section.kind === 'repo')?.items.map((entry) => entry.worktree.path)).toEqual(['/r/b'])
+    const graph = lineageGraph(cycleRepos)
+    const pinned = sections.find((section) => section.kind === 'pinned')?.items ?? []
+    expect(shape(nestSectionItems({ items: pinned, collapsed: NONE, graph }))).toEqual([['/r/a@0(1)', '/r/c@1(0)']])
+  })
+
+  it('필터로 순환 일부를 숨겨도 남은 구성원은 루트 — a→c→b→a 에서 c(detached)를 숨기고 a 를 접어도 b 는 보인다', () => {
+    const repos = [repo('/r', [wt({ path: '/r/a', parent: '/r/c' }), wt({ path: '/r/b', parent: '/r/a' }), { ...wt({ path: '/r/c', parent: '/r/b' }), branch: null, head: 'abcdef0123456789' }])]
+    const sections = buildSidebarSections({ repos, view: view({ hideDetachedHead: true }), order: { repos: ['/r'], worktrees: { '/r': ['/r/a', '/r/b', '/r/c'] }, all: [] }, now: 0 })
+    const visible = sections[0]?.items ?? []
+    expect(visible.map((entry) => entry.worktree.path)).toEqual(['/r/a', '/r/b'])
+    expect(hasValidLineage({ repos, path: '/r/b' })).toBe(false)
+    expect(shape(nestSectionItems({ items: visible, collapsed: new Set(['/r/a']), graph: lineageGraph(repos) }))).toEqual([['/r/a@0(0)'], ['/r/b@0(0)']])
+  })
+
+  it('다른 레포 링크는 간선이 아니라 순환도 아니다 — 전체 그래프에서도 같다', () => {
+    const repos = [repo('/r', [wt({ path: '/r/a', parent: '/s/b' })]), repo('/s', [wt({ path: '/s/b', parent: '/r/a' })])]
+    const graph = lineageGraph(repos)
+    expect([...graph.cyclic]).toEqual([])
+    expect([...graph.parentOf]).toEqual([])
+  })
+})
+
+describe('R2-A 부모 해제 동반 드롭의 착지 (`land`) — Orca 와 다르게', () => {
+  const rows = [wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/p' }), wt({ path: '/r/z' })]
+  const order = { repos: ['/r'], worktrees: { '/r': ['/r/c', '/r/p', '/r/z'] }, all: [] }
+  const move = (land: boolean): ReturnType<typeof applyWorktreeMove> =>
+    applyWorktreeMove({ order, repoRoot: '/r', worktrees: rows, visiblePaths: ['/r/p', '/r/c', '/r/z'], path: '/r/c', slot: 2, land })
+
+  it('자기 범위 안 경계(평면 목록 같음) + land → 화면 순서를 저장(표시 줄 자리)', () => {
+    expect(move(true)?.worktrees['/r']).toEqual(['/r/p', '/r/c', '/r/z'])
+  })
+  it('land 없음 → 그대로 no-op(일반 드롭 규칙)', () => {
+    expect(move(false)).toBeNull()
+  })
+  it('평면 목록이 바뀌는 드롭은 land 와 무관하게 같은 결과', () => {
+    const base = { order, repoRoot: '/r', worktrees: rows, visiblePaths: ['/r/p', '/r/c', '/r/z'], path: '/r/c', slot: 3 }
+    expect(applyWorktreeMove({ ...base, land: true })).toEqual(applyWorktreeMove(base))
   })
 })

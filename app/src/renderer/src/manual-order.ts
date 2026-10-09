@@ -197,6 +197,18 @@ export function moveBlock(input: { keys: readonly string[]; block: readonly stri
 }
 
 /**
+ * 부모 해제가 동반된 드롭 (LIFE-576 수정 r3 R2-A — **Orca 와 다르게**) — 덩어리 자기 범위 안 경계에 놓아 평면 목록이 같아도(`moveBlock` 제자리)
+ * 화면 순서 그대로를 결과로 낸다. 중첩된 카드는 저장 순서와 다른 자리(부모 아래)에 그려져 있으므로, 부모가 풀리면 저장 순서가 드러나
+ * 표시 줄과 다른 자리로 튄다 — 지금 보이는 자리를 저장해 표시 줄 자리에 착지시킨다. Orca main `worktree-manual-order.ts:144` 는 no-op(결함).
+ * `land` 가 거짓이면 `moveBlock` 그대로(일반 드롭의 제자리 규칙 유지).
+ */
+function landBlock(input: { keys: readonly string[]; block: readonly string[]; slot: number; land: boolean }): string[] | null {
+  const moved = moveBlock(input)
+  if (moved !== null || !input.land) return moved
+  return input.block.some((key) => input.keys.includes(key)) ? [...input.keys] : null
+}
+
+/**
  * 레포 드롭 반영 — 화면 순서로 다시 적는다. 지금 목록에 없는 저장 키(일시 오류 등)는 뒤에 그대로 붙여 잃지 않는다.
  */
 export function applyRepoMove(input: { order: ManualOrder; visibleRoots: readonly string[]; root: string; slot: number }): ManualOrder | null {
@@ -219,8 +231,10 @@ export function applyWorktreeMove(input: {
   slot: number
   /** 함께 옮길 덩어리(끄는 카드 + 펼친 후손, LIFE-576 D5). 없으면 `path` 하나. */
   block?: readonly string[]
+  /** 부모 해제 동반 드롭(LIFE-576 수정 r3 R2-A) — 평면 목록이 같아도 표시 자리로 착지한다(`landBlock`). */
+  land?: boolean
 }): ManualOrder | null {
-  const moved = moveBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot })
+  const moved = landBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot, land: input.land === true })
   if (moved === null) return null
   const effective = effectiveRepoList({ worktrees: input.worktrees, stored: input.order.worktrees[input.repoRoot] })
   // 화면에는 있는데 목록 행에 없는 키(방어) — 앞에 두어 채우기에서 빠지지 않게 한다.
@@ -289,8 +303,10 @@ export function applyAllMove(input: {
   slot: number
   /** 함께 옮길 덩어리(LIFE-576 D5) — `applyWorktreeMove` 와 같다. 중첩은 같은 레포끼리라 덩어리도 한 레포다. */
   block?: readonly string[]
+  /** `applyWorktreeMove` 와 같다(R2-A). */
+  land?: boolean
 }): ManualOrder | null {
-  const moved = moveBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot })
+  const moved = landBlock({ keys: input.visiblePaths, block: input.block ?? [input.path], slot: input.slot, land: input.land === true })
   if (moved === null) return null
   const effective = orderAll({ repos: input.repos, order: input.order }).map((item) => item.worktree.path)
   const storedSet = new Set(input.order.all)

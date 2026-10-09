@@ -12,6 +12,7 @@ let host
 let commits
 let nests
 let render
+let asked
 
 /**
  * 레포 하나 — a 0..50 · b 56..106 · p 112..250(카드 행 = 내용 112..160 + 안에 그린 자식 c1 166..206 · c2 210..250) · z 256..306.
@@ -34,10 +35,16 @@ function mount(options = {}) {
   host = new HookHost()
   commits = []
   nests = []
-  const canNest = options.canNest ?? (() => true)
+  // 상위 지정 후보 — 기본은 전부(자기 자신 포함: hook 이 자기는 거른다). 호출 기록은 R2-E 가 본다.
+  const candidates = options.candidates ?? FLAT
+  asked = []
+  const nestCandidates = (path) => {
+    asked.push(path)
+    return new Set(candidates)
+  }
   render = () =>
     host.render(() =>
-      useSidebarReorder({ listRef: { current: dom.list }, onCommit: (commit) => commits.push(commit), canNest, onNest: (nest) => nests.push(nest) }),
+      useSidebarReorder({ listRef: { current: dom.list }, onCommit: (commit) => commits.push(commit), nestCandidates, onNest: (nest) => nests.push(nest) }),
     )
   return render()
 }
@@ -80,9 +87,9 @@ describe('K3ⓐⓑ 카드 안쪽에 놓으면 상위 지정 — 표시 줄·행 
   })
 })
 
-describe('K3ⓒ 무효 대상(canNest 거짓) — 상위 지정 표시 없음, 순서 끌기로', () => {
-  it('가운데여도 canNest 가 거짓이면 대상 없음 → 순서 commit, onNest 없음', () => {
-    const api = mount({ canNest: () => false })
+describe('K3ⓒ 무효 대상(후보 밖) — 상위 지정 표시 없음, 순서 끌기로', () => {
+  it('가운데여도 후보가 아니면 대상 없음 → 순서 commit, onNest 없음', () => {
+    const api = mount({ candidates: [] })
     drag(api, { path: '/a', fromY: 25, ys: [40, 81] })
     expect(render().state?.lineageTarget).toBeUndefined()
     release(81)
@@ -90,18 +97,25 @@ describe('K3ⓒ 무효 대상(canNest 거짓) — 상위 지정 표시 없음, �
     expect(commits).toHaveLength(1)
   })
 
-  it('canNest 는 (끄는 카드, 후보) 로 불리고 끄는 카드 자신은 묻지 않는다', () => {
-    const asked = []
-    const api = mount({
-      canNest: (nest) => {
-        asked.push(`${nest.path}>${nest.parentPath}`)
-        return false
-      },
-    })
-    drag(api, { path: '/a', fromY: 25, ys: [40, 81] })
-    expect(asked.length).toBeGreaterThan(0)
-    expect(asked.every((entry) => entry.startsWith('/a>'))).toBe(true)
-    expect(asked).not.toContain('/a>/a')
+  it('R2-E 후보는 드래그 시작 때 끄는 경로로 **한 번** — 이동·프레임이 여러 번이어도 다시 묻지 않는다', () => {
+    const api = mount({ candidates: ['/b'] })
+    api.onCardMouseDown({ event: dom.down(40, 25), repoRoot: '/r', path: '/a' })
+    // 문턱 전 이동은 드래그가 아니다 — 아직 묻지 않는다.
+    dom.doc.emit('mousemove', { clientX: 40, clientY: 26, buttons: 1 })
+    expect(asked).toEqual([])
+    for (const y of [40, 81, 103, 81]) dom.doc.emit('mousemove', { clientX: 40, clientY: y, buttons: 1 })
+    dom.runFrame(16)
+    dom.runFrame(32)
+    expect(asked).toEqual(['/a'])
+    expect(render().state?.lineageTarget).toBe('/b')
+    release(81)
+    expect(nests).toEqual([{ path: '/a', parentPath: '/b' }])
+  })
+
+  it('후보 Set 에 자기 자신이 들어 있어도 자기 자신은 대상이 아니다', () => {
+    const api = mount({ candidates: ['/a'] })
+    drag(api, { path: '/a', fromY: 25, ys: [40, 25] })
+    expect(render().state?.lineageTarget).toBeUndefined()
   })
 })
 
@@ -137,7 +151,7 @@ describe('K3 부모 카드 안 자식 행은 부모 hit 영역이 아니다(Orca
 
 describe('K3ⓔ 정적 기하 — 순서 미리보기로 밀린 자리가 상위 지정 판정을 흔들지 않는다', () => {
   it('b 가 밀려 올라간 뒤에도 판정은 b 의 원래 자리로, 대상이 서면 밀림을 거둔다', () => {
-    const api = mount({ canNest: (nest) => nest.parentPath === '/b' })
+    const api = mount({ candidates: ['/b'] })
     // b 아래 가장자리(98..106) — 순서 slot 2 → b 가 a 자리로 밀려 올라간다.
     drag(api, { path: '/a', fromY: 25, ys: [40, 103] })
     expect(dom.shifts()['/b']).toBeLessThan(0)
@@ -158,7 +172,7 @@ describe('K3ⓔ 정적 기하 — 순서 미리보기로 밀린 자리가 상위
 
 describe('K4ⓑ 부모를 끌면 펼친 후손이 함께 — commit 에 덩어리', () => {
   it('p 를 맨 위 가장자리로 → slot 0, block = p + c1 + c2, 밀림은 덩어리 단위', () => {
-    const api = mount({ canNest: () => false })
+    const api = mount({ candidates: [] })
     drag(api, { path: '/p', fromY: 130, ys: [120, 2] })
     // 덩어리 단위 밀림 — a·b 가 p 덩어리 높이만큼 내려가고, 자식 행은 따로 밀리지 않는다.
     const shifts = dom.shifts()
@@ -172,7 +186,7 @@ describe('K4ⓑ 부모를 끌면 펼친 후손이 함께 — commit 에 덩어�
 describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순서 commit(부모 풀기는 Sidebar 가 같은 commit 에서 `hasValidLineage`)', () => {
 
   it('M4 + K3ⓔ — 자식 끌기로 덩어리가 밀린 뒤에도 상위 지정은 밀리기 전 자리로 판정한다', () => {
-    const api = mount({ canNest: (nest) => nest.parentPath === '/b' })
+    const api = mount({ candidates: ['/b'] })
     // c2 를 b 위 가장자리(56..64)로 → slot 1 → b·p·z 가 c2 높이(40)+6 만큼 내려간다.
     drag(api, { path: '/c2', fromY: 230, ys: [240, 58] })
     expect(dom.shifts()['/b']).toBe(46)
@@ -188,7 +202,7 @@ describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순�
   })
 
   it('c2 를 z 아래 가장자리로 → slot 6(평면 끝), block 없음, 끝이라 밀 행 없음 · 표시 줄 = 마지막 아랫변 + 틈', () => {
-    const api = mount({ canNest: () => false })
+    const api = mount({ candidates: [] })
     drag(api, { path: '/c2', fromY: 230, ys: [240, 303] })
     expect(dom.shifts()).toEqual({})
     expect(render().state?.indicatorY).toBe(312)
@@ -198,7 +212,7 @@ describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순�
   })
 
   it('M4 c1 을 a 위 가장자리로 → slot 0 · 모든 덩어리가 c1 높이(40) + 틈(6) 만큼 밀린다(Orca drag unit 미리보기)', () => {
-    const api = mount({ canNest: () => false })
+    const api = mount({ candidates: [] })
     drag(api, { path: '/c1', fromY: 186, ys: [180, 2] })
     expect(dom.shifts()).toEqual({ '/a': 46, '/b': 46, '/p': 46, '/z': 46 })
     release(2)
@@ -235,7 +249,7 @@ describe('R1-B 하위 카드를 끌면 그 카드의 보이는 후손(손자)도
     host = new HookHost()
     commits = []
     nests = []
-    render = () => host.render(() => useSidebarReorder({ listRef: { current: dom.list }, onCommit: (commit) => commits.push(commit), canNest: () => false, onNest: (nest) => nests.push(nest) }))
+    render = () => host.render(() => useSidebarReorder({ listRef: { current: dom.list }, onCommit: (commit) => commits.push(commit), nestCandidates: () => new Set(), onNest: (nest) => nests.push(nest) }))
     return render()
   }
 
@@ -245,6 +259,32 @@ describe('R1-B 하위 카드를 끌면 그 카드의 보이는 후손(손자)도
     expect(dom.shifts()).toEqual({ '/a': 90, '/b': 90, '/p': 90, '/z': 90 })
     release(2)
     expect(commits).toEqual([{ source: { kind: 'card', repoRoot: '/r', path: '/c1' }, keys: ['/a', '/b', '/p', '/c1', '/g1', '/c2', '/z'], slot: 0, block: ['/c1', '/g1'] }])
+  })
+
+  it('R2-C c1 을 끌면 사본에 c1 + 손자 g1 이 실리고(c2 는 아님), 상태 block(투명 처리 대상) = 저장 block', () => {
+    const api = mountWithGrandchild()
+    drag(api, { path: '/c1', fromY: 186, ys: [180, 2] })
+    const previews = dom.previews()
+    expect(previews).toHaveLength(1)
+    expect(previews[0].children.map((node) => node.getAttribute('data-fake-card'))).toEqual(['/c1', '/g1'])
+    // 사본 높이 = c1 윗변 ~ g1 아랫변(166..250).
+    expect(previews[0].style.height).toBe('84px')
+    expect(render().state?.block).toEqual(['/c1', '/g1'])
+    release(2)
+    expect(commits[0]?.block).toEqual(['/c1', '/g1'])
+  })
+
+  it('R2-C 손자 없는 하위 카드·루트 카드는 그 행 하나를 복제한다(루트 행은 후손을 품고 있다)', () => {
+    let api = mountWithGrandchild()
+    drag(api, { path: '/c2', fromY: 274, ys: [270, 2] })
+    expect(dom.previews()[0].children.map((node) => node.getAttribute('data-fake-card'))).toEqual(['/c2'])
+    expect(render().state?.block).toEqual(['/c2'])
+    release(2)
+    api = mountWithGrandchild()
+    drag(api, { path: '/p', fromY: 130, ys: [120, 2] })
+    expect(dom.previews()[0].children.map((node) => node.getAttribute('data-fake-card'))).toEqual(['/p'])
+    expect(render().state?.block).toEqual(['/p', '/c1', '/g1', '/c2'])
+    release(2)
   })
 
   it('형제 c2 는 c1 의 덩어리가 아니다 — c2 를 끌면 c2 하나', () => {

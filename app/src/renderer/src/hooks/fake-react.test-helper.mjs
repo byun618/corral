@@ -264,8 +264,14 @@ export function fakeDom(options) {
       getAttribute: (name) => (name === 'data-lineage-depth' ? (card.depth === undefined ? null : String(card.depth)) : card.path),
       getBoundingClientRect: screen(card.top, card.bottom, current),
       querySelector: () => content,
+      // 조상 사슬로 포함 판정(브라우저 `Node.contains`) — 사본이 끄는 행 밖 후손(평면 배치된 손자)을 따로 싣는지 본다(R2-C).
+      contains: (other) => {
+        for (let node = other; node !== undefined && node !== null; node = node.parentElement) if (node === current) return true
+        return false
+      },
       cloneNode: () => {
-        const node = new FakeNode('div', { 'data-reorder-card': card.path }, ['worktree-row'])
+        // `data-fake-card` 는 사본에서 지우지 않는 시험용 표식 — 사본에 어느 카드가 실렸는지 읽는다.
+        const node = new FakeNode('div', { 'data-reorder-card': card.path, 'data-fake-card': card.path }, ['worktree-row'])
         if (card.menu) node.appendChild(new FakeNode('div', { 'data-worktree-menu': card.path }, ['repo-row-menu', 'worktree-menu']))
         return node
       },

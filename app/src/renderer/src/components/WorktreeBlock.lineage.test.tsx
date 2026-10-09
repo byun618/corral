@@ -1,9 +1,17 @@
+// @vitest-environment happy-dom
 // 카드 계보 표시 (LIFE-576 K1ⓑ·K3ⓑ) — 「N 하위」 칩·셰브론, 부모 카드 행 안의 후손, 단계 들여쓰기, 상위 지정 드롭 강조.
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { OrchestrationLineage, WorktreeRow } from '../../../shared/types.js'
 import { NO_CARD_ACTIONS, NO_NEST, WorktreeBlock, type CardNest } from './WorktreeBlock.js'
+
+/** 정적 마크업 → DOM(happy-dom) — 포함 관계를 문자열 위치가 아니라 `Node.contains` 로 본다(리뷰 r2 시험 공백). */
+function dom(html: string): HTMLElement {
+  const host = document.createElement('div')
+  host.innerHTML = html
+  return host
+}
 
 const READY_EMPTY: OrchestrationLineage = { state: 'ready', entries: [] }
 const noop = (): void => {}
@@ -34,12 +42,23 @@ describe('「N 하위」 칩 + 셰브론 (Orca main `worktree-card-secondary-row
     expect(html).toContain('2 하위')
     expect(html).toContain('aria-expanded="true"')
     expect(html).toContain('data-lineage-children="/coord"')
-    // 후손 행은 부모 행(`data-worktree="/coord"`) 안 — 부모 행이 닫히기 전에 나온다.
-    const parentOpen = html.indexOf('data-worktree="/coord"')
-    expect(html.indexOf('data-worktree="/impl"')).toBeGreaterThan(parentOpen)
-    expect(html.indexOf('data-worktree="/review"')).toBeGreaterThan(html.indexOf('data-worktree="/impl"'))
-    // 칩은 부모 자기 내용 영역 안(후손 묶음보다 앞)이다 — 끌기 hit 영역 계산이 이 순서를 믿는다.
-    expect(html.indexOf('data-lineage-toggle="/coord"')).toBeLessThan(html.indexOf('data-lineage-children="/coord"'))
+    // 후손 행은 부모 행(`data-worktree="/coord"`) 안의 후손 묶음 안 — 부모 표면(내용 영역) 밖이다(M6).
+    const root = dom(html)
+    const parent = root.querySelector('[data-worktree="/coord"]')
+    const group = root.querySelector('[data-lineage-children="/coord"]')
+    const impl = root.querySelector('[data-worktree="/impl"]')
+    const review = root.querySelector('[data-worktree="/review"]')
+    const content = parent?.querySelector('[data-worktree-card-parent-content]') ?? null
+    const toggle = root.querySelector('[data-lineage-toggle="/coord"]')
+    expect(parent?.contains(group)).toBe(true)
+    expect(group?.contains(impl)).toBe(true)
+    expect(group?.contains(review)).toBe(true)
+    expect([...(group?.querySelectorAll('[data-worktree]') ?? [])].map((element) => element.getAttribute('data-worktree'))).toEqual(['/impl', '/review'])
+    // 칩은 부모 자기 내용 영역 안, 후손은 그 밖 — 끌기 hit 영역(내용 영역)이 후손 행을 덮지 않는다.
+    expect(content).not.toBeNull()
+    expect(content?.contains(toggle)).toBe(true)
+    expect(content?.contains(impl)).toBe(false)
+    expect(content?.contains(group)).toBe(false)
   })
 
   it('접히면 셰브론이 눕고 aria-expanded=false, 후손 묶음이 없다', () => {

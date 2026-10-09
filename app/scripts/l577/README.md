@@ -25,6 +25,7 @@ node scripts/l577/repro.mjs matrix --url <같은 URL> --token-file /tmp/l577x/to
   서버 포트는 설정 › Mobile 에는 안 보인다 — 계측 소켓 `{"cmd":"mobile-status"}` 의 `serverPort` 나 `lsof` 로 본다.
 - 코드는 두 길: **사람 경로** — 설정 › Mobile › 「QR 만들기」 화면의 코드를 읽어 `--code` 에 넣는다.
   **자동 경로** — `CORRAL_CONTROL_SOCKET` 을 켠 실행에서 `{"cmd":"mobile-pairing"}` 응답의 `pairing.code`(계측 실행 전용, 평시엔 이 소켓이 없다).
+  소켓 폴더가 내 소유·0700 이 아니면 `control_socket_not_private` 로 거절한다 — `mkdir -m 700` 한 폴더(예: `/tmp/l577x/ctl`)를 쓴다.
   해지는 화면의 「해지」 또는 `{"cmd":"mobile-revoke","id":"<기기 id>"}`.
 - 틀린 `pair` 시도는 **그때 유효한 코드**의 실패 횟수로 센다. `--fresh-code`(5회 틀린 뒤 정답)는 `--used-code`·`--expired-code` 와 **다른 실행**으로 친다 —
   섞으면 그 두 줄이 새 코드의 실패 2회로 먼저 세진다.

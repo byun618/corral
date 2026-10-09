@@ -116,4 +116,10 @@ describe('repro 스크립트 (A9)', () => {
     const out = await repro(['nope'])
     expect(out.code).toBe(2)
   })
+
+  // R1-A9 — 상속된 이름(`toString` 등)은 명령이 아니다. 실행 단계 0개로 exit 0 이 되면 안 된다.
+  it.each(['toString', 'constructor', 'hasOwnProperty', '__proto__'])('상속된 이름 %s 는 사용법 오류 exit 2', async (name) => {
+    const out = await repro([name, '--url', 'ws://127.0.0.1:1/ws'])
+    expect(out.code).toBe(2)
+  })
 })

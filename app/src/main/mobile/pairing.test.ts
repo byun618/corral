@@ -2,7 +2,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MAX_DEVICES, PAIRING_ALPHABET, PAIRING_CODE_LENGTH, PAIRING_MAX_FAILURES, PAIRING_TTL_MS, PairingStore } from './pairing.js'
+import { PAIRING_ALPHABET, PairingStore } from './pairing.js'
+
+// R1-A8 — 기준 수치는 **제품 상수가 아니라 01-criteria E2·E3 에서 옮겨 적은 값**으로 기대한다(상수를 바꾸면 이 시험이 잡는다).
+const CODE_LENGTH = 8
+const TTL_MS = 600_000
+const MAX_FAILURES = 5
+const DEVICE_CAP = 5
+const ALPHABET = 'ABCDEFGHJKMNPQRTUVWXY23456789'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -20,25 +27,28 @@ function fresh(now?: () => number): { store: PairingStore; dir: string } {
 
 describe('페어링 코드 [E3]', () => {
   it('8자 · 혼동 문자 뺀 29자 알파벳', () => {
-    expect(PAIRING_ALPHABET).toHaveLength(29)
+    expect(PAIRING_ALPHABET).toBe(ALPHABET)
+    expect(ALPHABET).toHaveLength(29)
     for (const banned of ['I', 'L', 'O', 'S', 'Z', '0', '1']) expect(PAIRING_ALPHABET).not.toContain(banned)
     const { store } = fresh()
     for (let i = 0; i < 50; i += 1) {
       const { code } = store.createCode()
-      expect(code).toHaveLength(PAIRING_CODE_LENGTH)
+      expect(code).toHaveLength(CODE_LENGTH)
       for (const char of code) expect(PAIRING_ALPHABET).toContain(char)
     }
   })
 
-  it('10분 뒤 만료 — 만료 코드는 거절', () => {
+  it('10분 뒤 만료 — 만료 직전(599999ms)은 성공, 정각(600000ms)은 거절', () => {
     let now = 1_000_000
     const { store } = fresh(() => now)
-    const { code, expiresAt } = store.createCode()
-    expect(expiresAt - now).toBe(PAIRING_TTL_MS)
-    now += PAIRING_TTL_MS - 1
-    expect(store.pairingExpiresAt()).toBe(expiresAt)
-    now += 1
-    expect(store.pair({ code, name: 'p' })).toEqual({ ok: false, reason: 'no_code' })
+    const early = store.createCode()
+    expect(early.expiresAt - now).toBe(TTL_MS)
+    now += TTL_MS - 1
+    expect(store.pair({ code: early.code, name: 'p' }).ok).toBe(true)
+    const late = store.createCode()
+    now += TTL_MS
+    expect(store.pairingExpiresAt()).toBeNull()
+    expect(store.pair({ code: late.code, name: 'p' })).toEqual({ ok: false, reason: 'no_code' })
   })
 
   it('1회 사용 — 쓴 코드는 다시 거절', () => {
@@ -48,17 +58,21 @@ describe('페어링 코드 [E3]', () => {
     expect(store.pair({ code, name: 'b' })).toEqual({ ok: false, reason: 'no_code' })
   })
 
-  it('5회 틀리면 폐기 — 그 뒤 정답도 거절', () => {
+  it('5회 틀리면 폐기(4회째까지 유효 · 5회째에 폐기) — 그 뒤 정답도 거절', () => {
     const { store } = fresh()
     const { code } = store.createCode()
-    for (let i = 0; i < PAIRING_MAX_FAILURES; i += 1) expect(store.pair({ code: 'AAAAAAAA', name: 'x' })).toEqual({ ok: false, reason: 'wrong_code' })
+    for (let i = 0; i < MAX_FAILURES; i += 1) {
+      expect(store.pairingExpiresAt()).not.toBeNull()
+      expect(store.pair({ code: 'AAAAAAAA', name: 'x' })).toEqual({ ok: false, reason: 'wrong_code' })
+    }
+    expect(store.pairingExpiresAt()).toBeNull()
     expect(store.pair({ code, name: 'x' })).toEqual({ ok: false, reason: 'no_code' })
   })
 
   it('4회 틀려도 정답은 통과(경계)', () => {
     const { store } = fresh()
     const { code } = store.createCode()
-    for (let i = 0; i < PAIRING_MAX_FAILURES - 1; i += 1) store.pair({ code: 'AAAAAAAA', name: 'x' })
+    for (let i = 0; i < MAX_FAILURES - 1; i += 1) store.pair({ code: 'AAAAAAAA', name: 'x' })
     expect(store.pair({ code, name: 'x' }).ok).toBe(true)
   })
 
@@ -85,13 +99,15 @@ describe('기기 [E2] · 토큰', () => {
     return { id: result.device.id, token: result.token }
   }
 
-  it('상한 5대까지 성공, 6번째는 device_limit — 코드는 소모되지 않는다', () => {
+  it('상한 5대까지 성공(5번째 성공 직접 확인), 6번째는 device_limit — 코드는 소모되지 않는다', () => {
     const { store } = fresh()
-    for (let i = 0; i < MAX_DEVICES; i += 1) pairOne(store, `d${i}`)
+    for (let i = 0; i < DEVICE_CAP - 1; i += 1) pairOne(store, `d${i}`)
+    const fifth = store.createCode()
+    expect(store.pair({ code: fifth.code, name: 'fifth' }).ok).toBe(true)
     const { code } = store.createCode()
     expect(store.pair({ code, name: 'over' })).toEqual({ ok: false, reason: 'device_limit' })
     expect(store.pairingExpiresAt()).not.toBeNull()
-    expect(store.list()).toHaveLength(MAX_DEVICES)
+    expect(store.list()).toHaveLength(DEVICE_CAP)
   })
 
   it('토큰 인증 · 틀린 토큰 · 해지 뒤 거절, 다른 기기는 유지', () => {

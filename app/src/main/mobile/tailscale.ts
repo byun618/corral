@@ -183,31 +183,81 @@ export function serveTarget(serverPort: number): string {
 }
 
 /**
- * 그 HTTPS 포트를 누가 쥐고 있나.
- * - `free` — `TCP[port]` 도, `Web["*:port"]` 도 없다
- * - `proxy` — 우리 모양 하나뿐: `TCP[port].HTTPS` 이고 그 포트의 Web 핸들러가 `/` 하나, `Proxy` 가 있다. **누구 것인지는 여기서 모른다** —
- *   소유권 기록과 대조는 부르는 쪽(`exposure.ts`)이 한다
- * - `other` — 그 밖 전부(파일·텍스트 핸들러, 여러 경로, TCP 포워드, 여러 호스트 이름)
+ * 포트 점유와 `/` 루트 소유를 **따로** 본다(fix1 R1-A4·N1). 같은 host:port 에 남의 다른 경로(`/other`)가 있어도
+ * `/` 가 기록과 같으면 그 `/` 는 우리 것이다 — 끄기는 `--set-path=/` 로 `/` 만 지우고 남의 경로를 남긴다.
  */
-export type PortUse = { kind: 'free' } | { kind: 'proxy'; host: string; target: string } | { kind: 'other' }
 
-export function portUse(input: { config: Record<string, unknown>; port: number }): PortUse {
+/** host:port 의 `/` 프록시 대상 — 배경 설정에서 `TCP[port].HTTPS` 이고 `Web["host:port"].Handlers["/"].Proxy` 일 때만. 없으면 null. */
+export function rootTarget(input: { config: Record<string, unknown>; host: string; port: number }): string | null {
   const tcp = readRecord(input.config, 'TCP')
-  const tcpEntry = tcp === null ? null : tcp[String(input.port)]
+  const entry = tcp === null ? null : readRecord(tcp, String(input.port))
+  if (entry === null || entry.HTTPS !== true) return null
+  const web = readRecord(input.config, 'Web')
+  const site = web === null ? null : readRecord(web, `${input.host}:${input.port}`)
+  const handlers = site === null ? null : readRecord(site, 'Handlers')
+  const root = handlers === null ? null : readRecord(handlers, '/')
+  return root === null ? null : readString(root, 'Proxy')
+}
+
+/** Foreground 세션이 그 포트를 쓰나 — 실제 daemon 은 그 포트에 배경 리스너를 거절한다(1.102.2 `validateServeConfigUpdate`). */
+export function foregroundUsesPort(input: { config: Record<string, unknown>; port: number }): boolean {
+  const foreground = readRecord(input.config, 'Foreground')
+  if (foreground === null) return false
+  return Object.values(foreground).some((session) => {
+    if (!isRecord(session)) return false
+    const tcp = readRecord(session, 'TCP')
+    const web = readRecord(session, 'Web') ?? {}
+    return (tcp !== null && tcp[String(input.port)] !== undefined) || Object.keys(web).some((key) => key.endsWith(`:${input.port}`))
+  })
+}
+
+/**
+ * host 에 `/` 를 새로 올려도 남의 것을 덮지 않나 — Foreground 가 그 포트를 안 쓰고, 배경 TCP 가 없거나 HTTPS 이고,
+ * 그 포트의 Web 키가 없거나 host 하나뿐이며, host 의 `/` 가 비었다(같은 host 의 남의 다른 경로와는 같이 산다).
+ */
+export function rootAddable(input: { config: Record<string, unknown>; host: string; port: number }): boolean {
+  if (foregroundUsesPort(input)) return false
+  const tcp = readRecord(input.config, 'TCP')
+  const entry = tcp === null ? undefined : tcp[String(input.port)]
+  if (entry !== undefined && !(isRecord(entry) && entry.HTTPS === true && entry.TCPForward === undefined)) return false
   const web = readRecord(input.config, 'Web') ?? {}
-  const webKeys = Object.keys(web).filter((key) => key.endsWith(`:${input.port}`))
-  if (tcpEntry === undefined || tcpEntry === null) {
-    return webKeys.length === 0 ? { kind: 'free' } : { kind: 'other' }
+  const keys = Object.keys(web).filter((key) => key.endsWith(`:${input.port}`))
+  if (keys.some((key) => key !== `${input.host}:${input.port}`)) return false
+  const site = readRecord(web, `${input.host}:${input.port}`)
+  const handlers = site === null ? null : readRecord(site, 'Handlers')
+  return handlers === null || handlers['/'] === undefined
+}
+
+/** 우리 `/` 를 뺀 설정 — 쓰기 전후를 대조할 때(R1-A3) 「우리 루트만 바뀌었나」 를 본다. 비게 된 Web·TCP 칸은 지운다. */
+export function withoutRoot(input: { config: Record<string, unknown>; host: string; port: number }): unknown {
+  const copy: unknown = JSON.parse(JSON.stringify(input.config))
+  if (!isRecord(copy)) return copy
+  const key = `${input.host}:${input.port}`
+  const web = readRecord(copy, 'Web')
+  const site = web === null ? null : readRecord(web, key)
+  const handlers = site === null ? null : readRecord(site, 'Handlers')
+  if (web !== null && handlers !== null) {
+    delete handlers['/']
+    if (Object.keys(handlers).length === 0) delete web[key]
   }
-  if (!isRecord(tcpEntry) || tcpEntry.HTTPS !== true || webKeys.length !== 1) return { kind: 'other' }
-  const host = webKeys[0]!
-  const site = web[host]
-  const handlers = isRecord(site) ? readRecord(site, 'Handlers') : null
-  if (handlers === null || Object.keys(handlers).length !== 1) return { kind: 'other' }
-  const root = handlers['/']
-  const target = isRecord(root) ? readString(root, 'Proxy') : null
-  if (target === null) return { kind: 'other' }
-  return { kind: 'proxy', host: host.slice(0, -`:${input.port}`.length), target }
+  const stillServed = web !== null && Object.keys(web).some((name) => name.endsWith(`:${input.port}`))
+  const tcp = readRecord(copy, 'TCP')
+  const entry = tcp === null ? null : readRecord(tcp, String(input.port))
+  if (tcp !== null && !stillServed && entry !== null && entry.HTTPS === true && Object.keys(entry).length === 1) delete tcp[String(input.port)]
+  if (web !== null && Object.keys(web).length === 0) delete copy.Web
+  if (tcp !== null && Object.keys(tcp).length === 0) delete copy.TCP
+  return copy
+}
+
+/** 키 순서와 무관한 같음. */
+export function sameJson(a: unknown, b: unknown): boolean {
+  return canonical(a) === canonical(b)
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+  return JSON.stringify(value) ?? 'null'
 }
 
 // --- argv (상수 + 숫자만) ----------------------------------------------------------------------------------

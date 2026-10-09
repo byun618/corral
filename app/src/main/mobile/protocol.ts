@@ -28,6 +28,7 @@ export type ErrorCode =
   | 'unknown_type'
   | 'auth_timeout'
   | 'revoked'
+  | 'unavailable'
 
 /** WS close 코드 — 4000 번대는 응용 몫. */
 export const CLOSE = {
@@ -37,6 +38,8 @@ export const CLOSE = {
   badMessage: 4004,
   pairRejected: 4005,
   authTimeout: 4008,
+  /** 노출이 막혔다(Funnel·HTTPS 꺼짐 등) — 새 인증을 받지 않고 기존 연결도 닫는다(fix1 R1-A2). */
+  unavailable: 4009,
   shutdown: 1001,
 } as const
 

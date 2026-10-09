@@ -19,7 +19,19 @@
 | --- | --- | --- |
 | `GET` + `Upgrade: websocket` | `/ws` (쿼리는 무시) | 101 WebSocket. 동시 연결 16개를 넘으면 404 |
 | 그 밖 전부 — 모든 메서드 · 모든 경로 · `/ws` 의 업그레이드 없는 요청 | | `404`, 본문 0바이트, `Connection: close` |
-| `/ws` 가 아닌 경로로의 업그레이드 · `GET` 이 아닌 업그레이드 | | `404` 후 소켓 닫음 |
+| 모양이 틀린 업그레이드 — `/ws` 아닌 경로 · `GET` 아님 · `Sec-WebSocket-Key` 없음·모양 틀림 · `Sec-WebSocket-Version` ≠ 13 · `Sec-WebSocket-Protocol` 있음 · 허용 밖 `Origin` | | `404`, 본문 0바이트, 소켓 닫음 |
+
+**거절 형식은 하나다**(fix1 R1-A10). 업그레이드는 `ws` 에 넘기기 **전에** `ws` 가 400·405 본문을 내는 검사(메서드·Upgrade·키·버전·하위 프로토콜)를
+같은 조건으로 먼저 하고 404 로 닫는다(`server.ts` `upgradeAllowed`). 확장 헤더는 permessage-deflate 를 꺼 두어 `ws` 가 읽지 않는다.
+남는 예외 하나: 서버를 닫는 순간에 도착한 업그레이드는 `ws` 가 `503` 으로 닫을 수 있다(본문은 상태 문구뿐, 데이터 없음).
+
+### Origin (R1-N2)
+
+- 업그레이드에 `Origin` 헤더가 **없으면** 허용한다 — 네이티브 클라이언트(RN)·`repro.mjs` 는 보통 보내지 않는다.
+- `Origin` 이 **있으면** 지금 노출 주소의 origin `https://<mac>.<tailnet>.ts.net:8577` 과 글자 그대로 같을 때만 허용한다. 노출 전(주소 없음)에는 Origin 있는 요청을 전부 거절한다.
+  포트 없는 `https://<mac>.ts.net`·다른 호스트·`http://` 는 거절. 브라우저 페이지의 JS 가 loopback 포트로 붙는 길을 막는 것이 목적이다.
+- RN 호환: **미확인.** RN `WebSocket` 은 기본으로 Origin 을 보내지 않는 것으로 알려져 있으나(Android `WebSocketModule` 은 URL 로 origin 을
+  만든다는 보고가 있다 — 그 경우 `https://<mac>.ts.net:8577` 이 되어 허용된다), iOS·Android 실기 확인은 M2 몫이다. 어긋나면 이 절을 고친다.
 
 인증 전에는 어떤 데이터도 돌려주지 않는다 — 앱 버전도 인증 뒤 `hello`/`paired` 응답에만 있다.
 헤더 상한: 요청 헤더 64개, 헤더·요청 타임아웃 10초.
@@ -36,7 +48,9 @@
 | `pair` | 인증 전 | `{type:'pair', protocol:1, code:'<8자 코드>', name:'<기기 이름, 64자까지>'}` |
 | `ping` | 인증 뒤 | `{type:'ping', id?: string\|number}` |
 
-인증 전에 `hello`·`pair` 가 아닌 것은 `not_authenticated` 로 닫는다. 인증 뒤 모르는 타입은 `unknown_type` 오류만 보내고 연결은 유지한다.
+인증 전에 `hello`·`pair` 가 아닌 것은 `not_authenticated` 로 닫는다. 노출이 `exposed` 가 아니면(Funnel·HTTPS 꺼짐·실패 등) `hello`·`pair` 도
+`unavailable` 로 닫는다(R1-A2). 서버가 거절·close 를 시작한 연결은 **그 뒤 도착한 메시지를 처리하지 않는다** — 같은 write 로 이어 온
+`pair` 가 거절된 `hello` 뒤에 통과하지 않는다(R1-A7). 인증 뒤 모르는 타입은 `unknown_type` 오류만 보내고 연결은 유지한다.
 인증 뒤 `hello`·`pair` 를 다시 보내면 `bad_message`(연결 유지).
 
 ### 서버 → 클라이언트
@@ -62,6 +76,7 @@
 | `unknown_type` | 인증 뒤 모르는 타입 | 유지 | — |
 | `auth_timeout` | 10초 안에 인증하지 않았다 | 닫음 | 4008 |
 | `revoked` | 열린 연결의 기기가 해지됐다 | 닫음(0.5초 뒤 강제 종료) | 4003 |
+| `unavailable` | 노출이 막혔다(`exposed` 아님) — 새 hello·pair 거절, 이미 열린 연결도 이 코드로 닫는다 | 닫음(0.5초 뒤 강제 종료) | 4009 |
 
 앱 종료·스위치 끄기는 close 1001.
 
@@ -92,8 +107,23 @@ QR 은 아래 JSON 문자열을 담는다. 같은 내용을 설정 › Mobile �
 ## 7. 위협 모델 메모
 
 - **loopback 의 다른 로컬 프로세스도 이 포트에 붙을 수 있다.** 같은 맥의 아무 프로세스(브라우저 페이지의 JS 포함)가 `ws://127.0.0.1:<포트>/ws` 를 열 수 있다.
-  그래서 **경계는 페어링 토큰**이다 — 인증 전에는 아무 데이터도 없고, 코드 추측은 39비트 · 5회로 막힌다. `Origin` 은 검사하지 않는다(RN 클라이언트의 Origin 이 일정하지 않다).
+  그래서 **경계는 페어링 토큰**이다 — 인증 전에는 아무 데이터도 없고, 코드 추측은 39비트 · 5회로 막힌다. 브라우저 페이지는 `Origin` 검사로
+  막는다(§2 Origin). Origin 을 보내지 않는 로컬 프로세스는 막지 못한다 — 그것은 토큰이 막는다.
 - tailscale serve 가 붙이는 `Tailscale-User-*`·`X-Forwarded-For` 헤더는 쓰지 않는다 — loopback 에서는 위조할 수 있다(W6).
 - serve 경유 요청은 전부 `127.0.0.1` 에서 오므로 IP 별 제한은 의미가 없다(E3) — 코드 실패 횟수는 코드 하나에 건다.
 - tailnet 의 다른 기기는 `wss://…:8577` 에 닿는다. 그 역시 토큰이 경계다. Funnel 이 노드에 하나라도 켜지면 corral 항목을 내린다(60초 이하 주기 재확인, 현재 30초).
-- `tailscale` argv 는 상수와 숫자(포트)만으로 조립한다. `serve reset`·`funnel` 을 부르는 경로가 없고, 제거는 소유권 기록과 serve 설정이 일치할 때만 `serve --yes --https=8577 --set-path=/ off`.
+- `tailscale` argv 는 상수와 숫자(포트)만으로 조립한다. `serve reset`·`funnel` 을 부르는 경로가 없고, 제거는 소유권 기록과 serve 설정의
+  `<host>:8577` 의 `/` 프록시가 일치할 때만 `serve --yes --https=8577 --set-path=/ off` — `/` 하나만 지우고 같은 host:port 의 남의 다른 경로는 남긴다(R1-A4).
+  포트 점유(배경 TCP·Web 키, **Foreground 세션** 포함 — R1-N1)와 `/` 소유는 따로 본다: 남이 그 포트를 쓰면 올리지 않는다(`foreign`).
+- **쓰기 직전 재조회·쓰기 뒤 대조(R1-A3).** add·off 바로 앞에서 `serve status --json` 을 다시 읽어 그때도 올릴 수 있을(지울 수 있을) 때만 쓰고,
+  쓴 뒤 다시 읽어 「`/` 만 바뀌었나」 를 대조한다. 다른 곳이 바뀌었으면 `failed` + 경고(「serve 설정이 corral 쓰기와 동시에 바뀌었다」).
+  **잔존 위험: 외부 클라이언트가 같은 루트를 ms 창 안에 바꾸는 경합은 CLI 방식의 잔존 위험이다.** 재조회와 쓰기 사이(수 ms~수십 ms)는
+  원자적이지 않다 — tailscale CLI 에 조건부 쓰기(ETag)가 없어서다. LocalAPI(ETag 조건부 `SetServeConfig`)로 옮기면 닫히지만 이번 범위가 아니다.
+  쓰기 뒤 대조가 그 경합을 **알아채고 경고**하는 것까지가 이번 보장이다.
+- **Tailscale 이름이 바뀌면(R1-A11)** 기록의 host 와 지금 `Self.DNSName` 이 다르다. 옛 이름의 `/` 를 CLI 로는 지울 수 없다 — `off` 는 **지금** 이름으로
+  키를 만든다(tailscale 1.102.2 `serve_v2.go:451`). 새 이름으로 `off` 를 부르면 남의 항목을 지울 수 있어 부르지 않고, 노출됨으로 쓰지 않은 채 `failed`
+  (「옛 이름의 serve 항목을 corral 이 내릴 수 없다 — 직접 지우면 새 이름으로 다시 올린다」)로 알린다. 옛 항목이 사라지면 다음 재확인이 새 이름으로 올린다.
+- **노출이 막히면 로컬 서버도 닫는다(R1-A2).** Funnel·HTTPS 꺼짐·serve 제거 실패 등 `exposed` 가 아니면 새 인증을 `unavailable` 로 거절하고 열린 연결도 닫는다.
+  「Funnel 이 켜져 corral 항목을 내렸다」 경고와 `removed:true` 로그는 제거를 다시 읽어 확인했을 때만 남긴다 — 못 내렸으면 `failed`, 재확인이 다시 내린다.
+- **계측 소켓(`CORRAL_CONTROL_SOCKET`)의 `mobile-pairing`(R1-A6)** 은 소켓 폴더가 이 사용자 소유·심링크 아님·0700 이고 소켓 파일이 0600 일 때만
+  코드를 돌려준다(소켓은 umask 077 아래에서 만들고 0600 으로 고정). 아니면 `control_socket_not_private` 로 거절한다. 같은 UID 의 다른 프로세스는 막지 못한다.

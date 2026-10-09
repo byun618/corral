@@ -179,9 +179,12 @@ const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix
 
 const name = args._[0]
 const url = typeof args.url === 'string' ? args.url : null
-if (!name || !(name in COMMANDS)) usage(`명령은 ${Object.keys(COMMANDS).join(' · ')} 중 하나`)
+// 자기 속성만 명령이다 — `toString`·`__proto__` 같은 상속 이름이 함수로 풀리지 않게(fix1 R1-A9).
+if (!name || !Object.hasOwn(COMMANDS, name)) usage(`명령은 ${Object.keys(COMMANDS).join(' · ')} 중 하나`)
 if (url === null || !/^wss?:\/\//.test(url)) usage('--url ws://127.0.0.1:<p>/ws 또는 wss://<mac>.ts.net:<port>/ws')
 await COMMANDS[name](url)
+// 실행한 단계가 0 이면 아무것도 확인하지 않은 것 — 통과(0)가 아니라 사용법 오류다.
+if (results.length === 0) usage(`${name}: 실행한 단계가 없다`)
 const failed = results.filter((row) => !row.pass).length
 process.stdout.write(JSON.stringify({ summary: { command: name, url, steps: results.length, failed } }) + '\n')
 process.exit(failed === 0 ? 0 : 1)

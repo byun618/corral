@@ -204,6 +204,12 @@ export const PROBES = [
   { id: 'm-mobile-ping-imports-adapter', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-adapter.ts', source: "import '../adapter/index.js'\nexport const T = 'ping'\n" },
   { id: 'm-ping-outside-mobile', group: 'ⓜ', expect: 'R4-wire-leak', file: `${M}m-ping.ts`, source: "export const T = 'ping'\n" },
   { id: 'm-mobile-herdr-method', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-herdr.ts', source: send("'workspace.rename'") },
+  // ⓜ LIFE-577 fix1 (R1-A5) — 리뷰어 반례: mobile 폴더 안이어도 `method` 에 묶인 `ping`·직렬화 envelope 는 위반, `{type:'ping'}` 은 통과
+  { id: 'm-mobile-explicit-envelope', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-envelope.ts', source: "import net from 'node:net'\nexport function rawPing(socket: string) { const c = net.connect(socket); c.write(JSON.stringify({id: 'r1', method: 'ping'}) + '\\n'); return c }\n" },
+  { id: 'm-mobile-serialized-envelope', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-json.ts', source: "export const frame = '{\"id\":\"r1\",\"method\":\"ping\"}'\n" },
+  { id: 'm-mobile-method-compare', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-compare.ts', source: "export const probe = (frame: { method: string }): boolean => frame.method === 'ping'\n" },
+  { id: 'm-mobile-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type.ts', source: "export const message = {type: 'ping'}\n" },
+  { id: 'm-mobile-type-compare-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-compare.ts', source: "export const isPing = (message: { type: string }): boolean => message.type === 'ping'\n" },
 ]
 
 /** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */

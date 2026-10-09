@@ -2,10 +2,15 @@
 //
 // 상태: off · checking · blocked(이유) · foreign · failed · exposed. 화면은 이것과 점검표 4줄을 그대로 보여 준다.
 //
-// **소유권 기록**(`<dir>/serve-owner.json`, 0600): `{host, httpsPort, target}`. 지우는 것은 serve 설정의 그 포트 항목이
-// **기록과 같을 때만**(호스트·대상 둘 다). 포트만 보고 지우지 않는다(00-analysis W2·W5).
+// **소유권 기록**(`<dir>/serve-owner.json`, 0600): `{host, httpsPort, target}`. 지우는 것은 serve 설정의 `host:port` 의
+// **`/` 프록시가 기록과 같을 때만**. 포트만 보고 지우지 않는다(00-analysis W2·W5). 포트 점유와 `/` 소유는 따로 본다(fix1 R1-A4) —
+// 같은 host:port 에 남의 다른 경로가 있어도 `/` 는 우리 것이고, 끄기(`--set-path=/ off`)는 `/` 만 지운다.
 // - 추가 **전에** 기록을 쓴다 — 추가 직후 죽어도 다음 기동이 그 항목을 자기 것으로 알아본다. 추가가 안 됐으면 기록만 지운다.
-// - 같은 포트에 기록과 다른 항목 = 남의 것 → 덮어쓰지 않고 `foreign`(기록도 버린다 — 더는 우리 것이 아니다).
+// - `/` 가 기록과 다르면 남의 것 → 덮어쓰지 않고 기록을 버린다. 그 포트를 남이 쓰면(Foreground 포함, R1-N1) `foreign`.
+// - **쓰기(add·off) 직전에 다시 읽고, 쓰기 뒤에 다시 읽어 기대 상태와 대조한다(R1-A3)** — `/` 말고 다른 곳이 바뀌었으면
+//   `failed` + 경고. CLI 방식이라 「읽기 → 쓰기」 사이 ms 창의 외부 변경 경합은 남는다(SURFACE.md 위협 모델).
+// - Tailscale 이름이 바뀌면(R1-A11) 옛 이름의 `/` 를 CLI 로 지울 수 없다 — `off` 는 **지금** 이름으로 키를 만든다
+//   (1.102.2 serve_v2.go:451). 새 이름으로 off 를 부르면 남의 항목을 지울 수 있어 부르지 않고 `failed` 로 알린다.
 //
 // **reconcile 은 한 줄로만 돈다**(`request`) — 스위치 연타·주기 재확인·종료가 겹쳐도 마지막 원하는 값으로 수렴한다(A6ⓖ).
 // **꺼져 있고 기록도 없으면 tailscale 을 부르지 않는다**(A1ⓒ). 사용자가 「다시 확인」 을 누를 때만 읽기 점검을 한다.
@@ -20,7 +25,9 @@ import {
   funnelOn,
   parseNodeStatus,
   parseServeConfig,
-  portUse,
+  rootAddable,
+  rootTarget,
+  sameJson,
   serveAddArgs,
   serveRemoveArgs,
   serveStatusArgs,
@@ -28,6 +35,7 @@ import {
   statusArgs,
   type NodeStatus,
   type TailscaleRunner,
+  withoutRoot,
 } from './tailscale.js'
 import type { MobileBlockReason, MobileCheck, MobileChecklist, MobileExposure } from '../../shared/mobile.js'
 
@@ -52,6 +60,11 @@ export type ServeExposureDeps = {
 const UNKNOWN: Check = { state: 'unknown', detail: '확인 안 함' }
 export const UNKNOWN_CHECKLIST: Checklist = { cli: UNKNOWN, loggedIn: UNKNOWN, https: UNKNOWN, funnelOff: UNKNOWN }
 
+/** 쓰기 전후 대조에서 `/` 말고 다른 곳이 바뀌었을 때(R1-A3). */
+export const CONCURRENT_WARNING = 'serve 설정이 corral 쓰기와 동시에 바뀌었다 — 설정을 확인한다'
+
+type RemoveOutcome = 'removed' | 'not_ours' | 'failed'
+
 export const HTTPS_HINT = 'Tailscale 관리 콘솔 › DNS › HTTPS Certificates 를 켠다'
 
 export class ServeExposure {
@@ -66,6 +79,7 @@ export class ServeExposure {
   private state: Exposure = { kind: 'off' }
   private checks: Checklist = UNKNOWN_CHECKLIST
   private warning: string | null = null
+  private closed = false
 
   constructor(deps: ServeExposureDeps) {
     this.deps = deps
@@ -87,6 +101,7 @@ export class ServeExposure {
 
   /** 원하는 값을 바꾸고 reconcile 을 줄 세운다. 돌려준 약속은 **줄이 빌 때** 풀린다. */
   apply(desired: Desired): Promise<void> {
+    if (this.closed) return Promise.resolve()
     this.desired = desired
     if (!desired.on) this.warning = null
     return this.request()
@@ -94,12 +109,14 @@ export class ServeExposure {
 
   /** 주기 재확인 — 켜져 있거나, 꺼졌는데 기록이 남았을 때(제거 실패 마무리)만 돈다. 그 밖엔 아무것도 부르지 않는다. */
   tick(): Promise<void> {
+    if (this.closed) return Promise.resolve()
     if (!this.desired.on && this.readRecord() === null) return Promise.resolve()
     return this.request()
   }
 
   /** 「다시 확인」 — 꺼져 있어도 읽기 점검만 한다(serve 쓰기 없음). */
   probe(): Promise<void> {
+    if (this.closed) return Promise.resolve()
     if (this.desired.on || this.readRecord() !== null) return this.request()
     this.probeOnly = true
     return this.request()
@@ -107,6 +124,8 @@ export class ServeExposure {
 
   /** 종료 — 원하는 값을 꺼짐으로, `deadlineMs` 안에 끝나지 않으면 진행 중 tailscale 자식을 죽이고 돌아온다. 거부하지 않는다. */
   async shutdown(deadlineMs: number): Promise<void> {
+    // 이 뒤로 apply·tick·probe 는 무시한다 — 진행 중인 reconcile 은 add 직전에 원하는 값(꺼짐)을 다시 보고 올리지 않는다(R1-A1).
+    this.closed = true
     this.desired = { on: false }
     let timer: NodeJS.Timeout | null = null
     const deadline = new Promise<'deadline'>((resolve) => { timer = setTimeout(() => resolve('deadline'), deadlineMs) })
@@ -154,7 +173,8 @@ export class ServeExposure {
       this.set({ kind: 'off' })
       return
     }
-    if (desired.on) this.set({ kind: 'checking' })
+    // 노출된 채 도는 재확인은 `checking` 으로 내리지 않는다 — 내리면 연결된 폰을 30초마다 끊는다(R1-A2 차단 연결 끊기와 맞물림).
+    if (desired.on && this.state.kind !== 'exposed') this.set({ kind: 'checking' })
 
     // ① CLI
     const bin = await this.resolveBin()
@@ -196,30 +216,38 @@ export class ServeExposure {
     if (!status.running) return this.settleBlocked({ desired, reason: 'logged_out', message: 'Tailscale 에 로그인되어 있지 않다', record })
     if (config === null) return this.settleBlocked({ desired, reason: 'unreadable', message: 'serve 설정을 읽지 못했다 — 아무것도 바꾸지 않았다', record })
 
-    const use = portUse({ config, port: this.deps.httpsPort })
-    const ours = record !== null && use.kind === 'proxy' && use.host === record.host && use.target === record.target && record.httpsPort === this.deps.httpsPort
+    const port = this.deps.httpsPort
+    const ours = record !== null && record.httpsPort === port && rootTarget({ config, host: record.host, port }) === record.target
+
+    // 이름이 바뀌었다(R1-A11) — 옛 `/` 를 CLI 로 지울 수 없고, 새 이름으로 off 하면 남의 것을 지울 수 있다. 쓰지 않는다.
+    if (ours && record.host !== status.dnsName) {
+      this.deps.log('mobile.serve_renamed', { httpsPort: port })
+      this.set({ kind: 'failed', message: `Tailscale 이름이 바뀌어 옛 이름(${record.host})의 serve 항목을 corral 이 내릴 수 없다 — tailscale serve 설정에서 직접 지우면 새 이름으로 다시 올린다` })
+      return
+    }
+    if (record !== null && !ours) this.deleteRecord('not_ours_or_gone')
 
     // 꺼짐(또는 막힘) 쪽 — 우리 항목만 내린다.
     if (!desired.on) {
-      if (ours) {
-        const removed = await this.remove()
-        if (!removed) return
-      } else if (record !== null) {
-        this.deleteRecord('not_ours_or_gone')
-      }
+      if (ours && (await this.remove(record)) === 'failed') return
       this.set({ kind: 'off' })
       return
     }
     if (funnel === true) {
-      const wasExposed = this.state.kind === 'exposed' || ours
-      if (ours) await this.remove()
-      if (wasExposed) this.warning = 'Funnel 이 켜져 corral 항목을 내렸다'
-      this.deps.log('mobile.serve_blocked', { reason: 'funnel', removed: ours })
+      // 「내렸다」 는 제거를 다시 읽어 확인했을 때만 쓴다(R1-A2). 못 내렸으면 failed — 재확인이 다시 내린다.
+      const outcome: RemoveOutcome | 'none' = ours ? await this.remove(record) : 'none'
+      if (outcome === 'failed') {
+        this.deps.log('mobile.serve_blocked', { reason: 'funnel', removed: false })
+        this.set({ kind: 'failed', message: 'Funnel 감지 — corral 항목을 내리지 못했다, 재확인에서 다시 내린다' })
+        return
+      }
+      if (outcome === 'removed') this.warning = 'Funnel 이 켜져 corral 항목을 내렸다'
+      this.deps.log('mobile.serve_blocked', { reason: 'funnel', removed: outcome === 'removed' })
       this.set({ kind: 'blocked', reason: 'funnel', message: 'Funnel 이 켜져 있다 — Funnel 을 끄기 전엔 노출하지 않는다' })
       return
     }
     if (!status.https || status.dnsName === null) {
-      if (ours) await this.remove()
+      if (ours && (await this.remove(record)) === 'failed') return
       this.set({ kind: 'blocked', reason: 'https', message: `tailnet HTTPS 인증서가 꺼져 있다 — ${HTTPS_HINT}` })
       return
     }
@@ -229,49 +257,91 @@ export class ServeExposure {
     if (ours && record.target === target) {
       return this.set(this.exposedState(host))
     }
-    if (ours) {
-      // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 내리고 다시 올린다.
-      if (!(await this.remove())) return
-    } else if (use.kind !== 'free') {
-      if (record !== null) this.deleteRecord('foreign')
-      this.deps.log('mobile.serve_foreign', { httpsPort: this.deps.httpsPort })
-      this.set({ kind: 'foreign', message: `HTTPS 포트 ${this.deps.httpsPort} 를 다른 항목이 쓰고 있다 — 덮어쓰지 않는다` })
-      return
-    }
+    // 대상(서버 포트)이 바뀌었다 — 비정상 종료 뒤 재기동. 내리고 다시 올린다.
+    if (ours && (await this.remove(record)) === 'failed') return
     await this.add({ host, target, serverPort: desired.serverPort })
   }
 
   private async add(input: { host: string; target: string; serverPort: number }): Promise<void> {
-    this.writeRecord({ host: input.host, httpsPort: this.deps.httpsPort, target: input.target })
-    const run = await this.call(serveAddArgs({ httpsPort: this.deps.httpsPort, serverPort: input.serverPort }), TAILSCALE_WRITE_TIMEOUT_MS)
-    // 결과를 믿지 않고 다시 읽어 확인한다 — 「추가했다」 는 serve 설정에 우리 모양이 보일 때만.
-    const after = await this.call(serveStatusArgs(), TAILSCALE_READ_TIMEOUT_MS)
-    const config = after.ok ? parseServeConfig(after.stdout) : null
-    const use = config === null ? null : portUse({ config, port: this.deps.httpsPort })
-    if (use !== null && use.kind === 'proxy' && use.host === input.host && use.target === input.target) {
-      this.deps.log('mobile.serve_added', { httpsPort: this.deps.httpsPort, target: input.target })
+    const port = this.deps.httpsPort
+    // 쓰기 직전 재조회(R1-A3) — 그 사이 남이 포트·`/` 를 잡았으면 덮지 않는다.
+    const before = await this.readServe()
+    if (before === null) {
+      this.set({ kind: 'failed', message: 'serve 설정을 다시 읽지 못했다 — 아무것도 바꾸지 않았다' })
+      return
+    }
+    if (!rootAddable({ config: before, host: input.host, port })) {
+      this.deps.log('mobile.serve_foreign', { httpsPort: port })
+      this.set({ kind: 'foreign', message: `HTTPS 포트 ${port} 를 다른 항목이 쓰고 있다 — 덮어쓰지 않는다` })
+      return
+    }
+    // 그 사이 꺼짐·종료가 들어왔으면 올리지 않는다(R1-A1).
+    if (!this.desired.on || this.closed) return
+    this.writeRecord({ host: input.host, httpsPort: port, target: input.target })
+    const run = await this.call(serveAddArgs({ httpsPort: port, serverPort: input.serverPort }), TAILSCALE_WRITE_TIMEOUT_MS)
+    // 결과를 믿지 않고 다시 읽어 확인한다 — 「추가했다」 는 serve 설정에 우리 `/` 가 보이고 나머지가 그대로일 때만.
+    const after = await this.readServe()
+    const now = after === null ? undefined : rootTarget({ config: after, host: input.host, port })
+    if (after !== null && now === input.target) {
+      if (!sameJson(withoutRoot({ config: before, host: input.host, port }), withoutRoot({ config: after, host: input.host, port }))) {
+        this.warning = CONCURRENT_WARNING
+        this.deps.log('mobile.serve_concurrent_change', { during: 'add' })
+        this.set({ kind: 'failed', message: `serve 항목은 올렸지만 ${CONCURRENT_WARNING}` })
+        return
+      }
+      this.deps.log('mobile.serve_added', { httpsPort: port, target: input.target })
       this.warning = null
       this.set(this.exposedState(input.host))
       return
     }
-    if (use !== null && use.kind === 'free') this.deleteRecord('add_failed')
+    if (now === null) this.deleteRecord('add_failed')
+    else if (now !== undefined) {
+      // `/` 가 남의 대상이다 — 우리 쓰기와 겹쳐 남이 잡았다. 기록을 버리고 덮지 않는다.
+      this.deleteRecord('foreign')
+      this.warning = CONCURRENT_WARNING
+    }
     this.deps.log('mobile.serve_add_failed', { detail: run.ok ? 'not_visible' : run.detail })
     this.set({ kind: 'failed', message: `serve 항목을 올리지 못했다(${run.ok ? '설정에 보이지 않음' : run.detail}) — 다시 확인에서 재시도한다` })
   }
 
-  /** 우리 항목 제거 — 성공(다시 읽어 그 포트가 비었음)하면 기록도 지운다. 실패면 기록을 남겨 다음 재확인이 마무리한다. */
-  private async remove(): Promise<boolean> {
-    const run = await this.call(serveRemoveArgs({ httpsPort: this.deps.httpsPort }), TAILSCALE_WRITE_TIMEOUT_MS)
-    const after = await this.call(serveStatusArgs(), TAILSCALE_READ_TIMEOUT_MS)
-    const config = after.ok ? parseServeConfig(after.stdout) : null
-    if (config !== null && portUse({ config, port: this.deps.httpsPort }).kind === 'free') {
-      this.deleteRecord('removed')
-      this.deps.log('mobile.serve_removed', { httpsPort: this.deps.httpsPort })
-      return true
+  /**
+   * 우리 `/` 제거 — 쓰기 직전에 다시 읽어 아직 우리 것일 때만 off 하고(R1-A3), 다시 읽어 `/` 가 사라졌으면 기록을 지운다.
+   * `/` 밖이 같이 바뀌었으면 `failed` + 경고. 실패면 기록을 남겨 다음 재확인이 마무리한다.
+   */
+  private async remove(record: OwnerRecord): Promise<RemoveOutcome> {
+    const port = this.deps.httpsPort
+    const before = await this.readServe()
+    if (before === null) {
+      this.set({ kind: 'failed', message: 'serve 설정을 다시 읽지 못했다 — 다음 재확인에서 다시 내린다' })
+      return 'failed'
+    }
+    if (rootTarget({ config: before, host: record.host, port }) !== record.target) {
+      this.deleteRecord('not_ours_before_write')
+      return 'not_ours'
+    }
+    const run = await this.call(serveRemoveArgs({ httpsPort: port }), TAILSCALE_WRITE_TIMEOUT_MS)
+    const after = await this.readServe()
+    const now = after === null ? undefined : rootTarget({ config: after, host: record.host, port })
+    if (after !== null && now !== record.target && now !== undefined) {
+      this.deleteRecord(now === null ? 'removed' : 'foreign')
+      const unchanged = now === null && sameJson(withoutRoot({ config: before, host: record.host, port }), withoutRoot({ config: after, host: record.host, port }))
+      if (unchanged) {
+        this.deps.log('mobile.serve_removed', { httpsPort: port })
+        return 'removed'
+      }
+      this.warning = CONCURRENT_WARNING
+      this.deps.log('mobile.serve_concurrent_change', { during: 'remove' })
+      this.set({ kind: 'failed', message: `serve 항목을 내리는 중 ${CONCURRENT_WARNING}` })
+      return 'failed'
     }
     this.deps.log('mobile.serve_remove_failed', { detail: run.ok ? 'still_visible' : run.detail })
     this.set({ kind: 'failed', message: `serve 항목을 내리지 못했다(${run.ok ? '설정에 남음' : run.detail}) — 다음 재확인에서 다시 내린다` })
-    return false
+    return 'failed'
+  }
+
+  private async readServe(): Promise<Record<string, unknown> | null> {
+    const run = await this.call(serveStatusArgs(), TAILSCALE_READ_TIMEOUT_MS)
+    return run.ok ? parseServeConfig(run.stdout) : null
   }
 
   private settleBlocked(input: { desired: Desired; reason: BlockReason; message: string; record: OwnerRecord | null }): void {

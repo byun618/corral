@@ -1,7 +1,10 @@
 // 모바일 서버 (LIFE-577 A2·A3·A5) — loopback 전용 HTTP+WS. 노출 표면 정본은 `SURFACE.md`(같은 폴더).
 //
 // - 바인딩은 `127.0.0.1` **상수** — 인자·환경변수로 넓힐 길이 없다. 포트는 0(OS 가 고름), 켤 때마다 바뀔 수 있다.
-// - HTTP 표면은 `GET /ws` 의 WS 업그레이드 **하나**. 그 밖의 요청·경로·메서드는 본문 없이 404 로 닫는다.
+// - HTTP 표면은 `GET /ws` 의 WS 업그레이드 **하나**. 그 밖의 요청·경로·메서드·모양이 틀린 업그레이드는 본문 없이 404 로 닫는다
+//   (fix1 R1-A10 — 키·버전 검사를 ws 에 맡기기 전에 직접 해 거절 형식을 하나로). `Origin` 이 있으면 노출 주소 origin 만(R1-N2).
+// - 노출이 막히면(`accepting` 거짓) 새 hello·pair 를 `unavailable` 로 거절하고 기존 연결은 `disconnectAll` 로 닫는다(R1-A2).
+// - 거절·close 를 시작한 연결은 그 뒤 메시지를 처리하지 않는다(R1-A7 — 같은 write 에 이어 온 pair 가 통과하지 않게).
 // - 인증은 WS 첫 메시지(`hello`+토큰 또는 `pair`+코드). 그 전에는 어떤 데이터도 돌려주지 않는다 — 버전도 인증 뒤에만.
 //   loopback 의 다른 로컬 프로세스도 붙을 수 있다는 전제다(serve 헤더는 위조 가능 — W6). 경계는 토큰이다.
 // - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 ws 가 닫는다.
@@ -25,7 +28,10 @@ export const MOBILE_BIND_HOST = '127.0.0.1'
 
 type Log = (tag: string, fields?: Record<string, unknown>) => void
 
-type Connection = { ws: WebSocket; deviceId: string | null; timer: NodeJS.Timeout | null }
+type Connection = { ws: WebSocket; deviceId: string | null; timer: NodeJS.Timeout | null; closing: boolean }
+
+/** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
+const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
 
 export type MobileServerDeps = {
   pairing: PairingStore
@@ -33,6 +39,10 @@ export type MobileServerDeps = {
   log: Log
   /** 기기 목록·연결 수가 바뀌었다(페어링·접속·끊김) — 설정 화면 push 용. 내용(토큰·코드)은 싣지 않는다. */
   onChange: () => void
+  /** 새 인증을 받나 — 노출이 막히면 거짓(R1-A2). 없으면 늘 받는다(서버 단위 시험). */
+  accepting?: () => boolean
+  /** 허용 Origin — `https://<mac>.ts.net:8577`. 업그레이드에 Origin 이 있으면 이것과 같아야 한다. 없으면(null) Origin 있는 요청은 전부 거절(R1-N2). */
+  allowedOrigin?: () => string | null
   /** 시험만 줄인다. */
   authTimeoutMs?: number
 }
@@ -43,6 +53,7 @@ export class MobileServer {
   private wss: WebSocketServer | null = null
   private readonly connections = new Set<Connection>()
   private port: number | null = null
+  private starting: Promise<number> | null = null
 
   constructor(deps: MobileServerDeps) {
     this.deps = deps
@@ -58,8 +69,14 @@ export class MobileServer {
     return out
   }
 
-  async start(): Promise<number> {
-    if (this.http !== null && this.port !== null) return this.port
+  /** 기동은 한 번에 하나 — 겹친 start 는 같은 약속을, stop 은 진행 중인 기동이 끝난 뒤 닫는다(R1-A1). */
+  start(): Promise<number> {
+    if (this.http !== null && this.port !== null) return Promise.resolve(this.port)
+    if (this.starting === null) this.starting = this.listen().finally(() => { this.starting = null })
+    return this.starting
+  }
+
+  private async listen(): Promise<number> {
     const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, clientTracking: false, perMessageDeflate: false })
     const server = http.createServer((request, response) => {
       // WS 가 아닌 HTTP 는 전부 같은 모양으로 거절 — 본문·헤더로 아무것도 알려 주지 않는다.
@@ -71,9 +88,7 @@ export class MobileServer {
     server.requestTimeout = 10_000
     server.maxHeadersCount = 64
     server.on('upgrade', (request, socket: Socket, head) => {
-      const url = request.url ?? ''
-      const pathOnly = url.split('?')[0]
-      if (request.method !== 'GET' || pathOnly !== WS_PATH || this.connections.size >= MAX_CONNECTIONS) {
+      if (!this.upgradeAllowed(request)) {
         socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
         socket.destroy()
         return
@@ -98,6 +113,7 @@ export class MobileServer {
   }
 
   async stop(): Promise<void> {
+    if (this.starting !== null) await this.starting.catch(() => {})
     const server = this.http
     this.http = null
     this.port = null
@@ -109,6 +125,37 @@ export class MobileServer {
     server.closeAllConnections()
     await new Promise<void>((resolve) => server.close(() => resolve()))
     this.deps.log('mobile.server_stop', {})
+  }
+
+  /** 노출이 막혔다 — 열린 연결을 전부 닫는다(R1-A2). 닫은 수를 돌려준다. */
+  disconnectAll(): number {
+    let closed = 0
+    for (const connection of [...this.connections]) {
+      if (connection.closing) continue
+      this.reject(connection, 'unavailable', CLOSE.unavailable)
+      closed += 1
+    }
+    if (closed > 0) this.deps.onChange()
+    return closed
+  }
+
+  private upgradeAllowed(request: http.IncomingMessage): boolean {
+    const pathOnly = (request.url ?? '').split('?')[0]
+    if (request.method !== 'GET' || pathOnly !== WS_PATH || this.connections.size >= MAX_CONNECTIONS) return false
+    if ((request.headers.upgrade ?? '').toLowerCase() !== 'websocket') return false
+    if (!WS_KEY.test(request.headers['sec-websocket-key'] ?? '')) return false
+    if (request.headers['sec-websocket-version'] !== '13') return false
+    // 하위 프로토콜은 쓰지 않는다 — 있으면 ws 가 모양 오류에 400 본문을 내므로 여기서 같은 404 로 닫는다.
+    if (request.headers['sec-websocket-protocol'] !== undefined) return false
+    const origin = request.headers.origin
+    if (origin !== undefined) {
+      const allowed = this.deps.allowedOrigin?.() ?? null
+      if (allowed === null || origin !== allowed) {
+        this.deps.log('mobile.origin_rejected', {})
+        return false
+      }
+    }
+    return true
   }
 
   /** 해지한 기기의 열린 연결을 지금 닫는다(A4ⓔ). 다른 기기 연결은 그대로. */
@@ -125,7 +172,7 @@ export class MobileServer {
   }
 
   private accept(ws: WebSocket): void {
-    const connection: Connection = { ws, deviceId: null, timer: null }
+    const connection: Connection = { ws, deviceId: null, timer: null, closing: false }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
     ws.on('message', (data, isBinary) => this.onMessage(connection, data, isBinary))
@@ -139,6 +186,8 @@ export class MobileServer {
   }
 
   private onMessage(connection: Connection, data: RawData, isBinary: boolean): void {
+    // 거절·close 를 시작한 연결 — 같은 write 로 뒤따라 온 메시지도 버린다(R1-A7).
+    if (connection.closing || connection.ws.readyState !== connection.ws.OPEN) return
     if (isBinary) {
       if (connection.deviceId === null) return this.reject(connection, 'bad_message', CLOSE.badMessage)
       return this.send(connection.ws, { type: 'error', code: 'bad_message', message: errorText('bad_message') })
@@ -163,7 +212,10 @@ export class MobileServer {
           return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
       }
     }
-    // 인증 전 — hello·pair 만. 그 밖은 거절하고 닫는다.
+    // 인증 전 — hello·pair 만. 그 밖은 거절하고 닫는다. 노출이 막혔으면 hello·pair 도 받지 않는다(R1-A2).
+    if ((message.type === 'hello' || message.type === 'pair') && this.deps.accepting?.() === false) {
+      return this.reject(connection, 'unavailable', CLOSE.unavailable)
+    }
     switch (message.type) {
       case 'hello': {
         if (message.protocol !== PROTOCOL_VERSION) return this.rejectProtocol(connection)
@@ -227,6 +279,7 @@ export class MobileServer {
   }
 
   private drop(connection: Connection, closeCode: number, reason: string): void {
+    connection.closing = true
     if (connection.timer !== null) clearTimeout(connection.timer)
     connection.timer = null
     const ws = connection.ws
@@ -259,5 +312,6 @@ function errorText(code: ErrorCode): string {
     case 'unknown_type': return '모르는 메시지 타입'
     case 'auth_timeout': return '인증 시간 초과'
     case 'revoked': return '기기가 해지되었다'
+    case 'unavailable': return '지금은 모바일 연결을 받지 않는다 — 데스크톱 설정의 노출 상태를 확인한다'
   }
 }

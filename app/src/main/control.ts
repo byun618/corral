@@ -15,6 +15,7 @@ import { isRecord, readNumber, readString, safeParse } from '../shared/json.js'
 import type { AddRepoResult } from '../shared/types.js'
 import { log } from './log.js'
 import { checkUnixSocketPath } from './unix-socket-path.js'
+import { listenPrivateSocket, socketMaySendSecrets } from './control-socket.js'
 
 export type ControlHandlers = {
   capture: (name: string, selector?: string) => Promise<string>
@@ -46,8 +47,9 @@ export type ControlHandlers = {
    */
   counters: () => unknown
   /**
-   * LIFE-577 최종 관문의 자동 경로 — repro 스크립트가 화면을 읽지 않고 페어링 코드를 받는다. 이 소켓은 계측 실행에만 열리고(0600)
-   * 응답은 로그에 남지 않는다(`control.cmd` 는 요청 줄만 적는다). 평시 실행에는 이 길이 없다.
+   * LIFE-577 최종 관문의 자동 경로 — repro 스크립트가 화면을 읽지 않고 페어링 코드를 받는다. 이 소켓은 계측 실행에만 열린다.
+   * fix1 R1-A6: 코드를 주는 `mobile-pairing` 은 소켓 폴더가 내 소유·0700 이고 소켓이 0600 일 때만(`control-socket.ts`) — 아니면 거절.
+   * 소켓은 umask 077 아래에서 만들고 0600 으로 고정한다. 응답은 로그에 남지 않는다(`control.cmd` 는 요청 줄만 적는다).
    */
   mobile: {
     status: () => unknown
@@ -125,7 +127,8 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
     log('control.path_too_long', { socketPath, bytes: check.bytes, limit: check.limit })
     return null
   }
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true })
+  // 폴더가 없으면 0700 으로 만든다. 있으면 권한을 고치지 않는다 — 비공개가 아니면 비밀 명령만 거절된다(R1-A6).
+  fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 })
   if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
   const server = net.createServer((socket) => {
@@ -140,16 +143,19 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
         const line = buffer.slice(0, index)
         buffer = buffer.slice(index + 1)
         if (line.trim().length === 0) continue
-        void handle(line, socket, handlers)
+        void handle(line, socket, handlers, socketPath)
       }
     })
   })
   server.on('error', (error) => log('control.listen_failed', { socketPath, error: String(error) }))
-  server.listen(socketPath, () => log('control.listening', { socketPath, bytes: check.bytes }))
+  listenPrivateSocket({ server, socketPath }).then(
+    () => log('control.listening', { socketPath, bytes: check.bytes, secrets: socketMaySendSecrets({ dir: path.dirname(socketPath), socketPath }) }),
+    (error: unknown) => log('control.listen_failed', { socketPath, error: String(error) }),
+  )
   return server
 }
 
-async function handle(line: string, socket: net.Socket, handlers: ControlHandlers): Promise<void> {
+async function handle(line: string, socket: net.Socket, handlers: ControlHandlers, socketPath: string): Promise<void> {
   const parsed = safeParse(line)
   if (!isRecord(parsed)) {
     socket.write(JSON.stringify({ ok: false, error: 'bad frame' }) + '\n')
@@ -177,6 +183,11 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         reply({ ok: true, at: Date.now(), mobile: handlers.mobile.status() })
         return
       case 'mobile-pairing':
+        // 비밀(코드)을 주는 유일한 계측 명령 — 폴더·소켓 권한을 **요청마다** 다시 본다(R1-A6).
+        if (!socketMaySendSecrets({ dir: path.dirname(socketPath), socketPath })) {
+          reply({ ok: false, error: 'control_socket_not_private' })
+          return
+        }
         reply({ ok: true, at: Date.now(), pairing: handlers.mobile.createPairing() })
         return
       case 'mobile-revoke':

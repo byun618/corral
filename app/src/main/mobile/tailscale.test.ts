@@ -10,10 +10,13 @@ import {
   locateTailscale,
   parseNodeStatus,
   parseServeConfig,
-  portUse,
+  rootAddable,
+  rootTarget,
+  sameJson,
   runTailscale,
   serveAddArgs,
   serveRemoveArgs,
+  withoutRoot,
 } from './tailscale.js'
 
 const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts/l577/fake-tailscale.mjs')
@@ -69,18 +72,35 @@ describe('Funnel 감지 [E1]', () => {
   })
 })
 
-describe('포트 사용 판정', () => {
+describe('포트 점유 · `/` 소유 판정 (R1-A4·N1)', () => {
   const port = MOBILE_HTTPS_PORT
-  it('free · 우리 모양 proxy · 그 밖은 other', () => {
-    expect(portUse({ config: {}, port })).toEqual({ kind: 'free' })
-    expect(portUse({ config: { TCP: { '443': { HTTPS: true } }, Web: { 'm:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } } }, port })).toEqual({ kind: 'free' })
-    expect(portUse({ config: { TCP: { [port]: { HTTPS: true } }, Web: { [`m:${port}`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:1' } } } } }, port }))
-      .toEqual({ kind: 'proxy', host: 'm', target: 'http://127.0.0.1:1' })
-    // 경로 여러 개 · 파일 핸들러 · TCP 포워드 · Web 만 있음
-    expect(portUse({ config: { TCP: { [port]: { HTTPS: true } }, Web: { [`m:${port}`]: { Handlers: { '/': { Proxy: 'x' }, '/b': { Proxy: 'y' } } } } }, port }).kind).toBe('other')
-    expect(portUse({ config: { TCP: { [port]: { HTTPS: true } }, Web: { [`m:${port}`]: { Handlers: { '/': { Path: '/tmp' } } } } }, port }).kind).toBe('other')
-    expect(portUse({ config: { TCP: { [port]: { TCPForward: '127.0.0.1:22' } } }, port }).kind).toBe('other')
-    expect(portUse({ config: { Web: { [`m:${port}`]: { Handlers: {} } } }, port }).kind).toBe('other')
+  const site = (handlers: Record<string, unknown>) => ({ TCP: { [port]: { HTTPS: true } }, Web: { [`m:${port}`]: { Handlers: handlers } } })
+  it('rootTarget — `/` 프록시만 본다, 남의 다른 경로가 같이 있어도 `/` 는 읽힌다', () => {
+    expect(rootTarget({ config: {}, host: 'm', port })).toBeNull()
+    expect(rootTarget({ config: site({ '/': { Proxy: 'http://127.0.0.1:1' } }), host: 'm', port })).toBe('http://127.0.0.1:1')
+    expect(rootTarget({ config: site({ '/': { Proxy: 'x' }, '/b': { Proxy: 'y' } }), host: 'm', port })).toBe('x')
+    expect(rootTarget({ config: site({ '/': { Proxy: 'x' } }), host: 'other', port })).toBeNull()
+    expect(rootTarget({ config: site({ '/': { Path: '/tmp' } }), host: 'm', port })).toBeNull()
+    expect(rootTarget({ config: { Web: { [`m:${port}`]: { Handlers: { '/': { Proxy: 'x' } } } } }, host: 'm', port })).toBeNull()
+  })
+
+  it('rootAddable — 빈 포트·같은 host 의 다른 경로만 있으면 가능, Foreground·TCP 포워드·다른 host·`/` 있음은 불가', () => {
+    expect(rootAddable({ config: {}, host: 'm', port })).toBe(true)
+    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'm', port })).toBe(true)
+    expect(rootAddable({ config: { TCP: { '443': { HTTPS: true } }, Web: { 'm:443': { Handlers: { '/': { Proxy: 'z' } } } } }, host: 'm', port })).toBe(true)
+    expect(rootAddable({ config: site({ '/': { Proxy: 'x' } }), host: 'm', port })).toBe(false)
+    expect(rootAddable({ config: site({ '/b': { Proxy: 'y' } }), host: 'other', port })).toBe(false)
+    expect(rootAddable({ config: { TCP: { [port]: { TCPForward: '127.0.0.1:22' } } }, host: 'm', port })).toBe(false)
+    expect(rootAddable({ config: { Foreground: { s1: { TCP: { [port]: { HTTPS: true } } } } }, host: 'm', port })).toBe(false)
+  })
+
+  it('withoutRoot · sameJson — `/` 와 그것만 쓰던 TCP 칸을 빼고 키 순서 무관하게 비교', () => {
+    const before = { ...site({ '/b': { Proxy: 'y' } }), AllowFunnel: {} }
+    const after = { AllowFunnel: {}, ...site({ '/': { Proxy: 'x' }, '/b': { Proxy: 'y' } }) }
+    expect(sameJson(withoutRoot({ config: before, host: 'm', port }), withoutRoot({ config: after, host: 'm', port }))).toBe(true)
+    expect(withoutRoot({ config: site({ '/': { Proxy: 'x' } }), host: 'm', port })).toEqual({})
+    expect(sameJson({ a: 1, b: [1, { c: 2 }] }, { b: [1, { c: 2 }], a: 1 })).toBe(true)
+    expect(sameJson({ a: 1 }, { a: 2 })).toBe(false)
   })
 })
 

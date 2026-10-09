@@ -70,7 +70,8 @@ const MAIN_LOG = path.join(SRC, 'main/log.ts')
 /**
  * LIFE-577 — 모바일 프로토콜(폰 ↔ corral WS)은 herdr 와 **다른 어휘**인데 메시지 이름 `ping` 이 herdr 메서드 지문과 겹친다
  * (A5 가 M1 메시지를 `hello`·`pair`·`ping` 으로 고정). 그래서 ③ 을 둔다: `src/main/mobile/` 안이고, 그 파일이 어댑터를 import 하지 않고,
- * 토큰이 모바일 프로토콜 어휘(`main/mobile/protocol.ts` 의 `CLIENT_TYPES` 에서 파생)일 때만. 어휘는 손으로 적지 않는다(L-6 와 같은 이유).
+ * 토큰이 모바일 프로토콜 어휘(`main/mobile/protocol.ts` 의 `CLIENT_TYPES` 에서 파생)이며 **method 자리·envelope 글자 밖**일 때만(fix1 R1-A5).
+ * 어휘는 손으로 적지 않는다(L-6 와 같은 이유).
  */
 const MOBILE_DIR = path.join(SRC, 'main/mobile')
 const MOBILE_TYPES = derivedList({ file: 'main/mobile/protocol.ts', block: /export const CLIENT_TYPES = \[([^\]]*)\]/, item: /'([a-z_]+)'/g })
@@ -212,7 +213,17 @@ function boundToMethod({ literal }) {
  */
 function methodExemption({ source, index, name, zone, importsMainLog, sourceFile, file, importsAdapter }) {
   const before = source.slice(Math.max(0, index - 80), index)
-  if (zone === 'main' && inside(file, MOBILE_DIR) && !importsAdapter && MOBILE_TYPES.has(name)) return 'mobile-protocol'
+  // ③ 모바일 어휘(LIFE-577) — fix1 R1-A5: 「mobile 폴더 + 어댑터 import 없음」 만으로는 와이어를 모른다는 근거가 아니다.
+  // ① 과 같은 판정으로 좁힌다: envelope 글자(`"method":"ping"`)가 아니고, 글자 노드 **그 자체**(긴 문장 안이 아님)이며,
+  // 같은 식 안에서 `method` 자리와 묶이지 않은 값(`{type:'ping'}`·`message.type === 'ping'`·`case 'ping'` 의 switch 대상이 type)만.
+  // 판정할 수 없으면(파싱 진단·글자 노드 못 찾음) 면제하지 않는다(R2-claude-01 fail-closed 와 같다).
+  if (zone === 'main' && inside(file, MOBILE_DIR) && !importsAdapter && MOBILE_TYPES.has(name) && !ENVELOPE_BEFORE.test(before)) {
+    const parsed = sourceFile()
+    const diagnostics = parsed.parseDiagnostics
+    const trusted = Array.isArray(diagnostics) && diagnostics.length === 0
+    const text = trusted ? textAt({ sourceFile: parsed, pos: index }) : null
+    if (text?.literal && !boundToMethod({ literal: text.literal })) return 'mobile-protocol'
+  }
   if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
     const parsed = sourceFile()
     const diagnostics = parsed.parseDiagnostics
@@ -468,7 +479,7 @@ const out = {
     항목: commentMentions,
   },
   면제: {
-    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다. mobile-protocol = src/main/mobile/ 안(어댑터 import 없음)의 모바일 프로토콜 메시지 이름(LIFE-577).',
+    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다. mobile-protocol = src/main/mobile/ 안(어댑터 import 없음)의 모바일 프로토콜 메시지 이름이 method 자리·envelope 글자 밖에 있다(LIFE-577 fix1).',
     '모바일 프로토콜 어휘 (main/mobile/protocol.ts CLIENT_TYPES 에서 파생)': [...MOBILE_TYPES],
     '액션 id (shared/keybindings.ts ACTIONS 에서 파생)': ACTION_IDS.size,
     'herdr 메서드 (adapter request.ts ALLOWED_METHODS 에서 파생)': HERDR_METHODS.size,

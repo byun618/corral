@@ -3,6 +3,8 @@
 // - 켜기 = loopback 서버 시작 → serve 항목 reconcile. 끄기 = serve 항목 내림 + 서버 정지(연결 전부 닫힘) + 페어링 코드 폐기.
 // - 꺼진 상태로 기동하면 **아무것도 열지 않고**, 소유권 기록이 없으면 tailscale 도 부르지 않는다(A1).
 // - 종료(`shutdown`)는 마감 안에 serve 항목을 내리고 돌아온다 — 기존 `before-quit` 체인이 이것을 기다린다.
+//   진행 중인 기동(listen·reconcile)을 같은 마감 안에서 기다린 뒤 닫는다 — 종료 뒤 새 listen·노출이 생기지 않는다(fix1 R1-A1).
+// - 노출이 `exposed` 가 아니면 로컬 서버도 새 인증을 받지 않고 기존 연결을 닫는다(R1-A2) — serve 를 못 내린 채 막힌 경우에도.
 // - 상태 push(`onStatus`)에는 토큰·코드가 없다(`MobileStatus`). 코드는 `createPairing` 응답에만 실린다.
 // - **electron 을 모른다** — 버전·로그·push 를 주입받는다.
 import path from 'node:path'
@@ -48,8 +50,23 @@ export class MobileService {
     this.pairing = new PairingStore({ dir, now: deps.now })
     this.pairing.load()
     const onChange = (): void => this.push()
-    this.server = new MobileServer({ pairing: this.pairing, appVersion: deps.appVersion, log: deps.log, onChange, authTimeoutMs: deps.authTimeoutMs })
-    this.exposure = new ServeExposure({ dir, httpsPort: deps.httpsPort ?? MOBILE_HTTPS_PORT, locate: deps.locate, run: deps.run, log: deps.log, onChange })
+    this.server = new MobileServer({
+      pairing: this.pairing,
+      appVersion: deps.appVersion,
+      log: deps.log,
+      onChange,
+      authTimeoutMs: deps.authTimeoutMs,
+      accepting: () => this.exposure.exposure().kind === 'exposed',
+      allowedOrigin: () => {
+        const exposure = this.exposure.exposure()
+        return exposure.kind === 'exposed' ? `https://${exposure.host}:${exposure.httpsPort}` : null
+      },
+    })
+    const onExposure = (): void => {
+      if (this.exposure.exposure().kind !== 'exposed') this.server.disconnectAll()
+      this.push()
+    }
+    this.exposure = new ServeExposure({ dir, httpsPort: deps.httpsPort ?? MOBILE_HTTPS_PORT, locate: deps.locate, run: deps.run, log: deps.log, onChange: onExposure })
   }
 
   /** 기동 — 저장된 스위치 값으로. 꺼져 있으면 남은 기록만 정리한다(기록이 없으면 아무것도 안 부른다). */
@@ -71,6 +88,8 @@ export class MobileService {
     if (this.closed) return
     if (this.enabled) {
       const port = await this.server.start()
+      // listen 을 기다리는 사이 종료가 들어왔다 — 노출을 올리지 않는다(서버는 shutdown 이 닫는다).
+      if (this.closed) return
       this.exposureDone = this.exposure.apply({ on: true, serverPort: port })
     } else {
       this.clearCode()
@@ -136,7 +155,14 @@ export class MobileService {
     if (this.recheck !== null) clearInterval(this.recheck)
     this.recheck = null
     this.clearCode()
-    await Promise.all([this.exposure.shutdown(deadlineMs), this.server.stop()])
+    // 진행 중인 기동을 마감 안에서 기다린다 — 남은 시간으로 serve 를 내리고 서버를 닫는다.
+    const started = Date.now()
+    let timer: NodeJS.Timeout | null = null
+    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs) })
+    await Promise.race([this.chain, deadline])
+    if (timer !== null) clearTimeout(timer)
+    const remaining = Math.max(0, deadlineMs - (Date.now() - started))
+    await Promise.all([this.exposure.shutdown(remaining), this.server.stop()])
   }
 
   /** 시험·계측용 — 지금 소유권 기록. */

@@ -3,6 +3,7 @@
 // (`CORRAL_TAILSCALE_BIN=<이 파일>` 또는 시험의 `locate` 주입). 상태는 `FAKE_TAILSCALE_DIR` 폴더:
 //
 //   state.json  — { backendState, dnsName, certDomains, serve, hang: [...], failAdd }
+//                 serve 추가는 실제 daemon 처럼 foreground 포트 충돌·종류 변경을 거절하고, 같은 `/` 는 교체한다(SetWebHandler)
 //                 `serve` 는 `tailscale serve status --json` 이 돌려줄 객체 그대로(TCP·Web·AllowFunnel·Foreground)
 //                 `hang` 에 든 명령 이름(status · serve-status · serve-add · serve-remove · version)은 끝없이 멈춘다(무응답 시나리오)
 //                 `failAdd` 참이면 serve 추가가 exit 1
@@ -89,11 +90,21 @@ function run(name) {
       }
       if (state.failAdd) return fail('add failed (fake)')
       const serve = state.serve ?? {}
+      // 실제 daemon(1.102.2 `validateServeConfigUpdate`)처럼 — foreground 리스너가 쓰는 포트에 배경 리스너를 올리지 못하고,
+      // 같은 포트의 serve 종류(TCP 포워드 ↔ HTTPS)를 바꾸지 못한다.
+      for (const session of Object.values(serve.Foreground ?? {})) {
+        if (session?.TCP?.[String(port)]) return fail(`foreground listener already exists for port ${port}`)
+      }
+      const existing = serve.TCP?.[String(port)]
+      if (existing && existing.HTTPS !== true) return fail(`cannot change serve type for port ${port}`)
       serve.TCP = serve.TCP ?? {}
       serve.Web = serve.Web ?? {}
-      if (serve.TCP[String(port)]) return fail(`port ${port} already in use (fake)`)
       serve.TCP[String(port)] = { HTTPS: true }
-      serve.Web[`${state.dnsName}:${port}`] = { Handlers: { '/': { Proxy: target } } }
+      // 실제 CLI 의 `SetWebHandler` 처럼 — 같은 호스트·포트의 `/` 는 **교체**하고 다른 경로는 남긴다.
+      const key = `${state.dnsName}:${port}`
+      const site = serve.Web[key] ?? { Handlers: {} }
+      site.Handlers = { ...(site.Handlers ?? {}), '/': { Proxy: target } }
+      serve.Web[key] = site
       state.serve = serve
       writeState(state)
       return 0
@@ -101,6 +112,7 @@ function run(name) {
     case 'serve-remove': {
       const port = httpsPort(argv)
       const serve = state.serve ?? {}
+      // 실제 CLI 처럼 **지금** 노드 DNS 이름으로 호스트 키를 만든다(1.102.2 serve_v2.go:451) — 이름이 바뀌면 옛 키는 못 지운다.
       const key = `${state.dnsName}:${port}`
       const handlers = serve.Web?.[key]?.Handlers
       if (!handlers || !handlers['/']) return fail('handler does not exist')

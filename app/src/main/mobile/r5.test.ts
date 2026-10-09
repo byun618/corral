@@ -14,7 +14,7 @@ const EXPIRED = 'code_expired'
 const USED = 'code_used'
 const INVALID = 'code_invalid'
 const PAIR_CLOSE = 4005
-const MAC = '변상현의 MacBook Pro'
+const MAC = '시험용 MacBook Pro'
 
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => {

@@ -9,7 +9,10 @@ tailscale 은 가짜 CLI(`FAKE=/tmp/l580g-f*`), herdr 은 g-up 이 띄운 이름
 | `k9-ab.mjs` | A(모바일 꺼짐)/B(켜짐+구독 1) 교대 3회 — 키 입력→화면 p50·p95(회당 36타) + main 루프 지연 p99 | J6 · L10ⓒ |
 | `k9-ab.nodetest.mjs` | k9-ab 자체 시험 — 구동 실패·`--rounds 0`·push 0·스모크 소표본·루프 표본 0 이 통과하지 못하는지 + 정상 양성 대조(`npm test` 의 node:test 쪽) | R1-A1 |
 | `push-cost.mjs` · `push-cost.nodetest.mjs` | main 로그 `mobile.list_built`·`mobile.list_push` 를 seq 로 묶어 buildMs+sendMs 합의 p95(표본 0 이면 실패) | L10ⓓ · R1 C3 |
-| `native-j5.md` | 네이티브 J5 — 폰 연결 기록(`list_recv`·`clock`)과 main 로그로 ⓐ·ⓑ 계산법·체크리스트 | L3 네이티브 · R1 C1 |
+| `native-j5.md` | 네이티브 J5 — 원인 시각 직접 기록 · 폰 연결 기록(`list_recv`·`clock`)으로 ⓐ·ⓑ 계산법 · L12ⓒ 체크리스트 | L3 네이티브 · R1 C1 · R2-A4 |
+| `native-cause.mjs` | 전용 셸 pane 안에서 자기 pane 에 `herdr pane report-agent` 를 치고 호출 직전 맥 시각(`causeAt`)·pane·exit 를 NDJSON 으로(`--isolated` = 격리 소켓만) | R2-A4 |
+| `native-j5.mjs` · `native-j5.nodetest.mjs` | 폰 기록 사본 + 원인 기록 [+ main 발췌] → 전이별 ⓐ·ⓑ, 원인 없는 전이 보류(5회에서 제외), `agent.push.applied` 는 참고값 | R2-A4 |
+| `native-dryrun.mjs` | 위 절차의 격리 dry-run(격리 herdr 셸 pane · Node 폰 자리 · 계산기까지) | R2-A4 |
 | `lib.mjs` | 루트 검사·격리 herdr RPC·모바일 켜고 끄기(**켠 뒤 설정 화면을 닫는다** — R1-A2)·폰 자리 클라이언트(페어링→hello→구독, ping/pong 시계차, 연결 닫힘 알림)·격리 레포 pane | — |
 
 ```sh

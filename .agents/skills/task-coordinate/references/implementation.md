@@ -35,6 +35,12 @@ git -C "$REPO_ROOT" worktree add "$REPO_ROOT/.claude/worktrees/${TASK_BRANCH}-cl
   -b "${TASK_BRANCH}-claude" "$TASK_BRANCH"
 ```
 
+   **생성 직후 상위 지정** (LIFE-576 D7): 그 구현 worktree 의 상위를 작업 worktree 로 지정한다 — 사이드바가 작업 worktree 아래에
+   중첩해 보이게 하는 표시용 메타다. 명령은 매핑의 『감독 워커 기동』 「git 으로 만든 직후 상위를 지정한다」 줄을 따른다
+   (corral 매핑 = `worktree set` 의 `--worktree path:<구현 worktree> --parent-worktree path:<작업 worktree>`).
+   **리뷰 worktree 를 만들 때도 같은 규칙 한 줄**이다. **실패는 경고만** — 원자료에 거절 원문을 남기고 워커 기동은 그대로 한다.
+   그 능력이 없는 매핑이면 이 단계는 공백이다.
+
 2. 『제어 문맥 격리』를 먼저 정한다 — **내 작업의 기존 Run**(내가·내 세션이 이 일감으로 만든 것)을 우선 쓰고,
    없거나 **누구 것인지 모르면 새로 만들고 끝나면 복원한다.** **어느 명령에 Run을
    명시하는지는 매핑의 Run 명시 규칙을 따른다** — 받지 않는 명령에 붙이면 거절되는 도구가 있다.

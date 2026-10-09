@@ -86,6 +86,60 @@ export function resolveCardDropSlot(input: { rects: readonly ItemRect[]; groupRa
   return rects.length
 }
 
+// --- 끌어서 상위 지정 (LIFE-576 D3 — Orca main `worktree-lineage-drag-drop.ts`, #20412) --------------------------------
+//
+// 카드 내용 영역(`[data-worktree-card-parent-content]`)의 **안쪽 전체 = 상위 지정**, 위·아래 가장자리(높이 20%, 최대 8px)만 순서
+// 이동 줄. 내용 영역 아랫변은 그 안의 첫 자식 행 윗변에서 자른다(부모 카드 안 자식 행은 부모 hit 영역이 아니다).
+// 사각형은 **밀리기 전** 자리여야 한다(K3ⓔ — 순서 미리보기로 밀린 자리로 재면 판정이 흔들린다, O3).
+
+const REORDER_GUTTER_RATIO = 0.2
+const REORDER_GUTTER_MAX_HEIGHT_PX = 8
+
+/** Orca `isWorktreeLineageDropZoneHit` 그대로 — 높이 0 이면 false, 경계값은 포함. */
+export function isLineageDropZoneHit(input: { y: number; rect: ItemRect }): boolean {
+  const height = Math.max(0, input.rect.bottom - input.rect.top)
+  if (height <= 0) return false
+  const gutter = Math.min(height * REORDER_GUTTER_RATIO, REORDER_GUTTER_MAX_HEIGHT_PX)
+  return input.y >= input.rect.top + gutter && input.y <= input.rect.bottom - gutter
+}
+
+/** 상위 지정 후보 하나 — `rect` = 내용 영역(자식 행 윗변에서 자른 것). 무효 대상(자기·후손·다른 레포 등)은 호출부가 뺀다. */
+export type LineageTargetRect = { key: string; rect: ItemRect }
+
+/** 포인터 y 가 들어간 후보 — 없으면 null. 내용 영역은 서로 겹치지 않으니 첫 적중이 답이다. */
+export function resolveLineageTarget(input: { targets: readonly LineageTargetRect[]; y: number }): string | null {
+  return input.targets.find((target) => isLineageDropZoneHit({ y: input.y, rect: target.rect }))?.key ?? null
+}
+
+/**
+ * 덩어리 경계 번호 → 평면 경계 번호 (Orca `getFullDropIndexForWorktreeDragUnit`) — 앞 덩어리들의 카드 수 합.
+ * `sizes[i]` = i 번째 덩어리의 카드 수(루트 + 펼친 후손).
+ */
+export function unitSlotToFlat(input: { sizes: readonly number[]; slot: number }): number {
+  const bounded = Math.max(0, Math.min(input.sizes.length, Math.trunc(input.slot)))
+  let flat = 0
+  for (let index = 0; index < bounded; index++) flat += input.sizes[index] ?? 0
+  return flat
+}
+
+/**
+ * 중첩된 자식을 끄는 중의 미리 보기 (수정 r1 M4 — Orca main `worktree-drag-units.ts`: 끄는 카드도 덩어리처럼 자리를 벌린다).
+ * 끄는 카드는 부모 덩어리 안이라 덩어리 목록에 없다 — 놓일 경계 `slot` 뒤 덩어리들을 끄는 카드 높이 + 틈(틈의 중앙값)만큼 내리고,
+ * 표시 줄 = 벌어진 자리 윗변(경계 덩어리 윗변, 맨 끝이면 마지막 덩어리 아랫변 + 틈). 사각형은 **밀리기 전** 자리다(K3ⓔ).
+ */
+export function buildInsertionPreview(input: { rects: readonly ItemRect[]; slot: number; height: number; view: ItemRect }): { offsets: number[]; indicatorY: number } {
+  const { rects, view } = input
+  const slot = Math.max(0, Math.min(rects.length, Math.trunc(input.slot)))
+  const gaps: number[] = []
+  for (let index = 1; index < rects.length; index++) gaps.push(Math.max(0, (rects[index]?.top ?? 0) - (rects[index - 1]?.bottom ?? 0)))
+  const gap = median(gaps) ?? 0
+  const shift = Math.max(0, input.height) + gap
+  const offsets = rects.map((_, index) => (index >= slot && shift >= 0.5 ? shift : 0))
+  const last = rects[rects.length - 1]
+  const y = rects[slot]?.top ?? (last === undefined ? view.top : last.bottom + gap)
+  return { offsets, indicatorY: clampToView({ y, view }) }
+}
+
 /** 표시 줄을 보이는 범위 안쪽으로 당기는 여유 — 붙은 헤더 윗변 바로 안쪽(점 3px + 테두리 2px). */
 const INDICATOR_VIEW_INSET_PX = 5
 

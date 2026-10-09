@@ -42,9 +42,11 @@ function applyCommit(input: { order: ManualOrder; commit: ReorderCommit; repos: 
         visiblePaths: commit.keys,
         path: source.path,
         slot: commit.slot,
+        block: commit.block,
+        land: commit.unnest,
       })
     case 'all-card':
-      return applyAllMove({ order, repos, visiblePaths: commit.keys, path: source.path, slot: commit.slot })
+      return applyAllMove({ order, repos, visiblePaths: commit.keys, path: source.path, slot: commit.slot, block: commit.block, land: commit.unnest })
   }
 }
 

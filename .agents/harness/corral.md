@@ -145,6 +145,7 @@ terminal list                       # 『회수·정리』 — 세션 목록
 terminal send                       # 『본문 주입』 우회 경로 (증명 없음 — 쓰지 않는다고 적기 위해 선언)
 terminal close                      # 『회수·정리』 — 빌린 pane 을 따로 닫는다
 terminal switch                     # 『세션 기동』 — 포커스 전환
+worktree set                        # 『감독 워커 기동』 — git 으로 만든 구현·리뷰 worktree 의 상위를 작업 worktree 로(LIFE-576 D7, 표시용)
 ```
 
 ```mentioned-commands
@@ -157,7 +158,6 @@ orchestration run-list         # 같은 위
 orchestration run-show         # 같은 위
 worktree create                # 광고에는 있다. 이 매핑은 실행하지 않는다 — 구현 worktree 는 git 으로 만든다(『감독 워커 기동』)
 worktree rm                    # 같은 위
-worktree set                   # 같은 위
 worktree list                  # 같은 위
 worktree current               # 같은 위
 worktree show                  # 같은 위
@@ -331,6 +331,20 @@ corral 광고에는 worktree 계열 명령이 **있다**: `worktree create` · `
 다만 이 매핑은 그중 어느 것도 실행해 본 적이 없다 — **이 절의 worktree 생성 보장 수준은 공백이다.**
 그래서 구현 worktree 는 절차 문서(`.agents/skills/task-coordinate/references/implementation.md` §2)의
 git 명령으로 만든다. `worktree create` 로 만드는 길은 원자료가 없으니 여기서 짐작하지 않는다.
+
+**git 으로 만든 직후 상위를 지정한다 (LIFE-576 D7).** git 으로 만든 worktree 는 레지스트리에 부모가 없어 사이드바에서
+작업 worktree 아래로 중첩되지 않는다. 생성 직후 코디네이터가 한 번 친다:
+
+```bash
+corral worktree set --worktree path:<구현 worktree 절대경로> --parent-worktree path:<작업 worktree 절대경로> --json
+```
+
+- **리뷰 worktree 를 만드는 경우도 같은 규칙이다** — `--worktree path:<리뷰 worktree>` 로 바꿔 한 번 더 친다.
+- **실패는 경고만 남기고 워커 기동을 막지 않는다.** 부모는 사이드바 표시용 메타일 뿐 제어 순환(Task·Dispatch·완료 감지)은 이 값을
+  읽지 않는다. 거절 원문(예: 순환 거절 `Lineage cycle is not allowed`)을 원자료에 남기고 진행한다.
+- 보장 수준: **실행 1회 원자료 있음** — LIFE-576 구현 worktree 에 이 명령을 실제로 쳤고 전후 `worktree show` 로 parent 가 작업
+  worktree 로 바뀐 것을 확인했다(`specs/LIFE-576-worktree-nesting/raw/coord/d7-worktree-set.txt`). 작업 worktree 쪽은 task-start 가
+  루트로 둔다(부모 지정 없음).
 
 > 이 자리는 2026-09-27 새 독자 측정에서 잡혔다. 그 전까지 이 매핑은 "corral 에 worktree 생성 명령이 없다" 고
 > **사실과 다르게** 적고 있었다. 관문이 못 잡은 이유는 방향이다 — 『전제 점검』은 *요구 ⊆ 광고* 한 방향만 보므로

@@ -174,7 +174,9 @@ const box = (top, bottom) => ({ top, bottom, left: 0, right: 280, width: 280, he
 
 /**
  * 가짜 사이드바 목록. 좌표는 **스크롤 내용 기준**으로 주고 화면 좌표는 `top − scrollTop` 으로 만든다.
- * repos: [{ root, top, bottom, head: [top, bottom] | 'sticky', cards: [{ path, top, bottom }] }]
+ * repos: [{ root, top, bottom, head: [top, bottom] | 'sticky', cards: [{ path, top, bottom, parent?, content? }] }]
+ * 카드 `depth` = 계보 깊이(`data-lineage-depth`, 루트는 생략). 카드 `parent` = 그 카드를 품은 카드 경로(LIFE-576 — 중첩 후손은 부모 카드 행 안에 그려진다, 목록에서 부모보다 뒤에 둔다).
+ * `content: [top, bottom]` = 카드 내용 영역(`[data-worktree-card-parent-content]`), 없으면 카드 범위 그대로.
  * `head: 'sticky'` = 헤더가 목록 윗변에 붙었다(묶음 범위 안에서) — 헤더 높이 28.
  * 카드·레포에 `menu: true` 면 그 사본(cloneNode)에 열린 `⋯` 메뉴(`.repo-row-menu`)가 든다 — 복제 순간 메뉴가 열려 있던 상태(R6-01).
  * `noise` = getComputedStyle 이 돌려주는 이동에 읽을 때마다 달라지는 소수 오차(±noise)를 섞는다(브라우저 전환 중 실측 오차 흉내).
@@ -235,7 +237,7 @@ export function fakeDom(options) {
       getAttribute: () => repo.root,
       getBoundingClientRect: screen(repo.top, repo.bottom, current),
       querySelector: () => head,
-      querySelectorAll: () => (repo.cards ?? []).map((card) => cardElement(card, current)),
+      querySelectorAll: () => (repo.cards ?? []).map((card) => cardElement(card, card.parent === undefined ? current : (cardElements.get(card.parent) ?? current))),
       cloneNode: () => {
         const node = new FakeNode('div', { 'data-repo': repo.root }, ['repo-row-group'])
         const headNode = node.appendChild(new FakeNode('div', { 'data-repo-head': '' }, repo.menu ? ['repo-row-head', 'is-menu-open'] : ['repo-row-head']))
@@ -253,12 +255,23 @@ export function fakeDom(options) {
       cardElements.set(card.path, element)
     }
     const current = element
+    const content = { style: fakeStyle(), parentElement: current }
+    const [contentTop, contentBottom] = card.content ?? [card.top, card.bottom]
+    content.getBoundingClientRect = screen(contentTop, contentBottom, content)
     Object.assign(current, {
       parentElement: parent,
-      getAttribute: () => card.path,
+      // `data-lineage-depth` 만 카드 `depth`(없으면 속성 없음 = null), 그 밖 속성은 경로(`data-reorder-card` 등).
+      getAttribute: (name) => (name === 'data-lineage-depth' ? (card.depth === undefined ? null : String(card.depth)) : card.path),
       getBoundingClientRect: screen(card.top, card.bottom, current),
+      querySelector: () => content,
+      // 조상 사슬로 포함 판정(브라우저 `Node.contains`) — 사본이 끄는 행 밖 후손(평면 배치된 손자)을 따로 싣는지 본다(R2-C).
+      contains: (other) => {
+        for (let node = other; node !== undefined && node !== null; node = node.parentElement) if (node === current) return true
+        return false
+      },
       cloneNode: () => {
-        const node = new FakeNode('div', { 'data-reorder-card': card.path }, ['worktree-row'])
+        // `data-fake-card` 는 사본에서 지우지 않는 시험용 표식 — 사본에 어느 카드가 실렸는지 읽는다.
+        const node = new FakeNode('div', { 'data-reorder-card': card.path, 'data-fake-card': card.path }, ['worktree-row'])
         if (card.menu) node.appendChild(new FakeNode('div', { 'data-worktree-menu': card.path }, ['repo-row-menu', 'worktree-menu']))
         return node
       },

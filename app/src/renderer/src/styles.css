@@ -1496,3 +1496,28 @@ body.is-sidebar-reorder .sidebar * { cursor: grabbing; }
 [data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button]:hover { color: var(--fg); background: var(--bg-accent); }
 /* 토스트 글자 — Orca `toastOptions.className: 'font-sans text-sm'`. 크기는 sonner 의 13px 가 이기고 줄높이만 text-sm 의 calc(1.25/0.875) 가 남는다(k4 실측 18.57px). */
 .corral-toast { font-family: var(--font-ui); line-height: calc(1.25 / 0.875); }
+
+/* --- 계보 중첩 (LIFE-576) — Orca main `worktree-card-secondary-rows.tsx`·`indentation.ts` ------------------------------------ */
+/* 후손 카드 — 부모 카드 행 안에 한 덩어리로, 깊이 × 18px(`SIDEBAR_TREE_INDENT`) 들여 그린다. 들여쓰기 값은 인라인(`lineageIndent` —
+   좁은 폭에서 카드 최소 폭을 지킨다). 위 틈은 형제 카드 사이(6px)보다 조금 좁게(Orca `space-y-1` 4px). */
+.worktree-lineage-children { display: flex; flex-direction: column; }
+.worktree-row.is-lineage-child { margin-top: 4px; min-width: 0; }
+/* 「N 하위」 칩 — Orca `h-[18px] max-w-[8rem] gap-1 rounded-md border px-1.5 text-[10px] font-medium` · 셰브론 접히면 -90°. */
+.worktree-lineage-chip-row { display: flex; justify-content: flex-start; min-width: 0; margin-top: 4px; }
+.worktree-lineage-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 18px; max-width: 8rem; padding: 0 6px;
+  border: 1px solid var(--line-weak); border-radius: 6px; background: var(--bg-sidebar);
+  font-size: 10px; font-weight: 500; line-height: 1; color: var(--fg-dim); cursor: pointer;
+}
+.worktree-lineage-chip:hover { color: var(--fg); background: color-mix(in srgb, var(--bg-sidebar-hover) 60%, var(--bg-sidebar)); }
+.worktree-lineage-chip:focus-visible { outline: 1px solid var(--ring-sidebar); outline-offset: 0; }
+.worktree-lineage-chip-icon { flex: 0 0 auto; width: 10px; height: 10px; }
+.worktree-lineage-chip-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.worktree-lineage-chip-caret { flex: 0 0 auto; width: 10px; height: 10px; transition: transform 150ms; }
+.worktree-lineage-chip-caret.is-collapsed { transform: rotate(-90deg); }
+/* 끌어서 상위 지정 대상 — 카드 강조(K3ⓑ). 순서 이동 표시 줄과 동시에 서지 않는다(hook 이 둘 중 하나만 낸다). */
+.worktree-block.is-lineage-drop-target {
+  border-color: var(--ring-sidebar);
+  background: color-mix(in srgb, var(--ring-sidebar) 14%, transparent);
+  box-shadow: 0 0 0 1px var(--ring-sidebar);
+}

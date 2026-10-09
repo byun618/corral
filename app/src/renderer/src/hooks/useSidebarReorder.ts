@@ -23,10 +23,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   buildReorderPreview,
   hasCrossedReorderThreshold,
+  buildInsertionPreview,
   nextAutoscrollTop,
   resolveCardDropSlot,
+  resolveLineageTarget,
   resolveRepoDropSlot,
+  unitSlotToFlat,
   type ItemRect,
+  type LineageTargetRect,
   type Point,
   type RepoSlotRect,
 } from '../sidebar-reorder.js'
@@ -34,10 +38,30 @@ import {
 /** `all-card` = Group by None 의 단일 「All」 구획 카드 (LIFE-470) — 레포가 섞여 있어 레포 묶음이 아니라 그 구획 안에서 잰다. */
 export type ReorderSource = { kind: 'repo'; root: string } | { kind: 'card'; repoRoot: string; path: string } | { kind: 'all-card'; path: string }
 
-export type ReorderState = { source: ReorderSource; indicatorY: number | null }
+/** `lineageTarget` = 지금 상위 지정 대상 카드 경로(LIFE-576 D3) — 있으면 표시 줄·행 밀림이 없다(둘이 동시에 보이지 않는다, K3ⓑ). */
+export type ReorderState = {
+  source: ReorderSource
+  indicatorY: number | null
+  lineageTarget?: string
+  /** 끄는 덩어리(끄는 항목 + 보이는 후손, 드래그 시작 때) — 원래 자리 투명 처리 대상. 저장 `block` 과 같은 집합(수정 r3 R2-C). */
+  block: readonly string[]
+}
 
-/** 놓기 — `keys` 는 놓는 순간 화면에 보이던 순서(끄는 항목 포함), `slot` 은 그 기준 경계 번호. */
-export type ReorderCommit = { source: ReorderSource; keys: string[]; slot: number }
+/**
+ * 놓기 — `keys` 는 놓는 순간 화면에 보이던 순서(끄는 항목 포함, 중첩 후손도 화면 순서로), `slot` 은 그 기준 경계 번호.
+ * `block` = 함께 옮길 덩어리(끄는 카드 + 펼친 후손, LIFE-576 D5) — 끄는 카드 하나뿐이면 없다.
+ */
+export type ReorderCommit = {
+  source: ReorderSource
+  keys: string[]
+  slot: number
+  block?: string[]
+  /** 부모 해제 동반(LIFE-576 R2-A) — Sidebar 가 붙인다. 평면 목록이 같아도 표시 자리로 착지하고 바뀐 것으로 센다. */
+  unnest?: boolean
+}
+
+/** 끌어서 상위 지정 (LIFE-576) — `path` 카드를 `parentPath` 카드의 하위로. */
+export type NestCommit = { path: string; parentPath: string }
 
 /** 헤더에서 드래그로 치지 않는 곳 — 셰브론·⋯·+ 버튼과 열린 메뉴(U14, 198 `REPO_HEADER_ACTION_SELECTOR`). */
 const NON_HANDLE_SELECTOR = 'button, a, input, textarea, select, [contenteditable="true"], [data-repo-row-actions], .repo-row-menu'
@@ -91,20 +115,108 @@ function measureRepos(list: HTMLElement): Measured<RepoSlotRect> {
   return { keys, rects, elements }
 }
 
-function measureCards(input: { list: HTMLElement; group: HTMLElement | undefined }): (Measured<ItemRect> & { groupRange: ItemRect }) | null {
+/**
+ * 잰 구획 — `keys`·`rects`·`elements` 는 **덩어리**(루트 카드 행 — 중첩 후손은 그 행 안에 그려진다, LIFE-576) 단위,
+ * `all` 은 화면의 카드 전부(문서 순서), `owner` 는 카드 → 그 카드를 품은 가장 가까운 카드(루트면 없음).
+ */
+type MeasuredCards = Measured<ItemRect> & { all: string[]; owner: Map<string, string>; cards: Map<string, HTMLElement>; depth: Map<string, number> }
+
+/** 카드를 품은 가장 가까운 다른 카드(같은 구획 안) — 없으면 null. */
+function ownerCardOf(input: { card: HTMLElement; group: HTMLElement }): string | null {
+  for (let node = input.card.parentElement; node !== null && node !== input.group; node = node.parentElement) {
+    const path = node.getAttribute('data-reorder-card')
+    if (path !== null) return path
+  }
+  return null
+}
+
+function measureCards(input: { list: HTMLElement; group: HTMLElement | undefined }): (MeasuredCards & { groupRange: ItemRect }) | null {
   const { list, group } = input
   if (group === undefined) return null
   const keys: string[] = []
   const rects: ItemRect[] = []
   const elements: HTMLElement[] = []
+  const all: string[] = []
+  const owner = new Map<string, string>()
+  const cards = new Map<string, HTMLElement>()
+  const depth = new Map<string, number>()
   for (const card of group.querySelectorAll<HTMLElement>('[data-reorder-card]')) {
     const path = card.getAttribute('data-reorder-card')
     if (path === null) continue
+    all.push(path)
+    cards.set(path, card)
+    // 계보 깊이(`WorktreeBlock` 의 `data-lineage-depth`, 루트는 없음 = 0) — 후손은 루트 행 안에 평평하게 그려져 DOM 소유로는 손자를 못 가른다.
+    depth.set(path, Number(card.getAttribute('data-lineage-depth') ?? 0) || 0)
+    const parent = ownerCardOf({ card, group })
+    if (parent !== null) {
+      owner.set(path, parent)
+      continue
+    }
     keys.push(path)
     rects.push(rectOf({ list, element: card }))
     elements.push(card)
   }
-  return { keys, rects, elements, groupRange: rectOf({ list, element: group }) }
+  return { keys, rects, elements, all, owner, cards, depth, groupRange: rectOf({ list, element: group }) }
+}
+
+/**
+ * 끄는 덩어리 — 카드 + 그 카드의 **보이는 후손**(화면 순서). Orca `expandDraggedWorktreeIdsForVisibleLineage` 대응(수정 r2 R1-B):
+ * 같은 루트 덩어리 안에서 바로 뒤에 이어지는, 깊이가 더 깊은 카드들. 루트면 덩어리 전체, 하위 카드면 그 아래 손자들까지.
+ */
+function blockOf(input: { key: string; measured: MeasuredCards }): string[] {
+  const { key, measured } = input
+  const rootOf = (path: string): string => {
+    const seen = new Set<string>()
+    let cursor = path
+    for (let next = measured.owner.get(cursor); next !== undefined && !seen.has(next); next = measured.owner.get(next)) {
+      seen.add(next)
+      cursor = next
+    }
+    return cursor
+  }
+  const start = measured.all.indexOf(key)
+  if (start < 0) return []
+  const base = measured.depth.get(key) ?? 0
+  const root = rootOf(key)
+  const block = [key]
+  for (const path of measured.all.slice(start + 1)) {
+    if (rootOf(path) !== root || (measured.depth.get(path) ?? 0) <= base) break
+    block.push(path)
+  }
+  return block
+}
+
+/** 덩어리의 밀리기 전 높이 — 첫 카드 윗변 ~ 마지막 카드 아랫변(하위 카드 + 손자 행이 따로 그려진다). */
+function blockHeight(input: { list: HTMLElement; measured: MeasuredCards; block: readonly string[] }): number {
+  const first = input.block[0] === undefined ? undefined : input.measured.cards.get(input.block[0])
+  const last = input.block.at(-1) === undefined ? undefined : input.measured.cards.get(input.block.at(-1) ?? '')
+  if (first === undefined || last === undefined) return 0
+  return Math.max(0, rectOf({ list: input.list, element: last }).bottom - rectOf({ list: input.list, element: first }).top)
+}
+
+/**
+ * 상위 지정 후보 사각형 (D3) — 후보 Set(드래그 시작 때 구한 것)에 든 카드만. 사각형 = 그 카드 자기 내용 영역(밀리기 전), 아랫변은 그 카드 안 첫
+ * 자식 카드 윗변에서 자른다(Orca main 「keep their rows out of its hit zone」).
+ */
+function lineageTargets(input: {
+  list: HTMLElement
+  measured: MeasuredCards
+  sourceKey: string
+  candidates: ReadonlySet<string>
+}): LineageTargetRect[] {
+  const { list, measured, sourceKey } = input
+  const targets: LineageTargetRect[] = []
+  for (const key of measured.all) {
+    if (key === sourceKey || !input.candidates.has(key)) continue
+    const content = measured.cards.get(key)?.querySelector('[data-worktree-card-parent-content]') ?? null
+    if (content === null) continue
+    const rect = rectOf({ list, element: content })
+    const firstChild = measured.all.find((path) => measured.owner.get(path) === key)
+    const childElement = firstChild === undefined ? undefined : measured.cards.get(firstChild)
+    const bottom = childElement === undefined ? rect.bottom : Math.min(rect.bottom, rectOf({ list, element: childElement }).top)
+    targets.push({ key, rect: { top: rect.top, bottom } })
+  }
+  return targets
 }
 
 function sourceKey(source: ReorderSource): string {
@@ -122,7 +234,25 @@ function sourceKey(source: ReorderSource): string {
  * 포인터가 스크롤러의 **보이는 범위**(좌우·위아래) 밖이면 slot 은 `null`(놓으면 취소, R1-01). 자동 스크롤은 바깥 48px 까지
  * 돌지만(`nextAutoscrollTop`) 그 띠는 놓기 허용과 별개다 — 화면 밖 항목 기준으로 순서가 바뀌지 않게.
  */
-function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: Point }): { slot: number | null } & Measured<ItemRect> {
+type DropMeasure = Measured<ItemRect> & {
+  slot: number | null
+  /** 화면의 항목 전부(카드면 중첩 후손 포함, 문서 순서) — 끄는 항목이 여기 없으면 그 행이 사라진 것이다. */
+  all: string[]
+  /** 끄는 덩어리(끄는 카드 + 그 안의 후손). */
+  block: string[]
+  /** 덩어리마다 카드 수 — 덩어리 경계를 평면 경계로 바꾼다(`unitSlotToFlat`). */
+  sizes: number[]
+  /** 상위 지정 대상(D3). 있으면 순서 이동이 아니다. */
+  lineageTarget: string | null
+  /** 끄는 덩어리의 밀리기 전 높이 — 중첩된 자식 끌기 미리 보기(M4)가 벌릴 높이. */
+  blockHeight: number
+  /** 끄는 항목의 행 요소 — 사본을 복제한다. 중첩된 자식은 덩어리 목록에 없어 따로 든다. */
+  sourceElement: HTMLElement | undefined
+  /** 끄는 덩어리의 행 요소(화면 순서) — 사본에 싣는다(R2-C). */
+  blockElements: HTMLElement[]
+}
+
+function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: Point; candidates: ReadonlySet<string> | null }): DropMeasure {
   const { list, source, point } = input
   const listRect = list.getBoundingClientRect()
   const outside = point.x < listRect.left || point.x > listRect.right || point.y < listRect.top || point.y > listRect.bottom
@@ -130,7 +260,17 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
   switch (source.kind) {
     case 'repo': {
       const repos = measureRepos(list)
-      return { ...repos, slot: outside ? null : resolveRepoDropSlot({ rects: repos.rects, y }) }
+      return {
+        ...repos,
+        slot: outside ? null : resolveRepoDropSlot({ rects: repos.rects, y }),
+        all: repos.keys,
+        block: [source.root],
+        sizes: repos.keys.map(() => 1),
+        lineageTarget: null,
+        blockHeight: 0,
+        sourceElement: repos.elements[repos.keys.indexOf(source.root)],
+        blockElements: repos.elements.filter((_, index) => repos.keys[index] === source.root),
+      }
     }
     case 'card':
     case 'all-card': {
@@ -139,8 +279,23 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
           ? repoGroups(list).find((element) => element.getAttribute('data-repo') === source.repoRoot)
           : (list.querySelector<HTMLElement>(':scope > [data-reorder-all]') ?? undefined)
       const cards = measureCards({ list, group })
-      if (cards === null) return { slot: null, keys: [], rects: [], elements: [] }
-      return { ...cards, slot: outside ? null : resolveCardDropSlot({ rects: cards.rects, groupRange: cards.groupRange, y }) }
+      if (cards === null) return { slot: null, keys: [], rects: [], elements: [], all: [], block: [], sizes: [], lineageTarget: null, blockHeight: 0, sourceElement: undefined, blockElements: [] }
+      const block = blockOf({ key: source.path, measured: cards })
+      const lineageTarget =
+        outside || input.candidates === null ? null : resolveLineageTarget({ targets: lineageTargets({ list, measured: cards, sourceKey: source.path, candidates: input.candidates }), y })
+      return {
+        keys: cards.keys,
+        rects: cards.rects,
+        elements: cards.elements,
+        all: cards.all,
+        block,
+        sizes: cards.keys.map((key) => blockOf({ key, measured: cards }).length),
+        blockHeight: blockHeight({ list, measured: cards, block }),
+        lineageTarget,
+        sourceElement: cards.cards.get(source.path),
+        blockElements: block.flatMap((path) => cards.cards.get(path) ?? []),
+        slot: outside || lineageTarget !== null ? null : resolveCardDropSlot({ rects: cards.rects, groupRange: cards.groupRange, y }),
+      }
     }
   }
 }
@@ -163,28 +318,47 @@ const DRAG_PREVIEW_SCALE = 1.015
  * 레포는 묶음(헤더+카드)을 복제하되 잡은 점은 **헤더** 기준으로 잰다 — 붙은(sticky) 헤더를 묶음 아래쪽에서 잡아도 사본의
  * 헤더가 커서 밑에 온다(사본 안 헤더는 묶음 맨 위에 그려진다). 사본 높이 상한은 CSS(펼친 큰 레포가 목록을 덮지 않게).
  */
-function createDragPreview(input: { list: HTMLElement; sourceElement: HTMLElement; source: ReorderSource; grab: Point; point: Point }): {
+function createDragPreview(input: {
+  list: HTMLElement
+  sourceElement: HTMLElement
+  /** 끄는 덩어리의 카드 행들(화면 순서). 하위 카드의 손자는 하위 카드 행 밖(평면 배치)에 있어 따로 복제한다(수정 r3 R2-C). */
+  blockElements: readonly HTMLElement[]
+  source: ReorderSource
+  grab: Point
+  point: Point
+}): {
   element: HTMLElement
   offsetX: number
   offsetY: number
 } {
   const { list, sourceElement, grab, point } = input
-  const rect = sourceElement.getBoundingClientRect()
+  // 덩어리가 끄는 행 안에 다 있으면(레포·루트 카드·손자 없는 하위 카드) 그 행 하나, 아니면 행들을 같은 틀(후손 묶음) 기준으로 쌓는다 —
+  // 들여쓰기가 화면과 같게 틀 폭·왼쪽에 맞춘다.
+  const outside = input.blockElements.filter((element) => element !== sourceElement && !sourceElement.contains(element))
+  const frame = outside.length === 0 ? null : sourceElement.parentElement
+  const sourceRect = sourceElement.getBoundingClientRect()
+  const lastRect = (outside.at(-1) ?? sourceElement).getBoundingClientRect()
+  const frameRect = frame?.getBoundingClientRect() ?? sourceRect
+  const rect = { left: frameRect.left, width: frameRect.width, top: sourceRect.top, height: Math.max(sourceRect.height, lastRect.bottom - sourceRect.top) }
   const anchor = input.source.kind === 'repo' ? (sourceElement.querySelector('[data-repo-head]') ?? sourceElement) : sourceElement
   const anchorRect = anchor.getBoundingClientRect()
-  const clone = sourceElement.cloneNode(true)
   const element = document.createElement('div')
   element.setAttribute('data-sidebar-drag-preview', 'true')
   element.setAttribute('data-sidebar-drag-preview-kind', input.source.kind)
   element.setAttribute('aria-hidden', 'true')
   element.style.width = `${rect.width}px`
   element.style.height = `${rect.height}px`
-  if (clone instanceof HTMLElement) {
+  for (const row of frame === null ? [sourceElement] : [sourceElement, ...outside]) {
+    const clone = row.cloneNode(true)
+    if (!(clone instanceof HTMLElement)) continue
     for (const node of [clone, ...clone.querySelectorAll<HTMLElement>('*')]) {
       node.removeAttribute('id')
       for (const name of ['data-repo', 'data-repo-head', 'data-reorder-card', 'data-worktree']) node.removeAttribute(name)
     }
-    clone.classList.remove('is-reorder-source')
+    for (const node of [clone, ...clone.querySelectorAll('.is-reorder-source')]) node.classList.remove('is-reorder-source')
+    // 행 하나 분기는 틀 = 끄는 행 자기 사각형(들여쓰기가 이미 빠진 폭·왼쪽)이라 복제 행의 바깥 들여쓰기를 지운다 — 남기면 사본 안에서
+    // 한 번 더 들어가 좁아진다(리뷰 r3 R3-A). 복제 안 후손의 들여쓰기·여러 행 분기(틀 = 후손 묶음)는 그대로.
+    if (frame === null) clone.style.marginLeft = '0px'
     for (const node of clone.querySelectorAll(TRANSIENT_UI_SELECTOR)) node.remove()
     // 메뉴가 열린 헤더의 z 올림 표식도 뗀다 — 메뉴가 없는 사본에는 의미가 없다.
     for (const node of clone.querySelectorAll('.is-menu-open')) node.classList.remove('is-menu-open')
@@ -203,7 +377,16 @@ function movePreview(input: { element: HTMLElement; point: Point; offsetX: numbe
   input.element.style.transform = `translate3d(${input.point.x - input.offsetX}px, ${input.point.y - input.offsetY}px, 0) scale(${DRAG_PREVIEW_SCALE})`
 }
 
-export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivElement | null>; onCommit: (commit: ReorderCommit) => void }): {
+export function useSidebarReorder(input: {
+  listRef: React.RefObject<HTMLDivElement | null>
+  onCommit: (commit: ReorderCommit) => void
+  /**
+   * 끌어서 상위 지정 (LIFE-576 D3) — `nestCandidates(끄는 경로)` 에 든 카드의 내용 영역 안쪽에 놓으면 `onNest`. 후보는 호출부가 메뉴
+   * 피커와 같은 `parentCandidates()` 로 준다(K3ⓒ — 복제 금지). 드래그 시작 때 한 번 부른다(수정 r3 R2-E). 없으면 순서 끌기만.
+   */
+  nestCandidates?: (path: string) => ReadonlySet<string>
+  onNest?: (nest: NestCommit) => void
+}): {
   state: ReorderState | null
   /** 레포 헤더(`.repo-row`)의 `onMouseDown`. 레포가 1개면 시작하지 않는다(198 — 헤더 2개 이상일 때만, K1ⓒ). */
   onRepoMouseDown: (input: { event: React.MouseEvent; root: string }) => void
@@ -244,7 +427,13 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
     let released = false
     let slot: number | null = null
     let keys: string[] = []
+    let block: string[] = []
+    let lineageTarget: string | null = null
     let shownY: number | null = null
+    let shownTarget: string | null = null
+    let shownBlock = ''
+    /** 상위 지정 후보(R2-E) — 문턱을 넘는 때(드래그 시작) 한 번 구하고 프레임마다는 포함 여부만 본다. */
+    let candidates: ReadonlySet<string> | null = null
     let frame = 0
     let lastFrameAt = 0
     let preview: { element: HTMLElement; offsetX: number; offsetY: number } | null = null
@@ -271,29 +460,36 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
 
     /** 지금 DOM 으로 다시 잰다 — 끄는 행이 사라졌으면(목록 갱신) 드래그를 취소한다(R1-03). */
     const update = (): void => {
-      const measured = measureDrop({ list, source, point })
-      const from = measured.keys.indexOf(key)
-      if (from < 0) {
+      const measured = measureDrop({ list, source, point, candidates })
+      if (!measured.all.includes(key)) {
         finish({ commit: false })
         return
       }
-      slot = measured.slot
-      keys = measured.keys
+      // 덩어리 목록에서 끄는 카드 자리 — 중첩된 자식이면 -1(부모 덩어리 안이다).
+      const from = measured.keys.indexOf(key)
+      lineageTarget = measured.lineageTarget
+      keys = measured.all
+      block = measured.block
+      slot = measured.slot === null ? null : unitSlotToFlat({ sizes: measured.sizes, slot: measured.slot })
+      const view = { top: list.scrollTop, bottom: list.scrollTop + list.clientHeight }
       let indicatorY: number | null = null
-      if (slot === null) applyShifts({ elements: [], offsets: [] })
-      else {
-        const built = buildReorderPreview({
-          rects: measured.rects,
-          from,
-          slot,
-          view: { top: list.scrollTop, bottom: list.scrollTop + list.clientHeight },
-        })
+      if (measured.slot === null) applyShifts({ elements: [], offsets: [] })
+      else if (from < 0) {
+        // 중첩된 자식 — 덩어리 목록 밖이라 끼워 넣기 미리 보기(M4). 높이는 끄는 덩어리(그 카드 + 보이는 손자, R1-B)의 밀리기 전 높이.
+        const built = buildInsertionPreview({ rects: measured.rects, slot: measured.slot, height: measured.blockHeight, view })
+        applyShifts({ elements: measured.elements, offsets: built.offsets })
+        indicatorY = built.indicatorY
+      } else {
+        const built = buildReorderPreview({ rects: measured.rects, from, slot: measured.slot, view })
         applyShifts({ elements: measured.elements, offsets: built.offsets })
         indicatorY = built.indicatorY
       }
-      if (indicatorY === shownY) return
+      const blockKey = block.join('\n')
+      if (indicatorY === shownY && lineageTarget === shownTarget && blockKey === shownBlock) return
       shownY = indicatorY
-      setState({ source, indicatorY })
+      shownTarget = lineageTarget
+      shownBlock = blockKey
+      setState(lineageTarget === null ? { source, indicatorY, block } : { source, indicatorY, lineageTarget, block })
     }
     const tick = (now: number): void => {
       const elapsed = lastFrameAt === 0 ? 16 : now - lastFrameAt
@@ -334,18 +530,23 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
       const wasDragging = dragging
       const finalSlot = slot
       const finalKeys = keys
+      const finalBlock = block
+      const finalTarget = lineageTarget
       cleanup()
       if (!wasDragging) return
       if (released) swallowNextClick()
       else swallowClickOfPendingRelease()
-      if (finishInput.commit && finalSlot !== null) inputRef.current.onCommit({ source, keys: finalKeys, slot: finalSlot })
+      if (!finishInput.commit) return
+      if (finalTarget !== null) inputRef.current.onNest?.({ path: key, parentPath: finalTarget })
+      else if (finalSlot !== null)
+        inputRef.current.onCommit(finalBlock.length > 1 ? { source, keys: finalKeys, slot: finalSlot, block: finalBlock } : { source, keys: finalKeys, slot: finalSlot })
     }
     const onMove = (moveEvent: MouseEvent): void => {
       point = { x: moveEvent.clientX, y: moveEvent.clientY }
       if (!dragging) {
         if (!hasCrossedReorderThreshold({ start, current: point })) return
-        const measured = measureDrop({ list, source, point })
-        const sourceElement = measured.elements[measured.keys.indexOf(key)]
+        const measured = measureDrop({ list, source, point, candidates: null })
+        const sourceElement = measured.sourceElement
         if (sourceElement === undefined) {
           finish({ commit: false })
           return
@@ -356,8 +557,11 @@ export function useSidebarReorder(input: { listRef: React.RefObject<HTMLDivEleme
         // 카드는 mousedown 을 막지 않았으니 문턱 전에 생긴 선택을 지운다.
         window.getSelection()?.removeAllRanges()
         // 사본은 원래 행이 투명해지기 전(아래 setState 의 다음 그리기 전)에 복제한다.
-        preview = createDragPreview({ list, sourceElement, source, grab: start, point })
-        setState({ source, indicatorY: null })
+        preview = createDragPreview({ list, sourceElement, blockElements: measured.blockElements, source, grab: start, point })
+        candidates = source.kind === 'repo' ? null : (inputRef.current.nestCandidates?.(key) ?? null)
+        block = measured.block
+        shownBlock = block.join('\n')
+        setState({ source, indicatorY: null, block })
         frame = requestAnimationFrame(tick)
       }
       if (preview !== null) movePreview({ element: preview.element, point, offsetX: preview.offsetX, offsetY: preview.offsetY })

@@ -59,6 +59,11 @@ export type UiPrefs = {
    * 레지스트리가 아니라 여기 두는 이유: 접힘·수동 순서와 같은 사이드바 화면 상태다. 없는 경로는 화면이 무시한다.
    */
   pinnedWorktrees: string[]
+  /**
+   * 「N 하위」 를 접은 부모 워크트리 경로 (LIFE-576 D6 — Orca `collapsedGroups` 의 `lineage:` 키). 기본 펼침이라 접은 것만 담는다.
+   * 경로 키인 이유는 `pinnedWorktrees` 와 같다. 없는 경로는 화면이 무시한다.
+   */
+  collapsedLineage: string[]
   /** 안 읽음 벨이 켜진 워크트리 경로 (LIFE-471) — `shared/types.ts` 의 같은 칸 주석. 없는 경로는 화면이 무시한다. */
   unreadWorktrees: string[]
   /**
@@ -81,6 +86,7 @@ const DEFAULT_PREFS: UiPrefs = {
   manualWorktreeOrder: {},
   manualFlatOrder: [],
   pinnedWorktrees: [],
+  collapsedLineage: [],
   unreadWorktrees: [],
   tabMarks: [],
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
@@ -150,6 +156,7 @@ export class UiPrefsStore {
         manualWorktreeOrder: readKeyListMap(parsed['manualWorktreeOrder']),
         manualFlatOrder: readKeyList(parsed['manualFlatOrder']),
         pinnedWorktrees: readKeyList(parsed['pinnedWorktrees']),
+        collapsedLineage: readKeyList(parsed['collapsedLineage']),
         unreadWorktrees: readKeyList(parsed['unreadWorktrees']),
         tabMarks: Array.isArray(parsed['tabMarks']) ? parsed['tabMarks'] : [],
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
@@ -174,6 +181,7 @@ export class UiPrefsStore {
       manualWorktreeOrder: Object.fromEntries(Object.entries(this.prefs.manualWorktreeOrder).map(([key, list]) => [key, [...list]])),
       manualFlatOrder: [...this.prefs.manualFlatOrder],
       pinnedWorktrees: [...this.prefs.pinnedWorktrees],
+      collapsedLineage: [...this.prefs.collapsedLineage],
       unreadWorktrees: [...this.prefs.unreadWorktrees],
       tabMarks: [...this.prefs.tabMarks],
       sidebarRepoFilter: [...this.prefs.sidebarRepoFilter],

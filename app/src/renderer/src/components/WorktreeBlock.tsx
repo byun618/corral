@@ -30,10 +30,11 @@ import { worktreeIdentity } from '../worktree-identity.js'
 import { worktreeStatus } from '../worktree-status.js'
 import { AgentFullRow } from './AgentFullRow.js'
 import { AgentGroupHeader } from './AgentGroupHeader.js'
-import { EllipsisIcon, PlusIcon } from './AgentStateDot.js'
+import { Chevron, EllipsisIcon, PlusIcon } from './AgentStateDot.js'
 import { HoverCard } from './HoverCard.js'
 import { SessionRow } from './SessionRow.js'
-import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon } from './SidebarIcons.js'
+import { GitCommitIcon, NoteIcon, StarIcon, TrashIcon, WorkflowIcon } from './SidebarIcons.js'
+import { lineageIndent } from '../sidebar-sections.js'
 import { useMenuBus } from '../menu-bus.js'
 import { WorktreeStatusSlot } from './WorktreeStatusSlot.js'
 
@@ -71,7 +72,10 @@ export function WorktreeBlock({
   showAgents = true,
   agentLayout = 'compact',
   card = NO_CARD_ACTIONS,
+  nest = NO_NEST,
 }: {
+  /** 계보 중첩 (LIFE-576) — 깊이·「N 하위」 칩·부모 카드 안에 그릴 후손·상위 지정 드롭 강조. 기본값은 중첩 없음(옛 호출부·시험). */
+  nest?: CardNest
   /** 카드 메뉴 쪽 상태·손잡이 (LIFE-478) — 우클릭·rename·삭제·고정·Reveal 번쩍. 기본값은 아무 것도 안 한다(옛 호출부·시험). */
   card?: CardActions
   /** Card layout (LIFE-477) — 기본 Detailed. */
@@ -258,14 +262,17 @@ export function WorktreeBlock({
 
   return (
     <div
-      className={`worktree-row ${dragging ? 'is-reorder-source' : ''}`}
+      className={`worktree-row ${dragging ? 'is-reorder-source' : ''} ${nest.depth > 0 ? 'is-lineage-child' : ''}`}
       data-worktree={worktree.path}
       data-reorder-card={card.reorderable ? worktree.path : undefined}
       data-worktree-pinned={card.pinned ? '' : undefined}
+      data-lineage-depth={nest.depth > 0 ? nest.depth : undefined}
+      style={nest.depth > 0 ? { marginLeft: lineageIndent(nest.depth) } : undefined}
       onMouseDown={card.reorderable ? onCardMouseDown : undefined}
     >
       <div
-        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'} ${compact ? 'is-compact' : ''} ${card.deleting ? 'is-deleting' : ''} ${card.flash ? 'card-reveal-flash' : ''}`}
+        className={`worktree-block ${selected ? 'is-selected' : 'worktree-card-hover'} ${compact ? 'is-compact' : ''} ${card.deleting ? 'is-deleting' : ''} ${card.flash ? 'card-reveal-flash' : ''} ${nest.dropTarget ? 'is-lineage-drop-target' : ''}`}
+        data-lineage-drop-target={nest.dropTarget ? '' : undefined}
         data-worktree-deleting={card.deleting ? '' : undefined}
         data-worktree-card-surface=""
         data-card-layout={layout}
@@ -433,7 +440,8 @@ export function WorktreeBlock({
                     </span>
                   )}
                   {card.parentName === null ? null : (
-                    // 198 은 자식을 부모 아래 중첩해 보인다 — corral 은 중첩을 만들지 않고(게이트 ⓪ Q4) 메타 줄에 상위 이름을 적는다(K6ⓔ).
+                    // 상위 칩 — 부모가 **같은 구획에 보일 때**는 부모 카드 안에 중첩되고(LIFE-576 D1 — 478 게이트 ⓪ Q4 「중첩 안 만듦」 보류를 번복),
+                    // 이 칩은 부모가 같은 구획에 안 보이거나(필터로 숨김) 다른 레포 부모라 유효 간선이 아닐 때(수정 r2 R1-A)만 뜻이 있다 — 고정한 부모의 후손은 Pinned 로 함께 올라간다(수정 r1 M1). Orca 도 같은 자리에서 중첩/칩을 가른다(478 K6ⓔ 칩 유지).
                     <span className="worktree-parent-chip" data-worktree-parent={worktree.parentPath ?? ''} title={`상위 워크트리: ${card.parentName}`}>
                       ↳ {card.parentName}
                     </span>
@@ -470,6 +478,28 @@ export function WorktreeBlock({
                     {roots.map((node) => renderBranch(node))}
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+            {nest.childCount > 0 ? (
+              // 「N 하위」 칩 + 셰브론 (Orca main `worktree-card-secondary-rows.tsx` — Workflow 아이콘 · 접히면 셰브론 -90°). N = 직계 자식 수.
+              <div className="worktree-lineage-chip-row">
+                <button
+                  type="button"
+                  className="worktree-lineage-chip"
+                  data-lineage-toggle={worktree.path}
+                  aria-expanded={!nest.collapsed}
+                  aria-label={nest.collapsed ? `하위 워크트리 ${nest.childCount}개 펼치기` : `하위 워크트리 ${nest.childCount}개 접기`}
+                  title={nest.collapsed ? '하위 워크트리 보기' : '하위 워크트리 숨기기'}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    nest.onToggle()
+                  }}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                >
+                  <WorkflowIcon className="worktree-lineage-chip-icon" />
+                  <span className="worktree-lineage-chip-label">{nest.childCount} 하위</span>
+                  <Chevron direction="down" className={`worktree-lineage-chip-caret ${nest.collapsed ? 'is-collapsed' : ''}`} />
+                </button>
               </div>
             ) : null}
           </div>
@@ -522,6 +552,12 @@ export function WorktreeBlock({
           </div>
         ) : null}
       </div>
+      {/* 펼친 후손 — 부모 카드 행 안에 한 덩어리로(Orca `renderable-rows.ts` lineage-group). 부모를 끌면 함께 움직인다(D5). */}
+      {nest.children === null ? null : (
+        <div className="worktree-lineage-children" data-lineage-children={worktree.path}>
+          {nest.children}
+        </div>
+      )}
     </div>
   )
 }
@@ -635,6 +671,20 @@ function InlineRename({ title, path, onCommit, onCancel }: { title: string; path
 }
 
 /** 카드 메뉴 쪽 손잡이 (LIFE-478). Sidebar 가 채운다. */
+/** 계보 중첩 한 카드 (LIFE-576) — `depth` 0 = 덩어리 루트. `children` = 이 카드 행 안에 그릴 후손(루트만, 없으면 null). */
+export type CardNest = {
+  depth: number
+  /** 직계 자식 수 — 0 이면 칩이 없다. */
+  childCount: number
+  collapsed: boolean
+  onToggle: () => void
+  /** 끌어서 상위 지정의 대상(D3) — 카드 강조. */
+  dropTarget: boolean
+  children: React.ReactNode | null
+}
+
+export const NO_NEST: CardNest = { depth: 0, childCount: 0, collapsed: false, onToggle: () => {}, dropTarget: false, children: null }
+
 export type CardActions = {
   /** 끌기 대상인가 — Pinned 구획 카드는 아니다(K5ⓕ). */
   reorderable: boolean

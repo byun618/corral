@@ -81,7 +81,8 @@ npm --prefix app run package:mac                                          # scri
 - **같은 스크립트·같은 패치**다. `CORRAL_BACKEND_PROFILE` 기본값은 `debug` 라 종전 명령은 그대로 debug 를 만든다. release 는 `cargo build --release` 에
   `--remap-path-prefix=<build root>=/corral-herdr-build` 를 붙여 build root 경로(`/tmp`·`CARGO_HOME`)가 바이너리에 박히지 않게 한다.
   영수증에 `profile`·`buildSeconds`·`binaryBytes` 가 더 실린다(실측: release 44~82초·약 20MB, debug 약 68MB).
-- **`herdr-bundle.patch`** (stream → guard → detect → bundle 순서). 넷 다 release 에서만 바뀌고 debug 동작은 그대로다:
+- **`herdr-bundle.patch`** (stream → guard → detect → bundle → shift-enter 순서의 넷째). 이 패치가 바꾸는 아래 네 가지는 release 에서만 바뀌고 debug 동작은 그대로다.
+  다섯째 `herdr-shift-enter.patch`(LIFE-571, 레거시 pane Shift+Enter → `\r`)는 프로필과 무관하게 **debug·release 둘 다** 바꾼다 — 위 첫 절:
   - 앱 폴더 이름 `app_dir_name()` — release `corral-herdr` (stock `herdr`), debug `herdr-dev` 유지. 설정 `~/.config/corral-herdr`(`XDG_CONFIG_HOME`
     아래) · 상태 `~/.local/state/corral-herdr` · 세션·소켓(`herdr.sock`·`herdr-client.sock`)이 전부 이 이름을 따른다. 그래서 따로 설치한 herdr
     (`~/.config/herdr`)와 소켓·세션·config 를 나누지 않는다. `XDG_*` 를 서버 env 로 주는 방식은 pane 셸이 물려받으므로 쓰지 않는다.

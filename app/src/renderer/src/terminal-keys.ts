@@ -3,7 +3,8 @@
 // xterm.js 6.0.0 은 Shift·Ctrl+Enter 를 Enter 와 같은 `\r` 로 보낸다(Alt 만 `\x1b\r`). 그러면 herdr → Claude Code·codex 가
 // 줄바꿈과 제출을 구분하지 못한다. 그래서 Shift+Enter 만 CSI-u `\x1b[13;2u` 로 바꿔 보낸다 — main 의 분류기
 // (vt-input-classifier)가 그걸 Shift 붙은 Enter 키 이벤트로 읽고, herdr 가 pane 앱의 키보드 모드에 맞춰 다시 인코딩한다
-// (kitty 모드 앱 → `\x1b[13;2u`, 셸 같은 레거시 앱 → `\r` 그대로 — 00-analysis K-1·K-3).
+// (kitty 모드 앱 → `\x1b[13;2u`). 셸 같은 레거시 앱이 `\r` 를 받는 것은 herdr 패치 `app/backend/herdr-shift-enter.patch` 덕이다 —
+// 패치 없는 herdr 의 Ghostty 인코더는 레거시 pane 에 `ESC[27;2;13~` 를 보낸다(00-analysis §9).
 // Alt·Ctrl+Enter 와 다른 수정자가 함께 눌린 Shift+Enter 는 건드리지 않는다(범위 밖 — 00-analysis §6).
 
 /** Shift+Enter 의 CSI-u 시퀀스 (수정자 2 = Shift). */

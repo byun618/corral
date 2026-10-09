@@ -18,8 +18,15 @@ SESSION=l571
 mkdir -p "$ROOT/ud" "$ROOT/shots"; chmod 700 "$ROOT"
 if [ -n "$OUTSRC" ]; then rm -rf "$APP/out" && cp -R "$OUTSRC" "$APP/out" && echo "out ← $OUTSRC ($(cat "$OUTSRC/.l571-build" 2>/dev/null))"; fi
 cp "$HOME/Library/Application Support/corral/settings.json" "$ROOT/ud/settings.json"
+# 워커(Claude Code) 세션 env 를 물려받지 않게 뺀다 — herdr 서버·Electron 둘 다(pane 셸은 herdr 서버 env 를 물려받는다).
+# 물려받으면 pane 의 Claude Code 가 transcript 를 끄고 C2ⓐ 세션 기록 칸을 볼 수 없다(LIFE-571 최종 관문 「env 정리」).
+UNSETS=$(env | sed -nE 's/^(CLAUDE_CODE_[A-Za-z0-9_]*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|ORCA_AGENT_HOOK_[A-Za-z0-9_]*)=.*/-u \1/p' | tr '\n' ' ')
+# shellcheck disable=SC2086
+LEFT=$(env $UNSETS env | sed -nE 's/^(CLAUDE[A-Za-z0-9_]*|ORCA_AGENT_HOOK[A-Za-z0-9_]*)=.*/\1/p')
+{ echo "unset: $UNSETS"; echo "남은 이름(CLAUDE*·ORCA_AGENT_HOOK*, 값 없음):"; echo "${LEFT:-(없음)}"; } > "$ROOT/env-clean.txt"
+echo "env 정리: $(echo $UNSETS | wc -w | tr -d ' ') 개 -u 인자 · 남은 이름: ${LEFT:-없음}"
 echo "# herdr $SESSION 서버"
-nohup "$GUARD" --session $SESSION server > "$ROOT/backend.log" 2>&1 &
+env $UNSETS nohup "$GUARD" --session $SESSION server > "$ROOT/backend.log" 2>&1 &
 echo $! > "$ROOT/backend.pid"
 i=0; until "$GUARD" session list 2>/dev/null | awk -v s=$SESSION '$1==s{print $2}' | grep -q running; do i=$((i+1)); [ $i -gt 150 ] && { echo "backend 안 뜸"; exit 1; }; sleep 0.2; done
 SOCK=$("$GUARD" session list --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);const x=(j.sessions??j).find(e=>e.name==='$SESSION');console.log(x?.socket??x?.socket_path??'')}catch{console.log('')}})")
@@ -27,7 +34,7 @@ SOCK=$("$GUARD" session list --json 2>/dev/null | node -e "let s='';process.stdi
 [ -S "$SOCK" ] || { echo "소켓 없음 $SOCK"; "$GUARD" session list; exit 1; }
 echo "backend pid $(cat "$ROOT/backend.pid") sock $SOCK guard $GUARD"
 echo "# 개발 실행"
-env HOME="$HOME" CORRAL_USER_DATA="$ROOT/ud" CORRAL_CONTROL_SOCKET="$ROOT/ctl.sock" CORRAL_LOG="$ROOT/corral.ndjson" CORRAL_SHOT_DIR="$ROOT/shots" \
+env $UNSETS HOME="$HOME" CORRAL_USER_DATA="$ROOT/ud" CORRAL_CONTROL_SOCKET="$ROOT/ctl.sock" CORRAL_LOG="$ROOT/corral.ndjson" CORRAL_SHOT_DIR="$ROOT/shots" \
   CORRAL_SESSION=$SESSION CORRAL_BACKEND_SOCKET="$SOCK" CORRAL_HERDR_BIN="$GUARD" \
   nohup "$EL" "$APP" --user-data-dir="$ROOT/ud" ${CDP:+--remote-debugging-port=$CDP} > "$ROOT/electron.log" 2>&1 &
 echo $! > "$ROOT/app.pid"; echo "$APP" > "$ROOT/app.dir"

@@ -252,12 +252,15 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
   1. `specs/LIFE-NNN-<슬러그>/handoff-main.md`를 작업 브랜치에 커밋한다 — **PR 생성 전에** 커밋해야 PR 에 실린다.
      LIFE-N, 본체 경로, 작업 브랜치·PR base(`main`, 묶음 자식이면 feature 브랜치), 검증한 구현 커밋, 채택·출고 승인 근거,
      출고 때 본체 세션이 볼 사항(정리는 코디가 3단계에서 끝낸다), LA의 현재 상태(`검증 중`)와 다음 전이(출고 머지 뒤 `완료`)를 기록한다. **LA는 완료로 바꾸지 않는다.**
-     **`## 변경 요약` 절은 필수다** — 무엇을·왜 바꿨는지 3~6줄. `task-pr.sh` 가 이 절을 PR 본문 맨 위에 옮기고, 없으면 push 전에 멈춘다.
-     PR 제목은 `00-start.md` 식별표의 일감 제목(`LIFE-NNN: <제목>`)에서 자동으로 만든다.
+     같은 커밋에 **PR 원고 `specs/LIFE-NNN-<슬러그>/pr.md`** 를 쓴다 — 기존 문서를 옮겨 붙이지 말고 diff(`git diff origin/main...HEAD`)와
+     specs 를 읽고 **PR 을 읽는 사람 기준으로** 새로 쓴다. 첫 줄 `# <제목>` = PR 제목(무엇이 바뀌는지 한 줄, `LIFE-NNN:` 은 없으면 스크립트가 붙인다),
+     나머지 = 본문: 왜(문제·증상) → 무엇을 바꿨나(사용자에게 보이는 변화 먼저, 구현 요점은 그 뒤) → 확인한 것(실제 실행 근거 한두 줄).
+     리뷰 라운드·게이트·판정표 같은 내부 절차는 쓰지 않는다 — 판정문 링크는 스크립트가 붙인다. 출고 때 릴리즈 노트가 이 본문을 재료로 쓴다.
+     원고가 없거나 첫 줄이 제목이 아니면 `task-pr.sh` 가 push 전에 멈춘다.
   2. **코디네이터가 작업 worktree 에서 PR 을 연다** (2026-10-09, LIFE-574 게이트 ① 수정 1). `task-pr.sh` 는 레포를 git 공통
      디렉터리에서 찾으므로 작업 worktree 의 사본으로 돌려도 본체 레포를 가리킨다.
      - 독립 작업: `scripts/task-pr.sh LIFE-NNN-<슬러그>` — 미커밋 거절 → push → main 대상 PR 생성(있으면 재사용, 멱등).
-       본문은 `verdict.md` 링크·판정표 요약이다. `gh pr list --head LIFE-NNN-<슬러그>` 로 1건을 확인한다.
+       본문은 `pr.md` 그대로에 판정문 링크·서명이 붙는다. `gh pr list --head LIFE-NNN-<슬러그>` 로 1건을 확인한다.
      - 묶음 자식: PR 을 열지 않는다 — feature 반영은 3단계 정리가 한다.
   3. **코디네이터가 정리까지 한다** (2026-10-09, LIFE-574 출고 뒤 변경 — 출고 승인은 사용자 확인이 끝났다는 뜻이라
      본체 세션에 넘길 판단이 없다). 정리는 작업 worktree 를 지우므로 **코디 세션의 마지막 실행**이다 — 이후 도구 호출을 하지 않는다.
@@ -268,13 +271,13 @@ git merge <기록된_구현_브랜치>                      # 채택 구현 → 
      - 묶음 자식: `cd <본체 절대경로> && scripts/task-finish.sh LIFE-NNN-<슬러그> --into feature/LIFE-MMM-<슬러그>` — feature 로
        로컬 merge·push 한 뒤 정리한다. 묶음이 끝나면 **마지막 자식의 코디가** 묶음 확인을 끝내 판정문
        `specs/LIFE-MMM-<슬러그>/verdict.md`(자식 판정 링크·묶음 확인 결과)를 feature 브랜치에 커밋하고, 정리 전에
-       `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다(판정문이 없으면 `task-pr.sh` 가 멈추므로
-       `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다).
+       `scripts/task-pr.sh feature/LIFE-MMM-<슬러그>` 로 feature → main PR 하나를 연다(PR 원고 `specs/LIFE-MMM-<슬러그>/pr.md` 는 자식들을 묶어
+       같은 방식으로 쓴다. 판정문이 없으면 `task-pr.sh` 가 멈추므로 `--verdict <마지막 자식 판정문 경로>` 로 대신 지정할 수 있다).
   4. 사용자에게 스크립트 출력 원문과 함께 **PR 번호(묶음 자식은 feature 반영 결과)**, 인계 문서를 읽을 명령
      `git show origin/LIFE-NNN-<슬러그>:specs/LIFE-NNN-<슬러그>/handoff-main.md` 를 보고하고 "PR 생성·정리 완료, 출고 대기"라고 끝낸다.
      LA 는 `검증 중` 그대로다. 정리가 실패하면 원문을 보고하고 멈춘다 — 남은 정리는 사용자가 본체에서 같은 명령으로 이어 간다(멱등).
 - 스크립트가 실패하면 멈추고 원문을 보고한다. 이미 연 PR 은 `task-pr.sh` 재실행이 재사용한다.
-- **출고**는 별도다 — 사용자가 열린 PR 중 고르면("PR 이거이거 머지하고 빌드하자") 본체 세션이 `scripts/release.sh` 로
+- **출고**는 별도다(본체 세션의 `release` 스킬) — 사용자가 열린 PR 중 고르면("PR 이거이거 머지하고 빌드하자") 본체 세션이 `scripts/release.sh` 로
   순서 머지·버전 태그·dmg 를 하고, **출고 머지 뒤**(설치를 기다리지 않는다 — D2) 머지된 PR 의 일감마다
   `issue_transition(seq: NNN, toStatusLabel: "완료", resolution: "completed")` 를 호출해 실제 응답을 확인한다.
   부모 checkpoint는 다른 미완 자식이 없는지 확인한 뒤 별도로 완료 여부를 판단한다. 절차는 `app/INSTALL.md` 「출고」.

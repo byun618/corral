@@ -8,12 +8,12 @@ arm64 macOS 전용. 서명은 ad-hoc 이고 자동 업데이트·brew cask·릴�
 
 **main = 출고된 상태 = 설치본.** 설치본 버전 = 태그 `vX.Y.Z` = `app/package.json` 버전이다(`corral --version` 으로 태그를 특정한다).
 출고 대기열은 열린 PR 이고(게이트 ② 출고 승인 = PR 생성, `scripts/task-pr.sh`), 출고는 사용자가 끊는다 — "PR 이거이거 머지하고 빌드하자".
-본체 세션이 본체 checkout 에서 실행한다.
+본체 세션이 본체 checkout 에서 `release` 스킬(`.agents/skills/release/SKILL.md`)대로 실행한다 — 릴리즈 노트 작성이 그 스킬 몫이다.
 
 ```sh
-gh pr list                                  # 출고 대기열
-scripts/release.sh --prs "12 15" --dry-run  # 사전 점검만 — 대상 PR·순서·head·다음 버전·태그 출력, 머지·push 0건
-scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|major 또는 --version X.Y.Z (기본 patch)
+gh pr list                                                  # 출고 대기열
+scripts/release.sh --prs "12 15" --dry-run                  # 사전 점검만 — 대상 PR·순서·head·다음 버전·태그 출력, 머지·push 0건
+scripts/release.sh --prs "12 15" --notes <릴리즈 노트 파일>  # 고른 순서대로. --bump minor|major 또는 --version X.Y.Z (기본 patch)
 ```
 
 `release.sh` 가 하는 일 — **검사 없이 순서 머지다.** PR CI 는 아직 없다(후속 일감 LIFE-575, 맥미니 self-hosted 러너) — 검증 근거는 각 PR 의 판정문(리뷰·관문)이다.
@@ -21,7 +21,8 @@ scripts/release.sh --prs "12 15"            # 고른 순서대로. --bump minor|
 이때 각 PR 의 head SHA 를 고정하고, dmg 를 만들 거면 node 를 본다(v24 기준, v22 는 경고, 그 밖은 거절) ① PR 마다 GitHub 머지 가능 판정을 보고,
 앞 PR 머지로 충돌이 생겼으면 그 자리에서 멈춘다 — 그 PR 과 뒤 PR 은 머지하지 않는다(exit 3). 그 작업 브랜치에 main 을 **merge**(rebase 아님)해 풀고 push 한 뒤
 남은 PR 로 다시(아래 「충돌이 나면」) ② `gh pr merge --merge --match-head-commit <⓪ 에서 고정한 SHA>` — 그 뒤 head 가 바뀌면 GitHub 가 거절한다(exit 6) ③ 머지 커밋 부모 2개 확인,
-원격 작업 브랜치 삭제. 다 머지하면 ④ 버전 올림 커밋 `release: vX.Y.Z` + 주석 태그를 main 에 push ⑤ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서
+원격 작업 브랜치 삭제. 다 머지하면 ④ 버전 올림 커밋 `release: vX.Y.Z` + 주석 태그를 main 에 push 하고 `--notes` 로 GitHub Release 를 만든다(실패 exit 9 —
+메시지의 `gh release create` 만 다시) ⑤ 그 태그 위 깨끗한 임시 worktree(`.claude/worktrees/_release-*`)에서
 `scripts/release-dmg.sh` 로 아래 「빌드」를 돌려 dmg 를 `app/dist/release/vX.Y.Z/` 에 둔다(`--skip-build` 면 생략).
 이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. 버전 커밋·태그 push 가 실패하면(exit 7 — main 이 그새 움직임 등) 로컬 태그를 지우고 멈추므로
 같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만든다.
@@ -33,7 +34,7 @@ git worktree add .claude/worktrees/LIFE-NNN-<슬러그> -B LIFE-NNN-<슬러그> 
 cd .claude/worktrees/LIFE-NNN-<슬러그> && git merge origin/main                                    # rebase 금지 — 리뷰 근거 커밋 보존
 # 충돌을 풀고 커밋 → 확인이 필요하면 app/ 에서 npm run typecheck·npm test
 git push origin LIFE-NNN-<슬러그>                                                                    # PR head 갱신(fast-forward)
-cd - && scripts/release.sh --prs "<멈춘 PR> <뒤 PR …>"                                               # 이미 머지된 PR 은 넣어도 건너뛴다
+cd - && scripts/release.sh --prs "<멈춘 PR> <뒤 PR …>" --notes <파일>                                # 이미 머지된 PR 은 넣어도 건너뛴다
 scripts/task-finish.sh LIFE-NNN-<슬러그>                                                             # 다시 만든 worktree 정리
 ```
 이미 일부 머지된 상태에서 재실행해도 안전하다 — 머지된 PR 은 건너뛰고, 버전 커밋·태그는 아직 만들지 않았다(멈춘 PR 에서 끝났으므로). 해소가 기능을 바꿀 만큼 크면

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# task-pr.sh <브랜치> [--base <base>] [--title <제목>] [--verdict <레포 상대경로>] [--draft]
+# task-pr.sh <브랜치> [--base <base>] [--pr <레포 상대경로>] [--verdict <레포 상대경로>] [--draft]
 # 게이트 ② 출고 승인 = PR 생성 (LIFE-574). 머지는 하지 않는다 — 머지는 출고 때 scripts/release.sh 만 한다.
 #   <브랜치>  작업 브랜치 LIFE-NNN-<슬러그> 또는 묶음 브랜치 feature/LIFE-NNN-<슬러그>
 #   --base    PR 대상. 기본 main. 출고 리허설은 throwaway base 를 준다
-#   --verdict 판정문 경로. 기본 specs/<브랜치에서 feature/ 를 뗀 이름>/verdict.md
+#   --pr      PR 원고. 기본 specs/<브랜치에서 feature/ 를 뗀 이름>/pr.md — 코디네이터가 쓰고 브랜치에 커밋한다.
+#             첫 줄 `# <제목>` = PR 제목, 나머지 = 본문. 스크립트는 판정문 링크·head/base·서명만 덧붙인다
+#   --verdict 판정문 경로. 기본 specs/<…>/verdict.md (존재 확인·링크용)
 #   --draft   draft 로 연다 (검증용 PR)
 # 흐름은 life-assistant issue-merge Phase 0~2 모양: 상태 파악 → 미커밋 거절 → push -u → 같은 head 의 열린 PR 재사용/없으면 생성.
 # 멱등 — 다시 돌리면 같은 PR 의 본문만 갱신하고 PR 을 하나 더 만들지 않는다. 본체 밖 어디서 실행해도 된다.
@@ -12,18 +14,18 @@ set -euo pipefail
 die() { echo "✖ $1" >&2; exit 1; }
 note() { echo "· $1"; }
 
-HEAD_BRANCH=""; BASE="main"; TITLE=""; VERDICT=""; DRAFT=0
+HEAD_BRANCH=""; BASE="main"; PR_DOC=""; VERDICT=""; DRAFT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="${2:?--base 값 없음}"; shift 2 ;;
-    --title) TITLE="${2:?--title 값 없음}"; shift 2 ;;
+    --pr) PR_DOC="${2:?--pr 값 없음}"; shift 2 ;;
     --verdict) VERDICT="${2:?--verdict 값 없음}"; shift 2 ;;
     --draft) DRAFT=1; shift ;;
     -*) die "모르는 옵션: $1" ;;
     *) [ -z "$HEAD_BRANCH" ] || die "브랜치는 하나만"; HEAD_BRANCH="$1"; shift ;;
   esac
 done
-[ -n "$HEAD_BRANCH" ] || die "사용법: task-pr.sh <LIFE-NNN-슬러그|feature/LIFE-NNN-슬러그> [--base main] [--title …] [--verdict …] [--draft]"
+[ -n "$HEAD_BRANCH" ] || die "사용법: task-pr.sh <LIFE-NNN-슬러그|feature/LIFE-NNN-슬러그> [--base main] [--pr …] [--verdict …] [--draft]"
 [ "$HEAD_BRANCH" != "$BASE" ] || die "head 와 base 가 같다: $BASE"
 [ "$HEAD_BRANCH" != "main" ] || die "main 은 head 가 될 수 없다"
 
@@ -39,6 +41,7 @@ SPEC_ID="${HEAD_BRANCH#feature/}"
 LIFE="$(awk 'match($0, /LIFE-[0-9]+/) { print substr($0, RSTART, RLENGTH) }' <<<"$SPEC_ID")"
 [ -n "$LIFE" ] || die "브랜치 이름에서 LIFE 번호를 못 찾음: $HEAD_BRANCH"
 [ -n "$VERDICT" ] || VERDICT="specs/$SPEC_ID/verdict.md"
+[ -n "$PR_DOC" ] || PR_DOC="specs/$SPEC_ID/pr.md"
 
 # 0. 상태 파악 — 브랜치·미커밋·판정문
 git -C "$REPO" fetch -q origin
@@ -51,48 +54,29 @@ fi
 git -C "$REPO" cat-file -e "$HEAD_BRANCH:$VERDICT" 2>/dev/null || die "판정문 없음: $HEAD_BRANCH:$VERDICT"
 [ -n "$(git -C "$REPO" log --oneline "origin/$BASE..$HEAD_BRANCH")" ] || die "$BASE 에 없는 커밋이 없다 — 이미 반영됐거나 빈 브랜치"
 
-# 변경 요약 — handoff-main.md, 없으면 판정문의 "## 변경 요약" 절. PR 목록만 보고 출고할 PR 을 고를 수 있어야 한다
-SPEC_DIR="$(dirname "$VERDICT")"
-SUMMARY=""
-for SRC in "$SPEC_DIR/handoff-main.md" "$VERDICT"; do
-  SUMMARY="$(git -C "$REPO" show "$HEAD_BRANCH:$SRC" 2>/dev/null | awk '/^## *변경 요약/{on=1; next} on&&/^#{1,2} /{exit} on{print}' || true)"
-  [ -z "$(tr -d '[:space:]' <<<"$SUMMARY")" ] || break
-done
-[ -n "$(tr -d '[:space:]' <<<"$SUMMARY")" ] || die "변경 요약 없음: $SPEC_DIR/handoff-main.md 또는 $VERDICT 에 '## 변경 요약' 절을 쓰고 커밋한 뒤 다시"
+# PR 원고 — 코디네이터가 diff·specs 를 읽고 쓴 제목·본문. 기계적으로 뽑지 않는다. 없으면 push 전에 멈춘다
+PR_TEXT="$(git -C "$REPO" show "$HEAD_BRANCH:$PR_DOC" 2>/dev/null)" \
+  || die "PR 원고 없음: $HEAD_BRANCH:$PR_DOC — 첫 줄 '# <제목>', 이어서 본문을 쓰고 커밋한 뒤 다시"
+TITLE="$(awk 'NF{ if (sub(/^# +/, "")) print; exit }' <<<"$PR_TEXT")"
+[ -n "$TITLE" ] || die "PR 원고 첫 줄이 '# <제목>' 이 아니다: $PR_DOC"
+BODY="$(awk 'done{print; next} NF{done=1}' <<<"$PR_TEXT")"
+[ -n "$(tr -d '[:space:]' <<<"$BODY")" ] || die "PR 원고에 본문이 없다: $PR_DOC"
 
 # 1. push -u (이미 push 됐으면 delta 만)
 git -C "$REPO" push -u origin "$HEAD_BRANCH"
 [ "$(git -C "$REPO" rev-parse "$HEAD_BRANCH")" = "$(git -C "$REPO" rev-parse "origin/$HEAD_BRANCH")" ] || die "push 뒤 원격과 로컬이 다르다"
 
-# 2. 본문 — 변경 요약·판정문 링크·판정표 요약·서명. 진실의 원천은 specs 이고 본문은 요약이다
+# 2. 본문 — 원고 그대로 + 판정문 링크·head/base·서명
 SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-VERDICT_TEXT="$(git -C "$REPO" show "$HEAD_BRANCH:$VERDICT")"
-if [ -z "$TITLE" ]; then
-  # 일감 제목 — 00-start.md 식별표의 "| 일감 | LIFE-NNN — <제목> (<종류…>) |" 행. 판정문 헤딩은 "LIFE-NNN 판정" 뿐일 때가 많다
-  TITLE="$(git -C "$REPO" show "$HEAD_BRANCH:$SPEC_DIR/00-start.md" 2>/dev/null \
-    | awk -F'|' '$2 ~ /^ *일감 *$/ { v=$3; gsub(/\*\*/, "", v); sub(/^ *LIFE-[0-9]+ *— */, "", v); sub(/ *\([^()]*\) *$/, "", v); sub(/ *$/, "", v); print v; exit }' || true)"
-  [ -n "$TITLE" ] || TITLE="$(awk '/^# /{ sub(/^# */, ""); print; exit }' <<<"$VERDICT_TEXT")"   # 파이프 없이 — 일찍 끝나도 SIGPIPE 없음
-  [ -n "$TITLE" ] || TITLE="$SPEC_ID"
-fi
 case "$TITLE" in *"$LIFE"*) ;; *) TITLE="$LIFE: $TITLE" ;; esac
-# 판정표 = "| 항목 |" 으로 시작하는 머리줄부터 이어지는 표 줄들 (첫 표 하나)
-TABLE="$(awk '/^\| *항목 *\|/{on=1} on&&/^\|/{print; next} on{exit}' <<<"$VERDICT_TEXT")"
-[ -n "$TABLE" ] || TABLE="(판정표를 찾지 못함 — 판정문 원문을 본다)"
 BODY_FILE="$(mktemp)"; trap 'rm -f "$BODY_FILE"' EXIT
 {
-  echo "## 변경 요약"
+  printf '%s\n' "$BODY"
   echo
-  printf '%s\n' "$SUMMARY"
+  echo "---"
   echo
-  echo "## $LIFE 출고 대기"
-  echo
-  echo "- 판정문: [\`$VERDICT\`](https://github.com/$SLUG/blob/$HEAD_BRANCH/$VERDICT) — 진실의 원천은 specs 이고 이 본문은 요약이다"
-  echo "- head \`$HEAD_BRANCH\` @ \`$(git -C "$REPO" rev-parse --short "$HEAD_BRANCH")\` → base \`$BASE\`"
-  echo "- 머지는 출고 때 \`scripts/release.sh\` 로만 한다(merge commit, 지정 순서). PR CI 는 아직 없다(LIFE-575) — 검증 근거는 판정문. 웹 UI 머지·squash 금지"
-  echo
-  echo "### 판정표"
-  echo
-  printf '%s\n' "$TABLE"
+  echo "- 판정문: [\`$VERDICT\`](https://github.com/$SLUG/blob/$HEAD_BRANCH/$VERDICT)"
+  echo "- head \`$HEAD_BRANCH\` @ \`$(git -C "$REPO" rev-parse --short "$HEAD_BRANCH")\` → base \`$BASE\` — 머지는 출고 때 \`scripts/release.sh\` 로만 한다"
   echo
   echo "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 } > "$BODY_FILE"

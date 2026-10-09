@@ -1,0 +1,12 @@
+# EAS 빌드 아카이브(LIFE-578) — 레포 루트가 git 루트라 기본은 모노레포 전체(704 MB)를 올린다. 모바일 앱 빌드에는 mobile/ 만 필요하다.
+# .easignore 가 있으면 .gitignore 는 쓰이지 않으므로 mobile/.gitignore 의 산출물도 여기서 뺀다.
+/*
+!/mobile
+/mobile/node_modules
+/mobile/android
+/mobile/ios
+/mobile/.expo
+/mobile/dist
+/mobile/build-*.apk
+/mobile/*.apk
+/mobile/*.aab

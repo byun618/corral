@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release.sh --prs "<번호> <번호> …" [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--dry-run]
+# release.sh --prs "<번호> <번호> …" --notes <릴리즈 노트 파일> [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--dry-run]
 #            [--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v]   ← 리허설. 둘은 짝으로만 받는다
 # 출고 (LIFE-574) — 사용자가 고른 PR 을 그 순서대로 머지하고, 버전 올림 커밋 + 태그 <접두>X.Y.Z 를 push 한 뒤
 # 그 태그 위 깨끗한 트리에서 dmg 를 빌드한다. 출고 머지는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).
@@ -19,15 +19,18 @@
 # 충돌 해소 절차는 app/INSTALL.md 「출고」 — 원격 작업 브랜치로 worktree 를 다시 만들어 base 를 merge(rebase 금지)·push 한 뒤 다시 돌린다.
 # 버전 커밋·태그 push 가 실패하면(exit 7) 로컬 태그를 지우고 멈춘다 — 같은 명령 재실행이 태그만 다시 만든다.
 # dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다.
+# 릴리즈 노트(--notes)는 release 스킬이 고른 PR 본문을 읽고 쓴 원고다 — 태그 push 뒤 GitHub Release 로 올린다
+# (리허설은 prerelease). 실패하면(exit 9) 머지·태그는 끝난 상태다 — 안내대로 gh release create 만 다시 돌린다.
 set -euo pipefail
 
 die() { local code="${2:-1}"; echo "✖ $1" >&2; exit "$code"; }
 note() { echo "· $1"; }
 
-PRS=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; DRY_RUN=0
+PRS=""; NOTES=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --prs) PRS="${2:?--prs 값 없음}"; shift 2 ;;
+    --notes) NOTES="${2:?--notes 값 없음}"; shift 2 ;;
     --base) BASE="${2:?--base 값 없음}"; shift 2 ;;
     --tag-prefix) PREFIX="${2:?--tag-prefix 값 없음}"; shift 2 ;;
     --bump) BUMP="${2:?--bump 값 없음}"; shift 2 ;;
@@ -37,7 +40,14 @@ while [ $# -gt 0 ]; do
     *) die "모르는 인자: $1" ;;
   esac
 done
-[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--dry-run]"
+[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" --notes <파일> [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--dry-run]"
+# 릴리즈 노트 — 실 실행은 필수(dry-run 은 노트를 쓰기 전 점검이라 없어도 된다). 아래에서 cd 하므로 절대경로로
+if [ -n "$NOTES" ]; then
+  [ -s "$NOTES" ] || die "릴리즈 노트 파일이 없거나 비었다: $NOTES"
+  NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
+elif [ "$DRY_RUN" != 1 ]; then
+  die "--notes <릴리즈 노트 파일> 필수 — 고른 PR 본문을 읽고 쓴다(release 스킬). 머지 전에 거절"
+fi
 # 번호 검사 + 중복 제거(처음 나온 순서 유지)
 UNIQ=""
 for n in $(echo "$PRS" | tr ',' ' '); do
@@ -134,6 +144,7 @@ if [ "$DRY_RUN" = 1 ]; then
   [ -n "$TODO" ] || echo "  머지 예정 없음"
   echo "버전 $1 → $2, 태그 $PREFIX$2 (지금 base 기준 — 머지할 PR 이 버전을 바꾸면 달라진다)"
   [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
+  [ -n "$NOTES" ] && echo "릴리즈 노트: $NOTES" || echo "릴리즈 노트: 아직 없음 — 실 실행에는 --notes 필수"
   exit 0
 fi
 
@@ -205,6 +216,12 @@ if ! git -C "$TMPWT" push -q --atomic origin "HEAD:refs/heads/$BASE" "refs/tags/
   die "버전 커밋·태그 push 실패 — $BASE 가 그새 움직였을 수 있다. 머지는${MERGED_LIST:-(이번 실행 0건)} 끝났다. 로컬 태그는 지웠다 — 같은 명령을 다시 돌리면 버전 커밋·태그만 다시 만든다" 7
 fi
 note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --short HEAD))"
+
+# 3-1. GitHub Release — 태그에 릴리즈 노트를 붙인다. 리허설 태그는 prerelease 로 표시
+REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
+gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
+  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 노트만 다시: gh release create $TAG --verify-tag --title $TAG --notes-file $NOTES $REL_FLAG — 그 뒤 dmg 는 scripts/release-dmg.sh" 9
+note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
 if [ "$(git branch --show-current)" = "$BASE" ] && [ -z "$(git status --porcelain)" ]; then

@@ -3,7 +3,9 @@
 set -u
 ROOT=$1
 case "$ROOT" in /tmp/l571-*) ;; *) echo "ROOT 는 /tmp/l571-*"; exit 2 ;; esac
-GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/aa8d1981b699319b/herdr-0.9.0/target/debug/herdr"
+# 칸 = 지금 source.json 패치 digest 앞 16자(build-dev-guard.mjs 와 같은 규칙) — 패치 guard(LIFE-571 shift-enter 포함)를 쓴다.
+KEY=${L571_GUARD_KEY:-$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')}
+GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"
 stop() { kill "$1" 2>/dev/null; i=0; while kill -0 "$1" 2>/dev/null; do i=$((i+1)); [ $i -gt 75 ] && { kill -9 "$1"; break; }; sleep 0.2; done; }
 A=$(cat "$ROOT/app.pid"); B=$(cat "$ROOT/backend.pid")
 ps -o command= -p "$A" 2>/dev/null | grep -qF -- "--user-data-dir=$ROOT/ud" && stop "$A"

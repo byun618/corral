@@ -9,7 +9,9 @@ ROOT=$1; OUTSRC=${2:-}; CDP=${3:-}
 case "$ROOT" in /tmp/l571-*) ;; *) echo "ROOT 는 /tmp/l571-*"; exit 2 ;; esac
 [ -e "$ROOT" ] && { echo "$ROOT 이미 있음"; exit 2; }
 APP=$(pwd -P); EL="$APP/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/aa8d1981b699319b/herdr-0.9.0/target/debug/herdr"
+# 칸 = 지금 source.json 패치 digest 앞 16자(build-dev-guard.mjs 와 같은 규칙) — 패치 guard(LIFE-571 shift-enter 포함)를 쓴다.
+KEY=${L571_GUARD_KEY:-$(node -e 'const fs=require("fs"),c=require("crypto");const s=JSON.parse(fs.readFileSync("backend/source.json"));console.log(c.createHash("sha256").update(Buffer.concat(s.patches.map(n=>fs.readFileSync("backend/"+n)))).digest("hex").slice(0,16))')}
+GUARD="$(git rev-parse --path-format=absolute --git-common-dir)/corral-herdr-dev/$KEY/herdr-0.9.0/target/debug/herdr"
 SESSION=l571
 [ -x "$GUARD" ] || { echo "guard 없음 $GUARD"; exit 2; }
 "$GUARD" session list 2>/dev/null | awk -v s=$SESSION '$1==s' | grep -q . && { echo "herdr 세션 $SESSION 이 이미 있다 — 멈춘다"; exit 3; }
@@ -23,7 +25,7 @@ i=0; until "$GUARD" session list 2>/dev/null | awk -v s=$SESSION '$1==s{print $2
 SOCK=$("$GUARD" session list --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);const x=(j.sessions??j).find(e=>e.name==='$SESSION');console.log(x?.socket??x?.socket_path??'')}catch{console.log('')}})")
 [ -n "$SOCK" ] || SOCK="$HOME/.config/herdr-dev/sessions/$SESSION/herdr.sock"
 [ -S "$SOCK" ] || { echo "소켓 없음 $SOCK"; "$GUARD" session list; exit 1; }
-echo "backend pid $(cat "$ROOT/backend.pid") sock $SOCK"
+echo "backend pid $(cat "$ROOT/backend.pid") sock $SOCK guard $GUARD"
 echo "# 개발 실행"
 env HOME="$HOME" CORRAL_USER_DATA="$ROOT/ud" CORRAL_CONTROL_SOCKET="$ROOT/ctl.sock" CORRAL_LOG="$ROOT/corral.ndjson" CORRAL_SHOT_DIR="$ROOT/shots" \
   CORRAL_SESSION=$SESSION CORRAL_BACKEND_SOCKET="$SOCK" CORRAL_HERDR_BIN="$GUARD" \

@@ -7,7 +7,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { WebSocket } from 'ws'
-import { clickSwitch, ctl, openMobile, setFake, sleep, status, switchChecked, until } from '../l577/g-lib.mjs'
+import { clickSwitch, ctl, evalJs, openMobile, setFake, sleep, status, switchChecked, until } from '../l577/g-lib.mjs'
 
 export { ctl, sleep, until }
 export const PROTOCOL = 1
@@ -55,7 +55,18 @@ export async function reportAgent(root, { paneId, state, agent = 'claude' }) {
   return causeAt
 }
 
-/** 설정 › Mobile 스위치를 원하는 쪽으로(가짜 tailscale 이 serve 를 받는 상태) — 켜면 노출(exposed)까지 기다린다. */
+/** 설정 화면(오버레이)이 열려 있나 — 열려 있으면 본문(탭·터미널)을 덮는다(R1-A2: `div.settings-topbar` 가 탭 클릭을 막았다). */
+export const settingsOpen = (root) => evalJs(root, `!!document.querySelector('[data-settings-page],[data-settings-topbar]')`)
+
+/** 설정을 사람의 길(뒤로 버튼)로 닫고 오버레이가 사라질 때까지 기다린다. 이미 닫혀 있으면 그대로. */
+export async function closeSettings(root) {
+  if (!(await settingsOpen(root))) return
+  const clicked = await until(async () => (await ctl(root, { cmd: 'click', selector: '[data-settings-back]' })).hit === true, { timeoutMs: 10_000, everyMs: 200, label: '설정 뒤로' })
+  if (!clicked.value) throw new Error('설정 뒤로 버튼을 누르지 못했다')
+  await until(async () => !(await settingsOpen(root)), { timeoutMs: 10_000, label: '설정 오버레이 닫힘' })
+}
+
+/** 설정 › Mobile 스위치를 원하는 쪽으로(가짜 tailscale 이 serve 를 받는 상태) — 켜면 노출(exposed)까지 기다리고, **설정을 닫고** 돌아온다. */
 export async function setMobile(root, fake, on) {
   if (on) setFake(fake, { serve: {} })
   await openMobile(root)
@@ -65,6 +76,7 @@ export async function setMobile(root, fake, on) {
     const s = await status(root)
     return on ? (s.exposure.kind === 'exposed' && s.serverPort !== null ? s : null) : (s.enabled === false && s.serverPort === null ? s : null)
   }, { timeoutMs: 20_000, label: on ? 'mobile 켜짐' : 'mobile 꺼짐' })
+  await closeSettings(root)
   return reached.value
 }
 
@@ -72,7 +84,7 @@ export async function setMobile(root, fake, on) {
  * 폰 자리 클라이언트 — 새 코드로 페어링 → hello → list.subscribe. 받은 목록마다 `onList({ message, recvAt })`.
  * `clockOffset()` = ping/pong 으로 잰 (서버 시각 − 내 시각) 추정(왕복 가장 짧은 표본의 중간점). 같은 기계라 0 근처가 기대값이다.
  */
-export async function phone(root, { onList, name = 'l580-measure' }) {
+export async function phone(root, { onList, onClose = () => {}, name = 'l580-measure' }) {
   const port = (await status(root)).serverPort
   if (port === null) throw new Error('모바일 서버가 안 떠 있다')
   const url = `ws://127.0.0.1:${port}/ws`
@@ -115,6 +127,8 @@ export async function phone(root, { onList, name = 'l580-measure' }) {
     })
     ws.on('error', reject)
   })
+  // 구독 유지 확인(R1-A1) — 측정 구간 안에 연결이 닫히면 그 회차는 B 조건(구독 1)을 못 지킨 것이다.
+  ws.on('close', (code) => onClose({ code, at: Date.now() }))
   let n = 0
   const ping = async () => {
     const id = `c${(n += 1)}`

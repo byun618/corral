@@ -1,7 +1,8 @@
 // LIFE-580 J5 · L3 격리 — 3초 반영. 격리 개발 Electron(g-up.sh /tmp/l580g-*)에서 에이전트 상태를 바꿔 가며 폰 자리(repro 클라이언트)가 받는 시각을 잰다.
 //
 //   ⓐ main 이 그 변화를 담은 상태를 낸 시각(list `changedAt`) → 폰 수신   ⓑ 변화를 일으킨 시각(`pane.report_agent` 직전) → 폰 수신
-//   통과: 전이 ≥ 20회, ⓐ·ⓑ **전부** ≤ 3000 ms(최대값 기준). 시계 차는 ping/pong 의 서버 시각으로 보정한다(같은 기계 — 보정값을 원자료에 남긴다).
+//   통과: 전이 ≥ 20회, ⓐ·ⓑ **전부** ≤ 3000 ms(최대값 기준). 보고 실패는 그 자리에서 실행 실패(exit 1) — 삼키지 않는다.
+//   설정 › Mobile 을 켠 뒤 설정 화면을 닫고 시작한다(`lib.setMobile` — R1-A2 오버레이). 시계 차는 ping/pong 의 서버 시각으로 보정한다(같은 기계 — 보정값을 원자료에 남긴다).
 //   전이는 working → idle → blocked → working … 를 섞는다(질문 대기·권한 대기 같은 blocked 사유는 provider 가 없어 이 경로로는 안 생긴다 — 점은 blocked).
 //
 // 사용(app/ 에서):
@@ -18,6 +19,7 @@ const { values: args } = parseArgs({ options: { root: { type: 'string' }, fake: 
 try {
   checkRoots({ root: args.root, fake: args.fake })
   if (args.out === undefined) throw new Error('--out 필요')
+  if (!/^\d+$/.test(args.transitions) || Number(args.transitions) < 1) throw new Error(`--transitions 는 1 이상의 정수: ${args.transitions}`)
 } catch (error) {
   console.error(String(error.message ?? error))
   process.exit(2)

@@ -7,13 +7,16 @@ tailscale 은 가짜 CLI(`FAKE=/tmp/l580g-f*`), herdr 은 g-up 이 띄운 이름
 | --- | --- | --- |
 | `three-sec.mjs` | 에이전트 상태 보고(`pane.report_agent`)를 바꿔 가며 폰 자리 클라이언트가 받는 시각 — ⓐ `changedAt`→수신 ⓑ 보고 직전→수신, 전이 ≥ 20회 전부 ≤ 3초 | J5 · L3 격리 |
 | `k9-ab.mjs` | A(모바일 꺼짐)/B(켜짐+구독 1) 교대 3회 — 키 입력→화면 p50·p95(회당 36타) + main 루프 지연 p99 | J6 · L10ⓒ |
-| `lib.mjs` | 루트 검사·격리 herdr RPC·모바일 켜고 끄기·폰 자리 클라이언트(페어링→hello→구독, ping/pong 시계차)·격리 레포 pane | — |
+| `k9-ab.nodetest.mjs` | k9-ab 자체 시험 — 구동 실패·`--rounds 0`·push 0·스모크 소표본·루프 표본 0 이 통과하지 못하는지 + 정상 양성 대조(`npm test` 의 node:test 쪽) | R1-A1 |
+| `push-cost.mjs` · `push-cost.nodetest.mjs` | main 로그 `mobile.list_built`·`mobile.list_push` 를 seq 로 묶어 buildMs+sendMs 합의 p95(표본 0 이면 실패) | L10ⓓ · R1 C3 |
+| `native-j5.md` | 네이티브 J5 — 폰 연결 기록(`list_recv`·`clock`)과 main 로그로 ⓐ·ⓑ 계산법·체크리스트 | L3 네이티브 · R1 C1 |
+| `lib.mjs` | 루트 검사·격리 herdr RPC·모바일 켜고 끄기(**켠 뒤 설정 화면을 닫는다** — R1-A2)·폰 자리 클라이언트(페어링→hello→구독, ping/pong 시계차, 연결 닫힘 알림)·격리 레포 pane | — |
 
 ```sh
 cd app && npm run build
 sh scripts/l577/g-up.sh /tmp/l580g-a /tmp/l580g-fa
 node scripts/l580/three-sec.mjs --root /tmp/l580g-a --fake /tmp/l580g-fa --out ../specs/LIFE-580-mobile-list/raw/claude/l3
-node scripts/l580/k9-ab.mjs     --root /tmp/l580g-a --fake /tmp/l580g-fa --out ../specs/LIFE-580-mobile-list/raw/claude/l10c
+node scripts/l580/k9-ab.mjs     --root /tmp/l580g-a --fake /tmp/l580g-fa --out ../specs/LIFE-580-mobile-list/raw/claude/l10c [--rounds 3] [--samples 36] [--a-idle-ref]
 sh scripts/l577/g-down.sh /tmp/l580g-a term herdr
 ```
 
@@ -22,3 +25,6 @@ sh scripts/l577/g-down.sh /tmp/l580g-a term herdr
 - K9 A/B 의 상태 변화 구동(다른 pane 의 working/idle 보고 ≥ 1회/초)은 **A·B 둘 다**에 건다 — 데스크톱이 그 변화를 그리는 비용은 양쪽에 같고, 차이는 모바일 쪽만 남는다.
 - 원자료에는 토큰·코드·제목을 남기지 않는다(G5). 목록은 seq·시각·측정 채널의 점만 적는다.
 - 종료 코드: 0 통과 · 1 미달 · 2 사용법 오류.
+- K9 판정(R1-A1): A·B 각 ≥ 3회·회당 36 유한 latency, 상태 보고 실패 0(실패하면 그 자리에서 실행 실패), 구간 안 성공 보고 ≥ 1/s,
+  B 는 구간 안 전이 **전부**를 3초 안에 받았고 구독 연결이 유지됐다, 회차마다 루프 표본 > 0 — 그 뒤에 수치 규칙. `--rounds`·`--samples` 를 줄인
+  스모크는 표본이 나와도 늘 미달이다(판정 회차 아님). `--a-idle-ref` = A 무구동 참고 회차 1회(결과 `reference`, 판정 밖 — 코디 해석 재량 4).

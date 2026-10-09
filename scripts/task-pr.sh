@@ -51,15 +51,27 @@ fi
 git -C "$REPO" cat-file -e "$HEAD_BRANCH:$VERDICT" 2>/dev/null || die "판정문 없음: $HEAD_BRANCH:$VERDICT"
 [ -n "$(git -C "$REPO" log --oneline "origin/$BASE..$HEAD_BRANCH")" ] || die "$BASE 에 없는 커밋이 없다 — 이미 반영됐거나 빈 브랜치"
 
+# 변경 요약 — handoff-main.md, 없으면 판정문의 "## 변경 요약" 절. PR 목록만 보고 출고할 PR 을 고를 수 있어야 한다
+SPEC_DIR="$(dirname "$VERDICT")"
+SUMMARY=""
+for SRC in "$SPEC_DIR/handoff-main.md" "$VERDICT"; do
+  SUMMARY="$(git -C "$REPO" show "$HEAD_BRANCH:$SRC" 2>/dev/null | awk '/^## *변경 요약/{on=1; next} on&&/^#{1,2} /{exit} on{print}' || true)"
+  [ -z "$(tr -d '[:space:]' <<<"$SUMMARY")" ] || break
+done
+[ -n "$(tr -d '[:space:]' <<<"$SUMMARY")" ] || die "변경 요약 없음: $SPEC_DIR/handoff-main.md 또는 $VERDICT 에 '## 변경 요약' 절을 쓰고 커밋한 뒤 다시"
+
 # 1. push -u (이미 push 됐으면 delta 만)
 git -C "$REPO" push -u origin "$HEAD_BRANCH"
 [ "$(git -C "$REPO" rev-parse "$HEAD_BRANCH")" = "$(git -C "$REPO" rev-parse "origin/$HEAD_BRANCH")" ] || die "push 뒤 원격과 로컬이 다르다"
 
-# 2. 본문 — 판정문 링크·판정표 요약·서명. 진실의 원천은 specs 이고 본문은 요약이다
+# 2. 본문 — 변경 요약·판정문 링크·판정표 요약·서명. 진실의 원천은 specs 이고 본문은 요약이다
 SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 VERDICT_TEXT="$(git -C "$REPO" show "$HEAD_BRANCH:$VERDICT")"
 if [ -z "$TITLE" ]; then
-  TITLE="$(awk '/^# /{ sub(/^# */, ""); print; exit }' <<<"$VERDICT_TEXT")"   # 파이프 없이 — 일찍 끝나도 SIGPIPE 없음
+  # 일감 제목 — 00-start.md 식별표의 "| 일감 | LIFE-NNN — <제목> (<종류…>) |" 행. 판정문 헤딩은 "LIFE-NNN 판정" 뿐일 때가 많다
+  TITLE="$(git -C "$REPO" show "$HEAD_BRANCH:$SPEC_DIR/00-start.md" 2>/dev/null \
+    | awk -F'|' '$2 ~ /^ *일감 *$/ { v=$3; gsub(/\*\*/, "", v); sub(/^ *LIFE-[0-9]+ *— */, "", v); sub(/ *\([^()]*\) *$/, "", v); sub(/ *$/, "", v); print v; exit }' || true)"
+  [ -n "$TITLE" ] || TITLE="$(awk '/^# /{ sub(/^# */, ""); print; exit }' <<<"$VERDICT_TEXT")"   # 파이프 없이 — 일찍 끝나도 SIGPIPE 없음
   [ -n "$TITLE" ] || TITLE="$SPEC_ID"
 fi
 case "$TITLE" in *"$LIFE"*) ;; *) TITLE="$LIFE: $TITLE" ;; esac
@@ -68,6 +80,10 @@ TABLE="$(awk '/^\| *항목 *\|/{on=1} on&&/^\|/{print; next} on{exit}' <<<"$VERD
 [ -n "$TABLE" ] || TABLE="(판정표를 찾지 못함 — 판정문 원문을 본다)"
 BODY_FILE="$(mktemp)"; trap 'rm -f "$BODY_FILE"' EXIT
 {
+  echo "## 변경 요약"
+  echo
+  printf '%s\n' "$SUMMARY"
+  echo
   echo "## $LIFE 출고 대기"
   echo
   echo "- 판정문: [\`$VERDICT\`](https://github.com/$SLUG/blob/$HEAD_BRANCH/$VERDICT) — 진실의 원천은 specs 이고 이 본문은 요약이다"

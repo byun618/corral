@@ -2,6 +2,7 @@ import { RuntimeError } from '../../../runtime/contracts.js'
 import { isRecord, readArray, readRecord } from '../../../shared/json.js'
 import { log } from '../../log.js'
 import { BUSY_RETRY_INTERVAL_MS, BUSY_RETRY_TIMEOUT_MS } from './lifecycle.js'
+import { paneEnv } from './pane-env.js'
 import { request, HerdrRequestError } from './request.js'
 
 /** LIFE-417 N4: 되걸기 규약. 테스트가 주입할 수 있게 값으로 받는다 — 실제 15초를 기다리지 않는다. */
@@ -104,7 +105,7 @@ export class TerminalBackend {
   }
   async create(epoch: string, directory: string, title: string | undefined, ctx: TerminalOperation): Promise<TerminalIdentity> {
     const panes = await this.list(epoch, ctx), existing = panes.find(p => p.path === directory)
-    const response = await this.operation(epoch, existing ? 'tab.create' : 'workspace.create', { cwd: directory, focus: false,
+    const response = await this.operation(epoch, existing ? 'tab.create' : 'workspace.create', { cwd: directory, focus: false, env: paneEnv(),
       ...(title === undefined ? {} : { label: title }), ...(existing ? { workspace_id: existing.workspaceId } : {}) }, ctx, undefined, true)
     const pane = readRecord(response, 'root_pane'), workspace = readRecord(response, 'workspace')
     const created = (await this.list(epoch, ctx)).find(p => pane ? p.paneId === pane.pane_id : p.workspaceId === workspace?.workspace_id)

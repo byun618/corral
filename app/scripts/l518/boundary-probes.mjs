@@ -26,6 +26,9 @@ const jsonFrame = (frame) => `export const frame = ${frame}\n`
 /**
  * group: K3 소항목. expect: 기대 규칙(null = 위반 0 이어야 하는 음성 대조).
  * flip: 기준 검사기에서 잡히고 고친 검사기에서 안 잡히는 것이 **허용된** 칸 — 01-criteria K3ⓔ 정의 ①·② 뿐.
+ * knownMiss: **알려진 미검출**(LIFE-577 fix3 R3-N1) — `expect` 는 옳은 기대(위반)를 그대로 두고, 지금 검사기가 그것을 **못 잡는다는
+ *   실제 결과**를 칸으로 고정한다. 통과로 위장하지 않는다: 칸은 「안 잡힘」 일 때만 맞고, 검사기가 잡게 되면 칸이 깨져 이 표시를 걷어 내게 한다.
+ *   모바일 면제는 리터럴의 **구문 위치**만 본다 — 문장 간 값 흐름(`msg.type` 을 다른 문장에서 `method` 로 쓰기 등)은 추적하지 않는다.
  */
 export const PROBES = [
   // ⓐ 액션 id 와 겹치는 실제 herdr 메서드 `tab.rename` 을 요청 envelope 위치에 — 네 구역 × 두 꼴
@@ -219,6 +222,9 @@ export const PROBES = [
   { id: 'm-mobile-type-switch-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-switch.ts', source: "export function kind(message: { type: string }): number { switch (message.type) { case 'ping': return 1; default: return 0 } }\n" },
   { id: 'm-mobile-client-types-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-client-types.ts', source: "export const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const\n" },
   { id: 'm-mobile-type-literal-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-literal.ts', source: "export type Ping = { type: 'ping'; id?: string }\n" },
+  // ⓜ LIFE-577 fix3 (R3-N1) — 리뷰어 r3 간접 반례: type 자리에서 허용된 값을 **다른 식에서** `method` 로 쓴다. 지금 검사기는 못 잡는다(알려진 미검출)
+  { id: 'm-mobile-indirect-msg-type', group: 'ⓜ', expect: 'R4-wire-leak', knownMiss: '모바일 면제는 구문 위치만 본다 — 문장 간 값 흐름 미추적', file: 'src/main/mobile/boundary-probe-m-indirect-type.ts', source: "import net from 'node:net'\nexport function go(sock: string) { const msg = {type: 'ping'}; net.connect(sock).write(JSON.stringify({id: 'r3', method: msg.type}) + '\\n') }\n" },
+  { id: 'm-mobile-indirect-client-types', group: 'ⓜ', expect: 'R4-wire-leak', knownMiss: '모바일 면제는 구문 위치만 본다 — CLIENT_TYPES 는 변수 이름으로 허용, 원소의 이후 쓰임 미추적', file: 'src/main/mobile/boundary-probe-m-indirect-client-types.ts', source: "const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const\nexport const request = {id: 'r3', method: CLIENT_TYPES[2]}\n" },
 ]
 
 /** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */
@@ -233,6 +239,8 @@ function makeSandbox(checkerSource) {
 
 /** 칸이 기대대로인가 — nodetest·행렬·변이가 같은 판정식을 쓴다. */
 export function cellOk({ probe, cell }) {
+  // 알려진 미검출(R3-N1) — 기대(위반)는 그대로, 실제 「안 잡힘」 을 고정한다. 잡히게 되면 칸이 깨진다(표시를 걷어 낼 때).
+  if (probe.knownMiss !== undefined) return !cell.caught
   const rules = probe.expect === null ? !cell.caught && cell.exit === 0 : cell.caught && cell.exit === 1
   const comments = probe.expectComment === undefined || JSON.stringify([...cell.commentTokens].sort()) === JSON.stringify([...probe.expectComment].sort())
   return rules && comments

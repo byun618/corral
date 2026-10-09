@@ -13,6 +13,8 @@
 cd app
 # ① 페어링 → hello → ping. 토큰을 **새** 0600 파일로 남긴다(원자료에는 <redacted> 로만 찍힌다).
 #    --token-out 경로가 이미 있으면(파일·심링크) pair 전에 exit 2 — 코드를 쓰지 않는다. 새 파일은 O_EXCL 로 만들고 umask 와 무관하게 0600.
+#    단, pair 응답 뒤 저장 순간에 그 경로가 경합으로 생겨 `token-out` 이 실패해도(exit 1) 코드는 이미 소모되고 기기는 등록된다 —
+#    그 기기를 설정 › Mobile 에서 해지하고 새 코드로 다시 페어링한다.
 node scripts/l577/repro.mjs pair  --url ws://127.0.0.1:<서버포트>/ws --code <QR 코드> --name repro --token-out /tmp/l577x/token
 # ② 저장한 토큰으로 hello → ping
 node scripts/l577/repro.mjs hello --url wss://<mac>.ts.net:8577/ws --token-file /tmp/l577x/token

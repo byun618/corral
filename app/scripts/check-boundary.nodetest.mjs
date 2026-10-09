@@ -17,4 +17,7 @@ test('check:boundary — 양성 대조는 잡고 음성 대조(오탐 꼴)는 �
     return cellOk({ probe, cell }) ? [] : [`${probe.id}: 기대 ${probe.expect ?? '위반 0'} · exit ${cell.exit} · ${JSON.stringify(cell.rules)} ${JSON.stringify(cell.tokens)} · 주석언급 ${JSON.stringify(cell.commentTokens)}`]
   })
   assert.deepEqual(wrong, [])
+  // 알려진 미검출(LIFE-577 R3-N1)은 통과로 세지 않고 따로 드러낸다 — 실제 결과 그대로.
+  const misses = PROBES.flatMap((probe, index) => (probe.knownMiss === undefined ? [] : [`${probe.id}: 기대 ${probe.expect} · 실제 미검출(exit ${cells[index].exit}) — ${probe.knownMiss}`]))
+  for (const miss of misses) console.log(`알려진 미검출 ${miss}`)
 })

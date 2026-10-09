@@ -32,7 +32,18 @@ export const MOBILE_BIND_HOST = '127.0.0.1'
 
 type Log = (tag: string, fields?: Record<string, unknown>) => void
 
-type Connection = { ws: WebSocket; deviceId: string | null; timer: NodeJS.Timeout | null; closing: boolean; lastSeenAt: number }
+type Connection = {
+  ws: WebSocket
+  deviceId: string | null
+  timer: NodeJS.Timeout | null
+  closing: boolean
+  lastSeenAt: number
+  /** 목록 구독 해제(LIFE-580) — 닫힘·거절·해지·교체 때 부른다. 그 뒤 이 연결로 목록이 가지 않는다. */
+  unsubscribe: (() => void) | null
+}
+
+/** 목록 공급(LIFE-580 `feed.ts`) — 서버는 구독·해제만 안다. */
+export type ListSource = { subscribe(sink: (text: string) => void): () => void }
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -49,6 +60,8 @@ export type MobileServerDeps = {
   accepting?: () => boolean
   /** 허용 Origin — `https://<mac>.ts.net:8577`. 업그레이드에 Origin 이 있으면 이것과 같아야 한다. 없으면(null) Origin 있는 요청은 전부 거절(R1-N2). */
   allowedOrigin?: () => string | null
+  /** 대화방 목록 공급(LIFE-580). 없으면 `list.subscribe` 는 `unknown_type`. */
+  list?: ListSource
   /** 시험만 줄인다. */
   authTimeoutMs?: number
   /** 시험만 줄인다 — 생존 확인 주기·무수신 마감(E3). */
@@ -197,6 +210,7 @@ export class MobileServer {
       if (now - connection.lastSeenAt > idleMs) {
         this.deps.log('mobile.idle_drop', { device: connection.deviceId, idleMs: now - connection.lastSeenAt })
         connection.closing = true
+        this.unsubscribe(connection)
         connection.ws.terminate()
         continue
       }
@@ -209,7 +223,7 @@ export class MobileServer {
   }
 
   private accept(ws: WebSocket): void {
-    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now() }
+    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
     ws.on('message', (data, isBinary) => {
@@ -218,6 +232,7 @@ export class MobileServer {
     })
     ws.on('pong', () => { connection.lastSeenAt = Date.now() })
     ws.on('close', () => {
+      this.unsubscribe(connection)
       if (connection.timer !== null) clearTimeout(connection.timer)
       const wasDevice = connection.deviceId !== null
       this.connections.delete(connection)
@@ -239,13 +254,15 @@ export class MobileServer {
       return this.send(connection.ws, { type: 'error', code: parsed.code, message: errorText(parsed.code) })
     }
     const message = parsed.message
-    // 인증 뒤 — M1 은 ping 하나. M3~ 메시지는 여기 분기에 더한다.
+    // 인증 뒤 — ping · list.subscribe(LIFE-580). M4~ 메시지는 여기 분기에 더한다.
     if (connection.deviceId !== null) {
       // 해지가 연결 닫기보다 먼저 보일 수 있는 틈을 막는다 — 매 메시지 기기 존재 확인.
       if (!this.deps.pairing.has(connection.deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
       switch (message.type) {
         case 'ping':
           return this.send(connection.ws, { type: 'pong', id: message.id, at: Date.now() })
+        case 'list.subscribe':
+          return this.subscribeList(connection)
         case 'hello':
         case 'pair':
           return this.send(connection.ws, { type: 'error', code: 'bad_message', message: '이미 인증된 연결이다' })
@@ -293,9 +310,33 @@ export class MobileServer {
         })
       }
       case 'ping':
+      case 'list.subscribe':
       case 'unknown':
         return this.reject(connection, 'not_authenticated', CLOSE.unauthorized)
     }
+  }
+
+  /**
+   * 목록 구독(LIFE-580 J8) — 다시 보내면 이전 구독을 끊고 새로 붙어 전체를 다시 받는다(포그라운드 복귀). 보내기 직전마다
+   * 이 연결이 아직 살아 있고(닫는 중 아님) 기기가 해지되지 않았는지 본다 — 해지·교체·닫힘 뒤에는 한 건도 가지 않는다.
+   */
+  private subscribeList(connection: Connection): void {
+    const list = this.deps.list
+    if (list === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+    this.unsubscribe(connection)
+    const deviceId = connection.deviceId
+    connection.unsubscribe = list.subscribe((text) => {
+      if (connection.closing || deviceId === null || connection.ws.readyState !== connection.ws.OPEN) return
+      if (!this.deps.pairing.has(deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
+      connection.ws.send(text)
+    })
+    this.deps.log('mobile.list_subscribe', { device: deviceId })
+  }
+
+  private unsubscribe(connection: Connection): void {
+    const stop = connection.unsubscribe
+    connection.unsubscribe = null
+    stop?.()
   }
 
   /** 같은 기기의 이전 연결을 닫는다(E3) — 다른 기기 연결은 건드리지 않는다. */
@@ -331,6 +372,7 @@ export class MobileServer {
 
   private drop(connection: Connection, closeCode: number, reason: string): void {
     connection.closing = true
+    this.unsubscribe(connection)
     if (connection.timer !== null) clearTimeout(connection.timer)
     connection.timer = null
     const ws = connection.ws

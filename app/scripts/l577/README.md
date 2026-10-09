@@ -27,6 +27,9 @@ node scripts/l577/repro.mjs matrix --url <같은 URL> --token-file /tmp/l577x/to
 # ④ 서버 연결 수명(LIFE-578 E3) — 같은 기기 재인증 → 이전 연결 replaced(4006) · 새 연결 pong.
 #    --idle-max-ms 를 주면 서버 ping 에 답하지 않는 연결이 그 안에 끊기는지도 본다(기본값 서버는 최대 40초).
 node scripts/l577/repro.mjs lifetime --url <같은 URL> --token-file /tmp/l577x/token [--idle-max-ms 45000]
+# ⑤ 대화방 목록 구독(LIFE-580) — hello → list.subscribe → 전체 스냅샷 + --watch-ms 동안 push. 줄에는 수·상태 점 분포만(제목·미리보기 글 없음).
+#    --resubscribe 면 중간에 다시 구독해 전체를 다시 받는지(포그라운드 복귀), --ndjson-out 이면 받은 목록마다 시각 한 줄(3초 측정 원자료).
+node scripts/l577/repro.mjs list --url <같은 URL> --token-file /tmp/l577x/token [--watch-ms 3000] [--resubscribe] [--ndjson-out /tmp/l580x/recv.ndjson]
 ```
 
 - `--url` 은 `ws://127.0.0.1:<p>/ws`(loopback 직접 — 개발·격리) 또는 `wss://<mac>.ts.net:8577/ws`(tailscale serve 경유 — 네이티브 A10ⓒ).

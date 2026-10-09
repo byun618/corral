@@ -1,5 +1,5 @@
 // 모바일 프로토콜 (LIFE-577 A5) — WS 하나 + JSON 텍스트 프레임. 정본 설명은 `SURFACE.md`(같은 폴더).
-// M1 메시지는 `hello`·`pair`·`ping` 셋뿐이다. M3~ 는 `CLIENT_TYPES` 에 타입을 더하고 `server.ts` 의 인증 뒤 분기에 한 줄을 더한다.
+// M1 메시지는 `hello`·`pair`·`ping`, M3(LIFE-580)이 `list.subscribe` 를 더했다. M3~ 는 `CLIENT_TYPES` 에 타입을 더하고 `server.ts` 의 인증 뒤 분기에 한 줄을 더한다.
 import { isRecord } from '../../shared/json.js'
 
 /** 프로토콜 버전 — 메시지 모양이 호환되지 않게 바뀔 때만 올린다. 앱 버전과 별개다. */
@@ -17,7 +17,7 @@ export const LIVENESS_INTERVAL_MS = 10_000
 /** 인증된 연결이 이만큼 아무 프레임(메시지·pong)도 보내지 않으면 죽은 연결로 보고 끊는다. 정리까지 최대 = 이 값 + 주기. */
 export const IDLE_TIMEOUT_MS = 30_000
 
-export const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const
+export const CLIENT_TYPES = ['hello', 'pair', 'ping', 'list.subscribe'] as const
 export type ClientType = (typeof CLIENT_TYPES)[number]
 
 /** 오류 코드 — 문서 표와 같은 목록이다(`SURFACE.md` §4). */
@@ -57,6 +57,8 @@ export type ClientMessage =
   | { type: 'hello'; protocol: number; token: unknown; client: unknown }
   | { type: 'pair'; protocol: number; code: unknown; name: unknown }
   | { type: 'ping'; id: string | number | null }
+  /** 대화방 목록 구독(LIFE-580) — 인증 뒤. 다시 보내면 전체 스냅샷을 다시 받는다(재연결·포그라운드 복귀). */
+  | { type: 'list.subscribe' }
   | { type: 'unknown'; name: string }
 
 export type ParseResult = { ok: true; message: ClientMessage } | { ok: false; code: 'bad_json' | 'bad_message' }
@@ -78,6 +80,8 @@ export function parseClientMessage(text: string): ParseResult {
       const id = typeof parsed.id === 'string' || typeof parsed.id === 'number' ? parsed.id : null
       return { ok: true, message: { type: 'ping', id } }
     }
+    case 'list.subscribe':
+      return { ok: true, message: { type: 'list.subscribe' } }
     default:
       return { ok: true, message: { type: 'unknown', name: parsed.type.slice(0, 64) } }
   }

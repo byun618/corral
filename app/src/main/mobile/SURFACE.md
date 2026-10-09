@@ -42,7 +42,7 @@
 
 프레임 하나 최대 16 KiB(넘으면 close 1009). 바이너리 프레임은 `bad_message`. 연결 후 **10초 안에** 인증(`hello` 성공 또는 `pair` 성공)하지 않으면 `auth_timeout`.
 
-**인증된 연결의 수명 (LIFE-578 E3)** — 새 메시지·경로·인증 전 동작은 없다. 서버 쪽 정리만 더했다.
+**인증된 연결의 수명 (LIFE-578 E3)** — 이 절은 메시지·경로·인증 전 동작을 더하지 않는다(목록은 아래 LIFE-580 절). 서버 쪽 정리만 더했다.
 
 - **생존 확인**: 서버가 인증된 연결에 **10초마다 WS ping 제어 프레임**(RFC 6455 opcode 0x9, 본문 0바이트)을 보낸다. WS 클라이언트는 pong 을 스스로 돌려준다
   (RN Android OkHttp·Node `ws` 기본값). 메시지·pong 어느 것이든 받으면 그 연결은 살아 있다. **30초 동안 아무 프레임도 없으면** 서버가 close 핸드셰이크 없이 끊는다
@@ -59,8 +59,9 @@
 | `hello` | 인증 전 | `{type:'hello', protocol:1, token:'<기기 토큰>', client?:{name,version}}` |
 | `pair` | 인증 전 | `{type:'pair', protocol:1, code:'<8자 코드>', name:'<기기 이름, 64자까지>'}` |
 | `ping` | 인증 뒤 | `{type:'ping', id?: string\|number}` |
+| `list.subscribe` | 인증 뒤 (LIFE-580) | `{type:'list.subscribe'}` — 대화방 목록 구독. 다시 보내면 이전 구독을 끊고 전체를 다시 받는다(재연결·포그라운드 복귀) |
 
-인증 전에 `hello`·`pair` 가 아닌 것은 `not_authenticated` 로 닫는다. 노출이 `exposed` 가 아니면(Funnel·HTTPS 꺼짐·실패 등) `hello`·`pair` 도
+인증 전에 `hello`·`pair` 가 아닌 것(`ping`·`list.subscribe` 포함)은 `not_authenticated` 로 닫는다. 노출이 `exposed` 가 아니면(Funnel·HTTPS 꺼짐·실패 등) `hello`·`pair` 도
 `unavailable` 로 닫는다(R1-A2). 서버가 거절·close 를 시작한 연결은 **그 뒤 도착한 메시지를 처리하지 않는다** — 같은 write 로 이어 온
 `pair` 가 거절된 `hello` 뒤에 통과하지 않는다(R1-A7). 인증 뒤 모르는 타입은 `unknown_type` 오류만 보내고 연결은 유지한다.
 인증 뒤 `hello`·`pair` 를 다시 보내면 `bad_message`(연결 유지).
@@ -72,11 +73,36 @@
 | `hello` | hello 성공 | `{type:'hello', ok:true, protocol:1, server:{app:'corral', version:'<app.getVersion()>', macName:'<맥 이름>'}, device:{id,name}}` |
 | `paired` | pair 성공 — 연결은 그대로 인증된다 | `{type:'paired', protocol:1, server:{app, version, macName}, token:'<기기 토큰 — 이때 한 번만>', device:{id,name}}` |
 | `pong` | ping | `{type:'pong', id, at:<ms>}` |
+| `list` | `list.subscribe` 직후 1건 + 목록 내용이 바뀔 때마다 (LIFE-580) | `{type:'list', epoch, seq, at:<ms>, changedAt:<ms>, list}` — 아래 「대화방 목록」 |
 | `error` | 아래 표 | `{type:'error', code, message}` (`protocol_mismatch` 는 `supported:[1]` 도) |
 
 **맥 이름 `server.macName`(R5 A5ⓓ, 표시용)** — 인증 뒤 `hello`·`paired` 응답에만 있다. 인증 전 응답·오류(`error`)에는 없다.
 출처(`mac-name.ts`): ① `/usr/sbin/scutil --get ComputerName`(macOS 「컴퓨터 이름」, 절대경로라 셸 PATH 없는 GUI 앱에서도 같다, 2초 타임아웃) →
 ② 실패·빈 값이면 `os.hostname()` 에서 `.local` 을 뗀 값 → ③ 그것도 비면 `"Mac"`. 제어 문자 제거·64자. 앱 기동 때 한 번 읽는다(읽기 전엔 ②).
+
+### 대화방 목록 (LIFE-580 — 코드 `list.ts`·`feed.ts`, 서버 분기 `server.ts` `subscribeList`)
+
+- **구독한 인증 연결에만** 간다. 보내기 직전마다 그 연결이 닫는 중이 아닌지·기기가 해지되지 않았는지 본다 — 해지·`replaced`·`unavailable`·닫힘·생존 확인 끊김 뒤에는
+  그 연결로 한 건도 가지 않는다(해지가 연결 닫기보다 먼저 보이면 그 자리에서 `revoked` 로 닫는다). 공급이 없는 서버(시험)는 `unknown_type`.
+- **매번 전체**를 보낸다(증분 없음). `epoch` = 서버(main) 기동마다 새 값, `seq` = 보낼 내용이 바뀔 때만 +1. 재구독은 지금 `seq` 의 전체를 그대로 다시 보낸다.
+  앱은 같은 `epoch` 의 더 낮은 `seq` 를 버린다. 같은 내용이면 보내지 않는다.
+- **뭉침**: 상태 변화 뒤 100 ms, 첫 변화에서 최대 300 ms 안에 한 번(`LIST_COALESCE_MS`·`LIST_MAX_WAIT_MS`). 구독자가 있는 동안 30초마다 다시 계산한다(정렬의 30분 신선도 경계).
+- **구독자 0 이면 변환하지 않는다** — main 상태 이벤트는 카운터 확인 하나로 끝난다. 같은 세대에 붙은 구독들은 직렬화 결과 하나를 공유한다.
+- `at` = 서버가 이 목록을 만든 시각, `changedAt` = 이 목록이 담은 첫 상태 변화를 main 이 낸 시각(3초 측정 J5ⓐ 의 시작점).
+- 비용 로그: `mobile.list_built {seq, bytes, buildMs, subscribers}` · `mobile.list_push {seq, subscribers, sendMs}` · `mobile.list_subscribe {device}` — 제목·글은 없다.
+
+`list` 모양:
+
+| 칸 | 값 |
+| --- | --- |
+| `available:false, reason` | 맥이 herdr 상태를 아직 못 읽었다(link 가 `live` 아님) — `repos`·`waiting` 빈 배열. 「세션 0」 과 다르다 |
+| `available:true, repos[], waiting[]` | `repos` = `{id, name, tasks[]}` · `tasks` = `{id, name, isDefault, channels[]}` · `waiting` = 「나를 기다리는 것」 채널 `id` 순서 |
+| 채널 | `id`(pane id · 보존 행 `retained:<pane id>`) · `key`(안 읽음 장부 키 — provider 세션 참조의 SHA-256 앞 16자, 없으면 `pane:<pane id>`) · `status` live/closed · `kind` claude/codex/grok/null · `title` · `dot`·`dotUnseen`(데스크톱 점 9값 — 본 것으로/안 본 것으로 칠 때) · `depth` 0/1 · `origin`(하위 워크트리 이름) · `spawnedBy` · `preview` {question·approval·prompt·tool·error·none} · `waiting` question/approval/login/other · `model` · `timeAt` · `activityAt` · `outcome` |
+
+- 값·순서는 데스크톱 파생 함수(`shared/` 의 `buildSidebarSections`·`nestSectionItems`·`buildAgentRows`)로 만든다 — 「레포로 묶기」 보기, 데스크톱 필터·고정은 적용하지 않는다.
+- **보내지 않는 것**: 셸 pane(에이전트 없는 pane)·서브에이전트 행 · 터미널 내용·제목 · 경로(레포·작업 `id` 는 경로의 SHA-256 앞 16자) · 세션 참조 원문 · 환경·토큰·비용.
+  열린 AI 세션이 없는 작업(셸만·닫힌 세션만)은 목록에 없다. 행 수는 자르지 않는다 — 제목 120자·미리보기 160자만 자른다.
+- 프레임 크기: 수신 상한 16 KiB 는 서버가 **받는** 프레임에만 걸린다 — `list` 는 그보다 클 수 있다(F9).
 
 ## 4. 오류 코드
 
@@ -86,7 +112,7 @@
 | `bad_message` | 모양이 틀렸다(타입 없음·protocol 없음·바이너리) | 인증 전 닫음 · 인증 뒤 유지 | 4004 |
 | `protocol_mismatch` | `protocol` 이 1 이 아니다 | 닫음 | 4002 |
 | `unauthorized` | 토큰 없음·틀림·해지됨(구별하지 않는다) | 닫음 | 4001 |
-| `not_authenticated` | 인증 전 hello·pair 아닌 메시지 | 닫음 | 4001 |
+| `not_authenticated` | 인증 전 hello·pair 아닌 메시지(`ping`·`list.subscribe` 포함) | 닫음 | 4001 |
 | `code_expired` | 만료된 페어링 코드(10분 지남) — 새 QR 을 만든 뒤에도 그 코드는 만료로 답한다 | 닫음 | 4005 |
 | `code_used` | 이미 쓴 페어링 코드(1회 사용) | 닫음 | 4005 |
 | `code_invalid` | 그 밖 전부 — 모르는 코드 · 형식 오류(문자열 아님) · 코드 없음 · **5회 실패로 폐기된 코드** · **새 QR 로 무효화된 이전 코드** · 스위치를 꺼 폐기된 코드 · 기억 범위(최근 8개) 밖의 끝난 코드 | 닫음 | 4005 |

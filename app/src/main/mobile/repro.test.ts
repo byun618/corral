@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PairingStore, PAIRING_TTL_MS } from './pairing.js'
-import { MobileServer } from './server.js'
+import { ListFeed } from './feed.js'
+import { FIXTURE_NOW, listFixture } from './list-fixture.js'
+import { MobileServer, type ListSource } from './server.js'
 
 const run = promisify(execFile)
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -36,7 +38,7 @@ function parse(stdout: string): Record<string, unknown>[] {
   return stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => JSON.parse(line))
 }
 
-async function setup(timing: { livenessIntervalMs?: number; idleTimeoutMs?: number } = {}): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
+async function setup(timing: { livenessIntervalMs?: number; idleTimeoutMs?: number; list?: ListSource } = {}): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l577x-'))
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   let now = Date.now()
@@ -94,7 +96,7 @@ describe('repro 스크립트 (A9)', () => {
     }
     const steps = [...first.rows, ...second.rows].map((row) => row.step).filter((step) => typeof step === 'string')
     expect(steps).toEqual(expect.arrayContaining([
-      'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:bad-json',
+      'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:list-before-auth', 'ws:bad-json',
       'ws:protocol-mismatch', 'ws:too-large', 'ws:revoked-token', 'ws:used-code', 'ws:expired-code',
       'ws:unknown-code', 'ws:wrong-code-5', 'ws:right-code-after-5-wrong', 'ws:auth-timeout', 'positive:hello', 'positive:ping',
     ]))
@@ -110,6 +112,34 @@ describe('repro 스크립트 (A9)', () => {
       expect(stdout).not.toContain(secret)
     }
   }, 60_000)
+
+  it('list(LIFE-580) — 구독 스냅샷 · push · 재구독 전체 · 셸 0, 출력에 제목·토큰 없음(exit 0)', async () => {
+    let state = listFixture()
+    const feed = new ListFeed({ read: () => ({ state, prefs: null, now: FIXTURE_NOW }), log: () => {}, coalesceMs: 20, maxWaitMs: 50 })
+    cleanups.push(() => feed.stop())
+    const { url, store, dir } = await setup({ list: feed })
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'token')
+    expect((await repro(['pair', '--url', url, '--code', code, '--token-out', tokenFile])).code).toBe(0)
+    const recv = path.join(dir, 'recv.ndjson')
+    const changer = setTimeout(() => {
+      state = listFixture({ p6: { agentStatus: 'working' } })
+      feed.changed()
+    }, 700)
+    cleanups.push(() => clearTimeout(changer))
+    const out = await repro(['list', '--url', url, '--token-file', tokenFile, '--watch-ms', '2000', '--resubscribe', '--ndjson-out', recv])
+    expect(out.rows.filter((row) => row.pass === false)).toEqual([])
+    expect(out.code).toBe(0)
+    expect(out.rows.map((row) => row.step).filter((step) => typeof step === 'string')).toEqual(['list:snapshot', 'list:seq-monotonic', 'list:no-shell', 'list:resubscribe-full'])
+    const lines = fs.readFileSync(recv, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    // 재구독과 변경의 선후는 프로세스 기동 시간에 따라 갈린다 — 세 건(구독·재구독·push), 번호는 1·2 만, 역행 없음.
+    const seqs = lines.map((line) => line.seq)
+    expect(seqs).toHaveLength(3)
+    expect(new Set(seqs)).toEqual(new Set([1, 2]))
+    expect([...seqs].sort()).toEqual(seqs)
+    expect(out.stdout).not.toContain('모바일 디자인 브리프 정리')
+    expect(out.stdout).not.toContain(fs.readFileSync(tokenFile, 'utf8').trim())
+  }, 30_000)
 
   // R2-A4 — `--token-out` 은 새 파일만 0600 으로 원자 생성. 이미 있는 파일(0644)·심링크는 pair 전에 거절(exit 2) — 코드를 소모하지 않는다.
   it.each([

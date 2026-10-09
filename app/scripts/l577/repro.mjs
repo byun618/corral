@@ -175,6 +175,8 @@ async function commandMatrix(url) {
   await expectRejected(url, 'ws:wrong-token', { send: [{ type: 'hello', protocol: PROTOCOL, token: 'not-a-real-token' }], code: 'unauthorized', close: 4001 })
   await expectRejected(url, 'ws:ping-before-auth', { send: [{ type: 'ping' }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:unknown-before-auth', { send: [{ type: 'state' }], code: 'not_authenticated', close: 4001 })
+  // LIFE-580 — 목록 구독도 인증 전에는 거절(새 메시지가 인증 전 표면을 넓히지 않는다).
+  await expectRejected(url, 'ws:list-before-auth', { send: [{ type: 'list.subscribe' }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:bad-json', { send: ['not json'], code: 'bad_json', close: 4004 })
   await expectRejected(url, 'ws:protocol-mismatch', { send: [{ type: 'hello', protocol: 999, token: 'x' }], code: 'protocol_mismatch', close: 4002 })
   {
@@ -284,7 +286,70 @@ async function commandLifetime(url) {
   }
 }
 
-const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime }
+/** 목록 한 건의 요약 — 제목·미리보기 글은 찍지 않는다(G5). 수·상태 점 분포·셸 채널 수만. */
+function listSummary(message) {
+  const list = message.list ?? {}
+  const channels = (list.repos ?? []).flatMap((repo) => (repo.tasks ?? []).flatMap((task) => task.channels ?? []))
+  const dots = {}
+  for (const channel of channels) dots[channel.dot] = (dots[channel.dot] ?? 0) + 1
+  return {
+    seq: message.seq,
+    epoch: message.epoch,
+    available: list.available,
+    repos: (list.repos ?? []).length,
+    tasks: (list.repos ?? []).reduce((sum, repo) => sum + (repo.tasks ?? []).length, 0),
+    channels: channels.length,
+    closed: channels.filter((channel) => channel.status === 'closed').length,
+    waiting: (list.waiting ?? []).length,
+    shellKinds: channels.filter((channel) => channel.kind === 'shell').length,
+    dots,
+  }
+}
+
+/**
+ * 목록 구독(LIFE-580 L1ⓔ) — hello 뒤 `list.subscribe` → 전체 스냅샷, `--watch-ms` 동안 push 를 모은다. `--resubscribe` 면 중간에 다시 구독해 전체를 다시 받는지 본다.
+ * `--ndjson-out <파일>` 이면 받은 목록마다 한 줄(받은 시각·seq·서버 시각 `at`·`changedAt`·요약)을 쓴다 — 3초 측정(J5)의 원자료.
+ */
+async function commandList(url) {
+  if (typeof args['token-file'] !== 'string') usage('list 에는 --token-file 이 필요하다')
+  const token = readSecretFile(args['token-file'])
+  const watchMs = typeof args['watch-ms'] === 'string' ? Number(args['watch-ms']) : 3000
+  const out = typeof args['ndjson-out'] === 'string' ? args['ndjson-out'] : null
+  const received = []
+  const errors = []
+  let closeCode = null
+  await new Promise((resolve) => {
+    const ws = new WebSocket(url, { handshakeTimeout: 5000 })
+    const timer = setTimeout(() => { ws.terminate(); resolve() }, watchMs + 1000)
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL, token, client: { name: 'repro', version: '1' } })))
+    ws.on('message', (data) => {
+      const message = JSON.parse(data.toString())
+      if (message.type === 'hello' && message.ok === true) {
+        ws.send(JSON.stringify({ type: 'list.subscribe' }))
+        if (args.resubscribe === true) setTimeout(() => ws.send(JSON.stringify({ type: 'list.subscribe' })), Math.min(1000, watchMs / 2))
+        return
+      }
+      if (message.type === 'list') {
+        const row = { recvAt: Date.now(), seq: message.seq, epoch: message.epoch, at: message.at, changedAt: message.changedAt, summary: listSummary(message) }
+        received.push(row)
+        if (out !== null) fs.appendFileSync(out, JSON.stringify(row) + '\n')
+        return
+      }
+      if (message.type === 'error') errors.push(message.code)
+    })
+    ws.on('close', (code) => { closeCode = code; clearTimeout(timer); resolve() })
+    ws.on('error', (error) => errors.push(String(error.message ?? error)))
+  })
+  const first = received[0]
+  record('list:snapshot', first !== undefined && typeof first.seq === 'number' && first.summary.available !== undefined, { type: 'list', seq: 'number', list: 'available 칸' }, { first: first?.summary ?? null, errors, closeCode })
+  const seqs = received.map((row) => row.seq)
+  const monotonic = seqs.every((seq, index) => index === 0 || seq >= seqs[index - 1])
+  record('list:seq-monotonic', received.length > 0 && monotonic, { seq: '단조 증가(같은 번호 = 재구독)' }, { seqs })
+  record('list:no-shell', received.every((row) => row.summary.shellKinds === 0), { shellKinds: 0 }, { shellKinds: received.map((row) => row.summary.shellKinds) })
+  if (args.resubscribe === true) record('list:resubscribe-full', received.length >= 2, { snapshots: '≥ 2 (구독 + 재구독)' }, { count: received.length })
+}
+
+const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime, list: commandList }
 
 const name = args._[0]
 const url = typeof args.url === 'string' ? args.url : null

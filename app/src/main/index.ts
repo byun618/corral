@@ -121,6 +121,8 @@ if (process.env.CORRAL_USER_DATA) app.setPath('userData', process.env.CORRAL_USE
 let stopRuntime: (() => Promise<void>) | null = null
 /** 설정 › Mobile (LIFE-577) — 기본 꺼짐. 종료 정리는 `stopRuntime` 체인에 합쳐 기존 `before-quit` 하나가 기다린다. */
 let mobile: MobileService | null = null
+/** 마지막으로 렌더러에 낸 상태 — 폰 목록이 같은 스냅샷을 읽는다(LIFE-580 F1). 아직 없으면 null. */
+let lastEmittedState: AppState | null = null
 /** 종료 때 serve 항목 제거에 주는 시간 — 넘기면 tailscale 자식을 죽이고 끝낸다(A6ⓕ 10초 안). 남은 항목은 다음 기동 reconcile 이 지운다. */
 const MOBILE_SHUTDOWN_DEADLINE_MS = 6_000
 /** 런타임 디스패처 (LIFE-478) — GUI 카드 메뉴가 CLI 와 같은 `worktree set`/`worktree rm` 을 이 손으로 돈다. */
@@ -458,6 +460,9 @@ function scheduleEmit(): void {
       ...link.store.ids(),
     })
     window?.webContents.send('corral:state', state)
+    // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
+    lastEmittedState = state
+    mobile?.listChanged()
   }, 0)
 }
 
@@ -1550,6 +1555,8 @@ app.whenReady().then(async () => {
     userData: app.getPath('userData'),
     appVersion: app.getVersion(),
     log,
+    // 대화방 목록(LIFE-580) — 렌더러에 낸 마지막 상태 + 사이드바 정렬 설정. 상태를 아직 못 냈으면 null(폰은 「아직 못 읽음」 으로 기다린다).
+    listSource: () => (lastEmittedState === null ? null : { state: lastEmittedState, prefs: uiPrefs?.get() ?? null }),
     onStatus: (status) => {
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:mobile', status)
     },
@@ -1623,6 +1630,8 @@ app.whenReady().then(async () => {
   )
   ipcMain.on('corral:setUiPrefs', (event, patch: Partial<UiPrefs>) => {
     if (fromOurWindow(event)) uiPrefs?.update(patch)
+    // 정렬 모드·수동 순서가 바뀌면 폰 목록 순서도 바뀐다(J4).
+    mobile?.listChanged()
   })
   // 사용자 설정 (LIFE-512 K1ⓑ). 첫 값은 **동기**로 준다 — 렌더러가 첫 셀 측정·첫 격자 요청부터 저장값을 써야
   // 시작 시 「기본값 셀로 한 번 → 저장값 셀로 또 한 번」 의 2단 resize 가 생기지 않는다(K2ⓔ). 렌더러는 이것을 부팅 때 한 번만 부른다.

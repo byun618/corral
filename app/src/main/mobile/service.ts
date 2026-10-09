@@ -11,6 +11,8 @@ import path from 'node:path'
 import QRCode from 'qrcode'
 import type { MobilePairingResult, MobileStatus } from '../../shared/mobile.js'
 import { ServeExposure } from './exposure.js'
+import { ListFeed } from './feed.js'
+import type { ListInput } from './list.js'
 import { fallbackMacName, readMacName } from './mac-name.js'
 import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
@@ -33,6 +35,8 @@ export type MobileServiceDeps = {
   authTimeoutMs?: number
   /** 맥 이름 출처 — 없으면 `mac-name.ts` 의 scutil → hostname → 「Mac」. */
   readMacName?: () => Promise<string>
+  /** 대화방 목록 재료(LIFE-580) — 구독자가 있을 때만 부른다. 없으면 목록 구독을 받지 않는다(`unknown_type`). */
+  listSource?: () => ListInput | null
 }
 
 export class MobileService {
@@ -40,6 +44,7 @@ export class MobileService {
   private readonly pairing: PairingStore
   private readonly server: MobileServer
   private readonly exposure: ServeExposure
+  private readonly feed: ListFeed | null
   private enabled = false
   private chain: Promise<void> = Promise.resolve()
   private exposureDone: Promise<void> = Promise.resolve()
@@ -54,6 +59,8 @@ export class MobileService {
     this.pairing = new PairingStore({ dir, now: deps.now })
     this.pairing.load()
     const onChange = (): void => this.push()
+    const listSource = deps.listSource
+    this.feed = listSource === undefined ? null : new ListFeed({ read: listSource, log: deps.log })
     this.server = new MobileServer({
       pairing: this.pairing,
       appVersion: deps.appVersion,
@@ -61,6 +68,7 @@ export class MobileService {
       log: deps.log,
       onChange,
       authTimeoutMs: deps.authTimeoutMs,
+      list: this.feed ?? undefined,
       accepting: () => this.exposure.exposure().kind === 'exposed',
       allowedOrigin: () => {
         const exposure = this.exposure.exposure()
@@ -150,6 +158,11 @@ export class MobileService {
     return removed
   }
 
+  /** main 상태(또는 정렬 설정)가 바뀌었다 — 목록 구독자가 없으면 아무 일도 안 한다(LIFE-580 K9). */
+  listChanged(): void {
+    this.feed?.changed()
+  }
+
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckNow(): Promise<void> {
     return this.exposure.probe()
@@ -170,6 +183,7 @@ export class MobileService {
     if (timer !== null) clearTimeout(timer)
     const remaining = Math.max(0, deadlineMs - (Date.now() - started))
     await Promise.all([this.exposure.shutdown(remaining), this.server.stop()])
+    this.feed?.stop()
   }
 
   /** 시험·계측용 — 지금 소유권 기록. */

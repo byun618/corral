@@ -12,7 +12,7 @@ server.on('connection', (ws, request) => {
   log({ event: 'conn', origin: request.headers.origin ?? null })
   ws.on('message', (data) => {
     let type = null
-    try { type = JSON.parse(String(data)).type ?? null } catch {}
+    try { type = JSON.parse(String(data)).type ?? null } catch { /* JSON 아님 — type null */ }
     log({ event: 'message', type })
     const reply = mode === 'protocol_mismatch'
       ? { type: 'error', code: 'protocol_mismatch', message: 'fixture', supported: [2] }

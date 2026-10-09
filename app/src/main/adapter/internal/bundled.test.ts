@@ -44,7 +44,7 @@ describe('bundledServerEnv (B2 — XDG 주입 없음, HERDR_* 전부 뺌)', () =
     HERDR_CONFIG_PATH: '/h/.config/herdr/config.toml', HERDR_LOG: 'debug', HERDR_SOCKET_PATH: '/h/.config/herdr/herdr.sock', CORRAL_SESSION: 's',
   }
   it('설정·로그 변수까지 HERDR_* 는 하나도 넘기지 않고, XDG 는 앱 env 그대로 둔다', () => {
-    expect(bundledServerEnv(input)).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', XDG_STATE_HOME: '/s', LANG: 'ko' })
+    expect(bundledServerEnv(input)).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', XDG_STATE_HOME: '/s', LANG: 'ko', FORCE_HYPERLINK: '1' })
   })
   it('XDG 가 없으면 만들지 않는다', () => {
     const env = bundledServerEnv({ PATH: '/usr/bin', HOME: '/h' })
@@ -52,6 +52,27 @@ describe('bundledServerEnv (B2 — XDG 주입 없음, HERDR_* 전부 뺌)', () =
   })
   it('개발 실행의 serverEnv 는 종전대로 설정 변수를 남긴다', () => {
     expect(serverEnv(input)).toMatchObject({ HERDR_CONFIG_PATH: '/h/.config/herdr/config.toml', HERDR_LOG: 'debug' })
+  })
+})
+
+describe('LIFE-565 C6ⓗ — 서버 기동 env 에 FORCE_HYPERLINK=1 (worktree.open·create 첫 pane 용)', () => {
+  it('serverEnv·bundledServerEnv 둘 다 싣는다 — 입력에 없어도', () => {
+    expect(serverEnv({ PATH: '/usr/bin' })['FORCE_HYPERLINK']).toBe('1')
+    expect(bundledServerEnv({ PATH: '/usr/bin' })['FORCE_HYPERLINK']).toBe('1')
+  })
+  it('사용자 env 의 같은 키는 덮어쓴다 — pane 단위 env 가 늘 1 을 싣으므로 서버 쪽만 존중하면 값이 갈린다', () => {
+    expect(serverEnv({ PATH: '/usr/bin', FORCE_HYPERLINK: '0' })['FORCE_HYPERLINK']).toBe('1')
+    expect(bundledServerEnv({ PATH: '/usr/bin', FORCE_HYPERLINK: '0' })['FORCE_HYPERLINK']).toBe('1')
+  })
+  it('다른 키는 더하지 않는다 — 빈 입력의 출력은 그 키 하나', () => {
+    expect(serverEnv({})).toEqual({ FORCE_HYPERLINK: '1' })
+    expect(bundledServerEnv({})).toEqual({ FORCE_HYPERLINK: '1' })
+  })
+  it('입력 env 객체를 바꾸지 않는다 — corral 앱 env(process.env)로 새지 않게', () => {
+    const input: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
+    serverEnv(input)
+    bundledServerEnv(input)
+    expect(input).toEqual({ PATH: '/usr/bin' })
   })
 })
 

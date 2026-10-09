@@ -2,9 +2,10 @@
 import fs from 'node:fs'
 import { rpc } from '../gui-diff/lib/corral.mjs'
 
-export const ROOT = '/tmp/l565n'
+// C6 최종 관문은 L565_ROOT=/tmp/l565c6 로 같은 드라이버를 쓴다(코디의 /tmp/l565n 무접촉).
+export const ROOT = process.env.L565_ROOT ?? '/tmp/l565n'
 export const SOCK = `${ROOT}/ctl.sock`
-export const PORT = fs.readFileSync(`${ROOT}/http.port`, 'utf8').trim()
+export const PORT = fs.existsSync(`${ROOT}/http.port`) ? fs.readFileSync(`${ROOT}/http.port`, 'utf8').trim() : ''
 export const CDP = fs.readFileSync(`${ROOT}/cdp.port`, 'utf8').trim()
 export const control = (request, timeout = 20_000) => rpc(SOCK, request, timeout)
 export const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

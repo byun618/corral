@@ -2,9 +2,10 @@
 # LIFE-565 최종 관문 — OS 수준 ⌘+클릭 1회(cliclick). 사용자의 실제 마우스를 움직이므로 조건이 다 맞을 때만:
 #   ① LIFE-566 개발 GUI 없음 ② HID 유휴 ≥ 20초(사용자가 안 쓰는 중) ③ 앞 창 = 이 회차 개발 앱(PID·소유자 확인)
 #   ④ 좌표가 그 창 bounds 안. 하나라도 어긋나면 누르지 않고 그 사유로 끝낸다(공백 → 보류).
-# 최대 $1 초(기본 100) 동안 ②를 기다린다. app/ 에서: sh scripts/l565/os-click.sh [대기초]
+# 최대 $1 초(기본 100) 동안 ②를 기다린다. app/ 에서: sh scripts/l565/os-click.sh [대기초] [대상 글자열] [몇 번째(0 기반)]
+# C6 은 L565_ROOT=/tmp/l565c6 로 부른다.
 set -u
-WAIT=${1:-100}; N="$HOME/.nvm/versions/node/v24.14.1/bin/node"; ROOT=/tmp/l565n
+WAIT=${1:-100}; TARGET=${2:-l565-os-cliclick}; NTH=${3:-0}; N="$HOME/.nvm/versions/node/v24.14.1/bin/node"; ROOT=${L565_ROOT:-/tmp/l565n}
 idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {printf "%d", $NF/1000000000; exit}'; }
 g566() { ps -axo pid=,command= | grep -E 'LIFE-566.*Electron.app/Contents/MacOS/Electron ' | grep -v -- '--type=' | grep -v grep; }
 APID=$(pgrep -f -- "--user-data-dir=$ROOT/ud" | head -1)
@@ -26,7 +27,7 @@ echo "front_pid=$FRONT front_name=$FNAME"
 # 좌표: 대상 셀의 화면 좌표(창 screenX/Y + 제목줄 높이 + 셀 client 좌표) 와 창 bounds
 GEO=$("$N" -e "
 import('./scripts/l565/lib.mjs').then(async l=>{
-  const t=await l.termRead(); const at=l.locate(t,'l565-os-cliclick'); if(!at){console.log('none');return}
+  const t=await l.termRead(); const at=l.locate(t,'$TARGET',$NTH); if(!at){console.log('none');return}
   const g=await l.evalJs('(() => { const s=document.querySelector(\".term-host .xterm-screen\").getBoundingClientRect(); return { sx: window.screenX, sy: window.screenY, ow: window.outerWidth, oh: window.outerHeight, ih: window.innerHeight, iw: window.innerWidth, left: s.left, top: s.top, w: s.width, h: s.height, zoom: window.devicePixelRatio } })()')
   const cw=g.w/t.cols, ch=g.h/t.rows, bar=g.oh-g.ih
   const x=Math.round(g.sx + g.left + (at.col+3+0.5)*cw), y=Math.round(g.sy + bar + g.top + (at.row+0.5)*ch)

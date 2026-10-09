@@ -1,8 +1,8 @@
 // 한 회차: 화면에서 글자열을 찾아 (⌘ 여부) 클릭하고 전후 관측을 한 행(NDJSON)으로 남긴다.
 // 사용: node click.mjs <회차 id> <찾을 글자열> <meta:true|false> [nth=0] [열 오프셋=0] [기록 파일]
 import fs from 'node:fs'
-import { termRead, locate, clickCell, openLog, httpLog, cdpTargets, counters, installCounters, pause } from './lib.mjs'
-const [id, text, metaArg, nthArg = '0', offArg = '0', out = '/tmp/l565n/clicks.ndjson'] = process.argv.slice(2)
+import { ROOT, termRead, locate, clickCell, openLog, httpLog, cdpTargets, counters, installCounters, pause } from './lib.mjs'
+const [id, text, metaArg, nthArg = '0', offArg = '0', out = `${ROOT}/clicks.ndjson`] = process.argv.slice(2)
 const meta = metaArg === 'true'
 await installCounters()
 const term = await termRead()

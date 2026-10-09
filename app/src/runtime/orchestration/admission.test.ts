@@ -25,6 +25,7 @@ import { TerminalBackend, type TerminalIdentity } from '../../main/adapter/index
 import { PROMPT_LEAD, bodyIdentity, sameBody } from '../terminal/agent.js'
 import { isRecord } from '../../shared/json.js'
 import type { MessageRecord } from './messages.js'
+import type { TerminalDesktop } from '../terminal/index.js'
 
 
 interface MockTerminal {
@@ -59,7 +60,9 @@ vi.mock('../terminal/index.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../terminal/index.js')>()
   return {
     ...actual,
-    terminalModule: (userData: string) => {
+    // LIFE-569 r2 L1: the desktop the orchestration hands over is used where the real module uses it —
+    // `terminal create` awaits `desktop?.changed()` before the agent stage (`terminal/index.ts`).
+    terminalModule: (userData: string, desktop?: { changed(): Promise<void> }) => {
       // The real module wraps every mutating command in this, and the wrapper is load-bearing here:
       // it is what a resumed run reads instead of submitting again (V35), and it is what re-packs a
       // refusal so the duplicate count moves under `detail` (V37).
@@ -107,6 +110,7 @@ vi.mock('../terminal/index.js', async importOriginal => {
         specs: [], validate: () => {}, execute: async (inv: { command: string; flags: Record<string, string | boolean>; stdin?: string }) => {
           mock.calls.push(inv)
           const terminal = { handle: 't1.review', epoch: 'epoch', ptyId: 'pty', paneId: 'pane' }
+          if (inv.command === 'terminal create') await desktop?.changed()
           if (inv.command === 'terminal create') return { terminal, agent: { kind: 'claude' }, stages: { agent: { status: 'completed', retries: mock.agentRetries } } }
           if (inv.command === 'terminal show') return { terminal, agent: { kind: 'claude' } }
           if (inv.command === 'terminal wait') return { satisfied: mock.waitSatisfied, agent: { phase: 'launching' } }
@@ -727,4 +731,42 @@ describe('LIFE-430 — a rejected mutation leaves the document byte-identical, e
     expect(attempt?.reconcile).toBeNull()
     expect(after).toBe(before)
   }, 60000)
+})
+
+describe('LIFE-569 r2 L1 — worker-start does not wait on the GUI tree rebuild after its create', () => {
+  /** The desktop the server hands over, with a `changed()` that never settles or that throws. */
+  const desktopWith = (changed: () => Promise<void>) => {
+    const seen = { changed: 0 }
+    const desktop: TerminalDesktop = { available: () => true, reveal: async () => {}, changed: async () => { seen.changed++; await changed() } }
+    return { desktop, seen }
+  }
+  const startWith = async (f: Harness, desktop: TerminalDesktop): Promise<Record<string, unknown> | 'blocked'> => {
+    const mod = orchestrationModule(f.dir, { terminalDesktop: desktop })
+    const started = mod.execute({ command: 'orchestration worker-start', args: [], cwd: f.dir,
+      flags: { task: f.task, agent: 'claude', worktree: f.dir, 'request-id': `r1.${Date.now()}.${randomUUID()}` } }, f.ctx())
+    const outcome = await Promise.race([started, new Promise<'blocked'>(resolve => { setTimeout(() => resolve('blocked'), 2000) })])
+    return outcome === 'blocked' ? outcome : asRecord(outcome)
+  }
+  it('a changed() that never settles leaves the start ready, with its one confirmed match', async () => {
+    const f = await setup()
+    mock.mode = 'completed'
+    const { desktop, seen } = desktopWith(() => new Promise<void>(() => {}))
+    const started = await startWith(f, desktop)
+    expect(started).not.toBe('blocked')
+    if (started === 'blocked') return
+    expect(started.state).toBe('ready')
+    expect(asRecord(asRecord(started.input).record).matchCount).toBe(1)
+    expect(seen.changed).toBe(1)
+  })
+  it('a changed() that throws does not turn the start into a terminal-stage failure', async () => {
+    const f = await setup()
+    mock.mode = 'completed'
+    const { desktop, seen } = desktopWith(async () => { throw new Error('tree rebuild failed') })
+    const started = await startWith(f, desktop)
+    expect(started).not.toBe('blocked')
+    if (started === 'blocked') return
+    expect(started.state).toBe('ready')
+    expect(asRecord(asRecord(started.input).record).matchCount).toBe(1)
+    await vi.waitFor(() => { expect(seen.changed).toBe(1) })
+  })
 })

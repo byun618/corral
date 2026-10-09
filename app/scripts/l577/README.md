@@ -6,6 +6,8 @@
 | --- | --- |
 | `repro.mjs` | Node WS 클라이언트 — pair → hello → ping, 거절 행렬(A3ⓑ). 출력은 NDJSON, 토큰·코드는 `<redacted>` |
 | `fake-tailscale.mjs` | 가짜 tailscale CLI(E4) — 격리 회차·시험이 실제 serve 설정을 건드리지 않게 CLI 자리에 꽂는다 |
+| `g-up.sh` · `g-down.sh` · `g-lib.mjs` · `g-run.mjs` | 최종 관문 격리 회차(A1~A9) — 개발 Electron 을 `/tmp/l577g-*` 에 띄우고 제어 소켓 DOM 합성으로 돌린다. `node scripts/l577/g-run.mjs <단계> <ROOT> <FAKE> [OUT]` |
+| `native-a10.mjs` · `native-a10.md` | A10 네이티브 회차 걸음별 판정(읽기 전용 tailscale) + 체크리스트·멈춤·원복 |
 
 ## 사용법
 

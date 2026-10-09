@@ -29,6 +29,7 @@ import { useSettings } from './settings-store.js'
 import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
+import { terminalKeyHandler } from './terminal-keys.js'
 import {
   CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
   clipboardImagePayload,
@@ -211,6 +212,8 @@ export function TerminalPane({
     termRef.current = term
     // 한글 IME 조합 표시층(LIFE-566) — 조합 상자를 그려진 커서 칸에 맞추고 뒤에 caret 을 그린다.
     const detachIme = attachImeComposition({ term })
+    // Shift+Enter → CSI-u (LIFE-571). `term.input` 은 onData 로 나가 아래 입력 경로(진단 링·termInput)를 그대로 탄다.
+    term.attachCustomKeyEventHandler(terminalKeyHandler((data) => term.input(data)))
 
     // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------
     let pending: TerminalFrame | null = null

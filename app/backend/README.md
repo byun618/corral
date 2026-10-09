@@ -2,7 +2,7 @@
 
 LIFE-393 CLI는 명시적으로 연결한 corral terminal backend를 쓴다. 설치 herdr 0.9.0에는 이 가드/출력 계약이 없으므로 `unsupported_backend`로 거절하며, 설치본을 교체하거나 가드 없는 제어로 fallback하지 않는다. 기존 GUI 경로는 그대로 설치 backend에도 연결할 수 있다.
 
-`source.json`의 upstream v0.9.0 commit/archive와 **네 patch**가 빌드 입력이다(네 번째 bundle patch 는 LIFE-556 — 아래 「설치본 동봉 release 빌드」). stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 LIFE-393 구현이고 LIFE-394가 agent 갈래를 얹었다. detect patch는 LIFE-394가 추가했다. 적용 순서는 stream → guard → detect → bundle로 고정이며 `patch_digest`가 네 파일을 모두 덮으므로 patch가 바뀌면 새 build root가 필요하다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
+`source.json`의 upstream v0.9.0 commit/archive와 **다섯 patch**가 빌드 입력이다(네 번째 bundle patch 는 LIFE-556 — 아래 「설치본 동봉 release 빌드」, 다섯 번째 shift-enter patch 는 LIFE-571). stream patch는 과거 후보 `ca85c70`에서 필요한 PTY 출력 링 부분만 추출했다. guard patch는 LIFE-393 구현이고 LIFE-394가 agent 갈래를 얹었다. detect patch는 LIFE-394가 추가했다. shift-enter patch는 레거시 pane(kitty 플래그 0·modifyOtherKeys 0)의 Shift+Enter 를 Ghostty 인코더의 `CSI 27;2;13~` 대신 `\r` 로 보낸다 — 렌더러가 Shift+Enter 를 CSI-u 로 보내도 셸 pane 은 지금처럼 Enter 로 받는다(LIFE-571). 적용 순서는 stream → guard → detect → bundle → shift-enter로 고정이며 `patch_digest`가 다섯 파일을 모두 덮으므로 patch가 바뀌면 새 build root가 필요하다. 관리 범위는 macOS arm64, Rust 1.96.1, Zig 0.15.2, 로컬 SDK 15.4다. 다른 OS/아키텍처 지원을 주장하지 않는다.
 
 ```sh
 # Node >=22.12.0. 설치 도구나 PATH의 herdr를 덮어쓰지 않는다.
@@ -40,7 +40,7 @@ npm --prefix app run herdr:guard    # 레포 루트(어느 worktree 든)에서. 
 
 - **고정 자리**: `<git-common-dir>/corral-herdr-dev/` — 본체 `.git` 안이라 `git status` 에 나타나지 않고, 본체와 모든 worktree 가 같은 자리를 본다.
   - `toolchain/` — rustup·cargo·zig·상류 archive. 칸끼리 한 번만 받는다(첫 빌드 실측 약 1.6GB).
-  - `<패치 digest 16자>/` — build root 한 칸(실측 약 1.4GB). 칸 이름은 `build-terminal-backend.sh` 의 `patch_digest`(네 patch 를 순서대로 이은 sha256) 앞 16자다.
+  - `<패치 digest 16자>/` — build root 한 칸(실측 약 1.4GB). 칸 이름은 `build-terminal-backend.sh` 의 `patch_digest`(다섯 patch 를 순서대로 이은 sha256) 앞 16자다.
     바이너리는 `<칸>/herdr-0.9.0/target/debug/herdr`, 영수증은 그 옆 `herdr.json`.
 - **재실행**: 그 칸의 영수증이 지금 체크아웃과 맞으면 빌드하지 않고 `up to date` 로 끝난다.
 - **패치가 바뀌면** 같은 명령이 새 칸에 새로 빌드한다(툴체인은 다시 받지 않는다) — `use a fresh CORRAL_BACKEND_BUILD_ROOT` 로 멈추지 않는다.
@@ -81,7 +81,8 @@ npm --prefix app run package:mac                                          # scri
 - **같은 스크립트·같은 패치**다. `CORRAL_BACKEND_PROFILE` 기본값은 `debug` 라 종전 명령은 그대로 debug 를 만든다. release 는 `cargo build --release` 에
   `--remap-path-prefix=<build root>=/corral-herdr-build` 를 붙여 build root 경로(`/tmp`·`CARGO_HOME`)가 바이너리에 박히지 않게 한다.
   영수증에 `profile`·`buildSeconds`·`binaryBytes` 가 더 실린다(실측: release 44~82초·약 20MB, debug 약 68MB).
-- **`herdr-bundle.patch`** (stream → guard → detect → bundle 순서). 넷 다 release 에서만 바뀌고 debug 동작은 그대로다:
+- **`herdr-bundle.patch`** (stream → guard → detect → bundle → shift-enter 순서의 넷째). 이 패치가 바꾸는 아래 네 가지는 release 에서만 바뀌고 debug 동작은 그대로다.
+  다섯째 `herdr-shift-enter.patch`(LIFE-571, 레거시 pane Shift+Enter → `\r`)는 프로필과 무관하게 **debug·release 둘 다** 바꾼다 — 위 첫 절:
   - 앱 폴더 이름 `app_dir_name()` — release `corral-herdr` (stock `herdr`), debug `herdr-dev` 유지. 설정 `~/.config/corral-herdr`(`XDG_CONFIG_HOME`
     아래) · 상태 `~/.local/state/corral-herdr` · 세션·소켓(`herdr.sock`·`herdr-client.sock`)이 전부 이 이름을 따른다. 그래서 따로 설치한 herdr
     (`~/.config/herdr`)와 소켓·세션·config 를 나누지 않는다. `XDG_*` 를 서버 env 로 주는 방식은 pane 셸이 물려받으므로 쓰지 않는다.

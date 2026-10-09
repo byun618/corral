@@ -8,11 +8,12 @@ import { useRouter } from 'expo-router'
 import { useState } from 'react'
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { statusLine } from '../src/core/band'
-import { buildListView, clockLabel, failureText } from '../src/core/list-view'
+import { buildListView, failureText } from '../src/core/list-view'
 import { connection, useConnection } from '../src/runtime/connection'
 import { collapse, listStore, useCollapseVersion, useList } from '../src/runtime/list'
 import { ChannelRow, GhostRow, RepoDivider, TaskHeader, WaitingHeader } from '../src/ui/ChannelList'
 import { ConnectionBand, useNow } from '../src/ui/ConnectionBand'
+import { StaleBand } from '../src/ui/StaleBand'
 import { Screen } from '../src/ui/Screen'
 import { color, font } from '../src/ui/tokens'
 import { VersionMismatch } from '../src/ui/VersionMismatch'
@@ -49,14 +50,7 @@ function ChannelListBody() {
   }
   const message = phase.message
   // 받은 목록이 있는데 그 뒤 실패 — 오래된 값임을 기준 시각과 함께 알린다.
-  const failed = failure === null ? null : failureText(failure)
-  const stale =
-    failed === null ? null : (
-      <View style={{ paddingHorizontal: 18, paddingVertical: 10, gap: 2, borderBottomWidth: 1, borderBottomColor: color.line }}>
-        <Text style={{ fontSize: 13, fontFamily: font.medium, color: color.fg }}>{`목록이 최신이 아닙니다 · ${clockLabel(phase.receivedAt)} 기준`}</Text>
-        <Text style={{ fontSize: 12.5, lineHeight: 18, fontFamily: font.regular, color: color.fgMuted }}>{`${failed.title} — ${failed.body}`}</Text>
-      </View>
-    )
+  const stale = failure === null ? null : <StaleBand failure={failure} receivedAt={phase.receivedAt} />
   if (!message.list.available) {
     return (
       <View className="flex-1">

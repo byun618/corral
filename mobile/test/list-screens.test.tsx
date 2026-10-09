@@ -168,3 +168,43 @@ describe('R1-A4 목록 실패를 「받는 중」·「세션 0」 으로 그리�
     expect(home).not.toContain('목록이 최신이 아닙니다')
   })
 })
+
+describe('R2-A2 대화 자리 화면도 목록 실패를 안다 — Home 과 같은 상태를 동시에', () => {
+  const failures: ListFailure[] = [
+    { reason: 'invalid', at: 2, incompatible: true },
+    { reason: 'rejected', at: 2, incompatible: true },
+    { reason: 'timeout', at: 2, incompatible: false },
+  ]
+  for (const failure of failures) {
+    it(`${failure.reason} — Home·Channel 모두 「오래된 값」 띠(기준 시각) · Channel 상태 「확인 불가」 · 읽음 장부 그대로`, async () => {
+      ctx.conn = connected
+      ctx.list = ready(withChannel, failure)
+      const home = await render(<Home />)
+      expect(home).toContain('목록이 최신이 아닙니다 · 04:05 기준')
+      const channel = await render(<Channel />)
+      expect(channel).toContain('목록이 최신이 아닙니다 · 04:05 기준')
+      expect(channel).toContain('확인 불가')
+      expect(channel).not.toContain('한가')
+      if (failure.incompatible) expect(channel).toContain('업데이트')
+      expect(ctx.markRead).not.toHaveBeenCalled()
+    })
+  }
+
+  it('받은 목록 없이 실패 — Channel 은 「목록에 없음」 대신 실패 안내', async () => {
+    ctx.conn = connected
+    ctx.list = { phase: { kind: 'waiting' }, flashUntil: {}, ledgerVersion: 0, failure: { reason: 'invalid', at: 1, incompatible: true } }
+    const channel = await render(<Channel />)
+    expect(channel).toContain('목록 형식이 맞지 않습니다')
+    expect(channel).not.toContain('이 세션은 지금 목록에 없습니다')
+  })
+
+  it('양성 대조 — 실패가 지워지면(정상 목록) 띠 없음 · 실제 상태 · 열면 읽음', async () => {
+    ctx.conn = connected
+    ctx.list = ready(withChannel)
+    const channel = await render(<Channel />)
+    expect(channel).not.toContain('목록이 최신이 아닙니다')
+    expect(channel).toContain('한가')
+    expect(channel).not.toContain('확인 불가')
+    expect(ctx.markRead).toHaveBeenCalledTimes(1)
+  })
+})

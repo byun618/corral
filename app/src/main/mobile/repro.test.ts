@@ -42,7 +42,7 @@ async function setup(): Promise<{ url: string; store: PairingStore; server: Mobi
   let now = Date.now()
   const store = new PairingStore({ dir: path.join(dir, 'mobile'), now: () => now })
   store.load()
-  const server = new MobileServer({ pairing: store, appVersion: '0.1.2-test', log: () => {}, onChange: () => {}, authTimeoutMs: 300 })
+  const server = new MobileServer({ pairing: store, appVersion: '0.1.2-test', macName: () => 'test-mac', log: () => {}, onChange: () => {}, authTimeoutMs: 300 })
   const port = await server.start()
   cleanups.push(() => server.stop())
   return { url: `ws://127.0.0.1:${port}/ws`, store, server, dir, advance: (ms) => { now += ms } }
@@ -96,9 +96,16 @@ describe('repro 스크립트 (A9)', () => {
     expect(steps).toEqual(expect.arrayContaining([
       'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:bad-json',
       'ws:protocol-mismatch', 'ws:too-large', 'ws:revoked-token', 'ws:used-code', 'ws:expired-code',
-      'ws:wrong-code-5', 'ws:right-code-after-5-wrong', 'ws:auth-timeout', 'positive:hello', 'positive:ping',
+      'ws:unknown-code', 'ws:wrong-code-5', 'ws:right-code-after-5-wrong', 'ws:auth-timeout', 'positive:hello', 'positive:ping',
     ]))
     const stdout = first.stdout + second.stdout
+    // R5 A4ⓖ — 세 실패 코드가 각자의 줄에서 기대값으로 판별됐다. A5ⓓ — hello 줄에 맥 이름이 찍힌다.
+    const expectOf = (step: string): unknown => [...first.rows, ...second.rows].find((row) => row.step === step)?.expect
+    expect(expectOf('ws:used-code')).toMatchObject({ error: 'code_used' })
+    expect(expectOf('ws:expired-code')).toMatchObject({ error: 'code_expired' })
+    expect(expectOf('ws:unknown-code')).toMatchObject({ error: 'code_invalid' })
+    expect(expectOf('ws:right-code-after-5-wrong')).toMatchObject({ error: 'code_invalid' })
+    expect(stdout).toContain('"macName":"test-mac"')
     for (const secret of [good.code, expired.code, fresh.code, fs.readFileSync(tokenFile, 'utf8').trim(), fs.readFileSync(doomedFile, 'utf8').trim()]) {
       expect(stdout).not.toContain(secret)
     }

@@ -106,8 +106,10 @@ async function expectRejected(url, step, { send, code, close }) {
 async function helloPing(url, token, label) {
   const got = await session(url, { send: [{ type: 'hello', protocol: PROTOCOL, token, client: { name: 'repro', version: '1' } }, { type: 'ping', id: 'r1' }], closeAfter: 2 })
   const [hello, pong] = got.messages
-  record(`${label}:hello`, hello?.type === 'hello' && hello?.ok === true && hello?.protocol === PROTOCOL && typeof hello?.server?.version === 'string',
-    { type: 'hello', ok: true, protocol: PROTOCOL, server: { version: 'string' } }, { hello, error: got.error })
+  // R5 A5ⓓ — 인증 뒤 hello 에 맥 이름(표시용)이 있어야 한다. 줄에 그대로 찍는다(사람이 맞는 맥인지 본다).
+  const macName = hello?.server?.macName
+  record(`${label}:hello`, hello?.type === 'hello' && hello?.ok === true && hello?.protocol === PROTOCOL && typeof hello?.server?.version === 'string' && typeof macName === 'string' && macName.length > 0,
+    { type: 'hello', ok: true, protocol: PROTOCOL, server: { version: 'string', macName: 'string(비어 있지 않음)' } }, { hello, macName, error: got.error })
   record(`${label}:ping`, pong?.type === 'pong' && pong?.id === 'r1', { type: 'pong', id: 'r1' }, { pong })
 }
 
@@ -116,8 +118,8 @@ async function commandPair(url) {
   if (code === null) usage('pair 에는 --code 가 필요하다')
   const got = await session(url, { send: [{ type: 'pair', protocol: PROTOCOL, code, name: typeof args.name === 'string' ? args.name : 'repro' }], closeAfter: 1 })
   const paired = got.messages[0]
-  const ok = paired?.type === 'paired' && typeof paired?.token === 'string' && paired?.protocol === PROTOCOL
-  record('pair', ok, { type: 'paired', token: 'string', protocol: PROTOCOL }, { paired, error: got.error })
+  const ok = paired?.type === 'paired' && typeof paired?.token === 'string' && paired?.protocol === PROTOCOL && typeof paired?.server?.macName === 'string'
+  record('pair', ok, { type: 'paired', token: 'string', protocol: PROTOCOL, server: { macName: 'string' } }, { paired, error: got.error })
   if (!ok) return
   if (typeof args['token-out'] === 'string') fs.writeFileSync(args['token-out'], paired.token + '\n', { mode: 0o600 })
   await helloPing(url, paired.token, 'after-pair')
@@ -151,20 +153,22 @@ async function commandMatrix(url) {
     const got = await session(url, { send: ['x'.repeat(MAX_MESSAGE_BYTES + 1)] })
     record('ws:too-large', got.closeCode === 1009, { close: 1009 }, { closeCode: got.closeCode })
   }
-  // ③ 준비물이 있는 거절(옵션)
+  // 모르는 코드 → code_invalid (R5 A4ⓖ). 활성 코드가 있으면 그 실패 1회로 센다 — README 「코드 실패 횟수」.
+  await expectRejected(url, 'ws:unknown-code', { send: [{ type: 'pair', protocol: PROTOCOL, code: 'ABCDEFGH', name: 'r' }], code: 'code_invalid', close: 4005 })
+  // ③ 준비물이 있는 거절(옵션) — 세 실패 코드를 각각 기대값으로 가른다(R5 A4ⓖ).
   if (typeof args['revoked-token-file'] === 'string') {
     await expectRejected(url, 'ws:revoked-token', { send: [{ type: 'hello', protocol: PROTOCOL, token: readSecretFile(args['revoked-token-file']) }], code: 'unauthorized', close: 4001 })
   }
   const used = secretArg('used-code')
-  if (used !== null) await expectRejected(url, 'ws:used-code', { send: [{ type: 'pair', protocol: PROTOCOL, code: used, name: 'r' }], code: 'pair_rejected', close: 4005 })
+  if (used !== null) await expectRejected(url, 'ws:used-code', { send: [{ type: 'pair', protocol: PROTOCOL, code: used, name: 'r' }], code: 'code_used', close: 4005 })
   const expired = secretArg('expired-code')
-  if (expired !== null) await expectRejected(url, 'ws:expired-code', { send: [{ type: 'pair', protocol: PROTOCOL, code: expired, name: 'r' }], code: 'pair_rejected', close: 4005 })
+  if (expired !== null) await expectRejected(url, 'ws:expired-code', { send: [{ type: 'pair', protocol: PROTOCOL, code: expired, name: 'r' }], code: 'code_expired', close: 4005 })
   const fresh = secretArg('fresh-code')
   if (fresh !== null) {
     for (let i = 1; i <= 5; i += 1) {
-      await expectRejected(url, `ws:wrong-code-${i}`, { send: [{ type: 'pair', protocol: PROTOCOL, code: 'AAAAAAAA', name: 'r' }], code: 'pair_rejected', close: 4005 })
+      await expectRejected(url, `ws:wrong-code-${i}`, { send: [{ type: 'pair', protocol: PROTOCOL, code: 'AAAAAAAA', name: 'r' }], code: 'code_invalid', close: 4005 })
     }
-    await expectRejected(url, 'ws:right-code-after-5-wrong', { send: [{ type: 'pair', protocol: PROTOCOL, code: fresh, name: 'r' }], code: 'pair_rejected', close: 4005 })
+    await expectRejected(url, 'ws:right-code-after-5-wrong', { send: [{ type: 'pair', protocol: PROTOCOL, code: fresh, name: 'r' }], code: 'code_invalid', close: 4005 })
   }
   if (args['auth-timeout'] === true) {
     const got = await session(url, { waitMs: 15_000 })

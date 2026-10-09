@@ -26,6 +26,7 @@ async function setup(input: { now?: () => number; authTimeoutMs?: number } = {})
   const server = new MobileServer({
     pairing: store,
     appVersion: '9.9.9-test',
+    macName: () => '시험 맥',
     log: (tag, fields = {}) => logs.push({ tag, fields }),
     onChange: () => {},
     authTimeoutMs: input.authTimeoutMs,
@@ -159,7 +160,7 @@ describe('인증 거절 행렬 (A3ⓑ) · 양성 대조', () => {
     const { token } = await pairDevice(port, store, '시험 폰')
     const client = await connect(port)
     client.ws.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL_VERSION, token }))
-    expect(await client.next()).toMatchObject({ type: 'hello', ok: true, protocol: PROTOCOL_VERSION, server: { app: 'corral', version: '9.9.9-test' }, device: { name: '시험 폰' } })
+    expect(await client.next()).toMatchObject({ type: 'hello', ok: true, protocol: PROTOCOL_VERSION, server: { app: 'corral', version: '9.9.9-test', macName: '시험 맥' }, device: { name: '시험 폰' } })
     client.ws.send(JSON.stringify({ type: 'ping', id: 7 }))
     expect(await client.next()).toMatchObject({ type: 'pong', id: 7 })
     client.ws.send(JSON.stringify({ type: 'state' }))
@@ -168,7 +169,7 @@ describe('인증 거절 행렬 (A3ⓑ) · 양성 대조', () => {
     expect(await client.next()).toMatchObject({ type: 'pong' })
   })
 
-  it('사용한 코드 · 만료 코드 · 5회 틀린 뒤 정답 → pair_rejected', async () => {
+  it('사용한 코드 → code_used · 만료 코드 → code_expired · 5회 틀린 뒤 정답 → code_invalid (A4ⓖ)', async () => {
     let now = 5_000_000
     const { port, store } = await setup({ now: () => now })
     // 사용한 코드
@@ -178,24 +179,24 @@ describe('인증 거절 행렬 (A3ⓑ) · 양성 대조', () => {
     expect(await first.next()).toMatchObject({ type: 'paired' })
     const reused = await connect(port)
     reused.ws.send(JSON.stringify({ type: 'pair', protocol: PROTOCOL_VERSION, code, name: 'b' }))
-    expect(await reused.next()).toMatchObject({ type: 'error', code: 'pair_rejected' })
+    expect(await reused.next()).toMatchObject({ type: 'error', code: 'code_used' })
     expect((await reused.closed).code).toBe(CLOSE.pairRejected)
     // 만료 코드
     const expiring = store.createCode()
     now += PAIRING_TTL_MS
     const late = await connect(port)
     late.ws.send(JSON.stringify({ type: 'pair', protocol: PROTOCOL_VERSION, code: expiring.code, name: 'c' }))
-    expect(await late.next()).toMatchObject({ type: 'error', code: 'pair_rejected' })
+    expect(await late.next()).toMatchObject({ type: 'error', code: 'code_expired' })
     // 5회 틀린 뒤 정답
     const guarded = store.createCode()
     for (let i = 0; i < 5; i += 1) {
       const wrong = await connect(port)
       wrong.ws.send(JSON.stringify({ type: 'pair', protocol: PROTOCOL_VERSION, code: 'AAAAAAAA', name: 'x' }))
-      expect(await wrong.next()).toMatchObject({ type: 'error', code: 'pair_rejected' })
+      expect(await wrong.next()).toMatchObject({ type: 'error', code: 'code_invalid' })
     }
     const right = await connect(port)
     right.ws.send(JSON.stringify({ type: 'pair', protocol: PROTOCOL_VERSION, code: guarded.code, name: 'x' }))
-    expect(await right.next()).toMatchObject({ type: 'error', code: 'pair_rejected' })
+    expect(await right.next()).toMatchObject({ type: 'error', code: 'code_invalid' })
   })
 
   it('해지: 그 기기의 열린 WS 가 1초 안에 닫히고 새 연결 거절, 다른 기기는 유지 (A4ⓔ)', async () => {

@@ -48,14 +48,14 @@ describe('페어링 코드 [E3]', () => {
     const late = store.createCode()
     now += TTL_MS
     expect(store.pairingExpiresAt()).toBeNull()
-    expect(store.pair({ code: late.code, name: 'p' })).toEqual({ ok: false, reason: 'no_code' })
+    expect(store.pair({ code: late.code, name: 'p' })).toEqual({ ok: false, reason: 'code_expired' })
   })
 
   it('1회 사용 — 쓴 코드는 다시 거절', () => {
     const { store } = fresh()
     const { code } = store.createCode()
     expect(store.pair({ code, name: 'a' }).ok).toBe(true)
-    expect(store.pair({ code, name: 'b' })).toEqual({ ok: false, reason: 'no_code' })
+    expect(store.pair({ code, name: 'b' })).toEqual({ ok: false, reason: 'code_used' })
   })
 
   it('5회 틀리면 폐기(4회째까지 유효 · 5회째에 폐기) — 그 뒤 정답도 거절', () => {
@@ -63,10 +63,10 @@ describe('페어링 코드 [E3]', () => {
     const { code } = store.createCode()
     for (let i = 0; i < MAX_FAILURES; i += 1) {
       expect(store.pairingExpiresAt()).not.toBeNull()
-      expect(store.pair({ code: 'AAAAAAAA', name: 'x' })).toEqual({ ok: false, reason: 'wrong_code' })
+      expect(store.pair({ code: 'AAAAAAAA', name: 'x' })).toEqual({ ok: false, reason: 'code_invalid' })
     }
     expect(store.pairingExpiresAt()).toBeNull()
-    expect(store.pair({ code, name: 'x' })).toEqual({ ok: false, reason: 'no_code' })
+    expect(store.pair({ code, name: 'x' })).toEqual({ ok: false, reason: 'code_invalid' })
   })
 
   it('4회 틀려도 정답은 통과(경계)', () => {

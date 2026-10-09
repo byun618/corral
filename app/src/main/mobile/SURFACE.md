@@ -57,10 +57,14 @@
 
 | 타입 | 언제 | 모양 |
 | --- | --- | --- |
-| `hello` | hello 성공 | `{type:'hello', ok:true, protocol:1, server:{app:'corral', version:'<app.getVersion()>'}, device:{id,name}}` |
-| `paired` | pair 성공 — 연결은 그대로 인증된다 | `{type:'paired', protocol:1, server:{…}, token:'<기기 토큰 — 이때 한 번만>', device:{id,name}}` |
+| `hello` | hello 성공 | `{type:'hello', ok:true, protocol:1, server:{app:'corral', version:'<app.getVersion()>', macName:'<맥 이름>'}, device:{id,name}}` |
+| `paired` | pair 성공 — 연결은 그대로 인증된다 | `{type:'paired', protocol:1, server:{app, version, macName}, token:'<기기 토큰 — 이때 한 번만>', device:{id,name}}` |
 | `pong` | ping | `{type:'pong', id, at:<ms>}` |
 | `error` | 아래 표 | `{type:'error', code, message}` (`protocol_mismatch` 는 `supported:[1]` 도) |
+
+**맥 이름 `server.macName`(R5 A5ⓓ, 표시용)** — 인증 뒤 `hello`·`paired` 응답에만 있다. 인증 전 응답·오류(`error`)에는 없다.
+출처(`mac-name.ts`): ① `/usr/sbin/scutil --get ComputerName`(macOS 「컴퓨터 이름」, 절대경로라 셸 PATH 없는 GUI 앱에서도 같다, 2초 타임아웃) →
+② 실패·빈 값이면 `os.hostname()` 에서 `.local` 을 뗀 값 → ③ 그것도 비면 `"Mac"`. 제어 문자 제거·64자. 앱 기동 때 한 번 읽는다(읽기 전엔 ②).
 
 ## 4. 오류 코드
 
@@ -71,7 +75,10 @@
 | `protocol_mismatch` | `protocol` 이 1 이 아니다 | 닫음 | 4002 |
 | `unauthorized` | 토큰 없음·틀림·해지됨(구별하지 않는다) | 닫음 | 4001 |
 | `not_authenticated` | 인증 전 hello·pair 아닌 메시지 | 닫음 | 4001 |
-| `pair_rejected` | 코드 틀림·만료·사용됨·5회 실패로 폐기·코드 없음(구별하지 않는다) | 닫음 | 4005 |
+| `code_expired` | 만료된 페어링 코드(10분 지남) — 새 QR 을 만든 뒤에도 그 코드는 만료로 답한다 | 닫음 | 4005 |
+| `code_used` | 이미 쓴 페어링 코드(1회 사용) | 닫음 | 4005 |
+| `code_invalid` | 그 밖 전부 — 모르는 코드 · 형식 오류(문자열 아님) · 코드 없음 · **5회 실패로 폐기된 코드** · **새 QR 로 무효화된 이전 코드** · 스위치를 꺼 폐기된 코드 · 기억 범위(최근 8개) 밖의 끝난 코드 | 닫음 | 4005 |
+| `pair_rejected` | 코드는 맞았으나 기기 저장(디스크 쓰기)이 실패했다 — 코드는 소모되지 않는다 | 닫음 | 4005 |
 | `device_limit` | 기기 5대가 차 있다 — 데스크톱에서 해지한 뒤 다시 | 닫음 | 4005 |
 | `unknown_type` | 인증 뒤 모르는 타입 | 유지 | — |
 | `auth_timeout` | 10초 안에 인증하지 않았다 | 닫음 | 4008 |
@@ -90,6 +97,8 @@ QR 은 아래 JSON 문자열을 담는다. 같은 내용을 설정 › Mobile �
 
 - 코드: 8자, 알파벳 `ABCDEFGHJKMNPQRTUVWXY23456789`(혼동 문자 I·L·O·S·Z·0·1 제외, 29자 ≈ 39비트). 대소문자·앞뒤 공백 무시.
 - 10분 유효 · 1회 사용 · 5회 틀리면 폐기 · 유효 코드는 동시에 하나(새 QR 이 이전 코드를 무효화) · 스위치를 끄면 폐기.
+- 실패 오류(R5 A4ⓖ): 만료 → `code_expired`, 사용 → `code_used`, 그 밖 → `code_invalid`(§4). 서버는 만료·사용으로 끝난 코드의 **해시**만
+  최근 8개 기억한다(메모리, 스위치 끄면 비움). 그 코드로 온 `pair` 는 활성 코드의 실패 횟수로 세지 않는다 — 추측이 아니라 이미 받은 코드라서.
 - QR 은 serve 로 노출된 동안에만 만든다(주소가 있어야 한다).
 
 ## 6. 비밀이 사는 곳
@@ -109,6 +118,10 @@ QR 은 아래 JSON 문자열을 담는다. 같은 내용을 설정 › Mobile �
 - **loopback 의 다른 로컬 프로세스도 이 포트에 붙을 수 있다.** 같은 맥의 아무 프로세스(브라우저 페이지의 JS 포함)가 `ws://127.0.0.1:<포트>/ws` 를 열 수 있다.
   그래서 **경계는 페어링 토큰**이다 — 인증 전에는 아무 데이터도 없고, 코드 추측은 39비트 · 5회로 막힌다. 브라우저 페이지는 `Origin` 검사로
   막는다(§2 Origin). Origin 을 보내지 않는 로컬 프로세스는 막지 못한다 — 그것은 토큰이 막는다.
+- **페어링 실패 구분(R5 A4ⓖ)이 주는 정보** — 「이 코드는 최근에 만료됐다/쓰였다」 는 사실뿐이다. 끝난 코드는 다시 쓸 수 없고, 그 값을 알려면 이미
+  QR·화면을 본 사람이어야 하며, 39비트 추측으로 끝난 코드를 맞히는 것은 활성 코드를 맞히는 것만큼 어렵고 맞혀도 얻는 것이 없다. 활성 코드에 대한
+  추측은 여전히 `code_invalid` 하나로만 답하고 5회로 막힌다 — 활성 코드에 관한 정보는 늘지 않는다. 낮음으로 평가한다.
+- **맥 이름**은 인증 뒤에만 준다 — 페어링 안 된 접속자는 이름을 얻지 못한다(tailnet 의 기기 목록에는 이미 보이는 수준의 값).
 - tailscale serve 가 붙이는 `Tailscale-User-*`·`X-Forwarded-For` 헤더는 쓰지 않는다 — loopback 에서는 위조할 수 있다(W6).
 - serve 경유 요청은 전부 `127.0.0.1` 에서 오므로 IP 별 제한은 의미가 없다(E3) — 코드 실패 횟수는 코드 하나에 건다.
 - tailnet 의 다른 기기는 `wss://…:8577` 에 닿는다. 그 역시 토큰이 경계다. Funnel 이 노드에 하나라도 켜지면 corral 항목을 내린다(60초 이하 주기 재확인, 현재 30초).

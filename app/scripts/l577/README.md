@@ -27,8 +27,13 @@ node scripts/l577/repro.mjs matrix --url <같은 URL> --token-file /tmp/l577x/to
   **자동 경로** — `CORRAL_CONTROL_SOCKET` 을 켠 실행에서 `{"cmd":"mobile-pairing"}` 응답의 `pairing.code`(계측 실행 전용, 평시엔 이 소켓이 없다).
   소켓 폴더가 내 소유·0700 이 아니면 `control_socket_not_private` 로 거절한다 — `mkdir -m 700` 한 폴더(예: `/tmp/l577x/ctl`)를 쓴다.
   해지는 화면의 「해지」 또는 `{"cmd":"mobile-revoke","id":"<기기 id>"}`.
-- 틀린 `pair` 시도는 **그때 유효한 코드**의 실패 횟수로 센다. `--fresh-code`(5회 틀린 뒤 정답)는 `--used-code`·`--expired-code` 와 **다른 실행**으로 친다 —
-  섞으면 그 두 줄이 새 코드의 실패 2회로 먼저 세진다.
+- `pair` 실패는 코드 셋으로 갈린다(R5 A4ⓖ): `code_expired`(만료) · `code_used`(이미 씀) · `code_invalid`(그 밖 — 모르는 코드·5회 폐기·새 QR 로 무효화).
+  행렬은 `ws:used-code`·`ws:expired-code`·`ws:unknown-code`·`ws:right-code-after-5-wrong` 줄이 각각 그 코드를 기대값으로 판별한다.
+- 코드 실패 횟수: **모르는 코드**(`ws:unknown-code` · `ws:wrong-code-N`)는 그때 유효한 코드의 실패로 센다. 만료·이미 쓴 코드는 서버가 알아보고 세지 않는다.
+  `--fresh-code`(5회 틀린 뒤 정답)는 `ws:unknown-code` 1회가 먼저 세지므로 4번째 틀림에서 폐기된다 — 줄 기대값(`code_invalid`)은 같다.
+  `--used-code`·`--expired-code` 와는 여전히 **다른 실행**으로 친다(만료 코드는 시간을 기다려야 해서).
+- `hello`·`pair` 줄은 응답의 `server.macName`(맥 이름, R5 A5ⓓ)이 비어 있지 않아야 통과하고 그 값을 줄에 그대로 찍는다 —
+  컴퓨터 이름이 개인 값이면 원자료를 커밋하기 전에 가린다(01-criteria G5).
 - `matrix` 는 `--token-file` 이 없으면 양성 대조 줄을 실패로 남긴다 — 거절만 보고 통과시키지 않는다.
 - 종료 코드: 0 전부 통과 · 1 실패 있음 · 2 사용법 오류. 출력을 그대로 `raw/` 에 리다이렉트하면 원자료다.
 

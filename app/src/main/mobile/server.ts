@@ -36,6 +36,8 @@ const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
 export type MobileServerDeps = {
   pairing: PairingStore
   appVersion: string
+  /** 표시용 맥 이름(R5 A5ⓓ) — 인증 뒤 `hello`·`paired` 응답에만 싣는다. 출처는 `mac-name.ts`. */
+  macName: () => string
   log: Log
   /** 기기 목록·연결 수가 바뀌었다(페어링·접속·끊김) — 설정 화면 push 용. 내용(토큰·코드)은 싣지 않는다. */
   onChange: () => void
@@ -238,9 +240,8 @@ export class MobileServer {
         if (!result.ok) {
           this.deps.log('mobile.pair_rejected', { reason: result.reason })
           this.deps.onChange()
-          return result.reason === 'device_limit'
-            ? this.reject(connection, 'device_limit', CLOSE.pairRejected)
-            : this.reject(connection, 'pair_rejected', CLOSE.pairRejected)
+          // 실패 이유를 그대로 오류 코드로(R5 A4ⓖ) — 만료·이미 씀·무효·상한.
+          return this.reject(connection, result.reason, CLOSE.pairRejected)
         }
         this.admit(connection, result.device)
         this.deps.log('mobile.paired', { device: result.device.id })
@@ -264,8 +265,9 @@ export class MobileServer {
     this.deps.onChange()
   }
 
-  private versions(): { protocol: number; server: { app: 'corral'; version: string } } {
-    return { protocol: PROTOCOL_VERSION, server: { app: 'corral', version: this.deps.appVersion } }
+  /** 인증 뒤 응답 전용 — 맥 이름이 여기 실린다(인증 전 응답·오류에는 없다). */
+  private versions(): { protocol: number; server: { app: 'corral'; version: string; macName: string } } {
+    return { protocol: PROTOCOL_VERSION, server: { app: 'corral', version: this.deps.appVersion, macName: this.deps.macName() } }
   }
 
   private rejectProtocol(connection: Connection): void {
@@ -307,7 +309,10 @@ function errorText(code: ErrorCode): string {
     case 'protocol_mismatch': return '프로토콜 버전이 맞지 않다'
     case 'unauthorized': return '인증 실패'
     case 'not_authenticated': return '인증 전에는 hello 또는 pair 만 보낼 수 있다'
-    case 'pair_rejected': return '페어링 코드가 맞지 않거나 만료되었다'
+    case 'pair_rejected': return '페어링을 저장하지 못했다 — 다시 시도한다'
+    case 'code_expired': return '페어링 코드가 만료되었다 — 데스크톱에서 새 QR 을 만든다'
+    case 'code_used': return '이미 쓴 페어링 코드다 — 데스크톱에서 새 QR 을 만든다'
+    case 'code_invalid': return '페어링 코드가 맞지 않다'
     case 'device_limit': return '기기 상한에 닿았다 — 데스크톱에서 기기를 해지한 뒤 다시 페어링한다'
     case 'unknown_type': return '모르는 메시지 타입'
     case 'auth_timeout': return '인증 시간 초과'

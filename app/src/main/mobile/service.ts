@@ -11,6 +11,7 @@ import path from 'node:path'
 import QRCode from 'qrcode'
 import type { MobilePairingResult, MobileStatus } from '../../shared/mobile.js'
 import { ServeExposure } from './exposure.js'
+import { fallbackMacName, readMacName } from './mac-name.js'
 import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
 import { MobileServer } from './server.js'
@@ -30,6 +31,8 @@ export type MobileServiceDeps = {
   recheckMs?: number
   now?: () => number
   authTimeoutMs?: number
+  /** 맥 이름 출처 — 없으면 `mac-name.ts` 의 scutil → hostname → 「Mac」. */
+  readMacName?: () => Promise<string>
 }
 
 export class MobileService {
@@ -43,6 +46,7 @@ export class MobileService {
   private recheck: NodeJS.Timeout | null = null
   private codeTimer: NodeJS.Timeout | null = null
   private closed = false
+  private macName = fallbackMacName()
 
   constructor(deps: MobileServiceDeps) {
     this.deps = deps
@@ -53,6 +57,7 @@ export class MobileService {
     this.server = new MobileServer({
       pairing: this.pairing,
       appVersion: deps.appVersion,
+      macName: () => this.macName,
       log: deps.log,
       onChange,
       authTimeoutMs: deps.authTimeoutMs,
@@ -66,6 +71,8 @@ export class MobileService {
       if (this.exposure.exposure().kind !== 'exposed') this.server.disconnectAll()
       this.push()
     }
+    // 컴퓨터 이름은 기동 때 한 번 읽는다 — 읽기 전·실패면 hostname 값 그대로.
+    void (deps.readMacName ?? (() => readMacName()))().then((name) => { this.macName = name }, () => {})
     this.exposure = new ServeExposure({ dir, httpsPort: deps.httpsPort ?? MOBILE_HTTPS_PORT, locate: deps.locate, run: deps.run, log: deps.log, onChange: onExposure })
   }
 

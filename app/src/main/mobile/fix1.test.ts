@@ -272,7 +272,7 @@ describe('서버 단위 — R1-A7 · R1-A10', () => {
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
     const store = new PairingStore({ dir })
     store.load()
-    const server = new MobileServer({ pairing: store, appVersion: 'fix1', log: () => {}, onChange: () => {} })
+    const server = new MobileServer({ pairing: store, appVersion: 'fix1', macName: () => 'test-mac', log: () => {}, onChange: () => {} })
     const port = await server.start()
     cleanups.push(() => server.stop())
     return { server, store, port }

@@ -114,77 +114,55 @@ export function phoneOrder(prefs: UiPrefs | null): ManualOrder {
 }
 
 /**
- * 경로 가림의 경계(R2-A1 → R3-A1). 허용 구분자 목록이 아니라 **경로 이름 글자인지**로 정한다 — 목록에 없는 구분자(`?`·`#`·`!`·`[`·한글 조사 등)마다
- * 새로 새는 부류를 닫는다.
- * - 루트 **앞**: 경로 이름 글자(영숫자 `_` `.` `~` `%` `+` `-`)나 `/` 가 붙어 있으면 더 긴 다른 경로의 일부다(`x/Users/me`·`./Users/me`·`/opt/Users/me`).
- *   그 밖(글 처음·공백·탭·줄바꿈·구분 기호·괄호·따옴표·한글 등)이면 루트다. URI 의 authority 뒤(`file://localhost/…`·`vscode://file/…`)는 앞 글자가
- *   이름 글자라 여기서 못 잡는다 — 그래서 URI 는 따로 path 성분만 떼어 가린다(`maskUris`).
- * - 루트 **뒤**: 이름 글자(영숫자 `_` `~` `+` `-`, 또는 `.` 다음 이름 글자)가 이어지면 다른 이름이다(`/Users/meow`·`/Users/me2`·`/Users/me.bak`·`/Users/me-old`).
- *   그 밖(`/`·`?`·`#`·`:5:2`·`.`문장 끝·`%2F`·한글 조사 등)이면 루트다.
- * 루트 **글자만** 바꾸고 그 뒤 경로는 소비하지 않는다 — `cp /Users/me/a,/Users/me/b` 의 둘째 경로도 따로 잡힌다.
- * 범위 밖(명시): Windows 모양(`C:\Users\me`)·이중 퍼센트 인코딩(`%252F`)·JSON `\/` 이스케이프는 다루지 않는다 — 데스크톱 macOS 의 POSIX 경로가 계약이다.
+ * 경로 가림(R1-A3 ② → R4-A1). 경계를 열거하지 않는다 — 계약은 하나다: **결과 글에 홈 아래 절대경로(퍼센트 인코딩 모양 포함)가 남지 않는다.**
+ * ① 퍼센트 디코딩 — 유효한 `%XX` 만, 바뀌지 않을 때까지(이중 인코딩까지). 한 덩어리가 UTF-8 로 안 풀리면 그 안의 ASCII 바이트만 푼다.
+ * ② 홈 문자열이 나오는 **모든 위치** — 앞 글자는 보지 않는다(`-I/Users/me`·`//Users/me`·`file://localhost/Users/me` 모두). 뒤 경계만 본다:
+ *    글 끝·`/`·홈 이름에 이어질 수 없는 글자. 이름에 이어지는 글자 = 영숫자 `_` `-` — 그래서 `/Users/meow`·`/Users/me2`·`/Users/me-old` 는
+ *    다른 홈으로 남는다. `.` 은 경계로 본다(`/Users/me.bak` → `~.bak` 과잉 가림) — `.` 다음 글자로 다른 이름을 짐작하면 `/Users/me.file://…` 처럼
+ *    문장 끝 점 뒤에 글이 붙은 홈이 샌다(불변식 시험이 찾은 모양).
+ * ③ 그 pane 의 worktree 안이면 worktree 상대(`src/a.ts`, 자신은 `.`), 그 밖의 홈 아래면 `~`.
+ * ④ 과잉 가림은 허용한다(`/x/Users/me/a` → `/x~/a`, `file:///Users/me/a` → `file://~/a`) — 정보 손실일 뿐 노출이 아니다.
+ * 범위 밖: Windows 모양(`C:\Users\me`) — 데스크톱 macOS POSIX 경로가 계약이다.
  */
-const ROOT_BEFORE = String.raw`(?<![A-Za-z0-9_.~%+\-/])`
-const ROOT_AFTER = String.raw`(?![A-Za-z0-9_~+\-]|\.[A-Za-z0-9_\-])`
-/** 퍼센트 인코딩 루트(`%2FUsers%2Fme`) 앞 — `%2F` 가 붙으면 더 긴 경로의 일부, 다른 `%XX`(예 `%3D` `=`)는 구분자다. */
-const ENCODED_BEFORE = String.raw`(?<=^|[^A-Za-z0-9_.~%+\-/]|%(?!2[Ff])[0-9A-Fa-f]{2})`
-/** `scheme://authority` 다음 path 성분 — query(`?`)·fragment(`#`)·공백 전까지. */
-const URI = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s?#]*)(\/[^\s?#]*)/g
+const ROOT_AFTER = String.raw`(?![A-Za-z0-9_-])`
+const PERCENT_RUN = /(?:%[0-9A-Fa-f]{2})+/g
+const DECODE_ROUNDS = 8
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** 인코딩 모양의 루트 패턴 — `%XX` 의 16진 대소문자를 가리지 않는다. 글자 그대로와 같으면 null. */
-function encodedPattern(root: string, encode: (text: string) => string): string | null {
-  const encoded = encode(root)
-  if (encoded === root) return null
-  return escapeRegExp(encoded).replace(/%([0-9A-F])([0-9A-F])/g, (_, high: string, low: string) => `%[${high}${high.toLowerCase()}][${low}${low.toLowerCase()}]`)
+function decodeRun(run: string): string {
+  try {
+    return decodeURIComponent(run)
+  } catch {
+    // UTF-8 로 안 풀리는 덩어리(`%FF%2F`) — ASCII 바이트만 푼다. 그래야 `%FF%2FUsers…` 의 `%2F` 가 숨지 못한다.
+    return run.replace(/%([0-7][0-9A-Fa-f])/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+  }
 }
 
-function maskRoot(input: { text: string; root: string; to: string; relative: boolean }): string {
-  let out = input.text
-  const root = escapeRegExp(input.root)
-  // worktree 안은 상대(`src/a.ts`) — 루트 + `/` 를 지운다. 홈은 `~/…` 로 루트만 바꾼다.
-  if (input.relative) out = out.replace(new RegExp(`${ROOT_BEFORE}${root}/(?=[^\\s])`, 'g'), '')
-  out = out.replace(new RegExp(`${ROOT_BEFORE}${root}${ROOT_AFTER}`, 'g'), input.to)
-  for (const encode of [encodeURI, encodeURIComponent]) {
-    const pattern = encodedPattern(input.root, encode)
-    if (pattern !== null) out = out.replace(new RegExp(`${ENCODED_BEFORE}${pattern}${ROOT_AFTER}`, 'g'), input.to)
+export function percentDecode(text: string): string {
+  let out = text
+  for (let round = 0; round < DECODE_ROUNDS; round += 1) {
+    const next = out.replace(PERCENT_RUN, decodeRun)
+    if (next === out) return out
+    out = next
   }
   return out
 }
 
-function maskPlain(input: { text: string; worktree: string; home: string }): string {
-  let out = input.text
-  if (input.worktree !== '') out = maskRoot({ text: out, root: input.worktree, to: '.', relative: true })
-  if (input.home !== '') out = maskRoot({ text: out, root: input.home, to: '~', relative: false })
-  return out
-}
-
-/**
- * URI 는 scheme·authority·path·query·fragment 를 나눠 **path 성분**에 같은 가림을 적용한다(R3-A1) — `file://localhost/Users/me/a` →
- * `file://localhost/~/a`, `vscode://file/Users/me/a.ts:5:2` → `vscode://file/~/a.ts:5:2`, `file:///Users/me?x=1` → `file:///~?x=1`.
- * 가린 path 앞 `/` 는 남긴다(authority 와 붙지 않게). query·fragment 안 경로는 뒤의 일반 가림이 잡는다(`?`·`#`·`=` 는 이름 글자가 아니다).
- */
-function maskUris(input: { text: string; worktree: string; home: string }): string {
-  return input.text.replace(URI, (_, head: string, uriPath: string) => {
-    const masked = maskPlain({ text: uriPath, worktree: input.worktree, home: input.home })
-    return masked === uriPath ? `${head}${uriPath}` : `${head}${masked.startsWith('/') ? '' : '/'}${masked}`
-  })
-}
-
-/**
- * 폰 표시 글에서 홈 아래 절대경로를 감춘다(R1-A3 ② · R2-A1 · R3-A1). 그 pane 의 작업 worktree 안이면 worktree 상대(`src/a.ts`, worktree 자신은 `.`),
- * 그 밖의 홈 아래면 `~/…`. 일반 경로·URI path 성분·퍼센트 인코딩(`%2FUsers%2Fme`, `encodeURI` 모양) 모두. 이미 `~` 인 글은 그대로.
- * 홈 밖 경로(`/tmp`·`/opt` 등)는 그대로 둔다 — 계약은 홈 아래 경로다.
- */
 export function maskPaths(input: { text: string; worktree: string | null; home: string }): string {
   const home = input.home.replace(/\/+$/, '')
   const worktree = input.worktree === null ? '' : input.worktree.replace(/\/+$/, '')
+  let out = percentDecode(input.text)
   // worktree 가 홈 자체면 상대경로로 바꾸지 않는다(홈 전체가 `.` 이 되면 `~` 보다 덜 알려 준다).
-  const place = { worktree: worktree === home ? '' : worktree, home }
-  return maskPlain({ text: maskUris({ text: input.text, ...place }), ...place })
+  if (worktree !== '' && worktree !== home) {
+    const root = escapeRegExp(worktree)
+    out = out.replace(new RegExp(`${root}/(?=[^\\s])`, 'g'), '')
+    out = out.replace(new RegExp(`${root}${ROOT_AFTER}`, 'g'), '.')
+  }
+  if (home !== '') out = out.replace(new RegExp(`${escapeRegExp(home)}${ROOT_AFTER}`, 'g'), '~')
+  return out
 }
 
 function toolLine(pane: PaneRow): string | null {

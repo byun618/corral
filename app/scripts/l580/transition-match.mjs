@@ -33,7 +33,11 @@ export function matchTransition({ lists, expect, causeAt, nextCauseAt = Number.P
   return { kind: 'miss', why: `대상이 다음 원인 전까지 ${expect} 로 바뀐 목록이 없다` }
 }
 
-/** 폰 `list_recv` 의 `changes`(`id=dot,…`, 사라짐 `id=-`)를 접어 목록마다 대상의 점을 낸다. `changes` 없는 줄은 대상 점을 모른다(undefined). */
+/**
+ * 폰 `list_recv` 의 `changes`(`id=dot,…`, 사라짐 `id=-`)를 접어 목록마다 대상의 점을 낸다.
+ * `changes` 없는 줄(옛 앱 기록)을 만나면 그때부터 대상 점을 모른다(undefined). 그 뒤 **대상을 명시한** `id=dot`·`id=-` 를 다시 읽으면
+ * 그 줄부터 다시 안다(R4-A2 — 옛 기록 한 줄이 이어진 새 기록 전체를 보류시키지 않게). 대상을 언급하지 않은 delta 로는 짐작하지 않는다.
+ */
 export function foldTargetDots({ recv, target }) {
   let known = true
   let dot = null
@@ -44,7 +48,9 @@ export function foldTargetDots({ recv, target }) {
     }
     for (const part of entry.changes === '' ? [] : entry.changes.split(',')) {
       const at = part.lastIndexOf('=')
-      if (part.slice(0, at) === target) dot = part.slice(at + 1) === '-' ? null : part.slice(at + 1)
+      if (part.slice(0, at) !== target) continue
+      dot = part.slice(at + 1) === '-' ? null : part.slice(at + 1)
+      known = true
     }
     return { ...entry, dot: known ? dot : undefined }
   })

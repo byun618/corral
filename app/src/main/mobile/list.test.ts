@@ -13,7 +13,7 @@ import { DEFAULT_SIDEBAR_VIEW } from '../../shared/sidebar-view.js'
 import type { UiPrefs } from '../../shared/types.js'
 import { worktreeDisplayName } from '../../shared/worktree-name.js'
 import { UiPrefsStore } from '../ui-prefs.js'
-import { buildMobileList, maskPaths, previewOf, type MobileChannel, type MobileList } from './list.js'
+import { buildMobileList, maskPaths, percentDecode, previewOf, type MobileChannel, type MobileList } from './list.js'
 import { FIXTURE_NOW, fixturePane, listFixture } from './list-fixture.js'
 import type { ListState } from './list.js'
 
@@ -297,102 +297,65 @@ describe('R1-A5 미리보기 순서 — 두 재료가 함께 있을 때(코디 �
   })
 })
 
-describe('R2-A1 경로 가림 경계 — 루트 앞 구분자 · 루트 뒤 경계 · 이어진 경로', () => {
+describe('R4-A1 경로 가림 — 한 규칙(디코딩 → 모든 위치 → 뒤 경계만) · 리뷰 r1~r4 사례 한 표 · 불변식', () => {
   const place = { worktree: '/Users/me/repos/app', home: '/Users/me' }
-  const cases: [string, string][] = [
-    // 리뷰어 재현 사례
-    ['PATH=/Users/me/.local/bin', 'PATH=~/.local/bin'],
-    ['Read:/Users/me/private/a.ts', 'Read:~/private/a.ts'],
-    ['cp /Users/me/a,/Users/me/b', 'cp ~/a,~/b'],
-    ['/Users/me: error', '~: error'],
-    ['file:///Users/me/private/a.ts', 'file:///~/private/a.ts'],
-    // 대입 · 콜론 목록 · 세미콜론 · 셸 연결 · 괄호 · 따옴표
-    ['PATH=/Users/me/bin:/Users/me/.cargo/bin:/usr/bin', 'PATH=~/bin:~/.cargo/bin:/usr/bin'],
-    ['--out=/Users/me/x;ls /Users/me', '--out=~/x;ls ~'],
-    ['cat /Users/me/a|grep x>/Users/me/b', 'cat ~/a|grep x>~/b'],
-    ['(see /Users/me/notes)', '(see ~/notes)'],
-    ["'/Users/me/a b.txt'", "'~/a b.txt'"],
-    ['"/Users/me/a b.txt"', '"~/a b.txt"'],
-    ['`/Users/me/x`', '`~/x`'],
-    ['홈은 /Users/me.', '홈은 ~.'],
-    // worktree 상대 — 이어진 둘 다
-    ['diff /Users/me/repos/app/a.ts,/Users/me/repos/app/b.ts', 'diff a.ts,b.ts'],
-    ['cd /Users/me/repos/app && ls', 'cd . && ls'],
-    ['Read:/Users/me/repos/app/src/x.ts', 'Read:src/x.ts'],
-    // 비슷한 다른 이름 · 다른 홈 · 홈 밖 — 그대로
-    ['/Users/meow/x /Users/me2/y /Users/me.bak/z', '/Users/meow/x /Users/me2/y /Users/me.bak/z'],
-    ['/Users/me/repos/app-other/x', '~/repos/app-other/x'],
-    ['/tmp/x /opt/me', '/tmp/x /opt/me'],
-    ['x/Users/me/a', 'x/Users/me/a'],
-  ]
-  for (const [input, expected] of cases) {
-    it(`${input} → ${expected}`, () => {
-      expect(maskPaths({ text: input, ...place })).toBe(expected)
-    })
-  }
-
-  it('실제 buildMobileList 페이로드 — 대입·콜론·이어진 경로가 전송 미리보기에 홈 절대경로를 남기지 않는다', () => {
-    const list = buildMobileList({
-      state: listFixture({
-        p20: { digest: { providerTitle: '알림 모듈 리팩터', tool: { name: 'Bash', input: 'PATH=/fx/home/.local/bin npm test' } } },
-        p6: { digest: { firstPrompt: '재연결 정책 조사', lastPrompt: 'Read:/fx/home/private/a.ts', lastActivityAt: FIXTURE_NOW } },
-        p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Bash', input: 'cp /fx/home/a,/fx/home/b /fx/corral/.wt/life-579-impl/x' } } },
-      }),
-      prefs: null,
-      now: FIXTURE_NOW,
-    })
-    expect(byTitle(list, '알림 모듈 리팩터').preview).toEqual({ kind: 'approval', text: 'Bash · PATH=~/.local/bin npm test' })
-    expect(byTitle(list, '재연결 정책 조사').preview).toEqual({ kind: 'prompt', text: 'Read:~/private/a.ts' })
-    expect(byTitle(list, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Bash · cp ~/a,~/b x' })
-    expect(JSON.stringify(list)).not.toContain('/fx/home')
-  })
-
-  it('음성 대조 — 같은 페이로드를 홈 없이(home "") 만들면 절대경로가 남는다(시험이 그 글을 실제로 본다)', () => {
-    const pane = fixturePane('x', 'claude', { agentStatus: 'working', digest: { tool: { name: 'Bash', input: 'PATH=/fx/home/.local/bin npm test' } } })
-    expect(previewOf({ pane, dot: 'working', place: { worktree: null, home: '' } })).toEqual({ kind: 'tool', text: 'Bash · PATH=/fx/home/.local/bin npm test' })
-  })
-})
-
-describe('R3-A1 경로 가림 부류 — URI(authority·query·fragment) · 퍼센트 인코딩 · 이름 글자 경계 · 범위 밖 명시', () => {
-  const place = { worktree: '/Users/me/repos/app', home: '/Users/me' }
-  // [입력, 기대, 부류]. 기대에 홈이 남지 않는 행은 아래 「잔여 0」 검사도 받는다.
+  // [입력, 기대, 출처]. 과잉 가림(앞 글자가 붙은 홈)은 허용 — 계약은 「결과에 홈 절대경로가 남지 않는다」 하나다.
   const cases: [string, string, string][] = [
-    // URI — authority 있음 · 없음 · 줄:열 · query · fragment · worktree 상대
-    ['file://localhost/Users/me/private/a.ts', 'file://localhost/~/private/a.ts', 'uri authority'],
-    ['Open vscode://file/Users/me/private/b.ts:5:2', 'Open vscode://file/~/private/b.ts:5:2', 'uri authority 줄:열'],
-    ['file:///Users/me/private/a.ts', 'file:///~/private/a.ts', 'uri authority 빈'],
-    ['file:///Users/me?x=1', 'file:///~?x=1', 'uri query'],
-    ['file:///Users/me#section', 'file:///~#section', 'uri fragment'],
-    ['file:///Users/me/a.ts?line=3#L3', 'file:///~/a.ts?line=3#L3', 'uri query+fragment'],
-    ['vscode://file/Users/me/repos/app/src/x.ts:5:2', 'vscode://file/src/x.ts:5:2', 'uri worktree 상대'],
-    ['https://h.example/open?path=/Users/me/a#/Users/me/b', 'https://h.example/open?path=~/a#~/b', 'query·fragment 안 경로'],
-    ['(file://localhost/Users/me/a)', '(file://localhost/~/a)', 'uri 괄호'],
-    ['https://h.example/Users/meow/x', 'https://h.example/Users/meow/x', 'uri 다른 이름 보존'],
-    // 퍼센트 인코딩 — 대소문자 · 앞 `%3D` · worktree · 비슷한 이름 · 더 긴 경로
-    ['open?p=%2FUsers%2Fme%2Fprivate%2Fa.ts', 'open?p=~%2Fprivate%2Fa.ts', '퍼센트'],
-    ['open?p=%2fUsers%2fme', 'open?p=~', '퍼센트 소문자'],
-    ['q=x%3D%2FUsers%2Fme%2Fa', 'q=x%3D~%2Fa', '퍼센트 앞 %XX 구분자'],
-    ['p=%2FUsers%2Fme%2Frepos%2Fapp%2Fsrc%2Fx.ts', 'p=.%2Fsrc%2Fx.ts', '퍼센트 worktree'],
-    ['p=%2FUsers%2Fmeow %2Fopt%2FUsers%2Fme', 'p=%2FUsers%2Fmeow %2Fopt%2FUsers%2Fme', '퍼센트 다른 이름·더 긴 경로 보존'],
-    // 목록에 없던 구분자 — 이름 글자가 아니면 경계
-    ['Delete /Users/me?', 'Delete ~?', '물음표'],
-    ['/Users/me! /Users/me#x', '~! ~#x', '느낌표·샵'],
-    ['[/Users/me/a] {/Users/me/b} </Users/me/c>', '[~/a] {~/b} <~/c>', '괄호류'],
-    ['a\t/Users/me/x\n/Users/me/y', 'a\t~/x\n~/y', '탭·줄바꿈'],
-    ['/Users/me에서 찾았다', '~에서 찾았다', '한글 조사'],
-    ['경로:/Users/me/a', '경로:~/a', '한글 뒤 콜론'],
-    ['scp host:/Users/me/a me@x:/Users/me/b', 'scp host:~/a me@x:~/b', 'scp'],
-    ['(홈은 /Users/me.)', '(홈은 ~.)', '문장 끝 점 + 괄호'],
-    ['/Users/me /Users/me/a /Users/me/b /Users/me', '~ ~/a ~/b ~', '홈 여럿 연속'],
-    ["x='/Users/me/a',y=\"/Users/me/b\"", "x='~/a',y=\"~/b\"", '따옴표·등호·쉼표'],
-    // 그대로 — 이미 축약 · 비슷한 다른 홈 · 더 긴 경로의 일부 · 홈 밖
+    // r1 — 기본
+    ['Read · /Users/me/.ssh/config', 'Read · ~/.ssh/config', 'r1'],
+    ['cat /Users/me', 'cat ~', 'r1'],
+    ['Read · "/Users/me/a b.txt"', 'Read · "~/a b.txt"', 'r1 따옴표'],
+    // r2 — 대입·콜론·쉼표·셸 연결·괄호·따옴표·문장 끝
+    ['PATH=/Users/me/.local/bin', 'PATH=~/.local/bin', 'r2 ='],
+    ['Read:/Users/me/private/a.ts', 'Read:~/private/a.ts', 'r2 :'],
+    ['cp /Users/me/a,/Users/me/b', 'cp ~/a,~/b', 'r2 쉼표'],
+    ['/Users/me: error', '~: error', 'r2'],
+    ['PATH=/Users/me/bin:/Users/me/.cargo/bin:/usr/bin', 'PATH=~/bin:~/.cargo/bin:/usr/bin', 'r2 콜론 목록'],
+    ['--out=/Users/me/x;ls /Users/me', '--out=~/x;ls ~', 'r2 ;'],
+    ['cat /Users/me/a|grep x>/Users/me/b', 'cat ~/a|grep x>~/b', 'r2 셸'],
+    ['(see /Users/me/notes)', '(see ~/notes)', 'r2 괄호'],
+    ["'/Users/me/a b.txt' `/Users/me/x`", "'~/a b.txt' `~/x`", 'r2 따옴표'],
+    ['홈은 /Users/me.', '홈은 ~.', 'r2 문장 끝'],
+    ['diff /Users/me/repos/app/a.ts,/Users/me/repos/app/b.ts', 'diff a.ts,b.ts', 'r2 worktree'],
+    ['cd /Users/me/repos/app && ls', 'cd . && ls', 'r2 worktree 자신'],
+    ['/Users/me/repos/app-other/x', '~/repos/app-other/x', 'r2 비슷한 worktree'],
+    // r3 — URI authority·query·fragment·탭·줄바꿈·여러 홈
+    ['file:///Users/me/private/a.ts', 'file://~/private/a.ts', 'r3 file:///'],
+    ['file://localhost/Users/me/private/a.ts', 'file://localhost~/private/a.ts', 'r3 authority'],
+    ['Open vscode://file/Users/me/private/b.ts:5:2', 'Open vscode://file~/private/b.ts:5:2', 'r3 줄:열'],
+    ['file:///Users/me?x=1', 'file://~?x=1', 'r3 query'],
+    ['file:///Users/me#section', 'file://~#section', 'r3 fragment'],
+    ['https://h.example/open?path=/Users/me/a#/Users/me/b', 'https://h.example/open?path=~/a#~/b', 'r3 query·fragment 안'],
+    ['vscode://file/Users/me/repos/app/src/x.ts:5:2', 'vscode://filesrc/x.ts:5:2', 'r3 uri worktree(과잉)'],
+    ['a\t/Users/me/x\n/Users/me/y', 'a\t~/x\n~/y', 'r3 탭·줄바꿈'],
+    ['/Users/me /Users/me/a /Users/me/b /Users/me', '~ ~/a ~/b ~', 'r3 홈 여럿'],
+    ['Delete /Users/me? /Users/me! [/Users/me/a] {/Users/me/b} </Users/me/c>', 'Delete ~? ~! [~/a] {~/b} <~/c>', 'r3 구분자'],
+    ['/Users/me에서 찾았다', '~에서 찾았다', 'r3 한글 조사'],
+    ['scp host:/Users/me/a me@x:/Users/me/b', 'scp host:~/a me@x:~/b', 'r3 scp'],
+    ['open?p=%2FUsers%2Fme%2Fprivate%2Fa.ts', 'open?p=~/private/a.ts', 'r3 퍼센트'],
+    ['open?p=%2fUsers%2fme', 'open?p=~', 'r3 퍼센트 소문자'],
+    ['file:///Users/John%20Smith/a.ts', 'file:///Users/John Smith/a.ts', 'r3 다른 홈(공백) 디코딩만'],
+    // r4 — 부분·혼합 퍼센트 인코딩 · 앞 글자 붙은 홈 · 혼합 스킴
+    ['file://localhost/Users/%6De/private/a.ts', 'file://localhost~/private/a.ts', 'r4 한 글자 인코딩'],
+    ['file://localhost/%55sers/me/private/a.ts', 'file://localhost~/private/a.ts', 'r4 첫 글자 인코딩'],
+    ['file://localhost/Users%2Fme/private/a.ts', 'file://localhost~/private/a.ts', 'r4 구분자만 인코딩'],
+    ['%2FUsers/me/private/a.ts', '~/private/a.ts', 'r4 앞 / 만 인코딩'],
+    ['/Users%2Fme/private/a.ts', '~/private/a.ts', 'r4 중간 / 만'],
+    ['file%3A%2F%2F%2FUsers%2Fme%2Fprivate%2Fa.ts', 'file://~/private/a.ts', 'r4 전체 인코딩 URI'],
+    ['p=%252FUsers%252Fme%252Fa', 'p=~/a', 'r4 이중 인코딩'],
+    ['%FF%2FUsers%2Fme', '%FF~', 'r4 UTF-8 아닌 덩어리 안 ASCII'],
+    ['cc -I/Users/me/include -L/Users/me/lib', 'cc -I~/include -L~/lib', 'r4 -I/-L'],
+    ['//Users/me/private/a.ts', '/~/private/a.ts', 'r4 //'],
+    ['file://localhost//Users/me/private/a.ts', 'file://localhost/~/private/a.ts', 'r4 authority //'],
+    ['FiLe:///Users/me/a VsCoDe://file/Users/me/b', 'FiLe://~/a VsCoDe://file~/b', 'r4 혼합 스킴'],
+    ['x/Users/me/a ./Users/me /opt/Users/me/b', 'x~/a .~ /opt~/b', 'r4 앞 글자 무관(과잉 가림 허용)'],
+    // 그대로 — 이미 축약 · 비슷한 다른 홈(양성 대조) · 홈 밖 · Windows(범위 밖)
     ['~/already/x ~', '~/already/x ~', '이미 ~'],
-    ['/Users/meow/x /Users/me2/y /Users/me.bak/z /Users/me-old/w /Users/me_x', '/Users/meow/x /Users/me2/y /Users/me.bak/z /Users/me-old/w /Users/me_x', '비슷한 다른 홈'],
-    ['x/Users/me/a ./Users/me /opt/Users/me/b', 'x/Users/me/a ./Users/me /opt/Users/me/b', '더 긴 경로의 일부'],
+    ['/Users/meow/x /Users/me2/y /Users/me-old/w /Users/me_x', '/Users/meow/x /Users/me2/y /Users/me-old/w /Users/me_x', '비슷한 다른 홈'],
+    ['/Users/me.bak/z 홈은 /Users/me.file:///Users/me/a', '~.bak/z 홈은 ~.file://~/a', '점은 경계(과잉 가림)'],
+    ['p=%2FUsers%2Fmeow', 'p=/Users/meow', '비슷한 다른 홈(인코딩)'],
     ['/tmp/x /opt/me', '/tmp/x /opt/me', '홈 밖'],
-    // 범위 밖(명시) — Windows 모양 · 이중 인코딩은 다루지 않는다. 바뀌지 않는 것을 고정해 둔다.
     ['C:\\Users\\me\\a', 'C:\\Users\\me\\a', '범위 밖 Windows'],
-    ['p=%252FUsers%252Fme', 'p=%252FUsers%252Fme', '범위 밖 이중 인코딩'],
   ]
   for (const [input, expected, kind] of cases) {
     it(`${kind}: ${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
@@ -400,29 +363,65 @@ describe('R3-A1 경로 가림 부류 — URI(authority·query·fragment) · 퍼�
     })
   }
 
-  it('잔여 0 — 가려야 하는 행의 결과에 홈 루트가 일반·인코딩 어느 모양으로도 남지 않는다', () => {
-    const leaks = /\/Users\/me(?![A-Za-z0-9_~+-]|\.[A-Za-z0-9_-])|%2[Ff]Users%2[Ff]me(?![A-Za-z0-9])/
-    const masked = cases.filter(([, , kind]) => !kind.includes('보존') && !kind.includes('그대로') && !kind.startsWith('범위 밖') && !['이미 ~', '비슷한 다른 홈', '더 긴 경로의 일부', '홈 밖'].includes(kind))
-    expect(masked.length).toBeGreaterThan(20)
-    for (const [input] of masked) expect(maskPaths({ text: input, ...place })).not.toMatch(leaks)
-    // 양성 대조 — 같은 검사가 가리지 않은 입력에서는 잡는다
-    for (const [input] of masked) expect(input).toMatch(leaks)
+  it('percentDecode — 유효한 %XX 만, 고정점까지, 깨진 %는 그대로', () => {
+    expect(percentDecode('a%20b%2')).toBe('a b%2')
+    expect(percentDecode('%25%32%46')).toBe('/')
+    expect(percentDecode('100%zz')).toBe('100%zz')
   })
 
-  it('홈 이름에 공백 — encodeURI 모양(`%20`)과 글자 그대로 둘 다', () => {
-    const spaced = { worktree: null, home: '/Users/John Smith' }
-    expect(maskPaths({ text: 'file:///Users/John%20Smith/a.ts', ...spaced })).toBe('file:///~/a.ts')
-    expect(maskPaths({ text: '"/Users/John Smith/a.ts"', ...spaced })).toBe('"~/a.ts"')
-    expect(maskPaths({ text: 'p=%2FUsers%2FJohn%20Smith%2Fa', ...spaced })).toBe('p=~%2Fa')
+  /** 결과를 끝까지 디코딩한 글에 홈 경로(홈 + 끝·이름에 이어질 수 없는 글자)가 있나. 이름 글자가 이어지면 다른 이름이다(`/Users/me-I` 등). */
+  const leaks = (output: string, home: string) => new RegExp(`${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(percentDecode(output))
+
+  it('불변식 — 무작위·조합 생성 입력 3000개에서 결과에 홈 절대경로(어느 인코딩으로도) 0', () => {
+    let seed = 580
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed / 2147483648
+    }
+    const pick = (items: readonly string[]): string => items[Math.floor(rand() * items.length)] ?? ''
+    const hex = (ch: string) => {
+      const code = ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')
+      return rand() < 0.5 ? `%${code}` : `%${code.toLowerCase()}`
+    }
+    /** 홈 경로를 글자마다 확률적으로 인코딩(가끔 이중). */
+    const encode = (text: string) =>
+      [...text]
+        .map((ch) => {
+          const r = rand()
+          if (r < 0.25) return hex(ch)
+          if (r < 0.3) return hex(ch).replace('%', '%25')
+          return ch
+        })
+        .join('')
+    const BEFORE = ['', ' ', 'x', '-I', '-L', '/', '//', 'file://', 'file://localhost', 'vscode://file', 'FiLe://', '"', "'", '`', '(', '[', '{', '<', '=', ':', ',', ';', '|', '&', '\t', '\n', '?p=', '#', '%FF', '경로', '/opt', '.']
+    const AFTER = ['', '/', '/a.ts', '/a b.ts', '?x=1', '#s', ':5:2', '.', ')', ']', '"', ',', ' ', '\t', '\n', '에서', '%2Fa', '%2fa', '!', '?', '/./x', '//y']
+    for (const placeCase of [place, { worktree: null, home: '/Users/me' }, { worktree: '/fx/corral/.wt/w', home: '/fx/home' }]) {
+      const home = placeCase.home
+      const roots = [home, ...(placeCase.worktree === null ? [] : [placeCase.worktree, `${placeCase.worktree}/src`])]
+      for (let i = 0; i < 1_000; i += 1) {
+        const pieces = Array.from({ length: 1 + Math.floor(rand() * 4) }, () => `${pick(BEFORE)}${encode(pick(roots))}${pick(AFTER)}`)
+        const input = pieces.join(pick(['', ' ', ',', ':', '\n']))
+        const output = maskPaths({ text: input, ...placeCase })
+        if (leaks(output, home)) throw new Error(`홈이 남음: ${JSON.stringify(input)} → ${JSON.stringify(output)}`)
+      }
+    }
   })
 
-  const r3Payload = (home: string) =>
+  it('양성 대조 — 같은 검사기가 가리지 않은 입력에서는 잡는다', () => {
+    // 가림이 실제로 일어난 행(디코딩만 한 글과 결과가 다름)
+    const changed = cases.filter(([input, expected]) => percentDecode(input) !== expected)
+    expect(changed.length).toBeGreaterThan(40)
+    for (const [input] of changed) expect(leaks(input, '/Users/me')).toBe(true)
+    expect(leaks('file://localhost/Users/%6De/a', '/Users/me')).toBe(true)
+  })
+
+  const r4Payload = (home: string) =>
     buildMobileList({
       state: {
         ...listFixture({
-          p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Read', input: 'file://localhost/fx/home/private/a.ts' } } },
-          p6: { digest: { firstPrompt: '재연결 정책 조사', lastPrompt: 'Open vscode://file/fx/home/private/b.ts:5:2 then file:///fx/home?x=1', lastActivityAt: FIXTURE_NOW } },
-          p20: { digest: { providerTitle: '알림 모듈 리팩터', tool: { name: 'Bash', input: 'open "x://h/?p=%2Ffx%2Fhome%2Fprivate" /fx/home#s' } } },
+          p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Read', input: 'file://localhost/fx/%68ome/private/a.ts' } } },
+          p6: { digest: { firstPrompt: '재연결 정책 조사', lastPrompt: 'Open file://localhost/fx%2Fhome/private/b.ts', lastActivityAt: FIXTURE_NOW } },
+          p20: { digest: { providerTitle: '알림 모듈 리팩터', tool: { name: 'Bash', input: 'cc -I/fx/home/include PATH=/fx/home/.local/bin cp /fx/home/a,/fx/home/b' } } },
         }),
         home,
       },
@@ -430,20 +429,17 @@ describe('R3-A1 경로 가림 부류 — URI(authority·query·fragment) · 퍼�
       now: FIXTURE_NOW,
     })
 
-  it('실제 buildMobileList 페이로드 — URI·인코딩 모양에서도 홈 절대경로 0', () => {
-    const list = r3Payload('/fx/home')
-    expect(byTitle(list, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Read · file://localhost/~/private/a.ts' })
-    expect(byTitle(list, '재연결 정책 조사').preview).toEqual({ kind: 'prompt', text: 'Open vscode://file/~/private/b.ts:5:2 then file:///~?x=1' })
-    expect(byTitle(list, '알림 모듈 리팩터').preview).toEqual({ kind: 'approval', text: 'Bash · open "x://h/?p=~%2Fprivate" ~#s' })
-    const wire = JSON.stringify(list)
-    expect(wire).not.toContain('/fx/home')
-    expect(wire.toLowerCase()).not.toContain('%2ffx%2fhome')
+  it('실제 buildMobileList 페이로드 — 부분 인코딩·-I·이어진 경로에서도 홈 절대경로 0', () => {
+    const list = r4Payload('/fx/home')
+    expect(byTitle(list, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Read · file://localhost~/private/a.ts' })
+    expect(byTitle(list, '재연결 정책 조사').preview).toEqual({ kind: 'prompt', text: 'Open file://localhost~/private/b.ts' })
+    expect(byTitle(list, '알림 모듈 리팩터').preview).toEqual({ kind: 'approval', text: 'Bash · cc -I~/include PATH=~/.local/bin cp ~/a,~/b' })
+    expect(percentDecode(JSON.stringify(list))).not.toContain('/fx/home')
   })
 
-  it('음성 대조 — 같은 페이로드를 홈 없이(home "") 만들면 URI·인코딩 모양 홈이 남는다(시험이 그 글을 실제로 본다)', () => {
-    const wire = JSON.stringify(r3Payload(''))
-    expect(wire).toContain('file://localhost/fx/home/private/a.ts')
-    expect(wire).toContain('vscode://file/fx/home/private/b.ts:5:2')
-    expect(wire).toContain('%2Ffx%2Fhome%2Fprivate')
+  it('음성 대조 — 같은 페이로드를 홈 없이(home "") 만들면 홈이 남는다(시험이 그 글을 실제로 본다)', () => {
+    const wire = percentDecode(JSON.stringify(r4Payload('')))
+    expect(wire).toContain('localhost/fx/home/private/a.ts')
+    expect(wire).toContain('-I/fx/home/include')
   })
 })

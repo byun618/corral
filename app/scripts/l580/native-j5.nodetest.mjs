@@ -230,3 +230,38 @@ describe('R3-A4 원인 기록의 중단·정리 줄', () => {
     assert.equal(cut.verdict, '미달')
   })
 })
+
+describe('R4-A2 옛·새 기록 섞임 — 대상을 다시 명시하면 그때부터 안다', () => {
+  const OLD = (seq, at) => JSON.stringify({ at: new Date(at).toISOString(), event: 'list_recv', seq, serverAt: at, changedAt: at, recvAt: at, offsetMs: 0, rttMs: 10 })
+  const fiveAfter = (head) => {
+    const lists = [{ seq: 1, changedAt: 9_000, delay: 50, dots: { [TARGET]: 'blocked', [OTHER]: 'idle' } }]
+    const causes = STATES.map((expect, i) => {
+      lists.push({ seq: i + 2, changedAt: 10_000 + i * 8_000 + 300, delay: 150, dots: { [TARGET]: expect, [OTHER]: 'idle' } })
+      return causeLine({ i, causeAt: 10_000 + i * 8_000, expect })
+    })
+    return { phoneText: `${head}\n${phoneLog(lists)}`, causeText: causes.join('\n') }
+  }
+
+  it('옛 줄 하나 뒤 새 앱의 첫 목록(대상 명시)부터 — 5전이 모두 계산 · 통과(옛 줄 뺀 것과 같다)', () => {
+    const mixed = computeNativeJ5(fiveAfter(OLD(90, 5_000)))
+    const fresh = computeNativeJ5(fiveAfter(''))
+    assert.equal(mixed.counted, 5)
+    assert.equal(mixed.verdict, '통과')
+    assert.deepEqual(mixed.rows.map((row) => row.bMs), fresh.rows.map((row) => row.bMs))
+  })
+
+  it('옛 줄 뒤 대상을 언급하지 않은 delta 만 있으면 짐작하지 않는다 — 대상 명시 전까지 보류', () => {
+    const lists = foldTargetDots({ target: TARGET, recv: [
+      { builtAt: 1, changes: `${TARGET}=idle` },
+      { builtAt: 2 },
+      { builtAt: 3, changes: `${OTHER}=working` },
+      { builtAt: 4, changes: `${TARGET}=-` },
+      { builtAt: 5, changes: `${OTHER}=idle` },
+      { builtAt: 6, changes: `${TARGET}=working` },
+    ] })
+    assert.deepEqual(lists.map((list) => list.dot), ['idle', undefined, undefined, null, null, 'working'])
+    // 원인이 대상 미확인 구간이면 보류, 명시(사라짐) 뒤면 판정
+    assert.equal(matchTransition({ lists, expect: 'working', causeAt: 3.5 }).kind, 'held')
+    assert.equal(matchTransition({ lists, expect: 'working', causeAt: 4.5 }).list.builtAt, 6)
+  })
+})

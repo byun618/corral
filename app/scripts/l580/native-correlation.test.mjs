@@ -12,10 +12,12 @@ const { ConnectionLog } = await mobileCore('log')
 const { ListStore } = await mobileCore('list-store')
 const { UnreadLedger } = await mobileCore('unread')
 
-function rig() {
+function rig({ restored = [] } = {}) {
   vi.useFakeTimers()
   vi.setSystemTime(FIXTURE_NOW)
   const log = new ConnectionLog(() => Date.now())
+  // 앱 재시작 때처럼 저장된 이전 기록을 앞에 붙인다(`runtime/connection.ts` 의 restore 와 같은 호출).
+  log.restore(restored)
   let listener = null
   const connection = {
     onSession: (fn) => {
@@ -43,7 +45,7 @@ function rig() {
 
 /** 5전이: 원인 → (+100 다른 채널) → (+targetDelay 대상) → 다음 원인까지 8초 간격. */
 function drive(input) {
-  const { log, feed, change } = rig()
+  const { log, feed, change } = rig({ restored: input.restored ?? [] })
   vi.advanceTimersByTime(1_000)
   const causes = []
   for (let i = 0; i < 5; i += 1) {
@@ -93,5 +95,19 @@ describe('R3-A2 실제 feed → 폰 기록 → 계산기 — 대상 채널 전�
     feed.stop()
     const changes = log.list().filter((entry) => entry.event === 'list_recv').map((entry) => entry.detail.changes)
     expect(changes.slice(1)).toEqual(['p5=idle', 'p6=working'])
+  })
+
+  it('R4-A2 옛 앱 기록(`changes` 없는 list_recv) 한 줄을 복원한 뒤 새 기록 — 5전이 계산 · 옛 줄 없는 것과 같은 판정', () => {
+    const old = { at: FIXTURE_NOW - 60_000, event: 'list_recv', detail: { seq: 7, serverAt: FIXTURE_NOW - 60_000, changedAt: FIXTURE_NOW - 60_100, recvAt: FIXTURE_NOW - 60_000, offsetMs: 0, rttMs: 0, available: true, channels: 3 } }
+    const mixed = drive({ targetDelay: 300, otherFirst: true, restored: [old] })
+    vi.useRealTimers()
+    const fresh = drive({ targetDelay: 300, otherFirst: true })
+    expect(mixed.held).toBe(0)
+    expect(mixed.counted).toBe(5)
+    expect(mixed.verdict).toBe('통과')
+    expect(mixed.rows.map((row) => row.bMs)).toEqual(fresh.rows.map((row) => row.bMs))
+    // 같은 섞인 기록에서 느린 대상은 여전히 미달(복구가 거짓 통과를 만들지 않는다)
+    vi.useRealTimers()
+    expect(drive({ targetDelay: 4_000, otherFirst: true, restored: [old] }).verdict).toBe('미달')
   })
 })

@@ -12,6 +12,10 @@ export const MAX_MESSAGE_BYTES = 16 * 1024
 export const AUTH_TIMEOUT_MS = 10_000
 /** 동시 연결 상한 — 인증 전 연결까지 센다. */
 export const MAX_CONNECTIONS = 16
+/** 인증된 연결의 생존 확인 주기 — 이 주기로 WS ping 프레임을 보내고 무수신을 잰다(LIFE-578 E3). */
+export const LIVENESS_INTERVAL_MS = 10_000
+/** 인증된 연결이 이만큼 아무 프레임(메시지·pong)도 보내지 않으면 죽은 연결로 보고 끊는다. 정리까지 최대 = 이 값 + 주기. */
+export const IDLE_TIMEOUT_MS = 30_000
 
 export const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const
 export type ClientType = (typeof CLIENT_TYPES)[number]
@@ -32,6 +36,7 @@ export type ErrorCode =
   | 'auth_timeout'
   | 'revoked'
   | 'unavailable'
+  | 'replaced'
 
 /** WS close 코드 — 4000 번대는 응용 몫. */
 export const CLOSE = {
@@ -40,6 +45,8 @@ export const CLOSE = {
   revoked: 4003,
   badMessage: 4004,
   pairRejected: 4005,
+  /** 같은 기기가 새 연결로 다시 인증했다 — 이전 연결을 닫는다(LIFE-578 E3). */
+  replaced: 4006,
   authTimeout: 4008,
   /** 노출이 막혔다(Funnel·HTTPS 꺼짐 등) — 새 인증을 받지 않고 기존 연결도 닫는다(fix1 R1-A2). */
   unavailable: 4009,

@@ -36,13 +36,13 @@ function parse(stdout: string): Record<string, unknown>[] {
   return stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => JSON.parse(line))
 }
 
-async function setup(): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
+async function setup(timing: { livenessIntervalMs?: number; idleTimeoutMs?: number } = {}): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l577x-'))
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   let now = Date.now()
   const store = new PairingStore({ dir: path.join(dir, 'mobile'), now: () => now })
   store.load()
-  const server = new MobileServer({ pairing: store, appVersion: '0.1.2-test', macName: () => 'test-mac', log: () => {}, onChange: () => {}, authTimeoutMs: 300 })
+  const server = new MobileServer({ pairing: store, appVersion: '0.1.2-test', macName: () => 'test-mac', log: () => {}, onChange: () => {}, authTimeoutMs: 300, ...timing })
   const port = await server.start()
   cleanups.push(() => server.stop())
   return { url: `ws://127.0.0.1:${port}/ws`, store, server, dir, advance: (ms) => { now += ms } }
@@ -151,6 +151,17 @@ describe('repro 스크립트 (A9)', () => {
     fs.writeFileSync(bad, 'not-a-token\n')
     const out = await repro(['hello', '--url', url, '--token-file', bad])
     expect(out.code).toBe(1)
+  })
+
+  it('lifetime (LIFE-578 E3) — 같은 기기 재인증 replaced · 무수신 정리 · 출력에 토큰 없음', async () => {
+    const { url, store, dir } = await setup({ livenessIntervalMs: 100, idleTimeoutMs: 400 })
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'token')
+    expect((await repro(['pair', '--url', url, '--code', code, '--token-out', tokenFile])).code).toBe(0)
+    const out = await repro(['lifetime', '--url', url, '--token-file', tokenFile, '--idle-max-ms', '1500'])
+    expect(out.code).toBe(0)
+    expect(out.rows.map((row) => row.step)).toEqual(['lifetime:old-hello', 'lifetime:new-hello', 'lifetime:old-replaced', 'lifetime:new-alive', 'lifetime:idle-drop', undefined])
+    expect(out.stdout).not.toContain(fs.readFileSync(tokenFile, 'utf8').trim())
   })
 
   it('사용법 오류는 exit 2', async () => {

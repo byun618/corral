@@ -24,6 +24,9 @@ node scripts/l577/repro.mjs hello --url wss://<mac>.ts.net:8577/ws --token-file 
 node scripts/l577/repro.mjs matrix --url <같은 URL> --token-file /tmp/l577x/token \
   [--revoked-token-file <해지한 기기 토큰>] [--used-code <이미 쓴 코드>] [--expired-code <10분 지난 코드>] \
   [--fresh-code <새 유효 코드 — 5번 틀린 뒤 정답이 거절되는지>] [--auth-timeout]
+# ④ 서버 연결 수명(LIFE-578 E3) — 같은 기기 재인증 → 이전 연결 replaced(4006) · 새 연결 pong.
+#    --idle-max-ms 를 주면 서버 ping 에 답하지 않는 연결이 그 안에 끊기는지도 본다(기본값 서버는 최대 40초).
+node scripts/l577/repro.mjs lifetime --url <같은 URL> --token-file /tmp/l577x/token [--idle-max-ms 45000]
 ```
 
 - `--url` 은 `ws://127.0.0.1:<p>/ws`(loopback 직접 — 개발·격리) 또는 `wss://<mac>.ts.net:8577/ws`(tailscale serve 경유 — 네이티브 A10ⓒ).

@@ -207,7 +207,57 @@ async function commandMatrix(url) {
   else record('positive', false, { note: '--token-file 로 양성 대조를 함께 돌린다' }, { skipped: true })
 }
 
-const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix }
+/** 인증된 연결 하나를 열어 둔다 — autoPong:false 면 서버 WS ping 에 답하지 않는다(망이 죽은 폰 흉내, LIFE-578 E3). */
+function heldConnection(url, token, { autoPong }) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(url, { handshakeTimeout: 5000, autoPong })
+    const held = { ws, messages: [], hello: null, closeCode: null, closedAt: null, error: null, closed: null }
+    held.closed = new Promise((done) => ws.on('close', (code) => { held.closeCode = code; held.closedAt = Date.now(); done(code) }))
+    ws.on('error', (err) => { held.error = String(err.message ?? err) })
+    ws.on('unexpected-response', (_req, res) => { held.error = `HTTP ${res.statusCode}`; resolve(held) })
+    ws.on('message', (data) => {
+      let parsed
+      try { parsed = JSON.parse(data.toString()) } catch { parsed = { raw: data.toString().slice(0, 200) } }
+      if (held.hello === null) { held.hello = parsed; resolve(held) } else held.messages.push(parsed)
+    })
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL, token, client: { name: 'repro', version: '1' } })))
+    held.closed.then(() => resolve(held))
+  })
+}
+
+function wait(ms) {
+  return new Promise((done) => setTimeout(done, ms))
+}
+
+/** 서버 연결 수명(LIFE-578 E3 · P7) — ① 같은 기기 재인증이 이전 연결을 replaced(4006)로 닫는다 ② (옵션) ping 에 답하지 않는 연결을 서버가 마감 안에 끊는다. */
+async function commandLifetime(url) {
+  if (typeof args['token-file'] !== 'string') usage('lifetime 에는 --token-file 이 필요하다')
+  const token = readSecretFile(args['token-file'])
+  // ① 이전 연결(서버 ping 에 답 없음) → 같은 토큰으로 새 연결
+  const old = await heldConnection(url, token, { autoPong: false })
+  record('lifetime:old-hello', old.hello?.type === 'hello', { type: 'hello' }, { hello: old.hello, error: old.error })
+  const fresh = await heldConnection(url, token, { autoPong: true })
+  record('lifetime:new-hello', fresh.hello?.type === 'hello', { type: 'hello' }, { hello: fresh.hello, error: fresh.error })
+  await Promise.race([old.closed, wait(3000)])
+  record('lifetime:old-replaced', old.messages[0]?.code === 'replaced' && old.closeCode === 4006, { error: 'replaced', close: 4006 }, { first: old.messages[0], closeCode: old.closeCode })
+  fresh.ws.send(JSON.stringify({ type: 'ping', id: 'l1' }))
+  await wait(500)
+  const pong = fresh.messages.find((message) => message.type === 'pong')
+  record('lifetime:new-alive', pong?.id === 'l1' && fresh.closeCode === null, { type: 'pong', id: 'l1', open: true }, { pong, closeCode: fresh.closeCode })
+  fresh.ws.close()
+  // ② 무수신 정리 — 서버 기본값(주기 10초·마감 30초)이면 최대 40초를 기다린다.
+  if (typeof args['idle-max-ms'] === 'string') {
+    const maxMs = Number(args['idle-max-ms'])
+    const silent = await heldConnection(url, token, { autoPong: false })
+    const startedAt = Date.now()
+    await Promise.race([silent.closed, wait(maxMs + 5000)])
+    const elapsedMs = silent.closedAt === null ? null : silent.closedAt - startedAt
+    record('lifetime:idle-drop', silent.hello?.type === 'hello' && elapsedMs !== null && elapsedMs <= maxMs,
+      { closedWithinMs: maxMs }, { elapsedMs, closeCode: silent.closeCode })
+  }
+}
+
+const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime }
 
 const name = args._[0]
 const url = typeof args.url === 'string' ? args.url : null

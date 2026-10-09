@@ -8,6 +8,8 @@
 // - 인증은 WS 첫 메시지(`hello`+토큰 또는 `pair`+코드). 그 전에는 어떤 데이터도 돌려주지 않는다 — 버전도 인증 뒤에만.
 //   loopback 의 다른 로컬 프로세스도 붙을 수 있다는 전제다(serve 헤더는 위조 가능 — W6). 경계는 토큰이다.
 // - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 ws 가 닫는다.
+// - 인증된 연결은 생존 확인(LIFE-578 E3): `LIVENESS_INTERVAL_MS` 마다 WS ping 프레임, `IDLE_TIMEOUT_MS` 동안 아무 프레임도 없으면 끊는다.
+//   같은 기기가 새로 hello 하면 그 기기의 이전 연결을 `replaced` 로 닫는다 — 망을 바꾼 폰의 죽은 연결이 상한 16 을 채우지 않게.
 // - **electron 을 모른다** — 버전·로그를 주입받아 vitest 가 실제 서버를 띄운다.
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
@@ -16,6 +18,8 @@ import type { Device, PairingStore } from './pairing.js'
 import {
   AUTH_TIMEOUT_MS,
   CLOSE,
+  IDLE_TIMEOUT_MS,
+  LIVENESS_INTERVAL_MS,
   MAX_CONNECTIONS,
   MAX_MESSAGE_BYTES,
   PROTOCOL_VERSION,
@@ -28,7 +32,7 @@ export const MOBILE_BIND_HOST = '127.0.0.1'
 
 type Log = (tag: string, fields?: Record<string, unknown>) => void
 
-type Connection = { ws: WebSocket; deviceId: string | null; timer: NodeJS.Timeout | null; closing: boolean }
+type Connection = { ws: WebSocket; deviceId: string | null; timer: NodeJS.Timeout | null; closing: boolean; lastSeenAt: number }
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -47,6 +51,9 @@ export type MobileServerDeps = {
   allowedOrigin?: () => string | null
   /** 시험만 줄인다. */
   authTimeoutMs?: number
+  /** 시험만 줄인다 — 생존 확인 주기·무수신 마감(E3). */
+  livenessIntervalMs?: number
+  idleTimeoutMs?: number
 }
 
 export class MobileServer {
@@ -56,6 +63,7 @@ export class MobileServer {
   private readonly connections = new Set<Connection>()
   private port: number | null = null
   private starting: Promise<number> | null = null
+  private sweeper: NodeJS.Timeout | null = null
 
   constructor(deps: MobileServerDeps) {
     this.deps = deps
@@ -110,6 +118,8 @@ export class MobileServer {
     this.http = server
     this.wss = wss
     this.port = (address satisfies AddressInfo).port
+    this.sweeper = setInterval(() => this.sweep(), this.deps.livenessIntervalMs ?? LIVENESS_INTERVAL_MS)
+    this.sweeper.unref()
     this.deps.log('mobile.server_listen', { host: MOBILE_BIND_HOST, port: this.port })
     return this.port
   }
@@ -119,6 +129,8 @@ export class MobileServer {
     const server = this.http
     this.http = null
     this.port = null
+    if (this.sweeper !== null) clearInterval(this.sweeper)
+    this.sweeper = null
     for (const connection of this.connections) this.drop(connection, CLOSE.shutdown, 'shutdown')
     this.connections.clear()
     this.wss?.close()
@@ -173,11 +185,38 @@ export class MobileServer {
     return closed
   }
 
+  /**
+   * 생존 확인(E3) — 인증된 연결 중 마감 동안 아무 프레임도 보내지 않은 것은 끊고(close 핸드셰이크 없이 — 상대가 없다), 나머지에는 ping 을 보낸다.
+   * 인증 전 연결은 `auth_timeout` 이 맡는다.
+   */
+  private sweep(): void {
+    const now = Date.now()
+    const idleMs = this.deps.idleTimeoutMs ?? IDLE_TIMEOUT_MS
+    for (const connection of [...this.connections]) {
+      if (connection.deviceId === null || connection.closing) continue
+      if (now - connection.lastSeenAt > idleMs) {
+        this.deps.log('mobile.idle_drop', { device: connection.deviceId, idleMs: now - connection.lastSeenAt })
+        connection.closing = true
+        connection.ws.terminate()
+        continue
+      }
+      try {
+        connection.ws.ping()
+      } catch {
+        connection.ws.terminate()
+      }
+    }
+  }
+
   private accept(ws: WebSocket): void {
-    const connection: Connection = { ws, deviceId: null, timer: null, closing: false }
+    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now() }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
-    ws.on('message', (data, isBinary) => this.onMessage(connection, data, isBinary))
+    ws.on('message', (data, isBinary) => {
+      connection.lastSeenAt = Date.now()
+      this.onMessage(connection, data, isBinary)
+    })
+    ws.on('pong', () => { connection.lastSeenAt = Date.now() })
     ws.on('close', () => {
       if (connection.timer !== null) clearTimeout(connection.timer)
       const wasDevice = connection.deviceId !== null
@@ -224,6 +263,7 @@ export class MobileServer {
         const device = this.deps.pairing.authenticate(message.token)
         if (device === null) return this.reject(connection, 'unauthorized', CLOSE.unauthorized)
         this.deps.pairing.touch(device.id)
+        this.replacePrevious(connection, device.id)
         this.admit(connection, device)
         this.deps.log('mobile.hello', { device: device.id })
         return this.send(connection.ws, { type: 'hello', ok: true, ...this.versions(), device: { id: device.id, name: device.name } })
@@ -255,6 +295,15 @@ export class MobileServer {
       case 'ping':
       case 'unknown':
         return this.reject(connection, 'not_authenticated', CLOSE.unauthorized)
+    }
+  }
+
+  /** 같은 기기의 이전 연결을 닫는다(E3) — 다른 기기 연결은 건드리지 않는다. */
+  private replacePrevious(connection: Connection, deviceId: string): void {
+    for (const other of [...this.connections]) {
+      if (other === connection || other.deviceId !== deviceId || other.closing) continue
+      this.deps.log('mobile.replaced', { device: deviceId })
+      this.reject(other, 'replaced', CLOSE.replaced)
     }
   }
 
@@ -318,5 +367,6 @@ function errorText(code: ErrorCode): string {
     case 'auth_timeout': return '인증 시간 초과'
     case 'revoked': return '기기가 해지되었다'
     case 'unavailable': return '지금은 모바일 연결을 받지 않는다 — 데스크톱 설정의 노출 상태를 확인한다'
+    case 'replaced': return '같은 기기의 새 연결로 바뀌었다'
   }
 }

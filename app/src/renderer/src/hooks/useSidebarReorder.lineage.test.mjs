@@ -169,20 +169,38 @@ describe('K4ⓑ 부모를 끌면 펼친 후손이 함께 — commit 에 덩어�
   })
 })
 
-describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순서 commit(부모 풀기는 Sidebar 가 같은 commit 에서)', () => {
-  it('c2 를 z 아래 가장자리로 → slot 6(평면 끝), block 없음, 행 밀림 없이 표시 줄만', () => {
+describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순서 commit(부모 풀기는 Sidebar 가 같은 commit 에서 `hasValidLineage`)', () => {
+
+  it('M4 + K3ⓔ — 자식 끌기로 덩어리가 밀린 뒤에도 상위 지정은 밀리기 전 자리로 판정한다', () => {
+    const api = mount({ canNest: (nest) => nest.parentPath === '/b' })
+    // c2 를 b 위 가장자리(56..64)로 → slot 1 → b·p·z 가 c2 높이(40)+6 만큼 내려간다.
+    drag(api, { path: '/c2', fromY: 230, ys: [240, 58] })
+    expect(dom.shifts()['/b']).toBe(46)
+    // 포인터 81 = b 의 원래 가운데(밀린 b 는 102..152 에 보인다) → 대상 b, 밀림을 거둔다.
+    dom.doc.emit('mousemove', { clientX: 40, clientY: 81, buttons: 1 })
+    expect(render().state?.lineageTarget).toBe('/b')
+    expect(dom.shifts()).toEqual({})
+    dom.runFrame(16)
+    expect(render().state?.lineageTarget).toBe('/b')
+    release(81)
+    expect(nests).toEqual([{ path: '/c2', parentPath: '/b' }])
+    expect(commits).toEqual([])
+  })
+
+  it('c2 를 z 아래 가장자리로 → slot 6(평면 끝), block 없음, 끝이라 밀 행 없음 · 표시 줄 = 마지막 아랫변 + 틈', () => {
     const api = mount({ canNest: () => false })
     drag(api, { path: '/c2', fromY: 230, ys: [240, 303] })
     expect(dom.shifts()).toEqual({})
-    expect(render().state?.indicatorY).toBe(306)
+    expect(render().state?.indicatorY).toBe(312)
     release(303)
     expect(commits).toEqual([{ source: { kind: 'card', repoRoot: '/r', path: '/c2' }, keys: FLAT, slot: 6 }])
     expect(nests).toEqual([])
   })
 
-  it('c1 을 a 위 가장자리로 → slot 0', () => {
+  it('M4 c1 을 a 위 가장자리로 → slot 0 · 모든 덩어리가 c1 높이(40) + 틈(6) 만큼 밀린다(Orca drag unit 미리보기)', () => {
     const api = mount({ canNest: () => false })
     drag(api, { path: '/c1', fromY: 186, ys: [180, 2] })
+    expect(dom.shifts()).toEqual({ '/a': 46, '/b': 46, '/p': 46, '/z': 46 })
     release(2)
     expect(commits).toEqual([{ source: { kind: 'card', repoRoot: '/r', path: '/c1' }, keys: FLAT, slot: 0 }])
   })

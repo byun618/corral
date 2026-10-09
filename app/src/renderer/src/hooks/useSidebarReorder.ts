@@ -23,7 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   buildReorderPreview,
   hasCrossedReorderThreshold,
-  insertionIndicatorY,
+  buildInsertionPreview,
   nextAutoscrollTop,
   resolveCardDropSlot,
   resolveLineageTarget,
@@ -408,8 +408,11 @@ export function useSidebarReorder(input: {
       let indicatorY: number | null = null
       if (measured.slot === null) applyShifts({ elements: [], offsets: [] })
       else if (from < 0) {
-        applyShifts({ elements: [], offsets: [] })
-        indicatorY = insertionIndicatorY({ rects: measured.rects, slot: measured.slot, view })
+        // 중첩된 자식 — 덩어리 목록 밖이라 끼워 넣기 미리 보기(M4). 높이는 끄는 행(그 안 후손 포함)의 밀리기 전 높이.
+        const source = measured.sourceElement === undefined ? null : rectOf({ list, element: measured.sourceElement })
+        const built = buildInsertionPreview({ rects: measured.rects, slot: measured.slot, height: source === null ? 0 : source.bottom - source.top, view })
+        applyShifts({ elements: measured.elements, offsets: built.offsets })
+        indicatorY = built.indicatorY
       } else {
         const built = buildReorderPreview({ rects: measured.rects, from, slot: measured.slot, view })
         applyShifts({ elements: measured.elements, offsets: built.offsets })

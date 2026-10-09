@@ -13,6 +13,7 @@ import type { LayoutGroup, ManualOrder } from '../manual-order.js'
 import {
   activeFilterCount,
   buildSidebarSections,
+  hasValidLineage,
   nestSectionItems,
   PINNED_SECTION_KEY,
   sectionKey,
@@ -184,8 +185,9 @@ export function Sidebar({
   const reorder = useSidebarReorder({
     listRef,
     onCommit: (commit) => {
-      // 중첩된 하위 카드를 순서 줄에 놓으면 그 카드만 부모를 푼다(D4 — Orca 「un-nest escape hatch」). 끈 카드의 후손 링크는 그대로.
-      if (commit.source.kind !== 'repo' && nestedPaths.has(commit.source.path)) removeParent(commit.source.path)
+      // 순서 줄에 놓은 카드는 lineage 가 유효하면 부모를 푼다 — 부모가 화면에 보이든 아니든(D4 · 수정 r1 M2, Orca main
+      // `getReorderedWorktreeIdsToUnnest` 「un-nest escape hatch」). 끈 카드의 후손 링크는 그대로, 부모 없는 카드는 lineage 를 안 쓴다.
+      if (commit.source.kind !== 'repo' && hasValidLineage({ repos: state.repos, path: commit.source.path })) removeParent(commit.source.path)
       onReorder({ commit, layout: sectionLayout(sections) })
     },
     // 아래에서 정의하는 술어 — 끄는 동안 부를 때는 이 렌더가 끝난 뒤다.
@@ -202,7 +204,7 @@ export function Sidebar({
   const sections = useSettledSections({ sections: buildSidebarSections({ repos: state.repos, view, order: manualOrder, now, pinned: cards.pinned }), view, order: manualOrder })
   // 계보 덩어리 (LIFE-576) — 구획은 평면 그대로 두고 그리기 직전에만 묶는다(`nestSectionItems`).
   const unitsOf = new Map<string, LineageUnit[]>(sections.map((section) => [sectionKey(section), nestSectionItems({ items: section.items, collapsed: lineageCollapse.values })]))
-  /** 지금 부모 카드 안에 중첩돼 그려진 카드 — 순서 줄에 놓으면 부모가 풀린다(D4). */
+  /** 지금 부모 카드 안에 중첩돼 그려진 카드 — `↳ 부모` 칩을 생략한다(부모 해제 판정은 `hasValidLineage`). */
   const nestedPaths = new Set<string>()
   for (const units of unitsOf.values()) for (const unit of units) for (const row of unit.descendants) nestedPaths.add(row.item.worktree.path)
   const filtersOn = activeFilterCount({ view, repos: state.repos }) > 0

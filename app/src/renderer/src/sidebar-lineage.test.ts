@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_SIDEBAR_VIEW, type SidebarView } from '../../shared/sidebar-view.js'
 import type { RepoRow, WorktreeRow } from '../../shared/types.js'
 import { applyWorktreeMove, EMPTY_MANUAL_ORDER, moveBlock } from './manual-order.js'
-import { insertionIndicatorY, isLineageDropZoneHit, resolveLineageTarget, unitSlotToFlat } from './sidebar-reorder.js'
+import { buildInsertionPreview, isLineageDropZoneHit, resolveLineageTarget, unitSlotToFlat } from './sidebar-reorder.js'
 import {
   buildSidebarSections,
+  hasValidLineage,
   LINEAGE_CARD_MIN_WIDTH_PX,
   lineageCycleMembers,
   lineageIndent,
@@ -79,7 +80,7 @@ describe('K1ⓐⓑ 같은 구획·같은 레포 부모 아래 중첩 — Orca `a
   })
 })
 
-describe('K1ⓒ 부모가 같은 구획에 안 보이면 평소 자리 (D1) — buildSidebarSections 와 함께', () => {
+describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1·M3) — buildSidebarSections 와 함께', () => {
   const repos = [
     repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/coord' }), wt({ path: '/r/impl', parent: '/r/coord' }), wt({ path: '/r/x', parent: '/s/other' })]),
     repo('/s', [wt({ path: '/s', linked: false }), wt({ path: '/s/other' }), wt({ path: '/s/y', parent: '/r/coord' })]),
@@ -91,23 +92,50 @@ describe('K1ⓒ 부모가 같은 구획에 안 보이면 평소 자리 (D1) — 
     expect(sectionUnits(sections, '/s')).toEqual([['/s@0(0)'], ['/s/other@0(0)'], ['/s/y@0(0)']])
   })
 
-  it('Group by None — 부모가 같은 구획에 보여도 다른 레포면 중첩 안 함', () => {
+  it('M3 Group by None — 다른 레포 부모라도 같은 구획에 보이면 중첩(Orca 유효 간선은 레포를 안 본다)', () => {
     const sections = buildSidebarSections({ repos, view: view({ groupBy: 'none' }), order: EMPTY_MANUAL_ORDER, now: 0 })
     const units = sectionUnits(sections, '*all')
-    expect(units).toContainEqual(['/r/coord@0(1)', '/r/impl@1(0)'])
-    expect(units).toContainEqual(['/r/x@0(0)'])
-    expect(units).toContainEqual(['/s/y@0(0)'])
+    // /r/coord 아래 같은 레포 /r/impl 과 다른 레포 /s/y, /s/other 아래 다른 레포 /r/x.
+    expect(units).toContainEqual(['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)'])
+    expect(units).toContainEqual(['/s/other@0(1)', '/r/x@1(0)'])
   })
 
-  it('고정한 부모 — 자식은 원래 구획 평소 자리, 부모는 Pinned 구획에서 자식 없이', () => {
+  it('M1 고정한 부모 — 후손이 Pinned 구획으로 함께 올라가 그 안에 중첩, 원래 구획에서는 빠진다', () => {
     const sections = buildSidebarSections({ repos, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/coord']) })
-    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(0)']])
-    expect(sectionUnits(sections, '/r')).toEqual([['/r@0(0)'], ['/r/impl@0(0)'], ['/r/x@0(0)']])
+    // /s/y 도 /r/coord 의 후손(다른 레포) — Orca 처럼 함께 올라간다.
+    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)']])
+    expect(sectionUnits(sections, '/r')).toEqual([['/r@0(0)'], ['/r/x@0(0)']])
+    expect(sectionUnits(sections, '/s')).toEqual([['/s@0(0)'], ['/s/other@0(0)']])
   })
 
-  it('부모와 자식을 다 고정하면 Pinned 구획 안에서 중첩된다(같은 구획에 보인다)', () => {
+  it('M1 고정 해제 = 후손이 원래 구획으로 돌아간다', () => {
+    const sections = buildSidebarSections({ repos, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set() })
+    expect(sections.some((section) => section.kind === 'pinned')).toBe(false)
+    expect(sectionUnits(sections, '/r')).toEqual([['/r@0(0)'], ['/r/coord@0(1)', '/r/impl@1(0)'], ['/r/x@0(0)']])
+  })
+
+  it('M1 손자까지 따라 내려가고, 필터로 가려진 중간 카드도 길로는 지나간다(가려진 카드 자신은 안 올라감)', () => {
+    const deep = [repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/p' }), wt({ path: '/r/mid', parent: '/r/p', branch: '' }), wt({ path: '/r/leaf', parent: '/r/mid' })])]
+    const detachedMid = [{ ...deep[0]!, worktrees: deep[0]!.worktrees.map((row) => (row.path === '/r/mid' ? { ...row, branch: null, head: 'abcdef0123456789' } : row)) }]
+    const shown = buildSidebarSections({ repos: detachedMid, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/p']) })
+    expect(sectionUnits(shown, '*pinned')).toEqual([['/r/p@0(1)', '/r/mid@1(1)', '/r/leaf@2(0)']])
+    const hidden = buildSidebarSections({ repos: detachedMid, view: view({ hideDetachedHead: true }), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/p']) })
+    // mid 가 가려져 leaf 는 Pinned 구획에서 부모가 안 보인다 → 루트로(칩).
+    expect(sectionUnits(hidden, '*pinned')).toEqual(expect.arrayContaining([['/r/p@0(0)'], ['/r/leaf@0(0)']]))
+    expect(sectionUnits(hidden, '*pinned')).toHaveLength(2)
+    expect(sectionUnits(hidden, '/r')).toEqual([['/r@0(0)']])
+  })
+
+  it('M1 가려진 고정 카드는 출발점이 아니다 — 후손은 원래 구획(Orca 는 보이는 목록에서 고정을 고른다)', () => {
+    const withMainParent = [repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/k', parent: '/r' })])]
+    const sections = buildSidebarSections({ repos: withMainParent, view: view({ hideDefaultBranch: true }), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r']) })
+    expect(sections.some((section) => section.kind === 'pinned')).toBe(false)
+    expect(sectionUnits(sections, '/r')).toEqual([['/r/k@0(0)']])
+  })
+
+  it('부모와 자식을 다 고정해도 같다(Pinned 구획 안 중첩)', () => {
     const sections = buildSidebarSections({ repos, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/coord', '/r/impl']) })
-    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(1)', '/r/impl@1(0)']])
+    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)']])
   })
 
   it('필터로 부모가 숨으면 자식은 평소 자리(Hide default branch 가 주 체크아웃 부모를 숨김)', () => {
@@ -226,11 +254,28 @@ describe('K4ⓑ 덩어리 이동 — 부모를 끌면 후손이 함께(Orca `get
     expect(next?.worktrees['/r']).toEqual(['/r/p', '/r/c', '/r', '/r/x'])
   })
 
-  it('중첩된 자식 끌기의 표시 줄 — 놓일 덩어리 윗변, 맨 끝은 마지막 덩어리 아랫변(보이는 범위 안으로)', () => {
-    const rects = [{ top: 0, bottom: 50 }, { top: 56, bottom: 200 }]
+  it('M4 중첩된 자식 끌기 미리 보기 — 경계 뒤 덩어리를 끄는 카드 높이 + 틈만큼 내리고, 표시 줄 = 벌어진 자리 윗변', () => {
+    const rects = [{ top: 0, bottom: 50 }, { top: 56, bottom: 200 }, { top: 206, bottom: 256 }]
     const view = { top: 0, bottom: 600 }
-    expect(insertionIndicatorY({ rects, slot: 0, view })).toBe(5)
-    expect(insertionIndicatorY({ rects, slot: 1, view })).toBe(56)
-    expect(insertionIndicatorY({ rects, slot: 2, view })).toBe(200)
+    expect(buildInsertionPreview({ rects, slot: 0, height: 40, view })).toEqual({ offsets: [46, 46, 46], indicatorY: 5 })
+    expect(buildInsertionPreview({ rects, slot: 2, height: 40, view })).toEqual({ offsets: [0, 0, 46], indicatorY: 206 })
+    expect(buildInsertionPreview({ rects, slot: 3, height: 40, view })).toEqual({ offsets: [0, 0, 0], indicatorY: 262 })
+  })
+})
+
+describe('K4ⓒ 순서 줄 부모 해제 판정 = Orca lineage 유효 (수정 r1 M2 — `getReorderedWorktreeIdsToUnnest`)', () => {
+  const repos = [
+    repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/p' }), wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/gone', parent: '/r/nowhere' }), wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' })]),
+    repo('/s', [wt({ path: '/s/x', parent: '/r/p' })]),
+  ]
+  it('부모가 목록에 있으면 참 — 화면에 보이든(중첩) 아니든(다른 구획·다른 레포·고정·필터)', () => {
+    expect(hasValidLineage({ repos, path: '/r/c' })).toBe(true)
+    expect(hasValidLineage({ repos, path: '/s/x' })).toBe(true)
+  })
+  it('부모 없는 카드·없는 부모·순환 구성원·없는 카드 = 거짓(lineage 무변경)', () => {
+    expect(hasValidLineage({ repos, path: '/r/p' })).toBe(false)
+    expect(hasValidLineage({ repos, path: '/r/gone' })).toBe(false)
+    expect(hasValidLineage({ repos, path: '/r/a' })).toBe(false)
+    expect(hasValidLineage({ repos, path: '/nope' })).toBe(false)
   })
 })

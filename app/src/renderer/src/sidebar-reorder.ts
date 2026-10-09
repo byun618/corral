@@ -123,14 +123,21 @@ export function unitSlotToFlat(input: { sizes: readonly number[]; slot: number }
 }
 
 /**
- * 중첩된 자식을 끄는 중의 표시 줄 — 끄는 카드가 덩어리 목록에 없어(부모 덩어리 안이다) 행을 밀지 않고 놓일 경계에 줄만 긋는다.
- * 경계 = 그 덩어리 윗변, 맨 끝이면 마지막 덩어리 아랫변.
+ * 중첩된 자식을 끄는 중의 미리 보기 (수정 r1 M4 — Orca main `worktree-drag-units.ts`: 끄는 카드도 덩어리처럼 자리를 벌린다).
+ * 끄는 카드는 부모 덩어리 안이라 덩어리 목록에 없다 — 놓일 경계 `slot` 뒤 덩어리들을 끄는 카드 높이 + 틈(틈의 중앙값)만큼 내리고,
+ * 표시 줄 = 벌어진 자리 윗변(경계 덩어리 윗변, 맨 끝이면 마지막 덩어리 아랫변 + 틈). 사각형은 **밀리기 전** 자리다(K3ⓔ).
  */
-export function insertionIndicatorY(input: { rects: readonly ItemRect[]; slot: number; view: ItemRect }): number {
+export function buildInsertionPreview(input: { rects: readonly ItemRect[]; slot: number; height: number; view: ItemRect }): { offsets: number[]; indicatorY: number } {
   const { rects, view } = input
   const slot = Math.max(0, Math.min(rects.length, Math.trunc(input.slot)))
-  const y = rects[slot]?.top ?? rects[rects.length - 1]?.bottom ?? view.top
-  return clampToView({ y, view })
+  const gaps: number[] = []
+  for (let index = 1; index < rects.length; index++) gaps.push(Math.max(0, (rects[index]?.top ?? 0) - (rects[index - 1]?.bottom ?? 0)))
+  const gap = median(gaps) ?? 0
+  const shift = Math.max(0, input.height) + gap
+  const offsets = rects.map((_, index) => (index >= slot && shift >= 0.5 ? shift : 0))
+  const last = rects[rects.length - 1]
+  const y = rects[slot]?.top ?? (last === undefined ? view.top : last.bottom + gap)
+  return { offsets, indicatorY: clampToView({ y, view }) }
 }
 
 /** 표시 줄을 보이는 범위 안쪽으로 당기는 여유 — 붙은 헤더 윗변 바로 안쪽(점 3px + 테두리 2px). */

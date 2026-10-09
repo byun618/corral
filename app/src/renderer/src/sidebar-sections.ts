@@ -247,10 +247,10 @@ export function buildSidebarSections(input: {
   pinned?: ReadonlySet<string>
 }): SidebarSection[] {
   const { view, order, now } = input
-  const pinned = input.pinned ?? NO_PINS
   const repos = visibleRepos({ view, repos: input.repos })
   const nameOf = new Map(repos.map((repo) => [repo.root, repo.name]))
   const passes = (item: SortItem): boolean => passesWorktreeFilters({ view, worktree: item.worktree })
+  const pinned = pinnedSectionPaths({ repos: input.repos, visible: repos, view, pinned: input.pinned ?? NO_PINS })
   const keep = (item: SortItem): boolean => passes(item) && !pinned.has(item.worktree.path)
   // Pinned 순서 = 지금 정렬(198 `sortedIds`) — Manual 이면 평면 수동 순서(`orderAll`), 아니면 그 모드의 비교.
   const pinnedItems = pinned.size === 0 ? [] : sortItems({
@@ -265,6 +265,34 @@ export function buildSidebarSections(input: {
 }
 
 const NO_PINS: ReadonlySet<string> = new Set()
+
+/**
+ * Pinned 구획에 들어갈 경로 (수정 r1 M1 — Orca `pinned-section-worktrees.ts:8-41` `getPinnedSectionWorktrees`) — **보이는** 고정 카드에서 시작해
+ * 부모 링크의 후손을 전부 따라 내려가며, 보이는(레포 필터·스위치 필터 통과) 후손을 함께 올린다. 가려진 중간 카드도 길로는 지나간다(Orca 와 같다).
+ * 가려진 고정 카드는 출발점이 아니다(Orca 는 보이는 목록에서 `isPinned` 를 고른다). 고정을 풀면 후손은 원래 구획으로 돌아간다.
+ */
+function pinnedSectionPaths(input: { repos: readonly RepoRow[]; visible: readonly RepoRow[]; view: SidebarView; pinned: ReadonlySet<string> }): ReadonlySet<string> {
+  if (input.pinned.size === 0) return input.pinned
+  const children = new Map<string, string[]>()
+  for (const repo of input.repos)
+    for (const worktree of repo.worktrees)
+      if (worktree.parentPath !== null && worktree.parentPath !== worktree.path)
+        children.set(worktree.parentPath, [...(children.get(worktree.parentPath) ?? []), worktree.path])
+  const visible = new Set(
+    input.visible.flatMap((repo) => repo.worktrees.filter((worktree) => passesWorktreeFilters({ view: input.view, worktree })).map((worktree) => worktree.path)),
+  )
+  const included = new Set<string>()
+  const seen = new Set<string>()
+  const pending = [...input.pinned].filter((path) => visible.has(path))
+  while (pending.length > 0) {
+    const path = pending.pop()
+    if (path === undefined || seen.has(path)) continue
+    seen.add(path)
+    if (visible.has(path)) included.add(path)
+    pending.push(...(children.get(path) ?? []))
+  }
+  return included
+}
 
 function groupedSections(input: {
   repos: readonly RepoRow[]
@@ -302,8 +330,9 @@ function groupedSections(input: {
 // Orca main `row-builders.ts` `appendWorktreeRows`(nestLineage) + `renderable-rows.ts` `buildRenderableRows` 대응 — 구획 하나의
 // 카드(정렬 끝난 평면 목록)를 부모 아래 후손이 붙은 덩어리(unit)로 묶는다. 구획 빌드·지연(`useSettledSections`)은 평면 그대로 두고
 // 그리기 직전에만 묶는다 — 순서·서명·필터 규칙은 하나도 안 바뀐다.
-//   · 부모가 **같은 구획에 보이고 같은 레포**일 때만 중첩(D1, Orca `getSidebarLineageParent` 가 보이는 행에서만 부모를 찾는다).
-//     안 보이면 평소 자리 + 메타 줄 `↳ 부모` 칩.
+//   · 부모가 **같은 구획에 보일 때만** 중첩(D1, Orca `getSidebarLineageParent` 가 보이는 행에서만 부모를 찾는다). 레포는 보지 않는다 —
+//     Orca 유효 간선(`isValidResolvedWorktreeLineageEdge`)이 레포를 안 보므로 「그룹 없음」 보기에서는 다른 레포 부모도 중첩된다(수정 r1 M3).
+//     레포 그룹 보기에서는 구획이 달라 평소 자리 + 메타 줄 `↳ 부모` 칩.
 //   · 순환 구성원은 부모를 무시하고 루트로 그린다(Orca `cyclicLineageIds` — 「malformed cyclic lineage should not hide every participant」).
 //   · 깊이 상한 없음(O7). 자식 순서 = 구획 안 순서. 「N 하위」 N = **직계 자식 수**(Orca `lineageChildCount = children.length`).
 //   · 접힌 부모(`collapsed` = 부모 경로)의 후손은 덩어리에서 빠진다(Orca `lineageCollapsed` → 자식 행을 내보내지 않음).
@@ -312,12 +341,12 @@ export type LineageRow = { item: SortItem; depth: number; childCount: number; co
 /** 덩어리 하나 — 루트 카드 + 펼친 후손(문서 순서, 깊이 ≥ 1). 끌기·그리기 단위(Orca `lineage-group` 행·drag unit). */
 export type LineageUnit = { root: LineageRow; descendants: LineageRow[] }
 
-/** 구획 안에서 그 카드의 부모 — 같은 구획에 보이고 같은 레포일 때만. */
+/** 구획 안에서 그 카드의 부모 — 같은 구획에 보일 때만. */
 function visibleParent(input: { item: SortItem; byPath: ReadonlyMap<string, SortItem> }): SortItem | undefined {
   const parentPath = input.item.worktree.parentPath
   if (parentPath === null || parentPath === input.item.worktree.path) return undefined
   const parent = input.byPath.get(parentPath)
-  return parent !== undefined && parent.repoRoot === input.item.repoRoot ? parent : undefined
+  return parent
 }
 
 /** 보이는 부모 연결 중 순환에 든 카드 경로(Orca `getCyclicWorktreeLineageChildIds` — 순환 구성원만, 순환에 매달린 카드는 아니다). */
@@ -340,6 +369,18 @@ export function lineageCycleMembers(items: readonly SortItem[]): Set<string> {
     for (const path of trail) settled.add(path)
   }
   return cyclic
+}
+
+/**
+ * 순서 줄에 놓았을 때 부모를 풀 카드인가 (수정 r1 M2 — Orca `getLineageRenderInfo(...).state === 'valid'`) — 부모가 목록 어딘가에 있고
+ * (화면에 보이든 아니든) 순환 구성원이 아니다. 부모 없는 카드·없는 부모를 가리키는 카드는 거짓(lineage 를 쓰지 않는다).
+ */
+export function hasValidLineage(input: { repos: readonly RepoRow[]; path: string }): boolean {
+  const all = input.repos.flatMap((repo) => repo.worktrees.map((worktree) => ({ repoRoot: repo.root, repoName: repo.name, worktree })))
+  const self = all.find((item) => item.worktree.path === input.path)
+  const parentPath = self?.worktree.parentPath ?? null
+  if (parentPath === null || parentPath === input.path || !all.some((item) => item.worktree.path === parentPath)) return false
+  return !lineageCycleMembers(all).has(input.path)
 }
 
 export function nestSectionItems(input: { items: readonly SortItem[]; collapsed: ReadonlySet<string> }): LineageUnit[] {

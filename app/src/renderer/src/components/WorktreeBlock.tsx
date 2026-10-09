@@ -441,7 +441,7 @@ export function WorktreeBlock({
                   )}
                   {card.parentName === null ? null : (
                     // 상위 칩 — 부모가 **같은 구획에 보일 때**는 부모 카드 안에 중첩되고(LIFE-576 D1 — 478 게이트 ⓪ Q4 「중첩 안 만듦」 보류를 번복),
-                    // 이 칩은 부모가 안 보일 때(고정됨·다른 레포·필터로 숨김)만 뜻이 있다. Orca 도 같은 자리에서 중첩/칩을 가른다(478 K6ⓔ 칩 유지).
+                    // 이 칩은 부모가 안 보일 때(필터로 숨김·레포 그룹 보기의 다른 레포 부모)만 뜻이 있다 — 고정한 부모의 후손은 Pinned 로 함께 올라간다(수정 r1 M1). Orca 도 같은 자리에서 중첩/칩을 가른다(478 K6ⓔ 칩 유지).
                     <span className="worktree-parent-chip" data-worktree-parent={worktree.parentPath ?? ''} title={`상위 워크트리: ${card.parentName}`}>
                       ↳ {card.parentName}
                     </span>

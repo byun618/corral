@@ -9,7 +9,9 @@
 // 안 읽음(J1)은 폰 장부라 서버가 모른다. 그래서 점을 두 번 계산해 둘 다 보낸다 — `dot`(본 것으로 칠 때) · `dotUnseen`(안 본 것으로 칠 때).
 // 데스크톱도 같은 함수에 자기 장부(`unreadPanes`)를 넣어 고른다. 폰은 자기 장부로 둘 중 하나를 고를 뿐 점 규칙을 모른다.
 //
-// 보내지 않는 것(J8): 셸 pane · 터미널 내용 · 경로(작업·레포 id 는 경로 해시) · 토큰·비용 · 환경. 행 수는 자르지 않는다 — 글만 표시 길이로 자른다.
+// 보내지 않는 것(J8 · R1-A3 계약): 셸 pane · 터미널 화면 내용 · 레포·작업 경로(id 는 경로 해시) · **홈 아래 절대경로**(미리보기 글의 경로는
+// 그 pane 의 작업 worktree 안이면 worktree 상대, 밖이면 `~/` — `maskPaths`) · 토큰·비용 · 환경. 제목은 데스크톱 사이드바와 같은 문자열이다
+// (터미널 제목 폴백·홈 축약 포함 — 데스크톱 함수 그대로, J4). 행 수는 자르지 않는다 — 글만 표시 길이로 자른다.
 import { createHash } from 'node:crypto'
 import type { AgentDot } from '../../shared/agent-dot.js'
 import { readKeyList, readWorktreeOrder, type ManualOrder } from '../../shared/manual-order.js'
@@ -57,8 +59,10 @@ export type MobileChannel = {
   depth: 0 | 1
   /** 하위 워크트리 출신이면 그 워크트리 이름(`↳ 출신`). */
   origin: string | null
-  /** 띄운 세션 — 부모가 다른 작업 그룹에 있거나 모를 때만(디자인 Q3). `{title:null}` = 모름. */
+  /** 띄운 세션 — 목록 행 셋째 줄용: 부모가 다른 작업 그룹에 있거나 모를 때만(디자인 Q3). `{title:null}` = 모름. */
   spawnedBy: { title: string | null } | null
+  /** 띄운 세션 — 대화 머리용: 계보에 부모가 있으면 **항상**(579 Q3, R1 C2). `{title:null}` = 부모를 모름. 계보에 없으면 null. */
+  parent: { title: string | null } | null
   preview: MobilePreview
   waiting: MobileWaitKind | null
   model: string | null
@@ -109,17 +113,50 @@ export function phoneOrder(prefs: UiPrefs | null): ManualOrder {
   return { repos: readKeyList(prefs.manualRepoOrder), worktrees: readWorktreeOrder(prefs.manualWorktreeOrder), all: readKeyList(prefs.manualFlatOrder) }
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** 경로 글자 — 경계 판정용(앞뒤가 이 글자면 더 긴 경로의 일부다). */
+const PATH_CHAR = '[\\w.~@%+=,:-]'
+
+/**
+ * 폰 표시 글에서 홈 아래 절대경로를 감춘다(R1-A3 ②). 그 pane 의 작업 worktree 안이면 worktree 상대(`src/a.ts`, worktree 자신은 `.`),
+ * 그 밖의 홈 아래면 `~/…`. 홈 밖 경로(`/tmp`·`/opt` 등)는 그대로 둔다 — 계약은 홈 아래 경로다.
+ * 경계를 본다 — `/Users/me/repo` 는 `/Users/me/repo-other` 를 건드리지 않는다.
+ */
+export function maskPaths(input: { text: string; worktree: string | null; home: string }): string {
+  let out = input.text
+  const replaceRoot = (root: string, inside: (rest: string) => string): void => {
+    const trimmed = root.replace(/\/+$/, '')
+    if (trimmed === '') return
+    const pattern = new RegExp(`(?<!${PATH_CHAR}|/)${escapeRegExp(trimmed)}(/[^\\s'"\`]*)?(?!${PATH_CHAR})`, 'g')
+    out = out.replace(pattern, (_match, rest: string | undefined) => inside(rest === undefined ? '' : rest.slice(1)))
+  }
+  const home = input.home.replace(/\/+$/, '')
+  const worktree = input.worktree
+  // worktree 가 홈 자체면 상대경로로 바꾸지 않는다(홈 전체가 `.` 이 되면 `~` 보다 덜 알려 준다).
+  if (worktree !== null && worktree.replace(/\/+$/, '') !== home) replaceRoot(worktree, (rest) => (rest === '' ? '.' : rest))
+  if (home !== '') replaceRoot(home, (rest) => (rest === '' ? '~' : `~/${rest}`))
+  return out
+}
+
 function toolLine(pane: PaneRow): string | null {
   const tool = pane.digest.tool
   if (tool === null) return null
   return tool.input === null ? tool.name : `${tool.name} · ${tool.input}`
 }
 
-/** 미리보기(J11) — 질문·권한 대기면 그 내용, 작업 중이면 진행 중 도구, 아니면 내 마지막 지시 → 마지막 도구 → 없음. 에이전트 마지막 답은 M4. */
-export function previewOf(input: { pane: PaneRow; dot: AgentDot }): MobilePreview {
-  const { pane, dot } = input
+/**
+ * 미리보기(J11 · R1-A5 코디 해석으로 확정한 순서):
+ *   질문 대기 → 그 질문 · 권한 대기 → 그 도구(claude) · 실패 → 실패 사유 · **작업 중이면 지금 도구** → 내 마지막 지시 → 마지막 도구 → 없음.
+ * 작업 중 도구가 지시보다 앞서는 것은 디자인 Q4 「지금 무엇을 하나」. 에이전트 마지막 답은 M4.
+ * 글은 홈 아래 경로를 감춘 뒤 자른다(`maskPaths`) — `place` = 그 pane 의 작업 worktree 경로 · 홈.
+ */
+export function previewOf(input: { pane: PaneRow; dot: AgentDot; place: { worktree: string | null; home: string } }): MobilePreview {
+  const { pane, dot, place } = input
   const tool = pane.agent === 'claude' ? toolLine(pane) : null
-  const clip = (text: string): string => oneLine(text, PREVIEW_MAX)
+  const clip = (text: string): string => oneLine(maskPaths({ text, worktree: place.worktree, home: place.home }), PREVIEW_MAX)
   if (dot === 'waiting') {
     if (pane.agentState.blockedReason === 'permission') return { kind: 'approval', text: tool === null ? null : clip(tool) }
     const question = pane.digest.pendingQuestions?.[0]
@@ -187,12 +224,15 @@ export function buildMobileList(input: ListInput): MobileList {
     if (tasks.length > 0) out.push({ id: opaqueId(section.repo.root), name: section.repo.name, tasks })
   }
 
-  // 띄운 세션(디자인 Q3) — 들여쓰기로 부모가 안 보일 때만: 부모가 다른 작업에 있거나 모를 때.
+  // 띄운 세션(디자인 Q3) — 대화 머리(`parent`)는 계보에 부모가 있으면 항상(R1 C2), 목록 행(`spawnedBy`)은 들여쓰기로 부모가 안 보일 때만:
+  // 부모가 다른 작업에 있거나 모를 때.
   const byPane = new Map(built.filter((entry) => entry.paneId !== null).map((entry) => [entry.paneId, entry]))
   for (const entry of built) {
-    if (entry.paneId === null || entry.nested || !lineageParent.has(entry.paneId)) continue
+    if (entry.paneId === null || !lineageParent.has(entry.paneId)) continue
     const parentPaneId = lineageParent.get(entry.paneId) ?? null
     const parent = parentPaneId === null ? undefined : byPane.get(parentPaneId)
+    entry.channel.parent = { title: parent?.channel.title ?? null }
+    if (entry.nested) continue
     if (parent !== undefined && parent.taskId === entry.taskId) continue
     entry.channel.spawnedBy = { title: parent?.channel.title ?? null }
   }
@@ -238,6 +278,7 @@ function worktreeChannels(input: { worktree: WorktreeRow; state: ListState; live
           depth: 0,
           origin: null,
           spawnedBy: null,
+          parent: null,
           preview: { kind: 'none' },
           waiting: null,
           model: null,
@@ -265,7 +306,8 @@ function worktreeChannels(input: { worktree: WorktreeRow; state: ListState; live
         depth: 0,
         origin: null,
         spawnedBy: null,
-        preview: previewOf({ pane, dot: node.dot }),
+        parent: null,
+        preview: previewOf({ pane, dot: node.dot, place: { worktree: worktree.path, home: state.home } }),
         waiting: waitingOf({ pane, dot: node.dot }),
         model: node.model,
         timeAt: node.timeAt,

@@ -97,10 +97,18 @@
 | --- | --- |
 | `available:false, reason` | 맥이 herdr 상태를 아직 못 읽었다(link 가 `live` 아님) — `repos`·`waiting` 빈 배열. 「세션 0」 과 다르다 |
 | `available:true, repos[], waiting[]` | `repos` = `{id, name, tasks[]}` · `tasks` = `{id, name, isDefault, channels[]}` · `waiting` = 「나를 기다리는 것」 채널 `id` 순서 |
-| 채널 | `id`(pane id · 보존 행 `retained:<pane id>`) · `key`(안 읽음 장부 키 — provider 세션 참조의 SHA-256 앞 16자, 없으면 `pane:<pane id>`) · `status` live/closed · `kind` claude/codex/grok/null · `title` · `dot`·`dotUnseen`(데스크톱 점 9값 — 본 것으로/안 본 것으로 칠 때) · `depth` 0/1 · `origin`(하위 워크트리 이름) · `spawnedBy` · `preview` {question·approval·prompt·tool·error·none} · `waiting` question/approval/login/other · `model` · `timeAt` · `activityAt` · `outcome` |
+| 채널 | `id`(pane id · 보존 행 `retained:<pane id>`) · `key`(안 읽음 장부 키 — provider 세션 참조의 SHA-256 앞 16자, 없으면 `pane:<pane id>`) · `status` live/closed · `kind` claude/codex/grok/null · `title` · `dot`·`dotUnseen`(데스크톱 점 9값 — 본 것으로/안 본 것으로 칠 때) · `depth` 0/1 · `origin`(하위 워크트리 이름) · `spawnedBy` · `parent` · `preview` {question·approval·prompt·tool·error·none} · `waiting` question/approval/login/other · `model` · `timeAt` · `activityAt` · `outcome` |
 
 - 값·순서는 데스크톱 파생 함수(`shared/` 의 `buildSidebarSections`·`nestSectionItems`·`buildAgentRows`)로 만든다 — 「레포로 묶기」 보기, 데스크톱 필터·고정은 적용하지 않는다.
-- **보내지 않는 것**: 셸 pane(에이전트 없는 pane)·서브에이전트 행 · 터미널 내용·제목 · 경로(레포·작업 `id` 는 경로의 SHA-256 앞 16자) · 세션 참조 원문 · 환경·토큰·비용.
+- **보내지 않는 것**: 셸 pane(에이전트 없는 pane)·서브에이전트 행 · **터미널 화면 내용** · 레포·작업 경로(`id` 는 경로의 SHA-256 앞 16자) ·
+  **홈 디렉터리 아래 절대경로** — 미리보기 글(질문·도구 대상·지시·실패 사유)의 경로는 그 pane 의 작업 worktree 안이면 worktree 상대(`src/a.ts`, worktree 자신은 `.`),
+  그 밖의 홈 아래면 `~/…` 로 바꿔 보낸다(`list.ts` `maskPaths`, 경계 일치만 — `/Users/me` 는 `/Users/meow` 를 건드리지 않는다). 홈 밖 경로(`/tmp`·`/opt` 등)는 그대로 갈 수 있다 ·
+  세션 참조 원문 · 환경·토큰·비용.
+- **제목은 보낸다** — 데스크톱 사이드바 같은 자리와 같은 문자열(J4, R1-A3 계약 ①): provider 제목 → 첫 지시 → **터미널 제목 폴백**(셸 프롬프트 모양이면 cwd 의
+  홈 축약 `~/…`, 그 밖은 터미널이 준 제목을 왼쪽 잘라 15자 — `shared/session-title.ts` 그대로). 그래서 홈 밖 경로 모양의 터미널 제목(`/tmp/x`)은 제목으로 갈 수 있다.
+- **미리보기 순서**(J11 · R1-A5 코디 해석): 질문 대기 → 그 질문 · 권한 대기 → 그 도구(claude) · 실패 → 실패 사유 · **작업 중이면 지금 도구** → 내 마지막 지시 →
+  마지막 도구(claude) → 없음. 작업 중 도구와 마지막 지시가 함께 있으면 도구, 실패 사유와 지시가 함께 있으면 실패 사유.
+- `parent` — 대화 머리 「띄운 세션」(579 Q3, 계보에 부모가 있으면 **항상**, 부모를 모르면 `{title:null}`). `spawnedBy` 는 목록 행용 — 부모가 다른 작업 그룹에 있거나 모를 때만.
   열린 AI 세션이 없는 작업(셸만·닫힌 세션만)은 목록에 없다. 행 수는 자르지 않는다 — 제목 120자·미리보기 160자만 자른다.
 - 프레임 크기: 수신 상한 16 KiB 는 서버가 **받는** 프레임에만 걸린다 — `list` 는 그보다 클 수 있다(F9).
 

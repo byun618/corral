@@ -13,8 +13,8 @@ import { DEFAULT_SIDEBAR_VIEW } from '../../shared/sidebar-view.js'
 import type { UiPrefs } from '../../shared/types.js'
 import { worktreeDisplayName } from '../../shared/worktree-name.js'
 import { UiPrefsStore } from '../ui-prefs.js'
-import { buildMobileList, type MobileChannel, type MobileList } from './list.js'
-import { FIXTURE_NOW, listFixture } from './list-fixture.js'
+import { buildMobileList, maskPaths, previewOf, type MobileChannel, type MobileList } from './list.js'
+import { FIXTURE_NOW, fixturePane, listFixture } from './list-fixture.js'
 import type { ListState } from './list.js'
 
 function prefs(patch: Partial<UiPrefs> = {}): UiPrefs {
@@ -155,6 +155,17 @@ describe('L1 · L5 · L8 · L9 — 폰 전용 규칙', () => {
     expect(byTitle(list, '부모 모르는 워커').spawnedBy).toEqual({ title: null })
   })
 
+  it('C2 대화 머리용 `parent` — 계보에 부모가 있으면 항상(같은 그룹 부모 포함), 없으면 null', () => {
+    // 같은 워크트리 워커 · 하위 워크트리 — 목록 행엔 안 붙지만(spawnedBy null) 머리에는 붙는다.
+    expect(byTitle(list, '목록 화면 구현')).toMatchObject({ spawnedBy: null, parent: { title: '모바일 디자인 브리프 정리' } })
+    expect(byTitle(list, '목록 행 구현')).toMatchObject({ spawnedBy: null, parent: { title: '모바일 디자인 브리프 정리' } })
+    expect(byTitle(list, '다른 레포에서 띄운 워커').parent).toEqual({ title: '알림 모듈 리팩터' })
+    expect(byTitle(list, '부모 모르는 워커').parent).toEqual({ title: null })
+    // 음성 대조: 계보에 없는 세션·보존 행.
+    expect(byTitle(list, '재연결 정책 조사').parent).toBeNull()
+    expect(byTitle(list, '닫은 리뷰 세션').parent).toBeNull()
+  })
+
   it('L5ⓒ · L8 — 닫힌 세션만 남은 작업 숨김, 보존 행은 그룹 끝 `closed`, 기다림 아님', () => {
     expect(list.repos.flatMap((repo) => repo.tasks.map((task) => task.name))).not.toContain('closed-only')
     const closed = byTitle(list, '닫은 리뷰 세션')
@@ -200,5 +211,88 @@ describe('L1 · L5 · L8 · L9 — 폰 전용 규칙', () => {
     expect(down).toEqual({ available: false, reason: 'reconnecting', repos: [], waiting: [] })
     const empty = buildMobileList({ state: { ...state, repos: [], retainedAgents: [] }, prefs: null, now: FIXTURE_NOW })
     expect(empty).toEqual({ available: true, repos: [], waiting: [] })
+  })
+})
+
+describe('R1-A3 폰 표시 글의 경로 — 홈 아래 절대경로를 싣지 않는다 · 제목은 데스크톱과 같은 문자열', () => {
+  it('maskPaths — worktree 안은 상대, 그 밖의 홈 아래는 `~/`, 홈 밖은 그대로, 경계를 본다', () => {
+    const place = { worktree: '/Users/me/repos/app/.wt/feat', home: '/Users/me' }
+    expect(maskPaths({ text: 'Read · /Users/me/repos/app/.wt/feat/src/a.ts', ...place })).toBe('Read · src/a.ts')
+    expect(maskPaths({ text: 'cd /Users/me/repos/app/.wt/feat && ls', ...place })).toBe('cd . && ls')
+    expect(maskPaths({ text: 'Read · /Users/me/.ssh/config', ...place })).toBe('Read · ~/.ssh/config')
+    expect(maskPaths({ text: 'cat /Users/me', ...place })).toBe('cat ~')
+    expect(maskPaths({ text: 'diff /Users/me/repos/app/.wt/feat-2/x /Users/me/repos/app/.wt/feat/y', ...place })).toBe('diff ~/repos/app/.wt/feat-2/x y')
+    expect(maskPaths({ text: 'ls /Users/meow/x /tmp/y', ...place })).toBe('ls /Users/meow/x /tmp/y')
+    expect(maskPaths({ text: 'Read · "/Users/me/a b.txt"', ...place })).toBe('Read · "~/a b.txt"')
+  })
+
+  const withPanes = (overrides: Parameters<typeof listFixture>[0]) => buildMobileList({ state: listFixture(overrides), prefs: null, now: FIXTURE_NOW })
+
+  it('Read/Edit 절대경로 — 작업 worktree 안 → 상대, 홈 아래 다른 곳 → `~/`, 페이로드에 홈·worktree 절대경로 0', () => {
+    const inside = withPanes({ p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Read', input: '/fx/corral/.wt/life-579-impl/src/secret.ts' } } } })
+    expect(byTitle(inside, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Read · src/secret.ts' })
+    const home = withPanes({ p5: { digest: { providerTitle: '목록 행 구현', tool: { name: 'Edit', input: '/fx/home/private/notes.md' } } } })
+    expect(byTitle(home, '목록 행 구현').preview).toEqual({ kind: 'tool', text: 'Edit · ~/private/notes.md' })
+    // 권한 대기·질문·지시·실패 사유도 같은 규칙.
+    const all = withPanes({
+      p20: { digest: { providerTitle: '알림 모듈 리팩터', tool: { name: 'Bash', input: 'rm -rf /fx/home/.cache/x' } } },
+      p1: { digest: { providerTitle: '모바일 디자인 브리프 정리', pendingQuestions: [{ question: '/fx/home/notes 를 지울까요?', header: 'h', options: [], multiSelect: false }] } },
+      p6: { digest: { firstPrompt: '재연결 정책 조사', lastPrompt: '/fx/corral/.wt/life-564/README.md 읽어 줘', lastActivityAt: FIXTURE_NOW } },
+      p8: { digest: { providerTitle: '빌드 고치기', turnOutcome: { outcome: 'failed', error: 'ENOENT /fx/home/x.json' }, turnOutcomeAt: FIXTURE_NOW } },
+    })
+    expect(byTitle(all, '알림 모듈 리팩터').preview).toEqual({ kind: 'approval', text: 'Bash · rm -rf ~/.cache/x' })
+    expect(byTitle(all, '모바일 디자인 브리프 정리').preview).toEqual({ kind: 'question', text: '~/notes 를 지울까요?' })
+    expect(byTitle(all, '재연결 정책 조사').preview).toEqual({ kind: 'prompt', text: 'README.md 읽어 줘' })
+    expect(byTitle(all, '빌드 고치기').preview).toEqual({ kind: 'error', text: 'ENOENT ~/x.json' })
+    for (const payload of [inside, home, all]) {
+      const text = JSON.stringify(payload)
+      expect(text).not.toContain('/fx/home')
+      expect(text).not.toContain('/fx/corral/.wt/')
+    }
+  })
+
+  it('음성 대조 — 가림 없이 만들면 같은 입력이 절대경로를 싣는다(시험이 경로를 실제로 본다)', () => {
+    const pane = fixturePane('x', 'claude', { agentStatus: 'working', digest: { tool: { name: 'Read', input: '/fx/home/private/notes.md' } } })
+    expect(previewOf({ pane, dot: 'working', place: { worktree: null, home: '' } })).toEqual({ kind: 'tool', text: 'Read · /fx/home/private/notes.md' })
+    expect(previewOf({ pane, dot: 'working', place: { worktree: null, home: '/fx/home' } })).toEqual({ kind: 'tool', text: 'Read · ~/private/notes.md' })
+  })
+
+  it('제목 = 데스크톱 사이드바와 같은 문자열 — 터미널 제목 폴백(경로 모양 · 셸 프롬프트 모양) 포함', () => {
+    // providerTitle·firstPrompt 가 없는 AI pane — 데스크톱은 터미널 제목으로 폴백한다(홈 축약은 데스크톱 함수가 한다).
+    const overrides = {
+      p7: { title: '/tmp/secret', digest: { providerTitle: null } },
+      p9: { title: 'byun@mac:~/repos/corral', cwd: '/fx/home/repos/corral', digest: { providerTitle: null } },
+    }
+    const state = listFixture(overrides)
+    const value = prefs()
+    const phone = phoneRows({ list: buildMobileList({ state, prefs: value, now: FIXTURE_NOW }), unread: new Set(), idOf: paneOf })
+    const desktop = desktopRows({ state, prefs: value, unread: new Set() })
+    expect(phone).toEqual(desktop)
+    // 양성: 폴백 제목이 실제로 들어갔다(시험이 비교 대상 행을 갖고 있다).
+    const titles = phone.map((row) => row.title)
+    expect(titles).toContain('/tmp/secret')
+    expect(titles).toContain('~/repos/corral')
+    // 셸 프롬프트 제목의 사용자@호스트 원문·홈 절대경로는 싣지 않는다(데스크톱이 cwd 홈 축약으로 바꾼다).
+    expect(titles.join('\n')).not.toContain('byun@mac')
+    expect(titles.join('\n')).not.toContain('/fx/home')
+  })
+})
+
+describe('R1-A5 미리보기 순서 — 두 재료가 함께 있을 때(코디 해석: 지금 순서 유지)', () => {
+  const place = { worktree: null, home: '/fx/home' }
+  it('작업 중 도구 + 마지막 지시 → 도구 · 작업이 끝나면(한가) 같은 재료에서 지시', () => {
+    const pane = fixturePane('x', 'claude', { agentStatus: 'working', digest: { lastPrompt: 'Please fix the list', tool: { name: 'Read', input: 'src/a.ts' } } })
+    expect(previewOf({ pane, dot: 'working', place })).toEqual({ kind: 'tool', text: 'Read · src/a.ts' })
+    expect(previewOf({ pane, dot: 'idle', place })).toEqual({ kind: 'prompt', text: 'Please fix the list' })
+  })
+  it('실패 사유 + 마지막 지시 → 실패 사유 · 사유가 비면 지시', () => {
+    const failed = fixturePane('y', 'claude', { digest: { lastPrompt: 'Please fix the list', turnOutcome: { outcome: 'failed', error: 'API Error: 529' } } })
+    expect(previewOf({ pane: failed, dot: 'failed', place })).toEqual({ kind: 'error', text: 'API Error: 529' })
+    const blank = fixturePane('z', 'claude', { digest: { lastPrompt: 'Please fix the list', turnOutcome: { outcome: 'failed', error: ' ' } } })
+    expect(previewOf({ pane: blank, dot: 'failed', place })).toEqual({ kind: 'prompt', text: 'Please fix the list' })
+  })
+  it('claude 아닌 에이전트는 도구 재료를 쓰지 않는다 — 작업 중이어도 지시', () => {
+    const pane = fixturePane('w', 'codex', { agentStatus: 'working', digest: { lastPrompt: '지시', tool: { name: 'Read', input: 'a' } } })
+    expect(previewOf({ pane, dot: 'working', place })).toEqual({ kind: 'prompt', text: '지시' })
   })
 })

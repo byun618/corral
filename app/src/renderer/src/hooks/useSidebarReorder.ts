@@ -106,7 +106,7 @@ function measureRepos(list: HTMLElement): Measured<RepoSlotRect> {
  * 잰 구획 — `keys`·`rects`·`elements` 는 **덩어리**(루트 카드 행 — 중첩 후손은 그 행 안에 그려진다, LIFE-576) 단위,
  * `all` 은 화면의 카드 전부(문서 순서), `owner` 는 카드 → 그 카드를 품은 가장 가까운 카드(루트면 없음).
  */
-type MeasuredCards = Measured<ItemRect> & { all: string[]; owner: Map<string, string>; cards: Map<string, HTMLElement> }
+type MeasuredCards = Measured<ItemRect> & { all: string[]; owner: Map<string, string>; cards: Map<string, HTMLElement>; depth: Map<string, number> }
 
 /** 카드를 품은 가장 가까운 다른 카드(같은 구획 안) — 없으면 null. */
 function ownerCardOf(input: { card: HTMLElement; group: HTMLElement }): string | null {
@@ -126,11 +126,14 @@ function measureCards(input: { list: HTMLElement; group: HTMLElement | undefined
   const all: string[] = []
   const owner = new Map<string, string>()
   const cards = new Map<string, HTMLElement>()
+  const depth = new Map<string, number>()
   for (const card of group.querySelectorAll<HTMLElement>('[data-reorder-card]')) {
     const path = card.getAttribute('data-reorder-card')
     if (path === null) continue
     all.push(path)
     cards.set(path, card)
+    // 계보 깊이(`WorktreeBlock` 의 `data-lineage-depth`, 루트는 없음 = 0) — 후손은 루트 행 안에 평평하게 그려져 DOM 소유로는 손자를 못 가른다.
+    depth.set(path, Number(card.getAttribute('data-lineage-depth') ?? 0) || 0)
     const parent = ownerCardOf({ card, group })
     if (parent !== null) {
       owner.set(path, parent)
@@ -140,21 +143,42 @@ function measureCards(input: { list: HTMLElement; group: HTMLElement | undefined
     rects.push(rectOf({ list, element: card }))
     elements.push(card)
   }
-  return { keys, rects, elements, all, owner, cards, groupRange: rectOf({ list, element: group }) }
+  return { keys, rects, elements, all, owner, cards, depth, groupRange: rectOf({ list, element: group }) }
 }
 
-/** 카드와 그 안에 그려진 후손 전부(화면 순서) — 끄는 덩어리(D5). */
-function blockOf(input: { key: string; all: readonly string[]; owner: ReadonlyMap<string, string> }): string[] {
-  const { key, owner } = input
-  const inside = (path: string): boolean => {
+/**
+ * 끄는 덩어리 — 카드 + 그 카드의 **보이는 후손**(화면 순서). Orca `expandDraggedWorktreeIdsForVisibleLineage` 대응(수정 r2 R1-B):
+ * 같은 루트 덩어리 안에서 바로 뒤에 이어지는, 깊이가 더 깊은 카드들. 루트면 덩어리 전체, 하위 카드면 그 아래 손자들까지.
+ */
+function blockOf(input: { key: string; measured: MeasuredCards }): string[] {
+  const { key, measured } = input
+  const rootOf = (path: string): string => {
     const seen = new Set<string>()
-    for (let cursor = owner.get(path); cursor !== undefined && !seen.has(cursor); cursor = owner.get(cursor)) {
-      if (cursor === key) return true
-      seen.add(cursor)
+    let cursor = path
+    for (let next = measured.owner.get(cursor); next !== undefined && !seen.has(next); next = measured.owner.get(next)) {
+      seen.add(next)
+      cursor = next
     }
-    return false
+    return cursor
   }
-  return input.all.filter((path) => path === key || inside(path))
+  const start = measured.all.indexOf(key)
+  if (start < 0) return []
+  const base = measured.depth.get(key) ?? 0
+  const root = rootOf(key)
+  const block = [key]
+  for (const path of measured.all.slice(start + 1)) {
+    if (rootOf(path) !== root || (measured.depth.get(path) ?? 0) <= base) break
+    block.push(path)
+  }
+  return block
+}
+
+/** 덩어리의 밀리기 전 높이 — 첫 카드 윗변 ~ 마지막 카드 아랫변(하위 카드 + 손자 행이 따로 그려진다). */
+function blockHeight(input: { list: HTMLElement; measured: MeasuredCards; block: readonly string[] }): number {
+  const first = input.block[0] === undefined ? undefined : input.measured.cards.get(input.block[0])
+  const last = input.block.at(-1) === undefined ? undefined : input.measured.cards.get(input.block.at(-1) ?? '')
+  if (first === undefined || last === undefined) return 0
+  return Math.max(0, rectOf({ list: input.list, element: last }).bottom - rectOf({ list: input.list, element: first }).top)
 }
 
 /**
@@ -207,6 +231,8 @@ type DropMeasure = Measured<ItemRect> & {
   sizes: number[]
   /** 상위 지정 대상(D3). 있으면 순서 이동이 아니다. */
   lineageTarget: string | null
+  /** 끄는 덩어리의 밀리기 전 높이 — 중첩된 자식 끌기 미리 보기(M4)가 벌릴 높이. */
+  blockHeight: number
   /** 끄는 항목의 행 요소 — 사본을 복제한다. 중첩된 자식은 덩어리 목록에 없어 따로 든다. */
   sourceElement: HTMLElement | undefined
 }
@@ -226,6 +252,7 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
         block: [source.root],
         sizes: repos.keys.map(() => 1),
         lineageTarget: null,
+        blockHeight: 0,
         sourceElement: repos.elements[repos.keys.indexOf(source.root)],
       }
     }
@@ -236,8 +263,8 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
           ? repoGroups(list).find((element) => element.getAttribute('data-repo') === source.repoRoot)
           : (list.querySelector<HTMLElement>(':scope > [data-reorder-all]') ?? undefined)
       const cards = measureCards({ list, group })
-      if (cards === null) return { slot: null, keys: [], rects: [], elements: [], all: [], block: [], sizes: [], lineageTarget: null, sourceElement: undefined }
-      const block = blockOf({ key: source.path, all: cards.all, owner: cards.owner })
+      if (cards === null) return { slot: null, keys: [], rects: [], elements: [], all: [], block: [], sizes: [], lineageTarget: null, blockHeight: 0, sourceElement: undefined }
+      const block = blockOf({ key: source.path, measured: cards })
       const lineageTarget =
         outside || input.canNest === null ? null : resolveLineageTarget({ targets: lineageTargets({ list, measured: cards, sourceKey: source.path, canNest: input.canNest }), y })
       return {
@@ -246,7 +273,8 @@ function measureDrop(input: { list: HTMLElement; source: ReorderSource; point: P
         elements: cards.elements,
         all: cards.all,
         block,
-        sizes: cards.keys.map((key) => blockOf({ key, all: cards.all, owner: cards.owner }).length),
+        sizes: cards.keys.map((key) => blockOf({ key, measured: cards }).length),
+        blockHeight: blockHeight({ list, measured: cards, block }),
         lineageTarget,
         sourceElement: cards.cards.get(source.path),
         slot: outside || lineageTarget !== null ? null : resolveCardDropSlot({ rects: cards.rects, groupRange: cards.groupRange, y }),
@@ -408,9 +436,8 @@ export function useSidebarReorder(input: {
       let indicatorY: number | null = null
       if (measured.slot === null) applyShifts({ elements: [], offsets: [] })
       else if (from < 0) {
-        // 중첩된 자식 — 덩어리 목록 밖이라 끼워 넣기 미리 보기(M4). 높이는 끄는 행(그 안 후손 포함)의 밀리기 전 높이.
-        const source = measured.sourceElement === undefined ? null : rectOf({ list, element: measured.sourceElement })
-        const built = buildInsertionPreview({ rects: measured.rects, slot: measured.slot, height: source === null ? 0 : source.bottom - source.top, view })
+        // 중첩된 자식 — 덩어리 목록 밖이라 끼워 넣기 미리 보기(M4). 높이는 끄는 덩어리(그 카드 + 보이는 손자, R1-B)의 밀리기 전 높이.
+        const built = buildInsertionPreview({ rects: measured.rects, slot: measured.slot, height: measured.blockHeight, view })
         applyShifts({ elements: measured.elements, offsets: built.offsets })
         indicatorY = built.indicatorY
       } else {

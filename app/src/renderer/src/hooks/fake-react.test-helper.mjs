@@ -175,7 +175,7 @@ const box = (top, bottom) => ({ top, bottom, left: 0, right: 280, width: 280, he
 /**
  * 가짜 사이드바 목록. 좌표는 **스크롤 내용 기준**으로 주고 화면 좌표는 `top − scrollTop` 으로 만든다.
  * repos: [{ root, top, bottom, head: [top, bottom] | 'sticky', cards: [{ path, top, bottom, parent?, content? }] }]
- * 카드 `parent` = 그 카드를 품은 카드 경로(LIFE-576 — 중첩 후손은 부모 카드 행 안에 그려진다, 목록에서 부모보다 뒤에 둔다).
+ * 카드 `depth` = 계보 깊이(`data-lineage-depth`, 루트는 생략). 카드 `parent` = 그 카드를 품은 카드 경로(LIFE-576 — 중첩 후손은 부모 카드 행 안에 그려진다, 목록에서 부모보다 뒤에 둔다).
  * `content: [top, bottom]` = 카드 내용 영역(`[data-worktree-card-parent-content]`), 없으면 카드 범위 그대로.
  * `head: 'sticky'` = 헤더가 목록 윗변에 붙었다(묶음 범위 안에서) — 헤더 높이 28.
  * 카드·레포에 `menu: true` 면 그 사본(cloneNode)에 열린 `⋯` 메뉴(`.repo-row-menu`)가 든다 — 복제 순간 메뉴가 열려 있던 상태(R6-01).
@@ -260,7 +260,8 @@ export function fakeDom(options) {
     content.getBoundingClientRect = screen(contentTop, contentBottom, content)
     Object.assign(current, {
       parentElement: parent,
-      getAttribute: () => card.path,
+      // `data-lineage-depth` 만 카드 `depth`(없으면 속성 없음 = null), 그 밖 속성은 경로(`data-reorder-card` 등).
+      getAttribute: (name) => (name === 'data-lineage-depth' ? (card.depth === undefined ? null : String(card.depth)) : card.path),
       getBoundingClientRect: screen(card.top, card.bottom, current),
       querySelector: () => content,
       cloneNode: () => {

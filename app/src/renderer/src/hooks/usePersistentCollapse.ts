@@ -22,8 +22,11 @@ export function usePersistentCollapse(field: CollapseField): {
   values: ReadonlySet<string>
   /** 집합에서 뺀다(없으면 그대로) — 삭제한 워크트리의 고정 정리(K5ⓗ). */
   remove: (id: string) => void
+  /** 저장값 적재가 끝났나(실패도 끝) — 적재 뒤 다시 돌아야 하는 효과의 신호(LIFE-576 R1-C). */
+  loaded: boolean
 } {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -32,9 +35,11 @@ export function usePersistentCollapse(field: CollapseField): {
       .then((prefs: UiPrefs) => {
         if (cancelled) return
         setCollapsed(new Set(prefs[field]))
+        setLoaded(true)
       })
       .catch(() => {
         // 읽기 실패 — 기본(전부 펼침) 유지.
+        if (!cancelled) setLoaded(true)
       })
     return () => {
       cancelled = true
@@ -69,5 +74,5 @@ export function usePersistentCollapse(field: CollapseField): {
     [field],
   )
 
-  return { has, toggle, values: collapsed, remove }
+  return { has, toggle, values: collapsed, remove, loaded }
 }

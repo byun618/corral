@@ -13,6 +13,7 @@ import type { LayoutGroup, ManualOrder } from '../manual-order.js'
 import {
   activeFilterCount,
   buildSidebarSections,
+  collapsedAncestors,
   hasValidLineage,
   nestSectionItems,
   PINNED_SECTION_KEY,
@@ -64,7 +65,7 @@ export type SidebarCardProps = {
 }
 
 /** 「N 하위」 접기 (LIFE-576 D6) — 접은 부모 경로 집합(ui-prefs `collapsedLineage`). */
-export type LineageCollapse = { values: ReadonlySet<string>; toggle: (path: string) => void; remove: (path: string) => void }
+export type LineageCollapse = { values: ReadonlySet<string>; toggle: (path: string) => void; remove: (path: string) => void; loaded: boolean }
 
 /** Reveal 번쩍 길이 — 198 `use-reveal-highlight.ts:37-53` 1500ms. */
 const REVEAL_FLASH_MS = 1500
@@ -247,15 +248,13 @@ export function Sidebar({
    * 사용자가 활성 카드의 부모를 직접 접는 것은 막지 않는다 — 그 조작 뒤에는 다음 활성화·드러내기 때 다시 펼친다.
    */
   const expandAncestors = (path: string): void => {
-    const seen = new Set<string>([path])
-    for (let parent = rowsByPath.get(path)?.worktree.parentPath ?? null; parent !== null && !seen.has(parent); parent = rowsByPath.get(parent)?.worktree.parentPath ?? null) {
-      seen.add(parent)
-      if (lineageCollapse.values.has(parent)) lineageCollapse.remove(parent)
-    }
+    for (const parent of collapsedAncestors({ repos: state.repos, path, collapsed: lineageCollapse.values })) lineageCollapse.remove(parent)
   }
+  // 접힘 집합 적재(`loaded`) 뒤에도 한 번 더 — 활성 경로가 적재보다 먼저 서면 첫 실행이 빈 집합을 보고 지나간다(수정 r2 R1-C).
+  // 집합 값 자체는 의존성에 넣지 않는다 — 넣으면 사용자가 활성 카드의 조상을 접는 즉시 다시 펼친다(위 주석의 허용 동작).
   useEffect(() => {
-    if (activePath !== null) expandAncestors(activePath)
-  }, [activePath])
+    if (activePath !== null && lineageCollapse.loaded) expandAncestors(activePath)
+  }, [activePath, lineageCollapse.loaded])
 
   const sectionOf = (sectionList: readonly SidebarSection[], path: string): SidebarSection | null =>
     sectionList.find((section) => section.items.some((item) => item.worktree.path === path)) ?? null

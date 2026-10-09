@@ -22,8 +22,8 @@ function cards(options = {}) {
     { path: '/a', top: 0, bottom: 50 },
     { path: '/b', top: 56, bottom: 106 },
     { path: '/p', top: 112, bottom: 250, ...(options.pContent === null ? {} : { content: options.pContent ?? [112, 160] }) },
-    { path: '/c1', top: 166, bottom: 206, parent: '/p' },
-    { path: '/c2', top: 210, bottom: 250, parent: '/p' },
+    { path: '/c1', top: 166, bottom: 206, parent: '/p', depth: 1 },
+    { path: '/c2', top: 210, bottom: 250, parent: '/p', depth: 1 },
     { path: '/z', top: 256, bottom: 306 },
   ]
 }
@@ -212,5 +212,52 @@ describe('K4ⓒ 중첩된 자식을 순서 줄에 놓기 — 그 자리로 순�
     release(81)
     expect(nests).toEqual([])
     expect(commits).toEqual([])
+  })
+})
+
+describe('R1-B 하위 카드를 끌면 그 카드의 보이는 후손(손자)도 함께 — Orca `expandDraggedWorktreeIdsForVisibleLineage`', () => {
+  /** p 덩어리 = p 112..160 · c1 166..206 · g1(c1 의 자식, 깊이 2) 210..250 · c2 254..294, 뒤에 z 300..350. 후손은 전부 p 행 안에 평평하게. */
+  function mountWithGrandchild() {
+    dom = fakeDom({
+      repos: [{ root: '/r', top: 0, bottom: 600, head: [0, 0], cards: [
+        { path: '/a', top: 0, bottom: 50 },
+        { path: '/b', top: 56, bottom: 106 },
+        { path: '/p', top: 112, bottom: 294, content: [112, 160] },
+        { path: '/c1', top: 166, bottom: 206, parent: '/p', depth: 1 },
+        { path: '/g1', top: 210, bottom: 250, parent: '/p', depth: 2 },
+        { path: '/c2', top: 254, bottom: 294, parent: '/p', depth: 1 },
+        { path: '/z', top: 300, bottom: 350 },
+      ] }],
+      listTop: 0,
+      listBottom: 600,
+    })
+    for (const [name, value] of Object.entries(dom.globals)) vi.stubGlobal(name, value)
+    host = new HookHost()
+    commits = []
+    nests = []
+    render = () => host.render(() => useSidebarReorder({ listRef: { current: dom.list }, onCommit: (commit) => commits.push(commit), canNest: () => false, onNest: (nest) => nests.push(nest) }))
+    return render()
+  }
+
+  it('c1 을 a 위 가장자리로 → block = c1 + g1, 미리 보기 높이 = c1 윗변 ~ g1 아랫변(84) + 틈 6', () => {
+    const api = mountWithGrandchild()
+    drag(api, { path: '/c1', fromY: 186, ys: [180, 2] })
+    expect(dom.shifts()).toEqual({ '/a': 90, '/b': 90, '/p': 90, '/z': 90 })
+    release(2)
+    expect(commits).toEqual([{ source: { kind: 'card', repoRoot: '/r', path: '/c1' }, keys: ['/a', '/b', '/p', '/c1', '/g1', '/c2', '/z'], slot: 0, block: ['/c1', '/g1'] }])
+  })
+
+  it('형제 c2 는 c1 의 덩어리가 아니다 — c2 를 끌면 c2 하나', () => {
+    const api = mountWithGrandchild()
+    drag(api, { path: '/c2', fromY: 274, ys: [270, 2] })
+    release(2)
+    expect(commits[0]?.block).toBeUndefined()
+  })
+
+  it('부모 p 를 끌면 손자까지 덩어리 전체', () => {
+    const api = mountWithGrandchild()
+    drag(api, { path: '/p', fromY: 130, ys: [120, 2] })
+    release(2)
+    expect(commits[0]?.block).toEqual(['/p', '/c1', '/g1', '/c2'])
   })
 })

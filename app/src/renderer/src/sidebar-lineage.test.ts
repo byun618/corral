@@ -8,6 +8,7 @@ import { applyWorktreeMove, EMPTY_MANUAL_ORDER, moveBlock } from './manual-order
 import { buildInsertionPreview, isLineageDropZoneHit, resolveLineageTarget, unitSlotToFlat } from './sidebar-reorder.js'
 import {
   buildSidebarSections,
+  collapsedAncestors,
   hasValidLineage,
   LINEAGE_CARD_MIN_WIDTH_PX,
   lineageCycleMembers,
@@ -80,7 +81,7 @@ describe('K1ⓐⓑ 같은 구획·같은 레포 부모 아래 중첩 — Orca `a
   })
 })
 
-describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1·M3) — buildSidebarSections 와 함께', () => {
+describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1 · 수정 r2 R1-A 같은 레포 간선만) — buildSidebarSections 와 함께', () => {
   const repos = [
     repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/coord' }), wt({ path: '/r/impl', parent: '/r/coord' }), wt({ path: '/r/x', parent: '/s/other' })]),
     repo('/s', [wt({ path: '/s', linked: false }), wt({ path: '/s/other' }), wt({ path: '/s/y', parent: '/r/coord' })]),
@@ -92,20 +93,21 @@ describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1·M3) — buildSidebarSections
     expect(sectionUnits(sections, '/s')).toEqual([['/s@0(0)'], ['/s/other@0(0)'], ['/s/y@0(0)']])
   })
 
-  it('M3 Group by None — 다른 레포 부모라도 같은 구획에 보이면 중첩(Orca 유효 간선은 레포를 안 본다)', () => {
+  it('R1-A Group by None — 다른 레포 부모는 같은 구획에 보여도 중첩 안 함(Orca `sharesWorktreeLineageBoundary` repoId 동일)', () => {
     const sections = buildSidebarSections({ repos, view: view({ groupBy: 'none' }), order: EMPTY_MANUAL_ORDER, now: 0 })
     const units = sectionUnits(sections, '*all')
-    // /r/coord 아래 같은 레포 /r/impl 과 다른 레포 /s/y, /s/other 아래 다른 레포 /r/x.
-    expect(units).toContainEqual(['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)'])
-    expect(units).toContainEqual(['/s/other@0(1)', '/r/x@1(0)'])
+    expect(units).toContainEqual(['/r/coord@0(1)', '/r/impl@1(0)'])
+    expect(units).toContainEqual(['/s/other@0(0)'])
+    expect(units).toContainEqual(['/r/x@0(0)'])
+    expect(units).toContainEqual(['/s/y@0(0)'])
   })
 
   it('M1 고정한 부모 — 후손이 Pinned 구획으로 함께 올라가 그 안에 중첩, 원래 구획에서는 빠진다', () => {
     const sections = buildSidebarSections({ repos, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/coord']) })
-    // /s/y 도 /r/coord 의 후손(다른 레포) — Orca 처럼 함께 올라간다.
-    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)']])
+    // /s/y 는 /r/coord 를 가리키지만 다른 레포 — 유효 간선이 아니라 올라가지 않는다(R1-A).
+    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(1)', '/r/impl@1(0)']])
     expect(sectionUnits(sections, '/r')).toEqual([['/r@0(0)'], ['/r/x@0(0)']])
-    expect(sectionUnits(sections, '/s')).toEqual([['/s@0(0)'], ['/s/other@0(0)']])
+    expect(sectionUnits(sections, '/s')).toEqual([['/s@0(0)'], ['/s/other@0(0)'], ['/s/y@0(0)']])
   })
 
   it('M1 고정 해제 = 후손이 원래 구획으로 돌아간다', () => {
@@ -135,7 +137,7 @@ describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1·M3) — buildSidebarSections
 
   it('부모와 자식을 다 고정해도 같다(Pinned 구획 안 중첩)', () => {
     const sections = buildSidebarSections({ repos, view: view(), order: EMPTY_MANUAL_ORDER, now: 0, pinned: new Set(['/r/coord', '/r/impl']) })
-    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(2)', '/r/impl@1(0)', '/s/y@1(0)']])
+    expect(sectionUnits(sections, '*pinned')).toEqual([['/r/coord@0(1)', '/r/impl@1(0)']])
   })
 
   it('필터로 부모가 숨으면 자식은 평소 자리(Hide default branch 가 주 체크아웃 부모를 숨김)', () => {
@@ -150,6 +152,12 @@ describe('K1ⓒ 중첩 판정 = Orca (수정 r1 M1·M3) — buildSidebarSections
 })
 
 describe('K1ⓓ 순환 — 렌더가 멈추거나 카드가 사라지지 않는다(Orca 「malformed cyclic lineage should not hide every participant」)', () => {
+  it('R1-A 레포를 넘는 링크는 순환 간선이 아니다 — A(r)→B(s)→A 는 순환 아님, 둘 다 루트', () => {
+    const mixed = [item('/r', wt({ path: '/r/a', parent: '/s/b' })), item('/s', wt({ path: '/s/b', parent: '/r/a' }))]
+    expect([...lineageCycleMembers(mixed)]).toEqual([])
+    expect(shape(nestSectionItems({ items: mixed, collapsed: NONE }))).toEqual([['/r/a@0(0)'], ['/s/b@0(0)']])
+  })
+
   it('A↔B 순환 + C→A: 순환 구성원은 루트, 매달린 C 는 A 아래', () => {
     const rows = [wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' }), wt({ path: '/r/c', parent: '/r/a' })]
     expect([...lineageCycleMembers(items('/r', rows))].sort()).toEqual(['/r/a', '/r/b'])
@@ -268,14 +276,32 @@ describe('K4ⓒ 순서 줄 부모 해제 판정 = Orca lineage 유효 (수정 r1
     repo('/r', [wt({ path: '/r', linked: false }), wt({ path: '/r/p' }), wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/gone', parent: '/r/nowhere' }), wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' })]),
     repo('/s', [wt({ path: '/s/x', parent: '/r/p' })]),
   ]
-  it('부모가 목록에 있으면 참 — 화면에 보이든(중첩) 아니든(다른 구획·다른 레포·고정·필터)', () => {
+  it('부모가 같은 레포 목록에 있으면 참 — 화면에 보이든(중첩) 아니든(고정·필터)', () => {
     expect(hasValidLineage({ repos, path: '/r/c' })).toBe(true)
-    expect(hasValidLineage({ repos, path: '/s/x' })).toBe(true)
+  })
+  it('R1-A 다른 레포 부모 = 유효 간선 아님 → 거짓(순서 줄에 놓아도 lineage 무변경)', () => {
+    expect(hasValidLineage({ repos, path: '/s/x' })).toBe(false)
   })
   it('부모 없는 카드·없는 부모·순환 구성원·없는 카드 = 거짓(lineage 무변경)', () => {
     expect(hasValidLineage({ repos, path: '/r/p' })).toBe(false)
     expect(hasValidLineage({ repos, path: '/r/gone' })).toBe(false)
     expect(hasValidLineage({ repos, path: '/r/a' })).toBe(false)
     expect(hasValidLineage({ repos, path: '/nope' })).toBe(false)
+  })
+})
+
+describe('K2ⓓ 활성 카드를 가리는 접힌 조상 (수정 r2 R1-C — Sidebar 가 접힘 적재 뒤에도 이 경로들을 펼친다)', () => {
+  const repos = [
+    repo('/r', [wt({ path: '/r/p' }), wt({ path: '/r/c', parent: '/r/p' }), wt({ path: '/r/g', parent: '/r/c' }), wt({ path: '/r/a', parent: '/r/b' }), wt({ path: '/r/b', parent: '/r/a' })]),
+    repo('/s', [wt({ path: '/s/x', parent: '/r/g' })]),
+  ]
+  it('접힌 조상만 아래에서 위 순서로 — 펼친 조상은 빠진다', () => {
+    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set(['/r/p', '/r/c']) })).toEqual(['/r/c', '/r/p'])
+    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set(['/r/p']) })).toEqual(['/r/p'])
+    expect(collapsedAncestors({ repos, path: '/r/g', collapsed: new Set() })).toEqual([])
+  })
+  it('순환은 한 바퀴에서 멈추고, 다른 레포 링크(유효 간선 아님)는 따라가지 않는다', () => {
+    expect(collapsedAncestors({ repos, path: '/r/a', collapsed: new Set(['/r/a', '/r/b']) })).toEqual(['/r/b'])
+    expect(collapsedAncestors({ repos, path: '/s/x', collapsed: new Set(['/r/g', '/r/p']) })).toEqual([])
   })
 })

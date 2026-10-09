@@ -20,6 +20,10 @@ function stateLabel(conn: ConnState): { text: string; color: string } {
       return conn.offline ? { text: '끊김', color: color.error } : { text: '재연결 중', color: color.fgMuted }
     case 'mismatch':
       return { text: '버전 불일치', color: color.error }
+    case 'unpairing':
+      return { text: '해제 중', color: color.fgMuted }
+    case 'unpair_failed':
+      return { text: '해제 실패', color: color.error }
     case 'loading':
     case 'unpaired':
       return { text: '—', color: color.fgDim }

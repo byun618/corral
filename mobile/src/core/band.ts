@@ -15,6 +15,8 @@ export function bandFor(conn: ConnState, now: number): BandView {
   switch (conn.kind) {
     case 'loading':
     case 'unpaired':
+    case 'unpairing':
+    case 'unpair_failed':
     case 'connected':
       return { kind: 'none' }
     case 'checking':
@@ -40,6 +42,9 @@ export function statusLine(conn: ConnState, macName: string): { text: string; to
       return { text: `${macName} · 버전 불일치`, tone: 'error' }
     case 'loading':
     case 'unpaired':
+    case 'unpairing':
       return { text: macName, tone: 'muted' }
+    case 'unpair_failed':
+      return { text: `${macName} · 해제 실패`, tone: 'error' }
   }
 }

@@ -10,9 +10,11 @@ import { color, mono } from '../../src/ui/tokens'
 
 type Failed = Extract<PairState, { kind: 'failed' }>
 
-function errorView(failed: Failed, appVersion: string, go: { rescan: () => void; intro: () => void }): PairingErrorProps {
+function errorView(failed: Failed, appVersion: string, go: { rescan: () => void; intro: () => void; retry: () => void }): PairingErrorProps {
   const rescan = { label: '다시 찍기', onPress: go.rescan }
   const intro = { label: '안내로 돌아가기', onPress: go.intro }
+  // 코드가 소모되지 않은 실패 — 같은 대상으로 다시(QR 을 다시 찍지 않는다). 대상은 연결 관리자 메모리에만 있다.
+  const retry = { label: '다시 시도', onPress: go.retry }
   switch (failed.reason) {
     case 'code_expired':
       return {
@@ -38,9 +40,9 @@ function errorView(failed: Failed, appVersion: string, go: { rescan: () => void;
     case 'pair_rejected':
       return {
         title: '맥이 기기를 저장하지 못했습니다',
-        body: '맥에서 기기 정보를 저장하다 실패했습니다. 코드는 아직 쓰이지 않았습니다 — 같은 QR 을 다시 찍어 주세요.',
-        primary: rescan,
-        secondary: intro,
+        body: '맥에서 기기 정보를 저장하다 실패했습니다. 코드는 아직 쓰이지 않았습니다 — 다시 시도해 주세요.',
+        primary: retry,
+        secondary: rescan,
       }
     case 'device_limit':
       return {
@@ -53,8 +55,8 @@ function errorView(failed: Failed, appVersion: string, go: { rescan: () => void;
       return {
         title: '맥이 지금 폰 연결을 받지 않습니다',
         body: '맥의 설정 › Mobile 이 켜져 있고 노출 상태가 정상인지 확인해 주세요(Tailscale HTTPS 인증서 · Funnel 꺼짐).',
-        primary: rescan,
-        secondary: intro,
+        primary: retry,
+        secondary: rescan,
       }
     case 'unreachable':
       return {
@@ -66,8 +68,8 @@ function errorView(failed: Failed, appVersion: string, go: { rescan: () => void;
           '맥에서 corral 이 실행 중이고 설정 › Mobile 이 켜져 있나요',
           '폰 Tailscale 앱의 「Use Tailscale DNS」 가 켜져 있나요',
         ],
-        primary: rescan,
-        secondary: intro,
+        primary: retry,
+        secondary: rescan,
       }
     case 'protocol_mismatch':
       return {
@@ -99,6 +101,7 @@ export default function PairProgress() {
       connection.resetPair()
       router.replace('/pair')
     },
+    retry: () => connection.retryPair(),
   }
   switch (pair.kind) {
     case 'idle':

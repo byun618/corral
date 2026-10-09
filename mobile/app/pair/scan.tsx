@@ -4,7 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
-import { Linking, Pressable, Text, View } from 'react-native'
+import { AppState, Linking, Pressable, Text, View } from 'react-native'
 import { parsePairingPayload, type PayloadProblem } from '../../src/core/payload'
 import { connection } from '../../src/runtime/connection'
 import { Header } from '../../src/ui/Header'
@@ -27,7 +27,7 @@ function problemText(problem: PayloadProblem, source: 'qr' | 'paste'): string {
 
 export default function PairScan() {
   const router = useRouter()
-  const [permission, requestPermission] = useCameraPermissions()
+  const [permission, requestPermission, getPermission] = useCameraPermissions()
   const [notice, setNotice] = useState<string | null>(null)
   const consumed = useRef(false)
   const lastRejected = useRef<string | null>(null)
@@ -36,6 +36,17 @@ export default function PairScan() {
   const ask = () => {
     void requestPermission().then((result) => setDenied(!result.granted))
   }
+
+  // 시스템 설정에서 권한을 바꾸고 돌아오면 다시 읽는다(묻지 않는다 — 비대화형). 허용됐으면 카메라가 보인다(R1-A6).
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return
+      void getPermission().then((result) => {
+        if (result.granted) setDenied(false)
+      })
+    })
+    return () => subscription.remove()
+  }, [getPermission])
 
   // 화면에 들어올 때 한 번만 묻는다 — 거절 뒤 다시 묻기는 사용자가 「권한 허용」 을 누를 때만.
   useEffect(() => {

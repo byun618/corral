@@ -70,6 +70,8 @@ npm run apk:install            # = adb install -r $(ls -t build-*.apk | head -1)
 ## 6. 해제·해지
 
 - 폰 › 설정 › 「페어링 해제」 — 폰의 토큰만 지운다. **맥의 기기 목록에는 남는다** — 맥 설정 › Mobile 에서 해지한다.
+  연결은 바로 닫고, 보안 저장소에서 토큰이 실제로 지워진 뒤에만 「해제했습니다」 를 보인다. 지우기가 실패하면 안내 화면에 「기기 토큰을 지우지 못했습니다」 +
+  「다시 지우기」 가 나오고, 지울 때까지 새 페어링·재연결을 하지 않는다.
 - 맥에서 해지 — 열린 연결은 바로 끊기고 폰은 안내 화면(「맥에서 이 폰의 연결을 해지했습니다」)으로 간다. 앱이 꺼져 있었으면 다음 실행 때.
 
 ## 7. 연결 동작
@@ -83,6 +85,7 @@ npm run apk:install            # = adb install -r $(ls -t build-*.apk | head -1)
 | 버전 불일치 | 본문을 막고 양쪽 프로토콜을 보여 준다. 자동 재시도 안 함 — 업데이트 뒤 「다시 연결」 |
 
 - 포그라운드 동안 8초마다 ping, 8초 안에 서버 응답이 없으면 끊고 새로 붙는다(half-open 감지 ≤ 16초).
+  응답을 기다리는 동안의 추가 프로브(새로고침·망 바뀜)는 마감을 늦추지 않고 앞당기기만 한다 — 연타해도 감지가 밀리지 않는다.
 - 서버는 10초마다 WS ping 을 보내고 30초 무수신이면 그 연결을 정리한다. 같은 폰이 새로 붙으면 이전 연결을 닫는다(SURFACE §3).
 - 토큰은 서버가 **명시적으로 거절**할 때만 지운다(해지 `revoked` · 인증 실패 `unauthorized`). 망 오류·마감·맥 종료·Mobile 꺼짐은 토큰을 유지하고 재시도한다.
 
@@ -90,11 +93,11 @@ npm run apk:install            # = adb install -r $(ls -t build-*.apk | head -1)
 
 | 증상 | 확인 |
 | --- | --- |
-| 「맥에 닿지 않습니다」 | 폰 Tailscale 켜짐 · 맥 깨어 있음 · 맥 corral 실행 + Mobile 켜짐 · 폰 「Use Tailscale DNS」(Android 에서 `*.ts.net` 해석만 실패하는 경우가 있다 — Private DNS 를 끄거나 Tailscale DNS 를 켠다). 폰 브라우저로 `https://<mac>.<tailnet>.ts.net:8577/` 을 열어 **404** 가 오면 이름·경로는 살아 있다 |
+| 「맥에 닿지 않습니다」 | 원인을 고친 뒤 「다시 시도」(같은 QR 내용으로 — 앱이 켜져 있는 동안 메모리에만 둔다). 폰 Tailscale 켜짐 · 맥 깨어 있음 · 맥 corral 실행 + Mobile 켜짐 · 폰 「Use Tailscale DNS」(Android 에서 `*.ts.net` 해석만 실패하는 경우가 있다 — Private DNS 를 끄거나 Tailscale DNS 를 켠다). 폰 브라우저로 `https://<mac>.<tailnet>.ts.net:8577/` 을 열어 **404** 가 오면 이름·경로는 살아 있다 |
 | 「코드가 만료」·「이미 쓴 코드」·「코드가 맞지 않습니다」 | 맥에서 「QR 만들기」 를 다시 누르고 새 QR 을 찍는다 |
 | 「기기가 가득 찼습니다」 | 맥 설정 › Mobile 기기 목록에서 안 쓰는 기기를 해지 |
 | 「맥이 지금 폰 연결을 받지 않습니다」 | 맥 설정 › Mobile 상태 — HTTPS 인증서·Funnel·8577 포트 점유 |
-| 카메라를 쓸 수 없음 | 「설정 열기」 → 권한 › 카메라 허용. 또는 페어링 텍스트 붙여넣기 |
+| 카메라를 쓸 수 없음 | 「권한 허용」(Android 가 더 묻지 않으면 「설정 열기」 → 권한 › 카메라 허용 → 앱으로 돌아오면 카메라가 바로 보인다). 또는 페어링 텍스트 붙여넣기 |
 | 연결이 이상하다 | 폰 › 설정 › **연결 기록** › 「복사」 — 시도·인증·프로브·끊김 사유가 시각과 함께 있다(토큰·코드 없음). 케이블이 있으면 `adb -s <시리얼> logcat -s ReactNativeJS \| grep corral-conn` |
 
 ## 9. 개발
@@ -105,7 +108,11 @@ npm run typecheck && npm run lint && npm test   # 단위 시험 + 실제 서버(
 npx expo-doctor
 ```
 
-- 연결 층은 RN 을 모르는 `src/core/`(관리자·페이로드·기록·띠) — vitest 가 node 에서 돌린다. RN 배선은 `src/runtime/`, 화면은 `app/`(expo-router), 공용 UI 는 `src/ui/`.
+- 연결 층은 RN 을 모르는 `src/core/`(관리자·페이로드·기록·띠·라우팅 판단) — vitest 가 node 에서 돌린다. RN 배선은 `src/runtime/`, 화면은 `app/`(expo-router), 공용 UI 는 `src/ui/`.
+  화면 시험(`test/screens.test.tsx`)은 happy-dom 에서 RN·expo-router 를 DOM 가짜로 바꿔 실제 화면 코드를 그린다(네이티브 실행 아님).
+- 의존: `react-dom` 을 `react` 와 같은 **19.1.0** 으로 개발 의존에 고정한다 — 화면 시험용이고, expo-router 의 웹 하위 의존(@radix-ui·vaul)이 요구하는 peer 를 채운다.
+  고정하지 않으면 npm 이 최신 react-dom(react 19.3 요구)을 골라 설치가 ERESOLVE 로 멈춘다. `legacy-peer-deps` 우회는 쓰지 않는다 — 그 우회 아래에서는
+  `npm ls --all` 이 picomatch peer 불일치(vitest → tinyglobby → fdir)까지 보고했다. 지금은 `npm ls --all` 이 exit 0.
 - **에뮬레이터 개발 접속**: 에뮬레이터는 tailnet 주소를 쓸 수 없고, `10.0.2.2` 로 붙으면 RN 이 만드는 Origin(`http://10.0.2.2:…`)을 서버가 거절한다(서버 규칙은 바꾸지 않는다).
   개발 클라이언트(`development` 프로필 · Metro 개발 번들)에서만 `EXPO_PUBLIC_DEV_ENDPOINT=ws://10.0.2.2:<서버 포트>/ws` 를 주면 그 주소로 바이트를 보내고
   Origin 헤더는 QR 주소에서 만든 `https://<host>:8577` 을 단다(`src/runtime/socket.ts`). 배포 번들(`__DEV__` 거짓)에는 이 가지가 없다.

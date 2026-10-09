@@ -133,3 +133,36 @@ export const SERVER = { app: 'corral', version: '0.2.0', macName: '시험 맥' }
 export async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve()
 }
+
+/** 저장·삭제 완료를 시험이 정하는 금고 — 경합 재현용(리뷰 r1 프로브 모양). 부른 순서대로 `ops` 에 쌓인다. */
+export class DeferredVault implements Vault {
+  record: PairingRecord | null
+  ops: { kind: 'save' | 'clear'; finish: () => void; fail: () => void }[] = []
+
+  constructor(record: PairingRecord | null = null) {
+    this.record = record
+  }
+
+  async load(): Promise<PairingRecord | null> {
+    return this.record
+  }
+
+  save(record: PairingRecord): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.ops.push({ kind: 'save', finish: () => { this.record = record; resolve() }, fail: () => reject(new Error('save failed')) })
+    })
+  }
+
+  clear(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.ops.push({ kind: 'clear', finish: () => { this.record = null; resolve() }, fail: () => reject(new Error('clear failed')) })
+    })
+  }
+
+  /** i 번째 작업 — 없으면 던진다(줄을 서서 아직 시작 안 한 작업). */
+  op(i: number): { kind: 'save' | 'clear'; finish: () => void; fail: () => void } {
+    const op = this.ops[i]
+    if (op === undefined) throw new Error(`금고 작업 ${i} 없음 — 시작된 것 ${this.ops.length}`)
+    return op
+  }
+}

@@ -19,6 +19,7 @@
 import { isRecord, readRecord, readString } from '../../../shared/json.js'
 import type { PaneDirection, PaneSplitDirection } from '../../../shared/types.js'
 import { log } from '../../log.js'
+import { paneEnv } from './pane-env.js'
 import { request } from './request.js'
 
 /** herdr 가 거절하면 **그대로 돌려준다** — corral 이 force 로 승격하지 않는다 (기준 L9). */
@@ -67,6 +68,7 @@ export async function splitPane(input: {
       direction: input.direction,
       target_pane_id: input.paneId,
       focus: false,
+      env: paneEnv(),
       ...(input.ratio === undefined ? {} : { ratio: input.ratio }),
     },
     { reason: 'pane-split' },

@@ -26,6 +26,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalFrame } from '../../shared/types.js'
 import { measureCellSize, readCellSize } from './term-metrics.js'
 import { useSettings } from './settings-store.js'
+import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import {
   CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
@@ -190,6 +191,8 @@ export function TerminalPane({
       ...appearanceRef.current,
       // unicode-graphemes 애드온이 unicode.register(proposed API)를 쓴다 — 명시 활성 필요.
       allowProposedApi: true,
+      // OSC 8 링크 ⌘+클릭 — 평문 URL 과 같은 열기 경로(LIFE-565, terminal-links.ts).
+      linkHandler: terminalLinkHandler,
     })
     /**
      * 이모지·CJK 폭을 herdr 격자와 맞춘다 (S1·S7ⓔ — 폭 재판 방지).
@@ -203,6 +206,7 @@ export function TerminalPane({
     term.loadAddon(graphemes)
     term.unicode.activeVersion = '15-graphemes'
     term.open(container)
+    const links = registerTerminalLinks(term)
     termRef.current = term
 
     // --- 프레임 제시: 최신 프레임만, 쓰기 하나만 비행, 선택 중에는 보류 -------------
@@ -495,6 +499,7 @@ export function TerminalPane({
       offFrame()
       selectionListener.dispose()
       dataListener.dispose()
+      links.dispose()
       termRef.current = null
       term.dispose()
     }

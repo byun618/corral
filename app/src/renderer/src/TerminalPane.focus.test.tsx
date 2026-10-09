@@ -8,6 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // xterm 은 happy-dom 에서 그리지 못한다 — 포커스 계약만 보면 되므로 보조 textarea 하나를 갖는 가짜로 바꾼다.
 // 진짜 xterm 처럼 `open()` 이 컨테이너 안에 `.xterm-helper-textarea` 를 만들고 `focus()` 가 그것을 포커스한다.
+// LIFE-565 R1-06 — 링크 배선 관측: 생성자 옵션과 `registerLinkProvider` 호출·dispose 를 모은다.
+const links = vi.hoisted(() => {
+  const constructed: Array<Record<string, unknown>> = []
+  return { constructed, register: vi.fn(), dispose: vi.fn() }
+})
+
 vi.mock('@xterm/xterm', () => {
   class Terminal {
     cols = 80
@@ -16,6 +22,9 @@ vi.mock('@xterm/xterm', () => {
     unicode = { activeVersion: '' }
     buffer = { active: { cursorX: 0, cursorY: 0, getLine: () => undefined } }
     private textarea: HTMLTextAreaElement | null = null
+    constructor(options: Record<string, unknown>) {
+      links.constructed.push(options)
+    }
     loadAddon(): void {}
     open(container: HTMLElement): void {
       this.textarea = document.createElement('textarea')
@@ -24,6 +33,10 @@ vi.mock('@xterm/xterm', () => {
     }
     focus(): void {
       this.textarea?.focus()
+    }
+    registerLinkProvider(provider: unknown): { dispose: () => void } {
+      links.register(provider)
+      return { dispose: links.dispose }
     }
     onSelectionChange(): { dispose: () => void } {
       return { dispose: () => {} }
@@ -48,6 +61,7 @@ vi.mock('@xterm/addon-unicode-graphemes', () => ({ UnicodeGraphemesAddon: class 
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
 const { TerminalPane } = await import('./TerminalPane.js')
+const { terminalLinkHandler } = await import('./terminal-links.js')
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
@@ -55,6 +69,9 @@ let host: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  links.constructed.length = 0
+  links.register.mockClear()
+  links.dispose.mockClear()
   const unsubscribe = (): (() => void) => () => {}
   Reflect.set(window, 'corral', {
     selectPane: vi.fn(async () => {}),
@@ -132,5 +149,17 @@ describe('LIFE-501 — 편집 중인 입력칸은 터미널 포커스에 지지 
     editingInput({ className: 'sidebar-search-input' })
     renderPane({ paneId: 'p1', focusToken: 1 })
     expect(document.activeElement).toBe(terminalTextarea())
+  })
+})
+
+describe('LIFE-565 R1-06 — 링크 배선', () => {
+  it('마운트에 평문 provider 1회 등록 · 생성자에 OSC 8 linkHandler · 언마운트에 dispose 1회', () => {
+    renderPane({ paneId: 'p1', focusToken: 0 })
+    expect(links.constructed).toHaveLength(1)
+    expect(links.constructed[0]?.['linkHandler']).toBe(terminalLinkHandler)
+    expect(links.register).toHaveBeenCalledTimes(1)
+    expect(links.dispose).not.toHaveBeenCalled()
+    act(() => root.render(createElement('div')))
+    expect(links.dispose).toHaveBeenCalledTimes(1)
   })
 })

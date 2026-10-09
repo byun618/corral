@@ -143,14 +143,53 @@ describe('serverEnv (D4·r1 R1-08)', () => {
       npm_config_prefix: '/p', npm_lifecycle_event: 'dev', npm_lifecycle_script: 'electron-vite dev', npm_package_name: 'corral',
     })
     // r2 R2-06 — npm_config_*·npm_lifecycle_* 는 빠진다(npm_package_* 는 범위 밖이라 남는다)
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug', npm_package_name: 'corral' })
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/h', XDG_CONFIG_HOME: '/x', LANG: 'ko', HERDR_CONFIG_PATH: '/c', HERDR_LOG: 'debug', npm_package_name: 'corral', FORCE_HYPERLINK: '1' })
   })
   it('세션 마커는 넘기지 않고 허용 목록(CODEX_HOME·GROK_HOME·CLAUDE_CONFIG_DIR)은 남긴다 (LIFE-555 A5)', () => {
     const env = serverEnv({
       PATH: '/usr/bin', CLAUDECODE: '1', CLAUDE_PID: '9', CLAUDE_EFFORT: 'high', CLAUDE_CODE_ENTRYPOINT: 'cli', ORCA_AGENT_HOOK_PORT: '7',
       CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude',
     })
-    expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude' })
+    expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/h/.codex', GROK_HOME: '/h/.grok', CLAUDE_CONFIG_DIR: '/h/.claude', FORCE_HYPERLINK: '1' })
+  })
+})
+
+describe('LIFE-565 C6ⓗ — spawnServer 가 서버를 그 env 로 띄운다 (리뷰 C6R-01)', () => {
+  /** 가짜 herdr: 자기 env 를 파일로 덤프하고 끝난다. 경로는 스크립트에 박는다 — env 로 넘기면 serverEnv 가 거를 수 있다. */
+  async function spawnedEnv(bundled: boolean): Promise<Record<string, string>> {
+    const dump = path.join(dir, `env-${bundled ? 'bundled' : 'stock'}.txt`)
+    const fake = file(`env-herdr-${bundled ? 'b' : 's'}`, `#!/bin/sh\n/usr/bin/env > '${dump}'\n`, 0o755)
+    await new Promise<void>((resolve, reject) => {
+      const result = spawnServer({ binary: fake, logPath: path.join(dir, 'server.log'), onExit: () => resolve(), bundled })
+      if (!result.ok) reject(new Error(result.error))
+    })
+    const out: Record<string, string> = {}
+    for (const line of fs.readFileSync(dump, 'utf8').split('\n')) {
+      const at = line.indexOf('=')
+      if (at > 0) out[line.slice(0, at)] = line.slice(at + 1)
+    }
+    return out
+  }
+  beforeEach(() => {
+    // 앱 env 에는 FORCE_HYPERLINK 가 없고(있으면 process.env 를 그대로 넘겨도 통과한다), 번들이 지워야 할 HERDR_* 설정 변수는 있다.
+    vi.stubEnv('FORCE_HYPERLINK', undefined)
+    vi.stubEnv('HERDR_CONFIG_PATH', '/l565/herdr/config.toml')
+    vi.stubEnv('CORRAL_USER_DATA', '/l565/ud')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+  it('일반 분기 — 자식 env 에 FORCE_HYPERLINK=1, serverEnv 가 남기는 HERDR 설정 변수는 남고 CORRAL_* 는 빠진다', async () => {
+    const env = await spawnedEnv(false)
+    expect(env['FORCE_HYPERLINK']).toBe('1')
+    expect(env['HERDR_CONFIG_PATH']).toBe('/l565/herdr/config.toml')
+    expect(env['CORRAL_USER_DATA']).toBeUndefined()
+  })
+  it('번들 분기 — 자식 env 에 FORCE_HYPERLINK=1, HERDR_* 는 하나도 없다(bundledServerEnv)', async () => {
+    const env = await spawnedEnv(true)
+    expect(env['FORCE_HYPERLINK']).toBe('1')
+    expect(Object.keys(env).filter((key) => key.startsWith('HERDR_'))).toEqual([])
+    expect(env['CORRAL_USER_DATA']).toBeUndefined()
   })
 })
 

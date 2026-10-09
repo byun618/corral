@@ -115,9 +115,10 @@ export default function PairProgress() {
               <Text className="text-[13px] text-fg-muted" style={{ fontFamily: mono }}>
                 {pair.kind === 'pairing' ? pair.host : ''}
               </Text>
-              <Text className="text-preview text-fg-dim">코드 확인 → 기기 등록</Text>
+              <Text className="text-preview text-fg-dim">{pair.kind === 'pairing' && pair.saving ? '기기 등록 → 폰에 저장하는 중' : '코드 확인 → 기기 등록'}</Text>
             </View>
-            <Button kind="secondary" label="취소" onPress={go.intro} />
+            {/* 토큰 저장이 떠난 뒤에는 취소를 받지 않는다 — 저장은 짧다(R2-A1). */}
+            {pair.kind === 'pairing' && pair.saving ? null : <Button kind="secondary" label="취소" onPress={go.intro} />}
           </View>
         </Screen>
       )
@@ -139,6 +140,8 @@ export default function PairProgress() {
               label="대화방 보기"
               onPress={() => {
                 connection.resetPair()
+                // 페어링 스택(A1·A3/A4)을 걷고 홈을 바닥에 둔다 — 뒤로 가기가 안내 화면으로 가지 않게(R2-A3).
+                if (router.canDismiss()) router.dismissAll()
                 router.replace('/home')
               }}
             />

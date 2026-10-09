@@ -1,4 +1,4 @@
-// 리뷰 r1 지적 시험 — R1-A1(반복 프로브가 마감을 늦추지 않음) · R1-A2(취소·새 페어링 뒤 이전 저장 무효) · R1-A3(저장·삭제 순서) ·
+// 리뷰 r1 지적 시험 — R1-A1(반복 프로브가 마감을 늦추지 않음) · R1-A2(→ r2 로 옮김) · R1-A3(저장·삭제 순서) ·
 // R1-A4(삭제 실패는 실패로) · R1-A5(A4 에서 해지 → A1) · R1-A7(같은 대상 다시 시도) · 판별력(캡처된 이전 콜백이 새 연결을 못 바꾼다).
 import { describe, expect, it } from 'vitest'
 import { ConnectionManager, DEFAULT_TIMING, type Vault } from '../src/core/connection'
@@ -33,7 +33,6 @@ function make(vault: Vault) {
 }
 
 const A = { url: 'wss://mac-a.tailnet.ts.net:8577/ws', host: 'mac-a.tailnet.ts.net:8577', code: 'ABCDEFGH' }
-const B = { url: 'wss://mac-b.tailnet.ts.net:8577/ws', host: 'mac-b.tailnet.ts.net:8577', code: 'HGFEDCBA' }
 
 function paired(socket: FakeSocket, macName: string, token = `${TOKEN}-${macName}`) {
   socket.serverOpen()
@@ -114,73 +113,8 @@ describe('R1-A1 — 반복 프로브는 마감을 늦추지 않는다 (E7 ≤ 20
   })
 })
 
-describe('R1-A2 — 취소·새 페어링 뒤 끝난 이전 저장은 반영되지 않는다', () => {
-  it('cancel-save: 저장 대기 중 A3 취소 → 저장이 끝나도 paired·재연결 없음, 금고는 삭제로 끝난다', async () => {
-    const vault = new DeferredVault()
-    const t = make(vault)
-    await t.manager.start()
-    t.manager.pair(A)
-    paired(t.last(), 'mac-A')
-    await flush()
-    expect(vault.ops.map((op) => op.kind)).toEqual(['save'])
-    t.manager.resetPair()
-    vault.op(0).finish()
-    await flush()
-    expect(t.manager.getSnapshot().pair.kind).toBe('idle')
-    expect(t.manager.getSnapshot().conn).toEqual({ kind: 'unpaired', reason: null })
-    expect(t.sockets).toHaveLength(1)
-    // 취소가 줄 세운 삭제가 저장 뒤에 돈다
-    expect(vault.ops.map((op) => op.kind)).toEqual(['save', 'clear'])
-    vault.op(1).finish()
-    await flush()
-    expect(vault.record).toBeNull()
-    t.clock.advance(60_000)
-    expect(t.sockets).toHaveLength(1)
-  })
-
-  it('stale-pair-save: A 저장 대기 → 취소 → B 페어링 성공 → A 저장 완료 → 선택된 맥은 B, B 소켓 유지, 금고 = B', async () => {
-    const vault = new DeferredVault()
-    const t = make(vault)
-    await t.manager.start()
-    t.manager.pair(A)
-    paired(t.last(), 'mac-A')
-    await flush()
-    t.manager.resetPair()
-    t.manager.pair(B)
-    const bSocket = t.last()
-    paired(bSocket, 'mac-B')
-    await flush()
-    // 줄: A 저장(진행 중) → 삭제 → B 저장. 아직 A 저장만 시작됐다
-    expect(vault.ops.map((op) => op.kind)).toEqual(['save'])
-    vault.op(0).finish()
-    await flush()
-    vault.op(1).finish() // 삭제
-    await flush()
-    expect(vault.op(2).kind).toBe('save')
-    vault.op(2).finish()
-    await flush()
-    expect(t.manager.getSnapshot().info?.macName).toBe('mac-B')
-    expect(t.manager.getSnapshot().pair).toMatchObject({ kind: 'paired', macName: 'mac-B' })
-    expect(t.manager.getSnapshot().conn.kind).toBe('connected')
-    expect(bSocket.closedByClient).toBeNull()
-    expect(vault.record?.macName).toBe('mac-B')
-    expect(t.sockets).toHaveLength(2)
-  })
-
-  it('취소된 페어링의 저장 실패는 새 페어링 상태를 덮지 않는다', async () => {
-    const vault = new DeferredVault()
-    const t = make(vault)
-    await t.manager.start()
-    t.manager.pair(A)
-    paired(t.last(), 'mac-A')
-    await flush()
-    t.manager.resetPair()
-    t.manager.pair(B)
-    vault.op(0).fail()
-    await flush()
-    expect(t.manager.getSnapshot().pair).toMatchObject({ kind: 'pairing', host: B.host })
-  })
-})
+// R1-A2(저장 대기 중 취소·새 페어링) 시험 3건은 r2 에서 의미가 바뀌었다 — 저장이 떠난 뒤에는 취소·새 페어링을 받지 않는다(R2-A1).
+// 바뀐 모양은 connection.r2.test.ts 「R2-A1」 에 있다.
 
 describe('R1-A3 — 같은 키의 저장·삭제는 순서대로', () => {
   it('metadata-save-after-delete: hello 메타 저장 대기 중 해제 → 삭제가 저장 뒤에 돌아 토큰이 남지 않는다, 재시작 소켓 0', async () => {

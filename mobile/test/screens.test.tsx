@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// 화면 시험 (리뷰 r1 R1-A5·A6·A7·A4) — RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
+// 화면 시험 (리뷰 r1 R1-A5·A6·A7·A4 · r2 R2-A1·A3·권한) — RN·expo-router 를 DOM 가짜로 바꾸고 실제 화면 코드를 그린다. 네이티브 실행이 아니다.
 // 카메라 권한 훅은 expo-modules-core 의 실제 `createPermissionHook`(복귀 갱신을 스스로 하지 않는 그 훅)을 쓴다.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -24,6 +24,9 @@ const ctx = vi.hoisted(() => {
     replace: vi.fn(),
     push: vi.fn(),
     back: vi.fn(),
+    /** router 호출 순서 — dismissAll·replace 순서 확인용. */
+    nav: [] as string[],
+    canDismiss: true,
     permission,
     getCalls: 0,
     requestCalls: 0,
@@ -38,7 +41,16 @@ vi.mock('../src/runtime/connection', () => ({
   connection: ctx.connection,
 }))
 vi.mock('expo-router', () => ({
-  useRouter: () => ({ replace: ctx.replace, push: ctx.push, back: ctx.back }),
+  useRouter: () => ({
+    replace: (href: string) => {
+      ctx.nav.push(`replace ${href}`)
+      ctx.replace(href)
+    },
+    push: ctx.push,
+    back: ctx.back,
+    canDismiss: () => ctx.canDismiss,
+    dismissAll: () => ctx.nav.push('dismissAll'),
+  }),
   useSegments: () => ctx.segments,
   Stack: () => null,
 }))
@@ -93,6 +105,8 @@ let root: Root
 beforeEach(() => {
   Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
   ctx.replace.mockClear()
+  ctx.nav = []
+  ctx.canDismiss = true
   for (const fn of Object.values(ctx.connection)) fn.mockClear()
   ctx.getCalls = 0
   ctx.requestCalls = 0
@@ -130,7 +144,7 @@ describe('R1-A5 — 해지·해제는 어느 화면에서든 A1 로', () => {
   })
 
   it('양성 대조 — 진행 중 페어링(이유 없는 unpaired)의 A3 에서는 그대로', async () => {
-    ctx.snapshot = { conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: 'h', startedAt: 1 }, info: null, appVersion: 'test' }
+    ctx.snapshot = { conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: 'h', startedAt: 1, saving: false }, info: null, appVersion: 'test' }
     ctx.segments = ['pair', 'progress']
     await act(async () => root.render(<RootLayout />))
     expect(ctx.replace).not.toHaveBeenCalled()
@@ -210,5 +224,80 @@ describe('R1-A7 — A8 「다시 시도」', () => {
     await act(async () => buttons()[0]?.click())
     expect(ctx.connection.retryPair).toHaveBeenCalledTimes(1)
     expect(ctx.connection.resetPair).not.toHaveBeenCalled()
+  })
+})
+
+describe('R2-A3 — 정상 페어링 뒤 뒤로 가기가 안내 화면에 갇히지 않는다', () => {
+  it('A4 「대화방 보기」 → 페어링 스택을 걷고(dismissAll) 홈으로 replace', async () => {
+    ctx.snapshot = { conn: { kind: 'connected', since: 1, lastAliveAt: 1 }, pair: { kind: 'paired', macName: 'm', serverVersion: '1' }, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    await act(async () => buttons().find((b) => b.textContent === '대화방 보기')?.click())
+    expect(ctx.connection.resetPair).toHaveBeenCalledTimes(1)
+    expect(ctx.nav).toEqual(['dismissAll', 'replace /home'])
+  })
+
+  it('connected-intro: 연결됨인데 A1(/pair) 에 오면 → /home', async () => {
+    ctx.snapshot = { conn: { kind: 'connected', since: 1, lastAliveAt: 1 }, pair: { kind: 'paired', macName: 'm', serverVersion: '1' }, info: null, appVersion: 'test' }
+    ctx.segments = ['pair']
+    await act(async () => root.render(<><RootLayout /><PairIntro /></>))
+    expect(ctx.replace).toHaveBeenCalledWith('/home')
+  })
+
+  it('재연결 중 스캔(/pair/scan) → /home · A4(/pair/progress) 연결됨은 그대로(성공 화면)', async () => {
+    ctx.snapshot = { conn: { kind: 'reconnecting', since: 1, lastConnectedAt: null, attempt: 0, reason: 'closed', offline: false }, pair: { kind: 'idle' }, info: null, appVersion: 'test' }
+    ctx.segments = ['pair', 'scan']
+    await act(async () => root.render(<RootLayout />))
+    expect(ctx.replace).toHaveBeenCalledWith('/home')
+    ctx.replace.mockClear()
+    ctx.snapshot = { conn: { kind: 'connected', since: 1, lastAliveAt: 1 }, pair: { kind: 'paired', macName: 'm', serverVersion: '1' }, info: null, appVersion: 'test' }
+    ctx.segments = ['pair', 'progress']
+    await act(async () => root.render(<RootLayout />))
+    expect(ctx.replace).not.toHaveBeenCalled()
+  })
+
+  it('양성 대조 — 해제 뒤 A1·첫 페어링 A3 에서는 홈으로 보내지 않는다(루프 없음)', async () => {
+    ctx.snapshot = { conn: { kind: 'unpaired', reason: 'user' }, pair: { kind: 'idle' }, info: null, appVersion: 'test' }
+    ctx.segments = ['pair']
+    await act(async () => root.render(<RootLayout />))
+    ctx.snapshot = { conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: 'h', startedAt: 1, saving: true }, info: null, appVersion: 'test' }
+    ctx.segments = ['pair', 'progress']
+    await act(async () => root.render(<RootLayout />))
+    expect(ctx.replace).not.toHaveBeenCalled()
+  })
+})
+
+describe('R2-A1 — 토큰 저장 중 A3 에는 취소가 없다', () => {
+  it('pairing(saving) → 「취소」 없음 · 양성 대조 pairing(저장 전) → 「취소」 있음', async () => {
+    ctx.snapshot = { conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: 'h', startedAt: 1, saving: true }, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    expect(buttons().map((b) => b.textContent)).toEqual([])
+    expect(container.textContent).toContain('폰에 저장하는 중')
+    ctx.snapshot = { conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: 'h', startedAt: 1, saving: false }, info: null, appVersion: 'test' }
+    await act(async () => root.render(<PairProgress />))
+    expect(buttons().map((b) => b.textContent)).toEqual(['취소'])
+  })
+})
+
+describe('r2 권한 — 최초 확인만 묻고 복귀 갱신은 묻지 않는다', () => {
+  it('granted-then-denied: 처음 허용 → 복귀 때 denied+canAskAgain → 자동 요청 0, A5 「권한 허용」', async () => {
+    ctx.permission = { granted: true, canAskAgain: true }
+    await act(async () => root.render(<PairScan />))
+    await settle()
+    expect(container.textContent).toContain('camera-preview')
+    ctx.permission = { granted: false, canAskAgain: true }
+    await act(async () => {
+      for (const listener of [...ctx.appStateListeners]) listener('active')
+    })
+    await settle()
+    expect(ctx.requestCalls).toBe(0)
+    expect(container.textContent).toContain('카메라를 쓸 수 없습니다')
+    expect(buttons().map((b) => b.textContent)).toContain('권한 허용')
+  })
+
+  it('양성 대조 — 처음 들어올 때 미결정(denied+canAskAgain)이면 한 번 묻는다', async () => {
+    ctx.permission = { granted: false, canAskAgain: true }
+    await act(async () => root.render(<PairScan />))
+    await settle()
+    expect(ctx.requestCalls).toBe(1)
   })
 })

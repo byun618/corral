@@ -31,27 +31,27 @@ export default function PairScan() {
   const [notice, setNotice] = useState<string | null>(null)
   const consumed = useRef(false)
   const lastRejected = useRef<string | null>(null)
-  const asked = useRef(false)
+  const checked = useRef(false)
   const [denied, setDenied] = useState(false)
   const ask = () => {
     void requestPermission().then((result) => setDenied(!result.granted))
   }
 
-  // 시스템 설정에서 권한을 바꾸고 돌아오면 다시 읽는다(묻지 않는다 — 비대화형). 허용됐으면 카메라가 보인다(R1-A6).
+  // 복귀 갱신 — 시스템 설정에서 권한을 바꾸고 돌아오면 다시 읽기만 한다(묻지 않는다). 허용이면 카메라, 거부면 A5(R1-A6 · r2 권한).
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return
-      void getPermission().then((result) => {
-        if (result.granted) setDenied(false)
-      })
+      void getPermission().then((result) => setDenied(!result.granted))
     })
     return () => subscription.remove()
   }, [getPermission])
 
-  // 화면에 들어올 때 한 번만 묻는다 — 거절 뒤 다시 묻기는 사용자가 「권한 허용」 을 누를 때만.
+  // 최초 확인 — 화면에 들어와 처음 읽은 권한에서만 한 번 묻는다. 그 뒤의 권한 변화(복귀 갱신)로는 묻지 않는다 —
+  // 다시 묻기는 사용자가 「권한 허용」 을 누를 때만.
   useEffect(() => {
-    if (permission === null || permission.granted || !permission.canAskAgain || asked.current) return
-    asked.current = true
+    if (permission === null || checked.current) return
+    checked.current = true
+    if (permission.granted || !permission.canAskAgain) return
     void requestPermission().then((result) => setDenied(!result.granted))
   }, [permission, requestPermission])
 

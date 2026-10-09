@@ -11,7 +11,10 @@
 // 토큰을 지우는 것은 서버가 명시적으로 거절할 때(`revoked`·`unauthorized`)와 사용자 해제뿐이다. 망 오류·마감·`unavailable`·1001 은 지우지 않는다(E4).
 //
 // 금고 쓰기(저장·삭제)는 한 줄로 선다(`vaultOp`) — 같은 키의 save·clear 가 부른 순서대로 끝난다(리뷰 r1 R1-A3).
-// 페어링은 세대(`pairGen`)로 묶는다 — 취소·새 페어링·해제 뒤에 끝난 이전 저장은 상태를 바꾸지 않는다(R1-A2).
+// 페어링 1건은 하나의 순서 있는 작업이다 — pair 송신 → paired 수신 → 저장 → 채택. 저장이 떠난 뒤에는 취소·새 페어링을 받지 않고
+// 소켓이 닫혀도 실패로 바꾸지 않는다(서버는 이미 기기를 등록했다 — 저장이 끝나면 hello 로 다시 붙는다). 저장 수명은 화면 상태가 아니라 `saving` 이 쥔다(R2-A1).
+// 해제·해지·삭제 재시도는 한 경로(`dropPairing`)만 지난다 — 시도 종료·세대 무효화·메모리 record 제거·금고 삭제·상태 반영(R2-A2).
+// 세대(`gen`)는 pair·해제마다 오른다 — 그 뒤에 끝난 이전 저장·삭제는 상태를 바꾸지 않는다.
 // 삭제가 끝나기 전에는 「해제됨」 을 보이지 않는다 — `unpairing` → 성공이면 `unpaired`, 실패면 `unpair_failed`(R1-A4).
 import type { ConnectionLog, LogValue } from './log'
 import { hostOf, type PairingTarget } from './payload'
@@ -114,7 +117,8 @@ export type ConnState =
 
 export type PairState =
   | { kind: 'idle' }
-  | { kind: 'pairing'; host: string; startedAt: number }
+  /** saving = 서버가 토큰을 줬고 폰에 저장하는 중 — 이때는 취소를 받지 않는다. */
+  | { kind: 'pairing'; host: string; startedAt: number; saving: boolean }
   | { kind: 'paired'; macName: string; serverVersion: string }
   | { kind: 'failed'; reason: PairFailure; host: string; supported: number[] }
 
@@ -129,7 +133,8 @@ type Attempt = {
   seq: number
   purpose: 'pair' | 'connect'
   socket: SocketLike
-  phase: 'opening' | 'authing' | 'live'
+  /** saving = paired 를 받고 저장을 기다린다(페어링 시도만). */
+  phase: 'opening' | 'authing' | 'saving' | 'live'
   ended: boolean
   /** 서버가 close 앞에 보낸 마지막 오류 코드. */
   lastError: string | null
@@ -142,7 +147,7 @@ type Attempt = {
   /** 미응답 프로브의 마감 시각 — 새 프로브는 앞당기기만 한다(R1-A1). */
   deadlineAt: number | null
   /** 이 페어링 시도의 세대(연결 시도는 0). */
-  pairGen: number
+  gen: number
   pairTarget: PairingTarget | null
 }
 
@@ -165,12 +170,10 @@ export class ConnectionManager {
   private started = false
   /** 금고 쓰기 줄 — 앞 작업이 끝나야(성공·실패 무관) 다음이 시작한다. */
   private vaultChain: Promise<void> = Promise.resolve()
-  /** 페어링 세대 — pair·취소·해제마다 오른다. */
-  private pairGen = 0
-  /** 저장을 기다리는 페어링의 세대(없으면 null) — 취소가 그 저장 뒤에 삭제를 줄 세운다. */
-  private pairSavingGen: number | null = null
-  /** 기록 세대 — 해제마다 오른다. hello 메타 저장은 세대가 같을 때만 쓴다. */
-  private recordGen = 0
+  /** 세대 — pair·해제마다 오른다. 페어링 저장·hello 메타 저장·해제 삭제는 세대가 같을 때만 상태를 바꾼다. */
+  private gen = 0
+  /** 페어링 토큰 저장이 진행 중 — 끝날 때까지 취소·새 페어링을 받지 않는다(R2-A1). */
+  private saving = false
   /** 마지막으로 검증된 페어링 대상 — A8 「다시 시도」 용. 메모리에만(코드는 기록에서 가린다). */
   private lastTarget: PairingTarget | null = null
 
@@ -227,15 +230,15 @@ export class ConnectionManager {
 
   pair(target: PairingTarget): void {
     // 토큰이 없다고 확인된 상태(unpaired)에서만 — 삭제 중·삭제 실패면 받지 않는다.
-    if (this.record !== null || this.snapshot.conn.kind !== 'unpaired' || this.snapshot.pair.kind === 'pairing') return
-    this.pairGen += 1
+    if (this.record !== null || this.saving || this.snapshot.conn.kind !== 'unpaired' || this.snapshot.pair.kind === 'pairing') return
+    this.gen += 1
     this.deps.log.rememberSecret(target.code)
     this.log('pair_start', { host: target.host })
     // 새 페어링을 시작하면 지난 해지·해제 이유는 지운다 — A1 으로 되돌리는 이유가 아니다(R1-A5).
-    this.set({ conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: target.host, startedAt: this.deps.clock.now() } })
+    this.set({ conn: { kind: 'unpaired', reason: null }, pair: { kind: 'pairing', host: target.host, startedAt: this.deps.clock.now(), saving: false } })
     this.lastTarget = target
     const attempt = this.open('pair', target.url, target)
-    attempt.pairGen = this.pairGen
+    attempt.gen = this.gen
     attempt.connectTimer = this.deps.clock.setTimeout(() => {
       if (this.current !== attempt || attempt.ended) return
       this.log('pair_timeout', { attempt: attempt.seq })
@@ -259,19 +262,11 @@ export class ConnectionManager {
     if (conn.kind === 'unpaired' && conn.reason !== null) this.set({ conn: { kind: 'unpaired', reason: null } })
   }
 
-  /** A3 「취소」 · 실패 화면에서 돌아가기. */
+  /** A3 「취소」 · 실패 화면에서 돌아가기 · A4 「대화방 보기」. 토큰 저장이 떠난 뒤에는 받지 않는다 — 저장은 짧고, 끝나면 페어링됨으로 이어진다(R2-A1). */
   resetPair(): void {
-    if (this.snapshot.pair.kind === 'pairing') {
-      // 진행 중 페어링 취소 — 세대를 올려 뒤늦은 저장 완료를 무효로 하고, 저장이 이미 떠났으면 그 뒤에 삭제를 줄 세운다.
-      this.pairGen += 1
-      if (this.pairSavingGen !== null) {
-        this.pairSavingGen = null
-        this.log('pair_cancel_clear', {})
-        void this.vaultOp(() => this.deps.vault.clear()).catch((error: unknown) => {
-          this.log('vault_clear_failed', { error: errorName(error) })
-          if (this.record === null && this.snapshot.conn.kind === 'unpaired') this.set({ conn: { kind: 'unpair_failed', reason: 'user' } })
-        })
-      }
+    if (this.saving) {
+      this.log('pair_cancel_ignored', { why: 'saving' })
+      return
     }
     const attempt = this.current
     if (attempt !== null && attempt.purpose === 'pair') {
@@ -302,13 +297,12 @@ export class ConnectionManager {
     await this.dropPairing('user')
   }
 
-  /** 금고 삭제 실패(`unpair_failed`) 뒤 다시 지운다. */
+  /** 금고 삭제 실패(`unpair_failed`) 뒤 다시 지운다 — 해제와 같은 경로(R2-A2). */
   async retryUnpair(): Promise<void> {
     const conn = this.snapshot.conn
     if (conn.kind !== 'unpair_failed') return
     this.log('unpair_retry', { reason: conn.reason })
-    this.set({ conn: { kind: 'unpairing', reason: conn.reason } })
-    await this.clearVault(conn.reason)
+    await this.dropPairing(conn.reason)
   }
 
   /** M3~ 가 쓸 송신 — 연결됨에서만, 늘 지금 시도의 소켓으로. */
@@ -394,7 +388,7 @@ export class ConnectionManager {
       deadlineTimer: null,
       awaiting: false,
       deadlineAt: null,
-      pairGen: 0,
+      gen: 0,
       pairTarget,
     }
     this.current = attempt
@@ -474,9 +468,9 @@ export class ConnectionManager {
           const next: PairingRecord = { ...record, macName: message.server.macName, serverVersion: message.server.version }
           this.record = next
           // 줄을 서서 쓰고, 그사이 해제됐으면(세대가 바뀜) 쓰지 않는다 — 지운 토큰이 되살아나지 않게(R1-A3).
-          const gen = this.recordGen
+          const gen = this.gen
           void this.vaultOp(async () => {
-            if (gen !== this.recordGen) return
+            if (gen !== this.gen) return
             await this.deps.vault.save(next)
           }).catch((error: unknown) => this.log('vault_save_failed', { error: errorName(error) }))
         }
@@ -487,7 +481,10 @@ export class ConnectionManager {
       case 'paired': {
         if (attempt.purpose !== 'pair' || attempt.phase !== 'authing' || attempt.pairTarget === null) return
         this.clearTimer(attempt, 'connectTimer')
-        void this.adoptPairing(attempt, attempt.pairGen, attempt.pairTarget, message.server, message.token, { id: message.deviceId, name: message.deviceName })
+        attempt.phase = 'saving'
+        this.saving = true
+        this.set({ pair: { kind: 'pairing', host: attempt.pairTarget.host, startedAt: now, saving: true } })
+        void this.adoptPairing({ attempt, gen: attempt.gen, target: attempt.pairTarget, server: message.server, token: message.token, device: { id: message.deviceId, name: message.deviceName }, receivedAt: now })
         return
       }
       case 'pong': {
@@ -521,6 +518,11 @@ export class ConnectionManager {
     if (this.current !== attempt || attempt.ended) return
     const error = attempt.lastError
     this.log('closed', { attempt: attempt.seq, code, error, phase: attempt.phase })
+    if (attempt.purpose === 'pair' && attempt.phase === 'saving') {
+      // 토큰은 이미 받았다 — 실패가 아니다. 저장이 끝나면 hello 로 다시 붙는다(R2-A1).
+      this.endAttempt(attempt)
+      return
+    }
     if (attempt.purpose === 'pair') return this.pairFailed(attempt, code)
     // E4 — 서버가 명시적으로 거절한 경우만 토큰을 지운다.
     if (error === 'revoked' || code === CLOSE.revoked) {
@@ -634,13 +636,13 @@ export class ConnectionManager {
   }
 
   /** ping 을 보내고 마감을 건다. 마감 안에 서버 프레임이 없으면 이 연결을 버린다. */
-  private probe(deadlineMs: number, why: 'interval' | 'resume' | 'network' | 'manual'): void {
+  private probe(deadlineMs: number, why: 'interval' | 'resume' | 'network' | 'manual' | 'saved'): void {
     const attempt = this.current
     if (attempt === null || attempt.ended || attempt.phase !== 'live') return
     this.pingSeq += 1
     if (why !== 'interval') this.log('probe', { attempt: attempt.seq, why, id: this.pingSeq })
     if (!this.write(attempt, { type: 'ping', id: this.pingSeq })) {
-      this.fail(attempt, why === 'resume' ? 'probe_timeout' : 'ping_timeout')
+      this.fail(attempt, why === 'interval' ? 'ping_timeout' : 'probe_timeout')
       return
     }
     // 응답을 기다리는 동안 마감은 늦추지 않는다 — 첫 미응답 프로브의 마감이 기준, 새 프로브는 앞당기기만(R1-A1).
@@ -662,27 +664,36 @@ export class ConnectionManager {
 
   // --- 페어링 마무리 ---
 
-  private async adoptPairing(attempt: Attempt, gen: number, target: PairingTarget, server: ServerInfo, token: string, device: { id: string; name: string }): Promise<void> {
-    this.deps.log.rememberSecret(token)
+  private async adoptPairing(job: {
+    attempt: Attempt
+    gen: number
+    target: PairingTarget
+    server: ServerInfo
+    token: string
+    device: { id: string; name: string }
+    /** paired 를 받은 시각 — 연결됨의 근거는 이 수신이다(저장 완료 시각이 아니다, R2-A4). */
+    receivedAt: number
+  }): Promise<void> {
+    const { attempt, gen, target, server, receivedAt } = job
+    this.deps.log.rememberSecret(job.token)
     const record: PairingRecord = {
-      token,
+      token: job.token,
       url: target.url,
       macName: server.macName,
       serverVersion: server.version,
-      deviceId: device.id,
-      deviceName: device.name,
-      pairedAt: this.deps.clock.now(),
+      deviceId: job.device.id,
+      deviceName: job.device.name,
+      pairedAt: receivedAt,
     }
-    this.pairSavingGen = gen
     let saveError: unknown = null
     try {
       await this.vaultOp(() => this.deps.vault.save(record))
     } catch (error) {
       saveError = error ?? new Error('save failed')
     }
-    if (this.pairSavingGen === gen) this.pairSavingGen = null
-    // 취소·새 페어링·해제 뒤에 끝난 저장 — 상태·소켓을 건드리지 않는다. 금고 정리는 취소 쪽이 이 저장 뒤에 줄 세웠다(R1-A2).
-    if (gen !== this.pairGen) {
+    this.saving = false
+    // 저장 중 해제됐다(세대가 바뀜) — 상태·소켓을 건드리지 않는다. 해제의 삭제는 이 저장 뒤에 줄을 섰다.
+    if (gen !== this.gen) {
       this.log('pair_stale', { attempt: attempt.seq, failed: saveError !== null })
       return
     }
@@ -695,16 +706,24 @@ export class ConnectionManager {
     this.record = record
     this.lastTarget = null
     this.log('paired', { attempt: attempt.seq, host: target.host, serverVersion: server.version })
+    this.set({ pair: { kind: 'paired', macName: server.macName, serverVersion: server.version } })
     // 서버는 pair 성공한 연결을 그대로 인증된 연결로 둔다 — 같은 소켓을 연결 시도로 넘겨받는다.
     if (this.current === attempt && !attempt.ended) {
       attempt.purpose = 'connect'
       attempt.phase = 'live'
       attempt.pairTarget = null
-      this.set({ pair: { kind: 'paired', macName: server.macName, serverVersion: server.version } })
-      this.markConnected(attempt, this.deps.clock.now())
+      const now = this.deps.clock.now()
+      if (now - receivedAt <= this.timing.probeDeadlineMs) {
+        this.markConnected(attempt, receivedAt)
+        return
+      }
+      // 저장이 오래 걸렸다 — paired 수신은 낡았다. 연결됨 대신 확인 중으로 두고 새 프로브 응답을 받은 뒤에만 연결됨(R2-A4).
+      this.log('pair_saved_late', { attempt: attempt.seq, savedAfterMs: now - receivedAt })
+      this.set({ conn: { kind: 'checking', since: now, lastConnectedAt: receivedAt } })
+      this.probe(this.timing.probeDeadlineMs, 'saved')
       return
     }
-    this.set({ pair: { kind: 'paired', macName: server.macName, serverVersion: server.version } })
+    // 저장 중 소켓이 닫혔다 — 저장한 토큰으로 다시 붙는다.
     this.enterReconnecting('closed', null)
     this.connect()
   }
@@ -719,29 +738,30 @@ export class ConnectionManager {
     this.set({ pair: { kind: 'failed', reason, host: target.host, supported } })
   }
 
-  /** 연결은 지금 닫고, 금고 삭제가 확인된 뒤에만 `unpaired` 로(R1-A4). */
+  /**
+   * 해제의 한 경로 — 사용자 해제·해지·인증 실패·삭제 재시도가 모두 지난다(R2-A2).
+   * 연결은 지금 닫고(살아 있는 시도·재시도 타이머), 세대를 올려 진행 중 저장·메타 저장을 무효로 하고, 메모리 record 를 지운 뒤
+   * 금고 삭제가 확인된 뒤에만 `unpaired` 로(R1-A4). 그사이 다시 해제가 시작됐으면(세대가 바뀜) 이 결과는 반영하지 않는다 — 뒤의 삭제가 줄 끝에서 결과를 낸다.
+   */
   private async dropPairing(reason: UnpairReason): Promise<void> {
     if (this.current !== null) this.endAttempt(this.current)
     this.clearRetry()
     this.clearOfflineTimer()
     this.failures = 0
     this.record = null
-    this.recordGen += 1
-    this.pairGen += 1
-    this.pairSavingGen = null
+    this.gen += 1
+    const gen = this.gen
     this.lastTarget = null
     this.set({ conn: { kind: 'unpairing', reason }, pair: { kind: 'idle' } })
-    await this.clearVault(reason)
-  }
-
-  private async clearVault(reason: UnpairReason): Promise<void> {
     try {
       await this.vaultOp(() => this.deps.vault.clear())
     } catch (error) {
+      if (gen !== this.gen) return
       this.log('vault_clear_failed', { error: errorName(error), reason })
       this.set({ conn: { kind: 'unpair_failed', reason } })
       return
     }
+    if (gen !== this.gen) return
     this.log('unpaired', { reason })
     this.deps.log.forgetSecrets()
     this.set({ conn: { kind: 'unpaired', reason } })

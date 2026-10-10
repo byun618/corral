@@ -210,6 +210,11 @@
   (들어갔을 수 있다 — 「보내지 못함」 이라 하지 않는다. r0 앱은 failed 로 두었다, R1-A8 에서 정정).
 - **들어감 = 이 제출 직전 커서 뒤 기록 매칭 정확히 1건**(`countSubmissions`, CLI 와 같은 대조, 15초). 0건 `unconfirmed/record_missing` · 2건 이상 `record_ambiguous` · 기록이 다시 쓰임 `record_rewritten`.
   커서는 **기록 꼬리**(제출 직전 그 파일의 dev·ino · 크기 + 끝 64 KiB 지문 — 한 번 연 파일에서 함께 잡고, 읽을 때도 같은 파일인지 본다. 이름이 다른 파일로 바뀌면 `record_rewritten`, R2-A7)이고 확인은 커서 뒤 바이트만 읽는다 — 지시마다 기록 전체를 동기로 읽지 않는다(C1: 45 MB 기록에서 루프 지연 p99 211~232 ms → 6.3 ms).
+  **근거로 세는 줄은 이 세션 · 이 접수 뒤의 줄만**(R3-A4·A5): 줄의 시각이 넣기 직전 시각 이후(기록 시각의 단위만큼만 봐준다 — ms 가 있으면 ms, Grok 처럼 초뿐이면 그 초)이고,
+  세션이 접수 때 묶은 세션(Claude 줄 `sessionId` · Grok `params.sessionId`)인 줄. 시각이 없거나 세션이 다른 줄은 세지 않는다. Codex 는 줄에 세션이 없어 기록 파일(이름에 세션 id)로 귀속하고 시각만 본다.
+  그래서 0건 경로에서 나중에 생긴 파일이 옛 기록 복원본이거나 다른 세션 줄이면, 같은 파일을 제자리에서 다시 써 옛 줄이 커서 뒤에 와도 들어감이 아니다(`record_missing`).
+  **남는 한계**: 「새 세션의 첫 지시」 와 「지워졌다 다시 생긴 기록」 은 파일만으로 구분하지 않는다 — 둘 다 이 세션·이 접수 뒤 시각의 줄이 있어야 들어감이라, 지운 기록을 같은 세션 id 로 이 접수 뒤에
+  새로 쓰는 경우만 남는다(provider 가 그렇게 쓰는 경로는 실측에 없다).
 - **기록 파일**(R1-A13·R2-A5): 대화 표시와 같은 파일이되 **같은 세션 id 의 후보가 하나일 때만** 쓴다(`resolveTranscriptUnique`). 둘 이상이면 `failed/record_ambiguous`. 폴더·후보 하나라도 못 읽으면
   (EACCES 등 — 「없음」 과 구분) 하나를 찾았어도 유일하다고 하지 않고 기다린다. 모든 탐색이 성공한 0건(새 세션 — 첫 지시 뒤에 파일이 생긴다)일 때만 그 세션이 쓸 경로(pane cwd + 세션 id)를 커서로 쓴다.
   표시용 찾기·CLI 계약은 그대로다.
@@ -222,15 +227,27 @@
 - **질문 답**(R1-A2·R2-A1): 폰은 말풍선 id · **그 질문의 도구 호출 id**(`call`) · **내용 지문**(`digest` — 서버가 기록의 문항 전체로 만들어 대화 말풍선 `question` 에 싣는다)을 보낸다.
   말풍선 id 는 파일 위치라 다른 질문에 다시 쓰일 수 있고, 같은 id·호출에 내용이 바뀔 수도 있다 — 셋이 모두 같아야 폰이 답한 그 질문이다(`call`·`digest` 가 없으면 넣지 않는다).
   서버는 ① 그 질문이 기록에서 **마지막 대기 질문**이고 내용 지문이 같고 ② 관측이 `blocked` 이고 ③ 키 묶음(문항 하나의 키들 · Codex 펼치기 · Claude 검토)마다 그 앞에서, 입력이 500 ms 이상 조용할 때
-  잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자 — provider 별 실측 모양 `keys.ts activeQuestion`)이 그 문항(문항 글 전체 · 선택지 글 전부 · 보이면 위치 `k/n`)일 때만 넣는다. 화면 위쪽 과거 글은 보지 않는다.
-  Codex 는 접힌 표시(`? N question(s)`)의 문항 수를 본 뒤 ⇧← 로 펼치고 다시 대조한다(이미 펼쳐져 있으면 ⇧← 를 보내지 않는다). ④ 키마다 guard 가 그 `blocked` seq 와 **입력 revision** 을 같은 턴에서 비교한다 —
+  잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자 — provider 별 실측 모양 `keys.ts activeQuestion`)이 그 문항(문항 글 전체 · 선택지 글 전부 · 보이면 위치)일 때만 넣는다. 화면 위쪽 과거 글은 보지 않는다.
+  상자의 끝(안내 줄)부터 **화면 끝까지** provider 마다 정해진 줄만 있어야 한다(R3-A2) — 그 아래 모르는 줄·다른 대화상자(권한 질문 등)가 있으면 그 상자는 지금 것이 아니다. Claude 검토 화면도
+  `Review your answers` → 요약 → `Ready to submit…` → `1. Submit answers`·`2. Cancel`(+ 안내 줄)로 끝나야 한다. 위치의 뜻: Grok `[k/n]` = 전체 중 k번째, Codex `k of n` = **남은 문항 중 위치**
+  (3문항이면 `1 of 3` → `1 of 2` → 마지막은 표시 없음 — R3-A3 실측), Claude 는 머리 줄 문항 탭(앞 문항 ☒ · 뒤 문항 ☐).
+  **그 문항이 갓 열린 빈 상태여야 한다**(R3-A1·D3): 커서가 첫 행(Claude ❯ · Codex ›), 직접 입력 행이 자리표시 글, 체크 없음, Claude 탭이 이 요청의 진행과 같음. 맥에서 이미 고르는 중이면
+  키 0회 `failed/question_in_progress`(폰 문구 「맥에서 이미 고르는 중이라 보내지 않았습니다 — 맥에서 답해 주세요」). 예외는 정확히 셀 수 있는 하나 — Claude multiSelect 에 **체크만** 있는 상태
+  (커서 첫 행 · 직접 입력 행 빈 상태): 숫자는 칸을 뒤집기만 하고 커서를 옮기지 않아(Z1 a-q2-after13) 폰 답과 다른 칸만 뒤집는다.
+  Codex 는 접힌 표시(`? N question(s)` + `⇧← to answer`)가 **맨 아래 입력창 바로 위**일 때만(아래가 입력창·상태 줄뿐 — D2) 그 문항 수를 본 뒤 ⇧← 를 한 번 보내 펼치고, 펼친 상자가 맞을 때만
+  답 키를 넣는다(이미 펼쳐져 있으면 ⇧← 를 보내지 않는다). ④ 키마다 guard 가 그 `blocked` seq 와 **입력 revision** 을 같은 턴에서 비교한다 —
   첫 키는 그 화면의 revision, 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4).
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
+  잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).
   **들어감 = 키 직전 꼬리 커서 뒤 기록에 그 질문의 답 정확히 1건**(Claude·Grok = 그 도구 호출의 `result` 줄 · Codex = 답 봉투의 `questionItemId`(도구 호출 id + 문항 번호)가 **이 호출**인 항목이 문항마다 한 번씩 —
   다른 질문의 봉투는 세지 않고, 귀속을 못 읽은 봉투가 있으면 `unconfirmed/record_unattributed`, R2-A2) **+ 판독자에서 그 질문이 대기에서 풀림**(10초) — UI 의 `answered` 만으로 세지 않는다.
+  판독자(`chat-parse`)도 Codex 봉투를 문항마다 받아 **그 호출의 문항이 모두 답해져야** 질문을 푼다(R3-A3 — 봉투 하나가 질문 전체를 풀지 않는다, 다른 호출의 봉투는 이 질문을 건드리지 않는다).
+  **+ 기록의 답 값이 폰이 고른 답**(R3-A1): Claude `toolUseResult.answers` · Grok `UserAnswered.message` · Codex 봉투의 `answer` 에서 문항 글을 빼고 고른 선택지 글·직접 입력 글을 하나씩 빼면
+  구분 기호만 남아야 한다. 다르면 `unconfirmed/answer_mismatch`(폰 「기록된 답이 고른 답과 다릅니다 — 맥에서 확인해 주세요」), 답 값을 못 읽으면 `unconfirmed/answer_unreadable`.
   답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
 - **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문 · 로그인 등) `stop_hidden` ·
-  Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
+  Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. Grok 의 Ctrl+C 는 입력 줄의 글을 지우므로 **빈 입력 줄을 본 같은 guard 턴**(입력 500 ms 이상 조용 · 같은 seq)의
+  입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
   `revoked` · `target_changed` · `guard_outdated` · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).

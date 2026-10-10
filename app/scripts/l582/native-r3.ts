@@ -1,0 +1,420 @@
+// LIFE-582 r3 격리 실물 — 격리 herdr 세션(이 시험이 띄운 것)에 이 시험이 만든 pane 에서만. 제품 허브(`InputHub`) + 실제 guard 백엔드(`HerdrInputBackend`).
+//   npx tsx scripts/l582/native-r3.ts <sock> claude <cwd>   → R3-A1 맥 선체크 재현 · 빈 상태 대조 + 회귀(하나 · 여럿 · 여러 문항 · 직접 입력)
+//   npx tsx scripts/l582/native-r3.ts <sock> codex <cwd>    → R3-A3 3문항 정상 경로(판독자 = 같은 기록을 읽는 ChatBuilder)
+//   npx tsx scripts/l582/native-r3.ts <sock> grok <cwd>     → R3-A6 중단 경합(화면 읽은 직후 맥 타자 → Ctrl+C 0회) · 양성 대조
+// 출력은 JSON 줄. 시나리오마다 `ok`(기대와 같은가). 하나라도 다르면 exit 1. 본문은 남기지 않는다(G5 — 답 값은 시험이 정한 짧은 라벨뿐).
+import fs from 'node:fs'
+import net from 'node:net'
+import { setTimeout as delay } from 'node:timers/promises'
+import { TerminalBackend, type TerminalIdentity } from '../../src/main/adapter/index.js'
+import { ChatBuilder, type ChatItem } from '../../src/main/chat-parse.js'
+import { chatListState } from '../../src/main/mobile/chat-fixture.js'
+import { InputHub, type InputBackend, type InputWire } from '../../src/main/mobile/input.js'
+import { HerdrInputBackend } from '../../src/main/mobile/input-backend.js'
+import { activeQuestion, draftState, questionDigest, screenPlain } from '../../src/main/mobile/keys.js'
+import type { MobileAgentKind } from '../../src/main/mobile/list.js'
+import { resolveTranscriptUnique } from '../../src/main/transcript.js'
+import { sessionRecordPaths } from '../../src/runtime/terminal/agent.js'
+
+const [sock, command, cwdArg] = process.argv.slice(2)
+const cwd = cwdArg ?? ''
+if (sock === undefined || !sock.includes('/herdr-dev/sessions/l582-race3') || !cwd.startsWith('/private/tmp/l582-race3')) {
+  console.error('usage: <isolated l582-race3 socket> claude|codex|grok </private/tmp/l582-race3/...>')
+  process.exit(2)
+}
+fs.mkdirSync(cwd, { recursive: true })
+const ctx = () => ({ signal: new AbortController().signal, deadlineAt: Date.now() + 10_000 })
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+let failures = 0
+const out = (step: string, data: Record<string, unknown>, ok: boolean | null = null): void => {
+  if (ok === false) failures += 1
+  console.log(JSON.stringify({ step, ...(ok === null ? {} : { ok }), ...data }))
+}
+
+function herdr(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(sock!)
+    socket.setEncoding('utf8')
+    let buffer = ''
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error(`timeout ${method}`))
+    }, 45_000)
+    socket.on('error', reject)
+    socket.on('connect', () => socket.write(JSON.stringify({ id: 'l582r3', method, params }) + '\n'))
+    socket.on('data', (chunk: string) => {
+      buffer += chunk
+      const index = buffer.indexOf('\n')
+      if (index === -1) return
+      clearTimeout(timer)
+      socket.destroy()
+      const message: unknown = JSON.parse(buffer.slice(0, index))
+      if (!isRecord(message)) return reject(new Error('bad reply'))
+      if (isRecord(message.error)) return reject(new Error(`${method}: ${JSON.stringify(message.error)}`))
+      resolve(isRecord(message.result) ? message.result : {})
+    })
+  })
+}
+
+const terminal = new TerminalBackend(sock)
+const live = new HerdrInputBackend(sock)
+
+async function launch(kind: MobileAgentKind): Promise<TerminalIdentity> {
+  const created = await herdr('workspace.create', { cwd, focus: false })
+  const root = isRecord(created.root_pane) ? created.root_pane : {}
+  const paneId = String(root.pane_id)
+  await delay(1600)
+  const args = kind === 'claude' ? ['--model', 'haiku', '--effort', 'low'] : kind === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'model_reasoning_effort="low"'] : []
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await herdr('agent.start', { name: `l582r3w-${kind}`, kind, pane_id: paneId, args, timeout_ms: 30_000 })
+      break
+    } catch (error) {
+      // 셸 rc 가 아직 도는 중이면 agent_pane_busy — 한 번 더(실패 회차는 출력에 남긴다).
+      out('agent-start-retry', { attempt, error: String(error) })
+      if (attempt >= 2) throw error
+      await delay(2000)
+    }
+  }
+  const epoch = await terminal.epoch(ctx())
+  const pane = (await terminal.list(epoch, ctx())).find((entry) => entry.paneId === paneId)
+  if (pane === undefined) throw new Error('pane missing')
+  let trusted = false
+  for (let index = 0; index < 120; index += 1) {
+    const info = await terminal.agentInfo(pane, ctx())
+    const screen = await terminal.screenAnsi(pane, ctx())
+    const plain = screenPlain(screen)
+    if (!trusted && kind === 'claude' && plain.includes('Yes, I trust this folder')) {
+      // 커서가 「Yes」 행이 아니면 한 칸 내린 뒤 Enter(r2 q07·q08 과 같은 순서).
+      if (!/❯\s*\d+\.\s*Yes, I trust this folder/.test(plain)) {
+        await terminal.send(pane, '\x1b[B', ctx())
+        await delay(350)
+      }
+      await terminal.send(pane, '\r', ctx())
+      trusted = true
+    } else if (!trusted && kind === 'codex' && /Trust this folder\?|trust the contents of this directory|Do you trust/i.test(plain)) {
+      await terminal.send(pane, '\r', ctx())
+      trusted = true
+    } else if (info.interactiveReady && ['idle', 'done'].includes(info.status) && draftState({ kind, screen }) === 'empty') {
+      out('launched', { kind, pane: paneId, trusted, processes: (await terminal.process(pane, ctx())).foreground.map((entry) => entry.name) })
+      return pane
+    }
+    await delay(400)
+  }
+  throw new Error('agent not ready')
+}
+
+async function sessionOf(pane: TerminalIdentity): Promise<string> {
+  for (let index = 0; index < 40; index += 1) {
+    const info = await terminal.agentInfo(pane, ctx())
+    const value = info.session?.value
+    if (typeof value === 'string' && value.length > 0) return value
+    await delay(500)
+  }
+  throw new Error('no session id')
+}
+
+function recordFile(kind: MobileAgentKind, sid: string): string | null {
+  if (kind === 'claude') return sessionRecordPaths('claude', { cwd, sessionId: sid, t0Ms: 0, nowMs: 0 })[0] ?? null
+  const found = resolveTranscriptUnique({ kind: 'id', agent: kind, source: 'herdr', id: sid })
+  return found.kind === 'found' ? found.file : null
+}
+
+function readItems(input: { kind: MobileAgentKind; file: string; sid: string }): ChatItem[] {
+  const builder = new ChatBuilder({ agent: input.kind, sessionId: input.kind === 'claude' ? input.sid : null })
+  let offset = 0
+  for (const line of fs.readFileSync(input.file, 'utf8').split('\n')) {
+    builder.feed({ offset, line })
+    offset += Buffer.byteLength(line) + 1
+  }
+  return builder.items
+}
+
+/** 허브 하나 — 채널 `c1`(claude)·`c2`(codex)·`c3`(grok) 의 세션 id 를 이 pane 의 실제 세션으로, 백엔드 위치는 이 pane 으로. */
+function hubFor(input: { kind: MobileAgentKind; pane: TerminalIdentity; sid: string; file: string | null; backend?: Partial<InputBackend> }) {
+  const state = chatListState()
+  const channel = input.kind === 'claude' ? 'c1' : input.kind === 'codex' ? 'c2' : 'c3'
+  for (const pane of state.repos[0]!.worktrees[0]!.workspace!.tabs.flatMap((tab) => tab.panes)) {
+    if (pane.paneId === channel && pane.agentSession !== null && pane.agentSession.kind === 'id') pane.agentSession = { ...pane.agentSession, id: input.sid }
+  }
+  const backend: InputBackend = {
+    locate: async () => input.pane,
+    observe: (pane) => live.observe(pane),
+    manifestVerified: (kind) => live.manifestVerified(kind),
+    screen: (pane) => live.screen(pane),
+    prompt: (pane, value) => live.prompt(pane, value),
+    send: (pane, value) => live.send(pane, value),
+    ...input.backend,
+  }
+  const wires: InputWire[] = []
+  const file = input.file
+  const hub = new InputHub({
+    read: () => ({ state, prefs: null }),
+    backend: () => backend,
+    resolveFile: () => (file === null ? { kind: 'none' } : { kind: 'found', file }),
+    questionItems: () => (file === null ? null : readItems({ kind: input.kind, file, sid: input.sid })),
+    log: () => {},
+    timing: { stopConfirmMs: 4000, recordPollMs: 100, answerConfirmMs: 15_000 },
+  })
+  hub.attach({ device: 'd1', sink: (text) => wires.push(JSON.parse(text)) })
+  const settled = async (id: string): Promise<InputWire | null> => {
+    for (let index = 0; index < 400; index += 1) {
+      const last = wires.filter((wire) => wire.id === id).at(-1)
+      if (last !== undefined && !['queued', 'sending'].includes(last.state)) return last
+      await delay(100)
+    }
+    return null
+  }
+  return { hub, channel, settled }
+}
+
+async function waitIdle(pane: TerminalIdentity): Promise<number> {
+  for (let index = 0; index < 240; index += 1) {
+    const info = await terminal.agentInfo(pane, ctx())
+    if (info.interactiveReady && ['idle', 'done'].includes(info.status)) return info.stateChangeSeq
+    await delay(500)
+  }
+  throw new Error('not idle')
+}
+
+async function waitQuestion(input: { kind: MobileAgentKind; pane: TerminalIdentity; collapsedOk?: boolean }): Promise<string> {
+  for (let index = 0; index < 160; index += 1) {
+    const text = (await terminal.screenRead(input.pane, ctx())).text
+    const active = activeQuestion({ kind: input.kind, screen: text })
+    if (active.kind === 'question' || (input.collapsedOk === true && active.kind === 'collapsed')) return text
+    await delay(500)
+  }
+  throw new Error('question not shown')
+}
+
+const pendingOf = (items: ChatItem[]): Extract<ChatItem, { kind: 'question' }> | null => {
+  let last: Extract<ChatItem, { kind: 'question' }> | null = null
+  for (const item of items) if (item.kind === 'question' && item.state === 'pending') last = item
+  return last
+}
+const questionOf = (items: ChatItem[], call: string | null): Extract<ChatItem, { kind: 'question' }> | null => {
+  for (const item of items) if (item.kind === 'question' && item.call === call) return item
+  return null
+}
+
+// --- Claude --------------------------------------------------------------------------------------------
+
+type ClaudeCase = { name: string; prompt: string; precheck: string[]; answers: { choices: number[]; other: string | null }[]; expect: string[] }
+
+const CLAUDE_CASES: ClaudeCase[] = [
+  {
+    name: 'R3-A1-precheck',
+    prompt: 'Call AskUserQuestion once: one question "Pick letters", multiSelect true, options Alpha, Beta, Gamma with short descriptions. No other tools. After I answer say OK.',
+    precheck: ['1'],
+    answers: [{ choices: [0, 1], other: null }],
+    expect: ['Alpha', 'Beta'],
+  },
+  {
+    name: 'R3-A1-empty-control',
+    prompt: 'Call AskUserQuestion once: one question "Pick letters", multiSelect true, options Alpha, Beta, Gamma with short descriptions. No other tools. After I answer say OK.',
+    precheck: [],
+    answers: [{ choices: [0, 1], other: null }],
+    expect: ['Alpha', 'Beta'],
+  },
+  {
+    name: 'reg-single',
+    prompt: 'Call AskUserQuestion once: one question "Pick a color", single select, options Red, Green, Blue with short descriptions. No other tools. After I answer say OK.',
+    precheck: [],
+    answers: [{ choices: [1], other: null }],
+    expect: ['Green'],
+  },
+  {
+    name: 'reg-multi',
+    prompt: 'Call AskUserQuestion once: one question "Pick fruits", multiSelect true, options Apple, Banana, Cherry with short descriptions. No other tools. After I answer say OK.',
+    precheck: [],
+    answers: [{ choices: [0, 2], other: null }],
+    expect: ['Apple', 'Cherry'],
+  },
+  {
+    name: 'reg-multi-question',
+    prompt: 'Call AskUserQuestion once with TWO questions: "Pick pet" (single select: Cat, Dog) and "Pick city" (single select: Seoul, Busan), short descriptions. No other tools. After I answer say OK.',
+    precheck: [],
+    answers: [{ choices: [1], other: null }, { choices: [0], other: null }],
+    expect: ['Dog', 'Seoul'],
+  },
+  {
+    name: 'reg-direct-input',
+    prompt: 'Call AskUserQuestion once: one question "Pick a drink", single select, options Tea, Coffee with short descriptions. No other tools. After I answer say OK.',
+    precheck: [],
+    answers: [{ choices: [], other: 'milk' }],
+    expect: ['milk'],
+  },
+]
+
+async function runClaude(): Promise<void> {
+  const pane = await launch('claude')
+  try {
+    let seq = await waitIdle(pane)
+    let sid: string | null = null
+    for (const item of CLAUDE_CASES) {
+      await terminal.promptAgent(pane, item.prompt, seq, ctx())
+      const initial = await waitQuestion({ kind: 'claude', pane })
+      sid ??= await sessionOf(pane)
+      const file = recordFile('claude', sid)
+      if (file === null || !fs.existsSync(file)) throw new Error('claude record missing')
+      // 판독자가 그 질문을 읽을 때까지.
+      let pending: Extract<ChatItem, { kind: 'question' }> | null = null
+      for (let index = 0; index < 40 && pending === null; index += 1) {
+        pending = pendingOf(readItems({ kind: 'claude', file, sid }))
+        if (pending === null) await delay(250)
+      }
+      if (pending === null) throw new Error('pending question not in record')
+      // 맥에서 먼저 고름 — 사람 키와 같은 PTY 입력 경로.
+      for (const key of item.precheck) {
+        await terminal.send(pane, key, ctx())
+        await delay(500)
+      }
+      const before = await terminal.screenRead(pane, ctx())
+      const beforeActive = activeQuestion({ kind: 'claude', screen: before.text })
+      const { hub, channel, settled } = hubFor({ kind: 'claude', pane, sid, file })
+      const id = `r3-${item.name}`
+      hub.answer({ device: 'd1', id, channel, question: pending.id, call: pending.call, digest: questionDigest(pending.questions), answers: item.answers })
+      const state = await settled(id)
+      hub.stop()
+      await delay(800)
+      const after = questionOf(readItems({ kind: 'claude', file, sid }), pending.call)
+      const recorded = after?.answer ?? ''
+      const has = item.expect.map((label) => recorded.includes(label))
+      const extra = ['Alpha', 'Beta', 'Gamma', 'Red', 'Green', 'Blue', 'Apple', 'Banana', 'Cherry', 'Cat', 'Dog', 'Seoul', 'Busan', 'Tea', 'Coffee', 'milk'].filter((label) => !item.expect.includes(label) && recorded.includes(label))
+      const ok = state?.state === 'delivered' && has.every(Boolean) && extra.length === 0
+      out(item.name, {
+        state,
+        precheck: item.precheck,
+        beforeChecks: beforeActive.kind === 'question' ? beforeActive.rows.map((row) => row.checked) : null,
+        initialKind: activeQuestion({ kind: 'claude', screen: initial }).kind,
+        recordExpectHits: has,
+        recordExtra: extra,
+        questionState: after?.state ?? null,
+      }, ok)
+      seq = await waitIdle(pane)
+    }
+    if (sid !== null) out('record', { file: recordFile('claude', sid)?.replace(/^\/Users\/[^/]+/, '~') ?? null })
+  } finally {
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
+// --- Codex ---------------------------------------------------------------------------------------------
+
+async function runCodex(): Promise<void> {
+  const pane = await launch('codex')
+  try {
+    const seq = await waitIdle(pane)
+    await terminal.promptAgent(pane, 'Use request_user_input_async now to ask THREE questions in a SINGLE call: Pick color (Red, Blue); Pick drink (Tea, Coffee); Pick size (Small, Large). Each option one word with a short description. No other tools. Wait for all answers, then reply OK.', seq, ctx())
+    const shown = await waitQuestion({ kind: 'codex', pane, collapsedOk: true })
+    out('codex-question-shown', { active: activeQuestion({ kind: 'codex', screen: shown }) })
+    const sid = await sessionOf(pane)
+    let file: string | null = null
+    let pending: Extract<ChatItem, { kind: 'question' }> | null = null
+    for (let index = 0; index < 60 && pending === null; index += 1) {
+      file = recordFile('codex', sid)
+      pending = file === null ? null : pendingOf(readItems({ kind: 'codex', file, sid }))
+      if (pending === null) await delay(500)
+    }
+    if (file === null || pending === null) throw new Error('codex pending question missing')
+    out('codex-pending', { questions: pending.questions.length, titles: pending.questions.map((q) => q.question.length) })
+    const screens: unknown[] = []
+    const { hub, channel, settled } = hubFor({
+      kind: 'codex', pane, sid, file,
+      backend: {
+        screen: async (target) => {
+          const shot = await live.screen(target)
+          const active = activeQuestion({ kind: 'codex', screen: shot.text })
+          screens.push(active.kind === 'question' ? { kind: active.kind, position: active.position, total: active.total, title: active.title.length } : active)
+          return shot
+        },
+      },
+    })
+    const id = 'r3-A3-codex-3q'
+    hub.answer({ device: 'd1', id, channel, question: pending.id, call: pending.call, digest: questionDigest(pending.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }, { choices: [0], other: null }] })
+    const state = await settled(id)
+    hub.stop()
+    const after = questionOf(readItems({ kind: 'codex', file, sid }), pending.call)
+    const ok = state?.state === 'delivered' && after?.state === 'answered'
+    out('R3-A3-codex-3q', { state, screens, questionState: after?.state ?? null, answer: after?.answer ?? null }, ok)
+    out('record', { file: file.replace(/^\/Users\/[^/]+/, '~') })
+    await waitIdle(pane).catch(() => 0)
+  } finally {
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
+// --- Grok ----------------------------------------------------------------------------------------------
+
+async function runGrok(): Promise<void> {
+  const pane = await launch('grok')
+  try {
+    const sid = await sessionOf(pane).catch(() => 'unknown')
+    for (const race of [true, false]) {
+      const seq = await waitIdle(pane)
+      await terminal.promptAgent(pane, 'Run the shell command sleep 20, wait for it, then reply OK. No other work.', seq, ctx())
+      let working = false
+      for (let index = 0; index < 80; index += 1) {
+        const info = await terminal.agentInfo(pane, ctx())
+        if (info.status === 'working' && draftState({ kind: 'grok', screen: await terminal.screenAnsi(pane, ctx()) }) === 'empty') {
+          working = true
+          break
+        }
+        await delay(250)
+      }
+      if (!working) throw new Error('grok not working')
+      await delay(1500)
+      // 허브가 부른 키 넣기와 guard 결과(sent = PTY 에 씀 · refused = 아무것도 안 씀). 「부름」 은 「씀」 이 아니다(n03 판정 오류 뒤 고침).
+      const keys: { code: number; inputRevision: number | null; result: string }[] = []
+      let interleaved: Record<string, unknown> | null = null
+      const { hub, channel, settled } = hubFor({
+        kind: 'grok', pane, sid, file: null,
+        backend: {
+          screen: async (target) => {
+            const shot = await live.screen(target)
+            if (race && interleaved === null) {
+              // 화면을 잡은 직후 맥 타자(사람 키와 같은 PTY 입력 경로).
+              await terminal.send(target, 'desktopdraft', ctx())
+              await delay(400)
+              const seen = await live.screen(target)
+              interleaved = { before: shot.input?.revision ?? null, after: seen.input?.revision ?? null, seqBefore: shot.seq, seqAfter: seen.seq }
+            }
+            return shot
+          },
+          send: async (target, value) => {
+            const result = await live.send(target, value)
+            keys.push({ code: value.text.charCodeAt(0), inputRevision: value.inputRevision, result: result.kind })
+            return result
+          },
+        },
+      })
+      const id = race ? 'r3-A6-grok-race' : 'r3-A6-grok-control'
+      hub.stopTurn({ device: 'd1', id, channel })
+      const state = await settled(id)
+      hub.stop()
+      const after = await live.screen(pane)
+      const remains = after.text.includes('desktopdraft')
+      const written = keys.filter((key) => key.result !== 'refused').length
+      const ok = race ? state?.state === 'failed' && written === 0 && remains : (state?.state === 'stopped' || state?.state === 'unconfirmed') && written === 1 && keys[0]!.inputRevision !== null
+      out(id, { state, keys, written, interleaved, desktopTextRemains: remains, draftAfter: draftState({ kind: 'grok', screen: after.text }) }, ok)
+      if (race) {
+        // 이 시험이 넣은 초안을 지우고(Ctrl-U) 턴이 끝나길 기다린다.
+        await terminal.send(pane, '\u0015', ctx())
+        await delay(500)
+      }
+      await waitIdle(pane).catch(() => 0)
+    }
+  } finally {
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
+try {
+  if (command === 'claude') await runClaude()
+  else if (command === 'codex') await runCodex()
+  else if (command === 'grok') await runGrok()
+  else throw new Error(`unknown command ${command}`)
+} catch (error) {
+  out('error', { error: String(error) }, false)
+}
+process.exit(failures === 0 ? 0 : 1)

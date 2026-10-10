@@ -14,6 +14,7 @@
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 import { WebSocketServer, type WebSocket, type RawData } from 'ws'
+import type { ChatResume, ChatSubscription } from './chat.js'
 import type { Device, PairingStore } from './pairing.js'
 import {
   AUTH_TIMEOUT_MS,
@@ -40,10 +41,15 @@ type Connection = {
   lastSeenAt: number
   /** 목록 구독 해제(LIFE-580) — 닫힘·거절·해지·교체 때 부른다. 그 뒤 이 연결로 목록이 가지 않는다. */
   unsubscribe: (() => void) | null
+  /** 대화 구독(LIFE-581) — 한 연결에 하나. 닫힘·거절·해지·교체 때 목록 구독과 같이 끊는다. */
+  chat: ChatSubscription | null
 }
 
 /** 목록 공급(LIFE-580 `feed.ts`) — 서버는 구독·해제만 안다. */
 export type ListSource = { subscribe(sink: (text: string) => void): () => void }
+
+/** 대화 공급(LIFE-581 `chat.ts`) — 서버는 구독·과거 요청·해제만 안다. 채널 id → 세션은 공급 쪽이 서버 상태로만 고른다. */
+export type ChatSource = { subscribe(input: { channelId: string; resume: ChatResume; sink: (text: string) => void }): ChatSubscription }
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -62,6 +68,8 @@ export type MobileServerDeps = {
   allowedOrigin?: () => string | null
   /** 대화방 목록 공급(LIFE-580). 없으면 `list.subscribe` 는 `unknown_type`. */
   list?: ListSource
+  /** 대화 공급(LIFE-581). 없으면 `chat.*` 는 `unknown_type`. */
+  chat?: ChatSource
   /** 시험만 줄인다. */
   authTimeoutMs?: number
   /** 시험만 줄인다 — 생존 확인 주기·무수신 마감(E3). */
@@ -223,7 +231,7 @@ export class MobileServer {
   }
 
   private accept(ws: WebSocket): void {
-    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null }
+    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null, chat: null }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
     ws.on('message', (data, isBinary) => {
@@ -254,7 +262,7 @@ export class MobileServer {
       return this.send(connection.ws, { type: 'error', code: parsed.code, message: errorText(parsed.code) })
     }
     const message = parsed.message
-    // 인증 뒤 — ping · list.subscribe(LIFE-580). M4~ 메시지는 여기 분기에 더한다.
+    // 인증 뒤 — ping · list.subscribe(LIFE-580) · chat.*(LIFE-581). M5~ 메시지는 여기 분기에 더한다.
     if (connection.deviceId !== null) {
       // 해지가 연결 닫기보다 먼저 보일 수 있는 틈을 막는다 — 매 메시지 기기 존재 확인.
       if (!this.deps.pairing.has(connection.deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
@@ -263,6 +271,14 @@ export class MobileServer {
           return this.send(connection.ws, { type: 'pong', id: message.id, at: Date.now() })
         case 'list.subscribe':
           return this.subscribeList(connection)
+        case 'chat.subscribe':
+          return this.subscribeChat({ connection, channelId: message.channel, resume: message.resume })
+        case 'chat.older':
+          if (this.deps.chat === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return connection.chat?.older({ gen: message.gen, before: message.before })
+        case 'chat.unsubscribe':
+          if (this.deps.chat === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return this.unsubscribeChat(connection)
         case 'hello':
         case 'pair':
           return this.send(connection.ws, { type: 'error', code: 'bad_message', message: '이미 인증된 연결이다' })
@@ -311,6 +327,9 @@ export class MobileServer {
       }
       case 'ping':
       case 'list.subscribe':
+      case 'chat.subscribe':
+      case 'chat.older':
+      case 'chat.unsubscribe':
       case 'unknown':
         return this.reject(connection, 'not_authenticated', CLOSE.unauthorized)
     }
@@ -323,7 +342,10 @@ export class MobileServer {
   private subscribeList(connection: Connection): void {
     const list = this.deps.list
     if (list === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
-    this.unsubscribe(connection)
+    // 목록 구독만 바꾼다 — 열린 대화 구독은 그대로(포그라운드 복귀의 목록 재구독이 대화를 끊지 않게).
+    const previous = connection.unsubscribe
+    connection.unsubscribe = null
+    previous?.()
     const deviceId = connection.deviceId
     connection.unsubscribe = list.subscribe((text) => {
       if (connection.closing || deviceId === null || connection.ws.readyState !== connection.ws.OPEN) return
@@ -333,10 +355,40 @@ export class MobileServer {
     this.deps.log('mobile.list_subscribe', { device: deviceId })
   }
 
+  /**
+   * 대화 구독(LIFE-581 X3) — 목록과 같은 보내기 직전 확인(닫는 중·기기 해지). 다시 보내면 이전 대화 구독을 끊는다.
+   * 채널 id 는 공급 쪽이 지금 목록 안에서만 찾는다 — 폰이 준 값으로 파일을 고르지 않는다.
+   */
+  private subscribeChat(input: { connection: Connection; channelId: string; resume: ChatResume }): void {
+    const { connection } = input
+    const chat = this.deps.chat
+    if (chat === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+    this.unsubscribeChat(connection)
+    const deviceId = connection.deviceId
+    connection.chat = chat.subscribe({
+      channelId: input.channelId,
+      resume: input.resume,
+      sink: (text) => {
+        if (connection.closing || deviceId === null || connection.ws.readyState !== connection.ws.OPEN) return
+        if (!this.deps.pairing.has(deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
+        connection.ws.send(text)
+      },
+    })
+    this.deps.log('mobile.chat_open', { device: deviceId })
+  }
+
+  private unsubscribeChat(connection: Connection): void {
+    const chat = connection.chat
+    connection.chat = null
+    chat?.close()
+  }
+
+  /** 연결이 끝난다(닫힘·거절·해지·교체·생존 확인 끊김) — 목록·대화 구독을 모두 끊는다. 그 뒤 이 연결로 아무것도 가지 않는다. */
   private unsubscribe(connection: Connection): void {
     const stop = connection.unsubscribe
     connection.unsubscribe = null
     stop?.()
+    this.unsubscribeChat(connection)
   }
 
   /** 같은 기기의 이전 연결을 닫는다(E3) — 다른 기기 연결은 건드리지 않는다. */

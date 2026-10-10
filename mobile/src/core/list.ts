@@ -14,6 +14,8 @@ export type Preview =
   | { kind: 'question'; text: string | null }
   | { kind: 'approval'; text: string | null }
   | { kind: 'prompt'; text: string }
+  /** 에이전트 마지막 답(LIFE-581 X8). */
+  | { kind: 'reply'; text: string }
   | { kind: 'tool'; text: string }
   | { kind: 'error'; text: string }
   | { kind: 'none' }
@@ -74,6 +76,8 @@ function readPreview(value: unknown): Preview | null {
       return { kind: 'approval', text }
     case 'prompt':
       return text === null ? null : { kind: 'prompt', text }
+    case 'reply':
+      return text === null ? null : { kind: 'reply', text }
     case 'tool':
       return text === null ? null : { kind: 'tool', text }
     case 'error':

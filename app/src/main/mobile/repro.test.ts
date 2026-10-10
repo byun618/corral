@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { PairingStore, PAIRING_TTL_MS } from './pairing.js'
 import { ListFeed } from './feed.js'
 import { FIXTURE_NOW, listFixture } from './list-fixture.js'
-import { MobileServer, type ListSource } from './server.js'
+import { MobileServer, type ChatSource, type ListSource } from './server.js'
+import { CHAT_SESSIONS, SECRET_RESULT, SECRET_THOUGHT, chatListState, claudeLines } from './chat-fixture.js'
+import { ChatHub } from './chat.js'
 
 const run = promisify(execFile)
 const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -38,7 +40,7 @@ function parse(stdout: string): Record<string, unknown>[] {
   return stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => JSON.parse(line))
 }
 
-async function setup(timing: { livenessIntervalMs?: number; idleTimeoutMs?: number; list?: ListSource } = {}): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
+async function setup(timing: { livenessIntervalMs?: number; idleTimeoutMs?: number; list?: ListSource; chat?: ChatSource } = {}): Promise<{ url: string; store: PairingStore; server: MobileServer; dir: string; advance: (ms: number) => void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'l577x-'))
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   let now = Date.now()
@@ -96,7 +98,7 @@ describe('repro 스크립트 (A9)', () => {
     }
     const steps = [...first.rows, ...second.rows].map((row) => row.step).filter((step) => typeof step === 'string')
     expect(steps).toEqual(expect.arrayContaining([
-      'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:list-before-auth', 'ws:bad-json',
+      'http:GET /', 'http:GET /ws', 'http:POST /ws', 'ws:no-token', 'ws:wrong-token', 'ws:ping-before-auth', 'ws:list-before-auth', 'ws:chat-subscribe-before-auth', 'ws:chat-older-before-auth', 'ws:chat-unsubscribe-before-auth', 'ws:bad-json',
       'ws:protocol-mismatch', 'ws:too-large', 'ws:revoked-token', 'ws:used-code', 'ws:expired-code',
       'ws:unknown-code', 'ws:wrong-code-5', 'ws:right-code-after-5-wrong', 'ws:auth-timeout', 'positive:hello', 'positive:ping',
     ]))
@@ -139,6 +141,39 @@ describe('repro 스크립트 (A9)', () => {
     expect([...seqs].sort()).toEqual(seqs)
     expect(out.stdout).not.toContain('모바일 디자인 브리프 정리')
     expect(out.stdout).not.toContain(fs.readFileSync(tokenFile, 'utf8').trim())
+  }, 30_000)
+
+  it('chat(LIFE-581) — 목록에서 AI 채널을 골라 구독 · 과거 페이지 · push · 이어 받기, 출력에 글·토큰 없음(exit 0)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l581r-'))
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
+    const file = path.join(root, 'claude.jsonl')
+    // 과거 페이지가 생기게 턴을 늘린다(첫 페이지 40 말풍선).
+    const extra = Array.from({ length: 30 }, (_, i) => [
+      JSON.stringify({ parentUuid: i === 0 ? 'a11' : `ra${i - 1}`, type: 'user', message: { role: 'user', content: `반복 지시 ${i}` }, uuid: `rp${i}`, sessionId: CHAT_SESSIONS.claude.id }),
+      JSON.stringify({ parentUuid: `rp${i}`, type: 'assistant', message: { id: `rm${i}`, model: 'x', content: [{ type: 'text', text: `반복 답 ${i}` }] }, uuid: `ra${i}`, sessionId: CHAT_SESSIONS.claude.id }),
+    ]).flat()
+    fs.writeFileSync(file, [...claudeLines(), ...extra].map((line) => `${line}\n`).join(''))
+    const read = () => ({ state: chatListState(), prefs: null })
+    const feed = new ListFeed({ read, log: () => {}, coalesceMs: 20, maxWaitMs: 50 })
+    cleanups.push(() => feed.stop())
+    const hub = new ChatHub({ read, resolveFile: ({ session }) => (session.kind === 'id' && session.id === CHAT_SESSIONS.claude.id ? file : null), log: () => {}, pollMs: 20 })
+    cleanups.push(() => hub.stop())
+    const { url, store, dir } = await setup({ list: feed, chat: hub })
+    const { code } = store.createCode()
+    const tokenFile = path.join(dir, 'token')
+    expect((await repro(['pair', '--url', url, '--code', code, '--token-out', tokenFile])).code).toBe(0)
+    const recv = path.join(dir, 'chat.ndjson')
+    const writer = setTimeout(() => fs.appendFileSync(file, `${JSON.stringify({ parentUuid: 'ra29', type: 'user', message: { role: 'user', content: '라이브 지시' }, uuid: 'live1', sessionId: CHAT_SESSIONS.claude.id })}\n`), 900)
+    cleanups.push(() => clearTimeout(writer))
+    const out = await repro(['chat', '--url', url, '--token-file', tokenFile, '--older', '3', '--resume', '--watch-ms', '1500', '--ndjson-out', recv])
+    expect(out.rows.filter((row) => row.pass === false)).toEqual([])
+    expect(out.code).toBe(0)
+    expect(out.rows.map((row) => row.step).filter((step) => typeof step === 'string')).toEqual(['chat:page', 'chat:no-duplicate-across-pages', 'chat:older', 'chat:resume', 'chat:summary'])
+    const lines = fs.readFileSync(recv, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(lines.map((line) => line.mode ?? line.type)).toEqual(expect.arrayContaining(['reset', 'older', 'resume']))
+    expect(lines.some((line) => line.type === 'chat.items')).toBe(true)
+    const text = out.stdout + fs.readFileSync(recv, 'utf8')
+    for (const secret of ['반복 지시', '라이브 지시', '마지막 답', SECRET_THOUGHT, SECRET_RESULT, fs.readFileSync(tokenFile, 'utf8').trim()]) expect(text).not.toContain(secret)
   }, 30_000)
 
   // R2-A4 — `--token-out` 은 새 파일만 0600 으로 원자 생성. 이미 있는 파일(0644)·심링크는 pair 전에 거절(exit 2) — 코드를 소모하지 않는다.

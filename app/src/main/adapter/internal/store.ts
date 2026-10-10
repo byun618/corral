@@ -987,7 +987,9 @@ export class WorkspaceStore {
     if (this.retentionSuppressed.has(pane.workspaceId)) return
     this.retained = [
       { paneId: pane.paneId, tabId: pane.tabId, workspaceId: pane.workspaceId, title: pane.title,
-        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, cwd: pane.cwd, retainedAt: at },
+        agent: pane.agent, agentStatus: pane.agentStatus, agentState: pane.agentState, cwd: pane.cwd, retainedAt: at,
+        // 모바일 대화 화면이 닫힌 세션의 지난 기록을 읽는 참조(LIFE-581 X7) — 데스크톱은 읽지 않는다.
+        agentSession: pane.agentSession },
       ...this.retained.filter((row) => row.paneId !== pane.paneId),
     ].slice(0, RETAINED_LIMIT)
   }

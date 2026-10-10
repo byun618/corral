@@ -297,6 +297,34 @@ describe('R1-A5 미리보기 순서 — 두 재료가 함께 있을 때(코디 �
   })
 })
 
+describe('LIFE-581 X8 미리보기 — 에이전트 마지막 답은 「내 지시」 앞', () => {
+  const place = { worktree: '/fx/home/repo', home: '/fx/home' }
+  const reply = { state: 'text' as const, text: '답에 /fx/home/repo/src/a.ts 와 /fx/home/x 가 있다', at: 1 }
+  const all = {
+    lastPrompt: '내 지시',
+    activity: reply,
+    tool: { name: 'Read', input: 'src/a.ts' },
+    pendingQuestions: [{ question: '질문?', header: null, options: [], multiSelect: null }],
+    turnOutcome: { outcome: 'failed' as const, error: '실패 사유' },
+  }
+  it('질문 → 권한 → 실패 → 작업 중 도구 → 마지막 답 → 내 지시 → 도구 — 재료를 하나씩 덜어 내며 본다 · 답도 홈 경로를 가린다', () => {
+    const waiting = fixturePane('q', 'claude', { agentStatus: 'blocked', agentState: { blockedReason: 'question' }, digest: all })
+    expect(previewOf({ pane: waiting, dot: 'waiting', place })).toEqual({ kind: 'question', text: '질문?' })
+    const approval = fixturePane('a', 'claude', { agentStatus: 'blocked', agentState: { blockedReason: 'permission' }, digest: all })
+    expect(previewOf({ pane: approval, dot: 'waiting', place })).toEqual({ kind: 'approval', text: 'Read · src/a.ts' })
+    const failed = fixturePane('f', 'claude', { digest: all })
+    expect(previewOf({ pane: failed, dot: 'failed', place })).toEqual({ kind: 'error', text: '실패 사유' })
+    const working = fixturePane('w', 'claude', { agentStatus: 'working', digest: all })
+    expect(previewOf({ pane: working, dot: 'working', place })).toEqual({ kind: 'tool', text: 'Read · src/a.ts' })
+    const idle = fixturePane('i', 'claude', { digest: all })
+    expect(previewOf({ pane: idle, dot: 'idle', place })).toEqual({ kind: 'reply', text: '답에 src/a.ts 와 ~/x 가 있다' })
+    const noReply = fixturePane('n', 'claude', { digest: { ...all, activity: { state: 'unknown-format' } } })
+    expect(previewOf({ pane: noReply, dot: 'idle', place })).toEqual({ kind: 'prompt', text: '내 지시' })
+    const toolOnly = fixturePane('t', 'claude', { digest: { tool: all.tool } })
+    expect(previewOf({ pane: toolOnly, dot: 'idle', place })).toEqual({ kind: 'tool', text: 'Read · src/a.ts' })
+  })
+})
+
 describe('R4-A1 경로 가림 — 한 규칙(디코딩 → 모든 위치 → 뒤 경계만) · 리뷰 r1~r4 사례 한 표 · 불변식', () => {
   const place = { worktree: '/Users/me/repos/app', home: '/Users/me' }
   // [입력, 기대, 출처]. 과잉 가림(앞 글자가 붙은 홈)은 허용 — 계약은 「결과에 홈 절대경로가 남지 않는다」 하나다.

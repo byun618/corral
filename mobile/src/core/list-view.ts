@@ -95,6 +95,7 @@ function previewText(input: { channel: Channel; dot: Dot }): { text: string; mon
     case 'tool':
       return { text: preview.text, mono: true }
     case 'prompt':
+    case 'reply':
     case 'error':
       return { text: preview.text, mono: false }
     case 'none':

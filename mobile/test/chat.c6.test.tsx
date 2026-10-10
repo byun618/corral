@@ -37,11 +37,14 @@ vi.mock('../src/runtime/chat', () => ({
   chatStore: { open: chatCtx.open, close: chatCtx.close, loadOlder: vi.fn(), retry: vi.fn() },
 }))
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
+// 쓰기(LIFE-582) — 이 시험의 대상이 아니다. 보낸 것 없음 · 입력창은 글 없는 빈 칸.
+vi.mock('../src/runtime/input', () => ({ useInput: () => ({ entries: [] }), inputStore: { send: vi.fn(), stop: vi.fn(), answer: vi.fn(), cancel: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }))
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children, style }: { children: ReactNode; style?: { opacity?: number } }) => <div data-opacity={style?.opacity}>{children}</div>,
   ScrollView: ({ children, style }: { children: ReactNode; style?: { opacity?: number } }) => <div data-opacity={style?.opacity}>{children}</div>,
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
+  TextInput: () => <textarea />,
   RefreshControl: () => null,
   ActivityIndicator: () => null,
   FlatList: (p: { data: { id: number }[]; renderItem: (input: { item: { id: number }; index: number }) => ReactNode; ListHeaderComponent: ReactNode; ListFooterComponent: ReactNode }) => (

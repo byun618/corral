@@ -1,5 +1,5 @@
 // 대화 본문 (LIFE-581 X9 — 579 C1·C2·C6(표시)·C8·C9·C11·C13·C15·C16·C18·C19) — 말풍선 4종·SystemNote·도구 묶음·마크다운·과거 불러오기·`새 메시지 ↓`.
-// 입력창·질문 답·중단은 M5(LIFE-582) — 이 화면은 그리지 않는다(입력 자리 없음). 색·크기는 design-handoff §2·§3 / tokens.ts.
+// 입력창·중단 버튼은 채널 화면(M5 LIFE-582)이 이 아래·머리에 그린다. 여기는 보낸 지시 상태 줄(C12)과 질문 답 카드(C3·C4·C5)를 더한다 — 색·크기는 design-handoff §2·§3 / tokens.ts.
 //
 // 목록은 뒤집힌 FlatList(가장 새 말풍선이 index 0 = 화면 아래). 과거 페이지는 배열 끝(화면 위)에 붙어 보던 자리가 움직이지 않는다(C16 위치 유지).
 // 새 말풍선은 아래(index 0)에 붙고, 맨 아래에 있지 않으면 `maintainVisibleContentPosition` 이 보던 말풍선을 제자리에 두고 `새 메시지 ↓` 를 띄운다.
@@ -8,6 +8,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import type { ChatItem } from '../core/chat'
 import type { ChatSnapshot } from '../core/chat-store'
+import { sentLine, stepReady, type SentEntry, type SentLine, type StepAnswer } from '../core/input'
 import {
   TABLE_SCROLL_COLUMNS,
   bodyState,
@@ -44,6 +45,27 @@ export type ConversationProps = {
   dim: boolean
   onOlder: () => void
   onRetry: () => void
+  /** 보낸 지시(LIFE-582 C12) — 기록의 「내 지시」 에 붙은 것(`attached`, 말풍선 id → 항목)과 아직 기록에 없는 것(`trailing`). 없으면 그리지 않는다. */
+  sent?: { attached: ReadonlyMap<number, SentEntry>; trailing: readonly SentEntry[] }
+  /** 보낸 지시의 `취소`·`다시 보내기`. */
+  onSentAction?: (input: { id: string; action: 'cancel' | 'retry' }) => void
+  /** 지금 답할 수 있는 질문(LIFE-582) — 그 질문 카드만 누를 수 있다. 없으면 질문은 표시만. */
+  question?: QuestionControl | null
+}
+
+/** 질문 답 조작 — 상태는 채널 화면이 든다(입력창의 직접 입력과 같이 쓴다). */
+export type QuestionControl = {
+  id: number
+  /** 폰에서 답할 수 없는 질문 — 선택지를 잠그고 `맥에서 답해 주세요`. */
+  locked: boolean
+  step: number
+  answers: readonly StepAnswer[]
+  /** 답을 보내는 중 — 다시 누르지 못한다. */
+  busy: boolean
+  /** 결과 한 줄(실패·확인 못 함·보내는 중). */
+  line: { tone: 'muted' | 'error'; text: string } | null
+  onToggle: (choice: number) => void
+  onConfirm: () => void
 }
 
 /** 맨 아래로 치는 거리(dp, 뒤집힌 목록의 contentOffset.y) — 이 안이면 따라가고, 넘으면 자리를 지키고 「새 메시지 ↓」. 하나의 임계다(n-12). */
@@ -54,7 +76,7 @@ const RELEASE_MS = 100
 /** 손가락 제스처 단계 — 이 동안은 크기 변화로 맨 아래에 붙이지 않고, 끝(`none` 으로 돌아올 때) 한 번 정한다. */
 type Gesture = 'none' | 'drag' | 'release' | 'momentum'
 
-export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: ConversationProps) {
+export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, sent, onSentAction, question }: ConversationProps) {
   const state = bodyState({ phase: chat.phase, count: chat.items.length })
   const list = useRef<FlatList<ChatItem>>(null)
   // 맨 아래를 떠난 순간의 맨 아래 쪽 변경 횟수(`tailRev`) — 그 뒤 새 말풍선이 붙거나 마지막 답이 자라면 「새 메시지 ↓」(R1-A10). 맨 아래로 돌아오면 지운다.
@@ -202,7 +224,16 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
         inverted
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item, index }) => (
-          <Bubble item={item} head={heads.has(item.id)} kind={channel.kind} last={index === 0} working={working} />
+          <Bubble
+            item={item}
+            head={heads.has(item.id)}
+            kind={channel.kind}
+            last={index === 0}
+            working={working}
+            sent={sent?.attached.get(item.id) ?? null}
+            onSentAction={onSentAction}
+            question={question !== undefined && question !== null && question.id === item.id ? question : null}
+          />
         )}
         maintainVisibleContentPosition={following ? undefined : { minIndexForVisible: 0 }}
         onContentSizeChange={onContentSizeChange}
@@ -215,7 +246,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
         onMomentumScrollEnd={onMomentumScrollEnd}
         scrollEventThrottle={100}
         contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, gap: 14 }}
-        ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty'} items={chat.items} dropped={chat.dropped} />}
+        ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty' && (sent?.trailing.length ?? 0) === 0} items={chat.items} dropped={chat.dropped} sent={sent?.trailing ?? []} onSentAction={onSentAction} />}
         ListFooterComponent={<OlderMark loading={chat.loadingOlder} hasOlder={chat.hasOlder} />}
       />
       {showNew ? (
@@ -249,7 +280,7 @@ function OlderMark({ loading, hasOlder }: { loading: boolean; hasOlder: boolean 
 }
 
 /** 화면 아래쪽 끝 — 지금 상태 카드(권한 대기 C6 · 중단 C8 · 실패 C9) · 못 읽은 말풍선 안내 · 닫힌 세션 안내(C19) · 빈 대화. */
-function Trailer({ channel, live, empty, items, dropped }: { channel: Channel; live: boolean; empty: boolean; items: readonly ChatItem[]; dropped: number }) {
+function Trailer({ channel, live, empty, items, dropped, sent, onSentAction }: { channel: Channel; live: boolean; empty: boolean; items: readonly ChatItem[]; dropped: number; sent: readonly SentEntry[]; onSentAction?: (input: { id: string; action: 'cancel' | 'retry' }) => void }) {
   // 지금 상태가 중단·실패인데 최신 턴의 기록에 그 카드가 없으면 상태에서 한 장(R1-A6, X2ⓔ).
   const card = stateCard({ dot: channel.dot, live, errorText: channel.preview.kind === 'error' ? channel.preview.text : null, items })
   const skipped = droppedText(dropped)
@@ -268,6 +299,10 @@ function Trailer({ channel, live, empty, items, dropped }: { channel: Channel; l
           detail="맥에서 승인하면 이어집니다"
         />
       ) : null}
+      {sent.map((entry) => (
+        // 아직 기록에 「내 지시」 로 보이지 않는 보낸 지시(보내는 중·대기 중·실패·확인 못 함) — 대화 끝에.
+        <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
+      ))}
       {channel.status === 'closed' ? (
         <View style={{ height: 56, alignItems: 'center', justifyContent: 'center', borderTopWidth: 1, borderTopColor: color.line }}>
           <Text style={{ fontSize: 13, color: color.fgDim, fontFamily: font.regular }}>세션이 닫혔습니다 · 지난 기록만 볼 수 있습니다</Text>
@@ -277,16 +312,34 @@ function Trailer({ channel, live, empty, items, dropped }: { channel: Channel; l
   )
 }
 
-const Bubble = memo(function Bubble({ item, head, kind, last, working }: { item: ChatItem; head: boolean; kind: AgentKind | null; last: boolean; working: boolean }) {
+type BubbleProps = {
+  item: ChatItem
+  head: boolean
+  kind: AgentKind | null
+  last: boolean
+  working: boolean
+  sent: SentEntry | null
+  onSentAction?: (input: { id: string; action: 'cancel' | 'retry' }) => void
+  question: QuestionControl | null
+}
+
+const Bubble = memo(function Bubble({ item, head, kind, last, working, sent, onSentAction, question }: BubbleProps) {
   switch (item.kind) {
     case 'prompt':
-      return <PromptBubble text={item.body.text} clipped={item.body.clipped} />
+      return (
+        <PromptBubble
+          text={item.body.text}
+          clipped={item.body.clipped}
+          status={sent === null ? null : sentLine({ entry: sent, hhmm })}
+          onAction={(action) => (sent === null ? undefined : onSentAction?.({ id: sent.id, action }))}
+        />
+      )
     case 'reply':
       return <ReplyBlock item={item} head={head} kind={kind} cursor={last && working} />
     case 'tools':
       return <ToolGroup item={item} live={last && working} />
     case 'question':
-      return <QuestionCard item={item} />
+      return question === null ? <QuestionCard item={item} /> : <QuestionAnswerCard item={item} control={question} />
     case 'note': {
       const view = noteView(item)
       const detail = item.clipped && view.detail !== null ? `${view.detail} …(잘림)` : view.detail
@@ -300,14 +353,35 @@ function Clipped({ clipped }: { clipped: number | null }) {
   return <Text style={{ fontSize: 12, color: color.fgDim, fontFamily: font.regular, marginTop: 4 }}>{`… 잘림 — 원문 ${clipped.toLocaleString()}자 중 일부`}</Text>
 }
 
-function PromptBubble({ text, clipped }: { text: string; clipped: number | null }) {
+/** 내 지시 — 보낸 지시면 아래 상태 한 줄(§1 Q7): 보내는 중(말풍선 55%) · 대기 중 + 취소 · 들어감 ✓ · 실패(테두리 `--st-error`) + 다시 보내기. */
+function PromptBubble({ text, clipped, status = null, onAction }: { text: string; clipped: number | null; status?: SentLine | null; onAction?: (action: 'cancel' | 'retry') => void }) {
   const [expanded, setExpanded] = useState(false)
   const folded = foldText({ text, expanded })
+  const failed = status?.tone === 'error'
   return (
-    <View style={{ alignSelf: 'flex-end', marginLeft: 44, maxWidth: '100%', backgroundColor: color.chip, borderRadius: 18, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10 }}>
-      <Text selectable style={{ fontSize: 15, lineHeight: 22.5, color: color.fg, fontFamily: font.regular }}>{folded.text}</Text>
-      {folded.hiddenLines > 0 ? <MoreLines hidden={folded.hiddenLines} onPress={() => setExpanded(true)} /> : null}
-      <Clipped clipped={clipped} />
+    <View style={{ alignSelf: 'flex-end', marginLeft: 44, maxWidth: '100%', gap: 4 }}>
+      <View style={{ opacity: status?.faded === true ? 0.55 : 1, backgroundColor: color.chip, borderRadius: 18, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, borderWidth: failed ? 1 : 0, borderColor: color.error }}>
+        <Text selectable style={{ fontSize: 15, lineHeight: 22.5, color: color.fg, fontFamily: font.regular }}>{folded.text}</Text>
+        {folded.hiddenLines > 0 ? <MoreLines hidden={folded.hiddenLines} onPress={() => setExpanded(true)} /> : null}
+        <Clipped clipped={clipped} />
+      </View>
+      {status !== null ? <SentStatus line={status} onAction={onAction} /> : null}
+    </View>
+  )
+}
+
+const SENT_TONE: Record<SentLine['tone'], string> = { muted: color.fgMuted, question: color.dotQuestion, dim: color.fgDim, error: color.error }
+
+function SentStatus({ line, onAction }: { line: SentLine; onAction?: (action: 'cancel' | 'retry') => void }) {
+  const action = line.action
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 10, paddingRight: 4 }}>
+      <Text style={{ flexShrink: 1, fontSize: 12, color: SENT_TONE[line.tone], fontFamily: font.regular, textAlign: 'right' }}>{line.text}</Text>
+      {action !== null ? (
+        <Pressable accessibilityRole="button" onPress={() => onAction?.(action)} className="active:opacity-60" hitSlop={8}>
+          <Text style={{ fontSize: 12, color: color.fg, fontFamily: font.semibold }}>{action === 'cancel' ? '취소' : '다시 보내기'}</Text>
+        </Pressable>
+      ) : null}
     </View>
   )
 }
@@ -517,7 +591,7 @@ function ToolGroup({ item, live }: { item: Extract<ChatItem, { kind: 'tools' }>;
   )
 }
 
-/** 질문 카드 — 표시만(답하기는 M5). 답한 질문은 `질문 · … / 답함 → …` 접힌 기록. */
+/** 질문 카드 — 표시만(지금 답할 수 없을 때 — 연결 없음·지난 질문. 답하기는 `QuestionAnswerCard`). 답한 질문은 `질문 · … / 답함 → …` 접힌 기록. */
 function QuestionCard({ item }: { item: Extract<ChatItem, { kind: 'question' }> }) {
   if (item.state !== 'pending') {
     return (
@@ -551,7 +625,71 @@ function QuestionCard({ item }: { item: Extract<ChatItem, { kind: 'question' }> 
         </View>
       ))}
       {item.clipped ? <QuestionClipped /> : null}
-      <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>답은 맥에서 — 폰에서 답하기는 다음 업데이트에서 들어옵니다</Text>
+      <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>연결되면 여기서 답할 수 있습니다 — 지금은 맥에서</Text>
+    </View>
+  )
+}
+
+/**
+ * 답할 수 있는 질문 카드(C3 하나 + 직접 입력 · C4 여럿 · C5 여러 문항 `n / m`) — design-handoff §2 QuestionOption. 지금 문항만 보인다.
+ * 직접 입력은 아래 입력창이 맡는다(P4ⓔ). 잠긴 질문은 선택지를 누를 수 없고 `맥에서 답해 주세요`.
+ */
+function QuestionAnswerCard({ item, control }: { item: Extract<ChatItem, { kind: 'question' }>; control: QuestionControl }) {
+  const total = item.questions.length
+  const step = Math.min(control.step, total - 1)
+  const question = item.questions[step]
+  if (question === undefined) return <QuestionCard item={item} />
+  const answer = control.answers[step] ?? { choices: [], other: null }
+  const multi = question.multiSelect === true
+  const last = step === total - 1
+  const ready = !control.locked && !control.busy && stepReady({ question, answer })
+  const count = answer.choices.length + (answer.other === null ? 0 : 1)
+  const label = !last ? '다음' : multi && count > 1 ? `${count}개 보내기` : '보내기'
+  return (
+    <View style={{ backgroundColor: TOOL_CARD_BG, borderWidth: 1, borderColor: color.questionTint40, borderRadius: 14, padding: 14, gap: 10 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 12.5, color: color.dotQuestion, fontFamily: font.semibold }}>{`${question.header ?? '질문'}${multi ? ' · 여러 개 고르기' : ''}`}</Text>
+        {total > 1 ? <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: mono }}>{`${step + 1} / ${total}`}</Text> : null}
+      </View>
+      <Text selectable style={{ fontSize: 15.5, lineHeight: 22, color: color.fg, fontFamily: font.semibold }}>{question.question}</Text>
+      {question.options.map((option, index) => {
+        const selected = answer.choices.includes(index)
+        return (
+          <Pressable
+            key={index}
+            accessibilityRole={multi ? 'checkbox' : 'radio'}
+            accessibilityState={{ checked: selected, disabled: control.locked || control.busy }}
+            disabled={control.locked || control.busy}
+            onPress={() => control.onToggle(index)}
+            className="active:opacity-80"
+            style={{ minHeight: 52, borderRadius: 10, borderWidth: 1, borderColor: selected ? color.dotQuestion : color.lineStrong, backgroundColor: selected ? color.questionTint8 : 'transparent', paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 }}
+          >
+            <View style={{ width: 18, height: 18, borderRadius: multi ? 5 : 9, borderWidth: 1.5, borderColor: selected ? color.dotQuestion : color.lineStrong, backgroundColor: selected ? color.dotQuestion : 'transparent', alignItems: 'center', justifyContent: 'center' }}>
+              {selected ? <Text style={{ fontSize: 11, color: color.surface, fontFamily: font.semibold }}>✓</Text> : null}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 14.5, color: color.fg, fontFamily: font.medium }}>{option.label}</Text>
+              {option.description !== null ? <Text style={{ fontSize: 12.5, color: color.fgMuted, fontFamily: font.regular }}>{option.description}</Text> : null}
+            </View>
+          </Pressable>
+        )
+      })}
+      {answer.other !== null ? <Text numberOfLines={2} style={{ fontSize: 13, color: color.fgMuted, fontFamily: font.regular }}>{`직접 입력 → ${answer.other}`}</Text> : null}
+      {control.locked ? (
+        <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다</Text>
+      ) : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !ready }}
+          disabled={!ready}
+          onPress={control.onConfirm}
+          className="active:opacity-80"
+          style={{ height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: ready ? color.fg : color.chip }}
+        >
+          <Text style={{ fontSize: 14.5, color: ready ? color.surface : color.fgFaint, fontFamily: font.semibold }}>{label}</Text>
+        </Pressable>
+      )}
+      {control.line !== null ? <Text style={{ fontSize: 12.5, color: control.line.tone === 'error' ? color.error : color.fgMuted, fontFamily: font.regular }}>{control.line.text}</Text> : null}
     </View>
   )
 }

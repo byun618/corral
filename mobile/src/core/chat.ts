@@ -5,7 +5,8 @@ export type ChatText = { text: string; clipped: number | null }
 /** `unknown` = 결과는 왔으나 성공/실패를 기록에서 읽지 못했다(옛 Codex 출력 — 서버가 성공으로 단정하지 않는다, R1-A9). */
 export type ChatToolStatus = 'running' | 'ok' | 'error' | 'unknown'
 export type ChatTool = { name: string | null; target: string | null; status: ChatToolStatus }
-export type ChatQuestion = { question: string; header: string | null; options: { label: string; description: string | null }[]; multiSelect: boolean | null }
+/** `preview` = Claude 의 미리보기 레이아웃(LIFE-582) — 직접 입력 행이 없다. 옛 서버는 칸이 없다(false). */
+export type ChatQuestion = { question: string; header: string | null; options: { label: string; description: string | null }[]; multiSelect: boolean | null; preview: boolean }
 
 export type ChatItem =
   | { id: number; kind: 'prompt'; at: number | null; body: ChatText }
@@ -52,7 +53,7 @@ function readQuestion(value: unknown): ChatQuestion | null {
   const options = Array.isArray(value.options)
     ? value.options.flatMap((option) => (isRecord(option) && typeof option.label === 'string' ? [{ label: option.label, description: str(option.description) }] : []))
     : []
-  return { question, header: str(value.header), options, multiSelect: typeof value.multiSelect === 'boolean' ? value.multiSelect : null }
+  return { question, header: str(value.header), options, multiSelect: typeof value.multiSelect === 'boolean' ? value.multiSelect : null, preview: value.preview === true }
 }
 
 export function readChatItem(value: unknown): ChatItem | null {

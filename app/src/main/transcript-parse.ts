@@ -498,11 +498,14 @@ export function readQuestions(input: { items: unknown; textKey: string }): Sessi
       }
     }
     const multiSelect = item['multiSelect']
+    // LIFE-582 Z1ⓑ — Claude 의 preview 레이아웃(선택지에 `preview` 글)은 「Type something」 행이 없고 숫자가 커서만 옮긴다. 있을 때만 싣는다.
+    const preview = Array.isArray(rawOptions) && rawOptions.some((option) => isRecord(option) && typeof option['preview'] === 'string')
     questions.push({
       question,
       header: readString(item, 'header'),
       options,
       multiSelect: typeof multiSelect === 'boolean' ? multiSelect : null,
+      ...(preview ? { preview: true } : {}),
     })
   }
   return questions.length === 0 ? null : questions

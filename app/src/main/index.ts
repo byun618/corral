@@ -1557,6 +1557,11 @@ app.whenReady().then(async () => {
     log,
     // 대화방 목록(LIFE-580) — 렌더러에 낸 마지막 상태 + 사이드바 정렬 설정. 상태를 아직 못 냈으면 null(폰은 「아직 못 읽음」 으로 기다린다).
     listSource: () => (lastEmittedState === null ? null : { state: lastEmittedState, prefs: uiPrefs?.get() ?? null }),
+    // 폰 쓰기(LIFE-582) — 목록의 세션이 guard 바인딩일 때만(CLI·GUI 넣기와 같은 봉투). 아니면 쓰기는 실패로 끝난다.
+    inputSocket: () => {
+      const socket = currentSocketPath()
+      return socket !== null && socket === backendBinding()?.socket ? socket : null
+    },
     onStatus: (status) => {
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:mobile', status)
     },

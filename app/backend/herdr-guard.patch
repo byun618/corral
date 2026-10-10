@@ -22,7 +22,7 @@
 +    #[serde(default)] pub pane_id: Option<String>,
 +    #[serde(default)] pub terminal_id: Option<String>,
 +    #[serde(default)] pub operation: Option<serde_json::Value>,
-+    /// agent.prompt only: the state_change_seq corral last observed as ready. Compare-and-submit.
++    /// agent.prompt: the state_change_seq corral last observed as ready (compare-and-submit). pane.send_text: optional, same compare (LIFE-582).
 +    #[serde(default)] pub expected_state_change_seq: Option<u64>,
 +}
 --- a/src/api/server.rs
@@ -54,7 +54,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,320 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -151,6 +151,20 @@
 +                Ok((id, agent, _completion)) => encode_success(id, ResponseResult::AgentPrompted { agent }),
 +                Err(response) => response,
 +            };
++        }
++        // LIFE-582: pane.send_text may carry the state_change_seq corral observed (a question still open, a
++        // turn still running). Compare it in this same turn and refuse on any transition, so a key meant
++        // for one screen never lands on the next one. Without the field the arm is unchanged.
++        if let (Method::PaneSendText(send), Some(expected_seq)) = (&request.method, params.expected_state_change_seq) {
++            self.reconcile_managed_agent_target(&send.pane_id);
++            let observed = match self.agent_info_for_target(&send.pane_id) {
++                Ok(agent) => agent,
++                Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
++            };
++            if observed.state_change_seq != expected_seq {
++                let message = format!("agent state changed (expected state_change_seq {expected_seq}, observed {})", observed.state_change_seq);
++                return serde_json::json!({"id": id, "error": {"code": "agent_state_changed", "message": message, "observed": observed}}).to_string();
++            }
 +        }
 +        // No await, internal-event drain, or second queue between guard and effect.
 +        let snapshot = matches!(&request.method, Method::SessionSnapshot(_));

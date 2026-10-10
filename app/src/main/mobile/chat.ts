@@ -122,7 +122,8 @@ function wireQuestions(input: { questions: SessionQuestion[]; place: Place }): {
       options.push({ label: take(option.label, 300) ?? '', description: take(option.description, 600) })
     }
     if (question.options.length > 20) clipped = true
-    questions.push({ question: text, header, options, multiSelect: question.multiSelect })
+    const layout: Pick<SessionQuestion, 'preview'> = question.preview === true ? { preview: true } : {}
+    questions.push({ question: text, header, options, multiSelect: question.multiSelect, ...layout })
   }
   return { questions, clipped }
 }

@@ -110,6 +110,11 @@ export class ListStore {
         // 읽지 못한 목록·구독 거부는 다시 보내도 같다 — 앱이나 맥 corral 을 맞춰야 한다.
         this.set({ failure: { reason: event.reason, at: this.now(), incompatible: true } })
         return
+      case 'chat':
+      case 'chat_invalid':
+      case 'server_error':
+      case 'input':
+        return
     }
   }
 

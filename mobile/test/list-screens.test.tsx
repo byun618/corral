@@ -38,11 +38,14 @@ vi.mock('../src/runtime/chat', () => ({
   chatStore: { open: chatCtx.open, close: chatCtx.close, loadOlder: vi.fn(), retry: vi.fn() },
 }))
 vi.mock('../src/ui/Conversation', () => ({ Conversation: () => <i data-conversation /> }))
+// 쓰기(LIFE-582) — 이 시험의 대상이 아니다. 보낸 것 없음 · 입력창은 글 없는 빈 칸.
+vi.mock('../src/runtime/input', () => ({ useInput: () => ({ entries: [] }), inputStore: { send: vi.fn(), stop: vi.fn(), answer: vi.fn(), cancel: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }))
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
+  TextInput: () => <textarea />,
   RefreshControl: () => null,
   ActivityIndicator: () => null,
   Platform: { select: (value: { android: string }) => value.android },

@@ -40,7 +40,8 @@
 
 ## 3. WS 메시지 (JSON 텍스트 프레임 · 프로토콜 버전 1)
 
-프레임 하나 최대 16 KiB(넘으면 close 1009). 바이너리 프레임은 `bad_message`. 연결 후 **10초 안에** 인증(`hello` 성공 또는 `pair` 성공)하지 않으면 `auth_timeout`.
+프레임 하나 최대 16 KiB(넘으면 close 1009). **예외 하나**: 인증된 연결의 `input.send` 는 `2×65536+4096` 바이트까지(LIFE-582 P7 — 본문 65536 UTF-8 바이트가 JSON 이스케이프로 불어도 들어가게).
+ws 의 `maxPayload` 가 큰 쪽이고 16 KiB 는 서버가 메시지마다 다시 건다 — 인증 전에는 파싱 전에, 인증 뒤에는 `input.send` 가 아닌 타입에. 바이너리 프레임은 `bad_message`. 연결 후 **10초 안에** 인증(`hello` 성공 또는 `pair` 성공)하지 않으면 `auth_timeout`.
 
 **인증된 연결의 수명 (LIFE-578 E3)** — 이 절은 메시지·경로·인증 전 동작을 더하지 않는다(목록은 아래 LIFE-580 절). 서버 쪽 정리만 더했다.
 
@@ -63,8 +64,13 @@
 | `chat.subscribe` | 인증 뒤 (LIFE-581) | `{type:'chat.subscribe', channel:'<목록의 채널 id, 200자까지>', gen?:string, from?:number, cursor?:number}` — 대화 하나 구독(연결당 하나 — 다시 보내면 이전 대화 구독을 끊는다). `gen`·`from`·`cursor` 셋이 다 있으면 이어 받기(R1-A2 — r0 의 `after` 대신) |
 | `chat.older` | 인증 뒤 (LIFE-581) | `{type:'chat.older', gen, before:<말풍선 id>}` — 지금 대화의 `before` 앞 페이지. 세대가 다르면 무시 |
 | `chat.unsubscribe` | 인증 뒤 (LIFE-581) | `{type:'chat.unsubscribe'}` — 대화 구독 끊기(목록 구독은 그대로) |
+| `input.send` | 인증 뒤 (LIFE-582) | `{type:'input.send', id:'<폰이 만든 id — [A-Za-z0-9_-]{8,64}>', channel, text:'<1~65536 UTF-8 바이트>'}` — 지시 보내기. 아래 「쓰기」 |
+| `input.cancel` | 인증 뒤 (LIFE-582) | `{type:'input.cancel', id}` — 큐 취소(넣기 시작 전만) |
+| `input.status` | 인증 뒤 (LIFE-582) | `{type:'input.status', ids:[id…, 100개까지]}` — 재연결 뒤 결과 조회 |
+| `question.answer` | 인증 뒤 (LIFE-582) | `{type:'question.answer', id, channel, question:<질문 말풍선 id>, answers:[{choices:[<0부터 선택지 번호>…], other:'<직접 입력>'\|null}…]}` — 문항 순서대로 |
+| `turn.stop` | 인증 뒤 (LIFE-582) | `{type:'turn.stop', id, channel}` — 지금 턴 중단 |
 
-인증 전에 `hello`·`pair` 가 아닌 것(`ping`·`list.subscribe`·`chat.*` 포함)은 `not_authenticated` 로 닫는다. 노출이 `exposed` 가 아니면(Funnel·HTTPS 꺼짐·실패 등) `hello`·`pair` 도
+인증 전에 `hello`·`pair` 가 아닌 것(`ping`·`list.subscribe`·`chat.*`·쓰기 다섯 포함)은 `not_authenticated` 로 닫는다. 노출이 `exposed` 가 아니면(Funnel·HTTPS 꺼짐·실패 등) `hello`·`pair` 도
 `unavailable` 로 닫는다(R1-A2). 서버가 거절·close 를 시작한 연결은 **그 뒤 도착한 메시지를 처리하지 않는다** — 같은 write 로 이어 온
 `pair` 가 거절된 `hello` 뒤에 통과하지 않는다(R1-A7). 인증 뒤 모르는 타입은 `unknown_type` 오류만 보내고 연결은 유지한다.
 인증 뒤 `hello`·`pair` 를 다시 보내면 `bad_message`(연결 유지).
@@ -80,6 +86,7 @@
 | `chat.page` | `chat.subscribe` 직후 1건(`reset`·`resume`) · `chat.older` 응답(`older`) · 세대가 바뀌면 구독자 모두에게 `reset` (LIFE-581) | `{type:'chat.page', channel, gen, cursor, mode, at, writtenAt, hasOlder, items[]}` — 아래 「대화」 |
 | `chat.items` | 기록에 새 말풍선이 생기거나 있던 것이 자랄 때 · 이어 받기가 프레임 하나를 넘칠 때 나머지 (LIFE-581) | `{type:'chat.items', channel, gen, cursor, at, readAt, writtenAt, items[]}` — 같은 `id` 는 새 값으로 바꾼다 |
 | `chat.unavailable` | 대화를 못 열 때 1건 · 열린 대화의 채널이 목록에서 사라질 때·기록을 잠깐 못 찾을 때 1건(R1-A1·R2-A4) (LIFE-581) | `{type:'chat.unavailable', channel, reason, retrying}` — `not_listed`(목록에 없음) · `no_session`(세션 참조 없음) · `no_file`(기록 파일 없음) · `not_ready`(맥이 herdr 상태를 아직 못 읽음 — 목록 연결 중 포함) · `unreadable`(읽다 실패). `retrying:true`(`no_session`·`no_file`·`not_ready`) = 구독은 살아 있고 찾으면 서버가 첫 페이지를 보낸다. `false` = 구독 끝 |
+| `input.state` | 쓰기 메시지를 받을 때·상태가 바뀔 때마다 · 같은 id 를 다시 보내거나 조회하면 지금 상태 1건 (LIFE-582) | `{type:'input.state', id, channel, op:'send'\|'answer'\|'stop'\|null, state, wait:'turn'\|'gate'\|null, reason, at}` — 아래 「쓰기」 |
 | `error` | 아래 표 | `{type:'error', code, message}` (`protocol_mismatch` 는 `supported:[1]` 도) |
 
 **맥 이름 `server.macName`(R5 A5ⓓ, 표시용)** — 인증 뒤 `hello`·`paired` 응답에만 있다. 인증 전 응답·오류(`error`)에는 없다.
@@ -168,6 +175,31 @@
   기록 파일 경로·세션 id · **홈 디렉터리 아래 절대경로** — 대화의 모든 글(지시·답·도구 대상·질문·안내)을 목록과 같은 `maskPaths` 로 가린다(worktree 상대 · `~/…`).
   어느 줄이 어느 말풍선이 되고 무엇을 버리는지는 `specs/LIFE-581-mobile-chat/raw/claude/mapping.md`.
 
+### 쓰기 (LIFE-582 — 코드 `input.ts`(큐·확인) · `keys.ts`(provider 키 표·본문 정리·초안 판별) · `input-backend.ts`(guard 호출), 서버 분기 `server.ts`)
+
+- **폰은 키·바이트를 보내지 않는다.** 위 다섯 메시지가 전부다 — 질문 답은 「몇 번째 선택지 / 직접 입력 글」, 중단은 「중단」 만. 키 순서는 서버가 `keys.ts` 의 실측표(`specs/LIFE-582-mobile-input/raw/claude/z1-measure.md`)로 만든다.
+- 넣는 길은 CLI `terminal prompt` 와 같은 guard 봉투(`corral.terminal`) — 지시는 `agent.prompt`, 질문 답·중단 키는 `pane.send_text`. 둘 다 **관측한 `state_change_seq` 그대로일 때만** 쓴다
+  (`expected_state_change_seq` — `pane.send_text` 의 비교는 LIFE-582 가 guard 에 더했다, `backend/herdr-guard.patch`). 바뀌었으면 guard 가 아무것도 쓰지 않고 `agent_state_changed` 로 거절한다.
+  CLI `terminal prompt` 계약·AgentRecord 는 건드리지 않는다 — 관리되지 않은 pane(GUI 로 연 세션)도 같은 관문을 지난다.
+- **목록의 살아 있는 AI 채널만**: 셸 pane·닫힌 세션·목록 밖은 `failed`(`not_listed`·`closed`), 세션 참조가 아직 없으면(Codex 첫 지시 전) `no_session`. 맥이 guard 바인딩 세션이 아니면 넣지 않는다(대기 → 실패).
+  지시는 herdr **관리 에이전트**(데스크톱 GUI·하네스가 `agent.start` 로 띄운 것)에만 넣는다 — 셸에서 직접 친 `claude` 같은 관리 밖 pane 은 guard 관문(`interactive_ready`)을 못 넘으므로
+  기다리지 않고 `failed/unmanaged`. 질문 답·중단(`pane.send_text`)은 관리 여부와 무관하게 같은 seq 비교로 받는다.
+- **메시지 id 당 많아야 한 번**: (기기, id) 를 기억한다(기기당 끝난 것 500개까지). 같은 id 를 다시 보내면 넣지 않고 `input.state` 로 지금 상태만. 같은 글이라도 새 id 면 새 지시다.
+- **state**: `queued`(큐 — `wait:'turn'` 작업 중이라 기다림 · `'gate'` 준비 관문 확인 중) → `sending`(넣기 시작 — 취소 불가) → 끝: `delivered`(들어감) · `unconfirmed`(확인 못 함 — 들어갔을 수 있다, 다시 넣지 않는다) ·
+  `failed`(넣지 않았다) · `cancelled` · `stopped`(중단 확인). 조회한 id 를 서버가 모르면 `unknown`(`channel`·`op` null).
+- **들어감 = 이 제출 직전 커서 뒤 기록 매칭 정확히 1건**(`countSubmissions`, CLI 와 같은 대조, 15초). 0건 `unconfirmed/record_missing` · 2건 이상 `record_ambiguous` · 기록이 다시 쓰임 `record_rewritten`.
+- **채널 큐**: 채널마다 순서대로 한 건씩, 대기 5건까지(넘으면 `queue_full`). 준비 관문(CLI 와 같은 750 ms 두 관측·같은 seq·detect manifest) 통과 = 턴이 끝난 뒤에만 — 턴 안에 끼어들지 않는다.
+  모바일 끔·앱 종료 → 큐는 `failed/mobile_off`, 다시 켜도 넣지 않는다. 앱 재시작이면 서버가 그 id 를 잊는다 → 조회 `unknown`(앱은 「확인 못 함」 으로 둔다).
+- **맥 입력창 초안**: 넣기 직전 보이는 화면에서 그 provider 의 입력 줄이 **비었다고 확인될 때만** 넣는다. 글이 있으면 `failed/mac_draft`, 입력 줄을 못 찾으면 `failed/draft_unknown` — 세 provider 모두 초안과 합쳐 보내기 때문이다(Z1ⓔ).
+- **본문 정리**: 탭·줄바꿈 말고 C0·DEL·C1 제어 문자는 지운다(`\r\n`→`\n`) — 본문 안 ESC·Ctrl+C 가 키로 작동하지 않는다. 질문 직접 입력은 한 줄(줄바꿈·탭 → 공백, 2000자까지).
+- **질문 답**: 그 질문이 기록에서 **마지막 대기 질문**이고 herdr `blocked` 일 때만. 아니면 `failed/question_closed`. 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
+  첫 키에서 seq 가 바뀌면 `failed/question_changed`, 중간이면 `unconfirmed/question_changed`. 들어감 = 그 질문 말풍선이 `answered`(10초). `closed` 로 끝나면 `unconfirmed/question_declined`.
+- **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문 · 로그인 등) `stop_hidden` ·
+  Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
+  백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
+- 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed).
+- 로그: `mobile.input_send {bytes, sha}`(정규화 본문 sha256 앞 8자) · `mobile.input_answer {questions}` · `mobile.input_stop` · `mobile.input_state {op, state, reason}` · `mobile.input_delivered {ms}` · `mobile.input_error` — 본문은 없다.
+
 ## 4. 오류 코드
 
 | code | 뜻 | 연결 | close 코드 |
@@ -176,7 +208,7 @@
 | `bad_message` | 모양이 틀렸다(타입 없음·protocol 없음·바이너리) | 인증 전 닫음 · 인증 뒤 유지 | 4004 |
 | `protocol_mismatch` | `protocol` 이 1 이 아니다 | 닫음 | 4002 |
 | `unauthorized` | 토큰 없음·틀림·해지됨(구별하지 않는다) | 닫음 | 4001 |
-| `not_authenticated` | 인증 전 hello·pair 아닌 메시지(`ping`·`list.subscribe`·`chat.*` 포함) | 닫음 | 4001 |
+| `not_authenticated` | 인증 전 hello·pair 아닌 메시지(`ping`·`list.subscribe`·`chat.*`·쓰기 다섯 포함) | 닫음 | 4001 |
 | `code_expired` | 만료된 페어링 코드(10분 지남) — 새 QR 을 만든 뒤에도 그 코드는 만료로 답한다 | 닫음 | 4005 |
 | `code_used` | 이미 쓴 페어링 코드(1회 사용) | 닫음 | 4005 |
 | `code_invalid` | 그 밖 전부 — 모르는 코드 · 형식 오류(문자열 아님) · 코드 없음 · **5회 실패로 폐기된 코드** · **새 QR 로 무효화된 이전 코드** · 스위치를 꺼 폐기된 코드 · 기억 범위(최근 8개) 밖의 끝난 코드 | 닫음 | 4005 |
@@ -188,7 +220,7 @@
 | `unavailable` | 노출이 막혔다(`exposed` 아님) — 새 hello·pair 거절, 이미 열린 연결도 이 코드로 닫는다 | 닫음(0.5초 뒤 강제 종료) | 4009 |
 | `replaced` | 같은 기기가 새 연결로 다시 인증했다 — 이전 연결에만 보낸다(LIFE-578 E3) | 닫음(0.5초 뒤 강제 종료) | 4006 |
 
-앱 종료·스위치 끄기는 close 1001. 생존 확인 마감으로 끊긴 연결은 close 프레임 없이 TCP 를 닫는다(상대 쪽에서 1006).
+프레임 상한 초과는 오류 메시지 없이 close 1009. 앱 종료·스위치 끄기는 close 1001. 생존 확인 마감으로 끊긴 연결은 close 프레임 없이 TCP 를 닫는다(상대 쪽에서 1006).
 
 ## 5. 페어링 QR 페이로드
 

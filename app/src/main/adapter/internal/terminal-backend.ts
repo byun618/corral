@@ -127,6 +127,22 @@ export class TerminalBackend {
   async send(target: TerminalIdentity, text: string, ctx: TerminalOperation) {
     await this.operation(target.epoch, 'pane.send_text', { pane_id: target.paneId, text }, ctx, target, true)
   }
+  /**
+   * LIFE-582: the same raw send, but only while the agent's `state_change_seq` is still the one corral observed —
+   * the guard compares it in the turn that writes (herdr-guard.patch). A transition in between is `agent_state_changed`
+   * and nothing is written. The CLI's `send` above does not carry the field and is unchanged.
+   */
+  async sendIfUnchanged(target: TerminalIdentity, text: string, expectedStateChangeSeq: number, ctx: TerminalOperation) {
+    await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
+      expected_state_change_seq: expectedStateChangeSeq, operation: { method: 'pane.send_text', params: { pane_id: target.paneId, text } } }, ctx, true)
+  }
+  /** LIFE-582: the visible screen with SGR attributes kept — the mobile input path reads the provider's input line from it. */
+  async screenAnsi(target: TerminalIdentity, ctx: TerminalOperation): Promise<string> {
+    const result = await this.operation(target.epoch, 'pane.read', { pane_id: target.paneId, source: 'visible', format: 'ansi', strip_ansi: false }, ctx, target)
+    const content = readRecord(result, 'read') ?? {}
+    if (typeof content.text !== 'string') throw new RuntimeError('invalid_backend_response', 'Invalid screen')
+    return content.text
+  }
   async close(target: TerminalIdentity, ctx: TerminalOperation) {
     await this.operation(target.epoch, 'pane.close', { pane_id: target.paneId }, ctx, target, true)
   }

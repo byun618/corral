@@ -289,6 +289,8 @@ export type SessionQuestion = {
   header: string | null
   options: SessionQuestionOption[]
   multiSelect: boolean | null
+  /** LIFE-582 — 선택지에 미리보기(`preview`)가 붙은 레이아웃(Claude). 직접 입력 행이 없다. 있을 때만 `true`. */
+  preview?: true
 }
 
 /**

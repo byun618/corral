@@ -153,6 +153,7 @@ export class ChatStore {
         return
       case 'list':
       case 'list_failed':
+      case 'input':
         return
     }
   }

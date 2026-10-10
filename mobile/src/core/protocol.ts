@@ -2,6 +2,7 @@
 // RN·Expo 를 모른다(단위 시험이 node 에서 돈다).
 
 import { parseChatMessage, type ChatMessage } from './chat'
+import { parseInputState, type InputStateMessage } from './input'
 import { parseListMessage, type ListMessage } from './list'
 
 export const PROTOCOL_VERSION = 1
@@ -55,6 +56,8 @@ export type ServerMessage =
   /** 대화(LIFE-581) — `chat.page`·`chat.items`·`chat.unavailable`. 봉투를 읽지 못하면 `chat_invalid`. */
   | { type: 'chat'; message: ChatMessage }
   | { type: 'chat_invalid' }
+  /** 쓰기 결과(LIFE-582). 모양이 틀리면 `other` — 앱은 그 id 를 조회로 다시 묻는다. */
+  | { type: 'input'; message: InputStateMessage }
   | { type: 'error'; code: string; supported: number[] }
   | { type: 'other' }
 
@@ -109,6 +112,10 @@ export function parseServerMessage(text: string): ServerMessage {
     case 'chat.unavailable': {
       const message = parseChatMessage(parsed)
       return message === null ? { type: 'chat_invalid' } : { type: 'chat', message }
+    }
+    case 'input.state': {
+      const message = parseInputState(parsed)
+      return message === null ? { type: 'other' } : { type: 'input', message }
     }
     case 'error': {
       const supported = Array.isArray(parsed.supported) ? parsed.supported.filter((v): v is number => typeof v === 'number') : []

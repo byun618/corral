@@ -34,6 +34,12 @@ node scripts/l577/repro.mjs list --url <같은 URL> --token-file /tmp/l577x/toke
 #    --older N 이면 과거 페이지를 N 번, --resume 이면 끝에 끊고 같은 세대·마지막 id 로 다시 붙어 resume 을 받는지. 줄에는 종류별 개수·id 만(글 없음).
 #    --ndjson-out 이면 받은 프레임마다 시각(받은 시각·서버 at·readAt·writtenAt·말풍선 at) 한 줄 — 3초 측정(Y3) 원자료.
 node scripts/l577/repro.mjs chat --url <같은 URL> --token-file /tmp/l577x/token [--channel <채널 id>] [--older 3] [--resume] [--watch-ms 2000] [--ndjson-out /tmp/l581x/chat.ndjson]
+# ⑦ 쓰기(LIFE-582) — hello → 메시지 하나 → 그 id 의 `input.state` 를 끝 상태까지. 줄에는 상태·이유·바이트 수만(본문 없음).
+#    --repeat N 이면 같은 id 로 N 번 더 보낸다(넣기 1회 확인 — Z2ⓐ). --expect 를 주면 끝 상태가 그것이어야 통과.
+node scripts/l577/repro.mjs input --url <같은 URL> --token-file /tmp/l577x/token --op send --channel <채널 id> --text '짧은 지시' [--repeat 2] [--expect delivered]
+node scripts/l577/repro.mjs input --url <같은 URL> --token-file /tmp/l577x/token --op answer --channel <채널 id> --question <질문 말풍선 id> --choice 0 | --other '글'
+node scripts/l577/repro.mjs input --url <같은 URL> --token-file /tmp/l577x/token --op stop --channel <채널 id>
+node scripts/l577/repro.mjs input --url <같은 URL> --token-file /tmp/l577x/token --op status --id <id>[,<id>…] · --op cancel --id <id>
 ```
 
 - `--url` 은 `ws://127.0.0.1:<p>/ws`(loopback 직접 — 개발·격리) 또는 `wss://<mac>.ts.net:8577/ws`(tailscale serve 경유 — 네이티브 A10ⓒ).

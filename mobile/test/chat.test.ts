@@ -282,6 +282,6 @@ describe('표시 규칙 (Y6ⓓ)', () => {
   it('답 머리는 지시 뒤 첫 답에만 · 안내·질문 문구', () => {
     expect([...replyHeads([prompt(1), reply(2), reply(3), prompt(4), reply(5)])]).toEqual([2, 5])
     expect(noteView({ id: 1, kind: 'note', at: null, note: 'failed', text: null, clipped: false })).toMatchObject({ title: '실패', tone: 'alert' })
-    expect(questionLine({ id: 1, kind: 'question', at: null, state: 'pending', answer: null, clipped: false, questions: [{ question: 'Q?', header: '고르기', options: [], multiSelect: null }, { question: 'R?', header: null, options: [], multiSelect: null }] })).toBe('고르기 — Q? 외 1')
+    expect(questionLine({ id: 1, kind: 'question', at: null, state: 'pending', answer: null, clipped: false, questions: [{ question: 'Q?', header: '고르기', options: [], multiSelect: null, preview: false }, { question: 'R?', header: null, options: [], multiSelect: null, preview: false }] })).toBe('고르기 — Q? 외 1')
   })
 })

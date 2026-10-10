@@ -6,10 +6,20 @@
 import fs from 'node:fs'
 import { bodyIdentity, captureCursor, countSubmissions, isAgentKind, type CursorEntry } from '../../src/runtime/terminal/agent.js'
 import { parseTail } from '../../src/main/transcript-parse.js'
+import { isRecord } from '../../src/shared/json.js'
 
 const [command, agent, file, third, fourth] = process.argv.slice(2)
 if (!isAgentKind(agent) || file === undefined) { console.error('usage'); process.exit(2) }
-const readCursor = (p: string): CursorEntry[] => JSON.parse(fs.readFileSync(p, 'utf8')) as CursorEntry[]
+function readCursor(p: string): CursorEntry[] {
+  const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf8'))
+  if (!Array.isArray(parsed)) return []
+  return parsed.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.path !== 'string' || typeof entry.existed !== 'boolean' || typeof entry.bytes !== 'number' || typeof entry.lines !== 'number') return []
+    const base: CursorEntry = { path: entry.path, existed: entry.existed, bytes: entry.bytes, lines: entry.lines }
+    return [typeof entry.prefixSha256 === 'string' ? { ...base, prefixSha256: entry.prefixSha256 } : base]
+  })
+}
+const rec = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {})
 
 switch (command) {
   case 'cursor':
@@ -35,12 +45,12 @@ switch (command) {
     for (const line of lines) {
       if (!line.trim()) continue
       let row: Record<string, unknown>
-      try { row = JSON.parse(line) as Record<string, unknown> } catch { continue }
-      const payload = (row.payload ?? {}) as Record<string, unknown>
-      const update = (((row.params ?? {}) as Record<string, unknown>).update ?? row.update ?? {}) as Record<string, unknown>
-      const message = (row.message ?? {}) as Record<string, unknown>
-      const content = Array.isArray(message.content) ? message.content.map(c => (c as Record<string, unknown>).type).join('+') : typeof message.content
-      console.log([row.type, message.role, content, payload.type, payload.name, update.sessionUpdate, (update.toolCall as Record<string, unknown> | undefined)?.name ?? update.title].filter(v => v !== undefined && v !== null).join(' · '))
+      try { row = rec(JSON.parse(line)) } catch { continue }
+      const payload = rec(row.payload)
+      const update = rec(rec(row.params).update ?? row.update)
+      const message = rec(row.message)
+      const content = Array.isArray(message.content) ? message.content.map(c => rec(c).type).join('+') : typeof message.content
+      console.log([row.type, message.role, content, payload.type, payload.name, update.sessionUpdate, rec(update.toolCall).name ?? update.title].filter(v => v !== undefined && v !== null).join(' · '))
     }
     break
   }

@@ -7,7 +7,8 @@
 // - 거절·close 를 시작한 연결은 그 뒤 메시지를 처리하지 않는다(R1-A7 — 같은 write 에 이어 온 pair 가 통과하지 않게).
 // - 인증은 WS 첫 메시지(`hello`+토큰 또는 `pair`+코드). 그 전에는 어떤 데이터도 돌려주지 않는다 — 버전도 인증 뒤에만.
 //   loopback 의 다른 로컬 프로세스도 붙을 수 있다는 전제다(serve 헤더는 위조 가능 — W6). 경계는 토큰이다.
-// - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 ws 가 닫는다.
+// - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 1009 로 닫는다. 인증된 연결의 `input.send` 만
+//   `MAX_INPUT_FRAME_BYTES` 까지 받는다(LIFE-582 P7) — ws 의 `maxPayload` 는 큰 쪽이고 16 KiB 는 여기서 직접 다시 건다.
 // - 인증된 연결은 생존 확인(LIFE-578 E3): `LIVENESS_INTERVAL_MS` 마다 WS ping 프레임, `IDLE_TIMEOUT_MS` 동안 아무 프레임도 없으면 끊는다.
 //   같은 기기가 새로 hello 하면 그 기기의 이전 연결을 `replaced` 로 닫는다 — 망을 바꾼 폰의 죽은 연결이 상한 16 을 채우지 않게.
 // - **electron 을 모른다** — 버전·로그를 주입받아 vitest 가 실제 서버를 띄운다.
@@ -22,6 +23,7 @@ import {
   IDLE_TIMEOUT_MS,
   LIVENESS_INTERVAL_MS,
   MAX_CONNECTIONS,
+  MAX_INPUT_FRAME_BYTES,
   MAX_MESSAGE_BYTES,
   PROTOCOL_VERSION,
   WS_PATH,
@@ -43,6 +45,8 @@ type Connection = {
   unsubscribe: (() => void) | null
   /** 대화 구독(LIFE-581) — 한 연결에 하나. 닫힘·거절·해지·교체 때 목록 구독과 같이 끊는다. */
   chat: ChatSubscription | null
+  /** 쓰기 결과 받기(LIFE-582) — 인증 때 붙이고 연결이 끝날 때 뗀다. */
+  input: (() => void) | null
 }
 
 /** 목록 공급(LIFE-580 `feed.ts`) — 서버는 구독·해제만 안다. */
@@ -50,6 +54,16 @@ export type ListSource = { subscribe(sink: (text: string) => void): () => void }
 
 /** 대화 공급(LIFE-581 `chat.ts`) — 서버는 구독·과거 요청·해제만 안다. 채널 id → 세션은 공급 쪽이 서버 상태로만 고른다. */
 export type ChatSource = { subscribe(input: { channelId: string; resume: ChatResume; sink: (text: string) => void }): ChatSubscription }
+
+/** 폰 쓰기(LIFE-582 `input.ts`) — 서버는 기기 id 를 붙여 넘기고 결과 받기를 붙였다 뗀다. 키 시퀀스는 공급 쪽이 만든다. */
+export type InputSource = {
+  attach(input: { device: string; sink: (text: string) => void }): () => void
+  send(input: { device: string; id: string; channel: string; text: string }): void
+  cancel(input: { device: string; id: string }): void
+  status(input: { device: string; ids: string[] }): void
+  answer(input: { device: string; id: string; channel: string; question: number; answers: { choices: number[]; other: string | null }[] }): void
+  stopTurn(input: { device: string; id: string; channel: string }): void
+}
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -70,6 +84,8 @@ export type MobileServerDeps = {
   list?: ListSource
   /** 대화 공급(LIFE-581). 없으면 `chat.*` 는 `unknown_type`. */
   chat?: ChatSource
+  /** 폰 쓰기(LIFE-582). 없으면 `input.*`·`question.answer`·`turn.stop` 은 `unknown_type`. */
+  input?: InputSource
   /** 시험만 줄인다. */
   authTimeoutMs?: number
   /** 시험만 줄인다 — 생존 확인 주기·무수신 마감(E3). */
@@ -108,7 +124,7 @@ export class MobileServer {
   }
 
   private async listen(): Promise<number> {
-    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, clientTracking: false, perMessageDeflate: false })
+    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INPUT_FRAME_BYTES, clientTracking: false, perMessageDeflate: false })
     const server = http.createServer((request, response) => {
       // WS 가 아닌 HTTP 는 전부 같은 모양으로 거절 — 본문·헤더로 아무것도 알려 주지 않는다.
       request.resume()
@@ -231,7 +247,7 @@ export class MobileServer {
   }
 
   private accept(ws: WebSocket): void {
-    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null, chat: null }
+    const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null, chat: null, input: null }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
     ws.on('message', (data, isBinary) => {
@@ -256,17 +272,39 @@ export class MobileServer {
       if (connection.deviceId === null) return this.reject(connection, 'bad_message', CLOSE.badMessage)
       return this.send(connection.ws, { type: 'error', code: 'bad_message', message: errorText('bad_message') })
     }
-    const parsed = parseClientMessage(rawText(data))
+    const text = rawText(data)
+    const bytes = Buffer.byteLength(text)
+    // 인증 전에는 16 KiB 넘는 프레임을 읽지도 않는다 — 큰 상한은 인증된 `input.send` 몫이다.
+    if (connection.deviceId === null && bytes > MAX_MESSAGE_BYTES) return this.drop(connection, CLOSE.tooBig, 'too_big')
+    const parsed = parseClientMessage(text)
     if (!parsed.ok) {
       if (connection.deviceId === null) return this.reject(connection, parsed.code, CLOSE.badMessage)
       return this.send(connection.ws, { type: 'error', code: parsed.code, message: errorText(parsed.code) })
     }
     const message = parsed.message
-    // 인증 뒤 — ping · list.subscribe(LIFE-580) · chat.*(LIFE-581). M5~ 메시지는 여기 분기에 더한다.
+    if (message.type !== 'input.send' && bytes > MAX_MESSAGE_BYTES) return this.drop(connection, CLOSE.tooBig, 'too_big')
+    // 인증 뒤 — ping · list.subscribe(LIFE-580) · chat.*(LIFE-581) · 쓰기(LIFE-582).
     if (connection.deviceId !== null) {
       // 해지가 연결 닫기보다 먼저 보일 수 있는 틈을 막는다 — 매 메시지 기기 존재 확인.
       if (!this.deps.pairing.has(connection.deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
+      const device = connection.deviceId
+      const input = this.deps.input
       switch (message.type) {
+        case 'input.send':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.send({ device, id: message.id, channel: message.channel, text: message.text })
+        case 'input.cancel':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.cancel({ device, id: message.id })
+        case 'input.status':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.status({ device, ids: message.ids })
+        case 'question.answer':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.answer({ device, id: message.id, channel: message.channel, question: message.question, answers: message.answers })
+        case 'turn.stop':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.stopTurn({ device, id: message.id, channel: message.channel })
         case 'ping':
           return this.send(connection.ws, { type: 'pong', id: message.id, at: Date.now() })
         case 'list.subscribe':
@@ -330,6 +368,11 @@ export class MobileServer {
       case 'chat.subscribe':
       case 'chat.older':
       case 'chat.unsubscribe':
+      case 'input.send':
+      case 'input.cancel':
+      case 'input.status':
+      case 'question.answer':
+      case 'turn.stop':
       case 'unknown':
         return this.reject(connection, 'not_authenticated', CLOSE.unauthorized)
     }
@@ -389,6 +432,9 @@ export class MobileServer {
     connection.unsubscribe = null
     stop?.()
     this.unsubscribeChat(connection)
+    const detach = connection.input
+    connection.input = null
+    detach?.()
   }
 
   /** 같은 기기의 이전 연결을 닫는다(E3) — 다른 기기 연결은 건드리지 않는다. */
@@ -404,6 +450,19 @@ export class MobileServer {
     if (connection.timer !== null) clearTimeout(connection.timer)
     connection.timer = null
     connection.deviceId = device.id
+    // 쓰기 결과는 이 연결로 — 보내기 직전마다 살아 있음·해지를 본다(목록·대화와 같은 확인).
+    const input = this.deps.input
+    if (input !== undefined) {
+      const deviceId = device.id
+      connection.input = input.attach({
+        device: deviceId,
+        sink: (text) => {
+          if (connection.closing || connection.ws.readyState !== connection.ws.OPEN) return
+          if (!this.deps.pairing.has(deviceId)) return this.reject(connection, 'revoked', CLOSE.revoked)
+          connection.ws.send(text)
+        },
+      })
+    }
     this.deps.onChange()
   }
 

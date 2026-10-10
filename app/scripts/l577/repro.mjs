@@ -6,6 +6,7 @@
 // 출력: 한 줄에 한 단계 NDJSON `{step, pass, expect, got}` + 마지막 줄 `{summary}`. 토큰·코드는 `<redacted>` 로만 찍는다.
 // 종료 코드: 0 전부 통과 · 1 하나라도 실패 · 2 사용법 오류.
 /* global fetch, AbortSignal */
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import { WebSocket } from 'ws'
 
@@ -181,6 +182,12 @@ async function commandMatrix(url) {
   await expectRejected(url, 'ws:chat-subscribe-before-auth', { send: [{ type: 'chat.subscribe', channel: 'w1:p1' }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:chat-older-before-auth', { send: [{ type: 'chat.older', gen: 'g', before: 1 }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:chat-unsubscribe-before-auth', { send: [{ type: 'chat.unsubscribe' }], code: 'not_authenticated', close: 4001 })
+  // LIFE-582 — 쓰기 메시지 다섯도 인증 전에는 거절.
+  await expectRejected(url, 'ws:input-send-before-auth', { send: [{ type: 'input.send', id: 'repro-0000-0001', channel: 'w1:p1', text: 'x' }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:input-cancel-before-auth', { send: [{ type: 'input.cancel', id: 'repro-0000-0001' }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:input-status-before-auth', { send: [{ type: 'input.status', ids: ['repro-0000-0001'] }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:question-answer-before-auth', { send: [{ type: 'question.answer', id: 'repro-0000-0001', channel: 'w1:p1', question: 1, answers: [{ choices: [0], other: null }] }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:turn-stop-before-auth', { send: [{ type: 'turn.stop', id: 'repro-0000-0001', channel: 'w1:p1' }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:bad-json', { send: ['not json'], code: 'bad_json', close: 4004 })
   await expectRejected(url, 'ws:protocol-mismatch', { send: [{ type: 'hello', protocol: 999, token: 'x' }], code: 'protocol_mismatch', close: 4002 })
   {
@@ -443,7 +450,104 @@ async function commandChat(url) {
   record('chat:summary', true, { note: '글 없이 개수·종류만' }, { frames: frames.length, pushes: frames.filter((row) => row.type === 'chat.items').length, held: chatSummary([...held.values()]) })
 }
 
-const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime, list: commandList, chat: commandChat }
+const FINAL_INPUT = new Set(['delivered', 'unconfirmed', 'failed', 'cancelled', 'stopped', 'unknown'])
+
+/**
+ * 쓰기(LIFE-582) — hello → `--op` 하나를 보내고 그 id 의 `input.state` 를 끝 상태까지 모은다. 본문은 출력하지 않는다(바이트 수만).
+ *   --op send   --channel <id> --text <글> | --text-file <파일>   [--repeat N — 같은 id 로 N 번 더 보낸다(Z2ⓐ)]
+ *   --op cancel --id <id> · --op status --id <id>[,<id>…]
+ *   --op answer --channel <id> --question <말풍선 id | auto — 대화를 구독해 마지막 대기 질문> --choice <0부터>[,…] | --other <글>
+ *   --op stop   --channel <id>
+ *   [--id <id>] [--expect <상태 — 끝 상태가 아니어도 된다(queued 면 대기에 들어간 순간 끝)>] [--wait-ms 30000]
+ */
+async function commandInput(url) {
+  if (typeof args['token-file'] !== 'string') usage('input 에는 --token-file 이 필요하다')
+  const token = readSecretFile(args['token-file'])
+  const op = typeof args.op === 'string' ? args.op : ''
+  const id = typeof args.id === 'string' ? args.id : `repro-${randomBytes(6).toString('hex')}`
+  const channel = typeof args.channel === 'string' ? args.channel : null
+  const waitMs = Number(args['wait-ms'] ?? 30_000)
+  const repeat = Number(args.repeat ?? 0)
+  let body
+  switch (op) {
+    case 'send': {
+      const text = typeof args['text-file'] === 'string' ? fs.readFileSync(args['text-file'], 'utf8') : typeof args.text === 'string' ? args.text : null
+      if (channel === null || text === null) usage('input --op send 에는 --channel 과 --text(또는 --text-file)가 필요하다')
+      body = { type: 'input.send', id, channel, text }
+      break
+    }
+    case 'cancel':
+      body = { type: 'input.cancel', id }
+      break
+    case 'status':
+      body = { type: 'input.status', ids: id.split(',') }
+      break
+    case 'answer': {
+      const question = args.question === 'auto' ? -1 : Number(args.question)
+      if (channel === null || !Number.isInteger(question)) usage('input --op answer 에는 --channel 과 --question(번호 또는 auto)이 필요하다')
+      const choices = typeof args.choice === 'string' ? args.choice.split(',').map(Number) : []
+      body = { type: 'question.answer', id, channel, question, answers: [{ choices, other: typeof args.other === 'string' ? args.other : null }] }
+      break
+    }
+    case 'stop':
+      if (channel === null) usage('input --op stop 에는 --channel 이 필요하다')
+      body = { type: 'turn.stop', id, channel }
+      break
+    default:
+      usage('input 의 --op 는 send · cancel · status · answer · stop 중 하나')
+  }
+  const expect = typeof args.expect === 'string' ? args.expect : null
+  const watched = new Set(op === 'status' ? id.split(',') : [id])
+  let picked = null
+  const states = []
+  const errors = []
+  const finals = new Map()
+  await new Promise((resolve) => {
+    const ws = new WebSocket(url)
+    const timer = setTimeout(() => { ws.terminate(); resolve() }, waitMs)
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL, token })))
+    ws.on('message', (data) => {
+      const message = JSON.parse(data.toString())
+      const fire = () => {
+        ws.send(JSON.stringify(body))
+        for (let index = 0; index < repeat; index += 1) ws.send(JSON.stringify(body))
+      }
+      if (message.type === 'hello') {
+        // `--question auto` — 그 채널 대화의 첫 페이지에서 마지막 대기 질문 id 를 고른다(글은 읽지 않는다).
+        if (body.type === 'question.answer' && body.question === -1) ws.send(JSON.stringify({ type: 'chat.subscribe', channel }))
+        else fire()
+        return
+      }
+      if (message.type === 'chat.page' && body.type === 'question.answer' && body.question === -1) {
+        const pending = (message.items ?? []).filter((item) => item.kind === 'question' && item.state === 'pending')
+        picked = pending.at(-1)?.id ?? null
+        if (picked === null) { errors.push('no_pending_question'); clearTimeout(timer); ws.close(); resolve(); return }
+        body.question = picked
+        fire()
+        return
+      }
+      if (message.type === 'error') errors.push(message.code)
+      if (message.type !== 'input.state' || !watched.has(message.id)) return
+      states.push({ id: message.id, state: message.state, wait: message.wait, reason: message.reason })
+      if (FINAL_INPUT.has(message.state)) finals.set(message.id, message.state)
+      // 같은 id 를 다시 보냈으면 그만큼의 응답(지금 상태 재전송)도 받는다.
+      const reached = expect !== null && !FINAL_INPUT.has(expect) && message.state === expect
+      const enough = reached || (op === 'send' ? states.filter((row) => FINAL_INPUT.has(row.state)).length >= 1 && states.length >= 1 + repeat : finals.size === watched.size)
+      if (enough) {
+        clearTimeout(timer)
+        setTimeout(() => { ws.close(); resolve() }, 300)
+      }
+    })
+    ws.on('error', (error) => { errors.push(String(error)); clearTimeout(timer); resolve() })
+  })
+  const last = states.filter((row) => row.id === id).at(-1) ?? null
+  const done = last !== null && (expect === null ? FINAL_INPUT.has(last.state) : last.state === expect)
+  record(`input:${op}`, errors.length === 0 && done,
+    { state: expect ?? 'any final' },
+    { id, states, errors, question: picked, bytes: op === 'send' && typeof body.text === 'string' ? Buffer.byteLength(body.text) : null })
+}
+
+const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime, list: commandList, chat: commandChat, input: commandInput }
 
 const name = args._[0]
 const url = typeof args.url === 'string' ? args.url : null

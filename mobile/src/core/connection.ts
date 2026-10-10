@@ -19,6 +19,7 @@
 import type { ConnectionLog, LogValue } from './log'
 import { hostOf, type PairingTarget } from './payload'
 import type { ChatMessage } from './chat'
+import type { InputStateMessage } from './input'
 import type { ListMessage } from './list'
 import { CLOSE, PROTOCOL_VERSION, parseServerMessage, serverPairFailure, type PairFailure, type ServerInfo } from './protocol'
 
@@ -146,6 +147,8 @@ export type SessionEvent =
   /** 대화(LIFE-581) — 지금 시도의 소켓으로 온 `chat.*`. 읽지 못한 프레임은 `chat_invalid`. */
   | { kind: 'chat'; attempt: number; message: ChatMessage }
   | { kind: 'chat_invalid'; attempt: number }
+  /** 쓰기 결과(LIFE-582) — 지금 시도의 소켓으로 온 `input.state`. */
+  | { kind: 'input'; attempt: number; message: InputStateMessage }
   /** 인증 뒤 서버 오류 — 대화가 「서버가 대화를 모른다(`unknown_type`)」 를 알 수 있게(목록 신호 `list_failed` 는 그대로). */
   | { kind: 'server_error'; attempt: number; code: string }
 
@@ -575,6 +578,10 @@ export class ConnectionManager {
         if (attempt.phase !== 'live') return
         this.log('chat_invalid', { attempt: attempt.seq })
         this.emitSession({ kind: 'chat_invalid', attempt: attempt.seq })
+        return
+      case 'input':
+        if (attempt.phase !== 'live') return
+        this.emitSession({ kind: 'input', attempt: attempt.seq, message: message.message })
         return
       case 'error':
         attempt.lastError = message.code

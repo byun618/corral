@@ -72,6 +72,11 @@ export type RetainedAgentRow = {
   cwd: string | null
   /** corral 이 그 pane 을 잃은 시각. */
   retainedAt: number
+  /**
+   * 잃은 순간의 provider 세션 참조 (LIFE-581 X7) — 모바일 대화 화면이 닫힌 세션의 지난 기록을 읽는 데만 쓴다(C19).
+   * 데스크톱 화면은 이 칸을 읽지 않는다. 없으면(옛 행·참조를 모르던 pane) 지난 기록을 볼 수 없다.
+   */
+  agentSession?: AgentSessionRef | null
 }
 
 /** 지나간 상태 전이 한 칸 (S15ⓒ 이력). */

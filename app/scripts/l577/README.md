@@ -30,6 +30,10 @@ node scripts/l577/repro.mjs lifetime --url <같은 URL> --token-file /tmp/l577x/
 # ⑤ 대화방 목록 구독(LIFE-580) — hello → list.subscribe → 전체 스냅샷 + --watch-ms 동안 push. 줄에는 수·상태 점 분포만(제목·미리보기 글 없음).
 #    --resubscribe 면 중간에 다시 구독해 전체를 다시 받는지(포그라운드 복귀), --ndjson-out 이면 받은 목록마다 시각 한 줄(3초 측정 원자료).
 node scripts/l577/repro.mjs list --url <같은 URL> --token-file /tmp/l577x/token [--watch-ms 3000] [--resubscribe] [--ndjson-out /tmp/l580x/recv.ndjson]
+# ⑥ 대화 구독(LIFE-581) — hello → (채널을 안 주면 list.subscribe 로 첫 AI 채널) → chat.subscribe → 첫 페이지 + --watch-ms 동안 push.
+#    --older N 이면 과거 페이지를 N 번, --resume 이면 끝에 끊고 같은 세대·마지막 id 로 다시 붙어 resume 을 받는지. 줄에는 종류별 개수·id 만(글 없음).
+#    --ndjson-out 이면 받은 프레임마다 시각(받은 시각·서버 at·readAt·writtenAt·말풍선 at) 한 줄 — 3초 측정(Y3) 원자료.
+node scripts/l577/repro.mjs chat --url <같은 URL> --token-file /tmp/l577x/token [--channel <채널 id>] [--older 3] [--resume] [--watch-ms 2000] [--ndjson-out /tmp/l581x/chat.ndjson]
 ```
 
 - `--url` 은 `ws://127.0.0.1:<p>/ws`(loopback 직접 — 개발·격리) 또는 `wss://<mac>.ts.net:8577/ws`(tailscale serve 경유 — 네이티브 A10ⓒ).

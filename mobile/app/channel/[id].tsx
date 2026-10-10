@@ -1,4 +1,5 @@
-// 대화 자리 화면 (LIFE-580 J3) — 머리(`ConversationHeader`)만 그린다. 대화 본문은 M4(LIFE-581)가 채운다.
+// 대화 화면 (LIFE-580 J3 머리 · LIFE-581 본문) — 머리(`ConversationHeader`) + 대화(세션 기록의 말풍선, `Conversation`). 입력·질문 답·중단은 M5.
+// 열면 대화를 구독하고(`chatStore.open`) 떠나면 끊는다. 재연결·포그라운드 복귀 뒤 이어 받기는 chatStore 가 한다(X6).
 // 열면 읽음(J1). Android 뒤로 = 목록(스택 기본 동작). 목록이 바뀌면 머리도 따라 바뀐다(상태·제목).
 // 버전 불일치(B8 · 579 Q10)면 목록 화면과 같이 채널 정보(제목·소속·모델·출신)를 숨기고 버전 안내만 — 읽음 장부도 바꾸지 않는다(R1-A6).
 // 셋째 줄 「띄운 세션」 은 부모가 있으면 항상(579 Q3, R1 C2 — 목록 행 규칙과 다르다).
@@ -11,9 +12,11 @@ import { locateChannel } from '../../src/core/list'
 import { failureText, headerMeta, headerStatus } from '../../src/core/list-view'
 import { listOf } from '../../src/core/list-store'
 import { connection, useConnection } from '../../src/runtime/connection'
+import { chatStore, useChat } from '../../src/runtime/chat'
 import { listStore, useList } from '../../src/runtime/list'
 import { toneColor } from '../../src/ui/ChannelList'
 import { ConnectionBand } from '../../src/ui/ConnectionBand'
+import { Conversation } from '../../src/ui/Conversation'
 import { Screen } from '../../src/ui/Screen'
 import { Avatar, StatusGlyph } from '../../src/ui/StatusGlyph'
 import { color, font } from '../../src/ui/tokens'
@@ -42,10 +45,19 @@ export default function ChannelPlaceholder() {
   }, [channel, unread, stale])
   const offline = conn.kind !== 'connected' && conn.kind !== 'checking'
   const unknown = offline || stale
+  // 본문 흐림은 실제 끊김(C18 — `reconnecting` 의 `offline`)에만. 재연결 중에는 3초 유예 전·후 모두 흐리지 않는다(디자인 Q10, R3-A2) — 연결 띠의 유예는 `band.ts` 그대로.
+  const dim = conn.kind === 'reconnecting' && conn.offline
   const closed = channel?.status === 'closed'
   // 표시 점 하나 — 아바타 배지·별도 점·상태 글이 같이 쓴다(R3-A3).
   const status = channel === null ? null : headerStatus({ channel, unknown })
   const third = channel === null ? null : headerMeta(channel)
+  const chat = useChat()
+  // 대화 구독 — 버전이 다르면 열지 않는다. 채널 id 만 보낸다(서버가 목록 안에서 세션을 고른다).
+  useEffect(() => {
+    if (mismatch || id === '') return
+    chatStore.open(id)
+    return () => chatStore.close(id)
+  }, [id, mismatch])
   return (
     <Screen>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingRight: 16, paddingVertical: 8 }}>
@@ -77,18 +89,21 @@ export default function ChannelPlaceholder() {
       </View>
       <ConnectionBand conn={conn} onReconnect={() => connection.reconnectNow()} />
       {failure !== null && staleAt !== null ? <StaleBand failure={failure} receivedAt={staleAt} /> : null}
+      {channel !== null && !unknown && channel.dot === 'monitoring' ? (
+        // 지켜보는 중 띠(C10) — 중단 버튼은 M5. 백그라운드 개수는 목록에 없어 글만.
+        <View style={{ height: 30, justifyContent: 'center', paddingHorizontal: 18, backgroundColor: color.accentTint8 }}>
+          <Text style={{ fontSize: 12.5, color: color.accent, fontFamily: font.medium }}>∿ 백그라운드 작업을 지켜보는 중</Text>
+        </View>
+      ) : null}
       {conn.kind === 'mismatch' ? (
         <VersionMismatch appVersion={appVersion} serverVersion={info?.serverVersion ?? null} supported={conn.supported} />
+      ) : channel !== null ? (
+        <Conversation channel={channel} chat={chat} unknown={unknown} dim={dim} onOlder={() => chatStore.loadOlder()} onRetry={() => chatStore.retry()} />
       ) : (
         <View className="flex-1 items-center justify-center gap-2 px-padx">
           {channel === null ? (
             <Text style={{ fontSize: 15, color: color.fgMuted, fontFamily: font.regular }}>{failure !== null && staleAt === null ? failureText(failure).title : '이 세션은 지금 목록에 없습니다'}</Text>
-          ) : (
-            <>
-              <Text style={{ fontSize: 15, color: color.fgMuted, fontFamily: font.regular }}>대화는 다음 작업에서 들어옵니다</Text>
-              <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>지금은 상태와 소속만 보입니다</Text>
-            </>
-          )}
+          ) : null}
         </View>
       )}
     </Screen>

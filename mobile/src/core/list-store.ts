@@ -51,6 +51,8 @@ export class ListStore {
   private readonly listeners = new Set<() => void>()
   private attempt: number | null = null
   private deadline: TimerHandle | null = null
+  /** 이 시도에서 목록을 한 번이라도 받았나 — 받았으면 그 뒤 `unknown_type` 은 목록 구독 거부가 아니다(LIFE-581: 대화를 모르는 옛 서버의 `chat.*` 응답). */
+  private listedAttempt: number | null = null
   private snapshot: ListSnapshot = { phase: { kind: 'waiting' }, flashUntil: {}, ledgerVersion: 0, failure: null }
   /** 받아들이지 않은 목록 수 — 시험·기록용. */
   dropped = 0
@@ -102,6 +104,7 @@ export class ListStore {
         return this.accept(event.attempt, event.message)
       case 'list_failed':
         if (event.attempt !== this.attempt) return
+        if (event.reason === 'rejected' && this.listedAttempt === event.attempt) return
         this.clearDeadline()
         this.log?.add('list_failed', { attempt: event.attempt, reason: event.reason, seq: event.seq })
         // 읽지 못한 목록·구독 거부는 다시 보내도 같다 — 앱이나 맥 corral 을 맞춰야 한다.
@@ -173,6 +176,7 @@ export class ListStore {
       }
     }
     this.ledger.observe(message.list)
+    this.listedAttempt = attempt
     this.set({ phase: { kind: 'ready', message, receivedAt: now }, flashUntil, ledgerVersion: this.snapshot.ledgerVersion + 1, failure: null })
   }
 

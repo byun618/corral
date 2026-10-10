@@ -11,11 +11,14 @@ import path from 'node:path'
 import QRCode from 'qrcode'
 import type { MobilePairingResult, MobileStatus } from '../../shared/mobile.js'
 import { ServeExposure } from './exposure.js'
+import { ChatHub, chatFileOf } from './chat.js'
 import { ListFeed } from './feed.js'
 import type { ListInput } from './list.js'
 import { fallbackMacName, readMacName } from './mac-name.js'
 import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
+import type { AgentSessionRef } from '../../shared/types.js'
+import { resolveTranscriptFile } from '../transcript.js'
 import { MobileServer } from './server.js'
 import { MOBILE_HTTPS_PORT, type TailscaleRunner } from './tailscale.js'
 
@@ -37,6 +40,8 @@ export type MobileServiceDeps = {
   readMacName?: () => Promise<string>
   /** 대화방 목록 재료(LIFE-580) — 구독자가 있을 때만 부른다. 없으면 목록 구독을 받지 않는다(`unknown_type`). */
   listSource?: () => ListInput | null
+  /** 대화 기록 파일 찾기(LIFE-581) — 시험이 격리 파일을 꽂는다. 기본은 지문과 같은 경로 찾기(`resolveTranscriptFile`, F8 — HOME 고정). */
+  resolveChatFile?: (session: AgentSessionRef) => string | null
 }
 
 export class MobileService {
@@ -45,6 +50,7 @@ export class MobileService {
   private readonly server: MobileServer
   private readonly exposure: ServeExposure
   private readonly feed: ListFeed | null
+  private readonly chat: ChatHub | null
   private enabled = false
   private chain: Promise<void> = Promise.resolve()
   private exposureDone: Promise<void> = Promise.resolve()
@@ -61,6 +67,16 @@ export class MobileService {
     const onChange = (): void => this.push()
     const listSource = deps.listSource
     this.feed = listSource === undefined ? null : new ListFeed({ read: listSource, log: deps.log })
+    // 대화(LIFE-581) — 목록과 같은 재료로 채널을 고른다. 열린 대화가 없으면 판독자도 없다(K9).
+    const resolveChat = deps.resolveChatFile ?? resolveTranscriptFile
+    this.chat = listSource === undefined ? null : new ChatHub({
+      read: listSource,
+      log: deps.log,
+      resolveFile: ({ session, agent }) => {
+        const transcript = resolveChat(session)
+        return transcript === null ? null : chatFileOf({ agent, transcript })
+      },
+    })
     this.server = new MobileServer({
       pairing: this.pairing,
       appVersion: deps.appVersion,
@@ -69,6 +85,7 @@ export class MobileService {
       onChange,
       authTimeoutMs: deps.authTimeoutMs,
       list: this.feed ?? undefined,
+      chat: this.chat ?? undefined,
       accepting: () => this.exposure.exposure().kind === 'exposed',
       allowedOrigin: () => {
         const exposure = this.exposure.exposure()
@@ -110,6 +127,8 @@ export class MobileService {
       this.clearCode()
       this.exposureDone = this.exposure.apply({ on: false })
       await this.server.stop()
+      // 연결이 다 닫히면 판독자도 멈춘다 — 끄면 유예도 없이 색인까지 버린다(R1-A3).
+      this.chat?.stop()
     }
     this.push()
   }
@@ -161,6 +180,8 @@ export class MobileService {
   /** main 상태(또는 정렬 설정)가 바뀌었다 — 목록 구독자가 없으면 아무 일도 안 한다(LIFE-580 K9). */
   listChanged(): void {
     this.feed?.changed()
+    // 열린 대화의 세션이 바뀌었을 수 있다(`/clear`·새 세션 — R1-A1). 열린 대화가 없으면 아무 일도 안 한다.
+    this.chat?.changed()
   }
 
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
@@ -184,6 +205,7 @@ export class MobileService {
     const remaining = Math.max(0, deadlineMs - (Date.now() - started))
     await Promise.all([this.exposure.shutdown(remaining), this.server.stop()])
     this.feed?.stop()
+    this.chat?.stop()
   }
 
   /** 시험·계측용 — 지금 소유권 기록. */

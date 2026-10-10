@@ -1,6 +1,7 @@
 // 앱이 쓰는 모바일 프로토콜 — 정본은 `app/src/main/mobile/SURFACE.md`(서버). 여기는 그 표의 앱 쪽 사본이다.
 // RN·Expo 를 모른다(단위 시험이 node 에서 돈다).
 
+import { parseChatMessage, type ChatMessage } from './chat'
 import { parseListMessage, type ListMessage } from './list'
 
 export const PROTOCOL_VERSION = 1
@@ -51,6 +52,9 @@ export type ServerMessage =
   | { type: 'list'; message: ListMessage }
   /** `list` 타입인데 모양을 읽지 못했다(R1-A4) — 버리지 않고 목록 실패로 올린다. 아는 번호만 같이. */
   | { type: 'list_invalid'; seq: number | null }
+  /** 대화(LIFE-581) — `chat.page`·`chat.items`·`chat.unavailable`. 봉투를 읽지 못하면 `chat_invalid`. */
+  | { type: 'chat'; message: ChatMessage }
+  | { type: 'chat_invalid' }
   | { type: 'error'; code: string; supported: number[] }
   | { type: 'other' }
 
@@ -99,6 +103,12 @@ export function parseServerMessage(text: string): ServerMessage {
       const message = parseListMessage(parsed)
       if (message !== null) return { type: 'list', message }
       return { type: 'list_invalid', seq: typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) ? parsed.seq : null }
+    }
+    case 'chat.page':
+    case 'chat.items':
+    case 'chat.unavailable': {
+      const message = parseChatMessage(parsed)
+      return message === null ? { type: 'chat_invalid' } : { type: 'chat', message }
     }
     case 'error': {
       const supported = Array.isArray(parsed.supported) ? parsed.supported.filter((v): v is number => typeof v === 'number') : []

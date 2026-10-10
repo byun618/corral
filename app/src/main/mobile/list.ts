@@ -38,6 +38,8 @@ export type MobilePreview =
   | { kind: 'question'; text: string | null }
   | { kind: 'approval'; text: string | null }
   | { kind: 'prompt'; text: string }
+  /** 에이전트 마지막 답(LIFE-581 X8) — 지문 `digest.activity` 의 글. */
+  | { kind: 'reply'; text: string }
   | { kind: 'tool'; text: string }
   | { kind: 'error'; text: string }
   | { kind: 'none' }
@@ -188,8 +190,9 @@ function toolLine(pane: PaneRow): string | null {
 
 /**
  * 미리보기(J11 · R1-A5 코디 해석으로 확정한 순서):
- *   질문 대기 → 그 질문 · 권한 대기 → 그 도구(claude) · 실패 → 실패 사유 · **작업 중이면 지금 도구** → 내 마지막 지시 → 마지막 도구 → 없음.
- * 작업 중 도구가 지시보다 앞서는 것은 디자인 Q4 「지금 무엇을 하나」. 에이전트 마지막 답은 M4.
+ *   질문 대기 → 그 질문 · 권한 대기 → 그 도구(claude) · 실패 → 실패 사유 · **작업 중이면 지금 도구** → **에이전트 마지막 답**(LIFE-581 X8) →
+ *   내 마지막 지시 → 마지막 도구 → 없음.
+ * 작업 중 도구가 지시보다 앞서는 것은 디자인 Q4 「지금 무엇을 하나」. 마지막 답은 세션 지문 `digest.activity`(마지막 어시스턴트 글)다 — 대화 판독기를 끌어오지 않는다.
  * 글은 홈 아래 경로를 감춘 뒤 자른다(`maskPaths`) — `place` = 그 pane 의 작업 worktree 경로 · 홈.
  */
 export function previewOf(input: { pane: PaneRow; dot: AgentDot; place: { worktree: string | null; home: string } }): MobilePreview {
@@ -208,6 +211,8 @@ export function previewOf(input: { pane: PaneRow; dot: AgentDot; place: { worktr
     if (error !== null && error.trim() !== '') return { kind: 'error', text: clip(error) }
   }
   if (dot === 'working' && tool !== null) return { kind: 'tool', text: clip(tool) }
+  const activity = pane.digest.activity
+  if (activity.state === 'text' && activity.text.trim() !== '') return { kind: 'reply', text: clip(activity.text) }
   const prompt = pane.digest.lastPrompt
   if (prompt !== null && prompt.trim() !== '') return { kind: 'prompt', text: clip(prompt) }
   if (tool !== null) return { kind: 'tool', text: clip(tool) }
@@ -363,4 +368,48 @@ function worktreeChannels(input: { worktree: WorktreeRow; state: ListState; live
 
 function flatten(roots: readonly AgentRowNode[]): { node: AgentRowNode; nested: boolean }[] {
   return roots.flatMap((root) => [{ node: root, nested: false }, ...root.children.map((child) => ({ node: child, nested: true }))])
+}
+
+/** 대화 구독(LIFE-581) 이 고른 채널의 서버 안 정체 — 폰은 채널 id 만 보낸다. 세션 참조·파일 경로는 서버 밖으로 나가지 않는다(X3). */
+export type ChatChannel = {
+  agent: MobileAgentKind
+  status: 'live' | 'closed'
+  session: AgentSessionRef
+  /** 홈 경로 가림의 재료 — 그 pane 의 작업 worktree · 홈(`maskPaths`). */
+  place: { worktree: string | null; home: string }
+}
+
+export type ChatChannelResult = { ok: true; channel: ChatChannel } | { ok: false; reason: 'not_listed' | 'no_session' | 'not_ready' }
+
+/**
+ * 채널 id → 그 세션. **지금 목록에 있는 채널만**(`buildMobileList` 와 같은 함수로 만든 목록 — 셸 pane·서브에이전트·숨긴 작업은 없다).
+ * live = pane 의 `agentSession`, 닫힌 채널(`retained:<pane id>`) = 보존 행이 잃는 순간 붙든 `agentSession`(X7). 참조가 없으면 `no_session`.
+ */
+export function chatChannel(input: { list: ListInput; channelId: string }): ChatChannelResult {
+  const { state } = input.list
+  const list = buildMobileList(input.list)
+  // 목록 연결이 아직·잠깐 끊김이다 — 채널이 없어진 것이 아니다(R2-A4, 구독은 기다린다).
+  if (!list.available) return { ok: false, reason: 'not_ready' }
+  const listed = list.repos.flatMap((repo) => repo.tasks.flatMap((task) => task.channels)).find((channel) => channel.id === input.channelId)
+  if (listed === undefined || listed.kind === null) return { ok: false, reason: 'not_listed' }
+  const kind = listed.kind
+  if (listed.status === 'live') {
+    for (const worktree of state.repos.flatMap((repo) => repo.worktrees)) {
+      for (const pane of (worktree.workspace?.tabs ?? []).flatMap((tab) => tab.panes)) {
+        if (pane.paneId !== input.channelId) continue
+        if (pane.agentSession === null) return { ok: false, reason: 'no_session' }
+        return { ok: true, channel: { agent: kind, status: 'live', session: pane.agentSession, place: { worktree: worktree.path, home: state.home } } }
+      }
+    }
+    return { ok: false, reason: 'not_listed' }
+  }
+  for (const [worktree, rows] of retainedByWorktree({ repos: state.repos, retained: state.retainedAgents })) {
+    for (const row of rows) {
+      if (`retained:${row.paneId}` !== input.channelId) continue
+      const session = row.agentSession ?? null
+      if (session === null) return { ok: false, reason: 'no_session' }
+      return { ok: true, channel: { agent: kind, status: 'closed', session, place: { worktree, home: state.home } } }
+    }
+  }
+  return { ok: false, reason: 'not_listed' }
 }

@@ -177,6 +177,10 @@ async function commandMatrix(url) {
   await expectRejected(url, 'ws:unknown-before-auth', { send: [{ type: 'state' }], code: 'not_authenticated', close: 4001 })
   // LIFE-580 — 목록 구독도 인증 전에는 거절(새 메시지가 인증 전 표면을 넓히지 않는다).
   await expectRejected(url, 'ws:list-before-auth', { send: [{ type: 'list.subscribe' }], code: 'not_authenticated', close: 4001 })
+  // LIFE-581 — 대화 메시지도 인증 전에는 거절.
+  await expectRejected(url, 'ws:chat-subscribe-before-auth', { send: [{ type: 'chat.subscribe', channel: 'w1:p1' }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:chat-older-before-auth', { send: [{ type: 'chat.older', gen: 'g', before: 1 }], code: 'not_authenticated', close: 4001 })
+  await expectRejected(url, 'ws:chat-unsubscribe-before-auth', { send: [{ type: 'chat.unsubscribe' }], code: 'not_authenticated', close: 4001 })
   await expectRejected(url, 'ws:bad-json', { send: ['not json'], code: 'bad_json', close: 4004 })
   await expectRejected(url, 'ws:protocol-mismatch', { send: [{ type: 'hello', protocol: 999, token: 'x' }], code: 'protocol_mismatch', close: 4002 })
   {
@@ -349,7 +353,97 @@ async function commandList(url) {
   if (args.resubscribe === true) record('list:resubscribe-full', received.length >= 2, { snapshots: '≥ 2 (구독 + 재구독)' }, { count: received.length })
 }
 
-const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime, list: commandList }
+/** 말풍선 요약 — 글은 찍지 않는다(G5). 종류별 개수·id 범위·잘림 수만. */
+function chatSummary(items) {
+  const kinds = {}
+  for (const item of items) kinds[item.kind] = (kinds[item.kind] ?? 0) + 1
+  return { items: items.length, kinds, firstId: items[0]?.id ?? null, lastId: items.at(-1)?.id ?? null, clipped: items.filter((item) => item.body?.clipped != null).length }
+}
+
+/**
+ * 대화 구독(LIFE-581 Y2ⓔ) — hello → list.subscribe 로 채널을 고르고(`--channel` 이 없으면 목록의 첫 AI 채널) → chat.subscribe → 첫 페이지,
+ * `--older N` 이면 과거 페이지를 N 번(또는 처음까지) 요청, `--watch-ms` 동안 push 를 모은다. `--resume` 이면 끝에 끊고 같은 세대·마지막 id 로
+ * 다시 붙어 `resume` 을 받는지 본다. `--ndjson-out` 이면 받은 프레임마다 한 줄(받은 시각·서버 시각·readAt·writtenAt·말풍선 id·시각 — 글 없음).
+ */
+async function commandChat(url) {
+  if (typeof args['token-file'] !== 'string') usage('chat 에는 --token-file 이 필요하다')
+  const token = readSecretFile(args['token-file'])
+  const watchMs = typeof args['watch-ms'] === 'string' ? Number(args['watch-ms']) : 2000
+  const olderRounds = typeof args.older === 'string' ? Number(args.older) : 0
+  const out = typeof args['ndjson-out'] === 'string' ? args['ndjson-out'] : null
+  const wanted = typeof args.channel === 'string' ? args.channel : null
+  const frames = []
+  const errors = []
+  let channel = wanted
+  let gen = null
+  let cursor = 0
+  const held = new Map()
+  const note = (frame) => {
+    const items = Array.isArray(frame.items) ? frame.items : []
+    const row = { recvAt: Date.now(), type: frame.type, mode: frame.mode ?? null, gen: frame.gen ?? null, at: frame.at ?? null, readAt: frame.readAt ?? null, writtenAt: frame.writtenAt ?? null, ids: items.map((item) => item.id), itemAts: items.map((item) => item.at), reason: frame.reason ?? null, summary: chatSummary(items) }
+    frames.push(row)
+    for (const item of items) held.set(item.id, item)
+    if (out !== null) fs.appendFileSync(out, JSON.stringify(row) + '\n')
+  }
+  const run = (resume) => new Promise((resolve) => {
+    const ws = new WebSocket(url, { handshakeTimeout: 5000 })
+    let olderLeft = olderRounds
+    const finish = () => { clearTimeout(timer); try { ws.terminate() } catch { /* 닫힘 */ } resolve() }
+    const timer = setTimeout(finish, watchMs + 3000)
+    const ask = (frame) => ws.send(JSON.stringify(frame))
+    ws.on('open', () => ask({ type: 'hello', protocol: PROTOCOL, token, client: { name: 'repro', version: '1' } }))
+    ws.on('message', (data) => {
+      const message = JSON.parse(data.toString())
+      if (message.type === 'hello' && message.ok === true) {
+        if (channel !== null) ask(resume === null ? { type: 'chat.subscribe', channel } : { type: 'chat.subscribe', channel, gen: resume.gen, from: resume.from, cursor: resume.cursor })
+        else ask({ type: 'list.subscribe' })
+        return
+      }
+      if (message.type === 'list' && channel === null) {
+        const channels = (message.list?.repos ?? []).flatMap((repo) => (repo.tasks ?? []).flatMap((task) => task.channels ?? []))
+        channel = channels.find((item) => item.kind !== null && item.status === 'live')?.id ?? null
+        if (channel === null) { errors.push('no_ai_channel'); finish(); return }
+        ask({ type: 'chat.subscribe', channel })
+        return
+      }
+      if (message.type === 'chat.page' || message.type === 'chat.items' || message.type === 'chat.unavailable') {
+        note(message)
+        if (typeof message.gen === 'string') gen = message.gen
+        if (typeof message.cursor === 'number' && message.mode !== 'older') cursor = Math.max(cursor, message.cursor)
+        if (message.type === 'chat.page' && message.hasOlder === true && olderLeft > 0) {
+          olderLeft -= 1
+          const first = Math.min(...[...held.keys()])
+          ask({ type: 'chat.older', gen: message.gen, before: first })
+          return
+        }
+        if (message.type === 'chat.page' && message.mode !== 'older') setTimeout(finish, watchMs)
+        if (message.type === 'chat.page' && message.mode === 'older' && (message.hasOlder !== true || olderLeft === 0)) setTimeout(finish, watchMs)
+        if (message.type === 'chat.unavailable') finish()
+        return
+      }
+      if (message.type === 'error') errors.push(message.code)
+    })
+    ws.on('close', () => finish())
+    ws.on('error', (error) => errors.push(String(error.message ?? error)))
+  })
+  await run(null)
+  const first = frames.find((row) => row.type === 'chat.page')
+  record('chat:page', first !== undefined && typeof first.gen === 'string' && first.summary.items > 0, { type: 'chat.page', gen: 'string', items: '> 0' }, { first: first ?? null, unavailable: frames.find((row) => row.type === 'chat.unavailable')?.reason ?? null, errors })
+  const ids = [...held.keys()].sort((a, b) => a - b)
+  const pageIds = frames.filter((row) => row.type === 'chat.page').flatMap((row) => row.ids)
+  record('chat:no-duplicate-across-pages', new Set(pageIds).size === pageIds.length, { duplicates: 0 }, { pageItems: pageIds.length, unique: new Set(pageIds).size })
+  if (olderRounds > 0) record('chat:older', frames.some((row) => row.mode === 'older'), { mode: 'older' }, { olderPages: frames.filter((row) => row.mode === 'older').length })
+  if (args.resume === true && gen !== null && ids.length > 0) {
+    const before = frames.length
+    // 이어 받기(R1-A2) — 받은 세대 · 들고 있는 첫 id · 받은 가장 큰 변경 순번. 서버는 그 뒤에 생기거나 바뀐 것만 준다(끊긴 동안 변화가 없으면 0개).
+    await run({ gen, from: ids[0], cursor })
+    const resumed = frames.slice(before).find((row) => row.type === 'chat.page')
+    record('chat:resume', resumed?.mode === 'resume' && resumed.ids.every((id) => id >= ids[0]), { mode: 'resume', idsFrom: ids[0] }, { mode: resumed?.mode ?? null, firstId: resumed?.ids[0] ?? null, items: resumed?.summary.items ?? 0 })
+  }
+  record('chat:summary', true, { note: '글 없이 개수·종류만' }, { frames: frames.length, pushes: frames.filter((row) => row.type === 'chat.items').length, held: chatSummary([...held.values()]) })
+}
+
+const COMMANDS = { pair: commandPair, hello: commandHello, matrix: commandMatrix, lifetime: commandLifetime, list: commandList, chat: commandChat }
 
 const name = args._[0]
 const url = typeof args.url === 'string' ? args.url : null

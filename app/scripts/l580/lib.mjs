@@ -84,7 +84,15 @@ export async function setMobile(root, fake, on) {
  * 폰 자리 클라이언트 — 새 코드로 페어링 → hello → list.subscribe. 받은 목록마다 `onList({ message, recvAt })`.
  * `clockOffset()` = ping/pong 으로 잰 (서버 시각 − 내 시각) 추정(왕복 가장 짧은 표본의 중간점). 같은 기계라 0 근처가 기대값이다.
  */
-export async function phone(root, { onList, onClose = () => {}, name = 'l580-measure' }) {
+export async function phone(root, { onList, onClose = () => {}, name = 'l580-measure', token = null }) {
+  const port = (await status(root)).serverPort
+  if (port === null) throw new Error('모바일 서버가 안 떠 있다')
+  const url = `ws://127.0.0.1:${port}/ws`
+  return connect({ url, token: token ?? (await pairDevice(root, { name })), onList, onClose, name })
+}
+
+/** 페어링만(기기 토큰을 돌려준다). 페어링 코드는 한 번에 하나만 유효하다 — 여러 폰 자리는 이걸 **차례로** 부른 뒤 `phone({ token })` 을 동시에(최종 관문 f06). */
+export async function pairDevice(root, { name = 'l580-measure' } = {}) {
   const port = (await status(root)).serverPort
   if (port === null) throw new Error('모바일 서버가 안 떠 있다')
   const url = `ws://127.0.0.1:${port}/ws`
@@ -103,6 +111,10 @@ export async function phone(root, { onList, onClose = () => {}, name = 'l580-mea
     })
     ws.on('error', reject)
   })
+  return token
+}
+
+async function connect({ url, token, onList, onClose, name }) {
   const ws = new WebSocket(url)
   const pings = new Map()
   const offsets = []

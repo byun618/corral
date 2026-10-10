@@ -87,8 +87,11 @@ function maskLine(input: { text: string | null; place: Place; max: number }): st
   if (input.text === null) return null
   const flat = input.text.replace(/\s+/g, ' ').trim()
   if (flat.length === 0) return null
+  // 가림 전에 두 배 창으로 자른다(비용 상한). 그 사전 절단도 잘림이다 — 가림으로 짧아졌어도 생략 표시를 붙인다(R4-A1).
+  const precut = flat.length > input.max * 2
   const masked = maskPaths({ text: flat.slice(0, input.max * 2), worktree: input.place.worktree, home: input.place.home })
-  return masked.length > input.max ? `${masked.slice(0, input.max - 1)}…` : masked
+  if (masked.length > input.max) return `${masked.slice(0, input.max - 1)}…`
+  return precut ? `${masked.slice(0, input.max - 1)}…` : masked
 }
 
 /** 질문 카드 — 글자 예산(`QUESTION_CHARS`) 안에서 문항 10·선택지 20 까지. 무엇이든 덜어 냈으면 `clipped`(R1-A5). */

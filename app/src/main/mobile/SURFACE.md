@@ -102,8 +102,8 @@
 | 칸 | 값 |
 | --- | --- |
 | `available:false, reason` | 맥이 herdr 상태를 아직 못 읽었다(link 가 `live` 아님) — `repos`·`waiting` 빈 배열. 「세션 0」 과 다르다 |
-| `available:true, repos[], waiting[]` | `repos` = `{id, name, tasks[]}` · `tasks` = `{id, name, isDefault, channels[]}` · `waiting` = 「나를 기다리는 것」 채널 `id` 순서 |
-| 채널 | `id`(pane id · 보존 행 `retained:<pane id>`) · `key`(안 읽음 장부 키 — provider 세션 참조의 SHA-256 앞 16자, 없으면 `pane:<pane id>`) · `status` live/closed · `kind` claude/codex/grok/null · `title` · `dot`·`dotUnseen`(데스크톱 점 9값 — 본 것으로/안 본 것으로 칠 때) · `depth` 0/1 · `origin`(하위 워크트리 이름) · `spawnedBy` · `parent` · `preview` {question·approval·reply·prompt·tool·error·none} · `waiting` question/approval/login/other · `model` · `timeAt` · `activityAt` · `outcome` |
+| `available:true, repos[], waiting[]` | `repos` = `{id, name, tasks[]}` · `tasks` = `{id, name, label, isDefault, groups[], channels[]}`(LIFE-588 — `name` 한 줄 꼴·`label` 머리 꼴, `groups` = `{id, name, label}` 하위 워크트리 묶음) · `waiting` = 「나를 기다리는 것」 채널 `id` 순서 |
+| 채널 | `id`(pane id · 보존 행 `retained:<pane id>`) · `key`(안 읽음 장부 키 — provider 세션 참조의 SHA-256 앞 16자, 없으면 `pane:<pane id>`) · `status` live/closed · `kind` claude/codex/grok/null · `title` · `dot`·`dotUnseen`(데스크톱 점 9값 — 본 것으로/안 본 것으로 칠 때) · `depth` 0/1(띄운 관계일 때만 1) · `origin`(하위 워크트리 이름 — 한 줄 꼴) · `group`(하위 묶음 id, 루트·머리 없는 행은 null) · `spawnedBy` · `parent` · `preview` {question·approval·reply·prompt·tool·error·none} · `waiting` question/approval/login/other · `model` · `timeAt` · `activityAt` · `outcome` |
 
 - 값·순서는 데스크톱 파생 함수(`shared/` 의 `buildSidebarSections`·`nestSectionItems`·`buildAgentRows`)로 만든다 — 「레포로 묶기」 보기, 데스크톱 필터·고정은 적용하지 않는다.
 - **보내지 않는 것**: 셸 pane(에이전트 없는 pane)·서브에이전트 행 · **터미널 화면 내용** · 레포·작업 경로(`id` 는 경로의 SHA-256 앞 16자) ·
@@ -114,7 +114,12 @@
   홈 축약 `~/…`, 그 밖은 터미널이 준 제목을 왼쪽 잘라 15자 — `shared/session-title.ts` 그대로). 그래서 홈 밖 경로 모양의 터미널 제목(`/tmp/x`)은 제목으로 갈 수 있다.
 - **미리보기 순서**(J11 · R1-A5 코디 해석 · LIFE-581 X8): 질문 대기 → 그 질문 · 권한 대기 → 그 도구(claude) · 실패 → 실패 사유 · **작업 중이면 지금 도구** →
   **에이전트 마지막 답**(`reply`, 데스크톱 digest 의 마지막 활동 글 · 가림·160자) → 내 마지막 지시 → 마지막 도구(claude) → 없음. 작업 중 도구와 마지막 지시가 함께 있으면 도구, 실패 사유와 지시가 함께 있으면 실패 사유.
-- `parent` — 대화 머리 「띄운 세션」(579 Q3, 계보에 부모가 있으면 **항상**, 부모를 모르면 `{title:null}`). `spawnedBy` 는 목록 행용 — 부모가 다른 작업 그룹에 있거나 모를 때만.
+- **하위 워크트리 묶음**(LIFE-588 D1·D2): 작업 = `nestSectionItems` 단위 하나, 그 안 `descendants`(데스크톱 중첩 카드 순서)마다 열린 AI 세션이 있으면 `groups` 하나.
+  `channels` = 루트 워크트리 행(열린 → 닫힌 → 머리 없는 하위의 닫힌 행) → 묶음마다 열린 → 닫힌. 한 묶음의 채널은 이어져 있다(폰은 `group` 이 바뀌는 곳에 머리를 그린다).
+  옛 폰은 `label`·`groups`·`group` 을 무시하고 평탄 목록 + `↳ origin` 으로 그린다 — 프로토콜 버전은 올리지 않는다.
+- **워크트리 이름 두 꼴**(LIFE-588 D3): 머리 꼴 `label` = 데스크톱 카드 제목(`worktreeDisplayName`), detached 면 ` · ` + 메타 배지 글(`worktreeIdentity().sidebarLabel` = `Detached HEAD @ <7자>`).
+  한 줄 꼴 `name`·`origin` = `distinctWorktreeName`(detached 면 `<제목> @ <7자>`). 브랜치 있는·HEAD 없는 워크트리는 두 꼴이 같다. 문구는 서버가 데스크톱 함수로 만든다 — 폰은 만들지 않는다.
+- `parent` — 대화 머리 「띄운 세션」(579 Q3, 계보에 부모가 있으면 **항상**, 부모를 모르면 `{title:null}`). `spawnedBy` 는 목록 행용 — 부모가 다른 워크트리(다른 작업·다른 하위 묶음·루트 쪽)에 있거나 모를 때만(LIFE-588 D5).
   열린 AI 세션이 없는 작업(셸만·닫힌 세션만)은 목록에 없다. 행 수는 자르지 않는다 — 제목 120자·미리보기 160자만 자른다.
 - 프레임 크기: 수신 상한 16 KiB 는 서버가 **받는** 프레임에만 걸린다 — `list` 는 그보다 클 수 있다(F9).
 

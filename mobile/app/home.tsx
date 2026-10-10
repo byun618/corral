@@ -11,7 +11,7 @@ import { statusLine } from '../src/core/band'
 import { buildListView, failureText } from '../src/core/list-view'
 import { connection, useConnection } from '../src/runtime/connection'
 import { collapse, listStore, useCollapseVersion, useList } from '../src/runtime/list'
-import { ChannelRow, GhostRow, RepoDivider, TaskHeader, WaitingHeader } from '../src/ui/ChannelList'
+import { ChannelRow, GhostRow, GroupHeader, RepoDivider, TaskHeader, WaitingHeader } from '../src/ui/ChannelList'
 import { ConnectionBand, useNow } from '../src/ui/ConnectionBand'
 import { StaleBand } from '../src/ui/StaleBand'
 import { Screen } from '../src/ui/Screen'
@@ -107,13 +107,16 @@ function ChannelListBody() {
                 <TaskHeader task={task} onToggle={() => collapse.toggle(task.id, task.liveDots)} />
                 {task.collapsed
                   ? null
-                  : task.rows.map((row) =>
-                      row.kind === 'ghost' ? (
-                        <GhostRow key={`g:${row.channel.id}`} row={row} onPress={() => open(row.channel.id)} />
-                      ) : (
-                        <ChannelRow key={row.channel.id} row={row} onPress={() => open(row.channel.id)} />
-                      ),
-                    )}
+                  : task.rows.map((row) => {
+                      switch (row.kind) {
+                        case 'group':
+                          return <GroupHeader key={`h:${row.id}`} row={row} />
+                        case 'ghost':
+                          return <GhostRow key={`g:${row.channel.id}`} row={row} onPress={() => open(row.channel.id)} />
+                        case 'channel':
+                          return <ChannelRow key={row.channel.id} row={row} onPress={() => open(row.channel.id)} />
+                      }
+                    })}
               </View>
             ))}
           </View>

@@ -5,7 +5,8 @@
 //   · 「나를 기다리는 것」: 서버 `waiting` 순서 그대로 위로 올리고, 제자리엔 자국 행. 4개 이상이면 3 + `N개 더 보기`
 //   · 작업 접힘(기본 규칙 + 기억) · 접힌 머리의 점 묶음(4개 넘으면 +N) · 안 읽음 점
 //   · 둘째 줄 접두어·글(디자인 §2 ChannelRow) · 셋째 줄(출신·`레포 › 작업`·띄운 세션)
-import type { Channel, ChannelList, Dot, WaitKind } from './list'
+//   · 하위 워크트리 묶음 머리(LIFE-588 D1·D4) — 서버 `groups` 순서·글 그대로. 머리 아래 행은 `↳ 출신` 을 빼고, 위 섹션은 `레포 › 작업 › 하위`
+import type { Channel, ChannelList, Dot, Group, WaitKind } from './list'
 import type { ListFailure } from './list-store'
 
 export const WAITING_SHOWN = 3
@@ -152,20 +153,26 @@ export type ChannelRowView = {
   text: string
   mono: boolean
   time: string
-  /** 셋째 줄(없으면 null) — 위 섹션: `레포 › 작업`(+출신) · 그룹 안: `↳ 출신` · 띄운 세션. */
+  /** 셋째 줄(없으면 null) — 위 섹션: `레포 › 작업`(› 하위 또는 +출신) · 그룹 안: `↳ 출신`(하위 머리 아래면 뺌) · 띄운 세션. */
   meta: string | null
 }
 
 /** 자국 행 — 기다리는 채널의 원래 자리(디자인 Q1 채택안). */
 export type GhostRowView = { kind: 'ghost'; channel: Channel; worker: boolean }
 
+/** 하위 워크트리 묶음 머리(LIFE-588 D1) — 접지 않는다. `label` = 서버 머리 꼴(detached 라벨 포함). */
+export type GroupRowView = { kind: 'group'; id: string; label: string }
+
 export type TaskView = {
   id: string
   name: string
+  /** 작업 머리 글 — 서버 `label`(detached 면 `<제목> · Detached HEAD @ <7자>`), 없으면 `name`. */
+  label: string
   isDefault: boolean
   collapsed: boolean
   unread: boolean
-  rows: (ChannelRowView | GhostRowView)[]
+  /** 접힌 작업은 하위 머리째 그리지 않는다(머리 접기는 작업 단위뿐 — 579 Q2). */
+  rows: (ChannelRowView | GhostRowView | GroupRowView)[]
   /** 열린 세션 전부의 표시 점 — 기본 접힘 규칙의 입력. */
   liveDots: Dot[]
   /** 접힌 머리 요약 — 열린 세션의 점(앞 4개) + 넘친 수 + 개수. */
@@ -212,13 +219,14 @@ function joinMeta(parts: (string | null)[]): string | null {
 export function buildListView(input: ViewInput): ListView {
   const { list, now } = input
   const waitingIds = new Set(list.waiting)
-  const rowOf = (channel: Channel, place: { crumb: string | null }): ChannelRowView => {
+  const rowOf = (channel: Channel, place: { crumb: string | null; group: Group | null }): ChannelRowView => {
     const unread = input.isUnread(channel)
     const dot = shownDot({ channel, unread })
     const flash = (input.flashUntil[channel.id] ?? 0) > now
     const preview = previewText({ channel, dot })
     const prefix = prefixOf({ channel, dot })
-    const origin = channel.origin === null ? null : `↳ ${channel.origin}`
+    // D4 — 하위 머리가 출신을 이미 말한다(그룹 안) · 위 섹션은 crumb 에 하위가 붙는다.
+    const origin = channel.origin === null || place.group !== null ? null : `↳ ${channel.origin}`
     return {
       kind: 'channel',
       channel,
@@ -244,16 +252,26 @@ export function buildListView(input: ViewInput): ListView {
       const live = task.channels.filter((channel) => channel.status === 'live')
       const dots = live.map((channel) => shownDot({ channel, unread: input.isUnread(channel) }))
       working += dots.filter((dot) => dot === 'working' || dot === 'monitoring').length
-      const rows = task.channels.map((channel): ChannelRowView | GhostRowView => {
+      const groups = new Map((task.groups ?? []).map((group) => [group.id, group]))
+      const rows: TaskView['rows'] = []
+      let current: Group | null = null
+      for (const channel of task.channels) {
+        // 모르는 묶음 id 는 묶음 없음 — 평탄 행 + `↳ 출신`(옛 꼴).
+        const group = groups.get(channel.group ?? '') ?? null
+        if (group !== null && group !== current) rows.push({ kind: 'group', id: group.id, label: group.label })
+        current = group
         if (waitingIds.has(channel.id)) {
-          waitingRows.set(channel.id, rowOf(channel, { crumb: `${repo.name} › ${task.name}` }))
-          return { kind: 'ghost', channel, worker: channel.depth === 1 }
+          const crumb = group === null ? `${repo.name} › ${task.name}` : `${repo.name} › ${task.name} › ${group.name}`
+          waitingRows.set(channel.id, rowOf(channel, { crumb, group }))
+          rows.push({ kind: 'ghost', channel, worker: channel.depth === 1 })
+          continue
         }
-        return rowOf(channel, { crumb: null })
-      })
+        rows.push(rowOf(channel, { crumb: null, group }))
+      }
       return {
         id: task.id,
         name: task.name,
+        label: task.label ?? task.name,
         isDefault: task.isDefault,
         collapsed: input.isCollapsed(task.id, dots),
         unread: live.some((channel) => input.isUnread(channel)),

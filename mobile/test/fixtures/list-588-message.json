@@ -1,0 +1,398 @@
+{
+  "type": "list",
+  "epoch": "e588",
+  "seq": 1,
+  "at": 1800000000000,
+  "changedAt": 1800000000000,
+  "list": {
+    "available": true,
+    "repos": [
+      {
+        "id": "915fa7863e3550cf",
+        "name": "corral",
+        "tasks": [
+          {
+            "id": "13a3525f97182867",
+            "name": "corral",
+            "label": "corral",
+            "isDefault": false,
+            "groups": [],
+            "channels": [
+              {
+                "id": "h1",
+                "key": "pane:h1",
+                "status": "live",
+                "kind": "claude",
+                "title": "HEAD 없는 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": null,
+                "group": null,
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999940000,
+                "activityAt": null,
+                "outcome": null
+              }
+            ]
+          },
+          {
+            "id": "869a49d46f58cc50",
+            "name": "corral @ 7cb34f3",
+            "label": "corral · Detached HEAD @ 7cb34f3",
+            "isDefault": false,
+            "groups": [],
+            "channels": [
+              {
+                "id": "r1",
+                "key": "pane:r1",
+                "status": "live",
+                "kind": "claude",
+                "title": "detached 루트 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": null,
+                "group": null,
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999940000,
+                "activityAt": null,
+                "outcome": null
+              }
+            ]
+          },
+          {
+            "id": "94015dca56a304f5",
+            "name": "feature/LIFE-564-mobile",
+            "label": "feature/LIFE-564-mobile",
+            "isDefault": false,
+            "groups": [
+              {
+                "id": "ab37aaf4d00334c1",
+                "name": "corral @ deadbee",
+                "label": "corral · Detached HEAD @ deadbee"
+              },
+              {
+                "id": "dfa7d11e93f9dac5",
+                "name": "LIFE-581-mobile-chat",
+                "label": "LIFE-581-mobile-chat"
+              },
+              {
+                "id": "a6e5e104699e5aff",
+                "name": "LIFE-581-mobile-chat-claude",
+                "label": "LIFE-581-mobile-chat-claude"
+              },
+              {
+                "id": "a32dc3e3aa7ee9ad",
+                "name": "LIFE-588-worktree-label",
+                "label": "LIFE-588-worktree-label"
+              }
+            ],
+            "channels": [
+              {
+                "id": "f1",
+                "key": "pane:f1",
+                "status": "live",
+                "kind": "claude",
+                "title": "묶음 코디",
+                "dot": "waiting",
+                "dotUnseen": "waiting",
+                "depth": 0,
+                "origin": null,
+                "group": null,
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "question",
+                  "text": "다음 일감?"
+                },
+                "waiting": "question",
+                "model": null,
+                "timeAt": 1799999970000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "f2",
+                "key": "pane:f2",
+                "status": "live",
+                "kind": "codex",
+                "title": "루트 워커",
+                "dot": "working",
+                "dotUnseen": "working",
+                "depth": 1,
+                "origin": null,
+                "group": null,
+                "spawnedBy": null,
+                "parent": {
+                  "title": "묶음 코디"
+                },
+                "preview": {
+                  "kind": "prompt",
+                  "text": "루트 워커"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999995000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "retained:rf",
+                "key": "closed:rf",
+                "status": "closed",
+                "kind": "claude",
+                "title": "닫은 루트 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": null,
+                "group": null,
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799998800000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "retained:rn",
+                "key": "closed:rn",
+                "status": "closed",
+                "kind": "claude",
+                "title": "닫은 열린 것 없는 하위 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": "no-live-child",
+                "group": null,
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799998700000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "d1",
+                "key": "pane:d1",
+                "status": "live",
+                "kind": "claude",
+                "title": "검증 세션",
+                "dot": "working",
+                "dotUnseen": "working",
+                "depth": 0,
+                "origin": "corral @ deadbee",
+                "group": "ab37aaf4d00334c1",
+                "spawnedBy": {
+                  "title": null
+                },
+                "parent": {
+                  "title": null
+                },
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999997000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "a1",
+                "key": "pane:a1",
+                "status": "live",
+                "kind": "claude",
+                "title": "581 코디",
+                "dot": "working",
+                "dotUnseen": "working",
+                "depth": 0,
+                "origin": "LIFE-581-mobile-chat",
+                "group": "dfa7d11e93f9dac5",
+                "spawnedBy": {
+                  "title": "묶음 코디"
+                },
+                "parent": {
+                  "title": "묶음 코디"
+                },
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999992000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "a2",
+                "key": "pane:a2",
+                "status": "live",
+                "kind": "claude",
+                "title": "581 워커",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 1,
+                "origin": "LIFE-581-mobile-chat",
+                "group": "dfa7d11e93f9dac5",
+                "spawnedBy": null,
+                "parent": {
+                  "title": "581 코디"
+                },
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999940000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "a3",
+                "key": "pane:a3",
+                "status": "live",
+                "kind": "claude",
+                "title": "581 계보 없는 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": "LIFE-581-mobile-chat",
+                "group": "dfa7d11e93f9dac5",
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999940000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "retained:ra",
+                "key": "closed:ra",
+                "status": "closed",
+                "kind": "claude",
+                "title": "닫은 581 세션",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": "LIFE-581-mobile-chat",
+                "group": "dfa7d11e93f9dac5",
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799998750000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "g1",
+                "key": "pane:g1",
+                "status": "live",
+                "kind": "claude",
+                "title": "581 구현 워커",
+                "dot": "working",
+                "dotUnseen": "working",
+                "depth": 0,
+                "origin": "LIFE-581-mobile-chat-claude",
+                "group": "a6e5e104699e5aff",
+                "spawnedBy": {
+                  "title": "581 코디"
+                },
+                "parent": {
+                  "title": "581 코디"
+                },
+                "preview": {
+                  "kind": "none"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999988000,
+                "activityAt": null,
+                "outcome": null
+              },
+              {
+                "id": "g2",
+                "key": "pane:g2",
+                "status": "live",
+                "kind": "codex",
+                "title": "581 리뷰어",
+                "dot": "waiting",
+                "dotUnseen": "waiting",
+                "depth": 0,
+                "origin": "LIFE-581-mobile-chat-claude",
+                "group": "a6e5e104699e5aff",
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "approval",
+                  "text": null
+                },
+                "waiting": "approval",
+                "model": null,
+                "timeAt": 1799999960000,
+                "activityAt": 1799999960000,
+                "outcome": null
+              },
+              {
+                "id": "b1",
+                "key": "pane:b1",
+                "status": "live",
+                "kind": "grok",
+                "title": "588 서치",
+                "dot": "idle",
+                "dotUnseen": "done",
+                "depth": 0,
+                "origin": "LIFE-588-worktree-label",
+                "group": "a32dc3e3aa7ee9ad",
+                "spawnedBy": null,
+                "parent": null,
+                "preview": {
+                  "kind": "prompt",
+                  "text": "588 서치"
+                },
+                "waiting": null,
+                "model": null,
+                "timeAt": 1799999940000,
+                "activityAt": null,
+                "outcome": null
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "waiting": [
+      "f1",
+      "g2"
+    ]
+  }
+}

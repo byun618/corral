@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
-import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, sameQuestion, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
+import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, matchQuestion, questionKeys, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
 
 /** Z1 실측 화면(커밋된 원자료). */
 const Z1 = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/z1')
@@ -129,7 +129,7 @@ describe('R2-A1 활성 질문 영역 — Z1 실측 화면', () => {
     return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
   }
   it('Claude — 단일·문항 둘의 두 번째·여럿 고름·preview·검토 화면', () => {
-    expect(activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
     expect(activeQuestion({ kind: 'claude', screen: z1('a-q4-q2.txt') })).toMatchObject({ kind: 'question', title: 'Pick city', options: ['Seoul', 'Busan'] })
     expect(activeQuestion({ kind: 'claude', screen: z1('a-q2-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'] })
     expect(activeQuestion({ kind: 'claude', screen: z1('a-q6-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick layout', options: ['A', 'B'] })
@@ -137,11 +137,11 @@ describe('R2-A1 활성 질문 영역 — Z1 실측 화면', () => {
   })
   it('Codex — 접힌 표시(문항 수) · 펼친 단일 · 둘 중 첫 번째(위치)', () => {
     expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-screen.txt') })).toEqual({ kind: 'collapsed', count: 1 })
-    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
-    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q3-open.txt') })).toEqual({ kind: 'question', title: 'Pick size', options: ['Small', 'Large'], position: 1, total: 2 })
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') })).toMatchObject({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q3-open.txt') })).toMatchObject({ kind: 'question', title: 'Pick size', options: ['Small', 'Large'], position: 1, total: 2 })
   })
   it('Grok — 단일 · 둘 중 두 번째(위치) · 직접 입력 중', () => {
-    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
     expect(activeQuestion({ kind: 'grok', screen: z1('ga-q3-after13.txt') })).toMatchObject({ kind: 'question', title: 'Pick city', options: ['Seoul', 'Busan'], position: 2, total: 2 })
     expect(activeQuestion({ kind: 'grok', screen: z1('ga-q2-typed.txt') })).toMatchObject({ kind: 'question', title: 'Pick a fruit', options: ['Apple', 'Pear'] })
   })
@@ -154,14 +154,14 @@ describe('R2-A1 활성 질문 영역 — Z1 실측 화면', () => {
     const history = ['❯ Pick a color', '1. Red', '2. Green', '3. Blue'].join('\n')
     expect(activeQuestion({ kind: 'claude', screen: `${history}\n${permission('p7')}` })).toEqual({ kind: 'none' })
   })
-  it('sameQuestion — 글 전체·선택지 전부·위치가 같아야 한다(앞부분 포함은 세지 않는다)', () => {
+  it('matchQuestion — 글 전체·선택지 전부·위치가 같아야 한다(앞부분 포함은 세지 않는다)', () => {
     const active = activeQuestion({ kind: 'codex', screen: z1('ca-q3-open.txt') })
-    const size = { question: 'Pick size', options: ['Small', 'Large'] }
-    expect(sameQuestion({ active, question: size, index: 0, total: 2 })).toBe(true)
-    expect(sameQuestion({ active, question: size, index: 1, total: 2 })).toBe(false)
-    expect(sameQuestion({ active, question: { question: 'Pick size now', options: ['Small', 'Large'] }, index: 0, total: 2 })).toBe(false)
-    expect(sameQuestion({ active, question: { question: 'Pick size', options: ['Small', 'Large', 'Huge'] }, index: 0, total: 2 })).toBe(false)
-    expect(sameQuestion({ active, question: { question: 'Pick', options: ['Small', 'Large'] }, index: 0, total: 2 })).toBe(false)
+    const size = { question: 'Pick size', options: ['Small', 'Large'], multiSelect: false, preview: false }
+    expect(matchQuestion({ kind: 'codex', active, question: size, index: 0, total: 2 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'codex', active, question: size, index: 1, total: 2 })).toEqual({ kind: 'other' })
+    expect(matchQuestion({ kind: 'codex', active, question: { ...size, question: 'Pick size now' }, index: 0, total: 2 })).toEqual({ kind: 'other' })
+    expect(matchQuestion({ kind: 'codex', active, question: { ...size, options: ['Small', 'Large', 'Huge'] }, index: 0, total: 2 })).toEqual({ kind: 'other' })
+    expect(matchQuestion({ kind: 'codex', active, question: { ...size, question: 'Pick' }, index: 0, total: 2 })).toEqual({ kind: 'other' })
   })
   it('answerGroups — 묶음마다 화면 확인 지점(Codex 열기 · 문항 · 검토)', () => {
     const one = { options: 2, multiSelect: false, preview: false }
@@ -171,5 +171,98 @@ describe('R2-A1 활성 질문 영역 — Z1 실측 화면', () => {
       { check: { kind: 'question', index: 1 }, keys: ['3', 'x', KEY.enter] },
     ] })
     expect(answerGroups({ kind: 'claude', questions: [one, one], answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })).toMatchObject({ ok: true, groups: [{ keys: ['1'] }, { keys: ['2'] }, { check: { kind: 'review' }, keys: ['1'] }] })
+  })
+})
+
+describe('LIFE-582 r3 — 활성 영역 아래 경계 · 선택 상태 · Codex 남은 위치 (Z1 실측 화면 합성)', () => {
+  const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
+  const permission = (pane: string): string => {
+    const text = z1('perm-screens.txt')
+    const start = text.indexOf(`== w1:${pane} `)
+    const next = text.indexOf('== w1:', start + 1)
+    return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
+  }
+  const pick = { question: 'Pick a color', options: ['Red', 'Green', 'Blue'], multiSelect: false, preview: false }
+
+  it('R3-A2 — 끝난 질문 상자 아래 지금 권한 질문이 있으면 세 provider 모두 none', () => {
+    expect(activeQuestion({ kind: 'claude', screen: `${z1('a-q1-screen.txt')}\n${permission('p7')}` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'codex', screen: `${z1('ca-q1-open.txt')}\n${permission('p8')}` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'grok', screen: `${z1('ga-q1-screen.txt')}\n${permission('p9')}` })).toEqual({ kind: 'none' })
+    // 검토 화면도 같은 규칙 — Submit 행이 있어도 그 아래 다른 대화상자가 있으면 아니다.
+    expect(activeQuestion({ kind: 'claude', screen: `${z1('a-q4-review.txt')}\n${permission('p7')}` })).toEqual({ kind: 'none' })
+    // 양성 대조 — 같은 상자 홀로는 question/review 다.
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') }).kind).toBe('question')
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') }).kind).toBe('question')
+    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') }).kind).toBe('question')
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q4-review.txt') })).toEqual({ kind: 'review' })
+  })
+  it('R3-A2 — 상자 아래 모르는 줄이 있으면 none', () => {
+    expect(activeQuestion({ kind: 'claude', screen: `${z1('a-q1-screen.txt')}\nsomething else` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'codex', screen: `${z1('ca-q1-open.txt')}\nsomething else` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'grok', screen: `${z1('ga-q1-screen.txt')}\nsomething else` })).toEqual({ kind: 'none' })
+  })
+  it('D2 — Codex 접힌 표시는 맨 아래 입력창 바로 위일 때만(아래 권한 질문·다른 상자면 none)', () => {
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-screen.txt') })).toEqual({ kind: 'collapsed', count: 1 })
+    expect(activeQuestion({ kind: 'codex', screen: `${z1('ca-q1-screen.txt')}\n${permission('p8')}` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'codex', screen: `${z1('ca-q1-screen.txt')}\n${z1('ca-q1-open.txt')}\n${permission('p8')}` })).toEqual({ kind: 'none' })
+    // 맥 초안이 입력창에 있어도 접힌 표시는 그대로다(실측 native-codex collapsed-draft).
+    const draft = z1('ca-q1-screen.txt').replace('Ask Codex to do anything', 'r3draft')
+    expect(draft).not.toBe(z1('ca-q1-screen.txt'))
+    expect(activeQuestion({ kind: 'codex', screen: draft })).toEqual({ kind: 'collapsed', count: 1 })
+  })
+  it('R3-A1 — 갓 열린 빈 상태만 same(세 provider 양성 대조)', () => {
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'codex', active: activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    const fruits = { question: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'], multiSelect: true, preview: false }
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q2-screen.txt') }), question: fruits, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+  })
+  it('R3-A1 — Claude multiSelect 의 이미 체크된 칸을 읽는다(Z1 a-q2-after13 = 1·3 체크)', () => {
+    // a-q2-after13 은 상자 아래쪽만 잡은 캡처라 위 가로줄이 없다 — 같은 너비의 가로줄만 앞에 붙인다(나머지 줄은 실물 그대로).
+    const active = activeQuestion({ kind: 'claude', screen: `${'─'.repeat(119)}\n${z1('a-q2-after13.txt')}` })
+    expect(active).toMatchObject({ kind: 'question', tabs: [true] })
+    const fruits = { question: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'], multiSelect: true, preview: false }
+    expect(matchQuestion({ kind: 'claude', active, question: fruits, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [0, 2] })
+  })
+  it('R3-A1 — 맥에서 고르는 중(직접 입력 글 · 커서 이동 · Grok 선택)은 busy', () => {
+    // a-other-typed 는 아래쪽만 잡은 캡처 — 그 실물 행(`❯ 4. 보라 violet`)을 a-q1 화면의 직접 입력 행 자리에 넣는다.
+    const typedRow = z1('a-other-typed.txt').split('\n').find((line) => line.includes('4. '))!
+    const typed = z1('a-q1-screen.txt').replace('❯ 1. Red', '  1. Red').replace(/^.*4\. Type something\..*$/m, typedRow)
+    expect(typed).toContain('보라 violet')
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: typed }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    const fruit = { question: 'Pick a fruit', options: ['Apple', 'Pear'], multiSelect: false, preview: false }
+    expect(matchQuestion({ kind: 'codex', active: activeQuestion({ kind: 'codex', screen: z1('ca-q2-typed.txt') }), question: fruit, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q2-typed.txt') }), question: fruit, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    // Claude 커서를 2행으로 옮긴 화면.
+    const moved = z1('a-q1-screen.txt').replace('❯ 1. Red', '  1. Red').replace('  2. Green', '❯ 2. Green')
+    expect(moved).not.toBe(z1('a-q1-screen.txt'))
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: moved }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    // Claude 여러 문항 — 첫 문항 차례인데 머리 줄에 다른 문항이 이미 답함이면 busy.
+    const pets = activeQuestion({ kind: 'claude', screen: z1('a-q4-q2.txt') })
+    const city = { question: 'Pick city', options: ['Seoul', 'Busan'], multiSelect: false, preview: false }
+    expect(matchQuestion({ kind: 'claude', active: pets, question: city, index: 1, total: 2 })).toEqual({ kind: 'same', checked: [] })
+    if (pets.kind !== 'question') throw new Error('question')
+    expect(matchQuestion({ kind: 'claude', active: { ...pets, tabs: [true, true] }, question: city, index: 1, total: 2 })).toEqual({ kind: 'busy' })
+  })
+  it('R3-A1 — 체크에서 폰 답으로 가는 키는 다른 칸만 뒤집는다', () => {
+    const multi = { options: 3, multiSelect: true, preview: false }
+    expect(questionKeys({ kind: 'claude', question: multi, answer: { choices: [0, 1], other: null }, checked: [0] })).toEqual(['2', KEY.down, KEY.down, KEY.down, KEY.down, KEY.enter])
+    expect(questionKeys({ kind: 'claude', question: multi, answer: { choices: [1], other: null }, checked: [0, 2] })).toEqual(['1', '2', '3', KEY.down, KEY.down, KEY.down, KEY.down, KEY.enter])
+    expect(questionKeys({ kind: 'claude', question: multi, answer: { choices: [0, 1], other: null }, checked: [] })).toEqual(['1', '2', KEY.down, KEY.down, KEY.down, KEY.down, KEY.enter])
+    // 하나 고름에 체크가 있으면 키를 만들지 않는다.
+    expect(questionKeys({ kind: 'claude', question: { options: 3, multiSelect: false, preview: false }, answer: { choices: [0], other: null }, checked: [1] })).toEqual([''])
+  })
+  it('R3-A3 — Codex `k of n` 은 남은 문항 중 위치(3문항: 1 of 3 → 1 of 2 → 표시 없음)', () => {
+    const screen = (counter: string | null, title: string): string =>
+      ['• Queued follow-up inputs', '', ...(counter === null ? [] : [`  ${counter}`]), `  ${title}`, '', '  › 1. Tea', '    2. Coffee', '    3. Other', '', '  enter submit   ⌃] skip   ⇧→ main prompt'].join('\n')
+    const q = (title: string) => ({ question: title, options: ['Tea', 'Coffee'], multiSelect: false, preview: false })
+    const at = (counter: string | null, title: string, index: number) => matchQuestion({ kind: 'codex', active: activeQuestion({ kind: 'codex', screen: screen(counter, title) }), question: q(title), index, total: 3 })
+    expect(at('1 of 3', 'Pick color', 0)).toEqual({ kind: 'same', checked: [] })
+    expect(at('1 of 2', 'Pick drink', 1)).toEqual({ kind: 'same', checked: [] })
+    expect(at(null, 'Pick size', 2)).toEqual({ kind: 'same', checked: [] })
+    // 위치 비교는 지운 게 아니다 — 남은 수가 다르면 다른 질문.
+    expect(at('1 of 3', 'Pick drink', 1)).toEqual({ kind: 'other' })
+    expect(at('2 of 3', 'Pick color', 0)).toEqual({ kind: 'other' })
+    expect(at(null, 'Pick color', 0)).toEqual({ kind: 'other' })
   })
 })

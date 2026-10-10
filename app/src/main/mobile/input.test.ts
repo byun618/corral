@@ -5,10 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { TerminalIdentity } from '../adapter/index.js'
-import type { ChatItem } from '../chat-parse.js'
+import { ChatBuilder, type ChatItem } from '../chat-parse.js'
 import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
 import { answerRecords, cleanAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
-import { KEY, questionDigest } from './keys.js'
+import { activeQuestion, KEY, questionDigest } from './keys.js'
+import type { MobileAgentKind } from './list.js'
 
 const cleanups: (() => void)[] = []
 afterEach(() => {
@@ -113,10 +114,13 @@ function question(input: { id: number; state: 'pending' | 'answered' | 'closed';
   return { id: input.id, kind: 'question', call, questions: [{ question: `Q-${input.id} 어느 쪽?`, header: null, options, multiSelect: false }], state: input.state, answer: null, at: null }
 }
 
-/** Claude 의 답 줄 — 그 도구 호출의 tool_result(`chat-parse` 가 `result` 원자로 읽는다). */
-function answerLine(call: string, isError = false): string {
+/**
+ * Claude 의 답 줄 — 그 도구 호출의 tool_result(`chat-parse` 가 `result` 원자로 읽는다). `answers` = 실물의 `toolUseResult.answers`(`{문항: 답}` —
+ * 답 값 대조 R3-A1 의 재료). 없으면 답 값을 못 읽는 줄.
+ */
+function answerLine(call: string, isError = false, answers: Record<string, string> | null = null): string {
   uuid += 1
-  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: call, content: 'ok', is_error: isError }] }, uuid: `u-${uuid}`, parentUuid: null, timestamp: new Date().toISOString(), sessionId: CHAT_SESSIONS.claude.id })
+  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: call, content: 'ok', is_error: isError }] }, ...(answers === null ? {} : { toolUseResult: { answers } }), uuid: `u-${uuid}`, parentUuid: null, timestamp: new Date().toISOString(), sessionId: CHAT_SESSIONS.claude.id })
 }
 
 function setup(input: { listed?: boolean; noFileYet?: boolean; resolution?: () => FileResolution; deviceValid?: (device: string) => boolean } = {}) {
@@ -154,10 +158,11 @@ function setup(input: { listed?: boolean; noFileYet?: boolean; resolution?: () =
     }
   }
   /** 답 키가 끝나면 기록에 그 질문의 답 줄을 붙이고 판독자를 해소한다 — 실제 provider 와 같은 두 증거. */
-  const answerOn = (input: { id: number; call?: string; when?: (text: string) => boolean; lines?: number; resolve?: boolean }) => {
+  const answerOn = (input: { id: number; call?: string; when?: (text: string) => boolean; lines?: number; resolve?: boolean; value?: string }) => {
     backend.onSend = (text) => {
       if (input.when !== undefined && !input.when(text)) return
-      for (let index = 0; index < (input.lines ?? 1); index += 1) fs.appendFileSync(file, `${answerLine(input.call ?? `toolu-${input.id}`)}\n`)
+      const answers = input.value === undefined ? null : { [`Q-${input.id} 어느 쪽?`]: input.value }
+      for (let index = 0; index < (input.lines ?? 1); index += 1) fs.appendFileSync(file, `${answerLine(input.call ?? `toolu-${input.id}`, false, answers)}\n`)
       if (input.resolve !== false) items.list = [question({ id: input.id, state: 'answered', call: input.call })]
     }
   }
@@ -343,7 +348,7 @@ describe('질문 답 (Z5)', () => {
     t.backend.seq = 7
     t.backend.screenText = questionScreen(10)
     t.items.list = [question({ id: 10, state: 'pending' })]
-    t.answerOn({ id: 10 })
+    t.answerOn({ id: 10, value: 'o1' })
     t.hub.answer({ device: 'd1', id: 'ans-aaaa-0001', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [1], other: null }] })
     expect((await t.settled('ans-aaaa-0001')).state).toBe('delivered')
     expect(t.backend.sends).toEqual([{ text: '2', seq: 7 }])
@@ -380,7 +385,7 @@ describe('질문 답 (Z5)', () => {
     t.backend.status = 'blocked'
     t.backend.screenText = questionScreen(10)
     t.items.list = [question({ id: 10, state: 'pending' })]
-    t.answerOn({ id: 10, when: (text) => text === KEY.enter })
+    t.answerOn({ id: 10, when: (text) => text === KEY.enter, value: 'a bc' })
     t.hub.answer({ device: 'd1', id: 'ans-aaaa-0006', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [], other: 'a\nb\x1bc' }] })
     expect((await t.settled('ans-aaaa-0006')).state).toBe('delivered')
     expect(t.backend.sends.map((send) => send.text)).toEqual(['3', 'a bc', KEY.enter])
@@ -710,7 +715,8 @@ function twoQuestions(id: number, state: 'pending' | 'answered' = 'pending'): Ch
   const options = [{ label: 'o0', description: null }, { label: 'o1', description: null }]
   return { id, kind: 'question', call: `toolu-${id}`, questions: [{ question: `Q-${id} 첫째?`, header: null, options, multiSelect: false }, { question: `Q-${id} 둘째?`, header: null, options, multiSelect: false }], state, answer: null, at: null }
 }
-const boxOf = (title: string): string => ['', RULE, '←  ☐ A  ☐ B  ✔ Submit  →', title, '❯ 1. o0', '  2. o1', '  3. Type something.', RULE, '  4. Chat about this', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\r\n')
+/** 문항 둘 상자 — `title` 이 둘째면 머리 줄 첫 탭이 답함(☒ — Z1 a-q4-q2 실측). */
+const boxOf = (title: string): string => ['', RULE, title.endsWith('둘째?') ? '←  ☒ A  ☐ B  ✔ Submit  →' : '←  ☐ A  ☐ B  ✔ Submit  →', title, '❯ 1. o0', '  2. o1', '  3. Type something.', RULE, '  4. Chat about this', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\r\n')
 const REVIEW = ['', RULE, '←  ☒ A  ☒ B  ✔ Submit  →', 'Review your answers', ' ● x', 'Ready to submit your answers?', '❯ 1. Submit answers', '  2. Cancel'].join('\r\n')
 
 describe('R2-A1 질문 동일성 — 활성 질문 영역 · 내용 지문 · 키 사이 입력 울타리', () => {
@@ -778,7 +784,7 @@ describe('R2-A1 질문 동일성 — 활성 질문 영역 · 내용 지문 · �
       const next = screens.shift()
       if (next !== undefined) t.backend.screenText = next
       else {
-        fs.appendFileSync(t.file, `${answerLine('toolu-31')}\n`)
+        fs.appendFileSync(t.file, `${answerLine('toolu-31', false, { 'Q-31 첫째?': 'o0', 'Q-31 둘째?': 'o1' })}\n`)
         t.items.list = [twoQuestions(31, 'answered')]
       }
     }
@@ -792,8 +798,8 @@ describe('R2-A1 질문 동일성 — 활성 질문 영역 · 내용 지문 · �
 })
 
 /** Codex 답 봉투 한 줄 — `questionItemId` = `["request_user_input_async","<call>",<문항>]`(실물 모양). `id` 를 주지 않으면 귀속을 못 읽는 봉투. */
-function codexReply(entries: { call?: string; index?: number; answer: string }[]): string {
-  const body = entries.map((entry) => ({ answer: entry.answer, question: 'q', ...(entry.call === undefined ? {} : { questionItemId: JSON.stringify(['request_user_input_async', entry.call, entry.index ?? 0]) }) }))
+function codexReply(entries: { call?: string; index?: number; answer: string; question?: string }[]): string {
+  const body = entries.map((entry) => ({ answer: entry.answer, question: entry.question ?? 'q', ...(entry.call === undefined ? {} : { questionItemId: JSON.stringify(['request_user_input_async', entry.call, entry.index ?? 0]) }) }))
   return JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: `<send_user_message_question_reply>\n${JSON.stringify(body)}\n</send_user_message_question_reply>` } })
 }
 const CODEX_COLLAPSED = ['• Queued follow-up inputs', '  ? 1 question · 3s', '    ⇧← to answer', '', '› Ask Codex to do anything'].join('\r\n')
@@ -836,7 +842,7 @@ describe('R2-A2 Codex 답 귀속 — 그 호출의 문항 답만 센다', () => 
     t.backend.onSend = (text) => {
       if (text === KEY.shiftLeft) t.backend.screenText = codexOpen(10)
       else {
-        fs.appendFileSync(t.file, `${codexReply([{ call: 'toolu-10', answer: 'o1' }])}\n`)
+        fs.appendFileSync(t.file, `${codexReply([{ call: 'toolu-10', answer: 'o1', question: 'Q-10 어느 쪽?' }])}\n`)
         t.items.list = [question({ id: 10, state: 'answered' })]
       }
     }
@@ -953,7 +959,7 @@ describe('R2-A9 답·중단은 취소를 받지 않는다 — 취소를 답한 �
     t.backend.status = 'blocked'
     t.backend.screenText = questionScreen(10)
     t.items.list = [question({ id: 10, state: 'pending' })]
-    t.answerOn({ id: 10 })
+    t.answerOn({ id: 10, value: 'o0' })
     t.hub.answer({ device: 'd1', id: 'r2a9-0000-0001', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [0], other: null }] })
     t.hub.cancel({ device: 'd1', id: 'r2a9-0000-0001' })
     expect((await t.settled('r2a9-0000-0001')).state).toBe('delivered')
@@ -993,5 +999,279 @@ describe('C5 활성 세대 — 끄고 바로 켜도(stopped=false) 이전 세대
     t.hub.answer({ device: 'd1', id: 'c5-0000-0002', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [], other: '본문' }] })
     expect(await t.settled('c5-0000-0002')).toMatchObject({ state: 'unconfirmed', reason: 'mobile_off' })
     expect(t.backend.sends.map((send) => send.text)).toEqual(['3'])
+  })
+})
+
+// --- 수정 r3 (Codex r3 지적) ---------------------------------------------------------------------------
+
+const Z1 = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/z1')
+const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
+const z1Permission = (pane: string): string => {
+  const text = z1('perm-screens.txt')
+  const start = text.indexOf(`== w1:${pane} `)
+  const next = text.indexOf('== w1:', start + 1)
+  return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
+}
+
+/** Claude multiSelect 상자 — `checked` = 체크된 칸(0부터), 직접 입력 행은 `other`(없으면 자리표시). 머리 탭은 체크가 있으면 ☒(Z1 a-q2-after13). */
+const multiBox = (input: { id: number; options: number; checked: number[]; other?: string; cursor?: number }): string => {
+  const cursor = input.cursor ?? 1
+  const row = (n: number, label: string, on: boolean) => `${n === cursor ? '❯ ' : '  '}${n}. [${on ? '✔' : ' '}] ${label}`
+  return ['', RULE, `←  ${input.checked.length > 0 || input.other !== undefined ? '☒' : '☐'} Pick  ✔ Submit  →`, `Q-${input.id} 어느 쪽?`,
+    ...Array.from({ length: input.options }, (_, index) => row(index + 1, `o${index}`, input.checked.includes(index))),
+    row(input.options + 1, input.other ?? 'Type something', input.other !== undefined), '     Submit', RULE, `  ${input.options + 2}. Chat about this`, 'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\r\n')
+}
+const multiQuestion = (id: number, options: number, state: 'pending' | 'answered' = 'pending'): ChatItem => ({
+  id, kind: 'question', call: `toolu-${id}`, state, answer: null, at: null,
+  questions: [{ question: `Q-${id} 어느 쪽?`, header: null, options: Array.from({ length: options }, (_, index) => ({ label: `o${index}`, description: null })), multiSelect: true }],
+})
+const questionsOf = (item: ChatItem): Extract<ChatItem, { kind: 'question' }>['questions'] => {
+  if (item.kind !== 'question') throw new Error('fixture')
+  return item.questions
+}
+const REVIEW_R3 = ['', RULE, '←  ☒ Pick  ✔ Submit  →', '', 'Review your answers', '', ' ● Q?', '   → o0', '', 'Ready to submit your answers?', '', '❯ 1. Submit answers', '  2. Cancel'].join('\r\n')
+
+/**
+ * Claude multiSelect 를 흉내 내는 가짜 화면 — 숫자 키는 칸을 뒤집고(커서는 그대로), ↓·Enter 로 Submit 행에 가면 검토 화면, 검토의 `1` 이면
+ * **그때 체크된 칸**을 기록의 답 값으로 남긴다(실물 `toolUseResult.answers` 모양). 맥이 먼저 체크한 칸이 있으면 그 상태에서 시작한다.
+ */
+function claudeMulti(t: ReturnType<typeof setup>, input: { id: number; options: number; checked: number[] }): { checked: Set<number> } {
+  const state = { checked: new Set(input.checked) }
+  let downs = 0
+  t.backend.status = 'blocked'
+  t.items.list = [multiQuestion(input.id, input.options)]
+  t.backend.screenText = multiBox({ id: input.id, options: input.options, checked: [...state.checked] })
+  t.backend.onSend = (text) => {
+    if (t.backend.screenText === REVIEW_R3) {
+      if (text !== '1') return
+      const labels = [...state.checked].sort((a, b) => a - b).map((index) => `o${index}`)
+      fs.appendFileSync(t.file, `${answerLine(`toolu-${input.id}`, false, { [`Q-${input.id} 어느 쪽?`]: labels.join(', ') })}\n`)
+      t.items.list = [multiQuestion(input.id, input.options, 'answered')]
+      t.backend.screenText = EMPTY
+      return
+    }
+    if (/^[1-9]$/.test(text)) {
+      const index = Number(text) - 1
+      if (state.checked.has(index)) state.checked.delete(index)
+      else state.checked.add(index)
+      t.backend.screenText = multiBox({ id: input.id, options: input.options, checked: [...state.checked] })
+    } else if (text === KEY.down) downs += 1
+    else if (text === KEY.enter && downs === input.options + 1) t.backend.screenText = REVIEW_R3
+  }
+  return state
+}
+
+describe('R3-A1 맥이 이미 고른 상태 — 정확히 셀 수 있으면 그 키, 아니면 키 0회 · 답 값 대조', () => {
+  it('재현 — 맥이 1번을 체크해 둔 multiSelect 에 폰 [0,1] → 2번만 뒤집고 기록 답 = o0, o1 · 들어감', async () => {
+    const t = setup()
+    const screen = claudeMulti(t, { id: 40, options: 3, checked: [0] })
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0001', channel: 'c1', question: 40, call: 'toolu-40', digest: questionDigest(questionsOf(multiQuestion(40, 3))), answers: [{ choices: [0, 1], other: null }] })
+    expect(await t.settled('r3a1-0000-0001')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['2', KEY.down, KEY.down, KEY.down, KEY.down, KEY.enter, '1'])
+    expect([...screen.checked].sort()).toEqual([0, 1])
+  })
+  it('양성 대조 — 갓 열린 빈 multiSelect 에 폰 [0,1] → 1·2 뒤집기 · 들어감', async () => {
+    const t = setup()
+    claudeMulti(t, { id: 41, options: 3, checked: [] })
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0002', channel: 'c1', question: 41, call: 'toolu-41', digest: questionDigest(questionsOf(multiQuestion(41, 3))), answers: [{ choices: [0, 1], other: null }] })
+    expect(await t.settled('r3a1-0000-0002')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1', '2', KEY.down, KEY.down, KEY.down, KEY.down, KEY.enter, '1'])
+  })
+  it('기록의 답 값이 폰 답과 다르면 1건이어도 들어감이 아니다(answer_mismatch)', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(10)
+    t.items.list = [question({ id: 10, state: 'pending' })]
+    t.answerOn({ id: 10, value: 'o0' })
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0003', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('r3a1-0000-0003')).toMatchObject({ state: 'unconfirmed', reason: 'answer_mismatch' })
+  })
+  it('답 값을 못 읽으면 들어감이 아니다(answer_unreadable)', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.backend.screenText = questionScreen(10)
+    t.items.list = [question({ id: 10, state: 'pending' })]
+    t.answerOn({ id: 10 })
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0004', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [1], other: null }] })
+    expect(await t.settled('r3a1-0000-0004')).toMatchObject({ state: 'unconfirmed', reason: 'answer_unreadable' })
+  })
+  it('맥에서 고르는 중(직접 입력 글 · 커서 이동)이면 키 0회 실패 question_in_progress', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    t.items.list = [multiQuestion(42, 3)]
+    t.backend.screenText = multiBox({ id: 42, options: 3, checked: [], other: '메모' })
+    const digest = questionDigest(questionsOf(multiQuestion(42, 3)))
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0005', channel: 'c1', question: 42, call: 'toolu-42', digest, answers: [{ choices: [0], other: null }] })
+    expect(await t.settled('r3a1-0000-0005')).toMatchObject({ state: 'failed', reason: 'question_in_progress' })
+    t.backend.screenText = multiBox({ id: 42, options: 3, checked: [], cursor: 2 })
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0006', channel: 'c1', question: 42, call: 'toolu-42', digest, answers: [{ choices: [0], other: null }] })
+    expect(await t.settled('r3a1-0000-0006')).toMatchObject({ state: 'failed', reason: 'question_in_progress' })
+    // 하나 고름 — 커서가 2행이면 숫자가 어디로 갈지 셀 수 없다.
+    t.items.list = [question({ id: 10, state: 'pending' })]
+    t.backend.screenText = questionScreen(10).replace('❯ 1. o0', '  1. o0').replace('  2. o1', '❯ 2. o1')
+    t.hub.answer({ device: 'd1', id: 'r3a1-0000-0007', channel: 'c1', question: 10, call: 'toolu-10', digest: digestFor(10), answers: [{ choices: [0], other: null }] })
+    expect(await t.settled('r3a1-0000-0007')).toMatchObject({ state: 'failed', reason: 'question_in_progress' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+})
+
+describe('R3-A2 활성 영역 아래 경계 — 끝난 질문 상자 + 지금 권한 질문(Z1 실측 합성, 세 provider)', () => {
+  const cases: { kind: MobileAgentKind; channel: string; file: string; pane: string }[] = [
+    { kind: 'claude', channel: 'c1', file: 'a-q1-screen.txt', pane: 'p7' },
+    { kind: 'codex', channel: 'c2', file: 'ca-q1-open.txt', pane: 'p8' },
+    { kind: 'grok', channel: 'c3', file: 'ga-q1-screen.txt', pane: 'p9' },
+  ]
+  for (const { kind, channel, file, pane } of cases) {
+    it(`${kind} — 키 0회 · 실패`, async () => {
+      const t = setup()
+      const old = z1(file)
+      const active = activeQuestion({ kind, screen: old })
+      if (active.kind !== 'question') throw new Error('fixture')
+      t.backend.status = 'blocked'
+      t.backend.screenText = `${old}\n${z1Permission(pane)}`
+      const item: ChatItem = { id: 10, kind: 'question', call: 'call-old', questions: [{ question: active.title, header: null, options: active.options.map((label) => ({ label, description: null })), multiSelect: false }], state: 'pending', answer: null, at: null }
+      t.items.list = [item]
+      t.hub.answer({ device: 'd1', id: `r3a2-${kind}`, channel, question: 10, call: 'call-old', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }] })
+      expect(await t.settled(`r3a2-${kind}`)).toMatchObject({ state: 'failed', reason: 'question_changed' })
+      expect(t.backend.sends).toHaveLength(0)
+    })
+  }
+})
+
+/** Codex 질문 도구 호출 줄 · 답 봉투 줄(실물 모양) — 판독자(`ChatBuilder`)가 이 파일을 읽어 대기 질문을 만든다. */
+const codexAsk = (call: string, titles: string[]): string =>
+  JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'function_call', name: 'request_user_input_async', arguments: JSON.stringify({ questions: titles.map((title, index) => ({ id: `q${index}`, title, options: ['Tea', 'Coffee'] })) }), call_id: call } })
+const codexAnswerLine = (input: { call: string; index: number; question: string; answer: string }): string =>
+  JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'user_message', message: `<send_user_message_question_reply>\n${JSON.stringify([{ answer: input.answer, question: input.question, questionItemId: JSON.stringify(['request_user_input_async', input.call, input.index]) }])}\n</send_user_message_question_reply>` } })
+const readItems = (file: string): ChatItem[] => {
+  const builder = new ChatBuilder({ agent: 'codex', sessionId: null })
+  let offset = 0
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    builder.feed({ offset, line })
+    offset += Buffer.byteLength(line) + 1
+  }
+  return builder.items
+}
+const codexBox = (input: { counter: string | null; title: string }): string =>
+  ['• Queued follow-up inputs', '', ...(input.counter === null ? [] : [`  ${input.counter}`]), `  ${input.title}`, '', '  › 1. Tea', '    2. Coffee', '    3. Other', '', '  enter submit   ⌃] skip   ⇧→ main prompt'].join('\r\n')
+
+describe('R3-A3 Codex 여러 문항 — 남은 위치 · 문항별 해소 (판독자 = ChatBuilder)', () => {
+  it('판독자 — 봉투가 문항마다 오면 마지막 문항까지 대기 · 다 차면 답함', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'l582r3-'))
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
+    const file = path.join(root, 'codex.jsonl')
+    const titles = ['Pick color', 'Pick drink', 'Pick size']
+    fs.writeFileSync(file, `${codexAsk('call-3q', titles)}\n`)
+    const state = () => readItems(file).find((item) => item.kind === 'question')
+    expect(state()).toMatchObject({ state: 'pending' })
+    fs.appendFileSync(file, `${codexAnswerLine({ call: 'call-3q', index: 0, question: titles[0]!, answer: 'Tea' })}\n`)
+    expect(state()).toMatchObject({ state: 'pending' })
+    fs.appendFileSync(file, `${codexAnswerLine({ call: 'call-3q', index: 1, question: titles[1]!, answer: 'Tea' })}\n`)
+    expect(state()).toMatchObject({ state: 'pending' })
+    // 다른 호출의 봉투는 이 질문을 풀지 않는다.
+    fs.appendFileSync(file, `${codexAnswerLine({ call: 'call-other', index: 2, question: titles[2]!, answer: 'Tea' })}\n`)
+    expect(state()).toMatchObject({ state: 'pending' })
+    fs.appendFileSync(file, `${codexAnswerLine({ call: 'call-3q', index: 2, question: titles[2]!, answer: 'Coffee' })}\n`)
+    expect(state()).toMatchObject({ state: 'answered', answer: 'Tea · Tea · Coffee' })
+  })
+  it('허브 — 3문항(1 of 3 → 1 of 2 → 표시 없음) 정상 경로가 들어감', async () => {
+    const t = setup()
+    const titles = ['Pick color', 'Pick drink', 'Pick size']
+    fs.writeFileSync(t.file, `${codexAsk('call-3q', titles)}\n`)
+    t.items.list = readItems(t.file)
+    const item = t.items.list.find((entry) => entry.kind === 'question')
+    if (item === undefined || item.kind !== 'question') throw new Error('fixture')
+    t.backend.status = 'blocked'
+    t.backend.screenText = [...'• Queued follow-up inputs\n  ? 3 questions · 3s\n    ⇧← to answer\n\n› Ask Codex to do anything'.split('\n')].join('\r\n')
+    const screens = [codexBox({ counter: '1 of 2', title: titles[1]! }), codexBox({ counter: null, title: titles[2]! }), EMPTY]
+    let answered = 0
+    t.backend.onSend = (text) => {
+      if (text === KEY.shiftLeft) {
+        t.backend.screenText = codexBox({ counter: '1 of 3', title: titles[0]! })
+        return
+      }
+      fs.appendFileSync(t.file, `${codexAnswerLine({ call: 'call-3q', index: answered, question: titles[answered]!, answer: text === '1' ? 'Tea' : 'Coffee' })}\n`)
+      answered += 1
+      t.items.list = readItems(t.file)
+      t.backend.screenText = screens.shift()!
+    }
+    t.hub.answer({ device: 'd1', id: 'r3a3-0000-0001', channel: 'c2', question: item.id, call: 'call-3q', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }, { choices: [1], other: null }, { choices: [0], other: null }] })
+    expect(await t.settled('r3a3-0000-0001')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual([KEY.shiftLeft, '1', '2', '1'])
+  })
+})
+
+describe('R3-A4·A5 들어감 근거 — 이 세션 · 이 접수 뒤의 줄만', () => {
+  it('같은 파일을 제자리에서 다시 써 옛 줄(접수 전 시각)이 커서 뒤에 와도 들어감이 아니다', async () => {
+    const t = setup()
+    const old = userLine('같은 초의 옛 지시')
+    const prefix = fs.readFileSync(t.file)
+    await wait(5)
+    t.backend.delivery = 'none'
+    t.backend.onPrompt = () => fs.writeFileSync(t.file, Buffer.concat([prefix, Buffer.from(`${old}\n`)]))
+    t.hub.send({ device: 'd1', id: 'r3a4-0000-0001', channel: 'c1', text: '같은 초의 옛 지시' })
+    expect(await t.settled('r3a4-0000-0001')).toMatchObject({ state: 'unconfirmed', reason: 'record_missing' })
+  })
+  it('파일이 없던 세션(0건 → 생길 경로) — 나중에 생긴 파일이 다른 세션 줄이거나 옛 줄이면 들어감이 아니다', async () => {
+    const foreign = setup({ noFileYet: true })
+    foreign.backend.delivery = 'none'
+    foreign.backend.onPrompt = () => {
+      const line = JSON.parse(userLine('폰 지시'))
+      fs.writeFileSync(foreign.file, `${JSON.stringify({ ...line, sessionId: 'different-session' })}\n`)
+    }
+    foreign.hub.send({ device: 'd1', id: 'r3a4-0000-0002', channel: 'c1', text: '폰 지시' })
+    expect(await foreign.settled('r3a4-0000-0002')).toMatchObject({ state: 'unconfirmed', reason: 'record_missing' })
+    const restored = setup({ noFileYet: true })
+    const archived = userLine('폰 지시')
+    await wait(5)
+    restored.backend.delivery = 'none'
+    restored.backend.onPrompt = () => fs.writeFileSync(restored.file, `${archived}\n`)
+    restored.hub.send({ device: 'd1', id: 'r3a4-0000-0003', channel: 'c1', text: '폰 지시' })
+    expect(await restored.settled('r3a4-0000-0003')).toMatchObject({ state: 'unconfirmed', reason: 'record_missing' })
+  })
+  it('양성 대조 — 보통 붙이기 · 새 세션의 첫 지시는 들어감', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'r3a4-0000-0004', channel: 'c1', text: '보통 지시' })
+    expect(await t.settled('r3a4-0000-0004')).toMatchObject({ state: 'delivered' })
+    const fresh = setup({ noFileYet: true })
+    fresh.hub.send({ device: 'd1', id: 'r3a4-0000-0005', channel: 'c1', text: '첫 지시' })
+    expect(await fresh.settled('r3a4-0000-0005')).toMatchObject({ state: 'delivered' })
+  })
+})
+
+describe('R3-A6 Grok 중단 — 빈 입력 줄을 본 guard 턴의 revision 으로 울타리', () => {
+  const GROK_EMPTY = ['╭──╮', '│ ❯       │', '╰──╯'].join('\r\n')
+  it('화면을 읽은 뒤 맥 입력이 끼면 Ctrl+C 0회 · 실패', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.screenText = GROK_EMPTY
+    const read = t.backend.screen.bind(t.backend)
+    t.backend.screen = async () => {
+      const shot = await read()
+      // 화면을 잡은 직후 맥 타자 — guard 의 입력 revision 이 오른다.
+      if (t.backend.input !== null) t.backend.input = { ...t.backend.input, revision: t.backend.input.revision + 1 }
+      return shot
+    }
+    t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0001', channel: 'c3' })
+    expect(await t.settled('r3a6-0000-0001')).toMatchObject({ state: 'failed', reason: 'state_changed' })
+    expect(t.backend.sends).toHaveLength(0)
+  })
+  it('양성 대조 — 사이 입력이 없으면 그 revision 으로 Ctrl+C 1회 · 멈춤', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.screenText = GROK_EMPTY
+    t.backend.onSend = () => { t.backend.status = 'idle' }
+    t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0002', channel: 'c3' })
+    expect((await t.settled('r3a6-0000-0002')).state).toBe('stopped')
+    expect(t.backend.sends.map((send) => send.text)).toEqual([KEY.ctrlC])
+    expect(t.backend.keyFences).toEqual([1])
+  })
+  it('다른 provider 의 중단은 그대로(울타리 없이 seq 비교만)', async () => {
+    const t = setup()
+    t.backend.status = 'working'
+    t.backend.onSend = () => { t.backend.status = 'idle' }
+    t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0003', channel: 'c1' })
+    expect((await t.settled('r3a6-0000-0003')).state).toBe('stopped')
+    expect(t.backend.keyFences).toEqual([null])
   })
 })

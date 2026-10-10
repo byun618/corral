@@ -58,6 +58,8 @@ export type ChatAtom =
   | { kind: 'question'; callId: string | null; questions: SessionQuestion[] }
   /** 질문 해소 — `callId` null = 열린 질문 전부(Codex: 사람 발화·새 턴·중단). */
   | { kind: 'resolve'; callId: string | null; state: 'answered' | 'closed'; answer: string | null }
+  /** Codex 답 봉투의 문항 하나(LIFE-582 R3-A3) — 그 호출의 문항이 모두 답해져야 질문이 풀린다. */
+  | { kind: 'question_reply'; callId: string; index: number; answer: string | null }
   | { kind: 'note'; note: ChatNoteKind; text: string | null }
   | { kind: 'skip'; reason: string }
   | { kind: 'unknown'; shape: string }
@@ -322,7 +324,14 @@ function codexUser(record: Record<string, unknown>): ChatAtom[] {
   const human = codexHumanText(record)
   if (human !== null) return [{ kind: 'resolve', callId: null, state: 'answered', answer: null }, { kind: 'prompt', text: human }]
   const raw = codexUserText(record)
-  if (raw !== null && raw.trimStart().startsWith(CODEX_QUESTION_REPLY)) return [{ kind: 'resolve', callId: null, state: 'answered', answer: codexReplyAnswer(raw) }]
+  if (raw !== null && raw.trimStart().startsWith(CODEX_QUESTION_REPLY)) {
+    // 문항마다 따로 오는 봉투(LIFE-582 R3-A3 — 실물: 3문항 = 봉투 3줄). 귀속을 다 읽으면 문항별로, 하나라도 못 읽으면 예전처럼 열린 질문 전부.
+    const replies = codexReplies(raw)
+    const attributed: ChatAtom[] = []
+    for (const reply of replies) if (reply.call !== null && reply.index !== null) attributed.push({ kind: 'question_reply', callId: reply.call, index: reply.index, answer: reply.answer })
+    if (replies.length > 0 && attributed.length === replies.length) return attributed
+    return [{ kind: 'resolve', callId: null, state: 'answered', answer: codexReplyAnswer(raw) }]
+  }
   return [{ kind: 'skip', reason: 'codex:user-empty' }]
 }
 
@@ -356,19 +365,28 @@ function codexReplyAnswer(raw: string): string | null {
  * LIFE-582 R2-A2 — 답 봉투 한 줄의 문항별 귀속. `questionItemId` 는 실물에서 `["<도구 이름>","<call_id>",<문항 번호>]` 의 JSON 글이다
  * (codex 0.162.1 기록 실측). 귀속을 못 읽은 항목은 `call`·`index` 가 null. 봉투 줄이 아니면 null.
  */
-export function codexQuestionReplies(line: string): { call: string | null; index: number | null }[] | null {
+export function codexQuestionReplies(line: string): CodexReply[] | null {
   const record = safeParse(line)
   if (!isRecord(record)) return null
   const raw = codexUserText(record)
   if (raw === null || !raw.trimStart().startsWith(CODEX_QUESTION_REPLY)) return null
+  return codexReplies(raw)
+}
+
+/** 봉투 항목 하나 — 귀속(도구 호출 id·문항 번호)과 문항 글·답 글. 못 읽은 칸은 null. */
+export type CodexReply = { call: string | null; index: number | null; question: string | null; answer: string | null }
+
+function codexReplies(raw: string): CodexReply[] {
   const start = raw.indexOf('[')
   const end = raw.lastIndexOf(']')
   const parsed = start < 0 || end <= start ? null : safeParse(raw.slice(start, end + 1))
-  if (!Array.isArray(parsed)) return [{ call: null, index: null }]
+  if (!Array.isArray(parsed)) return [{ call: null, index: null, question: null, answer: null }]
   return parsed.map((entry) => {
+    const question = isRecord(entry) && typeof entry['question'] === 'string' ? entry['question'] : null
+    const answer = isRecord(entry) && typeof entry['answer'] === 'string' ? entry['answer'] : null
     const id = isRecord(entry) && typeof entry['questionItemId'] === 'string' ? safeParse(entry['questionItemId']) : null
-    if (!Array.isArray(id) || id.length !== 3 || typeof id[1] !== 'string' || typeof id[2] !== 'number' || !Number.isInteger(id[2])) return { call: null, index: null }
-    return { call: id[1], index: id[2] }
+    if (!Array.isArray(id) || id.length !== 3 || typeof id[1] !== 'string' || typeof id[2] !== 'number' || !Number.isInteger(id[2])) return { call: null, index: null, question, answer }
+    return { call: id[1], index: id[2], question, answer }
   })
 }
 
@@ -607,6 +625,8 @@ export class ChatBuilder {
   private readonly calls = new Map<string, { item: ToolsItem; index: number }>()
   private readonly questions = new Map<string, QuestionItem>()
   private readonly pending: QuestionItem[] = []
+  /** Codex 질문의 문항별 답(R3-A3) — 문항이 다 차면 질문을 푼다. */
+  private readonly replies = new Map<QuestionItem, Map<number, string | null>>()
   private readonly humanChildOf = new Map<string, number>()
   private dirty = new Set<number>()
   rewinds = 0
@@ -752,6 +772,19 @@ export class ChatBuilder {
         for (const question of [...this.pending]) this.settle({ question, state: atom.state, answer: atom.answer })
         return
       }
+      case 'question_reply': {
+        // 모르는 호출의 봉투는 다른 질문을 풀지 않는다(R3-A3).
+        const question = this.questions.get(atom.callId)
+        if (question === undefined || question.state !== 'pending') return
+        if (atom.index < 0 || atom.index >= question.questions.length) return
+        const answers = this.replies.get(question) ?? new Map<number, string | null>()
+        answers.set(atom.index, atom.answer)
+        this.replies.set(question, answers)
+        if (answers.size < question.questions.length) return
+        const parts = [...answers.entries()].sort(([a], [b]) => a - b).flatMap(([, answer]) => (answer !== null && answer.trim().length > 0 ? [answer] : []))
+        this.settle({ question, state: 'answered', answer: parts.length === 0 ? null : parts.join(' · ') })
+        return
+      }
       case 'note':
         this.close()
         return this.push({ id: this.freeId(offset), kind: 'note', note: atom.note, text: atom.text, at })
@@ -762,6 +795,7 @@ export class ChatBuilder {
     const { question } = input
     question.state = input.state
     question.answer = input.answer
+    this.replies.delete(question)
     const index = this.pending.indexOf(question)
     if (index >= 0) this.pending.splice(index, 1)
     this.dirty.add(question.id)

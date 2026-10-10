@@ -36,8 +36,9 @@ import {
   cleanBody,
   draftState,
   MAX_INPUT_BYTES,
+  matchQuestion,
   questionDigest,
-  sameQuestion,
+  questionKeys,
   stopAllowed,
   stopKey,
   stopNeedsEmptyInput,
@@ -314,8 +315,142 @@ export function answerRecords(input: { kind: MobileAgentKind; text: string; call
   return { count: repeated ? 2 : complete ? 1 : 0, declined, unattributed }
 }
 
-/** 기록 문항 → 화면 대조용(글·선택지 글). */
-const plainQuestion = (question: QuestionItem['questions'][number]): { question: string; options: string[] } => ({ question: question.question, options: question.options.map((option) => option.label) })
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const parseLine = (line: string): Record<string, unknown> | null => {
+  try {
+    const value: unknown = JSON.parse(line)
+    return isObject(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 커서 뒤 기록에서 그 도구 호출의 **답 값**(R3-A1) — `"문항"="답"` 모양의 한 글. 못 읽으면 null.
+ * - Claude: 그 호출의 결과 줄 `toolUseResult.answers`(`{문항: 답}` — 여럿 고름은 `A, B`, 직접 입력은 그 글).
+ * - Grok: 그 호출의 결과 줄 `rawOutput.UserAnswered.message`(`User has answered your questions: "문항"="답", … .` — 직접 입력은 `"Other" user notes: 글`).
+ * - Codex: 답 봉투에서 그 호출에 귀속된 항목의 `question`·`answer`(문항마다 한 줄).
+ */
+export function recordedAnswer(input: { kind: MobileAgentKind; text: string; call: string }): string | null {
+  const parts: string[] = []
+  for (const line of input.text.split('\n')) {
+    if (line.trim() === '') continue
+    if (input.kind === 'codex') {
+      for (const reply of codexQuestionReplies(line) ?? []) if (reply.call === input.call && reply.answer !== null) parts.push(`"${reply.question ?? ''}"="${reply.answer}"`)
+      continue
+    }
+    if (!lineAtoms({ agent: input.kind, line, sessionId: null }).atoms.some((atom) => atom.kind === 'result' && atom.callId === input.call)) continue
+    const record = parseLine(line)
+    if (record === null) continue
+    if (input.kind === 'claude') {
+      const result = record['toolUseResult']
+      const answers = isObject(result) ? result['answers'] : null
+      if (isObject(answers)) for (const [question, answer] of Object.entries(answers)) if (typeof answer === 'string') parts.push(`"${question}"="${answer}"`)
+      continue
+    }
+    const params = record['params']
+    const update = isObject(params) && isObject(params['update']) ? params['update'] : isObject(record['update']) ? record['update'] : null
+    const output = update === null ? null : update['rawOutput']
+    const answered = isObject(output) ? output['UserAnswered'] : null
+    if (typeof answered === 'string') parts.push(answered)
+    else if (isObject(answered) && typeof answered['message'] === 'string') parts.push(answered['message'])
+  }
+  return parts.length === 0 ? null : parts.join(', ')
+}
+
+/** 답 값 글에서 빼도 되는 provider 고정 문구. */
+const ANSWER_PHRASES = ['User has answered your questions:', "You can now continue with the user's answers in mind."]
+
+/**
+ * 기록의 답 값이 폰이 고른 답인가(R3-A1) — 문항 글을 빼고, 고른 선택지 글·직접 입력 글을 **하나씩 정확히 한 번** 빼고 나면 구분 기호만 남아야 한다.
+ * 고른 글이 없거나(맥이 그 칸을 뺐다) 다른 글이 남으면(맥이 더 체크했다) 다르다. 순서는 보지 않는다.
+ */
+export function answerMatches(input: { kind: MobileAgentKind; recorded: string; questions: QuestionItem['questions']; answers: QuestionAnswer[] }): boolean {
+  let rest = input.recorded
+  const drop = (token: string): boolean => {
+    const at = rest.indexOf(token)
+    if (token.length === 0 || at < 0) return false
+    rest = `${rest.slice(0, at)} ${rest.slice(at + token.length)}`
+    return true
+  }
+  for (const phrase of ANSWER_PHRASES) drop(phrase)
+  for (const question of input.questions) drop(`"${question.question}"`)
+  const tokens: string[] = []
+  input.answers.forEach((answer, index) => {
+    const question = input.questions[index]
+    if (question === undefined) return
+    for (const choice of answer.choices) tokens.push(question.options[choice]?.label ?? '')
+    if (answer.other === null) return
+    if (input.kind === 'grok') {
+      drop('user notes:')
+      tokens.push('Other')
+    }
+    tokens.push(answer.other)
+  })
+  if (tokens.length === 0) return false
+  for (const token of [...tokens].sort((a, b) => b.length - a.length)) if (!drop(token)) return false
+  return rest.replace(/[\s"'=,·.:]/g, '') === ''
+}
+
+/**
+ * 「들어감」 근거로 쓸 줄만(R3-A4·A5) — **이 접수 뒤**(`sinceMs` 이후 — 기록 시각의 단위만큼만 봐준다: ms 가 있으면 ms, 초뿐이면 그 초)이고
+ * **이 세션**(Claude `sessionId` · Grok `params.sessionId`)인 줄. 시각이 없거나 세션이 다른 줄은 뺀다. Codex 는 줄에 세션이 없다 — 기록 파일이 세션마다
+ * 따로라(이름에 세션 id) 파일로 귀속하고, 시각만 본다. 나중에 생긴 파일을 통째로 읽거나, 같은 파일을 제자리에서 다시 써 옛 줄이 커서 뒤에 와도 그 줄은 이 접수 전 시각이다.
+ */
+export function submissionLines(input: { kind: MobileAgentKind; text: string; sessionId: string | null; sinceMs: number }): string {
+  const keep = input.text.split('\n').filter((line) => {
+    const record = parseLine(line)
+    if (record === null) return false
+    return lineAfter({ kind: input.kind, record, sinceMs: input.sinceMs }) && lineSession({ kind: input.kind, record, sessionId: input.sessionId })
+  })
+  return keep.length === 0 ? '' : `${keep.join('\n')}\n`
+}
+
+function lineAfter(input: { kind: MobileAgentKind; record: Record<string, unknown>; sinceMs: number }): boolean {
+  const stamp = input.record['timestamp']
+  if (typeof stamp === 'number' && Number.isFinite(stamp)) {
+    // Grok 은 초 단위 정수(실측) — 그 초까지 봐준다.
+    return stamp >= 1e12 ? stamp >= input.sinceMs : Math.floor(stamp) >= Math.floor(input.sinceMs / 1000)
+  }
+  if (typeof stamp !== 'string') return false
+  const ms = Date.parse(stamp)
+  if (Number.isNaN(ms)) return false
+  return /T\d{2}:\d{2}:\d{2}\.\d/.test(stamp) ? ms >= input.sinceMs : Math.floor(ms / 1000) >= Math.floor(input.sinceMs / 1000)
+}
+
+function lineSession(input: { kind: MobileAgentKind; record: Record<string, unknown>; sessionId: string | null }): boolean {
+  // 경로 참조 세션(`kind: 'path'`)은 그 파일이 곧 세션이다 — 파일로 귀속한다.
+  if (input.sessionId === null) return true
+  switch (input.kind) {
+    case 'claude':
+      return input.record['sessionId'] === input.sessionId
+    case 'grok': {
+      const params = input.record['params']
+      return (isObject(params) ? params['sessionId'] : input.record['sessionId']) === input.sessionId
+    }
+    case 'codex':
+      return true
+  }
+}
+
+/** 기록 문항 → 화면 대조용(글·선택지 글·여럿 고름·preview). */
+const plainQuestion = (question: QuestionItem['questions'][number]): { question: string; options: string[]; multiSelect: boolean | null; preview: boolean } => ({
+  question: question.question,
+  options: question.options.map((option) => option.label),
+  multiSelect: question.multiSelect,
+  preview: question.preview === true,
+})
+
+/** 기록 문항 → 키 만들기용 모양. */
+const answerShape = (question: QuestionItem['questions'][number]): { options: number; multiSelect: boolean | null; preview: boolean } => ({
+  options: question.options.length,
+  multiSelect: question.multiSelect,
+  preview: question.preview === true,
+})
+
+/** 키 묶음 앞 화면 확인 결과 — `go`(그 문항, `checked` = 이미 체크된 칸) · `skip` · `busy`(맥에서 고르는 중) · `other`(다른 화면). */
+type ScreenCheck = { kind: 'go'; checked: number[] } | { kind: 'skip' } | { kind: 'busy' } | { kind: 'other' }
 
 export class InputHub {
   private readonly deps: InputHubDeps
@@ -550,7 +685,7 @@ export class InputHub {
       entry.state = 'queued'
       return this.waitTurn(entry, 'turn')
     }
-    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text })
+    await this.confirmSend({ entry, kind, cursor, submittedAtMs, text, sessionId: channel.session.kind === 'id' ? channel.session.id : null })
     return 'done'
   }
 
@@ -614,7 +749,7 @@ export class InputHub {
     this.emit(entry)
   }
 
-  private async confirmSend(input: { entry: Entry; kind: MobileAgentKind; cursor: TailCursor; submittedAtMs: number; text: string }): Promise<void> {
+  private async confirmSend(input: { entry: Entry; kind: MobileAgentKind; cursor: TailCursor; submittedAtMs: number; text: string; sessionId: string | null }): Promise<void> {
     const { entry, cursor } = input
     const identity = bodyIdentity(input.text)
     const deadline = this.now() + this.timing.confirmMs
@@ -623,7 +758,8 @@ export class InputHub {
     for (;;) {
       const tail = tailSince(cursor)
       if (tail.rewritten) return this.settle(entry, 'unconfirmed', 'record_rewritten')
-      const text = tail.text
+      // 이 접수 뒤·이 세션의 줄만 근거로 센다(R3-A4·A5).
+      const text = tail.text === null ? null : submissionLines({ kind: input.kind, text: tail.text, sessionId: input.sessionId, sinceMs: input.submittedAtMs })
       const count = text === null ? null : countSubmissions({ kind: input.kind, files: [cursor.file], identity, submittedAtMs: input.submittedAtMs, cursor: after, read: () => text })
       if (count !== null && count.matchCount > 1) return this.settle(entry, 'unconfirmed', 'record_ambiguous')
       if (count !== null && count.matchCount === 1) {
@@ -667,7 +803,7 @@ export class InputHub {
     if (questionDigest(question.questions) !== digest) return this.settle(entry, 'failed', 'question_changed')
     const plan = answerGroups({
       kind,
-      questions: question.questions.map((q) => ({ options: q.options.length, multiSelect: q.multiSelect, preview: q.preview === true })),
+      questions: question.questions.map(answerShape),
       answers,
     })
     if (!plan.ok) return this.settle(entry, 'failed', plan.reason === 'bad_answer' ? 'bad_answer' : plan.reason === 'other_locked' ? 'other_locked' : 'question_locked')
@@ -681,7 +817,7 @@ export class InputHub {
     // 키가 들어간 뒤의 실패는 확인 못 함 — 일부 키가 들어갔을 수 있다.
     const stop = (reason: string): void => this.settle(entry, sent === 0 ? 'failed' : 'unconfirmed', reason)
     for (let group = 0; group < plan.groups.length; group += 1) {
-      const { check, keys } = plan.groups[group]!
+      const { check } = plan.groups[group]!
       if (group > 0) await this.sleep(this.timing.stepGapMs)
       const shot = await this.quietScreen({ backend, pane })
       if (this.halted(entry, sent)) return
@@ -689,8 +825,16 @@ export class InputHub {
       if (shot.input === null || shot.seq === null) return stop('guard_outdated')
       if (shot.seq !== before.seq || (revision !== null && shot.input.revision !== revision)) return stop('question_changed')
       const shown = this.screenMatches({ kind, check, screen: shot.text, questions: question.questions })
-      if (shown === 'skip') continue
-      if (!shown) return stop('question_changed')
+      if (shown.kind === 'skip') continue
+      // 맥에서 이미 고르는 중(커서·체크·직접 입력 글·문항 진행) — 거기서 폰 답으로 가는 키를 셀 수 없으면 넣지 않는다(R3-A1·D3).
+      if (shown.kind === 'busy') return stop('question_in_progress')
+      if (shown.kind === 'other') return stop('question_changed')
+      // Claude multiSelect 의 체크만 있는 상태 — 바뀌어야 하는 칸만 뒤집는 키로 다시 센다(R3-A1).
+      const keys =
+        check.kind === 'question' && shown.checked.length > 0
+          ? questionKeys({ kind, question: answerShape(question.questions[check.index]!), answer: answers[check.index]!, checked: shown.checked })
+          : plan.groups[group]!.keys
+      if (keys.some((key) => key.length === 0)) return stop('question_in_progress')
       if (this.openQuestion({ file, id: entry.question, call }) === null) return stop('question_closed')
       revision = shot.input.revision
       for (let index = 0; index < keys.length; index += 1) {
@@ -722,7 +866,13 @@ export class InputHub {
       if (records.count > 1) return this.settle(entry, 'unconfirmed', 'record_ambiguous')
       if (records.count === 1 && records.declined) return this.settle(entry, 'unconfirmed', 'question_declined')
       // 답 1건 + 판독자에서 그 질문이 대기에서 풀림(판독자가 없으면 답 줄이 곧 해소다 — Claude·Grok 은 그 도구 호출의 결과 줄).
-      if (records.count === 1 && this.questionItem({ file, id: entry.question, call })?.state !== 'pending') return this.settle(entry, 'delivered', null)
+      // 그리고 기록의 답 값이 폰이 고른 답이어야 한다(R3-A1 — 맥이 먼저 체크해 둔 칸이 섞이면 1건이어도 다른 답이다).
+      if (records.count === 1 && this.questionItem({ file, id: entry.question, call })?.state !== 'pending') {
+        const recorded = tail.text === null ? null : recordedAnswer({ kind, text: tail.text, call })
+        if (recorded === null) return this.settle(entry, 'unconfirmed', 'answer_unreadable')
+        if (!answerMatches({ kind, recorded, questions: question.questions, answers })) return this.settle(entry, 'unconfirmed', 'answer_mismatch')
+        return this.settle(entry, 'delivered', null)
+      }
       if (this.now() >= deadline) return this.settle(entry, 'unconfirmed', 'record_missing')
       await this.sleep(this.timing.recordPollMs)
     }
@@ -742,18 +892,28 @@ export class InputHub {
   }
 
   /** 키 묶음 앞 화면 확인 — `skip` = Codex 질문이 이미 펼쳐져 있다(⇧← 를 보내면 다음 문항으로 간다 — 보내지 않는다). */
-  private screenMatches(input: { kind: MobileAgentKind; check: AnswerCheck; screen: string; questions: QuestionItem['questions'] }): boolean | 'skip' {
-    const active = activeQuestion({ kind: input.kind, screen: input.screen })
+  private screenMatches(input: { kind: MobileAgentKind; check: AnswerCheck; screen: string; questions: QuestionItem['questions'] }): ScreenCheck {
+    const { kind, questions } = input
+    const active = activeQuestion({ kind, screen: input.screen })
+    const match = (index: number): ScreenCheck => {
+      const target = questions[index]
+      if (target === undefined) return { kind: 'other' }
+      const result = matchQuestion({ kind, active, question: plainQuestion(target), index, total: questions.length })
+      return result.kind === 'same' ? { kind: 'go', checked: result.checked } : result
+    }
     switch (input.check.kind) {
-      case 'open':
-        if (active.kind === 'question') return sameQuestion({ active, question: plainQuestion(input.questions[0]!), index: 0, total: input.questions.length }) ? 'skip' : false
-        return active.kind === 'collapsed' && active.count === input.questions.length
-      case 'review':
-        return active.kind === 'review'
-      case 'question': {
-        const target = input.questions[input.check.index]
-        return target !== undefined && sameQuestion({ active, question: plainQuestion(target), index: input.check.index, total: input.questions.length })
+      case 'open': {
+        if (active.kind === 'question') {
+          const first = match(0)
+          return first.kind === 'go' ? { kind: 'skip' } : first
+        }
+        // 접힌 표시는 화면 맨 아래 입력창 바로 위에 있을 때만(D2 — keys.ts codexCollapsed). ⇧← 는 이때 한 번.
+        return active.kind === 'collapsed' && active.count === questions.length ? { kind: 'go', checked: [] } : { kind: 'other' }
       }
+      case 'review':
+        return active.kind === 'review' ? { kind: 'go', checked: [] } : { kind: 'other' }
+      case 'question':
+        return match(input.check.index)
     }
   }
 
@@ -803,10 +963,17 @@ export class InputHub {
     if (observed.status !== 'working' && observed.status !== 'blocked') return this.settle(entry, 'failed', 'not_running')
     const waiting = observed.status === 'blocked' ? (listed.waiting ?? 'other') : null
     if (!stopAllowed({ kind, waiting })) return this.settle(entry, 'failed', 'stop_hidden')
+    // Grok 의 Ctrl+C 는 입력 줄에 글이 있으면 그 글을 지운다 — 빈 입력 줄을 본 **같은 guard 턴**의 입력 revision·seq 로 울타리 친다(R3-A6).
+    // 화면을 잡을 때 입력이 `quietMs` 이상 조용했어야 그 화면이 마지막 입력까지 보인다. 그 사이 맥 타자가 있으면 guard 가 거절한다(Ctrl+C 0회).
+    let inputRevision: number | null = null
     if (stopNeedsEmptyInput(kind)) {
-      const screen = await backend.screen(pane)
+      const screen = await this.quietScreen({ backend, pane })
       if (this.halted(entry)) return
+      if (screen === null) return this.settle(entry, 'failed', 'mac_draft')
+      if (screen.input === null || screen.seq === null) return this.settle(entry, 'failed', 'guard_outdated')
+      if (screen.seq !== observed.seq) return this.settle(entry, 'failed', 'state_changed')
       if (draftState({ kind, screen: screen.text }) !== 'empty') return this.settle(entry, 'failed', 'mac_draft')
+      inputRevision = screen.input.revision
     }
     const resolved = this.deps.resolveFile(channel)
     const file = resolved.kind === 'found' ? resolved.file : null
@@ -815,7 +982,7 @@ export class InputHub {
     entry.state = 'sending'
     this.emit(entry)
     const sentAt = this.now()
-    const sent = await backend.send(pane, { text: stopKey(kind), seq: observed.seq, inputRevision: null })
+    const sent = await backend.send(pane, { text: stopKey(kind), seq: observed.seq, inputRevision })
     if (sent.kind === 'refused') return this.settle(entry, 'failed', 'state_changed')
     const deadline = sentAt + this.timing.stopConfirmMs
     for (;;) {

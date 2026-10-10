@@ -354,6 +354,8 @@ export function answerLine(entry: SentEntry): { tone: 'muted' | 'error'; text: s
     case 'failed':
       return { tone: 'error', text: ANSWER_REASON[entry.reason ?? ''] ?? '답을 보내지 못했습니다' }
     case 'unconfirmed':
+      // 기록의 답 값이 고른 답과 다름(LIFE-582 R3-A1) — 맥에서 먼저 고른 칸이 섞였을 수 있다.
+      if (entry.reason === 'answer_mismatch') return { tone: 'error', text: '기록된 답이 고른 답과 다릅니다 — 맥에서 확인해 주세요' }
       return { tone: 'error', text: '답이 들어갔는지 확인하지 못했습니다 — 대화에서 확인해 주세요' }
     case 'delivered':
     case 'cancelled':
@@ -367,6 +369,7 @@ const ANSWER_REASON: Record<string, string> = {
   question_closed: '질문이 이미 닫혔습니다',
   question_changed: '그 사이 질문이 바뀌어 답하지 않았습니다',
   question_locked: '이 질문은 맥에서 답해 주세요',
+  question_in_progress: '맥에서 이미 고르는 중이라 보내지 않았습니다 — 맥에서 답해 주세요',
   other_locked: '이 질문은 직접 입력을 받지 않습니다',
   bad_answer: '답 모양이 맞지 않습니다',
   busy: '다른 요청을 처리하는 중입니다',

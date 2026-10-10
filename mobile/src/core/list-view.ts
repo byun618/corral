@@ -83,23 +83,24 @@ function prefixOf(input: { channel: Channel; dot: Dot }): { text: string; tone: 
   }
 }
 
-function previewText(input: { channel: Channel; dot: Dot }): { text: string; mono: boolean } {
+/** 미리보기 글. `fallback` = 재료가 없어 상태 이름·대체 문구로 채웠다 — 접두어가 있는 행은 이 글을 쓰지 않는다(LIFE-587). */
+function previewText(input: { channel: Channel; dot: Dot }): { text: string; mono: boolean; fallback: boolean } {
   const { channel, dot } = input
-  if (channel.status === 'closed') return { text: '닫힌 세션', mono: false }
+  if (channel.status === 'closed') return { text: '닫힌 세션', mono: false, fallback: false }
   const preview = channel.preview
   switch (preview.kind) {
     case 'question':
-      return { text: preview.text ?? '질문 대기', mono: false }
+      return preview.text === null ? { text: '질문 대기', mono: false, fallback: true } : { text: preview.text, mono: false, fallback: false }
     case 'approval':
-      return preview.text === null ? { text: '승인 대기', mono: false } : { text: preview.text, mono: true }
+      return preview.text === null ? { text: '승인 대기', mono: false, fallback: true } : { text: preview.text, mono: true, fallback: false }
     case 'tool':
-      return { text: preview.text, mono: true }
+      return { text: preview.text, mono: true, fallback: false }
     case 'prompt':
     case 'reply':
     case 'error':
-      return { text: preview.text, mono: false }
+      return { text: preview.text, mono: false, fallback: false }
     case 'none':
-      return { text: statusLabel({ dot, waiting: channel.waiting, closed: false }), mono: false }
+      return { text: statusLabel({ dot, waiting: channel.waiting, closed: false }), mono: false, fallback: true }
   }
 }
 
@@ -147,6 +148,7 @@ export type ChannelRowView = {
   flash: boolean
   worker: boolean
   prefix: { text: string; tone: Tone } | null
+  /** 둘째 줄 글. 접두어가 이미 상태를 말했고 재료가 없으면 `''`(글 없음) — 「대기 중 대기 중」 같은 겹침을 막는다(LIFE-587). */
   text: string
   mono: boolean
   time: string
@@ -215,6 +217,7 @@ export function buildListView(input: ViewInput): ListView {
     const dot = shownDot({ channel, unread })
     const flash = (input.flashUntil[channel.id] ?? 0) > now
     const preview = previewText({ channel, dot })
+    const prefix = prefixOf({ channel, dot })
     const origin = channel.origin === null ? null : `↳ ${channel.origin}`
     return {
       kind: 'channel',
@@ -224,8 +227,8 @@ export function buildListView(input: ViewInput): ListView {
       unread,
       flash,
       worker: place.crumb === null && channel.depth === 1,
-      prefix: prefixOf({ channel, dot }),
-      text: preview.text,
+      prefix,
+      text: preview.fallback && prefix !== null ? '' : preview.text,
       mono: preview.mono,
       time: flash ? '방금' : clockLabel(channel.timeAt),
       meta: place.crumb === null ? joinMeta([origin, spawnedText(channel)]) : joinMeta([place.crumb, origin, spawnedText(channel)]),

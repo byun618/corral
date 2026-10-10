@@ -45,9 +45,14 @@ export function ChannelRow({ row, onPress }: { row: ChannelRowView; onPress: () 
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           {row.prefix !== null ? <Text style={{ fontSize: 13, fontFamily: font.medium, color: toneColor(row.prefix.tone) }}>{row.prefix.text}</Text> : null}
-          <Text numberOfLines={1} style={{ flex: 1, fontSize: row.mono ? 12.5 : 13.5, lineHeight: 19, color: color.fgMuted, fontFamily: row.mono ? font.mono : font.regular }}>
-            {row.text}
-          </Text>
+          {row.text !== '' ? (
+            <Text numberOfLines={1} style={{ flex: 1, fontSize: row.mono ? 12.5 : 13.5, lineHeight: 19, color: color.fgMuted, fontFamily: row.mono ? font.mono : font.regular }}>
+              {row.text}
+            </Text>
+          ) : (
+            // 글 없는 행 — 같은 줄 높이(19)를 지키고 안 읽음 점을 오른쪽 끝에 둔다.
+            <View style={{ flex: 1, height: 19 }} />
+          )}
           {row.unread ? <View accessibilityLabel="안 읽음" style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color.fg }} /> : null}
         </View>
         {row.meta !== null ? (

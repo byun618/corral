@@ -6,7 +6,7 @@
 //   · 작업 접힘(기본 규칙 + 기억) · 접힌 머리의 점 묶음(4개 넘으면 +N) · 안 읽음 점
 //   · 둘째 줄 접두어·글(디자인 §2 ChannelRow) · 셋째 줄(출신·`레포 › 작업`·띄운 세션)
 //   · 하위 워크트리 묶음 머리(LIFE-588 D1·D4) — 서버 `groups` 순서·글 그대로. 머리 아래 행은 `↳ 출신` 을 빼고, 위 섹션은 `레포 › 작업 › 하위`
-import type { Channel, ChannelList, Dot, Group, WaitKind } from './list'
+import type { Channel, ChannelList, Dot, Group, Task, WaitKind } from './list'
 import type { ListFailure } from './list-store'
 
 export const WAITING_SHOWN = 3
@@ -216,6 +216,26 @@ function joinMeta(parts: (string | null)[]): string | null {
   return kept.length === 0 ? null : kept.join(' · ')
 }
 
+/**
+ * 그릴 묶음(LIFE-588 R1-A1) — 서버 계약(SURFACE §3)의 불변식이 깨진 작업은 **작업 전체를 평탄 보기**로 그린다(빈 Map):
+ * ① 채널의 `group` 은 그 작업 `groups` 에 있는 id ② 같은 `group` 채널은 이어진 한 덩어리 ③ 묶음 없는 행(루트 쪽)은 맨 앞 덩어리에만.
+ * 머리 중복만 지우면 행이 남의 머리 아래 붙는다 — 그래서 부분 보정하지 않는다.
+ */
+function groupsOf(task: Task): Map<string, Group> {
+  const groups = new Map((task.groups ?? []).map((group) => [group.id, group]))
+  const seen = new Set<string | null>()
+  let previous: string | null | undefined = undefined
+  for (const channel of task.channels) {
+    const id = channel.group ?? null
+    if (id !== null && !groups.has(id)) return new Map()
+    if (id === previous) continue
+    if (seen.has(id) || (id === null && previous !== undefined)) return new Map()
+    seen.add(id)
+    previous = id
+  }
+  return groups
+}
+
 export function buildListView(input: ViewInput): ListView {
   const { list, now } = input
   const waitingIds = new Set(list.waiting)
@@ -252,11 +272,11 @@ export function buildListView(input: ViewInput): ListView {
       const live = task.channels.filter((channel) => channel.status === 'live')
       const dots = live.map((channel) => shownDot({ channel, unread: input.isUnread(channel) }))
       working += dots.filter((dot) => dot === 'working' || dot === 'monitoring').length
-      const groups = new Map((task.groups ?? []).map((group) => [group.id, group]))
+      const groups = groupsOf(task)
       const rows: TaskView['rows'] = []
       let current: Group | null = null
       for (const channel of task.channels) {
-        // 모르는 묶음 id 는 묶음 없음 — 평탄 행 + `↳ 출신`(옛 꼴).
+        // 묶음이 없거나 불변식이 깨진 작업은 평탄 행 + `↳ 출신`(옛 꼴).
         const group = groups.get(channel.group ?? '') ?? null
         if (group !== null && group !== current) rows.push({ kind: 'group', id: group.id, label: group.label })
         current = group

@@ -10,6 +10,7 @@ import Channel from '../app/channel/[id]'
 import Home from '../app/home'
 import type { ConnState } from '../src/core/connection'
 import { parseListMessage } from '../src/core/list'
+import { MALFORMED, withFeatChannels } from './fixtures/list-588-malformed'
 import type { ListSnapshot } from '../src/core/list-store'
 
 const ctx = vi.hoisted(() => {
@@ -48,10 +49,14 @@ vi.mock('../src/ui/StatusGlyph', () => ({
   StatusGlyph: ({ dot }: { dot: string }) => <i data-status-dot={dot} />,
 }))
 
-function snapshot(): ListSnapshot {
+function loadRaw(): Record<string, unknown> {
   const raw: unknown = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/list-588-message.json'), 'utf8'))
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('고정본 모양')
-  const message = parseListMessage(Object.fromEntries(Object.entries(raw)))
+  return Object.fromEntries(Object.entries(raw))
+}
+
+function snapshot(raw: Record<string, unknown> = loadRaw()): ListSnapshot {
+  const message = parseListMessage(raw)
   if (message === null) throw new Error('파서 거절')
   return { phase: { kind: 'ready', receivedAt: 1, message }, flashUntil: {}, ledgerVersion: 0, failure: null }
 }
@@ -118,5 +123,37 @@ describe('W5 대화 머리 — 화면 코드 무변경으로 서버 출신 글�
     const channel = await render(<Channel />)
     expect(channel).toContain('corral › corral @ 7cb34f3')
     expect(channel).not.toContain('Detached HEAD')
+  })
+})
+
+describe('R1-A1 묶음 불변식이 깨진 메시지 — 화면', () => {
+  for (const item of MALFORMED) {
+    it(`${item.name} — 하위 머리 0 · React key 경고 0 · 출신 복원`, async () => {
+      ctx.list = snapshot(withFeatChannels(loadRaw(), item.change))
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const home = await render(<Home />)
+        for (const head of HEADS) {
+          // 머리 꼴 글(detached 긴 꼴)은 사라지고, 브랜치 하위 이름은 행 셋째 줄 `↳ 출신` 으로만 남는다.
+          if (head.includes('Detached HEAD')) expect(home).not.toContain(head)
+        }
+        expect(home).toContain('↳ corral @ deadbee')
+        expect(home).toContain('↳ LIFE-588-worktree-label')
+        expect(errors.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([])
+      } finally {
+        errors.mockRestore()
+      }
+    })
+  }
+
+  it('양성 대조 — 정상 메시지도 key 경고 0, 머리 그대로', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const home = await render(<Home />)
+      for (const head of HEADS) expect(home).toContain(head)
+      expect(errors.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([])
+    } finally {
+      errors.mockRestore()
+    }
   })
 })

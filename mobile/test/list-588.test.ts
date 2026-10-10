@@ -8,6 +8,7 @@ import { parseListMessage, type ChannelList } from '../src/core/list'
 import { buildListView, headerMeta, type ListView } from '../src/core/list-view'
 import { parseListMessage as parseBase } from './fixtures/list-parser-base'
 import { buildListView as buildBaseView } from './fixtures/list-view-base'
+import { MALFORMED, withFeatChannels } from './fixtures/list-588-malformed'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -161,13 +162,49 @@ describe('W6 호환', () => {
     expect(lines(featTask(now).rows)).toContainEqual(['channel', 'a3', false, '↳ LIFE-581-mobile-chat'])
   })
 
-  it('ⓑ 묶음 칸 모양이 틀려도 목록 전체를 거절하지 않는다 — 틀린 묶음만 버리고 그 채널은 평탄 행 + `↳ 출신`', () => {
+  it('ⓑ 묶음 칸 모양이 틀려도 목록 전체를 거절하지 않는다 — 버린 묶음을 가리키는 작업은 작업 전체가 평탄 행 + `↳ 출신`(R1-A1)', () => {
     const detachedGroup = { id: 'ab37aaf4d00334c1', name: 'corral @ deadbee', label: 'corral · Detached HEAD @ deadbee' }
     const parsed = parseListMessage(withGroups(loadMessage(), [{ id: 5 }, 'x', { id: 'dfa7d11e93f9dac5' }, detachedGroup]))
     if (parsed === null || !parsed.list.available) throw new Error('거절')
     const rows = lines(featTask(buildListView({ ...base, list: parsed.list })).rows)
-    expect(rows.filter(([kind]) => kind === 'group')).toEqual([['group', 'corral · Detached HEAD @ deadbee', null, null]])
+    // r0 기대는 「살아남은 detached 머리 1개 + 나머지 평탄」 — R1-A1 로 불변식(참조) 위반 작업은 머리 0, 출신 전부 복원.
+    expect(rows.filter(([kind]) => kind === 'group')).toEqual([])
+    expect(rows).toContainEqual(['channel', 'd1', false, '↳ corral @ deadbee · 띄운 세션: 알 수 없음'])
     expect(rows).toContainEqual(['channel', 'a3', false, '↳ LIFE-581-mobile-chat'])
+  })
+})
+
+/** 기대 평탄 보기 — 같은 메시지에서 이 일감이 더한 칸을 지운 옛 꼴(W6ⓑ 와 같은 경로). */
+function flatView(message: Record<string, unknown>): ListView {
+  const old = withoutNewFields(message)
+  if (!isRecord(old)) throw new Error('모양')
+  const parsed = parseListMessage(old)
+  if (parsed === null) throw new Error('거절')
+  return buildListView({ ...base, list: ready(parsed.list) })
+}
+
+describe('R1-A1 묶음 불변식이 깨진 작업 — 작업 전체 평탄 보기', () => {
+  for (const item of MALFORMED) {
+    it(`${item.name} — 머리 0 · 행 = 같은 메시지의 평탄 보기 · 다른 작업 무영향`, () => {
+      const message = withFeatChannels(loadMessage(), item.change)
+      const parsed = parseListMessage(message)
+      if (parsed === null) throw new Error('거절')
+      const value = buildListView({ ...base, list: ready(parsed.list) })
+      const flat = flatView(message)
+      const rows = lines(featTask(value).rows)
+      expect(rows.filter(([kind]) => kind === 'group')).toEqual([])
+      expect(rows).toEqual(lines(featTask(flat).rows))
+      expect(value.waiting.map((row) => row.meta)).toEqual(flat.waiting.map((row) => row.meta))
+      // 양성: 하위 출신 행에 `↳ origin` 이 돌아왔다.
+      expect(rows).toContainEqual(['channel', 'b1', false, '↳ LIFE-588-worktree-label'])
+      // 다른 작업(detached 루트·HEAD 없음)은 정상 보기와 같다.
+      const others = (view: ListView) => (view.repos[0]?.tasks ?? []).filter((task) => task.name !== 'feature/LIFE-564-mobile').map((task) => [task.label, lines(task.rows)])
+      expect(others(value)).toEqual(others(view()))
+    })
+  }
+
+  it('양성 대조 — 정상 고정 메시지는 머리 4개 그대로', () => {
+    expect(lines(featTask(view()).rows).filter(([kind]) => kind === 'group')).toHaveLength(4)
   })
 })
 

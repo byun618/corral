@@ -148,6 +148,28 @@ describe('R1-A9 옛 Codex 도구 출력의 성공/실패 — 머리의 종료 �
   })
 })
 
+describe('R3-A1 Codex `sleep` 한 호출이 function_call 과 item_completed/Extension 두 모양 — 한 칸', () => {
+  // 실물 모양(리뷰어 codex-duplicate · 워커 사본 41파일 중 6쌍 `raw/claude/r3/a1-id-pairs.txt`): 같은 id 로 function_call(sleep) 과 Extension(clock.sleep).
+  const sleep = (id: string) => JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'sleep', call_id: id, arguments: JSON.stringify({ duration_ms: 1 }) } })
+  const extension = (id: string) => JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'Extension', kind: 'clock.sleep', id, durationMs: 1 } } })
+  const ack = (id: string) => JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: id, output: 'SYNTHETIC_ACK' } })
+  const tools = (items: readonly ChatItem[]) => items.flatMap((item) => (item.kind === 'tools' ? item.tools : []))
+
+  it('같은 id 두 모양 → 1칸 · 이름은 앞 칸 그대로 · 완료 상태 ok 가 남는다(뒤에 온 판정 못 한 출력이 덮지 않는다) — 순서 둘 다', () => {
+    for (const lines of [[sleep('k1'), extension('k1'), ack('k1')], [sleep('k1'), ack('k1'), extension('k1')]]) {
+      const got = tools(build({ agent: 'codex', lines }).items)
+      expect(got.map((tool) => [tool.name, tool.status])).toEqual([['sleep', 'ok']])
+    }
+    // 서로 다른 id 두 호출(각각 두 모양)은 두 칸.
+    expect(tools(build({ agent: 'codex', lines: [sleep('a'), extension('a'), sleep('b'), extension('b')] }).items)).toHaveLength(2)
+  })
+
+  it('양성 대조 — 짝 없는 단독 Extension 은 1칸 그대로 · 짝 없는 sleep 은 출력이 판정 못 함이면 unknown', () => {
+    expect(tools(build({ agent: 'codex', lines: [extension('solo')] }).items).map((tool) => [tool.name, tool.status])).toEqual([['clock.sleep', 'ok']])
+    expect(tools(build({ agent: 'codex', lines: [sleep('k2'), ack('k2')] }).items).map((tool) => [tool.name, tool.status])).toEqual([['sleep', 'unknown']])
+  })
+})
+
 describe('C1 rewind 판정 — 격리 Claude 세션에서 본 줄 모양(raw/claude/r1/c1-shapes.txt) 그대로', () => {
   // 실측: 같은 부모를 둔 사람 발화 형제는 ⓐ rewind(Esc Esc → 되돌리기) ⓑ 답 전 Esc 중단(입력창으로 되돌아온 지시)에서만 생겼다 — 둘 다 Claude Code 화면에서 빠진 가지.
   // 작업 중 입력(대기열 → 턴 끝에 보냄 · 턴 중간 주입 attachment · 지금 보내기 = 중단 표식 뒤)은 셋 다 사슬이 이어진다.

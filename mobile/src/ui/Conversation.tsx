@@ -38,13 +38,15 @@ const AGENT_NAME: Record<AgentKind, string> = { claude: 'Claude', codex: 'Codex'
 export type ConversationProps = {
   channel: Channel
   chat: ChatSnapshot
-  /** 연결 끊김·목록 실패 — 흐리게(C18), 상태를 믿지 않는다. */
+  /** 연결이 확인되지 않음(재연결·끊김)·목록 실패 — 지금 상태(작업 중·상태 카드)를 믿지 않는다. 본문 흐림과는 따로다(R3-A2). */
   unknown: boolean
+  /** 본문 흐림 — 실제 끊김(C18)에만. 재연결 중(유예 전·후)은 흐리지 않는다(디자인 Q10, R3-A2). */
+  dim: boolean
   onOlder: () => void
   onRetry: () => void
 }
 
-export function Conversation({ channel, chat, unknown, onOlder, onRetry }: ConversationProps) {
+export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: ConversationProps) {
   const state = bodyState({ phase: chat.phase, count: chat.items.length })
   const list = useRef<FlatList<ChatItem>>(null)
   // 맨 아래를 떠난 순간의 맨 아래 쪽 변경 횟수(`tailRev`) — 그 뒤 새 말풍선이 붙거나 마지막 답이 자라면 「새 메시지 ↓」(R1-A10). 맨 아래로 돌아오면 지운다.
@@ -86,7 +88,7 @@ export function Conversation({ channel, chat, unknown, onOlder, onRetry }: Conve
   }
   const stale = chat.stale === null ? null : staleText(chat.stale)
   return (
-    <View style={{ flex: 1, opacity: unknown ? 0.5 : 1 }}>
+    <View style={{ flex: 1, opacity: dim ? 0.5 : 1 }}>
       {stale !== null ? (
         // 다시 구독 실패(R1-A7) — 본문은 지난 내용으로 두고 그 사실을 띠로.
         <View style={{ minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, backgroundColor: color.errorTint12 }}>

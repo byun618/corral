@@ -385,7 +385,9 @@ function codexItem(input: { record: Record<string, unknown>; item: Record<string
     case 'ImageView':
       return [{ kind: 'tool', callId: null, name: 'View image', target: readString(item, 'path'), status: 'ok' }]
     case 'Extension':
-      return [{ kind: 'tool', callId: null, name: readString(item, 'kind') ?? 'Extension', target: readString(item, 'query'), status: 'ok' }]
+      // `clock.sleep` 등 — id 가 같은 파일의 function_call(`sleep`) call_id 와 같으면 같은 호출이다(R3-A1, 실물 41파일 중 6쌍 — `raw/claude/r3/A1-id-pairs.txt`).
+      // FileChange·McpToolCall·ImageView 는 같은 표본에서 관측 짝 0 이라 id 를 싣지 않는다.
+      return [{ kind: 'tool', callId: readString(item, 'id'), name: readString(item, 'kind') ?? 'Extension', target: readString(item, 'query'), status: 'ok' }]
     default:
       return [{ kind: 'unknown', shape: `codex:item:${type ?? '?'}` }]
   }
@@ -707,6 +709,8 @@ export class ChatBuilder {
           this.stats.orphanResults += 1
           return
         }
+        // 판정 못 한 결과(`unknown`)는 이미 아는 완료 상태(같은 호출의 item_completed 가 준 ok·error)를 덮지 않는다(R3-A1).
+        if (atom.status === 'unknown' && (tool.status === 'ok' || tool.status === 'error')) return
         tool.status = atom.status
         this.dirty.add(call.item.id)
         return

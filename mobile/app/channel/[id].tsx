@@ -45,6 +45,8 @@ export default function ChannelPlaceholder() {
   }, [channel, unread, stale])
   const offline = conn.kind !== 'connected' && conn.kind !== 'checking'
   const unknown = offline || stale
+  // 본문 흐림은 실제 끊김(C18 — `reconnecting` 의 `offline`)에만. 재연결 중에는 3초 유예 전·후 모두 흐리지 않는다(디자인 Q10, R3-A2) — 연결 띠의 유예는 `band.ts` 그대로.
+  const dim = conn.kind === 'reconnecting' && conn.offline
   const closed = channel?.status === 'closed'
   // 표시 점 하나 — 아바타 배지·별도 점·상태 글이 같이 쓴다(R3-A3).
   const status = channel === null ? null : headerStatus({ channel, unknown })
@@ -96,7 +98,7 @@ export default function ChannelPlaceholder() {
       {conn.kind === 'mismatch' ? (
         <VersionMismatch appVersion={appVersion} serverVersion={info?.serverVersion ?? null} supported={conn.supported} />
       ) : channel !== null ? (
-        <Conversation channel={channel} chat={chat} unknown={unknown} onOlder={() => chatStore.loadOlder()} onRetry={() => chatStore.retry()} />
+        <Conversation channel={channel} chat={chat} unknown={unknown} dim={dim} onOlder={() => chatStore.loadOlder()} onRetry={() => chatStore.retry()} />
       ) : (
         <View className="flex-1 items-center justify-center gap-2 px-padx">
           {channel === null ? (

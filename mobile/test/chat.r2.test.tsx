@@ -67,7 +67,7 @@ const page = (items: unknown[]) => ({ type: 'chat.page', channel: 'c1', gen: 'g1
 const reply = (id: number, text: string) => ({ id, kind: 'reply', at: 0, body: { text, clipped: null } })
 
 async function show(store: ChatStore): Promise<string> {
-  await act(async () => root.render(<Conversation channel={channel} chat={store.getSnapshot()} unknown={false} onOlder={() => {}} onRetry={() => {}} />))
+  await act(async () => root.render(<Conversation channel={channel} chat={store.getSnapshot()} unknown={false} dim={false} onOlder={() => {}} onRetry={() => {}} />))
   return host.textContent ?? ''
 }
 

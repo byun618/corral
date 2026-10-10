@@ -85,7 +85,7 @@ const page = (items: unknown[], extra: Record<string, unknown> = {}) => ({ type:
 const push = (items: unknown[], cursor = 2) => ({ type: 'chat.items', channel: 'c1', gen: 'g1', cursor, at: 2, readAt: 2, writtenAt: 2, items })
 
 async function show(input: { channel?: Channel; store: ChatStore }): Promise<string> {
-  await act(async () => root.render(<Conversation channel={input.channel ?? channel} chat={input.store.getSnapshot()} unknown={false} onOlder={() => {}} onRetry={() => {}} />))
+  await act(async () => root.render(<Conversation channel={input.channel ?? channel} chat={input.store.getSnapshot()} unknown={false} dim={false} onOlder={() => {}} onRetry={() => {}} />))
   return host.textContent ?? ''
 }
 const count = (text: string, needle: string): number => text.split(needle).length - 1

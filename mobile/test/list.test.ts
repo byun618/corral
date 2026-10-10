@@ -362,7 +362,7 @@ describe('화면 줄 (L5ⓑⓖⓘ · L8)', () => {
     expect(statusLabel({ dot: 'idle', waiting: null, closed: true })).toBe('닫힘')
   })
 
-  it('L5ⓘ 미리보기 접두어 — 권한 대기는 `맥에서 승인`(도구 mono, 없으면 `승인 대기`) · 내 지시는 `나` · 실패 사유', () => {
+  it('L5ⓘ 미리보기 접두어 — 권한 대기는 `맥에서 승인`(도구 mono, 없으면 접두어만 — LIFE-587) · 내 지시는 `나` · 실패 사유', () => {
     const rows = buildListView({
       ...base,
       list: list(
@@ -383,8 +383,8 @@ describe('화면 줄 (L5ⓑⓖⓘ · L8)', () => {
     })
     expect(rows.waiting.map((row) => [row.prefix?.text, row.text, row.mono])).toEqual([
       ['맥에서 승인', 'Bash · rm -rf x', true],
-      ['맥에서 승인', '승인 대기', false],
-      ['로그인 대기', '로그인 대기', false],
+      ['맥에서 승인', '', false],
+      ['로그인 대기', '', false],
     ])
     const inGroup = rows.repos[0]?.tasks[0]?.rows.filter((row) => row.kind === 'channel') ?? []
     expect(inGroup.map((row) => (row.kind === 'channel' ? [row.prefix?.text ?? null, row.text] : null))).toEqual([

@@ -261,3 +261,35 @@ describe('R3-A3 대화 자리 머리 — 아바타 배지·별도 점·상태 �
     expect(text).toContain('질문 대기')
   })
 })
+
+describe('LIFE-587 K3 둘째 줄 — 재료 없는 행에서 상태 단어는 한 번', () => {
+  // 행 제목 칸의 다음 형제 = 둘째 줄(접두어 + 글). 그 안에 그려진 글 조각을 모은다.
+  const secondLine = (): string[] => {
+    const title = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'CACHED CHANNEL')
+    const line = title?.parentElement?.nextElementSibling
+    return Array.from(line?.querySelectorAll('span') ?? []).map((span) => span.textContent ?? '')
+  }
+  const listOf = (channel: ChannelValue): ChannelList => ({ ...withChannel, repos: [{ ...withChannel.repos[0], tasks: [{ ...withChannel.repos[0].tasks[0], channels: [channel] }] }] })
+
+  const cases: [string, ChannelValue, string[]][] = [
+    ['사유 없는 대기', { ...cached, dot: 'blocked', dotUnseen: 'blocked', waiting: null }, ['대기 중']],
+    ['로그인 대기', { ...cached, dot: 'blocked', dotUnseen: 'blocked', waiting: 'login' }, ['로그인 대기']],
+    ['완료', { ...cached, dot: 'done', dotUnseen: 'done' }, ['완료']],
+    ['작업 중(접두어 없음)', { ...cached, dot: 'working', dotUnseen: 'working' }, ['작업 중']],
+  ]
+  for (const [name, channel, expected] of cases) {
+    it(`${name} · 재료 없음 → 둘째 줄 ${JSON.stringify(expected)}`, async () => {
+      ctx.conn = connected
+      ctx.list = ready(listOf(channel))
+      await render(<Home />)
+      expect(secondLine()).toEqual(expected)
+    })
+  }
+
+  it('양성 대조 — 재료 있는 대기는 접두어 + 글 두 조각', async () => {
+    ctx.conn = connected
+    ctx.list = ready(listOf({ ...cached, dot: 'waiting', dotUnseen: 'waiting', waiting: 'question', preview: { kind: 'question', text: '어느 쪽?' } }))
+    await render(<Home />)
+    expect(secondLine()).toEqual(['질문', '어느 쪽?'])
+  })
+})

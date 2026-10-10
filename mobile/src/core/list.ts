@@ -30,7 +30,9 @@ export type Channel = {
   dotUnseen: Dot
   depth: 0 | 1
   origin: string | null
-  /** 목록 행 셋째 줄용 — 부모가 다른 작업 그룹에 있거나 모를 때만. */
+  /** 하위 워크트리 묶음 id(`Task.groups`, LIFE-588). 칸이 없으면(옛 서버) null·없음 — 평탄 목록 + `↳ 출신` 으로 그린다. */
+  group?: string | null
+  /** 목록 행 셋째 줄용 — 부모가 다른 작업·다른 하위 묶음에 있거나 모를 때만. */
   spawnedBy: { title: string | null } | null
   /** 대화 머리용 — 계보에 부모가 있으면 항상(579 Q3, R1 C2). 칸이 없으면(옛 서버) null. */
   parent: { title: string | null } | null
@@ -42,7 +44,14 @@ export type Channel = {
   outcome: Outcome | null
 }
 
-export type Task = { id: string; name: string; isDefault: boolean; channels: Channel[] }
+/** 하위 워크트리 묶음(LIFE-588 D1) — `name` = 한 줄 자리 꼴(위 섹션 crumb) · `label` = 머리 꼴(detached 라벨 포함, 서버가 만든 글). */
+export type Group = { id: string; name: string; label: string }
+
+/**
+ * `name` = 한 줄 자리 꼴(대화 머리 `레포 › 작업`) · `label` = 작업 머리 꼴(LIFE-588). 옛 서버는 `label`·`groups` 가 없다 —
+ * 파서는 `label` = `name`, 묶음 0 으로 채우고, 칸을 고르지 않은 값(시험 리터럴 등)은 `list-view` 가 같은 뜻으로 읽는다.
+ */
+export type Task = { id: string; name: string; label?: string; isDefault: boolean; groups?: Group[]; channels: Channel[] }
 export type Repo = { id: string; name: string; tasks: Task[] }
 
 export type ChannelList = { available: true; repos: Repo[]; waiting: string[] } | { available: false; reason: string }
@@ -112,6 +121,7 @@ function readChannel(value: unknown): Channel | null {
     dotUnseen,
     depth,
     origin: str(value.origin),
+    group: str(value.group),
     spawnedBy: isRecord(spawned) ? { title: str(spawned.title) } : null,
     parent: isRecord(parent) ? { title: str(parent.title) } : null,
     preview,
@@ -121,6 +131,23 @@ function readChannel(value: unknown): Channel | null {
     activityAt: num(value.activityAt),
     outcome: pick(value.outcome, ['completed', 'interrupted', 'failed'] as const),
   }
+}
+
+/**
+ * 하위 묶음(LIFE-588) — 표시를 더하는 칸이라 모양이 틀리면 그 묶음만 버린다(목록 전체를 거절하지 않는다).
+ * 버린 묶음을 가리키는 채널은 `list-view` 가 평탄 행 + `↳ 출신` 으로 그린다.
+ */
+function readGroups(value: unknown): Group[] {
+  if (!Array.isArray(value)) return []
+  const groups: Group[] = []
+  for (const raw of value) {
+    if (!isRecord(raw)) continue
+    const id = str(raw.id)
+    const name = str(raw.name)
+    if (id === null || name === null) continue
+    groups.push({ id, name, label: str(raw.label) ?? name })
+  }
+  return groups
 }
 
 /** 모양이 틀린 칸이 하나라도 있으면 그 목록 전체를 버린다 — 반쪽 목록을 그리지 않는다. */
@@ -146,7 +173,7 @@ function readList(value: unknown): ChannelList | null {
         if (channel === null) return null
         channels.push(channel)
       }
-      tasks.push({ id: taskId, name: taskName, isDefault: rawTask.isDefault === true, channels })
+      tasks.push({ id: taskId, name: taskName, label: str(rawTask.label) ?? taskName, isDefault: rawTask.isDefault === true, groups: readGroups(rawTask.groups), channels })
     }
     repos.push({ id: repoId, name: repoName, tasks })
   }

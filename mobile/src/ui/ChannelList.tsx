@@ -1,6 +1,6 @@
-// 대화방 목록 행들 (design-handoff §2 ChannelRow · WaitingSection · RepoDivider · TaskHeader) — 그리기만 한다. 값은 `core/list-view.ts`.
+// 대화방 목록 행들 (design-handoff §2 ChannelRow · WaitingSection · RepoDivider · TaskHeader · LIFE-588 GroupHeader) — 그리기만 한다. 값은 `core/list-view.ts`.
 import { Pressable, Text, View } from 'react-native'
-import type { ChannelRowView, GhostRowView, TaskView, Tone } from '../core/list-view'
+import type { ChannelRowView, GhostRowView, GroupRowView, TaskView, Tone } from '../core/list-view'
 import { Avatar, StatusGlyph } from './StatusGlyph'
 import { color, font } from './tokens'
 
@@ -103,7 +103,7 @@ export function TaskHeader({ task, onToggle }: { task: TaskView; onToggle: () =>
     >
       <Text style={{ width: 12, fontSize: 11, fontFamily: font.mono, color: color.fgDim }}>{task.collapsed ? '▸' : '▾'}</Text>
       <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 15, fontFamily: font.semibold, color: task.collapsed ? color.fgMuted : color.fg }}>
-        {task.name}
+        {task.label}
       </Text>
       {task.isDefault ? (
         <View style={{ borderRadius: 6, backgroundColor: color.chip, paddingHorizontal: 6, paddingVertical: 1 }}>
@@ -122,6 +122,17 @@ export function TaskHeader({ task, onToggle }: { task: TaskView; onToggle: () =>
       ) : null}
       {task.unread ? <View accessibilityLabel="안 읽음" style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color.fg }} /> : null}
     </Pressable>
+  )
+}
+
+/**
+ * 하위 워크트리 묶음 머리(LIFE-588 D1) — 접지 않는 얇은 머리. 시각 값은 `RepoDivider`(높이 38·mono 12·fgDim)와 워커 들여쓰기(30)에서 — 새 색 없음.
+ */
+export function GroupHeader({ row }: { row: GroupRowView }) {
+  return (
+    <View accessibilityRole="header" style={{ height: 38, flexDirection: 'row', alignItems: 'center', paddingLeft: 30, paddingRight: 16 }}>
+      <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 12, fontFamily: font.mono, color: color.fgDim }}>{`↳ ${row.label}`}</Text>
+    </View>
   )
 }
 

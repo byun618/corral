@@ -2,7 +2,9 @@
 //
 // **값과 순서는 데스크톱 파생 코드가 정한다(J4)** — 여기서 규칙을 다시 짜지 않는다:
 //   · 작업 순서 = `buildSidebarSections`(「레포로 묶기」 보기 + 사용자의 정렬 모드·수동 순서). 데스크톱 필터·고정은 폰에 적용하지 않는다(F4)
-//   · 하위 워크트리 합치기 = `lineageGraph` + `nestSectionItems`(parentPath 를 최상위 조상까지, 고아는 독립 그룹)
+//   · 하위 워크트리 합치기 = `lineageGraph` + `nestSectionItems`(parentPath 를 최상위 조상까지, 고아는 독립 그룹).
+//     작업 안에서는 `descendants` 경계를 버리지 않는다 — 하위 워크트리마다 묶음 하나(LIFE-588 D1, 데스크톱 중첩 카드와 같은 순서)
+//   · 워크트리 이름 = `worktreeDisplayName` · detached 라벨 = `worktreeIdentity().sidebarLabel`(머리) · `distinctWorktreeName`(한 줄 자리, LIFE-588 D3)
 //   · 채널 행·제목·상태 점·워커 들여쓰기·보존 행 = `buildAgentRows`(사이드바 `WorktreeBlock` 과 같은 호출)
 // 이 파일이 더하는 것은 폰 전용 결정뿐이다 — 「나를 기다리는 것」 분류·정렬(디자인 Q1) · 미리보기(J11) · 숨김(M3-b) · 비밀·경로 감추기(J8).
 //
@@ -19,7 +21,8 @@ import { buildAgentRows, livePaneIdsOf, retainedByWorktree, type AgentRowNode } 
 import { buildSidebarSections, lineageGraph, nestSectionItems } from '../../shared/sidebar-sections.js'
 import { readSidebarView, type SidebarView } from '../../shared/sidebar-view.js'
 import type { AgentSessionRef, AppState, PaneRow, UiPrefs, WorktreeRow } from '../../shared/types.js'
-import { worktreeDisplayName } from '../../shared/worktree-name.js'
+import { worktreeIdentity } from '../../shared/worktree-identity.js'
+import { distinctWorktreeName, worktreeDisplayName } from '../../shared/worktree-name.js'
 
 /** 목록이 읽는 상태 칸 — `currentState()` 의 일부. */
 export type ListState = Pick<AppState, 'repos' | 'retainedAgents' | 'orchestrationLineage' | 'integrations' | 'home' | 'link'>
@@ -57,11 +60,13 @@ export type MobileChannel = {
   dot: AgentDot
   /** 안 본 것으로 칠 때의 점 — 데스크톱이 자기 장부로 고르는 두 번째 값. 끝난 행만 `dot` 과 다르다. */
   dotUnseen: AgentDot
-  /** 0 = 작업 머리 아래, 1 = 워커(같은 워크트리 계보) 또는 하위 워크트리 출신. 데스크톱처럼 시각 깊이는 1 로 고정. */
+  /** 0 = 머리 아래, 1 = 워커(같은 워크트리 계보 — 띄운 관계일 때만, LIFE-588 D5). 데스크톱처럼 시각 깊이는 1 로 고정. */
   depth: 0 | 1
-  /** 하위 워크트리 출신이면 그 워크트리 이름(`↳ 출신`). */
+  /** 하위 워크트리 출신이면 그 워크트리 이름(`↳ 출신`) — 한 줄 자리 꼴이라 detached 는 `<제목> @ <7자>`(`distinctWorktreeName`). */
   origin: string | null
-  /** 띄운 세션 — 목록 행 셋째 줄용: 부모가 다른 작업 그룹에 있거나 모를 때만(디자인 Q3). `{title:null}` = 모름. */
+  /** 하위 워크트리 묶음 id(`MobileTask.groups`) — 루트 워크트리 행·머리 없는 행은 null(LIFE-588 D1·D2). */
+  group: string | null
+  /** 띄운 세션 — 목록 행 셋째 줄용: 부모가 다른 작업·다른 하위 묶음에 있거나 모를 때만(디자인 Q3 · LIFE-588 D5). `{title:null}` = 모름. */
   spawnedBy: { title: string | null } | null
   /** 띄운 세션 — 대화 머리용: 계보에 부모가 있으면 **항상**(579 Q3, R1 C2). `{title:null}` = 부모를 모름. 계보에 없으면 null. */
   parent: { title: string | null } | null
@@ -75,7 +80,17 @@ export type MobileChannel = {
   outcome: 'completed' | 'interrupted' | 'failed' | null
 }
 
-export type MobileTask = { id: string; name: string; isDefault: boolean; channels: MobileChannel[] }
+/**
+ * 하위 워크트리 묶음 하나(LIFE-588 D1) — 데스크톱의 부모 카드 안 자식 카드. 열린 AI 세션이 있는 하위 워크트리만(D2).
+ * `name` = 한 줄 자리 꼴(위 섹션 crumb) · `label` = 머리 꼴(detached 면 `<제목> · Detached HEAD @ <7자>`, D3).
+ */
+export type MobileGroup = { id: string; name: string; label: string }
+
+/**
+ * 작업 = 계보 단위 하나. `channels` 는 루트 워크트리 행(닫힌 행 · 머리 없는 하위의 닫힌 행 포함) → `groups` 순서대로 묶음마다 열린 행 → 닫힌 행.
+ * `name` = 한 줄 자리 꼴(대화 머리 `레포 › 작업`) · `label` = 작업 머리 꼴(D3). 옛 폰은 `label`·`groups`·`group` 을 모르고 무시한다.
+ */
+export type MobileTask = { id: string; name: string; label: string; isDefault: boolean; groups: MobileGroup[]; channels: MobileChannel[] }
 export type MobileRepo = { id: string; name: string; tasks: MobileTask[] }
 
 export type MobileList =
@@ -227,7 +242,15 @@ export function waitingOf(input: { pane: PaneRow; dot: AgentDot }): MobileWaitKi
   return null
 }
 
-type Built = { channel: MobileChannel; taskId: string; since: number; paneId: string | null; nested: boolean }
+type Built = { channel: MobileChannel; worktree: string; since: number; paneId: string | null; nested: boolean }
+type Part = { group: MobileGroup | null; live: Built[]; closed: Built[] }
+
+/** 머리 꼴·한 줄 자리 꼴(LIFE-588 D3) — 문구는 데스크톱 함수 결과 그대로다. 브랜치·HEAD 없는 워크트리는 둘 다 `worktreeDisplayName`. */
+export function worktreeLabels(worktree: WorktreeRow): { name: string; label: string } {
+  const identity = worktreeIdentity(worktree)
+  const title = worktreeDisplayName(worktree)
+  return { name: distinctWorktreeName(worktree), label: identity?.kind === 'detached' ? `${title} · ${identity.sidebarLabel}` : title }
+}
 
 export function buildMobileList(input: ListInput): MobileList {
   const { state, prefs } = input
@@ -249,27 +272,51 @@ export function buildMobileList(input: ListInput): MobileList {
     for (const unit of nestSectionItems({ items: section.items, collapsed: new Set(), graph })) {
       const root = unit.root.item.worktree
       const taskId = opaqueId(root.path)
-      const live: Built[] = []
-      const closed: Built[] = []
+      // 묶음 = 루트 워크트리(머리 없음) → 하위 워크트리마다 하나(`descendants` 순서, D1). J2 — 보존 행은 묶음 끝에.
+      const rootPart: Part = { group: null, live: [], closed: [] }
+      const parts: Part[] = [rootPart]
+      const headless: Built[] = []
       for (const worktree of [root, ...unit.descendants.map((row) => row.item.worktree)]) {
-        const origin = worktree === root ? null : worktreeDisplayName(worktree)
+        const isRoot = worktree === root
+        const names = worktreeLabels(worktree)
+        const group: MobileGroup | null = isRoot ? null : { id: opaqueId(worktree.path), ...names }
+        const live: Built[] = []
+        const closed: Built[] = []
         for (const item of worktreeChannels({ worktree, state, livePaneIds, retained: retainedOf.get(worktree.path) ?? [] })) {
-          const depth: 0 | 1 = origin !== null || item.nested ? 1 : 0
-          const entry: Built = { ...item, taskId, channel: { ...item.channel, depth, origin } }
+          // D5 — 들여쓰기는 띄운 관계(같은 워크트리 계보)일 때만. 하위 워크트리 출신이라는 이유로 들여 쓰지 않는다.
+          const depth: 0 | 1 = item.nested ? 1 : 0
+          const entry: Built = { ...item, worktree: worktree.path, channel: { ...item.channel, depth, origin: isRoot ? null : names.name, group: group?.id ?? null } }
           if (entry.channel.status === 'live') live.push(entry)
           else closed.push(entry)
         }
+        if (isRoot) {
+          rootPart.live.push(...live)
+          rootPart.closed.push(...closed)
+        } else if (live.length > 0) {
+          parts.push({ group, live, closed })
+        } else {
+          // D2 — 열린 AI 세션이 없는 하위 워크트리는 머리를 내지 않는다. 닫힌 행만 루트 쪽 끝에(`↳ 출신` 그대로).
+          headless.push(...closed.map((entry) => ({ ...entry, channel: { ...entry.channel, group: null } })))
+        }
       }
-      // M3-b — 열린 AI 세션이 없는 작업은 숨긴다(셸만 · 닫힌 세션만 남은 작업 포함). J2 — 보존 행은 그룹 끝에.
-      if (live.length === 0) continue
-      built.push(...live, ...closed)
-      tasks.push({ id: taskId, name: worktreeDisplayName(root), isDefault: !root.isLinked, channels: [...live, ...closed].map((entry) => entry.channel) })
+      rootPart.closed.push(...headless)
+      // M3-b — 열린 AI 세션이 없는 작업은 숨긴다(셸만 · 닫힌 세션만 남은 작업 포함).
+      if (parts.every((part) => part.live.length === 0)) continue
+      const ordered = parts.flatMap((part) => [...part.live, ...part.closed])
+      built.push(...ordered)
+      tasks.push({
+        id: taskId,
+        ...worktreeLabels(root),
+        isDefault: !root.isLinked,
+        groups: parts.flatMap((part) => (part.group === null ? [] : [part.group])),
+        channels: ordered.map((entry) => entry.channel),
+      })
     }
     if (tasks.length > 0) out.push({ id: opaqueId(section.repo.root), name: section.repo.name, tasks })
   }
 
   // 띄운 세션(디자인 Q3) — 대화 머리(`parent`)는 계보에 부모가 있으면 항상(R1 C2), 목록 행(`spawnedBy`)은 들여쓰기로 부모가 안 보일 때만:
-  // 부모가 다른 작업에 있거나 모를 때.
+  // 부모가 다른 워크트리(다른 작업 · 다른 하위 묶음 · 루트 쪽, LIFE-588 D5)에 있거나 모를 때.
   const byPane = new Map(built.filter((entry) => entry.paneId !== null).map((entry) => [entry.paneId, entry]))
   for (const entry of built) {
     if (entry.paneId === null || !lineageParent.has(entry.paneId)) continue
@@ -277,7 +324,7 @@ export function buildMobileList(input: ListInput): MobileList {
     const parent = parentPaneId === null ? undefined : byPane.get(parentPaneId)
     entry.channel.parent = { title: parent?.channel.title ?? null }
     if (entry.nested) continue
-    if (parent !== undefined && parent.taskId === entry.taskId) continue
+    if (parent !== undefined && parent.worktree === entry.worktree) continue
     entry.channel.spawnedBy = { title: parent?.channel.title ?? null }
   }
 
@@ -321,6 +368,7 @@ function worktreeChannels(input: { worktree: WorktreeRow; state: ListState; live
           dotUnseen,
           depth: 0,
           origin: null,
+          group: null,
           spawnedBy: null,
           parent: null,
           preview: { kind: 'none' },
@@ -349,6 +397,7 @@ function worktreeChannels(input: { worktree: WorktreeRow; state: ListState; live
         dotUnseen,
         depth: 0,
         origin: null,
+        group: null,
         spawnedBy: null,
         parent: null,
         preview: previewOf({ pane, dot: node.dot, place: { worktree: worktree.path, home: state.home } }),

@@ -41,8 +41,11 @@ function desktopRows(input: { state: ListState; prefs: UiPrefs; unread: Readonly
   for (const section of sections) {
     for (const unit of nestSectionItems({ items: section.items, collapsed: new Set(), graph })) {
       const group = `${section.kind === 'repo' ? section.repo.name : ''}/${worktreeDisplayName(unit.root.item.worktree)}`
-      const rows: Row[] = []
+      // LIFE-588 D1 — 워크트리(데스크톱 카드)마다 따로 모은다: 보존 행은 그 카드 끝, 열린 세션 없는 하위 카드의 보존 행은 루트 카드 끝.
+      const parts: Row[][] = []
+      const headless: Row[] = []
       for (const worktree of [unit.root.item.worktree, ...unit.descendants.map((row) => row.item.worktree)]) {
+        const rows: Row[] = []
         const roots = buildAgentRows({
           tabs: worktree.workspace?.tabs ?? [],
           retained: retainedOf.get(worktree.path) ?? [],
@@ -58,10 +61,16 @@ function desktopRows(input: { state: ListState; prefs: UiPrefs; unread: Readonly
           if (node.source === 'subagent' || node.kind === 'shell') continue
           rows.push({ group, title: node.full.label, dot: node.dot, status: node.source === 'retained' ? 'closed' : 'live' })
         }
+        const opened = rows.filter((row) => row.status === 'live')
+        const closed = rows.filter((row) => row.status === 'closed')
+        if (parts.length > 0 && opened.length === 0) headless.push(...closed)
+        else parts.push([...opened, ...closed])
       }
-      // M3-b — 열린 AI 세션 없는 작업 숨김 · J2 — 보존 행은 그룹 끝.
+      parts[0]?.push(...headless)
+      const rows = parts.flat()
+      // M3-b — 열린 AI 세션 없는 작업 숨김 · J2 — 보존 행은 그 묶음 끝(LIFE-588).
       if (!rows.some((row) => row.status === 'live')) continue
-      out.push(...rows.filter((row) => row.status === 'live'), ...rows.filter((row) => row.status === 'closed'))
+      out.push(...rows)
     }
   }
   return out
@@ -144,8 +153,10 @@ describe('L1 · L5 · L8 · L9 — 폰 전용 규칙', () => {
   it('L1ⓒ 하위 워크트리는 최상위 조상 작업에 합쳐지고 출신이 붙는다 · 고아는 독립 그룹', () => {
     const corral = list.repos.find((repo) => repo.name === 'corral')
     const task = corral?.tasks.find((item) => item.name === 'LIFE-579-mobile-design')
-    expect(task?.channels.map((channel) => channel.id)).toEqual(['p1', 'p2', 'p3', 'p5', 'retained:r1'])
-    expect(byTitle(list, '목록 행 구현')).toMatchObject({ origin: 'life-579-impl', depth: 1, spawnedBy: null })
+    // LIFE-588 D1 — 보존 행 r1(루트 워크트리)은 루트 묶음 끝, 하위 묶음(p5)보다 앞. 이전 기대: ['p1','p2','p3','p5','retained:r1'].
+    expect(task?.channels.map((channel) => channel.id)).toEqual(['p1', 'p2', 'p3', 'retained:r1', 'p5'])
+    // LIFE-588 D5 — 하위 출신이라고 들여 쓰지 않는다(depth 0, 이전 1) · 부모 p1 이 루트 쪽(다른 묶음)이라 띄운 세션이 붙는다(이전 null).
+    expect(byTitle(list, '목록 행 구현')).toMatchObject({ origin: 'life-579-impl', depth: 0, spawnedBy: { title: '모바일 디자인 브리프 정리' } })
     expect(corral?.tasks.map((item) => item.name)).toContain('orphan-child')
   })
 
@@ -156,9 +167,10 @@ describe('L1 · L5 · L8 · L9 — 폰 전용 규칙', () => {
   })
 
   it('C2 대화 머리용 `parent` — 계보에 부모가 있으면 항상(같은 그룹 부모 포함), 없으면 null', () => {
-    // 같은 워크트리 워커 · 하위 워크트리 — 목록 행엔 안 붙지만(spawnedBy null) 머리에는 붙는다.
+    // 같은 워크트리 워커 — 목록 행엔 안 붙지만(spawnedBy null) 머리에는 붙는다.
     expect(byTitle(list, '목록 화면 구현')).toMatchObject({ spawnedBy: null, parent: { title: '모바일 디자인 브리프 정리' } })
-    expect(byTitle(list, '목록 행 구현')).toMatchObject({ spawnedBy: null, parent: { title: '모바일 디자인 브리프 정리' } })
+    // 하위 워크트리 — LIFE-588 D5: 부모가 다른 묶음(루트 쪽)이라 목록 행에도 붙는다(이전 spawnedBy null). 머리 `parent` 는 그대로.
+    expect(byTitle(list, '목록 행 구현')).toMatchObject({ spawnedBy: { title: '모바일 디자인 브리프 정리' }, parent: { title: '모바일 디자인 브리프 정리' } })
     expect(byTitle(list, '다른 레포에서 띄운 워커').parent).toEqual({ title: '알림 모듈 리팩터' })
     expect(byTitle(list, '부모 모르는 워커').parent).toEqual({ title: null })
     // 음성 대조: 계보에 없는 세션·보존 행.

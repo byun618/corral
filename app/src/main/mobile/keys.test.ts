@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
-import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, matchQuestion, questionKeys, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
+import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, matchQuestion, questionKeys, screenPlain, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
 
 /** Z1 실측 화면(커밋된 원자료). */
 const Z1 = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/z1')
@@ -183,6 +183,11 @@ describe('LIFE-582 r3 — 활성 영역 아래 경계 · 선택 상태 · Codex 
     return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
   }
   const pick = { question: 'Pick a color', options: ['Red', 'Green', 'Blue'], multiSelect: false, preview: false }
+  /** 기록의 설명 — Z1 화면이 보이는 그대로(Claude `Pick <글>` · Grok 글과 같은 설명 · Codex 는 설명을 그리지 않는다). R4-A2 부터 설명 줄도 대조한다. */
+  const described = <T extends { options: string[] }>(question: T, kind: 'claude' | 'grok'): T & { descriptions: string[] } => ({
+    ...question,
+    descriptions: question.options.map((label) => (kind === 'claude' ? `Pick ${label}` : label)),
+  })
 
   it('R3-A2 — 끝난 질문 상자 아래 지금 권한 질문이 있으면 세 provider 모두 none', () => {
     expect(activeQuestion({ kind: 'claude', screen: `${z1('a-q1-screen.txt')}\n${permission('p7')}` })).toEqual({ kind: 'none' })
@@ -211,38 +216,38 @@ describe('LIFE-582 r3 — 활성 영역 아래 경계 · 선택 상태 · Codex 
     expect(activeQuestion({ kind: 'codex', screen: draft })).toEqual({ kind: 'collapsed', count: 1 })
   })
   it('R3-A1 — 갓 열린 빈 상태만 same(세 provider 양성 대조)', () => {
-    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') }), question: described(pick, 'claude'), index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
     expect(matchQuestion({ kind: 'codex', active: activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
-    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') }), question: described(pick, 'grok'), index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
     const fruits = { question: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'], multiSelect: true, preview: false }
-    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q2-screen.txt') }), question: fruits, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: z1('a-q2-screen.txt') }), question: described(fruits, 'claude'), index: 0, total: 1 })).toEqual({ kind: 'same', checked: [] })
   })
   it('R3-A1 — Claude multiSelect 의 이미 체크된 칸을 읽는다(Z1 a-q2-after13 = 1·3 체크)', () => {
     // a-q2-after13 은 상자 아래쪽만 잡은 캡처라 위 가로줄이 없다 — 같은 너비의 가로줄만 앞에 붙인다(나머지 줄은 실물 그대로).
     const active = activeQuestion({ kind: 'claude', screen: `${'─'.repeat(119)}\n${z1('a-q2-after13.txt')}` })
     expect(active).toMatchObject({ kind: 'question', tabs: [true] })
     const fruits = { question: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'], multiSelect: true, preview: false }
-    expect(matchQuestion({ kind: 'claude', active, question: fruits, index: 0, total: 1 })).toEqual({ kind: 'same', checked: [0, 2] })
+    expect(matchQuestion({ kind: 'claude', active, question: described(fruits, 'claude'), index: 0, total: 1 })).toEqual({ kind: 'same', checked: [0, 2] })
   })
   it('R3-A1 — 맥에서 고르는 중(직접 입력 글 · 커서 이동 · Grok 선택)은 busy', () => {
     // a-other-typed 는 아래쪽만 잡은 캡처 — 그 실물 행(`❯ 4. 보라 violet`)을 a-q1 화면의 직접 입력 행 자리에 넣는다.
     const typedRow = z1('a-other-typed.txt').split('\n').find((line) => line.includes('4. '))!
     const typed = z1('a-q1-screen.txt').replace('❯ 1. Red', '  1. Red').replace(/^.*4\. Type something\..*$/m, typedRow)
     expect(typed).toContain('보라 violet')
-    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: typed }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: typed }), question: described(pick, 'claude'), index: 0, total: 1 })).toEqual({ kind: 'busy' })
     const fruit = { question: 'Pick a fruit', options: ['Apple', 'Pear'], multiSelect: false, preview: false }
     expect(matchQuestion({ kind: 'codex', active: activeQuestion({ kind: 'codex', screen: z1('ca-q2-typed.txt') }), question: fruit, index: 0, total: 1 })).toEqual({ kind: 'busy' })
-    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q2-typed.txt') }), question: fruit, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: z1('ga-q2-typed.txt') }), question: described(fruit, 'grok'), index: 0, total: 1 })).toEqual({ kind: 'busy' })
     // Claude 커서를 2행으로 옮긴 화면.
     const moved = z1('a-q1-screen.txt').replace('❯ 1. Red', '  1. Red').replace('  2. Green', '❯ 2. Green')
     expect(moved).not.toBe(z1('a-q1-screen.txt'))
-    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: moved }), question: pick, index: 0, total: 1 })).toEqual({ kind: 'busy' })
+    expect(matchQuestion({ kind: 'claude', active: activeQuestion({ kind: 'claude', screen: moved }), question: described(pick, 'claude'), index: 0, total: 1 })).toEqual({ kind: 'busy' })
     // Claude 여러 문항 — 첫 문항 차례인데 머리 줄에 다른 문항이 이미 답함이면 busy.
     const pets = activeQuestion({ kind: 'claude', screen: z1('a-q4-q2.txt') })
     const city = { question: 'Pick city', options: ['Seoul', 'Busan'], multiSelect: false, preview: false }
-    expect(matchQuestion({ kind: 'claude', active: pets, question: city, index: 1, total: 2 })).toEqual({ kind: 'same', checked: [] })
+    expect(matchQuestion({ kind: 'claude', active: pets, question: described(city, 'claude'), index: 1, total: 2 })).toEqual({ kind: 'same', checked: [] })
     if (pets.kind !== 'question') throw new Error('question')
-    expect(matchQuestion({ kind: 'claude', active: { ...pets, tabs: [true, true] }, question: city, index: 1, total: 2 })).toEqual({ kind: 'busy' })
+    expect(matchQuestion({ kind: 'claude', active: { ...pets, tabs: [true, true] }, question: described(city, 'claude'), index: 1, total: 2 })).toEqual({ kind: 'busy' })
   })
   it('R3-A1 — 체크에서 폰 답으로 가는 키는 다른 칸만 뒤집는다', () => {
     const multi = { options: 3, multiSelect: true, preview: false }
@@ -264,5 +269,73 @@ describe('LIFE-582 r3 — 활성 영역 아래 경계 · 선택 상태 · Codex 
     expect(at('1 of 3', 'Pick drink', 1)).toEqual({ kind: 'other' })
     expect(at('2 of 3', 'Pick color', 0)).toEqual({ kind: 'other' })
     expect(at(null, 'Pick color', 0)).toEqual({ kind: 'other' })
+  })
+})
+
+describe('LIFE-582 r4 — 좁은 pane 줄 바꿈 복원 · Codex 접힌 표시 하단 허용 목록 (격리 실물 화면 r4/width)', () => {
+  const W = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/r4/width')
+  const screen = (name: string): string => fs.readFileSync(path.join(W, name), 'utf8')
+  /** 같은 실물 회차의 기록 문항(판독자가 읽은 그대로 저장한 것). */
+  const recorded = (kind: 'claude' | 'grok') => {
+    const parsed: unknown = JSON.parse(screen(`${kind}-question.json`))
+    if (!Array.isArray(parsed)) throw new Error('fixture')
+    const first: unknown = parsed[0]
+    if (typeof first !== 'object' || first === null || !('question' in first) || !('options' in first) || typeof first.question !== 'string' || !Array.isArray(first.options)) throw new Error('fixture')
+    const options: { label: string; description: string | null }[] = first.options.map((option: unknown) => {
+      if (typeof option !== 'object' || option === null || !('label' in option) || typeof option.label !== 'string') throw new Error('fixture')
+      return { label: option.label, description: 'description' in option && typeof option.description === 'string' ? option.description : null }
+    })
+    return { question: first.question, options: options.map((option) => option.label), descriptions: options.map((option) => option.description), multiSelect: false, preview: false }
+  }
+  const match = (kind: 'claude' | 'grok', name: string) => matchQuestion({ kind, active: activeQuestion({ kind, screen: screen(name) }), question: recorded(kind), index: 0, total: 1 })
+
+  it('R4-A2 Claude — 150·100·80·60·40열 모두 그 문항(번호 없는 이어진 줄 · 40열 두 줄 안내 줄 복원)', () => {
+    for (const cols of [150, 100, 80, 60, 40]) expect([cols, match('claude', `claude-${cols}.txt`)]).toEqual([cols, { kind: 'same', checked: [] }])
+  })
+  it('R4-A2 Grok — 150·100·80·60열은 그 문항(이어진 줄 · `…` 로 잘린 비포커스 행의 보이는 앞부분), 40열은 행이 스크롤로 안 보여 truncated', () => {
+    for (const cols of [150, 100, 80, 60]) expect([cols, match('grok', `grok-${cols}.txt`)]).toEqual([cols, { kind: 'same', checked: [] }])
+    expect(match('grok', 'grok-40.txt')).toEqual({ kind: 'truncated' })
+  })
+  it('R4-A2 음성 — 복원한 글이 기록과 다르면 other(줄 바꿈 복원이 다른 질문을 받아들이지 않는다)', () => {
+    const kinds: ('claude' | 'grok')[] = ['claude', 'grok']
+    for (const kind of kinds) {
+      const question = recorded(kind)
+      const changed = { ...question, options: [question.options[0]!.replace('integration checks', 'integration tests'), question.options[1]!] }
+      expect(matchQuestion({ kind, active: activeQuestion({ kind, screen: screen(`${kind}-80.txt`) }), question: changed, index: 0, total: 1 })).toEqual({ kind: 'other' })
+      const described = { ...question, descriptions: question.descriptions.map((text) => `${text ?? ''} extra`) }
+      expect(matchQuestion({ kind, active: activeQuestion({ kind, screen: screen(`${kind}-80.txt`) }), question: described, index: 0, total: 1 }).kind).toBe('other')
+    }
+  })
+  it('R4-A2 — 좁은 화면 아래 권한 질문이 붙으면 여전히 none(R3-A2 경계 유지)', () => {
+    const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
+    const permission = (pane: string): string => {
+      const text = z1('perm-screens.txt')
+      const start = text.indexOf(`== w1:${pane} `)
+      const next = text.indexOf('== w1:', start + 1)
+      return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
+    }
+    expect(activeQuestion({ kind: 'claude', screen: `${screen('claude-40.txt')}\n${permission('p7')}` })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'grok', screen: `${screen('grok-80.txt')}\n${permission('p9')}` })).toEqual({ kind: 'none' })
+  })
+  it('R4-A3 — 접힌 표시 아래는 실측 입력창·상태 줄 모양만(양성: 실측 · 감긴 초안 / 음성: 모르는 줄 · 번호 없는 모달)', () => {
+    expect(activeQuestion({ kind: 'codex', screen: screen('codex-collapsed-empty-150.txt') })).toEqual({ kind: 'collapsed', count: 1 })
+    // 감긴 맥 초안 — 실측 `codex-collapsed-long-80` 의 입력창 두 줄을 같은 회차 접힌 화면의 입력창 자리에 넣는다.
+    // 화면 사본은 색 코드·`\r\n` 을 품는다 — 판독과 같은 평문(`screenPlain`)에서 줄을 옮긴다.
+    const plain = (name: string): string => screenPlain(screen(name).replace(/\r\n/g, '\n'))
+    const long = plain('codex-collapsed-long-80.txt').split('\n')
+    const at = long.findIndex((line) => line.startsWith('› r4 long draft'))
+    const wrapped = plain('codex-collapsed-empty-150.txt').replace(/^› Ask Codex to do anything.*$/m, `${long[at]}\n${long[at + 1]}`)
+    expect(wrapped).toContain('physical line')
+    expect(activeQuestion({ kind: 'codex', screen: wrapped })).toEqual({ kind: 'collapsed', count: 1 })
+    // 리뷰 r4 collapsed-suffix · D2-unrecognized-bottom.
+    const collapsed = '? 1 question\n⇧← to answer\n\n› \n\n'
+    expect(activeQuestion({ kind: 'codex', screen: `${collapsed}gpt-6.1-sol · ~/w` })).toEqual({ kind: 'collapsed', count: 1 })
+    expect(activeQuestion({ kind: 'codex', screen: `${collapsed}UNKNOWN ACTIVE DIALOG` })).toEqual({ kind: 'none' })
+    // 입력창 바로 아래(빈 줄 없이) 들여쓰지 않은 모르는 줄 — 초안 이어짐 모양(두 칸 들여쓰기)이 아니다.
+    expect(activeQuestion({ kind: 'codex', screen: '? 1 question\n⇧← to answer\n\n› \nUNKNOWN ACTIVE DIALOG\n\n  gpt-6.1-sol · ~/w' })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'codex', screen: `${collapsed}Permission required\nAllow access?\n[Y] yes  [N] no` })).toEqual({ kind: 'none' })
+    // 상태 줄 사이에 모르는 줄 하나.
+    const status = plain('codex-collapsed-empty-150.txt').replace(/^(\s*\? for shortcuts.*)$/m, '  Allow access?\n$1')
+    expect(activeQuestion({ kind: 'codex', screen: status })).toEqual({ kind: 'none' })
   })
 })

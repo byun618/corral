@@ -370,6 +370,7 @@ const ANSWER_REASON: Record<string, string> = {
   question_changed: '그 사이 질문이 바뀌어 답하지 않았습니다',
   question_locked: '이 질문은 맥에서 답해 주세요',
   question_in_progress: '맥에서 이미 고르는 중이라 보내지 않았습니다 — 맥에서 답해 주세요',
+  question_truncated: '맥 화면이 좁아 질문이 잘려 보여 보내지 않았습니다 — 맥에서 답해 주세요',
   other_locked: '이 질문은 직접 입력을 받지 않습니다',
   bad_answer: '답 모양이 맞지 않습니다',
   busy: '다른 요청을 처리하는 중입니다',

@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { TerminalIdentity } from '../adapter/index.js'
 import { ChatBuilder, type ChatItem } from '../chat-parse.js'
 import { CHAT_SESSIONS, chatListState } from './chat-fixture.js'
-import { answerRecords, cleanAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
-import { activeQuestion, KEY, questionDigest } from './keys.js'
+import { answerMatches, answerRecords, cleanAnswers, recordedAnswers, INPUT_IDS_MAX, INPUT_QUEUE_MAX, InputHub, type FileResolution, type InputBackend, type InputWire, type KeyResult, type PaneObservation, type ScreenRead, type SendResult } from './input.js'
+import { activeQuestion, KEY, matchQuestion, questionDigest } from './keys.js'
 import type { MobileAgentKind } from './list.js'
 
 const cleanups: (() => void)[] = []
@@ -1127,9 +1127,13 @@ describe('R3-A2 활성 영역 아래 경계 — 끝난 질문 상자 + 지금 �
       const old = z1(file)
       const active = activeQuestion({ kind, screen: old })
       if (active.kind !== 'question') throw new Error('fixture')
+      // 실물 설명(Z1: Claude `Pick X`, Grok 라벨 반복)을 넣는다 — 설명이 틀려 `other` 로 떨어지면 아래 경계 없이도 이 시험이 통과한다.
+      const descriptions = active.options.map((label) => (kind === 'claude' ? `Pick ${label}` : kind === 'grok' ? label : null))
+      // 양성 대조 — 같은 상자 홀로는 그 질문이다(아래 경계만이 막는다).
+      expect(matchQuestion({ kind, active, question: { question: active.title, options: active.options, multiSelect: false, preview: false, descriptions }, index: 0, total: 1 }).kind).toBe('same')
       t.backend.status = 'blocked'
       t.backend.screenText = `${old}\n${z1Permission(pane)}`
-      const item: ChatItem = { id: 10, kind: 'question', call: 'call-old', questions: [{ question: active.title, header: null, options: active.options.map((label) => ({ label, description: null })), multiSelect: false }], state: 'pending', answer: null, at: null }
+      const item: ChatItem = { id: 10, kind: 'question', call: 'call-old', questions: [{ question: active.title, header: null, options: active.options.map((label, index) => ({ label, description: descriptions[index] ?? null })), multiSelect: false }], state: 'pending', answer: null, at: null }
       t.items.list = [item]
       t.hub.answer({ device: 'd1', id: `r3a2-${kind}`, channel, question: 10, call: 'call-old', digest: questionDigest(item.questions), answers: [{ choices: [0], other: null }] })
       expect(await t.settled(`r3a2-${kind}`)).toMatchObject({ state: 'failed', reason: 'question_changed' })
@@ -1273,5 +1277,134 @@ describe('R3-A6 Grok 중단 — 빈 입력 줄을 본 guard 턴의 revision 으�
     t.hub.stopTurn({ device: 'd1', id: 'r3a6-0000-0003', channel: 'c1' })
     expect((await t.settled('r3a6-0000-0003')).state).toBe('stopped')
     expect(t.backend.keyFences).toEqual([null])
+  })
+})
+
+// --- 수정 r4 (Codex r4 지적) ---------------------------------------------------------------------------
+
+describe('R4-A1 답 값은 문항마다 — 문항↔답 대응을 보존한다', () => {
+  const yesNo = (question: string) => ({ question, header: null, options: [{ label: 'Yes', description: null }, { label: 'No', description: null }], multiSelect: false })
+  const pair = [yesNo('Allow feature A?'), yesNo('Allow feature B?')]
+  const claudeResult = (answers: Record<string, string>): string =>
+    JSON.stringify({ type: 'user', sessionId: CHAT_SESSIONS.claude.id, timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-pair', content: 'answers' }] }, toolUseResult: { answers } })
+  const grokResult = (message: string): string =>
+    JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), method: 'session/update', params: { sessionId: 'g', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call-g', status: 'completed', rawOutput: { UserAnswered: { message } } } } })
+  const values = (input: Parameters<typeof recordedAnswers>[0]): string[] => {
+    const result = recordedAnswers(input)
+    if (result.kind !== 'ok') throw new Error('unreadable')
+    return result.values
+  }
+
+  it('리뷰 answer-values 재현 — 두 문항 답이 서로 바뀌어 기록되면 다르다 · 바른 대응은 같다', () => {
+    const answers = [{ choices: [0], other: null }, { choices: [1], other: null }]
+    const right = values({ kind: 'claude', text: claudeResult({ 'Allow feature A?': 'Yes', 'Allow feature B?': 'No' }), call: 'call-pair', questions: pair.map((q) => q.question) })
+    const swapped = values({ kind: 'claude', text: claudeResult({ 'Allow feature A?': 'No', 'Allow feature B?': 'Yes' }), call: 'call-pair', questions: pair.map((q) => q.question) })
+    expect(answerMatches({ kind: 'claude', recorded: right, questions: pair, answers })).toBe(true)
+    expect(answerMatches({ kind: 'claude', recorded: swapped, questions: pair, answers })).toBe(false)
+  })
+  it('반복 라벨 · 겹치는 라벨(다른 라벨의 부분 문자열) · multiSelect 집합 순서', () => {
+    const wine = [{ question: 'Pick drinks', header: null, options: [{ label: 'Red', description: null }, { label: 'Red wine', description: null }, { label: 'Tea', description: null }], multiSelect: true }]
+    const check = (recorded: string, choices: number[]) => answerMatches({ kind: 'claude', recorded: [recorded], questions: wine, answers: [{ choices, other: null }] })
+    expect(check('Red, Red wine', [0, 1])).toBe(true)
+    expect(check('Red wine, Red', [0, 1])).toBe(true)
+    expect(check('Red wine', [0, 1])).toBe(false)
+    expect(check('Red wine', [0])).toBe(false)
+    expect(check('Red, Red', [0])).toBe(false)
+    expect(check('Red, Tea', [0])).toBe(false)
+    const single = [{ question: 'Pick', header: null, options: [{ label: 'Red', description: null }, { label: 'Red wine', description: null }], multiSelect: false }]
+    expect(answerMatches({ kind: 'claude', recorded: ['Red wine'], questions: single, answers: [{ choices: [0], other: null }] })).toBe(false)
+    expect(answerMatches({ kind: 'claude', recorded: ['Red'], questions: single, answers: [{ choices: [0], other: null }] })).toBe(true)
+    // 두 라벨이 이어 붙으면 셋째 라벨이 되는 경우 — `, ` 경계를 안 보면 「Red wine」 하나를 [Red, wine] 으로 읽는다.
+    const glued = [{ question: 'Pick drinks', header: null, options: [{ label: 'Red', description: null }, { label: 'wine', description: null }, { label: 'Red wine', description: null }], multiSelect: true }]
+    expect(answerMatches({ kind: 'claude', recorded: ['Red wine'], questions: glued, answers: [{ choices: [0, 1], other: null }] })).toBe(false)
+    expect(answerMatches({ kind: 'claude', recorded: ['Red, wine'], questions: glued, answers: [{ choices: [0, 1], other: null }] })).toBe(true)
+  })
+  it('Codex — 그 호출의 문항 번호로 대응, 바뀐 번호는 다르다 · 같은 번호 둘은 대응 불명', () => {
+    const reply = (index: number, answer: string) => codexReply([{ call: 'call-c', index, answer, question: pair[index]!.question }])
+    const answers = [{ choices: [0], other: null }, { choices: [1], other: null }]
+    const right = values({ kind: 'codex', text: `${reply(0, 'Yes')}\n${reply(1, 'No')}`, call: 'call-c', questions: pair.map((q) => q.question) })
+    const swapped = values({ kind: 'codex', text: `${reply(0, 'No')}\n${reply(1, 'Yes')}`, call: 'call-c', questions: pair.map((q) => q.question) })
+    expect(answerMatches({ kind: 'codex', recorded: right, questions: pair, answers })).toBe(true)
+    expect(answerMatches({ kind: 'codex', recorded: swapped, questions: pair, answers })).toBe(false)
+    expect(recordedAnswers({ kind: 'codex', text: `${reply(0, 'Yes')}\n${reply(0, 'No')}`, call: 'call-c', questions: pair.map((q) => q.question) })).toEqual({ kind: 'unreadable' })
+  })
+  it('Grok — 문항 경계(`"문항"=`)로 자른다 · 경계를 못 읽으면 answer_unreadable 재료', () => {
+    const answers = [{ choices: [0], other: null }, { choices: [1], other: null }]
+    const tail = " You can now continue with the user's answers in mind."
+    const right = values({ kind: 'grok', text: grokResult(`User has answered your questions: "Allow feature A?"="Yes", "Allow feature B?"="No".${tail}`), call: 'call-g', questions: pair.map((q) => q.question) })
+    const swapped = values({ kind: 'grok', text: grokResult(`User has answered your questions: "Allow feature A?"="No", "Allow feature B?"="Yes".${tail}`), call: 'call-g', questions: pair.map((q) => q.question) })
+    expect(right).toEqual(['"Yes"', '"No"'])
+    expect(answerMatches({ kind: 'grok', recorded: right, questions: pair, answers })).toBe(true)
+    expect(answerMatches({ kind: 'grok', recorded: swapped, questions: pair, answers })).toBe(false)
+    // 직접 입력(실측 모양 `"Other" user notes: 글`).
+    const other = values({ kind: 'grok', text: grokResult(`User has answered your questions: "Allow feature A?"="Other" user notes: 망고 mango.${tail}`), call: 'call-g', questions: [pair[0]!.question] })
+    expect(answerMatches({ kind: 'grok', recorded: other, questions: [pair[0]!], answers: [{ choices: [], other: '망고 mango' }] })).toBe(true)
+    // 문항 글이 안 보이거나 두 번이면 경계를 모른다.
+    expect(recordedAnswers({ kind: 'grok', text: grokResult(`User has answered your questions: "Yes", "No".${tail}`), call: 'call-g', questions: pair.map((q) => q.question) })).toEqual({ kind: 'unreadable' })
+    expect(recordedAnswers({ kind: 'grok', text: grokResult(`User has answered your questions: "Allow feature A?"="Allow feature A?"="Yes".${tail}`), call: 'call-g', questions: [pair[0]!.question] })).toEqual({ kind: 'unreadable' })
+  })
+  it('허브 — 리뷰 hub-swapped-pair 재현: 키 1 · 2 · 검토 1 뒤 기록이 서로 바뀐 답이면 unconfirmed/answer_mismatch', async () => {
+    const t = setup()
+    t.backend.status = 'blocked'
+    const item: Extract<ChatItem, { kind: 'question' }> = { id: 12, kind: 'question', call: 'toolu-12', questions: [yesNo('Q-12 첫째?'), yesNo('Q-12 둘째?')], state: 'pending', answer: null, at: null }
+    t.items.list = [item]
+    const box = (title: string): string => ['', RULE, title.endsWith('둘째?') ? '←  ☒ A  ☐ B  ✔ Submit  →' : '←  ☐ A  ☐ B  ✔ Submit  →', title, '❯ 1. Yes', '  2. No', '  3. Type something.', RULE, '  4. Chat about this', 'Enter to select · Esc to cancel'].join('\r\n')
+    t.backend.screenText = box('Q-12 첫째?')
+    t.backend.onSend = () => {
+      const sent = t.backend.sends.length
+      if (sent === 1) t.backend.screenText = box('Q-12 둘째?')
+      else if (sent === 2) t.backend.screenText = REVIEW
+      else {
+        fs.appendFileSync(t.file, `${answerLine('toolu-12', false, { 'Q-12 첫째?': 'No', 'Q-12 둘째?': 'Yes' })}\n`)
+        t.items.list = [{ ...item, state: 'answered' }]
+      }
+    }
+    t.hub.answer({ device: 'd1', id: 'r4a1-0000-0001', channel: 'c1', question: 12, call: 'toolu-12', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })
+    expect(await t.settled('r4a1-0000-0001')).toMatchObject({ state: 'unconfirmed', reason: 'answer_mismatch' })
+    expect(t.backend.sends.map((send) => send.text)).toEqual(['1', '2', '1'])
+  })
+})
+
+describe('R4-A2 좁은 맥 pane — 실물 화면(r4/width)에서 허브 답', () => {
+  const W = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/r4/width')
+  const recordedItem = (kind: 'claude' | 'grok', call: string): Extract<ChatItem, { kind: 'question' }> => {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(W, `${kind}-question.json`), 'utf8'))
+    if (!Array.isArray(parsed)) throw new Error('fixture')
+    const questions = parsed.map((entry: unknown) => {
+      if (typeof entry !== 'object' || entry === null || !('question' in entry) || !('options' in entry) || typeof entry.question !== 'string' || !Array.isArray(entry.options)) throw new Error('fixture')
+      const options = entry.options.map((option: unknown) => {
+        if (typeof option !== 'object' || option === null || !('label' in option) || typeof option.label !== 'string') throw new Error('fixture')
+        return { label: option.label, description: 'description' in option && typeof option.description === 'string' ? option.description : null }
+      })
+      return { question: entry.question, header: null, options, multiSelect: false }
+    })
+    return { id: 50, kind: 'question', call, questions, state: 'pending', answer: null, at: null }
+  }
+  it('Claude 80·60열 실물 화면 — 줄 바뀐 선택지를 복원해 키 1회 · 들어감', async () => {
+    for (const cols of [80, 60]) {
+      const t = setup()
+      const item = recordedItem('claude', `toolu-w${cols}`)
+      const questions = questionsOf(item)
+      t.backend.status = 'blocked'
+      t.items.list = [item]
+      t.backend.screenText = fs.readFileSync(path.join(W, `claude-${cols}.txt`), 'utf8')
+      t.backend.onSend = () => {
+        fs.appendFileSync(t.file, `${answerLine(`toolu-w${cols}`, false, { [questions[0]!.question]: questions[0]!.options[0]!.label })}\n`)
+        t.items.list = [{ ...item, state: 'answered' }]
+      }
+      t.hub.answer({ device: 'd1', id: `r4a2-claude-${cols}`, channel: 'c1', question: 50, call: `toolu-w${cols}`, digest: questionDigest(questions), answers: [{ choices: [0], other: null }] })
+      expect([cols, await t.settled(`r4a2-claude-${cols}`)]).toMatchObject([cols, { state: 'delivered' }])
+      expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
+    }
+  })
+  it('Grok 40열 실물 화면 — 행이 스크롤로 안 보여 복원 불가 → 키 0회 failed/question_truncated', async () => {
+    const t = setup()
+    const item = recordedItem('grok', 'call-g40')
+    t.backend.status = 'blocked'
+    t.items.list = [item]
+    t.backend.screenText = fs.readFileSync(path.join(W, 'grok-40.txt'), 'utf8')
+    t.hub.answer({ device: 'd1', id: 'r4a2-grok-40', channel: 'c3', question: 50, call: 'call-g40', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }] })
+    expect(await t.settled('r4a2-grok-40')).toMatchObject({ state: 'failed', reason: 'question_truncated' })
+    expect(t.backend.sends).toHaveLength(0)
   })
 })

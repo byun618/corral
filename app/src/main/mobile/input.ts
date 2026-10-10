@@ -326,71 +326,141 @@ const parseLine = (line: string): Record<string, unknown> | null => {
   }
 }
 
+/** 기록의 답 값 — 문항마다 하나(문항 순서대로). 문항↔답 대응을 못 읽으면 `unreadable`(R4-A1). */
+export type RecordedAnswers = { kind: 'ok'; values: string[] } | { kind: 'unreadable' }
+
 /**
- * 커서 뒤 기록에서 그 도구 호출의 **답 값**(R3-A1) — `"문항"="답"` 모양의 한 글. 못 읽으면 null.
- * - Claude: 그 호출의 결과 줄 `toolUseResult.answers`(`{문항: 답}` — 여럿 고름은 `A, B`, 직접 입력은 그 글).
- * - Grok: 그 호출의 결과 줄 `rawOutput.UserAnswered.message`(`User has answered your questions: "문항"="답", … .` — 직접 입력은 `"Other" user notes: 글`).
- * - Codex: 답 봉투에서 그 호출에 귀속된 항목의 `question`·`answer`(문항마다 한 줄).
+ * 커서 뒤 기록에서 그 도구 호출의 **문항별 답 값**(R3-A1 · R4-A1 — 문항↔답 대응을 보존한다, 한 글로 평탄화하지 않는다).
+ * - Claude: 그 호출의 결과 줄 `toolUseResult.answers`(`{문항 글: 답}`) — 문항 글로 찾는다. 같은 문항 글이 둘이면 대응을 모른다.
+ * - Codex: 답 봉투에서 그 호출에 귀속된 항목의 `questionItemId` 문항 번호 → `answer`. 같은 번호가 둘이면 대응을 모른다.
+ * - Grok: 그 호출의 결과 줄 `rawOutput.UserAnswered.message`(`User has answered your questions: "문항"="답", … . You can now …`) —
+ *   문항 글마다 `"문항"=` 이 정확히 한 번 있어야 그 사이를 그 문항의 답으로 자른다. 경계를 못 읽으면 대응을 모른다.
+ * 하나라도 못 읽으면 `unreadable`.
  */
-export function recordedAnswer(input: { kind: MobileAgentKind; text: string; call: string }): string | null {
-  const parts: string[] = []
+export function recordedAnswers(input: { kind: MobileAgentKind; text: string; call: string; questions: string[] }): RecordedAnswers {
+  const values: (string | null)[] = input.questions.map(() => null)
+  const set = (index: number, value: string): boolean => {
+    if (index < 0 || index >= values.length || values[index] !== null) return false
+    values[index] = value
+    return true
+  }
   for (const line of input.text.split('\n')) {
     if (line.trim() === '') continue
     if (input.kind === 'codex') {
-      for (const reply of codexQuestionReplies(line) ?? []) if (reply.call === input.call && reply.answer !== null) parts.push(`"${reply.question ?? ''}"="${reply.answer}"`)
+      for (const reply of codexQuestionReplies(line) ?? []) {
+        if (reply.call !== input.call) continue
+        if (reply.index === null || reply.answer === null || !set(reply.index, reply.answer)) return { kind: 'unreadable' }
+      }
       continue
     }
     if (!lineAtoms({ agent: input.kind, line, sessionId: null }).atoms.some((atom) => atom.kind === 'result' && atom.callId === input.call)) continue
     const record = parseLine(line)
-    if (record === null) continue
+    if (record === null) return { kind: 'unreadable' }
     if (input.kind === 'claude') {
       const result = record['toolUseResult']
       const answers = isObject(result) ? result['answers'] : null
-      if (isObject(answers)) for (const [question, answer] of Object.entries(answers)) if (typeof answer === 'string') parts.push(`"${question}"="${answer}"`)
+      if (!isObject(answers)) return { kind: 'unreadable' }
+      // 같은 문항 글이 둘이면 map 으로는 어느 문항의 답인지 모른다.
+      if (new Set(input.questions).size !== input.questions.length) return { kind: 'unreadable' }
+      for (const [index, question] of input.questions.entries()) {
+        const value = answers[question]
+        if (typeof value !== 'string' || !set(index, value)) return { kind: 'unreadable' }
+      }
       continue
     }
     const params = record['params']
     const update = isObject(params) && isObject(params['update']) ? params['update'] : isObject(record['update']) ? record['update'] : null
     const output = update === null ? null : update['rawOutput']
     const answered = isObject(output) ? output['UserAnswered'] : null
-    if (typeof answered === 'string') parts.push(answered)
-    else if (isObject(answered) && typeof answered['message'] === 'string') parts.push(answered['message'])
+    const message = typeof answered === 'string' ? answered : isObject(answered) && typeof answered['message'] === 'string' ? answered['message'] : null
+    const split = message === null ? null : grokAnswerSegments({ message, questions: input.questions })
+    if (split === null) return { kind: 'unreadable' }
+    for (const [index, value] of split.entries()) if (!set(index, value)) return { kind: 'unreadable' }
   }
-  return parts.length === 0 ? null : parts.join(', ')
+  const ok: string[] = []
+  for (const value of values) {
+    if (value === null) return { kind: 'unreadable' }
+    ok.push(value)
+  }
+  return { kind: 'ok', values: ok }
 }
 
-/** 답 값 글에서 빼도 되는 provider 고정 문구. */
-const ANSWER_PHRASES = ['User has answered your questions:', "You can now continue with the user's answers in mind."]
+/**
+ * Grok 답 글을 문항마다 자른다 — 앞뒤 고정 문구를 떼고, 문항 글마다 `"문항"=` 이 정확히 한 번 · 기록 문항 순서대로 있어야 한다.
+ * 그 사이(다음 문항 앞 `, ` 까지)가 그 문항의 답. 아니면 null(경계를 못 읽음).
+ */
+function grokAnswerSegments(input: { message: string; questions: string[] }): string[] | null {
+  const head = 'User has answered your questions: '
+  const tail = /\.\s*You can now continue with the user's answers in mind\.?\s*$/
+  if (!input.message.startsWith(head) || !tail.test(input.message)) return null
+  const body = input.message.slice(head.length).replace(tail, '')
+  const starts: number[] = []
+  for (const question of input.questions) {
+    const marker = `"${question}"=`
+    const at = body.indexOf(marker)
+    if (at < 0 || body.indexOf(marker, at + 1) >= 0) return null
+    if (starts.length > 0 && at <= starts.at(-1)!) return null
+    starts.push(at)
+  }
+  if (starts[0] !== 0) return null
+  return starts.map((at, index) => {
+    const from = at + input.questions[index]!.length + 3
+    const to = index + 1 < starts.length ? starts[index + 1]! : body.length
+    return body.slice(from, to).replace(/,\s*$/, '').trim()
+  })
+}
 
 /**
- * 기록의 답 값이 폰이 고른 답인가(R3-A1) — 문항 글을 빼고, 고른 선택지 글·직접 입력 글을 **하나씩 정확히 한 번** 빼고 나면 구분 기호만 남아야 한다.
- * 고른 글이 없거나(맥이 그 칸을 뺐다) 다른 글이 남으면(맥이 더 체크했다) 다르다. 순서는 보지 않는다.
+ * 기록의 답 값이 폰이 고른 답인가(R3-A1 · R4-A1) — **문항마다** 비교한다. 순서를 보지 않는 것은 한 문항 안의 multiSelect 집합뿐.
+ * - 하나 고름: 그 선택지 글 또는 직접 입력 글과 정확히 같아야 한다(Grok 은 `"글"` · 직접 입력 `"Other" user notes: 글`).
+ * - 여럿 고름(Claude): `A, B` — 고른 글·직접 입력 글을 `, ` 경계에서 하나씩 정확히 한 번 빼면 아무것도 남지 않아야 한다
+ *   (반복 라벨은 남고, 다른 라벨의 부분 문자열인 라벨은 경계가 맞지 않아 빠지지 않는다).
  */
-export function answerMatches(input: { kind: MobileAgentKind; recorded: string; questions: QuestionItem['questions']; answers: QuestionAnswer[] }): boolean {
-  let rest = input.recorded
-  const drop = (token: string): boolean => {
-    const at = rest.indexOf(token)
-    if (token.length === 0 || at < 0) return false
-    rest = `${rest.slice(0, at)} ${rest.slice(at + token.length)}`
-    return true
-  }
-  for (const phrase of ANSWER_PHRASES) drop(phrase)
-  for (const question of input.questions) drop(`"${question.question}"`)
-  const tokens: string[] = []
-  input.answers.forEach((answer, index) => {
-    const question = input.questions[index]
-    if (question === undefined) return
-    for (const choice of answer.choices) tokens.push(question.options[choice]?.label ?? '')
-    if (answer.other === null) return
-    if (input.kind === 'grok') {
-      drop('user notes:')
-      tokens.push('Other')
-    }
-    tokens.push(answer.other)
+export function answerMatches(input: { kind: MobileAgentKind; recorded: string[]; questions: QuestionItem['questions']; answers: QuestionAnswer[] }): boolean {
+  if (input.recorded.length !== input.questions.length || input.answers.length !== input.questions.length) return false
+  return input.questions.every((question, index) => {
+    const answer = input.answers[index]!
+    const labels = answer.choices.map((choice) => question.options[choice]?.label ?? null)
+    if (labels.some((label) => label === null)) return false
+    return valueMatches({ kind: input.kind, value: input.recorded[index]!, multi: question.multiSelect === true, labels: labels.flatMap((label) => (label === null ? [] : [label])), other: answer.other })
   })
-  if (tokens.length === 0) return false
-  for (const token of [...tokens].sort((a, b) => b.length - a.length)) if (!drop(token)) return false
-  return rest.replace(/[\s"'=,·.:]/g, '') === ''
+}
+
+function valueMatches(input: { kind: MobileAgentKind; value: string; multi: boolean; labels: string[]; other: string | null }): boolean {
+  let value = input.value.trim()
+  if (input.kind === 'grok') {
+    // `"Green"` · `"Other" user notes: 글`.
+    const match = /^"(.*)"(?: user notes: ([\s\S]*))?$/.exec(value)
+    if (match === null) return false
+    if (input.other !== null) return !input.multi && input.labels.length === 0 && match[1] === 'Other' && (match[2] ?? '').trim() === input.other
+    if (match[2] !== undefined) return false
+    value = match[1]!
+  }
+  if (!input.multi) {
+    const expected = input.other ?? input.labels[0]
+    return input.labels.length + (input.other === null ? 0 : 1) === 1 && expected !== undefined && value === expected
+  }
+  let rest = value
+  const tokens = [...input.labels, ...(input.other === null ? [] : [input.other])].sort((a, b) => b.length - a.length)
+  for (const token of tokens) {
+    // `, ` 경계에 선 토큰만 뺀다 — 겹치는 라벨(다른 라벨의 부분 문자열)이 엉뚱한 자리에서 빠지지 않게.
+    let from = 0
+    let found = -1
+    while (from <= rest.length) {
+      const at = rest.indexOf(token, from)
+      if (at < 0) break
+      const before = at === 0 || rest.slice(0, at).endsWith(', ')
+      const after = at + token.length === rest.length || rest.slice(at + token.length).startsWith(', ')
+      if (before && after) {
+        found = at
+        break
+      }
+      from = at + 1
+    }
+    if (found < 0) return false
+    rest = `${rest.slice(0, found)}${rest.slice(found + token.length)}`
+  }
+  return rest.replace(/,\s*/g, '').trim() === ''
 }
 
 /**
@@ -435,9 +505,11 @@ function lineSession(input: { kind: MobileAgentKind; record: Record<string, unkn
 }
 
 /** 기록 문항 → 화면 대조용(글·선택지 글·여럿 고름·preview). */
-const plainQuestion = (question: QuestionItem['questions'][number]): { question: string; options: string[]; multiSelect: boolean | null; preview: boolean } => ({
+const plainQuestion = (question: QuestionItem['questions'][number]): { question: string; options: string[]; descriptions: (string | null)[]; multiSelect: boolean | null; preview: boolean } => ({
   question: question.question,
   options: question.options.map((option) => option.label),
+  // 좁은 pane 에서 줄 바뀐 행은 「선택지 글 + 설명」 으로 복원해 비교한다(R4-A2).
+  descriptions: question.options.map((option) => option.description),
   multiSelect: question.multiSelect,
   preview: question.preview === true,
 })
@@ -449,8 +521,8 @@ const answerShape = (question: QuestionItem['questions'][number]): { options: nu
   preview: question.preview === true,
 })
 
-/** 키 묶음 앞 화면 확인 결과 — `go`(그 문항, `checked` = 이미 체크된 칸) · `skip` · `busy`(맥에서 고르는 중) · `other`(다른 화면). */
-type ScreenCheck = { kind: 'go'; checked: number[] } | { kind: 'skip' } | { kind: 'busy' } | { kind: 'other' }
+/** 키 묶음 앞 화면 확인 결과 — `go`(그 문항, `checked` = 이미 체크된 칸) · `skip` · `busy`(맥에서 고르는 중) · `truncated`(좁은 pane 에서 잘려 복원 불가 — R4-A2) · `other`(다른 화면). */
+type ScreenCheck = { kind: 'go'; checked: number[] } | { kind: 'skip' } | { kind: 'busy' } | { kind: 'truncated' } | { kind: 'other' }
 
 export class InputHub {
   private readonly deps: InputHubDeps
@@ -828,6 +900,8 @@ export class InputHub {
       if (shown.kind === 'skip') continue
       // 맥에서 이미 고르는 중(커서·체크·직접 입력 글·문항 진행) — 거기서 폰 답으로 가는 키를 셀 수 없으면 넣지 않는다(R3-A1·D3).
       if (shown.kind === 'busy') return stop('question_in_progress')
+      // 좁은 맥 pane 에서 질문이 잘려 보여 그 문항임을 복원할 수 없다(R4-A2) — 원인이 보이는 이유로 키 0회.
+      if (shown.kind === 'truncated') return stop('question_truncated')
       if (shown.kind === 'other') return stop('question_changed')
       // Claude multiSelect 의 체크만 있는 상태 — 바뀌어야 하는 칸만 뒤집는 키로 다시 센다(R3-A1).
       const keys =
@@ -868,9 +942,9 @@ export class InputHub {
       // 답 1건 + 판독자에서 그 질문이 대기에서 풀림(판독자가 없으면 답 줄이 곧 해소다 — Claude·Grok 은 그 도구 호출의 결과 줄).
       // 그리고 기록의 답 값이 폰이 고른 답이어야 한다(R3-A1 — 맥이 먼저 체크해 둔 칸이 섞이면 1건이어도 다른 답이다).
       if (records.count === 1 && this.questionItem({ file, id: entry.question, call })?.state !== 'pending') {
-        const recorded = tail.text === null ? null : recordedAnswer({ kind, text: tail.text, call })
-        if (recorded === null) return this.settle(entry, 'unconfirmed', 'answer_unreadable')
-        if (!answerMatches({ kind, recorded, questions: question.questions, answers })) return this.settle(entry, 'unconfirmed', 'answer_mismatch')
+        const recorded: RecordedAnswers = tail.text === null ? { kind: 'unreadable' } : recordedAnswers({ kind, text: tail.text, call, questions: question.questions.map((q) => q.question) })
+        if (recorded.kind === 'unreadable') return this.settle(entry, 'unconfirmed', 'answer_unreadable')
+        if (!answerMatches({ kind, recorded: recorded.values, questions: question.questions, answers })) return this.settle(entry, 'unconfirmed', 'answer_mismatch')
         return this.settle(entry, 'delivered', null)
       }
       if (this.now() >= deadline) return this.settle(entry, 'unconfirmed', 'record_missing')

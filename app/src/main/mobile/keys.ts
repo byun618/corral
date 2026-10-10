@@ -217,8 +217,12 @@ export type ActiveQuestion =
   | { kind: 'review' }
   | { kind: 'none' }
 
-/** 선택지 행 하나(직접 입력 행 포함) — 글 · 커서가 이 행인가(화면이 커서를 안 보이면 null) · 체크 상자(없으면 null). */
-export type QuestionRow = { label: string; cursor: boolean | null; checked: boolean | null }
+/**
+ * 선택지 행 하나(직접 입력 행 포함) — 글(첫 물리 줄의 첫 칸) · 커서가 이 행인가(화면이 커서를 안 보이면 null) · 체크 상자(없으면 null) ·
+ * 번호(Grok `z` 는 null) · 이 행의 글 조각 전부(`pieces` — 첫 줄을 두 칸 이상 공백으로 나눈 칸 + 아래 이어진 물리 줄. 좁은 pane 에서 줄이 바뀐
+ * 선택지 글·설명을 복원하는 재료, R4-A2).
+ */
+export type QuestionRow = { label: string; cursor: boolean | null; checked: boolean | null; number: number | null; pieces: string[] }
 
 const squash = (text: string): string => text.replace(/[\s\u00a0]+/g, ' ').trim()
 const blankLine = (line: string): boolean => line.trim().length === 0
@@ -255,6 +259,19 @@ const CLAUDE_OPTION = /^\s*(❯\s*)?(\d+)\.\s+(?:\[([ ✔×x])\]\s+)?(.*)$/
 const CLAUDE_FOOTER = /^\s*Enter to select\b.*Esc to cancel\s*$/
 
 /**
+ * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄부터 빈 줄 전까지를 한 줄로 이어 `Esc to cancel` 로 끝나야 한다
+ * (좁은 pane 에서 안내 줄이 두 줄로 바뀐다 — R4-A2 실측 40열). 그 뒤는 화면 끝까지 빈 줄만(R3-A2). 아니면 -1.
+ */
+function claudeFooter(lines: string[]): number {
+  const footer = lastIndex(lines, (line) => /^\s*Enter to select\b/.test(line))
+  if (footer < 0) return -1
+  let end = footer
+  while (end + 1 < lines.length && !blankLine(lines[end + 1]!)) end += 1
+  if (!/Esc to cancel$/.test(squash(lines.slice(footer, end + 1).join(' ')))) return -1
+  return onlyBlankAfter(lines, end) ? footer : -1
+}
+
+/**
  * Claude: 맨 아래 안내 줄(`Enter to select … Esc to cancel`) 위의 두 가로줄 사이 상자. 첫 줄은 머리(` ☐ X` 또는 `←  ☒ A  ☐ B  ✔ Submit  →`),
  * 다음 줄들이 문항 글, `N. 글` 이 선택지(아래 들여쓴 설명 줄·preview 상자는 뺀다). 아래 가로줄과 안내 줄 사이는 `Chat about this` 행뿐,
  * 안내 줄 아래는 빈 줄뿐이어야 한다(R3-A2 — 권한 질문의 `Esc to cancel · Tab to amend` 는 안내 줄이 아니다).
@@ -262,8 +279,8 @@ const CLAUDE_FOOTER = /^\s*Enter to select\b.*Esc to cancel\s*$/
 function claudeQuestion(lines: string[]): ActiveQuestion {
   const tabsLine = lastIndex(lines, (line) => /^\s*←\s.*✔\s*Submit\s*→\s*$/.test(line))
   if (tabsLine >= 0 && claudeReview(lines.slice(tabsLine + 1))) return { kind: 'review' }
-  const footer = lastIndex(lines, (line) => CLAUDE_FOOTER.test(line))
-  if (footer < 0 || !onlyBlankAfter(lines, footer)) return { kind: 'none' }
+  const footer = claudeFooter(lines)
+  if (footer < 0) return { kind: 'none' }
   const rules: number[] = []
   for (let index = 0; index < footer; index += 1) if (RULE.test(lines[index]!)) rules.push(index)
   const bottom = rules.at(-1)
@@ -281,10 +298,15 @@ function claudeQuestion(lines: string[]): ActiveQuestion {
   const rows: QuestionRow[] = []
   for (const line of body.slice(first)) {
     const match = CLAUDE_OPTION.exec(line)
-    if (match === null) continue
+    if (match === null) {
+      // 번호 없는 줄 = 바로 위 행의 이어진 물리 줄(줄 바뀐 선택지 글 · 설명 — R4-A2).
+      rows.at(-1)?.pieces.push(squash(line))
+      continue
+    }
     if (Number(match[2]) !== rows.length + 1) return { kind: 'none' }
     // preview 레이아웃은 선택지 글 옆에 상자가 붙는다 — 두 칸 이상 공백 앞까지가 글.
-    rows.push({ label: squash(match[4]!.split(/\s{2,}/)[0]!), cursor: match[1] !== undefined, checked: match[3] === undefined ? null : match[3] !== ' ' })
+    const cells = match[4]!.split(/\s{2,}/).map(squash).filter((cell) => cell.length > 0)
+    rows.push({ label: cells[0] ?? '', cursor: match[1] !== undefined, checked: match[3] === undefined ? null : match[3] !== ' ', number: Number(match[2]), pieces: cells })
   }
   // 머리 줄의 문항 탭 — `☐` = 아직, `☒`·`✔` = 답함(마지막 `✔ Submit` 은 탭이 아니다).
   const marks = [...head.matchAll(/([☐☒✔])\s+([^☐☒✔→]+)/g)].filter((match) => !(match[1] === '✔' && match[2]!.trim() === 'Submit'))
@@ -317,6 +339,16 @@ function optionLabels(input: { kind: MobileAgentKind; rows: QuestionRow[] }): st
 const CODEX_OPTION = /^\s*(›\s*)?(\d+)\.\s+(.*)$/
 
 /**
+ * Codex 입력창 아래 상태 줄의 실측 모양(R4-A3 — Z1 ca-q1-screen · r4 `codex-collapsed-*`): 모델·노력 · 작업 경로 · 대화 제목 /
+ * `? for shortcuts`(오른쪽에 경고 표시가 붙을 수 있다) / 경고 표시만.
+ */
+const CODEX_STATUS: readonly RegExp[] = [
+  /^\s*\S+(?: \S+)* · (?:~|\/)\S*(?: · .*)?$/,
+  /^\s*\? for shortcuts(?:\s{2,}⚠ \d+ warnings? · f2 to view)?$/,
+  /^\s*⚠ \d+ warnings? · f2 to view$/,
+]
+
+/**
  * Codex: 맨 아래 안내 줄(`enter submit … ⇧→ main prompt`) 위 — `› N. 글` 선택지, 그 위 문항 글, 남은 문항이 둘 이상이면 `k of n` 줄
  * (실측: 남은 문항 중 위치 — 3문항이면 `1 of 3` → 답 뒤 `1 of 2` → 마지막은 표시 없음, R3-A3). 문항 글 위는 `•` 줄(진행 표시)이다.
  * 안내 줄 아래는 빈 줄뿐이어야 한다. 접힌 상태면 `? N question(s)` + `⇧← to answer` — 그 아래가 입력창과 상태 줄뿐일 때만(D2).
@@ -340,7 +372,7 @@ function codexQuestion(lines: string[]): ActiveQuestion {
   const counter = at >= 0 ? counterLine.exec(lines[at]!) : null
   const title = squash(titleLines.join(' '))
   if (title.length === 0) return { kind: 'none' }
-  const rows = matches.map((match) => ({ label: squash(match[3]!), cursor: match[1] !== undefined, checked: null }))
+  const rows = matches.map((match) => ({ label: squash(match[3]!), cursor: match[1] !== undefined, checked: null, number: Number(match[2]), pieces: [squash(match[3]!)] }))
   return { kind: 'question', title, options: optionLabels({ kind: 'codex', rows }), position: counter === null ? null : Number(counter[1]), total: counter === null ? null : Number(counter[2]), rows, tabs: null }
 }
 
@@ -356,14 +388,15 @@ function codexCollapsed(lines: string[]): ActiveQuestion {
   while (at < lines.length && blankLine(lines[at]!)) at += 1
   // 입력창 — `›` 로 시작하는 한 줄(번호 선택지 `› 1.` 은 대화상자다).
   if (at >= lines.length || !/^›(\s|$)/.test(lines[at]!) || CODEX_OPTION.test(lines[at]!)) return { kind: 'none' }
-  const composer = at
   at += 1
-  // 입력창에 이어지는 줄(맥 초안의 다음 줄 · 빈 줄 없이 붙은 상태 줄) → 빈 줄 뒤 상태 줄.
-  while (at < lines.length && !blankLine(lines[at]!)) at += 1
+  // 입력창 이어짐 — 맥 초안이 감긴 물리 줄은 두 칸 들여쓴다(r4 실측 `codex-collapsed-long-80`). 빈 줄 전까지.
+  while (at < lines.length && !blankLine(lines[at]!)) {
+    if (!/^ {2}\S/.test(lines[at]!)) return { kind: 'none' }
+    at += 1
+  }
+  // 그 아래는 실측한 상태 줄 모양만(R4-A3) — 모르는 줄이 한 줄이라도 있으면 맨 아래 활성 영역이 아니다.
   const status = lines.slice(at).filter((line) => !blankLine(line))
-  if (status.length > 3) return { kind: 'none' }
-  const dialog = /^\s*(?:›\s*)?\d+\.\s|Press enter|esc to cancel|enter submit|⇧← to answer|\?\s+\d+ questions?\b/i
-  if ([...lines.slice(composer + 1, at), ...status].some((line) => dialog.test(line))) return { kind: 'none' }
+  if (status.length > 3 || !status.every((line) => CODEX_STATUS.some((shape) => shape.test(line)))) return { kind: 'none' }
   return { kind: 'collapsed', count: Number(count[1]) }
 }
 
@@ -390,17 +423,30 @@ function grokQuestion(lines: string[]): ActiveQuestion {
   const title = squash(box.slice(0, first).join(' '))
   const rows: QuestionRow[] = []
   let numbered = 0
+  let last: number | null = null
+  // 오른쪽 끝 스크롤 막대(`█`)는 글이 아니다.
+  const cellsOf = (text: string): string[] => text.replace(/\s*█\s*$/, '').split(/\s{2,}/).map(squash).filter((cell) => cell.length > 0 && cell !== '█')
   for (const line of box.slice(first)) {
     const match = GROK_OPTION.exec(line)
-    if (match === null) return { kind: 'none' }
-    if (match[1] !== 'z') {
-      numbered += 1
-      if (Number(match[1]) !== numbered) return { kind: 'none' }
+    if (match === null) {
+      // 번호 없는 줄 = 바로 위 행의 이어진 물리 줄(좁은 pane 에서 줄 바뀐 선택지 글 · 설명 — R4-A2 실측 100·80·60열). 직접 입력 행 뒤에는 없다.
+      const row = rows.at(-1)
+      if (row === undefined || row.number === null) return { kind: 'none' }
+      row.pieces.push(...cellsOf(line))
+      continue
     }
-    rows.push({ label: squash(match[4]!.split(/\s{2,}/)[0]!), cursor: null, checked: match[3] !== ' ' && match[3] !== '○' })
+    const number = match[1] === 'z' ? null : Number(match[1])
+    if (number !== null) {
+      // 좁은 pane 에서는 위·아래 행이 스크롤로 안 보일 수 있다(R4-A2 실측 40열) — 보이는 번호는 이어져야 한다.
+      if (last !== null && number !== last + 1) return { kind: 'none' }
+      last = number
+      numbered += 1
+    }
+    const cells = cellsOf(match[4]!)
+    rows.push({ label: cells[0] ?? '', cursor: null, checked: match[3] !== ' ' && match[3] !== '○', number, pieces: cells })
   }
   // 직접 입력 행(`z`)은 맨 끝 하나만.
-  if (rows.length - numbered > 1 || (rows.length > numbered && GROK_OPTION.exec(box.at(-1)!)?.[1] !== 'z')) return { kind: 'none' }
+  if (rows.length - numbered > 1 || (rows.length > numbered && rows.at(-1)!.number !== null)) return { kind: 'none' }
   const counter = /\[(\d+)\/(\d+)\]/.exec(lines[footer]!)
   const options = rows.slice(0, numbered).map((row) => row.label)
   return { kind: 'question', title, options, position: counter === null ? null : Number(counter[1]), total: counter === null ? null : Number(counter[2]), rows, tabs: null }
@@ -414,12 +460,18 @@ function grokQuestion(lines: string[]): ActiveQuestion {
  * - `busy`: 그 문항이지만 맥에서 이미 고르는 중(커서 이동·체크·직접 입력 글·문항 진행) — 키 0회로 「맥에서 답해 주세요」.
  * - `other`: 다른 질문·다른 화면.
  */
-export type QuestionMatch = { kind: 'same'; checked: number[] } | { kind: 'busy' } | { kind: 'other' }
+export type QuestionMatch = { kind: 'same'; checked: number[] } | { kind: 'busy' } | { kind: 'truncated' } | { kind: 'other' }
 
+/**
+ * - `truncated`(R4-A2): 그 문항으로 보이지만(문항 글이 같고 보이는 행이 모두 기록과 어긋나지 않음) 좁은 pane 에서 행이 스크롤로 안 보이거나
+ *   선택지 글이 보이는 글자 없이 잘려 **복원할 수 없다** — 키 0회 「맥에서 답해 주세요」.
+ * 선택지 행은 물리 줄 바꿈을 복원해 「선택지 글 + 설명」 과 비교한다(`rowFits`). 끝이 `…` 인 칸은 provider 가 잘라 보인 것 — 보이는 앞부분이
+ * 기록과 같으면 받아들이고 그 칸의 나머지는 건너뛴다(Grok 비포커스 행 실측).
+ */
 export function matchQuestion(input: {
   kind: MobileAgentKind
   active: ActiveQuestion
-  question: { question: string; options: string[]; multiSelect: boolean | null; preview: boolean }
+  question: { question: string; options: string[]; descriptions?: (string | null)[]; multiSelect: boolean | null; preview: boolean }
   index: number
   total: number
 }): QuestionMatch {
@@ -431,14 +483,27 @@ export function matchQuestion(input: {
   const options = question.options.length
   const hasOther = otherAllowed({ kind, question: { options, multiSelect: question.multiSelect, preview: question.preview } })
   const rows = active.rows
-  if (rows.length !== options + (hasOther ? 1 : 0)) return { kind: 'other' }
-  if (!question.options.every((label, row) => key(rows[row]!.label) === key(label))) return { kind: 'other' }
+  // 직접 입력 행 — Claude·Codex 는 번호 N+1, Grok 은 번호 없는 `z`.
+  const isOther = (row: QuestionRow): boolean => (kind === 'grok' ? row.number === null : row.number === options + 1)
+  const otherRows = rows.filter(isOther)
+  const optionRows = rows.filter((row) => !isOther(row))
+  if (otherRows.length > (hasOther ? 1 : 0)) return { kind: 'other' }
+  if (optionRows.some((row) => row.number === null || row.number < 1 || row.number > options)) return { kind: 'other' }
+  let cut = optionRows.length < options || (hasOther && otherRows.length === 0)
+  for (const row of optionRows) {
+    const at = row.number! - 1
+    // preview 레이아웃은 옆 상자가 이어진 줄에 섞인다 — 첫 줄 글만 본다(R2 와 같음).
+    const fit = question.preview ? rowFits({ pieces: row.pieces.slice(0, 1), parts: [question.options[at]!] }) : rowFits({ pieces: row.pieces, parts: [question.options[at]!, question.descriptions?.[at] ?? null] })
+    if (fit === 'no') return { kind: 'other' }
+    if (fit === 'cut') cut = true
+  }
+  if (cut) return { kind: 'truncated' }
   // 여기부터 그 문항이다 — 갓 열린 빈 상태인가.
-  const otherRow = hasOther ? rows[options]! : null
+  const otherRow = otherRows[0] ?? null
   if (otherRow !== null && (!OTHER_PLACEHOLDER[kind].test(otherRow.label) || otherRow.checked === true)) return { kind: 'busy' }
   // 커서를 보이는 화면(Claude ❯ · Codex ›)이면 첫 행에만 있어야 한다.
-  if (kind !== 'grok' && (rows[0]!.cursor !== true || rows.slice(1).some((row) => row.cursor === true))) return { kind: 'busy' }
-  const checked = rows.slice(0, options).flatMap((row, at) => (row.checked === true ? [at] : []))
+  if (kind !== 'grok' && (optionRows[0]!.cursor !== true || rows.some((row) => row !== optionRows[0] && row.cursor === true))) return { kind: 'busy' }
+  const checked = optionRows.flatMap((row) => (row.checked === true ? [row.number! - 1] : []))
   // 체크에서 폰 답으로 가는 키를 셀 수 있는 것은 Claude multiSelect 뿐(숫자 = 뒤집기). 나머지는 체크가 있으면 고르는 중이다.
   if (checked.length > 0 && !(kind === 'claude' && question.multiSelect === true)) return { kind: 'busy' }
   if (active.tabs !== null) {
@@ -447,6 +512,45 @@ export function matchQuestion(input: {
     if (active.tabs.some((done, at) => (at < index ? !done : at > index ? done : done !== checked.length > 0))) return { kind: 'busy' }
   }
   return { kind: 'same', checked }
+}
+
+/**
+ * 한 행의 글 조각(물리 줄·칸)을 차례로 「선택지 글 → 설명」 에 맞춘다(공백 무시). 조각이 `…` 로 끝나면 그 부분은 잘려 보인 것 — 보이는 앞부분이
+ * 같으면 다음 부분으로 넘어간다.
+ * - `full`: 전부 보임 · `prefix`: 잘렸지만 보이는 글이 기록과 같음(받아들임) · `cut`: 선택지 글이 보이는 글자 없이 잘렸거나 끝까지 안 보임(복원 불가)
+ * - `no`: 기록과 다른 글.
+ */
+function rowFits(input: { pieces: string[]; parts: (string | null)[] }): 'full' | 'prefix' | 'cut' | 'no' {
+  const key = (text: string): string => text.replace(/[\s\u00a0]+/g, '')
+  const parts = input.parts.flatMap((part) => (part === null || key(part).length === 0 ? [] : [key(part)]))
+  if (parts.length === 0) return 'no'
+  let part = 0
+  let rest = parts[0]!
+  let truncated = false
+  for (const piece of input.pieces) {
+    if (part >= parts.length) return 'no'
+    let text = key(piece)
+    const ellipsis = text.endsWith('…')
+    if (ellipsis) text = text.slice(0, -1)
+    if (!rest.startsWith(text)) return 'no'
+    if (ellipsis) {
+      if (part === 0 && text.length === 0) return 'cut'
+      truncated = true
+      part += 1
+      rest = parts[part] ?? ''
+      continue
+    }
+    rest = rest.slice(text.length)
+    if (rest.length === 0) {
+      part += 1
+      rest = parts[part] ?? ''
+    }
+  }
+  // 선택지 글이 끝까지 안 보였다(조각이 모자람) — 복원할 수 없다.
+  if (part === 0) return input.pieces.length === 0 ? 'no' : 'cut'
+  // 설명을 보이다 만 채로 끝났다(… 없이) — 다른 글이다.
+  if (part < parts.length && rest.length > 0 && rest !== parts[part]) return 'no'
+  return truncated ? 'prefix' : 'full'
 }
 
 function positionMatches(input: { kind: MobileAgentKind; active: Extract<ActiveQuestion, { kind: 'question' }>; index: number; total: number }): boolean {

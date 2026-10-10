@@ -13,7 +13,7 @@ import { DEFAULT_SIDEBAR_VIEW } from '../../shared/sidebar-view.js'
 import type { UiPrefs } from '../../shared/types.js'
 import { worktreeDisplayName } from '../../shared/worktree-name.js'
 import { UiPrefsStore } from '../ui-prefs.js'
-import { buildMobileList, maskPaths, percentDecode, previewOf, type MobileChannel, type MobileList } from './list.js'
+import { buildMobileList, MASKED_UNDECODABLE, maskPaths, percentDecode, previewOf, type MobileChannel, type MobileList } from './list.js'
 import { FIXTURE_NOW, fixturePane, listFixture } from './list-fixture.js'
 import type { ListState } from './list.js'
 
@@ -369,8 +369,26 @@ describe('R4-A1 경로 가림 — 한 규칙(디코딩 → 모든 위치 → 뒤
     expect(percentDecode('100%zz')).toBe('100%zz')
   })
 
+  /**
+   * 독립 디코더(R5-A1 리뷰 지적 — 검출기가 제품 `percentDecode` 를 쓰면 제품과 같은 횟수에서 같이 멈춘다). 횟수 상한 없이 고정점까지 푼다.
+   */
+  const oracleDecode = (text: string): string => {
+    let out = text
+    for (;;) {
+      const next = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+        try {
+          return decodeURIComponent(run)
+        } catch {
+          return run.replace(/%([0-7][0-9A-Fa-f])/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+        }
+      })
+      if (next === out) return out
+      out = next
+    }
+  }
+
   /** 결과를 끝까지 디코딩한 글에 홈 경로(홈 + 끝·이름에 이어질 수 없는 글자)가 있나. 이름 글자가 이어지면 다른 이름이다(`/Users/me-I` 등). */
-  const leaks = (output: string, home: string) => new RegExp(`${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(percentDecode(output))
+  const leaks = (output: string, home: string) => new RegExp(`${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(oracleDecode(output))
 
   it('불변식 — 무작위·조합 생성 입력 3000개에서 결과에 홈 절대경로(어느 인코딩으로도) 0', () => {
     let seed = 580
@@ -390,6 +408,8 @@ describe('R4-A1 경로 가림 — 한 규칙(디코딩 → 모든 위치 → 뒤
           const r = rand()
           if (r < 0.25) return hex(ch)
           if (r < 0.3) return hex(ch).replace('%', '%25')
+          // R5-A1 — 깊은 중첩(2~32중). 9중 이상은 글 전체가 `…` 로 가려져야 한다.
+          if (r < 0.33) return hex(ch).replace('%', `%${'25'.repeat(1 + Math.floor(rand() * 31))}`)
           return ch
         })
         .join('')
@@ -441,5 +461,60 @@ describe('R4-A1 경로 가림 — 한 규칙(디코딩 → 모든 위치 → 뒤
     const wire = percentDecode(JSON.stringify(r4Payload('')))
     expect(wire).toContain('localhost/fx/home/private/a.ts')
     expect(wire).toContain('-I/fx/home/include')
+  })
+})
+
+describe('R5-A1 깊은 중첩 퍼센트 인코딩 — 8중까지는 기존 가림, 9중 이상은 글 전체 `…`(fail-closed)', () => {
+  const place = { worktree: '/Users/me/repos/app', home: '/Users/me' }
+  /** 글자 하나를 n 중 인코딩 — `%6D` → `%256D` → `%25256D` … */
+  const deep = (ch: string, n: number) => `%${'25'.repeat(n - 1)}${ch.charCodeAt(0).toString(16).toUpperCase()}`
+  const oracle = (text: string): string => {
+    let out = text
+    for (;;) {
+      const next = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => decodeURIComponent(run))
+      if (next === out) return out
+      out = next
+    }
+  }
+
+  for (let n = 1; n <= 8; n += 1) {
+    it(`${n}중 — 고정점에 닿아 기존과 같이 가린다`, () => {
+      expect(maskPaths({ text: `file://localhost/Users/${deep('m', n)}e/private/a.ts`, ...place })).toBe('file://localhost~/private/a.ts')
+      expect(maskPaths({ text: `cat ${deep('/', n)}Users/me/x`, ...place })).toBe('cat ~/x')
+    })
+  }
+
+  it('9~32중 — 글 전체를 `…` 로 · 결과에 홈 경로·그 인코딩 형태 0(독립 디코더로 끝까지 풀어도)', () => {
+    for (let n = 9; n <= 32; n += 1) {
+      for (const text of [`file://localhost/Users/${deep('m', n)}e/private/a.ts`, `cat ${deep('/', n)}Users/me/x`, `Read · /${deep('U', n)}sers/me`]) {
+        const out = maskPaths({ text, ...place })
+        expect(out).toBe(MASKED_UNDECODABLE)
+        expect(oracle(out)).not.toContain('/Users/me')
+        // 양성 대조 — 같은 입력을 끝까지 풀면 홈이 있다
+        expect(oracle(text)).toContain('/Users/me')
+      }
+    }
+  })
+
+  it('9중 이상이지만 홈이 없는 글도 가린다(남은 인코딩 안을 볼 수 없다) · 홈 없이(home "") 만들면 가리지 않는다', () => {
+    expect(maskPaths({ text: `x ${deep('a', 12)}`, ...place })).toBe(MASKED_UNDECODABLE)
+    expect(maskPaths({ text: `x ${deep('a', 12)}`, worktree: null, home: '' })).not.toBe(MASKED_UNDECODABLE)
+  })
+
+  const payload = (home: string) =>
+    buildMobileList({
+      state: { ...listFixture({ p5: { digest: { providerTitle: 'safe title', tool: { name: 'Read', input: 'file://localhost/fx/%252525252525252568ome/private/a.ts' } } } }), home },
+      prefs: null,
+      now: FIXTURE_NOW,
+    })
+
+  it('리뷰어 사례(h 9중) — 실제 buildMobileList 미리보기가 `…` · 전송 JSON 을 끝까지 풀어도 `/fx/home` 0', () => {
+    const list = payload('/fx/home')
+    expect(byTitle(list, 'safe title').preview).toEqual({ kind: 'tool', text: MASKED_UNDECODABLE })
+    expect(oracle(JSON.stringify(list))).not.toContain('/fx/home')
+  })
+
+  it('음성 대조 — 홈 없이 만들면 같은 입력이 인코딩된 홈을 싣는다', () => {
+    expect(oracle(JSON.stringify(payload('')))).toContain('/fx/home/private/a.ts')
   })
 })

@@ -115,7 +115,8 @@ export function phoneOrder(prefs: UiPrefs | null): ManualOrder {
 
 /**
  * 경로 가림(R1-A3 ② → R4-A1). 경계를 열거하지 않는다 — 계약은 하나다: **결과 글에 홈 아래 절대경로(퍼센트 인코딩 모양 포함)가 남지 않는다.**
- * ① 퍼센트 디코딩 — 유효한 `%XX` 만, 바뀌지 않을 때까지(이중 인코딩까지). 한 덩어리가 UTF-8 로 안 풀리면 그 안의 ASCII 바이트만 푼다.
+ * ① 퍼센트 디코딩 — 유효한 `%XX` 만, 바뀌지 않을 때까지(8중 인코딩까지). 한 덩어리가 UTF-8 로 안 풀리면 그 안의 ASCII 바이트만 푼다.
+ *    8회 안에 고정점에 닿지 못하면(9중 이상) 글 전체를 `…` 로 바꾼다 — fail-closed(R5-A1).
  * ② 홈 문자열이 나오는 **모든 위치** — 앞 글자는 보지 않는다(`-I/Users/me`·`//Users/me`·`file://localhost/Users/me` 모두). 뒤 경계만 본다:
  *    글 끝·`/`·홈 이름에 이어질 수 없는 글자. 이름에 이어지는 글자 = 영숫자 `_` `-` — 그래서 `/Users/meow`·`/Users/me2`·`/Users/me-old` 는
  *    다른 홈으로 남는다. `.` 은 경계로 본다(`/Users/me.bak` → `~.bak` 과잉 가림) — `.` 다음 글자로 다른 이름을 짐작하면 `/Users/me.file://…` 처럼
@@ -141,20 +142,34 @@ function decodeRun(run: string): string {
   }
 }
 
-export function percentDecode(text: string): string {
+/**
+ * 퍼센트 디코딩을 고정점까지 — 최대 `DECODE_ROUNDS` 번 풀고 한 번 더 확인한다(8중 인코딩까지 고정점에 닿는다).
+ * 그 안에 고정점에 닿지 못하면 `complete: false` 다(R5-A1 — 그 글은 아직 인코딩된 홈을 품을 수 있다).
+ */
+function decodeToFixpoint(text: string): { text: string; complete: boolean } {
   let out = text
-  for (let round = 0; round < DECODE_ROUNDS; round += 1) {
+  for (let round = 0; round <= DECODE_ROUNDS; round += 1) {
     const next = out.replace(PERCENT_RUN, decodeRun)
-    if (next === out) return out
+    if (next === out) return { text: out, complete: true }
     out = next
   }
-  return out
+  return { text: out, complete: false }
 }
+
+export function percentDecode(text: string): string {
+  return decodeToFixpoint(text).text
+}
+
+/** 디코딩이 고정점에 닿지 못한 글 전체를 대신하는 표시(R5-A1, fail-closed) — 원문·부분 디코딩 결과 어느 것도 싣지 않는다. */
+export const MASKED_UNDECODABLE = '…'
 
 export function maskPaths(input: { text: string; worktree: string | null; home: string }): string {
   const home = input.home.replace(/\/+$/, '')
   const worktree = input.worktree === null ? '' : input.worktree.replace(/\/+$/, '')
-  let out = percentDecode(input.text)
+  const decoded = decodeToFixpoint(input.text)
+  // 9중 이상 인코딩 — 남은 `%XX` 안에 홈이 숨을 수 있어 글 전체를 가린다(main 비용 상한은 유지).
+  if (!decoded.complete && home !== '') return MASKED_UNDECODABLE
+  let out = decoded.text
   // worktree 가 홈 자체면 상대경로로 바꾸지 않는다(홈 전체가 `.` 이 되면 `~` 보다 덜 알려 준다).
   if (worktree !== '' && worktree !== home) {
     const root = escapeRegExp(worktree)

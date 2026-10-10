@@ -79,7 +79,7 @@
 | `list` | `list.subscribe` 직후 1건 + 목록 내용이 바뀔 때마다 (LIFE-580) | `{type:'list', epoch, seq, at:<ms>, changedAt:<ms>, list}` — 아래 「대화방 목록」 |
 | `chat.page` | `chat.subscribe` 직후 1건(`reset`·`resume`) · `chat.older` 응답(`older`) · 세대가 바뀌면 구독자 모두에게 `reset` (LIFE-581) | `{type:'chat.page', channel, gen, cursor, mode, at, writtenAt, hasOlder, items[]}` — 아래 「대화」 |
 | `chat.items` | 기록에 새 말풍선이 생기거나 있던 것이 자랄 때 · 이어 받기가 프레임 하나를 넘칠 때 나머지 (LIFE-581) | `{type:'chat.items', channel, gen, cursor, at, readAt, writtenAt, items[]}` — 같은 `id` 는 새 값으로 바꾼다 |
-| `chat.unavailable` | 대화를 못 열 때 1건 · 열린 대화의 채널·파일이 목록에서 사라질 때 1건(R1-A1, 그 뒤 구독 해제) (LIFE-581) | `{type:'chat.unavailable', channel, reason}` — `not_listed`(목록에 없음) · `no_session`(세션 참조 없음) · `no_file`(기록 파일 없음) · `not_ready`(맥이 herdr 상태를 아직 못 읽음) · `unreadable`(읽다 실패) |
+| `chat.unavailable` | 대화를 못 열 때 1건 · 열린 대화의 채널이 목록에서 사라질 때·기록을 잠깐 못 찾을 때 1건(R1-A1·R2-A4) (LIFE-581) | `{type:'chat.unavailable', channel, reason, retrying}` — `not_listed`(목록에 없음) · `no_session`(세션 참조 없음) · `no_file`(기록 파일 없음) · `not_ready`(맥이 herdr 상태를 아직 못 읽음 — 목록 연결 중 포함) · `unreadable`(읽다 실패). `retrying:true`(`no_session`·`no_file`·`not_ready`) = 구독은 살아 있고 찾으면 서버가 첫 페이지를 보낸다. `false` = 구독 끝 |
 | `error` | 아래 표 | `{type:'error', code, message}` (`protocol_mismatch` 는 `supported:[1]` 도) |
 
 **맥 이름 `server.macName`(R5 A5ⓓ, 표시용)** — 인증 뒤 `hello`·`paired` 응답에만 있다. 인증 전 응답·오류(`error`)에는 없다.
@@ -122,10 +122,14 @@
 
 - 폰은 **채널 id 만** 준다. 서버가 목록과 같은 함수(`list.ts` `chatChannel` — `buildMobileList` + 보존 행)로 그 채널의 provider 세션 참조를 찾고 기록 파일을 고른다
   (Claude 본 파일 · Codex rollout · Grok `updates.jsonl`). 경로·세션 id 는 폰에 가지 않고 폰에서 받지도 않는다. 닫힌 세션(보존 행 `retained:<pane id>`)도 지난 기록을 연다.
-- **열린 대화가 0 이면 기록을 읽지 않는다.** 판독자는 첫 구독에 생기고, 마지막 구독이 떠나면 **그 자리에서 stat·꼬리 읽기를 멈춘다**(R1-A3). 색인은 15초(`CHAT_GRACE_MS`) 들고 있다가 버린다 —
+- **열린 대화가 0 이면 기록을 읽지 않는다.** 판독자는 첫 구독에 생기고, 마지막 구독이 떠나면 **그 자리에서 stat·꼬리 읽기를 멈춘다**(R1-A3) — 첫 색인·따라잡기 도중이어도
+  다음 1 MiB 조각 경계에서 멈춘다(R2-A3). 다 못 읽은 첫 색인은 공개하지 않고(ready 아님) 다시 열면 처음부터 색인한다. 색인은 15초(`CHAT_GRACE_MS`) 들고 있다가 버린다 —
   그 안에 다시 열면 멈춘 동안 늘어난 바이트를 한 번 따라잡은 뒤 첫 페이지를 보낸다. 파일 하나에 판독자 하나(여러 연결이 같은 대화를 열어도 한 벌).
 - **세션 교체**(R1-A1): 목록 재료가 바뀔 때마다(100 ms `CHAT_REFRESH_MS` 뭉침) 열린 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면(`/clear`·새 세션) 새 파일로 옮겨
-  `reset` 페이지, 채널이 목록에서 사라지거나 파일이 없어지면 `chat.unavailable` 뒤 구독 해제. 모바일을 끄면 판독자를 모두 멈춘다.
+  `reset` 페이지. **채널이 목록에서 사라지면**(pane 닫힘 등) `chat.unavailable`(`retrying:false`) 뒤 구독 해제. 모바일을 끄면 판독자를 모두 멈춘다.
+- **일시 부재는 구독을 끝내지 않는다**(R2-A4, X6): 세션 참조가 아직 없거나 새 참조의 기록 파일이 아직 없으면 판독자를 떼고 `chat.unavailable`(`retrying:true`) 한 건 —
+  구독은 들고 있다가 1초(`CHAT_RETRY_MS`)마다 다시 찾고(기다리는 대화가 열려 있을 때만), 찾으면 `reset` 페이지부터 이어진다. 상태를 못 읽음(목록 연결 중)이면 붙은 구독은
+  그대로 읽고 아무것도 보내지 않는다. 처음 열 때의 같은 부재도 같다.
 - 판독: 처음 한 번 파일 전체를 1 MiB 조각으로 **비동기** 읽어 색인(조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음), 그 뒤 250 ms(`CHAT_POLL_MS`)마다 stat 해 늘어난 바이트만 이어 읽는다.
   개행으로 끝나지 않은 마지막 줄은 개행이 올 때까지 보류한다.
 - **말풍선** `items[]` — 기록 순서(id 오름차순). `id` = 그 말풍선 첫 줄의 바이트 오프셋(한 줄에서 여럿이 나오면 소수 `+0.1`) — 같은 파일·같은 내용이면 다시 색인해도 같은 id.
@@ -142,7 +146,11 @@
 - **세대 `gen`** = 색인 한 번마다 새로 뽑는 값 + `.` + Claude rewind 횟수(R1-A4). 처음부터 다시 색인하면(파일 교체·줄어듦·inode/장치 변화·이미 읽은 구간 덮어쓰기·판독자를 버린 뒤 새로 열기)
   세대가 반드시 바뀐다. 덮어쓰기는 파일 크기·수정 시각이 바뀔 때마다 이미 읽은 구간의 **앞·뒤 4 KiB 해시**를 다시 대 봐서 잡는다(같은 크기 덮어쓰기 포함).
   세대가 바뀌면 구독자 모두에게 `reset` 을 보낸다. 앱은 지금 세대가 아닌 `chat.items`·`older` 를 버린다.
-- **변경 순번 `cursor`**(R1-A2): 판독자는 말풍선이 생기거나 바뀔 때마다 순번을 올려 그 말풍선에 붙인다. `chat.page`·`chat.items` 의 `cursor` = 그 시점 판독자 순번.
+- **변경 순번 `cursor`**(R1-A2): 판독자는 말풍선이 생기거나 바뀔 때마다 순번을 올려 그 말풍선에 붙인다. `chat.page`·`chat.items` 의 `cursor` = **이 프레임까지 받았으면 확정되는 순번** —
+  한 묶음(이어 받기 또는 한 번의 push)을 여러 프레임으로 나누면 마지막 프레임만 새 순번이고 앞 프레임은 묶음 전 순번이다(R2-A1). 앱은 받은 가장 큰 값을 든다 —
+  중간에 끊기면 묶음 전 순번으로 이어 받아 나머지를 다시 받는다(같은 id 는 합친다).
+- **보낸 범위**(R2-A2): 구독마다 보낸 말풍선 중 가장 오래된 id 를 든다(첫 페이지·과거 페이지·이어 받기의 `from`). 그보다 앞(앱이 아직 불러오지 않은 과거) 말풍선이
+  바뀌어도(늦은 도구 결과 등) push 하지 않는다 — 앱 배열 앞에 끼어 과거 요청 경계(`before`)를 당기지 않게. 그 과거 페이지를 열면 그때의 최신 상태로 받는다.
 - **이어 받기**: `gen` 이 지금 세대이면 `id ≥ from` 이고 순번이 `cursor` 보다 큰 말풍선(새로 생긴 것 + 끊긴 동안 자란·바뀐 것)을 `mode:'resume'` 으로. 400개(`CHAT_RESUME_MAX`) 넘으면 reset.
   `from` 은 앱이 들고 있는 가장 오래된 id — 그 앞의 바뀐 말풍선은 앱에 없으니 보내지 않는다.
   아니면 `mode:'reset'` 으로 최근 40개(`CHAT_PAGE_SIZE`). 이어 받기가 프레임 하나를 넘치면 첫 프레임 뒤를 `chat.items` 로 나눠 보낸다(빠짐 없음).
@@ -150,9 +158,12 @@
 - 시각: `at` = 서버가 보낸 시각 · `readAt` = 그 줄을 읽은 시각 · `writtenAt` = 파일 수정 시각 · 말풍선 `at` = 기록의 시각(3초 측정 Y3 재료).
 - 보내기 직전마다 목록과 같이 연결이 닫는 중이 아닌지·기기가 해지되지 않았는지 본다 — 해지·`replaced` 뒤에는 한 건도 가지 않는다. `list.subscribe` 를 다시 보내도 대화 구독은 끊기지 않는다.
   공급이 없는 서버(시험)는 `unknown_type`.
-- 비용 로그: `mobile.chat_index {agent, bytes, items, ms, lines}` · `mobile.chat_push {items, bytes, subscribers, readMs, sendMs, totalMs}` · `mobile.chat_page {mode, items, bytes|frames, firstPageMs}` ·
-  `mobile.chat_subscribe {agent, status, readers}` · `mobile.chat_unavailable {reason}` · `mobile.chat_session_switch {agent}` · `mobile.chat_reader_drop {readers}` — 글은 없다.
-  `firstPageMs` = 구독 받은 때부터 첫 페이지까지 · `readMs` = 꼬리 읽기·조립 · `sendMs` = 직렬화·보내기(C2 측정 지점 — 판정은 최종 관문).
+- 비용 로그: `mobile.chat_index {agent, bytes, items, ms, lines}` · `mobile.chat_index_paused {agent, bytes, of}` · `mobile.chat_push {items, bytes, subscribers, readMs, sendMs, totalMs}` ·
+  `mobile.chat_page {mode, items, frames, bytes, firstPageMs}` · `mobile.chat_subscribe {agent, status, readers}` · `mobile.chat_unavailable {reason, retrying}` · `mobile.chat_session_switch {agent}` ·
+  `mobile.chat_recovered {agent, reason}` · `mobile.chat_reader_drop {readers}` — 글은 없다.
+  구간(C2·R2-A5): `firstPageMs` = **구독 입구(`subscribe` 호출 — 세션 찾기 전) → 보낼 프레임이 다 준비된 때**(색인 기다림·가림·변환·크기 조절·직렬화 포함, sink 직전. 세션 교체·회복이면 다시 붙은 때부터) ·
+  `readMs` = 그 변화를 읽은 꼬리 확인 한 번(stat·덮어쓰기 확인·읽기·파싱·순번 찍기) · `sendMs` = push 입구 → 발송 끝(변경 말풍선 고르기·보낸 범위 거르기·변환·직렬화·발송) ·
+  `totalMs` = `readMs + sendMs`. 최종 관문(Y4·Y10ⓓ)은 이 로그와 폰 수신 시각(`chat_recv`)을 따로 남겨 교차 대조한다.
 - **보내지 않는 것**: 생각(thinking·reasoning) 글 · **도구 결과 본문**(성공/실패 여부만) · 도구 입력 전체(대상 한 줄 미리보기만) · 시스템·하네스가 넣은 사용자 줄(지문 규칙으로 거른다) ·
   기록 파일 경로·세션 id · **홈 디렉터리 아래 절대경로** — 대화의 모든 글(지시·답·도구 대상·질문·안내)을 목록과 같은 `maskPaths` 로 가린다(worktree 상대 · `~/…`).
   어느 줄이 어느 말풍선이 되고 무엇을 버리는지는 `specs/LIFE-581-mobile-chat/raw/claude/mapping.md`.

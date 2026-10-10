@@ -188,6 +188,26 @@ describe('C1 rewind 판정 — 격리 Claude 세션에서 본 줄 모양(raw/cla
     // D2 는 지문(claudeHumanText)도 사람 발화로 세지 않는다 — X2ⓐ 와 같은 판정(mapping.md 「턴 중간 주입」).
     expect(prompts(items)).toEqual(['B1', 'B2', 'D1', 'E1', 'E2'])
   })
+
+  it('C3 첫 프롬프트까지 rewind — 부모 없는 사람 발화가 또 온다(raw/claude/r2/c3-shapes.txt) → 앞 뿌리 가지 전부를 숨긴다', () => {
+    // 격리 실측 모양: R1(parent=null) → 답 → R2 → 답 → Esc Esc 로 R1 앞까지 되돌림 → R3(parent=null, 같은 파일에 이어 씀).
+    const lines = [
+      user('R1', 'r1', null), attach('r1x', 'r1', { type: 'environment' }), reply('R1', 'r1a', 'r1x'), meta('r1d', 'r1a'),
+      user('R2', 'r2', 'r1d'), reply('R2', 'r2a', 'r2'), meta('r2d', 'r2a'),
+      user('R3', 'r3', null), attach('r3x', 'r3', { type: 'environment' }), reply('R3', 'r3a', 'r3x'),
+    ]
+    const { builder, items } = build({ agent: 'claude', lines, sessionId: CLAUDE_SESSION })
+    expect(prompts(items)).toEqual(['R3'])
+    expect(items.map((item) => item.kind)).toEqual(['prompt', 'reply'])
+    expect(builder.rewinds).toBe(1)
+  })
+
+  it('C3 양성 대조 — 뿌리가 하나뿐인 보통 대화와 SessionStart 훅 뒤 첫 지시(실물: 첫 사람 발화의 부모 = hook attachment)는 rewind 아님', () => {
+    const plain = build({ agent: 'claude', lines: [user('P1', 'p1', null), reply('P1', 'p1a', 'p1'), meta('p1d', 'p1a'), user('P2', 'p2', 'p1d'), reply('P2', 'p2a', 'p2')], sessionId: CLAUDE_SESSION })
+    expect([plain.builder.rewinds, prompts(plain.items)]).toEqual([0, ['P1', 'P2']])
+    const hooked = build({ agent: 'claude', lines: [attach('h0', 'x', { type: 'hook_additional_context' }), user('H1', 'h1', 'h0'), reply('H1', 'h1a', 'h1'), meta('h1d', 'h1a'), user('H2', 'h2', 'h1d')], sessionId: CLAUDE_SESSION })
+    expect([hooked.builder.rewinds, prompts(hooked.items)]).toEqual([0, ['H1', 'H2']])
+  })
 })
 
 describe('Codex (Y1ⓑ)', () => {

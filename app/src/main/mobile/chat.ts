@@ -1,6 +1,7 @@
 // 대화 구독 (LIFE-581 X3~X6) — 인증된 연결이 채널 id 로 대화를 열면 그 세션 기록을 말풍선으로 보낸다. electron·소켓을 모른다.
 //
 // - **열린 대화가 0 이면 아무것도 읽지 않는다**(K9) — 판독자는 첫 구독에 생기고, 마지막 구독이 떠나면 **그 자리에서 읽기를 멈춘다**(stat·꼬리 읽기 0, R1-A3).
+//   첫 색인·따라잡기 도중이어도 다음 조각 경계에서 멈춘다 — 다 못 읽은 색인은 공개하지 않고, 다시 열면 처음부터 색인한다(R2-A3).
 //   색인은 `graceMs` 동안만 들고 있다가 버린다 — 그 안에 다시 열면 멈춘 동안 늘어난 바이트를 따라잡고 첫 페이지를 보낸다.
 // - **파일 하나에 판독자 하나**(Y2ⓒ) — 같은 기록을 여러 연결이 열어도 색인·꼬리 읽기는 한 벌, push 직렬화는 채널마다 한 번.
 // - 판독: 처음 한 번 파일 전체를 **비동기로 조각 읽기**(1 MiB 씩, 조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음, X5) → 말풍선 배열.
@@ -10,8 +11,12 @@
 //   덮어쓰기 감지: 파일이 바뀔 때마다 이미 읽은 구간의 앞·뒤 4 KiB 해시를 다시 대 본다(같은 크기 덮어쓰기·앞부분 재작성).
 // - **변경 순번(cursor)**: 말풍선이 생기거나 바뀔 때마다 판독자 순번을 올리고 그 말풍선에 붙인다(R1-A2). 폰은 받은 가장 큰 순번을 들고 있다가
 //   이어 받기 때 `{gen, from, cursor}` 를 보낸다 — 서버는 `from` 이후 말풍선 중 순번이 `cursor` 보다 큰 것(새로 생긴 것 + 끊긴 동안 바뀐 앞 말풍선) 전부를 준다.
+//   한 묶음을 여러 프레임으로 나누면 **마지막 프레임만 새 순번**을 싣고 앞 프레임은 묶음 전 순번을 싣는다 — 중간에 끊기면 폰은 묶음 전 순번으로 이어 받아 나머지를 다시 받는다(R2-A1).
+// - **구독마다 보낸 범위의 첫 id(`low`)**: 그보다 앞(폰이 아직 불러오지 않은 과거) 말풍선의 갱신은 push 하지 않는다 — 폰 배열 앞에 끼어 과거 요청 경계를 당기지 않게(R2-A2).
+//   그 과거 페이지를 나중에 열면 그때의 최신 상태로 받는다.
 // - **세션 교체**(R1-A1): 목록 재료가 바뀌면(`changed`) 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면(`/clear`·새 세션) 새 판독자로 옮겨 `reset`,
-//   채널이 사라지면 `chat.unavailable`.
+//   채널이 목록에서 사라지면 `chat.unavailable` 뒤 구독 끝. **일시 부재**(상태 못 읽음·세션 참조 아직 없음·파일 아직 없음)는 `chat.unavailable`(`retrying`)만 보내고
+//   구독을 들고 있다가 `CHAT_RETRY_MS` 마다 다시 찾아 회복되면 처음부터 보낸다(R2-A4).
 // - 보내는 글은 전부 홈 경로를 가린다(`maskPaths` — 목록과 같은 계약, X3) · 한 글 `ITEM_TEXT_MAX` 자, 넘으면 `clipped`(원래 길이)를 붙여 자른다.
 //   말풍선 하나 `ITEM_BYTES_MAX` 바이트 — 질문은 글자 예산 안에서만 싣고 넘치면 `clipped`(R1-A5). 프레임 하나 `MAX_FRAME_BYTES` — 넘으면 페이지를 줄이거나 나눠 보낸다.
 // - 폰이 주는 것은 채널 id·세대·말풍선 id(숫자) 뿐이다 — 파일 경로·세션 id 는 서버 안에서 `chatChannel`(목록과 같은 함수로 만든 목록)로만 고른다.
@@ -46,6 +51,8 @@ export const QUESTION_CHARS = 8000
 export const TOOL_NAMES_MAX = 40
 /** 목록 재료가 바뀐 뒤 구독의 세션을 다시 고르기까지(뭉침). */
 export const CHAT_REFRESH_MS = 100
+/** 일시 부재로 기다리는 구독이 있을 때 다시 찾는 주기 — 기다리는 대화가 열려 있을 때만 돈다(R2-A4). */
+export const CHAT_RETRY_MS = 1000
 /** 조각 읽기 크기. */
 const READ_CHUNK = 1024 * 1024
 /** 덮어쓰기 감지 — 이미 읽은 구간의 앞·뒤 이만큼을 해시로 대 본다. */
@@ -63,6 +70,8 @@ export type WireItem =
   | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null; clipped: boolean }
 
 export type ChatUnavailable = 'not_listed' | 'no_session' | 'no_file' | 'not_ready' | 'unreadable'
+/** 기다리면 회복될 수 있는 부재 — 구독을 끝내지 않는다(R2-A4). `not_listed`(채널이 목록에 없음)·`unreadable` 은 끝. */
+const TRANSIENT: ReadonlySet<ChatUnavailable> = new Set(['not_ready', 'no_session', 'no_file'])
 
 type Place = ChatChannel['place']
 
@@ -206,7 +215,8 @@ export type ChatReaderDeps = {
 }
 
 /** `readMs` = 그 변화를 읽은 꼬리 확인 한 번의 시간(stat·덮어쓰기 확인·읽기·파싱·변경 고르기) — push 비용(Y10ⓓ) 의 앞 구간(C2). */
-export type ChatReaderEvent = { kind: 'ready' } | { kind: 'reset' } | { kind: 'items'; ids: number[]; readAt: number; readMs: number } | { kind: 'failed' }
+/** `before` = 이 변화 직전의 변경 순번 — 나눠 보내는 앞 프레임에 싣는다(R2-A1). */
+export type ChatReaderEvent = { kind: 'ready' } | { kind: 'reset' } | { kind: 'items'; ids: number[]; before: number; readAt: number; readMs: number } | { kind: 'failed' }
 
 /** 한 기록 파일의 색인 + 꼬리. 구독자는 `ChatHub` 가 쥔다 — 판독자는 바뀐 것을 알린다(`onEvent`). */
 export class ChatReader {
@@ -261,11 +271,12 @@ export class ChatReader {
     this.disarm()
   }
 
-  /** 다시 구독 — 멈춘 동안 늘어난 것을 한 번 따라잡고 꼬리 확인을 다시 돌린다. */
+  /** 다시 구독 — 멈춘 동안 늘어난 것을 한 번 따라잡고 꼬리 확인을 다시 돌린다. 도중에 멈춘 첫 색인은 처음부터 다시(R2-A3). */
   async resume(): Promise<void> {
     if (!this.paused) return
     this.paused = false
     if (this.state.kind === 'ready') await this.poll()
+    else if (this.state.kind === 'indexing' && !this.busy) await this.index()
     this.arm()
   }
 
@@ -347,6 +358,12 @@ export class ChatReader {
       this.revs.clear()
       this.cost.indexes += 1
       await this.readTo(stat.size)
+      if (this.paused && this.end + this.carry.length < stat.size) {
+        // 구독이 다 떠났다 — 다 못 읽은 색인은 공개하지 않는다(R2-A3). 다시 열면 `resume` 이 처음부터 색인한다.
+        this.state = { kind: 'indexing' }
+        this.deps.log('mobile.chat_index_paused', { agent: this.agent, bytes: this.end + this.carry.length, of: stat.size })
+        return
+      }
       this.stamp()
       this.anchors = await this.readAnchors(this.end + this.carry.length)
       this.rewinds = this.builder.rewinds
@@ -371,7 +388,8 @@ export class ChatReader {
     const handle = await fs.promises.open(this.file, 'r')
     try {
       let position = this.end + this.carry.length
-      while (position < size && !this.stopped) {
+      // 구독 0 이면 다음 조각 전에 멈춘다(R2-A3) — 읽은 데까지는 `end`·`carry` 에 그대로 있다.
+      while (position < size && !this.stopped && !this.paused) {
         const length = Math.min(READ_CHUNK, size - position)
         const chunk = Buffer.alloc(length)
         const { bytesRead } = await handle.read(chunk, 0, length, position)
@@ -433,6 +451,7 @@ export class ChatReader {
     await this.readTo(stat.size)
     this.anchors = await this.readAnchors(this.end + this.carry.length)
     const readAt = this.deps.now()
+    const seqBefore = this.seq
     const ids = this.stamp()
     if (this.builder.rewinds !== this.rewinds) {
       // rewind — 앞 말풍선이 사라졌다. 세대를 바꿔 모두 처음부터 받게 한다(X2ⓘ·X6).
@@ -441,7 +460,7 @@ export class ChatReader {
       this.onEvent({ kind: 'reset' })
       return false
     }
-    if (ids.length > 0) this.onEvent({ kind: 'items', ids, readAt, readMs: performance.now() - started })
+    if (ids.length > 0) this.onEvent({ kind: 'items', ids, before: seqBefore, readAt, readMs: performance.now() - started })
     return false
   }
 }
@@ -459,16 +478,20 @@ export type ChatSubscription = {
 
 type ReaderEntry = { reader: ChatReader; subs: Set<Sub>; grace: NodeJS.Timeout | null }
 
+/** 구독이 지금 어디 있나 — 판독자에 붙음 · 일시 부재로 기다림(R2-A4) · 끝. */
+type Link = { kind: 'attached'; entry: ReaderEntry; channel: ChatChannel } | { kind: 'waiting'; reason: ChatUnavailable } | { kind: 'ended' }
+
 type Sub = {
   channelId: string
-  channel: ChatChannel
   sink: (text: string) => void
   resume: ChatResume
   /** 첫 페이지를 보냈나 — 그 전의 꼬리 변화는 첫 페이지에 들어간다. */
   started: boolean
-  /** 지금 붙어 있는 판독자 — 세션이 바뀌면 옮긴다(R1-A1). null = 끝난 구독. */
-  entry: ReaderEntry | null
-  /** 구독(또는 세션 교체로 다시 붙은) 시각 — 첫 페이지까지의 시간(Y4, C2). */
+  /** 세션이 바뀌면 다른 판독자로 옮긴다(R1-A1). 일시 부재면 기다린다(R2-A4). */
+  link: Link
+  /** 이 구독에 보낸 범위의 첫 id — 그보다 앞 말풍선의 갱신은 보내지 않는다(R2-A2). */
+  low: number
+  /** 구독 입구(또는 세션 교체·회복으로 다시 붙은) 시각 — 첫 페이지 준비까지의 시간(Y4, C2·R2-A5). */
   since: number
 }
 
@@ -481,6 +504,7 @@ export type ChatHubDeps = {
   pollMs?: number
   graceMs?: number
   refreshMs?: number
+  retryMs?: number
   now?: () => number
 }
 
@@ -491,17 +515,20 @@ export function chatFileOf(input: { agent: TranscriptAgent; transcript: string }
 
 type Located = { ok: true; channel: ChatChannel; file: string } | { ok: false; reason: ChatUnavailable }
 
+const round = (ms: number): number => Math.round(ms * 100) / 100
+
 export class ChatHub {
   private readonly deps: ChatHubDeps
   private readonly readers = new Map<string, ReaderEntry>()
   private readonly subs = new Set<Sub>()
   private refreshTimer: NodeJS.Timeout | null = null
+  private retryTimer: NodeJS.Timeout | null = null
 
   constructor(deps: ChatHubDeps) {
     this.deps = deps
   }
 
-  /** 시험·계측 — 살아 있는 판독자 수와 구독 수. */
+  /** 시험·계측 — 살아 있는 판독자 수와 구독 수(기다리는 구독 포함). */
   readerCount(): number {
     return this.readers.size
   }
@@ -514,19 +541,24 @@ export class ChatHub {
     return this.subs.size
   }
 
-  /** 대화 열기. 못 열면 `chat.unavailable` 한 건을 보내고 빈 구독을 돌려준다(닫아도 아무 일 없다). */
+  /**
+   * 대화 열기. 못 열면 `chat.unavailable` 한 건 — 채널이 목록에 없으면 빈 구독(닫아도 아무 일 없다),
+   * 일시 부재(`retrying`)면 구독을 들고 기다렸다가 회복되면 첫 페이지를 보낸다(R2-A4).
+   */
   subscribe(input: { channelId: string; resume: ChatResume; sink: (text: string) => void }): ChatSubscription {
+    const since = performance.now()
     const none: ChatSubscription = { older: () => {}, close: () => {} }
+    const sub: Sub = { channelId: input.channelId, sink: input.sink, resume: input.resume, started: false, link: { kind: 'ended' }, low: Number.NEGATIVE_INFINITY, since }
     const found = this.locate(input.channelId)
-    if (!found.ok) {
-      this.unavailable({ channelId: input.channelId, sink: input.sink, reason: found.reason })
+    if (!found.ok && !TRANSIENT.has(found.reason)) {
+      this.unavailable({ sub, reason: found.reason, retrying: false })
       return none
     }
-    const sub: Sub = { channelId: input.channelId, channel: found.channel, sink: input.sink, resume: input.resume, started: false, entry: null, since: performance.now() }
     this.subs.add(sub)
-    this.attach({ sub, file: found.file })
-    if (sub.entry === null) return none
-    this.deps.log('mobile.chat_subscribe', { agent: found.channel.agent, status: found.channel.status, readers: this.readers.size })
+    if (found.ok) this.attach({ sub, channel: found.channel, file: found.file })
+    else this.wait({ sub, reason: found.reason })
+    if (sub.link.kind === 'ended') return none
+    if (found.ok) this.deps.log('mobile.chat_subscribe', { agent: found.channel.agent, status: found.channel.status, readers: this.readers.size })
     return {
       older: (request) => this.older({ sub, ...request }),
       close: () => this.detach(sub),
@@ -546,36 +578,59 @@ export class ChatHub {
   stop(): void {
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer)
     this.refreshTimer = null
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer)
+    this.retryTimer = null
     for (const entry of this.readers.values()) {
       entry.reader.stop()
       if (entry.grace !== null) clearTimeout(entry.grace)
     }
     this.readers.clear()
-    for (const sub of this.subs) sub.entry = null
+    for (const sub of this.subs) sub.link = { kind: 'ended' }
     this.subs.clear()
   }
 
-  /** 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면 새 판독자로 옮겨 처음부터, 채널이 사라졌으면 `chat.unavailable`. */
+  /**
+   * 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면 새 판독자로 옮겨 처음부터(R1-A1), 채널이 목록에서 사라졌으면 `chat.unavailable` 뒤 끝.
+   * 일시 부재(R2-A4): 상태를 못 읽음(`not_ready` — 목록 연결 중 포함)이면 붙은 구독은 그대로 읽고, 세션 참조·파일이 아직 없으면 판독자를 떼고 기다린다.
+   * 기다리는 구독이 있으면 `CHAT_RETRY_MS` 뒤에 다시 본다 — 회복되면 처음부터(`reset`).
+   */
   refresh(): void {
-    if (this.deps.read() === null) return // 상태를 아직 못 읽었다 — 지금 판독을 그대로 둔다
     for (const sub of [...this.subs]) {
-      const entry = sub.entry
-      if (entry === null) continue
+      const link = sub.link
+      if (link.kind === 'ended') continue
       const found = this.locate(sub.channelId)
       if (!found.ok) {
+        if (found.reason === 'not_ready' && link.kind === 'attached') continue
+        if (TRANSIENT.has(found.reason)) {
+          this.wait({ sub, reason: found.reason })
+          continue
+        }
         this.detach(sub)
-        this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason: found.reason })
+        this.unavailable({ sub, reason: found.reason, retrying: false })
         continue
       }
-      sub.channel = found.channel
-      if (found.file === entry.reader.file) continue
-      this.deps.log('mobile.chat_session_switch', { agent: found.channel.agent })
+      if (link.kind === 'attached' && found.file === link.entry.reader.file) {
+        sub.link = { ...link, channel: found.channel }
+        continue
+      }
+      if (link.kind === 'attached') this.deps.log('mobile.chat_session_switch', { agent: found.channel.agent })
+      else this.deps.log('mobile.chat_recovered', { agent: found.channel.agent, reason: link.reason })
       this.leave(sub)
       sub.started = false
       sub.resume = null
       sub.since = performance.now()
-      this.attach({ sub, file: found.file })
+      this.attach({ sub, channel: found.channel, file: found.file })
     }
+    if ([...this.subs].some((sub) => sub.link.kind === 'waiting')) this.armRetry()
+  }
+
+  private armRetry(): void {
+    if (this.retryTimer !== null) return
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.refresh()
+    }, this.deps.retryMs ?? CHAT_RETRY_MS)
+    this.retryTimer.unref()
   }
 
   private locate(channelId: string): Located {
@@ -588,31 +643,43 @@ export class ChatHub {
     return { ok: true, channel: found.channel, file }
   }
 
-  private unavailable(input: { channelId: string; sink: (text: string) => void; reason: ChatUnavailable }): void {
-    input.sink(JSON.stringify({ type: 'chat.unavailable', channel: input.channelId, reason: input.reason }))
-    this.deps.log('mobile.chat_unavailable', { reason: input.reason })
+  private unavailable(input: { sub: Sub; reason: ChatUnavailable; retrying: boolean }): void {
+    input.sub.sink(JSON.stringify({ type: 'chat.unavailable', channel: input.sub.channelId, reason: input.reason, retrying: input.retrying }))
+    this.deps.log('mobile.chat_unavailable', { reason: input.reason, retrying: input.retrying })
+  }
+
+  /** 일시 부재 — 판독자에서 떼고 구독은 든다. 같은 사유로 이미 기다리는 중이면 다시 알리지 않는다(R2-A4). */
+  private wait(input: { sub: Sub; reason: ChatUnavailable }): void {
+    const { sub } = input
+    const was = sub.link
+    this.leave(sub)
+    sub.started = false
+    sub.resume = null
+    sub.link = { kind: 'waiting', reason: input.reason }
+    if (was.kind !== 'waiting' || was.reason !== input.reason) this.unavailable({ sub, reason: input.reason, retrying: true })
+    this.armRetry()
   }
 
   /** 구독을 판독자에 붙인다 — 멈춰 있던 판독자면 따라잡은 뒤, 준비됐으면 곧장 첫 페이지. */
-  private attach(input: { sub: Sub; file: string }): void {
+  private attach(input: { sub: Sub; channel: ChatChannel; file: string }): void {
     const { sub } = input
-    const entry = this.entry({ file: input.file, channel: sub.channel })
+    const entry = this.entry({ file: input.file, channel: input.channel })
     entry.subs.add(sub)
-    sub.entry = entry
+    sub.link = { kind: 'attached', entry, channel: input.channel }
     if (entry.grace !== null) clearTimeout(entry.grace)
     entry.grace = null
     const reader = entry.reader
     if (reader.state.kind === 'failed') {
       const reason = reader.state.reason
       this.detach(sub)
-      this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason })
+      this.unavailable({ sub, reason, retrying: false })
       return
     }
     if (reader.paused) {
       void reader.resume().then(() => this.startPending(entry))
       return
     }
-    if (reader.state.kind === 'ready') this.start({ entry, sub })
+    if (reader.state.kind === 'ready') this.start(sub)
   }
 
   /** 구독 끝 — 판독자에서 떼고 구독 목록에서도 뺀다. */
@@ -621,11 +688,13 @@ export class ChatHub {
     this.subs.delete(sub)
   }
 
-  /** 판독자에서만 뗀다. 그 판독자의 마지막 구독이면 그 자리에서 읽기를 멈추고 유예 뒤에 버린다(R1-A3). */
+  /** 판독자에서만 뗀다. 그 판독자의 마지막 구독이면 그 자리에서 읽기를 멈추고(색인 중이어도, R2-A3) 유예 뒤에 버린다(R1-A3). */
   private leave(sub: Sub): void {
-    const entry = sub.entry
-    sub.entry = null
-    if (entry === null || !entry.subs.delete(sub) || entry.subs.size > 0) return
+    const link = sub.link
+    sub.link = { kind: 'ended' }
+    if (link.kind !== 'attached') return
+    const entry = link.entry
+    if (!entry.subs.delete(sub) || entry.subs.size > 0) return
     entry.reader.pause()
     if (entry.grace !== null) return
     const file = entry.reader.file
@@ -658,7 +727,7 @@ export class ChatHub {
 
   private startPending(entry: ReaderEntry): void {
     if (entry.reader.state.kind !== 'ready' || entry.reader.paused) return
-    for (const sub of [...entry.subs]) if (!sub.started) this.start({ entry, sub })
+    for (const sub of [...entry.subs]) if (!sub.started) this.start(sub)
   }
 
   private onReader(input: { entry: ReaderEntry; event: ChatReaderEvent }): void {
@@ -667,16 +736,16 @@ export class ChatHub {
       case 'ready':
         return this.startPending(entry)
       case 'reset':
-        for (const sub of [...entry.subs]) this.sendPage({ entry, sub, mode: 'reset', items: this.latest(entry) })
+        for (const sub of [...entry.subs]) this.sendPage({ sub, mode: 'reset', items: this.latest(entry) })
         return
       case 'failed':
         for (const sub of [...entry.subs]) {
           this.detach(sub)
-          this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason: 'unreadable' })
+          this.unavailable({ sub, reason: 'unreadable', retrying: false })
         }
         return
       case 'items':
-        this.broadcast({ entry, ids: event.ids, readAt: event.readAt, readMs: event.readMs })
+        this.broadcast({ entry, ids: event.ids, before: event.before, readAt: event.readAt, readMs: event.readMs })
     }
   }
 
@@ -684,19 +753,19 @@ export class ChatHub {
    * 첫 페이지 — 이어 받기가 맞으면(같은 세대) `from` 이후 말풍선 중 `cursor` 뒤에 생기거나 바뀐 것 전부(`resume`, R1-A2),
    * 아니면 최근 페이지(`reset`). 이어 받을 것이 `CHAT_RESUME_MAX` 를 넘어도 `reset`.
    */
-  private start(input: { entry: ReaderEntry; sub: Sub }): void {
-    const { entry, sub } = input
-    const reader = entry.reader
+  private start(sub: Sub): void {
+    if (sub.link.kind !== 'attached') return
+    const reader = sub.link.entry.reader
     const resume = sub.resume
     if (resume !== null && resume.gen === reader.gen && resume.cursor <= reader.cursor()) {
       const all = reader.items()
       const changed = all.filter((item) => item.id >= resume.from && reader.revOf(item.id) > resume.cursor)
       if (changed.length <= CHAT_RESUME_MAX) {
-        this.sendPage({ entry, sub, mode: 'resume', items: changed, hasOlder: (all[0]?.id ?? resume.from) < resume.from })
+        this.sendPage({ sub, mode: 'resume', items: changed, hasOlder: (all[0]?.id ?? resume.from) < resume.from, resume })
         return
       }
     }
-    this.sendPage({ entry, sub, mode: 'reset', items: this.latest(entry) })
+    this.sendPage({ sub, mode: 'reset', items: this.latest(sub.link.entry) })
   }
 
   private latest(entry: ReaderEntry): readonly ChatItem[] {
@@ -706,73 +775,98 @@ export class ChatHub {
 
   private older(input: { sub: Sub; gen: string; before: number }): void {
     const { sub } = input
-    const entry = sub.entry
-    if (entry === null || entry.reader.state.kind !== 'ready' || input.gen !== entry.reader.gen) return
-    const items = entry.reader.items()
+    if (sub.link.kind !== 'attached') return
+    const reader = sub.link.entry.reader
+    if (reader.state.kind !== 'ready' || input.gen !== reader.gen) return
+    const items = reader.items()
     let end = items.findIndex((item) => item.id >= input.before)
     if (end < 0) end = items.length
-    this.sendPage({ entry, sub, mode: 'older', items: items.slice(Math.max(0, end - CHAT_PAGE_SIZE), end) })
+    this.sendPage({ sub, mode: 'older', items: items.slice(Math.max(0, end - CHAT_PAGE_SIZE), end) })
   }
 
   /**
    * 페이지 보내기. `reset`·`older` 는 프레임 하나 — 넘치면 앞(오래된) 말풍선부터 덜어 낸다(`hasOlder` 가 남은 것을 말한다).
    * `resume` 은 넘치면 첫 프레임 뒤를 `chat.items` 로 나눠 보낸다(빠짐 없이). 말풍선 하나는 `ITEM_BYTES_MAX` 이하라 늘 한 프레임에 든다.
+   * 나눈 앞 프레임은 이어 받기 전 순번을 싣는다 — 마지막 프레임을 받아야 새 순번이 확정된다(R2-A1).
+   * 보낸 범위의 첫 id 를 구독에 남긴다(`low`, R2-A2).
    */
-  private sendPage(input: { entry: ReaderEntry; sub: Sub; mode: 'reset' | 'resume' | 'older'; items: readonly ChatItem[]; hasOlder?: boolean }): void {
-    const { entry, sub, mode } = input
-    // 첫 페이지면 구독부터 보내기 직전까지(Y4 「첫 페이지 서버 준비」 — 색인 로그만으로 대신하지 않는다, C2).
-    const firstPageMs = sub.started ? null : Math.round((performance.now() - sub.since) * 100) / 100
-    sub.started = true
-    const all = entry.reader.items()
-    const wire = input.items.map((item) => wireItem({ item, place: sub.channel.place }))
-    const base = { channel: sub.channelId, gen: entry.reader.gen, cursor: entry.reader.cursor(), at: this.now(), writtenAt: entry.reader.writtenAt() }
+  private sendPage(input: { sub: Sub; mode: 'reset' | 'resume' | 'older'; items: readonly ChatItem[]; hasOlder?: boolean; resume?: { from: number; cursor: number } }): void {
+    const { sub, mode } = input
+    if (sub.link.kind !== 'attached') return
+    const reader = sub.link.entry.reader
+    const place = sub.link.channel.place
+    const all = reader.items()
+    const wire = input.items.map((item) => wireItem({ item, place }))
+    const cursor = reader.cursor()
+    const base = { channel: sub.channelId, gen: reader.gen, at: this.now(), writtenAt: reader.writtenAt() }
+    let texts: string[]
+    let low: number
     if (mode === 'resume') {
       const frames = frameItems(wire)
-      const [first, ...rest] = frames
-      sub.sink(JSON.stringify({ type: 'chat.page', mode, ...base, hasOlder: input.hasOlder ?? false, items: first ?? [] }))
-      for (const items of rest) sub.sink(JSON.stringify({ type: 'chat.items', ...base, readAt: base.at, items }))
-      this.deps.log('mobile.chat_page', { mode, items: wire.length, frames: frames.length, firstPageMs })
-      return
+      const partial = input.resume?.cursor ?? cursor
+      texts = frames.map((items, index) => {
+        const frameCursor = index === frames.length - 1 ? cursor : partial
+        return index === 0
+          ? JSON.stringify({ type: 'chat.page', mode, ...base, cursor: frameCursor, hasOlder: input.hasOlder ?? false, items })
+          : JSON.stringify({ type: 'chat.items', ...base, cursor: frameCursor, readAt: base.at, items })
+      })
+      low = input.resume?.from ?? wire[0]?.id ?? Number.NEGATIVE_INFINITY
+    } else {
+      let items = wire
+      let text = ''
+      for (;;) {
+        const firstId = items[0]?.id
+        const hasOlder = firstId !== undefined && (all[0]?.id ?? firstId) < firstId
+        text = JSON.stringify({ type: 'chat.page', mode, ...base, cursor, hasOlder, items })
+        if (Buffer.byteLength(text) <= MAX_FRAME_BYTES || items.length <= 1) break
+        items = items.slice(Math.ceil(items.length / 4))
+      }
+      texts = [text]
+      const first = items[0]?.id
+      low = mode === 'older' ? Math.min(sub.low, first ?? sub.low) : (first ?? Number.NEGATIVE_INFINITY)
     }
-    let items = wire
-    let text = ''
-    for (;;) {
-      const firstId = items[0]?.id
-      const hasOlder = firstId !== undefined && (all[0]?.id ?? firstId) < firstId
-      text = JSON.stringify({ type: 'chat.page', mode, ...base, hasOlder, items })
-      if (Buffer.byteLength(text) <= MAX_FRAME_BYTES || items.length <= 1) break
-      items = items.slice(Math.ceil(items.length / 4))
-    }
-    sub.sink(text)
-    this.deps.log('mobile.chat_page', { mode, items: items.length, bytes: text.length, firstPageMs })
+    // 첫 페이지면 구독 입구부터 보낼 프레임이 다 준비될 때까지(세션 찾기·가림·변환·크기 조절·직렬화 포함 — Y4 「첫 페이지 서버 준비」, C2·R2-A5).
+    const firstPageMs = sub.started ? null : round(performance.now() - sub.since)
+    sub.started = true
+    sub.low = low
+    for (const text of texts) sub.sink(text)
+    this.deps.log('mobile.chat_page', { mode, items: wire.length, frames: texts.length, bytes: texts.reduce((sum, text) => sum + text.length, 0), firstPageMs })
   }
 
-  /** 바뀐 말풍선 push — 채널마다 한 번 직렬화해 그 채널 구독자 모두에게(Y2ⓒ). 첫 페이지 전 구독은 건너뛴다(첫 페이지에 들어간다). */
-  private broadcast(input: { entry: ReaderEntry; ids: number[]; readAt: number; readMs: number }): void {
+  /**
+   * 바뀐 말풍선 push — 채널·보낸 범위마다 한 번 직렬화해 구독자에게(Y2ⓒ). 첫 페이지 전 구독은 건너뛴다(첫 페이지에 들어간다).
+   * 구독이 들고 있지 않은 과거(`low` 앞) 말풍선은 보내지 않는다(R2-A2). 나눈 앞 프레임은 변화 전 순번(R2-A1).
+   */
+  private broadcast(input: { entry: ReaderEntry; ids: number[]; before: number; readAt: number; readMs: number }): void {
     const { entry } = input
+    const started = performance.now()
     const wanted = new Set(input.ids)
     const changed = entry.reader.items().filter((item) => wanted.has(item.id))
     if (changed.length === 0) return
-    const started = performance.now()
+    const cursor = entry.reader.cursor()
     const texts = new Map<string, string[]>()
     let bytes = 0
     let subscribers = 0
     for (const sub of [...entry.subs]) {
-      if (!sub.started) continue
-      let frames = texts.get(sub.channelId)
+      const link = sub.link
+      if (!sub.started || link.kind !== 'attached') continue
+      const held = changed.filter((item) => item.id >= sub.low)
+      if (held.length === 0) continue
+      const key = `${sub.channelId}\u0000${sub.low}`
+      let frames = texts.get(key)
       if (frames === undefined) {
-        const base = { type: 'chat.items', channel: sub.channelId, gen: entry.reader.gen, cursor: entry.reader.cursor(), at: this.now(), readAt: input.readAt, writtenAt: entry.reader.writtenAt() }
-        frames = frameItems(changed.map((item) => wireItem({ item, place: sub.channel.place }))).map((items) => JSON.stringify({ ...base, items }))
-        texts.set(sub.channelId, frames)
+        const base = { type: 'chat.items', channel: sub.channelId, gen: entry.reader.gen, at: this.now(), readAt: input.readAt, writtenAt: entry.reader.writtenAt() }
+        const parts = frameItems(held.map((item) => wireItem({ item, place: link.channel.place })))
+        frames = parts.map((items, index) => JSON.stringify({ ...base, cursor: index === parts.length - 1 ? cursor : input.before, items }))
+        texts.set(key, frames)
         for (const frame of frames) bytes += frame.length
       }
       for (const frame of frames) sub.sink(frame)
       subscribers += 1
     }
-    // 대화 push 1회 비용(Y10ⓓ 재료) — 개수·크기·시간만, 글은 남기지 않는다. `sendMs` = 직렬화·발송, `readMs` = 그 변화를 읽은 꼬리 확인,
-    // `totalMs` = 둘의 합(판독·파싱·변경 고르기·직렬화·발송 — C2).
+    // 대화 push 1회 비용(Y10ⓓ 재료) — 개수·크기·시간만, 글은 남기지 않는다. `readMs` = 그 변화를 읽은 꼬리 확인(stat·덮어쓰기 확인·읽기·파싱),
+    // `sendMs` = 변경 고르기·범위 거르기·변환·직렬화·발송, `totalMs` = 둘의 합(C2·R2-A5).
     const sendMs = performance.now() - started
-    const round = (ms: number): number => Math.round(ms * 100) / 100
     this.deps.log('mobile.chat_push', { items: changed.length, bytes, subscribers, readMs: round(input.readMs), sendMs: round(sendMs), totalMs: round(input.readMs + sendMs) })
   }
 

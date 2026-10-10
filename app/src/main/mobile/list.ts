@@ -379,7 +379,7 @@ export type ChatChannel = {
   place: { worktree: string | null; home: string }
 }
 
-export type ChatChannelResult = { ok: true; channel: ChatChannel } | { ok: false; reason: 'not_listed' | 'no_session' }
+export type ChatChannelResult = { ok: true; channel: ChatChannel } | { ok: false; reason: 'not_listed' | 'no_session' | 'not_ready' }
 
 /**
  * 채널 id → 그 세션. **지금 목록에 있는 채널만**(`buildMobileList` 와 같은 함수로 만든 목록 — 셸 pane·서브에이전트·숨긴 작업은 없다).
@@ -388,7 +388,8 @@ export type ChatChannelResult = { ok: true; channel: ChatChannel } | { ok: false
 export function chatChannel(input: { list: ListInput; channelId: string }): ChatChannelResult {
   const { state } = input.list
   const list = buildMobileList(input.list)
-  if (!list.available) return { ok: false, reason: 'not_listed' }
+  // 목록 연결이 아직·잠깐 끊김이다 — 채널이 없어진 것이 아니다(R2-A4, 구독은 기다린다).
+  if (!list.available) return { ok: false, reason: 'not_ready' }
   const listed = list.repos.flatMap((repo) => repo.tasks.flatMap((task) => task.channels)).find((channel) => channel.id === input.channelId)
   if (listed === undefined || listed.kind === null) return { ok: false, reason: 'not_listed' }
   const kind = listed.kind

@@ -212,12 +212,14 @@ export type BodyState =
   | { kind: 'items' }
   | { kind: 'failed'; title: string; detail: string; retry: boolean }
 
-export function bodyState(input: { phase: { kind: string; reason?: string }; count: number }): BodyState {
+export function bodyState(input: { phase: { kind: string; reason?: string; retrying?: boolean }; count: number }): BodyState {
   const { phase } = input
   switch (phase.kind) {
     case 'ready':
       return input.count === 0 ? { kind: 'empty' } : { kind: 'items' }
     case 'unavailable':
+      // 일시 부재(R2-A4) — 맥이 찾으면 저절로 열린다. 버튼 대신 그 사실을 적는다.
+      if (phase.retrying === true) return { kind: 'failed', title: unavailableText(phase.reason ?? '').title, detail: '맥이 찾으면 자동으로 이어집니다', retry: false }
       return { kind: 'failed', ...unavailableText(phase.reason ?? ''), retry: phase.reason === 'not_ready' || phase.reason === 'unreadable' }
     case 'failed':
       if (phase.reason === 'rejected') return { kind: 'failed', title: '맥이 대화를 보내지 않습니다', detail: '맥의 corral 을 업데이트해 주세요', retry: false }
@@ -277,8 +279,10 @@ export function stateCard(input: { dot: string; live: boolean; errorText: string
 }
 
 /** 다시 구독이 실패해 들고 있는 본문이 최신이 아닐 수 있다(R1-A7) — 띠 글. */
-export function staleText(stale: 'timeout' | 'rejected' | 'invalid'): { title: string; retry: boolean } {
+export function staleText(stale: 'timeout' | 'rejected' | 'invalid' | 'waiting'): { title: string; retry: boolean } {
   switch (stale) {
+    case 'waiting':
+      return { title: '맥이 대화 기록을 다시 찾는 중입니다 · 지난 내용입니다', retry: false }
     case 'timeout':
       return { title: '대화를 새로 받지 못했습니다 · 지난 내용입니다', retry: true }
     case 'rejected':

@@ -30,7 +30,8 @@ import type { AgentKind, Channel } from '../core/list'
 import { Avatar } from './StatusGlyph'
 import { color, font, hhmm, mono } from './tokens'
 
-const TOOL_CARD_BG = '#121212'
+/** 도구·질문·코드 카드 배경 = 확정 토큰 `--m-tool-card-bg: var(--bg-window)`(`specs/design-tokens-mobile.css` — #121212 는 쓰지 않는다, R2-A6). */
+const TOOL_CARD_BG = color.window
 const BODY_TEXT = '#e5e5e5'
 const AGENT_NAME: Record<AgentKind, string> = { claude: 'Claude', codex: 'Codex', grok: 'Grok' }
 

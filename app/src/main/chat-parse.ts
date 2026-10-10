@@ -569,9 +569,12 @@ export type ChatStats = { lines: number; skipped: Record<string, number>; unknow
  * - 도구 결과는 그 호출을 찾아 상태만 바꾼다(본문은 버린다). 답(AskUserQuestion 결과 등)은 질문 말풍선에.
  * - Claude rewind(X2ⓘ): 사람 발화 R 의 부모 P 에 **앞선 사람 발화 자식 S** 가 이미 있으면 S 부터 R 앞까지는 버려진 가지다 —
  *   S 이후의 말풍선을 지우고 `rewinds` 를 올린다(판독자가 세대를 바꿔 폰이 처음부터 받는다). 실측에서 같은 부모를 둔 사람 발화 둘 = rewind 모양뿐이다
- *   (나머지 갈래는 병렬 도구 결과 — `raw/claude/mapping.md`).
+ *   (나머지 갈래는 병렬 도구 결과 — `raw/claude/mapping.md`). 첫 프롬프트까지 되감은 rewind 는 부모 없는 사람 발화가 둘 — 뿌리끼리 형제로 같은 규칙(C3).
  * - `changed()` = 마지막으로 물은 뒤 새로 생기거나 바뀐 말풍선 id.
  */
+/** 부모 없는 사람 발화의 형제 열쇠(C3) — uuid 와 겹치지 않는 값. */
+const ROOT_PARENT = '\u0000root'
+
 export class ChatBuilder {
   readonly agent: TranscriptAgent
   private readonly sessionId: string | null
@@ -607,8 +610,8 @@ export class ChatBuilder {
   }
 
   private rewindCheck(input: { link: ClaudeLink; offset: number }): void {
-    const parent = input.link.parentUuid
-    if (parent === null) return
+    // 부모 없는 사람 발화 = 대화의 뿌리. 첫 프롬프트까지 되감으면 새 뿌리가 또 생긴다(C3 — 격리 실측 `raw/claude/r2/c3-shapes.txt`) — 뿌리끼리도 형제로 본다.
+    const parent = input.link.parentUuid ?? ROOT_PARENT
     const earlier = this.humanChildOf.get(parent)
     if (earlier === undefined) {
       this.humanChildOf.set(parent, input.offset)

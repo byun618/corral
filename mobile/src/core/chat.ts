@@ -21,7 +21,8 @@ export type ChatTimes = { at: number | null; readAt: number | null; writtenAt: n
 export type ChatMessage =
   | ({ type: 'page'; channel: string; gen: string; mode: 'reset' | 'resume' | 'older'; hasOlder: boolean; items: ChatItem[]; dropped: number } & ChatTimes)
   | ({ type: 'items'; channel: string; gen: string; items: ChatItem[]; dropped: number } & ChatTimes)
-  | { type: 'unavailable'; channel: string; reason: string }
+  /** `retrying` = 일시 부재 — 서버가 구독을 들고 있다가 회복되면 첫 페이지를 보낸다(R2-A4). */
+  | { type: 'unavailable'; channel: string; reason: string; retrying: boolean }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -107,7 +108,7 @@ function readItems(value: unknown): { items: ChatItem[]; dropped: number } | nul
 export function parseChatMessage(value: Record<string, unknown>): ChatMessage | null {
   const channel = str(value.channel)
   if (channel === null) return null
-  if (value.type === 'chat.unavailable') return { type: 'unavailable', channel, reason: str(value.reason) ?? 'unknown' }
+  if (value.type === 'chat.unavailable') return { type: 'unavailable', channel, reason: str(value.reason) ?? 'unknown', retrying: value.retrying === true }
   const gen = str(value.gen)
   const read = readItems(value.items)
   if (gen === null || read === null) return null

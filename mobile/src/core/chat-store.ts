@@ -21,10 +21,11 @@ export type ChatPhase =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ready' }
-  | { kind: 'unavailable'; reason: string }
+  | { kind: 'unavailable'; reason: string; retrying: boolean }
   | { kind: 'failed'; reason: 'timeout' | 'rejected' | 'invalid' }
 
-export type ChatStale = 'timeout' | 'rejected' | 'invalid'
+/** `waiting` = 맥이 기록을 잠깐 못 찾는다(세션 교체 직후 등) — 찾으면 서버가 처음부터 보낸다(R2-A4). */
+export type ChatStale = 'timeout' | 'rejected' | 'invalid' | 'waiting'
 
 export type ChatSnapshot = {
   channel: string | null
@@ -176,7 +177,7 @@ export class ChatStore {
   }
 
   /** 이번 구독 실패 — 받은 본문이 없으면 실패 화면, 있으면 본문을 든 채 `stale`(R1-A7). */
-  private fail(reason: ChatStale): void {
+  private fail(reason: Exclude<ChatStale, 'waiting'>): void {
     this.pending = false
     this.clearDeadline()
     this.log?.add('chat_failed', { reason, held: this.snapshot.items.length })
@@ -200,8 +201,10 @@ export class ChatStore {
     if (message.type === 'unavailable') {
       this.clearDeadline()
       this.pending = false
-      this.log?.add('chat_unavailable', { reason: message.reason })
-      this.set({ phase: { kind: 'unavailable', reason: message.reason }, receivedAt: now })
+      this.log?.add('chat_unavailable', { reason: message.reason, retrying: message.retrying })
+      // 일시 부재인데 받은 본문이 있다 — 본문을 든 채 「지난 내용」 으로(R2-A4). 서버가 회복 뒤 reset 을 보낸다.
+      if (message.retrying && snapshot.items.length > 0) this.set({ stale: 'waiting', receivedAt: now })
+      else this.set({ phase: { kind: 'unavailable', reason: message.reason, retrying: message.retrying }, receivedAt: now })
       return
     }
     // 3초 측정(X4) 폰 원자료 — 받은 시각 · 서버가 보낸 시각 · 기록을 읽은 시각 · 파일 수정 시각 · 말풍선의 기록 시각 · 시계 차. 글 없음.

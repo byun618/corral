@@ -59,7 +59,8 @@ describe('메시지 읽기', () => {
     if (parsed.type !== 'chat' || parsed.message.type !== 'page') throw new Error('page 아님')
     expect(parsed.message.items.map((item) => item.id)).toEqual([1, 3])
     expect(parsed.message.dropped).toBe(2)
-    expect(parseChatMessage({ type: 'chat.unavailable', channel: 'c1', reason: 'no_file' })).toEqual({ type: 'unavailable', channel: 'c1', reason: 'no_file' })
+    // R2-A4 — `retrying` 칸이 생겼다(없으면 false). 기존 기대에 그 칸만 더했다.
+    expect(parseChatMessage({ type: 'chat.unavailable', channel: 'c1', reason: 'no_file' })).toEqual({ type: 'unavailable', channel: 'c1', reason: 'no_file', retrying: false })
     expect(parseServerMessage(JSON.stringify({ type: 'chat.page', channel: 'c1', items: [] }))).toEqual({ type: 'chat_invalid' })
   })
 

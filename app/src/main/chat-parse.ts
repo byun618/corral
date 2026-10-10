@@ -38,7 +38,8 @@ export type ChatItem =
   | { id: number; kind: 'prompt'; text: string; at: number | null }
   | { id: number; kind: 'reply'; text: string; at: number | null }
   | { id: number; kind: 'tools'; tools: ChatTool[]; at: number | null }
-  | { id: number; kind: 'question'; questions: SessionQuestion[]; state: ChatQuestionState; answer: string | null; at: number | null }
+  /** `call` = 그 질문의 도구 호출 id(LIFE-582 R1-A2 — 폰의 답이 같은 질문인지 대조한다). 기록에 없으면 null. */
+  | { id: number; kind: 'question'; call: string | null; questions: SessionQuestion[]; state: ChatQuestionState; answer: string | null; at: number | null }
   | { id: number; kind: 'note'; note: ChatNoteKind; text: string | null; at: number | null }
 
 /** 한 줄이 낸 것. `skip` 은 알고 버리는 줄(사유), `unknown` 은 모양을 모르는 줄. */
@@ -717,7 +718,7 @@ export class ChatBuilder {
       }
       case 'question': {
         this.close()
-        const item: QuestionItem = { id: this.freeId(offset), kind: 'question', questions: atom.questions, state: 'pending', answer: null, at }
+        const item: QuestionItem = { id: this.freeId(offset), kind: 'question', call: atom.callId, questions: atom.questions, state: 'pending', answer: null, at }
         if (atom.callId !== null) this.questions.set(atom.callId, item)
         this.pending.push(item)
         return this.push(item)

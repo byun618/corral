@@ -8,7 +8,8 @@ export type InputOp = 'send' | 'answer' | 'stop'
 export type InputState = 'queued' | 'sending' | 'delivered' | 'unconfirmed' | 'failed' | 'cancelled' | 'stopped' | 'unknown'
 export type InputWait = 'turn' | 'gate'
 
-export type InputStateMessage = { id: string; channel: string | null; op: InputOp | null; state: InputState; wait: InputWait | null; reason: string | null; at: number | null }
+/** `text` — 복구 조회(`input.pending`) 답에만 실리는 지시 본문(R1-A8). */
+export type InputStateMessage = { id: string; channel: string | null; op: InputOp | null; state: InputState; wait: InputWait | null; reason: string | null; at: number | null; text: string | null }
 
 /** 본문 상한(UTF-8 바이트) — 서버·CLI 와 같다(P7). */
 export const MAX_INPUT_BYTES = 65536
@@ -41,6 +42,7 @@ export function parseInputState(value: Record<string, unknown>): InputStateMessa
     wait: pick(value.wait, WAITS),
     reason: typeof value.reason === 'string' ? value.reason : null,
     at: typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : null,
+    text: typeof value.text === 'string' ? value.text : null,
   }
 }
 
@@ -167,7 +169,9 @@ export function composerMode(input: {
   }
   if (channel.waiting === 'approval') return { kind: 'locked', placeholder: '맥에서 승인할 때까지 보낼 수 없음', note: null, keep: true }
   if (channel.waiting === 'login' || channel.waiting === 'other') return { kind: 'locked', placeholder: '맥에서 처리할 때까지 보낼 수 없음', note: null, keep: true }
-  if (channel.dot === 'working' || channel.dot === 'monitoring') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다', note: null }
+  if (channel.dot === 'working') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다', note: null }
+  // 백그라운드가 남으면 herdr 는 작업 중으로 보고 큐는 그것이 끝날 때까지 기다린다(Z1ⓓ, C2 — 문구 후보는 RESULT r1, 게이트 ① 에서 확정).
+  if (channel.dot === 'monitoring') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 백그라운드 작업까지 끝나면 들어갑니다', note: null }
   return { kind: 'open', target: 'send', placeholder: '지시 보내기', note: null }
 }
 
@@ -218,9 +222,17 @@ export type SentEntry = {
   at: number
   /** 보낼 때 대화의 마지막 말풍선 id — 들어간 뒤 기록의 「내 지시」 를 찾는 기준. */
   tailId: number | null
+  /**
+   * 앱이 혼자 정한 「확인 못 함」(서버 답 없이 시간 초과 — R1-A7). 서버 결과가 아니라서 끝이 아니다 — 재연결 조회·늦은 결과로 바뀐다.
+   * 이 동안 「다시 보내기」 는 없다(아직 들어가는 중일 수 있다 — 같은 글이 두 번 들어간다).
+   */
+  provisional: boolean
 }
 
 export const FINAL_STATES: ReadonlySet<InputState> = new Set(['delivered', 'unconfirmed', 'failed', 'cancelled', 'stopped'])
+
+/** 서버가 확정한 끝 — 앱 혼자 정한 「확인 못 함」(provisional)은 끝이 아니다(R1-A7). */
+export const settled = (entry: SentEntry): boolean => FINAL_STATES.has(entry.state) && !entry.provisional
 
 export type SentLine = { tone: 'muted' | 'question' | 'dim' | 'error'; text: string; action: 'cancel' | 'retry' | null; faded: boolean }
 
@@ -240,22 +252,31 @@ const REASON: Record<string, string> = {
   record_missing: '대화 기록에서 찾지 못했습니다 — 대화에서 확인해 주세요',
   record_ambiguous: '대화 기록에서 같은 글을 둘 이상 찾았습니다 — 대화에서 확인해 주세요',
   record_rewritten: '대화 기록이 다시 쓰였습니다 — 대화에서 확인해 주세요',
-  no_reply: '맥이 답하지 않았습니다 — 대화에서 확인해 주세요',
+  no_reply: '맥이 아직 답하지 않았습니다 — 연결되면 다시 확인합니다',
   unknown: '맥이 이 지시를 모릅니다(맥 앱이 다시 시작됨)',
+  expired: '맥이 이 지시를 더 기억하지 않습니다',
+  revoked: '이 기기의 연결이 해지되었습니다',
+  target_changed: '그 사이 세션이 바뀌어 보내지 않았습니다',
+  guard_outdated: '맥의 터미널 백엔드가 오래되어 보내지 않았습니다',
 }
 
 export function reasonText(reason: string | null): string | null {
   return reason === null ? null : (REASON[reason] ?? null)
 }
 
-/** 말풍선 아래 상태 한 줄(design-handoff §1 Q7 · P6ⓒ 「확인하지 못했습니다」 변형). */
-export function sentLine(input: { entry: SentEntry; hhmm: (at: number) => string }): SentLine | null {
+/**
+ * 말풍선 아래 상태 한 줄(design-handoff §1 Q7 · P6ⓒ 「확인하지 못했습니다」 변형). `monitoring` = 그 채널이 백그라운드 작업을 지켜보는 중 —
+ * 큐는 그것까지 끝나야 넣는다(C2).
+ */
+export function sentLine(input: { entry: SentEntry; hhmm: (at: number) => string; monitoring?: boolean }): SentLine | null {
   const { entry } = input
   switch (entry.state) {
     case 'sending':
       return { tone: 'muted', text: '보내는 중…', action: null, faded: true }
-    case 'queued':
-      return { tone: 'question', text: entry.acked ? '대기 중 · 이 턴이 끝나면 들어갑니다' : '보내는 중…', action: entry.acked ? 'cancel' : null, faded: !entry.acked }
+    case 'queued': {
+      const wait = input.monitoring === true ? '대기 중 · 백그라운드 작업까지 끝나면 들어갑니다' : '대기 중 · 이 턴이 끝나면 들어갑니다'
+      return { tone: 'question', text: entry.acked ? wait : '보내는 중…', action: entry.acked ? 'cancel' : null, faded: !entry.acked }
+    }
     case 'delivered':
       return { tone: 'dim', text: `들어감 ✓ ${input.hhmm(entry.at)}`, action: null, faded: false }
     case 'failed': {
@@ -264,7 +285,7 @@ export function sentLine(input: { entry: SentEntry; hhmm: (at: number) => string
     }
     case 'unconfirmed': {
       const why = reasonText(entry.reason)
-      return { tone: 'error', text: why === null ? '들어갔는지 확인하지 못했습니다 — 대화에서 확인해 주세요' : `들어갔는지 확인하지 못했습니다 · ${why}`, action: 'retry', faded: false }
+      return { tone: 'error', text: why === null ? '들어갔는지 확인하지 못했습니다 — 대화에서 확인해 주세요' : `들어갔는지 확인하지 못했습니다 · ${why}`, action: entry.provisional ? null : 'retry', faded: false }
     }
     case 'cancelled':
     case 'stopped':

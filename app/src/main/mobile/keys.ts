@@ -48,8 +48,6 @@ export const stopNeedsEmptyInput = (kind: MobileAgentKind): boolean => kind === 
 
 /** 지시 본문 상한(UTF-8 바이트) — `terminal prompt` 의 `MAX_INPUT` 과 같다(P7). */
 export const MAX_INPUT_BYTES = 65536
-/** 질문 직접 입력 상한(글자). */
-export const MAX_ANSWER_TEXT = 2000
 
 /**
  * 지시 본문 정리(P8 Z9ⓔ) — 본문은 herdr 가 붙여 넣기(bracketed paste)로 넣는다. 본문 안 제어 문자가 키로 작동하지 않게
@@ -193,8 +191,13 @@ function runsOf(line: string): Run[] {
       if (match[2] === 'm') {
         flush()
         const params = match[1] === '' ? ['0'] : match[1]!.split(';')
-        for (const param of params) {
-          if (param === '0' || param === '') dim = false
+        // 확장 색(38·48·58 + `;5;n` 256색 · `;2;r;g;b` truecolor)은 뒤 인자까지 한 묶음으로 먹는다 — 그 안의 `2` 는 흐림이 아니다(R1-A9).
+        for (let at = 0; at < params.length; at += 1) {
+          const param = params[at]
+          if (param === '38' || param === '48' || param === '58') {
+            const mode = params[at + 1]
+            at += mode === '5' ? 2 : mode === '2' ? 4 : 1
+          } else if (param === '0' || param === '') dim = false
           else if (param === '2') dim = true
           else if (param === '22') dim = false
         }
@@ -210,6 +213,9 @@ function runsOf(line: string): Run[] {
 }
 
 const plainOf = (runs: Run[]): string => runs.map((run) => run.text).join('')
+
+/** 보이는 화면(ANSI)의 글만 — 줄 순서 그대로(R1-A2 질문 화면 대조). */
+export const screenPlain = (screen: string): string => screen.split(/\r?\n/).map((line) => plainOf(runsOf(line))).join('\n')
 const RULE = /^\s*─{20,}\s*$/
 
 /**

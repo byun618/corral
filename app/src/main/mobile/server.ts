@@ -7,14 +7,16 @@
 // - 거절·close 를 시작한 연결은 그 뒤 메시지를 처리하지 않는다(R1-A7 — 같은 write 에 이어 온 pair 가 통과하지 않게).
 // - 인증은 WS 첫 메시지(`hello`+토큰 또는 `pair`+코드). 그 전에는 어떤 데이터도 돌려주지 않는다 — 버전도 인증 뒤에만.
 //   loopback 의 다른 로컬 프로세스도 붙을 수 있다는 전제다(serve 헤더는 위조 가능 — W6). 경계는 토큰이다.
-// - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 1009 로 닫는다. 인증된 연결의 `input.send` 만
-//   `MAX_INPUT_FRAME_BYTES` 까지 받는다(LIFE-582 P7) — ws 의 `maxPayload` 는 큰 쪽이고 16 KiB 는 여기서 직접 다시 건다.
+// - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 1009 로 닫는다. 인증된 연결의 `input.send`·`question.answer` 만
+//   `MAX_INPUT_FRAME_BYTES` 까지 받는다(LIFE-582 P7) — ws 의 `maxPayload` 는 큰 쪽이다. 인증 전에는 소켓에 들어온 바이트를 직접 세어
+//   `PRE_AUTH_MAX_BYTES` 를 넘으면 닫고(끝나지 않은 조각도 — R1-A10), 인증 뒤 그 밖의 프레임(파싱 실패·바이너리 포함)은 16 KiB 를 여기서 다시 건다.
 // - 인증된 연결은 생존 확인(LIFE-578 E3): `LIVENESS_INTERVAL_MS` 마다 WS ping 프레임, `IDLE_TIMEOUT_MS` 동안 아무 프레임도 없으면 끊는다.
 //   같은 기기가 새로 hello 하면 그 기기의 이전 연결을 `replaced` 로 닫는다 — 망을 바꾼 폰의 죽은 연결이 상한 16 을 채우지 않게.
 // - **electron 을 모른다** — 버전·로그를 주입받아 vitest 가 실제 서버를 띄운다.
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 import { WebSocketServer, type WebSocket, type RawData } from 'ws'
+import { isRecord } from '../../shared/json.js'
 import type { ChatResume, ChatSubscription } from './chat.js'
 import type { Device, PairingStore } from './pairing.js'
 import {
@@ -25,6 +27,7 @@ import {
   MAX_CONNECTIONS,
   MAX_INPUT_FRAME_BYTES,
   MAX_MESSAGE_BYTES,
+  PRE_AUTH_MAX_BYTES,
   PROTOCOL_VERSION,
   WS_PATH,
   parseClientMessage,
@@ -61,9 +64,13 @@ export type InputSource = {
   send(input: { device: string; id: string; channel: string; text: string }): void
   cancel(input: { device: string; id: string }): void
   status(input: { device: string; ids: string[] }): void
-  answer(input: { device: string; id: string; channel: string; question: number; answers: { choices: number[]; other: string | null }[] }): void
+  answer(input: { device: string; id: string; channel: string; question: number; call: string | null; answers: { choices: number[]; other: string | null }[] }): void
   stopTurn(input: { device: string; id: string; channel: string }): void
+  pending(input: { device: string }): void
 }
+
+/** 인증된 연결이 16 KiB 를 넘겨 보낼 수 있는 메시지(P7). */
+const LARGE_TYPES: ReadonlySet<string> = new Set(['input.send', 'question.answer'])
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -140,7 +147,7 @@ export class MobileServer {
         socket.destroy()
         return
       }
-      wss.handleUpgrade(request, socket, head, (ws) => this.accept(ws))
+      wss.handleUpgrade(request, socket, head, (ws) => this.accept({ ws, socket, head: head.length }))
     })
     server.on('clientError', (_error, socket) => socket.destroy())
     await new Promise<void>((resolve, reject) => {
@@ -246,10 +253,21 @@ export class MobileServer {
     }
   }
 
-  private accept(ws: WebSocket): void {
+  private accept(input: { ws: WebSocket; socket: Socket; head: number }): void {
+    const { ws, socket } = input
     const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null, chat: null, input: null }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
+    // 인증 전 수신 관문(R1-A10) — ws 는 큰 `maxPayload` 로 끝나지 않은 조각을 모은다. 인증 전에는 소켓 바이트 합계로 16 KiB(+머리)를 넘기지 않는다.
+    let preAuth = input.head
+    const countPreAuth = (chunk: Buffer): void => {
+      if (connection.deviceId !== null || connection.closing) return void socket.off('data', countPreAuth)
+      preAuth += chunk.length
+      if (preAuth <= PRE_AUTH_MAX_BYTES) return
+      socket.off('data', countPreAuth)
+      this.drop(connection, CLOSE.tooBig, 'too_big')
+    }
+    socket.on('data', countPreAuth)
     ws.on('message', (data, isBinary) => {
       connection.lastSeenAt = Date.now()
       this.onMessage(connection, data, isBinary)
@@ -268,21 +286,21 @@ export class MobileServer {
   private onMessage(connection: Connection, data: RawData, isBinary: boolean): void {
     // 거절·close 를 시작한 연결 — 같은 write 로 뒤따라 온 메시지도 버린다(R1-A7).
     if (connection.closing || connection.ws.readyState !== connection.ws.OPEN) return
+    const text = rawText(data)
+    const bytes = Buffer.byteLength(text)
+    // 16 KiB 를 넘는 프레임은 인증된 `input.send`·`question.answer` 만 — 인증 전·바이너리·JSON 아님·다른 타입은 1009(R1-A10).
+    // 그 두 타입의 모양 오류(본문 초과 등)는 아래 파싱이 `bad_message` 로 답한다.
+    if (bytes > MAX_MESSAGE_BYTES && (connection.deviceId === null || isBinary || !largeType(text))) return this.drop(connection, CLOSE.tooBig, 'too_big')
     if (isBinary) {
       if (connection.deviceId === null) return this.reject(connection, 'bad_message', CLOSE.badMessage)
       return this.send(connection.ws, { type: 'error', code: 'bad_message', message: errorText('bad_message') })
     }
-    const text = rawText(data)
-    const bytes = Buffer.byteLength(text)
-    // 인증 전에는 16 KiB 넘는 프레임을 읽지도 않는다 — 큰 상한은 인증된 `input.send` 몫이다.
-    if (connection.deviceId === null && bytes > MAX_MESSAGE_BYTES) return this.drop(connection, CLOSE.tooBig, 'too_big')
     const parsed = parseClientMessage(text)
     if (!parsed.ok) {
       if (connection.deviceId === null) return this.reject(connection, parsed.code, CLOSE.badMessage)
       return this.send(connection.ws, { type: 'error', code: parsed.code, message: errorText(parsed.code) })
     }
     const message = parsed.message
-    if (message.type !== 'input.send' && bytes > MAX_MESSAGE_BYTES) return this.drop(connection, CLOSE.tooBig, 'too_big')
     // 인증 뒤 — ping · list.subscribe(LIFE-580) · chat.*(LIFE-581) · 쓰기(LIFE-582).
     if (connection.deviceId !== null) {
       // 해지가 연결 닫기보다 먼저 보일 수 있는 틈을 막는다 — 매 메시지 기기 존재 확인.
@@ -301,10 +319,13 @@ export class MobileServer {
           return input.status({ device, ids: message.ids })
         case 'question.answer':
           if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
-          return input.answer({ device, id: message.id, channel: message.channel, question: message.question, answers: message.answers })
+          return input.answer({ device, id: message.id, channel: message.channel, question: message.question, call: message.call, answers: message.answers })
         case 'turn.stop':
           if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
           return input.stopTurn({ device, id: message.id, channel: message.channel })
+        case 'input.pending':
+          if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
+          return input.pending({ device })
         case 'ping':
           return this.send(connection.ws, { type: 'pong', id: message.id, at: Date.now() })
         case 'list.subscribe':
@@ -373,6 +394,7 @@ export class MobileServer {
       case 'input.status':
       case 'question.answer':
       case 'turn.stop':
+      case 'input.pending':
       case 'unknown':
         return this.reject(connection, 'not_authenticated', CLOSE.unauthorized)
     }
@@ -494,6 +516,16 @@ export class MobileServer {
 
   private send(ws: WebSocket, value: unknown): void {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(value))
+  }
+}
+
+/** 큰 프레임이 받을 수 있는 타입인가 — JSON 이고 `type` 이 `LARGE_TYPES` 다. */
+function largeType(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text)
+    return isRecord(value) && typeof value.type === 'string' && LARGE_TYPES.has(value.type)
+  } catch {
+    return false
   }
 }
 

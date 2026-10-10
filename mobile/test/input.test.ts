@@ -33,7 +33,7 @@ function channel(patch: Partial<Channel> = {}): Channel {
 }
 
 const q = (patch: Partial<ChatQuestion> = {}): ChatQuestion => ({ question: '어느 쪽?', header: null, options: [{ label: 'A', description: null }, { label: 'B', description: null }], multiSelect: false, preview: false, ...patch })
-const card = (questions: ChatQuestion[], patch: Partial<Extract<ChatItem, { kind: 'question' }>> = {}): Extract<ChatItem, { kind: 'question' }> => ({ id: 9, kind: 'question', at: null, questions, state: 'pending', answer: null, clipped: false, ...patch })
+const card = (questions: ChatQuestion[], patch: Partial<Extract<ChatItem, { kind: 'question' }>> = {}): Extract<ChatItem, { kind: 'question' }> => ({ id: 9, kind: 'question', at: null, call: 'toolu-9', questions, state: 'pending', answer: null, clipped: false, ...patch })
 const mode = (input: Partial<Parameters<typeof composerMode>[0]>) => composerMode({ channel: channel(), conn: 'connected', unknown: false, question: null, step: 0, noSession: false, ...input })
 
 describe('Composer 상태표 8행 (design-handoff §2)', () => {
@@ -118,7 +118,7 @@ describe('질문 (C3 · C4 · C5 · P4)', () => {
   })
 })
 
-const entry = (patch: Partial<SentEntry>): SentEntry => ({ id: 'm1', channel: 'w1:p1', op: 'send', text: '안녕', state: 'sending', wait: null, reason: null, acked: false, sentAt: 0, at: 0, tailId: 5, ...patch })
+const entry = (patch: Partial<SentEntry>): SentEntry => ({ id: 'm1', channel: 'w1:p1', op: 'send', text: '안녕', state: 'sending', wait: null, reason: null, acked: false, sentAt: 0, at: 0, tailId: 5, provisional: false, ...patch })
 const hhmm = () => '10:12'
 
 describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
@@ -145,7 +145,7 @@ describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
     expect(stopLine(entry({ op: 'stop', state: 'failed', reason: 'not_running' }))?.text).toBe('이미 멈춰 있습니다')
   })
   it('서버 `input.state` 읽기 · id 규칙', () => {
-    expect(parseInputState({ type: 'input.state', id: 'm1', channel: 'c', op: 'send', state: 'queued', wait: 'turn', reason: null, at: 5 })).toEqual({ id: 'm1', channel: 'c', op: 'send', state: 'queued', wait: 'turn', reason: null, at: 5 })
+    expect(parseInputState({ type: 'input.state', id: 'm1', channel: 'c', op: 'send', state: 'queued', wait: 'turn', reason: null, at: 5 })).toEqual({ id: 'm1', channel: 'c', op: 'send', state: 'queued', wait: 'turn', reason: null, at: 5, text: null })
     expect(parseInputState({ id: 'm1', state: 'bogus' })).toBeNull()
     expect(newInputId({ now: 1_700_000_000_000, random: () => 0.5 })).toMatch(/^[A-Za-z0-9_-]{8,64}$/)
   })
@@ -215,14 +215,14 @@ describe('입력 저장소 (P2 · P6)', () => {
     expect(t.store.cancel(id)).toBe(true)
     expect(t.connection.sent.at(-1)).toEqual({ type: 'input.cancel', id })
   })
-  it('재연결(live) 뒤 끝나지 않은 id 를 조회 — 다시 보내지 않는다 · 서버가 모르면 보내지 못했습니다', () => {
+  it('재연결(live) 뒤 끝나지 않은 id 를 조회 — 다시 보내지 않는다 · 서버가 모르면 확인하지 못했습니다(들어갔을 수 있다 — R1-A8 SURFACE 정정)', () => {
     const t = setup()
     const id = t.store.send({ channel: 'w1:p1', text: 'x', tailId: null }) ?? ''
     t.connection.emit({ kind: 'live', attempt: 2, reason: 'connect' })
-    expect(t.connection.sent.at(-1)).toEqual({ type: 'input.status', ids: [id] })
+    expect(t.connection.sent.slice(-2)).toEqual([{ type: 'input.status', ids: [id] }, { type: 'input.pending' }])
     expect(t.connection.sent.filter((message) => message.type === 'input.send')).toHaveLength(1)
     t.connection.state(id, 'unknown', { channel: null, op: null })
-    expect(t.store.getSnapshot().entries[0]).toMatchObject({ state: 'failed', reason: 'unknown' })
+    expect(t.store.getSnapshot().entries[0]).toMatchObject({ state: 'unconfirmed', reason: 'unknown', provisional: false })
   })
   it('보내는 중이 30초 넘게 남지 않는다 — 20초에 조회, 30초에 확인하지 못했습니다', () => {
     const t = setup()
@@ -241,10 +241,57 @@ describe('입력 저장소 (P2 · P6)', () => {
   })
   it('질문 답·중단 메시지 모양 — 키는 보내지 않는다', () => {
     const t = setup()
-    t.store.answer({ channel: 'w1:p1', question: 9, answers: [{ choices: [1], other: null }] })
+    t.store.answer({ channel: 'w1:p1', question: 9, call: 'toolu-9', answers: [{ choices: [1], other: null }] })
     t.store.stop({ channel: 'w1:p1' })
     expect(t.connection.sent.map((message) => message.type)).toEqual(['question.answer', 'turn.stop'])
-    expect(t.connection.sent[0]).toMatchObject({ question: 9, answers: [{ choices: [1], other: null }] })
+    expect(t.connection.sent[0]).toMatchObject({ question: 9, call: 'toolu-9', answers: [{ choices: [1], other: null }] })
     expect(JSON.stringify(t.connection.sent)).not.toMatch(/\\u001b|keys/)
+  })
+})
+
+// --- 수정 r1 ---------------------------------------------------------------------------------------
+
+describe('R1-A7 앱 혼자 정한 확인 못 함은 끝이 아니다', () => {
+  it('30초 확인 못 함 뒤 재연결 조회 · 늦은 delivered 로 수렴한다 — 다시 보내기는 그동안 없다', () => {
+    const t = setup()
+    const id = t.store.send({ channel: 'w1:p1', text: 'x', tailId: null }) ?? ''
+    t.clock.advance(SENDING_GIVEUP_MS)
+    expect(t.store.getSnapshot().entries[0]).toMatchObject({ state: 'unconfirmed', reason: 'no_reply', provisional: true })
+    expect(t.store.retry(id)).toBeNull()
+    t.connection.sent.length = 0
+    t.connection.emit({ kind: 'live', attempt: 2, reason: 'connect' })
+    expect(t.connection.sent).toContainEqual({ type: 'input.status', ids: [id] })
+    t.connection.state(id, 'delivered')
+    expect(t.store.getSnapshot().entries[0]).toMatchObject({ state: 'delivered', provisional: false })
+    // 서버가 확정한 끝은 늦은 queued 가 되돌리지 않는다.
+    t.connection.state(id, 'queued')
+    expect(t.store.getSnapshot().entries[0]?.state).toBe('delivered')
+  })
+  it('확인 못 함 줄 — 앱 혼자 정한 것에는 다시 보내기가 없다', () => {
+    expect(sentLine({ entry: entry({ state: 'unconfirmed', reason: 'no_reply', provisional: true }), hhmm })?.action).toBeNull()
+    expect(sentLine({ entry: entry({ state: 'unconfirmed', reason: 'record_missing' }), hhmm })?.action).toBe('retry')
+  })
+})
+
+describe('R1-A8 앱 재시작 뒤 서버 큐 복구', () => {
+  it('새 저장소가 live 에서 input.pending 을 묻고, 모르는 대기 지시를 본문과 함께 들인다 — 취소할 수 있다', () => {
+    const t = setup()
+    t.connection.emit({ kind: 'live', attempt: 1, reason: 'connect' })
+    expect(t.connection.sent).toEqual([{ type: 'input.pending' }])
+    t.connection.state('mold-0000-0001', 'queued', { wait: 'turn', text: '앱이 잊은 지시' })
+    expect(t.store.getSnapshot().entries).toEqual([expect.objectContaining({ id: 'mold-0000-0001', channel: 'w1:p1', op: 'send', state: 'queued', text: '앱이 잊은 지시', acked: true })])
+    expect(t.store.cancel('mold-0000-0001')).toBe(true)
+    // 끝난 것·채널 모름은 들이지 않는다.
+    t.connection.state('mold-0000-0002', 'delivered')
+    t.connection.state('mold-0000-0003', 'queued', { channel: null })
+    expect(t.store.getSnapshot().entries).toHaveLength(1)
+  })
+})
+
+describe('C2 백그라운드 대기 문구', () => {
+  it('지켜보는 중이면 입력창·대기 줄이 「백그라운드 작업까지 끝나면」', () => {
+    expect(mode({ channel: channel({ dot: 'monitoring' }) })).toMatchObject({ kind: 'open', placeholder: '지시 보내기 — 백그라운드 작업까지 끝나면 들어갑니다' })
+    expect(mode({ channel: channel({ dot: 'working' }) })).toMatchObject({ placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다' })
+    expect(sentLine({ entry: entry({ state: 'queued', acked: true }), hhmm, monitoring: true })?.text).toBe('대기 중 · 백그라운드 작업까지 끝나면 들어갑니다')
   })
 })

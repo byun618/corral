@@ -13,7 +13,7 @@ export type ChatItem =
   | { id: number; kind: 'reply'; at: number | null; body: ChatText }
   | { id: number; kind: 'tools'; at: number | null; tools: ChatTool[]; count: number; names: Record<string, number>; detail: boolean }
   /** `clipped` = 서버가 글·문항·선택지 일부를 덜어 냈다(크기 상한, R1-A5) — 화면에 잘림을 보인다. */
-  | { id: number; kind: 'question'; at: number | null; questions: ChatQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
+  | { id: number; kind: 'question'; at: number | null; call: string | null; questions: ChatQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
   | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null; clipped: boolean }
 
 /** `cursor` = 서버 판독자의 변경 순번 — 이어 받기에 돌려준다(R1-A2). */
@@ -82,7 +82,7 @@ export function readChatItem(value: unknown): ChatItem | null {
         const read = readQuestion(question)
         return read === null ? [] : [read]
       })
-      return { id, kind: 'question', at, questions, state, answer: str(value.answer), clipped: value.clipped === true }
+      return { id, kind: 'question', at, call: str(value.call), questions, state, answer: str(value.answer), clipped: value.clipped === true }
     }
     case 'note': {
       const note = value.note === 'interrupted' || value.note === 'failed' || value.note === 'compacted' ? value.note : null

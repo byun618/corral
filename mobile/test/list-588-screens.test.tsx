@@ -34,11 +34,14 @@ vi.mock('../src/runtime/chat', () => ({
   chatStore: { open: vi.fn(), close: vi.fn(), loadOlder: vi.fn(), retry: vi.fn() },
 }))
 vi.mock('../src/ui/Conversation', () => ({ Conversation: () => <i data-conversation /> }))
+// LIFE-582 쓰기 — 대화 화면이 입력 저장소를 연다(다른 화면 시험과 같은 mock).
+vi.mock('../src/runtime/input', () => ({ useInput: () => ({ entries: [] }), inputStore: { send: vi.fn(), stop: vi.fn(), answer: vi.fn(), cancel: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }))
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
+  TextInput: () => <textarea />,
   RefreshControl: () => null,
   ActivityIndicator: () => null,
   Platform: { select: (value: { android: string }) => value.android },

@@ -230,6 +230,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
             kind={channel.kind}
             last={index === 0}
             working={working}
+            monitoring={channel.dot === 'monitoring'}
             sent={sent?.attached.get(item.id) ?? null}
             onSentAction={onSentAction}
             question={question !== undefined && question !== null && question.id === item.id ? question : null}
@@ -301,7 +302,7 @@ function Trailer({ channel, live, empty, items, dropped, sent, onSentAction }: {
       ) : null}
       {sent.map((entry) => (
         // 아직 기록에 「내 지시」 로 보이지 않는 보낸 지시(보내는 중·대기 중·실패·확인 못 함) — 대화 끝에.
-        <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
+        <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm, monitoring: channel.dot === 'monitoring' })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
       ))}
       {channel.status === 'closed' ? (
         <View style={{ height: 56, alignItems: 'center', justifyContent: 'center', borderTopWidth: 1, borderTopColor: color.line }}>
@@ -318,19 +319,21 @@ type BubbleProps = {
   kind: AgentKind | null
   last: boolean
   working: boolean
+  /** 백그라운드를 지켜보는 중 — 대기 줄 문구(C2). */
+  monitoring: boolean
   sent: SentEntry | null
   onSentAction?: (input: { id: string; action: 'cancel' | 'retry' }) => void
   question: QuestionControl | null
 }
 
-const Bubble = memo(function Bubble({ item, head, kind, last, working, sent, onSentAction, question }: BubbleProps) {
+const Bubble = memo(function Bubble({ item, head, kind, last, working, monitoring, sent, onSentAction, question }: BubbleProps) {
   switch (item.kind) {
     case 'prompt':
       return (
         <PromptBubble
           text={item.body.text}
           clipped={item.body.clipped}
-          status={sent === null ? null : sentLine({ entry: sent, hhmm })}
+          status={sent === null ? null : sentLine({ entry: sent, hhmm, monitoring })}
           onAction={(action) => (sent === null ? undefined : onSentAction?.({ id: sent.id, action }))}
         />
       )

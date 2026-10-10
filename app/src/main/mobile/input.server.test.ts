@@ -28,6 +28,7 @@ function fakeInput(): { source: InputSource; calls: Call[]; sinks: Map<string, (
     send: ({ device, ...payload }) => { calls.push({ op: 'send', device, payload }) },
     cancel: ({ device, ...payload }) => { calls.push({ op: 'cancel', device, payload }) },
     status: ({ device, ...payload }) => { calls.push({ op: 'status', device, payload }) },
+    pending: ({ device }) => { calls.push({ op: 'pending', device, payload: {} }) },
     answer: ({ device, ...payload }) => { calls.push({ op: 'answer', device, payload }) },
     stopTurn: ({ device, ...payload }) => { calls.push({ op: 'stop', device, payload }) },
   }
@@ -175,5 +176,63 @@ describe('분기 · 결과 받기', () => {
     const other = await paired(bare.port, bare.store)
     other.client.ws.send(JSON.stringify(send('x')))
     expect((await other.client.next({ type: 'error' }))?.code).toBe('unknown_type')
+  })
+})
+
+// --- 수정 r1 ---------------------------------------------------------------------------------------
+
+const until = async (check: () => boolean, timeoutMs = 2_000): Promise<void> => {
+  const started = Date.now()
+  while (!check() && Date.now() - started < timeoutMs) await new Promise((done) => setTimeout(done, 10))
+}
+
+describe('R1-A10 수신 상한 — 인증 전은 소켓 바이트로, 인증 뒤는 모든 프레임', () => {
+  it('인증 전 끝나지 않은 32 KiB 조각(fin:false)도 1009 로 닫는다', async () => {
+    const { port } = await setup()
+    const client = await connect(port)
+    client.ws.send('x'.repeat(32 * 1024), { fin: false })
+    expect(await client.closed).toBe(1009)
+  })
+  it('인증 뒤 16 KiB 넘는 JSON 아닌 글·바이너리는 1009 (bad_json 으로 남지 않는다)', async () => {
+    const { port, store } = await setup()
+    const a = await paired(port, store)
+    a.client.ws.send('{' + 'x'.repeat(32 * 1024))
+    expect(await a.client.closed).toBe(1009)
+    const b = await paired(port, store)
+    b.client.ws.send(Buffer.alloc(32 * 1024, 1))
+    expect(await b.client.closed).toBe(1009)
+  })
+  it('인증 뒤 16 KiB 넘는 다른 모양(input.send 아님)도 1009', async () => {
+    const { port, store } = await setup()
+    const { client } = await paired(port, store)
+    client.ws.send(JSON.stringify({ type: 'input.status', ids: [], pad: 'x'.repeat(MAX_MESSAGE_BYTES) }))
+    expect(await client.closed).toBe(1009)
+  })
+})
+
+describe('R1-A11 질문 답 직접 입력 = 65536 바이트(P7) · R1-A2 도구 호출 id · R1-A8 복구 조회', () => {
+  it('16 KiB 넘는 직접 입력 답은 공급으로 간다 — 도구 호출 id 와 함께', async () => {
+    const { port, store, calls } = await setup()
+    const { client } = await paired(port, store)
+    client.ws.send(JSON.stringify({ type: 'question.answer', id: 'ans-0000-0002', channel: 'c1', question: 4, call: 'toolu-4', answers: [{ choices: [], other: 'a'.repeat(30_000) }] }))
+    await until(() => calls.length > 0)
+    expect(calls[0]).toMatchObject({ op: 'answer', payload: { call: 'toolu-4' } })
+  })
+  it('합계 65536 바이트를 넘는 직접 입력은 bad_message', async () => {
+    const { port, store, calls } = await setup()
+    const { client } = await paired(port, store)
+    client.ws.send(JSON.stringify({ type: 'question.answer', id: 'ans-0000-0003', channel: 'c1', question: 4, call: 'toolu-4', answers: [{ choices: [], other: '가'.repeat(21_846) }] }))
+    expect((await client.next({ type: 'error' }))?.code).toBe('bad_message')
+    expect(calls).toHaveLength(0)
+  })
+  it('input.pending 은 그 기기로 공급에 간다 · 인증 전이면 닫힌다', async () => {
+    const { port, store, calls } = await setup()
+    const { client, id } = await paired(port, store)
+    client.ws.send(JSON.stringify({ type: 'input.pending' }))
+    await until(() => calls.length > 0)
+    expect(calls).toEqual([{ op: 'pending', device: id, payload: {} }])
+    const anon = await connect(port)
+    anon.ws.send(JSON.stringify({ type: 'input.pending' }))
+    expect(await anon.closed).toBe(CLOSE.unauthorized)
   })
 })

@@ -3,9 +3,11 @@
 // - 보내기·답·중단은 **연결됨에서만**(`connection.send` 가 거짓이면 아무것도 보내지 않은 것 — 실패로 남기고 자동 재전송 없음, P6ⓐ).
 // - 같은 id 는 한 번만 만든다. 「다시 보내기」 는 **새 id**(P2) — 이전 항목은 지운다.
 // - 연결이 (다시) 확인되면(`live`) 끝나지 않은 id 를 `input.status` 로 묻는다(P6ⓑ) — 다시 넣지 않는다.
-//   서버가 모르는 id(`unknown` — 맥 앱 재시작)는 `보내지 못했습니다`(failed/unknown).
+//   서버가 모르는 id(`unknown` — 맥 앱 재시작·기억 만료)는 `들어갔는지 확인하지 못했습니다`(unconfirmed) — 들어갔을 수 있으니 「보내지 못함」 이라 하지 않는다.
 // - `보내는 중` 이 무기한 남지 않는다(P6ⓒ): 서버 답 없이 `SENDING_QUERY_MS` 가 지나면 조회, `SENDING_GIVEUP_MS` 까지도 답이 없으면 `unconfirmed`(no_reply).
-// - 앱이 다시 시작되면 이 상태는 없다 — 들어간 지시는 대화 기록의 「내 지시」 로 보인다(P6ⓔ).
+//   이 「확인 못 함」 은 앱이 혼자 정한 것이라(`provisional`) 끝이 아니다 — 재연결 조회·늦은 결과로 바뀐다(R1-A7). 서버가 확정한 끝만 끝이다.
+// - 앱이 다시 시작되면 id 를 잊는다 — 연결될 때마다 `input.pending` 으로 이 기기의 끝나지 않은 요청을 다시 받아(본문 포함) 보이고 취소할 수 있게 한다(R1-A8, P6ⓔ).
+//   이미 들어간 지시는 대화 기록의 「내 지시」 로 보인다.
 // - 기록(`input_*`)에는 글을 남기지 않는다(바이트 수만).
 import type { SessionEvent, TimerHandle } from './connection'
 import {
@@ -18,6 +20,7 @@ import {
   type InputStateMessage,
   type SentEntry,
   type StepAnswer,
+  settled,
 } from './input'
 import type { ConnectionLog } from './log'
 
@@ -72,7 +75,7 @@ export class InputStore {
   /** 다시 보내기 — 같은 글을 새 id 로(P2). 이전 항목은 지운다. 못 보내면 이전 항목을 그대로 둔다. */
   retry(id: string): string | null {
     const entry = this.find(id)
-    if (entry === null || entry.op !== 'send' || entry.text === null || !FINAL_STATES.has(entry.state)) return null
+    if (entry === null || entry.op !== 'send' || entry.text === null || !settled(entry)) return null
     const next = this.send({ channel: entry.channel, text: entry.text, tailId: entry.tailId })
     if (next !== null) this.remove(id)
     return next
@@ -85,9 +88,10 @@ export class InputStore {
     return this.connection.send({ type: 'input.cancel', id })
   }
 
-  answer(input: { channel: string; question: number; answers: StepAnswer[] }): string | null {
+  /** `call` = 그 질문 말풍선의 도구 호출 id — 서버가 같은 질문인지 대조한다(R1-A2). */
+  answer(input: { channel: string; question: number; call: string | null; answers: StepAnswer[] }): string | null {
     const id = newInputId({ now: this.now(), random: this.random })
-    const sent = this.connection.send({ type: 'question.answer', id, channel: input.channel, question: input.question, answers: input.answers })
+    const sent = this.connection.send({ type: 'question.answer', id, channel: input.channel, question: input.question, call: input.call, answers: input.answers })
     this.log?.add('input_answer', { sent, questions: input.answers.length })
     if (!sent) return null
     this.add({ id, channel: input.channel, op: 'answer', text: null, tailId: null })
@@ -116,11 +120,13 @@ export class InputStore {
   private handle(event: SessionEvent): void {
     switch (event.kind) {
       case 'live': {
-        const open = this.snapshot.entries.filter((entry) => !FINAL_STATES.has(entry.state)).map((entry) => entry.id)
+        const open = this.snapshot.entries.filter((entry) => !settled(entry)).map((entry) => entry.id)
         if (open.length > 0) {
           this.connection.send({ type: 'input.status', ids: open })
           this.log?.add('input_status', { ids: open.length, reason: event.reason })
         }
+        // 앱이 잊은(다시 시작) 서버 큐까지 — 이 기기의 끝나지 않은 요청 전부(R1-A8).
+        this.connection.send({ type: 'input.pending' })
         return
       }
       case 'input':
@@ -136,16 +142,25 @@ export class InputStore {
 
   private accept(message: InputStateMessage): void {
     const entry = this.find(message.id)
-    if (entry === null) return
-    // 이미 끝난 항목은 바꾸지 않는다 — 늦게 온 조회 답이 결과를 뒤집지 않게.
-    if (FINAL_STATES.has(entry.state)) return
-    if (message.state === 'unknown') return this.update(entry.id, { state: 'failed', reason: 'unknown', wait: null, at: this.now() })
-    this.update(entry.id, { state: message.state, wait: message.wait, reason: message.reason, acked: true, at: message.at ?? this.now() })
+    if (entry === null) return this.recover(message)
+    // 서버가 확정한 끝은 바꾸지 않는다 — 늦게 온 조회 답(queued 등)이 결과를 되돌리지 않게. 앱 혼자 정한 확인 못 함은 서버 답으로 바뀐다(R1-A7).
+    if (settled(entry)) return
+    if (message.state === 'unknown') return this.update(entry.id, { state: 'unconfirmed', reason: message.reason ?? 'unknown', wait: null, acked: true, provisional: false, at: this.now() })
+    this.update(entry.id, { state: message.state, wait: message.wait, reason: message.reason, acked: true, provisional: false, at: message.at ?? this.now() })
+  }
+
+  /** 앱이 모르는 id 의 끝나지 않은 요청(복구 조회 답) — 다시 보이고 취소할 수 있게 들인다. 끝난 것·채널 모름은 버린다. */
+  private recover(message: InputStateMessage): void {
+    if (message.channel === null || message.op === null || FINAL_STATES.has(message.state) || message.state === 'unknown') return
+    const at = message.at ?? this.now()
+    const entry: SentEntry = { id: message.id, channel: message.channel, op: message.op, text: message.text, state: message.state, wait: message.wait, reason: message.reason, acked: true, sentAt: at, at, tailId: null, provisional: false }
+    this.log?.add('input_recovered', { op: message.op })
+    this.set({ entries: [...this.snapshot.entries, entry] })
   }
 
   private add(input: { id: string; channel: string; op: InputOp; text: string | null; tailId: number | null }): void {
     const at = this.now()
-    const entry: SentEntry = { ...input, state: 'sending', wait: null, reason: null, acked: false, sentAt: at, at }
+    const entry: SentEntry = { ...input, state: 'sending', wait: null, reason: null, acked: false, sentAt: at, at, provisional: false }
     const entries = [...this.snapshot.entries, entry]
     // 채널·종류마다 끝난 것은 최근 `KEEP_FINAL` 개만.
     const finals = entries.filter((item) => item.channel === input.channel && item.op === input.op && FINAL_STATES.has(item.state))
@@ -165,7 +180,7 @@ export class InputStore {
         const late = this.find(id)
         if (late === null || late.acked || FINAL_STATES.has(late.state)) return
         this.log?.add('input_no_reply', { op: late.op })
-        this.update(id, { state: 'unconfirmed', reason: 'no_reply', at: this.now() })
+        this.update(id, { state: 'unconfirmed', reason: 'no_reply', provisional: true, at: this.now() })
       }, SENDING_GIVEUP_MS - SENDING_QUERY_MS))
     }, SENDING_QUERY_MS))
   }

@@ -20,7 +20,7 @@ import { fallbackMacName, readMacName } from './mac-name.js'
 import { MAX_DEVICES, PairingStore } from './pairing.js'
 import { pairingPayload } from './protocol.js'
 import type { AgentSessionRef } from '../../shared/types.js'
-import { resolveTranscriptFile } from '../transcript.js'
+import { resolveTranscriptFile, resolveTranscriptUnique, type TranscriptResolution } from '../transcript.js'
 import { sessionRecordPaths } from '../../runtime/terminal/agent.js'
 import { MobileServer } from './server.js'
 import { MOBILE_HTTPS_PORT, type TailscaleRunner } from './tailscale.js'
@@ -89,7 +89,7 @@ export class MobileService {
         return transcript === null ? null : chatFileOf({ agent, transcript })
       },
     })
-    // 쓰기(LIFE-582) — 대화와 같은 파일 찾기. 질문 확인은 열린 대화 판독자에서만 읽는다(판독자를 새로 만들지 않는다).
+    // 쓰기(LIFE-582) — 대화와 같은 파일이되 **유일한 후보만**(R1-A13 — 표시용 첫 일치를 소유 증명으로 쓰지 않는다). 질문 확인은 열린 대화 판독자에서만 읽는다.
     const chat = this.chat
     const inputBackend = deps.inputBackend ?? (deps.inputSocket === undefined ? undefined : () => this.herdrBackend())
     this.input = listSource === undefined || chat === null || inputBackend === undefined ? null : new InputHub({
@@ -97,9 +97,10 @@ export class MobileService {
       log: deps.log,
       backend: inputBackend,
       resolveFile: ({ session, agent }) => {
-        const transcript = resolveChat(session)
-        return transcript === null ? null : chatFileOf({ agent, transcript })
+        const resolved = deps.resolveChatFile === undefined ? resolveTranscriptUnique(session) : uniqueOf(deps.resolveChatFile(session))
+        return resolved.kind === 'found' ? { kind: 'found', file: chatFileOf({ agent, transcript: resolved.file }) } : resolved
       },
+      deviceValid: (device) => this.pairing.has(device),
       questionItems: (file) => chat.readerFor(file)?.items() ?? null,
       expectedFile: ({ channel, cwd }) => {
         const { session, agent } = channel
@@ -204,6 +205,8 @@ export class MobileService {
   revoke(id: string): boolean {
     const removed = this.pairing.revoke(id)
     if (removed) {
+      // 쓰기 권한 회수(R1-A1) — 연결만 끊으면 그 기기의 큐가 나중에 PTY 에 쓰인다. 끊김과 달리 큐를 끝낸다.
+      this.input?.revoke(id)
       this.server.disconnectDevice(id)
       this.deps.log('mobile.device_revoked', { device: id })
       this.push()
@@ -275,4 +278,9 @@ export class MobileService {
   private push(): void {
     this.deps.onStatus(this.status())
   }
+}
+
+/** 시험이 주입한 찾기(첫 일치 모양) — 파일 하나면 그것, 없으면 0건. */
+function uniqueOf(file: string | null): TranscriptResolution {
+  return file === null ? { kind: 'none' } : { kind: 'found', file }
 }

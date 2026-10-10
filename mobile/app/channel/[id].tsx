@@ -93,9 +93,10 @@ export default function ChannelPlaceholder() {
   const stop = channel === null ? 'hidden' : stopView({ channel, conn: kindOfConn, unknown })
   const sent = placeSent({ items: chat.items, sent: mine })
   const tailId = chat.items.at(-1)?.id ?? null
+  // 보낸 뒤에도 초안을 그대로 둔다 — 실패하면 같은 답을 다시 보낼 수 있다(R1-A11). 질문이 닫히면(다른 id) 초안은 저절로 처음부터다.
   const sendAnswers = (answers: StepAnswer[]): void => {
     if (question === null) return
-    if (inputStore.answer({ channel: id, question: question.id, answers }) !== null) setDraft({ question: question.id, step: 0, answers: [] })
+    inputStore.answer({ channel: id, question: question.id, call: question.call, answers })
   }
   /** 문항 하나를 채우고 다음 문항으로 — 마지막이면 보낸다. */
   const commitStep = (answer: StepAnswer): void => {
@@ -130,8 +131,10 @@ export default function ChannelPlaceholder() {
     const step = question?.questions[current.step]
     if (step === undefined || answerBusy) return false
     commitStep(withOther({ question: step, answer: current.answers[current.step] ?? { choices: [], other: null }, text }))
-    return true
+    // 직접 입력 글은 지우지 않는다 — 답이 실패하면 그대로 다시 보낼 수 있게(R1-A11). 다음 문항·질문이 닫히면 입력창이 새로 열린다(아래 key).
+    return false
   }
+  const composerKey = mode !== null && mode.kind === 'open' && mode.target === 'answer' && question !== null ? `answer:${question.id}:${current.step}` : 'send'
   return (
     <Screen>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingRight: 16, paddingVertical: 8 }}>
@@ -200,7 +203,7 @@ export default function ChannelPlaceholder() {
             onSentAction={({ id: entry, action }) => void (action === 'cancel' ? inputStore.cancel(entry) : inputStore.retry(entry))}
             question={control}
           />
-          {mode !== null ? <Composer mode={mode} onSubmit={submit} /> : null}
+          {mode !== null ? <Composer key={composerKey} mode={mode} onSubmit={submit} /> : null}
         </>
       ) : (
         <View className="flex-1 items-center justify-center gap-2 px-padx">

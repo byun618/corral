@@ -455,8 +455,8 @@ const FINAL_INPUT = new Set(['delivered', 'unconfirmed', 'failed', 'cancelled', 
 /**
  * 쓰기(LIFE-582) — hello → `--op` 하나를 보내고 그 id 의 `input.state` 를 끝 상태까지 모은다. 본문은 출력하지 않는다(바이트 수만).
  *   --op send   --channel <id> --text <글> | --text-file <파일>   [--repeat N — 같은 id 로 N 번 더 보낸다(Z2ⓐ)]
- *   --op cancel --id <id> · --op status --id <id>[,<id>…]
- *   --op answer --channel <id> --question <말풍선 id | auto — 대화를 구독해 마지막 대기 질문> --choice <0부터>[,…] | --other <글>
+ *   --op cancel --id <id> · --op status --id <id>[,<id>…](모든 id 가 끝 상태여야 통과 — C3) · --op pending(이 기기의 끝나지 않은 요청, R1-A8 — 받은 개수)
+ *   --op answer --channel <id> --question <말풍선 id | auto — 대화를 구독해 마지막 대기 질문> [--call <도구 호출 id — auto 면 그 질문의 것>] --choice <0부터>[,…] | --other <글>
  *   --op stop   --channel <id>
  *   [--id <id>] [--expect <상태 — 끝 상태가 아니어도 된다(queued 면 대기에 들어간 순간 끝)>] [--wait-ms 30000]
  */
@@ -486,15 +486,18 @@ async function commandInput(url) {
       const question = args.question === 'auto' ? -1 : Number(args.question)
       if (channel === null || !Number.isInteger(question)) usage('input --op answer 에는 --channel 과 --question(번호 또는 auto)이 필요하다')
       const choices = typeof args.choice === 'string' ? args.choice.split(',').map(Number) : []
-      body = { type: 'question.answer', id, channel, question, answers: [{ choices, other: typeof args.other === 'string' ? args.other : null }] }
+      body = { type: 'question.answer', id, channel, question, call: typeof args.call === 'string' ? args.call : null, answers: [{ choices, other: typeof args.other === 'string' ? args.other : null }] }
       break
     }
+    case 'pending':
+      body = { type: 'input.pending' }
+      break
     case 'stop':
       if (channel === null) usage('input --op stop 에는 --channel 이 필요하다')
       body = { type: 'turn.stop', id, channel }
       break
     default:
-      usage('input 의 --op 는 send · cancel · status · answer · stop 중 하나')
+      usage('input 의 --op 는 send · cancel · status · pending · answer · stop 중 하나')
   }
   const expect = typeof args.expect === 'string' ? args.expect : null
   const watched = new Set(op === 'status' ? id.split(',') : [id])
@@ -516,17 +519,28 @@ async function commandInput(url) {
         // `--question auto` — 그 채널 대화의 첫 페이지에서 마지막 대기 질문 id 를 고른다(글은 읽지 않는다).
         if (body.type === 'question.answer' && body.question === -1) ws.send(JSON.stringify({ type: 'chat.subscribe', channel }))
         else fire()
+        if (op === 'pending') {
+          clearTimeout(timer)
+          setTimeout(() => { ws.close(); resolve() }, 1500)
+        }
         return
       }
       if (message.type === 'chat.page' && body.type === 'question.answer' && body.question === -1) {
         const pending = (message.items ?? []).filter((item) => item.kind === 'question' && item.state === 'pending')
-        picked = pending.at(-1)?.id ?? null
+        const open = pending.at(-1) ?? null
+        picked = open?.id ?? null
         if (picked === null) { errors.push('no_pending_question'); clearTimeout(timer); ws.close(); resolve(); return }
         body.question = picked
+        if (body.call === null) body.call = typeof open.call === 'string' ? open.call : null
         fire()
         return
       }
       if (message.type === 'error') errors.push(message.code)
+      // 복구 조회 — 보낸 뒤 1.5초 동안 온 것을 모은다(0건이면 아무것도 안 온다). 본문은 바이트 수만.
+      if (op === 'pending') {
+        if (message.type === 'input.state') states.push({ id: message.id, state: message.state, wait: message.wait, reason: message.reason, op: message.op, textBytes: typeof message.text === 'string' ? Buffer.byteLength(message.text) : null })
+        return
+      }
       if (message.type !== 'input.state' || !watched.has(message.id)) return
       states.push({ id: message.id, state: message.state, wait: message.wait, reason: message.reason })
       if (FINAL_INPUT.has(message.state)) finals.set(message.id, message.state)
@@ -540,8 +554,13 @@ async function commandInput(url) {
     })
     ws.on('error', (error) => { errors.push(String(error)); clearTimeout(timer); resolve() })
   })
-  const last = states.filter((row) => row.id === id).at(-1) ?? null
-  const done = last !== null && (expect === null ? FINAL_INPUT.has(last.state) : last.state === expect)
+  // 지켜본 id 마다 마지막 상태 — 여러 id 조회(status)는 전부가 끝(또는 기대) 상태여야 한다(C3: 쉼표 붙은 문자열과 비교하던 결함).
+  const lastOf = (one) => states.filter((row) => row.id === one).at(-1) ?? null
+  const reachedAll = [...watched].every((one) => {
+    const last = lastOf(one)
+    return last !== null && (expect === null ? FINAL_INPUT.has(last.state) : last.state === expect)
+  })
+  const done = op === 'pending' ? expect === null || states.length === Number(expect) : reachedAll
   record(`input:${op}`, errors.length === 0 && done,
     { state: expect ?? 'any final' },
     { id, states, errors, question: picked, bytes: op === 'send' && typeof body.text === 'string' ? Buffer.byteLength(body.text) : null })

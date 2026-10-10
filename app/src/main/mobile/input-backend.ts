@@ -11,7 +11,7 @@ import type { MobileAgentKind } from './list.js'
 const CALL_MS = 8_000
 
 /** guard·herdr 가 **아무것도 쓰지 않고** 거절한 것 — 다시 기다려도 된다. 그 밖의 실패(시간 초과 등)는 썼을 수 있다(`unknown`). */
-const REFUSED: ReadonlySet<string> = new Set(['agent_not_ready', 'agent_blocked', 'agent_state_changed', 'agent_not_found', 'stale_terminal', 'stale_backend', 'deadline_exceeded', 'invalid_request', 'unsupported'])
+const REFUSED: ReadonlySet<string> = new Set(['agent_not_ready', 'agent_blocked', 'agent_state_changed', 'agent_not_found', 'stale_terminal', 'stale_backend', 'deadline_exceeded', 'invalid_request', 'unsupported', 'input_changed', 'input_recent'])
 
 export class HerdrInputBackend implements InputBackend {
   private readonly backend: TerminalBackend
@@ -42,9 +42,9 @@ export class HerdrInputBackend implements InputBackend {
     try {
       const info = await this.backend.agentInfo(pane, this.ctx())
       const settled = info.status === 'idle' || info.status === 'done'
-      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info), unmanaged: settled && !info.launchPending && !info.interactiveReady }
+      return { status: info.status, seq: info.stateChangeSeq, quiet: agentQuiescent(info), unmanaged: settled && !info.launchPending && !info.interactiveReady, input: info.input ?? null }
     } catch (error) {
-      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false }
+      if (error instanceof RuntimeError && error.code === 'agent_not_found') return { status: 'none', seq: -1, quiet: false, unmanaged: false, input: null }
       throw error
     }
   }
@@ -62,8 +62,9 @@ export class HerdrInputBackend implements InputBackend {
     return this.backend.screenAnsi(pane, this.ctx())
   }
 
-  prompt(pane: TerminalIdentity, text: string, seq: number): Promise<SendResult> {
-    return this.effect(() => this.backend.promptAgent(pane, text, seq, this.ctx()))
+  /** LIFE-582 R1-A3: 관측한 입력 revision·조용한 시간까지 guard 가 같은 턴에서 비교한다(`input_changed`·`input_recent` = 쓰지 않았다). */
+  prompt(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number }): Promise<SendResult> {
+    return this.effect(() => this.backend.promptAgentIfQuiet(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision: input.inputRevision, minIdleMs: input.minIdleMs }, this.ctx()))
   }
 
   send(pane: TerminalIdentity, text: string, seq: number): Promise<SendResult> {

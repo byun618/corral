@@ -271,27 +271,32 @@ function homeDir(): string {
   return os.homedir()
 }
 
+/** 한 세션 id 의 후보 파일 전부 — `error` = 훑는 중 폴더를 읽지 못했다(0건이 「없음」 인지 알 수 없다). LIFE-582 R1-A13. */
+type Candidates = { files: string[]; error: boolean }
+
 /** `<HOME>/.claude/projects/<폴더>/<id>.jsonl` — 폴더 이름은 안 지어내고 훑어 찾는다. */
-function findClaudeFile(id: string): string | null {
+function claudeCandidates(id: string): Candidates {
   const projects = path.join(homeDir(), '.claude', 'projects')
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(projects, { withFileTypes: true })
   } catch {
-    return null
+    return { files: [], error: true }
   }
+  const files: string[] = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const candidate = path.join(projects, entry.name, `${id}.jsonl`)
-    if (fs.existsSync(candidate)) return candidate
+    if (fs.existsSync(candidate)) files.push(candidate)
   }
-  return null
+  return { files, error: false }
 }
 
 /** `<HOME>/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl` — 날짜 3단만 내려간다. */
-function findCodexFile(id: string): string | null {
+function codexCandidates(id: string): Candidates {
   const root = path.join(homeDir(), '.codex', 'sessions')
   const suffix = `-${id}.jsonl`
+  let error = false
   const dirs = (dir: string): string[] => {
     try {
       return fs
@@ -299,40 +304,72 @@ function findCodexFile(id: string): string | null {
         .filter((entry) => entry.isDirectory())
         .map((entry) => path.join(dir, entry.name))
     } catch {
+      error = true
       return []
     }
   }
+  const files: string[] = []
   for (const year of dirs(root)) {
     for (const month of dirs(year)) {
       for (const day of dirs(month)) {
-        let files: string[]
+        let names: string[]
         try {
-          files = fs.readdirSync(day)
+          names = fs.readdirSync(day)
         } catch {
+          error = true
           continue
         }
-        for (const file of files) if (file.endsWith(suffix)) return path.join(day, file)
+        for (const file of names) if (file.endsWith(suffix)) files.push(path.join(day, file))
       }
     }
   }
-  return null
+  return { files, error }
 }
 
 /** `<HOME>/.grok/sessions/<urlencoded cwd>/<id>/chat_history.jsonl`. */
-function findGrokFile(id: string): string | null {
+function grokCandidates(id: string): Candidates {
   const root = path.join(homeDir(), '.grok', 'sessions')
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(root, { withFileTypes: true })
   } catch {
-    return null
+    return { files: [], error: true }
   }
+  const files: string[] = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const candidate = path.join(root, entry.name, id, 'chat_history.jsonl')
-    if (fs.existsSync(candidate)) return candidate
+    if (fs.existsSync(candidate)) files.push(candidate)
   }
-  return null
+  return { files, error: false }
+}
+
+function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates {
+  switch (input.agent) {
+    case 'claude':
+      return claudeCandidates(input.id)
+    case 'codex':
+      return codexCandidates(input.id)
+    case 'grok':
+      return grokCandidates(input.id)
+  }
+}
+
+/**
+ * 쓰기(폰 지시)용 해소 — 「첫 일치」 가 아니라 **유일한 후보**만 소유 기록으로 센다(LIFE-582 R1-A13, P1 「둘 이상이면 잠금」).
+ * `none` = 훑기가 성공했고 후보가 0건(새 세션이 아직 파일을 쓰지 않았을 수 있다) · `error` = 폴더를 못 읽어 0건을 믿을 수 없다 ·
+ * `ambiguous` = 같은 id 의 파일이 둘 이상. 표시용 `resolveTranscriptFile`(첫 일치)과 CLI 계약은 그대로다.
+ */
+export type TranscriptResolution = { kind: 'found'; file: string } | { kind: 'none' } | { kind: 'error' } | { kind: 'ambiguous'; count: number }
+
+export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
+  const agent = transcriptAgent(ref.agent)
+  if (agent === null) return { kind: 'error' }
+  if (ref.kind === 'path') return fs.existsSync(ref.path) ? { kind: 'found', file: ref.path } : { kind: 'none' }
+  const { files, error } = candidatesOf({ agent, id: ref.id })
+  if (files.length > 1) return { kind: 'ambiguous', count: files.length }
+  if (files.length === 1) return { kind: 'found', file: files[0]! }
+  return error ? { kind: 'error' } : { kind: 'none' }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */
@@ -340,14 +377,7 @@ export function resolveTranscriptFile(ref: AgentSessionRef): string | null {
   const agent = transcriptAgent(ref.agent)
   if (agent === null) return null
   if (ref.kind === 'path') return fs.existsSync(ref.path) ? ref.path : null
-  switch (agent) {
-    case 'claude':
-      return findClaudeFile(ref.id)
-    case 'codex':
-      return findCodexFile(ref.id)
-    case 'grok':
-      return findGrokFile(ref.id)
-  }
+  return candidatesOf({ agent, id: ref.id }).files[0] ?? null
 }
 
 // --- 꼬리 읽기 ----------------------------------------------------------------

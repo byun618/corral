@@ -36,6 +36,8 @@ export interface AgentObservation {
   session: { source: string; kind: string; value: string } | null
   paneId: string
   observedAt: string
+  /** LIFE-582 R1-A3: the pane's user-input revision and quiet time, read by the guard in the agent.get turn. null on a guard without them. */
+  input?: { revision: number; idleMs: number } | null
 }
 /** One row of the guard's target-less `server.agent_manifests` read (LIFE-394 §3, D17). */
 export interface AgentManifestObservation {
@@ -202,6 +204,17 @@ export class TerminalBackend {
     return observation(readRecord(result, 'agent'), target.paneId)
   }
   /**
+   * LIFE-582 R1-A3: `promptAgent` plus an input fence — the guard refuses (`input_changed`·`input_recent`) when any user input
+   * reached the pane after the observation that reported `inputRevision`, or less than `minIdleMs` ago. The draft corral read
+   * from the screen is then still the whole input line at submission time. The CLI's `promptAgent` above is unchanged.
+   */
+  async promptAgentIfQuiet(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number; minIdleMs: number }, ctx: TerminalOperation) {
+    const result = await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
+      expected_state_change_seq: input.expectedStateChangeSeq, expected_input_revision: input.inputRevision, min_input_idle_ms: input.minIdleMs,
+      operation: { method: 'agent.prompt', params: { target: target.paneId, text: input.text } } }, ctx, true)
+    return observation(readRecord(result, 'agent'), target.paneId)
+  }
+  /**
    * Why a pane is blocked, as herdr's detection rules see it (LIFE-456 S3 / fix-r1 F3).
    *
    * The GUI already asks this and derives the reason from the rule id. The CLI used to read
@@ -240,5 +253,7 @@ function observation(agent: Record<string, unknown> | null, paneId: string): Age
     session: session && typeof session.value === 'string' ? { source: String(session.source ?? ''), kind: String(session.kind ?? ''), value: session.value } : null,
     paneId: typeof agent.pane_id === 'string' ? agent.pane_id : paneId,
     observedAt: new Date().toISOString(),
+    input: typeof agent.corral_input_revision === 'number' && typeof agent.corral_input_idle_ms === 'number'
+      ? { revision: agent.corral_input_revision, idleMs: agent.corral_input_idle_ms } : null,
   }
 }

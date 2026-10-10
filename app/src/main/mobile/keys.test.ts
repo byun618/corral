@@ -101,3 +101,15 @@ describe('맥 입력창 초안 (Z1ⓔ — 화면 모양 합성)', () => {
     expect(draftState({ kind: 'grok', screen: 'nothing' })).toBe('unknown')
   })
 })
+
+describe('R1-A9 SGR 확장 색의 2 는 흐림이 아니다', () => {
+  it('truecolor·256색 초안은 draft — 진짜 흐림(2)만 자리표시로 본다', () => {
+    const rgb = '\x1b[38;2;120;130;140m'
+    expect(draftState({ kind: 'claude', screen: claudeScreen(`${rgb}draft rgb\x1b[0m`) })).toBe('draft')
+    expect(draftState({ kind: 'claude', screen: claudeScreen('\x1b[38;5;2mdraft 256\x1b[0m') })).toBe('draft')
+    expect(draftState({ kind: 'claude', screen: claudeScreen('\x1b[48;2;2;2;2mdraft bg\x1b[0m') })).toBe('draft')
+    expect(draftState({ kind: 'codex', screen: codexScreen(`\x1b[1m› \x1b[0m${rgb}draft codex\x1b[0m`) })).toBe('draft')
+    // 색 묶음 뒤의 2 는 흐림이다.
+    expect(draftState({ kind: 'claude', screen: claudeScreen('\x1b[38;2;1;1;1;2mTry "x"\x1b[0m') })).toBe('empty')
+  })
+})

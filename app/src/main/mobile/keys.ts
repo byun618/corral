@@ -1,6 +1,8 @@
 // provider 별 키 표 (LIFE-582 P4·P5·P8·P9) — 폰은 키를 보내지 않는다. 질문 답·중단의 바이트는 전부 여기서 서버가 만든다.
 // 표의 근거는 실측 원자료 `specs/LIFE-582-mobile-input/raw/claude/z1-measure.md`(Claude 2.1.296 · Codex 0.162.1 · Grok 1.0.50).
 // 순수 함수만 둔다 — 시험이 provider 없이 돈다.
+import { createHash } from 'node:crypto'
+import type { SessionQuestion } from '../../shared/types.js'
 import type { MobileAgentKind } from './list.js'
 
 export const KEY = {
@@ -124,11 +126,25 @@ function validAnswer(input: { question: AnswerQuestion; answer: QuestionAnswer }
  * - Grok: 문항마다 숫자 또는 `z` + 글 + Enter.
  */
 export function answerSteps(input: { kind: MobileAgentKind; questions: AnswerQuestion[]; answers: QuestionAnswer[] }): AnswerPlan {
+  const plan = answerGroups(input)
+  return plan.ok ? { ok: true, steps: plan.groups.flatMap((group) => group.keys) } : plan
+}
+
+/**
+ * 키 묶음 앞에서 화면으로 확인할 것(R2-A1) — `open` = Codex 의 접힌 질문 표시(문항 수) · `question` = 활성 질문 영역이 그 문항 ·
+ * `review` = Claude 검토 화면.
+ */
+export type AnswerCheck = { kind: 'open' } | { kind: 'question'; index: number } | { kind: 'review' }
+export type AnswerGroup = { check: AnswerCheck; keys: string[] }
+export type AnswerGroups = { ok: true; groups: AnswerGroup[] } | { ok: false; reason: 'locked' | 'other_locked' | 'bad_answer' }
+
+/** `answerSteps` 의 키를 화면 확인 단위로 묶은 것 — 묶음마다 그 앞에서 활성 질문 영역을 다시 대조한다(R2-A1). */
+export function answerGroups(input: { kind: MobileAgentKind; questions: AnswerQuestion[]; answers: QuestionAnswer[] }): AnswerGroups {
   const { kind, questions, answers } = input
   if (answerLock({ kind, questions }) !== null) return { ok: false, reason: 'locked' }
   if (answers.length !== questions.length) return { ok: false, reason: 'bad_answer' }
-  const steps: string[] = []
-  if (kind === 'codex') steps.push(KEY.shiftLeft)
+  const groups: AnswerGroup[] = []
+  if (kind === 'codex') groups.push({ check: { kind: 'open' }, keys: [KEY.shiftLeft] })
   let review = false
   for (let index = 0; index < questions.length; index += 1) {
     const question = questions[index]!
@@ -137,30 +153,192 @@ export function answerSteps(input: { kind: MobileAgentKind; questions: AnswerQue
     if (answer.other !== null && !otherAllowed({ kind, question })) return { ok: false, reason: 'other_locked' }
     const keyOf = (n: number): string => digit(n) ?? ''
     const otherKey = kind === 'grok' ? 'z' : keyOf(question.options + 1)
+    const keys: string[] = []
+    groups.push({ check: { kind: 'question', index }, keys })
     if (question.multiSelect === true) {
       // Claude 만 온다(answerLock).
       review = true
-      for (const choice of answer.choices) steps.push(keyOf(choice + 1))
+      for (const choice of answer.choices) keys.push(keyOf(choice + 1))
       if (answer.other !== null) {
-        steps.push(otherKey)
-        for (let row = 0; row < question.options; row += 1) steps.push(KEY.down)
-        steps.push(answer.other, KEY.tab, KEY.enter)
+        keys.push(otherKey)
+        for (let row = 0; row < question.options; row += 1) keys.push(KEY.down)
+        keys.push(answer.other, KEY.tab, KEY.enter)
       } else {
-        for (let row = 0; row <= question.options; row += 1) steps.push(KEY.down)
-        steps.push(KEY.enter)
+        for (let row = 0; row <= question.options; row += 1) keys.push(KEY.down)
+        keys.push(KEY.enter)
       }
       continue
     }
     if (answer.other !== null) {
-      steps.push(otherKey, answer.other, KEY.enter)
+      keys.push(otherKey, answer.other, KEY.enter)
       continue
     }
-    steps.push(keyOf(answer.choices[0]! + 1))
-    if (kind === 'claude' && question.preview) steps.push(KEY.enter)
+    keys.push(keyOf(answer.choices[0]! + 1))
+    if (kind === 'claude' && question.preview) keys.push(KEY.enter)
   }
-  if (kind === 'claude' && (questions.length > 1 || review)) steps.push('1')
-  if (steps.some((step) => step.length === 0)) return { ok: false, reason: 'locked' }
-  return { ok: true, steps }
+  if (kind === 'claude' && (questions.length > 1 || review)) groups.push({ check: { kind: 'review' }, keys: ['1'] })
+  if (groups.some((group) => group.keys.some((key) => key.length === 0))) return { ok: false, reason: 'locked' }
+  return { ok: true, groups }
+}
+
+// --- 활성 질문 영역 (R2-A1) ---------------------------------------------------------------------------
+
+/**
+ * 질문 내용 지문 — 기록에서 읽은 문항 전체(글·머리·선택지 글과 설명·여럿 고름·preview)의 해시 앞 32자. 서버가 대화에 실어 보내고(`chat.ts`)
+ * 폰이 답과 함께 돌려준다. 같은 말풍선 id·도구 호출 id 라도 내용이 바뀌었으면 다른 질문이다(R2-A1).
+ */
+export function questionDigest(questions: readonly SessionQuestion[]): string {
+  const shape = questions.map((q) => [q.question, q.header, q.options.map((option) => [option.label, option.description]), q.multiSelect, q.preview === true])
+  return createHash('sha256').update(JSON.stringify(shape)).digest('hex').slice(0, 32)
+}
+
+/**
+ * 화면 맨 아래의 **지금 답을 받는 질문 상자**(Z1ⓑ 실측 모양). 화면 위쪽의 과거 글은 보지 않는다.
+ * - `question`: 문항 글 · 선택지 글(직접 입력 행 제외) · 보이면 몇 번째 문항(1부터)과 총 수.
+ * - `collapsed`: Codex 의 접힌 질문 표시(`? N question(s)` + `⇧← to answer`). `review`: Claude 검토 화면.
+ * - `none`: 질문 상자를 못 찾음(다른 대화상자·권한 질문·한가 화면 포함) — 넣지 않는다.
+ */
+export type ActiveQuestion =
+  | { kind: 'question'; title: string; options: string[]; position: number | null; total: number | null }
+  | { kind: 'collapsed'; count: number }
+  | { kind: 'review' }
+  | { kind: 'none' }
+
+const squash = (text: string): string => text.replace(/[\s\u00a0]+/g, ' ').trim()
+
+export function activeQuestion(input: { kind: MobileAgentKind; screen: string }): ActiveQuestion {
+  const lines = screenPlain(input.screen).split('\n').map((line) => line.replace(/\s+$/, ''))
+  switch (input.kind) {
+    case 'claude':
+      return claudeQuestion(lines)
+    case 'codex':
+      return codexQuestion(lines)
+    case 'grok':
+      return grokQuestion(lines)
+  }
+}
+
+/** 마지막 줄부터 위로 처음 맞는 줄. */
+function lastIndex(lines: string[], test: (line: string) => boolean): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) if (test(lines[index]!)) return index
+  return -1
+}
+
+/**
+ * Claude: 맨 아래 안내 줄(`… Esc to cancel`) 위의 두 가로줄 사이 상자. 첫 줄은 머리(` ☐ X` 또는 `←  ☒ A  ☐ B  ✔ Submit  →`),
+ * 다음 줄들이 문항 글, `N. 글` 이 선택지(아래 들여쓴 설명 줄·preview 상자는 뺀다). 머리 줄의 `☐`/`☒` 순서에서 현재 문항은 알 수 없어 위치는 null.
+ */
+function claudeQuestion(lines: string[]): ActiveQuestion {
+  // 검토 화면(Z1 a-q4-review) — 마지막 머리 줄 아래가 `Review your answers` 와 `1. Submit answers` 뿐이다(아래 안내 줄이 없다).
+  const tabs = lastIndex(lines, (line) => /^\s*←\s.*✔\s*Submit\s*→\s*$/.test(line))
+  if (tabs >= 0) {
+    const rest = lines.slice(tabs + 1).filter((line) => line.trim().length > 0)
+    if (rest[0]?.trim() === 'Review your answers' && rest.some((line) => /^\s*(?:❯\s*)?1\.\s+Submit answers$/.test(line))) return { kind: 'review' }
+  }
+  const footer = lastIndex(lines, (line) => /Esc to cancel\s*$/.test(line))
+  if (footer < 0) return { kind: 'none' }
+  const rules: number[] = []
+  for (let index = 0; index < footer; index += 1) if (RULE.test(lines[index]!)) rules.push(index)
+  // 아래 가로줄 뒤에는 `Chat about this` 와 안내 줄만 있어야 한다.
+  const bottom = rules.at(-1)
+  const top = rules.at(-2)
+  if (bottom === undefined || top === undefined || footer - bottom > 3) return { kind: 'none' }
+  const box = lines.slice(top + 1, bottom).filter((line) => line.trim().length > 0)
+  const head = box[0]
+  if (head === undefined || !/^\s*(←\s+)?[☐☒✔]/.test(head)) return { kind: 'none' }
+  const body = box.slice(1)
+  const option = /^\s*(?:❯\s*)?(\d+)\.\s+(?:\[[ ✔×x]\]\s+)?(.*)$/
+  const first = body.findIndex((line) => option.test(line))
+  if (first <= 0) return { kind: 'none' }
+  const title = squash(body.slice(0, first).join(' '))
+  const options: string[] = []
+  for (const line of body.slice(first)) {
+    const match = option.exec(line)
+    if (match === null) continue
+    if (Number(match[1]) !== options.length + 1) return { kind: 'none' }
+    // preview 레이아웃은 선택지 글 옆에 상자가 붙는다 — 두 칸 이상 공백 앞까지가 글.
+    options.push(squash(match[2]!.split(/\s{2,}/)[0]!))
+  }
+  // 직접 입력 행(`Type something`) 은 선택지가 아니다.
+  if (options.length > 0 && /^Type something\.?$/.test(options.at(-1)!)) options.pop()
+  return { kind: 'question', title, options, position: null, total: null }
+}
+
+/**
+ * Codex: 맨 아래 안내 줄(`enter submit … ⇧→ main prompt`) 위 — `› N. 글` 선택지, 그 위 문항 글, 문항이 여럿이면 `k of n` 줄.
+ * 문항 글 위는 `•` 줄(진행 표시)이다. 접힌 상태면 `? N question(s)` + `⇧← to answer`.
+ */
+function codexQuestion(lines: string[]): ActiveQuestion {
+  const footer = lastIndex(lines, (line) => /^\s*enter submit\b.*⇧→ main prompt/.test(line))
+  if (footer < 0) {
+    const hint = lastIndex(lines, (line) => /^\s*⇧← to answer\s*$/.test(line))
+    const count = hint > 0 ? /^\s*\?\s+(\d+) questions?\b/.exec(lines[hint - 1]!) : null
+    // 접힌 표시 아래는 입력 상자다 — 그보다 아래에 다른 질문 상자가 있으면 이 표시는 지금 것이 아니다.
+    return count === null ? { kind: 'none' } : { kind: 'collapsed', count: Number(count[1]) }
+  }
+  const option = /^\s*(?:›\s*)?(\d+)\.\s+(.*)$/
+  const blank = (index: number): boolean => lines[index]!.trim().length === 0
+  // 안내 줄 위로 빈 줄 → 선택지 줄들 → 빈 줄 → 문항 글 줄들(위는 빈 줄·`•` 진행 줄·`k of n` 줄).
+  let at = footer - 1
+  while (at >= 0 && blank(at)) at -= 1
+  const optionLines: string[] = []
+  while (at >= 0 && option.test(lines[at]!)) optionLines.unshift(lines[at--]!)
+  if (optionLines.length === 0) return { kind: 'none' }
+  const options = optionLines.map((line) => option.exec(line)!)
+  if (options.some((match, index) => Number(match[1]) !== index + 1)) return { kind: 'none' }
+  while (at >= 0 && blank(at)) at -= 1
+  const titleLines: string[] = []
+  const counterLine = /^\s*(\d+) of (\d+)\s*$/
+  while (at >= 0 && !blank(at) && !/^\s*•/.test(lines[at]!) && !counterLine.test(lines[at]!)) titleLines.unshift(lines[at--]!)
+  const counter = at >= 0 ? counterLine.exec(lines[at]!) : null
+  const title = squash(titleLines.join(' '))
+  if (title.length === 0) return { kind: 'none' }
+  const labels = options.map((match) => squash(match[2]!))
+  if (labels.at(-1) === 'Other') labels.pop()
+  return { kind: 'question', title, options: labels, position: counter === null ? null : Number(counter[1]), total: counter === null ? null : Number(counter[2]) }
+}
+
+/**
+ * Grok: 맨 아래 `┃` 상자 — 안내 줄(`… navigate …  Enter:…`, 여럿이면 앞에 `[k/n]`) 위에 `N (○) 글  설명` 선택지와 `z` 직접 입력 행,
+ * 그 위 문항 글.
+ */
+function grokQuestion(lines: string[]): ActiveQuestion {
+  const inner = (line: string): string | null => {
+    const match = /^\s*┃(.*)$/.exec(line)
+    return match === null ? null : match[1]!
+  }
+  const footer = lastIndex(lines, (line) => inner(line) !== null && /navigate\b.*Enter:/.test(line))
+  if (footer < 0) return { kind: 'none' }
+  let top = footer
+  while (top > 0 && inner(lines[top - 1]!) !== null) top -= 1
+  const box = lines.slice(top, footer).map((line) => inner(line)!).filter((line) => line.trim().length > 0)
+  const option = /^\s*(\d+|z) [([][ ○●✔x][)\]]\s+(.*)$/
+  const first = box.findIndex((line) => option.test(line))
+  if (first <= 0) return { kind: 'none' }
+  const title = squash(box.slice(0, first).join(' '))
+  const options: string[] = []
+  for (const line of box.slice(first)) {
+    const match = option.exec(line)
+    if (match === null) return { kind: 'none' }
+    if (match[1] === 'z') continue
+    if (Number(match[1]) !== options.length + 1) return { kind: 'none' }
+    options.push(squash(match[2]!.split(/\s{2,}/)[0]!))
+  }
+  const counter = /\[(\d+)\/(\d+)\]/.exec(lines[footer]!)
+  return { kind: 'question', title, options, position: counter === null ? null : Number(counter[1]), total: counter === null ? null : Number(counter[2]) }
+}
+
+/**
+ * 활성 질문 영역이 기록의 그 문항인가 — 문항 글 전체와 선택지 글 전부가 같고(공백만 무시), 위치가 보이면 그 위치까지 같아야 한다.
+ * 앞부분 포함·화면 아무 곳 포함은 세지 않는다(R2-A1).
+ */
+export function sameQuestion(input: { active: ActiveQuestion; question: { question: string; options: string[] }; index: number; total: number }): boolean {
+  const { active, question } = input
+  if (active.kind !== 'question') return false
+  if (active.position !== null && (active.position !== input.index + 1 || active.total !== input.total)) return false
+  const key = (text: string): string => text.replace(/[\s\u00a0]+/g, '')
+  if (key(active.title) !== key(question.question)) return false
+  return active.options.length === question.options.length && active.options.every((label, index) => key(label) === key(question.options[index]!))
 }
 
 // --- 맥 입력창 초안 (P9) -----------------------------------------------------------------------------

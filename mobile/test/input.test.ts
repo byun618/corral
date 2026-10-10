@@ -33,7 +33,7 @@ function channel(patch: Partial<Channel> = {}): Channel {
 }
 
 const q = (patch: Partial<ChatQuestion> = {}): ChatQuestion => ({ question: '어느 쪽?', header: null, options: [{ label: 'A', description: null }, { label: 'B', description: null }], multiSelect: false, preview: false, ...patch })
-const card = (questions: ChatQuestion[], patch: Partial<Extract<ChatItem, { kind: 'question' }>> = {}): Extract<ChatItem, { kind: 'question' }> => ({ id: 9, kind: 'question', at: null, call: 'toolu-9', questions, state: 'pending', answer: null, clipped: false, ...patch })
+const card = (questions: ChatQuestion[], patch: Partial<Extract<ChatItem, { kind: 'question' }>> = {}): Extract<ChatItem, { kind: 'question' }> => ({ id: 9, kind: 'question', at: null, call: 'toolu-9', digest: null, questions, state: 'pending', answer: null, clipped: false, ...patch })
 const mode = (input: Partial<Parameters<typeof composerMode>[0]>) => composerMode({ channel: channel(), conn: 'connected', unknown: false, question: null, step: 0, noSession: false, ...input })
 
 describe('Composer 상태표 8행 (design-handoff §2)', () => {
@@ -241,10 +241,10 @@ describe('입력 저장소 (P2 · P6)', () => {
   })
   it('질문 답·중단 메시지 모양 — 키는 보내지 않는다', () => {
     const t = setup()
-    t.store.answer({ channel: 'w1:p1', question: 9, call: 'toolu-9', answers: [{ choices: [1], other: null }] })
+    t.store.answer({ channel: 'w1:p1', question: 9, call: 'toolu-9', digest: 'ab'.repeat(16), answers: [{ choices: [1], other: null }] })
     t.store.stop({ channel: 'w1:p1' })
     expect(t.connection.sent.map((message) => message.type)).toEqual(['question.answer', 'turn.stop'])
-    expect(t.connection.sent[0]).toMatchObject({ question: 9, call: 'toolu-9', answers: [{ choices: [1], other: null }] })
+    expect(t.connection.sent[0]).toMatchObject({ question: 9, call: 'toolu-9', digest: 'ab'.repeat(16), answers: [{ choices: [1], other: null }] })
     expect(JSON.stringify(t.connection.sent)).not.toMatch(/\\u001b|keys/)
   })
 })

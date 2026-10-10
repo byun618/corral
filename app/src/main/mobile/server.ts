@@ -8,8 +8,8 @@
 // - 인증은 WS 첫 메시지(`hello`+토큰 또는 `pair`+코드). 그 전에는 어떤 데이터도 돌려주지 않는다 — 버전도 인증 뒤에만.
 //   loopback 의 다른 로컬 프로세스도 붙을 수 있다는 전제다(serve 헤더는 위조 가능 — W6). 경계는 토큰이다.
 // - 미인증 연결은 `AUTH_TIMEOUT_MS` 뒤 닫고, 프레임은 `MAX_MESSAGE_BYTES` 를 넘으면 1009 로 닫는다. 인증된 연결의 `input.send`·`question.answer` 만
-//   `MAX_INPUT_FRAME_BYTES` 까지 받는다(LIFE-582 P7) — ws 의 `maxPayload` 는 큰 쪽이다. 인증 전에는 소켓에 들어온 바이트를 직접 세어
-//   `PRE_AUTH_MAX_BYTES` 를 넘으면 닫고(끝나지 않은 조각도 — R1-A10), 인증 뒤 그 밖의 프레임(파싱 실패·바이너리 포함)은 16 KiB 를 여기서 다시 건다.
+//   `MAX_INPUT_FRAME_BYTES` 까지 받는다(LIFE-582 P7). **인증 전 수신 한도는 ws 의 `maxPayload` = 정확히 16 KiB** — 선언 길이로 본문이 오기 전에,
+//   끝나지 않은 조각(`fin:false`)은 누계로 거절한다(R2-A6). 인증되면 그 연결의 수신 한도만 넓히고, 그 밖의 프레임(파싱 실패·바이너리 포함)은 16 KiB 를 여기서 다시 건다.
 // - 인증된 연결은 생존 확인(LIFE-578 E3): `LIVENESS_INTERVAL_MS` 마다 WS ping 프레임, `IDLE_TIMEOUT_MS` 동안 아무 프레임도 없으면 끊는다.
 //   같은 기기가 새로 hello 하면 그 기기의 이전 연결을 `replaced` 로 닫는다 — 망을 바꾼 폰의 죽은 연결이 상한 16 을 채우지 않게.
 // - **electron 을 모른다** — 버전·로그를 주입받아 vitest 가 실제 서버를 띄운다.
@@ -27,7 +27,6 @@ import {
   MAX_CONNECTIONS,
   MAX_INPUT_FRAME_BYTES,
   MAX_MESSAGE_BYTES,
-  PRE_AUTH_MAX_BYTES,
   PROTOCOL_VERSION,
   WS_PATH,
   parseClientMessage,
@@ -64,13 +63,23 @@ export type InputSource = {
   send(input: { device: string; id: string; channel: string; text: string }): void
   cancel(input: { device: string; id: string }): void
   status(input: { device: string; ids: string[] }): void
-  answer(input: { device: string; id: string; channel: string; question: number; call: string | null; answers: { choices: number[]; other: string | null }[] }): void
+  answer(input: { device: string; id: string; channel: string; question: number; call: string | null; digest: string | null; answers: { choices: number[]; other: string | null }[] }): void
   stopTurn(input: { device: string; id: string; channel: string }): void
   pending(input: { device: string }): void
 }
 
 /** 인증된 연결이 16 KiB 를 넘겨 보낼 수 있는 메시지(P7). */
 const LARGE_TYPES: ReadonlySet<string> = new Set(['input.send', 'question.answer'])
+
+/**
+ * 그 연결의 ws 수신 한도를 넓힌다(R2-A6) — ws 8 의 `Receiver` 는 프레임 머리의 선언 길이를 `_maxPayload` 와 그때그때 비교한다
+ * (`receiver.js` haveLength, 끝나지 않은 조각은 누계). 공개 API 가 없어 그 칸만 고친다. 모양이 다르면 고치지 않고 false.
+ */
+function widenReceiver(input: { ws: WebSocket; maxPayload: number }): boolean {
+  const receiver: unknown = Reflect.get(input.ws, '_receiver')
+  if (typeof receiver !== 'object' || receiver === null || typeof Reflect.get(receiver, '_maxPayload') !== 'number') return false
+  return Reflect.set(receiver, '_maxPayload', input.maxPayload)
+}
 
 /** RFC 6455 §4.1 — 16바이트 nonce 의 base64(24자, `==` 로 끝남). */
 const WS_KEY = /^[A-Za-z0-9+/]{22}==$/
@@ -131,7 +140,8 @@ export class MobileServer {
   }
 
   private async listen(): Promise<number> {
-    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INPUT_FRAME_BYTES, clientTracking: false, perMessageDeflate: false })
+    // 인증 전 한도 그대로(R2-A6) — 인증된 연결만 `widenReceiver` 로 넓힌다.
+    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, clientTracking: false, perMessageDeflate: false })
     const server = http.createServer((request, response) => {
       // WS 가 아닌 HTTP 는 전부 같은 모양으로 거절 — 본문·헤더로 아무것도 알려 주지 않는다.
       request.resume()
@@ -147,7 +157,7 @@ export class MobileServer {
         socket.destroy()
         return
       }
-      wss.handleUpgrade(request, socket, head, (ws) => this.accept({ ws, socket, head: head.length }))
+      wss.handleUpgrade(request, socket, head, (ws) => this.accept({ ws }))
     })
     server.on('clientError', (_error, socket) => socket.destroy())
     await new Promise<void>((resolve, reject) => {
@@ -253,21 +263,11 @@ export class MobileServer {
     }
   }
 
-  private accept(input: { ws: WebSocket; socket: Socket; head: number }): void {
-    const { ws, socket } = input
+  private accept(input: { ws: WebSocket }): void {
+    const { ws } = input
     const connection: Connection = { ws, deviceId: null, timer: null, closing: false, lastSeenAt: Date.now(), unsubscribe: null, chat: null, input: null }
     connection.timer = setTimeout(() => this.reject(connection, 'auth_timeout', CLOSE.authTimeout), this.deps.authTimeoutMs ?? AUTH_TIMEOUT_MS)
     this.connections.add(connection)
-    // 인증 전 수신 관문(R1-A10) — ws 는 큰 `maxPayload` 로 끝나지 않은 조각을 모은다. 인증 전에는 소켓 바이트 합계로 16 KiB(+머리)를 넘기지 않는다.
-    let preAuth = input.head
-    const countPreAuth = (chunk: Buffer): void => {
-      if (connection.deviceId !== null || connection.closing) return void socket.off('data', countPreAuth)
-      preAuth += chunk.length
-      if (preAuth <= PRE_AUTH_MAX_BYTES) return
-      socket.off('data', countPreAuth)
-      this.drop(connection, CLOSE.tooBig, 'too_big')
-    }
-    socket.on('data', countPreAuth)
     ws.on('message', (data, isBinary) => {
       connection.lastSeenAt = Date.now()
       this.onMessage(connection, data, isBinary)
@@ -319,7 +319,7 @@ export class MobileServer {
           return input.status({ device, ids: message.ids })
         case 'question.answer':
           if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
-          return input.answer({ device, id: message.id, channel: message.channel, question: message.question, call: message.call, answers: message.answers })
+          return input.answer({ device, id: message.id, channel: message.channel, question: message.question, call: message.call, digest: message.digest, answers: message.answers })
         case 'turn.stop':
           if (input === undefined) return this.send(connection.ws, { type: 'error', code: 'unknown_type', message: errorText('unknown_type') })
           return input.stopTurn({ device, id: message.id, channel: message.channel })
@@ -472,6 +472,8 @@ export class MobileServer {
     if (connection.timer !== null) clearTimeout(connection.timer)
     connection.timer = null
     connection.deviceId = device.id
+    // 인증 뒤에만 큰 쓰기 프레임(P7)을 받는다 — 넓히지 못하면(ws 내부가 바뀜) 16 KiB 그대로다(큰 지시가 1009, 열리지 않는 쪽으로).
+    if (!widenReceiver({ ws: connection.ws, maxPayload: MAX_INPUT_FRAME_BYTES })) this.deps.log('mobile.widen_failed', {})
     // 쓰기 결과는 이 연결로 — 보내기 직전마다 살아 있음·해지를 본다(목록·대화와 같은 확인).
     const input = this.deps.input
     if (input !== undefined) {

@@ -1,5 +1,6 @@
 // 쓰기 메시지 — 실제 서버 (LIFE-582 Z2ⓖ · P7 · P8). 인증 전 거절 · 프레임 상한(지시만 64 KiB) · 기기 id 를 붙여 넘김 · 해지 뒤 0건.
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -207,6 +208,52 @@ describe('R1-A10 수신 상한 — 인증 전은 소켓 바이트로, 인증 뒤
     const { client } = await paired(port, store)
     client.ws.send(JSON.stringify({ type: 'input.status', ids: [], pad: 'x'.repeat(MAX_MESSAGE_BYTES) }))
     expect(await client.closed).toBe(1009)
+  })
+})
+
+describe('R2-A6 인증 전 수신 한도 = 정확히 16 KiB(선언 길이 · 조각 누계)', () => {
+  it('끝나지 않은 조각 16,385 B 는 1009 — 대조: 16,384 B 는 열린 채', async () => {
+    const { port } = await setup()
+    const over = await connect(port)
+    over.ws.send('x'.repeat(MAX_MESSAGE_BYTES + 1), { fin: false })
+    expect(await over.closed).toBe(1009)
+    const exact = await connect(port)
+    exact.ws.send('x'.repeat(MAX_MESSAGE_BYTES), { fin: false })
+    await new Promise((done) => setTimeout(done, 100))
+    expect(exact.ws.readyState).toBe(WebSocket.OPEN)
+    exact.ws.terminate()
+  })
+  it('조각 둘의 누계가 16 KiB 를 넘으면 1009', async () => {
+    const { port } = await setup()
+    const client = await connect(port)
+    client.ws.send('x'.repeat(10_000), { fin: false })
+    client.ws.send('y'.repeat(10_000), { fin: false })
+    expect(await client.closed).toBe(1009)
+  })
+  it('길이만 32,768 B 로 선언한 머리 8 B — 본문이 오기 전에 닫는다(1009 close 프레임)', async () => {
+    const { port } = await setup()
+    const socket = net.createConnection(port, '127.0.0.1')
+    let data = Buffer.alloc(0)
+    socket.on('data', (chunk: Buffer) => { data = Buffer.concat([data, chunk]) })
+    await new Promise((done) => socket.once('connect', done))
+    socket.write('GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+    await until(() => data.includes('\r\n\r\n'))
+    expect(data.toString('latin1').startsWith('HTTP/1.1 101')).toBe(true)
+    data = Buffer.alloc(0)
+    // FIN + text, MASK + 126(16비트 길이) 32768, 마스크 키 4 B — 본문 없음.
+    socket.write(Buffer.from([0x81, 0xfe, 0x80, 0x00, 1, 2, 3, 4]))
+    await until(() => data.length >= 4)
+    // 서버 close 프레임(0x88)과 코드 1009.
+    expect(data[0]).toBe(0x88)
+    expect(data.readUInt16BE(2)).toBe(1009)
+    socket.destroy()
+  })
+  it('인증 뒤에는 넓어진다 — 16 KiB 넘는 지시가 공급으로 간다', async () => {
+    const { port, store, calls } = await setup()
+    const { client } = await paired(port, store)
+    client.ws.send(JSON.stringify({ type: 'input.send', id: 'r2a6-0000-0001', channel: 'c1', text: 'a'.repeat(40_000) }))
+    await until(() => calls.length > 0)
+    expect(calls[0]).toMatchObject({ op: 'send' })
   })
 })
 

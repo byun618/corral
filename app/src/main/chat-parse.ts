@@ -352,6 +352,26 @@ function codexReplyAnswer(raw: string): string | null {
   return parts.length === 0 ? null : parts.join(' · ')
 }
 
+/**
+ * LIFE-582 R2-A2 — 답 봉투 한 줄의 문항별 귀속. `questionItemId` 는 실물에서 `["<도구 이름>","<call_id>",<문항 번호>]` 의 JSON 글이다
+ * (codex 0.162.1 기록 실측). 귀속을 못 읽은 항목은 `call`·`index` 가 null. 봉투 줄이 아니면 null.
+ */
+export function codexQuestionReplies(line: string): { call: string | null; index: number | null }[] | null {
+  const record = safeParse(line)
+  if (!isRecord(record)) return null
+  const raw = codexUserText(record)
+  if (raw === null || !raw.trimStart().startsWith(CODEX_QUESTION_REPLY)) return null
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  const parsed = start < 0 || end <= start ? null : safeParse(raw.slice(start, end + 1))
+  if (!Array.isArray(parsed)) return [{ call: null, index: null }]
+  return parsed.map((entry) => {
+    const id = isRecord(entry) && typeof entry['questionItemId'] === 'string' ? safeParse(entry['questionItemId']) : null
+    if (!Array.isArray(id) || id.length !== 3 || typeof id[1] !== 'string' || typeof id[2] !== 'number' || !Number.isInteger(id[2])) return { call: null, index: null }
+    return { call: id[1], index: id[2] }
+  })
+}
+
 function codexItem(input: { record: Record<string, unknown>; item: Record<string, unknown> }): ChatAtom[] {
   const { item } = input
   const type = readString(item, 'type')

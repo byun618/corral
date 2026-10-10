@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentSessionRef, SessionQuestion, TranscriptAgent } from '../../shared/types.js'
 import { ChatBuilder, type ChatItem, type ChatTool } from '../chat-parse.js'
+import { questionDigest } from './keys.js'
 import { chatChannel, maskPaths, type ChatChannel, type ListInput } from './list.js'
 
 /** 처음 열 때·과거 요청 한 번에 보내는 말풍선 수(X5). */
@@ -66,7 +67,7 @@ export type WireItem =
   | { id: number; kind: 'prompt'; at: number | null; body: WireText }
   | { id: number; kind: 'reply'; at: number | null; body: WireText }
   | { id: number; kind: 'tools'; at: number | null; tools: WireTool[]; count: number; names: Record<string, number>; detail: boolean }
-  | { id: number; kind: 'question'; at: number | null; call: string | null; questions: SessionQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
+  | { id: number; kind: 'question'; at: number | null; call: string | null; digest: string; questions: SessionQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
   | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null; clipped: boolean }
 
 export type ChatUnavailable = 'not_listed' | 'no_session' | 'no_file' | 'not_ready' | 'unreadable'
@@ -195,7 +196,7 @@ export function wireItem(input: { item: ChatItem; place: Place }): WireItem {
     case 'question': {
       const wired = wireQuestions({ questions: item.questions, place })
       const answer = item.answer === null ? null : clipText({ text: item.answer, place, max: 2000 })
-      return fitItem({ id: item.id, kind: 'question', at: item.at, call: item.call, questions: wired.questions, state: item.state, answer: answer?.text ?? null, clipped: wired.clipped || (answer?.clipped ?? null) !== null })
+      return fitItem({ id: item.id, kind: 'question', at: item.at, call: item.call, digest: questionDigest(item.questions), questions: wired.questions, state: item.state, answer: answer?.text ?? null, clipped: wired.clipped || (answer?.clipped ?? null) !== null })
     }
     case 'note': {
       const text = item.text === null ? null : clipText({ text: item.text, place, max: 2000 })

@@ -271,8 +271,21 @@ function homeDir(): string {
   return os.homedir()
 }
 
-/** 한 세션 id 의 후보 파일 전부 — `error` = 훑는 중 폴더를 읽지 못했다(0건이 「없음」 인지 알 수 없다). LIFE-582 R1-A13. */
+/** 한 세션 id 의 후보 파일 전부 — `error` = 훑는 중 폴더·후보를 읽지 못했다(0건이 「없음」 인지 알 수 없다). LIFE-582 R1-A13. */
 type Candidates = { files: string[]; error: boolean }
+
+/**
+ * 후보 하나가 있나 — `existsSync` 는 권한 오류(EACCES)도 「없음」 으로 접는다(R2-A5). 없음(ENOENT·ENOTDIR)과 못 읽음을 가른다.
+ */
+function probe(file: string): 'file' | 'absent' | 'error' {
+  try {
+    fs.statSync(file)
+    return 'file'
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? error.code : null
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'error'
+  }
+}
 
 /** `<HOME>/.claude/projects/<폴더>/<id>.jsonl` — 폴더 이름은 안 지어내고 훑어 찾는다. */
 function claudeCandidates(id: string): Candidates {
@@ -284,12 +297,15 @@ function claudeCandidates(id: string): Candidates {
     return { files: [], error: true }
   }
   const files: string[] = []
+  let error = false
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const candidate = path.join(projects, entry.name, `${id}.jsonl`)
-    if (fs.existsSync(candidate)) files.push(candidate)
+    const found = probe(candidate)
+    if (found === 'file') files.push(candidate)
+    else if (found === 'error') error = true
   }
-  return { files, error: false }
+  return { files, error }
 }
 
 /** `<HOME>/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl` — 날짜 3단만 내려간다. */
@@ -336,12 +352,15 @@ function grokCandidates(id: string): Candidates {
     return { files: [], error: true }
   }
   const files: string[] = []
+  let error = false
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const candidate = path.join(root, entry.name, id, 'chat_history.jsonl')
-    if (fs.existsSync(candidate)) files.push(candidate)
+    const found = probe(candidate)
+    if (found === 'file') files.push(candidate)
+    else if (found === 'error') error = true
   }
-  return { files, error: false }
+  return { files, error }
 }
 
 function candidatesOf(input: { agent: TranscriptAgent; id: string }): Candidates {
@@ -365,11 +384,15 @@ export type TranscriptResolution = { kind: 'found'; file: string } | { kind: 'no
 export function resolveTranscriptUnique(ref: AgentSessionRef): TranscriptResolution {
   const agent = transcriptAgent(ref.agent)
   if (agent === null) return { kind: 'error' }
-  if (ref.kind === 'path') return fs.existsSync(ref.path) ? { kind: 'found', file: ref.path } : { kind: 'none' }
+  if (ref.kind === 'path') {
+    const found = probe(ref.path)
+    return found === 'file' ? { kind: 'found', file: ref.path } : found === 'absent' ? { kind: 'none' } : { kind: 'error' }
+  }
   const { files, error } = candidatesOf({ agent, id: ref.id })
   if (files.length > 1) return { kind: 'ambiguous', count: files.length }
-  if (files.length === 1) return { kind: 'found', file: files[0]! }
-  return error ? { kind: 'error' } : { kind: 'none' }
+  // 일부를 못 읽었으면 하나만 찾았어도 유일하다고 말할 수 없고, 0건도 「없음」 이 아니다(R2-A5).
+  if (error) return { kind: 'error' }
+  return files.length === 1 ? { kind: 'found', file: files[0]! } : { kind: 'none' }
 }
 
 /** 참조를 파일 경로로 옮긴다. 못 찾으면 null. */

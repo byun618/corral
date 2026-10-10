@@ -7,7 +7,7 @@
 // 목록 실패(R2-A2 — 읽지 못함·구독 거부·응답 없음)면 Home 과 같은 정책: 「오래된 값」 띠(기준 시각 · 호환 불가면 업데이트 안내),
 // 상태는 「확인 불가」, 실패 중에는 읽음 장부를 바꾸지 않는다(최신이 아닌 것을 봤다고 치지 않는다).
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { locateChannel } from '../../src/core/list'
 import { failureText, headerMeta, headerStatus } from '../../src/core/list-view'
@@ -96,7 +96,7 @@ export default function ChannelPlaceholder() {
   // 보낸 뒤에도 초안을 그대로 둔다 — 실패하면 같은 답을 다시 보낼 수 있다(R1-A11). 질문이 닫히면(다른 id) 초안은 저절로 처음부터다.
   const sendAnswers = (answers: StepAnswer[]): void => {
     if (question === null) return
-    inputStore.answer({ channel: id, question: question.id, call: question.call, answers })
+    inputStore.answer({ channel: id, question: question.id, call: question.call, digest: question.digest, answers })
   }
   /** 문항 하나를 채우고 다음 문항으로 — 마지막이면 보낸다. */
   const commitStep = (answer: StepAnswer): void => {
@@ -134,7 +134,11 @@ export default function ChannelPlaceholder() {
     // 직접 입력 글은 지우지 않는다 — 답이 실패하면 그대로 다시 보낼 수 있게(R1-A11). 다음 문항·질문이 닫히면 입력창이 새로 열린다(아래 key).
     return false
   }
-  const composerKey = mode !== null && mode.kind === 'open' && mode.target === 'answer' && question !== null ? `answer:${question.id}:${current.step}` : 'send'
+  // 입력창의 수명 = 논리적 질문·문항(R2-A8). 연결이 잠깐 끊겨 질문을 모르는(`unknown`) 동안은 직전 키를 그대로 둔다 — 잠긴 입력창이 쓴 글을 지니고 있다가
+  // 다시 붙으면 그대로 열린다. 질문이 닫히거나 다음 문항으로 가면(아는 상태에서 키가 바뀜) 새 입력창이다.
+  const keyRef = useRef('send')
+  if (!unknown) keyRef.current = question !== null ? `answer:${question.id}:${current.step}` : 'send'
+  const composerKey = keyRef.current
   return (
     <Screen>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingRight: 16, paddingVertical: 8 }}>

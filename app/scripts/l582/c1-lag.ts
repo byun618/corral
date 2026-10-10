@@ -15,9 +15,9 @@ const backend: InputBackend = {
   locate: async (paneId) => ({ epoch: 'e', ptyId: 't', paneId, tabId: 'tab', workspaceId: 'ws', path: '/w', repo: '/w', title: 'x' }),
   observe: async () => ({ status: 'idle', seq: 1, quiet: true, unmanaged: false, input: { revision: 1, idleMs: 10_000 } }),
   manifestVerified: async () => true,
-  screen: async () => EMPTY,
+  screen: async () => ({ text: EMPTY, input: { revision: 1, idleMs: 10_000 }, seq: 1 }),
   prompt: async (_pane, input) => { setTimeout(() => fs.appendFileSync(file, line(input.text) + '\n'), 1000); return 'sent' },
-  send: async () => 'sent',
+  send: async () => ({ kind: 'sent', revision: null }),
 }
 const hub = new InputHub({ read: () => ({ state: chatListState(), prefs: null }), backend: () => backend, resolveFile: () => ({ kind: 'found', file }), questionItems: () => [], log: () => {} })
 const states: string[] = []

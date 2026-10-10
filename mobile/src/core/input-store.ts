@@ -88,10 +88,10 @@ export class InputStore {
     return this.connection.send({ type: 'input.cancel', id })
   }
 
-  /** `call` = 그 질문 말풍선의 도구 호출 id — 서버가 같은 질문인지 대조한다(R1-A2). */
-  answer(input: { channel: string; question: number; call: string | null; answers: StepAnswer[] }): string | null {
+  /** `call` = 그 질문 말풍선의 도구 호출 id · `digest` = 서버가 준 질문 내용 지문 — 서버가 같은 질문인지 대조한다(R1-A2·R2-A1). */
+  answer(input: { channel: string; question: number; call: string | null; digest: string | null; answers: StepAnswer[] }): string | null {
     const id = newInputId({ now: this.now(), random: this.random })
-    const sent = this.connection.send({ type: 'question.answer', id, channel: input.channel, question: input.question, call: input.call, answers: input.answers })
+    const sent = this.connection.send({ type: 'question.answer', id, channel: input.channel, question: input.question, call: input.call, digest: input.digest, answers: input.answers })
     this.log?.add('input_answer', { sent, questions: input.answers.length })
     if (!sent) return null
     this.add({ id, channel: input.channel, op: 'answer', text: null, tailId: null })

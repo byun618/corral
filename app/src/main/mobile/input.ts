@@ -27,17 +27,20 @@ import type { TerminalIdentity } from '../adapter/index.js'
 import { bodyIdentity, countSubmissions, normalizeBody } from '../../runtime/terminal/agent.js'
 import type { AgentSessionRef } from '../../shared/types.js'
 import { parseGrokUpdates, parseTail } from '../transcript-parse.js'
-import { lineAtoms, type ChatItem } from '../chat-parse.js'
+import { codexQuestionReplies, lineAtoms, type ChatItem } from '../chat-parse.js'
 import {
-  answerSteps,
+  activeQuestion,
+  answerGroups,
   cleanAnswerText,
   cleanBody,
   draftState,
   MAX_INPUT_BYTES,
-  screenPlain,
+  questionDigest,
+  sameQuestion,
   stopAllowed,
   stopKey,
   stopNeedsEmptyInput,
+  type AnswerCheck,
   type QuestionAnswer,
 } from './keys.js'
 import { buildMobileList, chatChannel, type ChatChannel, type ListInput, type MobileAgentKind, type MobileChannel } from './list.js'
@@ -89,6 +92,10 @@ export const INPUT_TIMING: InputTiming = { pollMs: 1000, gateMs: 750, quietMs: 5
  */
 export type PaneObservation = { status: string; seq: number; quiet: boolean; unmanaged: boolean; input: { revision: number; idleMs: number } | null }
 export type SendResult = 'sent' | 'refused' | 'unknown'
+/** 키 한 번의 결과 — `sent` 면 guard 가 쓴 뒤의 입력 revision(다음 키의 울타리, 울타리 없이 보냈으면 null). */
+export type KeyResult = { kind: 'sent'; revision: number | null } | { kind: 'refused' } | { kind: 'unknown' }
+/** 보이는 화면 + 같은 guard 턴의 입력 revision·조용한 시간·에이전트 seq(R2-A3). 이전 guard 면 `input`·`seq` 가 null. */
+export type ScreenRead = { text: string; input: { revision: number; idleMs: number } | null; seq: number | null }
 
 /** herdr 쪽 — 실제는 `input-backend.ts`(guard 봉투), 시험은 가짜. */
 export interface InputBackend {
@@ -98,12 +105,15 @@ export interface InputBackend {
   observe(pane: TerminalIdentity): Promise<PaneObservation>
   /** detect manifest 확인(CLI 와 같은 fail-closed — 신뢰 대화상자가 한가로 보일 수 있다). */
   manifestVerified(kind: MobileAgentKind): Promise<boolean>
-  /** 보이는 화면(ANSI). */
-  screen(pane: TerminalIdentity): Promise<string>
+  /** 보이는 화면(ANSI) — 같은 턴의 입력 revision·조용한 시간·seq 와 함께(R2-A3). */
+  screen(pane: TerminalIdentity): Promise<ScreenRead>
   /** guard `agent.prompt` — 관측한 seq·입력 revision 그대로이고 입력이 `minIdleMs` 이상 조용할 때만. `refused` = 아무것도 쓰지 않았다. */
   prompt(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number }): Promise<SendResult>
-  /** guard `pane.send_text` + 관측한 seq 비교. `refused` = 아무것도 쓰지 않았다. */
-  send(pane: TerminalIdentity, text: string, seq: number): Promise<SendResult>
+  /**
+   * guard `pane.send_text` + 관측한 seq 비교 + (주면) 입력 revision 울타리 — 그 revision 뒤에 다른 입력이 있었으면 `refused`(R2-A1).
+   * `refused` = 아무것도 쓰지 않았다.
+   */
+  send(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number | null }): Promise<KeyResult>
 }
 
 /**
@@ -154,12 +164,14 @@ type Entry = {
   question: number | null
   /** 폰이 본 질문의 도구 호출 id(R1-A2). */
   call: string | null
+  /** 폰이 본 질문 내용의 지문(`questionDigest`, R2-A1). */
+  digest: string | null
   answers: QuestionAnswer[] | null
 }
 
 type QuestionItem = Extract<ChatItem, { kind: 'question' }>
-/** 기록 꼬리 커서 — 제출 직전 크기와 끝 `TAIL_WINDOW` 바이트의 지문. */
-type TailCursor = { file: string; existed: boolean; bytes: number; window: string | null }
+/** 기록 꼬리 커서 — 제출 직전 그 파일의 정체(dev·ino)·크기와 끝 `TAIL_WINDOW` 바이트의 지문. 한 번 연 파일에서 함께 잡는다(R2-A7). */
+type TailCursor = { file: string; existed: boolean; dev: number; ino: number; bytes: number; window: string | null }
 
 const FINAL: ReadonlySet<InputState> = new Set(['delivered', 'unconfirmed', 'failed', 'cancelled', 'stopped'])
 const short = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 8)
@@ -179,22 +191,27 @@ export function cleanAnswers(raw: { choices: number[]; other: string | null }[])
   return out
 }
 
+/** 열린 파일에서 `[from, to)` 바이트. */
+function readFd(input: { fd: number; from: number; to: number }): Buffer {
+  const length = Math.max(0, input.to - input.from)
+  const buffer = Buffer.alloc(length)
+  let read = 0
+  while (read < length) {
+    const chunk = fs.readSync(input.fd, buffer, read, length - read, input.from + read)
+    if (chunk === 0) break
+    read += chunk
+  }
+  return buffer.subarray(0, read)
+}
+
 /** `[from, to)` 바이트. 못 읽으면 null. */
 function readBytes(input: { file: string; from: number; to: number }): Buffer | null {
   try {
-    const handle = fs.openSync(input.file, 'r')
+    const fd = fs.openSync(input.file, 'r')
     try {
-      const length = Math.max(0, input.to - input.from)
-      const buffer = Buffer.alloc(length)
-      let read = 0
-      while (read < length) {
-        const chunk = fs.readSync(handle, buffer, read, length - read, input.from + read)
-        if (chunk === 0) break
-        read += chunk
-      }
-      return buffer.subarray(0, read)
+      return readFd({ fd, from: input.from, to: input.to })
     } finally {
-      fs.closeSync(handle)
+      fs.closeSync(fd)
     }
   } catch {
     return null
@@ -209,59 +226,95 @@ const sizeOf = (file: string): number | null => {
   }
 }
 
-function windowDigest(input: { file: string; bytes: number }): string | null {
-  const chunk = readBytes({ file: input.file, from: Math.max(0, input.bytes - TAIL_WINDOW), to: input.bytes })
-  return chunk === null ? null : createHash('sha256').update(chunk).digest('hex')
+/**
+ * 파일 하나를 열어 그 정체(dev·ino)·크기와 `[from, 크기)` 를 같은 열린 파일에서 읽는다 — 이름이 그 사이 다른 파일로 바뀌어도 섞이지 않는다(R2-A7).
+ * 없으면 `missing`, 그 밖에 못 읽으면 `error`.
+ */
+function snapshot(input: { file: string; from: (size: number) => number }): { kind: 'ok'; dev: number; ino: number; size: number; data: Buffer } | { kind: 'missing' } | { kind: 'error' } {
+  let fd: number
+  try {
+    fd = fs.openSync(input.file, 'r')
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'error' }
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    return { kind: 'ok', dev: stat.dev, ino: stat.ino, size: stat.size, data: readFd({ fd, from: Math.min(stat.size, input.from(stat.size)), to: stat.size }) }
+  } catch {
+    return { kind: 'error' }
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
-/** 제출 직전 커서 — stat 과 끝 64 KiB 만 읽는다(C1). */
-export function tailCursor(file: string): TailCursor {
-  const bytes = sizeOf(file)
-  if (bytes === null) return { file, existed: false, bytes: 0, window: null }
-  return { file, existed: true, bytes, window: windowDigest({ file, bytes }) }
+const digestOf = (chunk: Buffer): string => createHash('sha256').update(chunk).digest('hex')
+
+/** 제출 직전 커서 — 정체·크기와 끝 64 KiB 만 읽는다(C1). 못 읽으면 null(넣지 않는다). */
+export function tailCursor(file: string): TailCursor | null {
+  const shot = snapshot({ file, from: (size) => Math.max(0, size - TAIL_WINDOW) })
+  switch (shot.kind) {
+    case 'missing':
+      return { file, existed: false, dev: 0, ino: 0, bytes: 0, window: null }
+    case 'error':
+      return null
+    case 'ok':
+      return { file, existed: true, dev: shot.dev, ino: shot.ino, bytes: shot.size, window: digestOf(shot.data) }
+  }
 }
 
 /**
- * 커서 뒤에 붙은 글. 파일이 커서보다 짧거나 커서 앞 꼬리가 바뀌었으면 다시 쓰인 것이다(`rewritten` — CLI 의 `cursorInvalidated` 와 같은 뜻).
- * 커서 때 없던 파일은 통째로(새 세션 — 작다), 아직 없으면 null.
+ * 커서 뒤에 붙은 글. 파일이 다른 파일로 바뀌었거나(dev·ino — R2-A7) 커서보다 짧거나 커서 앞 꼬리가 바뀌었으면 다시 쓰인 것이다
+ * (`rewritten` — CLI 의 `cursorInvalidated` 와 같은 뜻, 성공 근거로 쓰지 않는다). 커서 때 없던 파일은 통째로(새 세션 — 작다), 아직 없으면 null.
  */
 export function tailSince(cursor: TailCursor): { text: string | null; rewritten: boolean } {
-  const size = sizeOf(cursor.file)
-  if (size === null) return { text: null, rewritten: cursor.existed }
-  if (!cursor.existed) return { text: readBytes({ file: cursor.file, from: 0, to: size })?.toString('utf8') ?? null, rewritten: false }
-  if (size < cursor.bytes || windowDigest({ file: cursor.file, bytes: cursor.bytes }) !== cursor.window) return { text: null, rewritten: true }
-  return { text: readBytes({ file: cursor.file, from: cursor.bytes, to: size })?.toString('utf8') ?? null, rewritten: false }
-}
-
-/** 화면이 그 질문을 보이나 — 첫 문항 글 앞부분과 선택지(앞 4개)의 앞부분이 모두 보여야 한다(R1-A2). 공백 차이는 무시한다. */
-export function questionOnScreen(input: { question: QuestionItem; screen: string }): boolean {
-  const first = input.question.questions[0]
-  if (first === undefined) return false
-  const squash = (text: string): string => text.replace(/\s+/g, '')
-  const plain = squash(screenPlain(input.screen))
-  const probes = [first.question, ...first.options.slice(0, 4).map((option) => option.label)].map((text) => squash(text).slice(0, 12)).filter((text) => text.length > 0)
-  return probes.length > 0 && probes.every((probe) => plain.includes(probe))
+  const shot = snapshot({ file: cursor.file, from: (size) => (cursor.existed ? Math.max(0, Math.min(size, cursor.bytes) - TAIL_WINDOW) : 0) })
+  if (shot.kind === 'missing') return { text: null, rewritten: cursor.existed }
+  if (shot.kind === 'error') return { text: null, rewritten: false }
+  if (!cursor.existed) return { text: shot.data.toString('utf8'), rewritten: false }
+  if (shot.dev !== cursor.dev || shot.ino !== cursor.ino || shot.size < cursor.bytes) return { text: null, rewritten: true }
+  const windowStart = Math.max(0, cursor.bytes - TAIL_WINDOW)
+  if (digestOf(shot.data.subarray(0, cursor.bytes - windowStart)) !== cursor.window) return { text: null, rewritten: true }
+  return { text: shot.data.subarray(cursor.bytes - windowStart).toString('utf8'), rewritten: false }
 }
 
 /**
- * 커서 뒤 기록에서 그 도구 호출의 답 줄 — 같은 기록 파서(`lineAtoms`)의 `result` 원자를 센다. Codex 는 답이 사람 줄 봉투(`resolve` + 답 글)로도 온다 —
- * 도구 출력이 없을 때만 그것을 센다. `declined` = 답이 오류(거절·취소)로 끝났다.
+ * 커서 뒤 기록에서 그 도구 호출의 답 — 같은 기록 파서(`lineAtoms`)의 `result` 원자를 센다(Claude·Grok). `declined` = 답이 오류(거절·취소)로 끝났다.
+ * Codex 는 답이 사람 줄 봉투로 온다 — 봉투의 `questionItemId`(도구 호출 id + 문항 번호)가 **이 호출**인 항목만 센다(R2-A2). 이 호출의 문항
+ * `questions` 개가 모두 한 번씩 답해졌을 때만 1건, 일부만이면 0건. 귀속을 못 읽은 봉투가 있으면 `unattributed`(확정하지 않는다).
  */
-export function answerRecords(input: { kind: MobileAgentKind; text: string; call: string }): { count: number; declined: boolean } {
+export function answerRecords(input: { kind: MobileAgentKind; text: string; call: string; questions: number }): { count: number; declined: boolean; unattributed: boolean } {
   let results = 0
-  let replies = 0
   let declined = false
+  let unattributed = false
+  const answered = new Map<number, number>()
   for (const line of input.text.split('\n')) {
     if (line.trim() === '') continue
+    if (input.kind === 'codex') {
+      const replies = codexQuestionReplies(line)
+      if (replies !== null) {
+        for (const reply of replies) {
+          if (reply.call === null || reply.index === null) unattributed = true
+          else if (reply.call === input.call) answered.set(reply.index, (answered.get(reply.index) ?? 0) + 1)
+        }
+        continue
+      }
+    }
     for (const atom of lineAtoms({ agent: input.kind, line, sessionId: null }).atoms) {
       if (atom.kind === 'result' && atom.callId === input.call) {
         results += 1
         if (atom.status === 'error') declined = true
-      } else if (input.kind === 'codex' && atom.kind === 'resolve' && atom.callId === null && atom.state === 'answered' && atom.answer !== null) replies += 1
+      }
     }
   }
-  return { count: results > 0 ? results : replies, declined }
+  if (input.kind !== 'codex' || answered.size === 0) return { count: results, declined, unattributed }
+  const complete = answered.size === input.questions && [...answered.keys()].every((index) => index >= 0 && index < input.questions)
+  // 같은 문항이 두 번 답해졌으면 정확히 한 번이 아니다.
+  const repeated = [...answered.values()].some((times) => times > 1)
+  return { count: repeated ? 2 : complete ? 1 : 0, declined, unattributed }
 }
+
+/** 기록 문항 → 화면 대조용(글·선택지 글). */
+const plainQuestion = (question: QuestionItem['questions'][number]): { question: string; options: string[] } => ({ question: question.question, options: question.options.map((option) => option.label) })
 
 export class InputHub {
   private readonly deps: InputHubDeps
@@ -330,7 +383,7 @@ export class InputHub {
   send(input: { device: string; id: string; channel: string; text: string }): void {
     if (this.repeat(input)) return
     const text = cleanBody(input.text)
-    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'send', text, question: null, call: null, answers: null })
+    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'send', text, question: null, call: null, digest: null, answers: null })
     this.deps.log('mobile.input_send', { bytes: Buffer.byteLength(text), sha: short(normalizeBody(text)) })
     const gone = this.gone(entry)
     if (gone !== null) return this.settle(entry, 'failed', gone)
@@ -348,7 +401,8 @@ export class InputHub {
   cancel(input: { device: string; id: string }): void {
     const entry = this.entries.get(this.key(input))
     if (entry === undefined) return this.emitUnknown(input)
-    if (entry.state === 'queued') return this.settle(entry, 'cancelled', null)
+    // 취소는 큐의 지시만(R2-A9) — 답·중단은 접수 즉시 넣기를 시작한다. 취소를 받았다고 답한 뒤 키를 넣지 않게 지금 상태만 돌려준다.
+    if (entry.state === 'queued' && entry.op === 'send') return this.settle(entry, 'cancelled', null)
     this.emit(entry)
   }
 
@@ -366,10 +420,10 @@ export class InputHub {
     for (const entry of open) this.emit(entry, { withText: true })
   }
 
-  answer(input: { device: string; id: string; channel: string; question: number; call: string | null; answers: { choices: number[]; other: string | null }[] }): void {
+  answer(input: { device: string; id: string; channel: string; question: number; call: string | null; digest: string | null; answers: { choices: number[]; other: string | null }[] }): void {
     if (this.repeat(input)) return
     const answers = cleanAnswers(input.answers)
-    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'answer', text: null, question: input.question, call: input.call, answers })
+    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'answer', text: null, question: input.question, call: input.call, digest: input.digest, answers })
     this.deps.log('mobile.input_answer', { questions: input.answers.length })
     const gone = this.gone(entry)
     if (gone !== null) return this.settle(entry, 'failed', gone)
@@ -379,7 +433,7 @@ export class InputHub {
 
   stopTurn(input: { device: string; id: string; channel: string }): void {
     if (this.repeat(input)) return
-    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'stop', text: null, question: null, call: null, answers: null })
+    const entry = this.add({ device: input.device, id: input.id, channel: input.channel, op: 'stop', text: null, question: null, call: null, digest: null, answers: null })
     this.deps.log('mobile.input_stop', {})
     const gone = this.gone(entry)
     if (gone !== null) return this.settle(entry, 'failed', gone)
@@ -467,20 +521,27 @@ export class InputHub {
     if (!manifest) return this.waitTurn(entry, 'turn')
     // 입력 revision 이 없는 guard 는 화면을 읽은 뒤의 맥 타자를 막지 못한다 — 넣지 않는다(R1-A3, fail-closed).
     if (second.input === null) return this.fail(entry, 'guard_outdated')
-    const screen = await backend.screen(pane)
+    const shot = await backend.screen(pane)
     if (this.dropped(entry)) return 'done'
-    const draft = draftState({ kind, screen })
+    // R2-A3: 화면과 **같은 guard 턴**의 입력 revision·조용한 시간·seq 로 판단한다. 화면을 잡을 때 입력이 `quietMs` 이상 조용했어야
+    // 그 화면이 마지막 입력의 echo 까지 보인다. 넣기는 이 revision 그대로일 때만 — 그러면 넣는 순간까지 화면 뒤 입력이 없다.
+    if (shot.input === null || shot.seq === null) return this.fail(entry, 'guard_outdated')
+    if (shot.seq !== second.seq) return this.waitTurn(entry, 'turn')
+    if (shot.input.idleMs < this.timing.quietMs) return this.waitTurn(entry, 'gate')
+    const draft = draftState({ kind, screen: shot.text })
     if (draft !== 'empty') return this.fail(entry, draft === 'draft' ? 'mac_draft' : 'draft_unknown')
     const text = entry.text ?? ''
     const cursor = tailCursor(file)
+    if (cursor === null) return this.fail(entry, 'record_unreadable')
     const submittedAtMs = this.now()
-    // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔).
+    // 여기서부터 취소 불가 — 넣기 시작. 효과 직전 마지막 확인(해지·끔 · 접수 때 묶은 provider 세션 — R2-A4).
     const gone = this.gone(entry)
     if (gone !== null) return this.fail(entry, gone)
+    if (this.sessionMoved(entry)) return this.fail(entry, 'target_changed')
     entry.state = 'sending'
     entry.wait = null
     this.emit(entry)
-    const sent = await backend.prompt(pane, { text, seq: second.seq, inputRevision: second.input.revision, minIdleMs: this.timing.quietMs })
+    const sent = await backend.prompt(pane, { text, seq: second.seq, inputRevision: shot.input.revision, minIdleMs: this.timing.quietMs })
     if (sent === 'refused') {
       // guard 가 거절 — 아무것도 쓰지 않았다. 그 사이 끄거나 해지했으면 끝낸다(되살리지 않는다, R1-A4). 아니면 큐에 되돌려 다음 관문을 기다린다.
       const late = this.gone(entry)
@@ -507,6 +568,17 @@ export class InputHub {
         return expected === null ? { kind: 'wait' } : { kind: 'file', file: expected }
       }
     }
+  }
+
+  /**
+   * 접수 때 묶은 provider 세션이 지금 목록의 그 채널 세션과 다른가(R2-A4) — 효과 직전에 await 없이 본다. 채널이 사라졌어도 바뀐 것이다.
+   * 목록은 이 프로세스의 상태라 이 확인과 효과 호출 사이에 바뀌지 않는다.
+   */
+  private sessionMoved(entry: Entry): boolean {
+    const located = this.locate(entry.channel)
+    if (!located.ok) return true
+    const session = sessionKey(located.channel.session)
+    return entry.bind === null ? false : session !== entry.bind.session
   }
 
   private fail(entry: Entry, reason: string): 'done' {
@@ -564,60 +636,88 @@ export class InputHub {
 
   // --- 질문 답 ---
 
+  /**
+   * 질문 답(P4 · R2-A1). 같은 질문의 증명:
+   * - 기록: 그 말풍선 id + 도구 호출 id 가 마지막 대기 질문이고, 그 내용 지문이 폰이 본 지문과 같다(같은 id·호출에 다른 내용이면 거절).
+   * - 세션: 접수 때의 provider 세션이 키마다 그대로다.
+   * - 화면: 키 묶음마다 그 앞에서, 입력이 `quietMs` 이상 조용할 때 잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자)이 그 문항이다.
+   *   화면 위쪽 과거 글은 보지 않는다. Codex 는 접힌 표시의 문항 수를 본 뒤 ⇧← 로 열고 다시 본다.
+   * - 입력: 그 화면의 입력 revision 에서 시작해 키마다 guard 가 돌려준 revision 으로 다음 키를 울타리 친다 — 다른 클라이언트의 입력이 끼면 그 키부터 넣지 않는다.
+   * 증명 못 하면 키 0회로 실패(키가 이미 들어갔으면 `unconfirmed`). 들어감 = 커서 뒤 기록에 그 호출의 답 정확히 1건 + 판독자에서 대기 해소.
+   */
   private async runAnswer(entry: Entry, answers: QuestionAnswer[]): Promise<void> {
     const located = this.locate(entry.channel)
     if (!located.ok) return this.settle(entry, 'failed', located.reason === 'not_listed' ? 'closed' : located.reason)
     const { channel, kind } = located
     const backend = this.deps.backend()
     if (backend === null) return this.settle(entry, 'failed', 'not_ready')
-    // 폰이 본 질문의 도구 호출 id 가 없으면 같은 질문인지 대조할 수 없다 — 잠근다(R1-A2).
-    const call = entry.call
-    if (call === null) return this.settle(entry, 'failed', 'question_changed')
+    // 폰이 본 질문의 도구 호출 id·내용 지문이 없으면 같은 질문인지 대조할 수 없다 — 잠근다(R1-A2·R2-A1).
+    const { call, digest } = entry
+    if (call === null || digest === null) return this.settle(entry, 'failed', 'question_changed')
     const pane = await backend.locate(entry.channel)
     if (this.halted(entry)) return
     if (pane === null) return this.settle(entry, 'failed', 'closed')
+    entry.bind = { epoch: pane.epoch, ptyId: pane.ptyId, session: sessionKey(channel.session) }
     const resolved = this.deps.resolveFile(channel)
     if (resolved.kind !== 'found') return this.settle(entry, 'failed', resolved.kind === 'ambiguous' ? 'record_ambiguous' : 'not_ready')
     const { file } = resolved
     const question = this.openQuestion({ file, id: entry.question, call })
     if (question === null) return this.settle(entry, 'failed', 'question_closed')
-    const plan = answerSteps({
+    if (questionDigest(question.questions) !== digest) return this.settle(entry, 'failed', 'question_changed')
+    const plan = answerGroups({
       kind,
       questions: question.questions.map((q) => ({ options: q.options.length, multiSelect: q.multiSelect, preview: q.preview === true })),
       answers,
     })
     if (!plan.ok) return this.settle(entry, 'failed', plan.reason === 'bad_answer' ? 'bad_answer' : plan.reason === 'other_locked' ? 'other_locked' : 'question_locked')
-    // 한 관측 안에서 같은 질문 — 관측 → 기록(그 도구 호출이 마지막 대기) · 화면(그 질문) → 관측이 같은 blocked seq 일 때만. 그 seq 로 키마다 guard 가 다시 비교한다.
     const before = await backend.observe(pane)
     if (this.halted(entry)) return
     if (before.status !== 'blocked') return this.settle(entry, 'failed', 'question_closed')
-    const screen = await backend.screen(pane)
-    if (this.halted(entry)) return
-    if (!questionOnScreen({ question, screen })) return this.settle(entry, 'failed', 'question_changed')
-    const after = await backend.observe(pane)
-    if (this.halted(entry)) return
-    if (after.status !== 'blocked' || after.seq !== before.seq) return this.settle(entry, 'failed', 'question_changed')
-    if (this.openQuestion({ file, id: entry.question, call }) === null) return this.settle(entry, 'failed', 'question_closed')
     const cursor = tailCursor(file)
-    entry.state = 'sending'
-    this.emit(entry)
-    for (let index = 0; index < plan.steps.length; index += 1) {
-      if (index > 0) await this.sleep(this.timing.stepGapMs)
-      // 키마다 효과 직전 — 해지·끔이면 남은 키를 넣지 않는다. 첫 키 전이면 아무것도 넣지 않았다(R1-A1·A4).
-      const gone = this.gone(entry)
-      if (gone !== null) return this.settle(entry, index === 0 ? 'failed' : 'unconfirmed', gone)
-      const sent = await backend.send(pane, plan.steps[index]!, before.seq)
-      if (sent === 'refused') {
-        // 첫 키 전에 바뀌었으면 아무것도 넣지 않았다. 중간이면 일부 키는 들어갔다 — 확인 못 함.
-        return this.settle(entry, index === 0 ? 'failed' : 'unconfirmed', 'question_changed')
+    if (cursor === null) return this.settle(entry, 'failed', 'record_unreadable')
+    let revision: number | null = null
+    let sent = 0
+    // 키가 들어간 뒤의 실패는 확인 못 함 — 일부 키가 들어갔을 수 있다.
+    const stop = (reason: string): void => this.settle(entry, sent === 0 ? 'failed' : 'unconfirmed', reason)
+    for (let group = 0; group < plan.groups.length; group += 1) {
+      const { check, keys } = plan.groups[group]!
+      if (group > 0) await this.sleep(this.timing.stepGapMs)
+      const shot = await this.quietScreen({ backend, pane })
+      if (this.halted(entry, sent)) return
+      if (shot === null) return stop('question_changed')
+      if (shot.input === null || shot.seq === null) return stop('guard_outdated')
+      if (shot.seq !== before.seq || (revision !== null && shot.input.revision !== revision)) return stop('question_changed')
+      const shown = this.screenMatches({ kind, check, screen: shot.text, questions: question.questions })
+      if (shown === 'skip') continue
+      if (!shown) return stop('question_changed')
+      if (this.openQuestion({ file, id: entry.question, call }) === null) return stop('question_closed')
+      revision = shot.input.revision
+      for (let index = 0; index < keys.length; index += 1) {
+        if (index > 0) await this.sleep(this.timing.stepGapMs)
+        // 키마다 효과 직전 — 해지·끔·세션 바뀜이면 남은 키를 넣지 않는다. 첫 키 전이면 아무것도 넣지 않았다(R1-A1·A4·R2-A4).
+        const gone = this.gone(entry)
+        if (gone !== null) return stop(gone)
+        if (this.sessionMoved(entry)) return stop('target_changed')
+        if (sent === 0) {
+          entry.state = 'sending'
+          this.emit(entry)
+        }
+        const result = await backend.send(pane, { text: keys[index]!, seq: before.seq, inputRevision: revision })
+        if (result.kind === 'refused') return stop('question_changed')
+        if (result.kind === 'unknown') return this.settle(entry, 'unconfirmed', 'backend')
+        sent += 1
+        // 쓴 뒤 revision 을 모르면 다음 키를 울타리 칠 수 없다 — 더 넣지 않는다.
+        if (result.revision === null) return this.settle(entry, 'unconfirmed', 'guard_outdated')
+        revision = result.revision
       }
-      if (sent === 'unknown') return this.settle(entry, 'unconfirmed', 'backend')
     }
+    if (sent === 0) return this.settle(entry, 'failed', 'question_changed')
     const deadline = this.now() + this.timing.answerConfirmMs
     for (;;) {
       const tail = tailSince(cursor)
       if (tail.rewritten) return this.settle(entry, 'unconfirmed', 'record_rewritten')
-      const records = tail.text === null ? { count: 0, declined: false } : answerRecords({ kind, text: tail.text, call })
+      const records = tail.text === null ? { count: 0, declined: false, unattributed: false } : answerRecords({ kind, text: tail.text, call, questions: question.questions.length })
+      if (records.unattributed) return this.settle(entry, 'unconfirmed', 'record_unattributed')
       if (records.count > 1) return this.settle(entry, 'unconfirmed', 'record_ambiguous')
       if (records.count === 1 && records.declined) return this.settle(entry, 'unconfirmed', 'question_declined')
       // 답 1건 + 판독자에서 그 질문이 대기에서 풀림(판독자가 없으면 답 줄이 곧 해소다 — Claude·Grok 은 그 도구 호출의 결과 줄).
@@ -627,11 +727,43 @@ export class InputHub {
     }
   }
 
-  /** 답·중단의 await 뒤 — 해지·끔이면 넣기 전이라 실패로 끝낸다. */
-  private halted(entry: Entry): boolean {
+  /**
+   * 입력이 `quietMs` 이상 조용할 때 잡은 화면(R2-A3) — 덜 조용하면 남은 만큼 기다렸다 다시 읽는다(최대 몇 번). 끝내 조용하지 않으면 null.
+   * 이전 guard(`input` 없음)는 그대로 돌려준다 — 부르는 쪽이 `guard_outdated` 로 끝낸다.
+   */
+  private async quietScreen(input: { backend: InputBackend; pane: TerminalIdentity }): Promise<ScreenRead | null> {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const shot = await input.backend.screen(input.pane)
+      if (shot.input === null || shot.input.idleMs >= this.timing.quietMs) return shot
+      await this.sleep(this.timing.quietMs - shot.input.idleMs)
+    }
+    return null
+  }
+
+  /** 키 묶음 앞 화면 확인 — `skip` = Codex 질문이 이미 펼쳐져 있다(⇧← 를 보내면 다음 문항으로 간다 — 보내지 않는다). */
+  private screenMatches(input: { kind: MobileAgentKind; check: AnswerCheck; screen: string; questions: QuestionItem['questions'] }): boolean | 'skip' {
+    const active = activeQuestion({ kind: input.kind, screen: input.screen })
+    switch (input.check.kind) {
+      case 'open':
+        if (active.kind === 'question') return sameQuestion({ active, question: plainQuestion(input.questions[0]!), index: 0, total: input.questions.length }) ? 'skip' : false
+        return active.kind === 'collapsed' && active.count === input.questions.length
+      case 'review':
+        return active.kind === 'review'
+      case 'question': {
+        const target = input.questions[input.check.index]
+        return target !== undefined && sameQuestion({ active, question: plainQuestion(target), index: input.check.index, total: input.questions.length })
+      }
+    }
+  }
+
+  /**
+   * 답·중단의 await 뒤 — 이미 끝났거나(R2-A9) 해지·끔이면 더 하지 않는다. 키가 하나라도 들어갔으면(`sent`) `unconfirmed`, 아니면 실패.
+   */
+  private halted(entry: Entry, sent = 0): boolean {
+    if (FINAL.has(entry.state)) return true
     const gone = this.gone(entry)
     if (gone === null) return false
-    this.settle(entry, 'failed', gone)
+    this.settle(entry, sent === 0 ? 'failed' : 'unconfirmed', gone)
     return true
   }
 
@@ -673,7 +805,7 @@ export class InputHub {
     if (stopNeedsEmptyInput(kind)) {
       const screen = await backend.screen(pane)
       if (this.halted(entry)) return
-      if (draftState({ kind, screen }) !== 'empty') return this.settle(entry, 'failed', 'mac_draft')
+      if (draftState({ kind, screen: screen.text }) !== 'empty') return this.settle(entry, 'failed', 'mac_draft')
     }
     const resolved = this.deps.resolveFile(channel)
     const file = resolved.kind === 'found' ? resolved.file : null
@@ -682,8 +814,8 @@ export class InputHub {
     entry.state = 'sending'
     this.emit(entry)
     const sentAt = this.now()
-    const sent = await backend.send(pane, stopKey(kind), observed.seq)
-    if (sent === 'refused') return this.settle(entry, 'failed', 'state_changed')
+    const sent = await backend.send(pane, { text: stopKey(kind), seq: observed.seq, inputRevision: null })
+    if (sent.kind === 'refused') return this.settle(entry, 'failed', 'state_changed')
     const deadline = sentAt + this.timing.stopConfirmMs
     for (;;) {
       const now = await backend.observe(pane).catch(() => null)
@@ -739,7 +871,7 @@ export class InputHub {
     return true
   }
 
-  private add(input: { device: string; id: string; channel: string; op: InputOp; text: string | null; question: number | null; call: string | null; answers: QuestionAnswer[] | null }): Entry {
+  private add(input: { device: string; id: string; channel: string; op: InputOp; text: string | null; question: number | null; call: string | null; digest: string | null; answers: QuestionAnswer[] | null }): Entry {
     const entry: Entry = { ...input, state: 'queued', wait: null, reason: null, at: this.now(), order: (this.order += 1), gen: this.generation, bind: null }
     this.entries.set(this.key(input), entry)
     this.prune(input.device)

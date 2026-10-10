@@ -12,16 +12,16 @@ export const WS_PATH = '/ws'
 export const MAX_MESSAGE_BYTES = 16 * 1024
 /**
  * `input.send`·`question.answer` 프레임 상한 — 본문(직접 입력 글 합계) 65536 바이트(`MAX_INPUT_BYTES`)가 JSON 이스케이프(줄바꿈·따옴표 2바이트)로
- * 불어도 들어가게 두 배 + 여유. ws 의 `maxPayload` 는 이 값이다 — 인증 전 수신은 소켓 바이트로 16 KiB 를 따로 세고(`PRE_AUTH_MAX_BYTES`),
+ * 불어도 들어가게 두 배 + 여유. 인증 전 ws 수신 한도는 16 KiB(`MAX_MESSAGE_BYTES`) 그대로이고 인증된 연결만 이 값으로 넓힌다(R2-A6).
  * 인증 뒤 다른 메시지(파싱 실패·바이너리 포함)는 서버가 16 KiB 를 직접 다시 건다(`server.ts`, R1-A10).
  */
 export const MAX_INPUT_FRAME_BYTES = MAX_INPUT_BYTES * 2 + 4096
 /** 폰이 만든 메시지 id — 영숫자·`_`·`-` 8~64자. */
 export const INPUT_ID = /^[A-Za-z0-9_-]{8,64}$/
-/** 인증 전 연결이 보낼 수 있는 소켓 바이트 합계 — 16 KiB 프레임 하나 + 프레임 머리·close 여유(R1-A10). 넘으면 1009. */
-export const PRE_AUTH_MAX_BYTES = MAX_MESSAGE_BYTES + 512
 /** 질문 말풍선의 도구 호출 id 상한(글자). */
 export const QUESTION_CALL_MAX = 256
+/** 질문 내용 지문(`questionDigest`) 모양 — 16진 32자. */
+export const QUESTION_DIGEST = /^[0-9a-f]{32}$/
 /** `input.status` 한 번에 묻는 id 수 상한. */
 export const INPUT_STATUS_MAX = 100
 /** 인증(hello·pair 성공) 전 연결 수명. */
@@ -98,7 +98,7 @@ export type ClientMessage =
    * 질문 답 — `question` = 대화의 질문 말풍선 id, `call` = 그 말풍선의 도구 호출 id(R1-A2 — 말풍선 id 는 파일 위치라 다른 질문에 재사용될 수 있다),
    * `answers` = 문항 순서대로 고른 선택지 번호(0부터)·직접 입력 글(합계 65536 UTF-8 바이트까지, P7).
    */
-  | { type: 'question.answer'; id: string; channel: string; question: number; call: string | null; answers: { choices: number[]; other: string | null }[] }
+  | { type: 'question.answer'; id: string; channel: string; question: number; call: string | null; digest: string | null; answers: { choices: number[]; other: string | null }[] }
   /** 중단 — 서버가 그 순간 상태를 보고 provider 키 1회. */
   | { type: 'turn.stop'; id: string; channel: string }
   /** 복구 조회(R1-A8) — 이 기기의 끝나지 않은 요청 전부를 `input.state` 로 받는다(폰 앱이 다시 시작해 id 를 잊었을 때). */
@@ -154,9 +154,12 @@ export function parseClientMessage(text: string): ParseResult {
       if (!inputId(parsed.id) || !channelId(parsed.channel) || typeof parsed.question !== 'number' || !Number.isFinite(parsed.question)) return { ok: false, code: 'bad_message' }
       const call = parsed.call ?? null
       if (call !== null && (typeof call !== 'string' || call.length === 0 || call.length > QUESTION_CALL_MAX)) return { ok: false, code: 'bad_message' }
+      // 폰이 본 질문 내용의 지문(R2-A1) — 없으면 null(서버가 같은 질문인지 증명 못 해 넣지 않는다).
+      const digest = parsed.digest ?? null
+      if (digest !== null && (typeof digest !== 'string' || !QUESTION_DIGEST.test(digest))) return { ok: false, code: 'bad_message' }
       const answers = readAnswers(parsed.answers)
       if (answers === null) return { ok: false, code: 'bad_message' }
-      return { ok: true, message: { type: 'question.answer', id: parsed.id, channel: parsed.channel, question: parsed.question, call, answers } }
+      return { ok: true, message: { type: 'question.answer', id: parsed.id, channel: parsed.channel, question: parsed.question, call, digest, answers } }
     }
     case 'input.pending':
       return { ok: true, message: { type: 'input.pending' } }

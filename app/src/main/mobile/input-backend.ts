@@ -4,7 +4,7 @@
 import { TerminalBackend, type TerminalIdentity, type TerminalOperation } from '../adapter/index.js'
 import { RuntimeError } from '../../runtime/contracts.js'
 import { agentQuiescent, evaluateManifest } from '../../runtime/terminal/agent.js'
-import type { InputBackend, PaneObservation, SendResult } from './input.js'
+import type { InputBackend, KeyResult, PaneObservation, ScreenRead, SendResult } from './input.js'
 import type { MobileAgentKind } from './list.js'
 
 /** 한 호출의 마감 — 관측·넣기 모두 짧다. */
@@ -58,8 +58,9 @@ export class HerdrInputBackend implements InputBackend {
     }
   }
 
-  screen(pane: TerminalIdentity): Promise<string> {
-    return this.backend.screenAnsi(pane, this.ctx())
+  /** R2-A3: 화면과 같은 guard 턴의 입력 revision·조용한 시간·seq. */
+  screen(pane: TerminalIdentity): Promise<ScreenRead> {
+    return this.backend.screenRead(pane, this.ctx())
   }
 
   /** LIFE-582 R1-A3: 관측한 입력 revision·조용한 시간까지 guard 가 같은 턴에서 비교한다(`input_changed`·`input_recent` = 쓰지 않았다). */
@@ -67,8 +68,18 @@ export class HerdrInputBackend implements InputBackend {
     return this.effect(() => this.backend.promptAgentIfQuiet(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision: input.inputRevision, minIdleMs: input.minIdleMs }, this.ctx()))
   }
 
-  send(pane: TerminalIdentity, text: string, seq: number): Promise<SendResult> {
-    return this.effect(() => this.backend.sendIfUnchanged(pane, text, seq, this.ctx()))
+  /** seq 비교 + (주면) 입력 revision 울타리(R2-A1). 쓴 뒤 revision 을 돌려준다 — 다음 키의 울타리. */
+  async send(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number | null }): Promise<KeyResult> {
+    const { inputRevision } = input
+    if (inputRevision === null) {
+      const sent = await this.effect(() => this.backend.sendIfUnchanged(pane, input.text, input.seq, this.ctx()))
+      return sent === 'sent' ? { kind: 'sent', revision: null } : { kind: sent }
+    }
+    let revision: number | null = null
+    const sent = await this.effect(async () => {
+      revision = (await this.backend.sendFenced(pane, { text: input.text, expectedStateChangeSeq: input.seq, inputRevision }, this.ctx())).revision
+    })
+    return sent === 'sent' ? { kind: 'sent', revision } : { kind: sent }
   }
 
   private async effect(run: () => Promise<unknown>): Promise<SendResult> {

@@ -1,6 +1,11 @@
 // provider 키 표 (LIFE-582 Z5·Z6·Z9ⓔ) — 실측표(z1-measure.md ⓑⓒⓔ)를 그대로 옮겼는지 · 제어 문자 정리 · 초안 판별(z1 화면 모양을 본뜬 합성 fixture).
 import { describe, expect, it } from 'vitest'
-import { answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { activeQuestion, answerGroups, answerLock, answerSteps, cleanAnswerText, cleanBody, draftState, KEY, sameQuestion, stopAllowed, stopKey, stopNeedsEmptyInput } from './keys.js'
+
+/** Z1 실측 화면(커밋된 원자료). */
+const Z1 = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/z1')
 import type { MobileAgentKind } from './list.js'
 
 const one = (options: number) => ({ options, multiSelect: false, preview: false })
@@ -111,5 +116,60 @@ describe('R1-A9 SGR 확장 색의 2 는 흐림이 아니다', () => {
     expect(draftState({ kind: 'codex', screen: codexScreen(`\x1b[1m› \x1b[0m${rgb}draft codex\x1b[0m`) })).toBe('draft')
     // 색 묶음 뒤의 2 는 흐림이다.
     expect(draftState({ kind: 'claude', screen: claudeScreen('\x1b[38;2;1;1;1;2mTry "x"\x1b[0m') })).toBe('empty')
+  })
+})
+
+describe('R2-A1 활성 질문 영역 — Z1 실측 화면', () => {
+  const z1 = (name: string): string => fs.readFileSync(path.join(Z1, name), 'utf8')
+  /** perm-screens.txt 는 세 provider 의 권한 질문 화면을 `== w1:pN` 줄로 이어 붙인 것이다. */
+  const permission = (pane: string): string => {
+    const text = z1('perm-screens.txt')
+    const start = text.indexOf(`== w1:${pane} `)
+    const next = text.indexOf('== w1:', start + 1)
+    return text.slice(text.indexOf('\n', start) + 1, next < 0 ? undefined : next)
+  }
+  it('Claude — 단일·문항 둘의 두 번째·여럿 고름·preview·검토 화면', () => {
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q1-screen.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q4-q2.txt') })).toMatchObject({ kind: 'question', title: 'Pick city', options: ['Seoul', 'Busan'] })
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q2-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick fruits', options: ['Apple', 'Banana', 'Cherry'] })
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q6-screen.txt') })).toMatchObject({ kind: 'question', title: 'Pick layout', options: ['A', 'B'] })
+    expect(activeQuestion({ kind: 'claude', screen: z1('a-q4-review.txt') })).toEqual({ kind: 'review' })
+  })
+  it('Codex — 접힌 표시(문항 수) · 펼친 단일 · 둘 중 첫 번째(위치)', () => {
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-screen.txt') })).toEqual({ kind: 'collapsed', count: 1 })
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q1-open.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'codex', screen: z1('ca-q3-open.txt') })).toEqual({ kind: 'question', title: 'Pick size', options: ['Small', 'Large'], position: 1, total: 2 })
+  })
+  it('Grok — 단일 · 둘 중 두 번째(위치) · 직접 입력 중', () => {
+    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q1-screen.txt') })).toEqual({ kind: 'question', title: 'Pick a color', options: ['Red', 'Green', 'Blue'], position: null, total: null })
+    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q3-after13.txt') })).toMatchObject({ kind: 'question', title: 'Pick city', options: ['Seoul', 'Busan'], position: 2, total: 2 })
+    expect(activeQuestion({ kind: 'grok', screen: z1('ga-q2-typed.txt') })).toMatchObject({ kind: 'question', title: 'Pick a fruit', options: ['Apple', 'Pear'] })
+  })
+  it('세 provider 의 권한 질문 화면은 질문 상자가 아니다(none)', () => {
+    expect(activeQuestion({ kind: 'claude', screen: permission('p7') })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'codex', screen: permission('p8') })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'grok', screen: permission('p9') })).toEqual({ kind: 'none' })
+  })
+  it('화면 위 과거 글의 질문은 보지 않는다 — 맨 아래 상자만', () => {
+    const history = ['❯ Pick a color', '1. Red', '2. Green', '3. Blue'].join('\n')
+    expect(activeQuestion({ kind: 'claude', screen: `${history}\n${permission('p7')}` })).toEqual({ kind: 'none' })
+  })
+  it('sameQuestion — 글 전체·선택지 전부·위치가 같아야 한다(앞부분 포함은 세지 않는다)', () => {
+    const active = activeQuestion({ kind: 'codex', screen: z1('ca-q3-open.txt') })
+    const size = { question: 'Pick size', options: ['Small', 'Large'] }
+    expect(sameQuestion({ active, question: size, index: 0, total: 2 })).toBe(true)
+    expect(sameQuestion({ active, question: size, index: 1, total: 2 })).toBe(false)
+    expect(sameQuestion({ active, question: { question: 'Pick size now', options: ['Small', 'Large'] }, index: 0, total: 2 })).toBe(false)
+    expect(sameQuestion({ active, question: { question: 'Pick size', options: ['Small', 'Large', 'Huge'] }, index: 0, total: 2 })).toBe(false)
+    expect(sameQuestion({ active, question: { question: 'Pick', options: ['Small', 'Large'] }, index: 0, total: 2 })).toBe(false)
+  })
+  it('answerGroups — 묶음마다 화면 확인 지점(Codex 열기 · 문항 · 검토)', () => {
+    const one = { options: 2, multiSelect: false, preview: false }
+    expect(answerGroups({ kind: 'codex', questions: [one, one], answers: [{ choices: [0], other: null }, { choices: [], other: 'x' }] })).toEqual({ ok: true, groups: [
+      { check: { kind: 'open' }, keys: [KEY.shiftLeft] },
+      { check: { kind: 'question', index: 0 }, keys: ['1'] },
+      { check: { kind: 'question', index: 1 }, keys: ['3', 'x', KEY.enter] },
+    ] })
+    expect(answerGroups({ kind: 'claude', questions: [one, one], answers: [{ choices: [0], other: null }, { choices: [1], other: null }] })).toMatchObject({ ok: true, groups: [{ keys: ['1'] }, { keys: ['2'] }, { check: { kind: 'review' }, keys: ['1'] }] })
   })
 })

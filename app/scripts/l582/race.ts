@@ -89,7 +89,7 @@ switch (command) {
       screen = (await backend.screenRead(p, ctx())).text
       // 첫 실행 신뢰 확인 — Claude 는 기본 선택이 「No, exit」 라 아래로 한 칸 옮긴 뒤 Enter. Codex 는 기본이 신뢰라 Enter.
       if (!trusted && kind === 'claude' && /Yes, I trust this folder/.test(screen)) { await backend.send(p, '\u001b[B', ctx()); await delay(400); await backend.send(p, '\r', ctx()); trusted = true }
-      if (!trusted && kind === 'codex' && /trust the contents of this directory|Do you trust/i.test(screen)) { await backend.send(p, '\r', ctx()); trusted = true }
+      if (!trusted && kind === 'codex' && /Trust this folder\?|trust the contents of this directory|Do you trust/i.test(screen)) { await backend.send(p, '\r', ctx()); trusted = true }
     }
     out({ paneId, kind, error: 'not ready', screenTail: screenPlain(screen).split('\n').slice(-12).join('\n') }, false)
     break

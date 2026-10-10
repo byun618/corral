@@ -41,7 +41,8 @@
 ## 3. WS 메시지 (JSON 텍스트 프레임 · 프로토콜 버전 1)
 
 프레임 하나 최대 16 KiB(넘으면 close 1009). **예외 둘**: 인증된 연결의 `input.send`·`question.answer` 는 `2×65536+4096` 바이트까지(LIFE-582 P7 — 본문·직접 입력 65536 UTF-8 바이트가 JSON 이스케이프로 불어도 들어가게).
-ws 의 `maxPayload` 가 큰 쪽이다 — **인증 전**에는 소켓에 들어온 바이트를 직접 세어 `16 KiB + 512`(`PRE_AUTH_MAX_BYTES`)를 넘으면 1009(끝나지 않은 조각 `fin:false` 도 — LIFE-582 R1-A10),
+**인증 전** ws 수신 한도(`maxPayload`)는 정확히 16 KiB 다 — 프레임 머리의 선언 길이로 본문이 오기 전에, 끝나지 않은 조각(`fin:false`)은 누계로 넘으면 1009(LIFE-582 R2-A6).
+인증되면 그 연결의 수신 한도만 위 예외 크기로 넓힌다,
 완성된 프레임도 16 KiB 를 넘으면 파싱 전에 1009. **인증 뒤** 16 KiB 를 넘는 프레임은 JSON 이고 `type` 이 그 둘일 때만 받는다 — 바이너리·JSON 아님·다른 타입은 1009(그 둘의 모양 오류는 `bad_message`, 연결 유지). 16 KiB 이하 바이너리 프레임은 `bad_message`. 연결 후 **10초 안에** 인증(`hello` 성공 또는 `pair` 성공)하지 않으면 `auth_timeout`.
 
 **인증된 연결의 수명 (LIFE-578 E3)** — 이 절은 메시지·경로·인증 전 동작을 더하지 않는다(목록은 아래 LIFE-580 절). 서버 쪽 정리만 더했다.
@@ -68,7 +69,7 @@ ws 의 `maxPayload` 가 큰 쪽이다 — **인증 전**에는 소켓에 들어�
 | `input.send` | 인증 뒤 (LIFE-582) | `{type:'input.send', id:'<폰이 만든 id — [A-Za-z0-9_-]{8,64}>', channel, text:'<1~65536 UTF-8 바이트>'}` — 지시 보내기. 아래 「쓰기」 |
 | `input.cancel` | 인증 뒤 (LIFE-582) | `{type:'input.cancel', id}` — 큐 취소(넣기 시작 전만) |
 | `input.status` | 인증 뒤 (LIFE-582) | `{type:'input.status', ids:[id…, 100개까지]}` — 재연결 뒤 결과 조회 |
-| `question.answer` | 인증 뒤 (LIFE-582) | `{type:'question.answer', id, channel, question:<질문 말풍선 id>, call:'<그 말풍선의 도구 호출 id>'\|null, answers:[{choices:[<0부터 선택지 번호>…], other:'<직접 입력>'\|null}…]}` — 문항 순서대로. 직접 입력은 합계 65536 UTF-8 바이트까지 |
+| `question.answer` | 인증 뒤 (LIFE-582) | `{type:'question.answer', id, channel, question:<질문 말풍선 id>, call:'<그 말풍선의 도구 호출 id>'\|null, digest:'<그 말풍선의 내용 지문 — 16진 32자>'\|null, answers:[{choices:[<0부터 선택지 번호>…], other:'<직접 입력>'\|null}…]}` — 문항 순서대로. 직접 입력은 합계 65536 UTF-8 바이트까지 |
 | `turn.stop` | 인증 뒤 (LIFE-582) | `{type:'turn.stop', id, channel}` — 지금 턴 중단 |
 | `input.pending` | 인증 뒤 (LIFE-582 r1) | `{type:'input.pending'}` — 이 기기의 끝나지 않은(`queued`·`sending`) 요청 전부를 `input.state` 로(지시는 `text` 까지) — 앱이 다시 시작해 id 를 잊었을 때의 복구(R1-A8) |
 
@@ -152,7 +153,7 @@ ws 의 `maxPayload` 가 큰 쪽이다 — **인증 전**에는 소켓에 들어�
   | `prompt` | `{id, kind, at, body:{text, clipped}}` — 사람이 친 지시(데스크톱 지문 규칙과 같은 판정) |
   | `reply` | `{id, kind, at, body:{text, clipped}}` — 에이전트 답(마크다운 원문). 여러 줄로 나뉜 한 답은 하나로 합친다 |
   | `tools` | `{id, kind, at, tools:[{name, target, status: running\|ok\|error\|unknown}], count, names:{이름:횟수}, detail}` — 이어진 도구 호출 묶음. `tools` 는 뒤쪽 120개(`TOOLS_MAX`)까지, 나머지는 `count`·`names`(많은 순 40칸 `TOOL_NAMES_MAX`)로만. `unknown` = 끝났지만 성공/실패를 기록에서 판정 못 함(R1-A9 — Codex 결과 머리에 종료 코드가 없을 때) |
-  | `question` | `{id, kind, at, call, questions:[{question, header, options:[{label, description}], multiSelect}], state: pending\|answered\|closed, answer, clipped}` — `call` = 그 질문의 도구 호출 id(없으면 null — 답할 때 같은 질문 대조, LIFE-582 R1-A2). 답하기는 M5(`question.answer`). 문항·머리·선택지·설명 합 8000자(`QUESTION_CHARS`) 예산 — 넘는 것은 빼고 `clipped:true`(R1-A5) |
+  | `question` | `{id, kind, at, call, digest, questions:[{question, header, options:[{label, description}], multiSelect}], state: pending\|answered\|closed, answer, clipped}` — `call` = 그 질문의 도구 호출 id(없으면 null — 답할 때 같은 질문 대조, LIFE-582 R1-A2). 답하기는 M5(`question.answer`). 문항·머리·선택지·설명 합 8000자(`QUESTION_CHARS`) 예산 — 넘는 것은 빼고 `clipped:true`(R1-A5) |
   | `note` | `{id, kind, at, note: interrupted\|failed\|compacted, text, clipped}` — 중단·실패(API 오류)·압축 안내 |
 - `clipped` = 글이 16000자(`ITEM_TEXT_MAX`)를 넘어 잘렸을 때 원래 길이(아니면 `null`). 도구 대상은 240자.
 - 말풍선 하나 직렬화 64 KiB(`ITEM_BYTES_MAX`, R1-A5) — 글자 상한만으로는 바이트가 막히지 않아서(한글 3바이트·이스케이프 6바이트) 넘으면 글을 더 자르고(`clipped` 는 원래 길이),
@@ -187,18 +188,20 @@ ws 의 `maxPayload` 가 큰 쪽이다 — **인증 전**에는 소켓에 들어�
 - **폰은 키·바이트를 보내지 않는다.** 위 쓰기 메시지(다섯 + 복구 조회 `input.pending`)가 전부다 — 질문 답은 「몇 번째 선택지 / 직접 입력 글」, 중단은 「중단」 만. 키 순서는 서버가 `keys.ts` 의 실측표(`specs/LIFE-582-mobile-input/raw/claude/z1-measure.md`)로 만든다.
 - 넣는 길은 CLI `terminal prompt` 와 같은 guard 봉투(`corral.terminal`) — 지시는 `agent.prompt`, 질문 답·중단 키는 `pane.send_text`. 둘 다 **관측한 `state_change_seq` 그대로일 때만** 쓴다
   (`expected_state_change_seq` — `pane.send_text` 의 비교는 LIFE-582 가 guard 에 더했다, `backend/herdr-guard.patch`). 바뀌었으면 guard 가 아무것도 쓰지 않고 `agent_state_changed` 로 거절한다.
-  지시(`agent.prompt`)는 거기에 **pane 의 사람 입력 revision** 까지 같은 App 턴에서 비교한다(R1-A3): guard 가 PTY 사용자 입력 쓰기(키·붙여넣기·`pane.send_text` — 데스크톱 타자와 attach 클라이언트 포함)마다
-  revision 을 올리고 `agent.get` 에 `corral_input_revision`·`corral_input_idle_ms` 로 싣는다. corral 은 화면(초안 없음)을 읽기 전 관측의 revision 과 조용한 시간 하한(500 ms — 실측 echo ≤ 223 ms)을
-  `expected_input_revision`·`min_input_idle_ms` 로 보내고, 그 사이 입력이 있었으면 `input_changed`, 조용한 시간이 모자라면 `input_recent` 로 아무것도 쓰지 않는다 → 큐로 돌아가 다음 관문에서 초안을 다시 본다.
-  revision 이 없는 guard 면 지시를 넣지 않는다(`failed/guard_outdated`).
+  지시(`agent.prompt`)는 거기에 **pane 의 사람 입력 revision** 까지 같은 App 턴에서 비교한다(R1-A3·R2-A3): guard 가 PTY 사용자 입력 쓰기(키·붙여넣기·포커스 보고·`pane.send_text` — 데스크톱 타자와
+  attach 클라이언트 포함)와 **제출 대기열에 넣은 `agent.prompt`(칸 없는 CLI 제출 포함)** 마다 revision 을 올린다. `agent.get` 과 **`pane.read`(화면)** 가 같은 턴의 `corral_input_revision`·`corral_input_idle_ms`
+  (화면은 `corral_state_change_seq` 도)를 싣는다. corral 은 **화면을 잡은 턴**에 입력이 조용한 시간 하한(500 ms) 이상 조용했을 때만 그 화면을 믿고(아니면 기다림), 그 화면의 revision 을
+  `expected_input_revision` 으로 보낸다 — 넣는 순간까지 화면 뒤 입력이 하나라도 있었으면 `input_changed`, 하한이 모자라면 `input_recent` 로 아무것도 쓰지 않는다 → 큐로 돌아가 다음 관문에서 초안을 다시 본다.
+  하한 근거 = 격리 실측 echo(키 → 화면, 읽기 왕복 포함) 최대 Claude 225 · Codex 221 · Grok 223 ms(각 10표본, r2 — 부하·원격 attach 상한은 아니다).
+  revision 이 없는 guard 면 넣지 않는다(`failed/guard_outdated`). 질문 답 키(`pane.send_text`)도 같은 울타리를 친다 — 아래 「질문 답」.
   CLI `terminal prompt` 계약·AgentRecord 는 건드리지 않는다 — 관리되지 않은 pane(GUI 로 연 세션)도 같은 관문을 지난다.
 - **목록의 살아 있는 AI 채널만**: 셸 pane·닫힌 세션·목록 밖은 `failed`(`not_listed`·`closed`), 세션 참조가 아직 없으면(Codex 첫 지시 전) `no_session`. 맥이 guard 바인딩 세션이 아니면 넣지 않는다(대기 → 실패).
   지시는 herdr **관리 에이전트**(데스크톱 GUI·하네스가 `agent.start` 로 띄운 것)에만 넣는다 — 셸에서 직접 친 `claude` 같은 관리 밖 pane 은 guard 관문(`interactive_ready`)을 못 넘으므로
   기다리지 않고 `failed/unmanaged`. 질문 답·중단(`pane.send_text`)은 관리 여부와 무관하게 같은 seq 비교로 받는다.
 - **메시지 id 당 많아야 한 번**: (기기, id) 를 기억한다(기기당 끝난 것 500개까지 상태를). 같은 id 를 다시 보내면 넣지 않고 `input.state` 로 지금 상태만. 같은 글이라도 새 id 면 새 지시다.
   500개에서 밀린 id 는 상태를 잊어도 **표지는 남긴다**(앱 기동 동안) — 다시 오면 넣지 않고 `unknown/expired`(R1-A6).
-- **접수 때 대상을 묶는다**(R1-A5): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션을 묶는다. 넣기 전 셋 중 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션) `failed/target_changed` —
-  이전 지시가 새 세대로 따라가지 않는다.
+- **접수 때 대상을 묶는다**(R1-A5·R2-A4): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션을 묶는다. 넣기 전 셋 중 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션) `failed/target_changed` —
+  이전 지시가 새 세대로 따라가지 않는다. provider 세션은 관문 await 들이 끝난 **효과 직전에 다시** 본다(목록은 이 프로세스 상태라 그 확인과 넣기 호출 사이에 바뀌지 않는다).
 - **해지·끔**(R1-A1·A4): 기기를 해지하면 그 기기의 대기 지시는 `failed/revoked`(결과도 보내지 않는다). 모바일을 끄면 활성 세대가 바뀌어 이전 세대의 요청은 효과를 내지 않는다 — 넣는 중이던 지시에
   늦게 온 guard 거절도 큐로 되살리지 않는다(`failed/mobile_off`), 질문 답은 남은 키를 멈춘다(일부가 들어갔으면 `unconfirmed`). 매 await 뒤·효과 직전에 페어링과 세대를 다시 본다.
   **연결이 끊긴 것(폰 화면 끔)은 해지가 아니다** — 큐는 남고 결과는 다음 연결에서 조회로 받는다.
@@ -206,25 +209,31 @@ ws 의 `maxPayload` 가 큰 쪽이다 — **인증 전**에는 소켓에 들어�
   `failed`(넣지 않았다) · `cancelled` · `stopped`(중단 확인). 조회한 id 를 서버가 모르면 `unknown`(`channel`·`op` null, 기억 만료면 `reason:'expired'`) — 앱은 **「들어갔는지 확인하지 못했습니다」**(unconfirmed/unknown)로 둔다
   (들어갔을 수 있다 — 「보내지 못함」 이라 하지 않는다. r0 앱은 failed 로 두었다, R1-A8 에서 정정).
 - **들어감 = 이 제출 직전 커서 뒤 기록 매칭 정확히 1건**(`countSubmissions`, CLI 와 같은 대조, 15초). 0건 `unconfirmed/record_missing` · 2건 이상 `record_ambiguous` · 기록이 다시 쓰임 `record_rewritten`.
-  커서는 **기록 꼬리**(제출 직전 크기 + 끝 64 KiB 지문)이고 확인은 커서 뒤 바이트만 읽는다 — 지시마다 기록 전체를 동기로 읽지 않는다(C1: 45 MB 기록에서 루프 지연 p99 211~232 ms → 6.3 ms).
-- **기록 파일**(R1-A13): 대화 표시와 같은 파일이되 **같은 세션 id 의 후보가 하나일 때만** 쓴다(`resolveTranscriptUnique`). 둘 이상이면 `failed/record_ambiguous`, 폴더를 못 읽으면 기다린다,
-  훑기가 성공한 0건(새 세션 — 첫 지시 뒤에 파일이 생긴다)일 때만 그 세션이 쓸 경로(pane cwd + 세션 id)를 커서로 쓴다. 표시용 찾기·CLI 계약은 그대로다.
+  커서는 **기록 꼬리**(제출 직전 그 파일의 dev·ino · 크기 + 끝 64 KiB 지문 — 한 번 연 파일에서 함께 잡고, 읽을 때도 같은 파일인지 본다. 이름이 다른 파일로 바뀌면 `record_rewritten`, R2-A7)이고 확인은 커서 뒤 바이트만 읽는다 — 지시마다 기록 전체를 동기로 읽지 않는다(C1: 45 MB 기록에서 루프 지연 p99 211~232 ms → 6.3 ms).
+- **기록 파일**(R1-A13·R2-A5): 대화 표시와 같은 파일이되 **같은 세션 id 의 후보가 하나일 때만** 쓴다(`resolveTranscriptUnique`). 둘 이상이면 `failed/record_ambiguous`. 폴더·후보 하나라도 못 읽으면
+  (EACCES 등 — 「없음」 과 구분) 하나를 찾았어도 유일하다고 하지 않고 기다린다. 모든 탐색이 성공한 0건(새 세션 — 첫 지시 뒤에 파일이 생긴다)일 때만 그 세션이 쓸 경로(pane cwd + 세션 id)를 커서로 쓴다.
+  표시용 찾기·CLI 계약은 그대로다.
 - **채널 큐**: 채널마다 순서대로 한 건씩, 대기 5건까지(넘으면 `queue_full`). 준비 관문(CLI 와 같은 750 ms 두 관측·같은 seq·detect manifest) 통과 = 턴이 끝난 뒤에만 — 턴 안에 끼어들지 않는다.
   모바일 끔·앱 종료 → 큐는 `failed/mobile_off`, 다시 켜도 넣지 않는다. 맥 앱 재시작이면 서버가 그 id 를 잊는다 → 조회 `unknown`(앱은 「확인 못 함」 으로 둔다).
   **폰 앱** 재시작이면 앱이 id 를 잊는다 → 연결될 때마다 `input.pending` 으로 이 기기의 끝나지 않은 요청을 다시 받아(지시 본문 포함) 대기 줄·취소를 되살린다(R1-A8).
   큐는 에이전트가 `working` 인 동안 기다린다 — 백그라운드 작업이 남아 herdr 가 working 에 머물면 그것까지 끝나야 들어간다(Z1ⓓ, 앱 문구 「백그라운드 작업까지 끝나면 들어갑니다」 — C2).
 - **맥 입력창 초안**: 넣기 직전 보이는 화면에서 그 provider 의 입력 줄이 **비었다고 확인될 때만** 넣는다. 글이 있으면 `failed/mac_draft`, 입력 줄을 못 찾으면 `failed/draft_unknown` — 세 provider 모두 초안과 합쳐 보내기 때문이다(Z1ⓔ).
 - **본문 정리**: 탭·줄바꿈 말고 C0·DEL·C1 제어 문자는 지운다(`\r\n`→`\n`) — 본문 안 ESC·Ctrl+C 가 키로 작동하지 않는다. 질문 직접 입력은 한 줄(줄바꿈·탭 → 공백, 합계 65536 UTF-8 바이트까지 — P7, R1-A11).
-- **질문 답**(R1-A2): 폰은 말풍선 id 와 **그 질문의 도구 호출 id**(`call` — 대화 말풍선 `question` 에 실린다)를 보낸다. 말풍선 id 는 파일 위치라 다른 질문에 다시 쓰일 수 있다 — 도구 호출 id 가 같아야 같은 질문이다.
-  서버는 ① 그 도구 호출의 질문이 기록에서 **마지막 대기 질문**이고 ② 관측이 `blocked` 이고 ③ 화면이 그 질문(첫 문항 글·선택지 앞부분)을 보이고 ④ 화면을 읽은 뒤 다시 관측한 seq 가 ②와 같을 때만 넣는다 —
-  그 seq 로 키마다 guard 가 다시 비교한다. 기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq 가 다르거나 `call` 이 없으면 `failed/question_changed`. 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
-  첫 키에서 seq 가 바뀌면 `failed/question_changed`, 중간이면 `unconfirmed/question_changed`. **들어감 = 키 직전 꼬리 커서 뒤 기록에 그 도구 호출의 답 줄 정확히 1건**(같은 기록 파서의 `result` — Codex 는 도구 출력이 없으면 답 봉투 사람 줄)
-  **+ 판독자에서 그 질문이 대기에서 풀림**(10초) — UI 의 `answered` 만으로 세지 않는다. 답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`.
+- **질문 답**(R1-A2·R2-A1): 폰은 말풍선 id · **그 질문의 도구 호출 id**(`call`) · **내용 지문**(`digest` — 서버가 기록의 문항 전체로 만들어 대화 말풍선 `question` 에 싣는다)을 보낸다.
+  말풍선 id 는 파일 위치라 다른 질문에 다시 쓰일 수 있고, 같은 id·호출에 내용이 바뀔 수도 있다 — 셋이 모두 같아야 폰이 답한 그 질문이다(`call`·`digest` 가 없으면 넣지 않는다).
+  서버는 ① 그 질문이 기록에서 **마지막 대기 질문**이고 내용 지문이 같고 ② 관측이 `blocked` 이고 ③ 키 묶음(문항 하나의 키들 · Codex 펼치기 · Claude 검토)마다 그 앞에서, 입력이 500 ms 이상 조용할 때
+  잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자 — provider 별 실측 모양 `keys.ts activeQuestion`)이 그 문항(문항 글 전체 · 선택지 글 전부 · 보이면 위치 `k/n`)일 때만 넣는다. 화면 위쪽 과거 글은 보지 않는다.
+  Codex 는 접힌 표시(`? N question(s)`)의 문항 수를 본 뒤 ⇧← 로 펼치고 다시 대조한다(이미 펼쳐져 있으면 ⇧← 를 보내지 않는다). ④ 키마다 guard 가 그 `blocked` seq 와 **입력 revision** 을 같은 턴에서 비교한다 —
+  첫 키는 그 화면의 revision, 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4).
+  기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
+  **들어감 = 키 직전 꼬리 커서 뒤 기록에 그 질문의 답 정확히 1건**(Claude·Grok = 그 도구 호출의 `result` 줄 · Codex = 답 봉투의 `questionItemId`(도구 호출 id + 문항 번호)가 **이 호출**인 항목이 문항마다 한 번씩 —
+  다른 질문의 봉투는 세지 않고, 귀속을 못 읽은 봉투가 있으면 `unconfirmed/record_unattributed`, R2-A2) **+ 판독자에서 그 질문이 대기에서 풀림**(10초) — UI 의 `answered` 만으로 세지 않는다.
+  답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
 - **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문 · 로그인 등) `stop_hidden` ·
   Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
-  `revoked` · `target_changed` · `guard_outdated` · `record_ambiguous`(기록 후보 둘 이상).
+  `revoked` · `target_changed` · `guard_outdated` · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).
 - 로그: `mobile.input_send {bytes, sha}`(정규화 본문 sha256 앞 8자) · `mobile.input_answer {questions}` · `mobile.input_stop` · `mobile.input_state {op, state, reason}` · `mobile.input_delivered {ms}` · `mobile.input_error` — 본문은 없다.
 
 ## 4. 오류 코드

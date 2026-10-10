@@ -456,7 +456,8 @@ const FINAL_INPUT = new Set(['delivered', 'unconfirmed', 'failed', 'cancelled', 
  * 쓰기(LIFE-582) — hello → `--op` 하나를 보내고 그 id 의 `input.state` 를 끝 상태까지 모은다. 본문은 출력하지 않는다(바이트 수만).
  *   --op send   --channel <id> --text <글> | --text-file <파일>   [--repeat N — 같은 id 로 N 번 더 보낸다(Z2ⓐ)]
  *   --op cancel --id <id> · --op status --id <id>[,<id>…](모든 id 가 끝 상태여야 통과 — C3) · --op pending(이 기기의 끝나지 않은 요청, R1-A8 — 받은 개수)
- *   --op answer --channel <id> --question <말풍선 id | auto — 대화를 구독해 마지막 대기 질문> [--call <도구 호출 id — auto 면 그 질문의 것>] --choice <0부터>[,…] | --other <글>
+ *   --op answer --channel <id> --question <말풍선 id | auto — 대화를 구독해 마지막 대기 질문> [--call <도구 호출 id — auto 면 그 질문의 것>]
+ *               [--digest <질문 내용 지문 — auto 면 그 질문의 것, R2-A1>] --choice <0부터>[,…] | --other <글>
  *   --op stop   --channel <id>
  *   [--id <id>] [--expect <상태 — 끝 상태가 아니어도 된다(queued 면 대기에 들어간 순간 끝)>] [--wait-ms 30000]
  */
@@ -486,7 +487,7 @@ async function commandInput(url) {
       const question = args.question === 'auto' ? -1 : Number(args.question)
       if (channel === null || !Number.isInteger(question)) usage('input --op answer 에는 --channel 과 --question(번호 또는 auto)이 필요하다')
       const choices = typeof args.choice === 'string' ? args.choice.split(',').map(Number) : []
-      body = { type: 'question.answer', id, channel, question, call: typeof args.call === 'string' ? args.call : null, answers: [{ choices, other: typeof args.other === 'string' ? args.other : null }] }
+      body = { type: 'question.answer', id, channel, question, call: typeof args.call === 'string' ? args.call : null, digest: typeof args.digest === 'string' ? args.digest : null, answers: [{ choices, other: typeof args.other === 'string' ? args.other : null }] }
       break
     }
     case 'pending':
@@ -532,6 +533,7 @@ async function commandInput(url) {
         if (picked === null) { errors.push('no_pending_question'); clearTimeout(timer); ws.close(); resolve(); return }
         body.question = picked
         if (body.call === null) body.call = typeof open.call === 'string' ? open.call : null
+        if (body.digest === null) body.digest = typeof open.digest === 'string' ? open.digest : null
         fire()
         return
       }

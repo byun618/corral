@@ -22,6 +22,8 @@ tailscale 은 가짜 CLI(`FAKE=/tmp/l581g-f*`), herdr 은 g-up 이 띄운 이름
 | `y6c-tokens.mjs` | 캡처 PNG 의 색·크기를 토큰과 대조(밀도 420 → 1dp = 2.625px, 반투명은 surface 위 합성값) · `probe` 로 좌표 고르기 | Y6ⓒ |
 | `y9f-diff.sh` | 분기점 `f65c1428e` → HEAD 의 server·service·protocol diff 에서 HTTP·바인딩·Origin·업그레이드 줄 변경 0 + 양성 대조(본문엔 있다) | Y9ⓕ |
 | `n12-follow.mjs` | 네이티브 n-12 「맨 아래 따라가기」 재현 — `build`(합성 Claude 대화 12쌍 · pane `n12-follow`) · `run --mode a\|b\|c\|d`(ⓐ 지시→1초 뒤 답 · ⓑ 3줄 답 · ⓒ 한 프레임 · ⓓ 같은 id 로 자라는 답), 회차마다 uiautomator 로 맨 아래(마지막 답 아래 간격 69 px)를 확인한 뒤 `--offset <dp>` 만큼 띄우고 무조작 → 3초 뒤 덤프 판정 「보임」·「버튼」(`새 메시지 ↓`)·「잘림」 + 캡처. 종료 0 전부 보임 · 1 하나라도 아님 · 2 못 셈 | n-12 |
+| `r5a1-setup.py` · `r5a1-fixture.tsx` | R5-A1 제스처 재현용 사본 — 작업 폴더 `mobile/` 을 `/tmp/l581g-r5/m` 으로 복사(node_modules 링크)하고 app/ 을 합성 fixture 하나로(서버·인증·기록 없음, 리뷰어 r5 방식). `--conv <Conversation.tsx> --kind fix\|r5` — fix 는 로그만 덧붙이고(동작 무변경), r5 는 리뷰어 계측본 그대로. Metro 는 사본에서 `NODE_PATH=<mobile>/node_modules/react-native/node_modules CI=1` — **`CI=1` 은 감시를 끄니 코드를 바꿀 때마다 Metro 재시작 + 번들 grep** | R5-A1 |
+| `r5a1-gesture.mjs` | fixture 위 제스처 회차 — `during`(끄는 중 답 → `--drag` px 에서 놓음) · `away` · `fling`(관성 중 답) · `still --offset`(정지 회귀) · `fold`(24줄 접힘 뒤 숨은 줄 → 맨 아래 유지 · 놓기). 결정 offset 은 Metro 로그 계측 `R5_SCROLL`, 기대 = ≤ 120 dp 「보임」 / 넘으면 「버튼」, 3 s·10 s 두 번 덤프. 종료 0 전부 기대대로 · 1 아님 · 2 못 셈 | R5-A1 |
 | `apk-local.sh` | 로컬 preview APK — 작업 폴더·TMPDIR 를 심볼릭 링크 없는 `~/Library/Caches/l581fg` 로(`/tmp` 면 ninja 가 `libworklets.so` 를 못 찾는다 — 578 fg10·이 작업 F-K1) | Y11 |
 
 ## 돌리는 법

@@ -4,7 +4,7 @@
 // 목록은 뒤집힌 FlatList(가장 새 말풍선이 index 0 = 화면 아래). 과거 페이지는 배열 끝(화면 위)에 붙어 보던 자리가 움직이지 않는다(C16 위치 유지).
 // 새 말풍선은 아래(index 0)에 붙고, 맨 아래에 있지 않으면 `maintainVisibleContentPosition` 이 보던 말풍선을 제자리에 두고 `새 메시지 ↓` 를 띄운다.
 import * as Clipboard from 'expo-clipboard'
-import { memo, useCallback, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import type { ChatItem } from '../core/chat'
 import type { ChatSnapshot } from '../core/chat-store'
@@ -48,6 +48,11 @@ export type ConversationProps = {
 
 /** 맨 아래로 치는 거리(dp, 뒤집힌 목록의 contentOffset.y) — 이 안이면 따라가고, 넘으면 자리를 지키고 「새 메시지 ↓」. 하나의 임계다(n-12). */
 export const NEAR_BOTTOM = 120
+/** 손을 뗀 뒤 관성 시작을 기다리는 시간(ms) — 이 안에 `onMomentumScrollBegin` 이 오면 관성 종료에서 정한다. Android 는 손을 떼면 늘 관성 이벤트를 낸다(ReactScrollView `handlePostTouchScrolling`), iOS 는 감속할 때만. */
+const RELEASE_MS = 100
+
+/** 손가락 제스처 단계 — 이 동안은 크기 변화로 맨 아래에 붙이지 않고, 끝(`none` 으로 돌아올 때) 한 번 정한다. */
+type Gesture = 'none' | 'drag' | 'release' | 'momentum'
 
 export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: ConversationProps) {
   const state = bodyState({ phase: chat.phase, count: chat.items.length })
@@ -59,10 +64,22 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
   const heads = useMemo(() => replyHeads(chat.items), [chat.items])
   const live = channel.status === 'live' && !unknown
   const working = live && channel.dot === 'working'
+  const seenTail = useRef(tailRev)
+  // 아직 맨 아래에 반영하지 않은 맨 아래 쪽 변경(`pending`)과, 그 변경 전 `tailRev`(`pendingBase` — 떠난 채 정하면 이 값을 기준으로 「새 메시지 ↓」).
+  const pending = useRef(false)
+  const pendingBase = useRef(tailRev)
+  if (seenTail.current !== tailRev) {
+    if (!pending.current) pendingBase.current = seenTail.current
+    seenTail.current = tailRev
+    pending.current = true
+  }
+  const lastY = useRef(0)
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const isAway = event.nativeEvent.contentOffset.y > NEAR_BOTTOM
-      setAwayFrom((previous) => (isAway ? (previous ?? tailRev) : null))
+      lastY.current = event.nativeEvent.contentOffset.y
+      const isAway = lastY.current > NEAR_BOTTOM
+      const base = pending.current ? pendingBase.current : tailRev
+      setAwayFrom((previous) => (isAway ? (previous ?? base) : null))
     },
     [tailRev],
   )
@@ -70,30 +87,67 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
   // 맨 아래 따라가기(네이티브 n-12) — 임계 안(`NEAR_BOTTOM`)이면 새 말풍선·자란 말풍선 뒤 맨 아래로 붙인다. 이때는 `maintainVisibleContentPosition` 을 끈다:
   // 켜 두면 네이티브가 보던 말풍선 자리를 지키고, `autoscrollToTopThreshold` 는 정확히 맨 아래가 아니면(에뮬레이터 실측 26dp 에서도) 따라가지 않아
   // 새 답이 화면 아래로 밀린 채 버튼도 없었다(버튼 임계 120 과 따로 놀았다). 위를 보던 사람(임계 밖)만 자리를 지키고 「새 메시지 ↓」.
-  // 붙이는 건 맨 아래 쪽이 바뀐 뒤(`tailRev`) 첫 크기 변화 한 번이고, 손가락으로 끄는 동안은 안 붙인다 — 끌 때 가상화가 새 셀을 재며 크기가 바뀌는데,
-  // 그때 붙이면 임계를 넘기 전에 맨 아래로 도로 끌어내렸다(에뮬레이터 N-7*-o160-post2).
+  // 붙이는 건 맨 아래 쪽이 바뀐 뒤(`tailRev`) 첫 크기 변화 한 번이고, 손가락 제스처(끌기·놓은 직후·관성) 동안은 안 붙인다 — 끌 때 가상화가 새 셀을 재며 크기가 바뀌는데,
+  // 그때 붙이면 임계를 넘기 전에 맨 아래로 도로 끌어내렸다(에뮬레이터 N-7*-o160-post2). 관성 중 강제 스크롤은 사용자의 fling 을 끊는다.
+  // 제스처 중 들어온 변경은 제스처가 끝날 때(`settle`) 최신 offset 으로 정한다 — 임계 안이면 맨 아래로, 밖이면 자리 유지 + 「새 메시지 ↓」.
+  // 끝난 뒤 크기 이벤트가 한 번 더 온다고 기대하지 않는다(새 답의 배치는 끄는 중에 이미 끝났을 수 있다 — r5 R5-A1).
   const following = awayFrom === null
   const followingRef = useRef(following)
   followingRef.current = following
-  const seenTail = useRef(tailRev)
-  const pending = useRef(false)
-  const dragging = useRef(false)
-  if (seenTail.current !== tailRev) {
-    seenTail.current = tailRev
-    pending.current = true
-  }
+  const gesture = useRef<Gesture>('none')
+  const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearRelease = useCallback(() => {
+    if (releaseTimer.current !== null) clearTimeout(releaseTimer.current)
+    releaseTimer.current = null
+  }, [])
+  useEffect(() => clearRelease, [clearRelease])
   const onContentSizeChange = useCallback(() => {
-    if (!pending.current || dragging.current || !followingRef.current) return
+    if (!pending.current || gesture.current !== 'none' || !followingRef.current) return
     pending.current = false
     list.current?.scrollToOffset({ offset: 0, animated: false })
   }, [])
-  const onScrollBeginDrag = useCallback(() => {
-    dragging.current = true
+  const settle = useCallback(() => {
+    gesture.current = 'none'
+    if (!pending.current) return
     pending.current = false
+    if (lastY.current <= NEAR_BOTTOM) {
+      setAwayFrom(null)
+      list.current?.scrollToOffset({ offset: 0, animated: true })
+      return
+    }
+    const base = pendingBase.current
+    setAwayFrom((previous) => previous ?? base)
   }, [])
-  const onScrollEndDrag = useCallback(() => {
-    dragging.current = false
-  }, [])
+  const onScrollBeginDrag = useCallback(() => {
+    // 맨 아래를 따라가는 중 제스처 없이 남은 보류는 크기 변화가 없던 변경(24줄 접힌 답 안의 숨은 줄 등)이라 화면에 붙일 것이 없다 — 지워서 놓을 때 도로 끌어내리지 않는다
+    // (에뮬레이터 A-F5-fold). 관성·놓은 직후에 다시 잡았거나 떠나 있던 동안 들어온 보류는 남긴다.
+    if (gesture.current === 'none' && followingRef.current) pending.current = false
+    clearRelease()
+    gesture.current = 'drag'
+  }, [clearRelease])
+  const onScrollEndDrag = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      lastY.current = event.nativeEvent.contentOffset.y
+      gesture.current = 'release'
+      clearRelease()
+      releaseTimer.current = setTimeout(() => {
+        releaseTimer.current = null
+        if (gesture.current === 'release') settle()
+      }, RELEASE_MS)
+    },
+    [clearRelease, settle],
+  )
+  const onMomentumScrollBegin = useCallback(() => {
+    clearRelease()
+    if (gesture.current !== 'drag') gesture.current = 'momentum'
+  }, [clearRelease])
+  const onMomentumScrollEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      lastY.current = event.nativeEvent.contentOffset.y
+      if (gesture.current === 'momentum') settle()
+    },
+    [settle],
+  )
 
   if (state.kind === 'loading') {
     return (
@@ -145,6 +199,8 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
         onScroll={onScroll}
         onScrollBeginDrag={onScrollBeginDrag}
         onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
+        onMomentumScrollEnd={onMomentumScrollEnd}
         scrollEventThrottle={100}
         contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, gap: 14 }}
         ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty'} items={chat.items} dropped={chat.dropped} />}

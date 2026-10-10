@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentSessionRef } from '../../shared/types.js'
 import { ChatBuilder } from '../chat-parse.js'
 import { CHAT_HOME, CHAT_SESSIONS, CLAUDE_SESSION, SECRET_RESULT, SECRET_THOUGHT, chatListState, claudeLines, codexNewLines, grokUpdateLines } from './chat-fixture.js'
-import { CHAT_PAGE_SIZE, ChatHub, ITEM_TEXT_MAX, wireItem, type WireItem } from './chat.js'
+import { CHAT_PAGE_SIZE, ChatHub, ITEM_TEXT_MAX, wireItem, type ChatResume, type WireItem } from './chat.js'
 import type { ListInput } from './list.js'
 
 const cleanups: (() => void)[] = []
@@ -47,7 +47,7 @@ function setup(input: { files?: Partial<Record<keyof typeof CHAT_SESSIONS, strin
   return { dir, files, hub, logs, resolved }
 }
 
-function open(hub: ChatHub, channelId: string, resume: { gen: string; after: number } | null = null) {
+function open(hub: ChatHub, channelId: string, resume: ChatResume = null) {
   const frames: Frame[] = []
   const subscription = hub.subscribe({ channelId, resume, sink: (text) => frames.push(JSON.parse(text)) })
   return { frames, subscription }
@@ -229,31 +229,43 @@ describe('과거 페이지 (Y4ⓐ) — 이어 붙인 결과 = 한 번에 변환�
 })
 
 describe('재연결 이어 받기 (Y5ⓐ 재료 · Y5ⓒ)', () => {
-  it('끊긴 동안 쓰인 줄 ≥ 3 — 같은 세대 + 마지막 id 로 다시 구독하면 그 뒤 전부(resume), 이어 붙인 결과 = 한 번에 변환', async () => {
-    const { hub, files } = setup({ graceMs: 1 })
+  // r1(R1-A2·A4): 이어 받기 열쇠가 「마지막 id」 에서 「첫 id + 변경 순번」 으로 바뀌었고, 판독자를 버린 뒤(유예 끝)에는 세대가 새로 뽑혀 reset 이다.
+  // 그래서 r0 의 「유예 끝 뒤 resume」 시험을 「유예 안 resume」 + 「유예 끝 뒤 reset」 둘로 나눴다.
+  it('끊긴 동안 쓰인 줄 ≥ 3 — 유예 안에 같은 세대 + 첫 id + 변경 순번으로 다시 구독하면 그 뒤 전부(resume), 이어 붙인 결과 = 한 번에 변환', async () => {
+    const { hub, files } = setup({ graceMs: 5000 })
     const first = open(hub, 'c1')
     const page = await waitFor(() => pageOf(first.frames, 'reset'))
     const held = itemsOf(page)
-    const last = held[held.length - 1]
     first.subscription.close()
-    await waitFor(() => (hub.readerCount() === 0 ? true : undefined))
     append(files.claude ?? '', [claudePrompt('끊긴 동안 1', 'D1', 'a11'), claudeReply('끊긴 동안 2', 'D2', 'D1'), claudePrompt('끊긴 동안 3', 'D3', 'D2')])
-    const again = open(hub, 'c1', { gen: String(page.gen), after: last?.id ?? -1 })
+    const again = open(hub, 'c1', { gen: String(page.gen), from: held[0]?.id ?? 0, cursor: Number(page.cursor) })
     const resumed = await waitFor(() => pageOf(again.frames))
     expect(resumed).toMatchObject({ mode: 'resume', gen: page.gen })
     const merged = new Map<number, WireItem>()
     for (const item of [...held, ...itemsOf(resumed)]) merged.set(item.id, item)
     const expected = fullWire(files.claude ?? '', CLAUDE_SESSION)
     expect([...merged.values()].sort((a, b) => a.id - b.id)).toEqual(expected.slice(Math.max(0, expected.length - merged.size)))
-    expect(itemsOf(resumed)[0]?.id).toBe(last?.id)
     expect(itemsOf(resumed).filter((item) => item.kind === 'prompt').map((item) => (item.kind === 'prompt' ? item.body.text : ''))).toEqual(['끊긴 동안 1', '끊긴 동안 3'])
+    expect(Number(resumed.cursor)).toBeGreaterThan(Number(page.cursor))
   })
 
-  it('세대가 다르거나 모르는 id 면 처음부터(reset)', async () => {
+  it('판독자를 버린 뒤(유예 끝) 다시 열면 같은 파일이어도 새 세대 — 옛 세대 이어 받기는 reset', async () => {
+    const { hub } = setup({ graceMs: 1 })
+    const first = open(hub, 'c1')
+    const page = await waitFor(() => pageOf(first.frames, 'reset'))
+    first.subscription.close()
+    await waitFor(() => (hub.readerCount() === 0 ? true : undefined))
+    const again = open(hub, 'c1', { gen: String(page.gen), from: itemsOf(page)[0]?.id ?? 0, cursor: Number(page.cursor) })
+    const second = await waitFor(() => pageOf(again.frames))
+    expect(second).toMatchObject({ mode: 'reset' })
+    expect(second.gen).not.toBe(page.gen)
+  })
+
+  it('세대가 다르거나 받은 적 없는 순번이면 처음부터(reset)', async () => {
     const { hub } = setup()
-    expect(await waitFor(() => pageOf(open(hub, 'c1', { gen: 'other', after: 0 }).frames))).toMatchObject({ mode: 'reset' })
+    expect(await waitFor(() => pageOf(open(hub, 'c1', { gen: 'other', from: 0, cursor: 0 }).frames))).toMatchObject({ mode: 'reset' })
     const page = await waitFor(() => pageOf(open(hub, 'c1').frames))
-    expect(await waitFor(() => pageOf(open(hub, 'c1', { gen: String(page.gen), after: 123.4 }).frames))).toMatchObject({ mode: 'reset' })
+    expect(await waitFor(() => pageOf(open(hub, 'c1', { gen: String(page.gen), from: 0, cursor: Number(page.cursor) + 5 }).frames))).toMatchObject({ mode: 'reset' })
   })
 
   it('파일이 줄거나 교체되면 새 세대로 처음부터 · rewind 가 들어와도 새 세대', async () => {

@@ -1,15 +1,21 @@
 // 대화 구독 (LIFE-581 X3~X6) — 인증된 연결이 채널 id 로 대화를 열면 그 세션 기록을 말풍선으로 보낸다. electron·소켓을 모른다.
 //
-// - **열린 대화가 0 이면 아무것도 읽지 않는다**(K9) — 판독자는 첫 구독에 생기고 마지막 구독이 떠난 뒤 `graceMs` 에 사라진다.
+// - **열린 대화가 0 이면 아무것도 읽지 않는다**(K9) — 판독자는 첫 구독에 생기고, 마지막 구독이 떠나면 **그 자리에서 읽기를 멈춘다**(stat·꼬리 읽기 0, R1-A3).
+//   색인은 `graceMs` 동안만 들고 있다가 버린다 — 그 안에 다시 열면 멈춘 동안 늘어난 바이트를 따라잡고 첫 페이지를 보낸다.
 // - **파일 하나에 판독자 하나**(Y2ⓒ) — 같은 기록을 여러 연결이 열어도 색인·꼬리 읽기는 한 벌, push 직렬화는 채널마다 한 번.
 // - 판독: 처음 한 번 파일 전체를 **비동기로 조각 읽기**(1 MiB 씩, 조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음, X5) → 말풍선 배열.
 //   그 뒤 `pollMs` 마다 stat 하고 늘어난 바이트만 이어 읽는다(바이트 오프셋). 개행으로 끝나지 않은 마지막 줄은 개행이 올 때까지 보류(X4).
-// - **세대(gen)** = 파일 정체(장치·inode·생성 시각·첫 줄 해시) + Claude rewind 수. 파일이 바뀌거나(교체·줄어듦) rewind 로 앞 말풍선이 사라지면
-//   세대가 바뀌고 구독자 모두에게 처음부터(`reset`) 보낸다(X6). 같은 파일·같은 내용이면 다시 색인해도 같은 세대·같은 id 다 — 재연결 이어 받기의 근거.
+// - **세대(gen)** = 색인 한 번마다 새로 뽑는 값 + Claude rewind 수(R1-A4). 처음부터 다시 색인하면(파일 교체·줄어듦·앞부분 덮어쓰기·판독자를 버린 뒤 새로 열기)
+//   세대가 반드시 바뀐다 — 옛 세대로 온 이어 받기는 처음부터(`reset`). rewind 로 앞 말풍선이 사라져도 세대가 바뀐다(X6).
+//   덮어쓰기 감지: 파일이 바뀔 때마다 이미 읽은 구간의 앞·뒤 4 KiB 해시를 다시 대 본다(같은 크기 덮어쓰기·앞부분 재작성).
+// - **변경 순번(cursor)**: 말풍선이 생기거나 바뀔 때마다 판독자 순번을 올리고 그 말풍선에 붙인다(R1-A2). 폰은 받은 가장 큰 순번을 들고 있다가
+//   이어 받기 때 `{gen, from, cursor}` 를 보낸다 — 서버는 `from` 이후 말풍선 중 순번이 `cursor` 보다 큰 것(새로 생긴 것 + 끊긴 동안 바뀐 앞 말풍선) 전부를 준다.
+// - **세션 교체**(R1-A1): 목록 재료가 바뀌면(`changed`) 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면(`/clear`·새 세션) 새 판독자로 옮겨 `reset`,
+//   채널이 사라지면 `chat.unavailable`.
 // - 보내는 글은 전부 홈 경로를 가린다(`maskPaths` — 목록과 같은 계약, X3) · 한 글 `ITEM_TEXT_MAX` 자, 넘으면 `clipped`(원래 길이)를 붙여 자른다.
-//   프레임 하나 `MAX_FRAME_BYTES` — 넘으면 페이지를 줄이거나 나눠 보낸다.
+//   말풍선 하나 `ITEM_BYTES_MAX` 바이트 — 질문은 글자 예산 안에서만 싣고 넘치면 `clipped`(R1-A5). 프레임 하나 `MAX_FRAME_BYTES` — 넘으면 페이지를 줄이거나 나눠 보낸다.
 // - 폰이 주는 것은 채널 id·세대·말풍선 id(숫자) 뿐이다 — 파일 경로·세션 id 는 서버 안에서 `chatChannel`(목록과 같은 함수로 만든 목록)로만 고른다.
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentSessionRef, SessionQuestion, TranscriptAgent } from '../../shared/types.js'
@@ -32,10 +38,18 @@ export const TOOL_TARGET_MAX = 240
 export const TOOLS_MAX = 120
 /** 보내는 프레임 하나 상한(바이트). 받는 쪽 16 KiB 상한(`MAX_MESSAGE_BYTES`)과 별개다. */
 export const MAX_FRAME_BYTES = 256 * 1024
+/** 말풍선 하나의 직렬화 상한(바이트) — 프레임 상한보다 작아야 어떤 말풍선도 한 프레임에 들어간다(R1-A5). */
+export const ITEM_BYTES_MAX = 64 * 1024
+/** 질문 카드 한 장에 싣는 글자 예산(문항·머리·선택지·설명 합) — 넘는 글·문항·선택지는 빼고 `clipped`. */
+export const QUESTION_CHARS = 8000
+/** 도구 이름별 횟수 칸 상한 — 많은 순으로. 나머지는 `count` 에만. */
+export const TOOL_NAMES_MAX = 40
+/** 목록 재료가 바뀐 뒤 구독의 세션을 다시 고르기까지(뭉침). */
+export const CHAT_REFRESH_MS = 100
 /** 조각 읽기 크기. */
 const READ_CHUNK = 1024 * 1024
-/** 세대에 넣는 첫 줄 해시 범위. */
-const HEAD_HASH_BYTES = 4096
+/** 덮어쓰기 감지 — 이미 읽은 구간의 앞·뒤 이만큼을 해시로 대 본다. */
+const ANCHOR_BYTES = 4096
 
 // --- 보내는 모양 -------------------------------------------------------------------------------------
 
@@ -45,8 +59,8 @@ export type WireItem =
   | { id: number; kind: 'prompt'; at: number | null; body: WireText }
   | { id: number; kind: 'reply'; at: number | null; body: WireText }
   | { id: number; kind: 'tools'; at: number | null; tools: WireTool[]; count: number; names: Record<string, number>; detail: boolean }
-  | { id: number; kind: 'question'; at: number | null; questions: SessionQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null }
-  | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null }
+  | { id: number; kind: 'question'; at: number | null; questions: SessionQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
+  | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null; clipped: boolean }
 
 export type ChatUnavailable = 'not_listed' | 'no_session' | 'no_file' | 'not_ready' | 'unreadable'
 
@@ -68,14 +82,83 @@ function maskLine(input: { text: string | null; place: Place; max: number }): st
   return masked.length > input.max ? `${masked.slice(0, input.max - 1)}…` : masked
 }
 
-function maskQuestion(input: { question: SessionQuestion; place: Place }): SessionQuestion {
-  const { question, place } = input
-  const line = (text: string | null): string | null => (text === null ? null : clipText({ text, place, max: 2000 }).text)
-  return {
-    question: line(question.question) ?? '',
-    header: line(question.header),
-    options: question.options.slice(0, 20).map((option) => ({ label: line(option.label) ?? '', description: line(option.description) })),
-    multiSelect: question.multiSelect,
+/** 질문 카드 — 글자 예산(`QUESTION_CHARS`) 안에서 문항 10·선택지 20 까지. 무엇이든 덜어 냈으면 `clipped`(R1-A5). */
+function wireQuestions(input: { questions: SessionQuestion[]; place: Place }): { questions: SessionQuestion[]; clipped: boolean } {
+  let budget = QUESTION_CHARS
+  let clipped = input.questions.length > 10
+  const take = (text: string | null, max: number): string | null => {
+    if (text === null) return null
+    const cut = clipText({ text, place: input.place, max: Math.max(0, Math.min(max, budget)) })
+    if (cut.clipped !== null) clipped = true
+    budget -= cut.text.length
+    return cut.text
+  }
+  const questions: SessionQuestion[] = []
+  for (const question of input.questions.slice(0, 10)) {
+    if (budget <= 0) {
+      clipped = true
+      break
+    }
+    const text = take(question.question, 2000) ?? ''
+    const header = take(question.header, 200)
+    const options: SessionQuestion['options'] = []
+    for (const option of question.options.slice(0, 20)) {
+      if (budget <= 0) {
+        clipped = true
+        break
+      }
+      options.push({ label: take(option.label, 300) ?? '', description: take(option.description, 600) })
+    }
+    if (question.options.length > 20) clipped = true
+    questions.push({ question: text, header, options, multiSelect: question.multiSelect })
+  }
+  return { questions, clipped }
+}
+
+const itemBytes = (item: WireItem): number => Buffer.byteLength(JSON.stringify(item))
+
+/**
+ * 말풍선 하나를 `ITEM_BYTES_MAX` 안으로(R1-A5) — 글자 상한만으로는 바이트가 막히지 않는다(한글 3바이트·이스케이프 6바이트).
+ * 넘으면 글을 더 자르고(`clipped` 유지) · 도구는 앞쪽 줄부터 덜고(개수는 `count` 에) · 질문은 뒤 문항부터 던다(`clipped`).
+ */
+function fitItem(item: WireItem): WireItem {
+  let bytes = itemBytes(item)
+  if (bytes <= ITEM_BYTES_MAX) return item
+  switch (item.kind) {
+    case 'prompt':
+    case 'reply': {
+      const original = item.body.clipped ?? item.body.text.length
+      let next: WireItem = item
+      let text = item.body.text
+      while (bytes > ITEM_BYTES_MAX && text.length > 0) {
+        text = text.slice(0, Math.floor((text.length * ITEM_BYTES_MAX * 0.9) / bytes))
+        next = { ...item, body: { text, clipped: original } }
+        bytes = itemBytes(next)
+      }
+      return next
+    }
+    case 'tools': {
+      let next: WireItem = item
+      let tools = item.tools
+      while (bytes > ITEM_BYTES_MAX && tools.length > 0) {
+        tools = tools.slice(Math.ceil(tools.length / 4))
+        next = { ...item, tools }
+        bytes = itemBytes(next)
+      }
+      return next
+    }
+    case 'question': {
+      let next: WireItem = item
+      let questions = item.questions
+      while (bytes > ITEM_BYTES_MAX && questions.length > 0) {
+        questions = questions.slice(0, -1)
+        next = { ...item, questions, clipped: true }
+        bytes = itemBytes(next)
+      }
+      return next
+    }
+    case 'note':
+      return { ...item, text: item.text === null ? null : item.text.slice(0, 500), clipped: true }
   }
 }
 
@@ -85,27 +168,26 @@ export function wireItem(input: { item: ChatItem; place: Place }): WireItem {
   switch (item.kind) {
     case 'prompt':
     case 'reply':
-      return { id: item.id, kind: item.kind, at: item.at, body: clipText({ text: item.text, place, max: ITEM_TEXT_MAX }) }
+      return fitItem({ id: item.id, kind: item.kind, at: item.at, body: clipText({ text: item.text, place, max: ITEM_TEXT_MAX }) })
     case 'tools': {
-      const names: Record<string, number> = {}
+      const counted: Record<string, number> = {}
       for (const tool of item.tools) {
         const name = maskLine({ text: tool.name, place, max: 80 }) ?? '?'
-        names[name] = (names[name] ?? 0) + 1
+        counted[name] = (counted[name] ?? 0) + 1
       }
+      const names = Object.fromEntries(Object.entries(counted).sort((a, b) => b[1] - a[1]).slice(0, TOOL_NAMES_MAX))
       const tools = item.tools.slice(-TOOLS_MAX).map((tool) => ({ name: maskLine({ text: tool.name, place, max: 80 }), target: maskLine({ text: tool.target, place, max: TOOL_TARGET_MAX }), status: tool.status }))
-      return { id: item.id, kind: 'tools', at: item.at, tools, count: item.tools.length, names, detail: item.tools.some((tool) => tool.name !== null) }
+      return fitItem({ id: item.id, kind: 'tools', at: item.at, tools, count: item.tools.length, names, detail: item.tools.some((tool) => tool.name !== null) })
     }
-    case 'question':
-      return {
-        id: item.id,
-        kind: 'question',
-        at: item.at,
-        questions: item.questions.slice(0, 10).map((question) => maskQuestion({ question, place })),
-        state: item.state,
-        answer: item.answer === null ? null : clipText({ text: item.answer, place, max: 2000 }).text,
-      }
-    case 'note':
-      return { id: item.id, kind: 'note', at: item.at, note: item.note, text: item.text === null ? null : clipText({ text: item.text, place, max: 2000 }).text }
+    case 'question': {
+      const wired = wireQuestions({ questions: item.questions, place })
+      const answer = item.answer === null ? null : clipText({ text: item.answer, place, max: 2000 })
+      return fitItem({ id: item.id, kind: 'question', at: item.at, questions: wired.questions, state: item.state, answer: answer?.text ?? null, clipped: wired.clipped || (answer?.clipped ?? null) !== null })
+    }
+    case 'note': {
+      const text = item.text === null ? null : clipText({ text: item.text, place, max: 2000 })
+      return fitItem({ id: item.id, kind: 'note', at: item.at, note: item.note, text: text?.text ?? null, clipped: (text?.clipped ?? null) !== null })
+    }
   }
 }
 
@@ -113,13 +195,18 @@ export function wireItem(input: { item: ChatItem; place: Place }): WireItem {
 
 type ReaderState = { kind: 'indexing' } | { kind: 'ready' } | { kind: 'failed'; reason: ChatUnavailable }
 
-type FileIdentity = { dev: number; ino: number; birth: number; head: string }
+type FileIdentity = { dev: number; ino: number }
+/** 이미 읽은 구간의 앞·뒤 해시 — 파일이 바뀔 때 다시 대 보아 덮어쓰기를 잡는다(R1-A4). */
+type Anchors = { known: number; head: string; tail: string }
 
 export type ChatReaderDeps = {
   log: (tag: string, fields?: Record<string, unknown>) => void
   pollMs: number
   now: () => number
 }
+
+/** `readMs` = 그 변화를 읽은 꼬리 확인 한 번의 시간(stat·덮어쓰기 확인·읽기·파싱·변경 고르기) — push 비용(Y10ⓓ) 의 앞 구간(C2). */
+export type ChatReaderEvent = { kind: 'ready' } | { kind: 'reset' } | { kind: 'items'; ids: number[]; readAt: number; readMs: number } | { kind: 'failed' }
 
 /** 한 기록 파일의 색인 + 꼬리. 구독자는 `ChatHub` 가 쥔다 — 판독자는 바뀐 것을 알린다(`onEvent`). */
 export class ChatReader {
@@ -129,6 +216,7 @@ export class ChatReader {
   private readonly deps: ChatReaderDeps
   private builder: ChatBuilder
   private identity: FileIdentity | null = null
+  private anchors: Anchors | null = null
   /** 다음에 읽을 바이트(마지막 완성 줄의 끝). */
   private end = 0
   private mtimeMs = 0
@@ -137,11 +225,18 @@ export class ChatReader {
   private busy = false
   private stopped = false
   private rewinds = 0
+  /** 색인 한 번마다 새 값 — 세대의 앞부분(R1-A4). */
+  private nonce = ''
+  /** 변경 순번(R1-A2) — 말풍선이 생기거나 바뀔 때마다 +1, 그 말풍선의 `revs` 에 남는다. */
+  private seq = 0
+  private readonly revs = new Map<number, number>()
+  /** 구독 0 — 읽지 않는다(R1-A3). `resume` 이 따라잡고 다시 돈다. */
+  paused = false
   state: ReaderState = { kind: 'indexing' }
   gen = ''
-  /** 시험·계측 — 이 판독자가 지금까지 읽은 바이트·색인 횟수. */
+  /** 시험·계측 — 이 판독자가 지금까지 읽은 바이트·색인 횟수·꼬리 확인 횟수. */
   readonly cost = { bytes: 0, indexes: 0, polls: 0 }
-  onEvent: (event: { kind: 'ready' } | { kind: 'reset' } | { kind: 'items'; ids: number[]; readAt: number } | { kind: 'failed' }) => void = () => {}
+  onEvent: (event: ChatReaderEvent) => void = () => {}
 
   constructor(input: { file: string; agent: TranscriptAgent; sessionId: string | null; deps: ChatReaderDeps }) {
     this.file = input.file
@@ -152,21 +247,39 @@ export class ChatReader {
   }
 
   start(): void {
-    void this.index().then(() => {
-      if (this.stopped) return
-      this.timer = setInterval(() => void this.poll(), this.deps.pollMs)
-      this.timer.unref()
-    })
+    void this.index().then(() => this.arm())
   }
 
   stop(): void {
     this.stopped = true
-    if (this.timer !== null) clearInterval(this.timer)
-    this.timer = null
+    this.disarm()
+  }
+
+  /** 구독 0 — 꼬리 확인을 멈춘다. 색인은 그대로 든다. */
+  pause(): void {
+    this.paused = true
+    this.disarm()
+  }
+
+  /** 다시 구독 — 멈춘 동안 늘어난 것을 한 번 따라잡고 꼬리 확인을 다시 돌린다. */
+  async resume(): Promise<void> {
+    if (!this.paused) return
+    this.paused = false
+    if (this.state.kind === 'ready') await this.poll()
+    this.arm()
   }
 
   items(): readonly ChatItem[] {
     return this.builder.items
+  }
+
+  /** 지금 변경 순번 — 보내는 페이지·push 에 싣는다. */
+  cursor(): number {
+    return this.seq
+  }
+
+  revOf(id: number): number {
+    return this.revs.get(id) ?? 0
   }
 
   writtenAt(): number {
@@ -177,41 +290,68 @@ export class ChatReader {
     return this.builder.stats
   }
 
-  private async identify(stat: fs.Stats): Promise<FileIdentity> {
+  private arm(): void {
+    if (this.stopped || this.paused || this.timer !== null || this.state.kind !== 'ready') return
+    this.timer = setInterval(() => void this.poll(), this.deps.pollMs)
+    this.timer.unref()
+  }
+
+  private disarm(): void {
+    if (this.timer !== null) clearInterval(this.timer)
+    this.timer = null
+  }
+
+  private genOf(): string {
+    return `${this.nonce}.${this.rewinds}`
+  }
+
+  /** 바뀐 말풍선에 새 순번을 붙인다. */
+  private stamp(): number[] {
+    const ids = [...this.builder.changed()]
+    if (ids.length === 0) return ids
+    this.seq += 1
+    for (const id of ids) this.revs.set(id, this.seq)
+    return ids
+  }
+
+  private async hashRange(input: { handle: fs.promises.FileHandle; start: number; end: number }): Promise<string> {
+    const length = Math.max(0, input.end - input.start)
+    const buffer = Buffer.alloc(length)
+    if (length > 0) await input.handle.read(buffer, 0, length, input.start)
+    return createHash('sha1').update(buffer).digest('hex')
+  }
+
+  /** 지금까지 읽은 구간(`end + carry`)의 앞·뒤 해시. */
+  private async readAnchors(known: number): Promise<Anchors> {
     const handle = await fs.promises.open(this.file, 'r')
     try {
-      const buffer = Buffer.alloc(Math.min(HEAD_HASH_BYTES, stat.size))
-      await handle.read(buffer, 0, buffer.length, 0)
-      const newline = buffer.indexOf(0x0a)
-      const head = createHash('sha1').update(newline < 0 ? buffer : buffer.subarray(0, newline)).digest('hex').slice(0, 12)
-      return { dev: stat.dev, ino: stat.ino, birth: Math.round(stat.birthtimeMs), head }
+      const head = await this.hashRange({ handle, start: 0, end: Math.min(ANCHOR_BYTES, known) })
+      const tail = await this.hashRange({ handle, start: Math.max(0, known - ANCHOR_BYTES), end: known })
+      return { known, head, tail }
     } finally {
       await handle.close()
     }
   }
 
-  private genOf(identity: FileIdentity): string {
-    const base = createHash('sha1').update(`${this.agent}\u0000${identity.dev}:${identity.ino}:${identity.birth}:${identity.head}`).digest('hex').slice(0, 12)
-    return `${base}.${this.rewinds}`
-  }
-
-  /** 처음부터 색인 — 조각마다 이벤트 루프에 양보한다. */
+  /** 처음부터 색인 — 조각마다 이벤트 루프에 양보한다. 세대는 늘 새로 뽑는다. */
   private async index(): Promise<void> {
     this.busy = true
     const started = performance.now()
     try {
       const stat = await fs.promises.stat(this.file)
-      const identity = await this.identify(stat)
       this.builder = new ChatBuilder({ agent: this.agent, sessionId: this.sessionId })
       this.end = 0
       this.carry = Buffer.alloc(0)
-      this.identity = identity
+      this.identity = { dev: stat.dev, ino: stat.ino }
       this.mtimeMs = stat.mtimeMs
+      this.revs.clear()
       this.cost.indexes += 1
       await this.readTo(stat.size)
-      this.builder.changed()
+      this.stamp()
+      this.anchors = await this.readAnchors(this.end + this.carry.length)
       this.rewinds = this.builder.rewinds
-      this.gen = this.genOf(identity)
+      this.nonce = randomBytes(6).toString('hex')
+      this.gen = this.genOf()
       const wasReady = this.state.kind === 'ready'
       this.state = { kind: 'ready' }
       this.deps.log('mobile.chat_index', { agent: this.agent, bytes: stat.size, items: this.builder.items.length, ms: Math.round(performance.now() - started), lines: this.builder.stats.lines })
@@ -261,7 +401,7 @@ export class ChatReader {
     this.carry = Buffer.from(buffer.subarray(start))
   }
 
-  /** 꼬리 확인 — 커졌으면 이어 읽고, 정체가 바뀌었거나 줄었으면 처음부터. */
+  /** 꼬리 확인 — 커졌으면 이어 읽고, 정체가 바뀌었거나 줄었거나 읽은 구간이 덮어쓰였으면 처음부터. */
   private async poll(): Promise<void> {
     if (this.busy || this.stopped || this.state.kind !== 'ready') return
     this.busy = true
@@ -279,35 +419,45 @@ export class ChatReader {
 
   /** 늘어난 바이트를 읽는다. 처음부터 다시 읽어야 하면 true. */
   private async tail(): Promise<boolean> {
+    const started = performance.now()
     const stat = await fs.promises.stat(this.file)
     const identity = this.identity
-    if (identity === null || stat.ino !== identity.ino || stat.dev !== identity.dev || stat.size < this.end + this.carry.length) return true
-    if (stat.size === this.end + this.carry.length && stat.mtimeMs === this.mtimeMs) return false
+    const known = this.end + this.carry.length
+    if (identity === null || stat.ino !== identity.ino || stat.dev !== identity.dev || stat.size < known) return true
+    if (stat.size === known && stat.mtimeMs === this.mtimeMs) return false
+    // 파일이 바뀌었다 — 이어 쓰기면 읽은 구간은 그대로다. 앞·뒤 해시가 다르면 덮어쓰기(같은 크기·앞부분 재작성)다.
+    const before = this.anchors
+    const now = await this.readAnchors(known)
+    if (before === null || before.head !== now.head || before.tail !== now.tail) return true
     this.mtimeMs = stat.mtimeMs
     await this.readTo(stat.size)
+    this.anchors = await this.readAnchors(this.end + this.carry.length)
     const readAt = this.deps.now()
-    const ids = [...this.builder.changed()]
+    const ids = this.stamp()
     if (this.builder.rewinds !== this.rewinds) {
       // rewind — 앞 말풍선이 사라졌다. 세대를 바꿔 모두 처음부터 받게 한다(X2ⓘ·X6).
       this.rewinds = this.builder.rewinds
-      this.gen = this.genOf(identity)
+      this.gen = this.genOf()
       this.onEvent({ kind: 'reset' })
       return false
     }
-    if (ids.length > 0) this.onEvent({ kind: 'items', ids, readAt })
+    if (ids.length > 0) this.onEvent({ kind: 'items', ids, readAt, readMs: performance.now() - started })
     return false
   }
 }
 
 // --- 허브 (구독) ---------------------------------------------------------------------------------------
 
-export type ChatResume = { gen: string; after: number } | null
+/** 이어 받기 — 받은 세대 · 들고 있는 첫 말풍선 id · 받은 가장 큰 변경 순번. */
+export type ChatResume = { gen: string; from: number; cursor: number } | null
 
 export type ChatSubscription = {
   /** 과거 페이지 — `before` 보다 앞 말풍선. 세대가 다르면 무시한다(폰은 곧 reset 을 받는다). */
   older(input: { gen: string; before: number }): void
   close(): void
 }
+
+type ReaderEntry = { reader: ChatReader; subs: Set<Sub>; grace: NodeJS.Timeout | null }
 
 type Sub = {
   channelId: string
@@ -316,9 +466,11 @@ type Sub = {
   resume: ChatResume
   /** 첫 페이지를 보냈나 — 그 전의 꼬리 변화는 첫 페이지에 들어간다. */
   started: boolean
+  /** 지금 붙어 있는 판독자 — 세션이 바뀌면 옮긴다(R1-A1). null = 끝난 구독. */
+  entry: ReaderEntry | null
+  /** 구독(또는 세션 교체로 다시 붙은) 시각 — 첫 페이지까지의 시간(Y4, C2). */
+  since: number
 }
-
-type ReaderEntry = { reader: ChatReader; subs: Set<Sub>; grace: NodeJS.Timeout | null }
 
 export type ChatHubDeps = {
   /** 목록 재료 — 채널 id 를 세션으로 옮길 때만 부른다. */
@@ -328,6 +480,7 @@ export type ChatHubDeps = {
   log: (tag: string, fields?: Record<string, unknown>) => void
   pollMs?: number
   graceMs?: number
+  refreshMs?: number
   now?: () => number
 }
 
@@ -336,9 +489,13 @@ export function chatFileOf(input: { agent: TranscriptAgent; transcript: string }
   return input.agent === 'grok' ? path.join(path.dirname(input.transcript), 'updates.jsonl') : input.transcript
 }
 
+type Located = { ok: true; channel: ChatChannel; file: string } | { ok: false; reason: ChatUnavailable }
+
 export class ChatHub {
   private readonly deps: ChatHubDeps
   private readonly readers = new Map<string, ReaderEntry>()
+  private readonly subs = new Set<Sub>()
+  private refreshTimer: NodeJS.Timeout | null = null
 
   constructor(deps: ChatHubDeps) {
     this.deps = deps
@@ -354,53 +511,132 @@ export class ChatHub {
   }
 
   subscriberCount(): number {
-    let count = 0
-    for (const entry of this.readers.values()) count += entry.subs.size
-    return count
+    return this.subs.size
   }
 
   /** 대화 열기. 못 열면 `chat.unavailable` 한 건을 보내고 빈 구독을 돌려준다(닫아도 아무 일 없다). */
   subscribe(input: { channelId: string; resume: ChatResume; sink: (text: string) => void }): ChatSubscription {
     const none: ChatSubscription = { older: () => {}, close: () => {} }
-    const unavailable = (reason: ChatUnavailable): ChatSubscription => {
-      input.sink(JSON.stringify({ type: 'chat.unavailable', channel: input.channelId, reason }))
-      this.deps.log('mobile.chat_unavailable', { reason })
+    const found = this.locate(input.channelId)
+    if (!found.ok) {
+      this.unavailable({ channelId: input.channelId, sink: input.sink, reason: found.reason })
       return none
     }
-    const list = this.deps.read()
-    if (list === null) return unavailable('not_ready')
-    const found = chatChannel({ list, channelId: input.channelId })
-    if (!found.ok) return unavailable(found.reason)
-    const channel = found.channel
-    const file = this.deps.resolveFile({ session: channel.session, agent: channel.agent })
-    if (file === null || !fs.existsSync(file)) return unavailable('no_file')
-    const entry = this.entry({ file, channel })
-    const sub: Sub = { channelId: input.channelId, channel, sink: input.sink, resume: input.resume, started: false }
-    entry.subs.add(sub)
-    if (entry.grace !== null) clearTimeout(entry.grace)
-    entry.grace = null
-    if (entry.reader.state.kind === 'ready') this.start({ entry, sub })
-    else if (entry.reader.state.kind === 'failed') {
-      entry.subs.delete(sub)
-      this.release(file)
-      return unavailable(entry.reader.state.reason)
-    }
-    this.deps.log('mobile.chat_subscribe', { agent: channel.agent, status: channel.status, readers: this.readers.size })
+    const sub: Sub = { channelId: input.channelId, channel: found.channel, sink: input.sink, resume: input.resume, started: false, entry: null, since: performance.now() }
+    this.subs.add(sub)
+    this.attach({ sub, file: found.file })
+    if (sub.entry === null) return none
+    this.deps.log('mobile.chat_subscribe', { agent: found.channel.agent, status: found.channel.status, readers: this.readers.size })
     return {
-      older: (request) => this.older({ entry, sub, ...request }),
-      close: () => {
-        if (!entry.subs.delete(sub)) return
-        this.release(file)
-      },
+      older: (request) => this.older({ sub, ...request }),
+      close: () => this.detach(sub),
     }
   }
 
+  /** 목록 재료(main 상태)가 바뀌었다 — 열린 대화가 없으면 아무 일도 없다(K9). 뭉쳐서 구독마다 세션을 다시 고른다(R1-A1). */
+  changed(): void {
+    if (this.subs.size === 0 || this.refreshTimer !== null) return
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null
+      this.refresh()
+    }, this.deps.refreshMs ?? CHAT_REFRESH_MS)
+    this.refreshTimer.unref()
+  }
+
   stop(): void {
+    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer)
+    this.refreshTimer = null
     for (const entry of this.readers.values()) {
       entry.reader.stop()
       if (entry.grace !== null) clearTimeout(entry.grace)
     }
     this.readers.clear()
+    for (const sub of this.subs) sub.entry = null
+    this.subs.clear()
+  }
+
+  /** 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면 새 판독자로 옮겨 처음부터, 채널이 사라졌으면 `chat.unavailable`. */
+  refresh(): void {
+    if (this.deps.read() === null) return // 상태를 아직 못 읽었다 — 지금 판독을 그대로 둔다
+    for (const sub of [...this.subs]) {
+      const entry = sub.entry
+      if (entry === null) continue
+      const found = this.locate(sub.channelId)
+      if (!found.ok) {
+        this.detach(sub)
+        this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason: found.reason })
+        continue
+      }
+      sub.channel = found.channel
+      if (found.file === entry.reader.file) continue
+      this.deps.log('mobile.chat_session_switch', { agent: found.channel.agent })
+      this.leave(sub)
+      sub.started = false
+      sub.resume = null
+      sub.since = performance.now()
+      this.attach({ sub, file: found.file })
+    }
+  }
+
+  private locate(channelId: string): Located {
+    const list = this.deps.read()
+    if (list === null) return { ok: false, reason: 'not_ready' }
+    const found = chatChannel({ list, channelId })
+    if (!found.ok) return found
+    const file = this.deps.resolveFile({ session: found.channel.session, agent: found.channel.agent })
+    if (file === null || !fs.existsSync(file)) return { ok: false, reason: 'no_file' }
+    return { ok: true, channel: found.channel, file }
+  }
+
+  private unavailable(input: { channelId: string; sink: (text: string) => void; reason: ChatUnavailable }): void {
+    input.sink(JSON.stringify({ type: 'chat.unavailable', channel: input.channelId, reason: input.reason }))
+    this.deps.log('mobile.chat_unavailable', { reason: input.reason })
+  }
+
+  /** 구독을 판독자에 붙인다 — 멈춰 있던 판독자면 따라잡은 뒤, 준비됐으면 곧장 첫 페이지. */
+  private attach(input: { sub: Sub; file: string }): void {
+    const { sub } = input
+    const entry = this.entry({ file: input.file, channel: sub.channel })
+    entry.subs.add(sub)
+    sub.entry = entry
+    if (entry.grace !== null) clearTimeout(entry.grace)
+    entry.grace = null
+    const reader = entry.reader
+    if (reader.state.kind === 'failed') {
+      const reason = reader.state.reason
+      this.detach(sub)
+      this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason })
+      return
+    }
+    if (reader.paused) {
+      void reader.resume().then(() => this.startPending(entry))
+      return
+    }
+    if (reader.state.kind === 'ready') this.start({ entry, sub })
+  }
+
+  /** 구독 끝 — 판독자에서 떼고 구독 목록에서도 뺀다. */
+  private detach(sub: Sub): void {
+    this.leave(sub)
+    this.subs.delete(sub)
+  }
+
+  /** 판독자에서만 뗀다. 그 판독자의 마지막 구독이면 그 자리에서 읽기를 멈추고 유예 뒤에 버린다(R1-A3). */
+  private leave(sub: Sub): void {
+    const entry = sub.entry
+    sub.entry = null
+    if (entry === null || !entry.subs.delete(sub) || entry.subs.size > 0) return
+    entry.reader.pause()
+    if (entry.grace !== null) return
+    const file = entry.reader.file
+    entry.grace = setTimeout(() => {
+      entry.grace = null
+      if (entry.subs.size > 0) return
+      entry.reader.stop()
+      this.readers.delete(file)
+      this.deps.log('mobile.chat_reader_drop', { readers: this.readers.size })
+    }, this.deps.graceMs ?? CHAT_GRACE_MS)
+    entry.grace.unref()
   }
 
   private entry(input: { file: string; channel: ChatChannel }): ReaderEntry {
@@ -420,46 +656,43 @@ export class ChatHub {
     return entry
   }
 
-  private release(file: string): void {
-    const entry = this.readers.get(file)
-    if (entry === undefined || entry.subs.size > 0 || entry.grace !== null) return
-    entry.grace = setTimeout(() => {
-      entry.grace = null
-      if (entry.subs.size > 0) return
-      entry.reader.stop()
-      this.readers.delete(file)
-      this.deps.log('mobile.chat_reader_drop', { readers: this.readers.size })
-    }, this.deps.graceMs ?? CHAT_GRACE_MS)
-    entry.grace.unref()
+  private startPending(entry: ReaderEntry): void {
+    if (entry.reader.state.kind !== 'ready' || entry.reader.paused) return
+    for (const sub of [...entry.subs]) if (!sub.started) this.start({ entry, sub })
   }
 
-  private onReader(input: { entry: ReaderEntry; event: Parameters<ChatReader['onEvent']>[0] }): void {
+  private onReader(input: { entry: ReaderEntry; event: ChatReaderEvent }): void {
     const { entry, event } = input
     switch (event.kind) {
       case 'ready':
-        for (const sub of [...entry.subs]) if (!sub.started) this.start({ entry, sub })
-        return
+        return this.startPending(entry)
       case 'reset':
         for (const sub of [...entry.subs]) this.sendPage({ entry, sub, mode: 'reset', items: this.latest(entry) })
         return
       case 'failed':
-        for (const sub of [...entry.subs]) sub.sink(JSON.stringify({ type: 'chat.unavailable', channel: sub.channelId, reason: 'unreadable' }))
+        for (const sub of [...entry.subs]) {
+          this.detach(sub)
+          this.unavailable({ channelId: sub.channelId, sink: sub.sink, reason: 'unreadable' })
+        }
         return
       case 'items':
-        this.broadcast({ entry, ids: event.ids, readAt: event.readAt })
+        this.broadcast({ entry, ids: event.ids, readAt: event.readAt, readMs: event.readMs })
     }
   }
 
-  /** 첫 페이지 — 이어 받기가 맞으면 그 뒤 전부(`resume`), 아니면 최근 페이지(`reset`). */
+  /**
+   * 첫 페이지 — 이어 받기가 맞으면(같은 세대) `from` 이후 말풍선 중 `cursor` 뒤에 생기거나 바뀐 것 전부(`resume`, R1-A2),
+   * 아니면 최근 페이지(`reset`). 이어 받을 것이 `CHAT_RESUME_MAX` 를 넘어도 `reset`.
+   */
   private start(input: { entry: ReaderEntry; sub: Sub }): void {
     const { entry, sub } = input
-    sub.started = true
-    const items = entry.reader.items()
+    const reader = entry.reader
     const resume = sub.resume
-    if (resume !== null && resume.gen === entry.reader.gen) {
-      const from = items.findIndex((item) => item.id === resume.after)
-      if (from >= 0 && items.length - from <= CHAT_RESUME_MAX) {
-        this.sendPage({ entry, sub, mode: 'resume', items: items.slice(from) })
+    if (resume !== null && resume.gen === reader.gen && resume.cursor <= reader.cursor()) {
+      const all = reader.items()
+      const changed = all.filter((item) => item.id >= resume.from && reader.revOf(item.id) > resume.cursor)
+      if (changed.length <= CHAT_RESUME_MAX) {
+        this.sendPage({ entry, sub, mode: 'resume', items: changed, hasOlder: (all[0]?.id ?? resume.from) < resume.from })
         return
       }
     }
@@ -471,9 +704,10 @@ export class ChatHub {
     return items.slice(Math.max(0, items.length - CHAT_PAGE_SIZE))
   }
 
-  private older(input: { entry: ReaderEntry; sub: Sub; gen: string; before: number }): void {
-    const { entry, sub } = input
-    if (!entry.subs.has(sub) || entry.reader.state.kind !== 'ready' || input.gen !== entry.reader.gen) return
+  private older(input: { sub: Sub; gen: string; before: number }): void {
+    const { sub } = input
+    const entry = sub.entry
+    if (entry === null || entry.reader.state.kind !== 'ready' || input.gen !== entry.reader.gen) return
     const items = entry.reader.items()
     let end = items.findIndex((item) => item.id >= input.before)
     if (end < 0) end = items.length
@@ -482,18 +716,22 @@ export class ChatHub {
 
   /**
    * 페이지 보내기. `reset`·`older` 는 프레임 하나 — 넘치면 앞(오래된) 말풍선부터 덜어 낸다(`hasOlder` 가 남은 것을 말한다).
-   * `resume` 은 넘치면 첫 프레임 뒤를 `chat.items` 로 나눠 보낸다(빠짐 없이).
+   * `resume` 은 넘치면 첫 프레임 뒤를 `chat.items` 로 나눠 보낸다(빠짐 없이). 말풍선 하나는 `ITEM_BYTES_MAX` 이하라 늘 한 프레임에 든다.
    */
-  private sendPage(input: { entry: ReaderEntry; sub: Sub; mode: 'reset' | 'resume' | 'older'; items: readonly ChatItem[] }): void {
+  private sendPage(input: { entry: ReaderEntry; sub: Sub; mode: 'reset' | 'resume' | 'older'; items: readonly ChatItem[]; hasOlder?: boolean }): void {
     const { entry, sub, mode } = input
+    // 첫 페이지면 구독부터 보내기 직전까지(Y4 「첫 페이지 서버 준비」 — 색인 로그만으로 대신하지 않는다, C2).
+    const firstPageMs = sub.started ? null : Math.round((performance.now() - sub.since) * 100) / 100
+    sub.started = true
     const all = entry.reader.items()
     const wire = input.items.map((item) => wireItem({ item, place: sub.channel.place }))
-    const base = { channel: sub.channelId, gen: entry.reader.gen, at: this.now(), writtenAt: entry.reader.writtenAt() }
+    const base = { channel: sub.channelId, gen: entry.reader.gen, cursor: entry.reader.cursor(), at: this.now(), writtenAt: entry.reader.writtenAt() }
     if (mode === 'resume') {
       const frames = frameItems(wire)
       const [first, ...rest] = frames
-      sub.sink(JSON.stringify({ type: 'chat.page', mode, ...base, hasOlder: (all[0]?.id ?? 0) < (wire[0]?.id ?? 0), items: first ?? [] }))
+      sub.sink(JSON.stringify({ type: 'chat.page', mode, ...base, hasOlder: input.hasOlder ?? false, items: first ?? [] }))
       for (const items of rest) sub.sink(JSON.stringify({ type: 'chat.items', ...base, readAt: base.at, items }))
+      this.deps.log('mobile.chat_page', { mode, items: wire.length, frames: frames.length, firstPageMs })
       return
     }
     let items = wire
@@ -506,11 +744,11 @@ export class ChatHub {
       items = items.slice(Math.ceil(items.length / 4))
     }
     sub.sink(text)
-    this.deps.log('mobile.chat_page', { mode, items: items.length, bytes: text.length })
+    this.deps.log('mobile.chat_page', { mode, items: items.length, bytes: text.length, firstPageMs })
   }
 
   /** 바뀐 말풍선 push — 채널마다 한 번 직렬화해 그 채널 구독자 모두에게(Y2ⓒ). 첫 페이지 전 구독은 건너뛴다(첫 페이지에 들어간다). */
-  private broadcast(input: { entry: ReaderEntry; ids: number[]; readAt: number }): void {
+  private broadcast(input: { entry: ReaderEntry; ids: number[]; readAt: number; readMs: number }): void {
     const { entry } = input
     const wanted = new Set(input.ids)
     const changed = entry.reader.items().filter((item) => wanted.has(item.id))
@@ -523,7 +761,7 @@ export class ChatHub {
       if (!sub.started) continue
       let frames = texts.get(sub.channelId)
       if (frames === undefined) {
-        const base = { type: 'chat.items', channel: sub.channelId, gen: entry.reader.gen, at: this.now(), readAt: input.readAt, writtenAt: entry.reader.writtenAt() }
+        const base = { type: 'chat.items', channel: sub.channelId, gen: entry.reader.gen, cursor: entry.reader.cursor(), at: this.now(), readAt: input.readAt, writtenAt: entry.reader.writtenAt() }
         frames = frameItems(changed.map((item) => wireItem({ item, place: sub.channel.place }))).map((items) => JSON.stringify({ ...base, items }))
         texts.set(sub.channelId, frames)
         for (const frame of frames) bytes += frame.length
@@ -531,8 +769,11 @@ export class ChatHub {
       for (const frame of frames) sub.sink(frame)
       subscribers += 1
     }
-    // 대화 push 1회 비용(Y10ⓓ 재료) — 개수·크기·시간만, 글은 남기지 않는다.
-    this.deps.log('mobile.chat_push', { items: changed.length, bytes, subscribers, sendMs: Math.round((performance.now() - started) * 100) / 100 })
+    // 대화 push 1회 비용(Y10ⓓ 재료) — 개수·크기·시간만, 글은 남기지 않는다. `sendMs` = 직렬화·발송, `readMs` = 그 변화를 읽은 꼬리 확인,
+    // `totalMs` = 둘의 합(판독·파싱·변경 고르기·직렬화·발송 — C2).
+    const sendMs = performance.now() - started
+    const round = (ms: number): number => Math.round(ms * 100) / 100
+    this.deps.log('mobile.chat_push', { items: changed.length, bytes, subscribers, readMs: round(input.readMs), sendMs: round(sendMs), totalMs: round(input.readMs + sendMs) })
   }
 
   private now(): number {
@@ -540,7 +781,7 @@ export class ChatHub {
   }
 }
 
-/** 말풍선 배열을 프레임 상한 안의 묶음들로 — 순서 그대로. 말풍선 하나는 상한보다 작다(글 상한 `ITEM_TEXT_MAX`). */
+/** 말풍선 배열을 프레임 상한 안의 묶음들로 — 순서 그대로. 말풍선 하나는 `ITEM_BYTES_MAX` 이하(`fitItem`). */
 function frameItems(items: WireItem[]): WireItem[][] {
   const frames: WireItem[][] = []
   let current: WireItem[] = []

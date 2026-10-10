@@ -11,6 +11,7 @@ import type { ChatSnapshot } from '../core/chat-store'
 import {
   TABLE_SCROLL_COLUMNS,
   bodyState,
+  droppedText,
   foldText,
   inlineSpans,
   markdownBlocks,
@@ -18,7 +19,10 @@ import {
   questionLine,
   replyHeads,
   runningTool,
+  staleText,
+  stateCard,
   toolLine,
+  toolMark,
   toolSummary,
   type Block,
 } from '../core/chat-view'
@@ -42,21 +46,21 @@ export type ConversationProps = {
 export function Conversation({ channel, chat, unknown, onOlder, onRetry }: ConversationProps) {
   const state = bodyState({ phase: chat.phase, count: chat.items.length })
   const list = useRef<FlatList<ChatItem>>(null)
-  // 맨 아래를 떠난 순간의 마지막 말풍선 id — 그 뒤 마지막이 바뀌면 「새 메시지 ↓」. 맨 아래로 돌아오면 지운다.
+  // 맨 아래를 떠난 순간의 맨 아래 쪽 변경 횟수(`tailRev`) — 그 뒤 새 말풍선이 붙거나 마지막 답이 자라면 「새 메시지 ↓」(R1-A10). 맨 아래로 돌아오면 지운다.
   const [awayFrom, setAwayFrom] = useState<number | null>(null)
+  const tailRev = chat.tailRev
   const data = useMemo(() => [...chat.items].reverse(), [chat.items])
   const heads = useMemo(() => replyHeads(chat.items), [chat.items])
-  const lastId = chat.items[chat.items.length - 1]?.id ?? null
   const live = channel.status === 'live' && !unknown
   const working = live && channel.dot === 'working'
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const isAway = event.nativeEvent.contentOffset.y > 120
-      setAwayFrom((previous) => (isAway ? (previous ?? lastId) : null))
+      setAwayFrom((previous) => (isAway ? (previous ?? tailRev) : null))
     },
-    [lastId],
+    [tailRev],
   )
-  const showNew = awayFrom !== null && lastId !== null && lastId !== awayFrom
+  const showNew = awayFrom !== null && tailRev !== awayFrom
 
   if (state.kind === 'loading') {
     return (
@@ -79,8 +83,20 @@ export function Conversation({ channel, chat, unknown, onOlder, onRetry }: Conve
       </View>
     )
   }
+  const stale = chat.stale === null ? null : staleText(chat.stale)
   return (
     <View style={{ flex: 1, opacity: unknown ? 0.5 : 1 }}>
+      {stale !== null ? (
+        // 다시 구독 실패(R1-A7) — 본문은 지난 내용으로 두고 그 사실을 띠로.
+        <View style={{ minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, backgroundColor: color.errorTint12 }}>
+          <Text style={{ flex: 1, fontSize: 12.5, color: color.error, fontFamily: font.medium }}>{stale.title}</Text>
+          {stale.retry ? (
+            <Pressable accessibilityRole="button" onPress={onRetry} className="active:opacity-70">
+              <Text style={{ fontSize: 12.5, color: color.fg, fontFamily: font.semibold }}>다시 시도</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       <FlatList
         ref={list}
         data={data}
@@ -95,7 +111,7 @@ export function Conversation({ channel, chat, unknown, onOlder, onRetry }: Conve
         onScroll={onScroll}
         scrollEventThrottle={100}
         contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, gap: 14 }}
-        ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty'} />}
+        ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty'} items={chat.items} dropped={chat.dropped} />}
         ListFooterComponent={<OlderMark loading={chat.loadingOlder} hasOlder={chat.hasOlder} />}
       />
       {showNew ? (
@@ -128,11 +144,18 @@ function OlderMark({ loading, hasOlder }: { loading: boolean; hasOlder: boolean 
   return <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular, textAlign: 'center', paddingVertical: 12 }}>대화의 처음입니다</Text>
 }
 
-/** 화면 아래쪽 끝 — 지금 상태 카드(권한 대기 C6) · 닫힌 세션 안내(C19) · 빈 대화. */
-function Trailer({ channel, live, empty }: { channel: Channel; live: boolean; empty: boolean }) {
+/** 화면 아래쪽 끝 — 지금 상태 카드(권한 대기 C6 · 중단 C8 · 실패 C9) · 못 읽은 말풍선 안내 · 닫힌 세션 안내(C19) · 빈 대화. */
+function Trailer({ channel, live, empty, items, dropped }: { channel: Channel; live: boolean; empty: boolean; items: readonly ChatItem[]; dropped: number }) {
+  // 지금 상태가 중단·실패인데 최신 턴의 기록에 그 카드가 없으면 상태에서 한 장(R1-A6, X2ⓔ).
+  const card = stateCard({ dot: channel.dot, live, errorText: channel.preview.kind === 'error' ? channel.preview.text : null, items })
+  const skipped = droppedText(dropped)
   return (
     <View style={{ gap: 12 }}>
       {empty ? <Text style={{ fontSize: 14, color: color.fgMuted, fontFamily: font.regular, textAlign: 'center', paddingVertical: 24 }}>아직 대화가 없습니다</Text> : null}
+      {skipped !== null ? <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular, textAlign: 'center' }}>{skipped}</Text> : null}
+      {card !== null ? (
+        <SystemNote tint={color.dotAlert} title={card.note === 'failed' ? '실패' : '중단됨'} chip={null} detail={card.note === 'failed' ? (card.text ?? '사유를 알 수 없습니다') : '맥에서 다시 지시하면 이어집니다'} />
+      ) : null}
       {live && channel.waiting === 'approval' ? (
         <SystemNote
           tint={color.dotQuestion}
@@ -162,7 +185,8 @@ const Bubble = memo(function Bubble({ item, head, kind, last, working }: { item:
       return <QuestionCard item={item} />
     case 'note': {
       const view = noteView(item)
-      return <SystemNote tint={view.tone === 'alert' ? color.dotAlert : color.fgDim} title={view.title} chip={null} detail={view.detail} />
+      const detail = item.clipped && view.detail !== null ? `${view.detail} …(잘림)` : view.detail
+      return <SystemNote tint={view.tone === 'alert' ? color.dotAlert : color.fgDim} title={view.title} chip={null} detail={detail} />
     }
   }
 })
@@ -372,14 +396,17 @@ function ToolGroup({ item, live }: { item: Extract<ChatItem, { kind: 'tools' }>;
           {item.count > item.tools.length ? (
             <Text style={{ fontSize: 12, color: color.fgDim, fontFamily: font.regular, paddingHorizontal: 12, paddingVertical: 4 }}>{`앞의 ${item.count - item.tools.length}개는 개수만 보입니다`}</Text>
           ) : null}
-          {item.tools.map((tool, index) => (
+          {item.tools.map((tool, index) => {
+            const mark = toolMark(tool.status)
+            return (
             <View key={index} style={{ minHeight: 30, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12 }}>
-              <Text style={{ width: 14, fontSize: 12, color: tool.status === 'error' ? color.error : tool.status === 'running' ? color.accent : color.fgDim, fontFamily: mono }}>
-                {tool.status === 'error' ? '✕' : tool.status === 'running' ? '…' : '✓'}
+              <Text style={{ width: 14, fontSize: 12, color: mark.tone === 'error' ? color.error : mark.tone === 'running' ? color.accent : color.fgDim, fontFamily: mono }}>
+                {mark.mark}
               </Text>
               <Text numberOfLines={1} style={{ flex: 1, fontSize: 12.5, color: tool.status === 'error' ? color.error : color.fgMuted, fontFamily: mono }}>{toolLine(tool)}</Text>
             </View>
-          ))}
+            )
+          })}
         </View>
       ) : null}
     </View>
@@ -395,6 +422,7 @@ function QuestionCard({ item }: { item: Extract<ChatItem, { kind: 'question' }> 
         <Text numberOfLines={2} style={{ fontSize: 13, color: item.state === 'answered' ? color.fg : color.fgDim, fontFamily: font.medium }}>
           {item.state === 'answered' ? `답함 → ${item.answer ?? '(답을 기록에서 찾지 못함)'}` : '닫힘 — 답하지 않고 지나갔습니다'}
         </Text>
+        {item.clipped ? <QuestionClipped /> : null}
       </View>
     )
   }
@@ -418,9 +446,15 @@ function QuestionCard({ item }: { item: Extract<ChatItem, { kind: 'question' }> 
           ))}
         </View>
       ))}
+      {item.clipped ? <QuestionClipped /> : null}
       <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>답은 맥에서 — 폰에서 답하기는 다음 업데이트에서 들어옵니다</Text>
     </View>
   )
+}
+
+/** 질문이 너무 커서 서버가 글·문항·선택지 일부를 덜어 냈다(R1-A5). */
+function QuestionClipped() {
+  return <Text style={{ fontSize: 12, color: color.fgDim, fontFamily: font.regular }}>… 질문이 길어 일부만 보입니다 — 전체는 맥에서</Text>
 }
 
 /** SystemNote(권한 대기·중단됨·실패·압축) — StatusGlyph 자리 점 + 제목 14.5/600 상태색 + 도구 칩 + 설명 13.5. */

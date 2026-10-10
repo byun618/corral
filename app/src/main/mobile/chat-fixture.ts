@@ -74,6 +74,12 @@ function codex(type: string, payload: Record<string, unknown> | null, t: number)
   return line(payload === null ? { timestamp: iso(t), type } : { timestamp: iso(t), type, payload })
 }
 
+/** 0.142 `exec_command` 출력 — `Chunk ID`·`Wall time`·종료 코드(또는 「아직 도는 중」)·`Output:` 뒤 본문. 본문에 종료 코드 모양 글을 넣어 머리만 읽는지 본다. */
+export function codexExecOutput(input: { exit: number | 'running' }): string {
+  const status = input.exit === 'running' ? 'Process running with session ID 7' : `Process exited with code ${input.exit}`
+  return `Chunk ID: 9f1c\nWall time: 0.2 seconds\n${status}\nOriginal token count: 12\nOutput:\nProcess exited with code 0\n${SECRET_RESULT}`
+}
+
 /** 0.153 이전 모양 — event_msg user_message·agent_message 중복, function_call exec_command. */
 export function codexOldLines(): string[] {
   return [
@@ -84,9 +90,10 @@ export function codexOldLines(): string[] {
     codex('event_msg', { type: 'user_message', message: '옛 지시' }, 1),
     codex('response_item', { type: 'reasoning', summary: [{ type: 'summary_text', text: SECRET_THOUGHT }] }, 2),
     codex('response_item', { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: `cat ${CHAT_WORKTREE}/README.md` }), call_id: 'c1' }, 2),
-    codex('response_item', { type: 'function_call_output', call_id: 'c1', output: SECRET_RESULT }, 3),
+    // 0.142 실물 출력 모양 — 본문 앞 머리에 종료 코드(R1-A9, `raw/claude/r1/a9-codex-output-shapes.txt`).
+    codex('response_item', { type: 'function_call_output', call_id: 'c1', output: codexExecOutput({ exit: 0 }) }, 3),
     codex('response_item', { type: 'custom_tool_call', name: 'apply_patch', call_id: 'c2', input: '*** Begin Patch\n*** Update File: src/x.ts\n@@\n-a\n+b\n*** End Patch' }, 3),
-    codex('response_item', { type: 'custom_tool_call_output', call_id: 'c2', output: SECRET_RESULT }, 3),
+    codex('response_item', { type: 'custom_tool_call_output', call_id: 'c2', output: `Exit code: 0\nWall time: 0.1 seconds\nOutput:\n${SECRET_RESULT}` }, 3),
     codex('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '옛 답' }] }, 4),
     codex('event_msg', { type: 'agent_message', message: '옛 답' }, 4),
     codex('event_msg', { type: 'token_count', info: null }, 4),

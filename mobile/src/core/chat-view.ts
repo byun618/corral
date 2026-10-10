@@ -244,3 +244,51 @@ function unavailableText(reason: string): { title: string; detail: string } {
       return { title: '대화를 열 수 없습니다', detail: reason }
   }
 }
+
+/** 도구 줄 표식 — `unknown` 은 성공도 실패도 아닌 중립(결과를 기록에서 못 읽음, R1-A9). */
+export function toolMark(status: ChatTool['status']): { mark: string; tone: 'error' | 'running' | 'muted' } {
+  switch (status) {
+    case 'error':
+      return { mark: '✕', tone: 'error' }
+    case 'running':
+      return { mark: '…', tone: 'running' }
+    case 'unknown':
+      return { mark: '·', tone: 'muted' }
+    case 'ok':
+      return { mark: '✓', tone: 'muted' }
+  }
+}
+
+/**
+ * 지금 상태 카드(C8 중단됨 · C9 실패, X2ⓔ · R1-A6) — 목록 채널의 지금 점(`agentState`·`turnOutcome` 을 합친 값)이 중단·실패면 대화 끝에 한 장.
+ * 기록에서 낸 같은 종류 카드가 **최신 턴**(마지막 내 지시 뒤)에 이미 있으면 그리지 않는다(같은 턴 중복 없음). 지난 턴의 기록 카드는 제자리에 그대로.
+ */
+export function stateCard(input: { dot: string; live: boolean; errorText: string | null; items: readonly ChatItem[] }): { note: 'interrupted' | 'failed'; text: string | null } | null {
+  if (!input.live) return null
+  const note = input.dot === 'interrupted' ? 'interrupted' : input.dot === 'failed' ? 'failed' : null
+  if (note === null) return null
+  let lastPrompt = -1
+  input.items.forEach((item, index) => {
+    if (item.kind === 'prompt') lastPrompt = index
+  })
+  const latestTurn = input.items.slice(lastPrompt + 1)
+  if (latestTurn.some((item) => item.kind === 'note' && item.note === note)) return null
+  return { note, text: note === 'failed' ? input.errorText : null }
+}
+
+/** 다시 구독이 실패해 들고 있는 본문이 최신이 아닐 수 있다(R1-A7) — 띠 글. */
+export function staleText(stale: 'timeout' | 'rejected' | 'invalid'): { title: string; retry: boolean } {
+  switch (stale) {
+    case 'timeout':
+      return { title: '대화를 새로 받지 못했습니다 · 지난 내용입니다', retry: true }
+    case 'rejected':
+      return { title: '맥이 대화를 보내지 않습니다 · 맥의 corral 을 업데이트해 주세요', retry: false }
+    case 'invalid':
+      return { title: '대화 형식이 맞지 않습니다 · 앱이나 맥의 corral 을 업데이트해 주세요', retry: false }
+  }
+}
+
+/** 일부 말풍선을 못 읽었다(R1-A8) — 대화 끝 안내. */
+export function droppedText(dropped: number): string | null {
+  return dropped > 0 ? `읽지 못한 말풍선 ${dropped}개를 건너뛰었습니다 · 앱을 업데이트해 주세요` : null
+}

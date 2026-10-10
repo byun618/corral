@@ -2,7 +2,8 @@
 // RN 을 모른다. 모양이 틀린 말풍선은 버리고(그 프레임 전체를 버리지 않는다 — 대화는 목록과 달리 증분이라 한 칸 때문에 나머지를 잃지 않게) 개수만 센다.
 
 export type ChatText = { text: string; clipped: number | null }
-export type ChatToolStatus = 'running' | 'ok' | 'error'
+/** `unknown` = 결과는 왔으나 성공/실패를 기록에서 읽지 못했다(옛 Codex 출력 — 서버가 성공으로 단정하지 않는다, R1-A9). */
+export type ChatToolStatus = 'running' | 'ok' | 'error' | 'unknown'
 export type ChatTool = { name: string | null; target: string | null; status: ChatToolStatus }
 export type ChatQuestion = { question: string; header: string | null; options: { label: string; description: string | null }[]; multiSelect: boolean | null }
 
@@ -10,10 +11,12 @@ export type ChatItem =
   | { id: number; kind: 'prompt'; at: number | null; body: ChatText }
   | { id: number; kind: 'reply'; at: number | null; body: ChatText }
   | { id: number; kind: 'tools'; at: number | null; tools: ChatTool[]; count: number; names: Record<string, number>; detail: boolean }
-  | { id: number; kind: 'question'; at: number | null; questions: ChatQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null }
-  | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null }
+  /** `clipped` = 서버가 글·문항·선택지 일부를 덜어 냈다(크기 상한, R1-A5) — 화면에 잘림을 보인다. */
+  | { id: number; kind: 'question'; at: number | null; questions: ChatQuestion[]; state: 'pending' | 'answered' | 'closed'; answer: string | null; clipped: boolean }
+  | { id: number; kind: 'note'; at: number | null; note: 'interrupted' | 'failed' | 'compacted'; text: string | null; clipped: boolean }
 
-export type ChatTimes = { at: number | null; readAt: number | null; writtenAt: number | null }
+/** `cursor` = 서버 판독자의 변경 순번 — 이어 받기에 돌려준다(R1-A2). */
+export type ChatTimes = { at: number | null; readAt: number | null; writtenAt: number | null; cursor: number | null }
 
 export type ChatMessage =
   | ({ type: 'page'; channel: string; gen: string; mode: 'reset' | 'resume' | 'older'; hasOlder: boolean; items: ChatItem[]; dropped: number } & ChatTimes)
@@ -36,7 +39,7 @@ function readText(value: unknown): ChatText | null {
 
 function readTool(value: unknown): ChatTool | null {
   if (!isRecord(value)) return null
-  const status = value.status === 'running' || value.status === 'ok' || value.status === 'error' ? value.status : null
+  const status = value.status === 'running' || value.status === 'ok' || value.status === 'error' || value.status === 'unknown' ? value.status : null
   if (status === null) return null
   return { name: str(value.name), target: str(value.target), status }
 }
@@ -77,11 +80,11 @@ export function readChatItem(value: unknown): ChatItem | null {
         const read = readQuestion(question)
         return read === null ? [] : [read]
       })
-      return { id, kind: 'question', at, questions, state, answer: str(value.answer) }
+      return { id, kind: 'question', at, questions, state, answer: str(value.answer), clipped: value.clipped === true }
     }
     case 'note': {
       const note = value.note === 'interrupted' || value.note === 'failed' || value.note === 'compacted' ? value.note : null
-      return note === null ? null : { id, kind: 'note', at, note, text: str(value.text) }
+      return note === null ? null : { id, kind: 'note', at, note, text: str(value.text), clipped: value.clipped === true }
     }
     default:
       return null
@@ -108,7 +111,7 @@ export function parseChatMessage(value: Record<string, unknown>): ChatMessage | 
   const gen = str(value.gen)
   const read = readItems(value.items)
   if (gen === null || read === null) return null
-  const times: ChatTimes = { at: num(value.at), readAt: num(value.readAt), writtenAt: num(value.writtenAt) }
+  const times: ChatTimes = { at: num(value.at), readAt: num(value.readAt), writtenAt: num(value.writtenAt), cursor: num(value.cursor) }
   if (value.type === 'chat.items') return { type: 'items', channel, gen, ...read, ...times }
   if (value.type !== 'chat.page') return null
   const mode = value.mode === 'reset' || value.mode === 'resume' || value.mode === 'older' ? value.mode : null

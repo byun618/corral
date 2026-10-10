@@ -60,7 +60,7 @@
 | `pair` | 인증 전 | `{type:'pair', protocol:1, code:'<8자 코드>', name:'<기기 이름, 64자까지>'}` |
 | `ping` | 인증 뒤 | `{type:'ping', id?: string\|number}` |
 | `list.subscribe` | 인증 뒤 (LIFE-580) | `{type:'list.subscribe'}` — 대화방 목록 구독. 다시 보내면 이전 구독을 끊고 전체를 다시 받는다(재연결·포그라운드 복귀) |
-| `chat.subscribe` | 인증 뒤 (LIFE-581) | `{type:'chat.subscribe', channel:'<목록의 채널 id, 200자까지>', gen?:string, after?:number}` — 대화 하나 구독(연결당 하나 — 다시 보내면 이전 대화 구독을 끊는다). `gen`·`after` 가 함께 있으면 이어 받기 |
+| `chat.subscribe` | 인증 뒤 (LIFE-581) | `{type:'chat.subscribe', channel:'<목록의 채널 id, 200자까지>', gen?:string, from?:number, cursor?:number}` — 대화 하나 구독(연결당 하나 — 다시 보내면 이전 대화 구독을 끊는다). `gen`·`from`·`cursor` 셋이 다 있으면 이어 받기(R1-A2 — r0 의 `after` 대신) |
 | `chat.older` | 인증 뒤 (LIFE-581) | `{type:'chat.older', gen, before:<말풍선 id>}` — 지금 대화의 `before` 앞 페이지. 세대가 다르면 무시 |
 | `chat.unsubscribe` | 인증 뒤 (LIFE-581) | `{type:'chat.unsubscribe'}` — 대화 구독 끊기(목록 구독은 그대로) |
 
@@ -77,9 +77,9 @@
 | `paired` | pair 성공 — 연결은 그대로 인증된다 | `{type:'paired', protocol:1, server:{app, version, macName}, token:'<기기 토큰 — 이때 한 번만>', device:{id,name}}` |
 | `pong` | ping | `{type:'pong', id, at:<ms>}` |
 | `list` | `list.subscribe` 직후 1건 + 목록 내용이 바뀔 때마다 (LIFE-580) | `{type:'list', epoch, seq, at:<ms>, changedAt:<ms>, list}` — 아래 「대화방 목록」 |
-| `chat.page` | `chat.subscribe` 직후 1건(`reset`·`resume`) · `chat.older` 응답(`older`) · 세대가 바뀌면 구독자 모두에게 `reset` (LIFE-581) | `{type:'chat.page', channel, gen, mode, at, writtenAt, hasOlder, items[]}` — 아래 「대화」 |
-| `chat.items` | 기록에 새 말풍선이 생기거나 있던 것이 자랄 때 · 이어 받기가 프레임 하나를 넘칠 때 나머지 (LIFE-581) | `{type:'chat.items', channel, gen, at, readAt, writtenAt, items[]}` — 같은 `id` 는 새 값으로 바꾼다 |
-| `chat.unavailable` | 대화를 못 열 때 1건 (LIFE-581) | `{type:'chat.unavailable', channel, reason}` — `not_listed`(목록에 없음) · `no_session`(세션 참조 없음) · `no_file`(기록 파일 없음) · `not_ready`(맥이 herdr 상태를 아직 못 읽음) · `unreadable`(읽다 실패) |
+| `chat.page` | `chat.subscribe` 직후 1건(`reset`·`resume`) · `chat.older` 응답(`older`) · 세대가 바뀌면 구독자 모두에게 `reset` (LIFE-581) | `{type:'chat.page', channel, gen, cursor, mode, at, writtenAt, hasOlder, items[]}` — 아래 「대화」 |
+| `chat.items` | 기록에 새 말풍선이 생기거나 있던 것이 자랄 때 · 이어 받기가 프레임 하나를 넘칠 때 나머지 (LIFE-581) | `{type:'chat.items', channel, gen, cursor, at, readAt, writtenAt, items[]}` — 같은 `id` 는 새 값으로 바꾼다 |
+| `chat.unavailable` | 대화를 못 열 때 1건 · 열린 대화의 채널·파일이 목록에서 사라질 때 1건(R1-A1, 그 뒤 구독 해제) (LIFE-581) | `{type:'chat.unavailable', channel, reason}` — `not_listed`(목록에 없음) · `no_session`(세션 참조 없음) · `no_file`(기록 파일 없음) · `not_ready`(맥이 herdr 상태를 아직 못 읽음) · `unreadable`(읽다 실패) |
 | `error` | 아래 표 | `{type:'error', code, message}` (`protocol_mismatch` 는 `supported:[1]` 도) |
 
 **맥 이름 `server.macName`(R5 A5ⓓ, 표시용)** — 인증 뒤 `hello`·`paired` 응답에만 있다. 인증 전 응답·오류(`error`)에는 없다.
@@ -122,7 +122,10 @@
 
 - 폰은 **채널 id 만** 준다. 서버가 목록과 같은 함수(`list.ts` `chatChannel` — `buildMobileList` + 보존 행)로 그 채널의 provider 세션 참조를 찾고 기록 파일을 고른다
   (Claude 본 파일 · Codex rollout · Grok `updates.jsonl`). 경로·세션 id 는 폰에 가지 않고 폰에서 받지도 않는다. 닫힌 세션(보존 행 `retained:<pane id>`)도 지난 기록을 연다.
-- **열린 대화가 0 이면 기록을 읽지 않는다.** 판독자는 첫 구독에 생기고 마지막 구독이 떠난 뒤 15초(`CHAT_GRACE_MS`)에 사라진다. 파일 하나에 판독자 하나(여러 연결이 같은 대화를 열어도 한 벌).
+- **열린 대화가 0 이면 기록을 읽지 않는다.** 판독자는 첫 구독에 생기고, 마지막 구독이 떠나면 **그 자리에서 stat·꼬리 읽기를 멈춘다**(R1-A3). 색인은 15초(`CHAT_GRACE_MS`) 들고 있다가 버린다 —
+  그 안에 다시 열면 멈춘 동안 늘어난 바이트를 한 번 따라잡은 뒤 첫 페이지를 보낸다. 파일 하나에 판독자 하나(여러 연결이 같은 대화를 열어도 한 벌).
+- **세션 교체**(R1-A1): 목록 재료가 바뀔 때마다(100 ms `CHAT_REFRESH_MS` 뭉침) 열린 구독마다 채널 → 세션 → 파일을 다시 고른다. 파일이 바뀌었으면(`/clear`·새 세션) 새 파일로 옮겨
+  `reset` 페이지, 채널이 목록에서 사라지거나 파일이 없어지면 `chat.unavailable` 뒤 구독 해제. 모바일을 끄면 판독자를 모두 멈춘다.
 - 판독: 처음 한 번 파일 전체를 1 MiB 조각으로 **비동기** 읽어 색인(조각 사이 이벤트 루프 양보 — 동기 전체 읽기 없음), 그 뒤 250 ms(`CHAT_POLL_MS`)마다 stat 해 늘어난 바이트만 이어 읽는다.
   개행으로 끝나지 않은 마지막 줄은 개행이 올 때까지 보류한다.
 - **말풍선** `items[]` — 기록 순서(id 오름차순). `id` = 그 말풍선 첫 줄의 바이트 오프셋(한 줄에서 여럿이 나오면 소수 `+0.1`) — 같은 파일·같은 내용이면 다시 색인해도 같은 id.
@@ -130,20 +133,26 @@
   | --- | --- |
   | `prompt` | `{id, kind, at, body:{text, clipped}}` — 사람이 친 지시(데스크톱 지문 규칙과 같은 판정) |
   | `reply` | `{id, kind, at, body:{text, clipped}}` — 에이전트 답(마크다운 원문). 여러 줄로 나뉜 한 답은 하나로 합친다 |
-  | `tools` | `{id, kind, at, tools:[{name, target, status: running\|ok\|error}], count, names:{이름:횟수}, detail}` — 이어진 도구 호출 묶음. `tools` 는 뒤쪽 120개(`TOOLS_MAX`)까지, 나머지는 `count`·`names` 로만 |
-  | `question` | `{id, kind, at, questions:[{question, header, options:[{label, description}], multiSelect}], state: pending\|answered\|closed, answer}` — 표시만(답하기는 M5) |
-  | `note` | `{id, kind, at, note: interrupted\|failed\|compacted, text}` — 중단·실패(API 오류)·압축 안내 |
+  | `tools` | `{id, kind, at, tools:[{name, target, status: running\|ok\|error\|unknown}], count, names:{이름:횟수}, detail}` — 이어진 도구 호출 묶음. `tools` 는 뒤쪽 120개(`TOOLS_MAX`)까지, 나머지는 `count`·`names`(많은 순 40칸 `TOOL_NAMES_MAX`)로만. `unknown` = 끝났지만 성공/실패를 기록에서 판정 못 함(R1-A9 — Codex 결과 머리에 종료 코드가 없을 때) |
+  | `question` | `{id, kind, at, questions:[{question, header, options:[{label, description}], multiSelect}], state: pending\|answered\|closed, answer, clipped}` — 표시만(답하기는 M5). 문항·머리·선택지·설명 합 8000자(`QUESTION_CHARS`) 예산 — 넘는 것은 빼고 `clipped:true`(R1-A5) |
+  | `note` | `{id, kind, at, note: interrupted\|failed\|compacted, text, clipped}` — 중단·실패(API 오류)·압축 안내 |
 - `clipped` = 글이 16000자(`ITEM_TEXT_MAX`)를 넘어 잘렸을 때 원래 길이(아니면 `null`). 도구 대상은 240자.
-- **세대 `gen`** = 파일 정체(장치·inode·생성 시각·첫 4 KiB 해시) + Claude rewind 횟수. 파일이 바뀌거나 줄면, 또는 rewind 로 앞 말풍선이 사라지면 세대가 바뀌고
-  구독자 모두에게 `reset` 을 보낸다. 앱은 지금 세대가 아닌 `chat.items`·`older` 를 버린다.
-- **이어 받기**: `chat.subscribe` 의 `gen` 이 지금 세대이고 `after` id 가 있고 그 뒤가 400개(`CHAT_RESUME_MAX`) 이하이면 `mode:'resume'` 으로 `after` **부터**(그 말풍선 포함 — 자랐을 수 있다) 끝까지.
+- 말풍선 하나 직렬화 64 KiB(`ITEM_BYTES_MAX`, R1-A5) — 글자 상한만으로는 바이트가 막히지 않아서(한글 3바이트·이스케이프 6바이트) 넘으면 글을 더 자르고(`clipped` 는 원래 길이),
+  도구 줄은 앞쪽부터 덜고, 질문은 뒤 문항부터 덜고, 안내 글은 500자로. 그래서 어떤 말풍선도 프레임 하나에 든다.
+- **세대 `gen`** = 색인 한 번마다 새로 뽑는 값 + `.` + Claude rewind 횟수(R1-A4). 처음부터 다시 색인하면(파일 교체·줄어듦·inode/장치 변화·이미 읽은 구간 덮어쓰기·판독자를 버린 뒤 새로 열기)
+  세대가 반드시 바뀐다. 덮어쓰기는 파일 크기·수정 시각이 바뀔 때마다 이미 읽은 구간의 **앞·뒤 4 KiB 해시**를 다시 대 봐서 잡는다(같은 크기 덮어쓰기 포함).
+  세대가 바뀌면 구독자 모두에게 `reset` 을 보낸다. 앱은 지금 세대가 아닌 `chat.items`·`older` 를 버린다.
+- **변경 순번 `cursor`**(R1-A2): 판독자는 말풍선이 생기거나 바뀔 때마다 순번을 올려 그 말풍선에 붙인다. `chat.page`·`chat.items` 의 `cursor` = 그 시점 판독자 순번.
+- **이어 받기**: `gen` 이 지금 세대이면 `id ≥ from` 이고 순번이 `cursor` 보다 큰 말풍선(새로 생긴 것 + 끊긴 동안 자란·바뀐 것)을 `mode:'resume'` 으로. 400개(`CHAT_RESUME_MAX`) 넘으면 reset.
+  `from` 은 앱이 들고 있는 가장 오래된 id — 그 앞의 바뀐 말풍선은 앱에 없으니 보내지 않는다.
   아니면 `mode:'reset'` 으로 최근 40개(`CHAT_PAGE_SIZE`). 이어 받기가 프레임 하나를 넘치면 첫 프레임 뒤를 `chat.items` 로 나눠 보낸다(빠짐 없음).
 - **과거**: `chat.older` → `before` 앞 40개, `mode:'older'`. `hasOlder` = 이 페이지 앞에 더 있는지. 보내는 프레임 하나 256 KiB(`MAX_FRAME_BYTES`) — `reset`·`older` 가 넘치면 오래된 쪽부터 덜어 내고 `hasOlder` 가 남은 것을 말한다.
 - 시각: `at` = 서버가 보낸 시각 · `readAt` = 그 줄을 읽은 시각 · `writtenAt` = 파일 수정 시각 · 말풍선 `at` = 기록의 시각(3초 측정 Y3 재료).
 - 보내기 직전마다 목록과 같이 연결이 닫는 중이 아닌지·기기가 해지되지 않았는지 본다 — 해지·`replaced` 뒤에는 한 건도 가지 않는다. `list.subscribe` 를 다시 보내도 대화 구독은 끊기지 않는다.
   공급이 없는 서버(시험)는 `unknown_type`.
-- 비용 로그: `mobile.chat_index {agent, bytes, items, ms, lines}` · `mobile.chat_push {items, bytes, subscribers, sendMs}` · `mobile.chat_page {mode, items, bytes}` ·
-  `mobile.chat_subscribe {agent, status, readers}` · `mobile.chat_unavailable {reason}` · `mobile.chat_reader_drop {readers}` — 글은 없다.
+- 비용 로그: `mobile.chat_index {agent, bytes, items, ms, lines}` · `mobile.chat_push {items, bytes, subscribers, readMs, sendMs, totalMs}` · `mobile.chat_page {mode, items, bytes|frames, firstPageMs}` ·
+  `mobile.chat_subscribe {agent, status, readers}` · `mobile.chat_unavailable {reason}` · `mobile.chat_session_switch {agent}` · `mobile.chat_reader_drop {readers}` — 글은 없다.
+  `firstPageMs` = 구독 받은 때부터 첫 페이지까지 · `readMs` = 꼬리 읽기·조립 · `sendMs` = 직렬화·보내기(C2 측정 지점 — 판정은 최종 관문).
 - **보내지 않는 것**: 생각(thinking·reasoning) 글 · **도구 결과 본문**(성공/실패 여부만) · 도구 입력 전체(대상 한 줄 미리보기만) · 시스템·하네스가 넣은 사용자 줄(지문 규칙으로 거른다) ·
   기록 파일 경로·세션 id · **홈 디렉터리 아래 절대경로** — 대화의 모든 글(지시·답·도구 대상·질문·안내)을 목록과 같은 `maskPaths` 로 가린다(worktree 상대 · `~/…`).
   어느 줄이 어느 말풍선이 되고 무엇을 버리는지는 `specs/LIFE-581-mobile-chat/raw/claude/mapping.md`.

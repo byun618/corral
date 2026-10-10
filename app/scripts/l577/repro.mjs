@@ -376,6 +376,7 @@ async function commandChat(url) {
   const errors = []
   let channel = wanted
   let gen = null
+  let cursor = 0
   const held = new Map()
   const note = (frame) => {
     const items = Array.isArray(frame.items) ? frame.items : []
@@ -394,7 +395,7 @@ async function commandChat(url) {
     ws.on('message', (data) => {
       const message = JSON.parse(data.toString())
       if (message.type === 'hello' && message.ok === true) {
-        if (channel !== null) ask(resume === null ? { type: 'chat.subscribe', channel } : { type: 'chat.subscribe', channel, gen: resume.gen, after: resume.after })
+        if (channel !== null) ask(resume === null ? { type: 'chat.subscribe', channel } : { type: 'chat.subscribe', channel, gen: resume.gen, from: resume.from, cursor: resume.cursor })
         else ask({ type: 'list.subscribe' })
         return
       }
@@ -408,6 +409,7 @@ async function commandChat(url) {
       if (message.type === 'chat.page' || message.type === 'chat.items' || message.type === 'chat.unavailable') {
         note(message)
         if (typeof message.gen === 'string') gen = message.gen
+        if (typeof message.cursor === 'number' && message.mode !== 'older') cursor = Math.max(cursor, message.cursor)
         if (message.type === 'chat.page' && message.hasOlder === true && olderLeft > 0) {
           olderLeft -= 1
           const first = Math.min(...[...held.keys()])
@@ -433,9 +435,10 @@ async function commandChat(url) {
   if (olderRounds > 0) record('chat:older', frames.some((row) => row.mode === 'older'), { mode: 'older' }, { olderPages: frames.filter((row) => row.mode === 'older').length })
   if (args.resume === true && gen !== null && ids.length > 0) {
     const before = frames.length
-    await run({ gen, after: ids.at(-1) })
+    // 이어 받기(R1-A2) — 받은 세대 · 들고 있는 첫 id · 받은 가장 큰 변경 순번. 서버는 그 뒤에 생기거나 바뀐 것만 준다(끊긴 동안 변화가 없으면 0개).
+    await run({ gen, from: ids[0], cursor })
     const resumed = frames.slice(before).find((row) => row.type === 'chat.page')
-    record('chat:resume', resumed?.mode === 'resume' && resumed.ids[0] === ids.at(-1), { mode: 'resume', firstId: ids.at(-1) }, { mode: resumed?.mode ?? null, firstId: resumed?.ids[0] ?? null, items: resumed?.summary.items ?? 0 })
+    record('chat:resume', resumed?.mode === 'resume' && resumed.ids.every((id) => id >= ids[0]), { mode: 'resume', idsFrom: ids[0] }, { mode: resumed?.mode ?? null, firstId: resumed?.ids[0] ?? null, items: resumed?.summary.items ?? 0 })
   }
   record('chat:summary', true, { note: '글 없이 개수·종류만' }, { frames: frames.length, pushes: frames.filter((row) => row.type === 'chat.items').length, held: chatSummary([...held.values()]) })
 }

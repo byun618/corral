@@ -127,6 +127,8 @@ export class MobileService {
       this.clearCode()
       this.exposureDone = this.exposure.apply({ on: false })
       await this.server.stop()
+      // 연결이 다 닫히면 판독자도 멈춘다 — 끄면 유예도 없이 색인까지 버린다(R1-A3).
+      this.chat?.stop()
     }
     this.push()
   }
@@ -178,6 +180,8 @@ export class MobileService {
   /** main 상태(또는 정렬 설정)가 바뀌었다 — 목록 구독자가 없으면 아무 일도 안 한다(LIFE-580 K9). */
   listChanged(): void {
     this.feed?.changed()
+    // 열린 대화의 세션이 바뀌었을 수 있다(`/clear`·새 세션 — R1-A1). 열린 대화가 없으면 아무 일도 안 한다.
+    this.chat?.changed()
   }
 
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */

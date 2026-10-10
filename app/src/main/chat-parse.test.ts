@@ -4,6 +4,7 @@ import { ChatBuilder, type ChatItem, lineAtoms } from './chat-parse.js'
 import {
   CLAUDE_SESSION,
   SECRET_RESULT,
+  codexExecOutput,
   SECRET_THOUGHT,
   claudeLines,
   codexNewLines,
@@ -115,6 +116,77 @@ describe('Claude 실물 표본에서 본 줄 (raw/claude/y2-census.json)', () =>
     ])
     expect(builder.stats.unknown).toEqual({})
     expect(JSON.stringify(items)).not.toContain(SECRET_RESULT)
+  })
+})
+
+describe('R1-A9 옛 Codex 도구 출력의 성공/실패 — 머리의 종료 코드만 읽고, 못 읽으면 unknown', () => {
+  const call = (id: string, name = 'exec_command') => JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name, call_id: id, arguments: JSON.stringify({ cmd: `run ${id}` }) } })
+  const output = (id: string, value: unknown) => JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: id, output: value } })
+  it('종료 코드 0 → ok · 1 → error · 도는 중·종료 코드 없는 글·배열 → unknown(성공으로 단정하지 않는다) · apply_patch `Exit code: N`', () => {
+    const lines = [
+      call('ok'), output('ok', codexExecOutput({ exit: 0 })),
+      call('fail'), output('fail', codexExecOutput({ exit: 1 })),
+      call('bg'), output('bg', codexExecOutput({ exit: 'running' })),
+      call('plan', 'update_plan'), output('plan', 'Plan updated'),
+      call('img', 'view_image'), output('img', [{ type: 'input_image', image_url: 'data:x' }]),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'patch', input: '*** Update File: a.ts' } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'patch', output: `Exit code: 1\nWall time: 0 seconds\nOutput:\n${SECRET_RESULT}` } }),
+    ]
+    const { items } = build({ agent: 'codex', lines })
+    expect(shape(items)).toEqual([['tools', ['exec_command|run ok|ok', 'exec_command|run fail|error', 'exec_command|run bg|unknown', 'update_plan|run plan|unknown', 'view_image|run img|unknown', 'apply_patch|a.ts|error']]])
+    expect(JSON.stringify(items)).not.toContain(SECRET_RESULT)
+  })
+
+  it('리뷰 P6 — 같은 호출이 function_call 과 item_completed/CommandExecution 두 모양으로 오면 한 칸(실패 상태)', () => {
+    const lines = [
+      call('t1'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 't1', command: ['zsh', '-lc', 'false'], status: 'failed', exit_code: 1 } } }),
+      output('t1', codexExecOutput({ exit: 1 })),
+    ]
+    const { items } = build({ agent: 'codex', lines })
+    expect(shape(items)).toEqual([['tools', ['exec_command|false|error']]])
+  })
+})
+
+describe('C1 rewind 판정 — 격리 Claude 세션에서 본 줄 모양(raw/claude/r1/c1-shapes.txt) 그대로', () => {
+  // 실측: 같은 부모를 둔 사람 발화 형제는 ⓐ rewind(Esc Esc → 되돌리기) ⓑ 답 전 Esc 중단(입력창으로 되돌아온 지시)에서만 생겼다 — 둘 다 Claude Code 화면에서 빠진 가지.
+  // 작업 중 입력(대기열 → 턴 끝에 보냄 · 턴 중간 주입 attachment · 지금 보내기 = 중단 표식 뒤)은 셋 다 사슬이 이어진다.
+  const user = (text: string, uuid: string, parent: string | null) => JSON.stringify({ type: 'user', sessionId: CLAUDE_SESSION, uuid, parentUuid: parent, promptId: uuid, origin: { kind: 'human' }, message: { role: 'user', content: text } })
+  const reply = (text: string, uuid: string, parent: string) => JSON.stringify({ type: 'assistant', sessionId: CLAUDE_SESSION, uuid, parentUuid: parent, message: { id: `m-${uuid}`, role: 'assistant', model: 'x', content: [{ type: 'text', text }] } })
+  const meta = (uuid: string, parent: string) => JSON.stringify({ type: 'system', subtype: 'turn_duration', isMeta: true, sessionId: CLAUDE_SESSION, uuid, parentUuid: parent })
+  const attach = (uuid: string, parent: string, attachment: Record<string, unknown>) => JSON.stringify({ type: 'attachment', sessionId: CLAUDE_SESSION, uuid, parentUuid: parent, attachment })
+  const prompts = (items: readonly ChatItem[]) => items.flatMap((item) => (item.kind === 'prompt' ? [item.text] : []))
+
+  it('ⓐ rewind(A2 를 되돌리고 A3) · ⓑ 답 전 Esc 중단(F1 → F2) — 버려진 가지만 숨는다', () => {
+    const lines = [
+      user('A1', 'u1', null), reply('A1', 'a1', 'u1'), meta('d1', 'a1'),
+      user('A2', 'u2', 'd1'), reply('A2', 'a2', 'u2'), meta('d2', 'a2'),
+      user('A3', 'u3', 'd1'), reply('A3', 'a3', 'u3'), meta('d3', 'a3'),
+      user('F1', 'f1', 'd3'), attach('f1x', 'f1', { type: 'prompt_snapshot' }),
+      user('F2', 'f2', 'd3'), reply('F2', 'f2r', 'f2'),
+    ]
+    const { builder, items } = build({ agent: 'claude', lines, sessionId: CLAUDE_SESSION })
+    expect(prompts(items)).toEqual(['A1', 'A3', 'F2'])
+    expect(builder.rewinds).toBe(2)
+  })
+
+  it('작업 중 입력 세 모양은 rewind 가 아니다 — 대기열(B2) · 턴 중간 주입(D2, attachment) · 지금 보내기(E2, 중단 표식 뒤)', () => {
+    const tool = (uuid: string, parent: string, id: string) => JSON.stringify({ type: 'assistant', sessionId: CLAUDE_SESSION, uuid, parentUuid: parent, message: { id: `m-${uuid}`, role: 'assistant', model: 'x', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'sleep 9' } }] } })
+    const result = (uuid: string, parent: string, id: string) => JSON.stringify({ type: 'user', sessionId: CLAUDE_SESSION, uuid, parentUuid: parent, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } })
+    const queue = (operation: string) => JSON.stringify({ type: 'queue-operation', operation, sessionId: CLAUDE_SESSION, content: 'queued' })
+    const lines = [
+      user('B1', 'b1', null), queue('enqueue'), queue('dequeue'), reply('B1', 'b1r', 'b1'), meta('bd', 'b1r'),
+      user('B2', 'b2', 'bd'), reply('B2', 'b2r', 'b2'), meta('b2d', 'b2r'),
+      user('D1', 'd1', 'b2d'), tool('d1t', 'd1', 'td'), queue('enqueue'), queue('remove'), result('d1o', 'd1t', 'td'),
+      attach('d2q', 'd1o', { type: 'queued_command', prompt: 'D2', humanTurn: true }), reply('D1 D2', 'd1r', 'd2q'), meta('dd', 'd1r'),
+      user('E1', 'e1', 'dd'), tool('e1t', 'e1', 'te'), queue('enqueue'), queue('dequeue'), result('e1o', 'e1t', 'te'),
+      JSON.stringify({ type: 'user', sessionId: CLAUDE_SESSION, uuid: 'e1i', parentUuid: 'e1o', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }),
+      user('E2', 'e2', 'e1i'), reply('E2', 'e2r', 'e2'),
+    ]
+    const { builder, items } = build({ agent: 'claude', lines, sessionId: CLAUDE_SESSION })
+    expect(builder.rewinds).toBe(0)
+    // D2 는 지문(claudeHumanText)도 사람 발화로 세지 않는다 — X2ⓐ 와 같은 판정(mapping.md 「턴 중간 주입」).
+    expect(prompts(items)).toEqual(['B1', 'B2', 'D1', 'E1', 'E2'])
   })
 })
 

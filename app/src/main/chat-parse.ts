@@ -28,7 +28,8 @@ import {
   toolInputPreview,
 } from './transcript-parse.js'
 
-export type ChatToolStatus = 'running' | 'ok' | 'error'
+/** `unknown` = 결과는 왔지만 성공/실패를 기록에서 읽을 수 없다(옛 Codex 출력 중 종료 코드가 없는 모양 — 성공으로 단정하지 않는다, R1-A9). */
+export type ChatToolStatus = 'running' | 'ok' | 'error' | 'unknown'
 export type ChatTool = { name: string | null; target: string | null; status: ChatToolStatus }
 export type ChatQuestionState = 'pending' | 'answered' | 'closed'
 export type ChatNoteKind = 'interrupted' | 'failed' | 'compacted'
@@ -52,7 +53,7 @@ export type ChatAtom =
    * 도구 결과 — 상태만(본문은 버린다). `settles` = 이 결과가 같은 id 의 질문을 끝내나: Claude·Grok 은 결과가 답이다,
    * Codex 의 `request_user_input_async` 출력은 접수 확인(`{"accepted":…}`)일 뿐이라 끝내지 않는다(지문 `codexPendingQuestions` 와 같은 판단).
    */
-  | { kind: 'result'; callId: string; status: 'ok' | 'error'; answer: string | null; settles: boolean }
+  | { kind: 'result'; callId: string; status: 'ok' | 'error' | 'unknown'; answer: string | null; settles: boolean }
   | { kind: 'question'; callId: string | null; questions: SessionQuestion[] }
   /** 질문 해소 — `callId` null = 열린 질문 전부(Codex: 사람 발화·새 턴·중단). */
   | { kind: 'resolve'; callId: string | null; state: 'answered' | 'closed'; answer: string | null }
@@ -282,7 +283,7 @@ function codexResponseItem(payload: Record<string, unknown>): ChatAtom[] {
     case 'function_call_output':
     case 'custom_tool_call_output': {
       const callId = readString(payload, 'call_id')
-      return callId === null ? [{ kind: 'skip', reason: 'codex:output' }] : [{ kind: 'result', callId, status: 'ok', answer: null, settles: false }]
+      return callId === null ? [{ kind: 'skip', reason: 'codex:output' }] : [{ kind: 'result', callId, status: codexOutputStatus(payload['output']), answer: null, settles: false }]
     }
     default:
       return [{ kind: 'unknown', shape: `codex:response_item:${type ?? '?'}` }]
@@ -324,6 +325,21 @@ function codexUser(record: Record<string, unknown>): ChatAtom[] {
   return [{ kind: 'skip', reason: 'codex:user-empty' }]
 }
 
+/**
+ * 도구 출력의 성공/실패 — 본문 앞 머리(`Output:` 줄 앞)의 종료 코드만 읽는다(R1-A9). 실물 모양(이 기계 rollout 전수, `raw/claude/r1/a9-codex-output-shapes.txt`):
+ * 0.142 `exec_command`·`write_stdin` = `Chunk ID…/Wall time…/Process exited with code N/…/Output:` · `apply_patch` = `Exit code: N/Wall time…/Output:`.
+ * 종료 코드가 없는 모양(`Process running with session ID` · `Wall time` 만 · 글 · 배열 · JSON)은 `unknown` — 성공으로 단정하지 않는다.
+ */
+function codexOutputStatus(output: unknown): 'ok' | 'error' | 'unknown' {
+  if (typeof output !== 'string') return 'unknown'
+  const head = output.slice(0, 1000)
+  const marker = head.search(/^Output:/m)
+  const header = marker < 0 ? head : head.slice(0, marker)
+  const exit = /^(?:Process exited with code|Exit code:) (-?\d+)\s*$/m.exec(header)
+  if (exit === null) return 'unknown'
+  return Number(exit[1]) === 0 ? 'ok' : 'error'
+}
+
 /** `<send_user_message_question_reply>[{answer,question,questionItemId}]</…>` 의 답 글. 모양이 아니면 null. */
 function codexReplyAnswer(raw: string): string | null {
   const start = raw.indexOf('[')
@@ -351,7 +367,8 @@ function codexItem(input: { record: Record<string, unknown>; item: Record<string
     case 'CommandExecution': {
       const exit = item['exit_code']
       const error = failed || (typeof exit === 'number' && exit !== 0)
-      return [{ kind: 'tool', callId: null, name: 'Shell', target: codexCommand(item['command']), status: error ? 'error' : 'ok' }]
+      // id 가 앞선 function_call 의 call_id 와 같으면 같은 호출이다 — 조립기가 새 칸 대신 그 칸을 고친다(리뷰 P6, 실물 12401건 중 0건 관측).
+      return [{ kind: 'tool', callId: readString(item, 'id'), name: 'Shell', target: codexCommand(item['command']), status: error ? 'error' : 'ok' }]
     }
     case 'FileChange': {
       const changes = item['changes']
@@ -645,6 +662,15 @@ export class ChatBuilder {
         return this.push(item)
       }
       case 'tool': {
+        const known = atom.callId === null ? undefined : this.calls.get(atom.callId)
+        const existing = known?.item.tools[known.index]
+        if (known !== undefined && existing !== undefined) {
+          // 같은 호출이 두 모양으로 기록됐다(Codex function_call + item_completed) — 한 칸으로 센다.
+          existing.status = atom.status
+          if (atom.target !== null) existing.target = atom.target
+          this.dirty.add(known.item.id)
+          return
+        }
         this.openReply = null
         let group = this.openTools
         if (group === null) {

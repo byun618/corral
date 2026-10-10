@@ -63,10 +63,10 @@ export type ClientMessage =
   /** 대화방 목록 구독(LIFE-580) — 인증 뒤. 다시 보내면 전체 스냅샷을 다시 받는다(재연결·포그라운드 복귀). */
   | { type: 'list.subscribe' }
   /**
-   * 대화 구독(LIFE-581) — 인증 뒤. `channel` = 목록이 준 채널 id. `resume` = 폰이 가진 세대와 마지막 말풍선 id(재연결 이어 받기 — 없으면 최근 페이지).
-   * 다시 보내면 이전 대화 구독을 끊는다(한 연결에 대화 하나).
+   * 대화 구독(LIFE-581) — 인증 뒤. `channel` = 목록이 준 채널 id. `resume` = 받은 세대 · 들고 있는 첫 말풍선 id(`from`) · 받은 가장 큰 변경 순번(`cursor`)
+   * — 셋이 다 있을 때만(R1-A2, 재연결 이어 받기 — 없으면 최근 페이지). 다시 보내면 이전 대화 구독을 끊는다(한 연결에 대화 하나).
    */
-  | { type: 'chat.subscribe'; channel: string; resume: { gen: string; after: number } | null }
+  | { type: 'chat.subscribe'; channel: string; resume: { gen: string; from: number; cursor: number } | null }
   /** 과거 페이지 — `before` 보다 앞 말풍선. */
   | { type: 'chat.older'; gen: string; before: number }
   | { type: 'chat.unsubscribe' }
@@ -95,7 +95,8 @@ export function parseClientMessage(text: string): ParseResult {
       return { ok: true, message: { type: 'list.subscribe' } }
     case 'chat.subscribe': {
       if (typeof parsed.channel !== 'string' || parsed.channel.length === 0 || parsed.channel.length > CHANNEL_ID_MAX) return { ok: false, code: 'bad_message' }
-      const resume = typeof parsed.gen === 'string' && parsed.gen.length <= 64 && typeof parsed.after === 'number' && Number.isFinite(parsed.after) ? { gen: parsed.gen, after: parsed.after } : null
+      const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+      const resume = typeof parsed.gen === 'string' && parsed.gen.length <= 64 && finite(parsed.from) && finite(parsed.cursor) ? { gen: parsed.gen, from: parsed.from, cursor: parsed.cursor } : null
       return { ok: true, message: { type: 'chat.subscribe', channel: parsed.channel, resume } }
     }
     case 'chat.older':

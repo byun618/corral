@@ -13,11 +13,11 @@ import { FakeClock, FakeSocket, MemoryVault, SERVER, record } from './fakes'
 const prompt = (id: number, text = `지시 ${id}`): ChatItem => ({ id, kind: 'prompt', at: 1_000 + id, body: { text, clipped: null } })
 const reply = (id: number, text = `답 ${id}`): ChatItem => ({ id, kind: 'reply', at: 1_000 + id, body: { text, clipped: null } })
 
-function page(input: { gen?: string; mode?: 'reset' | 'resume' | 'older'; hasOlder?: boolean; items: unknown[]; channel?: string }): Record<string, unknown> {
-  return { type: 'chat.page', channel: input.channel ?? 'c1', gen: input.gen ?? 'g1', mode: input.mode ?? 'reset', at: 9, writtenAt: 8, hasOlder: input.hasOlder ?? false, items: input.items }
+function page(input: { gen?: string; mode?: 'reset' | 'resume' | 'older'; hasOlder?: boolean; items: unknown[]; channel?: string; cursor?: number }): Record<string, unknown> {
+  return { type: 'chat.page', channel: input.channel ?? 'c1', gen: input.gen ?? 'g1', cursor: input.cursor ?? 1, mode: input.mode ?? 'reset', at: 9, writtenAt: 8, hasOlder: input.hasOlder ?? false, items: input.items }
 }
-function items(input: { gen?: string; items: ChatItem[]; channel?: string }): Record<string, unknown> {
-  return { type: 'chat.items', channel: input.channel ?? 'c1', gen: input.gen ?? 'g1', at: 9, readAt: 9, writtenAt: 8, items: input.items }
+function items(input: { gen?: string; items: ChatItem[]; channel?: string; cursor?: number }): Record<string, unknown> {
+  return { type: 'chat.items', channel: input.channel ?? 'c1', gen: input.gen ?? 'g1', cursor: input.cursor ?? 2, at: 9, readAt: 9, writtenAt: 8, items: input.items }
 }
 
 function harness() {
@@ -102,7 +102,8 @@ describe('구독 · 이어 받기 (X6)', () => {
     expect(t.chatSent(socket)).toEqual([{ type: 'chat.subscribe', channel: 'c1' }])
   })
 
-  it('재연결하면 사용자 조작 없이 같은 세대 + 마지막 id 로 다시 구독 · resume 페이지를 이어 붙인다', async () => {
+  // r1(R1-A2): 이어 받기 열쇠가 「마지막 id(after)」 에서 「첫 id(from) + 받은 변경 순번(cursor)」 으로 바뀌어 기대 요청 모양을 바꿨다.
+  it('재연결하면 사용자 조작 없이 같은 세대 + 첫 id + 변경 순번으로 다시 구독 · resume 페이지를 이어 붙인다', async () => {
     const t = harness()
     await t.manager.start()
     const first = t.accept()
@@ -112,7 +113,7 @@ describe('구독 · 이어 받기 (X6)', () => {
     t.clock.advance(5_000)
     const second = t.accept()
     expect(second).not.toBe(first)
-    expect(t.chatSent(second)).toEqual([{ type: 'chat.subscribe', channel: 'c1', gen: 'g1', after: 2 }])
+    expect(t.chatSent(second)).toEqual([{ type: 'chat.subscribe', channel: 'c1', gen: 'g1', from: 1, cursor: 1 }])
     // 끊긴 동안 보던 말풍선은 그대로(C18 — 흐리게만).
     expect(t.store.getSnapshot().items).toHaveLength(2)
     second.serverSend(page({ mode: 'resume', items: [prompt(3), reply(4)] }))
@@ -279,7 +280,7 @@ describe('표시 규칙 (Y6ⓓ)', () => {
 
   it('답 머리는 지시 뒤 첫 답에만 · 안내·질문 문구', () => {
     expect([...replyHeads([prompt(1), reply(2), reply(3), prompt(4), reply(5)])]).toEqual([2, 5])
-    expect(noteView({ id: 1, kind: 'note', at: null, note: 'failed', text: null })).toMatchObject({ title: '실패', tone: 'alert' })
-    expect(questionLine({ id: 1, kind: 'question', at: null, state: 'pending', answer: null, questions: [{ question: 'Q?', header: '고르기', options: [], multiSelect: null }, { question: 'R?', header: null, options: [], multiSelect: null }] })).toBe('고르기 — Q? 외 1')
+    expect(noteView({ id: 1, kind: 'note', at: null, note: 'failed', text: null, clipped: false })).toMatchObject({ title: '실패', tone: 'alert' })
+    expect(questionLine({ id: 1, kind: 'question', at: null, state: 'pending', answer: null, clipped: false, questions: [{ question: 'Q?', header: '고르기', options: [], multiSelect: null }, { question: 'R?', header: null, options: [], multiSelect: null }] })).toBe('고르기 — Q? 외 1')
   })
 })

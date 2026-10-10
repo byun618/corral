@@ -159,6 +159,19 @@ describe('대화 구독 — 실제 서버', () => {
     expect(old.client.messages.filter((message) => message.type === 'chat.items')).toEqual([])
   })
 
+  // R1-A11 — 위 시험은 해지 직후 disconnectDevice 를 바로 불러 연결이 먼저 닫힌다. 보내기 직전 재확인(`pairing.has`)만 남는 구간을 따로 본다(리뷰어 경합 시험).
+  it('R1-A11 해지만 되고 연결 끊기가 아직이면 — 다음 push 자리에서 revoked 로 닫고 대화 0건', async () => {
+    const { port, store, file } = await setup()
+    const target = await authed(port, { store })
+    send(target.client, { type: 'chat.subscribe', channel: 'c1' })
+    expect(await target.client.next({ type: 'chat.page' })).not.toBeNull()
+    expect(store.revoke(target.id)).toBe(true)
+    // disconnectDevice 를 일부러 부르지 않는다 — 보내기 직전의 has(deviceId) 재확인만 남긴다.
+    appendPrompt(file, '해지 구간의 지시', 'R11')
+    expect(await target.client.next()).toMatchObject({ type: 'error', code: 'revoked' })
+    expect(target.client.messages.filter((message) => message.type === 'chat.items')).toEqual([])
+  })
+
   it('Y2ⓑ 목록에 없는 채널·셸 pane 은 chat.unavailable — 같은 연결의 AI 채널은 열린다', async () => {
     const { port, store } = await setup()
     const { client } = await authed(port, { store })

@@ -1,7 +1,11 @@
 // 대화 상태 (LIFE-581) — 연결 위에서 대화 하나를 구독하고 받은 말풍선을 든다. RN 을 모른다(연결·시계 주입).
 //
 // - 화면이 열면(`open`) 지금 인증된 연결로 `chat.subscribe`. 연결이 (다시) 확인될 때마다(`live` — 재연결·포그라운드 복귀) **사용자 조작 없이** 다시 구독한다(X6).
-//   이미 받은 말풍선이 있으면 같은 세대 + 마지막 말풍선 id 로 이어 받기(`resume`) — 서버가 그 뒤 전부를 준다. 세대가 다르면 서버가 처음부터(`reset`).
+//   이미 받은 말풍선이 있으면 같은 세대 + 들고 있는 첫 id + 받은 가장 큰 변경 순번으로 이어 받기(`resume`, R1-A2) — 서버가 그 뒤 생기거나 바뀐 것 전부를 준다.
+//   세대가 다르면 서버가 처음부터(`reset`).
+// - **다시 구독할 때마다 이번 구독의 성공을 따로 본다**(R1-A7): 받은 말풍선이 있어도 이번 요청이 응답 없음·서버가 모름·형식 틀림이면 `stale`(본문은 들고 흐리게 + 안내).
+// - 말풍선이 전부 읽히지 않은 페이지는 「빈 대화」 가 아니라 형식 불일치(R1-A8). 일부만 못 읽었으면 그 수를 `dropped` 로 들고 화면이 알린다.
+// - `tailRev` = 맨 아래 쪽(마지막 말풍선 이후·그 말풍선 자체)이 바뀐 횟수 — 같은 id 의 답이 자라도 오른다(`새 메시지 ↓`, R1-A10).
 // - **늦은 갱신을 버린다(Y5ⓑ)**: 지금 시도가 아닌 소켓의 프레임 · 다른 채널 · 다른 세대의 `chat.items`·`older`.
 // - 아직 첫 페이지를 못 받았으면 `loading` — 화면은 이것을 「빈 대화」 로 그리지 않는다(Y6ⓔ). 못 열면 `unavailable`(사유)·`failed`(응답 없음·서버가 모름·읽지 못함).
 // - 끊겨도 받은 말풍선은 들고 있다(C18 — 흐리게). 다시 붙으면 이어 받는다.
@@ -20,15 +24,25 @@ export type ChatPhase =
   | { kind: 'unavailable'; reason: string }
   | { kind: 'failed'; reason: 'timeout' | 'rejected' | 'invalid' }
 
+export type ChatStale = 'timeout' | 'rejected' | 'invalid'
+
 export type ChatSnapshot = {
   channel: string | null
   phase: ChatPhase
   gen: string | null
+  /** 받은 가장 큰 변경 순번 — 이어 받기 열쇠(R1-A2). */
+  cursor: number | null
   items: readonly ChatItem[]
   hasOlder: boolean
   loadingOlder: boolean
   /** 마지막으로 프레임을 받은 시각(폰 시계). */
   receivedAt: number | null
+  /** 들고 있는 본문이 최신이 아닐 수 있다 — 다시 구독이 실패했다(R1-A7). null = 이번 구독이 성공했거나 아직 기다리는 중. */
+  stale: ChatStale | null
+  /** 이 세대에서 읽지 못해 버린 말풍선 수(R1-A8). */
+  dropped: number
+  /** 맨 아래 쪽 변경 횟수(R1-A10). */
+  tailRev: number
 }
 
 export type ChatConnection = {
@@ -40,7 +54,7 @@ export type ChatConnection = {
 
 export type ChatTimer = { setTimeout(fn: () => void, ms: number): TimerHandle; clearTimeout(handle: TimerHandle): void }
 
-const IDLE: ChatSnapshot = { channel: null, phase: { kind: 'idle' }, gen: null, items: [], hasOlder: false, loadingOlder: false, receivedAt: null }
+const IDLE: ChatSnapshot = { channel: null, phase: { kind: 'idle' }, gen: null, cursor: null, items: [], hasOlder: false, loadingOlder: false, receivedAt: null, stale: null, dropped: 0, tailRev: 0 }
 
 export class ChatStore {
   private readonly connection: ChatConnection
@@ -51,6 +65,8 @@ export class ChatStore {
   private attempt: number | null = null
   private deadline: TimerHandle | null = null
   private olderDeadline: TimerHandle | null = null
+  /** 이번 구독의 첫 페이지를 기다리는 중 — 응답 없음·거절·형식 틀림을 이 요청의 실패로 본다(R1-A7). */
+  private pending = false
   private snapshot: ChatSnapshot = IDLE
   /** 버린 프레임 수 — 시험·기록용. */
   dropped = 0
@@ -126,11 +142,12 @@ export class ChatStore {
       case 'chat_invalid':
         if (event.attempt !== this.attempt || this.snapshot.channel === null) return
         this.dropped += 1
-        if (this.snapshot.phase.kind === 'loading') this.fail('invalid')
+        // 첫 페이지 대기 중이면 이번 구독의 실패, 받는 중이면 놓친 갱신이 있다 — 어느 쪽이든 본문을 최신이라 하지 않는다.
+        if (this.pending || this.snapshot.phase.kind === 'ready') this.fail('invalid')
         return
       case 'server_error':
-        // 인증 뒤 `unknown_type` — 서버(맥 corral)가 대화를 모른다. 첫 페이지를 기다리던 중이면 실패로.
-        if (event.attempt !== this.attempt || event.code !== 'unknown_type' || this.snapshot.phase.kind !== 'loading') return
+        // 인증 뒤 `unknown_type` — 서버(맥 corral)가 대화를 모른다. 이번 구독의 첫 페이지를 기다리던 중이면 실패로(받은 본문이 있어도, R1-A7).
+        if (event.attempt !== this.attempt || event.code !== 'unknown_type' || !this.pending) return
         this.fail('rejected')
         return
       case 'list':
@@ -139,27 +156,38 @@ export class ChatStore {
     }
   }
 
-  /** (다시) 구독 — 받은 것이 있으면 같은 세대 + 마지막 id 로 이어 받기. 첫 페이지 마감을 건다. */
+  /** (다시) 구독 — 받은 것이 있으면 같은 세대 + 첫 id + 변경 순번으로 이어 받기. 이번 구독의 첫 페이지 마감을 건다(받은 본문이 있어도). */
   private request(attempt: number, reason: string): void {
-    const { channel, gen, items } = this.snapshot
+    const { channel, gen, items, cursor } = this.snapshot
     if (channel === null) return
-    const last = items[items.length - 1]
-    const resume = gen !== null && last !== undefined ? { gen, after: last.id } : null
-    const sent = this.connection.send(resume === null ? { type: 'chat.subscribe', channel } : { type: 'chat.subscribe', channel, gen: resume.gen, after: resume.after })
+    const first = items[0]
+    const resume = gen !== null && cursor !== null && first !== undefined ? { gen, from: first.id, cursor } : null
+    const sent = this.connection.send(resume === null ? { type: 'chat.subscribe', channel } : { type: 'chat.subscribe', channel, gen: resume.gen, from: resume.from, cursor: resume.cursor })
     this.log?.add('chat_subscribe', { attempt, reason, resume: resume !== null })
     if (this.deadline !== null) this.timer.clearTimeout(this.deadline)
     this.deadline = null
+    this.pending = sent
     if (!sent) return
     this.deadline = this.timer.setTimeout(() => {
       this.deadline = null
-      if (attempt !== this.attempt || this.connection.liveAttempt() !== attempt) return
-      if (this.snapshot.phase.kind === 'loading') this.fail('timeout')
+      if (attempt !== this.attempt || this.connection.liveAttempt() !== attempt || !this.pending) return
+      this.fail('timeout')
     }, CHAT_DEADLINE_MS)
   }
 
-  private fail(reason: 'timeout' | 'rejected' | 'invalid'): void {
-    this.log?.add('chat_failed', { reason })
-    this.set({ phase: { kind: 'failed', reason } })
+  /** 이번 구독 실패 — 받은 본문이 없으면 실패 화면, 있으면 본문을 든 채 `stale`(R1-A7). */
+  private fail(reason: ChatStale): void {
+    this.pending = false
+    this.clearDeadline()
+    this.log?.add('chat_failed', { reason, held: this.snapshot.items.length })
+    if (this.snapshot.items.length === 0) this.set({ phase: { kind: 'failed', reason } })
+    else this.set({ stale: reason })
+  }
+
+  /** 맨 아래 쪽이 바뀌었나 — 새 말풍선이 마지막 뒤에 붙거나 마지막 말풍선 자체가 바뀌었다(R1-A10). */
+  private touchesTail(incoming: readonly ChatItem[]): boolean {
+    const last = this.snapshot.items[this.snapshot.items.length - 1]
+    return incoming.some((item) => last === undefined || item.id >= last.id)
   }
 
   private accept(attempt: number, message: ChatMessage): void {
@@ -171,6 +199,7 @@ export class ChatStore {
     const now = this.now()
     if (message.type === 'unavailable') {
       this.clearDeadline()
+      this.pending = false
       this.log?.add('chat_unavailable', { reason: message.reason })
       this.set({ phase: { kind: 'unavailable', reason: message.reason }, receivedAt: now })
       return
@@ -192,30 +221,39 @@ export class ChatStore {
       rttMs: clock?.rttMs ?? null,
       dropped: message.dropped,
     })
+    const cursor = (fallback: number | null): number | null => (message.cursor === null ? fallback : Math.max(fallback ?? 0, message.cursor))
+    // 말풍선이 있었는데 하나도 못 읽었다 — 「빈 대화」 가 아니라 형식 불일치(R1-A8).
+    const unreadable = message.items.length === 0 && message.dropped > 0
     if (message.type === 'items') {
       if (message.gen !== snapshot.gen) return this.drop('other_gen')
-      this.set({ items: mergeItems({ have: snapshot.items, incoming: message.items }), receivedAt: now })
+      this.set({ items: mergeItems({ have: snapshot.items, incoming: message.items }), cursor: cursor(snapshot.cursor), receivedAt: now, dropped: snapshot.dropped + message.dropped, tailRev: snapshot.tailRev + (this.touchesTail(message.items) ? 1 : 0) })
       return
     }
     switch (message.mode) {
       case 'reset':
+      case 'resume': {
         this.clearDeadline()
-        this.set({ phase: { kind: 'ready' }, gen: message.gen, items: mergeItems({ have: [], incoming: message.items }), hasOlder: message.hasOlder, loadingOlder: false, receivedAt: now })
-        return
-      case 'resume':
-        this.clearDeadline()
-        if (message.gen !== snapshot.gen) {
-          // 이어 받기를 청했는데 세대가 다르다 — 서버는 그때 reset 을 보낸다. 방어로 처음부터처럼 받는다.
-          this.set({ phase: { kind: 'ready' }, gen: message.gen, items: mergeItems({ have: [], incoming: message.items }), hasOlder: message.hasOlder, loadingOlder: false, receivedAt: now })
+        this.pending = false
+        // 이어 받기를 청했는데 세대가 다르다 — 서버는 그때 reset 을 보낸다. 방어로 처음부터처럼 받는다.
+        const fresh = message.mode === 'reset' || message.gen !== snapshot.gen
+        if (unreadable && (fresh || snapshot.items.length === 0)) {
+          this.log?.add('chat_unreadable', { mode: message.mode, dropped: message.dropped })
+          if (fresh) this.set({ gen: message.gen, cursor: message.cursor, items: [], dropped: message.dropped })
+          this.fail('invalid')
           return
         }
-        this.set({ phase: { kind: 'ready' }, items: mergeItems({ have: snapshot.items, incoming: message.items }), receivedAt: now })
+        if (fresh) {
+          this.set({ phase: { kind: 'ready' }, gen: message.gen, cursor: message.cursor, items: mergeItems({ have: [], incoming: message.items }), hasOlder: message.hasOlder, loadingOlder: false, receivedAt: now, stale: null, dropped: message.dropped, tailRev: snapshot.tailRev + 1 })
+          return
+        }
+        this.set({ phase: { kind: 'ready' }, items: mergeItems({ have: snapshot.items, incoming: message.items }), cursor: cursor(snapshot.cursor), receivedAt: now, stale: null, dropped: snapshot.dropped + message.dropped, tailRev: snapshot.tailRev + (this.touchesTail(message.items) ? 1 : 0) })
         return
+      }
       case 'older':
         if (message.gen !== snapshot.gen) return this.drop('other_gen')
         if (this.olderDeadline !== null) this.timer.clearTimeout(this.olderDeadline)
         this.olderDeadline = null
-        this.set({ items: mergeItems({ have: snapshot.items, incoming: message.items }), hasOlder: message.hasOlder, loadingOlder: false, receivedAt: now })
+        this.set({ items: mergeItems({ have: snapshot.items, incoming: message.items }), hasOlder: message.hasOlder, loadingOlder: false, receivedAt: now, dropped: snapshot.dropped + message.dropped })
     }
   }
 
@@ -232,6 +270,7 @@ export class ChatStore {
 
   private clearTimers(): void {
     this.clearDeadline()
+    this.pending = false
     if (this.olderDeadline !== null) this.timer.clearTimeout(this.olderDeadline)
     this.olderDeadline = null
   }

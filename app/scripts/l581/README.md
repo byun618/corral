@@ -21,6 +21,7 @@ tailscale 은 가짜 CLI(`FAKE=/tmp/l581g-f*`), herdr 은 g-up 이 띄운 이름
 | `shot.mjs` | 에뮬레이터 캡처(580 `shot.mjs` 복사) — `--list` 는 앱 바 둘째 줄 고정 띠 가림, `--chat` 은 가림 없음. 덤프가 실패하면 노드 덧칠은 0 — **캡처마다 눈으로 확인**(맥 이름이 행 제목에 들어간 보존 행은 손으로 덧칠했다) | G5 |
 | `y6c-tokens.mjs` | 캡처 PNG 의 색·크기를 토큰과 대조(밀도 420 → 1dp = 2.625px, 반투명은 surface 위 합성값) · `probe` 로 좌표 고르기 | Y6ⓒ |
 | `y9f-diff.sh` | 분기점 `f65c1428e` → HEAD 의 server·service·protocol diff 에서 HTTP·바인딩·Origin·업그레이드 줄 변경 0 + 양성 대조(본문엔 있다) | Y9ⓕ |
+| `n12-follow.mjs` | 네이티브 n-12 「맨 아래 따라가기」 재현 — `build`(합성 Claude 대화 12쌍 · pane `n12-follow`) · `run --mode a\|b\|c\|d`(ⓐ 지시→1초 뒤 답 · ⓑ 3줄 답 · ⓒ 한 프레임 · ⓓ 같은 id 로 자라는 답), 회차마다 uiautomator 로 맨 아래(마지막 답 아래 간격 69 px)를 확인한 뒤 `--offset <dp>` 만큼 띄우고 무조작 → 3초 뒤 덤프 판정 「보임」·「버튼」(`새 메시지 ↓`)·「잘림」 + 캡처. 종료 0 전부 보임 · 1 하나라도 아님 · 2 못 셈 | n-12 |
 | `apk-local.sh` | 로컬 preview APK — 작업 폴더·TMPDIR 를 심볼릭 링크 없는 `~/Library/Caches/l581fg` 로(`/tmp` 면 ninja 가 `libworklets.so` 를 못 찾는다 — 578 fg10·이 작업 F-K1) | Y11 |
 
 ## 돌리는 법

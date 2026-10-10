@@ -46,6 +46,9 @@ export type ConversationProps = {
   onRetry: () => void
 }
 
+/** 맨 아래로 치는 거리(dp, 뒤집힌 목록의 contentOffset.y) — 이 안이면 따라가고, 넘으면 자리를 지키고 「새 메시지 ↓」. 하나의 임계다(n-12). */
+export const NEAR_BOTTOM = 120
+
 export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: ConversationProps) {
   const state = bodyState({ phase: chat.phase, count: chat.items.length })
   const list = useRef<FlatList<ChatItem>>(null)
@@ -58,12 +61,39 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
   const working = live && channel.dot === 'working'
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const isAway = event.nativeEvent.contentOffset.y > 120
+      const isAway = event.nativeEvent.contentOffset.y > NEAR_BOTTOM
       setAwayFrom((previous) => (isAway ? (previous ?? tailRev) : null))
     },
     [tailRev],
   )
   const showNew = awayFrom !== null && tailRev !== awayFrom
+  // 맨 아래 따라가기(네이티브 n-12) — 임계 안(`NEAR_BOTTOM`)이면 새 말풍선·자란 말풍선 뒤 맨 아래로 붙인다. 이때는 `maintainVisibleContentPosition` 을 끈다:
+  // 켜 두면 네이티브가 보던 말풍선 자리를 지키고, `autoscrollToTopThreshold` 는 정확히 맨 아래가 아니면(에뮬레이터 실측 26dp 에서도) 따라가지 않아
+  // 새 답이 화면 아래로 밀린 채 버튼도 없었다(버튼 임계 120 과 따로 놀았다). 위를 보던 사람(임계 밖)만 자리를 지키고 「새 메시지 ↓」.
+  // 붙이는 건 맨 아래 쪽이 바뀐 뒤(`tailRev`) 첫 크기 변화 한 번이고, 손가락으로 끄는 동안은 안 붙인다 — 끌 때 가상화가 새 셀을 재며 크기가 바뀌는데,
+  // 그때 붙이면 임계를 넘기 전에 맨 아래로 도로 끌어내렸다(에뮬레이터 N-7*-o160-post2).
+  const following = awayFrom === null
+  const followingRef = useRef(following)
+  followingRef.current = following
+  const seenTail = useRef(tailRev)
+  const pending = useRef(false)
+  const dragging = useRef(false)
+  if (seenTail.current !== tailRev) {
+    seenTail.current = tailRev
+    pending.current = true
+  }
+  const onContentSizeChange = useCallback(() => {
+    if (!pending.current || dragging.current || !followingRef.current) return
+    pending.current = false
+    list.current?.scrollToOffset({ offset: 0, animated: false })
+  }, [])
+  const onScrollBeginDrag = useCallback(() => {
+    dragging.current = true
+    pending.current = false
+  }, [])
+  const onScrollEndDrag = useCallback(() => {
+    dragging.current = false
+  }, [])
 
   if (state.kind === 'loading') {
     return (
@@ -108,10 +138,13 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
         renderItem={({ item, index }) => (
           <Bubble item={item} head={heads.has(item.id)} kind={channel.kind} last={index === 0} working={working} />
         )}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 80 }}
+        maintainVisibleContentPosition={following ? undefined : { minIndexForVisible: 0 }}
+        onContentSizeChange={onContentSizeChange}
         onEndReached={() => onOlder()}
         onEndReachedThreshold={0.4}
         onScroll={onScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScrollEndDrag={onScrollEndDrag}
         scrollEventThrottle={100}
         contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, gap: 14 }}
         ListHeaderComponent={<Trailer channel={channel} live={live} empty={state.kind === 'empty'} items={chat.items} dropped={chat.dropped} />}

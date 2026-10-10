@@ -1,4 +1,4 @@
-// LIFE-581 R5-A1 에뮬레이터 fixture — 리뷰어 r5 `native-fixture.tsx` 에 SOON(300 ms 뒤 답)·FOLD(30줄 답)·GROW(같은 id 에 숨은 줄 추가) 를 더했다. 글은 전부 합성.
+// LIFE-581 R5-A1 에뮬레이터 fixture — 리뷰어 r5 `native-fixture.tsx` 에 SOON(300 ms 뒤 답)·FOLD(30줄 답)·GROW(같은 id 에 숨은 줄 추가)·SWAP(r6 목록 빠짐→복귀) 를 더했다. 글은 전부 합성.
 // `r5a1-setup.py` 가 사본의 app/index.tsx 로 둔다(작업 폴더 mobile/ 에는 들어가지 않는다).
 // app 타입 검사 밖(tsconfig.node.json exclude — 사본의 `../src` 로만 풀린다). 합성 채널·스냅숏 모양은 리뷰어 fixture 그대로 any 로 둔다.
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -58,6 +58,18 @@ export default function App() {
       <View style={{ height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}>
         {button('FOLD', fold)}
         {button('GROW', grow)}
+        {button('SWAP', () => {
+          // r6 R6-A1 — 리뷰어 `native-fixture-2.tsx` 그대로: 0.3 s 뒤 읽기 실패(목록 빠짐) → 1.8 s 뒤 같은 Conversation 에 새 목록
+          console.log('R6_SWAP_SCHEDULE')
+          setTimeout(() => {
+            console.log('R6_REMOVE')
+            setChat((c: any) => ({ ...c, phase: { kind: 'unavailable', reason: 'unreadable', retrying: false } }))
+          }, 300)
+          setTimeout(() => {
+            console.log('R6_RESTORE')
+            setChat((c: any) => ({ ...c, phase: { kind: 'ready' }, items: seed, tailRev: c.tailRev + 1 }))
+          }, 1800)
+        })}
       </View>
       <Conversation key={key} channel={channel} chat={chat} unknown={false} dim={false} onOlder={() => {}} onRetry={() => {}} />
     </View>

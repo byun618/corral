@@ -5,6 +5,7 @@
 //   away    DELAY + 441 px / 2 s 끌기 — 끄는 중 도착 → 임계 밖에서 놓음
 //   fling   SOON(0.3 s 뒤 답) + 짧은 fling `--dist` px / `--dur` ms — 관성 중·직후 도착
 //   still   `--offset` dp 까지 천천히 끌고 0.8 s 쉰 뒤 PUSH — n-12 정지 회귀(0·40·100·160)
+//   swap    SWAP(0.3 s 뒤 목록 빠짐 · 1.8 s 뒤 복귀) + 곧바로 fling 200 px / 40 ms → 복귀 뒤 PUSH(답37) · PUSH(답38) 각 3 s 뒤 덤프 — r6 R6-A1(관성 중 목록 빠짐). 둘 다 「보임」 이어야 통과
 //   fold    FOLD(30줄 답 — 24줄 접힘) → GROW(같은 id 에 숨은 줄 +4) → 맨 아래 유지 관측 → 60 dp 끌고 놓기 관측(P02)
 //   node scripts/l581/r5a1-gesture.mjs --mode during --runs 5 --tag fix --out <dir> [--drag 178] [--dist 90 --dur 60] [--offset 40]
 // 종료 코드: 0 전부 기대대로 · 1 하나라도 아님 · 2 사용법·덤프 실패.
@@ -14,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 
 const { values: args } = parseArgs({ options: { mode: { type: 'string' }, runs: { type: 'string' }, tag: { type: 'string' }, out: { type: 'string' }, drag: { type: 'string' }, dist: { type: 'string' }, dur: { type: 'string' }, offset: { type: 'string' } } })
-const MODES = ['during', 'away', 'fling', 'still', 'fold']
+const MODES = ['during', 'away', 'fling', 'still', 'fold', 'swap']
 if (!MODES.includes(args.mode ?? '') || args.out === undefined || args.tag === undefined) {
   console.error(`--mode ${MODES.join('|')} --tag <이름> --out <dir> 필요`)
   process.exit(2)
@@ -75,7 +76,7 @@ async function capture(dir, name) {
 /** 이 회차의 계측 로그 → 단계 순서 · 결정 offset. */
 function read(lines) {
   const events = lines.flatMap((line) => {
-    const match = line.match(/LOG\s+(R5_[A-Z_]+)(.*)$/)
+    const match = line.match(/LOG\s+(R[56]_[A-Z_]+)(.*)$/)
     return match === null ? [] : [{ name: match[1], rest: match[2].trim() }]
   })
   const firstFollow = events.findIndex((event) => event.name === 'R5_FOLLOW')
@@ -140,6 +141,22 @@ async function run() {
         const kept = folded.more !== null && grown.more !== null && folded.more.y2 === grown.more.y2
         rows.push({ n, mode: 'fold', folded, grown, released, kept, log, pass: kept })
         console.log(JSON.stringify({ n, kept, foldedMore: folded.more, grownMore: grown.more, releasedMore: released.more, follow: log.follow, trace: log.trace }))
+        continue
+      }
+      if (args.mode === 'swap') {
+        await tap('SWAP')
+        adb(['shell', 'input', 'swipe', '540', '1200', '540', '1400', '40'])
+        await sleep(2500)
+        await tap('PUSH')
+        await sleep(3000)
+        const first = await capture(out, `${n}-push37`)
+        await tap('PUSH')
+        await sleep(3000)
+        const second = await capture(out, `${n}-push38`)
+        const log = read(metroLines().slice(start))
+        const pass = first.result === '보임' && first.newest?.id === 37 && second.result === '보임' && second.newest?.id === 38
+        rows.push({ n, mode: 'swap', first, second, log, pass })
+        console.log(JSON.stringify({ n, first: first.result, firstId: first.newest?.id ?? null, second: second.result, secondId: second.newest?.id ?? null, pass, follow: log.follow, trace: log.trace }))
         continue
       }
       await gesture(args.mode)

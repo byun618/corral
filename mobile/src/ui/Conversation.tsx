@@ -101,6 +101,18 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry }: 
     releaseTimer.current = null
   }, [])
   useEffect(() => clearRelease, [clearRelease])
+  // 목록(FlatList)이 화면에서 빠지면(불러오는 중·실패 — stale·reset·resume 은 목록을 남긴다) 그 목록의 제스처도 끝난 것이다. 빠진 목록은 관성 종료를 보내지 않으므로
+  // 여기서 단계·놓음 타이머·offset·보류·떠난 기준을 함께 비운다 — 다시 붙는 목록은 맨 아래(offset 0)에서 새로 시작한다(r6 R6-A1: 관성 중 실패 → 재시도 뒤 `momentum` 이 남아 새 답을 계속 막았다).
+  const listShown = state.kind !== 'loading' && state.kind !== 'failed'
+  useEffect(() => {
+    if (listShown) return
+    clearRelease()
+    gesture.current = 'none'
+    lastY.current = 0
+    pending.current = false
+    pendingBase.current = seenTail.current
+    setAwayFrom(null)
+  }, [listShown, clearRelease])
   const onContentSizeChange = useCallback(() => {
     if (!pending.current || gesture.current !== 'none' || !followingRef.current) return
     pending.current = false

@@ -3,6 +3,7 @@
 // (그건 에뮬레이터 재현 회차 `raw/claude/n12/` 가 본다). 여기서는 화면이 네이티브에 무엇을 시키는지 — 임계 안이면 `maintainVisibleContentPosition` 을 끄고
 // 내용 크기가 바뀔 때 맨 아래로 붙이고, 임계 밖이면 자리를 지키고(`minIndexForVisible`) 「새 메시지 ↓」 — 를 본다. 수정 전 코드(7cb34f31d)에서 실패하는 것을 음성 대조로 남겼다.
 // r5 R5-A1 절은 손가락 제스처(끌기 → 놓음 → 관성) 중 들어온 새 답의 결정 — `f6bff1f48` 에서 실패하는 것을 음성 대조로 남겼다.
+// r6 절은 놓은 뒤 유예(fake timer — `RELEASE_MS` 0 변이에서 실패)와 목록이 빠졌다 붙을 때의 제스처 정리(`e9cd6120f` 에서 실패).
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -326,6 +327,147 @@ describe('r5 R5-A1 제스처 중 들어온 새 답은 손을 뗀 뒤(관성이 �
     await RELEASE()
     expect(ctx.scrolls).toEqual([{ offset: 0, animated: false }])
   })
+})
+
+describe('r6 R6-A2 놓은 뒤 유예(100 ms) — 유예 중간엔 안 정하고, 관성이 오면 관성 종료에서 정한다 (fake timer)', () => {
+  const pendingDuringDrag = async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    ctx.scrolls = []
+    await BEGIN()
+    t.frame(push([prompt(3), reply(4)], 2))
+    await show({ store: t.store })
+    await LAYOUT()
+    await SCROLL(59)
+  }
+  const ADVANCE = (ms: number) => act(async () => { vi.advanceTimersByTime(ms) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('ⓓ 놓음 → 99 ms(관성 시작 전) scroll 0회 → 관성 시작 → 500 ms 지나도 0회 → 관성 종료(59dp) → 맨 아래로 1회', async () => {
+    await pendingDuringDrag()
+    vi.useFakeTimers()
+    await END(59)
+    await ADVANCE(99)
+    expect(ctx.scrolls).toEqual([])
+    await MOMENTUM()
+    await ADVANCE(500)
+    expect(ctx.scrolls).toEqual([])
+    await MOMENTUM_END(59)
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
+  })
+
+  it('ⓓ′ 놓음 → 관성 없음 → 99 ms 엔 0회 · 100 ms 에 맨 아래로 1회', async () => {
+    await pendingDuringDrag()
+    vi.useFakeTimers()
+    await END(59)
+    await ADVANCE(99)
+    expect(ctx.scrolls).toEqual([])
+    await ADVANCE(1)
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
+  })
+})
+
+describe('r6 R6-A1 목록이 빠지면(불러오는 중·실패) 그 목록의 제스처도 끝난다 — 다시 붙은 목록은 새 답을 따라간다', () => {
+  const opened = async () => {
+    const t = harness()
+    t.store.open('c1')
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+    return t
+  }
+  // 읽기 실패(`unreadable, retrying:false`) → 실패 화면(목록 빠짐) → 재시도 → 불러오는 중 → 새 첫 페이지(같은 Conversation)
+  const removeAndReturn = async (t: ReturnType<typeof harness>) => {
+    t.frame({ type: 'chat.unavailable', channel: 'c1', reason: 'unreadable', retrying: false, at: 3 })
+    expect(await show({ store: t.store })).toContain('다시 시도')
+    expect(ctx.list).toBeNull()
+    t.store.retry()
+    await show({ store: t.store })
+    t.frame(page([prompt(1), reply(2)]))
+    await show({ store: t.store })
+    await LAYOUT()
+  }
+  beforeEach(() => { ctx.list = null })
+  // `ctx.list = null` 뒤에도 다시 그린 목록의 props 를 읽는다(대입으로 좁혀진 타입을 피한다)
+  const listNow = (): ListProps | null => ctx.list
+
+  it('ⓐ 관성 중 목록 빠짐(관성 종료 안 옴) → 복귀 → 새 답 → 추가 제스처 없이 맨 아래로 · 버튼 없음', async () => {
+    const t = await opened()
+    await BEGIN()
+    await SCROLL(300)
+    await END(300)
+    await MOMENTUM()
+    ctx.list = null
+    await removeAndReturn(t)
+    ctx.scrolls = []
+    t.frame(push([reply(3)], 2))
+    const text = await show({ store: t.store })
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: false }])
+    expect(text).not.toContain('새 메시지 ↓')
+    expect(listNow()?.maintainVisibleContentPosition).toBeUndefined()
+  })
+
+  it('ⓑ 복귀 뒤 두 번째 답도(110dp 에 있어도 — 임계 안) 맨 아래로', async () => {
+    const t = await opened()
+    await BEGIN()
+    await SCROLL(300)
+    await END(300)
+    await MOMENTUM()
+    ctx.list = null
+    await removeAndReturn(t)
+    t.frame(push([reply(3)], 2))
+    await show({ store: t.store })
+    await LAYOUT()
+    await SCROLL(110)
+    ctx.scrolls = []
+    t.frame(push([reply(4)], 3))
+    expect(await show({ store: t.store })).not.toContain('새 메시지 ↓')
+    await LAYOUT()
+    expect(ctx.scrolls).toEqual([{ offset: 0, animated: false }])
+  })
+
+  it('ⓑ′ 놓은 직후(유예 중) 목록 빠짐 → 옛 목록의 놓음 타이머가 새 목록을 움직이지 않는다', async () => {
+    const t = await opened()
+    await BEGIN()
+    await SCROLL(60)
+    t.frame(push([prompt(3), reply(4)], 2))
+    await show({ store: t.store })
+    await END(60)
+    ctx.list = null
+    await removeAndReturn(t)
+    ctx.scrolls = []
+    await RELEASE()
+    expect(ctx.scrolls).toEqual([])
+  })
+
+  for (const keep of ['stale', 'resume'] as const) {
+    it(`ⓒ 목록을 남기는 ${keep} 중 관성은 그대로 — 관성 동안 강제 스크롤 없음, 관성 종료(60dp)에서 맨 아래로`, async () => {
+      const t = await opened()
+      ctx.scrolls = []
+      await BEGIN()
+      await SCROLL(60)
+      await END(60)
+      await MOMENTUM()
+      t.reconnect()
+      if (keep === 'stale') {
+        t.emit({ kind: 'chat_invalid', attempt: t.attempt() })
+        await show({ store: t.store })
+        expect(t.store.getSnapshot().stale).toBe('invalid')
+        t.reconnect()
+      }
+      t.frame(page([prompt(1), reply(2), prompt(3), reply(4)], { mode: 'resume', cursor: 2 }))
+      await show({ store: t.store })
+      expect(ctx.list).not.toBeNull()
+      await LAYOUT()
+      expect(ctx.scrolls).toEqual([])
+      await MOMENTUM_END(60)
+      expect(ctx.scrolls).toEqual([{ offset: 0, animated: true }])
+    })
+  }
 })
 
 describe('n-12 대조 — 위를 보던 사람(임계 밖)은 자리를 지키고 「새 메시지 ↓」', () => {

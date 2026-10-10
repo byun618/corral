@@ -344,7 +344,9 @@ corral worktree set --worktree path:<구현 worktree 절대경로> --parent-work
   읽지 않는다. 거절 원문(예: 순환 거절 `Lineage cycle is not allowed`)을 원자료에 남기고 진행한다.
 - 보장 수준: **실행 1회 원자료 있음** — LIFE-576 구현 worktree 에 이 명령을 실제로 쳤고 전후 `worktree show` 로 parent 가 작업
   worktree 로 바뀐 것을 확인했다(`specs/LIFE-576-worktree-nesting/raw/coord/d7-worktree-set.txt`). 작업 worktree 쪽은 task-start 가
-  루트로 둔다(부모 지정 없음).
+  정한다 — 독립 작업은 루트, **묶음 자식은 feature worktree 아래**로 같은 명령을 친다(`--worktree path:<자식 작업 worktree>
+  --parent-worktree path:<feature worktree>`). 묶음 자식 쪽 보장 수준: **명령 실행 원자료 없음** — 2026-10-10 기준 LIFE-582·588 이
+  LIFE-564-mobile 아래에 붙어 있는 것은 `worktree show` 로 확인했으나, 사용자가 사이드바 드래그로 붙인 것이다.
 
 > 이 자리는 2026-09-27 새 독자 측정에서 잡혔다. 그 전까지 이 매핑은 "corral 에 worktree 생성 명령이 없다" 고
 > **사실과 다르게** 적고 있었다. 관문이 못 잡은 이유는 방향이다 — 『전제 점검』은 *요구 ⊆ 광고* 한 방향만 보므로

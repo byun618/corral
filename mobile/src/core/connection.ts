@@ -18,6 +18,7 @@
 // 삭제가 끝나기 전에는 「해제됨」 을 보이지 않는다 — `unpairing` → 성공이면 `unpaired`, 실패면 `unpair_failed`(R1-A4).
 import type { ConnectionLog, LogValue } from './log'
 import { hostOf, type PairingTarget } from './payload'
+import type { ChatMessage } from './chat'
 import type { ListMessage } from './list'
 import { CLOSE, PROTOCOL_VERSION, parseServerMessage, serverPairFailure, type PairFailure, type ServerInfo } from './protocol'
 
@@ -142,6 +143,11 @@ export type SessionEvent =
    * `rejected` = 서버가 구독을 모른다(`unknown_type` — 서버가 더 옛것). 연결은 그대로다.
    */
   | { kind: 'list_failed'; attempt: number; reason: 'invalid' | 'rejected'; seq: number | null }
+  /** 대화(LIFE-581) — 지금 시도의 소켓으로 온 `chat.*`. 읽지 못한 프레임은 `chat_invalid`. */
+  | { kind: 'chat'; attempt: number; message: ChatMessage }
+  | { kind: 'chat_invalid'; attempt: number }
+  /** 인증 뒤 서버 오류 — 대화가 「서버가 대화를 모른다(`unknown_type`)」 를 알 수 있게(목록 신호 `list_failed` 는 그대로). */
+  | { kind: 'server_error'; attempt: number; code: string }
 
 /**
  * 서버와 폰 시계 차(R1 C1) — ping/pong 왕복의 중간점 기준. `offsetMs` = 서버 시각 − 폰 시각. 최근 표본 중 왕복이 가장 짧은 것.
@@ -561,12 +567,23 @@ export class ConnectionManager {
         this.log('list_invalid', { attempt: attempt.seq, seq: message.seq })
         this.emitSession({ kind: 'list_failed', attempt: attempt.seq, reason: 'invalid', seq: message.seq })
         return
+      case 'chat':
+        if (attempt.phase !== 'live') return
+        this.emitSession({ kind: 'chat', attempt: attempt.seq, message: message.message })
+        return
+      case 'chat_invalid':
+        if (attempt.phase !== 'live') return
+        this.log('chat_invalid', { attempt: attempt.seq })
+        this.emitSession({ kind: 'chat_invalid', attempt: attempt.seq })
+        return
       case 'error':
         attempt.lastError = message.code
         attempt.supported = message.supported
         this.log('server_error', { attempt: attempt.seq, code: message.code })
-        // 인증 뒤 보내는 것은 ping 과 list.subscribe 뿐 — `unknown_type` 은 서버가 목록 구독을 모른다는 뜻(옛 서버).
+        // `unknown_type` — 서버가 목록 구독(또는 LIFE-581 대화)을 모른다(옛 서버). 오류에는 어느 메시지인지가 없다 — 목록 쪽은 이 시도에서 목록을 받았으면 무시하고
+        // (`ListStore`), 대화 쪽은 첫 페이지를 기다리던 중일 때만 실패로 본다(`ChatStore`).
         if (attempt.phase === 'live' && message.code === 'unknown_type') this.emitSession({ kind: 'list_failed', attempt: attempt.seq, reason: 'rejected', seq: null })
+        if (attempt.phase === 'live') this.emitSession({ kind: 'server_error', attempt: attempt.seq, code: message.code })
         return
       case 'other':
         return

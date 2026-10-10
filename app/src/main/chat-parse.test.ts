@@ -95,6 +95,29 @@ describe('Claude (Y1ⓑ)', () => {
   })
 })
 
+describe('Claude 실물 표본에서 본 줄 (raw/claude/y2-census.json)', () => {
+  it('서버 도구(advisor) 호출·결과는 도구 묶음 한 칸 — 결과 본문(암호문)은 싣지 않는다 · 비용·브리지·아티팩트 장부 줄은 건너뛴다', () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, sessionId: CLAUDE_SESSION, timestamp: '2026-10-10T00:00:00Z', message: { role: 'user', content: '지시' } }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'a1',
+        parentUuid: 'u1',
+        timestamp: '2026-10-10T00:00:01Z',
+        message: { id: 'm1', role: 'assistant', model: 'claude-x', content: [{ type: 'server_tool_use', id: 'st1', name: 'advisor', input: {} }, { type: 'advisor_tool_result', tool_use_id: 'st1', content: { type: 'advisor_redacted_result', encrypted_content: SECRET_RESULT } }] },
+      }),
+      ...['cost-state', 'bridge-session', 'frame-link', 'artifact-comment-monitor', 'artifact-autoreact-ledger'].map((type) => JSON.stringify({ type, sessionId: CLAUDE_SESSION })),
+    ]
+    const { builder, items } = build({ agent: 'claude', lines, sessionId: CLAUDE_SESSION })
+    expect(shape(items)).toEqual([
+      ['prompt', '지시'],
+      ['tools', ['advisor|null|ok']],
+    ])
+    expect(builder.stats.unknown).toEqual({})
+    expect(JSON.stringify(items)).not.toContain(SECRET_RESULT)
+  })
+})
+
 describe('Codex (Y1ⓑ)', () => {
   it('0.159 모양 — item_completed UserMessage 가 지시, response_item user(주입) 제외 · 답은 response_item 한 번(AgentMessage 중복 제외) · exec 상자 대신 CommandExecution', () => {
     const { builder, items } = build({ agent: 'codex', lines: codexNewLines() })

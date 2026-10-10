@@ -86,6 +86,12 @@ const CLAUDE_META_TYPES = new Set([
   'progress',
   'agent-name',
   'pr-link',
+  // 실물 표본 전수(raw/claude/y2-census.json) 에서 본 메타 줄 — 비용·브리지·아티팩트 장부. 대화가 아니다.
+  'cost-state',
+  'bridge-session',
+  'frame-link',
+  'artifact-comment-monitor',
+  'artifact-autoreact-ledger',
 ])
 
 export function claudeAtoms(input: { record: Record<string, unknown>; sessionId: string | null }): LineAtoms {
@@ -158,6 +164,18 @@ export function claudeAtoms(input: { record: Record<string, unknown>; sessionId:
             continue
           }
           atoms.push({ kind: 'tool', callId, name: name?.trim() || null, target: toolInputPreview(block['input']), status: 'running' })
+          continue
+        }
+        // 서버 쪽 도구(advisor 등) — 호출과 결과가 같은 답 줄에 온다. 결과 본문(암호화된 것 포함)은 버리고 성공/실패만.
+        if (blockType === 'server_tool_use') {
+          atoms.push({ kind: 'tool', callId: readString(block, 'id'), name: readString(block, 'name')?.trim() || null, target: toolInputPreview(block['input']), status: 'running' })
+          continue
+        }
+        if (blockType !== null && blockType.endsWith('_tool_result')) {
+          const callId = readString(block, 'tool_use_id')
+          const content = block['content']
+          const failed = isRecord(content) && (readString(content, 'type') ?? '').includes('error')
+          atoms.push(callId === null ? { kind: 'skip', reason: 'claude:server-tool-result' } : { kind: 'result', callId, status: failed ? 'error' : 'ok', answer: null, settles: true })
           continue
         }
         atoms.push({ kind: 'unknown', shape: `claude:block:${blockType ?? '?'}` })

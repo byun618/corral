@@ -31,6 +31,13 @@ vi.mock('../src/runtime/list', () => ({
   listStore: { isUnread: () => ctx.unread, markRead: ctx.markRead, refresh: vi.fn() },
   collapse: { isCollapsed: () => false, toggle: vi.fn() },
 }))
+// 대화 본문(LIFE-581)은 이 시험의 대상이 아니다 — 구독 열기/닫기만 센다. 본문 시험은 test/chat-*.test.ts(x).
+const chatCtx = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn() }))
+vi.mock('../src/runtime/chat', () => ({
+  useChat: () => ({ channel: null, phase: { kind: 'idle' }, gen: null, items: [], hasOlder: false, loadingOlder: false, receivedAt: null }),
+  chatStore: { open: chatCtx.open, close: chatCtx.close, loadOlder: vi.fn(), retry: vi.fn() },
+}))
+vi.mock('../src/ui/Conversation', () => ({ Conversation: () => <i data-conversation /> }))
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -79,6 +86,8 @@ let root: Root
 beforeEach(() => {
   Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
   ctx.markRead.mockClear()
+  chatCtx.open.mockClear()
+  chatCtx.close.mockClear()
   ctx.unread = true
   host = document.createElement('div')
   document.body.append(host)
@@ -105,6 +114,7 @@ describe('R1-A6 버전 불일치 — 목록·대화 자리 화면 둘 다 캐시
     for (const hidden of ['CACHED CHANNEL', 'safe-repo', 'safe-task', 'opus', '코디 세션']) expect(channel).not.toContain(hidden)
     expect(channel).toContain('버전이 맞지 않습니다')
     expect(ctx.markRead).not.toHaveBeenCalled()
+    expect(chatCtx.open).not.toHaveBeenCalled()
   })
 
   it('양성 대조 — 연결됨이면 자리 화면이 채널 머리를 그리고 열면 읽음', async () => {
@@ -115,6 +125,10 @@ describe('R1-A6 버전 불일치 — 목록·대화 자리 화면 둘 다 캐시
     expect(channel).toContain('safe-repo › safe-task')
     expect(channel).not.toContain('버전이 맞지 않습니다')
     expect(ctx.markRead).toHaveBeenCalledTimes(1)
+    // LIFE-581 — 열면 그 채널의 대화를 구독하고, 떠나면 끊는다.
+    expect(chatCtx.open).toHaveBeenCalledWith('p')
+    await act(async () => root.render(<i />))
+    expect(chatCtx.close).toHaveBeenCalledWith('p')
   })
 })
 

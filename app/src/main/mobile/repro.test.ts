@@ -174,6 +174,12 @@ describe('repro 스크립트 (A9)', () => {
     expect(lines.some((line) => line.type === 'chat.items')).toBe(true)
     const text = out.stdout + fs.readFileSync(recv, 'utf8')
     for (const secret of ['반복 지시', '라이브 지시', '마지막 답', SECRET_THOUGHT, SECRET_RESULT, fs.readFileSync(tokenFile, 'utf8').trim()]) expect(text).not.toContain(secret)
+    // 판정 원자료로 남길 때만(L581_REPRO_RAW=<폴더>) — 위에서 글·토큰이 없음을 확인한 출력 그대로.
+    const raw = process.env['L581_REPRO_RAW']
+    if (raw !== undefined && raw !== '') {
+      fs.writeFileSync(path.join(raw, 'repro-chat.stdout.ndjson'), out.stdout)
+      fs.copyFileSync(recv, path.join(raw, 'repro-chat.recv.ndjson'))
+    }
   }, 30_000)
 
   // R2-A4 — `--token-out` 은 새 파일만 0600 으로 원자 생성. 이미 있는 파일(0644)·심링크는 pair 전에 거절(exit 2) — 코드를 소모하지 않는다.

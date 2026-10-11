@@ -14,6 +14,7 @@ const line = (text: string) => JSON.stringify({ type: 'user', origin: { kind: 'h
 const backend: InputBackend = {
   locate: async (paneId) => ({ epoch: 'e', ptyId: 't', paneId, tabId: 'tab', workspaceId: 'ws', path: '/w', repo: '/w', title: 'x' }),
   observe: async () => ({ status: 'idle', seq: 1, quiet: true, unmanaged: false, input: { revision: 1, idleMs: 10_000 } }),
+  unmanagedPrompt: () => false,
   manifestVerified: async () => true,
   screen: async () => ({ text: EMPTY, input: { revision: 1, idleMs: 10_000 }, seq: 1 }),
   prompt: async (_pane, input) => { setTimeout(() => fs.appendFileSync(file, line(input.text) + '\n'), 1000); return 'sent' },

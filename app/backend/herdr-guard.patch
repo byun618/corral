@@ -9,7 +9,7 @@
      #[serde(rename = "ping")]
      Ping(PingParams),
      #[serde(rename = "server.stop")]
-@@ -268,3 +270,20 @@
+@@ -268,3 +270,23 @@
  
  #[cfg(test)]
  mod tests;
@@ -29,6 +29,9 @@
 +    #[serde(default)] pub expected_input_revision: Option<u64>,
 +    /// agent.prompt · pane.send_text (LIFE-582): the input must have been quiet this long, so an echo still in flight is not missed.
 +    #[serde(default)] pub min_input_idle_ms: Option<u64>,
++    /// agent.prompt (LIFE-597): opt in to a pane with no managed agent (a provider typed into a shell), naming the agent
++    /// kind the caller expects there. Without it — the CLI and harness paths — the ready predicate is unchanged.
++    #[serde(default)] pub unmanaged_agent: Option<String>,
 +}
 --- a/src/api/server.rs
 +++ b/src/api/server.rs
@@ -59,7 +62,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,645 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -77,7 +80,7 @@
 +    pub(super) fn handle_corral_terminal(&mut self, id: String, params: CorralTerminalParams) -> String {
 +        let Some(mut operation) = params.operation else {
 +            return serde_json::json!({"id": id, "result": {"epoch": epoch(), "guard_version": 1,
-+                "raw_capacity": 1048576, "conditional_process": false, "agent_ops": 1}}).to_string();
++                "raw_capacity": 1048576, "conditional_process": false, "agent_ops": 1, "unmanaged_prompt": 1}}).to_string();
 +        };
 +        if params.epoch != epoch() { return encode_error(id, "stale_backend", "backend generation changed"); }
 +        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
@@ -145,12 +148,14 @@
 +            // is_active_tab && outer_terminal_focus != Some(false) — GUI attention, not readiness.
 +            // So a pane that is not the active tab, or whose window focus is explicitly false, is
 +            // Done every finished turn; launch_pending and expected_state_change_seq still fence.
-+            if !matches!(observed.agent_status, AgentStatus::Idle | AgentStatus::Done) || !observed.interactive_ready
++            let unready = self.corral_prompt_unready(&prompt.target, params.unmanaged_agent.as_deref(), observed.interactive_ready);
++            if !matches!(observed.agent_status, AgentStatus::Idle | AgentStatus::Done) || unready.is_some()
 +                || observed.launch_pending || observed.state_change_seq != expected_seq {
 +                let code = if observed.agent_status == AgentStatus::Blocked { "agent_blocked" } else { "agent_not_ready" };
 +                let message = format!("agent is not the observed ready state (expected state_change_seq {expected_seq}, observed {})", observed.state_change_seq);
-+                return serde_json::json!({"id": prompt_id,
-+                    "error": {"code": code, "message": message, "observed": observed}}).to_string();
++                let mut error = serde_json::json!({"code": code, "message": message, "observed": observed});
++                if params.unmanaged_agent.is_some() { error["unready"] = serde_json::json!(unready); }
++                return serde_json::json!({"id": prompt_id, "error": error}).to_string();
 +            }
 +            // LIFE-582 R1-A3/R2-A3: corral read the screen (no draft) in a pane.read that reported this input revision.
 +            // A key, paste or raw send since then may be a draft the screen did not show, and it would merge with this
@@ -198,6 +203,8 @@
 +        if let Some((target, slot)) = input_target {
 +            let input = self.parse_pane_id(&target).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| runtime.corral_input_state());
 +            let seq = if slot == "read" { self.agent_info_for_target(&target).ok().map(|agent| agent.state_change_seq) } else { None };
++            // LIFE-597: how long the agent state has held, so corral waits out the unmanaged settle instead of being refused.
++            let quiet = if slot == "agent" { self.corral_terminal_state(&target).map(|terminal| terminal.corral_agent_changed_at.map(|at| at.elapsed().as_millis() as u64)) } else { None };
 +            let mut value: serde_json::Value = serde_json::from_str(&response).unwrap();
 +            if value.get("error").is_some() { return response; }
 +            if slot == "send" && !value["result"].is_object() { value["result"] = serde_json::json!({}); }
@@ -206,6 +213,7 @@
 +                place.insert("corral_input_revision".into(), serde_json::json!(revision));
 +                place.insert("corral_input_idle_ms".into(), serde_json::json!(idle_ms));
 +                if let Some(seq) = seq { place.insert("corral_state_change_seq".into(), serde_json::json!(seq)); }
++                if let Some(quiet) = quiet { place.insert("corral_state_quiet_ms".into(), serde_json::json!(quiet)); }
 +            }
 +            return value.to_string();
 +        }
@@ -220,6 +228,24 @@
 +            }
 +        }
 +        value.to_string()
++    }
++    fn corral_terminal_state(&self, target: &str) -> Option<&crate::terminal::TerminalState> {
++        let (ws, pane) = self.parse_pane_id(target)?;
++        self.state.terminals.get(&self.state.terminal_id_for_pane(ws, pane)?)
++    }
++    /// The ready predicate's launch half — why the pane is not ready, or None. A managed pane (or a request without
++    /// `unmanaged_agent`) needs interactive_ready, as before. LIFE-597: a pane with no managed agent never gets it, so a
++    /// request that names the expected kind replaces the launch proof with what the managed launch itself checks — herdr
++    /// detects that kind (queue_agent_prompt then checks it is the foreground process) and the state has held for
++    /// AGENT_START_SETTLE_DELAY. A managed pane still Pending or Blocked is not unmanaged and stays refused.
++    fn corral_prompt_unready(&self, target: &str, unmanaged_agent: Option<&str>, interactive_ready: bool) -> Option<&'static str> {
++        let terminal = self.corral_terminal_state(target);
++        let Some((kind, terminal)) = unmanaged_agent.zip(terminal).filter(|(_, terminal)| terminal.managed_agent_kind().is_none()) else {
++            return (!interactive_ready).then_some("not_interactive_ready");
++        };
++        if terminal.effective_known_agent().map(crate::detect::agent_label) != Some(kind) { return Some("unmanaged_kind_mismatch"); }
++        if !terminal.corral_agent_changed_at.is_some_and(|at| at.elapsed() >= crate::app::AGENT_START_SETTLE_DELAY) { return Some("unmanaged_settling"); }
++        None
 +    }
 +    /// LIFE-582: refuse in this turn when the pane's user input moved since the revision corral saw (`input_changed`)
 +    /// or moved less than `min_idle` ago (`input_recent`). Neither field — no fence (the CLI arms are unchanged).
@@ -261,14 +287,14 @@
 +            let operation = if method == "pane.close" { serde_json::json!({"method":method,"params":{"pane_id":pane_name}}) }
 +                else { serde_json::json!({"method":method,"params":{"pane_id":pane_name,"text":text}}) };
 +            let response: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
-+                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
 +            })).unwrap();
 +            assert_eq!(response["error"]["code"], "stale_terminal");
 +            assert_eq!(app.lookup_runtime_sender(ws, pane).unwrap().corral_generation(), new_generation);
 +        }
 +        let manifests: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: None, terminal_id: None,
-+            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
++            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
 +        })).unwrap();
 +        assert!(manifests.get("error").is_none(), "{manifests}");
 +        assert!(manifests["result"]["manifests"].as_array().is_some_and(|list| !list.is_empty()), "{manifests}");
@@ -336,7 +362,7 @@
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
 +                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"second turn"}})),
-+                expected_state_change_seq: Some(expected), expected_input_revision: None, min_input_idle_ms: None,
++                expected_state_change_seq: Some(expected), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
 +            })).unwrap()
 +        }
 +        // What this test can and cannot show. It can show that the *guard predicate* accepts a Done
@@ -407,7 +433,7 @@
 +                epoch: epoch().into(), deadline_ms: u64::MAX,
 +                pane_id: pane_id.map(str::to_string), terminal_id: terminal_id.map(str::to_string),
 +                operation: Some(serde_json::json!({"method":"agent.explain","params":{"target":operation_target}})),
-+                expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
++                expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
 +            })).unwrap()
 +        }
 +        // ① Matching identity: the envelope must not refuse it any more. There is no provider in
@@ -457,7 +483,7 @@
 +        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, seq: Option<u64>, revision: Option<u64>, idle: Option<u64>) -> serde_json::Value {
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
-+                operation: Some(operation), expected_state_change_seq: seq, expected_input_revision: revision, min_input_idle_ms: idle,
++                operation: Some(operation), expected_state_change_seq: seq, expected_input_revision: revision, min_input_idle_ms: idle, unmanaged_agent: None,
 +            })).unwrap()
 +        }
 +        let get = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"agent.get","params":{"target":pane_name}}), None, None, None);
@@ -515,7 +541,7 @@
 +        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, revision: Option<u64>) -> serde_json::Value {
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
-+                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None,
++                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None, unmanaged_agent: None,
 +            })).unwrap()
 +        }
 +        let read_op = serde_json::json!({"method":"pane.read","params":{"pane_id":pane_name,"source":"visible","format":"ansi","strip_ansi":false}});
@@ -543,10 +569,141 @@
 +        let prompt: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(target.clone()),
 +            operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"phone"}})),
-+            expected_state_change_seq: Some(seq), expected_input_revision: Some(revision + 2), min_input_idle_ms: None,
++            expected_state_change_seq: Some(seq), expected_input_revision: Some(revision + 2), min_input_idle_ms: None, unmanaged_agent: None,
 +        })).unwrap();
 +        assert_eq!(prompt["error"]["code"], "input_changed", "a prompt fenced before the submission: {prompt}");
 +        println!("pane.read revision {revision}; fenced key -> {}; other key then fenced key refused; submission -> {}", revision + 1, revision + 3);
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    /// LIFE-597 U2 — a pane with no managed agent (a provider typed into a shell) takes agent.prompt only when the request
++    /// names `unmanaged_agent` (ⓐ), that kind is what herdr detects (ⓑ — the foreground check is queue_agent_prompt's,
++    /// and with no provider here it is where an accepted prompt stops), the state has held for AGENT_START_SETTLE_DELAY (ⓒ),
++    /// and it is not blocked (ⓓ). A managed pane keeps its own predicate (ⓔ): Pending/Blocked stay refused with the option,
++    /// and an Active one is not put through the unmanaged settle.
++    #[tokio::test]
++    async fn corral_terminal_takes_an_unmanaged_pane_only_when_asked() {
++        use crate::detect::{Agent, AgentState};
++        use crate::events::AppEvent;
++        use std::time::{Duration, Instant};
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        // R1-A1: corral learns the arm exists only from the operation-less handshake — without the advertisement a new
++        // guard would look old and every unmanaged pane would end in guard_outdated.
++        let handshake: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("handshake".into(), CorralTerminalParams {
++            epoch: String::new(), deadline_ms: 0, pane_id: None, terminal_id: None, operation: None,
++            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++        })).unwrap();
++        assert_eq!(handshake["result"]["guard_version"], 1, "{handshake}");
++        assert_eq!(handshake["result"]["agent_ops"], 1, "{handshake}");
++        assert_eq!(handshake["result"]["unmanaged_prompt"], 1, "the handshake advertises the unmanaged arm: {handshake}");
++        let root = std::env::temp_dir().join(format!("l597-unmanaged-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        assert!(response.get("error").is_none(), "{response}");
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        app.state.outer_terminal_focus = Some(false);
++        let target = format!("{terminal}.{}", app.lookup_runtime_sender(ws, pane).unwrap().corral_generation());
++        fn observe(app: &mut App, pane: crate::layout::PaneId, terminal: &crate::terminal::TerminalId, state: AgentState) {
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude), state,
++                visible_blocker: state == AgentState::Blocked, visible_working: state == AgentState::Working,
++                process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        /// Pretend the last change happened `ago` earlier — the settle is wall-clock, the test does not sleep 3 s.
++        fn age(app: &mut App, terminal: &crate::terminal::TerminalId, ago: Duration) {
++            let state = app.state.terminals.get_mut(terminal).unwrap();
++            state.corral_agent_changed_at = Some(Instant::now() - ago);
++        }
++        fn prompt(app: &mut App, pane_name: &str, target: &str, seq: u64, unmanaged: Option<&str>) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
++                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"from the phone"}})),
++                expected_state_change_seq: Some(seq), expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: unmanaged.map(str::to_string),
++            })).unwrap()
++        }
++        const REFUSED: &str = "is not the observed ready state";
++        let passed = |response: &serde_json::Value| {
++            let message = response["error"]["message"].as_str().unwrap_or_default();
++            !message.contains(REFUSED) && message.contains("foreground")
++        };
++        // A provider typed into the shell: detected, idle, never managed.
++        observe(&mut app, pane, &terminal, AgentState::Unknown);
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let info = app.agent_info(ws, pane).expect("detected agent");
++        assert!(!info.interactive_ready && !info.launch_pending && info.name.is_none(), "{info:?}");
++        let seq = info.state_change_seq;
++        age(&mut app, &terminal, Duration::from_secs(4));
++        // ⓐ Without the option the predicate is the old one (CLI path): refused. With it: past the predicate.
++        let cli = prompt(&mut app, &pane_name, &target, seq, None);
++        assert_eq!(cli["error"]["code"], "agent_not_ready", "{cli}");
++        assert!(cli["error"]["message"].as_str().unwrap().contains(REFUSED), "{cli}");
++        assert!(cli["error"].get("unready").is_none(), "the CLI refusal shape is unchanged: {cli}");
++        let phone = prompt(&mut app, &pane_name, &target, seq, Some("claude"));
++        assert!(passed(&phone), "an unmanaged claude pane must clear the predicate with the option: {phone}");
++        // ⓑ The named kind must be the detected one.
++        let other = prompt(&mut app, &pane_name, &target, seq, Some("codex"));
++        assert_eq!(other["error"]["code"], "agent_not_ready", "{other}");
++        assert_eq!(other["error"]["unready"], "unmanaged_kind_mismatch", "{other}");
++        // ⓒ A fresh change (the provider just started, or a turn just ended) restarts the settle: refused until it held 3 s.
++        observe(&mut app, pane, &terminal, AgentState::Working);
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let seq = app.agent_info(ws, pane).unwrap().state_change_seq;
++        let fresh = prompt(&mut app, &pane_name, &target, seq, Some("claude"));
++        assert_eq!(fresh["error"]["unready"], "unmanaged_settling", "{fresh}");
++        age(&mut app, &terminal, crate::app::AGENT_START_SETTLE_DELAY - Duration::from_millis(100));
++        let almost = prompt(&mut app, &pane_name, &target, seq, Some("claude"));
++        assert_eq!(almost["error"]["unready"], "unmanaged_settling", "{almost}");
++        age(&mut app, &terminal, crate::app::AGENT_START_SETTLE_DELAY + Duration::from_millis(100));
++        let get: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(target.clone()),
++            operation: Some(serde_json::json!({"method":"agent.get","params":{"target":pane_name}})),
++            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++        })).unwrap();
++        assert!(get["result"]["agent"]["corral_state_quiet_ms"].as_u64().is_some_and(|ms| ms >= 3_000), "agent.get carries the settle: {get}");
++        let settled = prompt(&mut app, &pane_name, &target, seq, Some("claude"));
++        assert!(passed(&settled), "{settled}");
++        // The seq fence still applies to the unmanaged arm.
++        let stale = prompt(&mut app, &pane_name, &target, seq + 1, Some("claude"));
++        assert_eq!(stale["error"]["code"], "agent_not_ready", "{stale}");
++        // ⓓ Blocked (a trust or permission prompt) is refused even when settled.
++        observe(&mut app, pane, &terminal, AgentState::Blocked);
++        let blocked_seq = app.agent_info(ws, pane).unwrap().state_change_seq;
++        age(&mut app, &terminal, Duration::from_secs(10));
++        let blocked = prompt(&mut app, &pane_name, &target, blocked_seq, Some("claude"));
++        assert_eq!(blocked["error"]["code"], "agent_blocked", "{blocked}");
++        assert!(blocked["error"]["message"].as_str().unwrap().contains(REFUSED), "refused by the predicate, not only by the queue step: {blocked}");
++        // ⓔ A managed launch still Pending (settle not over) is not unmanaged: refused with the option.
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++            "corral-l597".into(), Agent::Claude, Instant::now(), Duration::from_secs(60), Duration::from_secs(300));
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let pending = app.agent_info(ws, pane).unwrap();
++        assert!(pending.launch_pending && !pending.interactive_ready, "{pending:?}");
++        age(&mut app, &terminal, Duration::from_secs(10));
++        let refused = prompt(&mut app, &pane_name, &target, pending.state_change_seq, Some("claude"));
++        assert_eq!(refused["error"]["code"], "agent_not_ready", "{refused}");
++        assert_eq!(refused["error"]["unready"], "not_interactive_ready", "{refused}");
++        // … and Blocked during launch.
++        observe(&mut app, pane, &terminal, AgentState::Blocked);
++        let launch_blocked = app.agent_info(ws, pane).unwrap();
++        assert!(launch_blocked.launch_pending, "{launch_blocked:?}");
++        let refused = prompt(&mut app, &pane_name, &target, launch_blocked.state_change_seq, Some("claude"));
++        assert_eq!(refused["error"]["code"], "agent_blocked", "{refused}");
++        assert!(refused["error"]["message"].as_str().unwrap().contains(REFUSED), "{refused}");
++        // An Active managed pane keeps the old predicate: a change just now does not hold it back for the unmanaged settle.
++        observe(&mut app, pane, &terminal, AgentState::Idle);
++        let active = app.agent_info(ws, pane).unwrap();
++        assert!(active.interactive_ready && !active.launch_pending, "{active:?}");
++        app.state.terminals.get_mut(&terminal).unwrap().corral_agent_changed_at = Some(Instant::now());
++        let managed = prompt(&mut app, &pane_name, &target, active.state_change_seq, Some("claude"));
++        assert!(passed(&managed), "an Active managed pane is not put through the unmanaged arm: {managed}");
++        println!("unmanaged pane: no option refused, claude passed, codex kind_mismatch, fresh/2.9s settling, 3.1s passed, blocked refused; managed pending/blocked refused, active unchanged");
 +        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
 +        std::fs::remove_dir_all(root).unwrap();
 +    }
@@ -652,3 +809,43 @@
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
  
      pub fn visible_text(&self) -> String {
+--- a/src/terminal/state.rs
++++ b/src/terminal/state.rs
+@@ -142,6 +142,8 @@
+     metadata_token_sequence_sources: std::collections::HashSet<String>,
+     pub state: AgentState,
+     pub last_agent_state_change_seq: Option<u64>,
++    /// corral guard (LIFE-597): when the effective agent state or identity last changed — the settle an unmanaged prompt waits out.
++    pub corral_agent_changed_at: Option<Instant>,
+     pub revision: u64,
+     pub launch_argv: Option<Vec<String>>,
+     pub respawn_shell_on_exit: bool,
+@@ -177,6 +179,7 @@
+             metadata_token_sequence_sources: std::collections::HashSet::new(),
+             state: AgentState::Unknown,
+             last_agent_state_change_seq: None,
++            corral_agent_changed_at: None,
+             revision: 0,
+             launch_argv: None,
+             respawn_shell_on_exit: false,
+@@ -2083,6 +2086,7 @@
+         self.stale_full_lifecycle_hook_sessions.clear();
+         self.state = AgentState::Unknown;
+         self.last_agent_state_change_seq = None;
++        self.corral_agent_changed_at = None;
+         self.launch_argv = None;
+         self.respawn_shell_on_exit = false;
+         self.recent_agent_process_exit = None;
+--- a/src/app/actions.rs
++++ b/src/app/actions.rs
+@@ -1868,6 +1868,10 @@
+         }
+         let agent_released = mutation.agent_released;
+         let change = mutation.effective_state_change.or(unchanged_change)?;
++        // corral guard (LIFE-597): any effective state or agent identity change restarts the unmanaged prompt settle.
++        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
++            terminal.corral_agent_changed_at = Some(now);
++        }
+         let suppress_completion = force_suppress_completion
+             || (change.state == AgentState::Idle
+                 && (managed_launch_pending || suppress_acquisition_completion));

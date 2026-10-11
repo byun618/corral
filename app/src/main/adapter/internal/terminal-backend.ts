@@ -38,6 +38,8 @@ export interface AgentObservation {
   observedAt: string
   /** LIFE-582 R1-A3: the pane's user-input revision and quiet time, read by the guard in the agent.get turn. null on a guard without them. */
   input?: { revision: number; idleMs: number } | null
+  /** LIFE-597: how long the agent state (and detected kind) has held, read by the guard in the agent.get turn. null on a guard without it. */
+  stateQuietMs?: number | null
 }
 /** One row of the guard's target-less `server.agent_manifests` read (LIFE-394 §3, D17). */
 export interface AgentManifestObservation {
@@ -59,9 +61,13 @@ export class TerminalBackend {
   private acceptedEffects = 0
   /** Handshake capability: set by `epoch()`. `null` until the handshake has been read once. */
   private agentOps: boolean | null = null
+  /** LIFE-597 handshake capability: the guard takes `unmanaged_agent` on agent.prompt. */
+  private unmanagedPrompt: boolean | null = null
   constructor(readonly socket: string, private readonly busyRetry: BusyRetryPolicy = DEFAULT_BUSY_RETRY) {}
   /** LIFE-394 §1.4/§5.2: the agent arms exist only on a guard build that advertises `agent_ops`. */
   agentCapable(): boolean { return this.agentOps === true }
+  /** LIFE-597: an older guard ignores `unmanaged_agent` and keeps refusing a pane with no managed agent. */
+  unmanagedPromptCapable(): boolean { return this.unmanagedPrompt === true }
   private async call(params: Record<string, unknown>, ctx: TerminalOperation, mutation = false) {
     ctx.signal.throwIfAborted()
     if (Date.now() >= ctx.deadlineAt) throw new RuntimeError('deadline_exceeded', 'Deadline passed before backend request')
@@ -90,6 +96,7 @@ export class TerminalBackend {
     }
     if (response.guard_version !== 1 || typeof response.epoch !== 'string') throw new RuntimeError('unsupported_backend', 'Terminal guard protocol v1 required')
     this.agentOps = response.agent_ops === 1 || response.agent_ops === true
+    this.unmanagedPrompt = response.unmanaged_prompt === 1
     return response.epoch
   }
   private operation(epoch: string, method: string, params: Record<string, unknown>, ctx: TerminalOperation, target?: TerminalIdentity, mutation = false) {
@@ -232,9 +239,10 @@ export class TerminalBackend {
    * reached the pane after the observation that reported `inputRevision`, or less than `minIdleMs` ago. The draft corral read
    * from the screen is then still the whole input line at submission time. The CLI's `promptAgent` above is unchanged.
    */
-  async promptAgentIfQuiet(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number; minIdleMs: number }, ctx: TerminalOperation) {
+  async promptAgentIfQuiet(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number; minIdleMs: number; unmanagedAgent?: string | null }, ctx: TerminalOperation) {
     const result = await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
       expected_state_change_seq: input.expectedStateChangeSeq, expected_input_revision: input.inputRevision, min_input_idle_ms: input.minIdleMs,
+      ...(input.unmanagedAgent == null ? {} : { unmanaged_agent: input.unmanagedAgent }),
       operation: { method: 'agent.prompt', params: { target: target.paneId, text: input.text } } }, ctx, true)
     return observation(readRecord(result, 'agent'), target.paneId)
   }
@@ -279,5 +287,6 @@ function observation(agent: Record<string, unknown> | null, paneId: string): Age
     observedAt: new Date().toISOString(),
     input: typeof agent.corral_input_revision === 'number' && typeof agent.corral_input_idle_ms === 'number'
       ? { revision: agent.corral_input_revision, idleMs: agent.corral_input_idle_ms } : null,
+    stateQuietMs: typeof agent.corral_state_quiet_ms === 'number' ? agent.corral_state_quiet_ms : null,
   }
 }

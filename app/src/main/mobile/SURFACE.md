@@ -196,8 +196,15 @@
   revision 이 없는 guard 면 넣지 않는다(`failed/guard_outdated`). 질문 답 키(`pane.send_text`)도 같은 울타리를 친다 — 아래 「질문 답」.
   CLI `terminal prompt` 계약·AgentRecord 는 건드리지 않는다 — 관리되지 않은 pane(GUI 로 연 세션)도 같은 관문을 지난다.
 - **목록의 살아 있는 AI 채널만**: 셸 pane·닫힌 세션·목록 밖은 `failed`(`not_listed`·`closed`), 세션 참조가 아직 없으면(Codex 첫 지시 전) `no_session`. 맥이 guard 바인딩 세션이 아니면 넣지 않는다(대기 → 실패).
-  지시는 herdr **관리 에이전트**(데스크톱 GUI·하네스가 `agent.start` 로 띄운 것)에만 넣는다 — 셸에서 직접 친 `claude` 같은 관리 밖 pane 은 guard 관문(`interactive_ready`)을 못 넘으므로
-  기다리지 않고 `failed/unmanaged`. 질문 답·중단(`pane.send_text`)은 관리 여부와 무관하게 같은 seq 비교로 받는다.
+  지시는 herdr **관리 에이전트**(데스크톱 GUI·하네스가 `agent.start` 로 띄운 것)와 **관리 밖 pane**(셸에서 직접 친 `claude`·`codex`·`grok`, `--resume` 포함 — LIFE-597, 582 D1 대체)에 넣는다.
+  관리 밖 pane 은 `interactive_ready` 가 켜지지 않으므로 폰 경로만 `agent.prompt` 에 **`unmanaged_agent: <채널 종류>`** 를 실어 보낸다(관리 밖이라고 관측했을 때만 — 관리 pane 은 싣지 않는다).
+  guard 는 그 칸이 있고 pane 에 관리 결속이 없을 때만(관리 pane 이 Pending·Blocked·Active 면 지금 술어 그대로) `interactive_ready` 대신 같은 App 턴에서 본다:
+  ⓐ 칸의 종류 = herdr 가 감지한 종류(`unready: unmanaged_kind_mismatch`) — 전경 프로세스가 그 에이전트인지는 `queue_agent_prompt` 가 이어서 본다
+  ⓑ 감지 상태·종류가 마지막으로 바뀐 뒤 **3 s 이상**(herdr `AGENT_START_SETTLE_DELAY` — 관리 기동이 Active 가 되기 전 기다리는 값, `unready: unmanaged_settling`).
+  idle|done · launch_pending 아님 · seq · 입력 revision · 조용한 하한은 관리 pane 과 같다. corral 은 `agent.get` 의 `corral_state_quiet_ms` 가 3 s 를 넘은 뒤에만 넣으러 간다(거절로 헛돌지 않게 — 기다리는 동안 `queued/turn`).
+  CLI `terminal prompt`·orchestration 은 이 칸을 싣지 않으므로 관리 밖 pane 에는 지금처럼 `agent_not_ready` 다.
+  guard 가 이 갈래를 아는지는 handshake 의 `"unmanaged_prompt": 1` 로 안다 — 없는 guard(설치본 herdr 서버를 재기동하기 전, LIFE-582 D15)면 관리 밖 pane 지시는 **쓰지 않고** `failed/guard_outdated`
+  (옛 guard 는 모르는 칸을 무시하고 `interactive_ready` 를 요구하므로 보내도 거절되지만, 기다리지 않고 바로 끝낸다). 질문 답·중단(`pane.send_text`)은 관리 여부와 무관하게 같은 seq 비교로 받는다.
 - **메시지 id 당 많아야 한 번**: (기기, id) 를 기억한다(기기당 끝난 것 500개까지 상태를). 같은 id 를 다시 보내면 넣지 않고 `input.state` 로 지금 상태만. 같은 글이라도 새 id 면 새 지시다.
   500개에서 밀린 id 는 상태를 잊어도 **표지는 남긴다**(앱 기동 동안) — 다시 오면 넣지 않고 `unknown/expired`(R1-A6).
 - **접수 때 대상을 묶는다**(R1-A5·R2-A4): 지시를 받으면 그 pane 의 backend epoch·PTY 세대·provider 세션을 묶는다. 넣기 전 셋 중 하나라도 바뀌면(herdr 재시작·같은 pane 의 새 세션) `failed/target_changed` —
@@ -263,7 +270,7 @@
   입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).
 - 답·중단은 채널당 한 번에 하나(겹치면 `failed/busy`). 그 밖 이유: `empty`(정리 뒤 빈 글) · `bad_answer` · `not_ready` · `backend`(guard 오류 — 넣기 전이면 failed, 뒤면 unconfirmed) ·
-  `revoked` · `target_changed` · `guard_outdated` · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).
+  `revoked` · `target_changed` · `guard_outdated`(입력 revision 이 없는 guard, 또는 관리 밖 pane 인데 `unmanaged_prompt` 가 없는 guard) · `record_ambiguous`(기록 후보 둘 이상) · `record_unreadable`(커서용 기록을 못 읽음 — 넣지 않았다).
 - 로그: `mobile.input_send {bytes, sha}`(정규화 본문 sha256 앞 8자) · `mobile.input_answer {questions}` · `mobile.input_stop` · `mobile.input_state {op, state, reason}` · `mobile.input_delivered {ms}` · `mobile.input_error` — 본문은 없다.
 
 ## 4. 오류 코드
@@ -375,7 +382,7 @@ QR 은 아래 JSON 문자열을 담는다. 같은 내용을 설정 › Mobile �
 | L8 | **새 세션 첫 지시 vs 지워졌다 다시 생긴 기록** — 파일만으로 가르지 않는다(§3 「쓰기」 남는 한계) | 같은 세션 id 로 지운 기록을 이 접수 뒤에 새로 쓰는 경우만 남는다(실측 없음) | 정상 표시 |
 | L9 | **맥 입력 조용한 시간 500 ms** — 화면을 믿는 하한의 근거는 무부하 격리 echo 최대 225 ms(r2)다 | 부하·원격 attach 로 키 echo 가 500 ms 를 넘으면, 화면을 잡기 직전에 친 맥 초안이 화면에 아직 없어 빈 입력 줄로 볼 수 있다. 화면을 잡은 **뒤**의 입력은 revision 울타리가 항상 막는다 | 드물게 초안과 합쳐질 수 있다 — 기록 대조는 합쳐진 글을 `확인하지 못했습니다` 로 잡는다(들어감으로 올리지 않는다) |
 | L10 | **Claude 40열 질문 전체 전달** — r6 리뷰 실물 1회 `question_closed`(원인 미계측) | 최종 관문 계측 결과는 `specs/LIFE-582-mobile-input/raw/claude/RESULT.md` 「final」 의 「Claude 40열 관찰」 | 「질문이 이미 닫혔습니다」(키 0회) |
-| L11 (D1) | **셸에서 corral 없이 직접 띄운 provider 세션** | 폰 입력 잠금 — 지원하지 않는다(guard 준비 관문을 못 넘는다) | 「맥 셸에서 직접 띄운 세션이라 폰에서 지시할 수 없습니다 — 맥에서 새 탭으로 띄운 세션을 써 주세요」(`failed/unmanaged`) |
+| L11 (D1 → LIFE-597) | **셸에서 corral 없이 직접 띄운 provider 세션** | 지시는 들어간다(§3 「쓰기」 — 종류 결속 + 3 s settle). 단 설치본 herdr 서버가 이 작업 전 guard 로 돌고 있으면(재기동 전) 넣지 않는다. 막 띄운 세션·막 끝난 턴은 3 s 기다린 뒤 들어간다 | 옛 guard 면 「맥의 터미널 백엔드가 오래되어 보내지 않았습니다」(`failed/guard_outdated`) — `failed/unmanaged` 는 더 내지 않는다(폰 문구는 남아 있다) |
 | L12 | **Codex 새 세션의 첫 지시** — 세션 참조가 Codex 첫 지시 뒤에 생긴다 | 맥에서 한 번도 지시하지 않은 Codex 세션은 폰 지시를 넣지 않는다 | 「맥에서 첫 지시를 보낸 뒤 쓸 수 있습니다」(`failed/no_session`) |
 | L13 (R1) | **중단 = 지금 턴만** | 백그라운드 Bash·서브에이전트는 멈추지 않는다(Z1ⓓ 실측) — 백그라운드 정지 키는 보내지 않는다 | 중단 버튼 「이 턴 멈추기」(장전 「한 번 더 → 중단」) — 문구가 범위를 「이 턴」 으로 말한다 |
 | L14 (최종 관문 Z2ⓒ) | **탭이 든 지시 — Claude·Grok** — 두 provider 가 입력창에서 탭을 공백 4칸으로 바꿔 기록한다(Claude 2.1.296 · Grok 1.0.50 실측, Codex 는 보존). 본문 정리는 탭을 남기고 기록 대조는 앞뒤 공백만 떼므로 0건이 된다 | 실제로는 들어갔어도 「들어감」 으로 확정하지 않는다(거짓 실패 — 안전 방향). CLI `terminal prompt` 도 같은 대조(앞뒤 SPACE·TAB·CR·LF 만 떼고 길이·지문 비교 — `cli/README.md`)라 같은 0건이다(코드 읽기, 실측 안 함) | 「들어갔는지 확인하지 못했습니다」(`unconfirmed/record_missing`) — 대화에서 확인 |

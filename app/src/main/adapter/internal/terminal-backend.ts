@@ -36,6 +36,8 @@ export interface AgentObservation {
   session: { source: string; kind: string; value: string } | null
   paneId: string
   observedAt: string
+  /** LIFE-582 R1-A3: the pane's user-input revision and quiet time, read by the guard in the agent.get turn. null on a guard without them. */
+  input?: { revision: number; idleMs: number } | null
 }
 /** One row of the guard's target-less `server.agent_manifests` read (LIFE-394 §3, D17). */
 export interface AgentManifestObservation {
@@ -127,6 +129,46 @@ export class TerminalBackend {
   async send(target: TerminalIdentity, text: string, ctx: TerminalOperation) {
     await this.operation(target.epoch, 'pane.send_text', { pane_id: target.paneId, text }, ctx, target, true)
   }
+  /**
+   * LIFE-582: the same raw send, but only while the agent's `state_change_seq` is still the one corral observed —
+   * the guard compares it in the turn that writes (herdr-guard.patch). A transition in between is `agent_state_changed`
+   * and nothing is written. The CLI's `send` above does not carry the field and is unchanged.
+   */
+  async sendIfUnchanged(target: TerminalIdentity, text: string, expectedStateChangeSeq: number, ctx: TerminalOperation) {
+    await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
+      expected_state_change_seq: expectedStateChangeSeq, operation: { method: 'pane.send_text', params: { pane_id: target.paneId, text } } }, ctx, true)
+  }
+  /**
+   * LIFE-582 R2-A1: a raw key fenced on the pane's input revision as well — `inputRevision` is the revision of the screen corral read,
+   * or the one the previous fenced key returned. Any other input since then is `input_changed` and nothing is written. Returns the
+   * revision after this write (the next key's fence); `null` from a guard that does not report it.
+   */
+  async sendFenced(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number }, ctx: TerminalOperation): Promise<{ revision: number | null }> {
+    const result = await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
+      expected_state_change_seq: input.expectedStateChangeSeq, expected_input_revision: input.inputRevision,
+      operation: { method: 'pane.send_text', params: { pane_id: target.paneId, text: input.text } } }, ctx, true)
+    return { revision: typeof result.corral_input_revision === 'number' ? result.corral_input_revision : null }
+  }
+  /**
+   * LIFE-582 R2-A3: the visible screen (SGR kept) with the input revision, input quiet time and agent `state_change_seq` the guard read
+   * in the same turn — so corral knows the screen was captured after the input went quiet, and can fence the effect on that revision.
+   * `input`·`seq` are null from a guard that does not report them.
+   */
+  async screenRead(target: TerminalIdentity, ctx: TerminalOperation): Promise<{ text: string; input: { revision: number; idleMs: number } | null; seq: number | null }> {
+    const result = await this.operation(target.epoch, 'pane.read', { pane_id: target.paneId, source: 'visible', format: 'ansi', strip_ansi: false }, ctx, target)
+    const content = readRecord(result, 'read') ?? {}
+    if (typeof content.text !== 'string') throw new RuntimeError('invalid_backend_response', 'Invalid screen')
+    const input = typeof content.corral_input_revision === 'number' && typeof content.corral_input_idle_ms === 'number'
+      ? { revision: content.corral_input_revision, idleMs: content.corral_input_idle_ms } : null
+    return { text: content.text, input, seq: typeof content.corral_state_change_seq === 'number' ? content.corral_state_change_seq : null }
+  }
+  /** LIFE-582: the visible screen with SGR attributes kept — the mobile input path reads the provider's input line from it. */
+  async screenAnsi(target: TerminalIdentity, ctx: TerminalOperation): Promise<string> {
+    const result = await this.operation(target.epoch, 'pane.read', { pane_id: target.paneId, source: 'visible', format: 'ansi', strip_ansi: false }, ctx, target)
+    const content = readRecord(result, 'read') ?? {}
+    if (typeof content.text !== 'string') throw new RuntimeError('invalid_backend_response', 'Invalid screen')
+    return content.text
+  }
   async close(target: TerminalIdentity, ctx: TerminalOperation) {
     await this.operation(target.epoch, 'pane.close', { pane_id: target.paneId }, ctx, target, true)
   }
@@ -186,6 +228,17 @@ export class TerminalBackend {
     return observation(readRecord(result, 'agent'), target.paneId)
   }
   /**
+   * LIFE-582 R1-A3: `promptAgent` plus an input fence — the guard refuses (`input_changed`·`input_recent`) when any user input
+   * reached the pane after the observation that reported `inputRevision`, or less than `minIdleMs` ago. The draft corral read
+   * from the screen is then still the whole input line at submission time. The CLI's `promptAgent` above is unchanged.
+   */
+  async promptAgentIfQuiet(target: TerminalIdentity, input: { text: string; expectedStateChangeSeq: number; inputRevision: number; minIdleMs: number }, ctx: TerminalOperation) {
+    const result = await this.call({ epoch: target.epoch, deadline_ms: ctx.deadlineAt, pane_id: target.paneId, terminal_id: target.ptyId,
+      expected_state_change_seq: input.expectedStateChangeSeq, expected_input_revision: input.inputRevision, min_input_idle_ms: input.minIdleMs,
+      operation: { method: 'agent.prompt', params: { target: target.paneId, text: input.text } } }, ctx, true)
+    return observation(readRecord(result, 'agent'), target.paneId)
+  }
+  /**
    * Why a pane is blocked, as herdr's detection rules see it (LIFE-456 S3 / fix-r1 F3).
    *
    * The GUI already asks this and derives the reason from the rule id. The CLI used to read
@@ -224,5 +277,7 @@ function observation(agent: Record<string, unknown> | null, paneId: string): Age
     session: session && typeof session.value === 'string' ? { source: String(session.source ?? ''), kind: String(session.kind ?? ''), value: session.value } : null,
     paneId: typeof agent.pane_id === 'string' ? agent.pane_id : paneId,
     observedAt: new Date().toISOString(),
+    input: typeof agent.corral_input_revision === 'number' && typeof agent.corral_input_idle_ms === 'number'
+      ? { revision: agent.corral_input_revision, idleMs: agent.corral_input_idle_ms } : null,
   }
 }

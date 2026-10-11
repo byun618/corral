@@ -6,6 +6,10 @@
 //   ③ `src/shared/` 는 main·renderer 를 import 하지 않는다 — 경계 어휘는 아무 층에도 안 붙는다
 //   ④ herdr **와이어 모양**(메서드 이름·snake_case 필드)이 어댑터 바깥 src/ 에 나타나지 않는다
 //
+// 알려진 한계(LIFE-577 fix3 R3-N1): ④의 모바일 면제(`src/main/mobile/` 의 프로토콜 어휘)는 리터럴의 **구문 위치**만 본다 —
+// 문장 간 값 흐름은 추적하지 않는다. type 자리에서 허용된 값을 다른 식에서 `method` 로 쓰는 꼴(`method: msg.type` ·
+// `method: CLIENT_TYPES[2]`)은 잡지 못한다. 대조 묶음에 「알려진 미검출」 칸으로 남겨 두었다(`scripts/l518/boundary-probes.mjs` knownMiss).
+//
 // 무효 조건(샘플링 금지)을 지키려고 `src/**` 의 .ts/.tsx 를 **한 파일도 빼지 않고** 읽는다.
 // 읽은 파일 목록을 결과에 그대로 실어서, 덮은 범위가 결과만 보고 확인되게 한다.
 
@@ -67,6 +71,18 @@ if (ACTION_IDS.size < 10 || HERDR_METHODS.size < 10) {
   process.exit(2)
 }
 const MAIN_LOG = path.join(SRC, 'main/log.ts')
+/**
+ * LIFE-577 — 모바일 프로토콜(폰 ↔ corral WS)은 herdr 와 **다른 어휘**인데 메시지 이름 `ping` 이 herdr 메서드 지문과 겹친다
+ * (A5 가 M1 메시지를 `hello`·`pair`·`ping` 으로 고정). 그래서 ③ 을 둔다: `src/main/mobile/` 안이고, 그 파일이 어댑터를 import 하지 않고,
+ * 토큰이 모바일 프로토콜 어휘(`main/mobile/protocol.ts` 의 `CLIENT_TYPES` 에서 파생)이며 **method 자리·envelope 글자 밖**일 때만(fix1 R1-A5).
+ * 어휘는 손으로 적지 않는다(L-6 와 같은 이유).
+ */
+const MOBILE_DIR = path.join(SRC, 'main/mobile')
+const MOBILE_TYPES = derivedList({ file: 'main/mobile/protocol.ts', block: /export const CLIENT_TYPES = \[([^\]]*)\]/, item: /'([a-z_]+)'/g })
+if (!MOBILE_TYPES.has('ping') || MOBILE_TYPES.size < 3) {
+  console.error(`지문 파생 실패: 모바일 프로토콜 어휘 ${[...MOBILE_TYPES].join(',') || '(없음)'}`)
+  process.exit(2)
+}
 
 /**
  * 토큰 바로 앞이 요청 envelope 자리인가 — `method:` · `"method":` · `.method =` · `method ===` · `\"method\":\"`
@@ -187,6 +203,34 @@ function boundToMethod({ literal }) {
   return false
 }
 
+/** 속성·이름 노드가 정확히 `type` 인가 — `type:` · `'type':` · `x.type`. */
+const namedType = (name) => name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === 'type'
+const accessesType = (node) => ts.isPropertyAccessExpression(node) && node.name.text === 'type'
+const EQUALITY = (kind) =>
+  kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+  kind === ts.SyntaxKind.EqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken
+
+/**
+ * LIFE-577 fix2 (R2-A1) — 모바일 리터럴이 **확인 가능한 메시지 `type` 자리**에 있는가(긍정 허용). 그 밖은 전부 위반으로 둔다:
+ *   객체의 `type:` 값(`{type: 'ping'}`) · 타입 멤버 `type: 'ping'` · `x.type === 'ping'` 류 비교 · `switch (x.type)` 의 `case 'ping'` ·
+ *   `CLIENT_TYPES` 선언 배열의 원소(`as const` 허용).
+ * 맨 상수(`const T = 'ping'`)·함수 인자·별칭·계산 키·Map 은 와이어로 흘러갈 수 있어 판정할 수 없다 → 면제하지 않는다.
+ */
+function mobileTypePosition({ literal }) {
+  const parent = literal.parent
+  if (!parent) return false
+  if (ts.isPropertyAssignment(parent) && parent.initializer === literal) return namedType(parent.name)
+  if (ts.isLiteralTypeNode(parent)) return ts.isPropertySignature(parent.parent) && parent.parent.type === parent && namedType(parent.parent.name)
+  if (ts.isBinaryExpression(parent) && EQUALITY(parent.operatorToken.kind)) return accessesType(parent.left === literal ? parent.right : parent.left)
+  if (ts.isCaseClause(parent) && parent.expression === literal) return accessesType(parent.parent.parent.expression)
+  if (ts.isArrayLiteralExpression(parent)) {
+    let holder = parent.parent
+    while (holder && (ts.isAsExpression(holder) || ts.isSatisfiesExpression(holder) || ts.isParenthesizedExpression(holder))) holder = holder.parent
+    return holder !== undefined && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) && holder.name.text === 'CLIENT_TYPES'
+  }
+  return false
+}
+
 /**
  * 메서드 지문에 걸린 토큰을 위반에서 빼는 두 경우(01-criteria K3ⓔ 의 오탐 꼴 정의 그대로). 그 밖은 null(위반).
  *   ① 액션 id 어휘의 토큰이 envelope 자리 밖에 있다 — 액션 표·`bindingLabel('tab.rename')`·액션 id 키 객체·테스트 기대값.
@@ -199,8 +243,20 @@ function boundToMethod({ literal }) {
  * fix3 (R3-claude-01) — 토큰이 **더 긴 글자 노드 안**(오류 메시지·JSON 픽스처·테스트 제목·템플릿 문장)이면 글이다.
  * envelope 글자 규칙(`"method":"…"`)에 안 걸렸으면 ①을 준다.
  */
-function methodExemption({ source, index, name, zone, importsMainLog, sourceFile }) {
+function methodExemption({ source, index, name, zone, importsMainLog, sourceFile, file, importsAdapter }) {
   const before = source.slice(Math.max(0, index - 80), index)
+  // ③ 모바일 어휘(LIFE-577) — fix1 R1-A5: 「mobile 폴더 + 어댑터 import 없음」 만으로는 와이어를 모른다는 근거가 아니다.
+  // ① 과 같은 판정으로 좁힌다: envelope 글자(`"method":"ping"`)가 아니고, 글자 노드 **그 자체**(긴 문장 안이 아님)이며,
+  // 같은 식 안에서 `method` 자리와 묶이지 않은 값(`{type:'ping'}`·`message.type === 'ping'`·`case 'ping'` 의 switch 대상이 type)만.
+  // fix2 R2-A1 — 「method 와 안 묶였다」(부정)만으로는 변수·인자 경유를 놓친다 → `mobileTypePosition` 으로 type 자리를 **긍정** 확인한다.
+  // 판정할 수 없으면(파싱 진단·글자 노드 못 찾음) 면제하지 않는다(R2-claude-01 fail-closed 와 같다).
+  if (zone === 'main' && inside(file, MOBILE_DIR) && !importsAdapter && MOBILE_TYPES.has(name) && !ENVELOPE_BEFORE.test(before)) {
+    const parsed = sourceFile()
+    const diagnostics = parsed.parseDiagnostics
+    const trusted = Array.isArray(diagnostics) && diagnostics.length === 0
+    const text = trusted ? textAt({ sourceFile: parsed, pos: index }) : null
+    if (text?.literal && mobileTypePosition({ literal: text.literal }) && !boundToMethod({ literal: text.literal })) return 'mobile-protocol'
+  }
   if (ACTION_IDS.has(name) && !ENVELOPE_BEFORE.test(before)) {
     const parsed = sourceFile()
     const diagnostics = parsed.parseDiagnostics
@@ -384,6 +440,7 @@ for (const file of files) {
   const exempt = new Set()
   if (!isAdapter) {
     const importsMainLog = resolved.some(({ target }) => target === MAIN_LOG)
+    const importsAdapter = resolved.some(({ target }) => target !== null && inside(target, ADAPTER))
     // 주석을 벗긴 원문을 파싱한다 — 토큰 위치(index)가 그 원문 기준이다. 액션 id 토큰이 있는 파일만 실제로 파싱한다.
     let parsed = null
     const sourceFile = () => (parsed ??= ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS))
@@ -391,7 +448,7 @@ for (const file of files) {
       for (const match of source.matchAll(pattern)) {
         codeTokens.add(match[0])
         const name = match[0].replace(/^['"`]|\\?['"`]$/g, '')
-        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile }) : null
+        const reason = kind === 'method' ? methodExemption({ source, index: match.index, name, zone, importsMainLog, sourceFile, file, importsAdapter }) : null
         if (reason === null) wire.push({ kind, token: match[0] })
         else exempt.add(`${reason}\t${match[0]}`)
       }
@@ -455,7 +512,8 @@ const out = {
     항목: commentMentions,
   },
   면제: {
-    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다.',
+    설명: '메서드 지문에 걸렸지만 위반이 아닌 토큰 (LIFE-518). action-id = 단축키 액션 id 가 요청 envelope 자리 밖에 있다. log-tag = main log() 의 첫 인자 태그이고 herdr 메서드 이름이 아니다. mobile-protocol = src/main/mobile/ 안(어댑터 import 없음)의 모바일 프로토콜 메시지 이름이 확인 가능한 type 자리(`type:` 값·타입 멤버·`x.type` 비교·`switch (x.type)` case·CLIENT_TYPES 선언)에 있고 method 자리·envelope 글자 밖이다(LIFE-577 fix1·fix2).',
+    '모바일 프로토콜 어휘 (main/mobile/protocol.ts CLIENT_TYPES 에서 파생)': [...MOBILE_TYPES],
     '액션 id (shared/keybindings.ts ACTIONS 에서 파생)': ACTION_IDS.size,
     'herdr 메서드 (adapter request.ts ALLOWED_METHODS 에서 파생)': HERDR_METHODS.size,
     항목: exemptions,

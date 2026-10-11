@@ -91,6 +91,19 @@ export const SETTINGS_SECTIONS = [
       { title: '키보드 단축키', description: '단축키를 바꾸거나 끄고 기본값으로 되돌립니다.', keywords: ['shortcut', 'shortcuts', 'keybinding', 'keybindings', 'keyboard', 'hotkey', '키', '바인딩', '키보드'] },
     ],
   },
+  // Mobile — LIFE-577. 비어 있던 「원격 호스트」 그룹의 첫 섹션(폰이 tailnet 으로 이 맥에 붙는다). 아이콘 lucide Smartphone.
+  {
+    id: 'mobile',
+    group: 'remote',
+    title: 'Mobile',
+    description: '폰에서 tailnet 으로 이 맥의 corral 에 붙습니다 — Tailscale 점검, 페어링 QR, 기기 관리.',
+    searchEntries: [
+      { title: 'Mobile 켜기', description: '모바일 서버와 tailscale serve 항목을 켜고 끕니다.', keywords: ['mobile', 'phone', 'iphone', 'android', 'server', 'remote', '모바일', '폰', '휴대폰', '서버', '원격', '켜기'] },
+      { title: 'Tailscale 점검', description: 'CLI · 로그인 · HTTPS 인증서 · Funnel 꺼짐.', keywords: ['tailscale', 'tailnet', 'serve', 'funnel', 'https', 'certificate', 'cli', '테일스케일', '인증서', '점검'] },
+      { title: '페어링', description: 'QR 과 1회용 코드로 기기를 등록합니다.', keywords: ['pair', 'pairing', 'qr', 'code', 'token', '페어링', '코드', '연결'] },
+      { title: '기기', description: '페어링된 기기 목록과 해지.', keywords: ['device', 'devices', 'revoke', '기기', '해지', '목록'] },
+    ],
+  },
 ] as const satisfies readonly { id: string; group: SettingsGroupId; title: string; description: string; searchEntries: readonly SettingsSearchEntry[] }[]
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
 

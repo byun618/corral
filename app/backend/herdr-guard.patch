@@ -9,7 +9,7 @@
      #[serde(rename = "ping")]
      Ping(PingParams),
      #[serde(rename = "server.stop")]
-@@ -268,3 +270,15 @@
+@@ -268,3 +270,20 @@
  
  #[cfg(test)]
  mod tests;
@@ -22,8 +22,13 @@
 +    #[serde(default)] pub pane_id: Option<String>,
 +    #[serde(default)] pub terminal_id: Option<String>,
 +    #[serde(default)] pub operation: Option<serde_json::Value>,
-+    /// agent.prompt only: the state_change_seq corral last observed as ready. Compare-and-submit.
++    /// agent.prompt: the state_change_seq corral last observed as ready (compare-and-submit). pane.send_text: optional, same compare (LIFE-582).
 +    #[serde(default)] pub expected_state_change_seq: Option<u64>,
++    /// agent.prompt · pane.send_text (LIFE-582): the pane's user-input revision corral observed (pane.read, agent.get, or the
++    /// revision a fenced send returned). Any key, paste, raw send or submission since then is `input_changed` — nothing is written.
++    #[serde(default)] pub expected_input_revision: Option<u64>,
++    /// agent.prompt · pane.send_text (LIFE-582): the input must have been quiet this long, so an echo still in flight is not missed.
++    #[serde(default)] pub min_input_idle_ms: Option<u64>,
 +}
 --- a/src/api/server.rs
 +++ b/src/api/server.rs
@@ -54,7 +59,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,491 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -147,14 +152,63 @@
 +                return serde_json::json!({"id": prompt_id,
 +                    "error": {"code": code, "message": message, "observed": observed}}).to_string();
 +            }
++            // LIFE-582 R1-A3/R2-A3: corral read the screen (no draft) in a pane.read that reported this input revision.
++            // A key, paste or raw send since then may be a draft the screen did not show, and it would merge with this
++            // prompt into one submission — refuse in this turn. Human input (attach clients, client-shell panes) is
++            // applied in the same server loop as this request, so nothing lands between this check and the queue.
++            if let Some(refused) = self.corral_input_fence(&prompt_id, &prompt.target, params.expected_input_revision, params.min_input_idle_ms) { return refused; }
 +            return match self.queue_agent_prompt(prompt_id, prompt) {
 +                Ok((id, agent, _completion)) => encode_success(id, ResponseResult::AgentPrompted { agent }),
 +                Err(response) => response,
 +            };
 +        }
++        // LIFE-582: pane.send_text may carry the state_change_seq corral observed (a question still open, a
++        // turn still running). Compare it in this same turn and refuse on any transition, so a key meant
++        // for one screen never lands on the next one. Without the field the arm is unchanged.
++        if let (Method::PaneSendText(send), Some(expected_seq)) = (&request.method, params.expected_state_change_seq) {
++            self.reconcile_managed_agent_target(&send.pane_id);
++            let observed = match self.agent_info_for_target(&send.pane_id) {
++                Ok(agent) => agent,
++                Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
++            };
++            if observed.state_change_seq != expected_seq {
++                let message = format!("agent state changed (expected state_change_seq {expected_seq}, observed {})", observed.state_change_seq);
++                return serde_json::json!({"id": id, "error": {"code": "agent_state_changed", "message": message, "observed": observed}}).to_string();
++            }
++        }
++        // LIFE-582 R2-A1: pane.send_text may also carry the input revision corral last saw (the screen it read, or the
++        // revision this guard returned after corral's previous key). Any other input since then is `input_changed` and
++        // nothing is written — so a multi-key answer cannot interleave with a desktop key.
++        if let Method::PaneSendText(send) = &request.method {
++            if let Some(refused) = self.corral_input_fence(&id, &send.pane_id, params.expected_input_revision, params.min_input_idle_ms) { return refused; }
++        }
 +        // No await, internal-event drain, or second queue between guard and effect.
 +        let snapshot = matches!(&request.method, Method::SessionSnapshot(_));
++        let input_target = match &request.method {
++            Method::AgentGet(t) => Some((t.target.clone(), "agent")),
++            // LIFE-582 R2-A3: the screen and the input revision/quiet time (and the agent's state_change_seq) of the
++            // same turn — corral then knows the screen was captured after the input went quiet, and fences on it.
++            Method::PaneRead(p) => Some((p.pane_id.clone(), "read")),
++            // LIFE-582 R2-A1: the revision after this write, so corral's next key can fence on it.
++            Method::PaneSendText(p) if params.expected_input_revision.is_some() => Some((p.pane_id.clone(), "send")),
++            _ => None,
++        };
 +        let response = self.handle_api_request_after_internal_events_drained(request);
++        // LIFE-582 R1-A3: agent.get also reports the pane's user-input revision and quiet time, read in this turn.
++        if let Some((target, slot)) = input_target {
++            let input = self.parse_pane_id(&target).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| runtime.corral_input_state());
++            let seq = if slot == "read" { self.agent_info_for_target(&target).ok().map(|agent| agent.state_change_seq) } else { None };
++            let mut value: serde_json::Value = serde_json::from_str(&response).unwrap();
++            if value.get("error").is_some() { return response; }
++            if slot == "send" && !value["result"].is_object() { value["result"] = serde_json::json!({}); }
++            let place = match slot { "agent" => value["result"]["agent"].as_object_mut(), "read" => value["result"]["read"].as_object_mut(), _ => value["result"].as_object_mut() };
++            if let (Some((revision, idle_ms)), Some(place)) = (input, place) {
++                place.insert("corral_input_revision".into(), serde_json::json!(revision));
++                place.insert("corral_input_idle_ms".into(), serde_json::json!(idle_ms));
++                if let Some(seq) = seq { place.insert("corral_state_change_seq".into(), serde_json::json!(seq)); }
++            }
++            return value.to_string();
++        }
 +        if !snapshot { return response; }
 +        let mut value: serde_json::Value = serde_json::from_str(&response).unwrap();
 +        if let Some(panes) = value["result"]["snapshot"]["panes"].as_array_mut() {
@@ -166,6 +220,18 @@
 +            }
 +        }
 +        value.to_string()
++    }
++    /// LIFE-582: refuse in this turn when the pane's user input moved since the revision corral saw (`input_changed`)
++    /// or moved less than `min_idle` ago (`input_recent`). Neither field — no fence (the CLI arms are unchanged).
++    fn corral_input_fence(&self, id: &str, target: &str, expected: Option<u64>, min_idle: Option<u64>) -> Option<String> {
++        if expected.is_none() && min_idle.is_none() { return None; }
++        let input = self.parse_pane_id(target).and_then(|(ws, pane)| self.lookup_runtime_sender(ws, pane)).map(|runtime| runtime.corral_input_state());
++        let Some((revision, idle_ms)) = input else { return Some(encode_error(id.to_string(), "stale_terminal", "pane disappeared")); };
++        let changed = expected.is_some_and(|expected| expected != revision);
++        if !changed && !min_idle.is_some_and(|min| idle_ms < min) { return None; }
++        let code = if changed { "input_changed" } else { "input_recent" };
++        Some(serde_json::json!({"id": id, "error": {"code": code, "message": "pane input moved since corral observed it",
++            "observed_input": {"revision": revision, "idle_ms": idle_ms}}}).to_string())
 +    }
 +}
 +
@@ -195,14 +261,14 @@
 +            let operation = if method == "pane.close" { serde_json::json!({"method":method,"params":{"pane_id":pane_name}}) }
 +                else { serde_json::json!({"method":method,"params":{"pane_id":pane_name,"text":text}}) };
 +            let response: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
-+                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None,
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(format!("{terminal}.{old_generation}")), operation: Some(operation), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
 +            })).unwrap();
 +            assert_eq!(response["error"]["code"], "stale_terminal");
 +            assert_eq!(app.lookup_runtime_sender(ws, pane).unwrap().corral_generation(), new_generation);
 +        }
 +        let manifests: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: None, terminal_id: None,
-+            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None,
++            operation: Some(serde_json::json!({"method":"server.agent_manifests","params":{}})), expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
 +        })).unwrap();
 +        assert!(manifests.get("error").is_none(), "{manifests}");
 +        assert!(manifests["result"]["manifests"].as_array().is_some_and(|list| !list.is_empty()), "{manifests}");
@@ -270,7 +336,7 @@
 +            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
 +                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
 +                operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"second turn"}})),
-+                expected_state_change_seq: Some(expected),
++                expected_state_change_seq: Some(expected), expected_input_revision: None, min_input_idle_ms: None,
 +            })).unwrap()
 +        }
 +        // What this test can and cannot show. It can show that the *guard predicate* accepts a Done
@@ -341,7 +407,7 @@
 +                epoch: epoch().into(), deadline_ms: u64::MAX,
 +                pane_id: pane_id.map(str::to_string), terminal_id: terminal_id.map(str::to_string),
 +                operation: Some(serde_json::json!({"method":"agent.explain","params":{"target":operation_target}})),
-+                expected_state_change_seq: None,
++                expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None,
 +            })).unwrap()
 +        }
 +        // ① Matching identity: the envelope must not refuse it any more. There is no provider in
@@ -360,6 +426,130 @@
 +        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
 +        std::fs::remove_dir_all(root).unwrap();
 +    }
++
++    /// LIFE-582 R1-A3 — agent.get reports the pane's user-input revision; agent.prompt with that revision is refused
++    /// once any input reached the PTY after it (`input_changed`) or the input has not been quiet long enough
++    /// (`input_recent`). With the current revision and no quiet floor it passes to the queue step.
++    #[tokio::test]
++    async fn corral_terminal_refuses_a_prompt_after_input_moved() {
++        use crate::detect::{Agent, AgentState};
++        use crate::events::AppEvent;
++        use std::time::{Duration, Instant};
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l582-input-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        app.state.outer_terminal_focus = Some(false);
++        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++            "corral-input".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));
++        for state in [AgentState::Unknown, AgentState::Idle] {
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude), state,
++                visible_blocker: false, visible_working: false, process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(&terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        let target = format!("{terminal}.{}", app.lookup_runtime_sender(ws, pane).unwrap().corral_generation());
++        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, seq: Option<u64>, revision: Option<u64>, idle: Option<u64>) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
++                operation: Some(operation), expected_state_change_seq: seq, expected_input_revision: revision, min_input_idle_ms: idle,
++            })).unwrap()
++        }
++        let get = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"agent.get","params":{"target":pane_name}}), None, None, None);
++        let seq = get["result"]["agent"]["state_change_seq"].as_u64().unwrap();
++        let revision = get["result"]["agent"]["corral_input_revision"].as_u64().expect("agent.get carries the input revision");
++        assert!(get["result"]["agent"]["corral_input_idle_ms"].is_u64(), "{get}");
++        let prompt = serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"hi"}});
++        // Current revision, no quiet floor: past the input check (stops at the queue step's foreground check).
++        let ok = guard(&mut app, &pane_name, &target, prompt.clone(), Some(seq), Some(revision), Some(0));
++        assert!(!["input_changed", "input_recent"].contains(&ok["error"]["code"].as_str().unwrap_or("")), "{ok}");
++        // A draft typed after the observation — any user-input write moves the revision.
++        let typed = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"pane.send_text","params":{"pane_id":pane_name,"text":"draft"}}), None, None, None);
++        assert!(typed.get("error").is_none(), "{typed}");
++        let moved = guard(&mut app, &pane_name, &target, prompt.clone(), Some(seq), Some(revision), Some(0));
++        assert_eq!(moved["error"]["code"], "input_changed", "{moved}");
++        assert_eq!(moved["error"]["observed_input"]["revision"], revision + 1);
++        // The new revision, but the input is still within the quiet floor.
++        let recent = guard(&mut app, &pane_name, &target, prompt, Some(seq), Some(revision + 1), Some(60_000));
++        assert_eq!(recent["error"]["code"], "input_recent", "{recent}");
++        let after = guard(&mut app, &pane_name, &target, serde_json::json!({"method":"agent.get","params":{"target":pane_name}}), None, None, None);
++        assert_eq!(after["result"]["agent"]["corral_input_revision"], revision + 1);
++        println!("input revision {revision} -> {}; stale revision input_changed, quiet floor input_recent", revision + 1);
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    /// LIFE-582 R2-A1/R2-A3 — (1) pane.read reports the input revision, quiet time and state_change_seq of the same turn;
++    /// (2) a fenced pane.send_text writes only at that revision and returns the revision after its own write, and refuses
++    /// (writing nothing) once other input moved it; (3) a submission queued the way agent.prompt queues it (no corral
++    /// fields — the CLI path) moves the revision too, so a phone prompt fenced on the earlier revision is refused.
++    #[tokio::test]
++    async fn corral_terminal_fences_keys_and_counts_every_submission() {
++        use crate::detect::{Agent, AgentState};
++        use crate::events::AppEvent;
++        use std::time::{Duration, Instant};
++        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
++        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        let root = std::env::temp_dir().join(format!("l582-r2-{}", std::process::id()));
++        std::fs::create_dir_all(&root).unwrap();
++        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();
++        let response: serde_json::Value = serde_json::from_str(&app.handle_api_request_after_internal_events_drained(req)).unwrap();
++        let pane_name = response["result"]["root_pane"]["pane_id"].as_str().unwrap().to_string();
++        let (ws, pane) = app.parse_pane_id(&pane_name).unwrap();
++        let terminal = app.state.terminal_id_for_pane(ws, pane).unwrap();
++        app.state.outer_terminal_focus = Some(false);
++        app.state.terminals.get_mut(&terminal).unwrap().begin_managed_agent(
++            "corral-r2".into(), Agent::Claude, Instant::now(), Duration::ZERO, Duration::from_secs(300));
++        for state in [AgentState::Unknown, AgentState::Idle] {
++            app.state.handle_app_event(AppEvent::StateChanged { pane_id: pane, agent: Some(Agent::Claude), state,
++                visible_blocker: false, visible_working: false, process_exited: false, observed_at: Instant::now() });
++            app.state.terminals.get_mut(&terminal).unwrap().reconcile_managed_agent_at(Instant::now(), false);
++        }
++        let target = format!("{terminal}.{}", app.lookup_runtime_sender(ws, pane).unwrap().corral_generation());
++        fn guard(app: &mut App, pane_name: &str, target: &str, operation: serde_json::Value, revision: Option<u64>) -> serde_json::Value {
++            serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++                epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.to_string()), terminal_id: Some(target.to_string()),
++                operation: Some(operation), expected_state_change_seq: None, expected_input_revision: revision, min_input_idle_ms: None,
++            })).unwrap()
++        }
++        let read_op = serde_json::json!({"method":"pane.read","params":{"pane_id":pane_name,"source":"visible","format":"ansi","strip_ansi":false}});
++        let read = guard(&mut app, &pane_name, &target, read_op.clone(), None);
++        let revision = read["result"]["read"]["corral_input_revision"].as_u64().expect("pane.read carries the input revision");
++        assert!(read["result"]["read"]["corral_input_idle_ms"].is_u64(), "{read}");
++        assert!(read["result"]["read"]["corral_state_change_seq"].is_u64(), "{read}");
++        let send = |text: &str| serde_json::json!({"method":"pane.send_text","params":{"pane_id":pane_name,"text":text}});
++        let first = guard(&mut app, &pane_name, &target, send("1"), Some(revision));
++        assert!(first.get("error").is_none(), "{first}");
++        assert_eq!(first["result"]["corral_input_revision"], revision + 1, "{first}");
++        // Another client's key between corral's keys: the next fenced key is refused and writes nothing.
++        let other = guard(&mut app, &pane_name, &target, send("x"), None);
++        assert!(other.get("error").is_none(), "{other}");
++        let fenced = guard(&mut app, &pane_name, &target, send("2"), Some(revision + 1));
++        assert_eq!(fenced["error"]["code"], "input_changed", "{fenced}");
++        let now = guard(&mut app, &pane_name, &target, read_op.clone(), None);
++        assert_eq!(now["result"]["read"]["corral_input_revision"], revision + 2, "a refused key must not write: {now}");
++        // The agent.prompt queue path (no corral fields, as the CLI submits) is user input too.
++        let runtime = app.lookup_runtime_sender(ws, pane).unwrap();
++        let _queued = runtime.queue_user_input_submission(bytes::Bytes::from_static(b"cli"), bytes::Bytes::from_static(b"\r"), Duration::ZERO, None).expect("queued");
++        let after = guard(&mut app, &pane_name, &target, read_op, None);
++        assert_eq!(after["result"]["read"]["corral_input_revision"], revision + 3, "{after}");
++        let seq = after["result"]["read"]["corral_state_change_seq"].as_u64().unwrap();
++        let prompt: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("guard".into(), CorralTerminalParams {
++            epoch: epoch().into(), deadline_ms: u64::MAX, pane_id: Some(pane_name.clone()), terminal_id: Some(target.clone()),
++            operation: Some(serde_json::json!({"method":"agent.prompt","params":{"target":pane_name,"text":"phone"}})),
++            expected_state_change_seq: Some(seq), expected_input_revision: Some(revision + 2), min_input_idle_ms: None,
++        })).unwrap();
++        assert_eq!(prompt["error"]["code"], "input_changed", "a prompt fenced before the submission: {prompt}");
++        println!("pane.read revision {revision}; fenced key -> {}; other key then fenced key refused; submission -> {}", revision + 1, revision + 3);
++        for (_, runtime) in app.terminal_runtimes.drain() { runtime.shutdown(); }
++        std::fs::remove_dir_all(root).unwrap();
++    }
 +}
 --- a/src/app/api/agents.rs
 +++ b/src/app/api/agents.rs
@@ -374,50 +564,91 @@
          params: AgentPromptParams,
 --- a/src/pane/terminal.rs
 +++ b/src/pane/terminal.rs
-@@ -213,12 +213,14 @@
+@@ -213,12 +213,16 @@
  
  pub(crate) struct PaneTerminal {
      pub(crate) ghostty: GhosttyPaneTerminal,
 +    corral_generation: u64,
      corral_raw: Mutex<(std::collections::VecDeque<u8>, u64)>,
++    /// LIFE-582: every user-input write to this PTY (keys, paste, pane.send_text) — revision and when it last moved.
++    corral_input: Mutex<(u64, std::time::Instant)>,
  }
  
  impl PaneTerminal {
      pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
 -        Self { ghostty, corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
 +        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-+        Self { ghostty, corral_generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)) }
++        Self { ghostty, corral_generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), corral_raw: Mutex::new((std::collections::VecDeque::new(), 0)), corral_input: Mutex::new((0, std::time::Instant::now())) }
      }
  
      pub fn process_pty_bytes(
-@@ -237,6 +239,8 @@
-         self.ghostty
+@@ -238,6 +242,18 @@
              .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
      }
-+
-+    pub(crate) fn corral_generation(&self) -> u64 { self.corral_generation }
  
++    pub(crate) fn corral_generation(&self) -> u64 { self.corral_generation }
++
++    pub(crate) fn corral_note_input(&self) {
++        if let Ok(mut input) = self.corral_input.lock() { input.0 = input.0.wrapping_add(1); input.1 = std::time::Instant::now(); }
++    }
++
++    /// (input revision, ms since the last user-input write).
++    pub(crate) fn corral_input_state(&self) -> (u64, u64) {
++        let input = self.corral_input.lock().unwrap();
++        (input.0, u64::try_from(input.1.elapsed().as_millis()).unwrap_or(u64::MAX))
++    }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) {
          use base64::Engine;
+         let history = self.corral_raw.lock().unwrap();
 --- a/src/pane.rs
 +++ b/src/pane.rs
-@@ -2919,6 +2919,8 @@
-     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+@@ -2920,6 +2920,10 @@
          self.terminal.scroll_metrics()
      }
-+
-+    pub(crate) fn corral_generation(&self) -> u64 { self.terminal.corral_generation() }
  
++    pub(crate) fn corral_generation(&self) -> u64 { self.terminal.corral_generation() }
++
++    pub(crate) fn corral_input_state(&self) -> (u64, u64) { self.terminal.corral_input_state() }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.terminal.corral_raw_snapshot() }
  
+     pub(crate) fn search_text_window(
+@@ -3133,7 +3137,9 @@
+     }
+ 
+     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+-        self.io.try_send_bytes(bytes)
++        let sent = self.io.try_send_bytes(bytes);
++        if sent.is_ok() { self.terminal.corral_note_input(); }
++        sent
+     }
+ 
+     pub fn queue_user_input_submission(
+@@ -3143,8 +3149,11 @@
+         delay: std::time::Duration,
+         deadline: Option<std::time::Instant>,
+     ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+-        self.io
+-            .queue_user_input_submission(text, enter, delay, deadline)
++        let queued = self.io
++            .queue_user_input_submission(text, enter, delay, deadline);
++        // LIFE-582 R2-A3: a submission (agent.prompt, with or without corral's fence) is user input too.
++        if queued.is_ok() { self.terminal.corral_note_input(); }
++        queued
+     }
+ 
+     pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
 --- a/src/terminal/runtime.rs
 +++ b/src/terminal/runtime.rs
-@@ -347,6 +347,8 @@
-     pub fn synchronized_output_active(&self) -> bool {
+@@ -348,6 +348,10 @@
          self.0.synchronized_output_active()
      }
-+
-+    pub(crate) fn corral_generation(&self) -> u64 { self.0.corral_generation() }
  
++    pub(crate) fn corral_generation(&self) -> u64 { self.0.corral_generation() }
++
++    pub(crate) fn corral_input_state(&self) -> (u64, u64) { self.0.corral_input_state() }
++
      pub(crate) fn corral_raw_snapshot(&self) -> (String, u64, bool) { self.0.corral_raw_snapshot() }
  
+     pub fn visible_text(&self) -> String {

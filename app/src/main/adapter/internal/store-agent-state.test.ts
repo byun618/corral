@@ -104,6 +104,20 @@ describe('retained — 닫힌 pane 의 마지막 기록 (S15ⓓ)', () => {
     expect(store.retainedRows()[0]?.agentStatus).toBe('done')
   })
 
+  it('LIFE-581 X7 — 잃는 순간의 세션 참조를 같이 남긴다(모바일 닫힌 대화용) · 참조 없는 pane 은 null', () => {
+    const store = new WorkspaceStore()
+    const base = snapshot({ panes: [{ id: 'w1:p1', tab: 'w1:t1', status: 'done' }, { id: 'w1:p2', tab: 'w1:t1', status: 'done' }] })
+    const withSession = typeof base === 'object' && base !== null && 'panes' in base && Array.isArray(base.panes)
+      ? { ...base, panes: base.panes.map((pane: Record<string, unknown>) => (pane['pane_id'] === 'w1:p1' ? { ...pane, agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'sess-1' } } : pane)) }
+      : base
+    store.applySnapshot(withSession)
+    closed(store, 'w1:p1')
+    closed(store, 'w1:p2')
+    const rows = new Map(store.retainedRows().map((row) => [row.paneId, row.agentSession]))
+    expect(rows.get('w1:p1')).toEqual({ kind: 'id', agent: 'claude', source: 'herdr:claude', id: 'sess-1' })
+    expect(rows.get('w1:p2')).toBeNull()
+  })
+
   it('done 이 아니면 안 남는다 — 완료만 남길 값이 있다', () => {
     const store = new WorkspaceStore()
     store.applySnapshot(snapshot({

@@ -44,6 +44,11 @@ export type Settings = {
   confirmClosePinnedTab: boolean
   skipCloseTerminalWithRunningProcessConfirm: boolean
   skipDeleteWorktreeConfirm: boolean
+  /**
+   * 설정 › Mobile 스위치(LIFE-577) — 기본 꺼짐. 켜 두면 기동 때 loopback 서버를 열고 `tailscale serve` 항목을 다시 올린다(A8ⓐ).
+   * 바뀌면 main 이 `MobileService.setEnabled` 로 넘긴다(`corral:setSettings`).
+   */
+  mobileEnabled: boolean
 }
 
 /**
@@ -85,6 +90,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmClosePinnedTab: true,
   skipCloseTerminalWithRunningProcessConfirm: false,
   skipDeleteWorktreeConfirm: false,
+  mobileEnabled: false,
 }
 
 export type NumericSettingKey =
@@ -169,6 +175,7 @@ export function readSettingField({ key, value }: { key: keyof Settings; value: u
     case 'confirmClosePinnedTab':
     case 'skipCloseTerminalWithRunningProcessConfirm':
     case 'skipDeleteWorktreeConfirm':
+    case 'mobileEnabled':
       return typeof value === 'boolean' ? value : null
     case 'terminalDividerColorDark':
       return isHexColor(value) ? value.toLowerCase() : null
@@ -225,6 +232,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'confirmClosePinnedTab',
   'skipCloseTerminalWithRunningProcessConfirm',
   'skipDeleteWorktreeConfirm',
+  'mobileEnabled',
 ]
 
 /** 파일에서 읽은 객체 → 설정. 칸마다 따로 기본값으로 떨어진다. 객체가 아니면 전부 기본값. */

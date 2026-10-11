@@ -26,6 +26,10 @@ const jsonFrame = (frame) => `export const frame = ${frame}\n`
 /**
  * group: K3 소항목. expect: 기대 규칙(null = 위반 0 이어야 하는 음성 대조).
  * flip: 기준 검사기에서 잡히고 고친 검사기에서 안 잡히는 것이 **허용된** 칸 — 01-criteria K3ⓔ 정의 ①·② 뿐.
+ * knownMiss: **알려진 미검출**(LIFE-577 fix3 R3-N1 · fix4 R4-A3) — `expect` 는 옳은 기대(위반)를 그대로 두고, 칸의 상태는 통과도 실패도 아닌
+ *   `known-miss` 다(`cellState`). `cellOk` 는 이 칸을 참으로 돌려주지 않는다 — 통과 수에 섞이지 않는다. 검사기가 정상 완료(exit 0·1 + 보고서)하고
+ *   안 잡았을 때만 `known-miss`, 실행 오류(보고서 없음·다른 exit)거나 잡게 되면 `fail`(표시를 걷어 낼 때).
+ *   모바일 면제는 리터럴의 **구문 위치**만 본다 — 문장 간 값 흐름(`msg.type` 을 다른 문장에서 `method` 로 쓰기 등)은 추적하지 않는다.
  */
 export const PROBES = [
   // ⓐ 액션 id 와 겹치는 실제 herdr 메서드 `tab.rename` 을 요청 envelope 위치에 — 네 구역 × 두 꼴
@@ -198,6 +202,30 @@ export const PROBES = [
   { id: 'f-request-outside', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ①', file: `${R}f-request-outside.ts`, source: "declare function request(sock: unknown, method: string): void\nexport const probe = (sock: unknown): void => request(sock, 'tab.rename')\n" },
   // ⓔ② 에 드는 사각 — main 로그 태그가 herdr 메서드 목록에 없는 메서드 꼴
   { id: 'f-log-unknown-method', expectComment: [], group: 'ⓕ', expect: null, flip: 'ⓔ②', file: `${M}f-log-unknown.ts`, source: "import { log } from './log.js'\nlog('pane.focus_direction', {})\n" },
+
+  // ⓜ LIFE-577 — 모바일 프로토콜 어휘 면제(`src/main/mobile/` 안 · 어댑터 import 없음 · `CLIENT_TYPES` 어휘)만 통과, 그 밖의 `ping` 은 계속 잡는다
+  // fix2 R2-A1 — 맨 상수 `'ping'` 은 type 자리로 확인할 수 없다(별칭 반례와 같은 꼴) → 위반으로 바뀐다(r1 까지 면제였다).
+  { id: 'm-mobile-ping', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-ping.ts', source: "export const T = 'ping'\n" },
+  { id: 'm-mobile-ping-imports-adapter', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-adapter.ts', source: "import '../adapter/index.js'\nexport const T = 'ping'\n" },
+  { id: 'm-ping-outside-mobile', group: 'ⓜ', expect: 'R4-wire-leak', file: `${M}m-ping.ts`, source: "export const T = 'ping'\n" },
+  { id: 'm-mobile-herdr-method', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-herdr.ts', source: send("'workspace.rename'") },
+  // ⓜ LIFE-577 fix1 (R1-A5) — 리뷰어 반례: mobile 폴더 안이어도 `method` 에 묶인 `ping`·직렬화 envelope 는 위반, `{type:'ping'}` 은 통과
+  { id: 'm-mobile-explicit-envelope', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-envelope.ts', source: "import net from 'node:net'\nexport function rawPing(socket: string) { const c = net.connect(socket); c.write(JSON.stringify({id: 'r1', method: 'ping'}) + '\\n'); return c }\n" },
+  { id: 'm-mobile-serialized-envelope', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-json.ts', source: "export const frame = '{\"id\":\"r1\",\"method\":\"ping\"}'\n" },
+  { id: 'm-mobile-method-compare', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-compare.ts', source: "export const probe = (frame: { method: string }): boolean => frame.method === 'ping'\n" },
+  { id: 'm-mobile-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type.ts', source: "export const message = {type: 'ping'}\n" },
+  { id: 'm-mobile-type-compare-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-compare.ts', source: "export const isPing = (message: { type: string }): boolean => message.type === 'ping'\n" },
+  // ⓜ LIFE-577 fix2 (R2-A1) — 면제는 **확인 가능한 type 자리만**(긍정 허용). 리뷰어 반례 4칸(함수 인자·별칭·계산 키·Map)은 위반
+  { id: 'm-mobile-direct-call', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-direct-call.ts', source: "import net from 'node:net'\nfunction request(c: net.Socket, m: string) { c.write(JSON.stringify({id: 'r2', method: m}) + '\\n') }\nexport function go(sock: string) { request(net.connect(sock), 'ping') }\n" },
+  { id: 'm-mobile-alias', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-alias.ts', source: "import net from 'node:net'\nexport function go(sock: string) { const operation = 'ping'; net.connect(sock).write(JSON.stringify({id: 'r2', method: operation}) + '\\n') }\n" },
+  { id: 'm-mobile-computed', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-computed.ts', source: "export const f = {['meth' + 'od']: 'ping'}\n" },
+  { id: 'm-mobile-map', group: 'ⓜ', expect: 'R4-wire-leak', file: 'src/main/mobile/boundary-probe-m-map.ts', source: "export const f = new Map([['method', 'ping']])\n" },
+  { id: 'm-mobile-type-switch-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-switch.ts', source: "export function kind(message: { type: string }): number { switch (message.type) { case 'ping': return 1; default: return 0 } }\n" },
+  { id: 'm-mobile-client-types-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-client-types.ts', source: "export const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const\n" },
+  { id: 'm-mobile-type-literal-type-positive', expectComment: [], group: 'ⓜ', expect: null, flip: 'LIFE-577 모바일 어휘', file: 'src/main/mobile/boundary-probe-m-type-literal.ts', source: "export type Ping = { type: 'ping'; id?: string }\n" },
+  // ⓜ LIFE-577 fix3 (R3-N1) — 리뷰어 r3 간접 반례: type 자리에서 허용된 값을 **다른 식에서** `method` 로 쓴다. 지금 검사기는 못 잡는다(알려진 미검출)
+  { id: 'm-mobile-indirect-msg-type', group: 'ⓜ', expect: 'R4-wire-leak', knownMiss: '모바일 면제는 구문 위치만 본다 — 문장 간 값 흐름 미추적', file: 'src/main/mobile/boundary-probe-m-indirect-type.ts', source: "import net from 'node:net'\nexport function go(sock: string) { const msg = {type: 'ping'}; net.connect(sock).write(JSON.stringify({id: 'r3', method: msg.type}) + '\\n') }\n" },
+  { id: 'm-mobile-indirect-client-types', group: 'ⓜ', expect: 'R4-wire-leak', knownMiss: '모바일 면제는 구문 위치만 본다 — CLIENT_TYPES 는 변수 이름으로 허용, 원소의 이후 쓰임 미추적', file: 'src/main/mobile/boundary-probe-m-indirect-client-types.ts', source: "const CLIENT_TYPES = ['hello', 'pair', 'ping'] as const\nexport const request = {id: 'r3', method: CLIENT_TYPES[2]}\n" },
 ]
 
 /** 검사기 원문을 받아 `<tmp>/scripts/check-boundary.mjs` + `<tmp>/src`(전체 복사) + `<tmp>/node_modules`(링크 — 검사기가 typescript 를 쓴다) 를 만든다. */
@@ -211,10 +239,18 @@ function makeSandbox(checkerSource) {
 }
 
 /** 칸이 기대대로인가 — nodetest·행렬·변이가 같은 판정식을 쓴다. */
-export function cellOk({ probe, cell }) {
+/** 칸 상태 — `pass` · `fail` · `known-miss`(알려진 미검출, R4-A3). 검사기 실행 오류는 언제나 `fail`. */
+export function cellState({ probe, cell }) {
+  if (cell.completed === false) return 'fail'
+  if (probe.knownMiss !== undefined) return cell.caught ? 'fail' : 'known-miss'
   const rules = probe.expect === null ? !cell.caught && cell.exit === 0 : cell.caught && cell.exit === 1
   const comments = probe.expectComment === undefined || JSON.stringify([...cell.commentTokens].sort()) === JSON.stringify([...probe.expectComment].sort())
-  return rules && comments
+  return rules && comments ? 'pass' : 'fail'
+}
+
+/** 기대대로 통과했나 — 알려진 미검출은 통과가 아니다(R4-A3). */
+export function cellOk({ probe, cell }) {
+  return cellState({ probe, cell }) === 'pass'
 }
 
 function runChecker(root) {
@@ -261,6 +297,8 @@ export function runProbes({ checkerSource, probes = PROBES }) {
           rules,
           tokens: mine.flatMap((item) => item.tokens ?? [item.specifier]),
           commentTokens: (report?.주석언급?.항목 ?? []).filter((item) => item.file === probe.file).flatMap((item) => item.tokens),
+          // 검사기가 정상 완료했나 — 보고서가 있고 exit 0·1. 실행 오류를 「안 잡음」 으로 읽지 않게(R4-A3).
+          completed: report !== null && (exit === 0 || exit === 1),
           caught: probe.expect === null ? mine.length > 0 : rules.includes(probe.expect),
         }
       } finally {

@@ -35,8 +35,14 @@ import type {
 import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.js'
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
+import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 
 const EXPOSED = [
+  'getMobileStatus',
+  'onMobileStatus',
+  'createMobilePairing',
+  'revokeMobileDevice',
+  'recheckMobile',
   'getState',
   'refreshTree',
   'onState',
@@ -255,6 +261,18 @@ const api: CorralApi = {
     }
   },
   syncWindowZoom: () => ipcRenderer.send('corral:syncWindowZoom'),
+  // 설정 › Mobile (LIFE-577). push 는 상태만(토큰·코드 없음) — 코드는 createMobilePairing 응답에만.
+  getMobileStatus: (): Promise<MobileStatus | null> => ipcRenderer.invoke('corral:getMobileStatus'),
+  onMobileStatus: (listener: (status: MobileStatus) => void) => {
+    const handler = (_event: unknown, status: MobileStatus): void => listener(status)
+    ipcRenderer.on('corral:mobile', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:mobile', handler)
+    }
+  },
+  createMobilePairing: (): Promise<MobilePairingResult> => ipcRenderer.invoke('corral:createMobilePairing'),
+  revokeMobileDevice: (input: { id: string }): Promise<{ ok: boolean }> => ipcRenderer.invoke('corral:revokeMobileDevice', input),
+  recheckMobile: (): Promise<MobileStatus | null> => ipcRenderer.invoke('corral:recheckMobile'),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

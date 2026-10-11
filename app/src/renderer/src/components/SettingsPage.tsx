@@ -15,11 +15,12 @@ import { useAnnounceDialog } from '../menu-bus.js'
 import { settingsNavGroups, settingsSectionById, type SettingsSection as SettingsSectionDef, type SettingsSectionId } from '../settings-registry.js'
 import { AgentsSection } from './AgentsSection.js'
 import { GeneralSection } from './GeneralSection.js'
+import { MobileSection } from './MobileSection.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
 import { TerminalAppearanceSection } from './TerminalAppearanceSection.js'
 import { WindowSidebarCard } from './WindowSidebarCard.js'
-import { ArrowLeftIcon, BotIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon } from './SidebarIcons.js'
+import { ArrowLeftIcon, BotIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon, SmartphoneIcon } from './SidebarIcons.js'
 import './settings.css'
 
 export const SETTINGS_ESCAPE_CONFIRM_MS = 2200
@@ -30,6 +31,7 @@ const SECTION_ICONS: Record<SettingsSectionId, (props: { className?: string }) =
   general: SlidersIcon,
   appearance: PaletteIcon,
   shortcuts: KeyboardIcon,
+  mobile: SmartphoneIcon,
 }
 
 /** 내비 행 하나 — 아이콘 · 제목 · 배지 자리(있을 때만, 198 `SettingsSidebar.tsx:255`). */
@@ -145,6 +147,7 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
               {shown.id === 'appearance' ? <WindowSidebarCard view={sidebarView} onChange={onChangeSidebarView} query={query} /> : null}
               {shown.id === 'general' ? <GeneralSection /> : null}
               {shown.id === 'agents' ? <AgentsSection /> : null}
+              {shown.id === 'mobile' ? <MobileSection /> : null}
             </SettingsSection>
           )}
         </div>

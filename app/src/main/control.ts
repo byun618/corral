@@ -11,10 +11,12 @@ import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks'
 import { isRecord, readNumber, readString, safeParse } from '../shared/json.js'
 import type { AddRepoResult } from '../shared/types.js'
 import { log } from './log.js'
 import { checkUnixSocketPath } from './unix-socket-path.js'
+import { listenPrivateSocket, socketMaySendSecrets } from './control-socket.js'
 
 export type ControlHandlers = {
   capture: (name: string, selector?: string) => Promise<string>
@@ -45,6 +47,16 @@ export type ControlHandlers = {
    * "매 프레임 위반 0" 은 밖에서 폴링해서는 만들 수 없는 수라 이 문을 낸다 (읽기 전용).
    */
   counters: () => unknown
+  /**
+   * LIFE-577 최종 관문의 자동 경로 — repro 스크립트가 화면을 읽지 않고 페어링 코드를 받는다. 이 소켓은 계측 실행에만 열린다.
+   * fix1 R1-A6: 코드를 주는 `mobile-pairing` 은 소켓 폴더가 내 소유·0700 이고 소켓이 0600 일 때만(`control-socket.ts`) — 아니면 거절.
+   * 소켓은 umask 077 아래에서 만들고 0600 으로 고정한다. 응답은 로그에 남지 않는다(`control.cmd` 는 요청 줄만 적는다).
+   */
+  mobile: {
+    status: () => unknown
+    createPairing: () => unknown
+    revoke: (id: string) => unknown
+  }
 }
 
 /**
@@ -116,7 +128,8 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
     log('control.path_too_long', { socketPath, bytes: check.bytes, limit: check.limit })
     return null
   }
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true })
+  // 폴더가 없으면 0700 으로 만든다. 있으면 권한을 고치지 않는다 — 비공개가 아니면 비밀 명령만 거절된다(R1-A6).
+  fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 })
   if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
   const server = net.createServer((socket) => {
@@ -131,16 +144,33 @@ export function startControlServer(handlers: ControlHandlers): net.Server | null
         const line = buffer.slice(0, index)
         buffer = buffer.slice(index + 1)
         if (line.trim().length === 0) continue
-        void handle(line, socket, handlers)
+        void handle(line, socket, handlers, socketPath)
       }
     })
   })
   server.on('error', (error) => log('control.listen_failed', { socketPath, error: String(error) }))
-  server.listen(socketPath, () => log('control.listening', { socketPath, bytes: check.bytes }))
+  listenPrivateSocket({ server, socketPath }).then(
+    () => log('control.listening', { socketPath, bytes: check.bytes, secrets: socketMaySendSecrets({ dir: path.dirname(socketPath), socketPath }) }),
+    (error: unknown) => log('control.listen_failed', { socketPath, error: String(error) }),
+  )
   return server
 }
 
-async function handle(line: string, socket: net.Socket, handlers: ControlHandlers): Promise<void> {
+let loopHistogram: IntervalHistogram | null = null
+
+function readLoopDelay(): { started: boolean; count: number; p50: number; p99: number; max: number; mean: number } {
+  if (loopHistogram === null) {
+    loopHistogram = monitorEventLoopDelay({ resolution: 10 })
+    loopHistogram.enable()
+    return { started: true, count: 0, p50: 0, p99: 0, max: 0, mean: 0 }
+  }
+  const ms = (ns: number): number => Math.round((ns / 1e6) * 100) / 100
+  const out = { started: false, count: loopHistogram.count, p50: ms(loopHistogram.percentile(50)), p99: ms(loopHistogram.percentile(99)), max: ms(loopHistogram.max), mean: ms(loopHistogram.mean) }
+  loopHistogram.reset()
+  return out
+}
+
+async function handle(line: string, socket: net.Socket, handlers: ControlHandlers, socketPath: string): Promise<void> {
   const parsed = safeParse(line)
   if (!isRecord(parsed)) {
     socket.write(JSON.stringify({ ok: false, error: 'bad frame' }) + '\n')
@@ -164,6 +194,20 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
       case 'state':
         reply({ ok: true, at: Date.now(), state: handlers.state() })
         return
+      case 'mobile-status':
+        reply({ ok: true, at: Date.now(), mobile: handlers.mobile.status() })
+        return
+      case 'mobile-pairing':
+        // 비밀(코드)을 주는 유일한 계측 명령 — 폴더·소켓 권한을 **요청마다** 다시 본다(R1-A6).
+        if (!socketMaySendSecrets({ dir: path.dirname(socketPath), socketPath })) {
+          reply({ ok: false, error: 'control_socket_not_private' })
+          return
+        }
+        reply({ ok: true, at: Date.now(), pairing: handlers.mobile.createPairing() })
+        return
+      case 'mobile-revoke':
+        reply({ ok: true, at: Date.now(), revoked: handlers.mobile.revoke(readString(parsed, 'id') ?? '') })
+        return
       /** S6 — 연결별 누적 카운터. 재는 대상의 **자기 신고**라 판정은 제3 오라클과 함께 읽는다. */
       case 'counters':
         reply({ ok: true, at: Date.now(), counters: handlers.counters() })
@@ -176,6 +220,13 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
        */
       case 'cpu':
         reply({ ok: true, at: Date.now(), cpu: process.cpuUsage(), uptimeMs: Math.round(process.uptime() * 1000) })
+        return
+      /**
+       * **main 이벤트 루프 지연** (LIFE-580 J6 — K9 A/B). 첫 요청에서 히스토그램(해상도 10 ms)을 켜고, 요청마다 지난 요청 이후의
+       * 분포(ms)를 돌려준 뒤 비운다 — 구간 앞에서 한 번(비우기), 뒤에서 한 번(읽기). 계측 소켓이 있는 실행에만 있다.
+       */
+      case 'loop-delay':
+        reply({ ok: true, at: Date.now(), loopDelay: readLoopDelay() })
         return
       /**
        * **herdr 쪽 대조값은 이 채널이 주지 않는다.**

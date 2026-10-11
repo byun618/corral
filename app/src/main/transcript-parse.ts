@@ -257,7 +257,7 @@ function toolFromContent(content: unknown): SessionTool | null {
 }
 
 /** 관측된 키 순서대로 문자열 하나. 없으면 null (이름만 보인다). */
-function toolInputPreview(input: unknown): string | null {
+export function toolInputPreview(input: unknown): string | null {
   if (!isRecord(input)) return null
   for (const key of ['command', 'file_path', 'url', 'query', 'task']) {
     const value = readString(input, key)
@@ -283,7 +283,7 @@ export function cleanPromptLine(raw: string): string | null {
 }
 
 /** Claude 중단 표지 — user 텍스트가 **정확히** 이 문자열일 때만 (실측 114 · 26, `u1-claude-sequences.txt`). */
-const CLAUDE_INTERRUPT_MARKERS: readonly string[] = [
+export const CLAUDE_INTERRUPT_MARKERS: readonly string[] = [
   '[Request interrupted by user]',
   '[Request interrupted by user for tool use]',
 ]
@@ -299,7 +299,7 @@ function claudeInterruptMarker(record: Record<string, unknown>): string | null {
 }
 
 /** user 레코드의 content 에 `tool_result` 블록이 있나 — 도구 결과는 사람 발화가 아니다. */
-function hasToolResult(message: Record<string, unknown>): boolean {
+export function hasToolResult(message: Record<string, unknown>): boolean {
   const content = message['content']
   if (!Array.isArray(content)) return false
   return content.some((block) => isRecord(block) && block['type'] === 'tool_result')
@@ -476,7 +476,7 @@ export function claudePendingQuestions(input: {
  * 남는 게 없으면 null (T6 — 던지지 않고 칸이 비는 것).
  * 선택지는 `{label, description}` 객체(claude·grok) 또는 문자열(codex)로 온다 — 둘 다 관측된 모양이다.
  */
-function readQuestions(input: { items: unknown; textKey: string }): SessionQuestion[] | null {
+export function readQuestions(input: { items: unknown; textKey: string }): SessionQuestion[] | null {
   if (!Array.isArray(input.items)) return null
   const questions: SessionQuestion[] = []
   for (const item of input.items) {
@@ -498,11 +498,14 @@ function readQuestions(input: { items: unknown; textKey: string }): SessionQuest
       }
     }
     const multiSelect = item['multiSelect']
+    // LIFE-582 Z1ⓑ — Claude 의 preview 레이아웃(선택지에 `preview` 글)은 「Type something」 행이 없고 숫자가 커서만 옮긴다. 있을 때만 싣는다.
+    const preview = Array.isArray(rawOptions) && rawOptions.some((option) => isRecord(option) && typeof option['preview'] === 'string')
     questions.push({
       question,
       header: readString(item, 'header'),
       options,
       multiSelect: typeof multiSelect === 'boolean' ? multiSelect : null,
+      ...(preview ? { preview: true } : {}),
     })
   }
   return questions.length === 0 ? null : questions
@@ -581,10 +584,10 @@ export function codexHumanText(record: Record<string, unknown>): string | null {
  * **도구 결과**다 — claude 의 AskUserQuestion 답(`tool_result`)이 최근 발화에서 빠지는 것과 같은 자리라 T4 에서
  * 뺀다. 질문 해소(T5)에는 쓴다. 기존 사용자 기록 252건에는 0건이다(`u5-codex-usermessage.txt`, `<` 로 시작 0).
  */
-const CODEX_QUESTION_REPLY = '<send_user_message_question_reply>'
+export const CODEX_QUESTION_REPLY = '<send_user_message_question_reply>'
 
 /** codex 사용자 줄의 원문 — 사람 발화와 질문 답 봉투를 가르기 **전**. 두 모양(옛 `user_message`·0.158 `UserMessage`). */
-function codexUserText(record: Record<string, unknown>): string | null {
+export function codexUserText(record: Record<string, unknown>): string | null {
   const payload = record['payload']
   if (!isRecord(payload)) return null
   if (payload['type'] === 'user_message') return readString(payload, 'message')
@@ -663,7 +666,7 @@ export function codexLastPrompt(records: readonly Record<string, unknown>[]): st
 }
 
 /** codex 의 질문 도구 — **관측된 이름**이다. 공식 소스의 `request_user_input` 과 다르다(00-analysis §9). */
-const CODEX_ASK_TOOL = 'request_user_input_async'
+export const CODEX_ASK_TOOL = 'request_user_input_async'
 
 /**
  * codex 대기 중인 질문 (T5).
@@ -697,7 +700,7 @@ export function codexPendingQuestions(records: readonly Record<string, unknown>[
 }
 
 /** codex 블록의 `output_text` 를 공용 `text` 모양으로 옮긴다 — `textFromContent` 를 그대로 쓰려고. */
-function codexContent(content: unknown): unknown {
+export function codexContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content
   return content.map((block) => {
     if (!isRecord(block)) return block
@@ -788,6 +791,24 @@ export function grokHumanText(record: Record<string, unknown>): string | null {
   return inside === null ? null : (inside[1] ?? null)
 }
 
+/**
+ * grok **사람 발화 — `updates.jsonl` 쪽 짝** (LIFE-581 X2ⓐ·ⓗ, 코디 승인 2026-10-10). 대화 화면은 Grok 의 정본 대화 기록 `updates.jsonl` 을 읽는데,
+ * 그 파일의 `user_message_chunk` 에는 `<user_query>` 봉투가 없다 — 봉투 안쪽 글이 그대로 `content.text` 에 온다. 하네스 주입(`<system-reminder>` 등)은
+ * `_meta.hideFromScrollback: true` 로 표시된다. 그래서 규칙은 「`user_message_chunk` 중 숨김 표시가 없는 것」 하나다.
+ * 지문(`grokHumanText` — `chat_history.jsonl`)과 갈리지 않는지는 동등 시험(Y1ⓒ)과 실측(`specs/LIFE-581-mobile-chat/raw/claude/y1-grok-human-equiv.txt`
+ * — 40 세션 중 37 목록 일치, 3 은 `chat_history` 가 압축 뒤 앞 발화를 잃은 접미사, 마지막 발화 40/40 일치)이 지킨다.
+ * 한 줄 = `{timestamp, method, params:{update:{sessionUpdate,…}}}`.
+ */
+export function grokUpdateHumanText(record: Record<string, unknown>): string | null {
+  const update = grokUpdate(record)
+  if (update === null || readString(update, 'sessionUpdate') !== 'user_message_chunk') return null
+  const meta = update['_meta']
+  if (isRecord(meta) && meta['hideFromScrollback'] === true) return null
+  const content = update['content']
+  const text = isRecord(content) ? textFromContent([content]) : textFromContent(content)
+  return text
+}
+
 /** grok 마지막 사람 발화 (T4) — `grokHumanText` 와 같은 규칙. */
 export function grokLastPrompt(records: readonly Record<string, unknown>[]): string | null {
   for (let i = records.length - 1; i >= 0; i -= 1) {
@@ -802,7 +823,7 @@ export function grokLastPrompt(records: readonly Record<string, unknown>[]): str
 }
 
 /** `updates.jsonl` 한 줄의 `params.update`. 모양이 아니면 null. */
-function grokUpdate(record: Record<string, unknown>): Record<string, unknown> | null {
+export function grokUpdate(record: Record<string, unknown>): Record<string, unknown> | null {
   const params = record['params']
   if (!isRecord(params)) return null
   const update = params['update']

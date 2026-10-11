@@ -3,6 +3,7 @@ import type { GhosttyImportPreview } from './ghostty-import.js'
 import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
+import type { MobilePairingResult, MobileStatus } from './mobile.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -71,6 +72,11 @@ export type RetainedAgentRow = {
   cwd: string | null
   /** corral 이 그 pane 을 잃은 시각. */
   retainedAt: number
+  /**
+   * 잃은 순간의 provider 세션 참조 (LIFE-581 X7) — 모바일 대화 화면이 닫힌 세션의 지난 기록을 읽는 데만 쓴다(C19).
+   * 데스크톱 화면은 이 칸을 읽지 않는다. 없으면(옛 행·참조를 모르던 pane) 지난 기록을 볼 수 없다.
+   */
+  agentSession?: AgentSessionRef | null
 }
 
 /** 지나간 상태 전이 한 칸 (S15ⓒ 이력). */
@@ -283,6 +289,8 @@ export type SessionQuestion = {
   header: string | null
   options: SessionQuestionOption[]
   multiSelect: boolean | null
+  /** LIFE-582 — 선택지에 미리보기(`preview`)가 붙은 레이아웃(Claude). 직접 입력 행이 없다. 있을 때만 `true`. */
+  preview?: true
 }
 
 /**
@@ -1060,5 +1068,13 @@ export type CorralApi = {
   onWindowChrome: (listener: (chrome: WindowChrome) => void) => () => void
   /** 줌이 바뀌었을지 모를 때(창 resize) — main 이 줌을 다시 읽어 신호등을 옮기고 상태를 민다. */
   syncWindowZoom: () => void
+  // --- 설정 › Mobile (LIFE-577) — 켜기·끄기는 `setSettings({ mobileEnabled })`. 상태 push 에는 토큰·코드가 없다 ---
+  getMobileStatus: () => Promise<MobileStatus | null>
+  onMobileStatus: (listener: (status: MobileStatus) => void) => () => void
+  /** 새 1회용 코드 + QR. 이전 코드는 무효가 된다. 코드는 이 응답에만 실린다. */
+  createMobilePairing: () => Promise<MobilePairingResult>
+  revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
+  /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
+  recheckMobile: () => Promise<MobileStatus | null>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

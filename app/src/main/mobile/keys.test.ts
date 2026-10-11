@@ -369,11 +369,20 @@ describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) 
   const GHOST = (text: string): string => `\x1b[0m\x1b[3m\x1b[38;2;88;88;88m\x1b[48;2;20;20;20m${text}\x1b[0m`
   const TYPED = (text: string): string => `\x1b[0m\x1b[38;2;225;225;225m\x1b[48;2;20;20;20m${text}\x1b[0m`
   const HINT = '  Tab/→:accept suggestion  │  Shift+Tab:mode  │  Ctrl+.:shortcuts'
-  const box = (input: { line: string; hint: boolean }): string =>
-    ['  ╭──────────────────────────────╮', `  \x1b[38;2;80;80;88m│\x1b[0m \x1b[38;2;200;200;200m❯ \x1b[0m${input.line}          \x1b[38;2;80;80;88m│\x1b[0m`, '  ╰──────────── Grok 4.7 (high) ─╯', input.hint ? HINT : '  Shift+Tab:mode  │  Ctrl+.:shortcuts'].join('\r\n')
+  // 실측 모양: 상자 끝 `╰` 와 힌트 줄 사이에 빈 줄 하나(gap 1). gap 0 도 같은 판정.
+  const box = (input: { line: string; hint: boolean; gap?: number }): string =>
+    ['  ╭──────────────────────────────╮', `  \x1b[38;2;80;80;88m│\x1b[0m \x1b[38;2;200;200;200m❯ \x1b[0m${input.line}          \x1b[38;2;80;80;88m│\x1b[0m`, '  ╰──────────── Grok 4.7 (high) ─╯', ...Array.from({ length: input.gap ?? 1 }, () => '                    '), input.hint ? HINT : '  Shift+Tab:mode  │  Ctrl+.:shortcuts'].join('\r\n')
 
   it('제안만 있으면 빈 입력', () => {
     expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true }) })).toBe('empty')
+    expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true, gap: 0 }) })).toBe('empty')
+  })
+  it('격리 실물 화면(z2-grok-ghost-gm) 그대로 — 제안만 → 빈 입력', () => {
+    const shot = fs.readFileSync(path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/final/runs/z2-grok-ghost-gm.ndjson'), 'utf8')
+    const parsed: unknown = JSON.parse(shot.trim().split('\n').at(-1) ?? '{}')
+    const text = typeof parsed === 'object' && parsed !== null && 'screen' in parsed && typeof parsed.screen === 'string' ? parsed.screen : ''
+    expect(text).toContain('accept suggestion')
+    expect(draftState({ kind: 'grok', screen: text })).toBe('empty')
   })
   it('사람이 친 글(기울임 아님)은 초안', () => {
     expect(draftState({ kind: 'grok', screen: box({ line: TYPED('draft grok'), hint: true }) })).toBe('draft')

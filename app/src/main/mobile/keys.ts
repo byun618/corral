@@ -639,7 +639,7 @@ const RULE = /^\s*─{20,}\s*$/
  * 글이 있으면 `draft`, 입력 줄을 못 찾으면 `unknown`(넣지 않는다, fail-closed).
  * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
  * - Codex: 마지막 `› ` 줄. 그 뒤 글이 전부 흐림(SGR 2 — 자리표시 `Ask Codex to do anything`)이면 빈 입력. 바로 아래 빈 줄 전까지 이어진 줄이 있으면 여러 줄 초안.
- * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력. 상자 바로 아래 줄에 `accept suggestion` 힌트가 있으면
+ * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력. 상자 아래 첫 비지 않은 줄에 `accept suggestion` 힌트가 있으면
  *   입력칸의 기울임(SGR 3) 글은 Grok 의 다음 문장 제안(ghost)이라 빼고 본다 — 힌트가 없으면 기울임도 초안으로 센다(fail-closed, LIFE-582 최종 관문).
  */
 export function draftState(input: { kind: MobileAgentKind; screen: string }): DraftState {
@@ -694,7 +694,10 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
       }
       let end = at + 1
       while (end < plain.length && !/^\s*╰/.test(plain[end]!) && inner(plain[end]!) !== null) end += 1
-      const suggestion = /^\s*╰/.test(plain[end] ?? '') && /accept suggestion/.test(plain[end + 1] ?? '')
+      // 힌트는 상자 아래 **첫 비지 않은 줄**이다(실측: `╰` 와 힌트 사이에 빈 줄 하나).
+      let below = end + 1
+      while (below < plain.length && plain[below]!.trim().length === 0) below += 1
+      const suggestion = /^\s*╰/.test(plain[end] ?? '') && /accept suggestion/.test(plain[below] ?? '')
       // 기울임 run 을 빼고 남은 글 — 제안 힌트가 있을 때만 뺀다. 틀(`│`)·표식(`❯`)은 그 뒤 inner·replace 가 지운다.
       const visible = (index: number): string => suggestion ? lines[index]!.filter((run) => !run.italic).map((run) => run.text).join('') : plain[index]!
       const first = inner(visible(at))

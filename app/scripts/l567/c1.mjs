@@ -2,6 +2,8 @@
 // xterm 버퍼가 `viewportY ≠ baseY` 또는 `baseY ≠ 0` 으로 남는지 보고, 그 상태에서 조합 상자 행·helper textarea 행·그려진 커서 행을 잰다.
 // 읽기는 xterm **공개 API**(buffer.active)와 DOM rect 만 쓴다(01-criteria G5). 조합은 실제 textarea 에 합성(G4) — 제출하지 않고 취소로 끝낸다.
 // 사용: node c1.mjs <ctl.sock> <out 폴더> <회차 이름> [폭 감소 px=40]
+// 조작·계측 응답(eval·shot·pump·resize-window)이 ok 가 아니거나, 창 폭·xterm 격자가 실제로 바뀌지 않았으면 그 회차는 **실패**다 —
+// 거기까지의 기록과 실패 사유를 `<이름>.json`(failure 칸)에 남기고 exit 1 (리뷰 r1 R1-02). 정합·어긋남 판정은 여기서 하지 않는다(요약만 낸다).
 import fs from 'node:fs'
 import path from 'node:path'
 import { rpc } from '../gui-diff/lib/corral.mjs'
@@ -10,17 +12,22 @@ const [sock, out, name, dwArg] = process.argv.slice(2)
 const dw = Number(dwArg ?? 40)
 fs.mkdirSync(out, { recursive: true })
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const evalJs = async (code) => {
-  const res = await rpc(sock, { cmd: 'eval', code: `(() => { ${code} })()` }, 20_000)
-  if (!res.ok) throw new Error(`eval 실패 ${JSON.stringify(res).slice(0, 300)}`)
-  return res.result
+class DriverFailure extends Error {}
+// rpc 는 유효한 JSON 이면 ok:false 도 resolve 한다 — 조작·계측마다 여기서 거른다.
+const call = async (label, request) => {
+  const res = await rpc(sock, request, 20_000)
+  if (res?.ok !== true) throw new DriverFailure(`${label}: ${JSON.stringify(res).slice(0, 300)}`)
+  return res
 }
+const evalJs = async (code) => (await call('eval', { cmd: 'eval', code: `(() => { ${code} })()` })).result
 // 가려진 창은 rAF 가 멈춘다 — 재기 전에 capturePage 로 프레임을 민다(l566 ime.mjs 와 같은 수법).
-const pump = () => rpc(sock, { cmd: 'shot', name: 'l567-frame-pump' }, 20_000)
+const pump = () => call('pump', { cmd: 'shot', name: 'l567-frame-pump' })
 const shot = async (label) => {
-  const res = await rpc(sock, { cmd: 'shot', name: `l567-${label}` }, 20_000)
-  if (res.ok) fs.copyFileSync(res.file, path.join(out, `${label}.png`))
+  const res = await call(`shot ${label}`, { cmd: 'shot', name: `l567-${label}` })
+  if (typeof res.file !== 'string' || !fs.existsSync(res.file)) throw new DriverFailure(`shot ${label}: 파일 없음 ${JSON.stringify(res.file)}`)
+  fs.copyFileSync(res.file, path.join(out, `${label}.png`))
 }
+const expect = (cond, message) => { if (!cond) throw new DriverFailure(message) }
 
 const HEAD = `const host = document.querySelector('.term-pane.is-selected [data-term-pane]') ?? document.querySelector('[data-term-pane]');
   const xt = host.querySelector('.xterm'); const ta = host.querySelector('.xterm-helper-textarea'); window.__l567 ??= { start: 0 };
@@ -56,35 +63,48 @@ const CANCEL = `${HEAD} ta.value = ta.value.slice(0, window.__l567.start);
 const record = { name, dw, at: new Date().toISOString(), steps: [] }
 const step = (label, value) => { record.steps.push({ label, at: Date.now(), value }); console.log(label, JSON.stringify(value)) }
 
-await pump()
-const before = await evalJs(STATE)
-step('before', before)
-const width = before.window.w
-const height = before.window.h
-step('resize-window', await rpc(sock, { cmd: 'resize-window', width: width - dw, height }))
-await pause(1500)
-await pump()
-step('after-shrink', await evalJs(STATE))
-await shot(`${name}-after-shrink`)
-step('compose-start', await evalJs(START))
-step('compose-update', await evalJs(UPDATE('한')))
-await pause(150)
-await pump()
-const m = await evalJs(MEASURE)
-step('measure-composing', m)
-await shot(`${name}-composing`)
-step('compose-cancel', await evalJs(CANCEL))
-step('resize-window-restore', await rpc(sock, { cmd: 'resize-window', width, height }))
-await pause(1500)
-await pump()
-step('after-restore', await evalJs(STATE))
-const bad = m.buffer.viewportY !== m.buffer.baseY || m.buffer.baseY !== 0
-record.summary = {
-  stateDuringCompose: `baseY ${m.buffer.baseY} · viewportY ${m.buffer.viewportY} · length ${m.buffer.length} · rows ${m.buffer.rows}`,
-  misaligned: bad,
-  viewRow: m.view.row, textareaRow: m.textarea.row, cursorRow: m.cursor.row,
-  viewRowEqualsCursorMinusDelta: m.view.row !== null && m.cursor.row !== null ? Math.round(m.view.row) === Math.round(m.cursor.row) - (m.buffer.baseY - m.buffer.viewportY) : null,
-  viewMinusCursorLeft: m.viewMinusCursorLeft,
+try {
+  await pump()
+  const before = await evalJs(STATE)
+  step('before', before)
+  const width = before.window.w
+  const height = before.window.h
+  step('resize-window', await call('resize-window', { cmd: 'resize-window', width: width - dw, height }))
+  await pause(1500)
+  await pump()
+  const shrunk = await evalJs(STATE)
+  step('after-shrink', shrunk)
+  expect(shrunk.window.w === width - dw, `창 폭이 안 바뀌었다: ${width} → ${shrunk.window.w} (기대 ${width - dw})`)
+  expect(shrunk.cols < before.cols, `xterm 열이 안 줄었다: ${before.cols} → ${shrunk.cols}`)
+  await shot(`${name}-after-shrink`)
+  step('compose-start', await evalJs(START))
+  step('compose-update', await evalJs(UPDATE('한')))
+  await pause(150)
+  await pump()
+  const m = await evalJs(MEASURE)
+  expect(m.view.active === true && m.view.text === '한', `조합 상자가 안 떴다: ${JSON.stringify(m.view)}`)
+  step('measure-composing', m)
+  await shot(`${name}-composing`)
+  step('compose-cancel', await evalJs(CANCEL))
+  step('resize-window-restore', await call('resize-window restore', { cmd: 'resize-window', width, height }))
+  await pause(1500)
+  await pump()
+  const restored = await evalJs(STATE)
+  step('after-restore', restored)
+  expect(restored.window.w === width && restored.cols === before.cols, `복원 실패: 창 ${restored.window.w}/${width} · 열 ${restored.cols}/${before.cols}`)
+  const bad = m.buffer.viewportY !== m.buffer.baseY || m.buffer.baseY !== 0
+  record.summary = {
+    stateDuringCompose: `baseY ${m.buffer.baseY} · viewportY ${m.buffer.viewportY} · length ${m.buffer.length} · rows ${m.buffer.rows}`,
+    misaligned: bad,
+    viewRow: m.view.row, textareaRow: m.textarea.row, cursorRow: m.cursor.row,
+    viewRowEqualsCursorMinusDelta: m.view.row !== null && m.cursor.row !== null ? Math.round(m.view.row) === Math.round(m.cursor.row) - (m.buffer.baseY - m.buffer.viewportY) : null,
+    viewMinusCursorLeft: m.viewMinusCursorLeft,
+  }
+  step('summary', record.summary)
+} catch (error) {
+  record.failure = { message: String(error?.message ?? error), driver: error instanceof DriverFailure }
+  console.error(`실패: ${record.failure.message}`)
+  fs.writeFileSync(path.join(out, `${name}.json`), JSON.stringify(record, null, 1))
+  process.exit(1)
 }
-step('summary', record.summary)
 fs.writeFileSync(path.join(out, `${name}.json`), JSON.stringify(record, null, 1))

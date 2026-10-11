@@ -8,6 +8,11 @@
 //
 // corral 의 xterm 은 순수 뷰포트라(프레임 = 전체 리페인트) 이 상태가 되면 버퍼를 비워 바닥 정합으로 되돌린다 — `clear()` 는 공개 API 이고
 // 동기로 ybase·ydisp 를 0 으로 맞춘다. 지워진 내용은 바로 뒤 프레임이 다시 그린다.
+//
+// resize·clear 는 동기지만 프레임 write 는 다음 틱에 파싱된다 — 그 사이 렌더가 끼면 reflow 로 뒤섞인 화면이나 clear 가 남긴 한 줄짜리 화면이
+// 그려진다(리뷰 r1 R1-01: 격리 fixture 80회 중 77회). 그래서 크기가 바뀌는 프레임은 **동기 출력 모드(DECSET 2026)를 먼저 켜고(파싱 완료까지 기다린 뒤)**
+// resize·복구를 하고, 프레임 끝에서 모드를 끈다. xterm 6.0.0 RenderService 는 이 모드 동안 refreshRows·_renderRows 를 모두 보류했다가
+// 끌 때 한 번에 그린다(모드가 1초 넘게 켜져 있으면 xterm 이 스스로 끈다). 서버 프레임(frame-to-ansi)은 이 모드를 쓰지 않는다.
 
 /** 쓰는 xterm 공개 API 만 — `Terminal` 이 그대로 들어맞는다. */
 export interface ResizableTerminal {
@@ -17,6 +22,13 @@ export interface ResizableTerminal {
   clear(): void
   readonly buffer: { readonly active: { readonly baseY: number; readonly viewportY: number } }
 }
+
+export interface FrameTerminal extends ResizableTerminal {
+  write(data: string, callback?: () => void): void
+}
+
+export const SYNC_OUTPUT_BEGIN = '\x1b[?2026h'
+export const SYNC_OUTPUT_END = '\x1b[?2026l'
 
 /** scrollback 0 인 corral 뷰포트에서 정상 상태는 늘 baseY 0 = viewportY. */
 export function viewportOffBottom(term: Pick<ResizableTerminal, 'buffer'>): boolean {
@@ -31,4 +43,23 @@ export function resizeToFrame(term: ResizableTerminal, size: { cols: number; row
   if (!viewportOffBottom(term)) return false
   term.clear()
   return true
+}
+
+/**
+ * 프레임 하나를 쓴다. 크기가 같으면 그대로 쓰고, 다르면 동기 출력 모드 안에서 resize·복구한 뒤 쓴다 —
+ * resize·clear 와 프레임 파싱 사이의 중간 화면이 렌더되지 않는다. `alive` 가 false 면(사이에 pane 이 내려감) 멈춘다.
+ */
+export function writeFrame(
+  term: FrameTerminal,
+  input: { cols: number; rows: number; data: string; alive: () => boolean; done: () => void },
+): void {
+  if (term.cols === input.cols && term.rows === input.rows) {
+    term.write(input.data, input.done)
+    return
+  }
+  term.write(SYNC_OUTPUT_BEGIN, () => {
+    if (!input.alive()) return
+    resizeToFrame(term, input)
+    term.write(input.data + SYNC_OUTPUT_END, input.done)
+  })
 }

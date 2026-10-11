@@ -30,7 +30,7 @@ import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
 import { terminalKeyHandler } from './terminal-keys.js'
-import { resizeToFrame } from './term-resize.js'
+import { writeFrame } from './term-resize.js'
 import {
   CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
   clipboardImagePayload,
@@ -231,8 +231,8 @@ export function TerminalPane({
     let decrqmCapture: { buf: string } | null = null
 
     // --- 크기: **서버가 준 프레임 크기를 그대로 따른다** (R13) ----------------------
-    // 프레임은 전체 리페인트라 resize 와 write 사이에 찢어질 창이 없다 — 먼저 맞추고 그 위에 쓴다.
-    // 열 축소 reflow 가 뷰포트를 바닥에서 떼면 버퍼를 비워 되돌린다(LIFE-567, term-resize.ts).
+    // 프레임은 전체 리페인트라 먼저 맞추고 그 위에 쓴다. 다만 resize(열 축소 reflow)·복구 clear 와 프레임 파싱 사이에는
+    // 틱이 끼어 중간 화면이 렌더될 수 있다 — 크기가 바뀌는 프레임은 동기 출력 모드 안에서 맞추고 쓴다(LIFE-567, term-resize.ts).
 
     const flush = (): void => {
       if (disposed || writing || term.hasSelection()) return
@@ -246,13 +246,12 @@ export function TerminalPane({
         appliedMouseReporting = frame.mouseReporting
       }
       if (frame === null && prefix === '') return
-      // 서버 격자에 맞춘 뒤 쓴다 (R13) — 프레임이 그 크기를 전제로 만들어졌다.
-      if (frame !== null) resizeToFrame(term, frame)
       writing = true
       // P4 는 **`term.write` 호출 → 콜백**을 잰다 (1차 스파이크 M2 와 같은 정의). 시작 시각을
       // 여기서 찍어야 파싱·렌더에 실제로 든 시간이 남는다 — 완료 시각만으로는 못 만든다.
       const writeStartedAt = Date.now()
-      term.write(prefix + (frame === null ? '' : decoder.decode(frame.data)), () => {
+      const data = prefix + (frame === null ? '' : decoder.decode(frame.data))
+      const done = (): void => {
         writing = false
         if (disposed) return
         if (frame !== null) {
@@ -274,7 +273,10 @@ export function TerminalPane({
           }
         }
         flush()
-      })
+      }
+      // 서버 격자에 맞춘 뒤 쓴다 (R13) — 프레임이 그 크기를 전제로 만들어졌다.
+      if (frame === null) term.write(data, done)
+      else writeFrame(term, { cols: frame.cols, rows: frame.rows, data, alive: () => !disposed, done })
     }
 
     const offFrame = window.corral.onTermFrame((frame) => {

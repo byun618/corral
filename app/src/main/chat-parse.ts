@@ -54,7 +54,7 @@ export type ChatAtom =
    * 도구 결과 — 상태만(본문은 버린다). `settles` = 이 결과가 같은 id 의 질문을 끝내나: Claude·Grok 은 결과가 답이다,
    * Codex 의 `request_user_input_async` 출력은 접수 확인(`{"accepted":…}`)일 뿐이라 끝내지 않는다(지문 `codexPendingQuestions` 와 같은 판단).
    */
-  | { kind: 'result'; callId: string; status: 'ok' | 'error' | 'unknown'; answer: string | null; settles: boolean }
+  | { kind: 'result'; callId: string; status: 'ok' | 'error' | 'unknown'; answer: string | null; grokMessage: string | null; settles: boolean }
   | { kind: 'question'; callId: string | null; questions: SessionQuestion[] }
   /** 질문 해소 — `callId` null = 열린 질문 전부(Codex: 사람 발화·새 턴·중단). */
   | { kind: 'resolve'; callId: string | null; state: 'answered' | 'closed'; answer: string | null }
@@ -122,7 +122,7 @@ export function claudeAtoms(input: { record: Record<string, unknown>; sessionId:
           if (!isRecord(block) || block['type'] !== 'tool_result') continue
           const callId = readString(block, 'tool_use_id')
           if (callId === null) continue
-          atoms.push({ kind: 'result', callId, status: block['is_error'] === true ? 'error' : 'ok', answer: claudeAnswer(record['toolUseResult']), settles: true })
+          atoms.push({ kind: 'result', callId, status: block['is_error'] === true ? 'error' : 'ok', answer: claudeAnswer(record['toolUseResult']), grokMessage: null, settles: true })
         }
         return { atoms: atoms.length === 0 ? [{ kind: 'skip', reason: 'claude:tool-result' }] : atoms, at, link }
       }
@@ -179,7 +179,7 @@ export function claudeAtoms(input: { record: Record<string, unknown>; sessionId:
           const callId = readString(block, 'tool_use_id')
           const content = block['content']
           const failed = isRecord(content) && (readString(content, 'type') ?? '').includes('error')
-          atoms.push(callId === null ? { kind: 'skip', reason: 'claude:server-tool-result' } : { kind: 'result', callId, status: failed ? 'error' : 'ok', answer: null, settles: true })
+          atoms.push(callId === null ? { kind: 'skip', reason: 'claude:server-tool-result' } : { kind: 'result', callId, status: failed ? 'error' : 'ok', answer: null, grokMessage: null, settles: true })
           continue
         }
         atoms.push({ kind: 'unknown', shape: `claude:block:${blockType ?? '?'}` })
@@ -286,7 +286,7 @@ function codexResponseItem(payload: Record<string, unknown>): ChatAtom[] {
     case 'function_call_output':
     case 'custom_tool_call_output': {
       const callId = readString(payload, 'call_id')
-      return callId === null ? [{ kind: 'skip', reason: 'codex:output' }] : [{ kind: 'result', callId, status: codexOutputStatus(payload['output']), answer: null, settles: false }]
+      return callId === null ? [{ kind: 'skip', reason: 'codex:output' }] : [{ kind: 'result', callId, status: codexOutputStatus(payload['output']), answer: null, grokMessage: null, settles: false }]
     }
     default:
       return [{ kind: 'unknown', shape: `codex:response_item:${type ?? '?'}` }]
@@ -520,7 +520,7 @@ export function grokAtoms(record: Record<string, unknown>): LineAtoms {
       const status = grokStatus(readString(update, 'status'))
       if (status === 'ok' || status === 'error') {
         const answer = grokAnswer(update['rawOutput'])
-        atoms.push({ kind: 'result', callId, status, answer, settles: true })
+        atoms.push({ kind: 'result', callId, status, answer, grokMessage: grokAnsweredMessage(update['rawOutput']), settles: true })
       }
       return { atoms: atoms.length === 0 ? [{ kind: 'skip', reason: 'grok:tool_call_update' }] : atoms, at, link: null }
     }
@@ -572,6 +572,60 @@ function grokAnswer(rawOutput: unknown): string | null {
   const values = Array.isArray(answers) ? answers : isRecord(answers) ? Object.values(answers) : []
   const parts = values.flatMap((value) => (typeof value === 'string' && value.trim().length > 0 ? [value] : isRecord(value) && typeof value['answer'] === 'string' ? [value['answer']] : []))
   return parts.length === 0 ? null : parts.join(' · ')
+}
+
+/**
+ * Grok `ask_user_question` 결과의 답 글 — `rawOutput.UserAnswered` 가 글이면 그것, `{ message }` 면 그 글(grok-4.7-build 실측 —
+ * `answers` 없이 `message` 만 온다, LIFE-582 F3). 서버 답 확인(`mobile/input.ts recordedAnswers`)과 대화 카드가 이 한 곳에서 읽는다.
+ */
+export function grokAnsweredMessage(rawOutput: unknown): string | null {
+  if (!isRecord(rawOutput)) return null
+  const answered = rawOutput['UserAnswered']
+  if (typeof answered === 'string') return answered
+  return isRecord(answered) && typeof answered['message'] === 'string' ? answered['message'] : null
+}
+
+/**
+ * Grok 답 글을 문항마다 자른다 — 앞뒤 고정 문구를 떼고, 문항 글마다 `"문항"=` 이 정확히 한 번 · 기록 문항 순서대로 있어야 한다.
+ * 그 사이(다음 문항 앞 `, ` 까지)가 그 문항의 답. 아니면 null(경계를 못 읽음).
+ */
+export function grokAnswerSegments(input: { message: string; questions: string[] }): string[] | null {
+  const head = 'User has answered your questions: '
+  const tail = /\.\s*You can now continue with the user's answers in mind\.?\s*$/
+  if (!input.message.startsWith(head) || !tail.test(input.message)) return null
+  const body = input.message.slice(head.length).replace(tail, '')
+  const starts: number[] = []
+  for (const question of input.questions) {
+    const marker = `"${question}"=`
+    const at = body.indexOf(marker)
+    if (at < 0 || body.indexOf(marker, at + 1) >= 0) return null
+    if (starts.length > 0 && at <= starts.at(-1)!) return null
+    starts.push(at)
+  }
+  if (starts[0] !== 0) return null
+  const segments: string[] = []
+  for (const [index, at] of starts.entries()) {
+    const from = at + input.questions[index]!.length + 3
+    if (index + 1 === starts.length) {
+      // 마지막 문항 — 사용자가 쓴 끝 쉼표·따옴표는 답 글이다(R5-A3). 지우지 않는다.
+      segments.push(body.slice(from))
+      continue
+    }
+    // 문항 사이 구분자 `, ` 만 뗀다.
+    const segment = body.slice(from, starts[index + 1]!)
+    if (!segment.endsWith(', ')) return null
+    segments.push(segment.slice(0, -2))
+  }
+  return segments
+}
+
+/** 대화 카드의 Grok 답 — 문항마다 자른 값에서 고름 `"글"` 의 따옴표 · 직접 입력 `"Other" user notes: ` 접두를 떼고 ` · ` 로 잇는다. 못 자르면 null. */
+function grokAnswerText(input: { message: string | null; questions: string[] }): string | null {
+  if (input.message === null || input.questions.length === 0) return null
+  const segments = grokAnswerSegments({ message: input.message, questions: input.questions })
+  if (segments === null) return null
+  const prefix = '"Other" user notes: '
+  return segments.map((value) => (value.startsWith(prefix) ? value.slice(prefix.length) : /^"(.*)"$/.exec(value)?.[1] ?? value)).join(' · ')
 }
 
 /** grok 시각 — 초 단위 정수(실측) · ms 숫자 · ISO 문자열. */
@@ -741,7 +795,7 @@ export class ChatBuilder {
       case 'result': {
         const question = this.questions.get(atom.callId)
         if (question !== undefined) {
-          if (question.state === 'pending' && atom.settles) this.settle({ question, state: atom.status === 'ok' ? 'answered' : 'closed', answer: atom.answer })
+          if (question.state === 'pending' && atom.settles) this.settle({ question, state: atom.status === 'ok' ? 'answered' : 'closed', answer: atom.answer ?? grokAnswerText({ message: atom.grokMessage, questions: question.questions.map((item) => item.question) }) })
           return
         }
         const call = this.calls.get(atom.callId)

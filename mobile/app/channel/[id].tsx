@@ -94,7 +94,7 @@ export default function ChannelPlaceholder() {
   const noSession = chat.phase.kind === 'unavailable' && chat.phase.reason === 'no_session'
   const mode = channel === null ? null : composerMode({ channel, conn: kindOfConn, unknown, question: lock === 'ended' || lock === 'not_waiting' ? null : question, step: current.step, noSession })
   const stop = channel === null ? 'hidden' : stopView({ channel, conn: kindOfConn, unknown })
-  const sent = placeSent({ items: chat.items, sent: mine })
+  const sent = placeSent({ items: chat.items, sent: mine, hasOlder: chat.hasOlder })
   const tailId = chat.items.at(-1)?.id ?? null
   // 보낸 뒤에도 초안을 그대로 둔다 — 실패하면 같은 답을 다시 보낼 수 있다(R1-A11). 질문이 닫히면(다른 id) 초안은 저절로 처음부터다.
   const sendAnswers = (answers: StepAnswer[]): void => {

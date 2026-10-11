@@ -140,10 +140,10 @@ describe('보낸 지시 상태 (C12 + 확인 못 함 · P6)', () => {
       { id: 3, kind: 'prompt', at: null, body: { text: '안녕', clipped: null } },
       { id: 7, kind: 'prompt', at: null, body: { text: ' 안녕 ', clipped: null } },
     ]
-    const placed = placeSent({ items, sent: [entry({ state: 'delivered' }), entry({ id: 'm2', state: 'queued' })] })
+    const placed = placeSent({ items, sent: [entry({ state: 'delivered' }), entry({ id: 'm2', state: 'queued' })], hasOlder: false })
     expect([...placed.attached.keys()]).toEqual([7])
     expect(placed.trailing.map((item) => item.id)).toEqual(['m2'])
-    expect(placeSent({ items: items.slice(0, 1), sent: [entry({ state: 'delivered' })] }).trailing).toHaveLength(1)
+    expect(placeSent({ items: items.slice(0, 1), sent: [entry({ state: 'delivered' })], hasOlder: false }).trailing).toHaveLength(1)
   })
   it('중단 결과 문구(C10 후보 A)', () => {
     expect(stopLine(entry({ op: 'stop', state: 'stopped' }))?.text).toBe('턴을 멈췄습니다 · 백그라운드는 계속 돕니다')
@@ -294,8 +294,8 @@ describe('R1-A8 앱 재시작 뒤 서버 큐 복구', () => {
 })
 
 describe('C2 백그라운드 대기 문구', () => {
-  it('지켜보는 중이면 입력창·대기 줄이 「백그라운드 작업까지 끝나면」', () => {
-    expect(mode({ channel: channel({ dot: 'monitoring' }) })).toMatchObject({ kind: 'open', placeholder: '지시 보내기 — 백그라운드 작업까지 끝나면 들어갑니다' })
+  it('지켜보는 중이면 입력창은 「백그라운드 작업은 계속 돕니다」(바로 들어갈 수 있다 — F2) · 대기 줄은 「백그라운드 작업까지 끝나면」', () => {
+    expect(mode({ channel: channel({ dot: 'monitoring' }) })).toMatchObject({ kind: 'open', placeholder: '지시 보내기 — 백그라운드 작업은 계속 돕니다' })
     expect(mode({ channel: channel({ dot: 'working' }) })).toMatchObject({ placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다' })
     expect(sentLine({ entry: entry({ state: 'queued', acked: true }), hhmm, monitoring: true })?.text).toBe('대기 중 · 백그라운드 작업까지 끝나면 들어갑니다')
   })

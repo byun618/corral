@@ -203,8 +203,10 @@ export function composerMode(input: {
   if (channel.waiting === 'approval') return { kind: 'locked', placeholder: '맥에서 승인할 때까지 보낼 수 없음', note: null, keep: true }
   if (channel.waiting === 'login' || channel.waiting === 'other') return { kind: 'locked', placeholder: '맥에서 처리할 때까지 보낼 수 없음', note: null, keep: true }
   if (channel.dot === 'working') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다', note: null }
-  // 백그라운드가 남으면 herdr 는 작업 중으로 보고 큐는 그것이 끝날 때까지 기다린다(Z1ⓓ, C2 — 문구 후보는 RESULT r1, 게이트 ① 에서 확정).
-  if (channel.dot === 'monitoring') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 백그라운드 작업까지 끝나면 들어갑니다', note: null }
+  // 지켜보는 중 = 턴은 끝났고 백그라운드 작업이 남았다. 서버 큐는 herdr 가 idle·done 이 아닐 때만 기다린다 — herdr 가 한가(Claude·Codex)면
+  // 지시는 바로 들어가고 백그라운드는 계속 돈다, working 에 머물면(Grok) 기다린다(SURFACE 쓰기 · C2). 폰은 둘을 못 가르므로 입력창은
+  // 둘 다 참인 말만 하고, 기다리면 대기 줄이 알린다(LIFE-582 F2 — 네이티브 n3d 「끝나면 들어갑니다」 인데 바로 들어감).
+  if (channel.dot === 'monitoring') return { kind: 'open', target: 'send', placeholder: '지시 보내기 — 백그라운드 작업은 계속 돕니다', note: null }
   return { kind: 'open', target: 'send', placeholder: '지시 보내기', note: null }
 }
 
@@ -300,7 +302,7 @@ export function reasonText(reason: string | null): string | null {
 
 /**
  * 말풍선 아래 상태 한 줄(design-handoff §1 Q7 · P6ⓒ 「확인하지 못했습니다」 변형). `monitoring` = 그 채널이 백그라운드 작업을 지켜보는 중 —
- * 큐는 그것까지 끝나야 넣는다(C2).
+ * 거기서 대기 중이면 herdr 가 아직 working 이라 백그라운드까지 끝나야 넣는다(C2 · F2).
  */
 export function sentLine(input: { entry: SentEntry; hhmm: (at: number) => string; monitoring?: boolean }): SentLine | null {
   const { entry } = input
@@ -308,6 +310,8 @@ export function sentLine(input: { entry: SentEntry; hhmm: (at: number) => string
     case 'sending':
       return { tone: 'muted', text: '보내는 중…', action: null, faded: true }
     case 'queued': {
+      // `gate` = 서버가 한가를 보고 넣기 직전 확인 중 — 기다리는 것이 아니다(F2). 대기 줄은 실제로 기다릴 때만.
+      if (entry.wait === 'gate') return { tone: 'muted', text: '보내는 중…', action: entry.acked ? 'cancel' : null, faded: true }
       const wait = input.monitoring === true ? '대기 중 · 백그라운드 작업까지 끝나면 들어갑니다' : '대기 중 · 이 턴이 끝나면 들어갑니다'
       return { tone: 'question', text: entry.acked ? wait : '보내는 중…', action: entry.acked ? 'cancel' : null, faded: !entry.acked }
     }
@@ -334,10 +338,13 @@ const squash = (text: string): string => text.replace(/\s+/g, ' ').trim()
 /**
  * 보낸 지시를 어디에 그리나 — 들어간 지시는 기록에 「내 지시」 로 보이므로, 보낸 뒤 생긴 같은 글의 지시 말풍선을 찾으면 그 아래에 상태 줄만 붙인다.
  * 못 찾으면(아직 안 들어감·실패·확인 못 함) 대화 끝에 따로 그린다. 한 지시 말풍선에는 한 항목만.
+ * 들어간 지시의 말풍선이 아직 안 받은 앞쪽(`hasOlder`)에 있을 수 있으면 끝에 그리지 않는다 — 대화 창을 최근 N 개로 다시 받으면
+ * 오래된 지시 말풍선이 창 밖으로 밀려, 끝에 한 번 더 보였다(LIFE-582 F1). 보낸 시점 끝(`tailId`)이 창 안이면 말풍선도 창 안이다.
  */
-export function placeSent(input: { items: readonly ChatItem[]; sent: readonly SentEntry[] }): { attached: Map<number, SentEntry>; trailing: SentEntry[] } {
+export function placeSent(input: { items: readonly ChatItem[]; sent: readonly SentEntry[]; hasOlder: boolean }): { attached: Map<number, SentEntry>; trailing: SentEntry[] } {
   const attached = new Map<number, SentEntry>()
   const trailing: SentEntry[] = []
+  const first = input.items[0]?.id ?? null
   for (const entry of input.sent) {
     if (entry.op !== 'send' || entry.text === null || entry.state === 'cancelled') continue
     const want = squash(entry.text)
@@ -345,6 +352,7 @@ export function placeSent(input: { items: readonly ChatItem[]; sent: readonly Se
       ? input.items.find((item) => item.kind === 'prompt' && (entry.tailId === null || item.id > entry.tailId) && !attached.has(item.id) && squash(item.body.text) === want)
       : undefined
     if (match !== undefined) attached.set(match.id, entry)
+    else if (entry.state === 'delivered' && input.hasOlder && (entry.tailId === null || first === null || entry.tailId < first)) continue
     else trailing.push(entry)
   }
   return { attached, trailing }

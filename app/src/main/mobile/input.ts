@@ -28,7 +28,7 @@ import type { TerminalIdentity } from '../adapter/index.js'
 import { bodyIdentity, countSubmissions, normalizeBody } from '../../runtime/terminal/agent.js'
 import type { AgentSessionRef } from '../../shared/types.js'
 import { parseGrokUpdates, parseTail } from '../transcript-parse.js'
-import { codexQuestionReplies, lineAtoms, type ChatItem } from '../chat-parse.js'
+import { codexQuestionReplies, grokAnsweredMessage, grokAnswerSegments, lineAtoms, type ChatItem } from '../chat-parse.js'
 import {
   activeQuestion,
   answerGroups,
@@ -370,9 +370,7 @@ export function recordedAnswers(input: { kind: MobileAgentKind; text: string; ca
     }
     const params = record['params']
     const update = isObject(params) && isObject(params['update']) ? params['update'] : isObject(record['update']) ? record['update'] : null
-    const output = update === null ? null : update['rawOutput']
-    const answered = isObject(output) ? output['UserAnswered'] : null
-    const message = typeof answered === 'string' ? answered : isObject(answered) && typeof answered['message'] === 'string' ? answered['message'] : null
+    const message = update === null ? null : grokAnsweredMessage(update['rawOutput'])
     const split = message === null ? null : grokAnswerSegments({ message, questions: input.questions })
     if (split === null) return { kind: 'unreadable' }
     for (const [index, value] of split.entries()) if (!set(index, value)) return { kind: 'unreadable' }
@@ -383,40 +381,6 @@ export function recordedAnswers(input: { kind: MobileAgentKind; text: string; ca
     ok.push(value)
   }
   return { kind: 'ok', values: ok }
-}
-
-/**
- * Grok 답 글을 문항마다 자른다 — 앞뒤 고정 문구를 떼고, 문항 글마다 `"문항"=` 이 정확히 한 번 · 기록 문항 순서대로 있어야 한다.
- * 그 사이(다음 문항 앞 `, ` 까지)가 그 문항의 답. 아니면 null(경계를 못 읽음).
- */
-function grokAnswerSegments(input: { message: string; questions: string[] }): string[] | null {
-  const head = 'User has answered your questions: '
-  const tail = /\.\s*You can now continue with the user's answers in mind\.?\s*$/
-  if (!input.message.startsWith(head) || !tail.test(input.message)) return null
-  const body = input.message.slice(head.length).replace(tail, '')
-  const starts: number[] = []
-  for (const question of input.questions) {
-    const marker = `"${question}"=`
-    const at = body.indexOf(marker)
-    if (at < 0 || body.indexOf(marker, at + 1) >= 0) return null
-    if (starts.length > 0 && at <= starts.at(-1)!) return null
-    starts.push(at)
-  }
-  if (starts[0] !== 0) return null
-  const segments: string[] = []
-  for (const [index, at] of starts.entries()) {
-    const from = at + input.questions[index]!.length + 3
-    if (index + 1 === starts.length) {
-      // 마지막 문항 — 사용자가 쓴 끝 쉼표·따옴표는 답 글이다(R5-A3). 지우지 않는다.
-      segments.push(body.slice(from))
-      continue
-    }
-    // 문항 사이 구분자 `, ` 만 뗀다.
-    const segment = body.slice(from, starts[index + 1]!)
-    if (!segment.endsWith(', ')) return null
-    segments.push(segment.slice(0, -2))
-  }
-  return segments
 }
 
 /**

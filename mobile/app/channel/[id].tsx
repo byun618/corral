@@ -81,7 +81,8 @@ export default function ChannelPlaceholder() {
   const kindOfConn = connKind(conn)
   const mine = input.entries.filter((entry) => entry.channel === id)
   const question = channel !== null && channel.status === 'live' && !unknown ? openQuestion(chat.items) : null
-  // 기다리지 않는 질문(턴 끝난 Codex 비동기 질문)은 카드만 잠그고 입력창은 일반 지시 규칙으로 — 턴이 끝났으면 답을 지시로 보낸다(D10).
+  // 턴이 끝난 질문(D10)·다른 대기의 질문은 카드만 잠그고 입력창은 그 질문을 뺀 규칙으로 — 턴이 끝났으면 답을 지시로 보낸다.
+  // 아직 작업 중(checking — 목록이 질문 대기를 아직 모름, R8-A1)이면 입력창은 질문 직접 입력 그대로(보내기만 잠김).
   const lock = channel === null || question === null ? null : questionLock({ channel, item: question })
   // 질문 답 초안 — 질문이 바뀌면 처음부터. 입력창의 직접 입력과 카드가 같이 쓴다.
   const [draft, setDraft] = useState<{ question: number | null; step: number; answers: StepAnswer[] }>({ question: null, step: 0, answers: [] })

@@ -91,16 +91,18 @@ export function questionLocked(input: { kind: AgentKind | null; item: Extract<Ch
 /**
  * 폰 답 카드 잠금 — 채널이 질문을 기다릴 때(`waiting: question`)만 연다. 서버도 상태가 blocked 가 아니면 `question_closed` 로 거절한다(input.ts runAnswer).
  * - `shape`: 폰이 답할 수 없는 모양(`questionLocked`)
+ * - `checking`: 아직 작업 중 — 기록엔 질문이 왔는데 목록 상태가 따라오지 않았다(두 스냅샷은 따로 온다, R8-A1). 입력창은 질문 직접 입력 그대로 두고 보내기만 잠근다.
+ *   목록이 `waiting: question` 으로 따라오면 열린다. 일반 지시로 바꾸지 않는다 — 질문에 쓴 글이 다음 턴 지시가 되지 않게
  * - `ended`: 턴이 끝났다(대기·작업 없음) — 턴이 끝난 Codex 비동기 질문은 맥에도 고르는 자리가 없어 다음 지시로 답한다(최종 관문 Z4ⓓ · D10). 입력창은 일반 지시
- * - `not_waiting`: 작업 중이거나 다른 대기(권한·로그인) — 지금은 답할 수 없다
- * 채널이 다시 질문을 기다리면 열린다.
+ * - `not_waiting`: 다른 대기(권한·로그인·그 밖) — 지금은 답할 수 없다. 입력창은 그 대기의 잠금
  */
-export type QuestionLock = 'open' | 'shape' | 'ended' | 'not_waiting'
+export type QuestionLock = 'open' | 'shape' | 'checking' | 'ended' | 'not_waiting'
 
 export function questionLock(input: { channel: Channel; item: Extract<ChatItem, { kind: 'question' }> }): QuestionLock {
   const { channel } = input
   if (channel.waiting === 'question') return questionLocked({ kind: channel.kind, item: input.item }) ? 'shape' : 'open'
-  return channel.waiting === null && channel.dot !== 'working' && channel.dot !== 'monitoring' ? 'ended' : 'not_waiting'
+  if (channel.waiting !== null) return 'not_waiting'
+  return channel.dot === 'working' || channel.dot === 'monitoring' ? 'checking' : 'ended'
 }
 
 /** 잠긴 답 카드의 안내 한 줄. */
@@ -110,6 +112,8 @@ export function questionLockText(input: { lock: Exclude<QuestionLock, 'open'>; k
       return '맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다'
     case 'ended':
       return input.kind === 'codex' ? 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요' : '턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요'
+    case 'checking':
+      return '질문을 확인하는 중…'
     case 'not_waiting':
       return '지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요'
   }
@@ -190,6 +194,8 @@ export function composerMode(input: {
   if (input.noSession) return { kind: 'locked', placeholder: '맥에서 첫 지시를 보낸 뒤 쓸 수 있음', note: null, keep: true }
   if (question !== null) {
     if (questionLocked({ kind: channel.kind, item: question })) return { kind: 'locked', placeholder: '맥에서 답해 주세요', note: null, keep: true }
+    // 목록이 아직 질문 대기를 모른다(R8-A1) — 직접 입력 자리와 쓴 글은 그대로, 보내기만 잠근다. 일반 지시로 바꾸지 않는다.
+    if (channel.waiting !== 'question') return { kind: 'locked', placeholder: '선택지 밖 답을 직접 쓰기', note: '질문을 확인하는 중…', keep: true }
     const current = question.questions[Math.min(input.step, question.questions.length - 1)]
     if (current !== undefined && otherAllowed({ kind: channel.kind, question: current })) return { kind: 'open', target: 'answer', placeholder: '선택지 밖 답을 직접 쓰기', note: null }
     return { kind: 'locked', placeholder: '선택지로 답해 주세요', note: null, keep: true }

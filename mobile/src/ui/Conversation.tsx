@@ -193,14 +193,25 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
     )
   }
   if (state.kind === 'failed') {
+    // 기록이 없어도 보낸 지시의 상태(보내는 중·대기 중·실패·다시 보내기)는 보인다 — 글이 사라진 채 아무 표시가 없으면 블랙홀이다(최종 관문 Z8 s39·s40).
+    const trailing = sent?.trailing ?? []
     return (
-      <View className="flex-1 items-center justify-center gap-2 px-padx">
-        <Text style={{ fontSize: 15, color: color.fg, fontFamily: font.medium, textAlign: 'center' }}>{state.title}</Text>
-        <Text style={{ fontSize: 13.5, color: color.fgMuted, fontFamily: font.regular, textAlign: 'center' }}>{state.detail}</Text>
-        {state.retry ? (
-          <Pressable accessibilityRole="button" onPress={onRetry} className="mt-2 h-11 justify-center rounded-pill border border-line-strong px-5 active:opacity-70">
-            <Text style={{ fontSize: 14, color: color.fg, fontFamily: font.semibold }}>다시 시도</Text>
-          </Pressable>
+      <View style={{ flex: 1 }}>
+        <View className="flex-1 items-center justify-center gap-2 px-padx">
+          <Text style={{ fontSize: 15, color: color.fg, fontFamily: font.medium, textAlign: 'center' }}>{state.title}</Text>
+          <Text style={{ fontSize: 13.5, color: color.fgMuted, fontFamily: font.regular, textAlign: 'center' }}>{state.detail}</Text>
+          {state.retry ? (
+            <Pressable accessibilityRole="button" onPress={onRetry} className="mt-2 h-11 justify-center rounded-pill border border-line-strong px-5 active:opacity-70">
+              <Text style={{ fontSize: 14, color: color.fg, fontFamily: font.semibold }}>다시 시도</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {trailing.length > 0 ? (
+          <View style={{ gap: 12, paddingHorizontal: 16, paddingBottom: 12 }}>
+            {trailing.map((entry) => (
+              <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm, monitoring: channel.dot === 'monitoring' })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
+            ))}
+          </View>
         ) : null}
       </View>
     )

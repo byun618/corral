@@ -147,11 +147,13 @@ describe('턴이 끝난 질문 — 채널이 질문을 기다리지 않으면 �
     expect(view.send).toBe(true)
     expect(view.text).not.toContain(ENDED)
   })
-  it('작업 중(턴이 아직 돎)은 기다리지 않음 — 「지금은 답할 수 없음」 잠금, 입력창은 큐 안내', async () => {
+  it('작업 중(목록이 질문 대기를 아직 모름, R8-A1) — 「질문을 확인하는 중…」 잠금, 입력창은 질문 직접 입력 자리 그대로(보내기 잠김)', async () => {
     const view = await render({ channel: { dot: 'working', dotUnseen: 'working' } })
-    expect(view.text).toContain(NOT_WAITING)
+    expect(view.text).toContain('질문을 확인하는 중…')
     expect(view.text).not.toContain(ENDED)
-    expect(view.placeholder).toBe('지시 보내기 — 이 턴이 끝나면 들어갑니다')
+    expect(view.text).not.toContain(NOT_WAITING)
+    expect(view.send).toBe(false)
+    expect(view.placeholder).toBe('선택지 밖 답을 직접 쓰기')
   })
   it('권한 대기 + 기록 대기 질문 → 카드 잠금, 입력창은 일반 지시로 열리지 않는다(승인 잠금)', async () => {
     const view = await render({ channel: { dot: 'waiting', dotUnseen: 'waiting', waiting: 'approval' } })

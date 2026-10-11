@@ -42,8 +42,9 @@ describe('Composer 상태표 8행 (design-handoff §2)', () => {
   it('한가 · 작업 중(큐) · 질문 직접 입력 · 질문 선택지만 · 권한 대기 · 재연결 · 끊김 · 닫힘', () => {
     expect(mode({})).toEqual({ kind: 'open', target: 'send', placeholder: '지시 보내기', note: null })
     expect(mode({ channel: channel({ dot: 'working' }) })).toMatchObject({ kind: 'open', target: 'send', placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다' })
-    expect(mode({ question: card([q()]) })).toMatchObject({ kind: 'open', target: 'answer', placeholder: '선택지 밖 답을 직접 쓰기' })
-    expect(mode({ question: card([q({ preview: true })]) })).toMatchObject({ kind: 'locked', placeholder: '선택지로 답해 주세요' })
+    const asking = channel({ dot: 'waiting', waiting: 'question' })
+    expect(mode({ channel: asking, question: card([q()]) })).toMatchObject({ kind: 'open', target: 'answer', placeholder: '선택지 밖 답을 직접 쓰기' })
+    expect(mode({ channel: asking, question: card([q({ preview: true })]) })).toMatchObject({ kind: 'locked', placeholder: '선택지로 답해 주세요' })
     expect(mode({ channel: channel({ dot: 'waiting', waiting: 'approval' }) })).toMatchObject({ kind: 'locked', placeholder: '맥에서 승인할 때까지 보낼 수 없음' })
     expect(mode({ conn: 'reconnecting' })).toEqual({ kind: 'locked', placeholder: '지시 보내기', note: '연결되면 보낼 수 있습니다', keep: true })
     expect(mode({ conn: 'offline' })).toMatchObject({ kind: 'locked', placeholder: '연결이 끊겨 보낼 수 없음', keep: true })
@@ -305,10 +306,10 @@ describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 �
     expect(questionLock({ channel: channel({ ...asking, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe('shape')
     expect(questionLock({ channel: channel({ ...asking, kind: 'claude' }), item: card([q({ multiSelect: true })]) })).toBe('open')
   })
-  it('턴이 끝남(한가 · 완료 · 중단) → ended · 작업 중 · 다른 대기 → not_waiting — 둘 다 모양 잠금보다 앞선다', () => {
+  it('턴이 끝남(한가 · 완료 · 중단) → ended · 작업 중(목록이 아직 모름, R8-A1) → checking · 다른 대기 → not_waiting — 모두 모양 잠금보다 앞선다', () => {
     const cases: [Partial<Channel>, string][] = [
       [{ dot: 'done' }, 'ended'], [{ dot: 'idle' }, 'ended'], [{ dot: 'interrupted' }, 'ended'],
-      [{ dot: 'working' }, 'not_waiting'], [{ dot: 'monitoring' }, 'not_waiting'], [{ dot: 'waiting', waiting: 'approval' }, 'not_waiting'], [{ dot: 'blocked', waiting: 'login' }, 'not_waiting'],
+      [{ dot: 'working' }, 'checking'], [{ dot: 'monitoring' }, 'checking'], [{ dot: 'waiting', waiting: 'approval' }, 'not_waiting'], [{ dot: 'blocked', waiting: 'login' }, 'not_waiting'],
     ]
     for (const [patch, want] of cases) {
       expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q()]) })).toBe(want)
@@ -319,6 +320,13 @@ describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 �
     expect(questionLockText({ lock: 'ended', kind: 'codex' })).toBe('Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요')
     expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요')
     expect(questionLockText({ lock: 'not_waiting', kind: 'codex' })).toBe('지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요')
+    expect(questionLockText({ lock: 'checking', kind: 'claude' })).toBe('질문을 확인하는 중…')
+  })
+  it('R8-A1 — 질문 기록은 왔는데 목록은 아직 작업 중: 입력창은 질문 직접 입력 자리 그대로, 보내기만 잠금(일반 지시로 바꾸지 않는다)', () => {
+    const kinds: Channel['kind'][] = ['claude', 'codex', 'grok']
+    for (const kind of kinds) {
+      expect(mode({ channel: channel({ dot: 'working', kind }), question: card([q()]) })).toEqual({ kind: 'locked', placeholder: '선택지 밖 답을 직접 쓰기', note: '질문을 확인하는 중…', keep: true })
+    }
     expect(questionLockText({ lock: 'shape', kind: 'codex' })).toBe('맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다')
   })
 })

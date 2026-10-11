@@ -12,6 +12,7 @@ import {
   otherAllowed,
   parseInputState,
   placeSent,
+  questionLock,
   questionLocked,
   sendGate,
   sentLine,
@@ -293,5 +294,20 @@ describe('C2 백그라운드 대기 문구', () => {
     expect(mode({ channel: channel({ dot: 'monitoring' }) })).toMatchObject({ kind: 'open', placeholder: '지시 보내기 — 백그라운드 작업까지 끝나면 들어갑니다' })
     expect(mode({ channel: channel({ dot: 'working' }) })).toMatchObject({ placeholder: '지시 보내기 — 이 턴이 끝나면 들어갑니다' })
     expect(sentLine({ entry: entry({ state: 'queued', acked: true }), hhmm, monitoring: true })?.text).toBe('대기 중 · 백그라운드 작업까지 끝나면 들어갑니다')
+  })
+})
+
+describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 기다릴 때만 연다 (Z4ⓓ 턴 끝난 Codex 비동기 질문)', () => {
+  const asking: Partial<Channel> = { dot: 'waiting', waiting: 'question' }
+  it('질문 대기 → open · 모양 잠금 → shape', () => {
+    expect(questionLock({ channel: channel({ ...asking, kind: 'codex' }), item: card([q()]) })).toBe('open')
+    expect(questionLock({ channel: channel({ ...asking, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe('shape')
+    expect(questionLock({ channel: channel({ ...asking, kind: 'claude' }), item: card([q({ multiSelect: true })]) })).toBe('open')
+  })
+  it('기다리지 않음(한가 · 작업 중 · 권한 · 로그인) → not_waiting — 모양 잠금보다 앞선다', () => {
+    for (const patch of [{ dot: 'done' }, { dot: 'idle' }, { dot: 'working' }, { dot: 'waiting', waiting: 'approval' }, { dot: 'blocked', waiting: 'login' }] satisfies Partial<Channel>[]) {
+      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q()]) })).toBe('not_waiting')
+      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe('not_waiting')
+    }
   })
 })

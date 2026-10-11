@@ -19,7 +19,7 @@ import {
   connKind,
   openQuestion,
   placeSent,
-  questionLocked,
+  questionLock,
   stopLine,
   stopView,
   toggleChoice,
@@ -81,6 +81,8 @@ export default function ChannelPlaceholder() {
   const kindOfConn = connKind(conn)
   const mine = input.entries.filter((entry) => entry.channel === id)
   const question = channel !== null && channel.status === 'live' && !unknown ? openQuestion(chat.items) : null
+  // 기다리지 않는 질문(턴 끝난 Codex 비동기 질문)은 카드만 잠그고 입력창은 일반 지시로 — 맥 사용자도 그 세션엔 새 지시를 친다.
+  const lock = channel === null || question === null ? null : questionLock({ channel, item: question })
   // 질문 답 초안 — 질문이 바뀌면 처음부터. 입력창의 직접 입력과 카드가 같이 쓴다.
   const [draft, setDraft] = useState<{ question: number | null; step: number; answers: StepAnswer[] }>({ question: null, step: 0, answers: [] })
   const current = question !== null && draft.question === question.id ? draft : { question: question?.id ?? null, step: 0, answers: [] }
@@ -89,7 +91,7 @@ export default function ChannelPlaceholder() {
   const lastStop = mine.filter((entry) => entry.op === 'stop').at(-1) ?? null
   const stopResult = lastStop === null ? null : stopLine(lastStop)
   const noSession = chat.phase.kind === 'unavailable' && chat.phase.reason === 'no_session'
-  const mode = channel === null ? null : composerMode({ channel, conn: kindOfConn, unknown, question, step: current.step, noSession })
+  const mode = channel === null ? null : composerMode({ channel, conn: kindOfConn, unknown, question: lock === 'not_waiting' ? null : question, step: current.step, noSession })
   const stop = channel === null ? 'hidden' : stopView({ channel, conn: kindOfConn, unknown })
   const sent = placeSent({ items: chat.items, sent: mine })
   const tailId = chat.items.at(-1)?.id ?? null
@@ -107,11 +109,11 @@ export default function ChannelPlaceholder() {
     setDraft({ question: question.id, step: current.step + 1, answers })
   }
   const control =
-    question === null || channel === null
+    question === null || channel === null || lock === null
       ? null
       : {
           id: question.id,
-          locked: questionLocked({ kind: channel.kind, item: question }),
+          lock,
           step: current.step,
           answers: current.answers,
           busy: answerBusy || kindOfConn !== 'connected',

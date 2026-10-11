@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import type { ChatItem } from '../core/chat'
 import type { ChatSnapshot } from '../core/chat-store'
-import { sentLine, stepReady, type SentEntry, type SentLine, type StepAnswer } from '../core/input'
+import { sentLine, stepReady, type QuestionLock, type SentEntry, type SentLine, type StepAnswer } from '../core/input'
 import {
   TABLE_SCROLL_COLUMNS,
   bodyState,
@@ -56,8 +56,8 @@ export type ConversationProps = {
 /** 질문 답 조작 — 상태는 채널 화면이 든다(입력창의 직접 입력과 같이 쓴다). */
 export type QuestionControl = {
   id: number
-  /** 폰에서 답할 수 없는 질문 — 선택지를 잠그고 `맥에서 답해 주세요`. */
-  locked: boolean
+  /** 폰에서 답할 수 없는 질문 — 선택지를 잠그고 안내 한 줄(`shape` 모양 · `not_waiting` 지금 기다리지 않음). */
+  lock: QuestionLock
   step: number
   answers: readonly StepAnswer[]
   /** 답을 보내는 중 — 다시 누르지 못한다. */
@@ -645,7 +645,8 @@ function QuestionAnswerCard({ item, control }: { item: Extract<ChatItem, { kind:
   const answer = control.answers[step] ?? { choices: [], other: null }
   const multi = question.multiSelect === true
   const last = step === total - 1
-  const ready = !control.locked && !control.busy && stepReady({ question, answer })
+  const locked = control.lock !== 'open'
+  const ready = !locked && !control.busy && stepReady({ question, answer })
   const count = answer.choices.length + (answer.other === null ? 0 : 1)
   const label = !last ? '다음' : multi && count > 1 ? `${count}개 보내기` : '보내기'
   return (
@@ -661,8 +662,8 @@ function QuestionAnswerCard({ item, control }: { item: Extract<ChatItem, { kind:
           <Pressable
             key={index}
             accessibilityRole={multi ? 'checkbox' : 'radio'}
-            accessibilityState={{ checked: selected, disabled: control.locked || control.busy }}
-            disabled={control.locked || control.busy}
+            accessibilityState={{ checked: selected, disabled: locked || control.busy }}
+            disabled={locked || control.busy}
             onPress={() => control.onToggle(index)}
             className="active:opacity-80"
             style={{ minHeight: 52, borderRadius: 10, borderWidth: 1, borderColor: selected ? color.dotQuestion : color.lineStrong, backgroundColor: selected ? color.questionTint8 : 'transparent', paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 }}
@@ -678,8 +679,8 @@ function QuestionAnswerCard({ item, control }: { item: Extract<ChatItem, { kind:
         )
       })}
       {answer.other !== null ? <Text numberOfLines={2} style={{ fontSize: 13, color: color.fgMuted, fontFamily: font.regular }}>{`직접 입력 → ${answer.other}`}</Text> : null}
-      {control.locked ? (
-        <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다</Text>
+      {locked ? (
+        <Text style={{ fontSize: 12.5, color: color.fgDim, fontFamily: font.regular }}>{control.lock === 'not_waiting' ? '지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요' : '맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다'}</Text>
       ) : (
         <Pressable
           accessibilityRole="button"

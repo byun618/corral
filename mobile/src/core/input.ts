@@ -88,6 +88,18 @@ export function questionLocked(input: { kind: AgentKind | null; item: Extract<Ch
   return false
 }
 
+/**
+ * 폰 답 카드 잠금 — `shape`: 폰이 답할 수 없는 모양(`questionLocked`) · `not_waiting`: 그 채널이 지금 질문을 기다리지 않는다
+ * (턴이 끝난 Codex 비동기 질문 — 기록엔 대기로 남지만 맥 화면에도 답할 자리가 없다, 최종 관문 Z4ⓓ). 서버도 상태가 blocked 가 아니면
+ * `question_closed` 로 거절한다(input.ts runAnswer). 채널이 다시 질문을 기다리면 열린다.
+ */
+export type QuestionLock = 'open' | 'shape' | 'not_waiting'
+
+export function questionLock(input: { channel: Channel; item: Extract<ChatItem, { kind: 'question' }> }): QuestionLock {
+  if (input.channel.waiting !== 'question') return 'not_waiting'
+  return questionLocked({ kind: input.channel.kind, item: input.item }) ? 'shape' : 'open'
+}
+
 /** 직접 입력 허용(R2) — Claude preview 레이아웃만 막힌다(Codex `Other` · Grok `z` 는 실측으로 있다). */
 export function otherAllowed(input: { kind: AgentKind | null; question: ChatQuestion }): boolean {
   return !(input.kind === 'claude' && input.question.preview)

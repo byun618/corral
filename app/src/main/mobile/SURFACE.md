@@ -247,6 +247,8 @@
   첫 키는 그 화면의 revision, 다음 키는 guard 가 앞 키를 쓴 직후 돌려준 revision 이라 그 사이 다른 클라이언트의 입력이 끼면 그 키부터 쓰지 않는다. ⑤ 키마다 접수 세션이 그대로여야 한다(R2-A4).
   기록의 질문이 닫혔으면 `failed/question_closed`, 화면·seq·revision·지문이 다르면 `question_changed`(키가 하나도 안 들어갔으면 `failed`, 들어갔으면 `unconfirmed`). 잠긴 질문(선택지 9개 이상 · Claude 아닌 multiSelect · Claude preview 의 직접 입력) `question_locked`·`other_locked`.
   잠긴 질문의 폰 문구는 「맥에서 답해 주세요」 한 갈래다 — 카드 「맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다」 · 입력창 자리표시 「맥에서 답해 주세요」 · 결과 줄 `question_locked` 「이 질문은 맥에서 답해 주세요」(D1 — 잠금 + 안내).
+  폰 카드는 그 채널이 **질문을 기다릴 때만**(목록 `waiting: question`) 연다 — 기록엔 대기인데 채널이 기다리지 않으면(턴이 끝난 Codex 비동기 질문: 맥 화면에도 답할 자리가 없다, 최종 관문 Z4ⓓ) 카드를 잠그고
+  「지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요」, 입력창은 일반 지시(서버도 상태가 blocked 가 아니면 `question_closed`). 새 서버 메시지 없음.
   **들어감 = 키 직전 꼬리 커서 뒤 기록에 그 질문의 답 정확히 1건**(Claude·Grok = 그 도구 호출의 `result` 줄 · Codex = 답 봉투의 `questionItemId`(도구 호출 id + 문항 번호)가 **이 호출**인 항목이 문항마다 한 번씩 —
   다른 질문의 봉투는 세지 않고, 귀속을 못 읽은 봉투가 있으면 `unconfirmed/record_unattributed`, R2-A2) **+ 판독자에서 그 질문이 대기에서 풀림**(10초) — UI 의 `answered` 만으로 세지 않는다.
   판독자(`chat-parse`)도 Codex 봉투를 문항마다 받아 **그 호출의 문항이 모두 답해져야** 질문을 푼다(R3-A3 — 봉투 하나가 질문 전체를 풀지 않는다, 다른 호출의 봉투는 이 질문을 건드리지 않는다).

@@ -222,13 +222,14 @@ export type StopView = 'hidden' | 'enabled' | 'disabled'
 
 /**
  * 보이는 조건: 작업 중 · 지켜보는 중 · 질문 대기 · 권한 대기(서버 `stopAllowed` 와 같다). Grok 의 질문 대기는 숨긴다(Ctrl+C 가 질문만 거절 — Z1ⓒ),
+ * Grok 의 권한 대기도 숨긴다(권한 상자가 입력 줄을 덮어 서버가 초안을 못 읽고 멈추지 않는다 — 최종 관문 Z5ⓔ s59),
  * 로그인·기타 대기는 숨긴다(실측 없음). 연결이 없거나 상태를 믿을 수 없으면 흐린 비활성.
  */
 export function stopView(input: { channel: Channel; conn: ConnKind; unknown: boolean }): StopView {
   const { channel } = input
   if (channel.status !== 'live' || channel.kind === null) return 'hidden'
   let visible = false
-  if (channel.waiting === 'approval') visible = true
+  if (channel.waiting === 'approval') visible = channel.kind !== 'grok'
   else if (channel.waiting === 'question') visible = channel.kind !== 'grok'
   else if (channel.waiting === null) visible = channel.dot === 'working' || channel.dot === 'monitoring'
   if (!visible) return 'hidden'

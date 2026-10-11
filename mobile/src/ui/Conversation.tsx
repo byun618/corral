@@ -194,27 +194,7 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
   }
   if (state.kind === 'failed') {
     // 기록이 없어도 보낸 지시의 상태(보내는 중·대기 중·실패·다시 보내기)는 보인다 — 글이 사라진 채 아무 표시가 없으면 블랙홀이다(최종 관문 Z8 s39·s40).
-    const trailing = sent?.trailing ?? []
-    return (
-      <View style={{ flex: 1 }}>
-        <View className="flex-1 items-center justify-center gap-2 px-padx">
-          <Text style={{ fontSize: 15, color: color.fg, fontFamily: font.medium, textAlign: 'center' }}>{state.title}</Text>
-          <Text style={{ fontSize: 13.5, color: color.fgMuted, fontFamily: font.regular, textAlign: 'center' }}>{state.detail}</Text>
-          {state.retry ? (
-            <Pressable accessibilityRole="button" onPress={onRetry} className="mt-2 h-11 justify-center rounded-pill border border-line-strong px-5 active:opacity-70">
-              <Text style={{ fontSize: 14, color: color.fg, fontFamily: font.semibold }}>다시 시도</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {trailing.length > 0 ? (
-          <View style={{ gap: 12, paddingHorizontal: 16, paddingBottom: 12 }}>
-            {trailing.map((entry) => (
-              <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm, monitoring: channel.dot === 'monitoring' })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
-            ))}
-          </View>
-        ) : null}
-      </View>
-    )
+    return <NoRecord state={state} trailing={sent?.trailing ?? []} monitoring={channel.dot === 'monitoring'} onRetry={onRetry} onSentAction={onSentAction} />
   }
   const stale = chat.stale === null ? null : staleText(chat.stale)
   return (
@@ -279,6 +259,35 @@ export function Conversation({ channel, chat, unknown, dim, onOlder, onRetry, se
 }
 
 /** 화면 위쪽 끝(뒤집힌 목록의 꼬리) — 이전 대화를 불러오는 중 · 대화의 처음. */
+/**
+ * 기록 없음 화면 — 안내 + 보낸 지시 줄을 높이가 제한된 스크롤 영역에 둔다(R9-A1: 실패 여러 개·긴 지시·키보드로 줄어든 높이에서도 마지막 상태·취소·다시 보내기까지 닿는다).
+ * 새 줄이 붙거나 높이가 바뀌면 끝으로 따라가 마지막 상태가 보인다. 대화 FlatList·제스처 분기와는 따로다.
+ */
+function NoRecord({ state, trailing, monitoring, onRetry, onSentAction }: { state: { title: string; detail: string; retry: boolean }; trailing: readonly SentEntry[]; monitoring: boolean; onRetry: () => void; onSentAction?: (input: { id: string; action: 'cancel' | 'retry' }) => void }) {
+  const scroll = useRef<ScrollView>(null)
+  const toEnd = useCallback(() => scroll.current?.scrollToEnd({ animated: false }), [])
+  return (
+    <ScrollView ref={scroll} style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled" onContentSizeChange={toEnd} onLayout={toEnd}>
+      <View className="flex-1 items-center justify-center gap-2 px-padx" style={{ paddingVertical: 24 }}>
+        <Text style={{ fontSize: 15, color: color.fg, fontFamily: font.medium, textAlign: 'center' }}>{state.title}</Text>
+        <Text style={{ fontSize: 13.5, color: color.fgMuted, fontFamily: font.regular, textAlign: 'center' }}>{state.detail}</Text>
+        {state.retry ? (
+          <Pressable accessibilityRole="button" onPress={onRetry} className="mt-2 h-11 justify-center rounded-pill border border-line-strong px-5 active:opacity-70">
+            <Text style={{ fontSize: 14, color: color.fg, fontFamily: font.semibold }}>다시 시도</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {trailing.length > 0 ? (
+        <View style={{ gap: 12, paddingHorizontal: 16, paddingBottom: 12 }}>
+          {trailing.map((entry) => (
+            <PromptBubble key={entry.id} text={entry.text ?? ''} clipped={null} status={sentLine({ entry, hhmm, monitoring })} onAction={(action) => onSentAction?.({ id: entry.id, action })} />
+          ))}
+        </View>
+      ) : null}
+    </ScrollView>
+  )
+}
+
 function OlderMark({ loading, hasOlder }: { loading: boolean; hasOlder: boolean }) {
   if (loading) {
     return (

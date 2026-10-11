@@ -33,8 +33,10 @@ export function stopKey(kind: MobileAgentKind): string {
 export function stopAllowed(input: { kind: MobileAgentKind; waiting: 'question' | 'approval' | 'login' | 'other' | null }): boolean {
   switch (input.waiting) {
     case null:
-    case 'approval':
       return true
+    // Grok 은 질문·권한 대기 모두 숨긴다 — 질문은 Ctrl+C 가 질문만 거절(Z1ⓒ), 권한은 상자가 입력 줄을 덮어 초안 확인(draftState)이
+    // unknown 이라 멈추지 않는다(최종 관문 Z5ⓔ s59 · raw/claude/final/grok-perm).
+    case 'approval':
     case 'question':
       return input.kind !== 'grok'
     case 'login':

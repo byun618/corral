@@ -82,12 +82,14 @@ describe('중단 버튼 4상태 (StopButton · P5)', () => {
     expect(view({ dot: 'waiting', waiting: 'question' })).toBe('enabled')
     expect(view({ dot: 'waiting', waiting: 'approval' })).toBe('enabled')
   })
-  it('한가 · 완료 · 실패 · 중단됨 · 닫힘 · Grok 질문 대기 · 로그인 대기는 숨긴다', () => {
+  it('한가 · 완료 · 실패 · 중단됨 · 닫힘 · Grok 질문·권한 대기 · 로그인 대기는 숨긴다', () => {
     const quiet: Channel['dot'][] = ['idle', 'done', 'failed', 'interrupted']
     for (const dot of quiet) expect(view({ dot })).toBe('hidden')
     expect(view({ status: 'closed', dot: 'working' })).toBe('hidden')
     expect(view({ kind: 'grok', dot: 'waiting', waiting: 'question' })).toBe('hidden')
-    expect(view({ kind: 'grok', dot: 'waiting', waiting: 'approval' })).toBe('enabled')
+    // 최종 관문 Z5ⓔ s59 — Grok 권한 대기의 중단은 「맥 입력창에 쓰던 글이…」 로 듣지 않았다 → 숨김(서버 stopAllowed 와 같다).
+    expect(view({ kind: 'grok', dot: 'waiting', waiting: 'approval' })).toBe('hidden')
+    expect(view({ kind: 'codex', dot: 'waiting', waiting: 'approval' })).toBe('enabled')
     expect(view({ dot: 'blocked', waiting: 'login' })).toBe('hidden')
   })
   it('연결이 없으면 흐린 비활성', () => {

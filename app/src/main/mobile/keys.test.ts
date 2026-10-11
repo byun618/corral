@@ -62,11 +62,13 @@ describe('중단 키 (Z1ⓒ)', () => {
     expect(stopKey('codex')).toBe('\x1b')
     expect(stopKey('grok')).toBe('\x03')
   })
-  it('질문 대기의 Grok 은 숨긴다 · 권한 대기는 셋 다 · 로그인·기타는 숨긴다', () => {
+  it('Grok 은 질문·권한 대기 모두 숨긴다 · 권한 대기는 Claude·Codex 만 · 로그인·기타는 숨긴다', () => {
     expect(stopAllowed({ kind: 'grok', waiting: 'question' })).toBe(false)
     expect(stopAllowed({ kind: 'claude', waiting: 'question' })).toBe(true)
-    const kinds: MobileAgentKind[] = ['claude', 'codex', 'grok']
+    const kinds: MobileAgentKind[] = ['claude', 'codex']
     for (const kind of kinds) expect(stopAllowed({ kind, waiting: 'approval' })).toBe(true)
+    // 최종 관문 Z5ⓔ s59 — Grok 권한 상자가 입력 줄을 덮어 초안 확인이 unknown → 멈추지 않는데 버튼만 남았다.
+    expect(stopAllowed({ kind: 'grok', waiting: 'approval' })).toBe(false)
     expect(stopAllowed({ kind: 'claude', waiting: 'login' })).toBe(false)
     expect(stopNeedsEmptyInput('grok')).toBe(true)
     expect(stopNeedsEmptyInput('claude')).toBe(false)

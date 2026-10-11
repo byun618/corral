@@ -258,7 +258,7 @@
   multiSelect(Claude)는 한 문항 안에서만 순서 무관 — 실측 형식(`, ` 로 잇고 쉼표나 `"` 가 든 글은 `"…"` 로 감싸 안의 `"` 를 `\"` 로, r5/native m01)대로 나눈 글 목록이
   고른 글·직접 입력 글의 집합과 같아야 한다(R5-A2 — 따옴표를 일괄로 지우지 않아 `"Red, Blue"` 한 칸과 `Red`·`Blue` 두 칸이 갈린다. 형식이 어긋나면 다르다고 본다). 다르면 `unconfirmed/answer_mismatch`(폰 「기록된 답이 고른 답과 다릅니다 — 맥에서 확인해 주세요」), 답 값을 못 읽으면 `unconfirmed/answer_unreadable`.
   답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
-- **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문 · 로그인 등) `stop_hidden` ·
+- **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문·권한 · 로그인 등 — Grok 권한은 상자가 입력 줄을 덮어 초안 확인 불가, 최종 관문 Z5ⓔ) `stop_hidden` ·
   Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. Grok 의 Ctrl+C 는 입력 줄의 글을 지우므로 **빈 입력 줄을 본 같은 guard 턴**(입력 500 ms 이상 조용 · 같은 seq)의
   입력 revision 으로 `pane.send_text` 를 울타리 친다(R3-A6) — 화면을 읽은 뒤 맥 입력이 끼면 guard 가 거절해 Ctrl+C 0회 `failed/state_changed`. Claude·Codex 의 Esc 는 그대로(seq 비교만). 멈춤 = 상태가 working·blocked 를 떠남 또는 기록의 그 턴 `interrupted`(5초), 아니면 `unconfirmed/still_running`.
   백그라운드 작업(Bash·서브에이전트)은 멈추지 않는다(Z1ⓓ).

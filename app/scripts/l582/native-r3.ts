@@ -28,7 +28,7 @@ import { sessionRecordPaths } from '../../src/runtime/terminal/agent.js'
 
 const [sock, command, cwdArg] = process.argv.slice(2)
 const cwd = cwdArg ?? ''
-if (sock === undefined || !/\/herdr-dev\/sessions\/l582-race[345]\//.test(sock) || !/^\/private\/tmp\/l582-race[345]\//.test(cwd)) {
+if (sock === undefined || !/\/herdr-dev\/sessions\/(l582-race[345]|l577g-l582g-z\d+)\//.test(sock) || !/^\/private\/tmp\/(l582-race[345]|l582g-z\d+)\//.test(cwd)) {
   console.error('usage: <isolated l582-race3|4 socket> claude|codex|grok|capture|width </private/tmp/l582-race3|4/...>')
   process.exit(2)
 }

@@ -963,12 +963,13 @@ async function u3b(): Promise<void> {
 /** ⓒ 대기 중 같은 pane 에 새 세션(Claude `/clear`)이 뜸 → failed/target_changed · 기록 0. */
 async function u3c(): Promise<void> {
   const phone = await Phone.open()
-  const info = paneOf('cs')
+  // --pane cm = 같은 시나리오를 관리 pane(agent.start)에서 — 기존(582) 한계인지 597 회귀인지 가르는 대조(코디 지시).
+  const info = paneOf(flag('pane') ?? 'cs')
   try {
     const before = await agentOf(info.paneId)
-    await startLong(phone, info, M('l597f-u3c-long'))
-    const marker = M('l597f-u3c')
-    const id = newId('u3c')
+    await startLong(phone, info, M(`l597f-u3c-long-${info.name}`))
+    const marker = M(`l597f-u3c-${info.name}`)
+    const id = newId(`u3c-${info.name}`)
     const text = `${marker} reply OK only`
     phone.send({ type: 'input.send', id, channel: info.paneId, text })
     const queued = await phone.waitFor(id, (wire) => wire.state === 'queued', 8000)
@@ -980,7 +981,7 @@ async function u3c(): Promise<void> {
     const final = await phone.final(id, 90_000)
     await delay(2000)
     const after = await agentOf(info.paneId)
-    out('U3c', { queued: queued !== null, sessionChanged: before.session !== null && after.session !== null && before.session !== after.session, final: final?.state ?? null, reason: final?.reason ?? null, states: (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`), rows: markerRows(info, marker) },
+    out(`U3c-${info.name}`, { pane: info.name, mode: info.mode, managed: after.ready, queued: queued !== null, sessionChanged: before.session !== null && after.session !== null && before.session !== after.session, final: final?.state ?? null, reason: final?.reason ?? null, states: (phone.states.get(id) ?? []).map((wire) => `${wire.state}${wire.wait === null ? '' : `:${wire.wait}`}${wire.reason === null ? '' : `/${wire.reason}`}`), rows: markerRows(info, marker) },
       final?.state === 'failed' && final.reason === 'target_changed' && markerRows(info, marker) === 0)
   } finally {
     await phone.close()

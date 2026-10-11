@@ -151,6 +151,7 @@ function hubFor(input: { kind: MobileAgentKind; pane: TerminalIdentity; sid: str
   const backend: InputBackend = {
     locate: async () => input.pane,
     observe: (pane) => live.observe(pane),
+    unmanagedPrompt: () => live.unmanagedPrompt(),
     manifestVerified: (kind) => live.manifestVerified(kind),
     screen: (pane) => live.screen(pane),
     prompt: (pane, value) => live.prompt(pane, value),

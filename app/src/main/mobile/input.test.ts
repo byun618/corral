@@ -43,6 +43,10 @@ class FakeBackend implements InputBackend {
   screenInput: ScreenRead['input'] | undefined = undefined
   paneMissing = false
   unmanaged = false
+  /** LIFE-597: guard 가 `unmanaged_agent` 를 아는가(handshake `unmanaged_prompt`). */
+  unmanagedCapable = true
+  /** 넣을 때마다 받은 `unmanagedAgent`(관리 pane 이면 null). */
+  readonly unmanagedAgents: (string | null)[] = []
   epoch = 'e'
   ptyId = 't'
   input: PaneObservation['input'] = { revision: 1, idleMs: 10_000 }
@@ -69,6 +73,10 @@ class FakeBackend implements InputBackend {
     return { status: this.status, seq: this.seq, quiet: this.quiet, unmanaged: this.unmanaged, input: this.input }
   }
 
+  unmanagedPrompt(): boolean {
+    return this.unmanagedCapable
+  }
+
   async manifestVerified(): Promise<boolean> {
     return true
   }
@@ -77,9 +85,10 @@ class FakeBackend implements InputBackend {
     return { text: this.screenText, input: this.screenInput === undefined ? this.input : this.screenInput, seq: this.seq }
   }
 
-  async prompt(_pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number }): Promise<SendResult> {
-    const { text, ...fence } = input
+  async prompt(_pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number; unmanagedAgent: string | null }): Promise<SendResult> {
+    const { text, unmanagedAgent, ...fence } = input
     this.fences.push(fence)
+    this.unmanagedAgents.push(unmanagedAgent)
     this.onPrompt?.()
     if (this.promptResult !== 'sent') return this.promptResult
     this.prompts.push(text)
@@ -273,12 +282,41 @@ describe('채널 큐 (Z3)', () => {
     await new Promise((done) => setTimeout(done, 80))
     expect(t.backend.prompts).toHaveLength(0)
   })
-  it('관리 밖 pane(셸에서 직접 띄운 세션)은 기다리지 않고 실패(unmanaged)', async () => {
+  // LIFE-597: 582 D1(관리 밖 = 기다리지 않고 failed/unmanaged)을 대체한다 — 새 guard 면 관리 밖 갈래로 넣고, 옛 guard 면 쓰기 0 + guard_outdated.
+  it('관리 밖 pane(셸에서 직접 띄운 세션)은 채널 종류를 명시해 넣는다(LIFE-597)', async () => {
     const t = setup()
     t.backend.unmanaged = true
     t.hub.send({ device: 'd1', id: 'msg-iiii-0002', channel: 'c1', text: '관리 밖' })
-    expect(await t.settled('msg-iiii-0002')).toMatchObject({ state: 'failed', reason: 'unmanaged' })
+    expect(await t.settled('msg-iiii-0002')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.prompts).toEqual(['관리 밖'])
+    expect(t.backend.unmanagedAgents).toEqual(['claude'])
+  })
+  it('관리 pane 은 관리 밖 옵션 없이 넣는다(LIFE-597 — CLI 와 같은 술어)', async () => {
+    const t = setup()
+    t.hub.send({ device: 'd1', id: 'msg-iiii-0003', channel: 'c1', text: '관리' })
+    expect(await t.settled('msg-iiii-0003')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.unmanagedAgents).toEqual([null])
+  })
+  it('관리 밖 pane 인데 guard 가 그 갈래를 모르면 쓰지 않고 실패(guard_outdated, LIFE-597 U5)', async () => {
+    const t = setup()
+    t.backend.unmanaged = true
+    t.backend.unmanagedCapable = false
+    t.hub.send({ device: 'd1', id: 'msg-iiii-0004', channel: 'c1', text: '옛 guard' })
+    expect(await t.settled('msg-iiii-0004')).toMatchObject({ state: 'failed', reason: 'guard_outdated' })
     expect(t.backend.prompts).toHaveLength(0)
+    expect(t.backend.fences).toHaveLength(0)
+  })
+  it('관리 밖 pane 이 settle 전이면(quiet 아님) 넣지 않고 기다린다(LIFE-597 U2ⓒ)', async () => {
+    const t = setup()
+    t.backend.unmanaged = true
+    t.backend.quiet = false
+    t.hub.send({ device: 'd1', id: 'msg-iiii-0005', channel: 'c1', text: '막 띄움' })
+    await new Promise((done) => setTimeout(done, 80))
+    expect(t.last('msg-iiii-0005')).toMatchObject({ state: 'queued' })
+    expect(t.backend.prompts).toHaveLength(0)
+    t.backend.quiet = true
+    expect(await t.settled('msg-iiii-0005')).toMatchObject({ state: 'delivered' })
+    expect(t.backend.unmanagedAgents).toEqual(['claude'])
   })
   it('pane 이 닫히면 실패(closed) — 나중에 넣지 않는다', async () => {
     const t = setup()

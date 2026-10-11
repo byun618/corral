@@ -88,8 +88,9 @@ export type InputTiming = {
 export const INPUT_TIMING: InputTiming = { pollMs: 1000, gateMs: 750, quietMs: 500, confirmMs: 15_000, recordPollMs: 250, stepGapMs: 350, answerConfirmMs: 10_000, stopConfirmMs: 5_000 }
 
 /**
- * `unmanaged` = herdr 가 그 pane 을 관리 에이전트로 띄우지 않았다(셸에서 직접 친 `claude` 등) — 한가해도 `interactive_ready` 가 켜지지 않아
- * guard 의 `agent.prompt` 관문을 영영 못 넘는다(격리 빠른 확인 q13). 데스크톱 GUI·하네스는 `agent.start` 로 띄워 관리된다.
+ * `unmanaged` = herdr 가 그 pane 을 관리 에이전트로 띄우지 않았다(셸에서 직접 친 `claude` 등) — 한가해도 `interactive_ready` 가 켜지지 않는다.
+ * LIFE-597: 그런 pane 은 요청이 `unmanaged_agent`(채널 종류)를 명시할 때만 guard 가 받는다 — 종류 결속 + 같은 상태 settle(3 s).
+ * `quiet` 는 관리 pane 이면 `agentQuiescent`, 관리 밖이면 guard 가 그 갈래를 알고 settle 을 넘겼을 때다.
  * `input` = 그 pane 의 사람 입력 revision·조용한 시간(guard 가 같은 관측 턴에서 읽는다). 이전 guard 면 null — 그때는 넣지 않는다.
  */
 export type PaneObservation = { status: string; seq: number; quiet: boolean; unmanaged: boolean; input: { revision: number; idleMs: number } | null }
@@ -105,12 +106,17 @@ export interface InputBackend {
   locate(paneId: string): Promise<TerminalIdentity | null>
   /** 에이전트 상태 한 번. 에이전트가 없으면 status `none`. */
   observe(pane: TerminalIdentity): Promise<PaneObservation>
+  /** LIFE-597: guard 가 관리 밖 pane 의 `agent.prompt`(`unmanaged_agent`)를 아는가 — `locate` 뒤에 안다. 모르면 관리 밖 pane 에 넣지 않는다. */
+  unmanagedPrompt(): boolean
   /** detect manifest 확인(CLI 와 같은 fail-closed — 신뢰 대화상자가 한가로 보일 수 있다). */
   manifestVerified(kind: MobileAgentKind): Promise<boolean>
   /** 보이는 화면(ANSI) — 같은 턴의 입력 revision·조용한 시간·seq 와 함께(R2-A3). */
   screen(pane: TerminalIdentity): Promise<ScreenRead>
-  /** guard `agent.prompt` — 관측한 seq·입력 revision 그대로이고 입력이 `minIdleMs` 이상 조용할 때만. `refused` = 아무것도 쓰지 않았다. */
-  prompt(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number }): Promise<SendResult>
+  /**
+   * guard `agent.prompt` — 관측한 seq·입력 revision 그대로이고 입력이 `minIdleMs` 이상 조용할 때만. `refused` = 아무것도 쓰지 않았다.
+   * `unmanagedAgent` = 관리 밖 pane 이라고 관측했을 때만 채널 종류(LIFE-597 — guard 가 감지 종류와 대조하고 settle 을 잰다). 관리 pane 은 null.
+   */
+  prompt(pane: TerminalIdentity, input: { text: string; seq: number; inputRevision: number; minIdleMs: number; unmanagedAgent: MobileAgentKind | null }): Promise<SendResult>
   /**
    * guard `pane.send_text` + 관측한 seq 비교 + (주면) 입력 revision 울타리 — 그 revision 뒤에 다른 입력이 있었으면 `refused`(R2-A1).
    * `refused` = 아무것도 쓰지 않았다.
@@ -712,8 +718,8 @@ export class InputHub {
     const { file } = resolved
     const first = await backend.observe(pane)
     if (this.dropped(entry)) return 'done'
-    // 관리 밖 pane — 기다려도 넣을 수 없다. 대기로 두면 블랙홀이다(P1 「증명 못 하는 채널은 잠그고 안내」).
-    if (first.unmanaged) return this.fail(entry, 'unmanaged')
+    // 관리 밖 pane 인데 guard 가 그 갈래를 모른다(설치본 herdr 서버를 재기동하기 전) — 기다려도 넣을 수 없다. 대기로 두면 블랙홀이다(LIFE-597 U5).
+    if (first.unmanaged && !backend.unmanagedPrompt()) return this.fail(entry, 'guard_outdated')
     if (!first.quiet) return this.waitTurn(entry, 'turn')
     this.setWait(entry, 'gate')
     await this.sleep(this.timing.gateMs)
@@ -746,7 +752,7 @@ export class InputHub {
     entry.state = 'sending'
     entry.wait = null
     this.emit(entry)
-    const sent = await backend.prompt(pane, { text, seq: second.seq, inputRevision: shot.input.revision, minIdleMs: this.timing.quietMs })
+    const sent = await backend.prompt(pane, { text, seq: second.seq, inputRevision: shot.input.revision, minIdleMs: this.timing.quietMs, unmanagedAgent: second.unmanaged ? kind : null })
     if (sent === 'refused') {
       // guard 가 거절 — 아무것도 쓰지 않았다. 그 사이 끄거나 해지했으면 끝낸다(되살리지 않는다, R1-A4). 아니면 큐에 되돌려 다음 관문을 기다린다.
       const late = this.gone(entry)

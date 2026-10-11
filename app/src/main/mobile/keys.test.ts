@@ -377,12 +377,28 @@ describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) 
     expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true }) })).toBe('empty')
     expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true, gap: 0 }) })).toBe('empty')
   })
-  it('격리 실물 화면(z2-grok-ghost-gm) 그대로 — 제안만 → 빈 입력', () => {
-    const shot = fs.readFileSync(path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/final/runs/z2-grok-ghost-gm.ndjson'), 'utf8')
-    const parsed: unknown = JSON.parse(shot.trim().split('\n').at(-1) ?? '{}')
-    const text = typeof parsed === 'object' && parsed !== null && 'screen' in parsed && typeof parsed.screen === 'string' ? parsed.screen : ''
-    expect(text).toContain('accept suggestion')
-    expect(draftState({ kind: 'grok', screen: text })).toBe('empty')
+  it('힌트가 빈 줄 둘 이상 아래면 보지 않는다 — 제안도 초안(fail-closed, R7-A1 좁게)', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true, gap: 2 }) })).toBe('draft')
+  })
+  it('격리 실물 화면(z2-grok-ghost-gm·gu) 그대로 — 제안만 → 빈 입력', () => {
+    for (const name of ['gm', 'gu']) {
+      const shot = fs.readFileSync(path.resolve(__dirname, `../../../../specs/LIFE-582-mobile-input/raw/claude/final/runs/z2-grok-ghost-${name}.ndjson`), 'utf8')
+      const parsed: unknown = JSON.parse(shot.trim().split('\n').at(-1) ?? '{}')
+      const text = typeof parsed === 'object' && parsed !== null && 'screen' in parsed && typeof parsed.screen === 'string' ? parsed.screen : ''
+      expect(text).toContain('accept suggestion')
+      expect(draftState({ kind: 'grok', screen: text })).toBe('empty')
+    }
+  })
+  it('R7-A1 리뷰어 실물 ANSI(raw/claude/final/ghost-fixtures) — 제안만은 빈 입력, 사람 글·수락·붙여넣기·여러 줄은 초안', () => {
+    const dir = path.resolve(__dirname, '../../../../specs/LIFE-582-mobile-input/raw/claude/final/ghost-fixtures')
+    const want: Record<string, string> = {
+      'count-done': 'empty', 'arrow-ghost': 'empty',
+      'ghost-partial': 'draft', 'tab-accepted': 'draft', 'arrow-accepted': 'draft', 'multiline-negative': 'draft',
+      'paste-markdown': 'draft', 'paste-unicode': 'draft', 'paste-multiline': 'draft', 'paste-leading-newline': 'draft', 'paste-sgr': 'draft',
+    }
+    for (const [name, expected] of Object.entries(want)) {
+      expect({ name, state: draftState({ kind: 'grok', screen: fs.readFileSync(path.join(dir, `${name}.ansi`), 'utf8') }) }).toEqual({ name, state: expected })
+    }
   })
   it('사람이 친 글(기울임 아님)은 초안', () => {
     expect(draftState({ kind: 'grok', screen: box({ line: TYPED('draft grok'), hint: true }) })).toBe('draft')

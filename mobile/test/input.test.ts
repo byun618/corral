@@ -13,6 +13,7 @@ import {
   parseInputState,
   placeSent,
   questionLock,
+  questionLockText,
   questionLocked,
   sendGate,
   sentLine,
@@ -304,10 +305,20 @@ describe('LIFE-582 최종 관문 — 답 카드 잠금은 채널이 질문을 �
     expect(questionLock({ channel: channel({ ...asking, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe('shape')
     expect(questionLock({ channel: channel({ ...asking, kind: 'claude' }), item: card([q({ multiSelect: true })]) })).toBe('open')
   })
-  it('기다리지 않음(한가 · 작업 중 · 권한 · 로그인) → not_waiting — 모양 잠금보다 앞선다', () => {
-    for (const patch of [{ dot: 'done' }, { dot: 'idle' }, { dot: 'working' }, { dot: 'waiting', waiting: 'approval' }, { dot: 'blocked', waiting: 'login' }] satisfies Partial<Channel>[]) {
-      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q()]) })).toBe('not_waiting')
-      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe('not_waiting')
+  it('턴이 끝남(한가 · 완료 · 중단) → ended · 작업 중 · 다른 대기 → not_waiting — 둘 다 모양 잠금보다 앞선다', () => {
+    const cases: [Partial<Channel>, string][] = [
+      [{ dot: 'done' }, 'ended'], [{ dot: 'idle' }, 'ended'], [{ dot: 'interrupted' }, 'ended'],
+      [{ dot: 'working' }, 'not_waiting'], [{ dot: 'monitoring' }, 'not_waiting'], [{ dot: 'waiting', waiting: 'approval' }, 'not_waiting'], [{ dot: 'blocked', waiting: 'login' }, 'not_waiting'],
+    ]
+    for (const [patch, want] of cases) {
+      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q()]) })).toBe(want)
+      expect(questionLock({ channel: channel({ ...patch, kind: 'codex' }), item: card([q({ multiSelect: true })]) })).toBe(want)
     }
+  })
+  it('잠금 안내 — Codex 턴 끝남은 provider 이름, 그 밖은 중립', () => {
+    expect(questionLockText({ lock: 'ended', kind: 'codex' })).toBe('Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요')
+    expect(questionLockText({ lock: 'ended', kind: 'claude' })).toBe('턴이 끝난 질문입니다 — 아래 입력창에 답을 지시로 보내 주세요')
+    expect(questionLockText({ lock: 'not_waiting', kind: 'codex' })).toBe('지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요')
+    expect(questionLockText({ lock: 'shape', kind: 'codex' })).toBe('맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다')
   })
 })

@@ -121,20 +121,22 @@ async function render(input: { channel: Partial<ChannelValue>; questions?: ChatQ
   return { text: host.textContent ?? '', placeholder: host.querySelector('textarea')?.getAttribute('data-placeholder') ?? null, send: buttons.includes('보내기') }
 }
 
+const ENDED = 'Codex 가 턴을 마쳤습니다 — 아래 입력창에 답을 지시로 보내 주세요'
 const NOT_WAITING = '지금은 폰에서 답할 수 없는 질문입니다 — 맥에서 확인해 주세요'
 const SHAPE = '맥에서 답해 주세요 — 이 질문은 폰에서 고를 수 없습니다'
 
 describe('턴이 끝난 질문 — 채널이 질문을 기다리지 않으면 카드 잠금 (최종 관문 Z4ⓓ)', () => {
-  it('Codex 한가(done) + 기록 대기 질문 → 카드 잠금 문구, 답 버튼 없음, 입력창은 일반 지시', async () => {
+  it('Codex 턴 끝남(done) + 기록 대기 질문 → 카드 잠금 「지시로 답」 문구, 답 버튼 없음, 입력창은 일반 지시', async () => {
     const view = await render({ channel: {} })
     expect(view.text).toContain('Pick a word')
-    expect(view.text).toContain(NOT_WAITING)
+    expect(view.text).toContain(ENDED)
+    expect(view.text).not.toContain(NOT_WAITING)
     expect(view.send).toBe(false)
     expect(view.placeholder).toBe('지시 보내기')
   })
   it('같은 질문인데 채널이 질문 대기 → 열림(답 버튼 · 직접 입력 자리표시)', async () => {
     const view = await render({ channel: asking })
-    expect(view.text).not.toContain(NOT_WAITING)
+    expect(view.text).not.toContain(ENDED)
     expect(view.send).toBe(true)
     expect(view.placeholder).toBe('선택지 밖 답을 직접 쓰기')
   })
@@ -142,11 +144,12 @@ describe('턴이 끝난 질문 — 채널이 질문을 기다리지 않으면 �
     expect((await render({ channel: {} })).send).toBe(false)
     const view = await render({ channel: asking })
     expect(view.send).toBe(true)
-    expect(view.text).not.toContain(NOT_WAITING)
+    expect(view.text).not.toContain(ENDED)
   })
-  it('작업 중(턴이 아직 돎)도 기다리지 않음 — 잠금, 입력창은 큐 안내', async () => {
+  it('작업 중(턴이 아직 돎)은 기다리지 않음 — 「지금은 답할 수 없음」 잠금, 입력창은 큐 안내', async () => {
     const view = await render({ channel: { dot: 'working', dotUnseen: 'working' } })
     expect(view.text).toContain(NOT_WAITING)
+    expect(view.text).not.toContain(ENDED)
     expect(view.placeholder).toBe('지시 보내기 — 이 턴이 끝나면 들어갑니다')
   })
   it('권한 대기 + 기록 대기 질문 → 카드 잠금, 입력창은 일반 지시로 열리지 않는다(승인 잠금)', async () => {
@@ -164,6 +167,7 @@ describe('턴이 끝난 질문 — 채널이 질문을 기다리지 않으면 �
     for (const kind of kinds) {
       const view = await render({ channel: { ...asking, kind } })
       expect(view.send).toBe(true)
+      expect(view.text).not.toContain(ENDED)
       expect(view.text).not.toContain(NOT_WAITING)
       expect(view.placeholder).toBe('선택지 밖 답을 직접 쓰기')
     }

@@ -84,6 +84,7 @@ done
 restore
 git -C "$repo" diff --stat > "$out/git-diff-after.txt"
 cmp -s "$out/git-diff-before.txt" "$out/git-diff-after.txt" || { echo "worktree not restored" >&2; exit 3; }
+trap - EXIT
 rm -rf "$backup"
 cat "$out/summary.md"
 grep -q '| 실패 |' "$out/summary.md" && exit 1 || exit 0

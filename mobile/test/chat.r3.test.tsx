@@ -43,6 +43,7 @@ vi.mock('../src/runtime/input', () => ({ useInput: () => ({ entries: [] }), inpu
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children, style }: { children: ReactNode; style?: { opacity?: number } }) => <div data-opacity={style?.opacity}>{children}</div>,
+  KeyboardAvoidingView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children, style }: { children: ReactNode; style?: { opacity?: number } }) => <div data-opacity={style?.opacity}>{children}</div>,
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
   TextInput: () => <textarea />,

@@ -8,7 +8,7 @@
 // 상태는 「확인 불가」, 실패 중에는 읽음 장부를 바꾸지 않는다(최신이 아닌 것을 봤다고 치지 않는다).
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { KeyboardAvoidingView, Pressable, Text, View } from 'react-native'
 import { locateChannel } from '../../src/core/list'
 import { failureText, headerMeta, headerStatus } from '../../src/core/list-view'
 import { listOf } from '../../src/core/list-store'
@@ -198,7 +198,9 @@ export default function ChannelPlaceholder() {
       {conn.kind === 'mismatch' ? (
         <VersionMismatch appVersion={appVersion} serverVersion={info?.serverVersion ?? null} supported={conn.supported} />
       ) : channel !== null ? (
-        <>
+        // 키보드 인셋 — edge-to-edge(app.config `edgeToEdgeEnabled`)에서는 `adjustResize` 가 창을 줄이지 않아 키보드가 입력창을 덮는다(최종 관문 Z8 s06).
+        // 대화+입력창 묶음만 키보드 높이만큼 올린다 — 대화의 제스처·따라가기 코드는 그대로.
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
           <Conversation
             channel={channel}
             chat={chat}
@@ -211,7 +213,7 @@ export default function ChannelPlaceholder() {
             question={control}
           />
           {mode !== null ? <Composer key={composerKey} mode={mode} onSubmit={submit} /> : null}
-        </>
+        </KeyboardAvoidingView>
       ) : (
         <View className="flex-1 items-center justify-center gap-2 px-padx">
           {channel === null ? (

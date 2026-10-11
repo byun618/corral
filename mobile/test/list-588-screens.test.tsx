@@ -39,6 +39,7 @@ vi.mock('../src/runtime/input', () => ({ useInput: () => ({ entries: [] }), inpu
 vi.mock('react-native', () => ({
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  KeyboardAvoidingView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
   TextInput: () => <textarea />,

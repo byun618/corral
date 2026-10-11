@@ -6,7 +6,7 @@ const variant = process.env.APP_VARIANT
 const IS_DEV = variant === 'development'
 
 const config: ExpoConfig = {
-  name: IS_DEV ? 'corral (dev)' : 'corral',
+  name: IS_DEV ? 'Corral (dev)' : 'Corral',
   slug: 'corral-mobile',
   scheme: IS_DEV ? 'corral-dev' : 'corral',
   version: '0.1.0',
@@ -20,6 +20,12 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     softwareKeyboardLayoutMode: 'resize',
+    // 런처 아이콘(LIFE-596) — 데스크톱 svg 에서 생성: node scripts/generate-icons.mjs. 모양은 런처 마스크가 만든다.
+    adaptiveIcon: {
+      foregroundImage: './assets/icon/adaptive-foreground.png',
+      backgroundImage: './assets/icon/adaptive-background.png',
+      monochromeImage: './assets/icon/adaptive-monochrome.png',
+    },
     permissions: ['android.permission.CAMERA'],
     blockedPermissions: ['android.permission.RECORD_AUDIO'],
   },

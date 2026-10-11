@@ -62,7 +62,7 @@
                  SuccessResponse {
 --- /dev/null
 +++ b/src/app/api/corral.rs
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,645 @@
 +use super::App;
 +use crate::api::schema::{AgentStatus, CorralTerminalParams, Method, Request, ResponseResult};
 +use super::responses::{encode_error, encode_error_body, encode_success};
@@ -590,6 +590,15 @@
 +        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
 +        let mut app = App::new(&crate::config::Config::default(), crate::app::AppPolicy::TEST, None, rx, crate::api::EventHub::default());
 +        app.state.default_shell = "/bin/sh".into(); app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
++        // R1-A1: corral learns the arm exists only from the operation-less handshake — without the advertisement a new
++        // guard would look old and every unmanaged pane would end in guard_outdated.
++        let handshake: serde_json::Value = serde_json::from_str(&app.handle_corral_terminal("handshake".into(), CorralTerminalParams {
++            epoch: String::new(), deadline_ms: 0, pane_id: None, terminal_id: None, operation: None,
++            expected_state_change_seq: None, expected_input_revision: None, min_input_idle_ms: None, unmanaged_agent: None,
++        })).unwrap();
++        assert_eq!(handshake["result"]["guard_version"], 1, "{handshake}");
++        assert_eq!(handshake["result"]["agent_ops"], 1, "{handshake}");
++        assert_eq!(handshake["result"]["unmanaged_prompt"], 1, "the handshake advertises the unmanaged arm: {handshake}");
 +        let root = std::env::temp_dir().join(format!("l597-unmanaged-{}", std::process::id()));
 +        std::fs::create_dir_all(&root).unwrap();
 +        let req: Request = serde_json::from_value(serde_json::json!({"id":"create", "method":"workspace.create", "params":{"cwd":root,"focus":false}})).unwrap();

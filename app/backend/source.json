@@ -17,7 +17,7 @@
   "conditionalProcess": false,
   "patchSHA256": {
     "herdr-stream.patch": "d7ec2e8b6af5fc1ee2fcebaacb5861ffe2f5e67e3394fac3c3a3e7d5c5b1fdce",
-    "herdr-guard.patch": "f583500084764e7f082c8520adf725526520b4e611342f90170495f796cfe1cb",
+    "herdr-guard.patch": "ad181838a0b042cd14bb44e6bb3989e36191944766471cae6e4ceeedf71a4861",
     "herdr-detect.patch": "84aa84f72d78ddfa6ad11db880764850b4c1b7f01bcb3535cff174aa7a4f50d4",
     "herdr-bundle.patch": "1eceac67e97c195ac073b37e1dba42108b420e862a70c2c84d1cc033eab38ac0",
     "herdr-shift-enter.patch": "746cbafdad7bbc8d1338fa0b4b12388a95ee6aa7dcb2406d8e932b16e8e589f1"

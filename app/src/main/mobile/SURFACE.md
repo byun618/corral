@@ -228,9 +228,12 @@
   말풍선 id 는 파일 위치라 다른 질문에 다시 쓰일 수 있고, 같은 id·호출에 내용이 바뀔 수도 있다 — 셋이 모두 같아야 폰이 답한 그 질문이다(`call`·`digest` 가 없으면 넣지 않는다).
   서버는 ① 그 질문이 기록에서 **마지막 대기 질문**이고 내용 지문이 같고 ② 관측이 `blocked` 이고 ③ 키 묶음(문항 하나의 키들 · Codex 펼치기 · Claude 검토)마다 그 앞에서, 입력이 500 ms 이상 조용할 때
   잡은 화면의 **활성 질문 영역**(맨 아래 질문 상자 — provider 별 실측 모양 `keys.ts activeQuestion`)이 그 문항(문항 글 전체 · 선택지 글 전부 · 보이면 위치)일 때만 넣는다. 화면 위쪽 과거 글은 보지 않는다.
-  **좁은 pane 줄바꿈**(R4-A2): 상자 안의 물리 줄바꿈을 되살려 비교한다 — Claude 는 번호 없는 이어진 줄(선택지 글·설명)을 앞 행에 잇고 안내 줄이 둘로 꺾여도(`…Esc` / `to cancel`) 한 줄로 읽는다,
-  Grok 은 커서 행의 이어진 줄(8칸 들여쓰기)을 앞 번호 행에 잇고 다른 행 끝의 `…`(provider 가 자른 표시)는 보이는 앞부분이 기록과 맞으면 받는다. 선택지 행이 화면에서 빠졌거나(스크롤)
-  글이 끝까지 안 보여 되살릴 수 없으면 키 0회 `failed/question_truncated`(폰 「맥 화면이 좁아 질문이 잘려 보여 보내지 않았습니다 — 맥에서 답해 주세요」). 실측(r4/width): Claude 150·100·80·60·40, Grok 150·100·80·60 은 그 문항, Grok 40 은 잘림.
+  **좁은 pane 줄바꿈**(R4-A2 · R5-A4): 상자 안의 물리 줄바꿈을 되살려 비교한다 — Claude 는 번호 없는 이어진 줄(선택지 글·설명)을 앞 행에 잇는다. 안내 줄은 이미 `Esc to cancel` 로 끝나면
+  거기서 멈추고(그 아래 비어 있지 않은 줄이 있으면 none — R3-A2), 덜 끝났을 때만 실측 안내 문구 조각(`↑/↓ to navigate` · `Tab/Arrow keys to navigate` · `ctrl+g to edit in VS Code` · `n to add notes` · `Esc to cancel`)이
+  될 때까지 다음 줄을 잇는다(40열 `…Esc` / `to cancel`). Grok 은 커서 행의 이어진 줄(8칸 들여쓰기)을 앞 번호 행에 잇는다.
+  **선택지 글은 끝까지 보여야 한다**(R5-A1): 선택지 글이 `…` 로 잘렸으면 보이는 앞부분이 같아도 받지 않는다(숨은 뒷부분이 다른 질문일 수 있다) — 설명만 `…` 로 잘린 것은 받는다.
+  선택지 글이 잘렸거나 행이 화면에서 빠졌으면(스크롤) 키 0회 `failed/question_truncated`(폰 「맥 화면이 좁아 질문이 잘려 보여 보내지 않았습니다 — 맥에서 답해 주세요」).
+  실측(r4/width · r5/native): Claude 는 줄을 감아 다 보이므로 150·100·80·60·40 모두 그 문항, Grok 은 비포커스 행을 한 줄로 자르므로 긴 선택지는 150 만 그 문항(100·80·60·40 잘림), 다 보이는 길이면 80열도 그 문항.
   Codex 의 좁은 폭 줄바꿈은 되살리지 않는다(그대로 비교 — 다르면 `question_changed`).
   상자의 끝(안내 줄)부터 **화면 끝까지** provider 마다 정해진 줄만 있어야 한다(R3-A2) — 그 아래 모르는 줄·다른 대화상자(권한 질문 등)가 있으면 그 상자는 지금 것이 아니다. Claude 검토 화면도
   `Review your answers` → 요약 → `Ready to submit…` → `1. Submit answers`·`2. Cancel`(+ 안내 줄)로 끝나야 한다. 위치의 뜻: Grok `[k/n]` = 전체 중 k번째, Codex `k of n` = **남은 문항 중 위치**
@@ -249,8 +252,9 @@
   판독자(`chat-parse`)도 Codex 봉투를 문항마다 받아 **그 호출의 문항이 모두 답해져야** 질문을 푼다(R3-A3 — 봉투 하나가 질문 전체를 풀지 않는다, 다른 호출의 봉투는 이 질문을 건드리지 않는다).
   **+ 기록의 답 값이 문항마다 폰이 고른 답**(R3-A1 · R4-A1 — 문항↔답 대응을 보존한다): Claude `toolUseResult.answers` 의 문항 글 키 · Codex 봉투의 그 호출 문항 번호 ·
   Grok `UserAnswered.message` 의 문항 경계(`"문항"="답"` — 머리·꼬리 문구와 각 문항 표시가 정확히 한 번씩 순서대로, 못 읽으면 `answer_unreadable`)로 문항마다 값을 꺼내 그 문항의 답과만 비교한다.
-  단일 선택은 같은 글, 직접 입력은 그 글(Grok `"Other" user notes: 글`), multiSelect 는 한 문항 안에서만 순서 무관 — 고른 글을 `, ` 경계에서만 하나씩 빼면 구분 기호만 남아야 한다
-  (문항끼리 바뀐 답 · 반복 라벨 · 다른 라벨의 부분 문자열인 라벨이 엉뚱한 자리에서 맞지 않게). 다르면 `unconfirmed/answer_mismatch`(폰 「기록된 답이 고른 답과 다릅니다 — 맥에서 확인해 주세요」), 답 값을 못 읽으면 `unconfirmed/answer_unreadable`.
+  단일 선택은 같은 글, 직접 입력은 그 글(Grok 은 고정 접두 `"Other" user notes: ` 뒤 글 그대로 — 따옴표·끝 쉼표도 답 글, 마지막 문항 글은 손대지 않고 문항 사이 구분자 `, ` 만 뗀다 — R5-A3).
+  multiSelect(Claude)는 한 문항 안에서만 순서 무관 — 실측 형식(`, ` 로 잇고 쉼표나 `"` 가 든 글은 `"…"` 로 감싸 안의 `"` 를 `\"` 로, r5/native m01)대로 나눈 글 목록이
+  고른 글·직접 입력 글의 집합과 같아야 한다(R5-A2 — 따옴표를 일괄로 지우지 않아 `"Red, Blue"` 한 칸과 `Red`·`Blue` 두 칸이 갈린다. 형식이 어긋나면 다르다고 본다). 다르면 `unconfirmed/answer_mismatch`(폰 「기록된 답이 고른 답과 다릅니다 — 맥에서 확인해 주세요」), 답 값을 못 읽으면 `unconfirmed/answer_unreadable`.
   답 줄이 오류면 `unconfirmed/question_declined`, 2건 이상 `record_ambiguous`. **답·중단은 취소를 받지 않는다**(`input.cancel` 은 큐의 지시만 — 받으면 지금 상태만 돌려준다, R2-A9).
 - **중단**: 그 순간 다시 관측해 `working`·`blocked` 일 때만 키 1회(Claude·Codex Esc · Grok Ctrl+C), 재시도 없음. 한가 `failed/not_running` · 숨김 대기(Grok 질문 · 로그인 등) `stop_hidden` ·
   Grok 입력창에 글 `mac_draft` · 관측 뒤 전이 `state_changed`. Grok 의 Ctrl+C 는 입력 줄의 글을 지우므로 **빈 입력 줄을 본 같은 guard 턴**(입력 500 ms 이상 조용 · 같은 seq)의

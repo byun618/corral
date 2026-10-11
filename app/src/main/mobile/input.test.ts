@@ -1397,6 +1397,19 @@ describe('R4-A2 좁은 맥 pane — 실물 화면(r4/width)에서 허브 답', (
       expect(t.backend.sends.map((send) => send.text)).toEqual(['1'])
     }
   })
+  it('R5-A1 리뷰 prefix-wrong-question — Grok 80열 실물 화면 + 숨은 뒷부분만 다른 기록 → 키 0회 failed/question_truncated(원래 기록도 같음)', async () => {
+    for (const alter of [true, false]) {
+      const t = setup()
+      const base = recordedItem('grok', 'call-g80')
+      const item = alter ? { ...base, questions: base.questions.map((q) => ({ ...q, options: q.options.map((option, at) => (at === 1 ? { ...option, label: option.label.replace('tomorrow morning', 'next month') } : option)) })) } : base
+      t.backend.status = 'blocked'
+      t.items.list = [item]
+      t.backend.screenText = fs.readFileSync(path.join(W, 'grok-80.txt'), 'utf8')
+      t.hub.answer({ device: 'd1', id: `r5a1-${alter}`, channel: 'c3', question: 50, call: 'call-g80', digest: questionDigest(questionsOf(item)), answers: [{ choices: [1], other: null }] })
+      expect([alter, await t.settled(`r5a1-${alter}`)]).toMatchObject([alter, { state: 'failed', reason: 'question_truncated' }])
+      expect(t.backend.sends).toHaveLength(0)
+    }
+  })
   it('Grok 40열 실물 화면 — 행이 스크롤로 안 보여 복원 불가 → 키 0회 failed/question_truncated', async () => {
     const t = setup()
     const item = recordedItem('grok', 'call-g40')
@@ -1406,5 +1419,64 @@ describe('R4-A2 좁은 맥 pane — 실물 화면(r4/width)에서 허브 답', (
     t.hub.answer({ device: 'd1', id: 'r4a2-grok-40', channel: 'c3', question: 50, call: 'call-g40', digest: questionDigest(questionsOf(item)), answers: [{ choices: [0], other: null }] })
     expect(await t.settled('r4a2-grok-40')).toMatchObject({ state: 'failed', reason: 'question_truncated' })
     expect(t.backend.sends).toHaveLength(0)
+  })
+})
+
+describe('R5-A2·A3 답 값 형식 — 실측 기록(r5/native m01 Claude · m02 Grok)', () => {
+  const colors = { question: 'Pick colors', header: null, options: ['Red', 'Blue', 'Red, Blue', 'Say "hi"'].map((label) => ({ label, description: null })), multiSelect: true }
+  const claudeValue = (value: string): string =>
+    JSON.stringify({ type: 'user', sessionId: CHAT_SESSIONS.claude.id, timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-c', content: 'answers' }] }, toolUseResult: { answers: { 'Pick colors': value } } })
+  const claudeMatches = (input: { value: string; choices: number[]; other?: string; question?: typeof colors }): boolean => {
+    const question = input.question ?? colors
+    const read = recordedAnswers({ kind: 'claude', text: claudeValue(input.value), call: 'call-c', questions: [question.question] })
+    return read.kind === 'ok' && answerMatches({ kind: 'claude', recorded: read.values, questions: [question], answers: [{ choices: input.choices, other: input.other ?? null }] })
+  }
+  it('R5-A2 Claude multiSelect — 쉼표·따옴표 든 글은 `"…"`(안의 `"` 는 `\\"`)로 감싼 실측 형식대로 나눈다', () => {
+    // 양성(m01 실측 모양): 쉼표 라벨 하나 · 쉼표 라벨 + 다른 라벨 · 따옴표 라벨 · 직접 입력(쉼표·따옴표) · 평범한 둘.
+    expect(claudeMatches({ value: '"Red, Blue"', choices: [2] })).toBe(true)
+    expect(claudeMatches({ value: 'Red, "Red, Blue"', choices: [0, 2] })).toBe(true)
+    expect(claudeMatches({ value: '"Red, Blue", Red', choices: [0, 2] })).toBe(true)
+    expect(claudeMatches({ value: '"Say \\"hi\\""', choices: [3] })).toBe(true)
+    expect(claudeMatches({ value: 'Red, "ok, \\"fine\\""', choices: [0], other: 'ok, "fine"' })).toBe(true)
+    expect(claudeMatches({ value: 'Red, Blue', choices: [0, 1] })).toBe(true)
+    // 음성: 다른 집합 — 따옴표를 일괄 제거하면 같아지는 값끼리.
+    expect(claudeMatches({ value: '"Red, Blue"', choices: [0, 1] })).toBe(false)
+    expect(claudeMatches({ value: 'Red, Blue', choices: [2] })).toBe(false)
+    expect(claudeMatches({ value: 'Red, "Red, Blue"', choices: [2] })).toBe(false)
+    expect(claudeMatches({ value: '"Say \\"hi\\""', choices: [], other: 'Say hi' })).toBe(false)
+    // 형식이 어긋난 값(닫히지 않은 따옴표 · 감싸지 않은 따옴표)은 같다고 하지 않는다.
+    expect(claudeMatches({ value: '"Red, Blue', choices: [2] })).toBe(false)
+    expect(claudeMatches({ value: 'Say "hi"', choices: [3] })).toBe(false)
+    // 하나 고름은 감싸지 않는다(m01 r5-claude-single-comma).
+    const single = { ...colors, multiSelect: false }
+    expect(claudeMatches({ value: 'Red, Blue', choices: [2], question: single })).toBe(true)
+    expect(claudeMatches({ value: '"Red, Blue"', choices: [2], question: single })).toBe(false)
+  })
+  const word = { question: 'Pick a word', header: null, options: [{ label: 'Yes', description: null }, { label: 'No', description: null }], multiSelect: false }
+  const tail = " You can now continue with the user's answers in mind."
+  const grokValues = (message: string, questions: string[]): string[] | null => {
+    const line = JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), method: 'session/update', params: { sessionId: 'g', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call-g', status: 'completed', rawOutput: { UserAnswered: { message } } } } })
+    const read = recordedAnswers({ kind: 'grok', text: line, call: 'call-g', questions })
+    return read.kind === 'ok' ? read.values : null
+  }
+  it('R5-A3 Grok 직접 입력 — 고정 접두 뒤 글 그대로 · 마지막 문항의 끝 쉼표는 답 글', () => {
+    const other = (recorded: string, phone: string): boolean => {
+      const values = grokValues(`User has answered your questions: "Pick a word"="Other" user notes: ${recorded}.${tail}`, ['Pick a word'])
+      return values !== null && answerMatches({ kind: 'grok', recorded: values, questions: [word], answers: [{ choices: [], other: phone }] })
+    }
+    // 양성(m02 실측 모양).
+    expect(other('hello', 'hello')).toBe(true)
+    expect(other('say "hello"', 'say "hello"')).toBe(true)
+    expect(other('hello,', 'hello,')).toBe(true)
+    // 음성 — 리뷰 trailing-comma-false-positive · 반대 방향.
+    expect(other('hello,', 'hello')).toBe(false)
+    expect(other('hello', 'hello,')).toBe(false)
+    expect(other('say "hello"', 'say hello')).toBe(false)
+    // 두 문항 — 문항 사이 구분자만 뗀다(앞 문항 직접 입력의 끝 쉼표는 남는다).
+    const pair = grokValues(`User has answered your questions: "Q1"="Other" user notes: a,, "Q2"="No".${tail}`, ['Q1', 'Q2'])
+    expect(pair).toEqual(['"Other" user notes: a,', '"No"'])
+    // 고른 답에 직접 입력 접두가 오면(또는 그 반대) 다르다.
+    expect(answerMatches({ kind: 'grok', recorded: ['"Other" user notes: Yes'], questions: [word], answers: [{ choices: [0], other: null }] })).toBe(false)
+    expect(answerMatches({ kind: 'grok', recorded: ['"Yes"'], questions: [word], answers: [{ choices: [], other: 'Yes' }] })).toBe(false)
   })
 })

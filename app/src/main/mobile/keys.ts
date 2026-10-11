@@ -258,16 +258,25 @@ const OTHER_PLACEHOLDER: Record<MobileAgentKind, RegExp> = {
 const CLAUDE_OPTION = /^\s*(❯\s*)?(\d+)\.\s+(?:\[([ ✔×x])\]\s+)?(.*)$/
 const CLAUDE_FOOTER = /^\s*Enter to select\b.*Esc to cancel\s*$/
 
+// 실측한 Claude 안내 줄의 조각(Z1·r4/width) — 꺾인 안내 줄은 이 조각들로만 다시 이어 읽는다(R5-A4).
+const CLAUDE_FOOTER_KNOWN = /^Enter to select(?: · (?:↑\/↓ to navigate|Tab\/Arrow keys to navigate|ctrl\+g to edit in VS Code|n to add notes))* · Esc to cancel$/
+
 /**
- * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄부터 빈 줄 전까지를 한 줄로 이어 `Esc to cancel` 로 끝나야 한다
- * (좁은 pane 에서 안내 줄이 두 줄로 바뀐다 — R4-A2 실측 40열). 그 뒤는 화면 끝까지 빈 줄만(R3-A2). 아니면 -1.
+ * Claude 안내 줄 — `Enter to select` 로 시작하는 마지막 줄. 그 줄이 이미 `Esc to cancel` 로 끝나면 거기서 멈춘다(R5-A4).
+ * 덜 끝났으면(좁은 pane 에서 꺾임 — R4-A2 실측 40열) 다음 줄들을 이어 실측 안내 문구가 될 때까지만 읽는다. 그 뒤는 화면 끝까지 빈 줄만(R3-A2). 아니면 -1.
  */
 function claudeFooter(lines: string[]): number {
   const footer = lastIndex(lines, (line) => /^\s*Enter to select\b/.test(line))
   if (footer < 0) return -1
   let end = footer
-  while (end + 1 < lines.length && !blankLine(lines[end + 1]!)) end += 1
-  if (!/Esc to cancel$/.test(squash(lines.slice(footer, end + 1).join(' ')))) return -1
+  if (!CLAUDE_FOOTER.test(lines[footer]!)) {
+    let text = squash(lines[footer]!)
+    while (!CLAUDE_FOOTER_KNOWN.test(text)) {
+      end += 1
+      if (end >= lines.length || end - footer > 2 || blankLine(lines[end]!)) return -1
+      text = squash(`${text} ${lines[end]!}`)
+    }
+  }
   return onlyBlankAfter(lines, end) ? footer : -1
 }
 
@@ -515,18 +524,16 @@ export function matchQuestion(input: {
 }
 
 /**
- * 한 행의 글 조각(물리 줄·칸)을 차례로 「선택지 글 → 설명」 에 맞춘다(공백 무시). 조각이 `…` 로 끝나면 그 부분은 잘려 보인 것 — 보이는 앞부분이
- * 같으면 다음 부분으로 넘어간다.
- * - `full`: 전부 보임 · `prefix`: 잘렸지만 보이는 글이 기록과 같음(받아들임) · `cut`: 선택지 글이 보이는 글자 없이 잘렸거나 끝까지 안 보임(복원 불가)
- * - `no`: 기록과 다른 글.
+ * 한 행의 글 조각(물리 줄·칸)을 차례로 「선택지 글 → 설명」 에 맞춘다(공백 무시). 조각이 `…` 로 끝나면 그 부분은 잘려 보인 것.
+ * - `full`: 선택지 글이 끝까지 보이고 기록과 같음(설명은 `…` 로 잘렸으면 보이는 앞부분만 같으면 된다)
+ * - `cut`: 선택지 글이 `…` 로 잘렸거나 끝까지 안 보임 — 앞부분이 같아도 받지 않는다(R5-A1, 복원 불가) · `no`: 기록과 다른 글.
  */
-function rowFits(input: { pieces: string[]; parts: (string | null)[] }): 'full' | 'prefix' | 'cut' | 'no' {
+function rowFits(input: { pieces: string[]; parts: (string | null)[] }): 'full' | 'cut' | 'no' {
   const key = (text: string): string => text.replace(/[\s\u00a0]+/g, '')
   const parts = input.parts.flatMap((part) => (part === null || key(part).length === 0 ? [] : [key(part)]))
   if (parts.length === 0) return 'no'
   let part = 0
   let rest = parts[0]!
-  let truncated = false
   for (const piece of input.pieces) {
     if (part >= parts.length) return 'no'
     let text = key(piece)
@@ -534,8 +541,8 @@ function rowFits(input: { pieces: string[]; parts: (string | null)[] }): 'full' 
     if (ellipsis) text = text.slice(0, -1)
     if (!rest.startsWith(text)) return 'no'
     if (ellipsis) {
-      if (part === 0 && text.length === 0) return 'cut'
-      truncated = true
+      // 선택지 글이 잘렸다 — 보이는 앞부분이 같아도 숨은 뒷부분이 다를 수 있다(R5-A1). 설명만 잘린 것은 받는다(선택지 글은 다 보였다).
+      if (part === 0) return 'cut'
       part += 1
       rest = parts[part] ?? ''
       continue
@@ -550,7 +557,7 @@ function rowFits(input: { pieces: string[]; parts: (string | null)[] }): 'full' 
   if (part === 0) return input.pieces.length === 0 ? 'no' : 'cut'
   // 설명을 보이다 만 채로 끝났다(… 없이) — 다른 글이다.
   if (part < parts.length && rest.length > 0 && rest !== parts[part]) return 'no'
-  return truncated ? 'prefix' : 'full'
+  return 'full'
 }
 
 function positionMatches(input: { kind: MobileAgentKind; active: Extract<ActiveQuestion, { kind: 'question' }>; index: number; total: number }): boolean {

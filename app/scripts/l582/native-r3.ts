@@ -5,6 +5,10 @@
 //   npx tsx scripts/l582/native-r3.ts <sock> capture <cwd> claude|grok <out dir>   → (r4 R4-A2) 긴 선택지 질문 하나를 띄우고 pane 을 150·100·80·60·40열로 바꿔 가며
 //        화면을 <out dir>/<kind>-<열>.txt 로, 기록의 문항을 <kind>-question.json 으로 저장(fixture). 끝에 150열로 되돌려 허브로 답한다(질문 정리)
 //   npx tsx scripts/l582/native-r3.ts <sock> width <cwd> claude|grok <열>...      → (r4 R4-A2) 열마다: pane 너비를 바꾸고 긴 선택지 질문 → 허브 답 → delivered + 기록 답 값
+//   npx tsx scripts/l582/native-r3.ts <sock> width-mid <cwd> claude|grok <열>...  → (r5) 같은 흐름, 그 폭에서 다 보이는 중간 길이 선택지 질문
+//   npx tsx scripts/l582/native-r3.ts <sock> truncated <cwd> grok <열>             → (r5 R5-A1) 긴 선택지(뒤 행이 `…` 로 잘림) → 키 0회 failed/question_truncated, 150열로 되돌려 답(대조·정리)
+//   npx tsx scripts/l582/native-r3.ts <sock> values <cwd>                          → (r5 R5-A2) Claude 쉼표·따옴표 든 라벨 · 직접 입력 — delivered + 기록 답 값(실측 형식)
+//   npx tsx scripts/l582/native-r3.ts <sock> other <cwd>                           → (r5 R5-A3) Grok 직접 입력 `hello` · `say "hello"` · `hello,` — delivered + 기록 답 값
 // 출력은 JSON 줄. 시나리오마다 `ok`(기대와 같은가). 하나라도 다르면 exit 1. 본문은 남기지 않는다(G5 — 답 값은 시험이 정한 짧은 라벨뿐).
 import fs from 'node:fs'
 import net from 'node:net'
@@ -24,7 +28,7 @@ import { sessionRecordPaths } from '../../src/runtime/terminal/agent.js'
 
 const [sock, command, cwdArg] = process.argv.slice(2)
 const cwd = cwdArg ?? ''
-if (sock === undefined || !/\/herdr-dev\/sessions\/l582-race[34]\//.test(sock) || !/^\/private\/tmp\/l582-race[34]\//.test(cwd)) {
+if (sock === undefined || !/\/herdr-dev\/sessions\/l582-race[345]\//.test(sock) || !/^\/private\/tmp\/l582-race[345]\//.test(cwd)) {
   console.error('usage: <isolated l582-race3|4 socket> claude|codex|grok|capture|width </private/tmp/l582-race3|4/...>')
   process.exit(2)
 }
@@ -442,7 +446,9 @@ async function runGrok(): Promise<void> {
 
 const LONG_QUESTION = (tool: string): string =>
   `Call ${tool} once now. One single-select question titled "Choose deployment". Use exactly these option labels: "Deploy the service to the staging environment after running all integration checks" and "Keep the current release running until the maintenance window tomorrow morning". Short descriptions. No other tools. Wait for my answer, then say OK.`
-const LONG_LABELS = ['Deploy the service to the staging environment', 'Keep the current release running']
+// (r5) 좁은 폭에서도 행이 잘리지 않는 중간 길이 — Grok 80열에서 안 잘림, Claude 60열에서 선택지 글이 꺾임.
+const MID_QUESTION = (tool: string): string =>
+  `Call ${tool} once now. One single-select question titled "Choose deployment". Use exactly these option labels: "Deploy to staging after all integration checks pass" and "Keep current release". Descriptions exactly: "Then deploy." and "Wait.". No other tools. Wait for my answer, then say OK.`
 
 /** 격리 herdr 의 화면 크기를 정하는 클라이언트(이 시험만 붙는다) — pane 크기는 이 클라이언트 크기를 따른다. */
 async function sizer(pane: TerminalIdentity): Promise<EndpointClient> {
@@ -454,9 +460,9 @@ async function sizer(pane: TerminalIdentity): Promise<EndpointClient> {
   return client
 }
 
-async function askLong(input: { kind: MobileAgentKind; pane: TerminalIdentity }): Promise<{ sid: string; file: string; pending: Extract<ChatItem, { kind: 'question' }> }> {
+async function askLong(input: { kind: MobileAgentKind; pane: TerminalIdentity; mid?: boolean }): Promise<{ sid: string; file: string; pending: Extract<ChatItem, { kind: 'question' }> }> {
   const seq = await waitIdle(input.pane)
-  await terminal.promptAgent(input.pane, LONG_QUESTION(input.kind === 'claude' ? 'AskUserQuestion' : 'ask_user_question'), seq, ctx())
+  await terminal.promptAgent(input.pane, (input.mid === true ? MID_QUESTION : LONG_QUESTION)(input.kind === 'claude' ? 'AskUserQuestion' : 'ask_user_question'), seq, ctx())
   await waitQuestion({ kind: input.kind, pane: input.pane }).catch(() => '')
   const sid = await sessionOf(input.pane)
   let file: string | null = null
@@ -484,8 +490,9 @@ async function answerLong(input: { kind: MobileAgentKind; pane: TerminalIdentity
   // 기록의 그 문항 답 값(판독자 `answer` 칸은 Grok 메시지 모양을 읽지 않는다 — c04 판정식 오류 뒤 고침).
   const values = recordedAnswers({ kind: input.kind, text: fs.readFileSync(input.file, 'utf8'), call: input.pending.call ?? '', questions: input.pending.questions.map((q) => q.question) })
   const recorded = values.kind === 'ok' ? (values.values[0] ?? '') : ''
-  const ok = state?.state === 'delivered' && recorded.includes(LONG_LABELS[0]!) && !recorded.includes(LONG_LABELS[1]!)
-  out(input.id, { state, recordHasChosen: recorded.includes(LONG_LABELS[0]!), recordHasOther: recorded.includes(LONG_LABELS[1]!), questionState: after?.state ?? null }, ok)
+  const [chosen, other] = input.pending.questions[0]!.options.map((option) => option.label)
+  const ok = state?.state === 'delivered' && chosen !== undefined && other !== undefined && recorded.includes(chosen) && !recorded.includes(other)
+  out(input.id, { state, recordHasChosen: chosen !== undefined && recorded.includes(chosen), recordHasOther: other !== undefined && recorded.includes(other), questionState: after?.state ?? null }, ok)
   return ok
 }
 
@@ -515,7 +522,8 @@ async function runCapture(kind: MobileAgentKind, dir: string): Promise<void> {
   }
 }
 
-async function runWidth(kind: MobileAgentKind, widths: number[]): Promise<void> {
+async function runWidth(input: { kind: MobileAgentKind; widths: number[]; mid: boolean }): Promise<void> {
+  const { kind, widths, mid } = input
   const pane = await launch(kind)
   let client: EndpointClient | null = null
   try {
@@ -524,11 +532,11 @@ async function runWidth(kind: MobileAgentKind, widths: number[]): Promise<void> 
     for (const cols of widths) {
       client.resize(cols, cols >= 150 ? 45 : 35)
       await delay(1200)
-      const asked = await askLong({ kind, pane })
+      const asked = await askLong({ kind, pane, mid })
       file = asked.file
       const shot = await terminal.screenRead(pane, ctx())
-      out('width-screen', { kind, cols, active: activeQuestion({ kind, screen: shot.text }).kind })
-      await answerLong({ kind, pane, ...asked, id: `r4-width-${kind}-${cols}` })
+      out('width-screen', { kind, cols, mid, active: activeQuestion({ kind, screen: shot.text }).kind })
+      await answerLong({ kind, pane, ...asked, id: `${mid ? 'r5-mid' : 'r4-width'}-${kind}-${cols}` })
     }
     if (file !== null) out('record', { file: file.replace(/^\/Users\/[^/]+/, '~') })
   } finally {
@@ -590,6 +598,116 @@ async function runCodexCapture(dir: string): Promise<void> {
   }
 }
 
+/** (r5 R5-A1) 긴 선택지를 좁은 폭에서 — 뒤 행이 `…` 로 잘려 키 0회 failed/question_truncated. 150열로 되돌려 같은 질문에 답한다(대조 · 질문 정리). */
+async function runTruncated(input: { kind: MobileAgentKind; cols: number }): Promise<void> {
+  const { kind, cols } = input
+  const pane = await launch(kind)
+  let client: EndpointClient | null = null
+  try {
+    client = await sizer(pane)
+    client.resize(cols, 35)
+    await delay(1200)
+    const asked = await askLong({ kind, pane })
+    const shot = await terminal.screenRead(pane, ctx())
+    const sent: string[] = []
+    const { hub, channel, settled } = hubFor({
+      kind, pane, sid: asked.sid, file: asked.file,
+      backend: {
+        send: async (target, value) => {
+          sent.push(value.text)
+          return live.send(target, value)
+        },
+      },
+    })
+    const id = `r5-truncated-${kind}-${cols}`
+    hub.answer({ device: 'd1', id, channel, question: asked.pending.id, call: asked.pending.call, digest: questionDigest(asked.pending.questions), answers: [{ choices: [0], other: null }] })
+    const state = await settled(id)
+    hub.stop()
+    await delay(800)
+    const still = questionOf(readItems({ kind, file: asked.file, sid: asked.sid }), asked.pending.call)
+    out(id, { state, active: activeQuestion({ kind, screen: shot.text }).kind, keys: sent.length, questionState: still?.state ?? null }, state?.state === 'failed' && state.reason === 'question_truncated' && sent.length === 0 && still?.state === 'pending')
+    client.resize(150, 45)
+    await delay(1200)
+    await answerLong({ kind, pane, ...asked, id: `r5-truncated-${kind}-control-150` })
+    out('record', { file: asked.file.replace(/^\/Users\/[^/]+/, '~') })
+  } finally {
+    client?.close()
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
+// --- 답 값 형식 (r5 R5-A2 Claude · R5-A3 Grok) --------------------------------------------------------------
+
+type ValueCase = { name: string; prompt: string; labels: string[]; multi: boolean; answers: { choices: number[]; other: string | null } }
+
+const COLOR_PROMPT = (multi: boolean, labels: string[]): string =>
+  `Call AskUserQuestion once now. One question titled "Pick colors", ${multi ? 'multiSelect true' : 'single select'}. The option labels are exactly the strings of this JSON array, in order, with no added characters: ${JSON.stringify(labels)}. Short descriptions. No other tools. Wait for my answer, then say OK.`
+const COLORS = ['Red', 'Blue', 'Red, Blue', 'Say "hi"']
+const CLAUDE_VALUES: ValueCase[] = [
+  { name: 'r5-claude-comma', prompt: COLOR_PROMPT(true, COLORS), labels: COLORS, multi: true, answers: { choices: [2], other: null } },
+  { name: 'r5-claude-comma-plus', prompt: COLOR_PROMPT(true, COLORS), labels: COLORS, multi: true, answers: { choices: [0, 2], other: null } },
+  { name: 'r5-claude-quote', prompt: COLOR_PROMPT(true, COLORS), labels: COLORS, multi: true, answers: { choices: [3], other: null } },
+  { name: 'r5-claude-pair', prompt: COLOR_PROMPT(true, COLORS), labels: COLORS, multi: true, answers: { choices: [0, 1], other: null } },
+  { name: 'r5-claude-multi-other', prompt: COLOR_PROMPT(true, COLORS), labels: COLORS, multi: true, answers: { choices: [0], other: 'ok, "fine"' } },
+  { name: 'r5-claude-single-comma', prompt: COLOR_PROMPT(false, ['Red, Blue', 'Plain']), labels: ['Red, Blue', 'Plain'], multi: false, answers: { choices: [0], other: null } },
+]
+const GROK_OTHERS = ['hello', 'say "hello"', 'hello,']
+
+async function answerCase(input: { kind: MobileAgentKind; pane: TerminalIdentity; item: ValueCase }): Promise<void> {
+  const { kind, pane, item } = input
+  const seq = await waitIdle(pane)
+  await terminal.promptAgent(pane, item.prompt, seq, ctx())
+  await waitQuestion({ kind, pane })
+  const sid = await sessionOf(pane)
+  let file: string | null = null
+  let pending: Extract<ChatItem, { kind: 'question' }> | null = null
+  for (let index = 0; index < 80 && pending === null; index += 1) {
+    file = recordFile(kind, sid)
+    pending = file !== null && fs.existsSync(file) ? pendingOf(readItems({ kind, file, sid })) : null
+    if (pending === null) await delay(300)
+  }
+  if (file === null || pending === null) throw new Error(`${item.name}: pending question missing`)
+  const labels = pending.questions[0]!.options.map((option) => option.label)
+  const exact = JSON.stringify(labels) === JSON.stringify(item.labels) && (pending.questions[0]!.multiSelect === true) === item.multi
+  const { hub, channel, settled } = hubFor({ kind, pane, sid, file })
+  hub.answer({ device: 'd1', id: item.name, channel, question: pending.id, call: pending.call, digest: questionDigest(pending.questions), answers: [item.answers] })
+  const state = await settled(item.name)
+  hub.stop()
+  await delay(800)
+  const after = questionOf(readItems({ kind, file, sid }), pending.call)
+  const values = recordedAnswers({ kind, text: fs.readFileSync(file, 'utf8'), call: pending.call ?? '', questions: pending.questions.map((q) => q.question) })
+  // 기록 값은 시험이 정한 라벨·짧은 글뿐(G5).
+  out(item.name, { state, labelsExact: exact, labels, choices: item.answers.choices, other: item.answers.other, recorded: values.kind === 'ok' ? values.values : null, questionState: after?.state ?? null }, exact && state?.state === 'delivered' && after?.state === 'answered')
+  out('record', { file: file.replace(/^\/Users\/[^/]+/, '~') })
+}
+
+async function runValues(): Promise<void> {
+  const pane = await launch('claude')
+  try {
+    for (const item of CLAUDE_VALUES) await answerCase({ kind: 'claude', pane, item })
+  } finally {
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
+async function runOther(): Promise<void> {
+  const pane = await launch('grok')
+  try {
+    for (const [index, other] of GROK_OTHERS.entries()) {
+      const item: ValueCase = {
+        name: `r5-grok-other-${index}`,
+        prompt: 'Call ask_user_question once: one question "Pick a word", single select, options Yes, No with short descriptions. No other tools. After I answer say OK.',
+        labels: ['Yes', 'No'],
+        multi: false,
+        answers: { choices: [], other },
+      }
+      await answerCase({ kind: 'grok', pane, item })
+    }
+  } finally {
+    await terminal.close(pane, ctx()).catch(() => {})
+  }
+}
+
 const kindArg = (value: string | undefined): MobileAgentKind => {
   if (value === 'claude' || value === 'grok') return value
   throw new Error('capture/width kind: claude|grok')
@@ -598,7 +716,11 @@ const kindArg = (value: string | undefined): MobileAgentKind => {
 try {
   if (command === 'capture' && process.argv[5] === 'codex') await runCodexCapture(process.argv[6] ?? '')
   else if (command === 'capture') await runCapture(kindArg(process.argv[5]), process.argv[6] ?? '')
-  else if (command === 'width') await runWidth(kindArg(process.argv[5]), process.argv.slice(6).map(Number))
+  else if (command === 'width') await runWidth({ kind: kindArg(process.argv[5]), widths: process.argv.slice(6).map(Number), mid: false })
+  else if (command === 'width-mid') await runWidth({ kind: kindArg(process.argv[5]), widths: process.argv.slice(6).map(Number), mid: true })
+  else if (command === 'truncated') await runTruncated({ kind: kindArg(process.argv[5]), cols: Number(process.argv[6]) })
+  else if (command === 'values') await runValues()
+  else if (command === 'other') await runOther()
   else if (command === 'claude') await runClaude()
   else if (command === 'codex') await runCodex()
   else if (command === 'grok') await runGrok()

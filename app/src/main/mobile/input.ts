@@ -403,11 +403,20 @@ function grokAnswerSegments(input: { message: string; questions: string[] }): st
     starts.push(at)
   }
   if (starts[0] !== 0) return null
-  return starts.map((at, index) => {
+  const segments: string[] = []
+  for (const [index, at] of starts.entries()) {
     const from = at + input.questions[index]!.length + 3
-    const to = index + 1 < starts.length ? starts[index + 1]! : body.length
-    return body.slice(from, to).replace(/,\s*$/, '').trim()
-  })
+    if (index + 1 === starts.length) {
+      // 마지막 문항 — 사용자가 쓴 끝 쉼표·따옴표는 답 글이다(R5-A3). 지우지 않는다.
+      segments.push(body.slice(from))
+      continue
+    }
+    // 문항 사이 구분자 `, ` 만 뗀다.
+    const segment = body.slice(from, starts[index + 1]!)
+    if (!segment.endsWith(', ')) return null
+    segments.push(segment.slice(0, -2))
+  }
+  return segments
 }
 
 /**
@@ -429,38 +438,62 @@ export function answerMatches(input: { kind: MobileAgentKind; recorded: string[]
 function valueMatches(input: { kind: MobileAgentKind; value: string; multi: boolean; labels: string[]; other: string | null }): boolean {
   let value = input.value.trim()
   if (input.kind === 'grok') {
-    // `"Green"` · `"Other" user notes: 글`.
-    const match = /^"(.*)"(?: user notes: ([\s\S]*))?$/.exec(value)
+    // 직접 입력 = 고정 접두 뒤 글 그대로(R5-A3 — 글 안의 따옴표·끝 쉼표도 답이다). 고름 = `"글"`.
+    const prefix = '"Other" user notes: '
+    if (value.startsWith(prefix)) return input.other !== null && !input.multi && input.labels.length === 0 && value.slice(prefix.length) === input.other
+    if (input.other !== null) return false
+    const match = /^"(.*)"$/.exec(value)
     if (match === null) return false
-    if (input.other !== null) return !input.multi && input.labels.length === 0 && match[1] === 'Other' && (match[2] ?? '').trim() === input.other
-    if (match[2] !== undefined) return false
     value = match[1]!
   }
   if (!input.multi) {
     const expected = input.other ?? input.labels[0]
     return input.labels.length + (input.other === null ? 0 : 1) === 1 && expected !== undefined && value === expected
   }
-  let rest = value
-  const tokens = [...input.labels, ...(input.other === null ? [] : [input.other])].sort((a, b) => b.length - a.length)
-  for (const token of tokens) {
-    // `, ` 경계에 선 토큰만 뺀다 — 겹치는 라벨(다른 라벨의 부분 문자열)이 엉뚱한 자리에서 빠지지 않게.
-    let from = 0
-    let found = -1
-    while (from <= rest.length) {
-      const at = rest.indexOf(token, from)
-      if (at < 0) break
-      const before = at === 0 || rest.slice(0, at).endsWith(', ')
-      const after = at + token.length === rest.length || rest.slice(at + token.length).startsWith(', ')
-      if (before && after) {
-        found = at
-        break
+  // 여럿 고름(Claude 실측 r5/native m01): `, ` 로 잇고, 쉼표나 `"` 가 든 글은 `"…"` 로 감싸 안의 `"` 를 `\"` 로 쓴다(R5-A2). 그 형식대로 나눠 집합을 비교한다.
+  const tokens = claudeChoiceList(value)
+  if (tokens === null) return false
+  const expected = [...input.labels, ...(input.other === null ? [] : [input.other])].sort()
+  return JSON.stringify([...tokens].sort()) === JSON.stringify(expected)
+}
+
+/** Claude multiSelect 답 값 → 고른 글 목록. 형식이 어긋나면(닫히지 않은 따옴표 · 감싸지 않은 `"` · 빈 칸) null. */
+function claudeChoiceList(value: string): string[] | null {
+  const tokens: string[] = []
+  let at = 0
+  while (at <= value.length) {
+    let token = ''
+    if (value[at] === '"') {
+      at += 1
+      let closed = false
+      while (at < value.length) {
+        const char = value[at]!
+        if (char === '\\' && (value[at + 1] === '"' || value[at + 1] === '\\')) {
+          token += value[at + 1]
+          at += 2
+          continue
+        }
+        at += 1
+        if (char === '"') {
+          closed = true
+          break
+        }
+        token += char
       }
-      from = at + 1
+      if (!closed) return null
+    } else {
+      const next = value.indexOf(', ', at)
+      token = value.slice(at, next < 0 ? value.length : next)
+      if (token.includes('"')) return null
+      at += token.length
     }
-    if (found < 0) return false
-    rest = `${rest.slice(0, found)}${rest.slice(found + token.length)}`
+    if (token.length === 0) return null
+    tokens.push(token)
+    if (at === value.length) return tokens
+    if (!value.startsWith(', ', at)) return null
+    at += 2
   }
-  return rest.replace(/,\s*/g, '').trim() === ''
+  return null
 }
 
 /**

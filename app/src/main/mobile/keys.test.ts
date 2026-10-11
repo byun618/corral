@@ -292,9 +292,33 @@ describe('LIFE-582 r4 — 좁은 pane 줄 바꿈 복원 · Codex 접힌 표시 �
   it('R4-A2 Claude — 150·100·80·60·40열 모두 그 문항(번호 없는 이어진 줄 · 40열 두 줄 안내 줄 복원)', () => {
     for (const cols of [150, 100, 80, 60, 40]) expect([cols, match('claude', `claude-${cols}.txt`)]).toEqual([cols, { kind: 'same', checked: [] }])
   })
-  it('R4-A2 Grok — 150·100·80·60열은 그 문항(이어진 줄 · `…` 로 잘린 비포커스 행의 보이는 앞부분), 40열은 행이 스크롤로 안 보여 truncated', () => {
-    for (const cols of [150, 100, 80, 60]) expect([cols, match('grok', `grok-${cols}.txt`)]).toEqual([cols, { kind: 'same', checked: [] }])
-    expect(match('grok', 'grok-40.txt')).toEqual({ kind: 'truncated' })
+  it('R4-A2 Grok (R5-A1) — 150열은 그 문항(선택지 글 다 보임 · 설명만 `…`), 100·80·60열은 둘째 선택지 글이 `…` 로 잘려 truncated, 40열은 행이 스크롤로 빠져 truncated', () => {
+    expect(match('grok', 'grok-150.txt')).toEqual({ kind: 'same', checked: [] })
+    for (const cols of [100, 80, 60, 40]) expect([cols, match('grok', `grok-${cols}.txt`)]).toEqual([cols, { kind: 'truncated' }])
+  })
+  it('R5-A1 리뷰 prefix-alias — 숨은 선택지 뒷부분만 다른 기록도 같은 질문으로 받지 않는다(80열 truncated · 150열 대조 other)', () => {
+    const question = recorded('grok')
+    const altered = { ...question, options: [question.options[0]!, question.options[1]!.replace('tomorrow morning', 'next month')] }
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: screen('grok-80.txt') }), question: altered, index: 0, total: 1 })).toEqual({ kind: 'truncated' })
+    expect(matchQuestion({ kind: 'grok', active: activeQuestion({ kind: 'grok', screen: screen('grok-150.txt') }), question: altered, index: 0, total: 1 })).toEqual({ kind: 'other' })
+  })
+  it('R5-A4 리뷰 footer-probe — 완성된 안내 줄 뒤의 빈 줄 없는 다른 영역은 이어 읽지 않는다(none) · 꺾인 안내 줄은 실측 조각만 잇는다', () => {
+    const rule = '─'.repeat(60)
+    const box = (footer: string[]): string => [rule, ' ☐ Header', '', 'question', '', '❯ 1. a', '  2. b', '  3. Type something.', rule, '  4. Chat about this', '', ...footer].join('\n')
+    const full = 'Enter to select · ↑/↓ to navigate · Esc to cancel'
+    const permission = ['Permission required', '❯ 1. Allow', '  2. Deny', 'Esc to cancel']
+    expect(activeQuestion({ kind: 'claude', screen: box([full]) }).kind).toBe('question')
+    expect(activeQuestion({ kind: 'claude', screen: box([full, ...permission]) })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'claude', screen: box([full, 'UNKNOWN']) })).toEqual({ kind: 'none' })
+    expect(activeQuestion({ kind: 'claude', screen: box([full, '', ...permission]) })).toEqual({ kind: 'none' })
+    // 덜 끝난 안내 줄 뒤에 다른 영역이 붙어 끝이 `Esc to cancel` 이어도 실측 안내 문구가 아니면 none.
+    expect(activeQuestion({ kind: 'claude', screen: box(['Enter to select · ↑/↓ to navigate · Esc', ...permission]) })).toEqual({ kind: 'none' })
+    // 양성 — 실측 40열 꺾임(`…Esc` / `to cancel`) · 다른 실측 조각의 꺾임.
+    expect(activeQuestion({ kind: 'claude', screen: box(['Enter to select · ↑/↓ to navigate · Esc', 'to cancel']) }).kind).toBe('question')
+    expect(activeQuestion({ kind: 'claude', screen: box(['Enter to select · ↑/↓ to navigate · n to', 'add notes · Esc to cancel']) }).kind).toBe('question')
+    expect(match('claude', 'claude-40.txt')).toEqual({ kind: 'same', checked: [] })
+    // 꺾인 안내 줄을 다 이은 뒤에도 그 아래는 빈 줄만.
+    expect(activeQuestion({ kind: 'claude', screen: box(['Enter to select · ↑/↓ to navigate · Esc', 'to cancel', 'UNKNOWN']) })).toEqual({ kind: 'none' })
   })
   it('R4-A2 음성 — 복원한 글이 기록과 다르면 other(줄 바꿈 복원이 다른 질문을 받아들이지 않는다)', () => {
     const kinds: ('claude' | 'grok')[] = ['claude', 'grok']

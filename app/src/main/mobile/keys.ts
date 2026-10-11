@@ -578,16 +578,17 @@ function positionMatches(input: { kind: MobileAgentKind; active: Extract<ActiveQ
 
 export type DraftState = 'empty' | 'draft' | 'unknown'
 
-type Run = { text: string; dim: boolean }
+type Run = { text: string; dim: boolean; italic: boolean }
 
-/** ANSI 한 줄 → 글자 덩어리(흐림 여부). SGR 의 `2`(흐림)·`22`·`0`/빈 값(해제)만 본다. 다른 제어 열은 버린다. */
+/** ANSI 한 줄 → 글자 덩어리(흐림·기울임 여부). SGR 의 `2`(흐림)·`22`·`3`(기울임)·`23`·`0`/빈 값(해제)만 본다. 다른 제어 열은 버린다. */
 function runsOf(line: string): Run[] {
   const runs: Run[] = []
   let dim = false
+  let italic = false
   let index = 0
   let text = ''
   const flush = (): void => {
-    if (text.length > 0) runs.push({ text, dim })
+    if (text.length > 0) runs.push({ text, dim, italic })
     text = ''
   }
   while (index < line.length) {
@@ -608,9 +609,13 @@ function runsOf(line: string): Run[] {
           if (param === '38' || param === '48' || param === '58') {
             const mode = params[at + 1]
             at += mode === '5' ? 2 : mode === '2' ? 4 : 1
-          } else if (param === '0' || param === '') dim = false
-          else if (param === '2') dim = true
+          } else if (param === '0' || param === '') {
+            dim = false
+            italic = false
+          } else if (param === '2') dim = true
           else if (param === '22') dim = false
+          else if (param === '3') italic = true
+          else if (param === '23') italic = false
         }
       }
       index += match[0].length + 1
@@ -634,7 +639,8 @@ const RULE = /^\s*─{20,}\s*$/
  * 글이 있으면 `draft`, 입력 줄을 못 찾으면 `unknown`(넣지 않는다, fail-closed).
  * - Claude: 마지막 두 가로줄(─) 사이 상자, 첫 줄이 `❯`. `❯` 뒤와 상자 안 나머지 줄에 진한 글이 없어야 빈 입력(흐린 자리표시 `Try "…"` 는 빈 입력 — 새 세션 첫 화면).
  * - Codex: 마지막 `› ` 줄. 그 뒤 글이 전부 흐림(SGR 2 — 자리표시 `Ask Codex to do anything`)이면 빈 입력. 바로 아래 빈 줄 전까지 이어진 줄이 있으면 여러 줄 초안.
- * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력.
+ * - Grok: 마지막 `│ ❯ …│` 줄과 그 아래 `│ … │` 줄(상자 끝 `╰` 전까지)이 비어야 빈 입력. 상자 바로 아래 줄에 `accept suggestion` 힌트가 있으면
+ *   입력칸의 기울임(SGR 3) 글은 Grok 의 다음 문장 제안(ghost)이라 빼고 본다 — 힌트가 없으면 기울임도 초안으로 센다(fail-closed, LIFE-582 최종 관문).
  */
 export function draftState(input: { kind: MobileAgentKind; screen: string }): DraftState {
   const lines = input.screen.split(/\r?\n/).map(runsOf)
@@ -686,16 +692,15 @@ export function draftState(input: { kind: MobileAgentKind; screen: string }): Dr
         const match = /^\s*│(.*)│\s*$/.exec(line)
         return match === null ? null : match[1]!
       }
-      const first = inner(plain[at]!)
+      let end = at + 1
+      while (end < plain.length && !/^\s*╰/.test(plain[end]!) && inner(plain[end]!) !== null) end += 1
+      const suggestion = /^\s*╰/.test(plain[end] ?? '') && /accept suggestion/.test(plain[end + 1] ?? '')
+      // 기울임 run 을 빼고 남은 글 — 제안 힌트가 있을 때만 뺀다. 틀(`│`)·표식(`❯`)은 그 뒤 inner·replace 가 지운다.
+      const visible = (index: number): string => suggestion ? lines[index]!.filter((run) => !run.italic).map((run) => run.text).join('') : plain[index]!
+      const first = inner(visible(at))
       if (first === null) return 'unknown'
       let content = first.replace(/^\s*❯/, '')
-      for (let index = at + 1; index < plain.length; index += 1) {
-        const line = plain[index]!
-        if (/^\s*╰/.test(line)) break
-        const body = inner(line)
-        if (body === null) break
-        content += body
-      }
+      for (let index = at + 1; index < end; index += 1) content += inner(visible(index)) ?? ''
       return content.trim().length === 0 ? 'empty' : 'draft'
     }
   }

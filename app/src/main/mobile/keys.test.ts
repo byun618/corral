@@ -363,3 +363,34 @@ describe('LIFE-582 r4 — 좁은 pane 줄 바꿈 복원 · Codex 접힌 표시 �
     expect(activeQuestion({ kind: 'codex', screen: status })).toEqual({ kind: 'none' })
   })
 })
+
+describe('LIFE-582 최종 관문 — Grok 입력칸 다음 문장 제안(ghost) (격리 실물 화면 final/z2-grok-ghost)', () => {
+  // 실측: 제안은 `ESC[3m` 기울임 + rgb(88,88,88), 상자 아래 줄에 `Tab/→:accept suggestion` 힌트. 사람이 친 글은 기울임이 아니다.
+  const GHOST = (text: string): string => `\x1b[0m\x1b[3m\x1b[38;2;88;88;88m\x1b[48;2;20;20;20m${text}\x1b[0m`
+  const TYPED = (text: string): string => `\x1b[0m\x1b[38;2;225;225;225m\x1b[48;2;20;20;20m${text}\x1b[0m`
+  const HINT = '  Tab/→:accept suggestion  │  Shift+Tab:mode  │  Ctrl+.:shortcuts'
+  const box = (input: { line: string; hint: boolean }): string =>
+    ['  ╭──────────────────────────────╮', `  \x1b[38;2;80;80;88m│\x1b[0m \x1b[38;2;200;200;200m❯ \x1b[0m${input.line}          \x1b[38;2;80;80;88m│\x1b[0m`, '  ╰──────────── Grok 4.7 (high) ─╯', input.hint ? HINT : '  Shift+Tab:mode  │  Ctrl+.:shortcuts'].join('\r\n')
+
+  it('제안만 있으면 빈 입력', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: true }) })).toBe('empty')
+  })
+  it('사람이 친 글(기울임 아님)은 초안', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: TYPED('draft grok'), hint: true }) })).toBe('draft')
+    expect(draftState({ kind: 'grok', screen: box({ line: TYPED('draft grok'), hint: false }) })).toBe('draft')
+  })
+  it('사람 글 뒤에 제안이 붙어도 초안', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: `${TYPED('l582')}${GHOST('f-z2d-2-gm reply with OK only')}`, hint: true }) })).toBe('draft')
+  })
+  it('힌트 줄이 없으면 기울임 글도 초안(fail-closed — 기존 판정)', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: GHOST('l582f-z2d-2-gm reply with OK only'), hint: false }) })).toBe('draft')
+  })
+  it('힌트 줄만 있고 기울임 run 이 없으면 기존 판정', () => {
+    expect(draftState({ kind: 'grok', screen: box({ line: '', hint: true }) })).toBe('empty')
+    expect(draftState({ kind: 'grok', screen: box({ line: 'plain draft', hint: true }) })).toBe('draft')
+  })
+  it('다른 provider 는 기울임을 보지 않는다(무변경)', () => {
+    expect(draftState({ kind: 'claude', screen: `${claudeScreen(GHOST('ghost'))}\r\n${HINT}` })).toBe('draft')
+    expect(draftState({ kind: 'codex', screen: codexScreen(`\x1b[1m› \x1b[0m${GHOST('ghost')}`) })).toBe('draft')
+  })
+})

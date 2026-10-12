@@ -13,7 +13,7 @@ import { color, mono } from '../src/ui/tokens'
 function stateLabel(conn: ConnState): { text: string; color: string } {
   switch (conn.kind) {
     case 'connected':
-      return { text: '연결됨', color: color.accent }
+      return { text: '연결됨', color: color.stOk }
     case 'checking':
       return { text: '연결 확인 중', color: color.fgMuted }
     case 'reconnecting':

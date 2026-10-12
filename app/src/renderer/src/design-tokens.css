@@ -60,7 +60,8 @@
 
   /* 상태색 */
   --st-ok: #7dd3a0;       /* LIFE-594 D1 — 완료·성공·연결 자리(옛 accent 초록 값 그대로). 01-criteria 「상태 자리」:
-                             MRU 완료 ◉ · InlineNotice 기본 점 · Ghostty 가져오기 완료 · 모바일 점검 OK · 모바일 연결됨 */
+                             MRU 완료 ◉ · InlineNotice 기본 점 · Ghostty 가져오기 완료 · 모바일 점검 OK · 모바일 연결됨
+                             (모바일 쪽 짝: 홈 연결 OK 점 · 페어링 성공 · 설정 「연결됨」 — mobile/src/ui/tokens.ts stOk) */
   --st-dirty: #d9a23f;
   --st-ahead: #6ea8fe;
   --st-behind: #b98bd9;

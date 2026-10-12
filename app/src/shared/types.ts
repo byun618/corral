@@ -4,6 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { ExplorerListResult } from './explorer.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -744,6 +745,14 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /**
+   * 오른쪽 패널·탐색기 (LIFE-589 E1ⓑ·E2ⓓⓔ) — 열림·폭과 표시 토글. 범위는 **전역**(worktree 별이 아니다 — VS Code `files.exclude`·
+   * Orca 「Show Git Ignored Files」 처럼 보기 설정이라 worktree 를 바꿔도 같은 눈으로 본다). 기본: 닫힘 · 폭 null(토큰) · dotfile 보임 · ignored 보임(흐림).
+   */
+  rightPanelOpen: boolean
+  rightPanelWidth: number | null
+  explorerShowDotfiles: boolean
+  explorerShowIgnored: boolean
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------
@@ -1023,6 +1032,8 @@ export type CorralApi = {
   revealInFinder: (input: { path: string; kind: 'worktree' | 'repo' }) => Promise<ShellActionResult>
   openInEditor: (input: { path: string }) => Promise<ShellActionResult>
   copyPath: (input: { path: string }) => Promise<ShellActionResult>
+  // --- 탐색기 (LIFE-589 F1) — 읽기 전용. root = 열린 worktree 경로, rel = 루트 기준 상대 경로('' = 루트). main 이 가둔다 ---
+  explorerList: (input: { root: string; rel: string }) => Promise<ExplorerListResult>
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

@@ -38,6 +38,16 @@ export function clampRatio(ratio: number): number {
   return Math.min(RATIO_MAX, Math.max(RATIO_MIN, ratio))
 }
 
+/** 오른쪽 위 모서리 영역 — 오른쪽 패널을 여는 버튼이 그 영역 탭 줄 끝에 선다(LIFE-589). row = 좌우(뒤가 오른쪽), column = 위아래(앞이 위). */
+export function topRightGroupId(node: GroupNode): string {
+  switch (node.kind) {
+    case 'leaf':
+      return node.group.groupId
+    case 'split':
+      return topRightGroupId(node.direction === 'row' ? node.second : node.first)
+  }
+}
+
 export function leaf(group: TabGroup): GroupNode {
   return { kind: 'leaf', group }
 }

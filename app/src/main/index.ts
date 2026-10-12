@@ -113,6 +113,7 @@ import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
+import { listDir } from './explorer-fs.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -1761,6 +1762,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('corral:revealInFinder', (event, input) => (fromOurWindow(event) ? revealInFinder(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:openInEditor', (event, input) => (fromOurWindow(event) ? openInEditor(cardDeps, input) : cardDenied))
   ipcMain.handle('corral:copyPath', (event, input) => (fromOurWindow(event) ? copyPath(cardDeps, input) : cardDenied))
+  // --- 탐색기 (LIFE-589 F1) — 읽기 전용, 루트는 **지금 열린** worktree 만(`explorer-fs.ts` 가둠). 호출마다 로그 한 줄(E1ⓓ·E2ⓐ 계수) ---
+  const explorerRoots = (): string[] => currentState().repos.flatMap((repo) => repo.worktrees.filter((row) => row.openWorkspaceId !== null).map((row) => row.path))
+  ipcMain.handle('corral:explorerList', async (event, input: unknown) => {
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    if (!fromOurWindow(event)) return { ok: false, dir: '', code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const startedAt = performance.now()
+    const result = await listDir({ roots: explorerRoots(), root, rel })
+    log('explorer.list', { rel: typeof rel === 'string' ? rel : null, ok: result.ok, code: result.ok ? null : result.code, count: result.ok ? result.entries.length : 0, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
   // Orca #14545 를 따라 하지 않기 — macOS 는 배경 앱 우클릭에 앱을 활성화하지 않아 메뉴가 키보드·포커스를 못 받는다.
   // 우클릭 순간 창을 앞으로 가져온다(198 뒤 수정 PR #14546 과 같은 방향).
   ipcMain.on('corral:activateWindow', (event) => {

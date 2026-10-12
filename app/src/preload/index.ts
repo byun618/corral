@@ -36,6 +36,7 @@ import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
+import type { ExplorerListResult } from '../shared/explorer.js'
 
 const EXPOSED = [
   'getMobileStatus',
@@ -73,6 +74,7 @@ const EXPOSED = [
   'revealInFinder',
   'openInEditor',
   'copyPath',
+  'explorerList',
   'activateWindow',
   'reportRendered',
   'selectPane',
@@ -168,6 +170,7 @@ const api: CorralApi = {
   refreshSessions: () => ipcRenderer.invoke('corral:refreshSessions'),
   startBackend: () => ipcRenderer.invoke('corral:startBackend'),
   getUiPrefs: (): Promise<UiPrefs> => ipcRenderer.invoke('corral:getUiPrefs'),
+  explorerList: (input: { root: string; rel: string }): Promise<ExplorerListResult> => ipcRenderer.invoke('corral:explorerList', input),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

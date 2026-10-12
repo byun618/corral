@@ -29,7 +29,7 @@ import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './
 import { numbersOf } from './pane-geometry.js'
 import { PaneGrid } from './components/PaneGrid.js'
 import { tabOrdinals } from './fallback-ordinal.js'
-import { ONE_TAB_IN_GROUP } from './group-tree.js'
+import { ONE_TAB_IN_GROUP, topRightGroupId } from './group-tree.js'
 import type { TabGroup } from './group-tree.js'
 import type { LifecycleNotice } from './lifecycle-types.js'
 import { paneTitleFrames, stabilizePaneTitles } from './pane-title-frames.js'
@@ -54,6 +54,10 @@ import { useManualOrder } from './hooks/useManualOrder.js'
 import { useSidebarView } from './hooks/useSidebarView.js'
 import { usePersistentCollapse } from './hooks/usePersistentCollapse.js'
 import { useSidebarResize } from './hooks/useSidebarResize.js'
+import { useRightPanel } from './hooks/useRightPanel.js'
+import { useExplorer } from './hooks/useExplorer.js'
+import { RightPanel, RightPanelToggle } from './components/RightPanel.js'
+import { Explorer } from './components/Explorer.js'
 import { useCardActions } from './hooks/useCardActions.js'
 import { useTabDrag } from './hooks/useTabDrag.js'
 import { pickPane } from './pane-utils.js'
@@ -147,6 +151,10 @@ export function App(): React.JSX.Element {
   }, [])
   const sidebarRef = useRef<HTMLDivElement | null>(null)
   const { width, onHandleMouseDown } = useSidebarResize(sidebarRef)
+  // LIFE-589 — 오른쪽 패널(⌘L)·탐색기(⌘⇧E). 패널을 닫아도 탐색기 상태는 여기 남는다(E1ⓔ).
+  const rightPanelRef = useRef<HTMLDivElement | null>(null)
+  const rightPanel = useRightPanel(rightPanelRef)
+  const [explorerFocusToken, setExplorerFocusToken] = useState(0)
   const repoCollapse = usePersistentCollapse('collapsedRepos')
   // LIFE-467: 알약은 기본 **접힘**(Orca 와 같다) — 펼친 worktree 만 영속한다. 옛 `collapsedGroups`(기본 펼침)는 안 읽는다.
   const groupExpand = usePersistentCollapse('expandedAgentGroups')
@@ -398,6 +406,8 @@ export function App(): React.JSX.Element {
         .find((worktree) => worktree.openWorkspaceId !== null && worktree.openWorkspaceId === lifecycle.activeWorkspaceId) ?? null
     )
   }, [state, lifecycle.activeWorkspaceId])
+
+  const explorer = useExplorer({ root: activeWorktreeRow?.path ?? null, active: rightPanel.open })
 
   const activeWorkspaceRow = useMemo(
     () => (state === null ? null : findWorkspace(state, lifecycle.activeWorkspaceId)),
@@ -1049,6 +1059,12 @@ export function App(): React.JSX.Element {
     'tab.cycle': (variant) => selectTabInActiveGroup(({ tabOrder, activeTabId }) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
     'tab.selectByIndex': (variant) => selectTabInActiveGroup(({ tabOrder }) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
+    'rightPanel.toggle': () => rightPanel.toggle(),
+    // VS Code `workbench.view.explorer` — 닫혀 있으면 열고, 트리에 포커스(키가 터미널로 새지 않게 keydown 은 캡처 단계에서 이미 삼켰다).
+    'explorer.show': () => {
+      rightPanel.show()
+      requestAnimationFrame(() => setExplorerFocusToken((value) => value + 1))
+    },
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
       const target = resolveNewAgentTab(settings.defaultAgent)
@@ -1161,6 +1177,11 @@ export function App(): React.JSX.Element {
         <GroupHeader
           groupId={group.groupId}
           headSpacer={sidebarCollapsed && settingsView === null && layout.groups[0]?.groupId === group.groupId}
+          tailToggle={
+            rightPanel.ready && !rightPanel.open && layout.layout !== null && topRightGroupId(layout.layout.root) === group.groupId ? (
+              <RightPanelToggle label="오른쪽 패널 열기" shortcut={rightPanelToggleShortcut} onToggle={rightPanel.toggle} placement="tabbar" />
+            ) : null
+          }
           tabs={groupTabs}
           workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
@@ -1461,6 +1482,7 @@ export function App(): React.JSX.Element {
 
   // 사이드바 토글의 단축키 표시 — 비운 칸(null, fix2 R2-01)이면 툴팁에 단축키를 싣지 않는다.
   const sidebarToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('sidebar.toggle', keymap.overrides)[0])
+  const rightPanelToggleShortcut = ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('rightPanel.toggle', keymap.overrides)[0])
 
   return (
     <BindingLabels.Provider value={keymap.overrides}>
@@ -1572,6 +1594,16 @@ export function App(): React.JSX.Element {
             />
           )}
         </div>
+        <RightPanel
+          open={rightPanel.open}
+          title="탐색기"
+          panelRef={rightPanelRef}
+          toggleShortcut={rightPanelToggleShortcut}
+          onToggle={rightPanel.toggle}
+          onResizeStart={rightPanel.onHandleMouseDown}
+        >
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} />
+        </RightPanel>
       </div>
       {settingsView === null ? null : (
         // LIFE-527 D12 — Orca 설정 뷰는 전폭 36px 타이틀바(신호등 여백 + drag)를 유지한다. 설정 페이지는 그 아래에 선다.

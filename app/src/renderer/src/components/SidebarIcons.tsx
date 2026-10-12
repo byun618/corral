@@ -306,6 +306,16 @@ export function RefreshCwIcon({ className }: { className?: string }): React.JSX.
 }
 
 /** lucide `PanelLeft` — 설정 › 외관 「창 및 사이드바」 카드(198 `AppearancePane.tsx:264`). LIFE-516 가 더했다(위 고지 그대로). LIFE-527 사이드바 머리 토글도 쓴다(198 `TitlebarLeftControls.tsx` `<PanelLeft size={16} />`). */
+/** lucide `PanelRight` — 오른쪽 패널 토글(LIFE-589, Orca `TitlebarRightControls` 와 같은 아이콘). */
+export function PanelRightIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M15 3v18" />
+    </svg>
+  )
+}
+
 export function PanelLeftIcon({ className }: { className?: string }): React.JSX.Element {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden {...STROKE}>

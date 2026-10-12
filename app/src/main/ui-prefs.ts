@@ -71,6 +71,11 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /** 오른쪽 패널·탐색기 (LIFE-589) — `shared/types.ts` 의 같은 칸 주석. */
+  rightPanelOpen: boolean
+  rightPanelWidth: number | null
+  explorerShowDotfiles: boolean
+  explorerShowIgnored: boolean
 } & SidebarViewPrefs
 
 const VERSION = 1
@@ -89,6 +94,10 @@ const DEFAULT_PREFS: UiPrefs = {
   collapsedLineage: [],
   unreadWorktrees: [],
   tabMarks: [],
+  rightPanelOpen: false,
+  rightPanelWidth: null,
+  explorerShowDotfiles: true,
+  explorerShowIgnored: true,
   // Workspace options (LIFE-470) — 칸 이름·기본값·읽기 규칙은 `shared/sidebar-view.ts` 한 곳.
   ...sidebarViewToPrefs(DEFAULT_SIDEBAR_VIEW),
 }
@@ -159,6 +168,11 @@ export class UiPrefsStore {
         collapsedLineage: readKeyList(parsed['collapsedLineage']),
         unreadWorktrees: readKeyList(parsed['unreadWorktrees']),
         tabMarks: Array.isArray(parsed['tabMarks']) ? parsed['tabMarks'] : [],
+        // LIFE-589 — 칸마다 형을 보고, 아니면 기본값(닫힘·토큰 폭·둘 다 보임).
+        rightPanelOpen: parsed['rightPanelOpen'] === true,
+        rightPanelWidth: typeof parsed['rightPanelWidth'] === 'number' && Number.isFinite(parsed['rightPanelWidth']) ? parsed['rightPanelWidth'] : null,
+        explorerShowDotfiles: parsed['explorerShowDotfiles'] !== false,
+        explorerShowIgnored: parsed['explorerShowIgnored'] !== false,
         // 칸마다 따로 기본값으로 떨어진다 — 손상된 모드 문자열이 다른 칸을 버리지 않게(LIFE-470 K9ⓓ).
         ...sidebarViewToPrefs(readSidebarView(parsed)),
       }

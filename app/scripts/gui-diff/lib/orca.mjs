@@ -34,7 +34,9 @@ const STRIPPED_ENV = new Set([
 
 /** 소스에서 리터럴을 긁어 온다 — 온보딩 프로필을 손으로 베끼면 버전이 올라갈 때 조용히 틀어진다. */
 function readOnboardingConstants(repoRoot) {
-  const constants = fs.readFileSync(path.join(repoRoot, 'src/shared/constants.ts'), 'utf8')
+  // LIFE-589 — 1.4.214 는 온보딩 상수를 `onboarding-defaults.ts` 로 옮겼다. 옛 자리(constants.ts)를 먼저 보고 없으면 새 자리.
+  const onboardingDefaults = path.join(repoRoot, 'src/shared/onboarding-defaults.ts')
+  const constants = fs.readFileSync(path.join(repoRoot, 'src/shared/constants.ts'), 'utf8') + (fs.existsSync(onboardingDefaults) ? '\n' + fs.readFileSync(onboardingDefaults, 'utf8') : '')
   const pick = (name) => {
     const match = constants.match(new RegExp(`export const ${name} = (\\d+)`))
     if (!match) throw new Error(`[orca] ${name} 를 constants.ts 에서 못 찾았다 — 태그가 바뀌었나?`)

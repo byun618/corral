@@ -494,6 +494,7 @@ function keepFocusOnHeaderBackground(event: React.MouseEvent): void {
 export function GroupHeader({
   groupId,
   headSpacer = false,
+  tailToggle = null,
   tabs,
   workspaceTabCount,
   home,
@@ -535,6 +536,8 @@ export function GroupHeader({
   groupId: string
   /** LIFE-527 D5 — 사이드바가 접혀 머리가 이 탭 줄 위에 떠 있다(왼쪽 위 영역만). 머리 폭만큼 no-drag 여백을 앞에 둔다. */
   headSpacer?: boolean
+  /** LIFE-589 — 오른쪽 패널이 닫혀 있을 때 여는 버튼(오른쪽 위 영역 탭 줄 끝만, Orca `TitlebarMainStrip` 의 `RightSidebarToggle` 자리). */
+  tailToggle?: React.ReactNode
   /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
   tabs: TabRow[]
   /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
@@ -789,6 +792,7 @@ export function GroupHeader({
             </button>
           ) : null}
         </div>
+        {tailToggle}
       </div>
       {headerMenu === null || activeTab === null ? null : (
         <TabContextMenu

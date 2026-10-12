@@ -50,6 +50,17 @@ export async function confine(input: { roots: readonly string[]; root: unknown; 
   return { ok: true, realRoot, abs: real, rel }
 }
 
+/** 폴더 도장 — 정체(dev:ino) + mtime. 항목이 생기거나 지워지거나 이름이 바뀌면 그 폴더 mtime 이 바뀐다. 없으면 null. */
+export async function dirStamp(target: string): Promise<{ id: string; stamp: string } | null> {
+  try {
+    const stat = await fs.lstat(target)
+    const id = `${stat.dev}:${stat.ino}`
+    return { id, stamp: `${id}:${stat.mtimeMs}` }
+  } catch {
+    return null
+  }
+}
+
 /** 정체 — lstat 의 dev·ino. 경로가 다른 객체로 바뀌었는지 본다. */
 async function identity(target: string): Promise<string | null> {
   try {
@@ -94,12 +105,14 @@ export async function listDir(input: { roots: readonly string[]; root: unknown; 
   const dirLabel = typeof input.rel === 'string' ? input.rel : ''
   const confined = await confine(input)
   if (!confined.ok) return { ok: false, dir: dirLabel, code: confined.code, error: confined.error }
-  const before = { realRoot: confined.realRoot, abs: confined.abs, rootId: await identity(confined.realRoot), absId: await identity(confined.abs) }
+  const stamped = await dirStamp(confined.abs)
+  const before = { realRoot: confined.realRoot, abs: confined.abs, rootId: await identity(confined.realRoot), absId: stamped?.id ?? null }
   try {
     const dirents = await fs.readdir(confined.abs, { withFileTypes: true })
     if (!(await stillSame(input, before))) return { ok: false, dir: confined.rel, code: 'changed', error: '읽는 동안 경로가 바뀌었다 — 결과를 버렸다' }
     const entries = await Promise.all(dirents.map((dirent) => entryOf(confined.abs, confined.realRoot, dirent)))
-    return { ok: true, dir: confined.rel, real: path.relative(confined.realRoot, confined.abs).split(path.sep).join('/'), entries }
+    const real = path.relative(confined.realRoot, confined.abs).split(path.sep).join('/')
+    return { ok: true, dir: confined.rel, real, id: stamped?.id ?? '', stamp: stamped?.stamp ?? '', entries }
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : ''
     return { ok: false, dir: confined.rel, code: code === 'ENOTDIR' ? 'not_directory' : code === 'ENOENT' ? 'not_found' : 'io_error', error: String(error) }

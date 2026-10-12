@@ -4,9 +4,12 @@
 //   같은 폴더 요청이 이미 날아가 있으면 또 보내지 않는다(E1ⓓ 폭주 방지). 대신 그 사이 변경이 오면 응답을 낡은 것으로 표시하고 끝난 뒤 한 번 더 읽는다(R1-D).
 // · worktree 를 바꿔도 컴포넌트를 다시 마운트하지 않는다(Orca `RS/index.tsx:83-88` — key 리마운트가 IPC 폭주를 냈다). 루트 키로 상태를 갈아 끼울 뿐이고,
 //   돌아오면 펼침·선택·스크롤이 그대로다(E2ⓘ). 패널을 닫아도 이 훅은 App 에 남아 상태를 잃지 않는다(E1ⓔ).
-// · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 열 때·worktree 로 돌아올 때는 구독이 **감시 시작을 확인한 뒤** 루트 + 보이는 펼친 폴더를
-//   **한 번** 읽는다 — 닫힌 동안의 변경(E4ⓑ — Orca #24044)과 감시 시작 전 틈을 같이 맞추면서 전환당 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ·R2-A).
-//   그동안은 캐시를 그대로 보여 준다. 열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ).
+// · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 열 때·worktree 로 돌아올 때는 **바로** 루트 + 보이는 펼친 폴더를 한 번 읽는다 — 닫힌 동안의
+//   변경(E4ⓑ — Orca #24044)을 맞추고 전환당 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ). 감시 준비를 기다리지 않는다(E3ⓐ — R3-C). 감시가 붙기 전 틈의
+//   변경은 main 이 감시 시작 때 stat 으로 가려 `changed` 로 보낸다. 루트 상태는 활성화 때 만든다 — 먼저 오는 git 스냅샷을 잃지 않게(R3-A).
+//   열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ). 전체 상태·전이는 `specs/LIFE-589-explorer-tree/raw/claude/fix-r3/state-model.md`.
+// · 폴더를 다시 읽었더니 실경로나 정체(dev:ino)가 바뀌었으면(링크 대상 교체·지우고 다시 만듦) 그 아래 캐시·실경로는 다른 폴더의 것이다 — 버리고,
+//   보이는 펼친 자손은 다시 읽고 접힌 자손은 다음 펼침 때 읽는다(R3-B).
 // · 변경 push 는 **보이는** 폴더(루트·조상이 다 펼쳐진 펼친 폴더)만 다시 읽는다. 안 보이는 캐시는 무효 표시만 하고 다시 보일 때 읽는다(R2-C).
 //   펼친 폴더가 읽기에 실패했어도(삭제·일시 오류) 그 경로의 변경이 오면 다시 읽는다(R2-D). 실경로를 아직 모르는 첫 읽기 중에는 어떤 변경이든 끝난 뒤 한 번 더 읽는다(R2-B).
 //   변경 push 의 폴더는 **실경로**(realpath(루트) 기준)다 — 목록마다 main 이 준 실경로(`real`)로 맞춰, 루트 안 디렉터리 링크로 펼친 목록도 대상 변경에 다시 읽힌다(R1-G).
@@ -19,6 +22,8 @@ export type ExplorerRootState = {
   listings: Map<string, ExplorerEntry[]>
   /** 목록 키(논리 경로) → 실경로(realpath(루트) 기준 상대). 링크 아닌 폴더는 같다. */
   real: Map<string, string>
+  /** 목록 키 → 그 폴더 정체(dev:ino). 바뀌면 자손 캐시를 버린다(R3-B). */
+  ids: Map<string, string>
   /** 안 보이는 동안 변경이 온 캐시 — 다시 보일 때 새로 읽는다(R2-C). */
   invalid: Set<string>
   /** 읽기 실패한 폴더 → 사유(가둠 거절 포함). 다시 펼치면 다시 시도한다. */
@@ -30,7 +35,7 @@ export type ExplorerRootState = {
   git: GitSnapshot | null
 }
 
-const emptyState = (): ExplorerRootState => ({ listings: new Map(), real: new Map(), invalid: new Set(), errors: new Map(), expanded: new Set(), selected: null, scrollTop: 0, git: null })
+const emptyState = (): ExplorerRootState => ({ listings: new Map(), real: new Map(), ids: new Map(), invalid: new Set(), errors: new Map(), expanded: new Set(), selected: null, scrollTop: 0, git: null })
 
 /** 보이는 펼친 폴더 — 조상이 전부 펼쳐져 있는 것만(루트 '' 는 따로). */
 export function visibleExpanded(expanded: ReadonlySet<string>): string[] {
@@ -96,6 +101,25 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     return created
   }, [])
 
+  /**
+   * `rel` 아래(자손) 캐시를 다른 폴더의 것으로 보고 버린다(R3-B) — 실경로·정체를 지우고, 보이는 펼친 자손은 다시 읽고(읽는 중이면 끝난 뒤 한 번 더),
+   * 안 보이는 자손 목록은 무효 표시(다시 펼칠 때 읽음 — R2-C).
+   */
+  const invalidateBelow = useCallback(
+    (input: { key: string; rel: string; reload: (key: string, rel: string) => void }) => {
+      const store = storeOf(input.key)
+      const prefix = input.rel === '' ? '' : `${input.rel}/`
+      for (const other of new Set([...store.listings.keys(), ...store.real.keys(), ...store.errors.keys(), ...store.expanded])) {
+        if (other === input.rel || !other.startsWith(prefix)) continue
+        store.real.delete(other)
+        store.ids.delete(other)
+        if (isVisibleDir(store.expanded, other)) input.reload(input.key, other)
+        else if (store.listings.has(other)) store.invalid.add(other)
+      }
+    },
+    [storeOf],
+  )
+
   const load = useCallback(
     (key: string, rel: string) => {
       const flight = `${key}\0${rel}`
@@ -120,9 +144,12 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
           const store = storeOf(key)
           store.invalid.delete(rel)
           if (result.ok) {
+            const before = { real: store.real.get(rel), id: store.ids.get(rel) }
             store.listings.set(rel, result.entries)
             store.real.set(rel, result.real)
+            store.ids.set(rel, result.id)
             store.errors.delete(rel)
+            if ((before.real !== undefined && before.real !== result.real) || (before.id !== undefined && before.id !== result.id)) invalidateBelow({ key, rel, reload: load })
           } else {
             // 실경로는 남긴다 — 링크 대상이 다시 생기면 그 실경로 변경으로 다시 읽게(R2-D).
             store.listings.delete(rel)
@@ -132,7 +159,7 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
         .catch((error: unknown) => storeOf(key).errors.set(rel, String(error)))
         .finally(again)
     },
-    [storeOf],
+    [storeOf, invalidateBelow],
   )
 
   /** 읽어 둔 것을 다시 — 루트 + 보이는 펼친 폴더. 안 보이는 폴더의 옛 목록은 버린다(다시 보이면 새로 읽는다 — Orca stale-dir-cache 와 같은 결). */
@@ -144,6 +171,7 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
         if (rel !== '' && !visible.has(rel)) {
           store.listings.delete(rel)
           store.real.delete(rel)
+          store.ids.delete(rel)
           store.invalid.delete(rel)
         }
       }
@@ -179,7 +207,8 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
   useEffect(
     () =>
       window.corral.onExplorerEvent((event) => {
-        const store = stores.current.get(event.root)
+        // git 스냅샷은 루트 상태가 아직 없어도 받아 둔다(R3-A) — 목록 변경은 읽어 둔 게 없으면 할 일이 없다.
+        const store = event.kind === 'git' ? storeOf(event.root) : stores.current.get(event.root)
         if (store === undefined) return
         switch (event.kind) {
           case 'changed':
@@ -194,30 +223,24 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
             return
         }
       }),
-    [reloadChanged, reloadLoaded],
+    [reloadChanged, reloadLoaded, storeOf],
   )
 
-  // 열림·활성 루트가 바뀔 때 — 감시를 걸고, 감시 시작이 확인되면(또는 구독이 실패·시간 초과로 끝나면) 루트 + 보이는 펼친 폴더를 한 번 읽는다(R2-A).
-  // 그 전까지는 캐시를 보여 준다. 감시는 이 루트 하나만.
+  // 열림·활성 루트가 바뀔 때 — 루트 상태를 만들고(R3-A) 루트 + 보이는 펼친 폴더를 바로 한 번 읽는다(E1ⓓ·E3ⓐ). 감시는 따로 건다 — 준비를 기다리지 않는다(R3-C).
   useEffect(() => {
     if (!active || root === null) return
-    let cancelled = false
-    void window.corral
-      .explorerWatch({ root, on: true })
-      .catch(() => null)
-      .then(() => {
-        if (!cancelled) reloadLoaded(root)
-      })
+    storeOf(root)
+    reloadLoaded(root)
+    void window.corral.explorerWatch({ root, on: true }).catch(() => null)
     const timer = window.setInterval(() => {
       reloadLoaded(root)
       window.corral.explorerRefreshGit(root)
     }, EXPLORER_SAFETY_NET_MS)
     return () => {
-      cancelled = true
       window.clearInterval(timer)
       void window.corral.explorerWatch({ root, on: false })
     }
-  }, [active, root, reloadLoaded])
+  }, [active, root, reloadLoaded, storeOf])
 
   const withRoot = useCallback(
     (fn: (key: string, store: ExplorerRootState) => void) => {

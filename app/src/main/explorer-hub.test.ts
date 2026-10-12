@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExplorerHub, GIT_MAX_WAIT_MS, IDLE_STOP_MS, indexStamp, WATCH_READY_TIMEOUT_MS, type WatcherChild } from './explorer-hub.js'
+import { ExplorerHub, GIT_MAX_WAIT_MS, IDLE_STOP_MS, indexStamp, type WatcherChild } from './explorer-hub.js'
 import { RESTART_DELAY_MS, RESTART_MAX } from './explorer-watch-batch.js'
 import type { ExplorerPush } from '../shared/explorer.js'
 
@@ -190,35 +190,54 @@ describe('R1-B 진행 중 구독 vs 해제', () => {
   })
 })
 
-describe('감시 시작 알림 → 한 번 다시 읽기 (수정 r1 격리 실행에서 발견)', () => {
-  it('watching 을 받으면 그 루트에 overflow 를 민다 — 모르는 id 는 버린다', async () => {
-    await hub.subscribe(rootA)
-    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
-    children[0]?.emit('message', { type: 'watching', id: '/nope', count: 1 })
-    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([{ kind: 'overflow', root: rootA }])
-  })
-})
-
-describe('R2-A 구독은 감시 시작 확인 뒤 끝난다 · 전환은 프로세스를 다시 안 띄운다', () => {
-  it('watching 알림 전에는 구독이 안 끝나고, 알림이 오면 끝난다 — 이때 overflow 는 안 민다(렌더러가 그 뒤 한 번 읽는다)', async () => {
-    autoAck = false
-    let done = false
-    const pending = hub.subscribe(rootA).then((result) => {
-      done = true
-      return result
-    })
-    await sleep(50)
-    expect(done).toBe(false)
-    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
-    expect(await pending).toEqual({ ok: true })
-    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([])
-  })
-  it('알림이 안 오면 시간 초과로 끝난다(렌더러는 읽고 안전망이 남는다)', async () => {
+describe('R3-C 감시 준비와 목록은 서로 기다리지 않는다 — 감시 시작 때 도장 대조', () => {
+  const listed = async (rel: string): Promise<void> => {
+    const result = await hub.list({ roots, root: rootA, rel })
+    if (!result.ok) throw new Error(result.error)
+  }
+  it('구독은 watching 을 기다리지 않고 끝난다(시작 오류여도) — 오류는 계수에만', async () => {
     autoAck = false
     const started = Date.now()
     expect(await hub.subscribe(rootA)).toEqual({ ok: true })
-    expect(Date.now() - started).toBeGreaterThanOrEqual(WATCH_READY_TIMEOUT_MS - 20)
+    expect(Date.now() - started).toBeLessThan(500)
+    children[0]?.emit('message', { type: 'error', id: rootA, error: 'injected' })
+    expect(hub.status().counters.watchErrors).toBe(1)
+    expect(pushed.filter((event) => event.kind !== 'git')).toEqual([])
   })
+  it('늦은 watching(1,200 ms) — 그 사이 바뀐 게 없으면 아무것도 안 민다(다시 읽기 0)', async () => {
+    autoAck = false
+    fs.mkdirSync(path.join(rootA, 'quiet'), { recursive: true })
+    await listed('')
+    await listed('quiet')
+    await hub.subscribe(rootA)
+    await sleep(1_200)
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind !== 'git')).toEqual([])
+    expect(hub.status().counters).toMatchObject({ gapChecks: 1, gapChangedDirs: 0 })
+  }, 5_000)
+  it('감시 전 틈에 바뀐 폴더만 changed 로 민다(실경로) — 처음·늦게·재기동 뒤 모두 같은 길', async () => {
+    autoAck = false
+    fs.mkdirSync(path.join(rootA, 'busy'), { recursive: true })
+    fs.mkdirSync(path.join(rootA, 'calm'), { recursive: true })
+    await listed('')
+    await listed('busy')
+    await listed('calm')
+    await hub.subscribe(rootA)
+    fs.writeFileSync(path.join(rootA, 'busy', `gap-${Date.now()}.txt`), 'g')
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: ['busy'] }])
+    // 재기동 뒤 watching — 그동안 calm 에 생긴 것도 같은 길로.
+    pushed = []
+    await listed('busy')
+    children[0]?.emit('exit', 1)
+    fs.writeFileSync(path.join(rootA, 'calm', `down-${Date.now()}.txt`), 'd')
+    await sleep(RESTART_DELAY_MS + 100)
+    children.at(-1)?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: ['calm'] }])
+  }, 5_000)
   it('해제 → 바로 다른 루트 구독(전환)은 같은 프로세스를 쓴다', async () => {
     await hub.subscribe(rootA)
     hub.unsubscribe(rootA)
@@ -228,12 +247,18 @@ describe('R2-A 구독은 감시 시작 확인 뒤 끝난다 · 전환은 프로�
     expect(children[0]?.killed).toBe(false)
     expect(hub.status()).toMatchObject({ subscriptions: [rootB], counters: { childStarts: 1 } })
   })
-  it('장애 재기동으로 되살린 감시의 watching 은 overflow 를 민다(끊긴 동안 변경)', async () => {
+  it('worktree 를 닫으면 적어 둔 도장도 버린다', async () => {
+    await listed('')
+    roots = [rootB]
+    hub.prune()
+    autoAck = false
+    roots = [rootA, rootB]
+    // 적어 둔 도장이 남아 있었다면 이 변경이 changed 로 나갔을 것이다(양성 대조는 위 「틈에 바뀐 폴더」 시험).
+    fs.writeFileSync(path.join(rootA, `after-close-${Date.now()}.txt`), 'c')
     await hub.subscribe(rootA)
-    children[0]?.emit('exit', 1)
-    await sleep(RESTART_DELAY_MS + 100)
-    expect(children).toHaveLength(2)
-    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([{ kind: 'overflow', root: rootA }])
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(30)
+    expect(hub.status().counters.gapChangedDirs).toBe(0)
   })
 })
 

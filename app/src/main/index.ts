@@ -1775,7 +1775,8 @@ app.whenReady().then(async () => {
     const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
     if (!fromOurWindow(event)) return { ok: false, dir: '', code: 'not_worktree', error: '허용되지 않은 발신자' }
     const startedAt = performance.now()
-    const result = await listDir({ roots: explorerRoots(), root, rel })
+    // 허브를 거쳐 읽는다 — 허브가 준 목록의 도장을 적어 두었다가 감시 시작 때 그 사이 바뀐 폴더만 가린다(상태 모델 fix-r3).
+    const result = explorerHub === null ? await listDir({ roots: explorerRoots(), root, rel }) : await explorerHub.list({ roots: explorerRoots(), root, rel })
     log('explorer.list', { rel: typeof rel === 'string' ? rel : null, ok: result.ok, code: result.ok ? null : result.code, count: result.ok ? result.entries.length : 0, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })

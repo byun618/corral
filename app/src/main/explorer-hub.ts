@@ -11,9 +11,11 @@
 // · 감시 프로세스가 죽으면(E4ⓖ) 로그를 남기고 1초 뒤 다시 띄워 구독을 되살린다 — 60초 안 3번까지. 넘으면 멈추고 렌더러 안전망만 남는다.
 //   재기동 타이머는 허브가 들고 있다가 구독이 0 이 되거나 dispose 면 취소하고, 실행 시점에도 구독 수를 다시 본다(R1-C). 일부러 끈 프로세스의
 //   exit 는 그 child 를 보고 가려 장애로 세지 않는다(실제 utilityProcess 의 exit 는 kill 뒤 비동기로 온다).
-// · 구독(`subscribe`)은 감시 프로세스가 그 루트의 `watching`(감시 시작)을 알린 **뒤에** 끝난다(늦으면 1 s 에서 그냥 끝냄). 렌더러는 그걸 기다렸다가
-//   목록을 **한 번** 읽는다 — 그 읽기는 감시가 붙은 뒤라 사이 변경을 놓치지 않고, 전환마다 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ·리뷰 r2 R2-A).
-//   장애 재기동으로 감시를 되살린 경우에는 기다리는 구독이 없으니 `watching` 에 overflow 를 한 번 민다(끊긴 동안의 변경).
+// · 감시 준비와 목록 읽기는 서로 기다리지 않는다(상태 모델 `specs/LIFE-589-explorer-tree/raw/claude/fix-r3/state-model.md`). 렌더러는 활성화되자마자
+//   목록을 한 번 읽고(전환당 펼친 폴더 수 + 1 — E1ⓓ, 첫 표시가 감시 준비에 묶이지 않음 — E3ⓐ), 허브는 목록을 줄 때마다 그 폴더의 도장(정체 + mtime)을
+//   적어 둔다(`list`). 감시 프로세스가 `watching`(감시 시작)을 알리면 — 처음이든 늦게든 장애 재기동 뒤든 같게 — 적어 둔 폴더를 stat 만 해서 도장이
+//   달라진 폴더만 `changed` 로 민다(감시 시작 전 틈 — r1 보완). 그 사이 바뀐 게 없으면 다시 읽기 0 이다. 감시 시작 오류는 기다리는 것이 없으니 로그만 남고
+//   안전망이 맡는다(R3-C).
 // · 구독이 0 이 되면 감시 프로세스를 300 ms 뒤에 끈다 — worktree 전환(해제 → 바로 구독)이 프로세스를 매번 새로 띄우지 않게. 그 사이 새 구독이 오면 그대로 쓴다.
 //   ref 폴링·재기동 예약은 0 이 되는 즉시 멈춘다. dispose 는 바로 끈다.
 import fs from 'node:fs'
@@ -21,7 +23,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
 import type { ExplorerPush } from '../shared/explorer.js'
-import { confine } from './explorer-fs.js'
+import { confine, dirStamp, listDir } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
 
 /** utility process 의 최소 모양 — 시험에서 가짜를 꽂는다. */
@@ -42,8 +44,6 @@ export type ExplorerHubDeps = {
 
 const GIT_DEBOUNCE_MS = 300
 const GIT_MIN_INTERVAL_MS = 1_000
-/** 구독이 감시 시작 알림을 기다리는 최대 시간 — 넘으면 그냥 끝낸다(렌더러는 읽고, 안전망이 남는다). */
-export const WATCH_READY_TIMEOUT_MS = 1_000
 /** 구독 0 뒤 감시 프로세스를 끄기까지의 유예. */
 export const IDLE_STOP_MS = 300
 /** git 재조회 최대 대기 — 첫 요청부터 이 안에는 돈다(뭉침이 계속 밀려도). */
@@ -76,13 +76,13 @@ export class ExplorerHub {
   private generation = 0
   private restartTimer: NodeJS.Timeout | null = null
   private idleTimer: NodeJS.Timeout | null = null
-  /** 루트 → 감시 시작 알림을 기다리는 구독들. */
-  private readonly watchWaiters = new Map<string, (() => void)[]>()
+  /** 루트 → (실경로 상대 → 렌더러에 준 목록의 도장). 감시 시작 때 그 사이 바뀐 폴더를 가리는 데 쓴다. 열린 worktree 가 아니게 되면 버린다. */
+  private readonly listed = new Map<string, Map<string, string>>()
   private restarts: number[] = []
   private stopped = false
   private indexTimer: NodeJS.Timeout | null = null
   /** 계측(E4ⓓ·E4ⓕ) — 렌더러로 민 변경 이벤트 수·감시 프로세스가 버린 제외 경로 이벤트 수(마지막 배치 기준 누계). */
-  readonly counters = { pushedChanged: 0, pushedOverflow: 0, pushedGit: 0, excludedSeen: 0, childStarts: 0, childExits: 0 }
+  readonly counters = { pushedChanged: 0, pushedOverflow: 0, pushedGit: 0, excludedSeen: 0, childStarts: 0, childExits: 0, gapChecks: 0, gapChangedDirs: 0, watchErrors: 0 }
 
   constructor(private readonly deps: ExplorerHubDeps) {}
 
@@ -131,13 +131,10 @@ export class ExplorerHub {
       return
     }
     if (message.type === 'watching' && 'id' in message && typeof message.id === 'string') {
-      // 감시가 실제로 붙었다. 기다리는 구독이 있으면 그 구독을 끝낸다 — 렌더러가 그 뒤에 한 번 읽는다(R2-A).
-      // 없으면(장애 재기동으로 되살림) 끊긴 동안의 변경을 맞추려고 읽어 둔 것을 한 번 다시 읽게 한다(수정 r1 격리 실행에서 발견한 틈).
-      if (this.resolveWaiters(message.id)) return
+      // 감시가 실제로 붙었다(처음·늦게·재기동 뒤 모두 같은 길). 감시가 없던 동안 바뀐 폴더만 stat 으로 가려 민다.
       const sub = this.subs.get(message.id)
       if (sub === undefined) return
-      this.counters.pushedOverflow += 1
-      this.deps.push({ kind: 'overflow', root: sub.root })
+      void this.gapCheck(sub)
       this.scheduleGit(sub)
       return
     }
@@ -146,7 +143,11 @@ export class ExplorerHub {
       this.deps.log('explorer.watch.ready', { pid: message.pid })
       return
     }
-    if (message.type === 'error') this.deps.log('explorer.watch.error', { message: JSON.stringify(message).slice(0, 300) })
+    if (message.type === 'error') {
+      // 감시 시작·유지 오류 — 기다리는 것이 없으므로 목록·git 은 그대로 가고, 변경 반영은 렌더러 안전망(10 s)이 맡는다.
+      this.counters.watchErrors += 1
+      this.deps.log('explorer.watch.error', { message: JSON.stringify(message).slice(0, 300) })
+    }
   }
 
   private onChildExit(child: WatcherChild, code: unknown): void {
@@ -159,8 +160,6 @@ export class ExplorerHub {
     this.child = null
     this.childPid = null
     this.counters.childExits += 1
-    // 기다리던 구독은 끝낸다 — 재기동이 감시를 되살리면 그때 overflow 로 맞춘다.
-    this.resolveAllWaiters()
     this.deps.log('explorer.watch.exit', { pid, code: typeof code === 'number' ? code : String(code), subscriptions: this.subs.size, disposing: this.stopped })
     if (this.stopped || this.subs.size === 0) return
     const now = this.now()
@@ -184,35 +183,32 @@ export class ExplorerHub {
     this.idleTimer = null
   }
 
-  /** 그 루트의 감시 시작을 기다리던 구독을 끝낸다. 기다리던 게 있었으면 true. */
-  private resolveWaiters(root: string): boolean {
-    const waiters = this.watchWaiters.get(root)
-    if (waiters === undefined) return false
-    this.watchWaiters.delete(root)
-    for (const resolve of waiters) resolve()
-    return true
+  /** 목록 읽기(렌더러 `explorerList` 의 main 입구) — 결과의 도장을 적어 둔다. */
+  async list(input: { roots: readonly string[]; root: unknown; rel: unknown }): ReturnType<typeof listDir> {
+    const result = await listDir(input)
+    if (result.ok && typeof input.root === 'string' && result.stamp !== '') {
+      const records = this.listed.get(input.root) ?? new Map<string, string>()
+      records.set(result.real, result.stamp)
+      this.listed.set(input.root, records)
+    }
+    return result
   }
 
-  private resolveAllWaiters(): void {
-    for (const root of [...this.watchWaiters.keys()]) this.resolveWaiters(root)
-  }
-
-  /** 감시 시작 알림을 기다린다 — 늦으면 `WATCH_READY_TIMEOUT_MS` 에서 끝. 알림보다 먼저 걸어 둔다. */
-  private watchReady(root: string): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        const left = (this.watchWaiters.get(root) ?? []).filter((waiter) => waiter !== done)
-        if (left.length > 0) this.watchWaiters.set(root, left)
-        else this.watchWaiters.delete(root)
-        this.deps.log('explorer.watch.ready_timeout', { root, ms: WATCH_READY_TIMEOUT_MS })
-        resolve()
-      }, WATCH_READY_TIMEOUT_MS)
-      const done = (): void => {
-        clearTimeout(timer)
-        resolve()
-      }
-      this.watchWaiters.set(root, [...(this.watchWaiters.get(root) ?? []), done])
-    })
+  /** 감시 시작 틈 맞추기 — 적어 둔 폴더를 stat 만 해서 도장이 달라진(없어진 것 포함) 폴더를 `changed` 로 민다. 목록은 읽지 않는다. */
+  private async gapCheck(sub: Subscription): Promise<void> {
+    const records = this.listed.get(sub.root)
+    this.counters.gapChecks += 1
+    if (records === undefined || records.size === 0) return
+    const dirs: string[] = []
+    for (const [real, stamp] of records) {
+      const now = await dirStamp(real === '' ? sub.realRoot : path.join(sub.realRoot, ...real.split('/')))
+      if (now?.stamp !== stamp) dirs.push(real)
+    }
+    if (this.subs.get(sub.root) !== sub || dirs.length === 0) return
+    this.counters.gapChangedDirs += dirs.length
+    this.counters.pushedChanged += 1
+    this.deps.log('explorer.watch.gap', { root: sub.root, checked: records.size, changed: dirs.length })
+    this.deps.push({ kind: 'changed', root: sub.root, dirs })
   }
 
   private clearRestart(): void {
@@ -264,7 +260,6 @@ export class ExplorerHub {
     }
     const sub: Subscription = { root, realRoot: confined.realRoot, gitDir, indexStamp: indexStamp(gitDir), gitTimer: null, gitLastAt: 0, gitFirstAt: null, gitRunning: false, gitAgain: false }
     this.subs.set(root, sub)
-    const ready = this.watchReady(root)
     if (this.child === null) this.ensureChild()
     else {
       this.clearIdle()
@@ -273,7 +268,6 @@ export class ExplorerHub {
     this.deps.log('explorer.watch.subscribe', { root, subscriptions: this.subs.size, gitDir })
     this.ensureIndexPoll()
     this.scheduleGit(sub, 0)
-    await ready
     return { ok: true }
   }
 
@@ -285,7 +279,6 @@ export class ExplorerHub {
     if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.delete(root)
     this.child?.postMessage({ type: 'unwatch', id: root })
-    this.resolveWaiters(root)
     this.deps.log('explorer.watch.unsubscribe', { root, subscriptions: this.subs.size })
     if (this.subs.size === 0) {
       if (this.indexTimer !== null) clearInterval(this.indexTimer)
@@ -303,6 +296,7 @@ export class ExplorerHub {
   prune(): void {
     const roots = this.deps.roots()
     for (const root of new Set([...this.subs.keys(), ...this.wanted.keys()])) if (!roots.includes(root)) this.unsubscribe(root)
+    for (const root of [...this.listed.keys()]) if (!roots.includes(root)) this.listed.delete(root)
   }
 
   /** 렌더러 안전망·새로고침 — git 상태를 바로 다시 읽는다. */
@@ -324,7 +318,7 @@ export class ExplorerHub {
     this.wanted.clear()
     this.clearRestart()
     this.clearIdle()
-    this.resolveAllWaiters()
+    this.listed.clear()
     for (const sub of this.subs.values()) if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.clear()
     if (this.indexTimer !== null) clearInterval(this.indexTimer)

@@ -29,7 +29,11 @@ export type ExplorerListResult =
    * `real` = 이 폴더의 실경로를 realpath(루트) 기준 상대로(`/` 구분). 링크 아닌 폴더면 `dir` 과 같고, 루트 안 디렉터리 링크를 펼친 폴더면 대상 쪽 경로다.
    * 감시 이벤트는 실경로로 오므로 렌더러는 이 값으로 「어느 목록을 다시 읽을지」 를 고른다(R1-G — 링크를 따라 따로 감시하지 않는다). 가둠을 지난 루트 안 경로뿐이다.
    */
-  | { ok: true; dir: string; real: string; entries: ExplorerEntry[] }
+  /**
+   * `id` = 이 폴더의 정체(dev:ino). 같은 논리 경로의 실경로나 정체가 바뀌면 그 아래 캐시는 다른 폴더의 것이다(R3-B). `stamp` = 정체 + mtime(읽기 직전) —
+   * main 이 감시 시작 때 「그 사이 이름이 바뀌었나」 를 목록 없이 stat 으로만 가리는 데 쓴다(상태 모델 `raw/claude/fix-r3/state-model.md`).
+   */
+  | { ok: true; dir: string; real: string; id: string; stamp: string; entries: ExplorerEntry[] }
   | { ok: false; dir: string; code: ExplorerRefusal; error: string }
 
 /** 렌더러 안전망 재조회 주기 (E4ⓒ) — 패널이 열려 있는 동안 펼친 폴더 목록·git 상태를 이 주기로 다시 읽는다(감시 이벤트 유실 대비 — Orca #17746). */

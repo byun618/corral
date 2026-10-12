@@ -143,7 +143,7 @@ describe('R1-A 가둠 TOCTOU — 접근 뒤 재확인', () => {
 
   it('양성 대조 — 바꿔치기 없으면 같은 경로가 그대로 읽힌다', async () => {
     const { wt } = setup('plain')
-    expect(await listDir({ roots: [wt], root: wt, rel: 'mid/safe' })).toEqual({ ok: true, dir: 'mid/safe', real: 'mid/safe', entries: [{ name: 'inside.txt', kind: 'file', link: 'none' }] })
+    expect(await listDir({ roots: [wt], root: wt, rel: 'mid/safe' })).toMatchObject({ ok: true, dir: 'mid/safe', real: 'mid/safe', entries: [{ name: 'inside.txt', kind: 'file', link: 'none' }] })
   })
 
   it('밖을 가리키는 링크 항목은 밖을 stat 하지 않는다', async () => {
@@ -153,5 +153,25 @@ describe('R1-A 가둠 TOCTOU — 접근 뒤 재확인', () => {
     const result = await listDir({ roots: [wt], root: wt, rel: '' })
     expect(result).toMatchObject({ ok: true })
     expect(statSpy.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith(outside))).toEqual([])
+  })
+})
+
+describe('R3 폴더 정체·도장', () => {
+  it('같은 경로를 지우고 다시 만들면 정체(id)가 바뀌고, 항목이 생기면 도장(stamp)이 바뀐다', async () => {
+    const wt = path.join(base, 'stamp-wt')
+    fs.mkdirSync(path.join(wt, 'd'), { recursive: true })
+    const first = await listDir({ roots: [wt], root: wt, rel: 'd' })
+    if (!first.ok) throw new Error(first.error)
+    fs.writeFileSync(path.join(wt, 'd', 'new.txt'), 'n')
+    const grown = await listDir({ roots: [wt], root: wt, rel: 'd' })
+    if (!grown.ok) throw new Error(grown.error)
+    expect(grown.id).toBe(first.id)
+    expect(grown.stamp).not.toBe(first.stamp)
+    fs.rmSync(path.join(wt, 'd'), { recursive: true })
+    fs.mkdirSync(path.join(wt, 'keep-inode-busy'))
+    fs.mkdirSync(path.join(wt, 'd'))
+    const recreated = await listDir({ roots: [wt], root: wt, rel: 'd' })
+    if (!recreated.ok) throw new Error(recreated.error)
+    expect(recreated.id).not.toBe(first.id)
   })
 })

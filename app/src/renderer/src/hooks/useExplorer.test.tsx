@@ -18,7 +18,7 @@ let api: ExplorerApi | null = null
 let listener: ((event: ExplorerPush) => void) | null = null
 let calls: string[] = []
 /** 논리 경로 → [실경로, 항목]. 응답은 요청 시점 스냅샷이다. */
-let fsView = new Map<string, { real: string; entries: ExplorerEntry[] }>()
+let fsView = new Map<string, { real: string; entries: ExplorerEntry[]; id?: string }>()
 /** 이 폴더 요청은 손으로 풀 때까지 붙든다. */
 let hold = new Set<string>()
 let held: (() => void)[] = []
@@ -61,7 +61,7 @@ beforeEach(async () => {
     explorerList: ({ rel }: { root: string; rel: string }): Promise<ExplorerListResult> => {
       calls.push(rel)
       const view = fsView.get(rel)
-      const result: ExplorerListResult = view === undefined ? { ok: false, dir: rel, code: 'not_found', error: '없음' } : { ok: true, dir: rel, real: view.real, entries: [...view.entries] }
+      const result: ExplorerListResult = view === undefined ? { ok: false, dir: rel, code: 'not_found', error: '없음' } : { ok: true, dir: rel, real: view.real, id: view.id ?? `id:${view.real}`, stamp: '', entries: [...view.entries] }
       if (!hold.has(rel)) return Promise.resolve(result)
       return new Promise((resolve) => held.push(() => resolve(result)))
     },
@@ -212,8 +212,8 @@ describe('R2-D 펼친 폴더 삭제 → 재생성', () => {
   })
 })
 
-describe('R2-A 감시 시작 확인 뒤 한 번만 읽는다 (E1ⓓ)', () => {
-  it('감시 구독이 끝나기 전에는 읽지 않고, 끝나면 루트 + 펼친 폴더를 한 번씩 — 전환마다 펼친 폴더 수 + 1', async () => {
+describe('R2-A·R3-C 전환당 한 번 — 감시 준비와 무관 (E1ⓓ·E3ⓐ)', () => {
+  it('감시 구독이 끝나지 않아도(늦음·안 옴) 활성화 즉시 루트 + 펼친 폴더를 한 번씩 읽고, 늦게 끝나도 더 읽지 않는다', async () => {
     await act(async () => current().expand('dir'))
     let finishWatch: (() => void)[] = []
     Reflect.set(window.corral, 'explorerWatch', ({ on }: { on: boolean }) => (on ? new Promise((resolve) => finishWatch.push(() => resolve({ ok: true }))) : Promise.resolve({ ok: true })))
@@ -222,13 +222,69 @@ describe('R2-A 감시 시작 확인 뒤 한 번만 읽는다 (E1ⓓ)', () => {
       calls = []
       finishWatch = []
       await act(async () => root.render(createElement(Probe)))
-      expect(calls).toEqual([])
+      // 첫 표시는 감시 준비에 묶이지 않는다.
+      expect(calls.length).toBe(probeRoot === '/fixture' ? 2 : 1)
       await act(async () => {
         for (const resolve of finishWatch) resolve()
       })
       const expanded = current().state?.expanded.size ?? 0
       expect(calls.length).toBeLessThanOrEqual(expanded + 1)
-      expect(calls.length).toBe(probeRoot === '/fixture' ? 2 : 1)
     }
+  })
+})
+
+describe('R3-A 첫 git 스냅샷', () => {
+  it('목록·활성화보다 먼저 온 git 스냅샷도 받아 두고, 그 루트를 열면 바로 쓴다', async () => {
+    await act(async () => push({ kind: 'git', root: '/fresh', git: { marks: [['new.txt', 'U']], ignored: ['ignored'] }, error: null }))
+    probeRoot = '/fresh'
+    await act(async () => root.render(createElement(Probe)))
+    expect([...(current().state?.git?.marks ?? [])]).toEqual([['new.txt', 'U']])
+    expect([...(current().state?.git?.ignored ?? [])]).toEqual(['ignored'])
+  })
+})
+
+describe('R3-B 부모 실경로·정체가 바뀌면 자손 캐시를 버린다', () => {
+  const retarget = (): void => {
+    fsView.set('alias', { real: 'dest', id: 'id:dest', entries: [dir('sub')] })
+    fsView.set('alias/sub', { real: 'dest/sub', id: 'id:dest/sub', entries: [file('new.txt')] })
+  }
+  beforeEach(() => {
+    fsView.set('alias', { real: 'src', id: 'id:src', entries: [dir('sub')] })
+    fsView.set('alias/sub', { real: 'src/sub', id: 'id:src/sub', entries: [file('old.txt')] })
+  })
+  it('보이는 펼친 자손 — 링크 대상 교체(alias 이벤트만 옴) 뒤 자손을 다시 읽어 새 대상 내용·실경로가 된다', async () => {
+    await act(async () => current().expand('alias'))
+    await act(async () => current().expand('alias/sub'))
+    retarget()
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['alias', ''] }))
+    expect(calls.sort()).toEqual(['', 'alias', 'alias/sub'])
+    expect(names('alias/sub')).toEqual(['new.txt'])
+    expect(current().state?.real.get('alias/sub')).toBe('dest/sub')
+  })
+  it('접힌 자손 — 읽지 않고 무효 표시, 다시 펼칠 때 새 대상을 읽는다', async () => {
+    await act(async () => current().expand('alias'))
+    await act(async () => current().expand('alias/sub'))
+    await act(async () => current().collapse('alias/sub'))
+    retarget()
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['alias', ''] }))
+    expect(calls.sort()).toEqual(['', 'alias'])
+    expect(current().state?.invalid.has('alias/sub')).toBe(true)
+    expect(current().state?.real.has('alias/sub')).toBe(false)
+    calls = []
+    await act(async () => current().expand('alias/sub'))
+    expect(calls).toEqual(['alias/sub'])
+    expect(names('alias/sub')).toEqual(['new.txt'])
+  })
+  it('같은 경로를 지우고 다시 만든 폴더(정체 바뀜)도 자손을 버린다', async () => {
+    await act(async () => current().expand('alias'))
+    await act(async () => current().expand('alias/sub'))
+    fsView.set('alias', { real: 'src', id: 'id:src-recreated', entries: [dir('sub')] })
+    fsView.set('alias/sub', { real: 'src/sub', id: 'id:src/sub-2', entries: [file('fresh.txt')] })
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['src'] }))
+    expect(calls.sort()).toEqual(['alias', 'alias/sub'])
+    expect(names('alias/sub')).toEqual(['fresh.txt'])
   })
 })

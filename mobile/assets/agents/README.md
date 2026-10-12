@@ -6,7 +6,7 @@
 | `codex.png` · `codex@2x.png` · `codex@3x.png` | 20 · 40 · 60 px | `codex.png` · `codex-2x.png` · `codex-3x.png` |
 | `grok.png` · `grok@2x.png` · `grok@3x.png` | 20 · 40 · 60 px | `grok.png` · `grok-2x.png` · `grok-3x.png` |
 
-- Claude Design 이 준 PNG 를 **바이트 그대로** 두고 이름만 RN 밀도 규칙(`@2x`·`@3x`)으로 바꿨다. sha256 대응은 `specs/LIFE-594-design-apply/raw/claude/k3-sha256.txt`.
+- Claude Design 이 준 PNG 를 **바이트 그대로** 두고 이름만 RN 밀도 규칙(`@2x`·`@3x`)으로 바꿨다. sha256 대응은 `specs/LIFE-594-design-apply/raw/claude/k3-sha256.md`.
 - 색이 박힌 고정 이미지다 — claude `#d97757` · codex `#a1a1a1` · grok 원색. 아바타 칸 38·34·32·22 에 20·18·16·13 으로 줄여 그린다(`src/ui/StatusGlyph.tsx` `Avatar`).
 
 ## 출처 · 라이선스

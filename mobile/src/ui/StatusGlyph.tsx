@@ -103,8 +103,11 @@ function logoSize(size: number): number {
   }
 }
 
-/** 아바타 — 에이전트 로고 + 우하단 상태 배지(디자인 §2 ChannelRow). 종류 모름(`null`)은 글리프 `·` 그대로. */
-export function Avatar({ kind, dot, closed = false, size }: { kind: AgentKind | null; dot: Dot; closed?: boolean; size: number }) {
+/**
+ * 아바타 — 에이전트 로고 + 우하단 상태 배지(디자인 §2 ChannelRow). 종류 모름(`null`)은 글리프 `·` 그대로.
+ * `dot` 을 넘기지 않으면 배지를 그리지 않는다 — 에이전트 답 머리(칸 22)는 고정 21px 배지가 로고를 덮고 늘 `idle` 이라 뺐다(LIFE-594 K3ⓐ 정정).
+ */
+export function Avatar({ kind, dot, closed = false, size }: { kind: AgentKind | null; dot?: Dot; closed?: boolean; size: number }) {
   const logo = logoSize(size)
   return (
     <View style={{ width: size, height: size }}>
@@ -117,21 +120,23 @@ export function Avatar({ kind, dot, closed = false, size }: { kind: AgentKind | 
           <Image source={AGENT_LOGO[kind].source} style={{ width: logo, height: logo, borderRadius: AGENT_LOGO[kind].radius }} />
         )}
       </View>
-      <View
-        style={{
-          position: 'absolute',
-          right: -6,
-          bottom: -6,
-          width: 21,
-          height: 21,
-          borderRadius: 11,
-          backgroundColor: color.surface,
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <StatusGlyph dot={dot} closed={closed} />
-      </View>
+      {dot === undefined ? null : (
+        <View
+          style={{
+            position: 'absolute',
+            right: -6,
+            bottom: -6,
+            width: 21,
+            height: 21,
+            borderRadius: 11,
+            backgroundColor: color.surface,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <StatusGlyph dot={dot} closed={closed} />
+        </View>
+      )}
     </View>
   )
 }

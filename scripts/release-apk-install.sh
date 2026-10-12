@@ -25,20 +25,21 @@ done
 [ -f "$APK" ] || die "APK 없음: $APK"
 command -v adb >/dev/null || die "adb 가 없다"
 [ -n "${ANDROID_HOME:-}" ] || die "ANDROID_HOME 이 없다 — apksigner·aapt2 를 찾는다"
-BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"
+BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$BUILD_TOOLS" ] && [ -x "$BUILD_TOOLS/apksigner" ] && [ -x "$BUILD_TOOLS/aapt2" ] || die "ANDROID_HOME/build-tools 에 apksigner·aapt2 가 없다"
 
 adbs() { adb -s "$SERIAL" "$@"; }
-cert_of() { "$BUILD_TOOLS/apksigner" verify --print-certs "$1" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'; }
+# 서명을 못 읽으면 빈 값 — 아래 대조가 "없음" 으로 멈춘다(pipefail 로 조용히 끝나지 않게)
+cert_of() { "$BUILD_TOOLS/apksigner" verify --print-certs "$1" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' || true; }
 # dumpsys package 에서 한 필드(첫 값, 줄 끝까지 — lastUpdateTime 은 "날짜 시각"). 전부 받은 뒤 고른다(head 로 자르면 SIGPIPE·pipefail)
-pkg_field() { local d; d="$(adbs shell dumpsys package "$PACKAGE" | tr -d '\r' | sed -n "s/^ *$1=//p")"; echo "${d%%$'\n'*}"; }
+pkg_field() { local d; d="$(adbs shell dumpsys package "$PACKAGE" | tr -d '\r' | sed -n "s/^ *$1=//p")" || die "dumpsys package 실패($SERIAL)"; echo "${d%%$'\n'*}"; }
 
 # ① 기기
 [ "$(adbs get-state 2>/dev/null)" = "device" ] || die "기기 $SERIAL 이 연결돼 있지 않다(adb devices 확인)"
 note "기기 $SERIAL — $(adbs shell getprop ro.product.model | tr -d '\r')"
 
 # 새 APK — 패키지·버전·서명
-BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$APK")"; BADGING="${BADGING%%$'\n'*}"
+BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$APK")" || die "aapt2 dump badging 실패: $APK"; BADGING="${BADGING%%$'\n'*}"
 NEW_PKG="$(echo "$BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p")"
 NEW_VNAME="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
 [ "$NEW_PKG" = "$PACKAGE" ] || die "APK 패키지가 $NEW_PKG — $PACKAGE 가 아니다"

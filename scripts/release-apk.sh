@@ -48,12 +48,14 @@ check_toolchain() {
   else
     java_bin="$(command -v java)" || die "java 가 없다(JAVA_HOME 도 없음) — APK 빌드에 JDK 17 이 필요하다"
   fi
-  jv="$("$java_bin" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -1)"
+  # java 가 실패해도(/usr/bin/java 껍데기는 JDK 를 못 찾으면 exit 1) pipefail 로 조용히 끝나지 않게 출력만 받는다
+  jv="$("$java_bin" -version 2>&1 || true)"
+  jv="$(echo "$jv" | sed -n '/version "/{s/.*version "\([0-9][0-9]*\).*/\1/p;q;}')"
   [ -n "$jv" ] || die "java -version 이 실패했다($java_bin) — JDK 를 설치하거나 JAVA_HOME 을 준다"
   [ "$jv" -ge 17 ] || die "JDK $jv — APK 빌드는 JDK 17 이상"
   # Android SDK — 서명·버전 확인에 build-tools 의 apksigner·aapt2 를 쓴다
   [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME" ] || die "ANDROID_HOME 이 없거나 폴더가 아니다(${ANDROID_HOME:-미설정}) — Android SDK 경로를 준다"
-  BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"
+  BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)"
   [ -n "$BUILD_TOOLS" ] && [ -x "$BUILD_TOOLS/apksigner" ] && [ -x "$BUILD_TOOLS/aapt2" ] \
     || die "ANDROID_HOME/build-tools 에 apksigner·aapt2 가 없다($ANDROID_HOME) — sdkmanager 로 build-tools 를 설치한다"
   # node — eas-cli·mobile npm ci 용. release-dmg.sh 와 같은 기준
@@ -118,11 +120,11 @@ cd "$ROOT"
 
 # 산출물 확인 — 패키지·versionName·서명
 # head 로 자르면 aapt2 가 SIGPIPE 로 끝나 pipefail 에 걸린다 — 전부 받은 뒤 첫 줄만
-BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$APK")"; BADGING="${BADGING%%$'\n'*}"
+BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$APK")" || die "aapt2 dump badging 실패: $APK"; BADGING="${BADGING%%$'\n'*}"
 GOT_PKG="$(echo "$BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p")"
 GOT_VNAME="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
 GOT_VCODE="$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
-CERT="$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+CERT="$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' || true)"
 [ "$GOT_PKG" = "$PACKAGE" ] || die "패키지가 $GOT_PKG — $PACKAGE 여야 한다($APK)"
 [ "$GOT_VNAME" = "$VERSION" ] || die "versionName 이 $GOT_VNAME — 태그 버전 $VERSION 이어야 한다($APK)"
 [ "$CERT" = "$RELEASE_CERT_SHA256" ] || die "서명 SHA-256 이 ${CERT:-없음} — EAS 원격 자격증명($RELEASE_CERT_SHA256)이 아니다. 폰에 덮어 설치할 수 없다($APK)"

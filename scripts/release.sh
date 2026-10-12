@@ -88,7 +88,7 @@ fi
 if [ "$SKIP_APK" = 0 ]; then
   [ -x "$SCRIPT_DIR/release-apk.sh" ] || die "scripts/release-apk.sh 가 없다 — APK 를 빼려면 --skip-apk — 아무것도 머지하지 않음" 2
   APK_PRE="$("$SCRIPT_DIR/release-apk.sh" --preflight 2>&1)" \
-    || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | grep '^✖' | head -1)" 2
+    || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | tail -1)" 2
   APK_PRE="$(echo "$APK_PRE" | grep '^· APK 전제' | head -1 || true)"
 fi
 

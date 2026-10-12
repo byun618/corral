@@ -54,7 +54,11 @@ if [ "$MODE" = "from-tag" ]; then
   FT_WT="$REPO/.claude/worktrees/_apk-$FROM_TAG-$(date +%Y%m%d-%H%M%S)-$$"
   [ ! -e "$FT_WT" ] || die "임시 worktree 자리가 이미 있다: $FT_WT"
   git -C "$REPO" worktree add -q --detach "$FT_WT" "refs/tags/$FROM_TAG" || die "임시 worktree 를 만들지 못했다: $FT_WT"
-  ft_cleanup() { git -C "$REPO" worktree remove --force "$FT_WT" >/dev/null 2>&1 || true; git -C "$REPO" worktree prune; }
+  # 이번에 만든 worktree 만 지운다(전역 prune 은 하지 않는다 — 무관한 worktree 등록을 건드리지 않는다). 실패하면 남은 경로를 알린다
+  ft_cleanup() {
+    git -C "$REPO" worktree remove --force "$FT_WT" >/dev/null 2>&1 \
+      || echo "⚠ 임시 worktree 정리 실패 — 남은 경로: $FT_WT (손으로: git -C '$REPO' worktree remove --force '$FT_WT')" >&2
+  }
   trap ft_cleanup EXIT
   note "태그 $FROM_TAG → 임시 worktree $FT_WT (끝나면 지운다)"
   [ -x "$FT_WT/scripts/release-apk.sh" ] || die "태그 $FROM_TAG 에 scripts/release-apk.sh 가 없다 — 이 태그는 APK 출고 전 버전이다"

@@ -75,6 +75,23 @@ COMMON="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir
   || { echo "✖ git 레포 안에서 실행한다" >&2; exit 1; }
 REPO="$(dirname "$COMMON")"
 cd "$REPO"
+
+# ── 재실행 안내 생성 (LIFE-599) ──
+# 명령은 설명과 다른 줄에 홀로, 인자는 POSIX 단일 따옴표로 인용한다(' → '\''). printf %q 는 macOS bash 3.2 에서
+# 한글 경로를 깨진 UTF-8 바이트로 내보내 화면에서 복사한 명령이 돌지 않았다 — 단일 따옴표 인용은 경로 바이트를 그대로 두므로
+# UTF-8 경로는 UTF-8 그대로 나온다. git -C·절대경로라 어느 cwd 에서 붙여 넣어도 돈다
+shq() { local s="$1" q="'\\''"; printf "'%s'" "${s//\'/$q}"; }
+NL=$'\n'
+# rerun_cmds <태그> → APK_RERUN · DMG_RERUN · DMG_DONE (OUT_DIR 도 정한다)
+rerun_cmds() {
+  local tag="$1" wt
+  OUT_DIR="$REPO/app/dist/release/$tag"
+  APK_RERUN="$(shq "$SCRIPT_DIR/release-apk.sh") --from-tag $(shq "$tag") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
+  wt="$REPO/.claude/worktrees/_dmg-$tag-$(date +%Y%m%d-%H%M%S)"
+  DMG_RERUN="git -C $(shq "$REPO") fetch origin $(shq "refs/tags/$tag:refs/tags/$tag") && git -C $(shq "$REPO") worktree add --detach $(shq "$wt") $(shq "refs/tags/$tag") && $(shq "$wt/scripts/release-dmg.sh") --tag-prefix $(shq "$PREFIX") --out $(shq "$OUT_DIR")"
+  DMG_DONE="git -C $(shq "$REPO") worktree remove --force $(shq "$wt")"
+}
+# ── 재실행 안내 생성 끝 ──
 git fetch -q --tags origin
 git rev-parse --verify -q "refs/remotes/origin/$BASE" >/dev/null || die "원격 base 없음: origin/$BASE"
 
@@ -206,7 +223,10 @@ done
 git fetch -q origin "$BASE"
 # 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
 if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
-  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐다면 dmg·APK 만 만든다: git worktree add --detach .claude/worktrees/_dmg <태그> && .claude/worktrees/_dmg/scripts/release-dmg.sh --tag-prefix $PREFIX --out $REPO/app/dist/release/<태그> — APK 는 scripts/release-apk.sh --from-tag <태그> --tag-prefix $PREFIX"
+  # 버전 커밋 제목 "release: <태그>" 에서 태그를 읽는다 — 안내를 자리표시 없이 그대로 돌 수 있는 명령으로
+  LAST_TAG="$(git log -1 --format=%s "origin/$BASE" | sed -n 's/^release: //p')"
+  rerun_cmds "$LAST_TAG"
+  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋(release: $LAST_TAG) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐는데 dmg·APK 가 없다면 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN"
 fi
 git -C "$TMPWT" checkout -q --detach "origin/$BASE"
 NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
@@ -231,8 +251,10 @@ note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --
 
 # 3-1. GitHub Release — 태그에 릴리즈 노트를 붙인다. 리허설 태그는 prerelease 로 표시
 REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
+rerun_cmds "$TAG"
+REL_RERUN="gh release create $(shq "$TAG") --verify-tag --title $(shq "$TAG") --notes-file $(shq "$NOTES")${REL_FLAG:+ $REL_FLAG}"
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
-  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 노트만 다시: gh release create $TAG --verify-tag --title $TAG --notes-file $NOTES $REL_FLAG — 그 뒤 dmg 는 scripts/release-dmg.sh, APK 는 scripts/release-apk.sh --from-tag $TAG --tag-prefix $PREFIX (app/INSTALL.md 「출고」)" 9
+  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다(app/INSTALL.md 「출고」)${NL}노트만 다시(레포 루트에서):${NL}$REL_RERUN${NL}그 뒤 dmg:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}그 뒤 APK:${NL}$APK_RERUN" 9
 note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
@@ -249,13 +271,7 @@ fi
 # 5. dmg — 그 태그 위 깨끗한 트리(임시 worktree)에서만. 산출물은 본체 app/dist/release/<태그>/ 로 복사(git 무시)
 # 재실행 안내 — 명령은 설명과 다른 줄에 홀로 두고 경로를 셸 인용한다. 어느 cwd 에서 붙여 넣어도 돈다(git -C·절대경로).
 # APK 는 release-apk.sh --from-tag 가 정확한 태그 fetch → 매번 새 임시 worktree → 기존 APK 보존까지 맡는다
-OUT_DIR="$REPO/app/dist/release/$TAG"
-APK_RERUN="$(printf '%q --from-tag %q --tag-prefix %q --out %q' "$SCRIPT_DIR/release-apk.sh" "$TAG" "$PREFIX" "$OUT_DIR")"
-DMG_WT="$REPO/.claude/worktrees/_dmg-$TAG-$(date +%Y%m%d-%H%M%S)"
-DMG_RERUN="$(printf 'git -C %q fetch origin %q && git -C %q worktree add --detach %q %q && %q --tag-prefix %q --out %q' \
-  "$REPO" "refs/tags/$TAG:refs/tags/$TAG" "$REPO" "$DMG_WT" "refs/tags/$TAG" "$DMG_WT/scripts/release-dmg.sh" "$PREFIX" "$OUT_DIR")"
-DMG_DONE="$(printf 'git -C %q worktree remove --force %q' "$REPO" "$DMG_WT")"
-NL=$'\n'
+rerun_cmds "$TAG"
 if [ "$SKIP_BUILD" = 1 ]; then
   note "--skip-build — dmg 는 나중에(그대로 붙여 넣는다):"
   echo "$DMG_RERUN"

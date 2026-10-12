@@ -33,11 +33,12 @@ JDK 17 이상(`JAVA_HOME` 의 java, 없으면 PATH 의 `java -version` — `/usr
 이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. 버전 커밋·태그 push 가 실패하면(exit 7 — main 이 그새 움직임 등) 로컬 태그를 지우고 멈추므로
 같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만들고,
 APK 는 아직이므로 메시지의 「APK 는 아직이다 — dmg 뒤 APK」 명령도 돌린다. APK 가 실패하면(**exit 10**) 머지·태그·dmg 는 끝난 상태다 — 메시지의 「APK 만 다시」 아래 줄을 그대로 붙여 넣는다.
-안내의 명령은 설명과 다른 줄에 홀로 있고 경로가 셸 인용돼 있어 어느 cwd 에서도 돈다:
+안내의 명령은 설명과 다른 줄에 홀로 있고 경로가 단일 따옴표로 인용돼 있어(한글·공백 경로도 화면 그대로 복사해 돈다) 어느 cwd 에서도 돈다.
+exit 9(GitHub Release 실패)·「출고할 것 없음」(태그는 base 끝 `release: <태그>` 커밋에서 읽는다) 안내도 같은 모양으로 노트·dmg·APK 명령을 낸다:
 ```sh
 <본체>/scripts/release-apk.sh --from-tag vX.Y.Z --tag-prefix v --out <본체>/app/dist/release/vX.Y.Z
 ```
-`--from-tag` 는 원격에서 그 태그를 정확히 fetch 하고(로컬 태그가 없어도 된다) 매번 새 임시 worktree(`.claude/worktrees/_apk-<태그>-<시각>-<pid>`)에서 빌드한 뒤 지운다 —
+`--from-tag` 는 원격에서 그 태그를 정확히 fetch 하고(로컬 태그가 없어도 된다) 매번 새 임시 worktree(`.claude/worktrees/_apk-<태그>-<시각>-<pid>`)에서 빌드한 뒤 그 worktree 만 지운다(다른 worktree 등록은 건드리지 않고, 못 지우면 남은 경로를 알린다) —
 앞선 시도가 남긴 worktree 와 겹치지 않는다. 산출물 자리에 이미 APK 가 있으면 지우지 않고 그 아래 `retry-<시각>/` 에 새로 만든다. 같은 명령을 몇 번 다시 돌려도 된다.
 
 **충돌이 나면 (exit 3)** — 앞 PR 이 머지돼 뒤 PR 이 main 과 충돌한다. 작업 worktree 는 PR 을 연 뒤 정리됐으므로(D4) 본체 세션이 다시 만들어 푼다.

@@ -11,7 +11,7 @@ WT=$(cd .. && pwd -P)
 sh scripts/l567/dev-up.sh "$ROOT" "$OUTSRC"
 echo "$(date +%FT%T) $NAME app=$(cat "$ROOT/app.pid") backend=$(cat "$ROOT/backend.pid")" >> /tmp/l567n-pids.txt
 trap 'sh scripts/l567/dev-down.sh "$ROOT"' EXIT
-node scripts/l566/open-claude.mjs "$ROOT/ctl.sock" "$WT"
+node scripts/l567/open-claude.mjs "$ROOT/ctl.sock" "$WT"
 sleep 2
 node scripts/l566/ctl.mjs "$ROOT/ctl.sock" "{\"cmd\":\"type\",\"text\":\"$(printf 'x%.0s' $(seq 400))\"}" > /dev/null
 sleep 2

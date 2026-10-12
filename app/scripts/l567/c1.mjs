@@ -49,7 +49,8 @@ const MEASURE = `${HEAD} const b = term.buffer.active;
     view: { active: view?.classList.contains('active') ?? null, text: view?.textContent ?? null, styleTop: view?.style.top ?? null, rect: r(view), row: rowOf(view) },
     textarea: { rect: r(ta), row: rowOf(ta) },
     cursor: { rect: r(cursor), row: rowOf(cursor), domRowIndex: cursor ? Array.prototype.indexOf.call(rows.children, cursor.closest('.xterm-rows > div')) : null },
-    viewMinusCursorLeft: view && cursor ? +(view.getBoundingClientRect().left - cursor.getBoundingClientRect().left).toFixed(3) : null }`
+    viewMinusCursorLeft: view && cursor ? +(view.getBoundingClientRect().left - cursor.getBoundingClientRect().left).toFixed(3) : null,
+    dom: { first: rows.firstElementChild?.textContent ?? null, last: rows.lastElementChild?.textContent ?? null, count: rows.children.length } }`
 const START = `${HEAD} ta.focus(); ta.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 229, key: 'Process', bubbles: true, cancelable: true }));
   window.__l567.start = ta.value.length; ta.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true })); return true`
 const UPDATE = (ch) => `${HEAD} ta.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 229, key: 'Process', bubbles: true, cancelable: true }));
@@ -78,12 +79,18 @@ try {
   expect(shrunk.cols < before.cols, `xterm 열이 안 줄었다: ${before.cols} → ${shrunk.cols}`)
   await shot(`${name}-after-shrink`)
   step('compose-start', await evalJs(START))
-  step('compose-update', await evalJs(UPDATE('한')))
-  await pause(150)
-  await pump()
-  const m = await evalJs(MEASURE)
-  expect(m.view.active === true && m.view.text === '한', `조합 상자가 안 떴다: ${JSON.stringify(m.view)}`)
-  step('measure-composing', m)
+  // 조합 프레임 셋(ㅎ → 하 → 한) 모두 잰다 — 최종 관문 C2 "모든 기록 프레임"
+  const frames = []
+  for (const ch of ['ㅎ', '하', '한']) {
+    step('compose-update', await evalJs(UPDATE(ch)))
+    await pause(150)
+    await pump()
+    const one = await evalJs(MEASURE)
+    expect(one.view.active === true && one.view.text === ch, `조합 상자가 안 떴다(${ch}): ${JSON.stringify(one.view)}`)
+    step(`measure-composing-${ch}`, one)
+    frames.push({ ch, ...one })
+  }
+  const m = frames[frames.length - 1]
   await shot(`${name}-composing`)
   step('compose-cancel', await evalJs(CANCEL))
   step('resize-window-restore', await call('resize-window restore', { cmd: 'resize-window', width, height }))
@@ -99,6 +106,11 @@ try {
     viewRow: m.view.row, textareaRow: m.textarea.row, cursorRow: m.cursor.row,
     viewRowEqualsCursorMinusDelta: m.view.row !== null && m.cursor.row !== null ? Math.round(m.view.row) === Math.round(m.cursor.row) - (m.buffer.baseY - m.buffer.viewportY) : null,
     viewMinusCursorLeft: m.viewMinusCursorLeft,
+    // 최종 관문 C2·C3 요약(판정은 RESULT 에서 이 값으로 한다)
+    frames: frames.map((f) => ({ ch: f.ch, viewRow: f.view.row, textareaRow: f.textarea.row, cursorRow: f.cursor.row, bufferCursorY: f.buffer.cursorY, baseY: f.buffer.baseY, viewportY: f.buffer.viewportY, viewMinusCursorLeft: f.viewMinusCursorLeft })),
+    allFramesAligned: frames.every((f) => f.view.row === f.cursor.row && f.textarea.row === f.cursor.row && f.cursor.row === f.buffer.cursorY && Math.abs(f.viewMinusCursorLeft) <= 1 && f.buffer.viewportY === f.buffer.baseY),
+    domFirstRow: m.dom.first, domLastRow: m.dom.last,
+    statusLineAtBottom: (m.dom.last ?? '').includes('⏵⏵') && !(m.dom.first ?? '').includes('⏵⏵'),
   }
   step('summary', record.summary)
 } catch (error) {

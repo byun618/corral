@@ -1,15 +1,21 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ExpoConfig } from 'expo/config'
 
 // 변형은 eas.json 프로필의 APP_VARIANT. development = 개발 클라이언트(패키지 `.dev`, 에뮬레이터 개발 접속 허용) ·
 // preview·production = 판정·배포 APK(패키지 `io.github.byun618.corral.mobile`).
 const variant = process.env.APP_VARIANT
 const IS_DEV = variant === 'development'
+// 버전 문자열(versionName) 원천 = 출고 버전 app/package.json (LIFE-599 Q3) — release.sh 가 올리는 그 값이라 출고 태그 APK 는 태그 버전이 된다.
+// versionCode 는 EAS remote(eas.json appVersionSource) 그대로.
+const { version } = JSON.parse(readFileSync(join(__dirname, '..', 'app', 'package.json'), 'utf8'))
+if (typeof version !== 'string') throw new Error('app/package.json 에 version 이 없다')
 
 const config: ExpoConfig = {
   name: IS_DEV ? 'Corral (dev)' : 'Corral',
   slug: 'corral-mobile',
   scheme: IS_DEV ? 'corral-dev' : 'corral',
-  version: '0.1.0',
+  version,
   orientation: 'portrait',
   userInterfaceStyle: 'dark',
   backgroundColor: '#0a0a0a',

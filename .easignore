@@ -2,6 +2,10 @@
 # .easignore 가 있으면 .gitignore 는 쓰이지 않으므로 mobile/.gitignore 의 산출물도 여기서 뺀다.
 /*
 !/mobile
+# 모바일 버전 문자열 원천(LIFE-599 Q3) — mobile/app.config.ts 가 app/package.json 의 version 을 읽는다. app/ 은 이 한 파일만 넣는다
+!/app
+/app/*
+!/app/package.json
 /mobile/node_modules
 /mobile/android
 /mobile/ios

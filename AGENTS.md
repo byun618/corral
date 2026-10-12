@@ -29,7 +29,7 @@ herdr = 바닥 레이어(PTY·영속·에이전트 상태·worktree), 그 위 El
 | 5 코드 리뷰 — 별도 세션, 재리뷰도 새 세션 | 리뷰어 | raw/review/, reviews.md | §5 |
 | 6 판정 → **게이트 ①** | 코디 | verdict.md | §6·§7 |
 | 7 사용자 확인 → **게이트 ②** = PR 생성·정리 | 코디 | handoff-main.md, pr.md | §8 |
-| 8 출고 — PR 머지·태그·릴리즈 노트·dmg | 본체 | GitHub Release | release |
+| 8 출고 — PR 머지·태그·릴리즈 노트·dmg·APK(폰 설치) | 본체 | GitHub Release | release |
 
 - 스킬 파일: .agents/skills/task-start · task-coordinate · release (각 SKILL.md). 역할별 모델·effort·리뷰어 구성은 task-start/defaults.md
 - **네이티브 실행 관문** (워커·리뷰어 공통): 사용자의 네이티브 설치 경로에서 최소 1회 실행한 원자료가 있어야

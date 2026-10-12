@@ -4,8 +4,11 @@
 //   같은 폴더 요청이 이미 날아가 있으면 또 보내지 않는다(E1ⓓ 폭주 방지). 대신 그 사이 변경이 오면 응답을 낡은 것으로 표시하고 끝난 뒤 한 번 더 읽는다(R1-D).
 // · worktree 를 바꿔도 컴포넌트를 다시 마운트하지 않는다(Orca `RS/index.tsx:83-88` — key 리마운트가 IPC 폭주를 냈다). 루트 키로 상태를 갈아 끼울 뿐이고,
 //   돌아오면 펼침·선택·스크롤이 그대로다(E2ⓘ). 패널을 닫아도 이 훅은 App 에 남아 상태를 잃지 않는다(E1ⓔ).
-// · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 변경 push 가 오면 **읽어 둔 폴더만** 다시 읽는다. 다시 열 때·worktree 로 돌아올 때는
-//   닫힌 동안 바뀐 것을 맞추려고 읽어 둔 것을 다시 읽는다(E4ⓑ — Orca #24044). 열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ).
+// · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 열 때·worktree 로 돌아올 때는 구독이 **감시 시작을 확인한 뒤** 루트 + 보이는 펼친 폴더를
+//   **한 번** 읽는다 — 닫힌 동안의 변경(E4ⓑ — Orca #24044)과 감시 시작 전 틈을 같이 맞추면서 전환당 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ·R2-A).
+//   그동안은 캐시를 그대로 보여 준다. 열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ).
+// · 변경 push 는 **보이는** 폴더(루트·조상이 다 펼쳐진 펼친 폴더)만 다시 읽는다. 안 보이는 캐시는 무효 표시만 하고 다시 보일 때 읽는다(R2-C).
+//   펼친 폴더가 읽기에 실패했어도(삭제·일시 오류) 그 경로의 변경이 오면 다시 읽는다(R2-D). 실경로를 아직 모르는 첫 읽기 중에는 어떤 변경이든 끝난 뒤 한 번 더 읽는다(R2-B).
 //   변경 push 의 폴더는 **실경로**(realpath(루트) 기준)다 — 목록마다 main 이 준 실경로(`real`)로 맞춰, 루트 안 디렉터리 링크로 펼친 목록도 대상 변경에 다시 읽힌다(R1-G).
 // · 표시 토글(dotfile·ignored)은 전역 ui-prefs(E2ⓓⓔ — 범위 「전역」, `shared/types.ts` UiPrefs 주석).
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
@@ -16,6 +19,8 @@ export type ExplorerRootState = {
   listings: Map<string, ExplorerEntry[]>
   /** 목록 키(논리 경로) → 실경로(realpath(루트) 기준 상대). 링크 아닌 폴더는 같다. */
   real: Map<string, string>
+  /** 안 보이는 동안 변경이 온 캐시 — 다시 보일 때 새로 읽는다(R2-C). */
+  invalid: Set<string>
   /** 읽기 실패한 폴더 → 사유(가둠 거절 포함). 다시 펼치면 다시 시도한다. */
   errors: Map<string, string>
   expanded: Set<string>
@@ -25,7 +30,7 @@ export type ExplorerRootState = {
   git: GitSnapshot | null
 }
 
-const emptyState = (): ExplorerRootState => ({ listings: new Map(), real: new Map(), errors: new Map(), expanded: new Set(), selected: null, scrollTop: 0, git: null })
+const emptyState = (): ExplorerRootState => ({ listings: new Map(), real: new Map(), invalid: new Set(), errors: new Map(), expanded: new Set(), selected: null, scrollTop: 0, git: null })
 
 /** 보이는 펼친 폴더 — 조상이 전부 펼쳐져 있는 것만(루트 '' 는 따로). */
 export function visibleExpanded(expanded: ReadonlySet<string>): string[] {
@@ -34,6 +39,15 @@ export function visibleExpanded(expanded: ReadonlySet<string>): string[] {
     for (let i = 1; i < parts.length; i += 1) if (!expanded.has(parts.slice(0, i).join('/'))) return false
     return true
   })
+}
+
+/** 지금 보이는 목록인가 — 루트이거나, 펼쳐져 있고 조상이 전부 펼쳐진 폴더. */
+export function isVisibleDir(expanded: ReadonlySet<string>, rel: string): boolean {
+  if (rel === '') return true
+  if (!expanded.has(rel)) return false
+  const parts = rel.split('/')
+  for (let i = 1; i < parts.length; i += 1) if (!expanded.has(parts.slice(0, i).join('/'))) return false
+  return true
 }
 
 export type ExplorerApi = {
@@ -92,20 +106,26 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
       inflight.current.add(flight)
       const again = (): void => {
         inflight.current.delete(flight)
-        if (stale.current.delete(flight)) load(key, rel)
+        if (stale.current.delete(flight)) {
+          // 낡은 응답 — 보이면 한 번 더 읽고, 그새 안 보이게 됐으면 무효 표시만(다시 보일 때 읽는다).
+          const store = storeOf(key)
+          if (isVisibleDir(store.expanded, rel)) load(key, rel)
+          else store.invalid.add(rel)
+        }
         bump()
       }
       void window.corral
         .explorerList({ root: key, rel })
         .then((result) => {
           const store = storeOf(key)
+          store.invalid.delete(rel)
           if (result.ok) {
             store.listings.set(rel, result.entries)
             store.real.set(rel, result.real)
             store.errors.delete(rel)
           } else {
+            // 실경로는 남긴다 — 링크 대상이 다시 생기면 그 실경로 변경으로 다시 읽게(R2-D).
             store.listings.delete(rel)
-            store.real.delete(rel)
             store.errors.set(rel, `${result.code}: ${result.error}`)
           }
         })
@@ -124,6 +144,7 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
         if (rel !== '' && !visible.has(rel)) {
           store.listings.delete(rel)
           store.real.delete(rel)
+          store.invalid.delete(rel)
         }
       }
       load(key, '')
@@ -132,15 +153,23 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     [storeOf, load],
   )
 
-  /** 바뀐 폴더(실경로) → 다시 읽을 목록 키. 읽어 둔 것과 지금 읽는 중인 것 모두(R1-D), 실경로가 같으면 링크로 펼친 것도(R1-G). */
+  /**
+   * 바뀐 폴더(실경로) → 다시 읽을 목록 키. 후보 = 읽어 둔 것 · 읽는 중인 것(R1-D) · 보이는 펼친 폴더(실패한 것 포함 — R2-D).
+   * 맞춤 = 논리 경로 또는 실경로(R1-G). 실경로를 아직 모르는 읽는 중 요청은 무엇이 바뀌든 낡은 것으로 본다(R2-B).
+   * 보이는 것만 읽고, 안 보이는 캐시는 무효 표시만 한다(R2-C).
+   */
   const reloadChanged = useCallback(
     (key: string, dirs: readonly string[]) => {
       const store = storeOf(key)
       const changed = new Set(dirs)
       const prefix = `${key}\0`
-      const reading = [...inflight.current].filter((flight) => flight.startsWith(prefix)).map((flight) => flight.slice(prefix.length))
-      for (const rel of new Set([...store.listings.keys(), ...reading])) {
-        if (changed.has(rel) || changed.has(store.real.get(rel) ?? rel)) load(key, rel)
+      const reading = new Set([...inflight.current].filter((flight) => flight.startsWith(prefix)).map((flight) => flight.slice(prefix.length)))
+      for (const rel of new Set(['', ...store.listings.keys(), ...reading, ...visibleExpanded(store.expanded)])) {
+        const real = store.real.get(rel)
+        const hit = changed.has(rel) || (real !== undefined && changed.has(real)) || (real === undefined && reading.has(rel))
+        if (!hit) continue
+        if (reading.has(rel) || isVisibleDir(store.expanded, rel)) load(key, rel)
+        else if (store.listings.has(rel)) store.invalid.add(rel)
       }
     },
     [storeOf, load],
@@ -168,22 +197,27 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     [reloadChanged, reloadLoaded],
   )
 
-  // 열림·활성 루트가 바뀔 때 — 처음이면 루트를 읽고, 이미 읽은 적이 있으면 닫힌 동안의 변경을 맞추려고 다시 읽는다. 감시는 이 루트 하나만.
+  // 열림·활성 루트가 바뀔 때 — 감시를 걸고, 감시 시작이 확인되면(또는 구독이 실패·시간 초과로 끝나면) 루트 + 보이는 펼친 폴더를 한 번 읽는다(R2-A).
+  // 그 전까지는 캐시를 보여 준다. 감시는 이 루트 하나만.
   useEffect(() => {
     if (!active || root === null) return
-    const store = storeOf(root)
-    if (store.listings.size === 0) load(root, '')
-    else reloadLoaded(root)
-    void window.corral.explorerWatch({ root, on: true })
+    let cancelled = false
+    void window.corral
+      .explorerWatch({ root, on: true })
+      .catch(() => null)
+      .then(() => {
+        if (!cancelled) reloadLoaded(root)
+      })
     const timer = window.setInterval(() => {
       reloadLoaded(root)
       window.corral.explorerRefreshGit(root)
     }, EXPLORER_SAFETY_NET_MS)
     return () => {
+      cancelled = true
       window.clearInterval(timer)
       void window.corral.explorerWatch({ root, on: false })
     }
-  }, [active, root, load, reloadLoaded, storeOf])
+  }, [active, root, reloadLoaded])
 
   const withRoot = useCallback(
     (fn: (key: string, store: ExplorerRootState) => void) => {
@@ -198,8 +232,8 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     (rel: string) =>
       withRoot((key, store) => {
         store.expanded.add(rel)
-        // 이 폴더와, 다시 보이게 된 펼침 기억 하위 폴더 중 목록이 없는 것.
-        for (const dir of visibleExpanded(store.expanded)) if (!store.listings.has(dir)) load(key, dir)
+        // 이 폴더와, 다시 보이게 된 펼침 기억 하위 폴더 중 목록이 없거나 안 보이는 동안 무효가 된 것(R2-C).
+        for (const dir of visibleExpanded(store.expanded)) if (!store.listings.has(dir) || store.invalid.has(dir)) load(key, dir)
       }),
     [withRoot, load],
   )

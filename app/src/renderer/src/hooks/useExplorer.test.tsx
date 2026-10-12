@@ -23,8 +23,9 @@ let fsView = new Map<string, { real: string; entries: ExplorerEntry[] }>()
 let hold = new Set<string>()
 let held: (() => void)[] = []
 
+let probeRoot = '/fixture'
 function Probe(): null {
-  api = useExplorer({ root: '/fixture', active: true })
+  api = useExplorer({ root: probeRoot, active: true })
   return null
 }
 const current = (): ExplorerApi => {
@@ -38,6 +39,7 @@ const push = (event: ExplorerPush): void => {
 const names = (rel: string): string[] | undefined => current().state?.listings.get(rel)?.map((entry) => entry.name)
 
 beforeEach(async () => {
+  probeRoot = '/fixture'
   calls = []
   hold = new Set()
   held = []
@@ -149,5 +151,84 @@ describe('보이는 펼침만 읽는다 (리뷰어 관찰 — 조상을 접은 �
   })
   it('visibleExpanded — 조상이 전부 펼쳐진 것만', () => {
     expect(visibleExpanded(new Set(['a', 'a/b', 'c/d', 'a/b/c']))).toEqual(['a', 'a/b', 'a/b/c'])
+  })
+})
+
+describe('R2-B 링크 첫 응답 전 변경', () => {
+  it('alias(→ src) 첫 읽기 중 실경로 src 변경 → 응답 뒤 한 번 더 읽어 새 항목이 보인다', async () => {
+    hold.add('alias')
+    await act(async () => current().expand('alias'))
+    grow('alias', 'during.txt')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['src/during.txt', 'src'] }))
+    await releaseAll()
+    expect(calls.filter((rel) => rel === 'alias')).toHaveLength(2)
+    expect(names('alias')).toEqual(['before.txt', 'during.txt'])
+  })
+})
+
+describe('R2-C 변경도 보이는 폴더만 — 안 보이는 캐시는 무효 표시, 다시 펼칠 때 읽는다', () => {
+  it('조상을 접은 뒤 하위 변경은 읽지 않고, 다시 펼치면 최신을 읽는다', async () => {
+    fsView.set('dir', { real: 'dir', entries: [dir('sub')] })
+    fsView.set('dir/sub', { real: 'dir/sub', entries: [file('leaf')] })
+    await act(async () => current().expand('dir'))
+    await act(async () => current().expand('dir/sub'))
+    await act(async () => current().collapse('dir'))
+    calls = []
+    fsView.set('dir/sub', { real: 'dir/sub', entries: [file('leaf'), file('hidden-change.txt')] })
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir/sub/hidden-change.txt', 'dir/sub'] }))
+    expect(calls).toEqual([])
+    expect(current().state?.invalid.has('dir/sub')).toBe(true)
+    await act(async () => current().expand('dir'))
+    expect(calls).toEqual(['dir/sub'])
+    expect(names('dir/sub')).toEqual(['leaf', 'hidden-change.txt'])
+    expect(current().state?.invalid.has('dir/sub')).toBe(false)
+  })
+})
+
+describe('R2-D 펼친 폴더 삭제 → 재생성', () => {
+  it('not_found 뒤 같은 경로가 다시 생기면 changed 로 복구한다', async () => {
+    await act(async () => current().expand('dir'))
+    fsView.delete('dir')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir', ''] }))
+    expect(current().state?.errors.get('dir')).toMatch(/^not_found/)
+    fsView.set('dir', { real: 'dir', entries: [file('recreated.txt')] })
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir', ''] }))
+    expect(calls.sort()).toEqual(['', 'dir'])
+    expect(names('dir')).toEqual(['recreated.txt'])
+    expect(current().state?.errors.has('dir')).toBe(false)
+  })
+  it('일시적 읽기 오류 뒤에도 그 폴더 변경으로 회복한다', async () => {
+    await act(async () => current().expand('dir'))
+    const list = Reflect.get(window.corral, 'explorerList')
+    Reflect.set(window.corral, 'explorerList', (input: { root: string; rel: string }): Promise<ExplorerListResult> =>
+      input.rel === 'dir' ? Promise.resolve({ ok: false, dir: 'dir', code: 'io_error', error: 'EIO' }) : list(input))
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir'] }))
+    expect(current().state?.errors.get('dir')).toMatch(/^io_error/)
+    Reflect.set(window.corral, 'explorerList', list)
+    grow('dir', 'after.txt')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['dir'] }))
+    expect(names('dir')).toEqual(['before.txt', 'after.txt'])
+  })
+})
+
+describe('R2-A 감시 시작 확인 뒤 한 번만 읽는다 (E1ⓓ)', () => {
+  it('감시 구독이 끝나기 전에는 읽지 않고, 끝나면 루트 + 펼친 폴더를 한 번씩 — 전환마다 펼친 폴더 수 + 1', async () => {
+    await act(async () => current().expand('dir'))
+    let finishWatch: (() => void)[] = []
+    Reflect.set(window.corral, 'explorerWatch', ({ on }: { on: boolean }) => (on ? new Promise((resolve) => finishWatch.push(() => resolve({ ok: true }))) : Promise.resolve({ ok: true })))
+    for (let i = 0; i < 4; i += 1) {
+      probeRoot = i % 2 === 0 ? '/other' : '/fixture'
+      calls = []
+      finishWatch = []
+      await act(async () => root.render(createElement(Probe)))
+      expect(calls).toEqual([])
+      await act(async () => {
+        for (const resolve of finishWatch) resolve()
+      })
+      const expanded = current().state?.expanded.size ?? 0
+      expect(calls.length).toBeLessThanOrEqual(expanded + 1)
+      expect(calls.length).toBe(probeRoot === '/fixture' ? 2 : 1)
+    }
   })
 })

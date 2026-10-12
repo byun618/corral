@@ -11,7 +11,11 @@
 // · 감시 프로세스가 죽으면(E4ⓖ) 로그를 남기고 1초 뒤 다시 띄워 구독을 되살린다 — 60초 안 3번까지. 넘으면 멈추고 렌더러 안전망만 남는다.
 //   재기동 타이머는 허브가 들고 있다가 구독이 0 이 되거나 dispose 면 취소하고, 실행 시점에도 구독 수를 다시 본다(R1-C). 일부러 끈 프로세스의
 //   exit 는 그 child 를 보고 가려 장애로 세지 않는다(실제 utilityProcess 의 exit 는 kill 뒤 비동기로 온다).
-// · 감시 프로세스가 `watching`(그 루트 감시 시작) 을 알리면 렌더러에 overflow 를 한 번 민다 — 구독 요청과 감시 시작 사이의 변경을 놓치지 않게.
+// · 구독(`subscribe`)은 감시 프로세스가 그 루트의 `watching`(감시 시작)을 알린 **뒤에** 끝난다(늦으면 1 s 에서 그냥 끝냄). 렌더러는 그걸 기다렸다가
+//   목록을 **한 번** 읽는다 — 그 읽기는 감시가 붙은 뒤라 사이 변경을 놓치지 않고, 전환마다 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ·리뷰 r2 R2-A).
+//   장애 재기동으로 감시를 되살린 경우에는 기다리는 구독이 없으니 `watching` 에 overflow 를 한 번 민다(끊긴 동안의 변경).
+// · 구독이 0 이 되면 감시 프로세스를 300 ms 뒤에 끈다 — worktree 전환(해제 → 바로 구독)이 프로세스를 매번 새로 띄우지 않게. 그 사이 새 구독이 오면 그대로 쓴다.
+//   ref 폴링·재기동 예약은 0 이 되는 즉시 멈춘다. dispose 는 바로 끈다.
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
@@ -38,6 +42,10 @@ export type ExplorerHubDeps = {
 
 const GIT_DEBOUNCE_MS = 300
 const GIT_MIN_INTERVAL_MS = 1_000
+/** 구독이 감시 시작 알림을 기다리는 최대 시간 — 넘으면 그냥 끝낸다(렌더러는 읽고, 안전망이 남는다). */
+export const WATCH_READY_TIMEOUT_MS = 1_000
+/** 구독 0 뒤 감시 프로세스를 끄기까지의 유예. */
+export const IDLE_STOP_MS = 300
 /** git 재조회 최대 대기 — 첫 요청부터 이 안에는 돈다(뭉침이 계속 밀려도). */
 export const GIT_MAX_WAIT_MS = 1_000
 const INDEX_POLL_MS = 1_000
@@ -67,6 +75,9 @@ export class ExplorerHub {
   private readonly pending = new Map<string, { generation: number; promise: Promise<SubscribeResult> }>()
   private generation = 0
   private restartTimer: NodeJS.Timeout | null = null
+  private idleTimer: NodeJS.Timeout | null = null
+  /** 루트 → 감시 시작 알림을 기다리는 구독들. */
+  private readonly watchWaiters = new Map<string, (() => void)[]>()
   private restarts: number[] = []
   private stopped = false
   private indexTimer: NodeJS.Timeout | null = null
@@ -84,6 +95,7 @@ export class ExplorerHub {
   }
 
   private ensureChild(): WatcherChild | null {
+    this.clearIdle()
     if (this.child !== null) return this.child
     if (this.stopped) return null
     const child = this.deps.fork()
@@ -119,8 +131,9 @@ export class ExplorerHub {
       return
     }
     if (message.type === 'watching' && 'id' in message && typeof message.id === 'string') {
-      // 감시가 실제로 붙었다 — 구독 요청·재기동부터 여기까지 사이의 변경은 이벤트로 안 온다. 읽어 둔 것을 한 번 다시 읽게 한다(수정 r1 격리 실행에서 발견:
-      // 패널을 다시 열자마자 만든 파일이 안전망 10 s 까지 안 보였다).
+      // 감시가 실제로 붙었다. 기다리는 구독이 있으면 그 구독을 끝낸다 — 렌더러가 그 뒤에 한 번 읽는다(R2-A).
+      // 없으면(장애 재기동으로 되살림) 끊긴 동안의 변경을 맞추려고 읽어 둔 것을 한 번 다시 읽게 한다(수정 r1 격리 실행에서 발견한 틈).
+      if (this.resolveWaiters(message.id)) return
       const sub = this.subs.get(message.id)
       if (sub === undefined) return
       this.counters.pushedOverflow += 1
@@ -146,6 +159,8 @@ export class ExplorerHub {
     this.child = null
     this.childPid = null
     this.counters.childExits += 1
+    // 기다리던 구독은 끝낸다 — 재기동이 감시를 되살리면 그때 overflow 로 맞춘다.
+    this.resolveAllWaiters()
     this.deps.log('explorer.watch.exit', { pid, code: typeof code === 'number' ? code : String(code), subscriptions: this.subs.size, disposing: this.stopped })
     if (this.stopped || this.subs.size === 0) return
     const now = this.now()
@@ -162,6 +177,42 @@ export class ExplorerHub {
       if (this.ensureChild() === null) return
       this.deps.log('explorer.watch.restarted', { pid: this.childPid, subscriptions: this.subs.size })
     }, RESTART_DELAY_MS)
+  }
+
+  private clearIdle(): void {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+
+  /** 그 루트의 감시 시작을 기다리던 구독을 끝낸다. 기다리던 게 있었으면 true. */
+  private resolveWaiters(root: string): boolean {
+    const waiters = this.watchWaiters.get(root)
+    if (waiters === undefined) return false
+    this.watchWaiters.delete(root)
+    for (const resolve of waiters) resolve()
+    return true
+  }
+
+  private resolveAllWaiters(): void {
+    for (const root of [...this.watchWaiters.keys()]) this.resolveWaiters(root)
+  }
+
+  /** 감시 시작 알림을 기다린다 — 늦으면 `WATCH_READY_TIMEOUT_MS` 에서 끝. 알림보다 먼저 걸어 둔다. */
+  private watchReady(root: string): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const left = (this.watchWaiters.get(root) ?? []).filter((waiter) => waiter !== done)
+        if (left.length > 0) this.watchWaiters.set(root, left)
+        else this.watchWaiters.delete(root)
+        this.deps.log('explorer.watch.ready_timeout', { root, ms: WATCH_READY_TIMEOUT_MS })
+        resolve()
+      }, WATCH_READY_TIMEOUT_MS)
+      const done = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      this.watchWaiters.set(root, [...(this.watchWaiters.get(root) ?? []), done])
+    })
   }
 
   private clearRestart(): void {
@@ -213,11 +264,16 @@ export class ExplorerHub {
     }
     const sub: Subscription = { root, realRoot: confined.realRoot, gitDir, indexStamp: indexStamp(gitDir), gitTimer: null, gitLastAt: 0, gitFirstAt: null, gitRunning: false, gitAgain: false }
     this.subs.set(root, sub)
+    const ready = this.watchReady(root)
     if (this.child === null) this.ensureChild()
-    else this.child.postMessage({ type: 'watch', id: root, path: confined.realRoot })
+    else {
+      this.clearIdle()
+      this.child.postMessage({ type: 'watch', id: root, path: confined.realRoot })
+    }
     this.deps.log('explorer.watch.subscribe', { root, subscriptions: this.subs.size, gitDir })
     this.ensureIndexPoll()
     this.scheduleGit(sub, 0)
+    await ready
     return { ok: true }
   }
 
@@ -229,8 +285,18 @@ export class ExplorerHub {
     if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.delete(root)
     this.child?.postMessage({ type: 'unwatch', id: root })
+    this.resolveWaiters(root)
     this.deps.log('explorer.watch.unsubscribe', { root, subscriptions: this.subs.size })
-    if (this.subs.size === 0) this.stopChild('idle')
+    if (this.subs.size === 0) {
+      if (this.indexTimer !== null) clearInterval(this.indexTimer)
+      this.indexTimer = null
+      this.clearRestart()
+      this.clearIdle()
+      this.idleTimer = setTimeout(() => {
+        this.idleTimer = null
+        if (this.subs.size === 0) this.stopChild('idle')
+      }, IDLE_STOP_MS)
+    }
   }
 
   /** 열린 worktree 가 아닌 구독을 푼다 — 트리가 바뀔 때마다 부른다. */
@@ -257,6 +323,8 @@ export class ExplorerHub {
     this.stopped = true
     this.wanted.clear()
     this.clearRestart()
+    this.clearIdle()
+    this.resolveAllWaiters()
     for (const sub of this.subs.values()) if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.clear()
     if (this.indexTimer !== null) clearInterval(this.indexTimer)

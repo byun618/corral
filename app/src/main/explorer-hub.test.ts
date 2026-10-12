@@ -5,9 +5,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExplorerHub, GIT_MAX_WAIT_MS, indexStamp, type WatcherChild } from './explorer-hub.js'
+import { ExplorerHub, GIT_MAX_WAIT_MS, IDLE_STOP_MS, indexStamp, WATCH_READY_TIMEOUT_MS, type WatcherChild } from './explorer-hub.js'
 import { RESTART_DELAY_MS, RESTART_MAX } from './explorer-watch-batch.js'
 import type { ExplorerPush } from '../shared/explorer.js'
+
+/** 가짜 감시 프로세스가 `watch` 를 받으면 실제처럼 `watching` 을 비동기로 알리는가(R2-A 시험에서 끈다). */
+let autoAck = true
 
 type FakeChild = WatcherChild & { posted: unknown[]; killed: boolean; emit: (event: 'message' | 'exit', value: unknown) => void }
 
@@ -17,7 +20,15 @@ function fakeChild(pid: number): FakeChild {
     pid,
     posted: [],
     killed: false,
-    postMessage: (message) => void child.posted.push(message),
+    postMessage: (message) => {
+      child.posted.push(message)
+      if (autoAck && typeof message === 'object' && message !== null && 'type' in message && message.type === 'watch' && 'id' in message) {
+        const id = message.id
+        setTimeout(() => {
+          for (const listener of listeners.message) listener({ type: 'watching', id, count: 1 })
+        }, 1)
+      }
+    },
     on: (event, listener) => void listeners[event].push(listener),
     kill: () => {
       child.killed = true
@@ -55,6 +66,7 @@ let roots: string[] = []
 let hub: ExplorerHub
 
 beforeEach(() => {
+  autoAck = true
   children = []
   pushed = []
   roots = [rootA, rootB]
@@ -91,6 +103,9 @@ describe('E4ⓕ 구독 수명', () => {
     hub.unsubscribe(rootA)
     expect(children[0]?.killed).toBe(false)
     hub.unsubscribe(rootB)
+    // 구독 0 → 유예(IDLE_STOP_MS) 뒤에 끈다.
+    expect(children[0]?.killed).toBe(false)
+    await sleep(IDLE_STOP_MS + 50)
     expect(children[0]?.killed).toBe(true)
     expect(hub.status()).toMatchObject({ childPid: null, subscriptions: [] })
   })
@@ -99,6 +114,7 @@ describe('E4ⓕ 구독 수명', () => {
     roots = [rootB]
     hub.prune()
     expect(hub.status().subscriptions).toEqual([])
+    await sleep(IDLE_STOP_MS + 50)
     expect(children[0]?.killed).toBe(true)
   })
   it('배치 → 렌더러 push(changed·overflow), 모르는 구독 id 는 버린다', async () => {
@@ -183,6 +199,44 @@ describe('감시 시작 알림 → 한 번 다시 읽기 (수정 r1 격리 실�
   })
 })
 
+describe('R2-A 구독은 감시 시작 확인 뒤 끝난다 · 전환은 프로세스를 다시 안 띄운다', () => {
+  it('watching 알림 전에는 구독이 안 끝나고, 알림이 오면 끝난다 — 이때 overflow 는 안 민다(렌더러가 그 뒤 한 번 읽는다)', async () => {
+    autoAck = false
+    let done = false
+    const pending = hub.subscribe(rootA).then((result) => {
+      done = true
+      return result
+    })
+    await sleep(50)
+    expect(done).toBe(false)
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    expect(await pending).toEqual({ ok: true })
+    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([])
+  })
+  it('알림이 안 오면 시간 초과로 끝난다(렌더러는 읽고 안전망이 남는다)', async () => {
+    autoAck = false
+    const started = Date.now()
+    expect(await hub.subscribe(rootA)).toEqual({ ok: true })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(WATCH_READY_TIMEOUT_MS - 20)
+  })
+  it('해제 → 바로 다른 루트 구독(전환)은 같은 프로세스를 쓴다', async () => {
+    await hub.subscribe(rootA)
+    hub.unsubscribe(rootA)
+    await hub.subscribe(rootB)
+    await sleep(IDLE_STOP_MS + 50)
+    expect(children).toHaveLength(1)
+    expect(children[0]?.killed).toBe(false)
+    expect(hub.status()).toMatchObject({ subscriptions: [rootB], counters: { childStarts: 1 } })
+  })
+  it('장애 재기동으로 되살린 감시의 watching 은 overflow 를 민다(끊긴 동안 변경)', async () => {
+    await hub.subscribe(rootA)
+    children[0]?.emit('exit', 1)
+    await sleep(RESTART_DELAY_MS + 100)
+    expect(children).toHaveLength(2)
+    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([{ kind: 'overflow', root: rootA }])
+  })
+})
+
 describe('R1-C 재기동 타이머 소유·비동기 exit', () => {
   it('죽은 뒤 재기동 대기 중 마지막 구독 해제 → 재기동하지 않는다', async () => {
     await hub.subscribe(rootA)
@@ -195,7 +249,7 @@ describe('R1-C 재기동 타이머 소유·비동기 exit', () => {
   it('일부러 끈 프로세스의 늦은 exit 는 장애로 안 센다 — 그 사이 새 구독이 띄운 프로세스도 그대로', async () => {
     await hub.subscribe(rootA)
     hub.unsubscribe(rootA)
-    expect(children[0]?.killed).toBe(true)
+    while (children[0]?.killed !== true) await sleep(5)
     await hub.subscribe(rootB)
     expect(children).toHaveLength(2)
     await sleep(50)

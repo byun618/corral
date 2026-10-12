@@ -289,7 +289,7 @@
 .modal-ghostty-import { width: var(--w-modal-create); max-height: calc(100vh - 80px); display: flex; flex-direction: column; }
 .modal-ghostty-import .modal-body { overflow-y: auto; }
 .ghostty-import-heading { margin: 0 0 4px; font-size: 11.5px; font-weight: 600; color: var(--fg); }
-.ghostty-import-done { color: var(--accent); }
+.ghostty-import-done { color: var(--st-ok); }
 .ghostty-import-error { margin: 0; font-size: 11.5px; color: var(--st-error); overflow-wrap: anywhere; }
 .ghostty-import-paths { overflow-wrap: anywhere; }
 .ghostty-import-diff, .ghostty-import-unsupported { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
@@ -318,7 +318,7 @@
 
 /* --- 원격 호스트 › Mobile (LIFE-577) --- */
 .mobile-check-mark { display: inline-block; width: 14px; text-align: center; font-weight: 600; }
-.mobile-check-mark.is-ok { color: var(--accent); }
+.mobile-check-mark.is-ok { color: var(--st-ok); }
 .mobile-check-mark.is-fail { color: var(--st-error); }
 .mobile-check-mark.is-unknown { color: var(--fg-muted); }
 .mobile-address, .mobile-code, .mobile-payload { font-family: var(--font-mono); font-size: 12px; color: var(--fg); user-select: text; overflow-wrap: anywhere; }
@@ -329,5 +329,5 @@
 .mobile-pairing-text { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; min-width: 0; }
 .mobile-pairing-text dt { color: var(--fg-muted); }
 .mobile-pairing-text dd { margin: 0; min-width: 0; user-select: text; }
-.mobile-connected { color: var(--accent); font-size: 10px; }
+.mobile-connected { color: var(--st-ok); font-size: 10px; }
 .mobile-empty { padding: 8px 0; }

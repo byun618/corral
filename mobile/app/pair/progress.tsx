@@ -128,8 +128,8 @@ export default function PairProgress() {
         <Screen>
           <View className="flex-1 justify-between px-padx pb-6 pt-16">
             <View className="items-center gap-4">
-              <View className="h-16 w-16 items-center justify-center rounded-full border-2 border-accent">
-                <Text className="text-[28px] text-accent">✓</Text>
+              <View className="h-16 w-16 items-center justify-center rounded-full border-2 border-st-ok">
+                <Text className="text-[28px] text-st-ok">✓</Text>
               </View>
               {/* 등록 성공과 지금 연결 상태를 나눠 보인다 — 「연결했습니다」 는 연결됨 위에서만(R3-A2). */}
               <Text className="text-center text-screen font-semibold text-fg">

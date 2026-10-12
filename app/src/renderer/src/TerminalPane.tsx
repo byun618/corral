@@ -30,7 +30,7 @@ import { registerTerminalLinks, terminalLinkHandler } from './terminal-links.js'
 import { applyTerminalAppearance, terminalAppearanceOptions, type TerminalAppearanceOptions } from './terminal-appearance.js'
 import { attachImeComposition } from './ime-composition.js'
 import { terminalKeyHandler } from './terminal-keys.js'
-import { writeFrame } from './term-resize.js'
+import { NO_REFLOW_WINDOWS_PTY, writeFrame } from './term-resize.js'
 import {
   CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS,
   clipboardImagePayload,
@@ -189,6 +189,8 @@ export function TerminalPane({
 
     const term = new Terminal({
       scrollback: 0,
+      // 열 축소 reflow 를 끈다 — 뷰포트가 바닥에서 떨어지는 원인(LIFE-567 fix2, term-resize.ts).
+      windowsPty: NO_REFLOW_WINDOWS_PTY,
       // 글꼴·테마·커서·대비 — 사용자 설정(LIFE-512). 셀 측정(`useCellMetrics`)과 같은 `terminalFontOptions` 를 거친다(원천 하나, K2ⓑ).
       // 배경은 이제 앱 표면 토큰이 아니라 테마 배경이다 — pane 상자도 같은 값을 칠한다(`--term-bg`, U5).
       ...appearanceRef.current,

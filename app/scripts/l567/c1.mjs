@@ -38,7 +38,7 @@ const HEAD = `const host = document.querySelector('.term-pane.is-selected [data-
 const STATE = `${HEAD} const b = term.buffer.active;
   return { baseY: b.baseY, viewportY: b.viewportY, cursorX: b.cursorX, cursorY: b.cursorY, length: b.length, rows: term.rows, cols: term.cols,
     window: { w: window.outerWidth, h: window.outerHeight }, lastLine: (b.getLine(b.baseY + term.rows - 1)?.translateToString(true) ?? null),
-    firstVisible: b.getLine(b.viewportY)?.translateToString(true) ?? null }`
+    firstVisible: b.getLine(b.viewportY)?.translateToString(true) ?? null, windowsPty: term.options.windowsPty ?? null }`
 const MEASURE = `${HEAD} const b = term.buffer.active;
   const r = (el) => { if (!el) return null; const x = el.getBoundingClientRect(); return { top: x.top, left: x.left, width: x.width, height: x.height } };
   const screen = xt.querySelector('.xterm-screen').getBoundingClientRect(); const rows = xt.querySelector('.xterm-rows');

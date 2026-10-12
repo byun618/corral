@@ -17,6 +17,7 @@ var __copyProps = (to, from, except, desc) => {
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var term_resize_exports = {};
 __export(term_resize_exports, {
+  NO_REFLOW_WINDOWS_PTY: () => NO_REFLOW_WINDOWS_PTY,
   SYNC_OUTPUT_BEGIN: () => SYNC_OUTPUT_BEGIN,
   SYNC_OUTPUT_END: () => SYNC_OUTPUT_END,
   resizeToFrame: () => resizeToFrame,
@@ -24,6 +25,7 @@ __export(term_resize_exports, {
   writeFrame: () => writeFrame
 });
 module.exports = __toCommonJS(term_resize_exports);
+const NO_REFLOW_WINDOWS_PTY = { backend: "winpty", buildNumber: 1 };
 const SYNC_OUTPUT_BEGIN = "\x1B[?2026h";
 const SYNC_OUTPUT_END = "\x1B[?2026l";
 function viewportOffBottom(term) {
@@ -44,12 +46,17 @@ function writeFrame(term, input) {
   }
   term.write(SYNC_OUTPUT_BEGIN, () => {
     if (!input.alive()) return;
-    resizeToFrame(term, input);
+    try {
+      resizeToFrame(term, input);
+    } catch (error) {
+      console.warn("[term] resize \uC2E4\uD328", error);
+    }
     term.write(input.data + SYNC_OUTPUT_END, input.done);
   });
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  NO_REFLOW_WINDOWS_PTY,
   SYNC_OUTPUT_BEGIN,
   SYNC_OUTPUT_END,
   resizeToFrame,

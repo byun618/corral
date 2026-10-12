@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import {
+  NO_REFLOW_WINDOWS_PTY,
   resizeToFrame,
   SYNC_OUTPUT_BEGIN,
   SYNC_OUTPUT_END,
@@ -176,5 +177,80 @@ describe('writeFrame', () => {
     expect(term.buffer.active.viewportY).toBe(0)
     expect(visibleRows(term)).toEqual(Array.from({ length: 24 }, (_, y) => rowText(next, y)))
     term.dispose()
+  })
+})
+
+describe('NO_REFLOW_WINDOWS_PTY (fix2 — reflow 예방)', () => {
+  const setupNoReflow = async (): Promise<Terminal> => {
+    const term = new Terminal({ scrollback: 0, windowsPty: NO_REFLOW_WINDOWS_PTY, cols: 80, rows: 24, allowProposedApi: true })
+    await write(term, frame({ cols: 80, rows: 24, cursorY: 20, full: FULL }))
+    return term
+  }
+
+  it('양성 대조와 같은 장면에서 term.resize 만 해도 baseY 가 0 이고 커서가 밀리지 않는다', async () => {
+    const term = await setupNoReflow()
+    term.resize(79, 24)
+    expect(term.buffer.active.baseY).toBe(0)
+    expect(term.buffer.active.viewportY).toBe(0)
+    expect(term.buffer.active.cursorY).toBe(20)
+    expect(term.buffer.active.length).toBe(24)
+    term.dispose()
+  })
+
+  it('큰 축소·행 변경을 섞어도 resize 직후에 이미 바닥 정합이고 복구(clear)가 한 번도 필요 없다', async () => {
+    const term = await setupNoReflow()
+    const clear = vi.spyOn(term, 'clear')
+    const sizes = [
+      { cols: 40, rows: 24 },
+      { cols: 90, rows: 30 },
+      { cols: 30, rows: 18 },
+      { cols: 30, rows: 24 },
+      { cols: 120, rows: 24 },
+      { cols: 20, rows: 12 },
+    ]
+    for (const { cols, rows } of sizes) {
+      expect(resizeToFrame(term, { cols, rows })).toBe(false)
+      expect(term.buffer.active.baseY).toBe(0)
+      const full = Array.from({ length: rows }, (_, y) => y).filter((y) => y < 6 || y >= rows - 3)
+      await write(term, frame({ cols, rows, cursorY: rows - 4, full }))
+      expect(visibleRows(term)).toEqual(Array.from({ length: rows }, (_, y) => rowText({ cols, full }, y)))
+    }
+    expect(clear).not.toHaveBeenCalled()
+    term.dispose()
+  })
+
+  it('Windows 줄바꿈 추론은 꺼져 있다 — 꽉 찬 행 뒤 CUP 로 쓴 행도 isWrapped 가 아니다(복사 때 줄이 이어붙지 않는다)', async () => {
+    const term = await setupNoReflow()
+    for (let y = 0; y < 24; y++) expect(term.buffer.active.getLine(y)?.isWrapped).toBe(false)
+    term.dispose()
+  })
+})
+
+describe('writeFrame 예외', () => {
+  it('resize 가 던져도 프레임·모드 해제·done 이 간다', () => {
+    const calls: string[] = []
+    const callbacks: Array<() => void> = []
+    const term: FrameTerminal = {
+      cols: 80,
+      rows: 24,
+      resize: () => {
+        throw new Error('boom')
+      },
+      clear: () => calls.push('clear'),
+      buffer: { active: { baseY: 0, viewportY: 0 } },
+      write: (data, callback) => {
+        calls.push(`write ${JSON.stringify(data)}`)
+        if (callback) callbacks.push(callback)
+      },
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const done = vi.fn()
+    writeFrame(term, { cols: 79, rows: 24, data: 'F', alive: () => true, done })
+    callbacks[0]?.()
+    expect(calls).toEqual([`write ${JSON.stringify(SYNC_OUTPUT_BEGIN)}`, `write ${JSON.stringify(`F${SYNC_OUTPUT_END}`)}`])
+    callbacks[1]?.()
+    expect(done).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
   })
 })

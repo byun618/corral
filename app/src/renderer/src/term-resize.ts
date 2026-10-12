@@ -22,7 +22,8 @@
 // backend 'conpty' 이고 21376 미만일 때만 켜지므로 꺼진 채다. 나머지 효과는 행을 늘릴 때 위로 스크롤하지 않고 빈 줄을 붙이는 것 하나인데,
 // scrollback 0 이라 ybase 가 늘 0 인 이 뷰포트에서는 원래 분기도 빈 줄을 붙인다 — 같다(xterm 6.0.0 소스에서 windowsPty 를 읽는 곳은 이 셋뿐).
 // reflow 가 꺼지면 열을 줄여도 줄 끝 칸이 잘리지 않고 남지만, 다음 프레임의 ED2(`line.fill`)가 줄 전체를 지운다 — alternate 버퍼가 원래 이렇게 돈다.
-// clear() 복구와 동기 출력은 다른 경로로 baseY 가 어긋날 때의 방어선으로 남긴다(이 경로에서는 더 발동하지 않는다).
+// clear() 복구와 동기 출력은 다른 경로로 baseY 가 어긋날 때의 방어선으로 남긴다(이 경로에서는 더 발동하지 않는다). 방어선이 발동하면
+// 바닥 정합은 되돌리지만 위 직접 렌더 경로 때문에 중간 화면이 보이지 않는다고는 보장하지 않는다(리뷰 r3 R3-01).
 
 import type { IWindowsPty } from '@xterm/xterm'
 
@@ -61,8 +62,10 @@ export function resizeToFrame(term: ResizableTerminal, size: { cols: number; row
 }
 
 /**
- * 프레임 하나를 쓴다. 크기가 같으면 그대로 쓰고, 다르면 동기 출력 모드 안에서 resize·복구한 뒤 쓴다 —
- * resize·clear 와 프레임 파싱 사이의 중간 화면이 렌더되지 않는다. `alive` 가 false 면(사이에 pane 이 내려감) 멈춘다.
+ * 프레임 하나를 쓴다. 크기가 같으면 그대로 쓰고, 다르면 동기 출력 모드 안에서 resize·필요 시 clear 한 뒤 프레임을 쓴다.
+ * 동기 출력은 refreshRows 경로만 보류한다 — reflow 중간 화면 예방은 Terminal 옵션 `NO_REFLOW_WINDOWS_PTY` 에 **의존**하며,
+ * clear 방어선이 발동한 경우(resize 직접 렌더·선택 redraw 가 끼거나 resize 가 write 예산을 넘을 때)의 화면 원자성은 보장하지 않는다(위 fix2 설명).
+ * `alive` 가 false 면(사이에 pane 이 내려감) 멈춘다.
  */
 export function writeFrame(
   term: FrameTerminal,

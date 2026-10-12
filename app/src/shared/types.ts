@@ -4,7 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
-import type { ExplorerListResult } from './explorer.js'
+import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1034,6 +1034,13 @@ export type CorralApi = {
   copyPath: (input: { path: string }) => Promise<ShellActionResult>
   // --- 탐색기 (LIFE-589 F1) — 읽기 전용. root = 열린 worktree 경로, rel = 루트 기준 상대 경로('' = 루트). main 이 가둔다 ---
   explorerList: (input: { root: string; rel: string }) => Promise<ExplorerListResult>
+  /** 감시 구독 켜기·끄기 — 렌더러는 「패널 열림 + 활성 worktree」 하나만 켠다. 결과·변경은 `onExplorerEvent` 로 온다. */
+  explorerWatch: (input: { root: string; on: boolean }) => Promise<{ ok: true } | { ok: false; code: string }>
+  /** 안전망·새로고침 — git 상태를 바로 다시 읽게 한다. */
+  explorerRefreshGit: (root: string) => void
+  /** 우클릭 메뉴 동작(E6) — 경로 복사·상대 경로 복사·Finder·터미널에서 열기. */
+  explorerAction: (input: ExplorerActionInput) => Promise<ExplorerActionResult>
+  onExplorerEvent: (listener: (event: ExplorerPush) => void) => () => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

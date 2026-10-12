@@ -12,7 +12,7 @@ describe('그룹 매핑', () => {
     const listed = SHORTCUT_GROUPS.flatMap((group) => group.ids)
     expect([...listed].sort()).toEqual(ACTIONS.map((action) => action.id).sort())
     expect(new Set(listed).size).toBe(listed.length)
-    expect(SHORTCUT_GROUPS.map((group) => [group.title, group.ids.length])).toEqual([['전역', 6], ['탭', 4], ['탭 이동', 3], ['터미널 pane', 6]])
+    expect(SHORTCUT_GROUPS.map((group) => [group.title, group.ids.length])).toEqual([['전역', 8], ['탭', 4], ['탭 이동', 3], ['터미널 pane', 6]])
   })
   it('행 칸 수 = 기본 조합 수, 칸 이름 = variants', () => {
     const focus = shortcutRows({}).find((row) => row.action.id === 'terminal.focus')!

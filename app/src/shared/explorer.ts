@@ -2,6 +2,8 @@
 //
 // main 은 **읽기 전용**으로 한 폴더의 항목만 준다(`corral:explorerList`). 무엇을 숨기고 어떤 순서로 보이는지는 여기 순수 함수가 정한다 —
 // 숨김 규칙(Orca: `.git`·`node_modules` 항상 숨김)과 정렬(VS Code `explorer.sortOrder: default` — 폴더 먼저, 숫자 인식)은 단위 시험으로 덮는다.
+import type { GitSnapshotWire } from './explorer-git.js'
+
 // 경로는 **worktree 루트 기준 상대 경로**(구분자 `/`, 루트 = '')로 주고받는다 — 절대 경로를 렌더러가 조립하지 않게 해 가둠을 main 한 곳에 둔다.
 
 /** 한 항목. `kind` 는 링크를 따라간 대상의 종류(디렉터리 링크는 `dir`), `link` 는 그 항목 자체가 심볼릭 링크인지. */
@@ -24,6 +26,9 @@ export type ExplorerRefusal =
 export type ExplorerListResult =
   | { ok: true; dir: string; entries: ExplorerEntry[] }
   | { ok: false; dir: string; code: ExplorerRefusal; error: string }
+
+/** 렌더러 안전망 재조회 주기 (E4ⓒ) — 패널이 열려 있는 동안 펼친 폴더 목록·git 상태를 이 주기로 다시 읽는다(감시 이벤트 유실 대비 — Orca #17746). */
+export const EXPLORER_SAFETY_NET_MS = 10_000
 
 /** 트리에서 **항상** 숨기는 이름 (Orca `file-explorer-entries.ts` — 어느 깊이든 이 이름이면 숨긴다). 감시 제외 목록과는 별개다. */
 export const ALWAYS_HIDDEN_NAMES: readonly string[] = ['.git', 'node_modules']
@@ -162,3 +167,14 @@ export function visibleRange(input: { scrollTop: number; viewport: number; rowHe
   const last = Math.ceil((input.scrollTop + input.viewport) / input.rowHeight)
   return { start: Math.max(0, first - input.overscan), end: Math.min(input.count, last + input.overscan) }
 }
+
+/** 우클릭 메뉴 동작 (E6) — 전부 비파괴. main `explorer-actions.ts` 가 가둠 뒤 실행한다. */
+export type ExplorerAction = 'copyPath' | 'copyRelativePath' | 'reveal' | 'openTerminal'
+export type ExplorerActionInput = { action: ExplorerAction; root: string; rel: string; isDir: boolean }
+export type ExplorerActionResult = { ok: true; value: string } | { ok: false; code: ExplorerRefusal; error: string }
+
+/** main → 렌더러 push (E4·E5). 감시 배치는 「다시 읽을 후보 폴더」, overflow 는 「읽어 둔 것 전부 다시」, git 은 상태 스냅샷. */
+export type ExplorerPush =
+  | { kind: 'changed'; root: string; dirs: string[] }
+  | { kind: 'overflow'; root: string }
+  | { kind: 'git'; root: string; git: GitSnapshotWire | null; error: string | null }

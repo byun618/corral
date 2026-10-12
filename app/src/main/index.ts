@@ -20,7 +20,7 @@ import { closeTabsGated } from './close-tabs.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell, utilityProcess } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -114,6 +114,8 @@ import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 import { listDir } from './explorer-fs.js'
+import { ExplorerHub } from './explorer-hub.js'
+import { explorerAction } from './explorer-actions.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -166,6 +168,8 @@ let lastBackendLog = ''
 let scanState: BackendInput['scan'] = 'pending'
 let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
+/** 탐색기 감시·git 허브 (LIFE-589) — 감시는 utility process 안에서 돈다. */
+let explorerHub: ExplorerHub | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
@@ -464,6 +468,8 @@ function scheduleEmit(): void {
     // 폰 목록(LIFE-580) — 방금 만든 상태를 그대로 쓴다(두 번 만들지 않는다). 구독자가 없으면 아무 일도 안 한다.
     lastEmittedState = state
     mobile?.listChanged()
+    // LIFE-589 — 닫힌 worktree 의 탐색기 감시를 푼다(감시 자원은 열린 worktree 만).
+    explorerHub?.prune()
   }, 0)
 }
 
@@ -1773,6 +1779,61 @@ app.whenReady().then(async () => {
     log('explorer.list', { rel: typeof rel === 'string' ? rel : null, ok: result.ok, code: result.ok ? null : result.code, count: result.ok ? result.entries.length : 0, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
+  explorerHub = new ExplorerHub({
+    // 감시 프로세스 — 같은 번들 폴더의 `explorer-watcher.js`(electron.vite.config 의 main 입력 둘째). asar 안에서도 utilityProcess 가 읽는다.
+    fork: () => {
+      const child = utilityProcess.fork(path.join(here, 'explorer-watcher.js'), [], { serviceName: 'corral-explorer-watcher', stdio: 'ignore' })
+      return {
+        get pid() {
+          return child.pid
+        },
+        postMessage: (message) => child.postMessage(message),
+        on: (event, listener) => {
+          if (event === 'message') child.on('message', listener)
+          else child.on('exit', listener)
+        },
+        kill: () => child.kill(),
+      }
+    },
+    push: (event) => {
+      log('explorer.push', { kind: event.kind, root: event.root, dirs: event.kind === 'changed' ? event.dirs.length : null })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:explorerEvent', event)
+    },
+    roots: explorerRoots,
+    log,
+  })
+  ipcMain.handle('corral:explorerWatch', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || explorerHub === null) return { ok: false, code: 'not_worktree' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const on = typeof input === 'object' && input !== null && 'on' in input && input.on === true
+    if (!on) {
+      explorerHub.unsubscribe(root)
+      return { ok: true }
+    }
+    return explorerHub.subscribe(root)
+  })
+  ipcMain.on('corral:explorerRefreshGit', (event, root: unknown) => {
+    if (fromOurWindow(event)) explorerHub?.refreshGit(root)
+  })
+  ipcMain.handle('corral:explorerAction', (event, input: unknown) =>
+    fromOurWindow(event)
+      ? explorerAction(
+          {
+            roots: explorerRoots,
+            writeClipboard: (text) => clipboard.writeText(text),
+            showItemInFolder: (target) => shell.showItemInFolder(target),
+            openShell: async ({ root, cwd }) => {
+              const workspaceId = currentState().repos.flatMap((repo) => repo.worktrees).find((row) => row.path === root)?.openWorkspaceId ?? null
+              if (workspaceId === null) return '열린 workspace 가 없다'
+              const created = await createRowInWorkspace({ workspaceId, kind: 'shell', cwd })
+              log('explorer.open_terminal', { root, cwd, ok: created.ok, paneId: created.paneId })
+              return created.ok ? null : (created.error ?? '탭을 못 만들었다')
+            },
+          },
+          input,
+        )
+      : { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' },
+  )
   // Orca #14545 를 따라 하지 않기 — macOS 는 배경 앱 우클릭에 앱을 활성화하지 않아 메뉴가 키보드·포커스를 못 받는다.
   // 우클릭 순간 창을 앞으로 가져온다(198 뒤 수정 PR #14546 과 같은 방향).
   ipcMain.on('corral:activateWindow', (event) => {
@@ -1987,6 +2048,11 @@ app.whenReady().then(async () => {
       createPairing: () => mobileService.createPairing(),
       revoke: (id) => mobileService.revoke(id),
     },
+    // LIFE-589 E4ⓓⓕⓖ — 감시 프로세스 pid·구독·계수(읽기) · 장애 주입(감시 프로세스만 끝낸다).
+    explorer: {
+      status: () => explorerHub?.status() ?? null,
+      crash: () => explorerHub?.injectCrash() ?? false,
+    },
   })
 
   app.on('activate', () => {
@@ -2002,6 +2068,7 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
+  explorerHub?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null
   worktreePoller.stop()

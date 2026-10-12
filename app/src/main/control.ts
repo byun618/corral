@@ -57,6 +57,11 @@ export type ControlHandlers = {
     createPairing: () => unknown
     revoke: (id: string) => unknown
   }
+  /** LIFE-589 E4 — 탐색기 감시 상태(pid·구독·계수)와 장애 주입. 계측 실행에만 열린다. */
+  explorer: {
+    status: () => unknown
+    crash: () => boolean
+  }
 }
 
 /**
@@ -225,6 +230,12 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
        * **main 이벤트 루프 지연** (LIFE-580 J6 — K9 A/B). 첫 요청에서 히스토그램(해상도 10 ms)을 켜고, 요청마다 지난 요청 이후의
        * 분포(ms)를 돌려준 뒤 비운다 — 구간 앞에서 한 번(비우기), 뒤에서 한 번(읽기). 계측 소켓이 있는 실행에만 있다.
        */
+      case 'explorer-status':
+        reply({ ok: true, at: Date.now(), explorer: handlers.explorer.status() })
+        return
+      case 'explorer-crash':
+        reply({ ok: true, at: Date.now(), injected: handlers.explorer.crash() })
+        return
       case 'loop-delay':
         reply({ ok: true, at: Date.now(), loopDelay: readLoopDelay() })
         return

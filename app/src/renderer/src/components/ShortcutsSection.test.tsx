@@ -165,7 +165,7 @@ it('저장이 main 에서 거절되면 그 문구를 status 에 보인다', asyn
 it('필터 레일 — 카운트와 필터 · 섹션 안 검색 · 결과 없음', async () => {
   const { view } = mount(validateOverrides({ 'terminal.zoom': [null, null] }))
   const count = (id: string): string => view.querySelector(`[data-shortcuts-filter-count="${id}"]`)?.textContent ?? ''
-  expect([count('all'), count('modified'), count('unassigned'), count('conflicts')]).toEqual(['19', '1', '1', '0'])
+  expect([count('all'), count('modified'), count('unassigned'), count('conflicts')]).toEqual(['21', '1', '1', '0'])
   act(() => view.querySelector<HTMLButtonElement>('[data-shortcuts-filter="unassigned"]')!.click())
   expect(view.querySelector('[data-shortcuts-filter="unassigned"]')?.getAttribute('aria-pressed')).toBe('true')
   expect([...view.querySelectorAll('[data-shortcut-action]')].map((row) => row.getAttribute('data-shortcut-action'))).toEqual(['terminal.zoom'])
@@ -176,5 +176,5 @@ it('필터 레일 — 카운트와 필터 · 섹션 안 검색 · 결과 없음'
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   act(() => { setValue.call(input, '설정'); input.dispatchEvent(new Event('input', { bubbles: true })) })
   expect([...view.querySelectorAll('[data-shortcut-action]')].map((row) => row.getAttribute('data-shortcut-action'))).toEqual(['settings.open'])
-  expect(view.querySelector('[data-shortcuts-visible-count]')?.textContent).toBe('1/19')
+  expect(view.querySelector('[data-shortcuts-visible-count]')?.textContent).toBe('1/21')
 })

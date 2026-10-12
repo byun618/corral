@@ -88,7 +88,7 @@
 }
 .explorer-row:hover { background: var(--bg-row-hover); }
 .explorer-row.is-selected { background: var(--bg-selected); }
-.explorer-tree:focus-visible .explorer-row.is-selected { outline: 1px solid var(--accent); outline-offset: -1px; }
+.explorer-tree:focus .explorer-row.is-selected { outline: 1px solid #3994bcb3; outline-offset: -1px; } /* list.focusOutline(Dark 2026) — 첫 화면 확인 사용자 답 */
 .explorer-row.is-ignored .explorer-label { color: #8c8c8c; } /* gitDecoration.ignoredResourceForeground(Dark 2026) */
 
 /* 들여쓰기 가이드 — left 16px, 가이드마다 indent(8px) · 1px 왼쪽 선. 평소 투명, 트리 hover 때 보임(onHover). */
@@ -114,3 +114,8 @@
 }
 .explorer-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .explorer-badge { flex-shrink: 0; width: 16px; margin-right: 12px; text-align: center; font-size: 12px; opacity: 0.75; }
+/* git 배지 — VS Code 데코 배지(글자 · 데코 색). 폴더는 codicon circle-filled 14px · opacity .4 · margin-right 14px(`decorationsService.ts` bubbleBadge). */
+.explorer-badge.is-git { opacity: 1; font-size: 12px; font-weight: normal; }
+.explorer-badge.is-link + .explorer-badge.is-git { margin-left: -8px; }
+.explorer-badge.is-bubble { width: auto; margin-right: 14px; opacity: 0.4; }
+.explorer-badge.is-bubble .codicon { font-size: 14px; }

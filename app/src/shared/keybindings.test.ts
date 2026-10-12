@@ -6,7 +6,8 @@ describe('shortcut catalog and compatibility', () => {
     // LIFE-495: + tab.reopenClosed(⌘⇧T) · tab.rename(⌘R) · tab.cycle(⌘⇧[ ] · ⌘⌥[ ] · ⌃PgUp/Dn) · tab.selectByIndex(⌃1–9)
     // LIFE-511: + settings.open(⌘,)
     // LIFE-515: + terminal.newAgent(⌘⌥T)
-    expect(ACTIONS).toHaveLength(19)
+    // LIFE-589: + rightPanel.toggle(⌘L) · explorer.show(⌘⇧E)
+    expect(ACTIONS).toHaveLength(21)
     expect(matchBinding('Mod+K', {})).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+J', { 'palette.open': ['Mod+J'] })).toEqual({ id: 'palette.open', variant: 0 })
     expect(matchBinding('Mod+K', { 'palette.open': ['Mod+J'] })).toBeNull()
@@ -264,5 +265,21 @@ describe('LIFE-515 K3 — terminal.newAgent(⌘⌥T)', () => {
   })
   it('누르고 있어도 한 번만 — NON_REPEATING_ACTIONS 에 든다(Orca `event.repeat` 무시)', () => {
     expect(NON_REPEATING_ACTIONS).toContain('terminal.newAgent')
+  })
+})
+describe('LIFE-589 오른쪽 패널·탐색기 단축키', () => {
+  it('기본 ⌘L 패널 토글 · ⌘⇧E 탐색기 열고 포커스, 길게 눌러도 반복하지 않는다', () => {
+    expect(matchBinding('Mod+L', {})).toEqual({ id: 'rightPanel.toggle', variant: 0 })
+    expect(matchBinding('Mod+Shift+E', {})).toEqual({ id: 'explorer.show', variant: 0 })
+    expect(NON_REPEATING_ACTIONS).toEqual(expect.arrayContaining(['rightPanel.toggle', 'explorer.show']))
+  })
+  it('기존 재정의가 ⌘L·⌘⇧E 를 쓰면 비켜 선다 — 사용자 파일을 버리지 않는다', () => {
+    const legacy = { 'sidebar.toggle': ['Mod+L'], 'palette.open': ['Mod+Shift+E'] }
+    expect(validateOverrides(legacy, true)).toEqual(legacy)
+    expect(matchBinding('Mod+L', legacy)?.id).toBe('sidebar.toggle')
+    expect(matchBinding('Mod+Shift+E', legacy)?.id).toBe('palette.open')
+    expect(bindingsFor('rightPanel.toggle', legacy)).toEqual([null])
+    expect(bindingsFor('explorer.show', legacy)).toEqual([null])
+    expect(bindingConflict(legacy)).toBeNull()
   })
 })

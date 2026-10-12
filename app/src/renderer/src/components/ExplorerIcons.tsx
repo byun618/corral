@@ -10,6 +10,7 @@ export const CODICON = {
   ellipsis: 0xea7c,
   check: 0xeab2,
   'layout-sidebar-right': 0xebf4,
+  'circle-filled': 0xea71,
 } as const
 
 export type CodiconName = keyof typeof CODICON

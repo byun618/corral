@@ -223,10 +223,25 @@ done
 git fetch -q origin "$BASE"
 # 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
 if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
-  # 버전 커밋 제목 "release: <태그>" 에서 태그를 읽는다 — 안내를 자리표시 없이 그대로 돌 수 있는 명령으로
-  LAST_TAG="$(git log -1 --format=%s "origin/$BASE" | sed -n 's/^release: //p')"
+  # 버전 커밋 제목 "release: <태그>" 의 태그는 확인될 때만 실행 명령에 넣는다 — 접두가 이번 --tag-prefix 이고
+  # 원격 태그가 가리키는 커밋 = origin/$BASE 끝. 하나라도 아니거나 확인할 수 없으면 고르지 않고 직접 확인하게 한다
+  LAST_SUBJ="$(git log -1 --format=%s "origin/$BASE")"
+  LAST_TAG="$(echo "$LAST_SUBJ" | sed -n 's/^release: //p')"
+  WHY=""
+  LAST_VER=""; case "$LAST_TAG" in "$PREFIX"?*) LAST_VER="${LAST_TAG#"$PREFIX"}" ;; esac
+  if ! echo "$LAST_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    WHY="제목의 태그 '$LAST_TAG' 가 '$PREFIX<X.Y.Z>' 모양이 아니다"
+  else
+    TAG_PEELED="$(git ls-remote --tags origin "refs/tags/$LAST_TAG" "refs/tags/$LAST_TAG^{}" 2>/dev/null | awk -v t="refs/tags/$LAST_TAG" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}')" || TAG_PEELED=""
+    BASE_TIP="$(git rev-parse "origin/$BASE^{commit}")"
+    [ -n "$TAG_PEELED" ] && [ "$TAG_PEELED" = "$BASE_TIP" ] \
+      || WHY="원격 태그 $LAST_TAG 가 없거나(또는 조회 실패) $BASE 끝(${BASE_TIP:0:7})과 다른 커밋(${TAG_PEELED:0:7})을 가리킨다"
+  fi
+  if [ -n "$WHY" ]; then
+    die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($LAST_SUBJ) — 출고할 것 없음. $WHY — 태그를 자동으로 고르지 않는다.${NL}dmg·APK 가 빠졌다면 먼저 $BASE 끝을 가리키는 태그를 직접 확인한다:${NL}git -C $(shq "$REPO") ls-remote --tags origin${NL}확인한 태그를 TAG 에 넣고 실행한다(직접 고쳐 쓰는 명령, dmg 는 app/INSTALL.md 「출고」):${NL}TAG='여기에-확인한-태그'; $(shq "$SCRIPT_DIR/release-apk.sh") --from-tag \"\$TAG\" --tag-prefix $(shq "$PREFIX")"
+  fi
   rerun_cmds "$LAST_TAG"
-  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋(release: $LAST_TAG) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐는데 dmg·APK 가 없다면 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN"
+  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋(release: $LAST_TAG, 원격 태그가 $BASE 끝과 같은 커밋) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐는데 dmg·APK 가 없다면 아래 명령을 그대로 붙여 넣는다${NL}dmg 만:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}APK 만:${NL}$APK_RERUN"
 fi
 git -C "$TMPWT" checkout -q --detach "origin/$BASE"
 NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
@@ -252,9 +267,9 @@ note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --
 # 3-1. GitHub Release — 태그에 릴리즈 노트를 붙인다. 리허설 태그는 prerelease 로 표시
 REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
 rerun_cmds "$TAG"
-REL_RERUN="gh release create $(shq "$TAG") --verify-tag --title $(shq "$TAG") --notes-file $(shq "$NOTES")${REL_FLAG:+ $REL_FLAG}"
+REL_RERUN="(cd $(shq "$REPO") && gh release create $(shq "$TAG") --verify-tag --title $(shq "$TAG") --notes-file $(shq "$NOTES")${REL_FLAG:+ $REL_FLAG})"
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
-  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다(app/INSTALL.md 「출고」)${NL}노트만 다시(레포 루트에서):${NL}$REL_RERUN${NL}그 뒤 dmg:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}그 뒤 APK:${NL}$APK_RERUN" 9
+  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 아래 명령을 그대로 붙여 넣는다(app/INSTALL.md 「출고」)${NL}노트만 다시:${NL}$REL_RERUN${NL}그 뒤 dmg:${NL}$DMG_RERUN${NL}dmg 가 끝나면 임시 worktree 정리:${NL}$DMG_DONE${NL}그 뒤 APK:${NL}$APK_RERUN" 9
 note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward

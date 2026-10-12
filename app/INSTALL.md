@@ -34,7 +34,9 @@ JDK 17 이상(`JAVA_HOME` 의 java, 없으면 PATH 의 `java -version` — `/usr
 같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만들고,
 APK 는 아직이므로 메시지의 「APK 는 아직이다 — dmg 뒤 APK」 명령도 돌린다. APK 가 실패하면(**exit 10**) 머지·태그·dmg 는 끝난 상태다 — 메시지의 「APK 만 다시」 아래 줄을 그대로 붙여 넣는다.
 안내의 명령은 설명과 다른 줄에 홀로 있고 경로가 단일 따옴표로 인용돼 있어(한글·공백 경로도 화면 그대로 복사해 돈다) 어느 cwd 에서도 돈다.
-exit 9(GitHub Release 실패)·「출고할 것 없음」(태그는 base 끝 `release: <태그>` 커밋에서 읽는다) 안내도 같은 모양으로 노트·dmg·APK 명령을 낸다:
+exit 9(GitHub Release 실패) 안내도 같은 모양으로 노트·dmg·APK 명령을 낸다 — 노트 명령도 `(cd <레포> && gh release create …)` 라 어느 cwd 에서나 돈다.
+「출고할 것 없음」은 base 끝 `release: <태그>` 제목의 태그가 이번 접두이고 원격 태그가 base 끝과 같은 커밋일 때만 dmg·APK 명령을 낸다 —
+아니거나 확인할 수 없으면 태그를 고르지 않고, `git ls-remote --tags origin` 으로 직접 확인한 태그를 `TAG='…'` 에 넣어 치는 명령만 보인다:
 ```sh
 <본체>/scripts/release-apk.sh --from-tag vX.Y.Z --tag-prefix v --out <본체>/app/dist/release/vX.Y.Z
 ```

@@ -57,7 +57,7 @@ if [ "$MODE" = "from-tag" ]; then
   # 이번에 만든 worktree 만 지운다(전역 prune 은 하지 않는다 — 무관한 worktree 등록을 건드리지 않는다). 실패하면 남은 경로를 알린다
   ft_cleanup() {
     git -C "$REPO" worktree remove --force "$FT_WT" >/dev/null 2>&1 \
-      || echo "⚠ 임시 worktree 정리 실패 — 남은 경로: $FT_WT (손으로: git -C '$REPO' worktree remove --force '$FT_WT')" >&2
+      || printf '⚠ 임시 worktree 정리 실패 — 남은 경로(확인 뒤 git worktree remove 로 지운다):\n%s\n' "$FT_WT" >&2
   }
   trap ft_cleanup EXIT
   note "태그 $FROM_TAG → 임시 worktree $FT_WT (끝나면 지운다)"

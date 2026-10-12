@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# release.sh --prs "<번호> <번호> …" --notes <릴리즈 노트 파일> [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--dry-run]
+# release.sh --prs "<번호> <번호> …" --notes <릴리즈 노트 파일> [--bump patch|minor|major | --version X.Y.Z] [--skip-build] [--skip-apk] [--dry-run]
 #            [--base throwaway/<이름> --tag-prefix rehearsal-<이름>-v]   ← 리허설. 둘은 짝으로만 받는다
 # 출고 (LIFE-574) — 사용자가 고른 PR 을 그 순서대로 머지하고, 버전 올림 커밋 + 태그 <접두>X.Y.Z 를 push 한 뒤
-# 그 태그 위 깨끗한 트리에서 dmg 를 빌드한다. 출고 머지는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).
+# 그 태그 위 깨끗한 트리에서 dmg 와 모바일 APK 를 빌드한다(LIFE-599). 출고 머지는 이 스크립트 한 경로로만 한다(웹 UI 머지 금지).
+# --skip-build 는 dmg 만, --skip-apk 는 APK 만 건너뛴다 — 둘 다 빼려면 둘 다 준다.
 #
 # **검사 없이 순서 머지다** (범위 변경 r1, 2026-10-08). PR CI 는 아직 없다 — 후속 일감 LIFE-575(맥미니 self-hosted 러너).
 # 브랜치 보호(required check)도 Free 플랜 private 레포에서 쓸 수 없다(403). 검증은 작업 플로우의 리뷰·관문이 한다.
 #
 # 0) 머지 전에 고른 PR 전부를 본다 — 닫힘·draft·포크·base 불일치가 하나라도 있으면 아무것도 머지하지 않는다(exit 2).
 #    이때 각 PR 의 head SHA 를 고정한다. 이미 머지된 PR 은 건너뛴다 — 중간에 멈추면 같은 명령을 다시 돌리면 된다.
-#    --dry-run 은 여기까지 보고 대상 PR·순서·head·다음 버전·태그를 출력하고 끝난다(머지·커밋·push 0건)
+#    APK 를 만들 거면 그 툴체인 전제(JDK·Android SDK·eas 로그인·작업 폴더)도 여기서 본다(release-apk.sh --preflight) — 미달이면 머지 0건(exit 2).
+#    --dry-run 은 여기까지 보고 대상 PR·순서·head·다음 버전·태그·dmg·APK 계획을 출력하고 끝난다(머지·커밋·push 0건)
 # PR 마다:
 #   1) GitHub 의 머지 가능 판정(mergeable)을 본다 — 앞 PR 머지로 충돌이 생겼으면(CONFLICTING) 거기서 멈추고
 #      그 PR 과 뒤 PR 은 머지하지 않는다(exit 3). 판정이 끝내 안 나오면 멈춘다(exit 5)
@@ -18,7 +20,8 @@
 # 남은 PR 에 base 를 합쳐 push 하지 않는다 — CI 가 없어 다시 돌릴 것이 없고, 남의 작업 브랜치를 건드리지 않는다.
 # 충돌 해소 절차는 app/INSTALL.md 「출고」 — 원격 작업 브랜치로 worktree 를 다시 만들어 base 를 merge(rebase 금지)·push 한 뒤 다시 돌린다.
 # 버전 커밋·태그 push 가 실패하면(exit 7) 로컬 태그를 지우고 멈춘다 — 같은 명령 재실행이 태그만 다시 만든다.
-# dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다.
+# dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 안내대로 release-dmg.sh 만 다시 돌린다(그 뒤 APK 도 — 안내에 있다).
+# APK 가 실패하면(exit 10) 머지·태그·dmg 는 끝난 상태다 — 안내대로 release-apk.sh 만 다시 돌린다.
 # 릴리즈 노트(--notes)는 release 스킬이 고른 PR 본문을 읽고 쓴 원고다 — 태그 push 뒤 GitHub Release 로 올린다
 # (리허설은 prerelease). 실패하면(exit 9) 머지·태그는 끝난 상태다 — 안내대로 gh release create 만 다시 돌린다.
 set -euo pipefail
@@ -26,7 +29,7 @@ set -euo pipefail
 die() { local code="${2:-1}"; echo "✖ $1" >&2; exit "$code"; }
 note() { echo "· $1"; }
 
-PRS=""; NOTES=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; DRY_RUN=0
+PRS=""; NOTES=""; BASE="main"; PREFIX="v"; BUMP="patch"; VERSION=""; SKIP_BUILD=0; SKIP_APK=0; DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --prs) PRS="${2:?--prs 값 없음}"; shift 2 ;;
@@ -36,11 +39,12 @@ while [ $# -gt 0 ]; do
     --bump) BUMP="${2:?--bump 값 없음}"; shift 2 ;;
     --version) VERSION="${2:?--version 값 없음}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --skip-apk) SKIP_APK=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) die "모르는 인자: $1" ;;
   esac
 done
-[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" --notes <파일> [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--dry-run]"
+[ -n "$(echo "$PRS" | tr -d ' ,')" ] || die "사용법: release.sh --prs \"12 15\" --notes <파일> [--bump patch|minor|major|--version X.Y.Z] [--skip-build] [--skip-apk] [--dry-run]"
 # 릴리즈 노트 — 실 실행은 필수(dry-run 은 노트를 쓰기 전 점검이라 없어도 된다). 아래에서 cd 하므로 절대경로로
 if [ -n "$NOTES" ]; then
   [ -s "$NOTES" ] || die "릴리즈 노트 파일이 없거나 비었다: $NOTES"
@@ -79,6 +83,13 @@ if [ "$SKIP_BUILD" = 0 ]; then
   NODE_V="$(node -p 'process.versions.node' 2>/dev/null)" || die "node 가 없다 — dmg 빌드에 필요(--skip-build 면 생략)"
   case "$NODE_V" in 24.*) ;; 22.*) note "node $NODE_V — 로컬 관문 기준은 v24 다(경고만)" ;;
     *) die "node $NODE_V — engines(>=22.12)·로컬 관문(v24) 밖이라 dmg 빌드를 거절한다. v24 를 PATH 앞에 두거나 --skip-build" ;; esac
+fi
+# APK 툴체인 전제 — 머지 전에 본다. 태그 가드는 태그가 생긴 뒤 release-apk.sh 가 본다
+if [ "$SKIP_APK" = 0 ]; then
+  [ -x "$SCRIPT_DIR/release-apk.sh" ] || die "scripts/release-apk.sh 가 없다 — APK 를 빼려면 --skip-apk — 아무것도 머지하지 않음" 2
+  APK_PRE="$("$SCRIPT_DIR/release-apk.sh" --preflight 2>&1)" \
+    || die "APK 전제 미달 — 아무것도 머지하지 않음(APK 를 빼려면 --skip-apk): $(echo "$APK_PRE" | grep '^✖' | head -1)" 2
+  APK_PRE="$(echo "$APK_PRE" | grep '^· APK 전제' | head -1 || true)"
 fi
 
 # 0. 사전 확인 — 모든 PR 이 열려 있고(이미 머지된 것은 건너뜀) base 가 맞고 draft·포크가 아니다. 하나라도 어긋나면 머지 0건.
@@ -144,6 +155,7 @@ if [ "$DRY_RUN" = 1 ]; then
   [ -n "$TODO" ] || echo "  머지 예정 없음"
   echo "버전 $1 → $2, 태그 $PREFIX$2 (지금 base 기준 — 머지할 PR 이 버전을 바꾸면 달라진다)"
   [ "$SKIP_BUILD" = 1 ] && echo "dmg: 건너뜀(--skip-build)" || echo "dmg: node ${NODE_V:-?} 로 빌드 예정"
+  [ "$SKIP_APK" = 1 ] && echo "APK: 건너뜀(--skip-apk)" || echo "APK: 매 출고 빌드 예정(preview 로컬 빌드, dmg 뒤) — ${APK_PRE#· }"
   [ -n "$NOTES" ] && echo "릴리즈 노트: $NOTES" || echo "릴리즈 노트: 아직 없음 — 실 실행에는 --notes 필수"
   exit 0
 fi
@@ -194,7 +206,7 @@ done
 git fetch -q origin "$BASE"
 # 이번에 머지한 것이 없고 base 끝이 이미 버전 커밋이면 출고할 것이 없다 — 같은 명령 재실행이 버전을 또 올리지 않게
 if [ -z "$MERGED_LIST" ] && git log -1 --format=%s "origin/$BASE" | grep -q '^release: '; then
-  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐다면 dmg 만 만든다: git worktree add --detach .claude/worktrees/_dmg <태그> && .claude/worktrees/_dmg/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/<태그>"
+  die "머지할 PR 이 없고 $BASE 끝이 이미 버전 커밋($(git log -1 --format=%s "origin/$BASE")) — 출고할 것 없음. 앞선 실행의 push 가 실제로는 반영됐다면 dmg·APK 만 만든다: git worktree add --detach .claude/worktrees/_dmg <태그> && .claude/worktrees/_dmg/scripts/release-dmg.sh --tag-prefix $PREFIX --out $REPO/app/dist/release/<태그> && .claude/worktrees/_dmg/scripts/release-apk.sh --tag-prefix $PREFIX --out $REPO/app/dist/release/<태그>"
 fi
 git -C "$TMPWT" checkout -q --detach "origin/$BASE"
 NV="$(next_version "$(cat "$TMPWT/app/package.json")")" || die "app/package.json 버전을 못 읽음"
@@ -220,7 +232,7 @@ note "버전 $CUR → $VERSION, 태그 $TAG push ($(git -C "$TMPWT" rev-parse --
 # 3-1. GitHub Release — 태그에 릴리즈 노트를 붙인다. 리허설 태그는 prerelease 로 표시
 REL_FLAG=""; [ "$PREFIX" = "v" ] || REL_FLAG="--prerelease"
 gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" $REL_FLAG >/dev/null \
-  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 노트만 다시: gh release create $TAG --verify-tag --title $TAG --notes-file $NOTES $REL_FLAG — 그 뒤 dmg 는 scripts/release-dmg.sh" 9
+  || die "GitHub Release 생성 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). 노트만 다시: gh release create $TAG --verify-tag --title $TAG --notes-file $NOTES $REL_FLAG — 그 뒤 dmg·APK 는 scripts/release-dmg.sh·release-apk.sh(app/INSTALL.md 「출고」)" 9
 note "GitHub Release $TAG ($(gh release view "$TAG" --json url --jq .url))"
 
 # 4. 본체 checkout 이 base 이고 깨끗하면 fast-forward
@@ -235,12 +247,25 @@ else
 fi
 
 # 5. dmg — 그 태그 위 깨끗한 트리(임시 worktree)에서만. 산출물은 본체 app/dist/release/<태그>/ 로 복사(git 무시)
+# 재실행 안내는 본체 checkout(레포 루트)에서 그대로 붙여 넣는 명령이다 — --out 은 절대경로(release-*.sh 가 자기 트리로 cd 한다)
+OUT_DIR="$REPO/app/dist/release/$TAG"
+APK_WT=".claude/worktrees/_apk-$TAG"
+APK_RERUN="git worktree add --detach $APK_WT $TAG && $APK_WT/scripts/release-apk.sh --tag-prefix $PREFIX --out $OUT_DIR (끝나면 git worktree remove $APK_WT)"
 if [ "$SKIP_BUILD" = 1 ]; then
-  note "--skip-build — dmg 는 나중에: 태그 $TAG 를 체크아웃한 깨끗한 트리에서 scripts/release-dmg.sh --tag-prefix $PREFIX"
+  note "--skip-build — dmg 는 나중에: 태그 $TAG 를 체크아웃한 깨끗한 트리에서 scripts/release-dmg.sh --tag-prefix $PREFIX --out $OUT_DIR"
 else
-  "$TMPWT/scripts/release-dmg.sh" --tag-prefix "$PREFIX" --out "$REPO/app/dist/release/$TAG" \
-    || die "dmg 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). dmg 만 다시: git worktree add --detach .claude/worktrees/_dmg-$TAG $TAG && .claude/worktrees/_dmg-$TAG/scripts/release-dmg.sh --tag-prefix $PREFIX --out app/dist/release/$TAG (끝나면 git worktree remove .claude/worktrees/_dmg-$TAG)" 8
+  "$TMPWT/scripts/release-dmg.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
+    || die "dmg 실패 — 머지·버전 커밋·태그 $TAG push 는 끝났다(다시 출고하지 않는다). dmg 만 다시: git worktree add --detach .claude/worktrees/_dmg-$TAG $TAG && .claude/worktrees/_dmg-$TAG/scripts/release-dmg.sh --tag-prefix $PREFIX --out $OUT_DIR (끝나면 git worktree remove .claude/worktrees/_dmg-$TAG)$([ "$SKIP_APK" = 1 ] || echo " — APK 는 아직이다. 그 뒤 APK: $APK_RERUN")" 8
 fi
 
+# 6. APK — dmg 와 같은 태그 worktree 에서. 가드(HEAD = 태그·깨끗한 트리·원격 태그)는 release-apk.sh 가 빌드 전에 본다
+if [ "$SKIP_APK" = 1 ]; then
+  note "--skip-apk — APK 는 나중에: $APK_RERUN"
+else
+  "$TMPWT/scripts/release-apk.sh" --tag-prefix "$PREFIX" --out "$OUT_DIR" \
+    || die "APK 실패 — 머지·버전 커밋·태그 $TAG push$([ "$SKIP_BUILD" = 1 ] || echo "·dmg") 는 끝났다(다시 출고하지 않는다). APK 만 다시: $APK_RERUN" 10
+fi
+
+APK_LATER=""; [ "$SKIP_APK" = 0 ] || APK_LATER=" — --skip-apk 였으니 APK 를 먼저 만든다"
 echo "✔ 출고 $TAG —$MERGED_LIST${SKIPPED:+ (앞선 실행:$SKIPPED)}"
-echo "□ 다음: ① 머지된 PR 의 LIFE 일감마다 LA '완료' 전이(출고 머지 뒤 — D2) ② dmg 설치(app/INSTALL.md 「설치」) ③ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"
+echo "□ 다음: ① 머지된 PR 의 LIFE 일감마다 LA '완료' 전이(출고 머지 뒤 — D2) ② dmg 설치(app/INSTALL.md 「설치」) ③ 폰 APK 덮어 설치 scripts/release-apk-install.sh --serial <폰 시리얼> --apk $OUT_DIR/corral-mobile-$VERSION.apk (서명 대조 뒤 install -r$APK_LATER) ④ 남은 로컬 정리 scripts/task-finish.sh <LIFE-NNN-슬러그>"

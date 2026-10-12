@@ -25,8 +25,11 @@ LA 와 같은 스크립트 세트다. 프로필은 `eas.json` 셋 — 전부 `in
 | 프로필 | 용도 | 패키지 |
 | --- | --- | --- |
 | `development` | 개발 클라이언트(Metro 에 붙음, 에뮬레이터 개발 접속 허용) | `…corral.mobile.dev` |
-| `preview` | 판정·사용 APK | `io.github.byun618.corral.mobile` |
-| `production` | 배포 APK | `io.github.byun618.corral.mobile` |
+| `preview` | 판정 APK(작업 브랜치 dev 빌드)·**출고 APK**(`scripts/release-apk.sh` 가 출고 태그에서 로컬 빌드) | `io.github.byun618.corral.mobile` |
+| `production` | **출고에 안 씀** — preview 와 동작이 같고(차이는 `extra.variant` 문자열뿐) 폰까지 실측된 경로는 preview 다 | `io.github.byun618.corral.mobile` |
+
+**정식본은 출고 태그 빌드다.** 작업 브랜치에서 만든 APK 는 머지 전 확인용 dev 빌드이고, 출고(`scripts/release.sh`, `app/INSTALL.md` 「출고」)가 태그 위 깨끗한 트리에서
+preview 로컬 빌드로 정식 APK 를 만들어 `app/dist/release/<태그>/` 에 둔다 — 폰은 그 APK 로 덮인다.
 
 ```sh
 cd mobile
@@ -39,7 +42,8 @@ npm run build:local:preview    # = eas build -p android --profile preview --loca
 ```
 
 - 서명 키는 EAS 원격 자격증명 하나를 클라우드·로컬이 같이 쓴다(첫 빌드 때 EAS 가 만든다). 그래서 어느 쪽 APK 로도 덮어쓰기 설치가 된다.
-- 버전 코드는 EAS 가 올린다(`appVersionSource: remote`). 앱 버전 문자열은 `app.config.ts` `version`.
+- 버전 문자열(versionName) = 출고 버전 — `app.config.ts` 가 `app/package.json` 의 `version` 을 읽는다(원천 하나, 출고가 올린다). 그래서 출고 태그 APK 는 태그 버전이고,
+  작업 브랜치 빌드는 지난 출고 버전을 단다. 버전 코드는 EAS 원격 값이다(`appVersionSource: remote`, `autoIncrement` 없음 — 같은 값으로 덮어 설치된다).
 - 빌드 산출물(`build-*.apk`·`android/`·`ios/`·`.expo/`)은 커밋하지 않는다(`.gitignore`).
 
 ## 3. 설치
@@ -51,6 +55,10 @@ adb -s <폰 시리얼> install -r build-<…>.apk
 # 기기가 하나뿐이면 가장 최근 APK 를 한 번에
 npm run apk:install            # = adb install -r $(ls -t build-*.apk | head -1)
 ```
+
+- **기기가 여럿이면(폰 + 에뮬레이터 등) `npm run apk:install` 은 쓰지 않는다** — 시리얼 없는 `adb install` 은 기기가 둘 이상이면 실패한다. `adb -s <시리얼>` 로 고른다.
+- 출고 APK 는 `scripts/release-apk-install.sh --serial <시리얼> --apk <APK>` 로 깐다 — 설치본과 서명을 먼저 대조하고 같을 때만 `install -r` 한다(`app/INSTALL.md` 「출고」).
+  서명이 다르면(예: 에뮬레이터의 Debug 서명 설치본) 덮어 설치가 안 된다 — 앱을 지우면 페어링·기록이 사라지므로 지우지 말고 멈춘다.
 
 케이블 없이: 클라우드 빌드 링크를 폰 브라우저로 열어 받거나 APK 파일을 옮겨 「출처를 알 수 없는 앱」 설치를 허용한다.
 

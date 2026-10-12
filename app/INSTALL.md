@@ -32,11 +32,13 @@ JDK 17 이상(`JAVA_HOME` 의 java, 없으면 PATH 의 `java -version` — `/usr
 (**매 출고 기본**, `--skip-apk` 면 생략). `--skip-build` 는 dmg 만, `--skip-apk` 는 APK 만 뺀다 — 둘 다 빼려면 둘 다 준다.
 이미 머지된 PR 은 건너뛰므로 중간에 멈추면 같은 명령을 다시 돌린다. 버전 커밋·태그 push 가 실패하면(exit 7 — main 이 그새 움직임 등) 로컬 태그를 지우고 멈추므로
 같은 명령 재실행이 버전 커밋·태그만 다시 만든다. dmg 가 실패하면(exit 8) 머지·태그는 끝난 상태다 — 메시지가 알려 주는 `release-dmg.sh` 명령으로 dmg 만 다시 만들고,
-APK 는 아직이므로 메시지의 「그 뒤 APK」 명령도 돌린다. APK 가 실패하면(**exit 10**) 머지·태그·dmg 는 끝난 상태다 — 메시지의 「APK 만 다시」 명령을 본체 checkout 에서 그대로 돌린다:
+APK 는 아직이므로 메시지의 「APK 는 아직이다 — dmg 뒤 APK」 명령도 돌린다. APK 가 실패하면(**exit 10**) 머지·태그·dmg 는 끝난 상태다 — 메시지의 「APK 만 다시」 아래 줄을 그대로 붙여 넣는다.
+안내의 명령은 설명과 다른 줄에 홀로 있고 경로가 셸 인용돼 있어 어느 cwd 에서도 돈다:
 ```sh
-git worktree add --detach .claude/worktrees/_apk-vX.Y.Z vX.Y.Z && .claude/worktrees/_apk-vX.Y.Z/scripts/release-apk.sh --tag-prefix v --out <본체>/app/dist/release/vX.Y.Z
-git worktree remove .claude/worktrees/_apk-vX.Y.Z
+<본체>/scripts/release-apk.sh --from-tag vX.Y.Z --tag-prefix v --out <본체>/app/dist/release/vX.Y.Z
 ```
+`--from-tag` 는 원격에서 그 태그를 정확히 fetch 하고(로컬 태그가 없어도 된다) 매번 새 임시 worktree(`.claude/worktrees/_apk-<태그>-<시각>-<pid>`)에서 빌드한 뒤 지운다 —
+앞선 시도가 남긴 worktree 와 겹치지 않는다. 산출물 자리에 이미 APK 가 있으면 지우지 않고 그 아래 `retry-<시각>/` 에 새로 만든다. 같은 명령을 몇 번 다시 돌려도 된다.
 
 **충돌이 나면 (exit 3)** — 앞 PR 이 머지돼 뒤 PR 이 main 과 충돌한다. 작업 worktree 는 PR 을 연 뒤 정리됐으므로(D4) 본체 세션이 다시 만들어 푼다.
 ```sh
@@ -56,7 +58,7 @@ scripts/task-finish.sh LIFE-NNN-<슬러그>                                     
 
 **폰 APK 설치** — `scripts/release-apk-install.sh --serial <폰 시리얼> --apk app/dist/release/vX.Y.Z/corral-mobile-X.Y.Z.apk`.
 ① 시리얼이 필수다(기본값 없음 — 폰·에뮬레이터가 같이 붙어 있어도 엉뚱한 기기에 깔지 않는다. 시리얼은 `adb devices -l`)
-② 설치 **전에** 기기 설치본(`pm path` → `adb pull`)과 새 APK 의 서명 SHA-256 을 `apksigner` 로 대조하고, **다르면 설치하지 않고 멈춘다**
+② 설치 **전에** 기기 설치본(`pm path` → `adb pull`)과 새 APK 를 `apksigner verify` 로 확인해 양쪽 모두 서명자 정확히 1개이고 SHA-256 이 같을 때만 넘어간다 — **다르거나 복수 서명·verify 실패면 설치하지 않고 멈춘다**
 ③ 같을 때만 `adb install -r`(데이터·페어링 유지) ④ `dumpsys` 로 versionName·`lastUpdateTime` 이 바뀌었는지 보고 APK sha256 을 출력한다 — 출고 보고에 넣는다.
 설치본을 지우고 새로 까는 길은 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르거나 설치본이 없으면(첫 설치) 멈추고 사용자에게 보고한다(첫 설치는 `mobile/README.md` §3).
 
@@ -71,7 +73,10 @@ scripts/task-finish.sh LIFE-NNN-<슬러그>                                     
   `--preflight` 는 전제만 본다(`release.sh` 가 머지 전에 부른다).
 - APK 작업 폴더는 **셸 TMPDIR 에 맡기지 않는다** — macOS `/tmp`(→ `/private/tmp` 심링크) 아래에서 CMake·ninja 가 경로를 섞어 실패한 적이 있다(LIFE-594, reanimated #9151).
   `release-apk.sh` 는 사용자 임시 폴더(`getconf DARWIN_USER_TEMP_DIR`, 바꾸려면 `CORRAL_APK_WORK_BASE`)에 실경로 작업 폴더를 만들어 `EAS_LOCAL_BUILD_WORKINGDIR`·`TMPDIR` 로 준다 —
-  셸이 vitest 관행대로 `TMPDIR=/tmp/…` 를 물려줘도 빌드는 그것을 쓰지 않는다. 자리가 없거나 쓸 수 없거나 경로에 공백이 있으면 빌드 전에 거절한다. 빌드가 실패하면 작업 폴더를 남기고 경로를 알려 준다.
+  셸이 vitest 관행대로 `TMPDIR=/tmp/…` 를 물려줘도 빌드는 그것을 쓰지 않는다. 자리가 없거나 쓸 수 없거나 경로에 공백이 있으면 빌드 전에 거절한다. 작업 폴더(`corral-apk-XXXXXX`)를 만들지 못하면 `npm ci`·`eas` 전에 멈춘다.
+  EAS 의 작업 폴더 자동 정리는 끄고(`EAS_LOCAL_BUILD_SKIP_CLEANUP=1`) 성공했을 때만 이번에 만든 그 폴더를 지운다 — 빌드·확인이 실패하면 작업 폴더를 남기고 경로를 알려 준다.
+- `JAVA_HOME`·`ANDROID_HOME`·`CORRAL_APK_WORK_BASE` 는 절대경로여야 한다 — 상대경로면 사전 점검에서 거절한다(머지 전 exit 2). 사전 점검(본체 cwd)과 태그 worktree 빌드가 같은 곳을 봐야 해서다.
+- 서명 확인은 `apksigner verify` 성공 + 서명자 정확히 1개 + SHA-256 일치일 때만 통과한다(출고 정책 = EAS 단일 키) — 빌드 뒤 확인과 폰 설치 전 대조 모두 같다.
 - PR CI 는 아직 없다 — 후속 일감 LIFE-575. 574 구현 r0 의 ubuntu workflow 초안은 구현 브랜치 커밋 `ffb08b9` 에 남아 있다(계정 결제 잠금으로 한 번도 돌지 못했다).
 - 574 출고 전후 과도기(565·566·564 와 첫 출고 순서)는 `specs/LIFE-574-pr-release/transition.md`.
 

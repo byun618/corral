@@ -2,7 +2,8 @@
 # release-apk-install.sh --serial <기기 시리얼> --apk <출고 APK>
 # 출고 APK 를 폰에 덮어 설치한다 (LIFE-599, release 스킬 §4). 순서:
 #   ① 시리얼로 기기를 고른다(기본값 없음 — 폰·에뮬레이터가 같이 붙어 있어도 엉뚱한 기기에 깔지 않는다)
-#   ② 설치 전에 기기 설치본(pm path → adb pull)의 서명과 새 APK 서명을 apksigner 로 대조 — 다르면 설치하지 않고 멈춘다
+#   ② 설치 전에 기기 설치본(pm path → adb pull)의 서명과 새 APK 서명을 apksigner 로 대조 — 양쪽 모두 verify 성공 + 서명자 정확히 1개 +
+#      SHA-256 같음일 때만 넘어간다(출고 정책 = EAS 단일 키). 복수 서명·서명 없음·verify 실패·다름은 설치하지 않고 멈춘다
 #   ③ 같을 때만 adb install -r (설치본 데이터·페어링 유지)
 #   ④ dumpsys 로 versionName·lastUpdateTime 이 바뀌었는지 확인하고 APK sha256 을 출력한다(출고 보고에 넣는다)
 # 설치본을 지우고 새로 까는 길은 이 스크립트에 없다 — 지우면 페어링 토큰·기록이 사라진다. 서명이 다르면 사람이 판단한다.
@@ -29,8 +30,14 @@ BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d 
 [ -n "$BUILD_TOOLS" ] && [ -x "$BUILD_TOOLS/apksigner" ] && [ -x "$BUILD_TOOLS/aapt2" ] || die "ANDROID_HOME/build-tools 에 apksigner·aapt2 가 없다"
 
 adbs() { adb -s "$SERIAL" "$@"; }
-# 서명을 못 읽으면 빈 값 — 아래 대조가 "없음" 으로 멈춘다(pipefail 로 조용히 끝나지 않게)
-cert_of() { "$BUILD_TOOLS/apksigner" verify --print-certs "$1" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' || true; }
+# 서명자 SHA-256 — verify 성공 + 서명자 정확히 1개일 때만 값, 아니면 die. $(…) 안에서 부르므로 호출 쪽에서 || exit 1
+cert_of() {
+  local out n
+  out="$("$BUILD_TOOLS/apksigner" verify --print-certs "$1" 2>&1)" || die "$2 apksigner verify 실패 — 설치하지 않는다: ${out##*$'\n'}"
+  n="$(printf '%s\n' "$out" | grep -c '^Signer #[0-9]* certificate SHA-256 digest: ' || true)"
+  [ "$n" = 1 ] || die "$2 서명자가 $n 개다 — 출고 APK 는 EAS 키 하나로만 서명된다. 설치하지 않는다"
+  printf '%s\n' "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'
+}
 # dumpsys package 에서 한 필드(첫 값, 줄 끝까지 — lastUpdateTime 은 "날짜 시각"). 전부 받은 뒤 고른다(head 로 자르면 SIGPIPE·pipefail)
 pkg_field() { local d; d="$(adbs shell dumpsys package "$PACKAGE" | tr -d '\r' | sed -n "s/^ *$1=//p")" || die "dumpsys package 실패($SERIAL)"; echo "${d%%$'\n'*}"; }
 
@@ -43,7 +50,7 @@ BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$APK")" || die "aapt2 dump badging
 NEW_PKG="$(echo "$BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p")"
 NEW_VNAME="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
 [ "$NEW_PKG" = "$PACKAGE" ] || die "APK 패키지가 $NEW_PKG — $PACKAGE 가 아니다"
-NEW_CERT="$(cert_of "$APK")"
+NEW_CERT="$(cert_of "$APK" "새 APK")" || exit 1
 [ -n "$NEW_CERT" ] || die "새 APK 서명을 못 읽었다: $APK"
 
 # ② 설치본 서명 — pm path → pull → apksigner. 설치 전에 대조한다
@@ -52,7 +59,7 @@ INSTALLED="$(adbs shell pm path "$PACKAGE" | tr -d '\r' | sed -n 's/^package://p
 PULL_DIR="$(mktemp -d)"
 trap 'rm -rf "$PULL_DIR"' EXIT
 adbs pull "$INSTALLED" "$PULL_DIR/installed.apk" >/dev/null
-OLD_CERT="$(cert_of "$PULL_DIR/installed.apk")"
+OLD_CERT="$(cert_of "$PULL_DIR/installed.apk" "기기 설치본")" || exit 1
 note "설치본 서명 SHA-256 ${OLD_CERT:-없음} · 새 APK 서명 SHA-256 $NEW_CERT"
 [ "$OLD_CERT" = "$NEW_CERT" ] || die "서명이 다르다 — 설치하지 않는다. adb install -r 은 서명이 다르면 거절되고, 지우고 까는 길은 페어링·기록을 잃는다. 사용자에게 보고하고 판단을 받는다"
 

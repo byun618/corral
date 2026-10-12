@@ -33,7 +33,7 @@ description: >-
 
 - `scripts/release.sh --prs "<번호…>" --notes <노트 파일>` (버전 지정이 있으면 `--bump`·`--version`).
 - 실패하면 멈추고 원문을 보고한다. exit 코드별 복구(3 충돌 · 7 태그 push · 8 dmg · 9 Release · 10 APK)는 `app/INSTALL.md` 「출고」와 스크립트 메시지를 따른다.
-  8·10 은 태그 push 뒤라 출고를 다시 돌리지 않는다 — 메시지의 「dmg 만 다시」(그 뒤 「APK」)·「APK 만 다시」 명령만.
+  8·10 은 태그 push 뒤라 출고를 다시 돌리지 않는다 — 메시지의 「dmg 만 다시」(그 뒤 「dmg 뒤 APK」)·「APK 만 다시」 아래 줄을 그대로 붙여 넣는다(`release-apk.sh --from-tag` — 여러 번 다시 돌려도 된다).
 
 ## 4. 마무리
 

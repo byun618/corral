@@ -11,11 +11,12 @@
 // · 감시 프로세스가 죽으면(E4ⓖ) 로그를 남기고 1초 뒤 다시 띄워 구독을 되살린다 — 60초 안 3번까지. 넘으면 멈추고 렌더러 안전망만 남는다.
 //   재기동 타이머는 허브가 들고 있다가 구독이 0 이 되거나 dispose 면 취소하고, 실행 시점에도 구독 수를 다시 본다(R1-C). 일부러 끈 프로세스의
 //   exit 는 그 child 를 보고 가려 장애로 세지 않는다(실제 utilityProcess 의 exit 는 kill 뒤 비동기로 온다).
-// · 감시 준비와 목록 읽기는 서로 기다리지 않는다(상태 모델 `specs/LIFE-589-explorer-tree/raw/claude/fix-r3/state-model.md`). 렌더러는 활성화되자마자
+// · 감시 준비와 목록 읽기는 서로 기다리지 않는다(상태 모델 `specs/LIFE-589-explorer-tree/raw/claude/fix-r4/state-model.md`). 렌더러는 활성화되자마자
 //   목록을 한 번 읽고(전환당 펼친 폴더 수 + 1 — E1ⓓ, 첫 표시가 감시 준비에 묶이지 않음 — E3ⓐ), 허브는 목록을 줄 때마다 그 폴더의 도장(정체 + mtime)을
 //   적어 둔다(`list`). 감시 프로세스가 `watching`(감시 시작)을 알리면 — 처음이든 늦게든 장애 재기동 뒤든 같게 — 적어 둔 폴더를 stat 만 해서 도장이
 //   달라진 폴더만 `changed` 로 민다(감시 시작 전 틈 — r1 보완). 그 사이 바뀐 게 없으면 다시 읽기 0 이다. 감시 시작 오류는 기다리는 것이 없으니 로그만 남고
-//   안전망이 맡는다(R3-C).
+//   안전망이 맡는다(R3-C). 도장에는 목록을 읽은 **논리 경로 → 실경로 대응**도 들어간다 — 감시가 없던 동안 링크 대상이 바뀌면 그 논리 경로를 민다(R4-B).
+//   `watching` 순간 아직 끝나지 않은 목록은 끝날 때 바로 대조한다(R4-A). 닫힌 루트·dispose 뒤 끝난 목록은 적지 않는다.
 // · 구독이 0 이 되면 감시 프로세스를 300 ms 뒤에 끈다 — worktree 전환(해제 → 바로 구독)이 프로세스를 매번 새로 띄우지 않게. 그 사이 새 구독이 오면 그대로 쓴다.
 //   ref 폴링·재기동 예약은 0 이 되는 즉시 멈춘다. dispose 는 바로 끈다.
 import fs from 'node:fs'
@@ -64,6 +65,9 @@ type Subscription = {
   gitAgain: boolean
 }
 
+/** 렌더러에 준 목록 하나 — 그 논리 경로가 풀린 실경로(realpath(루트) 기준 상대)와 그 폴더의 도장. */
+type ListedRecord = { real: string; stamp: string }
+
 type SubscribeResult = { ok: true } | { ok: false; code: string }
 
 export class ExplorerHub {
@@ -76,8 +80,10 @@ export class ExplorerHub {
   private generation = 0
   private restartTimer: NodeJS.Timeout | null = null
   private idleTimer: NodeJS.Timeout | null = null
-  /** 루트 → (실경로 상대 → 렌더러에 준 목록의 도장). 감시 시작 때 그 사이 바뀐 폴더를 가리는 데 쓴다. 열린 worktree 가 아니게 되면 버린다. */
-  private readonly listed = new Map<string, Map<string, string>>()
+  /** 루트 → (논리 경로 → 렌더러에 준 목록의 실경로·도장). 감시 시작 때 그 사이 바뀐 폴더·링크 대응을 가리는 데 쓴다. 열린 worktree 가 아니게 되면 버린다. */
+  private readonly listed = new Map<string, Map<string, ListedRecord>>()
+  /** 루트 → `watching` 받은 횟수. 목록이 이 값이 바뀐 뒤 끝나면(감시 준비가 목록 읽기 중에 왔다) 그 목록을 바로 대조한다(R4-A). */
+  private readonly watchEpoch = new Map<string, number>()
   private restarts: number[] = []
   private stopped = false
   private indexTimer: NodeJS.Timeout | null = null
@@ -134,6 +140,7 @@ export class ExplorerHub {
       // 감시가 실제로 붙었다(처음·늦게·재기동 뒤 모두 같은 길). 감시가 없던 동안 바뀐 폴더만 stat 으로 가려 민다.
       const sub = this.subs.get(message.id)
       if (sub === undefined) return
+      this.watchEpoch.set(sub.root, (this.watchEpoch.get(sub.root) ?? 0) + 1)
       void this.gapCheck(sub)
       this.scheduleGit(sub)
       return
@@ -183,31 +190,52 @@ export class ExplorerHub {
     this.idleTimer = null
   }
 
-  /** 목록 읽기(렌더러 `explorerList` 의 main 입구) — 결과의 도장을 적어 둔다. */
+  /** 목록 읽기(렌더러 `explorerList` 의 main 입구) — 결과의 논리 경로·실경로·도장을 적어 둔다. */
   async list(input: { roots: readonly string[]; root: unknown; rel: unknown }): ReturnType<typeof listDir> {
+    const root = input.root
+    const epoch = typeof root === 'string' ? (this.watchEpoch.get(root) ?? 0) : 0
     const result = await listDir(input)
-    if (result.ok && typeof input.root === 'string' && result.stamp !== '') {
-      const records = this.listed.get(input.root) ?? new Map<string, string>()
-      records.set(result.real, result.stamp)
-      this.listed.set(input.root, records)
-    }
+    // 그 사이 닫힌 루트·dispose 면 적지 않는다(늦은 완료가 정리된 도장을 되살리지 않게).
+    if (!result.ok || typeof root !== 'string' || result.stamp === '' || this.stopped || !this.deps.roots().includes(root)) return result
+    const record = { real: result.real, stamp: result.stamp }
+    const records = this.listed.get(root) ?? new Map<string, ListedRecord>()
+    records.set(result.dir, record)
+    this.listed.set(root, records)
+    // 감시 준비가 이 목록 읽기 중에 왔다 — 준비 때 대조에 이 결과가 없었으니 지금 대조한다(R4-A). 응답보다 push 가 먼저 가면 렌더러는 읽는 중 변경으로 본다.
+    const sub = this.subs.get(root)
+    if (sub !== undefined && (this.watchEpoch.get(root) ?? 0) !== epoch) await this.pushGap({ sub, entries: [[result.dir, record]], reason: 'late_list' })
     return result
   }
 
-  /** 감시 시작 틈 맞추기 — 적어 둔 폴더를 stat 만 해서 도장이 달라진(없어진 것 포함) 폴더를 `changed` 로 민다. 목록은 읽지 않는다. */
+  /** 감시 시작 틈 맞추기 — 적어 둔 목록을 stat·realpath 만 해서 도장이나 논리 → 실경로 대응이 달라진 것을 `changed` 로 민다. 목록은 읽지 않는다. */
   private async gapCheck(sub: Subscription): Promise<void> {
     const records = this.listed.get(sub.root)
     this.counters.gapChecks += 1
     if (records === undefined || records.size === 0) return
-    const dirs: string[] = []
-    for (const [real, stamp] of records) {
-      const now = await dirStamp(real === '' ? sub.realRoot : path.join(sub.realRoot, ...real.split('/')))
-      if (now?.stamp !== stamp) dirs.push(real)
+    await this.pushGap({ sub, entries: [...records], reason: 'watching' })
+  }
+
+  /**
+   * 대조 — 실경로 폴더의 도장이 다르면(없어진 것 포함) 그 실경로를, 논리 경로가 지금 다른 실경로로 풀리면(링크 대상 교체·삭제 — R4-B) 그 논리 경로를 민다.
+   * 렌더러는 변경 폴더를 논리 경로·실경로 둘 다로 맞춘다. 대응이 바뀐 논리 경로의 자손은 빼고 민다 — 렌더러가 부모의 실경로 변화로 자손을 무효화한다(R3-B).
+   */
+  private async pushGap(input: { sub: Subscription; entries: [string, ListedRecord][]; reason: string }): Promise<void> {
+    const { sub } = input
+    const stampChanged = new Set<string>()
+    const remapped: string[] = []
+    for (const [rel, record] of input.entries) {
+      const now = await dirStamp(record.real === '' ? sub.realRoot : path.join(sub.realRoot, ...record.real.split('/')))
+      if (now?.stamp !== record.stamp) stampChanged.add(record.real)
+      const confined = await confine({ roots: this.deps.roots(), root: sub.root, rel })
+      const realNow = confined.ok ? path.relative(confined.realRoot, confined.abs).split(path.sep).join('/') : null
+      if (realNow !== record.real) remapped.push(rel)
     }
+    const topRemapped = remapped.filter((rel) => !remapped.some((other) => other !== rel && (other === '' || rel.startsWith(`${other}/`))))
+    const dirs = [...new Set([...stampChanged, ...topRemapped])]
     if (this.subs.get(sub.root) !== sub || dirs.length === 0) return
     this.counters.gapChangedDirs += dirs.length
     this.counters.pushedChanged += 1
-    this.deps.log('explorer.watch.gap', { root: sub.root, checked: records.size, changed: dirs.length })
+    this.deps.log('explorer.watch.gap', { root: sub.root, reason: input.reason, checked: input.entries.length, changed: stampChanged.size, remapped: topRemapped.length })
     this.deps.push({ kind: 'changed', root: sub.root, dirs })
   }
 
@@ -297,6 +325,7 @@ export class ExplorerHub {
     const roots = this.deps.roots()
     for (const root of new Set([...this.subs.keys(), ...this.wanted.keys()])) if (!roots.includes(root)) this.unsubscribe(root)
     for (const root of [...this.listed.keys()]) if (!roots.includes(root)) this.listed.delete(root)
+    for (const root of [...this.watchEpoch.keys()]) if (!roots.includes(root)) this.watchEpoch.delete(root)
   }
 
   /** 렌더러 안전망·새로고침 — git 상태를 바로 다시 읽는다. */
@@ -319,6 +348,7 @@ export class ExplorerHub {
     this.clearRestart()
     this.clearIdle()
     this.listed.clear()
+    this.watchEpoch.clear()
     for (const sub of this.subs.values()) if (sub.gitTimer !== null) clearTimeout(sub.gitTimer)
     this.subs.clear()
     if (this.indexTimer !== null) clearInterval(this.indexTimer)

@@ -288,3 +288,30 @@ describe('R3-B 부모 실경로·정체가 바뀌면 자손 캐시를 버린다'
     expect(names('alias/sub')).toEqual(['fresh.txt'])
   })
 })
+
+describe('R4-C 안 보이는 목록의 진행 중 요청 — 늦은 옛 응답이 무효 표시를 지우지 못한다', () => {
+  it('자손을 다시 읽는 중에 접고 부모 대상이 바뀐 뒤 옛 응답이 와도 무효로 남고, 다시 펼치면 새 대상을 읽는다', async () => {
+    fsView.set('alias', { real: 'src', id: 'id:src', entries: [dir('sub')] })
+    fsView.set('alias/sub', { real: 'src/sub', id: 'id:src/sub', entries: [file('old.txt')] })
+    await act(async () => current().expand('alias'))
+    await act(async () => current().expand('alias/sub'))
+    hold.add('alias/sub')
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['src/sub'] }))
+    expect(held).toHaveLength(1)
+    await act(async () => current().collapse('alias/sub'))
+    fsView.set('alias', { real: 'dest', id: 'id:dest', entries: [dir('sub')] })
+    fsView.set('alias/sub', { real: 'dest/sub', id: 'id:dest/sub', entries: [file('new.txt')] })
+    hold.delete('alias/sub')
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['alias', ''] }))
+    // 접힌 자손은 즉시 다시 읽지 않는다(R2-C).
+    expect(calls.sort()).toEqual(['', 'alias'])
+    await act(async () => held.splice(0).forEach((release) => release()))
+    expect(current().state?.invalid.has('alias/sub')).toBe(true)
+    calls = []
+    await act(async () => current().expand('alias/sub'))
+    expect(calls).toEqual(['alias/sub'])
+    expect(names('alias/sub')).toEqual(['new.txt'])
+    expect(current().state?.real.get('alias/sub')).toBe('dest/sub')
+  })
+})

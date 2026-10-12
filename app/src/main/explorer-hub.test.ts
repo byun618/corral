@@ -2,6 +2,7 @@
 // 가짜 kill 은 실제 utilityProcess 처럼 exit 를 **나중에**(비동기) 부른다(R1-C). R1-B·E·F 회귀 시험은 아래.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -255,6 +256,81 @@ describe('R3-C 감시 준비와 목록은 서로 기다리지 않는다 — 감�
     roots = [rootA, rootB]
     // 적어 둔 도장이 남아 있었다면 이 변경이 changed 로 나갔을 것이다(양성 대조는 위 「틈에 바뀐 폴더」 시험).
     fs.writeFileSync(path.join(rootA, `after-close-${Date.now()}.txt`), 'c')
+    await hub.subscribe(rootA)
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(30)
+    expect(hub.status().counters.gapChangedDirs).toBe(0)
+  })
+})
+
+describe('R4 감시 준비 순간의 진행 중 목록·링크 대응·늦은 완료', () => {
+  /** 다음 readdir 하나를 결과를 읽은 뒤 붙든다 — 목록 요청이 「스냅샷은 읽었지만 아직 안 끝남」 인 상태. */
+  const holdNextReaddir = (): { release: () => void; reached: Promise<void> } => {
+    const original = fsp.readdir.bind(fsp)
+    let release = (): void => {}
+    let reach = (): void => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const reached = new Promise<void>((resolve) => (reach = resolve))
+    vi.spyOn(fsp, 'readdir').mockImplementationOnce(async (target, options) => {
+      const result = await original(target, options)
+      reach()
+      await gate
+      return result
+    })
+    return { release, reached }
+  }
+  it('R4-A 준비 알림이 목록 완료보다 먼저 — 끝난 목록을 바로 대조해 그 사이 변경을 민다', async () => {
+    autoAck = false
+    const dirRel = `race-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, dirRel))
+    await hub.subscribe(rootA)
+    const gate = holdNextReaddir()
+    const listing = hub.list({ roots, root: rootA, rel: dirRel })
+    await gate.reached
+    fs.writeFileSync(path.join(rootA, dirRel, 'during.txt'), 'd')
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(30)
+    gate.release()
+    const result = await listing
+    expect(result.ok && result.entries.map((entry) => entry.name)).toEqual([])
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [dirRel] }])
+  })
+  it('R4-A 준비 뒤 시작한 목록은 따로 대조하지 않는다(추가 stat·push 0)', async () => {
+    await hub.subscribe(rootA)
+    await sleep(30)
+    const dirRel = `after-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, dirRel))
+    await hub.list({ roots, root: rootA, rel: dirRel })
+    await sleep(30)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([])
+  })
+  it('R4-B 감시 공백 동안 링크 대상이 바뀌면 그 논리 경로를 민다(자손은 빼고) — 옛 대상 폴더는 그대로여도', async () => {
+    autoAck = false
+    const tag = `l${Date.now()}`
+    for (const target of ['src', 'dest']) fs.mkdirSync(path.join(rootA, `${tag}-${target}`, 'sub'), { recursive: true })
+    fs.symlinkSync(`${tag}-src`, path.join(rootA, `${tag}-alias`))
+    await hub.list({ roots, root: rootA, rel: `${tag}-alias` })
+    await hub.list({ roots, root: rootA, rel: `${tag}-alias/sub` })
+    await hub.subscribe(rootA)
+    fs.unlinkSync(path.join(rootA, `${tag}-alias`))
+    fs.symlinkSync(`${tag}-dest`, path.join(rootA, `${tag}-alias`))
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [`${tag}-alias`] }])
+  })
+  it('닫힌 루트의 늦은 목록 완료는 도장을 되살리지 않는다', async () => {
+    const dirRel = `late-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, dirRel))
+    const gate = holdNextReaddir()
+    const listing = hub.list({ roots, root: rootA, rel: dirRel })
+    await gate.reached
+    roots = [rootB]
+    hub.prune()
+    gate.release()
+    await listing
+    roots = [rootA, rootB]
+    autoAck = false
+    fs.writeFileSync(path.join(rootA, dirRel, 'after-close.txt'), 'c')
     await hub.subscribe(rootA)
     children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
     await sleep(30)

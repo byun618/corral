@@ -7,9 +7,10 @@
 // · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 열 때·worktree 로 돌아올 때는 **바로** 루트 + 보이는 펼친 폴더를 한 번 읽는다 — 닫힌 동안의
 //   변경(E4ⓑ — Orca #24044)을 맞추고 전환당 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ). 감시 준비를 기다리지 않는다(E3ⓐ — R3-C). 감시가 붙기 전 틈의
 //   변경은 main 이 감시 시작 때 stat 으로 가려 `changed` 로 보낸다. 루트 상태는 활성화 때 만든다 — 먼저 오는 git 스냅샷을 잃지 않게(R3-A).
-//   열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ). 전체 상태·전이는 `specs/LIFE-589-explorer-tree/raw/claude/fix-r3/state-model.md`.
+//   열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ). 전체 상태·전이는 `specs/LIFE-589-explorer-tree/raw/claude/fix-r4/state-model.md`.
 // · 폴더를 다시 읽었더니 실경로나 정체(dev:ino)가 바뀌었으면(링크 대상 교체·지우고 다시 만듦) 그 아래 캐시·실경로는 다른 폴더의 것이다 — 버리고,
-//   보이는 펼친 자손은 다시 읽고 접힌 자손은 다음 펼침 때 읽는다(R3-B).
+//   보이는 펼친 자손은 다시 읽고 접힌 자손은 다음 펼침 때 읽는다(R3-B). 접힌 자손의 요청이 날아가 있으면 그 응답도 낡은 것으로 표시해,
+//   늦게 온 옛 응답이 무효 표시를 지우지 못하게 한다(R4-C — 끝나면 무효로 남고, 펼칠 때 새로 읽는다).
 // · 변경 push 는 **보이는** 폴더(루트·조상이 다 펼쳐진 펼친 폴더)만 다시 읽는다. 안 보이는 캐시는 무효 표시만 하고 다시 보일 때 읽는다(R2-C).
 //   펼친 폴더가 읽기에 실패했어도(삭제·일시 오류) 그 경로의 변경이 오면 다시 읽는다(R2-D). 실경로를 아직 모르는 첫 읽기 중에는 어떤 변경이든 끝난 뒤 한 번 더 읽는다(R2-B).
 //   변경 push 의 폴더는 **실경로**(realpath(루트) 기준)다 — 목록마다 main 이 준 실경로(`real`)로 맞춰, 루트 안 디렉터리 링크로 펼친 목록도 대상 변경에 다시 읽힌다(R1-G).
@@ -101,6 +102,17 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     return created
   }, [])
 
+  /** 안 보이는 목록을 낡은 것으로 — 목록이 있으면 무효 표시, 요청이 날아가 있으면 그 응답도 낡음(끝나면 무효로 남는다 — R4-C). 다시 읽지는 않는다(R2-C). */
+  const hideStale = useCallback(
+    (input: { key: string; rel: string }) => {
+      const store = storeOf(input.key)
+      if (store.listings.has(input.rel)) store.invalid.add(input.rel)
+      const flight = `${input.key}\0${input.rel}`
+      if (inflight.current.has(flight)) stale.current.add(flight)
+    },
+    [storeOf],
+  )
+
   /**
    * `rel` 아래(자손) 캐시를 다른 폴더의 것으로 보고 버린다(R3-B) — 실경로·정체를 지우고, 보이는 펼친 자손은 다시 읽고(읽는 중이면 끝난 뒤 한 번 더),
    * 안 보이는 자손 목록은 무효 표시(다시 펼칠 때 읽음 — R2-C).
@@ -109,15 +121,17 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     (input: { key: string; rel: string; reload: (key: string, rel: string) => void }) => {
       const store = storeOf(input.key)
       const prefix = input.rel === '' ? '' : `${input.rel}/`
-      for (const other of new Set([...store.listings.keys(), ...store.real.keys(), ...store.errors.keys(), ...store.expanded])) {
+      const flightPrefix = `${input.key}\0`
+      const reading = [...inflight.current].filter((flight) => flight.startsWith(flightPrefix)).map((flight) => flight.slice(flightPrefix.length))
+      for (const other of new Set([...store.listings.keys(), ...store.real.keys(), ...store.errors.keys(), ...store.expanded, ...reading])) {
         if (other === input.rel || !other.startsWith(prefix)) continue
         store.real.delete(other)
         store.ids.delete(other)
         if (isVisibleDir(store.expanded, other)) input.reload(input.key, other)
-        else if (store.listings.has(other)) store.invalid.add(other)
+        else hideStale({ key: input.key, rel: other })
       }
     },
-    [storeOf],
+    [storeOf, hideStale],
   )
 
   const load = useCallback(
@@ -175,6 +189,12 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
           store.invalid.delete(rel)
         }
       }
+      // 버린 안 보이는 목록의 요청이 아직 날아가 있으면 그 응답도 낡음 — 끝나면 무효로 남아 다시 보일 때 읽는다(R4-C).
+      const flightPrefix = `${key}\0`
+      for (const flight of inflight.current) {
+        const rel = flight.slice(flightPrefix.length)
+        if (flight.startsWith(flightPrefix) && rel !== '' && !visible.has(rel)) stale.current.add(flight)
+      }
       load(key, '')
       for (const rel of visible) load(key, rel)
     },
@@ -196,11 +216,11 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
         const real = store.real.get(rel)
         const hit = changed.has(rel) || (real !== undefined && changed.has(real)) || (real === undefined && reading.has(rel))
         if (!hit) continue
-        if (reading.has(rel) || isVisibleDir(store.expanded, rel)) load(key, rel)
-        else if (store.listings.has(rel)) store.invalid.add(rel)
+        if (isVisibleDir(store.expanded, rel)) load(key, rel)
+        else hideStale({ key, rel })
       }
     },
-    [storeOf, load],
+    [storeOf, load, hideStale],
   )
 
   // main push — 감시 배치·overflow·git 스냅샷. 리스너는 한 번만 단다(루트는 push 에 실려 온다).

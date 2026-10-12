@@ -6,7 +6,7 @@ import type { GitSnapshotWire } from './explorer-git.js'
 
 // 경로는 **worktree 루트 기준 상대 경로**(구분자 `/`, 루트 = '')로 주고받는다 — 절대 경로를 렌더러가 조립하지 않게 해 가둠을 main 한 곳에 둔다.
 
-/** 한 항목. `kind` 는 링크를 따라간 대상의 종류(디렉터리 링크는 `dir`), `link` 는 그 항목 자체가 심볼릭 링크인지. */
+/** 한 항목. `kind` 는 링크를 따라간 대상의 종류(디렉터리 링크는 `dir` — 단 루트 밖 링크는 따라가 읽지 않아 `file`), `link` 는 그 항목 자체가 심볼릭 링크인지. */
 export type ExplorerEntry = {
   name: string
   kind: 'dir' | 'file'
@@ -22,9 +22,14 @@ export type ExplorerRefusal =
   | 'not_found'
   | 'not_directory'
   | 'io_error'
+  | 'changed' // 검사한 경로가 접근하는 동안 바뀌었다(교체·링크 바꿔치기) — 결과를 버렸다(R1-A)
 
 export type ExplorerListResult =
-  | { ok: true; dir: string; entries: ExplorerEntry[] }
+  /**
+   * `real` = 이 폴더의 실경로를 realpath(루트) 기준 상대로(`/` 구분). 링크 아닌 폴더면 `dir` 과 같고, 루트 안 디렉터리 링크를 펼친 폴더면 대상 쪽 경로다.
+   * 감시 이벤트는 실경로로 오므로 렌더러는 이 값으로 「어느 목록을 다시 읽을지」 를 고른다(R1-G — 링크를 따라 따로 감시하지 않는다). 가둠을 지난 루트 안 경로뿐이다.
+   */
+  | { ok: true; dir: string; real: string; entries: ExplorerEntry[] }
   | { ok: false; dir: string; code: ExplorerRefusal; error: string }
 
 /** 렌더러 안전망 재조회 주기 (E4ⓒ) — 패널이 열려 있는 동안 펼친 폴더 목록·git 상태를 이 주기로 다시 읽는다(감시 이벤트 유실 대비 — Orca #17746). */

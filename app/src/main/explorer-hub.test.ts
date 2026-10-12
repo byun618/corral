@@ -1,9 +1,11 @@
 // LIFE-589 E4ⓕⓖ — 허브 수명: 구독 0 이면 감시 프로세스 0, 죽으면 1초 뒤 재기동·구독 복원, 60초 안 3번 넘으면 멈춤. 가짜 child 로 본다.
+// 가짜 kill 은 실제 utilityProcess 처럼 exit 를 **나중에**(비동기) 부른다(R1-C). R1-B·E·F 회귀 시험은 아래.
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExplorerHub, type WatcherChild } from './explorer-hub.js'
+import { ExplorerHub, GIT_MAX_WAIT_MS, indexStamp, type WatcherChild } from './explorer-hub.js'
 import { RESTART_DELAY_MS, RESTART_MAX } from './explorer-watch-batch.js'
 import type { ExplorerPush } from '../shared/explorer.js'
 
@@ -19,7 +21,9 @@ function fakeChild(pid: number): FakeChild {
     on: (event, listener) => void listeners[event].push(listener),
     kill: () => {
       child.killed = true
-      for (const listener of listeners.exit) listener(null)
+      setTimeout(() => {
+        for (const listener of listeners.exit) listener(null)
+      }, 5)
       return true
     },
     emit: (event, value) => {
@@ -125,5 +129,141 @@ describe('E4ⓖ 장애 재기동', () => {
     vi.advanceTimersByTime(RESTART_DELAY_MS * 5)
     expect(children).toHaveLength(RESTART_MAX + 1)
     expect(hub.status()).toMatchObject({ childPid: null, restartsInWindow: RESTART_MAX })
+  })
+})
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+describe('R1-B 진행 중 구독 vs 해제', () => {
+  it('구독 직후 해제 — await 가 끝나도 구독 0·프로세스 0', async () => {
+    const pending = hub.subscribe(rootA)
+    hub.unsubscribe(rootA)
+    expect(await pending).toEqual({ ok: false, code: 'cancelled' })
+    expect(hub.status().subscriptions).toEqual([])
+    expect(children).toHaveLength(0)
+  })
+  it('구독 중 worktree 닫힘(prune) — 구독 0', async () => {
+    const pending = hub.subscribe(rootA)
+    roots = [rootB]
+    hub.prune()
+    expect(await pending).toMatchObject({ ok: false })
+    expect(hub.status().subscriptions).toEqual([])
+    expect(children).toHaveLength(0)
+  })
+  it('같은 루트 동시 구독은 하나로 합친다', async () => {
+    const first = hub.subscribe(rootA)
+    const second = hub.subscribe(rootA)
+    expect(second).toBe(first)
+    await Promise.all([first, second])
+    expect(hub.status().subscriptions).toEqual([rootA])
+    expect(children[0]?.posted).toEqual([{ type: 'watch', id: rootA, path: rootA }])
+  })
+  it('구독 → 해제 → 다시 구독(모두 진행 중) — 마지막 뜻대로 구독된다', async () => {
+    const first = hub.subscribe(rootA)
+    hub.unsubscribe(rootA)
+    const again = hub.subscribe(rootA)
+    await Promise.all([first, again])
+    expect(hub.status().subscriptions).toEqual([rootA])
+  })
+  it('dispose 뒤 끝난 구독은 남지 않는다', async () => {
+    const pending = hub.subscribe(rootA)
+    hub.dispose()
+    await pending
+    expect(hub.status().subscriptions).toEqual([])
+    expect(children).toHaveLength(0)
+  })
+})
+
+describe('감시 시작 알림 → 한 번 다시 읽기 (수정 r1 격리 실행에서 발견)', () => {
+  it('watching 을 받으면 그 루트에 overflow 를 민다 — 모르는 id 는 버린다', async () => {
+    await hub.subscribe(rootA)
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    children[0]?.emit('message', { type: 'watching', id: '/nope', count: 1 })
+    expect(pushed.filter((event) => event.kind === 'overflow')).toEqual([{ kind: 'overflow', root: rootA }])
+  })
+})
+
+describe('R1-C 재기동 타이머 소유·비동기 exit', () => {
+  it('죽은 뒤 재기동 대기 중 마지막 구독 해제 → 재기동하지 않는다', async () => {
+    await hub.subscribe(rootA)
+    children[0]?.emit('exit', 1)
+    hub.unsubscribe(rootA)
+    await sleep(RESTART_DELAY_MS + 200)
+    expect(children).toHaveLength(1)
+    expect(hub.status()).toMatchObject({ childPid: null, subscriptions: [] })
+  })
+  it('일부러 끈 프로세스의 늦은 exit 는 장애로 안 센다 — 그 사이 새 구독이 띄운 프로세스도 그대로', async () => {
+    await hub.subscribe(rootA)
+    hub.unsubscribe(rootA)
+    expect(children[0]?.killed).toBe(true)
+    await hub.subscribe(rootB)
+    expect(children).toHaveLength(2)
+    await sleep(50)
+    expect(hub.status()).toMatchObject({ childPid: 1001, subscriptions: [rootB], restartsInWindow: 0 })
+    await sleep(RESTART_DELAY_MS + 200)
+    expect(children).toHaveLength(2)
+  })
+  it('재기동 대기 중 새 구독이 먼저 띄우면 기존 구독도 함께 감시하고, 예약 재기동은 취소된다', async () => {
+    await hub.subscribe(rootA)
+    children[0]?.emit('exit', 1)
+    await hub.subscribe(rootB)
+    expect(children).toHaveLength(2)
+    expect(children[1]?.posted).toEqual(expect.arrayContaining([{ type: 'watch', id: rootA, path: rootA }, { type: 'watch', id: rootB, path: rootB }]))
+    await sleep(RESTART_DELAY_MS + 200)
+    expect(children).toHaveLength(2)
+  })
+})
+
+describe('R1-E·F git 재조회 (실제 git)', () => {
+  let repo = ''
+  beforeEach(() => {
+    repo = path.join(base, `repo-${Math.random().toString(36).slice(2)}`)
+    fs.mkdirSync(repo)
+    const git = (...args: string[]): void => void execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args])
+    git('init', '-q', '-b', 'main')
+    fs.writeFileSync(path.join(repo, 'f.txt'), 'one')
+    git('add', '.')
+    git('commit', '-qm', 'one')
+    fs.writeFileSync(path.join(repo, 'f.txt'), 'two')
+    git('commit', '-qam', 'two')
+    roots = [repo]
+  })
+  const gitPushes = (): number => pushed.filter((event) => event.kind === 'git').length
+
+  it(`R1-E 연속 변경(200 ms 간격) 중에도 git 이 ${GIT_MAX_WAIT_MS} ms 최대 대기 안에 돈다`, async () => {
+    await hub.subscribe(repo)
+    await sleep(400)
+    const initial = gitPushes()
+    const timer = setInterval(() => children[0]?.emit('message', { type: 'batch', id: repo, kind: 'changed', dirs: [''] }), 200)
+    await sleep(2_600)
+    clearInterval(timer)
+    expect(gitPushes() - initial).toBeGreaterThanOrEqual(2)
+  }, 10_000)
+
+  it('R1-F `reset --soft` (index·HEAD 파일 그대로, ref 만 이동) 를 도장이 잡고 5 s 안에 git push', async () => {
+    const gitDir = path.join(repo, '.git')
+    const before = indexStamp(gitDir)
+    await hub.subscribe(repo)
+    await sleep(2_500)
+    const initial = gitPushes()
+    execFileSync('git', ['-C', repo, 'reset', '--soft', 'HEAD^'])
+    expect(indexStamp(gitDir)).not.toBe(before)
+    const started = Date.now()
+    while (gitPushes() === initial && Date.now() - started < 5_000) await sleep(50)
+    expect(gitPushes()).toBeGreaterThan(initial)
+    const last = pushed.filter((event) => event.kind === 'git').at(-1)
+    expect(last?.kind === 'git' ? last.git?.marks : null).toEqual([['f.txt', 'M']])
+  }, 15_000)
+
+  it('R1-F linked worktree — ref 는 공용 gitdir 에 있다(commondir), packed-refs 변화도 잡는다', () => {
+    const linked = path.join(base, `linked-${Math.random().toString(36).slice(2)}`)
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'side', linked])
+    const linkedGitDir = execFileSync('git', ['-C', linked, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
+    const before = indexStamp(linkedGitDir)
+    execFileSync('git', ['-C', repo, 'update-ref', 'refs/heads/side', 'HEAD^'])
+    const moved = indexStamp(linkedGitDir)
+    expect(moved).not.toBe(before)
+    execFileSync('git', ['-C', repo, 'pack-refs', '--all'])
+    expect(indexStamp(linkedGitDir)).not.toBe(moved)
   })
 })

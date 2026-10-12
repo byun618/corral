@@ -1,9 +1,10 @@
 // LIFE-589 E7ⓑ — 가둠 양성 대조(단위). 같은 함수에 ① 안 경로 ② `..` 탈출 ③ 절대 경로 ④ 밖을 가리키는 링크 ⑤ 등록 안 된 루트 ⑥ 형 위반 + 접두사 함정.
 // 「거절이 그 검사에서 났다」 는 사유 코드로 보인다. 그리고 접두사 검사를 `startsWith(root)` 로 약하게 바꾸면(변이) 함정이 통과됨을 `isInside` 대조로 보인다.
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { confine, isInside, listDir } from './explorer-fs.js'
 
 let base = ''
@@ -73,16 +74,84 @@ describe('E2ⓗ 목록 — 링크 표시·루프 안전', () => {
     const top = await listDir({ roots: [root], root, rel: '' })
     if (!top.ok) throw new Error(top.error)
     const byName = Object.fromEntries(top.entries.map((entry) => [entry.name, `${entry.kind}:${entry.link}`]))
-    expect(byName).toMatchObject({ src: 'dir:none', 'escape-dir': 'dir:outside', 'escape-file': 'file:outside', broken: 'file:broken' })
+    // 밖 링크는 경계 판정(realpath) 뒤 더 읽지 않는다 — 종류를 모르니 `file`(R1-A).
+    expect(byName).toMatchObject({ src: 'dir:none', 'escape-dir': 'file:outside', 'escape-file': 'file:outside', broken: 'file:broken' })
     const deep = await listDir({ roots: [root], root, rel: 'src/deep' })
     if (!deep.ok) throw new Error(deep.error)
     expect(deep.entries).toEqual([{ name: 'up', kind: 'dir', link: 'ok' }])
   })
-  it('조상 링크를 따라 몇 겹을 펼쳐도 한 번에 한 폴더만 읽고 끝난다(재귀 없음)', async () => {
+  it('조상 링크를 따라 몇 겹을 펼쳐도 한 번에 한 폴더만 읽고 끝난다(재귀 없음) — real 은 실경로(R1-G)', async () => {
     const nested = await listDir({ roots: [root], root, rel: 'src/deep/up/src/deep/up/src' })
-    expect(nested).toMatchObject({ ok: true })
+    expect(nested).toMatchObject({ ok: true, real: 'src' })
+    expect(await listDir({ roots: [root], root, rel: 'src/deep/up' })).toMatchObject({ ok: true, real: '' })
+    expect(await listDir({ roots: [root], root, rel: 'src' })).toMatchObject({ ok: true, real: 'src' })
   })
   it('파일을 폴더로 읽으면 not_directory', async () => {
     expect(await listDir({ roots: [root], root, rel: 'src/a.ts' })).toMatchObject({ ok: false, code: 'not_directory' })
+  })
+})
+
+// R1-A — 검사(realpath)와 접근(readdir) 사이 바꿔치기. 리뷰어 `main-probes.mts` 와 같은 주입: realpath 가 값을 돌려주기 직전에 파일시스템을 바꾼다.
+describe('R1-A 가둠 TOCTOU — 접근 뒤 재확인', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+  const swapAfterRealpath = (target: string, swap: () => void): void => {
+    const original = fsp.realpath
+    let swapped = false
+    vi.spyOn(fsp, 'realpath').mockImplementation(async (p, options) => {
+      const real = await original(p, options)
+      if (String(p) === target && !swapped) {
+        swapped = true
+        swap()
+      }
+      return real
+    })
+  }
+  const setup = (name: string): { wt: string; outside: string } => {
+    const wt = path.join(base, `${name}-wt`)
+    const outside = path.join(base, `${name}-outside`)
+    fs.mkdirSync(path.join(wt, 'mid', 'safe'), { recursive: true })
+    fs.writeFileSync(path.join(wt, 'mid', 'safe', 'inside.txt'), 'i')
+    fs.mkdirSync(path.join(outside, 'safe'), { recursive: true })
+    fs.writeFileSync(path.join(outside, 'OUTSIDE_SECRET_NAME.txt'), 'o')
+    fs.writeFileSync(path.join(outside, 'safe', 'OUTSIDE_SECRET_NAME.txt'), 'o')
+    return { wt, outside }
+  }
+
+  it('최종 성분 교체 — 밖 이름을 돌려주지 않고 changed', async () => {
+    const { wt, outside } = setup('final')
+    swapAfterRealpath(path.join(wt, 'mid', 'safe'), () => {
+      fs.renameSync(path.join(wt, 'mid', 'safe'), path.join(wt, 'mid', 'saved'))
+      fs.symlinkSync(outside, path.join(wt, 'mid', 'safe'))
+    })
+    const result = await listDir({ roots: [wt], root: wt, rel: 'mid/safe' })
+    expect(result).toMatchObject({ ok: false, code: 'changed' })
+    expect(JSON.stringify(result)).not.toContain('OUTSIDE_SECRET_NAME')
+  })
+
+  it('중간 성분 교체 — 밖 이름을 돌려주지 않고 changed', async () => {
+    const { wt, outside } = setup('middle')
+    swapAfterRealpath(path.join(wt, 'mid', 'safe'), () => {
+      fs.renameSync(path.join(wt, 'mid'), path.join(wt, 'mid-saved'))
+      fs.symlinkSync(outside, path.join(wt, 'mid'))
+    })
+    const result = await listDir({ roots: [wt], root: wt, rel: 'mid/safe' })
+    expect(result).toMatchObject({ ok: false, code: 'changed' })
+    expect(JSON.stringify(result)).not.toContain('OUTSIDE_SECRET_NAME')
+  })
+
+  it('양성 대조 — 바꿔치기 없으면 같은 경로가 그대로 읽힌다', async () => {
+    const { wt } = setup('plain')
+    expect(await listDir({ roots: [wt], root: wt, rel: 'mid/safe' })).toEqual({ ok: true, dir: 'mid/safe', real: 'mid/safe', entries: [{ name: 'inside.txt', kind: 'file', link: 'none' }] })
+  })
+
+  it('밖을 가리키는 링크 항목은 밖을 stat 하지 않는다', async () => {
+    const { wt, outside } = setup('nostat')
+    fs.symlinkSync(outside, path.join(wt, 'out-link'))
+    const statSpy = vi.spyOn(fsp, 'stat')
+    const result = await listDir({ roots: [wt], root: wt, rel: '' })
+    expect(result).toMatchObject({ ok: true })
+    expect(statSpy.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith(outside))).toEqual([])
   })
 })

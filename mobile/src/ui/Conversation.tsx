@@ -426,7 +426,7 @@ function ReplyBlock({ item, head, kind, cursor }: { item: Extract<ChatItem, { ki
     <View style={{ gap: 6 }}>
       {head ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Avatar kind={kind} dot="idle" size={22} />
+          <Avatar kind={kind} size={22} />
           <Text style={{ fontSize: 13, color: color.fg, fontFamily: font.semibold }}>{kind === null ? '에이전트' : AGENT_NAME[kind]}</Text>
           {item.at !== null ? <Text style={{ fontSize: 11.5, color: color.fgDim, fontFamily: mono }}>{hhmm(item.at)}</Text> : null}
         </View>

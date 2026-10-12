@@ -144,7 +144,7 @@ export default function Home() {
         <View className="flex-1 gap-0.5">
           <Text className="text-[20px] font-semibold text-fg">대화방</Text>
           <View className="flex-row items-center gap-1.5">
-            {status.tone === 'ok' ? <View className="h-[7px] w-[7px] rounded-full bg-accent" /> : null}
+            {status.tone === 'ok' ? <View className="h-[7px] w-[7px] rounded-full bg-st-ok" /> : null}
             <Text className={`text-preview ${status.tone === 'error' ? 'text-error' : status.tone === 'ok' ? 'text-fg-muted' : 'text-fg-dim'}`} numberOfLines={1}>
               {status.text}
             </Text>

@@ -12,7 +12,10 @@ export const color = {
   fgFaint: '#525252',
   line: 'rgba(255,255,255,0.07)',
   lineStrong: 'rgba(255,255,255,0.15)',
-  accent: '#7dd3a0',
+  /** 상호작용·브랜드 — LIFE-594 D1 */
+  accent: '#c7b28a',
+  /** --st-ok — 완료·성공·연결 자리(LIFE-594 D1, 옛 accent 초록) */
+  stOk: '#7dd3a0',
   error: '#e06c5f',
   /** --st-error 12% */
   errorTint12: 'rgba(224,108,95,0.12)',
@@ -32,7 +35,7 @@ export const color = {
   questionTint8: 'rgba(255,105,0,0.08)',
   questionTint40: 'rgba(255,105,0,0.4)',
   /** --accent 8% */
-  accentTint8: 'rgba(125,211,160,0.08)',
+  accentTint8: 'rgba(199,178,138,0.08)',
 } as const
 
 /** 번들 글꼴(LIFE-580 J7) — Android 는 굵기마다 파일이 따로라 fontWeight 대신 이름으로 고른다. 번들이 없는 실행(개발 서버 등)은 시스템 글꼴로 떨어진다. */

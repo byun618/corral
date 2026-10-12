@@ -12,7 +12,9 @@ module.exports = {
         'bg-accent': '#404040',
         fg: { DEFAULT: '#fafafa', muted: '#a1a1a1', dim: '#737373', faint: '#525252' },
         line: { DEFAULT: 'rgba(255,255,255,0.07)', strong: 'rgba(255,255,255,0.15)' },
-        accent: '#7dd3a0',
+        accent: '#c7b28a',
+        // 완료·성공·연결 자리 — LIFE-594 D1 로 accent 에서 뗀 상태 토큰(--st-ok, 옛 accent 초록).
+        'st-ok': '#7dd3a0',
         error: '#e06c5f',
         scrim: 'rgba(6,7,8,0.62)',
         // 상태 점·에이전트 — design-tokens-mobile.css(데스크톱 oklch → hex). LIFE-580.

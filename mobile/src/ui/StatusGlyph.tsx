@@ -1,6 +1,10 @@
 // 상태 글리프 (design-handoff §2 StatusGlyph) — 데스크톱 상태 점과 같은 모양. 색은 design-tokens-mobile.css(L5ⓕ).
 import { useEffect, useRef } from 'react'
-import { Animated, Easing, Text, View } from 'react-native'
+import { Animated, Easing, Image, Text, View } from 'react-native'
+import type { ImageSourcePropType } from 'react-native'
+import claudeLogo from '../../assets/agents/claude.png'
+import codexLogo from '../../assets/agents/codex.png'
+import grokLogo from '../../assets/agents/grok.png'
 import type { AgentKind, Dot } from '../core/list'
 import { color, font } from './tokens'
 
@@ -70,37 +74,69 @@ export function StatusGlyph({ dot, closed = false }: { dot: Dot; closed?: boolea
   }
 }
 
-const AGENT_GLYPH: Record<AgentKind, { glyph: string; tint: string }> = {
-  claude: { glyph: '✳', tint: color.agentClaude },
-  codex: { glyph: '◆', tint: color.fgMuted },
-  grok: { glyph: '✦', tint: color.agentGrok },
+/**
+ * 에이전트 로고 (LIFE-594 핸드오프 §B) — 데스크톱 `AgentIcon.tsx` 와 같은 마크를 PNG 로 그린다.
+ * 파일은 Claude Design 이 준 자산(`specs/LIFE-594-design-apply/design-assets/png/`)을 바이트 그대로 두고 이름만 RN 밀도 규칙
+ * (`<n>.png`·`@2x`·`@3x`)으로 바꿨다 — 출처·라이선스는 `assets/agents/README.md`(로고 모양 = Orca MIT 이식 경로).
+ * 고정 PNG 라 색이 박혀 있다: claude `#d97757` · codex `#a1a1a1` · grok 원색. 데스크톱 codex 는 활성 때 `--fg` 로 밝아지지만
+ * 모바일 아바타에는 그 변화가 없다(의도 — 모바일 아바타에 활성 표현이 없다). 벡터(`react-native-svg`)는 네이티브 모듈이라 쓰지 않는다.
+ */
+const AGENT_LOGO: Record<AgentKind, { source: ImageSourcePropType; radius: number }> = {
+  claude: { source: claudeLogo, radius: 0 },
+  codex: { source: codexLogo, radius: 0 },
+  grok: { source: grokLogo, radius: 3 },
 }
 
-/** 아바타 — 에이전트 글리프 + 우하단 상태 배지(디자인 §2 ChannelRow). */
-export function Avatar({ kind, dot, closed = false, size }: { kind: AgentKind | null; dot: Dot; closed?: boolean; size: number }) {
-  const agent = kind === null ? { glyph: '·', tint: color.fgMuted } : AGENT_GLYPH[kind]
+/** 아바타 칸 → 로고 크기(핸드오프 §B): 목록 38→20 · 대화 머리 34→18 · 워커 행 32→16 · 답 머리 22→13. 표 밖 칸은 비율(≈0.53)로. */
+function logoSize(size: number): number {
+  switch (size) {
+    case 38:
+      return 20
+    case 34:
+      return 18
+    case 32:
+      return 16
+    case 22:
+      return 13
+    default:
+      return Math.round(size * 0.53)
+  }
+}
+
+/**
+ * 아바타 — 에이전트 로고 + 우하단 상태 배지(디자인 §2 ChannelRow). 종류 모름(`null`)은 글리프 `·` 그대로.
+ * `dot` 을 넘기지 않으면 배지를 그리지 않는다 — 에이전트 답 머리(칸 22)는 고정 21px 배지가 로고를 덮고 늘 `idle` 이라 뺐다(LIFE-594 K3ⓐ 정정).
+ */
+export function Avatar({ kind, dot, closed = false, size }: { kind: AgentKind | null; dot?: Dot; closed?: boolean; size: number }) {
+  const logo = logoSize(size)
   return (
     <View style={{ width: size, height: size }}>
       <View
         style={{ width: size, height: size, borderRadius: 10, backgroundColor: color.window, borderWidth: 1, borderColor: color.line, alignItems: 'center', justifyContent: 'center' }}
       >
-        <Text style={{ color: agent.tint, fontSize: size >= 38 ? 17 : 14 }}>{agent.glyph}</Text>
+        {kind === null ? (
+          <Text style={{ color: color.fgMuted, fontSize: size >= 38 ? 17 : 14 }}>·</Text>
+        ) : (
+          <Image source={AGENT_LOGO[kind].source} style={{ width: logo, height: logo, borderRadius: AGENT_LOGO[kind].radius }} />
+        )}
       </View>
-      <View
-        style={{
-          position: 'absolute',
-          right: -6,
-          bottom: -6,
-          width: 21,
-          height: 21,
-          borderRadius: 11,
-          backgroundColor: color.surface,
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <StatusGlyph dot={dot} closed={closed} />
-      </View>
+      {dot === undefined ? null : (
+        <View
+          style={{
+            position: 'absolute',
+            right: -6,
+            bottom: -6,
+            width: 21,
+            height: 21,
+            borderRadius: 11,
+            backgroundColor: color.surface,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <StatusGlyph dot={dot} closed={closed} />
+        </View>
+      )}
     </View>
   )
 }

@@ -106,7 +106,7 @@ button, input { font: inherit; letter-spacing: inherit; }
 .mru-row-place { width: 14px; flex: 0 0 auto; text-align: center; font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); }
 .mru-row-place.is-other { color: var(--fg-muted); }
 .mru-row-status { width: 12px; flex: 0 0 auto; text-align: center; font-family: var(--font-mono); font-size: var(--fs-meta); }
-.mru-row-status.tone-accent { color: var(--accent); }
+.mru-row-status.tone-ok { color: var(--st-ok); }
 .mru-row-status.tone-dirty { color: var(--st-dirty); }
 .mru-row-status.tone-behind { color: var(--st-behind); }
 .mru-row-status.tone-error { color: var(--st-error); }
@@ -918,7 +918,7 @@ body.is-tab-drag .main-tab[data-active-tab-dock]::before { content: none; }
 .inline-notice.tone-rejected, .inline-notice.tone-error {
   background: var(--bg-notice); border-bottom: 1px solid var(--line-notice);
 }
-.inline-notice-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; background: var(--accent); }
+.inline-notice-dot { width: 6px; height: 6px; border-radius: 6px; flex: 0 0 auto; background: var(--st-ok); }
 .inline-notice.tone-rejected .inline-notice-dot { background: var(--st-dirty); }
 .inline-notice.tone-error .inline-notice-dot { background: var(--st-error); }
 .inline-notice-text { min-width: 0; font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere; }

@@ -38,7 +38,6 @@ const openFile = async (rel, pin) => {
   await until(() => js(`document.querySelector('[data-main-tab="file:${rel}"]') !== null`), { label: `tab ${rel}` })
 }
 const tabs = () => js(`[...document.querySelectorAll('[data-tab-group]')].map((group) => ({ group: group.dataset.tabGroup, tabs: [...group.querySelectorAll('[data-main-tab]')].map((el) => ({ id: el.dataset.mainTab, active: el.dataset.active === 'true', preview: el.dataset.tabPreview ?? null, deleted: el.classList.contains('is-deleted') })) }))`)
-const activeId = async () => (await tabs()).flatMap((group) => group.tabs).find((tab) => tab.active && tab.id !== undefined)?.id ?? null
 const activeIn = async (groupIndex = 0) => (await tabs())[groupIndex]?.tabs.find((tab) => tab.active)?.id ?? null
 const rect = (selector) => js(`(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null })()`)
 const drag = async (from, to) => {

@@ -23,7 +23,7 @@ const GRAMMARS: GrammarRow[] = languagesJson.grammars
 const grammarLoaders = import.meta.glob<IRawGrammar>('../assets/textmate/grammars/*.json', { import: 'default' })
 
 /** 테마 원본(VS Code `ColorThemeData.tokenColors` 순서) — 기대 색 계산 스크립트도 같은 파일을 읽는다. */
-export const DARK_2026: { settings: IRawTheme['settings']; colors: Record<string, string> } = { settings: themeJson.settings as IRawTheme['settings'], colors: themeJson.colors }
+export const DARK_2026: { settings: IRawTheme['settings']; colors: Record<string, string> } = { settings: themeJson.settings, colors: themeJson.colors }
 
 /**
  * 파일 경로 → 언어 id. VS Code 처럼 **파일 이름 표가 먼저**, 그다음 확장자(가장 긴 일치 — `.d.ts` 같은 겹 확장자 대비). 모르면 null(= 일반 텍스트, E4ⓑ).

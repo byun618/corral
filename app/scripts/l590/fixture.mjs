@@ -265,6 +265,8 @@ if __name__ == "__main__":
 execFileSync('git', ['init', '-q', '-b', 'main', target])
 execFileSync('git', ['-C', target, 'add', '-A'])
 execFileSync('git', ['-C', target, '-c', 'user.name=l590', '-c', 'user.email=l590@example.invalid', 'commit', '-q', '-m', 'fixture'])
+// E7ⓑ ④ — worktree 안 링크가 밖을 가리킨다(커밋하지 않는다).
+fs.symlinkSync(path.join(path.dirname(target), 'outside.png'), path.join(target, 'escape-link.png'))
 // E4ⓕⓖ 대용량 — 커밋하지 않는다(untracked). 줄 120자 텍스트.
 const line = `${'0123456789abcdef'.repeat(7)}0123456\n`
 const big = (rel, bytes) => {

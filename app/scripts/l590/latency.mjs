@@ -5,6 +5,8 @@
 //   - drive on = 측정 동안 레포 안 `l589-drive/` 폴더에 파일 생성·삭제 ≥ 5회/초(외부 변경). explorer open 이면 그 폴더 행을 **펼치고**(aria-expanded)
 //     탐침 파일 하나가 하위 행으로 나타나는 것(반영)을 확인한 뒤 잰다
 // 기준선(구현 전)에는 탐색기가 없으므로 `base:closed:off`·`base-drive:closed:on` 만 돈다.
+// LIFE-590 E8ⓔ — 넷째 칸 `file on` = 10 MB 파일 탭(`big/10mb.txt`)을 **오른쪽 새 영역**에 열어 두고(터미널은 왼쪽 영역에 보인다) 그 파일을 측정 동안
+//   ≥ 1회/초 다시 쓴다(외부 변경 — 렌더러가 10 MB 를 다시 읽어 같은 모델에 넣는다). 판정 B 는 `탐색기 열림 + drive` **또는** `file on`.
 // 지표(회당): type 주입 시각 → 그 글자를 담은 첫 xterm write ms(36타) · main 이벤트 루프 지연 p99(계측 `loop-delay`).
 // 사용(app/ 에서):
 //   sh scripts/l577/g-up.sh /tmp/l589g-a /tmp/l589g-fa
@@ -30,8 +32,8 @@ const root = values.root
 const rounds = Number(values.rounds)
 const sampleCount = Number(values.samples)
 const steps = values.plan.split(',').map((text) => {
-  const [name, explorer, drive] = text.split(':')
-  return { name, explorer: explorer === 'open', drive: drive === 'on' }
+  const [name, explorer, drive, file] = text.split(':')
+  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' }
 })
 
 const termRead = async () => (await ctl(root, { cmd: 'term-read' })).term
@@ -105,6 +107,48 @@ async function setExplorer(open) {
   await until(async () => (await isOpen()) === open, { timeoutMs: 5_000, label: `탐색기 ${open ? '열기' : '닫기'}` })
 }
 
+const BIG = 'big/10mb.txt'
+/** 10 MB 파일 탭을 오른쪽 새 영역에 연다(이미 있으면 그대로). 탐색기를 잠깐 열어 행을 더블클릭(고정) → ⌘⌥D(활성 탭을 새 영역으로). */
+async function ensureFileTab() {
+  const open = async () => evalJs(root, `!!document.querySelector('[data-file-view="${BIG}"] [data-editor-ready]')`)
+  if (await open()) return true
+  await setExplorer(true)
+  const expanded = async () => (await evalJs(root, `document.querySelector('[data-explorer-row="big"]')?.getAttribute('aria-expanded')`)) === 'true'
+  await until(async () => evalJs(root, `!!document.querySelector('[data-explorer-row="big"]')`), { label: 'big 행' })
+  if (!(await expanded())) await ctl(root, { cmd: 'click', selector: '[data-explorer-row="big"]' })
+  await until(expanded, { label: 'big 펼침' })
+  await until(async () => (await ctl(root, { cmd: 'dblclick', selector: `[data-explorer-row="${BIG}"]` })).ok === true, { label: '10mb 더블클릭' })
+  await until(open, { timeoutMs: 20_000, label: '10mb 편집기' })
+  await ctl(root, { cmd: 'key', keyCode: 'D', modifiers: ['meta', 'alt'] })
+  await until(async () => (await evalJs(root, `document.querySelectorAll('[data-tab-group]').length`)) === 2, { label: '새 영역' })
+  await until(open, { timeoutMs: 20_000, label: '10mb 편집기(새 영역)' })
+  return true
+}
+async function closeFileTab() {
+  if (!(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`))) return
+  await until(async () => (await ctl(root, { cmd: 'click', selector: `[data-main-tab="file:${BIG}"]` })).ok === true, { label: '10mb 탭' })
+  await ctl(root, { cmd: 'key', keyCode: 'W', modifiers: ['meta'] })
+  await until(async () => !(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`)), { label: '10mb 닫힘' })
+}
+/** 10 MB 파일 다시 쓰기 ≥ 1회/초(700~900 ms) — 첫 줄 표식만 바꾼 같은 크기. */
+function fileDriver(file) {
+  const base = fs.readFileSync(file)
+  const changes = []
+  let stop = false
+  const done = (async () => {
+    let i = 0
+    while (!stop) {
+      const tag = Buffer.from(`tick ${String(i).padStart(8, '0')} `)
+      tag.copy(base, 0)
+      fs.writeFileSync(file, base)
+      changes.push(Date.now())
+      i += 1
+      await sleep(700 + Math.floor(Math.random() * 200))
+    }
+  })()
+  return { changes, stop: async () => { stop = true; await done } }
+}
+
 async function sampleRound(paneId) {
   const samples = []
   for (let i = 0; i < sampleCount; i += 1) {
@@ -139,12 +183,14 @@ try {
   await ctl(root, { cmd: 'loop-delay' })
   for (let r = 1; r <= rounds; r += 1) {
     for (const step of steps) {
+      const fileTabOpen = step.file ? await ensureFileTab() : (await closeFileTab(), false)
       await setExplorer(step.explorer)
       const driveDir = path.join(repo, 'l589-drive')
       if (step.drive) fs.mkdirSync(driveDir, { recursive: true })
       const driveView = step.drive && step.explorer ? await expandDrive(driveDir, r) : { expanded: false, reflectMs: null }
       await attach(paneId)
       const drive = step.drive ? driver(driveDir) : null
+      const fileDrive = step.file ? fileDriver(path.join(repo, BIG)) : null
       try {
         await sleep(1_500)
         await ctl(root, { cmd: 'loop-delay' })
@@ -153,11 +199,14 @@ try {
         const loopDelay = (await ctl(root, { cmd: 'loop-delay' })).loopDelay ?? null
         const windowEnd = Date.now()
         const changesInWindow = drive === null ? 0 : drive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
-        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
+        const fileChangesInWindow = fileDrive === null ? 0 : fileDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
+        const fileUpdated = step.file ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
+        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, loopDelay, ...summary(samples), samples }
         rows.push(row)
         console.log(`회차 ${r} ${step.name} p50 ${row.p50} p95 ${row.p95} 놓침 ${row.misses} 루프 p99 ${loopDelay?.p99} 변경 ${row.changesPerSec}/s`)
       } finally {
         if (drive !== null) await drive.stop()
+        if (fileDrive !== null) await fileDrive.stop()
       }
     }
   }
@@ -189,10 +238,16 @@ function judge(aName, bName) {
   const aStep = steps.find((step) => step.name === aName)
   if (aStep === undefined || bStep === undefined) problems.push('A/B 단계 이름이 계획에 없다')
   else {
-    if (aStep.explorer) problems.push(`A(${aName}) 는 탐색기 닫힘이어야 한다`)
-    if (!bStep.explorer || !bStep.drive) problems.push(`B(${bName}) 는 탐색기 열림 + drive on 이어야 한다`)
+    if (aStep.explorer || aStep.file) problems.push(`A(${aName}) 는 탐색기 닫힘·파일 탭 없음이어야 한다`)
+    if (!bStep.file && (!bStep.explorer || !bStep.drive)) problems.push(`B(${bName}) 는 탐색기 열림 + drive on 또는 file on 이어야 한다`)
   }
   for (const row of stepRows(bName)) {
+    if (bStep?.file) {
+      if (!row.fileTabOpen) problems.push(`B 회차 ${row.round} 10 MB 파일 탭 없음`)
+      if (row.fileChangesPerSec < 1) problems.push(`B 회차 ${row.round} 파일 변경 ${row.fileChangesPerSec}/s < 1`)
+      if (row.fileUpdated !== true) problems.push(`B 회차 ${row.round} 측정 구간에 파일 탭 갱신 없음`)
+      continue
+    }
     if (row.changesPerSec < MIN_CHANGES_PER_SEC) problems.push(`B 회차 ${row.round} 변경 ${row.changesPerSec}/s < ${MIN_CHANGES_PER_SEC}`)
     if (!row.driveExpanded || row.driveReflectMs === null) problems.push(`B 회차 ${row.round} drive 펼침·반영 확인 없음`)
   }

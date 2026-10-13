@@ -202,7 +202,30 @@ keyTable.push({ key: '⌘⇧T', receiver: 'app(같은 파일 탭 다시 열기)'
 check('E3d-reopen-file', true, 'file tab reopened')
 keyTable.push({ key: '⌘C', receiver: '격리에서 누르지 않음(시스템 클립보드) — Monaco clipboard 기여 + Electron Edit 메뉴 role copy. 네이티브 관문에서 확인' })
 
-writeJson(path.join(values.out, 'viewer-check.json'), { root, repo, checks, keyTable })
+// ── E7ⓑ 가둠 양성 대조 — 실제 창 → preload(window.corral) → ipcMain. ① 성공 ②~⑦ 거절 사유 코드(그 검사에서 났음)
+const ipc = (method, input) => js(`window.corral.${method}(${JSON.stringify(input)}).then((r) => ({ ok: r.ok, kind: r.kind ?? null, code: r.code ?? null, bytesRead: r.bytesRead ?? null }))`)
+const ipcRaw = (method, literal) => js(`window.corral.${method}(${literal}).then((r) => ({ ok: r.ok, kind: r.kind ?? null, code: r.code ?? null }))`)
+const realRepo = fs.realpathSync(repo)
+const confineRows = {
+  '1-inside': await ipc('readFile', { root: realRepo, rel: 'src/sample.ts' }),
+  '2-dotdot': await ipc('readFile', { root: realRepo, rel: '../outside.png' }),
+  '3-absolute': await ipc('readFile', { root: realRepo, rel: '/etc/hosts' }),
+  '4-link-outside': await ipc('readFile', { root: realRepo, rel: 'escape-link.png' }),
+  '5-unregistered-root': await ipc('readFile', { root: '/tmp', rel: 'l590g-t/repo/src/sample.ts' }),
+  '6-type-violation': await ipcRaw('readFile', `{ root: ${JSON.stringify(realRepo)}, rel: 42 }`),
+  '7-too-large': await ipc('readFile', { root: realRepo, rel: 'big/60mb.txt' }),
+  'img-1-inside': await ipc('readImage', { root: realRepo, rel: 'img/pixel.png' }),
+  'img-2-dotdot': await ipc('readImage', { root: realRepo, rel: '../outside.png' }),
+  'img-4-link-outside': await ipc('readImage', { root: realRepo, rel: 'escape-link.png' }),
+  'img-5-unregistered-root': await ipc('readImage', { root: '/tmp/l590g-t', rel: 'outside.png' }),
+}
+const refused = Object.entries(confineRows).filter(([name]) => !name.endsWith('1-inside') && name !== '7-too-large')
+check('E7b-confine', confineRows['1-inside'].ok && confineRows['img-1-inside'].ok && refused.every(([, row]) => row.ok === false && row.code !== null) && confineRows['7-too-large'].kind === 'too_large' && confineRows['7-too-large'].bytesRead === 0, confineRows)
+// ── E7ⓔ CSP 위반 0 — 이 실행 전 경로(편집기·이미지·Markdown·worker)의 렌더러 콘솔
+const cspViolations = logLines('renderer.console').filter((row) => /Content Security Policy/i.test(String(row.message ?? '')))
+check('E7e-no-csp-violation', cspViolations.length === 0, cspViolations.slice(0, 3))
+
+writeJson(path.join(values.out, 'viewer-check.json'), { root, repo, checks, keyTable, confineRows })
 const failed = checks.filter((row) => !row.pass)
 console.log(JSON.stringify({ total: checks.length, failed: failed.map((row) => row.id) }))
 process.exit(failed.length === 0 ? 0 : 1)

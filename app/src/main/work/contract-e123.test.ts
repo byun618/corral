@@ -2,6 +2,7 @@
 // 새 칸이 어긋나면 main 이 `invalid_response` 로 막아야 한다 — 화면이 깨진 키·id 를 받지 않는다.
 import { afterEach, describe, expect, it } from 'vitest'
 import { FIXTURE_IDS } from './la-mcp-fixture.js'
+import { LaShapeError, readBySeq } from './la-shape.js'
 import { mockBehaviorOf, mockSourceEntry, seedMockDemoState } from './mock-source.js'
 import { FAKE_LA_TOKEN, laFixtureHarness, workHarness } from './test-kit.js'
 
@@ -86,5 +87,34 @@ describe('모의 출처 — 격리 실행 행동(토큰 글자)', () => {
     } while (cursor !== null)
     expect(items).toContain('core-legal')
     expect(keys).not.toContain('core-legal')
+  })
+})
+
+describe('R1-P issue_by_seq 판별자 검증 — 모르는 kind·모순된 null 은 「없음」 이 아니라 형태 오류', () => {
+  it('작업 3종은 id · project·goal 은 null(정상 제외) · 없음은 {kind:null,data:null}', () => {
+    expect(readBySeq({ kind: 'task', data: { id: 'x' } }, 'r')).toBe('x')
+    expect(readBySeq({ kind: 'project', data: { id: 'p' } }, 'r')).toBeNull()
+    expect(readBySeq({ kind: 'goal', data: { id: 'g' } }, 'r')).toBeNull()
+    expect(readBySeq({ kind: null, data: null }, 'r')).toBeNull()
+  })
+  it('모르는 kind · kind null 인데 data 있음 · 제외 kind 인데 data 가 레코드 아님 → LaShapeError', () => {
+    expect(() => readBySeq({ kind: 'unexpected-kind', data: { id: 'x' } }, 'r')).toThrow(LaShapeError)
+    expect(() => readBySeq({ kind: null, data: { id: 'x' } }, 'r')).toThrow(LaShapeError)
+    expect(() => readBySeq({ kind: 'project', data: null }, 'r')).toThrow(LaShapeError)
+  })
+  it('양성 대조(서비스 경로) — 픽스처가 모르는 kind·모순된 null 을 주면 invalid_response', async () => {
+    const harness = await laFixtureHarness()
+    try {
+      const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
+      if (!added.ok) throw new Error(added.error.message)
+      const corrupts: ('byseq-unknown-kind' | 'byseq-null-kind-data')[] = ['byseq-unknown-kind', 'byseq-null-kind-data']
+      for (const corrupt of corrupts) {
+        harness.fixture.corrupt = corrupt
+        const response = await harness.service.request({ requestId: `p-${corrupt}`, connectionId: added.connection.id, call: { op: 'findByKey', key: corrupt === 'byseq-unknown-kind' ? 'LIFE-601' : 'LIFE-424242' } })
+        expect(response).toMatchObject({ ok: false, error: { kind: 'invalid_response' } })
+      }
+    } finally {
+      await harness.fixture.stop()
+    }
   })
 })

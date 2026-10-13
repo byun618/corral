@@ -13,6 +13,7 @@ import {
   boardBands,
   boardDropIntent,
   branchKey,
+  childProgress,
   detectWorking,
   dueTone,
   emptyCause,
@@ -261,5 +262,30 @@ describe('C4·C11', () => {
     ]
     const entries = detectWorking({ trees, patterns: [{ connectionId: 'la', pattern: 'LIFE-\\d+' }, { connectionId: 'mock', pattern: null }] })
     expect(entries).toEqual([{ key: 'LIFE-601', connectionId: 'la', trees: [trees[0], trees[1]] }])
+  })
+})
+
+describe('R1-Q 보드 합계·진행률', () => {
+  it('칸 없는 상태의 작업은 분류 합계에 들지 않는다 — 자기 밴드(unmapped)', () => {
+    const rows = rowsOf([space([item({ id: 'a' }), item({ id: 'b', statusKey: 'legal' })])])
+    const bands = boardBands({ rows, statuses: STATUSES, all: false })
+    expect(bands.find((band) => band.category === 'done' && band.id === 'done')?.count).toBe(0)
+    const unmapped = bands.find((band) => band.id === 'unmapped')
+    expect(unmapped?.count).toBe(1)
+    expect(unmapped?.columns.map((column) => column.id)).toEqual(['st:__unmapped'])
+    expect(bands.find((band) => band.id === 'todo')?.count).toBe(1)
+  })
+  it('자식 진행 — 같은 연결의 자식만, 다음 쪽이 남았으면 부분 수신 표시', () => {
+    const parent = item({ id: 'p', kind: { key: 'checkpoint', label: 'Checkpoint' } })
+    const mine = space([parent, item({ id: 'k1', parentId: 'p', category: 'done', statusKey: 'done' }), item({ id: 'k2', parentId: 'p' })])
+    const other: SpaceData = { ...space([item({ id: 'k3', parentId: 'p' })]), connectionId: 'c2' }
+    const rows = rowsOf([mine, other])
+    const parentRow = rows.find((row) => row.item.id === 'p')
+    if (parentRow === undefined) throw new Error('parent')
+    expect(childProgress({ row: parentRow, rows })).toMatchObject({ done: 1, total: 2, partial: false })
+    const paged = rowsOf([{ ...mine, nextCursor: 'next' }])
+    const pagedParent = paged.find((row) => row.item.id === 'p')
+    if (pagedParent === undefined) throw new Error('parent')
+    expect(childProgress({ row: pagedParent, rows: paged })).toMatchObject({ done: 1, total: 2, partial: true })
   })
 })

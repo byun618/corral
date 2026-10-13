@@ -42,7 +42,7 @@ import {
   type WorkingTree,
 } from '../tasks-model.js'
 import './tasks.css'
-import { Backlog, Board, ListView, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type WorkingView } from './TasksViews.js'
+import { Backlog, Board, ListView, MoreBar, SpaceDot, WorkingList, capabilityGate, type CardProps, type ColumnDragView, type MoreState, type WorkingView } from './TasksViews.js'
 
 type BacklogSection = { id: 'board' | 'backlog'; label: string; rows: TasksRow[] }
 
@@ -235,7 +235,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
     ]
   }, [filtered])
   const listGroups = useMemo(() => groupRows({ rows: sortRows({ rows: filtered, sort: prefs.sort }), group: prefs.group, statuses, all }), [filtered, prefs.sort, prefs.group, statuses, all])
-  const more = ((): Parameters<typeof ListView>[0]['more'] => {
+  const more = ((): MoreState => {
     if (load.data.some((entry) => entry.nextCursor !== null)) return { kind: 'cursor', loaded: rows.length, loading: load.loadingMore }
     const capped = load.data.find((entry) => entry.truncated)
     if (capped === undefined) return null
@@ -343,6 +343,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
           <div className="tasks-scroll" data-tasks-scroll="board">
             {hits.length > 0 ? <KeyHits hits={hits} onSelect={(item) => setSelectedId(item.id)} /> : null}
             <Board bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => setSelectedId(selectedId === row.item.id ? null : row.item.id)} />
+            <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
       case 'backlog':
@@ -350,6 +351,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
           <div className="tasks-scroll" data-tasks-scroll="backlog">
             {hits.length > 0 ? <KeyHits hits={hits} onSelect={(item) => setSelectedId(item.id)} /> : null}
             <Backlog sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => setSelectedId(selectedId === row.item.id ? null : row.item.id)} />
+            <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
       case 'list':

@@ -344,7 +344,7 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
   defaultPreset: TasksPreset
   groupLabel: (group: TasksGroup) => string
   hits: { item: WorkItem; spaceName: string }[]
-  more: { kind: 'cursor'; loaded: number; loading: boolean } | { kind: 'capped'; loaded: number; reason: string | null } | null
+  more: MoreState
   onSort: (sort: TasksSort) => void
   onGroup: (group: TasksGroup) => void
   onPreset: (preset: TasksPreset) => void
@@ -398,19 +398,31 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
             ))}
           </Fragment>
         ))}
-        {more === null ? null : more.kind === 'cursor' ? (
-          <div className="tasks-list-more" data-tasks-more="">
-            <span>{more.loaded} / 전체 — 더 있습니다</span>
-            <button type="button" className="tasks-more-btn" onClick={onLoadMore} disabled={more.loading}>{more.loading ? '불러오는 중…' : '더 불러오기'}</button>
-          </div>
-        ) : (
-          <div className="tasks-list-more is-capped" data-tasks-more="capped" title={more.reason ?? undefined}>
-            <span>최대 {more.loaded}건까지만 받았습니다</span>
-            <button type="button" className="tasks-more-btn" disabled title={more.reason ?? undefined}>더 불러오기</button>
-            {more.reason !== null ? <span className="tasks-more-reason">{more.reason}</span> : null}
-          </div>
-        )}
+        <MoreBar more={more} onLoadMore={onLoadMore} />
       </div>
+    </div>
+  )
+}
+
+// --- 더 불러오기 (C9) — 리스트·보드·백로그 공통. 커서가 있으면 다음 쪽, 커서가 꺼진 출처가 상한에 닿았으면 「최대 N건」 + 흐림 + 이유. ---
+
+export type MoreState = { kind: 'cursor'; loaded: number; loading: boolean } | { kind: 'capped'; loaded: number; reason: string | null } | null
+
+export function MoreBar({ more, onLoadMore }: { more: MoreState; onLoadMore: () => void }): React.JSX.Element | null {
+  if (more === null) return null
+  if (more.kind === 'cursor') {
+    return (
+      <div className="tasks-list-more" data-tasks-more="">
+        <span>{more.loaded} / 전체 — 더 있습니다</span>
+        <button type="button" className="tasks-more-btn" data-tasks-more-button="" onClick={onLoadMore} disabled={more.loading}>{more.loading ? '불러오는 중…' : '더 불러오기'}</button>
+      </div>
+    )
+  }
+  return (
+    <div className="tasks-list-more is-capped" data-tasks-more="capped" title={more.reason ?? undefined}>
+      <span>최대 {more.loaded}건까지만 받았습니다</span>
+      <button type="button" className="tasks-more-btn" disabled title={more.reason ?? undefined}>더 불러오기</button>
+      {more.reason !== null ? <span className="tasks-more-reason">{more.reason}</span> : null}
     </div>
   )
 }

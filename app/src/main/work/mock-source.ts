@@ -86,7 +86,8 @@ type MockSpace = { space: WorkSpace; statuses: WorkStatus[]; transitions: Record
 type MockItem = Omit<WorkItem, 'relations' | 'version' | 'category'> & { version: number }
 type MockLink = { id: string; from: string; to: string; kind: WorkRelationKind }
 
-export type MockState = { spaces: MockSpace[]; items: MockItem[]; links: MockLink[]; comments: Record<string, WorkComment[]>; seq: number }
+/** `pageSize` — 커서 한 쪽 크기. 계약 묶음 씨앗은 2(작업 5개로 여러 쪽), 데모 씨앗은 6(첫 쪽에 화면 재현이 다 들고 「더 불러오기」 가 남는다). */
+export type MockState = { spaces: MockSpace[]; items: MockItem[]; links: MockLink[]; comments: Record<string, WorkComment[]>; seq: number; pageSize?: number }
 
 function status({ key, label, category, order }: Omit<WorkStatus, 'color'>): WorkStatus {
   return { key, label, category, order, color: null }
@@ -159,6 +160,7 @@ export function seedMockDemoState(): MockState {
     { ...base, id: 'm-9', key: 'CORE-8', spaceKey: 'CORE', title: '백로그 아이디어', kind: story, statusKey: 'core-todo', rank: 'h', placement: 'backlog' },
   )
   // 막힘: CORE-6 ← CORE-2(열림) · CORE-6 ← CORE-7(완료 — 배지에 안 보임) · CORE-4 ← CORE-3(열림)
+  state.pageSize = 6
   state.links.push({ id: 'l-demo-1', from: 'm-2', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-2', from: 'm-8', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-3', from: 'm-4', to: 'm-3', kind: 'is_blocked_by' })
   return state
 }
@@ -213,8 +215,9 @@ export class MockSource implements WorkSourceClient {
         const all = this.state.items.filter((item) => item.spaceKey === call.spaceKey).sort((a, b) => (a.rank ?? '').localeCompare(b.rank ?? ''))
         const start = call.cursor === null ? 0 : Number(call.cursor)
         if (!Number.isInteger(start) || start < 0 || start > all.length) return rejected('잘못된 커서입니다.')
-        const page = all.slice(start, start + PAGE_SIZE).map((item) => this.view({ item, withRelations: false }))
-        const next = start + PAGE_SIZE < all.length ? String(start + PAGE_SIZE) : null
+        const size = this.state.pageSize ?? PAGE_SIZE
+        const page = all.slice(start, start + size).map((item) => this.view({ item, withRelations: false }))
+        const next = start + size < all.length ? String(start + size) : null
         return { ok: true, result: { op: 'listItems', items: page, nextCursor: next, truncated: false } }
       }
       case 'getItem': {

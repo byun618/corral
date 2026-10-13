@@ -102,6 +102,14 @@ try {
     viewChecks[tab] = await until(() => js(`!!document.querySelector(${JSON.stringify(selector)})`), { timeoutMs: 10_000, label: tab }).then(() => true).catch(() => false)
   }
   log('views', viewChecks)
+  // C9 — 커서가 켜진 모의 출처(쪽 크기 6): 리스트 「더 불러오기」 가 다음 쪽(CORE-7·CORE-8)을 실제로 붙인다.
+  await click('[data-tasks-view-tab="list"]')
+  const beforeMore = await js(`document.querySelectorAll('[data-tasks-list] [data-issue-row]').length`)
+  await click('[data-tasks-more-button]')
+  const more = await until(() => js(`!!document.querySelector('[data-tasks-list] [data-issue-row="CORE-8"]')`), { timeoutMs: 10_000, label: '다음 쪽' }).then(() => true).catch(() => false)
+  const afterMore = await js(`({ rows: document.querySelectorAll('[data-tasks-list] [data-issue-row]').length, bar: document.querySelector('[data-tasks-more]')?.getAttribute('data-tasks-more') ?? null })`)
+  judge('C9 리스트 「더 불러오기」 = 출처의 다음 커서 — 다음 쪽이 붙고 줄이 사라진다', more && afterMore.rows > beforeMore && afterMore.bar === null, JSON.stringify({ beforeMore, afterMore }))
+  await click('[data-tasks-view-tab="board"]')
   judge('보기 4 전환 — 백로그(두 섹션) · 리스트 · 작업 중(없음 빈 상태 포함) · 보드', Object.values(viewChecks).every(Boolean), JSON.stringify(viewChecks))
 
   await ctl(ROOT, { cmd: 'key', keyCode: 'Escape' })

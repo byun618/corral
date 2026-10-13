@@ -383,6 +383,7 @@ describe('R3-F 놓는 자리가 창 밖이거나 칸이 없으면 쓰기 0', () 
     await settle()
     expect(writes()).toHaveLength(0)
     expect(q('.tasks-drag-preview')).toBeNull()
+    expect(closed).toBe(0)
   })
   it('F2 창 안이지만 놓는 자리에 칸이 없으면 쓰기 0', async () => {
     await renderPage()

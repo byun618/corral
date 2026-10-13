@@ -30,7 +30,7 @@ import { cardMenuEntries, parentCandidates, type CardMenuAction } from '../card-
 import { worktreeDisplayName } from '../worktree-name.js'
 import { ContextMenu } from './ContextMenu.js'
 import { ParentPicker } from './ParentPicker.js'
-import { pickPane } from '../pane-utils.js'
+import { activateWorktreeCard } from '../worktree-activate.js'
 import { flashPaneRim } from '../pane-rim-flash.js'
 import { livePaneIdsOf, retainedByWorktree } from '../sidebar-agents.js'
 import { RepoRow } from './RepoRow.js'
@@ -89,6 +89,7 @@ export function Sidebar({
   view,
   onChangeView,
   onOpenSearch,
+  tasks,
   searchShortcut,
   isRepoCollapsed,
   toggleRepoCollapsed,
@@ -127,6 +128,8 @@ export function Sidebar({
   onChangeView: (patch: Partial<SidebarView>) => void
   /** Search 줄 → 391 팔레트 (LIFE-470 D28a). */
   onOpenSearch: () => void
+  /** 사이드바 「작업」 진입 (LIFE-601) — 작업 페이지 열기/닫기. */
+  tasks?: { open: boolean; onToggle: () => void; shortcut: string | null }
   /** Search 줄 hover 키캡 — ⌘J 의 지금 조합(비켜 서 없으면 null). */
   searchShortcut: string | null
   isRepoCollapsed: (root: string) => boolean
@@ -143,21 +146,7 @@ export function Sidebar({
   // 경과 시간이 얼지 않게 **한 곳에서만** 시계를 돌린다 (LIFE-366 D1) — 행마다 타이머를 두면
   // 세션 수만큼 타이머가 생긴다.
   const now = useNowTick()
-  /**
-   * 블록 클릭 시 자동 활성화할 세션 (§4 "첫 세션 자동 활성").
-   *
-   * **에이전트 세션이 아니라 전체 탭의 첫 번째**를 고른다 (09-gate1-fix.md D 하 결정, 기록용):
-   * 블록 클릭은 *worktree 전환*이지 세션 선택이 아니고, 전환 직후 화면에 뜨는 탭바는 전체 탭을
-   * 보여준다. 여기서 에이전트 탭만 고르면 탭바의 첫 탭과 활성 탭이 어긋나 보인다.
-   * 사이드바의 에이전트-only 필터는 *목록에 무엇을 나열하는가* 의 규칙이고, 이 자동 선택은
-   * 그 목록과 무관한 workspace 진입 동작이다.
-   */
-  const selectFirstSession = (worktree: WorktreeRow): void => {
-    const firstTab = worktree.workspace?.tabs[0]
-    if (firstTab === undefined) return
-    const pane = pickPane(firstTab)
-    if (pane !== null) selectPane(pane.paneId)
-  }
+  // 블록 클릭 시 첫 세션 자동 활성(§4 — 에이전트 세션이 아니라 전체 탭의 첫 번째, 09-gate1-fix.md D)은 `worktree-activate.ts` 로 옮겼다(LIFE-601 — 작업 중 줄이 같은 경로).
 
   /**
    * 세션 행 클릭 — **그 탭의 workspace 를 먼저 활성화**하고 pane 을 고른다 (11-gate1-fix3.md I-6).
@@ -165,7 +154,7 @@ export function Sidebar({
    * 전에는 `selectPane` 만 불렀다. 그래서 활성이 아닌 worktree 의 세션을 누르면 터미널만 바뀌고
    * 탭바·상태바는 딴 workspace 를 계속 가리켰다 — `App.tsx` 의 `activeWorkspace` 가
    * `activeWorkspaceId` 를 따르기 때문이다. `onSelectBlock` 이
-   * `activateWorkspace` → `selectFirstSession` 순으로 하는 것과 같은 결로 맞춘다.
+   * `activateWorkspace` → 첫 세션 선택 순으로 하는 것과 같은 결로 맞춘다.
    *
    * 행이 주는 것은 pane id 하나다(LIFE-467 — 서브에이전트 행은 부모 pane, 보존 행은 아직 살아 있는 그 pane).
    * 그 pane 의 workspace 는 지금 상태에서 찾는다. 고른 뒤 pane 테두리를 한 번 번쩍인다(D11 — Orca 림 플래시 1.5s).
@@ -332,13 +321,7 @@ export function Sidebar({
   }, [])
 
   const activateRow = (input: { repoRoot: string; worktree: WorktreeRow }): void => {
-    const workspace = input.worktree.workspace
-    if (workspace === null) {
-      actions.openWorktree(input.repoRoot, input.worktree)
-      return
-    }
-    actions.activateWorkspace(workspace.workspaceId)
-    selectFirstSession(input.worktree)
+    activateWorktreeCard({ actions, repoRoot: input.repoRoot, worktree: input.worktree, selectPane })
   }
 
   const runMenuAction = (input: { path: string; action: CardMenuAction }): void => {
@@ -463,15 +446,7 @@ export function Sidebar({
         groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
         groupExpanded={isGroupExpanded(worktree.path)}
         onToggleGroup={() => toggleGroupExpanded(worktree.path)}
-        onSelectBlock={() => {
-          const workspace = worktree.workspace
-          if (workspace === null) {
-            actions.openWorktree(repoRoot, worktree)
-            return
-          }
-          actions.activateWorkspace(workspace.workspaceId)
-          selectFirstSession(worktree)
-        }}
+        onSelectBlock={() => activateWorktreeCard({ actions, repoRoot, worktree, selectPane })}
         onSelectSession={onSelectSession}
         onCloseSession={closePane}
         onCloseWorktree={() => {
@@ -523,7 +498,7 @@ export function Sidebar({
 
   return (
     <div className={`sidebar ${reorder.state !== null ? 'is-reordering' : ''}`} data-sidebar ref={sidebarRef} style={{ width }}>
-      <SidebarSearch shortcut={searchShortcut} onOpen={onOpenSearch} />
+      <SidebarSearch shortcut={searchShortcut} onOpen={onOpenSearch} tasks={tasks} />
       <ReposSectionHeader view={view} repos={state.repos} onChangeView={onChangeView} onAddRepo={onAddRepo} />
       <div className="repo-list" data-repo-list ref={listRef}>
         {state.repos.length === 0 ? (

@@ -1,10 +1,12 @@
 import { CommandPalette } from './components/CommandPalette.js'
 import type { PaletteEntry } from './palette-search.js'
 import type { ShortcutHandlers } from './hooks/useKeybindings.js'
-import { ACTIONS, bindingsFor, formatBinding } from '../../shared/keybindings.js'
+import { ACTIONS, bindingsFor, formatBinding, type ActionId } from '../../shared/keybindings.js'
 import { BindingLabels } from './hooks/BindingLabels.js'
 import { useKeybindings } from './hooks/useKeybindings.js'
 import { SettingsPage } from './components/SettingsPage.js'
+import { TasksPage } from './components/TasksPage.js'
+import { activateWorktreeCard } from './worktree-activate.js'
 import { DEFAULT_SETTINGS_SECTION, SETTINGS_SECTIONS, type SettingsSectionId } from './settings-registry.js'
 // 화면 오케스트레이터 — `repo → worktree → tab → pane` 4단 데이터를 Orca 배치(사이드바 카드 +
 // 메인 탭바 + 상태바)로 그린다 (LIFE-357, Orca 직접 포팅 브랜치). 트리는 그리기, 동작은 IPC 로
@@ -101,6 +103,8 @@ const AGENT_LAUNCH_LABEL = { claude: 'Claude', codex: 'Codex', grok: 'Grok' } as
 const NO_REPOS: AppState['repos'] = []
 const NO_ROOTS: string[] = []
 const MRU_HOLD_TIMEOUT_MS = 10_000
+/** 작업 페이지가 열린 동안에도 사는 단축키 (LIFE-601 C4) — 나머지 워크스페이스 단축키는 삼키기만 한다. */
+const TASKS_PAGE_SHORTCUTS: readonly ActionId[] = ['tasks.toggle', 'settings.open', 'sidebar.toggle']
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState | null>(null)
@@ -118,6 +122,13 @@ export function App(): React.JSX.Element {
    * herdr 에 resize 요청된다(00-analysis A1, raw/claude/u1-before 실측) — 덮으면 ResizeObserver 가 발화하지 않는다.
    */
   const [settingsView, setSettingsView] = useState<SettingsSectionId | null>(null)
+  /**
+   * 작업 페이지 (LIFE-601) — **메인 영역만** 덮는다(사이드바는 그대로 보이고 조작된다). 덮는 방식은 설정과 같다: 메인 영역 내용을
+   * `display:contents` 래퍼로 감싸 `visibility:hidden` + `inert` — 상자 크기가 그대로라 여닫기가 격자 요청을 내지 않는다.
+   * 페이지는 처음 열 때 마운트되고 닫혀도 남는다(검색어·스크롤 복원 — C3).
+   */
+  const [tasksOpen, setTasksOpen] = useState(false)
+  const [tasksMounted, setTasksMounted] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarCollapsedRef = useRef(false)
   const toggleSidebar = (): void => {
@@ -1006,6 +1017,20 @@ export function App(): React.JSX.Element {
     setSettingsView(null)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
+  const openTasks = (): void => {
+    mruCancel()
+    setTasksMounted(true)
+    setTasksOpen(true)
+  }
+  // 닫으면 덮개가 걷힌 다음 프레임에 활성 pane 이 포커스를 되찾는다(설정 닫기와 같다).
+  const closeTasks = (): void => {
+    setTasksOpen(false)
+    requestAnimationFrame(() => setFocusToken((value) => value + 1))
+  }
+  const toggleTasks = (): void => {
+    if (tasksOpen) closeTasks()
+    else openTasks()
+  }
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
     'terminal.new': () => lifecycle.createShell(),
@@ -1049,6 +1074,7 @@ export function App(): React.JSX.Element {
     'tab.cycle': (variant) => selectTabInActiveGroup(({ tabOrder, activeTabId }) => cycleTabTarget({ tabOrder, activeTabId, direction: variant === 1 ? -1 : 1 })),
     'tab.selectByIndex': (variant) => selectTabInActiveGroup(({ tabOrder }) => tabAtIndex({ tabOrder, index: variant })),
     'settings.open': () => openSettings(),
+    'tasks.toggle': toggleTasks,
     // LIFE-515 — 기본 Agent 로 새 탭. ⌘T 와 같은 대상 workspace·같은 생성 경로(createRow), 에이전트 갈래는 Quick-launch 와 같은 launchAgent(워치독).
     'terminal.newAgent': () => {
       const target = resolveNewAgentTab(settings.defaultAgent)
@@ -1062,7 +1088,11 @@ export function App(): React.JSX.Element {
       }
     },
   }
-  const keymap = useKeybindings(handlers, modalBlocked || paletteOpen, () => {
+  // 작업 페이지가 열린 동안 워크스페이스 단축키(⌘T·⌘W·⌘D …)는 숨은 워크스페이스에 작용하지 않는다 — 설정 페이지(K2ⓕ)와 같은 규칙.
+  // 키는 useKeybindings 가 이미 삼켰으므로 터미널로 새지 않는다. 페이지 닫기(⌘I)·설정·사이드바 접기만 산다.
+  const activeHandlers: ShortcutHandlers = { ...handlers }
+  if (tasksOpen) for (const action of ACTIONS) if (!TASKS_PAGE_SHORTCUTS.includes(action.id)) activeHandlers[action.id] = () => undefined
+  const keymap = useKeybindings(activeHandlers, modalBlocked || paletteOpen, () => {
     if (mruRef.current === null) return false
     mruCancel()
     return true
@@ -1302,8 +1332,8 @@ export function App(): React.JSX.Element {
                   <TerminalPane
                     paneId={groupPane.paneId}
                     diagnostics={state.diagnostics}
-                    focusable={isActiveGroup && !paletteOpen && !modalBlocked}
-                    focusToken={isActiveGroup && !paletteOpen && !modalBlocked ? focusToken : 0}
+                    focusable={isActiveGroup && !paletteOpen && !modalBlocked && !tasksOpen}
+                    focusToken={isActiveGroup && !paletteOpen && !modalBlocked && !tasksOpen ? focusToken : 0}
                     /* 비활성 영역은 herdr 세션 포커스를 가져가지 않는다 (S2-b — PaneLayout 과 같은 규칙). */
                     announceFocus={isActiveGroup}
                   />
@@ -1315,7 +1345,7 @@ export function App(): React.JSX.Element {
                 cell={cell}
                 zoomedPaneId={groupState.zoomedPaneId}
                 selectedPaneId={groupSelectedPaneId}
-                focusable={isActiveGroup && !paletteOpen && !modalBlocked}
+                focusable={isActiveGroup && !paletteOpen && !modalBlocked && !tasksOpen}
                 focusToken={focusToken}
                 diagnostics={state.diagnostics}
                 onSelect={(paneId) => activateGroup({ groupId: group.groupId, paneId })}
@@ -1503,6 +1533,7 @@ export function App(): React.JSX.Element {
           view={sidebarView.view}
           onChangeView={sidebarView.change}
           onOpenSearch={openPalette}
+          tasks={{ open: tasksOpen, onToggle: toggleTasks, shortcut: ((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0]) }}
           searchShortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('palette.search', keymap.overrides)[0])}
           isRepoCollapsed={repoCollapse.has}
           toggleRepoCollapsed={repoCollapse.toggle}
@@ -1537,6 +1568,8 @@ export function App(): React.JSX.Element {
 
         </>}
         <div className="main-area" data-main-area>
+          {/* LIFE-601 — 작업 페이지가 열리면 메인 영역 내용만 덮는다(visibility:hidden + inert, 상자는 그대로 — display:contents 래퍼라 배치도 그대로). */}
+          <div className={`main-area-content${tasksOpen ? ' is-covered' : ''}`} data-main-area-content="" inert={tasksOpen}>
           {/* LIFE-527 D6 — 4px 드래그 띠 + 32px 영역 탭 줄 = 36px 기준선(Orca `TabGroupSplitLayout.tsx:316`). workspace-tools 줄(명령·단축키·
               사이드바 펼치기)과 앱 수준 알림 줄은 없앴다 — 팔레트는 사이드바 Search 줄·⌘K, 단축키는 하단 ? 메뉴, 펼치기는 떠 있는 머리(D7·D8·D5). */}
           <div className="top-drag-strip" data-top-drag-strip="" />
@@ -1571,6 +1604,23 @@ export function App(): React.JSX.Element {
               }}
             />
           )}
+          </div>
+          {tasksMounted ? (
+            <TasksPage
+              open={tasksOpen}
+              repos={state.repos}
+              activeRepoRoot={state.repos.find((repo) => repo.worktrees.some((worktree) => worktree === activeWorktree))?.root ?? null}
+              shortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0])}
+              onClose={closeTasks}
+              onOpenSettings={() => openSettings('connections')}
+              onOpenWorktree={(tree) => {
+                // 작업 중 줄 클릭 = 페이지 닫힘 + 그 worktree 활성 + 첫 세션 선택 — 사이드바 카드 클릭과 같은 함수(C11).
+                const worktree = state.repos.find((repo) => repo.root === tree.repoRoot)?.worktrees.find((entry) => entry.path === tree.path)
+                closeTasks()
+                if (worktree !== undefined) activateWorktreeCard({ actions: lifecycle.actions, repoRoot: tree.repoRoot, worktree, selectPane: revealPane })
+              }}
+            />
+          ) : null}
         </div>
       </div>
       {settingsView === null ? null : (

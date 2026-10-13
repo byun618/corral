@@ -230,4 +230,19 @@
   --space-5: oklch(72% 0.09 200);
   --space-6: oklch(72% 0.09 250);
   --space-7: oklch(72% 0.09 330);
+
+  /* --- LIFE-601 작업 페이지(A) — LIFE-372 design-handoff §3 중 T2 가 쓰는 것. 색은 기존 토큰의 별칭·섞음뿐이다 -------------
+     상세 패널·모달 폭(--w-issue-detail*·--w-modal-*)은 T3·T4 가 쓸 때 들인다. */
+  --cat-todo: var(--fg-dim);
+  --cat-doing: #6ea8fe;               /* --st-ahead 와 같은 값, 다른 이름(분류 「진행 중」) */
+  --cat-done: var(--st-ok);
+  --cat-cancel: var(--fg-faint);
+  --prio-highest: var(--st-error);
+  --prio-high: var(--st-dirty);
+  --prio-low: var(--fg-dim);
+  --prio-lowest: var(--fg-faint);
+  --bg-card-selected: color-mix(in srgb, var(--accent) 6%, var(--bg-raised));
+  --line-card-selected: color-mix(in srgb, var(--accent) 60%, transparent);
+  --w-board-col: 256px;
+  --h-issue-row: 34px;
 }

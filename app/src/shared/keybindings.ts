@@ -44,6 +44,8 @@ export const ACTIONS = [
   // LIFE-515 — 198 `tab.newAgent`(darwin Mod+Alt+T). 설정 › AI 기능 › 에이전트의 기본 Agent 로 새 탭을 연다(agent 없음이면 빈 터미널 — D2).
   // id 는 `terminal.` 접두로 둔다(`terminal.new` 와 같은 줄기) — 지을 때는 `tab.*` 가 경계 검사 R4 오탐에 걸렸다(LIFE-518 이 해소: 액션 id 는 요청 envelope 자리에서만 걸린다). 나중에 생긴 기본값이라 양보한다.
   { id: 'terminal.newAgent', group: '탭', title: '새 에이전트 탭', defaultBinding: ['Mod+Alt+T'], bindingVariants: [0], variants: ['기본 Agent'] },
+  // LIFE-601 — 작업 페이지(메인 영역만 덮는다)를 열고 닫는다. 나중에 생긴 기본값이라 양보한다.
+  { id: 'tasks.toggle', group: '전역', title: '작업 페이지', defaultBinding: ['Mod+I'], bindingVariants: [0], variants: ['열기 / 닫기'] },
 ] as const
 export type ActionId = (typeof ACTIONS)[number]['id']
 /** 칸 위치 = `defaultBinding` 칸. `null` = 그 칸 조합 없음(비켜 선 칸을 그대로 둔 채 다른 칸만 고쳐 저장한 경우 — LIFE-495 fix2 R2-01). */
@@ -79,7 +81,7 @@ export function bindingFromEvent(event: KeyInput): string | null {
  * 재정의해 둔 사용자의 `keybindings.json` 이 충돌로 버려지지 않게 한다(재정의가 이기고, 이 액션은 조합 없음으로 남는다 —
  * 단축키 설정에서 다시 배정할 수 있다). 처음부터 있던 액션의 기본값은 지금처럼 재정의보다 앞선다.
  */
-const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent']
+const YIELDING_DEFAULTS: readonly ActionId[] = ['palette.search', 'workspace.rename', 'workspace.delete', 'tab.reopenClosed', 'tab.rename', 'tab.cycle', 'tab.selectByIndex', 'settings.open', 'terminal.newAgent', 'tasks.toggle']
 
 /**
  * 기본 조합 **개수가 바뀐** 액션의 옛 기본값 (LIFE-495 K7ⓘ). 칸 수가 다른 재정의는 아래 검사에서 버려지므로, 옛 칸 수 그대로인 재정의를

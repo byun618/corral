@@ -1,0 +1,256 @@
+/* 작업 페이지 (LIFE-601 · LIFE-372 design-handoff §2) — 메인 영역만 덮는 페이지. 값은 design-tokens.css 토큰만 쓴다. */
+
+/* 메인 영역 덮기 — 상자는 그대로(display:contents 래퍼), 보이지만 않는다. 격자 요청 0 의 조건(설정 덮기와 같은 원리). */
+.main-area-content { display: contents; }
+.main-area-content.is-covered { visibility: hidden; }
+
+.tasks-page {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-surface); color: var(--fg);
+  font-size: var(--fs-ui); letter-spacing: var(--ls-ui);
+  outline: none;
+}
+.tasks-page.is-closed { visibility: hidden; }
+.tasks-drag-strip { height: 4px; flex: 0 0 auto; -webkit-app-region: drag; }
+
+/* --- 머리 40 --- */
+.tasks-head {
+  height: 36px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+}
+.tasks-head > * { -webkit-app-region: no-drag; }
+.tasks-head .tasks-head-spacer { -webkit-app-region: drag; }
+.tasks-title { font-size: 13px; font-weight: 600; }
+.tasks-head-spacer { flex: 1; min-width: 8px; align-self: stretch; }
+.tasks-space-anchor, .tasks-filter-anchor { position: relative; }
+.tasks-space-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; max-width: 240px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer;
+}
+.tasks-space-btn > span:not(.tasks-caret):not(.tasks-space-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-space-btn:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.tasks-caret { color: var(--fg-dim); font-size: 9px; }
+.tasks-space-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+.tasks-views { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.tasks-view-tab { height: 22px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 12px; }
+.tasks-view-tab:hover { color: var(--fg); }
+.tasks-view-tab.is-on { background: var(--bg-accent); color: var(--fg); }
+.tasks-density { height: 24px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.tasks-search {
+  width: 240px; min-width: 110px; flex: 0 1 240px; height: 26px; padding: 0 8px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-input-fill); color: var(--fg); font: inherit; font-size: 12px;
+}
+.tasks-search:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.tasks-close { width: 26px; height: 26px; border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-muted); cursor: pointer; }
+.tasks-close:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+
+/* --- 메뉴 (스페이스 288 · 필터) --- */
+.tasks-menu {
+  position: absolute; top: 28px; left: 0; z-index: 40; min-width: 200px; max-height: 60vh; overflow: auto;
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 4px; box-shadow: var(--shadow-menu);
+}
+.tasks-space-menu { width: 288px; }
+.tasks-menu-row {
+  width: 100%; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--fg-menu); cursor: pointer; text-align: left; font-size: 12px;
+}
+.tasks-menu-row:hover { background: var(--bg-menu-hover); color: var(--fg); }
+.tasks-menu-row.is-on { background: color-mix(in srgb, var(--bg-accent) 70%, transparent); color: var(--fg); }
+.tasks-menu-row.is-link { color: var(--fg-muted); }
+.tasks-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-menu-count { color: var(--fg-dim); font-family: var(--font-mono); font-size: 10.5px; }
+.tasks-menu-head { display: flex; align-items: baseline; gap: 6px; padding: 8px 8px 4px; font-size: 11px; color: var(--fg-muted); font-weight: 500; }
+.tasks-menu-sub { color: var(--fg-dim); font-family: var(--font-mono); font-size: 10px; }
+.tasks-menu-note { padding: 4px 8px; color: var(--fg-dim); font-size: 11px; }
+.tasks-menu-sep { height: 1px; margin: 4px 2px; background: var(--line-strong); }
+.tasks-space-all { width: 8px; text-align: center; color: var(--fg-dim); font-size: 10px; }
+.tasks-chip { height: 16px; padding: 0 5px; border-radius: var(--radius-badge); background: var(--bg-chip); color: var(--fg-muted); font-size: 10px; display: inline-flex; align-items: center; }
+.tasks-check { width: 12px; color: var(--accent); }
+
+/* --- 필터 칩 24 --- */
+.tasks-filters { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.tasks-filter {
+  height: 24px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent;
+  color: var(--fg-muted); cursor: pointer; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;
+}
+.tasks-filter.is-on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent);
+}
+.tasks-filter.is-static { cursor: default; }
+.tasks-clear { height: 24px; padding: 0 6px; border: 0; background: transparent; color: var(--fg-dim); cursor: pointer; font-size: 11.5px; }
+.tasks-clear:hover { color: var(--fg); }
+.tasks-refreshing { color: var(--fg-dim); font-size: 11px; }
+
+/* --- 배너 36 --- */
+.tasks-banner { flex: 0 0 auto; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.tasks-banner.is-auth, .tasks-banner.is-forbidden { background: var(--bg-notice); color: var(--fg-notice); border-bottom-color: var(--line-notice); }
+.tasks-banner.is-offline, .tasks-banner.is-error { background: var(--bg-raised); color: var(--fg-muted); }
+.tasks-banner-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.tasks-banner.is-auth .tasks-banner-dot { background: var(--st-error); }
+.tasks-banner.is-forbidden .tasks-banner-dot { background: var(--st-dirty); }
+.tasks-banner-text { flex: 1; min-width: 0; }
+.tasks-banner-action { height: 24px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer; font-size: 11.5px; }
+
+/* --- 본문 --- */
+.tasks-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.tasks-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.tasks-loading { display: flex; gap: 12px; padding: 16px 12px; }
+.tasks-skeleton-col { width: var(--w-board-col); display: flex; flex-direction: column; gap: 8px; }
+.tasks-skeleton-col span { height: 64px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 5%, transparent); animation: tasks-skel 1.4s ease-in-out infinite; }
+@keyframes tasks-skel { 0%, 100% { opacity: .5 } 50% { opacity: .9 } }
+.tasks-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 40px 16px; text-align: center; }
+.tasks-empty-title { font-size: 13px; font-weight: 500; }
+.tasks-empty-body { font-size: 12px; color: var(--fg-dim); }
+.tasks-empty-action { margin-top: 6px; height: 26px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer; font-size: 12px; }
+
+/* --- 보드 --- */
+.tasks-board { display: flex; gap: 16px; align-items: flex-start; min-width: min-content; }
+.tasks-band { display: flex; flex-direction: column; gap: 8px; }
+.tasks-band-head { display: flex; align-items: baseline; gap: 6px; padding-top: 6px; border-top: 2px solid var(--cat-todo); font-size: 10px; font-weight: 500; letter-spacing: .04em; color: var(--fg-dim); }
+.tasks-band.cat-in_progress .tasks-band-head { border-top-color: var(--cat-doing); }
+.tasks-band.cat-done .tasks-band-head { border-top-color: var(--cat-done); }
+.tasks-band-count { color: var(--fg-faint); font-family: var(--font-mono); }
+.tasks-band-columns { display: flex; gap: 8px; align-items: flex-start; }
+.tasks-column {
+  width: var(--w-board-col); flex: 0 0 auto; padding: 6px; border-radius: 10px; border: 1px solid transparent;
+  background: color-mix(in srgb, var(--fg) 2%, transparent); display: flex; flex-direction: column; gap: 6px;
+}
+.tasks-column.is-unmapped { border: 1px dashed var(--line-strong); background: transparent; }
+.tasks-column.drag-target.is-over { background: var(--dropzone-fill-empty); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.tasks-column.drag-blocked { opacity: .38; }
+.tasks-column-head { height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 4px; font-size: 12px; font-weight: 500; }
+.tasks-column-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-column-count { color: var(--fg-dim); font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; }
+.tasks-column-note { padding: 0 4px; color: var(--fg-dim); font-size: 10.5px; }
+.tasks-column-reason { padding: 0 4px; color: var(--st-error); font-size: 10.5px; }
+.tasks-column-list { display: flex; flex-direction: column; gap: 6px; min-height: 40px; }
+.tasks-unmapped-mark { color: var(--fg-dim); width: 10px; text-align: center; }
+.tasks-drop-gap { border-radius: 8px; border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); flex: 0 0 auto; }
+.tasks-drop-gap.is-row { border-radius: 0; }
+
+/* 상태 원 · 종류 · 우선순위 · 마감 */
+.tasks-status-circle { flex: 0 0 auto; color: var(--cat-todo); }
+.tasks-status-circle.cat-in_progress { color: var(--cat-doing); }
+.tasks-status-circle.cat-done { color: var(--cat-done); }
+.tasks-kind { flex: 0 0 auto; color: var(--fg-muted); }
+.tasks-kind.kind-diamond { color: var(--cat-doing); }
+.tasks-kind.kind-bug { color: var(--st-error); }
+.tasks-prio { font-size: 11px; line-height: 1; }
+.tasks-prio.prio-highest { color: var(--prio-highest); }
+.tasks-prio.prio-high { color: var(--prio-high); }
+.tasks-prio.prio-low { color: var(--prio-low); }
+.tasks-prio.prio-lowest { color: var(--prio-lowest); }
+.tasks-due { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); }
+.tasks-due.due-soon { color: var(--st-dirty); }
+.tasks-due.due-over { color: var(--st-error); }
+
+/* --- 카드 --- */
+.tasks-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 9px 10px 10px; border-radius: 8px;
+  background: var(--bg-raised); border: 1px solid var(--line); cursor: grab; user-select: none;
+}
+.tasks-card:hover { border-color: color-mix(in srgb, var(--fg) 18%, transparent); }
+.tasks-card.is-selected { background: var(--bg-card-selected); border-color: var(--line-card-selected); }
+.tasks-card.is-drag-source, .tasks-row.is-drag-source { opacity: .4; }
+.tasks-card.is-locked { cursor: not-allowed; }
+.tasks-card.is-compact { height: 32px; padding: 0 10px; justify-content: center; }
+.tasks-card-line { height: 14px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tasks-key { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); flex: 0 0 auto; }
+.tasks-card-space { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--fg-dim); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tasks-card-spacer { flex: 1; }
+.tasks-card-title { font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tasks-card-title-one { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-card-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-muted); }
+.tasks-blocked {
+  align-self: flex-start; height: 18px; display: inline-flex; align-items: center; gap: 5px; padding: 0 6px; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--st-error) 35%, transparent); background: color-mix(in srgb, var(--st-error) 8%, transparent);
+  color: var(--st-error); font-size: 10.5px; white-space: nowrap;
+}
+.tasks-blocked-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--st-error); flex: 0 0 auto; display: inline-block; }
+.tasks-progress { display: flex; flex-direction: column; gap: 4px; }
+.tasks-progress-toggle { align-self: flex-start; border: 0; background: transparent; padding: 0; color: var(--fg-dim); font-size: 10.5px; cursor: pointer; }
+.tasks-progress-bar { height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 8%, transparent); overflow: hidden; }
+.tasks-progress-bar span { display: block; height: 100%; background: var(--cat-done); }
+.tasks-children { display: flex; flex-direction: column; }
+.tasks-child-row { height: 22px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); min-width: 0; }
+.tasks-child-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 끄는 사본 — 커서를 따라온다(LIFE-469 와 같은 결: 반투명 · 클릭 통과). */
+.tasks-drag-preview { position: fixed; z-index: 60; pointer-events: none; opacity: .9; box-shadow: var(--shadow-menu); transform: rotate(1deg); }
+
+/* --- 백로그 --- */
+.tasks-backlog { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
+.tasks-backlog-section { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tasks-backlog-section.drag-target.is-over { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.tasks-backlog-section.drag-blocked { opacity: .38; }
+.tasks-backlog-head { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; font-weight: 500; background: color-mix(in srgb, var(--fg) 2%, transparent); border-bottom: 1px solid var(--line); }
+.tasks-backlog-list { min-height: 34px; }
+.tasks-backlog-empty { height: var(--h-issue-row); display: flex; align-items: center; padding: 0 12px; color: var(--fg-dim); font-size: 11.5px; }
+
+/* --- 행 34 --- */
+.tasks-row {
+  height: var(--h-issue-row); display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  border-bottom: 1px solid var(--line); font-size: 12.5px; cursor: default; min-width: 0;
+}
+.tasks-row:hover { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+.tasks-row.is-selected { background: var(--bg-card-selected); box-shadow: inset 2px 0 0 var(--line-card-selected); }
+.tasks-row.is-key-hit { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.tasks-grip { width: 12px; color: var(--fg-faint); cursor: grab; font-size: 10px; letter-spacing: -2px; user-select: none; }
+.tasks-grip.is-locked { cursor: not-allowed; opacity: .4; }
+.tasks-row-key { width: 72px; flex: 0 0 auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); }
+.tasks-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-row-title.is-missing { color: var(--fg-dim); }
+.tasks-row-space { width: 110px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: var(--fg-dim); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tasks-row-status { width: 96px; flex: 0 0 auto; color: var(--fg-muted); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tasks-row-prio { width: 14px; flex: 0 0 auto; text-align: center; }
+.tasks-row-due { width: 52px; flex: 0 0 auto; text-align: right; }
+.tasks-key-hit { height: 16px; padding: 0 5px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 10px; display: inline-flex; align-items: center; flex: 0 0 auto; }
+.tasks-key-hits { display: flex; flex-direction: column; margin-bottom: 12px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 8px; overflow: hidden; }
+.tasks-key-hit-row { height: var(--h-issue-row); display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 0; background: transparent; color: var(--fg); text-align: left; cursor: pointer; font-size: 12.5px; }
+
+/* --- 리스트 --- */
+.tasks-list { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tasks-list-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--fg-muted); }
+.tasks-select { display: inline-flex; align-items: center; gap: 6px; }
+.tasks-select select { height: 24px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-raised); color: var(--fg); font: inherit; font-size: 11.5px; padding: 0 4px; }
+.tasks-list-sep { width: 1px; height: 14px; background: rgba(255, 255, 255, .1); }
+.tasks-list-presets-label { color: var(--fg-dim); font-size: 11px; }
+.tasks-preset { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 5px; border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; font-size: 11.5px; }
+.tasks-preset.is-on { background: var(--bg-accent); color: var(--fg); }
+.tasks-preset-default { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+.tasks-list-scroll { flex: 1; min-height: 0; overflow: auto; }
+.tasks-list-group {
+  position: sticky; top: 0; z-index: 2; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--line); font-size: 11.5px; font-weight: 500; color: var(--fg-muted);
+}
+.tasks-list-more { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--fg-dim); font-size: 11.5px; }
+.tasks-list-more.is-capped { opacity: .7; }
+.tasks-more-btn { height: 24px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer; font-size: 11.5px; }
+.tasks-more-btn:disabled { opacity: .4; cursor: not-allowed; }
+.tasks-more-reason { color: var(--fg-dim); font-size: 10.5px; }
+
+/* --- 작업 중 --- */
+.tasks-working { display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
+.tasks-working-item { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tasks-working-head { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: color-mix(in srgb, var(--fg) 2%, transparent); font-size: 12.5px; min-width: 0; }
+.tasks-working-tree {
+  width: 100%; height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 0; border-top: 1px solid var(--line);
+  background: transparent; color: var(--fg); text-align: left; cursor: pointer; font-size: 12px;
+}
+.tasks-working-tree:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.tasks-working-dot { width: 12px; display: inline-flex; justify-content: center; }
+.tasks-working-state { width: 96px; flex: 0 0 auto; color: var(--fg-muted); font-size: 11px; }
+.tasks-working-branch { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-working-repo { color: var(--fg-dim); }
+.tasks-working-chevron { color: var(--fg-dim); }
+
+/* --- 토스트 내용 (기존 sonner 토스트 안) --- */
+.tasks-toast { display: flex; align-items: center; gap: 12px; width: 100%; }
+.tasks-toast-label { flex: 1; min-width: 0; }
+.tasks-toast.is-error { color: var(--st-error-hi); }
+.tasks-toast-undo { border: 0; background: transparent; color: var(--accent); font-weight: 600; cursor: pointer; font-size: 12px; padding: 0; }
+
+/* --- 사이드바 「작업」 진입 (검색 줄과 같은 문법) --- */
+.sidebar-tasks.is-on { background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg); }

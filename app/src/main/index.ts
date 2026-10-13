@@ -114,6 +114,7 @@ import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
 import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
+import { mockSourceEntry, seedMockDemoState } from './work/mock-source.js'
 import { WorkService } from './work/service.js'
 import { WorkSourceRegistry } from './work/source.js'
 import { WorkConnectionStore } from './work/store.js'
@@ -1599,10 +1600,16 @@ app.whenReady().then(async () => {
   if (laUrl !== LA_DEFAULT_MCP_URL) log('work.la_endpoint_override', { url: laUrl.slice(0, 200) })
   const testCipher = measuring && process.env.CORRAL_WORK_TEST_CIPHER === '1'
   if (testCipher) log('work.test_cipher', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_TEST_CIPHER — 키체인 무접촉 격리 실행' })
+  // LIFE-601 — 격리 실행(측정 모드)에서만 모의 Jira 형 출처를 레지스트리에 더한다. 평시 앱에는 없다.
+  const mockSource = measuring && process.env.CORRAL_WORK_MOCK === '1'
+  if (mockSource) log('work.mock_source', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_MOCK — 작업 페이지 격리 실행' })
   work = new WorkService({
     store: workStore,
     vault: new CredentialVault(testCipher ? measurementCipher() : electronCipher(safeStorage)),
-    sources: new WorkSourceRegistry([laSourceEntry({ url: laUrl, clientVersion: app.getVersion() })]),
+    sources: new WorkSourceRegistry([
+      laSourceEntry({ url: laUrl, clientVersion: app.getVersion() }),
+      ...(mockSource ? [mockSourceEntry({ state: seedMockDemoState() })] : []),
+    ]),
     repos: () => {
       try {
         return registry?.records().map((repo) => ({ id: repo.id, root: repo.path })) ?? []

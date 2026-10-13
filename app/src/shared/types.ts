@@ -745,6 +745,11 @@ export type UiPrefs = {
    * 여기서는 실어 나르기만 한다). 키가 herdr tab id 라 herdr 가 재기동하면 배치·폴백 번호와 같이 잃는다(00-analysis F13).
    */
   tabMarks: unknown[]
+  /**
+   * 작업 페이지 상태 (LIFE-601 C3) — 스페이스·보기·필터·정렬·그룹·밀도·프리셋 기본. 모양은 렌더러 `tasks-model.ts` 가 안다(`tabMarks` 처럼
+   * 여기서는 실어 나르기만 한다). 없는 칸이면 화면 기본값 — 옛 파일은 이 칸이 없다.
+   */
+  tasksPage?: unknown
 } & SidebarViewPrefs
 
 // --- 터미널 스트림 (R2 — LIFE-353) -------------------------------------------

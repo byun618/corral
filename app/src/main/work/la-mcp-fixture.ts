@@ -32,6 +32,8 @@ export type FixtureCorrupt =
   | 'drop-links' | 'drop-description' | 'drop-onBoard' | 'drop-priority'
   | 'isError-string' | 'rpc-wrong-version' | 'rpc-error-string'
   | 'list-drop-position' | 'list-drop-dueAt' | 'list-drop-color' | 'list-drop-archivedAt' | 'list-drop-openBlockers' | 'list-bad-blocker'
+  // LIFE-601 E1·E2 양성 대조 — 막은 쪽 행에서 displayId 를 지움 · `issue_by_seq` 의 data.id 를 숫자로.
+  | 'blocker-no-displayId' | 'byseq-bad-id'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -241,6 +243,13 @@ export class LaMcpFixture {
         const issue = find(args.id)
         return issue === undefined ? fail('NOT_FOUND', '일감을 찾을 수 없어요') : ok(this.full(issue))
       }
+      // LIFE-601 E2 — LA `issue_by_seq` 응답 `{kind, data}`. 못 찾으면 `{kind: null, data: null}`(오류 아님). 보관 일감도 찾는다.
+      case 'issue_by_seq': {
+        const issue = this.issues.find((row) => row.sequentialId === args.seq)
+        if (issue === undefined) return ok({ kind: null, data: null })
+        const data = this.full(issue)
+        return ok({ kind: issue.kind, data: this.corrupt === 'byseq-bad-id' ? { ...data, id: 42 } : data })
+      }
       case 'issue_transition': {
         const issue = find(args.id)
         if (issue === undefined) return fail('NOT_FOUND', '일감을 찾을 수 없어요')
@@ -321,6 +330,7 @@ export class LaMcpFixture {
     const openBlockers = this.linksOf(issue)
       .filter((link) => link.relation === 'is_blocked_by' && this.status(link.other).categoryKey !== 'done')
       .map((link) => ({ id: link.other.id, displayId: `LIFE-${link.other.sequentialId}`, title: link.other.title, statusId: link.other.statusId, statusLabel: this.status(link.other).label }))
+      .map(({ displayId, ...rest }) => (this.corrupt === 'blocker-no-displayId' ? rest : { ...rest, displayId }))
     return {
       ...this.ref(issue), goalId: null, parentId: issue.parentId, priority: issue.priority, color: issue.color, position: issue.position, onBoard: issue.onBoard,
       startedAt: null, dueAt: issue.dueAt, doneAt: null, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt, openBlockers,

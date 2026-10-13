@@ -3,6 +3,10 @@
 // 조건부 수정(`ifVersion` → 저장 충돌). 작업 링크 저장은 T5 까지 꺼 둔다. 메모리에만 산다 — 앱 레지스트리에는 넣지 않는다.
 //
 // `defect` 는 양성 대조용(C2): 계약에서 한 곳을 어긋나게 만들어 묶음이 실패하는지 본다. 평시에는 `none`.
+//
+// LIFE-601 — 격리 앱 실행(`CORRAL_WORK_MOCK=1`, 측정 모드에서만)이 작업 페이지를 그릴 때 이 출처를 쓴다. 토큰 글자로 행동을 고른다
+// (가짜 토큰만 — 원문 비밀이 아니다): `fault-auth|fault-forbidden|fault-network` = 목록·상태 요청이 그 오류(배너 양성 대조),
+// `delay-<ms>` = 모든 요청을 그만큼 늦춤(불러오기·늦은 응답). 씨앗 `seedMockDemoState` 는 점선 칸(칸 없는 상태)·막힘·자식·빈 스페이스를 갖는다.
 
 import type {
   WorkCall,
@@ -16,6 +20,7 @@ import type {
   WorkSpace,
   WorkStatus,
 } from '../../shared/work.js'
+import type { WorkErrorKind } from '../../shared/work.js'
 import { workError } from './errors.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
@@ -32,6 +37,25 @@ export const MOCK_DESCRIPTOR: WorkSourceDescriptor = {
   formTitle: 'Mock 연결',
   tokenLabel: 'Mock 토큰',
   tokenPrefix: MOCK_TOKEN_PREFIX,
+  keyPattern: '[A-Z][A-Z0-9]*-\\d+',
+}
+
+/** 토큰에서 읽는 행동 (LIFE-601) — 격리 실행 전용. 없으면 평시. */
+export type MockBehavior = { fault: Extract<WorkErrorKind, 'auth' | 'forbidden' | 'network'> | null; delayMs: number }
+
+export function mockBehaviorOf(token: string): MockBehavior {
+  const fault = /fault-(auth|forbidden|network)/.exec(token)?.[1]
+  const delay = /delay-(\d{1,5})/.exec(token)?.[1]
+  return {
+    fault: fault === 'auth' || fault === 'forbidden' || fault === 'network' ? fault : null,
+    delayMs: delay === undefined ? 0 : Number(delay),
+  }
+}
+
+const FAULT_MESSAGE: Record<NonNullable<MockBehavior['fault']>, { message: string; status: number | null }> = {
+  auth: { message: '인증에 실패했습니다 — 토큰을 다시 붙여넣으세요.', status: 401 },
+  forbidden: { message: '이 토큰에는 이 스페이스를 볼 권한이 없습니다.', status: 403 },
+  network: { message: '출처에 닿지 못했습니다.', status: null },
 }
 
 export const MOCK_CAPABILITIES: WorkCapabilities = {
@@ -55,6 +79,7 @@ const PAIR: Record<WorkRelationKind, WorkRelationKind> = {
 }
 
 const KINDS: WorkKind[] = [{ key: 'epic', label: 'Epic' }, { key: 'story', label: 'Story' }, { key: 'bug', label: 'Bug' }]
+const KEY_SHAPE = /^[A-Z][A-Z0-9]*-\d+$/i
 const PAGE_SIZE = 2
 
 type MockSpace = { space: WorkSpace; statuses: WorkStatus[]; transitions: Record<string, string[]> }
@@ -90,7 +115,7 @@ export function seedMockState(): MockState {
     transitions: { 'web-open': ['web-closed'], 'web-closed': ['web-open'] },
   }
   const item = ({ id, key, spaceKey, title, kind, statusKey, parentId, rank, placement }: { id: string; key: string; spaceKey: string; title: string; kind: WorkKind; statusKey: string; parentId: string | null; rank: string; placement: 'board' | 'backlog' }): MockItem => ({
-    id, key, spaceKey, title, body: `${title} 본문`, kind, statusKey, priority: 'medium', dueAt: null, parentId, placement, rank, openBlockerCount: 0,
+    id, key, spaceKey, title, body: `${title} 본문`, kind, statusKey, priority: 'medium', dueAt: null, parentId, placement, rank, openBlockerCount: 0, openBlockers: [],
     updatedAt: '2026-10-13T00:00:00.000Z', version: 1, workLinks: [],
   })
   const [epic, story, bug] = KINDS
@@ -110,18 +135,48 @@ export function seedMockState(): MockState {
   }
 }
 
+/**
+ * 격리 앱 실행용 씨앗 (LIFE-601) — 계약 묶음 씨앗에 화면 재현을 더한다: 칸 없는 상태(「Blocked by Legal」 → 점선 칸) · 막힘(열린/완료 막은 쪽) ·
+ * 자식 있는 Epic · 백로그 · 마감 · 우선순위 · 빈 스페이스. 계약 묶음은 `seedMockState` 를 그대로 쓴다.
+ */
+export function seedMockDemoState(): MockState {
+  const state = seedMockState()
+  const core = state.spaces[0]
+  if (core !== undefined) core.transitions['core-legal'] = ['core-todo']
+  state.spaces.push({
+    space: { key: 'EMPTY', name: 'Empty Space', color: null, description: null, openCount: null, role: 'regular' },
+    statuses: [status({ key: 'empty-todo', label: 'To Do', category: 'todo', order: 0 }), status({ key: 'empty-done', label: 'Done', category: 'done', order: 1 })],
+    transitions: { 'empty-todo': ['empty-done'], 'empty-done': ['empty-todo'] },
+  })
+  const [, story, bug] = KINDS
+  if (story === undefined || bug === undefined) throw new Error('mock kinds')
+  const base = { body: null, priority: 'medium' as const, dueAt: null, parentId: null, openBlockerCount: 0, openBlockers: [], updatedAt: '2026-10-13T00:00:00.000Z', version: 1, workLinks: [] }
+  const soon = new Date(Date.now() + 86_400_000).toISOString()
+  state.items.push(
+    { ...base, id: 'm-6', key: 'CORE-5', spaceKey: 'CORE', title: '법무 검토 대기 — 칸 없는 상태', kind: story, statusKey: 'core-legal', rank: 'e', placement: 'board' },
+    { ...base, id: 'm-7', key: 'CORE-6', spaceKey: 'CORE', title: '정산 리포트', kind: story, statusKey: 'core-todo', rank: 'f', placement: 'board', priority: 'highest', dueAt: soon },
+    { ...base, id: 'm-8', key: 'CORE-7', spaceKey: 'CORE', title: '구 결제 모듈 제거', kind: bug, statusKey: 'core-done', parentId: 'm-1', rank: 'g', placement: 'board', priority: 'low' },
+    { ...base, id: 'm-9', key: 'CORE-8', spaceKey: 'CORE', title: '백로그 아이디어', kind: story, statusKey: 'core-todo', rank: 'h', placement: 'backlog' },
+  )
+  // 막힘: CORE-6 ← CORE-2(열림) · CORE-6 ← CORE-7(완료 — 배지에 안 보임) · CORE-4 ← CORE-3(열림)
+  state.links.push({ id: 'l-demo-1', from: 'm-2', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-2', from: 'm-8', to: 'm-7', kind: 'blocks' }, { id: 'l-demo-3', from: 'm-4', to: 'm-3', kind: 'is_blocked_by' })
+  return state
+}
+
 export function mockSourceEntry({ state = seedMockState(), defect = 'none' }: { state?: MockState; defect?: MockDefect } = {}): WorkSourceEntry {
-  return { descriptor: MOCK_DESCRIPTOR, create: () => new MockSource({ state, defect }) }
+  return { descriptor: MOCK_DESCRIPTOR, create: (token) => new MockSource({ state, defect, behavior: mockBehaviorOf(token) }) }
 }
 
 export class MockSource implements WorkSourceClient {
   private readonly state: MockState
   private readonly defect: MockDefect
+  private readonly behavior: MockBehavior
   private closed = false
 
-  constructor({ state, defect }: { state: MockState; defect: MockDefect }) {
+  constructor({ state, defect, behavior = { fault: null, delayMs: 0 } }: { state: MockState; defect: MockDefect; behavior?: MockBehavior }) {
     this.state = state
     this.defect = defect
+    this.behavior = behavior
   }
 
   capabilities(): WorkCapabilities {
@@ -133,6 +188,16 @@ export class MockSource implements WorkSourceClient {
   }
 
   async call(call: WorkCall): Promise<WorkOutcome> {
+    if (this.behavior.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.behavior.delayMs))
+    const fault = this.behavior.fault
+    if (fault !== null && (call.op === 'listItems' || call.op === 'listStatuses')) {
+      const { message, status } = FAULT_MESSAGE[fault]
+      return { ok: false, error: workError({ kind: fault, message, status }) }
+    }
+    return this.answer(call)
+  }
+
+  private async answer(call: WorkCall): Promise<WorkOutcome> {
     if (this.closed) return { ok: false, error: workError({ kind: 'not_connected', message: '연결이 해제됐거나 토큰이 바뀌어 요청을 보내지 않았습니다.' }) }
     switch (call.op) {
       case 'listSpaces':
@@ -155,6 +220,11 @@ export class MockSource implements WorkSourceClient {
       case 'getItem': {
         const item = this.item(call.itemId)
         return item === null ? rejected('없는 작업입니다.') : { ok: true, result: { op: 'getItem', item: this.view({ item, withRelations: true }) } }
+      }
+      case 'findByKey': {
+        if (!KEY_SHAPE.test(call.key.trim())) return { ok: true, result: { op: 'findByKey', item: null } }
+        const item = this.state.items.find((row) => row.key.toUpperCase() === call.key.trim().toUpperCase()) ?? null
+        return { ok: true, result: { op: 'findByKey', item: item === null ? null : this.view({ item, withRelations: true }) } }
       }
       case 'listTransitions': {
         const item = this.item(call.itemId)
@@ -273,13 +343,16 @@ export class MockSource implements WorkSourceClient {
 
   private view({ item, withRelations }: { item: MockItem; withRelations: boolean }): WorkItem {
     const relations = this.state.links.filter((link) => link.from === item.id || link.to === item.id).map((link) => this.relationOf({ link, viewer: item.id }))
-    const openBlockerCount = relations.filter((relation) => relation.kind === 'is_blocked_by' && relation.other.category !== 'done').length
+    const openBlockers = relations
+      .filter((relation) => relation.kind === 'is_blocked_by' && relation.other.category !== 'done')
+      .map((relation) => ({ id: relation.other.id, key: relation.other.key, title: relation.other.title }))
     return {
       ...item,
+      openBlockers,
       body: withRelations ? item.body : null,
       category: this.categoryOf(item),
       version: String(item.version),
-      openBlockerCount,
+      openBlockerCount: openBlockers.length,
       relations: withRelations ? relations : null,
       workLinks: [...item.workLinks],
     }

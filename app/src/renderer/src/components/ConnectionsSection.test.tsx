@@ -9,7 +9,7 @@ import { ConnectionsSection } from './ConnectionsSection.js'
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
 
-const SOURCE = { id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '+ A 토큰', formTitle: 'A 연결', tokenLabel: 'A 토큰', tokenPrefix: 'a_pat_' }
+const SOURCE = { id: 'src-a', name: 'Source A', mono: 'SA', addLabel: '+ A 토큰', formTitle: 'A 연결', tokenLabel: 'A 토큰', tokenPrefix: 'a_pat_', keyPattern: null }
 const CONNECTION: WorkConnectionSummary = {
   id: 'c1', sourceId: 'src-a', name: 'Source A', mono: 'SA', tokenTail: 'wxyz', addedAt: Date.UTC(2026, 9, 8), generation: 0, status: 'ok', pending: null, error: null,
   checkedAt: Date.now(), hiddenSpaceKeys: ['s2'], capabilities: null,

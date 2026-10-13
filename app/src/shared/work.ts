@@ -78,6 +78,9 @@ export type WorkItemRef = {
   category: WorkCategory
 }
 
+/** 열린 막은 쪽 하나 (E1 · LIFE-601) — 목록 카드의 막힘 배지 「막힘 · KEY (외 N)」 에 쓴다. 열린 = 완료 분류가 아님(출처가 거른다). */
+export type WorkBlockerRef = { id: string; key: string; title: string }
+
 export type WorkRelation = {
   id: string
   kind: WorkRelationKind
@@ -109,6 +112,8 @@ export type WorkItem = {
   /** 순서 값 — 불투명. 순서 능력이 꺼진 출처도 정렬용으로 줄 수 있다. */
   rank: string | null
   openBlockerCount: number
+  /** 열린 막은 쪽 참조 (E1) — 목록·단건 모두 채운다. 길이 = `openBlockerCount`. */
+  openBlockers: WorkBlockerRef[]
   updatedAt: string
   /** 조건부 수정용 판(`ifVersion`). 충돌 검사 능력이 꺼져 있으면 null. */
   version: string | null
@@ -125,6 +130,8 @@ export type WorkCall =
   | { op: 'listStatuses'; spaceKey: string }
   | { op: 'listItems'; spaceKey: string; cursor: string | null }
   | { op: 'getItem'; itemId: string }
+  /** 키로 작업 하나 찾기 (E2 · LIFE-601) — 스페이스 무관. 키 모양 판별은 화면이 descriptor 의 `keyPattern` 으로만 한다. */
+  | { op: 'findByKey'; key: string }
   | { op: 'listTransitions'; itemId: string }
   | { op: 'changeStatus'; itemId: string; statusKey: string; ifVersion: string | null }
   | { op: 'setPlacement'; itemId: string; placement: WorkPlacement; ifVersion: string | null }
@@ -142,6 +149,8 @@ export type WorkResult =
   | { op: 'listStatuses'; statuses: WorkStatus[]; kinds: WorkKind[] }
   | { op: 'listItems'; items: WorkItem[]; nextCursor: string | null; truncated: boolean }
   | { op: 'getItem'; item: WorkItem }
+  /** 없으면 null — 「없음」 은 오류가 아니다(검색·작업 중이 「작업을 찾지 못함」 으로 그린다). */
+  | { op: 'findByKey'; item: WorkItem | null }
   | { op: 'listTransitions'; statusKeys: string[] }
   | { op: 'changeStatus' | 'setPlacement' | 'setParent' | 'reorder'; item: WorkItem }
   | { op: 'addRelation'; relation: WorkRelation }
@@ -198,6 +207,11 @@ export type WorkSourceDescriptor = {
   tokenLabel: string
   /** 토큰이 이 접두사로 시작해야 한다 — 화면은 보내기 전에, main 은 네트워크 전에 다시 거절한다. 없으면 null. */
   tokenPrefix: string | null
+  /**
+   * 사람 키의 모양 (E3 · LIFE-601) — 정규식 소스, 앵커 없이(`LIFE-\d+`). 대소문자 무시로 쓴다. 화면은 이것으로만 검색어·브랜치 이름의
+   * 키를 알아본다(출처 이름으로 분기하지 않는다 — K3). 없으면 null — 키 우선 검색·작업 중 감지를 하지 않는다.
+   */
+  keyPattern: string | null
 }
 
 export type WorkSpaceToggle = { key: string; name: string; color: string | null; openCount: number | null; hidden: boolean }
@@ -258,6 +272,7 @@ export function capabilityOf(call: WorkCall): WorkCapabilityName | null {
     case 'listSpaces':
     case 'listStatuses':
     case 'getItem':
+    case 'findByKey':
     case 'listTransitions':
       return null
     case 'listItems':
@@ -331,6 +346,8 @@ export function readWorkCall(value: unknown): WorkCall | null {
     case 'listTransitions':
     case 'listComments':
       return isNonEmpty(itemId) ? { op, itemId } : null
+    case 'findByKey':
+      return isNonEmpty(value.key) && value.key.length <= 64 ? { op, key: value.key } : null
     case 'changeStatus':
       return isNonEmpty(itemId) && isNonEmpty(value.statusKey) && isNullableString(ifVersion) ? { op, itemId, statusKey: value.statusKey, ifVersion } : null
     case 'setPlacement': {

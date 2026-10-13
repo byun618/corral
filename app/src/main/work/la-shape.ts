@@ -48,8 +48,12 @@ export type LaIssueCore = LaIssueRef & {
 }
 
 /** 작업으로 바꿀 수 있는 일감 — 목록 행이면 description·links 가 null, 단건이면 채워진다. */
+export type LaBlocker = { id: string; displayId: string; title: string }
+
 export type LaIssue = LaIssueCore & {
   openBlockerCount: number
+  /** 열린 막은 쪽 (E1 · LIFE-601) — 목록은 `openBlockers`, 단건은 links 의 완료 아닌 막힘에서. */
+  openBlockers: LaBlocker[]
   description: string | null
   links: LaLink[] | null
 }
@@ -162,10 +166,11 @@ function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
   }
 }
 
-/** openBlockers 원소 — `IssueBlockerRef` 의 다섯 칸이 글자여야 한다. */
-function readBlocker(value: unknown, path: string): void {
+/** openBlockers 원소 — `IssueBlockerRef` 의 다섯 칸이 글자여야 한다. 카드 배지에 쓰는 셋을 돌려준다(E1). */
+function readBlocker(value: unknown, path: string): LaBlocker {
   const row = record(value, path)
-  for (const key of ['id', 'displayId', 'title', 'statusId', 'statusLabel']) str(row, key, path)
+  for (const key of ['statusId', 'statusLabel']) str(row, key, path)
+  return { id: str(row, 'id', path), displayId: str(row, 'displayId', path), title: str(row, 'title', path) }
 }
 
 /** 목록 행(`IssueSummary`) — openBlockers 필수(빈 배열 = 안 막힘). description·links 는 없다. */
@@ -174,8 +179,8 @@ export function readIssueSummary(value: unknown, path: string): LaIssue {
   const core = readCore(row, path)
   const blockers = present(row, 'openBlockers', path)
   if (!Array.isArray(blockers)) throw new LaShapeError(`${path}.openBlockers`)
-  blockers.forEach((blocker, index) => readBlocker(blocker, `${path}.openBlockers[${index}]`))
-  return { ...core, openBlockerCount: blockers.length, description: null, links: null }
+  const openBlockers = blockers.map((blocker, index) => readBlocker(blocker, `${path}.openBlockers[${index}]`))
+  return { ...core, openBlockerCount: openBlockers.length, openBlockers, description: null, links: null }
 }
 
 /** 수정 응답(`IssueResponse`) — description 칸 필수. 부르는 쪽은 성공만 보고 단건을 다시 읽는다. */
@@ -193,8 +198,20 @@ export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
   const raw = present(row, 'links', path)
   if (!Array.isArray(raw)) throw new LaShapeError(`${path}.links`)
   const links = raw.map((link, index) => readLink(link, `${path}.links[${index}]`))
-  const openBlockerCount = links.filter((link) => link.relation === 'is_blocked_by' && link.issue.statusCategoryKey !== 'done').length
-  return { ...core, openBlockerCount, description, links }
+  const openBlockers = links
+    .filter((link) => link.relation === 'is_blocked_by' && link.issue.statusCategoryKey !== 'done')
+    .map((link) => ({ id: link.issue.id, displayId: link.issue.displayId, title: link.issue.title }))
+  return { ...core, openBlockerCount: openBlockers.length, openBlockers, description, links }
+}
+
+/** `issue_by_seq` — `{kind, data}`. 작업으로 쓸 수 있는 일감(project 아님)이면 그 id, 아니면(goal·없음·project) null (E2). */
+export function readBySeq(value: unknown, path: string): string | null {
+  const row = record(value, path)
+  const kind = row.kind
+  if (kind === null) return null
+  if (typeof kind !== 'string') throw new LaShapeError(`${path}.kind`)
+  if (kind !== 'checkpoint' && kind !== 'bug' && kind !== 'task') return null
+  return str(record(row.data, `${path}.data`), 'id', `${path}.data`)
 }
 
 export function readIssueSummaries(value: unknown, path: string): LaIssue[] {

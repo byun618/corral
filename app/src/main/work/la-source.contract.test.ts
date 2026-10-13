@@ -10,6 +10,9 @@ workContractSuite({
     const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_TOKEN, replaceId: null })
     if (!added.ok) throw new Error(`연결 실패: ${added.error.kind} ${added.error.message}`)
     if (process.env.L600_BREAK === 'la-field') harness.fixture.corrupt = 'drop-statusLabel'
-    return { service: harness.service, connectionId: added.connection.id, close: () => harness.fixture.stop(), visibleItems: FIXTURE_VISIBLE_ITEMS, retiredSpaceKeys: FIXTURE_RETIRED_SPACE_KEYS }
+    // LIFE-601 — 새 칸(E1 막은 쪽 키 · E2 issue_by_seq id) 어긋남 양성 대조.
+    if (process.env.L601_BREAK === 'blocker-key') harness.fixture.corrupt = 'blocker-no-displayId'
+    if (process.env.L601_BREAK === 'byseq-id') harness.fixture.corrupt = 'byseq-bad-id'
+    return { service: harness.service, connectionId: added.connection.id, close: () => harness.fixture.stop(), visibleItems: FIXTURE_VISIBLE_ITEMS, retiredSpaceKeys: FIXTURE_RETIRED_SPACE_KEYS, missingKey: 'LIFE-99999' }
   },
 })

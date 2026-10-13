@@ -24,7 +24,7 @@ import type {
   WorkStatus,
 } from '../../shared/work.js'
 import { workError } from './errors.js'
-import { readIssueDetail, readIssueSummaries, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { readBySeq, readIssueDetail, readIssueSummaries, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
 import { McpHttpClient } from './mcp-http.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
@@ -46,6 +46,8 @@ const PARENT_KINDS = new Set<LaIssue['kind']>(['project', 'checkpoint', 'bug'])
 const MISSING_SCOPE = /^missing scope: ([a-z_]+:[a-z_]+)$/
 /** 문구에 옮겨도 되는 범위 이름 — 원격 글을 그대로 옮기지 않는다(R2-F). 이 밖의 범위도 권한 부족이지만 이름은 싣지 않는다. */
 const KNOWN_SCOPES = new Set(['issue:read', 'issue:write'])
+/** LA 사람 키 (E3) — `LIFE-<seq>`. 화면에는 descriptor 로 소스만 나간다. */
+const LA_KEY = /^LIFE-(\d+)$/i
 
 export const LA_DESCRIPTOR: WorkSourceDescriptor = {
   id: LA_SOURCE_ID,
@@ -55,6 +57,7 @@ export const LA_DESCRIPTOR: WorkSourceDescriptor = {
   formTitle: 'LA 연결',
   tokenLabel: 'LA 개인 토큰',
   tokenPrefix: LA_TOKEN_PREFIX,
+  keyPattern: 'LIFE-\\d+',
 }
 
 export const LA_CAPABILITIES: WorkCapabilities = {
@@ -118,6 +121,7 @@ export class LaSource implements WorkSourceClient {
         const item = await this.item(call.itemId)
         return item.ok ? { ok: true, result: { op: 'getItem', item: item.value } } : item.outcome
       }
+      case 'findByKey': return this.findByKey(call.key)
       case 'listTransitions': {
         const statuses = await this.statuses()
         return statuses.ok ? { ok: true, result: { op: 'listTransitions', statusKeys: statuses.value.map((status) => status.id) } } : statuses.outcome
@@ -272,6 +276,17 @@ export class LaSource implements WorkSourceClient {
     return { ok: true, value: toItem({ issue, spaceKey, parentId: shownParent }) }
   }
 
+  /** 키로 찾기 (E2) — `issue_by_seq` 로 id 를 얻고 단건 경로(스페이스·표시 부모 풀기)로. 꼴이 아니거나 없으면 null(오류 아님). */
+  private async findByKey(key: string): Promise<WorkOutcome> {
+    const match = LA_KEY.exec(key.trim())
+    if (match === null) return { ok: true, result: { op: 'findByKey', item: null } }
+    const found = await this.tool({ name: 'issue_by_seq', args: { seq: Number(match[1]) }, read: readBySeq })
+    if (!found.ok) return found.outcome
+    if (found.value === null) return { ok: true, result: { op: 'findByKey', item: null } }
+    const item = await this.item(found.value)
+    return item.ok ? { ok: true, result: { op: 'findByKey', item: item.value } } : item.outcome
+  }
+
   private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent'; itemId: string }): Promise<WorkOutcome> {
     const item = await this.item(itemId)
     return item.ok ? { ok: true, result: { op, item: item.value } } : item.outcome
@@ -304,7 +319,7 @@ export class LaSource implements WorkSourceClient {
   }
 
   private async addRelation({ itemId, kind, otherKey }: { itemId: string; kind: WorkRelation['kind']; otherKey: string }): Promise<WorkOutcome> {
-    const match = /^LIFE-(\d+)$/i.exec(otherKey.trim())
+    const match = LA_KEY.exec(otherKey.trim())
     if (match === null) return { ok: false, error: workError({ kind: 'rejected', message: `LA 작업 키는 LIFE-N 꼴입니다 (${otherKey.slice(0, 40)}).` }) }
     const issue = await this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })
     if (!issue.ok) return issue.outcome
@@ -385,6 +400,7 @@ function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: strin
     placement: issue.onBoard === null ? null : issue.onBoard ? 'board' : 'backlog',
     rank: issue.position,
     openBlockerCount: issue.openBlockerCount,
+    openBlockers: issue.openBlockers.map((blocker) => ({ id: blocker.id, key: blocker.displayId, title: blocker.title })),
     updatedAt: issue.updatedAt,
     version: null,
     relations: issue.links === null

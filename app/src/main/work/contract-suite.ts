@@ -25,6 +25,8 @@ export type ContractTarget = {
   visibleItems: string[]
   /** 스페이스가 아니게 된(완료·보관) 옛 스페이스 키 — 목록 요청은 거절(「스페이스 아님」)이어야 한다(R3-D). 없는 출처는 빈 배열. */
   retiredSpaceKeys: string[]
+  /** 출처 키 모양에 맞지만 없는 키 — 키로 찾기(E2)는 오류가 아니라 null 이어야 한다(LIFE-601). */
+  missingKey: string
 }
 
 const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'workLinkStore']
@@ -68,6 +70,17 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const result = await okResult({ op: 'getItem', itemId })
       if (result.op !== 'getItem') throw new Error(result.op)
       return result.item
+    }
+    const findByKey = async (key: string): Promise<WorkItem | null> => {
+      const result = await okResult({ op: 'findByKey', key })
+      if (result.op !== 'findByKey') throw new Error(result.op)
+      return result.item
+    }
+    /** 이 연결 출처의 키 모양(E3) — 화면이 받는 그 값(설정 상태의 descriptor). */
+    const keyPattern = (): string | null => {
+      const settings = target.service.settings()
+      const sourceId = settings.connections.find((connection) => connection.id === target.connectionId)?.sourceId
+      return settings.sources.find((source) => source.id === sourceId)?.keyPattern ?? null
     }
     const transitions = async (itemId: string): Promise<string[]> => {
       const result = await okResult({ op: 'listTransitions', itemId })
@@ -132,6 +145,9 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         expect(ids.size).toBe(items.length)
         for (const item of items) {
           expect(keys).not.toContain(item.id)
+          // E1 — 열린 막은 쪽 참조는 개수와 같고 키가 있다.
+          expect(item.openBlockers).toHaveLength(item.openBlockerCount)
+          for (const blocker of item.openBlockers) expect(blocker.key.length).toBeGreaterThan(0)
           expect(item.spaceKey).toBe(space.key)
           expect(WORK_CATEGORIES).toContain(item.category)
           expect(item.key.length).toBeGreaterThan(0)
@@ -252,7 +268,13 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       expect(added.relation).toMatchObject({ kind: 'blocks', other: { id: b.id, key: b.key } })
       const onB = (await getItem(b.id)).relations ?? []
       expect(onB.some((relation) => relation.id === added.relation.id && relation.kind === 'is_blocked_by' && relation.other.id === a.id)).toBe(true)
-      if (a.category !== 'done') expect((await getItem(b.id)).openBlockerCount).toBeGreaterThanOrEqual(1)
+      if (a.category !== 'done') {
+        expect((await getItem(b.id)).openBlockerCount).toBeGreaterThanOrEqual(1)
+        // E1 — 목록 행과 단건 모두 막은 쪽 키를 싣는다(카드 배지 「막힘 · KEY」).
+        expect((await getItem(b.id)).openBlockers.map((blocker) => blocker.key)).toContain(a.key)
+        const listed = (await listAll(b.spaceKey)).items.find((item) => item.id === b.id)
+        expect(listed?.openBlockers.map((blocker) => blocker.key)).toContain(a.key)
+      }
       const duplicate = await send({ op: 'addRelation', itemId: a.id, kind: 'blocks', otherKey: b.key })
       expect(duplicate).toMatchObject({ ok: false, error: { kind: 'rejected' } })
       const self = await send({ op: 'addRelation', itemId: a.id, kind: 'relates_to', otherKey: a.key })
@@ -317,6 +339,31 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
       const stale = await send({ op: 'changeStatus', itemId: item.id, statusKey: other.key, ifVersion: `${item.version}-old` })
       expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } })
       expect((await getItem(item.id)).statusKey).toBe(item.statusKey)
+    })
+
+    it('키 모양(E3) — 출처가 정규식 소스를 주고, 목록의 모든 키가 그 모양이다', async () => {
+      const pattern = keyPattern()
+      expect(pattern).not.toBeNull()
+      if (pattern === null) return
+      const whole = new RegExp(`^(?:${pattern})$`, 'i')
+      const { spaces } = await listSpaces()
+      for (const space of spaces) for (const item of (await listAll(space.key)).items) expect(item.key).toMatch(whole)
+      expect(target.missingKey).toMatch(whole)
+    })
+
+    it('키로 찾기(E2) — 스페이스 무관하게 같은 작업, 대소문자 무시 · 없는 키·모양 밖은 null(오류 아님)', async () => {
+      const { spaces } = await listSpaces()
+      for (const space of spaces) {
+        for (const item of (await listAll(space.key)).items.slice(0, 3)) {
+          const found = await findByKey(item.key)
+          expect(found, item.key).toMatchObject({ id: item.id, key: item.key, spaceKey: item.spaceKey, statusKey: item.statusKey })
+          expect((await findByKey(item.key.toLowerCase()))?.id).toBe(item.id)
+        }
+      }
+      expect(await findByKey(target.missingKey)).toBeNull()
+      expect(await findByKey('not a key')).toBeNull()
+      const malformed = await send({ op: 'findByKey', key: '' })
+      expect(malformed).toMatchObject({ ok: false, error: { kind: 'invalid_request' } })
     })
 
     it('코멘트 — 켜져 있으면 남기고 읽고, 꺼져 있으면 이유와 함께 거절', async () => {

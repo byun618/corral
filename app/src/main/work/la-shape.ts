@@ -1,6 +1,8 @@
 // LA MCP 응답 형태 검증 (LIFE-600 C3) — 도구 결과 JSON(unknown)을 **검증한 뒤에만** LA 모양으로 쓴다.
 // 어긋나면 `LaShapeError(경로)` 를 던지고, 부르는 쪽(`la-source.ts`)이 `invalid_response` 로 바꾼다 — 조용히 지나가지 않는다.
 // 칸 목록은 LA 도구 설명(issue_list·issue_get·status_list·issue_transition·issue_link_create)과 실측(u0-la.json)에서 왔다.
+// **「null 허용」 과 「칸 없음」 을 가른다**(R1-F) — 실제 LA 가 늘 싣는 칸(priority·onBoard·parentId …)은 값이 null 이어도 칸이 있어야 한다.
+// 단건(`issue_get`)은 description·links 까지 늘 싣는다 → `readIssueDetail`. 목록·수정 응답은 그 둘을 요구하지 않는다(`readIssue`).
 
 import { isRecord } from '../../shared/json.js'
 import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind } from '../../shared/work.js'
@@ -43,6 +45,9 @@ export type LaIssue = LaIssueRef & {
   links: LaLink[] | null
 }
 
+/** 단건 — description 칸(null 허용)과 links 배열이 반드시 있다. */
+export type LaIssueDetail = LaIssue & { links: LaLink[] }
+
 export type LaStatus = { id: string; categoryKey: WorkCategory; label: string; color: string | null; position: number }
 
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -54,6 +59,12 @@ function str(source: Record<string, unknown>, key: string, path: string): string
   const value = source[key]
   if (typeof value !== 'string') throw new LaShapeError(`${path}.${key}`)
   return value
+}
+
+/** 칸이 있어야 한다(값은 null 일 수 있다). */
+function present(source: Record<string, unknown>, key: string, path: string): unknown {
+  if (!Object.hasOwn(source, key)) throw new LaShapeError(`${path}.${key}`)
+  return source[key]
 }
 
 function nullableStr(source: Record<string, unknown>, key: string, path: string): string | null {
@@ -120,12 +131,12 @@ export function readLink(value: unknown, path: string): LaLink {
 export function readIssue(value: unknown, path: string): LaIssue {
   const row = record(value, path)
   const ref = readIssueRef(row, path)
-  const priorityRaw = row.priority ?? null
+  const priorityRaw = present(row, 'priority', path)
   const priority = priorityRaw === null ? null : readWorkPriority(priorityRaw)
   if (priorityRaw !== null && priority === null) throw new LaShapeError(`${path}.priority`)
-  const onBoard = row.onBoard ?? null
+  const onBoard = present(row, 'onBoard', path)
   if (onBoard !== null && typeof onBoard !== 'boolean') throw new LaShapeError(`${path}.onBoard`)
-  const parentId = row.parentId
+  const parentId = present(row, 'parentId', path)
   if (parentId !== null && typeof parentId !== 'string') throw new LaShapeError(`${path}.parentId`)
   const blockers = row.openBlockers
   if (blockers !== undefined && !Array.isArray(blockers)) throw new LaShapeError(`${path}.openBlockers`)
@@ -148,6 +159,16 @@ export function readIssue(value: unknown, path: string): LaIssue {
     description: nullableStr(row, 'description', path),
     links: readLinks,
   }
+}
+
+export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
+  const row = record(value, path)
+  const description = present(row, 'description', path)
+  if (description !== null && typeof description !== 'string') throw new LaShapeError(`${path}.description`)
+  if (!Array.isArray(row.links)) throw new LaShapeError(`${path}.links`)
+  const issue = readIssue(row, path)
+  if (issue.links === null) throw new LaShapeError(`${path}.links`)
+  return { ...issue, links: issue.links }
 }
 
 export function readIssues(value: unknown, path: string): LaIssue[] {

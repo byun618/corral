@@ -2,7 +2,7 @@
 // LIFE-600 C4 — renderer 에 작업 출처(LA·Jira …) 이름 분기가 없는지 기계로 본다. 화면은 능력 표와 main 이 준 표시 정보만 그린다(P2).
 //
 //   node scripts/l600/renderer-source-branch.mjs                 # app/src/renderer 검사 — 위반 0 이면 exit 0, 있으면 1
-//   node scripts/l600/renderer-source-branch.mjs --root <폴더>    # 다른 renderer 사본 검사(양성 대조)
+//   node scripts/l600/renderer-source-branch.mjs --root <폴더>    # 다른 renderer 사본 검사(양성 대조). 폴더가 없거나 읽은 파일 0 이면 실패(2) — 빈 검사를 통과로 세지 않는다(R1-G)
 //   node scripts/l600/renderer-source-branch.mjs --self-test      # 양성 대조: 사본에 분기 한 줄을 넣으면 실패, 깨끗한 사본은 통과
 //
 // 무엇을 위반으로 보나(주석은 벗기고 TS AST 로 읽는다 — 문구 속 낱말은 세지 않는다):
@@ -57,7 +57,8 @@ function words(identifier) {
 }
 
 export function scan(root) {
-  const files = walk(root)
+  const stat = fs.statSync(root, { throwIfNoEntry: false })
+  const files = stat !== undefined && stat.isDirectory() ? walk(root) : []
   const violations = []
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8')
@@ -93,6 +94,7 @@ const args = process.argv.slice(2)
 console.log(`지문: 출처 id ${[...ids].join(', ')} · 토큰 접두사 ${prefixes.size}개 · 이름 ${[...NAMES].join(', ')}`)
 if (args[0] === '--self-test') {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'l600-branch-'))
+  let ok = false
   try {
     const clean = path.join(temp, 'clean')
     const dirty = path.join(temp, 'dirty')
@@ -101,18 +103,30 @@ if (args[0] === '--self-test') {
     const target = path.join(dirty, 'src/components/ConnectionsSection.tsx')
     const firstId = [...ids][0]
     fs.appendFileSync(target, `\nexport const injected = (sourceId: string): boolean => sourceId === '${firstId}'\n`)
+    fs.mkdirSync(path.join(temp, 'empty'))
     const cleanResult = scan(clean)
     const dirtyResult = scan(dirty)
+    const emptyResult = scan(path.join(temp, 'empty'))
+    const absentResult = scan(path.join(temp, 'no-such-dir'))
     report({ label: '깨끗한 사본', result: cleanResult })
     report({ label: `분기 한 줄을 넣은 사본 (sourceId === '${firstId}')`, result: dirtyResult })
-    const ok = cleanResult.violations.length === 0 && dirtyResult.violations.some((violation) => violation.at.startsWith('src/components/ConnectionsSection.tsx'))
-    console.log(ok ? '양성 대조 통과 — 깨끗한 사본 0건, 넣은 사본에서 잡힘' : '양성 대조 실패')
-    process.exit(ok ? 0 : 1)
+    report({ label: '빈 폴더', result: emptyResult })
+    report({ label: '없는 폴더', result: absentResult })
+    ok = cleanResult.files > 0 && cleanResult.violations.length === 0
+      && dirtyResult.violations.some((violation) => violation.at.startsWith('src/components/ConnectionsSection.tsx'))
+      && emptyResult.files === 0 && absentResult.files === 0
+    console.log(ok ? '양성 대조 통과 — 깨끗한 사본 0건, 넣은 사본에서 잡힘, 빈·없는 폴더는 읽은 파일 0(본 실행이면 실패로 끝난다)' : '양성 대조 실패')
   } finally {
     fs.rmSync(temp, { recursive: true, force: true })
   }
+  // 정리(finally) 뒤에 끝낸다 — try 안의 process.exit 는 finally 를 건너뛴다.
+  process.exit(ok ? 0 : 1)
 }
 const root = args[0] === '--root' && args[1] !== undefined ? path.resolve(args[1]) : path.join(APP, 'src/renderer')
 const result = scan(root)
 report({ label: path.relative(APP, root) || root, result })
+if (result.files === 0) {
+  console.error(`검사 대상 없음 — ${root} 에서 읽은 파일 0 (없는 폴더·빈 폴더). 통과로 세지 않는다.`)
+  process.exit(2)
+}
 process.exit(result.violations.length === 0 ? 0 : 1)

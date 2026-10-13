@@ -3,9 +3,12 @@
 // 실측(00-analysis §3 · raw/coordinator/m01·m02)을 따른 것:
 //   - 응답은 SSE(`text/event-stream`) 한 이벤트, protocol `2025-06-18`, 세션 헤더 없음(무상태).
 //   - 토큰 없음·`life_pat_` 가 아닌 토큰 = 500 `INTERNAL_ERROR` · 형식 맞는 모르는 토큰 = 401 `UNAUTHORIZED`.
-// 실측하지 못한 것(네이티브 C13 ② 에서 확인): scope 부족 = HTTP 403 `FORBIDDEN` 으로 둔다.
+//   - scope 부족 = **HTTP 200 · SSE `result.isError: true` · text `missing scope: issue:write`**(LA 소스 mcp.service `ensureIssueScope` →
+//     SDK 가 도구 오류로 감싼다 — 리뷰 r1 sdk-permission 와이어 실측). `scopeStyle: 'http'` 면 HTTP 403 `FORBIDDEN`(다른 서버 꼴 대조용).
+//   - 부모 규칙(issue.service `checkParentRule`): task 의 부모 = project·checkpoint·bug — 씨앗에 bug 아래 task 를 둔다(R1-A).
 //
-// 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`.
+// 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`
+//   · `echo`(원격 오류 글에 받은 토큰을 되울리기 — R1-E 양성 대조) · `holdStream`(결과를 쓰고 스트림을 닫지 않기 — R1-H).
 // `requests` 에 받은 요청(메서드·도구 이름·토큰 접두사 여부)을 쌓는다 — 「보내기 전에 거절」 을 요청 0건으로 확인한다.
 // 토큰 원문은 기록하지 않는다.
 
@@ -16,8 +19,17 @@ import { readWorkRelationKind, type WorkCategory, type WorkRelationKind } from '
 
 export type FixtureScope = 'write' | 'read'
 export type FixtureFault = { kind: 'http'; status: number; body: string } | { kind: 'drop' } | { kind: 'delay'; ms: number }
-/** 양성 대조용 깨기 — `issue-statusId`: 일감 행의 statusId 를 숫자로 · `tool-error`: 도구 결과를 isError 로 · `drop-statusLabel`: statusLabel 칸 삭제. */
-export type FixtureCorrupt = 'issue-statusId' | 'tool-error' | 'drop-statusLabel'
+/**
+ * 양성 대조용 깨기 — `issue-statusId`: 일감 행의 statusId 를 숫자로 · `tool-error`: 도구 결과를 isError 로 · `drop-statusLabel`: statusLabel 칸 삭제
+ * · `drop-<칸>`: 단건·목록 행에서 그 칸 삭제 · `isError-string`: isError 를 글자 'true' 로 · `rpc-wrong-version`: jsonrpc 를 'broken' 으로
+ * · `rpc-error-string`: result 옆에 error: 'failed' 를 같이.
+ */
+export type FixtureCorrupt =
+  | 'issue-statusId' | 'tool-error' | 'drop-statusLabel'
+  | 'drop-links' | 'drop-description' | 'drop-onBoard' | 'drop-priority'
+  | 'isError-string' | 'rpc-wrong-version' | 'rpc-error-string'
+/** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
+export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
 type FixtureStatus = { id: string; categoryKey: WorkCategory; label: string; color: string | null; position: number; isDefault: boolean }
 type FixtureIssue = {
@@ -64,6 +76,7 @@ function seedStatuses(): FixtureStatus[] {
 export const FIXTURE_IDS = {
   corral: uuid(337), lifeAssistant: uuid(2), doneProject: uuid(41),
   checkpoint: uuid(372), task600: uuid(600), task601: uuid(601), direct: uuid(500), orphanBug: uuid(385), archived: uuid(499), laTask: uuid(20),
+  bug: uuid(386), taskUnderBug: uuid(602), doneBug: uuid(387), taskUnderDoneBug: uuid(603),
 }
 
 function seedIssues(): FixtureIssue[] {
@@ -77,6 +90,11 @@ function seedIssues(): FixtureIssue[] {
     { ...base, id: FIXTURE_IDS.task601, sequentialId: 601, kind: 'task', parentId: FIXTURE_IDS.checkpoint, title: '작업 페이지', statusId: FIXTURE_STATUS.todo, position: '19' },
     { ...base, id: FIXTURE_IDS.direct, sequentialId: 500, kind: 'task', parentId: FIXTURE_IDS.corral, title: '프로젝트 직속 작업', statusId: FIXTURE_STATUS.todo, position: '20', onBoard: false },
     { ...base, id: FIXTURE_IDS.archived, sequentialId: 499, kind: 'task', parentId: FIXTURE_IDS.corral, title: '보관된 작업', statusId: FIXTURE_STATUS.todo, position: '21', archivedAt: '2026-10-01T00:00:00.000Z' },
+    // bug 아래 task(R1-A) — 열린 bug 아래 열린 task, 완료된 bug 아래 열린 task(열린 수의 부모 사슬 — R1-I).
+    { ...base, id: FIXTURE_IDS.bug, sequentialId: 386, kind: 'bug', parentId: FIXTURE_IDS.corral, title: '프로젝트 아래 버그', statusId: FIXTURE_STATUS.todo, position: '22' },
+    { ...base, id: FIXTURE_IDS.taskUnderBug, sequentialId: 602, kind: 'task', parentId: FIXTURE_IDS.bug, title: '버그 아래 작업', statusId: FIXTURE_STATUS.todo, position: '23' },
+    { ...base, id: FIXTURE_IDS.doneBug, sequentialId: 387, kind: 'bug', parentId: FIXTURE_IDS.checkpoint, title: '끝난 버그', statusId: FIXTURE_STATUS.done, position: '24', resolution: 'completed' },
+    { ...base, id: FIXTURE_IDS.taskUnderDoneBug, sequentialId: 603, kind: 'task', parentId: FIXTURE_IDS.doneBug, title: '끝난 버그 아래 남은 작업', statusId: FIXTURE_STATUS.dev, position: '25' },
     { ...base, id: FIXTURE_IDS.orphanBug, sequentialId: 385, kind: 'bug', parentId: null, title: '부모 없는 버그', statusId: FIXTURE_STATUS.todo, position: '30' },
     { ...base, id: FIXTURE_IDS.laTask, sequentialId: 20, kind: 'task', parentId: FIXTURE_IDS.lifeAssistant, title: 'LA 쪽 작업', statusId: FIXTURE_STATUS.done, position: '40', resolution: 'completed' },
   ]
@@ -90,6 +108,9 @@ export class LaMcpFixture {
   links: FixtureLink[] = []
   fault: FixtureFault | null = null
   corrupt: FixtureCorrupt | null = null
+  echo: FixtureEcho | null = null
+  holdStream = false
+  scopeStyle: 'sdk' | 'http' = 'sdk'
   protocolVersion = '2025-06-18'
   private server: http.Server | null = null
   private seq = 1
@@ -128,13 +149,23 @@ export class LaMcpFixture {
       if (fault.kind === 'http') { this.json({ response, status: fault.status, value: safeParse(fault.body) ?? fault.body }); return }
       await new Promise((resolve) => setTimeout(resolve, fault.ms))
     }
+    const id = isRecord(body) ? body.id : undefined
+    if (this.echo === 'http-body' && method === 'tools/call') { this.json({ response, status: 401, value: { code: 'UNAUTHORIZED', message: `bad bearer ${token}` } }); return }
+    if (this.echo === 'rpc-error' && method === 'tools/call') { this.sse({ response, value: { jsonrpc: '2.0', id, error: { code: -32000, message: `rejected bearer ${token}` } } }); return }
+    if (this.echo === 'tool-error' && method === 'tools/call') {
+      this.sse({ response, value: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ code: 'BAD_REQUEST', message: `token ${token} is not allowed` }) }], isError: true } } })
+      return
+    }
     if (request.method !== 'POST' || request.url !== '/mcp') { this.json({ response, status: 404, value: { code: 'NOT_FOUND' } }); return }
     if (!token.startsWith('life_pat_')) { this.json({ response, status: 500, value: { code: 'INTERNAL_ERROR', message: '잠시 후 다시 시도해주세요' } }); return }
     const scope = this.tokens.get(token)
     if (scope === undefined) { this.json({ response, status: 401, value: { code: 'UNAUTHORIZED', message: '인증이 필요해요' } }); return }
-    if (tool !== null && scope === 'read' && WRITE_TOOLS.has(tool)) { this.json({ response, status: 403, value: { code: 'FORBIDDEN', message: '권한이 없어요' } }); return }
+    if (tool !== null && scope === 'read' && WRITE_TOOLS.has(tool)) {
+      if (this.scopeStyle === 'http') this.json({ response, status: 403, value: { code: 'FORBIDDEN', message: '권한이 없어요' } })
+      else this.sse({ response, value: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'missing scope: issue:write' }], isError: true } } })
+      return
+    }
 
-    const id = isRecord(body) ? body.id : undefined
     if (method === 'notifications/initialized') { response.writeHead(202).end(); return }
     if (method === 'initialize') {
       this.sse({ response, value: { jsonrpc: '2.0', id, result: { protocolVersion: this.protocolVersion, serverInfo: { name: 'life-assistant', version: '1.0.0' }, capabilities: { tools: { listChanged: true } } } } })
@@ -146,7 +177,12 @@ export class LaMcpFixture {
     }
     const args = isRecord(params.arguments) ? params.arguments : {}
     const result = this.corrupt === 'tool-error' ? { isError: true, text: JSON.stringify({ code: 'INTERNAL', message: '깨진 도구' }) } : this.tool({ tool, args })
-    this.sse({ response, value: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: result.text }], ...(result.isError ? { isError: true } : {}) } } })
+    const toolResult: Record<string, unknown> = { content: [{ type: 'text', text: result.text }] }
+    if (result.isError) toolResult.isError = true
+    if (this.corrupt === 'isError-string') toolResult.isError = 'true'
+    const rpc: Record<string, unknown> = { jsonrpc: this.corrupt === 'rpc-wrong-version' ? 'broken' : '2.0', id, result: toolResult }
+    if (this.corrupt === 'rpc-error-string') rpc.error = 'failed'
+    this.sse({ response, value: rpc })
   }
 
   private json({ response, status, value }: { response: http.ServerResponse; status: number; value: unknown }): void {
@@ -154,7 +190,11 @@ export class LaMcpFixture {
   }
 
   private sse({ response, value }: { response: http.ServerResponse; value: unknown }): void {
-    response.writeHead(200, { 'content-type': 'text/event-stream' }).end(`event: message\ndata: ${JSON.stringify(value)}\n\n`)
+    const event = `event: message\ndata: ${JSON.stringify(value)}\n\n`
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    // 결과를 쓰고 스트림을 열어 둔다 — 클라이언트가 결과만으로 끝내야 한다(R1-H).
+    if (this.holdStream) response.write(event)
+    else response.end(event)
   }
 
   private tool({ tool, args }: { tool: string; args: Record<string, unknown> }): { isError: boolean; text: string } {
@@ -264,14 +304,23 @@ export class LaMcpFixture {
     }
   }
 
+  /** `drop-<칸>` 깨기 — 그 칸을 지운 사본. */
+  private dropped(row: Record<string, unknown>): Record<string, unknown> {
+    const field = this.corrupt?.startsWith('drop-') && this.corrupt !== 'drop-statusLabel' ? this.corrupt.slice(5) : null
+    if (field === null) return row
+    const { [field]: _gone, ...rest } = row
+    void _gone
+    return rest
+  }
+
   private full(issue: FixtureIssue): Record<string, unknown> {
     const { openBlockers: _drop, ...summary } = this.summary(issue)
     void _drop
-    return {
+    return this.dropped({
       ...summary,
       description: issue.description,
       links: this.linksOf(issue).map((link) => ({ id: link.id, relation: link.relation, issue: this.ref(link.other), createdAt: '2026-10-13T00:00:00.000Z' })),
-    }
+    })
   }
 
   private linksOf(issue: FixtureIssue): { id: string; relation: WorkRelationKind; other: FixtureIssue }[] {

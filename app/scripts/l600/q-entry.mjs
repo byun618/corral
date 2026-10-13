@@ -6,7 +6,7 @@
 // 흐름: 모의 LA MCP 서버 기동 → 앱 기동 → 설정 › 작업 연결 → 형식 틀린 토큰 거절(서버 요청 0) → 가짜 토큰 추가(테스트 통과 뒤 저장)
 //       → 파일에 암호문만 · 끝 4자 → 스페이스 하나 끄기 → 재시작 → 유지 확인(자격은 화면이 열릴 때 풀림) → 해제 → 파일 비움 → 정리.
 // 화면은 제어 소켓의 DOM 합성(click·eval)으로만 움직인다 — OS 입력 없음. 실제 LA·사용자 키체인 무접촉(계측 cipher, up.sh).
-// 토큰은 테스트 가짜(`life_pat_fixture…`)뿐이다. 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
+// 토큰은 테스트 가짜(`life_pat_fixture…`)뿐이다. 판정 11개(수정 r1 에서 협상 판 로그 추가). 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -121,6 +121,9 @@ try {
   const productLines = logLines.filter((line) => !line.includes('"tag":"control.cmd"'))
   log('log_lines', { product: productLines.length, harness: harnessLines.length, harnessWithToken: harnessLines.filter((line) => line.includes(TOKEN)).length, productWithToken: productLines.filter((line) => line.includes(TOKEN)).length })
   judge('기동 로그 — 계측 cipher(키체인 무접촉) · 제품 로그(control.cmd 제외) 토큰 원문 0', productLines.some((line) => line.includes('"tag":"work.test_cipher"')) && productLines.every((line) => !line.includes(TOKEN)))
+  // C14 — 협상한 MCP 판을 읽는 길(R1-J). 그 줄에는 호스트·판만 있다.
+  const negotiated = productLines.filter((line) => line.includes('"tag":"work.mcp_initialized"'))
+  judge('협상 판 로그 — work.mcp_initialized protocolVersion 2025-06-18 · 토큰 없음', negotiated.length > 0 && negotiated.every((line) => line.includes('"protocolVersion":"2025-06-18"') && !line.includes('life_pat_')), negotiated.at(-1) ?? '없음')
 
   // 해제 — 확인 뒤 파일 비움.
   await click('[data-connection-remove]')

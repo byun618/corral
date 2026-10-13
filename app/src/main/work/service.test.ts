@@ -120,7 +120,7 @@ describe('연결 추가 (C8) — 테스트 통과 뒤에만 저장', () => {
     const summary = harness.service.settings().connections[0]
     expect(summary).toMatchObject({ status: 'ok', tokenTail: FAKE_LA_TOKEN.slice(-4), name: 'LA', mono: 'LA' })
     expect(summary?.spaces?.map((space) => space.key)).toEqual([FIXTURE_IDS.corral, FIXTURE_IDS.lifeAssistant, LA_CATCH_ALL_KEY])
-    expect(summary?.spaces?.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(4)
+    expect(summary?.spaces?.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(7)
   })
 
   it('프로젝트 직속 작업은 parentId null, 보관·프로젝트 자신은 목록에 없다', async () => {
@@ -161,17 +161,39 @@ describe('연결 추가 (C8) — 테스트 통과 뒤에만 저장', () => {
 })
 
 describe('연결 상태 — 오류 5종 실측 (C5 빠른 층)', () => {
-  it('401 → 인증 실패, 토큰 다시 붙여넣기 · 같은 토큰을 다시 보내지 않는다', async () => {
+  it('401 → 인증 실패, 토큰 다시 붙여넣기 · 그 뒤 일반 요청은 보내지 않는다(연결 테스트만 다시 보낸다)', async () => {
     const harness = await connected()
     harness.fixture.tokens.delete(FAKE_LA_TOKEN)
     const response = await harness.service.request({ requestId: 'a', connectionId: harness.connectionId, call: { op: 'listSpaces' } })
     expect(response).toMatchObject({ ok: false, error: { kind: 'auth' } })
     expect(lastConnection(harness.emitted)).toMatchObject({ status: 'auth', error: { action: 'replace_token' } })
     expect(harness.store.data.connections).toHaveLength(1)
+    // R1-K — 인증 실패 상태의 일반 요청은 출처에 닿지 않는다.
+    const before = harness.fixture.requests.length
+    const again = await harness.service.request({ requestId: 'b', connectionId: harness.connectionId, call: { op: 'getItem', itemId: FIXTURE_IDS.task600 } })
+    expect(again).toMatchObject({ ok: false, error: { kind: 'auth' } })
+    expect(harness.fixture.requests.length - before).toBe(0)
+    // 사용자가 누른 연결 테스트는 다시 보낸다.
+    await harness.service.testConnection({ connectionId: harness.connectionId })
+    expect(harness.fixture.requests.length - before).toBeGreaterThan(0)
+    expect(lastConnection(harness.emitted)?.status).toBe('auth')
   })
 
-  it('403 → 권한 부족, 연결 유지(읽기는 계속 된다)', async () => {
+  it('scope 부족(LA SDK 꼴: 200 · isError · missing scope) → 권한 부족, 연결 유지(읽기는 계속 된다)', async () => {
     const harness = await open()
+    const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    const write = await harness.service.request({ requestId: 'w', connectionId: added.connection.id, call: { op: 'setPlacement', itemId: FIXTURE_IDS.task600, placement: 'backlog', ifVersion: null } })
+    expect(write).toMatchObject({ ok: false, error: { kind: 'forbidden', status: null, message: expect.stringContaining('issue:write') } })
+    expect(lastConnection(harness.emitted)).toMatchObject({ status: 'forbidden', error: { action: null } })
+    const read = await harness.service.request({ requestId: 'r', connectionId: added.connection.id, call: { op: 'listSpaces' } })
+    expect(read.ok).toBe(true)
+    expect(lastConnection(harness.emitted)?.status).toBe('ok')
+  })
+
+  it('403(HTTP 꼴) → 권한 부족, 연결 유지(읽기는 계속 된다)', async () => {
+    const harness = await open()
+    harness.fixture.scopeStyle = 'http'
     const added = await harness.service.addConnection({ sourceId: 'la', token: FAKE_LA_READ_TOKEN, replaceId: null })
     if (!added.ok) throw new Error(added.error.message)
     const write = await harness.service.request({ requestId: 'w', connectionId: added.connection.id, call: { op: 'setPlacement', itemId: FIXTURE_IDS.task600, placement: 'backlog', ifVersion: null } })

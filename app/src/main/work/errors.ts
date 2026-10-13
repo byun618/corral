@@ -2,7 +2,8 @@
 //   401 = 인증 실패 · 403 = 권한 부족 · 5xx = 서버 오류(네트워크 갈래) — 500 을 인증 실패로 읽지 않는다(00-analysis §3).
 //   LA `/mcp` 는 무인증·형식 다른 토큰에 500 을 주지만, corral 은 `life_pat_` 접두사가 아닌 토큰을 보내기 전에 거절하므로
 //   서버가 주는 인증 실패는 401 하나다.
-// 오류 문구에 토큰을 넣지 않는다 — 응답 본문은 앞 200자만, 그것도 출처가 준 `code`·`message` 칸만 옮긴다.
+// **원격이 준 글은 오류 문구로 옮기지 않는다**(R1-E) — HTTP 본문·도구 오류에서 `code` 칸이 정해진 모양(대문자·숫자·밑줄)일 때 그 코드만 옮기고,
+// 문구는 이쪽 말로 쓴다. 원격 `message` 는 토큰을 되울릴 수 있다(리뷰 r1 secret-echo). 나가는 문구는 클라이언트가 한 번 더 토큰을 지운다.
 
 import { isRecord, safeParse } from '../../shared/json.js'
 import type { WorkError, WorkErrorKind } from '../../shared/work.js'
@@ -11,13 +12,22 @@ export function workError({ kind, message, status = null }: { kind: WorkErrorKin
   return { kind, message, status }
 }
 
-/** 본문에서 출처가 준 `code`·`message` 만 꺼낸다(본문 통째를 옮기지 않는다). */
+const CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,39}$/
+
+/** 원격 JSON 의 `code` 칸 — 정해진 모양일 때만. 그 밖(문장·토큰 같은 글)은 버린다. */
+export function remoteCode(value: unknown): string | null {
+  return isRecord(value) && typeof value.code === 'string' && CODE_SHAPE.test(value.code) ? value.code : null
+}
+
+/** 본문에서 출처가 준 코드만 꺼낸다(본문·message 를 옮기지 않는다). */
 function bodyHint(body: string): string {
-  const parsed = safeParse(body)
-  if (!isRecord(parsed)) return ''
-  const code = typeof parsed.code === 'string' ? parsed.code.slice(0, 60) : null
-  const message = typeof parsed.message === 'string' ? parsed.message.slice(0, 140) : null
-  return [code, message].filter((part) => part !== null).join(' · ')
+  return remoteCode(safeParse(body)) ?? ''
+}
+
+/** 문구에서 비밀값을 지운다 — 원문·URL 인코딩 꼴 둘 다. */
+export function redactSecret({ text, secret }: { text: string; secret: string }): string {
+  if (secret.length === 0) return text
+  return text.replaceAll(secret, '••••').replaceAll(encodeURIComponent(secret), '••••')
 }
 
 export function classifyHttpStatus({ status, body, host }: { status: number; body: string; host: string }): WorkError {
@@ -56,14 +66,12 @@ export function classifyThrown({ error, host, timeoutMs }: { error: unknown; hos
   return workError({ kind: 'network', message: `${host} 에 닿지 않습니다 (${code ?? name ?? '알 수 없는 오류'}).` })
 }
 
-/** MCP 도구 결과 `isError` — 출처가 준 `code` 가 인증·권한 낱말일 때만 그 갈래, 나머지는 거절. */
+/** MCP 도구 결과 `isError` — 출처가 준 `code` 가 인증·권한 낱말일 때만 그 갈래, 나머지는 거절. 원격 글은 옮기지 않는다. */
 export function classifyToolError({ text }: { text: string }): WorkError {
   const parsed = safeParse(text)
-  const code = isRecord(parsed) && typeof parsed.code === 'string' ? parsed.code : null
-  const statusCode = isRecord(parsed) && typeof parsed.statusCode === 'number' ? parsed.statusCode : null
-  const message = isRecord(parsed) && typeof parsed.message === 'string' ? parsed.message : text
-  const short = message.slice(0, 200)
-  if (code === 'UNAUTHORIZED' || statusCode === 401) return workError({ kind: 'auth', status: 401, message: `토큰이 거부됐습니다 — ${short}` })
-  if (code === 'FORBIDDEN' || statusCode === 403) return workError({ kind: 'forbidden', status: 403, message: `이 작업을 할 권한이 없습니다 — ${short}` })
-  return workError({ kind: 'rejected', status: statusCode, message: short })
+  const code = remoteCode(parsed)
+  const statusCode = isRecord(parsed) && typeof parsed.statusCode === 'number' && Number.isInteger(parsed.statusCode) ? parsed.statusCode : null
+  if (code === 'UNAUTHORIZED' || statusCode === 401) return workError({ kind: 'auth', status: 401, message: '토큰이 거부됐습니다. 토큰이 만료됐거나 폐기됐습니다.' })
+  if (code === 'FORBIDDEN' || statusCode === 403) return workError({ kind: 'forbidden', status: 403, message: '연결은 됐지만 이 작업을 할 권한이 없습니다. 토큰 범위(scope)를 확인하세요.' })
+  return workError({ kind: 'rejected', status: statusCode, message: code === null ? '작업 출처가 요청을 거절했습니다.' : `작업 출처가 요청을 거절했습니다 (${code}).` })
 }

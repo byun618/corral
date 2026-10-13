@@ -117,6 +117,7 @@ export function mockSourceEntry({ state = seedMockState(), defect = 'none' }: { 
 export class MockSource implements WorkSourceClient {
   private readonly state: MockState
   private readonly defect: MockDefect
+  private closed = false
 
   constructor({ state, defect }: { state: MockState; defect: MockDefect }) {
     this.state = state
@@ -127,7 +128,12 @@ export class MockSource implements WorkSourceClient {
     return MOCK_CAPABILITIES
   }
 
+  close(): void {
+    this.closed = true
+  }
+
   async call(call: WorkCall): Promise<WorkOutcome> {
+    if (this.closed) return { ok: false, error: workError({ kind: 'not_connected', message: '연결이 해제됐거나 토큰이 바뀌어 요청을 보내지 않았습니다.' }) }
     switch (call.op) {
       case 'listSpaces':
         return { ok: true, result: { op: 'listSpaces', spaces: this.state.spaces.map((entry) => ({ ...entry.space, openCount: this.openCount(entry.space.key) })), capabilities: MOCK_CAPABILITIES } }

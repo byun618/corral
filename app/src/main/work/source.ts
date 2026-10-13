@@ -10,6 +10,8 @@ export interface WorkSourceClient {
   capabilities(): WorkCapabilities
   /** 연산 하나. 능력이 꺼진 연산은 main 이 먼저 막지만, 출처도 `unsupported` 로 답해야 한다(이중 방어). */
   call(call: WorkCall): Promise<WorkOutcome>
+  /** 해제·토큰 교체 때 — 이후 출처로 아무것도 보내지 않는다. 이미 보낸 요청은 되돌리지 못한다. */
+  close(): void
 }
 
 export type WorkSourceEntry = {

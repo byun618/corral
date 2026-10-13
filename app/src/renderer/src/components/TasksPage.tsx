@@ -4,6 +4,7 @@
 //   닫힌 동안은 `visibility:hidden` + `inert`. 그래서 검색어·스크롤·펼침이 같은 실행 안에서 그대로 남는다(C3). 재시작 뒤 복원은 ui-prefs.
 // - 키(C4): `/` 검색 · `1`–`4` 보기(입력 중이면 글자) · `Esc` 단계 = 열린 메뉴 → 입력 blur → 페이지 닫기. IME 조합 중 Esc 는 조합만 끝낸다.
 //   `C`(만들기)는 T4 까지 묶지 않는다(D5). 페이지가 열린 동안 워크스페이스 단축키는 App 이 막는다(설정 페이지와 같은 규칙).
+//   페이지 키는 **페이지 안(또는 포커스 없음)에서 난 키만** 받고, 위층(설정·팔레트·모달)이 열려 있으면(`yieldKeys`) 하나도 받지 않는다(R1-G).
 // - 만들기 진입점(버튼·C·칸 「+ 추가」)은 그리지 않는다(D5). 카드 클릭 = 선택 표시만(D2).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -24,12 +25,15 @@ import {
   compareRank,
   emptyCause,
   filtersActive,
+  itemUid,
   groupRows,
   imeComposing,
   passesFilters,
   passesText,
+  rowUid,
   sortRows,
   spaceId,
+  viewDisabledReason,
   viewsFor,
   writeBlock,
   type BoardColumn,
@@ -56,11 +60,13 @@ const EMPTY_COPY: Record<EmptyCause, { title: string; body: string }> = {
   working: { title: '작업 중인 worktree 가 없습니다', body: '브랜치 이름에 작업 키가 들어간 worktree 를 열면 여기에 모입니다.' },
 }
 
-export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOpenSettings, onOpenWorktree }: {
+export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, onClose, onOpenSettings, onOpenWorktree }: {
   open: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
   shortcut: string | null
+  /** 위층(설정·팔레트·모달)이 열려 있다 — 페이지 키 처리기가 아무 키도 받지 않는다(R1-G). */
+  yieldKeys: boolean
   onClose: () => void
   onOpenSettings: () => void
   onOpenWorktree: (tree: WorkingTree) => void
@@ -106,15 +112,19 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
     })
   }, [settings, space])
   const views = viewsFor(shownCaps)
-  const view: TasksView = views.includes(prefs.view) ? prefs.view : 'board'
+  const viewReason = (entry: TasksView): string | null => viewDisabledReason({ capabilities: shownCaps, view: entry })
+  const view: TasksView = views.includes(prefs.view) && viewReason(prefs.view) === null ? prefs.view : 'board'
 
   // --- 거르기 ---
+  const passes = (item: WorkItem): boolean => passesFilters({ item, filters: prefs.filters, workingKeys: page.workingKeys, now })
+  // 키 일치(E2) — 필터를 우회하지 않고(R1-I), 정확히 그 키인 작업은 맨 앞 영역으로 옮기고 나머지 목록에서 뺀다(R1-J).
+  const hits = page.hits.filter((hit) => passes(hit.item))
+  const hitUids = new Set(hits.map((hit) => itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })))
   const filtered = useMemo(
-    () => rows.filter((row) => passesFilters({ row, filters: prefs.filters, workingKeys: page.workingKeys, now }) && passesText({ row, query })),
-    [rows, prefs.filters, page.workingKeys, now, query],
+    () => rows.filter((row) => passes(row.item) && passesText({ item: row.item, query }) && !hitUids.has(rowUid(row))),
+    [rows, prefs.filters, page.workingKeys, now, query, page.hits],
   )
-  const afterFilter = useMemo(() => rows.filter((row) => passesFilters({ row, filters: prefs.filters, workingKeys: page.workingKeys, now })).length, [rows, prefs.filters, page.workingKeys, now])
-  const hits = page.hits.filter((hit) => !filtered.some((row) => row.item.id === hit.item.id))
+  const afterFilter = useMemo(() => rows.filter((row) => passes(row.item)).length, [rows, prefs.filters, page.workingKeys, now])
   const statuses: WorkStatus[] = load.data.length === 1 ? (load.data[0]?.statuses ?? []) : []
   const kinds = useMemo(() => {
     const map = new Map<string, string>()
@@ -130,7 +140,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
       if (entry.connectionId !== space.connectionId) return []
       if (lookup.state === 'found' && lookup.item.spaceKey !== space.spaceKey) return []
     }
-    if (lookup.state === 'found' && query.trim().length > 0 && !passesText({ row: { item: lookup.item, space: emptySpaceData(lookup.item), status: null }, query })) return []
+    if (lookup.state === 'found' && query.trim().length > 0 && !passesText({ item: lookup.item, query })) return []
+    // 같은 필터(R1-I) — 작업을 찾았으면 그 작업으로, 아직 못 찾았으면(찾는 중·없음·실패) 「작업 중」 밖의 필터가 켜져 있을 때 뺀다.
+    if (lookup.state === 'found' ? !passes(lookup.item) : filtersActive({ ...prefs.filters, working: false })) return []
     return [{ entry, lookup }]
   })
 
@@ -140,41 +152,45 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
     if (banner !== null && (banner.kind === 'forbidden' || banner.kind === 'offline' || banner.kind === 'auth')) return writeBlock(banner.kind === 'offline' ? 'offline' : banner.kind)?.reason ?? null
     return writeBlock(status)?.reason ?? null
   }
+  // 끄는 행 — 끌기 id 는 `(연결, 작업 id)`(R1-L). 놓기 판정은 이 행을 **인자로** 받는다(R1-A: 놓기 전에 지우면 판정이 idle 로 끝났다).
   const dragRow = useRef<TasksRow | null>(null)
   const { drag, onMouseDown } = useTaskDrag({
     rootRef,
-    onStart: (itemId) => {
-      const row = rows.find((entry) => entry.item.id === itemId) ?? null
+    onStart: (uid) => {
+      const row = rows.find((entry) => rowUid(entry) === uid) ?? null
       dragRow.current = row
       if (row !== null) void page.beginDrag(row, capsOf(row.space.connectionId)?.transition.mode ?? 'any')
     },
     onEnd: () => page.endDrag(),
     onDrop: (drop) => {
       const row = dragRow.current
-      dragRow.current = null
       if (row !== null) commitDrop({ row, drop })
+      dragRow.current = null
     },
   })
   const handleOf = (row: TasksRow): CardProps['handle'] => ({
     blocked: writeBlockOf(row.space.connectionId),
-    onMouseDown: (event) => onMouseDown(row.item.id, event, writeBlockOf(row.space.connectionId)),
+    onMouseDown: (event) => onMouseDown(rowUid(row), event, writeBlockOf(row.space.connectionId)),
   })
-  const transitionAllowed = (row: TasksRow, statusKey: string): boolean => {
-    if (capsOf(row.space.connectionId)?.transition.mode !== 'allowed') return true
+  /** 상태 전이 막힘 이유 — 허용 전이만인 출처는 그 작업의 허용 전이를 **받은 뒤에만** 연다(받는 중·실패 = 흐림, fail-closed). */
+  const transitionBlock = (row: TasksRow, statusKey: string): string | null => {
+    if (capsOf(row.space.connectionId)?.transition.mode !== 'allowed' || statusKey === row.item.statusKey) return null
     const known = page.transitions
-    if (known === null || known.itemId !== row.item.id || known.keys === null) return true
-    return statusKey === row.item.statusKey || known.keys.includes(statusKey)
+    if (known === null || known.uid !== rowUid(row) || known.state === 'loading') return '허용 전이를 받는 중…'
+    if (known.state === 'error') return `허용 전이를 받지 못했습니다 — ${known.message}`
+    return known.keys.includes(statusKey) ? null : NO_TRANSITION
   }
   const statusesOf = (row: TasksRow): WorkStatus[] => row.space.statuses
-  const columnView = (column: BoardColumn): ColumnDragView => {
-    const row = dragRow.current
-    if (row === null) return IDLE
+  const columnView = (column: BoardColumn): ColumnDragView => (dragRow.current === null ? IDLE : columnViewFor({ row: dragRow.current, column }))
+  const columnViewFor = ({ row, column }: { row: TasksRow; column: BoardColumn }): ColumnDragView => {
     const intent = boardDropIntent({ row, column, afterId: null, statusesOf })
     switch (intent.kind) {
       case 'none':
         return { mode: 'blocked', reason: column.unmapped ? '칸 없는 상태로는 옮길 수 없습니다' : NO_TRANSITION }
-      case 'status':
-        return transitionAllowed(row, intent.statusKey) ? { mode: 'target', reason: null } : { mode: 'blocked', reason: NO_TRANSITION }
+      case 'status': {
+        const reason = transitionBlock(row, intent.statusKey)
+        return reason === null ? { mode: 'target', reason: null } : { mode: 'blocked', reason }
+      }
       case 'reorder': {
         const order = capabilityGate(capsOf(row.space.connectionId), 'order')
         if (order.state === 'on') return { mode: 'target', reason: null }
@@ -184,9 +200,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
         return IDLE
     }
   }
-  const sectionView = (id: 'board' | 'backlog'): ColumnDragView => {
-    const row = dragRow.current
-    if (row === null) return IDLE
+  const sectionView = (id: 'board' | 'backlog'): ColumnDragView => (dragRow.current === null ? IDLE : sectionViewFor({ row: dragRow.current, id }))
+  const sectionViewFor = ({ row, id }: { row: TasksRow; id: 'board' | 'backlog' }): ColumnDragView => {
     const same = (row.item.placement ?? 'board') === id
     const gate = capabilityGate(capsOf(row.space.connectionId), same ? 'order' : 'placement')
     if (gate.state === 'on') return { mode: 'target', reason: null }
@@ -195,7 +210,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
   }
   /** 놓인 번호 → 「이 작업 뒤로」. 영역 맨 앞이면 그 영역 첫 작업의 (스페이스 전체 순서에서) 앞 작업, 없으면 null. */
   const afterIdFor = ({ row, laneRows, index }: { row: TasksRow; laneRows: TasksRow[]; index: number }): string | null => {
-    const others = laneRows.filter((entry) => entry.item.id !== row.item.id)
+    const others = laneRows.filter((entry) => rowUid(entry) !== rowUid(row))
     const previous = others[index - 1]
     if (previous !== undefined) return previous.item.id
     const first = others[0]
@@ -208,13 +223,13 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
     let intent: DragIntent = { kind: 'none' }
     if (drop.zone.startsWith('col:')) {
       const column = bands.flatMap((band) => band.columns).find((entry) => `col:${entry.id}` === drop.zone)
-      if (column === undefined || columnView(column).mode !== 'target') return
+      if (column === undefined || columnViewFor({ row, column }).mode !== 'target') return
       const afterId = afterIdFor({ row, laneRows: column.rows, index: drop.index })
       intent = boardDropIntent({ row, column, afterId, statusesOf })
       if (intent.kind === 'reorder' && unchangedPosition({ row, laneRows: column.rows, index: drop.index })) return
     } else if (drop.zone.startsWith('sec:')) {
       const id = drop.zone === 'sec:backlog' ? 'backlog' : 'board'
-      if (sectionView(id).mode !== 'target') return
+      if (sectionViewFor({ row, id }).mode !== 'target') return
       const section = backlogSections.find((entry) => entry.id === id)
       if (section === undefined) return
       if ((row.item.placement ?? 'board') !== id) intent = { kind: 'placement', placement: id }
@@ -246,13 +261,15 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
   // --- 키 (C4) ---
   const viewsRef = useRef(views)
   viewsRef.current = views
-  const latest = useRef({ menu, onClose, setPrefs })
-  latest.current = { menu, onClose, setPrefs }
+  const latest = useRef({ menu, onClose, setPrefs, yieldKeys, viewReason })
+  latest.current = { menu, onClose, setPrefs, yieldKeys, viewReason }
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented) return
+      if (event.defaultPrevented || latest.current.yieldKeys) return
       const target = event.target
+      // 페이지 밖(사이드바 입력·위층)에서 난 키는 그쪽 몫이다 — 포커스가 없을 때(body)만 페이지가 받는다(R1-G).
+      if (target instanceof Node && target !== document.body && target !== document.documentElement && !(rootRef.current?.contains(target) ?? false)) return
       const typing = target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select') !== null)
       if (event.key === 'Escape') {
         if (imeComposing(event)) return
@@ -272,7 +289,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
       const digit = ['1', '2', '3', '4'].indexOf(event.key)
       if (digit >= 0) {
         const next = TASKS_VIEWS[digit]
-        if (next !== undefined && viewsRef.current.includes(next)) {
+        if (next !== undefined && viewsRef.current.includes(next) && latest.current.viewReason(next) === null) {
           event.preventDefault()
           latest.current.setPrefs({ view: next })
         }
@@ -299,9 +316,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
     return { name: row?.name ?? load.data[0]?.spaceName ?? '스페이스', color: row?.color ?? null, index: row?.colorIndex ?? 1 }
   })()
 
+  const toggleSelect = (uid: string): void => setSelectedId(selectedId === uid ? null : uid)
+
   // --- 본문 ---
   const noConnection = settings !== null && settings.connections.length === 0
-  const loading = load.phase === 'loading' && load.data.length === 0
+  const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
   const total = view === 'working' ? page.workingEntries.length : rows.length
   const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : filtered.length
   const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0
@@ -341,16 +360,16 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
       case 'board':
         return (
           <div className="tasks-scroll" data-tasks-scroll="board">
-            {hits.length > 0 ? <KeyHits hits={hits} onSelect={(item) => setSelectedId(item.id)} /> : null}
-            <Board bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => setSelectedId(selectedId === row.item.id ? null : row.item.id)} />
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
+            <Board bands={bands} rows={rows} all={all} density={prefs.density} selectedId={selectedId} drag={drag} now={now} columnView={columnView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))} />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
       case 'backlog':
         return (
           <div className="tasks-scroll" data-tasks-scroll="backlog">
-            {hits.length > 0 ? <KeyHits hits={hits} onSelect={(item) => setSelectedId(item.id)} /> : null}
-            <Backlog sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => setSelectedId(selectedId === row.item.id ? null : row.item.id)} />
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
+            <Backlog sections={backlogSections} all={all} selectedId={selectedId} drag={drag} now={now} sectionView={sectionView} handleOf={handleOf} onSelect={(row) => toggleSelect(rowUid(row))} />
             <MoreBar more={more} onLoadMore={() => void page.loadMore()} />
           </div>
         )
@@ -372,7 +391,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
             onGroup={(group) => setPrefs({ group })}
             onPreset={(preset) => { page.invalidateMore(); setPrefs(applyPreset({ preset, sort: prefs.sort })) }}
             onDefaultPreset={(preset) => { setPrefs({ defaultPreset: preset }); toast(<div className="tasks-toast" data-toast="preset">리스트 기본 프리셋을 정했습니다</div>, { duration: 3000 }) }}
-            onSelect={(item) => setSelectedId(selectedId === item.id ? null : item.id)}
+            onSelect={toggleSelect}
             onLoadMore={() => void page.loadMore()}
           />
         )
@@ -438,11 +457,25 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
           ) : null}
         </div>
         <div className="tasks-views" data-tasks-views="" role="tablist">
-          {views.map((entry) => (
-            <button key={entry} type="button" role="tab" aria-selected={view === entry} className={`tasks-view-tab${view === entry ? ' is-on' : ''}`} data-tasks-view-tab={entry} onClick={() => setPrefs({ view: entry })}>
-              {TASKS_VIEW_LABEL[entry]}
-            </button>
-          ))}
+          {views.map((entry) => {
+            // 능력이 꺼진(disabled) 보기 = 흐림 + 이유(R1-O). 숨김(hidden)이면 탭이 없다(viewsFor).
+            const reason = viewReason(entry)
+            return (
+              <button
+                key={entry}
+                type="button"
+                role="tab"
+                aria-selected={view === entry}
+                aria-disabled={reason === null ? undefined : true}
+                title={reason ?? undefined}
+                className={`tasks-view-tab${view === entry ? ' is-on' : ''}${reason === null ? '' : ' is-disabled'}`}
+                data-tasks-view-tab={entry}
+                onClick={() => { if (reason === null) setPrefs({ view: entry }) }}
+              >
+                {TASKS_VIEW_LABEL[entry]}
+              </button>
+            )
+          })}
         </div>
         <span className="tasks-head-spacer" />
         <button type="button" className="tasks-density" data-tasks-density={prefs.density} onClick={() => setPrefs({ density: prefs.density === 'detailed' ? 'compact' : 'detailed' })} title="카드 밀도">
@@ -499,7 +532,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
             {banner.message.length > 0 ? ` — ${banner.message}` : ''}
           </span>
           {banner.kind === 'auth' ? <button type="button" className="tasks-banner-action" onClick={onOpenSettings}>토큰 다시 붙여넣기</button> : null}
-          {banner.kind === 'offline' || banner.kind === 'error' ? <button type="button" className="tasks-banner-action" data-tasks-retry="" onClick={() => void page.reload({ quiet: false })}>다시 시도</button> : null}
+          {banner.kind === 'offline' || banner.kind === 'error' ? <button type="button" className="tasks-banner-action" data-tasks-retry="" onClick={page.retry}>다시 시도</button> : null}
         </div>
       )}
 
@@ -508,21 +541,20 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, onClose, onOp
   )
 }
 
-function emptySpaceData(item: WorkItem): TasksRow['space'] {
-  return { connectionId: '', spaceKey: item.spaceKey, spaceName: '', colorIndex: 1, color: null, statuses: [], kinds: [], items: [], nextCursor: null, truncated: false }
-}
-
-function KeyHits({ hits, onSelect }: { hits: { item: WorkItem; spaceName: string }[]; onSelect: (item: WorkItem) => void }): React.JSX.Element {
+function KeyHits({ hits, selectedId, onSelect }: { hits: { connectionId: string; item: WorkItem; spaceName: string }[]; selectedId: string | null; onSelect: (uid: string) => void }): React.JSX.Element {
   return (
     <div className="tasks-key-hits" data-search-hits="">
-      {hits.map((hit) => (
-        <button key={hit.item.id} type="button" className="tasks-key-hit-row" data-issue-row={hit.item.key} onClick={() => onSelect(hit.item)}>
-          <span className="tasks-key-hit" data-search-hit="">키 일치</span>
-          <span className="tasks-row-key">{hit.item.key}</span>
-          <span className="tasks-row-title">{hit.item.title}</span>
-          <span className="tasks-row-space">{hit.spaceName}</span>
-        </button>
-      ))}
+      {hits.map((hit) => {
+        const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
+        return (
+          <button key={uid} type="button" className={`tasks-key-hit-row${selectedId === uid ? ' is-selected' : ''}`} data-issue-row={hit.item.key} onClick={() => onSelect(uid)}>
+            <span className="tasks-key-hit" data-search-hit="">키 일치</span>
+            <span className="tasks-row-key">{hit.item.key}</span>
+            <span className="tasks-row-title">{hit.item.title}</span>
+            <span className="tasks-row-space">{hit.spaceName}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -560,6 +592,6 @@ function FilterMenu({ id, label, open, onToggle, options, selected, onPick }: {
 
 /** 같은 영역 안에서 제자리에 놓았나 — 순서 요청을 보내지 않는다. */
 function unchangedPosition({ row, laneRows, index }: { row: TasksRow; laneRows: TasksRow[]; index: number }): boolean {
-  const at = laneRows.findIndex((entry) => entry.item.id === row.item.id)
+  const at = laneRows.findIndex((entry) => rowUid(entry) === rowUid(row))
   return at === index
 }

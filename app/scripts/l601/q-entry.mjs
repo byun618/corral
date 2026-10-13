@@ -4,7 +4,9 @@
 //   node scripts/l601/q-entry.mjs <ROOT=/tmp/l601q-*> <OUT 파일>
 //
 // 흐름: 앱 기동(모의 출처 — up.sh) → 모의 연결 추가(렌더러 IPC, 가짜 토큰) → ⌘I(앱 내부 sendInputEvent — OS 입력 아님) → 보드
-//       → 칸·점선 칸·막힘 배지·덮기(사이드바 보임 · 메인 영역 숨김) → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → 보기 4 → Esc 닫기 → 정리.
+//       → 칸·점선 칸·막힘 배지·덮기(사이드바 보임 · 메인 영역 숨김) → **실제 마우스 경로 가로 끌기 1회**(raw-mouse = webContents.sendInputEvent
+//       mouseDown/Move/Up — 렌더러의 mousedown/move/up 처리기를 그대로 지난다) → 쓰기·토스트·서버 재조회 값(수정 r1 R1-A)
+//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → 보기 4 → Esc 닫기 → 정리.
 // 실제 LA·사용자 키체인·설치본 무접촉. 토큰은 가짜(`mock_…`)뿐.
 // 격자 요청 수(`stream.sync` 로그 줄 · control counters)는 **관측만** 남긴다 — 판정은 최종 관문(C1, 양성 대조와 함께)이 한다.
 // 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
@@ -72,7 +74,7 @@ try {
     space: document.querySelector('[data-space-switch]')?.textContent ?? null,
   }))()`)
   log('board', board)
-  judge('C6 보드 — 밴드 3 · 상태 칸 4(워크플로 순서) + 점선 칸', JSON.stringify(board.bands) === '["todo","in_progress","done"]' && JSON.stringify(board.columns) === '["st:core-todo","st:core-doing","st:core-review","st:core-done","st:__unmapped"]', JSON.stringify(board.columns))
+  judge('C6 보드 — 분류 밴드 3 + 칸 없는 상태 밴드(합계 분리, R1-Q) · 상태 칸 4(워크플로 순서) + 점선 칸', JSON.stringify(board.bands) === '["todo","in_progress","done","unmapped"]' && JSON.stringify(board.columns) === '["st:core-todo","st:core-doing","st:core-review","st:core-done","st:__unmapped"]', JSON.stringify({ bands: board.bands, columns: board.columns }))
   judge('C6 칸 없는 상태의 작업(CORE-5)이 점선 칸에', JSON.stringify(board.unmapped) === '["CORE-5"]')
   judge('C6·E1 막힘 배지 — CORE-6 「막힘 · CORE-2」(완료 막은 쪽 CORE-7 은 셈하지 않음) · CORE-4 「막힘 · CORE-3」', board.blocked.includes('CORE-6 막힘 · CORE-2') && board.blocked.includes('CORE-4 막힘 · CORE-3'), JSON.stringify(board.blocked))
   judge('C6 백로그 배치(CORE-3·CORE-8)는 보드에 없다', !board.cards.includes('CORE-3') && !board.cards.includes('CORE-8'), JSON.stringify(board.cards))
@@ -86,6 +88,30 @@ try {
   judge('C1 덮기 — 메인 영역 내용 visibility:hidden + inert · 사이드바는 보임 · 페이지 보임', cover.sidebar === 'visible' && cover.mainContent === 'hidden' && cover.inert === true && cover.page === 'visible', JSON.stringify(cover))
   const shot = await ctl(ROOT, { cmd: 'shot', name: 'l601-board' })
   log('shot', { ...shot, file: shot.file?.replaceAll(ROOT, '<ROOT>') })
+
+  // R1-A — 실제 마우스 경로 가로 끌기 1회. 모의 출처는 허용 전이만(allowed)이라 놓기 전에 허용 전이를 받을 시간을 둔다(받기 전엔 흐림).
+  const connectionId = await js(`window.corral.getWorkSettings().then((s) => s.connections[0].id)`)
+  const serverStatus = (key) => js(`window.corral.workRequest({ requestId: 'q-entry-' + Date.now(), connectionId: ${JSON.stringify(connectionId)}, call: { op: 'findByKey', key: ${JSON.stringify(key)} } }).then((r) => (r.ok && r.result.op === 'findByKey' ? r.result.item?.statusKey ?? null : 'error:' + (r.ok ? 'shape' : r.error.kind)))`)
+  const center = (selector, bottom) => js(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(${bottom ? 'r.bottom - 6' : 'r.y + r.height / 2'}) } })()`)
+  const serverBefore = await serverStatus('CORE-2')
+  const from = await center('[data-issue-card="CORE-2"]', false)
+  const to = await center('[data-drop-zone="col:st:core-doing"]', true)
+  log('drag 좌표', { from, to, serverBefore })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...from })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: from.x + 10, y: from.y })
+  await sleep(250)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...to })
+  await sleep(400)
+  const during = await js(`({ gap: !!document.querySelector('[data-board-column="st:core-doing"] [data-drop-gap]'), column: document.querySelector('[data-board-column="st:core-doing"]')?.className ?? null })`)
+  log('끄는 중', during)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...to })
+  await until(() => js(`!!document.querySelector('[data-toast="moved"]')`), { timeoutMs: 5_000, label: '이동 토스트' }).catch(() => null)
+  const dropped = await js(`({ column: document.querySelector('[data-issue-card="CORE-2"]')?.closest('[data-board-column]')?.getAttribute('data-board-column') ?? null, toast: document.querySelector('[data-toast]')?.getAttribute('data-toast') ?? null, toastText: document.querySelector('[data-toast]')?.textContent ?? null })`)
+  const serverAfter = await serverStatus('CORE-2')
+  log('놓은 뒤', { ...dropped, serverAfter })
+  judge('C7·R1-A 실제 마우스 가로 끌기 — 놓는 동안 틈 · 카드가 그 칸 · 이동 토스트 · 서버 재조회 core-todo → core-doing',
+    during.gap === true && dropped.column === 'st:core-doing' && dropped.toast === 'moved' && serverBefore === 'core-todo' && serverAfter === 'core-doing',
+    JSON.stringify({ during, dropped, serverBefore, serverAfter }))
 
   await ctl(ROOT, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
   await until(async () => !(await pageOpen()), { timeoutMs: 10_000, label: '⌘I 로 닫힘' })

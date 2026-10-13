@@ -29,7 +29,10 @@ import {
   spaceGroups,
   viewsFor,
   writeBlock,
+  latestActivity,
+  spaceStillValid,
   type SpaceData,
+  type WorkingTree,
 } from './tasks-model.js'
 
 const status = (key: string, category: WorkStatus['category'], order: number): WorkStatus => ({ key, label: key.toUpperCase(), category, order, color: null })
@@ -69,13 +72,13 @@ describe('C2 스페이스 목록', () => {
 
   it('첫 진입 = 활성 worktree 레포 기본 → 마지막으로 본 것 → 첫 스페이스', () => {
     const groups = spaceGroups({ settings, repoRoot: '/r/corral' })
-    expect(initialSpace({ groups, settings, repoRoot: '/r/corral', last: { kind: 'space', connectionId: 'c2', spaceKey: 'q1' } })).toEqual({ kind: 'space', connectionId: 'c1', spaceKey: 'p1' })
-    expect(initialSpace({ groups, settings, repoRoot: '/r/else', last: { kind: 'space', connectionId: 'c2', spaceKey: 'q1' } })).toEqual({ kind: 'space', connectionId: 'c2', spaceKey: 'q1' })
-    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'all' } })).toEqual({ kind: 'all' })
+    expect(initialSpace({ groups, settings, repoRoot: '/r/corral', last: { kind: 'space', connectionId: 'c2', spaceKey: 'q1' }, failed: new Set() })).toEqual({ kind: 'pick', space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' } })
+    expect(initialSpace({ groups, settings, repoRoot: '/r/else', last: { kind: 'space', connectionId: 'c2', spaceKey: 'q1' }, failed: new Set() })).toEqual({ kind: 'pick', space: { kind: 'space', connectionId: 'c2', spaceKey: 'q1' } })
+    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'all' }, failed: new Set() })).toEqual({ kind: 'pick', space: { kind: 'all' } })
     // 숨긴 스페이스는 마지막으로 봤어도 고르지 않는다.
-    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'space', connectionId: 'c1', spaceKey: 'p2' } })).toEqual({ kind: 'space', connectionId: 'c1', spaceKey: 'p1' })
+    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'space', connectionId: 'c1', spaceKey: 'p2' }, failed: new Set() })).toEqual({ kind: 'pick', space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' } })
     // 스페이스 목록을 아직 못 받은 연결의 마지막 스페이스는 지우지 않는다.
-    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'space', connectionId: 'c3', spaceKey: 'CORE' } })).toEqual({ kind: 'space', connectionId: 'c3', spaceKey: 'CORE' })
+    expect(initialSpace({ groups, settings, repoRoot: null, last: { kind: 'space', connectionId: 'c3', spaceKey: 'CORE' }, failed: new Set() })).toEqual({ kind: 'pick', space: { kind: 'space', connectionId: 'c3', spaceKey: 'CORE' } })
   })
 })
 
@@ -101,9 +104,9 @@ describe('C6 보드', () => {
   it('상태마다 칸(워크플로 순서) · 분류 밴드 · 상태 목록에 없는 상태는 마지막 점선 칸', () => {
     const rows = rowsOf([space([item({ id: 'a', statusKey: 'doing', category: 'in_progress' }), item({ id: 'b', statusKey: 'legal' }), item({ id: 'c' })])])
     const bands = boardBands({ rows, statuses: STATUSES, all: false })
-    expect(bands.map((band) => band.category)).toEqual(['todo', 'in_progress', 'done'])
+    expect(bands.map((band) => band.id)).toEqual(['todo', 'in_progress', 'done', 'unmapped'])
     expect(bands[1]?.columns.map((column) => column.id)).toEqual(['st:doing', 'st:review'])
-    const last = bands[2]?.columns.at(-1)
+    const last = bands[3]?.columns.at(-1)
     expect(last).toMatchObject({ id: 'st:__unmapped', unmapped: true })
     expect(last?.rows.map((row) => row.item.id)).toEqual(['b'])
     expect(bands.reduce((sum, band) => sum + band.count, 0)).toBe(3)
@@ -226,12 +229,12 @@ describe('C10 검색·필터', () => {
     const [row] = rowsOf([space([item({ id: 'a', key: 'LIFE-1', kind: { key: 'bug', label: 'Bug' }, priority: 'high', openBlockerCount: 1, dueAt: '2026-10-15T00:00:00Z' })])])
     if (row === undefined) throw new Error('row')
     const working = new Set(['LIFE-1'])
-    expect(passesFilters({ row, filters: { ...NO_FILTERS, kinds: ['bug'], priorities: ['high'], blocked: true, working: true, dueWeek: true }, workingKeys: working, now })).toBe(true)
-    expect(passesFilters({ row, filters: { ...NO_FILTERS, kinds: ['task'] }, workingKeys: working, now })).toBe(false)
-    expect(passesFilters({ row, filters: { ...NO_FILTERS, working: true }, workingKeys: new Set(), now })).toBe(false)
-    expect(passesText({ row, query: 'TITLE A' })).toBe(true)
-    expect(passesText({ row, query: 'life-1' })).toBe(true)
-    expect(passesText({ row, query: 'nothing' })).toBe(false)
+    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, kinds: ['bug'], priorities: ['high'], blocked: true, working: true, dueWeek: true }, workingKeys: working, now })).toBe(true)
+    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, kinds: ['task'] }, workingKeys: working, now })).toBe(false)
+    expect(passesFilters({ item: row.item, filters: { ...NO_FILTERS, working: true }, workingKeys: new Set(), now })).toBe(false)
+    expect(passesText({ item: row.item, query: 'TITLE A' })).toBe(true)
+    expect(passesText({ item: row.item, query: 'life-1' })).toBe(true)
+    expect(passesText({ item: row.item, query: 'nothing' })).toBe(false)
   })
 })
 
@@ -255,13 +258,38 @@ describe('C4·C11', () => {
     expect(branchKey({ branch: 'feature/LIFE-372-la-issue-link', pattern: 'LIFE-\\d+' })).toBe('LIFE-372')
     expect(branchKey({ branch: 'xLIFE-601', pattern: 'LIFE-\\d+' })).toBeNull()
     expect(branchKey({ branch: 'main', pattern: 'LIFE-\\d+' })).toBeNull()
-    const trees = [
-      { path: '/w/a', repoRoot: '/r', repoName: 'r', branch: 'LIFE-601-x', dot: null },
-      { path: '/w/b', repoRoot: '/r', repoName: 'r', branch: 'LIFE-601-y', dot: 'working' as const },
-      { path: '/w/c', repoRoot: '/r', repoName: 'r', branch: 'CORE-2-z', dot: null },
+    const trees: WorkingTree[] = [
+      { path: '/w/a', repoRoot: '/r', repoName: 'r', branch: 'LIFE-601-x', dot: null, activityAt: null },
+      { path: '/w/b', repoRoot: '/r', repoName: 'r', branch: 'LIFE-601-y', dot: 'working', activityAt: 1000 },
+      { path: '/w/c', repoRoot: '/r', repoName: 'r', branch: 'CORE-2-z', dot: null, activityAt: null },
     ]
     const entries = detectWorking({ trees, patterns: [{ connectionId: 'la', pattern: 'LIFE-\\d+' }, { connectionId: 'mock', pattern: null }] })
     expect(entries).toEqual([{ key: 'LIFE-601', connectionId: 'la', trees: [trees[0], trees[1]] }])
+  })
+})
+
+describe('R1-D 스페이스 선택 — 기다림 · 유효성', () => {
+  const base = (spaces: WorkConnectionSummary['spaces']): WorkSettingsState => ({
+    sources: [], connections: [connection({ id: 'c1', spaces })], repoDefaults: [{ repoRoot: '/r', connectionId: 'c1', spaceKey: 'p2' }],
+  })
+  it('레포 기본의 연결이 목록을 받는 중이면 기다리고, 실패면 기다리지 않는다', () => {
+    const settings = base(null)
+    const groups = spaceGroups({ settings, repoRoot: '/r' })
+    expect(initialSpace({ groups, settings, repoRoot: '/r', last: null, failed: new Set() })).toEqual({ kind: 'wait' })
+    expect(initialSpace({ groups, settings, repoRoot: '/r', last: null, failed: new Set(['c1']) })).toEqual({ kind: 'pick', space: { kind: 'all' } })
+  })
+  it('숨기거나 없어진 스페이스는 유효하지 않다 · 받는 중인 연결의 스페이스는 유효', () => {
+    const settings = base([{ key: 'p1', name: 'a', color: null, openCount: 0, hidden: false }])
+    const groups = spaceGroups({ settings, repoRoot: null })
+    expect(spaceStillValid({ groups, settings, space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, failed: new Set() })).toBe(true)
+    expect(spaceStillValid({ groups, settings, space: { kind: 'space', connectionId: 'c1', spaceKey: 'gone' }, failed: new Set() })).toBe(false)
+    expect(spaceStillValid({ groups, settings, space: { kind: 'space', connectionId: 'c9', spaceKey: 'p1' }, failed: new Set() })).toBe(false)
+    const pending = base(null)
+    expect(spaceStillValid({ groups: spaceGroups({ settings: pending, repoRoot: null }), settings: pending, space: { kind: 'space', connectionId: 'c1', spaceKey: 'p1' }, failed: new Set() })).toBe(true)
+  })
+  it('작업 중 시간 = 가장 늦은 활동, 없으면 null', () => {
+    expect(latestActivity([null, 5, 3])).toBe(5)
+    expect(latestActivity([null])).toBeNull()
   })
 })
 

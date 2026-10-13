@@ -2,6 +2,7 @@
 // 출처 이름으로 분기하지 않는다 — 능력 표(흐림 + 이유 / 숨김)와 상태 목록만 본다(K3).
 import { Fragment, useState } from 'react'
 import type { WorkCapabilities, WorkCategory, WorkItem, WorkStatus } from '../../../shared/work.js'
+import { elapsedLabel } from '../../../shared/session-activity.js'
 import { AGENT_DOT_LABEL } from '../agent-dot.js'
 import type { TaskDragState } from '../hooks/useTaskDrag.js'
 import type { WorkingLookup } from '../hooks/useTasksPage.js'
@@ -17,6 +18,8 @@ import {
   childProgress,
   dueLabel,
   dueTone,
+  itemUid,
+  rowUid,
   type BoardBand,
   type BoardColumn,
   type ListGroup,
@@ -119,12 +122,13 @@ export type CardProps = {
 export function IssueCard({ row, rows, all, density, selected, dragging, now, handle, onSelect }: CardProps): React.JSX.Element {
   const { item } = row
   const [expanded, setExpanded] = useState(false)
-  const progress = childProgress({ item, rows })
+  const progress = childProgress({ row, rows })
+  const uid = rowUid(row)
   const className = `tasks-card${density === 'compact' ? ' is-compact' : ''}${selected ? ' is-selected' : ''}${dragging ? ' is-drag-source' : ''}${handle?.blocked ? ' is-locked' : ''}`
   const common = {
     className,
     'data-issue-card': item.key,
-    'data-drag-item': item.id,
+    'data-drag-item': uid,
     'aria-selected': selected,
     title: handle?.blocked ?? undefined,
     onMouseDown: handle?.onMouseDown,
@@ -157,15 +161,15 @@ export function IssueCard({ row, rows, all, density, selected, dragging, now, ha
       {all ? <div className="tasks-card-status"><StatusCircle category={item.category} fill={0.5} size={8} />{row.status?.label ?? '보드에 칸이 없는 상태'}</div> : null}
       <BlockedBadge item={item} />
       {progress === null ? null : (
-        <div className="tasks-progress" data-issue-progress="">
-          <button type="button" className="tasks-progress-toggle" data-no-drag="" onClick={(event) => { event.stopPropagation(); setExpanded((value) => !value) }} aria-expanded={expanded}>
-            {expanded ? '▾' : '▸'} 자식 {progress.done}/{progress.total}
+        <div className="tasks-progress" data-issue-progress="" data-progress-partial={progress.partial ? '' : undefined}>
+          <button type="button" className="tasks-progress-toggle" data-no-drag="" title={progress.partial ? '이 스페이스의 작업을 아직 다 받지 않았습니다 — 받은 자식만 셉니다' : undefined} onClick={(event) => { event.stopPropagation(); setExpanded((value) => !value) }} aria-expanded={expanded}>
+            {expanded ? '▾' : '▸'} 자식 {progress.done}/{progress.total}{progress.partial ? ' · 받은 것' : ''}
           </button>
           <div className="tasks-progress-bar"><span style={{ width: `${(progress.done / progress.total) * 100}%` }} /></div>
           {expanded ? (
             <div className="tasks-children">
               {progress.children.map((child) => (
-                <div key={child.item.id} className="tasks-child-row">
+                <div key={rowUid(child)} className="tasks-child-row">
                   <StatusCircle category={child.item.category} fill={0.5} size={8} />
                   <span className="tasks-key">{child.item.key}</span>
                   <span className="tasks-child-title">{child.item.title}</span>
@@ -198,7 +202,7 @@ export function Board({ bands, rows, all, density, selectedId, drag, now, column
   return (
     <div className="tasks-board" data-tasks-board="">
       {bands.map((band) => (
-        <section key={band.category} className={`tasks-band cat-${band.category}`} data-board-band={band.category}>
+        <section key={band.id} className={`tasks-band cat-${band.category}${band.id === 'unmapped' ? ' is-unmapped' : ''}`} data-board-band={band.id}>
           <header className="tasks-band-head"><span className="tasks-band-label">{band.label}</span><span className="tasks-band-count">{band.count}</span></header>
           <div className="tasks-band-columns">
             {band.columns.map((column) => {
@@ -220,13 +224,13 @@ export function Board({ bands, rows, all, density, selectedId, drag, now, column
                       ? <div key="gap" className="tasks-drop-gap" style={{ height: entry.height }} data-drop-gap="" />
                       : (
                           <IssueCard
-                            key={entry.row.item.id}
+                            key={rowUid(entry.row)}
                             row={entry.row}
                             rows={rows}
                             all={all}
                             density={density}
-                            selected={selectedId === entry.row.item.id}
-                            dragging={drag?.itemId === entry.row.item.id}
+                            selected={selectedId === rowUid(entry.row)}
+                            dragging={drag?.itemId === rowUid(entry.row)}
                             now={now}
                             handle={handleOf(entry.row)}
                             onSelect={() => onSelect(entry.row)}
@@ -248,7 +252,7 @@ function withGap({ rows, drag, showGap }: { rows: TasksRow[]; drag: TaskDragStat
   const entries: ({ kind: 'row'; row: TasksRow } | { kind: 'gap'; height: number })[] = []
   let position = 0
   for (const row of rows) {
-    const isSource = drag?.itemId === row.item.id
+    const isSource = drag?.itemId === rowUid(row)
     if (showGap && drag !== null && !isSource && position === drag.index) entries.push({ kind: 'gap', height: drag.height })
     entries.push({ kind: 'row', row })
     if (!isSource) position += 1
@@ -283,7 +287,7 @@ export function Backlog({ sections, all, selectedId, drag, now, sectionView, han
               {section.rows.length === 0 && !showGap ? <div className="tasks-backlog-empty">비어 있음</div> : null}
               {withGap({ rows: section.rows, drag, showGap }).map((entry) => (entry.kind === 'gap'
                 ? <div key="gap" className="tasks-drop-gap is-row" style={{ height: entry.height }} data-drop-gap="" />
-                : <IssueRow key={entry.row.item.id} row={entry.row} all={all} now={now} selected={selectedId === entry.row.item.id} dragging={drag?.itemId === entry.row.item.id} handle={handleOf(entry.row)} onSelect={() => onSelect(entry.row)} keyHit={false} />))}
+                : <IssueRow key={rowUid(entry.row)} row={entry.row} all={all} now={now} selected={selectedId === rowUid(entry.row)} dragging={drag?.itemId === rowUid(entry.row)} handle={handleOf(entry.row)} onSelect={() => onSelect(entry.row)} keyHit={false} />))}
             </div>
           </section>
         )
@@ -308,7 +312,7 @@ export function IssueRow({ row, all, now, selected, dragging, handle, onSelect, 
   const { item } = row
   const className = `tasks-row${selected ? ' is-selected' : ''}${dragging ? ' is-drag-source' : ''}${keyHit ? ' is-key-hit' : ''}`
   return (
-    <div className={className} data-issue-row={item.key} data-drag-item={handle === null ? undefined : item.id} aria-selected={selected} onClick={onSelect}>
+    <div className={className} data-issue-row={item.key} data-drag-item={handle === null || row.space === null ? undefined : itemUid({ connectionId: row.space.connectionId, itemId: item.id })} aria-selected={selected} onClick={onSelect}>
       {handle === null ? null : (
         <span className={`tasks-grip${handle.blocked ? ' is-locked' : ''}`} title={handle.blocked ?? '끌어서 옮기기'} onMouseDown={handle.onMouseDown} aria-hidden>⋮⋮</span>
       )}
@@ -343,13 +347,13 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
   preset: TasksPreset | null
   defaultPreset: TasksPreset
   groupLabel: (group: TasksGroup) => string
-  hits: { item: WorkItem; spaceName: string }[]
+  hits: { connectionId: string; item: WorkItem; spaceName: string }[]
   more: MoreState
   onSort: (sort: TasksSort) => void
   onGroup: (group: TasksGroup) => void
   onPreset: (preset: TasksPreset) => void
   onDefaultPreset: (preset: TasksPreset) => void
-  onSelect: (item: WorkItem) => void
+  onSelect: (uid: string) => void
   onLoadMore: () => void
 }): React.JSX.Element {
   const hasMore = more?.kind === 'cursor'
@@ -384,9 +388,10 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
         ))}
       </div>
       <div className="tasks-list-scroll" data-tasks-scroll="list">
-        {hits.map((hit) => (
-          <IssueRow key={`hit-${hit.item.id}`} row={{ item: hit.item, space: null, status: null }} all={all} now={now} selected={selectedId === hit.item.id} dragging={false} handle={null} onSelect={() => onSelect(hit.item)} keyHit spaceName={hit.spaceName} />
-        ))}
+        {hits.map((hit) => {
+          const uid = itemUid({ connectionId: hit.connectionId, itemId: hit.item.id })
+          return <IssueRow key={`hit-${uid}`} row={{ item: hit.item, space: null, status: null }} all={all} now={now} selected={selectedId === uid} dragging={false} handle={null} onSelect={() => onSelect(uid)} keyHit spaceName={hit.spaceName} />
+        })}
         {groups.map((entry) => (
           <Fragment key={entry.id}>
             <div className="tasks-list-group" data-list-group={entry.id} title={hasMore ? '받아 둔 행 기준 — 더 있을 수 있습니다' : undefined}>
@@ -394,7 +399,7 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
               <span className="tasks-column-count">{entry.rows.length}{hasMore ? ' / 받은 것' : ''}</span>
             </div>
             {entry.rows.map((row) => (
-              <IssueRow key={row.item.id} row={row} all={all} now={now} selected={selectedId === row.item.id} dragging={false} handle={null} onSelect={() => onSelect(row.item)} keyHit={false} />
+              <IssueRow key={rowUid(row)} row={row} all={all} now={now} selected={selectedId === rowUid(row)} dragging={false} handle={null} onSelect={() => onSelect(rowUid(row))} keyHit={false} />
             ))}
           </Fragment>
         ))}
@@ -432,7 +437,6 @@ export function MoreBar({ more, onLoadMore }: { more: MoreState; onLoadMore: () 
 export type WorkingView = { entry: WorkingEntry; lookup: WorkingLookup }
 
 export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now: number; onOpen: (tree: WorkingTree) => void }): React.JSX.Element {
-  void now
   return (
     <div className="tasks-working" data-tasks-working="">
       {views.map(({ entry, lookup }) => (
@@ -460,6 +464,8 @@ export function WorkingList({ views, now, onOpen }: { views: WorkingView[]; now:
               <span className="tasks-working-dot">{tree.dot === null ? null : <AgentStateDot dot={tree.dot} />}</span>
               <span className="tasks-working-state">{tree.dot === null ? '에이전트 없음' : AGENT_DOT_LABEL[tree.dot]}</span>
               <span className="tasks-working-branch"><span className="tasks-working-repo">{tree.repoName}</span> / {tree.branch}</span>
+              {/* 시간 = 그 worktree 세션의 마지막 활동(세션 지문). 없으면 그리지 않는다 — 지어낸 시각을 쓰지 않는다(R1-R). */}
+              {elapsedLabel(tree.activityAt, now) === null ? null : <span className="tasks-working-time" data-working-time="">{elapsedLabel(tree.activityAt, now)}</span>}
               <span className="tasks-working-chevron" aria-hidden>›</span>
             </button>
           ))}

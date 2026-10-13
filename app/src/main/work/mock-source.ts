@@ -7,10 +7,14 @@
 // LIFE-601 — 격리 앱 실행(`CORRAL_WORK_MOCK=1`, 측정 모드에서만)이 작업 페이지를 그릴 때 이 출처를 쓴다. 토큰 글자로 행동을 고른다
 // (가짜 토큰만 — 원문 비밀이 아니다): `fault-auth|fault-forbidden|fault-network` = 목록·상태 요청이 그 오류(배너 양성 대조),
 // `delay-<ms>` = 모든 요청을 그만큼 늦춤(불러오기·늦은 응답). 씨앗 `seedMockDemoState` 는 점선 칸(칸 없는 상태)·막힘·자식·빈 스페이스를 갖는다.
+// 수정 r1(R1-T) — `reject-writes` = 쓰기(상태·배치·순서)를 출처가 거절(원위치 양성 대조) · `flip-<ms>` = 홀수 번째 요청만 그만큼 늦춰
+// 뒤 요청이 먼저 답하게(응답 순서 뒤집기 — 늦은 응답 폐기·경합 양성 대조) · `cap-<order|placement|cursorPaging>-<off|hide>` = 그 능력을
+// disabled(이유)·hidden 으로 · `transition-any` = 전이 제한 없음(기본은 allowed) — 능력 표 분기(on/disabled/hidden·any/allowed)를 격리 앱에서 보이게.
 
 import type {
   WorkCall,
   WorkCapabilities,
+  WorkCapability,
   WorkComment,
   WorkItem,
   WorkKind,
@@ -41,14 +45,41 @@ export const MOCK_DESCRIPTOR: WorkSourceDescriptor = {
 }
 
 /** 토큰에서 읽는 행동 (LIFE-601) — 격리 실행 전용. 없으면 평시. */
-export type MockBehavior = { fault: Extract<WorkErrorKind, 'auth' | 'forbidden' | 'network'> | null; delayMs: number }
+export type MockBehavior = {
+  fault: Extract<WorkErrorKind, 'auth' | 'forbidden' | 'network'> | null
+  delayMs: number
+  rejectWrites: boolean
+  flipMs: number
+  /** 능력 표 덮어쓰기 — 없으면 `MOCK_CAPABILITIES` 그대로. */
+  caps: Partial<WorkCapabilities>
+}
+
+export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flipMs: 0, caps: {} }
+
+function capsOf(token: string): Partial<WorkCapabilities> {
+  const caps: Partial<WorkCapabilities> = {}
+  for (const match of token.matchAll(/cap-(order|placement|cursorPaging)-(off|hide)/g)) {
+    const capability: WorkCapability = match[2] === 'hide' ? { state: 'hidden' } : { state: 'disabled', reason: `모의 출처가 이 능력을 껐습니다 (cap-${match[1]}-off).` }
+    switch (match[1]) {
+      case 'order': caps.order = capability; break
+      case 'placement': caps.placement = capability; break
+      case 'cursorPaging': caps.cursorPaging = capability; break
+    }
+  }
+  if (token.includes('transition-any')) caps.transition = { mode: 'any' }
+  return caps
+}
 
 export function mockBehaviorOf(token: string): MockBehavior {
   const fault = /fault-(auth|forbidden|network)/.exec(token)?.[1]
   const delay = /delay-(\d{1,5})/.exec(token)?.[1]
+  const flip = /flip-(\d{1,5})/.exec(token)?.[1]
   return {
     fault: fault === 'auth' || fault === 'forbidden' || fault === 'network' ? fault : null,
     delayMs: delay === undefined ? 0 : Number(delay),
+    rejectWrites: token.includes('reject-writes'),
+    flipMs: flip === undefined ? 0 : Number(flip),
+    caps: capsOf(token),
   }
 }
 
@@ -174,15 +205,16 @@ export class MockSource implements WorkSourceClient {
   private readonly defect: MockDefect
   private readonly behavior: MockBehavior
   private closed = false
+  private calls = 0
 
-  constructor({ state, defect, behavior = { fault: null, delayMs: 0 } }: { state: MockState; defect: MockDefect; behavior?: MockBehavior }) {
+  constructor({ state, defect, behavior = PLAIN_BEHAVIOR }: { state: MockState; defect: MockDefect; behavior?: MockBehavior }) {
     this.state = state
     this.defect = defect
     this.behavior = behavior
   }
 
   capabilities(): WorkCapabilities {
-    return MOCK_CAPABILITIES
+    return { ...MOCK_CAPABILITIES, ...this.behavior.caps }
   }
 
   close(): void {
@@ -190,7 +222,12 @@ export class MockSource implements WorkSourceClient {
   }
 
   async call(call: WorkCall): Promise<WorkOutcome> {
-    if (this.behavior.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.behavior.delayMs))
+    this.calls += 1
+    const wait = this.behavior.delayMs + (this.behavior.flipMs > 0 && this.calls % 2 === 1 ? this.behavior.flipMs : 0)
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    if (this.behavior.rejectWrites && (call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'reorder')) {
+      return rejected('모의 출처가 이 쓰기를 거절했습니다 (reject-writes).')
+    }
     const fault = this.behavior.fault
     if (fault !== null && (call.op === 'listItems' || call.op === 'listStatuses')) {
       const { message, status } = FAULT_MESSAGE[fault]
@@ -203,7 +240,7 @@ export class MockSource implements WorkSourceClient {
     if (this.closed) return { ok: false, error: workError({ kind: 'not_connected', message: '연결이 해제됐거나 토큰이 바뀌어 요청을 보내지 않았습니다.' }) }
     switch (call.op) {
       case 'listSpaces':
-        return { ok: true, result: { op: 'listSpaces', spaces: this.state.spaces.map((entry) => ({ ...entry.space, openCount: this.openCount(entry.space.key) })), capabilities: MOCK_CAPABILITIES } }
+        return { ok: true, result: { op: 'listSpaces', spaces: this.state.spaces.map((entry) => ({ ...entry.space, openCount: this.openCount(entry.space.key) })), capabilities: this.capabilities() } }
       case 'listStatuses': {
         const space = this.space(call.spaceKey)
         if (space === null) return rejected('없는 스페이스입니다.')

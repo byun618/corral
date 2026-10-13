@@ -34,6 +34,8 @@ export type FixtureCorrupt =
   | 'list-drop-position' | 'list-drop-dueAt' | 'list-drop-color' | 'list-drop-archivedAt' | 'list-drop-openBlockers' | 'list-bad-blocker'
   // LIFE-601 E1·E2 양성 대조 — 막은 쪽 행에서 displayId 를 지움 · `issue_by_seq` 의 data.id 를 숫자로.
   | 'blocker-no-displayId' | 'byseq-bad-id'
+  // LIFE-601 R1-P 양성 대조 — 모르는 kind · kind null 인데 data 있음.
+  | 'byseq-unknown-kind' | 'byseq-null-kind-data'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -246,8 +248,9 @@ export class LaMcpFixture {
       // LIFE-601 E2 — LA `issue_by_seq` 응답 `{kind, data}`. 못 찾으면 `{kind: null, data: null}`(오류 아님). 보관 일감도 찾는다.
       case 'issue_by_seq': {
         const issue = this.issues.find((row) => row.sequentialId === args.seq)
-        if (issue === undefined) return ok({ kind: null, data: null })
+        if (issue === undefined) return ok({ kind: null, data: this.corrupt === 'byseq-null-kind-data' ? { id: 'ghost' } : null })
         const data = this.full(issue)
+        if (this.corrupt === 'byseq-unknown-kind') return ok({ kind: 'initiative', data })
         return ok({ kind: issue.kind, data: this.corrupt === 'byseq-bad-id' ? { ...data, id: 42 } : data })
       }
       case 'issue_transition': {

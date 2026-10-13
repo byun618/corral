@@ -204,14 +204,23 @@ export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
   return { ...core, openBlockerCount: openBlockers.length, openBlockers, description, links }
 }
 
-/** `issue_by_seq` — `{kind, data}`. 작업으로 쓸 수 있는 일감(project 아님)이면 그 id, 아니면(goal·없음·project) null (E2). */
+/**
+ * `issue_by_seq` — `{kind, data}`. 작업으로 쓸 수 있는 일감(checkpoint·bug·task)이면 그 id, 정상 제외(project·goal)·없음이면 null (E2).
+ * 판별자를 검증한다(R1-P): 없음은 `{kind: null, data: null}` 일 때만 — kind 가 null 인데 data 가 있으면 모순이다. 모르는 kind 는 「없음」 이 아니라
+ * 형태 오류다(LA 가 새 kind 를 들이면 조용히 「찾지 못함」 이 되지 않게). 제외 kind 도 data 는 레코드여야 한다.
+ */
 export function readBySeq(value: unknown, path: string): string | null {
   const row = record(value, path)
   const kind = row.kind
-  if (kind === null) return null
+  if (kind === null) {
+    if (row.data !== null) throw new LaShapeError(`${path}.data`)
+    return null
+  }
   if (typeof kind !== 'string') throw new LaShapeError(`${path}.kind`)
-  if (kind !== 'checkpoint' && kind !== 'bug' && kind !== 'task') return null
-  return str(record(row.data, `${path}.data`), 'id', `${path}.data`)
+  const data = record(row.data, `${path}.data`)
+  if (kind === 'project' || kind === 'goal') return null
+  if (kind !== 'checkpoint' && kind !== 'bug' && kind !== 'task') throw new LaShapeError(`${path}.kind`)
+  return str(data, 'id', `${path}.data`)
 }
 
 export function readIssueSummaries(value: unknown, path: string): LaIssue[] {

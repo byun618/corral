@@ -162,6 +162,7 @@ export function Sidebar({
   const onSelectSession = (paneId: string): void => {
     const workspaceId = workspaceOfPane(paneId)
     if (workspaceId === null) return
+    leaveTasks()
     if (workspaceId !== activeWorkspaceId) actions.activateWorkspace(workspaceId)
     selectPane(paneId)
     flashPaneRim(paneId)
@@ -320,7 +321,12 @@ export function Sidebar({
     if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
   }, [])
 
+  // 작업 페이지가 열려 있으면 카드·세션으로 가는 길은 페이지를 닫는다 — 페이지가 터미널을 계속 가리지 않게(LIFE-601 R1-H · 핸드오프 §1 Q1).
+  const leaveTasks = (): void => {
+    if (tasks?.open === true) tasks.onToggle()
+  }
   const activateRow = (input: { repoRoot: string; worktree: WorktreeRow }): void => {
+    leaveTasks()
     activateWorktreeCard({ actions, repoRoot: input.repoRoot, worktree: input.worktree, selectPane })
   }
 
@@ -446,7 +452,7 @@ export function Sidebar({
         groupGlyph={selected ? null : groupGlyphOf(worktree.path)}
         groupExpanded={isGroupExpanded(worktree.path)}
         onToggleGroup={() => toggleGroupExpanded(worktree.path)}
-        onSelectBlock={() => activateWorktreeCard({ actions, repoRoot, worktree, selectPane })}
+        onSelectBlock={() => activateRow({ repoRoot, worktree })}
         onSelectSession={onSelectSession}
         onCloseSession={closePane}
         onCloseWorktree={() => {

@@ -1,17 +1,12 @@
 // @vitest-environment happy-dom
 // LIFE-601 수정 r1 — 리뷰 r1(Codex) 지적마다 그 결함을 잡는 시험. 출발점: 리뷰어 재현 `raw/review/codex-r1-raw/l601-r1-review-v4.test.tsx`.
 // UI 경로 결함(A·G·I·J·L·O)은 DOM 이벤트(mousedown/move/up·click·keydown·input)로 본다 — 훅을 직접 부르지 않는다.
-// 하위 계층 결함(E·F·M·N·D)은 훅을 띄워(`Probe`) 본다. R1-B 는 실제 WorkService(모의 출처)의 상태 push 까지 이은 경로다.
+// 하위 계층 결함(E·F·M·N·D)은 훅을 띄워(`Probe`) 본다. R1-B 는 `TasksPage.service.test.tsx`(실제 WorkService 상태 push 까지).
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoRow, WorktreeRow } from '../../../shared/types.js'
 import type { WorkCall, WorkCapabilities, WorkItem, WorkRequest, WorkResponse, WorkSettingsState, WorkStatus } from '../../../shared/work.js'
-import { mockSourceEntry, seedMockDemoState } from '../../../main/work/mock-source.js'
-import { WorkService } from '../../../main/work/service.js'
-import { WorkSourceRegistry } from '../../../main/work/source.js'
-import { CredentialVault } from '../../../main/work/vault.js'
-import { FakeCipher, MemoryStore } from '../../../main/work/test-kit.js'
 import { useTasksPage, type MoveNotice, type TasksPageModel } from '../hooks/useTasksPage.js'
 import { TasksPage } from './TasksPage.js'
 
@@ -162,6 +157,7 @@ async function dragTo({ handle, zone }: { handle: Element | null; zone: string }
   vi.spyOn(document, 'elementFromPoint').mockReturnValue(target)
   mouse(handle, 'mousedown')
   mouse(document, 'mousemove', 50, 500)
+  await settle()
   mouse(document, 'mouseup', 50, 500)
   await settle()
 }
@@ -366,6 +362,20 @@ describe('R1-E 원복·되돌리기 — 확정 값과 보존한 맥락', () => {
     await settle()
     expect(row().item.statusKey).toBe('doing')
   })
+  it('M1c 뒤 요청이 먼저 거절되고 앞 요청이 늦게 성공하면 앞 요청의 서버 값(doing)', async () => {
+    const waits = pending('changeStatus')
+    await probe()
+    act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'doing' } }) })
+    await settle()
+    act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'done' } }) })
+    await settle()
+    await act(async () => { waits[1]?.resolve(reject(waits[1].request)) })
+    await settle()
+    expect(row().item.statusKey).toBe('todo')
+    await act(async () => { waits[0]?.resolve(answer(waits[0].request)) })
+    await settle()
+    expect(row().item.statusKey).toBe('doing')
+  })
   it('M3 다른 스페이스로 옮긴 뒤 되돌리기도 역요청을 보낸다', async () => {
     addSpace()
     await probe()
@@ -526,45 +536,5 @@ describe('R1-O 배치 disabled = 백로그 탭 흐림 + 이유', () => {
     expect(tab?.getAttribute('title')).toContain('placement locked')
     click(tab)
     expect(q('[data-tasks-page]')?.getAttribute('data-tasks-view')).toBe('board')
-  })
-})
-
-describe('R1-B 키 검색 — 실제 WorkService 상태 push 까지 이어도 반복 조회가 없다', () => {
-  it('키 한 번 입력 = 연결당 findByKey 1회, 성공 push 가 재조회를 부르지 않는다 · 닫힌 동안 push 에도 0', async () => {
-    const service = new WorkService({
-      store: new MemoryStore(), vault: new CredentialVault(new FakeCipher()), sources: new WorkSourceRegistry([mockSourceEntry({ state: seedMockDemoState() })]),
-      repos: () => [], onChange: (state) => settingsListener(state), now: () => 1_791_800_000_000, newId: () => 'conn-1',
-    })
-    const pushes: number[] = []
-    const finds: WorkRequest[] = []
-    Reflect.set(window, 'corral', {
-      getUiPrefs: async () => ({ tasksPage: undefined }),
-      setUiPrefs: () => {},
-      getWorkSettings: async () => service.settings(),
-      onWorkSettings: (listener: (value: WorkSettingsState) => void) => { settingsListener = (value) => { pushes.push(1); listener(value) }; return () => {} },
-      workRequest: (request: WorkRequest) => {
-        if (request.call.op === 'findByKey') {
-          finds.push(request)
-          // 반복 조회가 있으면(수정 전) 20회에서 끊는다 — 끝없는 act 로 시험이 멈추지 않고 횟수로 실패하게.
-          if (finds.length > 20) return new Promise<WorkResponse>(() => {})
-        }
-        return service.request(request)
-      },
-    })
-    settingsListener = () => {}
-    const added = await service.addConnection({ sourceId: 'mock-jira', token: 'mock_l601_fixture', replaceId: null })
-    expect(added.ok).toBe(true)
-    await renderPage()
-    expect(q('[data-tasks-board] [data-issue-card]')).not.toBeNull()
-    type('CORE-2')
-    for (let round = 0; round < 10; round += 1) await settle()
-    expect(pushes.length).toBeGreaterThan(0)
-    expect(finds).toHaveLength(1)
-    expect(q('[data-search-hit]')).not.toBeNull()
-    await renderPage({ open: false })
-    const before = finds.length
-    for (let round = 0; round < 3; round += 1) await act(async () => { settingsListener(service.settings()) })
-    await settle()
-    expect(finds).toHaveLength(before)
   })
 })

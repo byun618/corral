@@ -57,8 +57,44 @@ describe('LA 새 칸 형태 검증 (E1·E2)', () => {
 
 describe('모의 출처 — 격리 실행 행동(토큰 글자)', () => {
   it('fault·delay 를 읽는다', () => {
-    expect(mockBehaviorOf('mock_plain')).toEqual({ fault: null, delayMs: 0 })
-    expect(mockBehaviorOf('mock_fault-forbidden_delay-300')).toEqual({ fault: 'forbidden', delayMs: 300 })
+    expect(mockBehaviorOf('mock_plain')).toEqual({ fault: null, delayMs: 0, rejectWrites: false, flipMs: 0, caps: {} })
+    expect(mockBehaviorOf('mock_fault-forbidden_delay-300')).toEqual({ fault: 'forbidden', delayMs: 300, rejectWrites: false, flipMs: 0, caps: {} })
+    expect(mockBehaviorOf('mock_reject-writes_flip-80')).toEqual({ fault: null, delayMs: 0, rejectWrites: true, flipMs: 80, caps: {} })
+    expect(mockBehaviorOf('mock_cap-order-off_cap-placement-hide_transition-any').caps).toEqual({
+      order: { state: 'disabled', reason: '모의 출처가 이 능력을 껐습니다 (cap-order-off).' }, placement: { state: 'hidden' }, transition: { mode: 'any' },
+    })
+  })
+
+  it('reject-writes — 쓰기 3종은 rejected, 읽기는 그대로(원위치 양성 대조, R1-T)', async () => {
+    const harness = workHarness({ entries: [mockSourceEntry({ state: seedMockDemoState() })] })
+    const added = await harness.service.addConnection({ sourceId: 'mock-jira', token: 'mock_reject-writes', replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    const connectionId = added.connection.id
+    const list = await harness.service.request({ requestId: 'l', connectionId, call: { op: 'listItems', spaceKey: 'CORE', cursor: null } })
+    expect(list.ok).toBe(true)
+    const write = await harness.service.request({ requestId: 'w', connectionId, call: { op: 'setPlacement', itemId: 'm-1', placement: 'backlog', ifVersion: null } })
+    expect(write).toMatchObject({ ok: false, error: { kind: 'rejected' } })
+  })
+
+  it('cap 토큰 — 연결의 능력 표가 그 상태로 선다(on/disabled/hidden 분기 양성 대조, R1-T)', async () => {
+    const harness = workHarness({ entries: [mockSourceEntry({ state: seedMockDemoState() })] })
+    const added = await harness.service.addConnection({ sourceId: 'mock-jira', token: 'mock_cap-placement-off', replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    expect(added.connection.capabilities?.placement).toEqual({ state: 'disabled', reason: '모의 출처가 이 능력을 껐습니다 (cap-placement-off).' })
+    const write = await harness.service.request({ requestId: 'w', connectionId: added.connection.id, call: { op: 'setPlacement', itemId: 'm-1', placement: 'backlog', ifVersion: null } })
+    expect(write.ok).toBe(false)
+  })
+
+  it('flip — 홀수 번째 요청만 늦어 뒤에 보낸 요청이 먼저 답한다(응답 순서 뒤집기, R1-T)', async () => {
+    const harness = workHarness({ entries: [mockSourceEntry({ state: seedMockDemoState() })] })
+    const added = await harness.service.addConnection({ sourceId: 'mock-jira', token: 'mock_flip-60', replaceId: null })
+    if (!added.ok) throw new Error(added.error.message)
+    const connectionId = added.connection.id
+    const order: string[] = []
+    const ask = (id: string) => harness.service.request({ requestId: id, connectionId, call: { op: 'listStatuses', spaceKey: 'CORE' } }).then(() => { order.push(id) })
+    // 연결 추가가 1회(listSpaces) 썼으므로 다음은 2(즉시)·3(늦음)·4(즉시) — 먼저 보낸 b 가 나중에 보낸 c 보다 늦게 답한다.
+    await Promise.all([ask('a'), ask('b'), ask('c')])
+    expect(order).toEqual(['a', 'c', 'b'])
   })
 
   it('fault 토큰이면 목록이 그 오류 — 스페이스 목록(연결 테스트)은 통과한다', async () => {

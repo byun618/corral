@@ -1611,6 +1611,7 @@ export function App(): React.JSX.Element {
               repos={state.repos}
               activeRepoRoot={state.repos.find((repo) => repo.worktrees.some((worktree) => worktree === activeWorktree))?.root ?? null}
               shortcut={((binding) => (binding == null ? null : formatBinding(binding)))(bindingsFor('tasks.toggle', keymap.overrides)[0])}
+              yieldKeys={modalBlocked || paletteOpen}
               onClose={closeTasks}
               onOpenSettings={() => openSettings('connections')}
               onOpenWorktree={(tree) => {

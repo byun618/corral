@@ -96,7 +96,7 @@ const settle = async (): Promise<void> => {
 }
 
 async function renderPage(): Promise<void> {
-  act(() => root.render(createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
+  act(() => root.render(createElement(TasksPage, { open: true, repos: [], activeRepoRoot: null, shortcut: '⌘I', yieldKeys: false, onClose: () => { closed += 1 }, onOpenSettings: () => {}, onOpenWorktree: () => {} })))
   await settle()
 }
 

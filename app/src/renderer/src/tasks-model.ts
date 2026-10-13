@@ -136,25 +136,52 @@ export function spaceGroups({ settings, repoRoot }: { settings: WorkSettingsStat
   })
 }
 
+/** 첫 선택 결과 — 고름(없으면 null) 또는 스페이스 목록을 아직 받는 중이라 기다림(R1-D: 받기 전에 「전체」 로 굳히지 않는다). */
+export type SpacePick = { kind: 'pick'; space: TasksSpace | null } | { kind: 'wait' }
+
+/** 스페이스 목록을 아직 받는 중인 연결 — spaces 가 null 이고 조회가 실패로 끝나지 않았다(`failed` = 실패한 연결 id). */
+function spacesPending({ settings, connectionId, failed }: { settings: WorkSettingsState; connectionId: string; failed: ReadonlySet<string> }): boolean {
+  return settings.connections.some((connection) => connection.id === connectionId && connection.spaces === null && !failed.has(connection.id))
+}
+
+function spaceVisible({ groups, space }: { groups: SpaceGroup[]; space: TasksSpace }): boolean {
+  return space.kind === 'all' || groups.some((group) => group.connectionId === space.connectionId && group.rows.some((row) => row.key === space.spaceKey))
+}
+
 /**
  * 첫 진입 스페이스(C2) — 활성 worktree 레포의 기본 스페이스(보이는 것일 때), 없으면 마지막으로 본 스페이스(아직 보이면), 없으면 첫 스페이스.
- * 스페이스 목록을 아직 못 받았으면(연결은 있는데 spaces null) 마지막으로 본 것을 그대로 쓴다 — 받기 전에 지우지 않는다.
+ * 레포 기본이나 마지막 것의 연결이 스페이스 목록을 아직 받는 중이면 **기다린다**(받기 전에 다른 것으로 굳히지 않는다). 받는 연결이 남았는데
+ * 고를 것이 없어도 기다린다. 조회가 실패한 연결은 기다리지 않는다(`failed`).
  */
-export function initialSpace({ groups, settings, repoRoot, last }: { groups: SpaceGroup[]; settings: WorkSettingsState; repoRoot: string | null; last: TasksSpace | null }): TasksSpace | null {
-  const visible = (space: TasksSpace): boolean =>
-    space.kind === 'all' || groups.some((group) => group.connectionId === space.connectionId && group.rows.some((row) => row.key === space.spaceKey))
-  const pending = (space: TasksSpace): boolean =>
-    space.kind === 'space' && settings.connections.some((connection) => connection.id === space.connectionId && connection.spaces === null)
+export function initialSpace({ groups, settings, repoRoot, last, failed }: {
+  groups: SpaceGroup[]
+  settings: WorkSettingsState
+  repoRoot: string | null
+  last: TasksSpace | null
+  failed: ReadonlySet<string>
+}): SpacePick {
+  const pending = (space: TasksSpace): boolean => space.kind === 'space' && spacesPending({ settings, connectionId: space.connectionId, failed })
   if (repoRoot !== null) {
     const preferred = settings.repoDefaults.find((row) => row.repoRoot === repoRoot)
     if (preferred !== undefined) {
       const space: TasksSpace = { kind: 'space', connectionId: preferred.connectionId, spaceKey: preferred.spaceKey }
-      if (visible(space)) return space
+      if (spaceVisible({ groups, space })) return { kind: 'pick', space }
+      if (pending(space)) return { kind: 'wait' }
     }
   }
-  if (last !== null && (visible(last) || pending(last))) return last
+  if (last !== null && spaceVisible({ groups, space: last })) return { kind: 'pick', space: last }
+  // 마지막 것의 연결이 목록을 받는 중이면 그대로 쓴다 — 받은 뒤 없으면 유효성 검사(`spaceStillValid`)가 다시 고른다.
+  if (last !== null && pending(last)) return { kind: 'pick', space: last }
   const first = groups.find((group) => group.rows.length > 0)?.rows[0]
-  return first === undefined ? (settings.connections.length > 0 ? { kind: 'all' } : null) : { kind: 'space', connectionId: first.connectionId, spaceKey: first.key }
+  if (first !== undefined) return { kind: 'pick', space: { kind: 'space', connectionId: first.connectionId, spaceKey: first.key } }
+  if (settings.connections.some((connection) => spacesPending({ settings, connectionId: connection.id, failed }))) return { kind: 'wait' }
+  return { kind: 'pick', space: settings.connections.length > 0 ? { kind: 'all' } : null }
+}
+
+/** 고른 스페이스가 아직 유효한가(R1-D) — 「전체」 · 보이는 스페이스 · 그 연결이 목록을 받는 중. 숨겼거나 연결이 없어졌으면 아니다. */
+export function spaceStillValid({ groups, settings, space, failed }: { groups: SpaceGroup[]; settings: WorkSettingsState; space: TasksSpace; failed: ReadonlySet<string> }): boolean {
+  if (space.kind === 'all') return settings.connections.length > 0
+  return spaceVisible({ groups, space }) || spacesPending({ settings, connectionId: space.connectionId, failed })
 }
 
 // --- 불러온 자료 ---
@@ -174,6 +201,15 @@ export type SpaceData = {
 }
 
 export type TasksRow = { item: WorkItem; space: SpaceData; status: WorkStatus | null }
+
+/** 화면의 작업 정체(R1-L) — 작업 id 는 연결 안에서만 유일하다. 선택·React key·끌기 id·키 일치 중복·부모 집계가 모두 이것을 쓴다. */
+export function itemUid({ connectionId, itemId }: { connectionId: string; itemId: string }): string {
+  return `${connectionId}::${itemId}`
+}
+
+export function rowUid(row: TasksRow): string {
+  return itemUid({ connectionId: row.space.connectionId, itemId: row.item.id })
+}
 
 export function rowsOf(data: SpaceData[]): TasksRow[] {
   return data.flatMap((space) => space.items.map((item) => ({ item, space, status: space.statuses.find((status) => status.key === item.statusKey) ?? null })))
@@ -213,8 +249,8 @@ export function filtersActive(filters: TasksFilters): boolean {
 
 const DAY_MS = 86_400_000
 
-export function passesFilters({ row, filters, workingKeys, now }: { row: TasksRow; filters: TasksFilters; workingKeys: ReadonlySet<string>; now: number }): boolean {
-  const { item } = row
+/** 필터 칩(C10) — 작업 하나만 본다(보드·백로그·리스트 행 · 작업 중 항목 · 키 일치 결과가 같은 함수를 쓴다, R1-I). */
+export function passesFilters({ item, filters, workingKeys, now }: { item: WorkItem; filters: TasksFilters; workingKeys: ReadonlySet<string>; now: number }): boolean {
   if (filters.kinds.length > 0 && !filters.kinds.includes(item.kind.key)) return false
   if (filters.priorities.length > 0 && (item.priority === null || !filters.priorities.includes(item.priority))) return false
   if (filters.blocked && item.openBlockerCount === 0) return false
@@ -226,10 +262,10 @@ export function passesFilters({ row, filters, workingKeys, now }: { row: TasksRo
   return true
 }
 
-export function passesText({ row, query }: { row: TasksRow; query: string }): boolean {
+export function passesText({ item, query }: { item: WorkItem; query: string }): boolean {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return true
-  return row.item.title.toLowerCase().includes(needle) || row.item.key.toLowerCase().includes(needle)
+  return item.title.toLowerCase().includes(needle) || item.key.toLowerCase().includes(needle)
 }
 
 /** 빈 상태의 원인(C5) — 오류 배너가 있으면 부르지 않는다. */
@@ -245,7 +281,8 @@ export function emptyCause({ total, afterFilter, query, view }: { total: number;
 // --- 보드 (C6) ---
 
 export type BoardColumn = { id: string; label: string; category: WorkCategory; statusKey: string | null; unmapped: boolean; rows: TasksRow[]; fill: number }
-export type BoardBand = { category: WorkCategory; label: string; columns: BoardColumn[]; count: number }
+/** 밴드 — 분류 셋 + 상태 목록에 없는 상태의 작업 밴드(`unmapped`, R1-Q: 분류 합계에 넣지 않는다). */
+export type BoardBand = { id: WorkCategory | 'unmapped'; category: WorkCategory; label: string; columns: BoardColumn[]; count: number }
 
 export const CATEGORY_LABEL: Record<WorkCategory, string> = { todo: '할 일', in_progress: '진행 중', done: '완료' }
 const CATEGORIES: WorkCategory[] = ['todo', 'in_progress', 'done']
@@ -274,7 +311,7 @@ export function boardBands({ rows, statuses, all }: { rows: TasksRow[]; statuses
     return CATEGORIES.map((category) => {
       const columnRows = sorted.filter((row) => (row.status?.category ?? row.item.category) === category)
       const column: BoardColumn = { id: `cat:${category}`, label: CATEGORY_LABEL[category], category, statusKey: null, unmapped: false, rows: columnRows, fill: category === 'done' ? 1 : category === 'todo' ? 0 : 0.5 }
-      return { category, label: CATEGORY_LABEL[category], columns: [column], count: columnRows.length }
+      return { id: category, category, label: CATEGORY_LABEL[category], columns: [column], count: columnRows.length }
     })
   }
   const ordered = [...statuses].sort((a, b) => a.order - b.order)
@@ -292,25 +329,26 @@ export function boardBands({ rows, statuses, all }: { rows: TasksRow[]; statuses
         rows: sorted.filter((row) => row.item.statusKey === status.key),
         fill: category === 'done' ? 1 : category === 'todo' ? 0 : (doing.indexOf(status) + 1) / (doing.length + 1),
       }))
-    return { category, label: CATEGORY_LABEL[category], columns, count: columns.reduce((sum, column) => sum + column.rows.length, 0) }
+    return { id: category, category, label: CATEGORY_LABEL[category], columns, count: columns.reduce((sum, column) => sum + column.rows.length, 0) }
   }).filter((band) => band.columns.length > 0)
   const strays = sorted.filter((row) => !known.has(row.item.statusKey))
   if (strays.length > 0) {
-    const last = bands[bands.length - 1]
+    // 맨 끝 자기 밴드 — 분류를 모르므로 어느 분류 합계에도 넣지 않는다(R1-Q). 카드 원은 출처가 준 분류.
     const column: BoardColumn = { id: 'st:__unmapped', label: '보드에 칸이 없는 상태', category: 'todo', statusKey: null, unmapped: true, rows: strays, fill: 0 }
-    if (last !== undefined) {
-      last.columns.push(column)
-      last.count += strays.length
-    } else bands.push({ category: 'todo', label: CATEGORY_LABEL.todo, columns: [column], count: strays.length })
+    bands.push({ id: 'unmapped', category: 'todo', label: '칸 없는 상태', columns: [column], count: strays.length })
   }
   return bands
 }
 
-/** 체크포인트(자식 있는 작업) 진행 — 자식 중 완료 분류 수 / 전체. 자식이 없으면 null. */
-export function childProgress({ item, rows }: { item: WorkItem; rows: TasksRow[] }): { done: number; total: number; children: TasksRow[] } | null {
-  const children = rows.filter((row) => row.item.parentId === item.id && row.item.spaceKey === item.spaceKey)
+/**
+ * 체크포인트(자식 있는 작업) 진행 — **받아 둔** 자식 중 완료 분류 수 / 받아 둔 자식 수. 같은 연결·같은 스페이스의 자식만(R1-L). 자식이 없으면 null.
+ * 그 스페이스에 다음 쪽이 남았거나 상한에서 잘렸으면 `partial` — 화면이 「받은 것 기준」 이라고 밝힌다(R1-Q: 부분 수신을 전체 진행률처럼 보이지 않게).
+ */
+export function childProgress({ row, rows }: { row: TasksRow; rows: TasksRow[] }): { done: number; total: number; children: TasksRow[]; partial: boolean } | null {
+  const { item } = row
+  const children = rows.filter((entry) => entry.space.connectionId === row.space.connectionId && entry.item.parentId === item.id && entry.item.spaceKey === item.spaceKey)
   if (children.length === 0) return null
-  return { done: children.filter((row) => row.item.category === 'done').length, total: children.length, children }
+  return { done: children.filter((entry) => entry.item.category === 'done').length, total: children.length, children, partial: row.space.nextCursor !== null || row.space.truncated }
 }
 
 /** 막힘 배지 문구(C6) — 「막힘 · KEY」, 둘 이상이면 「(외 N)」. 열린 막은 쪽이 없으면 null(완료 분류 막은 쪽은 출처가 이미 뺐다). */
@@ -428,6 +466,13 @@ export function viewsFor(capabilities: WorkCapabilities[]): TasksView[] {
   return TASKS_VIEWS.filter((view) => view !== 'backlog' || placement)
 }
 
+/** 보기 탭의 흐림 이유(R1-O) — 백로그는 보이는 연결 중 배치가 켜진 곳이 없고 꺼진(disabled) 곳이 있으면 그 이유. 그 밖은 null. */
+export function viewDisabledReason({ capabilities, view }: { capabilities: WorkCapabilities[]; view: TasksView }): string | null {
+  if (view !== 'backlog' || capabilities.some((entry) => entry.placement.state === 'on')) return null
+  for (const entry of capabilities) if (entry.placement.state === 'disabled') return entry.placement.reason
+  return null
+}
+
 // --- 끌기 판정 (C7) ---
 
 export type DragIntent =
@@ -518,7 +563,14 @@ export function imeComposing(event: { isComposing: boolean; keyCode: number }): 
 // --- 작업 중 (C11) ---
 
 /** 열린 worktree 하나 — 에이전트 점은 탭 선두와 같은 집계(`tab-status.ts`), 에이전트 pane 이 없으면 null. */
-export type WorkingTree = { path: string; repoRoot: string; repoName: string; branch: string; dot: AgentDot | null }
+/** `activityAt` = 그 worktree pane 들의 세션 지문 마지막 활동 시각 중 가장 늦은 것(없으면 null) — 줄의 「시간」(C11·R1-R). */
+export type WorkingTree = { path: string; repoRoot: string; repoName: string; branch: string; dot: AgentDot | null; activityAt: number | null }
+/** 가장 늦은 활동 시각 — 없으면 null(지어낸 시각을 쓰지 않는다). */
+export function latestActivity(times: (number | null)[]): number | null {
+  const known = times.filter((time): time is number => time !== null)
+  return known.length === 0 ? null : Math.max(...known)
+}
+
 export type WorkingEntry = { key: string; connectionId: string; trees: WorkingTree[] }
 
 /**

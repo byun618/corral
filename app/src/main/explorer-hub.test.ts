@@ -339,7 +339,7 @@ describe('R4 감시 준비 순간의 진행 중 목록·링크 대응·늦은 �
 })
 
 describe('R5-A 감시 공백 동안 링크 행 대상의 생성·삭제', () => {
-  it('목록에 실린 링크 행의 대상이 공백 동안 생기면 대상과 그 부모를 민다 — 링크를 담은 폴더 도장은 그대로여도', async () => {
+  it('목록에 실린 링크 행의 대상이 공백 동안 생기면 그 목록의 실경로를 민다 — 링크를 담은 폴더 도장은 그대로여도(R6-A: 대상의 부모가 아니라)', async () => {
     autoAck = false
     const tag = `r5-${Date.now()}`
     fs.mkdirSync(path.join(rootA, tag, 'holder'), { recursive: true })
@@ -351,7 +351,7 @@ describe('R5-A 감시 공백 동안 링크 행 대상의 생성·삭제', () => 
     fs.mkdirSync(path.join(rootA, tag, 'holder', 'actual'))
     children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
     await sleep(50)
-    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [`${tag}/holder/actual`, `${tag}/holder`] }])
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [tag] }])
   })
   it('대상 상태가 그대로면 미는 것이 없다', async () => {
     autoAck = false
@@ -364,6 +364,37 @@ describe('R5-A 감시 공백 동안 링크 행 대상의 생성·삭제', () => 
     children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
     await sleep(50)
     expect(pushed.filter((event) => event.kind === 'changed')).toEqual([])
+  })
+})
+
+describe('R6-A 대조가 민 것은 기록도 지금 값으로 — 버린 목록의 같은 변화를 다시 밀지 않는다', () => {
+  it('접힌(렌더러가 버린) 목록의 링크 대상이 지워진 뒤 감시 재개를 거듭해도 한 번만, 그 목록의 실경로로 민다', async () => {
+    autoAck = false
+    const tag = `r6a-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, tag, 'box'), { recursive: true })
+    fs.mkdirSync(path.join(rootA, tag, 'target'))
+    fs.symlinkSync('../target', path.join(rootA, tag, 'box', 'alias'))
+    await hub.list({ roots, root: rootA, rel: `${tag}/box` })
+    await hub.subscribe(rootA)
+    fs.rmdirSync(path.join(rootA, tag, 'target'))
+    for (let round = 0; round < 3; round += 1) {
+      children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+      await sleep(30)
+    }
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [`${tag}/box`] }])
+  })
+  it('도장·대응 변화도 한 번만 민다(지워진 폴더·대상이 바뀐 링크)', async () => {
+    autoAck = false
+    const tag = `r6s-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, tag, 'gone'), { recursive: true })
+    await hub.list({ roots, root: rootA, rel: `${tag}/gone` })
+    await hub.subscribe(rootA)
+    fs.rmdirSync(path.join(rootA, tag, 'gone'))
+    for (let round = 0; round < 3; round += 1) {
+      children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+      await sleep(30)
+    }
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [`${tag}/gone`] }])
   })
 })
 

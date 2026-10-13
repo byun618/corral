@@ -340,6 +340,20 @@ describe('R5-A 펼치지 않은 링크 행 — 대상이 생기거나 없어지�
     expect(row('', 'alias')).toBe('file:broken')
   })
 
+  it('R6-B 연쇄 — 최종 대상이 생기거나 거친 링크(via)가 바뀌면 그 행을 담은 목록을 다시 읽는다', async () => {
+    const chained = (ok: boolean): ExplorerEntry => ({ ...link({ name: 'alias', target: 'holder/actual', ok }), via: ['holder/bridge'] })
+    fsView.set('', { real: '', entries: [dir('holder'), chained(false)] })
+    await act(async () => current().refresh())
+    fsView.set('', { real: '', entries: [dir('holder'), chained(true)] })
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/actual', 'holder', 'holder/actual/new.txt'] }))
+    expect(calls).toEqual([''])
+    expect(row('', 'alias')).toBe('dir:ok')
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/bridge', 'holder'] }))
+    expect(calls).toEqual([''])
+  })
+
   it('대상 폴더 안의 변경(대상 자신은 그대로)에는 링크의 부모를 다시 읽지 않는다', async () => {
     fsView.set('', { real: '', entries: [dir('holder'), link({ name: 'alias', target: 'holder/actual', ok: true })] })
     await act(async () => current().refresh())

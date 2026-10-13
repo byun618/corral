@@ -81,36 +81,61 @@ async function stillSame(input: { roots: readonly string[]; root: unknown; rel: 
 /** 실경로 → realpath(루트) 기준 상대(`/` 구분). */
 const relOf = (realRoot: string, real: string): string => path.relative(realRoot, real).split(path.sep).join('/')
 
-/** 깨진 링크가 가리키는 「생기면 있을 곳」 — 링크 글을 링크가 든 폴더 기준으로 풀고 부모만 realpath(없으면 글 그대로). 루트 밖이면 null. */
-async function brokenTarget(dir: string, realRoot: string, full: string): Promise<string | null> {
-  try {
-    const resolved = path.resolve(dir, await fs.readlink(full))
+/** 링크 연쇄를 풀 단계 상한(R6-B) — 넘거나 순환이면 대상 없이 깨진 것으로 본다(macOS SYMLOOP_MAX 32 보다 넉넉히). */
+export const MAX_LINK_HOPS = 40
+
+/**
+ * 링크 연쇄를 한 단계씩 푼다(R6-B) — 각 단계는 링크 글을 그 링크가 든 폴더 기준으로 풀고 부모만 realpath(없으면 글 그대로).
+ * `via` = 거친 루트 안 링크들, `end` = 마지막 링크가 가리키는 곳(있든 없든). 루트 밖으로 나가면 거기서 멈추고 밖 경로는 내보내지 않는다(E7). 순환·상한이면 `end` 없음.
+ */
+async function linkChain(input: { realRoot: string; full: string }): Promise<{ via: string[]; end: string | null }> {
+  const via: string[] = []
+  let current = input.full
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
+    const text = await fs.readlink(current).catch(() => null)
+    if (text === null) return { via, end: null }
+    const resolved = path.resolve(path.dirname(current), text)
     const parent = await fs.realpath(path.dirname(resolved)).catch(() => path.dirname(resolved))
-    const target = path.join(parent, path.basename(resolved))
-    return isInside(realRoot, target) ? relOf(realRoot, target) : null
-  } catch {
-    return null
+    const next = path.join(parent, path.basename(resolved))
+    if (!isInside(input.realRoot, next)) return { via, end: null }
+    const isLink = await fs.lstat(next).then(
+      (stat) => stat.isSymbolicLink(),
+      () => false,
+    )
+    if (!isLink) return { via, end: next }
+    const rel = relOf(input.realRoot, next)
+    if (via.includes(rel)) return { via, end: null }
+    via.push(rel)
+    current = next
   }
+  return { via, end: null }
 }
 
 /**
- * 한 항목의 종류·링크 상태. 링크는 realpath 로 대상을 풀어 **먼저 경계를 판정**하고, 루트 밖이면 더 읽지 않는다(stat 없음 — 종류를 모르므로 `file`
+ * 링크 항목 하나의 종류·링크 상태. 링크는 realpath 로 대상을 풀어 **먼저 경계를 판정**하고, 루트 밖이면 더 읽지 않는다(stat 없음 — 종류를 모르므로 `file`
  * 로 두고 펼칠 수 없다). 경계 판정 자체(realpath)는 링크 경로를 따라 성분을 푼다 — 그것까지 피할 수는 없다.
- * 루트 안 링크(깨진 것 포함)는 대상 실경로 `target` 을 싣는다(R5-A).
+ * 루트 안 대상은 `target`(깨진 링크는 연쇄 끝 — R5-A·R6-B), 거친 루트 안 링크는 `via` 로 싣는다. 도장 대조(main)도 이 함수로 다시 푼다.
  */
-async function entryOf(dir: string, realRoot: string, dirent: { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean }): Promise<ExplorerEntry> {
-  if (!dirent.isSymbolicLink()) return { name: dirent.name, kind: dirent.isDirectory() ? 'dir' : 'file', link: 'none' }
-  const full = path.join(dir, dirent.name)
+export async function linkEntry(input: { realRoot: string; dir: string; name: string }): Promise<ExplorerEntry> {
+  const { realRoot, name } = input
+  const full = path.join(input.dir, name)
+  const chain = await linkChain({ realRoot, full })
+  const via = chain.via.length > 0 ? { via: chain.via } : {}
   let target: string
   try {
     target = await fs.realpath(full)
   } catch {
-    const broken = await brokenTarget(dir, realRoot, full)
-    return broken === null ? { name: dirent.name, kind: 'file', link: 'broken' } : { name: dirent.name, kind: 'file', link: 'broken', target: broken }
+    return chain.end === null ? { name, kind: 'file', link: 'broken', ...via } : { name, kind: 'file', link: 'broken', target: relOf(realRoot, chain.end), ...via }
   }
-  if (!isInside(realRoot, target)) return { name: dirent.name, kind: 'file', link: 'outside' }
+  if (!isInside(realRoot, target)) return { name, kind: 'file', link: 'outside', ...via }
   const state = await targetKind(target)
-  return state === null ? { name: dirent.name, kind: 'file', link: 'broken', target: relOf(realRoot, target) } : { name: dirent.name, kind: state, link: 'ok', target: relOf(realRoot, target) }
+  return state === null ? { name, kind: 'file', link: 'broken', target: relOf(realRoot, target), ...via } : { name, kind: state, link: 'ok', target: relOf(realRoot, target), ...via }
+}
+
+/** 한 항목 — 링크가 아니면 dirent 그대로. */
+async function entryOf(dir: string, realRoot: string, dirent: { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean }): Promise<ExplorerEntry> {
+  if (!dirent.isSymbolicLink()) return { name: dirent.name, kind: dirent.isDirectory() ? 'dir' : 'file', link: 'none' }
+  return linkEntry({ realRoot, dir, name: dirent.name })
 }
 
 /** 대상의 종류(stat — 링크를 따라감). 없으면 null. 부르는 쪽이 루트 안임을 먼저 확인한다. */
@@ -120,18 +145,6 @@ async function targetKind(target: string): Promise<'dir' | 'file' | null> {
   } catch {
     return null
   }
-}
-
-/** 링크 행 대상의 지금 상태 — 도장 대조(R5-A)가 목록 때 상태와 비교한다. 밖으로 풀리면 stat 하지 않는다. */
-export async function linkTargetState(input: { realRoot: string; target: string }): Promise<'dir' | 'file' | 'none' | 'outside'> {
-  let real: string
-  try {
-    real = await fs.realpath(input.target === '' ? input.realRoot : path.join(input.realRoot, ...input.target.split('/')))
-  } catch {
-    return 'none'
-  }
-  if (!isInside(input.realRoot, real)) return 'outside'
-  return (await targetKind(real)) ?? 'none'
 }
 
 /** 한 폴더의 항목(숨김·정렬 전 원본) — 숨김·정렬은 렌더러 `shared/explorer.ts`. */

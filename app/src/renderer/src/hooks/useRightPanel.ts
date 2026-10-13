@@ -83,11 +83,12 @@ export function useRightPanel(panelRef: React.RefObject<HTMLDivElement | null>):
     [panelRef],
   )
 
+  // 의존성 없이 매 커밋 맞춘다 — 패널 DOM 은 App 부트 화면 동안 없어서, 저장된 폭이 먼저 와도 패널이 마운트되는 커밋에 적용해야 한다(최종 관문 E1ⓑ).
   useLayoutEffect(() => {
     if (isResizingRef.current) return
     draftWidthRef.current = width
-    applyRenderedWidth(width)
-  }, [applyRenderedWidth, width, open])
+    if (panelRef.current !== null && panelRef.current.style.width !== `${width}px`) applyRenderedWidth(width)
+  })
 
   const removeOverlay = useCallback(() => {
     const overlay = overlayRef.current

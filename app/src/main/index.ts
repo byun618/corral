@@ -1835,6 +1835,8 @@ app.whenReady().then(async () => {
       if (window !== null && !window.isDestroyed()) window.webContents.send('corral:fileEvent', push)
     },
     log,
+    // 확인·push 기록은 계측 실행(제어 소켓 opt-in)에서만 쌓는다(수정 r3 R3-B).
+    trace: measuring,
   })
   ipcMain.handle('corral:fileWatch', async (event, input: unknown) => {
     if (!fromOurWindow(event) || fileWatch === null) return { ok: false, count: 0 }
@@ -2094,7 +2096,7 @@ app.whenReady().then(async () => {
       crash: () => explorerHub?.injectCrash() ?? false,
     },
     fileWatch: {
-      status: () => (fileWatch === null ? null : { ...fileWatch.stats(), recent: fileWatch.recentChecks() }),
+      status: () => (fileWatch === null ? null : { ...fileWatch.stats(), recent: fileWatch.recentChecks(), pushes: fileWatch.recentPushes() }),
       drop: () => fileWatch?.dropWatchers(),
     },
   })

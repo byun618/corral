@@ -173,3 +173,28 @@ describe('수정 r1 R1-E 감시 목록 교체와 이전 조회가 겹쳐도 감�
     }
   })
 })
+
+describe('수정 r3 R3-B·R3-A 확인·push 기록은 계측 실행에서만 · push 는 파일별 식별자와 시각', () => {
+  it('trace 끔(기본, 리뷰 trace-optin 조건) — 파일 0 이어도 poll 이 돌지만 기록 0', async () => {
+    watch = createFileWatch({ roots: () => [root], pollMs: 50, push: () => undefined })
+    await watch.set({ root, rels: ['b.txt'] })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await watch.set({ root, rels: [] })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect({ checks: watch.recentChecks().length, pushes: watch.recentPushes().length }).toEqual({ checks: 0, pushes: 0 })
+  })
+  it('trace 켬 — poll 기록이 쌓이고(상한 64), push 기록은 root·rel·stamp 와 그 파일을 민 시각', async () => {
+    const pushes: FileWatchPush[] = []
+    watch = createFileWatch({ roots: () => [root], pollMs: 20, push: (push) => pushes.push(push), trace: true, watchDir: () => ({ close: () => undefined }) })
+    await watch.set({ root, rels: ['b.txt', 'src/a.ts'] })
+    fs.writeFileSync(path.join(root, 'b.txt'), `b ${Date.now()}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const traced = watch.recentPushes()
+    const changed = pushes.find((push) => push.rel === 'b.txt' && push !== pushes[0])
+    expect(changed).toBeDefined()
+    const row = traced.find((item) => item.rel === 'b.txt' && item.stamp === changed?.stamp)
+    expect(row).toMatchObject({ root, rel: 'b.txt', exists: true, via: 'poll' })
+    expect(row!.pushAt).toBeGreaterThanOrEqual(row!.checkStartAt)
+    expect(watch.recentChecks().length).toBe(64)
+  })
+})

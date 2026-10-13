@@ -64,19 +64,22 @@ const scrollDown = async () => {
 }
 await scrollDown()
 const result = { root, repo, runs, conditions: {} }
-// 수정 r2 — 구간 계측: 렌더러 수신 시각(이 스크립트가 단 리스너) + main 확인 기록(`file-watch-status.recent`). 판정 기준은 그대로(전체 ms).
+// 수정 r2·r3 — 구간 계측: 렌더러 수신 시각(이 스크립트가 단 리스너) + main push 기록(`file-watch-status.pushes`, 같은 rel·stamp 로 대응) + 확인 기록(`recent`). 판정 기준은 그대로(전체 ms).
 await js(`(() => { window.__e5 = []; window.corral.onFileEvent((push) => { if (push.rel === ${JSON.stringify(LONG)}) window.__e5.push({ at: Date.now(), exists: push.exists, stamp: push.stamp }) }); return true })()`)
 const phases = async ({ t0, updateAt, receiptsBefore }) => {
   const receipts = (await js(`window.__e5.slice(${receiptsBefore})`)) ?? []
   const status = await ctl(root, { cmd: 'file-watch-status' })
   const checks = (status.fileWatch?.recent ?? []).filter((row) => row.endAt >= t0 - 5)
-  const detect = checks.find((row) => row.pushed > 0 && !row.deferred) ?? null
+  // 수정 r3 R3-A — 감지·IPC 는 **같은 변경**(rel·stamp)의 main push 시각과 렌더러 수신 시각으로 잰다. 확인 `endAt` 은 목록 전체를 본 뒤라 「전체 확인 시간」으로만 적는다.
   const receipt = receipts[0] ?? null
+  const pushed = receipt === null ? null : (status.fileWatch?.pushes ?? []).find((row) => row.rel === LONG && row.stamp === receipt.stamp && row.pushAt >= t0 - 5) ?? null
+  const check = checks.find((row) => row.pushed > 0 && !row.deferred) ?? null
   return {
-    detectMs: detect === null ? null : detect.endAt - t0,
-    detectVia: detect?.via ?? null,
-    ipcMs: detect === null || receipt === null ? null : receipt.at - detect.endAt,
+    detectMs: pushed === null ? null : pushed.pushAt - t0,
+    detectVia: pushed?.via ?? null,
+    ipcMs: pushed === null || receipt === null ? null : receipt.at - pushed.pushAt,
     renderMs: receipt === null || updateAt === null ? null : updateAt - receipt.at,
+    checkEndMs: check === null ? null : check.endAt - t0,
     checks: checks.map((row) => ({ via: row.via, start: row.startAt - t0, end: row.endAt - t0, pushed: row.pushed, stale: row.stale, deferred: row.deferred })),
     pushes: receipts.map((push) => ({ afterT0: push.at - t0, size: typeof push.stamp === 'string' ? Number(push.stamp.split(':')[2]) : null })),
   }

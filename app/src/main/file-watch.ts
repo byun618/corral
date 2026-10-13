@@ -21,6 +21,11 @@ type Entry = { root: string; rel: string; stamp: string | null; dir: string | nu
  * await 뒤 버린 수(`stale` — 세대 검사)·겹쳐서 미룬 요청(`deferred`). 최근 `FILE_WATCH_TRACE_MAX` 개만 — 상태 조회(계측 제어 소켓)로만 나간다.
  */
 export type FileWatchCheck = { via: 'poll' | 'watch' | 'again'; startAt: number; endAt: number; pushed: number; stale: number; deferred: boolean }
+/**
+ * push 한 번의 기록(수정 r3 R3-A) — 변경 식별자(root·rel·stamp)와 **그 파일을 민 시각**. 확인의 `endAt` 은 목록 전체를 본 뒤라 뒤에 남은 파일 검사 시간이
+ * 섞인다 — 렌더러 수신과는 이 기록을 stamp 로 맞춰 IPC 구간을 잰다.
+ */
+export type FileWatchPushTrace = { root: string; rel: string; stamp: string | null; exists: boolean; via: 'poll' | 'watch' | 'again' | 'set'; checkStartAt: number; pushAt: number }
 export const FILE_WATCH_TRACE_MAX = 64
 
 export type FileWatch = {
@@ -29,8 +34,9 @@ export type FileWatch = {
   /** 폴더 감시를 전부 끊는다 — 감시 유실 주입(E5ⓓ). 안전망 주기는 계속 돈다. 다음 `set` 이 다시 붙인다. */
   dropWatchers: () => void
   stats: () => { files: number; dirWatchers: number }
-  /** 최근 확인 기록(오래된 것부터) — E5 지연을 「감지까지」와 「표시까지」로 나눠 보는 계측용. */
+  /** 최근 확인·push 기록(오래된 것부터) — E5 지연을 「감지까지」와 「표시까지」로 나눠 보는 계측용. `trace` 를 켠 실행에서만 쌓인다(꺼져 있으면 빈 배열). */
   recentChecks: () => FileWatchCheck[]
+  recentPushes: () => FileWatchPushTrace[]
   dispose: () => void
 }
 
@@ -39,6 +45,8 @@ export function createFileWatch(input: {
   push: (event: FileWatchPush) => void
   log?: (tag: string, data: Record<string, unknown>) => void
   pollMs?: number
+  /** 확인·push 기록을 쌓을까 — 계측 실행(제어 소켓 opt-in)에서만 켠다(수정 r3 R3-B). 기본 끔: 평시에는 기록 비용 0. */
+  trace?: boolean
   /** 시험이 바꿔 끼운다. */
   watchDir?: (dir: string, onEvent: () => void) => { close: () => void }
 }): FileWatch {
@@ -54,10 +62,21 @@ export function createFileWatch(input: {
   let disposed = false
   let checking = false
   let again = false
+  const tracing = input.trace === true
   const traces: FileWatchCheck[] = []
+  const pushTraces: FileWatchPushTrace[] = []
+  const remember = <T,>(list: T[], row: T): void => {
+    list.push(row)
+    if (list.length > FILE_WATCH_TRACE_MAX) list.shift()
+  }
   const trace = (row: FileWatchCheck): void => {
-    traces.push(row)
-    if (traces.length > FILE_WATCH_TRACE_MAX) traces.shift()
+    if (tracing) remember(traces, row)
+  }
+  /** 민다 — 계측 실행이면 변경 식별자·시각을 같이 적는다. */
+  const pushEntry = (entry: Entry, via: FileWatchPushTrace['via'], checkStartAt: number): void => {
+    const event = { root: entry.root, rel: entry.rel, exists: entry.stamp !== null, stamp: entry.stamp }
+    if (tracing) remember(pushTraces, { ...event, via, checkStartAt, pushAt: Date.now() })
+    input.push(event)
   }
 
   const stampOf = async (entry: Entry): Promise<{ stamp: string | null; abs: string | null }> => {
@@ -105,7 +124,7 @@ export function createFileWatch(input: {
   /** 한 폴더(또는 전부)의 파일을 다시 stat 해 바뀐 것만 민다. 겹쳐 돌지 않는다 — 돌던 중 온 요청은 끝난 뒤 전부 한 번 더 본다. */
   const check = async (dir: string | null, via: 'poll' | 'watch' | 'again'): Promise<void> => {
     if (disposed) return
-    const startAt = Date.now()
+    const startAt = tracing ? Date.now() : 0
     if (checking) {
       again = true
       trace({ via, startAt, endAt: startAt, pushed: 0, stale: 0, deferred: true })
@@ -126,11 +145,11 @@ export function createFileWatch(input: {
         if (next.stamp === entry.stamp) continue
         entry.stamp = next.stamp
         pushed += 1
-        input.push({ root: entry.root, rel: entry.rel, exists: next.stamp !== null, stamp: next.stamp })
+        pushEntry(entry, via, startAt)
       }
     } finally {
       checking = false
-      trace({ via, startAt, endAt: Date.now(), pushed, stale, deferred: false })
+      if (tracing) trace({ via, startAt, endAt: Date.now(), pushed, stale, deferred: false })
     }
     if (again) {
       again = false
@@ -170,7 +189,7 @@ export function createFileWatch(input: {
         if (!live(entry)) continue
         attach(entry, next.abs)
         entry.stamp = next.stamp
-        input.push({ root: entry.root, rel: entry.rel, exists: next.stamp !== null, stamp: next.stamp })
+        pushEntry(entry, 'set', 0)
       }
       // 감시가 끊겼던(dropWatchers) 파일도 다시 붙인다.
       for (const entry of [...entries.values()]) {
@@ -187,6 +206,7 @@ export function createFileWatch(input: {
     },
     stats: () => ({ files: entries.size, dirWatchers: dirs.size }),
     recentChecks: () => [...traces],
+    recentPushes: () => [...pushTraces],
     dispose: () => {
       disposed = true
       clearInterval(timer)

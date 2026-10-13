@@ -1,6 +1,6 @@
 // LIFE-590 수정 r2 — E5ⓓ 감시 유실 주입 지연을 구간으로 나눈다(리뷰 r2 관찰: 10회 중 1회 2,535 ms). 격리 개발 Electron.
 // 회차마다: 폴더 감시 끊기(`file-watch-drop`) → 0~1 s 무작위로 쉬고(안전망 주기와의 위상을 고르게) → node fs 로 쓰기(t0) → 렌더러 모델 갱신까지.
-// 구간: ① t0 → main 감지(그 변경을 민 확인의 끝 — `file-watch-status.recent`, main Date.now) ② 감지 → 렌더러 수신(이 스크립트가 단 `onFileEvent` 리스너, 렌더러 Date.now)
+// 구간: ① t0 → main 감지(그 파일을 민 시각 — `file-watch-status.pushes` 를 rel·stamp 로 렌더러 수신과 대응, 수정 r3 R3-A. 확인 끝 `recent.endAt` 은 「전체 확인 시간」 칸으로만) ② 감지 → 렌더러 수신(이 스크립트가 단 `onFileEvent` 리스너, 렌더러 Date.now)
 //       ③ 수신 → 모델 갱신(`data-editor-updated`). 그 사이 **변경을 못 본 확인**(t0 뒤 시작했는데 민 것 0)과 같은 변경에 대한 push 수·크기(잘린 쓰기 관측 여부)도 적는다.
 // 같은 기계 시계(main·렌더러·이 스크립트 모두 Date.now). 사용(app/ 에서): node scripts/l590/e5-latency.mjs --root /tmp/l590g-* --repo /tmp/l590g-t/repo --out <json> [--runs 30]
 import fs from 'node:fs'
@@ -81,6 +81,8 @@ for (let i = 0; i < runs; i += 1) {
   const detect = checks.find((row) => row.pushed > 0 && !row.deferred) ?? null
   const missed = checks.filter((row) => !row.deferred && row.pushed === 0 && row.startAt >= written.t1 && (detect === null || row.startAt < detect.startAt))
   const receipt = receipts[0] ?? null
+  // 수정 r3 R3-A — 같은 변경(rel·stamp)의 main push 시각. 확인 `endAt` 은 「전체 확인 시간」(뒤 파일 검사 포함)으로만 쓴다.
+  const pushed = receipt === null ? null : (status.fileWatch?.pushes ?? []).find((row) => row.rel === LONG && row.stamp === receipt.stamp && row.pushAt >= written.t0 - 5) ?? null
   const row = {
     i,
     dropAt,
@@ -88,9 +90,10 @@ for (let i = 0; i < runs; i += 1) {
     writeMs: written.t1 - written.t0,
     size: written.size,
     total: updateAt === null ? null : updateAt - written.t0,
-    detectMs: detect === null ? null : detect.endAt - written.t0,
-    detectVia: detect?.via ?? null,
-    ipcMs: detect === null || receipt === null ? null : receipt.at - detect.endAt,
+    detectMs: pushed === null ? null : pushed.pushAt - written.t0,
+    detectVia: pushed?.via ?? null,
+    ipcMs: pushed === null || receipt === null ? null : receipt.at - pushed.pushAt,
+    checkEndMs: detect === null ? null : detect.endAt - written.t0,
     renderMs: receipt === null || updateAt === null ? null : updateAt - receipt.at,
     missedChecks: missed.map((row) => ({ via: row.via, afterT0: row.startAt - written.t0 })),
     stale: checks.reduce((sum, row) => sum + row.stale, 0),
@@ -110,7 +113,8 @@ const summary = {
   extra: values.extra ?? null,
   total: { p50: pct(pick('total'), 50), p95: pct(pick('total'), 95), max: Math.max(...pick('total')) },
   detect: { p50: pct(pick('detectMs'), 50), max: Math.max(...pick('detectMs')) },
-  ipc: { max: Math.max(...pick('ipcMs')) },
+  ipc: { min: Math.min(...pick('ipcMs')), max: Math.max(...pick('ipcMs')) },
+  matched: rows.filter((row) => row.ipcMs !== null).length,
   render: { p50: pct(pick('renderMs'), 50), max: Math.max(...pick('renderMs')) },
   overTwoSeconds: rows.filter((row) => row.total === null || row.total > 2000).map((row) => row.i),
   missedAny: rows.filter((row) => row.missedChecks.length > 0).map((row) => row.i),

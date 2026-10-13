@@ -6,7 +6,8 @@
 // 흐름: 앱 기동(모의 출처 — up.sh) → 모의 연결 추가(렌더러 IPC, 가짜 토큰) → ⌘I(앱 내부 sendInputEvent — OS 입력 아님) → 보드
 //       → 칸·점선 칸·막힘 배지·덮기(사이드바 보임 · 메인 영역 숨김) → **실제 마우스 경로 가로 끌기 1회**(raw-mouse = webContents.sendInputEvent
 //       mouseDown/Move/Up — 렌더러의 mousedown/move/up 처리기를 그대로 지난다) → 쓰기·토스트·서버 재조회 값(수정 r1 R1-A)
-//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → **끄는 중 ⌘I 로 닫기 = 쓰기 0**(수정 r2 R2-K) → **창 밖 놓기 = 쓰기 0**(R3-F) → 보기 4 → **flip 응답 역전 순서 둘 = 서버 순서**(R3-A) → Esc 닫기 → 정리.
+//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → **끄는 중 ⌘I 로 닫기 = 쓰기 0**(수정 r2 R2-K) → **창 밖 놓기 = 쓰기 0**(R3-F) → 보기 4 → **flip 응답 역전 순서 둘 = 서버 순서**(R3-A)
+//       → **잠금 중 되돌리기 버튼 유지 → 잠금 해제 뒤 같은 버튼으로 되돌리기**(R4-E) → Esc 닫기 → 정리.
 // 실제 LA·사용자 키체인·설치본 무접촉. 토큰은 가짜(`mock_…`)뿐.
 // 격자 요청 수(`stream.sync` 로그 줄 · control counters)는 **관측만** 남긴다 — 판정은 최종 관문(C1, 양성 대조와 함께)이 한다.
 // 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
@@ -257,6 +258,72 @@ try {
     JSON.stringify(replies) === JSON.stringify([moveB, moveA]) && initial.length >= 3 && afterA.at(-1) === moveA && afterB[0] === moveB && final !== null && JSON.stringify(final.screen) === JSON.stringify(final.server),
     JSON.stringify({ initial, afterA, afterB, replies, final }))
   log('shot', await ctl(ROOT, { cmd: 'shot', name: 'l601-reorder-flip' }))
+
+  // 수정 r4(R4-E) — 모든 요청을 1.5초 늦추는 토큰(`mock_transition-any_delay-1500`)으로 바꾼 뒤, 백로그 보기에서
+  // ① 보드 섹션 첫 행 K 를 백로그 섹션으로(배치 → 「K → 백로그」 토스트) ② 같은 K 를 백로그 섹션 끝으로(순서 — 1.5초 확인 중)
+  // ③ 확인 중에 ①의 되돌리기 버튼을 실제 마우스로 누름 → 쓰기 0 · 그 토스트 남음 ④ 확인이 끝난 뒤 같은 버튼 → 배치 board 로 되돌림(서버 재조회).
+  const replacedDelay = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: 'mock_transition-any_delay-1500', replaceId: ${JSON.stringify(connectionId)} }).then((r) => ({ ok: r.ok, generation: r.ok ? r.connection.generation : null }))`)
+  log('delay 토큰으로 교체', replacedDelay)
+  await sleep(5_000)
+  const serverPlacement = async (key) => {
+    const response = await ask({ op: 'findByKey', key })
+    return response?.ok && response.result.op === 'findByKey' ? response.result.item?.placement ?? null : 'error'
+  }
+  const sectionRows = (section) => js(`[...document.querySelectorAll('[data-backlog-section="${section}"] [data-issue-row]')].map((e) => e.dataset.issueRow)`)
+  const press = async (point) => {
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...point })
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...point })
+  }
+  const undoPoint = (label) => js(`(() => { const t = [...document.querySelectorAll('[data-toast="moved"]')].find((e) => e.textContent.includes(${JSON.stringify(label)})); const b = t?.querySelector('[data-toast-undo]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })()`)
+  const keyE = (await sectionRows('board'))[0]
+  const labelE = `${keyE} → 백로그`
+  const placeBefore = await serverPlacement(keyE)
+  const gripE = await center(`[data-backlog-section="board"] [data-issue-row="${keyE}"] .tasks-grip`, false)
+  const zoneE = await center('[data-drop-zone="sec:backlog"]', false)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...gripE })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: gripE.x + 10, y: gripE.y })
+  await sleep(80)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...zoneE })
+  await sleep(150)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...zoneE })
+  await until(async () => (await undoPoint(labelE)) !== null, { timeoutMs: 6_000, everyMs: 100, label: '배치 토스트' }).catch(() => null)
+  const placed = await serverPlacement(keyE)
+  // ② 같은 카드 순서 쓰기(확인 1.5초) — 백로그 섹션의 끝(K 가 이미 끝이면 처음)으로.
+  const backlogRows = await sectionRows('backlog')
+  const edgeE = backlogRows.at(-1) === keyE ? 'top' : 'bottom'
+  const gripE2 = await center(`[data-backlog-section="backlog"] [data-issue-row="${keyE}"] .tasks-grip`, false)
+  const destE = () => js(`(() => { const rows = [...document.querySelectorAll('[data-backlog-section="backlog"] [data-issue-row]')]; const r = rows[${edgeE === 'bottom' ? 'rows.length - 1' : '0'}].getBoundingClientRect(); return { x: Math.round(r.x + 200), y: Math.round(${edgeE === 'bottom' ? 'r.bottom - 2' : 'r.top + 2'}) } })()`)
+  const writesBeforeE2 = writeLines()
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...gripE2 })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: gripE2.x + 10, y: gripE2.y })
+  await sleep(80)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...(await destE()) })
+  await sleep(100)
+  const destE2 = await destE()
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...destE2 })
+  await sleep(80)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...destE2 })
+  await sleep(150)
+  const locked = await js(`!!document.querySelector('[data-backlog-section] [data-issue-row="${keyE}"] [data-issue-busy], [data-issue-row="${keyE}"][data-busy]') || !!document.querySelector('[title*="확인하는 중"]')`)
+  // ③ 확인 중 되돌리기 — 실제 마우스로 그 토스트의 버튼.
+  const writesBeforeUndo = writeLines()
+  const pointLocked = await undoPoint(labelE)
+  if (pointLocked !== null) await press(pointLocked)
+  await sleep(300)
+  const lockedAfter = { writes: writeLines(), toast: (await undoPoint(labelE)) !== null, refused: await js(`[...document.querySelectorAll('[data-toast="failed"]')].some((e) => e.textContent.includes('확인하는 중'))`) }
+  // ④ 확인이 끝나면(순서 토스트가 뜨면) 같은 버튼.
+  await until(() => js(`[...document.querySelectorAll('[data-toast="moved"]')].some((e) => e.textContent.includes(${JSON.stringify(keyE + ' 순서를')}))`), { timeoutMs: 6_000, everyMs: 100, label: '순서 토스트' }).catch(() => null)
+  const pointFree = await undoPoint(labelE)
+  if (pointFree !== null) await press(pointFree)
+  let undoneE = null
+  await until(async () => { undoneE = await serverPlacement(keyE); return undoneE === 'board' }, { timeoutMs: 8_000, everyMs: 300, label: '되돌리기 서버' }).catch(() => null)
+  const writesAfterUndo = writeLines()
+  log('잠금 중 되돌리기', { keyE, placeBefore, placed, edgeE, writesBeforeE2, locked, writesBeforeUndo, pointLocked, lockedAfter, pointFree, writesAfterUndo, undoneE })
+  judge('C7·R4-E 잠금 중 되돌리기 → 쓰기 0 · 그 토스트·버튼 남음 · 거절 안내 / 확인 뒤 같은 버튼 → 서버 배치 board 로 되돌림',
+    // 쓰기 줄(main `work.request`)은 응답 때 남는다 — 확인 중 순간의 수가 아니라 끝난 뒤 총수로 본다: ②순서 1 + ④되돌리기 1 = +2(③이 보냈으면 +3).
+    placeBefore === 'board' && placed === 'backlog' && typeof writesBeforeE2 === 'number' && pointLocked !== null
+      && lockedAfter.toast === true && lockedAfter.refused === true && pointFree !== null && undoneE === 'board' && writesAfterUndo === writesBeforeE2 + 2,
+    JSON.stringify({ keyE, placeBefore, placed, writesBeforeE2, writesBeforeUndo, lockedAfter, pointFree, undoneE, writesAfterUndo }))
   await click('[data-tasks-view-tab="board"]')
 
   await ctl(ROOT, { cmd: 'key', keyCode: 'Escape' })

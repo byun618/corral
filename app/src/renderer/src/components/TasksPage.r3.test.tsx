@@ -354,7 +354,8 @@ describe('R3-E 요청 예외·무응답에도 잠금이 풀린다', () => {
     await act(async () => { await probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'doing' } }) })
     expect(row().item.statusKey).toBe('doing')
   })
-  it('E2 응답이 끝내 오지 않으면 30초 뒤 실패로 — 잠금 해제 · 원위치', async () => {
+  // 수정 r4(R4-A): 30초는 확정 실패가 아니라 「확인 지연」 이다 — 잠금은 풀리되 낙관적 값은 남고 실패 토스트·원복은 없다.
+  it('E2 응답이 끝내 오지 않으면 30초 뒤 잠금 해제 — 확인 지연(원복·실패 없음)', async () => {
     await probe()
     hold = (request) => (request.call.op === 'changeStatus' ? new Promise(() => {}) : null)
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -370,7 +371,8 @@ describe('R3-E 요청 예외·무응답에도 잠금이 풀린다', () => {
     hold = null
     await settle()
     expect(probeModel.busy.size).toBe(0)
-    expect(row().item.statusKey).toBe('todo')
+    expect(row().item.statusKey).toBe('doing')
+    expect(notices.map((notice) => notice.kind)).toEqual(['delayed'])
   })
 })
 

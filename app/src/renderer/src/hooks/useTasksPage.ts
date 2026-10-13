@@ -13,8 +13,8 @@
 //   그 키 응답을 무효화하고 서버 값을 쓴다 — 완료 분류를 넘나들면 작업 중·키 조회를 전부 다시 받는다(종속 막힘, R3-B·C).
 // - 쓰기·잠금·화면 변경은 **연결 세대**에 귀속한다(R3-D) — 세대가 바뀌면 이전 세대의 확인 안 된 쓰기는 잠금을 풀고, 새 자료에 다시 적용하지도
 //   원복하지도 않는다(늦게 온 그 응답은 버린다).
-// - 출처 요청은 `request` 하나로 — preload Promise 가 reject 되거나 30초 안에 답이 없으면 `network` 실패 응답으로 바꾼다(R3-E).
-//   잠금 해제·원복·오류 토스트가 언제나 지난다.
+// - 출처 요청은 `ask` 하나로 — preload Promise 의 reject 는 `network` 실패 응답으로 바꾼다(R3-E). 30초 안에 답이 없으면 **확정 실패가 아니라 「늦음」** 이다(R4-A):
+//   읽기는 시간 초과 오류(다시 시도)로, 쓰기는 「확인 지연」 — 잠금만 풀고 낙관적 값은 둔 채, 원래 요청이 끝나면(성공·실패 무관) 서버를 다시 읽어 맞춘다.
 // - 스페이스 목록 조회(연결별 · 세대별)는 시도·실패를 보존한다 — 실패하면 「다시 시도」 까지 다시 보내지 않는다(R1-C).
 // - 스페이스 선택(R1-D): 첫 선택(이 실행에서 처음 열 때 — 레포 기본 → 마지막 → 첫 스페이스, 목록을 받는 중이면 기다림) · 재열기는 그대로 ·
 //   설정이 바뀌어 고른 스페이스가 없어지면(숨김·연결 제거) 다시 고른다.
@@ -63,7 +63,8 @@ type StoredLookup = { state: 'loading' } | { state: 'found'; item: WorkItem } | 
 export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string; state: 'ready'; keys: string[] } | { uid: string; state: 'error'; message: string } | null
 
 export type MoveRequest = { row: TasksRow; intent: DragIntent }
-export type MoveNotice = { kind: 'moved'; label: string; undo: () => void } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string }
+/** `undo` 는 받아들였으면 true — 그 카드가 잠겨 있으면 false 이고 버튼은 남는다(R4-E). */
+export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string } | { kind: 'delayed'; message: string }
 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
@@ -76,23 +77,33 @@ const EMPTY_LOAD: TasksLoad = { spaceId: null, phase: 'idle', data: [], error: n
 const NO_SEARCH: KeySearch = { query: '', hits: [], errors: [] }
 
 /**
- * 렌더러 쪽 요청 시간 제한 — main 의 출처 요청 시간 제한(MCP 15초, `mcp-http.ts`)보다 길게 잡아, 정상 시간 초과는 main 의 실패 응답으로 오고
- * 이 값은 IPC 자체가 답하지 않는 경우만 잡는다(R3-E).
+ * 렌더러 쪽 기다림 한도 — **출처 연산 전체의 시간 제한이 아니다**(R4-A). main 의 MCP 15초(`mcp-http.ts`)는 RPC 한 번의 한도이고, 연산 하나가
+ * RPC 여러 번이다(LA `setPlacement` = `issue_update` 뒤 대상·체크포인트·프로젝트 `issue_get` 을 차례로) — 그래서 정상 연산도 30초를 넘을 수 있다.
+ * 이 한도는 「영원히 안 오는 응답에 잠금·불러오는 중이 갇히지 않게」 만 쓴다: 넘으면 「늦음」 이고 원래 요청은 계속 기다린다.
  */
 const REQUEST_TIMEOUT_MS = 30_000
 
-/** 출처 요청 하나 — reject·무응답도 `ok:false` 응답으로(R3-E). 잠금·원복 경로가 예외로 건너뛰어지지 않는다. */
-async function request({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<WorkResponse> {
-  const failed = (message: string): WorkResponse => ({ requestId, connectionId, ok: false, error: { kind: 'network', message, status: null } })
+/** 요청 하나의 결과 — 한도 안에 답함 · 늦음(원래 답은 `answer` 로 계속 온다). */
+type Asked = { kind: 'answered'; response: WorkResponse } | { kind: 'late'; answer: Promise<WorkResponse> }
+
+/** 출처 요청 하나 — reject 도 `ok:false` 응답으로(R3-E). 잠금·원복 경로가 예외로 건너뛰어지지 않는다. */
+async function ask({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<Asked> {
+  const answer = window.corral.workRequest({ requestId, connectionId, call }).catch((error: unknown): WorkResponse => ({
+    requestId, connectionId, ok: false, error: { kind: 'network', message: `요청이 끊겼습니다 — ${error instanceof Error ? error.message : String(error)}`, status: null },
+  }))
   let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<WorkResponse>((resolve) => { timer = setTimeout(() => resolve(failed('응답이 없습니다 — 시간이 지났습니다.')), REQUEST_TIMEOUT_MS) })
+  const late = new Promise<Asked>((resolve) => { timer = setTimeout(() => resolve({ kind: 'late', answer }), REQUEST_TIMEOUT_MS) })
   try {
-    return await Promise.race([window.corral.workRequest({ requestId, connectionId, call }), timeout])
-  } catch (error) {
-    return failed(`요청이 끊겼습니다 — ${error instanceof Error ? error.message : String(error)}`)
+    return await Promise.race([answer.then((response): Asked => ({ kind: 'answered', response })), late])
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** 읽기 요청 — 늦으면 시간 초과 오류다(「다시 시도」 로 다시 받는다). 늦게 온 원래 답은 버린다. */
+async function request({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<WorkResponse> {
+  const asked = await ask({ requestId, connectionId, call })
+  return asked.kind === 'answered' ? asked.response : { requestId, connectionId, ok: false, error: { kind: 'network', message: '응답이 없습니다 — 시간이 지났습니다.', status: null } }
 }
 
 function bannerOf(error: WorkError): TasksBanner {
@@ -179,6 +190,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const pendingWrites = useRef(new Map<string, Override>())
   /** 확인 안 된 쓰기 중 순서 쓰기 — 같은 스페이스의 순서 쓰기가 다 끝나면 서버에서 다시 읽는다(R3-A). */
   const reorders = useRef(new WeakSet<Override>())
+  /** 확인이 늦은 쓰기(R4-A) — 잠금은 풀었지만 답이 올 때까지 목록 응답에 다시 적용한다(낙관적 값 유지). */
+  const lagging = useRef(new Set<Override>())
+  /** 다시 적용할 기록이 없는 확정(순서 성공·늦은 답) 수 — 목록 요청 뒤 이 값이 바뀌었으면 그 응답은 버리고 다시 읽는다(R4-C). */
+  const settles = useRef(0)
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
   const reloadRef = useRef<(options: { quiet: boolean }) => Promise<void>>(async () => {})
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
@@ -284,6 +299,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   useEffect(() => {
     const stale = [...pendingWrites.current].filter(([, entry]) => entry.generation !== currentGeneration(entry.connectionId))
     overrides.current = overrides.current.filter((entry) => entry.generation === currentGeneration(entry.connectionId))
+    for (const entry of lagging.current) if (entry.generation !== currentGeneration(entry.connectionId)) lagging.current.delete(entry)
     if (stale.length === 0) return
     for (const [uid] of stale) pendingWrites.current.delete(uid)
     setBusy(new Set(pendingWrites.current.keys()))
@@ -305,6 +321,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     gate.invalidate('more')
     const token = gate.issue('load')
     const startSeq = writeSeq.current
+    const startSettles = settles.current
     const same = loadRef.current.spaceId === id
     setLoad((current) => (quiet && current.spaceId === id
       ? { ...current, loadingMore: false }
@@ -340,11 +357,14 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       return { ok: true, data, pages }
     }))
     if (!gate.accepts({ key: 'load', requestId: token })) return
+    // 요청 뒤에 순서 쓰기가 성공했거나 늦은 답이 왔으면 이 응답은 그 전 값일 수 있다 — 버리고 다시 읽는다(R4-C). 화면은 지금 그대로라 옛 순서로 깜빡이지 않는다.
+    if (settles.current !== startSettles) { void reloadRef.current({ quiet }); return }
     // 다시 적용할 변경 = 이 목록 요청 **전에** 시작해 아직 확인 안 된 쓰기(R2-C) + 요청 **뒤에** 화면에 쓴 변경(옮기기·원복·응답 반영, R1-F) — 순번 순.
     const later = overrides.current.filter((entry) => entry.seq > startSeq)
     overrides.current = later
     // 다른 세대의 변경은 새 자료에 다시 적용하지 않는다(R3-D).
-    const replay = [...[...pendingWrites.current.values()].filter((entry) => entry.seq <= startSeq), ...later]
+    const unsettled = [...pendingWrites.current.values(), ...lagging.current].filter((entry) => entry.seq <= startSeq).sort((a, b) => a.seq - b.seq)
+    const replay = [...unsettled, ...later]
       .filter((entry) => entry.generation === currentGeneration(entry.connectionId))
     if (!same) pagesRef.current = new Map()
     const error = results.flatMap((result) => (result.ok ? [] : [result.error]))[0] ?? null
@@ -416,22 +436,26 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const patternsId = settings === null ? '' : settings.connections.map((connection) => `${connection.id}#${connection.generation}#${patternOf({ settings, sourceId: connection.sourceId }) ?? ''}`).join('|')
   /** 「다시 시도」 가 키 조회도 다시 보내게 하는 번호(R2-G). */
   const [searchRound, setSearchRound] = useState(0)
+  /** 진행 중인 키 조회 — 그동안 쓰기가 성공하면 그 응답은 쓰기 전 값일 수 있어 다시 보낸다(R4-B). */
+  const finding = useRef(false)
   const patterns = useMemo(() => {
     const current = settingsRef.current
     return current === null ? [] : current.connections.map((connection) => ({ connectionId: connection.id, pattern: patternOf({ settings: current, sourceId: connection.sourceId }) }))
   }, [patternsId])
   useEffect(() => {
-    if (!open) { gate.invalidate('find'); return }
+    if (!open) { gate.invalidate('find'); finding.current = false; return }
     const candidates = patterns.flatMap(({ connectionId, pattern }) => {
       const key = searchKey({ query, pattern })
       return key === null ? [] : [{ connectionId, key }]
     })
-    if (candidates.length === 0) { gate.invalidate('find'); setSearch(NO_SEARCH); return }
+    if (candidates.length === 0) { gate.invalidate('find'); finding.current = false; setSearch(NO_SEARCH); return }
     const token = gate.issue('find')
+    finding.current = true
     void Promise.all(candidates.map(({ connectionId, key }) =>
       request({ requestId: `${token}/${connectionId}`, connectionId, call: { op: 'findByKey', key } }).then((response) => ({ connectionId, response })),
     )).then((answers) => {
       if (!gate.accepts({ key: 'find', requestId: token })) return
+      finding.current = false
       // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
       setSearch({
         query,
@@ -495,9 +519,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   // --- 쓰기 (C7) ---
   /** 성공한 쓰기를 작업 중 보기·키 조회 결과에도 쓴다(R2-I) — 같은 열림 동안 옛 상태가 남지 않게. */
   // 쓰기 직후엔 그 키의 진행 중 작업 중 조회 응답을 버린다(R3-B) — 쓰기 전에 잡은 옛 값이 늦게 와서 덮지 않게. 찾는 중·없음이던 항목도 서버 값으로.
+  // 키 조회도 같다(R4-B) — 진행 중이면 그 응답을 버리고 다시 보낸다.
   const reflect = useCallback(({ connectionId, item }: { connectionId: string; item: WorkItem }) => {
     const id = `${connectionId}::${item.key}`
     gate.invalidate(`working:${id}`)
+    if (finding.current) setSearchRound((value) => value + 1)
     setWorking((current) => {
       let changed = false
       const next = new Map(current)
@@ -533,9 +559,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     pendingWrites.current.set(uid, written)
     if (intent.kind === 'reorder') reorders.current.add(written)
     setBusy(new Set(pendingWrites.current.keys()))
-    let outcome: { accepted: boolean; response: WorkResponse } | null = null
+    const requestId = gate.issue(`item:${uid}`)
+    let asked: Asked | null = null
     try {
-      outcome = await send({ key: `item:${uid}`, connectionId, call })
+      asked = await ask({ requestId, connectionId, call })
     } finally {
       // 잠금은 어떤 경로로 끝나도 푼다(R3-E) — 단 세대가 바뀌어 이미 지운 뒤 같은 카드의 새 쓰기가 잡았으면 그 잠금은 둔다.
       if (pendingWrites.current.get(uid) === written) pendingWrites.current.delete(uid)
@@ -543,7 +570,24 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     }
     // 세대가 바뀐 뒤 온 응답은 버린다(R3-D) — 새 자료에 반영하지도 원복하지도 않는다.
     if (written.generation !== currentGeneration(connectionId)) return
-    const { accepted, response } = outcome
+    if (asked.kind === 'late') {
+      // 늦음은 실패가 아니다(R4-A) — 원복·실패 토스트 없이 「확인 지연」 만 알리고 낙관적 값을 둔다. 답이 오면(성공·실패 무관) 서버를 다시 읽어 맞춘다.
+      lagging.current.add(written)
+      notify({ kind: 'delayed', message: `${original.key} — 출처 확인이 늦어지고 있습니다. 답이 오면 서버 값으로 맞춥니다.` })
+      void asked.answer.then((late) => {
+        lagging.current.delete(written)
+        if (written.generation !== currentGeneration(connectionId)) return
+        // 늦게 온 실패는 알린다 — 화면은 아래 재조회가 서버 값으로 되돌린다(원복을 따로 쓰지 않는다).
+        if (!late.ok) notify({ kind: 'failed', message: `${original.key} — ${late.error.message}` })
+        settles.current += 1
+        void reloadRef.current({ quiet: true })
+        setWorkingRound((value) => value + 1)
+        setSearchRound((value) => value + 1)
+      })
+      return
+    }
+    const { response } = asked
+    const accepted = response.requestId === requestId && gate.accepts({ key: `item:${uid}`, requestId })
     const settled = response.ok && (response.result.op === 'changeStatus' || response.result.op === 'setPlacement' || response.result.op === 'reorder') ? response.result.item : null
     if (!accepted || settled === null) {
       // 실패·버린 응답·모양이 다른 응답 = 그 카드 하나만 옮기기 전 자리로(순서는 그 카드만 되돌린다, R2-B), 그리고 서버를 다시 읽어 수렴한다.
@@ -555,6 +599,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     if (intent.kind === 'reorder') {
       // 순서는 성공 응답에서 의도를 다시 적용하지 않는다(R3-A) — 다른 카드의 순서 쓰기와 응답이 엇갈리면 서버와 다른 순서가 남는다.
       // 같은 스페이스의 순서 쓰기가 다 끝나면 서버에서 다시 읽어 확정 순서로 맞춘다. 그때까지 화면은 낙관적 순서 그대로다.
+      // 다시 적용할 기록을 남기지 않으므로, 이미 나간 목록 요청은 이 성공 전 순서일 수 있다 — 그 응답은 버리고 다시 읽는다(R4-C).
+      settles.current += 1
       const reordering = [...pendingWrites.current.values()].some((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey && reorders.current.has(entry))
       if (!reordering) void reloadRef.current({ quiet: true })
     } else {
@@ -573,14 +619,20 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       label: describe({ item: original, intent, statuses }),
       // 되돌리기는 옮긴 맥락(연결·스페이스·작업·이전 값)을 들고 간다 — 다른 스페이스로 옮겨 가도 역요청을 보낸다(R1-E).
       // 보내는 값 = 이 쓰기 직전 출처가 인정한 값(`reverse`) — 거절된 낙관적 값이 끼어들 수 없다(R2-A).
+      // 이 카드에 확인 안 된 쓰기가 있으면 받지 않는다 — 버튼은 남아 잠금이 풀린 뒤 다시 누를 수 있다(R4-E).
       undo: () => {
+        if (pendingWrites.current.has(uid)) {
+          notify({ kind: 'failed', message: `${original.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
+          return false
+        }
         const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
         const at = now ?? row.space
         const item = now?.items.find((entry) => entry.id === original.id) ?? settled
         void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true })
+        return true
       },
     })
-  }, [patch, send, notify, reflect, currentGeneration])
+  }, [patch, gate, notify, reflect, currentGeneration])
 
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
   const beginDrag = useCallback(async (row: TasksRow, mode: 'any' | 'allowed') => {
@@ -597,10 +649,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     setTransitions(null)
   }, [gate])
 
-  /** 배너의 「다시 시도」 — 실패한 스페이스 목록 조회를 풀고(다시 보낸다) 자료와 키 조회를 다시 받는다(R2-G). */
+  /** 배너의 「다시 시도」 — 실패한 스페이스 목록 조회를 풀고(다시 보낸다) 자료·키 조회·작업 중 조회를 다시 받는다(R2-G·R4-D). */
   const retry = useCallback(() => {
     setSpaceFetch((current) => new Map([...current].filter(([, value]) => value.state !== 'failed')))
     setSearchRound((current) => current + 1)
+    setWorkingRound((current) => current + 1)
     void reload({ quiet: false })
   }, [reload])
 

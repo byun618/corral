@@ -91,7 +91,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         const id = toast(
           <div className="tasks-toast" data-toast="moved">
             <span className="tasks-toast-label">{notice.label}</span>
-            <button type="button" className="tasks-toast-undo" data-toast-undo="" onClick={() => { toast.dismiss(id); notice.undo() }}>되돌리기</button>
+            <button type="button" className="tasks-toast-undo" data-toast-undo="" onClick={() => { if (notice.undo()) toast.dismiss(id) }}>되돌리기</button>
           </div>,
           { duration: 6000 },
         )
@@ -102,6 +102,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
         return
       case 'failed':
         toast(<div className="tasks-toast is-error" data-toast="failed">{notice.message}</div>, { duration: 6000 })
+        return
+      case 'delayed':
+        toast(<div className="tasks-toast" data-toast="delayed">{notice.message}</div>, { duration: 6000 })
         return
     }
   }

@@ -1,7 +1,12 @@
 // LIFE-590 E4ⓑ — TextMate 토큰화(JS 정규식 엔진) 단위. 전체 10개 언어 토큰 위치별 대조는 최종 관문(`scripts/l590/token-colors.mjs`)이 한다 —
-// 여기서는 연결(문법 지연 로드·의존 문법·주입·색 번호 이름·테마 규칙)이 맞는지만 본다.
+// 여기서는 연결(문법 지연 로드·의존 문법·주입·이진 토큰 메타데이터·정규식 변환)이 맞는지만 본다.
 import { describe, expect, it } from 'vitest'
-import { createTextMate, DARK_2026, fontStyleText, grammarDependencies, INITIAL, languageOf, monacoRules, tokenizeLine } from './textmate.js'
+import { EncodedTokenMetadata } from '@shikijs/vscode-textmate'
+import fs from 'node:fs'
+import path from 'node:path'
+import { createJavaScriptRegexEngine } from '@shikijs/engine-javascript'
+import languagesJson from '../assets/textmate/languages.json'
+import { createTextMate, DARK_2026, grammarDependencies, INITIAL, languageOf, normalizeGrammar, normalizeOnigPattern, plainMetadata, tokenizeLine } from './textmate.js'
 
 /** 테마에서 그 scope 하나에 직접 걸린 마지막 규칙의 전경(이 시험이 고른 단순 scope 에만 쓴다). */
 const themeColorOf = (scope: string): string | undefined =>
@@ -32,62 +37,98 @@ describe('languageOf — 파일 이름 표 먼저, 그다음 가장 긴 확장�
   })
 })
 
-describe('토큰화 → 색 번호 토큰', () => {
-  it('TypeScript — 키워드·문자열·숫자가 테마 색으로, 이름은 c<n>', async () => {
+describe('토큰화 → TextMate 이진 토큰', () => {
+  const LANGUAGE = 7
+  /** 그 글자 위치를 덮는 토큰의 메타데이터. */
+  const metadataAt = (tokens: Uint32Array, at: number): number => {
+    let found = tokens[1] ?? 0
+    for (let index = 0; index < tokens.length; index += 2) if ((tokens[index] ?? 0) <= at) found = tokens[index + 1] ?? 0
+    return found
+  }
+  it('TypeScript — 키워드·문자열·숫자가 테마 색, 메타데이터에 언어 id·문자열 종류', async () => {
     const tm = createTextMate()
-    const grammar = await tm.grammar('source.ts')
+    const grammar = await tm.grammar({ scopeName: 'source.ts', languageId: LANGUAGE })
     expect(grammar).not.toBeNull()
     const line = "const greeting = 'hi' + 42"
-    const { tokens } = tokenizeLine({ grammar: grammar!, line, state: INITIAL })
-    const colorAt = (text: string): string | undefined => {
-      const at = line.indexOf(text)
-      const token = [...tokens].reverse().find((item) => item.startIndex <= at)
-      const index = Number(token?.scopes.split('.')[0]?.slice(1))
-      return tm.colorMap[index]?.toLowerCase()
-    }
+    const { tokens } = tokenizeLine({ grammar: grammar!, line, state: INITIAL, languageId: LANGUAGE })
+    const colorAt = (text: string): string | undefined => tm.colorMap[EncodedTokenMetadata.getForeground(metadataAt(tokens, line.indexOf(text)))]?.toLowerCase()
     expect(colorAt("'hi'")).toBe(themeColorOf('string'))
     expect(colorAt('42')).toBe(themeColorOf('constant.numeric'))
     expect(colorAt('const')).not.toBe(tm.colorMap[1]?.toLowerCase())
-    for (const token of tokens) expect(token.scopes).toMatch(/^c\d+(\.\d+)?(\.(comment|string|regex))?$/)
-    // 문자열 토큰은 표준 종류 `string` 꼬리를 단다(괄호 짝이 문자열 안을 건너뛰는 근거)
-    expect([...tokens].reverse().find((token) => token.startIndex <= line.indexOf("'hi'") + 1)?.scopes).toMatch(/\.string$/)
-    expect(tokens[0]?.scopes).not.toMatch(/\.string$/)
+    for (let index = 1; index < tokens.length; index += 2) expect(EncodedTokenMetadata.getLanguageId(tokens[index] ?? 0)).toBe(LANGUAGE)
+    // 문자열 안은 표준 종류 String(2) — 괄호 짝이 문자열 안을 건너뛰는 근거
+    expect(EncodedTokenMetadata.getTokenType(metadataAt(tokens, line.indexOf("'hi'") + 1))).toBe(2)
+    expect(EncodedTokenMetadata.getTokenType(metadataAt(tokens, 0))).toBe(0)
+  })
+  it('`=>` 의 `>` 는 균형 괄호가 아니다(문법 unbalancedBracketScopes) — `(` 는 균형 괄호', async () => {
+    const grammar = await createTextMate().grammar({ scopeName: 'source.ts', languageId: LANGUAGE })
+    const line = 'const f = (x) => x >= 1'
+    const { tokens } = tokenizeLine({ grammar: grammar!, line, state: INITIAL, languageId: LANGUAGE })
+    expect(EncodedTokenMetadata.containsBalancedBrackets(metadataAt(tokens, line.indexOf('=>') + 1))).toBe(false)
+    expect(EncodedTokenMetadata.containsBalancedBrackets(metadataAt(tokens, line.indexOf('>=')))).toBe(false)
+    expect(EncodedTokenMetadata.containsBalancedBrackets(metadataAt(tokens, line.indexOf('(')))).toBe(true)
   })
   it('Markdown 펜스 안 TypeScript 도 칠해진다(의존 문법 미리 싣기)', async () => {
     const tm = createTextMate()
-    const grammar = await tm.grammar('text.html.markdown')
+    const grammar = await tm.grammar({ scopeName: 'text.html.markdown', languageId: LANGUAGE })
     let state = INITIAL
-    const lines = ['```ts', "const x = 'y'", '```']
-    const colors: string[] = []
-    for (const line of lines) {
-      const result = tokenizeLine({ grammar: grammar!, line, state })
+    const colors = new Set<number>()
+    for (const line of ['```ts', "const x = 'y'", '```']) {
+      const result = tokenizeLine({ grammar: grammar!, line, state, languageId: LANGUAGE })
       state = result.endState
-      colors.push(...result.tokens.map((token) => token.scopes))
+      for (let index = 1; index < result.tokens.length; index += 2) colors.add(EncodedTokenMetadata.getForeground(result.tokens[index] ?? 0))
     }
-    expect(new Set(colors).size).toBeGreaterThan(3)
+    expect(colors.size).toBeGreaterThan(3)
   })
   it('없는 문법 = null', async () => {
-    expect(await createTextMate().grammar('source.nope')).toBeNull()
+    expect(await createTextMate().grammar({ scopeName: 'source.nope', languageId: LANGUAGE })).toBeNull()
   })
-  it('20000자 넘는 줄은 토큰화하지 않는다(VS Code maxTokenizationLineLength)', async () => {
-    const grammar = await createTextMate().grammar('source.ts')
-    expect(tokenizeLine({ grammar: grammar!, line: 'a'.repeat(20_000), state: INITIAL }).tokens).toEqual([{ startIndex: 0, scopes: '' }])
+  it('20000자 넘는 줄은 토큰화하지 않는다(VS Code maxTokenizationLineLength) — 기본 색 한 토큰', async () => {
+    const grammar = await createTextMate().grammar({ scopeName: 'source.ts', languageId: LANGUAGE })
+    expect([...tokenizeLine({ grammar: grammar!, line: 'a'.repeat(20_000), state: INITIAL, languageId: LANGUAGE }).tokens]).toEqual([0, plainMetadata(LANGUAGE)])
+    expect(EncodedTokenMetadata.getForeground(plainMetadata(LANGUAGE))).toBe(1)
   })
 })
 
-describe('Monaco 규칙·보조 함수', () => {
-  it('색 번호마다 c<n> + 글꼴 모양 15 가지', () => {
-    const rules = monacoRules(['', '#AABBCC', '#112233'])
-    expect(rules[0]).toEqual({ token: '', foreground: 'AABBCC' })
-    expect(rules.find((rule) => rule.token === 'c2')).toEqual({ token: 'c2', foreground: '112233' })
-    expect(rules.find((rule) => rule.token === 'c2.3')).toEqual({ token: 'c2.3', foreground: '112233', fontStyle: 'italic bold' })
-    expect(rules.length).toBe(1 + 2 * 16)
-  })
-  it('fontStyleText', () => {
-    expect(fontStyleText(0)).toBe('')
-    expect(fontStyleText(1 | 8)).toBe('italic strikethrough')
-  })
+describe('보조 함수', () => {
   it('grammarDependencies — 바깥 scope 만', () => {
     expect(grammarDependencies({ patterns: [{ include: '#x' }, { include: '$self' }, { include: 'source.css' }, { include: 'source.js#expr' }] }).sort()).toEqual(['source.css', 'source.js'])
+  })
+})
+
+describe('Oniguruma → JS 정규식 변환 (E4ⓑ)', () => {
+  it('`\\x{A B C}` 를 `\\x{A}\\x{B}\\x{C}` 로 — `\\\\x{…}`(글자 \\ 뒤 x)는 그대로', () => {
+    expect(normalizeOnigPattern('[^\\x{85 2028 2029}\\r\\n]')).toBe('[^\\x{85}\\x{2028}\\x{2029}\\r\\n]')
+    expect(normalizeOnigPattern('\\\\x{85 2028}')).toBe('\\\\x{85 2028}')
+    expect(normalizeOnigPattern('\\x{41}')).toBe('\\x{41}')
+  })
+  // 남는 4 개(알려진 차이 — E9): JSON snippets 의 겹친 재귀 1 · YAML 블록 스칼라 머리(`|`·`>` 뒤 표시자)의 조건부 그룹 `(?(<chomp>)…)` 3.
+  // forgiving 엔진에서는 그 패턴만 빠진다 — 색 차이는 E4ⓑ 대조(`e4b-tokens.mjs`)가 센다.
+  it('반입 문법 36 개 전부 — 고친 뒤 엄격 모드 JS 엔진으로 컴파일 실패는 알려진 4 개뿐', () => {
+    const strict = createJavaScriptRegexEngine({ forgiving: false })
+    const base = path.resolve(import.meta.dirname, '../assets/textmate')
+    const failures: string[] = []
+    for (const row of languagesJson.grammars) {
+      const raw = normalizeGrammar(JSON.parse(fs.readFileSync(path.join(base, 'grammars', row.file), 'utf8')))
+      const patterns: string[] = []
+      const walk = (value: unknown): void => {
+        if (Array.isArray(value)) return value.forEach(walk)
+        if (value === null || typeof value !== 'object') return
+        for (const [key, item] of Object.entries(value)) {
+          if (['match', 'begin', 'end', 'while'].includes(key) && typeof item === 'string') patterns.push(item)
+          else walk(item)
+        }
+      }
+      walk(raw)
+      for (const pattern of patterns) {
+        // end·while 의 역참조(\1)는 실행 때 채워진다 — 숫자 역참조를 글자로 바꿔 컴파일만 본다
+        try {
+          strict.createScanner([pattern.replace(/\\(\d+)/g, 'x')])
+        } catch {
+          failures.push(`${row.scopeName} ${pattern.slice(0, 80)}`)
+        }
+      }
+    }
+    expect(failures.map((failure) => failure.split(' ')[0])).toEqual(['source.json.comments.snippets', 'source.yaml.1.2', 'source.yaml.1.0', 'source.yaml.embedded'])
   })
 })

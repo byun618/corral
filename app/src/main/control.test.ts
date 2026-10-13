@@ -33,6 +33,7 @@ function handlers(createPairing: () => unknown): Handlers {
     counters: () => null,
     mobile: { status: () => null, createPairing, revoke: () => false },
     explorer: { status: () => null, crash: () => false },
+    fileWatch: { status: () => null, drop: () => undefined },
   }
 }
 

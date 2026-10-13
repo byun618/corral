@@ -68,8 +68,8 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { fileTabLabel, isFileTabId, previewOf, tabKindOf } from './file-tabs.js'
-import { FileView, type ViewStateStore } from './components/FileView.js'
+import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf } from './file-tabs.js'
+import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
@@ -365,6 +365,29 @@ export function App(): React.JSX.Element {
     fileViewStatesRef.current.set(worktreePath, made)
     return made
   }
+  /** Markdown 원문/미리보기 기억 — view state 와 같이 worktree 마다 탭 id 별(E4ⓓ). */
+  const markdownModesRef = useRef<Map<string, MarkdownModeStore>>(new Map())
+  const markdownModesOf = (worktreePath: string): MarkdownModeStore => {
+    const found = markdownModesRef.current.get(worktreePath)
+    if (found !== undefined) return found
+    const made: MarkdownModeStore = new Map()
+    markdownModesRef.current.set(worktreePath, made)
+    return made
+  }
+  /** 열린 파일 탭 감시 상태(E5) — main push 의 마지막 값, 키 = `루트\0상대 경로`. */
+  const [fileWatchState, setFileWatchState] = useState<ReadonlyMap<string, { exists: boolean; stamp: string | null }>>(() => new Map())
+  useEffect(
+    () =>
+      window.corral.onFileEvent((push) =>
+        setFileWatchState((previous) => {
+          const key = `${push.root}\0${push.rel}`
+          const before = previous.get(key)
+          if (before !== undefined && before.exists === push.exists && before.stamp === push.stamp) return previous
+          return new Map(previous).set(key, { exists: push.exists, stamp: push.stamp })
+        }),
+      ),
+    [],
+  )
   /** LIFE-495 — 탭 이름 편집 요청(⌘R·메뉴 「제목 바꾸기」). 토큰이 오를 때마다 그 탭이 편집을 연다. */
   const [renameRequest, setRenameRequest] = useState<{ tabId: string; token: number } | null>(null)
   const requestRename = useCallback((tabId: string) => setRenameRequest((previous) => ({ tabId, token: (previous?.token ?? 0) + 1 })), [])
@@ -577,6 +600,27 @@ export function App(): React.JSX.Element {
   }, [settings])
 
   const termSync = useTermGroupSync({ groups: termGroups, cell })
+
+  // LIFE-590 E5 — 활성 worktree 의 열린 파일 탭 전부(모든 영역·활성 여부 무관)를 main 감시에 맡긴다. 집합이 바뀔 때만 보낸다(통째로).
+  // 패널 열림과 무관하다 — 탐색기 감시(F1)는 패널이 닫히면 멈추지만 이 감시는 탭이 열려 있는 동안 돈다(E5ⓑ).
+  const watchRoot = activeWorktreeRow?.path ?? null
+  const watchRels = layout.layout === null ? '' : fileTabsOf(layout.layout).map((tab) => tab.rel).sort().join('\n')
+  useEffect(() => {
+    if (watchRoot === null) return
+    void window.corral.fileWatch({ root: watchRoot, rels: watchRels === '' ? [] : watchRels.split('\n') })
+  }, [watchRoot, watchRels])
+
+  // LIFE-590 E6 auto reveal — 활성 영역의 활성 탭이 파일 탭이면 탐색기가 그 파일을 따라간다(조상 펼침·선택·스크롤, 포커스는 그대로).
+  // 패널이 닫혀 있으면 아무것도 안 하고, 열리면 그때 활성 파일을 보인다(open 이 의존성). 숨김 경로(`.git`·`node_modules`)는 `reveal` 이 거른다.
+  const activeTabIdForReveal = layout.groups.find((group) => group.groupId === layout.activeGroupId)?.activeTabId ?? null
+  const activeTabKind = activeTabIdForReveal === null ? null : tabKindOf(activeTabIdForReveal)
+  const activeFileRel = activeTabKind?.kind === 'file' ? activeTabKind.rel : null
+  const [revealRequest, setRevealRequest] = useState<{ rel: string; token: number } | null>(null)
+  const revealFile = explorer.reveal
+  useEffect(() => {
+    if (!rightPanel.open || activeFileRel === null) return
+    if (revealFile(activeFileRel)) setRevealRequest((previous) => ({ rel: activeFileRel, token: (previous?.token ?? 0) + 1 }))
+  }, [rightPanel.open, activeFileRel, revealFile])
 
   /** 키 핸들러가 읽는 배치 거울 — 핸들러를 매 렌더 다시 달지 않으려고 ref 로 둔다. */
   const layoutMirror = {
@@ -1210,7 +1254,7 @@ export function App(): React.JSX.Element {
     const groupPreview = previewOf(group)
     const groupItems: GroupTabItem[] = group.tabOrder.flatMap((tabId): GroupTabItem[] => {
       const kind = tabKindOf(tabId)
-      if (kind.kind === 'file') return [{ kind: 'file', tabId, rel: kind.rel, preview: groupPreview === tabId, deleted: false }]
+      if (kind.kind === 'file') return [{ kind: 'file', tabId, rel: kind.rel, preview: groupPreview === tabId, deleted: activeWorktreeRow !== null && fileWatchState.get(`${activeWorktreeRow.path}\0${kind.rel}`)?.exists === false }]
       const tab = tabById(tabId)
       return tab === null ? [] : [{ kind: 'terminal', tab }]
     })
@@ -1350,7 +1394,10 @@ export function App(): React.JSX.Element {
             tabId={activeFile.tabId}
             groupId={group.groupId}
             viewStates={fileViewStatesOf(activeWorktreeRow.path)}
+            markdownModes={markdownModesOf(activeWorktreeRow.path)}
+            watched={fileWatchState.get(`${activeWorktreeRow.path}\0${activeFile.rel}`) ?? null}
             onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+            onOpenFile={(rel) => openFileFromExplorer({ rel, preview: true })}
           />
         ) : groupPane === null ? (
           <EmptyGroup
@@ -1695,7 +1742,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} onOpenFile={openFileFromExplorer} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} revealRequest={revealRequest} onOpenFile={openFileFromExplorer} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (

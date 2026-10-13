@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { looksBinary, readFileContent } from './file-read.js'
+import { looksBinary, readFileContent, readImageContent } from './file-read.js'
 import { BINARY_PROBE_BYTES } from '../shared/file-view.js'
 
 let base = ''
@@ -89,5 +89,27 @@ describe('E4ⓕ 바이너리·빈 파일·UTF-8 아님', () => {
     late.fill(1)
     late[BINARY_PROBE_BYTES] = 0
     expect(looksBinary(late)).toBe(false)
+  })
+})
+
+describe('E4ⓔ 이미지 바이트 읽기', () => {
+  it('목록 확장자 — 바이트·MIME·크기', async () => {
+    fs.writeFileSync(path.join(root, 'pic.PNG'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]))
+    const result = await readImageContent({ roots: roots(), root, rel: 'pic.PNG' })
+    expect(result).toMatchObject({ ok: true, kind: 'image', mime: 'image/png', size: 7, bytesRead: 7 })
+    expect(result.ok && result.kind === 'image' ? [...result.bytes.subarray(0, 4)] : null).toEqual([0x89, 0x50, 0x4e, 0x47])
+  })
+  it('목록 밖 확장자는 열지 않는다(not_file) — 텍스트는 readFile 로', async () => {
+    expect(await readImageContent({ roots: roots(), root, rel: 'src/a.ts' })).toMatchObject({ ok: false, code: 'not_file' })
+  })
+  it('상한 초과 — 읽은 바이트 0', async () => {
+    fs.writeFileSync(path.join(root, 'huge.jpg'), Buffer.alloc(5000, 1))
+    expect(await readImageContent({ roots: roots(), root, rel: 'huge.jpg', limit: 4096 })).toMatchObject({ ok: true, kind: 'too_large', bytesRead: 0 })
+  })
+  it('가둠 — 밖을 가리키는 링크·`..` 탈출은 거절', async () => {
+    fs.writeFileSync(path.join(base, 'out.png'), 'x')
+    fs.symlinkSync(path.join(base, 'out.png'), path.join(root, 'escape.png'))
+    expect((await readImageContent({ roots: roots(), root, rel: 'escape.png' })).ok).toBe(false)
+    expect((await readImageContent({ roots: roots(), root, rel: '../out.png' })).ok).toBe(false)
   })
 })

@@ -116,7 +116,8 @@ import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTai
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
 import { explorerAction } from './explorer-actions.js'
-import { readFileContent } from './file-read.js'
+import { readFileContent, readImageContent } from './file-read.js'
+import { createFileWatch, type FileWatch } from './file-watch.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -171,6 +172,7 @@ let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 탐색기 감시·git 허브 (LIFE-589) — 감시는 utility process 안에서 돈다. */
 let explorerHub: ExplorerHub | null = null
+let fileWatch: FileWatch | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
@@ -1815,6 +1817,31 @@ app.whenReady().then(async () => {
     log('file.read', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
+  // 이미지 바이트(E4ⓔ) — 확장자 목록·가둠·상한은 `readImageContent`. 경로는 남기지 않는다.
+  ipcMain.handle('corral:fileReadImage', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    const startedAt = performance.now()
+    const result = await readImageContent({ roots: explorerRoots(), root, rel })
+    log('file.read_image', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
+  })
+  // 열린 파일 탭 감시(E5) — 렌더러가 활성 worktree 의 열린 파일 탭 집합을 통째로 준다. 패널 열림과 무관하다(탐색기 감시와 별개).
+  fileWatch = createFileWatch({
+    roots: explorerRoots,
+    push: (push) => {
+      log('file.changed', { exists: push.exists })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:fileEvent', push)
+    },
+    log,
+  })
+  ipcMain.handle('corral:fileWatch', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || fileWatch === null) return { ok: false, count: 0 }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rels = typeof input === 'object' && input !== null && 'rels' in input ? input.rels : undefined
+    return fileWatch.set({ root, rels })
+  })
   ipcMain.handle('corral:explorerWatch', async (event, input: unknown) => {
     if (!fromOurWindow(event) || explorerHub === null) return { ok: false, code: 'not_worktree' }
     const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
@@ -2066,6 +2093,10 @@ app.whenReady().then(async () => {
       status: () => explorerHub?.status() ?? null,
       crash: () => explorerHub?.injectCrash() ?? false,
     },
+    fileWatch: {
+      status: () => fileWatch?.stats() ?? null,
+      drop: () => fileWatch?.dropWatchers(),
+    },
   })
 
   app.on('activate', () => {
@@ -2082,6 +2113,7 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   explorerHub?.dispose()
+  fileWatch?.dispose()
   if (digestTimer !== null) clearInterval(digestTimer)
   digestTimer = null
   worktreePoller.stop()

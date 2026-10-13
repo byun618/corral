@@ -18,3 +18,42 @@
   flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center;
   font-family: var(--font-ui); font-size: var(--fs-ui); color: var(--fg-muted);
 }
+
+/* Markdown 원문/미리보기 전환 — 본문 위 한 줄(22px, VS Code breadcrumbs 줄 높이). VS Code 는 편집기 제목 줄 「미리보기 열기」 버튼이지만 corral 은
+   편집기 제목 줄이 없다. 편집기 위에 띄우면 미니맵·스크롤바와 겹쳐 눌리지 않는다(격리 회차에서 확인) — 그래서 줄을 따로 둔다. */
+.file-view-toolbar { flex: none; height: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 0 12px; }
+.file-view-toolbar-button {
+  font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-muted); background: var(--bg-raised);
+  border: 1px solid var(--bg-chip); border-radius: 4px; padding: 0 8px; line-height: 16px; cursor: pointer;
+}
+.file-view-toolbar-button:hover { color: var(--fg); background: var(--bg-row-hover); }
+/* 대용량(20 MB 초과) 안내 띠 — 위 한 줄. */
+.file-view-banner { flex: none; padding: 4px 12px; font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-notice); background: var(--bg-notice); }
+
+/* 이미지 — 가운데, 창보다 크면 맞춤(VS Code 이미지 미리보기 기본 「맞춤」). 아래 한 줄에 크기. */
+.file-image-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.file-image-stage { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.file-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+.file-image-svg { display: flex; align-items: center; justify-content: center; max-width: 100%; max-height: 100%; }
+.file-image-svg > svg { max-width: 100%; max-height: 100%; }
+.file-image-info { flex: none; padding: 4px 12px; text-align: right; font-family: var(--font-ui); font-size: var(--fs-meta); color: var(--fg-muted); }
+
+/* Markdown 미리보기 — 치수는 VS Code `markdown-language-features/media/markdown.css`(본문 14px/22px · 좌우 26px · 제목 크기), 바탕·글꼴은 corral 토큰. */
+.file-markdown-preview {
+  flex: 1; min-height: 0; overflow: auto; padding: 0 26px 26px; font-family: var(--font-ui); font-size: 14px; line-height: 22px; color: var(--fg);
+  word-wrap: break-word; user-select: text;
+}
+.file-markdown-preview h1 { font-size: 2em; margin-top: 0; padding-bottom: 0.3em; border-bottom: 1px solid var(--bg-chip); line-height: 1.2; }
+.file-markdown-preview h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid var(--bg-chip); line-height: 1.2; }
+.file-markdown-preview h3 { font-size: 1.25em; line-height: 1.2; }
+.file-markdown-preview h4 { font-size: 1em; }
+.file-markdown-preview code { font-family: var(--font-mono); font-size: 1em; line-height: 1.357em; }
+.file-markdown-preview :not(pre) > code { background: var(--bg-raised); padding: 1px 3px; border-radius: 4px; }
+.file-markdown-preview pre { background: var(--bg-raised); padding: 16px; border-radius: 3px; overflow: auto; }
+.file-markdown-preview blockquote { margin: 0 7px 0 5px; padding: 0 16px 0 10px; border-left: 5px solid var(--bg-chip); color: var(--fg-muted); }
+.file-markdown-preview table { border-collapse: collapse; margin-bottom: 0.7em; }
+.file-markdown-preview th, .file-markdown-preview td { padding: 5px 10px; border: 1px solid var(--bg-chip); }
+.file-markdown-preview [data-md-href] { color: var(--accent); cursor: pointer; text-decoration: none; }
+.file-markdown-preview [data-md-href]:hover { text-decoration: underline; }
+.file-markdown-preview .md-image { max-width: 100%; height: auto; }
+.md-image-refused { color: var(--fg-muted); font-style: italic; }

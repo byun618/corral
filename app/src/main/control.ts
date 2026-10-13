@@ -62,6 +62,11 @@ export type ControlHandlers = {
     status: () => unknown
     crash: () => boolean
   }
+  /** LIFE-590 E5 — 열린 파일 탭 감시 상태(파일·폴더 감시 수)와 감시 유실 주입(폴더 감시를 끊는다 — 안전망 주기는 계속). 계측 실행에만 열린다. */
+  fileWatch: {
+    status: () => unknown
+    drop: () => void
+  }
 }
 
 /**
@@ -235,6 +240,13 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         return
       case 'explorer-crash':
         reply({ ok: true, at: Date.now(), injected: handlers.explorer.crash() })
+        return
+      case 'file-watch-status':
+        reply({ ok: true, at: Date.now(), fileWatch: handlers.fileWatch.status() })
+        return
+      case 'file-watch-drop':
+        handlers.fileWatch.drop()
+        reply({ ok: true, at: Date.now(), fileWatch: handlers.fileWatch.status() })
         return
       case 'loop-delay':
         reply({ ok: true, at: Date.now(), loopDelay: readLoopDelay() })

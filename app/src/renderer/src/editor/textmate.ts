@@ -3,11 +3,13 @@
 // JS RegExp 로 옮긴다)이라 WASM 이 없다 → CSP 무변경(`wasm-unsafe-eval` 불필요 — E7ⓔ). VS Code 는 같은 문법을 vscode-oniguruma(WASM)로 돈다 —
 // 엔진 차이로 색이 갈리는지는 E4ⓑ 자동 대조(`scripts/l590/token-colors.mjs` 의 기대 색 = vscode-textmate + oniguruma)가 잰다.
 //
-// Monaco 에는 **색 번호로 이름 붙인 토큰**을 준다: TextMate 메타데이터의 전경 색 번호 n·글꼴 모양 f → 토큰 `c<n>` / `c<n>.<f>`.
-// 테마 규칙도 같은 이름으로 그 색 하나씩이라(`monacoRules`), Monaco 의 규칙 매칭(점 접두사)이 끼어들 여지 없이 TextMate 가 고른 색이 그대로 칠해진다.
+// Monaco 에는 **TextMate 이진 토큰을 그대로** 준다(`tokenizeEncoded` — VS Code 와 같은 길): 메타데이터 = 언어 id·표준 종류(주석·문자열·정규식)·
+// 균형 괄호 비트·글꼴 모양·전경/바탕 색 번호. 색 번호는 TextMate 색표 번호이고 Monaco 테마에 같은 색표를 `encodedTokensColors` 로 줘서 번호가 맞는다
+// (`monaco.ts`). 문자열 토큰 경로는 Monaco 가 균형 괄호 비트를 늘 켜서 문법의 `unbalancedBracketScopes`(`=>` 의 `>` 등)가 사라지고 괄호쌍 색이
+// 짝 없는 괄호(빨강)를 칠했다 — E4ⓑ 자동 대조로 찾은 차이(2026-10-13).
 // 이 파일은 Monaco 를 import 하지 않는다 — 단위 시험이 node 에서 토큰화만 잰다.
 import { createJavaScriptRegexEngine } from '@shikijs/engine-javascript'
-import { EncodedTokenMetadata, INITIAL, Registry, type IGrammar, type IRawGrammar, type IRawTheme, type StateStack } from '@shikijs/vscode-textmate'
+import { INITIAL, Registry, type IGrammar, type IRawGrammar, type IRawTheme, type StateStack } from '@shikijs/vscode-textmate'
 import languagesJson from '../assets/textmate/languages.json'
 import themeJson from '../assets/textmate/dark-2026.json'
 
@@ -46,10 +48,37 @@ export function languageOf(rel: string): { id: string; scopeName: string; config
 }
 
 export type TextMate = {
-  /** 그 scopeName 문법(주입·내장 문법 포함)을 싣는다. 없으면 null. */
-  grammar: (scopeName: string) => Promise<IGrammar | null>
+  /** 그 scopeName 문법(주입·내장 문법 포함)을 싣는다. `languageId` = 토큰 메타데이터에 실을 언어 번호(Monaco 의 인코딩 언어 id). 없으면 null. */
+  grammar: (input: { scopeName: string; languageId: number }) => Promise<IGrammar | null>
   /** TextMate 색 번호 → `#rrggbb` (0 은 비어 있다). */
   colorMap: string[]
+}
+
+/**
+ * Oniguruma 전용 표기 `\x{85 2028 2029}`(한 이스케이프에 코드포인트 여럿 = 그 글자들을 잇달아 쓴 것)를 `\x{85}\x{2028}\x{2029}` 로 푼다 — 뜻이 같다
+ * (문자 클래스 안이면 각 글자가 멤버, 밖이면 글자 열). JS 정규식 엔진(oniguruma-to-es)이 이 표기를 못 옮겨 YAML 문법 패턴 145 개가 조용히 빠지고
+ * 거의 모든 줄이 `invalid.illegal` 이 됐다(E4ⓑ 자동 대조로 찾음 — 2026-10-13). 반입한 문법 파일은 VS Code 원본 그대로 두고 **로드할 때** 고친다.
+ * 앞에 홀수 개 `\` 가 있으면(글자 `\` 뒤의 x) 건드리지 않는다.
+ */
+export function normalizeOnigPattern(pattern: string): string {
+  return pattern.replace(/(?<!\\)((?:\\\\)*)\\x\{([0-9A-Fa-f]+(?:[ \t]+[0-9A-Fa-f]+)+)\}/g, (_whole, slashes: string, list: string) =>
+    slashes + list.split(/[ \t]+/).map((hex) => `\\x{${hex}}`).join(''),
+  )
+}
+
+/** 문법 JSON 의 정규식 칸(match·begin·end·while)마다 `normalizeOnigPattern` — 원본은 건드리지 않고 고친 사본을 돌려준다. */
+export function normalizeGrammar(raw: IRawGrammar): IRawGrammar {
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk)
+    if (value === null || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, ['match', 'begin', 'end', 'while'].includes(key) && typeof item === 'string' ? normalizeOnigPattern(item) : walk(item)]))
+  }
+  const copy = walk(raw)
+  return isRawGrammar(copy) ? copy : raw
+}
+
+function isRawGrammar(value: unknown): value is IRawGrammar {
+  return value !== null && typeof value === 'object' && 'scopeName' in value && 'patterns' in value
 }
 
 /** 문법 JSON 안의 바깥 문법 참조(`include: "source.css"`·`"source.css#rule"`) — 미리 실을 의존 문법. `#`·`$self`·`$base` 는 제 문법 안이다. */
@@ -87,7 +116,8 @@ export function createTextMate(input: { loadRaw?: (scopeName: string) => Promise
   const prefetch = async (scopeName: string): Promise<void> => {
     if (raws.has(scopeName)) return
     raws.set(scopeName, null)
-    const raw = await loadRaw(scopeName)
+    const loaded = await loadRaw(scopeName)
+    const raw = loaded === null ? null : normalizeGrammar(loaded)
     raws.set(scopeName, raw)
     if (raw === null) return
     await Promise.all([...grammarDependencies(raw), ...injectionsOf(scopeName)].map((dependency) => prefetch(dependency)))
@@ -102,16 +132,17 @@ export function createTextMate(input: { loadRaw?: (scopeName: string) => Promise
     getInjections: injectionsOf,
   })
   return {
-    grammar: async (scopeName) => {
+    grammar: async ({ scopeName, languageId }) => {
       await prefetch(scopeName)
       if (raws.get(scopeName) === null) return null
       // VS Code `TMGrammarFactory` 와 같이 문법 기여의 tokenTypes(문자열·주석 판정 덮어쓰기)·괄호 scope 를 같이 넘긴다.
       const row = GRAMMARS.find((item) => item.scopeName === scopeName)
       const tokenTypes = Object.fromEntries(Object.entries(row?.tokenTypes ?? {}).map(([selector, type]) => [selector, type === 'comment' ? 1 : type === 'string' ? 2 : type === 'regex' ? 3 : 0]))
-      return registry.loadGrammarWithConfiguration(scopeName, 1, {
+      return registry.loadGrammarWithConfiguration(scopeName, languageId, {
         tokenTypes,
-        ...(row?.balancedBracketScopes ? { balancedBracketSelectors: row.balancedBracketScopes } : {}),
-        ...(row?.unbalancedBracketScopes ? { unbalancedBracketSelectors: row.unbalancedBracketScopes } : {}),
+        // VS Code `TextMateTokenizationFeature` 와 같은 기본값 — 균형 괄호 scope 가 없으면 전부(`*`), 균형 아님은 없음.
+        balancedBracketSelectors: row?.balancedBracketScopes ?? ['*'],
+        unbalancedBracketSelectors: row?.unbalancedBracketScopes ?? [],
       })
     },
     colorMap: registry.getColorMap(),
@@ -123,43 +154,18 @@ export const MAX_TOKENIZATION_LINE_LENGTH = 20_000
 /** 한 줄 토큰화 시간 상한 — VS Code TextMate 토큰화와 같은 500 ms. */
 const TIME_LIMIT_MS = 500
 
-export type LineTokens = { endState: StateStack; tokens: { startIndex: number; scopes: string }[] }
+export type LineTokens = { endState: StateStack; tokens: Uint32Array }
 
-/**
- * 한 줄 → Monaco 토큰. 이름은 `c<전경 색 번호>[.<글꼴 모양 비트>][.comment|.string|.regex]`.
- * 꼬리의 종류 낱말은 Monaco 가 토큰 이름에서 읽는 표준 종류(`toStandardTokenType`) — 괄호 짝·괄호 색이 문자열·주석 안 괄호를 건너뛰게(VS Code 는 메타데이터로 같은 것을 한다).
- * 색 규칙은 `c<n>` / `c<n>.<f>` 에만 있고 Monaco 규칙 매칭은 점 접두사라 꼬리가 색을 바꾸지 않는다.
- */
-export function tokenizeLine(input: { grammar: IGrammar; line: string; state: StateStack }): LineTokens {
-  if (input.line.length >= MAX_TOKENIZATION_LINE_LENGTH) return { endState: input.state, tokens: [{ startIndex: 0, scopes: '' }] }
+/** Monaco `nullTokenizeEncoded` 과 같은 한 토큰 — 기본 전경(1)·바탕(2), 종류 Other. 토큰화하지 않는 긴 줄에 쓴다. */
+export function plainMetadata(languageId: number): number {
+  return (languageId | (1 << 15) | (2 << 24)) >>> 0
+}
+
+/** 한 줄 → TextMate 이진 토큰 `[시작, 메타데이터, …]`. 메타데이터 비트 배치는 vscode-textmate 와 Monaco 가 같다(`EncodedTokenMetadata`). */
+export function tokenizeLine(input: { grammar: IGrammar; line: string; state: StateStack; languageId: number }): LineTokens {
+  if (input.line.length >= MAX_TOKENIZATION_LINE_LENGTH) return { endState: input.state, tokens: new Uint32Array([0, plainMetadata(input.languageId)]) }
   const result = input.grammar.tokenizeLine2(input.line, input.state, TIME_LIMIT_MS)
-  const tokens: { startIndex: number; scopes: string }[] = []
-  for (let index = 0; index < result.tokens.length; index += 2) {
-    const metadata = result.tokens[index + 1] ?? 0
-    const foreground = EncodedTokenMetadata.getForeground(metadata)
-    const fontStyle = EncodedTokenMetadata.getFontStyle(metadata)
-    const type = EncodedTokenMetadata.getTokenType(metadata)
-    const kind = type === 1 ? '.comment' : type === 2 ? '.string' : type === 3 ? '.regex' : ''
-    tokens.push({ startIndex: result.tokens[index] ?? 0, scopes: `${fontStyle > 0 ? `c${foreground}.${fontStyle}` : `c${foreground}`}${kind}` })
-  }
-  return { endState: result.ruleStack, tokens }
+  return { endState: result.ruleStack, tokens: result.tokens }
 }
 
 export { INITIAL }
-
-/** 글꼴 모양 비트(TextMate `FontStyle`: 1 italic · 2 bold · 4 underline · 8 strikethrough) → Monaco 규칙 `fontStyle` 글. */
-export function fontStyleText(bits: number): string {
-  return [bits & 1 ? 'italic' : '', bits & 2 ? 'bold' : '', bits & 4 ? 'underline' : '', bits & 8 ? 'strikethrough' : ''].filter((part) => part.length > 0).join(' ')
-}
-
-/** Monaco 테마 규칙 — 색 번호마다 `c<n>` 과 글꼴 모양 15 가지 `c<n>.<f>`. 기본(이름 없는 토큰)은 테마 첫 규칙의 전경. */
-export function monacoRules(colorMap: string[]): { token: string; foreground?: string; fontStyle?: string }[] {
-  const strip = (color: string | undefined): string | undefined => (color === undefined ? undefined : color.replace(/^#/, '').slice(0, 6))
-  const rules: { token: string; foreground?: string; fontStyle?: string }[] = [{ token: '', foreground: strip(colorMap[1]) }]
-  for (let index = 1; index < colorMap.length; index += 1) {
-    const foreground = strip(colorMap[index])
-    rules.push({ token: `c${index}`, foreground })
-    for (let bits = 1; bits < 16; bits += 1) rules.push({ token: `c${index}.${bits}`, foreground, fontStyle: fontStyleText(bits) })
-  }
-  return rules
-}

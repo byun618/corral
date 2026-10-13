@@ -42,6 +42,7 @@ export function Explorer({
   explorer,
   title,
   focusToken,
+  revealRequest,
   onOpenFile,
 }: {
   explorer: ExplorerApi
@@ -51,6 +52,11 @@ export function Explorer({
   focusToken: number
   /** 파일 열기(LIFE-590 E2) — 한 번 클릭·Space = 미리보기, 더블클릭·Enter·⌘↓ = 고정. 폴더는 부르지 않는다. */
   onOpenFile: (input: { rel: string; preview: boolean }) => void
+  /**
+   * auto reveal(LIFE-590 E6) — 바뀌면 그 행이 보이는 곳으로 스크롤한다(조상 펼침·선택은 `explorer.reveal` 이 이미 했다). 조상 목록을 읽는 동안은 행이 없으니
+   * 행이 생길 때까지 기다렸다가 한 번만 스크롤한다. **포커스는 옮기지 않는다**(VS Code `revealInExplorer` 아닌 auto reveal 과 같다).
+   */
+  revealRequest: { rel: string; token: number } | null
 }): React.JSX.Element {
   const { state, filter } = explorer
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -102,6 +108,15 @@ export function Explorer({
     if (top < element.scrollTop) element.scrollTop = top
     else if (top + ROW_HEIGHT > element.scrollTop + element.clientHeight) element.scrollTop = top + ROW_HEIGHT - element.clientHeight
   }, [])
+
+  const revealedToken = useRef(0)
+  useEffect(() => {
+    if (revealRequest === null || revealedToken.current === revealRequest.token) return
+    const index = rows.findIndex((row) => row.rel === revealRequest.rel)
+    if (index === -1) return
+    revealedToken.current = revealRequest.token
+    revealIndex(index)
+  }, [revealRequest, rows, revealIndex])
 
   const openRowMenuAtSelection = (): void => {
     const index = rows.findIndex((row) => row.rel === selected)

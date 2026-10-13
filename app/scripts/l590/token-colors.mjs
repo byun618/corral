@@ -111,7 +111,9 @@ function compare(expected, actual) {
         const got = chars[column]
         if (/\s/.test(got.ch)) continue
         checked += 1
-        if (BRACKETS.has(got.ch) && BRACKET_COLORS.has(got.color)) {
+        // `${`(템플릿 괄호 — JS 언어 구성 brackets 첫 짝, colorizedBracketPairs 가 없으면 괄호쌍 색 대상)의 `$` 도 괄호 덧칠이다.
+        const templateBracket = got.ch === '$' && chars[column + 1]?.ch === '{'
+        if ((BRACKETS.has(got.ch) || templateBracket) && BRACKET_COLORS.has(got.color)) {
           bracketPair += 1
           continue
         }

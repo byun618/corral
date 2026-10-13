@@ -5,7 +5,7 @@ import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
-import type { FileReadResult } from './file-view.js'
+import type { FileReadResult, FileWatchPush, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1044,6 +1044,11 @@ export type CorralApi = {
   onExplorerEvent: (listener: (event: ExplorerPush) => void) => () => void
   // --- 파일 탭 (LIFE-590 F2) — 읽기 전용 내용. root = 열린 worktree 경로, rel = 루트 기준 상대 경로. main 이 가두고 상한·바이너리를 판정한다 ---
   readFile: (input: { root: string; rel: string }) => Promise<FileReadResult>
+  /** 이미지 바이트(LIFE-590 E4ⓔ) — 렌더러가 createImageBitmap·인라인 SVG 로 그린다(URL 없음 — CSP 무변경). */
+  readImage: (input: { root: string; rel: string }) => Promise<ImageReadResult>
+  /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
+  fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
+  onFileEvent: (listener: (event: FileWatchPush) => void) => () => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

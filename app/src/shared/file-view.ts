@@ -20,3 +20,35 @@ export type FileReadResult =
   | { ok: true; kind: 'binary'; size: number; bytesRead: number; stamp: string }
   | { ok: true; kind: 'too_large'; size: number; limit: number; bytesRead: number; stamp: string }
   | { ok: false; code: FileReadRefusal; error: string }
+
+/** 열린 파일 탭 외부 변경 push(E5) — `stamp` 는 `FileReadResult.stamp` 와 같은 글(없으면 null = 없음·가둠 밖). */
+export type FileWatchPush = { root: string; rel: string; exists: boolean; stamp: string | null }
+
+/**
+ * 이미지로 여는 확장자(E4ⓔ) — VS Code `extensions/media-preview/package.json` 의 imagePreview.previewEditor 선택자(1.142)와 같은 목록. 값은 MIME.
+ * `.svg` 는 텍스트이기도 하다 — VS Code 처럼 이미지 미리보기로 연다.
+ */
+export const IMAGE_MIME: Readonly<Record<string, string>> = {
+  jpg: 'image/jpeg',
+  jpe: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  ico: 'image/x-icon',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  svg: 'image/svg+xml',
+}
+
+export function imageMimeOf(rel: string): string | null {
+  const name = rel.split('/').pop() ?? rel
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return null
+  return IMAGE_MIME[name.slice(dot + 1).toLowerCase()] ?? null
+}
+
+export type ImageReadResult =
+  | { ok: true; kind: 'image'; mime: string; bytes: Uint8Array; size: number; bytesRead: number; stamp: string }
+  | { ok: true; kind: 'too_large'; size: number; limit: number; bytesRead: number; stamp: string }
+  | { ok: false; code: FileReadRefusal; error: string }

@@ -17,7 +17,7 @@
 //   목록 안 링크 행의 대상 실경로(`target`)나 거친 링크(`via`)가 바뀌면 그 행을 담은 목록을 다시 읽는다 — 펼치지 않은 링크의 대상이 생기거나 없어져도 `kind`·`link` 가 맞는다(R5-A·R6-B).
 // · 표시 토글(dotfile·ignored)은 전역 ui-prefs(E2ⓓⓔ — 범위 「전역」, `shared/types.ts` UiPrefs 주석).
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { EXPLORER_SAFETY_NET_MS, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
+import { ALWAYS_HIDDEN_NAMES, EXPLORER_SAFETY_NET_MS, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
 import { fromWire, type GitSnapshot } from '../../../shared/explorer-git.js'
 
 export type ExplorerRootState = {
@@ -68,6 +68,16 @@ export function targetChanged(changed: ReadonlySet<string>, target: string): boo
   return changed.has(index === -1 ? '' : target.slice(0, index))
 }
 
+/**
+ * auto reveal(LIFE-590 E6) 대상 — 활성 파일 탭 경로의 조상 폴더들(펼칠 것). 항상 숨김 이름(`.git`·`node_modules` — F1)을 지나는 경로는
+ * 탐색기에 행이 없으니 reveal 하지 않는다(null). VS Code 는 `explorer.autoRevealExclude` 기본이 `node_modules`·`bower_components` 다.
+ */
+export function revealDirs(rel: string): string[] | null {
+  const parts = rel.split('/')
+  if (rel === '' || parts.some((part) => part === '' || part === '.' || part === '..' || ALWAYS_HIDDEN_NAMES.includes(part))) return null
+  return parts.slice(0, -1).map((_part, index) => parts.slice(0, index + 1).join('/'))
+}
+
 export type ExplorerApi = {
   root: string | null
   state: ExplorerRootState | null
@@ -77,6 +87,8 @@ export type ExplorerApi = {
   expand: (rel: string) => void
   collapse: (rel: string) => void
   select: (rel: string | null) => void
+  /** 활성 파일 탭 따라가기(E6) — 조상 폴더를 펼치고(읽기) 그 파일을 선택한다. 포커스·스크롤은 탐색기 컴포넌트 몫. 숨김 경로면 false. */
+  reveal: (rel: string) => boolean
   setScrollTop: (value: number) => void
   collapseAll: () => void
   refresh: () => void
@@ -302,6 +314,19 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     [root, storeOf, collapse, expand],
   )
   const select = useCallback((rel: string | null) => withRoot((_key, store) => void (store.selected = rel)), [withRoot])
+  const reveal = useCallback(
+    (rel: string): boolean => {
+      const dirs = revealDirs(rel)
+      if (dirs === null) return false
+      withRoot((key, store) => {
+        for (const dir of dirs) store.expanded.add(dir)
+        store.selected = rel
+        for (const dir of ['', ...visibleExpanded(store.expanded)]) if (!store.listings.has(dir) || store.invalid.has(dir)) load(key, dir)
+      })
+      return true
+    },
+    [withRoot, load],
+  )
   const setScrollTop = useCallback(
     (value: number) => {
       if (root !== null) storeOf(root).scrollTop = value
@@ -325,5 +350,5 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
     })
   }, [])
 
-  return { root, state: root === null ? null : (stores.current.get(root) ?? null), filter, version, toggle, expand, collapse, select, setScrollTop, collapseAll, refresh, setFilter }
+  return { root, state: root === null ? null : (stores.current.get(root) ?? null), filter, version, toggle, expand, collapse, select, reveal, setScrollTop, collapseAll, refresh, setFilter }
 }

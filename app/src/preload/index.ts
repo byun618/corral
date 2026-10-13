@@ -37,7 +37,7 @@ import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
-import type { FileReadResult } from '../shared/file-view.js'
+import type { FileReadResult, FileWatchPush, ImageReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
   'getMobileStatus',
@@ -81,6 +81,9 @@ const EXPOSED = [
   'explorerAction',
   'onExplorerEvent',
   'readFile',
+  'fileWatch',
+  'readImage',
+  'onFileEvent',
   'activateWindow',
   'reportRendered',
   'selectPane',
@@ -188,6 +191,15 @@ const api: CorralApi = {
     }
   },
   readFile: (input: { root: string; rel: string }): Promise<FileReadResult> => ipcRenderer.invoke('corral:fileRead', input),
+  readImage: (input: { root: string; rel: string }): Promise<ImageReadResult> => ipcRenderer.invoke('corral:fileReadImage', input),
+  fileWatch: (input: { root: string; rels: string[] }): Promise<{ ok: boolean; count: number }> => ipcRenderer.invoke('corral:fileWatch', input),
+  onFileEvent: (listener: (event: FileWatchPush) => void) => {
+    const handler = (_event: unknown, push: FileWatchPush): void => listener(push)
+    ipcRenderer.on('corral:fileEvent', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:fileEvent', handler)
+    }
+  },
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

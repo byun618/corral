@@ -22,7 +22,7 @@ import 'monaco-editor/features/unicodeHighlighter/register'
 import 'monaco-editor/features/readOnlyMessage/register'
 import 'monaco-editor/features/longLinesHelper/register'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
-import { createTextMate, DARK_2026, INITIAL, languageOf, monacoRules, tokenizeLine, type TextMate } from './textmate.js'
+import { createTextMate, DARK_2026, INITIAL, languageOf, tokenizeLine, type TextMate } from './textmate.js'
 import type { StateStack } from '@shikijs/vscode-textmate'
 import { toMonacoLanguageConfiguration } from './language-config.js'
 
@@ -56,13 +56,19 @@ function corralToken(name: string, fallback: string): string {
   return value.length > 0 ? value : fallback
 }
 
-/** 테마 — 토큰 색은 VS Code Dark 2026(TextMate 색 번호 규칙), 편집기 바탕은 corral `--bg-surface`, 그 밖 편집기 색은 Dark 2026. */
+/**
+ * 테마 — 토큰 색은 VS Code Dark 2026: TextMate 색표를 **그대로** `encodedTokensColors` 로 줘서 Monaco 색 번호 = TextMate 색 번호(번호 1 = 기본 전경, 2 = 기본 바탕 —
+ * Monaco 가 색을 앞 6 자리로 묶으므로 알파만 다른 색이 있으면 번호가 밀린다; Dark 2026 색표 34 색에는 없다 — 2026-10-13 확인).
+ * 편집기 바탕은 corral `--bg-surface`, 그 밖 편집기 색은 Dark 2026.
+ */
 function defineTheme(colorMap: string[]): void {
   const background = corralToken('--bg-surface', '#0a0a0a')
+  const strip = (color: string | undefined): string | undefined => (color === undefined ? undefined : color.replace(/^#/, '').slice(0, 6))
   monaco.editor.defineTheme(THEME, {
     base: 'vs-dark',
     inherit: false,
-    rules: monacoRules(colorMap),
+    encodedTokensColors: colorMap.slice(1),
+    rules: [{ token: '', foreground: strip(colorMap[1]), background: strip(colorMap[2]) }],
     colors: { ...DARK_2026.colors, 'editor.background': background, 'editorGutter.background': background, 'editorStickyScroll.background': background, 'minimap.background': background },
   })
 }
@@ -86,16 +92,18 @@ export async function languageFor(rel: string): Promise<string> {
   let ready = registered.get(language.id)
   if (ready === undefined) {
     ready = (async () => {
-      const grammar = await tm.grammar(language.scopeName)
-      if (grammar === null) return false
       monaco.languages.register({ id: language.id })
+      // 토큰 메타데이터의 언어 칸 = Monaco 인코딩 언어 id — 괄호쌍 색·괄호 짝이 이 언어의 구성을 찾는다.
+      const languageId = monaco.languages.getEncodedLanguageId(language.id)
+      const grammar = await tm.grammar({ scopeName: language.scopeName, languageId })
+      if (grammar === null) return false
       const loadConfig = language.configuration === null ? undefined : configLoaders[`../assets/textmate/language-configuration/${language.configuration}`]
       if (loadConfig !== undefined) monaco.languages.setLanguageConfiguration(language.id, toMonacoLanguageConfiguration(await loadConfig()))
       monaco.languages.setTokensProvider(language.id, {
         getInitialState: () => new TokenState(INITIAL),
-        tokenize: (line, state) => {
+        tokenizeEncoded: (line, state) => {
           const stack = state instanceof TokenState ? state.stack : INITIAL
-          const result = tokenizeLine({ grammar, line, state: stack })
+          const result = tokenizeLine({ grammar, line, state: stack, languageId })
           return { tokens: result.tokens, endState: new TokenState(result.endState) }
         },
       })
@@ -106,10 +114,17 @@ export async function languageFor(rel: string): Promise<string> {
   return (await ready) ? language.id : 'plaintext'
 }
 
-/** 읽기 전용 편집기 하나 — 옵션은 VS Code 기본값(글꼴 크기·줄 높이·미니맵·sticky scroll 은 Monaco 기본 = VS Code 기본), 글꼴만 corral 토큰. */
-export function createViewer(host: HTMLElement): monaco.editor.IStandaloneCodeEditor {
+const LARGE_FILE_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = { folding: false, occurrencesHighlight: 'off', selectionHighlight: false, stickyScroll: { enabled: false } }
+
+/**
+ * 읽기 전용 편집기 하나 — 옵션은 VS Code 기본값(글꼴 크기·줄 높이·미니맵·sticky scroll 은 Monaco 기본 = VS Code 기본), 글꼴만 corral 토큰.
+ * `large`(20 MB 초과, E4ⓕ) — Monaco 모델이 스스로 토큰화를 끄는 것(`largeFileOptimizations` 기본 켬 — VS Code 와 같은 코드·같은 문턱)에 더해
+ * 접기·단어 강조·sticky scroll 을 끈다(VS Code 가 대용량 모델에서 끄는 기능들). 언어는 부르는 쪽이 `plaintext` 로 준다(문법을 싣지 않는다).
+ */
+export function createViewer(input: { host: HTMLElement; large: boolean }): monaco.editor.IStandaloneCodeEditor {
   ensureTextMate()
-  return monaco.editor.create(host, {
+  return monaco.editor.create(input.host, {
+    ...(input.large ? LARGE_FILE_OPTIONS : {}),
     theme: THEME,
     readOnly: true,
     // 읽기 전용 편집기에서 친 글자(한글 조합 포함)가 textarea 에 쌓이지 않게 — 입력이 어디로도 새지 않는다(E3ⓖ).

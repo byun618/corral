@@ -64,6 +64,23 @@ const scrollDown = async () => {
 }
 await scrollDown()
 const result = { root, repo, runs, conditions: {} }
+// 수정 r2 — 구간 계측: 렌더러 수신 시각(이 스크립트가 단 리스너) + main 확인 기록(`file-watch-status.recent`). 판정 기준은 그대로(전체 ms).
+await js(`(() => { window.__e5 = []; window.corral.onFileEvent((push) => { if (push.rel === ${JSON.stringify(LONG)}) window.__e5.push({ at: Date.now(), exists: push.exists, stamp: push.stamp }) }); return true })()`)
+const phases = async ({ t0, updateAt, receiptsBefore }) => {
+  const receipts = (await js(`window.__e5.slice(${receiptsBefore})`)) ?? []
+  const status = await ctl(root, { cmd: 'file-watch-status' })
+  const checks = (status.fileWatch?.recent ?? []).filter((row) => row.endAt >= t0 - 5)
+  const detect = checks.find((row) => row.pushed > 0 && !row.deferred) ?? null
+  const receipt = receipts[0] ?? null
+  return {
+    detectMs: detect === null ? null : detect.endAt - t0,
+    detectVia: detect?.via ?? null,
+    ipcMs: detect === null || receipt === null ? null : receipt.at - detect.endAt,
+    renderMs: receipt === null || updateAt === null ? null : updateAt - receipt.at,
+    checks: checks.map((row) => ({ via: row.via, start: row.startAt - t0, end: row.endAt - t0, pushed: row.pushed, stale: row.stale, deferred: row.deferred })),
+    pushes: receipts.map((push) => ({ afterT0: push.at - t0, size: typeof push.stamp === 'string' ? Number(push.stamp.split(':')[2]) : null })),
+  }
+}
 
 const measureActive = async (name, before) => {
   const rows = []
@@ -71,22 +88,26 @@ const measureActive = async (name, before) => {
     if (before) await before(i)
     const lineBefore = await firstLine()
     const prior = await updatedAt()
+    const receiptsBefore = await js(`window.__e5.length`)
     const t0 = mutate(`${name} ${i}`)
     let ms = null
     let error = null
+    let updateAt = null
     try {
       const done = await until(async () => {
         const at = await updatedAt()
         return at > prior ? at : 0
       }, { timeoutMs: 5000, everyMs: 20, label: `${name} ${i}` })
+      updateAt = done.value
       ms = done.value - t0
     } catch (caught) {
       error = String(caught)
     }
     await sleep(150)
+    const phase = await phases({ t0, updateAt, receiptsBefore })
     const lineAfter = await firstLine()
     const shown = await js(`[...document.querySelectorAll('[data-file-view="${LONG}"] .view-line')].some((el) => el.textContent.replace(/\u00a0/g, " ").includes(${JSON.stringify(`${name} ${i}`)}))`)
-    rows.push({ i, ms, error, lineBefore, lineAfter, scrollKept: lineBefore === lineAfter, shown })
+    rows.push({ i, ms, error, lineBefore, lineAfter, scrollKept: lineBefore === lineAfter, shown, phase })
     await sleep(300)
   }
   const ms = rows.map((row) => row.ms).filter((value) => value !== null)

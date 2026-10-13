@@ -100,7 +100,7 @@ const BRACKETS = new Set([...'{}[]()<>'])
 /**
  * 글자 단위 대조 — 공백은 색이 안 보이니 뺀다. 글꼴 모양은 italic(1)만 본다(DOM fontStyle 로 보이는 것).
  * **누락**(수정 r1 R1-G): 기대에 있는데 실제(DOM 추출)에 없는 줄·글자를 `missing` 으로 센다 — 일부만 추출된 회차가 「불일치 0」 으로 통과하지 않게.
- * 기대에 원문(`text`)이 있으면 공백 글자의 누락은 빼고, 없으면(옛 기대 파일) 기대 토큰 범위의 모든 칸을 센다. 누락이 하나라도 있으면 실패 종료.
+ * 인덱스는 양쪽 다 UTF-16 칸(수정 r2 R2-B). 기대에 원문(`text`)이 있으면 공백 글자의 누락은 빼고, 없으면(옛 기대 파일) 기대 토큰 범위의 모든 칸을 센다. 누락이 하나라도 있으면 실패 종료.
  */
 function compare(expected, actual) {
   const mismatches = []
@@ -110,7 +110,13 @@ function compare(expected, actual) {
   expected.lines.forEach((tokens, lineIndex) => {
     const text = expected.text?.[lineIndex]
     const spans = actual.lines[lineIndex]
-    const chars = (spans ?? []).flatMap(([chunk, color, fontStyle]) => [...chunk].map((ch) => ({ ch, color: hex(color), italic: fontStyle === 'italic' })))
+    // 기대 범위는 TextMate 의 UTF-16 인덱스다 — 실제도 UTF-16 칸으로 편다(수정 r2 R2-B). 보조 평면 글자(이모지 등)는 두 칸이고 둘째 칸은 `tail`(검사·누락 대상 아님).
+    const chars = (spans ?? []).flatMap(([chunk, color, fontStyle]) =>
+      [...chunk].flatMap((ch) => {
+        const cell = { ch, color: hex(color), italic: fontStyle === 'italic', tail: false }
+        return ch.length === 2 ? [cell, { ...cell, tail: true }] : [cell]
+      }),
+    )
     for (const [start, end, color, fontStyle] of tokens) {
       for (let column = start; column < end; column += 1) {
         const got = chars[column]
@@ -118,7 +124,7 @@ function compare(expected, actual) {
           if (text === undefined || !/\s/.test(text[column] ?? '')) missing.push({ line: lineIndex + 1, column: column + 1, lineMissing: spans === undefined })
           continue
         }
-        if (/\s/.test(got.ch)) continue
+        if (got.tail || /\s/.test(got.ch)) continue
         checked += 1
         // `${`(템플릿 괄호 — JS 언어 구성 brackets 첫 짝, colorizedBracketPairs 가 없으면 괄호쌍 색 대상)의 `$` 도 괄호 덧칠이다.
         const templateBracket = got.ch === '$' && chars[column + 1]?.ch === '{'

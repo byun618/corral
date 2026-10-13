@@ -16,12 +16,21 @@ export const FILE_WATCH_MAX = 200
 
 type Entry = { root: string; rel: string; stamp: string | null; dir: string | null }
 
+/**
+ * 확인 한 번의 기록(수정 r2 E5 조사) — 무엇이 불렀나(`poll` 안전망 주기 · `watch` 폴더 감시 · `again` 돌던 중 온 요청)·시작/끝 시각·민 수·
+ * await 뒤 버린 수(`stale` — 세대 검사)·겹쳐서 미룬 요청(`deferred`). 최근 `FILE_WATCH_TRACE_MAX` 개만 — 상태 조회(계측 제어 소켓)로만 나간다.
+ */
+export type FileWatchCheck = { via: 'poll' | 'watch' | 'again'; startAt: number; endAt: number; pushed: number; stale: number; deferred: boolean }
+export const FILE_WATCH_TRACE_MAX = 64
+
 export type FileWatch = {
   /** 감시할 파일 집합을 통째로 바꾼다. 새로 들어온 파일은 바로 한 번 상태를 민다(복원 때 없는 파일 = 삭제됨, E3ⓔ). */
   set: (input: { root: unknown; rels: unknown }) => Promise<{ ok: boolean; count: number }>
   /** 폴더 감시를 전부 끊는다 — 감시 유실 주입(E5ⓓ). 안전망 주기는 계속 돈다. 다음 `set` 이 다시 붙인다. */
   dropWatchers: () => void
   stats: () => { files: number; dirWatchers: number }
+  /** 최근 확인 기록(오래된 것부터) — E5 지연을 「감지까지」와 「표시까지」로 나눠 보는 계측용. */
+  recentChecks: () => FileWatchCheck[]
   dispose: () => void
 }
 
@@ -45,6 +54,11 @@ export function createFileWatch(input: {
   let disposed = false
   let checking = false
   let again = false
+  const traces: FileWatchCheck[] = []
+  const trace = (row: FileWatchCheck): void => {
+    traces.push(row)
+    if (traces.length > FILE_WATCH_TRACE_MAX) traces.shift()
+  }
 
   const stampOf = async (entry: Entry): Promise<{ stamp: string | null; abs: string | null }> => {
     const confined = await confine({ roots: input.roots(), root: entry.root, rel: entry.rel })
@@ -67,7 +81,7 @@ export function createFileWatch(input: {
     if (existing !== undefined) existing.count += 1
     else {
       try {
-        dirs.set(dir, { watcher: watchDir(dir, () => void check(dir)), count: 1 })
+        dirs.set(dir, { watcher: watchDir(dir, () => void check(dir, 'watch')), count: 1 })
       } catch {
         return // 폴더가 없으면 안전망 주기가 본다
       }
@@ -89,33 +103,42 @@ export function createFileWatch(input: {
   }
 
   /** 한 폴더(또는 전부)의 파일을 다시 stat 해 바뀐 것만 민다. 겹쳐 돌지 않는다 — 돌던 중 온 요청은 끝난 뒤 전부 한 번 더 본다. */
-  const check = async (dir: string | null): Promise<void> => {
+  const check = async (dir: string | null, via: 'poll' | 'watch' | 'again'): Promise<void> => {
     if (disposed) return
+    const startAt = Date.now()
     if (checking) {
       again = true
+      trace({ via, startAt, endAt: startAt, pushed: 0, stale: 0, deferred: true })
       return
     }
     checking = true
+    let pushed = 0
+    let stale = 0
     try {
       for (const entry of [...entries.values()]) {
         if (dir !== null && entry.dir !== dir) continue
         const next = await stampOf(entry)
-        if (!live(entry)) continue
+        if (!live(entry)) {
+          stale += 1
+          continue
+        }
         attach(entry, next.abs)
         if (next.stamp === entry.stamp) continue
         entry.stamp = next.stamp
+        pushed += 1
         input.push({ root: entry.root, rel: entry.rel, exists: next.stamp !== null, stamp: next.stamp })
       }
     } finally {
       checking = false
+      trace({ via, startAt, endAt: Date.now(), pushed, stale, deferred: false })
     }
     if (again) {
       again = false
-      await check(null)
+      await check(null, 'again')
     }
   }
 
-  const timer = setInterval(() => void check(null), input.pollMs ?? FILE_WATCH_POLL_MS)
+  const timer = setInterval(() => void check(null, 'poll'), input.pollMs ?? FILE_WATCH_POLL_MS)
   timer.unref?.()
 
   const keyOf = (entry: { root: string; rel: string }): string => `${entry.root}\0${entry.rel}`
@@ -163,6 +186,7 @@ export function createFileWatch(input: {
       for (const entry of entries.values()) entry.dir = null
     },
     stats: () => ({ files: entries.size, dirWatchers: dirs.size }),
+    recentChecks: () => [...traces],
     dispose: () => {
       disposed = true
       clearInterval(timer)

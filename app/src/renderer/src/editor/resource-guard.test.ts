@@ -48,3 +48,24 @@ describe('R1-A attributeVerdict', () => {
     expect(v(HTML, 'a', 'target', '_blank')).toEqual({ kind: 'drop' })
   })
 })
+
+describe('수정 r2 R2-A 조각 참조는 ID 글자 모양과 무관', () => {
+  const v = (localName: string, name: string, value: string) => attributeVerdict({ namespace: SVG, localName, name, value })
+  it('한글·이모지·점 ID 의 url(#…) 은 남긴다 — fill·filter·mask·clip-path·style', () => {
+    for (const [name, value] of [['fill', 'url(#색)'], ['filter', "url('#흐림-1')"], ['mask', 'url(#가림)'], ['clip-path', 'url(#자르기)'], ['fill', 'url(#😀)'], ['style', 'fill:url(#색);stroke:url("#선.가")']]) {
+      expect(v('rect', name!, value!), `${name}=${value}`).toEqual({ kind: 'keep' })
+    }
+  })
+  it('한글 ID href 조각도 남긴다(SVG <a> 는 여전히 지움)', () => {
+    expect(v('use', 'href', '#도형')).toEqual({ kind: 'keep' })
+    expect(v('a', 'href', '#도형')).toEqual({ kind: 'drop' })
+  })
+  it('바깥 참조 차단(R1-A)은 그대로 — 한글 경로·조각 뒤 바깥 url·이스케이프', () => {
+    expect(v('rect', 'fill', 'url(../바깥.png)')).toEqual({ kind: 'drop' })
+    expect(v('rect', 'fill', 'url(바깥.svg#색)')).toEqual({ kind: 'drop' })
+    expect(v('rect', 'style', 'fill:url(#색);background:url(../x.png)')).toEqual({ kind: 'drop' })
+    expect(v('rect', 'fill', 'url(#a\\)x.png)')).toEqual({ kind: 'drop' })
+    expect(v('image', 'href', '../바깥.png')).toEqual({ kind: 'drop' })
+    expect(loadsResource('url(#색)')).toBe(false)
+  })
+})

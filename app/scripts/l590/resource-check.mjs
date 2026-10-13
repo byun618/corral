@@ -116,12 +116,19 @@ const scrolledShots = async ({ name, selector }) => {
   }
   return { ...total, metrics }
 }
+/** 초록 계열(G 높고 R·B 낮음) — SVG 채움은 캡처에서 색 관리로 (0,255,46) 쯤으로 옮겨진다(수정 r2 Y17 실패 원자료). 래스터 PNG(자홍·청록)는 그대로라 정확 비교를 둔다. */
+const countGreenish = (file) => {
+  const image = decodePng(fs.readFileSync(file))
+  let hits = 0
+  for (let index = 0; index < image.pixels.length; index += image.bpp) if (image.pixels[index] <= 40 && image.pixels[index + 1] >= 220 && image.pixels[index + 2] <= 90) hits += 1
+  return { hits }
+}
 const shot = async ({ name, selector }) => {
   const result = await ctl(root, { cmd: 'shot', name, selector })
   if (!result.ok || typeof result.file !== 'string') throw new Error(`shot 실패 ${JSON.stringify(result).slice(0, 200)}`)
   const target = path.join(values.out, `${name}.png`)
   fs.copyFileSync(result.file, target)
-  return { file: target, magenta: countColor({ file: target, rgb: MAGENTA }), cyan: countColor({ file: target, rgb: CYAN }) }
+  return { file: target, magenta: countColor({ file: target, rgb: MAGENTA }), cyan: countColor({ file: target, rgb: CYAN }), lime: countGreenish(target) }
 }
 
 // ── fixture: 밖 자홍(worktree 부모 폴더) · 안 청록 · 밖을 가리키는 링크 · 시험 문서 둘
@@ -164,7 +171,11 @@ fs.writeFileSync(
     `<rect x="180" y="0" width="48" height="48" filter="url(#f)"/>` +
     `<rect x="240" y="0" width="48" height="48" style="fill:url(${relFromRenderer})"/>` +
     `<use href="${relFromRenderer}#x" x="300"/>` +
-    `<rect x="0" y="60" width="380" height="40" fill="url(#g)"/></svg>`,
+    `<rect x="0" y="60" width="380" height="40" fill="url(#g)"/>` +
+    // 수정 r2 R2-A — 한글 ID 내부 참조(그라디언트·필터·마스크·clip)는 남아야 한다. 초록(lime) 픽셀로 본다.
+    `<defs><linearGradient id="초록"><stop offset="0" stop-color="#00ff00"/><stop offset="1" stop-color="#00ff00"/></linearGradient>` +
+    `<filter id="그대로"><feOffset dx="0" dy="0"/></filter><mask id="가림"><rect x="0" y="100" width="400" height="20" fill="white"/></mask><clipPath id="자르기"><rect x="0" y="100" width="400" height="20"/></clipPath></defs>` +
+    `<rect x="0" y="100" width="380" height="20" fill="url(#초록)" filter="url(#그대로)" mask="url(#가림)" clip-path="url('#자르기')"/></svg>`,
 )
 
 // 같은 문서 안에서 쓸 DOM 검사 — 남은 URL 속성(경계로 옮긴 data-md-* 와 SVG 조각 `#id` 빼고)과 리소스를 부르는 값(`url(` — `url(#id)` 빼고)
@@ -176,9 +187,9 @@ const SCAN = (selector) => `(() => {
   for (const element of host.querySelectorAll('*')) {
     for (const attribute of element.attributes) {
       const name = attribute.name.toLowerCase()
-      const svgFragment = element.namespaceURI === 'http://www.w3.org/2000/svg' && element.localName !== 'a' && /^#[\\w.:-]*$/.test(attribute.value.trim())
+      const svgFragment = element.namespaceURI === 'http://www.w3.org/2000/svg' && element.localName !== 'a' && /^#[^\\s'"()\\\\]*$/u.test(attribute.value.trim())
       if (urlAttrs.has(name) && !svgFragment) leftovers.push({ tag: element.localName, name, value: attribute.value.slice(0, 120) })
-      else if (/url\\s*\\(|@import|image-set/i.test(attribute.value.replace(/url\\(\\s*(['"]?)#[\\w.:-]*\\1\\s*\\)/gi, ''))) leftovers.push({ tag: element.localName, name, value: attribute.value.slice(0, 120) })
+      else if (/url\\s*\\(|@import|image-set/i.test(attribute.value.replace(/url\\(\\s*(['"]?)#[^\\s'"()\\\\]*\\1\\s*\\)/giu, ''))) leftovers.push({ tag: element.localName, name, value: attribute.value.slice(0, 120) })
     }
   }
   const styles = host.querySelectorAll('style, link, set, animate, foreignObject').length
@@ -222,6 +233,7 @@ await sleep(1500)
 result.svg = { scan: await js(SCAN('[data-file-view="img/r1a.svg"] [data-file-image]')) }
 result.svg.shot = await shot({ name: 'r1a-svg', selector: '[data-file-view="img/r1a.svg"]' })
 result.svg.gradientKept = await js(`!!document.querySelector('[data-file-view="img/r1a.svg"] [data-file-image] rect[fill="url(#g)"]')`)
+result.svg.unicodeRefs = await js(`(() => { const rect = document.querySelector('[data-file-view="img/r1a.svg"] [data-file-image] rect[fill="url(#초록)"]'); if (rect === null) return null; const style = getComputedStyle(rect); return { fill: style.fill, filter: style.filter, mask: style.mask, clipPath: style.clipPath, attrs: ['fill', 'filter', 'mask', 'clip-path'].map((name) => rect.getAttribute(name)) } })()`)
 result.violations = await js(`window.__r1aViolations`)
 
 const boundaryOk =
@@ -236,11 +248,13 @@ const checks = {
   'svg-no-outside-pixels': result.svg.shot.magenta.hits === 0,
   'svg-no-leftover-refs': result.svg.scan !== null && result.svg.scan.leftovers.length === 0 && result.svg.scan.styles === 0,
   'svg-local-gradient-kept': result.svg.gradientKept === true,
+  'svg-unicode-refs-kept': result.svg.unicodeRefs !== null && result.svg.unicodeRefs.attrs.every((value) => value !== null) && result.svg.unicodeRefs.fill.includes('#초록') && result.svg.unicodeRefs.mask !== 'none' && result.svg.unicodeRefs.clipPath !== 'none' && result.svg.unicodeRefs.filter !== 'none',
+  'svg-unicode-gradient-pixels': result.svg.shot.lime.hits > 1000,
   'boundary-codes': boundaryOk,
 }
 result.checks = checks
 writeJson(path.join(values.out, 'resource-check.json'), result)
-console.log(JSON.stringify({ boundary: result.boundary, markdownRefused: result.markdown.scan?.refused, leftovers: { md: result.markdown.scan?.leftovers, svg: result.svg.scan?.leftovers }, pixels: { positive: result.positiveControl.magenta, md: [result.markdown.shot.magenta, result.markdown.shot.cyan], svg: result.svg.shot.magenta }, violations: result.violations.length, checks }))
+console.log(JSON.stringify({ boundary: result.boundary, markdownRefused: result.markdown.scan?.refused, leftovers: { md: result.markdown.scan?.leftovers, svg: result.svg.scan?.leftovers }, pixels: { positive: result.positiveControl.magenta, md: [result.markdown.shot.magenta, result.markdown.shot.cyan], svg: result.svg.shot.magenta, svgLime: result.svg.shot.lime }, unicodeRefs: result.svg.unicodeRefs, violations: result.violations.length, checks }))
 const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name)
 console.log(JSON.stringify({ failed }))
 fs.rmSync(outsideFile, { force: true })

@@ -2094,7 +2094,7 @@ app.whenReady().then(async () => {
       crash: () => explorerHub?.injectCrash() ?? false,
     },
     fileWatch: {
-      status: () => fileWatch?.stats() ?? null,
+      status: () => (fileWatch === null ? null : { ...fileWatch.stats(), recent: fileWatch.recentChecks() }),
       drop: () => fileWatch?.dropWatchers(),
     },
   })

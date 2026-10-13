@@ -53,15 +53,15 @@ export function readSetiTheme(theme: unknown, languages: unknown): SetiTheme {
   }
 }
 
-/** 이름의 확장자 후보 — 긴 것부터(`a.test.ts` → `test.ts`, `ts`). 점으로 시작하는 이름의 첫 점은 확장자 경계가 아니다. */
+/**
+ * 이름의 확장자 후보 — 긴 것부터(`a.test.ts` → `test.ts`, `ts`). 점으로 시작하는 이름도 첫 점 뒤가 후보다(`.babelrc` → `babelrc` — R5-B).
+ * VS Code `getIconClasses.ts:69-72` 와 같다(255자 넘는 이름은 후보를 만들지 않는다).
+ */
 export function extensionCandidates(name: string): string[] {
-  const lower = name.toLowerCase()
-  const parts = lower.split('.')
+  if (name.length > 255) return []
+  const parts = name.toLowerCase().split('.')
   const out: string[] = []
-  for (let i = 1; i < parts.length; i += 1) {
-    if (i === 1 && parts[0] === '') continue
-    out.push(parts.slice(i).join('.'))
-  }
+  for (let i = 1; i < parts.length; i += 1) out.push(parts.slice(i).join('.'))
   return out
 }
 

@@ -14,10 +14,11 @@ const theme = readSetiTheme(
 )
 
 describe('E2ⓖ Seti 찾기', () => {
-  it('확장자 후보는 긴 것부터, 점 파일의 첫 점은 경계가 아니다', () => {
+  it('확장자 후보는 긴 것부터, 점으로 시작하는 이름도 첫 점 뒤가 후보다(VS Code getIconClasses.ts:69-72 — R5-B)', () => {
     expect(extensionCandidates('a.test.ts')).toEqual(['test.ts', 'ts'])
-    expect(extensionCandidates('.eslintrc.json')).toEqual(['json'])
-    expect(extensionCandidates('.env')).toEqual([])
+    expect(extensionCandidates('.eslintrc.json')).toEqual(['eslintrc.json', 'json'])
+    expect(extensionCandidates('.env')).toEqual(['env'])
+    expect(extensionCandidates(`${'a'.repeat(250)}.b.c.ts`)).toEqual([])
   })
   it('파일 이름 → 긴 확장자 → 언어 → 기본', () => {
     expect(setiIconId(theme, 'Karma.conf.js')).toBe('_karma')
@@ -32,5 +33,15 @@ describe('E2ⓖ Seti 찾기', () => {
   })
   it('실제 VS Code 테마 — .ts 는 파랑 TypeScript 글리프', () => {
     expect(setiGlyph('index.ts')).toEqual({ char: '\u{E099}', color: '#519aba' })
+  })
+  it('R5-B 실제 테마 — 점 파일도 확장자 아이콘(`.babelrc`·`.npmrc` = `a.babelrc`·`a.npmrc`), `.env` 는 그대로 설정 아이콘', () => {
+    const fallback = setiGlyph('README.unknown-ext')
+    for (const ext of ['babelrc', 'npmrc']) {
+      expect(setiGlyph(`.${ext}`)).toEqual(setiGlyph(`a.${ext}`))
+      expect(setiGlyph(`.${ext}`)).not.toEqual(fallback)
+    }
+    expect(setiGlyph('.babelrc')).toEqual({ char: '\u{E006}', color: '#cbcb41' })
+    expect(setiGlyph('.env')).toEqual(setiGlyph('a.env'))
+    expect(setiGlyph('.env')).not.toEqual(fallback)
   })
 })

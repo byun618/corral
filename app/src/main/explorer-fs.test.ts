@@ -78,7 +78,13 @@ describe('E2ⓗ 목록 — 링크 표시·루프 안전', () => {
     expect(byName).toMatchObject({ src: 'dir:none', 'escape-dir': 'file:outside', 'escape-file': 'file:outside', broken: 'file:broken' })
     const deep = await listDir({ roots: [root], root, rel: 'src/deep' })
     if (!deep.ok) throw new Error(deep.error)
-    expect(deep.entries).toEqual([{ name: 'up', kind: 'dir', link: 'ok' }])
+    expect(deep.entries).toEqual([{ name: 'up', kind: 'dir', link: 'ok', target: '' }])
+  })
+  it('R5-A 링크 행 대상 실경로 — 안 링크는 대상(깨진 것은 생기면 있을 곳), 밖 링크는 없음', async () => {
+    const top = await listDir({ roots: [root], root, rel: '' })
+    if (!top.ok) throw new Error(top.error)
+    const targets = Object.fromEntries(top.entries.filter((entry) => entry.link !== 'none').map((entry) => [entry.name, entry.target ?? null]))
+    expect(targets).toEqual({ 'escape-dir': null, 'escape-file': null, broken: 'nowhere' })
   })
   it('조상 링크를 따라 몇 겹을 펼쳐도 한 번에 한 폴더만 읽고 끝난다(재귀 없음) — real 은 실경로(R1-G)', async () => {
     const nested = await listDir({ roots: [root], root, rel: 'src/deep/up/src/deep/up/src' })

@@ -7,13 +7,14 @@
 // · 감시(E4): 「패널 열림 + 활성 worktree」 하나만 구독한다. 열 때·worktree 로 돌아올 때는 **바로** 루트 + 보이는 펼친 폴더를 한 번 읽는다 — 닫힌 동안의
 //   변경(E4ⓑ — Orca #24044)을 맞추고 전환당 읽기가 펼친 폴더 수 + 1 을 넘지 않는다(E1ⓓ). 감시 준비를 기다리지 않는다(E3ⓐ — R3-C). 감시가 붙기 전 틈의
 //   변경은 main 이 감시 시작 때 stat 으로 가려 `changed` 로 보낸다. 루트 상태는 활성화 때 만든다 — 먼저 오는 git 스냅샷을 잃지 않게(R3-A).
-//   열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ). 전체 상태·전이는 `specs/LIFE-589-explorer-tree/raw/claude/fix-r4/state-model.md`.
+//   열려 있는 동안은 안전망 주기로 다시 읽는다(E4ⓒ). 전체 상태·전이는 `specs/LIFE-589-explorer-tree/raw/claude/fix-r5/state-model.md`.
 // · 폴더를 다시 읽었더니 실경로나 정체(dev:ino)가 바뀌었으면(링크 대상 교체·지우고 다시 만듦) 그 아래 캐시·실경로는 다른 폴더의 것이다 — 버리고,
 //   보이는 펼친 자손은 다시 읽고 접힌 자손은 다음 펼침 때 읽는다(R3-B). 접힌 자손의 요청이 날아가 있으면 그 응답도 낡은 것으로 표시해,
 //   늦게 온 옛 응답이 무효 표시를 지우지 못하게 한다(R4-C — 끝나면 무효로 남고, 펼칠 때 새로 읽는다).
 // · 변경 push 는 **보이는** 폴더(루트·조상이 다 펼쳐진 펼친 폴더)만 다시 읽는다. 안 보이는 캐시는 무효 표시만 하고 다시 보일 때 읽는다(R2-C).
 //   펼친 폴더가 읽기에 실패했어도(삭제·일시 오류) 그 경로의 변경이 오면 다시 읽는다(R2-D). 실경로를 아직 모르는 첫 읽기 중에는 어떤 변경이든 끝난 뒤 한 번 더 읽는다(R2-B).
 //   변경 push 의 폴더는 **실경로**(realpath(루트) 기준)다 — 목록마다 main 이 준 실경로(`real`)로 맞춰, 루트 안 디렉터리 링크로 펼친 목록도 대상 변경에 다시 읽힌다(R1-G).
+//   목록 안 링크 행의 대상 실경로(`target`)가 바뀐 폴더면 그 행을 담은 목록을 다시 읽는다 — 펼치지 않은 링크의 대상이 생기거나 없어져도 `kind`·`link` 가 맞는다(R5-A).
 // · 표시 토글(dotfile·ignored)은 전역 ui-prefs(E2ⓓⓔ — 범위 「전역」, `shared/types.ts` UiPrefs 주석).
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { EXPLORER_SAFETY_NET_MS, type ExplorerEntry, type ExplorerFilter } from '../../../shared/explorer.js'
@@ -54,6 +55,17 @@ export function isVisibleDir(expanded: ReadonlySet<string>, rel: string): boolea
   const parts = rel.split('/')
   for (let i = 1; i < parts.length; i += 1) if (!expanded.has(parts.slice(0, i).join('/'))) return false
   return true
+}
+
+/**
+ * 링크 행 대상이 생기거나 없어졌는가(R5-A) — 감시 배치는 바뀐 경로와 그 부모를 싣는다(`dirsOfChange`). 대상 **자신**이 생기고 지워지면 대상과 그 부모가
+ * 함께 실리고, 대상 **안**의 변경은 대상만 실린다 — 둘 다 있을 때만 맞춰 대상 폴더 안 변경마다 링크의 부모를 다시 읽지 않는다. 루트('')는 늘 있다.
+ * 감시 공백의 대조(main)는 대상과 그 부모를 함께 민다.
+ */
+export function targetChanged(changed: ReadonlySet<string>, target: string): boolean {
+  if (target === '' || !changed.has(target)) return false
+  const index = target.lastIndexOf('/')
+  return changed.has(index === -1 ? '' : target.slice(0, index))
 }
 
 export type ExplorerApi = {
@@ -203,7 +215,7 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
 
   /**
    * 바뀐 폴더(실경로) → 다시 읽을 목록 키. 후보 = 읽어 둔 것 · 읽는 중인 것(R1-D) · 보이는 펼친 폴더(실패한 것 포함 — R2-D).
-   * 맞춤 = 논리 경로 또는 실경로(R1-G). 실경로를 아직 모르는 읽는 중 요청은 무엇이 바뀌든 낡은 것으로 본다(R2-B).
+   * 맞춤 = 논리 경로 또는 실경로(R1-G) 또는 그 목록의 링크 행 대상 실경로(R5-A). 실경로를 아직 모르는 읽는 중 요청은 무엇이 바뀌든 낡은 것으로 본다(R2-B).
    * 보이는 것만 읽고, 안 보이는 캐시는 무효 표시만 한다(R2-C).
    */
   const reloadChanged = useCallback(
@@ -214,7 +226,8 @@ export function useExplorer({ root, active }: { root: string | null; active: boo
       const reading = new Set([...inflight.current].filter((flight) => flight.startsWith(prefix)).map((flight) => flight.slice(prefix.length)))
       for (const rel of new Set(['', ...store.listings.keys(), ...reading, ...visibleExpanded(store.expanded)])) {
         const real = store.real.get(rel)
-        const hit = changed.has(rel) || (real !== undefined && changed.has(real)) || (real === undefined && reading.has(rel))
+        const linkHit = store.listings.get(rel)?.some((entry) => entry.target !== undefined && targetChanged(changed, entry.target)) ?? false
+        const hit = changed.has(rel) || (real !== undefined && changed.has(real)) || (real === undefined && reading.has(rel)) || linkHit
         if (!hit) continue
         if (isVisibleDir(store.expanded, rel)) load(key, rel)
         else hideStale({ key, rel })

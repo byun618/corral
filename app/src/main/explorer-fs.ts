@@ -78,9 +78,25 @@ async function stillSame(input: { roots: readonly string[]; root: unknown; rel: 
   return (await identity(again.realRoot)) === before.rootId && (await identity(again.abs)) === before.absId
 }
 
+/** 실경로 → realpath(루트) 기준 상대(`/` 구분). */
+const relOf = (realRoot: string, real: string): string => path.relative(realRoot, real).split(path.sep).join('/')
+
+/** 깨진 링크가 가리키는 「생기면 있을 곳」 — 링크 글을 링크가 든 폴더 기준으로 풀고 부모만 realpath(없으면 글 그대로). 루트 밖이면 null. */
+async function brokenTarget(dir: string, realRoot: string, full: string): Promise<string | null> {
+  try {
+    const resolved = path.resolve(dir, await fs.readlink(full))
+    const parent = await fs.realpath(path.dirname(resolved)).catch(() => path.dirname(resolved))
+    const target = path.join(parent, path.basename(resolved))
+    return isInside(realRoot, target) ? relOf(realRoot, target) : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 한 항목의 종류·링크 상태. 링크는 realpath 로 대상을 풀어 **먼저 경계를 판정**하고, 루트 밖이면 더 읽지 않는다(stat 없음 — 종류를 모르므로 `file`
  * 로 두고 펼칠 수 없다). 경계 판정 자체(realpath)는 링크 경로를 따라 성분을 푼다 — 그것까지 피할 수는 없다.
+ * 루트 안 링크(깨진 것 포함)는 대상 실경로 `target` 을 싣는다(R5-A).
  */
 async function entryOf(dir: string, realRoot: string, dirent: { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean }): Promise<ExplorerEntry> {
   if (!dirent.isSymbolicLink()) return { name: dirent.name, kind: dirent.isDirectory() ? 'dir' : 'file', link: 'none' }
@@ -89,15 +105,33 @@ async function entryOf(dir: string, realRoot: string, dirent: { name: string; is
   try {
     target = await fs.realpath(full)
   } catch {
-    return { name: dirent.name, kind: 'file', link: 'broken' }
+    const broken = await brokenTarget(dir, realRoot, full)
+    return broken === null ? { name: dirent.name, kind: 'file', link: 'broken' } : { name: dirent.name, kind: 'file', link: 'broken', target: broken }
   }
   if (!isInside(realRoot, target)) return { name: dirent.name, kind: 'file', link: 'outside' }
+  const state = await targetKind(target)
+  return state === null ? { name: dirent.name, kind: 'file', link: 'broken', target: relOf(realRoot, target) } : { name: dirent.name, kind: state, link: 'ok', target: relOf(realRoot, target) }
+}
+
+/** 대상의 종류(stat — 링크를 따라감). 없으면 null. 부르는 쪽이 루트 안임을 먼저 확인한다. */
+async function targetKind(target: string): Promise<'dir' | 'file' | null> {
   try {
-    const stat = await fs.stat(target)
-    return { name: dirent.name, kind: stat.isDirectory() ? 'dir' : 'file', link: 'ok' }
+    return (await fs.stat(target)).isDirectory() ? 'dir' : 'file'
   } catch {
-    return { name: dirent.name, kind: 'file', link: 'broken' }
+    return null
   }
+}
+
+/** 링크 행 대상의 지금 상태 — 도장 대조(R5-A)가 목록 때 상태와 비교한다. 밖으로 풀리면 stat 하지 않는다. */
+export async function linkTargetState(input: { realRoot: string; target: string }): Promise<'dir' | 'file' | 'none' | 'outside'> {
+  let real: string
+  try {
+    real = await fs.realpath(input.target === '' ? input.realRoot : path.join(input.realRoot, ...input.target.split('/')))
+  } catch {
+    return 'none'
+  }
+  if (!isInside(input.realRoot, real)) return 'outside'
+  return (await targetKind(real)) ?? 'none'
 }
 
 /** 한 폴더의 항목(숨김·정렬 전 원본) — 숨김·정렬은 렌더러 `shared/explorer.ts`. */
@@ -111,7 +145,7 @@ export async function listDir(input: { roots: readonly string[]; root: unknown; 
     const dirents = await fs.readdir(confined.abs, { withFileTypes: true })
     if (!(await stillSame(input, before))) return { ok: false, dir: confined.rel, code: 'changed', error: '읽는 동안 경로가 바뀌었다 — 결과를 버렸다' }
     const entries = await Promise.all(dirents.map((dirent) => entryOf(confined.abs, confined.realRoot, dirent)))
-    const real = path.relative(confined.realRoot, confined.abs).split(path.sep).join('/')
+    const real = relOf(confined.realRoot, confined.abs)
     return { ok: true, dir: confined.rel, real, id: stamped?.id ?? '', stamp: stamped?.stamp ?? '', entries }
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : ''

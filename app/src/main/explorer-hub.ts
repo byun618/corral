@@ -11,7 +11,7 @@
 // · 감시 프로세스가 죽으면(E4ⓖ) 로그를 남기고 1초 뒤 다시 띄워 구독을 되살린다 — 60초 안 3번까지. 넘으면 멈추고 렌더러 안전망만 남는다.
 //   재기동 타이머는 허브가 들고 있다가 구독이 0 이 되거나 dispose 면 취소하고, 실행 시점에도 구독 수를 다시 본다(R1-C). 일부러 끈 프로세스의
 //   exit 는 그 child 를 보고 가려 장애로 세지 않는다(실제 utilityProcess 의 exit 는 kill 뒤 비동기로 온다).
-// · 감시 준비와 목록 읽기는 서로 기다리지 않는다(상태 모델 `specs/LIFE-589-explorer-tree/raw/claude/fix-r4/state-model.md`). 렌더러는 활성화되자마자
+// · 감시 준비와 목록 읽기는 서로 기다리지 않는다(상태 모델 `specs/LIFE-589-explorer-tree/raw/claude/fix-r5/state-model.md`). 렌더러는 활성화되자마자
 //   목록을 한 번 읽고(전환당 펼친 폴더 수 + 1 — E1ⓓ, 첫 표시가 감시 준비에 묶이지 않음 — E3ⓐ), 허브는 목록을 줄 때마다 그 폴더의 도장(정체 + mtime)을
 //   적어 둔다(`list`). 감시 프로세스가 `watching`(감시 시작)을 알리면 — 처음이든 늦게든 장애 재기동 뒤든 같게 — 적어 둔 폴더를 stat 만 해서 도장이
 //   달라진 폴더만 `changed` 로 민다(감시 시작 전 틈 — r1 보완). 그 사이 바뀐 게 없으면 다시 읽기 0 이다. 감시 시작 오류는 기다리는 것이 없으니 로그만 남고
@@ -24,7 +24,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
 import type { ExplorerPush } from '../shared/explorer.js'
-import { confine, dirStamp, listDir } from './explorer-fs.js'
+import { confine, dirStamp, linkTargetState, listDir } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
 
 /** utility process 의 최소 모양 — 시험에서 가짜를 꽂는다. */
@@ -65,8 +65,8 @@ type Subscription = {
   gitAgain: boolean
 }
 
-/** 렌더러에 준 목록 하나 — 그 논리 경로가 풀린 실경로(realpath(루트) 기준 상대)와 그 폴더의 도장. */
-type ListedRecord = { real: string; stamp: string }
+/** 렌더러에 준 목록 하나 — 그 논리 경로가 풀린 실경로(realpath(루트) 기준 상대)와 그 폴더의 도장, 그 목록의 링크 행 대상과 그때 상태(R5-A). */
+type ListedRecord = { real: string; stamp: string; links: { target: string; state: 'dir' | 'file' | 'none' }[] }
 
 type SubscribeResult = { ok: true } | { ok: false; code: string }
 
@@ -197,7 +197,8 @@ export class ExplorerHub {
     const result = await listDir(input)
     // 그 사이 닫힌 루트·dispose 면 적지 않는다(늦은 완료가 정리된 도장을 되살리지 않게).
     if (!result.ok || typeof root !== 'string' || result.stamp === '' || this.stopped || !this.deps.roots().includes(root)) return result
-    const record = { real: result.real, stamp: result.stamp }
+    const links = result.entries.flatMap((entry): ListedRecord['links'] => (entry.target === undefined ? [] : [{ target: entry.target, state: entry.link === 'ok' ? entry.kind : 'none' }]))
+    const record: ListedRecord = { real: result.real, stamp: result.stamp, links }
     const records = this.listed.get(root) ?? new Map<string, ListedRecord>()
     records.set(result.dir, record)
     this.listed.set(root, records)
@@ -218,12 +219,21 @@ export class ExplorerHub {
   /**
    * 대조 — 실경로 폴더의 도장이 다르면(없어진 것 포함) 그 실경로를, 논리 경로가 지금 다른 실경로로 풀리면(링크 대상 교체·삭제 — R4-B) 그 논리 경로를 민다.
    * 렌더러는 변경 폴더를 논리 경로·실경로 둘 다로 맞춘다. 대응이 바뀐 논리 경로의 자손은 빼고 민다 — 렌더러가 부모의 실경로 변화로 자손을 무효화한다(R3-B).
+   * 목록의 링크 행 대상이 그때와 다른 상태(생김·없어짐·종류·밖)면 그 대상 실경로를 민다 — 렌더러가 그 행을 담은 목록을 다시 읽는다(R5-A).
    */
   private async pushGap(input: { sub: Subscription; entries: [string, ListedRecord][]; reason: string }): Promise<void> {
     const { sub } = input
     const stampChanged = new Set<string>()
     const remapped: string[] = []
+    const linkChanged = new Set<string>()
     for (const [rel, record] of input.entries) {
+      for (const link of record.links) {
+        if ((await linkTargetState({ realRoot: sub.realRoot, target: link.target })) === link.state) continue
+        // 대상과 그 부모를 함께 — 렌더러는 그 모양(대상 자신의 생성·삭제)일 때만 링크 행을 맞춘다(`targetChanged`).
+        const index = link.target.lastIndexOf('/')
+        linkChanged.add(link.target)
+        linkChanged.add(index === -1 ? '' : link.target.slice(0, index))
+      }
       const now = await dirStamp(record.real === '' ? sub.realRoot : path.join(sub.realRoot, ...record.real.split('/')))
       if (now?.stamp !== record.stamp) stampChanged.add(record.real)
       const confined = await confine({ roots: this.deps.roots(), root: sub.root, rel })
@@ -231,11 +241,11 @@ export class ExplorerHub {
       if (realNow !== record.real) remapped.push(rel)
     }
     const topRemapped = remapped.filter((rel) => !remapped.some((other) => other !== rel && (other === '' || rel.startsWith(`${other}/`))))
-    const dirs = [...new Set([...stampChanged, ...topRemapped])]
+    const dirs = [...new Set([...stampChanged, ...topRemapped, ...linkChanged])]
     if (this.subs.get(sub.root) !== sub || dirs.length === 0) return
     this.counters.gapChangedDirs += dirs.length
     this.counters.pushedChanged += 1
-    this.deps.log('explorer.watch.gap', { root: sub.root, reason: input.reason, checked: input.entries.length, changed: stampChanged.size, remapped: topRemapped.length })
+    this.deps.log('explorer.watch.gap', { root: sub.root, reason: input.reason, checked: input.entries.length, changed: stampChanged.size, remapped: topRemapped.length, links: linkChanged.size })
     this.deps.push({ kind: 'changed', root: sub.root, dirs })
   }
 

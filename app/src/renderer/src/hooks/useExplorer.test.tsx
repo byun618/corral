@@ -315,3 +315,50 @@ describe('R4-C 안 보이는 목록의 진행 중 요청 — 늦은 옛 응답�
     expect(current().state?.real.get('alias/sub')).toBe('dest/sub')
   })
 })
+
+describe('R5-A 펼치지 않은 링크 행 — 대상이 생기거나 없어지면 그 행을 담은 목록을 다시 읽는다', () => {
+  const link = (input: { name: string; target: string; ok: boolean }): ExplorerEntry => ({ name: input.name, kind: input.ok ? 'dir' : 'file', link: input.ok ? 'ok' : 'broken', target: input.target })
+  const row = (rel: string, name: string): string | undefined => {
+    const entry = current().state?.listings.get(rel)?.find((item) => item.name === name)
+    return entry === undefined ? undefined : `${entry.kind}:${entry.link}`
+  }
+
+  it('보이는 행 — 링크와 대상의 부모가 달라도 대상 생성·삭제 배치에 부모 목록을 다시 읽어 kind·link 가 바뀐다', async () => {
+    fsView.set('', { real: '', entries: [dir('holder'), link({ name: 'alias', target: 'holder/actual', ok: false })] })
+    await act(async () => current().refresh())
+    expect(row('', 'alias')).toBe('file:broken')
+    fsView.set('', { real: '', entries: [dir('holder'), link({ name: 'alias', target: 'holder/actual', ok: true })] })
+    calls = []
+    // 실제 감시 배치 모양(리뷰어 r5 관측): 대상 생성 + 그 안 파일.
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/actual', 'holder', 'holder/actual/new.txt'] }))
+    expect(calls).toEqual([''])
+    expect(row('', 'alias')).toBe('dir:ok')
+    fsView.set('', { real: '', entries: [dir('holder'), link({ name: 'alias', target: 'holder/actual', ok: false })] })
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/actual', 'holder'] }))
+    expect(calls).toEqual([''])
+    expect(row('', 'alias')).toBe('file:broken')
+  })
+
+  it('대상 폴더 안의 변경(대상 자신은 그대로)에는 링크의 부모를 다시 읽지 않는다', async () => {
+    fsView.set('', { real: '', entries: [dir('holder'), link({ name: 'alias', target: 'holder/actual', ok: true })] })
+    await act(async () => current().refresh())
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/actual/x.txt', 'holder/actual'] }))
+    expect(calls).toEqual([])
+  })
+
+  it('접힌 곳의 링크 행 — 읽지 않고 무효 표시, 다시 펼칠 때 읽는다(R2-C)', async () => {
+    fsView.set('dir', { real: 'dir', entries: [link({ name: 'alias', target: 'holder/actual', ok: false })] })
+    await act(async () => current().expand('dir'))
+    await act(async () => current().collapse('dir'))
+    fsView.set('dir', { real: 'dir', entries: [link({ name: 'alias', target: 'holder/actual', ok: true })] })
+    calls = []
+    await act(async () => push({ kind: 'changed', root: '/fixture', dirs: ['holder/actual', 'holder'] }))
+    expect(calls).toEqual([])
+    expect(current().state?.invalid.has('dir')).toBe(true)
+    await act(async () => current().expand('dir'))
+    expect(calls).toEqual(['dir'])
+    expect(row('dir', 'alias')).toBe('dir:ok')
+  })
+})

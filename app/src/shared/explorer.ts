@@ -12,6 +12,11 @@ export type ExplorerEntry = {
   kind: 'dir' | 'file'
   /** 심볼릭 링크 — `broken` 대상 없음 · `outside` 대상이 worktree 루트 밖(가둠 — 펼치지 않는다). 둘 다 펼칠 수 없다. */
   link: 'none' | 'ok' | 'broken' | 'outside'
+  /**
+   * 루트 안 링크의 대상 실경로(realpath(루트) 기준 상대, `/` 구분). 깨진 링크는 링크 글을 풀어 「생기면 있을 곳」. 밖·모름이면 없다.
+   * 렌더러는 변경 폴더가 이 값과 같으면 이 항목을 담은 목록을 다시 읽는다 — 펼치지 않은 링크 행의 `kind`·`link` 갱신(R5-A, 링크를 따라 감시하지 않는다 — E2ⓗ).
+   */
+  target?: string
 }
 
 /** 거절 사유 — E7ⓑ 양성 대조가 「그 검사에서 났다」 를 이 코드로 보인다. */

@@ -338,6 +338,35 @@ describe('R4 감시 준비 순간의 진행 중 목록·링크 대응·늦은 �
   })
 })
 
+describe('R5-A 감시 공백 동안 링크 행 대상의 생성·삭제', () => {
+  it('목록에 실린 링크 행의 대상이 공백 동안 생기면 대상과 그 부모를 민다 — 링크를 담은 폴더 도장은 그대로여도', async () => {
+    autoAck = false
+    const tag = `r5-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, tag, 'holder'), { recursive: true })
+    fs.symlinkSync('holder/actual', path.join(rootA, tag, 'alias'))
+    const listed = await hub.list({ roots, root: rootA, rel: tag })
+    if (!listed.ok) throw new Error(listed.error)
+    expect(listed.entries.find((entry) => entry.name === 'alias')).toEqual({ name: 'alias', kind: 'file', link: 'broken', target: `${tag}/holder/actual` })
+    await hub.subscribe(rootA)
+    fs.mkdirSync(path.join(rootA, tag, 'holder', 'actual'))
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([{ kind: 'changed', root: rootA, dirs: [`${tag}/holder/actual`, `${tag}/holder`] }])
+  })
+  it('대상 상태가 그대로면 미는 것이 없다', async () => {
+    autoAck = false
+    const tag = `r5s-${Date.now()}`
+    fs.mkdirSync(path.join(rootA, tag, 'holder', 'actual'), { recursive: true })
+    fs.symlinkSync('holder/actual', path.join(rootA, tag, 'alias'))
+    await hub.list({ roots, root: rootA, rel: tag })
+    await hub.subscribe(rootA)
+    fs.writeFileSync(path.join(rootA, tag, 'holder', 'actual', 'inside.txt'), 'x')
+    children[0]?.emit('message', { type: 'watching', id: rootA, count: 1 })
+    await sleep(50)
+    expect(pushed.filter((event) => event.kind === 'changed')).toEqual([])
+  })
+})
+
 describe('R1-C 재기동 타이머 소유·비동기 exit', () => {
   it('죽은 뒤 재기동 대기 중 마지막 구독 해제 → 재기동하지 않는다', async () => {
     await hub.subscribe(rootA)

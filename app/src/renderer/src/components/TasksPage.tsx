@@ -141,18 +141,22 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [load.data])
 
   // --- 작업 중 ---
-  // 스페이스 범위 + 공통 필터(R1-I)를 먼저, 글자 거르기를 뒤에 — 빈 상태 원인(검색 vs 필터)을 가리려고 둘을 나눠 센다(R2-H).
-  const workingScoped: WorkingView[] = page.workingEntries.flatMap((entry) => {
+  // 스페이스 범위 → 공통 필터(R1-I) → 글자 거르기 순으로 세 단계를 나눠 센다 — 빈 상태 원인(작업 중 없음 vs 필터 vs 검색)을 가린다(R2-H·R3-H).
+  // 「전체」 에서도 숨긴 스페이스(보이는 스페이스 목록에 없는 곳)의 작업은 뺀다(R3-G, C2). 아직 못 찾은 항목은 스페이스를 모르니 연결만 본다.
+  const visibleSpaces = new Set(groups.flatMap((group) => group.rows.map((entry) => `${entry.connectionId}::${entry.key}`)))
+  const workingInSpace: WorkingView[] = page.workingEntries.flatMap((entry) => {
     const lookup = page.working.get(`${entry.connectionId}::${entry.key}`) ?? { state: 'loading' }
     if (space === null) return []
     if (space.kind === 'space') {
       if (entry.connectionId !== space.connectionId) return []
       if (lookup.state === 'found' && lookup.item.spaceKey !== space.spaceKey) return []
+    } else if (lookup.state === 'found' && !visibleSpaces.has(`${entry.connectionId}::${lookup.item.spaceKey}`)) {
+      return []
     }
-    // 같은 필터(R1-I) — 작업을 찾았으면 그 작업으로, 아직 못 찾았으면(찾는 중·없음·실패) 「작업 중」 밖의 필터가 켜져 있을 때 뺀다.
-    if (lookup.state === 'found' ? !passes(lookup.item) : filtersActive({ ...prefs.filters, working: false })) return []
     return [{ entry, lookup }]
   })
+  // 같은 필터(R1-I) — 작업을 찾았으면 그 작업으로, 아직 못 찾았으면(찾는 중·없음·실패) 「작업 중」 밖의 필터가 켜져 있을 때 뺀다.
+  const workingScoped = workingInSpace.filter(({ lookup }) => (lookup.state === 'found' ? passes(lookup.item) : !filtersActive({ ...prefs.filters, working: false })))
   const workingAfterFilter = workingScoped.length
   // 글자 거르기 — 찾은 작업은 키·제목으로, 아직 못 찾은 항목(찾는 중·없음·실패)은 키·브랜치로(R2-H). 키 일치 결과는 위에 따로 보인다
   // (작업 중 항목은 worktree 열기 버튼을 갖고 있어 겹쳐도 빼지 않는다).
@@ -172,6 +176,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     rootRef,
     // 페이지가 닫히거나 위층(설정·팔레트·모달)이 열리면 끄는 중이라도 취소한다(R2-K).
     active: open && !yieldKeys,
+    scope: space === null ? '' : spaceId(space),
     onStart: (uid) => {
       const row = rows.find((entry) => rowUid(entry) === uid) ?? null
       dragRow.current = row
@@ -343,7 +348,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   // --- 본문 ---
   const noConnection = settings !== null && settings.connections.length === 0
   const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
-  const total = view === 'working' ? page.workingEntries.length : rows.length
+  const total = view === 'working' ? workingInSpace.length : rows.length
   const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : filtered.length
   // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
   const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')

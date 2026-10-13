@@ -8,6 +8,13 @@
 //   그래서 같은 카드의 응답 순서가 뒤집힐 일이 없고, 「옮기기 전 값」 은 언제나 출처가 마지막으로 인정한 값이다(되돌리기는 그 값을 보낸다).
 //   실패·버린 응답이면 그 카드 하나만 옮기기 전 자리로 돌리고(다른 카드의 순서는 건드리지 않는다) 서버를 다시 읽어 수렴한다.
 //   목록 응답이 오면 확인 안 된 쓰기(시작 시점과 무관하게)와 그 요청 뒤에 화면에 쓴 변경을 그 위에 다시 적용한다(R1-F·R2-C).
+// - **수렴 규칙(수정 r3) — 서버가 정본이다.** 순서 쓰기는 성공해도 의도를 다시 적용하지 않는다: 같은 스페이스의 순서 쓰기가 모두 끝나면
+//   목록을 서버에서 다시 읽어 확정 순서로 맞춘다(그동안 화면은 낙관적 순서 그대로 — 깜빡이지 않는다, R3-A). 성공한 쓰기는 작업 중 조회의
+//   그 키 응답을 무효화하고 서버 값을 쓴다 — 완료 분류를 넘나들면 작업 중·키 조회를 전부 다시 받는다(종속 막힘, R3-B·C).
+// - 쓰기·잠금·화면 변경은 **연결 세대**에 귀속한다(R3-D) — 세대가 바뀌면 이전 세대의 확인 안 된 쓰기는 잠금을 풀고, 새 자료에 다시 적용하지도
+//   원복하지도 않는다(늦게 온 그 응답은 버린다).
+// - 출처 요청은 `request` 하나로 — preload Promise 가 reject 되거나 30초 안에 답이 없으면 `network` 실패 응답으로 바꾼다(R3-E).
+//   잠금 해제·원복·오류 토스트가 언제나 지난다.
 // - 스페이스 목록 조회(연결별 · 세대별)는 시도·실패를 보존한다 — 실패하면 「다시 시도」 까지 다시 보내지 않는다(R1-C).
 // - 스페이스 선택(R1-D): 첫 선택(이 실행에서 처음 열 때 — 레포 기본 → 마지막 → 첫 스페이스, 목록을 받는 중이면 기다림) · 재열기는 그대로 ·
 //   설정이 바뀌어 고른 스페이스가 없어지면(숨김·연결 제거) 다시 고른다.
@@ -60,12 +67,33 @@ export type MoveNotice = { kind: 'moved'; label: string; undo: () => void } | { 
 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
-type KeySearch = { hits: { connectionId: string; item: WorkItem }[]; errors: { connectionId: string; error: WorkError }[] }
+/** 키 조회 결과 — 그 결과를 낸 검색어에 귀속한다. 검색어가 바뀌면 새 응답 전까지 옛 결과를 보이지 않는다(R3-I). */
+type KeySearch = { query: string; hits: { connectionId: string; item: WorkItem }[]; errors: { connectionId: string; error: WorkError }[] }
 /** 화면에 쓴 변경 하나 — 그보다 먼저 시작한 목록 응답에 다시 적용한다(R1-F). 확인 안 된 쓰기도 이 모양으로 남긴다(R2-C). */
-type Override = { seq: number; connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }
+type Override = { seq: number; connectionId: string; generation: number; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }
 
 const EMPTY_LOAD: TasksLoad = { spaceId: null, phase: 'idle', data: [], error: null, loadingMore: false }
-const NO_SEARCH: KeySearch = { hits: [], errors: [] }
+const NO_SEARCH: KeySearch = { query: '', hits: [], errors: [] }
+
+/**
+ * 렌더러 쪽 요청 시간 제한 — main 의 출처 요청 시간 제한(MCP 15초, `mcp-http.ts`)보다 길게 잡아, 정상 시간 초과는 main 의 실패 응답으로 오고
+ * 이 값은 IPC 자체가 답하지 않는 경우만 잡는다(R3-E).
+ */
+const REQUEST_TIMEOUT_MS = 30_000
+
+/** 출처 요청 하나 — reject·무응답도 `ok:false` 응답으로(R3-E). 잠금·원복 경로가 예외로 건너뛰어지지 않는다. */
+async function request({ requestId, connectionId, call }: { requestId: string; connectionId: string; call: WorkCall }): Promise<WorkResponse> {
+  const failed = (message: string): WorkResponse => ({ requestId, connectionId, ok: false, error: { kind: 'network', message, status: null } })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<WorkResponse>((resolve) => { timer = setTimeout(() => resolve(failed('응답이 없습니다 — 시간이 지났습니다.')), REQUEST_TIMEOUT_MS) })
+  try {
+    return await Promise.race([window.corral.workRequest({ requestId, connectionId, call }), timeout])
+  } catch (error) {
+    return failed(`요청이 끊겼습니다 — ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 function bannerOf(error: WorkError): TasksBanner {
   switch (error.kind) {
@@ -149,6 +177,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const writeSeq = useRef(0)
   /** 확인 안 된 쓰기 — 카드(uid)마다 하나. 있으면 그 카드의 끌기·되돌리기는 잠긴다(R2-A). */
   const pendingWrites = useRef(new Map<string, Override>())
+  /** 확인 안 된 쓰기 중 순서 쓰기 — 같은 스페이스의 순서 쓰기가 다 끝나면 서버에서 다시 읽는다(R3-A). */
+  const reorders = useRef(new WeakSet<Override>())
   /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
   const reloadRef = useRef<(options: { quiet: boolean }) => Promise<void>>(async () => {})
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
@@ -184,7 +214,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
 
   const send = useCallback(async ({ key, connectionId, call }: { key: string; connectionId: string; call: WorkCall }): Promise<{ accepted: boolean; response: WorkResponse }> => {
     const requestId = gate.issue(key)
-    const response = await window.corral.workRequest({ requestId, connectionId, call })
+    const response = await request({ requestId, connectionId, call })
     return { accepted: response.requestId === requestId && gate.accepts({ key, requestId }), response }
   }, [gate])
 
@@ -247,12 +277,23 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   }, [space, groups, settings, failedSpaces])
   // 연결 세대를 넣는다(R2-E) — 같은 스페이스 id 로 토큰(계정)이 바뀌어도 다시 받는다.
   const generationOf = (connectionId: string): number => settings?.connections.find((connection) => connection.id === connectionId)?.generation ?? 0
+  /** 지금(응답을 받는 시점) 연결 세대 — await 를 넘어 읽으므로 ref 로(R3-D). */
+  const currentGeneration = useCallback((connectionId: string): number => settingsRef.current?.connections.find((connection) => connection.id === connectionId)?.generation ?? 0, [])
+  // 세대가 바뀌면 이전 세대의 확인 안 된 쓰기는 잠금을 풀고 버린다 — 새 자료에 다시 적용하지 않는다(R3-D). 그 응답은 move 가 버린다.
+  const generationsId = settings === null ? '' : settings.connections.map((connection) => `${connection.id}#${connection.generation}`).join('|')
+  useEffect(() => {
+    const stale = [...pendingWrites.current].filter(([, entry]) => entry.generation !== currentGeneration(entry.connectionId))
+    overrides.current = overrides.current.filter((entry) => entry.generation === currentGeneration(entry.connectionId))
+    if (stale.length === 0) return
+    for (const [uid] of stale) pendingWrites.current.delete(uid)
+    setBusy(new Set(pendingWrites.current.keys()))
+  }, [generationsId, currentGeneration])
   const targetsId = targets.map((target) => `${target.connectionId}#${generationOf(target.connectionId)}::${target.spaceKey}`).join('|')
 
   /** 화면 자료에 변경 하나를 쓰고, 순번을 달아 남긴다(R1-F). */
   const patch = useCallback(({ connectionId, spaceKey, apply }: { connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }): Override => {
     writeSeq.current += 1
-    const entry: Override = { seq: writeSeq.current, connectionId, spaceKey, apply }
+    const entry: Override = { seq: writeSeq.current, connectionId, generation: currentGeneration(connectionId), spaceKey, apply }
     overrides.current.push(entry)
     setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === spaceKey ? { ...data, items: apply(data.items) } : data)) }))
     return entry
@@ -271,8 +312,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     const results = await Promise.all(targets.map(async (target): Promise<SpaceResult> => {
       const at = `${token}/${target.connectionId}/${target.spaceKey}`
       const [statuses, first] = await Promise.all([
-        window.corral.workRequest({ requestId: `${at}/st`, connectionId: target.connectionId, call: { op: 'listStatuses', spaceKey: target.spaceKey } }),
-        window.corral.workRequest({ requestId: `${at}/it`, connectionId: target.connectionId, call: { op: 'listItems', spaceKey: target.spaceKey, cursor: null } }),
+        request({ requestId: `${at}/st`, connectionId: target.connectionId, call: { op: 'listStatuses', spaceKey: target.spaceKey } }),
+        request({ requestId: `${at}/it`, connectionId: target.connectionId, call: { op: 'listItems', spaceKey: target.spaceKey, cursor: null } }),
       ])
       if (!statuses.ok) return { ok: false, error: statuses.error }
       if (!first.ok) return { ok: false, error: first.error }
@@ -282,7 +323,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       // 다시 열 때는 더 받아 둔 쪽 수만큼 다시 받는다 — 아래쪽 작업·스크롤이 사라지지 않게(R1-N).
       const wanted = same ? (pagesRef.current.get(`${target.connectionId}::${target.spaceKey}`) ?? 1) : 1
       while (pages < wanted && nextCursor !== null) {
-        const next = await window.corral.workRequest({ requestId: `${at}/it${pages}`, connectionId: target.connectionId, call: { op: 'listItems', spaceKey: target.spaceKey, cursor: nextCursor } })
+        const next = await request({ requestId: `${at}/it${pages}`, connectionId: target.connectionId, call: { op: 'listItems', spaceKey: target.spaceKey, cursor: nextCursor } })
         // 덧 쪽 실패는 오류다(R2-F) — 짧은 목록을 성공으로 그리지 않는다. 표시 자료·받아 둔 쪽 수는 그대로 둔다(아래).
         if (!next.ok) return { ok: false, error: next.error }
         if (next.result.op !== 'listItems') return { ok: false, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }
@@ -302,7 +343,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     // 다시 적용할 변경 = 이 목록 요청 **전에** 시작해 아직 확인 안 된 쓰기(R2-C) + 요청 **뒤에** 화면에 쓴 변경(옮기기·원복·응답 반영, R1-F) — 순번 순.
     const later = overrides.current.filter((entry) => entry.seq > startSeq)
     overrides.current = later
+    // 다른 세대의 변경은 새 자료에 다시 적용하지 않는다(R3-D).
     const replay = [...[...pendingWrites.current.values()].filter((entry) => entry.seq <= startSeq), ...later]
+      .filter((entry) => entry.generation === currentGeneration(entry.connectionId))
     if (!same) pagesRef.current = new Map()
     const error = results.flatMap((result) => (result.ok ? [] : [result.error]))[0] ?? null
     const shown = loadRef.current.spaceId === id ? loadRef.current.data : []
@@ -319,7 +362,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       return [{ ...result.data, items }]
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
-  }, [space, targets, gate])
+  }, [space, targets, gate, currentGeneration])
   reloadRef.current = reload
 
   // 스페이스가 바뀌면 다시 짓고, 다시 열면 조용히 새로 받는다(지금 그림은 둔 채).
@@ -386,11 +429,12 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     if (candidates.length === 0) { gate.invalidate('find'); setSearch(NO_SEARCH); return }
     const token = gate.issue('find')
     void Promise.all(candidates.map(({ connectionId, key }) =>
-      window.corral.workRequest({ requestId: `${token}/${connectionId}`, connectionId, call: { op: 'findByKey', key } }).then((response) => ({ connectionId, response })),
+      request({ requestId: `${token}/${connectionId}`, connectionId, call: { op: 'findByKey', key } }).then((response) => ({ connectionId, response })),
     )).then((answers) => {
       if (!gate.accepts({ key: 'find', requestId: token })) return
       // 조회 오류는 「결과 없음」 이 아니다 — 따로 모아 배너로(R1-K).
       setSearch({
+        query,
         hits: answers.flatMap(({ connectionId, response }) => (response.ok && response.result.op === 'findByKey' && response.result.item !== null ? [{ connectionId, item: response.result.item }] : [])),
         errors: answers.flatMap(({ connectionId, response }) => {
           if (!response.ok) return [{ connectionId, error: response.error }]
@@ -401,7 +445,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   }, [open, query, patterns, gate, searchRound])
   const spaceNameOf = useCallback(({ connectionId, spaceKey }: { connectionId: string; spaceKey: string }): string =>
     settings?.connections.find((connection) => connection.id === connectionId)?.spaces?.find((entry) => entry.key === spaceKey)?.name ?? spaceKey, [settings])
-  const hits = useMemo((): SearchHit[] => search.hits.map((hit) => ({ ...hit, spaceName: spaceNameOf({ connectionId: hit.connectionId, spaceKey: hit.item.spaceKey }) })), [search, spaceNameOf])
+  // 지금 검색어의 결과만 보인다 — 새 검색어의 응답이 오기 전에는 옛 키 일치·오류를 보이지 않는다(R3-I).
+  const shownSearch = search.query === query ? search : NO_SEARCH
+  const hits = useMemo((): SearchHit[] => shownSearch.hits.map((hit) => ({ ...hit, spaceName: spaceNameOf({ connectionId: hit.connectionId, spaceKey: hit.item.spaceKey }) })), [shownSearch, spaceNameOf])
 
   // --- 작업 중 (C11) ---
   const trees = useMemo((): WorkingTree[] => repos.flatMap((repo) => repo.worktrees.flatMap((worktree) => {
@@ -420,6 +466,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   })), [repos])
   const workingEntries = useMemo(() => detectWorking({ trees, patterns }), [trees, patterns])
   const workingIds = workingEntries.map((entry) => `${entry.connectionId}#${generationOf(entry.connectionId)}::${entry.key}`).join('|')
+  /** 작업 중 조회를 전부 다시 받게 하는 번호 — 완료 분류를 넘나든 쓰기 뒤(종속 작업의 막힘이 바뀐다, R3-C). */
+  const [workingRound, setWorkingRound] = useState(0)
   useEffect(() => {
     if (!open) return
     for (const entry of workingEntries) {
@@ -434,7 +482,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
         setWorking((current) => new Map(current).set(id, lookup))
       })
     }
-  }, [open, workingIds])
+  }, [open, workingIds, workingRound])
   const workingLookups = useMemo(() => {
     const map = new Map<string, WorkingLookup>()
     for (const [id, lookup] of working) {
@@ -446,13 +494,17 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
 
   // --- 쓰기 (C7) ---
   /** 성공한 쓰기를 작업 중 보기·키 조회 결과에도 쓴다(R2-I) — 같은 열림 동안 옛 상태가 남지 않게. */
+  // 쓰기 직후엔 그 키의 진행 중 작업 중 조회 응답을 버린다(R3-B) — 쓰기 전에 잡은 옛 값이 늦게 와서 덮지 않게. 찾는 중·없음이던 항목도 서버 값으로.
   const reflect = useCallback(({ connectionId, item }: { connectionId: string; item: WorkItem }) => {
+    const id = `${connectionId}::${item.key}`
+    gate.invalidate(`working:${id}`)
     setWorking((current) => {
       let changed = false
       const next = new Map(current)
-      for (const [id, lookup] of current) {
-        if (lookup.state !== 'found' || lookup.item.id !== item.id || !id.startsWith(`${connectionId}::`)) continue
-        next.set(id, { state: 'found', item: { ...lookup.item, ...item } })
+      for (const [known, lookup] of current) {
+        const same = known === id || (lookup.state === 'found' && lookup.item.id === item.id && known.startsWith(`${connectionId}::`))
+        if (!same) continue
+        next.set(known, { state: 'found', item: lookup.state === 'found' ? { ...lookup.item, ...item } : item })
         changed = true
       }
       return changed ? next : current
@@ -460,7 +512,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     setSearch((current) => (current.hits.some((hit) => hit.connectionId === connectionId && hit.item.id === item.id)
       ? { ...current, hits: current.hits.map((hit) => (hit.connectionId === connectionId && hit.item.id === item.id ? { connectionId, item: { ...hit.item, ...item } } : hit)) }
       : current))
-  }, [])
+  }, [gate])
 
   const move = useCallback(async ({ row, intent, undo }: MoveRequest & { undo: boolean }): Promise<void> => {
     const call = callOf({ item: row.item, intent })
@@ -477,25 +529,44 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     const original = before.find((item) => item.id === row.item.id) ?? row.item
     const reverse = inverseOf({ item: original, intent, items: before })
     const apply = (items: WorkItem[]): WorkItem[] => applyIntent({ items, itemId: row.item.id, intent, statuses })
-    pendingWrites.current.set(uid, patch({ connectionId, spaceKey, apply }))
+    const written = patch({ connectionId, spaceKey, apply })
+    pendingWrites.current.set(uid, written)
+    if (intent.kind === 'reorder') reorders.current.add(written)
     setBusy(new Set(pendingWrites.current.keys()))
-    const { accepted, response } = await send({ key: `item:${uid}`, connectionId, call })
-    pendingWrites.current.delete(uid)
-    setBusy(new Set(pendingWrites.current.keys()))
+    let outcome: { accepted: boolean; response: WorkResponse } | null = null
+    try {
+      outcome = await send({ key: `item:${uid}`, connectionId, call })
+    } finally {
+      // 잠금은 어떤 경로로 끝나도 푼다(R3-E) — 단 세대가 바뀌어 이미 지운 뒤 같은 카드의 새 쓰기가 잡았으면 그 잠금은 둔다.
+      if (pendingWrites.current.get(uid) === written) pendingWrites.current.delete(uid)
+      setBusy(new Set(pendingWrites.current.keys()))
+    }
+    // 세대가 바뀐 뒤 온 응답은 버린다(R3-D) — 새 자료에 반영하지도 원복하지도 않는다.
+    if (written.generation !== currentGeneration(connectionId)) return
+    const { accepted, response } = outcome
     const settled = response.ok && (response.result.op === 'changeStatus' || response.result.op === 'setPlacement' || response.result.op === 'reorder') ? response.result.item : null
     if (!accepted || settled === null) {
       // 실패·버린 응답·모양이 다른 응답 = 그 카드 하나만 옮기기 전 자리로(순서는 그 카드만 되돌린다, R2-B), 그리고 서버를 다시 읽어 수렴한다.
       patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }) })
-      if (!response.ok) notify({ kind: 'failed', message: `${original.key} — ${response.error.message}` })
+      notify({ kind: 'failed', message: `${original.key} — ${response.ok ? '출처 응답을 확인하지 못했습니다.' : response.error.message}` })
       void reloadRef.current({ quiet: true })
       return
     }
-    // 출처 값으로 덮되, 순서는 낙관적 자리를 둔다(다른 작업의 순서 값은 출처가 다시 매겼을 수 있다 — 다음 불러오기에서 맞춘다).
-    // 순서도 변경 기록으로 다시 남겨, 이 쓰기보다 먼저 시작한 목록 응답이 와도 자리가 남게 한다.
-    patch({ connectionId, spaceKey, apply: intent.kind === 'reorder' ? apply : setFields({ item: settled }) })
+    if (intent.kind === 'reorder') {
+      // 순서는 성공 응답에서 의도를 다시 적용하지 않는다(R3-A) — 다른 카드의 순서 쓰기와 응답이 엇갈리면 서버와 다른 순서가 남는다.
+      // 같은 스페이스의 순서 쓰기가 다 끝나면 서버에서 다시 읽어 확정 순서로 맞춘다. 그때까지 화면은 낙관적 순서 그대로다.
+      const reordering = [...pendingWrites.current.values()].some((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey && reorders.current.has(entry))
+      if (!reordering) void reloadRef.current({ quiet: true })
+    } else {
+      patch({ connectionId, spaceKey, apply: setFields({ item: settled }) })
+    }
     reflect({ connectionId, item: settled })
-    // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 서버에서 다시 읽는다(R2-J).
-    if (crossesDone({ from: original, to: settled })) void reloadRef.current({ quiet: true })
+    // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 목록·작업 중·키 조회를 서버에서 다시 읽는다(R2-J·R3-C).
+    if (crossesDone({ from: original, to: settled })) {
+      void reloadRef.current({ quiet: true })
+      setWorkingRound((value) => value + 1)
+      setSearchRound((value) => value + 1)
+    }
     if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
     notify({
       kind: 'moved',
@@ -509,7 +580,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
         void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true })
       },
     })
-  }, [patch, send, notify, reflect])
+  }, [patch, send, notify, reflect, currentGeneration])
 
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
   const beginDrag = useCallback(async (row: TasksRow, mode: 'any' | 'allowed') => {
@@ -539,7 +610,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const scope = settings === null ? [] : settings.connections.filter((connection) => space === null || space.kind === 'all' || connection.id === space.connectionId)
   const broken = scope.find((connection) => connection.status === 'auth' || connection.status === 'forbidden' || connection.status === 'offline')
   const spaceError = spaceErrors.find((entry) => scope.some((connection) => connection.id === entry.connectionId))
-  const keyError = search.errors[0]
+  const keyError = shownSearch.errors[0]
   const banner: TasksBanner | null = load.error !== null
     ? bannerOf(load.error)
     : broken !== undefined && (broken.status === 'auth' || broken.status === 'forbidden' || broken.status === 'offline')

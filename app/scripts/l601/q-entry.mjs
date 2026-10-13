@@ -6,7 +6,7 @@
 // 흐름: 앱 기동(모의 출처 — up.sh) → 모의 연결 추가(렌더러 IPC, 가짜 토큰) → ⌘I(앱 내부 sendInputEvent — OS 입력 아님) → 보드
 //       → 칸·점선 칸·막힘 배지·덮기(사이드바 보임 · 메인 영역 숨김) → **실제 마우스 경로 가로 끌기 1회**(raw-mouse = webContents.sendInputEvent
 //       mouseDown/Move/Up — 렌더러의 mousedown/move/up 처리기를 그대로 지난다) → 쓰기·토스트·서버 재조회 값(수정 r1 R1-A)
-//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → **끄는 중 ⌘I 로 닫기 = 쓰기 0**(수정 r2 R2-K) → 보기 4 → Esc 닫기 → 정리.
+//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → **끄는 중 ⌘I 로 닫기 = 쓰기 0**(수정 r2 R2-K) → **창 밖 놓기 = 쓰기 0**(R3-F) → 보기 4 → **flip 응답 역전 순서 둘 = 서버 순서**(R3-A) → Esc 닫기 → 정리.
 // 실제 LA·사용자 키체인·설치본 무접촉. 토큰은 가짜(`mock_…`)뿐.
 // 격자 요청 수(`stream.sync` 로그 줄 · control counters)는 **관측만** 남긴다 — 판정은 최종 관문(C1, 양성 대조와 함께)이 한다.
 // 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
@@ -150,6 +150,24 @@ try {
   await click('[data-tasks-open]')
   await until(pageOpen, { timeoutMs: 10_000, label: '다시 열림' })
 
+  // 수정 r3(R3-F) — 끌어서 칸 위까지 간 뒤 **창 밖 좌표**에서 놓으면 취소 — 쓰기 0 · 서버 값 그대로.
+  const outBefore = { writes: writeLines(), server: await serverStatus('CORE-1') }
+  const from3 = await center('[data-issue-card="CORE-1"]', false)
+  const to3 = await center('[data-drop-zone="col:st:core-todo"]', true)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...from3 })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: from3.x + 10, y: from3.y })
+  await sleep(250)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...to3 })
+  await sleep(400)
+  const draggingOut = await js(`!!document.querySelector('.tasks-drag-preview')`)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', x: -10, y: -10 })
+  await sleep(1_000)
+  const outAfter = { writes: writeLines(), server: await serverStatus('CORE-1'), preview: await js(`!!document.querySelector('.tasks-drag-preview')`) }
+  log('창 밖 놓기', { from3, to3, draggingOut, outBefore, outAfter })
+  judge('C7·R3-F 창 밖 좌표 mouseup → 쓰기 0 · 사본 사라짐 · 서버 재조회 값 그대로',
+    draggingOut === true && outAfter.preview === false && typeof outBefore.writes === 'number' && outAfter.writes === outBefore.writes && outAfter.server === outBefore.server,
+    JSON.stringify({ draggingOut, outBefore, outAfter }))
+
   const viewChecks = {}
   for (const [tab, selector] of [['backlog', '[data-tasks-backlog] [data-backlog-section="backlog"] [data-issue-row="CORE-3"]'], ['list', '[data-tasks-list] [data-issue-row="CORE-1"]'], ['working', '[data-tasks-working], [data-tasks-empty="working"]'], ['board', '[data-tasks-board]']]) {
     await click(`[data-tasks-view-tab="${tab}"]`)
@@ -165,6 +183,66 @@ try {
   judge('C9 리스트 「더 불러오기」 = 출처의 다음 커서 — 다음 쪽이 붙고 줄이 사라진다', more && afterMore.rows > beforeMore && afterMore.bar === null, JSON.stringify({ beforeMore, afterMore }))
   await click('[data-tasks-view-tab="board"]')
   judge('보기 4 전환 — 백로그(두 섹션) · 리스트 · 작업 중(없음 빈 상태 포함) · 보드', Object.values(viewChecks).every(Boolean), JSON.stringify(viewChecks))
+
+  // 수정 r3(R3-A) — 응답 배달 뒤집기(`mock_flip-2000`: 서버는 받은 순서로 곧바로 적용, 홀수 번째 응답만 2초 늦음)로 토큰을 바꾼 뒤,
+  // 백로그 보드 섹션에서 서로 다른 카드 순서 변경 둘(A = 아래 끝으로 · B = 위 끝으로)을 보낸다. 앞 응답이 늦어 B 응답이 먼저 온다.
+  // 끝난 뒤 화면 순서 = 서버 재조회 순서(전 쪽을 다시 읽어 화면에 있는 키만 비교).
+  const ask = (call) => js(`window.corral.workRequest({ requestId: 'q-entry-' + Date.now() + Math.random(), connectionId: ${JSON.stringify(connectionId)}, call: ${JSON.stringify(call)} })`)
+  const replaced = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: 'mock_flip-2000', replaceId: ${JSON.stringify(connectionId)} }).then((r) => ({ ok: r.ok, generation: r.ok ? r.connection.generation : null }))`)
+  log('flip 토큰으로 교체', replaced)
+  await click('[data-tasks-view-tab="backlog"]')
+  await sleep(4_500)
+  // 출처 요청 순번 맞추기 — 곧바로 답한 요청(짝수) 다음이 늦는 홀수다. 그래서 다음 첫 쓰기(A)의 응답이 늦는다.
+  for (let index = 0; index < 3; index += 1) {
+    const started = Date.now()
+    await ask({ op: 'getItem', itemId: 'm-1' })
+    if (Date.now() - started < 1_000) break
+  }
+  const shownRows = () => js(`[...document.querySelectorAll('[data-backlog-section="board"] [data-issue-row]')].map((e) => e.dataset.issueRow)`)
+  const dragEdge = async ({ key, edge }) => {
+    const grip = await center(`[data-backlog-section="board"] [data-issue-row="${key}"] .tasks-grip`, false)
+    const dest = await js(`(() => { const r = document.querySelector('[data-drop-zone="sec:board"]').getBoundingClientRect(); return { x: Math.round(r.x + 200), y: Math.round(${edge === 'bottom' ? 'r.bottom - 1' : 'r.top + 1'}) } })()`)
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...grip })
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: grip.x + 10, y: grip.y })
+    await sleep(80)
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...dest })
+    await sleep(120)
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...dest })
+    await sleep(150)
+    return { grip, dest }
+  }
+  const initial = await shownRows()
+  const moveA = initial[0]
+  const moveB = initial.at(-1)
+  const dragA = await dragEdge({ key: moveA, edge: 'bottom' })
+  const afterA = await shownRows()
+  const dragB = await dragEdge({ key: moveB, edge: 'top' })
+  const afterB = await shownRows()
+  const serverBoard = async () => {
+    const all = []
+    let cursor = null
+    for (let page = 0; page < 10; page += 1) {
+      const response = await ask({ op: 'listItems', spaceKey: 'CORE', cursor })
+      if (!response?.ok) return null
+      all.push(...response.result.items)
+      cursor = response.result.nextCursor
+      if (cursor === null) break
+    }
+    return all.filter((entry) => entry.placement === 'board').map((entry) => entry.key)
+  }
+  let final = null
+  await until(async () => {
+    const screen = await shownRows()
+    const server = await serverBoard()
+    final = { screen, server: server?.filter((key) => screen.includes(key)) ?? null }
+    return final.server !== null && JSON.stringify(final.screen) === JSON.stringify(final.server)
+  }, { timeoutMs: 20_000, everyMs: 1_000, label: '화면 = 서버 순서' }).catch(() => null)
+  log('응답 뒤집힌 순서 둘', { initial, moveA, moveB, dragA, dragB, afterA, afterB, final })
+  judge('C7·C8·R3-A 다른 카드 순서 변경 둘(flip 응답 역전) — 둘 다 옮겨졌고 끝나면 화면 순서 = 서버 재조회 순서',
+    afterA.at(-1) === moveA && afterB[0] === moveB && final !== null && JSON.stringify(final.screen) === JSON.stringify(final.server),
+    JSON.stringify({ initial, afterA, afterB, final }))
+  log('shot', await ctl(ROOT, { cmd: 'shot', name: 'l601-reorder-flip' }))
+  await click('[data-tasks-view-tab="board"]')
 
   await ctl(ROOT, { cmd: 'key', keyCode: 'Escape' })
   await until(async () => !(await pageOpen()), { timeoutMs: 10_000, label: 'Esc 로 닫힘' })

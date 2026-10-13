@@ -5,7 +5,8 @@
 // - 포인터 캡처를 쓰지 않는다 — 문서에 mousemove/mouseup 을 거는 것은 끄는 동안만이고, 시작은 작업 페이지 안 `[data-drag-item]` 에서만이라
 //   탭·사이드바 끌기와 한 문서에서 다투지 않는다(작업 페이지가 열려 있으면 워크스페이스는 inert).
 // - 시작 문턱 4px(`REORDER_DRAG_THRESHOLD_PX`) · 문턱 미만은 클릭 · 문턱을 넘긴 뒤의 click 하나는 삼킨다 · Esc·창 blur·놓을 곳 밖 = 취소.
-//   `active` 가 꺼지면(페이지 닫힘·위층이 열림) 끄는 중이라도 취소한다 — 그 뒤 mouseup 은 쓰기를 보내지 않는다(R2-K).
+//   `active` 가 꺼지면(페이지 닫힘·위층이 열림) 끄는 중이라도 취소한다 — 그 뒤 mouseup 은 쓰기를 보내지 않는다(R2-K). `scope`(스페이스)가 바뀌어도 취소.
+// - 놓기는 **mouseup 좌표**로 다시 판정한다(R3-F) — 창 밖이거나 그 자리에 놓을 칸이 없으면 취소(마지막 mousemove 칸에 쓰지 않는다).
 // - 놓일 자리 = 그 영역(`[data-drop-zone]`) 안 끄는 항목을 뺀 항목들의 중점 기준 번호. 화면은 그 번호에 사본 높이만큼 틈을 그려 밀어낸다.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -30,10 +31,12 @@ function indexIn({ zone, itemId, y }: { zone: HTMLElement; itemId: string; y: nu
   }).length
 }
 
-export function useTaskDrag({ rootRef, active, onStart, onDrop, onEnd }: {
+export function useTaskDrag({ rootRef, active, scope, onStart, onDrop, onEnd }: {
   rootRef: React.RefObject<HTMLElement | null>
   /** 끌기를 받을 수 있나 — 꺼지는 순간 진행 중 끌기를 취소한다(R2-K). */
   active: boolean
+  /** 끄는 맥락(스페이스) — 바뀌면 진행 중 끌기를 취소한다(옛 맥락의 칸에 쓰지 않게). */
+  scope: string
   onStart: (itemId: string) => void
   onDrop: (drop: TaskDrop) => void
   onEnd: () => void
@@ -47,6 +50,7 @@ export function useTaskDrag({ rootRef, active, onStart, onDrop, onEnd }: {
 
   useEffect(() => () => session.current?.teardown(), [])
   useEffect(() => { if (!active) session.current?.cancel() }, [active])
+  useEffect(() => () => session.current?.cancel(), [scope])
 
   const onMouseDown = useCallback((itemId: string, event: React.MouseEvent<HTMLElement>, blocked: string | null) => {
     if (event.button !== 0 || session.current !== null || !activeRef.current) return
@@ -115,7 +119,13 @@ export function useTaskDrag({ rootRef, active, onStart, onDrop, onEnd }: {
       moveEvent.preventDefault()
       move(point)
     }
-    const onUp = (): void => finish(true)
+    const onUp = (upEvent: MouseEvent): void => {
+      const point = { x: upEvent.clientX, y: upEvent.clientY }
+      const inside = point.x >= 0 && point.y >= 0 && point.x <= window.innerWidth && point.y <= window.innerHeight
+      if (!started || !inside) { finish(false); return }
+      move(point)
+      finish(current !== null && current.zone !== null)
+    }
     const onKey = (keyEvent: KeyboardEvent): void => {
       if (keyEvent.key !== 'Escape' || !started) return
       keyEvent.preventDefault()

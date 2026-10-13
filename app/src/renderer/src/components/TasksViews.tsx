@@ -356,7 +356,8 @@ export function ListView({ groups, all, now, selectedId, sort, group, preset, de
   onSelect: (uid: string) => void
   onLoadMore: () => void
 }): React.JSX.Element {
-  const hasMore = more?.kind === 'cursor'
+  // 다음 커서가 있거나 상한에서 잘렸으면 그룹 수는 받은 것만의 집계다(R3-J).
+  const hasMore = more?.kind === 'cursor' || more?.kind === 'capped'
   return (
     <div className="tasks-list" data-tasks-list="">
       <div className="tasks-list-tools" data-tasks-list-tools="">

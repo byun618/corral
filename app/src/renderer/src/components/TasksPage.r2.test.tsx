@@ -533,6 +533,7 @@ describe('R2-K 끄는 중 페이지가 닫히거나 위층이 열리면 끌기 �
     mouse(document, 'mouseup', 50, 500)
     await settle()
     expect(writes()).toHaveLength(0)
+    expect(closed).toBe(0)
   })
   it('K3 대조 — 닫지 않으면 같은 끌기가 쓰기 1회', async () => {
     await renderPage()

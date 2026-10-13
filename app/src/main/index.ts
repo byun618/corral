@@ -116,6 +116,7 @@ import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTai
 import { listDir } from './explorer-fs.js'
 import { ExplorerHub } from './explorer-hub.js'
 import { explorerAction } from './explorer-actions.js'
+import { readFileContent } from './file-read.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -1802,6 +1803,17 @@ app.whenReady().then(async () => {
     },
     roots: explorerRoots,
     log,
+  })
+  // --- 파일 탭 (LIFE-590 F2) — 내용 읽기 전용. 루트는 탐색기와 같은 「지금 열린 worktree」 만, 가둠은 F1 `confine`(읽기). 쓰기 핸들러는 없다(F3) ---
+  ipcMain.handle('corral:fileRead', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const root = typeof input === 'object' && input !== null && 'root' in input ? input.root : undefined
+    const rel = typeof input === 'object' && input !== null && 'rel' in input ? input.rel : undefined
+    const startedAt = performance.now()
+    const result = await readFileContent({ roots: explorerRoots(), root, rel })
+    // 읽은 바이트를 남긴다(E4ⓕ 「상한 넘게 읽지 않음」 계측) — 경로는 남기지 않는다(상대 경로 길이만).
+    log('file.read', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
+    return result
   })
   ipcMain.handle('corral:explorerWatch', async (event, input: unknown) => {
     if (!fromOurWindow(event) || explorerHub === null) return { ok: false, code: 'not_worktree' }

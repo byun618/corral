@@ -128,12 +128,15 @@ export function projectRows(input: {
 
 /**
  * 키보드 이동 (E2ⓙ — VS Code 트리 키): ↑↓ 이동 · ← 펼친 폴더면 접기, 아니면 부모로 · → 접힌 폴더면 펼치기, 펼친 폴더면 첫 자식으로 ·
- * Enter·Space 폴더 토글(파일은 선택만 — 열기는 F2) · Home/End. 결과는 「무엇을 할지」 만 돌려준다(상태 변경은 부르는 쪽).
+ * Enter·Space 폴더 토글 · Home/End. 결과는 「무엇을 할지」 만 돌려준다(상태 변경은 부르는 쪽).
+ * 파일(LIFE-590 E2ⓓ): Space = 미리보기로 열기(포커스는 트리에 — VS Code `filesExplorer.openFilePreserveFocus`), Enter = 고정 탭으로 열기.
+ * VS Code macOS 의 Enter 는 이름 바꾸기인데 corral 에는 앱 안 이름 바꾸기가 없어(F4) 열기로 쓴다 — 차이는 E9 에 기록. ⌘↓(VS Code 열기)는 부르는 쪽이 받는다.
  */
 export type ExplorerKeyAction =
   | { kind: 'select'; rel: string }
   | { kind: 'expand'; rel: string }
   | { kind: 'collapse'; rel: string }
+  | { kind: 'open'; rel: string; preview: boolean }
   | { kind: 'none' }
 
 export function keyAction(input: { key: string; rows: readonly ExplorerRow[]; selected: string | null }): ExplorerKeyAction {
@@ -169,6 +172,7 @@ export function keyAction(input: { key: string; rows: readonly ExplorerRow[]; se
     }
     case 'Enter':
     case ' ': {
+      if (row !== null && row !== undefined && row.kind === 'file') return { kind: 'open', rel: row.rel, preview: input.key === ' ' }
       if (row === null || row === undefined || !isExpandable(row)) return { kind: 'none' }
       return row.expanded ? { kind: 'collapse', rel: row.rel } : { kind: 'expand', rel: row.rel }
     }

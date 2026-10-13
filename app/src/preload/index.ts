@@ -37,6 +37,7 @@ import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from '../shared/explorer.js'
+import type { FileReadResult } from '../shared/file-view.js'
 
 const EXPOSED = [
   'getMobileStatus',
@@ -79,6 +80,7 @@ const EXPOSED = [
   'explorerRefreshGit',
   'explorerAction',
   'onExplorerEvent',
+  'readFile',
   'activateWindow',
   'reportRendered',
   'selectPane',
@@ -185,6 +187,7 @@ const api: CorralApi = {
       ipcRenderer.removeListener('corral:explorerEvent', handler)
     }
   },
+  readFile: (input: { root: string; rel: string }): Promise<FileReadResult> => ipcRenderer.invoke('corral:fileRead', input),
   setUiPrefs: (patch: Partial<UiPrefs>) => ipcRenderer.send('corral:setUiPrefs', patch),
   // 사용자 설정 (LIFE-512) — 동기 읽기는 부팅 때 한 번(시작 2단 resize 방지, main 주석). 쓰기는 검증된 전체 값을 돌려준다.
   getSettingsSync: (): Settings => ipcRenderer.sendSync('corral:getSettingsSync'),

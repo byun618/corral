@@ -1,0 +1,20 @@
+/* 파일 탭·편집기 본문 (LIFE-590 F2 — D10 B: 탭·편집기 모양과 토큰 색은 VS Code, 바탕·글꼴은 corral 토큰).
+   칸 크기·활성 표시·닫기는 터미널 탭 `.main-tab` 그대로(한 탭바 안에서 같은 띠), 안쪽만 VS Code 편집기 탭이다. */
+
+/* 아이콘 — 탐색기와 같은 Seti(`.explorer-file-icon` 16px + 오른쪽 6px), 탭 줄 높이에 맞춘다. */
+.main-tab-file .explorer-file-icon { height: 100%; line-height: inherit; display: inline-flex; align-items: center; justify-content: center; }
+.main-tab-file:not(.is-active) .explorer-file-icon { opacity: 0.7; }
+/* 미리보기 = 이탤릭(VS Code `.monaco-icon-label.italic` — 고정되지 않은 탭). */
+.main-tab-file.is-preview .main-tab-file-label { font-style: italic; }
+/* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). */
+.main-tab-file.is-deleted .main-tab-file-label { text-decoration: line-through; }
+/* 수정 점 자리(F3) — VS Code 는 닫기 버튼 자리에 채운 원을 띄운다. F2 는 폭 0 자리만 둔다. */
+.main-tab-dirty-slot { display: none; }
+
+/* 본문 — 터미널 본문(`.term-group`) 자리. 편집기 바탕은 corral `--bg-surface`(테마도 같은 값). */
+.file-group { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
+.file-editor-host { flex: 1; min-height: 0; min-width: 0; }
+.file-view-notice {
+  flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center;
+  font-family: var(--font-ui); font-size: var(--fs-ui); color: var(--fg-muted);
+}

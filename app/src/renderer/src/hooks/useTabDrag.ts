@@ -67,7 +67,8 @@ function resolveDropTarget(input: {
     return { target: { kind: 'tabbar', groupId, index }, visual: { kind: 'tabbar', groupId, x: input.point.x, headerRect } }
   }
 
-  const bodyEl = container.querySelector('[data-term-group], [data-empty-group]')
+  // LIFE-590 — 파일 탭 본문(`[data-file-group]`)도 터미널 본문과 같은 드롭 판정(가장자리 = 분할, 가운데 = 병합)을 받는다.
+  const bodyEl = container.querySelector('[data-term-group], [data-empty-group], [data-file-group]')
   if (bodyEl === null) return invalid
   const bodyRect = bodyEl.getBoundingClientRect()
   const targetIsEmpty = bodyEl.matches('[data-empty-group]')

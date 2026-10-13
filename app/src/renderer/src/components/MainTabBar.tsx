@@ -52,6 +52,10 @@ import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStrip
 import { tabStripMaskClassName } from '../tab-strip-metrics.js'
 import type { LaunchAgent, OpenTabSearchEntry } from '../tab-create-menu.js'
 import { TabCreateMenu } from './TabCreateMenu.js'
+import { FileIcon } from './ExplorerIcons.js'
+import { ContextMenu, type MenuEntry } from './ContextMenu.js'
+import { fileTabLabel } from '../file-tabs.js'
+import './file-view.css'
 
 /**
  * 활성 터미널로 포커스를 돌려준다 (J-1).
@@ -416,6 +420,140 @@ function MainTab({
   )
 }
 
+/**
+ * 탭바 안 한 칸 (LIFE-590 E1) — 터미널 탭(herdr `TabRow`) 또는 파일 탭. 영역 배치의 `tabOrder` 순서 그대로 섞여 선다.
+ * 파일 탭의 `deleted` = 외부에서 지워짐(E5ⓒ — 표시는 F2 본구현에서 채운다).
+ */
+export type GroupTabItem = { kind: 'terminal'; tab: TabRow } | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean }
+
+type FileTabMenuAction = 'close' | 'keep' | 'split-right' | 'split-down' | `move:${string}`
+
+/**
+ * 파일 탭 (LIFE-590 E2·E10) — 칸·높이·활성 표시·닫기 자리는 터미널 탭(`.main-tab`)과 같고, 안쪽은 VS Code 편집기 탭:
+ * Seti 파일 아이콘(탐색기와 같은 `FileIcon`) · 파일 이름 · **미리보기 = 이탤릭**(VS Code `.monaco-icon-label.italic`) · 닫기 버튼 자리에
+ * 수정 점이 설 자리(`data-file-dirty-slot` — 점 자체는 F3). 더블클릭 = 고정(VS Code·Orca), 중클릭 = 닫기.
+ * 터미널 탭의 이름 바꾸기·핀·색·서수·pane 분할은 파일 탭에 없다 — 메뉴에서도 뺐다(E3ⓗ, 무동작 항목 0).
+ */
+function FileTab({
+  item,
+  active,
+  dock,
+  hasTabsToRight,
+  otherGroups,
+  onSelect,
+  onClose,
+  onKeep,
+  onMoveToGroup,
+  onMoveToOtherGroup,
+  onDragStart,
+}: {
+  item: Extract<GroupTabItem, { kind: 'file' }>
+  active: boolean
+  dock: boolean
+  hasTabsToRight: boolean
+  otherGroups: { groupId: string; label: string }[]
+  onSelect: () => void
+  onClose: () => void
+  onKeep: () => void
+  onMoveToGroup: (direction: MoveDirection) => void
+  onMoveToOtherGroup: (targetGroupId: string) => void
+  onDragStart: (event: React.MouseEvent) => void
+}): React.JSX.Element {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const label = fileTabLabel(item.rel)
+  const entries: MenuEntry<FileTabMenuAction>[] = [
+    { kind: 'item', action: 'close', label: '닫기' },
+    ...(item.preview ? [{ kind: 'item' as const, action: 'keep' as const, label: '고정(미리보기 끄기)' }] : []),
+    { kind: 'sep', key: 'split' },
+    { kind: 'item', action: 'split-right', label: '오른쪽 새 영역으로 옮기기' },
+    { kind: 'item', action: 'split-down', label: '아래 새 영역으로 옮기기' },
+    ...(otherGroups.length === 0
+      ? []
+      : [
+          { kind: 'sep' as const, key: 'other' },
+          ...otherGroups.map((group) => ({ kind: 'item' as const, action: `move:${group.groupId}` as const, label: `영역으로 옮기기 — ${group.label}` })),
+        ]),
+  ]
+  return (
+    <div
+      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''}`}
+      data-main-tab={item.tabId}
+      data-file-tab={item.rel}
+      data-active={active ? 'true' : 'false'}
+      data-active-tab-dock={dock ? '' : undefined}
+      data-tab-preview={item.preview ? 'true' : 'false'}
+      title={`${item.rel}${item.preview ? ' · 미리보기' : ''}${item.deleted ? ' · 삭제됨' : ''} — 끌어서 옮기기`}
+      onMouseDown={(event) => {
+        if (event.button === 1) {
+          event.preventDefault()
+          return
+        }
+        if (event.target instanceof Element && event.target.closest('button') !== null) return
+        onDragStart(event)
+      }}
+      onClick={onSelect}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return
+        event.preventDefault()
+        event.stopPropagation()
+        onClose()
+      }}
+      onDoubleClick={(event) => {
+        event.stopPropagation()
+        onKeep()
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        window.corral.activateWindow()
+        setMenu({ x: event.clientX, y: event.clientY })
+      }}
+    >
+      {active ? <span className="main-tab-indicator" aria-hidden /> : null}
+      <FileIcon name={label} />
+      <span className="main-tab-title">
+        <span className="main-tab-label main-tab-file-label">{label}</span>
+      </span>
+      {/* 수정 점 자리(F3) — VS Code 는 닫기 버튼 자리에 채운 원을 띄운다(`.tab.dirty > .tab-actions`). F2 는 자리만 둔다. */}
+      <span className="main-tab-dirty-slot" data-file-dirty-slot="" aria-hidden />
+      <button
+        className="main-tab-close"
+        data-main-tab-close={item.tabId}
+        data-tab-close-button="true"
+        type="button"
+        title="탭 닫기"
+        aria-label={`탭 닫기 ${label}`}
+        onClick={(event) => {
+          event.stopPropagation()
+          onClose()
+        }}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
+      </button>
+      {menu === null ? null : (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={entries}
+          attrs={{ 'data-file-tab-menu': item.rel }}
+          onClose={() => setMenu(null)}
+          onAction={(action) => {
+            setMenu(null)
+            if (action === 'close') onClose()
+            else if (action === 'keep') onKeep()
+            else if (action === 'split-right') onMoveToGroup('right')
+            else if (action === 'split-down') onMoveToGroup('down')
+            else onMoveToOtherGroup(action.slice('move:'.length))
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
 /** chevron 아이콘 — Orca `ChevronLeft`·`ChevronRight`(lucide) 14px(`size-3.5`). */
 function ChevronIcon({ direction }: { direction: 'start' | 'end' }): React.JSX.Element {
   return (
@@ -496,6 +634,10 @@ export function GroupHeader({
   headSpacer = false,
   tailToggle = null,
   tabs,
+  items,
+  onSelectFileTab,
+  onCloseFileTab,
+  onKeepFileTab,
   workspaceTabCount,
   home,
   selectedPane,
@@ -538,8 +680,17 @@ export function GroupHeader({
   headSpacer?: boolean
   /** LIFE-589 — 오른쪽 패널이 닫혀 있을 때 여는 버튼(오른쪽 위 영역 탭 줄 끝만, Orca `TitlebarMainStrip` 의 `RightSidebarToggle` 자리). */
   tailToggle?: React.ReactNode
-  /** **이 영역에 배정된** 탭들 (R3-c) — worktree 전체가 아니다. */
+  /** **이 영역에 배정된** 터미널 탭들 (R3-c) — worktree 전체가 아니다. */
   tabs: TabRow[]
+  /**
+   * LIFE-590 — 터미널·파일 탭을 배치 순서대로 섞은 칸. 주면 탭바는 이것을 그린다(없으면 `tabs` 만 — 터미널만 있던 때와 같다).
+   * 파일 탭 동작은 아래 셋으로 받는다.
+   */
+  items?: GroupTabItem[]
+  onSelectFileTab?: (tabId: string) => void
+  onCloseFileTab?: (tabId: string) => void
+  /** 미리보기 파일 탭 고정(탭 더블클릭·메뉴). */
+  onKeepFileTab?: (tabId: string) => void
   /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
    * `tabs` 는 이 영역 로컬이라 그 길이를 쓰면 범위가 좁아져 기본 label 이 이름으로 샌다). */
   workspaceTabCount: number
@@ -610,7 +761,8 @@ export function GroupHeader({
   }, [createMenu, activeTabId, selectedPane])
   // 탭 수로 가르지 않는다(C5′). 탭이 0개여도 `+` 가 남는 껍데기를 그린다 — 마지막 탭을 닫았을 때
   // 탭바가 통째로 사라지면 새 탭을 만들 진입점이 같이 사라진다.
-  const overflow = useTabStripOverflow({ activeTabId, layoutKey: tabs.map((tab) => tab.tabId).join('\n'), groupId, dragActive: tabDragActive })
+  const shown: GroupTabItem[] = items ?? tabs.map((tab) => ({ kind: 'terminal', tab }))
+  const overflow = useTabStripOverflow({ activeTabId, layoutKey: shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId)).join('\n'), groupId, dragActive: tabDragActive })
   // LIFE-387 B1 F-B1-1·F-B1-3 — 헤더 모드 메뉴(⊞ · 탭바 빈 곳 우클릭). 활성 탭이 없으면 안 연다
   // (§2 GroupHeader 우클릭 "빈 영역은 열지 않음").
   const [headerMenu, setHeaderMenu] = useState<TabMenuAnchor | null>(null)
@@ -622,7 +774,7 @@ export function GroupHeader({
   }
   const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? null
   const activeTabLabel = activeTab?.label ?? ''
-  const tabOrder = tabs.map((tab) => tab.tabId)
+  const tabOrder = shown.map((item) => (item.kind === 'terminal' ? item.tab.tabId : item.tabId))
   return (
     <div
       className={`main-tabbar ${activeGroup ? 'is-active-group' : ''}`}
@@ -653,7 +805,25 @@ export function GroupHeader({
           data-active-tab-docked={overflow.dockSide ?? undefined}
           ref={overflow.stripRef}
         >
-          {tabs.map((tab, index) => (
+          {shown.map((item, index) => {
+            if (item.kind === 'file') return (
+            <FileTab
+              key={item.tabId}
+              item={item}
+              active={item.tabId === activeTabId}
+              dock={item.tabId === activeTabId && !tabDragActive}
+              hasTabsToRight={index < shown.length - 1}
+              otherGroups={otherGroups}
+              onSelect={() => onSelectFileTab?.(item.tabId)}
+              onClose={() => onCloseFileTab?.(item.tabId)}
+              onKeep={() => onKeepFileTab?.(item.tabId)}
+              onMoveToGroup={(direction) => onMoveToGroup({ tabId: item.tabId, direction })}
+              onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: item.tabId, targetGroupId })}
+              onDragStart={(event) => onTabDragStart(event, item.tabId)}
+            />
+            )
+            const tab = item.tab
+            return (
             <MainTab
               key={tab.tabId}
               tab={tab}
@@ -666,7 +836,7 @@ export function GroupHeader({
               active={tab.tabId === activeTabId}
               dock={tab.tabId === activeTabId && !tabDragActive}
               unreadPanes={unreadPanes}
-              hasTabsToRight={index < tabs.length - 1}
+              hasTabsToRight={index < shown.length - 1}
               groupTabOrder={tabOrder}
               pinnedTabs={pinnedTabs}
               color={tabColorOf(tab.tabId)}
@@ -686,7 +856,8 @@ export function GroupHeader({
               onDragStart={(event) => onTabDragStart(event, tab.tabId)}
               menuHost={menuHost}
             />
-          ))}
+            )
+          })}
         </div>
         <TabStripScrollIndicator metrics={overflow.metrics} stripRef={overflow.stripRef} disabled={tabDragActive} />
       </div>
@@ -786,7 +957,7 @@ export function GroupHeader({
               ✕
             </button>
           ) : null}
-          {tabs.length === 0 && onCloseGroup !== null ? (
+          {shown.length === 0 && onCloseGroup !== null ? (
             <button className="group-action is-danger" data-group-close={groupId} title={`영역 닫기 (${bindingLabel('group.close')})`} onClick={onCloseGroup}>
               ✕
             </button>

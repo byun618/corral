@@ -6,7 +6,7 @@
 //   가이드 상자: left 16px · 폭 = (깊이−1)×8 · 가이드마다 8px · border-left 1px (`tree.css:16-34`, `abstractTree.ts:489`)
 //   아이콘: 폭 16 + padding-right 6 · Seti 글꼴 150% (`iconlabel.css:14` · 테마 `fonts[0].size`)
 // 가상 스크롤: 행 높이가 고정이라 scrollTop 으로 창을 자른다(overscan 위아래 10). DOM 행 수 = 보이는 행 + overscan(E3ⓒ).
-// 파일을 눌러도 열지 않는다 — 선택만(열기는 F2).
+// 파일 한 번 클릭 = 미리보기 탭, 더블클릭 = 고정 탭(LIFE-590 F2 — `onOpenFile`). 폴더는 펼치기·접기.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { depthOf, keyAction, parentRel, projectRows, visibleRange, type ExplorerAction, type ExplorerRow } from '../../../shared/explorer.js'
 import { folderMarks, GIT_DECORATION, isIgnoredPath, type GitMark } from '../../../shared/explorer-git.js'
@@ -42,12 +42,15 @@ export function Explorer({
   explorer,
   title,
   focusToken,
+  onOpenFile,
 }: {
   explorer: ExplorerApi
   /** 섹션 머리 글자 — 활성 worktree 표시 이름(VS Code 는 폴더 이름을 대문자로 싣는다). */
   title: string | null
   /** 바뀌면 트리에 포커스를 준다(⌘⇧E — 「탐색기 보이기」 는 열고 포커스). */
   focusToken: number
+  /** 파일 열기(LIFE-590 E2) — 한 번 클릭·Space = 미리보기, 더블클릭·Enter·⌘↓ = 고정. 폴더는 부르지 않는다. */
+  onOpenFile: (input: { rel: string; preview: boolean }) => void
 }): React.JSX.Element {
   const { state, filter } = explorer
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -127,6 +130,15 @@ export function Explorer({
       openRowMenuAtSelection()
       return
     }
+    // ⌘↓ — VS Code macOS 「열기」(explorer.openAndPassFocus). 파일만, 고정 탭으로.
+    if (event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'ArrowDown') {
+      const row = rows.find((item) => item.rel === selected)
+      if (row === undefined || row.kind !== 'file') return
+      event.preventDefault()
+      event.stopPropagation()
+      onOpenFile({ rel: row.rel, preview: false })
+      return
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const action = keyAction({ key: event.key, rows, selected })
     if (action.kind === 'none') return
@@ -145,6 +157,9 @@ export function Explorer({
       case 'collapse':
         explorer.select(action.rel)
         explorer.collapse(action.rel)
+        return
+      case 'open':
+        onOpenFile({ rel: action.rel, preview: action.preview })
         return
     }
   }
@@ -223,6 +238,10 @@ export function Explorer({
               onClick={() => {
                 explorer.select(row.rel)
                 if (row.kind === 'dir') explorer.toggle(row.rel)
+                else onOpenFile({ rel: row.rel, preview: true })
+              }}
+              onDoubleClick={() => {
+                if (row.kind === 'file') onOpenFile({ rel: row.rel, preview: false })
               }}
               onContextMenu={(event) => {
                 event.preventDefault()
@@ -283,6 +302,7 @@ function ExplorerRowView({
   error,
   mark,
   onClick,
+  onDoubleClick,
   onContextMenu,
 }: {
   row: ExplorerRow
@@ -293,6 +313,7 @@ function ExplorerRowView({
   /** git 상태 — 파일은 자기 것, 폴더는 하위 전파(우선순위). ignored 는 행 흐림으로 따로. */
   mark: GitMark | null
   onClick: () => void
+  onDoubleClick: () => void
   onContextMenu: (event: React.MouseEvent) => void
 }): React.JSX.Element {
   const decoration = mark === null ? null : GIT_DECORATION[mark]
@@ -314,6 +335,7 @@ function ExplorerRowView({
       data-ignored={row.ignored ? '' : undefined}
       title={error ?? (decoration === null ? undefined : `${row.name} • ${decoration.title}`)}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
     >
       <div className="explorer-indent" style={{ width: (row.depth - 1) * INDENT }}>

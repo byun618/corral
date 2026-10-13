@@ -1,12 +1,12 @@
 // LIFE-495 K6ⓕ — 닫은 탭 기록의 순수 부분(스택·상한·시작 디렉터리).
 import { describe, expect, it } from 'vitest'
-import { addPlacement, popClosed, pushClosed, RECENTLY_CLOSED_LIMIT, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, takeLivePlacements } from './recently-closed.js'
+import { addPlacement, popClosed, pushClosed, RECENTLY_CLOSED_LIMIT, snapshotCwd, type ClosedTabSnapshot, type ClosedTerminalSnapshot, type RecentlyClosed, takeLivePlacements } from './recently-closed.js'
 
-const snap = (index: number, worktreePath = '/repo'): ClosedTabSnapshot => ({ worktreePath, cwd: `/repo/d${index}`, label: `n${index}`, color: null, groupId: 'g1', index })
+const snap = (index: number, worktreePath = '/repo'): ClosedTerminalSnapshot => ({ worktreePath, cwd: `/repo/d${index}`, label: `n${index}`, color: null, groupId: 'g1', index })
 
 describe('pushClosed · popClosed', () => {
   it('가장 최근 것부터 꺼낸다 · 비면 null(아무것도 안 한다)', () => {
-    let history: RecentlyClosed = {}
+    let history: RecentlyClosed<ClosedTerminalSnapshot> = {}
     history = pushClosed({ history, snapshot: snap(1) })
     history = pushClosed({ history, snapshot: snap(2) })
     const first = popClosed({ history, worktreePath: '/repo' })
@@ -16,13 +16,25 @@ describe('pushClosed · popClosed', () => {
     expect(popClosed({ history: second.history, worktreePath: '/repo' }).snapshot).toBeNull()
   })
   it('worktree 별로 따로, 상한 10개(오래된 것을 버린다)', () => {
-    let history: RecentlyClosed = {}
+    let history: RecentlyClosed<ClosedTerminalSnapshot> = {}
     for (let index = 0; index < 12; index++) history = pushClosed({ history, snapshot: snap(index) })
     history = pushClosed({ history, snapshot: snap(99, '/other') })
     expect(history['/repo']).toHaveLength(RECENTLY_CLOSED_LIMIT)
     expect(history['/repo']?.at(-1)?.label).toBe('n2')
     expect(popClosed({ history, worktreePath: '/other' }).snapshot?.label).toBe('n99')
     expect(popClosed({ history, worktreePath: '/none' }).snapshot).toBeNull()
+  })
+})
+
+describe('LIFE-590 — 파일 탭 기록이 터미널 기록과 한 스택에 섞인다', () => {
+  it('kind 로 갈린다 — 파일은 같은 파일·자리·미리보기, 터미널은 기존 모양 그대로', () => {
+    let history: RecentlyClosed = {}
+    history = pushClosed({ history, snapshot: snap(1) })
+    history = pushClosed({ history, snapshot: { kind: 'file', worktreePath: '/repo', rel: 'src/a.ts', preview: true, groupId: 'g2', index: 3 } satisfies ClosedTabSnapshot })
+    const first = popClosed({ history, worktreePath: '/repo' })
+    expect(first.snapshot).toEqual({ kind: 'file', worktreePath: '/repo', rel: 'src/a.ts', preview: true, groupId: 'g2', index: 3 })
+    const second = popClosed({ history: first.history, worktreePath: '/repo' }).snapshot
+    expect(second?.kind).toBeUndefined()
   })
 })
 

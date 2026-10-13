@@ -8,9 +8,11 @@
 // 배치는 **worktree 마다 따로** 산다 — 창은 한 번에 하나만 보이지만(R3-f) 나머지도 보존된다.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { closeFileTab, keepFileTab, openFileTab, reopenFileTab } from '../file-tabs.js'
 import {
   closeGroup as closeGroupIn,
   dropDeadTabs,
+  LAYOUT_FORMAT,
   listGroups,
   mergeTabIntoGroup as mergeTabIntoGroupIn,
   moveTabWithinTabbar as moveTabWithinTabbarIn,
@@ -61,6 +63,17 @@ export type GroupLayoutApi = {
   }) => void
   /** LIFE-495 K6 — 다시 연 탭을 닫을 때의 영역·자리로. */
   placeTab: (input: { tabId: string; groupId: string; index: number }) => void
+  /**
+   * LIFE-590 — 파일 탭 열기(탐색기 한 번 클릭 = 미리보기, 더블클릭 = 고정). 미리보기 교체로 밀려난 파일은 `onReplaced` 로 알린다(닫은 탭 기록).
+   * 지금 worktree 의 배치에서만 한다.
+   */
+  openFile: (input: { rel: string; preview: boolean; onReplaced?: (replaced: { rel: string; groupId: string; index: number }) => void }) => void
+  /** 미리보기 파일 탭 고정(탭 더블클릭). */
+  keepFile: (tabId: string) => void
+  /** 파일 탭 닫기 — 닫기 전 자리를 `onClosed` 로(⌘⇧T 기록). */
+  closeFile: (input: { tabId: string; onClosed?: (closed: { groupId: string; index: number; preview: boolean }) => void }) => void
+  /** 닫은 파일 탭 다시 열기(⌘⇧T) — 같은 영역·자리·미리보기 여부. */
+  reopenFile: (input: { rel: string; groupId: string; index: number; preview: boolean }) => void
 }
 
 const ROOT_GROUP = 'g1'
@@ -153,7 +166,7 @@ export function useGroupLayout(input: {
   const saved = useRef('[]')
   useEffect(() => {
     if (!input.ready || !hydrated.current) return
-    const rows = Object.entries(byWorktree).map(([worktreePath, value]) => ({ worktreePath, layout: value }))
+    const rows = Object.entries(byWorktree).map(([worktreePath, value]) => ({ worktreePath, layout: value, layoutFormat: LAYOUT_FORMAT }))
     const serialized = JSON.stringify(rows)
     if (serialized === saved.current) return
     saved.current = serialized
@@ -277,6 +290,32 @@ export function useGroupLayout(input: {
     [mutate],
   )
 
+  // 밀려난·닫힌 자리 알림은 **화면 배치**(`layout` — 저장값을 같은 파생으로 추린 것)에서 미리 셈한다 — 상태 갱신 함수 안에서 부르면 순수하지 않다.
+  const openFile = useCallback(
+    (target: { rel: string; preview: boolean; onReplaced?: (replaced: { rel: string; groupId: string; index: number }) => void }) => {
+      const replaced = layout === null ? null : openFileTab({ layout, rel: target.rel, preview: target.preview }).replaced
+      mutate((current) => openFileTab({ layout: current, rel: target.rel, preview: target.preview }).layout)
+      if (replaced !== null) target.onReplaced?.(replaced)
+    },
+    [mutate, layout],
+  )
+
+  const keepFile = useCallback((tabId: string) => mutate((current) => keepFileTab({ layout: current, tabId })), [mutate])
+
+  const closeFile = useCallback(
+    (target: { tabId: string; onClosed?: (closed: { groupId: string; index: number; preview: boolean }) => void }) => {
+      const closed = layout === null ? null : closeFileTab({ layout, tabId: target.tabId }).closed
+      mutate((current) => closeFileTab({ layout: current, tabId: target.tabId }).layout)
+      if (closed !== null) target.onClosed?.(closed)
+    },
+    [mutate, layout],
+  )
+
+  const reopenFile = useCallback(
+    (target: { rel: string; groupId: string; index: number; preview: boolean }) => mutate((current) => reopenFileTab({ layout: current, ...target })),
+    [mutate],
+  )
+
   return {
     layout,
     groups,
@@ -294,5 +333,9 @@ export function useGroupLayout(input: {
     mergeTabIntoGroup,
     splitGroupWithForeignTab,
     placeTab,
+    openFile,
+    keepFile,
+    closeFile,
+    reopenFile,
   }
 }

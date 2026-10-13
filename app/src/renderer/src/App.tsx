@@ -23,7 +23,7 @@ import { DropZoneOverlay } from './components/DropZoneOverlay.js'
 import { EmptyGroup } from './components/EmptyGroup.js'
 import { BackendBanner, BackendCard, backendBlocksTerminal } from './components/BackendCard.js'
 import { InlineNotice } from './components/InlineNotice.js'
-import { GroupHeader } from './components/MainTabBar.js'
+import { GroupHeader, type GroupTabItem } from './components/MainTabBar.js'
 import { MruSwitcher, type MruRow } from './components/MruSwitcher.js'
 import { groupGlyphs, MRU_LIMIT, openMru, orderMru, stepMru, touchMru } from './mru-order.js'
 import { numbersOf } from './pane-geometry.js'
@@ -68,6 +68,8 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
+import { fileTabLabel, isFileTabId, previewOf, tabKindOf } from './file-tabs.js'
+import { FileView, type ViewStateStore } from './components/FileView.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
 import { groupOfTab } from './group-tree.js'
@@ -354,6 +356,15 @@ export function App(): React.JSX.Element {
   const pendingPlacementsRef = useRef<Map<string, PendingPlacement>>(new Map())
   /** LIFE-495 K6 — 닫은 탭 기록(worktree 경로별 최근 10개, 비영속). 렌더 대상이 아니라 ref 다. */
   const recentlyClosedRef = useRef<RecentlyClosed>({})
+  /** LIFE-590 E3ⓕ — 파일 탭 스크롤·선택 위치(Monaco view state). worktree 경로 → 탭 id 별. 비영속(재시작 복원은 열린 탭·순서·활성·미리보기까지). */
+  const fileViewStatesRef = useRef<Map<string, ViewStateStore>>(new Map())
+  const fileViewStatesOf = (worktreePath: string): ViewStateStore => {
+    const found = fileViewStatesRef.current.get(worktreePath)
+    if (found !== undefined) return found
+    const made: ViewStateStore = new Map()
+    fileViewStatesRef.current.set(worktreePath, made)
+    return made
+  }
   /** LIFE-495 — 탭 이름 편집 요청(⌘R·메뉴 「제목 바꾸기」). 토큰이 오를 때마다 그 탭이 편집을 연다. */
   const [renameRequest, setRenameRequest] = useState<{ tabId: string; token: number } | null>(null)
   const requestRename = useCallback((tabId: string) => setRenameRequest((previous) => ({ tabId, token: (previous?.token ?? 0) + 1 })), [])
@@ -793,10 +804,15 @@ export function App(): React.JSX.Element {
    * 키는 main 이 메뉴에서 뺏어 오므로(R23) 뜻이 IPC 로 늦게 도착한다. 그 사이 렌더가 몇 번
    * 돌든 **가장 최근 화면**을 겨눠야 해서 ref 로 둔다 — `layoutRef` 와 같은 결이다.
    */
-  const closeTargetRef = useRef<{ tabId: string | null; paneIds: string[] }>({ tabId: null, paneIds: [] })
+  const closeTargetRef = useRef<{ tabId: string | null; paneIds: string[]; file: boolean }>({ tabId: null, paneIds: [], file: false })
   {
-    const tab = tabById(layoutRef.current.activeTabId)
-    closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [] }
+    const activeId = layoutRef.current.activeTabId
+    // LIFE-590 E3ⓐ — 활성 탭이 파일 탭이면 ⌘W 가 그 파일 탭을 닫는다.
+    if (activeId !== null && isFileTabId(activeId)) closeTargetRef.current = { tabId: activeId, paneIds: [], file: true }
+    else {
+      const tab = tabById(activeId)
+      closeTargetRef.current = { tabId: tab?.tabId ?? null, paneIds: tab?.panes.map((pane) => pane.paneId) ?? [], file: false }
+    }
   }
   // --- LIFE-495 탭 닫기·다시 열기·탭 단축키 ----------------------------------------
 
@@ -867,7 +883,34 @@ export function App(): React.JSX.Element {
     closeTabsByUser({ tabIds: targets, anchor: { groupId: input.groupId, tab: input.tab } })
   }
 
-  /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 비어 있으면 아무것도 안 한다. */
+  /** LIFE-590 — 파일 탭 닫기(×·중클릭·메뉴·⌘W). 닫은 자리를 다시 열기 기록에 넣는다(⌘⇧T = 같은 파일). */
+  const closeFileByUser = (tabId: string): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    const kind = tabKindOf(tabId)
+    if (worktreePath === null || kind.kind !== 'file') return
+    fileViewStatesOf(worktreePath).delete(tabId)
+    layout.closeFile({
+      tabId,
+      onClosed: (closed) => {
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: kind.rel, ...closed } })
+      },
+    })
+  }
+
+  /** LIFE-590 E2 — 탐색기에서 파일 열기. 미리보기 교체로 밀려난 파일은 닫은 탭 기록에(Orca 와 같다 — ⌘⇧T 로 돌아온다). */
+  const openFileFromExplorer = (input: { rel: string; preview: boolean }): void => {
+    const worktreePath = activeWorktreeRow?.path ?? null
+    if (worktreePath === null) return
+    layout.openFile({
+      rel: input.rel,
+      preview: input.preview,
+      onReplaced: (replaced) => {
+        recentlyClosedRef.current = pushClosed({ history: recentlyClosedRef.current, snapshot: { kind: 'file', worktreePath, rel: replaced.rel, preview: true, groupId: replaced.groupId, index: replaced.index } })
+      },
+    })
+  }
+
+  /** ⌘⇧T (K6) — 활성 worktree 의 가장 최근 닫은 탭을 같은 시작 디렉터리의 새 셸로. 파일 탭이었으면 같은 파일을 같은 자리에(LIFE-590). 비어 있으면 아무것도 안 한다. */
   const reopenClosedTab = (): void => {
     const worktreePath = activeWorktreeRow?.path ?? null
     const workspaceId = activeWorkspaceRow?.workspaceId ?? null
@@ -876,6 +919,10 @@ export function App(): React.JSX.Element {
     if (popped.snapshot === null) return
     recentlyClosedRef.current = popped.history
     const snapshot = popped.snapshot
+    if (snapshot.kind === 'file') {
+      layout.reopenFile({ rel: snapshot.rel, groupId: snapshot.groupId, index: snapshot.index, preview: snapshot.preview })
+      return
+    }
     lifecycle.actions.reopenTab({
       workspaceId,
       cwd: snapshot.cwd,
@@ -900,8 +947,15 @@ export function App(): React.JSX.Element {
   const selectTabInActiveGroup = (pick: (input: { tabOrder: readonly string[]; activeTabId: string | null }) => string | null): void => {
     const { activeGroupId, activeTabId, activeTabOrder } = layoutRef.current
     if (activeGroupId === null) return
-    const tab = tabById(pick({ tabOrder: activeTabOrder, activeTabId }))
-    if (tab === null || tab.tabId === activeTabId) return
+    const picked = pick({ tabOrder: activeTabOrder, activeTabId })
+    if (picked === null || picked === activeTabId) return
+    // LIFE-590 E3ⓐ — 순환·⌃1–9 는 파일 탭도 센다(시각 순서 그대로). 파일 탭은 pane 이 없어 영역 활성 탭만 바꾼다.
+    if (isFileTabId(picked)) {
+      layout.setActiveTab({ groupId: activeGroupId, tabId: picked })
+      return
+    }
+    const tab = tabById(picked)
+    if (tab === null) return
     activateTab({ groupId: activeGroupId, tab })
   }
 
@@ -1040,6 +1094,7 @@ export function App(): React.JSX.Element {
     'terminal.close': () => {
       const target = closeTargetRef.current
       if (target.tabId === null) return
+      if (target.file) { closeFileByUser(target.tabId); return }
       if (target.paneIds.length <= 1) { closeTabsByUser({ tabIds: [target.tabId] }); return }
       void closePaneAt(target.paneIds.find((id) => id === lifecycle.selectedPane) ?? target.paneIds[0] ?? null)
     },
@@ -1143,6 +1198,15 @@ export function App(): React.JSX.Element {
 
   const renderGroup = ({ group, workspaceId }: { group: TabGroup; workspaceId: string }): React.JSX.Element => {
     const groupTabs = group.tabOrder.map((tabId) => tabById(tabId)).filter((tab): tab is TabRow => tab !== null)
+    // LIFE-590 — 탭바는 배치 순서대로 터미널·파일 탭을 섞어 그린다. herdr 에 아직 없는 터미널 id 는 빠진다(기존과 같다).
+    const groupPreview = previewOf(group)
+    const groupItems: GroupTabItem[] = group.tabOrder.flatMap((tabId): GroupTabItem[] => {
+      const kind = tabKindOf(tabId)
+      if (kind.kind === 'file') return [{ kind: 'file', tabId, rel: kind.rel, preview: groupPreview === tabId, deleted: false }]
+      const tab = tabById(tabId)
+      return tab === null ? [] : [{ kind: 'terminal', tab }]
+    })
+    const activeFile = group.activeTabId === null ? null : tabKindOf(group.activeTabId)
     const groupActiveTab = tabById(group.activeTabId)
     const groupPane = groupActiveTab === null ? null : pickPane(groupActiveTab)
     const isActiveGroup = group.groupId === layout.activeGroupId
@@ -1183,6 +1247,13 @@ export function App(): React.JSX.Element {
             ) : null
           }
           tabs={groupTabs}
+          items={groupItems}
+          onSelectFileTab={(tabId) => {
+            if (tabDrag.consumeClick()) return
+            layout.setActiveTab({ groupId: group.groupId, tabId })
+          }}
+          onCloseFileTab={closeFileByUser}
+          onKeepFileTab={layout.keepFile}
           workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
           selectedPane={groupSelectedPaneId}
@@ -1244,7 +1315,10 @@ export function App(): React.JSX.Element {
           // 이 정도로 충분하다는 판단, 03-result.md 에 단순화로 기록).
           otherGroups={layout.groups
             .filter((other) => other.groupId !== group.groupId)
-            .map((other) => ({ groupId: other.groupId, label: tabById(other.activeTabId)?.label ?? '비어 있음' }))}
+            .map((other) => {
+              const kind = other.activeTabId === null ? null : tabKindOf(other.activeTabId)
+              return { groupId: other.groupId, label: kind?.kind === 'file' ? fileTabLabel(kind.rel) : (tabById(other.activeTabId)?.label ?? '비어 있음') }
+            })}
           onMoveToOtherGroup={({ tabId, targetGroupId }) =>
             layout.mergeTabIntoGroup({ tabId, fromGroupId: group.groupId, toGroupId: targetGroupId })
           }
@@ -1259,7 +1333,17 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : null}
-        {groupPane === null ? (
+        {activeFile !== null && activeFile.kind === 'file' && activeWorktreeRow !== null ? (
+          <FileView
+            key={activeFile.tabId}
+            root={activeWorktreeRow.path}
+            rel={activeFile.rel}
+            tabId={activeFile.tabId}
+            groupId={group.groupId}
+            viewStates={fileViewStatesOf(activeWorktreeRow.path)}
+            onActivate={() => activateGroup({ groupId: group.groupId, paneId: null })}
+          />
+        ) : groupPane === null ? (
           <EmptyGroup
             groupId={group.groupId}
             activeGroup={isActiveGroup}
@@ -1602,7 +1686,7 @@ export function App(): React.JSX.Element {
           onToggle={rightPanel.toggle}
           onResizeStart={rightPanel.onHandleMouseDown}
         >
-          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} />
+          <Explorer explorer={explorer} title={activeWorktree === undefined ? null : worktreeDisplayName(activeWorktree)} focusToken={explorerFocusToken} onOpenFile={openFileFromExplorer} />
         </RightPanel>
       </div>
       {settingsView === null ? null : (

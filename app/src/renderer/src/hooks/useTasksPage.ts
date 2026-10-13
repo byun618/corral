@@ -157,8 +157,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     if (wasOpen.current && space !== null) return
     wasOpen.current = true
     const next = initialSpace({ groups, settings, repoRoot: activeRepoRoot, last: space ?? prefs.space })
-    if (!sameSpace(next, space)) setSpace(next)
-  }, [open, prefsReady, settings, groups, activeRepoRoot, space, prefs.space])
+    if (sameSpace(next, space)) return
+    setSpace(next)
+    // 자동으로 고른 스페이스도 「마지막으로 본 스페이스」 다 — 재시작 뒤 첫 진입 규칙(C2)의 두 번째 갈래가 이 값을 본다.
+    if (next !== null && !sameSpace(next, prefs.space)) setPrefs({ space: next })
+  }, [open, prefsReady, settings, groups, activeRepoRoot, space, prefs.space, setPrefs])
 
   const chooseSpace = useCallback((next: TasksSpace) => {
     setSpace(next)

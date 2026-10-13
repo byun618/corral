@@ -1,8 +1,12 @@
 // LA MCP 응답 형태 검증 (LIFE-600 C3) — 도구 결과 JSON(unknown)을 **검증한 뒤에만** LA 모양으로 쓴다.
 // 어긋나면 `LaShapeError(경로)` 를 던지고, 부르는 쪽(`la-source.ts`)이 `invalid_response` 로 바꾼다 — 조용히 지나가지 않는다.
 // 칸 목록은 LA 도구 설명(issue_list·issue_get·status_list·issue_transition·issue_link_create)과 실측(u0-la.json)에서 왔다.
-// **「null 허용」 과 「칸 없음」 을 가른다**(R1-F) — 실제 LA 가 늘 싣는 칸(priority·onBoard·parentId …)은 값이 null 이어도 칸이 있어야 한다.
-// 단건(`issue_get`)은 description·links 까지 늘 싣는다 → `readIssueDetail`. 목록·수정 응답은 그 둘을 요구하지 않는다(`readIssue`).
+// **「null 허용」 과 「칸 없음」 을 가른다**(R1-F·R2-D) — 실제 LA 가 늘 싣는 칸은 값이 null 이어도 칸이 있어야 한다.
+// 응답 계약은 셋이다(LA `issue.mapper.ts` · shared-types, 로컬 LA 4f8e273 대조):
+//   - 목록 `issue_list` = `IssueSummary`(`toIssueSummary`) — 공통 칸 + `openBlockers`(원소 `{id, displayId, title, statusId, statusLabel}`), description 없음 → `readIssueSummary`
+//   - 수정 `issue_update` = `IssueResponse`(`toIssueResponse`) — 공통 칸 + description, links·openBlockers 없음 → `readIssueUpdated`
+//   - 단건 `issue_get` = `IssueResponse & { links }` — 공통 칸 + description + links → `readIssueDetail`
+// 공통 칸: parentId·priority·onBoard·position·dueAt·color·archivedAt(값 null 허용, 칸 필수) · updatedAt(글자). LA 가 늘 주는 것 이상은 요구하지 않는다.
 
 import { isRecord } from '../../shared/json.js'
 import { readWorkCategory, readWorkPriority, readWorkRelationKind, type WorkCategory, type WorkPriority, type WorkRelationKind } from '../../shared/work.js'
@@ -31,16 +35,21 @@ export type LaIssueRef = {
 
 export type LaLink = { id: string; relation: WorkRelationKind; issue: LaIssueRef }
 
-export type LaIssue = LaIssueRef & {
+/** 세 응답 계약이 늘 싣는 칸. */
+export type LaIssueCore = LaIssueRef & {
   parentId: string | null
   priority: WorkPriority | null
   onBoard: boolean | null
   position: string | null
   dueAt: string | null
   color: string | null
+  archivedAt: string | null
   updatedAt: string
+}
+
+/** 작업으로 바꿀 수 있는 일감 — 목록 행이면 description·links 가 null, 단건이면 채워진다. */
+export type LaIssue = LaIssueCore & {
   openBlockerCount: number
-  /** issue_get 에서만 — 목록에는 없다(없으면 null). */
   description: string | null
   links: LaLink[] | null
 }
@@ -67,11 +76,17 @@ function present(source: Record<string, unknown>, key: string, path: string): un
   return source[key]
 }
 
+/** 칸이 있어야 하고 값은 글자 또는 null. */
 function nullableStr(source: Record<string, unknown>, key: string, path: string): string | null {
-  const value = source[key]
-  if (value === undefined || value === null) return null
-  if (typeof value !== 'string') throw new LaShapeError(`${path}.${key}`)
+  const value = present(source, key, path)
+  if (value !== null && typeof value !== 'string') throw new LaShapeError(`${path}.${key}`)
   return value
+}
+
+/** 칸이 없어도 되는 글자(null 허용) — 계약이 늘 싣지 않는 칸만. */
+function optionalStr(source: Record<string, unknown>, key: string, path: string): string | null {
+  if (!Object.hasOwn(source, key)) return null
+  return nullableStr(source, key, path)
 }
 
 function num(source: Record<string, unknown>, key: string, path: string): number {
@@ -128,51 +143,62 @@ export function readLink(value: unknown, path: string): LaLink {
   return { id: str(row, 'id', path), relation, issue: readIssueRef(row.issue, `${path}.issue`) }
 }
 
-export function readIssue(value: unknown, path: string): LaIssue {
-  const row = record(value, path)
-  const ref = readIssueRef(row, path)
+function readCore(row: Record<string, unknown>, path: string): LaIssueCore {
   const priorityRaw = present(row, 'priority', path)
   const priority = priorityRaw === null ? null : readWorkPriority(priorityRaw)
   if (priorityRaw !== null && priority === null) throw new LaShapeError(`${path}.priority`)
   const onBoard = present(row, 'onBoard', path)
   if (onBoard !== null && typeof onBoard !== 'boolean') throw new LaShapeError(`${path}.onBoard`)
-  const parentId = present(row, 'parentId', path)
-  if (parentId !== null && typeof parentId !== 'string') throw new LaShapeError(`${path}.parentId`)
-  const blockers = row.openBlockers
-  if (blockers !== undefined && !Array.isArray(blockers)) throw new LaShapeError(`${path}.openBlockers`)
-  const links = row.links
-  if (links !== undefined && !Array.isArray(links)) throw new LaShapeError(`${path}.links`)
-  const readLinks = links === undefined ? null : links.map((link, index) => readLink(link, `${path}.links[${index}]`))
   return {
-    ...ref,
-    parentId,
+    ...readIssueRef(row, path),
+    parentId: nullableStr(row, 'parentId', path),
     priority,
     onBoard,
     position: nullableStr(row, 'position', path),
     dueAt: nullableStr(row, 'dueAt', path),
     color: nullableStr(row, 'color', path),
+    archivedAt: nullableStr(row, 'archivedAt', path),
     updatedAt: str(row, 'updatedAt', path),
-    // 목록 행에는 openBlockers 가, 단건에는 links 가 있다 — 단건이면 미해소 막힘을 links 에서 센다.
-    openBlockerCount: blockers !== undefined
-      ? blockers.length
-      : (readLinks ?? []).filter((link) => link.relation === 'is_blocked_by' && link.issue.statusCategoryKey !== 'done').length,
-    description: nullableStr(row, 'description', path),
-    links: readLinks,
   }
 }
 
-export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
+/** openBlockers 원소 — `IssueBlockerRef` 의 다섯 칸이 글자여야 한다. */
+function readBlocker(value: unknown, path: string): void {
   const row = record(value, path)
-  const description = present(row, 'description', path)
-  if (description !== null && typeof description !== 'string') throw new LaShapeError(`${path}.description`)
-  if (!Array.isArray(row.links)) throw new LaShapeError(`${path}.links`)
-  const issue = readIssue(row, path)
-  if (issue.links === null) throw new LaShapeError(`${path}.links`)
-  return { ...issue, links: issue.links }
+  for (const key of ['id', 'displayId', 'title', 'statusId', 'statusLabel']) str(row, key, path)
 }
 
-export function readIssues(value: unknown, path: string): LaIssue[] {
-  return readList(value, path).map((row, index) => readIssue(row, `${path}[${index}]`))
+/** 목록 행(`IssueSummary`) — openBlockers 필수(빈 배열 = 안 막힘). description·links 는 없다. */
+export function readIssueSummary(value: unknown, path: string): LaIssue {
+  const row = record(value, path)
+  const core = readCore(row, path)
+  const blockers = present(row, 'openBlockers', path)
+  if (!Array.isArray(blockers)) throw new LaShapeError(`${path}.openBlockers`)
+  blockers.forEach((blocker, index) => readBlocker(blocker, `${path}.openBlockers[${index}]`))
+  return { ...core, openBlockerCount: blockers.length, description: null, links: null }
+}
+
+/** 수정 응답(`IssueResponse`) — description 칸 필수. 부르는 쪽은 성공만 보고 단건을 다시 읽는다. */
+export function readIssueUpdated(value: unknown, path: string): LaIssueCore {
+  const row = record(value, path)
+  nullableStr(row, 'description', path)
+  return readCore(row, path)
+}
+
+/** 단건(`IssueResponse & { links }`) — description 칸·links 배열 필수. 미해소 막힘은 links 에서 센다. */
+export function readIssueDetail(value: unknown, path: string): LaIssueDetail {
+  const row = record(value, path)
+  const core = readCore(row, path)
+  const description = nullableStr(row, 'description', path)
+  const raw = present(row, 'links', path)
+  if (!Array.isArray(raw)) throw new LaShapeError(`${path}.links`)
+  const links = raw.map((link, index) => readLink(link, `${path}.links[${index}]`))
+  const openBlockerCount = links.filter((link) => link.relation === 'is_blocked_by' && link.issue.statusCategoryKey !== 'done').length
+  return { ...core, openBlockerCount, description, links }
+}
+
+export function readIssueSummaries(value: unknown, path: string): LaIssue[] {
+  return readList(value, path).map((row, index) => readIssueSummary(row, `${path}[${index}]`))
 }
 
 export function readStatuses(value: unknown, path: string): LaStatus[] {
@@ -183,7 +209,7 @@ export function readStatuses(value: unknown, path: string): LaStatus[] {
       id: str(row, 'id', at),
       categoryKey: categoryOf(row.categoryKey, `${at}.categoryKey`),
       label: str(row, 'label', at),
-      color: nullableStr(row, 'color', at),
+      color: optionalStr(row, 'color', at),
       position: position(row, at),
     }
   })
@@ -192,7 +218,7 @@ export function readStatuses(value: unknown, path: string): LaStatus[] {
 export function readTransition(value: unknown, path: string): { transitioned: boolean; reason: string | null } {
   const row = record(value, path)
   if (typeof row.transitioned !== 'boolean') throw new LaShapeError(`${path}.transitioned`)
-  return { transitioned: row.transitioned, reason: nullableStr(row, 'reason', path) }
+  return { transitioned: row.transitioned, reason: optionalStr(row, 'reason', path) }
 }
 
 export function readLinkDeleted(value: unknown, path: string): string {

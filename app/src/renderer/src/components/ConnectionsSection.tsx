@@ -155,8 +155,13 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
 }
 
 function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
-  const test = (): void => {
-    void window.corral.testWorkConnection({ connectionId: connection.id })
+  // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
+  // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
+  const [testError, setTestError] = useState<WorkError | null>(null)
+  const test = async (): Promise<void> => {
+    setTestError(null)
+    const result = await window.corral.testWorkConnection({ connectionId: connection.id })
+    setTestError(result.ok ? null : result.error)
   }
   const spaces = connection.spaces
   const visibleCount = spaces?.filter((space) => !space.hidden).length ?? 0
@@ -171,7 +176,7 @@ function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: 
           </div>
           <div className="connection-meta">토큰 ••••{connection.tokenTail} · {formatDate(connection.addedAt)} 추가 · {formatChecked(connection.checkedAt)}</div>
         </div>
-        <button type="button" className="connection-btn" data-connection-test onClick={test} disabled={connection.status === 'testing'}>연결 테스트</button>
+        <button type="button" className="connection-btn" data-connection-test onClick={() => void test()} disabled={connection.status === 'testing'}>연결 테스트</button>
         <button type="button" className="connection-btn is-danger" data-connection-remove onClick={onRemove}>해제</button>
       </div>
       {connection.status === 'testing' && connection.pending === 'keychain' ? (
@@ -183,7 +188,12 @@ function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: 
         <div className="connection-error" data-connection-error={connection.status}>
           <span className="connection-error-text">{connection.error.message}</span>
           {connection.error.action === 'replace_token' ? <button type="button" className="connection-link" onClick={onReplaceToken}>토큰 다시 붙여넣기</button> : null}
-          {connection.error.action === 'retry' ? <button type="button" className="connection-link" onClick={test}>다시 시도</button> : null}
+          {connection.error.action === 'retry' ? <button type="button" className="connection-link" onClick={() => void test()}>다시 시도</button> : null}
+        </div>
+      )}
+      {testError === null || connection.error !== null ? null : (
+        <div className="connection-error" data-connection-test-error={testError.kind} role="alert">
+          <span className="connection-error-text">연결 테스트 실패: {testError.message}</span>
         </div>
       )}
       <div className="connection-spaces">
@@ -227,6 +237,7 @@ function RemoveConfirm({ connection, onCancel, onDone }: { connection: WorkConne
 
 function RepoDefaultRow({ repo, state, first }: { repo: ConnectionsRepo; state: WorkSettingsState; first: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const current = state.repoDefaults.find((entry) => entry.repoRoot === repo.root) ?? null
   const options = state.connections.flatMap((connection) =>
     (connection.spaces ?? [])
@@ -239,7 +250,9 @@ function RepoDefaultRow({ repo, state, first }: { repo: ConnectionsRepo; state: 
   const label = current === null ? '지정 안 함' : chosen === null ? (chosenConnection?.spaces === null ? '불러오는 중' : '없는 스페이스') : chosen.name
   const pick = async (target: { connectionId: string; spaceKey: string } | null): Promise<void> => {
     setOpen(false)
-    await window.corral.setRepoDefaultSpace({ repoRoot: repo.root, target })
+    // 저장 실패(파일 쓰기 등)는 이 줄에 보인다(R2-E).
+    const result = await window.corral.setRepoDefaultSpace({ repoRoot: repo.root, target })
+    setError(result.ok ? null : result.error.message)
   }
   return (
     <div className={`repo-default${first ? '' : ' has-sep'}`} data-repo-default-space={repo.name}>
@@ -248,6 +261,7 @@ function RepoDefaultRow({ repo, state, first }: { repo: ConnectionsRepo; state: 
         <span className="connection-space-dot" style={{ background: chosen === null ? 'var(--fg-faint)' : spaceColor({ color: chosen.color, index: chosenIndex }) }} />
         {label}
       </button>
+      {error === null ? null : <span className="connection-space-error" role="alert" data-repo-default-error>저장하지 못했습니다: {error}</span>}
       {open ? (
         <div className="repo-default-menu" role="menu">
           <button type="button" role="menuitem" className="repo-default-option" onClick={() => void pick(null)}>

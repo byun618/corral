@@ -20,6 +20,8 @@ import { classifyHttpStatus, classifyThrown, classifyToolError, redactSecret, wo
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 const SUPPORTED_VERSIONS = new Set(['2025-06-18', '2025-03-26'])
 const MAX_BODY_BYTES = 16 * 1024 * 1024
+/** HTTP 오류 본문에서 코드 힌트를 찾을 때 읽는 상한. */
+const HINT_BYTES = 64 * 1024
 
 export type McpOutcome = { ok: true; value: unknown } | { ok: false; error: WorkError }
 
@@ -180,13 +182,14 @@ export class McpHttpClient {
       const response = await this.fetchImpl(this.url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) })
       const session = response.headers.get('mcp-session-id')
       if (session !== null && session.length > 0) this.sessionId = session
-      if (!response.ok) return { ok: false, error: classifyHttpStatus({ status: response.status, body: await readCapped(response), host: this.host }) }
+      // 분류는 상태 코드로 먼저 정한다(R2-G). 본문은 코드 힌트만 — 읽기가 끊기거나 크거나 늦어도 분류를 잃지 않는다.
+      if (!response.ok) return { ok: false, error: classifyHttpStatus({ status: response.status, body: await readHint(response), host: this.host }) }
       if (id === null) {
         await response.body?.cancel()
         return { ok: true, value: null }
       }
       const contentType = response.headers.get('content-type') ?? ''
-      const reply = contentType.includes('text/event-stream') ? await findInStream({ response, id }) : findInJson({ text: await readCapped(response), id })
+      const reply = contentType.includes('text/event-stream') ? await findInStream({ response, id }) : findInJson({ text: await readCapped({ response }), id })
       if (reply === null) {
         return { ok: false, error: workError({ kind: 'invalid_response', status: response.status, message: `${this.host} 응답에 요청 ${id} 의 JSON-RPC 결과가 없습니다.` }) }
       }
@@ -207,10 +210,19 @@ function closedError(): WorkError {
   return workError({ kind: 'not_connected', message: '연결이 해제됐거나 토큰이 바뀌어 요청을 보내지 않았습니다.' })
 }
 
+/** HTTP 오류 본문 — 코드 힌트용 보조 단계. 상한(64 KiB)·끊김·시간 초과는 모두 「힌트 없음」(빈 글)이다. 던지지 않는다. */
+async function readHint(response: Response): Promise<string> {
+  try {
+    return await readCapped({ response, limit: HINT_BYTES })
+  } catch {
+    return ''
+  }
+}
+
 /** 본문을 상한 안에서 읽는다 — 상한을 넘으면 그 자리에서 멈춘다. */
-async function readCapped(response: Response): Promise<string> {
+async function readCapped({ response, limit = MAX_BODY_BYTES }: { response: Response; limit?: number }): Promise<string> {
   const declared = Number(response.headers.get('content-length') ?? '0')
-  if (declared > MAX_BODY_BYTES) throw new BodyTooLarge()
+  if (declared > limit) throw new BodyTooLarge()
   const body = response.body
   if (body === null) return ''
   const reader = body.getReader()
@@ -222,7 +234,7 @@ async function readCapped(response: Response): Promise<string> {
       const { done, value } = await reader.read()
       if (done) return text + decoder.decode()
       bytes += value.byteLength
-      if (bytes > MAX_BODY_BYTES) throw new BodyTooLarge()
+      if (bytes > limit) throw new BodyTooLarge()
       text += decoder.decode(value, { stream: true })
     }
   } finally {

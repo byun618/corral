@@ -10,7 +10,7 @@
 // Electron 을 import 하지 않는다 — `SecretCipher` 를 주입받는다(테스트는 가짜 cipher, 앱은 `electronCipher(safeStorage)`).
 
 import type { WorkError } from '../../shared/work.js'
-import { workError } from './errors.js'
+import { redactSecret, workError } from './errors.js'
 
 export interface SecretCipher {
   available(): Promise<boolean>
@@ -100,6 +100,13 @@ export class CredentialVault {
   forget(connectionId: string): void {
     this.open.delete(connectionId)
     this.opening.delete(connectionId)
+  }
+
+  /** 글에서 지금 메모리에 있는 토큰을 모두 지운다 — 밖으로 나가는 마지막 경계(service)가 부른다(R2-F). 토큰을 밖에 내주지 않는다. */
+  redact(text: string): string {
+    let out = text
+    for (const token of this.open.values()) out = redactSecret({ text: out, secret: token })
+    return out
   }
 
   private async decrypt(sealed: string): Promise<OpenResult> {

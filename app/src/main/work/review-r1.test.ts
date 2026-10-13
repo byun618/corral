@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkSettingsState } from '../../shared/work.js'
 import { FIXTURE_IDS, FIXTURE_STATUS, type FixtureCorrupt, type FixtureEcho } from './la-mcp-fixture.js'
-import { readIssue, readIssueDetail } from './la-shape.js'
+import { readIssueDetail, readIssueSummary, readIssueUpdated } from './la-shape.js'
 import { LA_CATCH_ALL_KEY, laSourceEntry, laToolError } from './la-source.js'
 import { McpHttpClient, parseSseMessages, readEnvelope, readToolResult, SseParser } from './mcp-http.js'
 import { FAKE_LA_TOKEN, laFixtureHarness, workHarness } from './test-kit.js'
@@ -205,17 +205,20 @@ describe('[R1-F] 봉투·단건 모양을 엄격히', () => {
     })
   }
 
-  it('null 허용과 칸 없음을 가른다 — 목록·수정 응답은 links·description 을 요구하지 않는다', () => {
+  it('null 허용과 칸 없음을 가른다 — 목록은 openBlockers, 수정은 description, 단건은 description·links', () => {
     const row = {
       id: 'i', sequentialId: 1, displayId: 'LIFE-1', kind: 'task', title: 't', statusId: 's', statusCategoryKey: 'todo', statusLabel: '할 일',
-      parentId: null, priority: null, onBoard: null, position: '1', dueAt: null, color: null, updatedAt: '2026-10-13T00:00:00.000Z',
+      parentId: null, priority: null, onBoard: null, position: '1', dueAt: null, color: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z',
     }
-    expect(readIssue(row, 'x').links).toBeNull()
+    expect(readIssueSummary({ ...row, openBlockers: [] }, 'x').links).toBeNull()
+    expect(() => readIssueSummary(row, 'x')).toThrow()
+    expect(readIssueUpdated({ ...row, description: null }, 'x').id).toBe('i')
+    expect(() => readIssueUpdated(row, 'x')).toThrow()
     expect(() => readIssueDetail(row, 'x')).toThrow()
     expect(readIssueDetail({ ...row, description: null, links: [] }, 'x').description).toBeNull()
     const { priority: _priority, ...withoutPriority } = row
     void _priority
-    expect(() => readIssue(withoutPriority, 'x')).toThrow()
+    expect(() => readIssueSummary({ ...withoutPriority, openBlockers: [] }, 'x')).toThrow()
   })
 
   it('JSON-RPC 봉투 — 판·result/error 배타·error 모양', () => {
@@ -290,8 +293,8 @@ describe('[R1-I] 열린 수 — 부모 사슬·상한', () => {
     const h = await connected()
     const spaces = await h.service.request({ requestId: 's', connectionId: h.connectionId, call: { op: 'listSpaces' } })
     if (!spaces.ok || spaces.result.op !== 'listSpaces') throw new Error('spaces')
-    // checkpoint · task600 · task601 · 직속 · 열린 bug · bug 아래 task · 완료 bug 아래 task = 7
-    expect(spaces.result.spaces.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(7)
+    // checkpoint · task600 · task601 · 직속 · 열린 bug · bug 아래 task · 완료 bug 아래 task · 보관 checkpoint 아래 task(R2-C) = 8
+    expect(spaces.result.spaces.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(8)
   })
 
   it('목록 상한에 닿으면 수를 모른다(null) — 틀린 수를 보이지 않는다', async () => {
@@ -304,11 +307,9 @@ describe('[R1-I] 열린 수 — 부모 사슬·상한', () => {
     for (const space of spaces.result.spaces) expect(space.openCount).toBeNull()
   })
 
-  it('부모 사슬을 못 풀면(보관된 부모) 수를 모른다(null)', async () => {
+  it('부모 사슬을 못 풀면(어느 목록에도 없는 부모) 수를 모른다(null) — 보관된 부모는 이제 풀린다(R2-C)', async () => {
     const h = await connected()
-    const checkpoint = h.fixture.issues.find((issue) => issue.id === FIXTURE_IDS.checkpoint)
-    if (checkpoint === undefined) throw new Error('fixture')
-    checkpoint.archivedAt = '2026-10-12T00:00:00.000Z'
+    h.fixture.issues = h.fixture.issues.filter((issue) => issue.id !== FIXTURE_IDS.checkpoint)
     const spaces = await h.service.request({ requestId: 's', connectionId: h.connectionId, call: { op: 'listSpaces' } })
     if (!spaces.ok || spaces.result.op !== 'listSpaces') throw new Error('spaces')
     expect(spaces.result.spaces.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBeNull()

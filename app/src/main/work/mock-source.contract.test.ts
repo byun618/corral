@@ -8,6 +8,6 @@ workContractSuite({
     const harness = mockHarness({ defect: process.env.L600_BREAK === 'mock-transition' ? 'transition-ignored' : 'none' })
     const added = await harness.service.addConnection({ sourceId: 'mock-jira', token: FAKE_MOCK_TOKEN, replaceId: null })
     if (!added.ok) throw new Error(`연결 실패: ${added.error.kind} ${added.error.message}`)
-    return { service: harness.service, connectionId: added.connection.id, close: async () => {} }
+    return { service: harness.service, connectionId: added.connection.id, close: async () => {}, visibleItems: ['m-1', 'm-2', 'm-3', 'm-4', 'm-5'] }
   },
 })

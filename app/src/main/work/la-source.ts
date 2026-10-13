@@ -4,6 +4,9 @@
 //   - 열린(아카이브 아님 · 완료 분류 아님) project 일감 하나 = 스페이스 하나. 이름·색·설명이 스페이스 정보가 된다.
 //   - 어느 프로젝트 트리에도 없는 일감(부모 없음)은 「미분류」 스페이스(`role: catch_all`)로 — 실재한다(00-analysis §3: 4건).
 //   - 프로젝트를 부모로 둔 일감은 `parentId: null`(스페이스 바로 아래)로 낸다. 프로젝트 자신은 작업 목록에 섞이지 않는다.
+//   - **보관(archive)** — 미보관 일감은 조상의 보관 여부와 무관하게 목록에 나온다(R2-C 계약). 조상 탐색(구조)은 보관 포함(`archived: 'all'`)으로,
+//     표시는 미보관만. 보관된 부모는 보이지 않으므로 자식의 `parentId` 는 **가장 가까운 미보관 조상**(없으면 스페이스 바로 아래 = null)이다.
+//     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다. 열린 수도 같은 규칙.
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
 // 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 조건부 수정(L1b) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
@@ -20,7 +23,7 @@ import type {
   WorkStatus,
 } from '../../shared/work.js'
 import { workError } from './errors.js'
-import { readIssue, readIssueDetail, readIssues, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
+import { readIssueDetail, readIssueSummaries, readIssueUpdated, readLink, readLinkDeleted, readStatuses, readTransition, LaShapeError, type LaIssue, type LaStatus } from './la-shape.js'
 import { McpHttpClient } from './mcp-http.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceEntry } from './source.js'
 
@@ -40,6 +43,8 @@ const MAX_DEPTH = 5
 const PARENT_KINDS = new Set<LaIssue['kind']>(['project', 'checkpoint', 'bug'])
 /** LA SDK 경로의 scope 부족 — HTTP 200 · `isError: true` · text `missing scope: issue:write`(mcp.service `ensureIssueScope`). */
 const MISSING_SCOPE = /^missing scope: ([a-z_]+:[a-z_]+)$/
+/** 문구에 옮겨도 되는 범위 이름 — 원격 글을 그대로 옮기지 않는다(R2-F). 이 밖의 범위도 권한 부족이지만 이름은 싣지 않는다. */
+const KNOWN_SCOPES = new Set(['issue:read', 'issue:write'])
 
 export const LA_DESCRIPTOR: WorkSourceDescriptor = {
   id: LA_SOURCE_ID,
@@ -79,7 +84,8 @@ export function laSourceEntry({ url, clientVersion, fetchImpl, timeoutMs }: { ur
 export function laToolError(text: string): WorkError | null {
   const match = MISSING_SCOPE.exec(text.trim())
   if (match === null) return null
-  return workError({ kind: 'forbidden', message: `연결은 됐지만 이 토큰에 ${match[1]} 범위가 없습니다. 토큰 범위(scope)를 확인하세요.` })
+  const scope = match[1] !== undefined && KNOWN_SCOPES.has(match[1]) ? `${match[1]} ` : ''
+  return workError({ kind: 'forbidden', message: `연결은 됐지만 이 토큰에 ${scope}범위가 없습니다. 토큰 범위(scope)를 확인하세요.` })
 }
 
 export class LaSource implements WorkSourceClient {
@@ -120,14 +126,14 @@ export class LaSource implements WorkSourceClient {
         return this.changeStatus({ itemId: call.itemId, statusKey: call.statusKey })
       case 'setPlacement': {
         if (call.ifVersion !== null) return unsupported('conflictCheck')
-        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, onBoard: call.placement === 'board' }, read: readIssue })
+        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, onBoard: call.placement === 'board' }, read: readIssueUpdated })
         return updated.ok ? this.itemResult({ op: 'setPlacement', itemId: call.itemId }) : updated.outcome
       }
       case 'setParent': {
         if (call.ifVersion !== null) return unsupported('conflictCheck')
         // 스페이스 바로 아래(null) = 그 프로젝트가 부모. 「미분류」 바로 아래 = 부모 없음.
         const parentId = call.parentId ?? (call.spaceKey === LA_CATCH_ALL_KEY ? null : call.spaceKey)
-        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, parentId }, read: readIssue })
+        const updated = await this.tool({ name: 'issue_update', args: { id: call.itemId, parentId }, read: readIssueUpdated })
         return updated.ok ? this.itemResult({ op: 'setParent', itemId: call.itemId }) : updated.outcome
       }
       case 'addRelation': return this.addRelation({ itemId: call.itemId, kind: call.kind, otherKey: call.otherKey })
@@ -157,18 +163,19 @@ export class LaSource implements WorkSourceClient {
     return this.tool({ name: 'status_list', args: {}, read: readStatuses }).then((step) => (step.ok ? { ok: true, value: sortStatuses(step.value) } : step))
   }
 
+  /** 목록 — 기본은 보관 포함(조상 탐색용). 표시할 것만 고르는 일은 부르는 쪽이 `archivedAt` 으로 한다. */
   private list(args: Record<string, unknown>): Promise<Step<LaIssue[]>> {
-    return this.tool({ name: 'issue_list', args: { archived: 'exclude', limit: LIST_LIMIT, ...args }, read: readIssues })
+    return this.tool({ name: 'issue_list', args: { archived: 'all', limit: LIST_LIMIT, ...args }, read: readIssueSummaries })
   }
 
   private async listSpaces(): Promise<WorkOutcome> {
-    // 열린 수를 세려고 열린 task 와, 부모 사슬을 풀 수 있게 부모가 될 수 있는 것(project·checkpoint·bug) **전부**(완료 포함)를 받는다 — 5번, 병렬.
+    // 열린 수를 세려고 미보관 열린 task 와, 부모 사슬을 풀 수 있게 부모가 될 수 있는 것(project·checkpoint·bug) **전부**(완료·보관 포함)를 받는다 — 5번, 병렬.
     const steps = await Promise.all([
       this.list({ kind: 'project' }),
       this.list({ kind: 'checkpoint' }),
       this.list({ kind: 'bug' }),
-      this.list({ kind: 'task', categoryKey: 'todo' }),
-      this.list({ kind: 'task', categoryKey: 'in_progress' }),
+      this.list({ kind: 'task', categoryKey: 'todo', archived: 'exclude' }),
+      this.list({ kind: 'task', categoryKey: 'in_progress', archived: 'exclude' }),
     ])
     const failed = steps.find((step) => !step.ok)
     if (failed !== undefined && !failed.ok) return failed.outcome
@@ -179,44 +186,31 @@ export class LaSource implements WorkSourceClient {
     const counts = new Map<string, number>()
     // 상한에 닿은 목록이 있거나 부모 사슬을 못 푼 열린 일감이 있으면 수를 믿을 수 없다 — 모든 스페이스의 수를 null(모름)로(R1-I).
     let countable = !lists.some((list) => list.length >= LIST_LIMIT)
-    const openItems = [...checkpoints, ...bugs].filter((issue) => issue.statusCategoryKey !== 'done').concat(openTasks.flat())
+    const openItems = [...checkpoints, ...bugs].filter((issue) => issue.statusCategoryKey !== 'done' && issue.archivedAt === null).concat(openTasks.flat())
     for (const issue of openItems) {
-      const root = rootOf({ issue, parents })
-      if (root === undefined) countable = false
-      else counts.set(root, (counts.get(root) ?? 0) + 1)
+      const space = spaceOf({ issue, byId: parents })
+      if (space === undefined) countable = false
+      else counts.set(space, (counts.get(space) ?? 0) + 1)
     }
     const openCount = (key: string): number | null => (countable ? counts.get(key) ?? 0 : null)
     const spaces: WorkSpace[] = projects
-      .filter((project) => project.kind === 'project' && project.statusCategoryKey !== 'done')
+      .filter(isSpace)
       .map((project) => ({ key: project.id, name: project.title, color: project.color, description: null, openCount: openCount(project.id), role: 'regular' }))
     spaces.push({ key: LA_CATCH_ALL_KEY, name: '미분류', color: null, description: '어느 프로젝트에도 속하지 않은 작업', openCount: openCount(LA_CATCH_ALL_KEY), role: 'catch_all' })
     return { ok: true, result: { op: 'listSpaces', spaces, capabilities: LA_CAPABILITIES } }
   }
 
   private async listItems(spaceKey: string): Promise<WorkOutcome> {
-    let truncated = false
-    let roots: LaIssue[]
-    let rootParent: string | null
-    if (spaceKey === LA_CATCH_ALL_KEY) {
-      const steps = await Promise.all(['checkpoint', 'task', 'bug'].map((kind) => this.list({ kind })))
-      const failed = steps.find((step) => !step.ok)
-      if (failed !== undefined && !failed.ok) return failed.outcome
-      const lists = steps.map((step) => (step.ok ? step.value : []))
-      truncated = lists.some((list) => list.length >= LIST_LIMIT)
-      roots = lists.flat().filter((issue) => issue.parentId === null)
-      rootParent = null
-    } else {
-      const space = await this.tool({ name: 'issue_get', args: { id: spaceKey }, read: readIssueDetail })
-      if (!space.ok) return space.outcome
-      if (space.value.kind !== 'project') return { ok: false, error: workError({ kind: 'rejected', message: `${space.value.displayId} 는 스페이스(프로젝트)가 아닙니다.` }) }
-      const children = await this.list({ parentId: spaceKey })
-      if (!children.ok) return children.outcome
-      truncated = children.value.length >= LIST_LIMIT
-      roots = children.value
-      rootParent = spaceKey
-    }
+    if (spaceKey === LA_CATCH_ALL_KEY) return this.listCatchAll()
+    const space = await this.tool({ name: 'issue_get', args: { id: spaceKey }, read: readIssueDetail })
+    if (!space.ok) return space.outcome
+    if (space.value.kind !== 'project') return { ok: false, error: workError({ kind: 'rejected', message: '이 키는 스페이스(프로젝트)가 아닙니다.' }) }
+    const children = await this.list({ parentId: spaceKey })
+    if (!children.ok) return children.outcome
+    let truncated = children.value.length >= LIST_LIMIT
+    // 구조는 보관 포함으로 내려간다 — 보관된 checkpoint·bug 아래 미보관 작업을 놓치지 않는다(R2-C).
     const collected = new Map<string, LaIssue>()
-    let frontier = roots.filter((issue) => issue.kind !== 'project')
+    let frontier = children.value.filter((issue) => issue.kind !== 'project')
     for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth += 1) {
       for (const issue of frontier) collected.set(issue.id, issue)
       // 자식을 가질 수 있는 것만 내려간다 — task 만 잎이다(bug 아래에도 task 가 있다).
@@ -228,32 +222,51 @@ export class LaSource implements WorkSourceClient {
       if (steps.some((step) => step.ok && step.value.length >= LIST_LIMIT)) truncated = true
       frontier = next.filter((issue) => issue.kind !== 'project' && !collected.has(issue.id))
     }
-    const items = [...collected.values()].map((issue) => toItem({ issue, spaceKey, rootParent }))
+    // 표시 부모를 풀 때 스페이스 프로젝트에 닿으면 바로 아래(null)다 — 사슬 지도에 프로젝트도 넣는다.
+    const byId = new Map(collected).set(space.value.id, space.value)
+    const items = [...collected.values()]
+      .filter((issue) => issue.archivedAt === null)
+      .map((issue) => toItem({ issue, spaceKey, parentId: visibleParent({ issue, byId }) }))
     return { ok: true, result: { op: 'listItems', items, nextCursor: null, truncated } }
   }
 
-  /** 단건 — 부모 사슬을 올라가 스페이스를 찾는다(프로젝트를 만나면 그 프로젝트, 부모가 끊기면 미분류). */
+  /** 「미분류」 — 부모 사슬이 프로젝트에 닿지 않거나, 닿은 프로젝트가 스페이스가 아닌(보관·완료) 미보관 일감. 4번 받아 메모리에서 사슬을 푼다. */
+  private async listCatchAll(): Promise<WorkOutcome> {
+    const steps = await Promise.all(['project', 'checkpoint', 'task', 'bug'].map((kind) => this.list({ kind })))
+    const failed = steps.find((step) => !step.ok)
+    if (failed !== undefined && !failed.ok) return failed.outcome
+    const lists = steps.map((step) => (step.ok ? step.value : []))
+    const truncated = lists.some((list) => list.length >= LIST_LIMIT)
+    const byId = new Map<string, LaIssue>()
+    for (const issue of lists.flat()) byId.set(issue.id, issue)
+    const items = [...byId.values()]
+      .filter((issue) => issue.kind !== 'project' && issue.archivedAt === null && spaceOf({ issue, byId }) === LA_CATCH_ALL_KEY)
+      .map((issue) => toItem({ issue, spaceKey: LA_CATCH_ALL_KEY, parentId: visibleParent({ issue, byId }) }))
+    return { ok: true, result: { op: 'listItems', items, nextCursor: null, truncated } }
+  }
+
+  /** 단건 — 부모 사슬을 올라가 스페이스를 찾는다(스페이스인 프로젝트를 만나면 그 프로젝트, 아니면 미분류). 표시 부모 = 가장 가까운 미보관 조상. */
   private async item(itemId: string): Promise<Step<WorkItem>> {
     const got = await this.tool({ name: 'issue_get', args: { id: itemId }, read: readIssueDetail })
     if (!got.ok) return got
     const issue = got.value
     if (issue.kind === 'project') {
-      return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: `${issue.displayId} 는 스페이스(프로젝트)라 작업으로 열 수 없습니다.` }) } }
+      return { ok: false, outcome: { ok: false, error: workError({ kind: 'rejected', message: '스페이스(프로젝트)라 작업으로 열 수 없습니다.' }) } }
     }
     let parentId = issue.parentId
     let spaceKey = LA_CATCH_ALL_KEY
-    let rootParent: string | null = null
+    let shownParent: string | null = null
     for (let depth = 0; depth < MAX_DEPTH && parentId !== null; depth += 1) {
       const parent = await this.tool({ name: 'issue_get', args: { id: parentId }, read: readIssueDetail })
       if (!parent.ok) return parent
       if (parent.value.kind === 'project') {
-        spaceKey = parent.value.id
-        rootParent = parent.value.id
+        if (isSpace(parent.value)) spaceKey = parent.value.id
         break
       }
+      if (shownParent === null && parent.value.archivedAt === null) shownParent = parent.value.id
       parentId = parent.value.parentId
     }
-    return { ok: true, value: toItem({ issue, spaceKey, rootParent }) }
+    return { ok: true, value: toItem({ issue, spaceKey, parentId: shownParent }) }
   }
 
   private async itemResult({ op, itemId }: { op: 'changeStatus' | 'setPlacement' | 'setParent'; itemId: string }): Promise<WorkOutcome> {
@@ -283,7 +296,7 @@ export class LaSource implements WorkSourceClient {
     const args: Record<string, unknown> = { id: itemId, statusId: target.id }
     if (target.categoryKey !== 'done' && current.value.statusCategoryKey === 'done') args.resolution = null
     if (target.categoryKey === 'done' && current.value.statusCategoryKey !== 'done') args.resolution = 'completed'
-    const updated = await this.tool({ name: 'issue_update', args, read: readIssue })
+    const updated = await this.tool({ name: 'issue_update', args, read: readIssueUpdated })
     return updated.ok ? this.itemResult({ op: 'changeStatus', itemId }) : updated.outcome
   }
 
@@ -323,17 +336,36 @@ function toStatus(status: LaStatus, index: number): WorkStatus {
   return { key: status.id, label: status.label, category: status.categoryKey, order: index, color: status.color }
 }
 
-function rootOf({ issue, parents }: { issue: LaIssue; parents: Map<string, LaIssue> }): string | undefined {
+/** 스페이스가 되는 프로젝트 — 보관 아님 · 완료 분류 아님. */
+function isSpace(issue: LaIssue): boolean {
+  return issue.kind === 'project' && issue.archivedAt === null && issue.statusCategoryKey !== 'done'
+}
+
+/** 일감이 속한 스페이스 키 — 사슬이 스페이스 프로젝트에 닿으면 그 id, 부모 없음·스페이스 아닌 프로젝트면 미분류, 못 풀면 undefined. */
+function spaceOf({ issue, byId }: { issue: LaIssue; byId: Map<string, LaIssue> }): string | undefined {
   let cursor: LaIssue | undefined = issue
   for (let depth = 0; depth <= MAX_DEPTH && cursor !== undefined; depth += 1) {
-    if (cursor.kind === 'project') return cursor.id
+    if (cursor.kind === 'project') return isSpace(cursor) ? cursor.id : LA_CATCH_ALL_KEY
     if (cursor.parentId === null) return LA_CATCH_ALL_KEY
-    cursor = parents.get(cursor.parentId)
+    cursor = byId.get(cursor.parentId)
   }
   return undefined
 }
 
-function toItem({ issue, spaceKey, rootParent }: { issue: LaIssue; spaceKey: string; rootParent: string | null }): WorkItem {
+/** 화면의 부모 — 가장 가까운 미보관 조상 작업. 프로젝트·부모 없음에 닿으면 null(스페이스 바로 아래). 사슬이 끊기면 끊긴 id 를 그대로(목록은 truncated). */
+function visibleParent({ issue, byId }: { issue: LaIssue; byId: Map<string, LaIssue> }): string | null {
+  let parentId = issue.parentId
+  for (let depth = 0; depth <= MAX_DEPTH && parentId !== null; depth += 1) {
+    const parent = byId.get(parentId)
+    if (parent === undefined) return parentId
+    if (parent.kind === 'project') return null
+    if (parent.archivedAt === null) return parent.id
+    parentId = parent.parentId
+  }
+  return null
+}
+
+function toItem({ issue, spaceKey, parentId }: { issue: LaIssue; spaceKey: string; parentId: string | null }): WorkItem {
   const kindKey = issue.kind === 'project' ? 'task' : issue.kind
   return {
     id: issue.id,
@@ -346,7 +378,7 @@ function toItem({ issue, spaceKey, rootParent }: { issue: LaIssue; spaceKey: str
     category: issue.statusCategoryKey,
     priority: issue.priority,
     dueAt: issue.dueAt,
-    parentId: issue.parentId === rootParent ? null : issue.parentId,
+    parentId,
     placement: issue.onBoard === null ? null : issue.onBoard ? 'board' : 'backlog',
     rank: issue.position,
     openBlockerCount: issue.openBlockerCount,

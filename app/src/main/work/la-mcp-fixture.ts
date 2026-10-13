@@ -6,6 +6,8 @@
 //   - scope 부족 = **HTTP 200 · SSE `result.isError: true` · text `missing scope: issue:write`**(LA 소스 mcp.service `ensureIssueScope` →
 //     SDK 가 도구 오류로 감싼다 — 리뷰 r1 sdk-permission 와이어 실측). `scopeStyle: 'http'` 면 HTTP 403 `FORBIDDEN`(다른 서버 꼴 대조용).
 //   - 부모 규칙(issue.service `checkParentRule`): task 의 부모 = project·checkpoint·bug — 씨앗에 bug 아래 task 를 둔다(R1-A).
+//   - 보관(issue.service `archive`)은 그 행만 바꾼다 — 씨앗에 보관된 checkpoint 아래 미보관 task, 보관된 부모 없는 bug 아래 미보관 task 를 둔다(R2-C).
+//   - 응답 계약(issue.mapper): 목록 = IssueSummary(openBlockers, description 없음) · 수정 = IssueResponse(description, links 없음) · 단건 = + links.
 //
 // 제어: `fault`(다음 요청들의 HTTP 상태 강제 · 소켓 끊기 · 지연) · `corrupt`(응답 한 칸 깨기 — 양성 대조) · `protocolVersion`
 //   · `echo`(원격 오류 글에 받은 토큰을 되울리기 — R1-E 양성 대조) · `holdStream`(결과를 쓰고 스트림을 닫지 않기 — R1-H).
@@ -22,12 +24,13 @@ export type FixtureFault = { kind: 'http'; status: number; body: string } | { ki
 /**
  * 양성 대조용 깨기 — `issue-statusId`: 일감 행의 statusId 를 숫자로 · `tool-error`: 도구 결과를 isError 로 · `drop-statusLabel`: statusLabel 칸 삭제
  * · `drop-<칸>`: 단건·목록 행에서 그 칸 삭제 · `isError-string`: isError 를 글자 'true' 로 · `rpc-wrong-version`: jsonrpc 를 'broken' 으로
- * · `rpc-error-string`: result 옆에 error: 'failed' 를 같이.
+ * · `rpc-error-string`: result 옆에 error: 'failed' 를 같이 · `list-drop-<칸>`: 목록 행에서 그 칸 삭제 · `list-bad-blocker`: openBlockers 를 [null, 42] 로(R2-D).
  */
 export type FixtureCorrupt =
   | 'issue-statusId' | 'tool-error' | 'drop-statusLabel'
   | 'drop-links' | 'drop-description' | 'drop-onBoard' | 'drop-priority'
   | 'isError-string' | 'rpc-wrong-version' | 'rpc-error-string'
+  | 'list-drop-position' | 'list-drop-dueAt' | 'list-drop-color' | 'list-drop-archivedAt' | 'list-drop-openBlockers' | 'list-bad-blocker'
 /** 받은 토큰을 되울리는 자리 — HTTP 오류 본문 · JSON-RPC error.message · 도구 isError 글. */
 export type FixtureEcho = 'http-body' | 'rpc-error' | 'tool-error'
 
@@ -77,7 +80,14 @@ export const FIXTURE_IDS = {
   corral: uuid(337), lifeAssistant: uuid(2), doneProject: uuid(41),
   checkpoint: uuid(372), task600: uuid(600), task601: uuid(601), direct: uuid(500), orphanBug: uuid(385), archived: uuid(499), laTask: uuid(20),
   bug: uuid(386), taskUnderBug: uuid(602), doneBug: uuid(387), taskUnderDoneBug: uuid(603),
+  archivedCheckpoint: uuid(373), taskUnderArchived: uuid(604), archivedOrphanBug: uuid(388), taskUnderArchivedBug: uuid(605),
 }
+
+/** 단건으로 열 수 있는 미보관 작업 전부 — 공통 묶음이 「각각 자기 스페이스 목록에 나온다」 를 본다(R1-A·R2-C). */
+export const FIXTURE_VISIBLE_ITEMS = [
+  FIXTURE_IDS.checkpoint, FIXTURE_IDS.task600, FIXTURE_IDS.task601, FIXTURE_IDS.direct, FIXTURE_IDS.bug, FIXTURE_IDS.taskUnderBug,
+  FIXTURE_IDS.doneBug, FIXTURE_IDS.taskUnderDoneBug, FIXTURE_IDS.taskUnderArchived, FIXTURE_IDS.orphanBug, FIXTURE_IDS.taskUnderArchivedBug, FIXTURE_IDS.laTask,
+]
 
 function seedIssues(): FixtureIssue[] {
   const base = { description: null, priority: 'medium', resolution: null, color: null, onBoard: true, dueAt: null, archivedAt: null, updatedAt: '2026-10-13T00:00:00.000Z' }
@@ -95,6 +105,11 @@ function seedIssues(): FixtureIssue[] {
     { ...base, id: FIXTURE_IDS.taskUnderBug, sequentialId: 602, kind: 'task', parentId: FIXTURE_IDS.bug, title: '버그 아래 작업', statusId: FIXTURE_STATUS.todo, position: '23' },
     { ...base, id: FIXTURE_IDS.doneBug, sequentialId: 387, kind: 'bug', parentId: FIXTURE_IDS.checkpoint, title: '끝난 버그', statusId: FIXTURE_STATUS.done, position: '24', resolution: 'completed' },
     { ...base, id: FIXTURE_IDS.taskUnderDoneBug, sequentialId: 603, kind: 'task', parentId: FIXTURE_IDS.doneBug, title: '끝난 버그 아래 남은 작업', statusId: FIXTURE_STATUS.dev, position: '25' },
+    // 보관된 부모 아래 미보관 작업(R2-C) — 보관은 그 행만 바꾼다. 프로젝트 아래 checkpoint, 부모 없는 bug(미분류) 두 갈래.
+    { ...base, id: FIXTURE_IDS.archivedCheckpoint, sequentialId: 373, kind: 'checkpoint', parentId: FIXTURE_IDS.corral, title: '보관된 체크포인트', statusId: FIXTURE_STATUS.analysis, position: '26', archivedAt: '2026-10-02T00:00:00.000Z' },
+    { ...base, id: FIXTURE_IDS.taskUnderArchived, sequentialId: 604, kind: 'task', parentId: FIXTURE_IDS.archivedCheckpoint, title: '보관된 체크포인트 아래 작업', statusId: FIXTURE_STATUS.todo, position: '27' },
+    { ...base, id: FIXTURE_IDS.archivedOrphanBug, sequentialId: 388, kind: 'bug', parentId: null, title: '보관된 부모 없는 버그', statusId: FIXTURE_STATUS.todo, position: '31', archivedAt: '2026-10-02T00:00:00.000Z' },
+    { ...base, id: FIXTURE_IDS.taskUnderArchivedBug, sequentialId: 605, kind: 'task', parentId: FIXTURE_IDS.archivedOrphanBug, title: '보관된 버그 아래 작업', statusId: FIXTURE_STATUS.dev, position: '32' },
     { ...base, id: FIXTURE_IDS.orphanBug, sequentialId: 385, kind: 'bug', parentId: null, title: '부모 없는 버그', statusId: FIXTURE_STATUS.todo, position: '30' },
     { ...base, id: FIXTURE_IDS.laTask, sequentialId: 20, kind: 'task', parentId: FIXTURE_IDS.lifeAssistant, title: 'LA 쪽 작업', statusId: FIXTURE_STATUS.done, position: '40', resolution: 'completed' },
   ]
@@ -212,7 +227,7 @@ export class LaMcpFixture {
           .filter((issue) => args.parentId === undefined || issue.parentId === args.parentId)
           .filter((issue) => args.categoryKey === undefined || this.status(issue).categoryKey === args.categoryKey)
           .slice(0, limit)
-        return ok(rows.map((issue) => this.summary(issue)))
+        return ok(rows.map((issue) => this.listRow(issue)))
       }
       case 'issue_get': {
         const issue = find(args.id)
@@ -248,7 +263,7 @@ export class LaMcpFixture {
         }
         if ('resolution' in args && (typeof args.resolution === 'string' || args.resolution === null)) issue.resolution = args.resolution
         this.touch(issue)
-        return ok(this.full(issue))
+        return ok(this.response(issue))
       }
       case 'issue_link_create': {
         const from = this.issues.find((issue) => issue.sequentialId === args.seq)
@@ -302,6 +317,24 @@ export class LaMcpFixture {
       ...this.ref(issue), goalId: null, parentId: issue.parentId, priority: issue.priority, color: issue.color, position: issue.position, onBoard: issue.onBoard,
       startedAt: null, dueAt: issue.dueAt, doneAt: null, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: issue.updatedAt, openBlockers,
     }
+  }
+
+  /** 목록 행 — `list-*` 깨기를 건다(R2-D). */
+  private listRow(issue: FixtureIssue): Record<string, unknown> {
+    const row = this.summary(issue)
+    if (this.corrupt === 'list-bad-blocker') return { ...row, openBlockers: [null, 42] }
+    const field = this.corrupt?.startsWith('list-drop-') ? this.corrupt.slice('list-drop-'.length) : null
+    if (field === null) return row
+    const { [field]: _gone, ...rest } = row
+    void _gone
+    return rest
+  }
+
+  /** 수정 응답(IssueResponse) — 단건에서 links 를 뺀 모양. */
+  private response(issue: FixtureIssue): Record<string, unknown> {
+    const { links: _links, ...rest } = this.full(issue)
+    void _links
+    return rest
   }
 
   /** `drop-<칸>` 깨기 — 그 칸을 지운 사본. */

@@ -21,6 +21,8 @@ export type ContractTarget = {
   service: WorkService
   connectionId: string
   close: () => Promise<void>
+  /** 출처 픽스처가 아는 「목록에 보여야 할」 작업 id — 단건으로 연 스페이스의 목록에 각각 나와야 한다(조상이 보관·완료여도 — R1-A·R2-C). */
+  visibleItems: string[]
 }
 
 const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'workLinkStore']
@@ -137,6 +139,19 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
           expect(item.parentId).not.toBe(space.key)
         }
         if (space.openCount !== null) expect(space.openCount).toBe(items.filter((item) => item.category !== 'done').length)
+      }
+    })
+
+    it('보여야 할 작업은 하나도 빠지지 않는다 — 단건의 스페이스 목록에 나오고, 부모는 그 목록 안이다', async () => {
+      expect(target.visibleItems.length).toBeGreaterThan(0)
+      const lists = new Map<string, WorkItem[]>()
+      for (const itemId of target.visibleItems) {
+        const item = await getItem(itemId)
+        const items = lists.get(item.spaceKey) ?? (await listAll(item.spaceKey)).items
+        lists.set(item.spaceKey, items)
+        const row = items.find((entry) => entry.id === itemId)
+        expect(row, `${item.key} 가 ${item.spaceKey} 목록에 없다`).toBeDefined()
+        expect(row?.parentId).toBe(item.parentId)
       }
     })
 

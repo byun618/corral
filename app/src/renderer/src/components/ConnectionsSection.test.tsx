@@ -28,6 +28,8 @@ const tested: string[] = []
 const hidden: Array<{ spaceKey: string; hidden: boolean }> = []
 const defaults: Array<{ repoRoot: string; target: { connectionId: string; spaceKey: string } | null }> = []
 let addResult: WorkConnectionAddResult
+let testResult: WorkActionResult
+let defaultResult: WorkActionResult
 
 function push(next: WorkSettingsState): void {
   state = next
@@ -43,14 +45,16 @@ beforeEach(() => {
   for (const list of [added, tested, hidden, defaults]) list.length = 0
   addResult = { ok: true, connection: CONNECTION }
   const ok: WorkActionResult = { ok: true }
+  testResult = ok
+  defaultResult = ok
   Reflect.set(window, 'corral', {
     getWorkSettings: async () => state,
     onWorkSettings: (listener: (next: WorkSettingsState) => void) => { listeners.push(listener); return () => {} },
     addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); return addResult },
-    testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); return ok },
+    testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); return testResult },
     removeWorkConnection: async () => ok,
     setWorkSpaceHidden: async (input: { spaceKey: string; hidden: boolean }) => { hidden.push({ spaceKey: input.spaceKey, hidden: input.hidden }); return ok },
-    setRepoDefaultSpace: async (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => { defaults.push(input); return ok },
+    setRepoDefaultSpace: async (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => { defaults.push(input); return defaultResult },
   })
 })
 afterEach(() => {
@@ -154,4 +158,24 @@ it('레포 ↔ 기본 스페이스 — 지정된 스페이스 이름, 메뉴는 
   expect(options.some((text) => text.includes('숨긴 스페이스'))).toBe(false)
   await act(async () => { [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')][1]?.click() })
   expect(defaults).toEqual([{ repoRoot: '/r/corral', target: { connectionId: 'c1', spaceKey: 's1' } }])
+})
+
+it('[R2-E] 누른 연결 테스트의 실패 — 연결 상태로 남지 않는 응답 어긋남도 카드에 보이고, 다시 성공하면 지운다', async () => {
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '응답 모양이 어긋났습니다' } }
+  await mount()
+  await act(async () => { q('[data-connection-test]').click() })
+  expect(q('[data-connection-status]').getAttribute('data-connection-status')).toBe('ok')
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('응답 모양이 어긋났습니다')
+  testResult = { ok: true }
+  await act(async () => { q('[data-connection-test]').click() })
+  expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R2-E] 레포 기본 저장 실패 — 실패 문구를 그 줄에 보인다', async () => {
+  defaultResult = { ok: false, error: { kind: 'local_write', status: null, message: '저장하지 못했습니다 (EACCES)' } }
+  await mount()
+  const row = q('[data-repo-default-space="corral"]')
+  act(() => row.querySelector<HTMLButtonElement>('button')?.click())
+  await act(async () => { [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')][0]?.click() })
+  expect(q('[data-repo-default-error]').textContent).toContain('EACCES')
 })

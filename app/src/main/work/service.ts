@@ -6,10 +6,15 @@
 // - 요청: 손검증(unknown → 계약) → 연결 확인 → **능력 문**(꺼진 능력은 출처에 닿기 전에 `unsupported` + 이유) → 출처 → 결과 연산 대조.
 // - 오류 5종 중 인증·권한·네트워크·키체인은 연결 상태(pill)를 바꾼다. **인증 실패만 「토큰 다시 붙여넣기」** — 권한 부족·네트워크는 연결 유지.
 // - 밖으로 나가는 모양(`WorkSettingsState`·`WorkResponse`)에 토큰은 없다. 끝 4자만.
-// - **세대(generation)** — 해제·토큰 교체마다 연결의 세대를 올리고 그 연결의 클라이언트를 닫는다(R1-C). 진행 중인 요청은 await 마다 세대를
-//   확인해, 바뀌었으면 결과를 버리고 상태·클라이언트를 되살리지 않는다. 닫힌 클라이언트는 이후 아무것도 보내지 않는다.
-//   **이미 보낸 쓰기는 되돌리지 못한다** — 막는 것은 해제·교체 「뒤에」 새로 나가는 요청이다.
-// - 인증 실패 상태에서는 일반 요청을 다시 보내지 않는다(R1-K) — 다시 보내는 길은 사용자가 누른 「연결 테스트」 와 토큰 교체뿐이다.
+// - **연결 단위 동시성 — 한 모델**(R2-A·B·H, notes §10):
+//   ① 세대(generation) — 자격 교체·해제 때만 오른다. 오르면 그 세대의 클라이언트를 닫는다. 닫힌 클라이언트는 새 전송을 하지 않는다
+//      (여러 단계 연산의 다음 단계 포함). **이미 보낸 쓰기는 되돌리지 못한다.**
+//   ② 클라이언트 획득은 세대마다 promise 하나(`acquire` — 풀기 + 만들기 + 설치). 동시 첫 요청이 그것을 나눠 쓴다 → 세대마다 클라이언트 하나.
+//   ③ 요청표(ticket) — 요청마다 시작 순번. 결과가 연결 상태를 바꾸려면 그 요청의 세대 = 현재 세대이고 순번 ≥ 상태를 마지막으로 정한 순번.
+//      인증 실패는 상태 순번을 「그때까지 낸 마지막 순번」 으로 올린다 → **auth 이후에 시작된 요청만 auth 를 풀 수 있다**.
+//   ④ 인증 실패 상태에서는 일반 요청을 보내지 않는다(R1-K) — 다시 보내는 길은 사용자가 누른 「연결 테스트」 와 토큰 교체뿐이다.
+//   ⑤ 설정 저장은 저장 직전 최신 행을 읽어 자기 칸만 바꾼다 — 토큰 교체는 자격 칸만, 숨김·레포 기본은 그대로(R2-H).
+// - 밖으로 나가는 오류 문구는 마지막 경계(이 파일의 IPC 응답·push)에서 금고가 아는 토큰을 한 번 더 지운다(R2-F).
 
 import { randomUUID } from 'node:crypto'
 import { isRecord } from '../../shared/json.js'
@@ -29,7 +34,7 @@ import {
   type WorkSpace,
 } from '../../shared/work.js'
 import { log } from '../log.js'
-import { workError } from './errors.js'
+import { redactSecret, workError } from './errors.js'
 import type { WorkOutcome, WorkSourceClient, WorkSourceRegistry } from './source.js'
 import type { StoredConnection, WorkStoreData, WorkStoreWrite } from './store.js'
 import type { CredentialVault } from './vault.js'
@@ -56,13 +61,20 @@ type Runtime = {
   spaces: WorkSpace[] | null
   capabilities: WorkCapabilities | null
   client: WorkSourceClient | null
+  /** 이 세대의 클라이언트 획득(풀기 + 만들기 + 설치) — 진행 중이면 동시 요청이 나눠 쓴다. */
+  acquiring: Promise<Acquired> | null
+  /** 상태를 마지막으로 정한 요청 순번 — 이보다 먼저 시작한 요청의 결과는 상태를 바꾸지 못한다. */
+  stateTicket: number
 }
+
+type Acquired = { ok: true; client: WorkSourceClient; fresh: boolean } | { ok: false; stale: true } | { ok: false; stale: false; error: WorkError }
+type Claim = { connectionId: string; generation: number; ticket: number }
 
 const MAX_TOKEN_LENGTH = 512
 const LAST_SPACE_REASON = '마지막 스페이스는 끌 수 없습니다 — 연결을 해제하세요'
 
 function freshRuntime(): Runtime {
-  return { status: 'unchecked', pending: null, error: null, checkedAt: null, spaces: null, capabilities: null, client: null }
+  return { status: 'unchecked', pending: null, error: null, checkedAt: null, spaces: null, capabilities: null, client: null, acquiring: null, stateTicket: 0 }
 }
 
 function invalid(message: string): WorkError {
@@ -78,6 +90,7 @@ export class WorkService {
   private readonly runtime = new Map<string, Runtime>()
   private readonly generations = new Map<string, number>()
   private generationSeq = 0
+  private ticketSeq = 0
   private readonly now: () => number
   private readonly newId: () => string
 
@@ -125,7 +138,8 @@ export class WorkService {
         this.patchRuntime(existing.id, { status: before.status, pending: before.pending, error: before.error })
       }
       log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: false, errorKind: error.kind, status: error.status })
-      return { ok: false, error }
+      // 붙여넣은 토큰은 아직 금고에 없다 — 그것까지 지운다.
+      return { ok: false, error: this.scrub({ error, secret: token }) }
     }
     // 교체하는 동안 그 연결이 해제·다시 교체됐으면 이 교체는 버린다.
     const superseded = (): boolean => existing !== null && generation !== this.generation(existing.id)
@@ -142,15 +156,18 @@ export class WorkService {
     const sealed = await this.deps.vault.seal(token)
     if (superseded()) return fail({ error: supersededError, client })
     if (!sealed.ok) return fail({ error: sealed.error, client })
+    // 저장 직전 최신 행 — 교체를 기다리는 동안 바뀐 비자격 설정(숨김 스페이스)을 보존하고 자격 칸만 바꾼다(R2-H).
     const data = this.deps.store.get()
     const id = existing?.id ?? this.newId()
+    const latest = existing === null ? null : data.connections.find((row) => row.id === id) ?? null
+    if (existing !== null && latest === null) return fail({ error: supersededError, client })
     const stored: StoredConnection = {
       id,
       sourceId: entry.descriptor.id,
-      addedAt: existing?.addedAt ?? this.now(),
+      addedAt: latest?.addedAt ?? this.now(),
       tokenTail: token.slice(-4),
       sealed: sealed.sealed,
-      hiddenSpaceKeys: existing?.hiddenSpaceKeys ?? [],
+      hiddenSpaceKeys: latest === null ? [] : [...latest.hiddenSpaceKeys],
     }
     const next: WorkStoreData = { ...data, connections: existing === null ? [...data.connections, stored] : data.connections.map((row) => (row.id === id ? stored : row)) }
     const written = this.deps.store.write(next)
@@ -160,7 +177,7 @@ export class WorkService {
     this.runtime.get(id)?.client?.close()
     this.deps.vault.forget(id)
     this.deps.vault.remember({ connectionId: id, token })
-    this.runtime.set(id, { status: 'ok', pending: null, error: null, checkedAt: this.now(), spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
+    this.runtime.set(id, { ...freshRuntime(), status: 'ok', checkedAt: this.now(), spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
     log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: true, spaces: tested.result.spaces.length })
     this.emit()
     const summary = this.summaryOf(stored)
@@ -171,7 +188,7 @@ export class WorkService {
     const id = isRecord(input) && nonEmpty(input.connectionId) ? input.connectionId : null
     if (id === null) return { ok: false, error: invalid('연결 id 가 잘못됐습니다.') }
     const outcome = await this.run({ connectionId: id, call: { op: 'listSpaces' }, announce: true })
-    return outcome.ok ? { ok: true } : { ok: false, error: outcome.error }
+    return outcome.ok ? { ok: true } : { ok: false, error: this.scrub({ error: outcome.error }) }
   }
 
   removeConnection(input: unknown): WorkActionResult {
@@ -239,7 +256,7 @@ export class WorkService {
     }
     const { requestId, connectionId, call } = request
     const outcome = await this.run({ connectionId, call, announce: false })
-    return outcome.ok ? { requestId, connectionId, ok: true, result: outcome.result } : { requestId, connectionId, ok: false, error: outcome.error }
+    return outcome.ok ? { requestId, connectionId, ok: true, result: outcome.result } : { requestId, connectionId, ok: false, error: this.scrub({ error: outcome.error }) }
   }
 
   private async run({ connectionId, call, announce }: { connectionId: string; call: Parameters<WorkSourceClient['call']>[0]; announce: boolean }): Promise<WorkOutcome> {
@@ -248,38 +265,33 @@ export class WorkService {
     const entry = this.deps.sources.get(stored.sourceId)
     if (entry === null) return { ok: false, error: workError({ kind: 'not_connected', message: '이 연결의 작업 출처를 이 판의 corral 이 모릅니다.' }) }
     // 능력 문 — 꺼진 능력은 출처에 닿지 않는다(이유를 그대로 돌려준다).
-    const capabilities = this.runtime.get(connectionId)?.capabilities ?? this.runtime.get(connectionId)?.client?.capabilities() ?? null
+    const known = this.runtime.get(connectionId)
+    const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
     const gate = capabilities === null ? null : closedCapability({ capabilities, call })
     if (gate !== null) return { ok: false, error: gate }
     // 인증 실패 상태 — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
-    const known = this.runtime.get(connectionId)
     if (!announce && known?.status === 'auth') return { ok: false, error: known.error ?? workError({ kind: 'auth', message: '토큰이 거부된 연결입니다 — 토큰을 다시 붙여넣으세요.' }) }
 
-    const generation = this.generation(connectionId)
+    this.ticketSeq += 1
+    const claim: Claim = { connectionId, generation: this.generation(connectionId), ticket: this.ticketSeq }
     const startedAt = this.now()
-    let client = known?.client ?? null
-    if (client === null) {
-      const unlocking = !this.deps.vault.isOpen(connectionId)
-      this.patchRuntime(connectionId, { status: 'testing', pending: unlocking ? 'keychain' : 'network', error: null })
-      const opened = await this.deps.vault.unseal({ connectionId, sealed: stored.sealed })
-      // 푸는 동안 해제·교체됐으면 옛 자격으로 클라이언트를 만들지 않고, 상태도 건드리지 않는다(R1-C).
-      if (generation !== this.generation(connectionId)) return { ok: false, error: this.staleError(connectionId) }
-      if (!opened.ok) {
-        this.settle({ connectionId, outcome: { ok: false, error: opened.error } })
-        return { ok: false, error: opened.error }
-      }
-      client = entry.create(opened.token)
-      this.patchRuntime(connectionId, { client, capabilities: client.capabilities() })
-      const lateGate = closedCapability({ capabilities: client.capabilities(), call })
-      if (lateGate !== null) {
-        this.patchRuntime(connectionId, { pending: null, status: this.runtime.get(connectionId)?.checkedAt === null ? 'unchecked' : 'ok' })
-        return { ok: false, error: lateGate }
-      }
-      if (!announce) this.patchRuntime(connectionId, { pending: 'network' })
+    const acquired = await this.acquire({ claim, sealed: stored.sealed, create: entry.create })
+    if (!acquired.ok) {
+      // 획득 중 해제·교체 — 옛 자격으로 클라이언트를 만들지 않았고, 상태도 건드리지 않는다(R1-C).
+      if (acquired.stale) return { ok: false, error: this.staleError(connectionId) }
+      this.settle({ claim, outcome: { ok: false, error: acquired.error } })
+      return { ok: false, error: acquired.error }
     }
-    if (announce) this.patchRuntime(connectionId, { status: 'testing', pending: 'network', error: null })
+    const client = acquired.client
+    const lateGate = closedCapability({ capabilities: client.capabilities(), call })
+    if (lateGate !== null) {
+      this.settle({ claim, outcome: { ok: false, error: lateGate } })
+      return { ok: false, error: lateGate }
+    }
+    if (announce) this.claimPatch({ claim, patch: { status: 'testing', pending: 'network', error: null } })
+    else if (acquired.fresh) this.claimPatch({ claim, patch: { pending: 'network' } })
     const outcome = await client.call(call)
-    if (generation !== this.generation(connectionId)) {
+    if (claim.generation !== this.generation(connectionId)) {
       log('work.request', { op: call.op, ok: false, errorKind: 'not_connected', status: null, ms: this.now() - startedAt, discarded: true })
       return { ok: false, error: this.staleError(connectionId) }
     }
@@ -287,30 +299,79 @@ export class WorkService {
       ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
       : outcome
     log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
-    this.settle({ connectionId, outcome: checked })
+    this.settle({ claim, outcome: checked })
     return checked
   }
 
-  /** 결과로 연결 상태를 정한다 — 성공 = ok, 연결 계열 오류 = 그 상태, 연산 하나의 실패는 상태를 바꾸지 않는다. */
-  private settle({ connectionId, outcome }: { connectionId: string; outcome: WorkOutcome }): void {
+  /**
+   * 이 세대의 클라이언트 — 있으면 그것, 획득 중이면 그 promise, 없으면 새로 시작한다(R2-A). 획득 = 풀기 + 만들기 + 설치를 한 번에.
+   * 푸는 동안 세대가 바뀌었으면 만들지 않는다(stale). 실패한 획득은 지워 다음 요청이 다시 푼다(암호문은 그대로 — C6).
+   */
+  private acquire({ claim, sealed, create }: { claim: Claim; sealed: string; create: (token: string) => WorkSourceClient }): Promise<Acquired> {
+    const { connectionId, generation } = claim
+    const current = this.runtime.get(connectionId)
+    if (current?.client) return Promise.resolve({ ok: true, client: current.client, fresh: false })
+    if (current?.acquiring) return current.acquiring
+    const unlocking = !this.deps.vault.isOpen(connectionId)
+    this.claimPatch({ claim, patch: { status: 'testing', pending: unlocking ? 'keychain' : 'network', error: null } })
+    const acquiring: Promise<Acquired> = this.deps.vault.unseal({ connectionId, sealed }).then((opened): Acquired => {
+      if (generation !== this.generation(connectionId)) return { ok: false, stale: true }
+      const mine = this.runtime.get(connectionId)?.acquiring === acquiring
+      if (!opened.ok) {
+        if (mine) this.patchRuntime(connectionId, { acquiring: null })
+        return { ok: false, stale: false, error: opened.error }
+      }
+      const client = create(opened.token)
+      this.patchRuntime(connectionId, { client, capabilities: client.capabilities(), acquiring: null })
+      return { ok: true, client, fresh: true }
+    })
+    this.patchRuntime(connectionId, { acquiring })
+    return acquiring
+  }
+
+  /** 상태를 바꿔도 되는 결과인가 — 같은 세대이고, 상태를 마지막으로 정한 요청보다 늦게(또는 같이) 시작한 요청. */
+  private owns(claim: Claim): boolean {
+    if (claim.generation !== this.generation(claim.connectionId)) return false
+    return claim.ticket >= (this.runtime.get(claim.connectionId)?.stateTicket ?? 0)
+  }
+
+  private claimPatch({ claim, patch }: { claim: Claim; patch: Partial<Runtime> }): void {
+    if (!this.owns(claim)) return
+    this.patchRuntime(claim.connectionId, { ...patch, stateTicket: claim.ticket })
+  }
+
+  /**
+   * 결과로 연결 상태를 정한다 — 성공 = ok, 연결 계열 오류 = 그 상태, 연산 하나의 실패는 상태를 바꾸지 않는다.
+   * 상태를 바꿀 자격이 없는 결과(`owns` 거짓 — 늦게 온 옛 요청)는 아무것도 바꾸지 않는다(R2-B).
+   */
+  private settle({ claim, outcome }: { claim: Claim; outcome: WorkOutcome }): void {
+    if (!this.owns(claim)) return
+    const { connectionId, ticket } = claim
     const current = this.runtime.get(connectionId) ?? freshRuntime()
     if (outcome.ok) {
       const spaces = outcome.result.op === 'listSpaces' ? outcome.result.spaces : current.spaces
       const capabilities = outcome.result.op === 'listSpaces' ? outcome.result.capabilities : current.capabilities
-      this.runtime.set(connectionId, { ...current, status: 'ok', pending: null, error: null, checkedAt: this.now(), spaces, capabilities })
+      this.runtime.set(connectionId, { ...current, status: 'ok', pending: null, error: null, checkedAt: this.now(), spaces, capabilities, stateTicket: ticket })
     } else {
       const status = connectionStatusOf(outcome.error.kind)
-      if (status === null) this.runtime.set(connectionId, { ...current, pending: null, status: current.status === 'testing' ? (current.checkedAt === null ? 'unchecked' : 'ok') : current.status })
-      else {
-        // 인증 실패면 그 토큰으로 만든 클라이언트는 닫고 버린다. 그 뒤 일반 요청은 `run` 이 보내기 전에 막는다(R1-K) —
-        // 같은 자격을 다시 보내는 길은 사용자가 누른 연결 테스트(금고의 토큰으로 새 클라이언트)와 토큰 교체뿐이다.
+      if (status === null) {
+        this.runtime.set(connectionId, { ...current, pending: null, status: current.status === 'testing' ? (current.checkedAt === null ? 'unchecked' : 'ok') : current.status, stateTicket: ticket })
+      } else if (outcome.error.kind === 'auth') {
+        // 인증 실패 — 그 자격의 클라이언트를 닫고 버린다(진행 중인 여러 단계 연산의 다음 단계도 나가지 않는다).
+        // 상태 순번을 지금까지 낸 마지막 순번으로 올린다 → 이미 진행 중인 요청의 늦은 성공이 auth 를 풀지 못한다.
+        current.client?.close()
+        this.runtime.set(connectionId, { ...current, status, pending: null, error: outcome.error, checkedAt: this.now(), client: null, stateTicket: this.ticketSeq })
+      } else {
         // 키체인 실패는 클라이언트가 없고, 암호문은 그대로 둔다(다음 요청이 다시 푼다).
-        if (outcome.error.kind === 'auth') current.client?.close()
-        const client = outcome.error.kind === 'auth' ? null : current.client
-        this.runtime.set(connectionId, { ...current, status, pending: null, error: outcome.error, checkedAt: this.now(), client })
+        this.runtime.set(connectionId, { ...current, status, pending: null, error: outcome.error, checkedAt: this.now(), stateTicket: ticket })
       }
     }
     this.emit()
+  }
+
+  /** 밖으로 나가는 오류의 마지막 경계 — 금고가 아는 토큰(과 아직 금고에 없는 붙여넣은 토큰)을 지운다(R2-F). */
+  private scrub({ error, secret = '' }: { error: WorkError; secret?: string }): WorkError {
+    return { ...error, message: redactSecret({ text: this.deps.vault.redact(error.message), secret }) }
   }
 
   private generation(connectionId: string): number {
@@ -338,7 +399,7 @@ export class WorkService {
     const runtime = this.runtime.get(stored.id) ?? freshRuntime()
     const error = runtime.error === null || connectionStatusOf(runtime.error.kind) === null
       ? null
-      : { message: runtime.error.message, action: actionOf(runtime.error) }
+      : { message: this.deps.vault.redact(runtime.error.message), action: actionOf(runtime.error) }
     return {
       id: stored.id,
       sourceId: stored.sourceId,

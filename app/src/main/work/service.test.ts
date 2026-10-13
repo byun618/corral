@@ -120,7 +120,7 @@ describe('연결 추가 (C8) — 테스트 통과 뒤에만 저장', () => {
     const summary = harness.service.settings().connections[0]
     expect(summary).toMatchObject({ status: 'ok', tokenTail: FAKE_LA_TOKEN.slice(-4), name: 'LA', mono: 'LA' })
     expect(summary?.spaces?.map((space) => space.key)).toEqual([FIXTURE_IDS.corral, FIXTURE_IDS.lifeAssistant, LA_CATCH_ALL_KEY])
-    expect(summary?.spaces?.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(7)
+    expect(summary?.spaces?.find((space) => space.key === FIXTURE_IDS.corral)?.openCount).toBe(8)
   })
 
   it('프로젝트 직속 작업은 parentId null, 보관·프로젝트 자신은 목록에 없다', async () => {
@@ -135,7 +135,8 @@ describe('연결 추가 (C8) — 테스트 통과 뒤에만 저장', () => {
     expect(byId.has(FIXTURE_IDS.corral)).toBe(false)
     const orphan = await harness.service.request({ requestId: 'r2', connectionId: harness.connectionId, call: { op: 'listItems', spaceKey: LA_CATCH_ALL_KEY, cursor: null } })
     if (!orphan.ok || orphan.result.op !== 'listItems') throw new Error('orphan')
-    expect(orphan.result.items.map((item) => item.key)).toEqual(['LIFE-385'])
+    // 보관된 부모 없는 bug(LIFE-388)는 빠지고 그 아래 미보관 작업(LIFE-605)은 남는다(R2-C).
+    expect(orphan.result.items.map((item) => item.key).sort()).toEqual(['LIFE-385', 'LIFE-605'])
     const single = await harness.service.request({ requestId: 'r3', connectionId: harness.connectionId, call: { op: 'getItem', itemId: FIXTURE_IDS.task600 } })
     expect(single).toMatchObject({ ok: true, result: { item: { spaceKey: FIXTURE_IDS.corral, parentId: FIXTURE_IDS.checkpoint, body: '본문 600' } } })
   })

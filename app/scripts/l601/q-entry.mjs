@@ -184,11 +184,12 @@ try {
   await click('[data-tasks-view-tab="board"]')
   judge('보기 4 전환 — 백로그(두 섹션) · 리스트 · 작업 중(없음 빈 상태 포함) · 보드', Object.values(viewChecks).every(Boolean), JSON.stringify(viewChecks))
 
-  // 수정 r3(R3-A) — 응답 배달 뒤집기(`mock_flip-2000`: 서버는 받은 순서로 곧바로 적용, 홀수 번째 응답만 2초 늦음)로 토큰을 바꾼 뒤,
+  // 수정 r3(R3-A) — 응답 배달 뒤집기(`mock_transition-any_flip-2000`: 서버는 받은 순서로 곧바로 적용, 홀수 번째 응답만 2초 늦음)로 토큰을 바꾼 뒤,
+  // (transition-any 로 끌기 시작 때 허용 전이 조회가 끼지 않게 — 끼면 홀짝이 어긋나 응답이 뒤집히지 않는다)
   // 백로그 보드 섹션에서 서로 다른 카드 순서 변경 둘(A = 아래 끝으로 · B = 위 끝으로)을 보낸다. 앞 응답이 늦어 B 응답이 먼저 온다.
   // 끝난 뒤 화면 순서 = 서버 재조회 순서(전 쪽을 다시 읽어 화면에 있는 키만 비교).
   const ask = (call) => js(`window.corral.workRequest({ requestId: 'q-entry-' + Date.now() + Math.random(), connectionId: ${JSON.stringify(connectionId)}, call: ${JSON.stringify(call)} })`)
-  const replaced = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: 'mock_flip-2000', replaceId: ${JSON.stringify(connectionId)} }).then((r) => ({ ok: r.ok, generation: r.ok ? r.connection.generation : null }))`)
+  const replaced = await js(`window.corral.addWorkConnection({ sourceId: 'mock-jira', token: 'mock_transition-any_flip-2000', replaceId: ${JSON.stringify(connectionId)} }).then((r) => ({ ok: r.ok, generation: r.ok ? r.connection.generation : null }))`)
   log('flip 토큰으로 교체', replaced)
   await click('[data-tasks-view-tab="backlog"]')
   await sleep(4_500)
@@ -201,18 +202,25 @@ try {
   const shownRows = () => js(`[...document.querySelectorAll('[data-backlog-section="board"] [data-issue-row]')].map((e) => e.dataset.issueRow)`)
   const dragEdge = async ({ key, edge }) => {
     const grip = await center(`[data-backlog-section="board"] [data-issue-row="${key}"] .tasks-grip`, false)
-    const dest = await js(`(() => { const r = document.querySelector('[data-drop-zone="sec:board"]').getBoundingClientRect(); return { x: Math.round(r.x + 200), y: Math.round(${edge === 'bottom' ? 'r.bottom - 1' : 'r.top + 1'}) } })()`)
+    // 놓는 자리 = 섹션의 첫 행 위쪽 끝 / 마지막 행 아래쪽 끝(행 중점 기준 번호가 맨 앞·맨 뒤가 되게).
+    const dest = await js(`(() => { const rows = [...document.querySelectorAll('[data-backlog-section="board"] [data-issue-row]')]; const r = rows[${edge === 'bottom' ? 'rows.length - 1' : '0'}].getBoundingClientRect(); return { x: Math.round(r.x + 200), y: Math.round(${edge === 'bottom' ? 'r.bottom - 2' : 'r.top + 2'}) } })()`)
     await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...grip })
     await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: grip.x + 10, y: grip.y })
     await sleep(80)
     await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...dest })
     await sleep(120)
-    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...dest })
+    // 끄는 동안 틈이 행을 밀어내므로 그 자리에서 한 번 더 잰다(맨 아래 끝이 틈 높이만큼 내려간다).
+    const settled = await js(`(() => { const rows = [...document.querySelectorAll('[data-backlog-section="board"] [data-issue-row]')]; const r = rows[${edge === 'bottom' ? 'rows.length - 1' : '0'}].getBoundingClientRect(); return { x: Math.round(r.x + 200), y: Math.round(${edge === 'bottom' ? 'r.bottom - 2' : 'r.top + 2'}) } })()`)
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...settled })
+    await sleep(120)
+    await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...settled })
     await sleep(150)
-    return { grip, dest }
+    return { grip, dest, settled }
   }
   const initial = await shownRows()
-  const moveA = initial[0]
+  // 리뷰 r3 재현과 같은 모양 — A = 끝에서 두 번째를 맨 아래로(afterId = 마지막 카드), B = 그 마지막 카드를 맨 위로.
+  // 옛 코드는 늦게 온 A 응답에서 의도(마지막 카드 뒤)를 다시 적용해, 맨 위로 간 B 바로 뒤로 A 가 끌려 올라갔다.
+  const moveA = initial.at(-2)
   const moveB = initial.at(-1)
   const dragA = await dragEdge({ key: moveA, edge: 'bottom' })
   const afterA = await shownRows()
@@ -237,10 +245,17 @@ try {
     final = { screen, server: server?.filter((key) => screen.includes(key)) ?? null }
     return final.server !== null && JSON.stringify(final.screen) === JSON.stringify(final.server)
   }, { timeoutMs: 20_000, everyMs: 1_000, label: '화면 = 서버 순서' }).catch(() => null)
-  log('응답 뒤집힌 순서 둘', { initial, moveA, moveB, dragA, dragB, afterA, afterB, final })
-  judge('C7·C8·R3-A 다른 카드 순서 변경 둘(flip 응답 역전) — 둘 다 옮겨졌고 끝나면 화면 순서 = 서버 재조회 순서',
-    afterA.at(-1) === moveA && afterB[0] === moveB && final !== null && JSON.stringify(final.screen) === JSON.stringify(final.server),
-    JSON.stringify({ initial, afterA, afterB, final }))
+  // 뒤집힘 양성 대조 — IPC 응답 기록에서 순서 쓰기 응답이 B → A 순으로 왔는가.
+  const replies = (() => {
+    try {
+      return fs.readFileSync(path.join(ROOT, 'ipc-trace.ndjson'), 'utf8').split('\n').filter((line) => line.includes('"op":"reorder"'))
+        .map((line) => JSON.parse(line).value?.result?.item?.key ?? null)
+    } catch { return null }
+  })()
+  log('응답 뒤집힌 순서 둘', { initial, moveA, moveB, dragA, dragB, afterA, afterB, replies, final })
+  judge('C7·C8·R3-A 다른 카드 순서 변경 둘(flip 응답 역전 — IPC 기록 B→A) — 둘 다 옮겨졌고 끝나면 화면 순서 = 서버 재조회 순서',
+    JSON.stringify(replies) === JSON.stringify([moveB, moveA]) && initial.length >= 3 && afterA.at(-1) === moveA && afterB[0] === moveB && final !== null && JSON.stringify(final.screen) === JSON.stringify(final.server),
+    JSON.stringify({ initial, afterA, afterB, replies, final }))
   log('shot', await ctl(ROOT, { cmd: 'shot', name: 'l601-reorder-flip' }))
   await click('[data-tasks-view-tab="board"]')
 

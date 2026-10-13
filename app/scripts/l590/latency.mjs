@@ -126,8 +126,10 @@ async function ensureFileTab() {
 }
 async function closeFileTab() {
   if (!(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`))) return
+  // × 버튼으로 닫는다 — 합성 ⌘W(main before-input-event 가 가로채는 키) 뒤에는 합성 글자 입력이 문서에 닿지 않았다(Q12 A 2·3회차 놓침 36,
+  // 수식키 없는 키 하나를 보내면 풀림 — 하네스 입력 상태 문제로 본다. 원자료 runs/Q12.log·DONE.md).
   await until(async () => (await ctl(root, { cmd: 'click', selector: `[data-main-tab="file:${BIG}"]` })).ok === true, { label: '10mb 탭' })
-  await ctl(root, { cmd: 'key', keyCode: 'W', modifiers: ['meta'] })
+  await until(async () => (await ctl(root, { cmd: 'click', selector: `[data-main-tab-close="file:${BIG}"]` })).ok === true, { label: '10mb 닫기 ×' })
   await until(async () => !(await evalJs(root, `!!document.querySelector('[data-main-tab="file:${BIG}"]')`)), { label: '10mb 닫힘' })
 }
 /** 10 MB 파일 다시 쓰기 ≥ 1회/초(700~900 ms) — 첫 줄 표식만 바꾼 같은 크기. */

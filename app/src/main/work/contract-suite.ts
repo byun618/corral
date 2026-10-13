@@ -23,6 +23,8 @@ export type ContractTarget = {
   close: () => Promise<void>
   /** 출처 픽스처가 아는 「목록에 보여야 할」 작업 id — 단건으로 연 스페이스의 목록에 각각 나와야 한다(조상이 보관·완료여도 — R1-A·R2-C). */
   visibleItems: string[]
+  /** 스페이스가 아니게 된(완료·보관) 옛 스페이스 키 — 목록 요청은 거절(「스페이스 아님」)이어야 한다(R3-D). 없는 출처는 빈 배열. */
+  retiredSpaceKeys: string[]
 }
 
 const CAPABILITY_NAMES: WorkCapabilityName[] = ['placement', 'relations', 'parentChange', 'order', 'cursorPaging', 'conflictCheck', 'comments', 'workLinkStore']
@@ -152,6 +154,15 @@ export function workContractSuite({ name, setup }: { name: string; setup: () => 
         const row = items.find((entry) => entry.id === itemId)
         expect(row, `${item.key} 가 ${item.spaceKey} 목록에 없다`).toBeDefined()
         expect(row?.parentId).toBe(item.parentId)
+      }
+    })
+
+    it('스페이스가 아니게 된 옛 키로 목록을 부르면 거절 — 스페이스 목록에도 없다', async () => {
+      const { spaces } = await listSpaces()
+      for (const key of target.retiredSpaceKeys) {
+        expect(spaces.map((space) => space.key)).not.toContain(key)
+        const response = await send({ op: 'listItems', spaceKey: key, cursor: null })
+        expect(response).toMatchObject({ ok: false, error: { kind: 'rejected' } })
       }
     })
 

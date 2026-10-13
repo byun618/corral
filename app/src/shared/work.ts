@@ -209,6 +209,8 @@ export type WorkConnectionSummary = {
   mono: string
   tokenTail: string
   addedAt: number
+  /** 자격 세대 — 토큰 교체·해제 때 오른다. 화면이 이전 자격의 로컬 결과(누른 테스트의 실패 줄)를 버리는 데 쓴다(R3-C). */
+  generation: number
   status: WorkConnectionStatus
   pending: WorkConnectionPending
   /** 마지막 오류 — 상태가 오류 계열일 때만. `replace_token` 은 인증 실패·키체인일 때(토큰 다시 붙여넣기). */
@@ -233,7 +235,7 @@ export type WorkConnectionAddResult = { ok: true; connection: WorkConnectionSumm
 export type WorkActionResult = { ok: true } | { ok: false; error: WorkError }
 
 /** 오류 → 연결 상태. 연결 상태를 바꾸지 않는 오류는 null. */
-export function connectionStatusOf(kind: WorkErrorKind): WorkConnectionStatus | null {
+export function connectionStatusOf(kind: WorkErrorKind): Exclude<WorkConnectionStatus, 'testing'> | null {
   switch (kind) {
     case 'auth': return 'auth'
     case 'forbidden': return 'forbidden'

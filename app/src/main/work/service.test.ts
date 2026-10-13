@@ -135,8 +135,8 @@ describe('연결 추가 (C8) — 테스트 통과 뒤에만 저장', () => {
     expect(byId.has(FIXTURE_IDS.corral)).toBe(false)
     const orphan = await harness.service.request({ requestId: 'r2', connectionId: harness.connectionId, call: { op: 'listItems', spaceKey: LA_CATCH_ALL_KEY, cursor: null } })
     if (!orphan.ok || orphan.result.op !== 'listItems') throw new Error('orphan')
-    // 보관된 부모 없는 bug(LIFE-388)는 빠지고 그 아래 미보관 작업(LIFE-605)은 남는다(R2-C).
-    expect(orphan.result.items.map((item) => item.key).sort()).toEqual(['LIFE-385', 'LIFE-605'])
+    // 보관된 부모 없는 bug(LIFE-388)는 빠지고 그 아래 미보관 작업(LIFE-605)은 남는다(R2-C). 완료 프로젝트 아래 열린 작업(LIFE-606)도 미분류(R3-D).
+    expect(orphan.result.items.map((item) => item.key).sort()).toEqual(['LIFE-385', 'LIFE-605', 'LIFE-606'])
     const single = await harness.service.request({ requestId: 'r3', connectionId: harness.connectionId, call: { op: 'getItem', itemId: FIXTURE_IDS.task600 } })
     expect(single).toMatchObject({ ok: true, result: { item: { spaceKey: FIXTURE_IDS.corral, parentId: FIXTURE_IDS.checkpoint, body: '본문 600' } } })
   })

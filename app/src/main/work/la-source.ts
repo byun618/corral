@@ -6,7 +6,8 @@
 //   - 프로젝트를 부모로 둔 일감은 `parentId: null`(스페이스 바로 아래)로 낸다. 프로젝트 자신은 작업 목록에 섞이지 않는다.
 //   - **보관(archive)** — 미보관 일감은 조상의 보관 여부와 무관하게 목록에 나온다(R2-C 계약). 조상 탐색(구조)은 보관 포함(`archived: 'all'`)으로,
 //     표시는 미보관만. 보관된 부모는 보이지 않으므로 자식의 `parentId` 는 **가장 가까운 미보관 조상**(없으면 스페이스 바로 아래 = null)이다.
-//     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다. 열린 수도 같은 규칙.
+//     스페이스가 아닌 프로젝트(보관·완료) 아래 일감은 「미분류」 로 간다(01-criteria C9, 2026-10-13 사용자 재승인 — R3-D). 열린 수도 같은 규칙.
+//     스페이스가 아니게 된 옛 프로젝트 키로 목록을 부르면 「스페이스 아님」(rejected).
 // 상태: 모든 LA 스페이스가 같은 `status_list`. 앞으로 = `issue_transition`(forwardOnly) · 뒤로 = `issue_update(statusId)`(D6).
 // 능력 꺼짐(L1 대기): 순서(L1f · LIFE-612) · 커서 페이지(L1c) · 조건부 수정(L1b) · 코멘트·이력(L1e) · 작업 링크 저장(L1a).
 // 응답은 `la-shape.ts` 로 검증한 뒤에만 계약 타입으로 바꾼다(C3) — 어긋나면 `invalid_response`.
@@ -204,7 +205,9 @@ export class LaSource implements WorkSourceClient {
     if (spaceKey === LA_CATCH_ALL_KEY) return this.listCatchAll()
     const space = await this.tool({ name: 'issue_get', args: { id: spaceKey }, read: readIssueDetail })
     if (!space.ok) return space.outcome
-    if (space.value.kind !== 'project') return { ok: false, error: workError({ kind: 'rejected', message: '이 키는 스페이스(프로젝트)가 아닙니다.' }) }
+    // 스페이스가 아닌 키(프로젝트가 아닌 일감 · 완료·보관돼 스페이스가 아니게 된 옛 프로젝트) = 「스페이스 아님」(R3-D) —
+    // 그 아래 미보관 일감은 미분류에 나오고 단건도 미분류 키를 말한다. 옛 키로 그 프로젝트 키를 붙인 목록을 내지 않는다.
+    if (!isSpace(space.value)) return { ok: false, error: workError({ kind: 'rejected', message: '이 키는 스페이스가 아닙니다 — 완료·보관된 프로젝트의 작업은 「미분류」 에 있습니다.' }) }
     const children = await this.list({ parentId: spaceKey })
     if (!children.ok) return children.outcome
     let truncated = children.value.length >= LIST_LIMIT

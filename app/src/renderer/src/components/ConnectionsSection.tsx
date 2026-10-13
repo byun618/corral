@@ -157,12 +157,15 @@ function SpaceRow({ connection, space, index, visibleCount }: { connection: Work
 function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: WorkConnectionSummary; onReplaceToken: () => void; onRemove: () => void }): React.JSX.Element {
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
-  const [testError, setTestError] = useState<WorkError | null>(null)
+  // 수명 = 누른 순간의 자격 세대(R3-C) — 토큰을 바꾸면(세대가 오르면) 이전 자격의 실패 줄은 버린다. 늦게 끝난 옛 테스트도 같은 규칙.
+  const [testError, setTestError] = useState<{ error: WorkError; generation: number } | null>(null)
   const test = async (): Promise<void> => {
+    const generation = connection.generation
     setTestError(null)
     const result = await window.corral.testWorkConnection({ connectionId: connection.id })
-    setTestError(result.ok ? null : result.error)
+    setTestError(result.ok ? null : { error: result.error, generation })
   }
+  const shownTestError = testError !== null && testError.generation === connection.generation ? testError.error : null
   const spaces = connection.spaces
   const visibleCount = spaces?.filter((space) => !space.hidden).length ?? 0
   return (
@@ -191,9 +194,9 @@ function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: 
           {connection.error.action === 'retry' ? <button type="button" className="connection-link" onClick={() => void test()}>다시 시도</button> : null}
         </div>
       )}
-      {testError === null || connection.error !== null ? null : (
-        <div className="connection-error" data-connection-test-error={testError.kind} role="alert">
-          <span className="connection-error-text">연결 테스트 실패: {testError.message}</span>
+      {shownTestError === null || connection.error !== null ? null : (
+        <div className="connection-error" data-connection-test-error={shownTestError.kind} role="alert">
+          <span className="connection-error-text">연결 테스트 실패: {shownTestError.message}</span>
         </div>
       )}
       <div className="connection-spaces">

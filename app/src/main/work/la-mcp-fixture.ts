@@ -6,6 +6,7 @@
 //   - scope 부족 = **HTTP 200 · SSE `result.isError: true` · text `missing scope: issue:write`**(LA 소스 mcp.service `ensureIssueScope` →
 //     SDK 가 도구 오류로 감싼다 — 리뷰 r1 sdk-permission 와이어 실측). `scopeStyle: 'http'` 면 HTTP 403 `FORBIDDEN`(다른 서버 꼴 대조용).
 //   - 부모 규칙(issue.service `checkParentRule`): task 의 부모 = project·checkpoint·bug — 씨앗에 bug 아래 task 를 둔다(R1-A).
+//   - 완료 프로젝트 아래 열린 task 하나(R3-D — 미분류로, 옛 프로젝트 키 목록은 「스페이스 아님」).
 //   - 보관(issue.service `archive`)은 그 행만 바꾼다 — 씨앗에 보관된 checkpoint 아래 미보관 task, 보관된 부모 없는 bug 아래 미보관 task 를 둔다(R2-C).
 //   - 응답 계약(issue.mapper): 목록 = IssueSummary(openBlockers, description 없음) · 수정 = IssueResponse(description, links 없음) · 단건 = + links.
 //
@@ -81,12 +82,17 @@ export const FIXTURE_IDS = {
   checkpoint: uuid(372), task600: uuid(600), task601: uuid(601), direct: uuid(500), orphanBug: uuid(385), archived: uuid(499), laTask: uuid(20),
   bug: uuid(386), taskUnderBug: uuid(602), doneBug: uuid(387), taskUnderDoneBug: uuid(603),
   archivedCheckpoint: uuid(373), taskUnderArchived: uuid(604), archivedOrphanBug: uuid(388), taskUnderArchivedBug: uuid(605),
+  taskUnderDoneProject: uuid(606),
 }
+
+/** 스페이스가 아닌(완료·보관) 프로젝트 키 — 목록 요청은 「스페이스 아님」 이어야 한다(R3-D). */
+export const FIXTURE_RETIRED_SPACE_KEYS = [FIXTURE_IDS.doneProject]
 
 /** 단건으로 열 수 있는 미보관 작업 전부 — 공통 묶음이 「각각 자기 스페이스 목록에 나온다」 를 본다(R1-A·R2-C). */
 export const FIXTURE_VISIBLE_ITEMS = [
   FIXTURE_IDS.checkpoint, FIXTURE_IDS.task600, FIXTURE_IDS.task601, FIXTURE_IDS.direct, FIXTURE_IDS.bug, FIXTURE_IDS.taskUnderBug,
   FIXTURE_IDS.doneBug, FIXTURE_IDS.taskUnderDoneBug, FIXTURE_IDS.taskUnderArchived, FIXTURE_IDS.orphanBug, FIXTURE_IDS.taskUnderArchivedBug, FIXTURE_IDS.laTask,
+  FIXTURE_IDS.taskUnderDoneProject,
 ]
 
 function seedIssues(): FixtureIssue[] {
@@ -110,6 +116,8 @@ function seedIssues(): FixtureIssue[] {
     { ...base, id: FIXTURE_IDS.taskUnderArchived, sequentialId: 604, kind: 'task', parentId: FIXTURE_IDS.archivedCheckpoint, title: '보관된 체크포인트 아래 작업', statusId: FIXTURE_STATUS.todo, position: '27' },
     { ...base, id: FIXTURE_IDS.archivedOrphanBug, sequentialId: 388, kind: 'bug', parentId: null, title: '보관된 부모 없는 버그', statusId: FIXTURE_STATUS.todo, position: '31', archivedAt: '2026-10-02T00:00:00.000Z' },
     { ...base, id: FIXTURE_IDS.taskUnderArchivedBug, sequentialId: 605, kind: 'task', parentId: FIXTURE_IDS.archivedOrphanBug, title: '보관된 버그 아래 작업', statusId: FIXTURE_STATUS.dev, position: '32' },
+    // 완료 프로젝트 아래 열린 작업(R3-D) — 미분류로 나온다.
+    { ...base, id: FIXTURE_IDS.taskUnderDoneProject, sequentialId: 606, kind: 'task', parentId: FIXTURE_IDS.doneProject, title: '끝난 프로젝트 아래 남은 작업', statusId: FIXTURE_STATUS.todo, position: '33' },
     { ...base, id: FIXTURE_IDS.orphanBug, sequentialId: 385, kind: 'bug', parentId: null, title: '부모 없는 버그', statusId: FIXTURE_STATUS.todo, position: '30' },
     { ...base, id: FIXTURE_IDS.laTask, sequentialId: 20, kind: 'task', parentId: FIXTURE_IDS.lifeAssistant, title: 'LA 쪽 작업', statusId: FIXTURE_STATUS.done, position: '40', resolution: 'completed' },
   ]

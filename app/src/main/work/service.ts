@@ -6,13 +6,16 @@
 // - 요청: 손검증(unknown → 계약) → 연결 확인 → **능력 문**(꺼진 능력은 출처에 닿기 전에 `unsupported` + 이유) → 출처 → 결과 연산 대조.
 // - 오류 5종 중 인증·권한·네트워크·키체인은 연결 상태(pill)를 바꾼다. **인증 실패만 「토큰 다시 붙여넣기」** — 권한 부족·네트워크는 연결 유지.
 // - 밖으로 나가는 모양(`WorkSettingsState`·`WorkResponse`)에 토큰은 없다. 끝 4자만.
-// - **연결 단위 동시성 — 한 모델**(R2-A·B·H, notes §10):
+// - **연결 단위 상태 모델**(R2-A·B·H · R3-A·B·C, notes §11 전이 표):
 //   ① 세대(generation) — 자격 교체·해제 때만 오른다. 오르면 그 세대의 클라이언트를 닫는다. 닫힌 클라이언트는 새 전송을 하지 않는다
 //      (여러 단계 연산의 다음 단계 포함). **이미 보낸 쓰기는 되돌리지 못한다.**
 //   ② 클라이언트 획득은 세대마다 promise 하나(`acquire` — 풀기 + 만들기 + 설치). 동시 첫 요청이 그것을 나눠 쓴다 → 세대마다 클라이언트 하나.
-//   ③ 요청표(ticket) — 요청마다 시작 순번. 결과가 연결 상태를 바꾸려면 그 요청의 세대 = 현재 세대이고 순번 ≥ 상태를 마지막으로 정한 순번.
-//      인증 실패는 상태 순번을 「그때까지 낸 마지막 순번」 으로 올린다 → **auth 이후에 시작된 요청만 auth 를 풀 수 있다**.
-//   ④ 인증 실패 상태에서는 일반 요청을 보내지 않는다(R1-K) — 다시 보내는 길은 사용자가 누른 「연결 테스트」 와 토큰 교체뿐이다.
+//   ③ **진행 표시와 확정 상태를 나눈다** — 진행 표시(`progress`: 획득·누른 테스트·교체가 저마다 하나씩 넣고 끝나면 자기 것만 뺀다)가 하나라도
+//      있으면 화면은 `testing`. 확정 상태(`settled`: unchecked·ok·auth·forbidden·offline·keychain)는 결과만 바꾼다. 실패는 자기 진행 표시만
+//      거둔다 — 확정 상태를 되돌리거나 `checkedAt` 으로 추정하지 않는다.
+//   ④ 요청 순번(ticket) — 결과가 확정 상태를 바꾸려면 같은 세대이고 순번 > `settledTicket`(확정 상태를 마지막으로 정한 순번).
+//      auth 는 `settledTicket` 을 **그때까지 발급한 마지막 순번**으로 올린다 → auth 시점에 진행 중이던 모든 요청(마지막 순번 포함)은 auth 를 풀지 못한다.
+//      auth 상태에서는 일반 요청을 보내지 않으므로, auth 를 푸는 것은 auth 이후에 시작한 「연결 테스트」 와 토큰 교체(새 세대)뿐이다.
 //   ⑤ 설정 저장은 저장 직전 최신 행을 읽어 자기 칸만 바꾼다 — 토큰 교체는 자격 칸만, 숨김·레포 기본은 그대로(R2-H).
 // - 밖으로 나가는 오류 문구는 마지막 경계(이 파일의 IPC 응답·push)에서 금고가 아는 토큰을 한 번 더 지운다(R2-F).
 
@@ -53,18 +56,21 @@ export type WorkServiceDeps = {
   newId?: () => string
 }
 
+type SettledStatus = Exclude<WorkConnectionStatus, 'testing'>
+/** 마지막 확정 상태 — 결과만 바꾼다. */
+type Settled = { status: SettledStatus; error: WorkError | null; checkedAt: number | null }
+
 type Runtime = {
-  status: WorkConnectionStatus
-  pending: WorkConnectionPending
-  error: WorkError | null
-  checkedAt: number | null
+  settled: Settled
+  /** 진행 표시 — id → 기다리는 것. 비어 있지 않으면 화면은 testing, pending 은 마지막에 넣은 것. */
+  progress: Map<number, WorkConnectionPending>
   spaces: WorkSpace[] | null
   capabilities: WorkCapabilities | null
   client: WorkSourceClient | null
   /** 이 세대의 클라이언트 획득(풀기 + 만들기 + 설치) — 진행 중이면 동시 요청이 나눠 쓴다. */
   acquiring: Promise<Acquired> | null
-  /** 상태를 마지막으로 정한 요청 순번 — 이보다 먼저 시작한 요청의 결과는 상태를 바꾸지 못한다. */
-  stateTicket: number
+  /** 확정 상태를 마지막으로 정한 순번(auth 면 그때 발급한 마지막 순번) — 이 순번 이하로 시작한 요청의 결과는 확정 상태를 바꾸지 못한다. */
+  settledTicket: number
 }
 
 type Acquired = { ok: true; client: WorkSourceClient; fresh: boolean } | { ok: false; stale: true } | { ok: false; stale: false; error: WorkError }
@@ -74,7 +80,7 @@ const MAX_TOKEN_LENGTH = 512
 const LAST_SPACE_REASON = '마지막 스페이스는 끌 수 없습니다 — 연결을 해제하세요'
 
 function freshRuntime(): Runtime {
-  return { status: 'unchecked', pending: null, error: null, checkedAt: null, spaces: null, capabilities: null, client: null, acquiring: null, stateTicket: 0 }
+  return { settled: { status: 'unchecked', error: null, checkedAt: null }, progress: new Map(), spaces: null, capabilities: null, client: null, acquiring: null, settledTicket: 0 }
 }
 
 function invalid(message: string): WorkError {
@@ -91,6 +97,7 @@ export class WorkService {
   private readonly generations = new Map<string, number>()
   private generationSeq = 0
   private ticketSeq = 0
+  private progressSeq = 0
   private readonly now: () => number
   private readonly newId: () => string
 
@@ -129,14 +136,12 @@ export class WorkService {
     const prefix = entry.descriptor.tokenPrefix
     if (prefix !== null && !token.startsWith(prefix)) return { ok: false, error: invalid(`${entry.descriptor.tokenLabel}은 ${prefix} 로 시작합니다. 보내지 않았습니다.`) }
 
-    // 교체가 실패하면 카드 상태를 교체 전 그대로 되돌린다(R1-D) — `testing` 에 멈추거나 `auth` 가 `ok` 로 바뀌지 않게.
+    // 교체가 실패하면 자기 진행 표시만 거둔다(R1-D·R3-B) — 확정 상태는 건드리지 않으므로, 그사이 다른 요청이 정한 더 새 상태를 되돌리지 않는다.
     const generation = existing === null ? null : this.generation(existing.id)
-    const before = existing === null ? null : this.runtime.get(existing.id) ?? freshRuntime()
+    const progress = existing === null ? null : this.beginProgress({ connectionId: existing.id, pending: 'network' })
     const fail = ({ error, client }: { error: WorkError; client: WorkSourceClient | null }): WorkConnectionAddResult => {
       client?.close()
-      if (existing !== null && before !== null && generation === this.generation(existing.id)) {
-        this.patchRuntime(existing.id, { status: before.status, pending: before.pending, error: before.error })
-      }
+      if (existing !== null && progress !== null) this.endProgress({ connectionId: existing.id, progress })
       log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: false, errorKind: error.kind, status: error.status })
       // 붙여넣은 토큰은 아직 금고에 없다 — 그것까지 지운다.
       return { ok: false, error: this.scrub({ error, secret: token }) }
@@ -145,7 +150,6 @@ export class WorkService {
     const superseded = (): boolean => existing !== null && generation !== this.generation(existing.id)
     const supersededError = workError({ kind: 'not_connected', message: '토큰을 바꾸는 동안 연결이 해제됐거나 다시 바뀌었습니다. 저장하지 않았습니다.' })
 
-    if (existing !== null) this.patchRuntime(existing.id, { status: 'testing', pending: 'network', error: null })
     const client = entry.create(token)
     const tested = await client.call({ op: 'listSpaces' })
     if (superseded()) return fail({ error: supersededError, client })
@@ -177,7 +181,8 @@ export class WorkService {
     this.runtime.get(id)?.client?.close()
     this.deps.vault.forget(id)
     this.deps.vault.remember({ connectionId: id, token })
-    this.runtime.set(id, { ...freshRuntime(), status: 'ok', checkedAt: this.now(), spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
+    // 새 세대 — 확정 상태는 ok 하나로 시작한다(옛 세대의 진행 표시·오류는 함께 버린다).
+    this.runtime.set(id, { ...freshRuntime(), settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: this.ticketSeq, spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
     log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: true, spaces: tested.result.spaces.length })
     this.emit()
     const summary = this.summaryOf(stored)
@@ -269,56 +274,58 @@ export class WorkService {
     const capabilities = known?.capabilities ?? known?.client?.capabilities() ?? null
     const gate = capabilities === null ? null : closedCapability({ capabilities, call })
     if (gate !== null) return { ok: false, error: gate }
-    // 인증 실패 상태 — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
-    if (!announce && known?.status === 'auth') return { ok: false, error: known.error ?? workError({ kind: 'auth', message: '토큰이 거부된 연결입니다 — 토큰을 다시 붙여넣으세요.' }) }
+    // 인증 실패(확정) — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
+    if (!announce && known?.settled.status === 'auth') return { ok: false, error: known.settled.error ?? workError({ kind: 'auth', message: '토큰이 거부된 연결입니다 — 토큰을 다시 붙여넣으세요.' }) }
 
     this.ticketSeq += 1
     const claim: Claim = { connectionId, generation: this.generation(connectionId), ticket: this.ticketSeq }
     const startedAt = this.now()
-    const acquired = await this.acquire({ claim, sealed: stored.sealed, create: entry.create })
-    if (!acquired.ok) {
-      // 획득 중 해제·교체 — 옛 자격으로 클라이언트를 만들지 않았고, 상태도 건드리지 않는다(R1-C).
-      if (acquired.stale) return { ok: false, error: this.staleError(connectionId) }
-      this.settle({ claim, outcome: { ok: false, error: acquired.error } })
-      return { ok: false, error: acquired.error }
+    // 누른 테스트는 시작부터 진행 표시. 일반 요청은 이 요청이 클라이언트를 처음 만든 경우에만(첫 사용).
+    let progress = announce ? this.beginProgress({ connectionId, pending: 'network' }) : null
+    try {
+      const acquired = await this.acquire({ claim, sealed: stored.sealed, create: entry.create })
+      if (!acquired.ok) {
+        // 획득 중 해제·교체 — 옛 자격으로 클라이언트를 만들지 않았고, 상태도 건드리지 않는다(R1-C).
+        if (acquired.stale) return { ok: false, error: this.staleError(connectionId) }
+        this.settle({ claim, outcome: { ok: false, error: acquired.error } })
+        return { ok: false, error: acquired.error }
+      }
+      const client = acquired.client
+      const lateGate = closedCapability({ capabilities: client.capabilities(), call })
+      if (lateGate !== null) return { ok: false, error: lateGate }
+      if (progress === null && acquired.fresh) progress = this.beginProgress({ connectionId, pending: 'network' })
+      const outcome = await client.call(call)
+      if (claim.generation !== this.generation(connectionId)) {
+        log('work.request', { op: call.op, ok: false, errorKind: 'not_connected', status: null, ms: this.now() - startedAt, discarded: true })
+        return { ok: false, error: this.staleError(connectionId) }
+      }
+      const checked: WorkOutcome = outcome.ok && !resultMatches({ call: call.op, result: outcome.result.op })
+        ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
+        : outcome
+      log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
+      this.settle({ claim, outcome: checked })
+      return checked
+    } finally {
+      if (progress !== null) this.endProgress({ connectionId, progress })
     }
-    const client = acquired.client
-    const lateGate = closedCapability({ capabilities: client.capabilities(), call })
-    if (lateGate !== null) {
-      this.settle({ claim, outcome: { ok: false, error: lateGate } })
-      return { ok: false, error: lateGate }
-    }
-    if (announce) this.claimPatch({ claim, patch: { status: 'testing', pending: 'network', error: null } })
-    else if (acquired.fresh) this.claimPatch({ claim, patch: { pending: 'network' } })
-    const outcome = await client.call(call)
-    if (claim.generation !== this.generation(connectionId)) {
-      log('work.request', { op: call.op, ok: false, errorKind: 'not_connected', status: null, ms: this.now() - startedAt, discarded: true })
-      return { ok: false, error: this.staleError(connectionId) }
-    }
-    const checked: WorkOutcome = outcome.ok && !resultMatches({ call: call.op, result: outcome.result.op })
-      ? { ok: false, error: workError({ kind: 'invalid_response', message: `출처가 ${call.op} 에 ${outcome.result.op} 로 답했습니다.` }) }
-      : outcome
-    log('work.request', { op: call.op, ok: checked.ok, errorKind: checked.ok ? null : checked.error.kind, status: checked.ok ? null : checked.error.status, ms: this.now() - startedAt })
-    this.settle({ claim, outcome: checked })
-    return checked
   }
 
   /**
    * 이 세대의 클라이언트 — 있으면 그것, 획득 중이면 그 promise, 없으면 새로 시작한다(R2-A). 획득 = 풀기 + 만들기 + 설치를 한 번에.
-   * 푸는 동안 세대가 바뀌었으면 만들지 않는다(stale). 실패한 획득은 지워 다음 요청이 다시 푼다(암호문은 그대로 — C6).
+   * 획득은 자기 진행 표시(키체인 대기 또는 네트워크)를 하나 넣고 끝나면 뺀다. 푸는 동안 세대가 바뀌었으면 만들지 않는다(stale).
+   * 실패한 획득은 지워 다음 요청이 다시 푼다(암호문은 그대로 — C6).
    */
   private acquire({ claim, sealed, create }: { claim: Claim; sealed: string; create: (token: string) => WorkSourceClient }): Promise<Acquired> {
     const { connectionId, generation } = claim
     const current = this.runtime.get(connectionId)
     if (current?.client) return Promise.resolve({ ok: true, client: current.client, fresh: false })
     if (current?.acquiring) return current.acquiring
-    const unlocking = !this.deps.vault.isOpen(connectionId)
-    this.claimPatch({ claim, patch: { status: 'testing', pending: unlocking ? 'keychain' : 'network', error: null } })
+    const progress = this.beginProgress({ connectionId, pending: this.deps.vault.isOpen(connectionId) ? 'network' : 'keychain' })
     const acquiring: Promise<Acquired> = this.deps.vault.unseal({ connectionId, sealed }).then((opened): Acquired => {
       if (generation !== this.generation(connectionId)) return { ok: false, stale: true }
-      const mine = this.runtime.get(connectionId)?.acquiring === acquiring
+      this.endProgress({ connectionId, progress })
       if (!opened.ok) {
-        if (mine) this.patchRuntime(connectionId, { acquiring: null })
+        if (this.runtime.get(connectionId)?.acquiring === acquiring) this.patchRuntime(connectionId, { acquiring: null })
         return { ok: false, stale: false, error: opened.error }
       }
       const client = create(opened.token)
@@ -329,20 +336,35 @@ export class WorkService {
     return acquiring
   }
 
-  /** 상태를 바꿔도 되는 결과인가 — 같은 세대이고, 상태를 마지막으로 정한 요청보다 늦게(또는 같이) 시작한 요청. */
+  /** 확정 상태를 바꿔도 되는 결과인가 — 같은 세대이고, 확정 상태를 마지막으로 정한 순번보다 **뒤에** 시작한 요청. */
   private owns(claim: Claim): boolean {
     if (claim.generation !== this.generation(claim.connectionId)) return false
-    return claim.ticket >= (this.runtime.get(claim.connectionId)?.stateTicket ?? 0)
+    return claim.ticket > (this.runtime.get(claim.connectionId)?.settledTicket ?? 0)
   }
 
-  private claimPatch({ claim, patch }: { claim: Claim; patch: Partial<Runtime> }): void {
-    if (!this.owns(claim)) return
-    this.patchRuntime(claim.connectionId, { ...patch, stateTicket: claim.ticket })
+  private beginProgress({ connectionId, pending }: { connectionId: string; pending: WorkConnectionPending }): number {
+    this.progressSeq += 1
+    const id = this.progressSeq
+    const current = this.runtime.get(connectionId) ?? freshRuntime()
+    const progress = new Map(current.progress).set(id, pending)
+    this.runtime.set(connectionId, { ...current, progress })
+    this.emit()
+    return id
+  }
+
+  /** 자기 진행 표시만 뺀다 — 세대가 바뀌어 새 runtime 이면 없는 id 라 아무것도 안 한다. 해제된 연결의 runtime 을 되살리지 않는다. */
+  private endProgress({ connectionId, progress }: { connectionId: string; progress: number }): void {
+    const current = this.runtime.get(connectionId)
+    if (current === undefined || !current.progress.has(progress)) return
+    const next = new Map(current.progress)
+    next.delete(progress)
+    this.runtime.set(connectionId, { ...current, progress: next })
+    this.emit()
   }
 
   /**
-   * 결과로 연결 상태를 정한다 — 성공 = ok, 연결 계열 오류 = 그 상태, 연산 하나의 실패는 상태를 바꾸지 않는다.
-   * 상태를 바꿀 자격이 없는 결과(`owns` 거짓 — 늦게 온 옛 요청)는 아무것도 바꾸지 않는다(R2-B).
+   * 결과로 확정 상태를 정한다 — 성공 = ok, 연결 계열 오류 = 그 상태, 연산 하나의 실패(거절·어긋남 등)는 확정 상태를 바꾸지 않는다.
+   * 바꿀 자격이 없는 결과(`owns` 거짓 — 해제·교체 뒤, 또는 확정 상태를 정한 요청보다 먼저 시작한 요청)는 아무것도 바꾸지 않는다(R2-B·R3-A).
    */
   private settle({ claim, outcome }: { claim: Claim; outcome: WorkOutcome }): void {
     if (!this.owns(claim)) return
@@ -351,19 +373,19 @@ export class WorkService {
     if (outcome.ok) {
       const spaces = outcome.result.op === 'listSpaces' ? outcome.result.spaces : current.spaces
       const capabilities = outcome.result.op === 'listSpaces' ? outcome.result.capabilities : current.capabilities
-      this.runtime.set(connectionId, { ...current, status: 'ok', pending: null, error: null, checkedAt: this.now(), spaces, capabilities, stateTicket: ticket })
+      this.runtime.set(connectionId, { ...current, settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: ticket, spaces, capabilities })
     } else {
       const status = connectionStatusOf(outcome.error.kind)
-      if (status === null) {
-        this.runtime.set(connectionId, { ...current, pending: null, status: current.status === 'testing' ? (current.checkedAt === null ? 'unchecked' : 'ok') : current.status, stateTicket: ticket })
-      } else if (outcome.error.kind === 'auth') {
+      if (status === null) return
+      const settled: Settled = { status, error: outcome.error, checkedAt: this.now() }
+      if (outcome.error.kind === 'auth') {
         // 인증 실패 — 그 자격의 클라이언트를 닫고 버린다(진행 중인 여러 단계 연산의 다음 단계도 나가지 않는다).
-        // 상태 순번을 지금까지 낸 마지막 순번으로 올린다 → 이미 진행 중인 요청의 늦은 성공이 auth 를 풀지 못한다.
+        // 확정 순번을 지금까지 발급한 마지막 순번으로 → 이미 진행 중인 요청은 (마지막 순번이어도) auth 를 풀지 못한다(R3-A).
         current.client?.close()
-        this.runtime.set(connectionId, { ...current, status, pending: null, error: outcome.error, checkedAt: this.now(), client: null, stateTicket: this.ticketSeq })
+        this.runtime.set(connectionId, { ...current, settled, client: null, settledTicket: this.ticketSeq })
       } else {
         // 키체인 실패는 클라이언트가 없고, 암호문은 그대로 둔다(다음 요청이 다시 푼다).
-        this.runtime.set(connectionId, { ...current, status, pending: null, error: outcome.error, checkedAt: this.now(), stateTicket: ticket })
+        this.runtime.set(connectionId, { ...current, settled, settledTicket: ticket })
       }
     }
     this.emit()
@@ -397,9 +419,12 @@ export class WorkService {
     const entry = this.deps.sources.get(stored.sourceId)
     if (entry === null) return null
     const runtime = this.runtime.get(stored.id) ?? freshRuntime()
-    const error = runtime.error === null || connectionStatusOf(runtime.error.kind) === null
+    const settledError = runtime.settled.error
+    const error = settledError === null || connectionStatusOf(settledError.kind) === null
       ? null
-      : { message: this.deps.vault.redact(runtime.error.message), action: actionOf(runtime.error) }
+      : { message: this.deps.vault.redact(settledError.message), action: actionOf(settledError) }
+    const testing = runtime.progress.size > 0
+    const status: WorkConnectionStatus = testing ? 'testing' : runtime.settled.status
     return {
       id: stored.id,
       sourceId: stored.sourceId,
@@ -407,10 +432,11 @@ export class WorkService {
       mono: entry.descriptor.mono,
       tokenTail: stored.tokenTail,
       addedAt: stored.addedAt,
-      status: runtime.status,
-      pending: runtime.pending,
-      error: runtime.status === 'ok' || runtime.status === 'testing' || runtime.status === 'unchecked' ? null : error,
-      checkedAt: runtime.checkedAt,
+      generation: this.generation(stored.id),
+      status,
+      pending: testing ? [...runtime.progress.values()].at(-1) ?? null : null,
+      error: status === 'ok' || status === 'testing' || status === 'unchecked' ? null : error,
+      checkedAt: runtime.settled.checkedAt,
       spaces: runtime.spaces === null
         ? null
         : runtime.spaces.map((space) => ({ key: space.key, name: space.name, color: space.color, openCount: space.openCount, hidden: stored.hiddenSpaceKeys.includes(space.key) })),

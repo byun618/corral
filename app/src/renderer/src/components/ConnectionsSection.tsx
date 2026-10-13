@@ -158,11 +158,19 @@ function ConnectionCard({ connection, onReplaceToken, onRemove }: { connection: 
   // 사용자가 누른 연결 테스트의 실패는 연결 상태로 남지 않는 것(invalid_response·rejected 등)까지 이 카드에 보인다(R2-E).
   // 일반 작업 요청의 실패는 연결 상태 정책을 따른다 — 이 줄은 누른 테스트의 결과만.
   // 수명 = 누른 순간의 자격 세대(R3-C) — 토큰을 바꾸면(세대가 오르면) 이전 자격의 실패 줄은 버린다. 늦게 끝난 옛 테스트도 같은 규칙.
+  // 결과는 **적용하기 전에** 거른다(R4-B) — 이 카드의 가장 최근 테스트이고 지금 자격 세대와 같을 때만 state 에 넣는다.
+  // 옛 세대·앞선 테스트의 늦은 결과는 버린다(새 세대의 실패 줄을 지우지 못한다).
   const [testError, setTestError] = useState<{ error: WorkError; generation: number } | null>(null)
+  const latestTest = useRef(0)
+  const currentGeneration = useRef(connection.generation)
+  useEffect(() => { currentGeneration.current = connection.generation }, [connection.generation])
   const test = async (): Promise<void> => {
+    latestTest.current += 1
+    const mine = latestTest.current
     const generation = connection.generation
     setTestError(null)
     const result = await window.corral.testWorkConnection({ connectionId: connection.id })
+    if (mine !== latestTest.current || generation !== currentGeneration.current) return
     setTestError(result.ok ? null : { error: result.error, generation })
   }
   const shownTestError = testError !== null && testError.generation === connection.generation ? testError.error : null

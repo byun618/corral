@@ -53,7 +53,7 @@ beforeEach(() => {
     getWorkSettings: async () => state,
     onWorkSettings: (listener: (next: WorkSettingsState) => void) => { listeners.push(listener); return () => {} },
     addWorkConnection: async (input: WorkConnectionAddInput) => { added.push(input); return addResult },
-    testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); await testGate; return testResult },
+    testWorkConnection: async (input: { connectionId: string }) => { tested.push(input.connectionId); const result = testResult; const gate = testGate; testGate = Promise.resolve(); await gate; return result },
     removeWorkConnection: async () => ok,
     setWorkSpaceHidden: async (input: { spaceKey: string; hidden: boolean }) => { hidden.push({ spaceKey: input.spaceKey, hidden: input.hidden }); return ok },
     setRepoDefaultSpace: async (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => { defaults.push(input); return defaultResult },
@@ -217,4 +217,32 @@ it('[R3-C] 교체 전에 누른 테스트가 교체 뒤 늦게 실패해도 새 
   push(withConnection({ generation: 1, tokenTail: 'new4' }))
   await act(async () => { release(); await testGate })
   expect(host.querySelector('[data-connection-test-error]')).toBeNull()
+})
+
+it('[R4-B] old-test-result-erases-new-generation-test-error — 새 세대의 실패 줄을 옛 세대 테스트의 늦은 결과가 지우지 못한다(적용 전에 거른다)', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: false, error: { kind: 'not_connected', status: null, message: '토큰이 바뀌어 이전 토큰으로 한 요청의 결과를 버렸습니다' } }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  // 교체 성공 — 세대 1. 새 토큰으로 누른 테스트가 invalid_response.
+  push(withConnection({ generation: 1, tokenTail: 'new4' }))
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '새 토큰 응답 어긋남' } }
+  await act(async () => { q('[data-connection-test]').click() })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('새 토큰 응답 어긋남')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('새 토큰 응답 어긋남')
+})
+
+it('[R4-B] 같은 세대에서도 앞선 테스트의 늦은 결과는 최신 테스트의 결과를 덮지 않는다', async () => {
+  let release = (): void => {}
+  testGate = new Promise<void>((resolve) => { release = resolve })
+  testResult = { ok: true }
+  await mount()
+  act(() => q('[data-connection-test]').click())
+  testResult = { ok: false, error: { kind: 'invalid_response', status: null, message: '최신 테스트 어긋남' } }
+  await act(async () => { q('[data-connection-test]').click() })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('최신 테스트 어긋남')
+  await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+  expect(q('[data-connection-test-error="invalid_response"]').textContent).toContain('최신 테스트 어긋남')
 })

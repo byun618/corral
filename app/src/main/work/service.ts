@@ -16,6 +16,10 @@
 //   ④ 요청 순번(ticket) — 결과가 확정 상태를 바꾸려면 같은 세대이고 순번 > `settledTicket`(확정 상태를 마지막으로 정한 순번).
 //      auth 는 `settledTicket` 을 **그때까지 발급한 마지막 순번**으로 올린다 → auth 시점에 진행 중이던 모든 요청(마지막 순번 포함)은 auth 를 풀지 못한다.
 //      auth 상태에서는 일반 요청을 보내지 않으므로, auth 를 푸는 것은 auth 이후에 시작한 「연결 테스트」 와 토큰 교체(새 세대)뿐이다.
+//      **자격 무효(`rejected`)는 확정 상태와 다른 축**(R4-A) — auth 가 세우고, 소유한 **성공**(누른 테스트 성공)이나 새 세대(교체 성공)만 거둔다.
+//      재시험이 network·5xx·forbidden·invalid_response 로 실패하면 화면은 그 장애를 보이지만 일반 요청 차단은 그대로다.
+//      **데이터 순번은 상태 순번과 따로**(R4-C) — 스페이스 목록은 `spacesTicket` 보다 늦게 시작했고 마지막 auth(`authFloor`) 뒤에 시작한
+//      목록 성공이면 받는다. 목록이 없는 후행 성공(예: listStatuses)이 먼저 시작한 목록 성공을 버리게 하지 않는다.
 //   ⑤ 설정 저장은 저장 직전 최신 행을 읽어 자기 칸만 바꾼다 — 토큰 교체는 자격 칸만, 숨김·레포 기본은 그대로(R2-H).
 // - 밖으로 나가는 오류 문구는 마지막 경계(이 파일의 IPC 응답·push)에서 금고가 아는 토큰을 한 번 더 지운다(R2-F).
 
@@ -71,6 +75,12 @@ type Runtime = {
   acquiring: Promise<Acquired> | null
   /** 확정 상태를 마지막으로 정한 순번(auth 면 그때 발급한 마지막 순번) — 이 순번 이하로 시작한 요청의 결과는 확정 상태를 바꾸지 못한다. */
   settledTicket: number
+  /** 자격 무효 — 서버가 이 자격을 거부했다(auth). 소유한 성공 또는 새 세대만 거둔다. 있으면 일반 요청을 보내지 않는다(R4-A). */
+  rejected: WorkError | null
+  /** 마지막 auth 때 발급돼 있던 마지막 순번 — 이 순번 이하로 시작한 요청의 데이터(스페이스 목록)는 받지 않는다. */
+  authFloor: number
+  /** 스페이스 목록을 마지막으로 정한 순번(R4-C). */
+  spacesTicket: number
 }
 
 type Acquired = { ok: true; client: WorkSourceClient; fresh: boolean } | { ok: false; stale: true } | { ok: false; stale: false; error: WorkError }
@@ -80,7 +90,7 @@ const MAX_TOKEN_LENGTH = 512
 const LAST_SPACE_REASON = '마지막 스페이스는 끌 수 없습니다 — 연결을 해제하세요'
 
 function freshRuntime(): Runtime {
-  return { settled: { status: 'unchecked', error: null, checkedAt: null }, progress: new Map(), spaces: null, capabilities: null, client: null, acquiring: null, settledTicket: 0 }
+  return { settled: { status: 'unchecked', error: null, checkedAt: null }, progress: new Map(), spaces: null, capabilities: null, client: null, acquiring: null, settledTicket: 0, rejected: null, authFloor: 0, spacesTicket: 0 }
 }
 
 function invalid(message: string): WorkError {
@@ -182,7 +192,7 @@ export class WorkService {
     this.deps.vault.forget(id)
     this.deps.vault.remember({ connectionId: id, token })
     // 새 세대 — 확정 상태는 ok 하나로 시작한다(옛 세대의 진행 표시·오류는 함께 버린다).
-    this.runtime.set(id, { ...freshRuntime(), settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: this.ticketSeq, spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
+    this.runtime.set(id, { ...freshRuntime(), settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: this.ticketSeq, authFloor: this.ticketSeq, spacesTicket: this.ticketSeq, spaces: tested.result.spaces, capabilities: tested.result.capabilities, client })
     log('work.connection_add', { source: entry.descriptor.id, replace: existing !== null, ok: true, spaces: tested.result.spaces.length })
     this.emit()
     const summary = this.summaryOf(stored)
@@ -275,7 +285,8 @@ export class WorkService {
     const gate = capabilities === null ? null : closedCapability({ capabilities, call })
     if (gate !== null) return { ok: false, error: gate }
     // 인증 실패(확정) — 일반 요청은 같은 자격을 다시 보내지 않는다. 사용자가 누른 연결 테스트(announce)만 다시 보낸다(R1-K).
-    if (!announce && known?.settled.status === 'auth') return { ok: false, error: known.settled.error ?? workError({ kind: 'auth', message: '토큰이 거부된 연결입니다 — 토큰을 다시 붙여넣으세요.' }) }
+    // 확정 상태가 아니라 자격 무효 축을 본다 — 재시험이 network 등으로 실패해 상태가 offline 이어도 차단은 그대로(R4-A).
+    if (!announce && known?.rejected) return { ok: false, error: known.rejected }
 
     this.ticketSeq += 1
     const claim: Claim = { connectionId, generation: this.generation(connectionId), ticket: this.ticketSeq }
@@ -367,13 +378,23 @@ export class WorkService {
    * 바꿀 자격이 없는 결과(`owns` 거짓 — 해제·교체 뒤, 또는 확정 상태를 정한 요청보다 먼저 시작한 요청)는 아무것도 바꾸지 않는다(R2-B·R3-A).
    */
   private settle({ claim, outcome }: { claim: Claim; outcome: WorkOutcome }): void {
-    if (!this.owns(claim)) return
+    if (claim.generation !== this.generation(claim.connectionId)) return
     const { connectionId, ticket } = claim
-    const current = this.runtime.get(connectionId) ?? freshRuntime()
+    const before = this.runtime.get(connectionId) ?? freshRuntime()
+    // 데이터 — 스페이스 목록은 상태 순번과 따로 센다(R4-C). auth 이전에 시작한 요청의 목록은 받지 않는다.
+    const current = outcome.ok && outcome.result.op === 'listSpaces' && ticket > before.spacesTicket && ticket > before.authFloor
+      ? { ...before, spaces: outcome.result.spaces, capabilities: outcome.result.capabilities, spacesTicket: ticket }
+      : before
+    if (!this.owns(claim)) {
+      if (current !== before) {
+        this.runtime.set(connectionId, current)
+        this.emit()
+      }
+      return
+    }
     if (outcome.ok) {
-      const spaces = outcome.result.op === 'listSpaces' ? outcome.result.spaces : current.spaces
-      const capabilities = outcome.result.op === 'listSpaces' ? outcome.result.capabilities : current.capabilities
-      this.runtime.set(connectionId, { ...current, settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: ticket, spaces, capabilities })
+      // 소유한 성공 — 확정 ok, 자격 무효도 거둔다(auth 이후에 시작한 요청만 소유할 수 있다).
+      this.runtime.set(connectionId, { ...current, settled: { status: 'ok', error: null, checkedAt: this.now() }, settledTicket: ticket, rejected: null })
     } else {
       const status = connectionStatusOf(outcome.error.kind)
       if (status === null) return
@@ -382,9 +403,10 @@ export class WorkService {
         // 인증 실패 — 그 자격의 클라이언트를 닫고 버린다(진행 중인 여러 단계 연산의 다음 단계도 나가지 않는다).
         // 확정 순번을 지금까지 발급한 마지막 순번으로 → 이미 진행 중인 요청은 (마지막 순번이어도) auth 를 풀지 못한다(R3-A).
         current.client?.close()
-        this.runtime.set(connectionId, { ...current, settled, client: null, settledTicket: this.ticketSeq })
+        this.runtime.set(connectionId, { ...current, settled, client: null, settledTicket: this.ticketSeq, authFloor: this.ticketSeq, rejected: outcome.error })
       } else {
         // 키체인 실패는 클라이언트가 없고, 암호문은 그대로 둔다(다음 요청이 다시 푼다).
+        // 자격 무효(`rejected`)는 건드리지 않는다 — 장애는 자격이 유효하다는 근거가 아니다(R4-A).
         this.runtime.set(connectionId, { ...current, settled, settledTicket: ticket })
       }
     }

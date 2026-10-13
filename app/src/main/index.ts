@@ -20,7 +20,7 @@ import { closeTabsGated } from './close-tabs.js'
 //
 // 이 파일은 **어댑터의 공개 입구만** import 한다 (`./adapter/index.js`). internal 은 모른다.
 
-import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, type BrowserWindowConstructorOptions, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -113,6 +113,12 @@ import { observePanes } from '../runtime/orchestration/index.js'
 import { OrchestrationStore } from '../runtime/orchestration/store.js'
 import { MobileService } from './mobile/service.js'
 import { KNOWN_TAILSCALE_LOCATIONS, locateTailscale, loginShellTailscale, runTailscale } from './mobile/tailscale.js'
+import { LA_DEFAULT_MCP_URL, laSourceEntry } from './work/la-source.js'
+import { WorkService } from './work/service.js'
+import { WorkSourceRegistry } from './work/source.js'
+import { WorkConnectionStore } from './work/store.js'
+import { CredentialVault, electronCipher, measurementCipher } from './work/vault.js'
+import type { WorkActionResult, WorkError } from '../shared/work.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -167,6 +173,18 @@ let registry: RepoRegistry | null = null
 let uiPrefs: UiPrefsStore | null = null
 /** 사용자 설정 (LIFE-512 S11) — 외관. ui-prefs(화면 상태)와 다른 파일·다른 칸이다(U8). */
 let settings: SettingsStore | null = null
+/** 설정 › 작업 연결 (LIFE-600) — 기동 때는 저장 파일만 읽는다. 자격(키체인)은 그 연결이 처음 쓰일 때 푼다(C6). */
+let work: WorkService | null = null
+/** C7 대조용 — 계측 실행(제어 소켓)에서 `CORRAL_WORK_IPC_TRACE` 가 있을 때만 작업 IPC 응답·push 를 NDJSON 으로 남긴다. */
+function traceWork({ channel, value }: { channel: string; value: unknown }): void {
+  const file = process.env.CORRAL_WORK_IPC_TRACE
+  if (!measuring || file === undefined || file.length === 0) return
+  try {
+    fs.appendFileSync(file, JSON.stringify({ at: Date.now(), channel, value }) + '\n', { mode: 0o600 })
+  } catch (error) {
+    log('work.ipc_trace_failed', { error: String(error) })
+  }
+}
 /** 비싼 쪽(git·herdr 왕복)만 캐시한다. 행은 내보낼 때마다 새로 붙인다 — tree.ts 의 주석 참고. */
 let skeleton: RepoSkeleton[] = []
 let emitScheduled = false
@@ -1574,6 +1592,29 @@ app.whenReady().then(async () => {
     }),
     run: runTailscale,
   })
+  const workStore = new WorkConnectionStore(app.getPath('userData'))
+  workStore.load()
+  // `CORRAL_LA_MCP_URL` — 격리 실행이 모의 LA MCP 서버를 꽂을 때만. 평시는 실제 LA.
+  const laUrl = process.env.CORRAL_LA_MCP_URL !== undefined && process.env.CORRAL_LA_MCP_URL.length > 0 ? process.env.CORRAL_LA_MCP_URL : LA_DEFAULT_MCP_URL
+  if (laUrl !== LA_DEFAULT_MCP_URL) log('work.la_endpoint_override', { url: laUrl.slice(0, 200) })
+  const testCipher = measuring && process.env.CORRAL_WORK_TEST_CIPHER === '1'
+  if (testCipher) log('work.test_cipher', { reason: 'CORRAL_CONTROL_SOCKET + CORRAL_WORK_TEST_CIPHER — 키체인 무접촉 격리 실행' })
+  work = new WorkService({
+    store: workStore,
+    vault: new CredentialVault(testCipher ? measurementCipher() : electronCipher(safeStorage)),
+    sources: new WorkSourceRegistry([laSourceEntry({ url: laUrl, clientVersion: app.getVersion() })]),
+    repos: () => {
+      try {
+        return registry?.records().map((repo) => ({ id: repo.id, root: repo.path })) ?? []
+      } catch {
+        return []
+      }
+    },
+    onChange: (state) => {
+      traceWork({ channel: 'corral:workSettings', value: state })
+      if (window !== null && !window.isDestroyed()) window.webContents.send('corral:workSettings', state)
+    },
+  })
   log('app.ready', {
     logFile: file,
     electron: process.versions.electron,
@@ -1688,6 +1729,25 @@ app.whenReady().then(async () => {
     await mobile.recheckNow()
     return mobile.status()
   })
+
+  // 설정 › 작업 연결 (LIFE-600) — 입력은 unknown 으로 받아 WorkService 가 손검증한다. 응답·push 에 토큰은 없다(끝 4자만).
+  const workDeniedError: WorkError = { kind: 'invalid_request', message: '허용되지 않은 발신자', status: null }
+  const workDenied: WorkActionResult = { ok: false, error: workDeniedError }
+  // 응답은 계측 실행이면 `CORRAL_WORK_IPC_TRACE` 에 그대로 남긴다(C7 평문 부재 대조 — 입력은 토큰이 실리므로 남기지 않는다).
+  const workHandle = (channel: string, run: (input: unknown) => unknown): void => {
+    ipcMain.handle(channel, async (event, input: unknown) => {
+      const value = fromOurWindow(event) && work !== null ? await run(input) : channel === 'corral:workRequest' ? { requestId: '', connectionId: '', ok: false, error: workDeniedError } : workDenied
+      traceWork({ channel, value })
+      return value
+    })
+  }
+  workHandle('corral:getWorkSettings', () => work?.settings() ?? null)
+  workHandle('corral:addWorkConnection', (input) => work?.addConnection(input))
+  workHandle('corral:testWorkConnection', (input) => work?.testConnection(input))
+  workHandle('corral:removeWorkConnection', (input) => work?.removeConnection(input))
+  workHandle('corral:setWorkSpaceHidden', (input) => work?.setSpaceHidden(input))
+  workHandle('corral:setRepoDefaultSpace', (input) => work?.setRepoDefault(input))
+  workHandle('corral:workRequest', (input) => work?.request(input))
 
   // --- 라이프사이클 (R3) ---
   const denied = { ok: false as const, error: '허용되지 않은 발신자' }

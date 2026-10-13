@@ -4,6 +4,7 @@ import type { Keybindings, ShortcutMatch } from './keybindings.js'
 import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
+import type { WorkActionResult, WorkConnectionAddInput, WorkConnectionAddResult, WorkRequest, WorkResponse, WorkSettingsState } from './work.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1076,5 +1077,16 @@ export type CorralApi = {
   revokeMobileDevice: (input: { id: string }) => Promise<{ ok: boolean }>
   /** 「다시 확인」 — 꺼져 있으면 읽기 점검만. */
   recheckMobile: () => Promise<MobileStatus | null>
+  // --- 설정 › 작업 연결 (LIFE-600) — 토큰은 `addWorkConnection` 입력으로만 main 에 들어가고, 어떤 응답·push 에도 나오지 않는다(끝 4자만) ---
+  getWorkSettings: () => Promise<WorkSettingsState | null>
+  onWorkSettings: (listener: (state: WorkSettingsState) => void) => () => void
+  /** 연결 테스트 통과 뒤에만 저장한다. `replaceId` 면 그 연결의 토큰을 바꾼다. */
+  addWorkConnection: (input: WorkConnectionAddInput) => Promise<WorkConnectionAddResult>
+  testWorkConnection: (input: { connectionId: string }) => Promise<WorkActionResult>
+  removeWorkConnection: (input: { connectionId: string }) => Promise<WorkActionResult>
+  setWorkSpaceHidden: (input: { connectionId: string; spaceKey: string; hidden: boolean }) => Promise<WorkActionResult>
+  setRepoDefaultSpace: (input: { repoRoot: string; target: { connectionId: string; spaceKey: string } | null }) => Promise<WorkActionResult>
+  /** 작업 계약 연산 — 요청 id 는 그대로 돌아온다(늦은 응답 폐기용, T2). */
+  workRequest: (request: WorkRequest) => Promise<WorkResponse>
   preloadEnv: { sandboxed: boolean; contextIsolated: boolean; exposedMethods: string[] }
 }

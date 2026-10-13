@@ -220,4 +220,14 @@
   --fs-settings-body: 14px;
   --fs-settings-group: 11px;
   --ls-settings-group: .18em;       /* 그룹 제목 `tracking-[0.18em]` */
+
+  /* --- LIFE-600 설정 › 작업 연결(E) — LIFE-372 design-handoff §3 중 E 가 쓰는 것만. 스페이스 색만 새 값이다 ----------
+     LA 프로젝트 색이 있으면 그 값, 없을 때 순서대로. 나머지 §3 토큰(--cat-* · --prio-* · 보드·상세 치수)은 T2 이후가 들인다. */
+  --space-1: oklch(72% 0.09 25);
+  --space-2: oklch(72% 0.09 145);
+  --space-3: oklch(72% 0.09 60);
+  --space-4: oklch(72% 0.09 290);
+  --space-5: oklch(72% 0.09 200);
+  --space-6: oklch(72% 0.09 250);
+  --space-7: oklch(72% 0.09 330);
 }

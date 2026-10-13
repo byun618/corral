@@ -36,6 +36,7 @@ import type { Settings, SettingsWriteResult } from '../shared/terminal-settings.
 import type { GhosttyImportPreview } from '../shared/ghostty-import.js'
 import type { WindowChrome } from '../shared/window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from '../shared/mobile.js'
+import type { WorkSettingsState } from '../shared/work.js'
 
 const EXPOSED = [
   'getMobileStatus',
@@ -93,6 +94,14 @@ const EXPOSED = [
   'getWindowChrome',
   'onWindowChrome',
   'syncWindowZoom',
+  'getWorkSettings',
+  'onWorkSettings',
+  'addWorkConnection',
+  'testWorkConnection',
+  'removeWorkConnection',
+  'setWorkSpaceHidden',
+  'setRepoDefaultSpace',
+  'workRequest',
   'preloadEnv',
 ]
 
@@ -273,6 +282,21 @@ const api: CorralApi = {
   createMobilePairing: (): Promise<MobilePairingResult> => ipcRenderer.invoke('corral:createMobilePairing'),
   revokeMobileDevice: (input: { id: string }): Promise<{ ok: boolean }> => ipcRenderer.invoke('corral:revokeMobileDevice', input),
   recheckMobile: (): Promise<MobileStatus | null> => ipcRenderer.invoke('corral:recheckMobile'),
+  // 설정 › 작업 연결 (LIFE-600). push 는 연결 요약만(토큰 없음, 끝 4자).
+  getWorkSettings: () => ipcRenderer.invoke('corral:getWorkSettings'),
+  onWorkSettings: (listener: (state: WorkSettingsState) => void) => {
+    const handler = (_event: unknown, state: WorkSettingsState): void => listener(state)
+    ipcRenderer.on('corral:workSettings', handler)
+    return () => {
+      ipcRenderer.removeListener('corral:workSettings', handler)
+    }
+  },
+  addWorkConnection: (input) => ipcRenderer.invoke('corral:addWorkConnection', input),
+  testWorkConnection: (input) => ipcRenderer.invoke('corral:testWorkConnection', input),
+  removeWorkConnection: (input) => ipcRenderer.invoke('corral:removeWorkConnection', input),
+  setWorkSpaceHidden: (input) => ipcRenderer.invoke('corral:setWorkSpaceHidden', input),
+  setRepoDefaultSpace: (input) => ipcRenderer.invoke('corral:setRepoDefaultSpace', input),
+  workRequest: (request) => ipcRenderer.invoke('corral:workRequest', request),
   // preload 자기 컨텍스트에서 관측한 값을 그대로 화면·로그에 싣는다 (보안 자세의 근거).
   preloadEnv: {
     sandboxed: process.sandboxed === true,

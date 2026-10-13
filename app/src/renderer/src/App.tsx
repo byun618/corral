@@ -1579,7 +1579,7 @@ export function App(): React.JSX.Element {
         <div className="settings-topbar" data-settings-topbar="">
           {showsTrafficLightPad(windowChrome) ? <div className="sidebar-head-traffic-pad" data-traffic-light-pad="" /> : null}
         </div>
-        <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} sidebarView={sidebarView.view} onChangeSidebarView={sidebarView.change} />
+        <SettingsPage section={settingsView} onSelectSection={setSettingsView} onClose={closeSettings} overrides={keymap.overrides} onChangeOverrides={keymap.setOverrides} sidebarView={sidebarView.view} onChangeSidebarView={sidebarView.change} repos={state?.repos ?? NO_REPOS} />
         </div>
       )}
       </div>

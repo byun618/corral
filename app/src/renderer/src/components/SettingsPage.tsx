@@ -16,11 +16,12 @@ import { settingsNavGroups, settingsSectionById, type SettingsSection as Setting
 import { AgentsSection } from './AgentsSection.js'
 import { GeneralSection } from './GeneralSection.js'
 import { MobileSection } from './MobileSection.js'
+import { ConnectionsSection, type ConnectionsRepo } from './ConnectionsSection.js'
 import { SettingsSection } from './SettingsControls.js'
 import { ShortcutsSection } from './ShortcutsSection.js'
 import { TerminalAppearanceSection } from './TerminalAppearanceSection.js'
 import { WindowSidebarCard } from './WindowSidebarCard.js'
-import { ArrowLeftIcon, BotIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon, SmartphoneIcon } from './SidebarIcons.js'
+import { ArrowLeftIcon, BotIcon, KanbanIcon, KeyboardIcon, PaletteIcon, SearchIcon, SlidersIcon, SmartphoneIcon } from './SidebarIcons.js'
 import './settings.css'
 
 export const SETTINGS_ESCAPE_CONFIRM_MS = 2200
@@ -32,13 +33,14 @@ const SECTION_ICONS: Record<SettingsSectionId, (props: { className?: string }) =
   appearance: PaletteIcon,
   shortcuts: KeyboardIcon,
   mobile: SmartphoneIcon,
+  connections: KanbanIcon,
 }
 
 /** 내비 행 하나 — 아이콘 · 제목 · 배지 자리(있을 때만, 198 `SettingsSidebar.tsx:255`). */
 export function SettingsNavItem({ section, active, onSelect }: { section: SettingsSectionDef; active: boolean; onSelect: (id: SettingsSectionId) => void }): React.JSX.Element {
   const Icon = SECTION_ICONS[section.id]
   return (
-    <button type="button" className={`settings-nav-item${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} data-settings-nav-item={section.id} onClick={() => onSelect(section.id)}>
+    <button type="button" className={`settings-nav-item${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} data-settings-nav-item={section.id} data-settings-nav={section.id} onClick={() => onSelect(section.id)}>
       <Icon className="settings-icon" />
       <span className="settings-nav-item-title">{section.title}</span>
       {section.badge === undefined ? null : <span className="settings-nav-badge" data-settings-nav-badge>{section.badge}</span>}
@@ -46,7 +48,9 @@ export function SettingsNavItem({ section, active, onSelect }: { section: Settin
   )
 }
 
-export function SettingsPage({ section, onSelectSection, onClose, overrides, onChangeOverrides, sidebarView, onChangeSidebarView }: {
+const NO_REPOS: readonly ConnectionsRepo[] = []
+
+export function SettingsPage({ section, onSelectSection, onClose, overrides, onChangeOverrides, sidebarView, onChangeSidebarView, repos = NO_REPOS }: {
   section: SettingsSectionId
   onSelectSection: (section: SettingsSectionId) => void
   onClose: () => void
@@ -55,6 +59,8 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
   /** App 의 `useSidebarView()` 그대로(LIFE-516 K6ⓑ) — 사이드바 옵션 메뉴와 같은 상태 하나. */
   sidebarView: SidebarView
   onChangeSidebarView: (patch: Partial<SidebarView>) => void
+  /** 작업 연결 › 레포 ↔ 기본 스페이스(LIFE-600) — 등록된 레포. 키는 main 이 `root` → `RepoRecord.id` 로 바꿔 저장한다. */
+  repos?: readonly ConnectionsRepo[]
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [escapeArmed, setEscapeArmed] = useState(false)
@@ -148,6 +154,7 @@ export function SettingsPage({ section, onSelectSection, onClose, overrides, onC
               {shown.id === 'general' ? <GeneralSection /> : null}
               {shown.id === 'agents' ? <AgentsSection /> : null}
               {shown.id === 'mobile' ? <MobileSection /> : null}
+              {shown.id === 'connections' ? <ConnectionsSection repos={repos} /> : null}
             </SettingsSection>
           )}
         </div>

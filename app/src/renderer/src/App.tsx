@@ -876,11 +876,19 @@ export function App(): React.JSX.Element {
     })
   }
 
-  const closeScope = (input: { groupId: string; tab: TabRow; scope: CloseScope }): void => {
+  /**
+   * 「다른/오른쪽/왼쪽 탭 닫기」 — 영역에 파일 탭이 섞여 있으면 **종류별로 나눠** 닫는다: 터미널 탭만 herdr 닫기(어댑터)로, 파일 탭은 배치에서만(LIFE-590 — 파일 탭은 herdr 를 부르지 않는다).
+   * 기준 탭이 파일 탭이면 터미널 쪽 anchor 대신 닫은 뒤 그 파일 탭을 활성으로 둔다.
+   */
+  const closeScope = (input: { groupId: string; tabId: string; scope: CloseScope }): void => {
     const group = layout.groups.find((row) => row.groupId === input.groupId)
     if (group === undefined) return
-    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tab.tabId, scope: input.scope, pinned: pinnedTabs })
-    closeTabsByUser({ tabIds: targets, anchor: { groupId: input.groupId, tab: input.tab } })
+    const targets = closeScopeTargets({ tabOrder: group.tabOrder, tabId: input.tabId, scope: input.scope, pinned: pinnedTabs })
+    const files = targets.filter((tabId) => isFileTabId(tabId))
+    for (const tabId of files) closeFileByUser(tabId)
+    const anchorTab = activeWorkspaceRow?.tabs.find((tab) => tab.tabId === input.tabId)
+    closeTabsByUser({ tabIds: targets.filter((tabId) => !isFileTabId(tabId)), ...(anchorTab === undefined ? {} : { anchor: { groupId: input.groupId, tab: anchorTab } }) })
+    if (isFileTabId(input.tabId) && group.activeTabId !== null && files.includes(group.activeTabId)) layout.setActiveTab({ groupId: input.groupId, tabId: input.tabId })
   }
 
   /** LIFE-590 — 파일 탭 닫기(×·중클릭·메뉴·⌘W). 닫은 자리를 다시 열기 기록에 넣는다(⌘⇧T = 같은 파일). */
@@ -1254,6 +1262,7 @@ export function App(): React.JSX.Element {
           }}
           onCloseFileTab={closeFileByUser}
           onKeepFileTab={layout.keepFile}
+          onCloseFileScope={({ tabId, scope }) => closeScope({ groupId: group.groupId, tabId, scope })}
           workspaceTabCount={activeWorkspaceRow?.tabs.length ?? groupTabs.length}
           home={state.home}
           selectedPane={groupSelectedPaneId}
@@ -1305,7 +1314,7 @@ export function App(): React.JSX.Element {
           renameRequest={renameRequest}
           onRequestRename={requestRename}
           onTogglePin={togglePin}
-          onCloseScope={({ tab, scope }) => closeScope({ groupId: group.groupId, tab, scope })}
+          onCloseScope={({ tab, scope }) => closeScope({ groupId: group.groupId, tabId: tab.tabId, scope })}
           onSetTabColor={({ tab, color }) => setTabMarks((marks) => setTabColor({ marks, tabId: tab.tabId, workspaceId: tab.workspaceId, color }))}
           onZoom={() => toggleZoom({ groupId: group.groupId, paneId: groupSelectedPaneId })}
           onClosePane={() => void closePaneAt(groupSelectedPaneId)}

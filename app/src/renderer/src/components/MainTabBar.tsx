@@ -45,7 +45,7 @@ import { sessionTitle, tabAgent, userLabel } from '../session-title.js'
 import { tabOrdinals } from '../fallback-ordinal.js'
 import { TabContextMenu, type MoveDirection, type TabMenuAnchor } from './TabContextMenu.js'
 import { TabMenuIcon } from './TabMenuIcon.js'
-import { tabMenuModel, type CloseScope } from '../tab-actions.js'
+import { closeScopeTargets, tabMenuModel, type CloseScope } from '../tab-actions.js'
 import { SplitIcon } from './SplitIcon.js'
 import { TabStripScrollIndicator } from './TabStripScrollIndicator.js'
 import { useTabStripOverflow, type TabStripOverflow } from '../hooks/useTabStripOverflow.js'
@@ -426,7 +426,7 @@ function MainTab({
  */
 export type GroupTabItem = { kind: 'terminal'; tab: TabRow } | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean }
 
-type FileTabMenuAction = 'close' | 'keep' | 'split-right' | 'split-down' | `move:${string}`
+type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'split-right' | 'split-down' | `move:${string}`
 
 /**
  * 파일 탭 (LIFE-590 E2·E10) — 칸·높이·활성 표시·닫기 자리는 터미널 탭(`.main-tab`)과 같고, 안쪽은 VS Code 편집기 탭:
@@ -443,6 +443,8 @@ function FileTab({
   onSelect,
   onClose,
   onKeep,
+  closeScopes,
+  onCloseScope,
   onMoveToGroup,
   onMoveToOtherGroup,
   onDragStart,
@@ -455,6 +457,9 @@ function FileTab({
   onSelect: () => void
   onClose: () => void
   onKeep: () => void
+  /** 「다른/오른쪽 탭 닫기」를 누를 수 있나 — 닫을 대상이 없으면 비활성(터미널 탭 메뉴와 같은 규칙, K2ⓑ). */
+  closeScopes: { others: boolean; right: boolean }
+  onCloseScope: (scope: 'others' | 'right') => void
   onMoveToGroup: (direction: MoveDirection) => void
   onMoveToOtherGroup: (targetGroupId: string) => void
   onDragStart: (event: React.MouseEvent) => void
@@ -463,6 +468,8 @@ function FileTab({
   const label = fileTabLabel(item.rel)
   const entries: MenuEntry<FileTabMenuAction>[] = [
     { kind: 'item', action: 'close', label: '닫기' },
+    { kind: 'item', action: 'close-others', label: '다른 탭 닫기', disabled: !closeScopes.others },
+    { kind: 'item', action: 'close-right', label: '오른쪽 탭 닫기', disabled: !closeScopes.right },
     ...(item.preview ? [{ kind: 'item' as const, action: 'keep' as const, label: '고정(미리보기 끄기)' }] : []),
     { kind: 'sep', key: 'split' },
     { kind: 'item', action: 'split-right', label: '오른쪽 새 영역으로 옮기기' },
@@ -544,6 +551,8 @@ function FileTab({
             setMenu(null)
             if (action === 'close') onClose()
             else if (action === 'keep') onKeep()
+            else if (action === 'close-others') onCloseScope('others')
+            else if (action === 'close-right') onCloseScope('right')
             else if (action === 'split-right') onMoveToGroup('right')
             else if (action === 'split-down') onMoveToGroup('down')
             else onMoveToOtherGroup(action.slice('move:'.length))
@@ -638,6 +647,7 @@ export function GroupHeader({
   onSelectFileTab,
   onCloseFileTab,
   onKeepFileTab,
+  onCloseFileScope,
   workspaceTabCount,
   home,
   selectedPane,
@@ -691,6 +701,8 @@ export function GroupHeader({
   onCloseFileTab?: (tabId: string) => void
   /** 미리보기 파일 탭 고정(탭 더블클릭·메뉴). */
   onKeepFileTab?: (tabId: string) => void
+  /** 파일 탭 메뉴의 「다른/오른쪽 탭 닫기」 — 섞인 탭(파일·터미널)을 App 이 종류별로 나눠 닫는다. */
+  onCloseFileScope?: (input: { tabId: string; scope: 'others' | 'right' }) => void
   /** herdr 기본 위치 라벨 판별용 — **워크스페이스 전체** 탭 수다 (G7, `tabs.length` 와 다르다 —
    * `tabs` 는 이 영역 로컬이라 그 길이를 쓰면 범위가 좁아져 기본 label 이 이름으로 샌다). */
   workspaceTabCount: number
@@ -817,6 +829,11 @@ export function GroupHeader({
               onSelect={() => onSelectFileTab?.(item.tabId)}
               onClose={() => onCloseFileTab?.(item.tabId)}
               onKeep={() => onKeepFileTab?.(item.tabId)}
+              closeScopes={{
+                others: closeScopeTargets({ tabOrder, tabId: item.tabId, scope: 'others', pinned: pinnedTabs }).length > 0,
+                right: closeScopeTargets({ tabOrder, tabId: item.tabId, scope: 'right', pinned: pinnedTabs }).length > 0,
+              }}
+              onCloseScope={(scope) => onCloseFileScope?.({ tabId: item.tabId, scope })}
               onMoveToGroup={(direction) => onMoveToGroup({ tabId: item.tabId, direction })}
               onMoveToOtherGroup={(targetGroupId) => onMoveToOtherGroup({ tabId: item.tabId, targetGroupId })}
               onDragStart={(event) => onTabDragStart(event, item.tabId)}

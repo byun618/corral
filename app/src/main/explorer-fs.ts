@@ -84,28 +84,63 @@ const relOf = (realRoot: string, real: string): string => path.relative(realRoot
 /** 링크 연쇄를 풀 단계 상한(R6-B) — 넘거나 순환이면 대상 없이 깨진 것으로 본다(macOS SYMLOOP_MAX 32 보다 넉넉히). */
 export const MAX_LINK_HOPS = 40
 
+/** 연쇄 한 단계 — 링크 `current` 가 가리키는 다음 경로와 그것이 루트 안 링크인지. readlink 실패면 null. 밖이면 lstat 하지 않는다(E7). */
+type LinkStep = { next: string; rel: string; inside: boolean; isLink: boolean } | null
+
+/**
+ * 한 목록 호출(또는 한 대조) 안의 시스템 호출 기억(R7-A) — 같은 경로의 readlink·부모 realpath·lstat·stat 은 한 번만 한다.
+ * 링크 행 여럿이 공통 연쇄를 거쳐도 비용이 「행 수 × 연쇄 길이」 가 아니라 「서로 다른 경로 수」 에 비례한다. 호출이 끝나면 버린다(낡은 결과를 다음 읽기에 넘기지 않는다).
+ */
+export type LinkMemo = { steps: Map<string, Promise<LinkStep>>; parents: Map<string, Promise<string>>; kinds: Map<string, Promise<'dir' | 'file' | null>> }
+
+export const newLinkMemo = (): LinkMemo => ({ steps: new Map(), parents: new Map(), kinds: new Map() })
+
+function remember<T>(input: { map: Map<string, Promise<T>>; key: string; make: () => Promise<T> }): Promise<T> {
+  const hit = input.map.get(input.key)
+  if (hit !== undefined) return hit
+  const made = input.make()
+  input.map.set(input.key, made)
+  return made
+}
+
+function linkStep(input: { realRoot: string; current: string; memo: LinkMemo }): Promise<LinkStep> {
+  const { realRoot, current, memo } = input
+  return remember({
+    map: memo.steps,
+    key: current,
+    make: async () => {
+      const text = await fs.readlink(current).catch(() => null)
+      if (text === null) return null
+      const resolved = path.resolve(path.dirname(current), text)
+      const lexical = path.dirname(resolved)
+      const parent = await remember({ map: memo.parents, key: lexical, make: () => fs.realpath(lexical).catch(() => lexical) })
+      const next = path.join(parent, path.basename(resolved))
+      if (!isInside(realRoot, next)) return { next, rel: '', inside: false, isLink: false }
+      const isLink = await fs.lstat(next).then(
+        (stat) => stat.isSymbolicLink(),
+        () => false,
+      )
+      return { next, rel: relOf(realRoot, next), inside: true, isLink }
+    },
+  })
+}
+
 /**
  * 링크 연쇄를 한 단계씩 푼다(R6-B) — 각 단계는 링크 글을 그 링크가 든 폴더 기준으로 풀고 부모만 realpath(없으면 글 그대로).
  * `via` = 거친 루트 안 링크들, `end` = 마지막 링크가 가리키는 곳(있든 없든). 루트 밖으로 나가면 거기서 멈추고 밖 경로는 내보내지 않는다(E7). 순환·상한이면 `end` 없음.
+ * 단계 결과는 `memo` 로 나눠 쓴다(R7-A) — 걷는 순서·순환·상한 판정은 항목마다 그대로다.
  */
-async function linkChain(input: { realRoot: string; full: string }): Promise<{ via: string[]; end: string | null }> {
+async function linkChain(input: { realRoot: string; full: string; memo: LinkMemo }): Promise<{ via: string[]; end: string | null }> {
   const via: string[] = []
   let current = input.full
   for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
-    const text = await fs.readlink(current).catch(() => null)
-    if (text === null) return { via, end: null }
-    const resolved = path.resolve(path.dirname(current), text)
-    const parent = await fs.realpath(path.dirname(resolved)).catch(() => path.dirname(resolved))
-    const next = path.join(parent, path.basename(resolved))
-    if (!isInside(input.realRoot, next)) return { via, end: null }
-    const isLink = await fs.lstat(next).then(
-      (stat) => stat.isSymbolicLink(),
-      () => false,
-    )
-    if (!isLink) return { via, end: next }
-    const rel = relOf(input.realRoot, next)
-    if (via.includes(rel)) return { via, end: null }
-    via.push(rel)
+    const step = await linkStep({ realRoot: input.realRoot, current, memo: input.memo })
+    if (step === null) return { via, end: null }
+    const { next } = step
+    if (!step.inside) return { via, end: null }
+    if (!step.isLink) return { via, end: next }
+    if (via.includes(step.rel)) return { via, end: null }
+    via.push(step.rel)
     current = next
   }
   return { via, end: null }
@@ -116,10 +151,11 @@ async function linkChain(input: { realRoot: string; full: string }): Promise<{ v
  * 로 두고 펼칠 수 없다). 경계 판정 자체(realpath)는 링크 경로를 따라 성분을 푼다 — 그것까지 피할 수는 없다.
  * 루트 안 대상은 `target`(깨진 링크는 연쇄 끝 — R5-A·R6-B), 거친 루트 안 링크는 `via` 로 싣는다. 도장 대조(main)도 이 함수로 다시 푼다.
  */
-export async function linkEntry(input: { realRoot: string; dir: string; name: string }): Promise<ExplorerEntry> {
+export async function linkEntry(input: { realRoot: string; dir: string; name: string; memo?: LinkMemo }): Promise<ExplorerEntry> {
   const { realRoot, name } = input
+  const memo = input.memo ?? newLinkMemo()
   const full = path.join(input.dir, name)
-  const chain = await linkChain({ realRoot, full })
+  const chain = await linkChain({ realRoot, full, memo })
   const via = chain.via.length > 0 ? { via: chain.via } : {}
   let target: string
   try {
@@ -128,14 +164,16 @@ export async function linkEntry(input: { realRoot: string; dir: string; name: st
     return chain.end === null ? { name, kind: 'file', link: 'broken', ...via } : { name, kind: 'file', link: 'broken', target: relOf(realRoot, chain.end), ...via }
   }
   if (!isInside(realRoot, target)) return { name, kind: 'file', link: 'outside', ...via }
-  const state = await targetKind(target)
+  const resolvedTarget = target
+  const state = await remember({ map: memo.kinds, key: resolvedTarget, make: () => targetKind(resolvedTarget) })
   return state === null ? { name, kind: 'file', link: 'broken', target: relOf(realRoot, target), ...via } : { name, kind: state, link: 'ok', target: relOf(realRoot, target), ...via }
 }
 
 /** 한 항목 — 링크가 아니면 dirent 그대로. */
-async function entryOf(dir: string, realRoot: string, dirent: { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean }): Promise<ExplorerEntry> {
+async function entryOf(input: { dir: string; realRoot: string; memo: LinkMemo; dirent: { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean } }): Promise<ExplorerEntry> {
+  const { dirent } = input
   if (!dirent.isSymbolicLink()) return { name: dirent.name, kind: dirent.isDirectory() ? 'dir' : 'file', link: 'none' }
-  return linkEntry({ realRoot, dir, name: dirent.name })
+  return linkEntry({ realRoot: input.realRoot, dir: input.dir, name: dirent.name, memo: input.memo })
 }
 
 /** 대상의 종류(stat — 링크를 따라감). 없으면 null. 부르는 쪽이 루트 안임을 먼저 확인한다. */
@@ -157,7 +195,8 @@ export async function listDir(input: { roots: readonly string[]; root: unknown; 
   try {
     const dirents = await fs.readdir(confined.abs, { withFileTypes: true })
     if (!(await stillSame(input, before))) return { ok: false, dir: confined.rel, code: 'changed', error: '읽는 동안 경로가 바뀌었다 — 결과를 버렸다' }
-    const entries = await Promise.all(dirents.map((dirent) => entryOf(confined.abs, confined.realRoot, dirent)))
+    const memo = newLinkMemo()
+    const entries = await Promise.all(dirents.map((dirent) => entryOf({ dir: confined.abs, realRoot: confined.realRoot, memo, dirent })))
     const real = relOf(confined.realRoot, confined.abs)
     return { ok: true, dir: confined.rel, real, id: stamped?.id ?? '', stamp: stamped?.stamp ?? '', entries }
   } catch (error) {

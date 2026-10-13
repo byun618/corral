@@ -5,7 +5,7 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { confine, isInside, listDir } from './explorer-fs.js'
+import { confine, isInside, linkEntry, listDir } from './explorer-fs.js'
 
 let base = ''
 let root = ''
@@ -79,6 +79,29 @@ describe('E2ⓗ 목록 — 링크 표시·루프 안전', () => {
     const deep = await listDir({ roots: [root], root, rel: 'src/deep' })
     if (!deep.ok) throw new Error(deep.error)
     expect(deep.entries).toEqual([{ name: 'up', kind: 'dir', link: 'ok', target: '' }])
+  })
+  it('R7-A 공통 연쇄를 거치는 링크가 많아도 한 목록 안에서 같은 경로는 한 번만 푼다 — 결과는 항목마다 따로 푼 것과 같다', async () => {
+    const dir = path.join(root, 'many')
+    fs.mkdirSync(path.join(dir, 'chain'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'actual'))
+    const hops = 12
+    for (let i = 0; i < hops; i += 1) fs.symlinkSync(i === hops - 1 ? '../actual' : String(i + 1), path.join(dir, 'chain', String(i)))
+    fs.mkdirSync(path.join(dir, 'rows'))
+    const rows = 60
+    for (let i = 0; i < rows; i += 1) fs.symlinkSync('../chain/0', path.join(dir, 'rows', `row${i}`))
+    const readlink = vi.spyOn(fsp, 'readlink')
+    const lstat = vi.spyOn(fsp, 'lstat')
+    const listed = await listDir({ roots: [root], root, rel: 'many/rows' })
+    const counts = { readlink: readlink.mock.calls.length, lstat: lstat.mock.calls.length }
+    vi.restoreAllMocks()
+    if (!listed.ok) throw new Error(listed.error)
+    // 행마다 첫 단계 1 + 공통 연쇄 hops 번 — 행 × hops(720)가 아니다.
+    expect(counts.readlink).toBe(rows + hops)
+    expect(counts.lstat).toBeLessThan(rows + hops + 10)
+    const realRoot = fs.realpathSync(root)
+    const alone = await Promise.all(listed.entries.map((entry) => linkEntry({ realRoot, dir: path.join(realRoot, 'many', 'rows'), name: entry.name })))
+    expect(listed.entries).toEqual(alone)
+    expect(listed.entries[0]).toEqual({ name: listed.entries[0]?.name, kind: 'dir', link: 'ok', target: 'many/actual', via: Array.from({ length: hops }, (_, i) => `many/chain/${i}`) })
   })
   it('R6-B 링크 연쇄 — 이미 있는 깨진 링크를 거치면 최종 대상과 거친 링크(via), 순환은 대상 없음, 밖으로 나가면 밖 경로를 싣지 않는다', async () => {
     const dir = path.join(root, 'chain')

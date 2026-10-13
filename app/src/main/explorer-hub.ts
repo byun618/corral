@@ -24,7 +24,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { parsePorcelainV2, toWire, type GitSnapshotWire } from '../shared/explorer-git.js'
 import type { ExplorerEntry, ExplorerPush } from '../shared/explorer.js'
-import { confine, dirStamp, linkEntry, listDir } from './explorer-fs.js'
+import { confine, dirStamp, linkEntry, listDir, newLinkMemo } from './explorer-fs.js'
 import { RESTART_DELAY_MS, RESTART_MAX, RESTART_WINDOW_MS } from './explorer-watch-batch.js'
 
 /** utility process 의 최소 모양 — 시험에서 가짜를 꽂는다. */
@@ -234,9 +234,11 @@ export class ExplorerHub {
     const remapped: string[] = []
     const linkChanged = new Set<string>()
     const advance: (() => void)[] = []
+    // 이번 대조 안에서만 시스템 호출을 나눠 쓴다(R7-A).
+    const memo = newLinkMemo()
     for (const [rel, record] of input.entries) {
       const dirAbs = record.real === '' ? sub.realRoot : path.join(sub.realRoot, ...record.real.split('/'))
-      const links = await Promise.all(record.links.map(async (link) => ({ name: link.name, sig: linkSig(await linkEntry({ realRoot: sub.realRoot, dir: dirAbs, name: link.name })) })))
+      const links = await Promise.all(record.links.map(async (link) => ({ name: link.name, sig: linkSig(await linkEntry({ realRoot: sub.realRoot, dir: dirAbs, name: link.name, memo })) })))
       const linksMoved = links.some((link, index) => link.sig !== record.links[index]?.sig)
       if (linksMoved) linkChanged.add(record.real)
       const stamp = (await dirStamp(dirAbs))?.stamp ?? ''

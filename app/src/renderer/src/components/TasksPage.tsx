@@ -35,6 +35,7 @@ import {
   spaceId,
   viewDisabledReason,
   viewsFor,
+  workingTextMatches,
   writeBlock,
   type BoardColumn,
   type DragIntent,
@@ -52,6 +53,7 @@ type BacklogSection = { id: 'board' | 'backlog'; label: string; rows: TasksRow[]
 
 const IDLE: ColumnDragView = { mode: 'idle', reason: null }
 const NO_TRANSITION = '워크플로에 이 전이가 없습니다'
+const BUSY = '앞 변경을 출처가 확인하는 중…'
 
 const EMPTY_COPY: Record<EmptyCause, { title: string; body: string }> = {
   space: { title: '이 스페이스는 비어 있습니다', body: '출처에서 작업을 만들면 여기에 나타납니다.' },
@@ -75,7 +77,13 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menu, setMenu] = useState<'space' | 'kind' | 'priority' | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  useEffect(() => { if (open) setNow(Date.now()) }, [open])
+  // 상대 시간(작업 중 보기·마감)은 열린 동안 분 단위로 흐른다(R2-P).
+  useEffect(() => {
+    if (!open) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [open])
 
   const notify = (notice: MoveNotice): void => {
     switch (notice.kind) {
@@ -133,18 +141,24 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   }, [load.data])
 
   // --- 작업 중 ---
-  const workingViews: WorkingView[] = page.workingEntries.flatMap((entry) => {
+  // 스페이스 범위 + 공통 필터(R1-I)를 먼저, 글자 거르기를 뒤에 — 빈 상태 원인(검색 vs 필터)을 가리려고 둘을 나눠 센다(R2-H).
+  const workingScoped: WorkingView[] = page.workingEntries.flatMap((entry) => {
     const lookup = page.working.get(`${entry.connectionId}::${entry.key}`) ?? { state: 'loading' }
     if (space === null) return []
     if (space.kind === 'space') {
       if (entry.connectionId !== space.connectionId) return []
       if (lookup.state === 'found' && lookup.item.spaceKey !== space.spaceKey) return []
     }
-    if (lookup.state === 'found' && query.trim().length > 0 && !passesText({ item: lookup.item, query })) return []
     // 같은 필터(R1-I) — 작업을 찾았으면 그 작업으로, 아직 못 찾았으면(찾는 중·없음·실패) 「작업 중」 밖의 필터가 켜져 있을 때 뺀다.
     if (lookup.state === 'found' ? !passes(lookup.item) : filtersActive({ ...prefs.filters, working: false })) return []
     return [{ entry, lookup }]
   })
+  const workingAfterFilter = workingScoped.length
+  // 글자 거르기 — 찾은 작업은 키·제목으로, 아직 못 찾은 항목(찾는 중·없음·실패)은 키·브랜치로(R2-H). 키 일치 결과는 위에 따로 보인다
+  // (작업 중 항목은 worktree 열기 버튼을 갖고 있어 겹쳐도 빼지 않는다).
+  const workingViews = workingScoped.filter(({ entry, lookup }) => (lookup.state === 'found'
+    ? passesText({ item: lookup.item, query })
+    : workingTextMatches({ key: entry.key, branches: entry.trees.map((tree) => tree.branch), query })))
 
   // --- 끌기 (C7·C8) ---
   const writeBlockOf = (connectionId: string): string | null => {
@@ -156,6 +170,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const dragRow = useRef<TasksRow | null>(null)
   const { drag, onMouseDown } = useTaskDrag({
     rootRef,
+    // 페이지가 닫히거나 위층(설정·팔레트·모달)이 열리면 끄는 중이라도 취소한다(R2-K).
+    active: open && !yieldKeys,
     onStart: (uid) => {
       const row = rows.find((entry) => rowUid(entry) === uid) ?? null
       dragRow.current = row
@@ -168,9 +184,11 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       dragRow.current = null
     },
   })
+  // 확인 안 된 쓰기가 있는 카드는 잠근다 — 손잡이 흐림 + 이유(R2-A).
+  const lockOf = (row: TasksRow): string | null => writeBlockOf(row.space.connectionId) ?? (page.busy.has(rowUid(row)) ? BUSY : null)
   const handleOf = (row: TasksRow): CardProps['handle'] => ({
-    blocked: writeBlockOf(row.space.connectionId),
-    onMouseDown: (event) => onMouseDown(rowUid(row), event, writeBlockOf(row.space.connectionId)),
+    blocked: lockOf(row),
+    onMouseDown: (event) => onMouseDown(rowUid(row), event, lockOf(row)),
   })
   /** 상태 전이 막힘 이유 — 허용 전이만인 출처는 그 작업의 허용 전이를 **받은 뒤에만** 연다(받는 중·실패 = 흐림, fail-closed). */
   const transitionBlock = (row: TasksRow, statusKey: string): string | null => {
@@ -208,12 +226,16 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
     if (gate.state === 'hidden') return { mode: 'source', reason: null }
     return { mode: 'blocked', reason: same ? `순서를 바꿀 수 없습니다 — ${gate.reason}` : gate.reason }
   }
-  /** 놓인 번호 → 「이 작업 뒤로」. 영역 맨 앞이면 그 영역 첫 작업의 (스페이스 전체 순서에서) 앞 작업, 없으면 null. */
+  /**
+   * 놓인 번호 → 「이 작업 뒤로」. **같은 연결·스페이스의 작업만** 기준으로 삼는다(R2-L) — 「전체」 칸에는 다른 연결 작업이 섞여 있고,
+   * 그 id 는 이 연결에서 뜻이 없다. 놓인 자리 앞의 같은 스페이스 작업이 있으면 그 뒤로, 없으면 뒤쪽 첫 같은 스페이스 작업의 (스페이스 전체 순서에서) 앞 작업, 그것도 없으면 null.
+   */
   const afterIdFor = ({ row, laneRows, index }: { row: TasksRow; laneRows: TasksRow[]; index: number }): string | null => {
     const others = laneRows.filter((entry) => rowUid(entry) !== rowUid(row))
-    const previous = others[index - 1]
+    const sameSpace = (entry: TasksRow): boolean => entry.space.connectionId === row.space.connectionId && entry.space.spaceKey === row.space.spaceKey
+    const previous = others.slice(0, index).filter(sameSpace).at(-1)
     if (previous !== undefined) return previous.item.id
-    const first = others[0]
+    const first = others.slice(index).find(sameSpace)
     if (first === undefined) return null
     const global = [...row.space.items].filter((item) => item.id !== row.item.id).sort(compareRank)
     const at = global.findIndex((item) => item.id === first.item.id)
@@ -323,8 +345,9 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
   const loading = (load.phase === 'loading' && load.data.length === 0) || page.choosing
   const total = view === 'working' ? page.workingEntries.length : rows.length
   const shown = view === 'working' ? workingViews.length : view === 'board' ? boardRows.length : filtered.length
-  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0
-  const cause = emptyCause({ total, afterFilter: view === 'working' ? workingViews.length : afterFilter, query, view })
+  // 다음 쪽이 있으면 거른 결과가 0 이어도 빈 상태로 갈아 끼우지 않는다 — 「더 불러오기」·목록 도구가 남아야 한다(R2-M).
+  const empty = !noConnection && banner === null && !loading && load.phase !== 'idle' && shown === 0 && hits.length === 0 && (view === 'working' || more?.kind !== 'cursor')
+  const cause = emptyCause({ total, afterFilter: view === 'working' ? workingAfterFilter : afterFilter, query, view })
 
   const body = ((): React.ReactNode => {
     if (noConnection) {
@@ -398,6 +421,8 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
       case 'working':
         return (
           <div className="tasks-scroll" data-tasks-scroll="working">
+            {/* 키 일치(E2)는 작업 중 보기에서도 맨 앞에 보인다(R2-H) — 다른 스페이스의 작업이어도. */}
+            {hits.length > 0 ? <KeyHits hits={hits} selectedId={selectedId} onSelect={toggleSelect} /> : null}
             <WorkingList views={workingViews} now={now} onOpen={onOpenWorktree} />
           </div>
         )

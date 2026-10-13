@@ -262,7 +262,7 @@ describe('끌기 반영 (C7) — 훅 수준', () => {
     expect(notices.some((notice) => notice.kind === 'failed' && notice.message.includes('워크플로'))).toBe(true)
   })
 
-  it('늦은 응답 폐기 — 같은 작업에 두 번 옮기고 앞 응답이 늦게 오면 뒤 결과가 남는다', async () => {
+  it('늦은 응답 폐기 — 같은 작업은 확인 전 두 번째 옮기기를 보내지 않는다(R2-A) · 늦게 온 첫 응답의 결과가 남는다', async () => {
     const pending: Array<{ request: WorkRequest; resolve: (response: WorkResponse) => void }> = []
     hold = (request) => (request.call.op === 'changeStatus' ? new Promise((resolve) => { pending.push({ request, resolve }) }) : null)
     let current = await mount()
@@ -271,16 +271,14 @@ describe('끌기 반영 (C7) — 훅 수준', () => {
     current = model ?? current
     await act(async () => { void current.move({ row: rowOf(current, 'i1'), intent: { kind: 'status', statusKey: 'done' } }) })
     await settle()
-    expect(pending).toHaveLength(2)
-    const [first, second] = pending
-    if (first === undefined || second === undefined) throw new Error('pending')
-    // 뒤 요청이 먼저 답하고, 앞 요청이 늦게 답한다.
-    await act(async () => { second.resolve(answer(second.request)) })
-    await settle()
+    expect(pending).toHaveLength(1)
+    const [first] = pending
+    if (first === undefined) throw new Error('pending')
     await act(async () => { first.resolve(answer(first.request)) })
     await settle()
     current = model ?? current
-    expect(rowOf(current, 'i1').item.statusKey).toBe('done')
+    expect(rowOf(current, 'i1').item.statusKey).toBe('doing')
     expect(notices.filter((notice) => notice.kind === 'moved')).toHaveLength(1)
   })
+
 })

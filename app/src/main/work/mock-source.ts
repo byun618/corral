@@ -7,9 +7,12 @@
 // LIFE-601 — 격리 앱 실행(`CORRAL_WORK_MOCK=1`, 측정 모드에서만)이 작업 페이지를 그릴 때 이 출처를 쓴다. 토큰 글자로 행동을 고른다
 // (가짜 토큰만 — 원문 비밀이 아니다): `fault-auth|fault-forbidden|fault-network` = 목록·상태 요청이 그 오류(배너 양성 대조),
 // `delay-<ms>` = 모든 요청을 그만큼 늦춤(불러오기·늦은 응답). 씨앗 `seedMockDemoState` 는 점선 칸(칸 없는 상태)·막힘·자식·빈 스페이스를 갖는다.
-// 수정 r1(R1-T) — `reject-writes` = 쓰기(상태·배치·순서)를 출처가 거절(원위치 양성 대조) · `flip-<ms>` = 홀수 번째 요청만 그만큼 늦춰
-// 뒤 요청이 먼저 답하게(응답 순서 뒤집기 — 늦은 응답 폐기·경합 양성 대조) · `cap-<order|placement|cursorPaging>-<off|hide>` = 그 능력을
-// disabled(이유)·hidden 으로 · `transition-any` = 전이 제한 없음(기본은 allowed) — 능력 표 분기(on/disabled/hidden·any/allowed)를 격리 앱에서 보이게.
+// 수정 r1(R1-T) — `reject-writes` = 쓰기(상태·배치·순서)를 출처가 거절(원위치 양성 대조) · `cap-<order|placement|cursorPaging>-<off|hide>` = 그 능력을
+// disabled(이유)·hidden 으로 · `transition-any` = 전이 제한 없음(기본은 allowed) — 능력 표만이 아니라 **출처도** 어떤 전이든 받는다(R2-N).
+// 응답 순서 뒤집기는 두 갈래로 나눈다(R2-O) — 홀수 번째 요청만 그만큼 늦춘다:
+//   `flip-<ms>` = **응답 배달만** 늦춤(출처는 도착 순서대로 곧바로 적용 — 서버 값은 마지막에 보낸 요청)
+//   `flipapply-<ms>` = **적용 자체를** 늦춤(늦춘 요청이 나중에 적용 — 서버 값은 먼저 보낸 요청일 수 있다).
+//   경합 관문의 기대에는 화면만이 아니라 그 뒤 서버 재조회 값도 넣는다.
 
 import type {
   WorkCall,
@@ -49,12 +52,13 @@ export type MockBehavior = {
   fault: Extract<WorkErrorKind, 'auth' | 'forbidden' | 'network'> | null
   delayMs: number
   rejectWrites: boolean
-  flipMs: number
+  /** 응답 순서 뒤집기(R2-O) — 배달만 늦춤(`deliver`) · 적용을 늦춤(`apply`). */
+  flip: { mode: 'deliver' | 'apply'; ms: number } | null
   /** 능력 표 덮어쓰기 — 없으면 `MOCK_CAPABILITIES` 그대로. */
   caps: Partial<WorkCapabilities>
 }
 
-export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flipMs: 0, caps: {} }
+export const PLAIN_BEHAVIOR: MockBehavior = { fault: null, delayMs: 0, rejectWrites: false, flip: null, caps: {} }
 
 function capsOf(token: string): Partial<WorkCapabilities> {
   const caps: Partial<WorkCapabilities> = {}
@@ -73,12 +77,12 @@ function capsOf(token: string): Partial<WorkCapabilities> {
 export function mockBehaviorOf(token: string): MockBehavior {
   const fault = /fault-(auth|forbidden|network)/.exec(token)?.[1]
   const delay = /delay-(\d{1,5})/.exec(token)?.[1]
-  const flip = /flip-(\d{1,5})/.exec(token)?.[1]
+  const flip = /flip(apply)?-(\d{1,5})/.exec(token)
   return {
     fault: fault === 'auth' || fault === 'forbidden' || fault === 'network' ? fault : null,
     delayMs: delay === undefined ? 0 : Number(delay),
     rejectWrites: token.includes('reject-writes'),
-    flipMs: flip === undefined ? 0 : Number(flip),
+    flip: flip === null ? null : { mode: flip[1] === undefined ? 'deliver' : 'apply', ms: Number(flip[2]) },
     caps: capsOf(token),
   }
 }
@@ -223,8 +227,15 @@ export class MockSource implements WorkSourceClient {
 
   async call(call: WorkCall): Promise<WorkOutcome> {
     this.calls += 1
-    const wait = this.behavior.delayMs + (this.behavior.flipMs > 0 && this.calls % 2 === 1 ? this.behavior.flipMs : 0)
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    const flip = this.behavior.flip !== null && this.calls % 2 === 1 ? this.behavior.flip : null
+    const before = this.behavior.delayMs + (flip?.mode === 'apply' ? flip.ms : 0)
+    if (before > 0) await new Promise((resolve) => setTimeout(resolve, before))
+    const outcome = await this.decide(call)
+    if (flip?.mode === 'deliver') await new Promise((resolve) => setTimeout(resolve, flip.ms))
+    return outcome
+  }
+
+  private async decide(call: WorkCall): Promise<WorkOutcome> {
     if (this.behavior.rejectWrites && (call.op === 'changeStatus' || call.op === 'setPlacement' || call.op === 'reorder')) {
       return rejected('모의 출처가 이 쓰기를 거절했습니다 (reject-writes).')
     }
@@ -277,7 +288,9 @@ export class MockSource implements WorkSourceClient {
         const stale = this.stale({ item, ifVersion: call.ifVersion })
         if (stale !== null) return stale
         const allowed = this.space(item.spaceKey)?.transitions[item.statusKey] ?? []
-        if (!allowed.includes(call.statusKey)) return rejected('워크플로에 이 전이가 없습니다.')
+        const known = this.space(item.spaceKey)?.statuses.some((status) => status.key === call.statusKey) ?? false
+        // `transition-any` 면 출처도 어떤 전이든 받는다(R2-N) — 능력 표만 any 이고 출처가 거절하면 any 분기를 볼 수 없다.
+        if (this.capabilities().transition.mode === 'any' ? !known : !allowed.includes(call.statusKey)) return rejected('워크플로에 이 전이가 없습니다.')
         if (this.defect !== 'transition-ignored') this.touch(item, { statusKey: call.statusKey })
         return { ok: true, result: { op: 'changeStatus', item: this.view({ item, withRelations: true }) } }
       }

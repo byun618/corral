@@ -268,12 +268,19 @@ export function passesText({ item, query }: { item: WorkItem; query: string }): 
   return item.title.toLowerCase().includes(needle) || item.key.toLowerCase().includes(needle)
 }
 
+/** 아직 작업을 못 찾은 작업 중 항목(찾는 중·없음·실패)의 글자 거르기 — 키·브랜치 이름으로(R2-H). */
+export function workingTextMatches({ key, branches, query }: { key: string; branches: string[]; query: string }): boolean {
+  const needle = query.trim().toLowerCase()
+  if (needle.length === 0) return true
+  return key.toLowerCase().includes(needle) || branches.some((branch) => branch.toLowerCase().includes(needle))
+}
+
 /** 빈 상태의 원인(C5) — 오류 배너가 있으면 부르지 않는다. */
 export type EmptyCause = 'space' | 'search' | 'filter' | 'working'
 
 export function emptyCause({ total, afterFilter, query, view }: { total: number; afterFilter: number; query: string; view: TasksView }): EmptyCause {
-  if (view === 'working') return 'working'
-  if (total === 0) return 'space'
+  // 작업 중 보기도 같은 규칙(R2-H) — 항목이 아예 없을 때만 「작업 중인 worktree 가 없습니다」, 있는데 걸러졌으면 검색·필터 원인.
+  if (total === 0) return view === 'working' ? 'working' : 'space'
   if (query.trim().length > 0 && afterFilter > 0) return 'search'
   return afterFilter === 0 ? 'filter' : 'search'
 }

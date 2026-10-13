@@ -3,9 +3,11 @@
 // - 요청은 `window.corral.workRequest` 하나(T1 계약). 요청 id 는 `LatestGate` 가 매기고, 같은 열쇠의 마지막 요청 응답만 받는다(C7 늦은 응답 폐기):
 //   `load`(스페이스 자료) · `more`(다음 쪽) · `find`(키 검색) · `item:<연결>::<id>`(작업 하나의 쓰기) · `transitions`(끄는 작업의 허용 전이).
 // - 작업 정체는 `(연결, 작업 id)`(R1-L) — 작업 id 는 연결 안에서만 유일하다.
-// - 끌기 = 즉시 반영 → 요청 → 성공이면 되돌리기 토스트(6초) / 실패면 **마지막 확정 값**으로 + 오류 토스트(R1-E). 같은 작업에 요청이 겹치면
-//   앞 요청의 성공은 확정 값만 갱신하고, 뒤 요청이 이미 **거절로** 끝났을 때만 화면에 쓴다(뒤 요청이 성공했으면 앞 응답은 낡은 값이다). 화면 변경은 순번을 달고 남겨 두어, 그보다 먼저 시작한
-//   목록 응답이 와도 그 위에 다시 적용한다(R1-F).
+// - 끌기 = 즉시 반영 → 요청 → 성공이면 되돌리기 토스트(6초) / 실패면 그 카드만 옮기기 전으로 + 오류 토스트 + 서버 재조회.
+//   **경합 표면을 줄인다(수정 r2)**: 한 카드에 확인 안 된 쓰기는 하나뿐이다 — 그동안 그 카드의 끌기·되돌리기는 잠긴다(「확인하는 중」).
+//   그래서 같은 카드의 응답 순서가 뒤집힐 일이 없고, 「옮기기 전 값」 은 언제나 출처가 마지막으로 인정한 값이다(되돌리기는 그 값을 보낸다).
+//   실패·버린 응답이면 그 카드 하나만 옮기기 전 자리로 돌리고(다른 카드의 순서는 건드리지 않는다) 서버를 다시 읽어 수렴한다.
+//   목록 응답이 오면 확인 안 된 쓰기(시작 시점과 무관하게)와 그 요청 뒤에 화면에 쓴 변경을 그 위에 다시 적용한다(R1-F·R2-C).
 // - 스페이스 목록 조회(연결별 · 세대별)는 시도·실패를 보존한다 — 실패하면 「다시 시도」 까지 다시 보내지 않는다(R1-C).
 // - 스페이스 선택(R1-D): 첫 선택(이 실행에서 처음 열 때 — 레포 기본 → 마지막 → 첫 스페이스, 목록을 받는 중이면 기다림) · 재열기는 그대로 ·
 //   설정이 바뀌어 고른 스페이스가 없어지면(숨김·연결 제거) 다시 고른다.
@@ -59,10 +61,8 @@ export type MoveNotice = { kind: 'moved'; label: string; undo: () => void } | { 
 type SpaceResult = { ok: true; data: SpaceData; pages: number } | { ok: false; error: WorkError }
 type SpaceFetch = { state: 'pending' } | { state: 'done' } | { state: 'failed'; error: WorkError }
 type KeySearch = { hits: { connectionId: string; item: WorkItem }[]; errors: { connectionId: string; error: WorkError }[] }
-/** 화면에 쓴 변경 하나 — 그보다 먼저 시작한 목록 응답에 다시 적용한다(R1-F). */
+/** 화면에 쓴 변경 하나 — 그보다 먼저 시작한 목록 응답에 다시 적용한다(R1-F). 확인 안 된 쓰기도 이 모양으로 남긴다(R2-C). */
 type Override = { seq: number; connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }
-/** 작업 하나의 쓰기 기록 — 확정 값(마지막으로 출처가 인정한 값)과 진행 중 요청 수(R1-E). */
-type Journal = { confirmed: WorkItem; ranks: Map<string, string | null>; inFlight: number; latest: 'pending' | 'ok' | 'failed' }
 
 const EMPTY_LOAD: TasksLoad = { spaceId: null, phase: 'idle', data: [], error: null, loadingMore: false }
 const NO_SEARCH: KeySearch = { hits: [], errors: [] }
@@ -114,16 +114,9 @@ function setFields({ item }: { item: WorkItem }): (items: WorkItem[]) => WorkIte
   return (items) => items.map((entry) => (entry.id === item.id ? { ...entry, statusKey: item.statusKey, category: item.category, placement: item.placement } : entry))
 }
 
-function setRanks(ranks: Map<string, string | null>): (items: WorkItem[]) => WorkItem[] {
-  return (items) => items.map((entry) => {
-    const rank = ranks.get(entry.id)
-    return rank === undefined ? entry : { ...entry, rank }
-  })
-}
-
-/** 뒤 요청의 결과 — 기다리는 사이 다른 요청이 바꾸므로 함수로 읽는다(대입 좁히기가 await 를 넘어 남지 않게). */
-function latestOf(journal: Journal): Journal['latest'] {
-  return journal.latest
+/** 완료 분류를 넘나들었나 — 그 작업이 막던 작업의 막힘 표시가 바뀐다(R2-J). */
+function crossesDone({ from, to }: { from: WorkItem; to: WorkItem }): boolean {
+  return (from.category === 'done') !== (to.category === 'done')
 }
 
 function patternOf({ settings, sourceId }: { settings: WorkSettingsState; sourceId: string }): string | null {
@@ -154,7 +147,11 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   loadRef.current = load
   const overrides = useRef<Override[]>([])
   const writeSeq = useRef(0)
-  const journals = useRef(new Map<string, Journal>())
+  /** 확인 안 된 쓰기 — 카드(uid)마다 하나. 있으면 그 카드의 끌기·되돌리기는 잠긴다(R2-A). */
+  const pendingWrites = useRef(new Map<string, Override>())
+  /** 쓰기 실패·완료 분류 변경 뒤 서버 재조회 — `reload` 는 아래에서 정의된다. */
+  const reloadRef = useRef<(options: { quiet: boolean }) => Promise<void>>(async () => {})
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set())
   /** 스페이스 자료(연결·스페이스)마다 받아 둔 쪽 수 — 다시 열 때 그만큼 다시 받는다(R1-N). */
   const pagesRef = useRef(new Map<string, number>())
 
@@ -248,13 +245,17 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     if (row === undefined && !spaceStillValid({ groups, settings, space, failed: failedSpaces })) return []
     return [{ connectionId: space.connectionId, spaceKey: space.spaceKey, spaceName: row?.name ?? space.spaceKey, color: row?.color ?? null, colorIndex: row?.colorIndex ?? 1 }]
   }, [space, groups, settings, failedSpaces])
-  const targetsId = targets.map((target) => `${target.connectionId}::${target.spaceKey}`).join('|')
+  // 연결 세대를 넣는다(R2-E) — 같은 스페이스 id 로 토큰(계정)이 바뀌어도 다시 받는다.
+  const generationOf = (connectionId: string): number => settings?.connections.find((connection) => connection.id === connectionId)?.generation ?? 0
+  const targetsId = targets.map((target) => `${target.connectionId}#${generationOf(target.connectionId)}::${target.spaceKey}`).join('|')
 
   /** 화면 자료에 변경 하나를 쓰고, 순번을 달아 남긴다(R1-F). */
-  const patch = useCallback(({ connectionId, spaceKey, apply }: { connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }) => {
+  const patch = useCallback(({ connectionId, spaceKey, apply }: { connectionId: string; spaceKey: string; apply: (items: WorkItem[]) => WorkItem[] }): Override => {
     writeSeq.current += 1
-    overrides.current.push({ seq: writeSeq.current, connectionId, spaceKey, apply })
-    setLoad((value) => ({ ...value, data: value.data.map((entry) => (entry.connectionId === connectionId && entry.spaceKey === spaceKey ? { ...entry, items: apply(entry.items) } : entry)) }))
+    const entry: Override = { seq: writeSeq.current, connectionId, spaceKey, apply }
+    overrides.current.push(entry)
+    setLoad((value) => ({ ...value, data: value.data.map((data) => (data.connectionId === connectionId && data.spaceKey === spaceKey ? { ...data, items: apply(data.items) } : data)) }))
+    return entry
   }, [])
 
   const reload = useCallback(async ({ quiet }: { quiet: boolean }) => {
@@ -282,7 +283,9 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       const wanted = same ? (pagesRef.current.get(`${target.connectionId}::${target.spaceKey}`) ?? 1) : 1
       while (pages < wanted && nextCursor !== null) {
         const next = await window.corral.workRequest({ requestId: `${at}/it${pages}`, connectionId: target.connectionId, call: { op: 'listItems', spaceKey: target.spaceKey, cursor: nextCursor } })
-        if (!next.ok || next.result.op !== 'listItems') break
+        // 덧 쪽 실패는 오류다(R2-F) — 짧은 목록을 성공으로 그리지 않는다. 표시 자료·받아 둔 쪽 수는 그대로 둔다(아래).
+        if (!next.ok) return { ok: false, error: next.error }
+        if (next.result.op !== 'listItems') return { ok: false, error: { kind: 'invalid_response', message: '출처 응답 모양이 다릅니다.', status: null } }
         const known = new Set(items.map((item) => item.id))
         items = [...items, ...next.result.items.filter((item) => !known.has(item.id))]
         nextCursor = next.result.nextCursor
@@ -296,27 +299,35 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
       return { ok: true, data, pages }
     }))
     if (!gate.accepts({ key: 'load', requestId: token })) return
-    // 이 목록 요청 뒤에 화면에 쓴 변경(옮기기·원복·응답 반영)을 다시 적용한다 — 옛 목록이 나중 변경을 덮지 않게(R1-F).
+    // 다시 적용할 변경 = 이 목록 요청 **전에** 시작해 아직 확인 안 된 쓰기(R2-C) + 요청 **뒤에** 화면에 쓴 변경(옮기기·원복·응답 반영, R1-F) — 순번 순.
     const later = overrides.current.filter((entry) => entry.seq > startSeq)
     overrides.current = later
+    const replay = [...[...pendingWrites.current.values()].filter((entry) => entry.seq <= startSeq), ...later]
     if (!same) pagesRef.current = new Map()
     const error = results.flatMap((result) => (result.ok ? [] : [result.error]))[0] ?? null
-    const data = results.flatMap((result) => {
-      if (!result.ok) return []
+    const shown = loadRef.current.spaceId === id ? loadRef.current.data : []
+    const data = results.flatMap((result, index) => {
+      if (!result.ok) {
+        // 실패한 대상은 지금 보이던 자료를 그대로 둔다(R2-F) — 받아 둔 쪽 수도 그대로.
+        const target = targets[index]
+        return shown.filter((entry) => entry.connectionId === target?.connectionId && entry.spaceKey === target.spaceKey)
+      }
       pagesRef.current.set(`${result.data.connectionId}::${result.data.spaceKey}`, result.pages)
-      const items = later
+      const items = replay
         .filter((entry) => entry.connectionId === result.data.connectionId && entry.spaceKey === result.data.spaceKey)
         .reduce((current, entry) => entry.apply(current), result.data.items)
       return [{ ...result.data, items }]
     })
     setLoad({ spaceId: id, phase: error === null ? 'ready' : 'error', data, error, loadingMore: false })
   }, [space, targets, gate])
+  reloadRef.current = reload
 
   // 스페이스가 바뀌면 다시 짓고, 다시 열면 조용히 새로 받는다(지금 그림은 둔 채).
   const loadedFor = useRef<string | null>(null)
   useEffect(() => {
     if (!open || space === null || targets.length === 0) {
-      if (open && (space === null || targets.length === 0)) setLoad(EMPTY_LOAD)
+      // 대상이 0 이 되면 진행 중 불러오기도 버린다(R2-D) — 늦게 온 응답이 사라진 스페이스의 자료·배너를 되살리지 않게.
+      if (open && (space === null || targets.length === 0)) { gate.invalidate('load'); loadedFor.current = null; setLoad(EMPTY_LOAD) }
       return
     }
     const key = `${spaceId(space)}#${targetsId}`
@@ -360,6 +371,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   // --- 키 검색 (E2·E3) ---
   // 조회는 「검색어 · 연결(세대) · 키 모양」 이 바뀔 때만(R1-B). settings 객체는 상태 push 마다 새로 오므로 의존하지 않는다.
   const patternsId = settings === null ? '' : settings.connections.map((connection) => `${connection.id}#${connection.generation}#${patternOf({ settings, sourceId: connection.sourceId }) ?? ''}`).join('|')
+  /** 「다시 시도」 가 키 조회도 다시 보내게 하는 번호(R2-G). */
+  const [searchRound, setSearchRound] = useState(0)
   const patterns = useMemo(() => {
     const current = settingsRef.current
     return current === null ? [] : current.connections.map((connection) => ({ connectionId: connection.id, pattern: patternOf({ settings: current, sourceId: connection.sourceId }) }))
@@ -385,7 +398,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
         }),
       })
     })
-  }, [open, query, patterns, gate])
+  }, [open, query, patterns, gate, searchRound])
   const spaceNameOf = useCallback(({ connectionId, spaceKey }: { connectionId: string; spaceKey: string }): string =>
     settings?.connections.find((connection) => connection.id === connectionId)?.spaces?.find((entry) => entry.key === spaceKey)?.name ?? spaceKey, [settings])
   const hits = useMemo((): SearchHit[] => search.hits.map((hit) => ({ ...hit, spaceName: spaceNameOf({ connectionId: hit.connectionId, spaceKey: hit.item.spaceKey }) })), [search, spaceNameOf])
@@ -406,7 +419,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     }]
   })), [repos])
   const workingEntries = useMemo(() => detectWorking({ trees, patterns }), [trees, patterns])
-  const workingIds = workingEntries.map((entry) => `${entry.connectionId}::${entry.key}`).join('|')
+  const workingIds = workingEntries.map((entry) => `${entry.connectionId}#${generationOf(entry.connectionId)}::${entry.key}`).join('|')
   useEffect(() => {
     if (!open) return
     for (const entry of workingEntries) {
@@ -432,58 +445,71 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const workingKeys = useMemo(() => new Set(workingEntries.map((entry) => entry.key)), [workingEntries])
 
   // --- 쓰기 (C7) ---
+  /** 성공한 쓰기를 작업 중 보기·키 조회 결과에도 쓴다(R2-I) — 같은 열림 동안 옛 상태가 남지 않게. */
+  const reflect = useCallback(({ connectionId, item }: { connectionId: string; item: WorkItem }) => {
+    setWorking((current) => {
+      let changed = false
+      const next = new Map(current)
+      for (const [id, lookup] of current) {
+        if (lookup.state !== 'found' || lookup.item.id !== item.id || !id.startsWith(`${connectionId}::`)) continue
+        next.set(id, { state: 'found', item: { ...lookup.item, ...item } })
+        changed = true
+      }
+      return changed ? next : current
+    })
+    setSearch((current) => (current.hits.some((hit) => hit.connectionId === connectionId && hit.item.id === item.id)
+      ? { ...current, hits: current.hits.map((hit) => (hit.connectionId === connectionId && hit.item.id === item.id ? { connectionId, item: { ...hit.item, ...item } } : hit)) }
+      : current))
+  }, [])
+
   const move = useCallback(async ({ row, intent, undo }: MoveRequest & { undo: boolean }): Promise<void> => {
     const call = callOf({ item: row.item, intent })
     if (call === null) return
     const { connectionId, spaceKey, statuses } = row.space
     const uid = rowUid(row)
+    // 확인 안 된 쓰기가 있는 카드는 잠근다(R2-A) — 끌기 손잡이도 잠겨 있지만 되돌리기 버튼은 여기서 막는다.
+    if (pendingWrites.current.has(uid)) {
+      notify({ kind: 'failed', message: `${row.item.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 하세요.` })
+      return
+    }
     const before = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)?.items ?? [row.item]
+    // 잠금 덕에 이 카드의 지금 값은 출처가 마지막으로 인정한 값이다(또는 마지막 재조회 값) — 되돌리기·원복은 이 값으로.
     const original = before.find((item) => item.id === row.item.id) ?? row.item
-    const known = journals.current.get(uid)
-    // 진행 중 요청이 없으면 지금 화면 값이 확정 값이다. 있으면(겹친 끌기) 첫 요청 전의 확정 값을 그대로 둔다(R1-E).
-    const journal: Journal = known !== undefined && known.inFlight > 0
-      ? known
-      : { confirmed: original, ranks: new Map(before.map((item) => [item.id, item.rank])), inFlight: 0, latest: 'pending' }
-    journal.inFlight += 1
-    journal.latest = 'pending'
-    journals.current.set(uid, journal)
     const reverse = inverseOf({ item: original, intent, items: before })
-    patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent, statuses }) })
+    const apply = (items: WorkItem[]): WorkItem[] => applyIntent({ items, itemId: row.item.id, intent, statuses })
+    pendingWrites.current.set(uid, patch({ connectionId, spaceKey, apply }))
+    setBusy(new Set(pendingWrites.current.keys()))
     const { accepted, response } = await send({ key: `item:${uid}`, connectionId, call })
-    journal.inFlight -= 1
+    pendingWrites.current.delete(uid)
+    setBusy(new Set(pendingWrites.current.keys()))
     const settled = response.ok && (response.result.op === 'changeStatus' || response.result.op === 'setPlacement' || response.result.op === 'reorder') ? response.result.item : null
-    if (!accepted) {
-      // 앞 요청 — 뒤 요청이 성공했으면 이 응답은 낡았다(버린다). 뒤 요청이 거절로 끝났으면 출처의 마지막 값은 이 성공이다. 아직이면 확정 값만 갱신한다.
-      const latest = latestOf(journal)
-      if (settled === null || latest === 'ok') return
-      journal.confirmed = settled
-      if (latest === 'failed' && intent.kind !== 'reorder') patch({ connectionId, spaceKey, apply: setFields({ item: settled }) })
+    if (!accepted || settled === null) {
+      // 실패·버린 응답·모양이 다른 응답 = 그 카드 하나만 옮기기 전 자리로(순서는 그 카드만 되돌린다, R2-B), 그리고 서버를 다시 읽어 수렴한다.
+      patch({ connectionId, spaceKey, apply: (items) => applyIntent({ items, itemId: row.item.id, intent: reverse, statuses }) })
+      if (!response.ok) notify({ kind: 'failed', message: `${original.key} — ${response.error.message}` })
+      void reloadRef.current({ quiet: true })
       return
     }
-    if (settled !== null) journal.confirmed = settled
-    journal.latest = response.ok ? 'ok' : 'failed'
-    if (!response.ok) {
-      // 마지막 확정 값으로 — 순서는 첫 요청 전 순서 값 전체를, 상태·배치는 그 작업만.
-      patch({ connectionId, spaceKey, apply: intent.kind === 'reorder' ? setRanks(journal.ranks) : setFields({ item: journal.confirmed }) })
-      notify({ kind: 'failed', message: `${original.key} — ${response.error.message}` })
-      return
-    }
-    // 출처 값으로 덮되, 화면 순서 값은 낙관적 자리를 둔다(다른 작업의 순서 값은 출처가 다시 매겼을 수 있다 — 다음 불러오기에서 맞춘다).
-    if (settled !== null && intent.kind !== 'reorder') patch({ connectionId, spaceKey, apply: setFields({ item: settled }) })
+    // 출처 값으로 덮되, 순서는 낙관적 자리를 둔다(다른 작업의 순서 값은 출처가 다시 매겼을 수 있다 — 다음 불러오기에서 맞춘다).
+    // 순서도 변경 기록으로 다시 남겨, 이 쓰기보다 먼저 시작한 목록 응답이 와도 자리가 남게 한다.
+    patch({ connectionId, spaceKey, apply: intent.kind === 'reorder' ? apply : setFields({ item: settled }) })
+    reflect({ connectionId, item: settled })
+    // 완료 분류를 넘나들면 이 작업이 막던 작업의 막힘 자료가 바뀐다 — 서버에서 다시 읽는다(R2-J).
+    if (crossesDone({ from: original, to: settled })) void reloadRef.current({ quiet: true })
     if (undo) { notify({ kind: 'undone', label: `${original.key} 를 되돌렸습니다` }); return }
-    const resultItem = settled ?? original
     notify({
       kind: 'moved',
       label: describe({ item: original, intent, statuses }),
       // 되돌리기는 옮긴 맥락(연결·스페이스·작업·이전 값)을 들고 간다 — 다른 스페이스로 옮겨 가도 역요청을 보낸다(R1-E).
+      // 보내는 값 = 이 쓰기 직전 출처가 인정한 값(`reverse`) — 거절된 낙관적 값이 끼어들 수 없다(R2-A).
       undo: () => {
         const now = loadRef.current.data.find((entry) => entry.connectionId === connectionId && entry.spaceKey === spaceKey)
         const at = now ?? row.space
-        const item = now?.items.find((entry) => entry.id === original.id) ?? resultItem
+        const item = now?.items.find((entry) => entry.id === original.id) ?? settled
         void move({ row: { item, space: at, status: at.statuses.find((status) => status.key === item.statusKey) ?? null }, intent: reverse, undo: true })
       },
     })
-  }, [patch, send, notify])
+  }, [patch, send, notify, reflect])
 
   /** 끄기 시작 — 허용 전이만인 출처면 그 작업의 허용 전이를 받는다. 받기 전·실패면 칸은 흐림(fail-closed). */
   const beginDrag = useCallback(async (row: TasksRow, mode: 'any' | 'allowed') => {
@@ -500,9 +526,10 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     setTransitions(null)
   }, [gate])
 
-  /** 배너의 「다시 시도」 — 실패한 스페이스 목록 조회를 풀고(다시 보낸다) 자료를 다시 받는다. */
+  /** 배너의 「다시 시도」 — 실패한 스페이스 목록 조회를 풀고(다시 보낸다) 자료와 키 조회를 다시 받는다(R2-G). */
   const retry = useCallback(() => {
     setSpaceFetch((current) => new Map([...current].filter(([, value]) => value.state !== 'failed')))
+    setSearchRound((current) => current + 1)
     void reload({ quiet: false })
   }, [reload])
 
@@ -532,6 +559,8 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     reload, retry, loadMore, invalidateMore,
     hits, workingEntries, working: workingLookups, workingKeys, trees,
     move: (request: MoveRequest) => move({ ...request, undo: false }),
+    /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */
+    busy,
     beginDrag, endDrag, transitions,
   }
 }

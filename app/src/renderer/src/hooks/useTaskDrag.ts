@@ -5,6 +5,7 @@
 // - 포인터 캡처를 쓰지 않는다 — 문서에 mousemove/mouseup 을 거는 것은 끄는 동안만이고, 시작은 작업 페이지 안 `[data-drag-item]` 에서만이라
 //   탭·사이드바 끌기와 한 문서에서 다투지 않는다(작업 페이지가 열려 있으면 워크스페이스는 inert).
 // - 시작 문턱 4px(`REORDER_DRAG_THRESHOLD_PX`) · 문턱 미만은 클릭 · 문턱을 넘긴 뒤의 click 하나는 삼킨다 · Esc·창 blur·놓을 곳 밖 = 취소.
+//   `active` 가 꺼지면(페이지 닫힘·위층이 열림) 끄는 중이라도 취소한다 — 그 뒤 mouseup 은 쓰기를 보내지 않는다(R2-K).
 // - 놓일 자리 = 그 영역(`[data-drop-zone]`) 안 끄는 항목을 뺀 항목들의 중점 기준 번호. 화면은 그 번호에 사본 높이만큼 틈을 그려 밀어낸다.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -29,21 +30,26 @@ function indexIn({ zone, itemId, y }: { zone: HTMLElement; itemId: string; y: nu
   }).length
 }
 
-export function useTaskDrag({ rootRef, onStart, onDrop, onEnd }: {
+export function useTaskDrag({ rootRef, active, onStart, onDrop, onEnd }: {
   rootRef: React.RefObject<HTMLElement | null>
+  /** 끌기를 받을 수 있나 — 꺼지는 순간 진행 중 끌기를 취소한다(R2-K). */
+  active: boolean
   onStart: (itemId: string) => void
   onDrop: (drop: TaskDrop) => void
   onEnd: () => void
 }) {
   const [drag, setDrag] = useState<TaskDragState | null>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
   const latest = useRef({ onStart, onDrop, onEnd })
   latest.current = { onStart, onDrop, onEnd }
-  const session = useRef<{ teardown: () => void } | null>(null)
+  const session = useRef<{ teardown: () => void; cancel: () => void } | null>(null)
 
   useEffect(() => () => session.current?.teardown(), [])
+  useEffect(() => { if (!active) session.current?.cancel() }, [active])
 
   const onMouseDown = useCallback((itemId: string, event: React.MouseEvent<HTMLElement>, blocked: string | null) => {
-    if (event.button !== 0 || session.current !== null) return
+    if (event.button !== 0 || session.current !== null || !activeRef.current) return
     if (event.target instanceof Element && event.target.closest(NON_HANDLE) !== null) return
     const source = event.currentTarget.closest<HTMLElement>('[data-drag-item]') ?? event.currentTarget
     const start: Point = { x: event.clientX, y: event.clientY }
@@ -130,7 +136,7 @@ export function useTaskDrag({ rootRef, onStart, onDrop, onEnd }: {
     document.addEventListener('mouseup', onUp, true)
     document.addEventListener('keydown', onKey, true)
     window.addEventListener('blur', onBlur)
-    session.current = { teardown }
+    session.current = { teardown, cancel: () => finish(false) }
     // 글자 선택 시작을 막는다(LIFE-469 C4).
     event.preventDefault()
   }, [rootRef])

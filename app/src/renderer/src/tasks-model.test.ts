@@ -243,7 +243,10 @@ describe('C5 빈 상태 원인', () => {
     expect(emptyCause({ total: 0, afterFilter: 0, query: '', view: 'board' })).toBe('space')
     expect(emptyCause({ total: 5, afterFilter: 5, query: 'zz', view: 'list' })).toBe('search')
     expect(emptyCause({ total: 5, afterFilter: 0, query: '', view: 'board' })).toBe('filter')
-    expect(emptyCause({ total: 5, afterFilter: 0, query: '', view: 'working' })).toBe('working')
+    // 작업 중 보기도 같은 규칙(R2-H) — 항목이 없을 때만 'working', 걸러졌으면 필터·검색 원인.
+    expect(emptyCause({ total: 0, afterFilter: 0, query: '', view: 'working' })).toBe('working')
+    expect(emptyCause({ total: 5, afterFilter: 0, query: '', view: 'working' })).toBe('filter')
+    expect(emptyCause({ total: 5, afterFilter: 5, query: 'zz', view: 'working' })).toBe('search')
   })
 })
 

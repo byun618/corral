@@ -338,43 +338,49 @@ describe('R1-D 스페이스 선택 — 첫 선택 · 재열기 복원 · 유효�
 })
 
 describe('R1-E 원복·되돌리기 — 확정 값과 보존한 맥락', () => {
-  it('M1 두 번 옮겨 둘 다 거절되면 마지막 확정 값(todo)', async () => {
+  // 수정 r2(R2-A) — 같은 카드의 확인 안 된 쓰기는 하나뿐이다. 옛 M1·M1b·M1c(겹친 두 요청의 응답 순서)는 이제 일어나지 않는 경우라
+  // 「두 번째 옮기기는 보내지 않는다」 로 바꿔 본다. 거절 뒤에는 서버를 다시 읽어 수렴한다.
+  it('M1 확인 전 두 번째 옮기기는 보내지 않는다 · 첫 요청 거절 → todo + 서버 재조회', async () => {
     const waits = pending('changeStatus')
     await probe()
     act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'doing' } }) })
     await settle()
     act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'done' } }) })
     await settle()
-    await act(async () => { waits[1]?.resolve(reject(waits[1].request)) })
+    expect(waits).toHaveLength(1)
+    const lists = ops('listItems').length
     await act(async () => { waits[0]?.resolve(reject(waits[0].request)) })
     await settle()
     expect(row().item.statusKey).toBe('todo')
+    expect(ops('listItems').length).toBeGreaterThan(lists)
   })
-  it('M1b 앞 요청이 성공하고 뒤 요청이 거절되면 앞 요청의 서버 값(doing)', async () => {
+  it('M1b 확인 전 두 번째 옮기기는 보내지 않는다 · 첫 요청 성공 → 그 서버 값(doing)', async () => {
     const waits = pending('changeStatus')
     await probe()
     act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'doing' } }) })
     await settle()
     act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'done' } }) })
     await settle()
+    expect(waits).toHaveLength(1)
     await act(async () => { waits[0]?.resolve(answer(waits[0].request)) })
-    await act(async () => { waits[1]?.resolve(reject(waits[1].request)) })
     await settle()
     expect(row().item.statusKey).toBe('doing')
   })
-  it('M1c 뒤 요청이 먼저 거절되고 앞 요청이 늦게 성공하면 앞 요청의 서버 값(doing)', async () => {
+  it('M1c 확인 뒤에는 다시 옮길 수 있다 — 두 번째 요청이 나가고 그 값이 남는다', async () => {
     const waits = pending('changeStatus')
     await probe()
     act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'doing' } }) })
     await settle()
-    act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'done' } }) })
+    await act(async () => { waits[0]?.resolve(answer(waits[0].request)) })
     await settle()
-    await act(async () => { waits[1]?.resolve(reject(waits[1].request)) })
+    // (이 묶음의 모의 서버는 상태가 없어 완료 분류를 넘나들면 재조회가 todo 로 돌린다 — 그래서 done 밖 전이로 본다.)
+    act(() => { void probeModel.move({ row: row(), intent: { kind: 'status', statusKey: 'todo' } }) })
+    await settle()
+    expect(waits).toHaveLength(2)
+    expect(waits[1]?.request.call).toMatchObject({ statusKey: 'todo' })
+    await act(async () => { waits[1]?.resolve(answer(waits[1].request)) })
     await settle()
     expect(row().item.statusKey).toBe('todo')
-    await act(async () => { waits[0]?.resolve(answer(waits[0].request)) })
-    await settle()
-    expect(row().item.statusKey).toBe('doing')
   })
   it('M3 다른 스페이스로 옮긴 뒤 되돌리기도 역요청을 보낸다', async () => {
     addSpace()

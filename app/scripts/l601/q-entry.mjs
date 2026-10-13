@@ -6,7 +6,7 @@
 // 흐름: 앱 기동(모의 출처 — up.sh) → 모의 연결 추가(렌더러 IPC, 가짜 토큰) → ⌘I(앱 내부 sendInputEvent — OS 입력 아님) → 보드
 //       → 칸·점선 칸·막힘 배지·덮기(사이드바 보임 · 메인 영역 숨김) → **실제 마우스 경로 가로 끌기 1회**(raw-mouse = webContents.sendInputEvent
 //       mouseDown/Move/Up — 렌더러의 mousedown/move/up 처리기를 그대로 지난다) → 쓰기·토스트·서버 재조회 값(수정 r1 R1-A)
-//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → 보기 4 → Esc 닫기 → 정리.
+//       → ⌘I 닫기 → 사이드바 「작업」 으로 다시 열기 → **끄는 중 ⌘I 로 닫기 = 쓰기 0**(수정 r2 R2-K) → 보기 4 → Esc 닫기 → 정리.
 // 실제 LA·사용자 키체인·설치본 무접촉. 토큰은 가짜(`mock_…`)뿐.
 // 격자 요청 수(`stream.sync` 로그 줄 · control counters)는 **관측만** 남긴다 — 판정은 최종 관문(C1, 양성 대조와 함께)이 한다.
 // 종료 코드: 0 판정 전부 통과 · 1 하나라도 미달 · 2 사용법.
@@ -121,6 +121,34 @@ try {
   await click('[data-tasks-open]')
   await until(pageOpen, { timeoutMs: 10_000, label: '사이드바 버튼으로 열림' })
   judge('C1 사이드바 「작업」 으로 다시 열림 · 보드 그대로', await js(`!!document.querySelector('[data-tasks-board] [data-issue-card="CORE-1"]')`))
+
+  // 수정 r2(R2-K) — 실제 마우스로 끄는 중 ⌘I 로 닫으면 끌기가 취소되고, 닫힌 뒤 mouseup 은 쓰기를 보내지 않는다.
+  // 쓰기 수 = main 로그 `work.request` 의 쓰기 op 줄 — 앞의 CORE-2 끌기가 1줄 이상 남겼어야 한다(세는 방법의 양성 대조).
+  const writeLines = () => {
+    try { return fs.readFileSync(path.join(ROOT, 'ud/corral.ndjson'), 'utf8').split('\n').filter((line) => line.includes('"tag":"work.request"') && /"op":"(changeStatus|setPlacement|reorder)"/.test(line)).length } catch { return null }
+  }
+  const cancelBefore = { writes: writeLines(), server: await serverStatus('CORE-1') }
+  const from2 = await center('[data-issue-card="CORE-1"]', false)
+  const to2 = await center('[data-drop-zone="col:st:core-doing"]', true)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseDown', ...from2 })
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', x: from2.x + 10, y: from2.y })
+  await sleep(250)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseMove', ...to2 })
+  await sleep(400)
+  const dragging = await js(`!!document.querySelector('.tasks-drag-preview')`)
+  await ctl(ROOT, { cmd: 'key', keyCode: 'I', modifiers: ['meta'] })
+  await until(async () => !(await pageOpen()), { timeoutMs: 10_000, label: '끄는 중 ⌘I 로 닫힘' })
+  const previewGone = await js(`!document.querySelector('.tasks-drag-preview')`)
+  await ctl(ROOT, { cmd: 'raw-mouse', type: 'mouseUp', ...to2 })
+  await sleep(1_000)
+  const cancelAfter = { writes: writeLines(), server: await serverStatus('CORE-1') }
+  log('끄는 중 ⌘I', { from2, to2, dragging, previewGone, cancelBefore, cancelAfter })
+  judge('C7·R2-K 끄는 중 ⌘I → 페이지 닫힘 · 사본 사라짐 · mouseup 뒤 쓰기 0 · 서버 재조회 값 그대로(쓰기 줄 세기 양성 대조 ≥1)',
+    dragging === true && previewGone === true && typeof cancelBefore.writes === 'number' && cancelBefore.writes >= 1 && cancelAfter.writes === cancelBefore.writes
+      && typeof cancelBefore.server === 'string' && !cancelBefore.server.startsWith('error') && cancelAfter.server === cancelBefore.server,
+    JSON.stringify({ dragging, previewGone, cancelBefore, cancelAfter }))
+  await click('[data-tasks-open]')
+  await until(pageOpen, { timeoutMs: 10_000, label: '다시 열림' })
 
   const viewChecks = {}
   for (const [tab, selector] of [['backlog', '[data-tasks-backlog] [data-backlog-section="backlog"] [data-issue-row="CORE-3"]'], ['list', '[data-tasks-list] [data-issue-row="CORE-1"]'], ['working', '[data-tasks-working], [data-tasks-empty="working"]'], ['board', '[data-tasks-board]']]) {

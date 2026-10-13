@@ -1,40 +1,22 @@
 // Markdown 미리보기 (LIFE-590 E4ⓓ) — VS Code 내장 미리보기와 같은 조합(marked → DOMPurify). 둘 다 Monaco 가 이미 끌고 오는 판(marked 14·DOMPurify 3)이다.
 //
 // 안전 규칙: ① DOMPurify 기본 프로필 — `<script>`·이벤트 핸들러(`on*`)·`javascript:` URL 이 빠진다. 폼·iframe·object·style 은 따로 막는다.
-// ② **링크·이미지는 브라우저가 스스로 따라가지 못하게** `href`·`src`·`srcset` 을 지우고 `data-md-href`·`data-md-src` 로 옮긴다 — 클릭은 FileView 가 받아
+// ② **링크·이미지는 브라우저가 스스로 따라가지 못하게** `href`·`src` 를 `data-md-href`·`data-md-src` 로 옮기고, 그 밖의 리소스 참조(SVG 안 이미지·CSS `url()` 등)는
+//    지운다 — `resource-guard.ts`(수정 r1 R1-A) — 클릭은 FileView 가 받아
 //    worktree 안 상대 경로면 파일 탭으로, http(s) 면 main 의 외부 열기(`setWindowOpenHandler` — http·https 만)로 보낸다. 창이 이동하는 경로가 없다.
 // ③ 이미지는 worktree 안 상대 경로만 — `resolveMarkdownTarget` 이 `..` 탈출·절대·원격을 거르고, 남은 것도 main 이 다시 가둔다(`readImage`).
 //    원격 이미지는 띄우지 않는다(VS Code Strict 보안 수준은 https 를 띄운다 — **의도적 차이**, E9).
 import DOMPurify from 'dompurify'
 import { Marked } from 'marked'
+import { installResourceGuard, RESOURCE_FORBID_TAGS } from './resource-guard.js'
 
 const marked = new Marked({ gfm: true, breaks: false, async: false })
 
-const FORBID_TAGS = ['style', 'form', 'input', 'button', 'textarea', 'select', 'iframe', 'frame', 'object', 'embed', 'link', 'meta', 'base', 'video', 'audio', 'source', 'track']
-
-let hooked = false
-function hookOnce(): void {
-  if (hooked) return
-  hooked = true
-  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    if (node.tagName === 'A') {
-      const href = node.getAttribute('href')
-      node.removeAttribute('href')
-      node.removeAttribute('target')
-      if (href !== null) node.setAttribute('data-md-href', href)
-    }
-    if (node.tagName === 'IMG') {
-      const src = node.getAttribute('src')
-      node.removeAttribute('src')
-      node.removeAttribute('srcset')
-      if (src !== null) node.setAttribute('data-md-src', src)
-    }
-  })
-}
+const FORBID_TAGS = [...RESOURCE_FORBID_TAGS, 'form', 'input', 'button', 'textarea', 'select', 'iframe', 'frame', 'object', 'embed', 'meta', 'base', 'video', 'audio', 'source', 'track', 'picture']
 
 /** Markdown 원문 → 정화한 HTML 글. 링크·이미지는 `data-md-*` 로만 남는다(위 ②). */
 export function renderMarkdown(source: string): string {
-  hookOnce()
+  installResourceGuard()
   const html = marked.parse(source)
   return DOMPurify.sanitize(typeof html === 'string' ? html : '', { FORBID_TAGS, FORBID_ATTR: ['style'] })
 }

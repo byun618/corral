@@ -282,7 +282,8 @@ export function moveTabWithinTabbar(
     return updateGroup(layout, input.toGroupId, (g) => {
       const without = g.tabOrder.filter((id) => id !== input.tabId)
       const at = Math.max(0, Math.min(input.index, without.length))
-      return { ...g, tabOrder: [...without.slice(0, at), input.tabId, ...without.slice(at)], activeTabId: input.tabId }
+      // 같은 탭바 안에서 끌어도 미리보기는 고정된다(VS Code·E10 답 ⑤ — 수정 r1 R1-C). 다른 영역 이동은 `removeTabFromGroup` 이 걷는다.
+      return { ...g, tabOrder: [...without.slice(0, at), input.tabId, ...without.slice(at)], activeTabId: input.tabId, ...(g.previewTabId === input.tabId ? { previewTabId: null } : {}) }
     })
   }
   const from = findGroup(layout.root, input.fromGroupId)

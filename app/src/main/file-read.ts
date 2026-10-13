@@ -1,6 +1,7 @@
 // 파일 탭 내용 읽기 (LIFE-590 F2 · E7ⓐ) — **읽기 전용**. 렌더러가 준 (루트, 상대 경로)를 F1 `confine` 으로 열린 worktree 밑에 가둔 뒤에만 읽는다.
 //
-// 순서: ① 가둠(`confine` — 등록 루트·형·realpath 접두사) ② 가둔 실경로를 `O_NOFOLLOW` 로 연다(마지막 성분이 그 사이 링크로 바뀌었으면 열기가 실패한다)
+// 순서: ① 가둠(`confine` — 등록 루트·형·realpath 접두사) ①' lstat 이 일반 파일이 아니면 열지 않고 `not_file`(FIFO 열기 대기 방지 — 수정 r1 R1-F)
+// ② 가둔 실경로를 `O_NOFOLLOW | O_NONBLOCK` 으로 연다(마지막 성분이 그 사이 링크로 바뀌었으면 열기가 실패한다)
 // ③ 연 fd 의 fstat 으로 종류·크기 — 파일이 아니면 거절, 상한(50 MB)을 넘으면 **내용을 읽지 않고** `too_large` ④ 다시 가둬 같은 실경로이고
 // fd 정체(dev:ino)가 그 경로의 lstat 정체와 같은지(F1 R1-A 재확인과 같은 결) ⑤ 앞 8 KB 에 NUL 이면 바이너리 — 나머지를 읽지 않는다 ⑥ 텍스트는 크기만큼(상한까지) 읽어 UTF-8 로.
 // 남은 위험은 F1 과 같다(`explorer-fs.ts` 머리말): 중간 성분을 열기 직전에 바꿨다 되돌리는 ABA. 노출은 worktree 밖 파일 **내용**일 수 있어 F1 보다 무겁지만,
@@ -25,11 +26,21 @@ async function openConfined(input: { roots: readonly string[]; root: unknown; re
 > {
   const confined = await confine(input)
   if (!confined.ok) return { ok: false, code: confined.code, error: confined.error }
+  const errorCode = (error: unknown): string => (typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '')
+  // 일반 파일이 아니면(FIFO·소켓·장치·폴더) **열기 전에** 거절한다 — FIFO 를 그냥 열면 쓰는 쪽이 올 때까지 열기가 끝나지 않는다(수정 r1 R1-F).
+  let before: Awaited<ReturnType<typeof fs.lstat>>
+  try {
+    before = await fs.lstat(confined.abs)
+  } catch (error) {
+    return { ok: false, code: errorCode(error) === 'ENOENT' ? 'not_found' : 'io_error', error: String(error) }
+  }
+  if (!before.isFile()) return { ok: false, code: 'not_file', error: '일반 파일이 아니다 — 열지 않았다' }
   let handle: fs.FileHandle
   try {
-    handle = await fs.open(confined.abs, constants.O_RDONLY | constants.O_NOFOLLOW)
+    // lstat 과 열기 사이에 FIFO 로 바뀌어도 막히지 않게 `O_NONBLOCK`(일반 파일 읽기에는 영향 없음) — 바뀐 것은 아래 fstat 이 `not_file` 로 거른다.
+    handle = await fs.open(confined.abs, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : ''
+    const code = errorCode(error)
     return { ok: false, code: code === 'ENOENT' ? 'not_found' : code === 'ELOOP' ? 'changed' : 'io_error', error: String(error) }
   }
   try {

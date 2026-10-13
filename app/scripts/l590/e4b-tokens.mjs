@@ -61,11 +61,11 @@ for (const file of FILES) {
   const expect = spawnSync(process.execPath, ['scripts/l590/token-colors.mjs', 'expect', '--file', path.join(repo, file.rel), '--out', expectedPath], { encoding: 'utf8' })
   const compare = spawnSync(process.execPath, ['scripts/l590/token-colors.mjs', 'compare', '--expected', expectedPath, '--actual', actualPath, '--out', diffPath], { encoding: 'utf8' })
   const diff = fs.existsSync(diffPath) ? JSON.parse(fs.readFileSync(diffPath, 'utf8')) : null
-  const row = { language: file.language, rel: file.rel, monacoLanguage: ready.value, lines: lines.length, checked: diff?.checked ?? null, bracketPair: diff?.bracketPair ?? null, mismatches: diff?.mismatches ?? null, expectExit: expect.status, compareExit: compare.status, stderr: (expect.stderr + compare.stderr).trim().slice(0, 300) }
+  const row = { language: file.language, rel: file.rel, monacoLanguage: ready.value, lines: lines.length, checked: diff?.checked ?? null, bracketPair: diff?.bracketPair ?? null, mismatches: diff?.mismatches ?? null, missing: diff?.missing ?? null, expectExit: expect.status, compareExit: compare.status, stderr: (expect.stderr + compare.stderr).trim().slice(0, 300) }
   summary.push(row)
   console.log(JSON.stringify(row))
 }
 writeJson(path.join(values.out, 'summary.json'), { root, repo, summary })
-const failed = summary.filter((row) => row.mismatches !== 0 || row.checked === null || row.checked === 0)
+const failed = summary.filter((row) => row.mismatches !== 0 || row.missing !== 0 || row.checked === null || row.checked === 0 || row.compareExit !== 0)
 console.log(JSON.stringify({ languages: summary.length, failed: failed.map((row) => row.language) }))
 process.exit(failed.length === 0 ? 0 : 1)

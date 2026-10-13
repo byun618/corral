@@ -52,7 +52,7 @@ async function expect(file) {
   const language = languageOf(file, languages)
   const lines = fs.readFileSync(file, 'utf8').split(/\r\n|\r|\n/)
   const fallback = theme.colors['editor.foreground']
-  if (language === null) return { file, versions, language: null, lines: lines.map((line) => [[0, line.length, fallback, 0]]) }
+  if (language === null) return { file, versions, language: null, text: lines, lines: lines.map((line) => [[0, line.length, fallback, 0]]) }
   const registry = new vsctm.Registry({
     onigLib: Promise.resolve({ createOnigScanner: (patterns) => new onig.OnigScanner(patterns), createOnigString: (text) => new onig.OnigString(text) }),
     theme: { name: 'Dark 2026', settings: theme.settings },
@@ -81,7 +81,7 @@ async function expect(file) {
     out.push(tokens)
     state = result.ruleStack
   }
-  return { file, versions, language: language.id, lines: out }
+  return { file, versions, language: language.id, text: lines, lines: out }
 }
 
 const hex = (rgb) => {
@@ -97,18 +97,27 @@ const hex = (rgb) => {
 const BRACKET_COLORS = new Set(['#ffd700', '#da70d6', '#179fff'])
 const BRACKETS = new Set([...'{}[]()<>'])
 
-/** 글자 단위 대조 — 공백은 색이 안 보이니 뺀다. 글꼴 모양은 italic(1)만 본다(DOM fontStyle 로 보이는 것). */
+/**
+ * 글자 단위 대조 — 공백은 색이 안 보이니 뺀다. 글꼴 모양은 italic(1)만 본다(DOM fontStyle 로 보이는 것).
+ * **누락**(수정 r1 R1-G): 기대에 있는데 실제(DOM 추출)에 없는 줄·글자를 `missing` 으로 센다 — 일부만 추출된 회차가 「불일치 0」 으로 통과하지 않게.
+ * 기대에 원문(`text`)이 있으면 공백 글자의 누락은 빼고, 없으면(옛 기대 파일) 기대 토큰 범위의 모든 칸을 센다. 누락이 하나라도 있으면 실패 종료.
+ */
 function compare(expected, actual) {
   const mismatches = []
+  const missing = []
   let checked = 0
   let bracketPair = 0
   expected.lines.forEach((tokens, lineIndex) => {
+    const text = expected.text?.[lineIndex]
     const spans = actual.lines[lineIndex]
-    if (spans === undefined) return
-    const chars = spans.flatMap(([text, color, fontStyle]) => [...text].map((ch) => ({ ch, color: hex(color), italic: fontStyle === 'italic' })))
+    const chars = (spans ?? []).flatMap(([chunk, color, fontStyle]) => [...chunk].map((ch) => ({ ch, color: hex(color), italic: fontStyle === 'italic' })))
     for (const [start, end, color, fontStyle] of tokens) {
-      for (let column = start; column < end && column < chars.length; column += 1) {
+      for (let column = start; column < end; column += 1) {
         const got = chars[column]
+        if (got === undefined) {
+          if (text === undefined || !/\s/.test(text[column] ?? '')) missing.push({ line: lineIndex + 1, column: column + 1, lineMissing: spans === undefined })
+          continue
+        }
         if (/\s/.test(got.ch)) continue
         checked += 1
         // `${`(템플릿 괄호 — JS 언어 구성 brackets 첫 짝, colorizedBracketPairs 가 없으면 괄호쌍 색 대상)의 `$` 도 괄호 덧칠이다.
@@ -122,7 +131,8 @@ function compare(expected, actual) {
       }
     }
   })
-  return { file: expected.file, language: expected.language, checked, bracketPair, mismatches: mismatches.length, details: mismatches }
+  const missingLines = new Set(missing.filter((row) => row.lineMissing).map((row) => row.line)).size
+  return { file: expected.file, language: expected.language, checked, bracketPair, mismatches: mismatches.length, missing: missing.length, missingLines, details: mismatches, missingDetails: missing.slice(0, 200) }
 }
 
 const [command, ...rest] = process.argv.slice(2)
@@ -132,6 +142,6 @@ if (command === 'expect') write(await expect(values.file))
 else if (command === 'compare') {
   const result = compare(JSON.parse(fs.readFileSync(values.expected, 'utf8')), JSON.parse(fs.readFileSync(values.actual, 'utf8')))
   write(result)
-  console.error(`checked=${result.checked} bracketPair=${result.bracketPair} mismatches=${result.mismatches}`)
-  process.exit(result.mismatches === 0 ? 0 : 1)
+  console.error(`checked=${result.checked} bracketPair=${result.bracketPair} mismatches=${result.mismatches} missing=${result.missing} missingLines=${result.missingLines}`)
+  process.exit(result.mismatches === 0 && result.missing === 0 && result.checked > 0 ? 0 : 1)
 } else throw new Error('명령: expect | compare')

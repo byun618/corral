@@ -100,7 +100,7 @@ export function createFileWatch(input: {
       for (const entry of [...entries.values()]) {
         if (dir !== null && entry.dir !== dir) continue
         const next = await stampOf(entry)
-        if (!entries.has(keyOf(entry))) continue
+        if (!live(entry)) continue
         attach(entry, next.abs)
         if (next.stamp === entry.stamp) continue
         entry.stamp = next.stamp
@@ -119,6 +119,9 @@ export function createFileWatch(input: {
   timer.unref?.()
 
   const keyOf = (entry: { root: string; rel: string }): string => `${entry.root}\0${entry.rel}`
+  // await 뒤에는 **같은 Entry 객체**가 아직 목록에 있는지 본다(수정 r1 R1-E) — 키만 보면, 조회 중 닫혔다 같은 경로로 다시 열린 새 Entry 를 보고 옛 Entry 에도
+  // 감시를 붙여 참조 수가 하나 남는다(열린 파일 0 인데 폴더 감시 1).
+  const live = (entry: Entry): boolean => !disposed && entries.get(keyOf(entry)) === entry
 
   return {
     set: async ({ root, rels }) => {
@@ -141,13 +144,17 @@ export function createFileWatch(input: {
       }
       for (const entry of added) {
         const next = await stampOf(entry)
-        if (!entries.has(keyOf(entry))) continue
+        if (!live(entry)) continue
         attach(entry, next.abs)
         entry.stamp = next.stamp
         input.push({ root: entry.root, rel: entry.rel, exists: next.stamp !== null, stamp: next.stamp })
       }
       // 감시가 끊겼던(dropWatchers) 파일도 다시 붙인다.
-      for (const entry of entries.values()) if (entry.dir === null && entry.stamp !== null) attach(entry, (await stampOf(entry)).abs)
+      for (const entry of [...entries.values()]) {
+        if (entry.dir !== null || entry.stamp === null) continue
+        const next = await stampOf(entry)
+        if (live(entry)) attach(entry, next.abs)
+      }
       return { ok: true, count: entries.size }
     },
     dropWatchers: () => {

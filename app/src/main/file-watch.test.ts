@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createFileWatch, type FileWatch } from './file-watch.js'
 import type { FileWatchPush } from '../shared/file-view.js'
 
@@ -127,5 +127,49 @@ describe('E5 열린 파일 탭 감시', () => {
     await watch.set({ root: base, rels: ['wt/b.txt'] })
     expect(rec.pushes.every((push) => !push.exists)).toBe(true)
     expect(watch.stats().dirWatchers).toBe(0)
+  })
+})
+
+describe('수정 r1 R1-E 감시 목록 교체와 이전 조회가 겹쳐도 감시가 남지 않는다', () => {
+  it('리뷰 watch-race 조건 — A 조회 중 빈 집합 → A → 조회 완료 → 빈 집합이면 파일 0·폴더 감시 0', async () => {
+    const original = fs.promises.realpath.bind(fs.promises)
+    let release = (): void => undefined
+    let entered = (): void => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const seen = new Promise<void>((resolve) => (entered = resolve))
+    let blocked = false
+    const spy = vi.spyOn(fs.promises, 'realpath').mockImplementation(async (target) => {
+      if (String(target) === root && !blocked) {
+        blocked = true
+        entered()
+        await gate
+      }
+      return original(target)
+    })
+    let opened = 0
+    let closed = 0
+    try {
+      watch = createFileWatch({
+        roots: () => [root],
+        pollMs: 60_000,
+        push: () => undefined,
+        watchDir: () => {
+          opened += 1
+          return { close: () => void (closed += 1) }
+        },
+      })
+      const first = watch.set({ root, rels: ['b.txt'] })
+      await seen
+      await watch.set({ root, rels: [] })
+      await watch.set({ root, rels: ['b.txt'] })
+      release()
+      await first
+      expect(watch.stats()).toEqual({ files: 1, dirWatchers: 1 })
+      await watch.set({ root, rels: [] })
+      expect(watch.stats()).toEqual({ files: 0, dirWatchers: 0 })
+      expect({ opened, closed }).toEqual({ opened: 1, closed: 1 })
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

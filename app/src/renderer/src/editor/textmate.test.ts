@@ -1,7 +1,7 @@
 // LIFE-590 E4ⓑ — TextMate 토큰화(JS 정규식 엔진) 단위. 전체 10개 언어 토큰 위치별 대조는 최종 관문(`scripts/l590/token-colors.mjs`)이 한다 —
 // 여기서는 연결(문법 지연 로드·의존 문법·주입·이진 토큰 메타데이터·정규식 변환)이 맞는지만 본다.
 import { describe, expect, it } from 'vitest'
-import { EncodedTokenMetadata } from '@shikijs/vscode-textmate'
+import { EncodedTokenMetadata, type IRawGrammar } from '@shikijs/vscode-textmate'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createJavaScriptRegexEngine } from '@shikijs/engine-javascript'
@@ -130,5 +130,69 @@ describe('Oniguruma → JS 정규식 변환 (E4ⓑ)', () => {
       }
     }
     expect(failures.map((failure) => failure.split(' ')[0])).toEqual(['source.json.comments.snippets', 'source.yaml.1.2', 'source.yaml.1.0', 'source.yaml.embedded'])
+  })
+})
+
+describe('수정 r1 R1-D 문법 로드 상태 — 로딩 중·없음·완료', () => {
+  const assets = path.resolve(import.meta.dirname, '../assets/textmate')
+  const index: { grammars: { scopeName: string; file: string }[] } = JSON.parse(fs.readFileSync(path.join(assets, 'languages.json'), 'utf8'))
+  const readReal = (scope: string): IRawGrammar | null => {
+    const row = index.grammars.find((item) => item.scopeName === scope)
+    return row === undefined ? null : JSON.parse(fs.readFileSync(path.join(assets, 'grammars', row.file), 'utf8'))
+  }
+
+  it('리뷰 grammar-real 조건 — Markdown 이 source.ts 를 싣는 동안 source.ts 를 요청해도 null 이 아니라 같은 완료를 기다린다', async () => {
+    let release = (): void => undefined
+    let entered = (): void => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const inside = new Promise<void>((resolve) => (entered = resolve))
+    const tm = createTextMate({
+      loadRaw: async (scope) => {
+        if (scope === 'source.ts') {
+          entered()
+          await gate
+        }
+        return readReal(scope)
+      },
+    })
+    const markdown = tm.grammar({ scopeName: 'text.html.markdown', languageId: 1 })
+    await inside
+    const during = tm.grammar({ scopeName: 'source.ts', languageId: 2 })
+    release()
+    expect(await during).not.toBeNull()
+    expect(await markdown).not.toBeNull()
+  })
+
+  const tiny: Record<string, IRawGrammar> = JSON.parse(
+    JSON.stringify({
+      outer: { scopeName: 'outer', patterns: [{ include: 'inner' }] },
+      inner: { scopeName: 'inner', patterns: [{ name: 'string.quoted', match: 'hello' }, { begin: '\\(', end: '\\)', patterns: [{ include: 'outer' }] }] },
+    }),
+  )
+
+  it('리뷰 grammar-repro 조건 — 병렬 로드(outer·inner)가 둘 다 성공하고 직렬과 같은 토큰(순환 include 포함)', async () => {
+    const parallel = createTextMate({
+      loadRaw: async (name) => {
+        await new Promise((resolve) => setTimeout(resolve, name === 'inner' ? 80 : 1))
+        return tiny[name] ?? null
+      },
+    })
+    const [outer, inner] = await Promise.all([parallel.grammar({ scopeName: 'outer', languageId: 1 }), parallel.grammar({ scopeName: 'inner', languageId: 2 })])
+    const serial = await createTextMate({ loadRaw: async (name) => tiny[name] ?? null }).grammar({ scopeName: 'outer', languageId: 1 })
+    expect(outer?.tokenizeLine('hello', INITIAL).tokens).toEqual(serial?.tokenizeLine('hello', INITIAL).tokens)
+    expect(inner?.tokenizeLine('hello', INITIAL).tokens[0]?.scopes).toContain('string.quoted')
+  })
+
+  it('읽기 실패는 캐시에 남지 않는다 — 다음 요청이 다시 싣는다 · 진짜 없는 문법은 null', async () => {
+    let calls = 0
+    const tm = createTextMate({
+      loadRaw: async (name) => {
+        if (name === 'inner' && (calls += 1) === 1) throw new Error('chunk load failed')
+        return tiny[name] ?? null
+      },
+    })
+    await expect(tm.grammar({ scopeName: 'inner', languageId: 1 })).rejects.toThrow('chunk load failed')
+    expect(await tm.grammar({ scopeName: 'inner', languageId: 1 })).not.toBeNull()
+    expect(await tm.grammar({ scopeName: 'missing', languageId: 1 })).toBeNull()
   })
 })

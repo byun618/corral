@@ -1,8 +1,8 @@
 // LIFE-590 E1·E2 — 파일 탭 종류 구분·정리 생존·미리보기 규칙·영속 형식 양방향(단위).
 // 하위 방향(E1ⓓ)은 기준 commit `bd2fca411` 의 `group-tree.ts` 사본(`legacy/group-tree.bd2fca411.ts` — 바이트 그대로)에 새 형식을 넣어 본다.
 import { describe, expect, it } from 'vitest'
-import { closeFileTab, fileTabId, fileTabsOf, keepFileTab, openFileTab, previewOf, reopenFileTab, tabKindOf } from './file-tabs.js'
-import { dropDeadTabs, LAYOUT_FORMAT, listGroups, mergeTabIntoGroup, readStoredLayouts, reconcileLayout, singleLayout, splitGroup, type GroupLayout } from './group-tree.js'
+import { closeFileTab, fileTabId, fileTabsOf, keepFileTab, openFileTab, previewOf, reopenFileTab, tabKindOf, terminalKeyTarget } from './file-tabs.js'
+import { dropDeadTabs, LAYOUT_FORMAT, listGroups, mergeTabIntoGroup, moveTabWithinTabbar, readStoredLayouts, reconcileLayout, singleLayout, splitGroup, type GroupLayout } from './group-tree.js'
 import * as legacy from './legacy/group-tree.bd2fca411.js'
 
 const A = fileTabId('src/a.ts')
@@ -156,5 +156,32 @@ describe('E1ⓒⓓ 영속 형식', () => {
     expect(pruned === null ? null : legacy.listGroups(pruned.root).map((group) => group.tabOrder)).toEqual([['w1:t1'], ['w1:t2']])
     // 파일 탭만 있던 worktree 는 구 코드에서 배치를 버린다(다음에 열면 한 영역) — 터미널 배치에는 영향 없음
     expect(legacy.dropDeadTabs({ layout: rows[1]!.layout, herdrTabIds: live })).toBeNull()
+  })
+})
+
+describe('수정 r1 R1-C 끌면 고정 — 같은 탭바 재정렬 포함', () => {
+  it('같은 영역 안에서 미리보기 탭을 옮기면 고정되고, 다음 한 번 클릭은 새 탭을 연다', () => {
+    const opened = openFileTab({ layout: terminals(), rel: 'README.md', preview: true }).layout
+    expect(previewOf(listGroups(opened.root)[0]!)).toBe(C)
+    const moved = moveTabWithinTabbar(opened, { tabId: C, fromGroupId: 'g1', toGroupId: 'g1', index: 0 })
+    expect(orders(moved)[0]![0]).toBe(C)
+    expect(previewOf(listGroups(moved.root)[0]!)).toBeNull()
+    const next = openFileTab({ layout: moved, rel: 'src/a.ts', preview: true }).layout
+    expect(orders(next)[0]).toEqual(expect.arrayContaining([C, A]))
+  })
+  it('다른 탭(터미널)을 옮겨도 미리보기는 그대로', () => {
+    const opened = openFileTab({ layout: terminals(), rel: 'README.md', preview: true }).layout
+    const moved = moveTabWithinTabbar(opened, { tabId: 'w1:t2', fromGroupId: 'g1', toGroupId: 'g1', index: 0 })
+    expect(previewOf(listGroups(moved.root)[0]!)).toBe(C)
+  })
+})
+
+describe('수정 r1 R1-B 터미널 대상 단축키 — 파일 탭이 활성이면 대상 없음', () => {
+  it('파일 탭 활성 → null(숨은 터미널 pane 을 쓰지 않는다)', () => {
+    expect(terminalKeyTarget({ activeTabId: C, selectedPane: 'w1:p1' })).toBeNull()
+  })
+  it('터미널 탭 활성·활성 탭 없음 → 이전과 같이 selectedPane', () => {
+    expect(terminalKeyTarget({ activeTabId: 'w1:t1', selectedPane: 'w1:p1' })).toBe('w1:p1')
+    expect(terminalKeyTarget({ activeTabId: null, selectedPane: 'w1:p1' })).toBe('w1:p1')
   })
 })

@@ -23,6 +23,14 @@ export function tabKindOf(tabId: string): TabKind {
 }
 
 /** 파일 이름(탭 제목) — 경로 마지막 성분. */
+/**
+ * 터미널 pane 을 대상으로 하는 단축키(⌘D·⌘⇧D 분할 · ⌘⌥방향 인접 포커스 · ⌘⇧Z 줌)의 대상 — 활성 영역의 활성 탭이 **파일 탭이면 없음**(무동작).
+ * 파일 탭으로 바꿔도 `selectedPane` 은 직전 터미널 pane 에 남아 있어, 그대로 쓰면 보이지 않는 터미널을 분할·줌한다(수정 r1 R1-B).
+ */
+export function terminalKeyTarget(input: { activeTabId: string | null; selectedPane: string | null }): string | null {
+  return input.activeTabId !== null && isFileTabId(input.activeTabId) ? null : input.selectedPane
+}
+
 export function fileTabLabel(rel: string): string {
   const parts = rel.split('/')
   return parts[parts.length - 1] ?? rel

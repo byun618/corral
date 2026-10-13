@@ -68,7 +68,7 @@ import { agentPanes, sessionTitle, userLabel } from './session-title.js'
 import { closeScopeTargets, cycleTabTarget, sidebarCloseRoute, tabAtIndex, type CloseScope } from './tab-actions.js'
 import { keepHerdrTabMarks, keepLiveTabMarks, markOf, pinnedTabIds, readTabMarks, setTabColor, setTabPinned, type TabMark } from './tab-marks.js'
 import { popClosed, pushClosed, snapshotCwd, type ClosedTabSnapshot, type RecentlyClosed, addPlacement, takeLivePlacements, type PendingPlacement } from './recently-closed.js'
-import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf } from './file-tabs.js'
+import { fileTabLabel, fileTabsOf, isFileTabId, previewOf, tabKindOf, terminalKeyTarget } from './file-tabs.js'
 import { FileView, type MarkdownModeStore, type ViewStateStore } from './components/FileView.js'
 import { CLOSE_SKIP_FAILED_NOTICE, closeCopy } from './close-copy.js'
 import { moveDirectionToSplit } from './components/TabContextMenu.js'
@@ -1122,11 +1122,13 @@ export function App(): React.JSX.Element {
     setSettingsView(null)
     requestAnimationFrame(() => setFocusToken((value) => value + 1))
   }
+  // 터미널 pane 대상 단축키의 대상 — 파일 탭이 활성이면 null(무동작, 수정 r1 R1-B). ⌘W 는 `closeTargetRef` 가 종류를 따로 본다.
+  const terminalTarget = (): string | null => terminalKeyTarget({ activeTabId: layoutRef.current.activeTabId, selectedPane: lifecycle.selectedPane })
   const handlers: ShortcutHandlers = {
     'palette.open': openPalette,
     'terminal.new': () => lifecycle.createShell(),
     'mru.open': (variant) => stepMruHold(variant === 1),
-    'terminal.split': (variant) => void splitPaneAt({ paneId: lifecycle.selectedPane, direction: variant === 1 ? 'down' : 'right' }),
+    'terminal.split': (variant) => void splitPaneAt({ paneId: terminalTarget(), direction: variant === 1 ? 'down' : 'right' }),
     'group.split': (variant) => {
       const { activeGroupId: groupId, activeTabId: tabId, activeTabCount } = layoutRef.current
       if (groupId === null || tabId === null) return
@@ -1134,14 +1136,15 @@ export function App(): React.JSX.Element {
       setGroupHint(null)
       layoutRef.current.splitGroup({ groupId, tabId, direction: variant === 1 ? 'column' : 'row' })
     },
-    'terminal.focus': (variant) => void focusNeighbor({ paneId: lifecycle.selectedPane, direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
+    'terminal.focus': (variant) => void focusNeighbor({ paneId: terminalTarget(), direction: (['left', 'right', 'up', 'down'] as const)[variant]! }),
     'group.close': () => {
       const groupId = layoutRef.current.activeGroupId
       if (groupId !== null) layoutRef.current.closeGroup(groupId)
     },
     'terminal.zoom': () => {
       const groupId = layoutRef.current.activeGroupId
-      if (groupId !== null) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
+      const activeTabId = layoutRef.current.activeTabId
+      if (groupId !== null && !(activeTabId !== null && isFileTabId(activeTabId))) toggleZoom({ groupId, paneId: lifecycle.selectedPane })
     },
     'terminal.close': () => {
       const target = closeTargetRef.current
@@ -1580,6 +1583,8 @@ export function App(): React.JSX.Element {
 
   const paletteEntries: PaletteEntry[] = []
   const connected = state.link.phase === 'live'
+  // 수정 r1 R1-B — 파일 탭이 활성이면 pane 대상 명령은 무동작이라 팔레트에서도 막아 둔다.
+  const TERMINAL_PANE_ACTIONS = new Set<string>(['terminal.split', 'terminal.focus', 'terminal.zoom'])
   const palettePaneAlive = !!activeWorkspace?.tabs.some(tab => tab.panes.some(pane => pane.paneId === lifecycle.selectedPane))
   for (const action of ACTIONS) {
     // ⌘⇧⌫ 는 hover 중인 카드가 대상이라 팔레트에서 부를 대상이 없다.
@@ -1588,7 +1593,7 @@ export function App(): React.JSX.Element {
       const id = action.id
       paletteEntries.push({ id: `${id}:${variant}`, title: `${action.title} · ${action.variants[variant]}`, detail: id,
         shortcut: bindingsFor(id, keymap.overrides).flatMap((binding, index) => (binding !== null && action.bindingVariants[index] === variant ? [formatBinding(binding)] : [])).join(' / '),
-        disabled: id === 'sidebar.toggle' || id === 'settings.open' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
+        disabled: id === 'sidebar.toggle' || id === 'settings.open' ? undefined : !connected ? '연결된 세션이 없습니다' : !palettePaneAlive ? '선택된 pane이 없습니다' : activeFileRel !== null && TERMINAL_PANE_ACTIONS.has(id) ? '파일 탭에서는 쓸 수 없습니다' : id === 'group.split' && (layout.groups.find(group => group.groupId === layout.activeGroupId)?.tabOrder.length ?? 0) < 2 ? ONE_TAB_IN_GROUP : undefined,
         run: () => {
           if (id === 'mru.open') {
             const other = orderMru({ history: mruHistoryRef.current, livePaneIds: mruPanes.map(pane => pane.paneId) }).filter(id => id !== lifecycle.selectedPane)

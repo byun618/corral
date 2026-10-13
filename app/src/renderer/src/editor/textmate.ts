@@ -111,16 +111,41 @@ export function createTextMate(input: { loadRaw?: (scopeName: string) => Promise
       const loader = row === undefined ? undefined : grammarLoaders[`../assets/textmate/grammars/${row.file}`]
       return loader === undefined ? null : loader()
     })
-  const raws = new Map<string, IRawGrammar | null>()
+  // 문법 상태 셋(수정 r1 R1-D): **로딩 중** = `loading` 에 있고 아직 안 끝난 Promise · **없음** = 그 Promise 가 null · **완료** = `raws` 에 있음.
+  // 동시 요청은 같은 Promise 를 기다린다(예전 구현은 로딩 중을 null 로 적어 두어, 다른 요청이 그 문법을 「없음」으로 보고 일반 텍스트로 굳었다).
+  // 읽기가 던지면(청크 로드 실패 등) 그 항목을 지워 다음 요청이 다시 시도한다 — 실패가 앱 세션 내내 남지 않는다.
+  const raws = new Map<string, IRawGrammar>()
+  const loading = new Map<string, Promise<IRawGrammar | null>>()
+  const loadOwn = (scopeName: string): Promise<IRawGrammar | null> => {
+    const pending = loading.get(scopeName)
+    if (pending !== undefined) return pending
+    const started = loadRaw(scopeName).then(
+      (loaded) => {
+        const raw = loaded === null ? null : normalizeGrammar(loaded)
+        if (raw !== null) raws.set(scopeName, raw)
+        return raw
+      },
+      (error: unknown) => {
+        loading.delete(scopeName)
+        throw error
+      },
+    )
+    loading.set(scopeName, started)
+    return started
+  }
   const injectionsOf = (scopeName: string): string[] => GRAMMARS.filter((row) => row.injectTo.includes(scopeName)).map((row) => row.scopeName)
-  const prefetch = async (scopeName: string): Promise<void> => {
-    if (raws.has(scopeName)) return
-    raws.set(scopeName, null)
-    const loaded = await loadRaw(scopeName)
-    const raw = loaded === null ? null : normalizeGrammar(loaded)
-    raws.set(scopeName, raw)
-    if (raw === null) return
-    await Promise.all([...grammarDependencies(raw), ...injectionsOf(scopeName)].map((dependency) => prefetch(dependency)))
+  // 문법과 의존 문법(include·주입) 전부가 「완료」나 「없음」이 될 때까지. 방문 집합은 요청마다 따로 — 순환 참조(A→B→A)에서 서로를 기다리지 않는다
+  // (각 문법의 자기 읽기 Promise 는 의존 문법을 기다리지 않는다).
+  const prefetch = async (rootScope: string): Promise<void> => {
+    const seen = new Set<string>()
+    const visit = async (scopeName: string): Promise<void> => {
+      if (seen.has(scopeName)) return
+      seen.add(scopeName)
+      const raw = await loadOwn(scopeName)
+      if (raw === null) return
+      await Promise.all([...grammarDependencies(raw), ...injectionsOf(scopeName)].map((dependency) => visit(dependency)))
+    }
+    await visit(rootScope)
   }
   // forgiving — JS 로 못 옮기는 패턴 하나 때문에 문법 전체가 죽지 않게 그 패턴만 빠진다(그 자리 색 차이는 E4ⓑ 대조가 드러낸다).
   const engine = createJavaScriptRegexEngine({ forgiving: true })
@@ -134,7 +159,7 @@ export function createTextMate(input: { loadRaw?: (scopeName: string) => Promise
   return {
     grammar: async ({ scopeName, languageId }) => {
       await prefetch(scopeName)
-      if (raws.get(scopeName) === null) return null
+      if (!raws.has(scopeName)) return null
       // VS Code `TMGrammarFactory` 와 같이 문법 기여의 tokenTypes(문자열·주석 판정 덮어쓰기)·괄호 scope 를 같이 넘긴다.
       const row = GRAMMARS.find((item) => item.scopeName === scopeName)
       const tokenTypes = Object.fromEntries(Object.entries(row?.tokenTypes ?? {}).map(([selector, type]) => [selector, type === 'comment' ? 1 : type === 'string' ? 2 : type === 'regex' ? 3 : 0]))

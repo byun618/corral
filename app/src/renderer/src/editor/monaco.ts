@@ -92,7 +92,7 @@ export async function languageFor(rel: string): Promise<string> {
   let ready = registered.get(language.id)
   if (ready === undefined) {
     ready = (async () => {
-      monaco.languages.register({ id: language.id })
+      if (!monaco.languages.getLanguages().some((row) => row.id === language.id)) monaco.languages.register({ id: language.id })
       // 토큰 메타데이터의 언어 칸 = Monaco 인코딩 언어 id — 괄호쌍 색·괄호 짝이 이 언어의 구성을 찾는다.
       const languageId = monaco.languages.getEncodedLanguageId(language.id)
       const grammar = await tm.grammar({ scopeName: language.scopeName, languageId })
@@ -111,7 +111,10 @@ export async function languageFor(rel: string): Promise<string> {
     })()
     registered.set(language.id, ready)
   }
-  return (await ready) ? language.id : 'plaintext'
+  // 실패(문법 없음·읽기 오류)는 캐시에 남기지 않는다 — 다음 열기가 다시 시도한다(수정 r1 R1-D).
+  const ok = await ready.catch(() => false)
+  if (!ok && registered.get(language.id) === ready) registered.delete(language.id)
+  return ok ? language.id : 'plaintext'
 }
 
 const LARGE_FILE_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = { folding: false, occurrencesHighlight: 'off', selectionHighlight: false, stickyScroll: { enabled: false } }

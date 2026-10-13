@@ -3,7 +3,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { looksBinary, readFileContent, readImageContent } from './file-read.js'
 import { BINARY_PROBE_BYTES } from '../shared/file-view.js'
 
@@ -111,5 +112,58 @@ describe('E4ⓔ 이미지 바이트 읽기', () => {
     fs.symlinkSync(path.join(base, 'out.png'), path.join(root, 'escape.png'))
     expect((await readImageContent({ roots: roots(), root, rel: 'escape.png' })).ok).toBe(false)
     expect((await readImageContent({ roots: roots(), root, rel: '../out.png' })).ok).toBe(false)
+  })
+})
+
+describe('수정 r1 R1-F 일반 파일이 아닌 대상은 열기 전에 not_file', () => {
+  // 실패(옛 코드)면 열기가 쓰는 쪽을 기다리며 끝나지 않는다 — 2 s 로 끊고, 막힌 열기는 쓰기 쪽을 잠깐 열어 풀어 준다(시험 프로세스가 남지 않게).
+  const within = async <T,>(work: Promise<T>): Promise<T | 'timeout'> => {
+    let timer: NodeJS.Timeout | undefined
+    const timeout = new Promise<'timeout'>((resolve) => (timer = setTimeout(() => resolve('timeout'), 2000)))
+    try {
+      return await Promise.race([work, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  const unblock = (fifo: string): void => {
+    try {
+      fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK))
+    } catch {
+      // 읽는 쪽이 없으면(이미 끝남) ENXIO — 풀 것이 없다
+    }
+  }
+
+  it('named pipe — 즉시 not_file(텍스트·이미지 둘 다)', async () => {
+    const fifo = path.join(root, 'pipe.txt')
+    const fifoImage = path.join(root, 'pipe.png')
+    execFileSync('mkfifo', [fifo, fifoImage])
+    try {
+      const started = Date.now()
+      expect(await within(readFileContent({ roots: roots(), root, rel: 'pipe.txt' }))).toMatchObject({ ok: false, code: 'not_file' })
+      expect(await within(readImageContent({ roots: roots(), root, rel: 'pipe.png' }))).toMatchObject({ ok: false, code: 'not_file' })
+      expect(Date.now() - started).toBeLessThan(1000)
+    } finally {
+      unblock(fifo)
+      unblock(fifoImage)
+      fs.rmSync(fifo, { force: true })
+      fs.rmSync(fifoImage, { force: true })
+    }
+  })
+
+  it('lstat 뒤 열기 전에 FIFO 로 바뀌어도 막히지 않고 not_file — O_NONBLOCK + 연 fd 의 fstat', async () => {
+    const fifo = path.join(root, 'swap.txt')
+    execFileSync('mkfifo', [fifo])
+    const regular = await fs.promises.lstat(path.join(root, 'src', 'a.ts'))
+    // lstat 만 「일반 파일」 로 속인다 = 검사와 열기 사이에 바꿔치기된 상황.
+    const spy = vi.spyOn(fs.promises, 'lstat').mockResolvedValueOnce(regular)
+    try {
+      expect(await within(readFileContent({ roots: roots(), root, rel: 'swap.txt' }))).toMatchObject({ ok: false, code: 'not_file' })
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+      unblock(fifo)
+      fs.rmSync(fifo, { force: true })
+    }
   })
 })

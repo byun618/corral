@@ -1972,7 +1972,7 @@ app.whenReady().then(async () => {
     const stubbed = measuring ? fileDialogAnswers.shift() : undefined
     if (stubbed !== undefined) fileDialogAsked.push(request.kind)
     const choice = stubbed !== undefined ? (spec.choices.find((item) => item === stubbed) ?? 'cancel') : (spec.choices[(await dialog.showMessageBox(window, spec.options)).response] ?? 'cancel')
-    log('file.dialog', { kind: request.kind, choice, stubbed: stubbed !== undefined, files: request.kind === 'close' || request.kind === 'discard' ? request.files.length : 1 })
+    log('file.dialog', { kind: request.kind, choice, stubbed: stubbed !== undefined, files: request.kind === 'close' || request.kind === 'discard' ? request.files.length : 1, ...(request.kind === 'trash' ? { isDir: request.isDir, undoable: request.undoable, dirty: request.dirty.length } : {}) })
     return choice
   })
   // 수정 파일 목록(E3ⓒ) — 바뀔 때마다 렌더러가 민다. 종료 확인 관문이 이것으로 동기 판정한다.

@@ -1,4 +1,7 @@
 // LIFE-592 사본(l591 → l592 루트만 바꿈)
+// LIFE-592 E10ⓓ(최종 관문) — 다섯째 칸 `op` = **탐색기 열림 + 조작 직후**: 측정 직전 탐색기 조작 4회(실제 창 → preload → ipcMain `explorerOp` — 새 파일·이름 변경)를 몰아서 하고
+//   측정 동안에도 0.8~1.2 s 마다 1회씩 계속한다(레포 `l592-lat/`). 판정 B 조건 = 탐색기 열림 + 측정 구간 조작 ≥ 0.5회/초. 예: --plan a:closed:off:off,b:open:off:off:op --a a --b b
+//   글자 주입 전 Shift keyDown 하나 — main 이 막은 keyDown(⌘L·⌘⇧E) 뒤 Chromium 이 char 를 버리는 하네스 문제(B07 회차 3 놓침 36, residual.md 하네스 주의)를 피한다.
 // LIFE-591 E7ⓓ(최종 관문) — 넷째 칸 `dirty` = **수정된 1 MB 파일 탭**(`big/1mb.txt`)을 오른쪽 새 영역에 열고 한 글자 쳐서 수정 상태로 둔 채(디스크 무변경·다시 쓰기 없음) 잰다.
 //   A 로 돌아갈 때 탭을 닫으면 확인 대화상자가 뜨므로 `file-dialog-stub` 으로 「저장 안 함」 을 답한다(계측 실행). 판정 B 조건 = 탭 열림 + 수정 표시.
 // LIFE-590 E8ⓔ (l589/e3-latency.mjs 사본 — 루트 /tmp/l591g-*) · LIFE-589 E3ⓓ — 터미널 입력 지연 A/B (`l580/k9-ab.mjs` 방식). 격리 개발 Electron(g-up.sh /tmp/l589g-*) 한 실행 안에서
@@ -35,8 +38,8 @@ const root = values.root
 const rounds = Number(values.rounds)
 const sampleCount = Number(values.samples)
 const steps = values.plan.split(',').map((text) => {
-  const [name, explorer, drive, file] = text.split(':')
-  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' || file === 'dirty', dirty: file === 'dirty' }
+  const [name, explorer, drive, file, op] = text.split(':')
+  return { name, explorer: explorer === 'open', drive: drive === 'on', file: file === 'on' || file === 'dirty', dirty: file === 'dirty', op: op === 'op' }
 })
 
 const termRead = async () => (await ctl(root, { cmd: 'term-read' })).term
@@ -165,7 +168,30 @@ function fileDriver(file) {
   return { changes, stop: async () => { stop = true; await done } }
 }
 
+/** 탐색기 조작(E10ⓓ B) — 실제 창 IPC 로 새 파일 → 이름 변경을 번갈아. 루트는 탐색기가 쓰는 값(`data-explorer-root`). */
+let opSeq = 0
+async function explorerOpOnce() {
+  const opRoot = await evalJs(root, `document.querySelector('[data-explorer-root]')?.dataset.explorerRoot ?? null`)
+  opSeq += 1
+  const name = `l592-lat-${opSeq}.txt`
+  const made = await evalJs(root, `window.corral.explorerOp(${JSON.stringify({ op: 'create', root: opRoot, dir: 'l592-lat', name, kind: 'file' })})`)
+  const moved = await evalJs(root, `window.corral.explorerOp(${JSON.stringify({ op: 'move', root: opRoot, from: `l592-lat/${name}`, to: `l592-lat/r-${name}` })})`)
+  return made?.ok === true && moved?.ok === true
+}
+function opDriver() {
+  const ops = []
+  let stop = false
+  const done = (async () => {
+    while (!stop) {
+      if (await explorerOpOnce()) ops.push(Date.now())
+      await sleep(800 + Math.floor(Math.random() * 400))
+    }
+  })()
+  return { ops, stop: async () => { stop = true; await done } }
+}
+
 async function sampleRound(paneId) {
+  await ctl(root, { cmd: 'key', keyCode: 'Shift' })
   const samples = []
   for (let i = 0; i < sampleCount; i += 1) {
     const ch = CHARS[i % CHARS.length]
@@ -206,10 +232,15 @@ try {
       if (step.drive) fs.mkdirSync(driveDir, { recursive: true })
       const driveView = step.drive && step.explorer ? await expandDrive(driveDir, r) : { expanded: false, reflectMs: null }
       await attach(paneId)
+      if (step.op) {
+        fs.mkdirSync(path.join(repo, 'l592-lat'), { recursive: true })
+        for (let i = 0; i < 4; i += 1) await explorerOpOnce()
+      }
+      const opDrive = step.op ? opDriver() : null
       const drive = step.drive ? driver(driveDir) : null
       const fileDrive = step.file && !step.dirty ? fileDriver(path.join(repo, BIG)) : null
       try {
-        await sleep(1_500)
+        await sleep(step.op ? 200 : 1_500)
         await ctl(root, { cmd: 'loop-delay' })
         const windowStart = Date.now()
         const samples = await sampleRound(paneId)
@@ -217,11 +248,13 @@ try {
         const windowEnd = Date.now()
         const changesInWindow = drive === null ? 0 : drive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileChangesInWindow = fileDrive === null ? 0 : fileDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
+        const opsInWindow = opDrive === null ? 0 : opDrive.ops.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileUpdated = step.file && !step.dirty ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
-        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, loopDelay, ...summary(samples), samples }
+        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, op: step.op, opsPerSec: Math.round((opsInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
         rows.push(row)
         console.log(`회차 ${r} ${step.name} p50 ${row.p50} p95 ${row.p95} 놓침 ${row.misses} 루프 p99 ${loopDelay?.p99} 변경 ${row.changesPerSec}/s`)
       } finally {
+        if (opDrive !== null) await opDrive.stop()
         if (drive !== null) await drive.stop()
         if (fileDrive !== null) await fileDrive.stop()
       }
@@ -256,12 +289,17 @@ function judge(aName, bName) {
   if (aStep === undefined || bStep === undefined) problems.push('A/B 단계 이름이 계획에 없다')
   else {
     if (aStep.explorer || aStep.file) problems.push(`A(${aName}) 는 탐색기 닫힘·파일 탭 없음이어야 한다`)
-    if (!bStep.file && (!bStep.explorer || !bStep.drive)) problems.push(`B(${bName}) 는 탐색기 열림 + drive on 또는 file on 이어야 한다`)
+    if (!bStep.file && (!bStep.explorer || (!bStep.drive && !bStep.op))) problems.push(`B(${bName}) 는 탐색기 열림 + drive on·op, 또는 file on 이어야 한다`)
   }
   for (const row of stepRows(bName)) {
     if (bStep?.dirty) {
       if (!row.fileTabOpen) problems.push(`B 회차 ${row.round} 1 MB 파일 탭 없음`)
       if (row.fileDirty !== true) problems.push(`B 회차 ${row.round} 측정 끝에 수정 표시 없음`)
+      continue
+    }
+    if (bStep?.op) {
+      if (!row.explorer) problems.push(`B 회차 ${row.round} 탐색기 닫힘`)
+      if (row.opsPerSec < 0.5) problems.push(`B 회차 ${row.round} 조작 ${row.opsPerSec}/s < 0.5`)
       continue
     }
     if (bStep?.file) {

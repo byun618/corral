@@ -36,10 +36,8 @@ import {
   LatestGate,
   applyIntent,
   compareRank,
-  detectWorking,
   initialSpace,
   itemUid,
-  latestActivity,
   parseUid,
   readTasksPrefs,
   restorableResolution,
@@ -56,9 +54,8 @@ import {
   type TasksPrefs,
   type TasksRow,
   type TasksSpace,
-  type WorkingTree,
 } from '../tasks-model.js'
-import { paneDot, tabStatus } from '../tab-status.js'
+import { linkedTrees, workingFromLinks } from '../work-links-model.js'
 
 export type TasksBanner = { kind: 'auth' | 'forbidden' | 'offline' | 'error'; message: string }
 
@@ -195,10 +192,14 @@ function patternOf({ settings, sourceId }: { settings: WorkSettingsState; source
   return settings.sources.find((source) => source.id === sourceId)?.keyPattern ?? null
 }
 
-export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
+const NO_UNREAD: ReadonlySet<string> = new Set()
+
+export function useTasksPage({ open, repos, activeRepoRoot, notify, unreadPanes = NO_UNREAD }: {
   open: boolean
   repos: RepoRow[]
   activeRepoRoot: string | null
+  /** 사이드바와 같은 안 읽음 pane 집합(`useUnread`) — 링크된 worktree 의 점이 사이드바와 같게(LIFE-603 C10). */
+  unreadPanes?: ReadonlySet<string>
   notify: (notice: MoveNotice) => void
 }) {
   const gate = useRef(new LatestGate()).current
@@ -527,22 +528,15 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
   const shownSearch = search.query === query ? search : NO_SEARCH
   const hits = useMemo((): SearchHit[] => shownSearch.hits.map((hit) => ({ ...hit, spaceName: spaceNameOf({ connectionId: hit.connectionId, spaceKey: hit.item.spaceKey }) })), [shownSearch, spaceNameOf])
 
-  // --- 작업 중 (C11) ---
-  const trees = useMemo((): WorkingTree[] => repos.flatMap((repo) => repo.worktrees.flatMap((worktree) => {
-    if (worktree.openWorkspaceId === null || worktree.branch === null) return []
-    const tabs = worktree.workspace?.tabs ?? []
-    const dots = tabs.flatMap((tab) => tab.panes.filter((pane) => pane.agent !== null).map((pane) => paneDot({ pane, unread: false })))
-    const status = tabStatus(dots)
-    return [{
-      path: worktree.path,
-      repoRoot: repo.root,
-      repoName: repo.name,
-      branch: worktree.branch,
-      dot: status?.dot ?? (dots.length > 0 ? 'idle' : null),
-      activityAt: latestActivity(tabs.flatMap((tab) => tab.panes.map((pane) => pane.digest.lastActivityAt))),
-    }]
-  })), [repos])
-  const workingEntries = useMemo(() => detectWorking({ trees, patterns }), [trees, patterns])
+  // --- 작업 중 (C11 · LIFE-603 C12) ---
+  // 링크 모델(명시 + 자동 − 예외, main 이 해석해 싣는다)을 읽는다 — T2 의 키 감지 읽기는 이제 쓰지 않는다. 점은 사이드바와 같은 안 읽음 집합으로.
+  const linked = useMemo(() => linkedTrees({ repos, unreadPanes }), [repos, unreadPanes])
+  // 설정을 받기 전·설정에 없는 연결은 묻지 않는다 — 세대 번호를 모르는 채 보냈다가 설정이 오면 또 보내게 된다(T2 와 같이 연결 목록 기준).
+  const connectionIds = settings === null ? '' : settings.connections.map((connection) => connection.id).join('|')
+  const workingEntries = useMemo(() => {
+    const known = new Set(connectionIds === '' ? [] : connectionIds.split('|'))
+    return workingFromLinks(linked).filter((entry) => known.has(entry.connectionId))
+  }, [linked, connectionIds])
   const workingIds = workingEntries.map((entry) => `${entry.connectionId}#${generationOf(entry.connectionId)}::${entry.key}`).join('|')
   /** 작업 중 조회를 전부 다시 받게 하는 번호 — 완료 분류를 넘나든 쓰기 뒤(종속 작업의 막힘이 바뀐다, R3-C). */
   const [workingRound, setWorkingRound] = useState(0)
@@ -851,7 +845,7 @@ export function useTasksPage({ open, repos, activeRepoRoot, notify }: {
     query, setQuery, selectedId, setSelectedId,
     load, rows, banner, connectionStatus,
     reload, retry, loadMore, invalidateMore,
-    hits, workingEntries, working: workingLookups, workingKeys, trees,
+    hits, workingEntries, working: workingLookups, workingKeys, linked,
     move: (request: MoveRequest) => move({ ...request, undo: false, restore: null }),
     writeItem, settledWrite, startedWrite, holdRead,
     /** 확인 안 된 쓰기가 있는 카드(uid) — 끌기 잠금·「확인하는 중」 표시(R2-A). */

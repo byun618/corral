@@ -28,7 +28,12 @@ const item = (over: Partial<WorkItem> & { id: string; key: string }): WorkItem =
 })
 const GIT = { branch: 'x', upstream: null, ahead: null, behind: null, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, dirty: false, error: null }
 function worktree({ path, branch }: { path: string; branch: string }): WorktreeRow {
-  return { path, branch, head: null, repoName: 'repo', isLinked: true, openWorkspaceId: 'w1', workspace: null, gitStatus: GIT, displayName: null, comment: null, parentPath: null }
+  return { path, branch, head: null, repoName: 'repo', isLinked: true, openWorkspaceId: 'w1', workspace: null, gitStatus: GIT, displayName: null, comment: null, parentPath: null, workLink: fixtureLink(branch) }
+}
+// LIFE-603: 작업 중 보기는 main 이 실은 링크로 묶는다 — 고정값에 자동 링크 칸만 더한다(기대값 무변경).
+function fixtureLink(branch: string): WorktreeRow['workLink'] {
+  const key = /(?<![A-Za-z0-9])K-\d+(?![0-9])/.exec(branch)?.[0]
+  return key === undefined ? null : { mode: 'auto', sourceId: 'src-a', connectionId: 'c1', key, itemId: null, connected: true }
 }
 
 let host: HTMLDivElement

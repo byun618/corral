@@ -101,6 +101,7 @@ export function TasksPage({ open, repos, activeRepoRoot, shortcut, yieldKeys, on
           </div>,
           { duration: 6000 },
         )
+        notice.bind?.(() => toast.dismiss(id))
         return
       }
       case 'undone':

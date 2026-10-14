@@ -72,7 +72,8 @@ export type TasksTransitions = { uid: string; state: 'loading' } | { uid: string
 
 export type MoveRequest = { row: TasksRow; intent: DragIntent }
 /** `undo` 는 받아들였으면 true — 그 카드가 잠겨 있으면 false 이고 버튼은 남는다(R4-E). */
-export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string } | { kind: 'delayed'; message: string }
+/** `bind` — 토스트를 띄운 쪽이 지우는 손잡이를 받는다(LIFE-602 수정 5: 상세 되돌리기는 다음 쓰기·판 변화에 곧바로 사라진다). 보드 되돌리기는 쓰지 않는다. */
+export type MoveNotice = { kind: 'moved'; label: string; undo: () => boolean; bind?: (dismiss: () => void) => void } | { kind: 'undone'; label: string } | { kind: 'failed'; message: string } | { kind: 'delayed'; message: string }
   /** 되돌릴 수 없는 변경(LIFE-602 수정 1 R1-G — 원래 완료 갈래를 복원할 수 없음) — 되돌리기 버튼 없이 그 사실을 보인다. */
   | { kind: 'final'; label: string }
 

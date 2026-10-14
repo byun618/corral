@@ -356,14 +356,14 @@ describe('독립 재현 - 되돌리기 잠금',()=>{
   const r=await rig();await openCard('CORE-2')
   click('[data-field="priority"]');click('[data-priority-row="high"]');await settle()
   const release=hold('setPlacement');click('[data-placement="backlog"]');await settle()
-  undoLast('우선순위');await wait(600)
+  await wait(600)
   const undoStill=[...document.querySelectorAll('[data-toast="moved"]')].some(e=>e.textContent?.includes('우선순위'))
   console.log('O',{undoStill,writes:writes(r.calls),errors:[...document.querySelectorAll('[data-toast="failed"]')].map(e=>e.textContent)})
   await release()
-  expect(undoStill).toBe(true)
-  // 수정 3 시험 감사: 확인이 끝난 뒤 남긴 되돌리기가 실제로 서버를 되돌리는지까지(옛 boolean 만 보던 시험 보강).
-  undoLast('우선순위'); await settle(16)
-  expect(r.state.items.find(e=>e.id==='m-2')?.priority).toBe('medium')
+  // 수정 5(기준 변경 — 상세 되돌리기 토스트 소멸): 같은 작업에 다음 쓰기(배치)가 시작되면 앞 토스트(우선순위)는 곧바로 사라진다.
+  // 원 기대(토스트 유지 → 확인 뒤 되돌리기로 medium)는 test-audit.md 「기준 변경으로 기대 수정」. 최종 서버 값은 두 쓰기 그대로.
+  expect(undoStill).toBe(false)
+  expect(r.state.items.find(e=>e.id==='m-2')?.priority).toBe('high')
   expect(r.state.items.find(e=>e.id==='m-2')?.placement).toBe('backlog')
  })
 })

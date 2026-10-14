@@ -137,8 +137,12 @@ describe('r2 independent edge reproductions', () => {
   await settle(); await release()
   console.log('R2-C',{disabled:input('[data-md-editor] textarea').disabled,save:el('[data-md-save]').outerHTML,busy:q('[data-issue-busy]')!==null,error:el('[data-md-editor]').textContent})
   expect(el('[data-md-save]')).toHaveProperty('disabled',false)
-  // 수정 3 시험 감사: 풀린 저장 칸으로 다시 저장하면 새 세대에서 실제로 저장되고 편집기가 닫힌다(최종 서버 값·화면).
+  // 수정 5(기준 변경 — 충돌 자동 재시도 제거): 풀린 저장 칸으로 다시 저장하면, 세대 사이 닿은 앞 저장 때문에 판이 달라 배너가 뜬다(자기 충돌로 보이는 배너 — 알려진 비용).
+  // 원 기대(재시도로 배너 없이 닫힘)는 test-audit.md. 배너의 「내 값으로 덮기」 로 끝나는지까지 본다 — 최종 서버 값·화면.
   click('[data-md-save]'); await settle(16)
+  expect(r.state.items.find(i=>i.id==='m-2')?.body).toBe('DRAFT GEN')
+  expect(q('[data-issue-conflict]')).not.toBeNull()
+  click('[data-conflict-override]'); await settle(16)
   expect(r.state.items.find(i=>i.id==='m-2')?.body).toBe('DRAFT GEN')
   expect(q('[data-md-editor]')).toBeNull()
   expect(q('[data-issue-conflict]')).toBeNull()
@@ -146,10 +150,13 @@ describe('r2 independent edge reproductions', () => {
  it('D child success before parent refresh: immediate next save must not self conflict', async () => {
   const r=await rig(); await openCard('CORE-1'); const release=hold('getItem')
   click('[data-child-add]'); setValue(input('[data-child-title]'),'CHILD'); key(input('[data-child-title]'),{key:'Enter'}); await settle()
-  click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle()
-  console.log('R2-D',{conflict:q('[data-issue-conflict]')?.textContent,writes:writes(r.calls)})
+  // 수정 5(기준 변경 — 같은 작업 쓰기 직렬화): 부모 재조회 중에는 우선순위 칸이 막혀 쓰기가 나가지 않는다(원 기대: 대기 뒤 저장 — test-audit.md).
+  const during={disabled:el('[data-field="priority"]').hasAttribute('disabled'),updates:writes(r.calls).filter(c=>c.op==='updateItem').length}
+  console.log('R2-D',{during,conflict:q('[data-issue-conflict]')?.textContent,writes:writes(r.calls)})
   await release(); await settle(16)
-  // 수정 3(시험 감사): 해제 **뒤** 예약 쓰기가 끝난 마지막 서버 값·마지막 화면으로 판정한다 — 해제 전 boolean 은 판별력이 없었다(R3-D).
+  expect(during).toEqual({disabled:true,updates:0})
+  // 재조회가 끝난 뒤 바로 누른 저장은 자기 충돌 없이 저장된다 — 마지막 서버 값·화면.
+  click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle(16)
   expect(r.state.items.find(i=>i.id==='m-1')?.priority).toBe('high')
   expect(q('[data-issue-conflict]')).toBeNull()
  })
@@ -160,11 +167,16 @@ describe('r2 independent edge reproductions', () => {
   window.corral.workRequest=async request=>{const result=await orig(request); if(request.call.op==='getItem'&&request.call.itemId==='m-2'){snapshots++; await pending} return result}
   setValue(input('[data-comment-composer] textarea'),'comment then priority')
   key(input('[data-comment-composer] textarea'),{key:'Enter',metaKey:true}); await settle()
-  click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle()
-  console.log('R2-E before release',{snapshots,priority:el('[data-field="priority"]').textContent,conflict:q('[data-issue-conflict]')?.textContent})
-  release(); await settle()
+  // 수정 5(기준 변경 — 직렬화): 재조회 중에는 우선순위 칸이 막힌다(원 기대: 그 사이 저장이 나가고 낡은 재조회가 덮지 않음 — test-audit.md).
+  // 낡은 재조회가 확정을 덮지 않는 규칙(R-stamp)은 보드 끌기 경로 T-stale-refresh-board 가 지킨다.
+  const disabled=el('[data-field="priority"]').hasAttribute('disabled')
+  console.log('R2-E before release',{snapshots,disabled,priority:el('[data-field="priority"]').textContent,conflict:q('[data-issue-conflict]')?.textContent})
+  release(); await settle(16)
+  expect(disabled).toBe(true)
+  click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle(16)
   console.log('R2-E after release',{server:r.state.items.find(i=>i.id==='m-2')?.priority,priority:el('[data-field="priority"]').textContent})
   expect(el('[data-field="priority"]').textContent).toContain('높음')
+  expect(r.state.items.find(i=>i.id==='m-2')?.priority).toBe('high')
  })
  it('F single late comment success appears and acknowledges sent draft', async () => {
   const r=await rig(); await openCard('CORE-2'); const release=hold('addComment')
@@ -266,8 +278,11 @@ describe('표 경로 — 같은 규칙의 다른 시작점', () => {
     const release = hold('updateItem')
     act(() => title.focus()); setValue(title, 'T1'); act(() => title.blur()); await settle()
     act(() => title.focus()); setValue(title, 'T2 TYPING')
+    // 수정 5(기준 변경 — 직렬화): 앞 저장 확인 중에는 제목 입력이 잠긴다(readOnly + 입력 무시). 원 기대(T2 TYPING 이 남음)는 test-audit.md.
+    const during = { readOnly: input('[data-issue-title]').readOnly, shown: input('[data-issue-title]').value }
     await release()
-    expect(input('[data-issue-title]').value).toBe('T2 TYPING')
+    expect(during).toEqual({ readOnly: true, shown: 'T1' })
+    expect(input('[data-issue-title]').value).toBe('T1')
     expect(r.state.items.find((entry) => entry.id === 'm-2')?.title).toBe('T1')
   })
   it('T-comment-typing: 코멘트 보내는 중 더 쓴 초안은 성공이 지우지 않는다', async () => {

@@ -155,7 +155,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
     const source = item.body ?? ''
     const next = toggleCheckLine({ source, line, checked })
     if (next === null) return
-    void saveFields({ fields: { body: next }, label: `${item.key} 체크 칸`, optimistic: (value) => ({ ...value, body: next }), undoFields: { body: source } })
+    // 체크 칸은 되돌리기 토스트를 내지 않는다(수정 5 — 되돌리기가 그 뒤 본문 변경까지 지우는 길을 없앤다). 저장 자체는 그 줄만 바뀐 본문.
+    void detail.write({ call: fieldCall({ itemId: item.id, fields: { body: next }, ifVersion: versionOf(base) }), optimistic: (value) => ({ ...value, body: next }), label: null, undo: null })
   }
   const saveBody = async (text: string): Promise<void> => {
     if (!bodyReady) return
@@ -230,8 +231,8 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
               </div>
               {editing ? <div className="issue-conflict-note">새로 불러오면 편집 중인 본문은 버려집니다.</div> : null}
               <div className="issue-conflict-actions">
-                <button type="button" className="issue-btn is-primary" data-conflict-reload="" onClick={() => { setEditing(false); setBodyError(null); detail.reloadFromServer() }}>새로 불러오기</button>
-                <button type="button" className="issue-btn" data-conflict-override="" onClick={() => { void overrideConflict() }}>내 값으로 덮기</button>
+                <button type="button" className="issue-btn is-primary" data-conflict-reload="" disabled={!writable} onClick={() => { setEditing(false); setBodyError(null); detail.reloadFromServer() }}>새로 불러오기</button>
+                <button type="button" className="issue-btn" data-conflict-override="" disabled={!writable} onClick={() => { void overrideConflict() }}>내 값으로 덮기</button>
               </div>
             </div>
           )}
@@ -253,7 +254,7 @@ export function TaskDetail({ detail, full, now, escapeRef, onToggleFull, onClose
             item={item}
             writable={writable}
             blocked={blocked}
-            onFocus={() => detail.holdBasis('title')}
+            onHold={() => detail.holdBasis('title')}
             onDone={() => detail.dropBasis('title')}
             onSave={(title) => saveFields({ fields: { title }, label: `${item.key} 제목을 바꿨습니다`, optimistic: (value) => ({ ...value, title }), undoFields: { title: item.title }, basis: 'title' })}
           />
@@ -362,9 +363,14 @@ function StatusMenu({ detail, statuses, item, onPick }: { detail: TaskDetailMode
 }
 
 /** 제목 칸 — 포커스 = 편집 시작(편집 기준을 잡는다), blur = 저장 뒤 기준을 놓는다(R3-A). 상세를 받기 전에는 읽기 전용(R3-E). */
-function TitleField({ item, writable, blocked, onSave, onFocus, onDone }: { item: WorkItem; writable: boolean; blocked: string | null; onSave: (title: string) => Promise<unknown>; onFocus: () => void; onDone: () => void }): React.JSX.Element {
+/**
+ * 제목 — 쓸 수 없는 동안(앞 쓰기 확인 중·상세를 받는 중 등)은 입력 자체가 잠긴다(readOnly + 입력 무시 — 화면에만 남는 제목 없음, 수정 5).
+ * 편집 기준은 **처음 고칠 때**의 base 로 잡는다(포커스가 아니다 — 잠긴 동안 포커스한 칸이 풀린 뒤 옛 판으로 저장하지 않게).
+ */
+function TitleField({ item, writable, blocked, onSave, onHold, onDone }: { item: WorkItem; writable: boolean; blocked: string | null; onSave: (title: string) => Promise<unknown>; onHold: () => void; onDone: () => void }): React.JSX.Element {
   const [draft, setDraft] = useState(item.title)
   const focused = useRef(false)
+  const held = useRef(false)
   useEffect(() => { if (!focused.current) setDraft(item.title) }, [item.title, item.id])
   const commit = (): void => {
     const title = draft.trim()
@@ -379,9 +385,19 @@ function TitleField({ item, writable, blocked, onSave, onFocus, onDone }: { item
       readOnly={!writable}
       title={blocked ?? undefined}
       aria-label="제목"
-      onFocus={() => { focused.current = true; onFocus() }}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => { focused.current = false; if (writable) commit(); onDone() }}
+      onFocus={() => { focused.current = true }}
+      onChange={(event) => {
+        if (!writable) return
+        if (!held.current) { held.current = true; onHold() }
+        setDraft(event.target.value)
+      }}
+      onBlur={() => {
+        focused.current = false
+        held.current = false
+        if (writable) commit()
+        else setDraft(item.title)
+        onDone()
+      }}
       onKeyDown={(event) => {
         if (imeComposing(event.nativeEvent)) return
         if (event.key === 'Enter') {

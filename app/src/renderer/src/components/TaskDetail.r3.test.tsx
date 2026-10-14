@@ -147,6 +147,9 @@ describe('r3 independent boundaries', () => {
     click('[data-md-save]'); await settle()
     expect(writes(r.calls).filter((c) => c.op === 'updateItem')).toHaveLength(0)
     await release()
+    // 수정 5(기준 변경 — 직렬화): 재조회 중 저장은 기다렸다 나가지 않고 막힌다(원 기대: 대기 뒤 그 판으로 나가 배너 — test-audit.md). 끝난 뒤 다시 저장하면 편집 기준 판으로 가 배너.
+    expect(writes(r.calls).filter((c) => c.op === 'updateItem')).toHaveLength(0)
+    click('[data-md-save]'); await settle(16)
     console.log('R3-A', { serverBody: server.body, banner: q('[data-issue-conflict]')?.textContent, writes: writes(r.calls) })
     expect(server.body).toBe('EXTERNAL BODY MUST SURVIVE')
     expect(q('[data-issue-conflict]')).not.toBeNull()
@@ -210,9 +213,14 @@ describe('r3 follow-through', () => {
   it('D after awaited parent refresh the queued write must actually succeed without self conflict', async () => {
     const r = await rig(); await openCard('CORE-1'); const release = hold('getItem')
     click('[data-child-add]'); setValue(input('[data-child-title]'), 'CHILD'); key(input('[data-child-title]'), { key: 'Enter' }); await settle()
-    click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle()
+    // 막힌 칸이라 메뉴가 열리지 않는다 — 열렸다면 그대로 눌러 본다(쓰기 0 이어야 한다).
+    click('[data-field="priority"]'); if (q('[data-priority-row="high"]') !== null) click('[data-priority-row="high"]'); await settle()
     expect(writes(r.calls).filter((c) => c.op === 'updateItem')).toHaveLength(0)
+    expect(el('[data-field="priority"]').hasAttribute('disabled')).toBe(true)
     await release(); await settle(16)
+    // 수정 5(기준 변경 — 직렬화): 부모 재조회 중의 우선순위는 막히고(원 기대: 예약 뒤 저장 — test-audit.md), 끝난 뒤 누른 저장은 자기 충돌 없이 저장된다.
+    expect(writes(r.calls).filter((c) => c.op === 'updateItem')).toHaveLength(0)
+    click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle(16)
     const server = serverItem(r, 'm-1')
     console.log('R3-D', { priority: server.priority, version: server.version, banner: q('[data-issue-conflict]')?.textContent, writes: writes(r.calls) })
     expect(server.priority).toBe('high')
@@ -242,17 +250,20 @@ describe('r3 같은 모양 — 편집 기준(R3-A)', () => {
     expect(server.title).toBe('EXTERNAL TITLE MUST SURVIVE')
     expect(conflictFieldsShown()).toContain('title')
   })
-  it('A-field 쓰기 준비 중 누른 즉시 저장 — 재조회가 다른 곳의 변경을 실어 오면 저장 안 됨 · 배너(그 칸)', async () => {
+  it('A-field 재조회 중 누른 즉시 저장 — 막혀 나가지 않고(수정 5 직렬화), 재조회가 실어 온 다른 곳의 변경은 화면에 보인 뒤 보존', async () => {
     const r = await rig(); await openCard('CORE-2')
     const held = holdWhere((call) => call.op === 'getItem')
     await sendComment('TRIGGER SYNC')
     const server = serverItem(r, 'm-2'); server.title = 'EXTERNAL TITLE'; server.version += 1
-    click('[data-field="priority"]'); click('[data-priority-row="high"]'); await settle()
+    click('[data-field="priority"]'); if (q('[data-priority-row="high"]') !== null) click('[data-priority-row="high"]'); await settle()
+    const during = writes(r.calls).filter((c) => c.op === 'updateItem').length
     await held.release()
-    console.log('R3-A-field', { priority: server.priority, title: server.title, fields: conflictFieldsShown() })
+    console.log('R3-A-field', { during, priority: server.priority, title: server.title, fields: conflictFieldsShown() })
+    // 원 기대(대기 뒤 기준 판으로 나가 배너 · 우선순위 medium)는 test-audit.md 「기준 변경으로 기대 수정」 — 이제 그 저장은 아예 나가지 않는다.
+    expect(during).toBe(0)
     expect(server.priority).toBe('medium')
     expect(server.title).toBe('EXTERNAL TITLE')
-    expect(conflictFieldsShown()).toContain('title')
+    expect(input('[data-issue-title]').value).toBe('EXTERNAL TITLE')
   })
   it('A-seen 대조 — 재조회로 화면에 보인 뒤 누른 즉시 저장은 지금 화면의 판으로 간다(배너 없음)', async () => {
     const r = await rig(); await openCard('CORE-2')
@@ -293,7 +304,12 @@ describe('r3 같은 모양 — 편집 기준(R3-A)', () => {
     const held = holdWhere((call) => call.op === 'getItem')
     click('[data-child-add]'); setValue(input('[data-child-title]'), 'CHILD'); key(input('[data-child-title]'), { key: 'Enter' }); await settle()
     click('[data-md-save]'); await settle()
+    const during = writes(r.calls).filter((c) => c.op === 'updateItem').length
     await held.release()
+    // 수정 5(기준 변경 — 직렬화): 자식 재조회 중 저장은 막히고 초안·편집기가 남는다(원 기대: 대기 뒤 저장 — test-audit.md). 끝난 뒤 다시 저장하면 배너 없이 저장.
+    expect(during).toBe(0)
+    expect(input('[data-md-editor] textarea').value).toBe('BODY DURING CHILD SYNC')
+    click('[data-md-save]'); await settle(16)
     expect(serverItem(r, 'm-1').body).toBe('BODY DURING CHILD SYNC')
     expect(q('[data-issue-conflict]')).toBeNull()
     expect(q('[data-md-editor]')).toBeNull()
@@ -301,12 +317,16 @@ describe('r3 같은 모양 — 편집 기준(R3-A)', () => {
 })
 
 describe('r3 같은 모양 — 결과를 받지 못한 내 쓰기(감사에서 찾은 자기 충돌)', () => {
-  it('A-gen 세대가 바뀌는 사이 앞 본문 저장이 닿았으면 다시 저장은 자기 충돌하지 않는다', async () => {
+  it('A-gen 세대가 바뀌는 사이 앞 본문 저장이 닿았으면 다시 저장은 배너(자기 충돌로 보임 — 수정 5 재시도 제거 비용) · 덮기로 끝난다', async () => {
     const r = await rig(); await openCard('CORE-2'); const held = holdWhere((call) => call.op === 'updateItem')
     click('[data-issue-body-edit]'); setValue(input('[data-md-editor] textarea'), 'DRAFT GEN'); click('[data-md-save]')
     await act(async () => { await r.service.addConnection({ sourceId: 'mock-jira', token: 'mock_l602_new_generation', replaceId: r.connectionId }) })
     await settle(); await held.release()
     click('[data-md-save]'); await settle(16)
+    // 원 기대(자동 재시도로 배너 없이 저장)는 test-audit.md 「기준 변경으로 기대 수정」.
+    expect(serverItem(r, 'm-2').body).toBe('DRAFT GEN')
+    expect(q('[data-issue-conflict]')).not.toBeNull()
+    click('[data-conflict-override]'); await settle(16)
     expect(serverItem(r, 'm-2').body).toBe('DRAFT GEN')
     expect(q('[data-issue-conflict]')).toBeNull()
     expect(q('[data-md-editor]')).toBeNull()

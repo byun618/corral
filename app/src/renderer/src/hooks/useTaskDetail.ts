@@ -1,24 +1,17 @@
 // 작업 상세 상태·자료 (LIFE-602) — 화면(TaskDetail)은 그리기만, 여기서 읽기·쓰기·충돌·활동을 한다.
 //
-// 비동기 결과를 언제 적용하는지는 이 파일 한 곳에서 정한다(수정 2·3 — 규칙 원문 `specs/LIFE-602-task-detail/raw/claude/detail-async-rules.md`).
-// - **열기 회차(session)**: 작업(uid) 또는 연결 세대가 바뀔 때마다 하나씩 오른다(A→B→A 도 새 회차). 모든 비동기 시작점은 회차를 잡고,
-//   결과가 왔을 때 회차가 같을 때만 적용한다. 다르면 읽기는 버리고 쓰기는 `left` — 화면은 `left` 에 아무것도 하지 않는다(R1-A·R2-A).
-//   세대만 바뀐 새 회차는 단건부터 다시 읽고(R2-C·I), 화면은 저장 중 표시를 풀되 초안은 둔다.
-//   회차는 **출발점(origin = 회차 + 대상)** 으로 체인 끝까지 들고 다닌다 — await 뒤 후속을 시작하기 전에 다시 보고, 후속 읽기는 그 origin 으로 간다(R3-C).
-// - **편집 기준(basis)**: 초안(본문 편집기·제목 칸)은 편집을 시작한 때의 서버 값을 기준으로 잡고, 저장은 그 기준의 판으로 간다. 화면 최신값(base)이
-//   다른 곳의 변경으로 바뀌어도 기준은 조용히 오르지 않는다 — 그 저장은 충돌 배너가 된다(R3-A, C8). 기준이 오르는 것은 바뀐 칸이 없을 때(판만 오름)와
-//   내 쓰기가 성공해 바뀐 칸이 전부 내가 보낸 칸일 때뿐이다.
-//   **살아 있는 기준은 전부 한 곳(basesRef)에 둔다** — 초안 칸 · 판을 기다리는 쓰기(write:n) · 되돌리기 토스트(undo:n, 되돌릴 성공의 값·판). 기준을 옮기는 것은
-//   `advanceBases` 하나이고, 읽기가 자기 쓰기 증거(unconfirmedRef)를 소비하는 것과 **같은 자리에서** 옮긴다. 쓰기는 await 뒤 기준을 지역 변수가 아니라
-//   이 자리에서 다시 읽는다(R4-A·C).
-// - **판 최신성(stamp)**: 단건 값(base)을 바꾸는 사건마다 시계를 하나 올린다 — 읽기는 **시작할 때**, 쓰기는 **시작할 때와 확정될 때**.
-//   읽기 결과는 시작 시각이 지금 base 의 시각보다 뒤일 때만 base 가 된다 — 그 사이 시작·확정된 쓰기가 있으면 낡은 읽기로 버린다(R2-D).
-// - **쓰기 준비(sync)**: 응답에 이 작업이 없는 쓰기(연결·자식·코멘트) 뒤 단건을 다시 읽는 동안은 다음 쓰기가 기다린다. 판은 그 대기의 **결과 값**에서
-//   직접 받는다(다음 render 의 ref 를 기다리지 않는다 — R3-D). 그 값이 쓰기의 기준과 칸이 같을 때만 새 판으로, 다르면 기준 판 그대로(충돌 배너).
-// - **늦은 확정**: 30초 확인 지연 뒤 온 결과(성공·실패·충돌)는 즉시 결과와 같은 `finish` 로 간다 — 충돌 배너·목록 재조회가 같다(R2-F·G).
-// - **목록 묶음 최신성**: 활동(workActivity + listHistory)·코멘트·자식은 같은 묶음의 마지막 요청만 적용한다(R2-H).
-// - 쓰기는 작업 페이지의 `writeItem` 하나로 — 보드 끌기와 **같은 잠금**·세대·확인 지연(D3). 판(`ifVersion`)은 충돌 검사 능력이 켜진 출처에서만.
-// - 초안(본문·코멘트·제목·연결 키·자식 제목)은 화면이 「보낸 값 vs 지금 값」 으로 정리한다 — 성공해도 보낸 뒤 고친 초안은 지우지 않는다(R2-B).
+// 비동기 결과를 언제 적용하는지는 이 파일 한 곳에서 정한다(규칙 원문 `specs/LIFE-602-task-detail/raw/claude/detail-async-rules.md`, 수정 5 — 범위 축소).
+// - **열기 회차(session)**: 작업(uid) 또는 연결 세대가 바뀔 때마다 하나씩 오른다. 비동기 체인은 출발점(origin = 회차 + 대상)을 끝까지 들고,
+//   결과는 그 회차가 살아 있을 때만 적용한다. 떠났으면 읽기는 버리고 쓰기는 `left`(R1-A·R2-A·R3-C).
+// - **직렬화**: 그 작업에 쓰기(보드와 같은 잠금)나 상세 단건 읽기(첫 읽기·재조회·새로 불러오기)가 진행 중이면 새 쓰기는 보내지 않는다 —
+//   화면은 그 칸들을 막고(`blocked`), 그래도 온 쓰기는 `busy`. 기다렸다 보내는 길은 없다. 그래서 쓰기의 판은 언제나 「진행 중인 것이 없을 때의 base」 다.
+// - **편집 기준(basis)**: 초안(본문 편집기·제목)은 편집을 시작한 때의 base 를 기준으로 그 판으로 저장한다 — 다른 곳의 변경이 보여도 조용히 오르지 않는다(R3-A, C8).
+//   오르는 것은 셋뿐: 읽기 값과 칸이 하나도 다르지 않을 때(판만 오름) · 내 쓰기가 기준과 같은 판 위에서 성공했을 때(그 결과로) · 덮기가 성공한 그 칸.
+// - **충돌**: 충돌 검사가 켜진 출처의 충돌 응답은 언제나 배너다(자동 재시도 없음 — 자기 충돌로 보이는 배너는 알려진 비용).
+// - **되돌리기 토스트**: 그 쓰기의 결과 판 = 지금 base 판일 때만 그 판으로 보낸다. 같은 작업에 다음 쓰기가 시작되거나 base 판이 결과 판과 달라지면 곧바로 사라진다.
+// - **판 최신성(stamp)**: 읽기는 시작 시각이 지금 base 의 시각보다 뒤일 때만 base 가 된다(R2-D) — 보드 끌기 확정이 낡은 재조회에 덮이지 않게.
+// - **늦은 확정**: 30초 확인 지연 뒤 온 결과는 즉시 결과와 같은 `finish` 로 간다(R2-F·G). 목록 묶음은 마지막 요청만(R2-H).
+// - 쓰기는 작업 페이지의 `writeItem` 하나로 — 보드 끌기와 같은 잠금·세대·확인 지연(D3). 판(`ifVersion`)은 충돌 검사가 켜진 출처에서만.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   WorkActivityRecord,
@@ -44,8 +37,6 @@ type Origin = { session: number; target: DetailTarget }
 
 /** 초안이 기준을 잡는 칸 — 본문 편집기 · 제목 칸(R3-A). */
 export type EditSlot = 'body' | 'title'
-/** 기준 자리 — 초안 칸 · 판을 기다리는 쓰기 하나 · 되돌리기 토스트 하나(R4-A·C). 뒤 둘은 쓰기가 보내기 직전에 놓는다. */
-export type BasisKey = EditSlot | `write:${number}` | `undo:${number}`
 
 /** 능력에 기대는 묶음 — 받는 중 · 받음 · 실패 · 꺼짐(숨김이면 reason null, 흐림이면 이유). */
 export type Loaded<T> = { state: 'loading' } | { state: 'ready'; value: T } | { state: 'error'; message: string } | { state: 'off'; reason: string | null }
@@ -59,7 +50,7 @@ export type DetailFinal = { kind: 'ok'; result: WorkResult } | { kind: 'failed';
 /** 쓰기 결과 — 확정이거나, 확인 지연(30초)이면 나중에 확정을 주는 약속. */
 export type DetailOutcome = DetailFinal | { kind: 'late'; settled: Promise<DetailFinal> }
 
-/** 쓰기 하나 — 낙관적 화면 값, 성공 토스트 문구, 되돌리기(그때의 서버 값으로 만든 역연산). */
+/** 쓰기 하나 — 낙관적 화면 값, 성공 토스트 문구, 되돌리기(누를 때의 base 로 만든 역연산 — 그 base 는 이 쓰기의 결과 판이다). */
 export type DetailWrite = {
   call: WorkCall
   optimistic: ((item: WorkItem) => WorkItem) | null
@@ -69,11 +60,14 @@ export type DetailWrite = {
   undoing?: boolean
   /** 실패를 토스트로 알리지 않는다 — 화면이 그 자리에 문구를 보인다(연결·자식·코멘트 입력). 충돌은 그래도 배너. */
   quiet?: boolean
-  /** 판을 다시 싣지 않는다 — 「내 값으로 덮기」(판 없이 보낸다). */
+  /** 판을 싣지 않는다 — 「내 값으로 덮기」. */
   force?: boolean
-  /** 초안의 저장 — 그 칸의 편집 기준 판으로 보낸다(R3-A). 되돌리기는 되돌릴 성공의 기준(R4-A). 없으면 지금 화면의 판. */
-  basis?: BasisKey
+  /** 초안의 저장 — 그 칸의 편집 기준 판으로 보낸다(R3-A). 없으면 지금 base 의 판. */
+  basis?: EditSlot
 }
+
+/** 되돌리기 토스트 하나 — 결과 판(응답에 작업이 없던 쓰기는 뒤 재조회가 정한다)과 토스트를 지우는 손잡이. */
+type UndoEntry = { version: string | null; pending: boolean; live: boolean; dismiss: (() => void) | null }
 
 const OFF_HIDDEN: Loaded<never> = { state: 'off', reason: null }
 
@@ -95,56 +89,6 @@ function withVersion({ call, version }: { call: WorkCall; version: string | null
   }
 }
 
-/** 응답에 이 작업의 새 값이 실려 오는가 — 아니면(연결·자식·코멘트) 단건을 다시 읽어야 판이 맞는다. */
-function carriesItem({ result, itemId }: { result: WorkResult; itemId: string }): boolean {
-  return 'item' in result && result.item !== null && result.item.id === itemId
-}
-
-/** 쓰기가 바꾸는 칸 — 내 쓰기 성공 뒤 편집 기준을 올려도 되는지 볼 때(바뀐 칸이 전부 이것이면 내 변경). */
-function touchedFields(call: WorkCall): ConflictField[] {
-  switch (call.op) {
-    case 'updateItem': {
-      const fields: ConflictField[] = []
-      if (call.fields.title !== undefined) fields.push('title')
-      if (call.fields.body !== undefined) fields.push('body')
-      if (call.fields.priority !== undefined) fields.push('priority')
-      if (call.fields.dueAt !== undefined) fields.push('dueAt')
-      return fields
-    }
-    case 'changeStatus':
-      return ['status']
-    case 'setPlacement':
-      return ['placement']
-    case 'setParent':
-      return ['parent']
-    default:
-      return []
-  }
-}
-
-/**
- * 쓰기가 보낸 **의미 전체**가 `item` 에 그대로 있는가 — 결과를 받지 못한 내 쓰기가 서버에 닿았는지 읽기로 알아볼 때(R4-B).
- * 보낸 칸이 하나라도 다르면 닿지 않은 것으로 본다(칸 하나만 같은 것을 내 변경으로 치지 않는다). 상태는 완료 갈래까지 — 고르지 않았으면 출처 기본(완료함).
- */
-function landed({ call, item }: { call: WorkCall; item: WorkItem }): boolean {
-  const sameDue = (a: string | null, b: string | null): boolean => (a === null || b === null ? a === b : Date.parse(a) === Date.parse(b))
-  switch (call.op) {
-    case 'updateItem':
-      return (call.fields.title === undefined || item.title === call.fields.title)
-        && (call.fields.body === undefined || (item.body ?? '') === call.fields.body)
-        && (call.fields.priority === undefined || item.priority === call.fields.priority)
-        && (call.fields.dueAt === undefined || sameDue(item.dueAt, call.fields.dueAt))
-    case 'changeStatus':
-      return item.statusKey === call.statusKey && (item.category !== 'done' || item.resolution === (call.resolution ?? 'completed'))
-    case 'setPlacement':
-      return item.placement === call.placement
-    case 'setParent':
-      return item.parentId === call.parentId
-    default:
-      return false
-  }
-}
-
 /** 쓰기가 초안 칸의 값을 보내는가 — 「내 값으로 덮기」 가 성공하면 그 칸의 기준을 덮은 결과로 옮긴다(덮은 충돌을 다시 내지 않는다). */
 function slotsOf(call: WorkCall): EditSlot[] {
   if (call.op !== 'updateItem') return []
@@ -154,11 +98,10 @@ function slotsOf(call: WorkCall): EditSlot[] {
   return slots
 }
 
-/** 되돌리기 기준을 이만큼만 둔다 — 누르지 않고 사라진 토스트의 기준이 쌓이지 않게. */
-const UNDO_BASES_MAX = 20
-
-/** 보드 끌기의 확정이 바꿀 수 있는 칸 — 상세 밖에서 낸 내 쓰기는 연산을 모르므로 이 칸들만 내 변경으로 친다. */
-const BOARD_FIELDS: readonly ConflictField[] = ['status', 'placement']
+/** 응답에 이 작업의 새 값이 실려 오는가 — 아니면(연결·자식·코멘트) 단건을 다시 읽어야 판이 맞는다. */
+function carriesItem({ result, itemId }: { result: WorkResult; itemId: string }): boolean {
+  return 'item' in result && result.item !== null && result.item.id === itemId
+}
 
 type Settled = { kind: 'ok'; result: WorkResult } | { kind: 'failed'; error: WorkError } | { kind: 'busy' } | { kind: 'stale' }
 
@@ -184,21 +127,15 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   const [base, setBase] = useState<WorkItem | null>(null)
   const [item, setItem] = useState<WorkItem | null>(null)
-  // base 를 바꾸는 곳은 ref 도 함께 바꾼다 — 대기가 끝난 직후의 쓰기가 다음 render 전에 낡은 판을 보지 않게(R3-D).
   const baseRef = useRef(base)
   baseRef.current = base
-  /** 살아 있는 기준 전부 — 초안 칸(초안이 있는 동안) · 판을 기다리는 쓰기 · 되돌리기 토스트(R3-A · R4-A·C). */
-  const basesRef = useRef(new Map<BasisKey, WorkItem>())
-  const basisSeqRef = useRef(0)
-  /**
-   * 결과를 받지 못한 내 쓰기 — 보냈지만 회차가 바뀌어(세대 변경 등) 성공·실패를 확정하지 못한 것, 또는 성공했지만 응답에 작업이 없어 값을 아직 못 본 것.
-   * 다음 읽기에서 보낸 의미 전체가 그대로면 그 칸을 내 변경으로 친다(그렇지 않으면 다시 저장이 자기 충돌한다). 거절·막힘으로 확정되면 **판별 전에** 빼고(R4-B),
-   * 읽기로 닿은 것이 보이면 그 읽기가 기준을 옮기는 같은 자리에서 지운다(R4-C).
-   */
-  const unconfirmedRef = useRef<{ itemId: string; call: WorkCall }[]>([])
-  /** 읽기로 온 값에서 내 변경으로 칠 칸 — 결과를 받지 못한 내 쓰기가 보낸 값 그대로인 칸. */
-  const readOwn = useCallback((next: WorkItem): ConflictField[] => unconfirmedRef.current.filter((entry) => entry.itemId === next.id && landed({ call: entry.call, item: next })).flatMap((entry) => touchedFields(entry.call)), [])
-  const forget = useCallback((call: WorkCall): void => { unconfirmedRef.current = unconfirmedRef.current.filter((entry) => entry.call !== call) }, [])
+  /** 칸별 편집 기준 — 초안이 있는 동안만 있다(R3-A). */
+  const basesRef = useRef(new Map<EditSlot, WorkItem>())
+  /** 진행 중인 단건 읽기 수 — 회차별(떠난 회차의 늦은 읽기가 새 회차를 막지 않게). 직렬화의 「상세 재조회 중」. */
+  const readsRef = useRef(new Map<number, number>())
+  const [, setReadsSeen] = useState(0)
+  /** 살아 있는 되돌리기 토스트 — 다음 쓰기·판 변화에 사라진다. */
+  const undosRef = useRef<UndoEntry[]>([])
   const [phase, setPhase] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; message: string | null }>({ state: 'idle', message: null })
   const [statuses, setStatuses] = useState<WorkStatus[] | null>(null)
   const [parents, setParents] = useState<ParentRef[]>([])
@@ -209,9 +146,6 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const [conflict, setConflict] = useState<DetailConflict | null>(null)
   const [transitions, setTransitions] = useState<Loaded<string[]> | null>(null)
   const [readSeq, setReadSeq] = useState(0)
-  /** 쓰기 준비 — 응답에 작업이 없는 쓰기 뒤 단건을 다시 읽는 동안(다음 쓰기는 이것을 기다린다). */
-  const syncRef = useRef<Promise<WorkItem | null> | null>(null)
-  const [syncing, setSyncing] = useState(false)
   const activitySeqRef = useRef(0)
 
   const caps: WorkCapabilities | null = connection?.capabilities ?? null
@@ -219,44 +153,55 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
   const capsRef = useRef(caps)
   capsRef.current = caps
   const locked = uid !== null && page.busy.has(uid)
-  /** 확인하는 중 표시 — 잠금(앞 쓰기 확인 중) 또는 쓰기 준비(판 맞추는 중). */
-  const busy = locked || syncing
-  /** 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중 → 상세를 아직 받지 않음(R3-E: 받기 전 칸은 막는다). 쓰기 준비(sync)는 막지 않고 기다린다. */
-  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? '상세를 불러오는 중…' : null)
+  const reading = (readsRef.current.get(session) ?? 0) > 0
+  /** 확인하는 중 표시 — 잠금(앞 쓰기 확인 중) 또는 받은 뒤의 단건 재조회. */
+  const busy = locked || (reading && base !== null)
+  /**
+   * 쓰기 막힘 이유 — 연결 상태(권한·끊김·인증) → 그 작업의 앞 쓰기 확인 중 → 상세를 아직 받지 않음(R3-E) → 상세를 다시 받는 중(직렬화).
+   * 막혀 있으면 화면은 그 칸을 막고, 그래도 온 쓰기는 보내지 않는다(기다렸다 보내지 않는다).
+   */
+  const blocked = writeBlock(connection?.status ?? null)?.reason ?? (locked ? '앞 변경을 출처가 확인하는 중…' : null) ?? (base === null && target !== null ? '상세를 불러오는 중…' : null) ?? (reading ? '상세를 다시 받는 중…' : null)
   const blockedRef = useRef(blocked)
   blockedRef.current = blocked
   const versionOf = useCallback((current: WorkItem | null): string | null => (capsRef.current?.conflictCheck.state === 'on' ? current?.version ?? null : null), [])
 
-  /**
-   * 새 서버 값이 왔을 때 편집 기준을 올릴지 — 기준과 새 값의 다른 칸이 전부 `own`(내가 바꾼 칸)일 때만 올린다.
-   * 읽기로 온 값은 own 이 비어 있으니 칸이 하나도 다르지 않을 때(판만 오름 — 자식·코멘트·연결 뒤)만 오른다(R3-A).
-   */
-  const advanceBases = useCallback(({ next, own }: { next: WorkItem; own: readonly ConflictField[] }): void => {
-    for (const [slot, basis] of basesRef.current) {
-      if (basis.id !== next.id) continue
-      if (conflictFields({ base: basis, current: next }).every((field) => own.includes(field))) basesRef.current.set(slot, next)
-    }
-  }, [])
-  /**
-   * 서버 값 하나를 기준에 반영한다 — 기준을 옮기는 것과 그 값에 닿은 자기 쓰기 증거를 소비하는 것을 **같은 자리에서**(사이에 await 없음, R4-C).
-   * `own` 은 이 값을 낸 쪽이 아는 내 칸(쓰기 성공이면 보낸 칸, 보드 확정이면 보드 칸, 읽기면 없음)이고, 여기에 증거로 알아본 칸을 더한다.
-   */
-  const absorb = useCallback(({ next, own }: { next: WorkItem; own: readonly ConflictField[] }): void => {
-    advanceBases({ next, own: [...own, ...readOwn(next)] })
-    // 보낸 의미가 전부 닿은 것이 보인 쓰기는 이제 확인된 셈이다(칸 없는 쓰기는 증거가 아니다).
-    unconfirmedRef.current = unconfirmedRef.current.filter((entry) => entry.itemId !== next.id || (touchedFields(entry.call).length > 0 && !landed({ call: entry.call, item: next })))
-  }, [advanceBases, readOwn])
-  /** 칸 편집을 시작한다 — 지금 서버 값(base)을 그 칸의 기준으로 잡는다. */
+  /** 칸 편집을 시작한다 — 지금 base 를 그 칸의 기준으로 잡는다. */
   const holdBasis = useCallback((slot: EditSlot): void => {
     const current = baseRef.current
     if (current !== null) basesRef.current.set(slot, current)
   }, [])
   const dropBasis = useCallback((slot: EditSlot): void => { basesRef.current.delete(slot) }, [])
+  /** 서버 값이 기준과 칸이 하나도 다르지 않으면(판만 오름 — 코멘트·연결·자식 뒤) 그 기준을 새 값으로. 다른 칸이 있으면 두어 저장이 배너가 되게. */
+  const slideBases = useCallback((next: WorkItem): void => {
+    for (const [slot, basis] of basesRef.current) if (basis.id === next.id && conflictFields({ base: basis, current: next }).length === 0) basesRef.current.set(slot, next)
+  }, [])
 
-  /** base 를 바꾼다 — ref 와 상태를 같이. */
+  /** 되돌리기 토스트 하나를 끝낸다 — 토스트도 지운다. */
+  const expire = useCallback((entry: UndoEntry): void => {
+    if (!entry.live) return
+    entry.live = false
+    entry.dismiss?.()
+    undosRef.current = undosRef.current.filter((other) => other !== entry)
+  }, [])
+  const expireAll = useCallback((): void => { for (const entry of [...undosRef.current]) expire(entry) }, [expire])
+
+  /** base 를 바꾼다 — ref 와 상태를 같이. 판이 결과 판과 다른 되돌리기는 여기서 사라진다. */
   const putBase = useCallback((value: WorkItem): void => {
     baseRef.current = value
     setBase(value)
+    for (const entry of [...undosRef.current]) if (!entry.pending && entry.version !== value.version) expire(entry)
+  }, [expire])
+
+  /** 단건 읽기 하나를 진행 중으로 센다 — 끝나면(버려져도) 뺀다. */
+  const tracked = useCallback(<T,>({ origin, run }: { origin: Origin; run: () => Promise<T> }): Promise<T> => {
+    const count = (delta: number): void => {
+      const next = (readsRef.current.get(origin.session) ?? 0) + delta
+      if (next <= 0) readsRef.current.delete(origin.session)
+      else readsRef.current.set(origin.session, next)
+      setReadsSeen((value) => value + 1)
+    }
+    count(1)
+    return run().finally(() => count(-1))
   }, [])
 
   /** 단건 값을 base 로 받는다 — 시작 시각이 지금 base 보다 뒤일 때만(R2-D). 받았으면 그 값을 돌려준다. */
@@ -265,9 +210,9 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     baseStampRef.current = stamp
     putBase(value)
     setItem(value)
-    absorb({ next: value, own: [] })
+    slideBases(value)
     return value
-  }, [putBase, absorb])
+  }, [putBase, slideBases])
 
   /** 읽기 하나 — 같은 열쇠의 마지막 요청이고 출발 회차가 아직 살아 있을 때만 받는다. 떠난 체인은 요청도 내지 않는다(R3-C). */
   const read = useCallback(async ({ key, call, origin }: { key: string; call: WorkCall; origin: Origin }): Promise<WorkResponse | null> => {
@@ -277,13 +222,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     return gate.accepts({ key, requestId }) && alive(origin.session) ? response : null
   }, [gate, alive])
 
-  /** 단건 다시 읽기 — 시작 시각으로 최신성을 본다. 첫 읽기(`item`)와 열쇠를 나눠 서로 버리지 않는다. 받은 값(버려졌으면 null)을 돌려준다. */
-  const refreshItem = useCallback(async (origin: Origin): Promise<WorkItem | null> => {
-    const stamp = tick()
-    const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
-    if (response === null || !response.ok || response.result.op !== 'getItem') return null
-    return acceptItem({ value: response.result.item, stamp })
-  }, [read, acceptItem, tick])
+  /** 단건 다시 읽기 — 진행 중으로 센다(직렬화). 받은 값(버려졌으면 null)을 돌려준다. */
+  const refreshItem = useCallback((origin: Origin): Promise<WorkItem | null> => tracked({
+    origin,
+    run: async () => {
+      const stamp = tick()
+      const response = await read({ key: 'refresh', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
+      if (response === null || !response.ok || response.result.op !== 'getItem') return null
+      return acceptItem({ value: response.result.item, stamp })
+    },
+  }), [read, acceptItem, tick, tracked])
 
   /** 활동 묶음(corral 기록 + 출처 이력) — 묶음의 마지막 요청·같은 회차만 적용한다(R2-H). */
   const refreshActivity = useCallback(async (origin: Origin): Promise<void> => {
@@ -347,7 +295,6 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setRecords([])
     baseStampRef.current = 0
     basesRef.current.clear()
-    unconfirmedRef.current = []
     baseRef.current = null
     if (target === null) { setBase(null); setItem(null); setPhase({ state: 'idle', message: null }); return }
     const listed = page.rows.find((row) => row.space.connectionId === target.connectionId && row.item.id === target.itemId)?.item ?? null
@@ -360,19 +307,16 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     setPhase({ state: 'loading', message: null })
   }, [targetKey])
 
-  // 회차가 바뀌면(작업·세대) 쓰기 준비를 버린다 — 아래 읽기 effect 가 단건부터 다시 읽는다. 세대만 바뀌었으면 화면 값·초안은 둔다(R2-C·I).
-  useEffect(() => {
-    syncRef.current = null
-    setSyncing(false)
-  }, [session])
+  // 회차가 바뀌면(작업·세대) 되돌리기 토스트는 모두 사라진다 — 아래 읽기 effect 가 단건부터 다시 읽는다. 세대만 바뀌었으면 화면 값·초안은 둔다(R2-C·I).
+  useEffect(() => { expireAll() }, [session])
 
-  // 첫 읽기 체인 — 출발점(origin)을 끝까지 든다. await 뒤마다 살아 있는지 보고, 아니면 후속을 시작하지 않는다(R3-C).
+  // 첫 읽기 체인 — 출발점(origin)을 끝까지 든다. 단건 읽기는 진행 중으로 센다(직렬화). await 뒤마다 살아 있는지 보고, 아니면 후속을 시작하지 않는다(R3-C).
   useEffect(() => {
     if (!open || here === null) return
     const origin = here
     void (async () => {
       const stamp = tick()
-      const response = await read({ key: 'item', call: { op: 'getItem', itemId: origin.target.itemId }, origin })
+      const response = await tracked({ origin, run: () => read({ key: 'item', call: { op: 'getItem', itemId: origin.target.itemId }, origin }) })
       if (!alive(origin.session) || response === null) return
       if (!response.ok || response.result.op !== 'getItem') {
         setPhase({ state: 'error', message: response.ok ? '출처 응답 모양이 다릅니다.' : response.error.message })
@@ -395,8 +339,8 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     })()
   }, [open, session, readSeq])
 
-  // 성공한 쓰기(상세·보드 끌기, 즉시·늦게) — 서버 값을 받는다. 확정 시각을 올려 그 전에 시작한 읽기를 낡은 것으로 만든다.
-  // 단건이 아닌 응답(목록 모양)은 본문·연결을 지금 값으로 둔다.
+  // 확정된 쓰기(상세·보드 끌기, 즉시·늦게) — 서버 값을 받는다. 확정 시각을 올려 그 전에 시작한 읽기를 낡은 것으로 만든다.
+  // 편집 기준은 읽기와 같은 규칙(칸이 하나도 다르지 않을 때만)으로 — 상세 쓰기의 기준은 `finish` 가 이미 옮겼다.
   useEffect(() => {
     const settled = page.settledWrite
     if (settled === null || settled.uid !== uid || here === null) return
@@ -405,71 +349,59 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
     const next = merge(baseRef.current)
     putBase(next)
     setItem(merge)
-    // 보드 끌기 등 상세 밖의 내 쓰기 — 연산을 모르므로 보드가 바꾸는 칸만 내 변경으로 친다(상세 쓰기는 finish 가 보낸 칸으로 올린다).
-    absorb({ next, own: BOARD_FIELDS })
+    slideBases(next)
     void refreshActivity(here)
   }, [page.settledWrite])
 
-  /** 응답에 이 작업이 없는 쓰기 뒤 — 단건(판)은 쓰기 준비로, 연산에 따라 목록을 다시 읽는다(R1-D·E · R2-E·F). 쓰기의 출발점으로. */
-  const afterForeign = useCallback(({ op, origin }: { op: WorkCall['op']; origin: Origin }): void => {
+  /** 응답에 이 작업이 없는 쓰기 뒤 — 단건(판)을 다시 읽고(진행 중 = 다음 쓰기 막힘), 연산에 따라 목록을 다시 읽는다(R1-D·E · R2-E·F). 쓰기의 출발점으로. */
+  const afterForeign = useCallback(({ op, origin }: { op: WorkCall['op']; origin: Origin }): Promise<WorkItem | null> => {
     const done = refreshItem(origin)
-    syncRef.current = done
-    setSyncing(true)
-    void done.finally(() => {
-      if (syncRef.current !== done) return
-      syncRef.current = null
-      setSyncing(false)
-    })
     void refreshActivity(origin)
     if (op === 'createItem') void refreshChildren(origin)
     if (op === 'addComment') void refreshComments(origin)
+    return done
   }, [refreshItem, refreshActivity, refreshChildren, refreshComments])
 
   /** 확정 처리 — 즉시 결과와 늦은 결과가 같은 길로 온다(R2-F·G). `late` 면 실패 토스트는 작업 페이지가 이미 냈다. */
   const finish = useCallback(({ spec, call, current, basis, origin, outcome, late }: { spec: DetailWrite; call: WorkCall; current: WorkItem; basis: WorkItem; origin: Origin; outcome: Settled; late: boolean }): DetailFinal => {
     const started = origin.session
-    const carried = outcome.kind === 'ok' && carriesItem({ result: outcome.result, itemId: current.id }) && 'item' in outcome.result ? outcome.result.item : null
-    // 확정 — 결과를 받지 못한 쓰기 목록에서 뺀다. stale(닿았는지 모름)과 「성공했지만 응답에 작업이 없음」 은 둔다 — 뒤 읽기가 값을 보고 기준을 옮기며 소비한다.
-    if (outcome.kind !== 'stale' && !(outcome.kind === 'ok' && carried === null)) forget(call)
     switch (outcome.kind) {
       case 'ok': {
         setConflict(null)
-        // 내 쓰기의 성공 — 보낸 칸만 바뀌었으면 그 칸을 들고 있던 편집 기준도 새 판으로(자기 충돌 없음).
+        const carried = carriesItem({ result: outcome.result, itemId: current.id }) && 'item' in outcome.result ? outcome.result.item : null
         if (carried !== null) {
-          absorb({ next: carried, own: touchedFields(call) })
-          // 덮기 — 사용자가 충돌을 보고 내 값을 골랐다. 덮은 칸의 기준은 덮은 결과로(같은 충돌을 다시 내지 않는다).
-          if (spec.force === true) for (const slot of slotsOf(call)) if (basesRef.current.has(slot)) basesRef.current.set(slot, carried)
-        } else afterForeign({ op: call.op, origin })
+          // 내 쓰기가 기준과 같은 판 위에서 성공했으면 그 기준은 결과로(그 사이 다른 쓰기가 없었다 — 직렬화). 덮기는 덮은 칸을 결과로.
+          for (const [slot, held] of basesRef.current) if (held.version === current.version || (spec.force === true && slotsOf(call).includes(slot))) basesRef.current.set(slot, carried)
+        }
+        const fresh = carried === null ? afterForeign({ op: call.op, origin }) : null
         if (spec.undoing === true) notify({ kind: 'undone', label: `${current.key} 를 되돌렸습니다` })
         else if (spec.label !== null && spec.undo === null) notify({ kind: 'final', label: spec.label })
-        else if (spec.label !== null) {
+        else if (spec.label !== null && spec.undo !== null) {
           const undo = spec.undo
-          // 되돌릴 성공의 값·판을 지금 고정한다(R4-A) — 누를 때의 화면 값이 아니다. 그 뒤 내 쓰기·판만 오른 읽기로는 옮겨 가고,
-          // 다른 곳의 변경이 보이면 옮겨 가지 않아 되돌리기는 충돌 배너가 된다. 판 없는 역연산(연결 되살리기)은 기준을 쓰지 않는다.
-          const undoKey: BasisKey = `undo:${(basisSeqRef.current += 1)}`
-          const frozen = carried ?? baseRef.current
-          if (undo !== null && frozen !== null) {
-            basesRef.current.set(undoKey, frozen)
-            const undoKeys = [...basesRef.current.keys()].filter((key) => key.startsWith('undo:'))
-            for (const old of undoKeys.slice(0, Math.max(0, undoKeys.length - UNDO_BASES_MAX))) basesRef.current.delete(old)
+          // 결과 판 — 응답에 작업이 실려 왔으면 그 판, 아니면 뒤 재조회가 정한다(그동안은 쓰기도 막혀 있다).
+          const entry: UndoEntry = { version: carried?.version ?? null, pending: carried === null, live: true, dismiss: null }
+          undosRef.current = [...undosRef.current, entry]
+          if (fresh !== null) {
+            void fresh.then((value) => {
+              if (value === null) { expire(entry); return }
+              entry.version = value.version
+              entry.pending = false
+              if (baseRef.current?.version !== value.version) expire(entry)
+            })
           }
           notify({
             kind: 'moved',
             label: spec.label,
+            bind: (dismiss) => { if (entry.live) entry.dismiss = dismiss; else dismiss() },
             undo: () => {
-              if (undo === null) return true
-              const held = basesRef.current.get(undoKey)
-              if (!alive(started)) return false
-              if (held === undefined) {
-                notify({ kind: 'failed', message: `${current.key} — 되돌릴 기준이 지났습니다. 상세를 새로 불러온 뒤 직접 바꾸세요.` })
-                return false
-              }
-              // 지금의 막힘(잠금·연결 상태)을 본다 — 토스트를 만든 때의 값이 아니다.
+              const now = baseRef.current
+              // 결과 판 = 지금 판일 때만 — 그 사이 다음 쓰기·판 변화가 있었으면 이미 사라졌어야 한다(여기서도 다시 본다).
+              if (!entry.live || entry.pending || !alive(started) || now === null || now.version !== entry.version) { expire(entry); return false }
               if (blockedRef.current !== null) {
-                notify({ kind: 'failed', message: `${current.key} — 앞 변경을 출처가 확인하는 중입니다. 확인된 뒤 다시 되돌리세요.` })
+                notify({ kind: 'failed', message: `${current.key} — ${blockedRef.current}` })
                 return false
               }
-              void writeRef.current({ ...undo(held), label: null, undo: null, undoing: true, basis: undoKey })
+              void writeRef.current({ ...undo(now), label: null, undo: null, undoing: true })
               return true
             },
           })
@@ -487,7 +419,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         setItem(baseRef.current)
         const conflictInfo = outcome.error.kind === 'conflict' ? outcome.error.conflict : undefined
         if (conflictInfo !== undefined) {
-          // 바뀐 칸 = 이 쓰기의 기준 값 vs 서버 지금 값(R3-A — 화면 최신값이 아니다).
+          // 충돌은 언제나 배너 — 자동으로 다시 보내지 않는다. 바뀐 칸 = 이 쓰기의 기준 값 vs 서버 지금 값(R3-A).
           setConflict({ call, current: conflictInfo.current, by: conflictInfo.by, fields: conflictFields({ base: basis, current: conflictInfo.current }), at: Date.parse(conflictInfo.current.updatedAt) || Date.now() })
         } else {
           if (spec.quiet !== true && !late) notify({ kind: 'failed', message: `${current.key} — ${outcome.error.message}` })
@@ -497,69 +429,33 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
         return outcome
       }
     }
-  }, [afterForeign, notify, alive, refreshItem, absorb, forget])
+  }, [afterForeign, notify, alive, refreshItem, expire])
 
   /**
-   * 쓰기 하나 — 이 렌더의 회차에서만 시작한다. 기준(초안 칸·되돌리기면 그 자리의 기준, 아니면 지금 화면의 base)을 **부를 때** 잡아 기준 자리에 둔다.
-   * 쓰기 준비가 있으면 기다린 뒤 기준을 **그 자리에서 다시 읽는다** — 기다리는 사이 읽기가 증거를 소비하며 옮겨 놓았을 수 있다(R4-C).
-   * 그 위에 대기의 결과 값으로 한 번 더 맞춘다(칸이 같을 때만, R3-D). 판을 기다리는 쓰기·되돌리기의 자리는 보내기 직전에 놓는다. 결과는 시작한 회차에서만 `finish` 로.
+   * 쓰기 하나 — 이 렌더의 회차에서만, 막혀 있지 않을 때만(직렬화) 보낸다. 판은 초안 칸이면 그 칸의 편집 기준, 아니면 지금 base.
+   * 시작하면 이 작업의 되돌리기 토스트는 모두 사라진다. 결과는 시작한 회차에서만 `finish` 로.
    */
   const write = useCallback(async (spec: DetailWrite): Promise<DetailOutcome> => {
     if (here === null || !alive(here.session)) return { kind: 'left' }
     const origin = here
     const started = origin.session
-    const held = spec.basis === undefined ? undefined : basesRef.current.get(spec.basis)
-    const key: BasisKey = held !== undefined && spec.basis !== undefined ? spec.basis : `write:${(basisSeqRef.current += 1)}`
-    let basis = held ?? baseRef.current
-    if (held === undefined && basis !== null) basesRef.current.set(key, basis)
-    const pending = syncRef.current
-    if (pending !== null) {
-      // 앞 쓰기 뒤 판을 맞추는 중 — 기다린다. 기다리는 사이 떠났으면 보내지 않는다.
-      const fresh = await pending
-      basis = basesRef.current.get(key) ?? basis
-      // 판은 대기의 결과 값에서 직접(R3-D). 기준과 칸이 같으면(판만 오름) 새 판으로, 다른 곳의 변경이 실려 왔으면 기준 판 그대로 — 충돌 배너(R3-A).
-      const candidate = fresh ?? baseRef.current
-      if (basis !== null && candidate !== null) {
-        const own = readOwn(candidate)
-        if (conflictFields({ base: basis, current: candidate }).every((field) => own.includes(field))) basis = candidate
-      }
-    }
-    if (key !== 'body' && key !== 'title') basesRef.current.delete(key)
-    if (!alive(started)) return { kind: 'left' }
     const current = baseRef.current
-    if (current === null || basis === null) return { kind: 'stale' }
-    let call = withVersion({ call: spec.call, version: spec.force === true ? null : versionOf(basis) })
+    if (current === null) return { kind: 'stale' }
     if (blockedRef.current !== null) {
       notify({ kind: 'failed', message: `${current.key} — ${blockedRef.current}` })
       return { kind: 'busy' }
     }
+    expireAll()
+    const basis = (spec.basis === undefined ? undefined : basesRef.current.get(spec.basis)) ?? current
+    const call = withVersion({ call: spec.call, version: spec.force === true ? null : versionOf(basis) })
     if (spec.optimistic !== null) {
       const apply = spec.optimistic
       setItem((value) => (value === null ? value : apply(value)))
     }
     // 쓰기 시작 — 그 전에 시작한 읽기는 이제 낡았다(R2-D).
-    const send = (sent: WorkCall): ReturnType<typeof page.writeItem> => {
-      baseStampRef.current = tick()
-      unconfirmedRef.current = [...unconfirmedRef.current.slice(-19), { itemId: current.id, call: sent }]
-      return page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call: sent, optimistic: spec.optimistic })
-    }
-    let outcome = await send(call)
+    baseStampRef.current = tick()
+    const outcome = await page.writeItem({ connectionId: origin.target.connectionId, spaceKey: current.spaceKey, itemId: current.id, call, optimistic: spec.optimistic })
     if (!alive(started)) return { kind: 'left' }
-    // 거절·막힘으로 확정된 이 요청은 「결과를 받지 못한 내 쓰기」 가 아니다 — 아래 판별 전에 뺀다(R4-B: 거절된 내 값을 자기 증거로 삼아 다시 보내지 않는다).
-    if (outcome.kind === 'failed' || outcome.kind === 'busy') forget(call)
-    // 자기 충돌 — 서버가 기준과 다른 칸이 전부 「결과를 받지 못한 내 쓰기가 보낸 값」 이면(세대가 바뀐 사이 앞 저장이 닿은 경우) 그 판으로 한 번만 다시 보낸다.
-    // 다른 곳의 변경이 하나라도 섞였으면 다시 보내지 않고 배너로 간다(C8).
-    const conflictNow = outcome.kind === 'failed' && outcome.error.kind === 'conflict' ? outcome.error.conflict?.current ?? null : null
-    if (conflictNow !== null && spec.force !== true) {
-      const own = readOwn(conflictNow)
-      if (conflictFields({ base: basis, current: conflictNow }).every((field) => own.includes(field)) && versionOf(conflictNow) !== null) {
-        absorb({ next: conflictNow, own })
-        basis = conflictNow
-        call = withVersion({ call: spec.call, version: versionOf(conflictNow) })
-        outcome = await send(call)
-        if (!alive(started)) return { kind: 'left' }
-      }
-    }
     if (outcome.kind === 'late') {
       const settled = outcome.settled.then((late): DetailFinal => {
         if (!alive(started) || late.kind === 'stale') return { kind: 'left' }
@@ -568,7 +464,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
       return { kind: 'late', settled }
     }
     return finish({ spec, call, current, basis, origin, outcome, late: false })
-  }, [here, notify, page, alive, versionOf, finish, tick, readOwn, absorb, forget])
+  }, [here, notify, page, alive, versionOf, finish, tick, expireAll])
   const writeRef = useRef(write)
   writeRef.current = write
 
@@ -587,9 +483,11 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   /** 「새로 불러오기」 — 서버 값으로 다시 그린다(미저장 편집은 화면이 버린다). */
   const reloadFromServer = useCallback(() => {
+    // 진행 중인 쓰기·읽기가 있으면 하지 않는다(직렬화 — 버튼도 막혀 있다).
+    if (locked || reading) return
     setConflict(null)
     setReadSeq((value) => value + 1)
-  }, [])
+  }, [locked, reading])
 
   /** 「내 값으로 덮기」 — 같은 쓰기를 판 없이 다시. */
   const overrideConflict = useCallback(async (): Promise<DetailFinal | null> => {
@@ -623,7 +521,7 @@ export function useTaskDetail({ open, target, page, notify }: { open: boolean; t
 
   return {
     target, uid, session, item, base, phase, statuses, parents, children, comments, history, records, conflict, transitions,
-    caps, descriptor, connection, blocked, busy, syncing, commentsGate,
+    caps, descriptor, connection, blocked, busy, commentsGate,
     write, finalOf, versionOf, reloadFromServer, overrideConflict, loadTransitions, openKey, openItem, lookupKey, holdBasis, dropBasis,
   }
 }

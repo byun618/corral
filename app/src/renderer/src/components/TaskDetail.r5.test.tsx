@@ -140,8 +140,10 @@ async function changeGeneration(r: Rig): Promise<void> {
   await settle()
 }
 
-const undoToast = (label: string): Element | null => [...document.querySelectorAll('[data-toast="moved"]')].find((entry) => entry.textContent?.includes(label))?.querySelector('[data-toast-undo]') ?? null
-const toastWith = (label: string): boolean => [...document.querySelectorAll('[data-toast]')].some((entry) => entry.textContent?.includes(label))
+// 지운 토스트는 sonner 가 200ms 퇴장 동안 `data-removed="true"` 로 남긴다 — 그 동안 누른 되돌리기도 hook 이 받지 않지만(소멸), 보이는 토스트로 세지 않는다.
+const shown = (entry: Element): boolean => entry.closest('[data-sonner-toast]')?.getAttribute('data-removed') !== 'true'
+const undoToast = (label: string): Element | null => [...document.querySelectorAll('[data-toast="moved"]')].find((entry) => shown(entry) && entry.textContent?.includes(label))?.querySelector('[data-toast-undo]') ?? null
+const toastWith = (label: string): boolean => [...document.querySelectorAll('[data-toast]')].some((entry) => shown(entry) && entry.textContent?.includes(label))
 
 // --- 리뷰 r5 재현(바뀐 기준의 기대로 — 원 기대와 다른 칸은 test-audit.md 「기준 변경으로 기대 수정」) ---
 describe('r5 재현 — 바뀐 기준', () => {

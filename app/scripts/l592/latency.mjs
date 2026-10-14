@@ -1,7 +1,8 @@
 // LIFE-592 사본(l591 → l592 루트만 바꿈)
 // LIFE-592 E10ⓓ(최종 관문) — 다섯째 칸 `op` = **탐색기 열림 + 조작 직후**: 측정 직전 탐색기 조작 4회(실제 창 → preload → ipcMain `explorerOp` — 새 파일·이름 변경)를 몰아서 하고
 //   측정 동안에도 0.8~1.2 s 마다 1회씩 계속한다(레포 `l592-lat/`). 판정 B 조건 = 탐색기 열림 + 측정 구간 조작 ≥ 0.5회/초. 예: --plan a:closed:off:off,b:open:off:off:op --a a --b b
-//   글자 주입 전 Shift keyDown 하나 — main 이 막은 keyDown(⌘L·⌘⇧E) 뒤 Chromium 이 char 를 버리는 하네스 문제(B07 회차 3 놓침 36, residual.md 하네스 주의)를 피한다.
+//   글자 주입 전 Shift keyDown 하나(main 이 막은 keyDown 뒤 char 버림 — residual.md 하네스 주의) · 측정 전 터미널 화면 클릭으로 xterm 포커스 확인(`focusTerm` —
+//   ⌘⇧E 가 트리에 준 포커스가 남아 글자가 트리로 가던 하네스 문제: F28·기준 B07 회차 3 b 놓침 36, 진단 dev27 activeElement = explorer-tree).
 // LIFE-591 E7ⓓ(최종 관문) — 넷째 칸 `dirty` = **수정된 1 MB 파일 탭**(`big/1mb.txt`)을 오른쪽 새 영역에 열고 한 글자 쳐서 수정 상태로 둔 채(디스크 무변경·다시 쓰기 없음) 잰다.
 //   A 로 돌아갈 때 탭을 닫으면 확인 대화상자가 뜨므로 `file-dialog-stub` 으로 「저장 안 함」 을 답한다(계측 실행). 판정 B 조건 = 탭 열림 + 수정 표시.
 // LIFE-590 E8ⓔ (l589/e3-latency.mjs 사본 — 루트 /tmp/l591g-*) · LIFE-589 E3ⓓ — 터미널 입력 지연 A/B (`l580/k9-ab.mjs` 방식). 격리 개발 Electron(g-up.sh /tmp/l589g-*) 한 실행 안에서
@@ -190,7 +191,23 @@ function opDriver() {
   return { ops, stop: async () => { stop = true; await done } }
 }
 
+/**
+ * 터미널에 키 포커스 — 탭 클릭(attach)은 이미 활성인 탭이면 포커스를 옮기지 않는다. `⌘⇧E`(탐색기 보이기)가 트리에 포커스를 준 뒤엔 글자가 트리로 간다
+ * (F28 회차 3 b·기준 B07 회차 3 b 놓침 36 — dev27 진단: activeElement = explorer-tree). 측정 전 터미널 화면을 눌러 xterm 입력칸 포커스를 확인한다.
+ */
+async function focusTerm() {
+  const focused = () => evalJs(root, `document.activeElement?.classList?.contains('xterm-helper-textarea') === true`)
+  await until(async () => {
+    if (await focused()) return true
+    await ctl(root, { cmd: 'term-click', fx: 0.5, fy: 0.5 })
+    await sleep(120)
+    return focused()
+  }, { timeoutMs: 8_000, everyMs: 200, label: '터미널 포커스' })
+  return true
+}
+
 async function sampleRound(paneId) {
+  await evalJs(root, `(() => { if (!window.__l592latProbe) { window.__l592latProbe = true; window.__l592latKeys = []; for (const t of ['keydown', 'keypress', 'input']) window.addEventListener(t, (e) => { window.__l592latKeys.push([t, e.key ?? e.data ?? null, (e.target?.className || e.target?.tagName || '').toString().slice(0, 40), Date.now()]); if (window.__l592latKeys.length > 50) window.__l592latKeys.shift() }, true) } return true })()`)
   await ctl(root, { cmd: 'key', keyCode: 'Shift' })
   const samples = []
   for (let i = 0; i < sampleCount; i += 1) {
@@ -203,7 +220,11 @@ async function sampleRound(paneId) {
       const after = term.writes.filter((write) => write.at >= injectAt).sort((a, b) => a.at - b.at || a.seq - b.seq)
       return after[0] ?? null
     }, { timeoutMs: 2_000, everyMs: 8, label: `에코 ${ch}` }).catch(() => null)
-    samples.push(seen === null ? { i, ch, miss: true } : { i, ch, injectAt, writeAt: seen.value.at, latencyMs: seen.value.at - injectAt })
+    // 놓치면 그 순간 상태를 남긴다(원인 진단 — 첫 놓침·마지막 놓침): 포커스·터미널 단계·창 포커스·페이지가 키를 받았는지
+    const diag = seen === null && (samples.every((x) => !x.miss) || i === sampleCount - 1)
+      ? { page: await evalJs(root, `({ active: (document.activeElement?.className || document.activeElement?.tagName || '').toString().slice(0, 80), hasFocus: document.hasFocus(), visibility: document.visibilityState, keys: (window.__l592latKeys ?? []).slice(-4) })`).catch((error) => String(error)), state: (await ctl(root, { cmd: 'state' }).catch(() => null))?.state?.terminal ?? null }
+      : undefined
+    samples.push(seen === null ? { i, ch, miss: true, diag } : { i, ch, injectAt, writeAt: seen.value.at, latencyMs: seen.value.at - injectAt })
     await sleep(220 + Math.floor(Math.random() * 80))
   }
   await herdr(root, 'pane.send_text', { pane_id: paneId, text: '\x15' })
@@ -242,6 +263,7 @@ try {
       try {
         await sleep(step.op ? 200 : 1_500)
         await ctl(root, { cmd: 'loop-delay' })
+        const terminalFocused = await focusTerm()
         const windowStart = Date.now()
         const samples = await sampleRound(paneId)
         const loopDelay = (await ctl(root, { cmd: 'loop-delay' })).loopDelay ?? null
@@ -250,7 +272,7 @@ try {
         const fileChangesInWindow = fileDrive === null ? 0 : fileDrive.changes.filter((at) => at >= windowStart && at <= windowEnd).length
         const opsInWindow = opDrive === null ? 0 : opDrive.ops.filter((at) => at >= windowStart && at <= windowEnd).length
         const fileUpdated = step.file && !step.dirty ? await evalJs(root, `Number(document.querySelector('[data-file-view="${BIG}"] [data-file-editor]')?.dataset.editorUpdated ?? 0) >= ${windowStart}`) : null
-        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, op: step.op, opsPerSec: Math.round((opsInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
+        const row = { round: r, step: step.name, explorer: step.explorer, drive: step.drive, driveExpanded: driveView.expanded, driveReflectMs: driveView.reflectMs, windowStart, windowEnd, changesPerSec: Math.round((changesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, file: step.file, fileTabOpen, fileDirty: step.dirty ? await tabDirty() : null, fileDirtyBefore: fileDirty, fileChangesPerSec: Math.round((fileChangesInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, fileUpdated, terminalFocused, op: step.op, opsPerSec: Math.round((opsInWindow / ((windowEnd - windowStart) / 1000)) * 100) / 100, loopDelay, ...summary(samples), samples }
         rows.push(row)
         console.log(`회차 ${r} ${step.name} p50 ${row.p50} p95 ${row.p95} 놓침 ${row.misses} 루프 p99 ${loopDelay?.p99} 변경 ${row.changesPerSec}/s`)
       } finally {

@@ -391,5 +391,56 @@ it('재생 근거 수명 — hook 이 언마운트되면 붙잡던 재생 근거
   await act(async () => ops().importDrop(dropOf('/wt/a')))
   act(() => tree.unmount())
   tree = createRoot(host)
-  expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: ['replay-1'] }])
+  // 수정 r4 R4-B — 언마운트 놓기는 이 hook 의 owner 도 싣는다(main 이 진행 중 가져오기의 근거도 놓게).
+  expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: ['replay-1'], owner: expect.any(String) }])
+})
+
+// --- 수정 r4 ------------------------------------------------------------------------------------------------
+//   R4-A 재생(⌘⇧Z)은 되돌릴 때 치운 항목의 표지(`was`)를 싣는다 — main 이 새로 만든 것을 그 옛 정체로 잇는다
+//   R4-B 가져오기는 이 hook 의 owner 를 싣고, 언마운트는 붙잡은 것이 없어도 owner 를 닫는다(진행 중 가져오기 — main 판정)
+const trashOk = (rel: string): ExplorerOpResult => ({ ok: true, op: 'trash', rel, kind: 'file', snapshotId: null })
+
+it('R4-A — 만들기 재생은 되돌릴 때 치운 표지(was)를 싣는다', async () => {
+  const marks = [{ rel: 'a.txt', stamp: 'stamp-a' }]
+  respond = (input) => (input.op === 'create' ? { ok: true, op: 'create', rel: input.name, kind: input.kind, created: input.name, marks } : input.op === 'trash' ? trashOk(input.rel) : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => render('/wt/a'))
+  await act(async () => void (await ops().create({ dir: '', name: 'a.txt', kind: 'file' })))
+  await act(async () => ops().undo())
+  await act(async () => ops().redo())
+  expect(calls[2]).toMatchObject({ op: 'create', name: 'a.txt', again: true, was: marks })
+})
+
+it('R4-A — 복제 재생은 되돌릴 때 치운 표지(was)를 싣는다', async () => {
+  const marks = [{ rel: 'pack copy', stamp: 'tree-x' }]
+  respond = (input) =>
+    input.op === 'duplicate' ? { ok: true, op: 'duplicate', from: input.rel, rel: 'pack copy', kind: 'dir', marks, skipped: [], failed: [], source: 'src-stamp' } : input.op === 'trash' ? trashOk(input.rel) : { ok: false, code: 'io_error', error: 'x' }
+  await act(async () => render('/wt/a'))
+  gate = () => undefined
+  await act(async () => ops().duplicate('pack'))
+  await act(async () => ops().undo())
+  await act(async () => ops().redo())
+  expect(calls[2]).toMatchObject({ op: 'duplicate', rel: 'pack', again: { name: 'pack copy', source: 'src-stamp' }, was: marks })
+})
+
+it('R4-A — 여러 항목 가져오기 재생은 치운 항목들의 표지를 싣는다', async () => {
+  respond = (input) => (input.op === 'import' ? importResult(['a.txt', 'b.txt']) : input.op === 'trash' ? trashOk(input.rel) : input.op === 'release' ? { ok: true, op: 'release' } : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  await act(async () => ops().undo())
+  await act(async () => ops().redo())
+  const replay = calls.filter((call) => call.op === 'import')[1]
+  expect(replay).toMatchObject({ replay: 'replay-1', names: ['a.txt', 'b.txt'] })
+  expect(replay !== undefined && 'was' in replay ? replay.was : null).toEqual(expect.arrayContaining([{ rel: 'a.txt', stamp: 's-a.txt' }, { rel: 'b.txt', stamp: 's-b.txt' }]))
+})
+
+it('R4-B — 가져오기는 owner 를 싣고, 붙잡은 근거가 없어도 언마운트가 그 owner 를 닫는다', async () => {
+  respond = (input) => (input.op === 'release' ? { ok: true, op: 'release' } : { ok: false, code: 'io_error', error: 'x' })
+  await act(async () => render('/wt/a'))
+  await act(async () => ops().importDrop(dropOf('/wt/a')))
+  const owner = calls.find((call) => call.op === 'import')
+  const id = owner !== undefined && 'owner' in owner ? owner.owner : undefined
+  expect(typeof id).toBe('string')
+  act(() => tree.unmount())
+  tree = createRoot(host)
+  expect(calls.filter((call) => call.op === 'release')).toEqual([{ op: 'release', ids: [], owner: id }])
 })

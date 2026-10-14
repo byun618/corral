@@ -26,12 +26,20 @@ await ctl(root, { cmd: 'dblclick', selector: `[data-explorer-row="${rel}"]` })
 await until(() => js(`document.querySelector('[data-file-view="${rel}"] [data-editor-ready]') !== null`), { label: 'editor' })
 await exposeMonaco(root)
 // 수정 r3 — Monaco scrollTop·view state 를 실제로 기록한다(옛 판은 찾기만 하고 넣지 않았다 — 리뷰어 r3 지적). 판정 없음(진단용, 종료 0 은 통과가 아니다).
-const sampleDom = () => js(`(() => { const v = document.querySelector('[data-file-view="${rel}"]'); const rows = [...(v?.querySelectorAll('.view-line') ?? [])]; rows.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)); const sc = v?.querySelector('.monaco-scrollable-element.editor-scrollable'); const lines = v?.querySelector('.view-lines'); return { first: rows[0]?.textContent ?? null, tops: rows.map((r) => r.style.top).slice(0, 3), linesTop: lines?.style.top ?? null, ready: v?.querySelector('[data-editor-ready]') !== null } })()`)
+const sampleDom = () => js(`(() => { const v = document.querySelector('[data-file-view="${rel}"]'); const rows = [...(v?.querySelectorAll('.view-line') ?? [])]; rows.sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)); const sc = v?.querySelector('.monaco-scrollable-element.editor-scrollable'); const lines = v?.querySelector('.view-lines'); const host = v?.querySelector('[data-file-editor]'); const hr = host?.getBoundingClientRect(); const vl = v?.querySelector('.view-lines')?.getBoundingClientRect(); return { host: hr === undefined ? null : [Math.round(hr.width), Math.round(hr.height)], viewLinesBox: vl === undefined ? null : [Math.round(vl.width), Math.round(vl.height)], viewLineCount: rows.length, active: document.activeElement?.className ?? null, first: rows[0]?.textContent ?? null, tops: rows.map((r) => r.style.top).slice(0, 3), linesTop: lines?.style.top ?? null, ready: v?.querySelector('[data-editor-ready]') !== null } })()`)
 const sample = async () => ({ ...(await sampleDom()), editor: await editorState(root, rel) })
 const rounds = []
 const n = Number(values.n)
 for (let round = 0; round < n; round += 1) {
-  await click(`[data-file-view="${rel}"] .view-lines`)
+  // 클릭이 안 되면(다시 마운트 뒤 줄 DOM 없음 등) 그때 상태를 남기고 끝낸다 — 진단용.
+  try {
+    await click(`[data-file-view="${rel}"] .view-lines`)
+  } catch (error) {
+    const stuck = { round, error: String(error), dom: await sampleDom(), editor: await editorState(root, rel), clickProbe: await ctl(root, { cmd: 'click', selector: `[data-file-view="${rel}"] .view-lines` }), visibility: await js('document.visibilityState'), raf: await js(`new Promise((resolve) => { const timer = setTimeout(() => resolve('no-raf-1s'), 1000); requestAnimationFrame(() => { clearTimeout(timer); resolve('raf') }) })`), window: await ctl(root, { cmd: 'window-visibility', action: 'read' }) }
+    console.log(JSON.stringify({ stuck }))
+    rounds.push({ round, stuck })
+    break
+  }
   await key('Up', ['meta'])
   await key('Home')
   if (round === 0) await ctl(root, { cmd: 'type', text: 'Z' })

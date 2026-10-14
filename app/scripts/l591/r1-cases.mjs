@@ -446,7 +446,8 @@ switch (name) {
       const hex = fs.readFileSync(file).toString('hex')
       await ed(`e.trigger('keyboard', 'undo', null); return true`)
       const clean = await settle(async () => (await ed('return m.getValue()')) === 'Xalpha\n' && (await dirtyOf(rel)) === 'false')
-      check('A3-retry-uses-snapshot-bom', during === 'DISK\n' && written && hex === 'efbbbf58616c7068610a' && clean, { during, written, hex, expected: 'efbbbf58616c7068610a', cleanAfterUndo: clean, asked: (await stub([])).asked })
+      const afterUndo = { model: await ed('return m.getValue()'), dirty: await dirtyOf(rel), alt: await ed('return m.getAlternativeVersionId()'), banner: await js(`document.querySelector('[data-file-notice="external-change"]') !== null`) }
+      check('A3-retry-uses-snapshot-bom', during === 'DISK\n' && written && hex === 'efbbbf58616c7068610a' && clean, { during, written, hex, expected: 'efbbbf58616c7068610a', cleanAfterUndo: clean, afterUndo, asked: (await stub([])).asked, writes: logRows().filter((row) => row.tag === 'file.write').map((row) => `${row.ok}:${row.code}`) })
     } finally {
       fs.rmSync(hook, { force: true })
     }

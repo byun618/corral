@@ -1,6 +1,6 @@
 // LIFE-592 최종 관문 — 격리 회차(01-criteria E1~E9·E10ⓑ). 격리 개발 Electron(iso.sh 가 /tmp/l592g-* 에 띄운 것)과 그 fixture 에서만.
 // 사용(app/ 에서, iso.sh 안): node scripts/l592/final.mjs <ROOT> <OUT.json> <case>[,<case>...] <FAKE>   (FAKE = iso.sh 의 {FAKE} — 앱 재시작(E4ⓓ·E10ⓑ)에 쓴다)
-//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b
+//   사례: e1 e2 e3 e4 e5 e5b e6 e7 e8 e9 e10b · e5lim(한계 확인 — DONE 미완 10)
 //   ISO_ENV='L577_ELECTRON_ARGS=--remote-debugging-port=0 CORRAL_TEST_OP_HOOK_FILE={ROOT}/op-hook.json' — CDP(합성 IME·합성 드롭)·⑩ 경쟁 주입 훅.
 // 입력: 제어 소켓 sendInputEvent · CDP(Input.imeSetComposition·Input.dispatchDragEvent·Input.dispatchKeyEvent) · DOM 값 setter(입력칸에 NUL·긴 이름 넣기만).
 //   OS 키 입력(CGEvent)·Finder 끌기·시스템 클립보드 쓰기 없음. 휴지통에는 이름에 l592 가 든 fixture 항목만 간다(결과 `trashed` 에 원래 경로·시각).
@@ -628,10 +628,10 @@ async function dragRow(fromSel, toAt, { steps = 6, hold = 0, release = true } = 
   return marks
 }
 const ptyLog = () => path.join(root, 'pty.log')
-/** 터미널 pane 이 받는 바이트를 파일로(raw·echo 끔 · `cat -v`) — PTY 로 간 바이트 수를 센다. */
+/** 터미널 pane 이 받는 바이트를 파일로(-icanon·echo 끔 · `dd bs=1` — 1바이트씩 바로 쓴다. BSD `cat -v` 는 파일 출력을 버퍼에 모아 양성 대조가 비었다) — PTY 로 간 바이트를 센다. */
 async function ptyCaptureStart(paneId) {
   fs.rmSync(ptyLog(), { force: true })
-  await herdr(root, 'pane.send_text', { pane_id: paneId, text: `stty -icanon -echo min 1; cat -v > ${ptyLog()}\n` })
+  await herdr(root, 'pane.send_text', { pane_id: paneId, text: `stty -icanon -echo min 1; dd bs=1 of=${ptyLog()} 2>/dev/null\n` })
   await until(() => Promise.resolve(fs.existsSync(ptyLog())), { timeoutMs: 8000, label: 'pty 캡처 시작' })
   await sleep(400)
 }
@@ -950,18 +950,21 @@ cases.e5 = async () => {
   await undo('docs')
   const chain1 = await settle(() => exists('docs/l592-readme.md') && !exists(renamed), '연쇄 이름 되돌림')
   check('ⓐ 연쇄 이름 변경 → 삭제 → ⌘Z ⌘Z = 원래 상태(sha 같음)', chain1 && JSON.stringify(snap()['docs/l592-readme.md']?.sha) === JSON.stringify(c0['docs/l592-readme.md'].sha), { chain1, toasts: await toasts() })
-  await rowMenu('l592-top.txt', 'duplicate')
-  await settle(() => exists('l592-top copy.txt'), '연쇄 복제')
-  await renameVia('l592-top copy.txt', 'l592-top-dup.txt')
-  await undo('l592-top.txt')
-  await settle(() => exists('l592-top copy.txt'), '연쇄 ⌘Z 1')
-  await undo('l592-top.txt')
-  const c2a = await settle(() => !exists('l592-top copy.txt') && !exists('l592-top-dup.txt'), '연쇄 ⌘Z 2')
-  noteTrash('l592-top copy.txt', '연쇄: 복제 → 이름 변경 → ⌘Z ⌘Z(복제 되돌림)')
-  await redo('l592-top.txt')
-  await settle(() => exists('l592-top copy.txt'), '연쇄 ⌘⇧Z 1')
-  await redo('l592-top.txt')
-  const c2b = await settle(() => exists('l592-top-dup.txt') && !exists('l592-top copy.txt'), '연쇄 ⌘⇧Z 2')
+  // 새 파일로(앞 「복제」 칸이 l592-top copy.txt 를 남겼다)
+  fs.writeFileSync(abs('l592-chain.txt'), 'chain\n')
+  await until(() => hasRow('l592-chain.txt'), { label: '연쇄 파일 행' })
+  await rowMenu('l592-chain.txt', 'duplicate')
+  await settle(() => exists('l592-chain copy.txt'), '연쇄 복제')
+  await renameVia('l592-chain copy.txt', 'l592-chain-dup.txt')
+  await undo('l592-chain.txt')
+  await settle(() => exists('l592-chain copy.txt'), '연쇄 ⌘Z 1')
+  await undo('l592-chain.txt')
+  const c2a = await settle(() => !exists('l592-chain copy.txt') && !exists('l592-chain-dup.txt'), '연쇄 ⌘Z 2')
+  noteTrash('l592-chain copy.txt', '연쇄: 복제 → 이름 변경 → ⌘Z ⌘Z(복제 되돌림)')
+  await redo('l592-chain.txt')
+  await settle(() => exists('l592-chain copy.txt'), '연쇄 ⌘⇧Z 1')
+  await redo('l592-chain.txt')
+  const c2b = await settle(() => exists('l592-chain-dup.txt') && !exists('l592-chain copy.txt'), '연쇄 ⌘⇧Z 2')
   check('ⓐ 연쇄 복제 → 이름 변경 → ⌘Z ⌘Z ⌘⇧Z ⌘⇧Z 왕복 거절 없음', c2a && c2b && !(await toasts()).some((t) => t.includes('하지 못했습니다')), { c2a, c2b, toasts: await toasts() })
   // ⓒ 데이터 무손실 — 만든 뒤 내용이 바뀐 파일의 만들기 되돌림 = 거절(안내)·파일 그대로
   await createVia(async () => { await focusRow('src'); await clickUntil('[data-explorer-new-file]') }, { name: 'l592-u-mod.ts', expectRel: 'src/l592-u-mod.ts' })
@@ -972,12 +975,14 @@ cases.e5 = async () => {
   const modRefuse = { exists: exists('src/l592-u-mod.ts'), content: exists('src/l592-u-mod.ts') ? fs.readFileSync(abs('src/l592-u-mod.ts'), 'utf8') : null, toasts: await toasts(), last: opLogs().slice(-1)[0] }
   check('ⓒ 만든 뒤 바뀐 파일 ⌘Z = 거절 안내·내용 그대로(영구 삭제 0)', modRefuse.exists && modRefuse.content === 'changed after create\n' && modRefuse.last?.code === 'modified', modRefuse)
   // ⓒ 되돌릴 자리에 다른 것이 생김 → 덮어쓰기 0
-  await renameVia('src/l592-a.ts', 'l592-a-o.ts')
-  fs.writeFileSync(abs('src/l592-a.ts'), 'squatter\n')
+  fs.writeFileSync(abs('src/l592-sq.ts'), 'mine\n')
+  await until(() => hasRow('src/l592-sq.ts'), { label: '덮어쓰기 칸 행' })
+  await renameVia('src/l592-sq.ts', 'l592-sq-o.ts')
+  fs.writeFileSync(abs('src/l592-sq.ts'), 'squatter\n')
   await sleep(500)
   await undo()
   await sleep(1200)
-  const squat = { squatter: fs.readFileSync(abs('src/l592-a.ts'), 'utf8'), moved: exists('src/l592-a-o.ts'), last: opLogs().slice(-1)[0] }
+  const squat = { squatter: fs.readFileSync(abs('src/l592-sq.ts'), 'utf8'), moved: exists('src/l592-sq-o.ts'), last: opLogs().slice(-1)[0], toasts: await toasts() }
   check('ⓒ 되돌릴 자리에 다른 항목 = 거절·덮어쓰기 0', squat.squatter === 'squatter\n' && squat.moved && squat.last?.ok === false, squat)
   // ⓓ 새 조작이 다시 실행 기록을 비운다
   await createVia(async () => { await focusRow('src'); await clickUntil('[data-explorer-new-file]') }, { name: 'l592-u-r1.ts', expectRel: 'src/l592-u-r1.ts' })
@@ -1054,6 +1059,8 @@ cases.e5b = async () => {
   const explorerUntouched = (x) => same(x.undoDiff) && same(x.redoDiff) && x.explorerOps.length === 0
   // 1 Monaco — 편집 실행 취소만
   await run('Monaco 편집기 → 편집 실행 취소만(탐색기 기록 무변화)', async () => {
+    await clickUntil('[data-main-tab="file:src/l592-a.ts"]')
+    await until(() => q(`document.querySelector('[data-file-view="src/l592-a.ts"] .view-lines')?.getBoundingClientRect().width > 0`), { label: 'a 보임' })
     await editorFocus('src/l592-a.ts')
     await type('MON')
     await sleep(200)
@@ -1061,13 +1068,14 @@ cases.e5b = async () => {
   // 2 터미널 — PTY 바이트 0 (양성 대조: 같은 캡처에 글자 하나)
   await ptyCaptureStart(paneId)
   await run('터미널 → PTY 바이트 0·탐색기 기록 무변화(⌘⇧Z = 기존 pane 줌)', async () => termFocus(paneId), async () => ({ pty: ptyBytes(), zoomed: await q(`document.querySelector('[data-term-zoomed], .is-zoomed') !== null`) }), (x) => explorerUntouched(x) && x.o1.pty === x.o0.pty && x.o2.pty === x.o0.pty)
+  if (await q(`document.querySelector('[data-term-zoomed], .is-zoomed') !== null`)) await key('Z', ['meta', 'shift'])
+  await termFocus(paneId)
   await key('Shift')
   await ctl(root, { cmd: 'type', text: 'x' })
-  await sleep(500)
+  await until(() => Promise.resolve((ptyBytes() ?? '').includes('x')), { timeoutMs: 3000, label: 'pty 양성' }).catch(() => null)
   const positive = ptyBytes()
   await ptyCaptureStop(paneId)
   check('ⓑ 터미널 PTY 캡처 양성 대조(글자 x 는 잡힌다)', typeof positive === 'string' && positive.includes('x'), { positive })
-  if (await q(`document.querySelector('[data-term-zoomed], .is-zoomed') !== null`)) await key('Z', ['meta', 'shift'])
   // 3 인라인 입력 — 입력칸 글자 실행 취소(CDP undo 명령 = 네이티브 키 바인딩 경로 흉내)
   const inputCase = async (label, open, selector) => {
     await open()
@@ -1091,7 +1099,9 @@ cases.e5b = async () => {
     const rowData = { label, viaSendInputEvent: viaSend, afterUndo, afterRedo, keys: await q(`window.__l592k`), explorerOps: opLogs().slice(logs0).map((x) => `${x.op}:${x.ok}`), diff: diff(s0, snap()) }
     table.push(rowData)
     log(`focus ${label}`, rowData)
-    check(`ⓑ ${label} → 그 입력의 글자 실행 취소(가로채지 않음·탐색기 기록 무변화)`, same(rowData.diff) && rowData.explorerOps.length === 0 && rowData.keys.every((k) => !k.prevented) && typeof afterUndo === 'string' && !afterUndo.endsWith('abc') && typeof afterRedo === 'string' && afterRedo.endsWith('abc'), rowData)
+    // ⌘⇧Z 는 기록만 — 팔레트·설정 입력칸에선 기존 전역 terminal.zoom(Mod+Shift+Z — 기준 91255e55f 와 같은 결합·같은 경로)이 가져간다. 인라인 입력 행은 data-inline-rename 양보로 입력칸 몫.
+    rowData.redoOutcome = afterRedo.endsWith('abc') ? '입력칸 다시 실행' : rowData.keys.some((k) => k.shift && k.prevented) ? '기존 전역 terminal.zoom 이 가져감(기준과 같음)' : '변화 없음'
+    check(`ⓑ ${label} → ⌘Z = 그 입력의 글자 실행 취소(가로채지 않음·탐색기 기록 무변화) · ⌘⇧Z 기록`, same(rowData.diff) && rowData.explorerOps.length === 0 && rowData.keys.filter((k) => !k.shift).every((k) => !k.prevented) && typeof afterUndo === 'string' && !afterUndo.endsWith('abc') && afterUndo.length < 'abc'.length + 1, rowData)
     await key('Escape')
     await sleep(300)
   }
@@ -1197,8 +1207,12 @@ cases.e6 = async () => {
   await key('Escape')
   await mouse('mouseUp', { x: sr2.left + 60, y: sr2.top + sr2.height - 6 })
   check('ⓓ 아래 가장자리 머무름 = 스크롤', top1 > top0, { top0, top1, band: 22 })
-  // ⓔ 탭 끌기 무회귀(탭 순서 바꾸기)
+  // ⓔ 탭 끌기 무회귀(탭 순서 바꾸기) — 80개 행 폴더를 접어 src 를 화면 안으로
   await q(`(document.querySelector('.explorer-scroll').scrollTop = 0, true)`)
+  await sleep(200)
+  await focusRow('l592-many')
+  await key('Left')
+  await until(async () => (await expanded('l592-many')) === 'false', { label: '많은 폴더 접기' })
   await expand('src')
   await openFixed('src/sub/l592-c.md').catch(async () => { await expand('src/sub'); await openFixed('src/sub/l592-c.md') })
   await openFixed('l592-top.txt')
@@ -1289,10 +1303,16 @@ cases.e7 = async () => {
     fs.mkdirSync(path.join(big, `d${i}`))
     for (let j = 0; j < 100; j += 1) fs.writeFileSync(path.join(big, `d${i}`, `f${j}.txt`), `${i}-${j}\n`)
   }
+  // 트리를 스크롤할 수 있게 긴 폴더를 펼쳐 둔다
+  fs.mkdirSync(abs('l592-long'))
+  for (let i = 0; i < 80; i += 1) fs.writeFileSync(abs(`l592-long/f${String(i).padStart(2, '0')}.txt`), `${i}\n`)
+  await until(() => hasRow('l592-long'), { label: '긴 폴더' })
+  await expand('l592-long')
+  await q(`(document.querySelector('.explorer-scroll').scrollTop = 0, true)`)
   const paneId = await terminalPane()
   await herdr(root, 'pane.send_text', { pane_id: paneId, text: 'clear\n' })
   await sleep(500)
-  await cdpDrop(await center(row('src')), [big])
+  await cdpDrop(await center(row('docs')), [big])
   const t0 = Date.now()
   const rtts = []
   let termOk = null
@@ -1311,11 +1331,11 @@ cases.e7 = async () => {
       const tt = Date.now()
       termOk = await until(async () => JSON.stringify((await herdr(root, 'pane.read', { pane_id: paneId, source: 'visible' }).catch(() => ({})))).includes('l592-big-7'), { timeoutMs: 10_000, label: '터미널 응답' }).then(() => Date.now() - tt, () => null)
     }
-    if (exists('src/l592-big/d51/f99.txt') && opLogs().some((r) => r.op === 'import' && r.ms > 0 && r.at > t0)) break
+    if (exists('docs/l592-big/d51/f99.txt') && opLogs().some((r) => r.op === 'import' && r.ms > 0 && r.at > t0)) break
     await sleep(50)
   }
   const importLog = opLogs().filter((r) => r.op === 'import').slice(-1)[0]
-  const count = fs.existsSync(abs('src/l592-big')) ? fs.readdirSync(abs('src/l592-big')).reduce((n, dname) => n + fs.readdirSync(abs(`src/l592-big/${dname}`)).length, 0) : 0
+  const count = fs.existsSync(abs('docs/l592-big')) ? fs.readdirSync(abs('docs/l592-big')).reduce((n, dname) => n + fs.readdirSync(abs(`docs/l592-big/${dname}`)).length, 0) : 0
   current.metrics = { bigItems: 52 * 100 + 52, copied: count, importMs: importLog?.ms ?? null, rttMax: Math.max(...rtts), rttP95: pct(rtts, 95), samples: rtts.length, scrolled, termEchoMs: termOk }
   check('ⓔ 5천 항목 이상 가져오기 중 렌더러 응답(eval 왕복 p95 < 200 ms)·트리 스크롤·터미널 입력', count === 5200 && pct(rtts, 95) < 200 && scrolled !== null && scrolled.after > scrolled.before && termOk !== null, current.metrics)
   // ⓔ 도중 실패 — 읽을 수 없는 원본 파일 → 무엇이 복사됐는지 안내
@@ -1324,6 +1344,8 @@ cases.e7 = async () => {
   fs.writeFileSync(path.join(part, 'ok.txt'), 'ok\n')
   fs.writeFileSync(path.join(part, 'locked.txt'), 'locked\n')
   fs.chmodSync(path.join(part, 'locked.txt'), 0o000)
+  await q(`(document.querySelector('.explorer-scroll').scrollTop = 0, true)`)
+  await sleep(300)
   try {
     s0 = snap()
     await cdpDrop(await center(row('docs')), [part])
@@ -1481,7 +1503,8 @@ cases.e9 = async () => {
   await call('복제', '① 안 경로', du('l592-in/f.txt'), ['ok'])
   await call('복제', '② .. 탈출', du('../outside/l592-ofile.txt'), ['outside_root', 'invalid_argument'])
   await call('복제', '③ 절대 밖', du(path.join(outside, 'l592-ofile.txt')), ['invalid_argument', 'outside_root'])
-  await call('복제', '④ 마지막 성분 = 밖 링크(링크로 복제 — 밖 무변경)', du('l592-ofile-link'), (r) => r.ok === false || fs.lstatSync(abs(r.rel)).isSymbolicLink())
+  fs.symlinkSync(path.join(outside, 'l592-ofile.txt'), abs('l592-ofile-link2'))
+  await call('복제', '④ 마지막 성분 = 밖 링크(링크로 복제 — 밖 무변경)', du('l592-ofile-link2'), (r) => r.ok === true && fs.lstatSync(abs(r.rel)).isSymbolicLink() && fs.readlinkSync(abs(r.rel)) === path.join(outside, 'l592-ofile.txt'))
   await call('복제', '⑤ 중간 폴더 밖 링크', du('l592-olink/sub/x.txt'), ['outside_root'])
   await call('복제', '⑥ 등록 안 된 루트', { ...du('a'), root: otherRoot }, ['not_worktree'])
   await call('복제', '⑦ 형 위반', { op: 'duplicate', rel: null }, ['invalid_argument'])
@@ -1499,12 +1522,13 @@ cases.e9 = async () => {
   await until(() => hasRow('l592-in'), { label: 'l592-in 행' })
   const dropInto = async (kase, forgedDir, forgedRoot, want) => {
     const logs0 = opLogs().length
+    const snapBefore = snap()
     await q(`(() => { const el = document.querySelector('${row('l592-in')}'); el.dataset.explorerDropDir = ${JSON.stringify(forgedDir)}; ${forgedRoot === null ? '' : `document.querySelector('[data-explorer-root]').dataset.explorerRoot = ${JSON.stringify(forgedRoot)};`} return true })()`)
     await cdpDrop(await center(row('l592-in')), [srcFile])
     await until(() => Promise.resolve(opLogs().slice(logs0).some((x) => x.op === 'import')), { timeoutMs: 5000, label: `드롭 ${kase}` }).catch(() => null)
     const got = opLogs().slice(logs0).find((x) => x.op === 'import') ?? null
     await q(`(() => { document.querySelector('[data-explorer-root]').dataset.explorerRoot = ${JSON.stringify(r0)}; const el = document.querySelector('${row('l592-in')}'); if (el) el.dataset.explorerDropDir = 'l592-in'; return true })()`)
-    const ok = got !== null && want.includes(got.ok ? 'ok' : got.code)
+    const ok = got === null ? want.includes('none') && same(diff(snapBefore, snap())) : want.includes(got.ok ? 'ok' : got.code)
     matrix.push({ family: '가져오기 대상', kase, input: { dropDir: forgedDir, root: forgedRoot ?? '<root>' }, result: got === null ? null : { ok: got.ok, code: got.code, done: got.done }, want, pass: ok })
   }
   await dropInto('① 안 경로', 'l592-in', null, ['ok'])
@@ -1512,7 +1536,14 @@ cases.e9 = async () => {
   await dropInto('③ 절대 밖', outside, null, ['invalid_argument', 'outside_root'])
   await dropInto('④ 대상 폴더 = 밖 링크', 'l592-olink', null, ['outside_root'])
   await dropInto('⑤ 중간 폴더 밖 링크', 'l592-olink/sub', null, ['outside_root'])
-  await dropInto('⑥ 등록 안 된 루트', '', otherRoot, ['not_worktree'])
+  // ⑥ — 렌더러는 화면 루트와 다른 드롭을 main 에 보내지 않는다(useFileOps importDrop owner=null — 1차 거름). 그 드롭의 실제 표지(main 에 안 쓰인 채 남음)를
+  //   잡아 등록 안 된 루트로 직접 부르면 main 가둠(not_worktree)이 2차로 거절함을 보인다.
+  await q(`(() => { window.__l592drops = []; window.__l592off?.(); window.__l592off = window.corral.onExplorerDrop((d) => window.__l592drops.push(d)); return true })()`)
+  await dropInto('⑥ 등록 안 된 루트(렌더러 1차 거름 — main 호출 0)', '', otherRoot, ['none'])
+  const captured = await q(`window.__l592drops.slice(-1)[0] ?? null`)
+  const direct = captured?.token ? await ipc({ op: 'import', root: otherRoot, dir: '', token: captured.token }) : null
+  matrix.push({ family: '가져오기 대상', kase: '⑥ 등록 안 된 루트 — 그 실제 표지로 main 직접', input: { root: otherRoot, token: captured?.token ? '<실제 드롭 표지>' : null }, result: direct === null ? null : { ok: direct.ok, code: direct.code ?? null }, want: ['not_worktree'], pass: direct !== null && direct.code === 'not_worktree' })
+  await q(`(window.__l592off?.(), true)`)
   await dropInto('⑧ .git', '.git', null, ['protected'])
   await dropInto('⑨ NUL', 'l592\u0000', null, ['invalid_argument', 'invalid_name'])
   const out1 = outSnap()
@@ -1540,6 +1571,7 @@ cases.e9 = async () => {
     const after = { outside: snap(outside), inside: snap() }
     const rowData = { phase, input, result: { ok: res.ok, code: res.code ?? null, done: res.done ?? null }, fired, outsideDiff: diff(before.outside, after.outside), note }
     rowData.pass = fired && expectFn(res, rowData)
+    rowData.caughtBy = res.ok ? '잡지 못함(성공 반환)' : res.done === true ? '사후 확인(done — 호출은 일어남)' : '호출 전 검사(거절 — 호출 없음)'
     race.push(rowData)
     log(`race ${phase}`, rowData)
     // 원복 — 링크 치우고 원래 폴더를 되돌린다
@@ -1551,12 +1583,14 @@ cases.e9 = async () => {
   }
   await raceOne('create-file', () => {}, { op: 'create', dir: 'l592-race', name: 'l592-r.txt', kind: 'file' }, (r, x) => r.ok === false && same(x.outsideDiff), 'fd 연산(O_NOFOLLOW_ANY) = 거절·밖 무변경')
   await raceOne('mkdir', () => {}, { op: 'create', dir: 'l592-race', name: 'l592-rd', kind: 'dir' }, (r) => r.ok === false && r.code === 'changed' && r.done === true, '경로 연산 — 밖에 빈 폴더가 생길 수 있음(residual 표) · 사후 확인이 changed done 으로 잡는다')
-  await raceOne('rename', (swap) => fs.writeFileSync(path.join(swap, 'l592-mv.txt'), 'mv\n'), { op: 'move', from: 'l592-race/l592-mv.txt', to: 'l592-moved.txt' }, (r) => r.ok === false && r.code === 'changed' && r.done === true, '경로 연산 — 사후 확인 changed done')
+  // 경로 연산의 판정(Q8): 결과 그대로 기록 — 훅 지점(검사 직후)은 「직전 재검사」 앞이라 재검사가 먼저 잡으면 거절·밖 무변경(done 없음), 놓치면 사후 확인이 changed done.
+  const pathOk = (r, x) => r.ok === false && ((r.code === 'changed' && r.done === true) || same(x.outsideDiff))
+  await raceOne('rename', (swap) => fs.writeFileSync(path.join(swap, 'l592-mv.txt'), 'mv\n'), { op: 'move', from: 'l592-race/l592-mv.txt', to: 'l592-moved.txt' }, pathOk, '경로 연산 — 직전 재검사(거절·밖 무변경) 또는 사후 확인(changed done)')
   await raceOne('symlink', (swap) => fs.symlinkSync('../l592-top.txt', path.join(swap, 'l592-ln')), { op: 'duplicate', rel: 'l592-race/l592-ln' }, (r) => r.ok === false && (r.code === 'changed' || r.code === 'outside_root' || r.code === 'io_error'), '경로 연산(symlink) — 사후 확인')
   const trashRace = await raceOne('trash', (swap, target) => { fs.writeFileSync(path.join(swap, 'l592-tr.txt'), 'in\n'); fs.writeFileSync(path.join(target, 'l592-tr.txt'), 'outside\n') }, { op: 'trash', rel: 'l592-race/l592-tr.txt', snapshot: false }, () => true, 'residual 표 — 휴지통 경쟁은 사후 확인이 잡지 못함(밖 항목이 휴지통으로 갈 수 있음) — 결과 그대로 기록')
   if (trashRace.outsideDiff.removed.length > 0) result.trashed.push({ path: path.join(outside, 'l592-race-trash/l592-tr.txt'), at: new Date().toISOString(), via: 'E9⑩ 휴지통 경쟁 주입 — 밖 링크를 따라 밖 fixture 항목이 휴지통으로(residual 표 「잡지 못함」)', case: current.name })
   result.e9race = race
-  check('ⓒ⑩ 경쟁 주입 — fd 연산 거절·경로 연산 사후 확인(Q8 판정대로)·휴지통은 결과 기록', race.every((x) => x.pass), race.map((x) => ({ phase: x.phase, result: x.result, fired: x.fired, outside: x.outsideDiff })))
+  check('ⓒ⑩ 경쟁 주입 — fd 연산 거절·경로 연산 재검사/사후 확인(Q8 판정대로)·휴지통은 결과 기록', race.every((x) => x.pass), race.map((x) => ({ phase: x.phase, result: x.result, fired: x.fired, caughtBy: x.caughtBy, outside: x.outsideDiff })))
   // ⑪ 하드링크·특수 파일
   fs.writeFileSync(abs('l592-in/l592-h.txt'), 'h\n')
   fs.linkSync(abs('l592-in/l592-h.txt'), abs('l592-in/l592-h2.txt'))
@@ -1600,9 +1634,10 @@ cases.e10b = async () => {
   await editorFocus('src/l592-b.ts')
   await type('S')
   await until(async () => (await tab('src/l592-b.ts'))?.dirty === 'true', { label: 'F3 수정' })
+  const beforeSave = (await modelOf('src/l592-b.ts')).value
   await key('S', ['meta'])
   await until(async () => (await tab('src/l592-b.ts'))?.dirty === 'false', { label: 'F3 저장' })
-  const savedOk = fs.readFileSync(abs('src/l592-b.ts'), 'utf8').startsWith('S')
+  const savedOk = fs.readFileSync(abs('src/l592-b.ts'), 'utf8') === beforeSave && beforeSave.includes('S')
   await type('T')
   await until(async () => (await tab('src/l592-b.ts'))?.dirty === 'true', { label: 'F3 다시 수정' })
   fs.writeFileSync(abs('src/l592-b.ts'), 'external\n')
@@ -1635,14 +1670,16 @@ cases.e10b = async () => {
   await key('D', ['meta'])
   const split = await until(async () => ((await herdr(root, 'pane.list')).panes ?? []).length === panes0 + 1, { timeoutMs: 8000, label: '⌘D' }).then(() => true, () => false)
   check('터미널 탭 ⌘T·⌘W·⌘⇧T·⌘D 분할', t1.length === t0.length + 1 && t2.length === t0.length && t3.length === t0.length + 1 && split, { t0, t1, t2, t3, split })
-  // 설정·단축키(⌘, · ⌘K)
+  // 단축키·설정(⌘K · ⌘,)
+  await clickUntil('[data-main-tab="file:src/l592-b.ts"]')
+  await key('K', ['meta'])
+  const palette = await until(() => q(`document.querySelector('input[role="combobox"]') !== null`), { timeoutMs: 5000, label: '팔레트' }).then(() => true, () => false)
+  await key('Escape')
+  await sleep(300)
   await key(',', ['meta'])
   const settings = await until(() => q(`document.querySelector('[data-settings-search]') !== null`), { timeoutMs: 5000, label: '설정' }).then(() => true, () => false)
   await key('Escape')
   await sleep(300)
-  await key('K', ['meta'])
-  const palette = await until(() => q(`document.querySelector('input[role="combobox"]') !== null`), { timeoutMs: 5000, label: '팔레트' }).then(() => true, () => false)
-  await key('Escape')
   check('설정(⌘,)·커맨드 팔레트(⌘K) 열림', settings && palette, { settings, palette })
   // 재시작 복원 — 터미널 탭 수·파일 탭
   await stub(['discard', 'discard', 'discard'])
@@ -1652,6 +1689,33 @@ cases.e10b = async () => {
   await until(async () => (await termTabs()).length > 0, { timeoutMs: 15_000, label: '복원 터미널' }).catch(() => null)
   const tabsAfter = { term: (await termTabs()).length, files: await fileTabs() }
   check('터미널 탭·파일 탭 재시작 복원', tabsAfter.term === tabsBefore.term && tabsBefore.files.every((f) => tabsAfter.files.includes(f)), { tabsBefore, tabsAfter })
+}
+
+/** 한계 확인(DONE 미완 10 — 판정 분모 아님): 만든 폴더를 사용자가 삭제(Q1 — 폴더는 되살림 칸 없음)한 뒤 ⌘Z → not_found 안내와 함께 앞 「만들기」 칸이 버려진다. 디스크 무변화. */
+cases.e5lim = async () => {
+  await expand('src')
+  await createVia(async () => { await focusRow('src'); await clickUntil('[data-explorer-new-folder]') }, { name: 'l592-lim-dir', expectRel: 'src/l592-lim-dir' })
+  await stub(['trash'])
+  const at = new Date().toISOString()
+  await rowMenu('src/l592-lim-dir', 'trash')
+  await settle(() => !exists('src/l592-lim-dir'), '폴더 삭제')
+  noteTrash('src/l592-lim-dir', '한계 확인: 만든 폴더 → 행 메뉴 삭제(폴더 — 되살림 칸 없음)', at)
+  const asked = (await stub([])).asked
+  let before = snap()
+  const logs0 = opLogs().length
+  await undo()
+  await sleep(1200)
+  const first = { diff: diff(before, snap()), ops: opLogs().slice(logs0).map((x) => `${x.op}:${x.ok}:${x.code}`), toasts: await toasts() }
+  before = snap()
+  const logs1 = opLogs().length
+  await undo()
+  await sleep(900)
+  const second = { diff: diff(before, snap()), ops: opLogs().slice(logs1).map((x) => `${x.op}:${x.ok}:${x.code}`) }
+  const dialog = logRows().filter((r) => r.tag === 'file.dialog').slice(-1)[0] ?? null
+  log('한계 확인', { asked, dialog, first, second })
+  check('한계 — 삭제 확인에 「되돌릴 수 없음」(undoable false)', dialog?.undoable === false, dialog)
+  check('한계 — ⌘Z 1 = not_found 안내·디스크 무변화(앞 「만들기」 칸 버려짐)', same(first.diff) && first.ops.some((x) => x.includes('not_found')), first)
+  check('한계 — ⌘Z 2 = 더 되돌릴 것 없음(버려진 칸)·디스크 무변화', same(second.diff), second)
 }
 
 // 사례 목록 실행 — 사례마다 같은 앱·fixture 를 이어 쓴다(앞 사례의 결과는 뒤 사례의 전제가 아님 — 사례는 자기 대상을 스스로 만든다).

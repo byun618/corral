@@ -67,6 +67,16 @@ export type ControlHandlers = {
     status: () => unknown
     drop: () => void
   }
+  /**
+   * LIFE-591 — 파일 탭 확인 대화상자(OS 기본 `showMessageBox` — `sendInputEvent` 가 안 닿는다)의 **답만** 갈아끼운다(`browse-stub` 과 같은 결).
+   * 답 목록을 앞에서부터 하나씩 쓰고, 비면 진짜 창이 뜬다. 렌더러 → IPC → main 문구 → 답 → 렌더러 흐름은 그대로 지난다. 계측 실행에만 열린다.
+   */
+  setFileDialogStub: (answers: string[]) => { asked: string[] }
+  /**
+   * LIFE-591 E3ⓒ — 종료 입구를 계측에서 부른다: `quit` = `app.quit()`(메뉴 Quit·⌘Q 의 role quit 과 같은 함수) · `close` = 창 `close()`(빨간 닫기 단추와 같은 이벤트).
+   * SIGTERM 은 첫 신호 뒤 Chromium 이 기본 처리로 되돌려 두 번째 신호가 확인 없이 프로세스를 끝낸다 — 사용자 입구가 아니라 반복 회차에 못 쓴다.
+   */
+  quitEntry: (via: 'quit' | 'close') => void
 }
 
 /**
@@ -287,6 +297,22 @@ async function handle(line: string, socket: net.Socket, handlers: ControlHandler
         const value = raw !== null ? { path: raw } : parsed['canceled'] === true ? ({ canceled: true } as const) : null
         handlers.setDialogStub(value)
         reply({ ok: true, stub: value, at: Date.now() })
+        return
+      }
+      case 'file-dialog-stub': {
+        // `answers` = 다음 대화상자들에 줄 답(단추 이름이 아니라 답 — save·discard·cancel·overwrite·recreate·reload). 빈 배열이면 스텁을 뗀다.
+        // 돌려주는 `asked` = 지금까지 스텁이 받은 대화상자 갈래(회차 원자료 — 무엇을 물었나).
+        const raw = parsed['answers']
+        const answers = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+        const { asked } = handlers.setFileDialogStub(answers)
+        reply({ ok: true, answers, asked, at: Date.now() })
+        return
+      }
+      case 'quit-entry': {
+        const via = readString(parsed, 'via')
+        if (via !== 'quit' && via !== 'close') throw new Error('via 는 quit · close')
+        reply({ ok: true, via, at: Date.now() })
+        handlers.quitEntry(via)
         return
       }
       case 'rebuild-tree': {

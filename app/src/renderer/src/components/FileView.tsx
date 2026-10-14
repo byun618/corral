@@ -6,14 +6,35 @@
 // 지워지면(`exists: false`) 마지막 내용을 그대로 둔다(VS Code 와 같다 — 탭에 「삭제됨」, MainTabBar). 같은 경로에 다시 생기면 새 stamp 로 다시 읽는다.
 // 이미지(E4ⓔ) = 바이트 → 캔버스·정화한 인라인 SVG(`editor/image.ts`). Markdown(E4ⓓ) = 원문(Monaco)과 미리보기(`editor/markdown.ts`) 전환 — 기본은 원문(VS Code 와 같다).
 // 바이너리·상한 초과·읽기 실패는 한 줄 안내(문구는 VS Code `binaryEditor.ts` 를 옮김).
-import { useEffect, useRef, useState } from 'react'
+//
+// LIFE-591 F3 — 텍스트는 **편집**한다. 모델(내용 + 실행 취소 기록)은 이 컴포넌트가 아니라 문서 저장소(`file-docs.ts`)에 있다 — 언마운트(탭 전환·끌기·worktree 전환)에는
+// 편집기(뷰)만 버리고 모델은 남는다(E1ⓔ). 외부 변경(E4): 수정 없는 문서는 F2 처럼 같은 모델에 디스크 내용을 넣고, **수정 중이면 덮지 않고 배너**를 띄운다
+// (「디스크 내용으로 되돌리기」 = 실행 취소 가능한 편집 · 「내 변경 유지」). 자기 저장 뒤 감시 push 는 문서 stamp 와 같아 아무 일도 없다(E2ⓒ).
+// 읽기 전용(편집 안 함): UTF-8 로 손실 없이 안 읽히는 파일(Q4) · 하드링크(E6ⓑ⑪) · 20 MB 초과(E1ⓖ) — 안내 띠로 까닭을 보인다.
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { toast } from 'sonner'
 import { imageMimeOf, LARGE_FILE_BYTES, type FileReadResult, type ImageReadResult } from '../../../shared/file-view.js'
+import { adoptDoc, disposeDoc, docKey, docsVersion, getDoc, reloadDoc, revertDoc, setComposing, setExternal, subscribeDocs, type FileDoc, type ReadOnlyReason } from '../file-docs.js'
 import './file-view.css'
 
 type MonacoModule = typeof import('../editor/monaco.js')
-type Viewer = ReturnType<MonacoModule['createViewer']>
-type Model = ReturnType<MonacoModule['createModel']>
-type ViewState = ReturnType<Viewer['saveViewState']>
+type Editor = ReturnType<MonacoModule['createEditor']>
+type ViewState = ReturnType<Editor['saveViewState']>
+type TextRead = Extract<FileReadResult, { kind: 'text' }>
+
+/** 이 읽기 결과를 편집할 수 없는 까닭 — 없으면 null. */
+export function readOnlyReasonOf(read: Pick<TextRead, 'utf8' | 'nlink' | 'size'>): ReadOnlyReason | null {
+  if (!read.utf8) return 'encoding'
+  if (read.nlink > 1) return 'hardlink'
+  if (read.size > LARGE_FILE_BYTES) return 'large'
+  return null
+}
+
+const READ_ONLY_NOTICE: Record<ReadOnlyReason, string> = {
+  encoding: 'UTF-8 로 읽을 수 없는 바이트가 있어 읽기 전용으로 엽니다 — 저장하면 그 바이트가 깨지므로 편집하지 않습니다.',
+  hardlink: '다른 위치와 하드링크로 연결된 파일이라 읽기 전용으로 엽니다.',
+  large: '20 MB 를 넘는 파일은 편집하지 않습니다(읽기 전용).',
+}
 
 /** 탭 id 별 Monaco view state — App 이 worktree 마다 하나 들고 있다(렌더 대상이 아니다). */
 export type ViewStateStore = Map<string, ViewState>
@@ -74,10 +95,32 @@ export function FileView({
   }, [root, rel, image, version])
 
   const readStamp = read !== null && read.ok ? read.stamp : null
+  // 문서(편집 중인 모델)는 저장소에 있다 — 수정 여부·외부 상태·저장 중이 바뀌면 다시 그린다.
+  const docsVer = useSyncExternalStore(subscribeDocs, docsVersion)
+  const key = docKey(root, rel)
+  const doc = getDoc(key)
   useEffect(() => {
-    if (watched === null || !watched.exists || watched.stamp === null || readStamp === null || watched.stamp === readStamp) return
-    setVersion((value) => value + 1)
-  }, [watched, readStamp])
+    if (watched === null) return
+    const current = getDoc(key)
+    if (current === undefined) {
+      if (!watched.exists || watched.stamp === null || readStamp === null || watched.stamp === readStamp) return
+      setVersion((value) => value + 1)
+      return
+    }
+    // 저장 중에 온 push 는 자기 저장의 중간 상태일 수 있다 — 적어 두고 그 값으로는 움직이지 않는다(E2ⓒ). 저장이 끝나면 최종 stamp 가 문서와 같다.
+    if (current.saving) {
+      if (watched.stamp !== null) current.ignoredStamps.add(watched.stamp)
+      return
+    }
+    if (!watched.exists || watched.stamp === null || watched.stamp === current.stamp || current.ignoredStamps.has(watched.stamp)) return
+    if (!current.dirty) {
+      setVersion((value) => value + 1)
+      return
+    }
+    // 수정 중 외부 변경 — 덮지 않고 배너(E4ⓑ). 같은 디스크 상태로 이미 띄웠거나 「내 변경 유지」 를 골랐으면 다시 띄우지 않는다.
+    const shown = current.external.kind === 'none' ? null : current.external.diskStamp
+    if (shown !== watched.stamp) setExternal(current, { kind: 'changed', diskStamp: watched.stamp, deleted: false })
+  }, [watched, readStamp, key, docsVer])
   // 지워졌다 같은 경로에 다시 생겼는데 처음 읽기가 실패해 있던 경우(복원 때 없던 파일 등) — 다시 읽는다.
   const readFailed = read !== null && !read.ok
   useEffect(() => {
@@ -108,11 +151,13 @@ export function FileView({
       </div>
     )
   else if (read.kind === 'image') body = <ImageBody key={read.stamp} bytes={read.bytes} mime={read.mime} size={read.size} />
-  else if (markdown && mode === 'preview') body = <MarkdownPreview source={read.text} root={root} rel={rel} onOpenFile={onOpenFile} />
-  else body = <TextBody text={read.text} rel={rel} tabId={tabId} large={large} viewStates={viewStates} />
+  // 미리보기는 편집 중인 내용을 그린다(문서가 있으면 모델 값 — 저장 전 변경도 보인다).
+  else if (markdown && mode === 'preview') body = <MarkdownPreview source={doc?.model.getValue() ?? read.text} root={root} rel={rel} onOpenFile={onOpenFile} />
+  else body = <TextBody read={read} root={root} rel={rel} tabId={tabId} large={large} viewStates={viewStates} />
+  const readOnly = doc?.readOnly ?? (read !== null && read.ok && read.kind === 'text' ? readOnlyReasonOf(read) : null)
 
   return (
-    <div className="file-group" data-file-group={groupId} data-file-view={rel} onMouseDown={() => onActivate()}>
+    <div className="file-group" data-file-group={groupId} data-file-view={rel} data-file-dirty={doc?.dirty === true ? 'true' : 'false'} onMouseDown={() => onActivate()}>
       {markdown && text !== null ? (
         <div className="file-view-toolbar">
           <button
@@ -129,62 +174,124 @@ export function FileView({
       ) : null}
       {large && text !== null ? (
         <div className="file-view-banner" data-file-notice="large">
-          대용량 파일({formatBytes(read !== null && read.ok ? read.size : 0)}) — 구문 강조·접기를 끄고 일반 텍스트로 표시합니다.
+          대용량 파일({formatBytes(read !== null && read.ok ? read.size : 0)}) — 구문 강조·접기를 끄고 일반 텍스트로 표시합니다. 편집하지 않습니다(읽기 전용).
         </div>
       ) : null}
+      {text !== null && readOnly !== null && readOnly !== 'large' ? (
+        <div className="file-view-banner" data-file-notice={`readonly-${readOnly}`}>
+          {READ_ONLY_NOTICE[readOnly]}
+        </div>
+      ) : null}
+      {doc !== undefined && doc.external.kind === 'changed' ? <ExternalBanner doc={doc} /> : null}
       {body}
     </div>
   )
 }
 
-/** 텍스트 — Monaco 하나를 이 탭 동안 유지하고, 다시 읽은 내용은 같은 모델에 넣는다(스크롤·선택 유지 — E5ⓐ). */
-function TextBody({ text, rel, tabId, large, viewStates }: { text: string; rel: string; tabId: string; large: boolean; viewStates: ViewStateStore }): React.JSX.Element {
+/**
+ * 수정 중 외부 변경 배너(E4ⓑ — Orca 「디스크에서 바뀜」 류). 「디스크 내용으로 되돌리기」 = 디스크를 다시 읽어 **실행 취소할 수 있는 편집**으로 넣는다(⌘Z 가 내 변경을 되살린다).
+ * 「내 변경 유지」 = 배너만 닫는다 — 저장할 때 저장 시점 충돌 검사가 「덮어쓰기 / 취소」 를 묻는다(E4ⓔ, 조용히 덮는 길 없음). Compare(diff)는 넣지 않는다(572 D5).
+ */
+function ExternalBanner({ doc }: { doc: FileDoc }): React.JSX.Element {
+  const revert = async (): Promise<void> => {
+    const result = await window.corral.readFile({ root: doc.root, rel: doc.rel })
+    if (!result.ok || result.kind !== 'text' || !result.utf8) {
+      toast(`'${doc.rel}' 의 디스크 내용을 읽지 못했습니다 (${result.ok ? result.kind : result.code})`)
+      return
+    }
+    revertDoc(doc, { text: result.text, bom: result.bom, stamp: result.stamp })
+  }
+  const diskStamp = doc.external.kind === 'changed' ? doc.external.diskStamp : null
+  return (
+    <div className="file-view-banner file-view-conflict" data-file-notice="external-change" onMouseDown={(event) => event.stopPropagation()}>
+      <span className="file-view-conflict-text">디스크의 파일이 바뀌었습니다. 저장하면 디스크의 새 내용을 덮어씁니다(저장할 때 다시 묻습니다).</span>
+      <button type="button" className="file-view-toolbar-button" data-external-action="revert" onClick={() => void revert()}>
+        디스크 내용으로 되돌리기
+      </button>
+      <button type="button" className="file-view-toolbar-button" data-external-action="keep" onClick={() => setExternal(doc, { kind: 'kept', diskStamp })}>
+        내 변경 유지
+      </button>
+    </div>
+  )
+}
+
+/**
+ * 텍스트 — 편집기(뷰)는 이 컴포넌트 동안만, 모델은 문서 저장소에(E1ⓔ). 처음 열면 이 읽기로 모델을 만들어 맡기고, 이미 있으면 그 모델에 붙는다.
+ * 새로 읽은 내용(감시 push → 다시 읽기)은 문서가 수정 없을 때만 같은 모델에 넣는다(스크롤·선택 유지 — F2 E5ⓐ). 수정 중이면 배너로 넘긴다.
+ */
+function TextBody({ read, root, rel, tabId, large, viewStates }: { read: TextRead; root: string; rel: string; tabId: string; large: boolean; viewStates: ViewStateStore }): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null)
-  const viewerRef = useRef<Viewer | null>(null)
-  const modelRef = useRef<Model | null>(null)
-  const textRef = useRef(text)
-  textRef.current = text
+  const editorRef = useRef<Editor | null>(null)
+  const readRef = useRef(read)
+  readRef.current = read
+  const key = docKey(root, rel)
 
   useEffect(() => {
     const host = hostRef.current
     if (host === null) return
     let disposed = false
     void import('../editor/monaco.js').then(async (module) => {
-      const language = large ? 'plaintext' : await module.languageFor(rel)
+      // 문서가 있으면 그 모델(URI = 문서 키)에 붙는다. 없으면 이 읽기로 만들어 맡긴다 — 언어 등록(비동기) 사이 다른 마운트가 먼저 맡겼으면 그것을 쓴다.
+      let doc = getDoc(key)
+      let model = module.modelOf(key)
+      if (doc !== undefined && model === null) {
+        disposeDoc(key)
+        doc = undefined
+      }
+      if (doc === undefined || model === null) {
+        const language = large ? 'plaintext' : await module.languageFor(rel)
+        if (disposed) return
+        doc = getDoc(key)
+        model = module.modelOf(key)
+        if (doc === undefined || model === null) {
+          const first = readRef.current
+          model = module.createModel({ text: first.text, language, key })
+          doc = adoptDoc({ root, rel, model, text: first.text, bom: first.bom, stamp: first.stamp, readOnly: readOnlyReasonOf(first) })
+        }
+      }
       if (disposed) return
-      const viewer = module.createViewer({ host, large })
-      const model = module.createModel({ text: textRef.current, language, tabId })
-      viewer.setModel(model)
+      const editor = module.createEditor({ host, large, readOnly: doc.readOnly !== null })
+      editor.setModel(model)
       const saved = viewStates.get(tabId)
-      if (saved !== undefined && saved !== null) viewer.restoreViewState(saved)
-      viewerRef.current = viewer
-      modelRef.current = model
-      host.dataset.editorReady = language
+      if (saved !== undefined && saved !== null) editor.restoreViewState(saved)
+      const owner = doc
+      editor.onDidCompositionStart(() => setComposing(owner, true))
+      editor.onDidCompositionEnd(() => setComposing(owner, false))
+      editorRef.current = editor
+      host.dataset.editorReady = model.getLanguageId()
     })
     return () => {
       disposed = true
-      const viewer = viewerRef.current
-      if (viewer !== null) {
-        viewStates.set(tabId, viewer.saveViewState())
-        viewer.dispose()
+      const editor = editorRef.current
+      if (editor !== null) {
+        viewStates.set(tabId, editor.saveViewState())
+        // 조합 중에 떠나면 조합이 끝난 것으로 친다 — 기다리던 저장이 묶이지 않게.
+        const doc = getDoc(key)
+        if (doc !== undefined && doc.composing) setComposing(doc, false)
+        editor.dispose()
       }
-      modelRef.current?.dispose()
-      viewerRef.current = null
-      modelRef.current = null
+      editorRef.current = null
       delete host.dataset.editorReady
     }
-  }, [rel, tabId, large, viewStates])
+  }, [key, root, rel, tabId, large, viewStates])
 
+  // 다시 읽은 결과 — 문서가 기대는 stamp 와 다를 때만. 수정 없으면 같은 모델에 넣고(스크롤 유지), 수정 중이면 배너(덮지 않는다 — E4ⓑ).
   useEffect(() => {
-    const viewer = viewerRef.current
-    const model = modelRef.current
-    if (viewer === null || model === null || model.getValue() === text) return
-    const state = viewer.saveViewState()
-    model.setValue(text)
-    if (state !== null) viewer.restoreViewState(state)
+    const doc = getDoc(key)
+    if (doc === undefined || doc.saving || read.stamp === doc.stamp || doc.ignoredStamps.has(read.stamp)) return
+    // 수정 중이거나, 편집 가능한 문서인데 디스크가 UTF-8 로 안 읽히게 바뀌었으면(넣으면 저장이 바이트를 깨뜨린다) 덮지 않고 배너.
+    if (doc.dirty || (!read.utf8 && doc.readOnly === null)) {
+      const shown = doc.external.kind === 'none' ? null : doc.external.diskStamp
+      if (shown !== read.stamp) setExternal(doc, { kind: 'changed', diskStamp: read.stamp, deleted: false })
+      return
+    }
+    const editor = editorRef.current
+    const state = editor?.saveViewState() ?? null
+    reloadDoc(doc, { text: read.text, bom: read.bom, stamp: read.stamp })
+    if (editor !== null && state !== null) editor.restoreViewState(state)
     const host = hostRef.current
     if (host !== null) host.dataset.editorUpdated = String(Date.now())
-  }, [text])
+  }, [read, key])
 
   return <div className="file-editor-host" data-file-editor={tabId} ref={hostRef} />
 }

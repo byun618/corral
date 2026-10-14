@@ -118,6 +118,9 @@ import { ExplorerHub } from './explorer-hub.js'
 import { explorerAction } from './explorer-actions.js'
 import { readFileContent, readImageContent } from './file-read.js'
 import { createFileWatch, type FileWatch } from './file-watch.js'
+import { loadTestHooks, writeFileContent } from './file-write.js'
+import { fileDialogSpec, parseFileDialogRequest, reloadDialogSpec } from './file-dialogs.js'
+import { createQuitGate, parseDirtyFiles } from './quit-gate.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -137,6 +140,18 @@ let shortcutRecording = false
 const measuring = (process.env.CORRAL_CONTROL_SOCKET ?? '').length > 0
 
 let window: BrowserWindow | null = null
+/**
+ * LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 종료·창 닫기를 런타임 정리보다 먼저 막고 렌더러에 확인을 맡긴다(`quit-gate.ts`).
+ * 렌더러가 없으면(창이 없거나 부서졌으면) 막지 않는다 — 그때는 확인할 내용도 없다.
+ */
+const quitGate = createQuitGate({
+  requestConfirm: () => {
+    if (window === null || window.isDestroyed() || window.webContents.isCrashed()) return false
+    window.webContents.send('corral:quitRequested')
+    return true
+  },
+  log: (tag, data) => log(tag, data),
+})
 let revision = 0
 /** 소켓 경로를 든 목록은 **여기까지만** 산다 (수정 1회차 L9) — 화면으로는 이름·running 만 간다. */
 let sessions: SessionHandle[] = []
@@ -628,6 +643,9 @@ function removeRepo(input: string): RemoveRepoResult {
  * 거기서 멈췄다 (수정 5회차 실측).
  */
 let dialogStub: { canceled: true } | { path: string } | null = null
+/** LIFE-591 — 파일 탭 확인 대화상자 답 스텁(계측 실행만, 제어 소켓 `file-dialog-stub`). 비면 진짜 창. `fileDialogAsked` = 스텁이 받은 갈래 기록. */
+let fileDialogAnswers: string[] = []
+const fileDialogAsked: string[] = []
 
 /** 다이얼로그가 떠 있는 동안 두 번째 클릭이 창을 하나 더 띄우지 않게. */
 let browsing = false
@@ -1445,6 +1463,31 @@ function createWindow(): void {
   })
 
   window.on('ready-to-show', () => window?.show())
+  // LIFE-591 E3ⓒ — 빨간 닫기 단추(창 `close`)도 ⌘Q 와 같은 확인을 거친다. 창이 닫히면 `window-all-closed` → 정리 → 종료이므로 여기서 막아야 렌더러의 수정 내용이 산다.
+  window.on('close', (event) => {
+    if (quitGate.intercept('window-close')) event.preventDefault()
+  })
+  window.on('closed', () => quitGate.setDirty([]))
+  window.webContents.on('render-process-gone', () => quitGate.setDirty([]))
+  /**
+   * LIFE-591 E3ⓕ — 렌더러 다시 불러오기(기본 메뉴 View ▸ Force Reload ⌘⇧R 등 — ⌘R 은 위 `before-input-event` 가 가져간다). 렌더러는 수정 파일이 있으면
+   * `beforeunload` 를 막는다 → 여기서 묻고, 「다시 불러오기」 면 막음을 무시한다(`preventDefault` = 그래도 내린다 — Electron 문서 패턴). 종료 확인을 이미 지났으면 묻지 않는다.
+   */
+  window.webContents.on('will-prevent-unload', (event) => {
+    if (quitGate.allowed()) {
+      event.preventDefault()
+      return
+    }
+    const target = window
+    const files = quitGate.dirty().map((file) => file.rel)
+    const options = reloadDialogSpec(files.length > 0 ? files : ['(수정된 파일)'])
+    // 계측 스텁(`file-dialog-stub` 의 `reload` = 다시 불러오기, 그 밖 = 취소).
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push('reload')
+    const choice = stubbed !== undefined ? (stubbed === 'reload' ? 0 : 1) : target === null || target.isDestroyed() ? 1 : dialog.showMessageBoxSync(target, options)
+    log('file.reload_confirm', { files: files.length, reload: choice === 0 })
+    if (choice === 0) event.preventDefault()
+  })
   // LIFE-527 D3 — 전체화면이면 신호등이 창 위에 없다. 렌더러가 신호등 여백을 걷도록 상태를 민다.
   window.on('enter-full-screen', pushWindowChrome)
   window.on('leave-full-screen', pushWindowChrome)
@@ -1827,6 +1870,54 @@ app.whenReady().then(async () => {
     log('file.read_image', { ok: result.ok, kind: result.ok ? result.kind : null, code: result.ok ? null : result.code, size: result.ok ? result.size : null, bytesRead: result.ok ? result.bytesRead : null, ms: Math.round((performance.now() - startedAt) * 10) / 10 })
     return result
   })
+  // --- 파일 탭 편집 (LIFE-591 F3) — 쓰기는 `file-write.ts`(fd 기반 쓰기 경계 — 등록 루트·이미 있는 일반 파일·`O_NOFOLLOW_ANY`). 내용 상한도 거기서 다시 잰다 ---
+  // 시험 전용 주입은 패키지 앱이면 늘 꺼진다(`loadTestHooks`) — 개발 실행에서도 `CORRAL_TEST_WRITE_HOOK_FILE` 이 있을 때만.
+  ipcMain.handle('corral:fileWrite', async (event, input: unknown) => {
+    if (!fromOurWindow(event)) return { ok: false, code: 'not_worktree', error: '허용되지 않은 발신자' }
+    const field = (name: string): unknown => (typeof input === 'object' && input !== null && name in input ? Reflect.get(input, name) : undefined)
+    const startedAt = performance.now()
+    const hooks = await loadTestHooks({ packaged: app.isPackaged, file: process.env.CORRAL_TEST_WRITE_HOOK_FILE })
+    const result = await writeFileContent({
+      roots: explorerRoots(),
+      root: field('root'),
+      rel: field('rel'),
+      text: field('text'),
+      bom: field('bom'),
+      baseStamp: field('baseStamp'),
+      overwrite: field('overwrite'),
+      create: field('create'),
+      hooks,
+    })
+    // 경로·내용은 남기지 않는다 — 결과 코드·크기·걸린 시간만(읽기 로그와 같은 결).
+    log('file.write', { ok: result.ok, code: result.ok ? null : result.code, size: result.ok ? result.size : null, ms: Math.round((performance.now() - startedAt) * 10) / 10, hooks: Object.keys(hooks).length > 0 })
+    return result
+  })
+  // 확인 대화상자(E3ⓑ·E4ⓒⓓ·E3ⓓ) — 문구·단추는 main(`file-dialogs.ts`), 렌더러는 갈래와 파일 이름만 준다. 고른 답을 돌려준다(모르는 요청 = 취소).
+  ipcMain.handle('corral:fileDialog', async (event, input: unknown) => {
+    if (!fromOurWindow(event) || window === null || window.isDestroyed()) return 'cancel'
+    const request = parseFileDialogRequest(input)
+    if (request === null) return 'cancel'
+    const spec = fileDialogSpec(request)
+    // 계측 스텁 — 답이 이 갈래에 있는 것이면 쓴다(없는 답이면 취소로 — 스텁이 다른 갈래를 조용히 고르지 않게).
+    const stubbed = measuring ? fileDialogAnswers.shift() : undefined
+    if (stubbed !== undefined) fileDialogAsked.push(request.kind)
+    const choice = stubbed !== undefined ? (spec.choices.find((item) => item === stubbed) ?? 'cancel') : (spec.choices[(await dialog.showMessageBox(window, spec.options)).response] ?? 'cancel')
+    log('file.dialog', { kind: request.kind, choice, stubbed: stubbed !== undefined, files: request.kind === 'close' || request.kind === 'discard' ? request.files.length : 1 })
+    return choice
+  })
+  // 수정 파일 목록(E3ⓒ) — 바뀔 때마다 렌더러가 민다. 종료 확인 관문이 이것으로 동기 판정한다.
+  ipcMain.on('corral:dirtyFiles', (event, input: unknown) => {
+    if (!fromOurWindow(event)) return
+    const files = parseDirtyFiles(input)
+    if (files !== null) quitGate.setDirty(files)
+  })
+  // 렌더러가 종료 확인을 마쳤다(저장했거나 저장 안 함) — 이제 막지 않고 다시 종료한다. 취소면 이 요청이 오지 않는다(앱·런타임 그대로).
+  ipcMain.on('corral:confirmQuit', (event) => {
+    if (!fromOurWindow(event)) return
+    log('quit.confirmed', { files: quitGate.dirty().length })
+    quitGate.allow()
+    app.quit()
+  })
   // 열린 파일 탭 감시(E5) — 렌더러가 활성 worktree 의 열린 파일 탭 집합을 통째로 준다. 패널 열림과 무관하다(탐색기 감시와 별개).
   fileWatch = createFileWatch({
     roots: explorerRoots,
@@ -2099,6 +2190,15 @@ app.whenReady().then(async () => {
       status: () => (fileWatch === null ? null : { ...fileWatch.stats(), recent: fileWatch.recentChecks(), pushes: fileWatch.recentPushes() }),
       drop: () => fileWatch?.dropWatchers(),
     },
+    quitEntry: (via) => {
+      if (via === 'quit') app.quit()
+      else window?.close()
+    },
+    setFileDialogStub: (answers) => {
+      fileDialogAnswers = answers
+      log('file.dialog_stub', { answers })
+      return { asked: [...fileDialogAsked] }
+    },
   })
 
   app.on('activate', () => {
@@ -2107,6 +2207,11 @@ app.whenReady().then(async () => {
 }).catch(error => { log('runtime.start_failed', { error: String(error) }); app.exit(1) })
 
 app.on('before-quit', event => {
+  // LIFE-591 E3ⓒ — 수정된 파일 탭이 있으면 런타임 정리보다 **먼저** 막는다(취소하면 런타임·터미널이 그대로여야 한다). 확인은 렌더러가 하고 `corral:confirmQuit` 로 다시 온다.
+  if (quitGate.intercept('before-quit')) {
+    event.preventDefault()
+    return
+  }
   if (!stopRuntime) return
   event.preventDefault()
   const close = stopRuntime; stopRuntime = null

@@ -422,16 +422,16 @@ function MainTab({
 
 /**
  * 탭바 안 한 칸 (LIFE-590 E1) — 터미널 탭(herdr `TabRow`) 또는 파일 탭. 영역 배치의 `tabOrder` 순서 그대로 섞여 선다.
- * 파일 탭의 `deleted` = 외부에서 지워짐(E5ⓒ — 표시는 F2 본구현에서 채운다).
+ * 파일 탭의 `deleted` = 외부에서 지워짐(E5ⓒ — 표시는 F2 본구현에서 채운다). `dirty` = 저장하지 않은 수정이 있음(LIFE-591 E1ⓑ — 닫기 자리에 점).
  */
-export type GroupTabItem = { kind: 'terminal'; tab: TabRow } | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean }
+export type GroupTabItem = { kind: 'terminal'; tab: TabRow } | { kind: 'file'; tabId: string; rel: string; preview: boolean; deleted: boolean; dirty: boolean }
 
 type FileTabMenuAction = 'close' | 'keep' | 'close-others' | 'close-right' | 'split-right' | 'split-down' | `move:${string}`
 
 /**
  * 파일 탭 (LIFE-590 E2·E10) — 칸·높이·활성 표시·닫기 자리는 터미널 탭(`.main-tab`)과 같고, 안쪽은 VS Code 편집기 탭:
  * Seti 파일 아이콘(탐색기와 같은 `FileIcon`) · 파일 이름 · **미리보기 = 이탤릭**(VS Code `.monaco-icon-label.italic`) · 닫기 버튼 자리에
- * 수정 점이 설 자리(`data-file-dirty-slot` — 점 자체는 F3). 더블클릭 = 고정(VS Code·Orca), 중클릭 = 닫기.
+ * 수정 점(닫기 단추 자리 — LIFE-591). 더블클릭 = 고정(VS Code·Orca), 중클릭 = 닫기.
  * 터미널 탭의 이름 바꾸기·핀·색·서수·pane 분할은 파일 탭에 없다 — 메뉴에서도 뺐다(E3ⓗ, 무동작 항목 0).
  */
 function FileTab({
@@ -483,13 +483,14 @@ function FileTab({
   ]
   return (
     <div
-      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''}`}
+      className={`main-tab main-tab-file ${active ? 'is-active' : ''} ${hasTabsToRight ? 'has-right' : ''} ${item.preview ? 'is-preview' : ''} ${item.deleted ? 'is-deleted' : ''} ${item.dirty ? 'is-dirty' : ''}`}
       data-main-tab={item.tabId}
+      data-file-dirty={item.dirty ? 'true' : 'false'}
       data-file-tab={item.rel}
       data-active={active ? 'true' : 'false'}
       data-active-tab-dock={dock ? '' : undefined}
       data-tab-preview={item.preview ? 'true' : 'false'}
-      title={`${item.rel}${item.preview ? ' · 미리보기' : ''}${item.deleted ? ' · 삭제됨' : ''} — 끌어서 옮기기`}
+      title={`${item.rel}${item.preview ? ' · 미리보기' : ''}${item.deleted ? ' · 삭제됨' : ''}${item.dirty ? ' · 수정됨' : ''} — 끌어서 옮기기`}
       onMouseDown={(event) => {
         if (event.button === 1) {
           event.preventDefault()
@@ -521,15 +522,14 @@ function FileTab({
       <span className="main-tab-title">
         <span className="main-tab-label main-tab-file-label">{label}</span>
       </span>
-      {/* 수정 점 자리(F3) — VS Code 는 닫기 버튼 자리에 채운 원을 띄운다(`.tab.dirty > .tab-actions`). F2 는 자리만 둔다. */}
-      <span className="main-tab-dirty-slot" data-file-dirty-slot="" aria-hidden />
+      {/* 수정 점(LIFE-591 E1ⓑ) — VS Code `.tab.dirty > .tab-actions`·Orca 처럼 **닫기 단추 자리**에 채운 원, 탭 hover·단추 포커스면 닫기(×). 단추 안 `::before` 로 그린다(file-view.css). */}
       <button
         className="main-tab-close"
         data-main-tab-close={item.tabId}
         data-tab-close-button="true"
         type="button"
         title="탭 닫기"
-        aria-label={`탭 닫기 ${label}`}
+        aria-label={`탭 닫기 ${label}${item.dirty ? ' (수정됨)' : ''}`}
         onClick={(event) => {
           event.stopPropagation()
           onClose()

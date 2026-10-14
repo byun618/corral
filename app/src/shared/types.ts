@@ -5,7 +5,7 @@ import type { SidebarViewPrefs } from './sidebar-view.js'
 import type { WindowChrome } from './window-chrome.js'
 import type { MobilePairingResult, MobileStatus } from './mobile.js'
 import type { ExplorerActionInput, ExplorerActionResult, ExplorerListResult, ExplorerPush } from './explorer.js'
-import type { FileReadResult, FileWatchPush, ImageReadResult } from './file-view.js'
+import type { DirtyFile, FileDialogChoice, FileDialogRequest, FileReadResult, FileWatchPush, FileWriteInput, FileWriteResult, ImageReadResult } from './file-view.js'
 // **경계를 건너는 타입은 전부 여기 있다** (기준 N2ⓐ).
 //
 // herdr 의 와이어 모양(snake_case 필드·`PaneInfo`·프로토콜 enum)은 이 파일에 한 글자도 없다.
@@ -1049,6 +1049,16 @@ export type CorralApi = {
   /** 열린 파일 탭 감시 집합(LIFE-590 E5) — 통째로 바꾼다. */
   fileWatch: (input: { root: string; rels: string[] }) => Promise<{ ok: boolean; count: number }>
   onFileEvent: (listener: (event: FileWatchPush) => void) => () => void
+  /** LIFE-591 F3 — 파일 탭 저장(쓰기 경계는 main `file-write.ts`). */
+  writeFile: (input: FileWriteInput) => Promise<FileWriteResult>
+  /** 확인 대화상자(OS 기본) — 문구는 main 이 만든다. 고른 답. */
+  fileDialog: (request: FileDialogRequest) => Promise<FileDialogChoice>
+  /** 수정 파일 목록 — 바뀔 때마다(종료 확인 관문이 동기 판정에 쓴다, E3ⓒ). */
+  setDirtyFiles: (files: DirtyFile[]) => void
+  /** main 이 종료·창 닫기를 막고 확인을 맡겼다. */
+  onQuitRequested: (listener: () => void) => () => void
+  /** 확인을 마쳤다(저장했거나 저장 안 함) — main 이 이제 막지 않고 종료한다. */
+  confirmQuit: () => void
   /** 우클릭 직전 창을 앞으로 (Orca #14545 를 따라 하지 않기 — 배경 앱 우클릭에도 키보드·hover 대상이 선다). */
   activateWindow: () => void
   reportRendered: (revision: number) => void

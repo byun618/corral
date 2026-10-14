@@ -70,6 +70,8 @@ export function useCardActions(input: {
   /** MRU pane 기록(최근 먼저) — 활성 워크트리를 지운 뒤 옮겨 갈 곳(198 「최근 방문한 같은 레포 형제」). */
   mruHistory: () => readonly string[]
   notify: (message: string) => void
+  /** LIFE-591 E3ⓓ — 지우기 전에 그 worktree 의 수정된 파일 탭을 묻는다(false = 지우지 않는다). 없으면 묻지 않는다. */
+  guardDelete?: (path: string) => Promise<boolean>
 }) {
   const pins = usePersistentCollapse('pinnedWorktrees')
   const altHeld = useAltHeld()
@@ -160,8 +162,15 @@ export function useCardActions(input: {
   }
 
   /** 삭제 실행 — 확인 창의 「삭제」/「강제 삭제」 와 확인 생략 경로(LIFE-516)가 같이 쓴다. `saved` = 방금 시작한 「다시 묻지 않음」 저장(없으면 null) — 성공이면 결과 알림에 되돌리는 자리를 한 번 붙이고(D5), 실패면 실패를 붙인다(fix1 R1-02). */
-  const runDelete = (input: RunDeleteInput): void => {
+  const runDelete = (input: RunDeleteInput & { guarded?: boolean }): void => {
     const { target, force } = input
+    const guard = latest.current.guardDelete
+    if (guard !== undefined && input.guarded !== true) {
+      void guard(target.path).then((ok) => {
+        if (ok) runDelete({ ...input, guarded: true })
+      })
+      return
+    }
     const found = findRow(latest.current.stateRef.current, target.path)
     const workspaceId = found?.worktree.openWorkspaceId ?? null
     if (workspaceId !== null && workspaceId === latest.current.activeWorkspaceId) activeDeletes.current.set(target.path, { workspaceId, userMoved: false })

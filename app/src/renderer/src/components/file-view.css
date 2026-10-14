@@ -8,8 +8,13 @@
 .main-tab-file.is-preview .main-tab-file-label { font-style: italic; }
 /* 외부에서 지워진 파일 — 취소선(Orca `EditorFileTab` line-through, E5ⓒ). */
 .main-tab-file.is-deleted .main-tab-file-label { text-decoration: line-through; }
-/* 수정 점 자리(F3) — VS Code 는 닫기 버튼 자리에 채운 원을 띄운다. F2 는 폭 0 자리만 둔다. */
-.main-tab-dirty-slot { display: none; }
+/* 수정 점(LIFE-591 E1ⓑ) — 닫기 단추(16px) 자리에 채운 원 8px(VS Code 수정 탭 · Orca `size-1.5 rounded-full` 류), 비활성 탭에서도 보인다.
+   탭 hover · 단추 키보드 포커스면 점을 걷고 닫기(×)를 보인다 — VS Code·Orca 와 같다. */
+.main-tab-file.is-dirty .main-tab-close { color: var(--fg-muted); }
+.main-tab-file.is-dirty .main-tab-close::before { content: ''; display: block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.main-tab-file.is-dirty .main-tab-close svg { display: none; }
+.main-tab-file.is-dirty:hover .main-tab-close::before, .main-tab-file.is-dirty .main-tab-close:focus-visible::before { display: none; }
+.main-tab-file.is-dirty:hover .main-tab-close svg, .main-tab-file.is-dirty .main-tab-close:focus-visible svg { display: block; }
 
 /* 본문 — 터미널 본문(`.term-group`) 자리. 편집기 바탕은 corral `--bg-surface`(테마도 같은 값). */
 .file-group { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
@@ -57,3 +62,7 @@
 .file-markdown-preview [data-md-href]:hover { text-decoration: underline; }
 .file-markdown-preview .md-image { max-width: 100%; height: auto; }
 .md-image-refused { color: var(--fg-muted); font-style: italic; }
+
+/* LIFE-591 F3 — 수정 중 외부 변경 배너(E4ⓑ): 위 한 줄, 글 + 단추 둘(「디스크 내용으로 되돌리기」·「내 변경 유지」). 색은 안내 띠(`--bg-notice`)와 같다. */
+.file-view-conflict { display: flex; align-items: center; gap: 8px; }
+.file-view-conflict-text { flex: 1; min-width: 0; }

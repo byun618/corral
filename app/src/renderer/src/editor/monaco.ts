@@ -1,4 +1,4 @@
-// Monaco 읽기 전용 편집기 (LIFE-590 E4ⓐ) — **첫 파일 탭이 열릴 때 처음 로드된다**(`FileEditor` 의 동적 import, E8ⓒ 지연 로딩).
+// Monaco 편집기 (LIFE-590 E4ⓐ 읽기 · LIFE-591 F3 편집) — **첫 파일 탭이 열릴 때 처음 로드된다**(`FileEditor` 의 동적 import, E8ⓒ 지연 로딩).
 //
 // Monaco 는 `editor.api`(핵심) + 읽기 전용 뷰어에 쓰는 기여만 싣는다 — 언어 서비스(TS·JSON·CSS·HTML worker)·Monarch 기본 언어는 싣지 않는다
 // (구문 강조는 VS Code TextMate — `textmate.ts`. 언어 서버·의미 강조는 F2 범위 밖).
@@ -120,21 +120,22 @@ export async function languageFor(rel: string): Promise<string> {
 const LARGE_FILE_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = { folding: false, occurrencesHighlight: 'off', selectionHighlight: false, stickyScroll: { enabled: false } }
 
 /**
- * 읽기 전용 편집기 하나 — 옵션은 VS Code 기본값(글꼴 크기·줄 높이·미니맵·sticky scroll 은 Monaco 기본 = VS Code 기본), 글꼴만 corral 토큰.
+ * 편집기 하나 — 옵션은 VS Code 기본값(글꼴 크기·줄 높이·미니맵·sticky scroll 은 Monaco 기본 = VS Code 기본), 글꼴만 corral 토큰.
  * `large`(20 MB 초과, E4ⓕ) — Monaco 모델이 스스로 토큰화를 끄는 것(`largeFileOptimizations` 기본 켬 — VS Code 와 같은 코드·같은 문턱)에 더해
  * 접기·단어 강조·sticky scroll 을 끈다(VS Code 가 대용량 모델에서 끄는 기능들). 언어는 부르는 쪽이 `plaintext` 로 준다(문법을 싣지 않는다).
+ * `readOnly`(LIFE-591) — 편집할 수 없는 파일(비 UTF-8·하드링크·20 MB 초과)만 읽기 전용. 그때는 `domReadOnly` 로 친 글자(한글 조합 포함)가 입력 요소에 쌓이지 않게 한다(590 E3ⓖ).
+ * IME: `editContext` 옵션은 지정하지 않는다(Monaco 0.57 기본 true — Chromium 에 EditContext 가 있으면 그 경로로 입력). 실제 한글 IME 는 E10 사용자 확인.
  */
-export function createViewer(input: { host: HTMLElement; large: boolean }): monaco.editor.IStandaloneCodeEditor {
+export function createEditor(input: { host: HTMLElement; large: boolean; readOnly: boolean }): monaco.editor.IStandaloneCodeEditor {
   ensureTextMate()
   return monaco.editor.create(input.host, {
     ...(input.large ? LARGE_FILE_OPTIONS : {}),
     theme: THEME,
-    readOnly: true,
-    // 읽기 전용 편집기에서 친 글자(한글 조합 포함)가 textarea 에 쌓이지 않게 — 입력이 어디로도 새지 않는다(E3ⓖ).
-    domReadOnly: true,
+    readOnly: input.readOnly,
+    domReadOnly: input.readOnly,
     automaticLayout: true,
     fontFamily: corralToken('--font-mono', 'ui-monospace, monospace'),
-    // 편집기 안 링크 열기·드래그 앤 드롭 편집은 끈다 — 링크가 앱 창을 옮기지 않게(E4ⓓ 와 같은 결), 편집은 F3.
+    // 편집기 안 링크 열기·드래그 앤 드롭은 끈다 — 링크가 앱 창을 옮기지 않게(E4ⓓ 와 같은 결).
     links: false,
     dragAndDrop: false,
     // 읽기 전용 안내 말풍선(「Cannot edit in read-only editor」) — VS Code 도 띄운다. 그대로 둔다.
@@ -142,9 +143,16 @@ export function createViewer(input: { host: HTMLElement; large: boolean }): mona
   })
 }
 
-/** 탭 하나의 모델 — URI 를 탭마다 따로(같은 파일이 두 번 열리지 않으므로 탭 id 로 충분). */
-export function createModel(input: { text: string; language: string; tabId: string }): monaco.editor.ITextModel {
-  const uri = monaco.Uri.from({ scheme: 'corral-file', path: `/${encodeURIComponent(input.tabId)}` })
+const modelUri = (key: string): monaco.Uri => monaco.Uri.from({ scheme: 'corral-file', path: `/${encodeURIComponent(key)}` })
+
+/** 이미 만든 모델(문서 저장소가 맡긴 것) — 편집기를 다시 만들 때 같은 모델에 붙는다. */
+export function modelOf(key: string): monaco.editor.ITextModel | null {
+  return monaco.editor.getModel(modelUri(key))
+}
+
+/** 파일 하나의 모델 — URI 를 `(worktree 루트, 상대 경로)` 키마다 따로(같은 상대 경로가 여러 worktree 에 열릴 수 있다 — LIFE-591 문서 저장소 키와 같다). */
+export function createModel(input: { text: string; language: string; key: string }): monaco.editor.ITextModel {
+  const uri = modelUri(input.key)
   monaco.editor.getModel(uri)?.dispose()
   return monaco.editor.createModel(input.text, input.language, uri)
 }
